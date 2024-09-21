@@ -69,25 +69,17 @@ func (app *app) runFile(ctx context.Context, file *ast.File) error {
 
 func (app *app) runFunc(ctx context.Context, fn *ast.FuncDecl) error {
 	// TODO: handling arguments
-	for line := fn.Body.List; len(line) > 0; line = line[1:] {
-		if stmt, ok := line[0].(*ast.ExprStmt); ok {
+	for lines := fn.Body.List; len(lines) > 0; lines = lines[1:] {
+		if stmt, ok := lines[0].(*ast.ExprStmt); ok {
 			if call, ok := stmt.X.(*ast.CallExpr); ok {
-				if ident, ok := call.Fun.(*ast.Ident); ok { // println()
-					if ident.Name == "println" {
-						if err := app.evaluator.evalPrintln(ctx, call); err != nil {
-							return err // TODO: line number
-						}
-					}
-				} else if sel, ok := call.Fun.(*ast.SelectorExpr); ok { // fmt.Println()
-					if ident, ok := sel.X.(*ast.Ident); ok {
-						if ident.Name == "fmt" && sel.Sel.Name == "Println" {
-							if err := app.evaluator.evalPrintln(ctx, call); err != nil {
-								return err // TODO: line number
-							}
-						}
-					}
+				if _, err := app.evaluator.evalCallExpr(ctx, call); err != nil {
+					return err // TODO: line number
 				}
+			} else {
+				return fmt.Errorf("unsupported expr: %T", stmt.X) // TODO: line number
 			}
+		} else {
+			return fmt.Errorf("unsupported statement: %T", lines[0]) // TODO
 		}
 	}
 	return nil
@@ -96,55 +88,77 @@ func (app *app) runFunc(ctx context.Context, fn *ast.FuncDecl) error {
 type evaluator struct {
 }
 
-func (e *evaluator) evalPrintln(ctx context.Context, call *ast.CallExpr) error {
-	args := make([]any, 0, len(call.Args))
-	for i, arg := range call.Args {
+func (e *evaluator) evalCallExpr(ctx context.Context, expr *ast.CallExpr) (string, error) {
+	args := make([]any, 0, len(expr.Args))
+	for i, arg := range expr.Args {
 		switch arg := arg.(type) {
 		case *ast.BasicLit:
-			val, err := e.evalValue(arg)
+			val, err := e.evalValue(ctx, arg)
 			if err != nil {
-				return fmt.Errorf("failed to eval argument[%d]: %w", i, err) // TODO: line number
+				return "", fmt.Errorf("failed to eval argument[%d]: %w", i, err) // TODO: line number
 			}
 			args = append(args, val)
 		case *ast.BinaryExpr:
-			val, err := e.evalBinaryExpr(arg.Op, arg.X, arg.Y)
+			val, err := e.evalBinaryExpr(ctx, arg)
 			if err != nil {
-				return err
+				return "", err
 			}
 			args = append(args, val)
-
+		case *ast.CallExpr:
+			val, err := e.evalCallExpr(ctx, arg)
+			if err != nil {
+				return "", err
+			}
+			args = append(args, val)
 		default:
-			return fmt.Errorf("unsupported argument[%d] type: %T", i, arg) // TODO: line number
+			return "", fmt.Errorf("unsupported argument[%d] type: %T", i, arg) // TODO: line number
 		}
 	}
-	fmt.Println(args...)
-	return nil
+
+	// TODO: fix (currently, only support println() and fmt.Println())
+	if ident, ok := expr.Fun.(*ast.Ident); ok { // println()
+		if ident.Name == "println" {
+			fmt.Println(args...)
+		} else {
+			return "", fmt.Errorf("unsupported function: %s", ident.Name)
+		}
+	} else if sel, ok := expr.Fun.(*ast.SelectorExpr); ok { // fmt.Println()
+		if ident, ok := sel.X.(*ast.Ident); ok {
+			if ident.Name == "fmt" && sel.Sel.Name == "Println" {
+				fmt.Println(args...)
+			}
+		} else {
+			return "", fmt.Errorf("unsupported function: %s.%s", sel.Sel.Name, sel.X)
+		}
+	}
+
+	return "", nil
 }
 
-func (e *evaluator) evalBinaryExpr(op token.Token, x, y ast.Expr) (string, error) {
-	xval, err := e.evalValue(x)
+func (e *evaluator) evalBinaryExpr(ctx context.Context, expr *ast.BinaryExpr) (string, error) {
+	x, err := e.evalValue(ctx, expr.X)
 	if err != nil {
 		return "", err
 	}
-	yval, err := e.evalValue(y)
+	y, err := e.evalValue(ctx, expr.Y)
 	if err != nil {
 		return "", err
 	}
 
-	switch op {
+	switch expr.Op {
 	case token.ADD:
-		return xval + yval, nil
+		return x + y, nil
 	default:
-		return "", fmt.Errorf("unsupported operator: %v", op)
+		return "", fmt.Errorf("unsupported operator: %v", expr.Op)
 	}
 }
 
-func (e *evaluator) evalValue(expr ast.Expr) (string, error) { // TODO: return any
+func (e *evaluator) evalValue(ctx context.Context, expr ast.Expr) (string, error) { // TODO: return any
 	switch expr := expr.(type) {
 	case *ast.BasicLit:
 		return expr.Value[1 : len(expr.Value)-1], nil // TODO: fix
 	case *ast.BinaryExpr:
-		val, err := e.evalBinaryExpr(expr.Op, expr.X, expr.Y)
+		val, err := e.evalBinaryExpr(ctx, expr)
 		if err != nil {
 			return "", err
 		}
