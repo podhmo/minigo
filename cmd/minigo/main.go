@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -11,18 +12,23 @@ import (
 )
 
 func main() {
-	ctx := context.Background()
-	entryPoint := "main"
+	var options struct {
+		entrypoint string
+	}
 
-	if len(os.Args) < 2 {
+	flag.StringVar(&options.entrypoint, "entrypoint", "main", "entrypoint function name")
+	flag.Parse()
+
+	if len(flag.Args()) < 1 {
 		fmt.Fprintln(os.Stderr, "Usage: minigo <filename>")
 		return
 	}
 
+	ctx := context.Background()
 	// logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	filename := os.Args[1]
-	if err := run(ctx, filename, entryPoint); err != nil {
+	filename := flag.Args()[0]
+	if err := run(ctx, filename, options.entrypoint); err != nil {
 		logger.ErrorContext(ctx, "failed to run", "error", err)
 		return
 	}
@@ -58,7 +64,7 @@ func (app *app) runFile(ctx context.Context, file *ast.File) error {
 			}
 		}
 	}
-	return nil
+	return fmt.Errorf("entrypoint func %s() is not found", app.entryPoint)
 }
 
 func (app *app) runFunc(ctx context.Context, fn *ast.FuncDecl) error {
