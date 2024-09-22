@@ -1,10 +1,12 @@
 package e2e
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"go/parser"
 	"go/token"
+	"os"
 	"path"
 	"strings"
 	"testing"
@@ -16,7 +18,35 @@ func normalize(s string) string {
 	return strings.TrimSpace(s)
 }
 
-func TestRunFileOutput(t *testing.T) {
+// readOutputComment reads the comment lines after "// Output:" from the file.
+func readOutputComment(t *testing.T, filename string) []string {
+	f, err := os.Open(filename)
+	if err != nil {
+		t.Errorf("open file: %+v", err)
+		return nil
+	}
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		if line := scanner.Text(); strings.Contains(line, "// Output:") {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Errorf("scan file: %+v", err)
+		return nil
+	}
+	var output []string
+	for scanner.Scan() {
+		if line := strings.TrimSpace(scanner.Text()); strings.HasPrefix(line, "//") {
+			output = append(output, strings.TrimLeft(line, "/ "))
+		} else {
+			break
+		}
+	}
+	return output
+}
+
+func TestRunFile(t *testing.T) {
 	type testcase struct {
 		filename   string
 		entrypoint string
@@ -25,11 +55,7 @@ func TestRunFileOutput(t *testing.T) {
 	for _, c := range []testcase{
 		{
 			filename: "./testdata/hello.go", entrypoint: "main",
-			output: []string{
-				"Hello, World!",
-				"Hello World!",
-				"Hello World!",
-			},
+			output: readOutputComment(t, "./testdata/hello.go"),
 		},
 		{
 			filename: "./testdata/another-entrypoint.go", entrypoint: "Foo",
@@ -39,18 +65,11 @@ func TestRunFileOutput(t *testing.T) {
 		},
 		{
 			filename: "./testdata/use-stdlib.go", entrypoint: "main",
-			output: []string{
-				"HELLO, WORLD",
-			},
+			output: readOutputComment(t, "./testdata/use-stdlib.go"),
 		},
 		{
 			filename: "./testdata/assign.go", entrypoint: "main",
-			output: []string{
-				"before !!",
-				"** shadow **",
-				"before !!",
-				"after !!",
-			},
+			output: readOutputComment(t, "./testdata/assign.go"),
 		},
 	} {
 		t.Run(path.Base(c.filename), func(t *testing.T) {

@@ -7,4 +7,7 @@ import (
 
 func main() {
 	fmt.Println(strings.ToUpper("hello, world"))
+
+	// Output:
+	// HELLO, WORLD
 }
