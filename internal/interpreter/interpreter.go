@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"io"
 	"reflect"
+	"strconv"
 	"strings"
 )
 
@@ -14,7 +15,10 @@ func New(fset *token.FileSet, entryPoint string, stdout, stderr io.Writer) *Inte
 	return &Interpreter{
 		fset:       fset,
 		entryPoint: entryPoint,
-		evaluator:  &evaluator{stdout: stdout, stderr: stderr, scope: &scope{frames: []map[string]reflect.Value{{}}}},
+		evaluator: &evaluator{stdout: stdout, stderr: stderr, scope: &scope{frames: []map[string]reflect.Value{{
+			"true":  reflect.ValueOf(true),
+			"false": reflect.ValueOf(false),
+		}}}},
 	}
 }
 
@@ -121,8 +125,24 @@ func (e *evaluator) EvalStmt(ctx context.Context, stmt ast.Stmt) error {
 func (e *evaluator) EvalExpr(ctx context.Context, expr ast.Expr) (reflect.Value, error) {
 	switch expr := expr.(type) {
 	case *ast.BasicLit:
-		// only support string literal
-		return reflect.ValueOf(expr.Value[1 : len(expr.Value)-1]), nil // TODO: fix
+		switch expr.Kind {
+		case token.INT:
+			v, err := strconv.Atoi(expr.Value)
+			if err != nil {
+				return zero, fmt.Errorf("failed to convert int: %w", err)
+			}
+			return reflect.ValueOf(v), nil
+		case token.FLOAT:
+			v, err := strconv.ParseFloat(expr.Value, 64)
+			if err != nil {
+				return zero, fmt.Errorf("failed to convert float: %w", err)
+			}
+			return reflect.ValueOf(v), nil
+		case token.STRING:
+			return reflect.ValueOf(expr.Value[1 : len(expr.Value)-1]), nil
+		default:
+			return zero, fmt.Errorf("unsupported basic lit kind: %v, value=%v", expr.Kind, expr.Value)
+		}
 	case *ast.Ident:
 		val, ok := e.scope.Get(expr.Name)
 		if !ok {
@@ -208,6 +228,26 @@ func (e *evaluator) evalBinaryExpr(ctx context.Context, expr *ast.BinaryExpr) (r
 			return reflect.ValueOf(x.Float() + y.Float()), nil
 		case reflect.String:
 			return reflect.ValueOf(x.String() + y.String()), nil
+		default:
+			return zero, fmt.Errorf("unsupported types: %s, %s", x.Kind(), y.Kind())
+		}
+	case token.LOR:
+		if !x.IsValid() || !y.IsValid() || x.Kind() != y.Kind() {
+			return zero, fmt.Errorf("invalid reflect.Value")
+		}
+		switch x.Kind() {
+		case reflect.Bool:
+			return reflect.ValueOf(x.Bool() || y.Bool()), nil
+		default:
+			return zero, fmt.Errorf("unsupported types: %s, %s", x.Kind(), y.Kind())
+		}
+	case token.LAND:
+		if !x.IsValid() || !y.IsValid() || x.Kind() != y.Kind() {
+			return zero, fmt.Errorf("invalid reflect.Value")
+		}
+		switch x.Kind() {
+		case reflect.Bool:
+			return reflect.ValueOf(x.Bool() && y.Bool()), nil
 		default:
 			return zero, fmt.Errorf("unsupported types: %s, %s", x.Kind(), y.Kind())
 		}
