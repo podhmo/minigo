@@ -182,11 +182,11 @@ func (e *evaluator) evalCallExpr(ctx context.Context, expr *ast.CallExpr) (strin
 func (e *evaluator) evalBinaryExpr(ctx context.Context, expr *ast.BinaryExpr) (string, error) {
 	x, err := e.EvalExpr(ctx, expr.X)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to eval binary expr lhs: %w", err)
 	}
 	y, err := e.EvalExpr(ctx, expr.Y)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to eval binary expr rhs: %w", err)
 	}
 
 	// only support ADD
