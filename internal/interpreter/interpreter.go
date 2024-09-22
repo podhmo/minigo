@@ -6,19 +6,36 @@ import (
 	"go/ast"
 	"go/token"
 	"io"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
 )
 
-func New(fset *token.FileSet, entryPoint string, stdout, stderr io.Writer) *Interpreter {
-	return &Interpreter{
+func New(fset *token.FileSet, entryPoint string, options ...func(*Interpreter)) *Interpreter {
+	stdout := os.Stdout
+	stderr := os.Stderr
+	i := &Interpreter{
 		fset:       fset,
 		entryPoint: entryPoint,
 		evaluator: &evaluator{stdout: stdout, stderr: stderr, scope: &scope{frames: []map[string]reflect.Value{{
 			"true":  reflect.ValueOf(true),
 			"false": reflect.ValueOf(false),
 		}}}},
+	}
+	for _, opt := range options {
+		opt(i)
+	}
+	return i
+}
+func WithStdout(w io.Writer) func(*Interpreter) {
+	return func(app *Interpreter) {
+		app.evaluator.stdout = w
+	}
+}
+func WithStderr(w io.Writer) func(*Interpreter) {
+	return func(app *Interpreter) {
+		app.evaluator.stderr = w
 	}
 }
 

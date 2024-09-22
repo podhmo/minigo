@@ -79,7 +79,10 @@ func TestRunFile(t *testing.T) {
 			fset := token.NewFileSet()
 
 			stdout := new(bytes.Buffer)
-			app := interpreter.New(fset, c.entrypoint, stdout, stdout)
+			app := interpreter.New(fset, c.entrypoint,
+				interpreter.WithStderr(stdout),
+				interpreter.WithStdout(stdout),
+			)
 
 			node, err := parser.ParseFile(fset, c.filename, nil, parser.AllErrors)
 			if err != nil {
