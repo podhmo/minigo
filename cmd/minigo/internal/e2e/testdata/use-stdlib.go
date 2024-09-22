@@ -1,7 +1,10 @@
 package main
 
-import "strings"
+import (
+	"github.com/podhmo/minigo/stdlib/fmt"
+	"github.com/podhmo/minigo/stdlib/strings"
+)
 
 func main() {
-	println(strings.ToUpper("hello, world"))
+	fmt.Println(strings.ToUpper("hello, world"))
 }
