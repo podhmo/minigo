@@ -15,12 +15,16 @@ import (
 func New(fset *token.FileSet, entryPoint string, options ...func(*Interpreter)) *Interpreter {
 	stdout := os.Stdout
 	stderr := os.Stderr
-	i := &Interpreter{
+	var i *Interpreter
+	i = &Interpreter{
 		fset:       fset,
 		entryPoint: entryPoint,
 		evaluator: &evaluator{stdout: stdout, stderr: stderr, scope: &scope{frames: []map[string]reflect.Value{{
 			"true":  reflect.ValueOf(true),
 			"false": reflect.ValueOf(false),
+			"println": reflect.ValueOf(func(args ...interface{}) (int, error) {
+				return fmt.Fprintln(i.evaluator.stdout, args...)
+			}),
 		}}}},
 	}
 	for _, opt := range options {
@@ -190,11 +194,12 @@ func (e *evaluator) evalCallExpr(ctx context.Context, expr *ast.CallExpr) (refle
 	switch fun := expr.Fun.(type) {
 	case *ast.Ident:
 		ident := fun
-		// only support println()
-		if ident.Name == "println" {
-			rfn := reflect.ValueOf(fmt.Fprintln)
-			rfn.Call(append([]reflect.Value{reflect.ValueOf(e.stdout)}, args...))
-			return zero, nil
+		if rfn, ok := e.scope.Get(ident.Name); ok {
+			out := rfn.Call(args)
+			if len(out) == 0 {
+				return zero, nil
+			}
+			return out[0], nil // TODO: multiple return values
 		} else {
 			return zero, fmt.Errorf("unsupported function: %s", ident.Name)
 		}
