@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"log/slog"
 	"os"
+	"strings"
 )
 
 func main() {
@@ -112,6 +113,7 @@ func (e *evaluator) evalCallExpr(ctx context.Context, expr *ast.CallExpr) (strin
 	switch fun := expr.Fun.(type) {
 	case *ast.Ident:
 		ident := fun
+		// only support println()
 		if ident.Name == "println" {
 			fmt.Println(args...)
 			return "", nil
@@ -120,10 +122,13 @@ func (e *evaluator) evalCallExpr(ctx context.Context, expr *ast.CallExpr) (strin
 		}
 	case *ast.SelectorExpr:
 		sel := fun
+		// only support fmt.Println() and strings.ToUpper()
 		if ident, ok := sel.X.(*ast.Ident); ok {
 			if ident.Name == "fmt" && sel.Sel.Name == "Println" {
 				fmt.Println(args...)
 				return "", nil
+			} else if ident.Name == "strings" && sel.Sel.Name == "ToUpper" {
+				return strings.ToUpper(args[0].(string)), nil
 			} else {
 				return "", fmt.Errorf("unsupported function: %s.%s", sel.X, sel.Sel.Name)
 			}
