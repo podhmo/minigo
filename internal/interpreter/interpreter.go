@@ -213,12 +213,12 @@ func (e *evaluator) evalBinaryExpr(ctx context.Context, expr *ast.BinaryExpr) (r
 		return zero, fmt.Errorf("failed to eval binary expr rhs: %w", err)
 	}
 
-	// only support ADD
+	// only support ADD, LOR, LAND
+	if !x.IsValid() || !y.IsValid() || x.Kind() != y.Kind() {
+		return zero, fmt.Errorf("invalid reflect.Value: %v, %v", x, y)
+	}
 	switch expr.Op {
 	case token.ADD:
-		if !x.IsValid() || !y.IsValid() || x.Kind() != y.Kind() {
-			return zero, fmt.Errorf("invalid reflect.Value")
-		}
 		switch x.Kind() {
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 			return reflect.ValueOf(x.Int() + y.Int()), nil
@@ -232,9 +232,6 @@ func (e *evaluator) evalBinaryExpr(ctx context.Context, expr *ast.BinaryExpr) (r
 			return zero, fmt.Errorf("unsupported types: %s, %s", x.Kind(), y.Kind())
 		}
 	case token.LOR:
-		if !x.IsValid() || !y.IsValid() || x.Kind() != y.Kind() {
-			return zero, fmt.Errorf("invalid reflect.Value")
-		}
 		switch x.Kind() {
 		case reflect.Bool:
 			return reflect.ValueOf(x.Bool() || y.Bool()), nil
@@ -242,9 +239,6 @@ func (e *evaluator) evalBinaryExpr(ctx context.Context, expr *ast.BinaryExpr) (r
 			return zero, fmt.Errorf("unsupported types: %s, %s", x.Kind(), y.Kind())
 		}
 	case token.LAND:
-		if !x.IsValid() || !y.IsValid() || x.Kind() != y.Kind() {
-			return zero, fmt.Errorf("invalid reflect.Value")
-		}
 		switch x.Kind() {
 		case reflect.Bool:
 			return reflect.ValueOf(x.Bool() && y.Bool()), nil
