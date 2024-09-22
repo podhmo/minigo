@@ -9,21 +9,21 @@ import (
 	"strings"
 )
 
-func New(fset *token.FileSet, entryPoint string, stdout, stderr io.Writer) *App {
-	return &App{
+func New(fset *token.FileSet, entryPoint string, stdout, stderr io.Writer) *Interpreter {
+	return &Interpreter{
 		fset:       fset,
 		entryPoint: entryPoint,
 		evaluator:  &evaluator{stdout: stdout, stderr: stderr, scope: &scope{frames: []map[string]string{{}}}},
 	}
 }
 
-type App struct {
+type Interpreter struct {
 	fset       *token.FileSet
 	entryPoint string
 	evaluator  *evaluator
 }
 
-func (app *App) RunFile(ctx context.Context, file *ast.File) error {
+func (app *Interpreter) RunFile(ctx context.Context, file *ast.File) error {
 	for _, decl := range file.Decls {
 		if fn, ok := decl.(*ast.FuncDecl); ok {
 			if fn.Name.Name == app.entryPoint {
@@ -34,7 +34,7 @@ func (app *App) RunFile(ctx context.Context, file *ast.File) error {
 	return fmt.Errorf("entrypoint func %s() is not found", app.entryPoint)
 }
 
-func (app *App) runFunc(ctx context.Context, fn *ast.FuncDecl) error {
+func (app *Interpreter) runFunc(ctx context.Context, fn *ast.FuncDecl) error {
 	// TODO: handling arguments
 	for lines := fn.Body.List; len(lines) > 0; lines = lines[1:] {
 		if err := app.evaluator.EvalStmt(ctx, lines[0]); err != nil {
