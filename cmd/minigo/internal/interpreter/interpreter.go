@@ -13,7 +13,7 @@ func New(fset *token.FileSet, entryPoint string, stdout, stderr io.Writer) *App 
 	return &App{
 		fset:       fset,
 		entryPoint: entryPoint,
-		evaluator:  &evaluator{stdout: stdout, stderr: stderr},
+		evaluator:  &evaluator{stdout: stdout, stderr: stderr, scope: &scope{frames: []map[string]string{{}}}},
 	}
 }
 
@@ -44,9 +44,34 @@ func (app *App) runFunc(ctx context.Context, fn *ast.FuncDecl) error {
 	return nil
 }
 
+type scope struct {
+	frames []map[string]string
+}
+
+func (s *scope) Push() {
+	s.frames = append(s.frames, map[string]string{})
+}
+func (s *scope) Pop() {
+	s.frames = s.frames[:len(s.frames)-1]
+}
+
+func (s *scope) Set(name string, value string) {
+	s.frames[len(s.frames)-1][name] = value
+}
+
+func (s *scope) Get(name string) (string, bool) {
+	for n := len(s.frames) - 1; n >= 0; n-- {
+		if val, ok := s.frames[n][name]; ok {
+			return val, true
+		}
+	}
+	return "", false
+}
+
 type evaluator struct {
 	stdout io.Writer
 	stderr io.Writer
+	scope  *scope
 }
 
 func (e *evaluator) EvalStmt(ctx context.Context, stmt ast.Stmt) error {
@@ -56,6 +81,37 @@ func (e *evaluator) EvalStmt(ctx context.Context, stmt ast.Stmt) error {
 			return fmt.Errorf("failed to eval expr: %w", err)
 		}
 		return nil
+	case *ast.BlockStmt:
+		e.scope.Push()
+		defer e.scope.Pop()
+		for i, sub := range stmt.List {
+			if err := e.EvalStmt(ctx, sub); err != nil {
+				return fmt.Errorf("in block %d: %w", i, err)
+			}
+		}
+		return nil
+	case *ast.AssignStmt:
+		// only support <lhs> := <rhs>
+		if len(stmt.Lhs) > 1 {
+			return fmt.Errorf("unsupported assign lhs %s", strings.Repeat("<var> ", len(stmt.Lhs)))
+		}
+		if len(stmt.Rhs) > 1 {
+			return fmt.Errorf("unsupported assign rhs %s", strings.Repeat("<var> ", len(stmt.Rhs)))
+		}
+
+		lhs := stmt.Lhs[0]
+		rhs := stmt.Rhs[0]
+		switch lhs := lhs.(type) {
+		case *ast.Ident:
+			val, err := e.EvalExpr(ctx, rhs)
+			if err != nil {
+				return fmt.Errorf("failed to eval assign: %w", err)
+			}
+			e.scope.Set(lhs.Name, val)
+			return nil
+		default:
+			return fmt.Errorf("unsupported assign lhs type: %T", lhs)
+		}
 	default:
 		return fmt.Errorf("unsupported stmt type: %T", stmt)
 	}
@@ -66,6 +122,12 @@ func (e *evaluator) EvalExpr(ctx context.Context, expr ast.Expr) (string, error)
 	case *ast.BasicLit:
 		// only support string literal
 		return expr.Value[1 : len(expr.Value)-1], nil // TODO: fix
+	case *ast.Ident:
+		val, ok := e.scope.Get(expr.Name)
+		if !ok {
+			return "", fmt.Errorf("undefined variable: %s", expr.Name)
+		}
+		return val, nil
 	case *ast.BinaryExpr:
 		return e.evalBinaryExpr(ctx, expr)
 	case *ast.CallExpr:
