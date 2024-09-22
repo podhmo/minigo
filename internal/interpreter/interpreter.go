@@ -196,7 +196,21 @@ func (e *evaluator) evalBinaryExpr(ctx context.Context, expr *ast.BinaryExpr) (r
 	// only support ADD
 	switch expr.Op {
 	case token.ADD:
-		return reflect.ValueOf(x.String() + y.String()), nil // TODO: support int,float,bool...etc
+		if !x.IsValid() || !y.IsValid() || x.Kind() != y.Kind() {
+			return zero, fmt.Errorf("invalid reflect.Value")
+		}
+		switch x.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return reflect.ValueOf(x.Int() + y.Int()), nil
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			return reflect.ValueOf(x.Uint() + y.Uint()), nil
+		case reflect.Float64, reflect.Float32:
+			return reflect.ValueOf(x.Float() + y.Float()), nil
+		case reflect.String:
+			return reflect.ValueOf(x.String() + y.String()), nil
+		default:
+			return zero, fmt.Errorf("unsupported types: %s, %s", x.Kind(), y.Kind())
+		}
 	default:
 		return zero, fmt.Errorf("unsupported operator: %v", expr.Op)
 	}
