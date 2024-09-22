@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/token"
 	"io"
+	"reflect"
 	"strings"
 )
 
@@ -13,7 +14,7 @@ func New(fset *token.FileSet, entryPoint string, stdout, stderr io.Writer) *Inte
 	return &Interpreter{
 		fset:       fset,
 		entryPoint: entryPoint,
-		evaluator:  &evaluator{stdout: stdout, stderr: stderr, scope: &scope{frames: []map[string]string{{}}}},
+		evaluator:  &evaluator{stdout: stdout, stderr: stderr, scope: &scope{frames: []map[string]reflect.Value{{}}}},
 	}
 }
 
@@ -45,27 +46,27 @@ func (app *Interpreter) runFunc(ctx context.Context, fn *ast.FuncDecl) error {
 }
 
 type scope struct {
-	frames []map[string]string
+	frames []map[string]reflect.Value
 }
 
 func (s *scope) Push() {
-	s.frames = append(s.frames, map[string]string{})
+	s.frames = append(s.frames, map[string]reflect.Value{})
 }
 func (s *scope) Pop() {
 	s.frames = s.frames[:len(s.frames)-1]
 }
 
-func (s *scope) Set(name string, value string) {
+func (s *scope) Set(name string, value reflect.Value) {
 	s.frames[len(s.frames)-1][name] = value
 }
 
-func (s *scope) Get(name string) (string, bool) {
+func (s *scope) Get(name string) (reflect.Value, bool) {
 	for n := len(s.frames) - 1; n >= 0; n-- {
 		if val, ok := s.frames[n][name]; ok {
 			return val, true
 		}
 	}
-	return "", false
+	return zero, false
 }
 
 type evaluator struct {
@@ -117,15 +118,15 @@ func (e *evaluator) EvalStmt(ctx context.Context, stmt ast.Stmt) error {
 	}
 }
 
-func (e *evaluator) EvalExpr(ctx context.Context, expr ast.Expr) (string, error) {
+func (e *evaluator) EvalExpr(ctx context.Context, expr ast.Expr) (reflect.Value, error) {
 	switch expr := expr.(type) {
 	case *ast.BasicLit:
 		// only support string literal
-		return expr.Value[1 : len(expr.Value)-1], nil // TODO: fix
+		return reflect.ValueOf(expr.Value[1 : len(expr.Value)-1]), nil // TODO: fix
 	case *ast.Ident:
 		val, ok := e.scope.Get(expr.Name)
 		if !ok {
-			return "", fmt.Errorf("undefined variable: %s", expr.Name)
+			return zero, fmt.Errorf("undefined variable: %s", expr.Name)
 		}
 		return val, nil
 	case *ast.BinaryExpr:
@@ -133,16 +134,16 @@ func (e *evaluator) EvalExpr(ctx context.Context, expr ast.Expr) (string, error)
 	case *ast.CallExpr:
 		return e.evalCallExpr(ctx, expr)
 	default:
-		return "", fmt.Errorf("unsupported expr type: %T", expr)
+		return zero, fmt.Errorf("unsupported expr type: %T", expr)
 	}
 }
 
-func (e *evaluator) evalCallExpr(ctx context.Context, expr *ast.CallExpr) (string, error) {
-	args := make([]any, 0, len(expr.Args))
+func (e *evaluator) evalCallExpr(ctx context.Context, expr *ast.CallExpr) (reflect.Value, error) {
+	args := make([]reflect.Value, 0, len(expr.Args))
 	for i, arg := range expr.Args {
 		val, err := e.EvalExpr(ctx, arg)
 		if err != nil {
-			return "", fmt.Errorf("failed to eval argument[%d]: %w", i, err)
+			return zero, fmt.Errorf("failed to eval argument[%d]: %w", i, err)
 		} else {
 			args = append(args, val)
 		}
@@ -154,46 +155,51 @@ func (e *evaluator) evalCallExpr(ctx context.Context, expr *ast.CallExpr) (strin
 		ident := fun
 		// only support println()
 		if ident.Name == "println" {
-			fmt.Fprintln(e.stdout, args...)
-			return "", nil
+			rfn := reflect.ValueOf(fmt.Fprintln)
+			rfn.Call(append([]reflect.Value{reflect.ValueOf(e.stdout)}, args...))
+			return zero, nil
 		} else {
-			return "", fmt.Errorf("unsupported function: %s", ident.Name)
+			return zero, fmt.Errorf("unsupported function: %s", ident.Name)
 		}
 	case *ast.SelectorExpr:
 		sel := fun
 		// only support fmt.Println() and strings.ToUpper()
 		if ident, ok := sel.X.(*ast.Ident); ok {
 			if ident.Name == "fmt" && sel.Sel.Name == "Println" {
-				fmt.Fprintln(e.stdout, args...)
-				return "", nil
+				rfn := reflect.ValueOf(fmt.Fprintln)
+				rfn.Call(append([]reflect.Value{reflect.ValueOf(e.stdout)}, args...))
+				return zero, nil
 			} else if ident.Name == "strings" && sel.Sel.Name == "ToUpper" {
-				return strings.ToUpper(args[0].(string)), nil
+				rfn := reflect.ValueOf(strings.ToUpper)
+				return rfn.Call(args)[0], nil
 			} else {
-				return "", fmt.Errorf("unsupported function: %s.%s", sel.X, sel.Sel.Name)
+				return zero, fmt.Errorf("unsupported function: %s.%s", sel.X, sel.Sel.Name)
 			}
 		} else {
-			return "", fmt.Errorf("unsupported function:: %s.%s", sel.X, sel.Sel.Name)
+			return zero, fmt.Errorf("unsupported function:: %s.%s", sel.X, sel.Sel.Name)
 		}
 	default:
-		return "", fmt.Errorf("unsupported function: %T", expr.Fun)
+		return zero, fmt.Errorf("unsupported function: %T", expr.Fun)
 	}
 }
 
-func (e *evaluator) evalBinaryExpr(ctx context.Context, expr *ast.BinaryExpr) (string, error) {
+func (e *evaluator) evalBinaryExpr(ctx context.Context, expr *ast.BinaryExpr) (reflect.Value, error) {
 	x, err := e.EvalExpr(ctx, expr.X)
 	if err != nil {
-		return "", fmt.Errorf("failed to eval binary expr lhs: %w", err)
+		return zero, fmt.Errorf("failed to eval binary expr lhs: %w", err)
 	}
 	y, err := e.EvalExpr(ctx, expr.Y)
 	if err != nil {
-		return "", fmt.Errorf("failed to eval binary expr rhs: %w", err)
+		return zero, fmt.Errorf("failed to eval binary expr rhs: %w", err)
 	}
 
 	// only support ADD
 	switch expr.Op {
 	case token.ADD:
-		return x + y, nil
+		return reflect.ValueOf(x.String() + y.String()), nil // TODO: support int,float,bool...etc
 	default:
-		return "", fmt.Errorf("unsupported operator: %v", expr.Op)
+		return zero, fmt.Errorf("unsupported operator: %v", expr.Op)
 	}
 }
+
+var zero = reflect.Value{}
