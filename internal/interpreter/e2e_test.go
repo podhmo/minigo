@@ -59,9 +59,11 @@ func TestRunFile(t *testing.T) {
 		},
 		{
 			filename: "./testdata/another-entrypoint.go", entrypoint: "Foo",
-			output: []string{
-				"Foo",
-			},
+			output: []string{"Foo"},
+		},
+		{
+			filename: "./testdata/another-entrypoint.go", entrypoint: "Bar",
+			output: []string{"Bar"},
 		},
 		{
 			filename: "./testdata/use-stdlib.go", entrypoint: "main",
