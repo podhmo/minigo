@@ -7,7 +7,7 @@ func main() {
 	fmt.Println(msg, "!!")
 	{
 		msg := "shaddow"
-		fmt.Println(msg, "**")
+		fmt.Println("**", msg, "**")
 	}
 	fmt.Println(msg, "!!")
 	msg = "after"

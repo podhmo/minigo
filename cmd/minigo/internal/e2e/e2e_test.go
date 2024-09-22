@@ -43,6 +43,15 @@ func TestRunFileOutput(t *testing.T) {
 				"HELLO, WORLD",
 			},
 		},
+		{
+			filename: "./testdata/assign.go", entrypoint: "main",
+			output: []string{
+				"before !!",
+				"** shadow **",
+				"before !!",
+				"after !!",
+			},
+		},
 	} {
 		t.Run(path.Base(c.filename), func(t *testing.T) {
 			ctx := context.Background()
