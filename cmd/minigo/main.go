@@ -71,12 +71,8 @@ func (app *app) runFile(ctx context.Context, file *ast.File) error {
 func (app *app) runFunc(ctx context.Context, fn *ast.FuncDecl) error {
 	// TODO: handling arguments
 	for lines := fn.Body.List; len(lines) > 0; lines = lines[1:] {
-		if stmt, ok := lines[0].(*ast.ExprStmt); ok {
-			if _, err := app.evaluator.EvalExpr(ctx, stmt.X); err != nil {
-				return fmt.Errorf("line:%d failed to eval expr: %w", app.fset.Position(stmt.Pos()).Line, err)
-			}
-		} else {
-			return fmt.Errorf("unsupported statement: %T", lines[0]) // TODO
+		if err := app.evaluator.EvalStmt(ctx, lines[0]); err != nil {
+			return fmt.Errorf("line:%d failed to eval stmt: %w", app.fset.Position(lines[0].Pos()).Line, err)
 		}
 	}
 	return nil
@@ -85,10 +81,23 @@ func (app *app) runFunc(ctx context.Context, fn *ast.FuncDecl) error {
 type evaluator struct {
 }
 
+func (e *evaluator) EvalStmt(ctx context.Context, stmt ast.Stmt) error {
+	switch stmt := stmt.(type) {
+	case *ast.ExprStmt:
+		if _, err := e.EvalExpr(ctx, stmt.X); err != nil {
+			return fmt.Errorf("failed to eval expr: %w", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported stmt type: %T", stmt)
+	}
+}
+
 func (e *evaluator) EvalExpr(ctx context.Context, expr ast.Expr) (string, error) {
 	switch expr := expr.(type) {
 	case *ast.BasicLit:
-		return e.evalValue(ctx, expr)
+		// only support string literal
+		return expr.Value[1 : len(expr.Value)-1], nil // TODO: fix
 	case *ast.BinaryExpr:
 		return e.evalBinaryExpr(ctx, expr)
 	case *ast.CallExpr:
@@ -141,34 +150,20 @@ func (e *evaluator) evalCallExpr(ctx context.Context, expr *ast.CallExpr) (strin
 }
 
 func (e *evaluator) evalBinaryExpr(ctx context.Context, expr *ast.BinaryExpr) (string, error) {
-	x, err := e.evalValue(ctx, expr.X)
+	x, err := e.EvalExpr(ctx, expr.X)
 	if err != nil {
 		return "", err
 	}
-	y, err := e.evalValue(ctx, expr.Y)
+	y, err := e.EvalExpr(ctx, expr.Y)
 	if err != nil {
 		return "", err
 	}
 
+	// only support ADD
 	switch expr.Op {
 	case token.ADD:
 		return x + y, nil
 	default:
 		return "", fmt.Errorf("unsupported operator: %v", expr.Op)
-	}
-}
-
-func (e *evaluator) evalValue(ctx context.Context, expr ast.Expr) (string, error) { // TODO: return any
-	switch expr := expr.(type) {
-	case *ast.BasicLit:
-		return expr.Value[1 : len(expr.Value)-1], nil // TODO: fix
-	case *ast.BinaryExpr:
-		val, err := e.evalBinaryExpr(ctx, expr)
-		if err != nil {
-			return "", err
-		}
-		return val, nil
-	default:
-		return "-", fmt.Errorf("unsupported value type: %T", expr)
 	}
 }
