@@ -1,29 +1,22 @@
-package main
+package e2e
 
 import (
 	"bytes"
 	"context"
 	"go/parser"
 	"go/token"
-	"io"
 	"path"
 	"strings"
 	"testing"
-)
 
-func newApp(fset *token.FileSet, entryPoint string, stdout, stderr io.Writer) *App {
-	return &App{
-		fset:       fset,
-		entryPoint: entryPoint,
-		evaluator:  &evaluator{stdout: stdout, stderr: stderr},
-	}
-}
+	"github.com/podhmo/minigo/cmd/minigo/internal/interpreter"
+)
 
 func normalize(s string) string {
 	return strings.TrimSpace(s)
 }
 
-func TestHello(t *testing.T) {
+func TestRunFileOutput(t *testing.T) {
 	type testcase struct {
 		filename   string
 		entrypoint string
@@ -31,7 +24,7 @@ func TestHello(t *testing.T) {
 	}
 	for _, c := range []testcase{
 		{
-			filename: "./internal/e2e/testdata/hello.go", entrypoint: "main",
+			filename: "./testdata/hello.go", entrypoint: "main",
 			output: []string{
 				"Hello, World!",
 				"Hello World!",
@@ -39,13 +32,13 @@ func TestHello(t *testing.T) {
 			},
 		},
 		{
-			filename: "./internal/e2e/testdata/another-entrypoint.go", entrypoint: "Foo",
+			filename: "./testdata/another-entrypoint.go", entrypoint: "Foo",
 			output: []string{
 				"Foo",
 			},
 		},
 		{
-			filename: "./internal/e2e/testdata/use-stdlib.go", entrypoint: "main",
+			filename: "./testdata/use-stdlib.go", entrypoint: "main",
 			output: []string{
 				"HELLO, WORLD",
 			},
@@ -56,13 +49,13 @@ func TestHello(t *testing.T) {
 			fset := token.NewFileSet()
 
 			stdout := new(bytes.Buffer)
-			app := newApp(fset, c.entrypoint, stdout, stdout)
+			app := interpreter.New(fset, c.entrypoint, stdout, stdout)
 
 			node, err := parser.ParseFile(fset, c.filename, nil, parser.AllErrors)
 			if err != nil {
 				t.Fatalf("parse file: +%v", err)
 			}
-			if err := app.runFile(ctx, node); err != nil {
+			if err := app.RunFile(ctx, node); err != nil {
 				t.Errorf("run file: %+v", err)
 			}
 
