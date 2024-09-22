@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"log/slog"
 	"os"
 	"strings"
@@ -43,21 +44,21 @@ func run(ctx context.Context, filename string, entryPoint string) error {
 		return fmt.Errorf("failed to parse file: %w", err)
 	}
 
-	app := &app{
+	app := &App{
 		fset:       fset,
 		entryPoint: entryPoint,
-		evaluator:  &evaluator{},
+		evaluator:  &evaluator{stdout: os.Stdout, stderr: os.Stderr},
 	}
 	return app.runFile(ctx, node)
 }
 
-type app struct {
+type App struct {
 	fset       *token.FileSet
 	entryPoint string
 	evaluator  *evaluator
 }
 
-func (app *app) runFile(ctx context.Context, file *ast.File) error {
+func (app *App) runFile(ctx context.Context, file *ast.File) error {
 	for _, decl := range file.Decls {
 		if fn, ok := decl.(*ast.FuncDecl); ok {
 			if fn.Name.Name == app.entryPoint {
@@ -68,7 +69,7 @@ func (app *app) runFile(ctx context.Context, file *ast.File) error {
 	return fmt.Errorf("entrypoint func %s() is not found", app.entryPoint)
 }
 
-func (app *app) runFunc(ctx context.Context, fn *ast.FuncDecl) error {
+func (app *App) runFunc(ctx context.Context, fn *ast.FuncDecl) error {
 	// TODO: handling arguments
 	for lines := fn.Body.List; len(lines) > 0; lines = lines[1:] {
 		if err := app.evaluator.EvalStmt(ctx, lines[0]); err != nil {
@@ -79,6 +80,8 @@ func (app *app) runFunc(ctx context.Context, fn *ast.FuncDecl) error {
 }
 
 type evaluator struct {
+	stdout io.Writer
+	stderr io.Writer
 }
 
 func (e *evaluator) EvalStmt(ctx context.Context, stmt ast.Stmt) error {
@@ -124,7 +127,7 @@ func (e *evaluator) evalCallExpr(ctx context.Context, expr *ast.CallExpr) (strin
 		ident := fun
 		// only support println()
 		if ident.Name == "println" {
-			fmt.Println(args...)
+			fmt.Fprintln(e.stdout, args...)
 			return "", nil
 		} else {
 			return "", fmt.Errorf("unsupported function: %s", ident.Name)
@@ -134,7 +137,7 @@ func (e *evaluator) evalCallExpr(ctx context.Context, expr *ast.CallExpr) (strin
 		// only support fmt.Println() and strings.ToUpper()
 		if ident, ok := sel.X.(*ast.Ident); ok {
 			if ident.Name == "fmt" && sel.Sel.Name == "Println" {
-				fmt.Println(args...)
+				fmt.Fprintln(e.stdout, args...)
 				return "", nil
 			} else if ident.Name == "strings" && sel.Sel.Name == "ToUpper" {
 				return strings.ToUpper(args[0].(string)), nil
