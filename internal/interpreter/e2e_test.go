@@ -1,4 +1,4 @@
-package e2e
+package interpreter_test
 
 import (
 	"bufio"
@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/podhmo/minigo/cmd/minigo/internal/interpreter"
+	"github.com/podhmo/minigo/internal/interpreter"
 )
 
 func normalize(s string) string {

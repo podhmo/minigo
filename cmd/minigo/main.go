@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/podhmo/minigo/cmd/minigo/internal/interpreter"
+	"github.com/podhmo/minigo/internal/interpreter"
 )
 
 func main() {
