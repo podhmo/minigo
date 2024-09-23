@@ -19,13 +19,24 @@ func New(fset *token.FileSet, entryPoint string, options ...func(*Interpreter)) 
 	i = &Interpreter{
 		fset:       fset,
 		entryPoint: entryPoint,
-		evaluator: &evaluator{stdout: stdout, stderr: stderr, scope: &scope{frames: []map[string]reflect.Value{{
-			"true":  reflect.ValueOf(true),
-			"false": reflect.ValueOf(false),
-			"println": reflect.ValueOf(func(args ...interface{}) (int, error) {
-				return fmt.Fprintln(i.evaluator.stdout, args...)
-			}),
-		}}}},
+		evaluator: &evaluator{stdout: stdout, stderr: stderr,
+			packages: map[string]*Package{
+				"fmt": {Name: "fmt", Path: "fmt", Decls: map[string]reflect.Value{
+					"Println": reflect.ValueOf(func(args ...interface{}) (int, error) {
+						return fmt.Fprintln(i.evaluator.stdout, args...)
+					})},
+				},
+				"strings": {Name: "strings", Path: "strings", Decls: map[string]reflect.Value{
+					"ToUpper": reflect.ValueOf(strings.ToUpper),
+				}},
+			},
+			scope: &scope{frames: []map[string]reflect.Value{{
+				"true":  reflect.ValueOf(true),
+				"false": reflect.ValueOf(false),
+				"println": reflect.ValueOf(func(args ...interface{}) (int, error) {
+					return fmt.Fprintln(i.evaluator.stdout, args...)
+				}),
+			}}}},
 	}
 	for _, opt := range options {
 		opt(i)
@@ -61,7 +72,6 @@ func (app *Interpreter) RunFile(ctx context.Context, file *ast.File) error {
 }
 
 func (app *Interpreter) runFunc(ctx context.Context, fn *ast.FuncDecl) error {
-	// TODO: handling arguments
 	for lines := fn.Body.List; len(lines) > 0; lines = lines[1:] {
 		if err := app.evaluator.EvalStmt(ctx, lines[0]); err != nil {
 			return fmt.Errorf("line:%d failed to eval stmt: %w", app.fset.Position(lines[0].Pos()).Line, err)
@@ -97,7 +107,9 @@ func (s *scope) Get(name string) (reflect.Value, bool) {
 type evaluator struct {
 	stdout io.Writer
 	stderr io.Writer
-	scope  *scope
+
+	scope    *scope
+	packages map[string]*Package
 }
 
 func (e *evaluator) EvalStmt(ctx context.Context, stmt ast.Stmt) error {
@@ -207,19 +219,20 @@ func (e *evaluator) evalCallExpr(ctx context.Context, expr *ast.CallExpr) (refle
 		sel := fun
 		// only support fmt.Println() and strings.ToUpper()
 		if ident, ok := sel.X.(*ast.Ident); ok {
-			if ident.Name == "fmt" && sel.Sel.Name == "Println" {
-				rfn := reflect.ValueOf(fmt.Fprintln)
-				rfn.Call(append([]reflect.Value{reflect.ValueOf(e.stdout)}, args...))
-				return zero, nil
-			} else if ident.Name == "strings" && sel.Sel.Name == "ToUpper" {
-				rfn := reflect.ValueOf(strings.ToUpper)
-				return rfn.Call(args)[0], nil
-			} else {
-				return zero, fmt.Errorf("unsupported function: %s.%s", sel.X, sel.Sel.Name)
+			// TODO: scan packages if needed
+			if pkg, ok := e.packages[ident.Name]; ok {
+				if rfn, ok := pkg.Decls[sel.Sel.Name]; ok {
+					out := rfn.Call(args)
+					if len(out) == 0 {
+						return zero, nil
+					}
+					return out[0], nil // TODO: multiple return values
+				} else {
+					return zero, fmt.Errorf("unsupported function: %s.%s", ident.Name, sel.Sel.Name)
+				}
 			}
-		} else {
-			return zero, fmt.Errorf("unsupported function:: %s.%s", sel.X, sel.Sel.Name)
 		}
+		return zero, fmt.Errorf("unsupported function:: %s.%s", sel.X, sel.Sel.Name)
 	default:
 		return zero, fmt.Errorf("unsupported function: %T", expr.Fun)
 	}
@@ -273,3 +286,10 @@ func (e *evaluator) evalBinaryExpr(ctx context.Context, expr *ast.BinaryExpr) (r
 }
 
 var zero = reflect.Value{}
+
+type Package struct {
+	Name string
+	Path string
+
+	Decls map[string]reflect.Value // ordered?
+}
