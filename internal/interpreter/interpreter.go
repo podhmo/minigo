@@ -71,9 +71,17 @@ type Interpreter struct {
 func (app *Interpreter) RunFile(ctx context.Context, node *ast.File) error {
 	fset := app.fset
 	filename := fset.Position(node.Pos()).Filename
-	// pkg := &Package{Name: "main", Path: "main", Decls: map[string]reflect.Value{}, Files: map[string]*File{}}
-	// pkg.Files[filename] = file
-	file := &File{Name: filename, Node: node, Imports: map[string]string{}}
+
+	pkg, ok := app.evaluator.packages["main"]
+	if !ok {
+		pkg = &Package{Name: "main", Path: "main", Decls: map[string]reflect.Value{}, Files: map[string]*File{}}
+		app.evaluator.packages[pkg.Path] = pkg
+	}
+	file, ok := pkg.Files[filename]
+	if !ok {
+		file = &File{Name: filename, Node: node, Imports: map[string]string{}}
+		pkg.Files[filename] = file
+	}
 
 	app.evaluator.history = append(app.evaluator.history, file) // TODO: line number
 	defer func() { app.evaluator.history = app.evaluator.history[:len(app.evaluator.history)-1] }()
