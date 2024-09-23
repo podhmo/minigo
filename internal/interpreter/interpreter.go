@@ -359,7 +359,7 @@ func (e *evaluator) evalFuncDecl(ctx context.Context, decl *ast.FuncDecl, args [
 				return zero, nil
 			case 1:
 				return e.EvalExpr(ctx, retStmt.Results[0])
-			default:
+			default: // TODO: multiple return values
 				return zero, fmt.Errorf("multiple return values are not supported")
 			}
 		} else {
