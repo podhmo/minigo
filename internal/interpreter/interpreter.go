@@ -1,9 +1,11 @@
 package interpreter
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"go/ast"
+	"go/printer"
 	"go/token"
 	"io"
 	"os"
@@ -41,7 +43,10 @@ func New(fset *token.FileSet, options ...func(*Interpreter)) *Interpreter {
 	i = &Interpreter{
 		fset: fset,
 		evaluator: &evaluator{
-			fset: fset, stdout: stdout, stderr: stderr,
+			fset:     fset,
+			stdout:   stdout,
+			stderr:   stderr,
+			tbBuffer: new(bytes.Buffer),
 			packages: packages,
 			scope:    scope,
 		},
@@ -109,13 +114,19 @@ func (app *Interpreter) RunFile(ctx context.Context, node *ast.File, entrypoint 
 	if targetFn == nil {
 		return fmt.Errorf("entrypoint func %s() is not found", entrypoint)
 	}
-	return app.runFunc(ctx, targetFn)
+	if err := app.runFunc(ctx, targetFn); err != nil {
+		if app.evaluator.tbBuffer.Len() > 0 {
+			io.Copy(app.evaluator.stderr, app.evaluator.tbBuffer)
+		}
+		return err
+	}
+	return nil
 }
 
 func (app *Interpreter) runFunc(ctx context.Context, fn *ast.FuncDecl) error {
-	for _, line := range fn.Body.List {
-		if err := app.evaluator.EvalStmt(ctx, line); err != nil {
-			return fmt.Errorf("failed to eval stmt[%d]: %w", app.fset.Position(line.Pos()).Line, err)
+	for _, stmt := range fn.Body.List {
+		if err := app.evaluator.EvalStmt(ctx, stmt); err != nil {
+			return fmt.Errorf("failed to eval stmt[%d]: %w", app.fset.Position(stmt.Pos()).Line, err)
 		}
 	}
 	return nil
@@ -149,6 +160,8 @@ type evaluator struct {
 	fset   *token.FileSet
 	stdout io.Writer
 	stderr io.Writer
+
+	tbBuffer *bytes.Buffer // for tracebacks
 
 	scope    *scope
 	packages map[string]*Package // path -> Package
@@ -318,7 +331,7 @@ func (e *evaluator) evalBinaryExpr(ctx context.Context, expr *ast.BinaryExpr) (r
 				return reflect.ValueOf(x.String() + y.String()), nil
 			}
 		}
-		return zero, fmt.Errorf("unsupported types: %s, %s", x.Type(), y.Type())
+		return zero, fmt.Errorf("unsupported types: %s + %s", x.Type(), y.Type())
 	case token.LOR:
 		switch x.Kind() {
 		case reflect.Bool:
@@ -360,7 +373,19 @@ func (e *evaluator) evalFuncDecl(ctx context.Context, decl *ast.FuncDecl, args [
 			case 0:
 				return zero, nil
 			case 1:
-				return e.EvalExpr(ctx, retStmt.Results[0])
+				val, err := e.EvalExpr(ctx, retStmt.Results[0])
+				if err != nil {
+					if e.tbBuffer.Len() == 0 {
+						fmt.Fprintf(e.tbBuffer, "Error: %s\n\n", err)
+						fmt.Fprintf(e.tbBuffer, "Traceback (most recent call first):\n")
+					}
+					position := e.fset.Position(stmt.Pos())
+					fmt.Fprintf(e.tbBuffer, "\tFile %q, line %d, in %s()\n\t\t", position.Filename, position.Line, decl.Name.Name)
+					printer.Fprint(e.tbBuffer, e.fset, stmt)
+					fmt.Fprintln(e.tbBuffer, "")
+					return zero, fmt.Errorf("failed to eval return expr: %w", err)
+				}
+				return val, nil
 			default: // TODO: multiple return values
 				return zero, fmt.Errorf("multiple return values are not supported")
 			}
