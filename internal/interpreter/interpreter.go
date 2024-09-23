@@ -15,28 +15,36 @@ import (
 func New(fset *token.FileSet, entryPoint string, options ...func(*Interpreter)) *Interpreter {
 	stdout := os.Stdout
 	stderr := os.Stderr
+
 	var i *Interpreter
+
+	packages := map[string]*Package{
+		"fmt": {Name: "fmt", Path: "fmt", Decls: map[string]reflect.Value{
+			"Println": reflect.ValueOf(func(args ...interface{}) (int, error) {
+				return fmt.Fprintln(i.evaluator.stdout, args...)
+			})},
+		},
+		"strings": {Name: "strings", Path: "strings", Decls: map[string]reflect.Value{
+			"ToUpper": reflect.ValueOf(strings.ToUpper),
+		}},
+	}
+	packages["github.com/podhmo/minigo/stdlib/strings"] = packages["strings"]
+	packages["github.com/podhmo/minigo/stdlib/fmt"] = packages["fmt"]
+
+	scope := &scope{frames: []map[string]reflect.Value{{
+		"true":  reflect.ValueOf(true),
+		"false": reflect.ValueOf(false),
+		"println": reflect.ValueOf(func(args ...interface{}) (int, error) {
+			return fmt.Fprintln(i.evaluator.stdout, args...)
+		}),
+	}}}
 	i = &Interpreter{
 		fset:       fset,
 		entryPoint: entryPoint,
 		evaluator: &evaluator{stdout: stdout, stderr: stderr,
-			packages: map[string]*Package{
-				"fmt": {Name: "fmt", Path: "fmt", Decls: map[string]reflect.Value{
-					"Println": reflect.ValueOf(func(args ...interface{}) (int, error) {
-						return fmt.Fprintln(i.evaluator.stdout, args...)
-					})},
-				},
-				"strings": {Name: "strings", Path: "strings", Decls: map[string]reflect.Value{
-					"ToUpper": reflect.ValueOf(strings.ToUpper),
-				}},
-			},
-			scope: &scope{frames: []map[string]reflect.Value{{
-				"true":  reflect.ValueOf(true),
-				"false": reflect.ValueOf(false),
-				"println": reflect.ValueOf(func(args ...interface{}) (int, error) {
-					return fmt.Fprintln(i.evaluator.stdout, args...)
-				}),
-			}}}},
+			packages: packages,
+			scope:    scope,
+		},
 	}
 	for _, opt := range options {
 		opt(i)
@@ -60,8 +68,30 @@ type Interpreter struct {
 	evaluator  *evaluator
 }
 
-func (app *Interpreter) RunFile(ctx context.Context, file *ast.File) error {
-	for _, decl := range file.Decls {
+func (app *Interpreter) RunFile(ctx context.Context, node *ast.File) error {
+	fset := app.fset
+	filename := fset.Position(node.Pos()).Filename
+	// pkg := &Package{Name: "main", Path: "main", Decls: map[string]reflect.Value{}, Files: map[string]*File{}}
+	// pkg.Files[filename] = file
+	file := &File{Name: filename, Node: node, Imports: map[string]string{}}
+
+	app.evaluator.history = append(app.evaluator.history, file) // TODO: line number
+	defer func() { app.evaluator.history = app.evaluator.history[:len(app.evaluator.history)-1] }()
+
+	for _, im := range node.Imports {
+		name := ""
+		if im.Name != nil {
+			name = im.Name.Name
+		}
+		path := strings.Trim(im.Path.Value, `"`)
+		if name == "" { // heuristic
+			parts := strings.Split(path, "/")
+			name = parts[len(parts)-1]
+		}
+		file.Imports[name] = path
+	}
+
+	for _, decl := range node.Decls {
 		if fn, ok := decl.(*ast.FuncDecl); ok {
 			if fn.Name.Name == app.entryPoint {
 				return app.runFunc(ctx, fn)
@@ -109,7 +139,8 @@ type evaluator struct {
 	stderr io.Writer
 
 	scope    *scope
-	packages map[string]*Package
+	packages map[string]*Package // path -> Package
+	history  []*File
 }
 
 func (e *evaluator) EvalStmt(ctx context.Context, stmt ast.Stmt) error {
@@ -220,7 +251,8 @@ func (e *evaluator) evalCallExpr(ctx context.Context, expr *ast.CallExpr) (refle
 		// only support fmt.Println() and strings.ToUpper()
 		if ident, ok := sel.X.(*ast.Ident); ok {
 			// TODO: scan packages if needed
-			if pkg, ok := e.packages[ident.Name]; ok {
+			pkgPath := e.history[len(e.history)-1].Imports[ident.Name]
+			if pkg, ok := e.packages[pkgPath]; ok {
 				if rfn, ok := pkg.Decls[sel.Sel.Name]; ok {
 					out := rfn.Call(args)
 					if len(out) == 0 {
@@ -292,4 +324,11 @@ type Package struct {
 	Path string
 
 	Decls map[string]reflect.Value // ordered?
+	Files map[string]*File
+}
+
+type File struct {
+	Name    string
+	Node    *ast.File
+	Imports map[string]string // name -> pathe
 }
