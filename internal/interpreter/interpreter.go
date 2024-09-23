@@ -40,7 +40,8 @@ func New(fset *token.FileSet, options ...func(*Interpreter)) *Interpreter {
 	}}}
 	i = &Interpreter{
 		fset: fset,
-		evaluator: &evaluator{stdout: stdout, stderr: stderr,
+		evaluator: &evaluator{
+			fset: fset, stdout: stdout, stderr: stderr,
 			packages: packages,
 			scope:    scope,
 		},
@@ -145,6 +146,7 @@ func (s *scope) Get(name string) (reflect.Value, bool) {
 }
 
 type evaluator struct {
+	fset   *token.FileSet
 	stdout io.Writer
 	stderr io.Writer
 
