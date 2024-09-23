@@ -81,23 +81,22 @@ func (app *Interpreter) RunFile(ctx context.Context, node *ast.File) error {
 	if !ok {
 		file = &File{Name: filename, Node: node, Imports: map[string]string{}}
 		pkg.Files[filename] = file
+		for _, im := range node.Imports {
+			name := ""
+			if im.Name != nil {
+				name = im.Name.Name
+			}
+			path := strings.Trim(im.Path.Value, `"`)
+			if name == "" { // heuristic
+				parts := strings.Split(path, "/")
+				name = parts[len(parts)-1]
+			}
+			file.Imports[name] = path
+		}
 	}
 
 	app.evaluator.history = append(app.evaluator.history, file) // TODO: line number
 	defer func() { app.evaluator.history = app.evaluator.history[:len(app.evaluator.history)-1] }()
-
-	for _, im := range node.Imports {
-		name := ""
-		if im.Name != nil {
-			name = im.Name.Name
-		}
-		path := strings.Trim(im.Path.Value, `"`)
-		if name == "" { // heuristic
-			parts := strings.Split(path, "/")
-			name = parts[len(parts)-1]
-		}
-		file.Imports[name] = path
-	}
 
 	for _, decl := range node.Decls {
 		if fn, ok := decl.(*ast.FuncDecl); ok {
