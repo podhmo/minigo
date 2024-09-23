@@ -43,6 +43,6 @@ func run(ctx context.Context, filename string, entryPoint string) error {
 		return fmt.Errorf("failed to parse file: %w", err)
 	}
 
-	app := interpreter.New(fset, entryPoint)
-	return app.RunFile(ctx, node)
+	app := interpreter.New(fset)
+	return app.RunFile(ctx, node, entryPoint)
 }

@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-func New(fset *token.FileSet, entryPoint string, options ...func(*Interpreter)) *Interpreter {
+func New(fset *token.FileSet, options ...func(*Interpreter)) *Interpreter {
 	stdout := os.Stdout
 	stderr := os.Stderr
 
@@ -39,8 +39,7 @@ func New(fset *token.FileSet, entryPoint string, options ...func(*Interpreter)) 
 		}),
 	}}}
 	i = &Interpreter{
-		fset:       fset,
-		entryPoint: entryPoint,
+		fset: fset,
 		evaluator: &evaluator{stdout: stdout, stderr: stderr,
 			packages: packages,
 			scope:    scope,
@@ -63,12 +62,11 @@ func WithStderr(w io.Writer) func(*Interpreter) {
 }
 
 type Interpreter struct {
-	fset       *token.FileSet
-	entryPoint string
-	evaluator  *evaluator
+	fset      *token.FileSet
+	evaluator *evaluator
 }
 
-func (app *Interpreter) RunFile(ctx context.Context, node *ast.File) error {
+func (app *Interpreter) RunFile(ctx context.Context, node *ast.File, entrypoint string) error {
 	fset := app.fset
 	filename := fset.Position(node.Pos()).Filename
 
@@ -100,12 +98,12 @@ func (app *Interpreter) RunFile(ctx context.Context, node *ast.File) error {
 
 	for _, decl := range node.Decls {
 		if fn, ok := decl.(*ast.FuncDecl); ok {
-			if fn.Name.Name == app.entryPoint {
+			if fn.Name.Name == entrypoint {
 				return app.runFunc(ctx, fn)
 			}
 		}
 	}
-	return fmt.Errorf("entrypoint func %s() is not found", app.entryPoint)
+	return fmt.Errorf("entrypoint func %s() is not found", entrypoint)
 }
 
 func (app *Interpreter) runFunc(ctx context.Context, fn *ast.FuncDecl) error {

@@ -79,7 +79,7 @@ func TestRunFile(t *testing.T) {
 			fset := token.NewFileSet()
 
 			stdout := new(bytes.Buffer)
-			app := interpreter.New(fset, c.entrypoint,
+			app := interpreter.New(fset,
 				interpreter.WithStderr(stdout),
 				interpreter.WithStdout(stdout),
 			)
@@ -88,7 +88,7 @@ func TestRunFile(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parse file: +%v", err)
 			}
-			if err := app.RunFile(ctx, node); err != nil {
+			if err := app.RunFile(ctx, node, c.entrypoint); err != nil {
 				t.Errorf("run file: %+v", err)
 			}
 
