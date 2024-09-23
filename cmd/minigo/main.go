@@ -38,7 +38,7 @@ func main() {
 func run(ctx context.Context, filename string, entryPoint string) error {
 	fset := token.NewFileSet()
 
-	node, err := parser.ParseFile(fset, filename, nil, parser.AllErrors)
+	node, err := parser.ParseFile(fset, filename, nil, parser.AllErrors|parser.SkipObjectResolution)
 	if err != nil {
 		return fmt.Errorf("failed to parse file: %w", err)
 	}
