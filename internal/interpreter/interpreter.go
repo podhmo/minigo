@@ -293,36 +293,43 @@ func (e *evaluator) evalBinaryExpr(ctx context.Context, expr *ast.BinaryExpr) (r
 	}
 
 	// only support ADD, LOR, LAND
-	if !x.IsValid() || !y.IsValid() /* || x.Kind() != y.Kind() */ { // e.g. int64 + int
-		return zero, fmt.Errorf("invalid reflect.Value: %v, %v (kind=%v,%v)", x, y, x.Kind(), y.Kind())
+	if !x.IsValid() || !y.IsValid() {
+		return zero, fmt.Errorf("invalid reflect.Value: %v, %v", x, y)
 	}
 	switch expr.Op {
 	case token.ADD:
 		switch x.Kind() {
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			return reflect.ValueOf(x.Int() + y.Int()), nil
+			if isIntKind(y.Kind()) {
+				return reflect.ValueOf(x.Int() + y.Int()), nil
+			}
 		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			return reflect.ValueOf(x.Uint() + y.Uint()), nil
+			if isUintKind(y.Kind()) {
+				return reflect.ValueOf(x.Uint() + y.Uint()), nil
+			}
 		case reflect.Float64, reflect.Float32:
-			return reflect.ValueOf(x.Float() + y.Float()), nil
+			if isFloatKind(y.Kind()) {
+				return reflect.ValueOf(x.Float() + y.Float()), nil
+			}
 		case reflect.String:
-			return reflect.ValueOf(x.String() + y.String()), nil
-		default:
-			return zero, fmt.Errorf("unsupported types: %s, %s", x.Kind(), y.Kind())
+			if y.Kind() == reflect.String {
+				return reflect.ValueOf(x.String() + y.String()), nil
+			}
 		}
+		return zero, fmt.Errorf("unsupported types: %s, %s", x.Type(), y.Type())
 	case token.LOR:
 		switch x.Kind() {
 		case reflect.Bool:
 			return reflect.ValueOf(x.Bool() || y.Bool()), nil
 		default:
-			return zero, fmt.Errorf("unsupported types: %s, %s", x.Kind(), y.Kind())
+			return zero, fmt.Errorf("unsupported types: %s, %s", x.Type(), y.Type())
 		}
 	case token.LAND:
 		switch x.Kind() {
 		case reflect.Bool:
 			return reflect.ValueOf(x.Bool() && y.Bool()), nil
 		default:
-			return zero, fmt.Errorf("unsupported types: %s, %s", x.Kind(), y.Kind())
+			return zero, fmt.Errorf("unsupported types: %s, %s", x.Type(), y.Type())
 		}
 	default:
 		return zero, fmt.Errorf("unsupported operator: %v", expr.Op)
@@ -356,10 +363,36 @@ func (e *evaluator) evalFuncDecl(ctx context.Context, decl *ast.FuncDecl, args [
 				return zero, fmt.Errorf("multiple return values are not supported")
 			}
 		} else {
-			e.EvalStmt(ctx, stmt)
+			if err := e.EvalStmt(ctx, stmt); err != nil {
+				return zero, fmt.Errorf("failed to eval stmt: %w", err)
+			}
 		}
 	}
 	return zero, nil
+}
+
+func isIntKind(kind reflect.Kind) bool {
+	switch kind {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return true
+	}
+	return false
+}
+
+func isUintKind(kind reflect.Kind) bool {
+	switch kind {
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return true
+	}
+	return false
+}
+
+func isFloatKind(kind reflect.Kind) bool {
+	switch kind {
+	case reflect.Float32, reflect.Float64:
+		return true
+	}
+	return false
 }
 
 var zero = reflect.Value{}
