@@ -73,6 +73,10 @@ func TestRunFile(t *testing.T) {
 			filename: "./testdata/assign.go", entrypoint: "main",
 			output: readOutputComment(t, "./testdata/assign.go"),
 		},
+		{
+			filename: "./testdata/func.go", entrypoint: "main",
+			output: readOutputComment(t, "./testdata/func.go"),
+		},
 	} {
 		t.Run(path.Base(c.filename), func(t *testing.T) {
 			ctx := context.Background()

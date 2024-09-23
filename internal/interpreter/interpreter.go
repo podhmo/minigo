@@ -77,7 +77,7 @@ func (app *Interpreter) RunFile(ctx context.Context, node *ast.File, entrypoint 
 	}
 	file, ok := pkg.Files[filename]
 	if !ok {
-		file = &File{Name: filename, Node: node, Imports: map[string]string{}}
+		file = &File{Name: filename, Node: node, Imports: map[string]string{}, Funcs: map[string]*ast.FuncDecl{}}
 		pkg.Files[filename] = file
 		for _, im := range node.Imports {
 			name := ""
@@ -96,20 +96,25 @@ func (app *Interpreter) RunFile(ctx context.Context, node *ast.File, entrypoint 
 	app.evaluator.history = append(app.evaluator.history, file) // TODO: line number
 	defer func() { app.evaluator.history = app.evaluator.history[:len(app.evaluator.history)-1] }()
 
+	var targetFn *ast.FuncDecl
 	for _, decl := range node.Decls {
 		if fn, ok := decl.(*ast.FuncDecl); ok {
+			file.Funcs[fn.Name.Name] = fn
 			if fn.Name.Name == entrypoint {
-				return app.runFunc(ctx, fn)
+				targetFn = fn
 			}
 		}
 	}
-	return fmt.Errorf("entrypoint func %s() is not found", entrypoint)
+	if targetFn == nil {
+		return fmt.Errorf("entrypoint func %s() is not found", entrypoint)
+	}
+	return app.runFunc(ctx, targetFn)
 }
 
 func (app *Interpreter) runFunc(ctx context.Context, fn *ast.FuncDecl) error {
-	for lines := fn.Body.List; len(lines) > 0; lines = lines[1:] {
-		if err := app.evaluator.EvalStmt(ctx, lines[0]); err != nil {
-			return fmt.Errorf("line:%d failed to eval stmt: %w", app.fset.Position(lines[0].Pos()).Line, err)
+	for _, line := range fn.Body.List {
+		if err := app.evaluator.EvalStmt(ctx, line); err != nil {
+			return fmt.Errorf("failed to eval stmt[%d]: %w", app.fset.Position(line.Pos()).Line, err)
 		}
 	}
 	return nil
@@ -247,7 +252,9 @@ func (e *evaluator) evalCallExpr(ctx context.Context, expr *ast.CallExpr) (refle
 			if len(out) == 0 {
 				return zero, nil
 			}
-			return out[0], nil // TODO: multiple return values
+			return out[0], nil // TODO: multiple return valuese
+		} else if decl, ok := e.history[len(e.history)-1].Funcs[ident.Name]; ok {
+			return e.evalFuncDecl(ctx, decl, args)
 		} else {
 			return zero, fmt.Errorf("unsupported function: %s", ident.Name)
 		}
@@ -286,8 +293,8 @@ func (e *evaluator) evalBinaryExpr(ctx context.Context, expr *ast.BinaryExpr) (r
 	}
 
 	// only support ADD, LOR, LAND
-	if !x.IsValid() || !y.IsValid() || x.Kind() != y.Kind() {
-		return zero, fmt.Errorf("invalid reflect.Value: %v, %v", x, y)
+	if !x.IsValid() || !y.IsValid() /* || x.Kind() != y.Kind() */ { // e.g. int64 + int
+		return zero, fmt.Errorf("invalid reflect.Value: %v, %v (kind=%v,%v)", x, y, x.Kind(), y.Kind())
 	}
 	switch expr.Op {
 	case token.ADD:
@@ -322,6 +329,39 @@ func (e *evaluator) evalBinaryExpr(ctx context.Context, expr *ast.BinaryExpr) (r
 	}
 }
 
+// special case, using *ast.FuncDecl
+func (e *evaluator) evalFuncDecl(ctx context.Context, decl *ast.FuncDecl, args []reflect.Value) (reflect.Value, error) {
+	if len(decl.Type.Params.List) != len(args) {
+		return zero, fmt.Errorf("mismatched arguments: %d != %d", len(decl.Type.Params.List), len(args))
+	}
+
+	e.scope.Push()
+	defer e.scope.Pop()
+
+	// binding arguments
+	for i, param := range decl.Type.Params.List {
+		name := param.Names[0].Name
+		e.scope.Set(name, args[i])
+	}
+
+	// handling lines
+	for _, stmt := range decl.Body.List {
+		if retStmt, ok := stmt.(*ast.ReturnStmt); ok {
+			switch len(retStmt.Results) {
+			case 0:
+				return zero, nil
+			case 1:
+				return e.EvalExpr(ctx, retStmt.Results[0])
+			default:
+				return zero, fmt.Errorf("multiple return values are not supported")
+			}
+		} else {
+			e.EvalStmt(ctx, stmt)
+		}
+	}
+	return zero, nil
+}
+
 var zero = reflect.Value{}
 
 type Package struct {
@@ -333,7 +373,9 @@ type Package struct {
 }
 
 type File struct {
-	Name    string
-	Node    *ast.File
+	Name string
+	Node *ast.File
+
 	Imports map[string]string // name -> pathe
+	Funcs   map[string]*ast.FuncDecl
 }
