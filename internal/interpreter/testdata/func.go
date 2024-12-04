@@ -16,7 +16,7 @@ func F(n int) int {
 }
 
 func G(n int) int {
-	return n + 10
+	return n + 10 + true
 }
 
 func H(n int) {
