@@ -9,6 +9,23 @@ e := minigo.NewEngine(".")
 v, err := e.Run(ctx, "./script", "Main") // dir, file, or import path + entry func
 ```
 
+- lazy per-function compilation: packages are indexed up front, each
+  function is compiled to bytecode only when execution reaches it
+- the compiler never fails: unsupported constructs emit a trap that
+  fires only if reached, so partially-supported programs still run
+- embeddable engine: virtual working directory, filesystem confinement
+  (`AllowedRoots`), host-surface filtering (`WithHostPolicy`), output
+  routing (`WithOutput`)
+- host boundary: Go values box with reflective method dispatch; stdlib
+  intrinsics (`fmt`, `strings`, `os`, `encoding/…`) bind as packages
+- generics: monomorphize-on-use, including the Go 1.26/1.27 deltas —
+  `new(expr)`, self-referential constraints, generic methods,
+  promoted-field literal keys, generalized func-type inference
+- introspection: `minigo.dev/inspect` exposes packages, decls, type
+  expressions and values to scripts; the REPL has `:cd`/`:ls`
+- channels/`select`/`go` model a documented single-thread
+  approximation, not real concurrency
+
 A `minigo` CLI is included (`./cmd/minigo`): `minigo run <ref> [--entry F]`,
 `minigo repl`, `minigo vet <ref>`, `minigo gen-intrinsics`, or the
 `minigo <ref> [func]` shorthand. See `docs/sketch/plan-minigo-vm.md` for the
