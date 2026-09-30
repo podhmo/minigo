@@ -1,5 +1,5 @@
 // Package host is the minigo host-extension stub package (plan
-// sketch/plan-minigo-vm.md §11): a real, importable Go package whose
+// docs/sketch/plan-minigo-vm.md §11): a real, importable Go package whose
 // members name the interpreter's host-capability surface. Scripts keep
 // working with gopls/gofmt/goimports because the stubs are ordinary Go
 // declarations; the minigo engine intercepts calls and never executes

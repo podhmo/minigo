@@ -151,4 +151,4 @@ minigo run ./app --entry F
 - 特殊フォームは `testdata/special` + `e.Bind("example.com/dsl", ...)` + `e.RegisterSpecial(...)` で検証。
 - 変更後は `make format`（goimports）と `make test` が必須（AGENTS.md）。
 
-設計の背景と各ラウンドの決定事項は `sketch/plan-minigo-vm.md`（英語、Round-N notes）を参照。
+設計の背景と各ラウンドの決定事項は `docs/sketch/plan-minigo-vm.md`（英語、Round-N notes）を参照。
