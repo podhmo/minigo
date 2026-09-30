@@ -337,6 +337,12 @@ type TypeDef struct {
 	EmbedSpecs []ast.Expr
 	EmbedIdx   []int
 	Embeds     []*TypeDef
+
+	// Elem is the resolved element/pointee typedef when Anon cannot
+	// express it — e.g. a pointer typedef synthesized from `&x` whose
+	// pointee is known only as a runtime typedef. Nil means resolve
+	// through Anon/Spec instead.
+	Elem *TypeDef
 }
 
 // TypeKind classifies a named type's underlying shape.
@@ -396,6 +402,12 @@ type VMCaller interface {
 	// Package returns the package of the innermost running frame — the
 	// caller's package for inspect.Current. Nil when no frame runs.
 	Package() *Package
+	// TypeOf returns the typedef describing a runtime value — used by
+	// new(expr) to type the allocated cell.
+	TypeOf(x Value) *TypeDef
+	// Copy returns a copy of v following Go assignment semantics
+	// (structs copy, slices/maps/pointers share) — used by new(expr).
+	Copy(x Value) Value
 }
 
 // Function is a compiled-or-compilable function. Chunk is produced lazily

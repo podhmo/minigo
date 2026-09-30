@@ -937,6 +937,73 @@ func TestConstraintRejects(t *testing.T) {
 	}
 }
 
+func TestGo1267(t *testing.T) {
+	e := newEngine(t)
+	// Go 1.26/1.27 language deltas; every expected value was verified
+	// against go1.27.1 running the same program.
+	cases := []struct {
+		fn   string
+		want runtime.Value
+	}{
+		// 1.26: new(expr) — allocates a copy, not an alias
+		{"NewTypeForm", int64(0)},
+		{"NewExprVar", int64(5)},
+		{"NewExprCall", int64(42)},
+		{"NewExprStruct", int64(7)},
+		{"NewExprSelector", int64(3)},
+		{"NewExprSlice", int64(3)},
+		{"NewExprGenericCall", int64(42)},
+		// 1.26: self-referential type constraints (A Adder[A])
+		{"SelfRefCons", int64(7)},
+		{"SelfRefConsInfer", int64(5)},
+		// 1.27: generic methods — explicit instantiation, arg inference,
+		// method expressions, promotion through embedding
+		{"GenMethodInfer", int64(6)},
+		{"GenMethodExplicit", int64(10)},
+		{"GenMethodExpr", int64(9)},
+		{"GenMethodConcreteRecv", int64(22)},
+		{"GenMethodPromoted", int64(6)},
+		// 1.27: promoted fields as composite-literal keys
+		{"PromotedLitKey", int64(11)},
+		{"PromotedLitNested", int64(7)},
+		{"PromotedLitShadow", int64(3)},
+		{"PromotedLitGeneric", int64(6)},
+		{"PromotedReadWrite", int64(9)},
+		// 1.27: generalized inference — a generic function infers from
+		// the func-typed slot it is bound to
+		{"InferAssign", int64(42)},
+		{"InferComposite", int64(42)},
+		{"InferSend", int64(42)},
+		{"InferConvert", int64(42)},
+		{"InferArg", int64(42)},
+		{"InferReturn", int64(42)},
+		{"InferMethodAssign", int64(13)},
+		// a receiver may rename its type's parameters
+		{"RecvRename", int64(5)},
+	}
+	for _, c := range cases {
+		got := run(t, e, "./testdata/go1267", c.fn)
+		if diff := cmp.Diff(c.want, got); diff != "" {
+			t.Errorf("%s mismatch (-want +got):\n%s", c.fn, diff)
+		}
+	}
+	bads := []struct {
+		fn  string
+		sub string
+	}{
+		{"SelfRefConsBad", "does not satisfy"}, // Plain lacks Add — Adder rejects it
+		{"GenMethodIfaceBad", "cannot use"},    // generic methods leave the method set
+		{"AmbigLitBad", "ambiguous"},           // X lives on both embeds
+		{"PromotedPtrPanic", "nil pointer"},    // promoted field through nil *E1
+	}
+	for _, c := range bads {
+		if _, err := e.Run(context.Background(), "./testdata/go1267", c.fn); err == nil ||
+			!strings.Contains(err.Error(), c.sub) {
+			t.Fatalf("%s: expected %q error, got %v", c.fn, c.sub, err)
+		}
+	}
+}
+
 func TestGotoViolations(t *testing.T) {
 	e := newEngine(t)
 	if got := run(t, e, "./testdata/gotoviol", "Good"); got != int64(7) {

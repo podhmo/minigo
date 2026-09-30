@@ -1926,4 +1926,82 @@ for the current engine to be honest about its approximation class:
   nothing. Per-file parse caching could revisit it without a
   dedicated scanner path.
 
+## 36. Round-17 notes: Go 1.26/1.27 deltas — `new(expr)`, generic methods, promoted keys, generalized inference
+
+The TODO's Go 1.26/1.27 line is implemented (testdata/go1267, expected
+values checked against go1.27.1). What the round actually surfaced —
+none of it in the plan:
+
+### Two latent dispatch gaps, not 1.27 features
+
+- **Named container types had unreachable methods.** `selectMember`
+  trapped `select M on slice`/`on map` for every `*runtime.Slice`/`Map`/
+  `Chan`, so `type List[E any] []E` could never dispatch `l.Reduce`.
+  `Named` had `namedMember`, `Struct` had `structMember`, containers had
+  nothing. New `typedMember` binds `Typ.Methods` on bare values, cells,
+  and `FieldRef`/`IndexRef` derefs (which also learned to unwrap `Named`).
+- **`resolveTypeRef` peeled `T[...]` to the base typedef.** A declared
+  `List[int]` field type resolved to generic `List` while a
+  `List[int]{...}` literal specialized — `sameTypeDef` then failed
+  `List[int]` vs `List[int]` ("cannot use List as List"). New
+  `instantiateRef` mirrors `specializeType` statically: arg exprs
+  resolve to typedefs, methods re-bind, unresolvable args get a
+  placeholder named typedef so `List[T]` inside a generic decl keeps a
+  stable shape. Follow-up: the value-side and AST-side specialization
+  paths should converge.
+
+### Generic methods (1.27)
+
+- A method's own type params ride `Function.TParams`/`TConstraints`
+  alongside the receiver's binds; `OpInstantiate` gained a `BoundMethod`
+  case, and `instantiateFunc` merges receiver binds with explicit targs.
+- **Receiver prepending shifts inference args.** `BoundMethod` calls put
+  the receiver at `args[0]` while `Decl.Type.Params` excludes it —
+  `inferBinds` skips position 0 whenever `Decl.Recv != nil`, which also
+  covers method expressions (`List[int].Reduce(l, init, f)`).
+- **Receivers may rename the type's parameters** (`func (b Box[U])` on
+  `type Box[T]`): `recvTypeParamNames` re-binds receiver names to the
+  type arguments in both specialization paths.
+- Generic methods are excluded from `methodSetOf` — `Impl` with
+  `Call[T any](T) T` does not satisfy `interface{ Call(int) int }`,
+  matching `S does not implement I` from the real compiler. A divergence
+  minigo keeps: binding `List[int].Reduce` uninstantiated is legal (the
+  compile-total contract — it traps only if inference fails on call),
+  where the Go compiler rejects it outright.
+- Generic func literals cannot exist — the parser rejects
+  `func[T any](...)` — so unbound generic values are always named decls;
+  funclits carry a synthetic `Decl` purely for signature unification.
+
+### Promoted-field literal keys (1.27)
+
+The TODO described `T{F.G: v}` selector chains; real Go 1.27 accepts
+only **promoted field names** (`Wrap{V: 9}` writes embedded `E.V`) —
+`{F.G: v}` does not parse. Implemented as BFS `promotedField`:
+shallowest wins, two hits at equal depth trap "ambiguous", pointer
+embeds are excluded for literal keys (`invalid implicit pointer
+indirection` in Go) but allowed for member access — where a nil
+embedded pointer panics with the classic dereference panic. The same
+search now serves `structMember`/`namedMember`/`setField`, so promoted
+fields read and write through embeds uniformly.
+
+### Generalized func-type inference (1.27)
+
+`var f func(int) int = Id` (plus composite elements, conversions,
+channel sends, call args) runs `inferForFuncTarget` before the value
+coerces: the callee's declared signature unifies against the target
+func type via `unifyType`/`unifyFieldTypes` (pattern-AST-driven, with
+`argTypedef` synthesizing `KindFunc`/`KindPointer` typedefs from
+values), then `checkTArgs` validates. Approximations kept: unification
+is one-directional, does not flag conflicting binds, and only named /
+composite type forms teach binds — constraint-driven inference is still
+absent.
+
+### `new(expr)` (1.26)
+
+`new` emits `typeExpr` only when the argument is a *type form*
+(`isTypeForm`), so `new(42)`, `new(x)`, `new(f())` compile as
+expressions and the builtin allocates a `Cell` around a copy —
+`TypeDef` args still produce typed zeros. The expr evaluates eagerly
+(side effects run before allocation, same as Go); `new(nil)` errors.
+
 ## (end)
