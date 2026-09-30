@@ -8,7 +8,7 @@
 make format
 ```
 
-静的解析（staticcheck）
+静的解析
 
 ```shell
 make lint
@@ -35,10 +35,11 @@ make test
 
 *Makefile内の `go run` コマンドについて**:
 - Makefile で `go run` を使用してローカルの Go プログラムを実行する場合、原則として `go run ./ <引数...>` の形式を使用してください。これは、カレントディレクトリの main パッケージを実行することを明示し、特定のファイル名 (`main.go` など) への依存を避けるためです。
-- この形式の採用経緯や詳細については、`sketch/trouble.md` の `go run` に関するセクションを参照してください(注: go-scan 側のファイル。移行元のリポジトリ参照)。
-- Makefile内の `go run` コマンドを編集する際は、安易に他の形式（例: `go run main.go ...`）に変更せず、上記の標準形式とその理由を理解した上で慎重に行ってください。
 
 # TODO.md
+
+TODO.mdに残りのタスクを追記してください。
+タスクとは関係のないバグを見つけた場合も追記してください、
 
 - 未実装のタスクと実装済みのタスクをチェックボックスで管理してください
 - 機能全体が完了した場合にはimplementedのセクションに移動します
@@ -61,5 +62,3 @@ make test
 
 # 補足情報
 
-- このリポジトリは github.com/podhmo/go-scan の `minigo2/` を `minigo` として独立させたものです。go-scan とは github.com/podhmo/go-scan のことで、トップレベルのパッケージそのものを指します。
-- 依存関係: go-scan へのモジュール依存はありません。locator だけ `pkg/locator` に vendoring しています(出所は `pkg/SOURCE.md` 参照)。`examples/convert-define` も同様に、使っている go-scan のコードを `examples/convert-define/pkg/` に、`examples/convert` のライブラリを `examples/convert-define/` 直下に vendoring しています(出所は `examples/convert-define/pkg/SOURCE.md` 参照)。
