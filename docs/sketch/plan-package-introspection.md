@@ -332,3 +332,213 @@ one; then `Signature`/`Pos` return nothing, same as a var/const.
 - Interface decls: expose `MReqs`/`IEmbeds` as `Methods`-like views?
 - Whether `:cd` ever gains a write mode (`:pin`/`:edit`) for
   session-scoped patching of a package's globals.
+
+## Round-2 notes: interface members, `SourceOf`, and `:cd` write-mode
+
+The three deferred items landed in one pass; what building each one
+revealed, in the order it was worked. Tests came first per item
+(`testdata/inspectuse` script calls for the inspect surface,
+`TestREPLPinWrite` for write mode).
+
+### Interface members
+
+- **One uniform member view, plus two filtered ones.** `Fields` reads
+  interface decls too — `InterfaceType.Methods` is an `*ast.FieldList`,
+  so the struct `fieldList` path already produces the right shape:
+  named method specs keep `Names` + a FuncType `TypeExpr`, unnamed
+  elements come back `Embedded` with their type expression. The plan's
+  open question resolved as *both*: `MReqs`/`IEmbeds` split the two
+  element kinds (names mirror `TypeDef.MReqs`/`IEmbeds`), `Fields`
+  stays the flat view.
+- **A union constraint is one element, not many.** `~int | ~int64` is a
+  single field whose Type is a BinaryExpr — its `Children` are the
+  tilde terms. `IEmbeds` returns the BinaryExpr as one TypeExpr;
+  callers walk `Children`.
+- `SymbolID`/`Resolve` on an embedded element chase the name back to
+  its decl unchanged — no extra work once elements flow through the
+  Field path.
+
+### `SourceOf` — the deferred `Bind` bypass
+
+- The design text left a bound-shadowed package's real source out of
+  scope; it turned out to matter quickly — `PackageOf("strings")`
+  answers a bound object whose `Index` is nil, so nothing below the
+  name list was inspectable.
+- **`SourceOf` returns a detached package, not the canonical one.** It
+  caches into a private `e.srcs` and is deliberately never published to
+  `pkgs`/`byDir` — the bound shadow is intentional, so importers and
+  `PackageOf` keep seeing the bound object while the source copy
+  serves inspection only.
+- Unbound paths return the canonical package (`SourceOf == PackageOf`
+  there) so the locator stays total and callers need no bound-check
+  branch.
+- Caveat: value-layer access (`Value`/`TypeOf`) on real GOROOT source
+  can trap on unimplemented constructs; the index/syntax layers are
+  the intended use. Noted on the stub doc.
+
+### `:cd` write-mode — `:pin`/`:unpin`
+
+- **Why cell sharing, not store redirection.** `OpSetGlobal` writes
+  `f.fn.Pkg.Globals` — the *executing function's own* package — so a
+  repl-frame `x = v` can never reach `entered.Globals` directly.
+  Patching therefore works by aliasing: `Pin` (after `EnsureReady` so
+  decl globals exist) binds the entered package's var *cells* into the
+  repl scope, and writes through a shared cell land in the package.
+- **`x := v` reuses or shadows into a published cell.** Hoist first
+  asks `entered.Globals` for an existing writable cell and re-aliases
+  it; a non-cell member (bound `BuiltinFunc`, materialized func) or a
+  new name gets a fresh cell published at commit — which is also how
+  bound package members get patched. Plain `x = v` on a non-cell
+  member stays a repl-local shadow (`Set` writes raw); documented
+  divergence: patching those needs `:=`.
+- **Consts stay read-only.** A const's cell carries `ReadOnly`, and the
+  shared cell keeps it — `Label = "x"` traps like any const assign.
+- **Func/type decls bind one object in both scopes.** `commitWrites`
+  materializes the decl through the repl package and sets the same
+  value into `p.Globals`, so `F` and `pkg.F` keep one identity.
+  `pinnedDecls` records them because reload's materialization eviction
+  would otherwise split bare `T` (fresh typedef) from `pkg.T` (the
+  published one) — found while wiring `x.(T)` identity.
+- **Methods graft onto the index, then evict the typedef.**
+  `typeDefOf` freezes `td.Methods` at materialization, so a patched
+  method decl is recorded into `Index.Types[recv].Methods` *and* the
+  entered package's cached `Globals[recv]` typedef is dropped — next
+  access rebuilds the method set. `index.ReceiverTypeName` was
+  exported for the receiver peel.
+- **Commit is per-input, after the step runs.** `pendingWrite`/
+  `pendingDecls`/`pendingMethods` are recorded at accept time and
+  published in `commitWrites` (after `sealConsts`, on every success
+  path); `rollbackSource` clears them so a failed input never
+  half-publishes.
+- **Decouple on `:unpin`/`:cd -`/another `:cd`.** Written names stay
+  in the package (they're shared cells). Borrowed names drop from the
+  repl scope; names the alias shadowed are restored — `pinPre` keeps
+  the repl binding object itself, so the pre-pin value (and cell
+  identity for anything that referenced it) survives the pin.
+- **The shared-package risk stands, contained.** Patches are
+  session-wide — every importer through this engine sees them — but
+  the REPL runs on a fresh session engine, so the blast radius is one
+  repl session. `:ls` marks published decls `patch` and bare `:cd`
+  shows `[pin]` so the mode is visible.
+- Command naming took the plan's `:pin` suggestion with the explicit
+  pair `:unpin` (over `:edit`, which implies a different session model).
+
+### Post-review fixes (first Devin Review pass)
+
+- **`pinPre` snapshots → saved bindings.** Unpin used to copy the
+  shared cell's *current* value into a private cell for names that
+  existed before Pin — so `x := 1` + pin + `x = 5` + unpin left repl
+  `x` at 5 and lost the original 1. Now `pinPre` stores the displaced
+  repl binding object and Unpin hands it back: the loan ends, you get
+  your own variable — and writes stay where they went (the package).
+- **Aliases are loans, not `pending` globals.** A `x := v` alias was
+  also recorded in `pending`, so a *failed* input (e.g.
+  `x := oops()`) deleted the repl binding mid-session and every later
+  `x = v` fell back to a repl-local raw Set — silently unpatching.
+  Aliased names now skip `pending` (the alias predates the input;
+  rollback only removes what the input created).
+- **Published decls move packages.** A published func/type kept
+  `Pkg = <repl>`, so its body resolved globals through the repl
+  package — under `:cd` that worked via the pseudo dot-import, but
+  `:cd -` removed it and the patch broke for every caller. Commit now
+  retargets `Function.Pkg`/`TypeDef.Pkg` (and nested method Pkgs) to
+  the entered package — the patch *is* a package member, SymbolID
+  included. Side effect: a patch can no longer see unpublished repl
+  scratch decls — surfaced immediately rather than silently breaking
+  on Leave, which is the honest behavior for a moved decl.
+- **The decl's file context travels with it.** The second half of the
+  same bug: `resolveGlobalE` reads `pkg.Scopes[file]`/`Imports[file]`,
+  and a replFile has no entry inside the entered package — grafted
+  methods (typed `Pkg` correctly by `typeDefOf`) couldn't resolve a
+  single repl import. `graftScope` registers the repl file's import
+  table into the entered package at commit, skipping the self
+  dot-import.
+- **Method grafts reach live typedefs too.** A method on a
+  `:pin`-declared type (`type T2 ...` then `func (t T2) M()`) has no
+  index entry in the entered package — the graft now falls back to
+  the published `*runtime.TypeDef` in `Globals`, via a shared
+  `engine.methodFunc` helper extracted from `typeDefOf`.
+
+## Round-3 notes: coverage audit — how much "where defined" survives
+
+A decl-kind × metadata matrix measured against the real API
+(testdata/inspectuse pins every row). "source" rows are packages
+reached via `PackageOf`/`DirOf`/`FileOf`/`SourceOf`/`Current` — they
+carry an index; "bound" rows are intrinsic-bound packages where the
+index is nil and only `Globals` exist.
+
+### Source packages — full metadata on every decl kind
+
+| decl kind | Package / File / Pos / Doc | type detail | pinned by |
+| --- | --- | --- | --- |
+| func | all | `Signature` — param names, types, per-param Pos | SymbolView, SignatureWalk, FieldPos |
+| method | all | `Signature` + `Recv` | MethodsWalk, SignatureWalk, DeclMeta |
+| struct | all | `Def` → StructType; `Fields` → Names/Tag/Embedded/Pos + `Type` | FieldsWalk, FieldPos, CompositeFields |
+| newtype (`MyInt`) | all | `Def` → base expr; `UnWrap`/`Origin` → underlying | TypeExprNav, OriginNav, NamedFieldType |
+| `*newtype` (`PInt`) | all | `Def` → StarExpr; `UnRef`/`Origin` | OriginNav, NamedFieldType |
+| interface | all | `Fields`/`MReqs`/`IEmbeds`; `~T` unions as children | IfaceMembers |
+| var / const | all | declared type unreachable — `Def` only accepts TypeSpec (limitation); value via `Value` | DeclMeta, VarValueRead |
+| generic decl (`Pair[T]`, `Reduce[T Number]`) | all | `TypeParams` → name + constraint (a named constraint keeps a resolvable SymbolID) | TypeParamsList |
+
+Field-level type chasing works for Ident (same-pkg decl or
+predeclared), SelectorExpr (via the file's import table), and every
+composite node `Children` understands (MapType/ChanType/FuncType/
+StructType/InterfaceType/arrays/pointers/unions).
+
+### Bound packages — host pseudo-decls; `SourceOf` restores full info
+
+| thing | direct (bound shadow) | via `SourceOf` |
+| --- | --- | --- |
+| func (`strings.Contains`) | `Symbol` → host decl: Kind/Name/Package + `Signature` synthesized from `BuiltinFunc.Target` (types only — no names, no Pos) | full decl: File/Pos/Doc + named params (SourceOfSrc) |
+| type (`strings.Builder`) | host decl: Kind/Name/Package only — `Fields`/`Methods` trap, `Def` leaks `*runtime.TypeDef` | full decl: Fields/Methods/Pos/Signature from GOROOT source (SourceOfStruct) |
+| method value (`r.Size`) | host decl: Kind/Name + **Package (receiver's PkgPath), `Signature` (Recv + param/result types — no names), `Pos` (file:line from the declared method's Func PC)** — the bound value's own PC is a `reflect.methodValueCall` thunk | full decl via the type's source-side Methods |
+| intrinsic without `Target` (`strings.Compare`) | host decl; `Signature` traps | full signature from source |
+
+Bound File/Pos/Doc are therefore reachable wherever real source
+exists — through `SourceOf`, never through the bound shadow.
+
+### Verified limitations (each pinned by a trap test)
+
+- `Def`/`Fields`/`Methods`/`MReqs` on a non-type or host decl traps
+  (TypeOfFuncTrap, MReqsStructTrap, DefVarTrap, BoundFieldTrap,
+  BoundMethodTrap — asserted Go-side via `e.Run` errors).
+- `Resolve`/`Origin`/`UnWrap`/`SameType` cannot descend into a bound
+  package: the resolver consults the canonical package (no index) and
+  traps — `no decl Builder in strings`. Field SymbolIDs such as
+  `strings.Builder` still form correctly; chasing them needs a
+  SourceOf-side lookup (ResolveBoundTrap).
+- `SymbolID` on an instantiated type (`Pair[int]` → IndexExpr)
+  returns nil — the generic origin isn't reachable; `Children` yields
+  only the type arguments (Instantiation).
+- `Symbol` on an unknown name traps (MissingSymTrap).
+- `Signature` on an intrinsic without `Target` traps (HostSigTrap).
+- Host method builtins keep `Kind = "host"` and `Doc = ""`, and
+  signature params are unnamed (reflect has no identifiers) — but
+  owner, position, and types now resolve (HostMethodSym).
+- `State` reflects how the package was reached: a `DirOf`-only load
+  stops at `indexed`; a `SourceOf` package stays `indexed` (never
+  initialized); the subject package flips to `ready` once `Value`
+  triggers init (SourceOfStruct, VarValueRead — order-dependent in
+  the test list).
+
+### What's still not pinned
+
+`Import.Pos`/`Import.Name` aliasing (only Path is asserted), `Doc` on
+files (`File.Doc`), and error message text (only trap occurrence is
+asserted, not the message).
+
+### Post-audit fix: host method values
+
+- **`BuiltinFunc.Method *reflect.Method`** — the ad-hoc builtin
+  `memberOf` builds for `hostValue.name` now keeps the declared
+  method. The method *value*'s PC is a `reflect.methodValueCall`
+  trampoline (verified: resolves to `asm_amd64.s`), but
+  `Method.Func.Pointer()` still points at the real code —
+  `FuncForPC` gives `strings/reader.go:36` for `r.Size`.
+- **Owner from the receiver**: `Method.Type.In(0)` is the receiver;
+  peeling pointers yields `strings.Reader` → `PkgPath "strings"`, so
+  `OwnerOf`/`PathOf`/`SymbolIDOf` recover the bound package instead
+  of nil.
+- **Signature keeps the receiver on `Sig.Recv`**: script method
+  decls expose recv separately, and the host path mirrors that —
+  `Params` are `In(1..)`, results are `Out(..)`, types only.

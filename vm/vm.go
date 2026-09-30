@@ -1128,7 +1128,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		if !m.IsValid() {
 			f.trap("no member %s on host value %T", name, b.V)
 		}
-		return &runtime.BuiltinFunc{Name: name, Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		bf := &runtime.BuiltinFunc{Name: name, Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			mt := m.Type()
 			nin := mt.NumIn()
 			if !mt.IsVariadic() && len(args) != nin {
@@ -1178,6 +1178,14 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 				return &runtime.Tuple{Elems: el}, nil
 			}
 		}}
+		// the method value's own PC is a thunk (reflect.methodValueCall)
+		// — the declared method's Func is the only handle that still
+		// points at the real code, so keep it for inspect.
+		if tm, ok := reflect.TypeOf(b.V).MethodByName(name); ok {
+			tm := tm
+			bf.Method = &tm
+		}
+		return bf
 	default:
 		f.trap("select %s on %T", name, base)
 	}

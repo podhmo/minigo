@@ -2,9 +2,11 @@ package minigo
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/podhmo/minigo/runtime"
 )
 
 func TestREPL(t *testing.T) {
@@ -330,5 +332,228 @@ func TestREPLCdLs(t *testing.T) {
 	}
 	if len(lines) == 0 || lines[0][:4] != "host" {
 		t.Fatalf("bound list: %v", lines)
+	}
+}
+
+// TestREPLPinWrite exercises :cd write mode (:pin): declarations land in
+// the entered package's globals so every importer in the session sees
+// the patch, and :unpin decouples the repl scope without undoing them.
+func TestREPLPinWrite(t *testing.T) {
+	ctx := context.Background()
+	e := NewEngine(".")
+	r := e.NewREPL()
+
+	eval := func(line string) (any, error) {
+		v, err := r.EvalLine(ctx, line)
+		if err != nil {
+			return nil, err
+		}
+		return r.Display(v), nil
+	}
+	mustEval := func(line string) any {
+		t.Helper()
+		v, err := eval(line)
+		if err != nil {
+			t.Fatalf("EvalLine(%q): %v", line, err)
+		}
+		return v
+	}
+	globalCell := func(p *runtime.Package, name string) *runtime.Cell {
+		t.Helper()
+		gv, ok := p.Globals.Get(name)
+		if !ok {
+			t.Fatalf("%s missing from %s globals", name, p.Name)
+		}
+		c, ok := gv.(*runtime.Cell)
+		if !ok {
+			t.Fatalf("%s is %T, not a cell", name, gv)
+		}
+		return c
+	}
+
+	// a repl var sharing a package var's name is shadowed by the pin
+	// alias — and restored by unpin
+	mustEval("hiddenVar := 100")
+
+	// pin needs an entered package
+	if err := r.Pin(); err == nil {
+		t.Fatal("Pin outside :cd should fail")
+	}
+	p, err := r.Enter(ctx, "github.com/podhmo/minigo/testdata/inspectpkg")
+	if err != nil {
+		t.Fatalf("Enter: %v", err)
+	}
+	if err := r.Pin(); err != nil {
+		t.Fatalf("Pin: %v", err)
+	}
+	if !r.Pinned() {
+		t.Fatal("Pinned() should report write mode")
+	}
+
+	// `x = v` writes through the aliased package var cell
+	if _, err := eval("hiddenVar = 42"); err != nil {
+		t.Fatalf("assign to package var: %v", err)
+	}
+	if got := globalCell(p, "hiddenVar").Elem; got != int64(42) {
+		t.Fatalf("package hiddenVar = %v", got)
+	}
+
+	// `x := v` on a package var reuses its cell
+	if _, err := eval("hiddenVar := 7"); err != nil {
+		t.Fatal(err)
+	}
+	if got := globalCell(p, "hiddenVar").Elem; got != int64(7) {
+		t.Fatalf("package hiddenVar after := = %v", got)
+	}
+
+	// a failed := on a package var must not sever the shared cell
+	if _, err := eval("hiddenVar := oops()"); err == nil {
+		t.Fatal("expected failure")
+	}
+	if _, err := eval("hiddenVar = 8"); err != nil {
+		t.Fatalf("write-through broken after failed input: %v", err)
+	}
+	if got := globalCell(p, "hiddenVar").Elem; got != int64(8) {
+		t.Fatalf("package hiddenVar after failed input = %v", got)
+	}
+
+	// new names publish into the package's globals
+	mustEval("newvar := 5")
+	if got := globalCell(p, "newvar").Elem; got != int64(5) {
+		t.Fatalf("package newvar = %v", got)
+	}
+
+	// const cells stay read-only through the shared binding
+	if _, err := eval(`Label = "x"`); err == nil {
+		t.Fatal("expected const-assign trap")
+	}
+
+	// func decls patch the package member — engine calls see it too
+	mustEval(`func Hello(s string) string { return "patched " + s }`)
+	if v, err := r.engine.Call(ctx, p, "Hello", "z"); err != nil || v != "patched z" {
+		t.Fatalf("patched Hello via engine: %v %v", v, err)
+	}
+	if got, err := eval(`Hello("y")`); err != nil || got != "patched y" {
+		t.Fatalf("patched Hello via repl: %v %v", got, err)
+	}
+	// a patch whose body references a package member (another patched
+	// decl) resolves through the entered package — before and after Leave
+	mustEval(`func Wrap(s string) string { return Hello(s) + "!" }`)
+	if v, err := r.engine.Call(ctx, p, "Wrap", "w"); err != nil || v != "patched w!" {
+		t.Fatalf("Wrap: %v %v", v, err)
+	}
+
+	// repl imports travel with published decls
+	if _, err := eval(`import "strings"`); err != nil {
+		t.Fatal(err)
+	}
+
+	// type decls land in the package and stay usable unqualified
+	mustEval("type T2 struct { V int }")
+	if _, ok := p.Globals.Get("T2"); !ok {
+		t.Fatal("T2 not published")
+	}
+	if got, err := eval("T2{V: 9}.V"); err != nil || got != int64(9) {
+		t.Fatalf("T2 literal: %v %v", got, err)
+	}
+	// a method on a repl-declared type grafts onto the published typedef
+	mustEval(`func (t T2) M() int { return t.V + 1 }`)
+	if got, err := eval("T2{V: 2}.M()"); err != nil || got != int64(3) {
+		t.Fatalf("method on published type: %v %v", got, err)
+	}
+
+	// method decls graft onto the entered package's type index; the
+	// body resolves repl imports via the grafted file scope
+	mustEval(`func (u User) Shout() string { return "!" + strings.ToUpper(u.Name) }`)
+	if got, err := eval(`User{Name: "n"}.Shout()`); err != nil || got != "!N" {
+		t.Fatalf("patched method: %v %v", got, err)
+	}
+
+	// :ls shows the grafted method and the patched decl
+	lines, err := r.List(ctx, "")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	want := map[string]bool{"method User.Shout": true, "patch T2": true}
+	for _, l := range lines {
+		delete(want, l)
+	}
+	for l := range want {
+		t.Errorf(":ls missing %q", l)
+	}
+
+	// published decls are introspectable through the entered package's
+	// index — without registration SymbolOf would read nil or, for a
+	// patched name, the shadowed original decl
+	if _, err := eval(`import "minigo.dev/inspect"`); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := eval(`inspect.SymbolOf(Wrap).Kind`); err != nil || got != "func" {
+		t.Fatalf("SymbolOf(Wrap): %v %v", got, err)
+	}
+	if got, err := eval(`inspect.Pos(inspect.SymbolOf(Wrap))`); err != nil ||
+		!strings.HasPrefix(got.(string), "repl.go:") {
+		t.Fatalf("SymbolOf(Wrap) pos: %v %v", got, err)
+	}
+	// a patched name reports the repl decl, not the shadowed original
+	if got, err := eval(`inspect.Pos(inspect.SymbolOf(Hello))`); err != nil ||
+		!strings.HasPrefix(got.(string), "repl.go:") {
+		t.Fatalf("SymbolOf(Hello) pos: %v %v", got, err)
+	}
+	if got, err := eval(`inspect.SymbolOf(T2).Kind`); err != nil || got != "type" {
+		t.Fatalf("SymbolOf(T2): %v %v", got, err)
+	}
+	// ...and the package's own decl listing sees the patch as a func
+	// (before registration it surfaced as a host pseudo-decl)
+	if got, err := eval(`inspect.Symbol(inspect.PackageOf("github.com/podhmo/minigo/testdata/inspectpkg"), "Wrap").Kind`); err != nil || got != "func" {
+		t.Fatalf("Symbol(Wrap): %v %v", got, err)
+	}
+
+	// unpin decouples: writes stay in the package, repl names detach
+	r.Unpin()
+	if r.Pinned() {
+		t.Fatal("unpin should clear write mode")
+	}
+	if got := globalCell(p, "hiddenVar").Elem; got != int64(8) {
+		t.Fatalf("written value lost on unpin: %v", got)
+	}
+	// the repl binding shadowed by the alias is restored, value intact
+	if got, err := eval("hiddenVar"); err != nil || got != int64(100) {
+		t.Fatalf("hiddenVar after unpin: %v %v", got, err)
+	}
+	// assigns now land in <repl> only — a plain shadow, not a patch
+	if _, err := eval("hiddenVar = 99"); err != nil {
+		t.Fatal(err)
+	}
+	if got := globalCell(p, "hiddenVar").Elem; got != int64(8) {
+		t.Fatalf("unpinned write leaked into the package: %v", got)
+	}
+	if got, err := eval("hiddenVar"); err != nil || got != int64(99) {
+		t.Fatalf("repl shadow: %v %v", got, err)
+	}
+	// a borrowed name (published var) still resolves through the dot-import
+	if got, err := eval("newvar"); err != nil || got != int64(5) {
+		t.Fatalf("newvar after unpin: %v %v", got, err)
+	}
+
+	// leaving keeps the package patched — including bodies that
+	// reference package members or repl-side imports
+	if err := r.Leave(); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := r.engine.Call(ctx, p, "Hello", "q"); err != nil || v != "patched q" {
+		t.Fatalf("patch survives Leave: %v %v", v, err)
+	}
+	if v, err := r.engine.Call(ctx, p, "Wrap", "w"); err != nil || v != "patched w!" {
+		t.Fatalf("member-referencing patch after Leave: %v %v", v, err)
+	}
+
+	// re-entering still sees the grafts; the repl file's import scope
+	// registered into the package keeps the method's imports alive
+	if _, err := r.Enter(ctx, "github.com/podhmo/minigo/testdata/inspectpkg"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := eval(`User{Name: "n"}.Shout()`); err != nil || got != "!N" {
+		t.Fatalf("patched method after re-enter: %v %v", got, err)
 	}
 }

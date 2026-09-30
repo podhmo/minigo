@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	goruntime "runtime"
 	"strings"
 
 	"github.com/podhmo/minigo/index"
@@ -37,6 +38,12 @@ func (e *Engine) installInspect() {
 				return nil, argerr("PackageOf", "one path string")
 			}
 			return e.loadPath(context.Background(), str(runtime.Unwrap(args[0])))
+		}),
+		"SourceOf": bf("SourceOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, argerr("SourceOf", "one path string")
+			}
+			return e.sourceOf(context.Background(), str(runtime.Unwrap(args[0])))
 		}),
 		"DirOf": bf("DirOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
@@ -283,6 +290,28 @@ func (e *Engine) installInspect() {
 				return nil, err
 			}
 			return boxedSlice(ms), nil
+		}),
+		"MReqs": bf("MReqs", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			s, err := declViewOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			fs, err := xinspect.MReqsOf(s)
+			if err != nil {
+				return nil, err
+			}
+			return boxedSlice(fs), nil
+		}),
+		"IEmbeds": bf("IEmbeds", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			s, err := declViewOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			es, err := xinspect.IEmbedsOf(s)
+			if err != nil {
+				return nil, err
+			}
+			return boxedSlice(es), nil
 		}),
 		"Signature": bf("Signature", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
@@ -538,28 +567,89 @@ func (e *Engine) lookupSymbol(p *runtime.Package, name string) (runtime.Value, e
 }
 
 // hostDecl synthesizes a Kind:"host" pseudo-decl for a bound intrinsic,
-// recovering a real signature from BuiltinFunc.Target when present.
+// recovering a real signature from BuiltinFunc.Target when present, and
+// the owner/signature/position from BuiltinFunc.Method for host-value
+// method builtins.
 func (e *Engine) hostDecl(p *runtime.Package, name string, bf *runtime.BuiltinFunc) *xinspect.Decl {
 	var sig *xinspect.Sig
 	var target reflect.Type
-	if bf != nil && bf.Target != nil {
+	if bf != nil && bf.Method != nil {
+		if p == nil {
+			p = e.hostMethodPkg(bf.Method)
+		}
+		mt := bf.Method.Type
+		if mt.Kind() == reflect.Func && mt.NumIn() > 0 {
+			target = mt
+			// In(0) is the receiver — the call site drops it, so the
+			// sig view puts it on Recv like a script method decl.
+			sig = &xinspect.Sig{
+				Recv: &xinspect.Field{Type: xinspect.NewHostType(mt.In(0))},
+				Params: hostFields(mt.NumIn()-1, func(i int) reflect.Type {
+					return mt.In(i + 1)
+				}),
+				Results: hostFields(mt.NumOut(), mt.Out),
+			}
+		}
+	} else if bf != nil && bf.Target != nil {
 		if t := reflect.TypeOf(bf.Target); t != nil && t.Kind() == reflect.Func {
 			target = t
-			params := make([]runtime.Value, t.NumIn())
-			for i := 0; i < t.NumIn(); i++ {
-				params[i] = &runtime.GoValue{V: &xinspect.Field{Type: xinspect.NewHostType(t.In(i))}}
-			}
-			results := make([]runtime.Value, t.NumOut())
-			for i := 0; i < t.NumOut(); i++ {
-				results[i] = &runtime.GoValue{V: &xinspect.Field{Type: xinspect.NewHostType(t.Out(i))}}
-			}
 			sig = &xinspect.Sig{
-				Params:  &runtime.Slice{Elems: params},
-				Results: &runtime.Slice{Elems: results},
+				Params:  hostFields(t.NumIn(), t.In),
+				Results: hostFields(t.NumOut(), t.Out),
 			}
 		}
 	}
-	return xinspect.NewHostDecl(p, name, sig, target)
+	d := xinspect.NewHostDecl(p, name, sig, target)
+	if bf != nil && bf.Method != nil {
+		d.Pos = hostMethodPos(bf.Method)
+	}
+	return d
+}
+
+// hostFields boxes a func type's params or results as Field views
+// (unnamed — host signatures carry no identifiers).
+func hostFields(n int, at func(i int) reflect.Type) *runtime.Slice {
+	xs := make([]runtime.Value, n)
+	for i := 0; i < n; i++ {
+		xs[i] = &runtime.GoValue{V: &xinspect.Field{Type: xinspect.NewHostType(at(i))}}
+	}
+	return &runtime.Slice{Elems: xs}
+}
+
+// hostMethodPkg recovers the package a host method was declared in from
+// its receiver type's PkgPath (peeling pointer receivers).
+func (e *Engine) hostMethodPkg(m *reflect.Method) *runtime.Package {
+	rt := m.Type
+	if rt.NumIn() == 0 {
+		return nil
+	}
+	recv := rt.In(0)
+	for recv.Kind() == reflect.Pointer {
+		recv = recv.Elem()
+	}
+	if recv.PkgPath() == "" {
+		return nil
+	}
+	p, err := e.loadPath(context.Background(), recv.PkgPath())
+	if err != nil {
+		return nil
+	}
+	return p
+}
+
+// hostMethodPos locates the method's definition through its Func PC —
+// the bound method value's PC is a reflect thunk and can't be used.
+func hostMethodPos(m *reflect.Method) string {
+	pc := m.Func.Pointer()
+	fn := goruntime.FuncForPC(pc)
+	if fn == nil {
+		return ""
+	}
+	file, line := fn.FileLine(pc)
+	if file == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s:%d", file, line)
 }
 
 // declsOf implements inspect.Decls(x): a package's top-level decls from
@@ -619,7 +709,13 @@ func (e *Engine) ownerOf(v runtime.Value) (*runtime.Package, error) {
 	case *runtime.Struct:
 		return x.Def.Pkg, nil
 	case *runtime.BuiltinFunc:
-		return x.Pkg, nil
+		if x.Pkg != nil {
+			return x.Pkg, nil
+		}
+		if x.Method != nil {
+			return e.hostMethodPkg(x.Method), nil
+		}
+		return nil, nil
 	case *runtime.GoValue:
 		if x.V != nil {
 			t := reflect.TypeOf(x.V)

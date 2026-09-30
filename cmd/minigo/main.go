@@ -164,6 +164,9 @@ const replHelp = `commands:
   :reset  clear all definitions and values
   :cd <ref>  resolve names inside a package (path or ./dir); :cd alone
              shows the current package, :cd - leaves it
+  :pin    write following declarations into the entered package's
+          globals (monkey-patch: visible to every importer here)
+  :unpin  stop writing into the package; decls land in <repl> again
   :ls [ref]  list top-level decls of the current (or given) package
   :exit   quit (also :quit, :q, Ctrl-D)
 input is a top-level declaration or statements; a trailing
@@ -218,7 +221,11 @@ func runREPL(ctx context.Context, in io.Reader, out io.Writer) error {
 					switch {
 					case arg == "":
 						if p := r.Current(); p != nil {
-							fmt.Fprintf(out, "%s (%s)\n", p.Name, p.Path)
+							mode := ""
+							if r.Pinned() {
+								mode = " [pin]"
+							}
+							fmt.Fprintf(out, "%s (%s)%s\n", p.Name, p.Path, mode)
 						} else {
 							fmt.Fprintln(out, "<repl>")
 						}
@@ -236,6 +243,15 @@ func runREPL(ctx context.Context, in io.Reader, out io.Writer) error {
 							fmt.Fprintf(out, "%s (%s)\n", p.Name, p.Path)
 						}
 					}
+				case ":pin":
+					if err := r.Pin(); err != nil {
+						fmt.Fprintf(out, "error: %s\n", err)
+					} else {
+						fmt.Fprintln(out, "write mode on: declarations land in the package")
+					}
+				case ":unpin":
+					r.Unpin()
+					fmt.Fprintln(out, "write mode off")
 				case ":ls":
 					lines, err := r.List(ctx, strings.TrimSpace(arg))
 					if err != nil {

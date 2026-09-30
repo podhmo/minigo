@@ -117,7 +117,7 @@ func Build(files []*syntax.File) (*Index, error) {
 	}
 	// Attach methods to their receiver type.
 	for _, md := range methodDecls {
-		tname := receiverTypeName(md.Func.Recv)
+		tname := ReceiverTypeName(md.Func.Recv)
 		if tname == "" {
 			continue
 		}
@@ -134,9 +134,9 @@ func Build(files []*syntax.File) (*Index, error) {
 	return ix, nil
 }
 
-// receiverTypeName extracts the base type name from a receiver like
+// ReceiverTypeName extracts the base type name from a receiver like
 // `t T`, `t *T`, `t T[P]`.
-func receiverTypeName(recv *ast.FieldList) string {
+func ReceiverTypeName(recv *ast.FieldList) string {
 	if recv == nil || len(recv.List) == 0 {
 		return ""
 	}

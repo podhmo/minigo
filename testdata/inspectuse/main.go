@@ -380,6 +380,111 @@ func TypeOfType() string {
 	return "ok"
 }
 
+// IfaceMembers: interface decls expose member views — Fields covers
+// method specs and embedded elements; MReqs/IEmbeds split them.
+func IfaceMembers() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	t := inspect.Symbol(p, "Talker")
+	fs := inspect.Fields(t)
+	if len(fs) != 2 {
+		return "want 2 members"
+	}
+	if !fs[0].Embedded || fs[0].Type.Text != "Speaker" {
+		return "bad embed member: " + fs[0].Type.Text
+	}
+	if fs[1].Embedded || fs[1].Names[0] != "Talk" || fs[1].Type.Kind != "FuncType" {
+		return "bad method member"
+	}
+	// MReqs: named method specs only
+	reqs := inspect.MReqs(t)
+	if len(reqs) != 1 || reqs[0].Names[0] != "Talk" {
+		return "bad mreqs"
+	}
+	// a method spec's FuncType children are its param then result types
+	kids := inspect.Children(reqs[0].Type)
+	if len(kids) != 2 || kids[0].Text != "string" || kids[1].Text != "error" {
+		return "bad sig children"
+	}
+	// IEmbeds: the embedded interface name, resolvable to its decl
+	emb := inspect.IEmbeds(t)
+	if len(emb) != 1 || emb[0].Text != "Speaker" {
+		return "bad iembeds"
+	}
+	sid := inspect.SymbolID(emb[0])
+	if sid == nil || sid.Name != "Speaker" || !strings.HasSuffix(sid.PackagePath, "inspectpkg") {
+		return "bad embed sid"
+	}
+	d := inspect.Resolve(emb[0])
+	if d == nil || d.Name != "Speaker" || d.Kind != "type" {
+		return "bad embed resolve"
+	}
+	// a constraint interface has no named requirements; its union is
+	// one embedded element with the ~terms as children
+	n := inspect.Symbol(p, "Number")
+	if len(inspect.MReqs(n)) != 0 {
+		return "mreqs on constraint"
+	}
+	ne := inspect.IEmbeds(n)
+	if len(ne) != 1 || ne[0].Kind != "BinaryExpr" {
+		return "bad union embed"
+	}
+	elts := inspect.Children(ne[0])
+	if len(elts) != 2 || elts[0].Text != "~int" || elts[1].Text != "~int64" {
+		return "bad union children"
+	}
+	return "ok"
+}
+
+// MReqsStructTrap: MReqs on a non-interface decl traps (asserted
+// Go-side — scripts cannot catch intrinsic errors).
+func MReqsStructTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	s := inspect.Symbol(p, "User")
+	if inspect.MReqs(s) != nil {
+		return "expected trap"
+	}
+	return "swallowed"
+}
+
+// SourceOfSrc: a bound-shadowed path still yields its GOROOT source —
+// real decls where PackageOf returns host pseudo-decls.
+func SourceOfSrc() string {
+	src := inspect.SourceOf("strings")
+	if src == nil {
+		return "nil source pkg"
+	}
+	if inspect.Path(src) != "strings" || !inspect.Standard(src) {
+		return "bad source meta"
+	}
+	// the source package indexes real decls with names and signatures
+	d := inspect.Symbol(src, "Contains")
+	if d == nil || d.Kind != "func" {
+		return "bad source decl kind"
+	}
+	sig := inspect.Signature(d)
+	if sig == nil || len(sig.Params) != 1 || len(sig.Results) != 1 {
+		return "bad source sig"
+	}
+	// `func Contains(s, substr string) bool` — one param field, two names
+	if sig.Params[0].Names[0] != "s" || sig.Params[0].Names[1] != "substr" {
+		return "source sig lost param names"
+	}
+	// the bound shadow still answers the canonical lookup
+	bound := inspect.PackageOf("strings")
+	if bound == src {
+		return "SourceOf leaked into pkgs"
+	}
+	if inspect.Symbol(bound, "Contains").Kind != "host" {
+		return "bound shadow broken"
+	}
+	// an unbound path returns the canonical package itself
+	p := inspect.SourceOf("github.com/podhmo/minigo/testdata/inspectpkg")
+	if p != inspect.PackageOf("github.com/podhmo/minigo/testdata/inspectpkg") {
+		return "unbound SourceOf should be canonical"
+	}
+	return "ok"
+}
+
 // BoundDecls: a bound package enumerates as host pseudo-symbols.
 func BoundDecls() string {
 	p := inspect.PackageOf("strings")
@@ -394,6 +499,313 @@ func BoundDecls() string {
 		return "too few bound decls"
 	}
 	return "ok"
+}
+
+// DeclMeta: File/Pos/Doc on every decl kind, including unexported
+// names that only the index sees.
+func DeclMeta() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	names := []string{"Hello", "User", "MyInt", "PInt", "AInt", "StrList",
+		"Count", "Label", "Talker", "hidden", "hiddenVar"}
+	for _, name := range names {
+		s := inspect.Symbol(p, name)
+		if s == nil {
+			return "missing " + name
+		}
+		if !strings.HasSuffix(s.File, "inspectpkg/main.go") {
+			return name + " bad file: " + s.File
+		}
+		if !strings.Contains(inspect.Pos(s), "main.go:") {
+			return name + " bad pos: " + inspect.Pos(s)
+		}
+	}
+	for _, name := range []string{"Hello", "User", "MyInt", "Count", "Label"} {
+		if inspect.Symbol(p, name).Doc == "" {
+			return name + " missing doc"
+		}
+	}
+	// method decls carry the same metadata as top-level decls
+	for _, m := range inspect.Methods(inspect.Symbol(p, "User")) {
+		if !strings.HasSuffix(m.File, "main.go") ||
+			!strings.Contains(inspect.Pos(m), "main.go:") || m.Doc == "" {
+			return "bad method meta: " + m.Name
+		}
+	}
+	return "ok"
+}
+
+// FieldPos: per-field Pos, plus param-level names and Pos on sigs.
+func FieldPos() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	for _, f := range inspect.Fields(inspect.Symbol(p, "User")) {
+		if !strings.Contains(f.Pos, "main.go:") {
+			return "bad field pos: " + f.Pos
+		}
+	}
+	sig := inspect.Signature(inspect.Symbol(p, "Hello"))
+	if sig.Params[0].Names[0] != "s" ||
+		!strings.Contains(sig.Params[0].Pos, "main.go:") {
+		return "bad param meta"
+	}
+	return "ok"
+}
+
+// PkgMeta: Files/Dir/State plus the File view's own fields.
+// NOTE: must run before VarValueRead — a bare DirOf load stops at
+// "indexed"; Value triggers package init and flips it to "ready".
+func PkgMeta() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	fsl := inspect.Files(p)
+	if len(fsl) != 1 {
+		return "bad files"
+	}
+	if !strings.HasSuffix(fsl[0].Name, "inspectpkg/main.go") {
+		return "bad file name: " + fsl[0].Name
+	}
+	if !strings.HasSuffix(inspect.Dir(p), "testdata/inspectpkg") {
+		return "bad dir: " + inspect.Dir(p)
+	}
+	return "ok"
+}
+
+// CompositeFields: map/chan/func/interface field type expressions.
+func CompositeFields() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	fs := inspect.Fields(inspect.Symbol(p, "Rec"))
+	if len(fs) != 6 {
+		return "want 6 fields"
+	}
+	if fs[0].Type.Kind != "MapType" || fs[1].Type.Kind != "ChanType" ||
+		fs[2].Type.Kind != "FuncType" || fs[3].Type.Kind != "Ident" {
+		return "bad composite kinds"
+	}
+	kids := inspect.Children(fs[0].Type)
+	if len(kids) != 2 || kids[0].Text != "string" || kids[1].Text != "int" {
+		return "bad map children"
+	}
+	fk := inspect.Children(fs[2].Type)
+	if len(fk) != 2 || fk[0].Text != "int" || fk[1].Text != "bool" {
+		return "bad func children"
+	}
+	sid := inspect.SymbolID(fs[3].Type)
+	if sid == nil || sid.Name != "Speaker" ||
+		!strings.HasSuffix(sid.PackagePath, "inspectpkg") {
+		return "bad iface field sid"
+	}
+	return "ok"
+}
+
+// NamedFieldType: a named-type field unwraps to its underlying expr;
+// UnWrap on a non-named shape is identity.
+func NamedFieldType() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	fs := inspect.Fields(inspect.Symbol(p, "Rec"))
+	u := inspect.UnWrap(fs[4].Type)
+	if u.Text != "int" {
+		return "bad named unwrap: " + u.Text
+	}
+	s := inspect.UnWrap(inspect.Def(inspect.Symbol(p, "User")))
+	if s == nil || s.Kind != "StructType" {
+		return "bad struct unwrap"
+	}
+	return "ok"
+}
+
+// Instantiation: a Pair[int] field reads as IndexExpr — the generic
+// origin is NOT reachable (SymbolID -> nil, Children yields args).
+func Instantiation() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	fs := inspect.Fields(inspect.Symbol(p, "Rec"))
+	ip := fs[5].Type
+	if ip.Kind != "IndexExpr" || ip.Text != "Pair[int]" {
+		return "bad inst: " + ip.Text + "/" + ip.Kind
+	}
+	kids := inspect.Children(ip)
+	if len(kids) != 1 || kids[0].Text != "int" {
+		return "bad inst children"
+	}
+	if inspect.SymbolID(ip) != nil {
+		return "unexpected inst sid"
+	}
+	return "ok"
+}
+
+// TypeParamsList: generic type and generic func expose their params;
+// a named constraint resolves to its interface decl.
+func TypeParamsList() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	tps := inspect.TypeParams(inspect.Symbol(p, "Pair"))
+	if len(tps) != 1 || tps[0].Names[0] != "T" || tps[0].Type.Text != "any" {
+		return "bad type tparams"
+	}
+	fps := inspect.TypeParams(inspect.Symbol(p, "Reduce"))
+	if len(fps) != 1 || fps[0].Names[0] != "T" || fps[0].Type.Text != "Number" {
+		return "bad func tparams"
+	}
+	sid := inspect.SymbolID(fps[0].Type)
+	if sid == nil || sid.Name != "Number" ||
+		!strings.HasSuffix(sid.PackagePath, "inspectpkg") {
+		return "bad constraint sid"
+	}
+	return "ok"
+}
+
+// TypeOfNamed: TypeOf materializes typedefs for non-struct types too.
+func TypeOfNamed() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	for _, n := range []string{"MyInt", "PInt", "StrList", "Talker", "Pair"} {
+		if inspect.TypeOf(inspect.Symbol(p, n)) == nil {
+			return "nil typedef: " + n
+		}
+	}
+	return "ok"
+}
+
+// BoundTypeSym: bound non-func symbols enumerate as host decls with
+// the package attached — but no File/Pos/Doc (host kind).
+func BoundTypeSym() string {
+	bp := inspect.PackageOf("strings")
+	b := inspect.Symbol(bp, "Builder")
+	if b == nil || b.Kind != "host" || b.Name != "Builder" {
+		return "bad bound type"
+	}
+	if b.Package == nil || inspect.Path(b.Package) != "strings" {
+		return "bad bound pkg"
+	}
+	return "ok"
+}
+
+// HostMethodSym: a reflective host method value yields a host decl
+// whose owner, signature, and position are recovered through the
+// declared method's Func — the bound method value's own PC is a
+// reflect thunk (reflect.methodValueCall) that locates nothing.
+func HostMethodSym() string {
+	r := strings.NewReader("x")
+	s := inspect.SymbolOf(r.Size)
+	if s == nil || s.Kind != "host" || s.Name != "Size" {
+		return "bad host method sym"
+	}
+	if s.Package == nil || inspect.Path(s.Package) != "strings" {
+		return "bad host method owner"
+	}
+	if inspect.PathOf(r.Size) != "strings" {
+		return "bad host method path"
+	}
+	if !strings.Contains(inspect.Pos(s), "reader.go:") {
+		return "bad host method pos: " + inspect.Pos(s)
+	}
+	sig := inspect.Signature(s)
+	if sig == nil || sig.Recv == nil || sig.Recv.Type.Text != "*strings.Reader" {
+		return "bad host method recv"
+	}
+	if len(sig.Params) != 0 || len(sig.Results) != 1 ||
+		sig.Results[0].Type.Text != "int64" {
+		return "bad host method sig"
+	}
+	// a parameterized method recovers its param types too
+	s2 := inspect.SymbolOf(r.Seek)
+	sig2 := inspect.Signature(s2)
+	if sig2 == nil || len(sig2.Params) != 2 || len(sig2.Results) != 2 {
+		return "bad host method params"
+	}
+	if sig2.Params[0].Type.Text != "int64" || sig2.Params[1].Type.Text != "int" {
+		return "bad host method param types"
+	}
+	sid := inspect.SymbolIDOf(r.Size)
+	if sid == nil || sid.Name != "Size" || sid.PackagePath != "strings" {
+		return "bad host method sid"
+	}
+	return "ok"
+}
+
+// SourceOfStruct: through SourceOf a bound stdlib type exposes real
+// fields, methods, positions, and named signatures.
+func SourceOfStruct() string {
+	src := inspect.SourceOf("strings")
+	b := inspect.Symbol(src, "Builder")
+	if b == nil || b.Kind != "type" {
+		return "bad src builder"
+	}
+	if !strings.Contains(inspect.Pos(b), ".go:") {
+		return "no src pos: " + inspect.Pos(b)
+	}
+	if inspect.State(src) != "indexed" {
+		return "bad src state: " + inspect.State(src)
+	}
+	found := false
+	for _, m := range inspect.Methods(b) {
+		if m.Name == "WriteString" {
+			found = true
+			if !strings.Contains(inspect.Pos(m), ".go:") {
+				return "no src method pos"
+			}
+			sig := inspect.Signature(m)
+			if sig == nil || len(sig.Params) != 1 ||
+				sig.Params[0].Names[0] != "s" {
+				return "bad src method sig"
+			}
+		}
+	}
+	if !found {
+		return "WriteString missing"
+	}
+	if len(inspect.Fields(b)) == 0 {
+		return "no src fields"
+	}
+	return "ok"
+}
+
+// VarValueRead: Value materializes a package var (runs init on
+// demand). Keep after PkgMeta — this flips State to "ready".
+func VarValueRead() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	v := inspect.Value(p, "Count")
+	if *v != 3 {
+		return "bad var value"
+	}
+	return "ok"
+}
+
+// ---- trap checkers: each must surface an intrinsic error Go-side
+// (scripts cannot catch traps) ----
+
+// DefVarTrap: Def on a var decl is not a type.
+func DefVarTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	inspect.Def(inspect.Symbol(p, "Count"))
+	return "swallowed"
+}
+
+// ResolveBoundTrap: Resolve cannot descend into a bound package.
+func ResolveBoundTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	inspect.Resolve(inspect.Fields(inspect.Symbol(p, "User"))[3].Type)
+	return "swallowed"
+}
+
+// MissingSymTrap: Symbol on an unknown name errors.
+func MissingSymTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	inspect.Symbol(p, "Nope")
+	return "swallowed"
+}
+
+// BoundFieldTrap: Fields on a bound type has no decl to read.
+func BoundFieldTrap() string {
+	inspect.Fields(inspect.Symbol(inspect.PackageOf("strings"), "Builder"))
+	return "swallowed"
+}
+
+// BoundMethodTrap: Methods on a bound type has no index to read.
+func BoundMethodTrap() string {
+	inspect.Methods(inspect.Symbol(inspect.PackageOf("strings"), "Builder"))
+	return "swallowed"
+}
+
+// HostSigTrap: Signature on an intrinsic without a Target errors.
+func HostSigTrap() string {
+	inspect.Signature(inspect.SymbolOf(strings.Compare))
+	return "swallowed"
 }
 
 func main() {}
