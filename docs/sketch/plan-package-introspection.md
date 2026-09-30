@@ -56,7 +56,7 @@ it reports declarations as declared.
 
 | Layer | Entry points | Cost | Side effects |
 |---|---|---|---|
-| index | `Import`, `ImportDir`, `ImportFile`, `Current`, `Members`, `Decls`, `Files`, `Imports` | locate + parse + index | none |
+| index | `Import`, `ImportDir`, `ImportFile`, `Current`, `Members`, `Decls`, `Files`, `Imports`, `PackageOf`, `PathOf`, `SymbolIDOf` | locate + parse + index | none |
 | syntax | `Doc`, `Pos`, `Fields`, `Signature`, `TypeExpr` views, `SymbolID`, `Resolve`, `SameType`, `UsedSymbols` | AST reads + import-table lookup | none |
 | value | `Value`, `TypeOf`, `Kind`, `Methods` | materialize | `Value` on var/const runs `EnsureReady` (package init) |
 
@@ -75,6 +75,12 @@ p := inspect.Import("strings")      // fake import: loadPath -> Indexed
 q := inspect.ImportDir("./app")     // dir entry point
 f := inspect.ImportFile("./schema.go") // single-file package (Engine.LoadFile)
 self := inspect.Current()           // caller's *runtime.Package
+
+// symbol -> package: pass a gopls-completable reference, get the pkg
+p2 := inspect.PackageOf(strings.Contains)  // -> the "strings" package
+inspect.PathOf(strings.Contains)           // -> "strings"
+inspect.SymbolIDOf(source.SrcUser)         // -> {model.Path, "SrcUser"}
+s := inspect.SymbolOf(dst.DstUser)         // value -> decl view (see below)
 
 inspect.Name(p) / Path(p) / Dir(p) / State(p)
 inspect.Members(p)                  // []Symbol — index-level, no init
@@ -119,6 +125,45 @@ inspect.TypeOf(s)      // *TypeDef for a type symbol (materialize, no init)
 lets a script walk a decl graph across packages in purely syntactic
 terms — e.g. a `[]*db.User` field: Children twice, SymbolID gives
 `{db, User}` for free, Resolve opens db's decl, Fields repeats.
+
+## Symbol → package, value → decl
+
+The dual direction matters as much: in a script, `import "strings"`
+is real Go — gopls completes `strings.Contains` — so the handle you
+*type* is a member reference, and `inspect` turns it back into the
+package/syntax world:
+
+```go
+import "strings"
+import "minigo.dev/inspect"
+
+p  := inspect.PackageOf(strings.Contains)  // *runtime.Package
+id := inspect.SymbolIDOf(x.Method)          // works on METHODS too
+s  := inspect.SymbolOf(x.Method)            // -> method decl view
+inspect.Fields(inspect.SymbolOf(dst.DstUser)) // IDE-completed value -> Fields
+```
+
+Mapping by value kind:
+
+| Value | `PackageOf` | `SymbolOf` |
+|---|---|---|
+| `*ImportRef` / `*Package` | Materialize / self | — |
+| `*Function`, `*Closure` | `Fn.Pkg` | func decl (index lookup) |
+| `*BoundMethod` | `Fn.Pkg` | method decl via `TypeDeclInfo.Methods` |
+| `*TypeDef` | `Pkg` | type decl via `Types` |
+| `*BuiltinFunc` | new `Pkg` field stamped at `Bind` | Kind "host" pseudo-symbol |
+| `*GoValue` | `reflect.TypeOf(V).PkgPath()` → bound package | — |
+
+Note the Go wart this escapes: real Go can recover a function's
+package via `runtime.FuncForPC(reflect.ValueOf(f).Pointer())`, but a
+method *value*'s PC is a wrapper thunk — methods are unreachable that
+way. In minigo `BoundMethod` keeps the declaring `*Function`, so
+`SymbolOf`/`PackageOf` cover methods for free.
+
+Cost caveat: evaluating `pkg.F` runs normal member semantics — under
+the default `GoCompatibleInit`, a source package's init fires on first
+member access. `SymbolOf` is the convenience bridge when you already
+hold the value; for init-free decl access use `inspect.Symbol(pkg,name)`.
 
 ## Consumer story: scaffolding generation (convert-define)
 
@@ -208,6 +253,11 @@ stdlib intrinsics introspect uniformly with source packages.
   installs in-process like `installStdlib`, not via `gen-intrinsics`.
 - `VMCaller` grows `Package() *runtime.Package` (caller's package) to
   implement `Current` as an ordinary builtin.
+- `runtime.BuiltinFunc` gains `Pkg *Package`, stamped by `Engine.Bind`
+  after the package is constructed — bound intrinsics become
+  `PackageOf`-able (`inspect.PathOf(strings.Contains)` -> "strings").
+  Predeclared builtins (`len`) keep nil → `PackageOf` errors with a
+  clear message.
 - `runtime.ImportRef` gains an internal flag (e.g. `AllNames`) used by
   the REPL pseudo-import to skip the exported-name gate in
   `resolveGlobal`'s dot-import walk.
