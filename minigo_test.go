@@ -465,14 +465,21 @@ func TestExecIntrinsics(t *testing.T) {
 	if got := run(t, e, "./testdata/fsops", "CmdDirField"); got != wantCwd {
 		t.Fatalf("CmdDirField: got %v, want %v", got, wantCwd)
 	}
-	// field set on a host struct: cmd.Dir = dir, then pwd reports it
+	// field set on a host struct: cmd.Dir = dir, then pwd reports it.
+	// A subprocess's getcwd may keep symlink components of the path it
+	// was entered through (darwin returns /var/... for /private/var/...),
+	// so directory identity is compared after resolving both sides.
 	got := run(t, e, "./testdata/fsops", "ExecDirField", dir)
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != resolved {
-		t.Fatalf("ExecDirField: got %v, want %v", got, resolved)
+	resolvedGot, err := filepath.EvalSymlinks(got.(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(resolved, resolvedGot); diff != "" {
+		t.Fatalf("ExecDirField mismatch (-want +got):\n%s", diff)
 	}
 	// exec.LookPath with a separator-bearing relative name anchors at the
 	// engine's virtual cwd, not the host process's cwd
