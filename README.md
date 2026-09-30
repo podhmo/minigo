@@ -23,7 +23,7 @@ v, err := e.Run(ctx, "./script", "Main") // dir, file, or import path + entry fu
 - generics: monomorphize-on-use, including the Go 1.26/1.27 deltas —
   `new(expr)`, self-referential constraints, generic methods,
   promoted-field literal keys, generalized func-type inference
-- introspection: `minigo.dev/inspect` exposes packages, decls, type
+- introspection: `minigo/inspect` exposes packages, decls, type
   expressions and values to scripts; the REPL has `:cd`/`:ls`
 - a Go subset, not full Go — e.g. channels/`select`/`go` model a
   documented single-thread approximation, not real concurrency
