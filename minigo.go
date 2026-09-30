@@ -17,6 +17,7 @@ import (
 	"io"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 
 	"github.com/podhmo/minigo/bytecode"
@@ -395,10 +396,16 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value) {
 		State:    runtime.Ready,
 		Globals:  runtime.NewEnv(),
 		Specials: e.specials,
+		// bound paths without a dot in the first element stand in for the
+		// GOROOT package of that name ("strings", "fmt", "unsafe").
+		Standard: !strings.Contains(strings.SplitN(importPath, "/", 2)[0], "."),
 	}
 	for k, v := range symbols {
 		if e.hostPolicy != nil && !e.hostPolicy(importPath, k) {
 			continue
+		}
+		if bf, ok := v.(*runtime.BuiltinFunc); ok {
+			bf.Pkg = p
 		}
 		p.Globals.Set(k, v)
 	}
@@ -463,6 +470,7 @@ func (e *Engine) buildPackage(meta *resolve.PackageMeta) (*runtime.Package, erro
 	e.mu.Unlock()
 
 	p := e.newPackage(meta.ImportPath, meta.Name, meta.Dir)
+	p.Standard = meta.Standard
 	// publish before parsing to make import cycles convergent
 	e.mu.Lock()
 	e.pkgs[meta.ImportPath] = p

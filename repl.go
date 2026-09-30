@@ -7,6 +7,8 @@ import (
 	"go/format"
 	"go/scanner"
 	"go/token"
+	"os"
+	"sort"
 	"strings"
 
 	"github.com/podhmo/minigo/index"
@@ -34,7 +36,10 @@ type REPL struct {
 	// has run.
 	pendingTyped  []namedExpr
 	pendingConsts []string
-	n             int
+	// entered is the :cd target — a package whose members resolve
+	// unqualified through a pseudo dot-import injected at reload.
+	entered *runtime.Package
+	n       int
 }
 
 // namedExpr pairs a hoisted name with an AST expression (a declared type
@@ -443,7 +448,115 @@ func (r *REPL) reload() error {
 			p.Scopes[sf][imp.LocalName()] = ref
 		}
 	}
+	if r.entered != nil {
+		// :cd target — a pseudo dot-import that also admits unexported
+		// names so `hiddenFn` resolves like an in-package call.
+		p.Imports[sf] = append(p.Imports[sf], &runtime.ImportRef{
+			Path:     r.entered.Path,
+			Alias:    ".",
+			AllNames: true,
+			Load: func(path string) (*runtime.Package, error) {
+				return r.entered, nil
+			},
+		})
+	}
 	return p.EnsureReady()
+}
+
+// Enter changes the REPL's resolution scope to the given package — the
+// target's members (exported and unexported) resolve unqualified while
+// inside, matching the inspect :cd story. ref is an import path
+// ("strings", "example.com/mod/pkg") or a directory ("./dir", "/abs/dir").
+func (r *REPL) Enter(ctx context.Context, ref string) (*runtime.Package, error) {
+	p, err := r.loadRef(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	r.entered = p
+	if err := r.reload(); err != nil {
+		r.entered = nil
+		return nil, err
+	}
+	return p, nil
+}
+
+// Leave drops the :cd scope override, returning to plain <repl> lookup.
+func (r *REPL) Leave() error {
+	if r.entered == nil {
+		return nil
+	}
+	r.entered = nil
+	return r.reload()
+}
+
+// Current returns the :cd target package, or nil for plain <repl> scope.
+func (r *REPL) Current() *runtime.Package {
+	return r.entered
+}
+
+// List returns one "kind name" line per top-level decl of the given ref
+// (or of the entered / scratch package when ref is empty) — :ls output.
+// Bound packages enumerate their globals as "host" entries.
+func (r *REPL) List(ctx context.Context, ref string) ([]string, error) {
+	p := r.entered
+	if ref != "" {
+		var err error
+		p, err = r.loadRef(ctx, ref)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if p == nil {
+		p = r.pkg
+	}
+	var out []string
+	if p.Index != nil {
+		for _, d := range p.Index.Decls {
+			if strings.HasPrefix(d.Name, "__") {
+				continue // repl internals (__stepN, __init__)
+			}
+			var kind string
+			switch d.Kind {
+			case index.FuncDecl:
+				kind = "func"
+			case index.VarDecl:
+				kind = "var"
+			case index.ConstDecl:
+				kind = "const"
+			default:
+				kind = "type"
+			}
+			out = append(out, fmt.Sprintf("%s %s", kind, d.Name))
+		}
+		for name, t := range p.Index.Types {
+			for m := range t.Methods {
+				out = append(out, fmt.Sprintf("method %s.%s", name, m))
+			}
+		}
+	}
+	for _, name := range p.Globals.Names() {
+		if strings.HasPrefix(name, "__") {
+			continue
+		}
+		if v, ok := p.Globals.Get(name); ok {
+			if _, isCell := v.(*runtime.Cell); isCell {
+				out = append(out, fmt.Sprintf("var %s", name)) // hoisted repl name
+			} else if p.Index == nil || p.Index.Decls == nil {
+				out = append(out, fmt.Sprintf("host %s", name))
+			}
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// loadRef resolves a :cd/:ls argument: an existing directory goes through
+// loadDir, anything else is treated as an import path.
+func (r *REPL) loadRef(ctx context.Context, ref string) (*runtime.Package, error) {
+	if st, err := os.Stat(ref); err == nil && st.IsDir() {
+		return r.engine.loadDir(ctx, ref)
+	}
+	return r.engine.loadPath(ctx, ref)
 }
 
 // Display renders a runtime value for REPL output.

@@ -201,10 +201,18 @@ func (v *VM) Member(base runtime.Value, name string) (m runtime.Value, ok bool) 
 	return v.selectMember(fr, base, name), true
 }
 
+// Package implements VMCaller.Package: the package of the innermost
+// running frame, i.e. the builtin's caller.
+func (v *VM) Package() *runtime.Package {
+	if n := len(v.frames); n > 0 {
+		if fn := v.frames[n-1].fn; fn != nil {
+			return fn.Pkg
+		}
+	}
+	return nil
+}
+
 // Recover implements the recover() builtin for VMCaller: it returns the
-// in-flight panic value only when the innermost frame is a deferred
-// function running during unwind — matching Go's restriction that recover
-// works only when called directly by a deferred function.
 func (v *VM) Recover() runtime.Value {
 	if n := len(v.frames); n > 0 && v.frames[n-1].deferred && v.inflight != nil {
 		val := v.inflight.Value
@@ -935,10 +943,13 @@ func (v *VM) resolveGlobalE(f *frame, name string) (runtime.Value, error) {
 	}
 	// 3. dot imports: index without initializing, then initialize the package
 	// only when the requested name exists there.
-	if file != nil && token.IsExported(name) {
+	if file != nil {
 		var imported *runtime.Package
 		for _, ref := range pkg.Imports[file] {
 			if ref.Alias != "." {
+				continue
+			}
+			if !token.IsExported(name) && !ref.AllNames {
 				continue
 			}
 			p, err := ref.Materialize()
@@ -998,7 +1009,7 @@ func lookupDecl(pkg *runtime.Package, name string) (*index.Decl, bool) {
 func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Value {
 	switch b := base.(type) {
 	case *runtime.ImportRef:
-		if !token.IsExported(name) {
+		if !token.IsExported(name) && !b.AllNames {
 			f.trap("cannot refer to unexported name %s.%s", b.Path, name)
 		}
 		p, err := b.Materialize()
@@ -1138,6 +1149,17 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 // pass through, everything else stays boxed as a host GoValue. Value is
 // `any`, so the pass-through list names the concrete runtime types.
 func goValueOf(rv reflect.Value) runtime.Value {
+	if !rv.IsValid() {
+		return runtime.NIL
+	}
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Interface, reflect.Chan, reflect.Func:
+		if rv.IsNil() {
+			// a nil pointer-ish host value reads as nil to scripts —
+			// boxing it would make `v == nil` comparisons lie
+			return runtime.NIL
+		}
+	}
 	x := rv.Interface()
 	switch v := x.(type) {
 	case nil:

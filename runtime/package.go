@@ -58,6 +58,10 @@ type ImportRef struct {
 	Path  string
 	Alias string // "", "_", ".", or an identifier
 
+	// AllNames bypasses the exported-name gate on member selection — the
+	// REPL's :cd uses it so a pseudo dot-import can see unexported decls.
+	AllNames bool
+
 	// Load materializes the package to Indexed state (injected by loader).
 	Load func(path string) (*Package, error)
 
@@ -80,10 +84,11 @@ func (r *ImportRef) Materialize() (*Package, error) {
 
 // Package is a lazily materialized package.
 type Package struct {
-	Path  string
-	Name  string
-	State State
-	Dir   string
+	Path     string
+	Name     string
+	State    State
+	Dir      string
+	Standard bool // inside GOROOT (or a bound stdlib stub)
 
 	Fset  *token.FileSet
 	Files []*syntax.File

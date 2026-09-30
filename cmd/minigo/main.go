@@ -162,6 +162,9 @@ func vet(ctx context.Context, args []string) error {
 const replHelp = `commands:
   :help   show this help
   :reset  clear all definitions and values
+  :cd <ref>  resolve names inside a package (path or ./dir); :cd alone
+             shows the current package, :cd - leaves it
+  :ls [ref]  list top-level decls of the current (or given) package
   :exit   quit (also :quit, :q, Ctrl-D)
 input is a top-level declaration or statements; a trailing
 expression is printed. new names introduced by := / var / const
@@ -203,12 +206,45 @@ func runREPL(ctx context.Context, in io.Reader, out io.Writer) error {
 				continue
 			}
 			if strings.HasPrefix(line, ":") {
-				switch line {
+				cmd, arg, _ := strings.Cut(line, " ")
+				switch cmd {
 				case ":exit", ":quit", ":q":
 					return nil
 				case ":reset":
 					r.Reset()
 					fmt.Fprintln(out, "state cleared")
+				case ":cd":
+					arg = strings.TrimSpace(arg)
+					switch {
+					case arg == "":
+						if p := r.Current(); p != nil {
+							fmt.Fprintf(out, "%s (%s)\n", p.Name, p.Path)
+						} else {
+							fmt.Fprintln(out, "<repl>")
+						}
+					case arg == "-":
+						if err := r.Leave(); err != nil {
+							fmt.Fprintf(out, "error: %s\n", err)
+						} else {
+							fmt.Fprintln(out, "<repl>")
+						}
+					default:
+						p, err := r.Enter(ctx, arg)
+						if err != nil {
+							fmt.Fprintf(out, "error: %s\n", err)
+						} else {
+							fmt.Fprintf(out, "%s (%s)\n", p.Name, p.Path)
+						}
+					}
+				case ":ls":
+					lines, err := r.List(ctx, strings.TrimSpace(arg))
+					if err != nil {
+						fmt.Fprintf(out, "error: %s\n", err)
+					} else {
+						for _, l := range lines {
+							fmt.Fprintln(out, l)
+						}
+					}
 				case ":help":
 					fmt.Fprintln(out, replHelp)
 				default:
