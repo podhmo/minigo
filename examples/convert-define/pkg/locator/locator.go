@@ -3,7 +3,6 @@ package locator
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,7 +10,6 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/podhmo/minigo/examples/convert-define/pkg/scanner"
 	"golang.org/x/mod/module"
 )
 
@@ -29,7 +27,6 @@ type Locator struct {
 	modulePath string
 	rootDir    string
 	replaces   []ReplaceDirective
-	overlay    scanner.Overlay
 
 	// Options for advanced resolution
 	UseGoModuleResolver bool
@@ -40,18 +37,6 @@ type Locator struct {
 
 // Option is a functional option for configuring the Locator.
 type Option func(*Locator)
-
-// WithOverlay provides in-memory file content for go.mod.
-func WithOverlay(overlay scanner.Overlay) Option {
-	return func(l *Locator) {
-		if l.overlay == nil {
-			l.overlay = make(scanner.Overlay)
-		}
-		for k, v := range overlay {
-			l.overlay[k] = v
-		}
-	}
-}
 
 // WithGoModuleResolver enables resolving packages from GOROOT and the module cache.
 func WithGoModuleResolver() Option {
@@ -89,13 +74,7 @@ func New(startPath string, options ...Option) (*Locator, error) {
 	l.rootDir = rootDir
 
 	var goModContent []byte
-	if l.overlay != nil {
-		if content, ok := l.overlay["go.mod"]; ok {
-			goModContent = content
-		}
-	}
-
-	if goModContent == nil && l.rootDir != "" {
+	if l.rootDir != "" {
 		goModFilePath := filepath.Join(l.rootDir, "go.mod")
 		// It's okay if go.mod doesn't exist, especially if UseGoModuleResolver is true
 		if content, readErr := os.ReadFile(goModFilePath); readErr == nil {
@@ -530,66 +509,4 @@ func (l *Locator) PathToImport(absPath string) (string, error) {
 	}
 
 	return "", fmt.Errorf("could not determine import path for directory %s", absPath)
-}
-
-// ResolvePkgPath converts a file path to a full Go package path.
-// If the path exists on the filesystem, it is treated as a file path and resolved.
-// If it does not exist, it's assumed to be a package path unless it has a relative
-// path prefix (like `./`), in which case it's an error.
-func ResolvePkgPath(ctx context.Context, path string) (string, error) {
-	isFilePathLike := strings.HasPrefix(path, ".") || filepath.IsAbs(path)
-
-	info, err := os.Stat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			if isFilePathLike {
-				// It looks like a file path but doesn't exist. This is an error.
-				return "", fmt.Errorf("path %q does not exist: %w", path, err)
-			}
-			// It doesn't look like a file path and doesn't exist. Assume it's a package path.
-			return path, nil
-		}
-		// Other stat error.
-		return "", fmt.Errorf("error checking path %q: %w", path, err)
-	}
-
-	// Path exists, so it's a file/dir path.
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("could not get absolute path for %q: %w", path, err)
-	}
-
-	searchDir := absPath
-	if !info.IsDir() {
-		searchDir = filepath.Dir(absPath)
-	}
-
-	modRoot, err := findModuleRoot(searchDir)
-	if err != nil {
-		// Re-wrap the error for more context.
-		return "", fmt.Errorf("could not find go.mod for path %q: %w", path, err)
-	}
-	goModPath := filepath.Join(modRoot, "go.mod")
-
-	modBytes, err := os.ReadFile(goModPath)
-	if err != nil {
-		return "", fmt.Errorf("could not read go.mod at %s: %w", goModPath, err)
-	}
-
-	modulePath, err := getModulePathFromBytes(modBytes)
-	if err != nil {
-		return "", fmt.Errorf("could not parse module path from %s: %w", goModPath, err)
-	}
-
-	// Use searchDir to get the relative path for the package, not the file.
-	relPath, err := filepath.Rel(modRoot, searchDir)
-	if err != nil {
-		return "", fmt.Errorf("could not determine relative path of %s from %s: %w", searchDir, modRoot, err)
-	}
-
-	pkgPath := filepath.ToSlash(relPath)
-	if pkgPath == "." {
-		return modulePath, nil
-	}
-	return modulePath + "/" + pkgPath, nil
 }

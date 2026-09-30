@@ -30,10 +30,10 @@ Here is an example `definitions.go`:
 package main
 
 import (
-	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/convutil"
-	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/destination"
-	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/funcs"
-	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/source"
+	"github.com/podhmo/minigo/examples/convert-define/convutil"
+	"github.com/podhmo/minigo/examples/convert-define/sampledata/destination"
+	"github.com/podhmo/minigo/examples/convert-define/sampledata/funcs"
+	"github.com/podhmo/minigo/examples/convert-define/sampledata/source"
 
 	"github.com/podhmo/minigo/examples/convert-define/define"
 )
@@ -142,7 +142,7 @@ Controls the conversion of a specific field.
       -pkg "github.com/your/project/models" \
       -output "github.com/your/project/models/generated_converters.go"
     # (the legacy annotation tool lives in the upstream go-scan repository; the
-    # converter libraries it shares with this tool are vendored under pkg/convert)
+    # converter libraries it shares with this tool live at this module's root)
     ```
 
 </details>

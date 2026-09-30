@@ -9,8 +9,8 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	generated "github.com/podhmo/minigo/examples/convert-define/e2e_test"
-	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/destination"
-	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/source"
+	"github.com/podhmo/minigo/examples/convert-define/sampledata/destination"
+	"github.com/podhmo/minigo/examples/convert-define/sampledata/source"
 )
 
 func TestGeneratedUserConversion(t *testing.T) {

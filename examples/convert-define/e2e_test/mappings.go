@@ -4,11 +4,11 @@
 package e2e
 
 import (
+	"github.com/podhmo/minigo/examples/convert-define/convutil"
 	"github.com/podhmo/minigo/examples/convert-define/define"
-	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/convutil"
-	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/destination"
-	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/funcs"
-	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/source"
+	"github.com/podhmo/minigo/examples/convert-define/sampledata/destination"
+	"github.com/podhmo/minigo/examples/convert-define/sampledata/funcs"
+	"github.com/podhmo/minigo/examples/convert-define/sampledata/source"
 )
 
 func main() {
