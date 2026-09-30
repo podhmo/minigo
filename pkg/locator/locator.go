@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"golang.org/x/mod/module"
@@ -130,7 +129,11 @@ func New(startPath string, options ...Option) (*Locator, error) {
 	}
 
 	if l.UseGoModuleResolver {
-		l.goRoot = runtime.GOROOT()
+		goRoot, err := getGoRoot()
+		if err != nil {
+			return nil, fmt.Errorf("could not determine GOROOT: %w", err)
+		}
+		l.goRoot = goRoot
 		cache, err := getGoModCache()
 		if err != nil {
 			return nil, fmt.Errorf("could not determine go mod cache location: %w", err)
@@ -362,6 +365,16 @@ func getReplaceDirectivesFromBytes(content []byte) ([]ReplaceDirective, error) {
 	}
 
 	return directives, nil
+}
+
+// getGoRoot finds the GOROOT of the local toolchain by calling `go env GOROOT`.
+func getGoRoot() (string, error) {
+	cmd := exec.Command("go", "env", "GOROOT")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to run 'go env GOROOT': %w", err)
+	}
+	return strings.TrimSpace(string(output)), nil
 }
 
 // getGoModCache finds the path to the module cache directory by calling `go env GOMODCACHE`.
