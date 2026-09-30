@@ -211,9 +211,16 @@ func (e *Engine) NewSession() *Engine {
 	s.vmm = s.newVM()
 	s.installStdlib()
 	// sessions inherit the parent's host bindings: a script importing a
-	// custom bound package must resolve identically in the new session
+	// custom bound package must resolve identically in the new session.
+	// Intrinsic packages the session already bound itself keep the
+	// session version — their builtins close over the session engine
+	// and its package cache, so e.g. inspect.PackageOf observes the
+	// session's (patched) packages, not the parent's copy.
 	e.mu.Lock()
 	for path, p := range e.binds {
+		if _, installed := s.binds[path]; installed {
+			continue
+		}
 		s.binds[path] = p
 		s.pkgs[path] = p
 	}

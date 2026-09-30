@@ -327,6 +327,24 @@ func (r *REPL) commitWrites() {
 		}
 		p.Globals.Set(n, v)
 		r.pkg.Globals.Set(n, v)
+		// publish the decl into the package's index too — the retargeted
+		// Pkg makes SymbolOf/Decls/Symbol consult it, and without an
+		// entry the patch's definition is invisible: a new name reads
+		// as nil and a patched name resolves back to the ORIGINAL decl.
+		if p.Index != nil {
+			switch d.Kind {
+			case index.FuncDecl:
+				p.Index.Funcs[n] = d
+			case index.TypeDecl:
+				td, ok := p.Index.Types[n]
+				if !ok {
+					td = &index.TypeDeclInfo{Methods: map[string]*index.Decl{}}
+					p.Index.Types[n] = td
+				}
+				td.Decl = d
+			}
+			p.Index.Decls = spliceDecl(p.Index.Decls, d)
+		}
 		if r.pinnedDecls == nil {
 			r.pinnedDecls = map[string]bool{}
 		}
@@ -347,11 +365,15 @@ func (r *REPL) commitWrites() {
 					td.Methods = map[string]*index.Decl{}
 				}
 				td.Methods[m.name] = d
-				// a materialized typedef froze its method set at build
-				// time — evict the cached value so the next Member
-				// rebuilds it patched
-				p.Globals.Delete(m.recv)
-				continue
+				if !r.pinnedDecls[m.recv] {
+					// a materialized typedef froze its method set at build
+					// time — evict the cached value so the next Member
+					// rebuilds it patched. A repl-published type skips the
+					// eviction: its shared typedef is patched in place
+					// below (evicting would drop the retargeted Pkg).
+					p.Globals.Delete(m.recv)
+					continue
+				}
 			}
 		}
 		// the receiver is not an index type of the entered package
@@ -366,6 +388,19 @@ func (r *REPL) commitWrites() {
 			}
 		}
 	}
+}
+
+// spliceDecl keeps a package's Decls listing coherent across patches:
+// a redeclared name replaces the original entry (the patch IS the
+// definition now), a new name appends.
+func spliceDecl(decls []*index.Decl, d *index.Decl) []*index.Decl {
+	for i, old := range decls {
+		if old.Name == d.Name && old.Kind == d.Kind {
+			decls[i] = d
+			return decls
+		}
+	}
+	return append(decls, d)
 }
 
 // graftScope registers the repl file's import context inside the
@@ -804,7 +839,11 @@ func (r *REPL) List(ctx context.Context, ref string) ([]string, error) {
 			default:
 				kind = "type"
 			}
-			out = append(out, fmt.Sprintf("%s %s", kind, d.Name))
+			if r.pinnedDecls[d.Name] {
+				out = append(out, fmt.Sprintf("patch %s", d.Name)) // decl published by :pin
+			} else {
+				out = append(out, fmt.Sprintf("%s %s", kind, d.Name))
+			}
 			seen[d.Name] = true
 		}
 		for name, t := range p.Index.Types {

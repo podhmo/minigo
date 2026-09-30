@@ -2,6 +2,7 @@ package minigo
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -479,6 +480,33 @@ func TestREPLPinWrite(t *testing.T) {
 	}
 	for l := range want {
 		t.Errorf(":ls missing %q", l)
+	}
+
+	// published decls are introspectable through the entered package's
+	// index — without registration SymbolOf would read nil or, for a
+	// patched name, the shadowed original decl
+	if _, err := eval(`import "minigo.dev/inspect"`); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := eval(`inspect.SymbolOf(Wrap).Kind`); err != nil || got != "func" {
+		t.Fatalf("SymbolOf(Wrap): %v %v", got, err)
+	}
+	if got, err := eval(`inspect.Pos(inspect.SymbolOf(Wrap))`); err != nil ||
+		!strings.HasPrefix(got.(string), "repl.go:") {
+		t.Fatalf("SymbolOf(Wrap) pos: %v %v", got, err)
+	}
+	// a patched name reports the repl decl, not the shadowed original
+	if got, err := eval(`inspect.Pos(inspect.SymbolOf(Hello))`); err != nil ||
+		!strings.HasPrefix(got.(string), "repl.go:") {
+		t.Fatalf("SymbolOf(Hello) pos: %v %v", got, err)
+	}
+	if got, err := eval(`inspect.SymbolOf(T2).Kind`); err != nil || got != "type" {
+		t.Fatalf("SymbolOf(T2): %v %v", got, err)
+	}
+	// ...and the package's own decl listing sees the patch as a func
+	// (before registration it surfaced as a host pseudo-decl)
+	if got, err := eval(`inspect.Symbol(inspect.PackageOf("github.com/podhmo/minigo/testdata/inspectpkg"), "Wrap").Kind`); err != nil || got != "func" {
+		t.Fatalf("Symbol(Wrap): %v %v", got, err)
 	}
 
 	// unpin decouples: writes stay in the package, repl names detach
