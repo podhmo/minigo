@@ -46,6 +46,29 @@ func NewExprSlice() int {
 	return q[0] + s[1] // 3
 }
 
+func NewExprSliceAssign() int {
+	s := []int{1, 2}
+	p := new(s)
+	*p = []int{9, 8}      // the cell keeps []int as its type
+	return (*p)[0] + s[0] // 10
+}
+
+type SI []int
+
+func NewExprNamedSlice() int {
+	s := SI{1}
+	p := new(s)
+	*p = SI{4}          // the cell's type is SI, not a bare slice
+	return int((*p)[0]) // 4
+}
+
+func NewExprMapAssign() int {
+	m := map[string]int{"a": 1}
+	p := new(m)
+	*p = map[string]int{"b": 40}
+	return (*p)["b"] + m["a"] // 41
+}
+
 func NewExprGeneric[T any](x T) T {
 	p := new(x) // x is a value, typed by the argument's typedef
 	return *p
@@ -85,6 +108,22 @@ type Plain int // no methods — cannot satisfy Adder[Plain]
 
 func SelfRefConsBad() int {
 	return int(addAll[Plain]([]Plain{1}))
+}
+
+// a named constraint carries its type set too — Num has no methods, but
+// ~int|~float64 still rejects string.
+type Num interface {
+	~int | ~float64
+}
+
+func pickNum[N Num](a, b N) N { return a }
+
+func NamedConsTypeSet() int {
+	return int(pickNum(38, 4)) // 38
+}
+
+func NamedConsTypeSetBad() int {
+	return int(pickNum("x", "y"))
 }
 
 // ---- Go 1.27: promoted-field composite literal keys ----
@@ -150,6 +189,18 @@ type PE struct{ *E1 }
 func PromotedPtrPanic() int {
 	p := PE{}
 	return p.V // nil embedded pointer dereference panics like Go
+}
+
+// the promoted field exists statically — evaluating it dereferences the
+// nil *DeepMid on the way through, so Go panics rather than reporting
+// an undefined field.
+type DeepIn struct{ V int }
+type DeepMid struct{ *DeepIn }
+type DeepOut struct{ *DeepMid }
+
+func PromotedDeepPtrPanic() int {
+	o := DeepOut{}
+	return o.V
 }
 
 // ---- Go 1.27: generalized function-type inference ----

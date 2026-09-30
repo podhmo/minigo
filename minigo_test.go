@@ -954,10 +954,15 @@ func TestGo1267(t *testing.T) {
 		{"NewExprStruct", int64(7)},
 		{"NewExprSelector", int64(3)},
 		{"NewExprSlice", int64(3)},
+		{"NewExprSliceAssign", int64(10)},
+		{"NewExprNamedSlice", int64(4)},
+		{"NewExprMapAssign", int64(41)},
 		{"NewExprGenericCall", int64(42)},
 		// 1.26: self-referential type constraints (A Adder[A])
 		{"SelfRefCons", int64(7)},
 		{"SelfRefConsInfer", int64(5)},
+		// a named constraint's type set constrains, not just its methods
+		{"NamedConsTypeSet", int64(38)},
 		// 1.27: promoted fields as composite-literal keys
 		{"PromotedLitKey", int64(11)},
 		{"PromotedLitNested", int64(7)},
@@ -985,9 +990,11 @@ func TestGo1267(t *testing.T) {
 		fn  string
 		sub string
 	}{
-		{"SelfRefConsBad", "does not satisfy"}, // Plain lacks Add — Adder rejects it
-		{"AmbigLitBad", "ambiguous"},           // X lives on both embeds
-		{"PromotedPtrPanic", "nil pointer"},    // promoted field through nil *E1
+		{"SelfRefConsBad", "does not satisfy"},      // Plain lacks Add — Adder rejects it
+		{"NamedConsTypeSetBad", "does not satisfy"}, // string is not ~int|~float64
+		{"AmbigLitBad", "ambiguous"},                // X lives on both embeds
+		{"PromotedPtrPanic", "nil pointer"},         // promoted field through nil *E1
+		{"PromotedDeepPtrPanic", "nil pointer"},     // deeper field, still a nil deref
 	}
 	for _, c := range bads {
 		if _, err := e.Run(context.Background(), "./testdata/go1267", c.fn); err == nil ||

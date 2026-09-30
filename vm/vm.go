@@ -1595,6 +1595,12 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 		idx int
 	}
 	level := []*runtime.Struct{s}
+	// nilDepth/nilPaths track resolutions that exist only through a nil
+	// embedded pointer: Go selects fields statically, so such a field is
+	// not "undefined" — reaching it panics on the implicit dereference
+	// (and a same-depth tie with a real path is ambiguous, like Go's
+	// compile-time rejection).
+	nilDepth, nilPaths := 0, 0
 	for depth := 0; len(level) > 0 && depth < 32; depth++ {
 		var hits []slot
 		var next []*runtime.Struct
@@ -1634,10 +1640,23 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 					}
 				}
 				if j < 0 {
-					// not declared here — keep descending; a nil pointer
-					// embed simply cannot yield a struct to search.
-					if inner, _ := v.embedValue(f, st, idx, embTd, ptr); inner != nil {
+					inner, _ := v.embedValue(f, st, idx, embTd, ptr)
+					if inner != nil {
 						next = append(next, inner)
+						continue
+					}
+					if ptr {
+						// a nil embedded pointer cannot be searched
+						// by value — ask the type whether the field
+						// exists deeper, and at which depth.
+						if d, c := v.embedTypeDepth(embTd, name, map[*runtime.TypeDef]bool{}); d > 0 {
+							abs := depth + 1 + d
+							if nilDepth == 0 || abs < nilDepth {
+								nilDepth, nilPaths = abs, c
+							} else if abs == nilDepth {
+								nilPaths += c
+							}
+						}
 					}
 					continue
 				}
@@ -1650,16 +1669,84 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 				hits = append(hits, slot{inner, j})
 			}
 		}
-		switch len(hits) {
-		case 0:
-		case 1:
-			return hits[0].st, hits[0].idx, true
-		default:
+		if len(hits) > 0 {
+			if nilDepth > 0 && nilDepth <= depth+1 {
+				// a nil path ties the real field's depth — Go
+				// rejects the selector as ambiguous.
+				f.trap("ambiguous selector %s", name)
+			}
+			if len(hits) == 1 {
+				return hits[0].st, hits[0].idx, true
+			}
 			f.trap("ambiguous selector %s", name)
+		}
+		if nilDepth > 0 && nilDepth <= depth+1 {
+			if nilPaths > 1 {
+				f.trap("ambiguous selector %s", name)
+			}
+			panic(&runtime.Panic{Value: "runtime error: invalid memory address or nil pointer dereference"})
 		}
 		level = next
 	}
+	if nilDepth > 0 {
+		if nilPaths > 1 {
+			f.trap("ambiguous selector %s", name)
+		}
+		panic(&runtime.Panic{Value: "runtime error: invalid memory address or nil pointer dereference"})
+	}
 	return nil, 0, false
+}
+
+// embedTypeDepth answers for the type what a value search cannot when an
+// embedded pointer is nil: whether `name` is promoted through td's own
+// embedded fields, the shallowest relative depth at which it resolves
+// (1 = a direct field of a type embedded in td), and how many distinct
+// paths reach it at that depth. Depth 0 means unreachable.
+func (v *VM) embedTypeDepth(td *runtime.TypeDef, name string, seen map[*runtime.TypeDef]bool) (int, int) {
+	if td == nil || seen[td] || v.H.ResolveType == nil {
+		return 0, 0
+	}
+	seen[td] = true
+	defer delete(seen, td)
+	best, cnt := 0, 0
+	for k, spec := range td.EmbedSpecs {
+		texpr := spec
+		if sx, ok := spec.(*ast.StarExpr); ok {
+			texpr = sx.X
+		}
+		if k >= len(td.EmbedIdx) {
+			continue
+		}
+		et, err := v.H.ResolveType(td, texpr)
+		if err != nil || et == nil {
+			continue
+		}
+		et = v.peelNamed(et)
+		if et == nil || len(et.Fields) == 0 {
+			continue
+		}
+		d, c := 0, 1
+		for _, fn := range et.Fields {
+			if fn == name {
+				d = 1
+				break
+			}
+		}
+		if d == 0 {
+			if sd, sc := v.embedTypeDepth(et, name, seen); sd > 0 {
+				d, c = 1+sd, sc
+			}
+		}
+		if d == 0 {
+			continue
+		}
+		if best == 0 || d < best {
+			best, cnt = d, c
+		} else if d == best {
+			cnt += c
+		}
+	}
+	return best, cnt
 }
 
 // embedValue returns the struct value stored in an embedded field,
@@ -4762,16 +4849,24 @@ func (v *VM) unifyTypeDef(ctx *runtime.TypeDef, tset map[string]bool, binds map[
 	case *ast.Ellipsis:
 		v.unifyTypeDef(ctx, tset, binds, p.Elt, conc)
 	case *ast.StarExpr:
-		et := v.elemTypedef(conc)
-		if et == nil && conc.Elem != nil {
-			et = conc.Elem
-		}
-		if et != nil {
-			v.unifyTypeDef(ctx, tset, binds, p.X, et)
+		// *T unifies only against pointer-shaped args — a slice or
+		// map's element type is not a pointee and must teach nothing.
+		if u := v.peelNamed(conc); u != nil && u.Kind == runtime.KindPointer {
+			et := v.elemTypedef(conc)
+			if et == nil {
+				et = conc.Elem
+			}
+			if et != nil {
+				v.unifyTypeDef(ctx, tset, binds, p.X, et)
+			}
 		}
 	case *ast.ArrayType:
-		if et := v.elemTypedef(conc); et != nil {
-			v.unifyTypeDef(ctx, tset, binds, p.Elt, et)
+		// []T unifies only against slice/array-shaped args — a pointer's
+		// pointee is not an element and must teach nothing.
+		if u := v.peelNamed(conc); u != nil && u.Kind == runtime.KindSlice {
+			if et := v.elemTypedef(conc); et != nil {
+				v.unifyTypeDef(ctx, tset, binds, p.Elt, et)
+			}
 		}
 	case *ast.MapType:
 		if mt, ok := conc.Anon.(*ast.MapType); ok && v.H.ResolveType != nil {
@@ -4783,8 +4878,10 @@ func (v *VM) unifyTypeDef(ctx *runtime.TypeDef, tset map[string]bool, binds map[
 			}
 		}
 	case *ast.ChanType:
-		if et := v.elemTypedef(conc); et != nil {
-			v.unifyTypeDef(ctx, tset, binds, p.Value, et)
+		if u := v.peelNamed(conc); u != nil && u.Kind == runtime.KindChan {
+			if et := v.elemTypedef(conc); et != nil {
+				v.unifyTypeDef(ctx, tset, binds, p.Value, et)
+			}
 		}
 	case *ast.FuncType:
 		cs := funcTypeExpr(conc)
@@ -4956,11 +5053,11 @@ func (v *VM) argTypedef(x runtime.Value) *runtime.TypeDef {
 // inference. Composite builtin values get anonymous kinds (a []int arg
 // binds T to "some slice" — enough for `var z T` and T(x) conversions).
 func (v *VM) typeOfValue(x runtime.Value) *runtime.TypeDef {
-	if _, ok := runtime.Deref(x); ok {
+	if dv, ok := runtime.Deref(x); ok {
 		// a pointer argument: T binds to a pointer-ish typedef — the
 		// element has no AST on this path, so Anon stays nil and
 		// elem-typed operations on it degrade to traps.
-		return &runtime.TypeDef{Kind: runtime.KindPointer}
+		return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: v.typeOfValue(dv)}
 	}
 	switch xv := x.(type) {
 	case int64:
@@ -4972,10 +5069,19 @@ func (v *VM) typeOfValue(x runtime.Value) *runtime.TypeDef {
 	case bool:
 		return v.builtinTypedef("bool")
 	case *runtime.Slice:
+		if xv.Typ != nil {
+			return xv.Typ
+		}
 		return &runtime.TypeDef{Kind: runtime.KindSlice}
 	case *runtime.Map:
+		if xv.Typ != nil {
+			return xv.Typ
+		}
 		return &runtime.TypeDef{Kind: runtime.KindMap}
 	case *runtime.Chan:
+		if xv.Typ != nil {
+			return xv.Typ
+		}
 		return &runtime.TypeDef{Kind: runtime.KindChan}
 	case *runtime.Struct:
 		return xv.Def
@@ -5110,6 +5216,24 @@ func (v *VM) satisfiesTypeElem(ctx *runtime.TypeDef, e ast.Expr, td *runtime.Typ
 		if ok, done := v.satisfiesNamed(ctx, e, td); done {
 			return ok
 		}
+		if id, ok := e.(*ast.Ident); ok {
+			switch id.Name {
+			case "any":
+				return true
+			case "comparable":
+				// approximated: slices, maps and funcs are never
+				// comparable; everything else is let through.
+				if u := v.peelNamed(td); u != nil {
+					switch u.Kind {
+					case runtime.KindSlice, runtime.KindMap, runtime.KindFunc:
+						return false
+					}
+				}
+				return true
+			case "error":
+				return v.typeHasMethods(td, []string{"Error"})
+			}
+		}
 		// bare type element: exact type-name match
 		return typeExprName(e) == tdNameOrAnon(td)
 	default:
@@ -5147,6 +5271,14 @@ func (v *VM) satisfiesNamed(ctx *runtime.TypeDef, e ast.Expr, td *runtime.TypeDe
 		return false, false
 	}
 	if nt.Kind == runtime.KindInterface {
+		// the constraint's type elements and embedded interfaces
+		// constrain the argument too — checking only the method set
+		// would let `interface{ ~int }` accept every type.
+		for _, e := range nt.IEmbeds {
+			if !v.satisfiesTypeElem(nt, e, td) {
+				return false, true
+			}
+		}
 		return v.typeHasMethods(td, v.ifaceReqNames(nt)), true
 	}
 	return sameTypeDef(td, nt), true
