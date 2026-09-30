@@ -491,7 +491,7 @@ StructType/InterfaceType/arrays/pointers/unions).
 | --- | --- | --- |
 | func (`strings.Contains`) | `Symbol` → host decl: Kind/Name/Package + `Signature` synthesized from `BuiltinFunc.Target` (types only — no names, no Pos) | full decl: File/Pos/Doc + named params (SourceOfSrc) |
 | type (`strings.Builder`) | host decl: Kind/Name/Package only — `Fields`/`Methods` trap, `Def` leaks `*runtime.TypeDef` | full decl: Fields/Methods/Pos/Signature from GOROOT source (SourceOfStruct) |
-| method value (`r.Size`) | `SymbolOf` → host decl with `Package = nil` (ad-hoc builtin — owner lost); `PathOf` → nil | n/a — read the type's source-side method instead |
+| method value (`r.Size`) | host decl: Kind/Name + **Package (receiver's PkgPath), `Signature` (Recv + param/result types — no names), `Pos` (file:line from the declared method's Func PC)** — the bound value's own PC is a `reflect.methodValueCall` thunk | full decl via the type's source-side Methods |
 | intrinsic without `Target` (`strings.Compare`) | host decl; `Signature` traps | full signature from source |
 
 Bound File/Pos/Doc are therefore reachable wherever real source
@@ -512,8 +512,9 @@ exists — through `SourceOf`, never through the bound shadow.
   only the type arguments (Instantiation).
 - `Symbol` on an unknown name traps (MissingSymTrap).
 - `Signature` on an intrinsic without `Target` traps (HostSigTrap).
-- Host method values lose their owner: `SymbolOf` reports Kind/Name
-  with `Package = nil`, `PathOf` → nil (HostMethodSym).
+- Host method builtins keep `Kind = "host"` and `Doc = ""`, and
+  signature params are unnamed (reflect has no identifiers) — but
+  owner, position, and types now resolve (HostMethodSym).
 - `State` reflects how the package was reached: a `DirOf`-only load
   stops at `indexed`; a `SourceOf` package stays `indexed` (never
   initialized); the subject package flips to `ready` once `Value`
@@ -525,3 +526,19 @@ exists — through `SourceOf`, never through the bound shadow.
 `Import.Pos`/`Import.Name` aliasing (only Path is asserted), `Doc` on
 files (`File.Doc`), and error message text (only trap occurrence is
 asserted, not the message).
+
+### Post-audit fix: host method values
+
+- **`BuiltinFunc.Method *reflect.Method`** — the ad-hoc builtin
+  `memberOf` builds for `hostValue.name` now keeps the declared
+  method. The method *value*'s PC is a `reflect.methodValueCall`
+  trampoline (verified: resolves to `asm_amd64.s`), but
+  `Method.Func.Pointer()` still points at the real code —
+  `FuncForPC` gives `strings/reader.go:36` for `r.Size`.
+- **Owner from the receiver**: `Method.Type.In(0)` is the receiver;
+  peeling pointers yields `strings.Reader` → `PkgPath "strings"`, so
+  `OwnerOf`/`PathOf`/`SymbolIDOf` recover the bound package instead
+  of nil.
+- **Signature keeps the receiver on `Sig.Recv`**: script method
+  decls expose recv separately, and the host path mirrors that —
+  `Params` are `In(1..)`, results are `Out(..)`, types only.

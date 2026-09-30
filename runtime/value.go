@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -383,6 +384,11 @@ type BuiltinFunc struct {
 	// adapts — inspect.Signature reads reflect.TypeOf it for the real
 	// signature. Nil for intrinsics that declare no target.
 	Target any
+	// Method optionally holds the reflected method this builtin adapts
+	// when it was created for member access on a host value — inspect
+	// reads it for the owner (receiver package), signature, and
+	// definition position. Nil for plain builtins.
+	Method *reflect.Method
 }
 
 // VMCaller is the piece of the VM builtins need (kept narrow to avoid a

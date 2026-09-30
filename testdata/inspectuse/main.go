@@ -676,18 +676,43 @@ func BoundTypeSym() string {
 }
 
 // HostMethodSym: a reflective host method value yields a host decl
-// with no owning package (ad-hoc builtin — owner is lost).
+// whose owner, signature, and position are recovered through the
+// declared method's Func — the bound method value's own PC is a
+// reflect thunk (reflect.methodValueCall) that locates nothing.
 func HostMethodSym() string {
 	r := strings.NewReader("x")
 	s := inspect.SymbolOf(r.Size)
 	if s == nil || s.Kind != "host" || s.Name != "Size" {
 		return "bad host method sym"
 	}
-	if inspect.PathOf(r.Size) != nil {
-		return "expected nil owner"
+	if s.Package == nil || inspect.Path(s.Package) != "strings" {
+		return "bad host method owner"
+	}
+	if inspect.PathOf(r.Size) != "strings" {
+		return "bad host method path"
+	}
+	if !strings.Contains(inspect.Pos(s), "reader.go:") {
+		return "bad host method pos: " + inspect.Pos(s)
+	}
+	sig := inspect.Signature(s)
+	if sig == nil || sig.Recv == nil || sig.Recv.Type.Text != "*strings.Reader" {
+		return "bad host method recv"
+	}
+	if len(sig.Params) != 0 || len(sig.Results) != 1 ||
+		sig.Results[0].Type.Text != "int64" {
+		return "bad host method sig"
+	}
+	// a parameterized method recovers its param types too
+	s2 := inspect.SymbolOf(r.Seek)
+	sig2 := inspect.Signature(s2)
+	if sig2 == nil || len(sig2.Params) != 2 || len(sig2.Results) != 2 {
+		return "bad host method params"
+	}
+	if sig2.Params[0].Type.Text != "int64" || sig2.Params[1].Type.Text != "int" {
+		return "bad host method param types"
 	}
 	sid := inspect.SymbolIDOf(r.Size)
-	if sid == nil || sid.Name != "Size" || sid.PackagePath != "" {
+	if sid == nil || sid.Name != "Size" || sid.PackagePath != "strings" {
 		return "bad host method sid"
 	}
 	return "ok"
