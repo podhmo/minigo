@@ -162,7 +162,7 @@ Mapping by value kind:
 | `*ImportRef` / `*Package` | Materialize / self | — |
 | `*Function`, `*Closure` | `Fn.Pkg` | func decl (index lookup) |
 | `*BoundMethod` | `Fn.Pkg` | method decl via `TypeDeclInfo.Methods` |
-| `*TypeDef` | `Pkg` | type decl via `Types` |
+| `*TypeDef` | `Pkg` | type decl via `Types` — see Go-validity note |
 | `*Struct` (instance) | `Def.Pkg` | its `Def`'s type decl |
 | `*BuiltinFunc` | new `Pkg` field stamped at `Bind` | Kind "host" pseudo-symbol — `Signature`/`Pos` recovered via `Target` (below) |
 | `*GoValue` | `reflect.TypeOf(V).PkgPath()` → bound package | — |
@@ -183,6 +183,14 @@ struct *instances*: `runtime.Struct.Def` points back at the declaring
 `TypeDef`, so `OwnerOf(u)` on `u := model.SrcUser{...}` recovers
 "myapp/model" — reflect on a Go value can't do that (the type name
 survives only as a string, the file/decl is gone).
+
+Go-validity note: `inspect.OwnerOf(strings.Contains)` and
+`inspect.OwnerOf(u)` are valid Go expressions, but
+`inspect.OwnerOf(model.SrcUser)` — passing a bare type name — is not
+valid Go (a type is not an expression). It still parses and works in
+minigo (evaluates to the `*TypeDef`), and it is kept as a minigo
+extension because it is convenient — but scripts that must compile as
+real Go should pass instances (`SymbolOf(model.SrcUser{})`) instead.
 
 Cost caveat: evaluating `pkg.F` runs normal member semantics — under
 the default `GoCompatibleInit`, a source package's init fires on first
