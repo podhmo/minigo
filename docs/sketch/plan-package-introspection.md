@@ -56,7 +56,7 @@ it reports declarations as declared.
 
 | Layer | Entry points | Cost | Side effects |
 |---|---|---|---|
-| index | `Import`, `ImportDir`, `ImportFile`, `Current`, `Members`, `Decls`, `Files`, `Imports`, `PackageOf`, `PathOf`, `SymbolIDOf` | locate + parse + index | none |
+| index | `ImportPackage`, `ImportDir`, `ImportFile`, `Current`, `Members`, `Decls`, `Files`, `Imports`, `PackageOf`, `PathOf`, `SymbolIDOf` | locate + parse + index | none |
 | syntax | `Doc`, `Pos`, `Fields`, `Signature`, `TypeExpr` views, `SymbolID`, `Resolve`, `SameType`, `UsedSymbols` | AST reads + import-table lookup | none |
 | value | `Value`, `TypeOf`, `Kind`, `Methods` | materialize | `Value` on var/const runs `EnsureReady` (package init) |
 
@@ -71,9 +71,9 @@ init side effects. `TypeOf`/`Kind`/`Methods` materialize decls only
 ```go
 import "minigo.dev/inspect"   // stub package; engine binds intrinsics
 
-p := inspect.Import("strings")      // fake import: loadPath -> Indexed
-q := inspect.ImportDir("./app")     // dir entry point
-f := inspect.ImportFile("./schema.go") // single-file package (Engine.LoadFile)
+p := inspect.ImportPackage("strings")   // fake import: loadPath -> Indexed
+q := inspect.ImportDir("./app")          // dir entry point
+f := inspect.ImportFile("./schema.go")   // single-file package (Engine.LoadFile)
 self := inspect.Current()           // caller's *runtime.Package
 
 // symbol -> package: pass a gopls-completable reference, get the pkg
@@ -173,8 +173,8 @@ packages by name and printing Go fragments. The inspect layer covers
 each step:
 
 ```go
-src := inspect.Import("myapp/model")      // e.g. db models
-dst := inspect.Import("myapp/api")        // e.g. DTO structs
+src := inspect.ImportPackage("myapp/model")   // e.g. db models
+dst := inspect.ImportPackage("myapp/api")      // e.g. DTO structs
 
 for _, s := range inspect.Members(src) {
     if s.Kind != "type" { continue }
@@ -209,12 +209,13 @@ it into the script.
 
 ## Return-shape decisions
 
-- View structs (`Symbol`, `File`, `Field`, `TypeExpr`, `Import`) are
+- View structs (`Symbol`, `File`, `Field`, `TypeExpr`) are
   boxed as `*runtime.GoValue`: exported field access already works via
   the existing reflective member dispatch, and internals (raw
   `ast.Node`s) stay out of the FFI — `TypeExpr` keeps `ast.Expr` +
   declaring file as hidden context for `SymbolID`/`Resolve`.
-- `Import`, `Current`, `Symbol`-targeting and `Value`/`TypeOf` return
+- `ImportPackage`/`ImportDir`/`ImportFile`, `Current`, `PackageOf`
+  and `Value`/`TypeOf` return
   real runtime values (`*runtime.Package`, `*TypeDef`, `*Function`,
   `*runtime.SymbolID`-shaped struct) — they compose with everything a
   script can already do (`p.Sym`, `f(args)`, `T{...}`).
@@ -273,8 +274,10 @@ stdlib intrinsics introspect uniformly with source packages.
 - `SameType` semantics: SymbolID-equality is strict (declared-type
   identity). A looser mode (underlying-shape equality, alias
   transparency) may be needed for real codegen — start strict.
-- Should `inspect.Import` accept a file path too (unify `ImportFile`),
-  or keep file/dir/path as three explicit entries?
+- Should `ImportPackage` accept a file path too (unify `ImportFile`),
+  or keep file/dir/path as three explicit entries? (Named
+  `ImportPackage` rather than `Import` so it doesn't read as an
+  `import` statement.)
 - Interface decls: expose `MReqs`/`IEmbeds` as `Fields`-like views?
   Probably a `Methods(sym)` answer later.
 - Whether `:cd` ever gains a write mode (`:pin`/`:edit`) for
