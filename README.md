@@ -14,9 +14,10 @@ v, err := e.Run(ctx, "./script", "Main") // dir, file, or import path + entry fu
 - scripts are valid Go, verifiable with `gopls`/`go vet`; the compiler
   still never fails — unimplemented constructs emit a trap that fires
   only if execution reaches them, so everything else still runs
-- embeddable engine: virtual working directory, filesystem confinement
-  (`AllowedRoots`), host-surface filtering (`WithHostPolicy`), output
-  routing (`WithOutput`)
+- special forms ("quoted Go"): ordinary Go calls dispatch by canonical
+  symbol identity to host handlers that receive the call's syntax
+  instead of evaluating it — stub packages keep DSL scripts typed and
+  gopls-friendly (`examples/convert-define`, `examples/task-run`)
 - host boundary: Go values box with reflective method dispatch; stdlib
   intrinsics (`fmt`, `strings`, `os`, `encoding/…`) bind as packages
 - generics: monomorphize-on-use, including the Go 1.26/1.27 deltas —
