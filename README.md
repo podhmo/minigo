@@ -11,8 +11,9 @@ v, err := e.Run(ctx, "./script", "Main") // dir, file, or import path + entry fu
 
 - lazy per-function compilation: packages are indexed up front, each
   function is compiled to bytecode only when execution reaches it
-- the compiler never fails: unsupported constructs emit a trap that
-  fires only if reached, so partially-supported programs still run
+- scripts are valid Go, verifiable with `gopls`/`go vet`; the compiler
+  still never fails — unimplemented constructs emit a trap that fires
+  only if execution reaches them, so everything else still runs
 - embeddable engine: virtual working directory, filesystem confinement
   (`AllowedRoots`), host-surface filtering (`WithHostPolicy`), output
   routing (`WithOutput`)
