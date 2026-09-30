@@ -7,6 +7,13 @@
 ```shell
 make format
 ```
+
+静的解析（staticcheck）
+
+```shell
+make lint
+```
+
 全体のテスト
 
 ```shell
