@@ -163,7 +163,7 @@ Mapping by value kind:
 | `*Function`, `*Closure` | `Fn.Pkg` | func decl (index lookup) |
 | `*BoundMethod` | `Fn.Pkg` | method decl via `TypeDeclInfo.Methods` |
 | `*TypeDef` | `Pkg` | type decl via `Types` |
-| `*BuiltinFunc` | new `Pkg` field stamped at `Bind` | Kind "host" pseudo-symbol |
+| `*BuiltinFunc` | new `Pkg` field stamped at `Bind` | Kind "host" pseudo-symbol — `Signature`/`Pos` recovered via `Target` (below) |
 | `*GoValue` | `reflect.TypeOf(V).PkgPath()` → bound package | — |
 
 Locator vs symbol access use different names deliberately
@@ -246,11 +246,23 @@ it into the script.
 `Bind`-registered packages have no index and *shadow* source loading
 (`PackageOf("strings")` returns the bound package, not GOROOT
 source — same as execution). `Decls` falls back to `Globals.Names()`
-yielding `Kind:"host"` symbols (no Pos/Doc), so bound stdlib
-intrinsics introspect as the same object shape as source packages.
+yielding `Kind:"host"` symbols, so bound stdlib intrinsics
+introspect as the same object shape as source packages.
 `inspect.Standard(p)` reports the `PackageMeta.Standard` flag.
 Reaching a bound-shadowed package's real source is out of scope
 (a `SourceOf` bypass could be added if it turns out to matter).
+
+A bound `Fn` is an anonymous `func([]any)` adapter, so the real
+signature is unrecoverable from the bound value itself — and a PC
+taken on the adapter resolves to the closure's own symbol, not the
+target's. `BuiltinFunc` therefore grows an optional `Target any`
+field holding the underlying Go func value (one pointer slot; the
+callee is already linked in since the adapter calls it). For a host
+symbol, `Signature` synthesizes `Field` views from
+`reflect.TypeOf(Target)` (param/result names are absent — positions
+only) and `Pos` uses `runtime.FuncForPC(...).FileLine`.
+`Doc` stays empty. `Target` is nil for intrinsics that don't declare
+one; then `Signature`/`Pos` return nothing, same as a var/const.
 
 ## REPL: implicit access
 
