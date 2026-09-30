@@ -52,6 +52,19 @@ type Arr2 [2]int
 
 type Arr3 [3]int
 
+// ArrExpr spells the same length as Arr2 differently.
+type ArrExpr [1 + 1]int
+
+const sizeN = 2
+
+// ArrN uses a named constant for the same length.
+type ArrN [sizeN]int
+
+const sizeM = 4
+
+// ArrM uses a named constant for a different length.
+type ArrM [sizeM]int
+
 type hidden struct{ x int }
 
 var hiddenVar = 1

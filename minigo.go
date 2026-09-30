@@ -404,9 +404,11 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value) {
 		if e.hostPolicy != nil && !e.hostPolicy(importPath, k) {
 			continue
 		}
-		if bf, ok := v.(*runtime.BuiltinFunc); ok && bf.Pkg == nil {
+		if bf, ok := v.(*runtime.BuiltinFunc); ok && (bf.Pkg == nil || bf.Pkg.Path == p.Path) {
 			// the same BuiltinFunc may be bound under several paths
-			// (minigo.dev/x and its module path) — keep the first owner
+			// (minigo.dev/x and its module path): the first owner wins,
+			// but a re-Bind under the SAME path must re-point at the
+			// new live package object, not the stale one
 			bf.Pkg = p
 		}
 		p.Globals.Set(k, v)

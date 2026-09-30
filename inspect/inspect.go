@@ -19,6 +19,7 @@ import (
 	"go/printer"
 	"go/token"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/podhmo/minigo/index"
@@ -550,7 +551,7 @@ func (a *TypeExpr) SameType(b *TypeExpr, res Resolver) bool {
 	if a.Kind != b.Kind {
 		return false
 	}
-	if !sameShapeExtra(a.expr, b.expr) {
+	if !a.sameShapeExtra(b, res) {
 		return false
 	}
 	ca, cb := a.Children(), b.Children()
@@ -568,27 +569,136 @@ func (a *TypeExpr) SameType(b *TypeExpr, res Resolver) bool {
 // sameShapeExtra compares the node fields Children does not expose:
 // array length and channel direction ([2]int != [3]int,
 // chan T != <-chan T).
-func sameShapeExtra(a, b ast.Expr) bool {
-	switch ea := a.(type) {
+func (a *TypeExpr) sameShapeExtra(b *TypeExpr, res Resolver) bool {
+	switch ea := a.expr.(type) {
 	case *ast.ArrayType:
-		eb := b.(*ast.ArrayType)
-		return exprText(ea.Len) == exprText(eb.Len)
+		eb, ok := b.expr.(*ast.ArrayType)
+		if !ok {
+			return false
+		}
+		return sameArrayLen(a.withExpr(ea.Len), b.withExpr(eb.Len), res)
 	case *ast.ChanType:
-		return ea.Dir == b.(*ast.ChanType).Dir
+		eb, ok := b.expr.(*ast.ChanType)
+		return ok && ea.Dir == eb.Dir
 	}
 	return true
 }
 
-// exprText renders an expression the same way NewTypeExpr renders Text.
-func exprText(e ast.Expr) string {
+// withExpr views a sub-expression in the same file/package context.
+func (te *TypeExpr) withExpr(e ast.Expr) *TypeExpr {
 	if e == nil {
-		return ""
+		return nil
 	}
-	var b bytes.Buffer
-	if err := printer.Fprint(&b, token.NewFileSet(), e); err != nil {
-		return ""
+	return NewTypeExpr(e, te.file, te.pkg)
+}
+
+// sameArrayLen compares two array-length expressions: both nil is a
+// slice; otherwise the constant values when evaluatable ([1+1]int ==
+// [2]int), else the resolved symbol identity ([N]int), else spelling.
+func sameArrayLen(a, b *TypeExpr, res Resolver) bool {
+	if a == nil || b == nil {
+		return a == b
 	}
-	return b.String()
+	va, oka := lenConst(a, res)
+	vb, okb := lenConst(b, res)
+	if oka && okb {
+		return va == vb
+	}
+	if oka != okb {
+		return false
+	}
+	sa, oka2 := a.SymbolID()
+	sb, okb2 := b.SymbolID()
+	if oka2 && okb2 {
+		return sa == sb
+	}
+	if oka2 != okb2 {
+		return false
+	}
+	return a.Text == b.Text
+}
+
+// lenConst evaluates a length expression, chasing ident/selector
+// references into the const decl's value ([sizeN]int == [2]int when
+// sizeN = 2). Inherited iota specs stay unevaluatable.
+func lenConst(te *TypeExpr, res Resolver) (int64, bool) {
+	if v, ok := constInt(te.expr); ok {
+		return v, true
+	}
+	sid, ok := te.SymbolID()
+	if !ok || sid.PackagePath == BuiltinPackagePath {
+		return 0, false
+	}
+	sym, err := res(sid)
+	if err != nil || sym == nil || sym.decl == nil {
+		return 0, false
+	}
+	vs, ok := sym.decl.Spec.(*ast.ValueSpec)
+	if !ok || sym.decl.NameIdx >= len(vs.Values) {
+		return 0, false
+	}
+	return constInt(vs.Values[sym.decl.NameIdx])
+}
+
+// constInt evaluates small constant integer expressions used as array
+// lengths: literals, unary +/- and the arithmetic/bitwise ops. Idents
+// (named constants) and anything else report not-ok.
+func constInt(e ast.Expr) (int64, bool) {
+	switch x := e.(type) {
+	case *ast.BasicLit:
+		if x.Kind == token.INT {
+			v, err := strconv.ParseInt(x.Value, 0, 64)
+			return v, err == nil
+		}
+	case *ast.ParenExpr:
+		return constInt(x.X)
+	case *ast.UnaryExpr:
+		v, ok := constInt(x.X)
+		if !ok {
+			return 0, false
+		}
+		switch x.Op {
+		case token.ADD:
+			return v, true
+		case token.SUB:
+			return -v, true
+		case token.XOR:
+			return ^v, true
+		}
+	case *ast.BinaryExpr:
+		l, ok1 := constInt(x.X)
+		r, ok2 := constInt(x.Y)
+		if !ok1 || !ok2 {
+			return 0, false
+		}
+		switch x.Op {
+		case token.ADD:
+			return l + r, true
+		case token.SUB:
+			return l - r, true
+		case token.MUL:
+			return l * r, true
+		case token.QUO:
+			if r != 0 {
+				return l / r, true
+			}
+		case token.REM:
+			if r != 0 {
+				return l % r, true
+			}
+		case token.SHL:
+			return l << uint(r), true
+		case token.SHR:
+			return l >> uint(r), true
+		case token.AND:
+			return l & r, true
+		case token.OR:
+			return l | r, true
+		case token.XOR:
+			return l ^ r, true
+		}
+	}
+	return 0, false
 }
 
 // UsedSymbolsOf walks a file's AST for SelectorExpr on an import-local

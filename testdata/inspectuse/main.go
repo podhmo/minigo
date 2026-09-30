@@ -308,7 +308,7 @@ func RecursiveOrigin() string {
 	return "ok"
 }
 
-// ShapeDetails: [2]int and [3]int are not the same type.
+// ShapeDetails: [2]int and [3]int are not the same type; [1+1]int is.
 func ShapeDetails() string {
 	p := inspect.DirOf("./testdata/inspectpkg")
 	a2 := inspect.Symbol(p, "Arr2")
@@ -318,6 +318,18 @@ func ShapeDetails() string {
 	}
 	if !inspect.SameType(inspect.Def(a2), inspect.Def(a2)) {
 		return "self not equal"
+	}
+	ae := inspect.Symbol(p, "ArrExpr")
+	if !inspect.SameType(inspect.Def(a2), inspect.Def(ae)) {
+		return "[2]int != [1+1]int"
+	}
+	an := inspect.Symbol(p, "ArrN")
+	if !inspect.SameType(inspect.Def(a2), inspect.Def(an)) {
+		return "[2]int != [sizeN]int"
+	}
+	am := inspect.Symbol(p, "ArrM")
+	if inspect.SameType(inspect.Def(an), inspect.Def(am)) {
+		return "[sizeN]int == [sizeM]int"
 	}
 	return "ok"
 }
