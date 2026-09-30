@@ -2,6 +2,8 @@ package main
 
 // Go 1.26 / 1.27 language deltas.
 // Expected values verified against go1.27.1.
+// Generic-method fixtures live in testdata/go127 — method type
+// parameters do not parse under go1.26's go/parser.
 
 // ---- Go 1.26: new(expr) ----
 
@@ -83,67 +85,6 @@ type Plain int // no methods — cannot satisfy Adder[Plain]
 
 func SelfRefConsBad() int {
 	return int(addAll[Plain]([]Plain{1}))
-}
-
-// ---- Go 1.27: generic methods ----
-
-type List[E any] []E
-
-func (l List[E]) Reduce[R any](init R, f func(R, E) R) R {
-	acc := init
-	for _, e := range l {
-		acc = f(acc, e)
-	}
-	return acc
-}
-
-func GenMethodInfer() int {
-	l := List[int]{1, 2, 3}
-	return l.Reduce(0, func(a, b int) int { return a + b }) // 6
-}
-
-func GenMethodExplicit() int {
-	l := List[int]{1, 2}
-	return l.Reduce[int](5, func(a, b int) int { return a * b }) // 10
-}
-
-func GenMethodExpr() int {
-	l := List[int]{1, 2}
-	// method expression — the receiver is arg 0, R infers from init
-	return List[int].Reduce(l, 3, func(a, b int) int { return a + b*2 }) // 9
-}
-
-// a generic method on a non-generic type
-func (b Box) Apply[T any](v T, f func(T) T) T { return f(v) }
-
-func GenMethodConcreteRecv() int {
-	b := Box{}
-	return b.Apply(20, func(x int) int { return x + 1 }) + 1 // 22
-}
-
-// generic methods never satisfy an interface (Go 1.27 spec)
-type Caller interface {
-	Call(int) int
-}
-
-type Impl struct{}
-
-func (Impl) Call[T any](v T) T { return v }
-
-func GenMethodIfaceBad() int {
-	var c Caller = Impl{} // generic Call is not in Impl's method set
-	return c.Call(0)
-}
-
-// promoted generic method on an embedded generic type
-type ListWrap struct {
-	List[int]
-	Y int
-}
-
-func GenMethodPromoted() int {
-	w := ListWrap{List: List[int]{1, 2}}
-	return w.Reduce(0, func(a, b int) int { return a + b*2 }) // 6
 }
 
 // ---- Go 1.27: promoted-field composite literal keys ----
@@ -247,14 +188,6 @@ func InferArg() int {
 func InferReturn() int {
 	get := func() func(int) int { return Id }
 	return get()(7) + 35 // 42
-}
-
-func InferMethodAssign() int {
-	l := List[int]{3}
-	var g func(func(int, int) int, int) int = func(f func(int, int) int, n int) int {
-		return l.Reduce(n, f)
-	}
-	return g(func(a, b int) int { return a + b }, 10) // 13
 }
 
 // receiver renaming: `func (b Box2[U])` re-binds U to the instantiation
