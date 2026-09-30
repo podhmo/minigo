@@ -47,8 +47,8 @@ make test
 - 強制。ログにはlog/slogを使うこと。使うときはcontextを受け取るメソッドを使うこと（e.g. DebugContext()）
 - 禁止。logパッケージを使わないこと。
 - 強制。docs/*.mdは英語で書くこと
-- 強制。sketch/*.mdは英語で書くこと
-- 強制。sketch/ja/*.mdは日本語で書くこと
+- 強制。docs/sketch/*.mdは英語で書くこと
+- 強制。docs/sketch/ja/*.mdは日本語で書くこと
 - 強制。コミットメッセージは英語で書くこと
 - 禁止。GOPATHを変更しないでください。特にテストでos.Setenvなどするのは禁止します。
 

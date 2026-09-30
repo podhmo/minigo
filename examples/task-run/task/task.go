@@ -18,7 +18,7 @@ func Deps(deps ...any) { panic("minigo intrinsic") }
 
 // SerialDeps is Deps with serial intent documented — deps already run
 // sequentially under minigo (parallel deps need real goroutines; see
-// sketch/plan-task-runner.md).
+// docs/sketch/plan-task-runner.md).
 func SerialDeps(deps ...any) { panic("minigo intrinsic") }
 
 // F wraps a task function and its arguments so it can be passed to Deps —

@@ -1217,7 +1217,7 @@ typed-nil holes instead of bare `NIL`.
 ## 26. Round-7 notes: file-level entries and the first special-form consumer
 
 This round surveyed and executed the `convert-define` migration
-(`sketch/plan-minigo-convert-define.md`), which made minigo's §12 claims
+(`docs/sketch/plan-minigo-convert-define.md`), which made minigo's §12 claims
 pay off against a real tool.
 
 ### File-level entry points (out-of-plan addition)
@@ -1578,7 +1578,7 @@ until a measured cost shows up.
 ## 32. Round-13 notes: filesystem/exec intrinsics, per-call root checks, host-struct fields, virtual cwd
 
 The exercise for this round: build a mage/go-task-style task runner on top
-of minigo (`examples/task-run`, plan: `sketch/plan-task-runner.md`) and
+of minigo (`examples/task-run`, plan: `docs/sketch/plan-task-runner.md`) and
 implement whatever the runner's Taskfile needed. The gaps it forced:
 
 - **os file I/O, always bound, checked per call.** `Stat`, `Lstat`,

@@ -1,6 +1,6 @@
 # plan-task-runner.md — a mage/go-task style task runner on minigo
 
-Companion to `sketch/plan-minigo-vm.md`. This file plans the runner itself
+Companion to `docs/sketch/plan-minigo-vm.md`. This file plans the runner itself
 (`examples/task-run`); the minigo features the runner forced are recorded
 in plan-minigo-vm.md's round-13 notes and tracked in TODO.md.
 

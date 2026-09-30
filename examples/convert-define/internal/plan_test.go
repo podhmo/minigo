@@ -11,7 +11,7 @@ import (
 )
 
 // spyResolver records every package the minigo engine resolves. The plan's
-// core laziness claim (sketch/plan-minigo-vm.md §12.2) is that quoted
+// core laziness claim (docs/sketch/plan-minigo-vm.md §12.2) is that quoted
 // special calls never materialize what they reference — so on a fully
 // lazy run these lists stay empty.
 type spyResolver struct {

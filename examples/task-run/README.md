@@ -3,7 +3,7 @@
 A task runner (in the spirit of [mage](https://magefile.org) /
 [go-task/task](https://taskfile.dev)) where the Taskfile is a Go file
 interpreted by [`minigo`](../../). See
-[sketch/plan-task-runner.md](../../sketch/plan-task-runner.md) for the design.
+[docs/sketch/plan-task-runner.md](../../docs/sketch/plan-task-runner.md) for the design.
 
 ## Usage
 
