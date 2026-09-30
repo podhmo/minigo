@@ -458,3 +458,70 @@ revealed, in the order it was worked. Tests came first per item
   index entry in the entered package — the graft now falls back to
   the published `*runtime.TypeDef` in `Globals`, via a shared
   `engine.methodFunc` helper extracted from `typeDefOf`.
+
+## Round-3 notes: coverage audit — how much "where defined" survives
+
+A decl-kind × metadata matrix measured against the real API
+(testdata/inspectuse pins every row). "source" rows are packages
+reached via `PackageOf`/`DirOf`/`FileOf`/`SourceOf`/`Current` — they
+carry an index; "bound" rows are intrinsic-bound packages where the
+index is nil and only `Globals` exist.
+
+### Source packages — full metadata on every decl kind
+
+| decl kind | Package / File / Pos / Doc | type detail | pinned by |
+| --- | --- | --- | --- |
+| func | all | `Signature` — param names, types, per-param Pos | SymbolView, SignatureWalk, FieldPos |
+| method | all | `Signature` + `Recv` | MethodsWalk, SignatureWalk, DeclMeta |
+| struct | all | `Def` → StructType; `Fields` → Names/Tag/Embedded/Pos + `Type` | FieldsWalk, FieldPos, CompositeFields |
+| newtype (`MyInt`) | all | `Def` → base expr; `UnWrap`/`Origin` → underlying | TypeExprNav, OriginNav, NamedFieldType |
+| `*newtype` (`PInt`) | all | `Def` → StarExpr; `UnRef`/`Origin` | OriginNav, NamedFieldType |
+| interface | all | `Fields`/`MReqs`/`IEmbeds`; `~T` unions as children | IfaceMembers |
+| var / const | all | declared type unreachable — `Def` only accepts TypeSpec (limitation); value via `Value` | DeclMeta, VarValueRead |
+| generic decl (`Pair[T]`, `Reduce[T Number]`) | all | `TypeParams` → name + constraint (a named constraint keeps a resolvable SymbolID) | TypeParamsList |
+
+Field-level type chasing works for Ident (same-pkg decl or
+predeclared), SelectorExpr (via the file's import table), and every
+composite node `Children` understands (MapType/ChanType/FuncType/
+StructType/InterfaceType/arrays/pointers/unions).
+
+### Bound packages — host pseudo-decls; `SourceOf` restores full info
+
+| thing | direct (bound shadow) | via `SourceOf` |
+| --- | --- | --- |
+| func (`strings.Contains`) | `Symbol` → host decl: Kind/Name/Package + `Signature` synthesized from `BuiltinFunc.Target` (types only — no names, no Pos) | full decl: File/Pos/Doc + named params (SourceOfSrc) |
+| type (`strings.Builder`) | host decl: Kind/Name/Package only — `Fields`/`Methods` trap, `Def` leaks `*runtime.TypeDef` | full decl: Fields/Methods/Pos/Signature from GOROOT source (SourceOfStruct) |
+| method value (`r.Size`) | `SymbolOf` → host decl with `Package = nil` (ad-hoc builtin — owner lost); `PathOf` → nil | n/a — read the type's source-side method instead |
+| intrinsic without `Target` (`strings.Compare`) | host decl; `Signature` traps | full signature from source |
+
+Bound File/Pos/Doc are therefore reachable wherever real source
+exists — through `SourceOf`, never through the bound shadow.
+
+### Verified limitations (each pinned by a trap test)
+
+- `Def`/`Fields`/`Methods`/`MReqs` on a non-type or host decl traps
+  (TypeOfFuncTrap, MReqsStructTrap, DefVarTrap, BoundFieldTrap,
+  BoundMethodTrap — asserted Go-side via `e.Run` errors).
+- `Resolve`/`Origin`/`UnWrap`/`SameType` cannot descend into a bound
+  package: the resolver consults the canonical package (no index) and
+  traps — `no decl Builder in strings`. Field SymbolIDs such as
+  `strings.Builder` still form correctly; chasing them needs a
+  SourceOf-side lookup (ResolveBoundTrap).
+- `SymbolID` on an instantiated type (`Pair[int]` → IndexExpr)
+  returns nil — the generic origin isn't reachable; `Children` yields
+  only the type arguments (Instantiation).
+- `Symbol` on an unknown name traps (MissingSymTrap).
+- `Signature` on an intrinsic without `Target` traps (HostSigTrap).
+- Host method values lose their owner: `SymbolOf` reports Kind/Name
+  with `Package = nil`, `PathOf` → nil (HostMethodSym).
+- `State` reflects how the package was reached: a `DirOf`-only load
+  stops at `indexed`; a `SourceOf` package stays `indexed` (never
+  initialized); the subject package flips to `ready` once `Value`
+  triggers init (SourceOfStruct, VarValueRead — order-dependent in
+  the test list).
+
+### What's still not pinned
+
+`Import.Pos`/`Import.Name` aliasing (only Path is asserted), `Doc` on
+files (`File.Doc`), and error message text (only trap occurrence is
+asserted, not the message).

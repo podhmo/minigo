@@ -32,6 +32,20 @@ func TestInspect(t *testing.T) {
 		"TypeOfType",
 		"IfaceMembers",
 		"SourceOfSrc",
+		// coverage-gap pass — see the round-3 audit in
+		// docs/sketch/plan-package-introspection.md
+		"DeclMeta",
+		"FieldPos",
+		"PkgMeta", // asserts State=="indexed" — keep before VarValueRead
+		"CompositeFields",
+		"NamedFieldType",
+		"Instantiation",
+		"TypeParamsList",
+		"TypeOfNamed",
+		"BoundTypeSym",
+		"HostMethodSym",
+		"SourceOfStruct",
+		"VarValueRead", // flips the package State to "ready"
 	} {
 		if got := run(t, e, "./testdata/inspectuse", fn); got != "ok" {
 			t.Errorf("%s: %v", fn, got)
@@ -45,5 +59,18 @@ func TestInspect(t *testing.T) {
 	// MReqs on a non-interface decl must trap too
 	if _, err := e.Run(context.Background(), "./testdata/inspectuse", "MReqsStructTrap"); err == nil {
 		t.Error("MReqsStructTrap: expected trap for struct decl, got nil")
+	}
+	// remaining documented limitations must also trap, not misreport
+	for _, fn := range []string{
+		"DefVarTrap",       // Def is TypeSpec-only — var/const types unreachable
+		"ResolveBoundTrap", // the resolver cannot descend into a bound pkg
+		"MissingSymTrap",   // unknown symbol name
+		"BoundFieldTrap",   // bound type has no decl for Fields
+		"BoundMethodTrap",  // bound type has no index for Methods
+		"HostSigTrap",      // intrinsic without Target has no signature
+	} {
+		if _, err := e.Run(context.Background(), "./testdata/inspectuse", fn); err == nil {
+			t.Errorf("%s: expected trap, got nil", fn)
+		}
 	}
 }

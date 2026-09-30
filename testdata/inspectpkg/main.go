@@ -81,6 +81,26 @@ type Number interface {
 	~int | ~int64
 }
 
+// Rec exercises composite field shapes: map, chan, func, interface,
+// a named-type field, and a generic instantiation.
+type Rec struct {
+	Table map[string]int
+	Out   chan string
+	Fn    func(int) bool
+	If    Speaker
+	M     MyInt
+	IP    Pair[int]
+}
+
+// Pair is a generic type for TypeParams coverage.
+type Pair[T any] struct {
+	A T
+	B T
+}
+
+// Reduce is a generic function for TypeParams coverage.
+func Reduce[T Number](xs []T, init T) T { return init }
+
 type hidden struct{ x int }
 
 var hiddenVar = 1
