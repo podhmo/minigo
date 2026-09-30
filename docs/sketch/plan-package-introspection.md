@@ -163,6 +163,7 @@ Mapping by value kind:
 | `*Function`, `*Closure` | `Fn.Pkg` | func decl (index lookup) |
 | `*BoundMethod` | `Fn.Pkg` | method decl via `TypeDeclInfo.Methods` |
 | `*TypeDef` | `Pkg` | type decl via `Types` |
+| `*Struct` (instance) | `Def.Pkg` | its `Def`'s type decl |
 | `*BuiltinFunc` | new `Pkg` field stamped at `Bind` | Kind "host" pseudo-symbol — `Signature`/`Pos` recovered via `Target` (below) |
 | `*GoValue` | `reflect.TypeOf(V).PkgPath()` → bound package | — |
 
@@ -177,7 +178,11 @@ Note the Go wart this escapes: real Go can recover a function's
 package via `runtime.FuncForPC(reflect.ValueOf(f).Pointer())`, but a
 method *value*'s PC is a wrapper thunk — methods are unreachable that
 way. In minigo `BoundMethod` keeps the declaring `*Function`, so
-`SymbolOf`/`OwnerOf` cover methods for free.
+`SymbolOf`/`OwnerOf` cover methods for free. The same luck applies to
+struct *instances*: `runtime.Struct.Def` points back at the declaring
+`TypeDef`, so `OwnerOf(u)` on `u := model.SrcUser{...}` recovers
+"myapp/model" — reflect on a Go value can't do that (the type name
+survives only as a string, the file/decl is gone).
 
 Cost caveat: evaluating `pkg.F` runs normal member semantics — under
 the default `GoCompatibleInit`, a source package's init fires on first
