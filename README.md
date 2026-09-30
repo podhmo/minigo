@@ -13,7 +13,8 @@ A `minigo` CLI is included (`./cmd/minigo`): `minigo run <ref> [--entry F]`,
 `minigo repl`, `minigo vet <ref>`, `minigo gen-intrinsics`, or the
 `minigo <ref> [func]` shorthand. See `sketch/plan-minigo-vm.md` for the
 design, `TODO.md` for current coverage and remaining gaps, and
-`examples/task-run` for an embedding example.
+`examples/task-run` for an embedding example and `examples/convert-define`
+for a DSL tool built on special forms.
 
 ## Provenance
 
