@@ -10,7 +10,7 @@ import (
 	destination "example.com/m/sampledata/destination"
 	"example.com/m/sampledata/funcs"
 	source "example.com/m/sampledata/source"
-	"github.com/podhmo/go-scan/examples/convert/model"
+	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/model"
 )
 
 // convertSrcUserToDstUser converts source.SrcUser to destination.DstUser.

@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	goscan "github.com/podhmo/go-scan"
-	"github.com/podhmo/go-scan/examples/convert/model"
+	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/model"
+	goscan "github.com/podhmo/minigo/examples/convert-define/pkg/goscan"
 )
 
 func TestParser(t *testing.T) {

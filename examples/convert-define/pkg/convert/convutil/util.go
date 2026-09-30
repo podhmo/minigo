@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/podhmo/go-scan/examples/convert/model"
+	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/model"
 )
 
 func TimeToString(ctx context.Context, ec *model.ErrorCollector, t time.Time) string {

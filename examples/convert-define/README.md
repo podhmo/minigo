@@ -1,6 +1,6 @@
 # Go Type Converter (`examples/convert-define`)
 
-This directory contains `convert-define`, a command-line tool that automatically generates Go type conversion functions. It uses `go-scan` to parse a Go-based configuration file, understand the desired struct mappings, and then generate the necessary boilerplate code for converting one struct type to another.
+This directory contains `convert-define`, a command-line tool that automatically generates Go type conversion functions. It uses a vendored copy of `go-scan` (under `pkg/`) to parse a Go-based configuration file, understand the desired struct mappings, and then generate the necessary boilerplate code for converting one struct type to another.
 
 This tool provides a modern, IDE-friendly way to define conversions, replacing the older annotation-based approach.
 
@@ -30,10 +30,10 @@ Here is an example `definitions.go`:
 package main
 
 import (
-	"github.com/podhmo/go-scan/examples/convert/convutil"
-	"github.com/podhmo/go-scan/examples/convert/sampledata/destination"
-	"github.com/podhmo/go-scan/examples/convert/sampledata/funcs"
-	"github.com/podhmo/go-scan/examples/convert/sampledata/source"
+	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/convutil"
+	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/destination"
+	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/funcs"
+	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/source"
 
 	"github.com/podhmo/minigo/examples/convert-define/define"
 )
@@ -93,7 +93,7 @@ The public API is housed in the `github.com/podhmo/minigo/examples/convert-defin
 
 ## Role of `go-scan`
 
-`go-scan` is essential for this tool. It allows the parser to:
+`go-scan` (vendored under `pkg/`, see `pkg/SOURCE.md`) is essential for this tool. It allows the parser to:
 *   Read and understand the structure of Go types (structs, fields, etc.) **without compiling the code**.
 *   Analyze the Go code in your `definitions.go` file as an Abstract Syntax Tree (AST).
 *   Resolve type information across different packages, which is critical for handling complex models.
@@ -141,6 +141,8 @@ Controls the conversion of a specific field.
     go run github.com/podhmo/go-scan/examples/convert \
       -pkg "github.com/your/project/models" \
       -output "github.com/your/project/models/generated_converters.go"
+    # (the legacy annotation tool lives in the upstream go-scan repository; the
+    # converter libraries it shares with this tool are vendored under pkg/convert)
     ```
 
 </details>

@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	goscan "github.com/podhmo/go-scan"
-	"github.com/podhmo/go-scan/examples/convert/model"
-	"github.com/podhmo/go-scan/scanner"
 	"github.com/podhmo/minigo"
+	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/model"
+	goscan "github.com/podhmo/minigo/examples/convert-define/pkg/goscan"
+	"github.com/podhmo/minigo/examples/convert-define/pkg/scanner"
 	"github.com/podhmo/minigo/resolve"
 	"github.com/podhmo/minigo/runtime"
 )

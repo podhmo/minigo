@@ -55,4 +55,4 @@ make test
 # 補足情報
 
 - このリポジトリは github.com/podhmo/go-scan の `minigo2/` を `minigo` として独立させたものです。go-scan とは github.com/podhmo/go-scan のことで、トップレベルのパッケージそのものを指します。
-- 依存関係: go-scan へのモジュール依存はありません。locator だけ `pkg/locator` に vendoring しています(出所は `pkg/SOURCE.md` 参照)。
+- 依存関係: go-scan へのモジュール依存はありません。locator だけ `pkg/locator` に vendoring しています(出所は `pkg/SOURCE.md` 参照)。`examples/convert-define` も同様に、使っている go-scan のコードと `examples/convert` のライブラリを `examples/convert-define/pkg/` に vendoring しています(出所は `examples/convert-define/pkg/SOURCE.md` 参照)。
