@@ -320,7 +320,6 @@ type TypeDef struct {
 	FTags   map[string]string    // struct tags
 	Anon    ast.Expr             // underlying type AST (non-struct named types)
 	Methods map[string]*Function // lazily built method set
-	once    sync.Once
 
 	TParams      []string         // generic type parameter names (type Foo[T any] ...)
 	TConstraints []ast.Expr       // constraint expr per TParams entry (nil = unconstrained)

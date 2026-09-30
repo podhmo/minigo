@@ -1657,7 +1657,6 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 	kv := ins.B == 1
 	// pop typedef then elems? No: compiler emitted typedef first, then elems.
 	// stack: [typedef, e1, e2, ...] — typedef is BELOW elems.
-	elems := make([]runtime.Value, 0, n*2)
 	total := n
 	if kv {
 		total = n * 2
@@ -1838,7 +1837,6 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 	default:
 		f.trap("composite literal for kind %d", td.Kind)
 	}
-	_ = elems
 	return nil
 }
 

@@ -61,7 +61,7 @@ func genIntrinsics(ctx context.Context, args []string) error {
 			}
 			output = args[i]
 		case a == "-h" || a == "--help":
-			return fmt.Errorf("usage: minigo gen-intrinsics -output <dir> <pkg>...")
+			return fmt.Errorf("usage: minigo gen-intrinsics -output <dir> <pkg...>")
 		default:
 			refs = append(refs, a)
 		}

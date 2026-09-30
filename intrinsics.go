@@ -80,7 +80,7 @@ func (e *Engine) installStdlib() {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("errors.As needs 2 args")
 			}
-			for err := asErr(goNative(args[0])); err != nil; err = errors.Unwrap(err) {
+			if err := asErr(goNative(args[0])); err != nil {
 				if runtime.SetRef(args[1], errVal(err)) {
 					return true, nil
 				}
@@ -137,8 +137,9 @@ func (e *Engine) installStdlib() {
 		"IndexRune":    h.fn2("strings.IndexRune", func(a []any) (any, error) { return int64(strings.IndexRune(str(a[0]), runeOf(a[1]))), nil }),
 		"ContainsRune": h.fn2("strings.ContainsRune", func(a []any) (any, error) { return strings.ContainsRune(str(a[0]), runeOf(a[1])), nil }),
 		"ToTitle":      h.fn("strings.ToTitle", func(a []any) (any, error) { return strings.ToTitle(str(a[0])), nil }),
-		"Title":        h.fn("strings.Title", func(a []any) (any, error) { return strings.Title(str(a[0])), nil }),
-		"NewReader":    h.fn("strings.NewReader", func(a []any) (any, error) { return strings.NewReader(str(a[0])), nil }),
+		//lint:ignore SA1019 mirrors the deprecated stdlib symbol for script parity
+		"Title":     h.fn("strings.Title", func(a []any) (any, error) { return strings.Title(str(a[0])), nil }),
+		"NewReader": h.fn("strings.NewReader", func(a []any) (any, error) { return strings.NewReader(str(a[0])), nil }),
 	})
 	e.Bind("strconv", map[string]runtime.Value{
 		"Atoi":    h.fn("strconv.Atoi", func(a []any) (any, error) { return retErr2(strconv.Atoi(str(a[0]))) }),
