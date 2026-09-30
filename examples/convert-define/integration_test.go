@@ -8,8 +8,23 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/podhmo/minigo/examples/convert-define/pkg/scantest"
 )
+
+// writeFiles creates a temporary directory populated with the given files.
+func writeFiles(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for name, content := range files {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatalf("MkdirAll(%q): %v", filepath.Dir(path), err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatalf("WriteFile(%q): %v", path, err)
+		}
+	}
+	return dir
+}
 
 var update = flag.Bool("update", false, "update golden files")
 
@@ -19,21 +34,20 @@ func TestIntegration(t *testing.T) {
 	// - go.mod (for the module root)
 	// - source and destination struct files
 	// - helper packages (convutil, funcs)
-	// we can get these from the vendored `pkg/convert` library.
-	baseDir := filepath.Join("pkg", "convert")
-	sampleSrc, err := os.ReadFile(filepath.Join(baseDir, "sampledata", "source", "source.go"))
+	// we can get these from the library packages in this module.
+	sampleSrc, err := os.ReadFile(filepath.Join("sampledata", "source", "source.go"))
 	if err != nil {
 		t.Fatalf("reading source.go: %v", err)
 	}
-	sampleDst, err := os.ReadFile(filepath.Join(baseDir, "sampledata", "destination", "destination.go"))
+	sampleDst, err := os.ReadFile(filepath.Join("sampledata", "destination", "destination.go"))
 	if err != nil {
 		t.Fatalf("reading destination.go: %v", err)
 	}
-	convutil, err := os.ReadFile(filepath.Join(baseDir, "convutil", "util.go"))
+	convutil, err := os.ReadFile(filepath.Join("convutil", "util.go"))
 	if err != nil {
 		t.Fatalf("reading convutil/util.go: %v", err)
 	}
-	funcs, err := os.ReadFile(filepath.Join(baseDir, "sampledata", "funcs", "funcs.go"))
+	funcs, err := os.ReadFile(filepath.Join("sampledata", "funcs", "funcs.go"))
 	if err != nil {
 		t.Fatalf("reading funcs/funcs.go: %v", err)
 	}
@@ -71,8 +85,7 @@ func main() {
 		"sampledata/funcs/funcs.go":             string(funcs),
 	}
 
-	dir, cleanup := scantest.WriteFiles(t, files)
-	defer cleanup()
+	dir := writeFiles(t, files)
 
 	ctx := context.Background()
 	defineFile := filepath.Join(dir, "define.go")

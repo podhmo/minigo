@@ -10,11 +10,11 @@ import (
 	"errors"
 	"fmt"
 
-	convutil "github.com/podhmo/minigo/examples/convert-define/pkg/convert/convutil"
-	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/model"
-	destination "github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/destination"
-	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/funcs"
-	source "github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/source"
+	convutil "github.com/podhmo/minigo/examples/convert-define/convutil"
+	"github.com/podhmo/minigo/examples/convert-define/model"
+	destination "github.com/podhmo/minigo/examples/convert-define/sampledata/destination"
+	"github.com/podhmo/minigo/examples/convert-define/sampledata/funcs"
+	source "github.com/podhmo/minigo/examples/convert-define/sampledata/source"
 )
 
 // convertSrcUserToDstUser converts source.SrcUser to destination.DstUser.

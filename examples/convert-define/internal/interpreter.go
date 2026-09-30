@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/podhmo/minigo"
-	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/model"
+	"github.com/podhmo/minigo/examples/convert-define/model"
 	goscan "github.com/podhmo/minigo/examples/convert-define/pkg/goscan"
 	"github.com/podhmo/minigo/examples/convert-define/pkg/scanner"
 	"github.com/podhmo/minigo/resolve"

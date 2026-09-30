@@ -9,7 +9,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/model"
+	"github.com/podhmo/minigo/examples/convert-define/model"
 	goscan "github.com/podhmo/minigo/examples/convert-define/pkg/goscan"
 	"github.com/podhmo/minigo/examples/convert-define/pkg/scanner"
 )
@@ -23,7 +23,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/model"
+	"github.com/podhmo/minigo/examples/convert-define/model"
 	{{- range $path, $alias := .Imports }}
 	{{ $alias }} "{{ $path }}"
 	{{- end }}

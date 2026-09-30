@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/model"
-	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/destination"
-	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/source"
+	"github.com/podhmo/minigo/examples/convert-define/model"
+	"github.com/podhmo/minigo/examples/convert-define/sampledata/destination"
+	"github.com/podhmo/minigo/examples/convert-define/sampledata/source"
 )
 
 // UserIDToString converts user id from int64 to string with prefix

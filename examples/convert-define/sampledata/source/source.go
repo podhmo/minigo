@@ -2,12 +2,12 @@ package source
 
 import "time"
 
-// convert:import convutil "github.com/podhmo/minigo/examples/convert-define/pkg/convert/convutil"
-// convert:import funcs "github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/funcs"
+// convert:import convutil "github.com/podhmo/minigo/examples/convert-define/convutil"
+// convert:import funcs "github.com/podhmo/minigo/examples/convert-define/sampledata/funcs"
 // convert:rule "time.Time" -> "string", using=convutil.TimeToString
 // convert:rule "*time.Time" -> "string", using=convutil.PtrTimeToString
 
-// @derivingconvert("github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/destination.DstUser")
+// @derivingconvert("github.com/podhmo/minigo/examples/convert-define/sampledata/destination.DstUser")
 // convert:computed FullName = funcs.MakeFullName(src.FirstName, src.LastName)
 type SrcUser struct {
 	ID          int64 `convert:"UserID,using=funcs.UserIDToString"`
@@ -20,7 +20,7 @@ type SrcUser struct {
 	UpdatedAt   *time.Time
 }
 
-// @derivingconvert("github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/destination.DstAddress")
+// @derivingconvert("github.com/podhmo/minigo/examples/convert-define/sampledata/destination.DstAddress")
 type SrcAddress struct {
 	Street string `convert:"FullStreet"`
 	City   string `convert:"CityName"`
@@ -31,26 +31,26 @@ type SrcContact struct {
 	Phone *string
 }
 
-// @derivingconvert("github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/destination.DstInternalDetail")
+// @derivingconvert("github.com/podhmo/minigo/examples/convert-define/sampledata/destination.DstInternalDetail")
 type SrcInternalDetail struct {
 	Code        int    `convert:"ItemCode"`
 	Description string `convert:"LocalizedDesc,using=funcs.Translate"`
 }
 
-// @derivingconvert("github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/destination.DstOrder")
+// @derivingconvert("github.com/podhmo/minigo/examples/convert-define/sampledata/destination.DstOrder")
 type SrcOrder struct {
 	OrderID string    `convert:"ID"`
 	Amount  float64   `convert:"TotalAmount"`
 	Items   []SrcItem `convert:"LineItems"`
 }
 
-// @derivingconvert("github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/destination.DstItem")
+// @derivingconvert("github.com/podhmo/minigo/examples/convert-define/sampledata/destination.DstItem")
 type SrcItem struct {
 	SKU      string `convert:"ProductCode"`
 	Quantity int    `convert:"Count"`
 }
 
-// @derivingconvert("github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/destination.ComplexTarget")
+// @derivingconvert("github.com/podhmo/minigo/examples/convert-define/sampledata/destination.ComplexTarget")
 type ComplexSource struct {
 	Value       string
 	Ptr         *string
@@ -62,7 +62,7 @@ type SubSource struct {
 	Value int
 }
 
-// @derivingconvert("github.com/podhmo/minigo/examples/convert-define/pkg/convert/sampledata/destination.TargetWithMap")
+// @derivingconvert("github.com/podhmo/minigo/examples/convert-define/sampledata/destination.TargetWithMap")
 type SourceWithMap struct {
 	ValueMap    map[string]SubSource
 	PtrMap      map[string]*SubSource
