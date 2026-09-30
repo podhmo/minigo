@@ -141,7 +141,6 @@ minigo run ./app --entry F
 ## 既知の近似・限界（重要なもの）
 
 - `go`/`select`/チャネルは単一スレッド近似（同期実行、無限バッファ、ブロックは trap）。真の goroutine 並行はスコープ外。
-- `FindSymbolInPackage`（宣言1個だけの解決）は未実装 — `index.Build` がそもそも評価しないので差が小さい。
 - スクリプト→ホストの marshal は値コピー（`*Struct` 等を直接書き換える intrinsic は自前で書く）。
 - 名前解決は実行時 — 綴りミスのグローバルは実行時 trap（位置情報つき）。
 

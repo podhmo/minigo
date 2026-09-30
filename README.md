@@ -24,9 +24,3 @@ from `github.com/podhmo/go-scan` (main @ `87cffe1`). It was copied file-wise
 dependency is a vendored subset of go-scan's `locator` in `pkg/` (see
 `pkg/SOURCE.md`). The earlier tree-walking interpreter that used to live
 here was removed.
-
-## motivation
-
-https://x.com/podhmo/status/1837171945487700269
-
-https://zenn.dev/podhmo/scraps/5df9409602a845
