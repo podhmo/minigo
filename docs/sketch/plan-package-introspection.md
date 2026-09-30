@@ -262,8 +262,10 @@ source — same as execution). `Decls` falls back to `Globals.Names()`
 yielding `Kind:"host"` symbols, so bound stdlib intrinsics
 introspect as the same object shape as source packages.
 `inspect.Standard(p)` reports the `PackageMeta.Standard` flag.
-Reaching a bound-shadowed package's real source is out of scope
-(a `SourceOf` bypass could be added if it turns out to matter).
+`SourceOf(path)` is the documented bypass: for a bound path it locates
+and indexes the real source into a detached package (never published
+to `pkgs`/`byDir`, so the bound shadow keeps answering imports);
+for an unbound path it is `PackageOf`.
 
 A bound `Fn` is an anonymous `func([]any)` adapter, so the real
 signature is unrecoverable from the bound value itself — and a PC
@@ -286,10 +288,12 @@ one; then `Signature`/`Pos` return nothing, same as a var/const.
   `token.IsExported` gate — `cd` means "enter the package", so
   unexported members are visible (the key difference from `import .`).
 - `:cd` alone reports the current package; `:cd -` returns to `<repl>`.
-- **cd changes name resolution only.** `x := ...` still hoists into the
-  `<repl>` scratch package (option (a)); writing declarations *into*
-  the visited package is a later, opt-in command (risky: `engine.pkgs`
-  is shared, so mutating a Ready package affects every importer).
+- **cd changes name resolution only** — until `:pin` opts in to write
+  mode. Default `:cd` still hoists `x := ...` into the `<repl>` scratch
+  package; `:pin`/`Pin()` then publishes declarations into the visited
+  package's globals (risky by design: `engine.pkgs` is shared, so
+  mutating a Ready package affects every importer — the REPL's fresh
+  session engine confines it to this session).
 - `:ls [name]` — `Decls` of the current package, or `Fields`/`Methods`/
   `Signature` of a named symbol. CLI-side sugar over the same inspect
   intrinsics.
@@ -330,5 +334,19 @@ one; then `Signature`/`Pos` return nothing, same as a var/const.
   identity). A looser mode (underlying-shape equality, alias
   transparency) may be needed for real codegen — start strict.
 - Interface decls: expose `MReqs`/`IEmbeds` as `Methods`-like views?
+  — resolved: yes. `Fields` reads interface members too (a uniform
+  member view: method specs keep `Names` + FuncType `TypeExpr`,
+  embedded/constraint elements are `Embedded`), and `MReqs`/`IEmbeds`
+  split the two element kinds — names mirror `TypeDef.MReqs`/`IEmbeds`.
 - Whether `:cd` ever gains a write mode (`:pin`/`:edit`) for
-  session-scoped patching of a package's globals.
+  session-scoped patching of a package's globals. — resolved: `:pin`/
+  `:unpin`. `OpSetGlobal` only reaches the executing function's own
+  package, so patching works by *cell sharing*: `Pin` (after
+  `EnsureReady`) aliases the entered package's var cells into the repl
+  scope, hoists alias or publish fresh cells into `entered.Globals`,
+  func/type decls bind their materialized value in both scopes, and
+  method decls graft onto `Index.Types[recv].Methods` plus a typedef
+  eviction (method sets freeze at materialization). Decouple on unpin:
+  written names stay, borrowed names drop, pre-Pin repl cells get
+  private snapshots. `x = v` on a non-cell member (bound intrinsic,
+  func) stays a repl-local shadow — patching those needs `x := v`.

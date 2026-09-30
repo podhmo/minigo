@@ -39,7 +39,25 @@ type REPL struct {
 	// entered is the :cd target — a package whose members resolve
 	// unqualified through a pseudo dot-import injected at reload.
 	entered *runtime.Package
-	n       int
+	// writeMode (:pin) publishes each input's new declarations into the
+	// entered package's globals — session-scoped monkey-patching.
+	// sharedCells tracks repl names bound to the package's own cells so
+	// `x = v` writes through and Unpin/Leave can decouple; pinPre marks
+	// which shared names were already repl bindings before Pin (borrowed
+	// names are deleted on decouple, pre-existing ones snapshotted).
+	// pinnedDecls names the func/type decls published so far — reload's
+	// materialization eviction must skip them or `T` and `pkg.T` would
+	// diverge into different TypeDef identities.
+	writeMode   bool
+	sharedCells map[string]*runtime.Cell
+	pinPre      map[string]bool
+	pinnedDecls map[string]bool
+	// the current input's write-mode records: hoisted names to publish,
+	// func/type decl names, and method decls (receiver + name)
+	pendingWrite   []string
+	pendingDecls   []string
+	pendingMethods []methodPatch
+	n              int
 }
 
 // namedExpr pairs a hoisted name with an AST expression (a declared type
@@ -47,6 +65,13 @@ type REPL struct {
 type namedExpr struct {
 	name string
 	expr ast.Expr
+}
+
+// methodPatch pairs a receiver base name with a method name — a decl to
+// graft onto the entered package's type index.
+type methodPatch struct {
+	recv string
+	name string
 }
 
 // NewREPL creates a persistent REPL session on a fresh engine derived from
@@ -86,6 +111,9 @@ func (r *REPL) EvalLine(ctx context.Context, input string) (runtime.Value, error
 	r.pending = nil
 	r.pendingTyped = nil
 	r.pendingConsts = nil
+	r.pendingWrite = nil
+	r.pendingDecls = nil
+	r.pendingMethods = nil
 
 	// Snapshot the accumulated source so a post-accept failure can roll
 	// back exactly what this input appended.
@@ -103,6 +131,7 @@ func (r *REPL) EvalLine(ctx context.Context, input string) (runtime.Value, error
 		}
 		if step == "" {
 			r.sealConsts()
+			r.commitWrites()
 			return runtime.NIL, nil
 		}
 		return r.runStep(ctx, step)
@@ -127,6 +156,7 @@ func (r *REPL) EvalLine(ctx context.Context, input string) (runtime.Value, error
 	}
 	if step == "" {
 		r.sealConsts()
+		r.commitWrites()
 		return runtime.NIL, nil
 	}
 	return r.runStep(ctx, step)
@@ -180,6 +210,9 @@ func (r *REPL) rollbackSource(il, dl, sl int) {
 	r.pending = nil
 	r.pendingTyped = nil
 	r.pendingConsts = nil
+	r.pendingWrite = nil
+	r.pendingDecls = nil
+	r.pendingMethods = nil
 	_ = r.reload() // best effort; the original error is the one that matters
 }
 
@@ -237,7 +270,76 @@ func (r *REPL) runStep(ctx context.Context, name string) (runtime.Value, error) 
 		return nil, err
 	}
 	r.sealConsts()
+	r.commitWrites()
 	return v, nil
+}
+
+// commitWrites publishes a successful input's write-mode declarations
+// into the entered package. Hoisted names share their cell with the
+// package's globals so later reads and `x = v` writes flow both ways;
+// func and type decls bind their materialized value — the same object in
+// the repl scope, so `F` and `pkg.F` keep one identity for the current
+// generation; method decls graft onto the package's type index and the
+// materialized typedef is evicted so the next access rebuilds the
+// method set with the patch.
+func (r *REPL) commitWrites() {
+	p := r.entered
+	defer func() {
+		r.pendingWrite = nil
+		r.pendingDecls = nil
+		r.pendingMethods = nil
+	}()
+	if !r.writeMode || p == nil {
+		return
+	}
+	for _, n := range r.pendingWrite {
+		if gv, ok := r.pkg.Globals.Get(n); ok {
+			p.Globals.Set(n, gv)
+			if c, isCell := gv.(*runtime.Cell); isCell {
+				r.sharedCells[n] = c
+			}
+		}
+	}
+	for _, n := range r.pendingDecls {
+		d, err := r.engine.lookupDeclIn(r.pkg, n)
+		if err != nil || d == nil {
+			continue
+		}
+		v, err := r.engine.materialize(r.pkg, d)
+		if err != nil || v == nil || v == runtime.NIL {
+			continue
+		}
+		p.Globals.Set(n, v)
+		r.pkg.Globals.Set(n, v)
+		if r.pinnedDecls == nil {
+			r.pinnedDecls = map[string]bool{}
+		}
+		r.pinnedDecls[n] = true
+	}
+	for _, m := range r.pendingMethods {
+		if p.Index == nil {
+			continue // bound package: no type index to graft onto
+		}
+		td, ok := p.Index.Types[m.recv]
+		if !ok || td.Decl == nil {
+			continue // receiver type lives outside the entered package
+		}
+		src, ok := r.pkg.Index.Types[m.recv]
+		if !ok {
+			continue
+		}
+		d, ok := src.Methods[m.name]
+		if !ok {
+			continue
+		}
+		if td.Methods == nil {
+			td.Methods = map[string]*index.Decl{}
+		}
+		td.Methods[m.name] = d
+		// a materialized typedef froze its method set at build time —
+		// evict the cached value so the next Member rebuilds it patched
+		p.Globals.Delete(m.recv)
+	}
 }
 
 // acceptDecls folds top-level declarations into the REPL state and returns
@@ -257,11 +359,25 @@ func (r *REPL) acceptDecls(fset *token.FileSet, f *ast.File) (string, error) {
 				stepBody = append(stepBody, r.hoistSpecs(d)...)
 			case token.TYPE:
 				r.decls = append(r.decls, formatNode(fset, d))
+				if r.writeMode {
+					for _, spec := range d.Specs {
+						if ts, ok := spec.(*ast.TypeSpec); ok {
+							r.pendingDecls = append(r.pendingDecls, ts.Name.Name)
+						}
+					}
+				}
 			default:
 				return "", fmt.Errorf("repl: unsupported declaration: %s", d.Tok)
 			}
 		case *ast.FuncDecl:
 			r.decls = append(r.decls, formatNode(fset, d))
+			if r.writeMode {
+				if d.Recv == nil {
+					r.pendingDecls = append(r.pendingDecls, d.Name.Name)
+				} else if recv := index.ReceiverTypeName(d.Recv); recv != "" {
+					r.pendingMethods = append(r.pendingMethods, methodPatch{recv: recv, name: d.Name.Name})
+				}
+			}
 		case *ast.BadDecl:
 			return "", fmt.Errorf("repl: cannot parse declaration")
 		default:
@@ -356,15 +472,39 @@ func (r *REPL) acceptStmts(fset *token.FileSet, body []ast.Stmt) (string, error)
 // hoist registers name as a persistent package-global cell, preserving an
 // existing entry's value. Newly created cells are recorded in r.pending so
 // a failing initializer can roll them back.
+//
+// In write mode a name that already has a writable cell in the entered
+// package is *aliased*: the repl scope binds the package's own cell, so
+// `x = v` writes through to the package (OpSetGlobal can only reach the
+// executing function's package — sharing the cell is what makes package
+// vars patchable). Read-only cells (consts) and non-cell members are not
+// aliased — the former trap on assignment like Go, the latter take a
+// fresh cell that replaces the binding when committed.
 func (r *REPL) hoist(name string) {
 	if name == "_" {
 		return
+	}
+	if r.writeMode && r.entered != nil {
+		if gv, ok := r.entered.Globals.Get(name); ok {
+			if c, isCell := gv.(*runtime.Cell); isCell && !c.ReadOnly {
+				r.pkg.Globals.Set(name, c)
+				r.sharedCells[name] = c
+				r.pending = append(r.pending, name)
+				r.pendingWrite = append(r.pendingWrite, name)
+				return
+			}
+		}
 	}
 	if _, ok := r.pkg.Globals.Get(name); ok {
 		return
 	}
 	r.pending = append(r.pending, name)
-	r.pkg.Globals.Set(name, &runtime.Cell{Elem: runtime.NIL})
+	c := &runtime.Cell{Elem: runtime.NIL}
+	r.pkg.Globals.Set(name, c)
+	if r.writeMode && r.entered != nil {
+		r.sharedCells[name] = c
+		r.pendingWrite = append(r.pendingWrite, name)
+	}
 }
 
 // addStep emits `func __stepN() any { <body> }` and returns its name; it
@@ -424,10 +564,16 @@ func (r *REPL) reload() error {
 	// up the new bodies: resolution consults Globals before the index.
 	// Only decl names holding a bare decl value are evicted — hoisted
 	// cells and values assigned under non-decl names are untouched.
+	// Decls published into the entered package under :pin keep their
+	// shared binding: evicting would split `T` (fresh typedef) from
+	// `pkg.T` (the published one).
 	for _, d := range idx.Decls {
 		if gv, ok := p.Globals.Get(d.Name); ok {
 			switch gv.(type) {
 			case *runtime.Function, *runtime.TypeDef:
+				if r.pinnedDecls[d.Name] {
+					continue
+				}
 				p.Globals.Delete(d.Name)
 			}
 		}
@@ -468,6 +614,7 @@ func (r *REPL) reload() error {
 // inside, matching the inspect :cd story. ref is an import path
 // ("strings", "example.com/mod/pkg") or a directory ("./dir", "/abs/dir").
 func (r *REPL) Enter(ctx context.Context, ref string) (*runtime.Package, error) {
+	r.Unpin() // write mode is bound to the package it entered
 	p, err := r.loadRef(ctx, ref)
 	if err != nil {
 		return nil, err
@@ -485,8 +632,73 @@ func (r *REPL) Leave() error {
 	if r.entered == nil {
 		return nil
 	}
+	r.Unpin()
 	r.entered = nil
 	return r.reload()
+}
+
+// Pin turns on write mode for the entered package (:cd first): every
+// subsequent declaration lands in the package's globals instead of only
+// the scratch package — monkey-patching experiments per
+// docs/sketch/plan-package-introspection.md. The package is initialized
+// at Pin so its var cells exist to alias into the repl scope: `x = v` on
+// a package var then writes through. The package object is shared —
+// every importer in this engine's session sees the patch.
+func (r *REPL) Pin() error {
+	if r.entered == nil {
+		return fmt.Errorf("pin: not inside a package (:cd first)")
+	}
+	if r.writeMode {
+		return nil
+	}
+	if err := r.entered.EnsureReady(); err != nil {
+		return err
+	}
+	r.writeMode = true
+	r.sharedCells = map[string]*runtime.Cell{}
+	r.pinPre = map[string]bool{}
+	for _, name := range r.entered.Globals.Names() {
+		gv, _ := r.entered.Globals.Get(name)
+		c, ok := gv.(*runtime.Cell)
+		if !ok {
+			continue
+		}
+		_, r.pinPre[name] = r.pkg.Globals.Get(name)
+		r.pkg.Globals.Set(name, c)
+		r.sharedCells[name] = c
+	}
+	return nil
+}
+
+// Pinned reports whether write mode is on.
+func (r *REPL) Pinned() bool { return r.writeMode }
+
+// Unpin turns write mode off. What was written stays in the entered
+// package; the repl scope decouples — names it owned before Pin get
+// private snapshot cells, names borrowed from the package are dropped
+// (bare lookup falls back to the :cd dot-import).
+func (r *REPL) Unpin() {
+	if !r.writeMode {
+		return
+	}
+	r.writeMode = false
+	for name, c := range r.sharedCells {
+		gv, ok := r.pkg.Globals.Get(name)
+		if !ok || gv != c {
+			continue
+		}
+		if r.pinPre[name] {
+			r.pkg.Globals.Set(name, &runtime.Cell{Elem: c.Elem, Typ: c.Typ, ReadOnly: c.ReadOnly})
+		} else {
+			r.pkg.Globals.Delete(name)
+		}
+	}
+	r.sharedCells = nil
+	r.pinPre = nil
+	r.pinnedDecls = nil
+	r.pendingWrite = nil
+	r.pendingDecls = nil
+	r.pendingMethods = nil
 }
 
 // Current returns the :cd target package, or nil for plain <repl> scope.
@@ -543,6 +755,8 @@ func (r *REPL) List(ctx context.Context, ref string) ([]string, error) {
 		if v, ok := p.Globals.Get(name); ok {
 			if _, isCell := v.(*runtime.Cell); isCell {
 				out = append(out, fmt.Sprintf("var %s", name)) // hoisted repl name
+			} else if r.pinnedDecls[name] {
+				out = append(out, fmt.Sprintf("patch %s", name)) // decl published by :pin
 			} else if p.Index == nil || p.Index.Decls == nil {
 				out = append(out, fmt.Sprintf("host %s", name))
 			}

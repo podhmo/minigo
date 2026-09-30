@@ -38,6 +38,12 @@ func (e *Engine) installInspect() {
 			}
 			return e.loadPath(context.Background(), str(runtime.Unwrap(args[0])))
 		}),
+		"SourceOf": bf("SourceOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, argerr("SourceOf", "one path string")
+			}
+			return e.sourceOf(context.Background(), str(runtime.Unwrap(args[0])))
+		}),
 		"DirOf": bf("DirOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("DirOf", "one dir string")
@@ -283,6 +289,28 @@ func (e *Engine) installInspect() {
 				return nil, err
 			}
 			return boxedSlice(ms), nil
+		}),
+		"MReqs": bf("MReqs", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			s, err := declViewOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			fs, err := xinspect.MReqsOf(s)
+			if err != nil {
+				return nil, err
+			}
+			return boxedSlice(fs), nil
+		}),
+		"IEmbeds": bf("IEmbeds", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			s, err := declViewOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			es, err := xinspect.IEmbedsOf(s)
+			if err != nil {
+				return nil, err
+			}
+			return boxedSlice(es), nil
 		}),
 		"Signature": bf("Signature", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])

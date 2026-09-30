@@ -49,6 +49,7 @@ type Engine struct {
 	byDir map[string]*runtime.Package // synthetic packages by dir
 	files map[string]*runtime.Package // single-file packages by abs path
 	binds map[string]*runtime.Package // host-bound packages (sessions inherit)
+	srcs  map[string]*runtime.Package // source packages behind bound paths (inspect.SourceOf)
 }
 
 // Option configures an Engine.
@@ -142,6 +143,7 @@ func NewEngine(startDir string, opts ...Option) *Engine {
 		byDir:    map[string]*runtime.Package{},
 		files:    map[string]*runtime.Package{},
 		binds:    map[string]*runtime.Package{},
+		srcs:     map[string]*runtime.Package{},
 		specials: map[runtime.SymbolID]runtime.SpecialFunc{},
 	}
 	for _, o := range opts {
@@ -203,6 +205,7 @@ func (e *Engine) NewSession() *Engine {
 		byDir:      map[string]*runtime.Package{},
 		files:      map[string]*runtime.Package{},
 		binds:      map[string]*runtime.Package{},
+		srcs:       map[string]*runtime.Package{},
 	}
 	s.builtins = builtins(s)
 	s.vmm = s.newVM()
@@ -462,6 +465,54 @@ func (e *Engine) loadDir(ctx context.Context, dir string) (*runtime.Package, err
 		return nil, fmt.Errorf("resolve dir %q: %w", dir, err)
 	}
 	return e.buildPackage(meta)
+}
+
+// sourceOf loads the source behind an import path, bypassing a bound
+// shadow (inspect.SourceOf): Bind-registered packages answer member
+// lookups through e.pkgs, so PackageOf("strings") yields the bound
+// object whose index is nil. The source package is built into a private
+// cache — never e.pkgs or e.byDir — so the bound package keeps answering
+// real imports. For an unbound path there is nothing to bypass: the
+// canonical package is returned.
+func (e *Engine) sourceOf(ctx context.Context, path string) (*runtime.Package, error) {
+	if _, bound := e.binds[path]; !bound {
+		return e.loadPath(ctx, path)
+	}
+	e.mu.Lock()
+	if p, ok := e.srcs[path]; ok {
+		e.mu.Unlock()
+		return p, nil
+	}
+	e.mu.Unlock()
+	if e.resolver == nil {
+		return nil, fmt.Errorf("minigo: no resolver configured; cannot load source of %q", path)
+	}
+	meta, err := e.resolver.Locate(ctx, "", path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve %q: %w", path, err)
+	}
+	p := e.newPackage(meta.ImportPath, meta.Name, meta.Dir)
+	p.Standard = meta.Standard
+	var files []*syntax.File
+	for _, f := range meta.GoFiles {
+		sf, err := syntax.ParseFile(e.fset, f, nil)
+		if err != nil {
+			p.State = runtime.Failed
+			return nil, fmt.Errorf("parse %s: %w", f, err)
+		}
+		files = append(files, sf)
+	}
+	if err := e.indexFiles(p, files); err != nil {
+		p.State = runtime.Failed
+		return nil, err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if q, ok := e.srcs[path]; ok {
+		return q, nil
+	}
+	e.srcs[path] = p
+	return p, nil
 }
 
 // buildPackage runs the pipeline Locate->Parse->Index for one package.

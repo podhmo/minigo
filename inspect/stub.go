@@ -11,6 +11,15 @@ import "github.com/podhmo/minigo/runtime"
 // PackageOf loads a package by import path (bound or source).
 func PackageOf(path string) *runtime.Package { panic("minigo intrinsic") }
 
+// SourceOf loads the source package behind an import path, bypassing a
+// bound shadow — stdlib sources stay inspectable where PackageOf would
+// return the bound object (a bound package has no index; its Decls are
+// host pseudo-decls). For an unbound path it is exactly PackageOf.
+// Value-layer access on real GOROOT source may still trap on constructs
+// the interpreter does not cover; the index and syntax layers are the
+// intended use.
+func SourceOf(path string) *runtime.Package { panic("minigo intrinsic") }
+
 // DirOf loads a package by directory.
 func DirOf(dir string) *runtime.Package { panic("minigo intrinsic") }
 
@@ -53,11 +62,21 @@ func Doc(s *Decl) string { panic("minigo intrinsic") }
 // Pos returns a symbol's "file.go:line:col" position.
 func Pos(s *Decl) string { panic("minigo intrinsic") }
 
-// Fields returns the declared fields of a struct type symbol.
+// Fields returns the declared fields of a struct type symbol, or the
+// member elements of an interface type symbol (named method specs and
+// embedded/constraint elements).
 func Fields(s *Decl) []*Field { panic("minigo intrinsic") }
 
 // Methods returns the method decls of a type symbol.
 func Methods(s *Decl) []*Decl { panic("minigo intrinsic") }
+
+// MReqs returns the named member requirements of an interface type
+// symbol — the method specs; embedded/constraint elements are skipped.
+func MReqs(s *Decl) []*Field { panic("minigo intrinsic") }
+
+// IEmbeds returns the embedded elements of an interface type symbol —
+// embedded interfaces and constraint elements (~T, unions).
+func IEmbeds(s *Decl) []*TypeExpr { panic("minigo intrinsic") }
 
 // Signature returns a func/method's {Recv, Params, Results}.
 func Signature(s *Decl) *Sig { panic("minigo intrinsic") }

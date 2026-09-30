@@ -253,8 +253,11 @@ func boxFields(fs []*Field) *runtime.Slice {
 	return &runtime.Slice{Elems: xs}
 }
 
-// FieldsOf returns the declared fields of a struct type symbol. Named
-// non-struct types and non-type symbols report an error — call Def and
+// FieldsOf returns the declared fields of a struct type symbol, or the
+// member elements of an interface type symbol: method specs carry their
+// names and the signature as a FuncType TypeExpr, while embedded and
+// constraint elements (~T, unions) come back Embedded with the element
+// expression as Type. Other symbols report an error — call Def and
 // navigate the TypeExpr when the spelling matters.
 func FieldsOf(s *Decl) ([]*Field, error) {
 	if s.decl == nil {
@@ -264,11 +267,65 @@ func FieldsOf(s *Decl) ([]*Field, error) {
 	if !ok {
 		return nil, fmt.Errorf("inspect.Fields: %s is not a type", s.Name)
 	}
-	st, ok := ts.Type.(*ast.StructType)
-	if !ok {
-		return nil, fmt.Errorf("inspect.Fields: %s is not a struct type", s.Name)
+	switch t := ts.Type.(type) {
+	case *ast.StructType:
+		return fieldList(t.Fields, s.file, s.Package), nil
+	case *ast.InterfaceType:
+		return fieldList(t.Methods, s.file, s.Package), nil
 	}
-	return fieldList(st.Fields, s.file, s.Package), nil
+	return nil, fmt.Errorf("inspect.Fields: %s is not a struct or interface type", s.Name)
+}
+
+// MReqsOf returns the named member requirements of an interface type
+// symbol — the method specs, each Field carrying its name and signature
+// (a FuncType TypeExpr). Embedded and constraint elements are skipped;
+// IEmbeds covers them. Non-interface symbols report an error.
+func MReqsOf(s *Decl) ([]*Field, error) {
+	it, err := ifaceOf("MReqs", s)
+	if err != nil {
+		return nil, err
+	}
+	var out []*Field
+	for _, fv := range fieldList(it.Methods, s.file, s.Package) {
+		if !fv.Embedded {
+			out = append(out, fv)
+		}
+	}
+	return out, nil
+}
+
+// IEmbedsOf returns the embedded elements of an interface type symbol —
+// embedded interface names and constraint elements (~T, union
+// expressions) as their written TypeExprs. Non-interface symbols
+// report an error.
+func IEmbedsOf(s *Decl) ([]*TypeExpr, error) {
+	it, err := ifaceOf("IEmbeds", s)
+	if err != nil {
+		return nil, err
+	}
+	var out []*TypeExpr
+	for _, fv := range fieldList(it.Methods, s.file, s.Package) {
+		if fv.Embedded {
+			out = append(out, fv.Type)
+		}
+	}
+	return out, nil
+}
+
+// ifaceOf unwraps an interface type decl.
+func ifaceOf(op string, s *Decl) (*ast.InterfaceType, error) {
+	if s.decl == nil {
+		return nil, fmt.Errorf("inspect.%s: host symbol %s has no declaration", op, s.Name)
+	}
+	ts, ok := s.decl.Spec.(*ast.TypeSpec)
+	if !ok {
+		return nil, fmt.Errorf("inspect.%s: %s is not a type", op, s.Name)
+	}
+	it, ok := ts.Type.(*ast.InterfaceType)
+	if !ok {
+		return nil, fmt.Errorf("inspect.%s: %s is not an interface type", op, s.Name)
+	}
+	return it, nil
 }
 
 // MethodsOf returns the method decls of a type symbol.

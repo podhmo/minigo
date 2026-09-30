@@ -65,6 +65,22 @@ const sizeM = 4
 // ArrM uses a named constant for a different length.
 type ArrM [sizeM]int
 
+// Speaker is a small interface with one named requirement.
+type Speaker interface {
+	Speak() string
+}
+
+// Talker embeds Speaker and adds a named method spec.
+type Talker interface {
+	Speaker
+	Talk(msg string) error
+}
+
+// Number is a constraint interface — type elements only.
+type Number interface {
+	~int | ~int64
+}
+
 type hidden struct{ x int }
 
 var hiddenVar = 1

@@ -380,6 +380,111 @@ func TypeOfType() string {
 	return "ok"
 }
 
+// IfaceMembers: interface decls expose member views — Fields covers
+// method specs and embedded elements; MReqs/IEmbeds split them.
+func IfaceMembers() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	t := inspect.Symbol(p, "Talker")
+	fs := inspect.Fields(t)
+	if len(fs) != 2 {
+		return "want 2 members"
+	}
+	if !fs[0].Embedded || fs[0].Type.Text != "Speaker" {
+		return "bad embed member: " + fs[0].Type.Text
+	}
+	if fs[1].Embedded || fs[1].Names[0] != "Talk" || fs[1].Type.Kind != "FuncType" {
+		return "bad method member"
+	}
+	// MReqs: named method specs only
+	reqs := inspect.MReqs(t)
+	if len(reqs) != 1 || reqs[0].Names[0] != "Talk" {
+		return "bad mreqs"
+	}
+	// a method spec's FuncType children are its param then result types
+	kids := inspect.Children(reqs[0].Type)
+	if len(kids) != 2 || kids[0].Text != "string" || kids[1].Text != "error" {
+		return "bad sig children"
+	}
+	// IEmbeds: the embedded interface name, resolvable to its decl
+	emb := inspect.IEmbeds(t)
+	if len(emb) != 1 || emb[0].Text != "Speaker" {
+		return "bad iembeds"
+	}
+	sid := inspect.SymbolID(emb[0])
+	if sid == nil || sid.Name != "Speaker" || !strings.HasSuffix(sid.PackagePath, "inspectpkg") {
+		return "bad embed sid"
+	}
+	d := inspect.Resolve(emb[0])
+	if d == nil || d.Name != "Speaker" || d.Kind != "type" {
+		return "bad embed resolve"
+	}
+	// a constraint interface has no named requirements; its union is
+	// one embedded element with the ~terms as children
+	n := inspect.Symbol(p, "Number")
+	if len(inspect.MReqs(n)) != 0 {
+		return "mreqs on constraint"
+	}
+	ne := inspect.IEmbeds(n)
+	if len(ne) != 1 || ne[0].Kind != "BinaryExpr" {
+		return "bad union embed"
+	}
+	elts := inspect.Children(ne[0])
+	if len(elts) != 2 || elts[0].Text != "~int" || elts[1].Text != "~int64" {
+		return "bad union children"
+	}
+	return "ok"
+}
+
+// MReqsStructTrap: MReqs on a non-interface decl traps (asserted
+// Go-side — scripts cannot catch intrinsic errors).
+func MReqsStructTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	s := inspect.Symbol(p, "User")
+	if inspect.MReqs(s) != nil {
+		return "expected trap"
+	}
+	return "swallowed"
+}
+
+// SourceOfSrc: a bound-shadowed path still yields its GOROOT source —
+// real decls where PackageOf returns host pseudo-decls.
+func SourceOfSrc() string {
+	src := inspect.SourceOf("strings")
+	if src == nil {
+		return "nil source pkg"
+	}
+	if inspect.Path(src) != "strings" || !inspect.Standard(src) {
+		return "bad source meta"
+	}
+	// the source package indexes real decls with names and signatures
+	d := inspect.Symbol(src, "Contains")
+	if d == nil || d.Kind != "func" {
+		return "bad source decl kind"
+	}
+	sig := inspect.Signature(d)
+	if sig == nil || len(sig.Params) != 1 || len(sig.Results) != 1 {
+		return "bad source sig"
+	}
+	// `func Contains(s, substr string) bool` — one param field, two names
+	if sig.Params[0].Names[0] != "s" || sig.Params[0].Names[1] != "substr" {
+		return "source sig lost param names"
+	}
+	// the bound shadow still answers the canonical lookup
+	bound := inspect.PackageOf("strings")
+	if bound == src {
+		return "SourceOf leaked into pkgs"
+	}
+	if inspect.Symbol(bound, "Contains").Kind != "host" {
+		return "bound shadow broken"
+	}
+	// an unbound path returns the canonical package itself
+	p := inspect.SourceOf("github.com/podhmo/minigo/testdata/inspectpkg")
+	if p != inspect.PackageOf("github.com/podhmo/minigo/testdata/inspectpkg") {
+		return "unbound SourceOf should be canonical"
+	}
+	return "ok"
+}
+
 // BoundDecls: a bound package enumerates as host pseudo-symbols.
 func BoundDecls() string {
 	p := inspect.PackageOf("strings")

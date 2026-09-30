@@ -24,7 +24,7 @@ v, err := e.Run(ctx, "./script", "Main") // dir, file, or import path + entry fu
   `new(expr)`, self-referential constraints, generic methods,
   promoted-field literal keys, generalized func-type inference
 - introspection: `minigo/inspect` exposes packages, decls, type
-  expressions and values to scripts; the REPL has `:cd`/`:ls`
+  expressions and values to scripts; the REPL has `:cd`/`:ls`/`:pin`
 - a Go subset, not full Go — e.g. channels/`select`/`go` model a
   documented single-thread approximation, not real concurrency
   (`TODO.md` tracks coverage and gaps)
