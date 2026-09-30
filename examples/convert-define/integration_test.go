@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/podhmo/go-scan/scantest"
+	"github.com/podhmo/minigo/examples/convert-define/pkg/scantest"
 )
 
 var update = flag.Bool("update", false, "update golden files")
@@ -19,8 +19,8 @@ func TestIntegration(t *testing.T) {
 	// - go.mod (for the module root)
 	// - source and destination struct files
 	// - helper packages (convutil, funcs)
-	// we can get these from the `examples/convert` directory.
-	baseDir := filepath.Join("testdata", "convert")
+	// we can get these from the vendored `pkg/convert` library.
+	baseDir := filepath.Join("pkg", "convert")
 	sampleSrc, err := os.ReadFile(filepath.Join(baseDir, "sampledata", "source", "source.go"))
 	if err != nil {
 		t.Fatalf("reading source.go: %v", err)

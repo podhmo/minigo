@@ -7,10 +7,10 @@ import (
 	"log/slog"
 	"os"
 
-	goscan "github.com/podhmo/go-scan"
-	"github.com/podhmo/go-scan/examples/convert/generator"
-	"github.com/podhmo/go-scan/scanner"
 	"github.com/podhmo/minigo/examples/convert-define/internal"
+	"github.com/podhmo/minigo/examples/convert-define/pkg/convert/generator"
+	goscan "github.com/podhmo/minigo/examples/convert-define/pkg/goscan"
+	"github.com/podhmo/minigo/examples/convert-define/pkg/scanner"
 	"golang.org/x/tools/imports"
 )
 

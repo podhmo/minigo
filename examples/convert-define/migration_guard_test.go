@@ -12,12 +12,12 @@ import (
 
 // TestNoMinigoV1Dependency is the dependency-guard half of the "convert-define
 // on minigo" acceptance: after the migration no Go source in this module may
-// import the v1 interpreter (github.com/podhmo/go-scan/minigo and any
-// subpackage), and at least one file must import the rebooted interpreter
-// (github.com/podhmo/minigo) — otherwise the check would also pass on a tree
-// that uses neither.
+// import github.com/podhmo/go-scan or any of its subpackages (the go-scan
+// sources it needs are vendored under pkg/), and at least one file must
+// import the rebooted interpreter (github.com/podhmo/minigo) — otherwise the
+// check would also pass on a tree that uses neither.
 func TestNoMinigoV1Dependency(t *testing.T) {
-	const v1Prefix = "github.com/podhmo/go-scan/minigo"
+	const goScanModule = "github.com/podhmo/go-scan"
 	const interpImport = "github.com/podhmo/minigo"
 
 	fset := token.NewFileSet()
@@ -44,8 +44,8 @@ func TestNoMinigoV1Dependency(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if p == v1Prefix || strings.HasPrefix(p, v1Prefix+"/") {
-				t.Errorf("%s: imports v1 minigo %q", path, p)
+			if p == goScanModule || strings.HasPrefix(p, goScanModule+"/") {
+				t.Errorf("%s: imports go-scan %q", path, p)
 			}
 			if p == interpImport || strings.HasPrefix(p, interpImport+"/") {
 				usesInterp = true

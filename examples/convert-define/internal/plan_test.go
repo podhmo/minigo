@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	goscan "github.com/podhmo/go-scan"
+	goscan "github.com/podhmo/minigo/examples/convert-define/pkg/goscan"
 	"github.com/podhmo/minigo/resolve"
 )
 

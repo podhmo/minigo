@@ -1,0 +1,32 @@
+name: Format Code
+
+on:
+  workflow_dispatch:
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Run make format
+        run: make format
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.CREATE_PULL_REQUEST }}
+          commit-message: "style: apply 'make format'"
+          title: "style: apply 'make format'"
+          body: "Automated formatting by 'make format'"
+          branch: "automation/format"
+          base: ${{ github.head_ref }}
+          delete-branch: true
+          labels: "automated-pr"
