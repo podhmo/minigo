@@ -229,6 +229,10 @@ func OwnerChain() string {
 	if inspect.PathOf(subj.User{}) != inspect.Path(subj) {
 		return "bad inst owner"
 	}
+	// an intrinsic bound under two paths keeps its first owner
+	if inspect.PathOf(inspect.PackageOf) != "minigo.dev/inspect" {
+		return "bad alias owner: " + inspect.PathOf(inspect.PackageOf)
+	}
 	return "ok"
 }
 
@@ -288,6 +292,77 @@ func ValueLayer() string {
 	u := inspect.Symbol(p, "User")
 	td := inspect.TypeOf(u)
 	if td == nil {
+		return "nil typedef"
+	}
+	return "ok"
+}
+
+// RecursiveOrigin: type Node *Node terminates instead of looping.
+func RecursiveOrigin() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	n := inspect.Symbol(p, "Node")
+	o := inspect.Origin(inspect.Def(n))
+	if o.Text != "Node" {
+		return "bad recursive origin: " + o.Text
+	}
+	return "ok"
+}
+
+// ShapeDetails: [2]int and [3]int are not the same type.
+func ShapeDetails() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	a2 := inspect.Symbol(p, "Arr2")
+	a3 := inspect.Symbol(p, "Arr3")
+	if inspect.SameType(inspect.Def(a2), inspect.Def(a3)) {
+		return "array lengths confused"
+	}
+	if !inspect.SameType(inspect.Def(a2), inspect.Def(a2)) {
+		return "self not equal"
+	}
+	return "ok"
+}
+
+// MethodValueSym: SymbolOf on a bound method finds the method decl.
+func MethodValueSym() string {
+	u := subj.User{Name: "x"}
+	s := inspect.SymbolOf(u.Greet)
+	if s == nil || s.Kind != "method" || s.Name != "Greet" {
+		return "method value not resolved"
+	}
+	if inspect.PathOf(u.Greet) != inspect.Path(subj) {
+		return "bad method owner"
+	}
+	return "ok"
+}
+
+// HostPtrOwner: OwnerOf on a host pointer finds the element package.
+func HostPtrOwner() string {
+	r := strings.NewReader("x")
+	p := inspect.OwnerOf(r)
+	if p == nil || inspect.Path(p) != "strings" {
+		return "bad host ptr owner"
+	}
+	return "ok"
+}
+
+// TypeOfGuards: TypeOf on a func decl traps instead of returning a func
+// (the trap assertion lives in inspect_test.go since scripts cannot
+// catch intrinsic errors).
+func TypeOfFuncTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	s := inspect.Symbol(p, "Hello")
+	td := inspect.TypeOf(s)
+	if td != nil {
+		return "expected trap"
+	}
+	return "swallowed"
+}
+
+// TypeOfType: TypeOf on a type decl yields the TypeDef.
+func TypeOfType() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	s := inspect.Symbol(p, "User")
+	if inspect.TypeOf(s) == nil {
 		return "nil typedef"
 	}
 	return "ok"

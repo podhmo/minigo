@@ -510,6 +510,7 @@ func (r *REPL) List(ctx context.Context, ref string) ([]string, error) {
 		p = r.pkg
 	}
 	var out []string
+	seen := map[string]bool{}
 	if p.Index != nil {
 		for _, d := range p.Index.Decls {
 			if strings.HasPrefix(d.Name, "__") {
@@ -527,6 +528,7 @@ func (r *REPL) List(ctx context.Context, ref string) ([]string, error) {
 				kind = "type"
 			}
 			out = append(out, fmt.Sprintf("%s %s", kind, d.Name))
+			seen[d.Name] = true
 		}
 		for name, t := range p.Index.Types {
 			for m := range t.Methods {
@@ -535,8 +537,8 @@ func (r *REPL) List(ctx context.Context, ref string) ([]string, error) {
 		}
 	}
 	for _, name := range p.Globals.Names() {
-		if strings.HasPrefix(name, "__") {
-			continue
+		if strings.HasPrefix(name, "__") || seen[name] {
+			continue // index already listed the materialized decl
 		}
 		if v, ok := p.Globals.Get(name); ok {
 			if _, isCell := v.(*runtime.Cell); isCell {

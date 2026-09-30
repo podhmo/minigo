@@ -407,6 +407,9 @@ func (e *Engine) installInspect() {
 			if d == nil || s.Package == nil {
 				return nil, fmt.Errorf("inspect.TypeOf: %s is not a decl", s.Name)
 			}
+			if d.Kind != index.TypeDecl {
+				return nil, fmt.Errorf("inspect.TypeOf: %s is a %s, not a type", s.Name, s.Kind)
+			}
 			return e.materialize(s.Package, d)
 		}),
 	}
@@ -619,7 +622,18 @@ func (e *Engine) ownerOf(v runtime.Value) (*runtime.Package, error) {
 		return x.Pkg, nil
 	case *runtime.GoValue:
 		if x.V != nil {
-			if t := reflect.TypeOf(x.V); t != nil && t.PkgPath() != "" {
+			t := reflect.TypeOf(x.V)
+			// unnamed carriers (pointers, slices, maps, chans) have no
+			// PkgPath themselves — walk to the named element type
+			for t != nil && t.PkgPath() == "" {
+				switch t.Kind() {
+				case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Chan, reflect.Map:
+					t = t.Elem()
+				default:
+					t = nil
+				}
+			}
+			if t != nil {
 				return e.loadPath(context.Background(), t.PkgPath())
 			}
 		}
@@ -666,8 +680,11 @@ func (e *Engine) symbolOfFunc(fn *runtime.Function) (*xinspect.Decl, error) {
 		return nil, nil
 	}
 	if fn.Recv != "" {
+		// fn.Name is qualified ("User.Greet"); the method dict keys are
+		// the short names from the index
+		name := strings.TrimPrefix(fn.Name, fn.Recv+".")
 		if td, ok := fn.Pkg.Index.Types[fn.Recv]; ok {
-			if d, ok := td.Methods[fn.Name]; ok {
+			if d, ok := td.Methods[name]; ok {
 				return xinspect.NewDecl(fn.Pkg, d), nil
 			}
 		}

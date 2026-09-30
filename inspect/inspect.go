@@ -463,11 +463,20 @@ func (te *TypeExpr) Unwrap(res Resolver) *TypeExpr {
 
 // Origin chases the whole declared chain: pointers AND type transitions
 // until the terminal base expression, where Origin(x) == x.
+// A recursive decl (type Node *Node) stops at the repeated symbol
+// rather than looping forever.
 func (te *TypeExpr) Origin(res Resolver) *TypeExpr {
+	seen := map[runtime.SymbolID]bool{}
 	for {
 		if u := te.Unref(); u != te {
 			te = u
 			continue
+		}
+		if sid, ok := te.SymbolID(); ok {
+			if seen[sid] {
+				return te
+			}
+			seen[sid] = true
 		}
 		if w := te.Unwrap(res); w != te {
 			te = w
@@ -541,6 +550,9 @@ func (a *TypeExpr) SameType(b *TypeExpr, res Resolver) bool {
 	if a.Kind != b.Kind {
 		return false
 	}
+	if !sameShapeExtra(a.expr, b.expr) {
+		return false
+	}
 	ca, cb := a.Children(), b.Children()
 	if len(ca) != len(cb) {
 		return false
@@ -551,6 +563,32 @@ func (a *TypeExpr) SameType(b *TypeExpr, res Resolver) bool {
 		}
 	}
 	return true
+}
+
+// sameShapeExtra compares the node fields Children does not expose:
+// array length and channel direction ([2]int != [3]int,
+// chan T != <-chan T).
+func sameShapeExtra(a, b ast.Expr) bool {
+	switch ea := a.(type) {
+	case *ast.ArrayType:
+		eb := b.(*ast.ArrayType)
+		return exprText(ea.Len) == exprText(eb.Len)
+	case *ast.ChanType:
+		return ea.Dir == b.(*ast.ChanType).Dir
+	}
+	return true
+}
+
+// exprText renders an expression the same way NewTypeExpr renders Text.
+func exprText(e ast.Expr) string {
+	if e == nil {
+		return ""
+	}
+	var b bytes.Buffer
+	if err := printer.Fprint(&b, token.NewFileSet(), e); err != nil {
+		return ""
+	}
+	return b.String()
 }
 
 // UsedSymbolsOf walks a file's AST for SelectorExpr on an import-local

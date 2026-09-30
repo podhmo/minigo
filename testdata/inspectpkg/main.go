@@ -44,6 +44,14 @@ type AInt = int
 // StrList is a named slice type.
 type StrList []string
 
+// Node is a recursive pointer type — Origin must terminate on it.
+type Node *Node
+
+// Arr2 and Arr3 differ only in array length.
+type Arr2 [2]int
+
+type Arr3 [3]int
+
 type hidden struct{ x int }
 
 var hiddenVar = 1

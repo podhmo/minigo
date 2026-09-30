@@ -404,7 +404,9 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value) {
 		if e.hostPolicy != nil && !e.hostPolicy(importPath, k) {
 			continue
 		}
-		if bf, ok := v.(*runtime.BuiltinFunc); ok {
+		if bf, ok := v.(*runtime.BuiltinFunc); ok && bf.Pkg == nil {
+			// the same BuiltinFunc may be bound under several paths
+			// (minigo.dev/x and its module path) — keep the first owner
 			bf.Pkg = p
 		}
 		p.Globals.Set(k, v)

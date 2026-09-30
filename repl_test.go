@@ -296,6 +296,22 @@ func TestREPLCdLs(t *testing.T) {
 		t.Fatalf("User literal + method: %v %v", got, err)
 	}
 
+	// after touching members, :ls still lists each decl once (the
+	// materialized global must not duplicate the index row)
+	lines, err = r.List(ctx, "")
+	if err != nil {
+		t.Fatalf("List after eval: %v", err)
+	}
+	counts := map[string]int{}
+	for _, l := range lines {
+		counts[l]++
+	}
+	for l, n := range counts {
+		if n > 1 {
+			t.Errorf(":ls shows %q %d times", l, n)
+		}
+	}
+
 	// :cd - restores <repl> scope
 	if err := r.Leave(); err != nil {
 		t.Fatalf("Leave: %v", err)

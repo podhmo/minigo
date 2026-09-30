@@ -1,6 +1,7 @@
 package minigo_test
 
 import (
+	"context"
 	"testing"
 )
 
@@ -24,9 +25,19 @@ func TestInspect(t *testing.T) {
 		"ImportsList",
 		"ValueLayer",
 		"BoundDecls",
+		"RecursiveOrigin",
+		"ShapeDetails",
+		"MethodValueSym",
+		"HostPtrOwner",
+		"TypeOfType",
 	} {
 		if got := run(t, e, "./testdata/inspectuse", fn); got != "ok" {
 			t.Errorf("%s: %v", fn, got)
 		}
+	}
+
+	// TypeOf on a non-type decl must trap, not return a func value
+	if _, err := e.Run(context.Background(), "./testdata/inspectuse", "TypeOfFuncTrap"); err == nil {
+		t.Error("TypeOfFuncTrap: expected trap for func decl, got nil")
 	}
 }
