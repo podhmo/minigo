@@ -1791,9 +1791,14 @@ func (c *compiler) call(x *ast.CallExpr) {
 		return
 	}
 	c.calleeExpr(x.Fun)
+	newCall := isNewCall(x)
 	for i, a := range x.Args {
-		// make(T, ...) / new(T) take a type as first argument
-		if i == 0 && isTypePositionCall(x) {
+		// make(T, ...) takes a type as first argument; new(T) also
+		// accepts an arbitrary expression (Go 1.26) — only a syntactic
+		// type form compiles as a type, anything else evaluates to a
+		// value and the builtin distinguishes a typedef argument from
+		// a value at run time.
+		if i == 0 && (isTypePositionCall(x) || (newCall && isTypeForm(a))) {
 			c.typeExpr(a)
 			continue
 		}
@@ -1854,10 +1859,17 @@ func (c *compiler) calleeExpr(fun ast.Expr) {
 }
 
 // isTypePositionCall reports whether the call's first argument is a type
-// (make/new builtins).
+// (the make builtin).
 func isTypePositionCall(x *ast.CallExpr) bool {
 	id, ok := x.Fun.(*ast.Ident)
-	return ok && (id.Name == "make" || id.Name == "new")
+	return ok && id.Name == "make"
+}
+
+// isNewCall reports whether the call names the new builtin — its first
+// argument is a type OR an expression since Go 1.26.
+func isNewCall(x *ast.CallExpr) bool {
+	id, ok := x.Fun.(*ast.Ident)
+	return ok && id.Name == "new"
 }
 
 // isTypeForm reports whether e is syntactically a type expression (and thus
@@ -1989,7 +2001,9 @@ func (c *compiler) typeExpr(e ast.Expr) {
 		}
 		c.emit(bytecode.OpConst, c.constIdx(td), 0, e.Pos())
 	case *ast.FuncType:
-		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindFunc}), 0, e.Pos())
+		// the signature AST rides on the typedef so generalized inference
+		// (Go 1.27) can unify it against a generic function's parameters.
+		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindFunc, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds}), 0, e.Pos())
 	case *ast.InterfaceType:
 		td := &runtime.TypeDef{Kind: runtime.KindInterface, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds}
 		for _, m := range t.Methods.List {
@@ -2029,7 +2043,9 @@ func (c *compiler) typeExpr(e ast.Expr) {
 // funcLit compiles a function literal into a separate chunk and emits a
 // closure creation.
 func (c *compiler) funcLit(x *ast.FuncLit) {
-	inner := &runtime.Function{Pkg: c.pkg, File: c.file, Name: "<funclit>"}
+	// a synthetic Decl carries the signature so inference can unify a
+	// funclit argument against `func(E) R`-shaped parameters.
+	inner := &runtime.Function{Pkg: c.pkg, File: c.file, Name: "<funclit>", Decl: &ast.FuncDecl{Type: x.Type, Body: x.Body}}
 	ic := &compiler{pkg: c.pkg, file: c.file, fs: newFScope(c.fs), ch: &bytecode.Chunk{Name: "<funclit>"}, labels: map[string]*labelInfo{}, binds: c.binds}
 	ic.fs.pushBlock()
 	nparams := 0

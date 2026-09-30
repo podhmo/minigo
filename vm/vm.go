@@ -64,6 +64,12 @@ type Hooks struct {
 	// to td.Fields (nil entries leave the field zero NIL) — used by
 	// zeroValue so `var s T` materializes typed field zeros like Go.
 	FieldTypes func(td *runtime.TypeDef) ([]*runtime.TypeDef, error)
+	// ResolveType resolves a type expression in the context of typedef td
+	// (its package scope, file imports and generic binds): named types
+	// materialize lazily through the index, composite types yield
+	// anonymous typedefs. Used for promoted-field lookup, constraint
+	// resolution and generalized type inference.
+	ResolveType func(td *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, error)
 }
 
 // VM is a stack machine. It is safe for sequential use from one goroutine.
@@ -212,6 +218,18 @@ func (v *VM) Package() *runtime.Package {
 	return nil
 }
 
+// TypeOf implements the VMCaller.TypeOf hook: the typedef describing a
+// runtime value, for new(expr)'s allocated cell type.
+func (v *VM) TypeOf(x runtime.Value) *runtime.TypeDef {
+	return v.typeOfValue(x)
+}
+
+// Copy implements the VMCaller.Copy hook: Go assignment semantics —
+// structs copy by value, slices/maps/pointers share.
+func (v *VM) Copy(x runtime.Value) runtime.Value {
+	return valueCopy(x)
+}
+
 // Recover implements the recover() builtin for VMCaller: it returns the
 func (v *VM) Recover() runtime.Value {
 	if n := len(v.frames); n > 0 && v.frames[n-1].deferred && v.inflight != nil {
@@ -252,8 +270,10 @@ func (v *VM) prepFrame(callee runtime.Value, args []runtime.Value) (*frame, erro
 		return nil, fmt.Errorf("value of type %T is not callable", callee)
 	}
 	// generic function called without instantiation (Id(40)): infer the
-	// type arguments from the runtime argument types, like v1's heuristic.
-	if len(fn.TParams) > 0 && fn.Binds == nil {
+	// unbound type arguments from the runtime argument types. A method of
+	// an instantiated generic type arrives partly bound — the receiver's
+	// own type binds stay, only the method's own type params infer.
+	if fn != nil && len(fn.TParams) > 0 && hasUnbound(fn.TParams, fn.Binds) {
 		inferred, err := v.inferBinds(fn, args)
 		if err != nil {
 			return nil, err
@@ -1052,6 +1072,12 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 			return v.memberOfType(f, e.Typ, name, e, false)
 		case *runtime.IfaceNil:
 			return v.memberOfType(f, e.Typ, name, e, true)
+		case *runtime.Slice:
+			return v.typedMember(f, e.Typ, name, b, "slice")
+		case *runtime.Map:
+			return v.typedMember(f, e.Typ, name, b, "map")
+		case *runtime.Chan:
+			return v.typedMember(f, e.Typ, name, b, "chan")
 		default:
 			f.trap("select %s on cell of %T", name, b.Elem)
 		}
@@ -1062,6 +1088,17 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		}
 		if s, isStruct := dv.(*runtime.Struct); isStruct {
 			return v.structMember(f, s, name, base)
+		}
+		if n, isNamed := dv.(*runtime.Named); isNamed {
+			return v.namedMember(f, n, name, base)
+		}
+		switch t := dv.(type) {
+		case *runtime.Slice:
+			return v.typedMember(f, t.Typ, name, base, "slice")
+		case *runtime.Map:
+			return v.typedMember(f, t.Typ, name, base, "map")
+		case *runtime.Chan:
+			return v.typedMember(f, t.Typ, name, base, "chan")
 		}
 		f.trap("select %s on %T", name, dv)
 	case *runtime.TypeDef:
@@ -1074,9 +1111,11 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 	case *runtime.TypedNil:
 		return v.memberOfType(f, b.Typ, name, b, false)
 	case *runtime.Slice:
-		f.trap("select %s on slice", name)
+		return v.typedMember(f, b.Typ, name, b, "slice")
 	case *runtime.Map:
-		f.trap("select %s on map", name)
+		return v.typedMember(f, b.Typ, name, b, "map")
+	case *runtime.Chan:
+		return v.typedMember(f, b.Typ, name, b, "chan")
 	case *runtime.GoValue:
 		// host value (stdlib intrinsic result): fields first, then the
 		// method set — Go forbids a field and method sharing a name, so
@@ -1341,6 +1380,12 @@ func (v *VM) structMember(f *frame, s *runtime.Struct, name string, recv runtime
 		}
 		return &runtime.BoundMethod{Recv: r, Fn: m}
 	}
+	// promoted field: embedded fields expose their members one level up
+	// (Go 1.27 also accepts them as composite-literal keys). Breadth
+	// beats depth here the same way it does for promoted methods.
+	if inner, j, ok := v.promotedField(f, s, name, true); ok {
+		return inner.Fields[j]
+	}
 	// promoted method: reach through embedded fields via the engine hook
 	if v.H.FindMethod != nil {
 		if m, rcv, ok := v.H.FindMethod(s, name); ok {
@@ -1404,6 +1449,9 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 				return s.Fields[i]
 			}
 		}
+		if inner, j, ok := v.promotedField(f, s, name, true); ok {
+			return inner.Fields[j]
+		}
 	}
 	f.trap("%s has no field or method %s", tdName(n.Typ), name)
 	return nil
@@ -1437,6 +1485,14 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 				b.Fields[i] = v.coerce(f, val, ft)
 				return
 			}
+		}
+		if inner, j, ok := v.promotedField(f, b, name, true); ok {
+			var ft *runtime.TypeDef
+			if fts := v.fieldTypedefs(inner.Def); j < len(fts) {
+				ft = fts[j]
+			}
+			inner.Fields[j] = v.coerce(f, val, ft)
+			return
 		}
 		f.trap("%s has no field %s", b.Def.Name, name)
 	case *runtime.GoValue:
@@ -1521,6 +1577,212 @@ func (v *VM) fieldTypedefs(td *runtime.TypeDef) []*runtime.TypeDef {
 		return nil
 	}
 	return fts
+}
+
+// promotedField locates `name` among s's promoted (embedded) fields,
+// breadth-first: the shallowest level wins and multiple hits at the same
+// level trap as ambiguous (Go rejects them at compile time). allowPtr
+// controls whether *T embeds are traversed — composite-literal keys
+// forbid pointer indirection (Go reports "invalid implicit pointer
+// indirection"), while selector access allows it and a nil embedded
+// pointer panics on the way through, like Go.
+func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bool) (*runtime.Struct, int, bool) {
+	if v.H.ResolveType == nil {
+		return nil, 0, false
+	}
+	type slot struct {
+		st  *runtime.Struct
+		idx int
+	}
+	level := []*runtime.Struct{s}
+	// nilDepth/nilPaths track resolutions that exist only through a nil
+	// embedded pointer: Go selects fields statically, so such a field is
+	// not "undefined" — reaching it panics on the implicit dereference
+	// (and a same-depth tie with a real path is ambiguous, like Go's
+	// compile-time rejection).
+	nilDepth, nilPaths := 0, 0
+	for depth := 0; len(level) > 0 && depth < 32; depth++ {
+		var hits []slot
+		var next []*runtime.Struct
+		for _, st := range level {
+			if st == nil || st.Def == nil {
+				continue
+			}
+			for k, spec := range st.Def.EmbedSpecs {
+				var ptr bool
+				texpr := spec
+				if sx, ok := spec.(*ast.StarExpr); ok {
+					ptr = true
+					texpr = sx.X
+				}
+				if ptr && !allowPtr {
+					continue
+				}
+				if k >= len(st.Def.EmbedIdx) {
+					continue
+				}
+				idx := st.Def.EmbedIdx[k]
+				embTd, err := v.H.ResolveType(st.Def, texpr)
+				if err != nil || embTd == nil {
+					continue
+				}
+				embTd = v.peelNamed(embTd)
+				if embTd == nil || len(embTd.Fields) == 0 {
+					// non-struct embeds (interfaces, basics) promote no
+					// fields — methods dispatch through FindMethod.
+					continue
+				}
+				j := -1
+				for fi, fn := range embTd.Fields {
+					if fn == name {
+						j = fi
+						break
+					}
+				}
+				if j < 0 {
+					inner, _ := v.embedValue(f, st, idx, embTd, ptr)
+					if inner != nil {
+						next = append(next, inner)
+						continue
+					}
+					if ptr {
+						// a nil embedded pointer cannot be searched
+						// by value — ask the type whether the field
+						// exists deeper, and at which depth.
+						if d, c := v.embedTypeDepth(embTd, name, map[*runtime.TypeDef]bool{}); d > 0 {
+							abs := depth + 1 + d
+							if nilDepth == 0 || abs < nilDepth {
+								nilDepth, nilPaths = abs, c
+							} else if abs == nilDepth {
+								nilPaths += c
+							}
+						}
+					}
+					continue
+				}
+				inner, ok := v.embedValue(f, st, idx, embTd, ptr)
+				if !ok {
+					// found only through a nil embedded pointer — Go
+					// panics on the implicit dereference.
+					panic(&runtime.Panic{Value: "runtime error: invalid memory address or nil pointer dereference"})
+				}
+				hits = append(hits, slot{inner, j})
+			}
+		}
+		if len(hits) > 0 {
+			if nilDepth > 0 && nilDepth <= depth+1 {
+				// a nil path ties the real field's depth — Go
+				// rejects the selector as ambiguous.
+				f.trap("ambiguous selector %s", name)
+			}
+			if len(hits) == 1 {
+				return hits[0].st, hits[0].idx, true
+			}
+			f.trap("ambiguous selector %s", name)
+		}
+		if nilDepth > 0 && nilDepth <= depth+1 {
+			if nilPaths > 1 {
+				f.trap("ambiguous selector %s", name)
+			}
+			panic(&runtime.Panic{Value: "runtime error: invalid memory address or nil pointer dereference"})
+		}
+		level = next
+	}
+	if nilDepth > 0 {
+		if nilPaths > 1 {
+			f.trap("ambiguous selector %s", name)
+		}
+		panic(&runtime.Panic{Value: "runtime error: invalid memory address or nil pointer dereference"})
+	}
+	return nil, 0, false
+}
+
+// embedTypeDepth answers for the type what a value search cannot when an
+// embedded pointer is nil: whether `name` is promoted through td's own
+// embedded fields, the shallowest relative depth at which it resolves
+// (1 = a direct field of a type embedded in td), and how many distinct
+// paths reach it at that depth. Depth 0 means unreachable.
+func (v *VM) embedTypeDepth(td *runtime.TypeDef, name string, seen map[*runtime.TypeDef]bool) (int, int) {
+	if td == nil || seen[td] || v.H.ResolveType == nil {
+		return 0, 0
+	}
+	seen[td] = true
+	defer delete(seen, td)
+	best, cnt := 0, 0
+	for k, spec := range td.EmbedSpecs {
+		texpr := spec
+		if sx, ok := spec.(*ast.StarExpr); ok {
+			texpr = sx.X
+		}
+		if k >= len(td.EmbedIdx) {
+			continue
+		}
+		et, err := v.H.ResolveType(td, texpr)
+		if err != nil || et == nil {
+			continue
+		}
+		et = v.peelNamed(et)
+		if et == nil || len(et.Fields) == 0 {
+			continue
+		}
+		d, c := 0, 1
+		for _, fn := range et.Fields {
+			if fn == name {
+				d = 1
+				break
+			}
+		}
+		if d == 0 {
+			if sd, sc := v.embedTypeDepth(et, name, seen); sd > 0 {
+				d, c = 1+sd, sc
+			}
+		}
+		if d == 0 {
+			continue
+		}
+		if best == 0 || d < best {
+			best, cnt = d, c
+		} else if d == best {
+			cnt += c
+		}
+	}
+	return best, cnt
+}
+
+// embedValue returns the struct value stored in an embedded field,
+// dereferencing pointer embeds (nil reports false so the caller decides
+// between skipping a deeper search and panicking on a hit) and
+// materializing a NIL-initialized non-pointer embed in place so field
+// writes through it land.
+func (v *VM) embedValue(f *frame, st *runtime.Struct, i int, td *runtime.TypeDef, ptr bool) (*runtime.Struct, bool) {
+	if i < 0 || i >= len(st.Fields) {
+		return nil, false
+	}
+	val := st.Fields[i]
+	if ptr {
+		dv, ok := runtime.Deref(val)
+		if !ok {
+			return nil, false
+		}
+		val = dv
+	}
+	if n, ok := val.(*runtime.Named); ok {
+		val = n.V
+	}
+	if s, ok := val.(*runtime.Struct); ok {
+		return s, true
+	}
+	if _, isNil := val.(runtime.Nil); isNil || val == nil {
+		z := v.zeroValue(f, td)
+		st.Fields[i] = z
+		if n, ok := z.(*runtime.Named); ok {
+			z = n.V
+		}
+		if s, ok := z.(*runtime.Struct); ok {
+			return s, true
+		}
+	}
+	return nil, false
 }
 
 // elemTypedef resolves the element type of a container typedef (nil when
@@ -1765,18 +2027,7 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 				if !ok {
 					f.trap("struct literal key %T", raw[i*2])
 				}
-				found := false
-				for fi, fn := range et.Fields {
-					if fn == name {
-						var ft *runtime.TypeDef
-						if fi < len(fts) {
-							ft = fts[fi]
-						}
-						es.Fields[fi] = v.coerce(f, raw[i*2+1], ft)
-						found = true
-						break
-					}
-				}
+				found := v.setLitField(f, es, et, fts, name, raw[i*2+1])
 				if !found {
 					f.trap("%s has no field %s", tdName(et), name)
 				}
@@ -1826,18 +2077,7 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 				if !ok {
 					f.trap("struct literal key %T", raw[i*2])
 				}
-				found := false
-				for fi, fn := range etd.Fields {
-					if fn == name {
-						var ft *runtime.TypeDef
-						if fi < len(fts) {
-							ft = fts[fi]
-						}
-						s.Fields[fi] = v.coerce(f, raw[i*2+1], ft)
-						found = true
-						break
-					}
-				}
+				found := v.setLitField(f, s, etd, fts, name, raw[i*2+1])
 				if !found {
 					f.trap("%s has no field %s", tdName(td), name)
 				}
@@ -1860,6 +2100,34 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 		f.trap("composite literal for kind %d", td.Kind)
 	}
 	return nil
+}
+
+// setLitField writes one `Name: value` entry of a struct literal. A
+// declared field wins by name; otherwise the key resolves through
+// promoted (embedded) fields — Go 1.27's promoted-field literal keys.
+// Pointer embeds cannot supply literal keys (Go rejects "invalid
+// implicit pointer indirection"), so promotedField is called with
+// allowPtr=false.
+func (v *VM) setLitField(f *frame, s *runtime.Struct, def *runtime.TypeDef, fts []*runtime.TypeDef, name string, val runtime.Value) bool {
+	for fi, fn := range def.Fields {
+		if fn == name {
+			var ft *runtime.TypeDef
+			if fi < len(fts) {
+				ft = fts[fi]
+			}
+			s.Fields[fi] = v.coerce(f, val, ft)
+			return true
+		}
+	}
+	if inner, j, ok := v.promotedField(f, s, name, false); ok {
+		var ft *runtime.TypeDef
+		if ifts := v.fieldTypedefs(inner.Def); j < len(ifts) {
+			ft = ifts[j]
+		}
+		inner.Fields[j] = v.coerce(f, val, ft)
+		return true
+	}
+	return false
 }
 
 // valueCopy implements Go assignment semantics: structs copy by value;
@@ -2743,6 +3011,14 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 		}
 		return x, nil
 	case runtime.KindFunc:
+		// generalized inference (Go 1.27): `F(Id)` instantiates the
+		// generic function against F's signature first — the inferred
+		// binds carry over into the (possibly named) result.
+		if xv, ierr := v.inferForFuncTarget(x, td); ierr != nil {
+			return nil, ierr
+		} else {
+			x = xv
+		}
 		switch x.(type) {
 		case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
 			// a declared func type re-tags so `x.(F)` checks identity
@@ -3368,6 +3644,34 @@ func (v *VM) typeMatchesTD(f *frame, td, dyn *runtime.TypeDef) bool {
 	return sameTypeDef(td, dyn)
 }
 
+// typedMember resolves base.name on a container value that carries its
+// declared typedef in Typ — values of `type L []E`, `type M map[K]V` or
+// `type C chan T` keep the declared type's methods, including the generic
+// methods added in Go 1.27. `what` names the container for the trap.
+func (v *VM) typedMember(f *frame, td *runtime.TypeDef, name string, recv runtime.Value, what string) runtime.Value {
+	if td != nil {
+		if m, ok := td.Methods[name]; ok {
+			if err := m.EnsureCompiled(); err != nil {
+				f.trap("%s", err)
+			}
+			r := recv
+			if m.PtrRecv {
+				if _, ok := runtime.Deref(r); !ok {
+					r = &runtime.Cell{Elem: r}
+				}
+			} else {
+				if dv, ok := runtime.Deref(r); ok {
+					r = dv
+				}
+				r = valueCopy(r)
+			}
+			return &runtime.BoundMethod{Recv: r, Fn: m}
+		}
+	}
+	f.trap("select %s on %s", name, what)
+	return nil
+}
+
 // memberOfType resolves base.name when base is a nil value carrying a
 // type — a method on *T still binds (the body panics on field access);
 // a field select on a nil pointer panics like Go.
@@ -3458,7 +3762,96 @@ func (v *VM) coerce(f *frame, x runtime.Value, td *runtime.TypeDef) runtime.Valu
 		}
 		return x
 	}
-	return v.coerceConcrete(f, x, td)
+	// generalized inference (Go 1.27): a generic function bound to a
+	// func-typed slot — assignment, composite element, call argument or
+	// channel send — infers its unbound type parameters from the target
+	// signature. `var h func(int) int = Id` instantiates Id[int].
+	xv, err := v.inferForFuncTarget(x, td)
+	if err != nil {
+		f.trap("%s", err)
+	}
+	return v.coerceConcrete(f, xv, td)
+}
+
+// inferForFuncTarget instantiates an unbound generic function value when
+// the target typedef is a func type whose signature teaches the missing
+// binds. Anything unresolvable passes the value through unchanged — an
+// unbound generic traps on use, matching the compile-total contract.
+func (v *VM) inferForFuncTarget(x runtime.Value, td *runtime.TypeDef) (runtime.Value, error) {
+	u := v.peelNamed(td)
+	if u == nil || u.Kind != runtime.KindFunc {
+		return x, nil
+	}
+	sig := funcTypeExpr(u)
+	if sig == nil || v.H.ResolveType == nil {
+		return x, nil
+	}
+	fn, wrap := funcTarget(x)
+	if fn == nil || len(fn.TParams) == 0 || !hasUnbound(fn.TParams, fn.Binds) {
+		return x, nil
+	}
+	if fn.Decl == nil || fn.Decl.Type == nil {
+		return x, nil
+	}
+	tset := map[string]bool{}
+	for _, tp := range fn.TParams {
+		if _, ok := fn.Binds[tp]; !ok {
+			tset[tp] = true
+		}
+	}
+	binds := map[string]runtime.Value{}
+	for k, bv := range fn.Binds {
+		binds[k] = bv
+	}
+	// the pattern is the callee's declared signature; the concrete side
+	// is the target func type resolved in ITS own context.
+	ctx := &runtime.TypeDef{Pkg: fn.Pkg, File: fn.File, Binds: binds}
+	v.unifyFieldTypes(ctx, tset, binds, fn.Decl.Type.Params, sig.Params, u)
+	v.unifyFieldTypes(ctx, tset, binds, fn.Decl.Type.Results, sig.Results, u)
+	if len(binds) == len(fn.Binds) {
+		return x, nil // the target signature taught nothing
+	}
+	if err := v.checkTArgs(ctx, fn.TParams, fn.TConstraints, binds); err != nil {
+		return nil, err
+	}
+	inst := &runtime.Function{
+		Pkg: fn.Pkg, File: fn.File, Decl: fn.Decl, Name: fn.Name,
+		Recv: fn.Recv, PtrRecv: fn.PtrRecv,
+		TParams: fn.TParams, TConstraints: fn.TConstraints,
+		Binds: binds, Compile: fn.Compile,
+	}
+	switch w := wrap.(type) {
+	case nil:
+		return inst, nil
+	case *runtime.Closure:
+		return &runtime.Closure{Fn: inst, Upvals: w.Upvals}, nil
+	case *runtime.BoundMethod:
+		return &runtime.BoundMethod{Recv: w.Recv, Fn: inst}, nil
+	}
+	return inst, nil
+}
+
+// funcTarget unwraps a function-ish value to its *runtime.Function,
+// reporting the wrapper to rebuild after instantiation.
+func funcTarget(x runtime.Value) (*runtime.Function, runtime.Value) {
+	switch t := x.(type) {
+	case *runtime.Function:
+		return t, nil
+	case *runtime.Closure:
+		return t.Fn, t
+	case *runtime.BoundMethod:
+		return t.Fn, t
+	case *runtime.Named:
+		if fn, w := funcTarget(t.V); fn != nil {
+			if w == nil {
+				return fn, t
+			}
+			// rebuild the inner wrapper under the Named tag lazily — a
+			// named func value's generic params live on the function.
+			return fn, w
+		}
+	}
+	return nil, nil
 }
 
 // declaredType reports whether td is a defined (declared) type rather than
@@ -3906,19 +4299,17 @@ func (v *VM) instantiate(f *frame, base runtime.Value, targs []runtime.Value, po
 		if len(targs) != len(g.TParams) {
 			f.trap("cannot instantiate %s: needs %d type arguments, got %d", g.Name, len(g.TParams), len(targs))
 		}
-		binds := map[string]runtime.Value{}
-		for i, tp := range g.TParams {
-			binds[tp] = targs[i]
+		return v.instantiateFunc(f, g, targs)
+	case *runtime.BoundMethod:
+		// a generic method explicit instantiation: recv.M[T](...) — the
+		// receiver's own type binds are kept, T binds the method's params.
+		if len(g.Fn.TParams) == 0 {
+			return v.indexFallback(f, base, targs)
 		}
-		if err := v.checkTArgs(g.TParams, g.TConstraints, binds); err != nil {
-			f.trap("%s", err)
+		if len(targs) != len(g.Fn.TParams) {
+			f.trap("cannot instantiate %s: needs %d type arguments, got %d", g.Fn.Name, len(g.Fn.TParams), len(targs))
 		}
-		return &runtime.Function{
-			Pkg: g.Pkg, File: g.File, Decl: g.Decl, Name: g.Name,
-			Recv: g.Recv, PtrRecv: g.PtrRecv,
-			TParams: g.TParams, TConstraints: g.TConstraints,
-			Binds: binds, Compile: g.Compile,
-		}
+		return &runtime.BoundMethod{Recv: g.Recv, Fn: v.instantiateFunc(f, g.Fn, targs)}
 	case *runtime.TypeDef:
 		if len(g.TParams) == 0 {
 			return v.indexFallback(f, base, targs)
@@ -3930,12 +4321,36 @@ func (v *VM) instantiate(f *frame, base runtime.Value, targs []runtime.Value, po
 		for i, tp := range g.TParams {
 			binds[tp] = targs[i]
 		}
-		if err := v.checkTArgs(g.TParams, g.TConstraints, binds); err != nil {
+		ctx := &runtime.TypeDef{Pkg: g.Pkg, File: g.File, Binds: binds}
+		if err := v.checkTArgs(ctx, g.TParams, g.TConstraints, binds); err != nil {
 			f.trap("%s", err)
 		}
 		return v.specializeType(g, targs)
 	default:
 		return v.indexFallback(f, base, targs)
+	}
+}
+
+// instantiateFunc binds a generic function's own type parameters to the
+// explicit type arguments — merging over binds already carried by the
+// value (a generic method keeps its receiver's type binds).
+func (v *VM) instantiateFunc(f *frame, g *runtime.Function, targs []runtime.Value) *runtime.Function {
+	binds := map[string]runtime.Value{}
+	for k, bv := range g.Binds {
+		binds[k] = bv
+	}
+	for i, tp := range g.TParams {
+		binds[tp] = targs[i]
+	}
+	ctx := &runtime.TypeDef{Pkg: g.Pkg, File: g.File, Binds: binds}
+	if err := v.checkTArgs(ctx, g.TParams, g.TConstraints, binds); err != nil {
+		f.trap("%s", err)
+	}
+	return &runtime.Function{
+		Pkg: g.Pkg, File: g.File, Decl: g.Decl, Name: g.Name,
+		Recv: g.Recv, PtrRecv: g.PtrRecv,
+		TParams: g.TParams, TConstraints: g.TConstraints,
+		Binds: binds, Compile: g.Compile,
 	}
 }
 
@@ -3974,6 +4389,14 @@ func (v *VM) specializeType(g *runtime.TypeDef, targs []runtime.Value) *runtime.
 			for i, tp := range g.TParams {
 				binds[tp] = targs[i]
 			}
+			// the receiver may rename the type's parameters — `func (l
+			// List[E])` on `type List[T]` scopes E in the method body, so
+			// the receiver's own names bind to the same arguments.
+			for i, rp := range recvTypeParamNames(m.Decl) {
+				if i < len(targs) {
+					binds[rp] = targs[i]
+				}
+			}
 			td.Methods[name] = &runtime.Function{
 				Pkg: m.Pkg, File: m.File, Decl: m.Decl, Name: m.Name,
 				Recv: m.Recv, PtrRecv: m.PtrRecv,
@@ -3983,6 +4406,29 @@ func (v *VM) specializeType(g *runtime.TypeDef, targs []runtime.Value) *runtime.
 		}
 	}
 	return td
+}
+
+// recvTypeParamNames extracts the type parameter names a method receiver
+// declares — `func (l List[E, F])` yields [E, F]. Non-generic receivers
+// yield nil.
+func recvTypeParamNames(d *ast.FuncDecl) []string {
+	if d == nil || d.Recv == nil || len(d.Recv.List) == 0 {
+		return nil
+	}
+	var idxs []ast.Expr
+	switch t := d.Recv.List[0].Type.(type) {
+	case *ast.IndexExpr:
+		idxs = []ast.Expr{t.Index}
+	case *ast.IndexListExpr:
+		idxs = t.Indices
+	}
+	var out []string
+	for _, x := range idxs {
+		if id, ok := x.(*ast.Ident); ok {
+			out = append(out, id.Name)
+		}
+	}
+	return out
 }
 
 // ---- special forms ----
@@ -4173,7 +4619,7 @@ func (s *specialCtx) ResolveType(e ast.Expr) (*runtime.TypeDef, error) {
 	case *ast.ChanType:
 		return &runtime.TypeDef{Kind: runtime.KindChan, Anon: t, Pkg: pkg, File: s.q.File, Binds: s.f.fn.Binds}, nil
 	case *ast.FuncType:
-		return &runtime.TypeDef{Kind: runtime.KindFunc, Pkg: pkg, File: s.q.File, Binds: s.f.fn.Binds}, nil
+		return &runtime.TypeDef{Kind: runtime.KindFunc, Anon: t, Pkg: pkg, File: s.q.File, Binds: s.f.fn.Binds}, nil
 	case *ast.StructType:
 		td := &runtime.TypeDef{Kind: runtime.KindStruct, Anon: t, Pkg: pkg, File: s.q.File, Binds: s.f.fn.Binds}
 		for _, fld := range t.Fields.List {
@@ -4294,23 +4740,49 @@ func (s *specialCtx) Errorf(n ast.Node, formatStr string, args ...any) error {
 
 // ---- call-site generic inference + constraint checks ----
 
-// inferBinds binds a generic function's type parameters from the runtime
-// argument types — `Id(40)` infers T=int the way v1's heuristic did. Only
-// params declared with exactly a type parameter (`v T`, `xs ...T`) infer;
-// deeper shapes like []T stay unbound (then T resolves to a run-time trap
-// on use, which matches the compiler-is-total contract).
+// hasUnbound reports whether any of the given type params lacks a bind.
+func hasUnbound(tparams []string, binds map[string]runtime.Value) bool {
+	for _, tp := range tparams {
+		if _, ok := binds[tp]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// inferBinds binds a generic function's unbound type parameters from the
+// runtime argument types — `Id(40)` infers T=int the way v1's heuristic
+// did, and (Go 1.27) deeper param shapes infer structurally: `f func(E) R`
+// against a func(int) string argument binds R=string. A method's receiver
+// occupies args[0]; its own type binds (from the receiver type's
+// instantiation) are kept, only the method's type params infer. Params
+// that stay unbound resolve to a run-time trap on use, matching the
+// compiler-is-total contract.
 func (v *VM) inferBinds(fn *runtime.Function, args []runtime.Value) (*runtime.Function, error) {
 	if fn.Decl == nil || fn.Decl.Type == nil || fn.Decl.Type.Params == nil {
 		return fn, nil
 	}
 	tset := map[string]bool{}
 	for _, t := range fn.TParams {
-		tset[t] = true
+		if _, ok := fn.Binds[t]; !ok {
+			tset[t] = true
+		}
+	}
+	if len(tset) == 0 {
+		return fn, nil
 	}
 	binds := map[string]runtime.Value{}
+	for k, bv := range fn.Binds {
+		binds[k] = bv
+	}
+	// ctx resolves named type expressions in the callee's own scope — its
+	// package, file imports and binds so far.
+	ctx := &runtime.TypeDef{Pkg: fn.Pkg, File: fn.File, Binds: binds}
 	pos := 0
-	fields := fn.Decl.Type.Params.List
-	for _, field := range fields {
+	if fn.Decl.Recv != nil {
+		pos = 1 // args[0] is the receiver; declared params exclude it
+	}
+	for _, field := range fn.Decl.Type.Params.List {
 		n := len(field.Names)
 		if n == 0 {
 			n = 1
@@ -4321,33 +4793,24 @@ func (v *VM) inferBinds(fn *runtime.Function, args []runtime.Value) (*runtime.Fu
 			et = el.Elt
 			variadic = true
 		}
-		id, isTParam := et.(*ast.Ident)
 		for i := 0; i < n; i++ {
 			if pos >= len(args) {
 				break
 			}
-			if isTParam && tset[id.Name] && binds[id.Name] == nil {
-				if td := v.typeOfValue(args[pos]); td != nil {
-					binds[id.Name] = td
-				}
-			}
+			v.unifyType(ctx, tset, binds, et, args[pos])
 			pos++
 		}
 		// ...T consumes all remaining args; the first arg that yields a
 		// typedef wins the binding.
 		for variadic && pos < len(args) {
-			if tset[id.Name] && binds[id.Name] == nil {
-				if td := v.typeOfValue(args[pos]); td != nil {
-					binds[id.Name] = td
-				}
-			}
+			v.unifyType(ctx, tset, binds, et, args[pos])
 			pos++
 		}
 	}
-	if len(binds) == 0 {
-		return fn, nil
+	if len(binds) == len(fn.Binds) {
+		return fn, nil // nothing inferred
 	}
-	if err := v.checkTArgs(fn.TParams, fn.TConstraints, binds); err != nil {
+	if err := v.checkTArgs(ctx, fn.TParams, fn.TConstraints, binds); err != nil {
 		return nil, err
 	}
 	return &runtime.Function{
@@ -4358,15 +4821,243 @@ func (v *VM) inferBinds(fn *runtime.Function, args []runtime.Value) (*runtime.Fu
 	}, nil
 }
 
+// unifyType learns type-argument binds by walking a parameter's declared
+// type expression (the pattern, which may mention tparams) alongside the
+// argument's runtime type. tset holds the tparam names still unbound;
+// inferred binds land in binds. Everything is best-effort: mismatched or
+// unsupported shapes simply teach nothing, and already-bound tparams are
+// not re-bound (no consistency check — approximation).
+func (v *VM) unifyType(ctx *runtime.TypeDef, tset map[string]bool, binds map[string]runtime.Value, pat ast.Expr, arg runtime.Value) {
+	conc := v.argTypedef(arg)
+	if conc == nil {
+		return
+	}
+	v.unifyTypeDef(ctx, tset, binds, pat, conc)
+}
+
+func (v *VM) unifyTypeDef(ctx *runtime.TypeDef, tset map[string]bool, binds map[string]runtime.Value, pat ast.Expr, conc *runtime.TypeDef) {
+	switch p := pat.(type) {
+	case *ast.Ident:
+		if tset[p.Name] {
+			if _, ok := binds[p.Name]; !ok {
+				binds[p.Name] = conc
+			}
+		}
+		// a bound or foreign ident teaches nothing
+	case *ast.ParenExpr:
+		v.unifyTypeDef(ctx, tset, binds, p.X, conc)
+	case *ast.Ellipsis:
+		v.unifyTypeDef(ctx, tset, binds, p.Elt, conc)
+	case *ast.StarExpr:
+		// *T unifies only against pointer-shaped args — a slice or
+		// map's element type is not a pointee and must teach nothing.
+		if u := v.peelNamed(conc); u != nil && u.Kind == runtime.KindPointer {
+			et := v.elemTypedef(conc)
+			if et == nil {
+				et = conc.Elem
+			}
+			if et != nil {
+				v.unifyTypeDef(ctx, tset, binds, p.X, et)
+			}
+		}
+	case *ast.ArrayType:
+		// []T unifies only against slice/array-shaped args — a pointer's
+		// pointee is not an element and must teach nothing.
+		if u := v.peelNamed(conc); u != nil && u.Kind == runtime.KindSlice {
+			if et := v.elemTypedef(conc); et != nil {
+				v.unifyTypeDef(ctx, tset, binds, p.Elt, et)
+			}
+		}
+	case *ast.MapType:
+		if mt, ok := conc.Anon.(*ast.MapType); ok && v.H.ResolveType != nil {
+			if kt, err := v.H.ResolveType(conc, mt.Key); err == nil {
+				v.unifyTypeDef(ctx, tset, binds, p.Key, kt)
+			}
+			if vt, err := v.H.ResolveType(conc, mt.Value); err == nil {
+				v.unifyTypeDef(ctx, tset, binds, p.Value, vt)
+			}
+		}
+	case *ast.ChanType:
+		if u := v.peelNamed(conc); u != nil && u.Kind == runtime.KindChan {
+			if et := v.elemTypedef(conc); et != nil {
+				v.unifyTypeDef(ctx, tset, binds, p.Value, et)
+			}
+		}
+	case *ast.FuncType:
+		cs := funcTypeExpr(conc)
+		if cs == nil || v.H.ResolveType == nil {
+			break
+		}
+		v.unifyFieldTypes(ctx, tset, binds, p.Params, cs.Params, conc)
+		v.unifyFieldTypes(ctx, tset, binds, p.Results, cs.Results, conc)
+	case *ast.IndexExpr:
+		v.unifyIndices(ctx, tset, binds, p.X, []ast.Expr{p.Index}, conc)
+	case *ast.IndexListExpr:
+		v.unifyIndices(ctx, tset, binds, p.X, p.Indices, conc)
+	}
+}
+
+// unifyFieldTypes zips two flattened field lists (params or results):
+// each declared type expr on the pattern side unifies against the
+// resolved typedef on the concrete side. A pattern `...T` pairs with
+// either `...U` or `[]U`.
+func (v *VM) unifyFieldTypes(ctx *runtime.TypeDef, tset map[string]bool, binds map[string]runtime.Value, pat, conc *ast.FieldList, concCtx *runtime.TypeDef) {
+	if pat == nil || conc == nil {
+		return
+	}
+	pe := flattenFieldExprs(pat)
+	ce := flattenFieldExprs(conc)
+	for i, p := range pe {
+		if i >= len(ce) {
+			break
+		}
+		pv := p
+		cvv := ce[i]
+		peEl, _ := pv.(*ast.Ellipsis)
+		ceEl, _ := cvv.(*ast.Ellipsis)
+		if peEl != nil && ceEl == nil {
+			// variadic pattern against a non-variadic concrete func:
+			// approximate by unifying the element against the param as-is.
+			pv = peEl.Elt
+		}
+		ct, err := v.H.ResolveType(concCtx, cvv)
+		if err != nil || ct == nil {
+			continue
+		}
+		if ceEl != nil {
+			// the concrete side is `...U` — the pattern sees []U
+			ct = &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Lbrack: ceEl.Pos(), Elt: ceEl.Elt}, Pkg: concCtx.Pkg, File: concCtx.File, Binds: concCtx.Binds}
+		}
+		v.unifyTypeDef(ctx, tset, binds, pv, ct)
+	}
+}
+
+func flattenFieldExprs(fl *ast.FieldList) []ast.Expr {
+	var out []ast.Expr
+	for _, fd := range fl.List {
+		n := len(fd.Names)
+		if n == 0 {
+			n = 1
+		}
+		for i := 0; i < n; i++ {
+			out = append(out, fd.Type)
+		}
+	}
+	return out
+}
+
+// unifyIndices handles a `Name[E]`-shaped pattern against an instantiated
+// concrete typedef: each tparam index binds to the concrete type's own
+// binding for the base's parameter at that position.
+func (v *VM) unifyIndices(ctx *runtime.TypeDef, tset map[string]bool, binds map[string]runtime.Value, base ast.Expr, idxs []ast.Expr, conc *runtime.TypeDef) {
+	if v.H.ResolveType == nil {
+		return
+	}
+	bt, err := v.H.ResolveType(ctx, base)
+	if err != nil || bt == nil || len(bt.TParams) == 0 {
+		return
+	}
+	for i, x := range idxs {
+		if i >= len(bt.TParams) {
+			break
+		}
+		id, ok := x.(*ast.Ident)
+		if !ok || !tset[id.Name] {
+			continue
+		}
+		if bv, ok := conc.Binds[bt.TParams[i]]; ok {
+			if _, bound := binds[id.Name]; !bound {
+				binds[id.Name] = bv
+			}
+		}
+	}
+}
+
+// funcTypeExpr returns the *ast.FuncType carried by a func-typed typedef,
+// from its anonymous or declared form.
+func funcTypeExpr(td *runtime.TypeDef) *ast.FuncType {
+	for _, x := range []ast.Expr{td.Anon, specTypeOf(td)} {
+		if ft, ok := x.(*ast.FuncType); ok {
+			return ft
+		}
+	}
+	return nil
+}
+
+func specTypeOf(td *runtime.TypeDef) ast.Expr {
+	if td.Spec != nil {
+		return td.Spec.Type
+	}
+	return nil
+}
+
+// funcSig returns the declared signature of a function value.
+func funcSig(x runtime.Value) (*ast.FuncType, *runtime.Package, *syntax.File, map[string]runtime.Value) {
+	switch fn := x.(type) {
+	case *runtime.Function:
+		if fn.Decl != nil && fn.Decl.Type != nil {
+			return fn.Decl.Type, fn.Pkg, fn.File, fn.Binds
+		}
+	case *runtime.Closure:
+		if fn.Fn != nil && fn.Fn.Decl != nil && fn.Fn.Decl.Type != nil {
+			return fn.Fn.Decl.Type, fn.Fn.Pkg, fn.Fn.File, fn.Fn.Binds
+		}
+	case *runtime.BoundMethod:
+		if fn.Fn != nil && fn.Fn.Decl != nil && fn.Fn.Decl.Type != nil {
+			return fn.Fn.Decl.Type, fn.Fn.Pkg, fn.Fn.File, fn.Fn.Binds
+		}
+	}
+	return nil, nil, nil, nil
+}
+
+// argTypedef is typeOfValue enriched for inference: stamped container
+// typedefs pass through, pointers remember the pointee typedef, and
+// function values carry their signature AST so `func(E) R`-shaped
+// patterns can unify position-by-position.
+func (v *VM) argTypedef(x runtime.Value) *runtime.TypeDef {
+	switch xv := x.(type) {
+	case *runtime.Slice:
+		if xv.Typ != nil {
+			return xv.Typ
+		}
+		return &runtime.TypeDef{Kind: runtime.KindSlice}
+	case *runtime.Map:
+		if xv.Typ != nil {
+			return xv.Typ
+		}
+		return &runtime.TypeDef{Kind: runtime.KindMap}
+	case *runtime.Chan:
+		if xv.Typ != nil {
+			return xv.Typ
+		}
+		return &runtime.TypeDef{Kind: runtime.KindChan}
+	case *runtime.Cell:
+		// a pointer: Elem records the pointee typedef — Anon cannot name
+		// it without the variable's declaration.
+		return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: v.argTypedef(xv.Elem)}
+	case *runtime.FieldRef, *runtime.IndexRef:
+		if dv, ok := runtime.Deref(x); ok {
+			return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: v.argTypedef(dv)}
+		}
+		return &runtime.TypeDef{Kind: runtime.KindPointer}
+	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod:
+		if sig, pkg, file, binds := funcSig(x); sig != nil {
+			return &runtime.TypeDef{Kind: runtime.KindFunc, Anon: sig, Pkg: pkg, File: file, Binds: binds}
+		}
+		return &runtime.TypeDef{Kind: runtime.KindFunc}
+	}
+	return v.typeOfValue(x)
+}
+
 // typeOfValue returns a typedef describing a runtime value, for call-site
 // inference. Composite builtin values get anonymous kinds (a []int arg
 // binds T to "some slice" — enough for `var z T` and T(x) conversions).
 func (v *VM) typeOfValue(x runtime.Value) *runtime.TypeDef {
-	if _, ok := runtime.Deref(x); ok {
+	if dv, ok := runtime.Deref(x); ok {
 		// a pointer argument: T binds to a pointer-ish typedef — the
 		// element has no AST on this path, so Anon stays nil and
 		// elem-typed operations on it degrade to traps.
-		return &runtime.TypeDef{Kind: runtime.KindPointer}
+		return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: v.typeOfValue(dv)}
 	}
 	switch xv := x.(type) {
 	case int64:
@@ -4378,10 +5069,19 @@ func (v *VM) typeOfValue(x runtime.Value) *runtime.TypeDef {
 	case bool:
 		return v.builtinTypedef("bool")
 	case *runtime.Slice:
+		if xv.Typ != nil {
+			return xv.Typ
+		}
 		return &runtime.TypeDef{Kind: runtime.KindSlice}
 	case *runtime.Map:
+		if xv.Typ != nil {
+			return xv.Typ
+		}
 		return &runtime.TypeDef{Kind: runtime.KindMap}
 	case *runtime.Chan:
+		if xv.Typ != nil {
+			return xv.Typ
+		}
 		return &runtime.TypeDef{Kind: runtime.KindChan}
 	case *runtime.Struct:
 		return xv.Def
@@ -4410,14 +5110,18 @@ func (v *VM) builtinTypedef(name string) *runtime.TypeDef {
 }
 
 // checkTArgs verifies an explicit F[...] / T[...] instantiation against
-// the declared constraints. Failures trap with a Go-like message.
-func (v *VM) checkTArgs(tparams []string, cons []ast.Expr, binds map[string]runtime.Value) error {
+// the declared constraints. Failures trap with a Go-like message. ctx is
+// the generic definition's own typedef context (its package, file imports
+// and binds), used to resolve named constraints — including
+// self-referential ones like `A Adder[A]` (Go 1.26), which check the
+// constraint's required methods against the argument's method set.
+func (v *VM) checkTArgs(ctx *runtime.TypeDef, tparams []string, cons []ast.Expr, binds map[string]runtime.Value) error {
 	for i, tp := range tparams {
 		if i >= len(cons) {
 			break
 		}
 		td := typedefOf(binds[tp])
-		if td == nil || satisfiesConstraint(cons[i], td) {
+		if td == nil || v.satisfiesConstraint(ctx, cons[i], td) {
 			continue
 		}
 		return fmt.Errorf("type argument %s does not satisfy constraint %s", tdName(td), typeExprName(cons[i]))
@@ -4427,26 +5131,34 @@ func (v *VM) checkTArgs(tparams []string, cons []ast.Expr, binds map[string]runt
 
 // satisfiesConstraint approximates Go's constraint check. `any` and
 // `comparable` pass; an interface literal checks its type elements
-// (~T by underlying-type name, unions by any-match); a bare builtin type
-// name matches by name; anything else (named constraints, embedded
-// interface elements, method requirements) is approximated satisfied —
-// the compiler stays total and wrong instantiations may still fail later.
-func satisfiesConstraint(cons ast.Expr, td *runtime.TypeDef) bool {
+// (~T by underlying-type name, unions by any-match) plus its method
+// requirements against the argument's method set; a named or
+// instantiated-named constraint resolves through the type index and
+// checks the same way — this covers self-referential constraints like
+// `A Adder[A]` without ever instantiating the constraint type. Anything
+// unresolvable is approximated satisfied — the compiler stays total and
+// wrong instantiations may still fail later.
+func (v *VM) satisfiesConstraint(ctx *runtime.TypeDef, cons ast.Expr, td *runtime.TypeDef) bool {
 	switch t := cons.(type) {
 	case nil:
 		return true
 	case *ast.ParenExpr:
-		return satisfiesConstraint(t.X, td)
+		return v.satisfiesConstraint(ctx, t.X, td)
 	case *ast.InterfaceType:
+		var reqs []string
 		for _, m := range t.Methods.List {
 			if len(m.Names) > 0 {
-				continue // method requirements approximated satisfied
+				// method requirements — checked against the method set
+				for _, n := range m.Names {
+					reqs = append(reqs, n.Name)
+				}
+				continue
 			}
-			if !satisfiesTypeElem(m.Type, td) {
+			if !v.satisfiesTypeElem(ctx, m.Type, td) {
 				return false
 			}
 		}
-		return true
+		return v.typeHasMethods(td, reqs)
 	case *ast.Ident:
 		switch t.Name {
 		case "any", "comparable":
@@ -4455,41 +5167,156 @@ func satisfiesConstraint(cons ast.Expr, td *runtime.TypeDef) bool {
 		if isBuiltinTypeName(t.Name) {
 			return tdNameOrAnon(td) == t.Name
 		}
-		return true // named constraint — approximated satisfied
+		// named constraint — resolve it and check its requirements
+		if ok, done := v.satisfiesNamed(ctx, t, td); done {
+			return ok
+		}
+		return true
 	default:
 		// top-level type elements — `T ~int`, `T ~A | ~B`, `T []int`
 		// reach the element checker; named/selector/index constraint
-		// exprs stay approximated satisfied.
+		// exprs resolve against the type index first.
 		switch cons.(type) {
 		case *ast.BinaryExpr, *ast.UnaryExpr, *ast.ArrayType, *ast.MapType, *ast.StarExpr, *ast.ChanType:
-			return satisfiesTypeElem(cons, td)
+			return v.satisfiesTypeElem(ctx, cons, td)
+		case *ast.SelectorExpr, *ast.IndexExpr, *ast.IndexListExpr:
+			if ok, done := v.satisfiesNamed(ctx, cons, td); done {
+				return ok
+			}
 		}
 		return true
 	}
 }
 
 // satisfiesTypeElem checks one type element inside a constraint interface.
-func satisfiesTypeElem(e ast.Expr, td *runtime.TypeDef) bool {
+func (v *VM) satisfiesTypeElem(ctx *runtime.TypeDef, e ast.Expr, td *runtime.TypeDef) bool {
 	switch t := e.(type) {
 	case *ast.BinaryExpr:
 		if t.Op == token.OR {
-			return satisfiesTypeElem(t.X, td) || satisfiesTypeElem(t.Y, td)
+			return v.satisfiesTypeElem(ctx, t.X, td) || v.satisfiesTypeElem(ctx, t.Y, td)
 		}
 		return true
 	case *ast.UnaryExpr:
 		if t.Op == token.TILDE {
 			return underlyingNameOf(td) == typeExprName(t.X)
 		}
-		return satisfiesTypeElem(t.X, td)
+		return v.satisfiesTypeElem(ctx, t.X, td)
 	case *ast.ParenExpr:
-		return satisfiesTypeElem(t.X, td)
+		return v.satisfiesTypeElem(ctx, t.X, td)
 	case *ast.InterfaceType:
-		// embedded interface element — methods approximated satisfied
-		return true
-	default:
+		// embedded interface literal — check its declared methods
+		var reqs []string
+		for _, m := range t.Methods.List {
+			for _, n := range m.Names {
+				reqs = append(reqs, n.Name)
+			}
+		}
+		return v.typeHasMethods(td, reqs)
+	case *ast.Ident, *ast.SelectorExpr, *ast.IndexExpr, *ast.IndexListExpr:
+		if ok, done := v.satisfiesNamed(ctx, e, td); done {
+			return ok
+		}
+		if id, ok := e.(*ast.Ident); ok {
+			switch id.Name {
+			case "any":
+				return true
+			case "comparable":
+				// approximated: slices, maps and funcs are never
+				// comparable; everything else is let through.
+				if u := v.peelNamed(td); u != nil {
+					switch u.Kind {
+					case runtime.KindSlice, runtime.KindMap, runtime.KindFunc:
+						return false
+					}
+				}
+				return true
+			case "error":
+				return v.typeHasMethods(td, []string{"Error"})
+			}
+		}
 		// bare type element: exact type-name match
 		return typeExprName(e) == tdNameOrAnon(td)
+	default:
+		return typeExprName(e) == tdNameOrAnon(td)
 	}
+}
+
+// satisfiesNamed resolves a named or instantiated constraint element
+// (`io.Reader`, `Adder[T]`) through the type index and checks the targ
+// against it: an interface checks its required methods, a concrete type
+// requires an exact match. done=false means unresolvable — callers fall
+// back to their approximation.
+func (v *VM) satisfiesNamed(ctx *runtime.TypeDef, e ast.Expr, td *runtime.TypeDef) (ok bool, done bool) {
+	if v.H.ResolveType == nil {
+		return false, false
+	}
+	var base ast.Expr
+	switch x := e.(type) {
+	case *ast.IndexExpr:
+		base = x.X
+	case *ast.IndexListExpr:
+		base = x.X
+	case *ast.Ident:
+		if isBuiltinTypeName(x.Name) {
+			return false, false
+		}
+		base = x
+	case *ast.SelectorExpr:
+		base = x
+	default:
+		return false, false
+	}
+	nt, err := v.H.ResolveType(ctx, base)
+	if err != nil || nt == nil {
+		return false, false
+	}
+	if nt.Kind == runtime.KindInterface {
+		// the constraint's type elements and embedded interfaces
+		// constrain the argument too — checking only the method set
+		// would let `interface{ ~int }` accept every type.
+		for _, e := range nt.IEmbeds {
+			if !v.satisfiesTypeElem(nt, e, td) {
+				return false, true
+			}
+		}
+		return v.typeHasMethods(td, v.ifaceReqNames(nt)), true
+	}
+	return sameTypeDef(td, nt), true
+}
+
+// ifaceReqNames collects a resolved interface typedef's required method
+// names through the engine's recursive interface requirement walk.
+func (v *VM) ifaceReqNames(nt *runtime.TypeDef) []string {
+	if v.H.IfaceReqs != nil {
+		if reqs, err := v.H.IfaceReqs(nt); err == nil && reqs != nil {
+			out := make([]string, 0, len(reqs))
+			for name := range reqs {
+				out = append(out, name)
+			}
+			return out
+		}
+	}
+	return nt.MReqs
+}
+
+// typeHasMethods reports whether td's method set covers every required
+// name — generic methods are already excluded from method sets (they
+// cannot satisfy interfaces). nil td or no method hook passes: an
+// unresolvable targ traps later on use anyway.
+func (v *VM) typeHasMethods(td *runtime.TypeDef, reqs []string) bool {
+	if len(reqs) == 0 || td == nil || v.H.TypeMethods == nil {
+		return true
+	}
+	ms, err := v.H.TypeMethods(td)
+	if err != nil || ms == nil {
+		return len(reqs) == 0
+	}
+	for _, r := range reqs {
+		if _, ok := ms[r]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // tdNameOrAnon is the exact-type name for bare constraint elements:

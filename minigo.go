@@ -181,6 +181,7 @@ func (e *Engine) newVM() *vm.VM {
 		Underlying:        e.underlying,
 		AliasOf:           e.aliasOf,
 		FieldTypes:        e.fieldTypes,
+		ResolveType:       e.resolveTypeRef,
 	}}
 }
 
@@ -751,6 +752,10 @@ func (e *Engine) typeDefOf(pkg *runtime.Package, d *index.Decl) (runtime.Value, 
 			td.Methods[name] = &runtime.Function{
 				Pkg: pkg, File: md.File, Decl: md.Func, Name: d.Name + "." + name,
 				Recv: d.Name, PtrRecv: ptrRecv, Compile: compile.Func,
+				// Go 1.27 generic methods: `func (l List[E]) Map[R any](...)`
+				// — the method's own type params ride alongside the receiver's.
+				TParams:      typeParamNames(md.Func.Type.TypeParams),
+				TConstraints: typeParamConstraints(md.Func.Type.TypeParams),
 			}
 		}
 	}

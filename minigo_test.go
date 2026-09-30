@@ -8,6 +8,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -935,6 +937,123 @@ func TestConstraintRejects(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "constraint") {
 		t.Fatalf("ConstraintBad: expected constraint trap, got %v", err)
 	}
+}
+
+func TestGo1267(t *testing.T) {
+	e := newEngine(t)
+	// Go 1.26/1.27 language deltas; every expected value was verified
+	// against go1.27.1 running the same program.
+	cases := []struct {
+		fn   string
+		want runtime.Value
+	}{
+		// 1.26: new(expr) — allocates a copy, not an alias
+		{"NewTypeForm", int64(0)},
+		{"NewExprVar", int64(5)},
+		{"NewExprCall", int64(42)},
+		{"NewExprStruct", int64(7)},
+		{"NewExprSelector", int64(3)},
+		{"NewExprSlice", int64(3)},
+		{"NewExprSliceAssign", int64(10)},
+		{"NewExprNamedSlice", int64(4)},
+		{"NewExprMapAssign", int64(41)},
+		{"NewExprGenericCall", int64(42)},
+		// 1.26: self-referential type constraints (A Adder[A])
+		{"SelfRefCons", int64(7)},
+		{"SelfRefConsInfer", int64(5)},
+		// a named constraint's type set constrains, not just its methods
+		{"NamedConsTypeSet", int64(38)},
+		// 1.27: promoted fields as composite-literal keys
+		{"PromotedLitKey", int64(11)},
+		{"PromotedLitNested", int64(7)},
+		{"PromotedLitShadow", int64(3)},
+		{"PromotedLitGeneric", int64(6)},
+		{"PromotedReadWrite", int64(9)},
+		// 1.27: generalized inference — a generic function infers from
+		// the func-typed slot it is bound to
+		{"InferAssign", int64(42)},
+		{"InferComposite", int64(42)},
+		{"InferSend", int64(42)},
+		{"InferConvert", int64(42)},
+		{"InferArg", int64(42)},
+		{"InferReturn", int64(42)},
+		// a receiver may rename its type's parameters
+		{"RecvRename", int64(5)},
+	}
+	for _, c := range cases {
+		got := run(t, e, "./testdata/go1267", c.fn)
+		if diff := cmp.Diff(c.want, got); diff != "" {
+			t.Errorf("%s mismatch (-want +got):\n%s", c.fn, diff)
+		}
+	}
+	bads := []struct {
+		fn  string
+		sub string
+	}{
+		{"SelfRefConsBad", "does not satisfy"},      // Plain lacks Add — Adder rejects it
+		{"NamedConsTypeSetBad", "does not satisfy"}, // string is not ~int|~float64
+		{"AmbigLitBad", "ambiguous"},                // X lives on both embeds
+		{"PromotedPtrPanic", "nil pointer"},         // promoted field through nil *E1
+		{"PromotedDeepPtrPanic", "nil pointer"},     // deeper field, still a nil deref
+	}
+	for _, c := range bads {
+		if _, err := e.Run(context.Background(), "./testdata/go1267", c.fn); err == nil ||
+			!strings.Contains(err.Error(), c.sub) {
+			t.Fatalf("%s: expected %q error, got %v", c.fn, c.sub, err)
+		}
+	}
+}
+
+func TestGo127(t *testing.T) {
+	// Method type parameters (`func (l List[E]) Reduce[R any]`) are a
+	// hard parse error in go/parser before go1.27, so the fixture only
+	// loads when the host toolchain is new enough.
+	if !toolchainAtLeast(1, 27) {
+		t.Skip("generic-method syntax needs go1.27+ go/parser")
+	}
+	e := newEngine(t)
+	// 1.27: generic methods — explicit instantiation, arg inference,
+	// method expressions, non-generic receivers, promotion through
+	// embedding, binding to a func-typed slot.
+	cases := []struct {
+		fn   string
+		want runtime.Value
+	}{
+		{"GenMethodInfer", int64(6)},
+		{"GenMethodExplicit", int64(10)},
+		{"GenMethodExpr", int64(9)},
+		{"GenMethodConcreteRecv", int64(22)},
+		{"GenMethodPromoted", int64(6)},
+		{"InferMethodAssign", int64(13)},
+	}
+	for _, c := range cases {
+		got := run(t, e, "./testdata/go127", c.fn)
+		if diff := cmp.Diff(c.want, got); diff != "" {
+			t.Errorf("%s mismatch (-want +got):\n%s", c.fn, diff)
+		}
+	}
+	// generic methods leave the interface method set: Impl has
+	// Call[T any] but does not satisfy `interface{ Call(int) int }`.
+	if _, err := e.Run(context.Background(), "./testdata/go127", "GenMethodIfaceBad"); err == nil ||
+		!strings.Contains(err.Error(), "cannot use") {
+		t.Fatalf("GenMethodIfaceBad: expected cannot-use error, got %v", err)
+	}
+}
+
+// toolchainAtLeast reports whether the host Go toolchain is >= major.minor
+// — the parsed language surface (go/parser) depends on it.
+func toolchainAtLeast(major, minor int) bool {
+	v := strings.TrimPrefix(goruntime.Version(), "go")
+	parts := strings.SplitN(v, ".", 3)
+	if len(parts) < 2 {
+		return false
+	}
+	maj, err1 := strconv.Atoi(parts[0])
+	min, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return maj > major || (maj == major && min >= minor)
 }
 
 func TestGotoViolations(t *testing.T) {

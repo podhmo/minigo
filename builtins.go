@@ -156,8 +156,19 @@ func builtins(e *Engine) *runtime.Env {
 		}
 	})
 	bf("new", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-		td, _ := args[0].(*runtime.TypeDef)
-		return &runtime.Cell{Elem: v.Zero(td), Typ: td}, nil
+		if len(args) != 1 {
+			return nil, fmt.Errorf("new expects exactly one argument")
+		}
+		if td, ok := args[0].(*runtime.TypeDef); ok {
+			return &runtime.Cell{Elem: v.Zero(td), Typ: td}, nil
+		}
+		// Go 1.26: new(expr) allocates and initializes to a copy of the
+		// expression's value — the cell is typed by the value's own
+		// typedef rather than a declared type form.
+		if _, isNil := args[0].(runtime.Nil); isNil {
+			return nil, fmt.Errorf("cannot use nil as type or value in new")
+		}
+		return &runtime.Cell{Elem: v.Copy(args[0]), Typ: v.TypeOf(args[0])}, nil
 	})
 	bf("close", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		var ch *runtime.Chan

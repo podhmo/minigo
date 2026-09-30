@@ -100,14 +100,18 @@ func (e *Engine) underlying(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 }
 
 // methodSetOf collects declared + promoted method names of a typedef.
+// Generic methods (Go 1.27) are excluded: they never satisfy interfaces.
 func (e *Engine) methodSetOf(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool) map[string]bool {
 	if td == nil || seen[td] {
 		return nil
 	}
 	seen[td] = true
 	set := map[string]bool{}
-	for m := range td.Methods {
-		set[m] = true
+	for name, m := range td.Methods {
+		if len(m.TParams) > 0 {
+			continue // a generic method contributes no interface method
+		}
+		set[name] = true
 	}
 	for _, spec := range td.EmbedSpecs {
 		emb, err := e.resolveTypeRef(td, spec)
@@ -276,9 +280,17 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 	case *ast.ParenExpr:
 		return e.resolveTypeRef(from, t.X)
 	case *ast.IndexExpr:
-		return e.resolveTypeRef(from, t.X)
+		base, err := e.resolveTypeRef(from, t.X)
+		if err != nil {
+			return nil, err
+		}
+		return e.instantiateRef(from, base, []ast.Expr{t.Index}), nil
 	case *ast.IndexListExpr:
-		return e.resolveTypeRef(from, t.X)
+		base, err := e.resolveTypeRef(from, t.X)
+		if err != nil {
+			return nil, err
+		}
+		return e.instantiateRef(from, base, t.Indices), nil
 	case *ast.ArrayType:
 		return &runtime.TypeDef{Kind: runtime.KindSlice, Anon: t, Pkg: from.Pkg, File: from.File, Binds: from.Binds}, nil
 	case *ast.MapType:
@@ -402,6 +414,88 @@ func (e *Engine) elemOf(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 		// bare underlying (e.g. `type T MyStruct`): the elem is that type
 		return e.resolveTypeRef(td, x)
 	}
+}
+
+// instantiateRef builds the specialized typedef for `base[args...]` like
+// the VM's specializeType does for a runtime instantiation: the type
+// parameters bind to the argument typedefs and every method is re-bound
+// so its body sees the concrete arguments. Arguments that do not resolve
+// (an unbound type parameter in a generic context) bind to a placeholder
+// named typedef so `List[T]` inside a decl stays a stable shape.
+func (e *Engine) instantiateRef(from *runtime.TypeDef, base *runtime.TypeDef, args []ast.Expr) *runtime.TypeDef {
+	if base == nil || len(base.TParams) == 0 {
+		return base
+	}
+	binds := map[string]runtime.Value{}
+	for i, tp := range base.TParams {
+		if i >= len(args) {
+			break
+		}
+		at, err := e.resolveTypeRef(from, args[i])
+		if err != nil || at == nil {
+			if id, ok := args[i].(*ast.Ident); ok {
+				at = &runtime.TypeDef{Kind: runtime.KindNamedBasic, Name: id.Name, Pkg: from.Pkg, File: from.File}
+			} else {
+				continue
+			}
+		}
+		binds[tp] = at
+	}
+	td := &runtime.TypeDef{
+		Pkg: base.Pkg, Name: base.Name, File: base.File, Spec: base.Spec, Kind: base.Kind,
+		Fields: base.Fields, FTags: base.FTags, Anon: base.Anon, TParams: base.TParams,
+		TConstraints: base.TConstraints, Binds: binds,
+		MReqs: base.MReqs, IEmbeds: base.IEmbeds,
+		EmbedSpecs: base.EmbedSpecs, EmbedIdx: base.EmbedIdx, Embeds: base.Embeds,
+	}
+	if len(base.Methods) > 0 {
+		td.Methods = make(map[string]*runtime.Function, len(base.Methods))
+		for name, m := range base.Methods {
+			mbinds := map[string]runtime.Value{}
+			for k, bv := range m.Binds {
+				mbinds[k] = bv
+			}
+			for tp, tv := range binds {
+				mbinds[tp] = tv
+			}
+			// the receiver may rename the type's parameters — bind them too
+			for i, rp := range recvParamNames(m.Decl) {
+				if i < len(base.TParams) {
+					mbinds[rp] = binds[base.TParams[i]]
+				}
+			}
+			td.Methods[name] = &runtime.Function{
+				Pkg: m.Pkg, File: m.File, Decl: m.Decl, Name: m.Name,
+				Recv: m.Recv, PtrRecv: m.PtrRecv,
+				TParams: m.TParams, TConstraints: m.TConstraints,
+				Binds: mbinds, Compile: m.Compile,
+			}
+		}
+	}
+	return td
+}
+
+// recvParamNames extracts the type parameter names a method receiver
+// declares — `func (l List[E, F])` yields [E, F]. Non-generic receivers
+// yield nil.
+func recvParamNames(d *ast.FuncDecl) []string {
+	if d == nil || d.Recv == nil || len(d.Recv.List) == 0 {
+		return nil
+	}
+	var idxs []ast.Expr
+	switch t := d.Recv.List[0].Type.(type) {
+	case *ast.IndexExpr:
+		idxs = []ast.Expr{t.Index}
+	case *ast.IndexListExpr:
+		idxs = t.Indices
+	}
+	var out []string
+	for _, x := range idxs {
+		if id, ok := x.(*ast.Ident); ok {
+			out = append(out, id.Name)
+		}
+	}
+	return out
 }
 
 // elemTypeRef resolves a container's element type expression: `*T`
