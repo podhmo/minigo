@@ -262,10 +262,8 @@ source — same as execution). `Decls` falls back to `Globals.Names()`
 yielding `Kind:"host"` symbols, so bound stdlib intrinsics
 introspect as the same object shape as source packages.
 `inspect.Standard(p)` reports the `PackageMeta.Standard` flag.
-`SourceOf(path)` is the documented bypass: for a bound path it locates
-and indexes the real source into a detached package (never published
-to `pkgs`/`byDir`, so the bound shadow keeps answering imports);
-for an unbound path it is `PackageOf`.
+Reaching a bound-shadowed package's real source is out of scope
+(a `SourceOf` bypass could be added if it turns out to matter).
 
 A bound `Fn` is an anonymous `func([]any)` adapter, so the real
 signature is unrecoverable from the bound value itself — and a PC
@@ -288,12 +286,10 @@ one; then `Signature`/`Pos` return nothing, same as a var/const.
   `token.IsExported` gate — `cd` means "enter the package", so
   unexported members are visible (the key difference from `import .`).
 - `:cd` alone reports the current package; `:cd -` returns to `<repl>`.
-- **cd changes name resolution only** — until `:pin` opts in to write
-  mode. Default `:cd` still hoists `x := ...` into the `<repl>` scratch
-  package; `:pin`/`Pin()` then publishes declarations into the visited
-  package's globals (risky by design: `engine.pkgs` is shared, so
-  mutating a Ready package affects every importer — the REPL's fresh
-  session engine confines it to this session).
+- **cd changes name resolution only.** `x := ...` still hoists into the
+  `<repl>` scratch package (option (a)); writing declarations *into*
+  the visited package is a later, opt-in command (risky: `engine.pkgs`
+  is shared, so mutating a Ready package affects every importer).
 - `:ls [name]` — `Decls` of the current package, or `Fields`/`Methods`/
   `Signature` of a named symbol. CLI-side sugar over the same inspect
   intrinsics.
@@ -334,19 +330,95 @@ one; then `Signature`/`Pos` return nothing, same as a var/const.
   identity). A looser mode (underlying-shape equality, alias
   transparency) may be needed for real codegen — start strict.
 - Interface decls: expose `MReqs`/`IEmbeds` as `Methods`-like views?
-  — resolved: yes. `Fields` reads interface members too (a uniform
-  member view: method specs keep `Names` + FuncType `TypeExpr`,
-  embedded/constraint elements are `Embedded`), and `MReqs`/`IEmbeds`
-  split the two element kinds — names mirror `TypeDef.MReqs`/`IEmbeds`.
 - Whether `:cd` ever gains a write mode (`:pin`/`:edit`) for
-  session-scoped patching of a package's globals. — resolved: `:pin`/
-  `:unpin`. `OpSetGlobal` only reaches the executing function's own
-  package, so patching works by *cell sharing*: `Pin` (after
-  `EnsureReady`) aliases the entered package's var cells into the repl
-  scope, hoists alias or publish fresh cells into `entered.Globals`,
-  func/type decls bind their materialized value in both scopes, and
-  method decls graft onto `Index.Types[recv].Methods` plus a typedef
-  eviction (method sets freeze at materialization). Decouple on unpin:
-  written names stay, borrowed names drop, pre-Pin repl cells get
-  private snapshots. `x = v` on a non-cell member (bound intrinsic,
-  func) stays a repl-local shadow — patching those needs `x := v`.
+  session-scoped patching of a package's globals.
+
+## Round-2 notes: interface members, `SourceOf`, and `:cd` write-mode
+
+The three deferred items landed in one pass; what building each one
+revealed, in the order it was worked. Tests came first per item
+(`testdata/inspectuse` script calls for the inspect surface,
+`TestREPLPinWrite` for write mode).
+
+### Interface members
+
+- **One uniform member view, plus two filtered ones.** `Fields` reads
+  interface decls too — `InterfaceType.Methods` is an `*ast.FieldList`,
+  so the struct `fieldList` path already produces the right shape:
+  named method specs keep `Names` + a FuncType `TypeExpr`, unnamed
+  elements come back `Embedded` with their type expression. The plan's
+  open question resolved as *both*: `MReqs`/`IEmbeds` split the two
+  element kinds (names mirror `TypeDef.MReqs`/`IEmbeds`), `Fields`
+  stays the flat view.
+- **A union constraint is one element, not many.** `~int | ~int64` is a
+  single field whose Type is a BinaryExpr — its `Children` are the
+  tilde terms. `IEmbeds` returns the BinaryExpr as one TypeExpr;
+  callers walk `Children`.
+- `SymbolID`/`Resolve` on an embedded element chase the name back to
+  its decl unchanged — no extra work once elements flow through the
+  Field path.
+
+### `SourceOf` — the deferred `Bind` bypass
+
+- The design text left a bound-shadowed package's real source out of
+  scope; it turned out to matter quickly — `PackageOf("strings")`
+  answers a bound object whose `Index` is nil, so nothing below the
+  name list was inspectable.
+- **`SourceOf` returns a detached package, not the canonical one.** It
+  caches into a private `e.srcs` and is deliberately never published to
+  `pkgs`/`byDir` — the bound shadow is intentional, so importers and
+  `PackageOf` keep seeing the bound object while the source copy
+  serves inspection only.
+- Unbound paths return the canonical package (`SourceOf == PackageOf`
+  there) so the locator stays total and callers need no bound-check
+  branch.
+- Caveat: value-layer access (`Value`/`TypeOf`) on real GOROOT source
+  can trap on unimplemented constructs; the index/syntax layers are
+  the intended use. Noted on the stub doc.
+
+### `:cd` write-mode — `:pin`/`:unpin`
+
+- **Why cell sharing, not store redirection.** `OpSetGlobal` writes
+  `f.fn.Pkg.Globals` — the *executing function's own* package — so a
+  repl-frame `x = v` can never reach `entered.Globals` directly.
+  Patching therefore works by aliasing: `Pin` (after `EnsureReady` so
+  decl globals exist) binds the entered package's var *cells* into the
+  repl scope, and writes through a shared cell land in the package.
+- **`x := v` reuses or shadows into a published cell.** Hoist first
+  asks `entered.Globals` for an existing writable cell and re-aliases
+  it; a non-cell member (bound `BuiltinFunc`, materialized func) or a
+  new name gets a fresh cell published at commit — which is also how
+  bound package members get patched. Plain `x = v` on a non-cell
+  member stays a repl-local shadow (`Set` writes raw); documented
+  divergence: patching those needs `:=`.
+- **Consts stay read-only.** A const's cell carries `ReadOnly`, and the
+  shared cell keeps it — `Label = "x"` traps like any const assign.
+- **Func/type decls bind one object in both scopes.** `commitWrites`
+  materializes the decl through the repl package and sets the same
+  value into `p.Globals`, so `F` and `pkg.F` keep one identity.
+  `pinnedDecls` records them because reload's materialization eviction
+  would otherwise split bare `T` (fresh typedef) from `pkg.T` (the
+  published one) — found while wiring `x.(T)` identity.
+- **Methods graft onto the index, then evict the typedef.**
+  `typeDefOf` freezes `td.Methods` at materialization, so a patched
+  method decl is recorded into `Index.Types[recv].Methods` *and* the
+  entered package's cached `Globals[recv]` typedef is dropped — next
+  access rebuilds the method set. `index.ReceiverTypeName` was
+  exported for the receiver peel.
+- **Commit is per-input, after the step runs.** `pendingWrite`/
+  `pendingDecls`/`pendingMethods` are recorded at accept time and
+  published in `commitWrites` (after `sealConsts`, on every success
+  path); `rollbackSource` clears them so a failed input never
+  half-publishes.
+- **Decouple on `:unpin`/`:cd -`/another `:cd`.** Written names stay
+  in the package (they're shared cells). Borrowed names drop from the
+  repl scope; names that were repl bindings before `Pin` (`pinPre`)
+  get a private snapshot cell so the pre-pin value survives. After
+  unpin, `x = v` on a borrowed name is a plain repl shadow again.
+- **The shared-package risk stands, contained.** Patches are
+  session-wide — every importer through this engine sees them — but
+  the REPL runs on a fresh session engine, so the blast radius is one
+  repl session. `:ls` marks published decls `patch` and bare `:cd`
+  shows `[pin]` so the mode is visible.
+- Command naming took the plan's `:pin` suggestion with the explicit
+  pair `:unpin` (over `:edit`, which implies a different session model).
