@@ -242,3 +242,93 @@ func TestREPLSpecialsAndBoundPkgs(t *testing.T) {
 	}
 	_ = v
 }
+
+func TestREPLCdLs(t *testing.T) {
+	ctx := context.Background()
+	e := NewEngine(".")
+	r := e.NewREPL()
+
+	eval := func(line string) (any, error) {
+		v, err := r.EvalLine(ctx, line)
+		if err != nil {
+			return nil, err
+		}
+		return r.Display(v), nil
+	}
+
+	// unexported names are not reachable before :cd
+	if _, err := eval("hiddenVar"); err == nil {
+		t.Fatal("hiddenVar should be undefined before :cd")
+	}
+
+	p, err := r.Enter(ctx, "github.com/podhmo/minigo/testdata/inspectpkg")
+	if err != nil {
+		t.Fatalf("Enter: %v", err)
+	}
+	if got := p.Name; got != "inspectpkg" {
+		t.Fatalf("entered %q", got)
+	}
+	if r.Current() != p {
+		t.Fatal("Current() should return the entered package")
+	}
+
+	// :ls on the entered package enumerates decls incl. unexported
+	lines, err := r.List(ctx, "")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	want := map[string]bool{"type User": true, "func Hello": true, "var hiddenVar": true, "method User.Greet": true}
+	for _, l := range lines {
+		delete(want, l)
+	}
+	for l := range want {
+		t.Errorf(":ls missing %q", l)
+	}
+
+	// bare names — including unexported — resolve while inside
+	if got, err := eval("hiddenVar"); err != nil || got != int64(1) {
+		t.Fatalf("hiddenVar: %v %v", got, err)
+	}
+	if got, err := eval(`Hello("y")`); err != nil || got != "hello y" {
+		t.Fatalf("Hello: %v %v", got, err)
+	}
+	if got, err := eval(`User{Name: "n"}.Greet()`); err != nil || got != "hi n" {
+		t.Fatalf("User literal + method: %v %v", got, err)
+	}
+
+	// after touching members, :ls still lists each decl once (the
+	// materialized global must not duplicate the index row)
+	lines, err = r.List(ctx, "")
+	if err != nil {
+		t.Fatalf("List after eval: %v", err)
+	}
+	counts := map[string]int{}
+	for _, l := range lines {
+		counts[l]++
+	}
+	for l, n := range counts {
+		if n > 1 {
+			t.Errorf(":ls shows %q %d times", l, n)
+		}
+	}
+
+	// :cd - restores <repl> scope
+	if err := r.Leave(); err != nil {
+		t.Fatalf("Leave: %v", err)
+	}
+	if r.Current() != nil {
+		t.Fatal("Current() should be nil after Leave")
+	}
+	if _, err := eval("hiddenVar"); err == nil {
+		t.Fatal("hiddenVar should be undefined after :cd -")
+	}
+
+	// :ls on a bound package lists host pseudo-decls
+	lines, err = r.List(ctx, "strings")
+	if err != nil {
+		t.Fatalf("List(strings): %v", err)
+	}
+	if len(lines) == 0 || lines[0][:4] != "host" {
+		t.Fatalf("bound list: %v", lines)
+	}
+}

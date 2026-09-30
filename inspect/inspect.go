@@ -1,0 +1,772 @@
+// Package inspect is the minigo introspection stub package
+// (docs/sketch/plan-package-introspection.md): a real, importable Go
+// package whose function declarations name the engine's inspect
+// intrinsics. Scripts import it as "minigo.dev/inspect" or by its
+// module path — the engine binds both to the same intrinsics, so the
+// panic bodies in stub.go never execute inside minigo.
+//
+// The view types (Decl, File, Import, Field, Sig, TypeExpr) are real:
+// intrinsics return them boxed as host values, so field access works
+// through reflective member dispatch. Unexported fields keep the AST
+// context (declaring file, expr) that functions like SymbolID and
+// UnWrap resolve against — they are intentionally out of the FFI.
+package inspect
+
+import (
+	"bytes"
+	"fmt"
+	"go/ast"
+	"go/printer"
+	"go/token"
+	"reflect"
+	"strconv"
+	"strings"
+
+	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/runtime"
+	"github.com/podhmo/minigo/syntax"
+)
+
+// BuiltinPackagePath is the pseudo import path predeclared identifiers
+// resolve to.
+const BuiltinPackagePath = ":builtin:"
+
+// Decl is a declaration-level view of one package member (the "Symbol"
+// the script API speaks of; renamed here to avoid colliding with the
+// Symbol stub function).
+type Decl struct {
+	Package *runtime.Package // owning package — SymbolOf(x).Package chains
+	Kind    string           // "func"|"method"|"var"|"const"|"type"|"host"
+	Name    string
+	File    string // declaring file name ("" for host symbols)
+	Pos     string // "file.go:12:6" ("" for host symbols)
+	Doc     string // doc comment text ("" for host symbols)
+
+	decl  *index.Decl
+	file  *syntax.File
+	hsig  *Sig // synthesized host signature (BuiltinFunc.Target)
+	htype reflect.Type
+}
+
+// NewDecl builds a source-decl view.
+func NewDecl(pkg *runtime.Package, d *index.Decl) *Decl {
+	s := &Decl{Package: pkg, decl: d}
+	if d == nil {
+		s.Kind = "host"
+		return s
+	}
+	s.Name = d.Name
+	if d.File != nil {
+		s.file = d.File
+		s.File = d.File.Name
+	}
+	if pkg != nil && pkg.Fset != nil {
+		s.Pos = pkg.Fset.Position(d.Pos).String()
+	}
+	switch d.Kind {
+	case index.FuncDecl:
+		if d.Func != nil && d.Func.Recv != nil {
+			s.Kind = "method"
+		} else {
+			s.Kind = "func"
+		}
+		if d.Func != nil {
+			s.Doc = docText(d.Func.Doc)
+		}
+	case index.TypeDecl:
+		s.Kind = "type"
+		if ts, ok := d.Spec.(*ast.TypeSpec); ok && ts.Doc != nil {
+			s.Doc = ts.Doc.Text()
+		} else {
+			s.Doc = docText(d.Gen.Doc)
+		}
+	case index.VarDecl, index.ConstDecl:
+		if d.Kind == index.VarDecl {
+			s.Kind = "var"
+		} else {
+			s.Kind = "const"
+		}
+		if vs, ok := d.Spec.(*ast.ValueSpec); ok && vs.Doc != nil {
+			s.Doc = vs.Doc.Text()
+		} else {
+			s.Doc = docText(d.Gen.Doc)
+		}
+	default:
+		s.Kind = "decl"
+	}
+	return s
+}
+
+// NewHostDecl builds a Kind:"host" pseudo-decl for a bound member.
+// sig may be nil.
+func NewHostDecl(pkg *runtime.Package, name string, sig *Sig, target reflect.Type) *Decl {
+	return &Decl{Package: pkg, Kind: "host", Name: name, hsig: sig, htype: target}
+}
+
+// File is a view of one source file of a package.
+type File struct {
+	Name string
+	Doc  string
+
+	pkg  *runtime.Package
+	sf   *syntax.File
+	fset *token.FileSet
+}
+
+// NewFile builds a file view.
+func NewFile(pkg *runtime.Package, sf *syntax.File) *File {
+	f := &File{pkg: pkg, sf: sf, fset: pkg.Fset}
+	f.Name = sf.Name
+	if sf.AST != nil && sf.AST.Doc != nil {
+		f.Doc = sf.AST.Doc.Text()
+	}
+	return f
+}
+
+// Import is one entry of a file's import table.
+type Import struct {
+	Path string
+	Name string // local name: alias or the package's declared name
+	Pos  string
+
+	ref *runtime.ImportRef // materializes on demand
+}
+
+// NewImport builds an import view for one syntax import entry.
+func NewImport(fset *token.FileSet, imp *syntax.Import, ref *runtime.ImportRef) *Import {
+	i := &Import{Path: imp.Path, Name: imp.LocalName(), ref: ref}
+	if fset != nil {
+		i.Pos = fset.Position(imp.Pos).String()
+	}
+	return i
+}
+
+// Ref exposes the backing ImportRef — engine-only.
+func (i *Import) Ref() *runtime.ImportRef { return i.ref }
+
+// Field is a view over one *ast.Field: a struct field, a signature
+// parameter, or a method's receiver.
+type Field struct {
+	Names    []string // empty for embedded fields and unnamed params
+	Type     *TypeExpr
+	Tag      string // struct tag, unquoted
+	Doc      string
+	Embedded bool
+	Pos      string
+}
+
+// Sig is a func/method declaration's shape (the "Signature" the script
+// API speaks of; renamed to avoid colliding with the Signature stub).
+type Sig struct {
+	Recv    *Field // nil for plain funcs
+	Params  *runtime.Slice
+	Results *runtime.Slice
+}
+
+// TypeExpr is a handle over one type expression: the declared spelling
+// plus the context needed to resolve the names it mentions.
+type TypeExpr struct {
+	Text string // printer spelling of the declaration
+	Kind string // ast node name: "Ident", "SelectorExpr", "StarExpr", ...
+
+	expr ast.Expr
+	file *syntax.File
+	pkg  *runtime.Package
+	ht   reflect.Type // host-backed alternative (BuiltinFunc.Target sigs)
+}
+
+// NewTypeExpr builds a syntax-backed type expression.
+func NewTypeExpr(e ast.Expr, f *syntax.File, p *runtime.Package) *TypeExpr {
+	te := &TypeExpr{expr: e, file: f, pkg: p}
+	if e != nil {
+		te.Kind = reflect.TypeOf(e).Elem().Name()
+		var buf bytes.Buffer
+		fset := token.NewFileSet()
+		if p != nil && p.Fset != nil {
+			fset = p.Fset
+		}
+		if err := printer.Fprint(&buf, fset, e); err == nil {
+			te.Text = buf.String()
+		}
+	}
+	return te
+}
+
+// NewHostType builds a reflect-backed type expression for host symbols.
+func NewHostType(t reflect.Type) *TypeExpr {
+	te := &TypeExpr{ht: t}
+	if t != nil {
+		te.Kind = "reflect:" + t.Kind().String()
+		te.Text = t.String()
+	}
+	return te
+}
+
+// Resolver turns a SymbolID into the decl view it names — the engine
+// supplies the implementation.
+type Resolver func(sid runtime.SymbolID) (*Decl, error)
+
+func docText(g *ast.CommentGroup) string {
+	if g == nil {
+		return ""
+	}
+	return g.Text()
+}
+
+func fieldList(fl *ast.FieldList, f *syntax.File, p *runtime.Package) []*Field {
+	if fl == nil {
+		return nil
+	}
+	var out []*Field
+	for _, fd := range fl.List {
+		fv := &Field{Type: NewTypeExpr(fd.Type, f, p), Doc: fieldDoc(fd)}
+		for _, n := range fd.Names {
+			fv.Names = append(fv.Names, n.Name)
+		}
+		fv.Embedded = len(fd.Names) == 0
+		if fd.Tag != nil {
+			fv.Tag = strings.Trim(fd.Tag.Value, "`")
+		}
+		if p != nil && p.Fset != nil {
+			fv.Pos = p.Fset.Position(fd.Pos()).String()
+		}
+		out = append(out, fv)
+	}
+	return out
+}
+
+func fieldDoc(fd *ast.Field) string {
+	if fd.Doc != nil {
+		return fd.Doc.Text()
+	}
+	if fd.Comment != nil {
+		return fd.Comment.Text()
+	}
+	return ""
+}
+
+func boxFields(fs []*Field) *runtime.Slice {
+	xs := make([]runtime.Value, len(fs))
+	for i, f := range fs {
+		xs[i] = &runtime.GoValue{V: f}
+	}
+	return &runtime.Slice{Elems: xs}
+}
+
+// FieldsOf returns the declared fields of a struct type symbol. Named
+// non-struct types and non-type symbols report an error — call Def and
+// navigate the TypeExpr when the spelling matters.
+func FieldsOf(s *Decl) ([]*Field, error) {
+	if s.decl == nil {
+		return nil, fmt.Errorf("inspect.Fields: host symbol %s has no declaration", s.Name)
+	}
+	ts, ok := s.decl.Spec.(*ast.TypeSpec)
+	if !ok {
+		return nil, fmt.Errorf("inspect.Fields: %s is not a type", s.Name)
+	}
+	st, ok := ts.Type.(*ast.StructType)
+	if !ok {
+		return nil, fmt.Errorf("inspect.Fields: %s is not a struct type", s.Name)
+	}
+	return fieldList(st.Fields, s.file, s.Package), nil
+}
+
+// MethodsOf returns the method decls of a type symbol.
+func MethodsOf(s *Decl) ([]*Decl, error) {
+	if s.decl == nil || s.Package == nil || s.Package.Index == nil {
+		return nil, fmt.Errorf("inspect.Methods: %s has no method index", s.Name)
+	}
+	td, ok := s.Package.Index.Types[s.Name]
+	if !ok {
+		return nil, fmt.Errorf("inspect.Methods: %s is not a type", s.Name)
+	}
+	var out []*Decl
+	for _, md := range td.Methods {
+		out = append(out, NewDecl(s.Package, md))
+	}
+	return out, nil
+}
+
+// SignatureOf returns the func/method signature, or the synthesized
+// host signature for a bound intrinsic that carries a Target.
+func SignatureOf(s *Decl) (*Sig, error) {
+	if s.hsig != nil {
+		return s.hsig, nil
+	}
+	if s.decl == nil || s.decl.Func == nil {
+		return nil, fmt.Errorf("inspect.Signature: %s has no signature", s.Name)
+	}
+	ft := s.decl.Func.Type
+	sig := &Sig{
+		Params:  boxFields(fieldList(ft.Params, s.file, s.Package)),
+		Results: boxFields(fieldList(ft.Results, s.file, s.Package)),
+	}
+	if s.decl.Func.Recv != nil && len(s.decl.Func.Recv.List) > 0 {
+		recv := s.decl.Func.Recv.List[0]
+		fv := &Field{Type: NewTypeExpr(recv.Type, s.file, s.Package)}
+		for _, n := range recv.Names {
+			fv.Names = append(fv.Names, n.Name)
+		}
+		if s.Package != nil && s.Package.Fset != nil {
+			fv.Pos = s.Package.Fset.Position(recv.Pos()).String()
+		}
+		sig.Recv = fv
+	}
+	return sig, nil
+}
+
+// TypeParamsOf returns the type parameter fields of a generic decl.
+func TypeParamsOf(s *Decl) ([]*Field, error) {
+	if s.decl == nil {
+		return nil, fmt.Errorf("inspect.TypeParams: %s is not a decl", s.Name)
+	}
+	var fl *ast.FieldList
+	switch {
+	case s.decl.Func != nil:
+		fl = s.decl.Func.Type.TypeParams
+	default:
+		if ts, ok := s.decl.Spec.(*ast.TypeSpec); ok {
+			fl = ts.TypeParams
+		}
+	}
+	return fieldList(fl, s.file, s.Package), nil
+}
+
+// DefOf returns the declared type expression of a type symbol.
+func DefOf(s *Decl) (*TypeExpr, error) {
+	if s.decl == nil {
+		if s.htype != nil {
+			return NewHostType(s.htype), nil
+		}
+		return nil, fmt.Errorf("inspect.Def: %s is not a decl", s.Name)
+	}
+	ts, ok := s.decl.Spec.(*ast.TypeSpec)
+	if !ok {
+		return nil, fmt.Errorf("inspect.Def: %s is not a type", s.Name)
+	}
+	return NewTypeExpr(ts.Type, s.file, s.Package), nil
+}
+
+// Expr exposes the underlying ast.Expr — engine-only, out of the FFI
+// (member dispatch sees only exported fields).
+func (te *TypeExpr) Expr() ast.Expr { return te.expr }
+
+// Children drills into a composite type expression: []T -> T,
+// map[K]V -> K then V, *T -> T, func(A) B -> A then B.
+func (te *TypeExpr) Children() []*TypeExpr {
+	if te.ht != nil {
+		return te.hostChildren()
+	}
+	wrap := func(e ast.Expr) *TypeExpr { return NewTypeExpr(e, te.file, te.pkg) }
+	var out []*TypeExpr
+	switch e := te.expr.(type) {
+	case *ast.StarExpr:
+		out = append(out, wrap(e.X))
+	case *ast.ArrayType:
+		out = append(out, wrap(e.Elt))
+	case *ast.MapType:
+		out = append(out, wrap(e.Key), wrap(e.Value))
+	case *ast.ChanType:
+		out = append(out, wrap(e.Value))
+	case *ast.Ellipsis:
+		out = append(out, wrap(e.Elt))
+	case *ast.ParenExpr:
+		out = append(out, wrap(e.X))
+	case *ast.IndexExpr:
+		out = append(out, wrap(e.Index))
+	case *ast.IndexListExpr:
+		for _, ix := range e.Indices {
+			out = append(out, wrap(ix))
+		}
+	case *ast.UnaryExpr:
+		out = append(out, wrap(e.X)) // ~T constraints
+	case *ast.BinaryExpr:
+		out = append(out, wrap(e.X), wrap(e.Y)) // A | B unions
+	case *ast.FuncType:
+		for _, fd := range fieldList(e.Params, te.file, te.pkg) {
+			out = append(out, fd.Type)
+		}
+		for _, fd := range fieldList(e.Results, te.file, te.pkg) {
+			out = append(out, fd.Type)
+		}
+	case *ast.StructType:
+		for _, fd := range fieldList(e.Fields, te.file, te.pkg) {
+			out = append(out, fd.Type)
+		}
+	case *ast.InterfaceType:
+		for _, fd := range fieldList(e.Methods, te.file, te.pkg) {
+			out = append(out, fd.Type)
+		}
+	}
+	return out
+}
+
+func (te *TypeExpr) hostChildren() []*TypeExpr {
+	t := te.ht
+	var out []*TypeExpr
+	switch t.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Chan:
+		out = append(out, NewHostType(t.Elem()))
+	case reflect.Map:
+		out = append(out, NewHostType(t.Key()), NewHostType(t.Elem()))
+	case reflect.Func:
+		for i := 0; i < t.NumIn(); i++ {
+			out = append(out, NewHostType(t.In(i)))
+		}
+		for i := 0; i < t.NumOut(); i++ {
+			out = append(out, NewHostType(t.Out(i)))
+		}
+	case reflect.Struct:
+		for i := 0; i < t.NumField(); i++ {
+			out = append(out, NewHostType(t.Field(i).Type))
+		}
+	case reflect.Interface:
+		for i := 0; i < t.NumMethod(); i++ {
+			out = append(out, NewHostType(t.Method(i).Type))
+		}
+	}
+	return out
+}
+
+// Unref strips one pointer layer: *T -> T; other shapes pass through.
+// (Named Unref — UnRef is taken by the stub declaration.)
+func (te *TypeExpr) Unref() *TypeExpr {
+	if te.ht != nil {
+		if te.ht.Kind() == reflect.Pointer {
+			return NewHostType(te.ht.Elem())
+		}
+		return te
+	}
+	if e, ok := te.expr.(*ast.StarExpr); ok {
+		return NewTypeExpr(e.X, te.file, te.pkg)
+	}
+	return te
+}
+
+// Unwrap peels one declared-type layer: an identifier or selector naming
+// a type resolves to that decl's underlying TypeExpr; other shapes pass
+// through. A newtype and an alias both count as one layer.
+func (te *TypeExpr) Unwrap(res Resolver) *TypeExpr {
+	sid, ok := te.SymbolID()
+	if !ok || sid.PackagePath == BuiltinPackagePath {
+		return te
+	}
+	sym, err := res(sid)
+	if err != nil || sym == nil || sym.decl == nil {
+		return te
+	}
+	ts, ok := sym.decl.Spec.(*ast.TypeSpec)
+	if !ok {
+		return te
+	}
+	return NewTypeExpr(ts.Type, sym.file, sym.Package)
+}
+
+// Origin chases the whole declared chain: pointers AND type transitions
+// until the terminal base expression, where Origin(x) == x.
+// A recursive decl (type Node *Node) stops at the repeated symbol
+// rather than looping forever.
+func (te *TypeExpr) Origin(res Resolver) *TypeExpr {
+	seen := map[runtime.SymbolID]bool{}
+	for {
+		if u := te.Unref(); u != te {
+			te = u
+			continue
+		}
+		if sid, ok := te.SymbolID(); ok {
+			if seen[sid] {
+				return te
+			}
+			seen[sid] = true
+		}
+		if w := te.Unwrap(res); w != te {
+			te = w
+			continue
+		}
+		return te
+	}
+}
+
+var predeclared = map[string]bool{
+	"bool": true, "byte": true, "complex64": true, "complex128": true,
+	"error": true, "float32": true, "float64": true, "int": true,
+	"int8": true, "int16": true, "int32": true, "int64": true,
+	"rune": true, "string": true, "uint": true, "uint8": true,
+	"uint16": true, "uint32": true, "uint64": true, "uintptr": true,
+	"any": true, "comparable": true,
+}
+
+// SymbolID resolves a type expression to the SymbolID it names:
+// Ident -> declaring package or ":builtin:", SelectorExpr -> the
+// declaring file's import table. Composite exprs report not-ok.
+func (te *TypeExpr) SymbolID() (runtime.SymbolID, bool) {
+	if te.ht != nil {
+		t := te.ht
+		if t.Name() == "" || t.PkgPath() == "" {
+			return runtime.SymbolID{PackagePath: BuiltinPackagePath, Name: t.String()}, true
+		}
+		return runtime.SymbolID{PackagePath: t.PkgPath(), Name: t.Name()}, true
+	}
+	switch e := te.expr.(type) {
+	case *ast.Ident:
+		if te.pkg != nil && te.pkg.Index != nil {
+			if _, ok := te.pkg.Index.Types[e.Name]; ok {
+				return runtime.SymbolID{PackagePath: te.pkg.Path, Name: e.Name}, true
+			}
+		}
+		if predeclared[e.Name] {
+			return runtime.SymbolID{PackagePath: BuiltinPackagePath, Name: e.Name}, true
+		}
+		if te.pkg != nil {
+			return runtime.SymbolID{PackagePath: te.pkg.Path, Name: e.Name}, true
+		}
+		return runtime.SymbolID{PackagePath: BuiltinPackagePath, Name: e.Name}, true
+	case *ast.SelectorExpr:
+		x, ok := e.X.(*ast.Ident)
+		if !ok || te.file == nil {
+			return runtime.SymbolID{}, false
+		}
+		for _, imp := range te.file.Imports {
+			if imp.LocalName() == x.Name {
+				return runtime.SymbolID{PackagePath: imp.Path, Name: e.Sel.Name}, true
+			}
+		}
+		return runtime.SymbolID{}, false
+	}
+	return runtime.SymbolID{}, false
+}
+
+// SameType is strict structural equality over TypeExpr trees: named
+// references compare by SymbolID (declared-type identity — an alias and
+// its target do NOT collapse), composites compare Kind and children.
+func (a *TypeExpr) SameType(b *TypeExpr, res Resolver) bool {
+	sa, oka := a.SymbolID()
+	sb, okb := b.SymbolID()
+	if oka && okb {
+		return sa == sb
+	}
+	if oka != okb {
+		return false
+	}
+	if a.Kind != b.Kind {
+		return false
+	}
+	if !a.sameShapeExtra(b, res) {
+		return false
+	}
+	ca, cb := a.Children(), b.Children()
+	if len(ca) != len(cb) {
+		return false
+	}
+	for i := range ca {
+		if !ca[i].SameType(cb[i], res) {
+			return false
+		}
+	}
+	return true
+}
+
+// sameShapeExtra compares the node fields Children does not expose:
+// array length and channel direction ([2]int != [3]int,
+// chan T != <-chan T).
+func (a *TypeExpr) sameShapeExtra(b *TypeExpr, res Resolver) bool {
+	switch ea := a.expr.(type) {
+	case *ast.ArrayType:
+		eb, ok := b.expr.(*ast.ArrayType)
+		if !ok {
+			return false
+		}
+		return sameArrayLen(a.withExpr(ea.Len), b.withExpr(eb.Len), res)
+	case *ast.ChanType:
+		eb, ok := b.expr.(*ast.ChanType)
+		return ok && ea.Dir == eb.Dir
+	}
+	return true
+}
+
+// withExpr views a sub-expression in the same file/package context.
+func (te *TypeExpr) withExpr(e ast.Expr) *TypeExpr {
+	if e == nil {
+		return nil
+	}
+	return NewTypeExpr(e, te.file, te.pkg)
+}
+
+// sameArrayLen compares two array-length expressions: both nil is a
+// slice; otherwise the constant values when evaluatable ([1+1]int ==
+// [2]int), else the resolved symbol identity ([N]int), else spelling.
+func sameArrayLen(a, b *TypeExpr, res Resolver) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	va, oka := lenConst(a, res)
+	vb, okb := lenConst(b, res)
+	if oka && okb {
+		return va == vb
+	}
+	if oka != okb {
+		return false
+	}
+	sa, oka2 := a.SymbolID()
+	sb, okb2 := b.SymbolID()
+	if oka2 && okb2 {
+		return sa == sb
+	}
+	if oka2 != okb2 {
+		return false
+	}
+	return a.Text == b.Text
+}
+
+// lenConst evaluates a length expression, chasing ident/selector
+// references into the const decl's value ([sizeN]int == [2]int when
+// sizeN = 2). Inherited iota specs stay unevaluatable.
+func lenConst(te *TypeExpr, res Resolver) (int64, bool) {
+	if v, ok := constInt(te.expr); ok {
+		return v, true
+	}
+	sid, ok := te.SymbolID()
+	if !ok || sid.PackagePath == BuiltinPackagePath {
+		return 0, false
+	}
+	sym, err := res(sid)
+	if err != nil || sym == nil || sym.decl == nil {
+		return 0, false
+	}
+	vs, ok := sym.decl.Spec.(*ast.ValueSpec)
+	if !ok || sym.decl.NameIdx >= len(vs.Values) {
+		return 0, false
+	}
+	return constInt(vs.Values[sym.decl.NameIdx])
+}
+
+// constInt evaluates small constant integer expressions used as array
+// lengths: literals, unary +/- and the arithmetic/bitwise ops. Idents
+// (named constants) and anything else report not-ok.
+func constInt(e ast.Expr) (int64, bool) {
+	switch x := e.(type) {
+	case *ast.BasicLit:
+		if x.Kind == token.INT {
+			v, err := strconv.ParseInt(x.Value, 0, 64)
+			return v, err == nil
+		}
+	case *ast.ParenExpr:
+		return constInt(x.X)
+	case *ast.UnaryExpr:
+		v, ok := constInt(x.X)
+		if !ok {
+			return 0, false
+		}
+		switch x.Op {
+		case token.ADD:
+			return v, true
+		case token.SUB:
+			return -v, true
+		case token.XOR:
+			return ^v, true
+		}
+	case *ast.BinaryExpr:
+		l, ok1 := constInt(x.X)
+		r, ok2 := constInt(x.Y)
+		if !ok1 || !ok2 {
+			return 0, false
+		}
+		switch x.Op {
+		case token.ADD:
+			return l + r, true
+		case token.SUB:
+			return l - r, true
+		case token.MUL:
+			return l * r, true
+		case token.QUO:
+			if r != 0 {
+				return l / r, true
+			}
+		case token.REM:
+			if r != 0 {
+				return l % r, true
+			}
+		case token.SHL:
+			return l << uint(r), true
+		case token.SHR:
+			return l >> uint(r), true
+		case token.AND:
+			return l & r, true
+		case token.OR:
+			return l | r, true
+		case token.XOR:
+			return l ^ r, true
+		}
+	}
+	return 0, false
+}
+
+// UsedSymbolsOf walks a file's AST for SelectorExpr on an import-local
+// name: every imported member the file actually references.
+func UsedSymbolsOf(f *File) []runtime.SymbolID {
+	if f.sf == nil || f.sf.AST == nil {
+		return nil
+	}
+	local := map[string]string{}
+	for _, imp := range f.sf.Imports {
+		local[imp.LocalName()] = imp.Path
+	}
+	seen := map[runtime.SymbolID]bool{}
+	var out []runtime.SymbolID
+	ast.Inspect(f.sf.AST, func(n ast.Node) bool {
+		se, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		x, ok := se.X.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		if path, ok := local[x.Name]; ok {
+			sid := runtime.SymbolID{PackagePath: path, Name: se.Sel.Name}
+			if !seen[sid] {
+				seen[sid] = true
+				out = append(out, sid)
+			}
+		}
+		return true
+	})
+	return out
+}
+
+// ImportsOf returns the file's own import table.
+func ImportsOf(f *File) []*Import {
+	if f.sf == nil {
+		return nil
+	}
+	refs := map[*syntax.Import]*runtime.ImportRef{}
+	if f.pkg != nil {
+		if rl := f.pkg.Imports[f.sf]; rl != nil {
+			for i, imp := range f.sf.Imports {
+				if i < len(rl) && rl[i].Path == imp.Path {
+					refs[imp] = rl[i]
+				}
+			}
+		}
+	}
+	var out []*Import
+	for _, imp := range f.sf.Imports {
+		out = append(out, NewImport(f.fset, imp, refs[imp]))
+	}
+	return out
+}
+
+// SyntaxFile exposes the underlying file — engine-only.
+func (f *File) SyntaxFile() *syntax.File { return f.sf }
+
+// Pkg exposes the owning package — engine-only.
+func (f *File) Pkg() *runtime.Package { return f.pkg }
+
+// DeclOf exposes the underlying index decl — engine-only.
+func (s *Decl) DeclOf() *index.Decl { return s.decl }
+
+// DeclFile exposes the declaring file — engine-only.
+func (s *Decl) DeclFile() *syntax.File { return s.file }
+
+// Target exposes the host reflect type — engine-only.
+func (s *Decl) Target() reflect.Type { return s.htype }

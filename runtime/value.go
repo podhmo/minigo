@@ -370,6 +370,13 @@ type BoundMethod struct {
 type BuiltinFunc struct {
 	Name string
 	Fn   func(vm VMCaller, args []Value) (Value, error)
+	// Pkg is the package this builtin was bound under (stamped by
+	// Engine.Bind); nil for ad-hoc builtins.
+	Pkg *Package
+	// Target optionally holds the underlying Go func value the builtin
+	// adapts — inspect.Signature reads reflect.TypeOf it for the real
+	// signature. Nil for intrinsics that declare no target.
+	Target any
 }
 
 // VMCaller is the piece of the VM builtins need (kept narrow to avoid a
@@ -386,6 +393,9 @@ type VMCaller interface {
 	// Zero returns the Go zero value of a typedef (struct fields get
 	// typed zeros, nilable kinds get TypedNil) — used by new().
 	Zero(td *TypeDef) Value
+	// Package returns the package of the innermost running frame — the
+	// caller's package for inspect.Current. Nil when no frame runs.
+	Package() *Package
 }
 
 // Function is a compiled-or-compilable function. Chunk is produced lazily
