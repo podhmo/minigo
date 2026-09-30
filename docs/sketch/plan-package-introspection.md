@@ -412,9 +412,9 @@ revealed, in the order it was worked. Tests came first per item
   half-publishes.
 - **Decouple on `:unpin`/`:cd -`/another `:cd`.** Written names stay
   in the package (they're shared cells). Borrowed names drop from the
-  repl scope; names that were repl bindings before `Pin` (`pinPre`)
-  get a private snapshot cell so the pre-pin value survives. After
-  unpin, `x = v` on a borrowed name is a plain repl shadow again.
+  repl scope; names the alias shadowed are restored — `pinPre` keeps
+  the repl binding object itself, so the pre-pin value (and cell
+  identity for anything that referenced it) survives the pin.
 - **The shared-package risk stands, contained.** Patches are
   session-wide — every importer through this engine sees them — but
   the REPL runs on a fresh session engine, so the blast radius is one
@@ -422,3 +422,39 @@ revealed, in the order it was worked. Tests came first per item
   shows `[pin]` so the mode is visible.
 - Command naming took the plan's `:pin` suggestion with the explicit
   pair `:unpin` (over `:edit`, which implies a different session model).
+
+### Post-review fixes (first Devin Review pass)
+
+- **`pinPre` snapshots → saved bindings.** Unpin used to copy the
+  shared cell's *current* value into a private cell for names that
+  existed before Pin — so `x := 1` + pin + `x = 5` + unpin left repl
+  `x` at 5 and lost the original 1. Now `pinPre` stores the displaced
+  repl binding object and Unpin hands it back: the loan ends, you get
+  your own variable — and writes stay where they went (the package).
+- **Aliases are loans, not `pending` globals.** A `x := v` alias was
+  also recorded in `pending`, so a *failed* input (e.g.
+  `x := oops()`) deleted the repl binding mid-session and every later
+  `x = v` fell back to a repl-local raw Set — silently unpatching.
+  Aliased names now skip `pending` (the alias predates the input;
+  rollback only removes what the input created).
+- **Published decls move packages.** A published func/type kept
+  `Pkg = <repl>`, so its body resolved globals through the repl
+  package — under `:cd` that worked via the pseudo dot-import, but
+  `:cd -` removed it and the patch broke for every caller. Commit now
+  retargets `Function.Pkg`/`TypeDef.Pkg` (and nested method Pkgs) to
+  the entered package — the patch *is* a package member, SymbolID
+  included. Side effect: a patch can no longer see unpublished repl
+  scratch decls — surfaced immediately rather than silently breaking
+  on Leave, which is the honest behavior for a moved decl.
+- **The decl's file context travels with it.** The second half of the
+  same bug: `resolveGlobalE` reads `pkg.Scopes[file]`/`Imports[file]`,
+  and a replFile has no entry inside the entered package — grafted
+  methods (typed `Pkg` correctly by `typeDefOf`) couldn't resolve a
+  single repl import. `graftScope` registers the repl file's import
+  table into the entered package at commit, skipping the self
+  dot-import.
+- **Method grafts reach live typedefs too.** A method on a
+  `:pin`-declared type (`type T2 ...` then `func (t T2) M()`) has no
+  index entry in the entered package — the graft now falls back to
+  the published `*runtime.TypeDef` in `Globals`, via a shared
+  `engine.methodFunc` helper extracted from `typeDefOf`.

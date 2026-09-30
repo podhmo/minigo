@@ -42,15 +42,15 @@ type REPL struct {
 	// writeMode (:pin) publishes each input's new declarations into the
 	// entered package's globals — session-scoped monkey-patching.
 	// sharedCells tracks repl names bound to the package's own cells so
-	// `x = v` writes through and Unpin/Leave can decouple; pinPre marks
-	// which shared names were already repl bindings before Pin (borrowed
-	// names are deleted on decouple, pre-existing ones snapshotted).
+	// `x = v` writes through and Unpin/Leave can decouple; pinPre saves
+	// the repl binding a shared name had before it was aliased (borrowed
+	// names are deleted on decouple, pre-existing ones restored).
 	// pinnedDecls names the func/type decls published so far — reload's
 	// materialization eviction must skip them or `T` and `pkg.T` would
 	// diverge into different TypeDef identities.
 	writeMode   bool
 	sharedCells map[string]*runtime.Cell
-	pinPre      map[string]bool
+	pinPre      map[string]runtime.Value
 	pinnedDecls map[string]bool
 	// the current input's write-mode records: hoisted names to publish,
 	// func/type decl names, and method decls (receiver + name)
@@ -300,6 +300,9 @@ func (r *REPL) commitWrites() {
 			}
 		}
 	}
+	if len(r.pendingDecls)+len(r.pendingMethods) > 0 {
+		r.graftScope(p, r.pkg.Files[0])
+	}
 	for _, n := range r.pendingDecls {
 		d, err := r.engine.lookupDeclIn(r.pkg, n)
 		if err != nil || d == nil {
@@ -309,6 +312,19 @@ func (r *REPL) commitWrites() {
 		if err != nil || v == nil || v == runtime.NIL {
 			continue
 		}
+		// the decl moves into the package: retarget its identity so
+		// global lookups and SymbolID report the entered package — a
+		// patch that keeps Pkg=<repl> would lose the package's own
+		// members the moment :cd is left (the pseudo import is gone)
+		switch t := v.(type) {
+		case *runtime.Function:
+			t.Pkg = p
+		case *runtime.TypeDef:
+			t.Pkg = p
+			for _, m := range t.Methods {
+				m.Pkg = p
+			}
+		}
 		p.Globals.Set(n, v)
 		r.pkg.Globals.Set(n, v)
 		if r.pinnedDecls == nil {
@@ -317,13 +333,6 @@ func (r *REPL) commitWrites() {
 		r.pinnedDecls[n] = true
 	}
 	for _, m := range r.pendingMethods {
-		if p.Index == nil {
-			continue // bound package: no type index to graft onto
-		}
-		td, ok := p.Index.Types[m.recv]
-		if !ok || td.Decl == nil {
-			continue // receiver type lives outside the entered package
-		}
 		src, ok := r.pkg.Index.Types[m.recv]
 		if !ok {
 			continue
@@ -332,13 +341,57 @@ func (r *REPL) commitWrites() {
 		if !ok {
 			continue
 		}
-		if td.Methods == nil {
-			td.Methods = map[string]*index.Decl{}
+		if p.Index != nil {
+			if td, ok := p.Index.Types[m.recv]; ok && td.Decl != nil {
+				if td.Methods == nil {
+					td.Methods = map[string]*index.Decl{}
+				}
+				td.Methods[m.name] = d
+				// a materialized typedef froze its method set at build
+				// time — evict the cached value so the next Member
+				// rebuilds it patched
+				p.Globals.Delete(m.recv)
+				continue
+			}
 		}
-		td.Methods[m.name] = d
-		// a materialized typedef froze its method set at build time —
-		// evict the cached value so the next Member rebuilds it patched
-		p.Globals.Delete(m.recv)
+		// the receiver is not an index type of the entered package
+		// (e.g. a type the repl itself just published): graft onto the
+		// live typedef instead
+		if gv, ok := p.Globals.Get(m.recv); ok {
+			if td, ok := gv.(*runtime.TypeDef); ok {
+				if td.Methods == nil {
+					td.Methods = map[string]*runtime.Function{}
+				}
+				td.Methods[m.name] = r.engine.methodFunc(p, m.recv, d)
+			}
+		}
+	}
+}
+
+// graftScope registers the repl file's import context inside the
+// entered package. Published decls keep their repl syntax.File, and
+// name resolution consults pkg.Scopes[file] / pkg.Imports[file] —
+// without this their bodies lose every repl import (strings & co).
+// The :cd pseudo dot-import back into the package is skipped: the
+// package's own names resolve through its globals/index.
+func (r *REPL) graftScope(p *runtime.Package, f *syntax.File) {
+	if f == nil {
+		return
+	}
+	if p.Scopes == nil {
+		p.Scopes = map[*syntax.File]map[string]*runtime.ImportRef{}
+	}
+	if sc, ok := r.pkg.Scopes[f]; ok && len(sc) > 0 {
+		p.Scopes[f] = sc
+	}
+	if p.Imports == nil {
+		p.Imports = map[*syntax.File][]*runtime.ImportRef{}
+	}
+	for _, ref := range r.pkg.Imports[f] {
+		if ref.Alias == "." && ref.Path == p.Path {
+			continue
+		}
+		p.Imports[f] = append(p.Imports[f], ref)
 	}
 }
 
@@ -487,9 +540,17 @@ func (r *REPL) hoist(name string) {
 	if r.writeMode && r.entered != nil {
 		if gv, ok := r.entered.Globals.Get(name); ok {
 			if c, isCell := gv.(*runtime.Cell); isCell && !c.ReadOnly {
+				if _, recorded := r.pinPre[name]; !recorded {
+					// save the binding being shadowed — but not the
+					// package cell itself on a re-hoist
+					if old, ok := r.pkg.Globals.Get(name); ok && old != c {
+						r.pinPre[name] = old
+					}
+				}
 				r.pkg.Globals.Set(name, c)
 				r.sharedCells[name] = c
-				r.pending = append(r.pending, name)
+				// the alias is a loan, not a new global — keep it out of
+				// pending so a failed input cannot sever write-through
 				r.pendingWrite = append(r.pendingWrite, name)
 				return
 			}
@@ -656,14 +717,18 @@ func (r *REPL) Pin() error {
 	}
 	r.writeMode = true
 	r.sharedCells = map[string]*runtime.Cell{}
-	r.pinPre = map[string]bool{}
+	r.pinPre = map[string]runtime.Value{}
 	for _, name := range r.entered.Globals.Names() {
 		gv, _ := r.entered.Globals.Get(name)
 		c, ok := gv.(*runtime.Cell)
 		if !ok {
 			continue
 		}
-		_, r.pinPre[name] = r.pkg.Globals.Get(name)
+		// a same-named repl binding is shadowed by the alias — save it
+		// so Unpin hands the name back to its original owner
+		if old, ok := r.pkg.Globals.Get(name); ok {
+			r.pinPre[name] = old
+		}
 		r.pkg.Globals.Set(name, c)
 		r.sharedCells[name] = c
 	}
@@ -674,9 +739,9 @@ func (r *REPL) Pin() error {
 func (r *REPL) Pinned() bool { return r.writeMode }
 
 // Unpin turns write mode off. What was written stays in the entered
-// package; the repl scope decouples — names it owned before Pin get
-// private snapshot cells, names borrowed from the package are dropped
-// (bare lookup falls back to the :cd dot-import).
+// package; the repl scope decouples — names it owned before the alias
+// get their saved bindings back, names borrowed from the package are
+// dropped (bare lookup falls back to the :cd dot-import).
 func (r *REPL) Unpin() {
 	if !r.writeMode {
 		return
@@ -687,8 +752,8 @@ func (r *REPL) Unpin() {
 		if !ok || gv != c {
 			continue
 		}
-		if r.pinPre[name] {
-			r.pkg.Globals.Set(name, &runtime.Cell{Elem: c.Elem, Typ: c.Typ, ReadOnly: c.ReadOnly})
+		if old, ok := r.pinPre[name]; ok {
+			r.pkg.Globals.Set(name, old)
 		} else {
 			r.pkg.Globals.Delete(name)
 		}

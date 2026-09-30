@@ -799,16 +799,22 @@ func (e *Engine) typeDefOf(pkg *runtime.Package, d *index.Decl) (runtime.Value, 
 	if info, ok := pkg.Index.Types[d.Name]; ok && len(info.Methods) > 0 {
 		td.Methods = map[string]*runtime.Function{}
 		for name, md := range info.Methods {
-			_, ptrRecv := md.Func.Recv.List[0].Type.(*ast.StarExpr)
-			td.Methods[name] = &runtime.Function{
-				Pkg: pkg, File: md.File, Decl: md.Func, Name: d.Name + "." + name,
-				Recv: d.Name, PtrRecv: ptrRecv, Compile: compile.Func,
-				// Go 1.27 generic methods: `func (l List[E]) Map[R any](...)`
-				// — the method's own type params ride alongside the receiver's.
-				TParams:      typeParamNames(md.Func.Type.TypeParams),
-				TConstraints: typeParamConstraints(md.Func.Type.TypeParams),
-			}
+			td.Methods[name] = e.methodFunc(pkg, d.Name, md)
 		}
 	}
 	return td, nil
+}
+
+// methodFunc builds the runtime.Function for one method decl — shared by
+// typeDefOf (index materialization) and the REPL's :pin method grafts.
+func (e *Engine) methodFunc(pkg *runtime.Package, recv string, md *index.Decl) *runtime.Function {
+	_, ptrRecv := md.Func.Recv.List[0].Type.(*ast.StarExpr)
+	return &runtime.Function{
+		Pkg: pkg, File: md.File, Decl: md.Func, Name: recv + "." + md.Name,
+		Recv: recv, PtrRecv: ptrRecv, Compile: compile.Func,
+		// Go 1.27 generic methods: `func (l List[E]) Map[R any](...)`
+		// — the method's own type params ride alongside the receiver's.
+		TParams:      typeParamNames(md.Func.Type.TypeParams),
+		TConstraints: typeParamConstraints(md.Func.Type.TypeParams),
+	}
 }
