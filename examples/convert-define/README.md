@@ -1,6 +1,6 @@
 # Go Type Converter (`examples/convert-define`)
 
-This directory contains `convert-define`, a command-line tool that automatically generates Go type conversion functions. It uses a vendored copy of `go-scan` (under `pkg/`) to parse a Go-based configuration file, understand the desired struct mappings, and then generate the necessary boilerplate code for converting one struct type to another.
+This directory contains `convert-define`, a command-line tool that automatically generates Go type conversion functions. The definition file runs inside the `minigo` interpreter itself: `define.Convert`/`define.Rule` are registered special forms, so their arguments arrive as quoted AST. Type information comes from minigo's own lazy package loading (`engine.Package`) viewed through the `inspect` layer (`inspect/inspect.go`) — the vendored copy of `go-scan` this tool used to ship under `pkg/` is gone.
 
 This tool provides a modern, IDE-friendly way to define conversions, replacing the older annotation-based approach.
 
@@ -91,13 +91,14 @@ The public API is housed in the `github.com/podhmo/minigo/examples/convert-defin
 *   `c.Convert(dstField, srcField, converterFunc)`: Maps two fields that require a **custom conversion function**.
 *   `c.Compute(dstField, expression)`: Maps a destination field that is **computed from an expression**.
 
-## Role of `go-scan`
+## Role of `minigo` and `inspect`
 
-`go-scan` (vendored under `pkg/`, see `pkg/SOURCE.md`) is essential for this tool. It allows the parser to:
-*   Read and understand the structure of Go types (structs, fields, etc.) **without compiling the code**.
-*   Analyze the Go code in your `definitions.go` file as an Abstract Syntax Tree (AST).
-*   Resolve type information across different packages, which is critical for handling complex models.
-*   Manage imports dynamically in the generated code via its `ImportManager`.
+The tool leans entirely on the interpreter it already runs in:
+*   The `define` DSL file executes on the minigo stack-VM; `define.Convert`/`define.Rule` calls arrive quoted (AST, never evaluated) at special-form handlers in `internal/`.
+*   `ctx.File()`/`ctx.Package()` wrap param exprs as `inspect.TypeExpr`, whose `SymbolID()` resolves `pkg.Type` to `{import path, name}` through the file's import table **without loading the package**.
+*   `engine.Package` locates/parses/indexes exactly the packages the DSL touches; `inspect.FieldsOf`, `SignatureOf`, `DefOf` provide decl views; `TypeExpr`'s `Kind`/`Children`/`Unref`/`Resolve` walk type structure lazily.
+*   Bound stdlib packages (e.g. `time`) have no source index, so known members surface as host pseudo-decls — the role `scanner.ExternalTypeOverride` used to play.
+*   `generator.ImportManager` manages imports dynamically in the generated code (moved out of the vendored tree; it never depended on a scanner).
 
 <details>
 <summary>Legacy Method: Annotation-Based Configuration</summary>

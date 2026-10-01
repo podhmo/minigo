@@ -9,8 +9,6 @@ import (
 
 	"github.com/podhmo/minigo/examples/convert-define/generator"
 	"github.com/podhmo/minigo/examples/convert-define/internal"
-	goscan "github.com/podhmo/minigo/examples/convert-define/pkg/goscan"
-	"github.com/podhmo/minigo/examples/convert-define/pkg/scanner"
 	"golang.org/x/tools/imports"
 )
 
@@ -49,23 +47,7 @@ func main() {
 func run(ctx context.Context, defineFile, output string, dryRun bool, buildTags string) error {
 	slog.InfoContext(ctx, "Starting parser", "file", defineFile)
 
-	// Add overrides for standard library types that cause scanning issues.
-	overrides := scanner.ExternalTypeOverride{
-		"time.Time": &scanner.TypeInfo{
-			Name:    "Time",
-			PkgPath: "time",
-			Kind:    scanner.StructKind,
-		},
-		"*time.Time": &scanner.TypeInfo{
-			Name:    "Time",
-			PkgPath: "time",
-			Kind:    scanner.StructKind,
-		},
-	}
-	runner, err := internal.NewRunner(
-		goscan.WithGoModuleResolver(),
-		goscan.WithExternalTypeOverrides(overrides),
-	)
+	runner, err := internal.NewRunner()
 	if err != nil {
 		return fmt.Errorf("failed to create interpreter runner: %w", err)
 	}
@@ -83,7 +65,7 @@ func run(ctx context.Context, defineFile, output string, dryRun bool, buildTags 
 	if buildTags != "" {
 		header = fmt.Sprintf("\n//go:build %s\n// +build %s\n\n", buildTags, buildTags)
 	}
-	generatedCode, err := generator.Generate(runner.Scanner(), runner.Info, header)
+	generatedCode, err := generator.Generate(runner.TypeResolver(), runner.Info, header)
 	if err != nil {
 		return fmt.Errorf("failed to generate code: %w", err)
 	}

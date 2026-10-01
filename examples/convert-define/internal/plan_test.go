@@ -5,15 +5,17 @@ import (
 	"path/filepath"
 	"testing"
 
+	"slices"
+
 	"github.com/google/go-cmp/cmp"
-	goscan "github.com/podhmo/minigo/examples/convert-define/pkg/goscan"
 	"github.com/podhmo/minigo/resolve"
 )
 
 // spyResolver records every package the minigo engine resolves. The plan's
 // core laziness claim (docs/sketch/plan-minigo-vm.md §12.2) is that quoted
-// special calls never materialize what they reference — so on a fully
-// lazy run these lists stay empty.
+// special calls never materialize what they reference at eval time — the
+// interpreter itself locates nothing, and the handlers then pay only for
+// the packages the DSL actually names.
 type spyResolver struct {
 	inner   resolve.Resolver
 	located []string
@@ -37,17 +39,17 @@ func (s *spyResolver) LocateDir(ctx context.Context, dir string) (*resolve.Packa
 //     import still compiles to SPECIAL_CALL;
 //   - specials fire only when reached: the dead `if false` branch never
 //     evaluates `bogus.Nope` (a package that does not exist);
-//   - quoting never materializes: the engine's resolver sees zero Locate /
-//     LocateDir calls — define, convutil, source and destination are all
-//     only read host-side or left as AST;
+//   - quoting never materializes at eval time: the engine's resolver sees
+//     no Locate call from interpretation itself. Scanning happens inside
+//     the special handlers through the same lazy loader (engine.Package),
+//     so exactly the packages the DSL names are located — convutil,
+//     source and destination — while define (a special, not a package)
+//     and bogus (a dead branch) are never located;
 //   - the //go:build codegen DSL file is a first-class entry (LoadFile).
 func TestConvertDefineSatisfiesPlan(t *testing.T) {
 	wd := filepath.Join("..", "testdata", "plan")
 
-	runner, err := NewRunner(
-		goscan.WithWorkDir(wd),
-		goscan.WithGoModuleResolver(),
-	)
+	runner, err := NewRunner()
 	if err != nil {
 		t.Fatalf("NewRunner() failed: %+v", err)
 	}
@@ -107,12 +109,22 @@ func TestConvertDefineSatisfiesPlan(t *testing.T) {
 		t.Errorf("ID tag DstFieldName: want %q, got %q", want, got)
 	}
 
-	// The laziness claim: quoting an import never locates the package.
-	// define (special), bogus (dead branch), convutil/source/destination
-	// (quoted args read host-side) never hit the engine's resolver.
-	if len(spy.located) != 0 {
-		t.Errorf("engine materialized packages: %v", spy.located)
+	// The laziness claim, restated for the inspect-based pipeline:
+	// interpretation itself locates nothing — LoadFile reads only the
+	// DSL file's own directory — while the special handlers resolve each
+	// quoted argument's package on demand. Exactly the touched packages
+	// are located; the `define` special and the dead `bogus` import are
+	// never located.
+	wantLocated := []string{
+		"example.com/plan/convutil",
+		"example.com/plan/destination",
+		"example.com/plan/source",
 	}
+	slices.Sort(spy.located)
+	if diff := cmp.Diff(wantLocated, spy.located); diff != "" {
+		t.Errorf("located packages mismatch (-want +got):\n%s", diff)
+	}
+	// LoadFile reads the DSL file directly — no directory is located either.
 	if len(spy.dirs) != 0 {
 		t.Errorf("engine located directories: %v", spy.dirs)
 	}

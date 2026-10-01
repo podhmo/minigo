@@ -4,19 +4,17 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/podhmo/minigo/examples/convert-define/pkg/scanner"
+	xinspect "github.com/podhmo/minigo/inspect"
 )
 
 // ParsedInfo holds all parsed conversion rules and type information.
 type ParsedInfo struct {
-	PackageName       string
-	PackagePath       string // Import path of the package being parsed
-	ConversionPairs   []ConversionPair
-	GlobalRules       []TypeRule
-	Imports           map[string]string // alias -> import path
-	Structs           map[string]*StructInfo
-	NamedTypes        map[string]*scanner.TypeInfo
-	ProcessedPackages map[string]bool // Tracks import paths that have been parsed
+	PackageName     string
+	PackagePath     string // Import path of the package being parsed
+	ConversionPairs []ConversionPair
+	GlobalRules     []TypeRule
+	Imports         map[string]string // alias -> import path
+	Structs         map[string]*StructInfo
 }
 
 // Variable defines a variable to be declared in the converter function.
@@ -49,8 +47,8 @@ type MappingInfo struct {
 type ConversionPair struct {
 	SrcTypeName string
 	DstTypeName string
-	SrcTypeInfo *scanner.TypeInfo
-	DstTypeInfo *scanner.TypeInfo
+	SrcTypeInfo *xinspect.Decl
+	DstTypeInfo *xinspect.Decl
 	Mapping     *MappingInfo // Explicit mapping rules from define.Mapping
 	MaxErrors   int
 	Variables   []Variable
@@ -61,19 +59,17 @@ type ConversionPair struct {
 type TypeRule struct {
 	SrcTypeName   string
 	DstTypeName   string
-	SrcTypeInfo   *scanner.TypeInfo
-	DstTypeInfo   *scanner.TypeInfo
+	SrcTypeInfo   *xinspect.Decl
+	DstTypeInfo   *xinspect.Decl
 	UsingFunc     string
 	ValidatorFunc string
 }
 
 // StructInfo holds information about a parsed struct.
 type StructInfo struct {
-	Name            string
-	Fields          []FieldInfo
-	Type            *scanner.TypeInfo
-	IsAlias         bool
-	UnderlyingAlias *scanner.TypeInfo
+	Name   string
+	Fields []FieldInfo
+	Type   *xinspect.Decl
 }
 
 // FieldInfo holds information about a field within a struct.
@@ -81,8 +77,7 @@ type FieldInfo struct {
 	Name         string
 	OriginalName string
 	JSONTag      string
-	TypeInfo     *scanner.TypeInfo  // The resolved TypeInfo for the field's type
-	FieldType    *scanner.FieldType // The detailed FieldType
+	FieldType    *xinspect.TypeExpr // The declared field type, as an inspect view
 	Tag          ConvertTag
 	ParentStruct *StructInfo
 }
@@ -94,22 +89,6 @@ type ConvertTag struct {
 	Required     bool
 	RawValue     string
 }
-
-type TypeKind int
-
-const (
-	KindUnknown TypeKind = iota
-	KindBasic
-	KindIdent // Identifier, could be a struct, named type, etc.
-	KindPointer
-	KindSlice
-	KindArray
-	KindMap
-	KindInterface
-	KindStruct // Specifically a struct type definition
-	KindNamed  // A named type (type MyInt int)
-	KindFunc
-)
 
 // ErrorCollector accumulates errors during a conversion process.
 type ErrorCollector struct {
