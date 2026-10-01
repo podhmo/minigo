@@ -8,12 +8,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/examples/convert-define/model"
-	goscan "github.com/podhmo/minigo/examples/convert-define/pkg/goscan"
-	"github.com/podhmo/minigo/examples/convert-define/pkg/scanner"
+	xinspect "github.com/podhmo/minigo/inspect"
 	"github.com/podhmo/minigo/resolve"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -23,10 +23,12 @@ const definePkgPath = "github.com/podhmo/minigo/examples/convert-define/define"
 // Runner manages the execution of a minigo script for conversion definitions.
 // The engine is a minigo stack-VM interpreter; the define calls arrive as
 // quoted special-form calls, so the DSL file's body is inspected as AST,
-// never evaluated.
+// never evaluated. Type information comes from the engine's own lazy
+// package loading (engine.Package) viewed through the inspect layer —
+// no separate scanner.
 type Runner struct {
-	scanner *goscan.Scanner
-	pkg     *runtime.Package // the loaded define file's package
+	engine *minigo.Engine
+	pkg    *runtime.Package // the loaded define file's package
 
 	// resolver, when non-nil, is installed on the minigo engine — a test
 	// hook for observing (or stubbing) package resolution.
@@ -36,28 +38,57 @@ type Runner struct {
 }
 
 // NewRunner creates a new interpreter runner.
-func NewRunner(scannerOpts ...goscan.ScannerOption) (*Runner, error) {
-	scanner, err := goscan.New(scannerOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("creating scanner: %w", err)
-	}
-
+func NewRunner() (*Runner, error) {
 	r := &Runner{
-		scanner: scanner,
 		Info: &model.ParsedInfo{
-			Imports:           make(map[string]string),
-			Structs:           make(map[string]*model.StructInfo),
-			ConversionPairs:   []model.ConversionPair{},
-			GlobalRules:       []model.TypeRule{},
-			ProcessedPackages: make(map[string]bool),
+			Imports:         make(map[string]string),
+			Structs:         make(map[string]*model.StructInfo),
+			ConversionPairs: []model.ConversionPair{},
+			GlobalRules:     []model.TypeRule{},
 		},
 	}
 	return r, nil
 }
 
-// Scanner returns the scanner instance.
-func (r *Runner) Scanner() *goscan.Scanner {
-	return r.scanner
+// TypeResolver exposes the engine's lazy package loading as an
+// inspect.Resolver so downstream stages (the generator) can chase
+// declarations by SymbolID.
+func (r *Runner) TypeResolver() xinspect.Resolver {
+	return func(sid runtime.SymbolID) (*xinspect.Decl, error) {
+		return r.lookupDecl(context.Background(), sid)
+	}
+}
+
+// lookupDecl resolves a SymbolID to a decl view through the engine:
+// source packages report the parsed decl; bound packages (the
+// interpreter's compiled-in stdlib) carry no index, so a known member
+// is reported as an opaque host decl — the role
+// scanner.ExternalTypeOverride played in the vendored pipeline.
+//
+// Engine.SourceOf could reach the real decl behind the shadow, but this
+// consumer deliberately keeps bound stdlib types opaque: a real
+// time.Time decl would parse GOROOT source (laziness), answer
+// IsStructDecl=true and route same-type field copies into a nonexistent
+// convertTimeToTime call, and introspect internals generated code could
+// never assign anyway.
+func (r *Runner) lookupDecl(gctx context.Context, sid runtime.SymbolID) (*xinspect.Decl, error) {
+	if sid.PackagePath == "" || sid.PackagePath == xinspect.BuiltinPackagePath {
+		return nil, nil
+	}
+	p, err := r.engine.Package(gctx, sid.PackagePath)
+	if err != nil {
+		return nil, err
+	}
+	if p.Index != nil {
+		if td, ok := p.Index.Types[sid.Name]; ok && td.Decl != nil {
+			return xinspect.NewDecl(p, td.Decl), nil
+		}
+		return nil, nil
+	}
+	if p.Standard {
+		return xinspect.NewHostDecl(p, sid.Name, nil, nil), nil
+	}
+	return nil, nil
 }
 
 // PackageName returns the package name of the loaded define file.
@@ -86,6 +117,7 @@ func (r *Runner) Run(ctx context.Context, filename string) error {
 	}
 	engine.RegisterSpecial(runtime.SymbolID{PackagePath: definePkgPath, Name: "Convert"}, r.handleConvert)
 	engine.RegisterSpecial(runtime.SymbolID{PackagePath: definePkgPath, Name: "Rule"}, r.handleRule)
+	r.engine = engine
 
 	pkg, err := engine.LoadFile(ctx, abs)
 	if err != nil {
@@ -112,29 +144,26 @@ func (r *Runner) handleConvert(ctx runtime.SpecialContext, call *runtime.QuotedC
 	}
 
 	// Infer types from function signature: func(c *Config, dst *Dst, src *Src)
-	// Param 1 is dst, Param 2 is src (after skipping config)
-	dstTypeExpr := fnLit.Type.Params.List[1].Type
-	srcTypeExpr := fnLit.Type.Params.List[2].Type
+	// Param 1 is dst, Param 2 is src (after skipping config). The param
+	// types are wrapped as inspect TypeExprs in the caller file's context,
+	// so `*dst.T` unwraps to a SymbolID through the file's import table.
+	dstTE := xinspect.NewTypeExpr(fnLit.Type.Params.List[1].Type, ctx.File(), ctx.Package())
+	srcTE := xinspect.NewTypeExpr(fnLit.Type.Params.List[2].Type, ctx.File(), ctx.Package())
 
-	// The types will be *ast.StarExpr, we need to get the underlying type expr.
-	if star, ok := dstTypeExpr.(*ast.StarExpr); ok {
-		dstTypeExpr = star.X
-	} else {
+	if dstTE.Kind != "StarExpr" {
 		return nil, ctx.Errorf(call.Call, "destination type in mapping function must be a pointer")
 	}
-	if star, ok := srcTypeExpr.(*ast.StarExpr); ok {
-		srcTypeExpr = star.X
-	} else {
+	if srcTE.Kind != "StarExpr" {
 		return nil, ctx.Errorf(call.Call, "source type in mapping function must be a pointer")
 	}
 
-	srcType, err := r.resolveTypeFromExpr(ctx, srcTypeExpr)
+	srcType, err := r.resolveTypeExpr(ctx, srcTE)
 	if err != nil {
 		return nil, ctx.Errorf(call.Call, "could not resolve source type from mapping function: %v", err)
 	}
 	r.ensureStructInfo(srcType)
 
-	dstType, err := r.resolveTypeFromExpr(ctx, dstTypeExpr)
+	dstType, err := r.resolveTypeExpr(ctx, dstTE)
 	if err != nil {
 		return nil, ctx.Errorf(call.Call, "could not resolve destination type from mapping function: %v", err)
 	}
@@ -154,6 +183,9 @@ func (r *Runner) handleConvert(ctx runtime.SpecialContext, call *runtime.QuotedC
 		pair:    &pair,
 		srcInfo: r.Info.Structs[srcType.Name],
 	}
+	if walker.srcInfo == nil {
+		return nil, ctx.Errorf(call.Call, "source type %s must be a struct", srcType.Name)
+	}
 
 	ast.Walk(walker, fnLit.Body)
 	if walker.err != nil {
@@ -166,59 +198,76 @@ func (r *Runner) handleConvert(ctx runtime.SpecialContext, call *runtime.QuotedC
 	return runtime.NIL, nil
 }
 
-// ensureStructInfo checks if a model.StructInfo exists for the given scanner.TypeInfo,
-// creating it from the scanner info if it doesn't.
-func (r *Runner) ensureStructInfo(typeInfo *scanner.TypeInfo) {
-	if _, exists := r.Info.Structs[typeInfo.Name]; exists {
+// ensureStructInfo materializes a model.StructInfo for a struct decl,
+// copying the inspect field views (names + TypeExpr) — including the
+// struct tags the vendored model accepted but never populated.
+func (r *Runner) ensureStructInfo(d *xinspect.Decl) {
+	if d == nil || !model.IsStructDecl(d) {
 		return
 	}
-	if typeInfo.Struct == nil {
+	if _, exists := r.Info.Structs[d.Name]; exists {
+		return
+	}
+	fields, err := xinspect.FieldsOf(d)
+	if err != nil {
 		return
 	}
 
-	slog.Debug("creating new model.StructInfo", "name", typeInfo.Name)
+	slog.Debug("creating new model.StructInfo", "name", d.Name)
 	structInfo := &model.StructInfo{
-		Name: typeInfo.Name,
-		Type: typeInfo,
+		Name: d.Name,
+		Type: d,
 	}
-	for _, f := range typeInfo.Struct.Fields {
-		fieldInfo := model.FieldInfo{
-			Name:         f.Name,
-			OriginalName: f.Name,
-			FieldType:    f.Type,
-			ParentStruct: structInfo,
+	for _, f := range fields {
+		names := f.Names
+		if len(names) == 0 {
+			names = []string{embeddedFieldName(f.Type)}
 		}
-		structInfo.Fields = append(structInfo.Fields, fieldInfo)
+		jsonTag := ""
+		if f.Tag != "" {
+			jsonTag = strings.Split(reflect.StructTag(f.Tag).Get("json"), ",")[0]
+		}
+		for _, name := range names {
+			fieldInfo := model.FieldInfo{
+				Name:         name,
+				OriginalName: name,
+				JSONTag:      jsonTag,
+				FieldType:    f.Type,
+				ParentStruct: structInfo,
+			}
+			structInfo.Fields = append(structInfo.Fields, fieldInfo)
+		}
 	}
-	r.Info.Structs[typeInfo.Name] = structInfo
+	r.Info.Structs[d.Name] = structInfo
 }
 
-// resolveTypeFromExpr resolves a type expression to a scanner.TypeInfo.
-func (r *Runner) resolveTypeFromExpr(ctx runtime.SpecialContext, expr ast.Expr) (*scanner.TypeInfo, error) {
-	if cl, ok := expr.(*ast.CompositeLit); ok {
-		expr = cl.Type
+// embeddedFieldName derives the field name of an embedded member from
+// its type's leaf name (e.g. `pkg.Base` -> `Base`, `*pkg.Base` -> `Base`).
+func embeddedFieldName(te *xinspect.TypeExpr) string {
+	if sid, ok := te.Unref().SymbolID(); ok {
+		return sid.Name
 	}
-	selector, ok := expr.(*ast.SelectorExpr)
+	return te.Text
+}
+
+// resolveTypeExpr resolves a type expr to its decl view through the
+// engine's package loader: Unref peels any pointer layer, SymbolID
+// maps the leaf to {import path, name} without loading the package,
+// and only then is the declaring package located.
+func (r *Runner) resolveTypeExpr(ctx runtime.SpecialContext, te *xinspect.TypeExpr) (*xinspect.Decl, error) {
+	sid, ok := te.Unref().SymbolID()
 	if !ok {
-		return nil, fmt.Errorf("expected a selector expression (pkg.Type), but got %T", expr)
-	}
-	sym, err := ctx.ResolveSymbol(selector)
-	if err != nil {
-		return nil, err
-	}
-	pkgPath, typeName := sym.PackagePath, sym.Name
-
-	pkgInfo, err := r.scanner.ScanPackageFromImportPath(context.Background(), pkgPath)
-	if err != nil {
-		return nil, fmt.Errorf("could not scan package %q: %w", pkgPath, err)
+		return nil, fmt.Errorf("expected a package-qualified type (pkg.Type), but got %q", te.Text)
 	}
 
-	for _, t := range pkgInfo.Types {
-		if t.Name == typeName {
-			return t, nil
-		}
+	d, err := r.lookupDecl(context.Background(), sid)
+	if err != nil {
+		return nil, fmt.Errorf("could not load package %q: %w", sid.PackagePath, err)
 	}
-	return nil, fmt.Errorf("type %q not found in package %q", typeName, pkgPath)
+	if d == nil {
+		return nil, fmt.Errorf("type %q not found in package %q", sid.Name, sid.PackagePath)
+	}
+	return d, nil
 }
 
 func (r *Runner) handleRule(ctx runtime.SpecialContext, call *runtime.QuotedCall) (runtime.Value, error) {
@@ -241,47 +290,52 @@ func (r *Runner) handleRule(ctx runtime.SpecialContext, call *runtime.QuotedCall
 	pkgPath, funcName := sym.PackagePath, sym.Name
 
 	gctx := context.Background()
-	pkgInfo, err := r.scanner.ScanPackageFromImportPath(gctx, pkgPath)
+	p, err := r.engine.Package(gctx, pkgPath)
 	if err != nil {
-		return nil, ctx.Errorf(call.Call, "could not scan package %q: %v", pkgPath, err)
+		return nil, ctx.Errorf(call.Call, "could not load package %q: %v", pkgPath, err)
 	}
-	var foundFunc *scanner.FunctionInfo
-	for _, f := range pkgInfo.Functions {
-		if f.Name == funcName {
-			foundFunc = f
-			break
+	var fnDecl *xinspect.Decl
+	if p.Index != nil {
+		if fd := p.Index.Funcs[funcName]; fd != nil {
+			fnDecl = xinspect.NewDecl(p, fd)
 		}
 	}
-	if foundFunc == nil {
+	if fnDecl == nil {
 		return nil, ctx.Errorf(call.Call, "function %q not found in package %q", funcName, pkgPath)
 	}
+	sig, err := xinspect.SignatureOf(fnDecl)
+	if err != nil {
+		return nil, ctx.Errorf(call.Call, "rule function %s has no readable signature: %v", funcName, err)
+	}
+	params, results := sig.ParamFields(), sig.ResultFields()
 	// A valid rule function has at least one parameter and exactly one result.
 	// The source type is the last parameter.
-	if len(foundFunc.Parameters) == 0 || len(foundFunc.Results) != 1 {
-		return nil, ctx.Errorf(call.Call, "rule function %s must have at least one parameter and exactly one result", foundFunc.Name)
+	if len(params) == 0 || len(results) != 1 {
+		return nil, ctx.Errorf(call.Call, "rule function %s must have at least one parameter and exactly one result", funcName)
 	}
 
-	srcField := foundFunc.Parameters[len(foundFunc.Parameters)-1]
-	dstField := foundFunc.Results[0]
-	srcTypeInfo, err := srcField.Type.Resolve(gctx)
+	srcTE := params[len(params)-1].Type
+	dstTE := results[0].Type
+	res := r.TypeResolver()
+	srcTypeInfo, err := model.ResolveNamed(res, srcTE)
 	if err != nil {
 		return nil, ctx.Errorf(call.Call, "could not resolve source type for rule: %v", err)
 	}
-	dstTypeInfo, err := dstField.Type.Resolve(gctx)
+	dstTypeInfo, err := model.ResolveNamed(res, dstTE)
 	if err != nil {
 		return nil, ctx.Errorf(call.Call, "could not resolve destination type for rule: %v", err)
 	}
-	if srcTypeInfo == nil && !srcField.Type.IsBuiltin {
-		return nil, ctx.Errorf(call.Call, "could not resolve source type definition for rule: %s", srcField.Type.String())
+	if srcTypeInfo == nil && !isBuiltinType(srcTE) {
+		return nil, ctx.Errorf(call.Call, "could not resolve source type definition for rule: %s", srcTE.Text)
 	}
-	if dstTypeInfo == nil && !dstField.Type.IsBuiltin {
-		return nil, ctx.Errorf(call.Call, "could not resolve destination type definition for rule: %s", dstField.Type.String())
+	if dstTypeInfo == nil && !isBuiltinType(dstTE) {
+		return nil, ctx.Errorf(call.Call, "could not resolve destination type definition for rule: %s", dstTE.Text)
 	}
 
 	usingFunc := fmt.Sprintf("%s.%s", pkgIdent.Name, funcName)
 	rule := model.TypeRule{
-		SrcTypeName: srcField.Type.String(),
-		DstTypeName: dstField.Type.String(),
+		SrcTypeName: srcTE.CanonicalName(),
+		DstTypeName: dstTE.CanonicalName(),
 		SrcTypeInfo: srcTypeInfo,
 		DstTypeInfo: dstTypeInfo,
 		UsingFunc:   usingFunc,
@@ -291,6 +345,12 @@ func (r *Runner) handleRule(ctx runtime.SpecialContext, call *runtime.QuotedCall
 		r.Info.Imports[pkgIdent.Name] = pkgPath
 	}
 	return runtime.NIL, nil
+}
+
+// isBuiltinType reports whether the type expr names a predeclared type.
+func isBuiltinType(te *xinspect.TypeExpr) bool {
+	sid, ok := te.Unref().SymbolID()
+	return ok && sid.PackagePath == xinspect.BuiltinPackagePath
 }
 
 type mappingWalker struct {

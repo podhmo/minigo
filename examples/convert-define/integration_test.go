@@ -128,3 +128,100 @@ func main() {
 		t.Errorf("generated code mismatch (-want +got):\n%s", diff)
 	}
 }
+
+// TestIntegration_GenericAndJSONTag covers two gaps the inspect-based
+// rewrite exposed: a field of generic instantiation type ([]box.Box[T])
+// needs its base package imported in generated code (Children() does not
+// reach IndexExpr.X, so registerImports walks it via TypeExpr.Sub), and
+// struct `json:"..."` tags must actually populate FieldInfo.JSONTag for
+// the priority-2 shared-json-tag field matching to fire (Src.ID ->
+// Dst.UserID via the shared `user_id` tag, without an explicit c.Map).
+func TestIntegration_GenericAndJSONTag(t *testing.T) {
+	files := map[string]string{
+		"go.mod": `
+module example.com/m2
+go 1.22
+`,
+		"define.go": `
+package main
+
+import (
+	"example.com/m2/destination"
+	"example.com/m2/source"
+	"github.com/podhmo/minigo/examples/convert-define/define"
+)
+
+func main() {
+	define.Convert(func(c *define.Config, dst *destination.Dst, src *source.Src) {
+	})
+}
+`,
+		"box/box.go": `
+package box
+
+type Box[T any] struct {
+	V T
+}
+`,
+		"source/source.go": `
+package source
+
+import "example.com/m2/box"
+
+type Src struct {
+	ID   int64            ` + "`json:\"user_id\"`" + `
+	Tags []box.Box[string]
+}
+`,
+		"destination/destination.go": `
+package destination
+
+import "example.com/m2/box"
+
+type Dst struct {
+	UserID int64 ` + "`json:\"user_id\"`" + `
+	Tags   []box.Box[string]
+}
+`,
+	}
+
+	dir := writeFiles(t, files)
+
+	ctx := context.Background()
+	defineFile := filepath.Join(dir, "define.go")
+	outputFile := filepath.Join(dir, "generated.go")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("could not get cwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("could not chdir to temp dir: %v", err)
+	}
+	defer os.Chdir(cwd)
+
+	if err := run(ctx, defineFile, outputFile, false /* dryRun */, ""); err != nil {
+		t.Fatalf("run failed: %+v", err)
+	}
+
+	got, err := os.ReadFile(outputFile)
+	if err != nil {
+		t.Fatalf("reading generated.go: %v", err)
+	}
+
+	goldenFile := filepath.Join(cwd, "testdata", "integration_generic.go.golden")
+	if *update {
+		if err := os.WriteFile(goldenFile, got, 0644); err != nil {
+			t.Fatalf("writing golden file: %v", err)
+		}
+	}
+
+	want, err := os.ReadFile(goldenFile)
+	if err != nil {
+		t.Fatalf("reading golden file: %v", err)
+	}
+
+	if diff := cmp.Diff(string(want), string(got)); diff != "" {
+		t.Errorf("generated code mismatch (-want +got):\n%s", diff)
+	}
+}

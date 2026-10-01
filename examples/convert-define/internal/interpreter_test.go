@@ -7,18 +7,15 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo/examples/convert-define/model"
-	goscan "github.com/podhmo/minigo/examples/convert-define/pkg/goscan"
 )
 
 func TestParser(t *testing.T) {
 	ctx := context.Background()
 	inputFile := filepath.Join("../testdata", "mappings.go")
 
-	// The runner needs a correctly configured scanner to find all the packages.
-	// Overrides are no longer needed.
-	runner, err := NewRunner(
-		goscan.WithGoModuleResolver(),
-	)
+	// The engine anchors at the define file's directory, so its module
+	// context governs package resolution — no scanner setup needed.
+	runner, err := NewRunner()
 	if err != nil {
 		t.Fatalf("NewRunner() failed: %+v", err)
 	}
@@ -136,10 +133,7 @@ func findField(t *testing.T, structInfo *model.StructInfo, name string) model.Fi
 func TestRunner(t *testing.T) {
 	wd := filepath.Join("..", "testdata", "success")
 
-	runner, err := NewRunner(
-		goscan.WithWorkDir(wd),
-		goscan.WithGoModuleResolver(),
-	)
+	runner, err := NewRunner()
 	if err != nil {
 		t.Fatalf("NewRunner() failed: %+v", err)
 	}

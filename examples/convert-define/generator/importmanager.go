@@ -1,4 +1,4 @@
-package goscan
+package generator
 
 import (
 	"fmt"
@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-
-	"github.com/podhmo/minigo/examples/convert-define/pkg/scanner"
 )
 
 // ImportManager helps manage import statements for generated Go code.
@@ -68,17 +66,14 @@ var goKeywords = map[string]bool{
 }
 
 // NewImportManager creates a new ImportManager.
-// currentPkgInfo is the package information for the file being generated.
-// If currentPkgInfo is nil, the ImportManager assumes no specific current package context.
-func NewImportManager(currentPkgInfo *scanner.PackageInfo) *ImportManager {
-	im := &ImportManager{
-		imports:      make(map[string]string),
-		aliasesInUse: make(map[string]string),
+// currentPackagePath is the import path of the package being generated;
+// types from it are emitted unqualified.
+func NewImportManager(currentPackagePath string) *ImportManager {
+	return &ImportManager{
+		currentPackagePath: currentPackagePath,
+		imports:            make(map[string]string),
+		aliasesInUse:       make(map[string]string),
 	}
-	if currentPkgInfo != nil {
-		im.currentPackagePath = currentPkgInfo.ImportPath
-	}
-	return im
 }
 
 // Add registers an import path and its desired alias.
