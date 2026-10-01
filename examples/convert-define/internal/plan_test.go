@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/podhmo/minigo/examples/convert-define/model"
 	"github.com/podhmo/minigo/resolve"
 )
 
@@ -93,7 +94,8 @@ func TestConvertDefineSatisfiesPlan(t *testing.T) {
 	}
 
 	// The aliased `d.Convert` likewise dispatched, and its quoted FuncLit
-	// was walked as AST: src/dst resolved host-side, c.Map became a tag.
+	// was walked as AST: src/dst resolved host-side, c.Map recorded an
+	// explicit field mapping on the pair.
 	if want, got := 1, len(runner.Info.ConversionPairs); want != got {
 		t.Fatalf("expected %d conversion pair, got %d", want, got)
 	}
@@ -104,9 +106,12 @@ func TestConvertDefineSatisfiesPlan(t *testing.T) {
 	if want, got := "DstUser", pair.DstTypeName; want != got {
 		t.Errorf("pair.DstTypeName: want %q, got %q", want, got)
 	}
-	srcInfo := findField(t, runner.Info.Structs["SrcUser"], "ID")
-	if want, got := "UserID", srcInfo.Tag.DstFieldName; want != got {
-		t.Errorf("ID tag DstFieldName: want %q, got %q", want, got)
+	if pair.Mapping == nil {
+		t.Fatal("pair.Mapping is nil")
+	}
+	wantMaps := []model.FieldMap{{SrcName: "ID", DstName: "UserID"}}
+	if diff := cmp.Diff(wantMaps, pair.Mapping.Maps); diff != "" {
+		t.Errorf("pair.Mapping.Maps mismatch (-want +got):\n%s", diff)
 	}
 
 	// The laziness claim, restated for the inspect-based pipeline:
@@ -124,8 +129,10 @@ func TestConvertDefineSatisfiesPlan(t *testing.T) {
 	if diff := cmp.Diff(wantLocated, spy.located); diff != "" {
 		t.Errorf("located packages mismatch (-want +got):\n%s", diff)
 	}
-	// LoadFile reads the DSL file directly — no directory is located either.
-	if len(spy.dirs) != 0 {
-		t.Errorf("engine located directories: %v", spy.dirs)
+	// LoadFile reads the DSL file directly; the only directory located is
+	// the DSL file's own, resolved once to learn the generated file's
+	// package path.
+	if diff := cmp.Diff([]string{abs}, spy.dirs); diff != "" {
+		t.Errorf("located directories mismatch (-want +got):\n%s", diff)
 	}
 }

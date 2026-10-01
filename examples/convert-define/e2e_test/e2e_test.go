@@ -95,3 +95,71 @@ func TestGeneratedOrderConversion(t *testing.T) {
 		t.Errorf("ConvertSrcOrderToDstOrder() mismatch (-want +got):\n%s", diff)
 	}
 }
+
+// Nested c.Map paths: dst.Inner.ID is written past the struct copy,
+// src.PIn.Value is read behind a nil guard, and dst.PIn.Value is
+// written behind a nil-init — all generated code, asserted end-to-end.
+func TestGeneratedNestedConversion(t *testing.T) {
+	ctx := context.Background()
+	src := &source.SrcNested{
+		ID:   42,
+		Name: "nested",
+		Inner: source.SrcNestedInner{
+			ID:    7,
+			Value: "inner-value",
+		},
+		PIn: &source.SrcNestedInner{
+			ID:    8,
+			Value: "pin-value",
+		},
+	}
+
+	expected := &destination.DstNested{
+		// Inner is struct-converted first (ID:7), then the explicit
+		// leaf map overrides it with src.ID.
+		Inner: destination.DstNestedInner{ID: 42, Value: "inner-value"},
+		// PIn is converted via its pointer fast path, then the
+		// explicit leaf write overwrites Value with src.Name.
+		PIn:  &destination.DstNestedInner{ID: 8, Value: "nested"},
+		Flat: "inner-value",
+		Tag:  "pin-value",
+	}
+
+	got, err := generated.ConvertSrcNestedToDstNested(ctx, src)
+	if err != nil {
+		t.Fatalf("ConvertSrcNestedToDstNested() failed: %v", err)
+	}
+	if diff := cmp.Diff(expected, got); diff != "" {
+		t.Errorf("ConvertSrcNestedToDstNested() mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// With a nil PIn the src guard drops the Tag read entirely, while the
+// dst nil-init still allocates dst.PIn to carry src.Name.
+func TestGeneratedNestedConversionNilPtr(t *testing.T) {
+	ctx := context.Background()
+	src := &source.SrcNested{
+		ID:   42,
+		Name: "nested",
+		Inner: source.SrcNestedInner{
+			ID:    7,
+			Value: "inner-value",
+		},
+		PIn: nil,
+	}
+
+	expected := &destination.DstNested{
+		Inner: destination.DstNestedInner{ID: 42, Value: "inner-value"},
+		PIn:   &destination.DstNestedInner{ID: 0, Value: "nested"},
+		Flat:  "inner-value",
+		Tag:   "",
+	}
+
+	got, err := generated.ConvertSrcNestedToDstNested(ctx, src)
+	if err != nil {
+		t.Fatalf("ConvertSrcNestedToDstNested() failed: %v", err)
+	}
+	if diff := cmp.Diff(expected, got); diff != "" {
+		t.Errorf("ConvertSrcNestedToDstNested() mismatch (-want +got):\n%s", diff)
+	}
+}

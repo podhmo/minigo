@@ -1,7 +1,12 @@
 package convutil
 
-import "time"
+import (
+	"context"
+	"time"
 
-func TimeToString(t time.Time) string {
+	"github.com/podhmo/minigo/examples/convert-define/model"
+)
+
+func TimeToString(ctx context.Context, ec *model.ErrorCollector, t time.Time) string {
 	return t.String()
 }

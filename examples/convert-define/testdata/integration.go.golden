@@ -8,12 +8,15 @@ import (
 
 	convutil "example.com/m/convutil"
 	destination "example.com/m/sampledata/destination"
-	"example.com/m/sampledata/funcs"
+	funcs "example.com/m/sampledata/funcs"
 	source "example.com/m/sampledata/source"
 	"github.com/podhmo/minigo/examples/convert-define/model"
 )
 
 // convertSrcUserToDstUser converts source.SrcUser to destination.DstUser.
+//
+// Generation warnings — the reported assignments may not compile:
+//   - dst.UserID: no conversion covers int64 -> string
 func convertSrcUserToDstUser(ctx context.Context, ec *model.ErrorCollector, src *source.SrcUser) *destination.DstUser {
 	if src == nil {
 		return nil
@@ -22,23 +25,8 @@ func convertSrcUserToDstUser(ctx context.Context, ec *model.ErrorCollector, src 
 	if ec.MaxErrorsReached() {
 		return dst
 	}
-	ec.Enter("UserID")
-	dst.UserID = src.ID
-
-	ec.Leave()
-	if ec.MaxErrorsReached() {
-		return dst
-	}
 	ec.Enter("Address")
 	dst.Address = *convertSrcAddressToDstAddress(ctx, ec, &src.Address)
-
-	ec.Leave()
-	if ec.MaxErrorsReached() {
-		return dst
-	}
-	ec.Enter("Contact")
-	dst.Contact = funcs.ConvertSrcContactToDstContact(ctx, ec, src.ContactInfo)
-
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
@@ -53,21 +41,30 @@ func convertSrcUserToDstUser(ctx context.Context, ec *model.ErrorCollector, src 
 		}
 		dst.Details = convertedSlice
 	}
-
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
 	}
 	ec.Enter("CreatedAt")
 	dst.CreatedAt = convutil.TimeToString(ctx, ec, src.CreatedAt)
-
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
 	}
 	ec.Enter("UpdatedAt")
 	dst.UpdatedAt = convutil.PtrTimeToString(ctx, ec, src.UpdatedAt)
-
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("UserID")
+	dst.UserID = src.ID
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("Contact")
+	dst.Contact = funcs.ConvertSrcContactToDstContact(ctx, ec, src.ContactInfo)
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
@@ -79,12 +76,105 @@ func convertSrcUserToDstUser(ctx context.Context, ec *model.ErrorCollector, src 
 }
 
 // ConvertSrcUserToDstUser converts source.SrcUser to destination.DstUser.
+//
+// Generation warnings — the reported assignments may not compile:
+//   - dst.UserID: no conversion covers int64 -> string
 func ConvertSrcUserToDstUser(ctx context.Context, src *source.SrcUser) (*destination.DstUser, error) {
 	if src == nil {
 		return nil, nil
 	}
 	ec := model.NewErrorCollector(0)
 	dst := convertSrcUserToDstUser(ctx, ec, src)
+	if ec.HasErrors() {
+		return dst, errors.Join(ec.Errors()...)
+	}
+	return dst, nil
+}
+
+// convertSrcAddressToDstAddress converts source.SrcAddress to destination.DstAddress.
+//
+// Fields that are not populated by this converter:
+//   - CityName
+//   - FullStreet
+func convertSrcAddressToDstAddress(ctx context.Context, ec *model.ErrorCollector, src *source.SrcAddress) *destination.DstAddress {
+	if src == nil {
+		return nil
+	}
+	dst := &destination.DstAddress{}
+	return dst
+}
+
+// ConvertSrcAddressToDstAddress converts source.SrcAddress to destination.DstAddress.
+//
+// Fields that are not populated by this converter:
+//   - CityName
+//   - FullStreet
+func ConvertSrcAddressToDstAddress(ctx context.Context, src *source.SrcAddress) (*destination.DstAddress, error) {
+	if src == nil {
+		return nil, nil
+	}
+	ec := model.NewErrorCollector(0)
+	dst := convertSrcAddressToDstAddress(ctx, ec, src)
+	if ec.HasErrors() {
+		return dst, errors.Join(ec.Errors()...)
+	}
+	return dst, nil
+}
+
+// convertSrcInternalDetailToDstInternalDetail converts source.SrcInternalDetail to destination.DstInternalDetail.
+//
+// Fields that are not populated by this converter:
+//   - ItemCode
+//   - LocalizedDesc
+func convertSrcInternalDetailToDstInternalDetail(ctx context.Context, ec *model.ErrorCollector, src *source.SrcInternalDetail) *destination.DstInternalDetail {
+	if src == nil {
+		return nil
+	}
+	dst := &destination.DstInternalDetail{}
+	return dst
+}
+
+// ConvertSrcInternalDetailToDstInternalDetail converts source.SrcInternalDetail to destination.DstInternalDetail.
+//
+// Fields that are not populated by this converter:
+//   - ItemCode
+//   - LocalizedDesc
+func ConvertSrcInternalDetailToDstInternalDetail(ctx context.Context, src *source.SrcInternalDetail) (*destination.DstInternalDetail, error) {
+	if src == nil {
+		return nil, nil
+	}
+	ec := model.NewErrorCollector(0)
+	dst := convertSrcInternalDetailToDstInternalDetail(ctx, ec, src)
+	if ec.HasErrors() {
+		return dst, errors.Join(ec.Errors()...)
+	}
+	return dst, nil
+}
+
+// convertSrcContactToDstContact converts source.SrcContact to destination.DstContact.
+//
+// Fields that are not populated by this converter:
+//   - EmailAddress
+//   - PhoneNumber
+func convertSrcContactToDstContact(ctx context.Context, ec *model.ErrorCollector, src *source.SrcContact) *destination.DstContact {
+	if src == nil {
+		return nil
+	}
+	dst := &destination.DstContact{}
+	return dst
+}
+
+// ConvertSrcContactToDstContact converts source.SrcContact to destination.DstContact.
+//
+// Fields that are not populated by this converter:
+//   - EmailAddress
+//   - PhoneNumber
+func ConvertSrcContactToDstContact(ctx context.Context, src *source.SrcContact) (*destination.DstContact, error) {
+	if src == nil {
+		return nil, nil
+	}
+	ec := model.NewErrorCollector(0)
+	dst := convertSrcContactToDstContact(ctx, ec, src)
 	if ec.HasErrors() {
 		return dst, errors.Join(ec.Errors()...)
 	}

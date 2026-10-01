@@ -13,7 +13,7 @@ import (
 	convutil "github.com/podhmo/minigo/examples/convert-define/convutil"
 	"github.com/podhmo/minigo/examples/convert-define/model"
 	destination "github.com/podhmo/minigo/examples/convert-define/sampledata/destination"
-	"github.com/podhmo/minigo/examples/convert-define/sampledata/funcs"
+	funcs "github.com/podhmo/minigo/examples/convert-define/sampledata/funcs"
 	source "github.com/podhmo/minigo/examples/convert-define/sampledata/source"
 )
 
@@ -26,23 +26,8 @@ func convertSrcUserToDstUser(ctx context.Context, ec *model.ErrorCollector, src 
 	if ec.MaxErrorsReached() {
 		return dst
 	}
-	ec.Enter("UserID")
-	dst.UserID = funcs.UserIDToString(ctx, ec, src.ID)
-
-	ec.Leave()
-	if ec.MaxErrorsReached() {
-		return dst
-	}
 	ec.Enter("Address")
 	dst.Address = *convertSrcAddressToDstAddress(ctx, ec, &src.Address)
-
-	ec.Leave()
-	if ec.MaxErrorsReached() {
-		return dst
-	}
-	ec.Enter("Contact")
-	dst.Contact = funcs.ConvertSrcContactToDstContact(ctx, ec, src.ContactInfo)
-
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
@@ -57,21 +42,30 @@ func convertSrcUserToDstUser(ctx context.Context, ec *model.ErrorCollector, src 
 		}
 		dst.Details = convertedSlice
 	}
-
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
 	}
 	ec.Enter("CreatedAt")
 	dst.CreatedAt = convutil.TimeToString(ctx, ec, src.CreatedAt)
-
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
 	}
 	ec.Enter("UpdatedAt")
 	dst.UpdatedAt = convutil.PtrTimeToString(ctx, ec, src.UpdatedAt)
-
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("UserID")
+	dst.UserID = funcs.UserIDToString(ctx, ec, src.ID)
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("Contact")
+	dst.Contact = funcs.ConvertSrcContactToDstContact(ctx, ec, src.ContactInfo)
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
@@ -106,14 +100,12 @@ func convertSrcAddressToDstAddress(ctx context.Context, ec *model.ErrorCollector
 	}
 	ec.Enter("FullStreet")
 	dst.FullStreet = src.Street
-
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
 	}
 	ec.Enter("CityName")
 	dst.CityName = src.City
-
 	ec.Leave()
 	return dst
 }
@@ -142,14 +134,12 @@ func convertSrcInternalDetailToDstInternalDetail(ctx context.Context, ec *model.
 	}
 	ec.Enter("ItemCode")
 	dst.ItemCode = src.Code
-
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
 	}
 	ec.Enter("LocalizedDesc")
 	dst.LocalizedDesc = funcs.Translate(ctx, ec, src.Description)
-
 	ec.Leave()
 	return dst
 }
@@ -178,14 +168,12 @@ func convertSrcOrderToDstOrder(ctx context.Context, ec *model.ErrorCollector, sr
 	}
 	ec.Enter("ID")
 	dst.ID = src.OrderID
-
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
 	}
 	ec.Enter("TotalAmount")
 	dst.TotalAmount = src.Amount
-
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
@@ -200,7 +188,6 @@ func convertSrcOrderToDstOrder(ctx context.Context, ec *model.ErrorCollector, sr
 		}
 		dst.LineItems = convertedSlice
 	}
-
 	ec.Leave()
 	return dst
 }
@@ -229,14 +216,12 @@ func convertSrcItemToDstItem(ctx context.Context, ec *model.ErrorCollector, src 
 	}
 	ec.Enter("ProductCode")
 	dst.ProductCode = src.SKU
-
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
 	}
 	ec.Enter("Count")
 	dst.Count = src.Quantity
-
 	ec.Leave()
 	return dst
 }
@@ -265,7 +250,6 @@ func convertComplexSourceToComplexTarget(ctx context.Context, ec *model.ErrorCol
 	}
 	ec.Enter("Value")
 	dst.Value = src.Value
-
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
@@ -277,7 +261,6 @@ func convertComplexSourceToComplexTarget(ctx context.Context, ec *model.ErrorCol
 	} else {
 		dst.Ptr = nil
 	}
-
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
@@ -292,7 +275,6 @@ func convertComplexSourceToComplexTarget(ctx context.Context, ec *model.ErrorCol
 		}
 		dst.Slice = convertedSlice
 	}
-
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
@@ -307,7 +289,6 @@ func convertComplexSourceToComplexTarget(ctx context.Context, ec *model.ErrorCol
 		}
 		dst.SliceOfPtrs = convertedSlice
 	}
-
 	ec.Leave()
 	return dst
 }
@@ -336,7 +317,6 @@ func convertSubSourceToSubTarget(ctx context.Context, ec *model.ErrorCollector, 
 	}
 	ec.Enter("Value")
 	dst.Value = src.Value
-
 	ec.Leave()
 	return dst
 }
@@ -373,7 +353,6 @@ func convertSourceWithMapToTargetWithMap(ctx context.Context, ec *model.ErrorCol
 		}
 		dst.ValueMap = convertedMap
 	}
-
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
@@ -388,7 +367,6 @@ func convertSourceWithMapToTargetWithMap(ctx context.Context, ec *model.ErrorCol
 		}
 		dst.PtrMap = convertedMap
 	}
-
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
@@ -403,7 +381,6 @@ func convertSourceWithMapToTargetWithMap(ctx context.Context, ec *model.ErrorCol
 		}
 		dst.StringToStr = convertedMap
 	}
-
 	ec.Leave()
 	return dst
 }
@@ -415,6 +392,133 @@ func ConvertSourceWithMapToTargetWithMap(ctx context.Context, src *source.Source
 	}
 	ec := model.NewErrorCollector(0)
 	dst := convertSourceWithMapToTargetWithMap(ctx, ec, src)
+	if ec.HasErrors() {
+		return dst, errors.Join(ec.Errors()...)
+	}
+	return dst, nil
+}
+
+// convertSrcNestedToDstNested converts source.SrcNested to destination.DstNested.
+func convertSrcNestedToDstNested(ctx context.Context, ec *model.ErrorCollector, src *source.SrcNested) *destination.DstNested {
+	if src == nil {
+		return nil
+	}
+	dst := &destination.DstNested{}
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("Inner")
+	dst.Inner = *convertSrcNestedInnerToDstNestedInner(ctx, ec, &src.Inner)
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("PIn")
+	dst.PIn = convertSrcNestedInnerToDstNestedInner(ctx, ec, src.PIn)
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("Inner.ID")
+	dst.Inner.ID = src.ID
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("Flat")
+	dst.Flat = src.Inner.Value
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("Tag")
+	if src.PIn != nil {
+		dst.Tag = src.PIn.Value
+	}
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("PIn.Value")
+	if dst.PIn == nil {
+		dst.PIn = &destination.DstNestedInner{}
+	}
+	dst.PIn.Value = src.Name
+	ec.Leave()
+	return dst
+}
+
+// ConvertSrcNestedToDstNested converts source.SrcNested to destination.DstNested.
+func ConvertSrcNestedToDstNested(ctx context.Context, src *source.SrcNested) (*destination.DstNested, error) {
+	if src == nil {
+		return nil, nil
+	}
+	ec := model.NewErrorCollector(0)
+	dst := convertSrcNestedToDstNested(ctx, ec, src)
+	if ec.HasErrors() {
+		return dst, errors.Join(ec.Errors()...)
+	}
+	return dst, nil
+}
+
+// convertSrcContactToDstContact converts source.SrcContact to destination.DstContact.
+//
+// Fields that are not populated by this converter:
+//   - EmailAddress
+//   - PhoneNumber
+func convertSrcContactToDstContact(ctx context.Context, ec *model.ErrorCollector, src *source.SrcContact) *destination.DstContact {
+	if src == nil {
+		return nil
+	}
+	dst := &destination.DstContact{}
+	return dst
+}
+
+// ConvertSrcContactToDstContact converts source.SrcContact to destination.DstContact.
+//
+// Fields that are not populated by this converter:
+//   - EmailAddress
+//   - PhoneNumber
+func ConvertSrcContactToDstContact(ctx context.Context, src *source.SrcContact) (*destination.DstContact, error) {
+	if src == nil {
+		return nil, nil
+	}
+	ec := model.NewErrorCollector(0)
+	dst := convertSrcContactToDstContact(ctx, ec, src)
+	if ec.HasErrors() {
+		return dst, errors.Join(ec.Errors()...)
+	}
+	return dst, nil
+}
+
+// convertSrcNestedInnerToDstNestedInner converts source.SrcNestedInner to destination.DstNestedInner.
+func convertSrcNestedInnerToDstNestedInner(ctx context.Context, ec *model.ErrorCollector, src *source.SrcNestedInner) *destination.DstNestedInner {
+	if src == nil {
+		return nil
+	}
+	dst := &destination.DstNestedInner{}
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("ID")
+	dst.ID = src.ID
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("Value")
+	dst.Value = src.Value
+	ec.Leave()
+	return dst
+}
+
+// ConvertSrcNestedInnerToDstNestedInner converts source.SrcNestedInner to destination.DstNestedInner.
+func ConvertSrcNestedInnerToDstNestedInner(ctx context.Context, src *source.SrcNestedInner) (*destination.DstNestedInner, error) {
+	if src == nil {
+		return nil, nil
+	}
+	ec := model.NewErrorCollector(0)
+	dst := convertSrcNestedInnerToDstNestedInner(ctx, ec, src)
 	if ec.HasErrors() {
 		return dst, errors.Join(ec.Errors()...)
 	}

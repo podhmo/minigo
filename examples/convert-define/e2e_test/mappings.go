@@ -46,4 +46,14 @@ func main() {
 	define.Convert(func(c *define.Config, dst *destination.SubTarget, src *source.SubSource) {})
 
 	define.Convert(func(c *define.Config, dst *destination.TargetWithMap, src *source.SourceWithMap) {})
+
+	// Nested field paths: a leaf inside a nested dst struct, a leaf
+	// read through a nested src struct (value and pointer receivers),
+	// and a leaf written through a nil-able dst pointer.
+	define.Convert(func(c *define.Config, dst *destination.DstNested, src *source.SrcNested) {
+		c.Map(dst.Inner.ID, src.ID)
+		c.Map(dst.Flat, src.Inner.Value)
+		c.Map(dst.Tag, src.PIn.Value)
+		c.Map(dst.PIn.Value, src.Name)
+	})
 }
