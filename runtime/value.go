@@ -558,15 +558,20 @@ func renderFrames(frames []string) string {
 
 // Panic is a script-level panic value; catchable by recover().
 type Panic struct {
-	Value  Value
-	Frames []string // "func at file:line" entries collected while unwinding
+	Value   Value
+	Frames  []string // "func at file:line" entries collected while unwinding
+	GoStack string   // host goroutine stack at panic time (host panics only)
 }
 
 func (p *Panic) Error() string {
-	if len(p.Frames) == 0 {
-		return fmt.Sprintf("panic: %v", panicValue(p.Value))
+	s := fmt.Sprintf("panic: %v", panicValue(p.Value))
+	if len(p.Frames) > 0 {
+		s += "\n" + renderFrames(p.Frames)
 	}
-	return fmt.Sprintf("panic: %v\n%s", panicValue(p.Value), renderFrames(p.Frames))
+	if p.GoStack != "" {
+		s += "\n" + p.GoStack
+	}
+	return s
 }
 
 // panicValue renders the panic payload for messages: a boxed host value

@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"reflect"
+	"runtime/debug"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -343,14 +344,16 @@ func (v *VM) exec(f *frame) {
 // attribute it to script frames and deferred recover() can catch it —
 // matching Go, where runtime errors (index out of range, nil deref, divide
 // by zero) are recoverable panics. The original value is kept boxed so
-// recover() hands scripts the real error, not its rendered text. Trap and
-// Panic pass through unchanged.
+// recover() hands scripts the real error, not its rendered text, and the
+// host goroutine stack is captured while the panicking frames are still
+// live, so a panic inside a builtin/host handler shows where it died.
+// Trap and Panic pass through unchanged.
 func asScriptPanic(r any) any {
 	switch r.(type) {
 	case nil, *runtime.Trap, *runtime.Panic:
 		return r
 	default:
-		return &runtime.Panic{Value: &runtime.GoValue{V: r}}
+		return &runtime.Panic{Value: &runtime.GoValue{V: r}, GoStack: string(debug.Stack())}
 	}
 }
 
