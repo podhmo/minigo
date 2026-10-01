@@ -173,6 +173,31 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value) (runtime.Value, er
 	for {
 		switch c := callee.(type) {
 		case *runtime.BuiltinFunc:
+			defer func() {
+				r := recover()
+				if r == nil {
+					return
+				}
+				r = asScriptPanic(r)
+				// a builtin has no frame of its own — record one attributed
+				// to the OpCall site so its failure names the builtin.
+				if c.Name != "" {
+					var entry string
+					if n := len(v.frames); n > 0 {
+						caller := v.frames[n-1]
+						entry = v.frameLine(caller, caller.pos(), c.Name+"() (builtin)")
+					} else {
+						entry = c.Name + "() (builtin)"
+					}
+					switch e := r.(type) {
+					case *runtime.Panic:
+						e.Frames = append(e.Frames, entry)
+					case *runtime.Trap:
+						e.Frames = append(e.Frames, entry)
+					}
+				}
+				panic(r)
+			}()
 			return c.Fn(v, args)
 		case *runtime.TypeDef:
 			if len(args) != 1 {
@@ -292,7 +317,14 @@ func (v *VM) prepFrame(callee runtime.Value, args []runtime.Value) (*frame, erro
 		fn = inferred
 	}
 	if err := fn.EnsureCompiled(); err != nil {
-		return nil, err
+		// attribute the failure to the callee: name its declaration so the
+		// trap (recorded at the caller's OpCall site) still says where the
+		// uncompilable function lives.
+		where := ""
+		if fn.Decl != nil && fn.Pkg != nil && fn.Pkg.Fset != nil {
+			where = fmt.Sprintf(" declared at %s", fn.Pkg.Fset.Position(fn.Decl.Pos()))
+		}
+		return nil, fmt.Errorf("compile %s%s: %w", fn.Name, where, err)
 	}
 	if len(v.frames) >= maxFrames {
 		return nil, fmt.Errorf("stack exhausted: frame limit %d", maxFrames)
@@ -300,8 +332,18 @@ func (v *VM) prepFrame(callee runtime.Value, args []runtime.Value) (*frame, erro
 	ch := fn.Chunk
 	fr := &frame{fn: fn, ch: ch, upvals: upvals}
 	fr.locals = make([]*runtime.Cell, ch.NLocals)
-	// bind params
+	// bind params; arity mismatches are compile errors in Go, so trap
 	n := ch.NParams
+	want := n
+	if ch.IsVararg {
+		want = n - 1 // the last slot collects the rest; zero extras is fine
+	}
+	if len(args) < want {
+		return nil, fmt.Errorf("not enough arguments to %s: %d given, want %d", fn.Name, len(args), want)
+	}
+	if !ch.IsVararg && len(args) > n {
+		return nil, fmt.Errorf("too many arguments to %s: %d given, want %d", fn.Name, len(args), n)
+	}
 	for i := 0; i < n; i++ {
 		var a runtime.Value = runtime.NIL
 		if i < len(args) {
@@ -409,29 +451,53 @@ func (f *frame) finalResult() runtime.Value {
 	}
 }
 
-// trace appends a "name at file:line" entry to an unwinding Trap/Panic,
-// followed by the source line when it is available (PR #3's format).
+// trace appends a traceback entry (PR #3's `File "...", line N, in f`
+// plus the source line under it) to an unwinding Trap/Panic.
 func (v *VM) trace(f *frame, r any) {
-	entry := f.fn.Name
 	pos := f.pos()
 	if !pos.IsValid() && f.fn.Decl != nil {
 		// the frame failed before its first instruction (e.g. argument
 		// coercion) — point at the function's declaration instead
 		pos = f.fn.Decl.Pos()
 	}
-	if pos.IsValid() && f.fn.Pkg != nil && f.fn.Pkg.Fset != nil {
-		p := f.fn.Pkg.Fset.Position(pos)
-		entry = fmt.Sprintf("%s at %s", f.fn.Name, p)
-		if l := v.sourceLine(f.fn.Pkg, p.Filename, p.Line); l != "" {
-			entry += "\n\t\t" + l
-		}
-	}
+	entry := v.frameLine(f, pos, v.frameName(f))
 	switch e := r.(type) {
 	case *runtime.Trap:
 		e.Frames = append(e.Frames, entry)
 	case *runtime.Panic:
 		e.Frames = append(e.Frames, entry)
 	}
+}
+
+// frameName renders f's function for a traceback entry — `Id[int]` for an
+// instantiated generic, `T.M` for methods.
+func (v *VM) frameName(f *frame) string {
+	name := f.fn.Name
+	if len(f.fn.TParams) > 0 {
+		args := make([]string, len(f.fn.TParams))
+		for i, tp := range f.fn.TParams {
+			args[i] = "?"
+			if td, ok := f.fn.Binds[tp].(*runtime.TypeDef); ok {
+				args[i] = td.Name
+			}
+		}
+		name += "[" + strings.Join(args, ", ") + "]"
+	}
+	return name + "()"
+}
+
+// frameLine formats one traceback entry — `File "<file>", line <n>, in
+// <name>` followed by the source text under it when available.
+func (v *VM) frameLine(f *frame, pos token.Pos, name string) string {
+	if !pos.IsValid() || f.fn.Pkg == nil || f.fn.Pkg.Fset == nil {
+		return name
+	}
+	p := f.fn.Pkg.Fset.Position(pos)
+	entry := fmt.Sprintf("File %q, line %d, in %s", p.Filename, p.Line, name)
+	if l := v.sourceLine(f.fn.Pkg, p.Filename, p.Line); l != "" {
+		entry += "\n\t\t" + l
+	}
+	return entry
 }
 
 // sourceLine returns the trimmed text of filename:line for traceback
@@ -499,16 +565,13 @@ func (v *VM) runDefers(f *frame) {
 				// a panic raised by the deferred call has no link back to
 				// the frame that registered it — record the defer site as a
 				// synthetic entry so the traceback shows who deferred it.
+				entry := v.frameLine(f, d.pos, v.frameName(f)+" (deferred call)")
 				switch e := r.(type) {
 				case *runtime.Panic:
-					if f.fn.Pkg != nil && f.fn.Pkg.Fset != nil && d.pos.IsValid() {
-						e.Frames = append(e.Frames, fmt.Sprintf("%s (deferred call) at %s", f.fn.Name, f.fn.Pkg.Fset.Position(d.pos)))
-					}
+					e.Frames = append(e.Frames, entry)
 					v.inflight = e
 				case *runtime.Trap:
-					if f.fn.Pkg != nil && f.fn.Pkg.Fset != nil && d.pos.IsValid() {
-						e.Frames = append(e.Frames, fmt.Sprintf("%s (deferred call) at %s", f.fn.Name, f.fn.Pkg.Fset.Position(d.pos)))
-					}
+					e.Frames = append(e.Frames, entry)
 					panic(r)
 				default:
 					panic(r)

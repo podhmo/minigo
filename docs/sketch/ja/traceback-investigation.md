@@ -105,6 +105,8 @@ main (deferred call) at /tmp/tbtest/main.go:6:2
 
 ## 5. 残っているギャップ / 今後の改善候補
 
+※ 以下は調査時点での残件。**全て Round-2（§8）で解消済み**。
+
 - **builtin 呼出し自身はフレームを持たない**: `strings.Repeat` 失敗時、Go なら `strings.Repeat` がスタックに出るが、minigo は呼出し元のコールサイトのみ。`invokeDeferred` の sentinel 的に OpCall で軽量フレームを積めば出せる（要検討: フレーム積みコスト）
 - **ジェネリック表記**: `Id[int]` のインスタンス化がフレーム名 `Id` のまま（Binds から `Id[int]` を再構成可能）
 - **callee 側コンパイル失敗**: `EnsureCompiled` 失敗は呼出しサイトの trap になり、失敗箇所ノードの位置がメッセージに残らない（compile error に位置を載せる拡張が要る）
@@ -119,11 +121,11 @@ main (deferred call) at /tmp/tbtest/main.go:6:2
 | `fmt.Errorf("x")` / `Printf("x")` / `Sprintf("x")` が "needs 2 args" で失敗（可変引数なし呼出しが拒否） | **修正済**（`fn2`→`fn1`、最小1引数） |
 | `panic(errors.New("x"))` が `panic: &{x}` と構造体ダンプ表示 | **修正済**（GoValue アンラップ） |
 | 無限再帰でホストプロセスが fatal stack overflow で死亡 | **修正済**（frame limit 10000 で trap 化） |
-| `add(1)` で欠損引数が NIL バインドで黙々と動く（Go ではコンパイルエラー） | 未対応・設計判断要。TODO.md に記録 |
-| `Id[int]` がフレーム上 `Id` と出る | 未対応（軽微）。TODO.md に記録 |
-| callee 内コンパイルエラーが呼出し位置に归因され失敗箇所の位置が落ちる | 未対応。TODO.md に記録 |
+| `add(1)` で欠損引数が NIL バインドで黙々と動く（Go ではコンパイルエラー） | **修正済（Round-2）**: `not enough arguments to add: 1 given, want 2` trap |
+| `Id[int]` がフレーム上 `Id` と出る | **修正済（Round-2）**: `Id[int]()` 表記 |
+| callee 内コンパイルエラーが呼出し位置に归因され失敗箇所の位置が落ちる | **修正済（Round-2）**: `compile <name> declared at <file:line>` |
 
-## 7. Round notes: 実際にやってみての想定外
+## 7. Round-1 notes: 実際にやってみての想定外
 
 調査・実装を通じて計画時点では読めていなかった発見:
 
@@ -137,9 +139,33 @@ main (deferred call) at /tmp/tbtest/main.go:6:2
 - **`add(1)` が黙々と動く。** Go ではコンパイルエラーなのに `prepFrame` が欠損引数を NIL bind する。意図的な緩さとも読めるので修正せず残件に記録（設計判断要）。
 - **表示上限の shape はレビューで変わった。** 当初 20 件先頭のみだったが、上限10000フレームに対し「1000程度に収めて head/tail 省略」が要望として出て、発生箇所側500 + elided + main 側500 の形に落ち着いた。確認済み: 700 件では省略分岐に入らず全件そのまま出る。
 
-## 8. 結論
+## 8. Round-2 notes: §5 の残ギャップ解消
 
-- **ファイル名・関数名・行・列はすでに出ていた**。VM 化で「同じものができるか」は → **できる。命令に Pos、Chunk に Name、unwind 時に Frames 集約、という構造がすでにあった**
-- **PR #3 の `File "..." line N in f()` + ソース行の表示はほぼ再現可能**（ソース行は実装済。ヘッダ形式の差は整形のみ）
-- 最大の実質ギャップは**ホストpanic系でフレームが全欠落**していた点（exec 境界で正規化すれば一括で治る）と、**再帰でのプロセス死亡**（frame cap で trap 化）
+§5 で挙げた残件を全部対応した round。想定外もいくつか出た。
+
+- **builtin フレームは「軽量フレームを積む」のでなく「panic 通過時にエントリを添える」形で解決。** `v.call` の `BuiltinFunc` 分岐に defer を挟み、panic が builtin を抜ける瞬間に `in strings.Repeat() (builtin)` エントリを Frames に append する。フレームとして積まないのでコストほぼゼロ。raw host panic はこの境界で `*Panic` 化するので、recover 前にエントリが乗る。`panic()` 自身も builtin なので `in panic() (builtin)` と出る。
+- **エントリの並びは自然に正しかった。** Frames は innermost-first に append されるので、builtin 呼出し中の panic は builtin エントリが caller エントリより先に乗るだけ — 順序の調整不要だった。
+- **ジェネリック名は `TParams`+`Binds` から再構成。** `Id` → `Id[int]()`。推論呼出し（`Id(42)`）でも inferred fn の Binds が埋まっているので型引数が出る。
+- **コンパイル失敗の位置は「エラーに Pos を持たせる」のでなく「callee 宣言位置をメッセージに含める」で妥結。** compile.Func は実は一度も失敗しない（全て OpTrap 化される設計）。EnsureCompiled の失敗は注入された Compile 実装経由のみ — メッセージを `compile <name> declared at <file:line>: <err>` にして、trap 自体は呼出しサイトに残す形にした。
+- **引数不足は trap 化。** `add(1)` → `runtime trap: not enough arguments to add: 1 given, want 2`（呼出し位置）。過剰引数も `too many arguments`。vararg は最後の param を除いた数を要求。Go ではコンパイルエラーだが、実行時境界の minigo では trap が最も近い意味論。
+- **表示形式を PR #3 に合わせた。** `panic:`/`runtime trap:` の後に `Traceback (most recent call first):` ヘッダ、各フレームは `File "<path>", line <N>, in <name>()` + インデントしたソース行。deferred は `in main() (deferred call)`、builtin は `in strings.Repeat() (builtin)`。列番号は落とし（marker と同じ粒度）— ソース行がその下に出るので実用上は十分。
+
+結果、`panic: in generic` のような builtin 内 panic でも:
+
+```
+panic: strings: negative Repeat count
+Traceback (most recent call first):
+File "/tmp/tbtest3/main.go", line 6, in strings.Repeat() (builtin)
+		return strings.Repeat(s, -1)
+File "/tmp/tbtest3/main.go", line 6, in up()
+		return strings.Repeat(s, -1)
+File "/tmp/tbtest3/main.go", line 21, in main()
+		println(up("a"))
+```
+
+## 9. 結論
+
+- **ファイル名・関数名・行はすでに出ていた**。VM 化で「同じものができるか」は → **できる。命令に Pos、Chunk に Name、unwind 時に Frames 集約、という構造がすでにあった**
+- **PR #3 の `File "..." line N in f()` + ソース行 + `Traceback` ヘッダは Round-2 で完全に再現**（§5 の残件は全て解消）
+- 最大の実質ギャップだった**ホストpanic系のフレーム全欠落**は exec/builtin 境界での正規化で一括解決、**再帰でのプロセス死亡**は frame cap で trap 化
 - トレードオフ: ホストpanic を `*Panic` にすると recover() で捕まえられる（Go忠実）が、VM 内部バグ由来の panic も script-catchable になる点だけ注意（報告用に `*Trap` 化して recover 不可を保つ選択肢もある — Go 意味論的には Panic が正しい）

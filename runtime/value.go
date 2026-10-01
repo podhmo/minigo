@@ -570,7 +570,7 @@ type Panic struct {
 func (p *Panic) Error() string {
 	s := fmt.Sprintf("panic: %v", panicValue(p.Value))
 	if len(p.Frames) > 0 {
-		s += "\n" + renderFrames(p.Frames)
+		s += "\nTraceback (most recent call first):\n" + renderFrames(p.Frames)
 	}
 	if p.GoStack != "" {
 		s += "\n" + p.GoStack
@@ -600,5 +600,5 @@ func (t *Trap) Error() string {
 	if len(t.Frames) == 0 {
 		return fmt.Sprintf("runtime trap: %s", t.Reason)
 	}
-	return fmt.Sprintf("runtime trap: %s\n%s", t.Reason, renderFrames(t.Frames))
+	return fmt.Sprintf("runtime trap: %s\nTraceback (most recent call first):\n%s", t.Reason, renderFrames(t.Frames))
 }

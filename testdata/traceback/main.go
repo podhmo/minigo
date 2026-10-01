@@ -1,5 +1,19 @@
 package main
 
+import "strings"
+
+// BoomViaBuiltin fails inside a host builtin — the traceback should name
+// strings.Repeat itself as a "(builtin)" frame.
+func BoomViaBuiltin() string {
+	return strings.Repeat("a", -1)
+}
+
+// Id is a generic function; a panic inside should render as Id[int]().
+func Id[T any](x T) T { panic("in generic") }
+
+// Add takes two params; calling it with one arg must trap, not bind nil.
+func Add(a, b int) int { return a + b }
+
 // boom panics unconditionally.
 func boom() {
 	panic("kaboom")
