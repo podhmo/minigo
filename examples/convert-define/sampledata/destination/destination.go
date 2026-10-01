@@ -52,3 +52,15 @@ type TargetWithMap struct {
 	PtrMap      map[string]*SubTarget
 	StringToStr map[string]string
 }
+
+type DstNested struct {
+	Inner DstNestedInner
+	PIn   *DstNestedInner
+	Flat  string
+	Tag   string
+}
+
+type DstNestedInner struct {
+	ID    int64
+	Value string
+}

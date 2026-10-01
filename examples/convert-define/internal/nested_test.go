@@ -1,0 +1,197 @@
+package internal
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/podhmo/minigo/examples/convert-define/generator"
+	"github.com/podhmo/minigo/examples/convert-define/model"
+)
+
+// writeNestedModule creates a temp module whose src/dst structs share a
+// nested struct shape, exercising dotted field paths in c.Map calls.
+// It returns the directory; define files are written per test.
+func writeNestedModule(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	files := map[string]string{
+		"go.mod": "module example.com/nested\n\ngo 1.22\n",
+		"source/source.go": `package source
+
+type Src struct {
+	ID    int64
+	Inner Inner
+	PIn   *Inner
+	Name  string
+}
+
+type Inner struct {
+	ID    int64
+	Value string
+}
+`,
+		"destination/destination.go": `package destination
+
+type Dst struct {
+	Inner Inner
+	PIn   *Inner
+	Flat  string
+	Tag   string
+}
+
+type Inner struct {
+	ID    int64
+	Value string
+}
+`,
+	}
+	for name, content := range files {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatalf("MkdirAll(%q): %v", filepath.Dir(path), err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatalf("WriteFile(%q): %v", path, err)
+		}
+	}
+	return dir
+}
+
+func writeDefine(t *testing.T, dir, body string) string {
+	t.Helper()
+	path := filepath.Join(dir, "define.go")
+	content := `//go:build codegen
+
+package main
+
+import (
+	"example.com/nested/destination"
+	"example.com/nested/source"
+	"github.com/podhmo/minigo/examples/convert-define/define"
+)
+
+func main() {
+` + body + `
+}
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", path, err)
+	}
+	return path
+}
+
+// TestParserNestedPaths: c.Map accepts dotted paths on both sides —
+// dst.Inner.ID, src.Inner.Value, src.PIn.Value (pointer intermediate)
+// and dst.PIn.Value (pointer intermediate needing nil-init) — and the
+// generated code carries the right guards.
+func TestParserNestedPaths(t *testing.T) {
+	dir := writeNestedModule(t)
+	defineFile := writeDefine(t, dir, `	define.Convert(func(c *define.Config, dst *destination.Dst, src *source.Src) {
+		c.Map(dst.Inner.ID, src.ID)
+		c.Map(dst.Flat, src.Inner.Value)
+		c.Map(dst.Tag, src.PIn.Value)
+		c.Map(dst.PIn.Value, src.Name)
+	})`)
+
+	runner, err := NewRunner()
+	if err != nil {
+		t.Fatalf("NewRunner() failed: %+v", err)
+	}
+	if err := runner.Run(context.Background(), defineFile); err != nil {
+		t.Fatalf("Run() failed: %+v", err)
+	}
+
+	if want, got := 1, len(runner.Info.ConversionPairs); want != got {
+		t.Fatalf("expected %d conversion pair, got %d", want, got)
+	}
+	pair := runner.Info.ConversionPairs[0]
+	if pair.Mapping == nil {
+		t.Fatal("pair.Mapping is nil")
+	}
+	wantMaps := []model.FieldMap{
+		{SrcName: "ID", DstName: "Inner.ID"},
+		{SrcName: "Inner.Value", DstName: "Flat"},
+		{SrcName: "PIn.Value", DstName: "Tag"},
+		{SrcName: "Name", DstName: "PIn.Value"},
+	}
+	if diff := cmp.Diff(wantMaps, pair.Mapping.Maps); diff != "" {
+		t.Errorf("pair.Mapping.Maps mismatch (-want +got):\n%s", diff)
+	}
+
+	out, err := generator.Generate(runner.TypeResolver(), runner.Info, "")
+	if err != nil {
+		t.Fatalf("Generate() failed: %+v", err)
+	}
+	code := string(out)
+	for _, want := range []string{
+		// struct auto-conversion runs first; the explicit leaf write
+		// overrides the ancestor's copied leaf afterwards.
+		"dst.Inner = *convertInnerToInner(ctx, ec, &src.Inner)",
+		"dst.Inner.ID = src.ID",
+		"dst.Flat = src.Inner.Value",
+		// pointer src intermediate is nil-guarded
+		"if src.PIn != nil {",
+		"dst.Tag = src.PIn.Value",
+		// pointer dst intermediate is nil-initialised before the write
+		"if dst.PIn == nil {",
+		"dst.PIn.Value = src.Name",
+	} {
+		if !strings.Contains(code, want) {
+			t.Errorf("generated code missing %q\n---\n%s", want, code)
+		}
+	}
+}
+
+// TestParserNestedPathErrors: bad path segments report at the DSL call
+// site instead of generating broken code.
+func TestParserNestedPathErrors(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{
+			name: "missing dst intermediate",
+			body: `	define.Convert(func(c *define.Config, dst *destination.Dst, src *source.Src) {
+		c.Map(dst.Nope.ID, src.ID)
+	})`,
+			wantErr: `has no field "Nope"`,
+		},
+		{
+			name: "missing src intermediate",
+			body: `	define.Convert(func(c *define.Config, dst *destination.Dst, src *source.Src) {
+		c.Map(dst.Flat, src.Nope.Value)
+	})`,
+			wantErr: `has no field "Nope"`,
+		},
+		{
+			name: "leaf intermediate is not selectable",
+			body: `	define.Convert(func(c *define.Config, dst *destination.Dst, src *source.Src) {
+		c.Map(dst.Flat.X, src.Name)
+	})`,
+			wantErr: "not a selectable struct",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeNestedModule(t)
+			defineFile := writeDefine(t, dir, tc.body)
+
+			runner, err := NewRunner()
+			if err != nil {
+				t.Fatalf("NewRunner() failed: %+v", err)
+			}
+			err = runner.Run(context.Background(), defineFile)
+			if err == nil {
+				t.Fatal("Run() succeeded, expected a field-path error")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("Run() error %q does not contain %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}

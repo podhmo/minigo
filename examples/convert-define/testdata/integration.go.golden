@@ -14,6 +14,9 @@ import (
 )
 
 // convertSrcUserToDstUser converts source.SrcUser to destination.DstUser.
+//
+// Generation warnings — the reported assignments may not compile:
+//   - dst.UserID: no conversion covers int64 -> string
 func convertSrcUserToDstUser(ctx context.Context, ec *model.ErrorCollector, src *source.SrcUser) *destination.DstUser {
 	if src == nil {
 		return nil
@@ -22,23 +25,8 @@ func convertSrcUserToDstUser(ctx context.Context, ec *model.ErrorCollector, src 
 	if ec.MaxErrorsReached() {
 		return dst
 	}
-	ec.Enter("UserID")
-	dst.UserID = src.ID
-
-	ec.Leave()
-	if ec.MaxErrorsReached() {
-		return dst
-	}
 	ec.Enter("Address")
 	dst.Address = *convertSrcAddressToDstAddress(ctx, ec, &src.Address)
-
-	ec.Leave()
-	if ec.MaxErrorsReached() {
-		return dst
-	}
-	ec.Enter("Contact")
-	dst.Contact = funcs.ConvertSrcContactToDstContact(ctx, ec, src.ContactInfo)
-
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
@@ -53,21 +41,30 @@ func convertSrcUserToDstUser(ctx context.Context, ec *model.ErrorCollector, src 
 		}
 		dst.Details = convertedSlice
 	}
-
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
 	}
 	ec.Enter("CreatedAt")
 	dst.CreatedAt = convutil.TimeToString(ctx, ec, src.CreatedAt)
-
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
 	}
 	ec.Enter("UpdatedAt")
 	dst.UpdatedAt = convutil.PtrTimeToString(ctx, ec, src.UpdatedAt)
-
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("UserID")
+	dst.UserID = src.ID
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("Contact")
+	dst.Contact = funcs.ConvertSrcContactToDstContact(ctx, ec, src.ContactInfo)
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
@@ -79,6 +76,9 @@ func convertSrcUserToDstUser(ctx context.Context, ec *model.ErrorCollector, src 
 }
 
 // ConvertSrcUserToDstUser converts source.SrcUser to destination.DstUser.
+//
+// Generation warnings — the reported assignments may not compile:
+//   - dst.UserID: no conversion covers int64 -> string
 func ConvertSrcUserToDstUser(ctx context.Context, src *source.SrcUser) (*destination.DstUser, error) {
 	if src == nil {
 		return nil, nil
@@ -121,36 +121,6 @@ func ConvertSrcAddressToDstAddress(ctx context.Context, src *source.SrcAddress) 
 	return dst, nil
 }
 
-// convertSrcContactToDstContact converts source.SrcContact to destination.DstContact.
-//
-// Fields that are not populated by this converter:
-//   - EmailAddress
-//   - PhoneNumber
-func convertSrcContactToDstContact(ctx context.Context, ec *model.ErrorCollector, src *source.SrcContact) *destination.DstContact {
-	if src == nil {
-		return nil
-	}
-	dst := &destination.DstContact{}
-	return dst
-}
-
-// ConvertSrcContactToDstContact converts source.SrcContact to destination.DstContact.
-//
-// Fields that are not populated by this converter:
-//   - EmailAddress
-//   - PhoneNumber
-func ConvertSrcContactToDstContact(ctx context.Context, src *source.SrcContact) (*destination.DstContact, error) {
-	if src == nil {
-		return nil, nil
-	}
-	ec := model.NewErrorCollector(0)
-	dst := convertSrcContactToDstContact(ctx, ec, src)
-	if ec.HasErrors() {
-		return dst, errors.Join(ec.Errors()...)
-	}
-	return dst, nil
-}
-
 // convertSrcInternalDetailToDstInternalDetail converts source.SrcInternalDetail to destination.DstInternalDetail.
 //
 // Fields that are not populated by this converter:
@@ -175,6 +145,36 @@ func ConvertSrcInternalDetailToDstInternalDetail(ctx context.Context, src *sourc
 	}
 	ec := model.NewErrorCollector(0)
 	dst := convertSrcInternalDetailToDstInternalDetail(ctx, ec, src)
+	if ec.HasErrors() {
+		return dst, errors.Join(ec.Errors()...)
+	}
+	return dst, nil
+}
+
+// convertSrcContactToDstContact converts source.SrcContact to destination.DstContact.
+//
+// Fields that are not populated by this converter:
+//   - EmailAddress
+//   - PhoneNumber
+func convertSrcContactToDstContact(ctx context.Context, ec *model.ErrorCollector, src *source.SrcContact) *destination.DstContact {
+	if src == nil {
+		return nil
+	}
+	dst := &destination.DstContact{}
+	return dst
+}
+
+// ConvertSrcContactToDstContact converts source.SrcContact to destination.DstContact.
+//
+// Fields that are not populated by this converter:
+//   - EmailAddress
+//   - PhoneNumber
+func ConvertSrcContactToDstContact(ctx context.Context, src *source.SrcContact) (*destination.DstContact, error) {
+	if src == nil {
+		return nil, nil
+	}
+	ec := model.NewErrorCollector(0)
+	dst := convertSrcContactToDstContact(ctx, ec, src)
 	if ec.HasErrors() {
 		return dst, errors.Join(ec.Errors()...)
 	}

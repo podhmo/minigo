@@ -91,6 +91,16 @@ The public API is housed in the `github.com/podhmo/minigo/examples/convert-defin
 *   `c.Convert(dstField, srcField, converterFunc)`: Maps two fields that require a **custom conversion function**.
 *   `c.Compute(dstField, expression)`: Maps a destination field that is **computed from an expression**.
 
+All three accept **dotted field paths**, not just top-level fields: `c.Map(dst.Inner.ID, src.ID)` writes a leaf inside a nested destination struct, and `c.Map(dst.Flat, src.In.Value)` reads through a nested source struct. Pointer intermediates are handled — a `*T` on the source side guards the read (`if src.P != nil`), a `*T` on the destination side is nil-initialised before the write (`if dst.P == nil { dst.P = &T{} }`). Bad segments are reported at generation time. Explicit maps are emitted after the automatic field matches, so a leaf-path mapping overrides the copied leaf of a struct its ancestor was also mapped (`c.Map(dst.Inner.ID, src.ID)` beats `dst.Inner = convert(src.Inner)`'s copied ID).
+
+## Conversion semantics and diagnostics
+
+Fields are matched in this order: an explicit `c.Map`/`c.Convert` entry, then the normalized `json` tag, then the normalized field name. For each matched pair the generator emits, in order: the explicit converter, a matching `define.Rule`, or the default shape conversion — direct assignment for identical types, struct-to-struct via the discovered sub-converter, element-wise slices/arrays/maps, pointer un/re-wrapping, and finally a `DstT(src)` cast for castable leaf pairs (named scalar types, numeric pairs, `string` <-> `[]byte`/`[]rune`).
+
+A leaf pair no rule and no cast covers (e.g. `int` -> `string`) still emits the honest raw assignment — which will not compile — but is also reported as a **generation warning** on the converter's doc comment and via `slog`, so the failure is visible before compile time.
+
+Note on identical names across packages: two struct types that merely share a name (e.g. `a.User` and `b.User`) are *not* the same type — the generator converts them field by field. Struct identity is checked by canonical package-qualified name plus structural shape; same-name cross-package types whose fields differ still get a per-field converter, which is the intended behavior.
+
 ## Role of `minigo` and `inspect`
 
 The tool leans entirely on the interpreter it already runs in:
