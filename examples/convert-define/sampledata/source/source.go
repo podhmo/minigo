@@ -68,3 +68,16 @@ type SourceWithMap struct {
 	PtrMap      map[string]*SubSource
 	StringToStr map[string]string
 }
+
+// @derivingconvert("github.com/podhmo/minigo/examples/convert-define/sampledata/destination.DstNested")
+type SrcNested struct {
+	ID    int64
+	Inner SrcNestedInner
+	PIn   *SrcNestedInner
+	Name  string
+}
+
+type SrcNestedInner struct {
+	ID    int64
+	Value string
+}

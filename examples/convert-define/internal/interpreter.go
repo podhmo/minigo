@@ -185,6 +185,7 @@ func (r *Runner) handleConvert(ctx runtime.SpecialContext, call *runtime.QuotedC
 		DstTypeName: dstType.Name,
 		SrcTypeInfo: srcType,
 		DstTypeInfo: dstType,
+		Mapping:     &model.MappingInfo{},
 	}
 
 	// Walk the function body to find Map/Convert/Compute calls
@@ -193,13 +194,14 @@ func (r *Runner) handleConvert(ctx runtime.SpecialContext, call *runtime.QuotedC
 		ctx:     ctx,
 		pair:    &pair,
 		srcInfo: r.Info.Structs[model.DeclKey(srcType)],
+		dstInfo: r.Info.Structs[model.DeclKey(dstType)],
 		dstName: paramName(fnLit.Type.Params.List[1], "dst"),
 		srcName: paramName(fnLit.Type.Params.List[2], "src"),
 	}
 	if walker.srcInfo == nil {
 		return nil, ctx.Errorf(call.Call, "source type %s must be a struct", srcType.Name)
 	}
-	if r.Info.Structs[model.DeclKey(dstType)] == nil {
+	if walker.dstInfo == nil {
 		return nil, ctx.Errorf(call.Call, "destination type %s must be a struct", dstType.Name)
 	}
 
@@ -352,6 +354,7 @@ type mappingWalker struct {
 	ctx     runtime.SpecialContext
 	pair    *model.ConversionPair
 	srcInfo *model.StructInfo
+	dstInfo *model.StructInfo
 	dstName string // name of the dst parameter in the mapping func
 	srcName string // name of the src parameter in the mapping func
 	err     error
@@ -394,7 +397,7 @@ func (w *mappingWalker) parseMapCall(call *ast.CallExpr) error {
 		return fmt.Errorf("could not parse src in c.Map(): %w", err)
 	}
 
-	return w.setFieldTag(srcName, dstName, "")
+	return w.addMap(srcName, dstName, "")
 }
 
 func (w *mappingWalker) parseConvertCall(call *ast.CallExpr) error {
@@ -427,7 +430,7 @@ func (w *mappingWalker) parseConvertCall(call *ast.CallExpr) error {
 		}
 	}
 
-	return w.setFieldTag(srcName, dstName, converter)
+	return w.addMap(srcName, dstName, converter)
 }
 
 // checkConverterSig verifies a field converter's signature contract when
@@ -472,16 +475,25 @@ func selectorRoot(expr ast.Expr) (string, bool) {
 	return id.Name, true
 }
 
-func (w *mappingWalker) setFieldTag(srcFieldName, dstFieldName, converter string) error {
-	for i := range w.srcInfo.Fields {
-		if w.srcInfo.Fields[i].Name == srcFieldName {
-			w.srcInfo.Fields[i].Tag.DstFieldName = dstFieldName
-			w.srcInfo.Fields[i].Tag.UsingFunc = converter
-			slog.Debug("updated field tag", "src", srcFieldName, "dst", dstFieldName, "converter", converter)
-			return nil
-		}
+// addMap records an explicit field mapping on the pair. Both names are
+// field paths relative to the src/dst parameters — a top-level field
+// ("ID") or a dotted path into nested structs ("Inner.ID"); nested
+// paths are validated here so a bad segment reports at the DSL call
+// site. The generator resolves the paths again to type the leaves.
+func (w *mappingWalker) addMap(srcPath, dstPath, converter string) error {
+	if _, err := model.ResolveFieldPath(w.r.Info, w.r.TypeResolver(), w.srcInfo, srcPath); err != nil {
+		return fmt.Errorf("source: %w", err)
 	}
-	return fmt.Errorf("source field %q not found in struct %s", srcFieldName, w.srcInfo.Name)
+	if _, err := model.ResolveFieldPath(w.r.Info, w.r.TypeResolver(), w.dstInfo, dstPath); err != nil {
+		return fmt.Errorf("destination: %w", err)
+	}
+	w.pair.Mapping.Maps = append(w.pair.Mapping.Maps, model.FieldMap{
+		SrcName:   srcPath,
+		DstName:   dstPath,
+		Converter: converter,
+	})
+	slog.Debug("added explicit field map", "src", srcPath, "dst", dstPath, "converter", converter)
+	return nil
 }
 
 func (w *mappingWalker) parseComputeCall(call *ast.CallExpr) error {
@@ -495,6 +507,12 @@ func (w *mappingWalker) parseComputeCall(call *ast.CallExpr) error {
 	expr, err := w.exprToString(call.Args[1])
 	if err != nil {
 		return fmt.Errorf("could not parse expression in c.Compute(): %w", err)
+	}
+
+	// A nested destination path ("Inner.X") is validated eagerly so a
+	// bad segment reports at the DSL call site.
+	if _, err := model.ResolveFieldPath(w.r.Info, w.r.TypeResolver(), w.dstInfo, dstName); err != nil {
+		return fmt.Errorf("destination: %w", err)
 	}
 
 	computed := model.ComputedField{

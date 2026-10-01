@@ -129,3 +129,60 @@ func embeddedFieldName(te *xinspect.TypeExpr) string {
 	}
 	return te.Text
 }
+
+// ResolveFieldPath walks a dotted field path ("Inner.ID") through struct
+// declarations: each segment must name a field of the current struct,
+// and every intermediate field's type must resolve to a struct decl.
+// Pointer layers on an intermediate are peeled (`*Inner` intermediates
+// resolve — the generator emits the nil-init/guard); slices, maps and
+// other composites are not selectable and fail.
+//
+// The returned chain has one FieldInfo per path segment, so callers can
+// read each intermediate's declared type. StructInfos for the
+// intermediate decls are materialized into info.Structs, the same cache
+// the generator's structInfoFor populates.
+func ResolveFieldPath(info *ParsedInfo, res xinspect.Resolver, si *StructInfo, path string) ([]FieldInfo, error) {
+	if si == nil {
+		return nil, fmt.Errorf("field path %q: no struct to resolve against", path)
+	}
+	parts := strings.Split(path, ".")
+	chain := make([]FieldInfo, 0, len(parts))
+	cur := si
+	for i, p := range parts {
+		var f *FieldInfo
+		for j := range cur.Fields {
+			if cur.Fields[j].Name == p {
+				f = &cur.Fields[j]
+				break
+			}
+		}
+		if f == nil {
+			return nil, fmt.Errorf("field path %q: %s has no field %q", path, cur.Name, p)
+		}
+		chain = append(chain, *f)
+		if i == len(parts)-1 {
+			break
+		}
+		d, err := ResolveNamed(res, f.FieldType)
+		if err != nil {
+			return nil, fmt.Errorf("field path %q: resolving %s.%s: %w", path, cur.Name, p, err)
+		}
+		if !IsStructDecl(d) {
+			return nil, fmt.Errorf("field path %q: %s.%s is %s, not a selectable struct", path, cur.Name, p, f.FieldType.Text)
+		}
+		key := DeclKey(d)
+		next, ok := info.Structs[key]
+		if !ok {
+			next, err = StructInfoFromDecl(d)
+			if err != nil {
+				return nil, err
+			}
+			if info.Structs == nil {
+				info.Structs = map[string]*StructInfo{}
+			}
+			info.Structs[key] = next
+		}
+		cur = next
+	}
+	return chain, nil
+}

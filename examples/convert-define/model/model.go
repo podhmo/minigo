@@ -27,17 +27,25 @@ type Variable struct {
 type ComputedField struct {
 	DstName string
 	Expr    string
+	// Prelude holds statements to emit before the assignment — the
+	// nil-pointer initialisation needed when DstName is a nested path
+	// ("Inner.X") whose intermediate fields are pointers. Filled by the
+	// generator's emit pass; "" for a top-level field.
+	Prelude string
 }
 
 // FieldMap defines a mapping between a source and destination field,
-// optionally with a custom conversion function.
+// optionally with a custom conversion function. SrcName/DstName are
+// field paths relative to the src/dst variables — a single field name
+// ("ID") or a dotted path through nested structs ("Inner.ID").
 type FieldMap struct {
 	DstName   string
 	SrcName   string
 	Converter string // e.g. "funcs.UserIDToString"
 }
 
-// MappingInfo holds the set of explicit mapping rules defined within a define.Mapping call.
+// MappingInfo holds the set of explicit mapping rules defined by the
+// c.Map/c.Convert calls in a define.Convert mapping function.
 type MappingInfo struct {
 	Maps     []FieldMap
 	Computes []ComputedField
@@ -49,20 +57,19 @@ type ConversionPair struct {
 	DstTypeName string
 	SrcTypeInfo *xinspect.Decl
 	DstTypeInfo *xinspect.Decl
-	Mapping     *MappingInfo // Explicit mapping rules from define.Mapping
+	Mapping     *MappingInfo // Explicit mapping rules from the mapping function body
 	MaxErrors   int
 	Variables   []Variable
 	Computed    []ComputedField // TODO: This might be deprecated in favor of Mapping.Computes
 }
 
-// TypeRule defines a global rule for converting between types or validating a type.
+// TypeRule defines a global rule for converting between types.
 type TypeRule struct {
-	SrcTypeName   string
-	DstTypeName   string
-	SrcTypeInfo   *xinspect.Decl
-	DstTypeInfo   *xinspect.Decl
-	UsingFunc     string
-	ValidatorFunc string
+	SrcTypeName string
+	DstTypeName string
+	SrcTypeInfo *xinspect.Decl
+	DstTypeInfo *xinspect.Decl
+	UsingFunc   string
 }
 
 // StructInfo holds information about a parsed struct.
@@ -78,16 +85,7 @@ type FieldInfo struct {
 	OriginalName string
 	JSONTag      string
 	FieldType    *xinspect.TypeExpr // The declared field type, as an inspect view
-	Tag          ConvertTag
 	ParentStruct *StructInfo
-}
-
-// ConvertTag holds parsed values from a `convert` struct tag.
-type ConvertTag struct {
-	DstFieldName string
-	UsingFunc    string
-	Required     bool
-	RawValue     string
 }
 
 // ErrorCollector accumulates errors during a conversion process.

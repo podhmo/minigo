@@ -69,26 +69,16 @@ func TestParser(t *testing.T) {
 		}
 	}
 
-	// Check field tags for user
-	userSrcInfo, ok := info.Structs[model.DeclKey(userPair.SrcTypeInfo)]
-	if !ok {
-		t.Fatal("SrcUser info not found")
+	// Explicit mappings land on the pair, in DSL call order.
+	if userPair.Mapping == nil {
+		t.Fatal("userPair.Mapping is nil")
 	}
-
-	idTag := findField(t, userSrcInfo, "ID").Tag
-	if want, got := "UserID", idTag.DstFieldName; want != got {
-		t.Errorf("ID tag DstFieldName: want %q, got %q", want, got)
+	wantUserMaps := []model.FieldMap{
+		{SrcName: "ID", DstName: "UserID"},
+		{SrcName: "ContactInfo", DstName: "Contact", Converter: "funcs.ConvertSrcContactToDstContact"},
 	}
-	if want, got := "", idTag.UsingFunc; want != got {
-		t.Errorf("ID tag UsingFunc: want %q, got %q", want, got)
-	}
-
-	contactTag := findField(t, userSrcInfo, "ContactInfo").Tag
-	if want, got := "Contact", contactTag.DstFieldName; want != got {
-		t.Errorf("ContactInfo tag DstFieldName: want %q, got %q", want, got)
-	}
-	if want, got := "funcs.ConvertSrcContactToDstContact", contactTag.UsingFunc; want != got {
-		t.Errorf("ContactInfo tag UsingFunc: want %q, got %q", want, got)
+	if diff := cmp.Diff(wantUserMaps, userPair.Mapping.Maps); diff != "" {
+		t.Errorf("userPair.Mapping.Maps mismatch (-want +got):\n%s", diff)
 	}
 
 	// -- Pair 2: SrcAddress -> DstAddress
@@ -103,31 +93,16 @@ func TestParser(t *testing.T) {
 		t.Fatalf("address pair should have no computed fields, but got %d", got)
 	}
 
-	// Check field tags for address
-	addrSrcInfo, ok := info.Structs[model.DeclKey(addrPair.SrcTypeInfo)]
-	if !ok {
-		t.Fatal("SrcAddress info not found")
+	if addrPair.Mapping == nil {
+		t.Fatal("addrPair.Mapping is nil")
 	}
-
-	streetTag := findField(t, addrSrcInfo, "Street").Tag
-	if want, got := "FullStreet", streetTag.DstFieldName; want != got {
-		t.Errorf("Street tag DstFieldName: want %q, got %q", want, got)
+	wantAddrMaps := []model.FieldMap{
+		{SrcName: "Street", DstName: "FullStreet"},
+		{SrcName: "City", DstName: "CityName"},
 	}
-	cityTag := findField(t, addrSrcInfo, "City").Tag
-	if want, got := "CityName", cityTag.DstFieldName; want != got {
-		t.Errorf("City tag DstFieldName: want %q, got %q", want, got)
+	if diff := cmp.Diff(wantAddrMaps, addrPair.Mapping.Maps); diff != "" {
+		t.Errorf("addrPair.Mapping.Maps mismatch (-want +got):\n%s", diff)
 	}
-}
-
-func findField(t *testing.T, structInfo *model.StructInfo, name string) model.FieldInfo {
-	t.Helper()
-	for _, f := range structInfo.Fields {
-		if f.Name == name {
-			return f
-		}
-	}
-	t.Fatalf("field %q not found in struct %s", name, structInfo.Name)
-	return model.FieldInfo{}
 }
 
 func TestRunner(t *testing.T) {

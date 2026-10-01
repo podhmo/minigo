@@ -24,7 +24,8 @@ func Convert(mapFunc any) {
 
 // Rule defines a global, reusable conversion rule for a specific type-to-type conversion.
 // The parser infers the source and destination types from the function's signature.
-// For example, `define.Rule(convutil.TimeToString)` where TimeToString is `func(t time.Time) string`
+// For example, `define.Rule(convutil.TimeToString)` where TimeToString is
+// `func(ctx context.Context, ec *model.ErrorCollector, t time.Time) string`
 // would establish a global rule for converting `time.Time` to `string`.
 //
 // The customFunc parameter is a function identifier (e.g., `convutil.TimeToString`).
@@ -35,6 +36,11 @@ func Rule(customFunc any) {
 // Map defines a mapping between two fields with different names.
 // This is only necessary when the source and destination field names do not match.
 //
+// Both arguments may be dotted field paths through nested structs:
+// `c.Map(dst.Inner.ID, src.ID)` writes a leaf of the nested destination,
+// `c.Map(dst.Flat, src.In.Value)` reads through a nested source field.
+// Pointer intermediates are nil-guarded on read and nil-initialised on write.
+//
 // Example: `c.Map(dst.UserID, src.ID)`
 func (c *Config) Map(dstField any, srcField any) {
 	// This is a stub function for the parser.
@@ -42,6 +48,9 @@ func (c *Config) Map(dstField any, srcField any) {
 
 // Convert defines a mapping that requires a custom conversion function for a specific field.
 // This is used when the default assignment or a global `Rule` is not sufficient.
+// The converter must have the signature
+// `func(ctx context.Context, ec *model.ErrorCollector, src SrcType) DstType`.
+// Dotted field paths are supported like in `Map`.
 //
 // Example: `c.Convert(dst.Contact, src.ContactInfo, funcs.ConvertSrcContactToDstContact)`
 func (c *Config) Convert(
@@ -53,6 +62,8 @@ func (c *Config) Convert(
 
 // Compute defines a mapping for a destination field that is computed from an expression.
 // The expression can be a function call or any other valid Go expression.
+// The destination may be a dotted field path; pointer intermediates are
+// nil-initialised before the write.
 //
 // Example: `c.Compute(dst.FullName, funcs.MakeFullName(src.FirstName, src.LastName))`
 func (c *Config) Compute(
