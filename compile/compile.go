@@ -386,9 +386,11 @@ type paramCoerce struct {
 }
 
 // emitParamCoerces emits typeExpr+OpCoerce for each declared parameter.
+// The coerce carries the parameter type's position so a failed coercion
+// points at the signature, not nowhere.
 func (c *compiler) emitParamCoerces(pcs []paramCoerce) {
 	for _, pc := range pcs {
-		c.emitTypeCoerce(pc.slot, pc.typ, token.NoPos)
+		c.emitTypeCoerce(pc.slot, pc.typ, pc.typ.Pos())
 	}
 }
 

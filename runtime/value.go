@@ -543,17 +543,49 @@ type SpecialContext interface {
 	Errorf(n ast.Node, format string, args ...any) error
 }
 
+// maxTracebackEntries bounds how many frames Error() renders; the full
+// list stays in Frames for programmatic use, but a runaway recursion
+// shouldn't dump tens of thousands of lines. Long traces keep both ends —
+// the innermost frames where the failure happened and the outermost entry
+// points — with the middle elided.
+const maxTracebackEntries = 1000
+
+func renderFrames(frames []string) string {
+	if len(frames) <= maxTracebackEntries {
+		return strings.Join(frames, "\n")
+	}
+	half := maxTracebackEntries / 2
+	return strings.Join(frames[:half], "\n") +
+		fmt.Sprintf("\n... %d frames elided ...\n", len(frames)-maxTracebackEntries) +
+		strings.Join(frames[len(frames)-half:], "\n")
+}
+
 // Panic is a script-level panic value; catchable by recover().
 type Panic struct {
-	Value  Value
-	Frames []string // "func at file:line" entries collected while unwinding
+	Value   Value
+	Frames  []string // "func at file:line" entries collected while unwinding
+	GoStack string   // host goroutine stack at panic time (host panics only)
 }
 
 func (p *Panic) Error() string {
-	if len(p.Frames) == 0 {
-		return fmt.Sprintf("panic: %v", p.Value)
+	s := fmt.Sprintf("panic: %v", panicValue(p.Value))
+	if len(p.Frames) > 0 {
+		s += "\nTraceback (most recent call first):\n" + renderFrames(p.Frames)
 	}
-	return fmt.Sprintf("panic: %v\n%s", p.Value, strings.Join(p.Frames, "\n"))
+	if p.GoStack != "" {
+		s += "\n" + p.GoStack
+	}
+	return s
+}
+
+// panicValue renders the panic payload for messages: a boxed host value
+// (error, stringer) is unwrapped so `panic(err)` reads like Go's output
+// rather than a struct dump.
+func panicValue(v Value) any {
+	if gv, ok := v.(*GoValue); ok {
+		return gv.V
+	}
+	return v
 }
 
 // Trap is a VM-level failure (unsupported construct, invalid operation).
@@ -568,5 +600,5 @@ func (t *Trap) Error() string {
 	if len(t.Frames) == 0 {
 		return fmt.Sprintf("runtime trap: %s", t.Reason)
 	}
-	return fmt.Sprintf("runtime trap: %s\n%s", t.Reason, strings.Join(t.Frames, "\n"))
+	return fmt.Sprintf("runtime trap: %s\nTraceback (most recent call first):\n%s", t.Reason, renderFrames(t.Frames))
 }

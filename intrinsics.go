@@ -45,15 +45,15 @@ func (e *Engine) installStdlib() {
 	e.Bind("fmt", map[string]runtime.Value{
 		"Print":   h.fn("fmt.Print", func(a []any) (any, error) { return retErr(fmt.Fprint(h.out(), a...)) }),
 		"Println": h.fn("fmt.Println", func(a []any) (any, error) { return retErr(fmt.Fprintln(h.out(), a...)) }),
-		"Printf": h.fn2("fmt.Printf", func(a []any) (any, error) {
+		"Printf": h.fn1("fmt.Printf", func(a []any) (any, error) {
 			return retErr(fmt.Fprintf(h.out(), str(a[0]), a[1:]...))
 		}),
 		"Sprint":   h.fn("fmt.Sprint", func(a []any) (any, error) { return fmt.Sprint(a...), nil }, fmt.Sprint),
 		"Sprintln": h.fn("fmt.Sprintln", func(a []any) (any, error) { return fmt.Sprintln(a...), nil }, fmt.Sprintln),
-		"Sprintf": h.fn2("fmt.Sprintf", func(a []any) (any, error) {
+		"Sprintf": h.fn1("fmt.Sprintf", func(a []any) (any, error) {
 			return fmt.Sprintf(str(a[0]), a[1:]...), nil
 		}),
-		"Errorf": h.fn2("fmt.Errorf", func(a []any) (any, error) {
+		"Errorf": h.fn1("fmt.Errorf", func(a []any) (any, error) {
 			return fmt.Errorf(str(a[0]), a[1:]...), nil
 		}),
 	})
