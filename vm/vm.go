@@ -703,6 +703,10 @@ func (v *VM) runDefers(f *frame) {
 				case *runtime.Trap:
 					e.Frames = append(e.Frames, entry)
 					panic(r)
+				case procExit:
+					// process teardown: a deferred call that parks again
+					// exits immediately — keep draining the remaining
+					// defers (Goexit drains them too)
 				default:
 					panic(r)
 				}
@@ -1125,7 +1129,7 @@ func (v *VM) loop(f *frame) {
 			if et != nil {
 				val = v.coerce(f, val, et)
 			}
-			sv, err := toReflectValue(val, chRV.Type().Elem())
+			sv, err := toReflectValue(val, chRV.Type().Elem(), v)
 			if err != nil {
 				f.trap("cannot send on %s: %s", chRV.Type(), err)
 			}
@@ -1144,7 +1148,7 @@ func (v *VM) loop(f *frame) {
 				if et != nil {
 					val = v.coerce(f, val, et)
 				}
-				sv, err := toReflectValue(val, chRV.Type().Elem())
+				sv, err := toReflectValue(val, chRV.Type().Elem(), v)
 				if err != nil {
 					f.trap("cannot send on %s: %s", chRV.Type(), err)
 				}
@@ -1466,7 +1470,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		if !m.IsValid() {
 			f.trap("no member %s on host value %T", name, b.V)
 		}
-		bf := &runtime.BuiltinFunc{Name: name, Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		bf := &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			mt := m.Type()
 			nin := mt.NumIn()
 			if !mt.IsVariadic() && len(args) != nin {
@@ -1483,7 +1487,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 				pt := mt.In(min(i, nin-1))
 				if mt.IsVariadic() && i >= nin-1 {
 					if i == nin-1 && len(args) == nin {
-						if rv, err := toReflectValue(a, pt); err == nil {
+						if rv, err := toReflectValue(a, pt, vc); err == nil {
 							in[i] = rv
 							useSlice = true
 							continue
@@ -1491,7 +1495,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 					}
 					pt = pt.Elem()
 				}
-				rv, err := toReflectValue(a, pt)
+				rv, err := toReflectValue(a, pt, vc)
 				if err != nil {
 					return nil, fmt.Errorf("%s arg %d: %w", name, i, err)
 				}
@@ -1624,10 +1628,27 @@ func hostField(v any, name string) (reflect.Value, bool) {
 }
 
 // toReflectValue marshals a runtime value to a reflect.Value of the
-// requested type: named/cell wrappers unwrap, slices and maps convert
-// element-wise, scalars assign or convert. Interface targets take any
-// assignable value.
-func toReflectValue(v runtime.Value, t reflect.Type) (reflect.Value, error) {
+// requested type: empty interfaces carry the value verbatim (a *Cell stays
+// a pointer, slices/maps cross unconverted), func types wrap the callable
+// so the host can invoke it back on the calling VM (vc), named/cell
+// wrappers unwrap, slices and maps convert element-wise, scalars assign or
+// convert.
+func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.Value, error) {
+	if t.Kind() == reflect.Interface && t.NumMethod() == 0 {
+		if v == nil || v == runtime.NIL {
+			return reflect.Zero(t), nil
+		}
+		av := reflect.ValueOf(v)
+		if !av.IsValid() {
+			return reflect.Zero(t), nil
+		}
+		out := reflect.New(t).Elem()
+		out.Set(av)
+		return out, nil
+	}
+	if t.Kind() == reflect.Func {
+		return adaptFunc(v, t, vc)
+	}
 	for {
 		if n, ok := v.(*runtime.Named); ok {
 			v = n.V
@@ -1659,7 +1680,7 @@ func toReflectValue(v runtime.Value, t reflect.Type) (reflect.Value, error) {
 			if i >= out.Len() {
 				break
 			}
-			ev, err := toReflectValue(e, t.Elem())
+			ev, err := toReflectValue(e, t.Elem(), vc)
 			if err != nil {
 				return reflect.Value{}, err
 			}
@@ -1672,11 +1693,11 @@ func toReflectValue(v runtime.Value, t reflect.Type) (reflect.Value, error) {
 		}
 		out := reflect.MakeMapWithSize(t, len(x.Pairs))
 		for k, e := range x.Pairs {
-			kv, err := toReflectValue(k, t.Key())
+			kv, err := toReflectValue(k, t.Key(), vc)
 			if err != nil {
 				return reflect.Value{}, fmt.Errorf("map key: %w", err)
 			}
-			ev, err := toReflectValue(e, t.Elem())
+			ev, err := toReflectValue(e, t.Elem(), vc)
 			if err != nil {
 				return reflect.Value{}, fmt.Errorf("map elem: %w", err)
 			}
@@ -1698,6 +1719,56 @@ func toReflectValue(v runtime.Value, t reflect.Type) (reflect.Value, error) {
 		return av.Convert(t), nil
 	}
 	return reflect.Value{}, fmt.Errorf("cannot use %s as %s", av.Type(), t)
+}
+
+// adaptFunc wraps a script callable as a host-typed func so methods taking
+// a func parameter (sync.Once.Do, sort callbacks, WalkDir-style visitors)
+// can invoke it: calls run back on vc — the VM the host call is executing
+// on, which is the right goroutine for synchronous host callbacks. A host
+// that retains the func and calls it later from another goroutine invokes
+// the script on that VM without synchronization (a documented hazard).
+func adaptFunc(x runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.Value, error) {
+	if vc == nil {
+		return reflect.Value{}, fmt.Errorf("cannot adapt %T to %s off-VM", x, t)
+	}
+	switch x.(type) {
+	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc, *runtime.Named:
+	default:
+		return reflect.Value{}, fmt.Errorf("cannot use %T as %s", x, t)
+	}
+	fv := reflect.MakeFunc(t, func(in []reflect.Value) []reflect.Value {
+		sargs := make([]runtime.Value, len(in))
+		for i, a := range in {
+			sargs[i] = goValueOf(a)
+		}
+		r, err := vc.Call(x, sargs)
+		if err != nil {
+			panic(err)
+		}
+		nout := t.NumOut()
+		var rs []runtime.Value
+		if tup, ok := r.(*runtime.Tuple); ok {
+			rs = tup.Elems
+		} else {
+			rs = []runtime.Value{r}
+		}
+		out := make([]reflect.Value, nout)
+		for i := range out {
+			var rv reflect.Value
+			var err error
+			if i < len(rs) {
+				rv, err = toReflectValue(rs[i], t.Out(i), vc)
+			} else {
+				rv, err = toReflectValue(runtime.NIL, t.Out(i), vc)
+			}
+			if err != nil {
+				panic(err)
+			}
+			out[i] = rv
+		}
+		return out
+	})
+	return fv, nil
 }
 
 func (v *VM) structMember(f *frame, s *runtime.Struct, name string, recv runtime.Value) runtime.Value {
@@ -1858,7 +1929,7 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 		if !fv.IsValid() || !fv.CanSet() {
 			f.trap("host value %T has no settable field %s", b.V, name)
 		}
-		nv, err := toReflectValue(val, fv.Type())
+		nv, err := toReflectValue(val, fv.Type(), v)
 		if err != nil {
 			f.trap("set field %s: %s", name, err)
 		}
@@ -2691,7 +2762,11 @@ func (v *VM) iterNext(f *frame, it *runtime.Iterator, nvars int) bool {
 		return true
 	case 'c':
 		// range over a channel receives until the channel closes, blocking
-		// on each element as in Go.
+		// on each element as in Go — and like Go it allows at most one
+		// iteration variable (there is no index/key).
+		if nvars == 2 {
+			f.trap("range over channel allows at most one iteration variable")
+		}
 		val, ok := v.chanRecvRV(f, it.ChRV, it.ETyp)
 		if !ok {
 			return false
@@ -2824,6 +2899,15 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 			return &runtime.Named{Typ: tag, V: res}
 		}
 		return res
+	}
+	// bound time.* constants arrive as raw time.Duration values — they
+	// behave as their int64 underlying in arithmetic and comparisons
+	// (2*time.Second, d < timeout).
+	if d, ok := a.(time.Duration); ok {
+		a = int64(d)
+	}
+	if d, ok := b.(time.Duration); ok {
+		b = int64(d)
 	}
 	// equality works on any comparable pair
 	switch op {

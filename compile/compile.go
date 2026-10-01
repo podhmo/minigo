@@ -945,8 +945,29 @@ func (c *compiler) forStmt(st *ast.ForStmt) {
 		c.expr(st.Cond)
 		jEnd = c.emit(bytecode.OpJumpFalse, 0, 0, st.Cond.Pos())
 	}
-	c.stmt(st.Body)
+	// Go 1.22+ iteration semantics: names the init statement declares get a
+	// fresh binding per iteration — rebind them inside the body so closures
+	// (and goroutines) capture distinct cells, then copy the body's
+	// (possibly mutated) value back so post and the next cond see it.
+	shadows := loopInitNames(st.Init)
+	c.fs.pushBlock()
+	var shadowPairs [][2]int
+	for _, name := range shadows {
+		outer, _ := c.fs.lookupLocal(name.Name)
+		slot := c.fs.declare(name.Name, name.Pos())
+		shadowPairs = append(shadowPairs, [2]int{outer, slot})
+		c.emit(bytecode.OpLocal, outer, 0, name.Pos())
+		c.emit(bytecode.OpNewLocal, slot, 0, name.Pos())
+	}
+	for _, bs := range st.Body.List {
+		c.stmt(bs)
+	}
+	c.fs.popBlock()
 	lc.continueIP = len(c.ch.Code)
+	for _, pr := range shadowPairs {
+		c.emit(bytecode.OpLocal, pr[1], 0, st.Init.Pos())
+		c.emit(bytecode.OpSetLocal, pr[0], 0, st.Init.Pos())
+	}
 	if st.Post != nil {
 		c.stmt(st.Post)
 	}
@@ -964,6 +985,22 @@ func (c *compiler) forStmt(st *ast.ForStmt) {
 	}
 	c.ctrl = c.ctrl[:len(c.ctrl)-1]
 	c.fs.popBlock()
+}
+
+// loopInitNames lists the names a 3-clause for's init statement declares
+// (`i := 0`): only :=-style inits get per-iteration bindings.
+func loopInitNames(s ast.Stmt) []*ast.Ident {
+	as, ok := s.(*ast.AssignStmt)
+	if !ok || as.Tok != token.DEFINE {
+		return nil
+	}
+	var out []*ast.Ident
+	for _, lhs := range as.Lhs {
+		if id, ok := lhs.(*ast.Ident); ok && id.Name != "_" {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 func (c *compiler) rangeStmt(st *ast.RangeStmt) {
@@ -1121,10 +1158,14 @@ func (c *compiler) selectStmt(st *ast.SelectStmt) {
 	}
 	var cases []selCase
 	var defaultBody []ast.Stmt
+	hasDefault := false
 	tmp := 0
 	for _, s := range st.Body.List {
 		clause := s.(*ast.CommClause)
 		if clause.Comm == nil {
+			// a `default:` with an empty body still counts as a default —
+			// without the arm the select blocks instead of falling through
+			hasDefault = true
 			defaultBody = clause.Body
 			continue
 		}
@@ -1168,18 +1209,18 @@ func (c *compiler) selectStmt(st *ast.SelectStmt) {
 			c.emit(bytecode.OpSelArm, sc.nrecv, 0, sc.pos)
 		}
 	}
-	hasDefault := 0
-	if defaultBody != nil {
-		hasDefault = 1
+	bDefault := 0
+	if hasDefault {
+		bDefault = 1
 	}
-	c.emit(bytecode.OpSelWait, len(cases), hasDefault, st.Pos())
+	c.emit(bytecode.OpSelWait, len(cases), bDefault, st.Pos())
 	// jump table OpSelWait dispatches into: one OpJump per case, then the
 	// default's OpJump as the last slot
 	jmps := make([]int, 0, len(cases)+1)
 	for _, sc := range cases {
 		jmps = append(jmps, c.emit(bytecode.OpJump, 0, 0, sc.pos))
 	}
-	if defaultBody != nil {
+	if hasDefault {
 		jmps = append(jmps, c.emit(bytecode.OpJump, 0, 0, st.Pos()))
 	}
 
@@ -1196,7 +1237,7 @@ func (c *compiler) selectStmt(st *ast.SelectStmt) {
 		c.fs.popBlock()
 		exits = append(exits, c.emit(bytecode.OpJump, 0, 0, sc.pos))
 	}
-	if defaultBody != nil {
+	if hasDefault {
 		c.patchA(jmps[len(cases)], len(c.ch.Code))
 		for _, bs := range defaultBody {
 			c.stmt(bs)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"runtime"
+	"sort"
 	"sync"
 	"time"
 )
@@ -279,3 +280,117 @@ func DetachedLeak() int {
 }
 
 func main() {}
+
+// OnceDo: sync.Once runs its func exactly once — the method takes a
+// func-typed argument adapted to a host func.
+func OnceDo() int {
+	var o sync.Once
+	n := 0
+	f := func() { n++ }
+	o.Do(f)
+	o.Do(f)
+	return n // 1
+}
+
+// ChanPointerIdentity: sending a pointer through a script channel keeps
+// pointer identity — *p writes back into the sender's variable.
+func ChanPointerIdentity() int {
+	ch := make(chan *int, 1)
+	n := 1
+	ch <- &n
+	p := <-ch
+	*p = 9
+	return n // 9
+}
+
+// ChanSliceSend / ChanMapSend: containers cross script channels verbatim.
+func ChanSliceSend() int {
+	ch := make(chan []int, 1)
+	ch <- []int{1, 2, 3}
+	return (<-ch)[1] // 2
+}
+
+func ChanMapSend() int {
+	ch := make(chan map[string]int, 1)
+	m := map[string]int{"k": 7}
+	ch <- m
+	got := <-ch
+	got["k"] = 8
+	return m["k"] // 8 (same underlying map)
+}
+
+// SelectEmptyDefault: a `default:` clause with an empty body still
+// registers the default — the select must not block.
+func SelectEmptyDefault() int {
+	ch := make(chan int)
+	select {
+	case <-ch:
+		return -1
+	default:
+	}
+	return 7 // 7
+}
+
+// DurationArithmetic: bound time.* constants behave as their int64
+// underlying — arithmetic and comparisons work.
+func DurationArithmetic() int {
+	if 2*time.Second != 2000000000 {
+		return -1
+	}
+	if !(time.Hour > time.Minute) {
+		return -2
+	}
+	if time.Millisecond+time.Second != 1001000000 {
+		return -3
+	}
+	return 1 // 1
+}
+
+// LoopVarPerIteration: a 3-clause for's iteration variable is fresh each
+// iteration (Go 1.22) — closures spawned inside capture distinct cells.
+func LoopVarPerIteration() int {
+	ch := make(chan int, 3)
+	for i := 0; i < 3; i++ {
+		go func() { ch <- i }()
+	}
+	return <-ch + <-ch + <-ch // 0+1+2 = 3
+}
+
+// RangeChanTwoVars: `for k, v := range ch` is a compile error in Go —
+// minigo traps it at iteration time.
+func RangeChanTwoVars() int {
+	ch := make(chan int, 1)
+	ch <- 1
+	for _, v := range ch {
+		return v
+	}
+	return 0
+}
+
+// SortInGoroutine: host callbacks like sort.Slice's less run on the
+// calling VM — inside a goroutine they must not touch the root VM.
+func SortInGoroutine() int {
+	ch := make(chan int, 1)
+	go func() {
+		s := []int{3, 1, 2}
+		sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
+		ch <- s[0]
+	}()
+	return <-ch // 1
+}
+
+// DetachedWait: a goroutine parked inside a host call (WaitGroup.Wait —
+// no select, no done arm) is not released when the process dies — this
+// leaks the host goroutine (unlike channel parking, which procExit frees).
+func DetachedWait() int {
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var inner sync.WaitGroup
+		inner.Add(1)
+		inner.Wait() // parks inside a host call — survives proc kill
+	}()
+	time.Sleep(1 * time.Millisecond) // let the goroutine reach Wait
+	return 1
+}

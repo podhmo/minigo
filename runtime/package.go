@@ -88,6 +88,14 @@ type ImportRef struct {
 // Materialize loads the package to Indexed (parses + indexes, no init).
 func (r *ImportRef) Materialize() (*Package, error) {
 	r.once.Do(func() {
+		defer func() {
+			// a panic inside Load still consumes the once — record it as an
+			// error so later calls report the failure instead of (nil, nil).
+			if pr := recover(); pr != nil {
+				r.pkg, r.err = nil, fmt.Errorf("import %s: %v", r.Path, pr)
+				panic(pr)
+			}
+		}()
 		if r.Load == nil {
 			r.err = fmt.Errorf("no loader for import %q", r.Path)
 			return
@@ -248,6 +256,11 @@ func (p *Package) runBootstrap(run func(*Function) error) (err error) {
 			} else {
 				err = fmt.Errorf("panic: %v", r)
 			}
+			// the re-panic still consumes initOnce — without recording the
+			// failure here the package would stay Initializing forever and
+			// later member access would silently see partial state.
+			p.initErr = err
+			p.SetState(Failed)
 			panic(r)
 		}
 	}()

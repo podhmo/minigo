@@ -2,9 +2,11 @@ package minigo_test
 
 import (
 	"context"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo"
@@ -41,6 +43,14 @@ func TestConcurrencyBlocking(t *testing.T) {
 			{"LazyInitFromGoroutine", int64(1)},
 			{"RecvClosedZero", int64(9)},
 			{"DeferRunsInGoroutine", int64(6)},
+			{"OnceDo", int64(1)},
+			{"ChanPointerIdentity", int64(9)},
+			{"ChanSliceSend", int64(2)},
+			{"ChanMapSend", int64(8)},
+			{"SelectEmptyDefault", int64(7)},
+			{"DurationArithmetic", int64(1)},
+			{"LoopVarPerIteration", int64(3)},
+			{"SortInGoroutine", int64(1)},
 		}
 		for _, c := range cases {
 			got := run(t, e, "./testdata/concurrency", c.fn)
@@ -96,6 +106,18 @@ func TestBlockedSiblingReleased(t *testing.T) {
 	})
 }
 
+// TestRangeChanTwoVars: `for k, v := range ch` traps — Go rejects it at
+// compile time; minigo reports it when the iteration starts.
+func TestRangeChanTwoVars(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEngine(t)
+		_, err := runErr(e, "./testdata/concurrency", "RangeChanTwoVars")
+		if err == nil || !strings.Contains(err.Error(), "at most one iteration variable") {
+			t.Fatalf("expected range-over-channel arity trap, got %v", err)
+		}
+	})
+}
+
 // TestDetachedLeak: a goroutine still parked when main returns dies with
 // the process — the synctest bubble proves it is gone (it would deadlock
 // the test otherwise).
@@ -107,6 +129,24 @@ func TestDetachedLeak(t *testing.T) {
 			t.Errorf("DetachedLeak mismatch (-want +got):\n%s", diff)
 		}
 	})
+}
+
+// TestHostParkLeak documents a known limitation: a script goroutine parked
+// inside a host call (WaitGroup.Wait, Mutex.Lock, time.Sleep) outlives its
+// process — only select-based blocking watches proc.done, so the host
+// goroutine leaks. A synctest bubble reports it as "blocked goroutines
+// remain", so this assertion runs on the real clock.
+func TestHostParkLeak(t *testing.T) {
+	before := goruntime.NumGoroutine()
+	e := newEngine(t)
+	run(t, e, "./testdata/concurrency", "DetachedWait")
+	deadline := time.Now().Add(2 * time.Second)
+	for goruntime.NumGoroutine() <= before && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if goruntime.NumGoroutine() <= before {
+		t.Fatal("expected the Wait-parked goroutine to leak")
+	}
 }
 
 // runErr is run() for tests that expect an error.
