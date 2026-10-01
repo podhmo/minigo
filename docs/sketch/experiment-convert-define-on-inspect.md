@@ -94,9 +94,12 @@ signature story symmetric with the fields story.
 
 - A nil-pointer panic inside a special-form handler surfaces as a bare
   `runtime error` with no Go stack — debugging the rewrite needed a
-  temporary `debug.Stack()` patch in `vm.asError`. A trap carrying a
-  stack (or the panic value's origin) would help every future host
-  extension author.
+  temporary `debug.Stack()` patch in `vm.asError`. Partially addressed
+  by #17's `asScriptPanic` (host panics now record *script* frames —
+  which DSL call panicked, plus its source line); the residual is the
+  host *Go* stack: `asScriptPanic` keeps `fmt.Sprintf("%v", r)` only,
+  so "which Go line inside the SpecialFunc panicked" still needs a
+  debugger. Capturing `debug.Stack()` at that boundary closes it.
 
 ## Bugs fixed along the way
 
