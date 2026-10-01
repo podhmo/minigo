@@ -123,7 +123,21 @@ main (deferred call) at /tmp/tbtest/main.go:6:2
 | `Id[int]` がフレーム上 `Id` と出る | 未対応（軽微）。TODO.md に記録 |
 | callee 内コンパイルエラーが呼出し位置に归因され失敗箇所の位置が落ちる | 未対応。TODO.md に記録 |
 
-## 7. 結論
+## 7. Round notes: 実際にやってみての想定外
+
+調査・実装を通じて計画時点では読めていなかった発見:
+
+- **ホストpanicは「通過するのに記録されない」抜け道だった。** `trace` は `*Trap`/`*Panic` にしか `Frames` を追記しないので、Go ランタイム由来の panic はフレームを巻き戻しながら素通りしていた。`exec` の recover 地点で `*Panic` に正規化する一本の変更で、index out of range・ゼロ除算・builtin 内 panic・defer 内 panic が一括で治った。箇所別に潰すのでなく境界で正規化するのが正解だった。
+- **`debug.Stack()` は recover 後でも panic 起点を含む。** deferred call の実行中は panic を起こしたフレームが論理スタック上にまだ生きているため、recover 地点で撮ったスタックに builtin・ホストハンドラ側の file:line が残る。PR #18 で欲しかった「interpreter.go の何行で nil deref したか」はこれで完全に取れた。スクリプトフレーム表示とセットで出るので、DSL 側の呼出し位置と Go 側の障害位置を一枚のエラーで読める。
+- **位置情報は想定よりほぼ出来上がっていた。** 「VM ベースで同じものができるか」は杞憂に近く、全命令に `Pos` が刻印・`Chunk` に関数名・caller フレームは `Code[ip-1]`（OpCall）で呼出し位置が自然に指せる構造があった。欠落は `token.NoPos` emit や Decl fallback のような個別経路だけだった。
+- **defer 起源の panic は「誰が defer したか」が完全に消えていた。** panic した deferred 関数のフレームだけで登録元フレームが出ないので、`main (deferred call) at ...` の合成エントリを `runDefers` の recover で付けた。これがないとスタックが途中で切れたように見える。
+- **再帰でプロセスごと死んだ（fatal stack overflow）。** VM フレーム数に上限がなく、スクリプトの無限再帰がホストのスタックを食い潰す。frame cap で `runtime trap: stack exhausted` に変換。Go でもスタック枯渇は recover 不可なので Trap（recover 不可）は Go 意味論に忠実 — ただしレビューで「recover 可能にすべきか」は設計判断として残っている。
+- **`FileByName` のキーと `Fset.Position().Filename` が同一文字列。** 「パッケージが読み込んだファイルに限定する」ゲートがファイル名比較だけで実現でき、AllowedRoots を再解釈しなくても任意ファイル読取を塞げた（Devin Review のセキュリティ指摘への対応）。
+- **`fmt.Errorf("x")` が動かなかった（範囲外バグの実例）。** 確認用に回したら `needs 2 args` で失敗 — 可変引数0個の呼出しが `fn2` arity で拒否されていた。エラー表示を試す行為自体が潜伏バグを掘った。
+- **`add(1)` が黙々と動く。** Go ではコンパイルエラーなのに `prepFrame` が欠損引数を NIL bind する。意図的な緩さとも読めるので修正せず残件に記録（設計判断要）。
+- **表示上限の shape はレビューで変わった。** 当初 20 件先頭のみだったが、上限10000フレームに対し「1000程度に収めて head/tail 省略」が要望として出て、発生箇所側500 + elided + main 側500 の形に落ち着いた。確認済み: 700 件では省略分岐に入らず全件そのまま出る。
+
+## 8. 結論
 
 - **ファイル名・関数名・行・列はすでに出ていた**。VM 化で「同じものができるか」は → **できる。命令に Pos、Chunk に Name、unwind 時に Frames 集約、という構造がすでにあった**
 - **PR #3 の `File "..." line N in f()` + ソース行の表示はほぼ再現可能**（ソース行は実装済。ヘッダ形式の差は整形のみ）
