@@ -1452,3 +1452,42 @@ func TestInitOnMemberAccess(t *testing.T) {
 		}
 	}
 }
+
+// Regressions found by the language-surface fuzz experiment — each case
+// pins one previously-wrong behavior (see docs/sketch/ja/fuzz-language.md).
+func TestFuzzFixes(t *testing.T) {
+	e := newEngine(t)
+	cases := []struct {
+		fn   string
+		want any
+	}{
+		{"MapElidedKey", "x"},
+		{"MapArrayKey", int64(9)},
+		{"AnonStructEq", true},
+		{"ArraySliceShare", int64(99)},
+		{"ArraySliceCap", int64(3)},
+		{"ArrayCopy", int64(1)},
+		{"SliceToArray", "[1 2 3] 7"},
+		{"UnarySizedInt", int64(251)},
+		{"ParenCompoundAssign", int64(12)},
+		{"AndNotAssign", int64(8)},
+		{"CopyFromString", `3 "hel"`},
+		{"IfaceTypedNilMethod", int64(-1)},
+		{"MethodExprPtr", int64(5)},
+		{"NilSliceIndexMsg", "runtime error: index out of range [0] with length 0"},
+		{"CallNilFuncMsg", "runtime error: invalid memory address or nil pointer dereference"},
+		{"AssertMissMsg", "interface conversion: interface {} is string, not int"},
+		{"FmtVerbs", `"hel" []int map[string]int A`},
+		{"FmtPkgType", "main.K main.K{X:1, Y:2}"},
+		{"InitDepOrder", "bac"},
+		{"ErrorfWrap", "o: x x true 7"},
+		{"PanicNilType", "*runtime.PanicNilError runtime error: panic called with nil argument"},
+		{"NamedUnary", "251"},
+	}
+	for _, c := range cases {
+		got := run(t, e, "./testdata/fuzzfix", c.fn)
+		if got != c.want {
+			t.Errorf("%s: got %v (%T), want %v (%T)", c.fn, got, got, c.want, c.want)
+		}
+	}
+}

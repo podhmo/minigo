@@ -792,7 +792,15 @@ func (c *compiler) assign(st *ast.AssignStmt) {
 			c.trap(st.Pos(), "unsupported assign op %s", st.Tok)
 			return
 		}
-		switch lhs := st.Lhs[0].(type) {
+		target := st.Lhs[0]
+		for {
+			if p, isParen := target.(*ast.ParenExpr); isParen {
+				target = p.X
+				continue
+			}
+			break
+		}
+		switch lhs := target.(type) {
 		case *ast.Ident:
 			c.getRef(lhs.Name, lhs.Pos())
 			c.expr(st.Rhs[0])
@@ -1838,6 +1846,8 @@ func binOpOf(tok token.Token) (bytecode.BinOp, bool) {
 		return bytecode.BinShl, true
 	case token.SHR_ASSIGN:
 		return bytecode.BinShr, true
+	case token.AND_NOT_ASSIGN:
+		return bytecode.BinAndNot, true
 	}
 	return 0, false
 }
@@ -1975,7 +1985,15 @@ func (c *compiler) compileLit(x *ast.CompositeLit, baseType ast.Expr, depth int)
 	for _, el := range x.Elts {
 		if kv {
 			kvel := el.(*ast.KeyValueExpr)
-			if id, ok := kvel.Key.(*ast.Ident); ok && !keysAreExprs {
+			if lit, ok := kvel.Key.(*ast.CompositeLit); ok && lit.Type == nil {
+				// an elided key literal (map[K]V{{...}: v}) inherits
+				// the map's declared key type when it is syntactic.
+				if mt, ok := peelLitType(baseType, depth).(*ast.MapType); ok {
+					c.compileLit(lit, mt.Key, 0)
+				} else {
+					c.expr(kvel.Key)
+				}
+			} else if id, ok := kvel.Key.(*ast.Ident); ok && !keysAreExprs {
 				// In struct literals the key is a field name, not an
 				// expression; the typedef confirms the map/index case.
 				c.emit(bytecode.OpConst, c.constIdx(id.Name), 0, id.Pos())
@@ -2001,7 +2019,17 @@ func (c *compiler) compileLit(x *ast.CompositeLit, baseType ast.Expr, depth int)
 // selector, instantiations) keep the struct-style name heuristic since
 // the underlying shape is not visible to the compiler.
 func literalKeysAreExprs(baseType ast.Expr, depth int) bool {
-	t := baseType
+	switch peelLitType(baseType, depth).(type) {
+	case *ast.MapType, *ast.ArrayType:
+		return true
+	}
+	return false
+}
+
+// peelLitType peels a composite literal's declared type `depth` levels
+// (array elt / map value / pointer / ellipsis) — the element type a
+// nested literal's shape comes from.
+func peelLitType(t ast.Expr, depth int) ast.Expr {
 	for i := 0; t != nil && i < depth; i++ {
 		switch tt := t.(type) {
 		case *ast.ArrayType:
@@ -2019,11 +2047,7 @@ func literalKeysAreExprs(baseType ast.Expr, depth int) bool {
 			t = nil
 		}
 	}
-	switch t.(type) {
-	case *ast.MapType, *ast.ArrayType:
-		return true
-	}
-	return false
+	return t
 }
 
 // typeExpr emits a push of *runtime.TypeDef for a type expression.
@@ -2173,6 +2197,12 @@ func literalValue(l *ast.BasicLit) (any, error) {
 		if i, ok := constant.Int64Val(v); ok {
 			return i, nil
 		}
+		// the one uint64-only literal Go source can spell is
+		// 9223372036854775808 — MinInt64's magnitude, spelled under a
+		// unary minus. Wider or weirder literals stay a hard error.
+		if u, ok := constant.Uint64Val(v); ok && u == 1<<63 {
+			return int64(u), nil
+		}
 		return nil, fmt.Errorf("int literal out of range: %s", l.Value)
 	case token.FLOAT:
 		v := constant.MakeFromLiteral(l.Value, token.FLOAT, 0)
@@ -2298,35 +2328,34 @@ func orderSpecs(ix *index.Index, reps []*index.Decl) []*index.Decl {
 		deps[vs] = ds
 	}
 
-	// stable Kahn: repeatedly emit the first spec whose deps are all done
+	// dependency-driven DFS: walk decls in source order; before emitting a
+	// spec, emit each spec it depends on (Go initializes a variable's
+	// dependencies at its point in the declaration order, not globally).
+	bySpec := map[*ast.ValueSpec]*index.Decl{}
+	for _, d := range reps {
+		bySpec[d.Spec.(*ast.ValueSpec)] = d
+	}
 	var out []*index.Decl
 	done := map[*ast.ValueSpec]bool{}
-	remaining := reps
-	for len(remaining) > 0 {
-		progress := false
-		var next []*index.Decl
-		for _, d := range remaining {
-			vs := d.Spec.(*ast.ValueSpec)
-			ready := true
-			for dep := range deps[vs] {
-				if !done[dep] {
-					ready = false
-					break
-				}
-			}
-			if ready {
-				out = append(out, d)
-				done[vs] = true
-				progress = true
-			} else {
-				next = append(next, d)
+	visiting := map[*ast.ValueSpec]bool{} // cycle guard
+	var visit func(d *index.Decl)
+	visit = func(d *index.Decl) {
+		vs := d.Spec.(*ast.ValueSpec)
+		if done[vs] || visiting[vs] {
+			return
+		}
+		visiting[vs] = true
+		for dep := range deps[vs] {
+			if dd, ok := bySpec[dep]; ok {
+				visit(dd)
 			}
 		}
-		if !progress {
-			out = append(out, next...) // cycle: keep source order
-			break
-		}
-		remaining = next
+		delete(visiting, vs)
+		done[vs] = true
+		out = append(out, d)
+	}
+	for _, d := range reps {
+		visit(d)
 	}
 	return out
 }

@@ -96,8 +96,9 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if r != nil {
-		fmt.Printf("%v\n", r)
+	// a void main returns the nil runtime value — print nothing.
+	if r != nil && r != runtime.NIL {
+		fmt.Printf("%v\n", minigo.Format(r))
 	}
 	return nil
 }
