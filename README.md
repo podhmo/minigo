@@ -25,9 +25,8 @@ v, err := e.Run(ctx, "./script", "Main") // dir, file, or import path + entry fu
   promoted-field literal keys, generalized func-type inference
 - introspection: `minigo/inspect` exposes packages, decls, type
   expressions and values to scripts; the REPL has `:cd`/`:ls`/`:pin`
-- a Go subset, not full Go — e.g. channels/`select`/`go` model a
-  documented single-thread approximation, not real concurrency
-  (`TODO.md` tracks coverage and gaps)
+- real concurrency: `go` spawns host goroutines, channels block,
+  `select` picks a ready case — see `TODO.md` for coverage and gaps
 
 A `minigo` CLI is included (`./cmd/minigo`): `minigo run <ref> [--entry F]`,
 `minigo repl`, `minigo vet <ref>`, `minigo gen-intrinsics`, or the

@@ -945,8 +945,29 @@ func (c *compiler) forStmt(st *ast.ForStmt) {
 		c.expr(st.Cond)
 		jEnd = c.emit(bytecode.OpJumpFalse, 0, 0, st.Cond.Pos())
 	}
-	c.stmt(st.Body)
+	// Go 1.22+ iteration semantics: names the init statement declares get a
+	// fresh binding per iteration — rebind them inside the body so closures
+	// (and goroutines) capture distinct cells, then copy the body's
+	// (possibly mutated) value back so post and the next cond see it.
+	shadows := loopInitNames(st.Init)
+	c.fs.pushBlock()
+	var shadowPairs [][2]int
+	for _, name := range shadows {
+		outer, _ := c.fs.lookupLocal(name.Name)
+		slot := c.fs.declare(name.Name, name.Pos())
+		shadowPairs = append(shadowPairs, [2]int{outer, slot})
+		c.emit(bytecode.OpLocal, outer, 0, name.Pos())
+		c.emit(bytecode.OpNewLocal, slot, 0, name.Pos())
+	}
+	for _, bs := range st.Body.List {
+		c.stmt(bs)
+	}
+	c.fs.popBlock()
 	lc.continueIP = len(c.ch.Code)
+	for _, pr := range shadowPairs {
+		c.emit(bytecode.OpLocal, pr[1], 0, st.Init.Pos())
+		c.emit(bytecode.OpSetLocal, pr[0], 0, st.Init.Pos())
+	}
 	if st.Post != nil {
 		c.stmt(st.Post)
 	}
@@ -964,6 +985,22 @@ func (c *compiler) forStmt(st *ast.ForStmt) {
 	}
 	c.ctrl = c.ctrl[:len(c.ctrl)-1]
 	c.fs.popBlock()
+}
+
+// loopInitNames lists the names a 3-clause for's init statement declares
+// (`i := 0`): only :=-style inits get per-iteration bindings.
+func loopInitNames(s ast.Stmt) []*ast.Ident {
+	as, ok := s.(*ast.AssignStmt)
+	if !ok || as.Tok != token.DEFINE {
+		return nil
+	}
+	var out []*ast.Ident
+	for _, lhs := range as.Lhs {
+		if id, ok := lhs.(*ast.Ident); ok && id.Name != "_" {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 func (c *compiler) rangeStmt(st *ast.RangeStmt) {
@@ -1097,13 +1134,13 @@ func (c *compiler) switchStmt(st *ast.SwitchStmt) {
 	c.fs.popBlock()
 }
 
-// selectStmt compiles select using the single-threaded approximation. The
-// Go spec evaluates every case's channel operand (and a send case's value)
-// exactly once, in source order, on entry — so operands are evaluated into
-// temp slots first, then the first ready case runs. Send cases are ready on
-// an open channel (sends never block); receive cases are ready on a
-// non-empty or closed channel. With no ready case, `default` runs; without
-// a default the select would block forever, so it traps.
+// selectStmt compiles a real blocking select. The Go spec evaluates every
+// case's channel operand (and a send case's value) exactly once, in source
+// order, on entry — so operands land in temp slots first, then OpSelArm
+// builds a select descriptor per case and OpSelWait blocks on
+// reflect.Select (random ready choice, blocking without a default). The
+// wait dispatches through a jump table of OpJumps laid down immediately
+// after it — case i's body is at table[i], the default at table[n].
 func (c *compiler) selectStmt(st *ast.SelectStmt) {
 	c.fs.pushBlock()
 	cc := &ctrlCtx{labels: c.takeLabels()}
@@ -1121,10 +1158,14 @@ func (c *compiler) selectStmt(st *ast.SelectStmt) {
 	}
 	var cases []selCase
 	var defaultBody []ast.Stmt
+	hasDefault := false
 	tmp := 0
 	for _, s := range st.Body.List {
 		clause := s.(*ast.CommClause)
 		if clause.Comm == nil {
+			// a `default:` with an empty body still counts as a default —
+			// without the arm the select blocks instead of falling through
+			hasDefault = true
 			defaultBody = clause.Body
 			continue
 		}
@@ -1157,20 +1198,35 @@ func (c *compiler) selectStmt(st *ast.SelectStmt) {
 		cases = append(cases, sc)
 	}
 
-	var exits []int
+	// arms: one OpSelArm per case, pushed in source order for OpSelWait
 	for _, sc := range cases {
 		if sc.send {
 			c.emit(bytecode.OpLocal, sc.chanSlot, 0, sc.pos)
 			c.emit(bytecode.OpLocal, sc.valSlot, 0, sc.pos)
-			c.emit(bytecode.OpSelSend, 0, 0, sc.pos)
+			c.emit(bytecode.OpSelArm, 0, 1, sc.pos)
 		} else {
 			c.emit(bytecode.OpLocal, sc.chanSlot, 0, sc.pos)
-			c.emit(bytecode.OpSelRecv, sc.nrecv, 0, sc.pos)
+			c.emit(bytecode.OpSelArm, sc.nrecv, 0, sc.pos)
 		}
-		jReady := c.emit(bytecode.OpJumpTrue, 0, 0, sc.pos)
-		jNext := c.emit(bytecode.OpJump, 0, 0, sc.pos)
-		bodyStart := len(c.ch.Code)
-		c.patchA(jReady, bodyStart)
+	}
+	bDefault := 0
+	if hasDefault {
+		bDefault = 1
+	}
+	c.emit(bytecode.OpSelWait, len(cases), bDefault, st.Pos())
+	// jump table OpSelWait dispatches into: one OpJump per case, then the
+	// default's OpJump as the last slot
+	jmps := make([]int, 0, len(cases)+1)
+	for _, sc := range cases {
+		jmps = append(jmps, c.emit(bytecode.OpJump, 0, 0, sc.pos))
+	}
+	if hasDefault {
+		jmps = append(jmps, c.emit(bytecode.OpJump, 0, 0, st.Pos()))
+	}
+
+	var exits []int
+	for i, sc := range cases {
+		c.patchA(jmps[i], len(c.ch.Code))
 		c.fs.pushBlock()
 		if !sc.send {
 			c.bindRecv(sc.lhs, sc.define)
@@ -1180,14 +1236,12 @@ func (c *compiler) selectStmt(st *ast.SelectStmt) {
 		}
 		c.fs.popBlock()
 		exits = append(exits, c.emit(bytecode.OpJump, 0, 0, sc.pos))
-		c.patchA(jNext, len(c.ch.Code))
 	}
-	if defaultBody != nil {
+	if hasDefault {
+		c.patchA(jmps[len(cases)], len(c.ch.Code))
 		for _, bs := range defaultBody {
 			c.stmt(bs)
 		}
-	} else {
-		c.trap(st.Pos(), "select would block (single-threaded approximation)")
 	}
 	end := len(c.ch.Code)
 	for _, j := range exits {

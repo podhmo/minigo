@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -132,8 +133,9 @@ func Default() {
 	if err := r.RunTask(context.Background(), file, "Default", nil); err != nil {
 		t.Fatal(err)
 	}
-	// F(Emit,"a") twice dedups to one run; F(Emit,"b") runs once
-	if diff := cmp.Diff("a\nb\n", errb.String()); diff != "" {
+	// F(Emit,"a") twice dedups to one run; F(Emit,"b") runs once —
+	// parallel deps, so only the multiset is deterministic
+	if diff := cmp.Diff([]string{"a", "b"}, sortedLines(errb.String())); diff != "" {
 		t.Errorf("deps output (-want +got):\n%s", diff)
 	}
 }
@@ -276,6 +278,102 @@ func FailCap() {
 	}
 }
 
+// sortedLines splits buf's output into sorted lines for order-insensitive
+// comparisons under parallel deps.
+func sortedLines(s string) []string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	sort.Strings(lines)
+	return lines
+}
+
+// TestDepsParallel: deps handshake across shared channels — A signals B
+// before B signals back, which serial deps could never satisfy (A's send
+// would park forever). Completion proves real goroutine interleaving.
+func TestDepsParallel(t *testing.T) {
+	_, file := writeTaskfile(t, `package main
+
+import "task"
+
+var a2b = make(chan int)
+var b2a = make(chan int)
+
+func A() { a2b <- 1; <-b2a }
+func B() { <-a2b; b2a <- 1 }
+
+func Default() { task.Deps(A, B) }
+`)
+	r := NewRunner(filepath.Dir(file), io.Discard, io.Discard)
+	if err := r.RunTask(context.Background(), file, "Default", nil); err != nil {
+		t.Fatalf("parallel deps handshake failed: %v", err)
+	}
+}
+
+// TestDepsParallelDedupAcrossModes: a dep claimed by parallel Deps is
+// also deduped for a later SerialDeps — the depStates map is shared.
+func TestDepsParallelDedupAcrossModes(t *testing.T) {
+	_, file := writeTaskfile(t, `package main
+
+import "task"
+
+func Setup() { task.Log("setup ran") }
+
+func Default() {
+	task.Deps(Setup)
+	task.SerialDeps(Setup)
+}
+`)
+	var errb bytes.Buffer
+	r := NewRunner(filepath.Dir(file), io.Discard, &errb)
+	if err := r.RunTask(context.Background(), file, "Default", nil); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(errb.String(), "setup ran"); n != 1 {
+		t.Fatalf("Setup ran %d times, want 1 (cross-mode dedup)", n)
+	}
+}
+
+// TestSerialDepsOrder: SerialDeps keeps serial ordering on the caller's
+// goroutine — output order is deterministic.
+func TestSerialDepsOrder(t *testing.T) {
+	_, file := writeTaskfile(t, `package main
+
+import "task"
+
+func A() { task.Log("a") }
+func B() { task.Log("b") }
+
+func Default() { task.SerialDeps(A, B) }
+`)
+	var errb bytes.Buffer
+	r := NewRunner(filepath.Dir(file), io.Discard, &errb)
+	if err := r.RunTask(context.Background(), file, "Default", nil); err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("a\nb\n", errb.String()); diff != "" {
+		t.Errorf("serial deps output (-want +got):\n%s", diff)
+	}
+}
+
+// TestDepsParallelFailure: a failing parallel dep fails the whole run —
+// its error result becomes a call error that kills the process.
+func TestDepsParallelFailure(t *testing.T) {
+	_, file := writeTaskfile(t, `package main
+
+import (
+	"errors"
+	"task"
+)
+
+func Bad() error { return errors.New("dep broke") }
+
+func Default() { task.Deps(Bad) }
+`)
+	r := NewRunner(filepath.Dir(file), io.Discard, io.Discard)
+	if err := r.RunTask(context.Background(), file, "Default", nil); err == nil || !strings.Contains(err.Error(), "dep broke") {
+		t.Fatalf("expected dep failure to fail the run, got %v", err)
+	}
+}
+
 func TestDepsArgKeyNoCollision(t *testing.T) {
 	// F(Emit2,"a b","c") and F(Emit2,"a","b c") must not dedup-collapse
 	_, file := writeTaskfile(t, `package main
@@ -293,7 +391,7 @@ func Default() {
 	if err := r.RunTask(context.Background(), file, "Default", nil); err != nil {
 		t.Fatal(err)
 	}
-	if diff := cmp.Diff("a b|c\na|b c\n", errb.String()); diff != "" {
+	if diff := cmp.Diff([]string{"a b|c", "a|b c"}, sortedLines(errb.String())); diff != "" {
 		t.Errorf("dedup collision (-want +got):\n%s", diff)
 	}
 }

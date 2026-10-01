@@ -81,13 +81,17 @@ func (e *Engine) NewREPL() *REPL {
 	p := &runtime.Package{
 		Path:     "<repl>",
 		Name:     "repl",
-		State:    runtime.Parsed,
 		Fset:     sess.fset,
 		Globals:  runtime.NewEnv(),
 		Scopes:   map[*syntax.File]map[string]*runtime.ImportRef{},
 		Imports:  map[*syntax.File][]*runtime.ImportRef{},
 		Specials: sess.specials,
+		RunInit: func(fn *runtime.Function) error {
+			_, err := sess.newVM().Call(fn, nil)
+			return err
+		},
 	}
+	p.SetState(runtime.Parsed)
 	p.Bootstrap = sess.bootstrap
 	return &REPL{engine: sess, pkg: p}
 }

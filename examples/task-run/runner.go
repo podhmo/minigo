@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/runtime"
@@ -47,23 +48,96 @@ type Runner struct {
 	stdout io.Writer
 	stderr io.Writer
 
-	ran     map[string]bool // dep tasks already run (deps dedup)
-	running map[string]bool // in-flight dep tasks (cycle detection)
+	mu        sync.Mutex
+	depStates map[string]*depState // dep key -> lifecycle (dedup + cycles)
+}
+
+// syncWriter serializes writes across dep goroutines: parallel deps
+// share the runner's streams, and Fprintln's single Write per call keeps
+// whole lines intact.
+type syncWriter struct {
+	mu *sync.Mutex
+	w  io.Writer
+}
+
+func (s syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
+
+// depState is one dep's lifecycle: claimed once per key, run either on a
+// spawned goroutine (task.Deps: task) or inline on the claimant's
+// goroutine (task.SerialDeps: done/err). owner records the claimant's
+// own task so a waiting goroutine can recognize when awaiting the claim
+// would deadlock — dep A awaiting dep B which transitively awaits A.
+type depState struct {
+	label string
+	owner *runtime.Task // claimant's task (nil = root goroutine)
+	task  *runtime.Task // spawned dep goroutine (parallel Deps only)
+	done  chan struct{} // serial claims signal completion here
+	err   error         // outcome; set before done closes / task finishes
+}
+
+// wait blocks until the dep's outcome is known.
+func (st *depState) wait() error {
+	if st.task != nil {
+		return st.task.Wait()
+	}
+	<-st.done
+	return st.err
+}
+
+// waiter returns the task a second claimant would wait on: the spawned
+// dep goroutine, or the claiming task itself for a serial claim.
+func (st *depState) waiter() *runtime.Task {
+	if st.task != nil {
+		return st.task
+	}
+	return st.owner
+}
+
+// taskInAncestry reports whether t is cur or an ancestor of cur — waiting
+// on such a claim would deadlock (a dependency cycle).
+func taskInAncestry(t, cur *runtime.Task) bool {
+	for c := cur; c != nil; c = c.Parent {
+		if c == t {
+			return true
+		}
+	}
+	return false
+}
+
+// claimDep registers key as in-flight and reports whether the caller must
+// run it. A serial claim (spawn == nil) waits on st.done; a parallel
+// claim spawns under the lock so no waiter can observe a task-less claim.
+func (r *Runner) claimDep(key string, cur *runtime.Task, label string, spawn func() *runtime.Task) (*depState, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if st, ok := r.depStates[key]; ok {
+		return st, false
+	}
+	st := &depState{label: label, owner: cur, done: make(chan struct{})}
+	if spawn != nil {
+		st.task = spawn()
+	}
+	r.depStates[key] = st
+	return st, true
 }
 
 // NewRunner creates a runner whose working directory is dir — scripts and
 // subprocesses alike see it as their cwd (the engine's virtual cwd plus
 // cmd.Dir on every spawned command).
 func NewRunner(dir string, stdout, stderr io.Writer) *Runner {
+	ioMu := &sync.Mutex{}
 	r := &Runner{
-		stdout:  stdout,
-		stderr:  stderr,
-		ran:     map[string]bool{},
-		running: map[string]bool{},
+		stdout:    syncWriter{mu: ioMu, w: stdout},
+		stderr:    syncWriter{mu: ioMu, w: stderr},
+		depStates: map[string]*depState{},
 	}
 	e := minigo.NewEngine(dir,
 		minigo.WithWorkingDir(dir),
-		minigo.WithOutput(stdout),
+		minigo.WithOutput(r.stdout),
 	)
 	r.engine = e
 	tb := r.taskBinds()
@@ -194,7 +268,7 @@ func taskShape(ft *ast.FuncType) ([]string, bool) {
 func (r *Runner) taskBinds() map[string]runtime.Value {
 	return map[string]runtime.Value{
 		"Deps":       &runtime.BuiltinFunc{Name: "task.Deps", Fn: r.deps},
-		"SerialDeps": &runtime.BuiltinFunc{Name: "task.SerialDeps", Fn: r.deps},
+		"SerialDeps": &runtime.BuiltinFunc{Name: "task.SerialDeps", Fn: r.serialDeps},
 		"F": &runtime.BuiltinFunc{Name: "task.F", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) == 0 {
 				return nil, errors.New("task.F needs a task function")
@@ -254,41 +328,79 @@ func (r *Runner) taskBinds() map[string]runtime.Value {
 	}
 }
 
-// deps implements task.Deps/task.SerialDeps: every argument is a task
-// function (or a task.F-wrapped call) invoked once per runner invocation.
-// Deps run sequentially — minigo's `go` statement is synchronous, so
-// parallel deps are a documented approximation, not a race.
+// deps implements task.Deps: every dep is claimed once per runner
+// invocation and run on a spawned goroutine — truly in parallel. A dep
+// that fails (call error or error result) fails the whole process like
+// a Go panic; dedup and cycle detection share depStates with SerialDeps
+// so mixed-mode graphs still converge on one claim per dep.
 func (r *Runner) deps(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	cur := v.Task()
+	states := make([]*depState, 0, len(args))
 	for _, a := range args {
-		if err := r.callDep(v, a); err != nil {
-			return nil, err
+		fn, fargs, key, label := depOf(a)
+		if key == "" {
+			return nil, fmt.Errorf("task.Deps: cannot use %T as a dependency", a)
+		}
+		st, mine := r.claimDep(key, cur, label, func() *runtime.Task {
+			// a dep that returns an error becomes a call error so the
+			// process fails fast, like a panic in real Go
+			return v.Spawn(&runtime.BuiltinFunc{Name: "dep:" + label, Fn: func(v runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
+				res, err := v.Call(fn, fargs)
+				if err != nil {
+					return nil, err
+				}
+				if rerr := resultErr(res); rerr != nil {
+					return nil, rerr
+				}
+				return res, nil
+			}}, nil)
+		})
+		if !mine {
+			if w := st.waiter(); w == cur || taskInAncestry(w, cur) {
+				return nil, fmt.Errorf("task.Deps: dependency cycle at %s", label)
+			}
+		}
+		states = append(states, st)
+	}
+	for _, st := range states {
+		if err := st.wait(); err != nil {
+			return nil, fmt.Errorf("dep %s: %w", st.label, err)
 		}
 	}
 	return runtime.NIL, nil
 }
 
-func (r *Runner) callDep(v runtime.VMCaller, a runtime.Value) error {
-	fn, fargs, key, label := depOf(a)
-	if key == "" {
-		return fmt.Errorf("task.Deps: cannot use %T as a dependency", a)
+// serialDeps implements task.SerialDeps: claims still dedup/cycle-check
+// through depStates, but the claimed dep runs inline on the calling
+// goroutine — ordered execution for scripts that want it.
+func (r *Runner) serialDeps(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	cur := v.Task()
+	for _, a := range args {
+		fn, fargs, key, label := depOf(a)
+		if key == "" {
+			return nil, fmt.Errorf("task.SerialDeps: cannot use %T as a dependency", a)
+		}
+		st, mine := r.claimDep(key, cur, label, nil)
+		if !mine {
+			if w := st.waiter(); w == cur || taskInAncestry(w, cur) {
+				return nil, fmt.Errorf("task.SerialDeps: dependency cycle at %s", label)
+			}
+			if err := st.wait(); err != nil {
+				return nil, fmt.Errorf("dep %s: %w", label, err)
+			}
+			continue
+		}
+		res, err := v.Call(fn, fargs)
+		if err == nil {
+			err = resultErr(res)
+		}
+		st.err = err
+		close(st.done)
+		if err != nil {
+			return nil, fmt.Errorf("dep %s: %w", label, err)
+		}
 	}
-	if r.ran[key] {
-		return nil
-	}
-	if r.running[key] {
-		return fmt.Errorf("task.Deps: dependency cycle at %s", label)
-	}
-	r.running[key] = true
-	defer delete(r.running, key)
-	res, err := v.Call(fn, fargs)
-	if err != nil {
-		return fmt.Errorf("dep %s: %w", label, err)
-	}
-	if err := resultErr(res); err != nil {
-		return fmt.Errorf("dep %s: %w", label, err)
-	}
-	r.ran[key] = true
-	return nil
+	return runtime.NIL, nil
 }
 
 // depOf unwraps a Deps argument into (callable, args, dedup key, label).

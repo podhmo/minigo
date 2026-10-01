@@ -51,7 +51,7 @@ const (
 	// calls and literals
 	OpCall          // A: argc; B: 1 = last arg is a spread slice (f(xs...)); pop args, pop callee -> call -> push result(s)
 	OpDefer         // A: argc; B: spread flag; pop args, pop callee -> register on frame defer list
-	OpGo            // A: argc; B: spread flag; pop args, pop callee -> run synchronously (single-threaded approximation)
+	OpGo            // A: argc; B: spread flag; pop args, pop callee -> spawn a goroutine in the current process
 	OpPack          // pop A values -> push Tuple
 	OpUnpack        // pop Tuple -> push A values (multi-assign)
 	OpMakeComposite // A: nelems, B: flags(1=kv pairs); pop elems, pop *TypeDef -> push composite
@@ -69,12 +69,12 @@ const (
 	OpIter      // pop value -> push *Iterator (range over slice/map/int/string)
 	OpRangeNext // A: exit ip; B: iterator local slot; C: nvars; pushes C values or exits
 
-	// channels (single-threaded approximation)
-	OpSend    // pop value, pop chan -> append to channel queue (trap if it would block)
-	OpRecv    // pop chan -> push received value (trap if it would block)
-	OpRecvOK  // pop chan -> push Tuple{value, ok} (non-blocking only for closed channels)
-	OpSelSend // pop value, pop chan -> if sendable: send + push true, else push false
-	OpSelRecv // A: nBinds; pop chan -> if ready: push payload + true, else push false
+	// channels — real blocking semantics on host channels
+	OpSend    // pop value, pop chan -> blocking send (park until received/closed-abort)
+	OpRecv    // pop chan -> blocking receive; closed chan -> element zero
+	OpRecvOK  // pop chan -> push Tuple{value, ok}
+	OpSelArm  // A: nrecv; B: 1=send — pop chan (+send val) -> push *runtime.SelArm
+	OpSelWait // A: ncases; B: 1=has default — pop A arms, reflect.Select, dispatch via the A(+1) OpJump table that follows
 
 	// failure / flow
 	OpPanic  // pop value -> unwind with *Panic

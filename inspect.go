@@ -238,7 +238,7 @@ func (e *Engine) installInspect() {
 			if err != nil {
 				return nil, err
 			}
-			return stateName(p.State), nil
+			return stateName(p.State()), nil
 		}),
 		"Standard": bf("Standard", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			p, err := e.pkgOf(runtime.Unwrap(args[0]))

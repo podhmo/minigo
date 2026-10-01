@@ -129,8 +129,9 @@ func BinarySearchFunc() int {
 // RuntimeGOOS reports the host GOOS via intrinsics — non-empty everywhere.
 func RuntimeGOOS() bool { return goruntime.GOOS != "" }
 
-// RuntimeGoroutines is pinned to 1: the VM is single-threaded by design.
-func RuntimeGoroutines() int { return goruntime.NumGoroutine() }
+// RuntimeGoroutines reports the real host goroutine count: goroutines
+// spawned by `go` are actual host goroutines.
+func RuntimeGoroutines() bool { return goruntime.NumGoroutine() >= 1 }
 
 // RuntimeGOMAXPROCS is read-only on the script side: the argument is
 // ignored and the host's current setting is returned (a script must not

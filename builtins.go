@@ -33,7 +33,7 @@ func builtins(e *Engine) *runtime.Env {
 		}
 	})
 	bf("cap", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-		return lenOf(args[0])
+		return capOf(args[0])
 	})
 	bf("append", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		var s *runtime.Slice
@@ -141,7 +141,11 @@ func builtins(e *Engine) *runtime.Env {
 			if len(args) > 1 {
 				n, _ = runtime.Unwrap(args[1]).(int64)
 			}
-			el := make([]runtime.Value, n)
+			cap := n
+			if len(args) > 2 {
+				cap, _ = runtime.Unwrap(args[2]).(int64)
+			}
+			el := make([]runtime.Value, n, cap)
 			for i := range el {
 				el[i] = runtime.NIL
 			}
@@ -149,8 +153,11 @@ func builtins(e *Engine) *runtime.Env {
 		case runtime.KindMap:
 			return &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}, Typ: td}, nil
 		case runtime.KindChan:
-			// buffer capacity is not modeled: sends never block
-			return &runtime.Chan{Typ: td}, nil
+			buf := int64(0)
+			if len(args) > 1 {
+				buf, _ = runtime.Unwrap(args[1]).(int64)
+			}
+			return &runtime.Chan{C: make(chan runtime.Value, int(buf)), Typ: td}, nil
 		default:
 			return nil, fmt.Errorf("make of kind %d", td.Kind)
 		}
@@ -184,13 +191,12 @@ func builtins(e *Engine) *runtime.Env {
 		default:
 			return nil, fmt.Errorf("close of non-channel %T", args[0])
 		}
-		if ch == nil {
+		if ch == nil || ch.C == nil {
 			panic(&runtime.Panic{Value: "close of nil channel"})
 		}
-		if ch.Closed {
-			panic(&runtime.Panic{Value: "close of closed channel"})
-		}
-		ch.Closed = true
+		// a second close — or a send past close — panics via the host
+		// channel itself, which the VM surfaces as a script panic
+		close(ch.C)
 		return runtime.NIL, nil
 	})
 	bf("panic", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -237,13 +243,26 @@ func lenOf(v runtime.Value) (runtime.Value, error) {
 	case *runtime.Map:
 		return int64(len(x.Pairs)), nil
 	case *runtime.Chan:
-		return int64(len(x.Elems)), nil
+		return int64(len(x.C)), nil
 	case string:
 		return int64(len(x)), nil
 	case runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
 		return int64(0), nil // len(nil slice/map/chan) == 0
 	default:
 		return nil, fmt.Errorf("len of %T", v)
+	}
+}
+
+func capOf(v runtime.Value) (runtime.Value, error) {
+	switch x := v.(type) {
+	case *runtime.Named:
+		return capOf(x.V)
+	case *runtime.Slice:
+		return int64(cap(x.Elems)), nil
+	case *runtime.Chan:
+		return int64(cap(x.C)), nil
+	default:
+		return lenOf(v)
 	}
 }
 

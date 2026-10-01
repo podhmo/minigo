@@ -37,7 +37,6 @@ type Engine struct {
 	fset     *token.FileSet
 
 	builtins   *runtime.Env
-	vmm        *vm.VM
 	initMode   InitMode
 	specials   map[runtime.SymbolID]runtime.SpecialFunc
 	hostPolicy func(importPath, symbol string) bool // nil = allow all bound intrinsics
@@ -50,6 +49,10 @@ type Engine struct {
 	files map[string]*runtime.Package // single-file packages by abs path
 	binds map[string]*runtime.Package // host-bound packages (sessions inherit)
 	srcs  map[string]*runtime.Package // source packages behind bound paths (inspect.SourceOf)
+
+	// buildMu serializes package construction (locate/parse/index): two
+	// goroutines cold-loading the same package converge on one build.
+	buildMu sync.Mutex
 }
 
 // Option configures an Engine.
@@ -162,7 +165,6 @@ func NewEngine(startDir string, opts ...Option) *Engine {
 		res = nil
 	}
 	e.resolver = res
-	e.vmm = e.newVM()
 	e.installStdlib()
 	return e
 }
@@ -174,16 +176,21 @@ func (e *Engine) newVM() *vm.VM {
 		Materialize:       e.materialize,
 		CompileExpr:       compile.Expr,
 		CompileScopedExpr: compile.ExprScoped,
-		Special:           func(id runtime.SymbolID) (runtime.SpecialFunc, bool) { h, ok := e.specials[id]; return h, ok },
-		MethodsOf:         e.methodsOfValue,
-		IfaceReqs:         e.ifaceReqs,
-		FindMethod:        e.findMethod,
-		ElemOf:            e.elemOf,
-		TypeMethods:       e.typeMethods,
-		Underlying:        e.underlying,
-		AliasOf:           e.aliasOf,
-		FieldTypes:        e.fieldTypes,
-		ResolveType:       e.resolveTypeRef,
+		Special: func(id runtime.SymbolID) (runtime.SpecialFunc, bool) {
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			h, ok := e.specials[id]
+			return h, ok
+		},
+		MethodsOf:   e.methodsOfValue,
+		IfaceReqs:   e.ifaceReqs,
+		FindMethod:  e.findMethod,
+		ElemOf:      e.elemOf,
+		TypeMethods: e.typeMethods,
+		Underlying:  e.underlying,
+		AliasOf:     e.aliasOf,
+		FieldTypes:  e.fieldTypes,
+		ResolveType: e.resolveTypeRef,
 	}}
 }
 
@@ -208,7 +215,6 @@ func (e *Engine) NewSession() *Engine {
 		srcs:       map[string]*runtime.Package{},
 	}
 	s.builtins = builtins(s)
-	s.vmm = s.newVM()
 	s.installStdlib()
 	// sessions inherit the parent's host bindings: a script importing a
 	// custom bound package must resolve identically in the new session.
@@ -374,13 +380,24 @@ func (e *Engine) Package(ctx context.Context, ref string) (*runtime.Package, err
 }
 
 // Call invokes a named member of a package: fn may be a function or anything
-// callable. The package is Initialized first if needed.
+// callable. The package is Initialized first if needed. The whole call is
+// one process scope: goroutines spawned by init or by the member itself
+// share it and are torn down when it returns.
 func (e *Engine) Call(ctx context.Context, pkg *runtime.Package, name string, args ...runtime.Value) (runtime.Value, error) {
-	member, err := pkg.Member(name, e.materialize)
+	// one Call = one process = one root VM: concurrent Calls never share
+	// interpreter state, and lazy inits triggered inside the run join this
+	// run's process scope through the per-call runner below.
+	vmm := e.newVM()
+	vmm.EnsureProc()
+	defer vmm.ReleaseProc()
+	member, err := pkg.MemberV(name, e.materialize, func(fn *runtime.Function) error {
+		_, err := vmm.Call(fn, nil)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
-	return e.vmm.Call(member, args)
+	return vmm.Call(member, args)
 }
 
 // Run is the high-level entry point: locate ref (dir or import path), ensure
@@ -404,13 +421,13 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value) {
 	p := &runtime.Package{
 		Path:     importPath,
 		Name:     lastElem(importPath),
-		State:    runtime.Ready,
 		Globals:  runtime.NewEnv(),
 		Specials: e.specials,
 		// bound paths without a dot in the first element stand in for the
 		// GOROOT package of that name ("strings", "fmt", "unsafe").
 		Standard: !strings.Contains(strings.SplitN(importPath, "/", 2)[0], "."),
 	}
+	p.SetState(runtime.Ready)
 	for k, v := range symbols {
 		if e.hostPolicy != nil && !e.hostPolicy(importPath, k) {
 			continue
@@ -421,6 +438,9 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value) {
 			// but a re-Bind under the SAME path must re-point at the
 			// new live package object, not the stale one
 			bf.Pkg = p
+		}
+		if td, ok := v.(*runtime.TypeDef); ok && td.Pkg == nil {
+			td.Pkg = p
 		}
 		p.Globals.Set(k, v)
 	}
@@ -498,19 +518,21 @@ func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, e
 	if err != nil {
 		return nil, fmt.Errorf("resolve %q: %w", path, err)
 	}
+	e.buildMu.Lock()
+	defer e.buildMu.Unlock()
 	p := e.newPackage(meta.ImportPath, meta.Name, meta.Dir)
 	p.Standard = meta.Standard
 	var files []*syntax.File
 	for _, f := range meta.GoFiles {
 		sf, err := syntax.ParseFile(e.fset, f, nil)
 		if err != nil {
-			p.State = runtime.Failed
+			p.SetState(runtime.Failed)
 			return nil, fmt.Errorf("parse %s: %w", f, err)
 		}
 		files = append(files, sf)
 	}
 	if err := e.indexFiles(p, files); err != nil {
-		p.State = runtime.Failed
+		p.SetState(runtime.Failed)
 		return nil, err
 	}
 	e.mu.Lock()
@@ -525,6 +547,12 @@ func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, e
 // buildPackage runs the pipeline Locate->Parse->Index for one package.
 // Initialize stays lazy (Bootstrap hook).
 func (e *Engine) buildPackage(meta *resolve.PackageMeta) (*runtime.Package, error) {
+	// serialize whole builds so two goroutines cold-loading the same
+	// package converge on one object (the indexed gate closes in
+	// indexFiles for concurrent member access)
+	e.buildMu.Lock()
+	defer e.buildMu.Unlock()
+
 	e.mu.Lock()
 	if p, ok := e.pkgs[meta.ImportPath]; ok {
 		e.mu.Unlock()
@@ -546,13 +574,14 @@ func (e *Engine) buildPackage(meta *resolve.PackageMeta) (*runtime.Package, erro
 	for _, f := range meta.GoFiles {
 		sf, err := syntax.ParseFile(e.fset, f, nil)
 		if err != nil {
-			p.State = runtime.Failed
+			p.SetState(runtime.Failed)
+			p.FinishIndexing()
 			return nil, fmt.Errorf("parse %s: %w", f, err)
 		}
 		files = append(files, sf)
 	}
 	if err := e.indexFiles(p, files); err != nil {
-		p.State = runtime.Failed
+		p.SetState(runtime.Failed)
 		return nil, err
 	}
 	return p, nil
@@ -560,10 +589,9 @@ func (e *Engine) buildPackage(meta *resolve.PackageMeta) (*runtime.Package, erro
 
 // newPackage builds a Package shell wired to this engine (Parsed state).
 func (e *Engine) newPackage(path, name, dir string) *runtime.Package {
-	return &runtime.Package{
+	p := &runtime.Package{
 		Path:     path,
 		Name:     name,
-		State:    runtime.Parsed,
 		Dir:      dir,
 		Fset:     e.fset,
 		LazyInit: e.initMode == LazyInit,
@@ -571,13 +599,25 @@ func (e *Engine) newPackage(path, name, dir string) *runtime.Package {
 		Scopes:   map[*syntax.File]map[string]*runtime.ImportRef{},
 		Imports:  map[*syntax.File][]*runtime.ImportRef{},
 		Specials: e.specials,
+		// host-side init runs on a fresh VM on the caller's goroutine —
+		// sharing a VM between goroutines is not safe
+		RunInit: func(fn *runtime.Function) error {
+			_, err := e.newVM().Call(fn, nil)
+			return err
+		},
 	}
+	p.SetState(runtime.Parsed)
+	p.MarkIndexed()
+	return p
 }
 
 // indexFiles finishes a package over already-selected files: declaration
 // index, file-by-name map, per-file import scopes, and the lazy initializer
 // hook. Directory discovery and build-constraint filtering happen upstream.
 func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File) error {
+	// the indexed gate closes however this returns: a failed package is
+	// finished too (its State reports Failed) rather than hanging waiters
+	defer p.FinishIndexing()
 	p.Files = files
 	p.FileByName = map[string]*syntax.File{}
 	for _, sf := range files {
@@ -589,7 +629,7 @@ func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File) error {
 		return fmt.Errorf("index %s: %w", p.Path, err)
 	}
 	p.Index = ix
-	p.State = runtime.Indexed
+	p.SetState(runtime.Indexed)
 
 	// file-scope import refs
 	for _, sf := range files {
@@ -634,6 +674,8 @@ func (e *Engine) LoadFile(ctx context.Context, filename string) (*runtime.Packag
 	if err := e.cfg.CheckDir(filepath.Dir(abs)); err != nil {
 		return nil, err
 	}
+	e.buildMu.Lock()
+	defer e.buildMu.Unlock()
 	sf, err := syntax.ParseFile(e.fset, abs, nil)
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", filename, err)
@@ -670,8 +712,11 @@ func (e *Engine) RunFile(ctx context.Context, filename, fnName string, args ...r
 	return e.Call(ctx, pkg, fnName, args...)
 }
 
-// bootstrap runs the synthetic __init__ function of a package.
-func (e *Engine) bootstrap(p *runtime.Package) error {
+// bootstrap runs the synthetic __init__ function of a package via run —
+// the runner supplied by whoever triggered initialization, so init code
+// executes on the triggering VM (a spawned goroutine's member access
+// runs init on that goroutine's VM, joining its process).
+func (e *Engine) bootstrap(p *runtime.Package, run func(*runtime.Function) error) error {
 	for _, sf := range p.Files {
 		for _, ref := range p.Imports[sf] {
 			if ref.Alias != "_" {
@@ -681,7 +726,7 @@ func (e *Engine) bootstrap(p *runtime.Package) error {
 			if err != nil {
 				return fmt.Errorf("initialize blank import %q: %w", ref.Path, err)
 			}
-			if err := imported.EnsureReady(); err != nil {
+			if err := imported.EnsureReadyRun(run); err != nil {
 				return fmt.Errorf("initialize blank import %q: %w", ref.Path, err)
 			}
 		}
@@ -692,8 +737,7 @@ func (e *Engine) bootstrap(p *runtime.Package) error {
 	}
 	bindCompiles(p, ch)
 	fn := &runtime.Function{Pkg: p, Name: p.Name + ".__init__", Chunk: ch}
-	_, err = e.vmm.Call(fn, nil)
-	return err
+	return run(fn)
 }
 
 // bindCompiles attaches the compile hook to *runtime.Function constants
@@ -718,7 +762,13 @@ func bindCompiles(p *runtime.Package, ch *bytecode.Chunk) {
 // committing to bytecode at build time. Names resolve exactly like inside
 // a function body of file: package globals, that file's imports, builtins.
 func (e *Engine) EvalExpr(ctx context.Context, pkg *runtime.Package, file *syntax.File, expr ast.Expr) (runtime.Value, error) {
-	if err := pkg.EnsureReady(); err != nil {
+	vmm := e.newVM()
+	vmm.EnsureProc()
+	defer vmm.ReleaseProc()
+	if err := pkg.EnsureReadyRun(func(fn *runtime.Function) error {
+		_, err := vmm.Call(fn, nil)
+		return err
+	}); err != nil {
 		return nil, err
 	}
 	ch := &bytecode.Chunk{
@@ -729,11 +779,17 @@ func (e *Engine) EvalExpr(ctx context.Context, pkg *runtime.Package, file *synta
 			{Op: bytecode.OpReturn, A: 1, C: -1},
 		},
 	}
-	return e.vmm.Call(&runtime.Function{Pkg: pkg, File: file, Name: "<eval>", Chunk: ch}, nil)
+	return vmm.Call(&runtime.Function{Pkg: pkg, File: file, Name: "<eval>", Chunk: ch}, nil)
 }
 
 // materialize builds the runtime value for one decl on first access.
+// The per-package dedup cache keeps one TypeDef/Function identity per
+// decl when two goroutines resolve the same member concurrently.
 func (e *Engine) materialize(pkg *runtime.Package, d *index.Decl) (runtime.Value, error) {
+	return pkg.MatCache(d, e.materializeOne)
+}
+
+func (e *Engine) materializeOne(pkg *runtime.Package, d *index.Decl) (runtime.Value, error) {
 	switch d.Kind {
 	case index.FuncDecl:
 		return &runtime.Function{Pkg: pkg, File: d.File, Decl: d.Func, Name: d.Name,

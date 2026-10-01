@@ -11,14 +11,15 @@
 // task; the doc comment becomes its `-l` description.
 package task
 
-// Deps runs each dependency task once, in order. Arguments are task
+// Deps runs each dependency task once, in parallel. Arguments are task
 // functions (`func()` or `func() error`) or wrapped calls from F.
-// Dependencies already executed are skipped; a dependency cycle traps.
+// Dependencies already executed are skipped (dedup is shared with
+// SerialDeps); a dependency cycle traps. A dep that returns an error
+// fails the whole run, like a panic in Go.
 func Deps(deps ...any) { panic("minigo intrinsic") }
 
-// SerialDeps is Deps with serial intent documented — deps already run
-// sequentially under minigo (parallel deps need real goroutines; see
-// docs/sketch/plan-task-runner.md).
+// SerialDeps runs each dependency task once, in order on the calling
+// goroutine — serial intent for task graphs that rely on ordering.
 func SerialDeps(deps ...any) { panic("minigo intrinsic") }
 
 // F wraps a task function and its arguments so it can be passed to Deps —
