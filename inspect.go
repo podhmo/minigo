@@ -43,7 +43,7 @@ func (e *Engine) installInspect() {
 			if len(args) != 1 {
 				return nil, argerr("SourceOf", "one path string")
 			}
-			return e.sourceOf(context.Background(), str(runtime.Unwrap(args[0])))
+			return e.SourceOf(context.Background(), str(runtime.Unwrap(args[0])))
 		}),
 		"DirOf": bf("DirOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {

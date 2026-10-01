@@ -321,9 +321,10 @@ func TestPanicTraceback(t *testing.T) {
 		}
 	}
 
-	// a panic inside a host builtin names the builtin itself
+	// a panic inside a host builtin names the builtin itself and carries
+	// the host goroutine stack (Panic.GoStack — issue #19)
 	got = runErr("BoomViaBuiltin")
-	for _, want := range []string{"negative Repeat count", "in strings.Repeat() (builtin)", "in BoomViaBuiltin()"} {
+	for _, want := range []string{"negative Repeat count", "in strings.Repeat() (builtin)", "in BoomViaBuiltin()", "goroutine"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("BoomViaBuiltin traceback missing %q:\n%s", want, got)
 		}

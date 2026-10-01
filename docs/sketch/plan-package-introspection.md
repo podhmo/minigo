@@ -542,3 +542,71 @@ asserted, not the message).
 - **Signature keeps the receiver on `Sig.Recv`**: script method
   decls expose recv separately, and the host path mirrors that —
   `Params` are `In(1..)`, results are `Out(..)`, types only.
+
+## Round-4 notes: host-side API surface for convert-define (issue #19)
+
+#18's convert-define experiment identified four gaps between the script
+intrinsics and their host-side counterparts. What landing each one
+revealed — including the item that needed no code.
+
+### `engine.SourceOf` — exported, not a `Package` flag
+
+- The issue offered two shapes: export `SourceOf(path)`, or add a
+  source flag to `engine.Package`. Chose the method: the bypass is an
+  *operation* (build into the private `srcs` cache, never `pkgs`/`byDir`),
+  not a mode of an existing load — a flag would suggest the two calls
+  return the same object, which is exactly what they must not do.
+- Landed as a rename of `sourceOf`; the script intrinsic is the only
+  caller. Host code can now skip convert-define's `NewHostDecl`
+  pseudo-decls for bound members and read the real decl (File/Pos/Doc,
+  Fields/Methods) via `SourceOf` + `NewDecl`.
+
+### `inspect.Sig` — accessors added, FFI shape kept
+
+- `Sig.Params`/`Results` stay `*runtime.Slice`: scripts read them
+  through reflective member dispatch, so re-typing to `[]*Field` would
+  break the script API. The fix is additive — `ParamFields()` /
+  `ResultFields()` unbox through `unboxFields`, mirroring what
+  convert-define's hand-rolled `sigFields` did.
+- Works for host signatures too: `hostDecl` boxes reflect-typed fields
+  through the same `*runtime.GoValue` elements, so both `Sig` sources
+  unbox identically.
+
+### `TypeExpr.CanonicalName` — `TypeKey` semantics, generalized
+
+- Port of convert-define's `model/typeref.go` `TypeKey`: SymbolID-backed
+  `"import/path.Name"` for named types, plain names for builtins,
+  `"*" + elem` for pointers, `""` for composites. Every consumer was
+  going to re-implement it; now it lives next to `SymbolID`.
+- **Unexpected wrinkle: host-backed exprs.** `TypeKey` only ever saw
+  syntax exprs. `NewHostType` kinds are `"reflect:<kind>"`, so a
+  `*strings.Builder` host expr is `"reflect:ptr"`, not `"StarExpr"`, and
+  its `SymbolID` reports the builtin path with `t.String()` as the name.
+  Coincidentally `"*strings.Builder"` — the right spelling through the
+  wrong door — but `[]byte` would come back `"[]uint8"`: a
+  non-SymbolID, non-canonical spelling a rule table could never match.
+  Decided: peel `"reflect:ptr"` like `StarExpr` (via `Unref`) and
+  report `""` for unnamed host composites, keeping the
+  composite-means-empty contract identical across both backends.
+- `TypeExpr.Sub` (the `withExpr` export, already written on #18's
+  branch) landed here verbatim so the branch rebases without conflicts;
+  combined with `CanonicalName` it names generic origins —
+  `Pair[int].Sub(IndexExpr.X)` → `"<pkg>.Pair"`.
+
+### Host-panic Go stack — already landed by #17
+
+- **Unexpected event: a no-op item.** The issue listed "capture
+  `debug.Stack()` at the `asScriptPanic` boundary" as open work, but
+  #17 had already merged exactly that while the issue was being
+  written — `asScriptPanic` fills `runtime.Panic.GoStack` on main, and
+  the experiment-branch comment thread had noted it. Verified rather
+  than re-implemented: pinned with a `"goroutine"` assertion on the
+  `BoomViaBuiltin` traceback test so the coverage is explicit.
+
+### Residual
+
+- The issue's five boxes close once #18 rebases: it can drop
+  `sigFields`, the `NewHostDecl` fallback in `lookupDecl`, and
+  `model/typeref.go` `TypeKey` for the engine-side pieces here. Nothing
+  else surfaced — decl-granular views remain sufficient for a real
+  code generator.
