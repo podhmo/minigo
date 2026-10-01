@@ -163,6 +163,14 @@ type Sig struct {
 	Results *runtime.Slice
 }
 
+// ParamFields returns the parameters as Field views — the host-side
+// counterpart of FieldsOf (Params stays boxed for script member
+// dispatch).
+func (s *Sig) ParamFields() []*Field { return unboxFields(s.Params) }
+
+// ResultFields returns the results as Field views.
+func (s *Sig) ResultFields() []*Field { return unboxFields(s.Results) }
+
 // TypeExpr is a handle over one type expression: the declared spelling
 // plus the context needed to resolve the names it mentions.
 type TypeExpr struct {
@@ -251,6 +259,21 @@ func boxFields(fs []*Field) *runtime.Slice {
 		xs[i] = &runtime.GoValue{V: f}
 	}
 	return &runtime.Slice{Elems: xs}
+}
+
+// unboxFields reverses boxFields for host callers — elements that are
+// not *Field views come back nil.
+func unboxFields(s *runtime.Slice) []*Field {
+	if s == nil {
+		return nil
+	}
+	out := make([]*Field, len(s.Elems))
+	for i, e := range s.Elems {
+		if gv, ok := e.(*runtime.GoValue); ok {
+			out[i], _ = gv.V.(*Field)
+		}
+	}
+	return out
 }
 
 // FieldsOf returns the declared fields of a struct type symbol, or the
@@ -593,6 +616,39 @@ func (te *TypeExpr) SymbolID() (runtime.SymbolID, bool) {
 	return runtime.SymbolID{}, false
 }
 
+// CanonicalName renders the type's canonical identity: the fully
+// qualified "import/path.Name" for named types (the written spelling's
+// local alias is replaced by the declaring file's import path, so the
+// same type read through two files compares equal), the plain name for
+// builtins, and "*" + the element name for pointer types. Composite
+// shapes (slices, maps, func types, ...) report "" — they carry no
+// package-qualified identity a consumer could name.
+func (te *TypeExpr) CanonicalName() string {
+	if te == nil {
+		return ""
+	}
+	switch te.Kind {
+	case "StarExpr", "reflect:ptr":
+		inner := te.Unref().CanonicalName()
+		if inner == "" {
+			return ""
+		}
+		return "*" + inner
+	default:
+		if te.ht != nil && te.ht.Name() == "" {
+			return "" // unnamed host composite — like a syntax composite
+		}
+		sid, ok := te.SymbolID()
+		if !ok {
+			return ""
+		}
+		if sid.PackagePath == BuiltinPackagePath {
+			return sid.Name
+		}
+		return sid.PackagePath + "." + sid.Name
+	}
+}
+
 // SameType is strict structural equality over TypeExpr trees: named
 // references compare by SymbolID (declared-type identity — an alias and
 // its target do NOT collapse), composites compare Kind and children.
@@ -633,7 +689,7 @@ func (a *TypeExpr) sameShapeExtra(b *TypeExpr, res Resolver) bool {
 		if !ok {
 			return false
 		}
-		return sameArrayLen(a.withExpr(ea.Len), b.withExpr(eb.Len), res)
+		return sameArrayLen(a.Sub(ea.Len), b.Sub(eb.Len), res)
 	case *ast.ChanType:
 		eb, ok := b.expr.(*ast.ChanType)
 		return ok && ea.Dir == eb.Dir
@@ -641,8 +697,11 @@ func (a *TypeExpr) sameShapeExtra(b *TypeExpr, res Resolver) bool {
 	return true
 }
 
-// withExpr views a sub-expression in the same file/package context.
-func (te *TypeExpr) withExpr(e ast.Expr) *TypeExpr {
+// Sub views an arbitrary sub-expression of this type in the same
+// file/package context — the parts Children() does not reach, such as
+// the base X of an IndexExpr/IndexListExpr, an ArrayType length, or
+// anything Expr() exposes. Returns nil for a nil expression.
+func (te *TypeExpr) Sub(e ast.Expr) *TypeExpr {
 	if e == nil {
 		return nil
 	}

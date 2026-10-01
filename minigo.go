@@ -474,14 +474,14 @@ func (e *Engine) loadDir(ctx context.Context, dir string) (*runtime.Package, err
 	return e.buildPackage(meta)
 }
 
-// sourceOf loads the source behind an import path, bypassing a bound
+// SourceOf loads the source behind an import path, bypassing a bound
 // shadow (inspect.SourceOf): Bind-registered packages answer member
 // lookups through e.pkgs, so PackageOf("strings") yields the bound
 // object whose index is nil. The source package is built into a private
 // cache — never e.pkgs or e.byDir — so the bound package keeps answering
 // real imports. For an unbound path there is nothing to bypass: the
 // canonical package is returned.
-func (e *Engine) sourceOf(ctx context.Context, path string) (*runtime.Package, error) {
+func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, error) {
 	if _, bound := e.binds[path]; !bound {
 		return e.loadPath(ctx, path)
 	}
