@@ -342,13 +342,15 @@ func (v *VM) exec(f *frame) {
 // asScriptPanic wraps a raw host panic in *runtime.Panic so unwinding can
 // attribute it to script frames and deferred recover() can catch it —
 // matching Go, where runtime errors (index out of range, nil deref, divide
-// by zero) are recoverable panics. Trap and Panic pass through unchanged.
+// by zero) are recoverable panics. The original value is kept boxed so
+// recover() hands scripts the real error, not its rendered text. Trap and
+// Panic pass through unchanged.
 func asScriptPanic(r any) any {
 	switch r.(type) {
 	case nil, *runtime.Trap, *runtime.Panic:
 		return r
 	default:
-		return &runtime.Panic{Value: fmt.Sprintf("%v", r)}
+		return &runtime.Panic{Value: &runtime.GoValue{V: r}}
 	}
 }
 
@@ -431,13 +433,20 @@ func (v *VM) trace(f *frame, r any) {
 
 // sourceLine returns the trimmed text of filename:line for traceback
 // snippets. In-memory sources (REPL, generated files) come from
-// syntax.File.Src; others are read from disk. Failures are silent — a
-// traceback must never itself fail.
+// syntax.File.Src; others are read from disk, but only when filename is a
+// file the package actually loaded — never an arbitrary path — so an
+// error message cannot leak text outside what the script already ran.
+// Failures are silent — a traceback must never itself fail.
 func (v *VM) sourceLine(pkg *runtime.Package, filename string, line int) string {
-	if pkg != nil && pkg.FileByName != nil {
-		if sf := pkg.FileByName[filename]; sf != nil && sf.Src != nil {
-			return nthLine(sf.Src, line)
-		}
+	if pkg == nil || pkg.FileByName == nil {
+		return ""
+	}
+	sf := pkg.FileByName[filename]
+	if sf == nil {
+		return ""
+	}
+	if sf.Src != nil {
+		return nthLine(sf.Src, line)
 	}
 	if v.srcCache == nil {
 		v.srcCache = map[string][]string{}
