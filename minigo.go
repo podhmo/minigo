@@ -37,7 +37,6 @@ type Engine struct {
 	fset     *token.FileSet
 
 	builtins   *runtime.Env
-	vmm        *vm.VM
 	initMode   InitMode
 	specials   map[runtime.SymbolID]runtime.SpecialFunc
 	hostPolicy func(importPath, symbol string) bool // nil = allow all bound intrinsics
@@ -166,7 +165,6 @@ func NewEngine(startDir string, opts ...Option) *Engine {
 		res = nil
 	}
 	e.resolver = res
-	e.vmm = e.newVM()
 	e.installStdlib()
 	return e
 }
@@ -217,7 +215,6 @@ func (e *Engine) NewSession() *Engine {
 		srcs:       map[string]*runtime.Package{},
 	}
 	s.builtins = builtins(s)
-	s.vmm = s.newVM()
 	s.installStdlib()
 	// sessions inherit the parent's host bindings: a script importing a
 	// custom bound package must resolve identically in the new session.
@@ -387,21 +384,20 @@ func (e *Engine) Package(ctx context.Context, ref string) (*runtime.Package, err
 // one process scope: goroutines spawned by init or by the member itself
 // share it and are torn down when it returns.
 func (e *Engine) Call(ctx context.Context, pkg *runtime.Package, name string, args ...runtime.Value) (runtime.Value, error) {
-	e.vmm.EnsureProc()
-	defer e.vmm.ReleaseProc()
-	member, err := pkg.MemberV(name, e.materialize, e.initRunner)
+	// one Call = one process = one root VM: concurrent Calls never share
+	// interpreter state, and lazy inits triggered inside the run join this
+	// run's process scope through the per-call runner below.
+	vmm := e.newVM()
+	vmm.EnsureProc()
+	defer vmm.ReleaseProc()
+	member, err := pkg.MemberV(name, e.materialize, func(fn *runtime.Function) error {
+		_, err := vmm.Call(fn, nil)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
-	return e.vmm.Call(member, args)
-}
-
-// initRunner runs a package __init__ on the engine VM — the runner
-// Engine.Call and EvalExpr hand to member resolution so lazy init joins
-// the run's process scope (spawned goroutines share its done channel).
-func (e *Engine) initRunner(fn *runtime.Function) error {
-	_, err := e.vmm.Call(fn, nil)
-	return err
+	return vmm.Call(member, args)
 }
 
 // Run is the high-level entry point: locate ref (dir or import path), ensure
@@ -604,7 +600,7 @@ func (e *Engine) newPackage(path, name, dir string) *runtime.Package {
 		Imports:  map[*syntax.File][]*runtime.ImportRef{},
 		Specials: e.specials,
 		// host-side init runs on a fresh VM on the caller's goroutine —
-		// never on e.vmm, which a spawned goroutine cannot share safely
+		// sharing a VM between goroutines is not safe
 		RunInit: func(fn *runtime.Function) error {
 			_, err := e.newVM().Call(fn, nil)
 			return err
@@ -766,9 +762,13 @@ func bindCompiles(p *runtime.Package, ch *bytecode.Chunk) {
 // committing to bytecode at build time. Names resolve exactly like inside
 // a function body of file: package globals, that file's imports, builtins.
 func (e *Engine) EvalExpr(ctx context.Context, pkg *runtime.Package, file *syntax.File, expr ast.Expr) (runtime.Value, error) {
-	e.vmm.EnsureProc()
-	defer e.vmm.ReleaseProc()
-	if err := pkg.EnsureReadyRun(e.initRunner); err != nil {
+	vmm := e.newVM()
+	vmm.EnsureProc()
+	defer vmm.ReleaseProc()
+	if err := pkg.EnsureReadyRun(func(fn *runtime.Function) error {
+		_, err := vmm.Call(fn, nil)
+		return err
+	}); err != nil {
 		return nil, err
 	}
 	ch := &bytecode.Chunk{
@@ -779,7 +779,7 @@ func (e *Engine) EvalExpr(ctx context.Context, pkg *runtime.Package, file *synta
 			{Op: bytecode.OpReturn, A: 1, C: -1},
 		},
 	}
-	return e.vmm.Call(&runtime.Function{Pkg: pkg, File: file, Name: "<eval>", Chunk: ch}, nil)
+	return vmm.Call(&runtime.Function{Pkg: pkg, File: file, Name: "<eval>", Chunk: ch}, nil)
 }
 
 // materialize builds the runtime value for one decl on first access.

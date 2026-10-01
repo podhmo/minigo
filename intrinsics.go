@@ -42,7 +42,7 @@ import (
 // installStdlib binds the intrinsic packages onto the engine's import-path
 // table; Bound packages win over source resolution (loadPath checks pkgs).
 func (e *Engine) installStdlib() {
-	h := &hostHelpers{v: e.vmm, e: e}
+	h := &hostHelpers{e: e}
 	e.Bind("fmt", map[string]runtime.Value{
 		"Print":   h.fn("fmt.Print", func(a []any) (any, error) { return retErr(fmt.Fprint(h.out(), a...)) }),
 		"Println": h.fn("fmt.Println", func(a []any) (any, error) { return retErr(fmt.Fprintln(h.out(), a...)) }),
@@ -388,15 +388,15 @@ func (e *Engine) installStdlib() {
 		"Ints":     h.sortInPlace("sort.Ints"),
 		"Float64s": h.sortInPlace("sort.Float64s"),
 		"Strings":  h.sortInPlace("sort.Strings"),
-		"Slice":    h.sortSlice,
-		"SliceIsSorted": &runtime.BuiltinFunc{Name: "sort.SliceIsSorted", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Slice":    &runtime.BuiltinFunc{Name: "sort.Slice", Fn: h.sortSlice},
+		"SliceIsSorted": &runtime.BuiltinFunc{Name: "sort.SliceIsSorted", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, ok := args[0].(*runtime.Slice)
 			if !ok {
 				return nil, fmt.Errorf("sort.SliceIsSorted: first arg must be a slice")
 			}
 			less := args[1]
 			for i := len(s.Elems) - 1; i > 0; i-- {
-				r, err := h.v.Call(less, []runtime.Value{int64(i), int64(i - 1)})
+				r, err := v.Call(less, []runtime.Value{int64(i), int64(i - 1)})
 				if err != nil {
 					return nil, err
 				}
@@ -406,13 +406,13 @@ func (e *Engine) installStdlib() {
 			}
 			return true, nil
 		}},
-		"Search": &runtime.BuiltinFunc{Name: "sort.Search", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Search": &runtime.BuiltinFunc{Name: "sort.Search", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			n, _ := args[0].(int64)
 			f := args[1]
 			i, j := int64(0), n
 			for i < j {
 				m := int64(uint64(i+j) >> 1)
-				r, err := h.v.Call(f, []runtime.Value{m})
+				r, err := v.Call(f, []runtime.Value{m})
 				if err != nil {
 					return nil, err
 				}
@@ -424,7 +424,7 @@ func (e *Engine) installStdlib() {
 			}
 			return i, nil
 		}},
-		"SliceStable": &runtime.BuiltinFunc{Name: "sort.SliceStable", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"SliceStable": &runtime.BuiltinFunc{Name: "sort.SliceStable", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, ok := args[0].(*runtime.Slice)
 			if !ok {
 				return nil, fmt.Errorf("sort.SliceStable: first arg must be a slice")
@@ -435,7 +435,7 @@ func (e *Engine) installStdlib() {
 				if cerr != nil {
 					return false
 				}
-				r, err := h.v.Call(less, []runtime.Value{int64(i), int64(j)})
+				r, err := v.Call(less, []runtime.Value{int64(i), int64(j)})
 				if err != nil {
 					cerr = err
 					return false
@@ -473,7 +473,7 @@ func (e *Engine) installStdlib() {
 		}),
 		"SortFunc":       h.sortByCmpFunc("slices.SortFunc"),
 		"SortStableFunc": h.sortByCmpFunc("slices.SortStableFunc"),
-		"BinarySearch": &runtime.BuiltinFunc{Name: "slices.BinarySearch", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"BinarySearch": &runtime.BuiltinFunc{Name: "slices.BinarySearch", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, ok := args[0].(*runtime.Slice)
 			if !ok {
 				return nil, fmt.Errorf("slices.BinarySearch: first arg must be a slice")
@@ -483,7 +483,7 @@ func (e *Engine) installStdlib() {
 			found := i < len(s.Elems) && equalScript(s.Elems[i], target)
 			return &runtime.Tuple{Elems: []runtime.Value{int64(i), found}}, nil
 		}},
-		"BinarySearchFunc": &runtime.BuiltinFunc{Name: "slices.BinarySearchFunc", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"BinarySearchFunc": &runtime.BuiltinFunc{Name: "slices.BinarySearchFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, ok := args[0].(*runtime.Slice)
 			if !ok {
 				return nil, fmt.Errorf("slices.BinarySearchFunc: first arg must be a slice")
@@ -491,7 +491,7 @@ func (e *Engine) installStdlib() {
 			target := args[1]
 			cf := args[2]
 			cmpAt := func(i int) (int64, error) {
-				r, err := h.v.Call(cf, []runtime.Value{s.Elems[i], target})
+				r, err := v.Call(cf, []runtime.Value{s.Elems[i], target})
 				if err != nil {
 					return 0, err
 				}
@@ -521,7 +521,7 @@ func (e *Engine) installStdlib() {
 			}
 			return &runtime.Tuple{Elems: []runtime.Value{int64(i), found}}, nil
 		}},
-		"EqualFunc": &runtime.BuiltinFunc{Name: "slices.EqualFunc", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"EqualFunc": &runtime.BuiltinFunc{Name: "slices.EqualFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			a, _ := args[0].(*runtime.Slice)
 			b, _ := args[1].(*runtime.Slice)
 			eq := args[2]
@@ -532,7 +532,7 @@ func (e *Engine) installStdlib() {
 				return false, nil
 			}
 			for i := range a.Elems {
-				r, err := h.v.Call(eq, []runtime.Value{a.Elems[i], b.Elems[i]})
+				r, err := v.Call(eq, []runtime.Value{a.Elems[i], b.Elems[i]})
 				if err != nil {
 					return nil, err
 				}
@@ -542,13 +542,13 @@ func (e *Engine) installStdlib() {
 			}
 			return true, nil
 		}},
-		"IndexFunc": &runtime.BuiltinFunc{Name: "slices.IndexFunc", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"IndexFunc": &runtime.BuiltinFunc{Name: "slices.IndexFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, ok := args[0].(*runtime.Slice)
 			if !ok {
 				return nil, fmt.Errorf("slices.IndexFunc: first arg must be a slice")
 			}
 			for i, el := range s.Elems {
-				r, err := h.v.Call(args[1], []runtime.Value{el})
+				r, err := v.Call(args[1], []runtime.Value{el})
 				if err != nil {
 					return nil, err
 				}
@@ -1059,7 +1059,6 @@ func hostType(name string, new func() any) *runtime.TypeDef {
 // hostHelpers builds BuiltinFuncs whose Fn marshals arguments to Go natives
 // and results back to runtime values.
 type hostHelpers struct {
-	v runtime.VMCaller
 	e *Engine // for the configured output writer
 }
 
@@ -1252,14 +1251,14 @@ func equalScript(a, b runtime.Value) bool {
 	return a == b
 }
 
-func (h *hostHelpers) sortSlice(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+func (h *hostHelpers) sortSlice(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 	s, ok := args[0].(*runtime.Slice)
 	if !ok {
 		return nil, fmt.Errorf("sort.Slice: first arg must be a slice")
 	}
 	less := args[1]
 	sort.Slice(s.Elems, func(i, j int) bool {
-		r, err := h.v.Call(less, []runtime.Value{int64(i), int64(j)})
+		r, err := v.Call(less, []runtime.Value{int64(i), int64(j)})
 		if err != nil {
 			return false
 		}
@@ -1273,7 +1272,7 @@ func (h *hostHelpers) sortSlice(_ runtime.VMCaller, args []runtime.Value) (runti
 // a script callable returning negative/zero/positive. The sort is stable,
 // like Go's implementation.
 func (h *hostHelpers) sortByCmpFunc(name string) *runtime.BuiltinFunc {
-	return &runtime.BuiltinFunc{Name: name, Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	return &runtime.BuiltinFunc{Name: name, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		s, ok := args[0].(*runtime.Slice)
 		if !ok {
 			return nil, fmt.Errorf("%s: first arg must be a slice", name)
@@ -1284,7 +1283,7 @@ func (h *hostHelpers) sortByCmpFunc(name string) *runtime.BuiltinFunc {
 			if cerr != nil {
 				return false
 			}
-			r, err := h.v.Call(cmp, []runtime.Value{s.Elems[i], s.Elems[j]})
+			r, err := v.Call(cmp, []runtime.Value{s.Elems[i], s.Elems[j]})
 			if err != nil {
 				cerr = err
 				return false
@@ -1469,6 +1468,8 @@ func intOf(v any) int {
 	case int:
 		return x
 	case float64:
+		return int(x)
+	case time.Duration:
 		return int(x)
 	}
 	return 0
