@@ -73,7 +73,8 @@ main at /tmp/tbtest/main.go:12:2
 5. **演算子名表示**: `binary 0` → `unsupported types: int64 + bool`（`BinOp`/`UnOp` に `String()` 追加 — PR #3 と同じメッセージに一致）
 6. **`panic(err)` の値表示**: `*GoValue` アンラップで `panic: &{x}` → `panic: x`
 7. **スタック深さ上限 10000**: fatal crash を `runtime trap: stack exhausted` + スクリプトフレームに変換（表示は 20 件 + `... and N more frames` に切り詰め）
-8. 回帰テスト `TestTraceback` + `testdata/traceback/` 追加
+8. **ホストpanicに Go スタックも保持**: `asScriptPanic` の recover 地点で `debug.Stack()` を採取し `Panic.GoStack` へ。builtin/ホストハンドラ内の panic で Go 側のファイル:行（例: `intrinsics.go:118`）まで表示される
+9. 回帰テスト `TestPanicTraceback`/`TestTrapTraceback` + `testdata/traceback/` 追加
 
 ### 改善後の出力例
 
