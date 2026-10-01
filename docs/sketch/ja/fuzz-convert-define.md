@@ -110,7 +110,16 @@ SelectorExpr/Ident/CallExpr しか対応せず `c.Compute(dst.F, src.A+" "+src.B
 4. **goimports への暗黙依存**: `Imports()` マップが不完全でも `imports.Process` が最後に吸収するため（c24 の `funcs` import 欠落はたまたま救われていた）、「import 登録を忘れる」バグが表面化しにくい。
 5. **文字列上の型名操作**: `getTypeName`/`sanitizeIdent`/修飾判定は全て「名前の綴り」を扱っており、`"int"` vs `"int64"` の比較といった semantic でないキーが多い — `SameType`/`CanonicalName` が inspect 層に育ったので今後はそちらへ寄せられる。
 
-結論として、出力面は read しやすいコードが出る利点はあるが、**ロジック（型の形状判定・変換戦略）をテンプレートに近い文字列操作で書くこと自体が今回見つかったバグ群の大きな温床**だった。`generateConversion` が返すものを「文/式の文字列」ではなく AST に寄せれば、モードの二重性・修飾・衝突回避の大半は消せる。
+結論として、出力面は read しやすいコードが出る利点はあるが、**ロジック（型の形状判定・変換戦略）をテンプレートに近い文字列操作で書くこと自体が今回見つかったバグ群の大きな温床**だった。
+
+#### AST 組み立て以外の選択肢（レビューでの質問への回答）
+
+`go/ast` をフルで組むのは確かに重い。軽い代替案:
+
+1. **戻り値の契約の統一（依存追加ゼロ）**: `generateConversion` を常に `(prelude []string, expr string)` を返す形にする。今の「`dst == ""` で式モード／非空で文モード」の二重性は、呼出側が `dst = expr` を出力するだけの形に退化させられる。`if src != nil` の分岐は prelude に逃がせるので、片側だけ実装が欠ける今回の構造的バグが起きにくい — まずこれが費用対効果最大。
+2. **parse-then-compose**: 式は `parser.ParseExpr(fmt.Sprintf(...))` でノード化し、スケルトンだけ最小限の AST で組む。AST を手で積む辛さを式のパースに肩代わりさせる折衷案。
+3. **printer 系ライブラリに乗る**: protobuf の `protogen` 風 `g.P(...)` や `dave/jennifer`（`Qual` が修飾名の衝突回避と import 収集を自動化）。関数名一意化や `Imports()` 漏れ（c24）が仕組みごと消える。example に依存を足すかは判断分かれ目。
+4. `dave/dst` もあるがこの用途ではむしろ過剰かもしれない。
 
 ## 6. ケース一覧（実験後の最終状態）
 
@@ -157,6 +166,36 @@ SelectorExpr/Ident/CallExpr しか対応せず `c.Compute(dst.F, src.A+" "+src.B
 | c39 empty | フィールド0件 | OK |
 | c40/c41 mapkey-struct | struct キー（宣言有/無） | 修正（キー側発見） |
 
-## 7. まとめ
+## 7. 第2ラウンド: #23（residuals 対応）に対する再探索
+
+#23 で残件4件が実装されたため、同一ハーネスを `devin/1790827095-convert-define-fuzz-residuals` に向けて全ケースを再実行した（ハーネスは `REPO_DIR`/`GEN_DIR` を環境変数で差し替え可能に修正 — ハーネス自身も実験対象の修正に追随する必要があった）。
+
+### 既存ケースの変化
+
+- **c12b / c37（ネストパス）**: エラー → OK に。`dst.Inner.ID = src.ID`、`dst.V = src.In.V` が生成される。
+- **c08b / c26（leaf 不一致）**: 依然 BUILD-FAIL だが、生成コードの doc comment と `slog` に `dst.ID: no conversion covers int -> string` の警告が載るようになった — 仕様どおりの loud failure＋診断。
+- **c28（dst typo）**: エラー文が `mapped destination field "UserID" not found` から `field path "UserID": Dst has no field "UserID"` に。より良いメッセージ。
+- その他の OK ケースは全て維持（回帰なし）。
+
+### 新規ケース（#23 の新規面を狙う）
+
+| ケース | 狙い | 結果 |
+|---|---|---|
+| c42-nested-ptr-dst | `c.Map(dst.PIn.Value, src.Name)`, `PIn *Inner` | OK — `if dst.PIn == nil { dst.PIn = &destination.Inner{} }` の nil 初期化が出る |
+| c43-nested-ptr-src | `c.Map(dst.V, src.PIn.Value)`, `PIn *Inner` | OK — `if src.PIn != nil` ガードが出る |
+| c44-nested-ptr-both | 両側 ptr 中間 + 同名フィールド | OK — 自動マップ `dst.PIn = convertInnerToInner(src.PIn)` の後にガード付き override |
+| c45-nested-override | 自動マップされた子の中の葉を上書き | OK — `dst.Inner = *convert...(src.Inner)` の後に `dst.Inner.ID = src.OtherID`（override 勝ち） |
+| c46-nested-deep | 3段パス `src.Mid.Leaf.V` | OK |
+| c47-nested-nonstruct | 非 struct 中間 `src.A.B` (A is int) | 早期エラー `Src.A is int, not a selectable struct` |
+
+全48ケース: OK 43、意図した DSL エラー 4（c12/c14/c28/c47）、警告付き BUILD-FAIL 2（c08b/c26 — 要 `define.Rule`）。新規の壊れは見つからなかった。
+
+### 観察
+
+- 明示マップは自動マッチの**後**に出力される設計で、`dst.PIn = convert...(src.PIn)`（子ごと変換）→ `dst.PIn.Value = src.X`（葉の上書き）の順になる。nil 中間の取り扱い（src 側はガードで沈黙 skip、dst 側は初期化して代入）は「nil なら書かない」という一貫した意味論。
+- c44 で `src.PIn == nil` なら `dst.PIn` は nil のまま — 上書きも走らないので矛盾しない。
+- 警告が doc comment にも残るのは生成物レビュー的に良い出力。
+
+## 8. まとめ
 
 ハッピーパス前提の指摘は概ね的中で、**「生成は成功するが生成物が壊れている」系のバグが14件の独立した根本原因に集約された**。特に「結果を捨てる」「定義しない関数を呼ぶ」「同名型の混線」の3系統は静かな正解コケ（silent corruption）であり、コンパイルオラクル＋目視の二段構えでないと拾えなかった。修正後は未対応の入力は全て DSL 側 or 生成時の明示エラーかコンパイルエラーとして「うるさく」失敗する状態になった。
