@@ -13,9 +13,16 @@ And where does that surface still fall short?
 Yes. The vendored `pkg/` tree is deleted; every capability it provided is
 replaced by pieces the interpreter already has. `make e2e` regenerates
 `e2e_test/generated.go` byte-identically, and all unit tests pass —
-including the plan-§12 laziness acceptance test, updated to the stronger
+including the plan-§12 laziness acceptance test, asserting the stronger
 claim "exactly the packages the DSL names are located" (see
 `internal/plan_test.go`).
+
+The four host-side gaps this experiment found in `inspect`/the engine
+(`Sub`, `SourceOf`, `Sig` field accessors, `CanonicalName`) all landed on
+main as #20 — this branch was rebased onto them and the workarounds
+(`sigFields` unboxing, `model.TypeKey`, the `NewHostDecl`-only fallback
+comment) removed. The one panic-stack item turned out to be already
+landed by #17 (`runtime.Panic.GoStack`).
 
 The one wholesale gap: **nothing script-side can walk a function body** —
 and this experiment never needed it. The `define.Convert(func(c, dst, src)
@@ -30,18 +37,19 @@ the special form is the interface, not something `inspect` is missing.
 | `goscan.Scanner` (module-aware package loader over a workdir) | `engine.Package(ctx, path)` — the engine's own Locate→Parse→Index pipeline, anchored at the define file's directory. Strictly better scoping: resolution follows the file, not the process cwd |
 | `ctx.ResolveSymbol` + `ScanPackageFromImportPath` per quoted `pkg.Type` arg | `xinspect.NewTypeExpr(expr, ctx.File(), ctx.Package())` + `SymbolID()` → `{import path, name}` without loading; `lookupDecl` (via `engine.Package`) pays the one-package cost |
 | `scanner.TypeInfo` (struct model: name, fields, kind) | `xinspect.Decl` + `xinspect.FieldsOf` (`[]*Field` with `Names`, `Type`, `Tag`, `Embedded`) + `xinspect.DefOf` (`Kind == "StructType"`) |
-| `scanner.FieldType` (resolved type graph: IsPointer/IsSlice/IsMap/Elem/MapKey/TypeArgs/FullImportPath/Definition/Resolve) | `*xinspect.TypeExpr`: `Kind` (ast node name), `Children()` (composite parts), `Unref()` (pointer peel), `SymbolID()` (canonical identity), `Resolve`/`Unwrap`/`Origin` (lazy decl chasing through an `xinspect.Resolver`) |
-| `ExternalTypeOverride` for `time.Time` | bound packages carry no `Index`; `lookupDecl` synthesizes `xinspect.NewHostDecl` for their members — same "known to exist, not introspectable" semantics, no registration table needed |
+| `scanner.FieldType` (resolved type graph: IsPointer/IsSlice/IsMap/Elem/MapKey/TypeArgs/FullImportPath/Definition/Resolve) | `*xinspect.TypeExpr`: `Kind` (ast node name), `Children()` (composite parts), `Unref()` (pointer peel), `SymbolID()`/`CanonicalName()` (canonical identity), `Resolve`/`Unwrap`/`Origin` (lazy decl chasing through an `xinspect.Resolver`), `Sub()` (any sub-expr, incl. generic bases) |
+| `ExternalTypeOverride` for `time.Time` | bound packages carry no `Index`; `lookupDecl` synthesizes `xinspect.NewHostDecl` for their members — same "known to exist, not introspectable" semantics, no registration table needed (deliberate — see "SourceOf" below) |
 | `scanner.ResolveType` eager cross-package resolution pass | gone — `TypeExpr` resolves on demand through `runner.TypeResolver()` (`SymbolID → engine.Package → Index.Types`), so only the packages actually touched are loaded |
-| `TypeInfoFromExpr` AST→model translation (832-line scanner.go) | gone — `TypeExpr` *is* the type model; `model/typeref.go` adds the three shapes the generator needs (`TypeKey`, `ResolveNamed`, `IsStructDecl`, `StructElemOf`) |
+| `TypeInfoFromExpr` AST→model translation (832-line scanner.go) | gone — `TypeExpr` *is* the type model; `model/typeref.go` adds only `ResolveNamed`/`IsStructDecl`/`StructElemOf` (`TypeKey` moved into inspect as `CanonicalName`) |
 | `goscan.ImportManager` | moved to `generator/importmanager.go` — it never depended on the scanner (its constructor took a `PackageInfo` just for one string) |
 | `pkg/locator` (module/replace/GOPATH walking, ~500 lines) | root `resolve` package (`resolve.GoScanResolver`) — the vendored copy was a stale duplicate of it |
 
-## Gaps found in `inspect` / the engine
+## Gaps found — all landed on main
 
-Ordered by how much they hurt this consumer.
+Ordered by how much they hurt this consumer. All four were filed as
+issue #19 and landed as #20; this branch uses every one.
 
-### 1. `TypeExpr` couldn't re-wrap sub-expressions in its own context (fixed)
+### 1. `TypeExpr` couldn't re-wrap sub-expressions in its own context → `Sub` (#20)
 
 `TypeExpr.expr/file/pkg` are unexported and `Children()` only covers a
 curated set of children, so `IndexExpr`/`IndexListExpr` bases
@@ -49,51 +57,68 @@ curated set of children, so `IndexExpr`/`IndexListExpr` bases
 unreachable — generic-typed fields got no import registration and kept
 the file's local alias in generated code.
 
-**Fixed on this branch**: `withExpr` is exported as `(*TypeExpr).Sub`,
-so host code re-wraps any sub-expression in the same context. The
-generator now registers the generic base's package and renders
-`pkg.List[int]` through `im.Qualify`. `ChanType.Dir`/`ArrayType.Len`
-need no child view (they aren't `ast.Expr`s worth resolving) —
-`Expr()` already exposes them.
+`withExpr` is now exported as `(*TypeExpr).Sub`: host code re-wraps any
+sub-expression in the same context. The generator registers the generic
+base's package and renders `pkg.List[int]` through `im.Qualify`.
+`ChanType.Dir`/`ArrayType.Len` need no child view (not `ast.Expr`s
+worth resolving) — `Expr()` already exposes them.
 
-### 2. No host-side `SourceOf` (bound-shadowed stdlib decls)
+### 2. No host-side `SourceOf` → `Engine.SourceOf` (#20) — landed, and deliberately unused here
 
-`engine.sourceOf` (the code behind `inspect.SourceOf`) is unexported, so
-host code can't reach the real `time.Time` decl behind the bound `time`
-package — hence the `NewHostDecl` pseudo-decl workaround in
-`lookupDecl`, which is exactly what `ExternalTypeOverride` was. An
-exported `engine.SourceOf(path)` (or a `SourceOf` flag on
-`engine.Package`) would let host tools see through bound shadows the way
-scripts can.
+`engine.sourceOf` is exported as `Engine.SourceOf(ctx, path)`: host code
+can now reach the real decl behind a bound package's shadow.
 
-### 3. `inspect.Sig` boxes fields for the script FFI — awkward host-side
+**The interesting finding is that convert-define should NOT use it.**
+Wiring `SourceOf` into `lookupDecl` was tried on this branch and
+reverted: bound-stdlib opacity is the correct *consumer* policy —
+`ExternalTypeOverride`'s semantics all along. A real `time.Time` decl
+would:
 
-`SignatureOf` returns `Params`/`Results` as `*runtime.Slice` of
-`*runtime.GoValue`, so host callers must unbox (`gv.V.(*xinspect.Field)`).
-A `[]*xinspect.Field` accessor (parallel to `FieldsOf`) would make the
-signature story symmetric with the fields story.
+- **cost laziness**: `SourceOf` parses and indexes GOROOT source for
+  every bound member the DSL touches (plan_test's located-set grew `time`
+  before the revert).
+- **lie about struct-ness**: `IsStructDecl(time.Time)` becomes true, so
+  a same-type `*time.Time -> *time.Time` field routes into a
+  nonexistent `convertTimeToTime` call instead of the pointer-copy path.
+- **introspect what codegen can't use**: stdlib internals are unexported
+  and unassignable from generated code regardless.
 
-### 4. Smaller things
+The API is right for tools that need real decls (doc generators, linters
+on bound packages); for codegen, `NewHostDecl` pseudo-decls remain the
+correct answer — "known to exist, opaque on purpose".
+
+### 3. `inspect.Sig` boxed fields for the script FFI → `ParamFields`/`ResultFields` (#20)
+
+`SignatureOf` still returns `Params`/`Results` as `*runtime.Slice` (the
+script FFI shape — changing it would break scripts), but the new
+`sig.ParamFields()`/`ResultFields()` unbox to `[]*Field` for host
+callers. convert-define's hand-rolled `sigFields` is deleted.
+
+### 4. No canonical identity on `TypeExpr` → `CanonicalName` (#20)
+
+`model/typeref.go`'s `TypeKey` (`"*import/path.Name"` for named types,
+builtin name for predeclared, `""` for composites) moved into inspect as
+`(*TypeExpr).CanonicalName()` — generalized to host-backed exprs
+(`reflect:ptr` peels like `StarExpr`; unnamed host composites report
+`""`). `model.TypeKey` is deleted; rules and map keys use the method.
+
+### 5. Panics inside host handlers lose their stack — already landed by #17
+
+A nil-pointer panic inside a special-form handler used to surface as a
+bare `runtime error`. An earlier revision of this report claimed the Go
+stack was still dropped after #17's `asScriptPanic` — **that was wrong**:
+`asScriptPanic` stores `debug.Stack()` into `runtime.Panic.GoStack` and
+`Panic.Error()` renders it. Host-extension authors now get both the
+script frames (which DSL call panicked, with its source line) and the Go
+stack (which line inside the handler panicked).
+
+## Smaller things (still open)
 
 - `index` only indexes top-level decls; type decls inside function
   bodies are invisible (the vendored scanner picked them up). Nobody
   converts on body-local types in practice.
 - `inspect.Field` doesn't expose `IsExported`/computed names for
   embedded fields — trivially derivable, but a convenience.
-- A canonical `TypeExpr` identity string (`TypeKey` in `model/typeref.go`
-  hand-rolls `"*path.Name"`) might belong in inspect itself — codegen
-  consumers will all re-implement it.
-
-### 5. Ergonomics, not gaps
-
-- A nil-pointer panic inside a special-form handler surfaces as a bare
-  `runtime error` with no Go stack — debugging the rewrite needed a
-  temporary `debug.Stack()` patch in `vm.asError`. Partially addressed
-  by #17's `asScriptPanic` (host panics now record *script* frames —
-  which DSL call panicked, plus its source line); the residual is the
-  host *Go* stack: `asScriptPanic` keeps `fmt.Sprintf("%v", r)` only,
-  so "which Go line inside the SpecialFunc panicked" still needs a
-  debugger. Capturing `debug.Stack()` at that boundary closes it.
 
 ## Bugs fixed along the way
 
@@ -102,25 +127,23 @@ signature story symmetric with the fields story.
   `time.Time`) while `findMatchingRule` compared it against
   `PkgPath`-qualified names (`example.com/m/pkg.T`). They coincide for
   stdlib but never for module paths, so `define.Rule` could only ever
-  match stdlib/builtin types. `TypeKey` now renders both sides as
-  canonical `{import path}.{name}`.
+  match stdlib/builtin types. Canonical `SymbolID`-backed names
+  (`CanonicalName` now) render both sides identically.
 - **`FieldInfo.JSONTag` was populated nowhere** — the "normalized json
   tag" match priority in the generator was dead code. `ensureStructInfo`
-  now fills it from `inspect.Field.Tag`, making the priority real.
+  now fills it from `inspect.Field.Tag` (after fixing a double-quote
+  bug: `Field.Tag` is already unquoted, so `reflect.StructTag` takes it
+  directly), making the shared-json-tag priority real — pinned by
+  `TestIntegration_GenericAndJSONTag` (`src json:"user_id"` → `dst
+  json:"user_id"` auto-maps `ID -> UserID`).
 
 ## What this suggests about `inspect`
 
 The sketch's "Consumer story" holds up: decl-granular, laziness-preserving
 views are sufficient for a real code generator — with *less* code than the
 scanner needed (the AST→model translation layer evaporates; `TypeExpr` is
-the model). The worthwhile additions, in priority order:
-
-1. ~~`(*TypeExpr).Sub`/`withExpr` export~~ — done on this branch
-   (`inspect/inspect.go`); the generator uses it for generic bases.
-2. A host-callable `SourceOf` (export `engine.SourceOf`), so bound
-   shadows stop being opaque for tools.
-3. A host-friendly `[]*Field` signature accessor.
-4. A canonical identity string on `TypeExpr` (the `TypeKey` role).
-
-None of these is a new *feature* in the sense of new machinery — they're
-exports/accessors over structures that already exist.
+the model). Every missing piece was an export/accessor over structures
+that already exist, not new machinery — and one of them (`SourceOf`)
+turned out to be an API this consumer correctly declines: the right
+boundary is that codegen treats bound stdlib as opaque even when the
+real decl is reachable.

@@ -4,40 +4,6 @@ import (
 	xinspect "github.com/podhmo/minigo/inspect"
 )
 
-// TypeKey renders a TypeExpr as a canonical type identity: the fully
-// qualified "import/path.Name" for named types (the written spelling's
-// local alias is replaced by the declaring file's import path, so the
-// same type read through two files compares equal), the plain name for
-// builtins, and "*" + the element key for pointer types. Composite
-// shapes (slices, maps, func types, ...) report "" — they carry no
-// package-qualified identity a rule could name.
-func TypeKey(te *xinspect.TypeExpr) string {
-	if te == nil {
-		return ""
-	}
-	switch te.Kind {
-	case "StarExpr":
-		cs := te.Children()
-		if len(cs) != 1 {
-			return ""
-		}
-		inner := TypeKey(cs[0])
-		if inner == "" {
-			return ""
-		}
-		return "*" + inner
-	default:
-		sid, ok := te.SymbolID()
-		if !ok {
-			return ""
-		}
-		if sid.PackagePath == xinspect.BuiltinPackagePath {
-			return sid.Name
-		}
-		return sid.PackagePath + "." + sid.Name
-	}
-}
-
 // ResolveNamed resolves a TypeExpr to the declaration it names: a
 // pointer expr resolves to its element's decl, a builtin reports nil.
 // Composite expressions without a SymbolID report nil — callers decide

@@ -64,6 +64,13 @@ func (r *Runner) TypeResolver() xinspect.Resolver {
 // interpreter's compiled-in stdlib) carry no index, so a known member
 // is reported as an opaque host decl — the role
 // scanner.ExternalTypeOverride played in the vendored pipeline.
+//
+// Engine.SourceOf could reach the real decl behind the shadow, but this
+// consumer deliberately keeps bound stdlib types opaque: a real
+// time.Time decl would parse GOROOT source (laziness), answer
+// IsStructDecl=true and route same-type field copies into a nonexistent
+// convertTimeToTime call, and introspect internals generated code could
+// never assign anyway.
 func (r *Runner) lookupDecl(gctx context.Context, sid runtime.SymbolID) (*xinspect.Decl, error) {
 	if sid.PackagePath == "" || sid.PackagePath == xinspect.BuiltinPackagePath {
 		return nil, nil
@@ -300,7 +307,7 @@ func (r *Runner) handleRule(ctx runtime.SpecialContext, call *runtime.QuotedCall
 	if err != nil {
 		return nil, ctx.Errorf(call.Call, "rule function %s has no readable signature: %v", funcName, err)
 	}
-	params, results := sigFields(sig.Params), sigFields(sig.Results)
+	params, results := sig.ParamFields(), sig.ResultFields()
 	// A valid rule function has at least one parameter and exactly one result.
 	// The source type is the last parameter.
 	if len(params) == 0 || len(results) != 1 {
@@ -327,8 +334,8 @@ func (r *Runner) handleRule(ctx runtime.SpecialContext, call *runtime.QuotedCall
 
 	usingFunc := fmt.Sprintf("%s.%s", pkgIdent.Name, funcName)
 	rule := model.TypeRule{
-		SrcTypeName: model.TypeKey(srcTE),
-		DstTypeName: model.TypeKey(dstTE),
+		SrcTypeName: srcTE.CanonicalName(),
+		DstTypeName: dstTE.CanonicalName(),
 		SrcTypeInfo: srcTypeInfo,
 		DstTypeInfo: dstTypeInfo,
 		UsingFunc:   usingFunc,
@@ -338,21 +345,6 @@ func (r *Runner) handleRule(ctx runtime.SpecialContext, call *runtime.QuotedCall
 		r.Info.Imports[pkgIdent.Name] = pkgPath
 	}
 	return runtime.NIL, nil
-}
-
-// sigFields unboxes the inspect Sig's runtime slices back into fields —
-// each element arrives as a *runtime.GoValue wrapping the *xinspect.Field.
-func sigFields(s *runtime.Slice) []*xinspect.Field {
-	if s == nil {
-		return nil
-	}
-	out := make([]*xinspect.Field, len(s.Elems))
-	for i, e := range s.Elems {
-		if gv, ok := e.(*runtime.GoValue); ok {
-			out[i], _ = gv.V.(*xinspect.Field)
-		}
-	}
-	return out
 }
 
 // isBuiltinType reports whether the type expr names a predeclared type.

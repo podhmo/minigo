@@ -421,7 +421,7 @@ func normalizeFieldName(name string) string {
 // -----------------------------------------------------------------------------
 
 func getValidator(im *ImportManager, info *model.ParsedInfo, field FieldMap, dstVar, ecVar, ctxVar string) string {
-	dstFieldTypeName := model.TypeKey(field.DstFieldT)
+	dstFieldTypeName := field.DstFieldT.CanonicalName()
 	dst := fmt.Sprintf("%s.%s", dstVar, field.DstName)
 
 	for _, rule := range info.GlobalRules {
@@ -492,8 +492,8 @@ func findMatchingRule(info *model.ParsedInfo, srcT, dstT *xinspect.TypeExpr) *ru
 		return nil
 	}
 
-	srcFieldTypeName := model.TypeKey(srcT)
-	dstFieldTypeName := model.TypeKey(dstT)
+	srcFieldTypeName := srcT.CanonicalName()
+	dstFieldTypeName := dstT.CanonicalName()
 
 	for i := range info.GlobalRules {
 		rule := &info.GlobalRules[i]
