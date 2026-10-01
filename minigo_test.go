@@ -275,6 +275,58 @@ func TestStdlibIntrinsics(t *testing.T) {
 	}
 }
 
+// TestTraceback locks the error-report shape: unwinding Trap/Panic carry
+// "name at file:line" frames plus the source line under each entry.
+func TestTraceback(t *testing.T) {
+	e := newEngine(t)
+	runErr := func(fn string) string {
+		t.Helper()
+		_, err := e.Run(context.Background(), "./testdata/traceback", fn)
+		if err == nil {
+			t.Fatalf("%s: expected error", fn)
+		}
+		return err.Error()
+	}
+
+	got := runErr("Wrap")
+	for _, want := range []string{
+		"panic: kaboom",
+		"boom at ",
+		"Wrap at ",
+		"traceback/main.go:",
+		"panic(\"kaboom\")", // source line under the boom frame
+		"boom()",            // source line under the Wrap frame
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Wrap traceback missing %q:\n%s", want, got)
+		}
+	}
+
+	// a host panic (Go runtime error) records frames too
+	got = runErr("Idx")
+	for _, want := range []string{"panic: runtime error: index out of range", "Idx at ", "xs[10]"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Idx traceback missing %q:\n%s", want, got)
+		}
+	}
+
+	// unsupported constructs trap with frames + source lines
+	got = runErr("Unsupported")
+	for _, want := range []string{"runtime trap: 3-index slice", "Unsupported at ", "s[0:1:2]"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Unsupported traceback missing %q:\n%s", want, got)
+		}
+	}
+
+	// a panic escaping a deferred call names its registerer
+	got = runErr("WithDefer")
+	for _, want := range []string{"panic: in defer", "DeferredCleanup at ", "(deferred call) at "} {
+		if !strings.Contains(got, want) {
+			t.Errorf("WithDefer traceback missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestConstAssignTraps(t *testing.T) {
 	e := newEngine(t)
 	_, err := e.Run(context.Background(), "./testdata/constreassign", "AssignConst")
