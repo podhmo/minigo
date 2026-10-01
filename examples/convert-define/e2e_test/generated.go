@@ -13,7 +13,7 @@ import (
 	convutil "github.com/podhmo/minigo/examples/convert-define/convutil"
 	"github.com/podhmo/minigo/examples/convert-define/model"
 	destination "github.com/podhmo/minigo/examples/convert-define/sampledata/destination"
-	"github.com/podhmo/minigo/examples/convert-define/sampledata/funcs"
+	funcs "github.com/podhmo/minigo/examples/convert-define/sampledata/funcs"
 	source "github.com/podhmo/minigo/examples/convert-define/sampledata/source"
 )
 
@@ -415,6 +415,36 @@ func ConvertSourceWithMapToTargetWithMap(ctx context.Context, src *source.Source
 	}
 	ec := model.NewErrorCollector(0)
 	dst := convertSourceWithMapToTargetWithMap(ctx, ec, src)
+	if ec.HasErrors() {
+		return dst, errors.Join(ec.Errors()...)
+	}
+	return dst, nil
+}
+
+// convertSrcContactToDstContact converts source.SrcContact to destination.DstContact.
+//
+// Fields that are not populated by this converter:
+//   - EmailAddress
+//   - PhoneNumber
+func convertSrcContactToDstContact(ctx context.Context, ec *model.ErrorCollector, src *source.SrcContact) *destination.DstContact {
+	if src == nil {
+		return nil
+	}
+	dst := &destination.DstContact{}
+	return dst
+}
+
+// ConvertSrcContactToDstContact converts source.SrcContact to destination.DstContact.
+//
+// Fields that are not populated by this converter:
+//   - EmailAddress
+//   - PhoneNumber
+func ConvertSrcContactToDstContact(ctx context.Context, src *source.SrcContact) (*destination.DstContact, error) {
+	if src == nil {
+		return nil, nil
+	}
+	ec := model.NewErrorCollector(0)
+	dst := convertSrcContactToDstContact(ctx, ec, src)
 	if ec.HasErrors() {
 		return dst, errors.Join(ec.Errors()...)
 	}

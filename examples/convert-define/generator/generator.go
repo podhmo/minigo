@@ -5,7 +5,10 @@ import (
 	"context"
 	"fmt"
 	"go/ast"
+	"go/printer"
+	"go/token"
 	"log/slog"
+	"path/filepath"
 	"slices"
 	"strings"
 	"text/template"
@@ -31,7 +34,7 @@ import (
 )
 
 {{ range .Pairs -}}
-// convert{{ .SrcType.Name }}To{{ .DstType.Name }} converts {{ getQualifiedTypeName $.Im .SrcType }} to {{ getQualifiedTypeName $.Im .DstType }}.
+// {{ .ConvName }} converts {{ getQualifiedTypeName $.Im .SrcType }} to {{ getQualifiedTypeName $.Im .DstType }}.
 {{- if .UnmappedFields }}
 //
 // Fields that are not populated by this converter:
@@ -39,7 +42,7 @@ import (
 //   - {{ . }}
 {{- end }}
 {{- end }}
-func convert{{ .SrcType.Name }}To{{ .DstType.Name }}(ctx context.Context, ec *model.ErrorCollector, src *{{ getQualifiedTypeName $.Im .SrcType }}) *{{ getQualifiedTypeName $.Im .DstType }} {
+func {{ .ConvName }}(ctx context.Context, ec *model.ErrorCollector, src *{{ getQualifiedTypeName $.Im .SrcType }}) *{{ getQualifiedTypeName $.Im .DstType }} {
 	if src == nil {
 		return nil
 	}
@@ -67,7 +70,7 @@ func convert{{ .SrcType.Name }}To{{ .DstType.Name }}(ctx context.Context, ec *mo
 	return dst
 }
 
-// Convert{{ .SrcType.Name }}To{{ .DstType.Name }} converts {{ getQualifiedTypeName $.Im .SrcType }} to {{ getQualifiedTypeName $.Im .DstType }}.
+// {{ .PublicName }} converts {{ getQualifiedTypeName $.Im .SrcType }} to {{ getQualifiedTypeName $.Im .DstType }}.
 {{- if .UnmappedFields }}
 //
 // Fields that are not populated by this converter:
@@ -75,12 +78,12 @@ func convert{{ .SrcType.Name }}To{{ .DstType.Name }}(ctx context.Context, ec *mo
 //   - {{ . }}
 {{- end }}
 {{- end }}
-func Convert{{ .SrcType.Name }}To{{ .DstType.Name }}(ctx context.Context, src *{{ getQualifiedTypeName $.Im .SrcType }}) (*{{ getQualifiedTypeName $.Im .DstType }}, error) {
+func {{ .PublicName }}(ctx context.Context, src *{{ getQualifiedTypeName $.Im .SrcType }}) (*{{ getQualifiedTypeName $.Im .DstType }}, error) {
 	if src == nil {
 		return nil, nil
 	}
 	ec := model.NewErrorCollector({{ .Pair.MaxErrors }})
-	dst := convert{{ .SrcType.Name }}To{{ .DstType.Name }}(ctx, ec, src)
+	dst := {{ .ConvName }}(ctx, ec, src)
 	if ec.HasErrors() {
 		return dst, errors.Join(ec.Errors()...)
 	}
@@ -104,6 +107,10 @@ type TemplatePair struct {
 	Fields         []FieldMap
 	Pair           model.ConversionPair
 	UnmappedFields []string
+	// ConvName/PublicName are the emitted function identifiers; they
+	// carry a disambiguating suffix when two pairs would collide.
+	ConvName   string
+	PublicName string
 }
 
 type FieldMap struct {
@@ -114,24 +121,16 @@ type FieldMap struct {
 	DstFieldT *xinspect.TypeExpr
 }
 
-// declKey renders a decl's canonical "import/path.Name" identity.
-func declKey(d *xinspect.Decl) string {
-	if d == nil {
-		return ""
-	}
-	if d.Package != nil && d.Package.Path != "" {
-		return d.Package.Path + "." + d.Name
-	}
-	return d.Name
-}
+// funcNamer maps a "src-decl -> dst-decl" key to the emitted
+// converter identifier, so call sites stay consistent when a suffix
+// was needed to disambiguate colliding names.
+type funcNamer map[string]string
 
-// declKeyOf resolves a type expr to its decl's canonical identity.
-func declKeyOf(res xinspect.Resolver, te *xinspect.TypeExpr) string {
-	d, err := model.ResolveNamed(res, te)
-	if err != nil || d == nil {
-		return ""
+func (fn funcNamer) call(srcElem, dstElem *xinspect.Decl) string {
+	if name, ok := fn[model.DeclKey(srcElem)+" -> "+model.DeclKey(dstElem)]; ok {
+		return name
 	}
-	return declKey(d)
+	return fmt.Sprintf("convert%sTo%s", srcElem.Name, dstElem.Name)
 }
 
 // declNameOf resolves a type expr to the name of the decl it names.
@@ -148,11 +147,29 @@ func isPtr(te *xinspect.TypeExpr) bool {
 	return te != nil && te.Kind == "StarExpr"
 }
 
-// isSlice reports whether the declared type is a slice (or array — the
-// TypeExpr view does not expose ArrayType.Len, matching the previous
-// implementation which also treated arrays as slices).
+// isSlice reports whether the declared type is a slice — `[]T` or
+// `...T`. Arrays (`[N]T`, ArrayType with a Len) are handled separately
+// since their length is part of the type.
 func isSlice(te *xinspect.TypeExpr) bool {
-	return te != nil && (te.Kind == "ArrayType" || te.Kind == "Ellipsis")
+	if te == nil {
+		return false
+	}
+	if te.Kind == "Ellipsis" {
+		return true
+	}
+	if at, ok := te.Expr().(*ast.ArrayType); ok {
+		return at.Len == nil
+	}
+	return false
+}
+
+// isArray reports whether the declared type is a fixed-length array.
+func isArray(te *xinspect.TypeExpr) bool {
+	if te == nil {
+		return false
+	}
+	at, ok := te.Expr().(*ast.ArrayType)
+	return ok && at.Len != nil
 }
 
 // isMap reports whether the declared type is a map.
@@ -170,6 +187,12 @@ func elem(te *xinspect.TypeExpr) *xinspect.TypeExpr {
 		return nil
 	}
 	return cs[len(cs)-1]
+}
+
+// mapKeyElem returns the key type of a map expr, or nil.
+func mapKeyElem(te *xinspect.TypeExpr) *xinspect.TypeExpr {
+	k, _ := mapParts(te)
+	return k
 }
 
 // mapParts returns the key and element type of a map expr.
@@ -211,7 +234,7 @@ func Generate(res xinspect.Resolver, info *model.ParsedInfo, header string) ([]b
 
 	// Initial population from explicit @derivingconvert annotations
 	for _, pair := range info.ConversionPairs {
-		key := declKey(pair.SrcTypeInfo) + " -> " + declKey(pair.DstTypeInfo)
+		key := model.DeclKey(pair.SrcTypeInfo) + " -> " + model.DeclKey(pair.DstTypeInfo)
 		if !processed[key] {
 			worklist = append(worklist, pair)
 			processed[key] = true
@@ -221,15 +244,17 @@ func Generate(res xinspect.Resolver, info *model.ParsedInfo, header string) ([]b
 	for i := 0; i < len(worklist); i++ {
 		pair := worklist[i]
 
-		srcStruct, ok := info.Structs[pair.SrcTypeName]
-		if !ok {
-			// This can happen if a struct is referenced but not defined in the scanned packages.
-			slog.WarnContext(ctx, "source struct for conversion not found in parsed info, skipping", "type", pair.SrcTypeName)
+		// Explicit pairs carry their StructInfo already; discovered
+		// pairs only know their decls, so materialize the StructInfo
+		// here — the same code path as the interpreter's ensureStructInfo.
+		srcStruct, err := structInfoFor(info, pair.SrcTypeInfo)
+		if err != nil {
+			slog.WarnContext(ctx, "source struct for conversion not found in parsed info, skipping", "type", model.DeclKey(pair.SrcTypeInfo), "error", err)
 			continue
 		}
-		dstStruct, ok := info.Structs[pair.DstTypeName]
-		if !ok {
-			slog.WarnContext(ctx, "destination struct for conversion not found in parsed info, skipping", "type", pair.DstTypeName)
+		dstStruct, err := structInfoFor(info, pair.DstTypeInfo)
+		if err != nil {
+			slog.WarnContext(ctx, "destination struct for conversion not found in parsed info, skipping", "type", model.DeclKey(pair.DstTypeInfo), "error", err)
 			continue
 		}
 
@@ -246,23 +271,30 @@ func Generate(res xinspect.Resolver, info *model.ParsedInfo, header string) ([]b
 			return nil, fmt.Errorf("creating field maps for %s -> %s: %w", srcStruct.Name, dstStruct.Name, err)
 		}
 
-		// Discover new pairs from fields
+		// Discover new pairs from fields — element types plus, for map
+		// fields, key types (StructElemOf follows only the value side).
 		for _, fm := range fieldMaps {
-			srcFieldType := model.StructElemOf(res, fm.SrcFieldT)
-			dstFieldType := model.StructElemOf(res, fm.DstFieldT)
+			typePairs := [][2]*xinspect.TypeExpr{{fm.SrcFieldT, fm.DstFieldT}}
+			if sk, dk := mapKeyElem(fm.SrcFieldT), mapKeyElem(fm.DstFieldT); sk != nil && dk != nil {
+				typePairs = append(typePairs, [2]*xinspect.TypeExpr{sk, dk})
+			}
+			for _, tp := range typePairs {
+				srcFieldType := model.StructElemOf(res, tp[0])
+				dstFieldType := model.StructElemOf(res, tp[1])
 
-			if srcFieldType != nil && dstFieldType != nil {
-				key := declKey(srcFieldType) + " -> " + declKey(dstFieldType)
-				if !processed[key] {
-					slog.DebugContext(ctx, "Discovered required conversion", "key", key)
-					newPair := model.ConversionPair{
-						SrcTypeName: srcFieldType.Name,
-						DstTypeName: dstFieldType.Name,
-						SrcTypeInfo: srcFieldType,
-						DstTypeInfo: dstFieldType,
+				if srcFieldType != nil && dstFieldType != nil {
+					key := model.DeclKey(srcFieldType) + " -> " + model.DeclKey(dstFieldType)
+					if !processed[key] {
+						slog.DebugContext(ctx, "Discovered required conversion", "key", key)
+						newPair := model.ConversionPair{
+							SrcTypeName: srcFieldType.Name,
+							DstTypeName: dstFieldType.Name,
+							SrcTypeInfo: srcFieldType,
+							DstTypeInfo: dstFieldType,
+						}
+						worklist = append(worklist, newPair)
+						processed[key] = true
 					}
-					worklist = append(worklist, newPair)
-					processed[key] = true
 				}
 			}
 		}
@@ -274,6 +306,27 @@ func Generate(res xinspect.Resolver, info *model.ParsedInfo, header string) ([]b
 			Pair:           pair,
 			UnmappedFields: unmappedFields,
 		})
+	}
+
+	// Assign function names after the worklist: pairs that would emit
+	// the same converter identifier (e.g. a.User -> b.User and
+	// a.User -> c.User) get a deterministic disambiguating suffix.
+	funcNames := funcNamer{}
+	taken := map[string]bool{}
+	for i := range allPairs {
+		tp := &allPairs[i]
+		base := fmt.Sprintf("%sTo%s", tp.SrcType.Name, tp.DstType.Name)
+		name := base
+		if taken["convert"+name] {
+			name = base + "From" + sanitizeIdent(filepath.Base(tp.SrcType.Type.Package.Path)) + "To" + sanitizeIdent(filepath.Base(tp.DstType.Type.Package.Path))
+		}
+		for n := 2; taken["convert"+name]; n++ {
+			name = fmt.Sprintf("%s%d", base, n)
+		}
+		taken["convert"+name] = true
+		tp.ConvName = "convert" + name
+		tp.PublicName = "Convert" + name
+		funcNames[model.DeclKey(tp.Pair.SrcTypeInfo)+" -> "+model.DeclKey(tp.Pair.DstTypeInfo)] = tp.ConvName
 	}
 
 	for _, rule := range info.GlobalRules {
@@ -296,10 +349,10 @@ func Generate(res xinspect.Resolver, info *model.ParsedInfo, header string) ([]b
 
 	funcMap := template.FuncMap{
 		"getAssignment": func(im *ImportManager, info *model.ParsedInfo, field FieldMap, srcVar, dstVar, ecVar, ctxVar string) string {
-			return getAssignment(im, res, info, field, srcVar, dstVar, ecVar, ctxVar)
+			return getAssignment(im, res, info, funcNames, field, srcVar, dstVar, ecVar, ctxVar)
 		},
 		"getMapKeyAssignment": func(im *ImportManager, info *model.ParsedInfo, srcVar, dstVar string, srcT, dstT *xinspect.TypeExpr, ecVar, ctxVar string) string {
-			return getMapKeyAssignment(im, res, info, srcVar, dstVar, srcT, dstT, ecVar, ctxVar)
+			return getMapKeyAssignment(im, res, info, funcNames, srcVar, dstVar, srcT, dstT, ecVar, ctxVar)
 		},
 		"getValidator": func(im *ImportManager, info *model.ParsedInfo, field FieldMap, dstVar, ecVar, ctxVar string) string {
 			return getValidator(im, info, field, dstVar, ecVar, ctxVar)
@@ -326,6 +379,34 @@ func Generate(res xinspect.Resolver, info *model.ParsedInfo, header string) ([]b
 		return nil, fmt.Errorf("executing template: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// structInfoFor returns the StructInfo for a conversion decl,
+// materializing it from the decl when the interpreter's pass did not
+// (the common case for types discovered through field traversal).
+func structInfoFor(info *model.ParsedInfo, d *xinspect.Decl) (*model.StructInfo, error) {
+	key := model.DeclKey(d)
+	if si, ok := info.Structs[key]; ok {
+		return si, nil
+	}
+	si, err := model.StructInfoFromDecl(d)
+	if err != nil {
+		return nil, err
+	}
+	info.Structs[key] = si
+	return si, nil
+}
+
+// sanitizeIdent renders a package path as an identifier-safe fragment
+// for converter-name disambiguation ("a/b/c" -> "abc").
+func sanitizeIdent(path string) string {
+	var b strings.Builder
+	for _, r := range path {
+		if r == '_' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func createFieldMaps(ctx context.Context, src, dst *model.StructInfo, pair *model.ConversionPair) ([]FieldMap, []string, error) {
@@ -365,9 +446,14 @@ func createFieldMaps(ctx context.Context, src, dst *model.StructInfo, pair *mode
 		var ok bool
 		var reason string
 
-		// Priority 1: `convert` tag
+		// Priority 1: `convert` tag — an explicit mapping that names no
+		// destination field is a definition error, not a reason to
+		// silently fall back to name matching.
 		if srcField.Tag.DstFieldName != "" {
 			dstField, ok = dstFieldsByName[srcField.Tag.DstFieldName]
+			if !ok {
+				return nil, nil, fmt.Errorf("field %s: mapped destination field %q not found in struct %s", srcField.Name, srcField.Tag.DstFieldName, dst.Name)
+			}
 			reason = fmt.Sprintf("`convert` tag (%s)", srcField.Tag.DstFieldName)
 		}
 
@@ -429,7 +515,7 @@ func getValidator(im *ImportManager, info *model.ParsedInfo, field FieldMap, dst
 			continue
 		}
 
-		ruleDstName := declKey(rule.DstTypeInfo)
+		ruleDstName := model.DeclKey(rule.DstTypeInfo)
 		if ruleDstName == dstFieldTypeName {
 			funcName := qualifyFunc(im, info, rule.ValidatorFunc)
 			return fmt.Sprintf("%s(%s, %s)", funcName, ecVar, dst)
@@ -511,7 +597,7 @@ func findMatchingRule(info *model.ParsedInfo, srcT, dstT *xinspect.TypeExpr) *ru
 	return nil
 }
 
-func getMapKeyAssignment(im *ImportManager, res xinspect.Resolver, info *model.ParsedInfo, srcVar, dstVar string, srcT, dstT *xinspect.TypeExpr, ecVar, ctxVar string) string {
+func getMapKeyAssignment(im *ImportManager, res xinspect.Resolver, info *model.ParsedInfo, fn funcNamer, srcVar, dstVar string, srcT, dstT *xinspect.TypeExpr, ecVar, ctxVar string) string {
 	// Global conversion rule
 	if match := findMatchingRule(info, srcT, dstT); match != nil {
 		funcName := qualifyFunc(im, info, match.Rule.UsingFunc)
@@ -520,10 +606,10 @@ func getMapKeyAssignment(im *ImportManager, res xinspect.Resolver, info *model.P
 		}
 		return fmt.Sprintf("%s(%s, %s, %s)", funcName, ctxVar, ecVar, srcVar)
 	}
-	return generateConversion(im, res, info, srcVar, dstVar, srcT, dstT, 0, ecVar, ctxVar)
+	return generateConversion(im, res, info, fn, srcVar, dstVar, srcT, dstT, 0, ecVar, ctxVar)
 }
 
-func getAssignment(im *ImportManager, res xinspect.Resolver, info *model.ParsedInfo, field FieldMap, srcVar, dstVar, ecVar, ctxVar string) string {
+func getAssignment(im *ImportManager, res xinspect.Resolver, info *model.ParsedInfo, fn funcNamer, field FieldMap, srcVar, dstVar, ecVar, ctxVar string) string {
 	src := fmt.Sprintf("%s.%s", srcVar, field.SrcName)
 	dst := fmt.Sprintf("%s.%s", dstVar, field.DstName)
 
@@ -542,14 +628,14 @@ func getAssignment(im *ImportManager, res xinspect.Resolver, info *model.ParsedI
 	}
 
 	if field.Tag.Required && isPtr(field.SrcFieldT) {
-		return fmt.Sprintf("if %s == nil {\n\t%s.Add(fmt.Errorf(\"%s is required\"))\n} else {\n\t%s\n}", src, ecVar, field.SrcName, generateConversion(im, res, info, src, dst, field.SrcFieldT, field.DstFieldT, 0, ecVar, ctxVar))
+		return fmt.Sprintf("if %s == nil {\n\t%s.Add(fmt.Errorf(\"%s is required\"))\n} else {\n\t%s\n}", src, ecVar, field.SrcName, generateConversion(im, res, info, fn, src, dst, field.SrcFieldT, field.DstFieldT, 0, ecVar, ctxVar))
 	}
 
 	// Priority 3: Default conversion logic
-	return generateConversion(im, res, info, src, dst, field.SrcFieldT, field.DstFieldT, 0, ecVar, ctxVar)
+	return generateConversion(im, res, info, fn, src, dst, field.SrcFieldT, field.DstFieldT, 0, ecVar, ctxVar)
 }
 
-func generateConversion(im *ImportManager, res xinspect.Resolver, info *model.ParsedInfo, src, dst string, srcT, dstT *xinspect.TypeExpr, depth int, ecVar, ctxVar string) string {
+func generateConversion(im *ImportManager, res xinspect.Resolver, info *model.ParsedInfo, fn funcNamer, src, dst string, srcT, dstT *xinspect.TypeExpr, depth int, ecVar, ctxVar string) string {
 	// Global conversion rule
 	if match := findMatchingRule(info, srcT, dstT); match != nil {
 		funcName := qualifyFunc(im, info, match.Rule.UsingFunc)
@@ -564,6 +650,17 @@ func generateConversion(im *ImportManager, res xinspect.Resolver, info *model.Pa
 		return fmt.Sprintf("// srcT or dstT is nil for %s -> %s", src, dst)
 	}
 
+	// Identical value types assign directly — same-name structs, same
+	// scalars, etc. Pointers, slices and maps are excluded: they fall
+	// through to the shape branches below, which allocate fresh copies
+	// instead of aliasing the source's memory.
+	if srcT.SameType(dstT, res) && !isPtr(srcT) && !isSlice(srcT) && !isMap(srcT) {
+		if dst != "" {
+			return fmt.Sprintf("%s = %s", dst, src)
+		}
+		return src
+	}
+
 	// Pointer to Pointer
 	if isPtr(srcT) && isPtr(dstT) {
 		srcElem, dstElem := elem(srcT), elem(dstT)
@@ -575,16 +672,23 @@ func generateConversion(im *ImportManager, res xinspect.Resolver, info *model.Pa
 			return src
 		}
 
-		// If the elements are structs that have a dedicated converter, use it directly.
-		if isStructType(res, srcElem) && isStructType(res, dstElem) {
-			return fmt.Sprintf("convert%sTo%s(%s, %s, %s)", declNameOf(res, srcElem), declNameOf(res, dstElem), ctxVar, ecVar, src)
+		// If the elements are structs that have a dedicated converter, use
+		// it directly — but only at exactly one level of indirection:
+		// `**T` is not a `*T` argument.
+		srcElemDecl, dstElemDecl := namedDeclOf(res, srcElem), namedDeclOf(res, dstElem)
+		if !isPtr(srcElem) && !isPtr(dstElem) && model.IsStructDecl(srcElemDecl) && model.IsStructDecl(dstElemDecl) {
+			call := fmt.Sprintf("%s(%s, %s, %s)", fn.call(srcElemDecl, dstElemDecl), ctxVar, ecVar, src)
+			if dst != "" {
+				return fmt.Sprintf("%s = %s", dst, call)
+			}
+			return call
 		}
 
 		var b strings.Builder
 		if dst != "" {
 			// If dst is specified, we generate a block of statements.
 			b.WriteString(fmt.Sprintf("if %s != nil {\n", src))
-			b.WriteString(fmt.Sprintf("\ttmp := %s\n", generateConversion(im, res, info, "(*"+src+")", "", srcElem, dstElem, depth+1, ecVar, ctxVar)))
+			b.WriteString(fmt.Sprintf("\ttmp := %s\n", generateConversion(im, res, info, fn, "(*"+src+")", "", srcElem, dstElem, depth+1, ecVar, ctxVar)))
 			b.WriteString(fmt.Sprintf("\t%s = &tmp\n", dst))
 			b.WriteString("} else {\n")
 			b.WriteString(fmt.Sprintf("\t%s = nil\n", dst))
@@ -593,7 +697,7 @@ func generateConversion(im *ImportManager, res xinspect.Resolver, info *model.Pa
 			// If dst is empty, we must generate an expression, which we do with an anonymous func.
 			b.WriteString(fmt.Sprintf("func() %s {\n", getTypeName(im, dstT)))
 			b.WriteString(fmt.Sprintf("\tif %s == nil { return nil }\n", src))
-			b.WriteString(fmt.Sprintf("\ttmp := %s\n", generateConversion(im, res, info, "(*"+src+")", "", srcElem, dstElem, depth+1, ecVar, ctxVar)))
+			b.WriteString(fmt.Sprintf("\ttmp := %s\n", generateConversion(im, res, info, fn, "(*"+src+")", "", srcElem, dstElem, depth+1, ecVar, ctxVar)))
 			b.WriteString("\treturn &tmp\n")
 			b.WriteString("}()")
 		}
@@ -605,7 +709,11 @@ func generateConversion(im *ImportManager, res xinspect.Resolver, info *model.Pa
 		if srcElem == nil {
 			return fmt.Sprintf("// Cannot convert pointer to value, element type is nil")
 		}
-		return fmt.Sprintf("if %s != nil {\n\t%s\n}", src, generateConversion(im, res, info, "(*"+src+")", dst, srcElem, dstT, depth+1, ecVar, ctxVar))
+		inner := generateConversion(im, res, info, fn, "(*"+src+")", "", srcElem, dstT, depth+1, ecVar, ctxVar)
+		if dst != "" {
+			return fmt.Sprintf("if %s != nil {\n\t%s = %s\n}", src, dst, inner)
+		}
+		return fmt.Sprintf("func() %s {\n\tif %s == nil { var z %s; return z }\n\treturn %s\n}()", getTypeName(im, dstT), src, getTypeName(im, dstT), inner)
 	}
 	// Value to Pointer
 	if !isPtr(srcT) && isPtr(dstT) {
@@ -613,50 +721,120 @@ func generateConversion(im *ImportManager, res xinspect.Resolver, info *model.Pa
 		if dstElem == nil {
 			return fmt.Sprintf("// Cannot convert value to pointer, element type is nil")
 		}
-		var b strings.Builder
-		b.WriteString("{\n")
-		b.WriteString(fmt.Sprintf("\ttmp := %s\n", generateConversion(im, res, info, src, "", srcT, dstElem, depth+1, ecVar, ctxVar)))
+		inner := generateConversion(im, res, info, fn, src, "", srcT, dstElem, depth+1, ecVar, ctxVar)
 		if dst != "" {
-			b.WriteString(fmt.Sprintf("\t%s = &tmp\n", dst))
-		} else {
-			b.WriteString(fmt.Sprintf("\treturn &tmp\n"))
+			return fmt.Sprintf("{\n\ttmp := %s\n\t%s = &tmp\n}", inner, dst)
 		}
-		b.WriteString("}")
-		return b.String()
+		return fmt.Sprintf("func() %s {\n\ttmp := %s\n\treturn &tmp\n}()", getTypeName(im, dstT), inner)
 	}
 
 	// Slices
 	if isSlice(srcT) && isSlice(dstT) {
-		return generateSliceConversion(im, res, info, src, dst, srcT, dstT, depth, ecVar, ctxVar)
+		return generateSliceConversion(im, res, info, fn, src, dst, srcT, dstT, depth, ecVar, ctxVar)
+	}
+
+	// Arrays: fixed-length; element conversion proceeds one index at a
+	// time (same-type arrays already assigned above).
+	if isArray(srcT) && isArray(dstT) {
+		return generateArrayConversion(im, res, info, fn, src, dst, srcT, dstT, depth, ecVar, ctxVar)
 	}
 
 	// Maps
 	if isMap(srcT) && isMap(dstT) {
-		return generateMapConversion(im, res, info, src, dst, srcT, dstT, depth, ecVar, ctxVar)
+		return generateMapConversion(im, res, info, fn, src, dst, srcT, dstT, depth, ecVar, ctxVar)
 	}
 
 	// Structs
-	srcName, dstName := declNameOf(res, srcT), declNameOf(res, dstT)
-	if isStructType(res, srcT) && isStructType(res, dstT) && srcName != "" && dstName != "" {
+	srcDecl, dstDecl := namedDeclOf(res, srcT), namedDeclOf(res, dstT)
+	if model.IsStructDecl(srcDecl) && model.IsStructDecl(dstDecl) {
 		srcPtr := src
 		if !isPtr(srcT) {
 			srcPtr = "&" + src
 		}
-		conversion := fmt.Sprintf("*convert%sTo%s(%s, %s, %s)", srcName, dstName, ctxVar, ecVar, srcPtr)
+		conversion := fmt.Sprintf("*%s(%s, %s, %s)", fn.call(srcDecl, dstDecl), ctxVar, ecVar, srcPtr)
 		if dst != "" {
 			return fmt.Sprintf("%s = %s", dst, conversion)
 		}
 		return conversion
 	}
 
-	// Basic assignment
+	// Basic assignment — with a type conversion when the canonical names
+	// differ but the shape is castable (named leaf types, numeric pairs).
 	if dst != "" {
+		if cast, ok := leafCast(im, srcT, dstT, src); ok {
+			return fmt.Sprintf("%s = %s", dst, cast)
+		}
 		return fmt.Sprintf("%s = %s", dst, src)
+	}
+	if cast, ok := leafCast(im, srcT, dstT, src); ok {
+		return cast
 	}
 	return src
 }
 
-func generateSliceConversion(im *ImportManager, res xinspect.Resolver, info *model.ParsedInfo, src, dst string, srcT, dstT *xinspect.TypeExpr, depth int, ecVar, ctxVar string) string {
+// namedDeclOf resolves a type expr to its declaration, or nil for
+// builtins and composite shapes.
+func namedDeclOf(res xinspect.Resolver, te *xinspect.TypeExpr) *xinspect.Decl {
+	d, err := model.ResolveNamed(res, te)
+	if err != nil {
+		return nil
+	}
+	return d
+}
+
+// numericBuiltins is the set of predeclared numeric types — casts
+// between them are always legal Go.
+var numericBuiltins = map[string]bool{
+	"int": true, "int8": true, "int16": true, "int32": true, "int64": true,
+	"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true,
+	"uintptr": true, "byte": true, "rune": true,
+	"float32": true, "float64": true, "complex64": true, "complex128": true,
+}
+
+// leafCast reports the `dstT(src)` cast to emit when src and dst are
+// leaf types with different canonical names: either side being a named
+// (non-builtin) type, or both being numeric builtins, makes a plain
+// conversion legal; anything else is left to a raw assignment that the
+// compiler will flag if it is truly wrong.
+func leafCast(im *ImportManager, srcT, dstT *xinspect.TypeExpr, src string) (string, bool) {
+	srcCanon, dstCanon := srcT.CanonicalName(), dstT.CanonicalName()
+	if srcCanon == "" || dstCanon == "" || srcCanon == dstCanon {
+		return "", false
+	}
+	isNamed := func(te *xinspect.TypeExpr) bool {
+		sid, ok := te.Unref().SymbolID()
+		return ok && sid.PackagePath != xinspect.BuiltinPackagePath
+	}
+	if isNamed(dstT) || isNamed(srcT) || (numericBuiltins[srcCanon] && numericBuiltins[dstCanon]) {
+		return fmt.Sprintf("%s(%s)", getTypeName(im, dstT), src), true
+	}
+	return "", false
+}
+
+func generateArrayConversion(im *ImportManager, res xinspect.Resolver, info *model.ParsedInfo, fn funcNamer, src, dst string, srcT, dstT *xinspect.TypeExpr, depth int, ecVar, ctxVar string) string {
+	srcElem, dstElem := elem(srcT), elem(dstT)
+	if srcElem == nil || dstElem == nil {
+		return ""
+	}
+	dstType := getTypeName(im, dstT)
+	conv := generateConversion(im, res, info, fn, "item", "", srcElem, dstElem, depth+2, ecVar, ctxVar)
+
+	var b strings.Builder
+	if dst != "" {
+		b.WriteString(fmt.Sprintf("{\n\tfor i, item := range %s {\n", src))
+		b.WriteString("\t\t" + ecVar + ".Enter(fmt.Sprintf(\"[%d]\", i))\n")
+		b.WriteString(fmt.Sprintf("\t\t%s[i] = %s\n", dst, conv))
+		b.WriteString("\t\t" + ecVar + ".Leave()\n\t}\n}")
+	} else {
+		b.WriteString(fmt.Sprintf("func() %s {\n\tvar arr %s\n\tfor i, item := range %s {\n", dstType, dstType, src))
+		b.WriteString("\t\t" + ecVar + ".Enter(fmt.Sprintf(\"[%d]\", i))\n")
+		b.WriteString(fmt.Sprintf("\t\tarr[i] = %s\n", conv))
+		b.WriteString("\t\t" + ecVar + ".Leave()\n\t}\n\treturn arr\n}()")
+	}
+	return b.String()
+}
+
+func generateSliceConversion(im *ImportManager, res xinspect.Resolver, info *model.ParsedInfo, fn funcNamer, src, dst string, srcT, dstT *xinspect.TypeExpr, depth int, ecVar, ctxVar string) string {
 	srcElem, dstElem := elem(srcT), elem(dstT)
 	if srcElem == nil || dstElem == nil {
 		return ""
@@ -668,7 +846,7 @@ func generateSliceConversion(im *ImportManager, res xinspect.Resolver, info *mod
 		b.WriteString(fmt.Sprintf("\tconvertedSlice := make([]%s, len(%s))\n", getTypeName(im, dstElem), src))
 		b.WriteString(fmt.Sprintf("\tfor i, item := range %s {\n", src))
 		b.WriteString("\t\t" + ecVar + ".Enter(fmt.Sprintf(\"[%d]\", i))\n")
-		b.WriteString(fmt.Sprintf("\t\tconvertedSlice[i] = %s\n", generateConversion(im, res, info, "item", "", srcElem, dstElem, depth+2, ecVar, ctxVar)))
+		b.WriteString(fmt.Sprintf("\t\tconvertedSlice[i] = %s\n", generateConversion(im, res, info, fn, "item", "", srcElem, dstElem, depth+2, ecVar, ctxVar)))
 		b.WriteString("\t\t" + ecVar + ".Leave()\n")
 		b.WriteString("\t}\n")
 		b.WriteString(fmt.Sprintf("\t%s = convertedSlice\n", dst))
@@ -678,7 +856,7 @@ func generateSliceConversion(im *ImportManager, res xinspect.Resolver, info *mod
 		b.WriteString(fmt.Sprintf("\tconvertedSlice := make([]%s, len(%s))\n", getTypeName(im, dstElem), src))
 		b.WriteString(fmt.Sprintf("\tfor i, item := range %s {\n", src))
 		b.WriteString("\t\t" + ecVar + ".Enter(fmt.Sprintf(\"[%d]\", i))\n")
-		b.WriteString(fmt.Sprintf("\t\tconvertedSlice[i] = %s\n", generateConversion(im, res, info, "item", "", srcElem, dstElem, depth+2, ecVar, ctxVar)))
+		b.WriteString(fmt.Sprintf("\t\tconvertedSlice[i] = %s\n", generateConversion(im, res, info, fn, "item", "", srcElem, dstElem, depth+2, ecVar, ctxVar)))
 		b.WriteString("\t\t" + ecVar + ".Leave()\n")
 		b.WriteString("\t}\n")
 		b.WriteString("\treturn convertedSlice\n")
@@ -687,11 +865,18 @@ func generateSliceConversion(im *ImportManager, res xinspect.Resolver, info *mod
 	return b.String()
 }
 
-func generateMapConversion(im *ImportManager, res xinspect.Resolver, info *model.ParsedInfo, src, dst string, srcT, dstT *xinspect.TypeExpr, depth int, ecVar, ctxVar string) string {
+func generateMapConversion(im *ImportManager, res xinspect.Resolver, info *model.ParsedInfo, fn funcNamer, src, dst string, srcT, dstT *xinspect.TypeExpr, depth int, ecVar, ctxVar string) string {
 	srcKT, srcVT := mapParts(srcT)
 	dstKT, dstVT := mapParts(dstT)
 	if srcKT == nil || srcVT == nil || dstKT == nil || dstVT == nil {
 		return ""
+	}
+
+	keyExpr := func() string {
+		if srcKT.SameType(dstKT, res) {
+			return "key"
+		}
+		return getMapKeyAssignment(im, res, info, fn, "key", "", srcKT, dstKT, ecVar, ctxVar)
 	}
 
 	var b strings.Builder
@@ -700,13 +885,9 @@ func generateMapConversion(im *ImportManager, res xinspect.Resolver, info *model
 		b.WriteString(fmt.Sprintf("\tconvertedMap := make(map[%s]%s, len(%s))\n", getTypeName(im, dstKT), getTypeName(im, dstVT), src))
 		b.WriteString(fmt.Sprintf("\tfor key, value := range %s {\n", src))
 		b.WriteString("\t\t" + ecVar + ".Enter(fmt.Sprintf(\"[%v]\", key))\n")
-		keyExpr := "key"
-		if declKeyOf(res, srcKT) != declKeyOf(res, dstKT) {
-			keyExpr = getMapKeyAssignment(im, res, info, "key", "", srcKT, dstKT, ecVar, ctxVar)
-		}
 		b.WriteString(fmt.Sprintf("\t\tconvertedMap[%s] = %s\n",
-			keyExpr,
-			generateConversion(im, res, info, "value", "", srcVT, dstVT, depth+2, ecVar, ctxVar)))
+			keyExpr(),
+			generateConversion(im, res, info, fn, "value", "", srcVT, dstVT, depth+2, ecVar, ctxVar)))
 		b.WriteString("\t\t" + ecVar + ".Leave()\n")
 		b.WriteString("\t}\n")
 		b.WriteString(fmt.Sprintf("\t%s = convertedMap\n", dst))
@@ -717,13 +898,9 @@ func generateMapConversion(im *ImportManager, res xinspect.Resolver, info *model
 		b.WriteString(fmt.Sprintf("\tfor key, value := range %s {\n", src))
 
 		b.WriteString("\t\t" + ecVar + ".Enter(fmt.Sprintf(\"[%v]\", key))\n")
-		keyExpr := "key"
-		if declKeyOf(res, srcKT) != declKeyOf(res, dstKT) {
-			keyExpr = getMapKeyAssignment(im, res, info, "key", "", srcKT, dstKT, ecVar, ctxVar)
-		}
 		b.WriteString(fmt.Sprintf("\t\tconvertedMap[%s] = %s\n",
-			keyExpr,
-			generateConversion(im, res, info, "value", "", srcVT, dstVT, depth+2, ecVar, ctxVar)))
+			keyExpr(),
+			generateConversion(im, res, info, fn, "value", "", srcVT, dstVT, depth+2, ecVar, ctxVar)))
 		b.WriteString("\t\t" + ecVar + ".Leave()\n")
 		b.WriteString("\t}\n")
 		b.WriteString("\treturn convertedMap\n")
@@ -758,6 +935,13 @@ func getTypeName(im *ImportManager, te *xinspect.TypeExpr) string {
 			return "*" + getTypeName(im, e)
 		}
 		return te.Text // te.Text already carries the "*"
+	case isArray(te):
+		at := te.Expr().(*ast.ArrayType)
+		var lb bytes.Buffer
+		if err := printer.Fprint(&lb, token.NewFileSet(), at.Len); err != nil {
+			return te.Text
+		}
+		return fmt.Sprintf("[%s]%s", lb.String(), getTypeName(im, elem(te)))
 	case isSlice(te):
 		return "[]" + getTypeName(im, elem(te))
 	case isMap(te):

@@ -70,7 +70,7 @@ func TestParser(t *testing.T) {
 	}
 
 	// Check field tags for user
-	userSrcInfo, ok := info.Structs["SrcUser"]
+	userSrcInfo, ok := info.Structs[model.DeclKey(userPair.SrcTypeInfo)]
 	if !ok {
 		t.Fatal("SrcUser info not found")
 	}
@@ -104,7 +104,7 @@ func TestParser(t *testing.T) {
 	}
 
 	// Check field tags for address
-	addrSrcInfo, ok := info.Structs["SrcAddress"]
+	addrSrcInfo, ok := info.Structs[model.DeclKey(addrPair.SrcTypeInfo)]
 	if !ok {
 		t.Fatal("SrcAddress info not found")
 	}

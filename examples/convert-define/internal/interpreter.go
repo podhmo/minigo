@@ -2,14 +2,15 @@
 package internal
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"go/ast"
+	"go/printer"
+	"go/token"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"reflect"
-	"strings"
 
 	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/examples/convert-define/model"
@@ -19,6 +20,7 @@ import (
 )
 
 const definePkgPath = "github.com/podhmo/minigo/examples/convert-define/define"
+const modelPkgPath = "github.com/podhmo/minigo/examples/convert-define/model"
 
 // Runner manages the execution of a minigo script for conversion definitions.
 // The engine is a minigo stack-VM interpreter; the define calls arrive as
@@ -124,6 +126,13 @@ func (r *Runner) Run(ctx context.Context, filename string) error {
 		return fmt.Errorf("loading define file into interpreter: %w", err)
 	}
 	r.pkg = pkg
+	// The generated file lives in the define file's directory, so types
+	// of that directory's package are emitted unqualified (and never
+	// self-imported). LoadFile's synthetic "<file>..." path is not the
+	// import path — resolving the directory itself yields the real one.
+	if dirPkg, err := engine.Package(ctx, filepath.Dir(abs)); err == nil && dirPkg != nil {
+		r.Info.PackagePath = dirPkg.Path
+	}
 	if _, err := engine.Call(ctx, pkg, "main"); err != nil {
 		return fmt.Errorf("evaluating define file: %w", err)
 	}
@@ -180,11 +189,18 @@ func (r *Runner) handleConvert(ctx runtime.SpecialContext, call *runtime.QuotedC
 
 	// Walk the function body to find Map/Convert/Compute calls
 	walker := &mappingWalker{
+		r:       r,
+		ctx:     ctx,
 		pair:    &pair,
-		srcInfo: r.Info.Structs[srcType.Name],
+		srcInfo: r.Info.Structs[model.DeclKey(srcType)],
+		dstName: paramName(fnLit.Type.Params.List[1], "dst"),
+		srcName: paramName(fnLit.Type.Params.List[2], "src"),
 	}
 	if walker.srcInfo == nil {
 		return nil, ctx.Errorf(call.Call, "source type %s must be a struct", srcType.Name)
+	}
+	if r.Info.Structs[model.DeclKey(dstType)] == nil {
+		return nil, ctx.Errorf(call.Call, "destination type %s must be a struct", dstType.Name)
 	}
 
 	ast.Walk(walker, fnLit.Body)
@@ -199,55 +215,31 @@ func (r *Runner) handleConvert(ctx runtime.SpecialContext, call *runtime.QuotedC
 }
 
 // ensureStructInfo materializes a model.StructInfo for a struct decl,
-// copying the inspect field views (names + TypeExpr) — including the
-// struct tags the vendored model accepted but never populated.
+// keyed by the decl's canonical package-qualified identity so that
+// same-named types in different packages do not overwrite each other.
 func (r *Runner) ensureStructInfo(d *xinspect.Decl) {
 	if d == nil || !model.IsStructDecl(d) {
 		return
 	}
-	if _, exists := r.Info.Structs[d.Name]; exists {
+	key := model.DeclKey(d)
+	if _, exists := r.Info.Structs[key]; exists {
 		return
 	}
-	fields, err := xinspect.FieldsOf(d)
+	structInfo, err := model.StructInfoFromDecl(d)
 	if err != nil {
 		return
 	}
-
 	slog.Debug("creating new model.StructInfo", "name", d.Name)
-	structInfo := &model.StructInfo{
-		Name: d.Name,
-		Type: d,
-	}
-	for _, f := range fields {
-		names := f.Names
-		if len(names) == 0 {
-			names = []string{embeddedFieldName(f.Type)}
-		}
-		jsonTag := ""
-		if f.Tag != "" {
-			jsonTag = strings.Split(reflect.StructTag(f.Tag).Get("json"), ",")[0]
-		}
-		for _, name := range names {
-			fieldInfo := model.FieldInfo{
-				Name:         name,
-				OriginalName: name,
-				JSONTag:      jsonTag,
-				FieldType:    f.Type,
-				ParentStruct: structInfo,
-			}
-			structInfo.Fields = append(structInfo.Fields, fieldInfo)
-		}
-	}
-	r.Info.Structs[d.Name] = structInfo
+	r.Info.Structs[key] = structInfo
 }
 
-// embeddedFieldName derives the field name of an embedded member from
-// its type's leaf name (e.g. `pkg.Base` -> `Base`, `*pkg.Base` -> `Base`).
-func embeddedFieldName(te *xinspect.TypeExpr) string {
-	if sid, ok := te.Unref().SymbolID(); ok {
-		return sid.Name
+// paramName returns the declared name of a signature parameter,
+// defaulting to fallback when the parameter is unnamed.
+func paramName(fl *ast.Field, fallback string) string {
+	if fl != nil && len(fl.Names) > 0 {
+		return fl.Names[0].Name
 	}
-	return te.Text
+	return fallback
 }
 
 // resolveTypeExpr resolves a type expr to its decl view through the
@@ -308,10 +300,12 @@ func (r *Runner) handleRule(ctx runtime.SpecialContext, call *runtime.QuotedCall
 		return nil, ctx.Errorf(call.Call, "rule function %s has no readable signature: %v", funcName, err)
 	}
 	params, results := sig.ParamFields(), sig.ResultFields()
-	// A valid rule function has at least one parameter and exactly one result.
-	// The source type is the last parameter.
-	if len(params) == 0 || len(results) != 1 {
-		return nil, ctx.Errorf(call.Call, "rule function %s must have at least one parameter and exactly one result", funcName)
+	// The generated call site is f(ctx, ec, src): enforce the contract —
+	// exactly func(ctx context.Context, ec *model.ErrorCollector, src SrcType) DstType.
+	if len(params) != 3 || len(results) != 1 ||
+		params[0].Type.CanonicalName() != "context.Context" ||
+		params[1].Type.CanonicalName() != "*"+modelPkgPath+".ErrorCollector" {
+		return nil, ctx.Errorf(call.Call, "rule function %s must have signature func(ctx context.Context, ec *model.ErrorCollector, src SrcType) DstType", funcName)
 	}
 
 	srcTE := params[len(params)-1].Type
@@ -354,8 +348,12 @@ func isBuiltinType(te *xinspect.TypeExpr) bool {
 }
 
 type mappingWalker struct {
+	r       *Runner
+	ctx     runtime.SpecialContext
 	pair    *model.ConversionPair
 	srcInfo *model.StructInfo
+	dstName string // name of the dst parameter in the mapping func
+	srcName string // name of the src parameter in the mapping func
 	err     error
 }
 
@@ -387,17 +385,14 @@ func (w *mappingWalker) parseMapCall(call *ast.CallExpr) error {
 	if len(call.Args) != 2 {
 		return fmt.Errorf("c.Map() expects 2 arguments, got %d", len(call.Args))
 	}
-	dst, err := w.exprToString(call.Args[0])
+	dstName, err := w.fieldAccess(call.Args[0], w.dstName)
 	if err != nil {
 		return fmt.Errorf("could not parse dst in c.Map(): %w", err)
 	}
-	src, err := w.exprToString(call.Args[1])
+	srcName, err := w.fieldAccess(call.Args[1], w.srcName)
 	if err != nil {
 		return fmt.Errorf("could not parse src in c.Map(): %w", err)
 	}
-
-	dstName := strings.SplitN(dst, ".", 2)[1]
-	srcName := strings.SplitN(src, ".", 2)[1]
 
 	return w.setFieldTag(srcName, dstName, "")
 }
@@ -406,11 +401,11 @@ func (w *mappingWalker) parseConvertCall(call *ast.CallExpr) error {
 	if len(call.Args) != 3 {
 		return fmt.Errorf("c.Convert() expects 3 arguments, got %d", len(call.Args))
 	}
-	dst, err := w.exprToString(call.Args[0])
+	dstName, err := w.fieldAccess(call.Args[0], w.dstName)
 	if err != nil {
 		return fmt.Errorf("could not parse dst in c.Convert(): %w", err)
 	}
-	src, err := w.exprToString(call.Args[1])
+	srcName, err := w.fieldAccess(call.Args[1], w.srcName)
 	if err != nil {
 		return fmt.Errorf("could not parse src in c.Convert(): %w", err)
 	}
@@ -419,10 +414,62 @@ func (w *mappingWalker) parseConvertCall(call *ast.CallExpr) error {
 		return fmt.Errorf("could not parse converter in c.Convert(): %w", err)
 	}
 
-	dstName := strings.SplitN(dst, ".", 2)[1]
-	srcName := strings.SplitN(src, ".", 2)[1]
+	// Record the converter's package so the generator can qualify it,
+	// and check the (ctx, ec, src) contract when its decl resolves.
+	if sym, err := w.ctx.ResolveSymbol(call.Args[2]); err == nil && sym.PackagePath != "" {
+		if alias, ok := selectorRoot(call.Args[2]); ok {
+			if _, exists := w.r.Info.Imports[alias]; !exists {
+				w.r.Info.Imports[alias] = sym.PackagePath
+			}
+		}
+		if err := w.checkConverterSig(call.Args[2], sym); err != nil {
+			return err
+		}
+	}
 
 	return w.setFieldTag(srcName, dstName, converter)
+}
+
+// checkConverterSig verifies a field converter's signature contract when
+// its declaration resolves: exactly func(ctx context.Context,
+// ec *model.ErrorCollector, src T) R — the shape the generated call uses.
+func (w *mappingWalker) checkConverterSig(expr ast.Expr, sym runtime.SymbolID) error {
+	p, err := w.r.engine.Package(context.Background(), sym.PackagePath)
+	if err != nil || p == nil || p.Index == nil {
+		return nil // unresolvable (host/stdlib) — leave to the compiler
+	}
+	fd := p.Index.Funcs[sym.Name]
+	if fd == nil {
+		return nil
+	}
+	sig, err := xinspect.SignatureOf(xinspect.NewDecl(p, fd))
+	if err != nil {
+		return nil
+	}
+	params, results := sig.ParamFields(), sig.ResultFields()
+	if len(params) != 3 || len(results) != 1 ||
+		params[0].Type.CanonicalName() != "context.Context" ||
+		params[1].Type.CanonicalName() != "*"+modelPkgPath+".ErrorCollector" {
+		return fmt.Errorf("converter function %s must have signature func(ctx context.Context, ec *model.ErrorCollector, src SrcType) DstType", sym.Name)
+	}
+	return nil
+}
+
+// selectorRoot returns the root identifier of a selector chain
+// ("a.b.c" -> "a"), or "" when the expression is not selector-rooted.
+func selectorRoot(expr ast.Expr) (string, bool) {
+	for {
+		sel, ok := expr.(*ast.SelectorExpr)
+		if !ok {
+			break
+		}
+		expr = sel.X
+	}
+	id, ok := expr.(*ast.Ident)
+	if !ok {
+		return "", false
+	}
+	return id.Name, true
 }
 
 func (w *mappingWalker) setFieldTag(srcFieldName, dstFieldName, converter string) error {
@@ -441,7 +488,7 @@ func (w *mappingWalker) parseComputeCall(call *ast.CallExpr) error {
 	if len(call.Args) != 2 {
 		return fmt.Errorf("c.Compute() expects 2 arguments, got %d", len(call.Args))
 	}
-	dst, err := w.exprToString(call.Args[0])
+	dstName, err := w.fieldAccess(call.Args[0], w.dstName)
 	if err != nil {
 		return fmt.Errorf("could not parse dst in c.Compute(): %w", err)
 	}
@@ -450,7 +497,6 @@ func (w *mappingWalker) parseComputeCall(call *ast.CallExpr) error {
 		return fmt.Errorf("could not parse expression in c.Compute(): %w", err)
 	}
 
-	dstName := strings.SplitN(dst, ".", 2)[1]
 	computed := model.ComputedField{
 		DstName: dstName,
 		Expr:    expr,
@@ -460,31 +506,35 @@ func (w *mappingWalker) parseComputeCall(call *ast.CallExpr) error {
 	return nil
 }
 
-func (w *mappingWalker) exprToString(expr ast.Expr) (string, error) {
-	switch n := expr.(type) {
-	case *ast.SelectorExpr:
-		x, err := w.exprToString(n.X)
-		if err != nil {
-			return "", err
-		}
-		return x + "." + n.Sel.Name, nil
-	case *ast.Ident:
-		return n.Name, nil
-	case *ast.CallExpr:
-		fun, err := w.exprToString(n.Fun)
-		if err != nil {
-			return "", err
-		}
-		var args []string
-		for _, arg := range n.Args {
-			argStr, err := w.exprToString(arg)
-			if err != nil {
-				return "", err
-			}
-			args = append(args, argStr)
-		}
-		return fmt.Sprintf("%s(%s)", fun, strings.Join(args, ", ")), nil
-	default:
-		return "", fmt.Errorf("unsupported expression type: %T", expr)
+// fieldAccess validates that expr is a field selection rooted at the
+// given parameter (<root>.<Field> or deeper) and returns the field
+// path relative to the root ("Inner.ID" for <root>.Inner.ID).
+func (w *mappingWalker) fieldAccess(expr ast.Expr, root string) (string, error) {
+	s, err := w.exprToString(expr)
+	if err != nil {
+		return "", err
 	}
+	if _, isSel := expr.(*ast.SelectorExpr); !isSel {
+		return "", fmt.Errorf("expected a field access like %s.<Field>, got %q", root, s)
+	}
+	rootIdent, ok := selectorRoot(expr)
+	if !ok || rootIdent != root {
+		return "", fmt.Errorf("expected a field access like %s.<Field>, got %q", root, s)
+	}
+	return s[len(root)+1:], nil
+}
+
+// exprToString renders any expression back to its source spelling via
+// go/printer — c.Compute accepts arbitrary expressions (binary ops,
+// literals, index expressions, address-of, ...).
+func (w *mappingWalker) exprToString(expr ast.Expr) (string, error) {
+	var buf bytes.Buffer
+	fset := token.NewFileSet()
+	if p := w.ctx.Package(); p != nil && p.Fset != nil {
+		fset = p.Fset
+	}
+	if err := printer.Fprint(&buf, fset, expr); err != nil {
+		return "", fmt.Errorf("cannot render expression: %w", err)
+	}
+	return buf.String(), nil
 }

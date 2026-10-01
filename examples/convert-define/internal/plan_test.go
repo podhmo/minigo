@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/podhmo/minigo/examples/convert-define/model"
 	"github.com/podhmo/minigo/resolve"
 )
 
@@ -104,7 +105,7 @@ func TestConvertDefineSatisfiesPlan(t *testing.T) {
 	if want, got := "DstUser", pair.DstTypeName; want != got {
 		t.Errorf("pair.DstTypeName: want %q, got %q", want, got)
 	}
-	srcInfo := findField(t, runner.Info.Structs["SrcUser"], "ID")
+	srcInfo := findField(t, runner.Info.Structs[model.DeclKey(pair.SrcTypeInfo)], "ID")
 	if want, got := "UserID", srcInfo.Tag.DstFieldName; want != got {
 		t.Errorf("ID tag DstFieldName: want %q, got %q", want, got)
 	}
@@ -124,8 +125,10 @@ func TestConvertDefineSatisfiesPlan(t *testing.T) {
 	if diff := cmp.Diff(wantLocated, spy.located); diff != "" {
 		t.Errorf("located packages mismatch (-want +got):\n%s", diff)
 	}
-	// LoadFile reads the DSL file directly — no directory is located either.
-	if len(spy.dirs) != 0 {
-		t.Errorf("engine located directories: %v", spy.dirs)
+	// LoadFile reads the DSL file directly; the only directory located is
+	// the DSL file's own, resolved once to learn the generated file's
+	// package path.
+	if diff := cmp.Diff([]string{abs}, spy.dirs); diff != "" {
+		t.Errorf("located directories mismatch (-want +got):\n%s", diff)
 	}
 }
