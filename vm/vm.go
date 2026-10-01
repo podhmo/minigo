@@ -9,6 +9,7 @@ import (
 	"go/format"
 	"go/token"
 	"math"
+	"os"
 	"reflect"
 	"strings"
 	"time"
@@ -81,7 +82,16 @@ type VM struct {
 	// inflight is the script panic currently being propagated, visible to
 	// recover() only while a frame's defers are running.
 	inflight *runtime.Panic
+
+	// srcCache maps filename -> source lines for traceback snippets;
+	// populated lazily and only on the error path.
+	srcCache map[string][]string
 }
+
+// maxFrames bounds the call stack; exceeding it traps instead of letting
+// unbounded script recursion blow the host goroutine stack (a fatal,
+// untraceable crash in Go).
+const maxFrames = 10000
 
 type deferredCall struct {
 	fn   runtime.Value
@@ -283,6 +293,9 @@ func (v *VM) prepFrame(callee runtime.Value, args []runtime.Value) (*frame, erro
 	if err := fn.EnsureCompiled(); err != nil {
 		return nil, err
 	}
+	if len(v.frames) >= maxFrames {
+		return nil, fmt.Errorf("stack exhausted: frame limit %d", maxFrames)
+	}
 	ch := fn.Chunk
 	fr := &frame{fn: fn, ch: ch, upvals: upvals}
 	fr.locals = make([]*runtime.Cell, ch.NLocals)
@@ -312,16 +325,31 @@ func (v *VM) prepFrame(callee runtime.Value, args []runtime.Value) (*frame, erro
 // exec runs a frame to completion: the instruction loop first, then the
 // frame's defers during unwind — mirroring Go, where deferred calls run on
 // normal return and during panic unwinding alike. A script *Panic is
-// catchable by recover() inside a deferred function; a *Trap (and any host
-// panic) bypasses recover and re-panics after defers drain.
+// catchable by recover() inside a deferred function; a *Trap bypasses
+// recover and re-panics after defers drain. A raw host panic (a Go runtime
+// error or a panic inside a builtin) is lifted into a script *Panic so it
+// records frames and can be recovered, like Go's own runtime errors.
 func (v *VM) exec(f *frame) {
 	v.frames = append(v.frames, f)
 	defer func() {
 		r := recover()
 		v.frames = v.frames[:len(v.frames)-1]
-		v.unwind(f, r)
+		v.unwind(f, asScriptPanic(r))
 	}()
 	v.loop(f)
+}
+
+// asScriptPanic wraps a raw host panic in *runtime.Panic so unwinding can
+// attribute it to script frames and deferred recover() can catch it —
+// matching Go, where runtime errors (index out of range, nil deref, divide
+// by zero) are recoverable panics. Trap and Panic pass through unchanged.
+func asScriptPanic(r any) any {
+	switch r.(type) {
+	case nil, *runtime.Trap, *runtime.Panic:
+		return r
+	default:
+		return &runtime.Panic{Value: fmt.Sprintf("%v", r)}
+	}
 }
 
 // unwind runs the frame's defers and resolves the outcome of r, the value
@@ -376,11 +404,22 @@ func (f *frame) finalResult() runtime.Value {
 	}
 }
 
-// trace appends a "name at file:line" entry to an unwinding Trap/Panic.
+// trace appends a "name at file:line" entry to an unwinding Trap/Panic,
+// followed by the source line when it is available (PR #3's format).
 func (v *VM) trace(f *frame, r any) {
 	entry := f.fn.Name
-	if pos := f.pos(); pos.IsValid() && f.fn.Pkg != nil && f.fn.Pkg.Fset != nil {
-		entry = fmt.Sprintf("%s at %s", f.fn.Name, f.fn.Pkg.Fset.Position(pos))
+	pos := f.pos()
+	if !pos.IsValid() && f.fn.Decl != nil {
+		// the frame failed before its first instruction (e.g. argument
+		// coercion) — point at the function's declaration instead
+		pos = f.fn.Decl.Pos()
+	}
+	if pos.IsValid() && f.fn.Pkg != nil && f.fn.Pkg.Fset != nil {
+		p := f.fn.Pkg.Fset.Position(pos)
+		entry = fmt.Sprintf("%s at %s", f.fn.Name, p)
+		if l := v.sourceLine(f.fn.Pkg, p.Filename, p.Line); l != "" {
+			entry += "\n\t\t" + l
+		}
 	}
 	switch e := r.(type) {
 	case *runtime.Trap:
@@ -390,20 +429,76 @@ func (v *VM) trace(f *frame, r any) {
 	}
 }
 
+// sourceLine returns the trimmed text of filename:line for traceback
+// snippets. In-memory sources (REPL, generated files) come from
+// syntax.File.Src; others are read from disk. Failures are silent — a
+// traceback must never itself fail.
+func (v *VM) sourceLine(pkg *runtime.Package, filename string, line int) string {
+	if pkg != nil && pkg.FileByName != nil {
+		if sf := pkg.FileByName[filename]; sf != nil && sf.Src != nil {
+			return nthLine(sf.Src, line)
+		}
+	}
+	if v.srcCache == nil {
+		v.srcCache = map[string][]string{}
+	}
+	lines, ok := v.srcCache[filename]
+	if !ok {
+		data, err := os.ReadFile(filename)
+		if err != nil {
+			v.srcCache[filename] = nil
+			return ""
+		}
+		lines = strings.Split(string(data), "\n")
+		v.srcCache[filename] = lines
+	}
+	if line < 1 || line > len(lines) {
+		return ""
+	}
+	return strings.TrimSpace(lines[line-1])
+}
+
+// nthLine returns src's line-th line, trimmed; "" when out of range.
+func nthLine(src []byte, line int) string {
+	if line < 1 {
+		return ""
+	}
+	for i, l := range strings.Split(string(src), "\n") {
+		if i == line-1 {
+			return strings.TrimSpace(l)
+		}
+	}
+	return ""
+}
+
 // runDefers drains the frame's defer list LIFO. As in Go, a script panic
 // inside a deferred call supersedes the panic being unwound but the
-// remaining defers still run; a Trap/host panic aborts the rest.
+// remaining defers still run; a Trap aborts the rest.
 func (v *VM) runDefers(f *frame) {
 	for len(f.defers) > 0 {
 		d := f.defers[len(f.defers)-1]
 		f.defers = f.defers[:len(f.defers)-1]
 		func() {
 			defer func() {
-				if r := recover(); r != nil {
-					if p, ok := r.(*runtime.Panic); ok {
-						v.inflight = p
-						return
+				r := asScriptPanic(recover())
+				if r == nil {
+					return
+				}
+				// a panic raised by the deferred call has no link back to
+				// the frame that registered it — record the defer site as a
+				// synthetic entry so the traceback shows who deferred it.
+				switch e := r.(type) {
+				case *runtime.Panic:
+					if f.fn.Pkg != nil && f.fn.Pkg.Fset != nil && d.pos.IsValid() {
+						e.Frames = append(e.Frames, fmt.Sprintf("%s (deferred call) at %s", f.fn.Name, f.fn.Pkg.Fset.Position(d.pos)))
 					}
+					v.inflight = e
+				case *runtime.Trap:
+					if f.fn.Pkg != nil && f.fn.Pkg.Fset != nil && d.pos.IsValid() {
+						e.Frames = append(e.Frames, fmt.Sprintf("%s (deferred call) at %s", f.fn.Name, f.fn.Pkg.Fset.Position(d.pos)))
+					}
+					panic(r)
+				default:
 					panic(r)
 				}
 			}()
@@ -2444,14 +2539,14 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 	if ai, ok := a.(int64); ok {
 		bi, ok := b.(int64)
 		if !ok {
-			f.trap("binary %d on %T and %T", op, a, b)
+			f.trap("unsupported types: %T %s %T", a, op, b)
 		}
 		return intBinOp(f, op, ai, bi)
 	}
 	if ab, ok := a.(bool); ok {
 		bb, ok := b.(bool)
 		if !ok {
-			f.trap("binary %d on %T and %T", op, a, b)
+			f.trap("unsupported types: %T %s %T", a, op, b)
 		}
 		switch op {
 		case bytecode.BinLAnd:
@@ -2460,7 +2555,7 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 			return ab || bb
 		}
 	}
-	f.trap("binary %d on %T and %T", op, a, b)
+	f.trap("unsupported types: %T %s %T", a, op, b)
 	return nil
 }
 
@@ -2497,7 +2592,7 @@ func intBinOp(f *frame, op bytecode.BinOp, a, b int64) runtime.Value {
 	case bytecode.BinGeq:
 		return a >= b
 	}
-	f.trap("int binary %d", op)
+	f.trap("int binary %s", op)
 	return nil
 }
 
@@ -2520,7 +2615,7 @@ func floatBinOp(f *frame, op bytecode.BinOp, a, b float64) runtime.Value {
 	case bytecode.BinGeq:
 		return a >= b
 	}
-	f.trap("float binary %d", op)
+	f.trap("float binary %s", op)
 	return nil
 }
 
@@ -2541,7 +2636,7 @@ func stringBinOp(f *frame, op bytecode.BinOp, a string, b runtime.Value) runtime
 	case bytecode.BinGeq:
 		return a >= s
 	}
-	f.trap("string binary %d", op)
+	f.trap("string binary %s", op)
 	return nil
 }
 
@@ -2580,7 +2675,7 @@ func unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value {
 		}
 		f.trap("unary ^ on %T", a)
 	}
-	f.trap("unary %d on %T", op, a)
+	f.trap("unary %s on %T", op, a)
 	return nil
 }
 

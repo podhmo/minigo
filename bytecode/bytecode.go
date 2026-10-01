@@ -3,6 +3,7 @@
 package bytecode
 
 import (
+	"fmt"
 	"go/ast"
 	"go/token"
 
@@ -129,6 +130,22 @@ const (
 	BinGeq                 // >=
 )
 
+var binOpSyms = [...]string{
+	BinAdd: "+", BinSub: "-", BinMul: "*", BinQuo: "/", BinRem: "%",
+	BinAnd: "&", BinOr: "|", BinXor: "^", BinAndNot: "&^",
+	BinShl: "<<", BinShr: ">>", BinLAnd: "&&", BinLOr: "||",
+	BinEql: "==", BinNeq: "!=", BinLss: "<", BinLeq: "<=",
+	BinGtr: ">", BinGeq: ">=",
+}
+
+// String renders the operator's source spelling, for error messages.
+func (b BinOp) String() string {
+	if int(b) < len(binOpSyms) && binOpSyms[b] != "" {
+		return binOpSyms[b]
+	}
+	return fmt.Sprintf("BinOp(%d)", int(b))
+}
+
 // UnOp is an OpUnary sub-op.
 type UnOp uint8
 
@@ -138,6 +155,21 @@ const (
 	UnNot             // !x
 	UnXor             // ^x
 )
+
+// String renders the operator's source spelling, for error messages.
+func (u UnOp) String() string {
+	switch u {
+	case UnPos:
+		return "+"
+	case UnNeg:
+		return "-"
+	case UnNot:
+		return "!"
+	case UnXor:
+		return "^"
+	}
+	return fmt.Sprintf("UnOp(%d)", int(u))
+}
 
 // Instruction is one fixed-width bytecode instruction.
 type Instruction struct {

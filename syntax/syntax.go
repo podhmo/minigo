@@ -18,6 +18,10 @@ type File struct {
 	Name    string // filename as given to the FileSet
 	AST     *ast.File
 	Imports []*Import // alias -> path entries, in declaration order
+	// Src is the source text when it was provided in memory (REPL,
+	// generated files); nil when the parser read the file from disk.
+	// Traceback rendering uses it for source-line snippets.
+	Src []byte
 }
 
 // Import is one import declaration.
@@ -40,7 +44,7 @@ func ParseFile(fset *token.FileSet, filename string, src []byte) (*File, error) 
 	if err != nil {
 		return nil, err
 	}
-	sf := &File{Name: filename, AST: f}
+	sf := &File{Name: filename, AST: f, Src: src}
 	for _, spec := range f.Imports {
 		path, err := strconv.Unquote(spec.Path.Value)
 		if err != nil {

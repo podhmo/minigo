@@ -543,6 +543,19 @@ type SpecialContext interface {
 	Errorf(n ast.Node, format string, args ...any) error
 }
 
+// maxTracebackEntries bounds how many frames Error() renders; the full
+// list stays in Frames for programmatic use, but a runaway recursion
+// shouldn't dump tens of thousands of lines.
+const maxTracebackEntries = 20
+
+func renderFrames(frames []string) string {
+	if len(frames) <= maxTracebackEntries {
+		return strings.Join(frames, "\n")
+	}
+	head := frames[:maxTracebackEntries]
+	return strings.Join(head, "\n") + fmt.Sprintf("\n... and %d more frames", len(frames)-maxTracebackEntries)
+}
+
 // Panic is a script-level panic value; catchable by recover().
 type Panic struct {
 	Value  Value
@@ -551,9 +564,19 @@ type Panic struct {
 
 func (p *Panic) Error() string {
 	if len(p.Frames) == 0 {
-		return fmt.Sprintf("panic: %v", p.Value)
+		return fmt.Sprintf("panic: %v", panicValue(p.Value))
 	}
-	return fmt.Sprintf("panic: %v\n%s", p.Value, strings.Join(p.Frames, "\n"))
+	return fmt.Sprintf("panic: %v\n%s", panicValue(p.Value), renderFrames(p.Frames))
+}
+
+// panicValue renders the panic payload for messages: a boxed host value
+// (error, stringer) is unwrapped so `panic(err)` reads like Go's output
+// rather than a struct dump.
+func panicValue(v Value) any {
+	if gv, ok := v.(*GoValue); ok {
+		return gv.V
+	}
+	return v
 }
 
 // Trap is a VM-level failure (unsupported construct, invalid operation).
@@ -568,5 +591,5 @@ func (t *Trap) Error() string {
 	if len(t.Frames) == 0 {
 		return fmt.Sprintf("runtime trap: %s", t.Reason)
 	}
-	return fmt.Sprintf("runtime trap: %s\n%s", t.Reason, strings.Join(t.Frames, "\n"))
+	return fmt.Sprintf("runtime trap: %s\n%s", t.Reason, renderFrames(t.Frames))
 }
