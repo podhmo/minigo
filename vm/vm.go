@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -74,7 +75,10 @@ type Hooks struct {
 	ResolveType func(td *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, error)
 }
 
-// VM is a stack machine. It is safe for sequential use from one goroutine.
+// VM is a stack machine. Each VM is confined to one goroutine; the `go`
+// statement forks a fresh VM sharing the same process so goroutines
+// genuinely interleave on host goroutines. Only package state (globals,
+// the materialization cache, channels) is shared between them.
 type VM struct {
 	H Hooks
 
@@ -87,7 +91,118 @@ type VM struct {
 	// srcCache maps filename -> source lines for traceback snippets;
 	// populated lazily and only on the error path.
 	srcCache map[string][]string
+
+	// proc is the process this VM belongs to: every goroutine spawned by
+	// `go` shares it. The outermost Call owns it; when that Call returns,
+	// done closes and every parked channel op aborts with procExit (like
+	// a Go process exiting under live goroutines). A goroutine's panic
+	// fails the process the same way, aborting everyone else.
+	proc      *proc
+	procHolds int
+	task      *runtime.Task // this VM's own spawn handle; nil on the root
 }
+
+// proc is one interpreter process: the goroutines belonging to a root Call.
+type proc struct {
+	done     chan struct{}
+	doneOnce sync.Once
+	mu       sync.Mutex
+	fatal    error // first goroutine failure (panic/trap/builtin error)
+}
+
+func newProc() *proc { return &proc{done: make(chan struct{})} }
+
+// kill ends the process: parked channel operations abort with procExit.
+func (p *proc) kill() { p.doneOnce.Do(func() { close(p.done) }) }
+
+// fail records the process's first fatal error and ends the process.
+func (p *proc) fail(err error) {
+	p.mu.Lock()
+	if p.fatal == nil {
+		p.fatal = err
+	}
+	p.mu.Unlock()
+	p.kill()
+}
+
+func (p *proc) fatalErr() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.fatal
+}
+
+// procExit is the unwind raised in a parked goroutine when its process
+// ends (root Call returned, or a sibling goroutine's panic failed the
+// process). It is deliberately not a *runtime.Panic: defers still run
+// but recover() cannot see it, and it is swallowed at the spawn
+// boundary — the Go analogue is process exit, where other goroutines
+// die without a catchable panic.
+type procExit struct{}
+
+func (procExit) Error() string { return "minigo: process exited" }
+
+// IsProcExit reports whether err is the process-exit sentinel — for host
+// code collecting Task errors that wants the real failure, not the noise
+// of siblings killed alongside it.
+func IsProcExit(err error) bool { _, ok := err.(procExit); return ok }
+
+// EnsureProc opens a process scope on this VM when none is open: the
+// `go` spawns that occur before the Call boundary joins the scope so
+// they die with it. ReleaseProc ends a scope opened by EnsureProc.
+func (v *VM) EnsureProc() {
+	if v.proc == nil {
+		v.proc = newProc()
+	}
+	v.procHolds++
+}
+
+// ReleaseProc ends a scope opened by EnsureProc: the process is killed
+// (parked goroutines abort) when the last hold releases.
+func (v *VM) ReleaseProc() {
+	v.procHolds--
+	if v.procHolds <= 0 {
+		if v.proc != nil {
+			v.proc.kill()
+			v.proc = nil
+		}
+		v.procHolds = 0
+	}
+}
+
+// doneRV is the process-done channel as a reflect select operand — nil
+// (never ready) when this VM has no process.
+func (v *VM) doneRV() reflect.Value {
+	if v.proc == nil {
+		return nilChanValue
+	}
+	return reflect.ValueOf(v.proc.done)
+}
+
+var nilChanValue = reflect.ValueOf((chan struct{})(nil))
+
+// Spawn implements VMCaller.Spawn — the `go` statement's machinery.
+func (v *VM) Spawn(fn runtime.Value, args []runtime.Value) *runtime.Task {
+	if v.proc == nil {
+		// a spawn outside any Call (host-driven VM) gets a detached
+		// process: nothing kills it, matching a goroutine that outlives
+		// the program it was expected to die with
+		v.EnsureProc()
+	}
+	p := v.proc
+	t := &runtime.Task{Done: make(chan struct{}), Parent: v.task}
+	child := &VM{H: v.H, proc: p, task: t}
+	go func() {
+		_, err := child.Call(fn, args)
+		t.Finish(err, IsProcExit(err))
+		if err != nil && !IsProcExit(err) {
+			p.fail(err)
+		}
+	}()
+	return t
+}
+
+// Task implements VMCaller.Task — nil on the root goroutine.
+func (v *VM) Task() *runtime.Task { return v.task }
 
 // maxFrames bounds the call stack; exceeding it traps instead of letting
 // unbounded script recursion blow the host goroutine stack (a fatal,
@@ -157,11 +272,24 @@ func (v *VM) assignCell(f *frame, c *runtime.Cell, val runtime.Value) {
 // Call invokes a function-like value: Function, Closure, BoundMethod,
 // BuiltinFunc, TypeDef (conversion), or Cell wrapping any of those.
 // It is the engine boundary: script panics and traps unwind as Go panics
-// and are converted to errors here.
+// and are converted to errors here. The outermost Call on a VM is its
+// process's root: the proc is created lazily and killed on return.
 func (v *VM) Call(callee runtime.Value, args []runtime.Value) (result runtime.Value, err error) {
+	p := v.proc
+	if p == nil {
+		v.EnsureProc()
+		defer v.ReleaseProc()
+		p = v.proc
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			result, err = nil, asError(r)
+		}
+		// a goroutine's panic fails the process like Go's crash: report
+		// the real failure over this call's own outcome (including a
+		// procExit this goroutine received while unwinding)
+		if ferr := p.fatalErr(); ferr != nil && (err == nil || IsProcExit(err)) {
+			err = ferr
 		}
 	}()
 	return v.call(callee, args)
@@ -392,7 +520,9 @@ func (v *VM) exec(f *frame) {
 // Trap and Panic pass through unchanged.
 func asScriptPanic(r any) any {
 	switch r.(type) {
-	case nil, *runtime.Trap, *runtime.Panic:
+	// procExit passes through like Trap: a process-exit unwind must not
+	// become a recoverable script panic.
+	case nil, *runtime.Trap, *runtime.Panic, procExit:
 		return r
 	default:
 		return &runtime.Panic{Value: &runtime.GoValue{V: r}, GoStack: string(debug.Stack())}
@@ -893,13 +1023,11 @@ func (v *VM) loop(f *frame) {
 			fn := f.pop()
 			f.defers = append(f.defers, deferredCall{fn: fn, args: args, pos: ins.Pos})
 		case bytecode.OpGo:
-			// single-threaded approximation: `go f(x)` runs f synchronously;
-			// its result is discarded and a panic propagates immediately.
+			// `go f(x)` spawns a real goroutine in this process: callee and
+			// args are evaluated now; the call runs concurrently.
 			args := v.popArgs(f, int(ins.A), ins.B == 1, ins.Pos)
 			fn := f.pop()
-			if _, err := v.call(fn, args); err != nil {
-				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error()})
-			}
+			v.Spawn(fn, args)
 		case bytecode.OpEvalAST:
 			frag := consts[ins.A].(*bytecode.ASTFragment)
 			if v.H.CompileExpr == nil {
@@ -969,7 +1097,7 @@ func (v *VM) loop(f *frame) {
 				f.ip = int(ins.A)
 			}
 		case bytecode.OpIter:
-			f.push(newIterator(f, f.pop()))
+			f.push(v.newIterator(f, f.pop()))
 		case bytecode.OpRangeNext:
 			it := f.locals[ins.B].Elem.(*runtime.Iterator)
 			if it.Kind == 'f' {
@@ -987,54 +1115,88 @@ func (v *VM) loop(f *frame) {
 				if f.ip >= top && f.ip <= int(ins.A) {
 					f.ip = int(ins.A)
 				}
-			} else if !iterNext(f, it, int(ins.C)) {
+			} else if !v.iterNext(f, it, int(ins.C)) {
 				f.ip = int(ins.A)
 			}
 		case bytecode.OpSend:
 			val := f.pop()
 			chv := f.pop()
-			ch := asChan(f, chv)
-			if ch.Closed {
-				f.trap("send on closed channel")
-			}
-			if et := v.elemTypedef(ch.Typ); et != nil {
+			chRV, et := v.chanOf(f, chv)
+			if et != nil {
 				val = v.coerce(f, val, et)
 			}
-			ch.Elems = append(ch.Elems, val)
+			sv, err := toReflectValue(val, chRV.Type().Elem())
+			if err != nil {
+				f.trap("cannot send on %s: %s", chRV.Type(), err)
+			}
+			v.chanSend(chRV, sv)
 		case bytecode.OpRecv:
-			f.push(recvChan(f, f.pop()))
+			val, _ := v.chanRecv(f, f.pop())
+			f.push(val)
 		case bytecode.OpRecvOK:
-			f.push(recvChanOK(f, f.pop()))
-		case bytecode.OpSelSend:
-			val := f.pop()
-			chv := runtime.Unwrap(f.pop())
-			if ch, ok := chv.(*runtime.Chan); ok && !ch.Closed {
-				if et := v.elemTypedef(ch.Typ); et != nil {
+			val, ok := v.chanRecv(f, f.pop())
+			f.push(&runtime.Tuple{Elems: []runtime.Value{val, ok}})
+		case bytecode.OpSelArm:
+			if ins.B == 1 {
+				val := f.pop()
+				chv := f.pop()
+				chRV, et := v.chanOf(f, chv)
+				if et != nil {
 					val = v.coerce(f, val, et)
 				}
-				ch.Elems = append(ch.Elems, val)
-				f.push(true)
+				sv, err := toReflectValue(val, chRV.Type().Elem())
+				if err != nil {
+					f.trap("cannot send on %s: %s", chRV.Type(), err)
+				}
+				f.push(&runtime.SelArm{Send: true, Case: reflect.SelectCase{Dir: reflect.SelectSend, Chan: chRV, Send: sv}})
 			} else {
-				f.push(false)
+				chRV, et := v.chanOf(f, f.pop())
+				f.push(&runtime.SelArm{NRecv: int(ins.A), ETyp: et, Case: reflect.SelectCase{Dir: reflect.SelectRecv, Chan: chRV}})
 			}
-		case bytecode.OpSelRecv:
-			chv := runtime.Unwrap(f.pop())
-			ch, ok := chv.(*runtime.Chan)
-			if !ok || (len(ch.Elems) == 0 && !ch.Closed) {
-				f.push(false)
-				break
+		case bytecode.OpSelWait:
+			// arms were pushed in source order; the jump table follows this
+			// instruction: one OpJump per case, then the default's OpJump
+			n := int(ins.A)
+			arms := make([]*runtime.SelArm, n)
+			for i := n - 1; i >= 0; i-- {
+				a, ok := f.pop().(*runtime.SelArm)
+				if !ok {
+					f.trap("select arm is %T", f.stack[len(f.stack)-1])
+				}
+				arms[i] = a
 			}
-			switch int(ins.A) {
-			case 0:
-				popChan(ch) // a bare `case <-ch` still consumes the value
-				f.push(runtime.NIL)
-			case 1:
-				f.push(popChan(ch))
+			table := f.ip
+			cases := make([]reflect.SelectCase, 0, n+2)
+			for _, a := range arms {
+				cases = append(cases, a.Case)
+			}
+			doneIdx := len(cases)
+			cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: v.doneRV()})
+			defIdx := -1
+			if ins.B == 1 {
+				defIdx = len(cases)
+				cases = append(cases, reflect.SelectCase{Dir: reflect.SelectDefault})
+			}
+			chosen, rv, open := reflect.Select(cases)
+			switch {
+			case chosen == doneIdx:
+				panic(procExit{})
+			case chosen == defIdx:
+				f.ip = table + n // last table slot: the default body
 			default:
-				okv := len(ch.Elems) > 0
-				f.push(&runtime.Tuple{Elems: []runtime.Value{popChan(ch), okv}})
+				a := arms[chosen]
+				if !a.Send {
+					switch a.NRecv {
+					case 0:
+						f.push(runtime.NIL)
+					case 1:
+						f.push(v.chanZero(f, a, open, rv))
+					default:
+						f.push(&runtime.Tuple{Elems: []runtime.Value{v.chanZero(f, a, open, rv), open}})
+					}
+				}
+				f.ip = table + chosen
 			}
-			f.push(true)
 		case bytecode.OpPanic:
 			panic(&runtime.Panic{Value: f.pop()})
 		case bytecode.OpTrap:
@@ -1160,7 +1322,7 @@ func (v *VM) resolveGlobalE(f *frame, name string) (runtime.Value, error) {
 			imported = p
 		}
 		if imported != nil {
-			mv, err := imported.Member(name, v.H.Materialize)
+			mv, err := v.memberOf(imported, name)
 			if err != nil {
 				return nil, fmt.Errorf("dot import %s: %s", imported.Path, err)
 			}
@@ -1206,7 +1368,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		if err != nil {
 			f.trap("import %s: %s", b.Path, err)
 		}
-		mv, err := p.Member(name, v.H.Materialize)
+		mv, err := v.memberOf(p, name)
 		if err != nil {
 			f.trap("%s", err)
 		}
@@ -1220,7 +1382,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		if !token.IsExported(name) {
 			f.trap("cannot refer to unexported name %s.%s", b.Path, name)
 		}
-		mv, err := b.Member(name, v.H.Materialize)
+		mv, err := v.memberOf(b, name)
 		if err != nil {
 			f.trap("%s", err)
 		}
@@ -1248,6 +1410,10 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 			return v.typedMember(f, e.Typ, name, b, "map")
 		case *runtime.Chan:
 			return v.typedMember(f, e.Typ, name, b, "chan")
+		case *runtime.GoValue:
+			// a host value stored in a cell (`var mu sync.Mutex`): select on
+			// the boxed value so host methods resolve
+			return v.selectMember(f, e, name)
 		default:
 			f.trap("select %s on cell of %T", name, b.Elem)
 		}
@@ -1269,6 +1435,8 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 			return v.typedMember(f, t.Typ, name, base, "map")
 		case *runtime.Chan:
 			return v.typedMember(f, t.Typ, name, base, "chan")
+		case *runtime.GoValue:
+			return v.selectMember(f, t, name)
 		}
 		f.trap("select %s on %T", name, dv)
 	case *runtime.TypeDef:
@@ -2132,6 +2300,14 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 	if !ok {
 		f.trap("composite literal on non-type %T", tdv)
 	}
+	if td.HostNew != nil {
+		// host-backed type (sync.Mutex, ...): literal form yields a fresh
+		// boxed host value; field initialization has no script meaning
+		if n > 0 {
+			f.trap("cannot initialize host type %s with fields", td.Name)
+		}
+		return &runtime.GoValue{V: td.HostNew()}
+	}
 	// a type alias builds the underlying composite
 	if td.Kind == runtime.KindAlias && v.H.Underlying != nil {
 		if u, err := v.H.Underlying(td); err == nil && u != nil {
@@ -2323,75 +2499,117 @@ func valueCopy(v runtime.Value) runtime.Value {
 	return v
 }
 
-// channels — single-threaded approximation. Sends append to an unbounded
-// queue (never block); a receive on an empty open channel would block
-// forever, so it traps rather than deadlocking the interpreter.
+// channels — real blocking semantics. Channels are host `chan Value`s:
+// sends and receives block exactly as in Go, buffer capacity is honored,
+// and close wakes parked receivers. Every blocking op also selects on the
+// owning process's done channel so a dead process releases goroutines
+// parked in it (they unwind with procExit, which recover() cannot see).
 
-func asChan(f *frame, v runtime.Value) *runtime.Chan {
-	switch x := v.(type) {
+var nilChanRV = reflect.ValueOf((chan runtime.Value)(nil))
+
+// memberOf resolves a package member through MemberV so that a lazy
+// package initializer triggered from inside this VM runs on THIS VM — a
+// spawned goroutine's first touch of a package must not execute __init__
+// on the engine's root VM.
+func (v *VM) memberOf(p *runtime.Package, name string) (runtime.Value, error) {
+	return p.MemberV(name, v.H.Materialize, v.runInit)
+}
+
+// runInit executes a package __init__ function as a nested call on this VM.
+func (v *VM) runInit(fn *runtime.Function) error {
+	_, err := v.call(fn, nil)
+	return err
+}
+
+// chanOf resolves a channel value to its reflect channel plus the declared
+// element typedef (send coercion / closed-receive zeros). Host channels
+// boxed as *GoValue (e.g. `time.After`'s return) participate too.
+func (v *VM) chanOf(f *frame, x runtime.Value) (reflect.Value, *runtime.TypeDef) {
+	switch c := x.(type) {
 	case *runtime.Chan:
-		return x
+		return reflect.ValueOf(c.C), v.elemTypedef(c.Typ)
 	case *runtime.Cell:
-		return asChan(f, x.Elem)
+		return v.chanOf(f, c.Elem)
 	case *runtime.Named:
-		return asChan(f, x.V)
+		return v.chanOf(f, c.V)
 	case *runtime.IfaceNil:
-		return asChan(f, &runtime.TypedNil{Typ: x.Typ})
+		return v.chanOf(f, &runtime.TypedNil{Typ: c.Typ})
 	case *runtime.TypedNil:
-		// a nil channel blocks forever in Go — trap like an empty open chan
-		if x.Typ.Kind == runtime.KindChan {
-			f.trap("channel operation on nil channel (single-threaded approximation)")
+		if c.Typ != nil && c.Typ.Kind == runtime.KindChan {
+			// a nil channel never becomes ready — it parks the op
+			// (blocking forever at the root, as Go's deadlock does)
+			return nilChanRV, v.elemTypedef(c.Typ)
 		}
-		f.trap("channel operation on %T", v)
-		return nil
+		f.trap("channel operation on %T", x)
+	case *runtime.GoValue:
+		if rv := reflect.ValueOf(c.V); rv.IsValid() && rv.Kind() == reflect.Chan {
+			return rv, nil
+		}
+		f.trap("channel operation on non-channel host value %T", c.V)
 	default:
-		f.trap("channel operation on %T", v)
-		return nil
+		f.trap("channel operation on %T", x)
+	}
+	return reflect.Value{}, nil
+}
+
+// chanSend sends sv on chRV, blocking as in Go — including panicking on a
+// closed channel (the host panic surfaces as a script panic).
+func (v *VM) chanSend(chRV, sv reflect.Value) {
+	chosen, _, _ := reflect.Select([]reflect.SelectCase{
+		{Dir: reflect.SelectSend, Chan: chRV, Send: sv},
+		{Dir: reflect.SelectRecv, Chan: v.doneRV()},
+	})
+	if chosen == 1 {
+		panic(procExit{})
 	}
 }
 
-// popChan removes and returns the front element, or NIL on an empty closed
-// channel (approximating the zero value).
-func popChan(ch *runtime.Chan) runtime.Value {
-	if len(ch.Elems) == 0 {
-		return runtime.NIL
-	}
-	v := ch.Elems[0]
-	ch.Elems = ch.Elems[1:]
-	return v
+// chanRecv receives one value from the channel denoted by chv, blocking
+// as in Go: closed-and-empty reports (zero, false).
+func (v *VM) chanRecv(f *frame, chv runtime.Value) (runtime.Value, bool) {
+	chRV, et := v.chanOf(f, chv)
+	return v.chanRecvRV(f, chRV, et)
 }
 
-func recvChan(f *frame, v runtime.Value) runtime.Value {
-	ch := asChan(f, v)
-	if len(ch.Elems) == 0 {
-		if ch.Closed {
-			return runtime.NIL
+// chanRecvRV is chanRecv on an already-resolved reflect channel — shared
+// by OpRecv/OpRecvOK and channel-range iterators.
+func (v *VM) chanRecvRV(f *frame, chRV reflect.Value, et *runtime.TypeDef) (runtime.Value, bool) {
+	chosen, rv, open := reflect.Select([]reflect.SelectCase{
+		{Dir: reflect.SelectRecv, Chan: chRV},
+		{Dir: reflect.SelectRecv, Chan: v.doneRV()},
+	})
+	if chosen == 1 {
+		panic(procExit{})
+	}
+	if !open {
+		if et != nil {
+			return v.zeroValue(f, et), false
 		}
-		f.trap("channel receive would block (single-threaded approximation)")
+		return runtime.NIL, false
 	}
-	return popChan(ch)
+	return goValueOf(rv), true
 }
 
-func recvChanOK(f *frame, v runtime.Value) runtime.Value {
-	ch := asChan(f, v)
-	if len(ch.Elems) > 0 {
-		return &runtime.Tuple{Elems: []runtime.Value{popChan(ch), true}}
+// chanZero is the OpSelWait payload for a receive arm: the received value,
+// or the element type's zero when the channel was closed.
+func (v *VM) chanZero(f *frame, a *runtime.SelArm, open bool, rv reflect.Value) runtime.Value {
+	if open {
+		return goValueOf(rv)
 	}
-	if ch.Closed {
-		return &runtime.Tuple{Elems: []runtime.Value{runtime.NIL, false}}
+	if a.ETyp != nil {
+		return v.zeroValue(f, a.ETyp)
 	}
-	f.trap("channel receive would block (single-threaded approximation)")
-	return nil
+	return runtime.NIL
 }
 
 // iterators
 
-func newIterator(f *frame, coll runtime.Value) *runtime.Iterator {
+func (v *VM) newIterator(f *frame, coll runtime.Value) *runtime.Iterator {
 	switch c := coll.(type) {
 	case *runtime.Cell:
-		return newIterator(f, c.Elem)
+		return v.newIterator(f, c.Elem)
 	case *runtime.Named:
-		return newIterator(f, c.V)
+		return v.newIterator(f, c.V)
 	case *runtime.Slice:
 		return &runtime.Iterator{Kind: 's', Elems: c.Elems}
 	case *runtime.Map:
@@ -2401,7 +2619,13 @@ func newIterator(f *frame, coll runtime.Value) *runtime.Iterator {
 		}
 		return it
 	case *runtime.Chan:
-		return &runtime.Iterator{Kind: 'c', Chan: c}
+		return &runtime.Iterator{Kind: 'c', ChRV: reflect.ValueOf(c.C), ETyp: v.elemTypedef(c.Typ)}
+	case *runtime.GoValue:
+		if rv := reflect.ValueOf(c.V); rv.IsValid() && rv.Kind() == reflect.Chan {
+			return &runtime.Iterator{Kind: 'c', ChRV: rv}
+		}
+		f.trap("range over %T", coll)
+		return nil
 	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
 		// iter.Seq/Seq2-style producer: the whole loop runs inside the
 		// first OpRangeNext via yield — see driveFuncIter.
@@ -2411,8 +2635,11 @@ func newIterator(f *frame, coll runtime.Value) *runtime.Iterator {
 	case string:
 		return &runtime.Iterator{Kind: 'x', String: c}
 	case *runtime.TypedNil, *runtime.IfaceNil:
-		// range over a nil slice/map iterates zero times; nil channels
-		// blocking forever collapse into the same approximation.
+		// range over a nil slice/map iterates zero times
+		if tn, ok := coll.(*runtime.TypedNil); ok && tn.Typ != nil && tn.Typ.Kind == runtime.KindChan {
+			// a nil channel range blocks forever, as in Go
+			return &runtime.Iterator{Kind: 'c', ChRV: nilChanRV, ETyp: v.elemTypedef(tn.Typ)}
+		}
 		return &runtime.Iterator{Kind: 's'}
 	case nil, runtime.Nil:
 		return &runtime.Iterator{Kind: 's'}
@@ -2423,7 +2650,7 @@ func newIterator(f *frame, coll runtime.Value) *runtime.Iterator {
 }
 
 // iterNext pushes nvars values (key/index, elem) and returns false when done.
-func iterNext(f *frame, it *runtime.Iterator, nvars int) bool {
+func (v *VM) iterNext(f *frame, it *runtime.Iterator, nvars int) bool {
 	push := func(key, val runtime.Value) {
 		if nvars == 2 {
 			f.push(key)
@@ -2463,13 +2690,13 @@ func iterNext(f *frame, it *runtime.Iterator, nvars int) bool {
 		it.Idx += size
 		return true
 	case 'c':
-		// range over a channel drains the queue (approximation of "until
-		// closed" — sends already ran synchronously).
-		if len(it.Chan.Elems) == 0 {
+		// range over a channel receives until the channel closes, blocking
+		// on each element as in Go.
+		val, ok := v.chanRecvRV(f, it.ChRV, it.ETyp)
+		if !ok {
 			return false
 		}
-		v := popChan(it.Chan)
-		push(v, v)
+		push(val, val)
 		return true
 	}
 	return false
@@ -4740,7 +4967,7 @@ func (s *specialCtx) Resolve(e ast.Expr) (runtime.Value, error) {
 		if err != nil {
 			return nil, err
 		}
-		mv, err := p.Member(x.Sel.Name, s.v.H.Materialize)
+		mv, err := s.v.memberOf(p, x.Sel.Name)
 		if err != nil {
 			return nil, err
 		}

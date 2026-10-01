@@ -80,11 +80,11 @@ func TestEngineSourceOf(t *testing.T) {
 	}
 
 	// Unbound path: nothing to bypass — the canonical package comes back.
-	canon, err := e.Package(ctx, "sync")
+	canon, err := e.Package(ctx, "container/list")
 	if err != nil {
 		t.Fatal(err)
 	}
-	via, err := e.SourceOf(ctx, "sync")
+	via, err := e.SourceOf(ctx, "container/list")
 	if err != nil {
 		t.Fatal(err)
 	}

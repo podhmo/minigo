@@ -670,7 +670,7 @@ func SliceElemTyped() int {
 type CE chan EI
 
 func ChanElemTyped() int {
-	var ch CE = make(CE)
+	var ch CE = make(CE, 1)
 	ch <- EI(3)
 	x := <-ch
 	var a any = x

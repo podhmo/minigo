@@ -75,6 +75,9 @@ func Zero(td *TypeDef) Value {
 	if td == nil {
 		return NIL
 	}
+	if td.HostNew != nil {
+		return &GoValue{V: td.HostNew()}
+	}
 	switch td.Kind {
 	case KindInterface:
 		return NIL
@@ -297,17 +300,51 @@ type Map struct {
 	Typ   *TypeDef // declared map type (nil => missing keys yield NIL)
 }
 
-// Chan is a channel value. minigo approximates goroutines by running `go`
-// calls synchronously, so channels are unbounded queues: sends never block
-// (buffer capacity is not modeled) and a receive on an empty open channel —
-// which could never be satisfied in a single-threaded world — traps instead
-// of deadlocking the interpreter.
+// Chan is a channel value backed by a real host channel: sends and
+// receives block exactly as in Go, capacity is honored, and close wakes
+// every parked receiver. Blocking operations also watch the owning
+// process's done channel so a dead process releases parked goroutines.
 type Chan struct {
-	Elems  []Value
-	Closed bool
+	C chan Value
 	// Typ is the declared channel type when one is known (make or a
 	// `var c C` bind): sends re-coerce to the element type.
 	Typ *TypeDef
+}
+
+// SelArm is one prepared select case, built by OpSelArm on entry to a
+// select: the reflect.SelectCase to poll plus the receive-bind shape
+// (NRecv) or send marker, and the channel's element typedef for
+// closed-receive zero values.
+type SelArm struct {
+	Case  reflect.SelectCase
+	Send  bool
+	NRecv int
+	ETyp  *TypeDef
+}
+
+// Task is the handle of one spawned goroutine: Done closes when its call
+// ends — normally, by panic (Err), or by proc exit — and Wait reports
+// how it finished. Parent chains mirror the spawn tree so callers can
+// recognize when waiting would deadlock (dependency cycles).
+type Task struct {
+	Done    chan struct{}
+	Err     error
+	Parent  *Task
+	Aborted bool // finished by process exit rather than its own outcome
+}
+
+// Finish records the task's outcome and releases waiters. Called once.
+func (t *Task) Finish(err error, aborted bool) {
+	t.Err = err
+	t.Aborted = aborted
+	close(t.Done)
+}
+
+// Wait blocks until the task ends and reports its call's error (the
+// process-exit sentinel for aborted tasks).
+func (t *Task) Wait() error {
+	<-t.Done
+	return t.Err
 }
 
 // TypeDef is a runtime type descriptor for a named type.
@@ -344,6 +381,12 @@ type TypeDef struct {
 	// pointee is known only as a runtime typedef. Nil means resolve
 	// through Anon/Spec instead.
 	Elem *TypeDef
+
+	// HostNew, when set, constructs the zero of this type as a host Go
+	// value (sync.Mutex, sync.WaitGroup, ...): Zero returns a *GoValue
+	// instead of a *Struct so member access dispatches through the host
+	// method set. Set only on bound intrinsics' typedefs.
+	HostNew func() any
 }
 
 // TypeKind classifies a named type's underlying shape.
@@ -414,6 +457,14 @@ type VMCaller interface {
 	// Copy returns a copy of v following Go assignment semantics
 	// (structs copy, slices/maps/pointers share) — used by new(expr).
 	Copy(x Value) Value
+	// Spawn runs fn(args) on a new goroutine sharing the caller's
+	// process — the machinery of the `go` statement, exposed so host
+	// code (task runners) can fan out work the same way. A non-procExit
+	// failure fails the whole process.
+	Spawn(fn Value, args []Value) *Task
+	// Task returns the handle of the calling goroutine — nil on the
+	// root goroutine — for ancestry-aware cycle checks.
+	Task() *Task
 }
 
 // Function is a compiled-or-compilable function. Chunk is produced lazily
@@ -460,7 +511,10 @@ type Iterator struct {
 	Idx    int
 	Limit  int // for integer ranges
 	String string
-	Chan   *Chan // for channel ranges
+	// ChRV is the reflect channel a channel range receives from; ETyp is
+	// its element typedef for closed-receive zero values.
+	ChRV reflect.Value
+	ETyp *TypeDef
 
 	// Fn is the producer for 'f' (range-over-func) iterators. Started marks
 	// that the producer was invoked once; Exited marks that the loop body

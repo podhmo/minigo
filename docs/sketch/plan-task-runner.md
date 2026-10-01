@@ -47,8 +47,8 @@ tooling (gopls resolves the package, signatures and docs are real).
 
 | API | mage/go-task analog | semantics |
 |-----|--------------------|-----------|
-| `task.Deps(fns...)` | `mg.Deps` | each dep runs once per invocation, in order; cycle → error |
-| `task.SerialDeps` | `mg.SerialDeps` | alias documenting serial intent (see §6) |
+| `task.Deps(fns...)` | `mg.Deps` | each dep runs once per invocation, in parallel on spawned goroutines; cycle → error |
+| `task.SerialDeps` | `mg.SerialDeps` | serial ordering on the caller's goroutine; dedup shared with `Deps` |
 | `task.F(fn, args...)` | `mg.F` | wrap fn+args into a callable dep, dedup key (fn, args) |
 | `task.Sh(cmd)` | `sh.Run` / `cmd:` | `sh -c`, stdio on the runner's streams |
 | `task.Run(name, args...)` | `sh.Run` | direct exec, streaming output |
@@ -97,10 +97,6 @@ it lazily, and calling it is the script's decision.
 
 ## 6. Deliberately not done (follow-ups)
 
-- **Parallel deps.** `Deps` runs in order; `go f()` is synchronous in the
-  VM, and the runner shares one memory space — real interleaving wants the
-  far-future "real concurrency" work. `SerialDeps` exists to mark serial
-  intent.
 - **`[]byte` spellings.** `[]byte("x")` conversion is still unimplemented
   in the interpreter — task scripts use `os.WriteFile(p, "x", 0644)` (the
   intrinsic accepts strings) or `f.Write("x")` (string→[]byte converts via

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go/token"
 	"sync"
+	"sync/atomic"
 
 	"github.com/podhmo/minigo/index"
 	"github.com/podhmo/minigo/syntax"
@@ -22,9 +23,11 @@ const (
 	Failed
 )
 
-// Env is a name -> Value map for package globals (and builtins).
+// Env is a name -> Value map for package globals (and builtins). It is
+// goroutine-safe: spawned goroutines read and write the same globals.
 type Env struct {
-	m map[string]Value
+	mu sync.RWMutex
+	m  map[string]Value
 }
 
 // NewEnv creates an empty Env.
@@ -32,18 +35,30 @@ func NewEnv() *Env { return &Env{m: map[string]Value{}} }
 
 // Get returns the value bound to name.
 func (e *Env) Get(name string) (Value, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 	v, ok := e.m[name]
 	return v, ok
 }
 
 // Set binds name to v.
-func (e *Env) Set(name string, v Value) { e.m[name] = v }
+func (e *Env) Set(name string, v Value) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.m[name] = v
+}
 
 // Delete removes the binding for name, if present.
-func (e *Env) Delete(name string) { delete(e.m, name) }
+func (e *Env) Delete(name string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.m, name)
+}
 
 // Names lists bound names.
 func (e *Env) Names() []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 	out := make([]string, 0, len(e.m))
 	for k := range e.m {
 		out = append(out, k)
@@ -86,7 +101,6 @@ func (r *ImportRef) Materialize() (*Package, error) {
 type Package struct {
 	Path     string
 	Name     string
-	State    State
 	Dir      string
 	Standard bool // inside GOROOT (or a bound stdlib stub)
 
@@ -106,11 +120,25 @@ type Package struct {
 	// __init__ chunk mixes decls from several files).
 	FileByName map[string]*syntax.File
 
+	state atomic.Int32 // a State value — member access can come from any goroutine
+	// indexed closes when the package finishes indexing (success or
+	// failure): a goroutine racing a cold load waits for it instead of
+	// seeing a half-indexed package. Nil on bound host packages, which
+	// are born Ready.
+	indexed chan struct{}
+
 	initOnce sync.Once
 	initErr  error
 	// Bootstrap builds and runs the package initializer (var/const decls +
-	// init() funcs). Injected by the engine; called exactly once.
-	Bootstrap func(*Package) error
+	// init() funcs). Injected by the engine; called exactly once. The run
+	// argument executes the __init__ function — supplied by the triggering
+	// caller so a spawned goroutine's init runs on ITS VM.
+	Bootstrap func(p *Package, run func(*Function) error) error
+
+	// RunInit is the default runner used when EnsureReady fires with no
+	// explicit VM (host-side callers): the engine installs a fresh-VM
+	// runner so init never shares the caller's interpreter state.
+	RunInit func(*Function) error
 
 	// LazyInit answers type/signature queries (functions and type decls)
 	// without running initializers — set by the engine's InitMode.
@@ -119,36 +147,130 @@ type Package struct {
 	// Specials is the engine's special-form registry (canonical symbol ->
 	// handler); the compiler consults it to emit OpSpecialCall.
 	Specials map[SymbolID]SpecialFunc
+
+	matMu sync.Mutex
+	matM  map[*index.Decl]Value // materialization dedup: one TypeDef/Function identity per decl
 }
 
-// EnsureReady advances the package through Initialize to Ready.
+// State reports the package lifecycle stage.
+func (p *Package) State() State { return State(p.state.Load()) }
+
+// SetState records the package lifecycle stage.
+func (p *Package) SetState(s State) { p.state.Store(int32(s)) }
+
+// MarkIndexed arms the indexed gate (called when the package is built).
+func (p *Package) MarkIndexed() {
+	if p.indexed == nil {
+		p.indexed = make(chan struct{})
+	}
+}
+
+// FinishIndexing closes the indexed gate.
+func (p *Package) FinishIndexing() {
+	if p.indexed != nil {
+		close(p.indexed)
+	}
+}
+
+// MatCache returns the materialized value for decl d, building it once
+// through build when missing. Two goroutines materializing the same decl
+// share one TypeDef/Function identity — type asserts depend on it. build
+// runs outside the lock (it may resolve other decls, which would
+// deadlock on a held lock); the loser of a concurrent build discards
+// its value so every caller converges on the first stored identity.
+func (p *Package) MatCache(d *index.Decl, build func(*Package, *index.Decl) (Value, error)) (Value, error) {
+	p.matMu.Lock()
+	v, ok := p.matM[d]
+	p.matMu.Unlock()
+	if ok {
+		return v, nil
+	}
+	v, err := build(p, d)
+	if err != nil || v == nil {
+		return v, err
+	}
+	p.matMu.Lock()
+	defer p.matMu.Unlock()
+	if p.matM == nil {
+		p.matM = map[*index.Decl]Value{}
+	}
+	if prev, ok := p.matM[d]; ok {
+		return prev, nil
+	}
+	p.matM[d] = v
+	return v, nil
+}
+
+// EnsureReady advances the package through Initialize to Ready, running
+// __init__ through p.RunInit (the engine's default runner).
 func (p *Package) EnsureReady() error {
+	return p.EnsureReadyRun(nil)
+}
+
+// EnsureReadyRun is EnsureReady with an explicit runner: run executes the
+// package __init__ on the caller's VM — a spawned goroutine initializing a
+// package runs it on ITS VM, never the engine's root VM. run==nil falls
+// back to p.RunInit.
+func (p *Package) EnsureReadyRun(run func(*Function) error) error {
 	p.initOnce.Do(func() {
-		if p.State == Ready {
+		if p.State() == Ready {
 			return
 		}
-		p.State = Initializing
-		if p.Bootstrap != nil {
-			if err := p.Bootstrap(p); err != nil {
-				p.initErr = err
-				p.State = Failed
-				return
-			}
+		p.SetState(Initializing)
+		if err := p.runBootstrap(run); err != nil {
+			p.initErr = err
+			p.SetState(Failed)
+			return
 		}
-		p.State = Ready
+		p.SetState(Ready)
 	})
 	return p.initErr
+}
+
+// runBootstrap invokes p.Bootstrap, converting a panic into initErr (and
+// Failed state) before re-panicking: sync.Once consumes a panicked Do as
+// done, so without recording it later callers would see a successful-but-
+// partial init.
+func (p *Package) runBootstrap(run func(*Function) error) (err error) {
+	if p.Bootstrap == nil {
+		return nil
+	}
+	if run == nil {
+		run = p.RunInit
+	}
+	if run == nil {
+		return fmt.Errorf("package %s: no init runner", p.Name)
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			if e, ok := r.(error); ok {
+				err = e
+			} else {
+				err = fmt.Errorf("panic: %v", r)
+			}
+			panic(r)
+		}
+	}()
+	return p.Bootstrap(p, run)
 }
 
 // Member returns an exported member of the package: globals first, then the
 // index (functions/types are materialized on demand via materialize).
 // materialize is engine-provided and builds *Function / *TypeDef objects.
 func (p *Package) Member(name string, materialize func(*Package, *index.Decl) (Value, error)) (Value, error) {
+	return p.MemberV(name, materialize, nil)
+}
+
+// MemberV is Member with an explicit init runner (see EnsureReadyRun).
+func (p *Package) MemberV(name string, materialize func(*Package, *index.Decl) (Value, error), run func(*Function) error) (Value, error) {
+	if p.indexed != nil {
+		<-p.indexed
+	}
 	// A failed initialization must not go unnoticed: globals registered
 	// before the failure are partial state, so surface the error instead.
-	if p.State == Failed {
-		if p.initErr != nil {
-			return nil, p.initErr
+	if p.State() == Failed {
+		if err := p.EnsureReadyRun(run); err != nil {
+			return nil, err
 		}
 		return nil, fmt.Errorf("package %s failed to load", p.Name)
 	}
@@ -165,7 +287,7 @@ func (p *Package) Member(name string, materialize func(*Package, *index.Decl) (V
 			return materialize(p, d)
 		}
 	}
-	if err := p.EnsureReady(); err != nil {
+	if err := p.EnsureReadyRun(run); err != nil {
 		return nil, err
 	}
 	if v, ok := p.Globals.Get(name); ok {
@@ -173,6 +295,9 @@ func (p *Package) Member(name string, materialize func(*Package, *index.Decl) (V
 	}
 	if p.Index != nil {
 		if d, ok := memberDecl(p.Index, name); ok {
+			if materialize == nil {
+				return nil, fmt.Errorf("no materializer for %s.%s", p.Name, name)
+			}
 			return materialize(p, d)
 		}
 	}

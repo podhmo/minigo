@@ -236,7 +236,7 @@ func TestStdlibIntrinsics(t *testing.T) {
 		{"BinarySearchFunc", int64(3)},
 		{"BinarySearchNamed", int64(1)}, // named-string elements
 		{"RuntimeGOOS", true},
-		{"RuntimeGoroutines", int64(1)}, // single-threaded approximation
+		{"RuntimeGoroutines", true},     // host goroutine count ≥ 1
 		{"RuntimeGOMAXPROCS", int64(1)}, // read-only: setter arg is ignored
 		{"UnsafeSizeofInt", int64(8)},
 		{"UnsafeSizeofSlice", int64(24)},
@@ -431,7 +431,7 @@ func TestLazyInitMode(t *testing.T) {
 	if _, err := pkg.Member("Get", stub); err != nil {
 		t.Fatalf("Member(Get): %v", err)
 	}
-	if pkg.State == runtime.Ready {
+	if pkg.State() == runtime.Ready {
 		t.Fatal("LazyInit Member must not initialize the package")
 	}
 	// GoCompatibleInit (default) surfaces the panic at member touch.

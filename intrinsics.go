@@ -31,6 +31,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -988,7 +989,11 @@ func (e *Engine) installStdlib() {
 		"GOOS":   goruntime.GOOS,
 		"GOARCH": goruntime.GOARCH,
 		"NumGoroutine": h.fn("runtime.NumGoroutine", func(a []any) (any, error) {
-			return int64(1), nil
+			return int64(goruntime.NumGoroutine()), nil
+		}),
+		"Gosched": h.fn("runtime.Gosched", func(a []any) (any, error) {
+			goruntime.Gosched()
+			return nil, nil
 		}),
 		"NumCPU": h.fn("runtime.NumCPU", func(a []any) (any, error) { return int64(goruntime.NumCPU()), nil }),
 		"GOMAXPROCS": &runtime.BuiltinFunc{Name: "runtime.GOMAXPROCS", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -1002,7 +1007,16 @@ func (e *Engine) installStdlib() {
 	})
 	e.Bind("time", map[string]runtime.Value{
 		"Sleep": h.fn("time.Sleep", func(a []any) (any, error) { time.Sleep(durOf(a[0])); return nil, nil }),
-		"Now":   h.fn("time.Now", func(a []any) (any, error) { return time.Now(), nil }, time.Now),
+		"After": h.fn("time.After", func(a []any) (any, error) {
+			return &runtime.GoValue{V: time.After(durOf(a[0]))}, nil
+		}),
+		"NewTimer": h.fn("time.NewTimer", func(a []any) (any, error) {
+			return &runtime.GoValue{V: time.NewTimer(durOf(a[0]))}, nil
+		}),
+		"NewTicker": h.fn("time.NewTicker", func(a []any) (any, error) {
+			return &runtime.GoValue{V: time.NewTicker(durOf(a[0]))}, nil
+		}),
+		"Now": h.fn("time.Now", func(a []any) (any, error) { return time.Now(), nil }, time.Now),
 		"Since": h.fn("time.Since", func(a []any) (any, error) {
 			if t, ok := a[0].(time.Time); ok {
 				return time.Since(t), nil
@@ -1016,9 +1030,28 @@ func (e *Engine) installStdlib() {
 		"Unix": h.fn2("time.Unix", func(a []any) (any, error) {
 			return &runtime.GoValue{V: time.Unix(int64Of(a[0]), int64Of(a[1]))}, nil
 		}),
+		"Nanosecond":  time.Nanosecond,
+		"Microsecond": time.Microsecond,
 		"Second":      time.Second,
+		"Minute":      time.Minute,
+		"Hour":        time.Hour,
 		"Millisecond": time.Millisecond,
 	})
+	// sync: the real host types back `var wg sync.WaitGroup` — TypeDef.HostNew
+	// boxes a fresh Go value per zero, and member access dispatches through
+	// the host method set (Lock/Unlock, Add/Wait/Done, Do).
+	e.Bind("sync", map[string]runtime.Value{
+		"WaitGroup": hostType("sync.WaitGroup", func() any { return &sync.WaitGroup{} }),
+		"Mutex":     hostType("sync.Mutex", func() any { return &sync.Mutex{} }),
+		"RWMutex":   hostType("sync.RWMutex", func() any { return &sync.RWMutex{} }),
+		"Once":      hostType("sync.Once", func() any { return &sync.Once{} }),
+	})
+}
+
+// hostType is a TypeDef whose zero is a host value: `var m T` and `T{}`
+// produce a boxed *newT() so selectMember sees the real method set.
+func hostType(name string, new func() any) *runtime.TypeDef {
+	return &runtime.TypeDef{Name: name, Kind: runtime.KindStruct, HostNew: new}
 }
 
 // ---- value marshalling ----

@@ -60,7 +60,7 @@ func ReraiseReplace() {
 
 // ChanQueue: send then receive, FIFO.
 func ChanQueue() int {
-	ch := make(chan int)
+	ch := make(chan int, 3)
 	ch <- 1
 	ch <- 2
 	ch <- 3
@@ -69,7 +69,7 @@ func ChanQueue() int {
 
 // ChanCommaOk: receive with ok flag on a non-empty channel.
 func ChanCommaOk() int {
-	ch := make(chan int)
+	ch := make(chan int, 1)
 	ch <- 7
 	v, ok := <-ch
 	if ok && v == 7 {
@@ -90,12 +90,13 @@ func ChanClosedRecv() int {
 	return 42
 }
 
-// ChanRange drains a channel after synchronous sends.
+// ChanRange drains a buffered channel until close.
 func ChanRange() int {
-	ch := make(chan int)
+	ch := make(chan int, 3)
 	ch <- 10
 	ch <- 20
 	ch <- 30
+	close(ch)
 	sum := 0
 	for v := range ch {
 		sum += v
@@ -103,26 +104,27 @@ func ChanRange() int {
 	return sum
 }
 
-// GoSync runs `go f()` synchronously: the side effect is visible at once.
+// GoSync spawns two goroutines and collects their results over a
+// channel: the order is free but the sum is deterministic.
 func GoSync() int {
-	x := 0
-	add := func(n int) { x += n }
+	done := make(chan int, 2)
+	add := func(n int) { done <- n }
 	go add(5)
 	go add(7)
-	return x
+	return <-done + <-done
 }
 
-// GoChanRoundtrip approximates the classic goroutine+channel pattern
-// synchronously: send then receive.
+// GoChanRoundtrip runs the classic goroutine+channel pattern for real:
+// the unbuffered send hands off directly to the blocked receiver.
 func GoChanRoundtrip() int {
 	ch := make(chan int)
 	go func() { ch <- 42 }()
 	return <-ch
 }
 
-// SelectRecv picks the first ready receive case.
+// SelectRecv receives through a select on a buffered channel.
 func SelectRecv() int {
-	ch := make(chan int)
+	ch := make(chan int, 1)
 	ch <- 5
 	r := 0
 	select {
@@ -158,9 +160,9 @@ func SelectCommaOk() int {
 	return 0
 }
 
-// SelectSend: a send case is ready when the channel is open.
+// SelectSend: a send case is ready on a buffered channel with room.
 func SelectSend() int {
-	ch := make(chan int)
+	ch := make(chan int, 1)
 	select {
 	case ch <- 11:
 	default:
@@ -172,7 +174,7 @@ func SelectSend() int {
 // DeferBuiltinClose: a deferred builtin (close) runs at teardown —
 // deferred callees are not limited to compiled functions.
 func DeferBuiltinClose() int {
-	ch := make(chan int)
+	ch := make(chan int, 1)
 	defer close(ch)
 	ch <- 7
 	return len(ch) + 1 // closed but still queued: len 1 -> 2
@@ -189,7 +191,7 @@ func DeferBuiltinRecover() (r int) {
 // SelectConsumeBare: `case <-ch` consumes the queued value like any
 // other receive — a non-binding receive must not leave it queued.
 func SelectConsumeBare() int {
-	ch := make(chan int)
+	ch := make(chan int, 2)
 	ch <- 1
 	ch <- 2
 	select {
@@ -204,7 +206,7 @@ func SelectEvalOrder() int {
 	seen := 0
 	mkch := func(n int) chan int {
 		seen += n
-		c := make(chan int)
+		c := make(chan int, 1)
 		c <- n
 		return c
 	}
@@ -221,7 +223,7 @@ func SelectSendEvalOrder() int {
 	seen := 0
 	val := func() int { seen = 7; return 1 }
 	sch := make(chan int)
-	rch := make(chan int)
+	rch := make(chan int, 1)
 	rch <- 9
 	select {
 	case <-rch:
