@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"go/ast"
 	"log/slog"
 	"slices"
 	"strings"
@@ -453,9 +454,9 @@ func qualifyFunc(im *ImportManager, info *model.ParsedInfo, funcName string) str
 }
 
 // registerImports qualifies every named type reachable through the
-// TypeExpr's children — pointers, slices, maps, func types. Names the
-// child walk cannot reach (e.g. the base of an IndexExpr) are not
-// registered; see the notes on generic types in the experiment report.
+// TypeExpr — pointers, slices, maps, func types, and generic
+// instantiation bases (pkg.List in pkg.List[T]), which Children() does
+// not yield and so are reached via Sub.
 func registerImports(im *ImportManager, te *xinspect.TypeExpr) {
 	if te == nil {
 		return
@@ -465,6 +466,12 @@ func registerImports(im *ImportManager, te *xinspect.TypeExpr) {
 			im.Qualify(sid.PackagePath, sid.Name)
 		}
 		return
+	}
+	switch e := te.Expr().(type) {
+	case *ast.IndexExpr:
+		registerImports(im, te.Sub(e.X))
+	case *ast.IndexListExpr:
+		registerImports(im, te.Sub(e.X))
 	}
 	for _, c := range te.Children() {
 		registerImports(im, c)
@@ -727,11 +734,22 @@ func generateMapConversion(im *ImportManager, res xinspect.Resolver, info *model
 
 // getTypeName renders a TypeExpr in the generated file's terms —
 // declared identifiers become im.Qualify'd names; composite shapes that
-// carry no resolvable identity (the base of an IndexExpr, anonymous
-// struct/func types) keep the written spelling.
+// carry no resolvable identity (anonymous struct/func types) keep the
+// written spelling.
 func getTypeName(im *ImportManager, te *xinspect.TypeExpr) string {
 	if te == nil {
 		return "interface{}" // Should not happen in valid code
+	}
+
+	switch e := te.Expr().(type) {
+	case *ast.IndexExpr:
+		return fmt.Sprintf("%s[%s]", getTypeName(im, te.Sub(e.X)), getTypeName(im, te.Sub(e.Index)))
+	case *ast.IndexListExpr:
+		var args []string
+		for _, ix := range e.Indices {
+			args = append(args, getTypeName(im, te.Sub(ix)))
+		}
+		return fmt.Sprintf("%s[%s]", getTypeName(im, te.Sub(e.X)), strings.Join(args, ","))
 	}
 
 	switch {

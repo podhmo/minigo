@@ -41,26 +41,20 @@ the special form is the interface, not something `inspect` is missing.
 
 Ordered by how much they hurt this consumer.
 
-### 1. `TypeExpr` can't re-wrap sub-expressions in its own context (real gap)
+### 1. `TypeExpr` couldn't re-wrap sub-expressions in its own context (fixed)
 
 `TypeExpr.expr/file/pkg` are unexported and `Children()` only covers a
-curated set of children. Two concrete losses for codegen:
+curated set of children, so `IndexExpr`/`IndexListExpr` bases
+(`pkg.List` in `pkg.List[T]`), `ArrayType.Len`, and `ChanType.Dir` were
+unreachable — generic-typed fields got no import registration and kept
+the file's local alias in generated code.
 
-- **`IndexExpr`/`IndexListExpr` children are only the type arguments** —
-  the base `X` (the `List` in `pkg.List[T]`) is not a child, so the
-  generic type's declaring package is unreachable: no `SymbolID`, no
-  import registration, `Text` keeps the file's local alias (which may
-  not exist in the generated file). Generic-typed fields are silently
-  misrendered.
-- **Array length / channel direction** exist only inside `SameType`'s
-  internals (`sameShapeExtra`): `[3]int` renders as `[]int`, `<-chan T`
-  as `chan T`. (The previous implementation made the same slice/array
-  conflation, so e2e parity holds — but it's a view-level blind spot.)
-
-A `(*TypeExpr).Sub(ast.Expr)` (the existing unexported `withExpr`) or a
-`File()`/`Package()` accessor on `TypeExpr` closes the whole class:
-`Expr()` already hands back the raw AST, so callers could rebuild
-sibling views for `IndexExpr.X`, `ChanType.Dir`, `ArrayType.Len`.
+**Fixed on this branch**: `withExpr` is exported as `(*TypeExpr).Sub`,
+so host code re-wraps any sub-expression in the same context. The
+generator now registers the generic base's package and renders
+`pkg.List[int]` through `im.Qualify`. `ChanType.Dir`/`ArrayType.Len`
+need no child view (they aren't `ast.Expr`s worth resolving) —
+`Expr()` already exposes them.
 
 ### 2. No host-side `SourceOf` (bound-shadowed stdlib decls)
 
@@ -121,8 +115,8 @@ views are sufficient for a real code generator — with *less* code than the
 scanner needed (the AST→model translation layer evaporates; `TypeExpr` is
 the model). The worthwhile additions, in priority order:
 
-1. `(*TypeExpr).Sub`/`withExpr` export (or `File()`/`Package()`), so
-   `IndexExpr` bases, chan direction and array length are reachable.
+1. ~~`(*TypeExpr).Sub`/`withExpr` export~~ — done on this branch
+   (`inspect/inspect.go`); the generator uses it for generic bases.
 2. A host-callable `SourceOf` (export `engine.SourceOf`), so bound
    shadows stop being opaque for tools.
 3. A host-friendly `[]*Field` signature accessor.

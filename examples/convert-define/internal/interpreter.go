@@ -218,7 +218,7 @@ func (r *Runner) ensureStructInfo(d *xinspect.Decl) {
 		}
 		jsonTag := ""
 		if f.Tag != "" {
-			jsonTag = strings.Split(reflect.StructTag("`"+f.Tag+"`").Get("json"), ",")[0]
+			jsonTag = strings.Split(reflect.StructTag(f.Tag).Get("json"), ",")[0]
 		}
 		for _, name := range names {
 			fieldInfo := model.FieldInfo{
