@@ -545,15 +545,19 @@ type SpecialContext interface {
 
 // maxTracebackEntries bounds how many frames Error() renders; the full
 // list stays in Frames for programmatic use, but a runaway recursion
-// shouldn't dump tens of thousands of lines.
-const maxTracebackEntries = 20
+// shouldn't dump tens of thousands of lines. Long traces keep both ends —
+// the innermost frames where the failure happened and the outermost entry
+// points — with the middle elided.
+const maxTracebackEntries = 1000
 
 func renderFrames(frames []string) string {
 	if len(frames) <= maxTracebackEntries {
 		return strings.Join(frames, "\n")
 	}
-	head := frames[:maxTracebackEntries]
-	return strings.Join(head, "\n") + fmt.Sprintf("\n... and %d more frames", len(frames)-maxTracebackEntries)
+	half := maxTracebackEntries / 2
+	return strings.Join(frames[:half], "\n") +
+		fmt.Sprintf("\n... %d frames elided ...\n", len(frames)-maxTracebackEntries) +
+		strings.Join(frames[len(frames)-half:], "\n")
 }
 
 // Panic is a script-level panic value; catchable by recover().
