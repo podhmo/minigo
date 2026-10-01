@@ -13,6 +13,7 @@ package minigo
 import (
 	"context"
 	"fmt"
+	"go/ast"
 	"path/filepath"
 	"reflect"
 	goruntime "runtime"
@@ -21,6 +22,7 @@ import (
 	"github.com/podhmo/minigo/index"
 	xinspect "github.com/podhmo/minigo/inspect"
 	"github.com/podhmo/minigo/runtime"
+	"github.com/podhmo/minigo/syntax"
 )
 
 func (e *Engine) installInspect() {
@@ -258,6 +260,13 @@ func (e *Engine) installInspect() {
 				}
 				return &runtime.GoValue{V: sid}, nil
 			}
+			if te := astExprOf(args[0]); te != nil {
+				sid, ok := te.SymbolID()
+				if !ok {
+					return runtime.NIL, nil
+				}
+				return &runtime.GoValue{V: sid}, nil
+			}
 			s, err := declViewOf(args[0])
 			if err != nil {
 				return nil, err
@@ -335,6 +344,39 @@ func (e *Engine) installInspect() {
 			}
 			return boxedSlice(fs), nil
 		}),
+		// ---- body layer (experimental) ----
+		"Body": bf("Body", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			s, err := declViewOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			body := xinspect.BodyOf(s)
+			if body == nil {
+				return runtime.NIL, nil
+			}
+			return &runtime.GoValue{V: body}, nil
+		}),
+		"Nodes": bf("Nodes", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			n, err := nodeViewOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			return boxedSlice(xinspect.ChildrenOf(n)), nil
+		}),
+		"AsExpr": bf("AsExpr", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			te := astExprOf(args[0])
+			if te == nil {
+				return runtime.NIL, nil
+			}
+			return &runtime.GoValue{V: te}, nil
+		}),
+		"Ops": bf("Ops", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			x, err := opBodyOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			return boxedSlice(x), nil
+		}),
 		"Def": bf("Def", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {
@@ -377,7 +419,10 @@ func (e *Engine) installInspect() {
 		"Resolve": bf("Resolve", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			te, err := typeExprOf(args[0])
 			if err != nil {
-				return nil, err
+				te = astExprOf(args[0])
+				if te == nil {
+					return nil, err
+				}
 			}
 			sid, ok := te.SymbolID()
 			if !ok || sid.PackagePath == xinspect.BuiltinPackagePath {
@@ -386,6 +431,26 @@ func (e *Engine) installInspect() {
 			d, err := e.resolverForInspect()(sid)
 			if err != nil {
 				return nil, err
+			}
+			return &runtime.GoValue{V: d}, nil
+		}),
+		"Lookup": bf("Lookup", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			var te *xinspect.TypeExpr
+			if t, err := typeExprOf(args[0]); err == nil {
+				te = t
+			} else {
+				te = astExprOf(args[0])
+			}
+			if te == nil {
+				return runtime.NIL, nil
+			}
+			sid, ok := te.SymbolID()
+			if !ok || sid.PackagePath == xinspect.BuiltinPackagePath {
+				return runtime.NIL, nil
+			}
+			d, err := e.resolverForInspect()(sid)
+			if err != nil || d == nil {
+				return runtime.NIL, nil
 			}
 			return &runtime.GoValue{V: d}, nil
 		}),
@@ -489,8 +554,47 @@ func goView[T any](v runtime.Value, what string) (*T, error) {
 
 func declViewOf(v runtime.Value) (*xinspect.Decl, error) { return goView[xinspect.Decl](v, "decl") }
 func fileViewOf(v runtime.Value) (*xinspect.File, error) { return goView[xinspect.File](v, "file") }
+func nodeViewOf(v runtime.Value) (*xinspect.Node, error) { return goView[xinspect.Node](v, "node") }
+func opViewOf(v runtime.Value) (*xinspect.Op, error)     { return goView[xinspect.Op](v, "op") }
 func typeExprOf(v runtime.Value) (*xinspect.TypeExpr, error) {
 	return goView[xinspect.TypeExpr](v, "type expression")
+}
+
+// astBackedView is the common shape of body views (Node, Op): a
+// backing ast.Node plus its declaring file/package context.
+type astBackedView interface {
+	AST() ast.Node
+	File() *syntax.File
+	Pkg() *runtime.Package
+}
+
+// astExprOf re-wraps a body view's backing node as a TypeExpr when it
+// is an expression — nil for non-expressions and non-body values.
+func astExprOf(v runtime.Value) *xinspect.TypeExpr {
+	gv, ok := runtime.Unwrap(v).(*runtime.GoValue)
+	if !ok {
+		return nil
+	}
+	bv, ok := gv.V.(astBackedView)
+	if !ok {
+		return nil
+	}
+	e, ok := bv.AST().(ast.Expr)
+	if !ok {
+		return nil
+	}
+	return xinspect.NewTypeExpr(e, bv.File(), bv.Pkg())
+}
+
+// opBodyOf accepts a decl or a func literal op for inspect.Ops.
+func opBodyOf(v runtime.Value) ([]*xinspect.Op, error) {
+	if d, err := declViewOf(v); err == nil {
+		return xinspect.OpsOf(d)
+	}
+	if o, err := opViewOf(v); err == nil {
+		return xinspect.OpsOf(o)
+	}
+	return nil, fmt.Errorf("inspect.Ops expects a decl or a func op")
 }
 
 // pkgOf normalizes package-ish values: *runtime.Package or
