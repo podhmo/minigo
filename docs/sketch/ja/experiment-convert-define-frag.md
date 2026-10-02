@@ -307,7 +307,7 @@ DSL ファイルはふつう `main` の中で `define.Convert` を呼ぶので�
 
 ## 9. round-2: `-check` で型エラーを converter/field に戻す（issue #49）
 
-§9 までの残課題として [issue #49](https://github.com/podhmo/minigo/issues/49) に切り出していたもの（ブランチ `exp/issue49-check`、PR #52）。生成コードの構文エラー、import の登録漏れ、既知の leaf の不一致は、生成時に「誰が直すか」を示せるようになった。残っていたのは、**構文は正しいのに `go build` で型エラーになる**ものである。
+§8 までの残課題として [issue #49](https://github.com/podhmo/minigo/issues/49) に切り出していたもの（ブランチ `exp/issue49-check`、PR #52）。生成コードの構文エラー、import の登録漏れ、既知の leaf の不一致は、生成時に「誰が直すか」を示せるようになった。残っていたのは、**構文は正しいのに `go build` で型エラーになる**ものである。
 
 ### 9.1 先に実例を集めた
 
