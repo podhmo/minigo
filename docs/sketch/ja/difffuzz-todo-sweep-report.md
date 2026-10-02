@@ -34,3 +34,18 @@
 - **1 PR の粒度**: 原則は 1 根本原因 1 PR だが、corpus 1 ファイルを PASS にする複数修正（map.go 3 修正、nilptr2.go 4 修正）は「同一プログラムを PASS にする」単位で束ねた。レビュー容易性より「各 PR が corpus verdict を動かす」単位を優先した判断。
 - **作業ミスの記録**: `convarray` コミットが一時 `assignnamed` ブランチに混入 → soft reset + force-with-lease で分離（自分のブランチのみ、共有前）。`testdata` の gofmt ドリフト（mapclone）が `make format` のたびに再発するため commit 前 `git checkout` で戻す運用に落ち着いた。
 - **Scope 判断**: `gcgort` は Go でも実際にデッドロック、copy/divmod の HANG はスループット差 — 「Go と同じ振る舞い」が目的に合わないケースとして TRAP 受理。unsafe.Pointer 系はポインタ値モデルが要る大物として #40 に管理委譲。
+
+## 5. 次ラウンドの再開方法
+
+次の sweep を始めるときのプロンプト（このラウンドの教訓を反映した版）:
+
+```
+@podhmo/minigo difffuzz harness（tools/difffuzz、.claude/skills/difffuzz/SKILL.md）を使って、difffuzz の todo を確認しながら潰していってください。TODO.md の残件から始め、枯れたら `go -C ./tools/difffuzz run ./ gen` で hunt して新しい SILENT を補充してください。
+
+- 1 根本原因 = 1 PR。回帰は testdata/difffuzz/<verdict>_<slug>/（main.go + want.stdout）にピンする
+- 境界クラスは潰し対象外: unsafe.Pointer → issue #40、GC fidelity、script 値の reflect.ValueOf、unsafe.String/Offsetof、gcgort（Go でもデッドロック）、スループット差の HANG
+- 最後に usecasefuzz（github.com/podhmo/minigo-usecasefuzz、`MINIGO_DIR=<checkout> bash run.sh`）を回してリグレッション確認
+- 終了時に docs/sketch/ja/ にレポート（実施内容・残り状況・不備の振り返り・計画外の記録と判断）
+```
+
+補足: 残存 TODO が無い状態からの再開になるので、hunt が実質の入口になる（`-domain text -seed <新 seed> -batches 16 -per-bucket 1`、深く掘るなら `-batches 32 -depth 6`）。num は seed 8111 で 0 SILENT 済み。
