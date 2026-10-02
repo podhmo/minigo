@@ -388,7 +388,24 @@ func (w *mappingWalker) Visit(node ast.Node) ast.Visitor {
 	if !ok {
 		return w
 	}
-	sel, ok := call.Fun.(*ast.SelectorExpr)
+	// Unwrap explicit generic instantiation — c.Map[T](...) and
+	// c.Convert[D, S](...) are legal call shapes for the generic
+	// methods the go1.27 define API exposes.
+	fun := call.Fun
+	for {
+		switch ix := fun.(type) {
+		case *ast.IndexExpr:
+			fun = ix.X
+		case *ast.IndexListExpr:
+			fun = ix.X
+		case *ast.ParenExpr:
+			fun = ix.X
+		default:
+			goto unwrapped
+		}
+	}
+unwrapped:
+	sel, ok := fun.(*ast.SelectorExpr)
 	if !ok {
 		return w
 	}

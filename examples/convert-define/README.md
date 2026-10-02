@@ -83,13 +83,13 @@ You can then call this function directly in your application code.
 
 ## The `define` API Reference
 
-The public API is housed in the `github.com/podhmo/minigo/examples/convert-define/define` package.
+The public API is housed in the `github.com/podhmo/minigo/examples/convert-define/define` package. `Convert`/`Rule` are generic functions, and on go1.27+ toolchains `c.Convert`/`c.Compute` are generic methods — the go1.26 module keeps both variants buildable by splitting the method declarations by `//go:build go1.27` (a file-level release constraint also raises that file's language version, so generic methods compile in a `go 1.26` module).
 
-*   `define.Convert(mapFunc)`: Defines a conversion between two struct types. The source and destination types are inferred from the signature of the mapping function, which must be `func(c *Config, dst *DstType, src *SrcType)`.
-*   `define.Rule(customFunc)`: Defines a global, reusable conversion rule for a specific type-to-type conversion (e.g., `time.Time` to `string`).
-*   `c.Map(dstField, srcField)`: Maps a source field to a destination field with a **different name**.
-*   `c.Convert(dstField, srcField, converterFunc)`: Maps two fields that require a **custom conversion function**.
-*   `c.Compute(dstField, expression)`: Maps a destination field that is **computed from an expression**.
+*   `define.Convert(mapFunc)`: Defines a conversion between two struct types. The source and destination types are inferred from the signature of the mapping function, which must be `func(c *Config, dst *DstType, src *SrcType)`. Generic — `Convert[Dst, Src]` — so the mapFunc shape is checked statically.
+*   `define.Rule(customFunc)`: Defines a global, reusable conversion rule for a specific type-to-type conversion (e.g., `time.Time` to `string`). Generic — `Rule[Src, Dst]` — so the customFunc must have signature `func(context.Context, *model.ErrorCollector, Src) Dst`.
+*   `c.Map(dstField, srcField)`: Maps a source field to a destination field with a **different name**. Stays `any`-typed: mapped pairs may differ in type and convert through registered rules (e.g. `[]SrcItem` -> `[]DstItem`), which no signature can express.
+*   `c.Convert(dstField, srcField, converterFunc)`: Maps two fields that require a **custom conversion function**. On go1.27+ toolchains generic — `Convert[Dst, Src]` — so the field types are checked against the converter signature `func(context.Context, *model.ErrorCollector, Src) Dst`.
+*   `c.Compute(dstField, expression)`: Maps a destination field that is **computed from an expression**. On go1.27+ toolchains generic — `Compute[T]` — so the expression's result type must match the field type.
 
 All three accept **dotted field paths**, not just top-level fields: `c.Map(dst.Inner.ID, src.ID)` writes a leaf inside a nested destination struct, and `c.Map(dst.Flat, src.In.Value)` reads through a nested source struct. Pointer intermediates are handled — a `*T` on the source side guards the read (`if src.P != nil`), a `*T` on the destination side is nil-initialised before the write (`if dst.P == nil { dst.P = &T{} }`). Bad segments are reported at generation time. Explicit maps are emitted after the automatic field matches, so a leaf-path mapping overrides the copied leaf of a struct its ancestor was also mapped (`c.Map(dst.Inner.ID, src.ID)` beats `dst.Inner = convert(src.Inner)`'s copied ID).
 
@@ -109,3 +109,12 @@ The tool leans entirely on the interpreter it already runs in:
 *   `engine.Package` locates/parses/indexes exactly the packages the DSL touches; `inspect.FieldsOf`, `SignatureOf`, `DefOf` provide decl views; `TypeExpr`'s `Kind`/`Children`/`Unref`/`Resolve` walk type structure lazily.
 *   Bound stdlib packages (e.g. `time`) have no source index, so known members surface as host pseudo-decls — the role `scanner.ExternalTypeOverride` used to play.
 *   `generator.ImportManager` manages imports dynamically in the generated code (moved out of the vendored tree; it never depended on a scanner).
+
+## Works on non-compiling input
+
+Unlike `go/packages`-based tools, the generator does not require the input to compile — minigo reads ASTs and never type-checks, so **parseable code is enough**:
+
+*   Type errors anywhere in `source`/`destination` (undefined identifiers in function bodies, fields of unresolvable types) do not stop generation.
+*   The DSL file itself is never compiled — it is interpreted, and the mapping function literal is only walked as AST, not evaluated — so it may contain unused imports or dead code inside the literal that `go build` would reject (statements elsewhere in `main()` do execute).
+*   Regeneration works while the generated package is broken: the typical field add/remove workflow leaves a stale `generated.go` referencing deleted fields, yet `convert -file define.go` runs fine and the fresh output un-breaks the package.
+*   The only real boundary is **syntax**: a file that does not parse fails generation. Separately, names the DSL actually mentions (types in the `Convert` signature, fields in `c.Map` paths) must resolve — stale references there are generation errors, not ignored.
