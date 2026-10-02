@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"go/scanner"
 	"log/slog"
 	"os"
 
@@ -38,12 +40,20 @@ func main() {
 	ctx := context.Background()
 
 	if err := run(ctx, *defineFile, *output, *dryRun, *buildTags); err != nil {
-		slog.ErrorContext(ctx, "Error", slog.Any("error", err))
+		// The error is a multi-line, user-facing report; print it as
+		// is rather than as an escaped log attribute.
+		slog.ErrorContext(ctx, "convert-define failed")
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
 func run(ctx context.Context, defineFile, output string, dryRun bool, buildTags string) error {
+	header, err := buildConstraintHeader(buildTags)
+	if err != nil {
+		return err
+	}
+
 	slog.InfoContext(ctx, "Starting parser", "file", defineFile)
 
 	runner, err := internal.NewRunner()
@@ -52,6 +62,12 @@ func run(ctx context.Context, defineFile, output string, dryRun bool, buildTags 
 	}
 
 	if err := runner.Run(ctx, defineFile); err != nil {
+		var list scanner.ErrorList
+		if errors.As(err, &list) {
+			if src, rerr := os.ReadFile(defineFile); rerr == nil {
+				return defineSyntaxError(defineFile, list, src)
+			}
+		}
 		return fmt.Errorf("failed to run definition script: %w", err)
 	}
 
@@ -60,10 +76,6 @@ func run(ctx context.Context, defineFile, output string, dryRun bool, buildTags 
 
 	slog.InfoContext(ctx, "Successfully parsed define file", "parsed_info", runner.Info)
 
-	header := ""
-	if buildTags != "" {
-		header = fmt.Sprintf("\n//go:build %s\n// +build %s\n\n", buildTags, buildTags)
-	}
 	generatedCode, err := generator.Generate(runner.TypeResolver(), runner.Info, header)
 	if err != nil {
 		return fmt.Errorf("failed to generate code: %w", err)

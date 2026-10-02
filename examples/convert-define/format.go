@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/build/constraint"
 	"go/parser"
 	"go/scanner"
 	"go/token"
@@ -16,7 +17,7 @@ import (
 	"golang.org/x/tools/imports"
 )
 
-// maxReportedErrors bounds a formatError report; the remainder is
+// maxReportedErrors bounds a syntaxError report; the remainder is
 // summarized as a count.
 const maxReportedErrors = 10
 
@@ -26,7 +27,7 @@ const maxReportedErrors = 10
 var strictImports = false
 
 // formatCode runs goimports over the generated source. Syntax errors
-// come back as a *formatError, which points each error at the
+// come back as a *syntaxError, which points each error at the
 // converter and field that emitted it. goimports silently adding an
 // import is also a generator bug (ImportManager missed a registration),
 // so it is logged instead of being absorbed.
@@ -35,7 +36,13 @@ func formatCode(ctx context.Context, filename string, src []byte) ([]byte, error
 	if err != nil {
 		var list scanner.ErrorList
 		if errors.As(err, &list) {
-			return nil, &formatError{errs: list, src: src}
+			list.RemoveMultiples()
+			return nil, &syntaxError{
+				headline:   fmt.Sprintf("generated code does not parse (%d errors). This is a convert-define generator bug, not a problem in the define file.\nRerun with -log-level debug to dump the full unformatted source.", len(list)),
+				errs:       list,
+				src:        src,
+				provenance: true,
+			}
 		}
 		return nil, fmt.Errorf("goimports failed: %w", err)
 	}
@@ -48,14 +55,29 @@ func formatCode(ctx context.Context, filename string, src []byte) ([]byte, error
 	return formatted, nil
 }
 
-// formatError reports syntax errors in generated code. Generated
-// syntax is the generator's responsibility (c.Compute expressions are
-// re-printed from a parsed AST), so the report says so and names the
-// converter/field each error falls in — the generator decision to look
-// at — with a numbered excerpt of the unformatted source.
-type formatError struct {
-	errs scanner.ErrorList
-	src  []byte
+// syntaxError reports Go syntax errors: every error (bounded), each
+// with a numbered excerpt, under a headline that says who has to act.
+// For generated code that is the generator (c.Compute expressions are
+// re-printed from a parsed AST, so broken syntax is never the user's),
+// and provenance names the converter/field each error falls in — the
+// generator decision to look at. For the define file it is the user.
+// Constructors drop parser cascades on the same line (RemoveMultiples,
+// as gofmt does), so the count reflects distinct sites.
+type syntaxError struct {
+	headline   string
+	errs       scanner.ErrorList
+	src        []byte
+	provenance bool
+}
+
+// defineSyntaxError wraps a parse failure of the define file.
+func defineSyntaxError(filename string, list scanner.ErrorList, src []byte) *syntaxError {
+	list.RemoveMultiples()
+	return &syntaxError{
+		headline: fmt.Sprintf("define file %s does not parse (%d errors). Fix the define file; no code was generated.", filename, len(list)),
+		errs:     list,
+		src:      src,
+	}
 }
 
 var (
@@ -63,19 +85,20 @@ var (
 	enterLine = regexp.MustCompile(`^\s*ec\.Enter\("([^"]+)"\)`)
 )
 
-func (e *formatError) Error() string {
+func (e *syntaxError) Error() string {
 	lines := strings.Split(strings.TrimSuffix(string(e.src), "\n"), "\n")
 	var b strings.Builder
-	fmt.Fprintf(&b, "generated code does not parse (%d errors). This is a convert-define generator bug, not a problem in the define file.\n", len(e.errs))
-	b.WriteString("Rerun with -log-level debug to dump the full unformatted source.\n")
+	b.WriteString(e.headline + "\n")
 	for i, err := range e.errs {
 		if i == maxReportedErrors {
 			fmt.Fprintf(&b, "... and %d more errors\n", len(e.errs)-i)
 			break
 		}
 		fmt.Fprintf(&b, "\n%s\n", err)
-		conv, field := provenance(lines, err.Pos.Line)
-		fmt.Fprintf(&b, "  emitted by: converter %s, field %s\n", orUnknown(conv), orUnknown(field))
+		if e.provenance {
+			conv, field := provenance(lines, err.Pos.Line)
+			fmt.Fprintf(&b, "  emitted by: converter %s, field %s\n", orUnknown(conv), orUnknown(field))
+		}
 		b.WriteString(excerpt(lines, err.Pos.Line, 2))
 	}
 	return b.String()
@@ -114,6 +137,21 @@ func orUnknown(s string) string {
 		return "(unknown)"
 	}
 	return s
+}
+
+// buildConstraintHeader validates -tags as a build constraint
+// expression and renders the //go:build header. A malformed expression
+// is rejected here: written out, it is only a comment to the parser and
+// would surface later as an unrelated-looking build failure.
+func buildConstraintHeader(tags string) (string, error) {
+	if tags == "" {
+		return "", nil
+	}
+	expr, err := constraint.Parse("//go:build " + tags)
+	if err != nil {
+		return "", fmt.Errorf("invalid -tags %q: %v. Fix the command-line arguments: -tags takes a build constraint expression, e.g. -tags e2e or -tags 'linux && !cgo'", tags, err)
+	}
+	return fmt.Sprintf("\n//go:build %s\n\n", expr), nil
 }
 
 // addedImports lists import paths present in formatted but not in src.
