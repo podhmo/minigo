@@ -394,3 +394,419 @@ func DetachedWait() int {
 	time.Sleep(1 * time.Millisecond) // let the goroutine reach Wait
 	return 1
 }
+
+// ---- sync package surface ----
+
+// SyncMapBasic: Store/Load/Range carry script values through the host
+// sync.Map untouched.
+func SyncMapBasic() int {
+	var m sync.Map
+	m.Store("a", 1)
+	m.Store("b", 2)
+	if v, ok := m.Load("a"); !ok || v.(int) != 1 {
+		return -1
+	}
+	sum := 0
+	m.Range(func(k, v any) bool {
+		sum += v.(int)
+		return true
+	})
+	return sum // 3
+}
+
+// SyncMapOps: LoadOrStore / Swap / CompareAndSwap / LoadAndDelete /
+// CompareAndDelete / Clear behave like the host methods.
+func SyncMapOps() int {
+	var m sync.Map
+	if v, loaded := m.LoadOrStore("k", 1); loaded || v.(int) != 1 {
+		return -1
+	}
+	if v, loaded := m.LoadOrStore("k", 2); !loaded || v.(int) != 1 {
+		return -2
+	}
+	m.Store("k", 3)
+	if v, _ := m.Swap("k", 4); v.(int) != 3 {
+		return -3
+	}
+	if !m.CompareAndSwap("k", 4, 5) {
+		return -4
+	}
+	if m.CompareAndSwap("k", 4, 9) {
+		return -5
+	}
+	if v, ok := m.LoadAndDelete("k"); !ok || v.(int) != 5 {
+		return -6
+	}
+	m.Store("x", 1)
+	m.CompareAndDelete("x", 1)
+	m.Store("y", 1)
+	m.Clear()
+	n := 0
+	m.Range(func(k, v any) bool { n++; return true })
+	return n // 0
+}
+
+// SyncMapConcurrent: stores from many goroutines land intact — the host
+// map gives real atomicity, not a script-side simulation.
+func SyncMapConcurrent() int {
+	var m sync.Map
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			m.Store(i, i*i)
+		}(i)
+	}
+	wg.Wait()
+	sum := 0
+	m.Range(func(k, v any) bool {
+		sum += v.(int)
+		return true
+	})
+	return sum // 140
+}
+
+// SyncPoolNew: `&sync.Pool{New: f}` initializes the exported New field
+// of a host literal with a script func; Get on an empty pool invokes
+// it. Put/Get identity is deliberately not asserted — sync.Pool makes
+// no retention guarantee (P migration, GC).
+func SyncPoolNew() int {
+	n := 0
+	p := &sync.Pool{New: func() any {
+		n++
+		x := n
+		return &x
+	}}
+	a := p.Get().(*int)
+	b := p.Get().(*int)
+	if a == b || *a != 1 || *b != 2 || n != 2 {
+		return -1
+	}
+	return 1
+}
+
+// SyncPoolDecl: `var p sync.Pool` gives a usable zero Pool; assigning
+// the exported New field writes through reflection onto the host struct
+// and the stored func then calls back through the VM.
+func SyncPoolDecl() int {
+	var p sync.Pool
+	p.New = func() any { return 7 }
+	return p.New().(int) // 7
+}
+
+// SyncCondSignal: NewCond(&mu) waits and wakes — a real notify, not a
+// fake-clock resolution.
+func SyncCondSignal() int {
+	var mu sync.Mutex
+	c := sync.NewCond(&mu)
+	done := false
+	go func() {
+		mu.Lock()
+		done = true
+		c.Signal()
+		mu.Unlock()
+	}()
+	mu.Lock()
+	for !done {
+		c.Wait()
+	}
+	mu.Unlock()
+	return 1
+}
+
+// SyncCondBroadcast: Broadcast releases every waiter parked on the Cond.
+func SyncCondBroadcast() int {
+	var mu sync.Mutex
+	c := sync.NewCond(&mu)
+	waiting := 0
+	fired := false
+	released := 0
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			mu.Lock()
+			waiting++
+			for !fired {
+				c.Wait()
+			}
+			released++
+			mu.Unlock()
+		}()
+	}
+	for {
+		mu.Lock()
+		if waiting == 3 {
+			fired = true
+			c.Broadcast()
+			mu.Unlock()
+			break
+		}
+		mu.Unlock()
+		runtime.Gosched()
+	}
+	wg.Wait()
+	return released // 3
+}
+
+// SyncScriptLocker: NewCond accepts a script-defined Locker too — its
+// Lock/Unlock methods dispatch back through the VM. The spy delegates
+// mutual exclusion to a real Mutex (script fields are not atomic) and
+// counts under a second one so the dispatch is observable race-free.
+func SyncScriptLocker() int {
+	l := &spyLocker{}
+	c := sync.NewCond(l)
+	done := false
+	go func() {
+		l.Lock()
+		done = true
+		c.Signal()
+		l.Unlock()
+	}()
+	l.Lock()
+	for !done {
+		c.Wait()
+	}
+	l.Unlock()
+	l.guard.Lock()
+	n := l.locks
+	m := l.unlocks
+	l.guard.Unlock()
+	if n == 0 || n != m {
+		return -1
+	}
+	return 1
+}
+
+type spyLocker struct {
+	mu      sync.Mutex
+	guard   sync.Mutex
+	locks   int
+	unlocks int
+}
+
+func (l *spyLocker) Lock() {
+	l.mu.Lock()
+	l.guard.Lock()
+	l.locks++
+	l.guard.Unlock()
+}
+
+func (l *spyLocker) Unlock() {
+	l.guard.Lock()
+	l.unlocks++
+	l.guard.Unlock()
+	l.mu.Unlock()
+}
+
+// SyncRWMutex: readers and a writer serialize through the host RWMutex —
+// the count is exact.
+func SyncRWMutex() int {
+	var rw sync.RWMutex
+	n := 0
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			rw.RLock()
+			_ = n
+			rw.RUnlock()
+		}()
+		go func() {
+			defer wg.Done()
+			rw.Lock()
+			n++
+			rw.Unlock()
+		}()
+	}
+	wg.Wait()
+	return n // 4
+}
+
+// SyncLockerDecl: `var l sync.Locker` coerces a host Mutex through the
+// interface method set (Lock/Unlock dispatch on the boxed value).
+func SyncLockerDecl() int {
+	var l sync.Locker = &sync.Mutex{}
+	l.Lock()
+	l.Unlock()
+	return 1
+}
+
+// SyncTryLock: TryLock reports acquisition like the host method.
+func SyncTryLock() int {
+	var mu sync.Mutex
+	if !mu.TryLock() {
+		return -1
+	}
+	mu.Unlock()
+	mu.Lock()
+	if mu.TryLock() {
+		return -2 // held lock is not tryable
+	}
+	mu.Unlock()
+	return 1
+}
+
+// SyncOnceFunc: the returned func runs its inner func exactly once.
+func SyncOnceFunc() int {
+	calls := 0
+	f := sync.OnceFunc(func() { calls++ })
+	f()
+	f()
+	return calls // 1
+}
+
+// SyncOnceValue: OnceValue memoizes the first result.
+func SyncOnceValue() int {
+	calls := 0
+	f := sync.OnceValue(func() int {
+		calls++
+		return calls * 10
+	})
+	a := f()
+	b := f()
+	if a != 10 || b != 10 || calls != 1 {
+		return -1
+	}
+	return a / 10 // 1
+}
+
+// SyncOnceValues: OnceValues memoizes the pair.
+func SyncOnceValues() int {
+	calls := 0
+	f := sync.OnceValues(func() (int, int) {
+		calls++
+		return 3, 4
+	})
+	a, b := f()
+	c, d := f()
+	if calls != 1 {
+		return -1
+	}
+	return a + b + c + d // 14
+}
+
+// SyncPoolConcurrent: Pool.New is a script func invoked from whichever
+// goroutine calls Get — foreign-goroutine calls reroute to spawned
+// child VMs (the Call goroutine-id check), so this must not race.
+func SyncPoolConcurrent() int {
+	n := 0
+	var mu sync.Mutex
+	p := &sync.Pool{New: func() any {
+		mu.Lock()
+		n++
+		x := n
+		mu.Unlock()
+		return &x
+	}}
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = p.Get().(*int)
+		}()
+	}
+	wg.Wait()
+	if n < 1 || n > 4 {
+		return -1
+	}
+	return 1
+}
+
+// SyncWaitGroupGo: wg.Go (Go 1.25) runs the func on a new goroutine and
+// counts the WaitGroup for you.
+func SyncWaitGroupGo() int {
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	n := 0
+	for i := 0; i < 4; i++ {
+		wg.Go(func() {
+			mu.Lock()
+			n++
+			mu.Unlock()
+		})
+	}
+	wg.Wait()
+	return n // 4
+}
+
+// SyncMethodMutex: a sync.Mutex embedded in a script struct serializes
+// its methods like Go.
+type counter struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (c *counter) Inc() {
+	c.mu.Lock()
+	c.n++
+	c.mu.Unlock()
+}
+
+func SyncMethodMutex() int {
+	c := &counter{}
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.Inc()
+		}()
+	}
+	wg.Wait()
+	return c.n // 5
+}
+
+// SyncEmbedMutex: a host mutex embedded in a script struct promotes its
+// methods — `struct{ sync.Mutex }` is Go's standard lockable struct.
+type gated struct {
+	sync.Mutex
+	n int
+}
+
+func (g *gated) Inc() {
+	g.Lock()
+	g.n++
+	g.Unlock()
+}
+
+func SyncEmbedMutex() int {
+	g := &gated{}
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			g.Inc()
+		}()
+	}
+	wg.Wait()
+	return g.n // 5
+}
+
+// SyncEmbedPoolField: a promoted host field works too — g.New reads the
+// embedded Pool's exported field through the same host-select path.
+type poolBox struct {
+	sync.Pool
+}
+
+func SyncEmbedPoolField() int {
+	g := &poolBox{}
+	g.New = func() any { return 9 }
+	return g.New().(int) // 9
+}
+
+// SyncAssertHostPtr: c.L is a host pointer box — type-asserting it to
+// *sync.Mutex matches by the boxed native type, not by Deref.
+func SyncAssertHostPtr() int {
+	var mu sync.Mutex
+	c := sync.NewCond(&mu)
+	if _, ok := c.L.(*sync.Mutex); !ok {
+		return -1
+	}
+	return 1
+}

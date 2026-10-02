@@ -1219,6 +1219,39 @@ func (e *Engine) installStdlib() {
 		"Mutex":     hostType("sync.Mutex", func() any { return &sync.Mutex{} }),
 		"RWMutex":   hostType("sync.RWMutex", func() any { return &sync.RWMutex{} }),
 		"Once":      hostType("sync.Once", func() any { return &sync.Once{} }),
+		"Map":       hostType("sync.Map", func() any { return &sync.Map{} }),
+		"Pool":      hostType("sync.Pool", func() any { return &sync.Pool{} }),
+		"Cond":      hostType("sync.Cond", func() any { return &sync.Cond{} }),
+		// an interface typedef: `var l sync.Locker` / parameter coercion
+		// duck-type against the reflect method set (GoValue) or the
+		// declared method set (script types).
+		"Locker": &runtime.TypeDef{
+			Name: "sync.Locker", Kind: runtime.KindInterface,
+			MReqs: []string{"Lock", "Unlock"},
+		},
+		"NewCond": &runtime.BuiltinFunc{Name: "sync.NewCond", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("sync.NewCond needs 1 arg, got %d", len(args))
+			}
+			l, err := lockerOf(vc, args[0])
+			if err != nil {
+				return nil, err
+			}
+			return &runtime.GoValue{V: sync.NewCond(l)}, nil
+		}},
+		// sync.OnceFunc family: memoization lives on the host (a real
+		// sync.Once), while the wrapped function runs on whichever VM
+		// calls the result — like Go, a panic on the first call still
+		// consumes the once.
+		"OnceFunc": &runtime.BuiltinFunc{Name: "sync.OnceFunc", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			return syncOnceWrap("sync.OnceFunc", args)
+		}},
+		"OnceValue": &runtime.BuiltinFunc{Name: "sync.OnceValue", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			return syncOnceWrap("sync.OnceValue", args)
+		}},
+		"OnceValues": &runtime.BuiltinFunc{Name: "sync.OnceValues", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			return syncOnceWrap("sync.OnceValues", args)
+		}},
 	})
 }
 
@@ -1226,6 +1259,70 @@ func (e *Engine) installStdlib() {
 // produce a boxed *newT() so selectMember sees the real method set.
 func hostType(name string, new func() any) *runtime.TypeDef {
 	return &runtime.TypeDef{Name: name, Kind: runtime.KindStruct, HostNew: new}
+}
+
+// lockerOf resolves a script value to a sync.Locker for NewCond: host
+// values pass through goNative (*sync.Mutex, *sync.RWMutex), while a
+// script-defined value adapts through its Lock/Unlock members — calls
+// run back on the VM that built the Cond, the same hazard as every
+// retained host callback.
+func lockerOf(vc runtime.VMCaller, v runtime.Value) (sync.Locker, error) {
+	if l, ok := goNative(v).(sync.Locker); ok {
+		return l, nil
+	}
+	dv, ok := runtime.Deref(v)
+	if !ok {
+		dv = v
+	}
+	lock, lok := vc.Member(dv, "Lock")
+	unlock, uok := vc.Member(dv, "Unlock")
+	if lok && uok {
+		return &scriptLocker{vc: vc, lock: lock, unlock: unlock}, nil
+	}
+	return nil, fmt.Errorf("sync.NewCond: cannot use %T as sync.Locker", v)
+}
+
+// scriptLocker adapts a script value with Lock/Unlock methods to a host
+// sync.Locker so sync.Cond can wait on it.
+type scriptLocker struct {
+	vc           runtime.VMCaller
+	lock, unlock runtime.Value
+}
+
+func (s *scriptLocker) Lock()   { s.call(s.lock) }
+func (s *scriptLocker) Unlock() { s.call(s.unlock) }
+
+func (s *scriptLocker) call(fn runtime.Value) {
+	if _, err := s.vc.Call(fn, nil); err != nil {
+		panic(err)
+	}
+}
+
+// syncOnceWrap implements the sync.OnceFunc family: the returned callable
+// memoizes the script function's first result under a real host
+// sync.Once. The inner call runs on the VM that invokes the wrapper
+// (vc.Call inside Fn), and a panic on that first call consumes the once
+// like Go's OnceFunc does.
+func syncOnceWrap(name string, args []runtime.Value) (runtime.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("%s needs 1 arg, got %d", name, len(args))
+	}
+	f := args[0]
+	var once sync.Once
+	var res runtime.Value
+	return &runtime.BuiltinFunc{Name: name + "(...)", Fn: func(vc runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
+		once.Do(func() {
+			r, err := vc.Call(f, nil)
+			if err != nil {
+				panic(err)
+			}
+			res = r
+		})
+		if res == nil {
+			return runtime.NIL, nil
+		}
+		return res, nil
+	}}, nil
 }
 
 // ---- value marshalling ----

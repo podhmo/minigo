@@ -4,6 +4,7 @@
 package vm
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
 	"go/format"
@@ -11,6 +12,7 @@ import (
 	"math"
 	"os"
 	"reflect"
+	goruntime "runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -80,11 +82,21 @@ type Hooks struct {
 // statement forks a fresh VM sharing the same process so goroutines
 // genuinely interleave on host goroutines. Only package state (globals,
 // the materialization cache, channels) is shared between them.
+//
+// A Call from a foreign goroutine — a host-retained callback firing
+// off-VM (WaitGroup.Go, time.AfterFunc) — does not run here: Call
+// detects it by goroutine id and reroutes to a spawned child VM of the
+// same process, keeping the frames stack single-owner.
 type VM struct {
 	H Hooks
 
 	// frames is the live call stack (innermost last); recover() consults it.
 	frames []*frame
+	// callMu guards callDepth/callGid: the goroutine id owning the
+	// in-flight Call(s). A foreign goroutine's Call spawns instead.
+	callMu    sync.Mutex
+	callDepth int
+	callGid   int64
 	// inflight is the script panic currently being propagated, visible to
 	// recover() only while a frame's defers are running.
 	inflight *runtime.Panic
@@ -151,6 +163,8 @@ func IsProcExit(err error) bool { _, ok := err.(procExit); return ok }
 // `go` spawns that occur before the Call boundary joins the scope so
 // they die with it. ReleaseProc ends a scope opened by EnsureProc.
 func (v *VM) EnsureProc() {
+	v.callMu.Lock()
+	defer v.callMu.Unlock()
 	if v.proc == nil {
 		v.proc = newProc()
 	}
@@ -160,6 +174,8 @@ func (v *VM) EnsureProc() {
 // ReleaseProc ends a scope opened by EnsureProc: the process is killed
 // (parked goroutines abort) when the last hold releases.
 func (v *VM) ReleaseProc() {
+	v.callMu.Lock()
+	defer v.callMu.Unlock()
 	v.procHolds--
 	if v.procHolds <= 0 {
 		if v.proc != nil {
@@ -183,23 +199,54 @@ var nilChanValue = reflect.ValueOf((chan struct{})(nil))
 
 // Spawn implements VMCaller.Spawn — the `go` statement's machinery.
 func (v *VM) Spawn(fn runtime.Value, args []runtime.Value) *runtime.Task {
+	v.callMu.Lock()
 	if v.proc == nil {
 		// a spawn outside any Call (host-driven VM) gets a detached
 		// process: nothing kills it, matching a goroutine that outlives
-		// the program it was expected to die with
-		v.EnsureProc()
+		// the program it was expected to die with — the hold is
+		// deliberately never released.
+		v.proc = newProc()
+		v.procHolds++
 	}
 	p := v.proc
+	v.callMu.Unlock()
 	t := &runtime.Task{Done: make(chan struct{}), Parent: v.task}
 	child := &VM{H: v.H, proc: p, task: t}
 	go func() {
-		_, err := child.Call(fn, args)
+		r, err := child.Call(fn, args)
+		t.Result = r
 		t.Finish(err, IsProcExit(err))
 		if err != nil && !IsProcExit(err) {
 			p.fail(err)
 		}
 	}()
 	return t
+}
+
+// goroutineID reports the calling goroutine's id, parsed out of
+// runtime.Stack — the stdlib exposes no accessor and Call needs one to
+// tell a same-goroutine re-entry from a foreign one (a host-retained
+// callback firing on another goroutine). 0 means unparseable, which
+// Call treats as foreign when the VM is busy — the safe direction.
+func goroutineID() int64 {
+	var buf [48]byte
+	n := goruntime.Stack(buf[:], false)
+	s := buf[:n]
+	// "goroutine 123 [running]:" — the id sits between the first two
+	// spaces of the header line.
+	i := bytes.IndexByte(s, ' ')
+	if i < 0 {
+		return 0
+	}
+	j := bytes.IndexByte(s[i+1:], ' ')
+	if j < 0 {
+		return 0
+	}
+	id, err := strconv.ParseInt(string(s[i+1:i+1+j]), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return id
 }
 
 // Task implements VMCaller.Task — nil on the root goroutine.
@@ -276,6 +323,30 @@ func (v *VM) assignCell(f *frame, c *runtime.Cell, val runtime.Value) {
 // and are converted to errors here. The outermost Call on a VM is its
 // process's root: the proc is created lazily and killed on return.
 func (v *VM) Call(callee runtime.Value, args []runtime.Value) (result runtime.Value, err error) {
+	gid := goroutineID()
+	v.callMu.Lock()
+	if v.callDepth > 0 && v.callGid != gid {
+		v.callMu.Unlock()
+		// a foreign goroutine — a retained host callback firing off-VM
+		// (WaitGroup.Go, time.AfterFunc, a Pool.New hit from another
+		// script goroutine): the owning goroutine holds this frame
+		// stack, so run the call on a spawned child VM of the same
+		// process and join it instead of racing the owner's frames.
+		t := v.Spawn(callee, args)
+		werr := t.Wait()
+		return t.Result, werr
+	}
+	v.callDepth++
+	v.callGid = gid
+	v.callMu.Unlock()
+	defer func() {
+		v.callMu.Lock()
+		v.callDepth--
+		if v.callDepth == 0 {
+			v.callGid = 0
+		}
+		v.callMu.Unlock()
+	}()
 	p := v.proc
 	if p == nil {
 		v.EnsureProc()
@@ -340,6 +411,11 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value) (runtime.Value, er
 			// a value of a named func type calls through its underlying
 			callee = c.V
 			continue
+		case *runtime.GoValue:
+			if fv := reflect.ValueOf(c.V); fv.IsValid() && fv.Kind() == reflect.Func {
+				return callReflectFunc(fmt.Sprintf("%v", fv.Type()), fv, v, args)
+			}
+			return nil, fmt.Errorf("value of type %T is not callable", callee)
 		default:
 			if dv, ok := runtime.Deref(callee); ok {
 				callee = dv
@@ -1509,54 +1585,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 			f.trap("no member %s on host value %T", name, b.V)
 		}
 		bf := &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			mt := m.Type()
-			nin := mt.NumIn()
-			if !mt.IsVariadic() && len(args) != nin {
-				return nil, fmt.Errorf("%s needs %d args, got %d", name, nin, len(args))
-			}
-			if mt.IsVariadic() && len(args) < nin-1 {
-				return nil, fmt.Errorf("%s needs at least %d args, got %d", name, nin-1, len(args))
-			}
-			// a trailing slice assignable to the variadic parameter calls
-			// through CallSlice — `f(xs...)`-style forwarding on natives.
-			in := make([]reflect.Value, len(args))
-			useSlice := false
-			for i, a := range args {
-				pt := mt.In(min(i, nin-1))
-				if mt.IsVariadic() && i >= nin-1 {
-					if i == nin-1 && len(args) == nin {
-						if rv, err := toReflectValue(a, pt, vc); err == nil {
-							in[i] = rv
-							useSlice = true
-							continue
-						}
-					}
-					pt = pt.Elem()
-				}
-				rv, err := toReflectValue(a, pt, vc)
-				if err != nil {
-					return nil, fmt.Errorf("%s arg %d: %w", name, i, err)
-				}
-				in[i] = rv
-			}
-			var out []reflect.Value
-			if useSlice {
-				out = m.CallSlice(in)
-			} else {
-				out = m.Call(in)
-			}
-			switch len(out) {
-			case 0:
-				return runtime.NIL, nil
-			case 1:
-				return goValueOf(out[0]), nil
-			default:
-				el := make([]runtime.Value, len(out))
-				for i, o := range out {
-					el[i] = goValueOf(o)
-				}
-				return &runtime.Tuple{Elems: el}, nil
-			}
+			return callReflectFunc(name, m, vc, args)
 		}}
 		// the method value's own PC is a thunk (reflect.methodValueCall)
 		// — the declared method's Func is the only handle that still
@@ -1699,6 +1728,42 @@ func hostField(v any, name string) (reflect.Value, bool) {
 	return fv, true
 }
 
+// initHostLiteral writes keyed composite-literal fields onto a
+// host-created value (`&sync.Pool{New: f}`): the pointer chain is
+// dereferenced to a settable struct, each key must name an exported
+// field, and the value marshals to the field's type (a script func for
+// New, via toReflectValue's adaptFunc).
+func (v *VM) initHostLiteral(f *frame, td *runtime.TypeDef, hv any, raw []runtime.Value) {
+	rv := reflect.ValueOf(hv)
+	for rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			f.trap("cannot initialize host type %s: nil struct", td.Name)
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Struct {
+		f.trap("cannot initialize host type %s with fields", td.Name)
+	}
+	for i := 0; i < len(raw); i += 2 {
+		name, ok := raw[i].(string)
+		if !ok {
+			f.trap("struct literal key %T", raw[i])
+		}
+		fv := rv.FieldByName(name)
+		if !fv.IsValid() {
+			f.trap("%s has no field %s", td.Name, name)
+		}
+		if !fv.CanSet() {
+			f.trap("cannot set unexported field %s of host type %s", name, td.Name)
+		}
+		val, err := toReflectValue(raw[i+1], fv.Type(), v)
+		if err != nil {
+			f.trap("%s.%s: %s", td.Name, name, err)
+		}
+		fv.Set(val)
+	}
+}
+
 // toReflectValue marshals a runtime value to a reflect.Value of the
 // requested type: empty interfaces carry the value verbatim (a *Cell stays
 // a pointer, slices/maps cross unconverted), func types wrap the callable
@@ -1794,12 +1859,67 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 	return reflect.Value{}, fmt.Errorf("cannot use %s as %s", av.Type(), t)
 }
 
+// callReflectFunc invokes a host func reflect.Value with script args:
+// arity checks, variadic/CallSlice handling, and result marshaling —
+// shared by host method values and callable GoValue funcs.
+func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	mt := m.Type()
+	nin := mt.NumIn()
+	if !mt.IsVariadic() && len(args) != nin {
+		return nil, fmt.Errorf("%s needs %d args, got %d", name, nin, len(args))
+	}
+	if mt.IsVariadic() && len(args) < nin-1 {
+		return nil, fmt.Errorf("%s needs at least %d args, got %d", name, nin-1, len(args))
+	}
+	// a trailing slice assignable to the variadic parameter calls
+	// through CallSlice — `f(xs...)`-style forwarding on natives.
+	in := make([]reflect.Value, len(args))
+	useSlice := false
+	for i, a := range args {
+		pt := mt.In(min(i, nin-1))
+		if mt.IsVariadic() && i >= nin-1 {
+			if i == nin-1 && len(args) == nin {
+				if rv, err := toReflectValue(a, pt, vc); err == nil {
+					in[i] = rv
+					useSlice = true
+					continue
+				}
+			}
+			pt = pt.Elem()
+		}
+		rv, err := toReflectValue(a, pt, vc)
+		if err != nil {
+			return nil, fmt.Errorf("%s arg %d: %w", name, i, err)
+		}
+		in[i] = rv
+	}
+	var out []reflect.Value
+	if useSlice {
+		out = m.CallSlice(in)
+	} else {
+		out = m.Call(in)
+	}
+	switch len(out) {
+	case 0:
+		return runtime.NIL, nil
+	case 1:
+		return goValueOf(out[0]), nil
+	default:
+		el := make([]runtime.Value, len(out))
+		for i, o := range out {
+			el[i] = goValueOf(o)
+		}
+		return &runtime.Tuple{Elems: el}, nil
+	}
+}
+
 // adaptFunc wraps a script callable as a host-typed func so methods taking
 // a func parameter (sync.Once.Do, sort callbacks, WalkDir-style visitors)
 // can invoke it: calls run back on vc — the VM the host call is executing
 // on, which is the right goroutine for synchronous host callbacks. A host
-// that retains the func and calls it later from another goroutine invokes
-// the script on that VM without synchronization (a documented hazard).
+// that retains the func and calls it later from another goroutine
+// (sync.WaitGroup.Go, time.AfterFunc) lands on vc.Call from a foreign
+// goroutine, which reroutes to a spawned child VM — see Call.
 func adaptFunc(x runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.Value, error) {
 	if vc == nil {
 		return reflect.Value{}, fmt.Errorf("cannot adapt %T to %s off-VM", x, t)
@@ -1984,6 +2104,12 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 			inner.Fields[j] = v.coerce(f, val, ft)
 			return
 		}
+		// promoted host field (sync.Pool.New behind an embedded
+		// host-typed field): write through reflection on the box.
+		if recv, ok := v.promotedHostField(f, b, name); ok {
+			v.setField(f, recv, name, val)
+			return
+		}
 		f.trap("%s has no field %s", b.Def.Name, name)
 	case *runtime.GoValue:
 		// host struct behind a pointer: `cmd.Dir = "sub"` writes through
@@ -2064,6 +2190,43 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 		return nil
 	}
 	return nil
+}
+
+// promotedHostField locates an exported field living on an embedded
+// host-typed field (sync.Pool.New): resolves each embed spec's typedef
+// and, when it is host-backed, checks the stored value's exported
+// fields through hostField. The returned receiver is the embedded field
+// value — setField/selectMember unwrap it to the GoValue inside.
+func (v *VM) promotedHostField(f *frame, s *runtime.Struct, name string) (runtime.Value, bool) {
+	if v.H.ResolveType == nil {
+		return nil, false
+	}
+	for k, spec := range s.Def.EmbedSpecs {
+		if k >= len(s.Def.EmbedIdx) {
+			continue
+		}
+		embTd, err := v.H.ResolveType(s.Def, spec)
+		if err != nil || embTd == nil || embTd.HostNew == nil {
+			continue
+		}
+		idx := s.Def.EmbedIdx[k]
+		if idx >= len(s.Fields) {
+			continue
+		}
+		recv := s.Fields[idx]
+		dv := recv
+		if d, ok := runtime.Deref(dv); ok {
+			dv = d
+		}
+		gv, ok := dv.(*runtime.GoValue)
+		if !ok {
+			continue
+		}
+		if _, ok := hostField(gv.V, name); ok {
+			return recv, true
+		}
+	}
+	return nil, false
 }
 
 // fieldTypedefs returns declared field types for a struct typedef (nil
@@ -2515,12 +2678,18 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 		f.trap("composite literal on non-type %T", tdv)
 	}
 	if td.HostNew != nil {
-		// host-backed type (sync.Mutex, ...): literal form yields a fresh
-		// boxed host value; field initialization has no script meaning
+		// host-backed type (sync.Mutex, sync.Pool, ...): the literal
+		// yields a fresh boxed host value; keyed fields initialize the
+		// exported fields of the host struct through reflection
+		// (`&sync.Pool{New: f}`).
+		hv := td.HostNew()
 		if n > 0 {
-			f.trap("cannot initialize host type %s with fields", td.Name)
+			if !kv {
+				f.trap("cannot initialize host type %s with positional fields", td.Name)
+			}
+			v.initHostLiteral(f, td, hv, raw[:2*n])
 		}
-		return &runtime.GoValue{V: td.HostNew()}
+		return &runtime.GoValue{V: hv}
 	}
 	// a type alias builds the underlying composite
 	if td.Kind == runtime.KindAlias && v.H.Underlying != nil {
@@ -4464,6 +4633,17 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 				}
 				f.trap("cannot resolve element type of %s", tdName(td))
 			}
+		}
+		if gv, ok := x.(*runtime.GoValue); ok {
+			// a host box never dereferences through Deref — compare the
+			// boxed native type instead. Host typedefs box a pointer
+			// zero (sync.Mutex -> *sync.Mutex), so *T matches when the
+			// native type equals the typedef's own box; other *T fall
+			// back to comparing the printed type spelling.
+			if et.HostNew != nil {
+				return reflect.TypeOf(gv.V) == reflect.TypeOf(et.HostNew())
+			}
+			return reflect.TypeOf(gv.V).String() == tdName(td)
 		}
 		dv, ok := runtime.Deref(x)
 		if !ok {
