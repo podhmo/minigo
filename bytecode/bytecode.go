@@ -50,7 +50,7 @@ const (
 	OpSlice    // pop hi, pop lo, pop base -> base[lo:hi] (Nil bounds = absent); B=1: pop max first -> base[lo:hi:max]
 	OpDeref    // pop cell -> push cell.Elem
 	OpSetInd   // pop value, pop cell -> cell.Elem = value (*p = v)
-	OpSetRefs  // A: n targets; pop A values then A refs, store ref_i <- val_i left-to-right (multi-assign)
+	OpSetRefs  // A: n targets; B=0: pop A values then A refs; B=1: pop A refs then A values (range: refs evaluate after the iter pair pushes). Stores ref_i <- val_i left-to-right.
 	OpBox      // pop value -> push &Cell{value} (address-of composite literal)
 
 	// calls and literals
