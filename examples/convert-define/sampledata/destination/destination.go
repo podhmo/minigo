@@ -64,3 +64,21 @@ type DstNestedInner struct {
 	ID    int64
 	Value string
 }
+
+type DstShapes struct {
+	PtrToVal    int64
+	ValToPtr    *int64
+	PtrPtr      **DstLeaf
+	SlicePP     []**DstLeaf
+	MapPP       map[string]**DstLeaf
+	SlicePtrVal []int64
+	SliceValPtr []*int64
+	Nested      [][]int64
+	MapSlice    map[int64][]int64
+	Arr         [2]int64
+	PSlice      []int64
+}
+
+type DstLeaf struct {
+	V int64
+}

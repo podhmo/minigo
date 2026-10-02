@@ -461,6 +461,217 @@ func ConvertSrcNestedToDstNested(ctx context.Context, src *source.SrcNested) (*d
 	return dst, nil
 }
 
+// convertSrcShapesToDstShapes converts source.SrcShapes to destination.DstShapes.
+func convertSrcShapesToDstShapes(ctx context.Context, ec *model.ErrorCollector, src *source.SrcShapes) *destination.DstShapes {
+	if src == nil {
+		return nil
+	}
+	dst := &destination.DstShapes{}
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("PtrToVal")
+	if src.PtrToVal != nil {
+		dst.PtrToVal = int64((*src.PtrToVal))
+	}
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("ValToPtr")
+	{
+		tmp := int64(src.ValToPtr)
+		dst.ValToPtr = &tmp
+	}
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("PtrPtr")
+	if src.PtrPtr != nil {
+		tmp := convertSrcLeafToDstLeaf(ctx, ec, (*src.PtrPtr))
+		dst.PtrPtr = &tmp
+	} else {
+		dst.PtrPtr = nil
+	}
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("SlicePP")
+	{
+		convertedSlice := make([]**destination.DstLeaf, len(src.SlicePP))
+		for i, item := range src.SlicePP {
+			ec.Enter(fmt.Sprintf("[%d]", i))
+			convertedSlice[i] = func() **destination.DstLeaf {
+				if item == nil {
+					return nil
+				}
+				tmp := convertSrcLeafToDstLeaf(ctx, ec, (*item))
+				return &tmp
+			}()
+			ec.Leave()
+		}
+		dst.SlicePP = convertedSlice
+	}
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("MapPP")
+	{
+		convertedMap := make(map[string]**destination.DstLeaf, len(src.MapPP))
+		for key, value := range src.MapPP {
+			ec.Enter(fmt.Sprintf("[%v]", key))
+			convertedMap[key] = func() **destination.DstLeaf {
+				if value == nil {
+					return nil
+				}
+				tmp := convertSrcLeafToDstLeaf(ctx, ec, (*value))
+				return &tmp
+			}()
+			ec.Leave()
+		}
+		dst.MapPP = convertedMap
+	}
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("SlicePtrVal")
+	{
+		convertedSlice := make([]int64, len(src.SlicePtrVal))
+		for i, item := range src.SlicePtrVal {
+			ec.Enter(fmt.Sprintf("[%d]", i))
+			convertedSlice[i] = func() int64 {
+				if item == nil {
+					var z int64
+					return z
+				}
+				return int64((*item))
+			}()
+			ec.Leave()
+		}
+		dst.SlicePtrVal = convertedSlice
+	}
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("SliceValPtr")
+	{
+		convertedSlice := make([]*int64, len(src.SliceValPtr))
+		for i, item := range src.SliceValPtr {
+			ec.Enter(fmt.Sprintf("[%d]", i))
+			convertedSlice[i] = func() *int64 {
+				tmp := int64(item)
+				return &tmp
+			}()
+			ec.Leave()
+		}
+		dst.SliceValPtr = convertedSlice
+	}
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("Nested")
+	{
+		convertedSlice := make([][]int64, len(src.Nested))
+		for i, item := range src.Nested {
+			ec.Enter(fmt.Sprintf("[%d]", i))
+			convertedSlice[i] = func() []int64 {
+				convertedSlice := make([]int64, len(item))
+				for i, item := range item {
+					ec.Enter(fmt.Sprintf("[%d]", i))
+					convertedSlice[i] = int64(item)
+					ec.Leave()
+				}
+				return convertedSlice
+			}()
+			ec.Leave()
+		}
+		dst.Nested = convertedSlice
+	}
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("MapSlice")
+	{
+		convertedMap := make(map[int64][]int64, len(src.MapSlice))
+		for key, value := range src.MapSlice {
+			ec.Enter(fmt.Sprintf("[%v]", key))
+			convertedMap[int64(key)] = func() []int64 {
+				convertedSlice := make([]int64, len(value))
+				for i, item := range value {
+					ec.Enter(fmt.Sprintf("[%d]", i))
+					convertedSlice[i] = func() int64 {
+						if item == nil {
+							var z int64
+							return z
+						}
+						return int64((*item))
+					}()
+					ec.Leave()
+				}
+				return convertedSlice
+			}()
+			ec.Leave()
+		}
+		dst.MapSlice = convertedMap
+	}
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("Arr")
+	{
+		for i, item := range src.Arr {
+			ec.Enter(fmt.Sprintf("[%d]", i))
+			dst.Arr[i] = func() int64 {
+				if item == nil {
+					var z int64
+					return z
+				}
+				return int64((*item))
+			}()
+			ec.Leave()
+		}
+	}
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("PSlice")
+	if src.PSlice != nil {
+		dst.PSlice = func() []int64 {
+			convertedSlice := make([]int64, len((*src.PSlice)))
+			for i, item := range *src.PSlice {
+				ec.Enter(fmt.Sprintf("[%d]", i))
+				convertedSlice[i] = int64(item)
+				ec.Leave()
+			}
+			return convertedSlice
+		}()
+	}
+	ec.Leave()
+	return dst
+}
+
+// ConvertSrcShapesToDstShapes converts source.SrcShapes to destination.DstShapes.
+func ConvertSrcShapesToDstShapes(ctx context.Context, src *source.SrcShapes) (*destination.DstShapes, error) {
+	if src == nil {
+		return nil, nil
+	}
+	ec := model.NewErrorCollector(0)
+	dst := convertSrcShapesToDstShapes(ctx, ec, src)
+	if ec.HasErrors() {
+		return dst, errors.Join(ec.Errors()...)
+	}
+	return dst, nil
+}
+
 // convertSrcContactToDstContact converts source.SrcContact to destination.DstContact.
 //
 // Fields that are not populated by this converter:
@@ -519,6 +730,34 @@ func ConvertSrcNestedInnerToDstNestedInner(ctx context.Context, src *source.SrcN
 	}
 	ec := model.NewErrorCollector(0)
 	dst := convertSrcNestedInnerToDstNestedInner(ctx, ec, src)
+	if ec.HasErrors() {
+		return dst, errors.Join(ec.Errors()...)
+	}
+	return dst, nil
+}
+
+// convertSrcLeafToDstLeaf converts source.SrcLeaf to destination.DstLeaf.
+func convertSrcLeafToDstLeaf(ctx context.Context, ec *model.ErrorCollector, src *source.SrcLeaf) *destination.DstLeaf {
+	if src == nil {
+		return nil
+	}
+	dst := &destination.DstLeaf{}
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("V")
+	dst.V = int64(src.V)
+	ec.Leave()
+	return dst
+}
+
+// ConvertSrcLeafToDstLeaf converts source.SrcLeaf to destination.DstLeaf.
+func ConvertSrcLeafToDstLeaf(ctx context.Context, src *source.SrcLeaf) (*destination.DstLeaf, error) {
+	if src == nil {
+		return nil, nil
+	}
+	ec := model.NewErrorCollector(0)
+	dst := convertSrcLeafToDstLeaf(ctx, ec, src)
 	if ec.HasErrors() {
 		return dst, errors.Join(ec.Errors()...)
 	}
