@@ -1,5 +1,7 @@
 package main
 
+import "fmt"
+
 type D struct{}
 
 func (d D) h() int { return 1 }
@@ -9,8 +11,8 @@ type A struct{ B }
 
 func main() {
 	defer func() {
-		println(recover() != nil)
+		fmt.Println(recover() != nil)
 	}()
 	var a A
-	println(a.h())
+	fmt.Println(a.h())
 }
