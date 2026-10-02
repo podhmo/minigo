@@ -1,0 +1,4 @@
+SILENT/value (seen ×1)
+shape:  expr:ss==nil(sorted([]string))
+go:     bool true
+minigo: bool false

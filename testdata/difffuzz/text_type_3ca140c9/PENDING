@@ -1,0 +1,4 @@
+SILENT/type (seen ×18)
+shape:  expr:regexpAll(string)
+go:     []string [ello orld]
+minigo: interface{} [ello orld]

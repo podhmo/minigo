@@ -1,0 +1,4 @@
+SILENT/value (seen ×3)
+shape:  expr:CutPrefix(string, string)
+go:     string false
+minigo: string  false

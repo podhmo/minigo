@@ -1,4 +1,4 @@
-.PHONY: all test format clean lint go-mod-tidy-all
+.PHONY: all test format clean lint go-mod-tidy-all difffuzz difffuzz-corpus
 
 all:
 	go build ./...
@@ -16,6 +16,15 @@ test:
 	go test ./...
 	go -C ./examples/task-run test ./...
 	go -C ./examples/convert-define test ./...
+
+# differential harness vs the go toolchain (see tools/difffuzz/README.md).
+# override e.g. `make difffuzz DIFFFUZZ_ARGS="-domain num -seed 1"`
+DIFFFUZZ_ARGS ?= -domain text -batches 16
+difffuzz:
+	go -C ./tools/difffuzz run ./ gen $(DIFFFUZZ_ARGS)
+
+difffuzz-corpus:
+	go -C ./tools/difffuzz run ./ corpus -goroot-tests $(DIFFFUZZ_CORPUS_ARGS)
 
 clean:
 	go clean -cache -testcache # General Go clean
