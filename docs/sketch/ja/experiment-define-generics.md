@@ -80,6 +80,8 @@ minigo は型検査をしない AST インタプリタなので、go/packages �
 
 つまり「src/dst は更新したが変換関数がまだ壊れている」という途中状態でもツールは回せる。go/packages 系ツールでよくある「まずビルドを通せ」制約は存在しない。
 
+特に典型的なワークフロー — src/dst のフィールド追加・削除で **`package gen` 内の stale な `generated.go` 自体がビルドエラーになっている状態** でも、`-file` は DSL ファイルだけを読むので再生成は成功し、新しい出力が上書きされてパッケージが直る（`stale-generated` ケース。`generated.go` は gitignore されるため stale 状態は `pre-gen.sh` フックで毎回再現する）。
+
 ## 8. 残件
 
 - `go.mod` の言語バージョン未強制（§5）— TODO.md に `[ ]` で起票。
