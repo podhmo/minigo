@@ -2,6 +2,7 @@ package minigo_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -46,7 +47,7 @@ func TestInspect(t *testing.T) {
 		"HostMethodSym",
 		"SourceOfStruct",
 		"VarValueRead", // flips the package State to "ready"
-		"PkgFields",    // field/method fallback on *runtime.Package (#26)
+		"PkgMetaView",  // metadata via accessors; member shadow wins (#26)
 	} {
 		if got := run(t, e, "./testdata/inspectuse", fn); got != "ok" {
 			t.Errorf("%s: %v", fn, got)
@@ -69,12 +70,24 @@ func TestInspect(t *testing.T) {
 		"BoundFieldTrap",    // bound type has no decl for Fields
 		"BoundMethodTrap",   // bound type has no index for Methods
 		"HostSigTrap",       // intrinsic without Target has no signature
-		"ImportRefTrap",     // import refs stay namespace-strict (no field fallback)
+		"ImportRefTrap",     // import refs stay namespace-strict
 		"PkgUnknownTrap",    // neither member nor field -> undefined
-		"PkgUnexportedTrap", // unexported names trap before the fallback
+		"PkgUnexportedTrap", // unexported names trap
+		"PkgDirTrap",        // metadata field names trap with an inspect.* hint
+		"CurPkgPathTrap",    // the reported d.Package.Path shape stays loud
 	} {
 		if _, err := e.Run(context.Background(), "./testdata/inspectuse", fn); err == nil {
 			t.Errorf("%s: expected trap, got nil", fn)
+		}
+	}
+	// metadata misses spell the inspect.* accessor in the trap message
+	for fn, want := range map[string]string{
+		"PkgDirTrap":     "inspect.Dir(pkg)",
+		"CurPkgPathTrap": "inspect.Path(pkg)",
+	} {
+		_, err := e.Run(context.Background(), "./testdata/inspectuse", fn)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: expected trap mentioning %q, got %v", fn, want, err)
 		}
 	}
 }

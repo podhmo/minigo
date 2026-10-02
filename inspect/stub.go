@@ -11,10 +11,9 @@ import "github.com/podhmo/minigo/runtime"
 // PackageOf loads a package by import path (bound or source).
 //
 // Member access on the returned *runtime.Package resolves the package
-// namespace first (pkg.Foo is the decl, never the field); when no
-// member matches, the struct's exported fields and methods read as on
-// any host value — so p.Path is the import path unless the package
-// exports a member named Path (then use Path(p) for the field).
+// namespace only — p.Foo is the decl, and a member named like a
+// metadata field shadows it. Read metadata through the accessors
+// (Path, Name, Dir, State, Standard) instead; p.Path alone traps.
 func PackageOf(path string) *runtime.Package { panic("minigo intrinsic") }
 
 // SourceOf loads the source package behind an import path, bypassing a

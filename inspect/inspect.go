@@ -36,9 +36,9 @@ const BuiltinPackagePath = ":builtin:"
 // Symbol stub function).
 type Decl struct {
 	// owning package — SymbolOf(x).Package chains. Member access on it
-	// resolves the package namespace first; when no member matches,
-	// the exported *runtime.Package fields (Path, Name, Dir, ...) and
-	// methods (State, ...) read as on any host value.
+	// resolves the package namespace only (pkg.Foo is the decl); read
+	// its metadata through the inspect.* accessors (Path, Name, Dir,
+	// State, Standard) instead.
 	Package *runtime.Package
 	Kind    string // "func"|"method"|"var"|"const"|"type"|"host"
 	Name    string

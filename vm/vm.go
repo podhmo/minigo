@@ -1441,23 +1441,6 @@ func (v *VM) resolveGlobalE(f *frame, name string) (runtime.Value, error) {
 	return nil, fmt.Errorf("undefined: %s", name)
 }
 
-// isPackageMember reports whether name resolves through the package
-// namespace (a bound global or an indexed decl) — as opposed to a
-// *runtime.Package struct field of the same spelling.
-func isPackageMember(p *runtime.Package, name string) bool {
-	if p.Globals != nil {
-		if _, ok := p.Globals.Get(name); ok {
-			return true
-		}
-	}
-	if p.Index != nil {
-		if _, ok := lookupDecl(p, name); ok {
-			return true
-		}
-	}
-	return false
-}
-
 func lookupDecl(pkg *runtime.Package, name string) (*index.Decl, bool) {
 	if d, ok := pkg.Index.Funcs[name]; ok {
 		return d, true
@@ -1502,15 +1485,19 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		}
 		mv, err := v.memberOf(b, name)
 		if err != nil {
-			// a package value reached through the inspect layer also
-			// answers its own metadata: a package member always wins,
-			// otherwise the exported *runtime.Package fields (Path,
-			// Name, Dir, ...) and methods (State, ...) resolve like a
-			// host value.
-			if !isPackageMember(b, name) {
-				if mv, ok := v.hostMember(b, name); ok {
-					return mv
+			// member access on a package is namespace-only — the
+			// value's meaning must not change with its type, so the
+			// exported *runtime.Package metadata (Path, Name, Dir,
+			// State, ...) lives behind the inspect.* accessors.
+			// When the miss is one of those names, the trap spells
+			// the escape hatch.
+			if _, ok := v.hostMember(b, name); ok {
+				hint := "use the inspect.* accessors"
+				switch name {
+				case "Path", "Name", "Dir", "State", "Standard":
+					hint = fmt.Sprintf("use inspect.%s(pkg)", name)
 				}
+				f.trap("%s (inspect-layer package metadata — %s)", err, hint)
 			}
 			f.trap("%s", err)
 		}
