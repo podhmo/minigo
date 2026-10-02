@@ -4306,7 +4306,13 @@ func (v *VM) materializeConstErr(u *runtime.UConst, td *runtime.TypeDef) (runtim
 		}
 		x = constant.BoolVal(u.V)
 	default:
-		return nil, fmt.Errorf("cannot use constant %s as %s", u.V, tdName(td))
+		// not a basic-name target — the constant converts through its
+		// default type first: []byte("s") is []byte(string).
+		dx, err := materializeDefault(u)
+		if err != nil {
+			return nil, err
+		}
+		return v.convert(td, dx)
 	}
 	// the tag rule from coerceConcrete applies equally: a converted const
 	// keeps the declared name (and int64/float32/complex64 tag even
