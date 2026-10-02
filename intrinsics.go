@@ -1174,7 +1174,18 @@ func (e *Engine) installStdlib() {
 		"Version":  h.fn("runtime.Version", func(a []any) (any, error) { return goruntime.Version(), nil }),
 		"GC":       h.fn("runtime.GC", func(a []any) (any, error) { return nil, nil }),
 		"Compiler": "gc",
-		"GOROOT":   h.fn("runtime.GOROOT", func(a []any) (any, error) { return goruntime.GOROOT(), nil }),
+		// runtime.GOROOT is deprecated for the host; report the env's
+		// root, falling back to `go env GOROOT` like go/build does.
+		"GOROOT": h.fn("runtime.GOROOT", func(a []any) (any, error) {
+			if gr := os.Getenv("GOROOT"); gr != "" {
+				return gr, nil
+			}
+			out, err := exec.Command("go", "env", "GOROOT").Output()
+			if err != nil {
+				return "", err
+			}
+			return strings.TrimSpace(string(out)), nil
+		}),
 		// a debugger trap is a no-op for the interpreter — the program
 		// just continues, which is what these tests rely on.
 		"Breakpoint": h.fn("runtime.Breakpoint", func(a []any) (any, error) { return nil, nil }),
