@@ -111,7 +111,6 @@ goroutine で発見: `for i := 0; i < 3; i++ { go func() { ch <- i }() }` が `0
 
 - **ホスト呼び出し内でパークした goroutine は漏洩する**: `wg.Wait()`/`Mutex.Lock()`/`time.Sleep` のような「select ではない」ホスト呼び出し内でブロックした spawn ゴルーチンは `proc.done` を監視しないため、root が返っても残る（`DetachedWait` — 実クロックで goroutine 数 +1 を確認、`TestHostParkLeak` で記録）。synctest バブル内では "blocked goroutines remain" として検出されるため synctest では試せない。Go で `go func(){ wg.Wait() }()` が同様に残るのと同じ意味での制限であり、任意のホスト呼び出しをキャンセル可能にする汎用的な方法はない。
 - **デッドロックはプロセスを殺す**: 全 goroutine のパークで host ランタイムが fatal を出す — CLI としては Go と同じ挙動だが、minigo を組み込みで使う場合はホストプロセスごと落ちる（= 「ハングする」のではなく「落ちる」）。
-- **`MakeFunc` で包んだコールバックをホストが別 goroutine から呼ぶケース**: `sync.Once.Do` のような同期呼び出しは安全だが、ホストがコールバックを保持して非同期で呼ぶ形（例 `time.AfterFunc` は現在未 bind）だと、呼ばれた VM は goroutine 安全でないので危険。`adaptFunc` のコメントに明記した。→ **§7 の S4 で解消済み**（Call が goroutine id を検査し、別 goroutine からの Call は Spawn+Wait に回送）。
 - **`runDefers` 中の `*runtime.Trap` は残りの defer を捨てる**（従来仕様 — Trap は「実行不能」を意味するので意図的。ただし panic と Trap の区別がちょっと強い）。
 
 ## 5. 試行錯誤で得た知見
