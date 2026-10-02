@@ -357,6 +357,16 @@ func (v *VM) assignCell(f *frame, c *runtime.Cell, val runtime.Value) {
 	}
 	if c.Typ != nil {
 		val = v.coerce(f, val, c.Typ)
+	} else if _, isNil := val.(runtime.Nil); isNil {
+		// `p = nil` keeps the variable's inferred type — a *T var
+		// holds a nil *T, not an untyped nil (Go's zero is typed).
+		// The nil keeps the tag so member selects and comparisons
+		// still resolve on it.
+		if pt := v.pointeeTag(c.Elem); pt != nil {
+			val = &runtime.TypedNil{Typ: &runtime.TypeDef{Kind: runtime.KindPointer, Elem: pt}}
+		} else if tag := containerTyp(c.Elem); tag != nil && v.nilableTypedef(tag) {
+			val = &runtime.TypedNil{Typ: tag}
+		}
 	}
 	c.Elem = valueCopy(val)
 }
