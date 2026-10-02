@@ -70,7 +70,7 @@ type Dst struct {
 	}
 	defer os.Chdir(cwd)
 
-	if err := run(ctx, defineFile, outputFile, false /* dryRun */, ""); err != nil {
+	if err := run(ctx, defineFile, outputFile, false /* dryRun */, "", false /* strict */); err != nil {
 		t.Fatalf("run failed: %+v", err)
 	}
 
@@ -93,5 +93,52 @@ type Dst struct {
 
 	if diff := cmp.Diff(string(want), string(got)); diff != "" {
 		t.Errorf("generated code mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestRunStrictRejectsLeafMismatch pins -strict: the same leaf
+// mismatches that only warn by default fail the run, listing each
+// converter/field and the input-side fix, and nothing is written.
+func TestRunStrictRejectsLeafMismatch(t *testing.T) {
+	dir := writeFiles(t, map[string]string{
+		"go.mod": "module example.com/strict\ngo 1.22\n",
+		"define.go": `
+package main
+
+import (
+	"example.com/strict/destination"
+	"example.com/strict/source"
+	"github.com/podhmo/minigo/examples/convert-define/define"
+)
+
+func main() {
+	define.Convert(func(c *define.Config, dst *destination.Dst, src *source.Src) {
+	})
+}
+`,
+		"source/source.go":           "package source\n\ntype Src struct {\n\tAge  int\n\tName string\n}\n",
+		"destination/destination.go": "package destination\n\ntype Dst struct {\n\tAge  string\n\tName string\n}\n",
+	})
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(cwd)
+
+	outputFile := filepath.Join(dir, "generated.go")
+	err = run(context.Background(), filepath.Join(dir, "define.go"), outputFile, false, "", true /* strict */)
+	want := "-strict: 1 field pair(s) would not compile; no output was written. Fix the define file or the types: add a define.Rule for the type pair, or c.Convert the field with a converter function.\n" +
+		"  - convertSrcToDst: dst.Age: no conversion covers int -> string\n"
+	if err == nil {
+		t.Fatal("want an error in strict mode")
+	}
+	if diff := cmp.Diff(want, err.Error()); diff != "" {
+		t.Errorf("mismatch (-want +got):\n%s", diff)
+	}
+	if _, err := os.Stat(outputFile); !os.IsNotExist(err) {
+		t.Errorf("output must not be written, stat err = %v", err)
 	}
 }

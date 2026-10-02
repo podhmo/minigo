@@ -122,7 +122,7 @@ func TestParserNestedPaths(t *testing.T) {
 		t.Errorf("pair.Mapping.Maps mismatch (-want +got):\n%s", diff)
 	}
 
-	out, err := generator.Generate(runner.TypeResolver(), runner.Info, "")
+	out, err := generator.Generate(runner.TypeResolver(), runner.Info, generator.Options{})
 	if err != nil {
 		t.Fatalf("Generate() failed: %+v", err)
 	}
@@ -235,7 +235,7 @@ type DstSelf struct {
 		t.Errorf("DstTypeName: want %q, got %q", want, got)
 	}
 
-	out, err := generator.Generate(runner.TypeResolver(), runner.Info, "")
+	out, err := generator.Generate(runner.TypeResolver(), runner.Info, generator.Options{})
 	if err != nil {
 		t.Fatalf("Generate() failed: %+v", err)
 	}

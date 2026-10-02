@@ -8,6 +8,7 @@ import (
 	"go/scanner"
 	"log/slog"
 	"os"
+	"path/filepath"
 
 	"github.com/podhmo/minigo/examples/convert-define/generator"
 	"github.com/podhmo/minigo/examples/convert-define/internal"
@@ -18,7 +19,8 @@ func main() {
 		defineFile = flag.String("file", "", "path to the go file with conversion definitions")
 		output     = flag.String("output", "generated.go", "output file name")
 		dryRun     = flag.Bool("dry-run", false, "don't write files, just print to stdout")
-		buildTags  = flag.String("tags", "", "build tags to use when running the code generator")
+		buildTags  = flag.String("tags", "", "build constraint expression written as the generated file's //go:build line")
+		strict     = flag.Bool("strict", false, "fail instead of writing output when a field pair would not compile (generation warnings become errors)")
 		logLevel   = slog.LevelWarn
 	)
 	flag.TextVar(&logLevel, "log-level", &logLevel, "set log level (debug, info, warn, error)")
@@ -39,7 +41,7 @@ func main() {
 
 	ctx := context.Background()
 
-	if err := run(ctx, *defineFile, *output, *dryRun, *buildTags); err != nil {
+	if err := run(ctx, *defineFile, *output, *dryRun, *buildTags, *strict); err != nil {
 		// The error is a multi-line, user-facing report; print it as
 		// is rather than as an escaped log attribute.
 		slog.ErrorContext(ctx, "convert-define failed")
@@ -48,7 +50,7 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, defineFile, output string, dryRun bool, buildTags string) error {
+func run(ctx context.Context, defineFile, output string, dryRun bool, buildTags string, strict bool) error {
 	header, err := buildConstraintHeader(buildTags)
 	if err != nil {
 		return err
@@ -76,8 +78,18 @@ func run(ctx context.Context, defineFile, output string, dryRun bool, buildTags 
 
 	slog.InfoContext(ctx, "Successfully parsed define file", "parsed_info", runner.Info)
 
-	generatedCode, err := generator.Generate(runner.TypeResolver(), runner.Info, header)
+	generatedCode, err := generator.Generate(runner.TypeResolver(), runner.Info, generator.Options{
+		Header: header,
+		// The generated file joins the package in the output directory;
+		// its temporaries must not shadow that package's identifiers.
+		PackageIdents: generator.PackageIdents(ctx, filepath.Dir(output)),
+		Strict:        strict,
+	})
 	if err != nil {
+		var we *generator.WarningsError
+		if errors.As(err, &we) {
+			return we // already a complete, user-facing report
+		}
 		return fmt.Errorf("failed to generate code: %w", err)
 	}
 

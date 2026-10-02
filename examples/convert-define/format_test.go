@@ -174,7 +174,7 @@ func main( {
 	defineFile := filepath.Join(dir, "define.go")
 	outputFile := filepath.Join(dir, "generated.go")
 
-	err := run(context.Background(), defineFile, outputFile, false, "")
+	err := run(context.Background(), defineFile, outputFile, false, "", false)
 	var se *syntaxError
 	if !errors.As(err, &se) {
 		t.Fatalf("want *syntaxError, got %T: %v", err, err)

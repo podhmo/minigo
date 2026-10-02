@@ -242,7 +242,35 @@ func isStructType(res xinspect.Resolver, te *xinspect.TypeExpr) bool {
 	return model.IsStructDecl(d)
 }
 
-func Generate(res xinspect.Resolver, info *model.ParsedInfo, header string) ([]byte, error) {
+// Options tunes one Generate call.
+type Options struct {
+	// Header is written right after the "Code generated" line (e.g.
+	// a //go:build constraint).
+	Header string
+	// PackageIdents are the top-level identifiers of the package the
+	// generated file joins (see PackageIdents); temporaries avoid them.
+	PackageIdents []string
+	// Strict turns generation warnings — field pairs whose emitted
+	// assignment will not compile — into a *WarningsError.
+	Strict bool
+}
+
+// WarningsError is returned in Strict mode when a converter carries
+// generation warnings. Each entry is "converter: dst.Field: reason".
+type WarningsError struct {
+	Warnings []string
+}
+
+func (e *WarningsError) Error() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "-strict: %d field pair(s) would not compile; no output was written. Fix the define file or the types: add a define.Rule for the type pair, or c.Convert the field with a converter function.\n", len(e.Warnings))
+	for _, w := range e.Warnings {
+		b.WriteString("  - " + w + "\n")
+	}
+	return b.String()
+}
+
+func Generate(res xinspect.Resolver, info *model.ParsedInfo, opts Options) ([]byte, error) {
 	im := NewImportManager(info.PackagePath)
 	ctx := context.Background()
 
@@ -363,7 +391,7 @@ func Generate(res xinspect.Resolver, info *model.ParsedInfo, header string) ([]b
 		tp.SrcTypeName = qualifiedStructName(im, info, tp.SrcType)
 		tp.DstTypeName = qualifiedStructName(im, info, tp.DstType)
 		diag := newGenDiags()
-		e := newEmitter(im, res, info, funcNames, diag, tp)
+		e := newEmitter(im, res, info, funcNames, diag, tp, opts.PackageIdents)
 		for j := range tp.Fields {
 			tp.Fields[j].Assign = e.assignment(tp.Fields[j], "src", "dst")
 		}
@@ -377,6 +405,17 @@ func Generate(res xinspect.Resolver, info *model.ParsedInfo, header string) ([]b
 		tp.Warnings = diag.warnings()
 		for _, w := range tp.Warnings {
 			slog.WarnContext(ctx, w, "converter", tp.ConvName)
+		}
+	}
+	if opts.Strict {
+		var all []string
+		for _, tp := range allPairs {
+			for _, w := range tp.Warnings {
+				all = append(all, tp.ConvName+": "+w)
+			}
+		}
+		if len(all) > 0 {
+			return nil, &WarningsError{Warnings: all}
 		}
 	}
 
@@ -393,7 +432,7 @@ func Generate(res xinspect.Resolver, info *model.ParsedInfo, header string) ([]b
 		PackageName: info.PackageName,
 		Imports:     im.Imports(),
 		Pairs:       allPairs,
-		Header:      header,
+		Header:      opts.Header,
 	}
 
 	tmpl, err := template.New("converter").Parse(codeTemplate)
@@ -702,11 +741,15 @@ type emitter struct {
 }
 
 // newEmitter reserves every identifier visible inside the converter
-// body: its parameters and locals, the fixed imports, and the unqualified (same-package) rule and converter
+// body: its parameters and locals, the generated package's own
+// top-level identifiers, the fixed imports, and the unqualified (same-package) rule and converter
 // funcs. Import aliases are checked at allocation time (fresh) because
 // the ImportManager keeps growing during the emit pass.
-func newEmitter(im *ImportManager, res xinspect.Resolver, info *model.ParsedInfo, fn funcNamer, diag *genDiags, pair *TemplatePair) *emitter {
+func newEmitter(im *ImportManager, res xinspect.Resolver, info *model.ParsedInfo, fn funcNamer, diag *genDiags, pair *TemplatePair, packageIdents []string) *emitter {
 	taken := map[string]bool{"ctx": true, "ec": true, "src": true, "dst": true, "context": true, "errors": true, "fmt": true, "model": true}
+	for _, id := range packageIdents {
+		taken[id] = true
+	}
 	for _, r := range info.GlobalRules {
 		taken[r.UsingFunc] = true
 	}
