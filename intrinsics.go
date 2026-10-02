@@ -9,8 +9,11 @@
 package minigo
 
 import (
+	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -34,6 +37,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -978,9 +982,14 @@ func (e *Engine) installStdlib() {
 		ospkg["Unsetenv"] = h.fn1("os.Unsetenv", func(a []any) (any, error) { return errVal(os.Unsetenv(str(a[0]))), nil })
 		ospkg["Clearenv"] = h.fn("os.Clearenv", func(a []any) (any, error) { os.Clearenv(); return nil, nil })
 		ospkg["Environ"] = h.fn("os.Environ", func(a []any) (any, error) { return strsSlice(os.Environ()), nil })
-		// os.Args is the host process argv as a VARIABLE, like Go's —
-		// flag's package init reads it via len(os.Args).
-		ospkg["Args"] = strsSlice(os.Args)
+		// os.Args is the script-visible argv (WithArgs; else the host
+		// process argv), bound as a VARIABLE like Go's — flag's package
+		// init reads it via len(os.Args).
+		argv := os.Args
+		if e.args != nil {
+			argv = e.args
+		}
+		ospkg["Args"] = strsSlice(argv)
 		ospkg["Hostname"] = h.fn("os.Hostname", func(a []any) (any, error) { return retErr2(os.Hostname()) })
 		// process stdio, boxed for cmd.Stdout / cmd.Stderr wiring
 		ospkg["Stdin"] = &runtime.GoValue{V: os.Stdin}
@@ -1186,7 +1195,12 @@ func (e *Engine) installStdlib() {
 		"NewTicker": h.fn("time.NewTicker", func(a []any) (any, error) {
 			return &runtime.GoValue{V: time.NewTicker(durOf(a[0]))}, nil
 		}),
-		"Now": h.fn("time.Now", func(a []any) (any, error) { return time.Now(), nil }, time.Now),
+		"Now":      h.fn("time.Now", func(a []any) (any, error) { return time.Now(), nil }, time.Now),
+		"Time":     hostType("time.Time", func() any { return time.Time{} }),
+		"Duration": &runtime.TypeDef{Name: "time.Duration", Kind: runtime.KindNamedBasic},
+		"Location": hostType("time.Location", func() any { return time.Local }),
+		"UTC":      &runtime.GoValue{V: time.UTC},
+		"Local":    &runtime.GoValue{V: time.Local},
 		"Since": h.fn("time.Since", func(a []any) (any, error) {
 			if t, ok := a[0].(time.Time); ok {
 				return time.Since(t), nil
@@ -1210,6 +1224,25 @@ func (e *Engine) installStdlib() {
 		"Minute":      time.Minute,
 		"Hour":        time.Hour,
 		"Millisecond": time.Millisecond,
+		"Layout":      time.Layout,
+		"ANSIC":       time.ANSIC,
+		"UnixDate":    time.UnixDate,
+		"RubyDate":    time.RubyDate,
+		"RFC822":      time.RFC822,
+		"RFC822Z":     time.RFC822Z,
+		"RFC850":      time.RFC850,
+		"RFC1123":     time.RFC1123,
+		"RFC1123Z":    time.RFC1123Z,
+		"RFC3339":     time.RFC3339,
+		"RFC3339Nano": time.RFC3339Nano,
+		"Kitchen":     time.Kitchen,
+		"Stamp":       time.Stamp,
+		"StampMilli":  time.StampMilli,
+		"StampMicro":  time.StampMicro,
+		"StampNano":   time.StampNano,
+		"DateTime":    time.DateTime,
+		"DateOnly":    time.DateOnly,
+		"TimeOnly":    time.TimeOnly,
 	})
 	// sync: the real host types back `var wg sync.WaitGroup` — TypeDef.HostNew
 	// boxes a fresh Go value per zero, and member access dispatches through
@@ -1252,6 +1285,273 @@ func (e *Engine) installStdlib() {
 		"OnceValues": &runtime.BuiltinFunc{Name: "sync.OnceValues", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			return syncOnceWrap("sync.OnceValues", args)
 		}},
+	})
+	// io: bound as natives because the interpreted io package cannot provide
+	// singleton identity — `err == io.EOF` compares GoValues by pointer, so
+	// EOF must be the real host sentinel. Reader/Writer interfaces are
+	// typedefs so script values can declare and satisfy them.
+	e.Bind("io", map[string]runtime.Value{
+		"Reader":       &runtime.TypeDef{Name: "io.Reader", Kind: runtime.KindInterface, MReqs: []string{"Read"}},
+		"Writer":       &runtime.TypeDef{Name: "io.Writer", Kind: runtime.KindInterface, MReqs: []string{"Write"}},
+		"Closer":       &runtime.TypeDef{Name: "io.Closer", Kind: runtime.KindInterface, MReqs: []string{"Close"}},
+		"ReadWriter":   &runtime.TypeDef{Name: "io.ReadWriter", Kind: runtime.KindInterface, MReqs: []string{"Read", "Write"}},
+		"Seeker":       &runtime.TypeDef{Name: "io.Seeker", Kind: runtime.KindInterface, MReqs: []string{"Seek"}},
+		"ReadSeeker":   &runtime.TypeDef{Name: "io.ReadSeeker", Kind: runtime.KindInterface, MReqs: []string{"Read", "Seek"}},
+		"WriterAt":     &runtime.TypeDef{Name: "io.WriterAt", Kind: runtime.KindInterface, MReqs: []string{"WriteAt"}},
+		"ReaderAt":     &runtime.TypeDef{Name: "io.ReaderAt", Kind: runtime.KindInterface, MReqs: []string{"ReadAt"}},
+		"ReaderFrom":   &runtime.TypeDef{Name: "io.ReaderFrom", Kind: runtime.KindInterface, MReqs: []string{"ReadFrom"}},
+		"WriterTo":     &runtime.TypeDef{Name: "io.WriterTo", Kind: runtime.KindInterface, MReqs: []string{"WriteTo"}},
+		"ByteReader":   &runtime.TypeDef{Name: "io.ByteReader", Kind: runtime.KindInterface, MReqs: []string{"ReadByte"}},
+		"ByteWriter":   &runtime.TypeDef{Name: "io.ByteWriter", Kind: runtime.KindInterface, MReqs: []string{"WriteByte"}},
+		"RuneReader":   &runtime.TypeDef{Name: "io.RuneReader", Kind: runtime.KindInterface, MReqs: []string{"ReadRune"}},
+		"StringWriter": &runtime.TypeDef{Name: "io.StringWriter", Kind: runtime.KindInterface, MReqs: []string{"WriteString"}},
+		"ReadCloser":   &runtime.TypeDef{Name: "io.ReadCloser", Kind: runtime.KindInterface, MReqs: []string{"Read", "Close"}},
+		"WriteCloser":  &runtime.TypeDef{Name: "io.WriteCloser", Kind: runtime.KindInterface, MReqs: []string{"Write", "Close"}},
+		"ReadWriteCloser": &runtime.TypeDef{Name: "io.ReadWriteCloser", Kind: runtime.KindInterface,
+			MReqs: []string{"Read", "Write", "Close"}},
+		"WriteSeeker": &runtime.TypeDef{Name: "io.WriteSeeker", Kind: runtime.KindInterface, MReqs: []string{"Write", "Seek"}},
+		"ReadSeekCloser": &runtime.TypeDef{Name: "io.ReadSeekCloser", Kind: runtime.KindInterface,
+			MReqs: []string{"Read", "Seek", "Close"}},
+		"ReadWriteSeeker": &runtime.TypeDef{Name: "io.ReadWriteSeeker", Kind: runtime.KindInterface,
+			MReqs: []string{"Read", "Write", "Seek"}},
+		"NewSectionReader": h.fn3("io.NewSectionReader", func(a []any) (any, error) {
+			ra, ok := a[0].(io.ReaderAt)
+			if !ok {
+				if g, isGV := a[0].(*runtime.GoValue); isGV {
+					if rr, isRA := g.V.(io.ReaderAt); isRA {
+						ra = rr
+						ok = true
+					}
+				}
+			}
+			if !ok {
+				return nil, fmt.Errorf("io.NewSectionReader: not an io.ReaderAt: %T", a[0])
+			}
+			return &runtime.GoValue{V: io.NewSectionReader(ra, int64Of(a[1]), int64Of(a[2]))}, nil
+		}, io.NewSectionReader),
+		"EOF":              errVal(io.EOF),
+		"ErrClosedPipe":    errVal(io.ErrClosedPipe),
+		"ErrNoProgress":    errVal(io.ErrNoProgress),
+		"ErrShortBuffer":   errVal(io.ErrShortBuffer),
+		"ErrShortWrite":    errVal(io.ErrShortWrite),
+		"ErrUnexpectedEOF": errVal(io.ErrUnexpectedEOF),
+		"Discard":          &runtime.GoValue{V: io.Discard},
+		"SeekStart":        int64(io.SeekStart),
+		"SeekCurrent":      int64(io.SeekCurrent),
+		"SeekEnd":          int64(io.SeekEnd),
+		"ReadAll": h.fn1("io.ReadAll", func(a []any) (any, error) {
+			r, err := asReader(a[0])
+			if err != nil {
+				return nil, err
+			}
+			b, rerr := io.ReadAll(r)
+			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(b), errVal(rerr)}}, nil
+		}, io.ReadAll),
+		"WriteString": h.fn2("io.WriteString", func(a []any) (any, error) {
+			w, err := asWriter(a[0])
+			if err != nil {
+				return nil, err
+			}
+			n, werr := io.WriteString(w, str(a[1]))
+			return &runtime.Tuple{Elems: []runtime.Value{int64(n), errVal(werr)}}, nil
+		}, io.WriteString),
+		"Copy": h.fn2("io.Copy", func(a []any) (any, error) {
+			w, err := asWriter(a[0])
+			if err != nil {
+				return nil, err
+			}
+			r, err := asReader(a[1])
+			if err != nil {
+				return nil, err
+			}
+			n, cerr := io.Copy(w, r)
+			return &runtime.Tuple{Elems: []runtime.Value{int64(n), errVal(cerr)}}, nil
+		}, io.Copy),
+		"CopyN": h.fn3("io.CopyN", func(a []any) (any, error) {
+			w, err := asWriter(a[0])
+			if err != nil {
+				return nil, err
+			}
+			r, err := asReader(a[1])
+			if err != nil {
+				return nil, err
+			}
+			n, cerr := io.CopyN(w, r, int64Of(a[2]))
+			return &runtime.Tuple{Elems: []runtime.Value{int64(n), errVal(cerr)}}, nil
+		}, io.CopyN),
+		"ReadFull": h.fn2("io.ReadFull", func(a []any) (any, error) {
+			r, err := asReader(a[0])
+			if err != nil {
+				return nil, err
+			}
+			n, rerr := io.ReadFull(r, byteSlice(a[1]))
+			return &runtime.Tuple{Elems: []runtime.Value{int64(n), errVal(rerr)}}, nil
+		}, io.ReadFull),
+		"LimitReader": h.fn2("io.LimitReader", func(a []any) (any, error) {
+			r, err := asReader(a[0])
+			if err != nil {
+				return nil, err
+			}
+			return &runtime.GoValue{V: io.LimitReader(r, int64Of(a[1]))}, nil
+		}, io.LimitReader),
+		"TeeReader": h.fn2("io.TeeReader", func(a []any) (any, error) {
+			r, err := asReader(a[0])
+			if err != nil {
+				return nil, err
+			}
+			w, err := asWriter(a[1])
+			if err != nil {
+				return nil, err
+			}
+			return &runtime.GoValue{V: io.TeeReader(r, w)}, nil
+		}, io.TeeReader),
+		"MultiReader": h.fn("io.MultiReader", func(a []any) (any, error) {
+			rs := make([]io.Reader, len(a))
+			for i, x := range a {
+				r, err := asReader(x)
+				if err != nil {
+					return nil, err
+				}
+				rs[i] = r
+			}
+			return &runtime.GoValue{V: io.MultiReader(rs...)}, nil
+		}, io.MultiReader),
+		"MultiWriter": h.fn("io.MultiWriter", func(a []any) (any, error) {
+			ws := make([]io.Writer, len(a))
+			for i, x := range a {
+				w, err := asWriter(x)
+				if err != nil {
+					return nil, err
+				}
+				ws[i] = w
+			}
+			return &runtime.GoValue{V: io.MultiWriter(ws...)}, nil
+		}, io.MultiWriter),
+		"NopCloser": h.fn1("io.NopCloser", func(a []any) (any, error) {
+			r, err := asReader(a[0])
+			if err != nil {
+				return nil, err
+			}
+			return &runtime.GoValue{V: io.NopCloser(r)}, nil
+		}, io.NopCloser),
+		"Pipe": h.fn("io.Pipe", func(a []any) (any, error) {
+			pr, pw := io.Pipe()
+			return &runtime.Tuple{Elems: []runtime.Value{&runtime.GoValue{V: pr}, &runtime.GoValue{V: pw}}}, nil
+		}, io.Pipe),
+	})
+	// crypto/sha256: Sum256's [32]byte result unboxes element-wise so
+	// `sum[:]` slices and hex.EncodeToString consume it.
+	e.Bind("crypto/sha256", map[string]runtime.Value{
+		"New": h.fn("sha256.New", func(a []any) (any, error) {
+			return &runtime.GoValue{V: sha256.New()}, nil
+		}, sha256.New),
+		"New224": h.fn("sha256.New224", func(a []any) (any, error) {
+			return &runtime.GoValue{V: sha256.New224()}, nil
+		}, sha256.New224),
+		"Sum256": h.fn1("sha256.Sum256", func(a []any) (any, error) {
+			sum := sha256.Sum256(byteSlice(a[0]))
+			return scriptVal(sum[:]), nil
+		}, sha256.Sum256),
+		"Sum224": h.fn1("sha256.Sum224", func(a []any) (any, error) {
+			sum := sha256.Sum224(byteSlice(a[0]))
+			return scriptVal(sum[:]), nil
+		}, sha256.Sum224),
+		"Size":      int64(sha256.Size),
+		"Size224":   int64(sha256.Size224),
+		"BlockSize": int64(sha256.BlockSize),
+	})
+	// encoding/csv: NewReader binds the real *csv.Reader so Read/ReadAll and
+	// field tuning (Comma/FieldsPerRecord via host field writes) work.
+	e.Bind("encoding/csv", map[string]runtime.Value{
+		"NewReader": h.fn1("csv.NewReader", func(a []any) (any, error) {
+			r, err := asReader(a[0])
+			if err != nil {
+				return nil, err
+			}
+			return &runtime.GoValue{V: csv.NewReader(r)}, nil
+		}, csv.NewReader),
+		"NewWriter": h.fn1("csv.NewWriter", func(a []any) (any, error) {
+			w, err := asWriter(a[0])
+			if err != nil {
+				return nil, err
+			}
+			return &runtime.GoValue{V: csv.NewWriter(w)}, nil
+		}, csv.NewWriter),
+	})
+	// bufio: Scanner/Reader/Writer box the host types — Scan/Text/Err and
+	// friends dispatch through reflection.
+	e.Bind("bufio", map[string]runtime.Value{
+		"NewScanner": h.fn1("bufio.NewScanner", func(a []any) (any, error) {
+			r, err := asReader(a[0])
+			if err != nil {
+				return nil, err
+			}
+			return &runtime.GoValue{V: bufio.NewScanner(r)}, nil
+		}, bufio.NewScanner),
+		"NewReader": h.fn1("bufio.NewReader", func(a []any) (any, error) {
+			r, err := asReader(a[0])
+			if err != nil {
+				return nil, err
+			}
+			return &runtime.GoValue{V: bufio.NewReader(r)}, nil
+		}, bufio.NewReader),
+		"NewReaderSize": h.fn2("bufio.NewReaderSize", func(a []any) (any, error) {
+			r, err := asReader(a[0])
+			if err != nil {
+				return nil, err
+			}
+			return &runtime.GoValue{V: bufio.NewReaderSize(r, int(int64Of(a[1])))}, nil
+		}, bufio.NewReaderSize),
+		"NewWriter": h.fn1("bufio.NewWriter", func(a []any) (any, error) {
+			w, err := asWriter(a[0])
+			if err != nil {
+				return nil, err
+			}
+			return &runtime.GoValue{V: bufio.NewWriter(w)}, nil
+		}, bufio.NewWriter),
+		"NewWriterSize": h.fn2("bufio.NewWriterSize", func(a []any) (any, error) {
+			w, err := asWriter(a[0])
+			if err != nil {
+				return nil, err
+			}
+			return &runtime.GoValue{V: bufio.NewWriterSize(w, int(int64Of(a[1])))}, nil
+		}, bufio.NewWriterSize),
+	})
+	// text/template: New/Parse/Must box *template.Template — Execute's
+	// io.Writer arg adapts `&b` cells via toReflectValue's auto-pointer
+	// rule and the data map marshals through goNative.
+	e.Bind("text/template", map[string]runtime.Value{
+		"Template": hostType("text/template.Template", func() any { return template.New("") }),
+		"New": h.fn1("template.New", func(a []any) (any, error) {
+			return &runtime.GoValue{V: template.New(str(a[0]))}, nil
+		}, template.New),
+		"Must": h.fn1("template.Must", func(a []any) (any, error) {
+			// Must takes the (t, err) pair of New/Parse: a Tuple arg
+			// unpacks, a plain value passes through — the panic on a
+			// non-nil err mirrors template.Must.
+			t, err := a[0], error(nil)
+			if tup, ok := a[0].(*runtime.Tuple); ok && len(tup.Elems) == 2 {
+				t = tup.Elems[0]
+				err = asErr(goNative(tup.Elems[1]))
+			}
+			if err != nil {
+				panic(err)
+			}
+			return scriptVal(t), nil
+		}, template.Must),
+		"HTMLEscapeString": h.fn1("template.HTMLEscapeString", func(a []any) (any, error) {
+			return template.HTMLEscapeString(str(a[0])), nil
+		}, template.HTMLEscapeString),
+		"JSEscapeString": h.fn1("template.JSEscapeString", func(a []any) (any, error) {
+			return template.JSEscapeString(str(a[0])), nil
+		}, template.JSEscapeString),
+		"URLQueryEscaper": h.fn("template.URLQueryEscaper", func(a []any) (any, error) {
+			ss := make([]any, len(a))
+			for i, x := range a {
+				ss[i] = str(x)
+			}
+			return template.URLQueryEscaper(ss...), nil
+		}, template.URLQueryEscaper),
 	})
 }
 
@@ -1978,6 +2278,24 @@ func asWriter(v any) (io.Writer, error) {
 		return w, nil
 	}
 	return nil, fmt.Errorf("not an io.Writer: %T", v)
+}
+
+// asReader mirrors asWriter for io.Reader args: `strings.NewReader`'s
+// GoValue unwraps to the real reader, `&r` cells deref through.
+func asReader(v any) (io.Reader, error) {
+	if fv, ok := v.(*fmtValue); ok {
+		v = fv.x
+	}
+	if dv, ok := runtime.Deref(v); ok {
+		v = dv
+	}
+	if g, ok := v.(*runtime.GoValue); ok {
+		v = g.V
+	}
+	if r, ok := v.(io.Reader); ok {
+		return r, nil
+	}
+	return nil, fmt.Errorf("not an io.Reader: %T", v)
 }
 
 // goJSON marshals a script value into the shape encoding/json expects:

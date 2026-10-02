@@ -76,3 +76,56 @@
 ## 4. 回帰テスト
 
 `make format` / `make lint` / `make test` 全て緑。ユースケースコーパスは [podhmo/minigo-usecasefuzz](https://github.com/podhmo/minigo-usecasefuzz) に残置。
+
+## 5. Round-2: PR #30 leftovers 解消 — 計画外の意思決定
+
+§2 の lim-* 残件を解消した。8 件中 6 件 (lim-flag, lim-template, lim-bufio, lim-sha, lim-csv, lim-io) が PASS に、lim-http / lim-yaml は引き続き境界 TRAP。以下は計画時になかった設計判断。
+
+### C1. host 呼び出しでの write-back / auto-pointer
+
+`callReflectFunc` で slice 要素と ref 引数 (`argBack`/`sliceArg`/`refArg` + `backs`) を反映後に書き戻す。`toReflectValue` は ref ホルダ（Cell/FieldRef/IndexRef — 最後のもの勝ち）を追跡し、非 ref 戻り直前に auto-pointer 化 (`T → *T` または `ConvertibleTo(t.Elem())`) する。これで `csv.NewWriter(&sb)`・`io.Copy(&w, r)` のような `&x` 経由の writer 引数、`io.ReadFull` の slice への書き戻しが動く。Named の再ラップは sized-int の mask を保持する。
+
+### C2. `any` 境界の deepHost — 例外として `chan any` は verbatim
+
+`toReflectValue` の `any` パスは `deepHost` で Named/Slice/Map を完全に unwrap する（`any` 引数のホスト API には raw 値を渡す）。ただし `chan any` は `chan runtime.Value`（Value は `any` のエイリアス）なので、`OpSend`/`OpSelArm` は `toReflectValue` ではなく `chanSendValue` を使い、空 interface 要素型なら script 値を verbatim で送る。これで `ch <- m` した map が受信側で同一 `*runtime.Map` として返り、`got["k"]=8` が元 map を書き換える (ChanSliceSend/ChanMapSend リグレッションを防止)。`goValueOf` 側は逆方向に `[]any`/`map[any]any` を Slice/Map に復元するケースを追加し、ホスト側が本当にコンテナを返したケースを補う。
+
+### C3. interface 充足の楽観判定 (methodSetOfU / MethodSetOfU / unsure)
+
+embed された型が解決できない（vendor パッケージ、外部モジュール未解決、`*net.TCPConn` の peel 失敗など）場合、そのメソッド集合は不完全な可能性があるとして `unsure=true` を返す。充足チェックで「reqs に無いメソッドが見つからなかった」場合は `unsure` なら充足とみなす（未解決 embed がそのメソッドを持っているかも知れないため）。`Hooks.MethodSetOf` を追加し、Slice/Map/Chan に `Typ` を持つ宣言型 (declared slice/map/chan typedef — `type B []byte` のメソッド `b.M()`) もメソッド集合として返すようにした。これで `var _ closeWriter = (*net.TCPConn)(nil)` や `[]sniffSig{htmlSig(...)}` の interface チェックが通る。
+
+副作用として、embedded 型が本当にメソッドを持たない場合でも誤って充足する（miss が発生し得る）が、メソッド呼出時に改めて trap するので実害は低い。
+
+### C4. `(*T)(p)` ポインタ→named 型変換と OpSetInd/OpDeref
+
+`convertPointer` で `*Declared` への変換は `Named{Typ: *T-td}` に包む（ElemOf が宣言型を返した場合のみ）。これは assignability (`var p PSq = &o` は依然として strict identity で trap) ではなく conversion のみに適用。`OpDeref` は pointer typedef を peel して pointee typedef で coerce し直すので `*sp` が `SV` タグで読める。`OpSetInd` は pointer typedef の elem で coerce してから `runtime.Unwrap(val)` で中身を剥がして格納 — 共有 cell (`*string` と `*stringValue` の二面性) はタグのない中立値を保持し、`*p` が string を、`*sp` が SV を返す。
+
+`namedMember` は pointer typedef の peel を先頭で行い、peel 済みの typedef の value receiver は pointee の値を re-tag して bind する（`(*SV)(p).Set` が `*s` を通じて `SV` として書ける）。
+
+### C5. unsigned domain の拡張
+
+`sizedIntName` に `"uint"` を追加し、`unsignedName` でタグを判定して `binaryOp` は `uintOperand`/`uintBinOp`（ubox も含む）に分岐。`unaryOp` の `UnNeg`/`UnXor` も `*runtime.GoValue` uint64 に対応。シフトは `shiftOp` + `shiftCount` + `shiftInt`/`shiftUint`: count は Named-unsigned なら `uint64(iv)` でビット再解釈（`x << uint(-4)` = 0）、int64 <0 は `negative shift amount` panic、GoValue の unsigned kind は `.Uint()`。c≥64 では `<<`→0、`>>` →符号付きは符号ビット詰め・符号なしは 0。
+
+### C6. bodiless func 宣言（`//go:linkname` stub / asm decl）の no-op 化
+
+`compile.go` で `fn.Decl.Body == nil` の宣言は body を emit せず、各結果型に `OpNil + typeExpr + OpCoerceTop`（宣言型のゼロ値）だけを生成する。godebug.Setting.Value() 等が update() 未登録で空を返す実装と同じ結果になるため、stdlib の `//go:linkname` stub が init で死ななくなる。
+
+### C7. `os.Args` の WithArgs/`--` パススルー
+
+`Engine::args` + `WithArgs(argv)` を追加。`minigo run dir -- -x v` は `[dir, -x, v]` を `os.Args` として script に見せる（`--` 自体は CLI が食うので `go run . -- x` とは意味が違う点に注意 — Go 側は `--` が args に残り flag.Parse がそこで止まる）。既存の「`os.Args` は変数バインド」を維持。
+
+### C8. `io` を native バインド化 — sentinel 同一性のため
+
+解釈版 `io` パッケージは singleton `io.EOF` を与えられない（`err == io.EOF` が別 `*errorString` になり得る）ので、`io` は native バインドにし `errVal(io.EOF)` を返す。`eqlValue` は `*runtime.GoValue` を `.V` の同一性で比較するよう変更（nil 同士は等しい、uncomparable host 値は panic、`t.Comparable()` で判定）。これで `err == io.EOF` が成立する。
+
+### C9. time の const + host type 追加
+
+`time` バインドに layout consts（Layout/RFC3339 等）と `Time`/`Location` の hostType、UTC/Local GoValue を追加 — net/http init の `time.Time{}` / `time.RFC850` が解決するようになった。
+
+### C10. 残件（境界）
+
+- **lim-http**: `net` init が `netip` → `unique.Make` → `internal/abi.TypeFor` → `unsafe.Pointer` reinterpretation を要求。`reflect` init も `unsafe.Pointer` 必要。unsure 楽観判定で `(*net.TCPConn)(nil) as closeWriter` や `http2ResponseWriter` (vendor http2 embed) は通過したが、unsafe が関わる init 連鎖は実装上無理。**意図 TRAP として残す**。
+- **lim-yaml**: `gopkg.in/yaml.v3` は外部モジュールで resolver が到達しない。意図 TRAP。
+- **optimism の trade-off**: unsure で見逃す interface メソッド欠落はあり得るが、メソッド呼出時に trap するので誤 silent-fail はしない。
+- **slice write-back**: `sliceArg` は `[]T` → `[]T` copy-back、`refArg` は `runtime.SetRef` 経由で中身を書き戻す（Named は mask 維持で再 wrap）。GoValue ポインタ leaf と `wb.rv` が同一なら skip。
+- **deepHost**: Map は `Order`+`CanonicalKey` 順で `map[any]any` に、Slice は `[]any` に。TypedNil/IfaceNil/nil は `nil`。
+- **`uint` を sizedIntName に追加**: `"int64"` は従来通りタグなし（変換で Named wrap しない）だが、`"uint"` はタグとして扱う — `%T` が `int` vs `uint64` を区別するため。

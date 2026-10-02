@@ -42,6 +42,7 @@ type Engine struct {
 	hostPolicy func(importPath, symbol string) bool // nil = allow all bound intrinsics
 	out        io.Writer                            // print/println/fmt.Print* destination; nil = io.Discard
 	cwd        string                               // virtual cwd for os.* path intrinsics (defaults to startDir)
+	args       []string                             // script-visible os.Args; nil = host process argv
 
 	mu    sync.Mutex
 	pkgs  map[string]*runtime.Package // by import path
@@ -102,6 +103,13 @@ func WithHostPolicy(allow func(importPath, symbol string) bool) Option {
 // or REPL passes os.Stdout or a buffer to observe it.
 func WithOutput(w io.Writer) Option {
 	return func(e *Engine) { e.out = w }
+}
+
+// WithArgs sets the script-visible os.Args: `minigo run dir -- -x v`
+// reports [dir, -x, v] so flag.Parse inside a script sees only its own
+// flags. Nil keeps the host process argv (the default).
+func WithArgs(argv []string) Option {
+	return func(e *Engine) { e.args = argv }
 }
 
 // WithWorkingDir sets the engine's virtual working directory: relative
@@ -183,6 +191,7 @@ func (e *Engine) newVM() *vm.VM {
 			return h, ok
 		},
 		MethodsOf:   e.methodsOfValue,
+		MethodSetOf: e.methodSetOfValue,
 		IfaceReqs:   e.ifaceReqs,
 		FindMethod:  e.findMethod,
 		ElemOf:      e.elemOf,

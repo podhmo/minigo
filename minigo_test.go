@@ -1488,6 +1488,24 @@ func TestFuzzFixes(t *testing.T) {
 		{"NamedUnary", "251"},
 		{"ConvSizedInt", "251 251 uint8"},
 		{"ConstFoldShift", int64(1) << 50},
+
+		// use-case-fuzz leftovers (PR-30; docs/sketch/ja/fuzz-usecase.md)
+		{"UnsignedOps", "1152921504606846976 0 250 28 4"},
+		{"ShiftUintCount", "0 0"},
+		{"ShiftNegCount", "runtime error: negative shift amount"},
+		{"PtrConv", "y main.SV string"},
+		{"PtrConvShared", "b"},
+		{"SliceIfaceMethod", "4"},
+		{"ChanAnyMap", "8"},
+		{"ChanAnySlice", "[1 2 3]"},
+		{"IoReadAll", "payload <nil>"},
+		{"IoReadFullEOF", `0 "\x00\x00\x00\x00"`},
+		{"IoCopy", "2 xy <nil>"},
+		{"Sha256Bind", "2cf24dba 2cf24dba"},
+		{"CsvBind", "[[a b]] <nil>"},
+		{"BufioBind", "[a b] <nil>"},
+		{"TemplateBind", "hi ann <nil>"},
+		{"BodilessCall", int64(3)},
 	}
 	for _, c := range cases {
 		got := run(t, e, "./testdata/fuzzfix", c.fn)
@@ -1498,5 +1516,15 @@ func TestFuzzFixes(t *testing.T) {
 	_, err := e.Run(context.Background(), "./testdata/fuzzfix", "ConstDivZero")
 	if err == nil || !strings.Contains(err.Error(), "division by zero") {
 		t.Fatalf("ConstDivZero: expected division-by-zero trap, got %v", err)
+	}
+}
+
+// WithArgs makes `minigo run dir -- args` visible to the script as
+// os.Args (the script dir is argv[0], like a compiled program).
+func TestScriptArgs(t *testing.T) {
+	e := minigo.NewEngine(".", minigo.WithArgs([]string{"./testdata/fuzzfix", "-v", "x"}))
+	got := run(t, e, "./testdata/fuzzfix", "OsArgs")
+	if got != "./testdata/fuzzfix,-v,x" {
+		t.Errorf("OsArgs = %v", got)
 	}
 }

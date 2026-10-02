@@ -20,13 +20,22 @@ import (
 // Structs offer declared + promoted methods; host GoValues expose their
 // reflect method set. Other values have no methods.
 func (e *Engine) methodsOfValue(v runtime.Value) (map[string]bool, error) {
+	set, _, err := e.methodSetOfValue(v)
+	return set, err
+}
+
+// methodSetOfValue implements the Hooks.MethodSetOf hook: methodsOfValue
+// plus an "unsure" flag — true when an embedded type failed to resolve
+// (e.g. a vendored stdlib package), so the returned set may be missing
+// promoted methods that the embed would have contributed.
+func (e *Engine) methodSetOfValue(v runtime.Value) (map[string]bool, bool, error) {
 	for {
 		// a Named value exposes its own declared method set — `type A B`
 		// does not inherit B's methods (Go). Checked inside the deref
 		// loop: a pointer like &c lands on a *Cell{Named} and must stop
 		// on the tag rather than deref past it.
 		if n, ok := v.(*runtime.Named); ok {
-			return e.typeMethods(n.Typ)
+			return e.typeMethodsU(n.Typ)
 		}
 		dv, ok := runtime.Deref(v)
 		if !ok {
@@ -36,41 +45,62 @@ func (e *Engine) methodsOfValue(v runtime.Value) (map[string]bool, error) {
 	}
 	switch x := v.(type) {
 	case *runtime.Struct:
-		return e.methodSetOf(x.Def, map[*runtime.TypeDef]bool{}), nil
+		set, unsure := e.methodSetOfU(x.Def, map[*runtime.TypeDef]bool{})
+		return set, unsure, nil
 	case *runtime.TypedNil:
-		return e.typeMethods(x.Typ)
+		return e.typeMethodsU(x.Typ)
 	case *runtime.IfaceNil:
-		return e.typeMethods(x.Typ)
+		return e.typeMethodsU(x.Typ)
+	case *runtime.Slice:
+		// a slice carrying a declared typedef (`type htmlSig []byte`)
+		// exposes that type's methods — same for maps and channels.
+		return e.typeMethodsU(x.Typ)
+	case *runtime.Map:
+		return e.typeMethodsU(x.Typ)
+	case *runtime.Chan:
+		return e.typeMethodsU(x.Typ)
 	case *runtime.GoValue:
 		t := reflect.TypeOf(x.V)
 		set := map[string]bool{}
 		for i := 0; i < t.NumMethod(); i++ {
 			set[t.Method(i).Name] = true
 		}
-		return set, nil
+		return set, false, nil
 	default:
-		return nil, nil
+		return nil, false, nil
 	}
 }
 
 // typeMethods implements the Hooks.TypeMethods hook: the method set of a
 // typedef (a typed nil still dispatches its declared methods, like Go).
 func (e *Engine) typeMethods(td *runtime.TypeDef) (map[string]bool, error) {
+	set, _, err := e.typeMethodsU(td)
+	return set, err
+}
+
+// typeMethodsU is typeMethods plus an "unsure" report: true when a
+// pointer's pointee or an embedded type failed to resolve, so the set
+// may be missing methods the unresolved type would have contributed.
+func (e *Engine) typeMethodsU(td *runtime.TypeDef) (map[string]bool, bool, error) {
 	if td == nil {
-		return nil, nil
+		return nil, false, nil
 	}
+	var unsure bool
 	// an anonymous *T typedef sees T's method set; a declared pointer
 	// typedef (`type P *Sq`) keeps only methods declared on P itself —
 	// Go forbids those outright, so in valid programs the set is empty.
 	if td.Kind == runtime.KindPointer && td.Spec == nil {
 		if et, err := e.elemOf(td); err == nil && et != nil {
 			td = et
+		} else {
+			unsure = true
 		}
 	}
 	if td.Kind == runtime.KindInterface {
-		return e.ifaceReqsRec(td, map[*runtime.TypeDef]bool{}), nil
+		return e.ifaceReqsRec(td, map[*runtime.TypeDef]bool{}), unsure, nil
 	}
-	return e.methodSetOf(td, map[*runtime.TypeDef]bool{}), nil
+	set, subUnsure := e.methodSetOfU(td, map[*runtime.TypeDef]bool{})
+	return set, unsure || subUnsure, nil
 }
 
 // aliasOf implements the Hooks.AliasOf hook: a KindAlias typedef resolves
@@ -99,14 +129,19 @@ func (e *Engine) underlying(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 	return td, nil
 }
 
-// methodSetOf collects declared + promoted method names of a typedef.
-// Generic methods (Go 1.27) are excluded: they never satisfy interfaces.
-func (e *Engine) methodSetOf(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool) map[string]bool {
+// methodSetOfU collects declared + promoted method names of a typedef —
+// generic methods (Go 1.27) are excluded as they never satisfy
+// interfaces — plus an "unsure" report: true when an embedded type could
+// not be resolved, so the set may be missing promoted methods. Interface
+// satisfaction treats such sets as optimistic — a missing requirement
+// may live on the unresolved embed.
+func (e *Engine) methodSetOfU(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool) (map[string]bool, bool) {
 	if td == nil || seen[td] {
-		return nil
+		return nil, false
 	}
 	seen[td] = true
 	set := map[string]bool{}
+	var unsure bool
 	for name, m := range td.Methods {
 		if len(m.TParams) > 0 {
 			continue // a generic method contributes no interface method
@@ -116,6 +151,7 @@ func (e *Engine) methodSetOf(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool
 	for _, spec := range td.EmbedSpecs {
 		emb, err := e.resolveTypeRef(td, spec)
 		if err != nil || emb == nil {
+			unsure = true
 			continue
 		}
 		if emb.Kind == runtime.KindInterface {
@@ -125,11 +161,13 @@ func (e *Engine) methodSetOf(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool
 			}
 			continue
 		}
-		for m := range e.methodSetOf(emb, seen) {
+		sub, subUnsure := e.methodSetOfU(emb, seen)
+		unsure = unsure || subUnsure
+		for m := range sub {
 			set[m] = true
 		}
 	}
-	return set
+	return set, unsure
 }
 
 // ifaceReqs returns the required method set of an interface typedef:

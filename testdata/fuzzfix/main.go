@@ -4,8 +4,15 @@ package main
 // (docs/sketch/ja/fuzz-language.md): each function pins one fixed bug.
 
 import (
+	"bufio"
+	"crypto/sha256"
+	"encoding/csv"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"strings"
+	"text/template"
 )
 
 // elided-key struct literals in maps must key by content, not identity.
@@ -218,3 +225,164 @@ func ConstFoldShift() int64 {
 func ConstDivZero() int {
 	return 1 / 0
 }
+
+// ---- use-case-fuzz leftovers (PR-30; docs/sketch/ja/fuzz-usecase.md) ----
+
+// unsigned-domain ops: >> on uint fills zeros, ^ and - stay unsigned,
+// and %/ use unsigned division — `uint8(200)/uint8(7)` is 28 not -3.
+func UnsignedOps() string {
+	var u uint64 = 1 << 60
+	w := u >> 65   // shift >= width -> 0
+	x := ^uint8(5) // 250
+	d := uint8(200) / uint8(7)
+	m := uint8(200) % uint8(7)
+	return fmt.Sprintf("%v %v %v %v %v", u, w, x, d, m)
+}
+
+// shifting by an unsigned-typed count uses its raw bit pattern:
+// `x << uint(-4)` sees a huge count -> 0.
+func ShiftUintCount() string {
+	var x int64 = 1
+	c := uint(4) - 8 // 18446744073709551612
+	return fmt.Sprintf("%v %v", x<<c, x>>uint64(70))
+}
+
+// a negative shift count panics like Go (recoverable runtime error).
+func ShiftNegCount() (r string) {
+	defer func() {
+		if v := recover(); v != nil {
+			r = fmt.Sprintf("%v", v)
+		}
+	}()
+	var x int64 = 1
+	return fmt.Sprintf("%v", x>>int64(-1))
+}
+
+// (*T)(p) conversion: a pointer conversion re-tags the same cell so
+// *sp reads and writes as T while *p keeps the base type.
+type SV string
+
+func (s *SV) Set(v string) { *s = SV(v) }
+
+func PtrConv() string {
+	s := "x"
+	p := &s
+	sp := (*SV)(p)
+	sp.Set("y")
+	return fmt.Sprintf("%v %T %T", s, *sp, *p)
+}
+
+// (*T)(p) shares the pointee's address: storing through *p is
+// observable through *sp.
+func PtrConvShared() string {
+	s := "a"
+	sp := (*SV)(&s)
+	*sp = "b" // store through the converted pointer
+	return s
+}
+
+// declared slice/map/chan typedefs keep their methods when checked
+// against an interface — a conversion `B("x")` must satisfy W.
+type B []byte
+
+func (b B) Count() int { return len(b) }
+
+type W interface{ Count() int }
+
+var _ W = B{} // package-level static assert
+
+func SliceIfaceMethod() string {
+	var w W = B("abcd")
+	return fmt.Sprintf("%d", w.Count())
+}
+
+// chan any carries a container verbatim — the map sent is the map
+// received, so mutation through the received alias is visible.
+func ChanAnyMap() string {
+	m := map[string]int{"a": 1}
+	ch := make(chan any, 1)
+	ch <- m
+	got := <-ch
+	got.(map[string]int)["a"] = 8
+	return fmt.Sprintf("%d", m["a"])
+}
+
+// chan any keeps a slice's identity too.
+func ChanAnySlice() string {
+	s := []int{1, 2, 3}
+	ch := make(chan any, 1)
+	ch <- s
+	got := <-ch
+	return fmt.Sprintf("%v", got)
+}
+
+// io.ReadAll marshals through a host reader.
+func IoReadAll() string {
+	b, err := io.ReadAll(strings.NewReader("payload"))
+	return fmt.Sprintf("%s %v", b, err)
+}
+
+// io.ReadFull writes back into the script's byte slice and returns
+// the real io.EOF sentinel on a short read.
+func IoReadFullEOF() string {
+	r := strings.NewReader("")
+	buf := make([]byte, 4)
+	n, err := io.ReadFull(r, buf)
+	if err != io.EOF {
+		return fmt.Sprintf("unexpected err %v", err)
+	}
+	return fmt.Sprintf("%d %q", n, buf)
+}
+
+// io.Copy from a host reader to a host writer.
+func IoCopy() string {
+	var sb strings.Builder
+	n, err := io.Copy(&sb, strings.NewReader("xy"))
+	return fmt.Sprintf("%d %v %v", n, sb.String(), err)
+}
+
+// crypto/sha256 native bind: Sum256 and New/Write produce the digest.
+func Sha256Bind() string {
+	sum := sha256.Sum256([]byte("hello"))
+	h := sha256.New()
+	h.Write([]byte("hello"))
+	return fmt.Sprintf("%x %x", sum[:4], h.Sum(nil)[:4])
+}
+
+// encoding/csv round-trip through host reader/writer.
+func CsvBind() string {
+	var sb strings.Builder
+	w := csv.NewWriter(&sb)
+	w.Write([]string{"a", "b"})
+	w.Flush()
+	r := csv.NewReader(strings.NewReader(sb.String()))
+	rec, err := r.ReadAll()
+	return fmt.Sprintf("%v %v", rec, err)
+}
+
+// bufio.Scanner over a script-side multi-line string.
+func BufioBind() string {
+	sc := bufio.NewScanner(strings.NewReader("a\nb"))
+	var got []string
+	for sc.Scan() {
+		got = append(got, sc.Text())
+	}
+	return fmt.Sprintf("%v %v", got, sc.Err())
+}
+
+// text/template executes against a host strings.Builder.
+func TemplateBind() string {
+	t := template.Must(template.New("t").Parse("hi {{.}}"))
+	var sb strings.Builder
+	err := t.Execute(&sb, "ann")
+	return fmt.Sprintf("%s %v", sb.String(), err)
+}
+
+// a bodiless declaration (asm stub, //go:linkname target) compiles to
+// a no-op returning its declared zero values.
+func Bodiless() int
+
+func BodilessCall() int { return Bodiless() + 3 }
+
+// os.Args reflects the engine's script args (WithArgs / `minigo run --`).
+func OsArgs() string { return strings.Join(os.Args, ",") }

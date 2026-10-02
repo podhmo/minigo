@@ -45,6 +45,10 @@ type Hooks struct {
 	// MethodsOf returns the method names callable on a dynamic value
 	// (structs: declared + promoted; host values: reflect method set).
 	MethodsOf func(v runtime.Value) (map[string]bool, error)
+	// MethodSetOf is an optional extended MethodsOf that also reports
+	// whether the returned set may be incomplete because an embedded
+	// type failed to resolve. Nil falls back to MethodsOf (complete).
+	MethodSetOf func(v runtime.Value) (map[string]bool, bool, error)
 	// IfaceReqs returns the required method set of an interface typedef.
 	IfaceReqs func(td *runtime.TypeDef) (map[string]bool, error)
 	// FindMethod resolves a promoted method on a struct through embedded
@@ -963,6 +967,14 @@ func (v *VM) loop(f *frame) {
 				// pointer typedef so selectMember can bind pointer methods.
 				f.push(&runtime.TypeDef{Kind: runtime.KindPointer, Anon: &ast.StarExpr{X: typeExprFor(td)}, Pkg: td.Pkg, File: td.File})
 			} else if dv, ok := runtime.Deref(x); ok {
+				// a pointer value typed *Declared dereferences to the
+				// declared pointee type — `*s` on `(*T)(p)` reads as T,
+				// so method calls and `:=`-inferred vars keep the tag.
+				if n, isN := x.(*runtime.Named); isN && n.Typ != nil && n.Typ.Kind == runtime.KindPointer {
+					if et := v.elemTypedef(f, n.Typ); et != nil {
+						dv = v.coerce(f, dv, et)
+					}
+				}
 				f.push(dv)
 			} else if tn, ok := asTypedNil(x); ok {
 				// *p on a nil pointer panics; on other nilables it's invalid
@@ -981,12 +993,20 @@ func (v *VM) loop(f *frame) {
 			}
 			// a Named pointer unwraps to its cell so the pointee's
 			// declared type still constrains the store (`*p = v` on a
-			// `var p P` where P is `type P *Sq`).
+			// `var p P` where P is `type P *Sq`, or `*s = v` through a
+			// `(*stringValue)(p)` view). The pointer's element typedef
+			// wins over the cell's own tag: the cell may be shared with a
+			// differently-typed alias (`*string` vs `*stringValue`), and
+			// the stored value un-wraps so the other view keeps its tag.
 			ur := ref
+			var ptrTd *runtime.TypeDef
 			for {
 				n, isNamed := ur.(*runtime.Named)
 				if !isNamed {
 					break
+				}
+				if n.Typ != nil && n.Typ.Kind == runtime.KindPointer {
+					ptrTd = n.Typ
 				}
 				ur = n.V
 			}
@@ -994,8 +1014,17 @@ func (v *VM) loop(f *frame) {
 				if c.ReadOnly {
 					f.trap("cannot assign to constant")
 				}
-				if c.Typ != nil {
-					val = v.coerce(f, val, c.Typ)
+				tgt := c.Typ
+				if ptrTd != nil {
+					if et := v.elemTypedef(f, ptrTd); et != nil {
+						tgt = et
+					}
+				}
+				if tgt != nil {
+					val = v.coerce(f, val, tgt)
+				}
+				if ptrTd != nil {
+					val = runtime.Unwrap(val)
 				}
 			}
 			if !runtime.SetRef(ref, val) {
@@ -1226,7 +1255,7 @@ func (v *VM) loop(f *frame) {
 			if et != nil {
 				val = v.coerce(f, val, et)
 			}
-			sv, err := toReflectValue(val, chRV.Type().Elem(), v)
+			sv, err := v.chanSendValue(val, chRV.Type().Elem())
 			if err != nil {
 				f.trap("cannot send on %s: %s", chRV.Type(), err)
 			}
@@ -1245,7 +1274,7 @@ func (v *VM) loop(f *frame) {
 				if et != nil {
 					val = v.coerce(f, val, et)
 				}
-				sv, err := toReflectValue(val, chRV.Type().Elem(), v)
+				sv, err := v.chanSendValue(val, chRV.Type().Elem())
 				if err != nil {
 					f.trap("cannot send on %s: %s", chRV.Type(), err)
 				}
@@ -1695,6 +1724,29 @@ func goValueOf(rv reflect.Value) runtime.Value {
 			el[i] = s
 		}
 		return &runtime.Slice{Elems: el}
+	case []any:
+		// a `chan any` send deep-hosts script containers (see deepHost);
+		// the receive rehydrates the flat slice shape so indexing works.
+		if v == nil {
+			return &runtime.TypedNil{Typ: anonSliceTyp("any")}
+		}
+		el := make([]runtime.Value, len(v))
+		for i, e := range v {
+			el[i] = goValueOf(reflect.ValueOf(e))
+		}
+		return &runtime.Slice{Elems: el}
+	case map[any]any:
+		if v == nil {
+			return &runtime.TypedNil{Typ: &runtime.TypeDef{Kind: runtime.KindMap,
+				Anon: &ast.MapType{Key: ast.NewIdent("any"), Value: ast.NewIdent("any")}}}
+		}
+		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}}
+		for k, e := range v {
+			kv := goValueOf(reflect.ValueOf(k))
+			m.Pairs[runtime.CanonicalKey(kv)] = goValueOf(reflect.ValueOf(e))
+			m.Order = append(m.Order, kv)
+		}
+		return m
 	case error:
 		// errors stay boxed — Error() and Unwrap() dispatch via reflection;
 		// errors.Is/As unwrap through goNative.
@@ -1804,6 +1856,15 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 		if v == nil || v == runtime.NIL {
 			return reflect.Zero(t), nil
 		}
+		// a host func taking `any` can only consume the value through
+		// reflect, so script containers marshal to real host values —
+		// slices as []any, maps as map[any]any. Pointer-like values stay
+		// verbatim: their address-ness is the point. callReflectFunc
+		// copies a converted slice's elements back after the call.
+		v = deepHost(v)
+		if v == nil || v == runtime.NIL {
+			return reflect.Zero(t), nil
+		}
 		av := reflect.ValueOf(v)
 		if !av.IsValid() {
 			return reflect.Zero(t), nil
@@ -1815,10 +1876,19 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 	if t.Kind() == reflect.Func {
 		return adaptFunc(v, t, vc)
 	}
+	// holder keeps the pointer-like node (Cell/FieldRef/IndexRef) the
+	// final value was loaded through: when the parameter wants a pointer
+	// the callee can write through, a fresh host pointer is built here
+	// and callReflectFunc copies the pointee back into holder.
+	var holder runtime.Value
 	for {
 		if n, ok := v.(*runtime.Named); ok {
 			v = n.V
 			continue
+		}
+		switch v.(type) {
+		case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
+			holder = v // last ref wins — the deepest pointer chain link
 		}
 		if dv, ok := runtime.Deref(v); ok {
 			v = dv
@@ -1885,7 +1955,94 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 	if av.Type().ConvertibleTo(t) {
 		return av.Convert(t), nil
 	}
+	// `&b` / pointer-var args cross as the pointee value — rebuild a real
+	// host pointer when the parameter wants one (a *T param or an
+	// interface the pointer type implements, like io.Writer). The temp
+	// points at a copy; callReflectFunc writes it back to holder.
+	if holder != nil {
+		if t.Kind() == reflect.Pointer && av.Type().ConvertibleTo(t.Elem()) {
+			pv := reflect.New(t.Elem())
+			pv.Elem().Set(av.Convert(t.Elem()))
+			return pv, nil
+		}
+		if pt := reflect.PointerTo(av.Type()); pt.AssignableTo(t) {
+			pv := reflect.New(av.Type())
+			pv.Elem().Set(av)
+			return pv, nil
+		}
+	}
 	return reflect.Value{}, fmt.Errorf("cannot use %s as %s", av.Type(), t)
+}
+
+// deepHost converts a script value for an `any` parameter: containers
+// become real host values (Slice → []any, Map → map[any]any) so the
+// callee can reflect over them; Named and GoValue unwrap; typed nils
+// read as nil. Everything else — cells, funcs, structs — stays verbatim.
+func deepHost(v runtime.Value) runtime.Value {
+	switch x := v.(type) {
+	case nil, runtime.Nil:
+		return nil
+	case *runtime.TypedNil, *runtime.IfaceNil:
+		return nil
+	case *runtime.Named:
+		return deepHost(x.V)
+	case *runtime.GoValue:
+		return x.V
+	case *runtime.Slice:
+		out := make([]any, len(x.Elems))
+		for i, e := range x.Elems {
+			out[i] = deepHost(e)
+		}
+		return out
+	case *runtime.Map:
+		out := make(map[any]any, len(x.Pairs))
+		for _, k := range x.Order {
+			out[deepHost(k)] = deepHost(x.Pairs[runtime.CanonicalKey(k)])
+		}
+		return out
+	}
+	return v
+}
+
+// argBack pairs an argument with the host value it marshaled to so a
+// callee's writes through it can mirror back into the script value.
+type argBack struct {
+	arg runtime.Value
+	rv  reflect.Value
+}
+
+// sliceArg resolves an argument to the script slice it carries, through
+// Named tags and one level of pointer-like deref.
+func sliceArg(a runtime.Value) *runtime.Slice {
+	u := runtime.Unwrap(a)
+	if dv, ok := runtime.Deref(u); ok {
+		u = runtime.Unwrap(dv)
+	}
+	s, _ := u.(*runtime.Slice)
+	return s
+}
+
+// refArg resolves an argument to the pointer-like node (Cell/FieldRef/
+// IndexRef) nearest its leaf value — the write-back target for a
+// pointer crossed by address — plus the leaf it resolved to.
+func refArg(a runtime.Value) (ref runtime.Value, leaf runtime.Value) {
+	u := a
+	for {
+		if n, ok := u.(*runtime.Named); ok {
+			u = n.V
+			continue
+		}
+		switch u.(type) {
+		case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
+			ref = u
+		}
+		if dv, ok := runtime.Deref(u); ok {
+			u = dv
+			continue
+		}
+		break
+	}
+	return ref, u
 }
 
 // callReflectFunc invokes a host func reflect.Value with script args:
@@ -1903,6 +2060,7 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 	// a trailing slice assignable to the variadic parameter calls
 	// through CallSlice — `f(xs...)`-style forwarding on natives.
 	in := make([]reflect.Value, len(args))
+	var backs []argBack
 	useSlice := false
 	for i, a := range args {
 		pt := mt.In(min(i, nin-1))
@@ -1911,6 +2069,7 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 				if rv, err := toReflectValue(a, pt, vc); err == nil {
 					in[i] = rv
 					useSlice = true
+					backs = append(backs, argBack{arg: a, rv: rv})
 					continue
 				}
 			}
@@ -1921,12 +2080,58 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 			return nil, fmt.Errorf("%s arg %d: %w", name, i, err)
 		}
 		in[i] = rv
+		backs = append(backs, argBack{arg: a, rv: rv})
 	}
 	var out []reflect.Value
 	if useSlice {
 		out = m.CallSlice(in)
 	} else {
 		out = m.Call(in)
+	}
+	// callee writes propagate back: a script slice crossed as a fresh
+	// host slice shares nothing (Reader.Read's buffer), and an
+	// addressable arg crossed as a fresh host pointer (a *T param or an
+	// interface the pointer implements) needs its pointee mirrored.
+	for _, wb := range backs {
+		handled := false
+		if ss := sliceArg(wb.arg); ss != nil {
+			rv := wb.rv
+			if rv.Kind() == reflect.Interface {
+				rv = rv.Elem()
+			}
+			if rv.IsValid() && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) {
+				for i := 0; i < rv.Len() && i < len(ss.Elems); i++ {
+					ss.Elems[i] = goValueOf(rv.Index(i))
+				}
+				handled = true
+			}
+		}
+		if handled {
+			continue
+		}
+		ref, leaf := refArg(wb.arg)
+		if ref == nil || wb.rv.Kind() != reflect.Pointer {
+			continue
+		}
+		// the arg's own pointer crossing directly isn't a temp —
+		// copying its pointee back would un-box the cell.
+		if gv, ok := leaf.(*runtime.GoValue); ok {
+			if pv := reflect.ValueOf(gv.V); pv.IsValid() && pv.Kind() == reflect.Pointer && pv.Pointer() == wb.rv.Pointer() {
+				continue
+			}
+		}
+		val := goValueOf(wb.rv.Elem())
+		if cell, ok := ref.(*runtime.Cell); ok {
+			if n, ok := cell.Elem.(*runtime.Named); ok {
+				// a declared cell keeps its tag through the round trip
+				vv := runtime.Unwrap(val)
+				if iv, ok := vv.(int64); ok {
+					vv = maskInt(iv, sizedNameOf(n.Typ))
+				}
+				val = &runtime.Named{Typ: n.Typ, V: vv}
+			}
+		}
+		runtime.SetRef(ref, val)
 	}
 	switch len(out) {
 	case 0:
@@ -2057,7 +2262,17 @@ func (v *VM) structMember(f *frame, s *runtime.Struct, name string, recv runtime
 // the declared typedef (`type A B` does not inherit B's methods, like
 // Go); fields reach through to the underlying struct's layout.
 func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.Value) runtime.Value {
-	if m, ok := n.Typ.Methods[name]; ok {
+	// an anonymous *Declared typedef exposes the pointee's method set —
+	// `(*T)(p)` keeps T's methods callable on the conversion result.
+	td := n.Typ
+	for td != nil && td.Kind == runtime.KindPointer && td.Spec == nil && td.Methods[name] == nil {
+		et, err := v.H.ElemOf(td)
+		if err != nil || et == nil {
+			break
+		}
+		td = et
+	}
+	if m, ok := td.Methods[name]; ok {
 		if err := m.EnsureCompiled(); err != nil {
 			f.trap("%s", err)
 		}
@@ -2066,6 +2281,14 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 			if _, ok := runtime.Deref(r); !ok {
 				r = &runtime.Cell{Elem: r}
 			}
+		} else if td != n.Typ {
+			// a value receiver reached through the peeled pointer binds
+			// the pointee, re-tagged to the declared type.
+			sv := n.V
+			if dv, ok := runtime.Deref(sv); ok {
+				sv = dv
+			}
+			r = valueCopy(&runtime.Named{Typ: td, V: sv})
 		} else {
 			// a value receiver binds a copy of the named value — for a
 			// pointer-underlying declaration (`type P *Sq`) the pointer
@@ -3026,6 +3249,21 @@ func (v *VM) chanOf(f *frame, x runtime.Value) (reflect.Value, *runtime.TypeDef)
 	return reflect.Value{}, nil
 }
 
+// chanSendValue marshals a value sent on a channel: `chan any` carries
+// the script value verbatim so a container keeps its identity on the
+// receive side (`got["k"] = 8` writes the original map); concrete
+// element types marshal like a host call argument.
+func (v *VM) chanSendValue(val runtime.Value, elemT reflect.Type) (reflect.Value, error) {
+	if elemT.Kind() == reflect.Interface && elemT.NumMethod() == 0 {
+		out := reflect.New(elemT).Elem()
+		if val != nil && val != runtime.NIL {
+			out.Set(reflect.ValueOf(val))
+		}
+		return out, nil
+	}
+	return toReflectValue(val, elemT, v)
+}
+
 // chanSend sends sv on chRV, blocking as in Go — including panicking on a
 // closed channel (the host panic surfaces as a script panic).
 func (v *VM) chanSend(chRV, sv reflect.Value) {
@@ -3278,6 +3516,12 @@ func truthy(v runtime.Value) bool {
 }
 
 func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
+	// shifts evaluate in the left operand's signedness — Go types the
+	// result by the left side alone, so `^uintptr(0) >> 63` must shift
+	// logically, not as int64. They get their own operator.
+	if op == bytecode.BinShl || op == bytecode.BinShr {
+		return shiftOp(f, op, a, b)
+	}
 	// named basic values operate on their underlying value; two different
 	// declared types in one operation is a type error (Go: `x + y` on
 	// MyInt and Other traps), and an arithmetic result keeps the
@@ -3296,6 +3540,20 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 		b = n.V
 	}
 	if tag != nil {
+		// an unsigned-width declared int evaluates `/`, `%` and ordered
+		// comparisons in the uint64 domain — same bits as int64 for the
+		// rest, so only those ops differ.
+		if uname := sizedNameOf(tag); unsignedName(uname) {
+			if ua, aok := uintOperand(a); aok {
+				if ub, bok := uintOperand(b); bok {
+					res, isInt := uintBinOp(f, op, ua, ub)
+					if !isInt {
+						return res
+					}
+					return &runtime.Named{Typ: tag, V: maskInt(int64(res.(uint64)), uname)}
+				}
+			}
+		}
 		res := binaryOp(f, op, a, b)
 		if iv, ok := res.(int64); ok {
 			return &runtime.Named{Typ: tag, V: maskInt(iv, sizedNameOf(tag))}
@@ -3357,11 +3615,16 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 		if !ok {
 			f.trap("unsupported types: %T %s %T", a, op, b)
 		}
+		if ubox {
+			res, isInt := uintBinOp(f, op, uint64(ai), uint64(bi))
+			if isInt {
+				return &runtime.GoValue{V: res}
+			}
+			return res
+		}
 		res := intBinOp(f, op, ai, bi)
 		if iv, isI := res.(int64); isI {
 			switch {
-			case ubox:
-				return &runtime.GoValue{V: uint64(iv)}
 			case dmark && op == bytecode.BinQuo && dboth:
 				return iv // d/d is unitless in Go
 			case dmark:
@@ -3386,6 +3649,152 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 	return nil
 }
 
+// uintOperand reads an int-domain runtime value as uint64: int64s carry
+// two's-complement bits already and GoValue{uint64} holds the wide form.
+func uintOperand(v runtime.Value) (uint64, bool) {
+	switch x := v.(type) {
+	case int64:
+		return uint64(x), true
+	case *runtime.GoValue:
+		if u, ok := x.V.(uint64); ok {
+			return u, true
+		}
+	}
+	return 0, false
+}
+
+// uintBinOp is intBinOp evaluated in the uint64 domain: only `/`, `%` and
+// the ordered comparisons differ from the signed reading — bit ops and
+// add/sub/mul produce identical bits. Integer results arrive as uint64.
+func uintBinOp(f *frame, op bytecode.BinOp, a, b uint64) (res runtime.Value, isInt bool) {
+	switch op {
+	case bytecode.BinAdd:
+		return a + b, true
+	case bytecode.BinSub:
+		return a - b, true
+	case bytecode.BinMul:
+		return a * b, true
+	case bytecode.BinQuo:
+		return a / b, true
+	case bytecode.BinRem:
+		return a % b, true
+	case bytecode.BinAnd:
+		return a & b, true
+	case bytecode.BinOr:
+		return a | b, true
+	case bytecode.BinXor:
+		return a ^ b, true
+	case bytecode.BinAndNot:
+		return a &^ b, true
+	case bytecode.BinLss:
+		return a < b, false
+	case bytecode.BinLeq:
+		return a <= b, false
+	case bytecode.BinGtr:
+		return a > b, false
+	case bytecode.BinGeq:
+		return a >= b, false
+	}
+	f.trap("uint binary %s", op)
+	return nil, false
+}
+
+// shiftOp evaluates << and >> in the left operand's signedness: Go types
+// the result by the left side alone (the count is always an unsigned
+// count), so a uintptr/uint64 value shifts logically while int64 shifts
+// arithmetically. A declared-width operand re-tags and re-masks.
+func shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
+	var tag *runtime.TypeDef
+	if n, ok := a.(*runtime.Named); ok {
+		tag, a = n.Typ, n.V
+	}
+	count, ok := shiftCount(b)
+	if !ok {
+		f.trap("unsupported shift count %T", b)
+	}
+	unsigned := unsignedName(sizedNameOf(tag))
+	switch x := a.(type) {
+	case int64:
+		var r int64
+		if unsigned {
+			r = int64(shiftUint(op, uint64(x), count))
+		} else {
+			r = shiftInt(op, x, count)
+		}
+		if tag != nil {
+			return &runtime.Named{Typ: tag, V: maskInt(r, sizedNameOf(tag))}
+		}
+		return r
+	case time.Duration:
+		return time.Duration(shiftInt(op, int64(x), count))
+	case *runtime.GoValue:
+		if u, ok := x.V.(uint64); ok {
+			r := shiftUint(op, u, count)
+			if tag != nil {
+				return &runtime.Named{Typ: tag, V: maskInt(int64(r), sizedNameOf(tag))}
+			}
+			return &runtime.GoValue{V: r}
+		}
+	}
+	f.trap("unsupported types: %T %s %T", a, op, b)
+	return nil
+}
+
+// shiftCount reads the right operand of a shift as an unsigned count —
+// a negative count panics like Go's runtime error. A Named unsigned tag
+// reinterprets the int64 bits (`x << uint(-4)` shifts by 2^64-4, not -4).
+func shiftCount(b runtime.Value) (uint64, bool) {
+	if n, ok := b.(*runtime.Named); ok {
+		if unsignedName(sizedNameOf(n.Typ)) {
+			if iv, ok := n.V.(int64); ok {
+				return uint64(iv), true
+			}
+		}
+	}
+	switch x := runtime.Unwrap(b).(type) {
+	case int64:
+		if x < 0 {
+			panic(&runtime.Panic{Value: "runtime error: negative shift amount"})
+		}
+		return uint64(x), true
+	case *runtime.GoValue:
+		switch u := x.V.(type) {
+		case uint64:
+			return u, true
+		case uint:
+			return uint64(u), true
+		case uint8, uint16, uint32, uintptr:
+			return reflect.ValueOf(u).Uint(), true
+		}
+	}
+	return 0, false
+}
+
+// shiftInt shifts int64 with Go's saturation: `x << c` loses bits past
+// 64 (zero fill), `x >> c` sign-fills for a negative left operand.
+func shiftInt(op bytecode.BinOp, a int64, c uint64) int64 {
+	if c >= 64 {
+		if op == bytecode.BinShl || a >= 0 {
+			return 0
+		}
+		return -1
+	}
+	if op == bytecode.BinShl {
+		return a << c
+	}
+	return a >> c
+}
+
+func shiftUint(op bytecode.BinOp, a uint64, c uint64) uint64 {
+	if c >= 64 {
+		return 0
+	}
+	if op == bytecode.BinShl {
+		return a << c
+	}
+	return a >> c
+}
+
 func intBinOp(f *frame, op bytecode.BinOp, a, b int64) runtime.Value {
 	switch op {
 	case bytecode.BinAdd:
@@ -3406,10 +3815,6 @@ func intBinOp(f *frame, op bytecode.BinOp, a, b int64) runtime.Value {
 		return a ^ b
 	case bytecode.BinAndNot:
 		return a &^ b
-	case bytecode.BinShl:
-		return a << b
-	case bytecode.BinShr:
-		return a >> b
 	case bytecode.BinLss:
 		return a < b
 	case bytecode.BinLeq:
@@ -3500,11 +3905,22 @@ func unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value {
 			return retag(-x)
 		case time.Duration:
 			return retag(-x)
+		case *runtime.GoValue:
+			// -u on a wide uint64 wraps mod 2^64, re-boxed so the unsigned
+			// domain survives.
+			if u, ok := x.V.(uint64); ok {
+				return &runtime.GoValue{V: -u}
+			}
 		}
 		f.trap("unary - on %T", a)
 	case bytecode.UnXor:
 		if x, ok := a.(int64); ok {
 			return retag(^x)
+		}
+		if g, ok := a.(*runtime.GoValue); ok {
+			if u, ok := g.V.(uint64); ok {
+				return &runtime.GoValue{V: ^u}
+			}
 		}
 		f.trap("unary ^ on %T", a)
 	}
@@ -3652,6 +4068,20 @@ func eqlValue(a, b runtime.Value) bool {
 	case *runtime.Chan:
 		if _, ok := b.(*runtime.Chan); ok {
 			return a == b // channel identity
+		}
+		return false
+	case *runtime.GoValue:
+		// host values compare by underlying identity: two wrappers
+		// around the same object (e.g. the io.EOF sentinel) are equal.
+		if bg, ok := b.(*runtime.GoValue); ok {
+			if av.V == nil || bg.V == nil {
+				return av.V == bg.V
+			}
+			t := reflect.TypeOf(av.V)
+			if !t.Comparable() {
+				panic(&runtime.Panic{Value: "runtime error: comparing uncomparable type " + t.String()})
+			}
+			return av.V == bg.V
 		}
 		return false
 	}
@@ -4334,9 +4764,17 @@ func (v *VM) convertPointer(td *runtime.TypeDef, x runtime.Value) (runtime.Value
 	}
 	// a declared pointer type re-tags so `x.(P)` checks identity and
 	// member access sees only P's declared method set — a bare cell's
-	// dynamic type stays the anonymous *Elem.
+	// dynamic type stays the anonymous *Elem. An anonymous *Declared
+	// (`(*T)(p)` on a declared T) wraps too: the pointer type is unnamed,
+	// but the value must keep T's declared identity so interface checks
+	// and method dispatch see the pointee's method set.
 	if td.Spec != nil {
 		return &runtime.Named{Typ: td, V: x}, nil
+	}
+	if v.H.ElemOf != nil {
+		if et, err := v.H.ElemOf(td); err == nil && et != nil && declaredType(et) {
+			return &runtime.Named{Typ: td, V: x}, nil
+		}
 	}
 	return x, nil
 }
@@ -4770,12 +5208,20 @@ func (v *VM) ifaceSatisfied(td *runtime.TypeDef, x runtime.Value) (bool, error) 
 	if len(reqs) == 0 {
 		return true, nil
 	}
-	have, err := v.H.MethodsOf(x)
+	var have map[string]bool
+	var unsure bool
+	if v.H.MethodSetOf != nil {
+		have, unsure, err = v.H.MethodSetOf(x)
+	} else {
+		have, err = v.H.MethodsOf(x)
+	}
 	if err != nil {
 		return false, err
 	}
 	for m := range reqs {
-		if !have[m] {
+		if !have[m] && !unsure {
+			// an unresolvable embedded type may promote any missing
+			// method, so only a complete method set can fail the check
 			return false, nil
 		}
 	}
@@ -5560,12 +6006,26 @@ func sizedNameOf(td *runtime.TypeDef) string {
 	return ""
 }
 
-// sizedIntName reports whether name is a builtin integer narrower or
-// wider than the int64 model — maskInt changes those values' domain.
+// sizedIntName reports whether name is a builtin integer whose domain
+// differs from bare int64 — maskInt wraps those values, and the
+// unsigned names also switch binaryOp's division/shift/compare domain.
+// int64 itself stays untagged: it IS the bare model. uint tags so
+// `x := uint(v)` keeps unsigned semantics; int stays bare too.
 func sizedIntName(name string) bool {
 	switch name {
 	case "int8", "int16", "int32", "rune",
-		"uint8", "byte", "uint16", "uint32", "uint64", "uintptr":
+		"uint", "uint8", "byte", "uint16", "uint32", "uint64", "uintptr":
+		return true
+	}
+	return false
+}
+
+// unsignedName reports whether a sized-int typedef name is an unsigned
+// width — the unsigned names evaluate division, remainder, shifts and
+// ordered comparisons in the uint64 domain.
+func unsignedName(name string) bool {
+	switch name {
+	case "uint", "uint8", "byte", "uint16", "uint32", "uint64", "uintptr":
 		return true
 	}
 	return false
@@ -5585,7 +6045,7 @@ func maskInt(n int64, name string) int64 {
 		return int64(uint16(n))
 	case "uint32":
 		return int64(uint32(n))
-	case "uint64", "uintptr":
+	case "uint64", "uintptr", "uint":
 		return int64(uint64(n))
 	}
 	return n
