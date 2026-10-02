@@ -199,3 +199,22 @@ func NamedUnary() string {
 	var x MyU8 = 5
 	return fmt.Sprintf("%v", -x)
 }
+
+// a conversion-produced sized int keeps the tag through arithmetic:
+// -uint8(5) is 251 and u-10 wraps, not just on declared vars.
+func ConvSizedInt() string {
+	u := uint8(5)
+	return fmt.Sprintf("%v %v %T", -u, u-10, u)
+}
+
+// constant expressions fold in the exact domain: 1<<100>>50 is 2^50,
+// not the 0 an int64 runtime shift would produce.
+func ConstFoldShift() int64 {
+	return 1 << 100 >> 50
+}
+
+// 1/0 as a constant expression traps at compile, matching Go's
+// division-by-zero compile error — not a runtime panic.
+func ConstDivZero() int {
+	return 1 / 0
+}

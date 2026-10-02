@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -128,6 +129,14 @@ func WalkCollect(dir string) int64 {
 
 // ExecEcho exercises exec.Command + Cmd.Output + []byte marshalling.
 func ExecEcho() string {
+	// echo is a shell builtin, not an exe, on Windows.
+	if runtime.GOOS == "windows" {
+		out, err := exec.Command("cmd", "/c", "echo", "hi").Output()
+		if err != nil {
+			return "exec: " + err.Error()
+		}
+		return strings.TrimSpace(string(out))
+	}
 	out, err := exec.Command("echo", "-n", "hi").Output()
 	if err != nil {
 		return "exec: " + err.Error()
@@ -143,6 +152,17 @@ func CmdDirField() string {
 
 // ExecDirField writes cmd.Dir and runs pwd there: field set + cwd default.
 func ExecDirField(dir string) string {
+	// pwd is an MSYS exe on Windows (when present at all) and reports the
+	// dir in /tmp-ish mount form; cmd's builtin cd prints the native path.
+	if runtime.GOOS == "windows" {
+		cmd := exec.Command("cmd", "/c", "cd")
+		cmd.Dir = dir
+		out, err := cmd.Output()
+		if err != nil {
+			return "exec: " + err.Error()
+		}
+		return strings.TrimSpace(string(out))
+	}
 	cmd := exec.Command("pwd")
 	cmd.Dir = dir
 	out, err := cmd.Output()

@@ -3861,9 +3861,11 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 		default:
 			return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), td.Name)
 		}
-		if td.Name == "uint64" || td.Name == "uintptr" {
-			// the unsigned domain must survive for %x/%d rendering —
-			// tag the value so fmtValue formats it as uint64.
+		if sizedIntName(td.Name) {
+			// the converted value keeps its declared tag: arithmetic
+			// re-wraps to the type's width (-u on uint8 yields 251), %T
+			// prints the type name, and unsigned uint64 keeps its
+			// domain for %x/%d. Native-width ints stay bare int64.
 			return &runtime.Named{Typ: td, V: maskInt(iv, td.Name)}, nil
 		}
 		return maskInt(iv, td.Name), nil

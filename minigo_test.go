@@ -563,16 +563,19 @@ func TestExecIntrinsics(t *testing.T) {
 	// was entered through (darwin returns /var/... for /private/var/...),
 	// so directory identity is compared after resolving both sides.
 	got := run(t, e, "./testdata/fsops", "ExecDirField", dir)
-	resolved, err := filepath.EvalSymlinks(dir)
+	// Directory identity, not string equality: a subprocess's getcwd may
+	// keep symlink components (darwin /var vs /private/var) or 8.3-short
+	// vs long components (Windows ADMINI~1 vs Administrator).
+	dirInfo, err := os.Stat(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolvedGot, err := filepath.EvalSymlinks(got.(string))
+	gotInfo, err := os.Stat(got.(string))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if diff := cmp.Diff(resolved, resolvedGot); diff != "" {
-		t.Fatalf("ExecDirField mismatch (-want +got):\n%s", diff)
+	if !os.SameFile(dirInfo, gotInfo) {
+		t.Fatalf("ExecDirField: got %q, want dir %q", got, dir)
 	}
 	// exec.LookPath with a separator-bearing relative name anchors at the
 	// engine's virtual cwd, not the host process's cwd
@@ -1483,11 +1486,17 @@ func TestFuzzFixes(t *testing.T) {
 		{"ErrorfWrap", "o: x x true 7"},
 		{"PanicNilType", "*runtime.PanicNilError runtime error: panic called with nil argument"},
 		{"NamedUnary", "251"},
+		{"ConvSizedInt", "251 251 uint8"},
+		{"ConstFoldShift", int64(1) << 50},
 	}
 	for _, c := range cases {
 		got := run(t, e, "./testdata/fuzzfix", c.fn)
 		if got != c.want {
 			t.Errorf("%s: got %v (%T), want %v (%T)", c.fn, got, got, c.want, c.want)
 		}
+	}
+	_, err := e.Run(context.Background(), "./testdata/fuzzfix", "ConstDivZero")
+	if err == nil || !strings.Contains(err.Error(), "division by zero") {
+		t.Fatalf("ConstDivZero: expected division-by-zero trap, got %v", err)
 	}
 }
