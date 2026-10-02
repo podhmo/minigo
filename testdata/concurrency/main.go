@@ -4,6 +4,7 @@ import (
 	"runtime"
 	"sort"
 	"sync"
+	"text/template"
 	"time"
 )
 
@@ -810,3 +811,263 @@ func SyncAssertHostPtr() int {
 	}
 	return 1
 }
+
+// AfterFuncFires: time.AfterFunc's host-timer callback lands back on
+// the calling process through the foreign-goroutine Call reroute — the
+// buffered send reaches the root goroutine like a spawned one.
+func AfterFuncFires() int {
+	ch := make(chan int, 1)
+	time.AfterFunc(time.Hour, func() { ch <- 7 })
+	return <-ch // 7 — the fake clock fires the timer
+}
+
+// AfterFuncStop: a stopped timer never runs the callback — the fake
+// clock still advances past the deadline via Sleep.
+func AfterFuncStop() int {
+	ch := make(chan int, 1)
+	t := time.AfterFunc(time.Hour, func() { ch <- 1 })
+	t.Stop()
+	time.Sleep(2 * time.Hour)
+	select {
+	case v := <-ch:
+		return v
+	default:
+	}
+	return 9 // the channel stayed empty
+}
+
+// AfterFuncPanic: a panic inside an AfterFunc callback fails the whole
+// process like Go's crash — the panic must reach Run through the
+// goroutine-failure path, not as an unrecovered panic on the timer's
+// host goroutine.
+func AfterFuncPanic() int {
+	time.AfterFunc(time.Hour, func() { panic("timer boom") })
+	select {}
+}
+
+// AmbigHostMethod: Lock is promoted from both embeds — Go rejects the
+// selector as ambiguous at compile time; minigo traps at the access.
+type dualLock struct {
+	sync.Mutex
+	sync.RWMutex
+}
+
+func AmbigHostMethod() int {
+	var t dualLock
+	t.Lock()
+	return -1
+}
+
+// AmbigHostField: New reaches the selector through two embedded
+// host-typed paths at the same depth — ambiguous like Go.
+type poolA struct{ sync.Pool }
+type poolB struct{ sync.Pool }
+type poolAB struct {
+	poolA
+	poolB
+}
+
+func AmbigHostField() int {
+	var t poolAB
+	t.New = func() any { return 1 }
+	return -1
+}
+
+// AmbigMixedField: a script-typed embed and a host-typed embed carry
+// the same field name at the same depth — ambiguous like Go.
+type hasNew struct{ New func() any }
+type mixedNew struct {
+	sync.Pool
+	hasNew
+}
+
+func AmbigMixedField() int {
+	var t mixedNew
+	t.New = func() any { return 1 }
+	return -1
+}
+
+// AmbigMixedMethodField: a promoted host method and a promoted script
+// field share the name — Go rejects the selector regardless of which
+// kind wins, so the access is ambiguous too.
+type hasLock struct{ Lock int }
+type mixedLock struct {
+	sync.Mutex
+	hasLock
+}
+
+func AmbigMixedMethodField() int {
+	var t mixedLock
+	t.Lock = 3
+	return -1
+}
+
+// AmbigMixedMethodMethod: a promoted host method and a promoted script
+// method share the name at the same depth — ambiguous like Go.
+type locker2 struct{}
+
+func (locker2) Lock()   {}
+func (locker2) Unlock() {}
+
+type mixedLock2 struct {
+	sync.Mutex
+	locker2
+}
+
+func AmbigMixedMethodMethod() int {
+	var t mixedLock2
+	t.Lock()
+	return -1
+}
+
+// AmbigScriptMethod: two script embeds promote the same method name at
+// the same depth — ambiguous like Go.
+type mA struct{}
+
+func (mA) M() {}
+
+type mB struct{}
+
+func (mB) M() {}
+
+type mAB struct {
+	mA
+	mB
+}
+
+func AmbigScriptMethod() int {
+	var t mAB
+	t.M()
+	return -1
+}
+
+// ShallowHostWins: a depth-1 host field shadows the same name promoted
+// through a deeper script embed — no ambiguity across depths.
+type deepNew struct{ poolA }
+type shallowNew struct {
+	sync.Pool
+	deepNew
+}
+
+func ShallowHostWins() int {
+	var t shallowNew
+	t.New = func() any { return 4 }
+	return t.New().(int) // 4
+}
+
+// NilHostPtrEmbed: a member reachable only through a nil embedded host
+// pointer panics on the implicit dereference, like Go.
+type poolPtr struct{ *sync.Pool }
+
+func NilHostPtrEmbed() int {
+	var t poolPtr
+	t.New = func() any { return 1 }
+	return -1
+}
+
+// NamedHostFieldEmbed: a declared type over a host type keeps the
+// underlying's fields (`type MyPool sync.Pool` still has New), even
+// though Go gives the defined type an empty method set.
+type MyPool sync.Pool
+type namedPool struct{ MyPool }
+
+func NamedHostFieldEmbed() int {
+	var t namedPool
+	t.New = func() any { return 7 }
+	return t.New().(int)
+}
+
+// NamedHostMethodEmbed: a defined type does not inherit the underlying
+// host type's methods — `t.Lock` is undefined, like Go.
+type MyMutex sync.Mutex
+type namedMu struct {
+	MyMutex
+	n int
+}
+
+func NamedHostMethodEmbed() int {
+	var t namedMu
+	t.Lock()
+	return t.n
+}
+
+// NamedScriptFieldEmbed / NamedScriptMethodEmbed: the same rule for a
+// script declared type — fields of the underlying promote, methods do
+// not.
+type sBase struct{ F int }
+
+func (sBase) M() {}
+
+type bDefined sBase
+type bWrap struct{ bDefined }
+
+func NamedScriptFieldEmbed() int {
+	var t bWrap
+	t.F = 9
+	return t.F
+}
+
+func NamedScriptMethodEmbed() int {
+	var t bWrap
+	t.M()
+	return 1
+}
+
+// AfterFuncNilStop: a nil callback registers fine — Go only fails if
+// the timer actually fires. Stop() means it never does.
+func AfterFuncNilStop() int {
+	if time.AfterFunc(time.Hour, nil).Stop() {
+		return 1
+	}
+	return -1
+}
+
+// AfterFuncNilFire: a nil callback that does fire fails the process
+// with a nil-call panic through the goroutine-failure path.
+func AfterFuncNilFire() int {
+	time.AfterFunc(time.Hour, nil)
+	select {}
+}
+
+// HostSubEmbedField: *template.Template's own anonymous *common is nil
+// inside the bound type's zero — a promoted field reachable only
+// through it must still resolve (existence is a type-level question;
+// only member access dereferences the stored value).
+type tplWrap struct{ *template.Template }
+
+func HostSubEmbedField() int {
+	s := tplWrap{Template: template.Must(template.New("x").Parse("hello"))}
+	if s.Root != nil {
+		return 1
+	}
+	return -1
+}
+
+// HostSubEmbedDepth: a member promoted inside a host type counts its
+// internal embedding depth — Local.Root is shallower than
+// Template→*parse.Tree→Root, so it wins without ambiguity like Go.
+type tplLocal struct{ Root int }
+
+type tplDepthWrap struct {
+	*template.Template
+	tplLocal
+}
+
+func HostSubEmbedDepth() int {
+	s := tplDepthWrap{tplLocal: tplLocal{Root: 7}}
+	return s.Root
+}
+
+var afterFuncFired int
+
+// AfterFuncArm: registers a real-clock timer and returns — its process
+// dies with the run, so the callback must never start (Go kills pending
+// timers with the process).
+func AfterFuncArm() int {
+	time.AfterFunc(20*time.Millisecond, func() { afterFuncFired = 1 })
+	return 0
+}
+
+// AfterFuncRead: observes the package var a dead run's timer would have
+// set — stays 0 when the callback never started.
+func AfterFuncRead() int { return afterFuncFired }

@@ -71,6 +71,14 @@ func TestConcurrencyBlocking(t *testing.T) {
 			{"SyncEmbedMutex", int64(5)},
 			{"SyncEmbedPoolField", int64(9)},
 			{"SyncAssertHostPtr", int64(1)},
+			{"AfterFuncFires", int64(7)},
+			{"AfterFuncStop", int64(9)},
+			{"AfterFuncNilStop", int64(1)},
+			{"ShallowHostWins", int64(4)},
+			{"NamedHostFieldEmbed", int64(7)},
+			{"NamedScriptFieldEmbed", int64(9)},
+			{"HostSubEmbedField", int64(1)},
+			{"HostSubEmbedDepth", int64(7)},
 		}
 		for _, c := range cases {
 			got := run(t, e, "./testdata/concurrency", c.fn)
@@ -134,6 +142,125 @@ func TestRangeChanTwoVars(t *testing.T) {
 		_, err := runErr(e, "./testdata/concurrency", "RangeChanTwoVars")
 		if err == nil || !strings.Contains(err.Error(), "at most one iteration variable") {
 			t.Fatalf("expected range-over-channel arity trap, got %v", err)
+		}
+	})
+}
+
+// TestAmbiguousSelector: a member promoted through two embedded paths
+// at the same depth traps like Go's compile-time rejection — across
+// host embeds, and across script+host embeds, for fields and methods.
+func TestAmbiguousSelector(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEngine(t)
+		for _, fn := range []string{"AmbigHostMethod", "AmbigHostField", "AmbigMixedField", "AmbigMixedMethodField", "AmbigMixedMethodMethod", "AmbigScriptMethod"} {
+			_, err := runErr(e, "./testdata/concurrency", fn)
+			if err == nil || !strings.Contains(err.Error(), "ambiguous selector") {
+				t.Fatalf("%s: expected ambiguous-selector trap, got %v", fn, err)
+			}
+		}
+	})
+}
+
+// TestAfterFuncPanic: a panic inside an AfterFunc callback reaches Run
+// through the goroutine-failure path — the timer's host goroutine must
+// not die with an unrecovered panic.
+func TestAfterFuncPanic(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEngine(t)
+		_, err := runErr(e, "./testdata/concurrency", "AfterFuncPanic")
+		if err == nil || !strings.Contains(err.Error(), "timer boom") {
+			t.Fatalf("expected timer-callback panic to fail the run, got %v", err)
+		}
+	})
+}
+
+// TestAfterFuncNilFire: a nil callback that does fire fails the
+// process with a nil-call panic through the goroutine-failure path —
+// like a panic inside any other spawned goroutine.
+func TestAfterFuncNilFire(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEngine(t)
+		_, err := runErr(e, "./testdata/concurrency", "AfterFuncNilFire")
+		if err == nil || !strings.Contains(err.Error(), "nil pointer") {
+			t.Fatalf("expected nil-call panic to fail the run, got %v", err)
+		}
+	})
+}
+
+// TestDefinedTypeMethodSet: a defined type (`type B A`) carries the
+// underlying's fields but not its methods — Go rejects the selector at
+// compile time, minigo traps on the access.
+func TestDefinedTypeMethodSet(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEngine(t)
+		for _, fn := range []string{"NamedHostMethodEmbed", "NamedScriptMethodEmbed"} {
+			_, err := runErr(e, "./testdata/concurrency", fn)
+			if err == nil || !strings.Contains(err.Error(), "has no field or method") {
+				t.Fatalf("%s: expected no-member trap, got %v", fn, err)
+			}
+		}
+	})
+}
+
+// TestAfterFuncDiesWithProc: a timer registered by a finished run never
+// fires — Go kills pending timers with the process. Real clock: the
+// timer must actually outlive the run.
+func TestAfterFuncDiesWithProc(t *testing.T) {
+	e := newEngine(t)
+	run(t, e, "./testdata/concurrency", "AfterFuncArm")
+	time.Sleep(100 * time.Millisecond)
+	got := run(t, e, "./testdata/concurrency", "AfterFuncRead")
+	if diff := cmp.Diff(int64(0), got); diff != "" {
+		t.Errorf("AfterFuncRead mismatch (-want +got):\n%s", diff)
+	}
+}
+
+type nilHostT struct{ N int }
+
+type selfHostT struct{ *selfHostT }
+
+func (*selfHostT) M() {}
+
+func (*nilHostT) M() int { return 7 } // nil-tolerant pointer receiver
+func (nilHostT) V() int  { return 9 } // value receiver — dereferences
+
+// TestNilHostPtrMember: through a nil embedded host pointer, only the
+// accesses that must dereference panic — fields and value-receiver
+// methods. Pointer-receiver methods take the nil receiver like Go.
+func TestNilHostPtrMember(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEngine(t)
+		e.Bind("probehost", map[string]runtime.Value{
+			"T":     &runtime.TypeDef{Name: "probehost.T", Kind: runtime.KindStruct, HostNew: func() any { return &nilHostT{} }},
+			"Nil":   &runtime.GoValue{V: (*nilHostT)(nil)},
+			"SelfT": &runtime.TypeDef{Name: "probehost.SelfT", Kind: runtime.KindStruct, HostNew: func() any { return &selfHostT{} }},
+		})
+		got := run(t, e, "./testdata/nilhost", "NilMethod")
+		if diff := cmp.Diff(int64(7), got); diff != "" {
+			t.Errorf("NilMethod mismatch (-want +got):\n%s", diff)
+		}
+		for _, fn := range []string{"NilValueMethod", "NilField"} {
+			_, err := runErr(e, "./testdata/nilhost", fn)
+			if err == nil || !strings.Contains(err.Error(), "nil pointer") {
+				t.Fatalf("%s: expected nil-pointer panic, got %v", fn, err)
+			}
+		}
+		// a recursively-embedded host type (struct{ *T }) must not
+		// loop the internal method-depth walk.
+		if got := run(t, e, "./testdata/nilhost", "SelfEmbedMethod"); got != int64(7) {
+			t.Errorf("SelfEmbedMethod = %v", got)
+		}
+	})
+}
+
+// TestNilHostPtrEmbed: a member reachable only through a nil embedded
+// host pointer panics on the implicit dereference, like Go.
+func TestNilHostPtrEmbed(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEngine(t)
+		_, err := runErr(e, "./testdata/concurrency", "NilHostPtrEmbed")
+		if err == nil || !strings.Contains(err.Error(), "nil pointer") {
+			t.Fatalf("expected nil-pointer panic, got %v", err)
 		}
 	})
 }
