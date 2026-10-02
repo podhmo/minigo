@@ -5975,6 +5975,9 @@ func (v *VM) shapeSpelling(e ast.Expr, ctx *runtime.TypeDef) string {
 	case *ast.StarExpr:
 		return "*" + v.shapeSpelling(t.X, ctx)
 	case *ast.ArrayType:
+		if t.Len != nil {
+			return "[" + lenExprName(t.Len) + "]" + v.shapeSpelling(t.Elt, ctx)
+		}
 		return "[]" + v.shapeSpelling(t.Elt, ctx)
 	case *ast.Ellipsis:
 		return "[]" + v.shapeSpelling(t.Elt, ctx)
@@ -6003,13 +6006,81 @@ func (v *VM) shapeSpelling(e ast.Expr, ctx *runtime.TypeDef) string {
 		}
 		return s + "]"
 	case *ast.InterfaceType:
-		return "interface{}"
+		// methods decide identity, so spell them — an empty interface
+		// still renders "interface{}".
+		if t.Methods == nil || len(t.Methods.List) == 0 {
+			return "interface{}"
+		}
+		var sb strings.Builder
+		sb.WriteString("interface{")
+		for _, m := range t.Methods.List {
+			for _, n := range m.Names {
+				sb.WriteString(n.Name)
+			}
+			sb.WriteString(v.shapeSpelling(m.Type, ctx))
+			sb.WriteString(";")
+		}
+		sb.WriteString("}")
+		return sb.String()
 	case *ast.StructType:
-		return "struct{}"
+		// field names, types and tags all decide identity — an empty
+		// struct still renders "struct{}".
+		var sb strings.Builder
+		sb.WriteString("struct{")
+		if t.Fields != nil {
+			for _, f := range t.Fields.List {
+				for i, n := range f.Names {
+					if i > 0 {
+						sb.WriteString(",")
+					}
+					sb.WriteString(n.Name)
+				}
+				if len(f.Names) > 0 {
+					sb.WriteString(" ")
+				}
+				sb.WriteString(v.shapeSpelling(f.Type, ctx))
+				if f.Tag != nil {
+					sb.WriteString(" ")
+					sb.WriteString(f.Tag.Value)
+				}
+				sb.WriteString(";")
+			}
+		}
+		sb.WriteString("}")
+		return sb.String()
 	case *ast.FuncType:
-		return "func()"
+		var sb strings.Builder
+		sb.WriteString("func(")
+		sb.WriteString(v.fieldTypeSpellings(t.Params, ctx))
+		sb.WriteString(")")
+		if res := v.fieldTypeSpellings(t.Results, ctx); res != "" {
+			sb.WriteString("(")
+			sb.WriteString(res)
+			sb.WriteString(")")
+		}
+		return sb.String()
 	}
 	return fmt.Sprintf("%T", e)
+}
+
+// fieldTypeSpellings renders a signature field list as its comma-joined
+// type spellings — `a, b int` contributes `int,int` since parameter
+// names are not part of a func type's identity.
+func (v *VM) fieldTypeSpellings(fl *ast.FieldList, ctx *runtime.TypeDef) string {
+	if fl == nil {
+		return ""
+	}
+	var parts []string
+	for _, f := range fl.List {
+		n := len(f.Names)
+		if n == 0 {
+			n = 1
+		}
+		for i := 0; i < n; i++ {
+			parts = append(parts, v.shapeSpelling(f.Type, ctx))
+		}
+	}
+	return strings.Join(parts, ",")
 }
 
 // boundShape spells an instantiated type argument: a named type keeps its
@@ -6342,6 +6413,11 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 	case *runtime.Struct:
 		if xv.Def == td {
 			return true
+		}
+		// anonymous struct spellings are the same type when their
+		// field shapes match: `interface{}(struct{}{}).(struct{})`.
+		if td.Name == "" && xv.Def != nil && xv.Def.Name == "" {
+			return v.convShapeEq(xv.Def, td)
 		}
 		return xv.Def != nil && td.Name != "" && xv.Def.Name == td.Name && xv.Def.Pkg == td.Pkg && td.Pkg != nil && bindsEq(xv.Def.Binds, td.Binds)
 	case int64:
