@@ -1407,6 +1407,11 @@ func (c *compiler) returnStmt(st *ast.ReturnStmt) {
 			c.typeExpr(rt)
 		}
 		c.emit(bytecode.OpCoerceN, len(c.results), 0, st.Results[0].Pos())
+		// spread the tuple back to N values so OpReturn's named-slot
+		// store (and a caller's unpack) sees each element, not one Tuple.
+		c.emit3(bytecode.OpUnpack, len(c.results), 0, 0, st.Pos())
+		c.emit(bytecode.OpReturn, len(c.results), 0, st.Pos())
+		return
 	} else {
 		for i, r := range st.Results {
 			c.expr(r)
