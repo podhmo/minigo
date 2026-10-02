@@ -5074,6 +5074,11 @@ func eqlValue(a, b runtime.Value) bool {
 		return false
 	}
 	if tn, ok := a.(*runtime.TypedNil); ok {
+		// a typed nil of a slice/map/func type is still uncomparable —
+		// Go panics on the TYPE even when the value is nil.
+		if _, ok2 := b.(*runtime.TypedNil); ok2 && uncomparableTyp(tn.Typ) {
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "comparing uncomparable type " + spelledTyp(tn.Typ)}})
+		}
 		switch bi := b.(type) {
 		case runtime.Nil, *runtime.TypedNil:
 			return true // a nil pointer/slice/map/chan/func == nil
@@ -5099,6 +5104,11 @@ func eqlValue(a, b runtime.Value) bool {
 			return false
 		}
 		for i := range av.Fields {
+			// an uncomparable field type panics on the struct itself —
+			// Go's message names the enclosing type, not the field's.
+			if uncomparableValue(av.Fields[i]) {
+				panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "comparing uncomparable type " + spelledTyp(av.Def)}})
+			}
 			if !eqlValue(av.Fields[i], bs.Fields[i]) {
 				return false
 			}
@@ -5119,12 +5129,12 @@ func eqlValue(a, b runtime.Value) bool {
 				}
 				return true
 			}
-			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "comparing uncomparable type " + kindName(av)}})
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "comparing uncomparable type " + spelledTyp(av.Typ)}})
 		}
 		return false
 	case *runtime.Map:
 		if _, ok := b.(*runtime.Map); ok {
-			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "comparing uncomparable type " + kindName(av)}})
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "comparing uncomparable type " + spelledTyp(av.Typ)}})
 		}
 		return false
 	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
@@ -5200,21 +5210,24 @@ func sliceTypOf(td *runtime.TypeDef) *runtime.TypeDef {
 	}
 }
 
-// kindName names a value's type for runtime-error messages.
-func kindName(v runtime.Value) string {
-	switch x := v.(type) {
+// uncomparableTyp reports whether a typedef's kind is uncomparable in
+// Go — slices, maps and funcs panic on == even when nil.
+func uncomparableTyp(td *runtime.TypeDef) bool {
+	return td != nil && (td.Kind == runtime.KindSlice || td.Kind == runtime.KindMap || td.Kind == runtime.KindFunc)
+}
+
+// uncomparableValue reports whether an == over v must panic: slices,
+// maps and funcs (live or typed-nil) are uncomparable types.
+func uncomparableValue(v runtime.Value) bool {
+	switch x := runtime.Unwrap(v).(type) {
 	case *runtime.Slice:
-		if x.Typ != nil {
-			return tdName(x.Typ)
-		}
-		return "slice"
-	case *runtime.Map:
-		if x.Typ != nil {
-			return tdName(x.Typ)
-		}
-		return "map"
+		return !isArrayTyp(x.Typ)
+	case *runtime.Map, *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
+		return true
+	case *runtime.TypedNil:
+		return uncomparableTyp(x.Typ)
 	}
-	return fmt.Sprintf("%T", v)
+	return false
 }
 
 // typeExprFor renders a typedef back to a type expression for synthetic
@@ -6151,14 +6164,17 @@ func (v *VM) typeAssert(f *frame, x, tdv, static runtime.Value, pos token.Pos) r
 	// "main.T is not io.Writer: missing method Write".
 	if td.Kind == runtime.KindInterface {
 		if miss := v.missingIfaceMethod(td, x); miss != "" {
-			panic(&runtime.Panic{Value: fmt.Sprintf("interface conversion: %s is not %s: missing method %s", typeNameOf(x), spelledTyp(td), miss)})
+			panic(&runtime.Panic{Value: &runtime.GoValue{V: fmt.Errorf("interface conversion: %s is not %s: missing method %s", typeNameOf(x), spelledTyp(td), miss)}})
 		}
 	}
 	staticName := "interface {}"
 	if st, ok := static.(*runtime.TypeDef); ok {
 		staticName = spelledTyp(st)
+		if staticName == "interface{}" {
+			staticName = "interface {}"
+		}
 	}
-	panic(&runtime.Panic{Value: fmt.Sprintf("interface conversion: %s is %s, not %s", staticName, typeNameOf(x), spelledTyp(td))})
+	panic(&runtime.Panic{Value: &runtime.GoValue{V: fmt.Errorf("interface conversion: %s is %s, not %s", staticName, typeNameOf(x), spelledTyp(td))}})
 }
 
 // missingIfaceMethod names the first required method x lacks — Go's
@@ -7446,7 +7462,9 @@ func typeNameOf(x runtime.Value) string {
 		// conversion panic, like the real runtime prints it.
 		return fmt.Sprintf("%T", xv.V)
 	case int64:
-		return "int64"
+		// the bare int64 is Go's int; sized ints arrive as Named{int64}
+		// and spell themselves through spelledTyp above.
+		return "int"
 	case float64:
 		return "float64"
 	case string:
