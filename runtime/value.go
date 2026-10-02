@@ -709,6 +709,11 @@ type TypeDef struct {
 	EmbedIdx   []int
 	Embeds     []*TypeDef
 
+	// LocalTypes maps the function-local `type` declarations visible where
+	// this typedef was declared — embedded specs and other type refs that
+	// name a local type resolve through it (package indexes don't see them).
+	LocalTypes map[string]*TypeDef
+
 	// Elem is the resolved element/pointee typedef when Anon cannot
 	// express it — e.g. a pointer typedef synthesized from `&x` whose
 	// pointee is known only as a runtime typedef. Nil means resolve

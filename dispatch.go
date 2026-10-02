@@ -421,6 +421,12 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 				}
 			}
 		}
+		// a type declared inside a function shadows package-level names —
+		// embedded specs on local typedefs resolve through their decl-time
+		// local-type snapshot (package indexes never see function scopes).
+		if td, ok := from.LocalTypes[t.Name]; ok {
+			return td, nil
+		}
 		if from.Pkg != nil && from.Pkg.Index != nil {
 			if info, ok := from.Pkg.Index.Types[t.Name]; ok && info.Decl != nil {
 				vv, err := e.materialize(from.Pkg, info.Decl)

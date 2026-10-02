@@ -32,18 +32,19 @@ type fscope struct {
 	blockIDs   []int                  // unique id per open block, for goto scoping
 	declPos    []map[string]token.Pos // name -> declaring position (goto scoping)
 	nextID     int
-	typeDecls  map[string]bool          // names bound by local `type` decls (not vars)
-	typeSpecs  map[string]*ast.TypeSpec // local `type` decl specs, for shape checks
-	ifaceTypes map[string]bool          // local `type` decls whose spec is an interface
-	ifaceVars  []map[string]bool        // per-block: vars declared interface-typed
-	iota       int                      // slot backing the `iota` builtin in local const specs; -1 until declared
+	typeDecls  map[string]bool             // names bound by local `type` decls (not vars)
+	typeSpecs  map[string]*ast.TypeSpec    // local `type` decl specs, for shape checks
+	typeDefs   map[string]*runtime.TypeDef // local `type` decl typedefs, for local embed resolution
+	ifaceTypes map[string]bool             // local `type` decls whose spec is an interface
+	ifaceVars  []map[string]bool           // per-block: vars declared interface-typed
+	iota       int                         // slot backing the `iota` builtin in local const specs; -1 until declared
 	nlocals    int
 	upvals     []bytecode.UpvalDesc
 	upmap      map[string]int
 }
 
 func newFScope(parent *fscope) *fscope {
-	return &fscope{parent: parent, iota: -1, upmap: map[string]int{}, typeDecls: map[string]bool{}, typeSpecs: map[string]*ast.TypeSpec{}, ifaceTypes: map[string]bool{}}
+	return &fscope{parent: parent, iota: -1, upmap: map[string]int{}, typeDecls: map[string]bool{}, typeSpecs: map[string]*ast.TypeSpec{}, typeDefs: map[string]*runtime.TypeDef{}, ifaceTypes: map[string]bool{}}
 }
 
 // iotaSlot lazily declares the hidden local backing the `iota` builtin
@@ -106,6 +107,23 @@ func (s *fscope) typeSpec(name string) *ast.TypeSpec {
 		}
 	}
 	return nil
+}
+
+// localTypeDefs collects the typedefs of every local `type` decl
+// visible from this scope — inner declarations shadow outer ones.
+func (s *fscope) localTypeDefs() map[string]*runtime.TypeDef {
+	var out map[string]*runtime.TypeDef
+	for cur := s; cur != nil; cur = cur.parent {
+		for name, td := range cur.typeDefs {
+			if _, seen := out[name]; !seen {
+				if out == nil {
+					out = map[string]*runtime.TypeDef{}
+				}
+				out[name] = td
+			}
+		}
+	}
+	return out
 }
 
 // isIfaceTypeName reports whether a local `type I interface{...}` decl
@@ -1023,8 +1041,10 @@ func (c *compiler) localTypeDecl(ts *ast.TypeSpec) {
 	if ts.Assign.IsValid() {
 		td.Kind = runtime.KindAlias
 	}
+	td.LocalTypes = c.fs.localTypeDefs()
 	c.fs.typeDecls[ts.Name.Name] = true
 	c.fs.typeSpecs[ts.Name.Name] = ts
+	c.fs.typeDefs[ts.Name.Name] = td
 	c.emit(bytecode.OpConst, c.constIdx(td), 0, ts.Pos())
 	slot := c.fs.declare(ts.Name.Name, ts.Pos())
 	c.emit(bytecode.OpNewLocal, slot, 0, ts.Pos())
