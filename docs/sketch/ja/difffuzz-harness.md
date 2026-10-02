@@ -191,6 +191,48 @@ usecasefuzz 側も別スキルにする価値はあると思う（今回は作�
 - `/usecasefuzz triage`: DIFF を見つけたら、該当 API を difffuzz の `textSigs` に足して周辺を掃く手順へつなぐ。
 - 修正は `/difffuzz fix` に合流させる（回帰テストの形式を `testdata/difffuzz` に一本化）。
 
+## 補題: Go 本体のテストスイートで全面チェックする方針（途中で主軸から外した）
+
+### 当初の着想
+
+最初に考えた方針は「`$GOROOT/test` を丸ごと oracle 付きコーパスにする」だった。Go 本体のテストは大半が自己検査型で（結果が違うと `panic("fail")` する、または `.out` と比較される）、`go build` してバイナリを走らせればそのまま期待出力が手に入る。手書きコーパスの数十本に比べて桁違いの量で、しかも Go チームが仕様の端を狙って書いたものなので、「人が思いつかない観点」を外部から持ち込める、という狙いだった。
+
+手元の go1.27.1 での規模（先頭行のディレクティブで分類）:
+
+| 場所 | `// run` | 備考 |
+|---|---|---|
+| `test/*.go` | 151（うち引数なし・単一ファイル・`package main` は 145） | ほかに `// errorcheck` 147、`// runoutput` 14、`// compile` 12、`// rundir` 等 |
+| `test/fixedbugs/` | 646 | 過去のコンパイラ/ランタイムのバグ回帰 |
+| `test/typeparam/` | 141 | ジェネリクス |
+| `test/ken/`, `chan/`, `interface/` | 40 / 17 / 11 | |
+
+### やったこと
+
+1. まず数本（`235.go`, `64bit.go`, `alg.go`）を手で `minigo run` に通して感触を見た。`235.go` と `alg.go` は通り、`64bit.go` は `bufio.NewWriter` → `io` の init → `sync.Pool` 未バインドで trap した。動くものは動く一方、テストの出力手段（`bufio`、`os.Exit`、`println`）の段階で落ちるものがある、というのが最初の観察。
+2. 判定ロジックを作るために、minigo の失敗の出方を確認した。スクリプトの panic は `error="panic: …"`、未実装は `error="runtime trap: …"`、どちらも exit 1。Go 側は `go run` だと panic でも exit 1 になって区別がつかないので、`go build` してバイナリを直接実行し、本来の exit code（panic なら 2）を取ることにした。
+3. `corpus` サブコマンドとして実装した（`-goroot-tests` で先頭行がちょうど `// run`、かつ `package main` のトップレベル単一ファイルだけを拾う）。判定は stdout の行比較 → 一致したら終了の仕方（exit code、stderr、panic メッセージの部分一致）を比べる。
+4. 145本を流した結果が §3.3（PASS 47 / TRAP 65 / SILENT 23 / CRASH 1 / HANG 3 / SKIP 6）。
+
+### 主軸から外した理由
+
+実装の途中で「minigo は Go の完全なサブセットを目指していない」「主用途はテキスト処理・LL 的スクリプトで、数値計算やバイナリ処理は劣後する」という前提を共有してもらい、方針を見直した。結果を見ても、この前提だと Go 本体のテストは主軸に向かないことがはっきりした:
+
+- **TRAP のほとんどが対象外の機能**。上位は `sync.Map`（9本、reflect 経由）、`unsafe.Pointer`（7）、`runtime.SetFinalizer`（5）、`runtime.MemStats`/`runtime.Compiler`/`runtime.Breakpoint`、複素数リテラル。GC・ランタイム内部・unsafe を試すテストが多く、「件数順に実装すべきもの」の表としては minigo の優先度と噛み合わない。
+- **SILENT が局所化できない**。自己検査型テストは失敗すると `panic: fail` / `panic: 1` のような情報の無いメッセージで止まる。1ファイル数百行のどこで値がずれたかはわからず、結局人が二分探索することになる。これは既存のやり方の弱点（プログラム単位の判定）をそのまま持ち込むことになる。
+- **出力手段の段階で落ちる**。`os.Exit` は minigo では設計上 trap（ホストプロセスを終了できない）、`bufio` は `sync.Pool` で止まる、`println` は stderr。テストの中身に到達する前に止まるものがある。
+- **性能で HANG する**。`copy.go`/`divmod.go`/`makeslice.go` は網羅ループが重く、15秒で終わらない。バグかどうかの判断がつかない。
+- **TRAP→SILENT の誤分類**。`mapclear.go` は自己検査の失敗メッセージを出した後に `os.Exit` で trap しており、「出力が一致した後の trap」ではないので SILENT になる。判定自体は正しいが、原因が「`os.Exit` 未対応」なのか「map の clear が壊れている」なのかは読まないとわからない（実際には後者の失敗メッセージ `number of keys found = 3 want 1` が出ている）。
+
+そこで方針を「Go のテストで全面チェック」から「minigo の主用途に合わせた式レベルの生成 + 縮小」（本文 §2）に切り替え、corpus は**補助モード**として残した。用途は2つに絞った: (1) CRASH/HANG の検出（インタプリタ自身のバグは用途に関係なくバグ）、(2) SILENT の中から LL 用途でも踏みうるもの（多重代入の評価順 `reorder.go`、`switch.go`、`range.go` 等）を拾う。
+
+### やらなかったこと・やるなら
+
+- `fixedbugs/`（646本）、`typeparam/`（141本）、`ken/` 等のサブディレクトリは流していない。`typeparam/` はジェネリクスの単一化（monomorphize）の検証として価値がありそうなので、次に流すならここから。`-goroot-tests` をサブディレクトリにも対応させるのは小さな変更。
+- `// runoutput`（生成したプログラムを実行する）、`// rundir`（複数ファイル/パッケージ）、引数付きの `// run` は対象外にした。
+- `// errorcheck`（147本）は「Go がコンパイルエラーにするものを minigo が実行してしまう」逆方向の検査に使えるが、README の「compiler never fails」の設計と衝突するので見送った。
+- 対象外の領域（unsafe・runtime・GC・複素数）を事前に除外するフィルタ（import や識別子で弾く）を入れれば、残りを LL 用途の回帰として毎回流す運用はあり得る。
+- 自己検査型テストの SILENT を局所化するには、テスト内の `panic` 呼び出しを `println` に置換して最初の失敗だけでなく全失敗を出させる、などの書き換えが必要になる。手間に見合うかは未検証。
+
 ## 5. 再現手順
 
 ```
