@@ -646,8 +646,12 @@ func (c *compiler) valueSpec(vs *ast.ValueSpec, d *index.Decl) {
 		c.emit(bytecode.OpNewGlobal, c.nameIdx(name.Name), int(readonly), name.Pos())
 	}
 	vals := vs.Values
+	effType := vs.Type
 	if isConst && len(vals) == 0 {
+		// the empty spec repeats the previous values AND their type —
+		// `B` under `A T = e` binds `B T = e`.
 		vals = d.Inherited
+		effType = d.InheritedType
 	}
 	// `var x T` at package level gets the same declared-type coerce as a
 	// local: zero values materialize (var s Sq -> Struct), typed nils too.
@@ -663,10 +667,10 @@ func (c *compiler) valueSpec(vs *ast.ValueSpec, d *index.Decl) {
 	// would otherwise materialize an untyped-constant value at bind time,
 	// losing `var r MyRune = 'a'`-style direct conversion to the decl.
 	coerceTop := func() {
-		if vs.Type == nil {
+		if effType == nil {
 			return
 		}
-		c.typeExpr(vs.Type)
+		c.typeExpr(effType)
 		c.emit(bytecode.OpCoerceTop, 0, 0, vs.Pos())
 	}
 	switch {
