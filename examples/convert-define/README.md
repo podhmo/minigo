@@ -113,6 +113,7 @@ Note on identical names across packages: two struct types that merely share a na
 | `-log-level debug` | log the parsed definitions (`parsed_info`), discovered sub-conversions, and — when generated code does not parse — the full unformatted source |
 | `-tags <expr>` | a build constraint written as the output's `//go:build` line (validated; e.g. `-tags e2e`) |
 | `-strict` | fail instead of writing output when a field pair would not compile (generation warnings become errors) |
+| `-check` | type-check the output inside its package with `go build` (via `-overlay`, so nothing is written first) and trace each error in the generated file back to its converter and field; needs the input packages to compile |
 
 ### Reading a failure
 
@@ -125,10 +126,12 @@ Every failure exits non-zero, writes nothing, and its first line says **who has 
 | `define file ... does not parse (N errors). Fix the define file` | syntax error in the DSL file; every distinct error follows with a numbered excerpt | fix the define file |
 | `define file ... is invalid at L:C: c.Map: ... Fix the define file at that position` | the definitions name something that does not resolve (unknown field in `c.Map`, bad `define.Rule` signature, ...); the position is the offending call, with an excerpt, plus `reached via` frames when `define.Convert` was called from a helper | fix the define file at that position, or the types |
 | `-strict: N field pair(s) would not compile` | a field pair no rule/cast covers, or a `c.Compute` expression whose type the field cannot hold, listed as `converter: dst.Field: reason` | add a `define.Rule` for the type pair, or `c.Convert` the field; for `c.Compute`, fix the expression |
+| `-check: generated code does not compile (N errors)` | a type error in the generated file the generator could not foresee (an arbitrary `c.Compute` expression, a type that does not implement a dst interface, ...); each error names the converter and field with an excerpt | fix the define file at that field; if it is right, report a generator bug |
+| `-check: inconclusive: the package does not build for reasons outside the generated file` | the input package or a dependency does not compile, so the output cannot be judged | fix the input packages, or rerun without `-check` (regeneration itself never needs a compiling package) |
 | `generated code does not parse ... This is a convert-define generator bug` | the generator emitted broken syntax; each error names the converter and field (`emitted by: converter convertAToB, field Items`) | report it with the message; rerun with `-log-level debug` for the raw source |
 | `generated code uses N package(s) the generator did not import ... generator bug` | the generator used a package without registering its import; names the path and its first use | report it with the message |
 
-`c.Compute` expressions are type-checked only where the type is knowable without a type checker: a `src` field path (`src.N`) or a call of a non-generic package func with one result (`funcs.Itoa(src.N)`). Other expressions (`src.S + "!"`, generic calls) are not checked and fail only at `go build`.
+`c.Compute` expressions are type-checked only where the type is knowable without a type checker: a `src` field path (`src.N`) or a call of a non-generic package func with one result (`funcs.Itoa(src.N)`). Other expressions (`src.S + "!"`, generic calls) are not checked at generation; `-check` catches them.
 
 Without `-strict`, a field pair that will not compile still produces output: the warning is printed via `slog` and listed under "Generation warnings" in the converter's doc comment, and `go build` then fails on that assignment. Search the generated file for the `ec.Enter("Field")` line above the failing line to find the field.
 
@@ -136,7 +139,9 @@ Without `-strict`, a field pair that will not compile still produces output: the
 
 1. `go run ... -file define.go -dry-run` — check what would be generated without touching the package.
 2. If a field looks wrong, rerun with `-log-level debug` and check `parsed_info` (which pairs and mappings the DSL produced) and the discovered sub-conversions.
-3. Run with `-strict` in CI so an uncovered field pair fails generation rather than a later build.
+3. Run with `-strict -check` in CI so an uncovered field pair, or any type error in the output, fails generation with the converter and field named rather than a later build.
+
+`-check` is opt-in because regeneration must keep working while the package does not compile (e.g. a stale `generated.go` referencing deleted fields). With `-tags`, it builds with a tag set that satisfies the expression; GOOS/GOARCH terms in `-tags` are not applied, so such a constraint can exclude the file from the check.
 
 ## Role of `minigo` and `inspect`
 

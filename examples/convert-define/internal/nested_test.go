@@ -268,6 +268,13 @@ func TestParserConvertCallRejectsNonFunction(t *testing.T) {
 	})`,
 			wantErr: "must be a function",
 		},
+		{
+			name: "func literal without the (ctx, ec, src) params",
+			body: `	define.Convert(func(c *define.Config, dst *destination.Dst, src *source.Src) {
+		c.Convert(dst.Flat, src.Name, func(s string) string { return s + "!" })
+	})`,
+			wantErr: "got 1 param(s) and 1 result(s)",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -294,7 +301,7 @@ func TestParserConvertCallRejectsNonFunction(t *testing.T) {
 func TestParserConvertCallFuncLit(t *testing.T) {
 	dir := writeNestedModule(t)
 	defineFile := writeDefine(t, dir, `	define.Convert(func(c *define.Config, dst *destination.Dst, src *source.Src) {
-		c.Convert(dst.Flat, src.Name, func(s string) string { return s + "!" })
+		c.Convert(dst.Flat, src.Name, func(ctx context.Context, ec *model.ErrorCollector, s string) string { return s + "!" })
 	})`)
 
 	runner, err := NewRunner()
@@ -307,7 +314,7 @@ func TestParserConvertCallFuncLit(t *testing.T) {
 	if want, got := 1, len(runner.Info.ConversionPairs[0].Mapping.Maps); want != got {
 		t.Fatalf("expected %d field map, got %d", want, got)
 	}
-	if want := `func(s string) string { return s + "!" }`; runner.Info.ConversionPairs[0].Mapping.Maps[0].Converter != want {
+	if want := `func(ctx context.Context, ec *model.ErrorCollector, s string) string { return s + "!" }`; runner.Info.ConversionPairs[0].Mapping.Maps[0].Converter != want {
 		t.Errorf("Converter: want %q, got %q", want, runner.Info.ConversionPairs[0].Mapping.Maps[0].Converter)
 	}
 }
@@ -320,7 +327,7 @@ func TestParserConvertCallFuncLit(t *testing.T) {
 func TestParserExplicitTypeArgs(t *testing.T) {
 	dir := writeNestedModule(t)
 	defineFile := writeDefine(t, dir, `	define.Convert[destination.Dst, source.Src](func(c *define.Config, dst *destination.Dst, src *source.Src) {
-		c.Convert[string, string](dst.Flat, src.Name, func(s string) string { return s + "!" })
+		c.Convert[string, string](dst.Flat, src.Name, func(ctx context.Context, ec *model.ErrorCollector, s string) string { return s + "!" })
 		c.Compute[string](dst.Tag, src.Name)
 		c.Map[int64](dst.Inner.ID, src.ID) // lenient: Map is not generic, instantiation still accepted
 	})`)
@@ -338,7 +345,7 @@ func TestParserExplicitTypeArgs(t *testing.T) {
 	}
 	pair := runner.Info.ConversionPairs[0]
 	wantMaps := []model.FieldMap{
-		{SrcName: "Name", DstName: "Flat", Converter: `func(s string) string { return s + "!" }`},
+		{SrcName: "Name", DstName: "Flat", Converter: `func(ctx context.Context, ec *model.ErrorCollector, s string) string { return s + "!" }`},
 		{SrcName: "ID", DstName: "Inner.ID"},
 	}
 	if diff := cmp.Diff(wantMaps, pair.Mapping.Maps); diff != "" {

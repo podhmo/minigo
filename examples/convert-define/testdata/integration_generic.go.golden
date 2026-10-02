@@ -2,14 +2,14 @@
 package main
 
 import (
-	"context"
-	"errors"
-	"fmt"
+	context "context"
+	errors "errors"
+	fmt "fmt"
 
 	box "example.com/m2/box"
 	destination "example.com/m2/destination"
 	source "example.com/m2/source"
-	"github.com/podhmo/minigo/examples/convert-define/model"
+	model "github.com/podhmo/minigo/examples/convert-define/model"
 )
 
 // convertSrcToDst converts source.Src to destination.Dst.

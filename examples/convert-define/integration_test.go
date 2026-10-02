@@ -103,7 +103,7 @@ func main() {
 	}
 	defer os.Chdir(cwd)
 
-	if err := run(ctx, defineFile, outputFile, false /* dryRun */, "", false /* strict */); err != nil {
+	if err := run(ctx, defineFile, outputFile, false /* dryRun */, "", false /* strict */, false /* check */); err != nil {
 		t.Fatalf("run failed: %+v", err)
 	}
 
@@ -200,7 +200,7 @@ type Dst struct {
 	}
 	defer os.Chdir(cwd)
 
-	if err := run(ctx, defineFile, outputFile, false /* dryRun */, "", false /* strict */); err != nil {
+	if err := run(ctx, defineFile, outputFile, false /* dryRun */, "", false /* strict */, false /* check */); err != nil {
 		t.Fatalf("run failed: %+v", err)
 	}
 

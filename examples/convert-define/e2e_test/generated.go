@@ -5,12 +5,12 @@
 package e2e
 
 import (
-	"context"
-	"errors"
-	"fmt"
+	context "context"
+	errors "errors"
+	fmt "fmt"
 
 	convutil "github.com/podhmo/minigo/examples/convert-define/convutil"
-	"github.com/podhmo/minigo/examples/convert-define/model"
+	model "github.com/podhmo/minigo/examples/convert-define/model"
 	destination "github.com/podhmo/minigo/examples/convert-define/sampledata/destination"
 	funcs "github.com/podhmo/minigo/examples/convert-define/sampledata/funcs"
 	source "github.com/podhmo/minigo/examples/convert-define/sampledata/source"

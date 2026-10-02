@@ -174,7 +174,7 @@ func main( {
 	defineFile := filepath.Join(dir, "define.go")
 	outputFile := filepath.Join(dir, "generated.go")
 
-	err := run(context.Background(), defineFile, outputFile, false, "", false)
+	err := run(context.Background(), defineFile, outputFile, false, "", false, false)
 	var se *syntaxError
 	if !errors.As(err, &se) {
 		t.Fatalf("want *syntaxError, got %T: %v", err, err)
@@ -287,7 +287,7 @@ reached via (most recent call first):
 			}
 			dir := writeFiles(t, files)
 			outputFile := filepath.Join(dir, "generated.go")
-			err := run(context.Background(), filepath.Join(dir, "define.go"), outputFile, false, "", false)
+			err := run(context.Background(), filepath.Join(dir, "define.go"), outputFile, false, "", false, false)
 			var de *dslError
 			if !errors.As(err, &de) {
 				t.Fatalf("want *dslError, got %T: %v", err, err)
@@ -316,7 +316,7 @@ func TestRunRejectsBadDefineFile(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := run(context.Background(), tc.file, filepath.Join(dir, "generated.go"), false, "", false)
+			err := run(context.Background(), tc.file, filepath.Join(dir, "generated.go"), false, "", false, false)
 			if err == nil {
 				t.Fatal("want an error")
 			}
