@@ -435,7 +435,7 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value) (runtime.Value, er
 			return v.convert(c, args[0])
 		case runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
 			// calling a nil function value panics like a nil deref in Go
-			panic(&runtime.Panic{Value: "runtime error: invalid memory address or nil pointer dereference"})
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "invalid memory address or nil pointer dereference"}})
 		case *runtime.Named:
 			// a value of a named func type calls through its underlying
 			callee = c.V
@@ -505,6 +505,12 @@ func (v *VM) Recover() runtime.Value {
 	if n := len(v.frames); n > 0 && v.frames[n-1].deferred && v.inflight != nil {
 		val := v.inflight.Value
 		v.inflight = nil
+		// a runtime-error payload surfaces as the boxed host error Go's
+		// recover() returns — `err.(error)` asserts and `.Error()` calls
+		// resolve through the reflection path.
+		if re, ok := val.(*runtime.RuntimeError); ok {
+			return &runtime.GoValue{V: re}
+		}
 		return val
 	}
 	return runtime.NIL
@@ -1040,7 +1046,7 @@ func (v *VM) loop(f *frame) {
 			} else if tn, ok := asTypedNil(x); ok {
 				// *p on a nil pointer panics; on other nilables it's invalid
 				if tn.Typ.Kind == runtime.KindPointer {
-					panic(&runtime.Panic{Value: "runtime error: invalid memory address or nil pointer dereference"})
+					panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "invalid memory address or nil pointer dereference"}})
 				}
 				f.trap("deref of non-pointer %T", x)
 			} else {
@@ -1050,7 +1056,7 @@ func (v *VM) loop(f *frame) {
 			val := f.pop()
 			ref := f.pop()
 			if tn, ok := asTypedNil(ref); ok && tn.Typ.Kind == runtime.KindPointer {
-				panic(&runtime.Panic{Value: "runtime error: invalid memory address or nil pointer dereference"})
+				panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "invalid memory address or nil pointer dereference"}})
 			}
 			// a Named pointer unwraps to its cell so the pointee's
 			// declared type still constrains the store (`*p = v` on a
@@ -2490,12 +2496,12 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 		fv.Set(nv)
 	case *runtime.TypedNil:
 		if b.Typ != nil && b.Typ.Kind == runtime.KindPointer {
-			panic(&runtime.Panic{Value: "runtime error: invalid memory address or nil pointer dereference"})
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "invalid memory address or nil pointer dereference"}})
 		}
 		f.trap("set field %s on nil %s", name, tdName(b.Typ))
 	case *runtime.IfaceNil:
 		if b.Typ != nil && b.Typ.Kind == runtime.KindPointer {
-			panic(&runtime.Panic{Value: "runtime error: invalid memory address or nil pointer dereference"})
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "invalid memory address or nil pointer dereference"}})
 		}
 		f.trap("set field %s on nil %s", name, tdName(b.Typ))
 	default:
@@ -2518,7 +2524,7 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 		case runtime.KindMap:
 			return v.mapZero(f, b.Typ) // reading a nil map yields the zero value
 		case runtime.KindSlice:
-			panic(&runtime.Panic{Value: fmt.Sprintf("runtime error: index out of range [%v] with length 0", runtime.Unwrap(idx))})
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: fmt.Sprintf("index out of range [%v] with length 0", runtime.Unwrap(idx))}})
 		default:
 			f.trap("index on nil %s", tdName(b.Typ))
 		}
@@ -2708,7 +2714,7 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 				if !ok {
 					// found only through a nil embedded pointer — Go
 					// panics on the implicit dereference.
-					panic(&runtime.Panic{Value: "runtime error: invalid memory address or nil pointer dereference"})
+					panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "invalid memory address or nil pointer dereference"}})
 				}
 				hits = append(hits, slot{inner, j})
 			}
@@ -2749,7 +2755,7 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 			if nilPaths > 1 {
 				f.trap("ambiguous selector %s", name)
 			}
-			panic(&runtime.Panic{Value: "runtime error: invalid memory address or nil pointer dereference"})
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "invalid memory address or nil pointer dereference"}})
 		}
 		level = next
 	}
@@ -2766,7 +2772,7 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 			if nilDepth == minAbs || nilPaths > 1 {
 				f.trap("ambiguous selector %s", name)
 			}
-			panic(&runtime.Panic{Value: "runtime error: invalid memory address or nil pointer dereference"})
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "invalid memory address or nil pointer dereference"}})
 		}
 		var recv runtime.Value
 		n := 0
@@ -2785,7 +2791,7 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 		if nilPaths > 1 {
 			f.trap("ambiguous selector %s", name)
 		}
-		panic(&runtime.Panic{Value: "runtime error: invalid memory address or nil pointer dereference"})
+		panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "invalid memory address or nil pointer dereference"}})
 	}
 	return nil, 0, nil, false
 }
@@ -3164,7 +3170,7 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 		case runtime.KindMap:
 			panic(&runtime.Panic{Value: "assignment to entry in nil map"})
 		case runtime.KindSlice:
-			panic(&runtime.Panic{Value: fmt.Sprintf("runtime error: index out of range [%v] with length 0", runtime.Unwrap(idx))})
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: fmt.Sprintf("index out of range [%v] with length 0", runtime.Unwrap(idx))}})
 		default:
 			f.trap("index assign on nil %s", tdName(b.Typ))
 		}
@@ -3215,7 +3221,7 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 		l, h := bounds(f, lo, hi, 0)
 		m := maxBound(f, max, 0)
 		if l != 0 || h != 0 || m != 0 {
-			panic(&runtime.Panic{Value: nilSliceBoundsReason(l, h, m, three)})
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: nilSliceBoundsReason(l, h, m, three)}})
 		}
 		return b
 	case *runtime.Slice:
@@ -3244,7 +3250,7 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 // own indexing, which already spells the full message, so only the
 // nil path needs the formats reproduced (cap is 0 throughout).
 func nilSliceBoundsReason(l, h, m int64, three bool) string {
-	const p = "runtime error: slice bounds out of range"
+	const p = "slice bounds out of range"
 	if three {
 		switch {
 		case m < 0:
@@ -4573,7 +4579,7 @@ func shiftCount(b runtime.Value) (uint64, bool) {
 	switch x := runtime.Unwrap(b).(type) {
 	case int64:
 		if x < 0 {
-			panic(&runtime.Panic{Value: "runtime error: negative shift amount"})
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "negative shift amount"}})
 		}
 		return uint64(x), true
 	case *runtime.GoValue:
@@ -4910,18 +4916,18 @@ func eqlValue(a, b runtime.Value) bool {
 				}
 				return true
 			}
-			panic(&runtime.Panic{Value: "runtime error: comparing uncomparable type " + kindName(av)})
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "comparing uncomparable type " + kindName(av)}})
 		}
 		return false
 	case *runtime.Map:
 		if _, ok := b.(*runtime.Map); ok {
-			panic(&runtime.Panic{Value: "runtime error: comparing uncomparable type " + kindName(av)})
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "comparing uncomparable type " + kindName(av)}})
 		}
 		return false
 	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
 		switch b.(type) {
 		case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
-			panic(&runtime.Panic{Value: "runtime error: comparing uncomparable type func"})
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "comparing uncomparable type func"}})
 		}
 		return false
 	case *runtime.Chan:
@@ -4938,7 +4944,7 @@ func eqlValue(a, b runtime.Value) bool {
 			}
 			t := reflect.TypeOf(av.V)
 			if !t.Comparable() {
-				panic(&runtime.Panic{Value: "runtime error: comparing uncomparable type " + t.String()})
+				panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "comparing uncomparable type " + t.String()}})
 			}
 			return av.V == bg.V
 		}
@@ -5588,7 +5594,7 @@ func (v *VM) convertSlice(td *runtime.TypeDef, x runtime.Value) (runtime.Value, 
 			// [N]T(s) — slice-to-array conversion copies the first N
 			// elements (too-short slices panic like Go's runtime check).
 			if int64(len(s.Elems)) < an {
-				panic(&runtime.Panic{Value: fmt.Sprintf("runtime error: cannot convert slice with length %d to array or pointer to array with length %d", len(s.Elems), an)})
+				panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: fmt.Sprintf("cannot convert slice with length %d to array or pointer to array with length %d", len(s.Elems), an)}})
 			}
 			return v.copyArray(v.topFrame(), &runtime.Slice{Elems: s.Elems[:an], Typ: td}, td), nil
 		}
@@ -5642,7 +5648,7 @@ func (v *VM) convertPointer(td *runtime.TypeDef, x runtime.Value) (runtime.Value
 		if et := v.elemTypedef(v.topFrame(), td); et != nil {
 			if an, isArr := v.arrayLen(v.topFrame(), et); isArr {
 				if int64(len(s.Elems)) < an {
-					panic(&runtime.Panic{Value: fmt.Sprintf("runtime error: cannot convert slice with length %d to array or pointer to array with length %d", len(s.Elems), an)})
+					panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: fmt.Sprintf("cannot convert slice with length %d to array or pointer to array with length %d", len(s.Elems), an)}})
 				}
 				return &runtime.Cell{Elem: &runtime.Slice{Elems: s.Elems[:an], Typ: et}}, nil
 			}
@@ -6299,7 +6305,7 @@ func (v *VM) memberOfType(f *frame, td *runtime.TypeDef, name string, recv runti
 			// body decides.
 			if !m.PtrRecv {
 				if _, isNil := asTypedNil(recv); isNil && (peeled || !v.nilableTypedef(td)) {
-					panic(&runtime.Panic{Value: "runtime error: invalid memory address or nil pointer dereference"})
+					panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "invalid memory address or nil pointer dereference"}})
 				}
 			}
 			r := recv
@@ -6332,10 +6338,10 @@ func (v *VM) memberOfType(f *frame, td *runtime.TypeDef, name string, recv runti
 	// field access on a nil pointer panics in Go; on a nil slice/map/chan
 	// it is a plain invalid select.
 	if tn, ok := recv.(*runtime.TypedNil); ok && tn.Typ.Kind == runtime.KindPointer {
-		panic(&runtime.Panic{Value: "runtime error: invalid memory address or nil pointer dereference"})
+		panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "invalid memory address or nil pointer dereference"}})
 	}
 	if in, ok := recv.(*runtime.IfaceNil); ok && in.Typ.Kind == runtime.KindPointer {
-		panic(&runtime.Panic{Value: "runtime error: invalid memory address or nil pointer dereference"})
+		panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "invalid memory address or nil pointer dereference"}})
 	}
 	if isIface {
 		f.trap("interface value has no field %s", name)

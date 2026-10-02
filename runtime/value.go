@@ -323,18 +323,18 @@ func CanonicalKey(v Value) Value {
 		// only fixed-size arrays are comparable; a slice key panics
 		// like Go's runtime unhashable-type check.
 		if !arrayTypedef(x.Typ) {
-			panic(&Panic{Value: "runtime error: hash of unhashable type " + typeTagOf(x.Typ)})
+			panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type " + typeTagOf(x.Typ)}})
 		}
 		var sb strings.Builder
 		writeKeyRepr(&sb, x.Elems)
 		return mapKey{typ: typeTagOf(x.Typ), repr: sb.String()}
 	case *Map:
-		panic(&Panic{Value: "runtime error: hash of unhashable type " + typeTagOf(x.Typ)})
+		panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type " + typeTagOf(x.Typ)}})
 	case *Function, *Closure, *BoundMethod, *BuiltinFunc:
-		panic(&Panic{Value: "runtime error: hash of unhashable type func()"})
+		panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type func()"}})
 	case *GoValue:
 		if !reflect.TypeOf(x.V).Comparable() {
-			panic(&Panic{Value: fmt.Sprintf("runtime error: hash of unhashable type %T", x.V)})
+			panic(&Panic{Value: &RuntimeError{Msg: fmt.Sprintf("hash of unhashable type %T", x.V)}})
 		}
 		return x.V
 	case *TypedNil:
@@ -373,7 +373,7 @@ func writeKeyElem(sb *strings.Builder, v Value) {
 		writeKeyRepr(sb, x.Fields)
 	case *Slice:
 		if !arrayTypedef(x.Typ) {
-			panic(&Panic{Value: "runtime error: hash of unhashable type " + typeTagOf(x.Typ)})
+			panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type " + typeTagOf(x.Typ)}})
 		}
 		writeKeyRepr(sb, x.Elems)
 	case float64:
@@ -891,6 +891,13 @@ func (p *Panic) Error() string {
 	}
 	return s
 }
+
+// RuntimeError is the payload of a runtime panic (bounds, nil deref,
+// makeslice, ...): recover() yields it as an error value the way Go's
+// *runtime.Error does — `err.(error)` and `.Error()` work on it.
+type RuntimeError struct{ Msg string }
+
+func (e *RuntimeError) Error() string { return "runtime error: " + e.Msg }
 
 // PanicNilError is the payload recover() sees for panic(nil), matching
 // the *runtime.PanicNilError Go produces since 1.21.

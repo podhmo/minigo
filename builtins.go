@@ -211,11 +211,23 @@ func builtins(e *Engine) *runtime.Env {
 		case runtime.KindSlice:
 			n := int64(0)
 			if len(args) > 1 {
-				n, _ = runtime.Unwrap(args[1]).(int64)
+				n = int64Of(runtime.Unwrap(args[1]))
 			}
 			cap := n
 			if len(args) > 2 {
-				cap, _ = runtime.Unwrap(args[2]).(int64)
+				cap = int64Of(runtime.Unwrap(args[2]))
+			}
+			// Go's makeslice panics once len exceeds its maxAlloc bound —
+			// without a check the host make() would die as a real OOM
+			// instead of a script panic. Elements are 16-byte Values, so
+			// the bound lands below Go's, which is fine: the makeslice.go
+			// corpus only asks for panics far above the practical limit.
+			const maxSliceElems = 1 << 32
+			if n < 0 || n > maxSliceElems {
+				panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "makeslice: len out of range"}})
+			}
+			if cap < n || cap > maxSliceElems {
+				panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "makeslice: cap out of range"}})
 			}
 			el := make([]runtime.Value, n, cap)
 			zero := runtime.Value(runtime.NIL)
