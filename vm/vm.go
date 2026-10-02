@@ -2565,6 +2565,14 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 		st  *runtime.Struct
 		idx int
 	}
+	// a host member's absolute resolution depth includes the embedding
+	// inside the host type itself (template.Template → *parse.Tree →
+	// Root), so a hit can land below the level that discovered it.
+	type hostHit struct {
+		abs  int
+		recv runtime.Value
+	}
+	var hostHits []hostHit
 	level := []*runtime.Struct{s}
 	// nilDepth/nilPaths track resolutions that exist only through a nil
 	// embedded pointer: Go selects fields statically, so such a field is
@@ -2574,7 +2582,6 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 	nilDepth, nilPaths := 0, 0
 	for depth := 0; len(level) > 0 && depth < 32; depth++ {
 		var hits []slot
-		var hostHits []runtime.Value
 		methHits := 0
 		var next []*runtime.Struct
 		for _, st := range level {
@@ -2606,21 +2613,27 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 				}
 				if embTd.HostNew != nil {
 					// a host-typed embed is a leaf: name is promoted
-					// when the boxed type exposes it as an exported
-					// field or method — checked on the type's zero so
-					// a nil stored pointer still resolves (and then
-					// panics on the dereference, via nilPaths). A defined
+					// when the boxed type exposes it — checked at type
+					// level so a nil stored pointer still resolves (and
+					// then panics on the dereference, via nilPaths).
+					// inner adds the host type's own embedding depth:
+					// a member promoted inside it (parse.Tree.Root)
+					// lands below a shallower script member. A defined
 					// type (type MyMutex sync.Mutex) carries the fields
 					// but not the methods — its method set starts empty.
-					if idx >= len(st.Fields) || !v.hostMemberExists(embTd.HostNew(), name, embTd == raw) {
+					if idx >= len(st.Fields) {
 						continue
 					}
+					inner := hostMemberInner(embTd.HostNew(), name, embTd == raw)
+					if inner < 0 {
+						continue
+					}
+					abs := depth + 1 + inner
 					recv := st.Fields[idx]
 					if ptr && hostNilEmbed(recv) && !v.hostNilCallable(embTd.HostNew(), name) {
 						// reachable only through a nil embedded
 						// pointer — same accounting as a nil
 						// script-embed path.
-						abs := depth + 1
 						if nilDepth == 0 || abs < nilDepth {
 							nilDepth, nilPaths = abs, 1
 						} else if abs == nilDepth {
@@ -2628,7 +2641,7 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 						}
 						continue
 					}
-					hostHits = append(hostHits, runtime.Unwrap(recv))
+					hostHits = append(hostHits, hostHit{abs, runtime.Unwrap(recv)})
 					continue
 				}
 				if _, ok := raw.Methods[name]; ok {
@@ -2683,7 +2696,19 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 				hits = append(hits, slot{inner, j})
 			}
 		}
-		total := len(hits) + len(hostHits) + methHits
+		// host members due at this level compete now; deeper ones
+		// stay pending for a later level.
+		var thisHost []runtime.Value
+		keep := hostHits[:0]
+		for _, hh := range hostHits {
+			if hh.abs <= depth+1 {
+				thisHost = append(thisHost, hh.recv)
+			} else {
+				keep = append(keep, hh)
+			}
+		}
+		hostHits = keep
+		total := len(hits) + len(thisHost) + methHits
 		if total > 0 {
 			if nilDepth > 0 && nilDepth <= depth+1 {
 				// a nil path ties the real field's depth — Go
@@ -2693,8 +2718,8 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 			if total > 1 {
 				f.trap("ambiguous selector %s", name)
 			}
-			if len(hostHits) == 1 {
-				return nil, 0, hostHits[0], true
+			if len(thisHost) == 1 {
+				return nil, 0, thisHost[0], true
 			}
 			if len(hits) == 1 {
 				return hits[0].st, hits[0].idx, nil, true
@@ -2711,6 +2736,34 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 		}
 		level = next
 	}
+	if len(hostHits) > 0 {
+		// pending host members deeper than any walkable level —
+		// the shallowest of them wins now.
+		minAbs := hostHits[0].abs
+		for _, hh := range hostHits[1:] {
+			if hh.abs < minAbs {
+				minAbs = hh.abs
+			}
+		}
+		if nilDepth > 0 && nilDepth <= minAbs {
+			if nilDepth == minAbs || nilPaths > 1 {
+				f.trap("ambiguous selector %s", name)
+			}
+			panic(&runtime.Panic{Value: "runtime error: invalid memory address or nil pointer dereference"})
+		}
+		var recv runtime.Value
+		n := 0
+		for _, hh := range hostHits {
+			if hh.abs == minAbs {
+				n++
+				recv = hh.recv
+			}
+		}
+		if n > 1 {
+			f.trap("ambiguous selector %s", name)
+		}
+		return nil, 0, recv, true
+	}
 	if nilDepth > 0 {
 		if nilPaths > 1 {
 			f.trap("ambiguous selector %s", name)
@@ -2720,28 +2773,72 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 	return nil, 0, nil, false
 }
 
-// hostMemberExists reports whether a host-typed embed promotes name —
-// an exported field or method on the boxed type. Existence is answered
-// at type level (StructField via Type.FieldByName, Method via
-// Type.MethodByName) so a zero whose anonymous pointer fields are nil
-// — e.g. *template.Template's *common — still resolves; only actual
-// member access dereferences the stored value. methods is false for a
-// defined type over a host type: it carries fields, not the method set.
-func (v *VM) hostMemberExists(zero any, name string, methods bool) bool {
+// hostMemberInner reports how deeply name is promoted inside the boxed
+// type — 0 for a direct exported field or a method of the slot type,
+// higher when it resolves through the host's own embeds
+// (*template.Template → *parse.Tree → Root is inner 1), -1 when absent.
+// Answered at type level so a zero whose anonymous pointer fields are
+// nil still resolves; only actual member access dereferences the stored
+// value. methods is false for a defined type over a host type: it
+// carries fields, not the method set.
+func hostMemberInner(zero any, name string, methods bool) int {
 	t := reflect.TypeOf(zero)
-	for t != nil && t.Kind() == reflect.Pointer {
-		t = t.Elem()
+	if t == nil {
+		return -1
 	}
-	if t != nil && t.Kind() == reflect.Struct {
-		if sf, ok := t.FieldByName(name); ok && sf.PkgPath == "" {
-			return true
+	st := t
+	for st.Kind() == reflect.Pointer {
+		st = st.Elem()
+	}
+	if st.Kind() == reflect.Struct {
+		if sf, ok := st.FieldByName(name); ok && sf.PkgPath == "" {
+			return len(sf.Index) - 1 // 0 = a direct field
 		}
 	}
-	if !methods || t == nil {
-		return false
+	if methods {
+		if _, ok := t.MethodByName(name); ok {
+			return hostMethodInner(t, name)
+		}
 	}
-	_, ok := reflect.TypeOf(zero).MethodByName(name)
-	return ok
+	return -1
+}
+
+// hostMethodInner counts the embed levels inside the host type that
+// name's method is promoted through — 0 when it is declared on t's own
+// method set. t is the slot's declared type: a *T slot contributes the
+// methods of *T, including pointer receivers of embedded values.
+func hostMethodInner(t reflect.Type, name string) int {
+	st := t
+	for st.Kind() == reflect.Pointer {
+		st = st.Elem()
+	}
+	if st.Kind() != reflect.Struct {
+		return 0 // a leaf (non-struct) type declares the method itself
+	}
+	underPtr := t.Kind() == reflect.Pointer
+	best := -1
+	for i := 0; i < st.NumField(); i++ {
+		sf := st.Field(i)
+		if !sf.Anonymous {
+			continue
+		}
+		ct := sf.Type
+		if ct.Kind() != reflect.Pointer && underPtr {
+			// a value embed contributes *E's method set when the
+			// embedding chain went through a pointer.
+			ct = reflect.PointerTo(ct)
+		}
+		if _, ok := ct.MethodByName(name); !ok {
+			continue
+		}
+		if d := hostMethodInner(ct, name) + 1; best < 0 || d < best {
+			best = d
+		}
+	}
+	if best >= 0 {
+		return best
+	}
+	return 0
 }
 
 // hostNilCallable reports whether name is a pointer-receiver method on
@@ -2815,9 +2912,10 @@ func (v *VM) embedTypeDepth(td *runtime.TypeDef, name string, seen map[*runtime.
 		d, c := 0, 1
 		if et.HostNew != nil {
 			// a host-typed leaf resolves name on the boxed type's
-			// exported field/method surface — no deeper traversal.
-			if v.hostMemberExists(et.HostNew(), name, et == raw) {
-				d = 1
+			// exported field/method surface — plus the host's own
+			// internal embed depth.
+			if inner := hostMemberInner(et.HostNew(), name, et == raw); inner >= 0 {
+				d = 1 + inner
 			}
 		} else {
 			for _, fn := range et.Fields {

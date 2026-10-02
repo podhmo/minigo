@@ -1043,6 +1043,21 @@ func HostSubEmbedField() int {
 	return -1
 }
 
+// HostSubEmbedDepth: a member promoted inside a host type counts its
+// internal embedding depth — Local.Root is shallower than
+// Template→*parse.Tree→Root, so it wins without ambiguity like Go.
+type tplLocal struct{ Root int }
+
+type tplDepthWrap struct {
+	*template.Template
+	tplLocal
+}
+
+func HostSubEmbedDepth() int {
+	s := tplDepthWrap{tplLocal: tplLocal{Root: 7}}
+	return s.Root
+}
+
 var afterFuncFired int
 
 // AfterFuncArm: registers a real-clock timer and returns — its process

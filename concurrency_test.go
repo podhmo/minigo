@@ -78,6 +78,7 @@ func TestConcurrencyBlocking(t *testing.T) {
 			{"NamedHostFieldEmbed", int64(7)},
 			{"NamedScriptFieldEmbed", int64(9)},
 			{"HostSubEmbedField", int64(1)},
+			{"HostSubEmbedDepth", int64(7)},
 		}
 		for _, c := range cases {
 			got := run(t, e, "./testdata/concurrency", c.fn)

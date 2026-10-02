@@ -185,8 +185,9 @@ PR #27 で「並行動作を実装した」と言いつつ、`sync` パッケー
 対象バグは `struct{ sync.Mutex; sync.RWMutex }` の `t.Lock()` が先勝ちで `Mutex` を選ぶこと。実装を追うと host 埋め込みの解決は **first-wins の2系統に散っていた**: 読みは `findMethod` の `HostNew` 分岐、書きは `promotedHostField`。個別に ambiguity を足すと判定ルールが散在するため、**host 埋め込みを `promotedField` の BFS に統合する**判断をした — スクリプト埋め込みと同じ「浅い深さ優先・同深度ヒットは ambiguous trap・nil ポインタ経路は dereference panic」のルールにそのまま乗る。
 
 - `promotedField` の戻り値を `(*runtime.Struct, int, runtime.Value, bool)` に拡張（3番目 = host レシーバ）。呼び出し側（`structMember`/`namedMember`/`setField`/`setLitField`）は `hrecv != nil` なら `selectMember`/`setField` に流すだけで、解決機構は1本に集約された。`promotedHostField` は削除。
-- host 埋め込みはリーフ: `hostMemberExists(embTd.HostNew(), name)` が boxed 型の promoted メンバーの存在を見る。格納値が nil でも名前解決は成功し、その後 `hostNilEmbed` が nil ポインタ経路として `nilDepth`/`nilPaths` 会計に載せる（script 側 nil-ptr 埋め込みと同じ nil pointer panic になる）。
+- host 埋め込みはリーフ: `hostMemberInner(embTd.HostNew(), name, methods)` が boxed 型の promoted メンバーとその内部深さを返す。格納値が nil でも名前解決は成功し、その後 `hostNilEmbed` が nil ポインタ経路として `nilDepth`/`nilPaths` 会計に載せる（script 側 nil-ptr 埋め込みと同じ nil pointer panic になる）。
 - **存在確認は型レベルで行う（レビュー指摘で修正）**: 初版は `hostField(zero, name)` — ゼロ値を dereference して `reflect.Value.FieldByName` を呼んでいたため、`struct{ *template.Template }` のように「host 型自身が nil の匿名ポインタフィールドを持つ」ケースで promoted フィールド（`s.Root`）の存在確認自体が `reflect: indirection through nil pointer` で panic した。`reflect.Type.FieldByName`（`PkgPath` で非公開を除外）に変更し、dereference は実際のメンバーアクセス側に委ねた（`HostSubEmbedField` = `s.Root != nil` で固定）。
+- **host 型内部の昇格深さも BFS に乗せる（レビュー指摘で修正）**: 上の修正で `Template → *parse.Tree → Root` のような「host 型内部を1段潜った promoted メンバー」も検出されるようになったが、全てスロット直上の深度（depth+1）として数えていたため、`struct{ *template.Template; Local }` の `Local.Root`（浅い）と `parse.Tree.Root`（深い）が同深度衝突 → false ambiguous になった。`hostMemberInner` が内部深さを返す（フィールドは `sf.Index` 長、メソッドは埋め込み型を再帰する `hostMethodInner` — ポインタ経路の貢献メソッド集合も `underPtr` で追跡）し、BFS は `abs = depth+1+inner` の deferred ヒットとして保持: そのレベルに到達した時点で script ヒットと競合させ、walk が尽きて残った deferred は最浅のものが勝つ（`HostSubEmbedDepth` = 7 で固定）。nil-embed の nilPaths も同じ abs 計算を使うので、nil `*T` 経由の深いメンバーが浅い実メンバーと誤って同深度判定されることもない。
 - `embedTypeDepth` にも host リーフ判定を追加（host 型の内部は minigo から不透明なので d=1 で打ち止め — nil `*sync.Pool` 埋め込み経由の「型レベルで存在確認」にも使われる）。
 - script メソッドも `embTd.Methods[name]` で `methHits` として計数するよう拡張。メソッド自体は `findMethod` に委譲して戻り値にはしないが、同深度での衝突は数える: `{sync.Mutex; locker2}`（host メソッド vs script メソッド）も `{mA; mB}`（script メソッド同士）も ambiguous trap になる。mixed-kind（host メソッド vs script フィールド等）も同様。
 
@@ -212,6 +213,7 @@ PR #27 で「並行動作を実装した」と言いつつ、`sync` パッケー
 - `TestAfterFuncNilFire` + `AfterFuncNilStop`（表）: nil コールバックは登録できる — Stop すれば成功、発火すれば nil-call panic が goroutine 失敗経路で `Run` に返る
 - `TestNilHostPtrMember`: `probehost`（Bind した `*T` host 型）の nil `*T` 埋め込み — ポインタレシーバ `M()` は nil レシーバで 7、値レシーバ `V()` と フィールド `N` は nil pointer panic
 - `HostSubEmbedField`（表）: `struct{ *template.Template }` の promoted `Root` — host 型のゼロ値が nil 匿名ポインタを持っていても型レベルで解決し、実値の `*common` はアクセス時に deref される
+- `HostSubEmbedDepth`（表）: `{*template.Template; tplLocal{Root int}}` — host 型内部の昇格フィールド（Template→*Tree→Root、深さ2）より script の直接フィールド（深さ1）が勝つ
 - `TestNilHostPtrEmbed`: nil `*sync.Pool` 埋め込みへの `New` 書き込みで nil pointer panic
 
 ### 8.5 検証
