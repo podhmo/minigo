@@ -1,0 +1,3 @@
+0: bool true
+1: map[string]int map[a:1 b:2 c:3 x:1]
+2: []string [a b c]

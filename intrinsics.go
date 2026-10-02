@@ -574,9 +574,29 @@ func (e *Engine) installStdlib() {
 		"Index": h.fn2("slices.Index", func(a []any) (any, error) {
 			return int64(slices.Index(anySlice(a[0]), a[1])), nil
 		}),
-		"Clone": h.fn("slices.Clone", func(a []any) (any, error) {
-			return slices.Clone(anySlice(a[0])), nil
-		}),
+		"Clone": &runtime.BuiltinFunc{Name: "slices.Clone", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("slices.Clone needs 1 arg")
+			}
+			switch s := args[0].(type) {
+			case *runtime.TypedNil:
+				// Clone(nil) is the same typed nil — a host Clone on a nil
+				// []any would surface an empty non-nil slice.
+				return s, nil
+			case *runtime.Slice:
+				// keep the declared slice type: a clone boxed as []any loses
+				// `[]string` and `sort.Strings(c)` traps on the reuse.
+				return &runtime.Slice{Elems: append([]runtime.Value{}, s.Elems...), Typ: s.Typ}, nil
+			case *runtime.Named:
+				if _, ok := s.V.(*runtime.TypedNil); ok {
+					return s, nil
+				}
+				if sl, ok := s.V.(*runtime.Slice); ok {
+					return &runtime.Named{Typ: s.Typ, V: &runtime.Slice{Elems: append([]runtime.Value{}, sl.Elems...), Typ: sl.Typ}}, nil
+				}
+			}
+			return nil, fmt.Errorf("slices.Clone: arg must be a slice")
+		}},
 		"Concat": h.fn("slices.Concat", func(a []any) (any, error) {
 			var parts [][]any
 			for _, p := range a {
@@ -718,12 +738,35 @@ func (e *Engine) installStdlib() {
 	e.Bind("maps", map[string]runtime.Value{
 		"Keys":   h.fn("maps.Keys", func(a []any) (any, error) { return mapKeys(a[0]), nil }),
 		"Values": h.fn("maps.Values", func(a []any) (any, error) { return mapValues(a[0]), nil }),
-		"Clone": h.fn("maps.Clone", func(a []any) (any, error) {
-			if m, ok := a[0].(map[any]any); ok {
-				return maps.Clone(m), nil
+		"Clone": &runtime.BuiltinFunc{Name: "maps.Clone", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("maps.Clone needs 1 arg")
+			}
+			clone := func(m *runtime.Map) *runtime.Map {
+				pairs := make(map[runtime.Value]runtime.Value, len(m.Pairs))
+				for k, v := range m.Pairs {
+					pairs[k] = v
+				}
+				// keep the declared map type: without Typ a missing key
+				// reads NIL and `c[k]++` traps instead of zero-starting.
+				return &runtime.Map{Pairs: pairs, Order: append([]runtime.Value{}, m.Order...), Typ: m.Typ}
+			}
+			switch m := args[0].(type) {
+			case *runtime.TypedNil:
+				// Clone(nil) is the same typed nil map.
+				return m, nil
+			case *runtime.Map:
+				return clone(m), nil
+			case *runtime.Named:
+				if _, ok := m.V.(*runtime.TypedNil); ok {
+					return m, nil
+				}
+				if mm, ok := m.V.(*runtime.Map); ok {
+					return &runtime.Named{Typ: m.Typ, V: clone(mm)}, nil
+				}
 			}
 			return nil, fmt.Errorf("maps.Clone: arg must be a map")
-		}),
+		}},
 		"Copy": &runtime.BuiltinFunc{Name: "maps.Copy", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			dst, _ := args[0].(*runtime.Map)
 			src, _ := args[1].(*runtime.Map)
@@ -1655,11 +1698,18 @@ func (h *hostHelpers) sortInPlace(name string) *runtime.BuiltinFunc {
 		if len(args) != 1 {
 			return nil, fmt.Errorf("%s needs 1 arg, got %d", name, len(args))
 		}
-		s, ok := args[0].(*runtime.Slice)
-		if !ok {
+		s := args[0]
+		if n, ok := s.(*runtime.Named); ok {
+			s = n.V
+		}
+		switch s := s.(type) {
+		case *runtime.Slice:
+			sortScript(s.Elems)
+		case *runtime.TypedNil:
+			// sorting a nil slice is a no-op in Go
+		default:
 			return nil, fmt.Errorf("%s: arg must be a slice, got %T", name, args[0])
 		}
-		sortScript(s.Elems)
 		return runtime.NIL, nil
 	}}
 }
