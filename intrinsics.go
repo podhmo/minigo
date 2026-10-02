@@ -59,22 +59,22 @@ func (e *Engine) installStdlib() {
 		}),
 		// Fprint* take an explicit writer — os.Stdout/os.Stderr arrive as
 		// GoValue (unwrapped by fmtArg to the native *os.File).
-		"Fprint": h.ffn("fmt.Fprint", -1, 1, func(a []any) (any, error) {
-			w, err := asWriter(a[0])
+		"Fprint": h.vffn("fmt.Fprint", -1, 1, func(v runtime.VMCaller, a []any) (any, error) {
+			w, err := asWriterVM(v, a[0])
 			if err != nil {
 				return nil, err
 			}
 			return retErr(fmt.Fprint(w, a[1:]...))
 		}),
-		"Fprintf": h.ffn("fmt.Fprintf", 1, 2, func(a []any) (any, error) {
-			w, err := asWriter(a[0])
+		"Fprintf": h.vffn("fmt.Fprintf", 1, 2, func(v runtime.VMCaller, a []any) (any, error) {
+			w, err := asWriterVM(v, a[0])
 			if err != nil {
 				return nil, err
 			}
 			return retErr(fmt.Fprintf(w, str(a[1]), a[2:]...))
 		}),
-		"Fprintln": h.ffn("fmt.Fprintln", -1, 1, func(a []any) (any, error) {
-			w, err := asWriter(a[0])
+		"Fprintln": h.vffn("fmt.Fprintln", -1, 1, func(v runtime.VMCaller, a []any) (any, error) {
+			w, err := asWriterVM(v, a[0])
 			if err != nil {
 				return nil, err
 			}
@@ -2365,6 +2365,13 @@ func runePred(v runtime.VMCaller, fn runtime.Value) func(rune) bool {
 // asWriter pulls an io.Writer out of a bound stdio handle (os.Stdout,
 // os.Stderr, an *os.File) for the fmt.Fprint* family.
 func asWriter(v any) (io.Writer, error) {
+	return asWriterVM(nil, v)
+}
+
+// asWriterVM is asWriter plus script-defined writers: when the VM is
+// available and the value carries a Write method, it adapts into an
+// io.Writer that calls back into the script.
+func asWriterVM(vc runtime.VMCaller, v any) (io.Writer, error) {
 	// args arrive fmtArg'd: a *runtime.Cell (a `&b` address-of) surfaces
 	// as *fmtValue — unwrap back through the reference to the box.
 	if fv, ok := v.(*fmtValue); ok {
@@ -2379,7 +2386,44 @@ func asWriter(v any) (io.Writer, error) {
 	if w, ok := v.(io.Writer); ok {
 		return w, nil
 	}
+	if vc != nil && v != nil && v != runtime.NIL {
+		if m, ok := vc.Member(v, "Write"); ok && m != nil && m != runtime.NIL {
+			return &scriptWriter{v: vc, write: m}, nil
+		}
+	}
 	return nil, fmt.Errorf("not an io.Writer: %T", v)
+}
+
+// scriptWriter adapts a script-side Write method to io.Writer so
+// fmt.Fprint* writes through a writer implemented in the script.
+type scriptWriter struct {
+	v     runtime.VMCaller
+	write runtime.Value
+}
+
+func (s *scriptWriter) Write(p []byte) (int, error) {
+	r, err := s.v.Call(s.write, []runtime.Value{scriptVal(p)})
+	if err != nil {
+		return 0, err
+	}
+	switch t := r.(type) {
+	case *runtime.Tuple:
+		var n int
+		if len(t.Elems) > 0 {
+			if i, ok := runtime.Unwrap(t.Elems[0]).(int64); ok {
+				n = int(i)
+			}
+		}
+		if len(t.Elems) > 1 {
+			return n, hostErrOf(s.v, t.Elems[1])
+		}
+		return n, nil
+	default:
+		if i, ok := runtime.Unwrap(r).(int64); ok {
+			return int(i), nil
+		}
+		return 0, nil
+	}
 }
 
 // asReader mirrors asWriter for io.Reader args: `strings.NewReader`'s
@@ -2920,6 +2964,15 @@ func rewriteWrapVerbs(spec string) (string, int) {
 // over the value's script type spelling because host fmt never calls
 // Formatter.Format for %T/%p.
 func (h *hostHelpers) ffn(name string, formatAt, minArgs int, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
+	return h.vffn(name, formatAt, minArgs, func(_ runtime.VMCaller, a []any) (any, error) {
+		return f(a)
+	}, target...)
+}
+
+// vffn is ffn whose inner fn also receives the VM caller — needed when
+// an argument must call back into the script (a script-defined
+// io.Writer for fmt.Fprintf, say).
+func (h *hostHelpers) vffn(name string, formatAt, minArgs int, f func(runtime.VMCaller, []any) (any, error), target ...any) *runtime.BuiltinFunc {
 	bf := &runtime.BuiltinFunc{Name: name, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) < minArgs {
 			return nil, fmt.Errorf("%s needs %d args, got %d", name, minArgs, len(args))
@@ -2930,7 +2983,7 @@ func (h *hostHelpers) ffn(name string, formatAt, minArgs int, f func([]any) (any
 				a[formatAt] = rewriteTypeVerbs(spec, a, flat, formatAt, v)
 			}
 		}
-		r, err := f(a)
+		r, err := f(v, a)
 		if err != nil {
 			return nil, err
 		}
