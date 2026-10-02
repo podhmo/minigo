@@ -1,0 +1,4 @@
+SILENT/value (seen ×14)
+shape:  expr:Sprintf%#vss([]string)
+go:     string []string(nil)
+minigo: string <nil>

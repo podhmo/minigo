@@ -38,6 +38,22 @@ Skeleton landed: lazy per-package loading, per-function compile, struct/method/c
   - [ ] `flag` package: gets past `os.Args` now but traps at `(*stringValue)(p)` — pointer-to-named-type conversion unsupported (lim-flag).
   - [ ] Unsigned shift semantics: `^uintptr(0) >> 63` evaluates as signed → `negative shift amount` (lim-sha). Arithmetic on `uint64` values works; only shifts and `^` need width-aware ops.
   - [ ] `crypto/sha256`, `encoding/csv`, `bufio` per-package binds (like the `strings`/`encoding/json` ones) would avoid interpreting their sources entirely.
+- [-] **difffuzz harness** (`tools/difffuzz`: generated probes + batched shrinking + `$GOROOT/test` corpus, verdicts per minigo's trap contract; [docs/sketch/ja/difffuzz-harness.md](./docs/sketch/ja/difffuzz-harness.md); fix loop: `.claude/skills/difffuzz`). Landed: text/num domains, metamorphic contexts, symptom-preserving shrink, `-mask`, `-emit` → `testdata/difffuzz` xfail regressions (`TestDiffRegressions`). Findings below are pinned as `PENDING` cases where marked.
+  - [ ] nil slice / nil map print as `<nil>` instead of `[]` / `map[]` (`fmt.Println(ss)`, `%v`, `%s`, `%x`); `%#v` should be `[]string(nil)` (`text_value_05d448e7`, `text_value_c971b474`, `text_value_17998073`).
+  - [ ] `%q` on an empty `[]string` renders `""` instead of `[]` (`text_value_3613fc16`).
+  - [ ] `fmt.Sprint(f())` with a multi-value call inserts spaces between string operands (`fmt.Sprint(strings.Cut("a=b", "="))` is `abtrue` in Go) (`text_value_650e3d07`, `text_value_6d405433`).
+  - [ ] A panic inside a script callback passed to a host function (`strings.Map`, `strings.TrimFunc`) surfaces as an unrecoverable `runtime trap: panic: …` instead of a recoverable panic (`text_panic-became-trap_*`).
+  - [ ] Slice-bounds panic message lacks indices (`slice bounds out of range [2:0]`) (`text_panic-message_66b1011f`).
+  - [ ] `slices.Clone(nil)` returns a non-nil slice (`text_value_f50116fd`).
+  - [ ] `%T` differences: `rune`/`byte` print as alias names instead of `int32`/`uint8`; host `[]string` results (`strings.Fields`, `regexp.FindAllString`) print `interface{}`; `s[i]` and `unicode.ToUpper(r)` print `int` (`text_type_*`).
+  - [ ] `c := maps.Clone(m); c[k]++` traps `unsupported types: runtime.Nil + int64` (missing key on a cloned map isn't the zero value) — word-count shape.
+  - [ ] `maps.Clone(nil)` traps (Go returns nil); `string(nilBytes)` / `string(nilRunes)` trap `cannot convert *runtime.TypedNil to string`.
+  - [ ] Unbound: `strings.IndexByte`, `strings.FieldsFunc`.
+  - [ ] Typed var decls from untyped consts lose the type: `var f float64 = 3` is an `int` and `f/2 == 1`; `var x int64 = 0` prints `int`.
+  - [ ] Conversions to sized ints lose the type tag (`int8(x)` prints `int`).
+  - [ ] Unsigned arithmetic: `uint` ≥ 2^63 prints negative, `uint64` `/` and `>>` compute signed, `-(uint)` doesn't wrap, an unsigned shift count ≥ 2^63 panics as negative; `-(0.0)` loses `-0`.
+  - [ ] `$GOROOT/test` SILENT/CRASH/HANG worth a look for scripts: `reorder.go` (tuple-assignment order), `typeswitch1.go`, `switch.go`, `range.go`, `const8.go` (`undefined: iota`), `initialize.go` (interpreter CRASH: `*ast.BasicLit` asserted as `*ast.KeyValueExpr`), `copy.go`/`divmod.go`/`makeslice.go` (timeouts), `goprint.go` (`println` of nil pointers prints `<nil>` not `0x0`).
+  - [ ] Harness: a usecasefuzz-style skill for hand-written scenario programs, sharing difffuzz's verdict contract and `testdata/difffuzz` regression format.
   - [ ] `io.Writer` produced by a script-side implementation is not usable as a `fmt.Fprintf` target yet (`asWriter` only unwraps host boxes).
   - [ ] Third-party module code (`gopkg.in/yaml.v3`) resolves and interprets but dies deep inside `reflect`-heavy init (lim-yaml).
 - [x] **Interfaces**: method sets, dynamic dispatch, `any`/`interface{}` values (types and asserts). Satisfaction is duck-typed over the runtime method set (embedded-interface members, promoted methods via `FindMethod`); constraint elements (`~T`, unions) are approximated as satisfied.

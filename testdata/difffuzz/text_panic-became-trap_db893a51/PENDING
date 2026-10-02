@@ -1,0 +1,4 @@
+SILENT/panic-became-trap (seen ×4)
+shape:  expr:TrimFuncLit(string, runeAt(string, int))
+go:     panic: runtime error: index out of range [-1]
+minigo: <runtime trap: panic: runtime error: index out of range [-1]>

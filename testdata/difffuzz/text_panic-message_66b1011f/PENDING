@@ -1,0 +1,4 @@
+SILENT/panic-message (seen ×19)
+shape:  expr:sliceSS([]string, int)
+go:     panic: runtime error: slice bounds out of range [2:0]
+minigo: panic: runtime error: slice bounds out of range

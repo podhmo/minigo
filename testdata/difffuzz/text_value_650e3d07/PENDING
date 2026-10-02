@@ -1,0 +1,4 @@
+SILENT/value (seen ×4)
+shape:  expr:Cut(string, string)
+go:     string false
+minigo: string   false
