@@ -69,3 +69,9 @@ func main() {}
 func TypeParamOf[T any](v T) string { return dsl.TypeName(T) }
 func TypeParamInt() string          { return TypeParamOf[int](0) } // "int"
 func TypeParamInfer() string        { return TypeParamOf(1) }      // "int64"
+
+// FailTyped reaches a special form whose handler returns a typed host
+// error; the host must be able to errors.As it through the trap.
+func FailTyped() int { return failVia() }
+
+func failVia() int { return dsl.Fail(1) }

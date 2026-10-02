@@ -2,6 +2,8 @@ package minigo_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -1561,5 +1563,44 @@ func TestScriptArgs(t *testing.T) {
 	got := run(t, e, "./testdata/fuzzfix", "OsArgs")
 	if got != "./testdata/fuzzfix,-v,x" {
 		t.Errorf("OsArgs = %v", got)
+	}
+}
+
+type typedSpecialErr struct{ code int }
+
+func (e *typedSpecialErr) Error() string { return fmt.Sprintf("typed failure %d", e.code) }
+
+// TestSpecialFormErrorUnwrap pins that a handler's own error value
+// survives the VM: the trap keeps it as Err (Unwrap), so a host can
+// errors.As its typed error — and still read the trap's DSL frames.
+func TestSpecialFormErrorUnwrap(t *testing.T) {
+	e := minigo.NewEngine(".")
+	e.Bind("example.com/dsl", map[string]runtime.Value{})
+	e.RegisterSpecial(runtime.SymbolID{PackagePath: "example.com/dsl", Name: "Fail"},
+		func(ctx runtime.SpecialContext, call *runtime.QuotedCall) (runtime.Value, error) {
+			return nil, &typedSpecialErr{code: 7}
+		})
+
+	_, err := e.Run(context.Background(), "./testdata/special", "FailTyped")
+	var typed *typedSpecialErr
+	if !errors.As(err, &typed) || typed.code != 7 {
+		t.Fatalf("want *typedSpecialErr{7} through the trap, got %T: %v", err, err)
+	}
+	var trap *runtime.Trap
+	if !errors.As(err, &trap) {
+		t.Fatalf("want a *runtime.Trap, got %T", err)
+	}
+	if diff := cmp.Diff("typed failure 7", trap.Reason); diff != "" {
+		t.Errorf("Reason mismatch (-want +got):\n%s", diff)
+	}
+	var names []string
+	for _, f := range trap.Frames {
+		// `File "<path>", line N, in <name>()` (+ an indented source line)
+		if i := strings.Index(f, ", in "); i >= 0 {
+			names = append(names, strings.SplitN(f[i+len(", in "):], "(", 2)[0])
+		}
+	}
+	if diff := cmp.Diff([]string{"failVia", "FailTyped"}, names); diff != "" {
+		t.Errorf("frames mismatch (-want +got):\n%s", diff)
 	}
 }
