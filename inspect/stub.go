@@ -116,6 +116,13 @@ func UsedSymbols(f *File) []runtime.SymbolID { panic("minigo intrinsic") }
 // SameType reports strict structural equality over type expressions.
 func SameType(a, b *TypeExpr) bool { panic("minigo intrinsic") }
 
+// Ops returns the lifted op-dataflow view of a function/method decl's
+// body — the compiled VM code as a flat op list with explicit value ids
+// for tracking call arguments and return values through helpers.
+// Non-func decls and host (bound-package) pseudo-decls return nil, so
+// scripts descend into user code and stop at stdlib by construction.
+func Ops(s *Decl) *Body { panic("minigo intrinsic") }
+
 // Value materializes a package member's runtime value (may run init).
 func Value(p *runtime.Package, name string) any { panic("minigo intrinsic") }
 

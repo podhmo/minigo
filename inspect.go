@@ -416,6 +416,20 @@ func (e *Engine) installInspect() {
 			}
 			return &runtime.Slice{Elems: xs}, nil
 		}),
+		"Ops": bf("Ops", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			s, err := declViewOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			b, err := xinspect.OpsOf(s)
+			if err != nil {
+				return nil, err
+			}
+			if b == nil {
+				return runtime.NIL, nil
+			}
+			return &runtime.GoValue{V: b}, nil
+		}),
 		// ---- value layer ----
 		"Value": bf("Value", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
