@@ -35,3 +35,6 @@ jobs:
 
     - name: E2E Test
       run: make -C examples/convert-define e2e
+
+    - name: Check toolchains
+      run: make -C examples/convert-define check-toolchains

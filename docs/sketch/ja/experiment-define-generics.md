@@ -62,6 +62,7 @@ DSL の呼び出し形は一切変わらない（全て型推論で書ける）�
 - `go build ./...` (go1.27 toolchain, `go 1.26` module): `methods_go127.go` が選ばれコンパイル。
 - `GOTOOLCHAIN=go1.26.0 go build ./...`: `methods_pre127.go` が選ばれコンパイル。
 - `go vet -tags codegen ./e2e_test/`（DSL の静的検査）: 両ツールチェーンで通過。
+- `make check-toolchains`（examples/convert-define/Makefile）: 上記の go1.27.0 / go1.26.0 両側 build+vet を一括実行するタスクとして追加。GOTOOLCHAIN はパッチバージョン指定が必須のため `go1.27.0`/`go1.26.0` で明示 pin し、環境の `go version` に依存しない。CI の e2e-test ジョブにも組み込み済み。
 - `make format` / `make lint` / `make test`: clean。
 - `make e2e`: `generated.go` を再生成して e2e PASS（生成物は変更なし）。
 - convert-define fuzz コーパス（`podhmo/minigo-usecasefuzz`, `MINIGO_DIR` = 本 checkout）: **23/23 expected**（leaf-mismatch=BUILD-FAIL, neg*=GEN-FAIL を含む）。
