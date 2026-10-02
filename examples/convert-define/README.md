@@ -83,13 +83,13 @@ You can then call this function directly in your application code.
 
 ## The `define` API Reference
 
-The public API is housed in the `github.com/podhmo/minigo/examples/convert-define/define` package.
+The public API is housed in the `github.com/podhmo/minigo/examples/convert-define/define` package. `Convert`/`Rule` are generic functions, and on go1.27+ toolchains `c.Convert`/`c.Compute` are generic methods — the go1.26 module keeps both variants buildable by splitting the method declarations by `//go:build go1.27` (a file-level release constraint also raises that file's language version, so generic methods compile in a `go 1.26` module).
 
-*   `define.Convert(mapFunc)`: Defines a conversion between two struct types. The source and destination types are inferred from the signature of the mapping function, which must be `func(c *Config, dst *DstType, src *SrcType)`.
-*   `define.Rule(customFunc)`: Defines a global, reusable conversion rule for a specific type-to-type conversion (e.g., `time.Time` to `string`).
-*   `c.Map(dstField, srcField)`: Maps a source field to a destination field with a **different name**.
-*   `c.Convert(dstField, srcField, converterFunc)`: Maps two fields that require a **custom conversion function**.
-*   `c.Compute(dstField, expression)`: Maps a destination field that is **computed from an expression**.
+*   `define.Convert(mapFunc)`: Defines a conversion between two struct types. The source and destination types are inferred from the signature of the mapping function, which must be `func(c *Config, dst *DstType, src *SrcType)`. Generic — `Convert[Dst, Src]` — so the mapFunc shape is checked statically.
+*   `define.Rule(customFunc)`: Defines a global, reusable conversion rule for a specific type-to-type conversion (e.g., `time.Time` to `string`). Generic — `Rule[Src, Dst]` — so the customFunc must have signature `func(context.Context, *model.ErrorCollector, Src) Dst`.
+*   `c.Map(dstField, srcField)`: Maps a source field to a destination field with a **different name**. Stays `any`-typed: mapped pairs may differ in type and convert through registered rules (e.g. `[]SrcItem` -> `[]DstItem`), which no signature can express.
+*   `c.Convert(dstField, srcField, converterFunc)`: Maps two fields that require a **custom conversion function**. On go1.27+ toolchains generic — `Convert[Dst, Src]` — so the field types are checked against the converter signature `func(context.Context, *model.ErrorCollector, Src) Dst`.
+*   `c.Compute(dstField, expression)`: Maps a destination field that is **computed from an expression**. On go1.27+ toolchains generic — `Compute[T]` — so the expression's result type must match the field type.
 
 All three accept **dotted field paths**, not just top-level fields: `c.Map(dst.Inner.ID, src.ID)` writes a leaf inside a nested destination struct, and `c.Map(dst.Flat, src.In.Value)` reads through a nested source struct. Pointer intermediates are handled — a `*T` on the source side guards the read (`if src.P != nil`), a `*T` on the destination side is nil-initialised before the write (`if dst.P == nil { dst.P = &T{} }`). Bad segments are reported at generation time. Explicit maps are emitted after the automatic field matches, so a leaf-path mapping overrides the copied leaf of a struct its ancestor was also mapped (`c.Map(dst.Inner.ID, src.ID)` beats `dst.Inner = convert(src.Inner)`'s copied ID).
 
