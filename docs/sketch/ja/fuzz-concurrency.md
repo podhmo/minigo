@@ -165,3 +165,51 @@ PR #27 で「並行動作を実装した」と言いつつ、`sync` パッケー
 - `sync.Map` の複数戻り値メソッド（`Load`/`LoadOrStore`/`Swap`/`CompareAndDelete`/`LoadAndDelete`）は minigo の Tuple 規約どおり `v, _ := m.Load(k)` の 2 変数受けが必要 — minigo 全域の既存仕様。
 - `var c sync.Cond`（零値 Cond: `c.L` が nil）は Go と同じく使用不可 — `NewCond` 必須。
 - 複数の埋め込み host 型が同名の exported フィールドを持つ場合の ambiguity 判定は未実装（最初に見つかった方が勝つ — Go はコンパイルエラー）。
+
+---
+
+## 8. 計画外: sync-round leftovers 処理ラウンド（テスト先行 + language corpus 回帰）
+
+§7.4 の残件2件（`time.AfterFunc` 未 bind、埋め込み host 型の ambiguous selector が先勝ち）を、テストを先に書いてから処理したラウンド。途中で埋め込み解決の構造そのものに手を入れる計画外の意思決定が2つ入った。
+
+### 8.1 `time.AfterFunc` の bind
+
+- `h.fn`/`h.fn1` 系のヘルパは第一引数 `vc runtime.VMCaller` を捨ててしまうため、生の `&runtime.BuiltinFunc{Fn: func(vc, args)}` で bind した（S4 が整えた窓口）。タイマー発火はホスト goroutine 上で起きるが、`vc.Call` が所有 VM の busy 判定をして `v.Spawn(callee, args)` + `t.Wait()` に回送するため、root が `<-ch` でブロックしていてもコールバックは proc 内の spawn VM で正しく走る。
+- コールバック引数の事前検査は `adaptFunc` の受理集合（`*runtime.Function`/`*Closure`/`*BoundMethod`/`*BuiltinFunc`/`*Named`）に揃え、bind 時点で「func として使えない」値を早く弾く。
+- synctest バブルでは `time.AfterFunc(time.Hour, f)` も即時発火するため決定的に書ける: `AfterFuncFires`（バッファ付き ch 経由で 7）、`AfterFuncStop`（`t.Stop()` 後は select の default 分岐で 9）。実クロック側も 50ms で発火することを手動確認した。
+
+### 8.2 埋め込み host 型の ambiguity — `promotedField` への統合（計画外の意思決定①）
+
+対象バグは `struct{ sync.Mutex; sync.RWMutex }` の `t.Lock()` が先勝ちで `Mutex` を選ぶこと。実装を追うと host 埋め込みの解決は **first-wins の2系統に散っていた**: 読みは `findMethod` の `HostNew` 分岐、書きは `promotedHostField`。個別に ambiguity を足すと判定ルールが散在するため、**host 埋め込みを `promotedField` の BFS に統合する**判断をした — スクリプト埋め込みと同じ「浅い深さ優先・同深度ヒットは ambiguous trap・nil ポインタ経路は dereference panic」のルールにそのまま乗る。
+
+- `promotedField` の戻り値を `(*runtime.Struct, int, runtime.Value, bool)` に拡張（3番目 = host レシーバ）。呼び出し側（`structMember`/`namedMember`/`setField`/`setLitField`）は `hrecv != nil` なら `selectMember`/`setField` に流すだけで、解決機構は1本に集約された。`promotedHostField` は削除。
+- host 埋め込みはリーフ: `hostMemberExists(embTd.HostNew(), name)` が **boxed 型のゼロ値** で exported フィールド/メソッドの存在を見る。型レベルで調べるので格納値が nil でも名前解決は成功し、その後 `hostNilEmbed` が nil ポインタ経路として `nilDepth`/`nilPaths` 会計に載せる（script 側 nil-ptr 埋め込みと同じ nil pointer panic になる）。
+- `embedTypeDepth` にも host リーフ判定を追加（host 型の内部は minigo から不透明なので d=1 で打ち止め — nil `*sync.Pool` 埋め込み経由の「型レベルで存在確認」にも使われる）。
+- script メソッドも `embTd.Methods[name]` で `methHits` として計数するよう拡張。メソッド自体は `findMethod` に委譲して戻り値にはしないが、同深度での衝突は数える: `{sync.Mutex; locker2}`（host メソッド vs script メソッド）も `{mA; mB}`（script メソッド同士）も ambiguous trap になる。mixed-kind（host メソッド vs script フィールド等）も同様。
+
+**副産物**: host hit に `runtime.Unwrap(recv)` を掛けたことで、`type MyMutex sync.Mutex` のような named host 型埋め込みでも昇格が効くようになった（従来は `has no field or method` trap — `NamedHostEmbed` で固定）。
+
+`findMethod` の HostNew 分岐は `promotedField` を通らない呼び出し経路のセーフティネットとして残した。
+
+### 8.3 nil `*T` host 埋め込みの扱い（計画外の意思決定②）
+
+`struct{ *sync.Pool }` で格納値が nil のケース。Go はセレクタ自体を静的に解決するため「フィールドがない」ではなく dereference で panic する。`hostMemberExists` を型のゼロ値で評価する設計にしたことで、このケースは script 側の nil-ptr 埋め込みと同じ nilPaths 機構に自然に乗る — 単独パスなら nil pointer panic、実パスと同深度なら ambiguous trap、という対称性が無料で得られた（`NilHostPtrEmbed` で固定）。
+
+### 8.4 追加テスト
+
+`testdata/concurrency/main.go` + `concurrency_test.go`:
+
+- `TestConcurrencyBlocking` 表: `AfterFuncFires` `AfterFuncStop` `ShallowHostWins` `NamedHostEmbed`
+- `TestAmbiguousSelector`: `AmbigHostMethod`（host+host メソッド）`AmbigHostField`（host+host フィールド書き込み）`AmbigMixedField`（host フィールド vs script フィールド）`AmbigMixedMethodField`（host メソッド vs script フィールド）`AmbigMixedMethodMethod`（host メソッド vs script メソッド）`AmbigScriptMethod`（script メソッド同士）— 全て "ambiguous selector" trap 期待
+- `TestNilHostPtrEmbed`: nil `*sync.Pool` 埋め込みへの `New` 書き込みで nil pointer panic
+
+### 8.5 検証
+
+- `make format` / `make lint` / `make test` 全 green、`-race` で警告なし
+- language corpus（podhmo/minigo-usecasefuzz `language/`）: **38 PASS / 4 PASS-REJECT / 0 DIFF / 0 TRAP / 0 ACCEPT** — 前回記録の 35 PASS + 3 TRAP-by-design から `lim-*` 系も全て PASS になっていた（本ラウンドの変更によるものではなく、leftovers ラウンドで既に解消済みだったことを確認）
+
+### 8.6 残件
+
+- `findMethod` は embeds を順に見る DFS first-wins のまま — `promotedField` が単一メソッドヒットを返さない限り深さ順序は DFS 依存であり、浅い promoted メソッドと深い promoted メソッドが競合した場合（`struct{X{A}; Y}` で A.M が深く Y.M が浅い等）に深い方を返し得る。ambiguity の trap は防げたが、深さ順序の完全な正しさには `findMethod` 側の BFS 化が必要。
+- interface 埋め込みの method-req 衝突は未計数（`struct{io.Reader; A}` で A も Read を持つ等 — Go はコンパイルエラー、minigo は iface の動的 dispatch として動く）。
+- nil `*T` 埋め込み経由の promoted メソッド呼び出しは "no field or method" trap（Go は method value 評価時に nil pointer panic — `findMethod` が nil recv の `structOf` に失敗して skip するため）。

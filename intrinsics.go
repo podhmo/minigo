@@ -1197,6 +1197,26 @@ func (e *Engine) installStdlib() {
 		"NewTicker": h.fn("time.NewTicker", func(a []any) (any, error) {
 			return &runtime.GoValue{V: time.NewTicker(durOf(a[0]))}, nil
 		}),
+		"AfterFunc": &runtime.BuiltinFunc{Name: "time.AfterFunc", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) < 2 {
+				return nil, errors.New("time.AfterFunc needs 2 args")
+			}
+			f := args[1]
+			switch f.(type) {
+			case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc, *runtime.Named:
+			default:
+				return nil, fmt.Errorf("time.AfterFunc: cannot use %T as func()", f)
+			}
+			t := time.AfterFunc(durOf(goNative(args[0])), func() {
+				// the timer fires on a host goroutine — vc.Call
+				// reroutes through Spawn when the owning VM is
+				// busy, and runs directly when it is idle.
+				if _, err := vc.Call(f, nil); err != nil {
+					panic(err)
+				}
+			})
+			return &runtime.GoValue{V: t}, nil
+		}},
 		"Now":      h.fn("time.Now", func(a []any) (any, error) { return time.Now(), nil }, time.Now),
 		"Time":     hostType("time.Time", func() any { return time.Time{} }),
 		"Duration": &runtime.TypeDef{Name: "time.Duration", Kind: runtime.KindNamedBasic},

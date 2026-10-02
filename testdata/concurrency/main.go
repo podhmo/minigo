@@ -810,3 +810,163 @@ func SyncAssertHostPtr() int {
 	}
 	return 1
 }
+
+// AfterFuncFires: time.AfterFunc's host-timer callback lands back on
+// the calling process through the foreign-goroutine Call reroute — the
+// buffered send reaches the root goroutine like a spawned one.
+func AfterFuncFires() int {
+	ch := make(chan int, 1)
+	time.AfterFunc(time.Hour, func() { ch <- 7 })
+	return <-ch // 7 — the fake clock fires the timer
+}
+
+// AfterFuncStop: a stopped timer never runs the callback — the fake
+// clock still advances past the deadline via Sleep.
+func AfterFuncStop() int {
+	ch := make(chan int, 1)
+	t := time.AfterFunc(time.Hour, func() { ch <- 1 })
+	t.Stop()
+	time.Sleep(2 * time.Hour)
+	select {
+	case v := <-ch:
+		return v
+	default:
+	}
+	return 9 // the channel stayed empty
+}
+
+// AmbigHostMethod: Lock is promoted from both embeds — Go rejects the
+// selector as ambiguous at compile time; minigo traps at the access.
+type dualLock struct {
+	sync.Mutex
+	sync.RWMutex
+}
+
+func AmbigHostMethod() int {
+	var t dualLock
+	t.Lock()
+	return -1
+}
+
+// AmbigHostField: New reaches the selector through two embedded
+// host-typed paths at the same depth — ambiguous like Go.
+type poolA struct{ sync.Pool }
+type poolB struct{ sync.Pool }
+type poolAB struct {
+	poolA
+	poolB
+}
+
+func AmbigHostField() int {
+	var t poolAB
+	t.New = func() any { return 1 }
+	return -1
+}
+
+// AmbigMixedField: a script-typed embed and a host-typed embed carry
+// the same field name at the same depth — ambiguous like Go.
+type hasNew struct{ New func() any }
+type mixedNew struct {
+	sync.Pool
+	hasNew
+}
+
+func AmbigMixedField() int {
+	var t mixedNew
+	t.New = func() any { return 1 }
+	return -1
+}
+
+// AmbigMixedMethodField: a promoted host method and a promoted script
+// field share the name — Go rejects the selector regardless of which
+// kind wins, so the access is ambiguous too.
+type hasLock struct{ Lock int }
+type mixedLock struct {
+	sync.Mutex
+	hasLock
+}
+
+func AmbigMixedMethodField() int {
+	var t mixedLock
+	t.Lock = 3
+	return -1
+}
+
+// AmbigMixedMethodMethod: a promoted host method and a promoted script
+// method share the name at the same depth — ambiguous like Go.
+type locker2 struct{}
+
+func (locker2) Lock()   {}
+func (locker2) Unlock() {}
+
+type mixedLock2 struct {
+	sync.Mutex
+	locker2
+}
+
+func AmbigMixedMethodMethod() int {
+	var t mixedLock2
+	t.Lock()
+	return -1
+}
+
+// AmbigScriptMethod: two script embeds promote the same method name at
+// the same depth — ambiguous like Go.
+type mA struct{}
+
+func (mA) M() {}
+
+type mB struct{}
+
+func (mB) M() {}
+
+type mAB struct {
+	mA
+	mB
+}
+
+func AmbigScriptMethod() int {
+	var t mAB
+	t.M()
+	return -1
+}
+
+// ShallowHostWins: a depth-1 host field shadows the same name promoted
+// through a deeper script embed — no ambiguity across depths.
+type deepNew struct{ poolA }
+type shallowNew struct {
+	sync.Pool
+	deepNew
+}
+
+func ShallowHostWins() int {
+	var t shallowNew
+	t.New = func() any { return 4 }
+	return t.New().(int) // 4
+}
+
+// NilHostPtrEmbed: a member reachable only through a nil embedded host
+// pointer panics on the implicit dereference, like Go.
+type poolPtr struct{ *sync.Pool }
+
+func NilHostPtrEmbed() int {
+	var t poolPtr
+	t.New = func() any { return 1 }
+	return -1
+}
+
+// NamedHostEmbed: a declared type whose underlying is a host type
+// (`type MyMutex sync.Mutex`) still promotes the box's methods.
+type MyMutex sync.Mutex
+type namedMu struct {
+	MyMutex
+	n int
+}
+
+func NamedHostEmbed() int {
+	var t namedMu
+	t.Lock()
+	t.n++
+	t.Unlock()
+	return t.n // 1
+}

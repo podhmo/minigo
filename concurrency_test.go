@@ -71,6 +71,10 @@ func TestConcurrencyBlocking(t *testing.T) {
 			{"SyncEmbedMutex", int64(5)},
 			{"SyncEmbedPoolField", int64(9)},
 			{"SyncAssertHostPtr", int64(1)},
+			{"AfterFuncFires", int64(7)},
+			{"AfterFuncStop", int64(9)},
+			{"ShallowHostWins", int64(4)},
+			{"NamedHostEmbed", int64(1)},
 		}
 		for _, c := range cases {
 			got := run(t, e, "./testdata/concurrency", c.fn)
@@ -134,6 +138,33 @@ func TestRangeChanTwoVars(t *testing.T) {
 		_, err := runErr(e, "./testdata/concurrency", "RangeChanTwoVars")
 		if err == nil || !strings.Contains(err.Error(), "at most one iteration variable") {
 			t.Fatalf("expected range-over-channel arity trap, got %v", err)
+		}
+	})
+}
+
+// TestAmbiguousSelector: a member promoted through two embedded paths
+// at the same depth traps like Go's compile-time rejection — across
+// host embeds, and across script+host embeds, for fields and methods.
+func TestAmbiguousSelector(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEngine(t)
+		for _, fn := range []string{"AmbigHostMethod", "AmbigHostField", "AmbigMixedField", "AmbigMixedMethodField", "AmbigMixedMethodMethod", "AmbigScriptMethod"} {
+			_, err := runErr(e, "./testdata/concurrency", fn)
+			if err == nil || !strings.Contains(err.Error(), "ambiguous selector") {
+				t.Fatalf("%s: expected ambiguous-selector trap, got %v", fn, err)
+			}
+		}
+	})
+}
+
+// TestNilHostPtrEmbed: a member reachable only through a nil embedded
+// host pointer panics on the implicit dereference, like Go.
+func TestNilHostPtrEmbed(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEngine(t)
+		_, err := runErr(e, "./testdata/concurrency", "NilHostPtrEmbed")
+		if err == nil || !strings.Contains(err.Error(), "nil pointer") {
+			t.Fatalf("expected nil-pointer panic, got %v", err)
 		}
 	})
 }
