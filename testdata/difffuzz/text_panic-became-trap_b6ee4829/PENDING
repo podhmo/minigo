@@ -1,4 +1,0 @@
-SILENT/panic-became-trap (seen ×14)
-shape:  expr:Map(string, runeAt(string, int))
-go:     panic: runtime error: index out of range [0] with length 0
-minigo: <runtime trap: panic: runtime error: index out of range [0] with length 0>
