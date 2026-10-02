@@ -243,6 +243,17 @@ func (e *Engine) findMethod(s *runtime.Struct, name string) (*runtime.Function, 
 			}
 			continue
 		}
+		if emb.HostNew != nil {
+			// a host-typed embedded field (sync.Mutex): the method set
+			// lives on the boxed host value — the VM selects members on
+			// it by reflection, which also promotes exported fields like
+			// sync.Pool.New. Unverifiable names defer to the select's
+			// own "no member" trap, as interface embeds do.
+			if set, err := e.methodsOfValue(recv); err == nil && set != nil && !set[name] && !hostFieldName(recv, name) {
+				continue
+			}
+			return nil, recv, true
+		}
 		if m, ok := emb.Methods[name]; ok {
 			return m, recv, true
 		}
@@ -254,6 +265,31 @@ func (e *Engine) findMethod(s *runtime.Struct, name string) (*runtime.Function, 
 		}
 	}
 	return nil, nil, false
+}
+
+// hostFieldName reports whether recv unwraps to a host value carrying an
+// exported field called name — mirrors the vm's hostField walk.
+func hostFieldName(v runtime.Value, name string) bool {
+	dv, ok := runtime.Deref(v)
+	if !ok {
+		dv = v
+	}
+	gv, ok := dv.(*runtime.GoValue)
+	if !ok {
+		return false
+	}
+	rv := reflect.ValueOf(gv.V)
+	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return false
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Struct {
+		return false
+	}
+	fv := rv.FieldByName(name)
+	return fv.IsValid() && fv.CanInterface()
 }
 
 func structOf(v runtime.Value) (*runtime.Struct, bool) {

@@ -111,7 +111,7 @@ goroutine で発見: `for i := 0; i < 3; i++ { go func() { ch <- i }() }` が `0
 
 - **ホスト呼び出し内でパークした goroutine は漏洩する**: `wg.Wait()`/`Mutex.Lock()`/`time.Sleep` のような「select ではない」ホスト呼び出し内でブロックした spawn ゴルーチンは `proc.done` を監視しないため、root が返っても残る（`DetachedWait` — 実クロックで goroutine 数 +1 を確認、`TestHostParkLeak` で記録）。synctest バブル内では "blocked goroutines remain" として検出されるため synctest では試せない。Go で `go func(){ wg.Wait() }()` が同様に残るのと同じ意味での制限であり、任意のホスト呼び出しをキャンセル可能にする汎用的な方法はない。
 - **デッドロックはプロセスを殺す**: 全 goroutine のパークで host ランタイムが fatal を出す — CLI としては Go と同じ挙動だが、minigo を組み込みで使う場合はホストプロセスごと落ちる（= 「ハングする」のではなく「落ちる」）。
-- **`MakeFunc` で包んだコールバックをホストが別 goroutine から呼ぶケース**: `sync.Once.Do` のような同期呼び出しは安全だが、ホストがコールバックを保持して非同期で呼ぶ形（例 `time.AfterFunc` は現在未 bind）だと、呼ばれた VM は goroutine 安全でないので危険。`adaptFunc` のコメントに明記した。
+- **`MakeFunc` で包んだコールバックをホストが別 goroutine から呼ぶケース**: `sync.Once.Do` のような同期呼び出しは安全だが、ホストがコールバックを保持して非同期で呼ぶ形（例 `time.AfterFunc` は現在未 bind）だと、呼ばれた VM は goroutine 安全でないので危険。`adaptFunc` のコメントに明記した。→ **§7 の S4 で解消済み**（Call が goroutine id を検査し、別 goroutine からの Call は Spawn+Wait に回送）。
 - **`runDefers` 中の `*runtime.Trap` は残りの defer を捨てる**（従来仕様 — Trap は「実行不能」を意味するので意図的。ただし panic と Trap の区別がちょっと強い）。
 
 ## 5. 試行錯誤で得た知見
@@ -130,3 +130,39 @@ goroutine で発見: `for i := 0; i < 3; i++ { go func() { ch <- i }() }` が `0
 `OnceDo` `ChanPointerIdentity` `ChanSliceSend` `ChanMapSend` `SelectEmptyDefault` `DurationArithmetic` `LoopVarPerIteration` `SortInGoroutine`（+ `RangeChanTwoVars` は `TestRangeChanTwoVars`、`DetachedWait` は `TestHostParkLeak`）
 
 `sort.Slice` が実は呼べなかった件、`sync.Once.Do`、Durations、select 空 default、`chan *int` のポインタ同一性、`for` 反復変数 — 全部このラウンドで発見・修正された。
+
+---
+
+## 7. 計画外: `sync` パッケージ実装ラウンド（ユニットテスト先行 + fuzz 追撃）
+
+PR #27 で「並行動作を実装した」と言いつつ、`sync` パッケージは WaitGroup/Mutex/RWMutex/Once の 4 型が bind されているだけで実用にならなかった（Map/Pool/Cond/Locker/NewCond/OnceFunc 系が全滅、`sync.Map` の API は型ごと未定義）。ユーザの指摘を受け、**まずユニットテストで動作確認を固めてから fuzz corpus を再構築して追撃**した。
+
+### 7.1 順序: ユニットテストを先に書く
+
+`testdata/concurrency/main.go` に `Sync*` 系の関数を先に追加し、`TestConcurrencyBlocking`（synctest バブル + `-race`）で回した。fuzz より先に green を取る方針は正しかった — 実装の主要な欠落（下記 S1-S6）は全部この段階で炙り出せており、fuzz 側の新規発見は埋め込み昇格（S5）だけだった。
+
+追加した関数: `SyncMapBasic` `SyncMapOps` `SyncMapConcurrent` `SyncPoolNew` `SyncPoolDecl` `SyncPoolConcurrent` `SyncCondSignal` `SyncCondBroadcast` `SyncScriptLocker` `SyncRWMutex` `SyncLockerDecl` `SyncTryLock` `SyncOnceFunc` `SyncOnceValue` `SyncOnceValues` `SyncWaitGroupGo` `SyncMethodMutex` `SyncEmbedMutex` `SyncEmbedPoolField` `SyncAssertHostPtr`。
+
+注意点: `sync.Pool` の Put→Get の同一性は本家 Go でも保証されない（P 移行・GC で消える）ため、テストは `New` の dispatch と型だけを assert する。当初「Put した値が取れる」を期待して書いたら flake したので書き直した。
+
+### 7.2 発見・修正したもの（S1-S6）
+
+- **S1. sync binding の欠落（根本原因）**: `sync.Map`/`Pool`/`Cond` の hostType と、`sync.Locker`（`KindInterface` typedef、`Lock`/`Unlock` のメソッド要件）、`NewCond`、`OnceFunc`/`OnceValue`/`OnceValues` を `intrinsics.go` に追加。`sync.Locker` への適合判定は `satisfiesIface` → `methodsOfValue` が GoValue の reflect メソッドセットを列挙するので `var l sync.Locker = &sync.Mutex{}` が型チェックを通る。スクリプト側の自作 Locker も `scriptLocker` アダプタ（`vc.Member` 経由で Lock/Unlock を引く）で `NewCond` に渡せる。
+- **S2. GoValue 包みの func が呼べない**: `p.New()`（Pool.New は `func() any` のホスト func）や `m.Range` に渡したコールバック変数の呼び出しが `is not callable`。`v.call` に `*runtime.GoValue`（`reflect.Func` kind）ケースを追加し、arity/variadic/marshal 処理は selectMember と共有の `callReflectFunc` に抽出。
+- **S3. host 型の keyed composite literal が拒否される**: `&sync.Pool{New: f}` が `cannot initialize host type with fields`。`makeComposite` の HostNew 分岐に `initHostLiteral` を追加 — ポインタを辿って struct を取り、`FieldByName`+`CanSet`+`toReflectValue`+`Set` で書き込む。**大きな副産物**: minigo は stdlib の import を本物の GOROOT ソースから解釈するため、`var blackHolePool = sync.Pool{New: ...}` を持つ `io` パッケージが丸ごとロード可能になった（S1+S3 の両方が必要）。`testdata/decltypes` は「io が解決不能」前提のケースだったので `io.NotAReader`（メンバ不在のまま）に差し替えて前提を保全。
+- **S4. 別 goroutine からの `v.Call` が VM を破壊（本ラウンド最重要）**: `wg.Go`（Go 1.25）や他 goroutine からの `Pool.New` 起動など、「ホストが保持したスクリプト callable をホスト goroutine から呼ぶ」ケースで `v.frames` がデータ競合し crash。`v.Call` に goroutine-id による所有チェック（`callDepth`/`callGid` を `callMu` 下で管理、`goroutineID()` は `runtime.Stack` ヘッダの `goroutine N` を parse、失敗時は 0=foreign 扱い）を入れ、呼び出し中の VM に対する別 goroutine からの Call は `v.Spawn(callee, args)` + `t.Wait()` に回送して `t.Result` を返す。`runtime.Task` に `Result` フィールド追加（Done close より先にセットするので Wait 帰還後の観測が保証される）。これは §4 で「既知の限界」としていた **adaptFunc hazard をクラスごと解消**したもので、`time.AfterFunc` のような未 bind API も理論上は bind 可能になった。
+- **S5. 埋め込み host 型のメソッド/フィールド昇格**: `type gated struct{ sync.Mutex }` の `g.Lock()` が `gated has no field or method Lock`（fuzz の新規発見）。`e.findMethod` に `emb.HostNew != nil` 分岐を追加し、`methodsOfValue(recv)` のメソッドセット＋`hostFieldName`（exported フィールド用）で検証した上で `(nil, recv, true)` を返す — interface 埋め込みと同じく、実解決は VM の `selectMember` の reflect 経路に任せる。`g.New` のような **promoted フィールドへの書き込み**は `setField` 側の `promotedHostField` が担当（埋め込み GoValue を発見して再帰 setField → `*runtime.GoValue` ケースの reflect Set）。読みは findMethod→selectMember 経路で通る。
+- **S6. host ポインタの型 assert が false**: `c.L.(*sync.Mutex)` が失敗（`sync.Cond.L` は exported な `sync.Locker` フィールド）。`typeMatches` の `KindPointer` 分岐は `runtime.Deref` に頼るが GoValue は剥がせない。GoValue ケースを追加 — host typedef の box はポインタ零値（`sync.Mutex` → `*sync.Mutex`）なので `reflect.TypeOf(gv.V) == reflect.TypeOf(et.HostNew())` で一致判定、host typedef でない `*T` は型名スペル比較にフォールバック。
+
+### 7.3 fuzz corpus（~/concfuzz の再構築）
+
+前ラウンドの `~/concfuzz` は消えていたため、sync 中心に再構築（`cases/` 20 ディレクトリ、`run.sh` = `timeout 8 ./minigo-bin <dir> F` で `expected.txt` 照合、`ERR` はエラー期待）: `syncmap_ops` `syncmap_concurrent` `syncmap_range` `syncmap_vals`（closure/struct/slice/nil の格納忠実性）`syncpool` `syncpool_zero` `synccond` `synconce` `synconce_panic`（panicking Do で once 消費）`synclock` `syncwg` `syncwg_neg`（負カウンタ panic）`synclocker` `syncembed` `syncembed2` `syncmap_lit` `syncmisc`（TryRLock/TryLock + defer）`syncmulti` `syncmulti2` `syncneg`（`NewCond(42)` が trap）。
+
+結果: 全 20 ケース通過、`-race` ビルドでも警告なし、3 回連続実行で flake なし。新規発見は S5（埋め込み昇格）のみ — S1-S4 はユニットテスト段階で潰せていた。
+
+### 7.4 残件
+
+- `time.AfterFunc` は依然未 bind（S4 で安全に bind 可能にはなった — 要追加実装）。
+- `sync.Map` の複数戻り値メソッド（`Load`/`LoadOrStore`/`Swap`/`CompareAndDelete`/`LoadAndDelete`）は minigo の Tuple 規約どおり `v, _ := m.Load(k)` の 2 変数受けが必要 — minigo 全域の既存仕様。
+- `var c sync.Cond`（零値 Cond: `c.L` が nil）は Go と同じく使用不可 — `NewCond` 必須。
+- 複数の埋め込み host 型が同名の exported フィールドを持つ場合の ambiguity 判定は未実装（最初に見つかった方が勝つ — Go はコンパイルエラー）。

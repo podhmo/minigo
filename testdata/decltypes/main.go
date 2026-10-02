@@ -416,7 +416,7 @@ func MapBindTrap() int {
 // import, unbound name) keeps a typed-nil hole inside an otherwise typed
 // struct zero — boxed into an interface it is non-nil, like a typed nil.
 type Holder struct {
-	R io.Reader // io is deliberately not imported
+	R io.NotAReader // the member is deliberately absent from io
 }
 
 func FieldHoleZero() int {
@@ -536,7 +536,7 @@ func NamedUnary() int {
 // ChainHoleBad: `type A B` does not accept a B value — both are named
 // types (Go needs a conversion) even when B's own underlying cannot be
 // resolved further.
-type BHole io.Reader // unresolvable: io is deliberately not imported
+type BHole io.NotAReader // unresolvable: the member is absent from io
 type AHole BHole
 
 func ChainHoleBad() int {

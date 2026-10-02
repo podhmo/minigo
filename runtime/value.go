@@ -538,6 +538,9 @@ type Task struct {
 	Err     error
 	Parent  *Task
 	Aborted bool // finished by process exit rather than its own outcome
+	// Result carries the call's return value to a joiner — set before
+	// Done closes, so a Wait that returns also observes it.
+	Result Value
 }
 
 // Finish records the task's outcome and releases waiters. Called once.
