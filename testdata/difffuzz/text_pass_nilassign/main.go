@@ -1,5 +1,7 @@
 package main
 
+import "fmt"
+
 type Tsmallp byte
 
 func (p *Tsmallp) M(x int) int { return x + int(*p) }
@@ -9,8 +11,8 @@ func main() {
 	psp := &sp
 	psp = nil
 	f := psp.M
-	println(f != nil)
+	fmt.Println(f != nil)
 	s := []int{1}
 	s = nil
-	println(s == nil, len(s))
+	fmt.Println(s == nil, len(s))
 }
