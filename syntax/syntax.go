@@ -9,6 +9,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -35,6 +36,10 @@ type Import struct {
 // errors are reported, but every construct the toolchain's parser accepts is
 // accepted here (unsupported constructs become runtime TRAPs downstream).
 func ParseFile(fset *token.FileSet, filename string, src []byte) (*File, error) {
+	// Positions, decl File fields, and traceback frames all quote this name:
+	// normalize to "/" so script-visible paths match on every OS. Windows
+	// still opens the slash form fine when src is nil.
+	filename = filepath.ToSlash(filename)
 	var srcAny any // typed-nil []byte would read as an empty file
 	if src != nil {
 		srcAny = src

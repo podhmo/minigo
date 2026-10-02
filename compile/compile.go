@@ -1775,6 +1775,9 @@ func (c *compiler) binary(x *ast.BinaryExpr) {
 		c.expr(x.Y)
 		c.patchA(j, len(c.ch.Code))
 	default:
+		if c.foldConst(x) {
+			return
+		}
 		op, ok := binOpOf(x.Op)
 		if !ok {
 			c.trap(x.Pos(), "unsupported binary %s", x.Op)
@@ -1784,6 +1787,117 @@ func (c *compiler) binary(x *ast.BinaryExpr) {
 		c.expr(x.Y)
 		c.emit(bytecode.OpBinary, int(op), 0, x.Pos())
 	}
+}
+
+// foldConst evaluates a constant-only binary expression in go/constant's
+// arbitrary-precision domain and emits one OpConst. Go computes constant
+// arithmetic exactly — 1<<100>>50 is 2^50 — where evaluating the same
+// expression at runtime in int64 would silently wrap to 0. An expression
+// whose constant result minigo cannot represent traps at compile time
+// (the same operation Go rejects). Returns false when any operand is not
+// a constant, so the caller emits the usual binary ops.
+func (c *compiler) foldConst(x *ast.BinaryExpr) bool {
+	// division by zero is a compile error in Go — trap it like the
+	// compiler rather than letting the runtime panic.
+	if x.Op == token.QUO || x.Op == token.REM {
+		if rv, ok := constValue(x.Y); ok && (rv.Kind() == constant.Int || rv.Kind() == constant.Float) && constant.Sign(rv) == 0 {
+			c.trap(x.Pos(), "constant division by zero")
+			return true
+		}
+	}
+	cv, ok := constValue(x)
+	if !ok {
+		return false
+	}
+	var v any
+	switch cv.Kind() {
+	case constant.Bool:
+		v = constant.BoolVal(cv)
+	case constant.String:
+		v = constant.StringVal(cv)
+	case constant.Float:
+		f, _ := constant.Float64Val(cv)
+		v = f
+	case constant.Int:
+		if i, ok := constant.Int64Val(cv); ok {
+			v = i
+		} else if u, ok := constant.Uint64Val(cv); ok {
+			if u == 1<<63 {
+				v = int64(u)
+			} else {
+				// same boxing as literalValue: formatting reads the box.
+				v = &runtime.GoValue{V: u}
+			}
+		} else {
+			c.trap(x.Pos(), "constant overflows int64: %s", cv)
+			return true
+		}
+	default:
+		// Unknown kind: the operation is undefined for these operand
+		// types ("a" + 1), which Go rejects at compile time.
+		c.trap(x.Pos(), "invalid constant expression: %s %s %s", x.X, x.Op, x.Y)
+		return true
+	}
+	c.emit(bytecode.OpConst, c.constIdx(v), 0, x.Pos())
+	return true
+}
+
+// constValue evaluates an expression made only of literal constants and
+// returns its go/constant value. ok is false when any operand is not a
+// constant (identifiers, calls, index expressions), letting the caller
+// fall back to normal codegen.
+func constValue(e ast.Expr) (cv constant.Value, ok bool) {
+	defer func() {
+		// go/constant panics on unsound inputs (shift by a negative
+		// count, integer divide by zero); those keep runtime semantics.
+		if recover() != nil {
+			cv, ok = nil, false
+		}
+	}()
+	switch x := e.(type) {
+	case *ast.ParenExpr:
+		return constValue(x.X)
+	case *ast.BasicLit:
+		switch x.Kind {
+		case token.INT, token.FLOAT, token.CHAR, token.STRING:
+			return constant.MakeFromLiteral(x.Value, x.Kind, 0), true
+		}
+	case *ast.UnaryExpr:
+		xv, ok := constValue(x.X)
+		if !ok {
+			return nil, false
+		}
+		switch x.Op {
+		case token.ADD, token.SUB, token.XOR, token.NOT:
+			return constant.UnaryOp(x.Op, xv, 0), true
+		}
+	case *ast.BinaryExpr:
+		lv, ok := constValue(x.X)
+		if !ok {
+			return nil, false
+		}
+		rv, ok := constValue(x.Y)
+		if !ok {
+			return nil, false
+		}
+		switch x.Op {
+		case token.SHL, token.SHR:
+			s, ok := constant.Uint64Val(rv)
+			if !ok {
+				return nil, false
+			}
+			return constant.Shift(lv, x.Op, uint(s)), true
+		case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ:
+			return constant.MakeBool(constant.Compare(lv, x.Op, rv)), true
+		case token.LAND, token.LOR:
+			// keep short-circuit semantics at runtime; && and || on
+			// constants are rare enough not to fold here.
+			return nil, false
+		default:
+			return constant.BinaryOp(lv, x.Op, rv), true
+		}
+	}
+	return nil, false
 }
 
 func binOpOf(tok token.Token) (bytecode.BinOp, bool) {

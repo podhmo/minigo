@@ -4,13 +4,13 @@ all:
 	go build ./...
 
 format:
-	go tool goimports -w $(shell find . -name '*.go')
+	go tool goimports -w . # walks .go files recursively; `find` is not portable (Windows System32\find.exe shadows GNU find)
 
 lint:
 	go tool staticcheck ./...
 
 go-mod-tidy-all:
-	for i in `find . -name go.mod | grep -v testdata | xargs dirname`; do pushd $$i; go mod tidy; popd; done
+	for i in `git ls-files | grep 'go\.mod$$' | grep -v testdata | xargs dirname`; do pushd $$i; go mod tidy; popd; done
 
 test:
 	go test ./...

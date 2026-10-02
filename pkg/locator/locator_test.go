@@ -635,7 +635,12 @@ func TestGetGoModCache(t *testing.T) {
 	})
 
 	t.Run("GOPATH_is_set", func(t *testing.T) {
-		gopath := "/test/gopath"
+		// `go env` rejects a GOPATH that isn't an absolute path in host
+		// terms, so /test/gopath must become C:\test\gopath on Windows.
+		gopath, err := filepath.Abs("/test/gopath")
+		if err != nil {
+			t.Fatal(err)
+		}
 		originalGOMODCACHE := os.Getenv("GOMODCACHE")
 		originalGOPATH := os.Getenv("GOPATH")
 		os.Setenv("GOMODCACHE", "") // Unset

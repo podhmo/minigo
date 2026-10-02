@@ -681,7 +681,7 @@ func (e *Engine) LoadFile(ctx context.Context, filename string) (*runtime.Packag
 		return nil, fmt.Errorf("parse %s: %w", filename, err)
 	}
 
-	p := e.newPackage("<file>"+abs, sf.AST.Name.Name, filepath.Dir(abs))
+	p := e.newPackage("<file>"+filepath.ToSlash(abs), sf.AST.Name.Name, filepath.Dir(abs))
 	if err := e.indexFiles(p, []*syntax.File{sf}); err != nil {
 		return nil, err
 	}

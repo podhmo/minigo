@@ -231,7 +231,7 @@ func (e *Engine) installInspect() {
 			if err != nil {
 				return nil, err
 			}
-			return p.Dir, nil
+			return filepath.ToSlash(p.Dir), nil
 		}),
 		"State": bf("State", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			p, err := e.pkgOf(runtime.Unwrap(args[0]))

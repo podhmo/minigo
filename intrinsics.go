@@ -2835,6 +2835,12 @@ func typedefSpelling(td *runtime.TypeDef) string {
 		if td.Pkg != nil && td.Pkg.Name != "" {
 			return td.Pkg.Name + "." + td.Name
 		}
+		switch td.Name {
+		case "byte":
+			return "uint8"
+		case "rune":
+			return "int32"
+		}
 		return td.Name
 	}
 	if td.Anon != nil {
@@ -2847,6 +2853,12 @@ func typedefSpelling(td *runtime.TypeDef) string {
 func anonTypeSpelling(e ast.Expr) string {
 	switch t := e.(type) {
 	case *ast.Ident:
+		switch t.Name {
+		case "byte":
+			return "uint8"
+		case "rune":
+			return "int32"
+		}
 		return t.Name
 	case *ast.StarExpr:
 		return "*" + anonTypeSpelling(t.X)
