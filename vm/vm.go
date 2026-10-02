@@ -346,6 +346,75 @@ func (v *VM) assignCell(f *frame, c *runtime.Cell, val runtime.Value) {
 	c.Elem = valueCopy(val)
 }
 
+// assignRef stores a value into a resolved assignment target — the
+// phase-2 store of OpSetRefs. The ref carries the target's storage
+// shape: IndexRef/FieldRef go through the typed index/field stores so
+// element typedefs still coerce; a bare Cell is a variable or pointer
+// cell; a Named pointer unwraps in setIndirect.
+func (v *VM) assignRef(f *frame, ref, val runtime.Value) {
+	switch r := ref.(type) {
+	case *runtime.IndexRef:
+		v.setIndex(f, r.Base, r.Key, val)
+		return
+	case *runtime.FieldRef:
+		v.setField(f, r.Base, r.Name, val)
+		return
+	case *runtime.Cell:
+		v.assignCell(f, r, val)
+		return
+	case runtime.Nil:
+		return // `_` — the value is discarded
+	}
+	v.setIndirect(f, ref, val)
+}
+
+// setIndirect stores through a pointer-like ref — the OpSetInd body
+// (`*p = v`) and the pointer-shaped targets of OpSetRefs.
+func (v *VM) setIndirect(f *frame, ref, val runtime.Value) {
+	if tn, ok := asTypedNil(ref); ok && tn.Typ.Kind == runtime.KindPointer {
+		panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "invalid memory address or nil pointer dereference"}})
+	}
+	// a Named pointer unwraps to its cell so the pointee's
+	// declared type still constrains the store (`*p = v` on a
+	// `var p P` where P is `type P *Sq`, or `*s = v` through a
+	// `(*stringValue)(p)` view). The pointer's element typedef
+	// wins over the cell's own tag: the cell may be shared with a
+	// differently-typed alias (`*string` vs `*stringValue`), and
+	// the stored value un-wraps so the other view keeps its tag.
+	ur := ref
+	var ptrTd *runtime.TypeDef
+	for {
+		n, isNamed := ur.(*runtime.Named)
+		if !isNamed {
+			break
+		}
+		if n.Typ != nil && n.Typ.Kind == runtime.KindPointer {
+			ptrTd = n.Typ
+		}
+		ur = n.V
+	}
+	if c, ok := ur.(*runtime.Cell); ok {
+		if c.ReadOnly {
+			f.trap("cannot assign to constant")
+		}
+		tgt := c.Typ
+		if ptrTd != nil {
+			if et := v.elemTypedef(f, ptrTd); et != nil {
+				tgt = et
+			}
+		}
+		if tgt != nil {
+			val = v.coerce(f, val, tgt)
+		}
+		if ptrTd != nil {
+			val = runtime.Unwrap(val)
+		}
+	}
+	if !runtime.SetRef(ref, val) {
+		f.trap("indirect store to non-pointer %T", ref)
+	}
+}
+
 // Call invokes a function-like value: Function, Closure, BoundMethod,
 // BuiltinFunc, TypeDef (conversion), or Cell wrapping any of those.
 // It is the engine boundary: script panics and traps unwind as Go panics
@@ -911,9 +980,10 @@ func (v *VM) loop(f *frame) {
 		case bytecode.OpIndexRef:
 			key := f.pop()
 			base := f.pop()
-			if _, isMap := runtime.Unwrap(base).(*runtime.Map); isMap {
+			if _, isMap := runtime.Unwrap(base).(*runtime.Map); isMap && ins.B == 0 {
 				// Go rejects &m[k] at compile time: map elements are
-				// not addressable. The nearest loud failure is a trap.
+				// not addressable — B=1 marks a multi-assign store
+				// target, where the ref is legal (m[k] = v stores).
 				f.trap("cannot take the address of map element")
 			}
 			f.push(&runtime.IndexRef{Base: base, Key: key})
@@ -959,6 +1029,8 @@ func (v *VM) loop(f *frame) {
 			}
 		case bytecode.OpSetUpval:
 			v.assignCell(f, f.upvals[ins.A], f.pop())
+		case bytecode.OpUpvalRef:
+			f.push(f.upvals[ins.A])
 		case bytecode.OpGlobal:
 			f.push(v.resolveGlobal(f, consts[ins.A].(string)))
 		case bytecode.OpGlobalTyp:
@@ -1055,47 +1127,21 @@ func (v *VM) loop(f *frame) {
 		case bytecode.OpSetInd:
 			val := f.pop()
 			ref := f.pop()
-			if tn, ok := asTypedNil(ref); ok && tn.Typ.Kind == runtime.KindPointer {
-				panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "invalid memory address or nil pointer dereference"}})
+			v.setIndirect(f, ref, val)
+		case bytecode.OpSetRefs:
+			// multi-assign phase 2: every LHS ref was resolved before the
+			// RHS evaluated (Go spec); stores land left-to-right.
+			n := int(ins.A)
+			vals := make([]runtime.Value, n)
+			for i := n - 1; i >= 0; i-- {
+				vals[i] = f.pop()
 			}
-			// a Named pointer unwraps to its cell so the pointee's
-			// declared type still constrains the store (`*p = v` on a
-			// `var p P` where P is `type P *Sq`, or `*s = v` through a
-			// `(*stringValue)(p)` view). The pointer's element typedef
-			// wins over the cell's own tag: the cell may be shared with a
-			// differently-typed alias (`*string` vs `*stringValue`), and
-			// the stored value un-wraps so the other view keeps its tag.
-			ur := ref
-			var ptrTd *runtime.TypeDef
-			for {
-				n, isNamed := ur.(*runtime.Named)
-				if !isNamed {
-					break
-				}
-				if n.Typ != nil && n.Typ.Kind == runtime.KindPointer {
-					ptrTd = n.Typ
-				}
-				ur = n.V
+			refs := make([]runtime.Value, n)
+			for i := n - 1; i >= 0; i-- {
+				refs[i] = f.pop()
 			}
-			if c, ok := ur.(*runtime.Cell); ok {
-				if c.ReadOnly {
-					f.trap("cannot assign to constant")
-				}
-				tgt := c.Typ
-				if ptrTd != nil {
-					if et := v.elemTypedef(f, ptrTd); et != nil {
-						tgt = et
-					}
-				}
-				if tgt != nil {
-					val = v.coerce(f, val, tgt)
-				}
-				if ptrTd != nil {
-					val = runtime.Unwrap(val)
-				}
-			}
-			if !runtime.SetRef(ref, val) {
-				f.trap("indirect store to non-pointer %T", ref)
+			for i := 0; i < n; i++ {
+				v.assignRef(f, refs[i], vals[i])
 			}
 		case bytecode.OpAssert:
 			tdv := f.pop()

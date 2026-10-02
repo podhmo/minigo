@@ -860,6 +860,17 @@ func (c *compiler) assign(st *ast.AssignStmt) {
 	}
 
 	n := len(st.Lhs)
+	// Go assigns in two phases: index/pointer/selector operands on the
+	// left resolve BEFORE the right side evaluates (`x[i], i = 100, 1`
+	// binds x[i] through the old i), then stores land left-to-right.
+	// Push each target's reference first so `=` keeps that order; `:=`
+	// only allows identifier targets, so it keeps the value-stack path.
+	useRefs := !isDefine
+	if useRefs {
+		for _, l := range st.Lhs {
+			c.refTarget(l)
+		}
+	}
 	if len(st.Rhs) == 1 && n > 1 {
 		if n == 2 {
 			switch x := st.Rhs[0].(type) {
@@ -869,9 +880,7 @@ func (c *compiler) assign(st *ast.AssignStmt) {
 					c.expr(x.X)
 					c.emit(bytecode.OpRecvOK, 0, 0, x.Pos())
 					c.emit3(bytecode.OpUnpack, 2, 0, 0, st.Pos())
-					for i := n - 1; i >= 0; i-- {
-						c.storeTarget(st.Lhs[i], isDefine)
-					}
+					c.storeAll(st.Lhs, isDefine, useRefs, st.Pos())
 					return
 				}
 			case *ast.IndexExpr:
@@ -880,9 +889,7 @@ func (c *compiler) assign(st *ast.AssignStmt) {
 				c.expr(x.Index)
 				c.emit(bytecode.OpIndexOK, 0, 0, x.Pos())
 				c.emit3(bytecode.OpUnpack, 2, 0, 0, st.Pos())
-				for i := n - 1; i >= 0; i-- {
-					c.storeTarget(st.Lhs[i], isDefine)
-				}
+				c.storeAll(st.Lhs, isDefine, useRefs, st.Pos())
 				return
 			case *ast.TypeAssertExpr:
 				// comma-ok assert: v, ok := x.(T)
@@ -894,9 +901,7 @@ func (c *compiler) assign(st *ast.AssignStmt) {
 				c.typeExpr(x.Type)
 				c.emit(bytecode.OpAssertOK, 0, 0, x.Pos())
 				c.emit3(bytecode.OpUnpack, 2, 0, 0, st.Pos())
-				for i := n - 1; i >= 0; i-- {
-					c.storeTarget(st.Lhs[i], isDefine)
-				}
+				c.storeAll(st.Lhs, isDefine, useRefs, st.Pos())
 				return
 			}
 		}
@@ -907,9 +912,63 @@ func (c *compiler) assign(st *ast.AssignStmt) {
 			c.expr(r)
 		}
 	}
-	// store in reverse order (stack top = last value)
-	for i := n - 1; i >= 0; i-- {
-		c.storeTarget(st.Lhs[i], isDefine)
+	c.storeAll(st.Lhs, isDefine, useRefs, st.Pos())
+}
+
+// storeAll emits the phase-2 stores for an assignment: OpSetRefs when the
+// refs were pushed (plain `=`), otherwise the per-target stack stores in
+// reverse order (stack top = last value).
+func (c *compiler) storeAll(lhs []ast.Expr, isDefine, useRefs bool, pos token.Pos) {
+	if useRefs {
+		c.emit(bytecode.OpSetRefs, len(lhs), 0, pos)
+		return
+	}
+	for i := len(lhs) - 1; i >= 0; i-- {
+		c.storeTarget(lhs[i], isDefine)
+	}
+}
+
+// refTarget emits code pushing the assignment target's storage reference
+// — the phase-1 operand evaluation Go runs before the right side: cells
+// for names, FieldRef/IndexRef for `s.f` / `s[i]`, the pointer itself for
+// `*p`. `_` pushes nil — OpSetRefs discards its value.
+func (c *compiler) refTarget(lhs ast.Expr) {
+	target := lhs
+	for {
+		if p, isParen := target.(*ast.ParenExpr); isParen {
+			target = p.X
+			continue
+		}
+		break
+	}
+	switch t := target.(type) {
+	case *ast.Ident:
+		if t.Name == "_" {
+			c.emit(bytecode.OpNil, 0, 0, t.Pos())
+			return
+		}
+		isUp, idx, ok := c.fs.find(t.Name)
+		switch {
+		case !ok:
+			c.emit(bytecode.OpGlobalRef, c.nameIdx(t.Name), 0, t.Pos())
+		case !isUp:
+			c.emit(bytecode.OpLocalRef, idx, 0, t.Pos())
+		default:
+			c.emit(bytecode.OpUpvalRef, idx, 0, t.Pos())
+		}
+	case *ast.SelectorExpr:
+		c.expr(t.X)
+		c.emit(bytecode.OpFieldRef, c.nameIdx(t.Sel.Name), 0, t.Pos())
+	case *ast.IndexExpr:
+		// B=1: the ref is a store target — a map element is legal here
+		// (m[k] = v), unlike `&` which Go forbids on map values.
+		c.expr(t.X)
+		c.expr(t.Index)
+		c.emit(bytecode.OpIndexRef, 0, 1, t.Pos())
+	case *ast.StarExpr:
+		c.expr(t.X)
+	default:
+		c.trap(lhs.Pos(), "unsupported assignment target %T", lhs)
 	}
 }
 
