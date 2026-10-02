@@ -5337,6 +5337,13 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 		switch sx := x.(type) {
 		case string:
 			return sx, nil
+		case *runtime.TypedNil:
+			// string([]byte(nil)) / string([]rune(nil)) yields "" — a
+			// nilable source that isn't a slice is a convert error.
+			if sx.Typ == nil || sx.Typ.Kind == runtime.KindSlice {
+				return "", nil
+			}
+			return nil, fmt.Errorf("cannot convert %s to string", typeNameOf(x))
 		case int64:
 			return string(rune(sx)), nil
 		case *runtime.Slice:
