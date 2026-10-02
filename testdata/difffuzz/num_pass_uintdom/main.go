@@ -17,4 +17,13 @@ func main() {
 	fmt.Println(float64(w64))
 	var p uintptr = 0
 	fmt.Println(^p)
+	unary()
+}
+
+func unary() {
+	var u uint = 18446744073709551615
+	fmt.Printf("%T %v\n", -u, -u)
+	var u2 uint = 2
+	fmt.Printf("%T %v\n", -u2, -u2)
+	fmt.Printf("%T %v\n", ^u, ^u)
 }
