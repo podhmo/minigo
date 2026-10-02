@@ -1,6 +1,6 @@
 # Windows 環境での動作確認 — `make test` とファズハーネス全系列の再実行
 
-対象: `podhmo/minigo` の `main`（言語仕様回 `fuzz-language.md`・ユースケース回 `fuzz-difffuzz-report.md`・並行回 `fuzz-concurrency.md`・convert-define 回 `fuzz-convert-define.md` がマージ済みの状態）
+対象: `podhmo/minigo` の `main`（言語仕様回 `fuzz-language.md`・ユースケース回 `fuzz-usecase.md`・並行回 `fuzz-concurrency.md`・convert-define 回 `fuzz-convert-define.md` がマージ済みの状態）
 方法: これまでの動作確認は全て Linux (ubuntu) だったので、Windows (Server 2022 + Git Bash/MSYS + Go 1.27.1) で `make test` が通るか、そして 4 系列のファズハーネスが Linux と同じ判定になるかを確認する。ハーネスはそれぞれのメモに書かれた設計を Windows 用に写して再現したもの（`~/usecasefuzz` は podhmo/minigo-usecasefuzz を clone、`~/langfuzz`・`~/concfuzz`・`~/convfuzz` は本メモ末の構成で再構築）。
 
 **最終状態: `make test` グリーン。usecasefuzz PASS=28/ACCEPT=1/TRAP=8、langfuzz PASS=19/PASS-REJECT=2/TRAP=2/DIFF=0、concfuzz 18/18 全 PASS、convfuzz OK=5/WARN-BUILD=1/GEN-FAIL=2 — 4 系列とも Linux 実行時と同一の判定に揃った。**

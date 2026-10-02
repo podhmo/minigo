@@ -210,7 +210,7 @@ usecasefuzz 側も別スキルにする価値はあると思う（今回は作�
 
 整理後の説明ではなく、実際の操作と観察の順に残す。
 
-1. **前回までの資産の確認**。PR #23/#28/#29/#30 の本文と `docs/sketch/ja/fuzz-difffuzz-report.md` を読んだ。#28/#30 の本文に出てくる `~/concfuzz` / `~/usecasefuzz` を `ls` したが、どちらも手元に無かった（usecasefuzz は別リポジトリに移っていた）。→「コーパスがリポジトリ外にあって消える」を弱点の1つとしてメモ。
+1. **前回までの資産の確認**。PR #23/#28/#29/#30 の本文と `docs/sketch/ja/fuzz-usecase.md` を読んだ。#28/#30 の本文に出てくる `~/concfuzz` / `~/usecasefuzz` を `ls` したが、どちらも手元に無かった（usecasefuzz は別リポジトリに移っていた）。→「コーパスがリポジトリ外にあって消える」を弱点の1つとしてメモ。
 2. **Go 本体のテストを oracle 付きコーパスに使えないか調べた**。`go version`（go1.27.1）、`$(go env GOROOT)/test` に `.go` が 356 本、先頭行がちょうど `// run` のものが 145 本（`grep -l '^// run$'`）。自己検査型なので期待値を書かずに使える、と判断し、これを主軸にするつもりで進め始めた。
 3. **minigo の CLI を確認してビルド**。`cmd/minigo/main.go` を読み、`minigo run <dir>` がカレントディレクトリをルートにパッケージを解決することを確認。`go build -o /tmp/minigo ./cmd/minigo`。
 4. **最初の数本を手で試す — 1回目は失敗**。`/tmp/gt` に `go.mod` を作り `235.go`/`64bit.go`/`alg.go` を `<name>/main.go` にコピーして流したが、zsh で `rm -rf *` が「no matches found」になってコマンド列が途中で止まり、GOROOT のパスが空のまま `cp` が失敗。minigo は `no buildable Go source files` を返した（ハーネス側の操作ミス）。
