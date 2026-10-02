@@ -1054,9 +1054,7 @@ func (c *compiler) localTypeDecl(ts *ast.TypeSpec) {
 // evaluated immediately; op (OpDefer/OpGo) decides when the call runs.
 func (c *compiler) callStmt(call *ast.CallExpr, op bytecode.Op, pos token.Pos) {
 	c.calleeExpr(call.Fun)
-	for _, a := range call.Args {
-		c.expr(a)
-	}
+	c.callArgs(call.Args)
 	c.emit(op, len(call.Args), callSpread(call), pos)
 }
 
@@ -2465,6 +2463,281 @@ func binOpOf(tok token.Token) (bytecode.BinOp, bool) {
 	return 0, false
 }
 
+var predeclaredTypeNames = map[string]bool{
+	"bool": true, "byte": true, "rune": true, "string": true,
+	"error": true, "any": true, "complex64": true, "complex128": true,
+	"float32": true, "float64": true,
+	"int": true, "int8": true, "int16": true, "int32": true, "int64": true,
+	"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true,
+	"uintptr": true,
+}
+
+// isTypeDeclName reports whether the innermost local/upval declaration of
+// name is a `type` decl rather than a variable (walking enclosing scopes).
+func (s *fscope) isTypeDeclName(name string) bool {
+	for cur := s; cur != nil; cur = cur.parent {
+		for i := len(cur.blocks) - 1; i >= 0; i-- {
+			if _, declared := cur.blocks[i][name]; declared {
+				return cur.typeDecls[name]
+			}
+		}
+	}
+	return false
+}
+
+// conversionCall reports whether the call's callee names a type, making
+// the CallExpr a conversion — a transparent non-call operation for
+// argument evaluation order (T(x)'s own computation defers like an
+// index or arithmetic op, unlike a real call).
+func (c *compiler) conversionCall(x *ast.CallExpr) bool {
+	if isTypeForm(x.Fun) {
+		return true // []T(x), *T(x), struct{...}(x) — syntactic type forms
+	}
+	switch f := x.Fun.(type) {
+	case *ast.Ident:
+		return c.isTypeName(f.Name)
+	case *ast.IndexExpr:
+		// T[Args](x) is a conversion only when T names a generic type;
+		// a generic function f[T](x) is a real call.
+		if id, ok := f.X.(*ast.Ident); ok {
+			return c.isTypeName(id.Name)
+		}
+	case *ast.IndexListExpr:
+		if id, ok := f.X.(*ast.Ident); ok {
+			return c.isTypeName(id.Name)
+		}
+	}
+	return false
+}
+
+// isTypeName reports whether name resolves to a type: a type parameter, a
+// local `type` decl, a package-level type decl, or a predeclared type —
+// unless a nearer variable shadows it.
+func (c *compiler) isTypeName(name string) bool {
+	if _, bound := c.binds[name]; bound {
+		return true
+	}
+	if _, _, found := c.fs.find(name); found {
+		return c.fs.isTypeDeclName(name)
+	}
+	if c.pkg != nil && c.pkg.Index != nil {
+		idx := c.pkg.Index
+		if idx.Types[name] != nil {
+			return true
+		}
+		if idx.Vars[name] != nil || idx.Funcs[name] != nil || idx.Consts[name] != nil {
+			return false
+		}
+	}
+	return predeclaredTypeNames[name]
+}
+
+// hoistedArgCalls lists the call-time operations inside an argument that
+// Go orders like calls — CallExpr nodes that aren't conversions, plus
+// channel receives — in lexical order. Conversions are transparent
+// (their argument expressions' calls still hoist, but the conversion
+// itself is a deferred non-call op). Returns ok=false when the argument
+// contains conditional call sites (&&/||) or other shapes hoisting would
+// reorder; the caller then falls back to plain sequential evaluation.
+func (c *compiler) hoistedArgCalls(e ast.Expr) (calls []ast.Expr, ok bool) {
+	ok = true
+	ast.Inspect(e, func(n ast.Node) bool {
+		if !ok || n == nil {
+			return false
+		}
+		switch t := n.(type) {
+		case *ast.FuncLit:
+			return false // body calls run at invocation, not arg time
+		case *ast.BinaryExpr:
+			if t.Op == token.LAND || t.Op == token.LOR {
+				ok = false
+				return false
+			}
+		case *ast.CallExpr:
+			if c.conversionCall(t) {
+				return true // transparent op — descend into its args
+			}
+			calls = append(calls, t)
+			return false
+		case *ast.UnaryExpr:
+			if t.Op == token.ARROW {
+				calls = append(calls, t) // receive: ordered like a call
+				return false
+			}
+		}
+		return true
+	})
+	return calls, ok
+}
+
+// substCallArg rewrites the nodes of e listed in subs (hoisted calls)
+// as references to their scratch slots. Nodes without hoisted
+// descendants are shared, not copied.
+func substCallArg(e ast.Expr, subs map[ast.Expr]string) ast.Expr {
+	if name, ok := subs[e]; ok {
+		return &ast.Ident{Name: name, NamePos: e.Pos()}
+	}
+	switch x := e.(type) {
+	case *ast.ParenExpr:
+		nx := substCallArg(x.X, subs)
+		if nx == x.X {
+			return e
+		}
+		return &ast.ParenExpr{Lparen: x.Lparen, X: nx, Rparen: x.Rparen}
+	case *ast.BinaryExpr:
+		nx, ny := substCallArg(x.X, subs), substCallArg(x.Y, subs)
+		if nx == x.X && ny == x.Y {
+			return e
+		}
+		return &ast.BinaryExpr{X: nx, OpPos: x.OpPos, Op: x.Op, Y: ny}
+	case *ast.UnaryExpr:
+		nx := substCallArg(x.X, subs)
+		if nx == x.X {
+			return e
+		}
+		return &ast.UnaryExpr{OpPos: x.OpPos, Op: x.Op, X: nx}
+	case *ast.StarExpr:
+		nx := substCallArg(x.X, subs)
+		if nx == x.X {
+			return e
+		}
+		return &ast.StarExpr{Star: x.Star, X: nx}
+	case *ast.SelectorExpr:
+		nx := substCallArg(x.X, subs)
+		if nx == x.X {
+			return e
+		}
+		return &ast.SelectorExpr{X: nx, Sel: x.Sel}
+	case *ast.IndexExpr:
+		nx, ni := substCallArg(x.X, subs), substCallArg(x.Index, subs)
+		if nx == x.X && ni == x.Index {
+			return e
+		}
+		return &ast.IndexExpr{X: nx, Lbrack: x.Lbrack, Index: ni, Rbrack: x.Rbrack}
+	case *ast.IndexListExpr:
+		nx := substCallArg(x.X, subs)
+		changed := nx != x.X
+		var inds []ast.Expr
+		for _, i := range x.Indices {
+			ni := substCallArg(i, subs)
+			changed = changed || ni != i
+			inds = append(inds, ni)
+		}
+		if !changed {
+			return e
+		}
+		return &ast.IndexListExpr{X: nx, Lbrack: x.Lbrack, Indices: inds, Rbrack: x.Rbrack}
+	case *ast.SliceExpr:
+		nx := substCallArg(x.X, subs)
+		changed := nx != x.X
+		var low, high, max ast.Expr
+		if x.Low != nil {
+			low = substCallArg(x.Low, subs)
+			changed = changed || low != x.Low
+		}
+		if x.High != nil {
+			high = substCallArg(x.High, subs)
+			changed = changed || high != x.High
+		}
+		if x.Max != nil {
+			max = substCallArg(x.Max, subs)
+			changed = changed || max != x.Max
+		}
+		if !changed {
+			return e
+		}
+		return &ast.SliceExpr{X: nx, Lbrack: x.Lbrack, Low: low, High: high, Max: max, Slice3: x.Slice3, Rbrack: x.Rbrack}
+	case *ast.TypeAssertExpr:
+		nx := substCallArg(x.X, subs)
+		if nx == x.X {
+			return e
+		}
+		return &ast.TypeAssertExpr{X: nx, Lparen: x.Lparen, Type: x.Type, Rparen: x.Rparen}
+	case *ast.CallExpr:
+		// only transparent conversion calls reach here — real calls were
+		// hoisted and substituted at the top of this walk.
+		changed := false
+		var args []ast.Expr
+		for _, a := range x.Args {
+			na := substCallArg(a, subs)
+			changed = changed || na != a
+			args = append(args, na)
+		}
+		if !changed {
+			return e
+		}
+		return &ast.CallExpr{Fun: x.Fun, Lparen: x.Lparen, Args: args, Ellipsis: x.Ellipsis, Rparen: x.Rparen}
+	case *ast.CompositeLit:
+		changed := false
+		var elts []ast.Expr
+		for _, el := range x.Elts {
+			ne := substCallArg(el, subs)
+			changed = changed || ne != el
+			elts = append(elts, ne)
+		}
+		if !changed {
+			return e
+		}
+		return &ast.CompositeLit{Type: x.Type, Lbrace: x.Lbrace, Elts: elts, Rbrace: x.Rbrace, Incomplete: x.Incomplete}
+	case *ast.KeyValueExpr:
+		nk, nv := substCallArg(x.Key, subs), substCallArg(x.Value, subs)
+		if nk == x.Key && nv == x.Value {
+			return e
+		}
+		return &ast.KeyValueExpr{Key: nk, Colon: x.Colon, Value: nv}
+	}
+	return e
+}
+
+// callArgs emits call arguments in Go's two-phase order: function calls
+// (and channel receives) inside the arguments evaluate first in lexical
+// order across the whole argument list, and each argument's non-call
+// computation — index/slice/deref/arithmetic/conversion — materializes
+// afterwards in argument order. Go schedules s[i]'s bounds check past a
+// later argument's call: fmt.Sprintf("%d", s[10], f()) reports f's panic.
+func (c *compiler) callArgs(args []ast.Expr) {
+	var perArg [][]ast.Expr
+	unsafe := false
+	for _, a := range args {
+		calls, ok := c.hoistedArgCalls(a)
+		if !ok {
+			unsafe = true
+			break
+		}
+		perArg = append(perArg, calls)
+	}
+	hoist := 0
+	for _, calls := range perArg {
+		hoist += len(calls)
+	}
+	if unsafe || hoist == 0 {
+		for _, a := range args {
+			c.expr(a)
+		}
+		return
+	}
+	// Phase 1: evaluate each call into a scratch local, in order.
+	names := map[ast.Expr]string{}
+	for _, calls := range perArg {
+		for _, call := range calls {
+			c.expr(call)
+			name := fmt.Sprintf("$arg%d", len(names))
+			slot := c.fs.declare(name, call.Pos())
+			c.emit(bytecode.OpNewLocal, slot, 0, call.Pos())
+			names[call] = name
+		}
+	}
+	// Phase 2: materialize each argument with the hoisted calls swapped
+	// for their scratch-slot loads.
+	for i, a := range args {
+		if len(perArg[i]) == 0 {
+			c.expr(a)
+			continue
+		}
+		c.expr(substCallArg(a, names))
+	}
+}
+
 func (c *compiler) call(x *ast.CallExpr) {
 	// F[...] is explicit generic instantiation — unwrap to reach a
 	// special form like define.Convert[Dst, Src](...); the type args
@@ -2505,18 +2778,17 @@ unwrapped:
 	}
 	c.calleeExpr(x.Fun)
 	newCall := isNewCall(x)
-	for i, a := range x.Args {
-		// make(T, ...) takes a type as first argument; new(T) also
-		// accepts an arbitrary expression (Go 1.26) — only a syntactic
-		// type form compiles as a type, anything else evaluates to a
-		// value and the builtin distinguishes a typedef argument from
-		// a value at run time.
-		if i == 0 && (isTypePositionCall(x) || (newCall && isTypeForm(a))) {
-			c.typeExpr(a)
-			continue
-		}
-		c.expr(a)
+	args := x.Args
+	// make(T, ...) takes a type as first argument; new(T) also
+	// accepts an arbitrary expression (Go 1.26) — only a syntactic
+	// type form compiles as a type, anything else evaluates to a
+	// value and the builtin distinguishes a typedef argument from
+	// a value at run time.
+	if len(args) > 0 && (isTypePositionCall(x) || (newCall && isTypeForm(args[0]))) {
+		c.typeExpr(args[0])
+		args = args[1:]
 	}
+	c.callArgs(args)
 	c.emit(bytecode.OpCall, len(x.Args), callSpread(x), x.Pos())
 }
 
