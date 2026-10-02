@@ -68,11 +68,12 @@ const (
 	OpUnary  // A: UnOp
 
 	// control
-	OpJump      // ip = A
-	OpJumpFalse // pop cond; if !truthy ip = A
-	OpJumpTrue  // pop cond; if truthy ip = A
-	OpIter      // pop value -> push *Iterator (range over slice/map/int/string)
-	OpRangeNext // A: exit ip; B: iterator local slot; C: nvars; pushes C values or exits
+	OpJump       // ip = A
+	OpLenIdxFold // stack [callee, base]; if base's elem type is an array replace both with len(elem) and ip = A (skips index+index-op+call); else fall through
+	OpJumpFalse  // pop cond; if !truthy ip = A
+	OpJumpTrue   // pop cond; if truthy ip = A
+	OpIter       // pop value -> push *Iterator (range over slice/map/int/string)
+	OpRangeNext  // A: exit ip; B: iterator local slot; C: nvars; pushes C values or exits
 
 	// channels — real blocking semantics on host channels
 	OpSend    // pop value, pop chan -> blocking send (park until received/closed-abort)
