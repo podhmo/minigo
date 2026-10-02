@@ -7,8 +7,8 @@ import (
 	"fmt"
 
 	box "example.com/m2/box"
-	"example.com/m2/destination"
-	"example.com/m2/source"
+	destination "example.com/m2/destination"
+	source "example.com/m2/source"
 	"github.com/podhmo/minigo/examples/convert-define/model"
 )
 
@@ -29,13 +29,13 @@ func convertSrcToDst(ctx context.Context, ec *model.ErrorCollector, src *source.
 	}
 	ec.Enter("Tags")
 	{
-		convertedSlice := make([]box.Box[string], len(src.Tags))
+		s := make([]box.Box[string], len(src.Tags))
 		for i, item := range src.Tags {
 			ec.Enter(fmt.Sprintf("[%d]", i))
-			convertedSlice[i] = item
+			s[i] = item
 			ec.Leave()
 		}
-		dst.Tags = convertedSlice
+		dst.Tags = s
 	}
 	ec.Leave()
 	return dst

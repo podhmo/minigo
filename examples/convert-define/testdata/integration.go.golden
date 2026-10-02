@@ -33,13 +33,13 @@ func convertSrcUserToDstUser(ctx context.Context, ec *model.ErrorCollector, src 
 	}
 	ec.Enter("Details")
 	{
-		convertedSlice := make([]destination.DstInternalDetail, len(src.Details))
+		s := make([]destination.DstInternalDetail, len(src.Details))
 		for i, item := range src.Details {
 			ec.Enter(fmt.Sprintf("[%d]", i))
-			convertedSlice[i] = *convertSrcInternalDetailToDstInternalDetail(ctx, ec, &item)
+			s[i] = *convertSrcInternalDetailToDstInternalDetail(ctx, ec, &item)
 			ec.Leave()
 		}
-		dst.Details = convertedSlice
+		dst.Details = s
 	}
 	ec.Leave()
 	if ec.MaxErrorsReached() {

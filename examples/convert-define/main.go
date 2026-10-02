@@ -9,7 +9,6 @@ import (
 
 	"github.com/podhmo/minigo/examples/convert-define/generator"
 	"github.com/podhmo/minigo/examples/convert-define/internal"
-	"golang.org/x/tools/imports"
 )
 
 func main() {
@@ -73,8 +72,10 @@ func run(ctx context.Context, defineFile, output string, dryRun bool, buildTags 
 	slog.DebugContext(ctx, "Writing output", "file", output)
 	formatted, err := formatCode(ctx, output, generatedCode)
 	if err != nil {
-		slog.WarnContext(ctx, "code formatting failed, using unformatted code", "error", err)
-		formatted = generatedCode // Use unformatted code on format error
+		// Writing the unformatted code would turn a generator failure
+		// into a later, unrelated-looking compile error; fail here.
+		slog.DebugContext(ctx, "unformatted generated source", "source", string(generatedCode))
+		return fmt.Errorf("formatting %s: %w", output, err)
 	}
 
 	if dryRun {
@@ -89,12 +90,4 @@ func run(ctx context.Context, defineFile, output string, dryRun bool, buildTags 
 
 	slog.InfoContext(ctx, "Successfully generated skeleton file", "output", output)
 	return nil
-}
-
-func formatCode(ctx context.Context, filename string, src []byte) ([]byte, error) {
-	formatted, err := imports.Process(filename, src, nil)
-	if err != nil {
-		return nil, fmt.Errorf("goimports failed: %w", err)
-	}
-	return formatted, nil
 }

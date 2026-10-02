@@ -34,13 +34,13 @@ func convertSrcUserToDstUser(ctx context.Context, ec *model.ErrorCollector, src 
 	}
 	ec.Enter("Details")
 	{
-		convertedSlice := make([]destination.DstInternalDetail, len(src.Details))
+		s := make([]destination.DstInternalDetail, len(src.Details))
 		for i, item := range src.Details {
 			ec.Enter(fmt.Sprintf("[%d]", i))
-			convertedSlice[i] = *convertSrcInternalDetailToDstInternalDetail(ctx, ec, &item)
+			s[i] = *convertSrcInternalDetailToDstInternalDetail(ctx, ec, &item)
 			ec.Leave()
 		}
-		dst.Details = convertedSlice
+		dst.Details = s
 	}
 	ec.Leave()
 	if ec.MaxErrorsReached() {
@@ -180,13 +180,13 @@ func convertSrcOrderToDstOrder(ctx context.Context, ec *model.ErrorCollector, sr
 	}
 	ec.Enter("LineItems")
 	{
-		convertedSlice := make([]destination.DstItem, len(src.Items))
+		s := make([]destination.DstItem, len(src.Items))
 		for i, item := range src.Items {
 			ec.Enter(fmt.Sprintf("[%d]", i))
-			convertedSlice[i] = *convertSrcItemToDstItem(ctx, ec, &item)
+			s[i] = *convertSrcItemToDstItem(ctx, ec, &item)
 			ec.Leave()
 		}
-		dst.LineItems = convertedSlice
+		dst.LineItems = s
 	}
 	ec.Leave()
 	return dst
@@ -255,11 +255,13 @@ func convertComplexSourceToComplexTarget(ctx context.Context, ec *model.ErrorCol
 		return dst
 	}
 	ec.Enter("Ptr")
-	if src.Ptr != nil {
-		tmp := (*src.Ptr)
-		dst.Ptr = &tmp
-	} else {
-		dst.Ptr = nil
+	{
+		var p *string
+		if src.Ptr != nil {
+			v := (*src.Ptr)
+			p = &v
+		}
+		dst.Ptr = p
 	}
 	ec.Leave()
 	if ec.MaxErrorsReached() {
@@ -267,13 +269,13 @@ func convertComplexSourceToComplexTarget(ctx context.Context, ec *model.ErrorCol
 	}
 	ec.Enter("Slice")
 	{
-		convertedSlice := make([]destination.SubTarget, len(src.Slice))
+		s := make([]destination.SubTarget, len(src.Slice))
 		for i, item := range src.Slice {
 			ec.Enter(fmt.Sprintf("[%d]", i))
-			convertedSlice[i] = *convertSubSourceToSubTarget(ctx, ec, &item)
+			s[i] = *convertSubSourceToSubTarget(ctx, ec, &item)
 			ec.Leave()
 		}
-		dst.Slice = convertedSlice
+		dst.Slice = s
 	}
 	ec.Leave()
 	if ec.MaxErrorsReached() {
@@ -281,13 +283,13 @@ func convertComplexSourceToComplexTarget(ctx context.Context, ec *model.ErrorCol
 	}
 	ec.Enter("SliceOfPtrs")
 	{
-		convertedSlice := make([]*destination.SubTarget, len(src.SliceOfPtrs))
+		s := make([]*destination.SubTarget, len(src.SliceOfPtrs))
 		for i, item := range src.SliceOfPtrs {
 			ec.Enter(fmt.Sprintf("[%d]", i))
-			convertedSlice[i] = convertSubSourceToSubTarget(ctx, ec, item)
+			s[i] = convertSubSourceToSubTarget(ctx, ec, item)
 			ec.Leave()
 		}
-		dst.SliceOfPtrs = convertedSlice
+		dst.SliceOfPtrs = s
 	}
 	ec.Leave()
 	return dst
@@ -345,13 +347,13 @@ func convertSourceWithMapToTargetWithMap(ctx context.Context, ec *model.ErrorCol
 	}
 	ec.Enter("ValueMap")
 	{
-		convertedMap := make(map[string]destination.SubTarget, len(src.ValueMap))
+		m := make(map[string]destination.SubTarget, len(src.ValueMap))
 		for key, value := range src.ValueMap {
 			ec.Enter(fmt.Sprintf("[%v]", key))
-			convertedMap[key] = *convertSubSourceToSubTarget(ctx, ec, &value)
+			m[key] = *convertSubSourceToSubTarget(ctx, ec, &value)
 			ec.Leave()
 		}
-		dst.ValueMap = convertedMap
+		dst.ValueMap = m
 	}
 	ec.Leave()
 	if ec.MaxErrorsReached() {
@@ -359,13 +361,13 @@ func convertSourceWithMapToTargetWithMap(ctx context.Context, ec *model.ErrorCol
 	}
 	ec.Enter("PtrMap")
 	{
-		convertedMap := make(map[string]*destination.SubTarget, len(src.PtrMap))
+		m := make(map[string]*destination.SubTarget, len(src.PtrMap))
 		for key, value := range src.PtrMap {
 			ec.Enter(fmt.Sprintf("[%v]", key))
-			convertedMap[key] = convertSubSourceToSubTarget(ctx, ec, value)
+			m[key] = convertSubSourceToSubTarget(ctx, ec, value)
 			ec.Leave()
 		}
-		dst.PtrMap = convertedMap
+		dst.PtrMap = m
 	}
 	ec.Leave()
 	if ec.MaxErrorsReached() {
@@ -373,13 +375,13 @@ func convertSourceWithMapToTargetWithMap(ctx context.Context, ec *model.ErrorCol
 	}
 	ec.Enter("StringToStr")
 	{
-		convertedMap := make(map[string]string, len(src.StringToStr))
+		m := make(map[string]string, len(src.StringToStr))
 		for key, value := range src.StringToStr {
 			ec.Enter(fmt.Sprintf("[%v]", key))
-			convertedMap[key] = value
+			m[key] = value
 			ec.Leave()
 		}
-		dst.StringToStr = convertedMap
+		dst.StringToStr = m
 	}
 	ec.Leave()
 	return dst
@@ -471,8 +473,12 @@ func convertSrcShapesToDstShapes(ctx context.Context, ec *model.ErrorCollector, 
 		return dst
 	}
 	ec.Enter("PtrToVal")
-	if src.PtrToVal != nil {
-		dst.PtrToVal = int64((*src.PtrToVal))
+	{
+		var v int64
+		if src.PtrToVal != nil {
+			v = int64((*src.PtrToVal))
+		}
+		dst.PtrToVal = v
 	}
 	ec.Leave()
 	if ec.MaxErrorsReached() {
@@ -480,19 +486,21 @@ func convertSrcShapesToDstShapes(ctx context.Context, ec *model.ErrorCollector, 
 	}
 	ec.Enter("ValToPtr")
 	{
-		tmp := int64(src.ValToPtr)
-		dst.ValToPtr = &tmp
+		v := int64(src.ValToPtr)
+		dst.ValToPtr = &v
 	}
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
 	}
 	ec.Enter("PtrPtr")
-	if src.PtrPtr != nil {
-		tmp := convertSrcLeafToDstLeaf(ctx, ec, (*src.PtrPtr))
-		dst.PtrPtr = &tmp
-	} else {
-		dst.PtrPtr = nil
+	{
+		var p **destination.DstLeaf
+		if src.PtrPtr != nil {
+			v := convertSrcLeafToDstLeaf(ctx, ec, (*src.PtrPtr))
+			p = &v
+		}
+		dst.PtrPtr = p
 	}
 	ec.Leave()
 	if ec.MaxErrorsReached() {
@@ -500,19 +508,18 @@ func convertSrcShapesToDstShapes(ctx context.Context, ec *model.ErrorCollector, 
 	}
 	ec.Enter("SlicePP")
 	{
-		convertedSlice := make([]**destination.DstLeaf, len(src.SlicePP))
+		s := make([]**destination.DstLeaf, len(src.SlicePP))
 		for i, item := range src.SlicePP {
 			ec.Enter(fmt.Sprintf("[%d]", i))
-			convertedSlice[i] = func() **destination.DstLeaf {
-				if item == nil {
-					return nil
-				}
-				tmp := convertSrcLeafToDstLeaf(ctx, ec, (*item))
-				return &tmp
-			}()
+			var p **destination.DstLeaf
+			if item != nil {
+				v := convertSrcLeafToDstLeaf(ctx, ec, (*item))
+				p = &v
+			}
+			s[i] = p
 			ec.Leave()
 		}
-		dst.SlicePP = convertedSlice
+		dst.SlicePP = s
 	}
 	ec.Leave()
 	if ec.MaxErrorsReached() {
@@ -520,19 +527,18 @@ func convertSrcShapesToDstShapes(ctx context.Context, ec *model.ErrorCollector, 
 	}
 	ec.Enter("MapPP")
 	{
-		convertedMap := make(map[string]**destination.DstLeaf, len(src.MapPP))
+		m := make(map[string]**destination.DstLeaf, len(src.MapPP))
 		for key, value := range src.MapPP {
 			ec.Enter(fmt.Sprintf("[%v]", key))
-			convertedMap[key] = func() **destination.DstLeaf {
-				if value == nil {
-					return nil
-				}
-				tmp := convertSrcLeafToDstLeaf(ctx, ec, (*value))
-				return &tmp
-			}()
+			var p **destination.DstLeaf
+			if value != nil {
+				v := convertSrcLeafToDstLeaf(ctx, ec, (*value))
+				p = &v
+			}
+			m[key] = p
 			ec.Leave()
 		}
-		dst.MapPP = convertedMap
+		dst.MapPP = m
 	}
 	ec.Leave()
 	if ec.MaxErrorsReached() {
@@ -540,19 +546,17 @@ func convertSrcShapesToDstShapes(ctx context.Context, ec *model.ErrorCollector, 
 	}
 	ec.Enter("SlicePtrVal")
 	{
-		convertedSlice := make([]int64, len(src.SlicePtrVal))
+		s := make([]int64, len(src.SlicePtrVal))
 		for i, item := range src.SlicePtrVal {
 			ec.Enter(fmt.Sprintf("[%d]", i))
-			convertedSlice[i] = func() int64 {
-				if item == nil {
-					var z int64
-					return z
-				}
-				return int64((*item))
-			}()
+			var v int64
+			if item != nil {
+				v = int64((*item))
+			}
+			s[i] = v
 			ec.Leave()
 		}
-		dst.SlicePtrVal = convertedSlice
+		dst.SlicePtrVal = s
 	}
 	ec.Leave()
 	if ec.MaxErrorsReached() {
@@ -560,16 +564,14 @@ func convertSrcShapesToDstShapes(ctx context.Context, ec *model.ErrorCollector, 
 	}
 	ec.Enter("SliceValPtr")
 	{
-		convertedSlice := make([]*int64, len(src.SliceValPtr))
+		s := make([]*int64, len(src.SliceValPtr))
 		for i, item := range src.SliceValPtr {
 			ec.Enter(fmt.Sprintf("[%d]", i))
-			convertedSlice[i] = func() *int64 {
-				tmp := int64(item)
-				return &tmp
-			}()
+			v := int64(item)
+			s[i] = &v
 			ec.Leave()
 		}
-		dst.SliceValPtr = convertedSlice
+		dst.SliceValPtr = s
 	}
 	ec.Leave()
 	if ec.MaxErrorsReached() {
@@ -577,21 +579,19 @@ func convertSrcShapesToDstShapes(ctx context.Context, ec *model.ErrorCollector, 
 	}
 	ec.Enter("Nested")
 	{
-		convertedSlice := make([][]int64, len(src.Nested))
+		s := make([][]int64, len(src.Nested))
 		for i, item := range src.Nested {
 			ec.Enter(fmt.Sprintf("[%d]", i))
-			convertedSlice[i] = func() []int64 {
-				convertedSlice := make([]int64, len(item))
-				for i, item := range item {
-					ec.Enter(fmt.Sprintf("[%d]", i))
-					convertedSlice[i] = int64(item)
-					ec.Leave()
-				}
-				return convertedSlice
-			}()
+			s2 := make([]int64, len(item))
+			for i2, item2 := range item {
+				ec.Enter(fmt.Sprintf("[%d]", i2))
+				s2[i2] = int64(item2)
+				ec.Leave()
+			}
+			s[i] = s2
 			ec.Leave()
 		}
-		dst.Nested = convertedSlice
+		dst.Nested = s
 	}
 	ec.Leave()
 	if ec.MaxErrorsReached() {
@@ -599,27 +599,23 @@ func convertSrcShapesToDstShapes(ctx context.Context, ec *model.ErrorCollector, 
 	}
 	ec.Enter("MapSlice")
 	{
-		convertedMap := make(map[int64][]int64, len(src.MapSlice))
+		m := make(map[int64][]int64, len(src.MapSlice))
 		for key, value := range src.MapSlice {
 			ec.Enter(fmt.Sprintf("[%v]", key))
-			convertedMap[int64(key)] = func() []int64 {
-				convertedSlice := make([]int64, len(value))
-				for i, item := range value {
-					ec.Enter(fmt.Sprintf("[%d]", i))
-					convertedSlice[i] = func() int64 {
-						if item == nil {
-							var z int64
-							return z
-						}
-						return int64((*item))
-					}()
-					ec.Leave()
+			s := make([]int64, len(value))
+			for i, item := range value {
+				ec.Enter(fmt.Sprintf("[%d]", i))
+				var v int64
+				if item != nil {
+					v = int64((*item))
 				}
-				return convertedSlice
-			}()
+				s[i] = v
+				ec.Leave()
+			}
+			m[int64(key)] = s
 			ec.Leave()
 		}
-		dst.MapSlice = convertedMap
+		dst.MapSlice = m
 	}
 	ec.Leave()
 	if ec.MaxErrorsReached() {
@@ -627,33 +623,35 @@ func convertSrcShapesToDstShapes(ctx context.Context, ec *model.ErrorCollector, 
 	}
 	ec.Enter("Arr")
 	{
+		var a [2]int64
 		for i, item := range src.Arr {
 			ec.Enter(fmt.Sprintf("[%d]", i))
-			dst.Arr[i] = func() int64 {
-				if item == nil {
-					var z int64
-					return z
-				}
-				return int64((*item))
-			}()
+			var v int64
+			if item != nil {
+				v = int64((*item))
+			}
+			a[i] = v
 			ec.Leave()
 		}
+		dst.Arr = a
 	}
 	ec.Leave()
 	if ec.MaxErrorsReached() {
 		return dst
 	}
 	ec.Enter("PSlice")
-	if src.PSlice != nil {
-		dst.PSlice = func() []int64 {
-			convertedSlice := make([]int64, len((*src.PSlice)))
+	{
+		var v []int64
+		if src.PSlice != nil {
+			s := make([]int64, len((*src.PSlice)))
 			for i, item := range *src.PSlice {
 				ec.Enter(fmt.Sprintf("[%d]", i))
-				convertedSlice[i] = int64(item)
+				s[i] = int64(item)
 				ec.Leave()
 			}
-			return convertedSlice
-		}()
+			v = s
+		}
+		dst.PSlice = v
 	}
 	ec.Leave()
 	return dst
