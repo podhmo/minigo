@@ -347,7 +347,7 @@ func (c *compiler) refRef(name string, pos token.Pos) {
 	case !isUp:
 		c.emit(bytecode.OpLocalRef, idx, 0, pos)
 	default:
-		c.trap(pos, "cannot take address of captured variable %s", name)
+		c.emit(bytecode.OpUpvalRef, idx, 0, pos)
 	}
 }
 
