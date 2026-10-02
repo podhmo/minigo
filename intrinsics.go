@@ -1208,12 +1208,10 @@ func (e *Engine) installStdlib() {
 				return nil, fmt.Errorf("time.AfterFunc: cannot use %T as func()", f)
 			}
 			t := time.AfterFunc(durOf(goNative(args[0])), func() {
-				// the timer fires on a host goroutine — vc.Call
-				// reroutes through Spawn when the owning VM is
-				// busy, and runs directly when it is idle.
-				if _, err := vc.Call(f, nil); err != nil {
-					panic(err)
-				}
+				// the timer fires on a host goroutine — run the
+				// callback like `go f()`: a panic inside fails the
+				// process through the same path as a goroutine's.
+				vc.Spawn(f, nil)
 			})
 			return &runtime.GoValue{V: t}, nil
 		}},

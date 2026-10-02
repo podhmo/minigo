@@ -835,6 +835,15 @@ func AfterFuncStop() int {
 	return 9 // the channel stayed empty
 }
 
+// AfterFuncPanic: a panic inside an AfterFunc callback fails the whole
+// process like Go's crash — the panic must reach Run through the
+// goroutine-failure path, not as an unrecovered panic on the timer's
+// host goroutine.
+func AfterFuncPanic() int {
+	time.AfterFunc(time.Hour, func() { panic("timer boom") })
+	select {}
+}
+
 // AmbigHostMethod: Lock is promoted from both embeds — Go rejects the
 // selector as ambiguous at compile time; minigo traps at the access.
 type dualLock struct {

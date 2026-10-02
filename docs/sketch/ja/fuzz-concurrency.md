@@ -174,9 +174,10 @@ PR #27 で「並行動作を実装した」と言いつつ、`sync` パッケー
 
 ### 8.1 `time.AfterFunc` の bind
 
-- `h.fn`/`h.fn1` 系のヘルパは第一引数 `vc runtime.VMCaller` を捨ててしまうため、生の `&runtime.BuiltinFunc{Fn: func(vc, args)}` で bind した（S4 が整えた窓口）。タイマー発火はホスト goroutine 上で起きるが、`vc.Call` が所有 VM の busy 判定をして `v.Spawn(callee, args)` + `t.Wait()` に回送するため、root が `<-ch` でブロックしていてもコールバックは proc 内の spawn VM で正しく走る。
+- `h.fn`/`h.fn1` 系のヘルパは第一引数 `vc runtime.VMCaller` を捨ててしまうため、生の `&runtime.BuiltinFunc{Fn: func(vc, args)}` で bind した（S4 が整えた窓口）。コールバックは `vc.Spawn(f, nil)` で起動する — Go の「コールバックは専用 goroutine で呼ばれる」意味論どおりで、タイマー goroutine は join せずに返る。
+- **失敗経路が重要（レビュー指摘で修正）**: 初版は `vc.Call(f, nil)` + `panic(err)` だったが、reroute 経由では Spawn のラッパーが既に `p.fail(err)` しており、その後の `panic(err)` はタイマー goroutine 上の **未回復 panic** として host プロセスごと落とす競合になっていた（実クロックで exit 2 のクラッシュを確認）。`vc.Spawn` に変えたことで、コールバックの panic は通常の `go` goroutine panic と同じく `p.fail` → `proc.done` → root の procExit アンワインド経路で `Run` のエラーになる（`AfterFuncPanic` で「timer boom」が返ることを固定）。
 - コールバック引数の事前検査は `adaptFunc` の受理集合（`*runtime.Function`/`*Closure`/`*BoundMethod`/`*BuiltinFunc`/`*Named`）に揃え、bind 時点で「func として使えない」値を早く弾く。
-- synctest バブルでは `time.AfterFunc(time.Hour, f)` も即時発火するため決定的に書ける: `AfterFuncFires`（バッファ付き ch 経由で 7）、`AfterFuncStop`（`t.Stop()` 後は select の default 分岐で 9）。実クロック側も 50ms で発火することを手動確認した。
+- synctest バブルでは `time.AfterFunc(time.Hour, f)` も即時発火するため決定的に書ける: `AfterFuncFires`（バッファ付き ch 経由で 7）、`AfterFuncStop`（`t.Stop()` 後は select の default 分岐で 9）、`AfterFuncPanic`（コールバック panic → Run が panic を返す）。実クロック側も 50ms で発火と、panic 時のクリーンなエラー返却を手動確認した。
 
 ### 8.2 埋め込み host 型の ambiguity — `promotedField` への統合（計画外の意思決定①）
 
@@ -200,6 +201,7 @@ PR #27 で「並行動作を実装した」と言いつつ、`sync` パッケー
 `testdata/concurrency/main.go` + `concurrency_test.go`:
 
 - `TestConcurrencyBlocking` 表: `AfterFuncFires` `AfterFuncStop` `ShallowHostWins` `NamedHostEmbed`
+- `TestAfterFuncPanic`: コールバックの panic が `go` panic と同じ proc 失敗経路で `Run` に届くこと（タイマー goroutine の未回復 panic で host が死なない — レビュー指摘の回帰）
 - `TestAmbiguousSelector`: `AmbigHostMethod`（host+host メソッド）`AmbigHostField`（host+host フィールド書き込み）`AmbigMixedField`（host フィールド vs script フィールド）`AmbigMixedMethodField`（host メソッド vs script フィールド）`AmbigMixedMethodMethod`（host メソッド vs script メソッド）`AmbigScriptMethod`（script メソッド同士）— 全て "ambiguous selector" trap 期待
 - `TestNilHostPtrEmbed`: nil `*sync.Pool` 埋め込みへの `New` 書き込みで nil pointer panic
 

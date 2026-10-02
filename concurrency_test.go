@@ -157,6 +157,19 @@ func TestAmbiguousSelector(t *testing.T) {
 	})
 }
 
+// TestAfterFuncPanic: a panic inside an AfterFunc callback reaches Run
+// through the goroutine-failure path — the timer's host goroutine must
+// not die with an unrecovered panic.
+func TestAfterFuncPanic(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEngine(t)
+		_, err := runErr(e, "./testdata/concurrency", "AfterFuncPanic")
+		if err == nil || !strings.Contains(err.Error(), "timer boom") {
+			t.Fatalf("expected timer-callback panic to fail the run, got %v", err)
+		}
+	})
+}
+
 // TestNilHostPtrEmbed: a member reachable only through a nil embedded
 // host pointer panics on the implicit dereference, like Go.
 func TestNilHostPtrEmbed(t *testing.T) {
