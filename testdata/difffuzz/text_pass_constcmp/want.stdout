@@ -1,0 +1,4 @@
+ne ok
+eq ok
+bigconst ne ok
+gt ok

@@ -4181,7 +4181,10 @@ func constBinary(op bytecode.BinOp, ua, ub *runtime.UConst) (res runtime.Value, 
 	}
 	switch tok {
 	case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ:
-		return constant.MakeBool(constant.Compare(ua.V, tok, ub.V)), true
+		// the stack holds runtime values, not constant.Value — a
+		// constant.MakeBool here reads as a non-bool truthy in
+		// `if x != c` (default case → always true).
+		return constant.Compare(ua.V, tok, ub.V), true
 	case token.SHL, token.SHR:
 		s, ok := constant.Uint64Val(ub.V)
 		if !ok {
