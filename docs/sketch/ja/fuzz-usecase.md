@@ -124,7 +124,7 @@ embed された型が解決できない（vendor パッケージ、外部モジ�
 ### C10. 残件（境界）
 
 - **lim-http**: `net` init が `netip` → `unique.Make` → `internal/abi.TypeFor` → `unsafe.Pointer` reinterpretation を要求。`reflect` init も `unsafe.Pointer` 必要。unsure 楽観判定で `(*net.TCPConn)(nil) as closeWriter` や `http2ResponseWriter` (vendor http2 embed) は通過したが、unsafe が関わる init 連鎖は実装上無理。**意図 TRAP として残す**。
-- **lim-yaml**: `gopkg.in/yaml.v3` は外部モジュールで resolver が到達しない。意図 TRAP。
+- **lim-yaml**: `gopkg.in/yaml.v3` は go.mod requires + GOMODCACHE 経由で解決・初期化まで進むが、`reflect` init 内部の `internal/abi.TypeOf` が `unsafe.Pointer` を要求し lim-http と同一境界で TRAP。外部モジュールが解決できない訳ではない（cgo も無関係）。
 - **optimism の trade-off**: unsure で見逃す interface メソッド欠落はあり得るが、メソッド呼出時に trap するので誤 silent-fail はしない。
 - **slice write-back**: `sliceArg` は `[]T` → `[]T` copy-back、`refArg` は `runtime.SetRef` 経由で中身を書き戻す（Named は mask 維持で再 wrap）。GoValue ポインタ leaf と `wb.rv` が同一なら skip。
 - **deepHost**: Map は `Order`+`CanonicalKey` 順で `map[any]any` に、Slice は `[]any` に。TypedNil/IfaceNil/nil は `nil`。
