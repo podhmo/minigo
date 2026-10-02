@@ -402,7 +402,12 @@ func Func(fn *runtime.Function) error {
 	c.results = resultTypes(fn.Decl.Type.Results)
 
 	if fn.Decl.Body != nil {
-		c.stmt(fn.Decl.Body)
+		// the body's outermost scope is the signature's block — params
+		// and named results live beside top-level `:=` names, so
+		// `a, b, s := f()` with s a result name assigns, not shadows.
+		for _, s := range fn.Decl.Body.List {
+			c.stmt(s)
+		}
 		c.resolveGotos()
 	} else {
 		// a bodiless declaration (//go:linkname stubs, assembly decls)
@@ -2716,7 +2721,12 @@ func (c *compiler) funcLit(x *ast.FuncLit) {
 		ic.ch.NResults = countResults(x.Type.Results)
 	}
 	ic.results = resultTypes(x.Type.Results)
-	ic.stmt(x.Body)
+	if x.Body != nil {
+		// same as Func: the body's outer scope is the signature's block.
+		for _, s := range x.Body.List {
+			ic.stmt(s)
+		}
+	}
 	ic.resolveGotos()
 	ic.emit(bytecode.OpReturn, ic.ch.NResults, 0, x.End())
 	ic.ch.NLocals = ic.fs.nlocals
