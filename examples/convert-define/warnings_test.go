@@ -70,7 +70,7 @@ type Dst struct {
 	}
 	defer os.Chdir(cwd)
 
-	if err := run(ctx, defineFile, outputFile, false /* dryRun */, "", false /* strict */); err != nil {
+	if err := run(ctx, defineFile, outputFile, false /* dryRun */, "", false /* strict */, false /* check */); err != nil {
 		t.Fatalf("run failed: %+v", err)
 	}
 
@@ -129,7 +129,7 @@ func main() {
 	defer os.Chdir(cwd)
 
 	outputFile := filepath.Join(dir, "generated.go")
-	err = run(context.Background(), filepath.Join(dir, "define.go"), outputFile, false, "", true /* strict */)
+	err = run(context.Background(), filepath.Join(dir, "define.go"), outputFile, false, "", true /* strict */, false /* check */)
 	want := "-strict: 1 field pair(s) would not compile; no output was written. Fix the define file or the types: add a define.Rule for the type pair, or c.Convert the field with a converter function.\n" +
 		"  - convertSrcToDst: dst.Age: no conversion covers int -> string\n"
 	if err == nil {
@@ -190,7 +190,7 @@ func main() {
 			}
 			defer os.Chdir(cwd)
 
-			err = run(context.Background(), filepath.Join(dir, "define.go"), filepath.Join(dir, "generated.go"), true /* dryRun */, "", true /* strict */)
+			err = run(context.Background(), filepath.Join(dir, "define.go"), filepath.Join(dir, "generated.go"), true /* dryRun */, "", true /* strict */, false /* check */)
 			if tc.want == "" {
 				if err != nil {
 					t.Fatalf("want success, got: %v", err)

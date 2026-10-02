@@ -270,9 +270,31 @@ func (e *WarningsError) Error() string {
 	return b.String()
 }
 
+// templateImports are the imports codeTemplate writes itself (path -> alias).
+var templateImports = map[string]string{
+	"context": "context",
+	"errors":  "errors",
+	"fmt":     "fmt",
+	"github.com/podhmo/minigo/examples/convert-define/model": "model",
+}
+
+func withoutTemplateImports(imports map[string]string) map[string]string {
+	for path := range templateImports {
+		delete(imports, path)
+	}
+	return imports
+}
+
 func Generate(res xinspect.Resolver, info *model.ParsedInfo, opts Options) ([]byte, error) {
 	im := NewImportManager(info.PackagePath)
 	ctx := context.Background()
+
+	// The template imports these unconditionally; registering them first
+	// keeps a dst type such as fmt.Stringer from importing fmt twice and
+	// pushes a user package with the same name to another alias.
+	for path, alias := range templateImports {
+		im.Add(path, alias)
+	}
 
 	// Pre-register all necessary imports
 	for alias, path := range info.Imports {
@@ -435,7 +457,7 @@ func Generate(res xinspect.Resolver, info *model.ParsedInfo, opts Options) ([]by
 
 	templateData := TemplateData{
 		PackageName: info.PackageName,
-		Imports:     im.Imports(),
+		Imports:     withoutTemplateImports(im.Imports()),
 		Pairs:       allPairs,
 		Header:      opts.Header,
 	}
@@ -519,6 +541,10 @@ func createFieldMaps(ctx context.Context, res xinspect.Resolver, info *model.Par
 	// A nested src path leaves its top field available for matching;
 	// a plain field name claims it.
 	var explicit []FieldMap
+	// claimedDstFields are top-level dst fields an explicit mapping or
+	// c.Compute writes as a whole; auto-matching them would emit a dead
+	// (and possibly ill-typed) assignment that is then overwritten.
+	claimedDstFields := make(map[string]bool)
 	if pair.Mapping != nil {
 		for _, m := range pair.Mapping.Maps {
 			srcChain, err := model.ResolveFieldPath(info, res, src, m.SrcName)
@@ -531,6 +557,9 @@ func createFieldMaps(ctx context.Context, res xinspect.Resolver, info *model.Par
 			}
 			if !strings.Contains(m.SrcName, ".") {
 				consumedSrcFields[m.SrcName] = true
+			}
+			if !strings.Contains(m.DstName, ".") {
+				claimedDstFields[m.DstName] = true
 			}
 			delete(unmappedDstFields, firstSeg(m.DstName))
 			explicit = append(explicit, FieldMap{
@@ -548,6 +577,9 @@ func createFieldMaps(ctx context.Context, res xinspect.Resolver, info *model.Par
 	// Remove computed fields from the unmapped list (a nested compute
 	// destination counts its top-level field as populated).
 	for _, computed := range pair.Computed {
+		if !strings.Contains(computed.DstName, ".") {
+			claimedDstFields[computed.DstName] = true
+		}
 		delete(unmappedDstFields, firstSeg(computed.DstName))
 	}
 
@@ -578,6 +610,11 @@ func createFieldMaps(ctx context.Context, res xinspect.Resolver, info *model.Par
 
 		if !ok {
 			slog.DebugContext(ctx, "src field no match found", "name", srcField.Name)
+			continue
+		}
+
+		if claimedDstFields[dstField.Name] {
+			slog.DebugContext(ctx, "dst field claimed by explicit mapping or compute", "src", srcField.Name, "dst", dstField.Name)
 			continue
 		}
 

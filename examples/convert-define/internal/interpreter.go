@@ -480,6 +480,15 @@ func (w *mappingWalker) parseConvertCall(call *ast.CallExpr) error {
 		return fmt.Errorf("converter in c.Convert() must be a function (pkg.Fn, Fn, or a func literal), got %q", converter)
 	}
 
+	// A func literal is emitted verbatim and called as f(ctx, ec, src);
+	// its arity is visible in the syntax, so check it here rather than
+	// leave a "too many arguments" for go build.
+	if fl, ok := call.Args[2].(*ast.FuncLit); ok {
+		if fl.Type.Params.NumFields() != 3 || fl.Type.Results.NumFields() != 1 {
+			return fmt.Errorf("converter func literal must have signature func(ctx context.Context, ec *model.ErrorCollector, src SrcType) DstType, got %d param(s) and %d result(s)", fl.Type.Params.NumFields(), fl.Type.Results.NumFields())
+		}
+	}
+
 	// Record the converter's package so the generator can qualify it,
 	// and check the (ctx, ec, src) contract when its decl resolves.
 	if sym, err := w.ctx.ResolveSymbol(call.Args[2]); err == nil && sym.PackagePath != "" {

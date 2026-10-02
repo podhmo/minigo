@@ -21,6 +21,7 @@ func main() {
 		dryRun     = flag.Bool("dry-run", false, "don't write files, just print to stdout")
 		buildTags  = flag.String("tags", "", "build constraint expression written as the generated file's //go:build line")
 		strict     = flag.Bool("strict", false, "fail instead of writing output when a field pair would not compile (generation warnings become errors)")
+		check      = flag.Bool("check", false, "type-check the output in its package with go build before writing it, and trace errors back to converter/field (needs a compiling input package)")
 		logLevel   = slog.LevelWarn
 	)
 	flag.TextVar(&logLevel, "log-level", &logLevel, "set log level (debug, info, warn, error)")
@@ -41,7 +42,7 @@ func main() {
 
 	ctx := context.Background()
 
-	if err := run(ctx, *defineFile, *output, *dryRun, *buildTags, *strict); err != nil {
+	if err := run(ctx, *defineFile, *output, *dryRun, *buildTags, *strict, *check); err != nil {
 		// The error is a multi-line, user-facing report; print it as
 		// is rather than as an escaped log attribute.
 		slog.ErrorContext(ctx, "convert-define failed")
@@ -50,7 +51,7 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, defineFile, output string, dryRun bool, buildTags string, strict bool) error {
+func run(ctx context.Context, defineFile, output string, dryRun bool, buildTags string, strict, check bool) error {
 	header, err := buildConstraintHeader(buildTags)
 	if err != nil {
 		return err
@@ -109,6 +110,12 @@ func run(ctx context.Context, defineFile, output string, dryRun bool, buildTags 
 		// into a later, unrelated-looking compile error; fail here.
 		slog.DebugContext(ctx, "unformatted generated source", "source", string(generatedCode))
 		return fmt.Errorf("formatting %s: %w", output, err)
+	}
+
+	if check {
+		if err := checkGenerated(ctx, output, formatted, buildTags); err != nil {
+			return err
+		}
 	}
 
 	if dryRun {
