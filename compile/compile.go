@@ -1977,7 +1977,24 @@ func binOpOf(tok token.Token) (bytecode.BinOp, bool) {
 }
 
 func (c *compiler) call(x *ast.CallExpr) {
-	if sel, ok := x.Fun.(*ast.SelectorExpr); ok && c.trySpecial(x, sel) {
+	// F[...] is explicit generic instantiation — unwrap to reach a
+	// special form like define.Convert[Dst, Src](...); the type args
+	// carry no meaning for the quoted handler.
+	fun := x.Fun
+	for {
+		switch ix := fun.(type) {
+		case *ast.IndexExpr:
+			fun = ix.X
+		case *ast.IndexListExpr:
+			fun = ix.X
+		case *ast.ParenExpr:
+			fun = ix.X
+		default:
+			goto unwrapped
+		}
+	}
+unwrapped:
+	if sel, ok := fun.(*ast.SelectorExpr); ok && c.trySpecial(x, sel) {
 		return
 	}
 	c.calleeExpr(x.Fun)

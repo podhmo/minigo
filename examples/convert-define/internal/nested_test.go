@@ -310,3 +310,43 @@ func TestParserConvertCallFuncLit(t *testing.T) {
 		t.Errorf("Converter: want %q, got %q", want, runner.Info.ConversionPairs[0].Mapping.Maps[0].Converter)
 	}
 }
+
+// TestParserExplicitTypeArgs: explicit generic instantiation on the DSL
+// calls — define.Convert[Dst, Src](...), c.Convert[D, S](...),
+// c.Compute[T](...) — is legal under the generic define API, and the
+// interpreter accepts it leniently by unwrapping the type args before
+// dispatching the special form / matching the mapping method name.
+func TestParserExplicitTypeArgs(t *testing.T) {
+	dir := writeNestedModule(t)
+	defineFile := writeDefine(t, dir, `	define.Convert[destination.Dst, source.Src](func(c *define.Config, dst *destination.Dst, src *source.Src) {
+		c.Convert[string, string](dst.Flat, src.Name, func(s string) string { return s + "!" })
+		c.Compute[string](dst.Tag, src.Name)
+		c.Map[int64](dst.Inner.ID, src.ID) // lenient: Map is not generic, instantiation still accepted
+	})`)
+
+	runner, err := NewRunner()
+	if err != nil {
+		t.Fatalf("NewRunner() failed: %+v", err)
+	}
+	if err := runner.Run(context.Background(), defineFile); err != nil {
+		t.Fatalf("Run() failed: %+v", err)
+	}
+
+	if want, got := 1, len(runner.Info.ConversionPairs); want != got {
+		t.Fatalf("expected %d conversion pair, got %d", want, got)
+	}
+	pair := runner.Info.ConversionPairs[0]
+	wantMaps := []model.FieldMap{
+		{SrcName: "Name", DstName: "Flat", Converter: `func(s string) string { return s + "!" }`},
+		{SrcName: "ID", DstName: "Inner.ID"},
+	}
+	if diff := cmp.Diff(wantMaps, pair.Mapping.Maps); diff != "" {
+		t.Errorf("pair.Mapping.Maps mismatch (-want +got):\n%s", diff)
+	}
+	wantComputed := []model.ComputedField{
+		{DstName: "Tag", Expr: "src.Name"},
+	}
+	if diff := cmp.Diff(wantComputed, pair.Computed); diff != "" {
+		t.Errorf("pair.Computed mismatch (-want +got):\n%s", diff)
+	}
+}

@@ -1339,10 +1339,13 @@ func TestSpecialFormsConvertDefineStyle(t *testing.T) {
 
 	want := []string{
 		"Rule example.com/convutil.TimeToString",
+		"Rule example.com/convutil.PtrTimeToString",
 		"Convert example.com/destination.DstUser <- example.com/source.SrcUser",
 		"  Map(dst.UserID, src.ID)",
 		"  Convert(dst.Contact, src.ContactInfo, convutil.ConvertContact)",
 		"  Compute(dst.FullName, convutil.MakeFullName(src.FirstName, src.LastName))",
+		"Convert example.com/destination.DstAddress <- example.com/source.SrcAddress",
+		"  Map(dst.FullStreet, src.Street)",
 	}
 	if diff := cmp.Diff(want, records); diff != "" {
 		t.Errorf("records mismatch (-want +got):\n%s", diff)
