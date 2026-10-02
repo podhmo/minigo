@@ -106,6 +106,13 @@ type VM struct {
 	// inflight is the script panic currently being propagated, visible to
 	// recover() only while a frame's defers are running.
 	inflight *runtime.Panic
+	// unwinding lists frames popped by the in-flight panic — kept so
+	// runtime.Callers still sees the panicking frames while defers run,
+	// like Go's traceback does.
+	unwinding []*frame
+	// pcSites is the registry behind runtime.Callers' opaque uintptr
+	// handles: CallerPCs appends a snapshot, CallerFrame resolves one.
+	pcSites []runtime.CallSite
 
 	// srcCache maps filename -> source lines for traceback snippets;
 	// populated lazily and only on the error path.
@@ -702,6 +709,12 @@ func (v *VM) exec(f *frame) {
 	defer func() {
 		r := recover()
 		v.frames = v.frames[:len(v.frames)-1]
+		if p, ok := asScriptPanic(r).(*runtime.Panic); ok && p != nil {
+			// keep the panicking frame visible to Callers while the
+			// unwind propagates — Go's traceback lists it until the
+			// panic dies or a defer recovers it.
+			v.unwinding = append(v.unwinding, f)
+		}
 		v.unwind(f, asScriptPanic(r))
 	}()
 	v.loop(f)
@@ -745,6 +758,11 @@ func (v *VM) unwind(f *frame, r any) {
 	}
 	p = v.inflight
 	v.inflight = saved
+	if r != nil && p == nil {
+		// the panic died here (recovered, or it was a Trap swallowed
+		// at a boundary) — no frames are still unwinding.
+		v.unwinding = nil
+	}
 	switch {
 	case p != nil:
 		panic(p) // still panicking, or a deferred call panicked
@@ -1766,6 +1784,10 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 			return m // method expression: T.M(recv, ...)
 		}
 		f.trap("type %s has no method %s", b.Name, name)
+	case runtime.Nil:
+		// selecting a member on a nil interface value is a nil-pointer
+		// dereference in Go — a script panic, not a trap.
+		panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "invalid memory address or nil pointer dereference"}})
 	case *runtime.IfaceNil:
 		return v.memberOfType(f, b.Typ, name, b, true)
 	case *runtime.TypedNil:
@@ -6604,6 +6626,13 @@ func (v *VM) memberOfType(f *frame, td *runtime.TypeDef, name string, recv runti
 	// pointee methods — P's method set is only what is declared on P.
 	peeled := false
 	for td != nil {
+		// a nil interface value has no method at all — any call on it
+		// panics like a nil-pointer dereference in Go.
+		if td.Kind == runtime.KindInterface {
+			if _, isNil := asTypedNil(recv); isNil {
+				panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "invalid memory address or nil pointer dereference"}})
+			}
+		}
 		if m, ok := td.Methods[name]; ok {
 			// A value receiver dereferences a peeled pointer chain at
 			// dispatch — panic on nil like Go. A nil carrying a nilable
@@ -7327,6 +7356,50 @@ func (v *VM) ElemZero(td *runtime.TypeDef) runtime.Value {
 // on a nil *[N]T needs the constant length without a live frame.
 func (v *VM) ArrayLenOf(td *runtime.TypeDef) (int64, bool) {
 	return v.arrayLen(v.topFrame(), td)
+}
+
+// CallerPCs implements VMCaller: it snapshots the call stack — live
+// frames (top first) followed by frames the in-flight panic already
+// unwound — and returns one opaque uintptr handle per site.
+func (v *VM) CallerPCs() []uintptr {
+	sites := make([]runtime.CallSite, 0, len(v.frames)+len(v.unwinding))
+	for i := len(v.frames) - 1; i >= 0; i-- {
+		sites = append(sites, v.callSite(v.frames[i]))
+	}
+	for i := len(v.unwinding) - 1; i >= 0; i-- {
+		sites = append(sites, v.callSite(v.unwinding[i]))
+	}
+	base := len(v.pcSites)
+	v.pcSites = append(v.pcSites, sites...)
+	pcs := make([]uintptr, len(sites))
+	for i := range pcs {
+		pcs[i] = uintptr(base + i + 1)
+	}
+	return pcs
+}
+
+// CallerFrame implements VMCaller: resolve a handle from CallerPCs.
+func (v *VM) CallerFrame(pc uintptr) (runtime.CallSite, bool) {
+	if pc == 0 || int(pc) > len(v.pcSites) {
+		return runtime.CallSite{}, false
+	}
+	return v.pcSites[pc-1], true
+}
+
+// callSite renders one frame for runtime.Callers: the function's Go
+// symbol name and the source position it is (or was) executing.
+func (v *VM) callSite(f *frame) runtime.CallSite {
+	site := runtime.CallSite{Name: f.fn.Name}
+	pos := f.pos()
+	if !pos.IsValid() && f.fn.Decl != nil {
+		pos = f.fn.Decl.Pos()
+	}
+	if pos.IsValid() && f.fn.Pkg != nil && f.fn.Pkg.Fset != nil {
+		p := f.fn.Pkg.Fset.Position(pos)
+		site.File = p.Filename
+		site.Line = p.Line
+	}
+	return site
 }
 
 // arrayLen reports the element count of an array typedef — an

@@ -1169,6 +1169,44 @@ func (e *Engine) installStdlib() {
 		}},
 		"Version": h.fn("runtime.Version", func(a []any) (any, error) { return goruntime.Version(), nil }),
 		"GC":      h.fn("runtime.GC", func(a []any) (any, error) { return nil, nil }),
+		"Callers": &runtime.BuiltinFunc{Name: "runtime.Callers", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) < 2 {
+				return nil, errors.New("runtime.Callers needs 2 args")
+			}
+			sl, ok := args[1].(*runtime.Slice)
+			if !ok {
+				return nil, fmt.Errorf("runtime.Callers: pc slice is %T", args[1])
+			}
+			// index 0 is the Callers builtin itself, like Go — CallerFrame
+			// never resolves it. skip drops that many leading PCs.
+			pcs := append([]uintptr{0}, vc.CallerPCs()...)
+			skip := intOf(goNative(args[0]))
+			if skip > len(pcs) {
+				skip = len(pcs)
+			}
+			pcs = pcs[skip:]
+			n := len(pcs)
+			if len(sl.Elems) < n {
+				n = len(sl.Elems)
+			}
+			for i := 0; i < n; i++ {
+				sl.Elems[i] = int64(pcs[i])
+			}
+			return int64(n), nil
+		}},
+		"CallersFrames": &runtime.BuiltinFunc{Name: "runtime.CallersFrames", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			sl, ok := args[0].(*runtime.Slice)
+			if !ok {
+				return nil, fmt.Errorf("runtime.CallersFrames: pcs is %T", args[0])
+			}
+			sites := []runtime.CallSite{}
+			for _, e := range sl.Elems {
+				if s, ok := vc.CallerFrame(uintptr(int64Of(goNative(e)))); ok {
+					sites = append(sites, s)
+				}
+			}
+			return &runtime.GoValue{V: &callerFrames{sites: sites}}, nil
+		}},
 	})
 	e.Bind("time", map[string]runtime.Value{
 		"Sleep": h.fn("time.Sleep", func(a []any) (any, error) { time.Sleep(durOf(a[0])); return nil, nil }),
@@ -3946,3 +3984,43 @@ func anonTypeSpelling(e ast.Expr, pkg *runtime.Package) string {
 	}
 	return fmt.Sprintf("%T", e)
 }
+
+// callerFrames is the script-side *runtime.Frames: it iterates the
+// call sites a runtime.Callers snapshot captured.
+type callerFrames struct {
+	sites []runtime.CallSite
+	i     int
+}
+
+// Next implements (*runtime.Frames).Next — Go stops at an empty next
+// flag, so the loop `for f, next := frames.Next(); next` ends here.
+func (cf *callerFrames) Next() (callerFrame, bool) {
+	if cf.i >= len(cf.sites) {
+		return callerFrame{}, false
+	}
+	s := cf.sites[cf.i]
+	cf.i++
+	return callerFrame{
+		PC:       uintptr(cf.i),
+		Func:     &callerFunc{name: s.Name},
+		Function: s.Name,
+		File:     s.File,
+		Line:     s.Line,
+	}, true
+}
+
+// callerFrame is the script-side runtime.Frame.
+type callerFrame struct {
+	PC       uintptr
+	Func     *callerFunc
+	Function string
+	File     string
+	Line     int
+	Entry    uintptr
+}
+
+// callerFunc is the script-side *runtime.Func (only Name() is used).
+type callerFunc struct{ name string }
+
+// Name implements (*runtime.Func).Name.
+func (f *callerFunc) Name() string { return f.name }

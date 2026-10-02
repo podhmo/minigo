@@ -808,6 +808,20 @@ type VMCaller interface {
 	// ok=false for non-array shapes. Lets len()/cap() on a nil *[N]T
 	// constant-fold like Go without a live frame.
 	ArrayLenOf(td *TypeDef) (n int64, ok bool)
+	// CallerPCs returns opaque uintptr handles for the call stack —
+	// live frames plus frames already unwound by the in-flight panic,
+	// top-first like runtime.Callers.
+	CallerPCs() []uintptr
+	// CallerFrame resolves a handle from CallerPCs to its call site.
+	CallerFrame(pc uintptr) (site CallSite, ok bool)
+}
+
+// CallSite is one call-stack entry for runtime.Callers: the function's
+// Go-style symbol name and the source position it is executing.
+type CallSite struct {
+	Name string
+	File string
+	Line int
 }
 
 // Function is a compiled-or-compilable function. Chunk is produced lazily
