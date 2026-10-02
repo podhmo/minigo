@@ -1,4 +1,0 @@
-SILENT/value (seen ×10)
-shape:  expr:Sprintf%vss([]string)
-go:     string []|[]|0
-minigo: string []|""|0

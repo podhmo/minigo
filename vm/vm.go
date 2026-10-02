@@ -1783,7 +1783,7 @@ func goValueOf(rv reflect.Value) runtime.Value {
 		for i, b := range v {
 			el[i] = int64(b)
 		}
-		return &runtime.Slice{Elems: el}
+		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("byte")}
 	case []string:
 		if v == nil {
 			return &runtime.TypedNil{Typ: anonSliceTyp("string")}
@@ -1792,7 +1792,7 @@ func goValueOf(rv reflect.Value) runtime.Value {
 		for i, s := range v {
 			el[i] = s
 		}
-		return &runtime.Slice{Elems: el}
+		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("string")}
 	case []any:
 		// a `chan any` send deep-hosts script containers (see deepHost);
 		// the receive rehydrates the flat slice shape so indexing works.
@@ -1803,7 +1803,7 @@ func goValueOf(rv reflect.Value) runtime.Value {
 		for i, e := range v {
 			el[i] = goValueOf(reflect.ValueOf(e))
 		}
-		return &runtime.Slice{Elems: el}
+		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("any")}
 	case map[any]any:
 		if v == nil {
 			return &runtime.TypedNil{Typ: &runtime.TypeDef{Kind: runtime.KindMap,
@@ -1836,13 +1836,13 @@ func goValueOf(rv reflect.Value) runtime.Value {
 		case reflect.Slice:
 			if rv.Type().Name() == "" {
 				if rv.IsNil() {
-					return &runtime.TypedNil{Typ: anonSliceTyp(rv.Type().Elem().Name())}
+					return &runtime.TypedNil{Typ: anonSliceTyp(elemTypeName(rv.Type().Elem()))}
 				}
 				el := make([]runtime.Value, rv.Len())
 				for i := range el {
 					el[i] = goValueOf(rv.Index(i))
 				}
-				return &runtime.Slice{Elems: el}
+				return &runtime.Slice{Elems: el, Typ: anonSliceTyp(elemTypeName(rv.Type().Elem()))}
 			}
 		case reflect.Array:
 			if rv.Type().Name() == "" {
@@ -1850,11 +1850,20 @@ func goValueOf(rv reflect.Value) runtime.Value {
 				for i := range el {
 					el[i] = goValueOf(rv.Index(i))
 				}
-				return &runtime.Slice{Elems: el}
+				return &runtime.Slice{Elems: el, Typ: anonArrayTyp(rv.Len(), elemTypeName(rv.Type().Elem()))}
 			}
 		}
 		return &runtime.GoValue{V: x}
 	}
+}
+
+// elemTypeName names a reflect type for typedef spelling — Name() when
+// it has one, the reflect spelling otherwise (struct{...}, []string).
+func elemTypeName(t reflect.Type) string {
+	if n := t.Name(); n != "" {
+		return n
+	}
+	return t.String()
 }
 
 // hostField finds an exported field by name on a host value: pointer and
@@ -5481,6 +5490,15 @@ func unboxGoValue(x runtime.Value) runtime.Value {
 // unboxed from host values (no package context — the name is a builtin).
 func anonSliceTyp(name string) *runtime.TypeDef {
 	return &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: ast.NewIdent(name)}}
+}
+
+// anonArrayTyp builds the anonymous [n]name typedef used to tag arrays
+// unboxed from host values.
+func anonArrayTyp(n int, name string) *runtime.TypeDef {
+	return &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{
+		Len: &ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(n)},
+		Elt: ast.NewIdent(name),
+	}}
 }
 
 // convertSlice implements `[]T(x)`: the special string->byte/rune-slice
