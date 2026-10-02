@@ -32,6 +32,12 @@ type Runner struct {
 	engine *minigo.Engine
 	pkg    *runtime.Package // the loaded define file's package
 
+	// dirPkg is the package of the define file's directory — bare type
+	// names in the DSL resolve here, because the file-loaded package
+	// (synthetic "<file>..." path) only holds the define file's decls
+	// while the directory package indexes every sibling file.
+	dirPkg *runtime.Package
+
 	// resolver, when non-nil, is installed on the minigo engine — a test
 	// hook for observing (or stubbing) package resolution.
 	resolver resolve.Resolver
@@ -132,6 +138,7 @@ func (r *Runner) Run(ctx context.Context, filename string) error {
 	// import path — resolving the directory itself yields the real one.
 	if dirPkg, err := engine.Package(ctx, filepath.Dir(abs)); err == nil && dirPkg != nil {
 		r.Info.PackagePath = dirPkg.Path
+		r.dirPkg = dirPkg
 	}
 	if _, err := engine.Call(ctx, pkg, "main"); err != nil {
 		return fmt.Errorf("evaluating define file: %w", err)
@@ -252,6 +259,19 @@ func (r *Runner) resolveTypeExpr(ctx runtime.SpecialContext, te *xinspect.TypeEx
 	sid, ok := te.Unref().SymbolID()
 	if !ok {
 		return nil, fmt.Errorf("expected a package-qualified type (pkg.Type), but got %q", te.Text)
+	}
+
+	// An unqualified type name resolves in the file-loaded package,
+	// whose "<file>..." path is synthetic — chase the declaration in
+	// the define file's directory package instead (the same package
+	// the generated file joins).
+	if r.dirPkg != nil && r.pkg != nil && sid.PackagePath == r.pkg.Path {
+		if r.dirPkg.Index != nil {
+			if td, ok := r.dirPkg.Index.Types[sid.Name]; ok && td.Decl != nil {
+				return xinspect.NewDecl(r.dirPkg, td.Decl), nil
+			}
+		}
+		return nil, fmt.Errorf("type %q not found in package %q", sid.Name, r.dirPkg.Path)
 	}
 
 	d, err := r.lookupDecl(context.Background(), sid)
@@ -415,6 +435,14 @@ func (w *mappingWalker) parseConvertCall(call *ast.CallExpr) error {
 	converter, err := w.exprToString(call.Args[2])
 	if err != nil {
 		return fmt.Errorf("could not parse converter in c.Convert(): %w", err)
+	}
+	// The converter must be a function — anything else (a call like
+	// define.Rule(fn), a literal, an index expression) would be emitted
+	// verbatim and only fail inside the generated code.
+	switch call.Args[2].(type) {
+	case *ast.SelectorExpr, *ast.Ident, *ast.FuncLit:
+	default:
+		return fmt.Errorf("converter in c.Convert() must be a function (pkg.Fn, Fn, or a func literal), got %q", converter)
 	}
 
 	// Record the converter's package so the generator can qualify it,
