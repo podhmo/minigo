@@ -8,6 +8,7 @@ import (
 	"go/ast"
 	"go/constant"
 	"go/token"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -345,6 +346,29 @@ func CanonicalKey(v Value) Value {
 		// pointer-shaped keys hash by identity — the wrapper itself
 		// is comparable and stable.
 		return x
+	case float32:
+		// a float32 key hashes as float64: the declared float32 key type
+		// may unwrap to either width, and the host map compares them
+		// equal only in one canonical form.
+		return CanonicalKey(float64(x))
+	case float64:
+		// NaN keys store under a fresh nonce: a lookup can never match,
+		// exactly like Go's never-equal map semantics.
+		if x != x {
+			return mapKey{typ: "float64", repr: fmt.Sprintf("NaN#%d", nextKeyNonce())}
+		}
+		return x
+	case complex64:
+		r, i := real(x), imag(x)
+		if math.IsNaN(float64(r)) || math.IsNaN(float64(i)) {
+			return mapKey{typ: "complex64", repr: fmt.Sprintf("NaN#%d", nextKeyNonce())}
+		}
+		return x
+	case complex128:
+		if math.IsNaN(real(x)) || math.IsNaN(imag(x)) {
+			return mapKey{typ: "complex128", repr: fmt.Sprintf("NaN#%d", nextKeyNonce())}
+		}
+		return x
 	default:
 		return x
 	}
@@ -517,8 +541,11 @@ type Slice struct {
 // Map is a Go map value (keys must be comparable basics for now).
 type Map struct {
 	Pairs map[Value]Value
-	Order []Value  // insertion order for stable-ish range
-	Typ   *TypeDef // declared map type (nil => missing keys yield NIL)
+	Order []Value // insertion order for stable-ish range
+	Keys  []Value // canonical key per Order slot — a NaN canonical key is
+	// a fresh nonce on every CanonicalKey call, so iteration remembers
+	// the one used at insert instead of recomputing it.
+	Typ *TypeDef // declared map type (nil => missing keys yield NIL)
 }
 
 // Chan is a channel value backed by a real host channel: sends and

@@ -32,16 +32,17 @@ type fscope struct {
 	blockIDs   []int                  // unique id per open block, for goto scoping
 	declPos    []map[string]token.Pos // name -> declaring position (goto scoping)
 	nextID     int
-	typeDecls  map[string]bool   // names bound by local `type` decls (not vars)
-	ifaceTypes map[string]bool   // local `type` decls whose spec is an interface
-	ifaceVars  []map[string]bool // per-block: vars declared interface-typed
+	typeDecls  map[string]bool          // names bound by local `type` decls (not vars)
+	typeSpecs  map[string]*ast.TypeSpec // local `type` decl specs, for shape checks
+	ifaceTypes map[string]bool          // local `type` decls whose spec is an interface
+	ifaceVars  []map[string]bool        // per-block: vars declared interface-typed
 	nlocals    int
 	upvals     []bytecode.UpvalDesc
 	upmap      map[string]int
 }
 
 func newFScope(parent *fscope) *fscope {
-	return &fscope{parent: parent, upmap: map[string]int{}, typeDecls: map[string]bool{}, ifaceTypes: map[string]bool{}}
+	return &fscope{parent: parent, upmap: map[string]int{}, typeDecls: map[string]bool{}, typeSpecs: map[string]*ast.TypeSpec{}, ifaceTypes: map[string]bool{}}
 }
 
 func (s *fscope) pushBlock() {
@@ -79,6 +80,21 @@ func (s *fscope) isIfaceVar(name string) bool {
 		}
 	}
 	return false
+}
+
+// typeSpec returns the spec of a local `type` decl named this
+// identifier (walking enclosing function scopes); nil when none or
+// when a closer type decl shadowed an outer one.
+func (s *fscope) typeSpec(name string) *ast.TypeSpec {
+	for cur := s; cur != nil; cur = cur.parent {
+		if ts, ok := cur.typeSpecs[name]; ok {
+			return ts
+		}
+		if cur.typeDecls[name] {
+			return nil
+		}
+	}
+	return nil
 }
 
 // isIfaceTypeName reports whether a local `type I interface{...}` decl
@@ -916,6 +932,7 @@ func (c *compiler) localTypeDecl(ts *ast.TypeSpec) {
 		td.Kind = runtime.KindAlias
 	}
 	c.fs.typeDecls[ts.Name.Name] = true
+	c.fs.typeSpecs[ts.Name.Name] = ts
 	c.emit(bytecode.OpConst, c.constIdx(td), 0, ts.Pos())
 	slot := c.fs.declare(ts.Name.Name, ts.Pos())
 	c.emit(bytecode.OpNewLocal, slot, 0, ts.Pos())
@@ -2452,7 +2469,7 @@ func (c *compiler) compileLit(x *ast.CompositeLit, baseType ast.Expr, depth int)
 	// Whether an identifier key is a field name or a real expression is
 	// decidable when the peeled element type is syntactically a map or an
 	// array — `map[int]int{K: 1}` and `[]int{K: 1}` evaluate K.
-	keysAreExprs := literalKeysAreExprs(baseType, depth)
+	keysAreExprs := c.literalKeysAreExprs(baseType, depth)
 	for _, el := range x.Elts {
 		if kvel, isKV := el.(*ast.KeyValueExpr); kv && !isKV {
 			// mixed keyed/positional elements — arrays allow it: the
@@ -2490,14 +2507,37 @@ func (c *compiler) compileLit(x *ast.CompositeLit, baseType ast.Expr, depth int)
 
 // literalKeysAreExprs peels a composite literal's declared element type
 // `depth` levels (array elt / map value / pointer / ellipsis) and reports
-// whether the resulting type is syntactically a map or array — where a
-// key is a real expression, not a field name. Named types (idents,
-// selector, instantiations) keep the struct-style name heuristic since
-// the underlying shape is not visible to the compiler.
-func literalKeysAreExprs(baseType ast.Expr, depth int) bool {
-	switch peelLitType(baseType, depth).(type) {
+// whether the resulting type resolves to a map or array — where a key is
+// a real expression, not a field name.
+func (c *compiler) literalKeysAreExprs(baseType ast.Expr, depth int) bool {
+	return c.isKeyedLitShape(peelLitType(baseType, depth), 4)
+}
+
+// isKeyedLitShape reports whether a type expression's shape makes
+// literal keys expressions rather than field names. Named types resolve
+// through local `type` decls and the package index — `type M
+// map[int]int` means `M{i: 1}` evaluates `i` — while unresolvable names
+// keep the struct-style field-name heuristic. fuel bounds alias chains.
+func (c *compiler) isKeyedLitShape(t ast.Expr, fuel int) bool {
+	switch tt := t.(type) {
 	case *ast.MapType, *ast.ArrayType:
 		return true
+	case *ast.ParenExpr:
+		return c.isKeyedLitShape(tt.X, fuel)
+	case *ast.Ident:
+		if fuel <= 0 {
+			return false
+		}
+		if ts := c.fs.typeSpec(tt.Name); ts != nil {
+			return c.isKeyedLitShape(ts.Type, fuel-1)
+		}
+		if c.pkg != nil && c.pkg.Index != nil {
+			if td := c.pkg.Index.Types[tt.Name]; td != nil && td.Decl != nil {
+				if ts, ok := td.Decl.Spec.(*ast.TypeSpec); ok {
+					return c.isKeyedLitShape(ts.Type, fuel-1)
+				}
+			}
+		}
 	}
 	return false
 }
