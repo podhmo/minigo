@@ -2068,6 +2068,7 @@ func (c *compiler) typeExpr(e ast.Expr) {
 		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindPointer, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds}), 0, e.Pos())
 	case *ast.StructType:
 		td := &runtime.TypeDef{Kind: runtime.KindStruct, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds}
+		td.FTags = runtime.StructFieldTags(t)
 		for _, f := range t.Fields.List {
 			if len(f.Names) == 0 {
 				td.EmbedSpecs = append(td.EmbedSpecs, f.Type)
@@ -2199,9 +2200,14 @@ func literalValue(l *ast.BasicLit) (any, error) {
 		}
 		// the one uint64-only literal Go source can spell is
 		// 9223372036854775808 — MinInt64's magnitude, spelled under a
-		// unary minus. Wider or weirder literals stay a hard error.
-		if u, ok := constant.Uint64Val(v); ok && u == 1<<63 {
-			return int64(u), nil
+		// unary minus.
+		if u, ok := constant.Uint64Val(v); ok {
+			if u == 1<<63 {
+				return int64(u), nil
+			}
+			// wider uint64 literals stay boxed: arithmetic unwraps them
+			// to int64 (same bits mod 2^64) and formatting reads the box.
+			return &runtime.GoValue{V: u}, nil
 		}
 		return nil, fmt.Errorf("int literal out of range: %s", l.Value)
 	case token.FLOAT:

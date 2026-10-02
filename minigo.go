@@ -816,6 +816,7 @@ func (e *Engine) typeDefOf(pkg *runtime.Package, d *index.Decl) (runtime.Value, 
 	switch t := ts.Type.(type) {
 	case *ast.StructType:
 		td.Kind = runtime.KindStruct
+		td.FTags = runtime.StructFieldTags(t)
 		for _, f := range t.Fields.List {
 			if len(f.Names) == 0 {
 				// embedded field: the field name is the base type's name
