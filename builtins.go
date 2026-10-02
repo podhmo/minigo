@@ -2,23 +2,16 @@ package minigo
 
 import (
 	"fmt"
-	"io"
+	"os"
+	"strings"
 
 	"github.com/podhmo/minigo/runtime"
 )
 
 // builtins returns the predeclared universe: builtin functions and builtin
 // type names (as *TypeDef values so `int(x)` is a normal conversion call).
-// print/println write to the engine's configured output.
 func builtins(e *Engine) *runtime.Env {
 	env := runtime.NewEnv()
-
-	out := func() io.Writer {
-		if e.out == nil {
-			return io.Discard
-		}
-		return e.out
-	}
 
 	bf := func(name string, fn func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error)) {
 		env.Set(name, &runtime.BuiltinFunc{Name: name, Fn: fn})
@@ -33,7 +26,12 @@ func builtins(e *Engine) *runtime.Env {
 		}
 	})
 	bf("cap", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-		return capOf(args[0])
+		switch x := args[0].(type) {
+		case *runtime.Cell:
+			return capOf(x.Elem)
+		default:
+			return capOf(x)
+		}
 	})
 	bf("append", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		var s *runtime.Slice
@@ -71,7 +69,10 @@ func builtins(e *Engine) *runtime.Env {
 			elems = s.Elems
 			rtyp = s.Typ
 		}
-		res := &runtime.Slice{Elems: append(append([]runtime.Value{}, elems...), args[1:]...), Typ: rtyp}
+		// appending onto the backing array itself keeps Go's sharing
+		// semantics: within spare capacity the result aliases the same
+		// storage, past it the host append allocates a fresh array.
+		res := &runtime.Slice{Elems: append(elems, args[1:]...), Typ: rtyp}
 		if tag != nil {
 			return &runtime.Named{Typ: tag, V: res}, nil // append keeps the declared type
 		}
@@ -97,6 +98,16 @@ func builtins(e *Engine) *runtime.Env {
 		}
 		dst, ok1 := sliceOf(args[0])
 		src, ok2 := sliceOf(args[1])
+		if src == nil && ok1 {
+			// copy(dst, "str"): a string source copies into []byte.
+			if s, ok := runtime.Unwrap(args[1]).(string); ok {
+				src = &runtime.Slice{Elems: make([]runtime.Value, len(s)), Typ: dst.Typ}
+				for i := 0; i < len(s); i++ {
+					src.Elems[i] = int64(s[i])
+				}
+				ok2 = true
+			}
+		}
 		if !ok1 || !ok2 {
 			return nil, fmt.Errorf("copy on non-slice")
 		}
@@ -107,7 +118,7 @@ func builtins(e *Engine) *runtime.Env {
 		return int64(n), nil
 	})
 	bf("delete", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-		key := runtime.Unwrap(args[1])
+		key := runtime.CanonicalKey(runtime.Unwrap(args[1]))
 		switch m := args[0].(type) {
 		case *runtime.Named:
 			if mm, ok := m.V.(*runtime.Map); ok {
@@ -146,8 +157,14 @@ func builtins(e *Engine) *runtime.Env {
 				cap, _ = runtime.Unwrap(args[2]).(int64)
 			}
 			el := make([]runtime.Value, n, cap)
+			zero := runtime.Value(runtime.NIL)
+			if ez, ok := v.(interface {
+				ElemZero(*runtime.TypeDef) runtime.Value
+			}); ok {
+				zero = ez.ElemZero(td)
+			}
 			for i := range el {
-				el[i] = runtime.NIL
+				el[i] = zero
 			}
 			return &runtime.Slice{Elems: el, Typ: td}, nil
 		case runtime.KindMap:
@@ -200,14 +217,74 @@ func builtins(e *Engine) *runtime.Env {
 		return runtime.NIL, nil
 	})
 	bf("panic", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		// panic(nil) carries a *PanicNilError since Go 1.21 — recover()
+		// reports a non-nil value. A typed nil stays a typed nil (the
+		// interface argument is non-nil).
+		switch args[0].(type) {
+		case runtime.Nil, *runtime.IfaceNil:
+			panic(&runtime.Panic{Value: &runtime.PanicNilError{}})
+		}
 		panic(&runtime.Panic{Value: args[0]})
 	})
 	bf("recover", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		return v.Recover(), nil
 	})
+	bf("min", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) == 0 {
+			return nil, fmt.Errorf("min needs at least one argument")
+		}
+		m := args[0]
+		for _, a := range args[1:] {
+			if orderedLess(a, m) {
+				m = a
+			}
+		}
+		return m, nil
+	})
+	bf("max", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) == 0 {
+			return nil, fmt.Errorf("max needs at least one argument")
+		}
+		m := args[0]
+		for _, a := range args[1:] {
+			if orderedLess(m, a) {
+				m = a
+			}
+		}
+		return m, nil
+	})
+	bf("clear", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		switch m := runtime.Unwrap(args[0]).(type) {
+		case *runtime.Map:
+			m.Pairs = map[runtime.Value]runtime.Value{}
+			m.Order = nil
+		case *runtime.Slice:
+			zero := runtime.Value(runtime.NIL)
+			if ez, ok := v.(interface {
+				ElemZero(*runtime.TypeDef) runtime.Value
+			}); ok {
+				zero = ez.ElemZero(m.Typ)
+			}
+			for i := range m.Elems {
+				m.Elems[i] = zero
+			}
+		default:
+			return nil, fmt.Errorf("clear of %T", args[0])
+		}
+		return runtime.NIL, nil
+	})
+	// print/println write to stderr like Go's builtins do; print spaces
+	// only between adjacent non-string operands.
 	bf("print", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-		for _, a := range args {
-			fmt.Fprint(out(), display(a))
+		for i, a := range args {
+			if i > 0 {
+				_, prevStr := runtime.Unwrap(args[i-1]).(string)
+				_, curStr := runtime.Unwrap(a).(string)
+				if !prevStr && !curStr {
+					fmt.Fprint(os.Stderr, " ")
+				}
+			}
+			fmt.Fprint(os.Stderr, display(a))
 		}
 		return runtime.NIL, nil
 	})
@@ -216,14 +293,14 @@ func builtins(e *Engine) *runtime.Env {
 		for i, a := range args {
 			parts[i] = display(a)
 		}
-		fmt.Fprintln(out(), parts...)
+		fmt.Fprintln(os.Stderr, parts...)
 		return runtime.NIL, nil
 	})
 
 	// builtin type names
 	for _, n := range []string{
 		"int", "int8", "int16", "int32", "int64",
-		"uint", "uint8", "uint16", "uint32", "uint64",
+		"uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
 		"float32", "float64", "string", "bool", "byte", "rune",
 	} {
 		env.Set(n, &runtime.TypeDef{Name: n, Kind: runtime.KindNamedBasic})
@@ -257,6 +334,8 @@ func capOf(v runtime.Value) (runtime.Value, error) {
 	switch x := v.(type) {
 	case *runtime.Named:
 		return capOf(x.V)
+	case *runtime.Cell:
+		return capOf(x.Elem)
 	case *runtime.Slice:
 		return int64(cap(x.Elems)), nil
 	case *runtime.Chan:
@@ -264,6 +343,36 @@ func capOf(v runtime.Value) (runtime.Value, error) {
 	default:
 		return lenOf(v)
 	}
+}
+
+// orderedLess implements the builtin min/max comparison over ordered
+// values: ints, floats and strings compare naturally; a float NaN is
+// never less (so a NaN argument wins the fold, matching Go's
+// "NaN propagates" rule). Named values compare by their underlying.
+func orderedLess(a, b runtime.Value) bool {
+	a = runtime.Unwrap(a)
+	b = runtime.Unwrap(b)
+	switch x := a.(type) {
+	case int64:
+		switch y := b.(type) {
+		case int64:
+			return x < y
+		case float64:
+			return float64(x) < y
+		}
+	case float64:
+		switch y := b.(type) {
+		case int64:
+			return x < float64(y)
+		case float64:
+			return x < y
+		}
+	case string:
+		if y, ok := b.(string); ok {
+			return x < y
+		}
+	}
+	return false
 }
 
 func display(v runtime.Value) any {
@@ -281,8 +390,40 @@ func display(v runtime.Value) any {
 		}
 		return parts
 	case *runtime.Struct:
-		return fmt.Sprintf("%s%+v", x.Def.Name, x.Fields)
+		parts := make([]any, len(x.Fields))
+		for i, e := range x.Fields {
+			parts[i] = display(e)
+		}
+		return fmt.Sprintf("{%v}", joinDisplay(parts))
+	case *runtime.Map:
+		var sb strings.Builder
+		sb.WriteString("map[")
+		for i, k := range x.Order {
+			if i > 0 {
+				sb.WriteByte(' ')
+			}
+			sb.WriteString(fmt.Sprintf("%v:%v", display(k), display(x.Pairs[runtime.CanonicalKey(k)])))
+		}
+		sb.WriteByte(']')
+		return sb.String()
 	default:
 		return x
 	}
+}
+
+// Format renders a runtime value for host-side output — the CLI's run
+// result and embedding tools print it like Go's %v would.
+func Format(v runtime.Value) any {
+	return display(v)
+}
+
+func joinDisplay(parts []any) string {
+	var sb strings.Builder
+	for i, p := range parts {
+		if i > 0 {
+			sb.WriteByte(' ')
+		}
+		sb.WriteString(fmt.Sprint(p))
+	}
+	return sb.String()
 }

@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
 	"html"
 	"io"
 	"io/fs"
@@ -44,19 +45,35 @@ import (
 func (e *Engine) installStdlib() {
 	h := &hostHelpers{e: e}
 	e.Bind("fmt", map[string]runtime.Value{
-		"Print":   h.fn("fmt.Print", func(a []any) (any, error) { return retErr(fmt.Fprint(h.out(), a...)) }),
-		"Println": h.fn("fmt.Println", func(a []any) (any, error) { return retErr(fmt.Fprintln(h.out(), a...)) }),
-		"Printf": h.fn1("fmt.Printf", func(a []any) (any, error) {
+		"Print":   h.ffn("fmt.Print", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprint(h.out(), a...)) }),
+		"Println": h.ffn("fmt.Println", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprintln(h.out(), a...)) }),
+		"Printf": h.ffn("fmt.Printf", 0, 1, func(a []any) (any, error) {
 			return retErr(fmt.Fprintf(h.out(), str(a[0]), a[1:]...))
 		}),
-		"Sprint":   h.fn("fmt.Sprint", func(a []any) (any, error) { return fmt.Sprint(a...), nil }, fmt.Sprint),
-		"Sprintln": h.fn("fmt.Sprintln", func(a []any) (any, error) { return fmt.Sprintln(a...), nil }, fmt.Sprintln),
-		"Sprintf": h.fn1("fmt.Sprintf", func(a []any) (any, error) {
+		"Sprint":   h.ffn("fmt.Sprint", -1, 0, func(a []any) (any, error) { return fmt.Sprint(a...), nil }, fmt.Sprint),
+		"Sprintln": h.ffn("fmt.Sprintln", -1, 0, func(a []any) (any, error) { return fmt.Sprintln(a...), nil }, fmt.Sprintln),
+		"Sprintf": h.ffn("fmt.Sprintf", 0, 1, func(a []any) (any, error) {
 			return fmt.Sprintf(str(a[0]), a[1:]...), nil
 		}),
-		"Errorf": h.fn1("fmt.Errorf", func(a []any) (any, error) {
-			return fmt.Errorf(str(a[0]), a[1:]...), nil
-		}),
+		// Errorf is hand-bound: %w verbs wrap the cause like Go's
+		// fmt.wrapError so errors.Unwrap/Is/As see the chain.
+		"Errorf": &runtime.BuiltinFunc{Name: "fmt.Errorf", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) < 1 {
+				return nil, fmt.Errorf("fmt.Errorf needs 1+ args")
+			}
+			a := make([]any, len(args))
+			for i, x := range args {
+				a[i] = fmtArg(v, x)
+			}
+			spec := str(a[0])
+			spec = rewriteTypeVerbs(spec, a, args, 0)
+			spec, wrapPos := rewriteWrapVerbs(spec)
+			msg := fmt.Sprintf(spec, a[1:]...)
+			if wrapPos >= 0 && wrapPos < len(args)-1 {
+				return errVal(&wrapError{msg: msg, err: hostErrOf(v, args[wrapPos+1])}), nil
+			}
+			return errVal(errors.New(msg)), nil
+		}},
 	})
 	e.Bind("errors", map[string]runtime.Value{
 		"New": h.fn("errors.New", func(a []any) (any, error) { return errors.New(str(a[0])), nil }, errors.New),
@@ -75,17 +92,23 @@ func (e *Engine) installStdlib() {
 		"Unwrap": h.fn("errors.Unwrap", func(a []any) (any, error) {
 			return errVal(errors.Unwrap(asErr(a[0]))), nil
 		}),
-		// As is approximated: the script cannot spell the target type, so it
-		// assigns the first non-nil cause in the chain to *target.
-		"As": &runtime.BuiltinFunc{Name: "errors.As", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		// As walks the Unwrap chain and assigns the first cause whose type
+		// name matches the target cell's declared type.
+		"As": &runtime.BuiltinFunc{Name: "errors.As", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("errors.As needs 2 args")
 			}
-			if err := asErr(goNative(args[0])); err != nil {
-				if runtime.SetRef(args[1], errVal(err)) {
-					return true, nil
+			want := cellElemTyp(args[1])
+			for err := asErr(goNative(args[0])); err != nil; err = errors.Unwrap(err) {
+				sv := scriptErrUnbox(err)
+				st := v.TypeOf(sv)
+				// spellings disagree on pkg/`*` prefixes between the two
+				// paths — compare the final identifier
+				if want == nil || shortTypName(st) == shortTypName(want) {
+					if runtime.SetRef(args[1], sv) {
+						return true, nil
+					}
 				}
-				return nil, fmt.Errorf("errors.As: target must be a pointer (cell)")
 			}
 			return false, nil
 		}},
@@ -628,11 +651,12 @@ func (e *Engine) installStdlib() {
 				return nil, fmt.Errorf("maps.Copy: args must be maps")
 			}
 			for _, k := range src.Order {
-				v := src.Pairs[k]
-				if _, ok := dst.Pairs[k]; !ok {
+				v := src.Pairs[runtime.CanonicalKey(k)]
+				ck := runtime.CanonicalKey(k)
+				if _, ok := dst.Pairs[ck]; !ok {
 					dst.Order = append(dst.Order, k)
 				}
-				dst.Pairs[k] = v
+				dst.Pairs[ck] = v
 			}
 			return runtime.NIL, nil
 		}},
@@ -1386,10 +1410,11 @@ func scriptVal(v any) runtime.Value {
 		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}}
 		for k, vv := range x {
 			kk := scriptVal(k)
-			if _, ok := m.Pairs[kk]; !ok {
+			ck := runtime.CanonicalKey(kk)
+			if _, ok := m.Pairs[ck]; !ok {
 				m.Order = append(m.Order, kk)
 			}
-			m.Pairs[kk] = scriptVal(vv)
+			m.Pairs[ck] = scriptVal(vv)
 		}
 		return m
 	case runtime.Nil, *runtime.Tuple, *runtime.Cell, *runtime.Slice,
@@ -1422,8 +1447,8 @@ func goNative(v runtime.Value) any {
 		return out
 	case *runtime.Map:
 		out := make(map[any]any, len(x.Pairs))
-		for k, val := range x.Pairs {
-			out[goNative(k)] = goNative(val)
+		for _, k := range x.Order {
+			out[goNative(k)] = goNative(x.Pairs[runtime.CanonicalKey(k)])
 		}
 		return out
 	case *runtime.Struct:
@@ -1684,8 +1709,8 @@ func goJSON(v any) any {
 		return out
 	case *runtime.Map:
 		m := make(map[string]any, len(x.Pairs))
-		for k, val := range x.Pairs {
-			m[str(goNative(k))] = goJSON(val)
+		for _, k := range x.Order {
+			m[str(goNative(k))] = goJSON(x.Pairs[runtime.CanonicalKey(k)])
 		}
 		return m
 	case *runtime.GoValue:
@@ -1746,7 +1771,7 @@ func mapValues(v any) *runtime.Slice {
 	if m, ok := v.(*runtime.Map); ok {
 		el := make([]runtime.Value, len(m.Order))
 		for i, k := range m.Order {
-			el[i] = m.Pairs[k]
+			el[i] = m.Pairs[runtime.CanonicalKey(k)]
 		}
 		return &runtime.Slice{Elems: el}
 	}
@@ -1754,4 +1779,611 @@ func mapValues(v any) *runtime.Slice {
 		return &runtime.Slice{Elems: slices.Collect(maps.Values(m))}
 	}
 	return &runtime.Slice{}
+}
+
+// ffn is the fmt-package variant of fn: script values reach host fmt as
+// fmtValue wrappers so composites render like Go's %v — a *runtime.Slice
+// prints [1 2], a struct {x y}, a pointer &{...}, and a String()/Error()/
+// GoString() method declared on the type is honored.
+// scriptError boxes a script error value (a struct carrying an Error
+// method) as a host error, so fmt.Errorf's %w chains and errors.Is/As
+// walk it through host errors.Unwrap.
+type scriptError struct {
+	c runtime.VMCaller
+	v runtime.Value
+}
+
+func (e *scriptError) Error() string {
+	s, ok := callStringer(e.c, e.v, "Error")
+	if !ok {
+		return fmt.Sprintf("%v", goNative(e.v))
+	}
+	return s
+}
+
+// wrapError is fmt.Errorf's %w product: message plus one cause.
+type wrapError struct {
+	msg string
+	err error
+}
+
+func (e *wrapError) Error() string { return e.msg }
+func (e *wrapError) Unwrap() error { return e.err }
+
+// hostErrOf converts a script error value to a host error: boxed Go
+// errors pass through, script values get a scriptError that calls back
+// into the VM for Error().
+func hostErrOf(c runtime.VMCaller, v runtime.Value) error {
+	switch x := v.(type) {
+	case *runtime.GoValue:
+		if e, ok := x.V.(error); ok {
+			return e
+		}
+		return fmt.Errorf("%v", x.V)
+	case *runtime.Named:
+		return hostErrOf(c, x.V)
+	default:
+		return &scriptError{c: c, v: v}
+	}
+}
+
+// scriptErrUnbox maps a chain element back to the script-visible error
+// value — a scriptError's inner script value, anything else boxed.
+func scriptErrUnbox(e error) runtime.Value {
+	if se, ok := e.(*scriptError); ok {
+		return se.v
+	}
+	return errVal(e)
+}
+
+// cellElemTyp reads the declared type held by a cell (the target of
+// errors.As's &x): its TypedNil/IfaceNil/Struct tag.
+func cellElemTyp(v runtime.Value) *runtime.TypeDef {
+	c, ok := v.(*runtime.Cell)
+	if !ok {
+		return nil
+	}
+	switch e := c.Elem.(type) {
+	case *runtime.TypedNil:
+		return e.Typ
+	case *runtime.IfaceNil:
+		return e.Typ
+	case *runtime.Struct:
+		return e.Def
+	case *runtime.Named:
+		return e.Typ
+	}
+	return nil
+}
+
+// shortTypName reduces a typedef to its leaf identifier — "*main.MyErr"
+// and "MyErr" both yield "MyErr" — for errors.As's loose target match.
+func shortTypName(td *runtime.TypeDef) string {
+	if td == nil {
+		return ""
+	}
+	s := typedefSpelling(td)
+	if s == "interface{}" && td.Elem != nil {
+		// synthetic pointer typedefs carry the pointee in Elem
+		s = typedefSpelling(td.Elem)
+	}
+	s = strings.TrimPrefix(s, "*")
+	if i := strings.LastIndex(s, "."); i >= 0 {
+		s = s[i+1:]
+	}
+	return s
+}
+
+// rewriteWrapVerbs rewrites %w verbs to %v and reports the LAST %w's
+// argument position (-1 when absent); Go keeps the last %w's arg as the
+// wrapError's cause.
+func rewriteWrapVerbs(spec string) (string, int) {
+	if !strings.Contains(spec, "%w") {
+		return spec, -1
+	}
+	var sb strings.Builder
+	wrapPos := -1
+	seq := 0
+	for i := 0; i < len(spec); {
+		j := strings.IndexByte(spec[i:], '%')
+		if j < 0 {
+			sb.WriteString(spec[i:])
+			break
+		}
+		sb.WriteString(spec[i : i+j])
+		i += j
+		pct := i
+		i++
+		for i < len(spec) && (spec[i] == '#' || spec[i] == '+' || spec[i] == '-' || spec[i] == ' ' || spec[i] == '.' || (spec[i] >= '0' && spec[i] <= '9') || spec[i] == '[' || spec[i] == ']' || spec[i] == '*') {
+			i++
+		}
+		if i >= len(spec) {
+			sb.WriteString(spec[pct:])
+			break
+		}
+		verb := spec[i]
+		i++
+		switch verb {
+		case '%':
+			sb.WriteString("%%")
+		case 'w':
+			sb.WriteString("%v")
+			wrapPos = seq
+			seq++
+		default:
+			sb.WriteString(spec[pct:i])
+			seq++
+		}
+	}
+	return sb.String(), wrapPos
+}
+
+// ffn wraps a host fmt-style function: each arg becomes fmtArg so host
+// fmt sees the script-shaped wrapper. formatAt is the index of the
+// format-string arg (-1 when none); %T verbs there are rewritten to %s
+// over the value's script type spelling because host fmt never calls
+// Formatter.Format for %T/%p.
+func (h *hostHelpers) ffn(name string, formatAt, minArgs int, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
+	bf := &runtime.BuiltinFunc{Name: name, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) < minArgs {
+			return nil, fmt.Errorf("%s needs %d args, got %d", name, minArgs, len(args))
+		}
+		a := make([]any, len(args))
+		for i, x := range args {
+			a[i] = fmtArg(v, x)
+		}
+		if formatAt >= 0 && formatAt < len(a) {
+			if spec, ok := a[formatAt].(string); ok {
+				a[formatAt] = rewriteTypeVerbs(spec, a, args, formatAt)
+			}
+		}
+		r, err := f(a)
+		if err != nil {
+			return nil, err
+		}
+		return scriptVal(r), nil
+	}}
+	if len(target) > 0 {
+		bf.Target = target[0]
+	}
+	return bf
+}
+
+// fmtValue wraps one script value for host fmt: Format renders %v/%+v/%#v
+// with Go's composite layout and honors script String/Error/GoString.
+type fmtValue struct {
+	c     runtime.VMCaller
+	x     runtime.Value
+	depth int
+}
+
+func (s *fmtValue) Format(f fmt.State, verb rune) {
+	io.WriteString(f, s.render(verb, f))
+}
+
+func (s *fmtValue) render(verb rune, f fmt.State) string {
+	// Stringer family first, like fmt does.
+	if s.c != nil {
+		switch verb {
+		case 'v':
+			if f.Flag('#') {
+				// %#v consults GoString, not String/Error.
+				if str, ok := callStringer(s.c, s.x, "GoString"); ok {
+					return str
+				}
+				break
+			}
+			if str, ok := callStringer(s.c, s.x, "String"); ok {
+				return withWidth(f, str)
+			}
+			if str, ok := callStringer(s.c, s.x, "Error"); ok {
+				return withWidth(f, str)
+			}
+		case 's':
+			if str, ok := callStringer(s.c, s.x, "String"); ok {
+				return withWidth(f, str)
+			}
+			if str, ok := callStringer(s.c, s.x, "Error"); ok {
+				return withWidth(f, str)
+			}
+		case 'q':
+			if str, ok := callStringer(s.c, s.x, "String"); ok {
+				return strconv.Quote(str)
+			}
+		case 'x', 'X':
+			if str, ok := callStringer(s.c, s.x, "String"); ok {
+				return fmt.Sprintf("%"+string(verb), str)
+			}
+		}
+	}
+	return s.renderValue(s.x, verb, f)
+}
+
+func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
+	if s.depth > 8 {
+		return "..."
+	}
+	switch v := x.(type) {
+	case *runtime.Named:
+		// %T keeps the declared name; other verbs render through.
+		if verb == 'T' {
+			return typedefSpelling(v.Typ)
+		}
+		return (&fmtValue{c: s.c, x: v.V, depth: s.depth + 1}).render(verb, f)
+	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
+		dv, ok := runtime.Deref(v)
+		if !ok {
+			return "<nil>"
+		}
+		if _, isStruct := dv.(*runtime.Struct); isStruct {
+			return "&" + (&fmtValue{c: s.c, x: dv, depth: s.depth + 1}).render(verb, f)
+		}
+		if n, isNamed := dv.(*runtime.Named); isNamed {
+			if _, isStruct := n.V.(*runtime.Struct); isStruct {
+				return "&" + (&fmtValue{c: s.c, x: n.V, depth: s.depth + 1}).render(verb, f)
+			}
+		}
+		// scalar pointer: Go prints the address — a host pointer repr
+		// is the closest readable stand-in.
+		return fmt.Sprintf("%p", v)
+	case *runtime.Struct:
+		switch verb {
+		case 'T':
+			return typedefSpelling(v.Def)
+		case 'q':
+			return strconv.Quote(s.renderValue(x, 'v', f))
+		}
+		parts := make([]string, len(v.Fields))
+		for i, e := range v.Fields {
+			fv := (&fmtValue{c: s.c, x: e, depth: s.depth + 1}).render(elemVerb(verb), f)
+			if f.Flag('+') && i < len(v.Def.Fields) {
+				fv = v.Def.Fields[i] + ":" + fv
+			}
+			if f.Flag('#') && i < len(v.Def.Fields) {
+				fv = v.Def.Fields[i] + ":" + fv
+			}
+			parts[i] = fv
+		}
+		sep := " "
+		if f.Flag('#') {
+			sep = ", "
+		}
+		body := strings.Join(parts, sep)
+		if f.Flag('#') {
+			return typedefSpelling(v.Def) + "{" + body + "}"
+		}
+		return "{" + body + "}"
+	case *runtime.Slice:
+		switch verb {
+		case 'T':
+			return typedefSpelling(v.Typ)
+		case 's', 'q', 'x', 'X':
+			// a byte-wise slice formats as text like Go's fmt does
+			if bs, ok := sliceBytes(v); ok {
+				switch verb {
+				case 's':
+					return string(bs)
+				case 'q':
+					return strconv.Quote(string(bs))
+				default:
+					return fmt.Sprintf(formatOf(f, verb), bs)
+				}
+			}
+		}
+		parts := make([]string, len(v.Elems))
+		for i, e := range v.Elems {
+			parts[i] = (&fmtValue{c: s.c, x: e, depth: s.depth + 1}).render(elemVerb(verb), f)
+		}
+		if f.Flag('#') {
+			return typedefSpelling(v.Typ) + "{" + strings.Join(parts, ", ") + "}"
+		}
+		return "[" + strings.Join(parts, " ") + "]"
+	case *runtime.Map:
+		switch verb {
+		case 'T':
+			return typedefSpelling(v.Typ)
+		}
+		parts := make([]string, 0, len(v.Order))
+		for _, k := range v.Order {
+			e := v.Pairs[runtime.CanonicalKey(k)]
+			kr := (&fmtValue{c: s.c, x: k, depth: s.depth + 1}).render('v', f)
+			vr := (&fmtValue{c: s.c, x: e, depth: s.depth + 1}).render('v', f)
+			if f.Flag('+') || f.Flag('#') {
+				parts = append(parts, kr+":"+vr)
+			} else {
+				parts = append(parts, kr+":"+vr)
+			}
+		}
+		return "map[" + strings.Join(parts, " ") + "]"
+	case *runtime.Tuple:
+		parts := make([]string, len(v.Elems))
+		for i, e := range v.Elems {
+			parts[i] = (&fmtValue{c: s.c, x: e, depth: s.depth + 1}).render(verb, f)
+		}
+		return strings.Join(parts, " ")
+	case *runtime.TypedNil:
+		if verb == 'T' {
+			return typedefSpelling(v.Typ)
+		}
+		return "<nil>"
+	case *runtime.IfaceNil:
+		if verb == 'T' {
+			return typedefSpelling(v.Typ)
+		}
+		return "<nil>"
+	case runtime.Nil:
+		if verb == 'T' {
+			return "<nil>"
+		}
+		return "<nil>"
+	case *runtime.Chan:
+		if verb == 'T' {
+			return typedefSpelling(v.Typ)
+		}
+		return fmt.Sprintf("%p", v)
+	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
+		if verb == 'T' {
+			return "func"
+		}
+		return fmt.Sprintf("%p", v)
+	case *runtime.GoValue:
+		return fmt.Sprintf(formatOf(f, verb), v.V)
+	case *runtime.TypeDef:
+		if verb == 'T' {
+			return "type"
+		}
+		return typedefSpelling(v)
+	}
+	return fmt.Sprintf(formatOf(f, verb), x)
+}
+
+// elemVerb picks the verb applied to elements inside a composite:
+// numeric verbs descend elementwise like Go's fmt (`%c` on []rune), any
+// other verb renders each element as %v.
+func elemVerb(verb rune) rune {
+	switch verb {
+	case 'c', 'd', 'o', 'b', 'e', 'E', 'f', 'F', 'g', 'G', 'U', 'x', 'X':
+		return verb
+	}
+	return 'v'
+}
+
+// sliceBytes reports the slice as bytes when every element is an int in
+// byte range — the interpreter's model of []byte/[]rune-as-text.
+func sliceBytes(v *runtime.Slice) ([]byte, bool) {
+	bs := make([]byte, len(v.Elems))
+	for i, e := range v.Elems {
+		n, ok := runtime.Unwrap(e).(int64)
+		if !ok || n < 0 || n > 255 {
+			return nil, false
+		}
+		bs[i] = byte(n)
+	}
+	return bs, true
+}
+
+// scriptTypeString spells a value's type the way Go's %T does —
+// "[]int", "main.Point" — using the typedef, not the Go wrapper type.
+func scriptTypeString(x runtime.Value) string {
+	switch t := x.(type) {
+	case *runtime.Named:
+		return typedefSpelling(t.Typ)
+	case *runtime.Struct:
+		return typedefSpelling(t.Def)
+	case *runtime.Slice:
+		return typedefSpelling(t.Typ)
+	case *runtime.Map:
+		return typedefSpelling(t.Typ)
+	case *runtime.Chan:
+		return typedefSpelling(t.Typ)
+	case *runtime.TypedNil:
+		return typedefSpelling(t.Typ)
+	case *runtime.IfaceNil:
+		return typedefSpelling(t.Typ)
+	case *runtime.PanicNilError:
+		return "*runtime.PanicNilError"
+	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
+		if dv, ok := runtime.Deref(t); ok {
+			return "*" + scriptTypeString(dv)
+		}
+		return "unsafe.Pointer"
+	case *runtime.GoValue:
+		if se, ok := t.V.(*scriptError); ok {
+			return scriptTypeString(se.v)
+		}
+		return fmt.Sprintf("%T", t.V)
+	case int64:
+		return "int"
+	case float64:
+		return "float64"
+	case string:
+		return "string"
+	case bool:
+		return "bool"
+	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
+		return "func"
+	default:
+		return fmt.Sprintf("%T", x)
+	}
+}
+
+// rewriteTypeVerbs replaces each %T in spec with %s and substitutes the
+// matching arg slot with the script type spelling. Positional indexes
+// %[n] count arguments after the format string, as does implicit order.
+func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt int) string {
+	vals := rawArgs[formatAt+1:]
+	off := formatAt + 1
+	var sb strings.Builder
+	seq := 0
+	for i := 0; i < len(spec); {
+		j := strings.IndexByte(spec[i:], '%')
+		if j < 0 {
+			sb.WriteString(spec[i:])
+			break
+		}
+		sb.WriteString(spec[i : i+j])
+		i += j
+		pct := i
+		i++ // past '%'
+		if i >= len(spec) {
+			sb.WriteByte('%')
+			break
+		}
+		pos := -1
+		for i < len(spec) {
+			ch := spec[i]
+			switch {
+			case ch == '[':
+				k := i + 1
+				for k < len(spec) && spec[k] != ']' {
+					k++
+				}
+				if n, err := strconv.Atoi(spec[i+1 : k]); err == nil {
+					pos = n - 1
+				}
+				i = k + 1
+			case ch == '*':
+				if pos < 0 {
+					seq++
+				}
+				i++
+			case ch == '#' || ch == '+' || ch == '-' || ch == ' ' || ch == '.' || (ch >= '0' && ch <= '9'):
+				i++
+			default:
+				goto gotVerb
+			}
+		}
+		break
+	gotVerb:
+		if i >= len(spec) {
+			sb.WriteString(spec[pct:])
+			break
+		}
+		verb := spec[i]
+		i++
+		if verb == '%' {
+			sb.WriteString("%%")
+			continue
+		}
+		if pos < 0 {
+			pos = seq
+			seq++
+		}
+		if verb == 'T' && pos >= 0 && pos < len(vals) && off+pos < len(a) {
+			sb.WriteString("%s")
+			a[off+pos] = scriptTypeString(vals[pos])
+		} else {
+			sb.WriteString(spec[pct:i])
+		}
+	}
+	return sb.String()
+}
+
+// formatOf rebuilds a fmt directive from the verb and the flags/width a
+// host call set on the state — for scalar leaf values the host formatter
+// does the real work.
+func formatOf(f fmt.State, verb rune) string {
+	var sb strings.Builder
+	sb.WriteByte('%')
+	for _, c := range "+-# 0" {
+		if f.Flag(int(c)) {
+			sb.WriteByte(byte(c))
+		}
+	}
+	if w, ok := f.Width(); ok {
+		sb.WriteString(strconv.Itoa(w))
+	}
+	if p, ok := f.Precision(); ok {
+		sb.WriteString("." + strconv.Itoa(p))
+	}
+	sb.WriteRune(verb)
+	return sb.String()
+}
+
+func withWidth(f fmt.State, s string) string {
+	return fmt.Sprintf(formatOf(f, 's'), s)
+}
+
+// callStringer invokes a declared String()/Error() method through the VM
+// when the value carries one; a panicking or absent method reports false.
+func callStringer(c runtime.VMCaller, x runtime.Value, name string) (string, bool) {
+	m, ok := c.Member(x, name)
+	if !ok {
+		return "", false
+	}
+	r, err := c.Call(m, nil)
+	if err != nil {
+		return "", false
+	}
+	s, ok := r.(string)
+	return s, ok
+}
+
+// fmtArg routes a script value into a host fmt call: scalars unbox to
+// Go natives; composites keep their script shape inside a fmtValue.
+func fmtArg(v runtime.VMCaller, x runtime.Value) any {
+	switch x.(type) {
+	case int64, float64, string, bool:
+		return x
+	case *runtime.GoValue:
+		return goNative(x)
+	default:
+		return &fmtValue{c: v, x: x}
+	}
+}
+
+// typedefSpelling renders a typedef for %T/#v output.
+func typedefSpelling(td *runtime.TypeDef) string {
+	if td == nil {
+		return "interface{}"
+	}
+	if td.Name != "" {
+		if td.Pkg != nil && td.Pkg.Name != "" {
+			return td.Pkg.Name + "." + td.Name
+		}
+		return td.Name
+	}
+	if td.Anon != nil {
+		return anonTypeSpelling(td.Anon)
+	}
+	return "interface{}"
+}
+
+// anonTypeSpelling renders an anonymous type AST for %T/#v output.
+func anonTypeSpelling(e ast.Expr) string {
+	switch t := e.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.StarExpr:
+		return "*" + anonTypeSpelling(t.X)
+	case *ast.ArrayType:
+		n := ""
+		if t.Len != nil {
+			if bl, ok := t.Len.(*ast.BasicLit); ok {
+				n = bl.Value
+			} else if id, ok := t.Len.(*ast.Ident); ok {
+				n = id.Name
+			}
+		}
+		return "[" + n + "]" + anonTypeSpelling(t.Elt)
+	case *ast.MapType:
+		return "map[" + anonTypeSpelling(t.Key) + "]" + anonTypeSpelling(t.Value)
+	case *ast.ChanType:
+		return "chan " + anonTypeSpelling(t.Value)
+	case *ast.SelectorExpr:
+		return anonTypeSpelling(t.X) + "." + t.Sel.Name
+	case *ast.IndexExpr:
+		return anonTypeSpelling(t.X) + "[" + anonTypeSpelling(t.Index) + "]"
+	case *ast.ParenExpr:
+		return anonTypeSpelling(t.X)
+	case *ast.Ellipsis:
+		return "[]" + anonTypeSpelling(t.Elt)
+	case *ast.InterfaceType:
+		return "interface{}"
+	case *ast.StructType:
+		return "struct{}"
+	case *ast.FuncType:
+		return "func()"
+	}
+	return fmt.Sprintf("%T", e)
 }

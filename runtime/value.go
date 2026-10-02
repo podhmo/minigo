@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/syntax"
@@ -279,6 +280,211 @@ func SetRef(v, val Value) bool {
 		return SetRef(r.V, val)
 	}
 	return false
+}
+
+// mapKey is the canonical form of a composite map key: structs and
+// arrays compare by content in Go, so the Pairs table keys them by a
+// type-tagged rendering of their fields rather than pointer identity.
+type mapKey struct {
+	typ  string
+	repr string
+}
+
+// CanonicalKey renders a map key to a Go-comparable value so composite
+// keys compare by content. Scalars pass through — a float64 NaN keeps
+// Go's never-equal map semantics for free. Pointers and channels keep
+// identity (they ARE their identity); structs and fixed-size arrays
+// fold to a mapKey of the type name plus a recursive field rendering
+// where any NaN inside forces a never-equal nonce, like Go.
+// Unhashable keys (slices, maps, funcs) panic like Go's runtime does.
+func CanonicalKey(v Value) Value {
+	switch x := Unwrap(v).(type) {
+	case *Struct:
+		var sb strings.Builder
+		sb.WriteString(typeTagOf(x.Def))
+		writeKeyRepr(&sb, x.Fields)
+		return mapKey{typ: typeTagOf(x.Def), repr: sb.String()}
+	case *Slice:
+		// only fixed-size arrays are comparable; a slice key panics
+		// like Go's runtime unhashable-type check.
+		if !arrayTypedef(x.Typ) {
+			panic(&Panic{Value: "runtime error: hash of unhashable type " + typeTagOf(x.Typ)})
+		}
+		var sb strings.Builder
+		writeKeyRepr(&sb, x.Elems)
+		return mapKey{typ: typeTagOf(x.Typ), repr: sb.String()}
+	case *Map:
+		panic(&Panic{Value: "runtime error: hash of unhashable type " + typeTagOf(x.Typ)})
+	case *Function, *Closure, *BoundMethod, *BuiltinFunc:
+		panic(&Panic{Value: "runtime error: hash of unhashable type func()"})
+	case *GoValue:
+		if !reflect.TypeOf(x.V).Comparable() {
+			panic(&Panic{Value: fmt.Sprintf("runtime error: hash of unhashable type %T", x.V)})
+		}
+		return x.V
+	case *TypedNil:
+		return mapKey{typ: typeTagOf(x.Typ), repr: "nil"}
+	case *IfaceNil:
+		return mapKey{typ: typeTagOf(x.Typ), repr: "nil"}
+	case *Cell, *FieldRef, *IndexRef, *Chan:
+		// pointer-shaped keys hash by identity — the wrapper itself
+		// is comparable and stable.
+		return x
+	default:
+		return x
+	}
+}
+
+var keyNonce atomic.Int64
+
+// writeKeyRepr renders composite key contents canonically: "K{1,2}".
+// A NaN field anywhere emits a unique nonce instead — Go maps never
+// match a NaN-bearing key, even against itself.
+func writeKeyRepr(sb *strings.Builder, elems []Value) {
+	sb.WriteByte('{')
+	for i, e := range elems {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		writeKeyElem(sb, e)
+	}
+	sb.WriteByte('}')
+}
+
+func writeKeyElem(sb *strings.Builder, v Value) {
+	switch x := Unwrap(v).(type) {
+	case *Struct:
+		sb.WriteString(typeTagOf(x.Def))
+		writeKeyRepr(sb, x.Fields)
+	case *Slice:
+		if !arrayTypedef(x.Typ) {
+			panic(&Panic{Value: "runtime error: hash of unhashable type " + typeTagOf(x.Typ)})
+		}
+		writeKeyRepr(sb, x.Elems)
+	case float64:
+		if x != x { // NaN
+			sb.WriteString(fmt.Sprintf("NaN#%d", nextKeyNonce()))
+			return
+		}
+		fmt.Fprintf(sb, "%v", x)
+	case *Cell, *FieldRef, *IndexRef, *Chan:
+		fmt.Fprintf(sb, "%p", x)
+	case *GoValue:
+		writeKeyElem(sb, fmt.Sprintf("%#v", x.V))
+	case *TypedNil, *IfaceNil, Nil:
+		sb.WriteString("nil")
+	default:
+		fmt.Fprintf(sb, "%v", x)
+	}
+}
+
+func nextKeyNonce() int64 {
+	return keyNonce.Add(1)
+}
+
+// arrayTypedef reports whether a typedef is a fixed-size array — its
+// underlying AST is an ArrayType carrying a length (slices have none).
+func arrayTypedef(td *TypeDef) bool {
+	if td == nil {
+		return false
+	}
+	x := td.Anon
+	if x == nil && td.Spec != nil {
+		x = td.Spec.Type
+	}
+	at, ok := x.(*ast.ArrayType)
+	return ok && at.Len != nil
+}
+
+func typeTagOf(td *TypeDef) string {
+	if td == nil {
+		return "?"
+	}
+	if td.Name != "" {
+		if td.Pkg != nil && td.Pkg.Path != "" {
+			return td.Pkg.Path + "." + td.Name
+		}
+		return td.Name
+	}
+	x := td.Anon
+	if x == nil && td.Spec != nil {
+		x = td.Spec.Type
+	}
+	if x != nil {
+		return anonTag(x)
+	}
+	return fmt.Sprintf("%p", td)
+}
+
+// anonTag renders an anonymous type for a canonical-key tag: the
+// structural spelling keeps two separately-written `struct{A int}` keys
+// equal, like Go's identical-type rule for unnamed types.
+func anonTag(e ast.Expr) string {
+	switch t := e.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.StarExpr:
+		return "*" + anonTag(t.X)
+	case *ast.ArrayType:
+		n := ""
+		if t.Len != nil {
+			switch l := t.Len.(type) {
+			case *ast.BasicLit:
+				n = l.Value
+			case *ast.Ident:
+				n = l.Name
+			case *ast.Ellipsis:
+				n = "..."
+			}
+		}
+		return "[" + n + "]" + anonTag(t.Elt)
+	case *ast.MapType:
+		return "map[" + anonTag(t.Key) + "]" + anonTag(t.Value)
+	case *ast.ChanType:
+		return "chan " + anonTag(t.Value)
+	case *ast.SelectorExpr:
+		return anonTag(t.X) + "." + t.Sel.Name
+	case *ast.IndexExpr:
+		return anonTag(t.X) + "[" + anonTag(t.Index) + "]"
+	case *ast.IndexListExpr:
+		var sb strings.Builder
+		sb.WriteString(anonTag(t.X))
+		sb.WriteByte('[')
+		for i, ix := range t.Indices {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			sb.WriteString(anonTag(ix))
+		}
+		sb.WriteByte(']')
+		return sb.String()
+	case *ast.ParenExpr:
+		return anonTag(t.X)
+	case *ast.Ellipsis:
+		return "[]" + anonTag(t.Elt)
+	case *ast.StructType:
+		var sb strings.Builder
+		sb.WriteString("struct{")
+		for i, f := range t.Fields.List {
+			if i > 0 {
+				sb.WriteByte(';')
+			}
+			for j, n := range f.Names {
+				if j > 0 {
+					sb.WriteByte(',')
+				}
+				sb.WriteString(n.Name)
+			}
+			sb.WriteString(":" + anonTag(f.Type))
+		}
+		sb.WriteString("}")
+		return sb.String()
+	case *ast.InterfaceType:
+		return "interface{}"
+	case *ast.FuncType:
+		return "func()"
+	}
+	return fmt.Sprintf("%T", e)
 }
 
 // Tuple packs multiple values (multi return / multi assign).
@@ -630,6 +836,14 @@ func (p *Panic) Error() string {
 		s += "\n" + p.GoStack
 	}
 	return s
+}
+
+// PanicNilError is the payload recover() sees for panic(nil), matching
+// the *runtime.PanicNilError Go produces since 1.21.
+type PanicNilError struct{}
+
+func (*PanicNilError) Error() string {
+	return "runtime error: panic called with nil argument"
 }
 
 // panicValue renders the panic payload for messages: a boxed host value

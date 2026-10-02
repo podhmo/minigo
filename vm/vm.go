@@ -12,6 +12,7 @@ import (
 	"os"
 	"reflect"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -333,8 +334,8 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value) (runtime.Value, er
 			}
 			return v.convert(c, args[0])
 		case *runtime.TypedNil, *runtime.IfaceNil:
-			// calling a nil function value panics in Go
-			panic(&runtime.Panic{Value: "call of nil function"})
+			// calling a nil function value panics like a nil deref in Go
+			panic(&runtime.Panic{Value: "runtime error: invalid memory address or nil pointer dereference"})
 		case *runtime.Named:
 			// a value of a named func type calls through its underlying
 			callee = c.V
@@ -799,6 +800,11 @@ func (v *VM) loop(f *frame) {
 		case bytecode.OpIndexRef:
 			key := f.pop()
 			base := f.pop()
+			if _, isMap := runtime.Unwrap(base).(*runtime.Map); isMap {
+				// Go rejects &m[k] at compile time: map elements are
+				// not addressable. The nearest loud failure is a trap.
+				f.trap("cannot take the address of map element")
+			}
 			f.push(&runtime.IndexRef{Base: base, Key: key})
 		case bytecode.OpSwap:
 			n := len(f.stack)
@@ -876,7 +882,11 @@ func (v *VM) loop(f *frame) {
 			f.push(v.slice(f, base, lo, hi))
 		case bytecode.OpDeref:
 			x := f.pop()
-			if dv, ok := runtime.Deref(x); ok {
+			if td, ok := x.(*runtime.TypeDef); ok {
+				// `(*T)` in a method-expression position evaluates to the
+				// pointer typedef so selectMember can bind pointer methods.
+				f.push(&runtime.TypeDef{Kind: runtime.KindPointer, Anon: &ast.StarExpr{X: typeExprFor(td)}, Pkg: td.Pkg, File: td.File})
+			} else if dv, ok := runtime.Deref(x); ok {
 				f.push(dv)
 			} else if tn, ok := asTypedNil(x); ok {
 				// *p on a nil pointer panics; on other nilables it's invalid
@@ -1444,7 +1454,20 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		}
 		f.trap("select %s on %T", name, dv)
 	case *runtime.TypeDef:
+		if _, isPtr := b.Anon.(*ast.StarExpr); isPtr {
+			// `(*T).M` — a pointer method expression sees the full
+			// method set (value and pointer receivers alike).
+			if et := v.elemTypedef(f, b); et != nil {
+				if m, ok := et.Methods[name]; ok {
+					return m
+				}
+			}
+			f.trap("type %s has no method %s", tdName(b), name)
+		}
 		if m, ok := b.Methods[name]; ok {
+			if m.PtrRecv {
+				f.trap("invalid method expression %s.%s (needs pointer receiver)", tdName(b), name)
+			}
 			return m // method expression: T.M(recv, ...)
 		}
 		f.trap("type %s has no method %s", b.Name, name)
@@ -1692,7 +1715,8 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 			return reflect.Value{}, fmt.Errorf("cannot convert script map to %s", t)
 		}
 		out := reflect.MakeMapWithSize(t, len(x.Pairs))
-		for k, e := range x.Pairs {
+		for _, k := range x.Order {
+			e := x.Pairs[runtime.CanonicalKey(k)]
 			kv, err := toReflectValue(k, t.Key(), vc)
 			if err != nil {
 				return reflect.Value{}, fmt.Errorf("map key: %w", err)
@@ -1934,6 +1958,16 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 			f.trap("set field %s: %s", name, err)
 		}
 		fv.Set(nv)
+	case *runtime.TypedNil:
+		if b.Typ != nil && b.Typ.Kind == runtime.KindPointer {
+			panic(&runtime.Panic{Value: "runtime error: invalid memory address or nil pointer dereference"})
+		}
+		f.trap("set field %s on nil %s", name, tdName(b.Typ))
+	case *runtime.IfaceNil:
+		if b.Typ != nil && b.Typ.Kind == runtime.KindPointer {
+			panic(&runtime.Panic{Value: "runtime error: invalid memory address or nil pointer dereference"})
+		}
+		f.trap("set field %s on nil %s", name, tdName(b.Typ))
 	default:
 		f.trap("set field %s on %T", name, base)
 	}
@@ -1954,7 +1988,7 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 		case runtime.KindMap:
 			return v.mapZero(f, b.Typ) // reading a nil map yields the zero value
 		case runtime.KindSlice:
-			panic(&runtime.Panic{Value: "runtime error: index out of range"})
+			panic(&runtime.Panic{Value: fmt.Sprintf("runtime error: index out of range [%v] with length 0", runtime.Unwrap(idx))})
 		default:
 			f.trap("index on nil %s", tdName(b.Typ))
 		}
@@ -1965,7 +1999,7 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 		}
 		return b.Elems[i]
 	case *runtime.Map:
-		val, found := b.Pairs[idx]
+		val, found := b.Pairs[runtime.CanonicalKey(idx)]
 		if !found {
 			val = v.mapZero(f, b.Typ)
 		}
@@ -2204,15 +2238,70 @@ func (v *VM) embedValue(f *frame, st *runtime.Struct, i int, td *runtime.TypeDef
 
 // elemTypedef resolves the element type of a container typedef (nil when
 // unresolvable — callers then pass values through or reject).
-func (v *VM) elemTypedef(td *runtime.TypeDef) *runtime.TypeDef {
+func (v *VM) elemTypedef(f *frame, td *runtime.TypeDef) *runtime.TypeDef {
 	if td == nil || v.H.ElemOf == nil {
 		return nil
 	}
 	et, err := v.H.ElemOf(v.peelNamed(td))
-	if err != nil {
-		return nil
+	if err == nil && et != nil {
+		return et
 	}
-	return et
+	// the element may be named by a function-local `type` decl — the
+	// package index cannot see those, but the typedef sits in this
+	// frame's locals like any other local constant.
+	if f != nil {
+		return v.localElemTypedef(f, td)
+	}
+	return nil
+}
+
+// localElemTypedef resolves a container's element typedef when its AST
+// names a function-local type: walk the underlying type expression to the
+// element name, then find that typedef among the frame's locals/upvals.
+func (v *VM) localElemTypedef(f *frame, td *runtime.TypeDef) *runtime.TypeDef {
+	u := v.peelNamed(td)
+	x := u.Anon
+	if x == nil && u.Spec != nil {
+		x = u.Spec.Type
+	}
+	for x != nil {
+		switch t := x.(type) {
+		case *ast.ParenExpr:
+			x = t.X
+		case *ast.Ellipsis:
+			x = t.Elt
+		case *ast.StarExpr:
+			x = t.X
+		case *ast.ArrayType:
+			x = t.Elt
+		case *ast.MapType:
+			x = t.Value
+		case *ast.ChanType:
+			x = t.Value
+		default:
+			if id, ok := x.(*ast.Ident); ok {
+				return v.localTypedefOf(f, id.Name)
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
+// localTypedefOf finds a typedef value bound as a local constant — how a
+// `type` decl inside a function body stores its typedef.
+func (v *VM) localTypedefOf(f *frame, name string) *runtime.TypeDef {
+	for _, cells := range [2][]*runtime.Cell{f.locals, f.upvals} {
+		for _, c := range cells {
+			if c == nil {
+				continue
+			}
+			if td, ok := c.Elem.(*runtime.TypeDef); ok && td.Name == name {
+				return td
+			}
+		}
+	}
+	return nil
 }
 
 // mapZero is the value a map read produces for a missing key or a nil
@@ -2251,7 +2340,7 @@ func (v *VM) indexOK(f *frame, base, idx runtime.Value) runtime.Value {
 		return &runtime.Tuple{Elems: []runtime.Value{v.index(f, base, idx), true}}
 	}
 	if m, ok := base.(*runtime.Map); ok {
-		val, found := m.Pairs[idx]
+		val, found := m.Pairs[runtime.CanonicalKey(idx)]
 		if !found {
 			val = v.mapZero(f, m.Typ)
 		}
@@ -2278,7 +2367,7 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 		case runtime.KindMap:
 			panic(&runtime.Panic{Value: "assignment to entry in nil map"})
 		case runtime.KindSlice:
-			panic(&runtime.Panic{Value: "runtime error: index out of range"})
+			panic(&runtime.Panic{Value: fmt.Sprintf("runtime error: index out of range [%v] with length 0", runtime.Unwrap(idx))})
 		default:
 			f.trap("index assign on nil %s", tdName(b.Typ))
 		}
@@ -2288,7 +2377,7 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 			f.trap("slice index is %T", idx)
 		}
 		// the slice's declared element type constrains the write.
-		if et := v.elemTypedef(b.Typ); et != nil {
+		if et := v.elemTypedef(f, b.Typ); et != nil {
 			val = v.coerce(f, val, et)
 		}
 		b.Elems[i] = val
@@ -2297,13 +2386,14 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 			f.trap("map key %T is not comparable", idx)
 		}
 		// the map's declared element type constrains the write.
-		if et := v.elemTypedef(b.Typ); et != nil {
+		if et := v.elemTypedef(f, b.Typ); et != nil {
 			val = v.coerce(f, val, et)
 		}
-		if _, exists := b.Pairs[idx]; !exists {
+		ck := runtime.CanonicalKey(idx)
+		if _, exists := b.Pairs[ck]; !exists {
 			b.Order = append(b.Order, idx)
 		}
-		b.Pairs[idx] = val
+		b.Pairs[ck] = val
 	default:
 		f.trap("index assign on %T", base)
 	}
@@ -2331,7 +2421,7 @@ func (v *VM) slice(f *frame, base, lo, hi runtime.Value) runtime.Value {
 		return b
 	case *runtime.Slice:
 		l, h := bounds(f, lo, hi, int64(len(b.Elems)))
-		return &runtime.Slice{Elems: b.Elems[l:h], Typ: b.Typ}
+		return &runtime.Slice{Elems: b.Elems[l:h], Typ: sliceTypOf(b.Typ)}
 	case string:
 		l, h := bounds(f, lo, hi, int64(len(b)))
 		return b[l:h]
@@ -2388,6 +2478,37 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 	switch td.Kind {
 	case runtime.KindSlice:
 		s := &runtime.Slice{Typ: td}
+		if an, isArr := v.arrayLen(f, td); isArr {
+			// an array literal keeps its declared length: unlisted
+			// elements are the element zero; overruns and out-of-range
+			// indexes are a compile reject — surfaced as a trap here.
+			et := v.elemTypedef(f, td)
+			zv := v.zeroValue(f, et)
+			s.Elems = make([]runtime.Value, an)
+			for i := range s.Elems {
+				s.Elems[i] = zv
+			}
+			if kv {
+				for i := 0; i < n; i++ {
+					ival, ok := raw[i*2].(int64)
+					if !ok {
+						f.trap("array literal index %T", raw[i*2])
+					}
+					if ival < 0 || ival >= an {
+						f.trap("array index %d out of bounds [0:%d]", ival, an)
+					}
+					s.Elems[ival] = v.coerce(f, raw[i*2+1], et)
+				}
+			} else {
+				if int64(n) > an {
+					f.trap("index %d out of bounds [0:%d] in array literal", an, an)
+				}
+				for i := range raw {
+					s.Elems[i] = v.coerce(f, raw[i], et)
+				}
+			}
+			return s
+		}
 		if kv {
 			// indexed literal: size is max index + 1, gaps are zero
 			max := int64(-1)
@@ -2410,7 +2531,7 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 		} else {
 			// elements coerce to the declared element type — `[]any{x}`
 			// boxes a typed nil while `[]*int{x}` keeps it
-			et := v.elemTypedef(td)
+			et := v.elemTypedef(f, td)
 			for i := range raw {
 				raw[i] = v.coerce(f, raw[i], et)
 			}
@@ -2419,11 +2540,14 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 		return s
 	case runtime.KindMap:
 		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}, Typ: td}
-		et := v.elemTypedef(td)
+		et := v.elemTypedef(f, td)
 		for i := 0; i < n; i++ {
 			k := runtime.Unwrap(raw[i*2])
-			m.Pairs[k] = v.coerce(f, raw[i*2+1], et)
-			m.Order = append(m.Order, k)
+			ck := runtime.CanonicalKey(k)
+			if _, exists := m.Pairs[ck]; !exists {
+				m.Order = append(m.Order, k)
+			}
+			m.Pairs[ck] = v.coerce(f, raw[i*2+1], et)
 		}
 		return m
 	case runtime.KindPointer:
@@ -2563,6 +2687,17 @@ func valueCopy(v runtime.Value) runtime.Value {
 		cp := &runtime.Struct{Def: x.Def, Fields: make([]runtime.Value, len(x.Fields))}
 		copy(cp.Fields, x.Fields)
 		return cp
+	case *runtime.Slice:
+		// arrays copy on assignment like structs — nested arrays copy
+		// recursively. Plain slices share their backing (Go semantics).
+		if isArrayTyp(x.Typ) {
+			el := make([]runtime.Value, len(x.Elems))
+			for i, e := range x.Elems {
+				el[i] = valueCopy(e)
+			}
+			return &runtime.Slice{Elems: el, Typ: x.Typ}
+		}
+		return v
 	case *runtime.Named:
 		// assignment copies the underlying value but keeps the declared tag
 		return &runtime.Named{Typ: x.Typ, V: valueCopy(x.V)}
@@ -2598,7 +2733,7 @@ func (v *VM) runInit(fn *runtime.Function) error {
 func (v *VM) chanOf(f *frame, x runtime.Value) (reflect.Value, *runtime.TypeDef) {
 	switch c := x.(type) {
 	case *runtime.Chan:
-		return reflect.ValueOf(c.C), v.elemTypedef(c.Typ)
+		return reflect.ValueOf(c.C), v.elemTypedef(f, c.Typ)
 	case *runtime.Cell:
 		return v.chanOf(f, c.Elem)
 	case *runtime.Named:
@@ -2609,7 +2744,7 @@ func (v *VM) chanOf(f *frame, x runtime.Value) (reflect.Value, *runtime.TypeDef)
 		if c.Typ != nil && c.Typ.Kind == runtime.KindChan {
 			// a nil channel never becomes ready — it parks the op
 			// (blocking forever at the root, as Go's deadlock does)
-			return nilChanRV, v.elemTypedef(c.Typ)
+			return nilChanRV, v.elemTypedef(f, c.Typ)
 		}
 		f.trap("channel operation on %T", x)
 	case *runtime.GoValue:
@@ -2686,11 +2821,11 @@ func (v *VM) newIterator(f *frame, coll runtime.Value) *runtime.Iterator {
 	case *runtime.Map:
 		it := &runtime.Iterator{Kind: 'm', Keys: c.Order}
 		for _, k := range c.Order {
-			it.Elems = append(it.Elems, c.Pairs[k])
+			it.Elems = append(it.Elems, c.Pairs[runtime.CanonicalKey(k)])
 		}
 		return it
 	case *runtime.Chan:
-		return &runtime.Iterator{Kind: 'c', ChRV: reflect.ValueOf(c.C), ETyp: v.elemTypedef(c.Typ)}
+		return &runtime.Iterator{Kind: 'c', ChRV: reflect.ValueOf(c.C), ETyp: v.elemTypedef(f, c.Typ)}
 	case *runtime.GoValue:
 		if rv := reflect.ValueOf(c.V); rv.IsValid() && rv.Kind() == reflect.Chan {
 			return &runtime.Iterator{Kind: 'c', ChRV: rv}
@@ -2709,7 +2844,7 @@ func (v *VM) newIterator(f *frame, coll runtime.Value) *runtime.Iterator {
 		// range over a nil slice/map iterates zero times
 		if tn, ok := coll.(*runtime.TypedNil); ok && tn.Typ != nil && tn.Typ.Kind == runtime.KindChan {
 			// a nil channel range blocks forever, as in Go
-			return &runtime.Iterator{Kind: 'c', ChRV: nilChanRV, ETyp: v.elemTypedef(tn.Typ)}
+			return &runtime.Iterator{Kind: 'c', ChRV: nilChanRV, ETyp: v.elemTypedef(f, tn.Typ)}
 		}
 		return &runtime.Iterator{Kind: 's'}
 	case nil, runtime.Nil:
@@ -2894,8 +3029,11 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 	}
 	if tag != nil {
 		res := binaryOp(f, op, a, b)
+		if iv, ok := res.(int64); ok {
+			return &runtime.Named{Typ: tag, V: maskInt(iv, sizedNameOf(tag))}
+		}
 		switch res.(type) {
-		case int64, float64, string:
+		case float64, string:
 			return &runtime.Named{Typ: tag, V: res}
 		}
 		return res
@@ -3032,11 +3170,15 @@ func unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value {
 		tag, a = n.Typ, n.V
 	}
 	// unary results keep the operand's declared type (-x, +x, ^x, !x are
-	// all typed T when x is T); a bare result stays bare.
+	// all typed T when x is T); a bare result stays bare. A sized-int
+	// operand wraps the result to its width — -uint8(5) is 251, not -5.
 	retag := func(r runtime.Value) runtime.Value {
 		if tag != nil {
+			if iv, ok := r.(int64); ok {
+				return &runtime.Named{Typ: tag, V: maskInt(iv, sizedNameOf(tag))}
+			}
 			switch r.(type) {
-			case int64, float64, string, bool:
+			case float64, string, bool:
 				return &runtime.Named{Typ: tag, V: r}
 			}
 		}
@@ -3063,6 +3205,41 @@ func unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value {
 	}
 	f.trap("unary %s on %T", op, a)
 	return nil
+}
+
+// structDefsEq reports whether two struct typedefs are the same type:
+// identical pointers, or two anonymous struct typedefs carrying the same
+// field-name list — Go treats `struct{A int}` written twice as one type.
+func structDefsEq(a, b *runtime.TypeDef) bool {
+	if a == b {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	if a.Name != "" || b.Name != "" {
+		return a.Name == b.Name && a.Pkg == b.Pkg
+	}
+	if len(a.Fields) != len(b.Fields) {
+		return false
+	}
+	for i := range a.Fields {
+		if a.Fields[i] != b.Fields[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// ifaceTagOf spells the static interface side of a failed type assertion:
+// `interface {} is string, not int`. The static type only survives on
+// IfaceNil; concrete values unwrap early, so it falls back to the empty
+// interface spelling.
+func ifaceTagOf(x runtime.Value) string {
+	if in, ok := x.(*runtime.IfaceNil); ok && in.Typ != nil && in.Typ.Name != "" {
+		return tdName(in.Typ)
+	}
+	return "interface {}"
 }
 
 func eqlValue(a, b runtime.Value) bool {
@@ -3116,7 +3293,132 @@ func eqlValue(a, b runtime.Value) bool {
 		}
 		return false
 	}
+	switch av := a.(type) {
+	case *runtime.Struct:
+		// structs compare field-wise in Go; the defs must name the same
+		// type — anonymous struct typedefs with the same field list are
+		// the same type (Go's identical-underlying rule).
+		bs, ok := b.(*runtime.Struct)
+		if !ok || !structDefsEq(av.Def, bs.Def) || len(av.Fields) != len(bs.Fields) {
+			return false
+		}
+		for i := range av.Fields {
+			if !eqlValue(av.Fields[i], bs.Fields[i]) {
+				return false
+			}
+		}
+		return true
+	case *runtime.Slice:
+		if bs, ok := b.(*runtime.Slice); ok {
+			// array-typed values compare element-wise; plain slices are
+			// uncomparable and the comparison panics, like Go.
+			if isArrayTyp(av.Typ) && isArrayTyp(bs.Typ) {
+				if len(av.Elems) != len(bs.Elems) {
+					return false
+				}
+				for i := range av.Elems {
+					if !eqlValue(av.Elems[i], bs.Elems[i]) {
+						return false
+					}
+				}
+				return true
+			}
+			panic(&runtime.Panic{Value: "runtime error: comparing uncomparable type " + kindName(av)})
+		}
+		return false
+	case *runtime.Map:
+		if _, ok := b.(*runtime.Map); ok {
+			panic(&runtime.Panic{Value: "runtime error: comparing uncomparable type " + kindName(av)})
+		}
+		return false
+	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
+		switch b.(type) {
+		case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
+			panic(&runtime.Panic{Value: "runtime error: comparing uncomparable type func"})
+		}
+		return false
+	case *runtime.Chan:
+		if _, ok := b.(*runtime.Chan); ok {
+			return a == b // channel identity
+		}
+		return false
+	}
 	return a == b // pointers, strings, bools
+}
+
+// isArrayTyp reports whether td keeps a fixed array length — the value
+// it types is an array (copying, comparable), not a slice.
+func isArrayTyp(td *runtime.TypeDef) bool {
+	if td == nil {
+		return false
+	}
+	x := td.Anon
+	if x == nil && td.Spec != nil {
+		x = td.Spec.Type
+	}
+	at, ok := x.(*ast.ArrayType)
+	return ok && at.Len != nil
+}
+
+// arrayASTOf returns the ArrayType AST behind an array typedef (Anon or
+// the named spec's type).
+func arrayASTOf(td *runtime.TypeDef) *ast.ArrayType {
+	if td == nil {
+		return nil
+	}
+	x := td.Anon
+	if x == nil && td.Spec != nil {
+		x = td.Spec.Type
+	}
+	at, _ := x.(*ast.ArrayType)
+	return at
+}
+
+// sliceTypOf: slicing an array-typed value yields the slice type []Elem —
+// `a[1:]` on [4]int is []int, not [4]int. Carrying the array typedef
+// would make later binds deep-copy it like an array (losing the shared
+// backing) and would key it differently as a map key.
+func sliceTypOf(td *runtime.TypeDef) *runtime.TypeDef {
+	at := arrayASTOf(td)
+	if at == nil || at.Len == nil {
+		return td
+	}
+	return &runtime.TypeDef{
+		Kind: runtime.KindSlice,
+		Elem: td.Elem,
+		Anon: &ast.ArrayType{Elt: at.Elt},
+	}
+}
+
+// kindName names a value's type for runtime-error messages.
+func kindName(v runtime.Value) string {
+	switch x := v.(type) {
+	case *runtime.Slice:
+		if x.Typ != nil {
+			return tdName(x.Typ)
+		}
+		return "slice"
+	case *runtime.Map:
+		if x.Typ != nil {
+			return tdName(x.Typ)
+		}
+		return "map"
+	}
+	return fmt.Sprintf("%T", v)
+}
+
+// typeExprFor renders a typedef back to a type expression for synthetic
+// wrappers like the `(*T)` of a pointer method expression. Named types
+// render as the name so a later ResolveType finds the declaration (and
+// its methods) through the package index.
+func typeExprFor(td *runtime.TypeDef) ast.Expr {
+	if td.Name != "" {
+		return ast.NewIdent(td.Name)
+	}
+	if td.Anon != nil {
+		return td.Anon
+	}
+	return ast.NewIdent("interface{}")
 }
 
 // sameTypeDef reports whether two typedefs name the same type: identical
@@ -3181,6 +3483,22 @@ func bindArgEq(a, b runtime.Value) bool {
 // typeExprName renders a type AST to a comparable shape string for
 // anonymous-type identity (approximation: structural equality by shape,
 // not by the go/types identity rules).
+// lenExprName renders an array-length expression inside a type-identity
+// spelling — the `3` of `[3]int`, a named const, or `...`.
+func lenExprName(e ast.Expr) string {
+	switch l := e.(type) {
+	case nil:
+		return ""
+	case *ast.BasicLit:
+		return l.Value
+	case *ast.Ident:
+		return l.Name
+	case *ast.Ellipsis:
+		return "..."
+	}
+	return fmt.Sprintf("%T", e)
+}
+
 func typeExprName(e ast.Expr) string {
 	switch t := e.(type) {
 	case *ast.Ident:
@@ -3188,7 +3506,7 @@ func typeExprName(e ast.Expr) string {
 	case *ast.StarExpr:
 		return "*" + typeExprName(t.X)
 	case *ast.ArrayType:
-		return "[]" + typeExprName(t.Elt)
+		return "[" + lenExprName(t.Len) + "]" + typeExprName(t.Elt)
 	case *ast.MapType:
 		return "map[" + typeExprName(t.Key) + "]" + typeExprName(t.Value)
 	case *ast.ChanType:
@@ -3239,7 +3557,7 @@ func typeExprNameCtx(e ast.Expr, file *syntax.File, pkg *runtime.Package) string
 	case *ast.StarExpr:
 		return "*" + typeExprNameCtx(t.X, file, pkg)
 	case *ast.ArrayType:
-		return "[]" + typeExprNameCtx(t.Elt, file, pkg)
+		return "[" + lenExprName(t.Len) + "]" + typeExprNameCtx(t.Elt, file, pkg)
 	case *ast.MapType:
 		return "map[" + typeExprNameCtx(t.Key, file, pkg) + "]" + typeExprNameCtx(t.Value, file, pkg)
 	case *ast.ChanType:
@@ -3404,15 +3722,18 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 	switch td.Name {
 	case "int", "int8", "int16", "int32", "int64",
 		"uint", "uint8", "uint16", "uint32", "uint64", "byte", "rune", "uintptr":
+		var iv int64
 		switch n := x.(type) {
 		case int64:
-			return n, nil
+			iv = n
 		case float64:
-			return int64(n), nil
+			iv = int64(n)
 		case string:
-			return int64([]rune(n)[0]), nil // int("x") is the first rune's code point
+			iv = int64([]rune(n)[0]) // int("x") is the first rune's code point
+		default:
+			return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), td.Name)
 		}
-		return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), td.Name)
+		return maskInt(iv, td.Name), nil
 	case "float64", "float32":
 		switch x.(type) {
 		case int64, float64:
@@ -3431,7 +3752,7 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 			fam := byte('b')
 			tn := "[]byte"
 			if sx.Typ != nil {
-				fam = v.elemFamily(v.elemTypedef(sx.Typ))
+				fam = v.elemFamily(v.elemTypedef(v.topFrame(), sx.Typ))
 				tn = tdName(sx.Typ)
 			}
 			switch fam {
@@ -3585,7 +3906,7 @@ func anonSliceTyp(name string) *runtime.TypeDef {
 func (v *VM) convertSlice(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error) {
 	switch s := x.(type) {
 	case string:
-		switch v.elemFamily(v.elemTypedef(td)) {
+		switch v.elemFamily(v.elemTypedef(v.topFrame(), td)) {
 		case 'b':
 			el := make([]runtime.Value, 0, len(s))
 			for _, b := range []byte(s) {
@@ -3601,6 +3922,14 @@ func (v *VM) convertSlice(td *runtime.TypeDef, x runtime.Value) (runtime.Value, 
 		}
 		return nil, fmt.Errorf("cannot convert string to %s", tdName(td))
 	case *runtime.Slice:
+		if an, isArr := v.arrayLen(v.topFrame(), td); isArr {
+			// [N]T(s) — slice-to-array conversion copies the first N
+			// elements (too-short slices panic like Go's runtime check).
+			if int64(len(s.Elems)) < an {
+				panic(&runtime.Panic{Value: fmt.Sprintf("runtime error: cannot convert slice with length %d to array or pointer to array with length %d", len(s.Elems), an)})
+			}
+			return v.copyArray(v.topFrame(), &runtime.Slice{Elems: s.Elems[:an], Typ: td}, td), nil
+		}
 		if s.Typ != nil && !v.convShapeEq(s.Typ, td) {
 			return nil, fmt.Errorf("cannot convert %s to %s", tdName(s.Typ), tdName(td))
 		}
@@ -3645,6 +3974,18 @@ func (v *VM) convertChan(td *runtime.TypeDef, x runtime.Value) (runtime.Value, e
 // the conversion checks the pointee's declared shape when one is known
 // and passes the pointer itself through.
 func (v *VM) convertPointer(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error) {
+	if s, isSlice := runtime.Unwrap(x).(*runtime.Slice); isSlice {
+		// (*[N]T)(s) — slice-to-array-pointer conversion shares the
+		// slice's backing array (too-short slices panic like Go's).
+		if et := v.elemTypedef(v.topFrame(), td); et != nil {
+			if an, isArr := v.arrayLen(v.topFrame(), et); isArr {
+				if int64(len(s.Elems)) < an {
+					panic(&runtime.Panic{Value: fmt.Sprintf("runtime error: cannot convert slice with length %d to array or pointer to array with length %d", len(s.Elems), an)})
+				}
+				return &runtime.Cell{Elem: &runtime.Slice{Elems: s.Elems[:an], Typ: et}}, nil
+			}
+		}
+	}
 	if _, ok := runtime.Deref(x); !ok {
 		return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
 	}
@@ -3917,7 +4258,7 @@ func (v *VM) typeAssert(f *frame, x, tdv runtime.Value, pos token.Pos) runtime.V
 	if v.typeMatches(f, td, x) {
 		return unboxAsserted(x, td)
 	}
-	panic(&runtime.Panic{Value: fmt.Sprintf("interface conversion: %s is not %s", typeNameOf(x), tdName(td))})
+	panic(&runtime.Panic{Value: fmt.Sprintf("interface conversion: %s is %s, not %s", ifaceTagOf(x), typeNameOf(x), tdName(td))})
 }
 
 // typeAssertOK implements the comma-ok form: pushes Tuple{val, ok}.
@@ -4183,6 +4524,12 @@ func (v *VM) memberOfType(f *frame, td *runtime.TypeDef, name string, recv runti
 				}
 			}
 			r := recv
+			if in, isNil := r.(*runtime.IfaceNil); isNil {
+				// an interface holding a nil binds the concrete typed
+				// nil as the receiver — `var i I = (*P)(nil); i.M()`
+				// calls M on (*P)(nil), not on a nil interface.
+				r = &runtime.TypedNil{Typ: in.Typ}
+			}
 			if !m.PtrRecv {
 				if dv, ok := runtime.Deref(r); ok {
 					r = valueCopy(dv)
@@ -4482,6 +4829,18 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 	if !v.shapeOK(f, x, utd) {
 		f.trap("cannot use %s as %s", typeNameOf(x), tdName(td))
 	}
+	// array-typed slots copy on assignment: `var b = a` owns its own
+	// backing array, like Go's value semantics for arrays.
+	if _, isArr := v.arrayLen(f, utd); isArr {
+		if s, ok := x.(*runtime.Slice); ok {
+			x = v.copyArray(f, s, utd)
+		}
+	}
+	// a sized-int slot wraps like a conversion — `var x int8 = y`
+	// keeps the low byte of a non-constant operand.
+	if iv, ok := runtime.Unwrap(x).(int64); ok && !declaredType(utd) {
+		x = maskInt(iv, utd.Name)
+	}
 	switch utd.Kind {
 	case runtime.KindMap, runtime.KindSlice, runtime.KindChan:
 		if ct := containerTyp(x); ct == nil {
@@ -4503,7 +4862,11 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 	}
 	switch td.Kind {
 	case runtime.KindNamedBasic:
-		if declaredType(td) {
+		// declared types and sized-int builtins tag the bound value —
+		// without the tag, arithmetic on `var x uint8` loses its width
+		// (maskInt at bind time wraps the constant, but -x has nothing
+		// to re-wrap against).
+		if declaredType(td) || sizedIntName(td.Name) {
 			return &runtime.Named{Typ: td, V: x}
 		}
 	case runtime.KindPointer, runtime.KindFunc:
@@ -4703,6 +5066,16 @@ func (v *VM) zeroSeen(f *frame, td *runtime.TypeDef, seen map[*runtime.TypeDef]b
 	// zeros as "" and `type A B` chains resolve transitively. The cap
 	// keeps a self-referential chain from looping forever.
 	td = v.peelNamed(td)
+	// an array typedef materializes a fixed-length slice of element
+	// zeros — `var a [3]int` yields [0 0 0], not a nil slice.
+	if n, isArr := v.arrayLen(f, td); isArr {
+		zv := v.zeroSeen(f, v.elemTypedef(f, td), seen)
+		el := make([]runtime.Value, n)
+		for i := range el {
+			el[i] = zv
+		}
+		return v.wrapZero(orig, &runtime.Slice{Elems: el, Typ: td})
+	}
 	z := runtime.Zero(td)
 	s, ok := z.(*runtime.Struct)
 	if ok && v.H.FieldTypes != nil {
@@ -4743,6 +5116,126 @@ func (v *VM) wrapZero(td *runtime.TypeDef, z runtime.Value) runtime.Value {
 // Zero implements the VMCaller hook for the new() builtin.
 func (v *VM) Zero(td *runtime.TypeDef) runtime.Value {
 	return v.zeroSeen(nil, td, map[*runtime.TypeDef]bool{})
+}
+
+// ElemZero returns the element-type zero of a container typedef — the
+// value make() fills a new slice with.
+// topFrame returns the innermost running frame — the caller whose locals
+// may hold a function-local typedef — or nil outside a call.
+func (v *VM) topFrame() *frame {
+	if n := len(v.frames); n > 0 {
+		return v.frames[n-1]
+	}
+	return nil
+}
+
+func (v *VM) ElemZero(td *runtime.TypeDef) runtime.Value {
+	et := v.elemTypedef(v.topFrame(), td)
+	if et == nil {
+		return runtime.NIL
+	}
+	return v.zeroSeen(nil, et, map[*runtime.TypeDef]bool{})
+}
+
+// arrayLen reports the element count of an array typedef — an
+// *ast.ArrayType that kept its length. The length may be a literal
+// (`[3]int`) or a package-level const name (`[N]int`); slice typedefs
+// and `[...]T` forms report ok=false.
+func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
+	if td == nil {
+		return 0, false
+	}
+	at, ok := td.Anon.(*ast.ArrayType)
+	if !ok || at.Len == nil {
+		return 0, false
+	}
+	switch l := at.Len.(type) {
+	case *ast.BasicLit:
+		n, err := strconv.ParseInt(l.Value, 0, 64)
+		return n, err == nil
+	case *ast.Ident:
+		// a named const: resolve through the typedef's package index.
+		if td.Pkg != nil && td.Pkg.Index != nil && v.H.Materialize != nil {
+			if d := td.Pkg.Index.Consts[l.Name]; d != nil {
+				if mv, err := v.H.Materialize(td.Pkg, d); err == nil {
+					if n, ok := runtime.Unwrap(mv).(int64); ok {
+						return n, true
+					}
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
+// copyArray clones an array value for Go's assignment semantics —
+// `b := a` on arrays owns a distinct backing array, and nested arrays
+// copy recursively.
+func (v *VM) copyArray(f *frame, s *runtime.Slice, td *runtime.TypeDef) *runtime.Slice {
+	el := make([]runtime.Value, len(s.Elems))
+	et := v.elemTypedef(f, td)
+	_, nested := v.arrayLen(f, et)
+	for i, e := range s.Elems {
+		if inner, ok := e.(*runtime.Slice); ok && nested {
+			el[i] = v.copyArray(f, inner, et)
+			continue
+		}
+		el[i] = e
+	}
+	return &runtime.Slice{Elems: el, Typ: s.Typ}
+}
+
+// maskInt applies integer-width wraparound for a conversion into a
+// sized type: int8(200) is -56 like Go. Unsized names pass through.
+// sizedNameOf resolves the builtin width name behind a tag: for a
+// declared `type MyU8 uint8` the mask applies through the underlying
+// ident, not the declared name.
+func sizedNameOf(td *runtime.TypeDef) string {
+	if td == nil {
+		return ""
+	}
+	if sizedIntName(td.Name) {
+		return td.Name
+	}
+	x := td.Anon
+	if x == nil && td.Spec != nil {
+		x = td.Spec.Type
+	}
+	if id, ok := x.(*ast.Ident); ok && sizedIntName(id.Name) {
+		return id.Name
+	}
+	return ""
+}
+
+// sizedIntName reports whether name is a builtin integer narrower or
+// wider than the int64 model — maskInt changes those values' domain.
+func sizedIntName(name string) bool {
+	switch name {
+	case "int8", "int16", "int32", "rune",
+		"uint8", "byte", "uint16", "uint32", "uint64", "uintptr":
+		return true
+	}
+	return false
+}
+
+func maskInt(n int64, name string) int64 {
+	switch name {
+	case "int8":
+		return int64(int8(n))
+	case "int16":
+		return int64(int16(n))
+	case "int32", "rune":
+		return int64(int32(n))
+	case "uint8", "byte":
+		return int64(uint8(n))
+	case "uint16":
+		return int64(uint16(n))
+	case "uint32":
+		return int64(uint32(n))
+	case "uint64", "uintptr":
+		return int64(uint64(n))
+	}
+	return n
 }
 
 func typeNameOf(x runtime.Value) string {
@@ -5341,7 +5834,7 @@ func (v *VM) unifyTypeDef(ctx *runtime.TypeDef, tset map[string]bool, binds map[
 		// *T unifies only against pointer-shaped args — a slice or
 		// map's element type is not a pointee and must teach nothing.
 		if u := v.peelNamed(conc); u != nil && u.Kind == runtime.KindPointer {
-			et := v.elemTypedef(conc)
+			et := v.elemTypedef(v.topFrame(), conc)
 			if et == nil {
 				et = conc.Elem
 			}
@@ -5353,7 +5846,14 @@ func (v *VM) unifyTypeDef(ctx *runtime.TypeDef, tset map[string]bool, binds map[
 		// []T unifies only against slice/array-shaped args — a pointer's
 		// pointee is not an element and must teach nothing.
 		if u := v.peelNamed(conc); u != nil && u.Kind == runtime.KindSlice {
-			if et := v.elemTypedef(conc); et != nil {
+			et := v.elemTypedef(v.topFrame(), conc)
+			if et == nil {
+				// element named by a type the typedef cannot resolve —
+				// a function-local `type` decl, say — falls back to the
+				// element evidence argTypedef lifted off the value.
+				et = conc.Elem
+			}
+			if et != nil {
 				v.unifyTypeDef(ctx, tset, binds, p.Elt, et)
 			}
 		}
@@ -5368,7 +5868,7 @@ func (v *VM) unifyTypeDef(ctx *runtime.TypeDef, tset map[string]bool, binds map[
 		}
 	case *ast.ChanType:
 		if u := v.peelNamed(conc); u != nil && u.Kind == runtime.KindChan {
-			if et := v.elemTypedef(conc); et != nil {
+			if et := v.elemTypedef(v.topFrame(), conc); et != nil {
 				v.unifyTypeDef(ctx, tset, binds, p.Value, et)
 			}
 		}
@@ -5506,10 +6006,20 @@ func funcSig(x runtime.Value) (*ast.FuncType, *runtime.Package, *syntax.File, ma
 func (v *VM) argTypedef(x runtime.Value) *runtime.TypeDef {
 	switch xv := x.(type) {
 	case *runtime.Slice:
-		if xv.Typ != nil {
-			return xv.Typ
+		// the first element's own typedef is kept as Elem evidence —
+		// elements of a function-local named type resolve nowhere else.
+		var ev *runtime.TypeDef
+		if len(xv.Elems) > 0 {
+			ev = v.argTypedef(xv.Elems[0])
 		}
-		return &runtime.TypeDef{Kind: runtime.KindSlice}
+		if xv.Typ != nil {
+			return &runtime.TypeDef{
+				Kind: xv.Typ.Kind, Name: xv.Typ.Name, Pkg: xv.Typ.Pkg,
+				File: xv.Typ.File, Anon: xv.Typ.Anon, Spec: xv.Typ.Spec,
+				Binds: xv.Typ.Binds, Elem: ev,
+			}
+		}
+		return &runtime.TypeDef{Kind: runtime.KindSlice, Elem: ev}
 	case *runtime.Map:
 		if xv.Typ != nil {
 			return xv.Typ
@@ -5687,7 +6197,9 @@ func (v *VM) satisfiesTypeElem(ctx *runtime.TypeDef, e ast.Expr, td *runtime.Typ
 		return true
 	case *ast.UnaryExpr:
 		if t.Op == token.TILDE {
-			return underlyingNameOf(td) == typeExprName(t.X)
+			// `~int` matches any type whose UNDERLYING type is int —
+			// a named `type MyInt int` satisfies it; peel the argument.
+			return underlyingNameOf(v.peelNamed(td)) == typeExprName(t.X)
 		}
 		return v.satisfiesTypeElem(ctx, t.X, td)
 	case *ast.ParenExpr:
