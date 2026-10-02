@@ -90,12 +90,9 @@ func (e *Engine) installStdlib() {
 			if len(args) < 1 {
 				return nil, fmt.Errorf("fmt.Errorf needs 1+ args")
 			}
-			a := make([]any, len(args))
-			for i, x := range args {
-				a[i] = fmtArg(v, x)
-			}
+			a, flat := fmtArgs(v, args)
 			spec := str(a[0])
-			spec = rewriteTypeVerbs(spec, a, args, 0, v)
+			spec = rewriteTypeVerbs(spec, a, flat, 0, v)
 			spec, wrapPos := rewriteWrapVerbs(spec)
 			msg := fmt.Sprintf(spec, a[1:]...)
 			if wrapPos >= 0 && wrapPos < len(args)-1 {
@@ -2916,13 +2913,10 @@ func (h *hostHelpers) ffn(name string, formatAt, minArgs int, f func([]any) (any
 		if len(args) < minArgs {
 			return nil, fmt.Errorf("%s needs %d args, got %d", name, minArgs, len(args))
 		}
-		a := make([]any, len(args))
-		for i, x := range args {
-			a[i] = fmtArg(v, x)
-		}
+		a, flat := fmtArgs(v, args)
 		if formatAt >= 0 && formatAt < len(a) {
 			if spec, ok := a[formatAt].(string); ok {
-				a[formatAt] = rewriteTypeVerbs(spec, a, args, formatAt, v)
+				a[formatAt] = rewriteTypeVerbs(spec, a, flat, formatAt, v)
 			}
 		}
 		r, err := f(a)
@@ -3750,6 +3744,29 @@ func callStringer(c runtime.VMCaller, x runtime.Value, name string) (string, boo
 	}
 	s, ok := r.(string)
 	return s, ok
+}
+
+// fmtArgs maps script call args to host fmt args: a multi-value call
+// result (Tuple) spreads into individual operands — Go treats
+// `fmt.Sprint(f())` as `Sprint(v0, v1, ...)` so its space-between-
+// operands rule (only when neither is a string) sees the real scalars.
+// Returns the host args plus the flattened script args for spec
+// rewriting (%T/%p positional lookup).
+func fmtArgs(v runtime.VMCaller, args []runtime.Value) ([]any, []runtime.Value) {
+	a := make([]any, 0, len(args))
+	flat := make([]runtime.Value, 0, len(args))
+	for _, x := range args {
+		if tup, ok := x.(*runtime.Tuple); ok {
+			for _, e := range tup.Elems {
+				a = append(a, fmtArg(v, e))
+				flat = append(flat, e)
+			}
+			continue
+		}
+		a = append(a, fmtArg(v, x))
+		flat = append(flat, x)
+	}
+	return a, flat
 }
 
 // fmtArg routes a script value into a host fmt call: scalars unbox to
