@@ -2,6 +2,7 @@ package minigo
 
 import (
 	"fmt"
+	"go/constant"
 	"os"
 	"strings"
 
@@ -69,10 +70,39 @@ func builtins(e *Engine) *runtime.Env {
 			elems = s.Elems
 			rtyp = s.Typ
 		}
+		// an untyped-constant element converts through the declared
+		// element type — append(b, 'i') on []byte is Go's constant
+		// conversion; without a declared type it takes its default.
+		var et runtime.Value
+		if rtyp != nil {
+			et = v.TypeOf(v.ElemZero(rtyp))
+		}
+		add := make([]runtime.Value, len(args)-1)
+		for i, a := range args[1:] {
+			if u, ok := a.(*runtime.UConst); ok {
+				if et != nil {
+					cv, err := v.Call(et, []runtime.Value{a})
+					if err != nil {
+						return nil, err
+					}
+					a = cv
+				} else {
+					nv, err := uconstNative(u)
+					if err != nil {
+						return nil, err
+					}
+					if cv, isC := nv.(complex128); isC {
+						nv = &runtime.GoValue{V: cv}
+					}
+					a = nv
+				}
+			}
+			add[i] = a
+		}
 		// appending onto the backing array itself keeps Go's sharing
 		// semantics: within spare capacity the result aliases the same
 		// storage, past it the host append allocates a fresh array.
-		res := &runtime.Slice{Elems: append(elems, args[1:]...), Typ: rtyp}
+		res := &runtime.Slice{Elems: append(elems, add...), Typ: rtyp}
 		if tag != nil {
 			return &runtime.Named{Typ: tag, V: res}, nil // append keeps the declared type
 		}
@@ -118,7 +148,18 @@ func builtins(e *Engine) *runtime.Env {
 		return int64(n), nil
 	})
 	bf("delete", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-		key := runtime.CanonicalKey(runtime.Unwrap(args[1]))
+		kv := runtime.Unwrap(args[1])
+		if u, ok := kv.(*runtime.UConst); ok {
+			nv, err := uconstNative(u)
+			if err != nil {
+				return nil, err
+			}
+			if cv, isC := nv.(complex128); isC {
+				nv = &runtime.GoValue{V: cv}
+			}
+			kv = nv
+		}
+		key := runtime.CanonicalKey(kv)
 		switch m := args[0].(type) {
 		case *runtime.Named:
 			if mm, ok := m.V.(*runtime.Map); ok {
@@ -229,6 +270,50 @@ func builtins(e *Engine) *runtime.Env {
 	bf("recover", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		return v.Recover(), nil
 	})
+	bf("complex", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) != 2 {
+			return nil, fmt.Errorf("complex expects two arguments")
+		}
+		re, ok1 := argFloat(args[0])
+		im, ok2 := argFloat(args[1])
+		if !ok1 || !ok2 {
+			return nil, fmt.Errorf("complex on non-numeric")
+		}
+		// float32 operands yield a complex64 (the narrower side wins —
+		// Go types the call by its arguments' type, not float64).
+		if namedFloat32(args[0]) || namedFloat32(args[1]) {
+			return &runtime.GoValue{V: complex64(complex(re, im))}, nil
+		}
+		return &runtime.GoValue{V: complex(re, im)}, nil
+	})
+	bf("real", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if u, ok := args[0].(*runtime.UConst); ok && numericConst(u) {
+			// a constant stays a constant: real(1+2i) is the untyped
+			// float 1, still materializable to any numeric target.
+			return &runtime.UConst{V: constant.Real(u.V)}, nil
+		}
+		cv, w, ok := argComplex(args[0])
+		if !ok {
+			return nil, fmt.Errorf("real of %T", args[0])
+		}
+		if w == 64 {
+			return &runtime.Named{Typ: &runtime.TypeDef{Name: "float32", Kind: runtime.KindNamedBasic}, V: float64(real(complex64(cv)))}, nil
+		}
+		return real(cv), nil
+	})
+	bf("imag", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if u, ok := args[0].(*runtime.UConst); ok && numericConst(u) {
+			return &runtime.UConst{V: constant.Imag(u.V)}, nil
+		}
+		cv, w, ok := argComplex(args[0])
+		if !ok {
+			return nil, fmt.Errorf("imag of %T", args[0])
+		}
+		if w == 64 {
+			return &runtime.Named{Typ: &runtime.TypeDef{Name: "float32", Kind: runtime.KindNamedBasic}, V: float64(imag(complex64(cv)))}, nil
+		}
+		return imag(cv), nil
+	})
 	bf("min", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) == 0 {
 			return nil, fmt.Errorf("min needs at least one argument")
@@ -301,7 +386,8 @@ func builtins(e *Engine) *runtime.Env {
 	for _, n := range []string{
 		"int", "int8", "int16", "int32", "int64",
 		"uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
-		"float32", "float64", "string", "bool", "byte", "rune",
+		"float32", "float64", "complex64", "complex128",
+		"string", "bool", "byte", "rune",
 	} {
 		env.Set(n, &runtime.TypeDef{Name: n, Kind: runtime.KindNamedBasic})
 	}
@@ -375,10 +461,68 @@ func orderedLess(a, b runtime.Value) bool {
 	return false
 }
 
+// argFloat reads a builtin argument as float64 (ints promote).
+func argFloat(x runtime.Value) (float64, bool) {
+	if u, ok := x.(*runtime.UConst); ok {
+		f, _ := constant.Float64Val(u.V)
+		return f, true
+	}
+	switch n := runtime.Unwrap(x).(type) {
+	case int64:
+		return float64(n), true
+	case float64:
+		return n, true
+	}
+	return 0, false
+}
+
+// argComplex reads a builtin argument as complex128 with its width —
+// ints and floats promote to complex128.
+func argComplex(x runtime.Value) (complex128, int, bool) {
+	if n, ok := x.(*runtime.Named); ok {
+		x = n.V
+	}
+	switch n := x.(type) {
+	case *runtime.GoValue:
+		switch c := n.V.(type) {
+		case complex64:
+			return complex128(c), 64, true
+		case complex128:
+			return c, 128, true
+		}
+	}
+	if f, ok := argFloat(x); ok {
+		return complex(f, 0), 128, true
+	}
+	return 0, 0, false
+}
+
+// numericConst reports whether a constant is numeric — real/imag on a
+// non-complex-kind constant is Go's compile-time reject.
+func numericConst(u *runtime.UConst) bool {
+	switch u.V.Kind() {
+	case constant.Int, constant.Float, constant.Complex:
+		return true
+	}
+	return false
+}
+
+// namedFloat32 reports whether x carries a float32 typedef.
+func namedFloat32(x runtime.Value) bool {
+	n, ok := x.(*runtime.Named)
+	return ok && float32Tag(n.Typ)
+}
+
 func display(v runtime.Value) any {
 	switch x := v.(type) {
 	case runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
 		return nil
+	case *runtime.UConst:
+		nv, err := uconstNative(x)
+		if err != nil {
+			return err.Error()
+		}
+		return display(nv)
 	case *runtime.Named:
 		return display(x.V)
 	case *runtime.Cell:

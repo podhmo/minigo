@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/constant"
 	"html"
 	"io"
 	"io/fs"
@@ -148,10 +149,11 @@ func (e *Engine) installStdlib() {
 			for err := hostErrOf(v, args[0]); err != nil; err = errors.Unwrap(err) {
 				sv := scriptErrUnbox(err)
 				st := v.TypeOf(sv)
-				// spellings disagree on pkg/`*` prefixes between the two
-				// paths — compare the final identifier; an interface
-				// target (`var e error; &e`) accepts any error value.
-				if want == nil || want.Kind == runtime.KindInterface || shortTypName(st) == shortTypName(want) {
+				// an interface target (`var e error; &e`) accepts any
+				// error value; a concrete target matches the chain
+				// element's declared type exactly — name + package, the
+				// way reflect.TypeOf(err) == elem(target) works.
+				if want == nil || want.Kind == runtime.KindInterface || sameErrTyp(v, st, want) {
 					if runtime.SetRef(args[1], sv) {
 						return true, nil
 					}
@@ -1982,11 +1984,76 @@ func scriptVal(v any) runtime.Value {
 // goNative converts a runtime value to its Go-native counterpart for host
 // calls: cells unwrap, slices/maps become []any / map[any]any, structs get a
 // Stringer view so fmt prints them sensibly.
+// float32Tag reports whether a Named tag's underlying type is float32 —
+// the one builtin where a float64 box and the declared width disagree in
+// formatting. `type F32 float32` tags count too (Anon names the builtin).
+func float32Tag(td *runtime.TypeDef) bool {
+	if td == nil {
+		return false
+	}
+	if td.Name == "float32" {
+		return true
+	}
+	x := td.Anon
+	if x == nil && td.Spec != nil {
+		x = td.Spec.Type
+	}
+	if id, ok := x.(*ast.Ident); ok {
+		return id.Name == "float32"
+	}
+	return false
+}
+
+// uconstNative materializes an untyped constant to its host default —
+// the same rule the VM applies when the constant crosses a value
+// boundary. An overflowing constant reports like Go's compile error.
+func uconstNative(u *runtime.UConst) (any, error) {
+	switch u.V.Kind() {
+	case constant.Bool:
+		return constant.BoolVal(u.V), nil
+	case constant.String:
+		return constant.StringVal(u.V), nil
+	case constant.Int:
+		if i, ok := constant.Int64Val(u.V); ok {
+			return i, nil
+		}
+		if uv, ok := constant.Uint64Val(u.V); ok && uv <= math.MaxInt64 {
+			return int64(uv), nil
+		}
+		return nil, fmt.Errorf("constant %s overflows int", u.V)
+	case constant.Float:
+		f, _ := constant.Float64Val(u.V)
+		if math.IsInf(f, 0) {
+			return nil, fmt.Errorf("constant %s overflows float64", u.V)
+		}
+		return f, nil
+	case constant.Complex:
+		re, _ := constant.Float64Val(constant.Real(u.V))
+		im, _ := constant.Float64Val(constant.Imag(u.V))
+		return complex(re, im), nil
+	}
+	return nil, fmt.Errorf("cannot materialize constant %s", u.V)
+}
+
 func goNative(v runtime.Value) any {
 	switch x := v.(type) {
 	case runtime.Nil:
 		return nil
+	case *runtime.UConst:
+		nv, err := uconstNative(x)
+		if err != nil {
+			panic(&runtime.Panic{Value: err.Error()})
+		}
+		return nv
 	case *runtime.Named:
+		// a float32-tagged value crosses to fmt as a real float32 so
+		// %v applies float32 formatting (0.1, not 0.10000000149011612);
+		// %T is rewritten to scriptTypeString before this runs.
+		if float32Tag(x.Typ) {
+			if fv, ok := x.V.(float64); ok {
+				return float32(fv)
+			}
+		}
 		return goNative(x.V)
 	case *runtime.Cell:
 		return goNative(x.Elem)
@@ -2725,22 +2792,47 @@ func cellElemTyp(v runtime.Value) *runtime.TypeDef {
 	return nil
 }
 
-// shortTypName reduces a typedef to its leaf identifier — "*main.MyErr"
-// and "MyErr" both yield "MyErr" — for errors.As's loose target match.
-func shortTypName(td *runtime.TypeDef) string {
-	if td == nil {
-		return ""
+// sameErrTyp compares a chain element's dynamic typedef with the As
+// target's element typedef: pointer depth must match (Go requires
+// reflect.TypeOf(err) == reflect.TypeOf(target).Elem()), and leaf
+// identity is name + package path — leaf spelling alone lets two
+// packages declaring the same error type name match each other.
+func sameErrTyp(v runtime.VMCaller, st, want *runtime.TypeDef) bool {
+	if st == nil || want == nil || st.Kind != want.Kind {
+		return false
 	}
-	s := typedefSpelling(td)
-	if s == "interface{}" && td.Elem != nil {
-		// synthetic pointer typedefs carry the pointee in Elem
-		s = typedefSpelling(td.Elem)
+	if st == want {
+		return true
 	}
-	s = strings.TrimPrefix(s, "*")
-	if i := strings.LastIndex(s, "."); i >= 0 {
-		s = s[i+1:]
+	stl, wl := st, want
+	if st.Kind == runtime.KindPointer {
+		stl, wl = st.Elem, want.Elem
+		// a typedef may carry the pointee only in Anon — let the VM
+		// resolve the element zero instead of walking the AST here.
+		if stl == nil {
+			stl = v.TypeOf(v.ElemZero(st))
+		}
+		if wl == nil {
+			wl = v.TypeOf(v.ElemZero(want))
+		}
 	}
-	return s
+	if stl == nil || wl == nil {
+		return false
+	}
+	if stl == wl {
+		return true
+	}
+	if stl.Name == "" || stl.Name != wl.Name {
+		return false
+	}
+	sp, wp := "", ""
+	if stl.Pkg != nil {
+		sp = stl.Pkg.Path
+	}
+	if wl.Pkg != nil {
+		wp = wl.Pkg.Path
+	}
+	return sp == wp
 }
 
 // rewriteWrapVerbs rewrites %w verbs to %v and reports the LAST %w's
@@ -2883,6 +2975,13 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		if unsignedIntTyp(v.Typ) {
 			if iv, ok := v.V.(int64); ok {
 				return fmt.Sprintf(formatOf(f, verb), uint64(iv))
+			}
+		}
+		// a float64 carrying a float32 tag formats in float32 — the
+		// rounded value, not the wider box's digits.
+		if float32Tag(v.Typ) {
+			if fv, ok := v.V.(float64); ok {
+				return fmt.Sprintf(formatOf(f, verb), float32(fv))
 			}
 		}
 		return (&fmtValue{c: s.c, x: v.V, depth: s.depth + 1}).render(verb, f)
@@ -3075,6 +3174,8 @@ func sliceBytes(v *runtime.Slice) ([]byte, bool) {
 // "[]int", "main.Point" — using the typedef, not the Go wrapper type.
 func scriptTypeString(x runtime.Value) string {
 	switch t := x.(type) {
+	case *runtime.UConst:
+		return t.DefaultName()
 	case *runtime.Named:
 		return typedefSpelling(t.Typ)
 	case *runtime.Struct:
@@ -3231,9 +3332,15 @@ func callStringer(c runtime.VMCaller, x runtime.Value, name string) (string, boo
 // fmtArg routes a script value into a host fmt call: scalars unbox to
 // Go natives; composites keep their script shape inside a fmtValue.
 func fmtArg(v runtime.VMCaller, x runtime.Value) any {
-	switch x.(type) {
+	switch x := x.(type) {
 	case int64, float64, string, bool:
 		return x
+	case *runtime.UConst:
+		nv, err := uconstNative(x)
+		if err != nil {
+			panic(&runtime.Panic{Value: err.Error()})
+		}
+		return nv
 	case *runtime.GoValue:
 		return goNative(x)
 	default:

@@ -6,6 +6,7 @@ package runtime
 import (
 	"fmt"
 	"go/ast"
+	"go/constant"
 	"go/token"
 	"reflect"
 	"strconv"
@@ -99,6 +100,10 @@ func Zero(td *TypeDef) Value {
 		return false
 	case "float32", "float64":
 		return float64(0)
+	case "complex64":
+		return &GoValue{V: complex64(0)}
+	case "complex128":
+		return &GoValue{V: complex128(0)}
 	case "int", "int8", "int16", "int32", "int64",
 		"uint", "uint8", "uint16", "uint32", "uint64", "byte", "rune", "uintptr":
 		return int64(0)
@@ -127,6 +132,10 @@ func basicZero(name string) (Value, bool) {
 		return false, true
 	case "float32", "float64":
 		return float64(0), true
+	case "complex64":
+		return &GoValue{V: complex64(0)}, true
+	case "complex128":
+		return &GoValue{V: complex128(0)}, true
 	case "int", "int8", "int16", "int32", "int64",
 		"uint", "uint8", "uint16", "uint32", "uint64", "byte", "rune", "uintptr":
 		return int64(0), true
@@ -743,6 +752,37 @@ type Iterator struct {
 // GoValue wraps a host reflect value at the FFI boundary (implemented in
 // ffi.go; declared here as the box used by Globals/Register).
 type GoValue struct{ V any }
+
+// UConst is a lazily materialized untyped constant: a rune literal
+// (default rune, not int), an integer that does not fit int64, a float
+// literal overflowing float64, or a complex constant. Const cells hold
+// it lazily; conversion, assignment, arithmetic and call boundaries
+// materialize it to the constant's default type — matching Go, where
+// `const B = 1<<100` compiles while `var x = 1<<100` is rejected.
+type UConst struct {
+	V    constant.Value
+	Rune bool // Kind()==Int but the literal/expression is rune-flavored
+}
+
+// DefaultName spells the Go type an untyped constant defaults to.
+func (u *UConst) DefaultName() string {
+	switch u.V.Kind() {
+	case constant.Bool:
+		return "bool"
+	case constant.String:
+		return "string"
+	case constant.Int:
+		if u.Rune {
+			return "int32"
+		}
+		return "int"
+	case constant.Float:
+		return "float64"
+	case constant.Complex:
+		return "complex128"
+	}
+	return "unknown"
+}
 
 // SymbolID is a canonical symbol address used for special-form dispatch:
 // the defining package's import path plus the member name.

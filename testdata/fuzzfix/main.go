@@ -13,6 +13,9 @@ import (
 	"os"
 	"strings"
 	"text/template"
+
+	"github.com/podhmo/minigo/testdata/errfooa"
+	"github.com/podhmo/minigo/testdata/errfoob"
 )
 
 // elided-key struct literals in maps must key by content, not identity.
@@ -426,3 +429,156 @@ func BodilessCall() int { return Bodiless() + 3 }
 
 // os.Args reflects the engine's script args (WithArgs / `minigo run --`).
 func OsArgs() string { return strings.Join(os.Args, ",") }
+
+// errors.As must not match a same-named error type from another package:
+// a *errfooa.Same chain element does not satisfy a *errfoob.Same target.
+func ErrAsCrossPkg() string {
+	var a *errfooa.Same
+	var b *errfoob.Same
+	err := fmt.Errorf("wrap: %w", &errfooa.Same{N: 1})
+	hitA := errors.As(err, &a)
+	hitB := errors.As(err, &b)
+	return fmt.Sprintf("%v %v", hitA, hitB)
+}
+
+// a 3-index slice caps the result's capacity the way Go does.
+func ThreeIndexSlice() string {
+	s := []int{1, 2, 3, 4, 5}[1:3:4]
+	return fmt.Sprintf("%v %d %d", s, len(s), cap(s))
+}
+
+// float32 slots narrow stored values and arithmetic results:
+// float64(float32(0.1)) is 0.10000000149011612, and %v prints the
+// float32 digits back.
+func Float32Narrow() string {
+	var f float32 = 0.1
+	var g float32 = 0.2
+	var arr [1]float32
+	arr[0] = 0.1
+	return fmt.Sprintf("%v %v %v %T", f+g, arr[0], f, f)
+}
+
+// assert failures name the static interface type (main.asI), the dynamic
+// concrete type, and the target — like the gc panic.
+type asI interface{ AM() }
+type asT struct{}
+
+func (asT) AM() {}
+
+type asT2 struct{}
+
+func (asT2) AM() {}
+
+func AssertStaticName() (r string) {
+	var i asI = asT{}
+	defer func() { r = fmt.Sprintf("%v", recover()) }()
+	_ = i.(asT2)
+	return
+}
+
+// a failed interface-to-interface assert names the missing method, and a
+// boxed host value names its Go type.
+func AssertMissingMethod() (r string) {
+	defer func() { r = fmt.Sprintf("%v", recover()) }()
+	var a any = errors.New("x")
+	_ = a.(io.Writer)
+	return
+}
+
+// []byte and []rune element reads carry the element type (uint8/int32),
+// not a bare int.
+func ByteRuneElemTyp() string {
+	b := []byte("abc")
+	r := []rune("xyz")
+	s := "s"
+	return fmt.Sprintf("%T %T %T", b[0], r[0], s[0])
+}
+
+// ---- untyped constants + complex values (fuzz-round leftovers) ----
+
+type ufRune rune
+type ufC64 complex64
+
+// a bare 'a' stays untyped until it binds: its default type is rune
+// (int32), and rune-flavor propagates through constant expressions.
+func UConstRuneDefault() string {
+	var r = 'a'
+	var y = 'a' + 1
+	return fmt.Sprintf("%T %T %v", r, y, y)
+}
+
+// an over-wide integer constant compiles while unused and still folds
+// exactly in constant expressions (`B - B` is 0, not an overflow).
+func UConstBigConstExpr() string {
+	const B = 1 << 100
+	const C = B - (1 << 99)
+	return fmt.Sprintf("%v %v", B-B, C == B-(1<<99))
+}
+
+// materializing the same constant as a value is Go's "overflows int"
+// compile rejection — a trap here.
+func UConstBigTrap() string {
+	var x = 1 << 100
+	return fmt.Sprint(x)
+}
+
+// a float literal past float64 range is legal until it must fit one.
+func UConstFloatOverflow() string {
+	var f = 1e500
+	return fmt.Sprint(f)
+}
+
+// a rune constant converts into a declared numeric type directly.
+func UConstNamedRune() string {
+	var mr ufRune = 'a'
+	var i8 int8 = 'a'
+	return fmt.Sprintf("%T %v %v", mr, mr, i8)
+}
+
+// rune constants convert to string as the rune, and can sit in a
+// []byte literal.
+func UConstRuneConv() string {
+	return fmt.Sprintf("%s %v", string('a'), []byte{'x', 'y'})
+}
+
+// %T names the materialized default type of a conversion target or a
+// bare literal.
+func PctTDefaults() string {
+	return fmt.Sprintf("%T %T %T", int64(5), int8(5), 'a')
+}
+
+// complex values: complex/real/imag builtins, arithmetic, and %T.
+func ComplexOps() string {
+	var c64 complex64 = 1 + 2i
+	var c128 = complex(3, 4)
+	d := complex(1.5, 2.5)
+	return fmt.Sprintf("%v %v %v %v %v %v %v %T %v",
+		real(c64), imag(c64), real(c128), imag(c128),
+		c64+c64, c128*c128, 1+2i+3i, d, d)
+}
+
+// a declared complex type tags through conversion and keeps its name.
+func ComplexDecl() string {
+	var mc ufC64 = 1 + 2i
+	fmt.Println(complex64(complex(1, 2)) + complex64(1))
+	return fmt.Sprintf("%T %v", mc, mc)
+}
+
+// complex keys hash by value.
+func ComplexMapKey() string {
+	m := map[complex128]int{complex(1, 2): 5}
+	return fmt.Sprintf("%v %v", m[complex(1, 2)], m[complex(0, 0)])
+}
+
+// mixed complex widths are Go's mismatched-types rejection.
+func ComplexMixedWidth() string {
+	var c64 complex64 = 1
+	var c128 complex128 = 1
+	return fmt.Sprint(c64 != c128)
+}
+
+// ordered comparison on complex is rejected in Go.
+func ComplexOrdered() string {
+	c := complex(1, 2)
+	return fmt.Sprint(c < c)
+}

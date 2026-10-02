@@ -29,10 +29,11 @@ func Idx() int {
 	return xs[10]
 }
 
-// Unsupported hits an OpTrap (3-index slice is not supported).
+// Unsupported hits an OpTrap (x.(type) outside a type switch is not
+// supported).
 func Unsupported() {
-	s := []int{1, 2, 3}
-	_ = s[0:1:2]
+	var x any = 1
+	_ = x.(type)
 }
 
 // DeferredCleanup panics from a deferred call; the traceback names the

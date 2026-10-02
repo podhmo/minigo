@@ -89,3 +89,49 @@
 - **「壊れてないか」の判定は多段**: (a) 明確な panic/クラッシュ、(b) 出力不一致、(c) Go は reject するのに受理（ACCEPT＝最悪）、(d) Go は panic するが minigo は trap（実行時 vs コンパイル時の違いは許容）。これらを分類しないと「動いてしまった静的エラー」が見落とされる（`neg-mapaddr` が典型）。
 - **隠れバグの温床は「ヘルパー関数に挙動を任せた部分」**: ホスト fmt に丸投げした `Format`（%T/%p が素通り）、`errors.As` の「first non-nil」近似、map の canonical key の「Def ポインタ同一性」は、単独では正しそうに見えるが組み合わせて初めて壊れる。**差分テストでしか炙り出せない類のバグが今回の収穫の半分**だった。
 - **限界**: この手法は「実行結果が決定的に予測できるケース」にしか効かない。真の PBT（プロパティ記述 + ランダム入力 + shrink）とは別物で、カバレッジは列挙したテーマに依存する。型レベルの静的解析系（`go/types` 非使用という制約）や、ホスト境界をまたぐ複雑な参照同一性は別アプローチが要る。
+
+## 7. 計画外: Fuzz-round leftovers 消化ラウンド（round-2）
+
+TODO.md に残っていた §3-4 の lim-\* / 近似項目をこのラウンドで全部向き合わせた。結果は lim-complex / lim-threeidx / lim-bigconst が全て PASS（language corpus 44 件中 40 PASS + 4 PASS-REJECT、DIFF/TRAP/ACCEPT ゼロ）。中心は **untyped constant の遅延具象化モデル** で、ここが計画から一番逸れた設計判断。
+
+### 7.1 `runtime.UConst` — untyped 定数は値ではなく「まだ型を持たない」
+
+`'a'` が `int` と表示される問題・`const B = 1<<100` が未使用でも init 時に死ぬ問題・`1i` が complex 値に落ちない問題は、実は同じ根を持っていた: minigo はリテラルを評価した時点で int64/float64/rune-literal の int64 に **早すぎる具象化** をしていた。Go ではこれらはすべて「untyped constant」であり、**使用される型コンテキストで初めて型が決まる**。
+
+導入したのは `runtime.UConst{V constant.Value, Rune bool}` — `go/constant` の任意精度値を包んだ lazy な値。コンパイラは CHAR / int64 非収容整数 / float64 を溢れる float / IMAG リテラルと、それらを含む fold 済み定数式（`hasCharLit` で rune フレーバを伝播 — `'a'+1` は int32）を `UConst` として emit する。`const` 束縛は ReadOnly セルに `UConst` のまま格納するので `const B = 1<<100` は未使用なら何もしない — Go の「定数宣言は使われて初めて表現可能性を要求される」と一致する。
+
+具象化ポイントは「値に型が要求される場所」すべて:
+
+- `OpNewLocal`/`OpNewGlobal` の `B==0`（非 const 束縛）→ `var x = 'a'` は `Named{rune,int32}` になり `%T` が `int32` と出る
+- `var x = 1<<100` → `materializeDefault` が int64/uint64 に収まらず `constant ... overflows int` で trap（Go のコンパイル拒否と同じ文面）
+- 型付き `var x T = c` は **OpCoerceTop を bind の前に emit** するよう変更し、`materializeConst(u, td)` がターゲット幅で表現可能性を検査（`var i8 int8 = 300` は trap、`var r MyRune = 'a'` は MyRune に直接変換 — 旧来は default 具象化→Named 不一致 trap だった）
+- `assignCell` の無型セル、`convert`（`int8('a')` 等）、`binaryOp`/`unaryOp`（定数域演算→`constBinary`/`constUnary` は `go/constant` の panic を recover で受けて runtime 域にフォールバック）、index/bounds/send/iter/shiftOp、iface coerce
+- ホスト境界は `uconstNative`（intrinsics）/`deepHost`/`toReflectValue`/`fmtArg` が受け持つ
+
+### 7.2 complex64/complex128 — `GoValue{complex64|complex128}` で幅を値に持たせる
+
+complex 値は `Named` で包まず **`GoValue` にネイティブの complex64/complex128 を直持ち** させた — Go の幅がそのまま値の Go 型になるので narrow/wide の区別がタグ不要で自明。`type C complex64` の宣言型だけは従来通り `Named` を付ける（`declaredType` 経路）。
+
+- `complex(re, im)` — 引数が float32 風なら complex64、`real`/`imag` は complex64 入力で float32 タグを返す
+- 複素数演算は `asComplex`（真の complex のみ検出）+ `complexOperand`（int64/float64 を幅 0＝untyped として昇格）に分離。**幅 0 の昇格定数は両側どちらの幅にも join でき、複素数同士で幅が違えば `mismatched types complex64 and complex128` で trap** — `c64 + c128` も `c64 == c128` も Go のコンパイル拒否と一致する。順序比較 `c < c` は `complex numbers are not ordered`。
+- `real(1+2i)` のような定数呼び出しは `constant.Real/Imag` で **定数域のまま** UConst を返す（`real(1e500i)` が `var f float64` でちゃんと溢れる）
+- `complexResult` は narrow 側の幅を採用（complex64 wins）
+
+### 7.3 計画から外れた修正ポイント（初回実装で踏んだ罠）
+
+- **`popArgs` の eager materialize を撤回**: 最初は呼び出し境界で UConst を全部具象化したが、これだと `f('a')` が `func(x int)` に入る時点で `Named{int32}` に化けて "cannot use rune as int" で死んだ。Go では `'a'` は untyped のまま int パラメータに入る。`emitParamCoerces` が宣言パラメータ型の OpCoerce を callee prologue に emit する構造なので、args は素のまま渡して coerce に委ねる形に戻した。spread tail も同様。
+- **`setIndex` の val materialize を撤回**: `b[0] = 'x'` が []byte 要素の `cannot use rune as byte` で死んだ。elemTypedef 経由の `coerce` が UConst→`materializeConst` を既に担うので、先回り materialize は却って型情報を潰す。
+- **`asComplex` が素の int64/float64 に ok=true を返していた**: 初回実装で全数値演算が complex128 化する壊滅的リグレッション（`x*2` が `(20+0i)`）。asComplex を strict に直し、昇格は complexOperand の責務に分離。
+- **`append` / `delete` / map リテラルキー / `real`/`imag` に UConst が素通り**: append は elem typedef が分かるなら `v.Call(et, [a])` で変換（VMCaller.Call に typedef を渡せば convert 経路が走る = 追加公開 API 不要）、map リテラルキー・`delete` キーは値ハッシュで合わせるために materialize。
+- **mixed const/native の fold**: `const C = B - (1<<99)` の右側はリテラル fold で int64 に落ちるので、`binaryOp` で片側 UConst + 片側 bare literal の時は `constOf` で native を定数域に引き戻して `constBinary`（Go の任意精度と一致 — `B - B` が 0 と評価される）。
+
+### 7.4 残っている近似（このラウンドでも解かなかったもの）
+
+- `f('a')` で `x` 側が Named{int32} に化けた後の `mismatched` は Go と同じ reject 判定だが、メッセージは Go と異なる。
+- 定数式の中間値が int64 に落ちるケースは依然ある — `'a' + i`（i は変数）は permissive に計算される（Go は型不一致で reject）。方向は従来通り「緩い側」への一貫したズレ。
+- complex の GoValue は `fmt` 等で常に Go ネイティブとして扱われるので、スクリプト側で `%T` の `main.C` 等の表現は Named ラップの有無で変わる（`var c ufC64 = 1+2i` → `main.ufC64` は出るが `complex(1,2)` は `complex128`）。
+- `eqlValue`（map キー / switch 内部）は complex を幅無視で数値比較する — Go が reject する `c64 == c128` 相当はここでは受理側に振れる。
+
+### 7.5 回帰テスト
+
+`testdata/fuzzfix/main.go` に `UConstRuneDefault`/`UConstBigConstExpr`/`UConstNamedRune`/`UConstRuneConv`/`PctTDefaults`/`ComplexOps`/`ComplexDecl`/`ComplexMapKey` を追加、`UConstBigTrap`/`UConstFloatOverflow`/`ComplexMixedWidth`/`ComplexOrdered` は `ConstDivZero` 流の trap チェックで検証。全件 `go run` をオラクルに出力一致を確認済み。
