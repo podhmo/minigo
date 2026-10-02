@@ -81,3 +81,24 @@ type SrcNestedInner struct {
 	ID    int64
 	Value string
 }
+
+// SrcShapes exercises every container/pointer shape in nested
+// (expression) positions — the paths that used to be implemented twice
+// (statement mode vs. expression mode) in the generator.
+type SrcShapes struct {
+	PtrToVal    *int
+	ValToPtr    int
+	PtrPtr      **SrcLeaf
+	SlicePP     []**SrcLeaf
+	MapPP       map[string]**SrcLeaf
+	SlicePtrVal []*int
+	SliceValPtr []int
+	Nested      [][]int
+	MapSlice    map[int][]*int
+	Arr         [2]*int
+	PSlice      *[]int
+}
+
+type SrcLeaf struct {
+	V int
+}

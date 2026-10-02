@@ -163,3 +163,78 @@ func TestGeneratedNestedConversionNilPtr(t *testing.T) {
 		t.Errorf("ConvertSrcNestedToDstNested() mismatch (-want +got):\n%s", diff)
 	}
 }
+
+// TestGeneratedShapesConversion pins the runtime behavior of every
+// pointer/container shape in nested positions: nil guards (nil pointers
+// stay nil or become the zero value; nil elements stay nil), element
+// conversion inside loops, and fresh allocation (no aliasing of src).
+func TestGeneratedShapesConversion(t *testing.T) {
+	ctx := context.Background()
+	i := func(v int) *int { return &v }
+	i64 := func(v int64) *int64 { return &v }
+	leafPP := func(v int) **source.SrcLeaf { p := &source.SrcLeaf{V: v}; return &p }
+	dleafPP := func(v int64) **destination.DstLeaf { p := &destination.DstLeaf{V: v}; return &p }
+	var nilLeaf *source.SrcLeaf
+	var nilDLeaf *destination.DstLeaf
+	pslice := []int{7, 8}
+
+	tests := []struct {
+		name string
+		src  *source.SrcShapes
+		want *destination.DstShapes
+	}{
+		{
+			name: "populated",
+			src: &source.SrcShapes{
+				PtrToVal:    i(1),
+				ValToPtr:    2,
+				PtrPtr:      leafPP(3),
+				SlicePP:     []**source.SrcLeaf{leafPP(4), nil, &nilLeaf},
+				MapPP:       map[string]**source.SrcLeaf{"a": leafPP(5), "n": nil},
+				SlicePtrVal: []*int{i(6), nil},
+				SliceValPtr: []int{7},
+				Nested:      [][]int{{1, 2}, nil},
+				MapSlice:    map[int][]*int{1: {i(9), nil}},
+				Arr:         [2]*int{i(10), nil},
+				PSlice:      &pslice,
+			},
+			want: &destination.DstShapes{
+				PtrToVal:    1,
+				ValToPtr:    i64(2),
+				PtrPtr:      dleafPP(3),
+				SlicePP:     []**destination.DstLeaf{dleafPP(4), nil, &nilDLeaf},
+				MapPP:       map[string]**destination.DstLeaf{"a": dleafPP(5), "n": nil},
+				SlicePtrVal: []int64{6, 0},
+				SliceValPtr: []*int64{i64(7)},
+				Nested:      [][]int64{{1, 2}, {}},
+				MapSlice:    map[int64][]int64{1: {9, 0}},
+				Arr:         [2]int64{10, 0},
+				PSlice:      []int64{7, 8},
+			},
+		},
+		{
+			name: "zero",
+			src:  &source.SrcShapes{},
+			want: &destination.DstShapes{
+				ValToPtr:    i64(0),
+				SlicePP:     []**destination.DstLeaf{},
+				MapPP:       map[string]**destination.DstLeaf{},
+				SlicePtrVal: []int64{},
+				SliceValPtr: []*int64{},
+				Nested:      [][]int64{},
+				MapSlice:    map[int64][]int64{},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := generated.ConvertSrcShapesToDstShapes(ctx, tt.src)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}

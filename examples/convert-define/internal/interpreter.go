@@ -561,11 +561,77 @@ func (w *mappingWalker) parseComputeCall(call *ast.CallExpr) error {
 	}
 
 	computed := model.ComputedField{
-		DstName: dstName,
-		Expr:    expr,
+		DstName:  dstName,
+		Expr:     expr,
+		ExprType: w.exprType(call.Args[1]),
 	}
+	w.registerExprImports(call.Args[1])
 	w.pair.Computed = append(w.pair.Computed, computed)
 	slog.Debug("added computed field", "dst", dstName, "expr", expr)
+	return nil
+}
+
+// registerExprImports records the package of every pkg.Name reference
+// in a c.Compute expression. The expression is emitted verbatim, so
+// without this its packages are imported only if something else
+// happened to register them.
+func (w *mappingWalker) registerExprImports(e ast.Expr) {
+	ast.Inspect(e, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		alias, ok := selectorRoot(sel)
+		if !ok || alias == w.srcName || alias == w.dstName {
+			return true
+		}
+		if sym, err := w.ctx.ResolveSymbol(sel); err == nil && sym.PackagePath != "" {
+			if _, exists := w.r.Info.Imports[alias]; !exists {
+				w.r.Info.Imports[alias] = sym.PackagePath
+			}
+		}
+		return true
+	})
+}
+
+// exprType infers a c.Compute expression's type for the shapes whose
+// type is knowable without a type checker: a field path rooted at the
+// src param (src.A.B), and a call of a non-generic package-level func
+// with exactly one result (pkg.F(...)). Anything else returns nil —
+// unknown, which never produces a warning.
+func (w *mappingWalker) exprType(e ast.Expr) *xinspect.TypeExpr {
+	switch e := ast.Unparen(e).(type) {
+	case *ast.SelectorExpr:
+		path, err := w.fieldAccess(e, w.srcName)
+		if err != nil {
+			return nil
+		}
+		chain, err := model.ResolveFieldPath(w.r.Info, w.r.TypeResolver(), w.srcInfo, path)
+		if err != nil || len(chain) == 0 {
+			return nil
+		}
+		return chain[len(chain)-1].FieldType
+	case *ast.CallExpr:
+		sym, err := w.ctx.ResolveSymbol(e.Fun)
+		if err != nil {
+			return nil
+		}
+		p, err := w.r.engine.Package(context.Background(), sym.PackagePath)
+		if err != nil || p.Index == nil {
+			return nil
+		}
+		fd := p.Index.Funcs[sym.Name]
+		if fd == nil || fd.Func == nil || fd.Func.Type.TypeParams != nil {
+			return nil // unknown, or a generic result that depends on inference
+		}
+		sig, err := xinspect.SignatureOf(xinspect.NewDecl(p, fd))
+		if err != nil {
+			return nil
+		}
+		if results := sig.ResultFields(); len(results) == 1 {
+			return results[0].Type
+		}
+	}
 	return nil
 }
 

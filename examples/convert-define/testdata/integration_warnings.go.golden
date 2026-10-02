@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"example.com/warn/destination"
-	"example.com/warn/source"
+	destination "example.com/warn/destination"
+	source "example.com/warn/source"
 	"github.com/podhmo/minigo/examples/convert-define/model"
 )
 
@@ -32,13 +32,13 @@ func convertSrcToDst(ctx context.Context, ec *model.ErrorCollector, src *source.
 	}
 	ec.Enter("Nums")
 	{
-		convertedSlice := make([]string, len(src.Nums))
+		s := make([]string, len(src.Nums))
 		for i, item := range src.Nums {
 			ec.Enter(fmt.Sprintf("[%d]", i))
-			convertedSlice[i] = item
+			s[i] = item
 			ec.Leave()
 		}
-		dst.Nums = convertedSlice
+		dst.Nums = s
 	}
 	ec.Leave()
 	if ec.MaxErrorsReached() {

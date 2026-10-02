@@ -56,4 +56,7 @@ func main() {
 		c.Map(dst.Tag, src.PIn.Value)
 		c.Map(dst.PIn.Value, src.Name)
 	})
+
+	// Every pointer/container shape in nested positions (see SrcShapes).
+	define.Convert(func(c *define.Config, dst *destination.DstShapes, src *source.SrcShapes) {})
 }

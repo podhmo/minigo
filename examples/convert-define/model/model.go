@@ -17,12 +17,6 @@ type ParsedInfo struct {
 	Structs         map[string]*StructInfo
 }
 
-// Variable defines a variable to be declared in the converter function.
-type Variable struct {
-	Name string
-	Type string
-}
-
 // ComputedField defines a field that is computed from an expression.
 type ComputedField struct {
 	DstName string
@@ -32,6 +26,11 @@ type ComputedField struct {
 	// ("Inner.X") whose intermediate fields are pointers. Filled by the
 	// generator's emit pass; "" for a top-level field.
 	Prelude string
+	// ExprType is Expr's type when it is knowable without a type
+	// checker (a src field path, or a call of a non-generic package
+	// func with one result); nil means unknown. The generator warns
+	// when the destination field cannot hold it.
+	ExprType *xinspect.TypeExpr
 }
 
 // FieldMap defines a mapping between a source and destination field,
@@ -59,7 +58,6 @@ type ConversionPair struct {
 	DstTypeInfo *xinspect.Decl
 	Mapping     *MappingInfo // Explicit mapping rules from the mapping function body
 	MaxErrors   int
-	Variables   []Variable
 	Computed    []ComputedField // TODO: This might be deprecated in favor of Mapping.Computes
 }
 
