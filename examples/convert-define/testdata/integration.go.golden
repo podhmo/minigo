@@ -2,15 +2,15 @@
 package main
 
 import (
-	"context"
-	"errors"
-	"fmt"
+	context "context"
+	errors "errors"
+	fmt "fmt"
 
 	convutil "example.com/m/convutil"
 	destination "example.com/m/sampledata/destination"
 	funcs "example.com/m/sampledata/funcs"
 	source "example.com/m/sampledata/source"
-	"github.com/podhmo/minigo/examples/convert-define/model"
+	model "github.com/podhmo/minigo/examples/convert-define/model"
 )
 
 // convertSrcUserToDstUser converts source.SrcUser to destination.DstUser.

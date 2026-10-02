@@ -25,10 +25,6 @@ const codeTemplate = `
 package {{ .PackageName }}
 
 import (
-	"context"
-	"errors"
-	"fmt"
-	"github.com/podhmo/minigo/examples/convert-define/model"
 	{{- range $path, $alias := .Imports }}
 	{{ $alias }} "{{ $path }}"
 	{{- end }}
@@ -270,29 +266,23 @@ func (e *WarningsError) Error() string {
 	return b.String()
 }
 
-// templateImports are the imports codeTemplate writes itself (path -> alias).
-var templateImports = map[string]string{
+// baseImports are the packages the generated code's skeleton uses
+// (path -> alias).
+var baseImports = map[string]string{
 	"context": "context",
 	"errors":  "errors",
 	"fmt":     "fmt",
 	"github.com/podhmo/minigo/examples/convert-define/model": "model",
 }
 
-func withoutTemplateImports(imports map[string]string) map[string]string {
-	for path := range templateImports {
-		delete(imports, path)
-	}
-	return imports
-}
-
 func Generate(res xinspect.Resolver, info *model.ParsedInfo, opts Options) ([]byte, error) {
 	im := NewImportManager(info.PackagePath)
 	ctx := context.Background()
 
-	// The template imports these unconditionally; registering them first
-	// keeps a dst type such as fmt.Stringer from importing fmt twice and
-	// pushes a user package with the same name to another alias.
-	for path, alias := range templateImports {
+	// The generated code always may use these; registering them first
+	// keeps their aliases stable and pushes a user package with the same
+	// name to another alias. goimports drops the unused ones.
+	for path, alias := range baseImports {
 		im.Add(path, alias)
 	}
 
@@ -457,7 +447,7 @@ func Generate(res xinspect.Resolver, info *model.ParsedInfo, opts Options) ([]by
 
 	templateData := TemplateData{
 		PackageName: info.PackageName,
-		Imports:     withoutTemplateImports(im.Imports()),
+		Imports:     im.Imports(),
 		Pairs:       allPairs,
 		Header:      opts.Header,
 	}
