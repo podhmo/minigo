@@ -8,7 +8,7 @@ import (
 	"go/parser"
 	"go/scanner"
 	"go/token"
-	"log/slog"
+	"path"
 	"regexp"
 	"slices"
 	"strconv"
@@ -21,16 +21,12 @@ import (
 // summarized as a count.
 const maxReportedErrors = 10
 
-// strictImports turns an import goimports had to add into an error;
-// tests enable it so a missed ImportManager registration fails CI
-// instead of being absorbed.
-var strictImports = false
-
 // formatCode runs goimports over the generated source. Syntax errors
 // come back as a *syntaxError, which points each error at the
-// converter and field that emitted it. goimports silently adding an
-// import is also a generator bug (ImportManager missed a registration),
-// so it is logged instead of being absorbed.
+// converter and field that emitted it. goimports having to add an
+// import is also a generator bug (ImportManager missed a registration):
+// absorbing it hides the bug, and the guessed package can be the wrong
+// one, so it fails the run too.
 func formatCode(ctx context.Context, filename string, src []byte) ([]byte, error) {
 	formatted, err := imports.Process(filename, src, nil)
 	if err != nil {
@@ -47,10 +43,7 @@ func formatCode(ctx context.Context, filename string, src []byte) ([]byte, error
 		return nil, fmt.Errorf("goimports failed: %w", err)
 	}
 	if added := addedImports(src, formatted); len(added) > 0 {
-		if strictImports {
-			return nil, fmt.Errorf("goimports added imports the generator did not register: %v", added)
-		}
-		slog.WarnContext(ctx, "goimports added imports the generator did not register (generator bug: ImportManager missed them)", "file", filename, "imports", added)
+		return nil, &missingImportsError{added: added, src: src, formatted: formatted}
 	}
 	return formatted, nil
 }
@@ -80,9 +73,47 @@ func defineSyntaxError(filename string, list scanner.ErrorList, src []byte) *syn
 	}
 }
 
+// missingImportsError reports imports goimports had to add — paths the
+// generator used without registering them with its ImportManager.
+type missingImportsError struct {
+	added     []string
+	src       []byte // as generated
+	formatted []byte // after goimports, to learn the names it chose
+}
+
+func (e *missingImportsError) Error() string {
+	lines := strings.Split(strings.TrimSuffix(string(e.src), "\n"), "\n")
+	names := importNames(e.formatted)
+	var b strings.Builder
+	fmt.Fprintf(&b, "generated code uses %d package(s) the generator did not import. This is a convert-define generator bug (ImportManager missed a registration), not a problem in the define file; no output was written.\n", len(e.added))
+	for _, path := range e.added {
+		name := names[path]
+		fmt.Fprintf(&b, "\nmissing import %q (referenced as %s.)\n", path, name)
+		if line := firstUse(lines, name); line > 0 {
+			conv, field := provenance(lines, line)
+			fmt.Fprintf(&b, "  first used by: %s\n", site(conv, field))
+			b.WriteString(excerpt(lines, line, 1))
+		}
+	}
+	return b.String()
+}
+
+// firstUse returns the 1-based line of the first `name.` selector.
+func firstUse(lines []string, name string) int {
+	use := regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\.`)
+	for i, l := range lines {
+		if use.MatchString(l) {
+			return i + 1
+		}
+	}
+	return 0
+}
+
 var (
-	funcLine  = regexp.MustCompile(`^func (\w+)\(`)
-	enterLine = regexp.MustCompile(`^\s*ec\.Enter\("([^"]+)"\)`)
+	funcLine       = regexp.MustCompile(`^func (\w+)\(`)
+	fieldEnterLine = regexp.MustCompile(`^\s*ec\.Enter\("([^"]+)"\)`)
+	anyEnterLine   = regexp.MustCompile(`^\s*ec\.Enter\(`)
+	leaveLine      = regexp.MustCompile(`^\s*ec\.Leave\(\)`)
 )
 
 func (e *syntaxError) Error() string {
@@ -97,25 +128,50 @@ func (e *syntaxError) Error() string {
 		fmt.Fprintf(&b, "\n%s\n", err)
 		if e.provenance {
 			conv, field := provenance(lines, err.Pos.Line)
-			fmt.Fprintf(&b, "  emitted by: converter %s, field %s\n", orUnknown(conv), orUnknown(field))
+			fmt.Fprintf(&b, "  emitted by: %s\n", site(conv, field))
 		}
 		b.WriteString(excerpt(lines, err.Pos.Line, 2))
 	}
 	return b.String()
 }
 
-// provenance finds the converter function and the field (its
-// ec.Enter("Field") marker) enclosing a 1-based line.
+// provenance finds the converter function and the field enclosing a
+// 1-based line. A field spans ec.Enter("Field") .. its matching
+// ec.Leave(); element segments (ec.Enter(fmt.Sprintf(...))) nest inside
+// it, so the backward scan balances Enter/Leave and only attributes a
+// field whose span is still open at line.
 func provenance(lines []string, line int) (conv, field string) {
-	for i := min(line, len(lines)) - 1; i >= 0; i-- {
-		if m := enterLine.FindStringSubmatch(lines[i]); m != nil && field == "" {
-			field = m[1]
+	depth := 0 // Leaves seen minus Enters seen, scanning backward
+	for i := min(line, len(lines)) - 2; i >= 0; i-- {
+		l := lines[i]
+		switch {
+		case leaveLine.MatchString(l):
+			depth++
+		case anyEnterLine.MatchString(l):
+			if depth > 0 {
+				depth--
+				continue
+			}
+			if m := fieldEnterLine.FindStringSubmatch(l); m != nil && field == "" {
+				field = m[1]
+			}
 		}
-		if m := funcLine.FindStringSubmatch(lines[i]); m != nil {
+		if m := funcLine.FindStringSubmatch(l); m != nil {
 			return m[1], field
 		}
 	}
 	return "", field
+}
+
+// site renders a provenance pair for a report.
+func site(conv, field string) string {
+	if conv == "" {
+		return "(unknown converter)"
+	}
+	if field == "" {
+		return "converter " + conv + " (outside any field)"
+	}
+	return "converter " + conv + ", field " + field
 }
 
 // excerpt renders lines [line-ctx, line+ctx] numbered, marking line.
@@ -130,13 +186,6 @@ func excerpt(lines []string, line, ctx int) string {
 		fmt.Fprintf(&b, "  %s %*d | %s\n", mark, width, n, lines[n-1])
 	}
 	return b.String()
-}
-
-func orUnknown(s string) string {
-	if s == "" {
-		return "(unknown)"
-	}
-	return s
 }
 
 // buildConstraintHeader validates -tags as a build constraint
@@ -165,6 +214,27 @@ func addedImports(src, formatted []byte) []string {
 	}
 	slices.Sort(added)
 	return added
+}
+
+// importNames maps each import path to the name it is referenced by
+// (the explicit alias, else the last path element).
+func importNames(src []byte) map[string]string {
+	f, err := parser.ParseFile(token.NewFileSet(), "", src, parser.ImportsOnly)
+	if err != nil {
+		return nil
+	}
+	names := map[string]string{}
+	for _, s := range f.Imports {
+		p, err := strconv.Unquote(s.Path.Value)
+		if err != nil {
+			continue
+		}
+		names[p] = path.Base(p)
+		if s.Name != nil {
+			names[p] = s.Name.Name
+		}
+	}
+	return names
 }
 
 func importPaths(src []byte) map[string]bool {

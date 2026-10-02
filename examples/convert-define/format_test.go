@@ -11,11 +11,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
-func TestMain(m *testing.M) {
-	strictImports = true
-	os.Exit(m.Run())
-}
-
 // TestFormatCodeReportsProvenance pins the agent-facing failure report:
 // broken generated syntax names the responsible side (the generator),
 // the converter and field that emitted it, and a numbered excerpt —
@@ -48,7 +43,7 @@ generated.go:6:14: expected operand, found ')'
     8 | 	return dst
 
 generated.go:8:2: expected ';', found 'return'
-  emitted by: converter convertSrcToDst, field Items
+  emitted by: converter convertSrcToDst (outside any field)
     6 | 	dst.Items = )
     7 | 	ec.Leave()
   > 8 | 	return dst
@@ -56,6 +51,73 @@ generated.go:8:2: expected ';', found 'return'
 `
 	if diff := cmp.Diff(want, err.Error()); diff != "" {
 		t.Errorf("report mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestFormatCodeRejectsMissingImports pins that an import goimports
+// has to add fails the run (it would hide an ImportManager bug, and the
+// guessed package can be the wrong one), naming the path and the
+// converter/field that first uses it.
+func TestFormatCodeRejectsMissingImports(t *testing.T) {
+	src := `package p
+
+import (
+	"context"
+
+	"github.com/podhmo/minigo/examples/convert-define/model"
+)
+
+func convertSrcToDst(ctx context.Context, ec *model.ErrorCollector, src *Src) *Dst {
+	dst := &Dst{}
+	ec.Enter("Name")
+	dst.Name = strings.ToUpper(src.Name)
+	ec.Leave()
+	return dst
+}
+`
+	_, err := formatCode(context.Background(), "generated.go", []byte(src))
+	var me *missingImportsError
+	if !errors.As(err, &me) {
+		t.Fatalf("want *missingImportsError, got %T: %v", err, err)
+	}
+	want := `generated code uses 1 package(s) the generator did not import. This is a convert-define generator bug (ImportManager missed a registration), not a problem in the define file; no output was written.
+
+missing import "strings" (referenced as strings.)
+  first used by: converter convertSrcToDst, field Name
+    11 | 	ec.Enter("Name")
+  > 12 | 	dst.Name = strings.ToUpper(src.Name)
+    13 | 	ec.Leave()
+`
+	if diff := cmp.Diff(want, err.Error()); diff != "" {
+		t.Errorf("report mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestProvenanceBalancesEnterLeave(t *testing.T) {
+	lines := strings.Split(`func convertAToB(ctx context.Context, ec *model.ErrorCollector, src *A) *B {
+	ec.Enter("Items")
+	for i, item := range src.Items {
+		ec.Enter(fmt.Sprintf("[%d]", i))
+		s[i] = item
+		ec.Leave()
+	}
+	dst.Items = s
+	ec.Leave()
+	return dst
+}`, "\n")
+	tests := []struct {
+		line        int
+		conv, field string
+	}{
+		{line: 5, conv: "convertAToB", field: "Items"}, // inside an element segment
+		{line: 8, conv: "convertAToB", field: "Items"}, // after the element loop, still in the field
+		{line: 10, conv: "convertAToB", field: ""},     // after the field's Leave
+	}
+	for _, tt := range tests {
+		conv, field := provenance(lines, tt.line)
+		if diff := cmp.Diff([2]string{tt.conv, tt.field}, [2]string{conv, field}); diff != "" {
+			t.Errorf("line %d mismatch (-want +got):\n%s", tt.line, diff)
+		}
 	}
 }
 

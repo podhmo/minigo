@@ -124,7 +124,7 @@ generated.go:6:14: expected operand, found ')'
 
 ### 「黙って直さない」検査が、すぐに本物のバグを見つけた
 
-goimports が補った import を検出する `addedImports` を入れた。本番では WARN を出し、テストでは `strictImports` を有効にして失敗扱いにする。すると既存の integration テスト 2 本が即座に失敗した。
+goimports が補った import を検出する `addedImports` を入れた。当初は本番では WARN を出すだけにし、テストでは `strictImports` を有効にして失敗扱いにした（後述のレビューを受けて、本番でも失敗扱いに変更）。すると既存の integration テスト 2 本が即座に失敗した。
 
 - 原因: `TemplateData.Imports` には `im.Imports()` のスナップショットを渡している。ところがテンプレート内の `getQualifiedTypeName` が、そのスナップショットを**取ったあと**で `im.Qualify` を呼び、pair の src/dst 型の import を登録していた。その結果、import ブロックから `source`/`destination` が抜け落ち、毎回 goimports が黙って補っていた。e2e では define ファイル側の import が先に登録されていたため、たまたま表に出ていなかった。
 - 修正: 型名を `qualifiedStructName` で emit パスのうちに計算し、`TemplatePair.SrcTypeName`/`DstTypeName` に入れた。`funcMap` と `TemplateData.Im`/`Info` は削除したので、**テンプレートの実行は純粋に整形するだけになった**。
@@ -150,6 +150,28 @@ goimports が補った import を検出する `addedImports` を入れた。本�
 
 まだ残っているのは、型の不一致（`int64 → string`）を警告するだけでコマンドが成功する点である。既定の動作は fuzz 実験で「loud failure」として固定した設計なので変えず、`-strict` フラグで警告をエラーにする案と、型エラーの provenance をまとめて別 issue にする。
 
+### TODO の評価を受けて: 自動修復を本番でも失敗扱いにし、provenance の範囲を正した
+
+同じレビュアーに追加した TODO を評価してもらったところ、さらに 2 点の指摘を受けた（どちらも TODO.md に追記されていた）。
+
+- **goimports による import の補完を、本番でも失敗にする。** テストでしか失敗しない状態では、上で見た「間違ったパッケージが補われる」危険が通常の利用では閉じていなかった。テスト専用のスイッチ `strictImports` を削除し、`formatCode` は常に `*missingImportsError` を返すようにした。報告には次を含める。
+  - 補われた import の path と、コード中で参照されている名前
+  - その名前が最初に使われた箇所の converter/field と抜粋
+  - 出力は書いていないこと
+
+  変更後もコーパスは 28/28 のままだった。
+  ```
+  generated code uses 1 package(s) the generator did not import. This is a convert-define generator bug (ImportManager missed a registration), not a problem in the define file; no output was written.
+
+  missing import "strings" (referenced as strings.)
+    first used by: converter convertSrcToDst, field Name
+      11 | 	ec.Enter("Name")
+    > 12 | 	dst.Name = strings.ToUpper(src.Name)
+      13 | 	ec.Leave()
+  ```
+- **provenance がフィールドの外のエラーまで、そのフィールドに帰属させていた。** 直前の `ec.Enter("X")` を探すだけで、`ec.Leave()` を見ていなかったためである。実は私が書いた format テストの期待値自体が、`return dst` 行のエラーを `field Items` としていた。テストを書いた本人がそれをバグだと気づかず、期待値として固定していたことになる。逆方向に走査するときに Enter/Leave の対応を数えるように直した（要素ごとの `ec.Enter(fmt.Sprintf(...))` はフィールドの内側に入れ子になる）。フィールドの外のエラーは `converter X (outside any field)` と表示する。
+- **型エラーの追跡のために `go build` を必須にはしない**、という判断にも同意する。この生成器には「入力パッケージが一時的にコンパイルできなくても再生成できる」という価値がある（usecasefuzz の `stale-generated`/`broken-*` ケース）。ビルド検査を設けるなら任意のモードにし、まず「生成位置 → 変換の判断」の対応表を残すところから始める（TODO.md）。
+
 ## 6. 2 つの見解の検証
 
 | 主張 | 結果 |
@@ -167,6 +189,7 @@ goimports が補った import を検出する `addedImports` を入れた。本�
 
 ## 8. 「LLM・エージェントに親切なツール」への含意
 
+- **テストの期待値は、バグも固定してしまう。** provenance の誤帰属は、私が自分で書いた golden に入っていた。出力を「見て正しそうなら固定する」golden の運用では、書いた本人の思い込みはそのまま残る。それを見つけたのは、別のエージェントのレビューだった。
 - **自動修復を検出する検査は安く入れられて、効果が大きい。** 入れた直後に、何度も隠されていたバグが見つかった。人間にとっての便利さ（goimports が黙って直してくれる）が、エージェントにとっては信号を消すことになる、という指摘の実例になった。
 - **失敗の入口は 1 つではない。** 生成器の内部だけを直しても、CLI 引数や入力ファイルの経路に同じ欠点（あとで後段のビルドが失敗する、エラーの省略、エスケープされて潰れた出力）が残っていた。それを見つけたのは、変更の経緯を知らないブラインドのレビューだった。
 - **エラーは原因の語彙で返す。** 「生成器のバグであって define ファイルの問題ではない」「`convertSrcToDst` の `Items`」という情報があれば、次にどこを読むべきかが一意に決まる。
