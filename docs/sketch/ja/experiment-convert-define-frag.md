@@ -129,6 +129,8 @@ goimports が補った import を検出する `addedImports` を入れた。本�
 - 原因: `TemplateData.Imports` には `im.Imports()` のスナップショットを渡している。ところがテンプレート内の `getQualifiedTypeName` が、そのスナップショットを**取ったあと**で `im.Qualify` を呼び、pair の src/dst 型の import を登録していた。その結果、import ブロックから `source`/`destination` が抜け落ち、毎回 goimports が黙って補っていた。e2e では define ファイル側の import が先に登録されていたため、たまたま表に出ていなかった。
 - 修正: 型名を `qualifiedStructName` で emit パスのうちに計算し、`TemplatePair.SrcTypeName`/`DstTypeName` に入れた。`funcMap` と `TemplateData.Im`/`Info` は削除したので、**テンプレートの実行は純粋に整形するだけになった**。
 
+**外部コーパスでの確認（`podhmo/minigo-usecasefuzz` の `convert-define/`、28 ケース）**: main もこのブランチも、28 ケースすべてが期待どおりの判定（OK / GEN-FAIL / BUILD-FAIL）になった。ただし main の生成器に `addedImports` の検査だけを移植して流すと、**8 ケース（c01、c02、c13、c15、c16、broken-dsl、broken-src、stale-generated）で goimports が import を黙って補っていた**。ハーネスでは出力先がケースのモジュール内なので、goimports は正しいパッケージを推測できた。しかし `-dry-run -output /tmp/raw.go` のように出力先をモジュールの外にすると、`example.com/m/destination` のはずが **`.../convert-define/sampledata/destination` という別の同名パッケージ**が補われた。黙って直す処理は、バグを隠すだけでなく、条件次第で間違った依存を入れてしまう。このブランチでは 28 ケースとも補完はゼロだった。
+
 これは、issue #48 で Codex が書いた「`FieldMap.Assign` は emit パスで計算済みなので、テンプレート実行中の副作用という指摘は古い」に対する反例である。フィールド代入については正しいが、型名の修飾という副作用は残っていた。
 
 ## 6. 2 つの見解の検証
