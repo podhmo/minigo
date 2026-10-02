@@ -2808,13 +2808,30 @@ func hostMemberInner(zero any, name string, methods bool) int {
 // method set. t is the slot's declared type: a *T slot contributes the
 // methods of *T, including pointer receivers of embedded values.
 func hostMethodInner(t reflect.Type, name string) int {
+	return methodInner(t, name, map[reflect.Type]bool{})
+}
+
+// methodInner: name is in t's method set — how deeply inside t it is
+// promoted. Each anonymous field contributes its own type's method set
+// — *E when the chain went through a pointer, an interface as itself —
+// and the shallowest path wins. reflect cannot tell a method declared
+// on t from one promoted through an embed, so a name found in a
+// child's set counts via that child; contributed types are visited
+// once per path so a recursively-embedded host type (struct{ *T })
+// terminates instead of overflowing the stack.
+func methodInner(t reflect.Type, name string, seen map[reflect.Type]bool) int {
 	st := t
 	for st.Kind() == reflect.Pointer {
 		st = st.Elem()
 	}
 	if st.Kind() != reflect.Struct {
-		return 0 // a leaf (non-struct) type declares the method itself
+		return 0 // non-struct types declare their methods
 	}
+	if seen[t] {
+		return -1
+	}
+	seen[t] = true
+	defer delete(seen, t)
 	underPtr := t.Kind() == reflect.Pointer
 	best := -1
 	for i := 0; i < st.NumField(); i++ {
@@ -2823,7 +2840,7 @@ func hostMethodInner(t reflect.Type, name string) int {
 			continue
 		}
 		ct := sf.Type
-		if ct.Kind() != reflect.Pointer && underPtr {
+		if ct.Kind() != reflect.Pointer && ct.Kind() != reflect.Interface && underPtr {
 			// a value embed contributes *E's method set when the
 			// embedding chain went through a pointer.
 			ct = reflect.PointerTo(ct)
@@ -2831,8 +2848,8 @@ func hostMethodInner(t reflect.Type, name string) int {
 		if _, ok := ct.MethodByName(name); !ok {
 			continue
 		}
-		if d := hostMethodInner(ct, name) + 1; best < 0 || d < best {
-			best = d
+		if d := methodInner(ct, name, seen); d >= 0 && (best < 0 || d+1 < best) {
+			best = d + 1
 		}
 	}
 	if best >= 0 {

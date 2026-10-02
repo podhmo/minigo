@@ -217,6 +217,10 @@ func TestAfterFuncDiesWithProc(t *testing.T) {
 
 type nilHostT struct{ N int }
 
+type selfHostT struct{ *selfHostT }
+
+func (*selfHostT) M() {}
+
 func (*nilHostT) M() int { return 7 } // nil-tolerant pointer receiver
 func (nilHostT) V() int  { return 9 } // value receiver — dereferences
 
@@ -227,8 +231,9 @@ func TestNilHostPtrMember(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		e := newEngine(t)
 		e.Bind("probehost", map[string]runtime.Value{
-			"T":   &runtime.TypeDef{Name: "probehost.T", Kind: runtime.KindStruct, HostNew: func() any { return &nilHostT{} }},
-			"Nil": &runtime.GoValue{V: (*nilHostT)(nil)},
+			"T":     &runtime.TypeDef{Name: "probehost.T", Kind: runtime.KindStruct, HostNew: func() any { return &nilHostT{} }},
+			"Nil":   &runtime.GoValue{V: (*nilHostT)(nil)},
+			"SelfT": &runtime.TypeDef{Name: "probehost.SelfT", Kind: runtime.KindStruct, HostNew: func() any { return &selfHostT{} }},
 		})
 		got := run(t, e, "./testdata/nilhost", "NilMethod")
 		if diff := cmp.Diff(int64(7), got); diff != "" {
@@ -239,6 +244,11 @@ func TestNilHostPtrMember(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), "nil pointer") {
 				t.Fatalf("%s: expected nil-pointer panic, got %v", fn, err)
 			}
+		}
+		// a recursively-embedded host type (struct{ *T }) must not
+		// loop the internal method-depth walk.
+		if got := run(t, e, "./testdata/nilhost", "SelfEmbedMethod"); got != int64(7) {
+			t.Errorf("SelfEmbedMethod = %v", got)
 		}
 	})
 }

@@ -27,3 +27,14 @@ func NilField() int {
 	s := S{T: probehost.Nil}
 	return s.N
 }
+
+// SelfEmbedMethod: probehost.SelfT embeds itself (type T struct{ *T })
+// and declares M on *T — method lookup through the embed must not
+// recurse.
+type S2 struct{ probehost.SelfT }
+
+func SelfEmbedMethod() int {
+	var s S2
+	s.M()
+	return 7
+}

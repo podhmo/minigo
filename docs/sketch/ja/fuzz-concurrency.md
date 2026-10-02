@@ -188,16 +188,17 @@ PR #27 で「並行動作を実装した」と言いつつ、`sync` パッケー
 - host 埋め込みはリーフ: `hostMemberInner(embTd.HostNew(), name, methods)` が boxed 型の promoted メンバーとその内部深さを返す。格納値が nil でも名前解決は成功し、その後 `hostNilEmbed` が nil ポインタ経路として `nilDepth`/`nilPaths` 会計に載せる（script 側 nil-ptr 埋め込みと同じ nil pointer panic になる）。
 - **存在確認は型レベルで行う（レビュー指摘で修正）**: 初版は `hostField(zero, name)` — ゼロ値を dereference して `reflect.Value.FieldByName` を呼んでいたため、`struct{ *template.Template }` のように「host 型自身が nil の匿名ポインタフィールドを持つ」ケースで promoted フィールド（`s.Root`）の存在確認自体が `reflect: indirection through nil pointer` で panic した。`reflect.Type.FieldByName`（`PkgPath` で非公開を除外）に変更し、dereference は実際のメンバーアクセス側に委ねた（`HostSubEmbedField` = `s.Root != nil` で固定）。
 - **host 型内部の昇格深さも BFS に乗せる（レビュー指摘で修正）**: 上の修正で `Template → *parse.Tree → Root` のような「host 型内部を1段潜った promoted メンバー」も検出されるようになったが、全てスロット直上の深度（depth+1）として数えていたため、`struct{ *template.Template; Local }` の `Local.Root`（浅い）と `parse.Tree.Root`（深い）が同深度衝突 → false ambiguous になった。`hostMemberInner` が内部深さを返す（フィールドは `sf.Index` 長、メソッドは埋め込み型を再帰する `hostMethodInner` — ポインタ経路の貢献メソッド集合も `underPtr` で追跡）し、BFS は `abs = depth+1+inner` の deferred ヒットとして保持: そのレベルに到達した時点で script ヒットと競合させ、walk が尽きて残った deferred は最浅のものが勝つ（`HostSubEmbedDepth` = 7 で固定）。nil-embed の nilPaths も同じ abs 計算を使うので、nil `*T` 経由の深いメンバーが浅い実メンバーと誤って同深度判定されることもない。
+- **`hostMethodInner` の無限再帰を防ぐ（レビュー指摘で修正）**: `type T struct{ *T }` のように再帰的に埋め込まれた host 型では、子の貢献メソッド集合（`*T`）が同名メソッドを持つため同じ引数で再帰し続け stack overflow でホストプロセスごと落ちていた（再現コードで確認）。貢献型をパス単位の seen で管理して循環を打ち切る。なお reflect の `Method.Type.In(0)`・`FuncForPC` ともクエリ側の型を返すだけで「宣言されたメソッド」と「昇格メソッド」の区別は API 上取れない — 子の集合で見つかった名前は常に昇格として数えるため、「host 型自身に宣言され、かつ内部埋め込みにも同名で存在する」メソッドは実際より深く数え得る（残件として §8.6 に記録）。
 - `embedTypeDepth` にも host リーフ判定を追加（host 型の内部は minigo から不透明なので d=1 で打ち止め — nil `*sync.Pool` 埋め込み経由の「型レベルで存在確認」にも使われる）。
 - script メソッドも `embTd.Methods[name]` で `methHits` として計数するよう拡張。メソッド自体は `findMethod` に委譲して戻り値にはしないが、同深度での衝突は数える: `{sync.Mutex; locker2}`（host メソッド vs script メソッド）も `{mA; mB}`（script メソッド同士）も ambiguous trap になる。mixed-kind（host メソッド vs script フィールド等）も同様。
 
-**定義型はメソッドを継承しない（レビュー指摘で修正）**: `type MyMutex sync.Mutex` は Go ではメソッド集合が空 — `{MyMutex}` の `x.Lock()` はコンパイルエラー。peel 前の typedef を `raw` として保持し、メソッド判定は `raw.Methods` と `hostMemberExists(..., methods bool)` に「embed が host 型そのものか」を渡す形に分離した: 定義型経由では underlying の**フィールドのみ**昇格しメソッドは昇格しない（`type MyPool sync.Pool` の `x.New` は通り、`x.Lock` は `has no field or method` trap — Go と同じく拒否される）。script 側の `type B A` も同じ規則になる。
+**定義型はメソッドを継承しない（レビュー指摘で修正）**: `type MyMutex sync.Mutex` は Go ではメソッド集合が空 — `{MyMutex}` の `x.Lock()` はコンパイルエラー。peel 前の typedef を `raw` として保持し、メソッド判定は `raw.Methods` と `hostMemberInner(..., methods bool)` に「embed が host 型そのものか」を渡す形に分離した: 定義型経由では underlying の**フィールドのみ**昇格しメソッドは昇格しない（`type MyPool sync.Pool` の `x.New` は通り、`x.Lock` は `has no field or method` trap — Go と同じく拒否される）。script 側の `type B A` も同じ規則になる。
 
 `findMethod` の HostNew 分岐は `promotedField` を通らない呼び出し経路のセーフティネットとして残した。
 
 ### 8.3 nil `*T` host 埋め込みの扱い（計画外の意思決定② + レビュー指摘で修正）
 
-`struct{ *sync.Pool }` で格納値が nil のケース。Go はセレクタ自体を静的に解決するため「フィールドがない」ではなく dereference で panic する。`hostMemberExists` を型レベルで評価する設計にしたことで、このケースは script 側の nil-ptr 埋め込みと同じ nilPaths 機構に自然に乗る — 単独パスなら nil pointer panic、実パスと同深度なら ambiguous trap、という対称性が無料で得られた（`NilHostPtrEmbed` で固定）。
+`struct{ *sync.Pool }` で格納値が nil のケース。Go はセレクタ自体を静的に解決するため「フィールドがない」ではなく dereference で panic する。`hostMemberInner` を型レベルで評価する設計にしたことで、このケースは script 側の nil-ptr 埋め込みと同じ nilPaths 機構に自然に乗る — 単独パスなら nil pointer panic、実パスと同深度なら ambiguous trap、という対称性が無料で得られた（`NilHostPtrEmbed` で固定）。
 
 ただし一律 panic は誤りだった: **nil レシーバを許容するポインタレシーバのメソッドは Go では呼べる**（レシーバに nil がそのまま渡るだけ）。`hostNilCallable` を追加し、メンバー種別で分けた: フィールドと値レシーバのメソッド（`T.MethodByName` で見つかる = レシーバ評価が deref を要する）は従来どおり panic、ポインタレシーバのみのメソッド（`*T` にだけ存在）は nil を通して呼び出す（`NilMethod`=7、`NilValueMethod`/`NilField`=panic で固定）。
 
@@ -214,6 +215,7 @@ PR #27 で「並行動作を実装した」と言いつつ、`sync` パッケー
 - `TestNilHostPtrMember`: `probehost`（Bind した `*T` host 型）の nil `*T` 埋め込み — ポインタレシーバ `M()` は nil レシーバで 7、値レシーバ `V()` と フィールド `N` は nil pointer panic
 - `HostSubEmbedField`（表）: `struct{ *template.Template }` の promoted `Root` — host 型のゼロ値が nil 匿名ポインタを持っていても型レベルで解決し、実値の `*common` はアクセス時に deref される
 - `HostSubEmbedDepth`（表）: `{*template.Template; tplLocal{Root int}}` — host 型内部の昇格フィールド（Template→*Tree→Root、深さ2）より script の直接フィールド（深さ1）が勝つ
+- `SelfEmbedMethod`（TestNilHostPtrMember 内）: `type T struct{ *T }` の再帰的埋め込み host 型 — `hostMethodInner` の貢献型 seen で stack overflow を防ぐ
 - `TestNilHostPtrEmbed`: nil `*sync.Pool` 埋め込みへの `New` 書き込みで nil pointer panic
 
 ### 8.5 検証
@@ -226,4 +228,5 @@ PR #27 で「並行動作を実装した」と言いつつ、`sync` パッケー
 - `findMethod` は embeds を順に見る DFS first-wins のまま — `promotedField` が単一メソッドヒットを返さない限り深さ順序は DFS 依存であり、浅い promoted メソッドと深い promoted メソッドが競合した場合（`struct{X{A}; Y}` で A.M が深く Y.M が浅い等）に深い方を返し得る。ambiguity の trap は防げたが、深さ順序の完全な正しさには `findMethod` 側の BFS 化が必要。
 - interface 埋め込みの method-req 衝突は未計数（`struct{io.Reader; A}` で A も Read を持つ等 — Go はコンパイルエラー、minigo は iface の動的 dispatch として動く）。
 - nil `*T` 埋め込み経由の promoted メソッド呼び出し: host 側はポインタレシーバなら呼べるようになった（`hostNilCallable`）が、script メソッド（`findMethod` 経由）は nil recv の `structOf` に失敗して "no field or method" trap のまま — Go は method value 評価時に nil pointer panic（値レシーバ）または nil を渡す（ポインタレシーバ）。また `{*S{*T}}` nil のような「script の nil-ptr 埋め込みを更に潜った先の host ポインタレシーバメソッド」も `embedTypeDepth` が nil パスとしか数えられないため早期 panic になる。
+- host 型内部のメソッド深さは「同名が host 型自身に宣言済み AND 内部埋め込みからも昇格する」場合に実際より深く数え得る（reflect は宣言/昇格を区別できないため子の集合で見つかったものは常に昇格扱い）。例: `{*template.Template; Local}` の `Parse` は Go では ambiguous だが Local 側が選ばれる。
 - `vc.Call` 経由の retained コールバック（adaptFunc で MakeFunc 化された sync.Pool.New 等）は detached proc で依然実行される — AfterFunc は Spawn 経路なので今回の `procDead` ゲートで止まるが、Call は新しい proc を開く設計で変えていない。proc 寿命の厳密な縛りを host コールバック全般に広げるなら別途検討。
