@@ -233,7 +233,7 @@ Codex が衝突の例に挙げた `Pair.Variables` は、どこからも値が�
 
 ### D10. DSL の誤用エラーは、今回は直さなかった
 
-README の Debugging 節を書いている途中で、DSL の誤用エラー（`c.Map(dst.W, src.W)` など）だけは 1 行目で「誰が直すか」を言っていないことに気づいた。README は実態に合わせて書き（位置とトレースバックがあることを明記）、直すのは TODO に回した。エラーの発生源が minigo の runtime trap で、範囲が convert-define の外に広がるためである。
+README の Debugging 節を書いている途中で、DSL の誤用エラー（`c.Map(dst.W, src.W)` など）だけは 1 行目で「誰が直すか」を言っていないことに気づいた。README は実態に合わせて書き（位置とトレースバックがあることを明記）、直すのは TODO に回した。エラーの発生源が minigo の runtime trap で、範囲が convert-define の外に広がるためである。→ 派生ブランチ `exp/issue48-dsl-errors` で、minigo 本体の変更を含めて対応した（§8）。
 
 ### D11. 満足度評価の 2 件は、どちらも convert-define 側で直した
 
@@ -254,13 +254,64 @@ README の Debugging 節を書いている途中で、DSL の誤用エラー（`
 
 既存の integration テストが通っていたのは、同じ define ファイルの `c.Convert(dst.Contact, src.ContactInfo, funcs.ConvertSrcContactToDstContact)` が、同じ `funcs` パッケージをたまたま登録していたからにすぎない。main では goimports が黙って補うので、このバグは見えなかった。いまは、式の中の `pkg.Name` をすべて辿って登録している。D9 の検査が、入れてすぐに 2 件目のバグを見つけたことになる。
 
-## 8. 残課題（TODO.md に記載）
+## 8. 派生: DSL の誤用エラー（minigo 本体の変更を含む）
+
+ブランチ `exp/issue48-dsl-errors`（`exp/issue48-frag` から派生）で D10 に対応した。
+
+### 何が起きていたか
+
+```
+failed to run definition script: evaluating define file: runtime trap: .../define.go:12:2: error while parsing mapping function: source: field path "W": A has no field "W"
+Traceback (most recent call first):
+...
+```
+
+これには 2 つの問題があった。
+
+- **誰が直すかを言っていない。** しかも位置が `12:2`（`define.Convert` の呼出し）で、本当に壊れている `c.Map(dst.W, src.W)` の行（13 行目）ではなかった。
+- **構造化した情報が VM で失われる。** special form のハンドラが返したエラーを、VM は `panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error()})` で文字列に潰していた。ホスト（convert-define）は、自分が返した独自型のエラーを `errors.As` で取り戻せなかった。
+
+### 変更
+
+- **minigo 本体**: `runtime.Trap` に `Err error` と `Unwrap()` を追加した。`Reason: err.Error()` で Trap を作っている 8 箇所（special form、builtin、ホスト呼出し、defer、range-over-func など）すべてで `Err: err` も設定する。VM 自身が出す Trap は `Err == nil` のまま。`TestSpecialFormErrorUnwrap` で、独自型のエラーが Trap 越しに `errors.As` でき、Trap の frames も読めることを固定した。
+- **convert-define**: ハンドラは `internal.DefineError{Pos, Msg}` を返す。位置は、失敗した `c.Map`/`c.Convert`/`c.Compute` の呼出しを指す（`mappingWalker` が失敗した呼出しを記録する）。`Run` は Trap から `DefineError` を `errors.As` で取り出し、Trap の frames を付けて返す。CLI は次のように表示する。
+
+```
+define file DIR/define.go is invalid at 15:3: c.Map: destination: field path "W": B has no field "W"
+Fix the define file at that position; no code was generated.
+
+    13 | func register() {
+    14 | 	define.Convert(func(c *define.Config, dst *destination.B, src *source.A) {
+  > 15 | 		c.Map(dst.W, src.V)
+    16 | 	})
+    17 | }
+
+reached via (most recent call first):
+  File "DIR/define.go", line 14, in register()
+      define.Convert(func(c *define.Config, dst *destination.B, src *source.A) {
+  File "DIR/define.go", line 10, in main()
+      register()
+```
+
+これで README の「失敗の 1 行目が、誰が直すべきかを示す」は、例外なく成り立つようになった。usecasefuzz のコーパス（neg01〜03 の GEN-FAIL を含む）は 28/28 のまま。
+
+### D13. 最初は本体に手を入れずに済ませようとした
+
+最初は「範囲が convert-define の外に広がる」ことを避けて、convert-define の中だけで完結させた。ハンドラを包む関数が `DefineError` を Runner に保存しておき（`r.dslErr`）、`Run` で Trap を受け取ったらそれを返す、という脇道を通す方式である。動きはしたが、ユーザーから「本体に手を入れて。そのためにブランチを分けた」と指摘を受けた。本体側で `Trap.Unwrap` を用意すれば、脇道はまるごと消える。結果として、ホスト側の状態が 1 つ減り、すべての special form のホストが同じ仕組みを使えるようになった。
+
+**教訓**: 「範囲を広げない」ことを優先しすぎて、根本の原因（Trap がエラーを文字列に潰す）を迂回する設計を選んでいた。ブランチを分けたという事実自体が、範囲を広げてよいという合図だった。
+
+### D14. 呼出し経路は、ヘルパーを経由したときだけ出す
+
+DSL ファイルはふつう `main` の中で `define.Convert` を呼ぶので、frame は `main` の 1 つだけになり、表示しても情報が増えない。frame が 2 つ以上あるとき（ヘルパー関数を経由したとき）だけ `reached via` を出すことにした。出力量を抑えつつ、必要なときには経路が見える。
+
+## 9. 残課題（TODO.md に記載）
 
 - （対応済み）`ConversionPair.Variables`、同じパッケージの識別子との衝突、`-tags` の検証、本番での import 補完の失敗化、provenance の範囲、`-file` の検査、`c.Compute` の型検査（D11）
-- DSL の誤用エラーが、1 行目で「誰が直すか」を言わない（D10）
+- （対応済み・§8）DSL の誤用エラーが、1 行目で「誰が直すか」を言わない（D10）
 - 構文は正しいが型エラーになるコードの provenance。既知の leaf の不一致は `-strict` で対応済み。それ以外は任意の `-check` として [issue #49](https://github.com/podhmo/minigo/issues/49) に切り出した
 
-## 9. 「LLM・エージェントに親切なツール」への含意
+## 10. 「LLM・エージェントに親切なツール」への含意
 
 - **テストの期待値は、バグも固定してしまう。** provenance の誤帰属は、私が自分で書いた golden に入っていた。出力を「見て正しそうなら固定する」golden の運用では、書いた本人の思い込みはそのまま残る。それを見つけたのは、別のエージェントのレビューだった。
 - **自動修復を検出する検査は安く入れられて、効果が大きい。** 入れた直後に、何度も隠されていたバグが見つかった。人間にとっての便利さ（goimports が黙って直してくれる）が、エージェントにとっては信号を消すことになる、という指摘の実例になった。

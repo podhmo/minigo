@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/podhmo/minigo/examples/convert-define/internal"
 	"golang.org/x/tools/imports"
 )
 
@@ -270,4 +271,36 @@ func importPaths(src []byte) map[string]bool {
 		}
 	}
 	return paths
+}
+
+// dslError renders a define-DSL misuse (internal.DefineError) for the
+// CLI: the user's to fix, at a define-file position, with an excerpt.
+// The DSL call frames are shown only when the failing define call was
+// reached through a helper (more than main itself).
+type dslError struct {
+	de  *internal.DefineError
+	src []byte // the define file, for the excerpt; nil if unreadable
+}
+
+func (e *dslError) Error() string {
+	var b strings.Builder
+	p := e.de.Pos
+	fmt.Fprintf(&b, "define file %s is invalid at %d:%d: %s\n", p.Filename, p.Line, p.Column, e.de.Msg)
+	b.WriteString("Fix the define file at that position; no code was generated.\n")
+	if e.src != nil {
+		lines := strings.Split(strings.TrimSuffix(string(e.src), "\n"), "\n")
+		b.WriteString("\n" + excerpt(lines, p.Line, 2))
+	}
+	if len(e.de.Frames) > 1 {
+		b.WriteString("\nreached via (most recent call first):\n")
+		for _, f := range e.de.Frames {
+			// `File "...", line N, in f()` plus its indented source line
+			head, srcLine, _ := strings.Cut(f, "\n")
+			b.WriteString("  " + head + "\n")
+			if s := strings.TrimSpace(srcLine); s != "" {
+				b.WriteString("      " + s + "\n")
+			}
+		}
+	}
+	return b.String()
 }

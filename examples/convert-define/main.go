@@ -74,6 +74,11 @@ func run(ctx context.Context, defineFile, output string, dryRun bool, buildTags 
 				return defineSyntaxError(defineFile, list, src)
 			}
 		}
+		var de *internal.DefineError
+		if errors.As(err, &de) {
+			src, _ := os.ReadFile(de.Pos.Filename)
+			return &dslError{de: de, src: src}
+		}
 		return fmt.Errorf("failed to run definition script: %w", err)
 	}
 
