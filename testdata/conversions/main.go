@@ -131,7 +131,7 @@ func CastT[T any](v any) T {
 	return T(v)
 }
 
-func GenericCast() int {
+func GenericCast() int64 {
 	return CastT[int64](int64(9))
 }
 

@@ -281,6 +281,22 @@ func PtrConvShared() string {
 	return s
 }
 
+// an untyped constant lands already converted to its destination type:
+// `var f float64 = 3` divides as a float, and a sized decl tags so %T
+// spells the declared width (float32, int64 — also the zero value).
+type CF float64
+type CI8 int8
+
+func ConstDestType() string {
+	var f32 float32 = 1.5
+	var x CF = 3
+	var i64 int64
+	const cf float64 = 3
+	var i int = 7
+	var i8 CI8 = 100
+	return fmt.Sprintf("%v %v %v|%T %T %T %T %T", x/2, cf/2, f32/2, f32, x, i64, i, i8)
+}
+
 // declared slice/map/chan typedefs keep their methods when checked
 // against an interface — a conversion `B("x")` must satisfy W.
 type B []byte

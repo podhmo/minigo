@@ -1488,6 +1488,7 @@ func TestFuzzFixes(t *testing.T) {
 		{"NamedUnary", "251"},
 		{"ConvSizedInt", "251 251 uint8"},
 		{"ConstFoldShift", int64(1) << 50},
+		{"ConstDestType", "1.5 1.5 0.75|float32 main.CF int64 int main.CI8"},
 
 		// use-case-fuzz leftovers (PR-30; docs/sketch/ja/fuzz-usecase.md)
 		{"UnsignedOps", "1152921504606846976 0 250 28 4"},
