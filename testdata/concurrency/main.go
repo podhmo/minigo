@@ -964,18 +964,64 @@ func NilHostPtrEmbed() int {
 	return -1
 }
 
-// NamedHostEmbed: a declared type whose underlying is a host type
-// (`type MyMutex sync.Mutex`) still promotes the box's methods.
+// NamedHostFieldEmbed: a declared type over a host type keeps the
+// underlying's fields (`type MyPool sync.Pool` still has New), even
+// though Go gives the defined type an empty method set.
+type MyPool sync.Pool
+type namedPool struct{ MyPool }
+
+func NamedHostFieldEmbed() int {
+	var t namedPool
+	t.New = func() any { return 7 }
+	return t.New().(int)
+}
+
+// NamedHostMethodEmbed: a defined type does not inherit the underlying
+// host type's methods — `t.Lock` is undefined, like Go.
 type MyMutex sync.Mutex
 type namedMu struct {
 	MyMutex
 	n int
 }
 
-func NamedHostEmbed() int {
+func NamedHostMethodEmbed() int {
 	var t namedMu
 	t.Lock()
-	t.n++
-	t.Unlock()
-	return t.n // 1
+	return t.n
 }
+
+// NamedScriptFieldEmbed / NamedScriptMethodEmbed: the same rule for a
+// script declared type — fields of the underlying promote, methods do
+// not.
+type sBase struct{ F int }
+
+func (sBase) M() {}
+
+type bDefined sBase
+type bWrap struct{ bDefined }
+
+func NamedScriptFieldEmbed() int {
+	var t bWrap
+	t.F = 9
+	return t.F
+}
+
+func NamedScriptMethodEmbed() int {
+	var t bWrap
+	t.M()
+	return 1
+}
+
+var afterFuncFired int
+
+// AfterFuncArm: registers a real-clock timer and returns — its process
+// dies with the run, so the callback must never start (Go kills pending
+// timers with the process).
+func AfterFuncArm() int {
+	time.AfterFunc(20*time.Millisecond, func() { afterFuncFired = 1 })
+	return 0
+}
+
+// AfterFuncRead: observes the package var a dead run's timer would have
+// set — stays 0 when the callback never started.
+func AfterFuncRead() int { return afterFuncFired }

@@ -118,7 +118,11 @@ type VM struct {
 	// fails the process the same way, aborting everyone else.
 	proc      *proc
 	procHolds int
-	task      *runtime.Task // this VM's own spawn handle; nil on the root
+	// procDead records that this VM's process ended — a dead process
+	// spawns nothing, so a timer or host callback bound to a finished
+	// run never starts on a detached process.
+	procDead bool
+	task     *runtime.Task // this VM's own spawn handle; nil on the root
 }
 
 // proc is one interpreter process: the goroutines belonging to a root Call.
@@ -187,6 +191,7 @@ func (v *VM) ReleaseProc() {
 		if v.proc != nil {
 			v.proc.kill()
 			v.proc = nil
+			v.procDead = true
 		}
 		v.procHolds = 0
 	}
@@ -207,6 +212,14 @@ var nilChanValue = reflect.ValueOf((chan struct{})(nil))
 func (v *VM) Spawn(fn runtime.Value, args []runtime.Value) *runtime.Task {
 	v.callMu.Lock()
 	if v.proc == nil {
+		if v.procDead {
+			// the caller's process already ended — Go kills pending
+			// timers with the process, so the spawn never starts.
+			v.callMu.Unlock()
+			t := &runtime.Task{Done: make(chan struct{}), Parent: v.task}
+			t.Finish(procExit{}, true)
+			return t
+		}
 		// a spawn outside any Call (host-driven VM) gets a detached
 		// process: nothing kills it, matching a goroutine that outlives
 		// the program it was expected to die with — the hold is
@@ -215,6 +228,16 @@ func (v *VM) Spawn(fn runtime.Value, args []runtime.Value) *runtime.Task {
 		v.procHolds++
 	}
 	p := v.proc
+	select {
+	case <-p.done:
+		// the process died between hold and spawn — same refusal: a
+		// dead process starts no new work.
+		v.callMu.Unlock()
+		t := &runtime.Task{Done: make(chan struct{}), Parent: v.task}
+		t.Finish(procExit{}, true)
+		return t
+	default:
+	}
 	v.callMu.Unlock()
 	t := &runtime.Task{Done: make(chan struct{}), Parent: v.task}
 	child := &VM{H: v.H, proc: p, task: t}
@@ -2576,6 +2599,7 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 				if err != nil || embTd == nil {
 					continue
 				}
+				raw := embTd
 				embTd = v.peelNamed(embTd)
 				if embTd == nil {
 					continue
@@ -2585,8 +2609,10 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 					// when the boxed type exposes it as an exported
 					// field or method — checked on the type's zero so
 					// a nil stored pointer still resolves (and then
-					// panics on the dereference, via nilPaths).
-					if idx >= len(st.Fields) || !v.hostMemberExists(embTd.HostNew(), name) {
+					// panics on the dereference, via nilPaths). A defined
+					// type (type MyMutex sync.Mutex) carries the fields
+					// but not the methods — its method set starts empty.
+					if idx >= len(st.Fields) || !v.hostMemberExists(embTd.HostNew(), name, embTd == raw) {
 						continue
 					}
 					recv := st.Fields[idx]
@@ -2605,11 +2631,13 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 					hostHits = append(hostHits, runtime.Unwrap(recv))
 					continue
 				}
-				if _, ok := embTd.Methods[name]; ok {
+				if _, ok := raw.Methods[name]; ok {
 					// promoted methods resolve through findMethod, but
 					// they still collide: a same-depth field or host
 					// member with the name makes the selector ambiguous,
-					// like Go's compile-time rejection.
+					// like Go's compile-time rejection. Only the embed's
+					// own methods count — a defined type does not inherit
+					// the underlying type's methods.
 					methHits++
 					continue
 				}
@@ -2694,10 +2722,15 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 
 // hostMemberExists reports whether a host-typed embed promotes name —
 // an exported field or method on the boxed type. The zero value stands
-// in for the stored one so a nil pointer embed still resolves.
-func (v *VM) hostMemberExists(zero any, name string) bool {
+// in for the stored one so a nil pointer embed still resolves. methods
+// is false for a defined type over a host type: it carries fields, not
+// the method set.
+func (v *VM) hostMemberExists(zero any, name string, methods bool) bool {
 	if _, ok := hostField(zero, name); ok {
 		return true
+	}
+	if !methods {
+		return false
 	}
 	_, ok := reflect.TypeOf(zero).MethodByName(name)
 	return ok
@@ -2748,6 +2781,7 @@ func (v *VM) embedTypeDepth(td *runtime.TypeDef, name string, seen map[*runtime.
 		if err != nil || et == nil {
 			continue
 		}
+		raw := et
 		et = v.peelNamed(et)
 		if et == nil {
 			continue
@@ -2756,7 +2790,7 @@ func (v *VM) embedTypeDepth(td *runtime.TypeDef, name string, seen map[*runtime.
 		if et.HostNew != nil {
 			// a host-typed leaf resolves name on the boxed type's
 			// exported field/method surface — no deeper traversal.
-			if v.hostMemberExists(et.HostNew(), name) {
+			if v.hostMemberExists(et.HostNew(), name, et == raw) {
 				d = 1
 			}
 		} else {

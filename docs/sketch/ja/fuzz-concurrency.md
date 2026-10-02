@@ -176,6 +176,7 @@ PR #27 で「並行動作を実装した」と言いつつ、`sync` パッケー
 
 - `h.fn`/`h.fn1` 系のヘルパは第一引数 `vc runtime.VMCaller` を捨ててしまうため、生の `&runtime.BuiltinFunc{Fn: func(vc, args)}` で bind した（S4 が整えた窓口）。コールバックは `vc.Spawn(f, nil)` で起動する — Go の「コールバックは専用 goroutine で呼ばれる」意味論どおりで、タイマー goroutine は join せずに返る。
 - **失敗経路が重要（レビュー指摘で修正）**: 初版は `vc.Call(f, nil)` + `panic(err)` だったが、reroute 経由では Spawn のラッパーが既に `p.fail(err)` しており、その後の `panic(err)` はタイマー goroutine 上の **未回復 panic** として host プロセスごと落とす競合になっていた（実クロックで exit 2 のクラッシュを確認）。`vc.Spawn` に変えたことで、コールバックの panic は通常の `go` goroutine panic と同じく `p.fail` → `proc.done` → root の procExit アンワインド経路で `Run` のエラーになる（`AfterFuncPanic` で「timer boom」が返ることを固定）。
+- **タイマーは登録元プロセスと共に死ぬ（レビュー指摘で修正）**: `vc.Spawn` は呼び出し側 VM の proc が nil のとき detached な proc を新設するため、元の `Run` が返った後にタイマーが発火するとコールバックが別プロセスとして動き、後続の `Run` から `fired` への書き込みが観測できていた。Go ではプロセス終了で pending タイマーは死ぬ。`VM.procDead` フラグを追加し `ReleaseProc`（proc 死亡時）にセット、`Spawn` で「proc nil + dead」「生存 proc だが done 済み」の両経路で spawn を拒否して完了済み Task（procExit）を返す。bind 側は `vc.Spawn(f, nil)` のまま — proc 寿命の縛りは VM 層の責務に寄せた（`TestAfterFuncDiesWithProc` で Arm→sleep→Read が 0 を返すことを固定）。
 - コールバック引数の事前検査は `adaptFunc` の受理集合（`*runtime.Function`/`*Closure`/`*BoundMethod`/`*BuiltinFunc`/`*Named`）に揃え、bind 時点で「func として使えない」値を早く弾く。
 - synctest バブルでは `time.AfterFunc(time.Hour, f)` も即時発火するため決定的に書ける: `AfterFuncFires`（バッファ付き ch 経由で 7）、`AfterFuncStop`（`t.Stop()` 後は select の default 分岐で 9）、`AfterFuncPanic`（コールバック panic → Run が panic を返す）。実クロック側も 50ms で発火と、panic 時のクリーンなエラー返却を手動確認した。
 
@@ -188,7 +189,7 @@ PR #27 で「並行動作を実装した」と言いつつ、`sync` パッケー
 - `embedTypeDepth` にも host リーフ判定を追加（host 型の内部は minigo から不透明なので d=1 で打ち止め — nil `*sync.Pool` 埋め込み経由の「型レベルで存在確認」にも使われる）。
 - script メソッドも `embTd.Methods[name]` で `methHits` として計数するよう拡張。メソッド自体は `findMethod` に委譲して戻り値にはしないが、同深度での衝突は数える: `{sync.Mutex; locker2}`（host メソッド vs script メソッド）も `{mA; mB}`（script メソッド同士）も ambiguous trap になる。mixed-kind（host メソッド vs script フィールド等）も同様。
 
-**副産物**: host hit に `runtime.Unwrap(recv)` を掛けたことで、`type MyMutex sync.Mutex` のような named host 型埋め込みでも昇格が効くようになった（従来は `has no field or method` trap — `NamedHostEmbed` で固定）。
+**定義型はメソッドを継承しない（レビュー指摘で修正）**: `type MyMutex sync.Mutex` は Go ではメソッド集合が空 — `{MyMutex}` の `x.Lock()` はコンパイルエラー。peel 前の typedef を `raw` として保持し、メソッド判定は `raw.Methods` と `hostMemberExists(..., methods bool)` に「embed が host 型そのものか」を渡す形に分離した: 定義型経由では underlying の**フィールドのみ**昇格しメソッドは昇格しない（`type MyPool sync.Pool` の `x.New` は通り、`x.Lock` は `has no field or method` trap — Go と同じく拒否される）。script 側の `type B A` も同じ規則になる。
 
 `findMethod` の HostNew 分岐は `promotedField` を通らない呼び出し経路のセーフティネットとして残した。
 
@@ -200,9 +201,11 @@ PR #27 で「並行動作を実装した」と言いつつ、`sync` パッケー
 
 `testdata/concurrency/main.go` + `concurrency_test.go`:
 
-- `TestConcurrencyBlocking` 表: `AfterFuncFires` `AfterFuncStop` `ShallowHostWins` `NamedHostEmbed`
+- `TestConcurrencyBlocking` 表: `AfterFuncFires` `AfterFuncStop` `ShallowHostWins` `NamedHostFieldEmbed` `NamedScriptFieldEmbed`
 - `TestAfterFuncPanic`: コールバックの panic が `go` panic と同じ proc 失敗経路で `Run` に届くこと（タイマー goroutine の未回復 panic で host が死なない — レビュー指摘の回帰）
+- `TestAfterFuncDiesWithProc`: 終了済み run のタイマーが発火しないこと（`AfterFuncArm` で登録→実クロック 100ms 待機→`AfterFuncRead` が 0 — レビュー指摘の回帰。実クロックが要るので synctest 外）
 - `TestAmbiguousSelector`: `AmbigHostMethod`（host+host メソッド）`AmbigHostField`（host+host フィールド書き込み）`AmbigMixedField`（host フィールド vs script フィールド）`AmbigMixedMethodField`（host メソッド vs script フィールド）`AmbigMixedMethodMethod`（host メソッド vs script メソッド）`AmbigScriptMethod`（script メソッド同士）— 全て "ambiguous selector" trap 期待
+- `TestDefinedTypeMethodSet`: `NamedHostMethodEmbed`（`{MyMutex}` の `Lock`）`NamedScriptMethodEmbed`（`{bDefined}` の `M`）— 全て "has no field or method" trap 期待
 - `TestNilHostPtrEmbed`: nil `*sync.Pool` 埋め込みへの `New` 書き込みで nil pointer panic
 
 ### 8.5 検証
@@ -215,3 +218,4 @@ PR #27 で「並行動作を実装した」と言いつつ、`sync` パッケー
 - `findMethod` は embeds を順に見る DFS first-wins のまま — `promotedField` が単一メソッドヒットを返さない限り深さ順序は DFS 依存であり、浅い promoted メソッドと深い promoted メソッドが競合した場合（`struct{X{A}; Y}` で A.M が深く Y.M が浅い等）に深い方を返し得る。ambiguity の trap は防げたが、深さ順序の完全な正しさには `findMethod` 側の BFS 化が必要。
 - interface 埋め込みの method-req 衝突は未計数（`struct{io.Reader; A}` で A も Read を持つ等 — Go はコンパイルエラー、minigo は iface の動的 dispatch として動く）。
 - nil `*T` 埋め込み経由の promoted メソッド呼び出しは "no field or method" trap（Go は method value 評価時に nil pointer panic — `findMethod` が nil recv の `structOf` に失敗して skip するため）。
+- run 後に呼ばれる `vc.Call` 経由の retained コールバック（adaptFunc で MakeFunc 化された sync.Pool.New 等）は detached proc で依然実行される — AfterFunc は Spawn 経路なので今回の `procDead` ゲートで止まるが、Call は新しい proc を開く設計で変えていない。proc 寿命の厳密な縛りを host コールバック全般に広げるなら別途検討。

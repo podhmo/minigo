@@ -74,7 +74,8 @@ func TestConcurrencyBlocking(t *testing.T) {
 			{"AfterFuncFires", int64(7)},
 			{"AfterFuncStop", int64(9)},
 			{"ShallowHostWins", int64(4)},
-			{"NamedHostEmbed", int64(1)},
+			{"NamedHostFieldEmbed", int64(7)},
+			{"NamedScriptFieldEmbed", int64(9)},
 		}
 		for _, c := range cases {
 			got := run(t, e, "./testdata/concurrency", c.fn)
@@ -168,6 +169,34 @@ func TestAfterFuncPanic(t *testing.T) {
 			t.Fatalf("expected timer-callback panic to fail the run, got %v", err)
 		}
 	})
+}
+
+// TestDefinedTypeMethodSet: a defined type (`type B A`) carries the
+// underlying's fields but not its methods — Go rejects the selector at
+// compile time, minigo traps on the access.
+func TestDefinedTypeMethodSet(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEngine(t)
+		for _, fn := range []string{"NamedHostMethodEmbed", "NamedScriptMethodEmbed"} {
+			_, err := runErr(e, "./testdata/concurrency", fn)
+			if err == nil || !strings.Contains(err.Error(), "has no field or method") {
+				t.Fatalf("%s: expected no-member trap, got %v", fn, err)
+			}
+		}
+	})
+}
+
+// TestAfterFuncDiesWithProc: a timer registered by a finished run never
+// fires — Go kills pending timers with the process. Real clock: the
+// timer must actually outlive the run.
+func TestAfterFuncDiesWithProc(t *testing.T) {
+	e := newEngine(t)
+	run(t, e, "./testdata/concurrency", "AfterFuncArm")
+	time.Sleep(100 * time.Millisecond)
+	got := run(t, e, "./testdata/concurrency", "AfterFuncRead")
+	if diff := cmp.Diff(int64(0), got); diff != "" {
+		t.Errorf("AfterFuncRead mismatch (-want +got):\n%s", diff)
+	}
 }
 
 // TestNilHostPtrEmbed: a member reachable only through a nil embedded
