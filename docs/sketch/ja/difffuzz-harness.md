@@ -206,16 +206,25 @@ usecasefuzz 側も別スキルにする価値はあると思う（今回は作�
 | `test/typeparam/` | 141 | ジェネリクス |
 | `test/ken/`, `chan/`, `interface/` | 40 / 17 / 11 | |
 
-### やったこと
+### 行動ログ（このセッションで実際にやった順）
 
-1. まず数本（`235.go`, `64bit.go`, `alg.go`）を手で `minigo run` に通して感触を見た。`235.go` と `alg.go` は通り、`64bit.go` は `bufio.NewWriter` → `io` の init → `sync.Pool` 未バインドで trap した。動くものは動く一方、テストの出力手段（`bufio`、`os.Exit`、`println`）の段階で落ちるものがある、というのが最初の観察。
-2. 判定ロジックを作るために、minigo の失敗の出方を確認した。スクリプトの panic は `error="panic: …"`、未実装は `error="runtime trap: …"`、どちらも exit 1。Go 側は `go run` だと panic でも exit 1 になって区別がつかないので、`go build` してバイナリを直接実行し、本来の exit code（panic なら 2）を取ることにした。
-3. `corpus` サブコマンドとして実装した（`-goroot-tests` で先頭行がちょうど `// run`、かつ `package main` のトップレベル単一ファイルだけを拾う）。判定は stdout の行比較 → 一致したら終了の仕方（exit code、stderr、panic メッセージの部分一致）を比べる。
-4. 145本を流した結果が §3.3（PASS 47 / TRAP 65 / SILENT 23 / CRASH 1 / HANG 3 / SKIP 6）。
+整理後の説明ではなく、実際の操作と観察の順に残す。
 
-### 主軸から外した理由
+1. **前回までの資産の確認**。PR #23/#28/#29/#30 の本文と `docs/sketch/ja/fuzz-usecase.md` を読んだ。#28/#30 の本文に出てくる `~/concfuzz` / `~/usecasefuzz` を `ls` したが、どちらも手元に無かった（usecasefuzz は別リポジトリに移っていた）。→「コーパスがリポジトリ外にあって消える」を弱点の1つとしてメモ。
+2. **Go 本体のテストを oracle 付きコーパスに使えないか調べた**。`go version`（go1.27.1）、`$(go env GOROOT)/test` に `.go` が 356 本、先頭行がちょうど `// run` のものが 145 本（`grep -l '^// run$'`）。自己検査型なので期待値を書かずに使える、と判断し、これを主軸にするつもりで進め始めた。
+3. **minigo の CLI を確認してビルド**。`cmd/minigo/main.go` を読み、`minigo run <dir>` がカレントディレクトリをルートにパッケージを解決することを確認。`go build -o /tmp/minigo ./cmd/minigo`。
+4. **最初の数本を手で試す — 1回目は失敗**。`/tmp/gt` に `go.mod` を作り `235.go`/`64bit.go`/`alg.go` を `<name>/main.go` にコピーして流したが、zsh で `rm -rf *` が「no matches found」になってコマンド列が途中で止まり、GOROOT のパスが空のまま `cp` が失敗。minigo は `no buildable Go source files` を返した（ハーネス側の操作ミス）。
+5. **2回目**。GOROOT をクォートした変数に入れ直して再実行。`235.go` は exit 0（出力なし）、`alg.go` は exit 0、`64bit.go` は exit 1 で `runtime trap: undefined: sync.Pool`（`bufio.NewWriter` → `io` の package init）。→「テストの中身に入る前に出力手段（bufio 等）で止まるものがある」が最初の観察。
+6. **失敗の出方を確認するための小さな2本**。`var m map[string]int; m["x"] = 1`（nil map 代入）と `var c complex128`。minigo は前者を `error="panic: assignment to entry in nil map"`、後者を `error="runtime trap: undefined: complex128"` として slog で出し、どちらも exit 1。Go は `go run` だと panic でも exit 1 になるので区別できない。→ oracle 側は `go build` してバイナリを直接実行し、本来の exit code（panic は 2）を取ることにした。
+7. **ブランチを切って判定ロジック（`run.go`）を書き始めた**。この時点では「Go と同じか」を基準に、stdout の行比較 → exit code → panic メッセージの部分一致、という corpus 用の `Judge` を作っていた。並行して式生成器も作る計画を立てていた（GOROOT コーパス + 生成器の二本立て、主はコーパス）。
+8. **ここで「minigo は Go の完全なサブセットを目指していない」という前提を受け取った**。README の「unimplemented constructs emit a trap」と TODO.md（lim-* を設計上の制限として扱っている）を読み直し、判定基準を「Go と一致する、または loud に trap する」に変更。trap を許容側、trap しない食い違い・インタプリタ自身の panic・timeout をバグ側にした（`Judge` に `Trap`/`Silent`/`Crash`/`Hang` を入れたのはこのため）。同時に、GOROOT のテストは GC・unsafe・runtime 内部を大量に試すので、全面チェックを主軸にすると「対象外の機能の trap 一覧」が大半を占めると予想し、**主軸を式レベルの生成器に切り替え、GOROOT コーパスは `corpus -goroot-tests` という補助モードに格下げ**した。
+9. **生成器と probe 方式を実装**（本文 §2）。最初の生成器の実行で、SILENT の発見が `%T` の差に吸い込まれる問題などを潰していた。
+10. **その途中で補助モードを1回だけ流した**。生成器の再実行をバックグラウンドで回している間に、`go run ./ corpus -goroot-tests -j 4 -timeout 15s` で 145 本を実行。結果が §3.3（PASS 47 / TRAP 65 / SILENT 23 / CRASH 1 / HANG 3 / SKIP 6）。
+11. **結果を見て格下げを確定**。TRAP の上位が `sync.Map`・`unsafe.Pointer`・`runtime.SetFinalizer` など対象外、SILENT の多くが `panic: fail` で場所がわからない、HANG は重いループ。corpus の実行中に「主用途はテキスト処理・LL 的スクリプト」という補足も受け取っており、以後は text ドメインの生成器に時間を使った。corpus はこの1回以降は流しておらず、サブディレクトリ（`fixedbugs/` など）は一度も試していない。
 
-実装の途中で「minigo は Go の完全なサブセットを目指していない」「主用途はテキスト処理・LL 的スクリプトで、数値計算やバイナリ処理は劣後する」という前提を共有してもらい、方針を見直した。結果を見ても、この前提だと Go 本体のテストは主軸に向かないことがはっきりした:
+### 主軸から外した理由（ログ 8・11 の判断を後から整理したもの）
+
+実際の判断のきっかけは、ログ 8 で受け取った前提（完全なサブセットを目指していない）と、ログ 10〜11 の間に受け取った補足（主用途はテキスト処理）。1回流した結果を後から見直しても、この前提だと Go 本体のテストは主軸に向かない:
 
 - **TRAP のほとんどが対象外の機能**。上位は `sync.Map`（9本、reflect 経由）、`unsafe.Pointer`（7）、`runtime.SetFinalizer`（5）、`runtime.MemStats`/`runtime.Compiler`/`runtime.Breakpoint`、複素数リテラル。GC・ランタイム内部・unsafe を試すテストが多く、「件数順に実装すべきもの」の表としては minigo の優先度と噛み合わない。
 - **SILENT が局所化できない**。自己検査型テストは失敗すると `panic: fail` / `panic: 1` のような情報の無いメッセージで止まる。1ファイル数百行のどこで値がずれたかはわからず、結局人が二分探索することになる。これは既存のやり方の弱点（プログラム単位の判定）をそのまま持ち込むことになる。
