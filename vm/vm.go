@@ -4566,6 +4566,10 @@ func uintBinOp(f *frame, op bytecode.BinOp, a, b uint64) (res runtime.Value, isI
 		return a > b, false
 	case bytecode.BinGeq:
 		return a >= b, false
+	case bytecode.BinEql:
+		return a == b, false
+	case bytecode.BinNeq:
+		return a != b, false
 	}
 	f.trap("uint binary %s", op)
 	return nil, false
