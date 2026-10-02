@@ -2211,8 +2211,13 @@ func (c *compiler) compileLit(x *ast.CompositeLit, baseType ast.Expr, depth int)
 	// array — `map[int]int{K: 1}` and `[]int{K: 1}` evaluate K.
 	keysAreExprs := literalKeysAreExprs(baseType, depth)
 	for _, el := range x.Elts {
-		if kv {
-			kvel := el.(*ast.KeyValueExpr)
+		if kvel, isKV := el.(*ast.KeyValueExpr); kv && !isKV {
+			// mixed keyed/positional elements — arrays allow it: the
+			// positional element takes the running index, resolved at
+			// run time since keys may be named constants.
+			c.emit(bytecode.OpConst, c.constIdx(&runtime.ImplicitIndex{}), 0, el.Pos())
+			emitVal(el)
+		} else if kv {
 			if lit, ok := kvel.Key.(*ast.CompositeLit); ok && lit.Type == nil {
 				// an elided key literal (map[K]V{{...}: v}) inherits
 				// the map's declared key type when it is syntactic.
