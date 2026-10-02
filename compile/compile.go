@@ -2157,6 +2157,15 @@ func (c *compiler) unary(x *ast.UnaryExpr) {
 			c.expr(t.X)
 			c.expr(t.Index)
 			c.emit(bytecode.OpIndexRef, 0, 0, t.Pos())
+		case *ast.StarExpr:
+			// &*p is p — the address-of and the dereference cancel,
+			// but the dereference's nil check still fires (Go panics
+			// on &*p when p is nil).
+			c.expr(t.X)
+			c.emit(bytecode.OpNilPtrCheck, 0, 0, x.Pos())
+		case *ast.ParenExpr:
+			// &(expr) recurses on the unwrapped operand.
+			c.unary(&ast.UnaryExpr{OpPos: x.OpPos, Op: x.Op, X: t.X})
 		default:
 			c.trap(x.Pos(), "address-of %T is not supported", x.X)
 		}

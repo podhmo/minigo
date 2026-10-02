@@ -88,9 +88,10 @@ const (
 	OpReturn // A: nresults — pop n -> tear down frame
 
 	// references (address-of on field/index expressions)
-	OpDup2     // duplicate top two slots: a,b -> a,b,a,b
-	OpFieldRef // A: name const; pop base -> push *FieldRef{base, name} (&s.f)
-	OpIndexRef // pop key, pop base -> push *IndexRef{base, key} (&s[i]); B=1: store target (map bases allowed)
+	OpDup2        // duplicate top two slots: a,b -> a,b,a,b
+	OpFieldRef    // A: name const; pop base -> push *FieldRef{base, name} (&s.f)
+	OpIndexRef    // pop key, pop base -> push *IndexRef{base, key} (&s[i]); B=1: store target (map bases allowed)
+	OpNilPtrCheck // pop v -> panic on a nil pointer value; push v (&*p is still a dereference)
 
 	// types / interfaces / generics
 	OpAssert      // pop typedef, pop value -> push asserted value (script panic on mismatch); B=1: a static-typedef operand sits between value and typedef
