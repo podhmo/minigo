@@ -25,8 +25,11 @@ v, err := e.Run(ctx, "./script", "Main") // dir, file, or import path + entry fu
   promoted-field literal keys, generalized func-type inference
 - introspection: `minigo/inspect` exposes packages, decls, type
   expressions and values to scripts; the REPL has `:cd`/`:ls`/`:pin`
-- real concurrency: `go` spawns host goroutines, channels block,
-  `select` picks a ready case — see `TODO.md` for coverage and gaps
+- speed is a non-goal: the lazy-VM design favors implementation
+  simplicity and coverage over runtime performance
+- concurrency, best-effort: `go` statements, channels, and `select`
+  run on host goroutines — enough for typical scripts to work, not a
+  faithful model of Go's concurrency; see `TODO.md` for the gaps
 
 A `minigo` CLI is included (`./cmd/minigo`): `minigo run <ref> [--entry F]`,
 `minigo repl`, `minigo vet <ref>`, `minigo gen-intrinsics`, or the
