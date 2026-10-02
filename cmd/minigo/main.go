@@ -49,8 +49,8 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
-  minigo run <dir-or-importpath> [--entry Func]
-  minigo <dir-or-importpath> [Func]
+  minigo run <dir-or-importpath> [--entry Func] [-- script args...]
+  minigo <dir-or-importpath> [Func] [-- script args...]
   minigo repl
   minigo vet <dir-or-importpath> [--special import/path.Sym]...
   minigo gen-intrinsics -output <dir> <dir-or-importpath>...`)
@@ -58,6 +58,16 @@ func usage() {
 }
 
 func run(ctx context.Context, args []string) error {
+	// `--` separates script args: `minigo run dir -- -x v` runs dir's
+	// main with os.Args = [dir, -x, v].
+	var scriptArgs []string
+	for i, a := range args {
+		if a == "--" {
+			scriptArgs = args[i+1:]
+			args = args[:i]
+			break
+		}
+	}
 	// extract -entry/--entry anywhere: Go's flag package stops at the
 	// first positional, but `minigo run ./pkg --entry F` should work
 	var entry string
@@ -91,7 +101,8 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	e := minigo.NewEngine(cwd, minigo.WithOutput(os.Stdout))
+	e := minigo.NewEngine(cwd, minigo.WithOutput(os.Stdout),
+		minigo.WithArgs(append([]string{ref}, scriptArgs...)))
 	r, err := e.Run(ctx, ref, fn)
 	if err != nil {
 		return err

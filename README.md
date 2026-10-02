@@ -35,6 +35,24 @@ design, `TODO.md` for current coverage and remaining gaps, and
 `examples/task-run` for an embedding example and `examples/convert-define`
 for a DSL tool built on special forms.
 
+## Import resolution
+
+Package loading follows the Go module on disk — there is no `go list` and
+no downloading. `NewEngine(startDir)` walks up from `startDir` to the
+enclosing `go.mod` (or `go.work`) and resolves each import as:
+
+1. `replace` directives in that `go.mod`
+2. the current module's own path
+3. `GOROOT` for the standard library
+4. `go.mod` `require` entries, mapped into `GOMODCACHE`
+   (`go mod download` must have populated it already)
+
+The module context is fixed at engine creation, so run minigo from
+inside the target module — e.g. `cd mymodule && minigo run .` — not from
+a different module's tree. External module source is interpreted like
+any other package; what still traps is cgo and `unsafe`-dependent
+internals (e.g. `reflect`'s `internal/abi` init).
+
 ## Provenance
 
 This repository is a reboot of [`minigo2/`](https://github.com/podhmo/go-scan/tree/main/minigo2)

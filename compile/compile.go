@@ -328,8 +328,18 @@ func Func(fn *runtime.Function) error {
 	c.ch.NResults = nresults
 	c.results = resultTypes(fn.Decl.Type.Results)
 
-	c.stmt(fn.Decl.Body)
-	c.resolveGotos()
+	if fn.Decl.Body != nil {
+		c.stmt(fn.Decl.Body)
+		c.resolveGotos()
+	} else {
+		// a bodiless declaration (//go:linkname stubs, assembly decls)
+		// compiles to a no-op returning its declared zero values.
+		for _, rt := range c.results {
+			c.emit(bytecode.OpNil, 0, 0, fn.Decl.End())
+			c.typeExpr(rt)
+			c.emit(bytecode.OpCoerceTop, 0, 0, fn.Decl.End())
+		}
+	}
 	// implicit return
 	c.emit(bytecode.OpReturn, nresults, 0, fn.Decl.End())
 	c.ch.NLocals = c.fs.nlocals
