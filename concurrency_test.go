@@ -73,6 +73,7 @@ func TestConcurrencyBlocking(t *testing.T) {
 			{"SyncAssertHostPtr", int64(1)},
 			{"AfterFuncFires", int64(7)},
 			{"AfterFuncStop", int64(9)},
+			{"AfterFuncNilStop", int64(1)},
 			{"ShallowHostWins", int64(4)},
 			{"NamedHostFieldEmbed", int64(7)},
 			{"NamedScriptFieldEmbed", int64(9)},
@@ -171,6 +172,19 @@ func TestAfterFuncPanic(t *testing.T) {
 	})
 }
 
+// TestAfterFuncNilFire: a nil callback that does fire fails the
+// process with a nil-call panic through the goroutine-failure path —
+// like a panic inside any other spawned goroutine.
+func TestAfterFuncNilFire(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEngine(t)
+		_, err := runErr(e, "./testdata/concurrency", "AfterFuncNilFire")
+		if err == nil || !strings.Contains(err.Error(), "nil pointer") {
+			t.Fatalf("expected nil-call panic to fail the run, got %v", err)
+		}
+	})
+}
+
 // TestDefinedTypeMethodSet: a defined type (`type B A`) carries the
 // underlying's fields but not its methods — Go rejects the selector at
 // compile time, minigo traps on the access.
@@ -197,6 +211,34 @@ func TestAfterFuncDiesWithProc(t *testing.T) {
 	if diff := cmp.Diff(int64(0), got); diff != "" {
 		t.Errorf("AfterFuncRead mismatch (-want +got):\n%s", diff)
 	}
+}
+
+type nilHostT struct{ N int }
+
+func (*nilHostT) M() int { return 7 } // nil-tolerant pointer receiver
+func (nilHostT) V() int  { return 9 } // value receiver — dereferences
+
+// TestNilHostPtrMember: through a nil embedded host pointer, only the
+// accesses that must dereference panic — fields and value-receiver
+// methods. Pointer-receiver methods take the nil receiver like Go.
+func TestNilHostPtrMember(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEngine(t)
+		e.Bind("probehost", map[string]runtime.Value{
+			"T":   &runtime.TypeDef{Name: "probehost.T", Kind: runtime.KindStruct, HostNew: func() any { return &nilHostT{} }},
+			"Nil": &runtime.GoValue{V: (*nilHostT)(nil)},
+		})
+		got := run(t, e, "./testdata/nilhost", "NilMethod")
+		if diff := cmp.Diff(int64(7), got); diff != "" {
+			t.Errorf("NilMethod mismatch (-want +got):\n%s", diff)
+		}
+		for _, fn := range []string{"NilValueMethod", "NilField"} {
+			_, err := runErr(e, "./testdata/nilhost", fn)
+			if err == nil || !strings.Contains(err.Error(), "nil pointer") {
+				t.Fatalf("%s: expected nil-pointer panic, got %v", fn, err)
+			}
+		}
+	})
 }
 
 // TestNilHostPtrEmbed: a member reachable only through a nil embedded

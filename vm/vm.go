@@ -433,7 +433,7 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value) (runtime.Value, er
 				return nil, fmt.Errorf("conversion to %s needs exactly one argument", c.Name)
 			}
 			return v.convert(c, args[0])
-		case *runtime.TypedNil, *runtime.IfaceNil:
+		case runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
 			// calling a nil function value panics like a nil deref in Go
 			panic(&runtime.Panic{Value: "runtime error: invalid memory address or nil pointer dereference"})
 		case *runtime.Named:
@@ -2616,7 +2616,7 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 						continue
 					}
 					recv := st.Fields[idx]
-					if ptr && hostNilEmbed(recv) {
+					if ptr && hostNilEmbed(recv) && !v.hostNilCallable(embTd.HostNew(), name) {
 						// reachable only through a nil embedded
 						// pointer — same accounting as a nil
 						// script-embed path.
@@ -2734,6 +2734,24 @@ func (v *VM) hostMemberExists(zero any, name string, methods bool) bool {
 	}
 	_, ok := reflect.TypeOf(zero).MethodByName(name)
 	return ok
+}
+
+// hostNilCallable reports whether name is a pointer-receiver method on
+// the boxed type — the only member callable through a nil stored
+// pointer: Go passes the nil receiver straight to the method, while
+// fields and value-receiver methods must dereference it first.
+func (v *VM) hostNilCallable(zero any, name string) bool {
+	pt := reflect.TypeOf(zero)
+	if pt.Kind() != reflect.Pointer {
+		return false
+	}
+	if _, ok := pt.MethodByName(name); !ok {
+		return false // a field — reads and writes dereference
+	}
+	if _, ok := pt.Elem().MethodByName(name); ok {
+		return false // value receiver — evaluating it dereferences
+	}
+	return true
 }
 
 // hostNilEmbed reports whether an embedded host-typed field's stored

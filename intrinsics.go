@@ -1203,7 +1203,10 @@ func (e *Engine) installStdlib() {
 			}
 			f := args[1]
 			switch f.(type) {
-			case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc, *runtime.Named:
+			case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc, *runtime.Named,
+				runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
+				// a nil callback registers like Go — calling it fails at
+				// fire time through the goroutine-failure path
 			default:
 				return nil, fmt.Errorf("time.AfterFunc: cannot use %T as func()", f)
 			}

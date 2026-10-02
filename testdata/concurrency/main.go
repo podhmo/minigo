@@ -1012,6 +1012,22 @@ func NamedScriptMethodEmbed() int {
 	return 1
 }
 
+// AfterFuncNilStop: a nil callback registers fine — Go only fails if
+// the timer actually fires. Stop() means it never does.
+func AfterFuncNilStop() int {
+	if time.AfterFunc(time.Hour, nil).Stop() {
+		return 1
+	}
+	return -1
+}
+
+// AfterFuncNilFire: a nil callback that does fire fails the process
+// with a nil-call panic through the goroutine-failure path.
+func AfterFuncNilFire() int {
+	time.AfterFunc(time.Hour, nil)
+	select {}
+}
+
 var afterFuncFired int
 
 // AfterFuncArm: registers a real-clock timer and returns — its process
