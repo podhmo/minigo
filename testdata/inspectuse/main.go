@@ -766,6 +766,52 @@ func VarValueRead() string {
 	return "ok"
 }
 
+// PkgMetaView: member access on a first-class *runtime.Package is
+// namespace-only — a member named like a metadata field still wins
+// (issue #26, option 2: keep pkg.X = member lookup uniform; metadata
+// reads go through the inspect.* accessors).
+// Runs init via p.Path — keep after PkgMeta/VarValueRead.
+func PkgMetaView() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	// the var Path member shadows the Path field; the canonical
+	// accessor still reports the import path
+	if p.Path != "member-shadow" {
+		return "member lost: " + p.Path
+	}
+	if inspect.Path(p) == p.Path || !strings.HasSuffix(inspect.Path(p), "inspectpkg") {
+		return "bad canonical path: " + inspect.Path(p)
+	}
+	if inspect.Name(p) != "inspectpkg" {
+		return "bad name: " + inspect.Name(p)
+	}
+	if !strings.HasSuffix(inspect.Dir(p), "testdata/inspectpkg") {
+		return "bad dir: " + inspect.Dir(p)
+	}
+	if inspect.Standard(p) {
+		return "std?"
+	}
+	if inspect.State(p) == "" {
+		return "no state"
+	}
+	// the same resolution through a decl's owning package
+	d := inspect.Symbol(p, "Hello")
+	if d.Package.Path != "member-shadow" || inspect.Path(d.Package) != inspect.Path(p) {
+		return "bad decl pkg view"
+	}
+	// the current package reads metadata through accessors too —
+	// a file-loaded script gets the synthetic <file> path
+	c := inspect.Current()
+	if inspect.Path(c) == "" || inspect.Name(c) == "" {
+		return "bad current meta"
+	}
+	// bound packages too
+	b := inspect.PackageOf("strings")
+	if inspect.Path(b) != "strings" || inspect.Name(b) != "strings" || !inspect.Standard(b) {
+		return "bad bound meta"
+	}
+	return "ok"
+}
+
 // ---- trap checkers: each must surface an intrinsic error Go-side
 // (scripts cannot catch traps) ----
 
@@ -806,6 +852,40 @@ func BoundMethodTrap() string {
 func HostSigTrap() string {
 	inspect.Signature(inspect.SymbolOf(strings.Compare))
 	return "swallowed"
+}
+
+// ImportRefTrap: an import ref keeps strict namespace semantics —
+// `strings.Path` is not a field read (Go rejects it too).
+func ImportRefTrap() string {
+	return strings.Path
+}
+
+// PkgUnknownTrap: a name that is neither member nor field still
+// traps "undefined: pkg.Nope".
+func PkgUnknownTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	return p.Nope
+}
+
+// PkgUnexportedTrap: unexported names trap (they are neither members
+// nor reachable metadata).
+func PkgUnexportedTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	return p.path
+}
+
+// PkgDirTrap: a metadata field name that is not a package member
+// traps "undefined: pkg.Dir (… use inspect.Dir(pkg))" — field access
+// never falls back to host semantics.
+func PkgDirTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	return p.Dir
+}
+
+// CurPkgPathTrap: the same miss on an unshadowed package — the
+// reported issue's `d.Package.Path` shape stays a loud trap.
+func CurPkgPathTrap() string {
+	return inspect.Current().Path
 }
 
 func main() {}

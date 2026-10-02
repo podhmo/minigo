@@ -1485,6 +1485,20 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		}
 		mv, err := v.memberOf(b, name)
 		if err != nil {
+			// member access on a package is namespace-only — the
+			// value's meaning must not change with its type, so the
+			// exported *runtime.Package metadata (Path, Name, Dir,
+			// State, ...) lives behind the inspect.* accessors.
+			// When the miss is one of those names, the trap spells
+			// the escape hatch.
+			if _, ok := v.hostMember(b, name); ok {
+				hint := "use the inspect.* accessors"
+				switch name {
+				case "Path", "Name", "Dir", "State", "Standard":
+					hint = fmt.Sprintf("use inspect.%s(pkg)", name)
+				}
+				f.trap("%s (inspect-layer package metadata — %s)", err, hint)
+			}
 			f.trap("%s", err)
 		}
 		if c, isCell := mv.(*runtime.Cell); isCell {
@@ -1515,6 +1529,9 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 			// a host value stored in a cell (`var mu sync.Mutex`): select on
 			// the boxed value so host methods resolve
 			return v.selectMember(f, e, name)
+		case *runtime.Package:
+			// an inspect-layer package stored in a var
+			return v.selectMember(f, e, name)
 		default:
 			f.trap("select %s on cell of %T", name, b.Elem)
 		}
@@ -1537,6 +1554,8 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		case *runtime.Chan:
 			return v.typedMember(f, t.Typ, name, base, "chan")
 		case *runtime.GoValue:
+			return v.selectMember(f, t, name)
+		case *runtime.Package:
 			return v.selectMember(f, t, name)
 		}
 		f.trap("select %s on %T", name, dv)
@@ -1577,28 +1596,38 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		// method set — Go forbids a field and method sharing a name, so
 		// probing fields first is safe and keeps `cmd.Dir`-style access
 		// working on host structs like *exec.Cmd.
-		if fv, ok := hostField(b.V, name); ok {
-			return goValueOf(fv)
+		if mv, ok := v.hostMember(b.V, name); ok {
+			return mv
 		}
-		m := reflect.ValueOf(b.V).MethodByName(name)
-		if !m.IsValid() {
-			f.trap("no member %s on host value %T", name, b.V)
-		}
-		bf := &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			return callReflectFunc(name, m, vc, args)
-		}}
-		// the method value's own PC is a thunk (reflect.methodValueCall)
-		// — the declared method's Func is the only handle that still
-		// points at the real code, so keep it for inspect.
-		if tm, ok := reflect.TypeOf(b.V).MethodByName(name); ok {
-			tm := tm
-			bf.Method = &tm
-		}
-		return bf
+		f.trap("no member %s on host value %T", name, b.V)
 	default:
 		f.trap("select %s on %T", name, base)
 	}
 	return nil
+}
+
+// hostMember resolves a field or method on a host value: fields first,
+// then the method set — Go forbids a field and method sharing a name.
+// (nil, false) reports that neither exists.
+func (v *VM) hostMember(hv any, name string) (runtime.Value, bool) {
+	if fv, ok := hostField(hv, name); ok {
+		return goValueOf(fv), true
+	}
+	m := reflect.ValueOf(hv).MethodByName(name)
+	if !m.IsValid() {
+		return nil, false
+	}
+	bf := &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		return callReflectFunc(name, m, vc, args)
+	}}
+	// the method value's own PC is a thunk (reflect.methodValueCall)
+	// — the declared method's Func is the only handle that still
+	// points at the real code, so keep it for inspect.
+	if tm, ok := reflect.TypeOf(hv).MethodByName(name); ok {
+		tm := tm
+		bf.Method = &tm
+	}
+	return bf, true
 }
 
 // goValueOf adapts a reflect result to a runtime value: script-native types
