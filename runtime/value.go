@@ -243,6 +243,10 @@ func (r *IndexRef) sliceOf() *Slice {
 	}
 }
 
+// Slice resolves the base to the referenced slice — exported so the VM
+// can compare two refs by backing-array identity.
+func (r *IndexRef) Slice() *Slice { return r.sliceOf() }
+
 // Get reads the element value.
 func (r *IndexRef) Get() (Value, bool) {
 	s := r.sliceOf()
