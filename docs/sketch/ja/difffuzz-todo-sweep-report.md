@@ -50,3 +50,26 @@
 ```
 
 補足: 残存 TODO が無い状態からの再開になるので、hunt が実質の入口になる（`-domain text -seed <新 seed> -batches 16 -per-bucket 1`、深く掘るなら `-batches 32 -depth 6`）。num は seed 8111 で 0 SILENT 済み。
+
+## 6. レビュー指摘への対応とリファクタリング提案の評価
+
+### 6.1 指摘された5件の修正
+
+別エージェントのレビューで本ラウンドの変更由来の diverge が5件報告された。全て `go run` との差分を確認の上で修正（[#108](https://github.com/podhmo/minigo/pull/108)–[#111](https://github.com/podhmo/minigo/pull/111)、Stack #73 の続き）。
+
+- **len/cap 添字畳み込みの前提不足（#108、指摘2件を同所に集約）** — `len(a[idx()])` が `idx()` を評価しなかった（operand に call/受信がある場合 Go は評価する）。さらにユーザー宣言の `func len(a [3]int)` も名前だけで畳み込まれ呼ばれなかった。`!c.declared(id.Name)`（builtin 解決ガード）と `hoistedArgCalls`（call/受信検出、引数二相化で導入済みの分類器を再利用）で fold をガード。
+- **iota 束縛のブロック横断（#109）** — slot は関数スコープだが名前束縛は最初のブロックだけ。`{const A = iota}; {const B = iota}` で2つ目が `undefined: iota` に trap。slot 再利用時に現在ブロックへ `iota→slot` を再バインド（ユーザー宣言の shadow はそのまま優先）。
+- **代入先の nil チェック時期（#110）** — `OpIndexRef`/`OpFieldRef` が ref 生成時に nil base チェックを行い、`s[0] = before()` で RHS が評価されなかった。Go は phase-2 の store 時に panic。store ターゲット（B=1）では eager check をスキップし `setIndex`/`setField` の panic に委譲（`*[N]int` nil base の arm も追加）。
+- **DeepEqual の型一致（#111）** — 配列も slice も `runtime.Slice` で、`Named`/ref 層が先に剥がれていたため `DeepEqual([]int{1}, [1]int{1})` が true。`Named` タグと deref 層を両辺 lockstep で剥がして型不一致を早期判定し、複合型は typedef の AST spelling（`deepTypeEq`、`[]int` vs `[1]int` vs `[]string` を区別）で比較。
+
+いずれも「最適化・新規 op が spec 上の前提条件を検査していなかった」系で、§3 の「評価順序前提」反省と同根。fold・ref・unwrap を入れるときは「どの条件で素朴な経路と等価になるか」をガードに落とす形が必要。
+
+### 6.2 リファクタリング提案の妥当性
+
+提案3件をコード上の実態と照合した。結論: 3件とも妥当 — ただし優先度と粒度が異なる。修正系の sweep とは別 PR・別ラウンドで扱うのが良い。
+
+1. **`runtime.Map` の insert/delete/clear をメソッド集約 — 妥当、実害あり（中〜高）**。検証したところ `Order`/`Keys`/`Pairs` の三連 append イディオムが vm.go に3箇所（setIndex、literal 構築、GoValue unbox）、intrinsics.go に2箇所（copy、native→script 変換）、delete が builtins.go に散在し、`CanonicalKey` の計算も各所で重複。#74 で入れた NaN nonce キーは「canonical key の生成方針」そのもので、insert ごとに正しく適用されているかは各サイトの実装依存になっている。`Map.Insert(k, v)`/`Delete`/`Clear` + key 正規化を1箇所に閉じ込めれば NaN 方針も強制できる。更新漏れリスクが実際に存在するので、正当性の提案。
+2. **compiler の型・名前解決の共通化 — 妥当、中（一貫性効果）**。`declared`（任意の宣言）・`isTypeName`（型名のみ、非型 decl による shadow を考慮）・`isIfaceTypeExpr`・`isKeyedLitShape` は `fs→binds→pkg.Index→predeclared` の同じラダーを歩くが、判定したい属性が違うので「解決結果」を返す共通関数（`resolveName → {found, kind, spec}`）にするのが正しい方向。実際 `isIfaceTypeExpr` は `index.Types` を見るが local var による shadow を見ていない — `var Reader` が `type Reader interface` を覆うケースで誤判定し得る小さな latent divergence で、ラダーの手書き複製の弊害が既に出ている。今回の len/cap 修正で `declared` をガードに使ったのもこの系の一例。
+3. **`RuntimeError` 生成の共通ヘルパー — 妥当、低リスク（整合性効果）**。`&runtime.Panic{Value: &runtime.RuntimeError{Msg: ...}}` の組み立てが vm.go+builtins.go で40箇所。recover の `.(error)` が効くかはペイロードの型依存（#55/#76 で直した系）で、文字列 payload と混在すると静かに壊れる。`runtime` 側に `BoundsError(i, n)` 系コンストラクタ、vm 側に `panicRuntime` 系の一括経路を置けばメッセージ形式と wrapper の一貫性が担保できる。ただしメッセージ文言がサイトごとに違うので「完全な一本化」より「wrapper 生成だけ共通化」の粒度が適切。
+
+補足: いずれも挙動中立の整理なので、diverge 修正と混ぜるとレビューが追いにくい。ピン済みの corpus が緑のまま通ることを確認しながら別 PR で進めるのが安全。
