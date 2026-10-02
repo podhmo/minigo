@@ -527,6 +527,17 @@ func (e *Engine) installStdlib() {
 			return &runtime.Tuple{Elems: []runtime.Value{d, f}}, nil
 		}),
 	})
+	e.Bind("reflect", map[string]runtime.Value{
+		// full reflect fidelity means interpreting reflect's own
+		// unsafe.Pointer-heavy source — a script-value deep equal
+		// covers the corpus uses (comparing result slices/maps).
+		"DeepEqual": &runtime.BuiltinFunc{Name: "reflect.DeepEqual", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, errors.New("reflect.DeepEqual needs 2 args")
+			}
+			return deepEql(args[0], args[1]), nil
+		}},
+	})
 	e.Bind("sort", map[string]runtime.Value{
 		"Ints":     h.sortInPlace("sort.Ints"),
 		"Float64s": h.sortInPlace("sort.Float64s"),
@@ -4073,3 +4084,123 @@ type callerFunc struct{ name string }
 
 // Name implements (*runtime.Func).Name.
 func (f *callerFunc) Name() string { return f.name }
+
+// deepEql implements reflect.DeepEqual over script values: nil-ness and
+// type identity are honored, composites compare recursively, and
+// leaf/host values compare as marshaled natives.
+func deepEql(a, b runtime.Value) bool {
+	a = deepUnwrap(a)
+	b = deepUnwrap(b)
+	if an, bn := deepNilish(a), deepNilish(b); an || bn {
+		if !(an && bn) {
+			return false
+		}
+		// two typed nils are equal only for the same type
+		return deepTypName(a) == deepTypName(b)
+	}
+	switch av := a.(type) {
+	case *runtime.Slice:
+		bs, ok := b.(*runtime.Slice)
+		if !ok || len(av.Elems) != len(bs.Elems) {
+			return false
+		}
+		for i := range av.Elems {
+			if !deepEql(av.Elems[i], bs.Elems[i]) {
+				return false
+			}
+		}
+		return true
+	case *runtime.Struct:
+		bs, ok := b.(*runtime.Struct)
+		if !ok || !deepDefEq(av.Def, bs.Def) || len(av.Fields) != len(bs.Fields) {
+			return false
+		}
+		for i := range av.Fields {
+			if !deepEql(av.Fields[i], bs.Fields[i]) {
+				return false
+			}
+		}
+		return true
+	case *runtime.Map:
+		bm, ok := b.(*runtime.Map)
+		if !ok || len(av.Pairs) != len(bm.Pairs) {
+			return false
+		}
+		for ak, aval := range av.Pairs {
+			found := false
+			for bk, bval := range bm.Pairs {
+				if deepEql(ak, bk) {
+					if !deepEql(aval, bval) {
+						return false
+					}
+					found = true
+					break
+				}
+			}
+			if !found {
+				return false
+			}
+		}
+		return true
+	}
+	return reflect.DeepEqual(goNative(a), goNative(b))
+}
+
+// deepDefEq reports whether two struct defs spell the same type — the
+// same def object, or anonymous defs with equal shapes (kind + name +
+// field names): `struct{}` literals at different sites are one Go type.
+func deepDefEq(a, b *runtime.TypeDef) bool {
+	if a == b {
+		return true
+	}
+	if a == nil || b == nil || a.Kind != b.Kind || a.Name != b.Name || len(a.Fields) != len(b.Fields) {
+		return false
+	}
+	for i := range a.Fields {
+		if a.Fields[i] != b.Fields[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// deepUnwrap peels Named wrappers and pointer chains (Cell/FieldRef/
+// IndexRef) down to the underlying value.
+func deepUnwrap(v runtime.Value) runtime.Value {
+	for {
+		if n, ok := v.(*runtime.Named); ok {
+			v = n.V
+			continue
+		}
+		if dv, ok := runtime.Deref(v); ok {
+			v = dv
+			continue
+		}
+		return v
+	}
+}
+
+// deepNilish reports whether v is any nil flavor (typed nil, iface nil,
+// or the untyped nil).
+func deepNilish(v runtime.Value) bool {
+	switch v.(type) {
+	case *runtime.TypedNil, *runtime.IfaceNil, runtime.Nil:
+		return true
+	}
+	return v == nil || v == runtime.NIL
+}
+
+// deepTypName names a nil value's type for typed-nil comparisons.
+func deepTypName(v runtime.Value) string {
+	switch n := v.(type) {
+	case *runtime.TypedNil:
+		if n.Typ != nil {
+			return n.Typ.Name
+		}
+	case *runtime.IfaceNil:
+		if n.Typ != nil {
+			return n.Typ.Name
+		}
+	}
+	return ""
+}

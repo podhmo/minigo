@@ -6298,6 +6298,15 @@ func (v *VM) popArgs(f *frame, argc int, spread bool, pos token.Pos) []runtime.V
 		if n, ok := last.(*runtime.Named); ok {
 			last = n.V
 		}
+		if str, ok := last.(string); ok {
+			// append([]byte, s...) spreads the string's bytes — the
+			// only legal string spread in Go.
+			args = args[:argc-1]
+			for i := 0; i < len(str); i++ {
+				args = append(args, int64(str[i]))
+			}
+			return args
+		}
 		if _, isNil := last.(runtime.Nil); isNil {
 			args = args[:argc-1]
 			return args
@@ -8584,6 +8593,17 @@ func (v *VM) typeOfValue(x runtime.Value) *runtime.TypeDef {
 		return xv.Def
 	case *runtime.Named:
 		return xv.Typ // a named arg binds T to its declared type
+	case *runtime.GoValue:
+		// a boxed basic (complex128 is the common one — it has no
+		// scalar runtime.Value) reports its builtin type so
+		// TypeOf(ElemZero([]complex128)) still resolves the element.
+		switch xv.V.(type) {
+		case complex64:
+			return v.builtinTypedef("complex64")
+		case complex128:
+			return v.builtinTypedef("complex128")
+		}
+		return nil
 	case *runtime.TypedNil:
 		return xv.Typ
 	case *runtime.IfaceNil:
