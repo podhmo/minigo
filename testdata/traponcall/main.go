@@ -4,11 +4,11 @@ package main
 // constructs run normally.
 func Good() int { return 7 }
 
-// Bad hits OpTrap at call time (3-index slice is not supported) — never at
-// parse or compile time.
+// Bad hits OpTrap at call time (x.(type) outside a type switch is not
+// supported) — never at parse or compile time.
 func Bad() int {
-	s := []int{1, 2, 3}
-	_ = s[0:1:2]
+	var x any = 1
+	_ = x.(type)
 	return 0
 }
 

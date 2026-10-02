@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"fmt"
 	"go/ast"
+	"go/constant"
 	"go/format"
 	"go/token"
 	"math"
@@ -14,6 +15,7 @@ import (
 	"reflect"
 	goruntime "runtime"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -895,23 +897,55 @@ func (v *VM) loop(f *frame) {
 		case bytecode.OpPop:
 			f.pop()
 		case bytecode.OpNewLocal:
-			f.locals[ins.A] = &runtime.Cell{Elem: valueCopy(f.pop()), ReadOnly: ins.B != 0}
+			x := f.pop()
+			if ins.B == 0 {
+				// a var bind fixes the value's type: an untyped constant
+				// materializes its default here (`x := 'a'` is a rune, and
+				// `x := 1<<100` fails like a Go compile error). Const cells
+				// keep it lazy — an unused `const B = 1<<100` is legal.
+				x = materialize(f, x)
+			}
+			f.locals[ins.A] = &runtime.Cell{Elem: valueCopy(x), ReadOnly: ins.B != 0}
 		case bytecode.OpRenewVar:
 			f.locals[ins.A] = &runtime.Cell{Elem: f.locals[ins.A].Elem}
 		case bytecode.OpLocal:
 			f.push(f.locals[ins.A].Elem)
+		case bytecode.OpLocalTyp:
+			if td := f.locals[ins.A].Typ; td != nil {
+				f.push(td)
+			} else {
+				f.push(runtime.NIL)
+			}
 		case bytecode.OpSetLocal:
 			v.assignCell(f, f.locals[ins.A], f.pop())
 		case bytecode.OpLocalRef:
 			f.push(f.locals[ins.A])
 		case bytecode.OpUpval:
 			f.push(f.upvals[ins.A].Elem)
+		case bytecode.OpUpvalTyp:
+			if td := f.upvals[ins.A].Typ; td != nil {
+				f.push(td)
+			} else {
+				f.push(runtime.NIL)
+			}
 		case bytecode.OpSetUpval:
 			v.assignCell(f, f.upvals[ins.A], f.pop())
 		case bytecode.OpGlobal:
 			f.push(v.resolveGlobal(f, consts[ins.A].(string)))
+		case bytecode.OpGlobalTyp:
+			if old, ok := f.fn.Pkg.Globals.Get(consts[ins.A].(string)); ok {
+				if c, isCell := old.(*runtime.Cell); isCell && c.Typ != nil {
+					f.push(c.Typ)
+					break
+				}
+			}
+			f.push(runtime.NIL)
 		case bytecode.OpNewGlobal:
-			c := &runtime.Cell{Elem: valueCopy(f.pop()), ReadOnly: ins.B != 0}
+			x := f.pop()
+			if ins.B == 0 {
+				x = materialize(f, x)
+			}
+			c := &runtime.Cell{Elem: valueCopy(x), ReadOnly: ins.B != 0}
 			f.fn.Pkg.Globals.Set(consts[ins.A].(string), c)
 		case bytecode.OpSetGlobal:
 			name := consts[ins.A].(string)
@@ -956,10 +990,14 @@ func (v *VM) loop(f *frame) {
 			base := f.pop()
 			v.setIndex(f, base, idx, val)
 		case bytecode.OpSlice:
+			var max runtime.Value = runtime.NIL
+			if ins.B == 1 {
+				max = f.pop()
+			}
 			hi := f.pop()
 			lo := f.pop()
 			base := f.pop()
-			f.push(v.slice(f, base, lo, hi))
+			f.push(v.slice(f, base, lo, hi, max))
 		case bytecode.OpDeref:
 			x := f.pop()
 			if td, ok := x.(*runtime.TypeDef); ok {
@@ -1032,8 +1070,12 @@ func (v *VM) loop(f *frame) {
 			}
 		case bytecode.OpAssert:
 			tdv := f.pop()
+			var static runtime.Value = runtime.NIL
+			if ins.B == 1 {
+				static = f.pop()
+			}
 			x := f.pop()
-			f.push(v.typeAssert(f, x, tdv, ins.Pos))
+			f.push(v.typeAssert(f, x, tdv, static, ins.Pos))
 		case bytecode.OpAssertOK:
 			tdv := f.pop()
 			x := f.pop()
@@ -1227,7 +1269,7 @@ func (v *VM) loop(f *frame) {
 				f.ip = int(ins.A)
 			}
 		case bytecode.OpIter:
-			f.push(v.newIterator(f, f.pop()))
+			f.push(v.newIterator(f, materialize(f, f.pop())))
 		case bytecode.OpRangeNext:
 			it := f.locals[ins.B].Elem.(*runtime.Iterator)
 			if it.Kind == 'f' {
@@ -1254,6 +1296,8 @@ func (v *VM) loop(f *frame) {
 			chRV, et := v.chanOf(f, chv)
 			if et != nil {
 				val = v.coerce(f, val, et)
+			} else {
+				val = materialize(f, val)
 			}
 			sv, err := v.chanSendValue(val, chRV.Type().Elem())
 			if err != nil {
@@ -1273,6 +1317,8 @@ func (v *VM) loop(f *frame) {
 				chRV, et := v.chanOf(f, chv)
 				if et != nil {
 					val = v.coerce(f, val, et)
+				} else {
+					val = materialize(f, val)
 				}
 				sv, err := v.chanSendValue(val, chRV.Type().Elem())
 				if err != nil {
@@ -1852,6 +1898,13 @@ func (v *VM) initHostLiteral(f *frame, td *runtime.TypeDef, hv any, raw []runtim
 // wrappers unwrap, slices and maps convert element-wise, scalars assign or
 // convert.
 func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.Value, error) {
+	if u, ok := v.(*runtime.UConst); ok {
+		mv, err := materializeDefault(u)
+		if err != nil {
+			return reflect.Value{}, err
+		}
+		v = mv
+	}
 	if t.Kind() == reflect.Interface && t.NumMethod() == 0 {
 		if v == nil || v == runtime.NIL {
 			return reflect.Zero(t), nil
@@ -1984,6 +2037,12 @@ func deepHost(v runtime.Value) runtime.Value {
 		return nil
 	case *runtime.TypedNil, *runtime.IfaceNil:
 		return nil
+	case *runtime.UConst:
+		mv, err := materializeDefault(x)
+		if err != nil {
+			panic(&runtime.Panic{Value: err.Error()})
+		}
+		return deepHost(mv)
 	case *runtime.Named:
 		return deepHost(x.V)
 	case *runtime.GoValue:
@@ -2404,7 +2463,7 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 	if dv, ok := runtime.Deref(base); ok {
 		return v.index(f, dv, idx)
 	}
-	idx = runtime.Unwrap(idx) // named key/index types hash as their value
+	idx = runtime.Unwrap(materialize(f, idx)) // named key/index types hash as their value
 	switch b := base.(type) {
 	case *runtime.Named:
 		return v.index(f, b.V, idx)
@@ -2424,19 +2483,19 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 		if !ok {
 			f.trap("slice index is %T", idx)
 		}
-		return b.Elems[i]
+		return v.elemRead(f, b.Typ, b.Elems[i])
 	case *runtime.Map:
 		val, found := b.Pairs[runtime.CanonicalKey(idx)]
 		if !found {
 			val = v.mapZero(f, b.Typ)
 		}
-		return val
+		return v.elemRead(f, b.Typ, val)
 	case string:
 		i, ok := idx.(int64)
 		if !ok {
 			f.trap("string index is %T", idx)
 		}
-		return int64(b[i])
+		return &runtime.Named{Typ: v.builtinTypedef("uint8"), V: int64(b[i])}
 	default:
 		f.trap("index on %T", base)
 		return nil
@@ -2768,6 +2827,23 @@ func (v *VM) localTypedefOf(f *frame, name string) *runtime.TypeDef {
 	return nil
 }
 
+// elemRead coerces a container element read to its declared element
+// typedef — b[i] on []byte is uint8-typed, not a bare int64, so %T and
+// cross-type assignment see the element's real type.
+func (v *VM) elemRead(f *frame, cont *runtime.TypeDef, x runtime.Value) runtime.Value {
+	if cont == nil {
+		return x
+	}
+	if _, ok := x.(*runtime.Named); ok {
+		return x // stored value already carries its tag
+	}
+	et := v.elemTypedef(f, cont)
+	if et == nil {
+		return x
+	}
+	return v.coerce(f, x, et)
+}
+
 // mapZero is the value a map read produces for a missing key or a nil
 // map: the zero of the map's element typedef when the type is known,
 // NIL otherwise.
@@ -2826,7 +2902,7 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 		v.setIndex(f, n.V, idx, val)
 		return
 	}
-	idx = runtime.Unwrap(idx)
+	idx = runtime.Unwrap(materialize(f, idx))
 	switch b := base.(type) {
 	case *runtime.IfaceNil:
 		v.setIndex(f, &runtime.TypedNil{Typ: b.Typ}, idx, val)
@@ -2867,30 +2943,41 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 	}
 }
 
-func (v *VM) slice(f *frame, base, lo, hi runtime.Value) runtime.Value {
+func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 	if dv, ok := runtime.Deref(base); ok {
-		return v.slice(f, dv, lo, hi)
+		return v.slice(f, dv, lo, hi, max)
 	}
 	if n, ok := base.(*runtime.Named); ok {
-		return v.slice(f, n.V, lo, hi)
+		return v.slice(f, n.V, lo, hi, max)
 	}
+	three := max != runtime.NIL && max != nil
 	switch b := base.(type) {
 	case *runtime.IfaceNil:
-		return v.slice(f, &runtime.TypedNil{Typ: b.Typ}, lo, hi)
+		return v.slice(f, &runtime.TypedNil{Typ: b.Typ}, lo, hi, max)
 	case *runtime.TypedNil:
 		if b.Typ.Kind != runtime.KindSlice {
 			f.trap("slice on nil %s", tdName(b.Typ))
 		}
 		// s[0:0] / s[:] on a nil slice is a valid empty result
 		l, h := bounds(f, lo, hi, 0)
-		if l != 0 || h != 0 {
+		m := maxBound(f, max, 0)
+		if l != 0 || h != 0 || m != 0 {
 			panic(&runtime.Panic{Value: "runtime error: slice bounds out of range"})
 		}
 		return b
 	case *runtime.Slice:
 		l, h := bounds(f, lo, hi, int64(len(b.Elems)))
+		if three {
+			m := maxBound(f, max, int64(cap(b.Elems)))
+			return &runtime.Slice{Elems: b.Elems[l:h:m], Typ: sliceTypOf(b.Typ)}
+		}
 		return &runtime.Slice{Elems: b.Elems[l:h], Typ: sliceTypOf(b.Typ)}
 	case string:
+		if three {
+			// a 3-index slice on a string is a compile reject in Go —
+			// loud-fail like the other compile-time checks.
+			f.trap("cannot slice a string with 3 indices")
+		}
 		l, h := bounds(f, lo, hi, int64(len(b)))
 		return b[l:h]
 	default:
@@ -2902,13 +2989,23 @@ func (v *VM) slice(f *frame, base, lo, hi runtime.Value) runtime.Value {
 func bounds(f *frame, lo, hi runtime.Value, n int64) (int64, int64) {
 	l := int64(0)
 	h := n
-	if lv, ok := runtime.Unwrap(lo).(int64); ok {
+	if lv, ok := runtime.Unwrap(materialize(f, lo)).(int64); ok {
 		l = lv
 	}
-	if hv, ok := runtime.Unwrap(hi).(int64); ok {
+	if hv, ok := runtime.Unwrap(materialize(f, hi)).(int64); ok {
 		h = hv
 	}
 	return l, h
+}
+
+// maxBound reads a 3-index slice's max operand; the full-expression form
+// `a[low:high:]` uses the container's capacity. The slice operator itself
+// (`elems[l:h:m]`) enforces low <= high <= max <= cap with Go's panic.
+func maxBound(f *frame, max runtime.Value, capN int64) int64 {
+	if mv, ok := runtime.Unwrap(materialize(f, max)).(int64); ok {
+		return mv
+	}
+	return capN
 }
 
 func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
@@ -3027,7 +3124,7 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}, Typ: td}
 		et := v.elemTypedef(f, td)
 		for i := 0; i < n; i++ {
-			k := runtime.Unwrap(raw[i*2])
+			k := runtime.Unwrap(materialize(f, raw[i*2]))
 			ck := runtime.CanonicalKey(k)
 			if _, exists := m.Pairs[ck]; !exists {
 				m.Order = append(m.Order, k)
@@ -3515,7 +3612,381 @@ func truthy(v runtime.Value) bool {
 	}
 }
 
+// materialize turns an untyped constant into its default-typed value at
+// a value boundary ('a' -> rune, `1<<100` -> trap like Go's compile-time
+// "constant overflows int"); any other value passes through.
+func materialize(f *frame, x runtime.Value) runtime.Value {
+	u, ok := x.(*runtime.UConst)
+	if !ok {
+		return x
+	}
+	r, err := materializeDefault(u)
+	if err != nil {
+		f.trap("%s", err)
+	}
+	return r
+}
+
+// materializeDefault converts an untyped constant to its Go default
+// type: bool, string, rune->int32, int, float64, or complex128.
+func materializeDefault(u *runtime.UConst) (runtime.Value, error) {
+	switch u.V.Kind() {
+	case constant.Bool:
+		return constant.BoolVal(u.V), nil
+	case constant.String:
+		return constant.StringVal(u.V), nil
+	case constant.Int:
+		if u.Rune {
+			if i, ok := constant.Int64Val(u.V); ok {
+				return &runtime.Named{Typ: &runtime.TypeDef{Name: "rune", Kind: runtime.KindNamedBasic}, V: i}, nil
+			}
+			return nil, fmt.Errorf("constant %s overflows rune", u.V)
+		}
+		if i, ok := constant.Int64Val(u.V); ok {
+			return i, nil
+		}
+		if uv, ok := constant.Uint64Val(u.V); ok && uv <= math.MaxInt64 {
+			return int64(uv), nil
+		}
+		return nil, fmt.Errorf("constant %s overflows int", u.V)
+	case constant.Float:
+		fv, _ := constant.Float64Val(u.V)
+		if math.IsInf(fv, 0) {
+			return nil, fmt.Errorf("constant %s overflows float64", u.V)
+		}
+		return fv, nil
+	case constant.Complex:
+		cv := constComplexVal(u.V)
+		return &runtime.GoValue{V: cv}, nil
+	}
+	return nil, fmt.Errorf("cannot materialize constant %s", u.V)
+}
+
+// materializeConst converts an untyped constant for a declared target —
+// Go's representability check: `const B = 1<<100` is legal but
+// `var x int = B` fails with "constant ... overflows int".
+func (v *VM) materializeConst(f *frame, u *runtime.UConst, td *runtime.TypeDef) runtime.Value {
+	r, err := v.materializeConstErr(u, td)
+	if err != nil {
+		f.trap("%s", err)
+	}
+	return r
+}
+
+func (v *VM) materializeConstErr(u *runtime.UConst, td *runtime.TypeDef) (runtime.Value, error) {
+	utd := v.peelNamed(td)
+	if utd == nil || utd.Kind == runtime.KindInterface {
+		// `any`/`error` slots take the constant's default type.
+		return materializeDefault(u)
+	}
+	name := basicNameOf(utd)
+	var x runtime.Value
+	switch name {
+	case "int", "int8", "int16", "int32", "int64", "rune",
+		"uint", "uint8", "byte", "uint16", "uint32", "uint64", "uintptr":
+		if u.V.Kind() != constant.Int {
+			return nil, fmt.Errorf("cannot use constant %s as %s", u.V, name)
+		}
+		i, ok := fitsIntConst(u.V, name)
+		if !ok {
+			return nil, fmt.Errorf("constant %s overflows %s", u.V, name)
+		}
+		x = i
+	case "float32":
+		fv, ok := constFloat(u.V)
+		if !ok {
+			return nil, fmt.Errorf("cannot use constant %s as %s", u.V, name)
+		}
+		f32, _ := constant.Float32Val(u.V)
+		if math.IsInf(float64(f32), 0) || math.IsInf(fv, 0) {
+			return nil, fmt.Errorf("constant %s overflows float32", u.V)
+		}
+		x = float64(f32)
+	case "float64":
+		fv, ok := constFloat(u.V)
+		if !ok {
+			return nil, fmt.Errorf("cannot use constant %s as %s", u.V, name)
+		}
+		if math.IsInf(fv, 0) {
+			return nil, fmt.Errorf("constant %s overflows float64", u.V)
+		}
+		x = fv
+	case "complex64":
+		cv, ok := constComplex(u.V)
+		if !ok {
+			return nil, fmt.Errorf("cannot use constant %s as %s", u.V, name)
+		}
+		x = &runtime.GoValue{V: complex64(cv)}
+	case "complex128":
+		cv, ok := constComplex(u.V)
+		if !ok {
+			return nil, fmt.Errorf("cannot use constant %s as %s", u.V, name)
+		}
+		x = &runtime.GoValue{V: cv}
+	case "string":
+		switch u.V.Kind() {
+		case constant.String:
+			x = constant.StringVal(u.V)
+		case constant.Int:
+			// int-to-string produces the rune (Go vet would flag it, the
+			// conversion itself is legal).
+			i, _ := constant.Int64Val(u.V)
+			x = string(rune(i))
+		default:
+			return nil, fmt.Errorf("cannot use constant %s as %s", u.V, name)
+		}
+	case "bool":
+		if u.V.Kind() != constant.Bool {
+			return nil, fmt.Errorf("cannot use constant %s as %s", u.V, name)
+		}
+		x = constant.BoolVal(u.V)
+	default:
+		return nil, fmt.Errorf("cannot use constant %s as %s", u.V, tdName(td))
+	}
+	// the tag rule from coerceConcrete applies equally: a converted const
+	// keeps the declared name (and int64/float32/complex64 tag even
+	// spelled bare).
+	if td != nil && (declaredType(td) || sizedIntName(td.Name) || td.Name == "int64" ||
+		td.Name == "float32" || td.Name == "complex64") {
+		return &runtime.Named{Typ: td, V: x}, nil
+	}
+	return x, nil
+}
+
+// constFloat reads a numeric constant as float64; a complex constant
+// with an imaginary part is not a float.
+func constFloat(cv constant.Value) (float64, bool) {
+	switch cv.Kind() {
+	case constant.Int, constant.Float:
+	default:
+		return 0, false
+	}
+	return constant.Float64Val(cv)
+}
+
+func constComplex(cv constant.Value) (complex128, bool) {
+	switch cv.Kind() {
+	case constant.Int, constant.Float, constant.Complex:
+	default:
+		return 0, false
+	}
+	return constComplexVal(cv), true
+}
+
+// constComplexVal reads a numeric constant's real/imag parts at
+// float64 precision — the same conversion materialization performs.
+func constComplexVal(cv constant.Value) complex128 {
+	re, _ := constant.Float64Val(constant.Real(cv))
+	im, _ := constant.Float64Val(constant.Imag(cv))
+	return complex(re, im)
+}
+
+// fitsIntConst reports whether an integer constant is representable as
+// the named Go int type — Go's constant-to-type conversion check.
+func fitsIntConst(cv constant.Value, name string) (int64, bool) {
+	i, iok := constant.Int64Val(cv)
+	switch name {
+	case "int", "int64":
+		return i, iok
+	case "int8":
+		return i, iok && i >= -128 && i <= 127
+	case "int16":
+		return i, iok && i >= -32768 && i <= 32767
+	case "int32", "rune":
+		return i, iok && i >= -2147483648 && i <= 2147483647
+	case "uint", "uint64", "uintptr":
+		if iok {
+			return i, i >= 0
+		}
+		u, uok := constant.Uint64Val(cv)
+		return int64(u), uok
+	case "uint8", "byte":
+		return i, iok && i >= 0 && i <= 255
+	case "uint16":
+		return i, iok && i >= 0 && i <= 65535
+	case "uint32":
+		return i, iok && i >= 0 && i <= 4294967295
+	}
+	return 0, false
+}
+
+// constBinary folds an op over two untyped constants in the go/constant
+// domain. ok is false when the op isn't constant-foldable (&& || keep
+// runtime short-circuit semantics) or constant evaluation itself
+// rejected the operands — the caller then materializes and applies
+// runtime semantics.
+func constBinary(op bytecode.BinOp, ua, ub *runtime.UConst) (res runtime.Value, ok bool) {
+	defer func() {
+		if recover() != nil {
+			res, ok = nil, false
+		}
+	}()
+	tok, ok := binOpToken(op)
+	if !ok {
+		return nil, false
+	}
+	switch tok {
+	case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ:
+		return constant.MakeBool(constant.Compare(ua.V, tok, ub.V)), true
+	case token.SHL, token.SHR:
+		s, ok := constant.Uint64Val(ub.V)
+		if !ok {
+			return nil, false
+		}
+		return &runtime.UConst{V: constant.Shift(ua.V, tok, uint(s)), Rune: ua.Rune || ub.Rune}, true
+	case token.QUO:
+		if ua.V.Kind() == constant.Int && ub.V.Kind() == constant.Int {
+			// integer constants divide truncated (7/2 is 3), like
+			// constValue's QUO_ASSIGN rule.
+			return &runtime.UConst{V: constant.BinaryOp(ua.V, token.QUO_ASSIGN, ub.V), Rune: ua.Rune || ub.Rune}, true
+		}
+	}
+	return &runtime.UConst{V: constant.BinaryOp(ua.V, tok, ub.V), Rune: ua.Rune || ub.Rune}, true
+}
+
+// binOpToken maps a bytecode binary op to its go/token spelling —
+// inverse of compile's binOpOf, for constant-domain evaluation.
+func binOpToken(op bytecode.BinOp) (token.Token, bool) {
+	switch op {
+	case bytecode.BinAdd:
+		return token.ADD, true
+	case bytecode.BinSub:
+		return token.SUB, true
+	case bytecode.BinMul:
+		return token.MUL, true
+	case bytecode.BinQuo:
+		return token.QUO, true
+	case bytecode.BinRem:
+		return token.REM, true
+	case bytecode.BinAnd:
+		return token.AND, true
+	case bytecode.BinOr:
+		return token.OR, true
+	case bytecode.BinXor:
+		return token.XOR, true
+	case bytecode.BinAndNot:
+		return token.AND_NOT, true
+	case bytecode.BinShl:
+		return token.SHL, true
+	case bytecode.BinShr:
+		return token.SHR, true
+	case bytecode.BinEql:
+		return token.EQL, true
+	case bytecode.BinNeq:
+		return token.NEQ, true
+	case bytecode.BinLss:
+		return token.LSS, true
+	case bytecode.BinLeq:
+		return token.LEQ, true
+	case bytecode.BinGtr:
+		return token.GTR, true
+	case bytecode.BinGeq:
+		return token.GEQ, true
+	}
+	return 0, false
+}
+
+// asComplex reads a value in the complex domain: a boxed complex of
+// either width, or a bare numeric operand that promotes to complex128.
+// width is 64 for a complex64 value, else 128.
+func asComplex(x runtime.Value) (cv complex128, width int, ok bool) {
+	if n, isN := x.(*runtime.Named); isN {
+		x = n.V
+	}
+	if v, isG := x.(*runtime.GoValue); isG {
+		switch c := v.V.(type) {
+		case complex64:
+			return complex128(c), 64, true
+		case complex128:
+			return c, 128, true
+		}
+	}
+	return 0, 0, false
+}
+
+// complexOperand reads a value into the complex domain for arithmetic:
+// a real complex value keeps its width; a bare int64/float64 promotes
+// with width 0 — untyped, so it joins either side (`c64 + 1` works).
+func complexOperand(x runtime.Value) (complex128, int, bool) {
+	if cv, w, ok := asComplex(x); ok {
+		return cv, w, true
+	}
+	switch v := x.(type) {
+	case int64:
+		return complex(float64(v), 0), 0, true
+	case float64:
+		return complex(v, 0), 0, true
+	}
+	return 0, 0, false
+}
+
+// complexResult boxes a complex result at the operand's width — the
+// narrowest side wins like Go's complex64/complex128 promotion rules,
+// and a promoted constant (width 0) takes the other side's width.
+func complexResult(cv complex128, wa, wb int) runtime.Value {
+	if wa == 64 || wb == 64 {
+		return &runtime.GoValue{V: complex64(cv)}
+	}
+	return &runtime.GoValue{V: cv}
+}
+
+// constOf lifts a value back into the constant domain: a UConst is
+// already there; a bare literal value re-wraps as one. A Named value
+// stays out — it is typed, not a constant.
+func constOf(x runtime.Value) (*runtime.UConst, bool) {
+	switch v := x.(type) {
+	case *runtime.UConst:
+		return v, true
+	case int64:
+		return &runtime.UConst{V: constant.MakeInt64(v)}, true
+	case float64:
+		return &runtime.UConst{V: constant.MakeFloat64(v)}, true
+	case string:
+		return &runtime.UConst{V: constant.MakeString(v)}, true
+	case bool:
+		return &runtime.UConst{V: constant.MakeBool(v)}, true
+	}
+	return nil, false
+}
+
+// isPlainConst reports whether x reads as a compile-time constant for
+// mixed folding — bare numerics and strings do, typed (Named) values
+// and everything else do not.
+func isPlainConst(x runtime.Value) bool {
+	switch x.(type) {
+	case int64, float64, string, bool:
+		return true
+	}
+	return false
+}
+
 func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
+	// untyped constants fold in the arbitrary-precision constant domain
+	// while both sides read as constants — a bare int64/float64 operand
+	// came from a folded literal and can lift back (`const C = B - 1<<99`
+	// computes exactly). With a real value a constant materializes to
+	// its default type instead (and can fail to, like Go's compile-time
+	// "constant overflows int").
+	if _, isA := a.(*runtime.UConst); isA {
+		if _, isB := b.(*runtime.UConst); isB || isPlainConst(b) {
+			ca, _ := constOf(a)
+			cb, _ := constOf(b)
+			if r, ok := constBinary(op, ca, cb); ok {
+				return r
+			}
+		}
+		a = materialize(f, a)
+	}
+	if _, ok := b.(*runtime.UConst); ok {
+		if isPlainConst(a) {
+			ca, _ := constOf(a)
+			cb, _ := constOf(b)
+			if r, ok2 := constBinary(op, ca, cb); ok2 {
+				return r
+			}
+		}
+		b = materialize(f, b)
+	}
 	// shifts evaluate in the left operand's signedness — Go types the
 	// result by the left side alone, so `^uintptr(0) >> 63` must shift
 	// logically, not as int64. They get their own operator.
@@ -3526,7 +3997,8 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 	// declared types in one operation is a type error (Go: `x + y` on
 	// MyInt and Other traps), and an arithmetic result keeps the
 	// operand's declared tag — comparisons produce an untyped bool, which
-	// stays bare.
+	// stays bare. The unwrap happens before the complex branch so a
+	// declared complex type is checked too.
 	var tag *runtime.TypeDef
 	if n, ok := a.(*runtime.Named); ok {
 		tag = n.Typ
@@ -3538,6 +4010,42 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 		}
 		tag = n.Typ
 		b = n.V
+	}
+	// complex values operate in the complex domain: complex64 wins over
+	// complex128, ordered comparisons are a compile reject in Go.
+	_, _, aIs := asComplex(a)
+	_, _, bIs := asComplex(b)
+	if aIs || bIs {
+		ca, wa, aok := complexOperand(a)
+		cb, wb, bok := complexOperand(b)
+		if aok && bok {
+			if wa != 0 && wb != 0 && wa != wb {
+				f.trap("invalid operation: %s (mismatched types complex%d and complex%d)", op, wa, wb)
+			}
+			var r runtime.Value
+			switch op {
+			case bytecode.BinAdd:
+				r = complexResult(ca+cb, wa, wb)
+			case bytecode.BinSub:
+				r = complexResult(ca-cb, wa, wb)
+			case bytecode.BinMul:
+				r = complexResult(ca*cb, wa, wb)
+			case bytecode.BinQuo:
+				r = complexResult(ca/cb, wa, wb)
+			case bytecode.BinEql:
+				r = ca == cb
+			case bytecode.BinNeq:
+				r = ca != cb
+			default:
+				f.trap("invalid operation: %s (complex numbers are not ordered)", op)
+			}
+			if tag != nil {
+				if _, isBool := r.(bool); !isBool {
+					return &runtime.Named{Typ: tag, V: r}
+				}
+			}
+			return r
+		}
 	}
 	if tag != nil {
 		// an unsigned-width declared int evaluates `/`, `%` and ordered
@@ -3558,8 +4066,15 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 		if iv, ok := res.(int64); ok {
 			return &runtime.Named{Typ: tag, V: maskInt(iv, sizedNameOf(tag))}
 		}
-		switch res.(type) {
-		case float64, string:
+		if fv, ok := res.(float64); ok {
+			// a float32-flavored tag narrows the result the way an
+			// assignment into a float32 slot does.
+			if basicNameOf(tag) == "float32" {
+				fv = float64(float32(fv))
+			}
+			return &runtime.Named{Typ: tag, V: fv}
+		}
+		if _, ok := res.(string); ok {
 			return &runtime.Named{Typ: tag, V: res}
 		}
 		return res
@@ -3704,6 +4219,8 @@ func uintBinOp(f *frame, op bytecode.BinOp, a, b uint64) (res runtime.Value, isI
 // count), so a uintptr/uint64 value shifts logically while int64 shifts
 // arithmetically. A declared-width operand re-tags and re-masks.
 func shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
+	a = materialize(f, a)
+	b = materialize(f, b)
 	var tag *runtime.TypeDef
 	if n, ok := a.(*runtime.Named); ok {
 		tag, a = n.Typ, n.V
@@ -3872,7 +4389,45 @@ func stringBinOp(f *frame, op bytecode.BinOp, a string, b runtime.Value) runtime
 	return nil
 }
 
+// unOpToken maps a bytecode unary op to its go/token spelling.
+func unOpToken(op bytecode.UnOp) (token.Token, bool) {
+	switch op {
+	case bytecode.UnPos:
+		return token.ADD, true
+	case bytecode.UnNeg:
+		return token.SUB, true
+	case bytecode.UnNot:
+		return token.NOT, true
+	case bytecode.UnXor:
+		return token.XOR, true
+	}
+	return 0, false
+}
+
+// constUnary applies a unary op in the constant domain; ok is false
+// when the op doesn't apply to the constant's kind (go/constant
+// panics on those — the runtime path below reports them).
+func constUnary(op bytecode.UnOp, u *runtime.UConst) (res *runtime.UConst, ok bool) {
+	defer func() {
+		if recover() != nil {
+			res, ok = nil, false
+		}
+	}()
+	tok, ok := unOpToken(op)
+	if !ok {
+		return nil, false
+	}
+	return &runtime.UConst{V: constant.UnaryOp(tok, u.V, 0), Rune: u.Rune}, true
+}
+
 func unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value {
+	if u, ok := a.(*runtime.UConst); ok {
+		// unary ops on constants stay in the constant domain
+		if cv, ok2 := constUnary(op, u); ok2 {
+			return cv
+		}
+		a = materialize(f, a)
+	}
 	var tag *runtime.TypeDef
 	if n, ok := a.(*runtime.Named); ok {
 		tag, a = n.Typ, n.V
@@ -3910,6 +4465,12 @@ func unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value {
 			// domain survives.
 			if u, ok := x.V.(uint64); ok {
 				return &runtime.GoValue{V: -u}
+			}
+			switch c := x.V.(type) {
+			case complex64:
+				return &runtime.GoValue{V: -c}
+			case complex128:
+				return &runtime.GoValue{V: -c}
 			}
 		}
 		f.trap("unary - on %T", a)
@@ -3952,17 +4513,6 @@ func structDefsEq(a, b *runtime.TypeDef) bool {
 	return true
 }
 
-// ifaceTagOf spells the static interface side of a failed type assertion:
-// `interface {} is string, not int`. The static type only survives on
-// IfaceNil; concrete values unwrap early, so it falls back to the empty
-// interface spelling.
-func ifaceTagOf(x runtime.Value) string {
-	if in, ok := x.(*runtime.IfaceNil); ok && in.Typ != nil && in.Typ.Name != "" {
-		return tdName(in.Typ)
-	}
-	return "interface {}"
-}
-
 func eqlValue(a, b runtime.Value) bool {
 	if n, ok := a.(*runtime.Named); ok {
 		a = n.V
@@ -3976,6 +4526,13 @@ func eqlValue(a, b runtime.Value) bool {
 	}
 	if d, ok := b.(time.Duration); ok {
 		b = int64(d)
+	}
+	// boxed complex values compare by value across widths — Go rejects
+	// complex64 == complex128 (mismatched types), but here both operands
+	// already passed the tag check so compare numerically like int/float.
+	if ca, _, ok := asComplex(a); ok {
+		cb, _, ok2 := asComplex(b)
+		return ok2 && ca == cb
 	}
 	if ai, ok := a.(int64); ok {
 		switch bv := b.(type) {
@@ -4449,6 +5006,12 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 			return &runtime.IfaceNil{Typ: tn.Typ}, nil
 		}
 	}
+	// an untyped constant converts by Go's representability rules —
+	// int64('a'), float64(1e500)'s overflow, string('a'), complex128(3)
+	// all land here.
+	if u, ok := x.(*runtime.UConst); ok {
+		return v.materializeConstErr(u, td)
+	}
 	// a Named value converts through its underlying value — `string(x)` on
 	// a named string value works like the underlying conversion; `T(x)`
 	// on the same declared type is a no-op.
@@ -4489,18 +5052,36 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 		default:
 			return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), td.Name)
 		}
-		if sizedIntName(td.Name) {
+		if sizedIntName(td.Name) || td.Name == "int64" {
 			// the converted value keeps its declared tag: arithmetic
 			// re-wraps to the type's width (-u on uint8 yields 251), %T
 			// prints the type name, and unsigned uint64 keeps its
-			// domain for %x/%d. Native-width ints stay bare int64.
+			// domain for %x/%d. `int64(x)` tags too — an explicit
+			// conversion declares its type — while bare ints stay
+			// untagged (their %T already spells "int").
 			return &runtime.Named{Typ: td, V: maskInt(iv, td.Name)}, nil
 		}
 		return maskInt(iv, td.Name), nil
-	case "float64", "float32":
+	case "float32":
+		switch x.(type) {
+		case int64, float64:
+			return &runtime.Named{Typ: td, V: float64(float32(toFloat(x)))}, nil
+		}
+		return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), td.Name)
+	case "float64":
 		switch x.(type) {
 		case int64, float64:
 			return toFloat(x), nil
+		}
+		return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), td.Name)
+	case "complex64":
+		if cv, ok := convComplex(x); ok {
+			return &runtime.GoValue{V: complex64(cv)}, nil
+		}
+		return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), td.Name)
+	case "complex128":
+		if cv, ok := convComplex(x); ok {
+			return &runtime.GoValue{V: cv}, nil
 		}
 		return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), td.Name)
 	case "string":
@@ -4966,6 +5547,9 @@ func (v *VM) popArgs(f *frame, argc int, spread bool, pos token.Pos) []runtime.V
 	for i := argc - 1; i >= 0; i-- {
 		args[i] = f.pop()
 	}
+	// args stay lazy across the boundary: the callee's declared-param
+	// coerce applies Go's constant-to-type conversion (`f('a')` into an
+	// int param), and host marshaling materializes what is left.
 	if spread {
 		if argc == 0 {
 			f.trap("spread call with no arguments")
@@ -5021,7 +5605,10 @@ func typedefOf(v runtime.Value) *runtime.TypeDef {
 
 // typeAssert implements x.(T): returns x on match, panics with a script
 // Panic (recoverable) on mismatch — Go semantics for a failed assertion.
-func (v *VM) typeAssert(f *frame, x, tdv runtime.Value, pos token.Pos) runtime.Value {
+// static is the operand's declared type (a bare identifier's cell type,
+// NIL when the expression has none) — it names the interface in the
+// message the way Go does: "main.I is main.T, not io.Writer".
+func (v *VM) typeAssert(f *frame, x, tdv, static runtime.Value, pos token.Pos) runtime.Value {
 	td := typedefOf(tdv)
 	if td == nil {
 		f.trap("type assertion target %T is not a type", tdv)
@@ -5029,7 +5616,85 @@ func (v *VM) typeAssert(f *frame, x, tdv runtime.Value, pos token.Pos) runtime.V
 	if v.typeMatches(f, td, x) {
 		return unboxAsserted(x, td)
 	}
-	panic(&runtime.Panic{Value: fmt.Sprintf("interface conversion: %s is %s, not %s", ifaceTagOf(x), typeNameOf(x), tdName(td))})
+	// asserting to a non-empty interface names the missing method:
+	// "main.T is not io.Writer: missing method Write".
+	if td.Kind == runtime.KindInterface {
+		if miss := v.missingIfaceMethod(td, x); miss != "" {
+			panic(&runtime.Panic{Value: fmt.Sprintf("interface conversion: %s is not %s: missing method %s", typeNameOf(x), spelledTyp(td), miss)})
+		}
+	}
+	staticName := "interface {}"
+	if st, ok := static.(*runtime.TypeDef); ok {
+		staticName = spelledTyp(st)
+	}
+	panic(&runtime.Panic{Value: fmt.Sprintf("interface conversion: %s is %s, not %s", staticName, typeNameOf(x), spelledTyp(td))})
+}
+
+// missingIfaceMethod names the first required method x lacks — Go's
+// "missing method Write" detail when an interface assertion fails on the
+// method set. Empty when the check can't name one (hooks missing, or the
+// failure came from something else).
+func (v *VM) missingIfaceMethod(td *runtime.TypeDef, x runtime.Value) string {
+	if len(td.MReqs) == 0 && len(td.IEmbeds) == 0 {
+		return ""
+	}
+	if v.H.IfaceReqs == nil || v.H.MethodsOf == nil {
+		return ""
+	}
+	reqs, err := v.H.IfaceReqs(td)
+	if err != nil || len(reqs) == 0 {
+		return ""
+	}
+	var have map[string]bool
+	var unsure bool
+	if v.H.MethodSetOf != nil {
+		have, unsure, err = v.H.MethodSetOf(x)
+	} else {
+		have, err = v.H.MethodsOf(x)
+	}
+	if err != nil {
+		return ""
+	}
+	missing := make([]string, 0, len(reqs))
+	for m := range reqs {
+		if !have[m] && !unsure {
+			missing = append(missing, m)
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) == 0 {
+		return ""
+	}
+	return missing[0]
+}
+
+// spelledTyp spells a typedef the way Go's runtime does in conversion
+// panics — package-qualified ("main.I", "io.Writer"), anonymous forms
+// rendered from their AST.
+func spelledTyp(td *runtime.TypeDef) string {
+	if td == nil {
+		return "interface {}"
+	}
+	if td.Name != "" {
+		switch td.Name {
+		case "byte":
+			return "uint8"
+		case "rune":
+			return "int32"
+		case "any":
+			return "interface {}"
+		}
+		// imported typedefs spell their own package ("io.Writer"); only
+		// the script's own names need the package prefix.
+		if td.Pkg != nil && td.Pkg.Name != "" && !strings.Contains(td.Name, ".") {
+			return td.Pkg.Name + "." + td.Name
+		}
+		return td.Name
+	}
+	if td.Anon != nil {
+		return typeExprName(td.Anon)
+	}
+	return tdName(td)
 }
 
 // typeAssertOK implements the comma-ok form: pushes Tuple{val, ok}.
@@ -5384,6 +6049,9 @@ func (v *VM) coerce(f *frame, x runtime.Value, td *runtime.TypeDef) runtime.Valu
 		return v.zeroValue(f, td)
 	}
 	if td.Kind == runtime.KindInterface {
+		// an untyped constant binds an interface at its default type —
+		// `var a any = 'a'` holds a rune, not the lazy constant.
+		x = materialize(f, x)
 		if tn, ok := x.(*runtime.TypedNil); ok {
 			// boxing a typed nil still checks the method set: (*int)(nil)
 			// cannot bind an interface that requires methods.
@@ -5569,7 +6237,32 @@ func setContainerTyp(x runtime.Value, td *runtime.TypeDef) {
 // A Named value keeps its identity only for the identical declared type
 // (Go: named-to-named needs a conversion); GoValues pass unchecked at the
 // host boundary; a TypedNil re-tags when the underlying shape matches.
+// convComplex reads a value into the complex domain for a conversion:
+// ints and floats promote to complex128, boxed complex values pass.
+func convComplex(x runtime.Value) (complex128, bool) {
+	switch n := x.(type) {
+	case int64:
+		return complex(float64(n), 0), true
+	case float64:
+		return complex(n, 0), true
+	case *runtime.GoValue:
+		if cv, _, ok := asComplex(n); ok {
+			return cv, true
+		}
+	}
+	return 0, false
+}
+
 func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runtime.Value {
+	if u, ok := x.(*runtime.UConst); ok {
+		if utd := v.peelNamed(td); utd != nil && basicNameOf(utd) != "" {
+			// a constant converts straight to the declared basic type:
+			// `var r MyRune = 'a'`, `var i int8 = 300`'s overflow trap.
+			return v.materializeConst(f, u, td)
+		}
+		// other targets take the default type, then assign normally.
+		x = materialize(f, x)
+	}
 	if n, ok := x.(*runtime.Named); ok {
 		// a Named value keeps its identity only for the identical declared
 		// type — aliases count (they ARE the type), `type A B` chains do
@@ -5579,7 +6272,23 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		}
 		f.trap("cannot use %s as %s", tdName(n.Typ), tdName(td))
 	}
-	if _, ok := x.(*runtime.GoValue); ok {
+	if gv, ok := x.(*runtime.GoValue); ok {
+		// a complex value coerces into a complex-typed slot at the slot's
+		// width; other host boxes pass through unchecked as before.
+		switch gv.V.(type) {
+		case complex64, complex128:
+			if n := basicNameOf(v.peelNamed(td)); n == "complex64" || n == "complex128" {
+				cv, _, _ := asComplex(gv)
+				if n == "complex64" {
+					x = &runtime.GoValue{V: complex64(cv)}
+				} else {
+					x = &runtime.GoValue{V: cv}
+				}
+				if td != nil && declaredType(td) {
+					return &runtime.Named{Typ: td, V: x}
+				}
+			}
+		}
 		return x // host boundary: assignability is unknowable
 	}
 	if tn, ok := x.(*runtime.TypedNil); ok {
@@ -5643,10 +6352,29 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 	// two, and a Named int64 traps in the declared-tag check above.
 	if iv, ok := runtime.Unwrap(x).(int64); ok && !declaredType(utd) {
 		switch n := tdName(utd); n {
-		case "float32", "float64":
+		case "float32":
+			x = float64(float32(iv))
+		case "float64":
 			x = float64(iv)
+		case "complex64":
+			x = &runtime.GoValue{V: complex64(complex(float64(iv), 0))}
+		case "complex128":
+			x = &runtime.GoValue{V: complex(float64(iv), 0)}
 		default:
 			x = maskInt(iv, n)
+		}
+	}
+	// assigning into a float32 slot narrows the way T(x) does —
+	// `var f float32 = 0.1` stores the float64 that reads back as
+	// float32(0.1), not the source literal's extra bits.
+	if fv, ok := runtime.Unwrap(x).(float64); ok {
+		switch basicNameOf(utd) {
+		case "float32":
+			x = float64(float32(fv))
+		case "complex64":
+			x = &runtime.GoValue{V: complex64(complex(fv, 0))}
+		case "complex128":
+			x = &runtime.GoValue{V: complex(fv, 0)}
 		}
 	}
 	switch utd.Kind {
@@ -5805,6 +6533,19 @@ func (v *VM) shapeOK(f *frame, x runtime.Value, td *runtime.TypeDef) bool {
 			switch x.(type) {
 			case int64, float64:
 				return true
+			}
+			return false
+		case "complex64", "complex128":
+			// same cannot-distinguish rule: numerics promote to complex.
+			switch x.(type) {
+			case int64, float64:
+				return true
+			}
+			if gv, ok := x.(*runtime.GoValue); ok {
+				switch gv.V.(type) {
+				case complex64, complex128:
+					return true
+				}
 			}
 			return false
 		case "string":
@@ -6035,6 +6776,39 @@ func sizedIntName(name string) bool {
 	return false
 }
 
+// builtinTypeName reports whether name is a predeclared basic type —
+// the names a conversion or var decl may tag a Named value with.
+func builtinTypeName(name string) bool {
+	switch name {
+	case "int", "int64", "bool", "string", "error",
+		"float32", "float64", "complex64", "complex128",
+		"int8", "int16", "int32", "rune",
+		"uint", "uint8", "byte", "uint16", "uint32", "uint64", "uintptr":
+		return true
+	}
+	return false
+}
+
+// basicNameOf resolves the underlying builtin basic-type name behind a
+// typedef the way sizedNameOf resolves ints: `type F32 float32` and the
+// bare float32 typedef both read "float32".
+func basicNameOf(td *runtime.TypeDef) string {
+	if td == nil {
+		return ""
+	}
+	if builtinTypeName(td.Name) {
+		return td.Name
+	}
+	x := td.Anon
+	if x == nil && td.Spec != nil {
+		x = td.Spec.Type
+	}
+	if id, ok := x.(*ast.Ident); ok && builtinTypeName(id.Name) {
+		return id.Name
+	}
+	return ""
+}
+
 // unsignedName reports whether a sized-int typedef name is an unsigned
 // width — the unsigned names evaluate division, remainder, shifts and
 // ordered comparisons in the uint64 domain.
@@ -6068,13 +6842,19 @@ func maskInt(n int64, name string) int64 {
 
 func typeNameOf(x runtime.Value) string {
 	switch xv := x.(type) {
+	case *runtime.UConst:
+		return xv.DefaultName()
 	case *runtime.Named:
-		return tdName(xv.Typ)
+		return spelledTyp(xv.Typ)
 	case *runtime.Struct:
 		if xv.Def != nil && xv.Def.Name != "" {
-			return xv.Def.Name
+			return spelledTyp(xv.Def)
 		}
 		return "struct"
+	case *runtime.GoValue:
+		// a host box names its Go type — "*errors.errorString" in a
+		// conversion panic, like the real runtime prints it.
+		return fmt.Sprintf("%T", xv.V)
 	case int64:
 		return "int64"
 	case float64:

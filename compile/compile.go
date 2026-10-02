@@ -15,6 +15,7 @@ import (
 	"go/ast"
 	"go/constant"
 	"go/token"
+	"math"
 	"strconv"
 	"strings"
 
@@ -517,10 +518,12 @@ func (c *compiler) valueSpec(vs *ast.ValueSpec, d *index.Decl) {
 		c.typeExpr(vs.Type)
 		c.emit(bytecode.OpCoerceGlobal, c.nameIdx(name.Name), 0, name.Pos())
 	}
-	// `const k T = v` coerces the value before binding — consts are stored
-	// as plain globals, not cells, so OpCoerceGlobal cannot reach them.
-	coerceConst := func() {
-		if !isConst || vs.Type == nil {
+	// A typed decl coerces its value on the stack before binding — consts
+	// are stored as plain globals OpCoerceGlobal cannot reach, and a var
+	// would otherwise materialize an untyped-constant value at bind time,
+	// losing `var r MyRune = 'a'`-style direct conversion to the decl.
+	coerceTop := func() {
+		if vs.Type == nil {
 			return
 		}
 		c.typeExpr(vs.Type)
@@ -537,14 +540,14 @@ func (c *compiler) valueSpec(vs *ast.ValueSpec, d *index.Decl) {
 		c.expr(vals[0])
 		c.emit3(bytecode.OpUnpack, len(vs.Names), 0, 0, vs.Pos())
 		for i := len(vs.Names) - 1; i >= 0; i-- {
-			coerceConst()
+			coerceTop()
 			bind(vs.Names[i])
 			coerceVar(vs.Names[i])
 		}
 	default:
 		for i, name := range vs.Names {
 			c.expr(vals[i])
-			coerceConst()
+			coerceTop()
 			bind(name)
 			coerceVar(name)
 		}
@@ -579,10 +582,21 @@ func (c *compiler) stmt(s ast.Stmt) {
 					}
 					c.emitTypeCoerce(slot, vs.Type, name.Pos())
 				}
+				// A declared type coerces the value on the stack before the
+				// bind: an untyped constant converts straight to T (`var r
+				// MyRune = 'a'`) instead of first materializing its default.
+				coerceTop := func() {
+					if vs.Type == nil {
+						return
+					}
+					c.typeExpr(vs.Type)
+					c.emit(bytecode.OpCoerceTop, 0, 0, vs.Pos())
+				}
 				if len(vs.Values) == 1 && len(vs.Names) > 1 {
 					c.expr(vs.Values[0])
 					c.emit3(bytecode.OpUnpack, len(vs.Names), 0, 0, vs.Pos())
 					for i := len(vs.Names) - 1; i >= 0; i-- {
+						coerceTop()
 						coerce(vs.Names[i], c.bindLocal(vs.Names[i].Name, vs.Names[i].Pos(), isConst))
 					}
 					break
@@ -592,6 +606,7 @@ func (c *compiler) stmt(s ast.Stmt) {
 						c.emit(bytecode.OpNil, 0, 0, name.Pos())
 					} else {
 						c.expr(vs.Values[i])
+						coerceTop()
 					}
 					coerce(name, c.bindLocal(name.Name, name.Pos(), isConst))
 				}
@@ -1674,10 +1689,6 @@ func (c *compiler) expr(e ast.Expr) {
 		}
 		c.emit(bytecode.OpInstantiate, 1, 0, x.Pos())
 	case *ast.SliceExpr:
-		if x.Slice3 {
-			c.trap(x.Pos(), "3-index slice is not supported")
-			return
-		}
 		c.expr(x.X)
 		if x.Low != nil {
 			c.expr(x.Low)
@@ -1688,6 +1699,15 @@ func (c *compiler) expr(e ast.Expr) {
 			c.expr(x.High)
 		} else {
 			c.emit(bytecode.OpNil, 0, 0, x.Pos())
+		}
+		if x.Slice3 {
+			if x.Max != nil {
+				c.expr(x.Max)
+			} else {
+				c.emit(bytecode.OpNil, 0, 0, x.Pos())
+			}
+			c.emit(bytecode.OpSlice, 0, 1, x.Pos())
+			return
 		}
 		c.emit(bytecode.OpSlice, 0, 0, x.Pos())
 	case *ast.StarExpr:
@@ -1711,8 +1731,9 @@ func (c *compiler) expr(e ast.Expr) {
 			c.trap(x.Pos(), ".(type) outside type switch")
 			return
 		}
+		c.staticTyp(x.X)
 		c.typeExpr(x.Type)
-		c.emit(bytecode.OpAssert, 0, 0, x.Pos())
+		c.emit(bytecode.OpAssert, 0, 1, x.Pos())
 	case *ast.IndexListExpr:
 		// multi-index is only legal as generic instantiation F[T, U]
 		c.expr(x.X)
@@ -1726,6 +1747,32 @@ func (c *compiler) expr(e ast.Expr) {
 		c.trap(x.Pos(), "key:value outside composite literal")
 	default:
 		c.trap(e.Pos(), "unsupported expression %T", e)
+	}
+}
+
+// staticTyp pushes the declared type the operand of an assertion is
+// bound under — Go's "main.I" in "interface conversion: main.I is main.T,
+// not io.Writer". Only a bare identifier carries a static type into the
+// runtime; other expressions (or untyped cells) yield NIL and the panic
+// message falls back to "interface {}".
+func (c *compiler) staticTyp(e ast.Expr) {
+	id, ok := e.(*ast.Ident)
+	if !ok {
+		c.emit(bytecode.OpNil, 0, 0, e.Pos())
+		return
+	}
+	isUp, idx, found := c.fs.find(id.Name)
+	switch {
+	case !found:
+		if _, bound := c.binds[id.Name]; bound {
+			c.emit(bytecode.OpNil, 0, 0, id.Pos())
+			return
+		}
+		c.emit(bytecode.OpGlobalTyp, c.nameIdx(id.Name), 0, id.Pos())
+	case !isUp:
+		c.emit(bytecode.OpLocalTyp, idx, 0, id.Pos())
+	default:
+		c.emit(bytecode.OpUpvalTyp, idx, 0, id.Pos())
 	}
 }
 
@@ -1832,9 +1879,22 @@ func (c *compiler) foldConst(x *ast.BinaryExpr) bool {
 		v = constant.StringVal(cv)
 	case constant.Float:
 		f, _ := constant.Float64Val(cv)
-		v = f
+		if math.IsInf(f, 0) {
+			// an overflowing constant float is still a valid untyped
+			// constant (Go compiles `const F = 1e500`); failing is the
+			// materialization boundary's job.
+			v = &runtime.UConst{V: cv}
+		} else {
+			v = f
+		}
+	case constant.Complex:
+		v = &runtime.UConst{V: cv}
 	case constant.Int:
-		if i, ok := constant.Int64Val(cv); ok {
+		if hasCharLit(x.X) || hasCharLit(x.Y) {
+			// a rune-kind constant expr defaults to rune, not int:
+			// `var y = 'a' + 1` types y as int32 in Go.
+			v = &runtime.UConst{V: cv, Rune: true}
+		} else if i, ok := constant.Int64Val(cv); ok {
 			v = i
 		} else if u, ok := constant.Uint64Val(cv); ok {
 			if u == 1<<63 {
@@ -1844,8 +1904,9 @@ func (c *compiler) foldConst(x *ast.BinaryExpr) bool {
 				v = &runtime.GoValue{V: u}
 			}
 		} else {
-			c.trap(x.Pos(), "constant overflows int64: %s", cv)
-			return true
+			// beyond uint64: lazy untyped constant — `const B = 1<<100`
+			// is legal and only materializing it can overflow.
+			v = &runtime.UConst{V: cv}
 		}
 	default:
 		// Unknown kind: the operation is undefined for these operand
@@ -1855,6 +1916,19 @@ func (c *compiler) foldConst(x *ast.BinaryExpr) bool {
 	}
 	c.emit(bytecode.OpConst, c.constIdx(v), 0, x.Pos())
 	return true
+}
+
+// hasCharLit reports whether the expression contains a rune literal —
+// constant folding uses it to keep the rune kind of the result.
+func hasCharLit(e ast.Expr) bool {
+	found := false
+	ast.Inspect(e, func(n ast.Node) bool {
+		if lit, ok := n.(*ast.BasicLit); ok && lit.Kind == token.CHAR {
+			found = true
+		}
+		return !found
+	})
+	return found
 }
 
 // constValue evaluates an expression made only of literal constants and
@@ -2363,23 +2437,28 @@ func literalValue(l *ast.BasicLit) (any, error) {
 			// to int64 (same bits mod 2^64) and formatting reads the box.
 			return &runtime.GoValue{V: u}, nil
 		}
-		return nil, fmt.Errorf("int literal out of range: %s", l.Value)
+		// beyond uint64 the literal stays an untyped constant: it compiles
+		// (Go does too) and only materializing it as a value can fail.
+		return &runtime.UConst{V: v}, nil
 	case token.FLOAT:
 		v := constant.MakeFromLiteral(l.Value, token.FLOAT, 0)
 		f, _ := constant.Float64Val(v)
+		if math.IsInf(f, 0) {
+			// 1e500 is a legal untyped constant; it fails only when it
+			// has to fit a float64 (`var f = 1e500` is a compile error).
+			return &runtime.UConst{V: v}, nil
+		}
 		return f, nil
+	case token.IMAG:
+		// imaginary literals exist only in the constant domain until
+		// materialized into a complex64/128 value.
+		return &runtime.UConst{V: constant.MakeFromLiteral(l.Value, token.IMAG, 0)}, nil
 	case token.STRING:
 		return strconv.Unquote(l.Value)
 	case token.CHAR:
-		s, err := strconv.Unquote(l.Value)
-		if err != nil {
-			return nil, err
-		}
-		r := []rune(s)
-		if len(r) != 1 {
-			return nil, fmt.Errorf("multi-char literal %s", l.Value)
-		}
-		return int64(r[0]), nil
+		// rune literals stay untyped so a bare 'a' defaults to rune
+		// (int32) while still converting into any numeric target.
+		return &runtime.UConst{V: constant.MakeFromLiteral(l.Value, token.CHAR, 0), Rune: true}, nil
 	}
 	return nil, fmt.Errorf("unsupported literal kind %s", l.Kind)
 }

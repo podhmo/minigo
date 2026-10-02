@@ -139,8 +139,8 @@ func TestTrapOnCall(t *testing.T) {
 		t.Fatalf("Good: got %v", got)
 	}
 	_, err := e.Run(context.Background(), "./testdata/traponcall", "Bad")
-	if err == nil || !strings.Contains(err.Error(), "3-index") {
-		t.Fatalf("Bad: expected 3-index-slice trap, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "outside type switch") {
+		t.Fatalf("Bad: expected .(type)-outside-switch trap, got %v", err)
 	}
 	_, err = e.Run(context.Background(), "./testdata/traponcall", "Channy")
 	if err == nil || !strings.Contains(err.Error(), "label not defined") {
@@ -359,7 +359,7 @@ func TestTrapTraceback(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	got := err.Error()
-	for _, want := range []string{"runtime trap: 3-index slice", "Traceback (most recent call first):", "in Unsupported()", "s[0:1:2]"} {
+	for _, want := range []string{"runtime trap: .(type) outside type switch", "Traceback (most recent call first):", "in Unsupported()", "_ = x.(type)"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Unsupported traceback missing %q:\n%s", want, got)
 		}
@@ -1513,6 +1513,22 @@ func TestFuzzFixes(t *testing.T) {
 		{"BufioBind", "[a b] <nil>"},
 		{"TemplateBind", "hi ann <nil>"},
 		{"BodilessCall", int64(3)},
+
+		// fuzz-round leftovers (docs/sketch/ja/fuzz-language.md)
+		{"ThreeIndexSlice", "[2 3] 2 3"},
+		{"Float32Narrow", "0.3 0.1 0.1 float32"},
+		{"AssertStaticName", "interface conversion: main.asI is main.asT, not main.asT2"},
+		{"AssertMissingMethod", "interface conversion: *errors.errorString is not io.Writer: missing method Write"},
+		{"ErrAsCrossPkg", "true false"},
+		{"ByteRuneElemTyp", "uint8 int32 uint8"},
+		{"UConstRuneDefault", "int32 int32 98"},
+		{"UConstBigConstExpr", "0 true"},
+		{"UConstNamedRune", "main.ufRune 97 97"},
+		{"UConstRuneConv", "a [120 121]"},
+		{"PctTDefaults", "int64 int8 int32"},
+		{"ComplexOps", "1 2 3 4 (2+4i) (-7+24i) (1+5i) complex128 (1.5+2.5i)"},
+		{"ComplexDecl", "main.ufC64 (1+2i)"},
+		{"ComplexMapKey", "5 0"},
 	}
 	for _, c := range cases {
 		got := run(t, e, "./testdata/fuzzfix", c.fn)
@@ -1523,6 +1539,18 @@ func TestFuzzFixes(t *testing.T) {
 	_, err := e.Run(context.Background(), "./testdata/fuzzfix", "ConstDivZero")
 	if err == nil || !strings.Contains(err.Error(), "division by zero") {
 		t.Fatalf("ConstDivZero: expected division-by-zero trap, got %v", err)
+	}
+	traps := []struct{ fn, want string }{
+		{"UConstBigTrap", "overflows int"},
+		{"UConstFloatOverflow", "overflows float64"},
+		{"ComplexMixedWidth", "mismatched types complex64 and complex128"},
+		{"ComplexOrdered", "complex numbers are not ordered"},
+	}
+	for _, c := range traps {
+		_, err := e.Run(context.Background(), "./testdata/fuzzfix", c.fn)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Fatalf("%s: expected %q trap, got %v", c.fn, c.want, err)
+		}
 	}
 }
 

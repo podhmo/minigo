@@ -26,13 +26,16 @@ const (
 	OpNewLocal // pop -> new cell at slot A (variable declaration); B=1 makes it ReadOnly (local const)
 	OpRenewVar // replace cell at slot A with a fresh cell (per-iteration loop var)
 	OpLocal    // push cell(slot A).Elem
+	OpLocalTyp // push the declared typedef stamped on cell(slot A) (NIL when untyped)
 	OpSetLocal // pop -> cell(slot A).Elem
 	OpLocalRef // push the cell at slot A itself (address-of)
 	OpUpval    // push cell(upval A).Elem
+	OpUpvalTyp // push the declared typedef stamped on upval cell A (NIL when untyped)
 	OpSetUpval // pop -> cell(upval A).Elem
 
 	// global / package scope
 	OpGlobal    // push resolve(name Consts[A]): file imports -> pkg env -> builtins
+	OpGlobalTyp // push the declared typedef stamped on the package cell for name Consts[A] (NIL when untyped)
 	OpNewGlobal // pop -> pkg.Globals[name] = &Cell{v}; B=1 binds a ReadOnly cell (const decl)
 	OpSetGlobal // pop -> pkg.Globals[name] (cell-aware store)
 	OpGlobalRef // push the package cell for name (address-of a package var)
@@ -43,7 +46,7 @@ const (
 	OpIndex    // pop index, pop base -> push base[index]
 	OpIndexOK  // pop index, pop base -> push Tuple{value, ok} (comma-ok map access)
 	OpSetIndex // pop value, pop index, pop base -> base[index] = value
-	OpSlice    // pop hi, pop lo, pop base -> base[lo:hi] (Nil bounds = absent)
+	OpSlice    // pop hi, pop lo, pop base -> base[lo:hi] (Nil bounds = absent); B=1: pop max first -> base[lo:hi:max]
 	OpDeref    // pop cell -> push cell.Elem
 	OpSetInd   // pop value, pop cell -> cell.Elem = value (*p = v)
 	OpBox      // pop value -> push &Cell{value} (address-of composite literal)
@@ -87,7 +90,7 @@ const (
 	OpIndexRef // pop key, pop base -> push *IndexRef{base, key} (&s[i])
 
 	// types / interfaces / generics
-	OpAssert      // pop typedef, pop value -> push asserted value (script panic on mismatch)
+	OpAssert      // pop typedef, pop value -> push asserted value (script panic on mismatch); B=1: a static-typedef operand sits between value and typedef
 	OpAssertOK    // pop typedef, pop value -> push Tuple{value, ok} (comma-ok assert)
 	OpInstantiate // A: ntypeargs; pop type args, pop generic -> push specialized value
 	OpElemType    // pop typedef -> push element typedef ([]T->T, map[K]V->V, chan T->T, *T->T)
