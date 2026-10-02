@@ -226,6 +226,30 @@ func ConstDivZero() int {
 	return 1 / 0
 }
 
+// an integer/integer quotient of constants is an integer constant:
+// 7/2 folds to 3, not the rational 3.5 go/constant's QUO computes.
+func ConstIntDiv() int {
+	return 7/2 + 10/3 - -7/2
+}
+
+// a constant-zero divisor traps only when the whole expression is
+// constant: a variable dividend divides at runtime — floats give
+// ±Inf or NaN, never a compile trap.
+func RuntimeFloatDivZero() string {
+	x, z := 1.0, 0.0
+	return fmt.Sprintf("%v %v %v", x/z, -x/z, z/z)
+}
+
+// int / 0 with a variable dividend is a recoverable runtime panic
+// like Go's, not a compile-time trap recover() cannot see.
+func RuntimeIntDivZero() (r string) {
+	defer func() {
+		r = fmt.Sprintf("%v", recover())
+	}()
+	x, z := 7, 0
+	return fmt.Sprintf("%v", x/z)
+}
+
 // ---- use-case-fuzz leftovers (PR-30; docs/sketch/ja/fuzz-usecase.md) ----
 
 // unsigned-domain ops: >> on uint fills zeros, ^ and - stay unsigned,

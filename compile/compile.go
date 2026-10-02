@@ -1807,12 +1807,17 @@ func (c *compiler) binary(x *ast.BinaryExpr) {
 // (the same operation Go rejects). Returns false when any operand is not
 // a constant, so the caller emits the usual binary ops.
 func (c *compiler) foldConst(x *ast.BinaryExpr) bool {
-	// division by zero is a compile error in Go — trap it like the
-	// compiler rather than letting the runtime panic.
+	// division by zero is a compile error in Go when the whole
+	// expression is constant — trap it like the compiler. With a
+	// non-constant dividend the op divides at runtime instead: floats
+	// yield ±Inf or NaN and ints panic (a recoverable *Panic, not a
+	// compile-time *Trap).
 	if x.Op == token.QUO || x.Op == token.REM {
 		if rv, ok := constValue(x.Y); ok && (rv.Kind() == constant.Int || rv.Kind() == constant.Float) && constant.Sign(rv) == 0 {
-			c.trap(x.Pos(), "constant division by zero")
-			return true
+			if _, ok := constValue(x.X); ok {
+				c.trap(x.Pos(), "constant division by zero")
+				return true
+			}
 		}
 	}
 	cv, ok := constValue(x)
@@ -1903,6 +1908,14 @@ func constValue(e ast.Expr) (cv constant.Value, ok bool) {
 			// keep short-circuit semantics at runtime; && and || on
 			// constants are rare enough not to fold here.
 			return nil, false
+		case token.QUO:
+			// a quotient of two integer constants is an integer constant
+			// (7/2 is 3): QUO computes the exact rational, QUO_ASSIGN is
+			// go/constant's spelling for truncating integer division.
+			if lv.Kind() == constant.Int && rv.Kind() == constant.Int {
+				return constant.BinaryOp(lv, token.QUO_ASSIGN, rv), true
+			}
+			return constant.BinaryOp(lv, x.Op, rv), true
 		default:
 			return constant.BinaryOp(lv, x.Op, rv), true
 		}
