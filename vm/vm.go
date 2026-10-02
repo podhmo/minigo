@@ -5635,10 +5635,19 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 			x = v.copyArray(f, s, utd)
 		}
 	}
-	// a sized-int slot wraps like a conversion — `var x int8 = y`
-	// keeps the low byte of a non-constant operand.
+	// an untyped int constant lands already converted: a float slot
+	// takes float64(3) so `var f float64 = 3; f / 2` is 1.5, and a
+	// sized-int slot wraps like a conversion (`var x int8 = y` keeps
+	// the low byte of a non-constant operand). A bare int64 from an
+	// int-typed variable converts too — the VM cannot distinguish the
+	// two, and a Named int64 traps in the declared-tag check above.
 	if iv, ok := runtime.Unwrap(x).(int64); ok && !declaredType(utd) {
-		x = maskInt(iv, utd.Name)
+		switch n := tdName(utd); n {
+		case "float32", "float64":
+			x = float64(iv)
+		default:
+			x = maskInt(iv, n)
+		}
 	}
 	switch utd.Kind {
 	case runtime.KindMap, runtime.KindSlice, runtime.KindChan:
@@ -5664,8 +5673,11 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		// declared types and sized-int builtins tag the bound value —
 		// without the tag, arithmetic on `var x uint8` loses its width
 		// (maskInt at bind time wraps the constant, but -x has nothing
-		// to re-wrap against).
-		if declaredType(td) || sizedIntName(td.Name) {
+		// to re-wrap against). int64 and float32 tag too, so %T spells
+		// the declared width; int and float64 stay bare since the bare
+		// value already spells them.
+		if declaredType(td) || sizedIntName(td.Name) ||
+			td.Name == "int64" || td.Name == "float32" {
 			return &runtime.Named{Typ: td, V: x}
 		}
 	case runtime.KindPointer, runtime.KindFunc:
@@ -5898,9 +5910,12 @@ func (v *VM) zeroSeen(f *frame, td *runtime.TypeDef, seen map[*runtime.TypeDef]b
 // peeled underlying typedef: a declared named basic type gets a Named tag
 // (`var x MyInt` reads as MyInt, not int64), while a nilable zero re-tags
 // its TypedNil to the declared name (`var p P2` where P2's underlying is
-// a pointer type).
+// a pointer type). The sized builtins tag by the same rule coerceConcrete
+// uses, so `var u uint8` and `var i int64` keep their declared width.
 func (v *VM) wrapZero(td *runtime.TypeDef, z runtime.Value) runtime.Value {
-	if td.Kind != runtime.KindNamedBasic || !declaredType(td) {
+	if td.Kind != runtime.KindNamedBasic ||
+		!(declaredType(td) || sizedIntName(td.Name) ||
+			td.Name == "int64" || td.Name == "float32") {
 		return z
 	}
 	if _, ok := z.(*runtime.TypedNil); ok {

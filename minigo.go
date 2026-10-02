@@ -406,7 +406,10 @@ func (e *Engine) Call(ctx context.Context, pkg *runtime.Package, name string, ar
 	if err != nil {
 		return nil, err
 	}
-	return vmm.Call(member, args)
+	// the host boundary reports the payload: a Named int64 leaves the
+	// interpreter as a plain int64, like fmt's %v inside the script.
+	r, err := vmm.Call(member, args)
+	return runtime.Unwrap(r), err
 }
 
 // Run is the high-level entry point: locate ref (dir or import path), ensure

@@ -573,7 +573,7 @@ func (e *Engine) installStdlib() {
 			return true, nil
 		}},
 		"Search": &runtime.BuiltinFunc{Name: "sort.Search", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			n, _ := args[0].(int64)
+			n, _ := runtime.Unwrap(args[0]).(int64)
 			f := args[1]
 			i, j := int64(0), n
 			for i < j {
@@ -661,7 +661,7 @@ func (e *Engine) installStdlib() {
 				if err != nil {
 					return 0, err
 				}
-				n, _ := r.(int64)
+				n, _ := runtime.Unwrap(r).(int64)
 				return n, nil
 			}
 			i, j := 0, len(s.Elems)
@@ -763,7 +763,7 @@ func (e *Engine) installStdlib() {
 			if !ok || len(args) < 2 {
 				return nil, fmt.Errorf("slices.Insert(slice, i, elems...)")
 			}
-			i, _ := args[1].(int64)
+			i, _ := runtime.Unwrap(args[1]).(int64)
 			el := slices.Insert(s.Elems, int(i), args[2:]...)
 			return &runtime.Slice{Elems: el}, nil
 		}},
@@ -772,8 +772,8 @@ func (e *Engine) installStdlib() {
 			if !ok || len(args) != 3 {
 				return nil, fmt.Errorf("slices.Delete(slice, i, j)")
 			}
-			i, _ := args[1].(int64)
-			j, _ := args[2].(int64)
+			i, _ := runtime.Unwrap(args[1]).(int64)
+			j, _ := runtime.Unwrap(args[2]).(int64)
 			el := slices.Delete(s.Elems, int(i), int(j))
 			return &runtime.Slice{Elems: el}, nil
 		}},
@@ -1861,7 +1861,7 @@ func (h *hostHelpers) sortByCmpFunc(name string) *runtime.BuiltinFunc {
 				cerr = err
 				return false
 			}
-			n, _ := r.(int64)
+			n, _ := runtime.Unwrap(r).(int64)
 			return n < 0
 		})
 		if cerr != nil {

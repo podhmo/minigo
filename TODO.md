@@ -54,7 +54,7 @@ Skeleton landed: lazy per-package loading, per-function compile, struct/method/c
   - [ ] `c := maps.Clone(m); c[k]++` traps `unsupported types: runtime.Nil + int64` (missing key on a cloned map isn't the zero value) — word-count shape.
   - [ ] `maps.Clone(nil)` traps (Go returns nil); `string(nilBytes)` / `string(nilRunes)` trap `cannot convert *runtime.TypedNil to string`.
   - [ ] Unbound: `strings.IndexByte`, `strings.FieldsFunc`.
-  - [ ] Typed var decls from untyped consts lose the type: `var f float64 = 3` is an `int` and `f/2 == 1`; `var x int64 = 0` prints `int`.
+  - [x] Typed var decls from untyped consts lose the type: `var f float64 = 3` is an `int` and `f/2 == 1`; `var x int64 = 0` prints `int` — `coerceConcrete` now converts an int64 operand to float32/float64 and tags `int64`/`float32` decls as `Named` (zero-init too, via `wrapZero`), so every assignment-like site (decl/`=`/field/element/arg/return/send/`*p=`) lands converted; `e.Call` unwraps `Named` at the host boundary ([#35](https://github.com/podhmo/minigo/issues/35), `num_value_issue35`).
   - [ ] `$GOROOT/test` SILENT/CRASH/HANG worth a look for scripts: `reorder.go` (tuple-assignment order), `typeswitch1.go`, `switch.go`, `range.go`, `const8.go` (`undefined: iota`), `initialize.go` (interpreter CRASH: `*ast.BasicLit` asserted as `*ast.KeyValueExpr`), `copy.go`/`divmod.go`/`makeslice.go` (timeouts), `goprint.go` (`println` of nil pointers prints `<nil>` not `0x0`).
   - [ ] Harness: a usecasefuzz-style skill for hand-written scenario programs, sharing difffuzz's verdict contract and `testdata/difffuzz` regression format.
   - [ ] `io.Writer` produced by a script-side implementation is not usable as a `fmt.Fprintf` target yet (`asWriter` only unwraps host boxes).
