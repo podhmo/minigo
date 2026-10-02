@@ -2628,6 +2628,21 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "invalid memory address or nil pointer dereference"}})
 		}
 		f.trap("set field %s on nil %s", name, tdName(b.Typ))
+	case *runtime.ImportRef:
+		// package-level assignment: `runtime.MemProfileRate = 1`
+		// writes into the bound cell (or the global slot) so later
+		// reads of the member see it.
+		p, err := b.Materialize()
+		if err != nil {
+			f.trap("import %s: %s", b.Path, err)
+		}
+		if existing, ok := p.Globals.Get(name); ok {
+			if c, isCell := existing.(*runtime.Cell); isCell {
+				c.Elem = val
+				return
+			}
+		}
+		p.Globals.Set(name, val)
 	default:
 		f.trap("set field %s on %T", name, base)
 	}
