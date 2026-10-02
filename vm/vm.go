@@ -6081,6 +6081,10 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 	// a named string value works like the underlying conversion; `T(x)`
 	// on the same declared type is a no-op. Nested tags peel too — a
 	// `type Tsmallv byte` value carries Named{Tsmallv, Named{byte, v}}.
+	// A peeled unsigned tag is remembered: float conversions of an
+	// unsigned source read the bits as uint64 (float64(uint64(1<<63))
+	// is 2^63, not -2^63).
+	srcUnsigned := false
 	for {
 		n, ok := x.(*runtime.Named)
 		if !ok {
@@ -6088,6 +6092,9 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 		}
 		if sameTypeDef(n.Typ, td) {
 			return x, nil
+		}
+		if unsignedName(sizedNameOf(n.Typ)) {
+			srcUnsigned = true
 		}
 		x = n.V
 	}
@@ -6133,12 +6140,24 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 		}
 		return maskInt(iv, td.Name), nil
 	case "float32":
+		if iv, ok := x.(int64); ok && srcUnsigned {
+			return &runtime.Named{Typ: td, V: float64(float32(uint64(iv)))}, nil
+		}
+		if f, ok := hostFloat(x); ok {
+			return &runtime.Named{Typ: td, V: float64(float32(f))}, nil
+		}
 		switch x.(type) {
 		case int64, float64:
 			return &runtime.Named{Typ: td, V: float64(float32(toFloat(x)))}, nil
 		}
 		return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), td.Name)
 	case "float64":
+		if iv, ok := x.(int64); ok && srcUnsigned {
+			return float64(uint64(iv)), nil
+		}
+		if f, ok := hostFloat(x); ok {
+			return f, nil
+		}
 		switch x.(type) {
 		case int64, float64:
 			return toFloat(x), nil
@@ -6286,6 +6305,27 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 		return x, nil
 	}
 	return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
+}
+
+// hostFloat reads a value as float64 for float conversions: plain
+// int64/float64 pass through, and a boxed host number converts by its
+// own kind (uint64 reads unsigned — a wide literal keeps 2^63, not
+// the int64 reinterpretation).
+func hostFloat(x runtime.Value) (float64, bool) {
+	gv, ok := x.(*runtime.GoValue)
+	if !ok {
+		return 0, false
+	}
+	rv := reflect.ValueOf(gv.V)
+	switch rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return float64(rv.Int()), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return float64(rv.Uint()), true
+	case reflect.Float32, reflect.Float64:
+		return rv.Float(), true
+	}
+	return 0, false
 }
 
 // unboxGoValue gives a boxed host value the script value of the same
@@ -7541,6 +7581,13 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 				if td != nil && declaredType(td) {
 					return &runtime.Named{Typ: td, V: x}
 				}
+			}
+		case uint64:
+			// a wide uint64 box into an integer slot takes the declared
+			// tag like a fitting constant would — `var u uint =
+			// 18446744073709551615` is a uint, not a bare uint64.
+			if n := basicNameOf(v.peelNamed(td)); sizedIntName(n) {
+				return &runtime.Named{Typ: td, V: gv}
 			}
 		}
 		return x // host boundary: assignability is unknowable

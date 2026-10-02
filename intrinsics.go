@@ -3731,7 +3731,7 @@ func unsignedIntTyp(td *runtime.TypeDef) bool {
 		return false
 	}
 	switch td.Name {
-	case "uint64", "uintptr":
+	case "uint", "uint64", "uintptr":
 		return true
 	}
 	x := td.Anon
@@ -3739,7 +3739,10 @@ func unsignedIntTyp(td *runtime.TypeDef) bool {
 		x = td.Spec.Type
 	}
 	if id, ok := x.(*ast.Ident); ok {
-		return id.Name == "uint64" || id.Name == "uintptr"
+		switch id.Name {
+		case "uint", "uint64", "uintptr":
+			return true
+		}
 	}
 	return false
 }
