@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"go/ast"
 	"go/constant"
+	"go/printer"
+	"go/token"
 	"html"
 	"io"
 	"io/fs"
@@ -4111,10 +4113,35 @@ func (f *callerFunc) Name() string { return f.name }
 
 // deepEql implements reflect.DeepEqual over script values: nil-ness and
 // type identity are honored, composites compare recursively, and
-// leaf/host values compare as marshaled natives.
+// leaf/host values compare as marshaled natives. Named tags and
+// pointer/ref layers peel on both sides in lockstep — a depth or named
+// type mismatch is a type mismatch, so *T never equals T and a named
+// type never equals a different name for the same underlying type.
 func deepEql(a, b runtime.Value) bool {
-	a = deepUnwrap(a)
-	b = deepUnwrap(b)
+	for {
+		an, aNamed := a.(*runtime.Named)
+		bn, bNamed := b.(*runtime.Named)
+		if aNamed != bNamed {
+			return false
+		}
+		if aNamed {
+			if !deepDefEq(an.Typ, bn.Typ) {
+				return false
+			}
+			a, b = an.V, bn.V
+			continue
+		}
+		ad, aRef := runtime.Deref(a)
+		bd, bRef := runtime.Deref(b)
+		if aRef != bRef {
+			return false
+		}
+		if aRef {
+			a, b = ad, bd
+			continue
+		}
+		break
+	}
 	if an, bn := deepNilish(a), deepNilish(b); an || bn {
 		if !(an && bn) {
 			return false
@@ -4125,7 +4152,9 @@ func deepEql(a, b runtime.Value) bool {
 	switch av := a.(type) {
 	case *runtime.Slice:
 		bs, ok := b.(*runtime.Slice)
-		if !ok || len(av.Elems) != len(bs.Elems) {
+		// both arrays and slices are runtime.Slice — the typedef's
+		// spelling carries the kind and element type ([]T != [N]T).
+		if !ok || len(av.Elems) != len(bs.Elems) || !deepTypeEq(av.Typ, bs.Typ) {
 			return false
 		}
 		for i := range av.Elems {
@@ -4147,7 +4176,7 @@ func deepEql(a, b runtime.Value) bool {
 		return true
 	case *runtime.Map:
 		bm, ok := b.(*runtime.Map)
-		if !ok || len(av.Pairs) != len(bm.Pairs) {
+		if !ok || len(av.Pairs) != len(bm.Pairs) || !deepTypeEq(av.Typ, bm.Typ) {
 			return false
 		}
 		for ak, aval := range av.Pairs {
@@ -4188,20 +4217,35 @@ func deepDefEq(a, b *runtime.TypeDef) bool {
 	return true
 }
 
-// deepUnwrap peels Named wrappers and pointer chains (Cell/FieldRef/
-// IndexRef) down to the underlying value.
-func deepUnwrap(v runtime.Value) runtime.Value {
-	for {
-		if n, ok := v.(*runtime.Named); ok {
-			v = n.V
-			continue
-		}
-		if dv, ok := runtime.Deref(v); ok {
-			v = dv
-			continue
-		}
-		return v
+// deepTypeEq reports whether two typedefs spell the same type for
+// DeepEqual: the def equality of deepDefEq plus the underlying type's
+// AST spelling, which distinguishes slices from arrays and element
+// types ([]int vs [1]int vs []string).
+func deepTypeEq(a, b *runtime.TypeDef) bool {
+	if !deepDefEq(a, b) {
+		return false
 	}
+	return deepTypSpelling(a) == deepTypSpelling(b)
+}
+
+// deepTypSpelling renders a typedef's underlying type for equality —
+// Anon or Spec.Type printed without positions.
+func deepTypSpelling(td *runtime.TypeDef) string {
+	if td == nil {
+		return ""
+	}
+	x := td.Anon
+	if x == nil && td.Spec != nil {
+		x = td.Spec.Type
+	}
+	if x == nil {
+		return td.Name
+	}
+	var b strings.Builder
+	if err := printer.Fprint(&b, token.NewFileSet(), x); err != nil {
+		return td.Name
+	}
+	return b.String()
 }
 
 // deepNilish reports whether v is any nil flavor (typed nil, iface nil,
