@@ -478,10 +478,11 @@ func TestOsHostSurface(t *testing.T) {
 	if _, err := e.Run(context.Background(), "./testdata/hostenv", "Read"); err == nil {
 		t.Fatal("os.Getenv must be unbound under AllowedRoots")
 	}
-	// os.Exit never terminates the host, in any mode.
+	// os.Exit surfaces as a process exit at the Call boundary — nonzero
+	// codes report `exit status N`; the host process is never terminated.
 	if _, err := newEngine(t).Run(context.Background(), "./testdata/hostenv", "Exit"); err == nil ||
-		!strings.Contains(err.Error(), "cannot terminate the host") {
-		t.Fatalf("os.Exit must trap, got %v", err)
+		!strings.Contains(err.Error(), "exit status") {
+		t.Fatalf("os.Exit must report an exit status, got %v", err)
 	}
 }
 
