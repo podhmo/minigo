@@ -299,6 +299,7 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 		return &runtime.TypeDef{Kind: runtime.KindChan, Anon: t, Pkg: from.Pkg, File: from.File, Binds: from.Binds}, nil
 	case *ast.StructType:
 		td := &runtime.TypeDef{Kind: runtime.KindStruct, Anon: t, Pkg: from.Pkg, File: from.File, Binds: from.Binds}
+		td.FTags = runtime.StructFieldTags(t)
 		for _, f := range t.Fields.List {
 			if len(f.Names) == 0 {
 				td.EmbedSpecs = append(td.EmbedSpecs, f.Type)

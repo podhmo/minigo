@@ -8,6 +8,7 @@ import (
 	"go/ast"
 	"go/token"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -654,6 +655,11 @@ type VMCaller interface {
 	// Zero returns the Go zero value of a typedef (struct fields get
 	// typed zeros, nilable kinds get TypedNil) — used by new().
 	Zero(td *TypeDef) Value
+	// ElemZero returns the element-type zero of a container typedef —
+	// for a slice/map/pointer/chan td, the zero of its element; NIL when
+	// the element type is unknown. Lets intrinsics recover an element
+	// typedef via TypeOf(ElemZero(td)).
+	ElemZero(td *TypeDef) Value
 	// Package returns the package of the innermost running frame — the
 	// caller's package for inspect.Current. Nil when no frame runs.
 	Package() *Package
@@ -869,4 +875,27 @@ func (t *Trap) Error() string {
 		return fmt.Sprintf("runtime trap: %s", t.Reason)
 	}
 	return fmt.Sprintf("runtime trap: %s\nTraceback (most recent call first):\n%s", t.Reason, renderFrames(t.Frames))
+}
+
+// StructFieldTags reads the raw tag literals of a struct type (`name
+// string `json:"name"“) into a field-name → tag map. Callers store it
+// on TypeDef.FTags so tag-aware hosts (encoding/json) can look keys up.
+func StructFieldTags(st *ast.StructType) map[string]string {
+	var out map[string]string
+	for _, f := range st.Fields.List {
+		if f.Tag == nil || len(f.Names) == 0 {
+			continue
+		}
+		tag, err := strconv.Unquote(f.Tag.Value)
+		if err != nil {
+			continue
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		for _, n := range f.Names {
+			out[n.Name] = tag
+		}
+	}
+	return out
 }

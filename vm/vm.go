@@ -950,8 +950,19 @@ func (v *VM) loop(f *frame) {
 				f.trap("element types require engine hooks")
 			}
 			et, err := v.H.ElemOf(td)
+			if err != nil || et == nil {
+				// the element may be named by a function-local `type` decl —
+				// the package index cannot see it, but its typedef sits in
+				// this frame's locals like any other local constant.
+				if lt := v.localElemTypedef(f, td); lt != nil {
+					et, err = lt, nil
+				}
+			}
 			if err != nil {
 				f.trap("%s", err)
+			}
+			if et == nil {
+				f.trap("cannot resolve element type of %s", tdName(td))
 			}
 			f.push(et)
 		case bytecode.OpCoerce:
@@ -1475,6 +1486,10 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		return v.memberOfType(f, b.Typ, name, b, true)
 	case *runtime.TypedNil:
 		return v.memberOfType(f, b.Typ, name, b, false)
+	case time.Duration:
+		// a raw duration selects host methods (Hours, String, ...) the
+		// same way a GoValue box does.
+		return v.selectMember(f, &runtime.GoValue{V: b}, name)
 	case *runtime.Slice:
 		return v.typedMember(f, b.Typ, name, b, "slice")
 	case *runtime.Map:
@@ -1598,16 +1613,25 @@ func goValueOf(rv reflect.Value) runtime.Value {
 	case float64:
 		return v
 	case time.Duration:
-		return int64(v)
+		// durations stay raw host values: methods (.Hours(), .String())
+		// dispatch through reflection and binaryOp unwraps for arithmetic.
+		return v
 	case []byte:
 		// []byte unmarshals to a slice of int64s so `string(b)` and
-		// indexing behave like Go source suggests.
+		// indexing behave like Go source suggests. A nil slice is a
+		// typed nil so `b == nil` reads like Go.
+		if v == nil {
+			return &runtime.TypedNil{Typ: anonSliceTyp("byte")}
+		}
 		el := make([]runtime.Value, len(v))
 		for i, b := range v {
 			el[i] = int64(b)
 		}
 		return &runtime.Slice{Elems: el}
 	case []string:
+		if v == nil {
+			return &runtime.TypedNil{Typ: anonSliceTyp("string")}
+		}
 		el := make([]runtime.Value, len(v))
 		for i, s := range v {
 			el[i] = s
@@ -1625,6 +1649,31 @@ func goValueOf(rv reflect.Value) runtime.Value {
 		*runtime.Named:
 		return v
 	default:
+		// an unnamed host slice/array ([N]T, []T) unboxes element-wise so
+		// indexing and range work; a named slice type keeps its box to
+		// preserve method dispatch. A nil slice is a typed nil so
+		// `v == nil` reads like Go.
+		switch rv.Kind() {
+		case reflect.Slice:
+			if rv.Type().Name() == "" {
+				if rv.IsNil() {
+					return &runtime.TypedNil{Typ: anonSliceTyp(rv.Type().Elem().Name())}
+				}
+				el := make([]runtime.Value, rv.Len())
+				for i := range el {
+					el[i] = goValueOf(rv.Index(i))
+				}
+				return &runtime.Slice{Elems: el}
+			}
+		case reflect.Array:
+			if rv.Type().Name() == "" {
+				el := make([]runtime.Value, rv.Len())
+				for i := range el {
+					el[i] = goValueOf(rv.Index(i))
+				}
+				return &runtime.Slice{Elems: el}
+			}
+		}
 		return &runtime.GoValue{V: x}
 	}
 }
@@ -2315,6 +2364,10 @@ func (v *VM) mapZero(f *frame, td *runtime.TypeDef) runtime.Value {
 	// underlying typedef, so peel first to reach the element type.
 	et, err := v.H.ElemOf(v.peelNamed(td))
 	if err != nil || et == nil {
+		// a function-local element type falls back to frame locals.
+		et = v.localElemTypedef(f, td)
+	}
+	if et == nil {
 		return runtime.NIL
 	}
 	return v.zeroValue(f, et)
@@ -2490,7 +2543,11 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 			}
 			if kv {
 				for i := 0; i < n; i++ {
-					ival, ok := raw[i*2].(int64)
+					k := raw[i*2]
+					if nk, ok := k.(*runtime.Named); ok {
+						k = nk.V
+					}
+					ival, ok := k.(int64)
 					if !ok {
 						f.trap("array literal index %T", raw[i*2])
 					}
@@ -2510,13 +2567,20 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 			return s
 		}
 		if kv {
-			// indexed literal: size is max index + 1, gaps are zero
+			// indexed literal: size is max index + 1, gaps are zero.
+			// A named const index (`[T]{MyKind: v}`) unwraps to int64.
+			idx := make([]int64, n)
 			max := int64(-1)
 			for i := 0; i < n; i++ {
-				ival, ok := raw[i*2].(int64)
+				k := raw[i*2]
+				if nk, ok := k.(*runtime.Named); ok {
+					k = nk.V
+				}
+				ival, ok := k.(int64)
 				if !ok {
 					f.trap("slice literal index %T", raw[i*2])
 				}
+				idx[i] = ival
 				if ival > max {
 					max = ival
 				}
@@ -2526,7 +2590,7 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 				s.Elems[i] = runtime.NIL
 			}
 			for i := 0; i < n; i++ {
-				s.Elems[raw[i*2].(int64)] = raw[i*2+1]
+				s.Elems[idx[i]] = raw[i*2+1]
 			}
 		} else {
 			// elements coerce to the declared element type — `[]any{x}`
@@ -2557,8 +2621,14 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 			f.trap("pointer element types require engine hooks")
 		}
 		et, err := v.H.ElemOf(td)
-		if err != nil {
-			f.trap("%s", err)
+		if err != nil || et == nil {
+			et = v.localElemTypedef(f, td)
+			if et == nil {
+				if err != nil {
+					f.trap("%s", err)
+				}
+				f.trap("cannot resolve element type of %s", tdName(td))
+			}
 		}
 		var es *runtime.Struct
 		if z, isStruct := v.zeroValue(f, et).(*runtime.Struct); isStruct {
@@ -3038,14 +3108,38 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 		}
 		return res
 	}
-	// bound time.* constants arrive as raw time.Duration values — they
-	// behave as their int64 underlying in arithmetic and comparisons
-	// (2*time.Second, d < timeout).
+	// bound time.* constants and reflect-produced durations arrive as
+	// raw time.Duration values — they behave as their int64 underlying
+	// in arithmetic and comparisons (2*time.Second, d < timeout), and
+	// a result on a duration operand stays a duration (except d/d,
+	// which is unitless like Go).
+	var dmark, dboth bool
 	if d, ok := a.(time.Duration); ok {
 		a = int64(d)
+		dmark = true
 	}
 	if d, ok := b.(time.Duration); ok {
 		b = int64(d)
+		if dmark {
+			dboth = true
+		}
+		dmark = true
+	}
+	// uint64 literals too wide for int64 stay boxed as GoValue;
+	// arithmetic on them computes mod 2^64 in int64 (same bits) and
+	// re-boxes so formatting keeps the unsigned domain.
+	var ubox bool
+	if g, ok := a.(*runtime.GoValue); ok {
+		if u, isU := g.V.(uint64); isU {
+			a = int64(u)
+			ubox = true
+		}
+	}
+	if g, ok := b.(*runtime.GoValue); ok {
+		if u, isU := g.V.(uint64); isU {
+			b = int64(u)
+			ubox = true
+		}
 	}
 	// equality works on any comparable pair
 	switch op {
@@ -3065,7 +3159,18 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 		if !ok {
 			f.trap("unsupported types: %T %s %T", a, op, b)
 		}
-		return intBinOp(f, op, ai, bi)
+		res := intBinOp(f, op, ai, bi)
+		if iv, isI := res.(int64); isI {
+			switch {
+			case ubox:
+				return &runtime.GoValue{V: uint64(iv)}
+			case dmark && op == bytecode.BinQuo && dboth:
+				return iv // d/d is unitless in Go
+			case dmark:
+				return time.Duration(iv)
+			}
+		}
+		return res
 	}
 	if ab, ok := a.(bool); ok {
 		bb, ok := b.(bool)
@@ -3195,6 +3300,8 @@ func unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value {
 			return retag(-x)
 		case float64:
 			return retag(-x)
+		case time.Duration:
+			return retag(-x)
 		}
 		f.trap("unary - on %T", a)
 	case bytecode.UnXor:
@@ -3248,6 +3355,13 @@ func eqlValue(a, b runtime.Value) bool {
 	}
 	if n, ok := b.(*runtime.Named); ok {
 		b = n.V
+	}
+	// raw time.Duration values compare by their int64 nanoseconds.
+	if d, ok := a.(time.Duration); ok {
+		a = int64(d)
+	}
+	if d, ok := b.(time.Duration); ok {
+		b = int64(d)
 	}
 	if ai, ok := a.(int64); ok {
 		switch bv := b.(type) {
@@ -3730,8 +3844,27 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 			iv = int64(n)
 		case string:
 			iv = int64([]rune(n)[0]) // int("x") is the first rune's code point
+		case *runtime.GoValue:
+			// a boxed host integer (a wide uint64 literal, a reflect
+			// result) converts by its host kind.
+			rv := reflect.ValueOf(n.V)
+			switch rv.Kind() {
+			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+				iv = rv.Int()
+			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+				iv = int64(rv.Uint())
+			case reflect.Float32, reflect.Float64:
+				iv = int64(rv.Float())
+			default:
+				return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), td.Name)
+			}
 		default:
 			return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), td.Name)
+		}
+		if td.Name == "uint64" || td.Name == "uintptr" {
+			// the unsigned domain must survive for %x/%d rendering —
+			// tag the value so fmtValue formats it as uint64.
+			return &runtime.Named{Typ: td, V: maskInt(iv, td.Name)}, nil
 		}
 		return maskInt(iv, td.Name), nil
 	case "float64", "float32":
@@ -4321,8 +4454,14 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 		// asserting *T on a non-nil value: dereference one level and match
 		// the element type (a Cell IS the pointer in this model).
 		et, err := v.H.ElemOf(td)
-		if err != nil {
-			f.trap("%s", err)
+		if err != nil || et == nil {
+			et = v.localElemTypedef(f, td)
+			if et == nil {
+				if err != nil {
+					f.trap("%s", err)
+				}
+				f.trap("cannot resolve element type of %s", tdName(td))
+			}
 		}
 		dv, ok := runtime.Deref(x)
 		if !ok {
@@ -4542,7 +4681,10 @@ func (v *VM) memberOfType(f *frame, td *runtime.TypeDef, name string, recv runti
 		}
 		et, err := v.H.ElemOf(td)
 		if err != nil || et == nil {
-			break
+			et = v.localElemTypedef(f, td)
+			if et == nil {
+				break
+			}
 		}
 		td = et
 		peeled = true
@@ -5604,6 +5746,7 @@ func (s *specialCtx) ResolveType(e ast.Expr) (*runtime.TypeDef, error) {
 		return &runtime.TypeDef{Kind: runtime.KindFunc, Anon: t, Pkg: pkg, File: s.q.File, Binds: s.f.fn.Binds}, nil
 	case *ast.StructType:
 		td := &runtime.TypeDef{Kind: runtime.KindStruct, Anon: t, Pkg: pkg, File: s.q.File, Binds: s.f.fn.Binds}
+		td.FTags = runtime.StructFieldTags(t)
 		for _, fld := range t.Fields.List {
 			if len(fld.Names) == 0 {
 				td.EmbedSpecs = append(td.EmbedSpecs, fld.Type)

@@ -26,6 +26,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	goruntime "runtime"
 	"slices"
@@ -49,6 +50,29 @@ func (e *Engine) installStdlib() {
 		"Println": h.ffn("fmt.Println", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprintln(h.out(), a...)) }),
 		"Printf": h.ffn("fmt.Printf", 0, 1, func(a []any) (any, error) {
 			return retErr(fmt.Fprintf(h.out(), str(a[0]), a[1:]...))
+		}),
+		// Fprint* take an explicit writer — os.Stdout/os.Stderr arrive as
+		// GoValue (unwrapped by fmtArg to the native *os.File).
+		"Fprint": h.ffn("fmt.Fprint", -1, 1, func(a []any) (any, error) {
+			w, err := asWriter(a[0])
+			if err != nil {
+				return nil, err
+			}
+			return retErr(fmt.Fprint(w, a[1:]...))
+		}),
+		"Fprintf": h.ffn("fmt.Fprintf", 1, 2, func(a []any) (any, error) {
+			w, err := asWriter(a[0])
+			if err != nil {
+				return nil, err
+			}
+			return retErr(fmt.Fprintf(w, str(a[1]), a[2:]...))
+		}),
+		"Fprintln": h.ffn("fmt.Fprintln", -1, 1, func(a []any) (any, error) {
+			w, err := asWriter(a[0])
+			if err != nil {
+				return nil, err
+			}
+			return retErr(fmt.Fprintln(w, a[1:]...))
 		}),
 		"Sprint":   h.ffn("fmt.Sprint", -1, 0, func(a []any) (any, error) { return fmt.Sprint(a...), nil }, fmt.Sprint),
 		"Sprintln": h.ffn("fmt.Sprintln", -1, 0, func(a []any) (any, error) { return fmt.Sprintln(a...), nil }, fmt.Sprintln),
@@ -77,21 +101,39 @@ func (e *Engine) installStdlib() {
 	})
 	e.Bind("errors", map[string]runtime.Value{
 		"New": h.fn("errors.New", func(a []any) (any, error) { return errors.New(str(a[0])), nil }, errors.New),
-		"Join": h.fn("errors.Join", func(a []any) (any, error) {
+		"Join": &runtime.BuiltinFunc{Name: "errors.Join", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			var errs []error
-			for _, v := range a {
-				if err := asErr(v); err != nil {
+			for _, x := range args {
+				if err := hostErrOf(v, x); err != nil {
 					errs = append(errs, err)
 				}
 			}
 			return errVal(errors.Join(errs...)), nil
-		}),
-		"Is": h.fn2("errors.Is", func(a []any) (any, error) {
-			return errors.Is(asErr(a[0]), asErr(a[1])), nil
-		}),
-		"Unwrap": h.fn("errors.Unwrap", func(a []any) (any, error) {
-			return errVal(errors.Unwrap(asErr(a[0]))), nil
-		}),
+		}},
+		// Is/Unwrap/As take raw runtime args: h.fn's goNative would flatten
+		// a script error value to its printed string, losing the type the
+		// chain walk needs. hostErrOf keeps the script value inside a
+		// scriptError wrapper instead.
+		"Is": &runtime.BuiltinFunc{Name: "errors.Is", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("errors.Is needs 2 args")
+			}
+			e0, e1 := hostErrOf(v, args[0]), hostErrOf(v, args[1])
+			if s0, ok := e0.(*scriptError); ok {
+				// Go's `err == target` fast path: two scriptError boxes
+				// around the same script value are one error.
+				if s1, ok := e1.(*scriptError); ok && s0.v == s1.v {
+					return true, nil
+				}
+			}
+			return errors.Is(e0, e1), nil
+		}},
+		"Unwrap": &runtime.BuiltinFunc{Name: "errors.Unwrap", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("errors.Unwrap needs 1 arg")
+			}
+			return errVal(errors.Unwrap(hostErrOf(v, args[0]))), nil
+		}},
 		// As walks the Unwrap chain and assigns the first cause whose type
 		// name matches the target cell's declared type.
 		"As": &runtime.BuiltinFunc{Name: "errors.As", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -99,12 +141,13 @@ func (e *Engine) installStdlib() {
 				return nil, fmt.Errorf("errors.As needs 2 args")
 			}
 			want := cellElemTyp(args[1])
-			for err := asErr(goNative(args[0])); err != nil; err = errors.Unwrap(err) {
+			for err := hostErrOf(v, args[0]); err != nil; err = errors.Unwrap(err) {
 				sv := scriptErrUnbox(err)
 				st := v.TypeOf(sv)
 				// spellings disagree on pkg/`*` prefixes between the two
-				// paths — compare the final identifier
-				if want == nil || shortTypName(st) == shortTypName(want) {
+				// paths — compare the final identifier; an interface
+				// target (`var e error; &e`) accepts any error value.
+				if want == nil || want.Kind == runtime.KindInterface || shortTypName(st) == shortTypName(want) {
 					if runtime.SetRef(args[1], sv) {
 						return true, nil
 					}
@@ -130,18 +173,20 @@ func (e *Engine) installStdlib() {
 			bf, ok := strings.CutSuffix(str(a[0]), str(a[1]))
 			return &runtime.Tuple{Elems: []runtime.Value{bf, ok}}, nil
 		}),
-		"HasPrefix":   h.fn2("strings.HasPrefix", func(a []any) (any, error) { return strings.HasPrefix(str(a[0]), str(a[1])), nil }, strings.HasPrefix),
-		"HasSuffix":   h.fn2("strings.HasSuffix", func(a []any) (any, error) { return strings.HasSuffix(str(a[0]), str(a[1])), nil }, strings.HasSuffix),
-		"Index":       h.fn2("strings.Index", func(a []any) (any, error) { return int64(strings.Index(str(a[0]), str(a[1]))), nil }),
-		"Join":        h.fn2("strings.Join", func(a []any) (any, error) { return strings.Join(strSlice(a[0]), str(a[1])), nil }, strings.Join),
-		"Split":       h.fn2("strings.Split", func(a []any) (any, error) { return strsSlice(strings.Split(str(a[0]), str(a[1]))), nil }),
-		"ToUpper":     h.fn("strings.ToUpper", func(a []any) (any, error) { return strings.ToUpper(str(a[0])), nil }, strings.ToUpper),
-		"ToLower":     h.fn("strings.ToLower", func(a []any) (any, error) { return strings.ToLower(str(a[0])), nil }, strings.ToLower),
-		"TrimSpace":   h.fn("strings.TrimSpace", func(a []any) (any, error) { return strings.TrimSpace(str(a[0])), nil }, strings.TrimSpace),
-		"ReplaceAll":  h.fn3("strings.ReplaceAll", func(a []any) (any, error) { return strings.ReplaceAll(str(a[0]), str(a[1]), str(a[2])), nil }, strings.ReplaceAll),
-		"Repeat":      h.fn2("strings.Repeat", func(a []any) (any, error) { return strings.Repeat(str(a[0]), intOf(a[1])), nil }, strings.Repeat),
-		"Builder":     &runtime.TypeDef{Name: "Builder", Kind: runtime.KindNamedBasic},
-		"NewReplacer": h.fn2("strings.NewReplacer", func(a []any) (any, error) { return strings.NewReplacer(strSlice(a[0])...), nil }, strings.NewReplacer),
+		"HasPrefix":  h.fn2("strings.HasPrefix", func(a []any) (any, error) { return strings.HasPrefix(str(a[0]), str(a[1])), nil }, strings.HasPrefix),
+		"HasSuffix":  h.fn2("strings.HasSuffix", func(a []any) (any, error) { return strings.HasSuffix(str(a[0]), str(a[1])), nil }, strings.HasSuffix),
+		"Index":      h.fn2("strings.Index", func(a []any) (any, error) { return int64(strings.Index(str(a[0]), str(a[1]))), nil }),
+		"Join":       h.fn2("strings.Join", func(a []any) (any, error) { return strings.Join(strSlice(a[0]), str(a[1])), nil }, strings.Join),
+		"Split":      h.fn2("strings.Split", func(a []any) (any, error) { return strsSlice(strings.Split(str(a[0]), str(a[1]))), nil }),
+		"ToUpper":    h.fn("strings.ToUpper", func(a []any) (any, error) { return strings.ToUpper(str(a[0])), nil }, strings.ToUpper),
+		"ToLower":    h.fn("strings.ToLower", func(a []any) (any, error) { return strings.ToLower(str(a[0])), nil }, strings.ToLower),
+		"TrimSpace":  h.fn("strings.TrimSpace", func(a []any) (any, error) { return strings.TrimSpace(str(a[0])), nil }, strings.TrimSpace),
+		"ReplaceAll": h.fn3("strings.ReplaceAll", func(a []any) (any, error) { return strings.ReplaceAll(str(a[0]), str(a[1]), str(a[2])), nil }, strings.ReplaceAll),
+		"Repeat":     h.fn2("strings.Repeat", func(a []any) (any, error) { return strings.Repeat(str(a[0]), intOf(a[1])), nil }, strings.Repeat),
+		// a Builder's zero is the host *strings.Builder so Write*/String
+		// methods dispatch through reflection like sync.Mutex's.
+		"Builder":     hostType("strings.Builder", func() any { return &strings.Builder{} }),
+		"NewReplacer": h.fn("strings.NewReplacer", func(a []any) (any, error) { return strings.NewReplacer(strArgs(a)...), nil }, strings.NewReplacer),
 		"Fields":      h.fn("strings.Fields", func(a []any) (any, error) { return strsSlice(strings.Fields(str(a[0]))), nil }),
 		"EqualFold":   h.fn2("strings.EqualFold", func(a []any) (any, error) { return strings.EqualFold(str(a[0]), str(a[1])), nil }, strings.EqualFold),
 		"Count":       h.fn2("strings.Count", func(a []any) (any, error) { return int64(strings.Count(str(a[0]), str(a[1]))), nil }),
@@ -164,6 +209,85 @@ func (e *Engine) installStdlib() {
 		//lint:ignore SA1019 mirrors the deprecated stdlib symbol for script parity
 		"Title":     h.fn("strings.Title", func(a []any) (any, error) { return strings.Title(str(a[0])), nil }, strings.Title),
 		"NewReader": h.fn("strings.NewReader", func(a []any) (any, error) { return strings.NewReader(str(a[0])), nil }, strings.NewReader),
+		// func-taking variants call the script callback back through the VM.
+		"TrimFunc": &runtime.BuiltinFunc{Name: "strings.TrimFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("strings.TrimFunc needs 2 args")
+			}
+			pred, cerr := runePred(v, args[1])
+			out := strings.TrimFunc(str(args[0]), pred)
+			if *cerr != nil {
+				return nil, *cerr
+			}
+			return out, nil
+		}},
+		"TrimLeftFunc": &runtime.BuiltinFunc{Name: "strings.TrimLeftFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("strings.TrimLeftFunc needs 2 args")
+			}
+			pred, cerr := runePred(v, args[1])
+			out := strings.TrimLeftFunc(str(args[0]), pred)
+			if *cerr != nil {
+				return nil, *cerr
+			}
+			return out, nil
+		}},
+		"TrimRightFunc": &runtime.BuiltinFunc{Name: "strings.TrimRightFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("strings.TrimRightFunc needs 2 args")
+			}
+			pred, cerr := runePred(v, args[1])
+			out := strings.TrimRightFunc(str(args[0]), pred)
+			if *cerr != nil {
+				return nil, *cerr
+			}
+			return out, nil
+		}},
+		"IndexFunc": &runtime.BuiltinFunc{Name: "strings.IndexFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("strings.IndexFunc needs 2 args")
+			}
+			pred, cerr := runePred(v, args[1])
+			out := strings.IndexFunc(str(args[0]), pred)
+			if *cerr != nil {
+				return nil, *cerr
+			}
+			return int64(out), nil
+		}},
+		"LastIndexFunc": &runtime.BuiltinFunc{Name: "strings.LastIndexFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("strings.LastIndexFunc needs 2 args")
+			}
+			pred, cerr := runePred(v, args[1])
+			out := strings.LastIndexFunc(str(args[0]), pred)
+			if *cerr != nil {
+				return nil, *cerr
+			}
+			return int64(out), nil
+		}},
+		"Map": &runtime.BuiltinFunc{Name: "strings.Map", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("strings.Map needs 2 args")
+			}
+			var cerr error
+			mapping := func(r rune) rune {
+				if cerr != nil {
+					return r
+				}
+				res, err := v.Call(args[0], []runtime.Value{int64(r)})
+				if err != nil {
+					cerr = err
+					return r
+				}
+				// a negative result drops the rune in Go
+				return rune(int64Of(goNative(res)))
+			}
+			out := strings.Map(mapping, str(args[1]))
+			if cerr != nil {
+				return nil, cerr
+			}
+			return out, nil
+		}},
 	})
 	e.Bind("strconv", map[string]runtime.Value{
 		"Atoi":    h.fn("strconv.Atoi", func(a []any) (any, error) { return retErr2(strconv.Atoi(str(a[0]))) }),
@@ -372,13 +496,28 @@ func (e *Engine) installStdlib() {
 			b, err := json.MarshalIndent(goJSON(args[0]), str(goNative(args[1])), str(goNative(args[2])))
 			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(b), errVal(err)}}, nil
 		}},
-		// Script-shaped: stdlib Unmarshal takes a *T target; here it decodes
-		// into the runtime value tree (maps/slices/scalars) and returns it.
-		"Unmarshal": h.fn("json.Unmarshal", func(a []any) (any, error) {
-			var v any
-			err := json.Unmarshal(byteSlice(a[0]), &v)
-			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(jsonDeep(v)), errVal(err)}}, nil
-		}),
+		// Two shapes: Unmarshal(data) decodes into the runtime value tree
+		// (maps/slices/scalars) and returns it; Unmarshal(data, &v) decodes
+		// into the pointer target like the stdlib and returns just error.
+		"Unmarshal": &runtime.BuiltinFunc{Name: "json.Unmarshal", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) == 1 {
+				var dec any
+				err := json.Unmarshal(byteSlice(goNative(args[0])), &dec)
+				return &runtime.Tuple{Elems: []runtime.Value{scriptVal(jsonDeep(dec)), errVal(err)}}, nil
+			}
+			if len(args) != 2 {
+				return nil, fmt.Errorf("json.Unmarshal needs 1 or 2 args, got %d", len(args))
+			}
+			var dec any
+			if err := json.Unmarshal(byteSlice(goNative(args[0])), &dec); err != nil {
+				return errVal(err), nil
+			}
+			sv := jsonShape(v, dec, derefTyp(v.TypeOf(args[1])))
+			if !runtime.SetRef(args[1], sv) {
+				return nil, fmt.Errorf("json.Unmarshal: cannot assign to %T", args[1])
+			}
+			return errVal(nil), nil
+		}},
 		"Valid": h.fn("json.Valid", func(a []any) (any, error) { return json.Valid(byteSlice(a[0])), nil }, json.Valid),
 	})
 	e.Bind("net/url", map[string]runtime.Value{
@@ -827,6 +966,11 @@ func (e *Engine) installStdlib() {
 		"SeekStart":         int64(io.SeekStart),
 		"SeekCurrent":       int64(io.SeekCurrent),
 		"SeekEnd":           int64(io.SeekEnd),
+		// marker interface typedefs so `os.DirEntry`/`os.FileInfo` resolve
+		// in callback signatures (filepath.WalkDir's funclit); member
+		// access on the host values behind them dispatches by reflection.
+		"DirEntry": &runtime.TypeDef{Name: "DirEntry", Kind: runtime.KindInterface},
+		"FileInfo": &runtime.TypeDef{Name: "FileInfo", Kind: runtime.KindInterface},
 	}
 	if len(e.cfg.AllowedRoots) == 0 {
 		ospkg["Getenv"] = h.fn("os.Getenv", func(a []any) (any, error) { return os.Getenv(str(a[0])), nil })
@@ -834,7 +978,9 @@ func (e *Engine) installStdlib() {
 		ospkg["Unsetenv"] = h.fn1("os.Unsetenv", func(a []any) (any, error) { return errVal(os.Unsetenv(str(a[0]))), nil })
 		ospkg["Clearenv"] = h.fn("os.Clearenv", func(a []any) (any, error) { os.Clearenv(); return nil, nil })
 		ospkg["Environ"] = h.fn("os.Environ", func(a []any) (any, error) { return strsSlice(os.Environ()), nil })
-		ospkg["Args"] = h.fn("os.Args", func(a []any) (any, error) { return strsSlice(os.Args), nil })
+		// os.Args is the host process argv as a VARIABLE, like Go's —
+		// flag's package init reads it via len(os.Args).
+		ospkg["Args"] = strsSlice(os.Args)
 		ospkg["Hostname"] = h.fn("os.Hostname", func(a []any) (any, error) { return retErr2(os.Hostname()) })
 		// process stdio, boxed for cmd.Stdout / cmd.Stderr wiring
 		ospkg["Stdin"] = &runtime.GoValue{V: os.Stdin}
@@ -1051,6 +1197,10 @@ func (e *Engine) installStdlib() {
 			t, err := time.Parse(str(a[0]), str(a[1]))
 			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(t), errVal(err)}}, nil
 		}),
+		"ParseDuration": h.fn1("time.ParseDuration", func(a []any) (any, error) {
+			d, err := time.ParseDuration(str(a[0]))
+			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(d), errVal(err)}}, nil
+		}),
 		"Unix": h.fn2("time.Unix", func(a []any) (any, error) {
 			return &runtime.GoValue{V: time.Unix(int64Of(a[0]), int64Of(a[1]))}, nil
 		}),
@@ -1232,6 +1382,8 @@ func numOf(v runtime.Value) (float64, bool) {
 		return float64(n), true
 	case float64:
 		return n, true
+	case time.Duration:
+		return float64(n), true
 	}
 	return 0, false
 }
@@ -1399,7 +1551,9 @@ func scriptVal(v any) runtime.Value {
 	case []string:
 		return strsSlice(x)
 	case time.Duration:
-		return int64(x)
+		// durations stay raw host values: methods (.Hours(), .String())
+		// dispatch through reflection and binaryOp unwraps for arithmetic.
+		return x
 	case []any:
 		el := make([]runtime.Value, len(x))
 		for i, e := range x {
@@ -1494,8 +1648,14 @@ func intOf(v any) int {
 		return x
 	case float64:
 		return int(x)
+	case uint64:
+		return int(x)
+	case uint, uint8, uint16, uint32, uintptr:
+		return int(reflect.ValueOf(x).Uint())
 	case time.Duration:
 		return int(x)
+	case *runtime.GoValue:
+		return intOf(x.V)
 	}
 	return 0
 }
@@ -1684,6 +1844,45 @@ func strArgs(a []any) []string {
 	return out
 }
 
+// runePred adapts a script `func(rune) bool` to the host signature for
+// strings.*Func calls; the returned error slot captures a callback
+// failure so the builtin can surface it after the host call returns.
+func runePred(v runtime.VMCaller, fn runtime.Value) (func(rune) bool, *error) {
+	cerr := new(error)
+	return func(r rune) bool {
+		if *cerr != nil {
+			return false
+		}
+		res, err := v.Call(fn, []runtime.Value{int64(r)})
+		if err != nil {
+			*cerr = err
+			return false
+		}
+		b, _ := res.(bool)
+		return b
+	}, cerr
+}
+
+// asWriter pulls an io.Writer out of a bound stdio handle (os.Stdout,
+// os.Stderr, an *os.File) for the fmt.Fprint* family.
+func asWriter(v any) (io.Writer, error) {
+	// args arrive fmtArg'd: a *runtime.Cell (a `&b` address-of) surfaces
+	// as *fmtValue — unwrap back through the reference to the box.
+	if fv, ok := v.(*fmtValue); ok {
+		v = fv.x
+	}
+	if dv, ok := runtime.Deref(v); ok {
+		v = dv
+	}
+	if g, ok := v.(*runtime.GoValue); ok {
+		v = g.V
+	}
+	if w, ok := v.(io.Writer); ok {
+		return w, nil
+	}
+	return nil, fmt.Errorf("not an io.Writer: %T", v)
+}
+
 // goJSON marshals a script value into the shape encoding/json expects:
 // structs become field-name maps, runtime maps/slices recurse, GoValue
 // unwraps.
@@ -1694,13 +1893,20 @@ func goJSON(v any) any {
 	case *runtime.Cell:
 		return goJSON(x.Elem)
 	case *runtime.Struct:
-		m := make(map[string]any, len(x.Fields))
+		// structs marshal in DECLARATION order (encoding/json never
+		// sorts struct fields) — an ordered map keeps that visible.
+		var o orderedObject
 		for i, name := range x.Def.Fields {
 			if i < len(x.Fields) {
-				m[name] = goJSON(x.Fields[i])
+				key, omit, skip := jsonFieldKey(x.Def, name)
+				if skip || (omit && jsonIsEmpty(x.Fields[i])) {
+					continue
+				}
+				o.keys = append(o.keys, key)
+				o.vals = append(o.vals, goJSON(x.Fields[i]))
 			}
 		}
-		return m
+		return o
 	case *runtime.Slice:
 		out := make([]any, len(x.Elems))
 		for i, e := range x.Elems {
@@ -1729,6 +1935,222 @@ func goJSON(v any) any {
 	default:
 		return v
 	}
+}
+
+// jsonFieldKey maps a struct field to its JSON object key: the `json`
+// tag's name wins, a "-" tag skips the field, `omitempty` drops empty
+// values on marshal, and an absent tag falls back to the field name
+// (matching encoding/json's defaulting).
+func jsonFieldKey(def *runtime.TypeDef, name string) (key string, omitEmpty, skip bool) {
+	if def != nil && def.FTags != nil {
+		if tag, ok := def.FTags[name]; ok {
+			j := reflect.StructTag(tag).Get("json")
+			if j == "-" {
+				return "", false, true
+			}
+			omit := false
+			if i := strings.IndexByte(j, ','); i >= 0 {
+				for _, opt := range strings.Split(j[i+1:], ",") {
+					if opt == "omitempty" {
+						omit = true
+					}
+				}
+				j = j[:i]
+			}
+			if j != "" {
+				return j, omit, false
+			}
+		}
+	}
+	return name, false, false
+}
+
+// jsonIsEmpty mirrors encoding/json's isEmptyValue for `omitempty`:
+// false, 0, "", and empty/nil containers are dropped.
+func jsonIsEmpty(v any) bool {
+	switch x := v.(type) {
+	case *runtime.Named:
+		return jsonIsEmpty(x.V)
+	case *runtime.Cell:
+		return jsonIsEmpty(x.Elem)
+	case bool:
+		return !x
+	case int64:
+		return x == 0
+	case float64:
+		return x == 0
+	case string:
+		return x == ""
+	case *runtime.Slice:
+		return len(x.Elems) == 0
+	case *runtime.Map:
+		return len(x.Pairs) == 0
+	case runtime.Nil, *runtime.IfaceNil, *runtime.TypedNil:
+		return true
+	}
+	return false
+}
+
+// orderedObject marshals struct fields in declaration order —
+// encoding/json emits struct fields in source order, unlike map keys
+// which it sorts, so a plain map[string]any loses the field order.
+type orderedObject struct {
+	keys []string
+	vals []any
+}
+
+func (o orderedObject) MarshalJSON() ([]byte, error) {
+	var sb strings.Builder
+	sb.WriteByte('{')
+	for i, k := range o.keys {
+		kb, err := json.Marshal(k)
+		if err != nil {
+			return nil, err
+		}
+		vb, err := json.Marshal(o.vals[i])
+		if err != nil {
+			return nil, err
+		}
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		sb.Write(kb)
+		sb.WriteByte(':')
+		sb.Write(vb)
+	}
+	sb.WriteByte('}')
+	return []byte(sb.String()), nil
+}
+
+// jsonLookup finds key in a decoded object; encoding/json also accepts a
+// case-insensitive match as a fallback.
+func jsonLookup(m map[string]any, key string) (any, bool) {
+	if v, ok := m[key]; ok {
+		return v, true
+	}
+	for k, v := range m {
+		if strings.EqualFold(k, key) {
+			return v, true
+		}
+	}
+	return nil, false
+}
+
+// derefTyp peels the pointer level off a value's typedef — json.Unmarshal
+// decodes into the pointee, so `&cfg` (*Config) shapes as Config.
+func derefTyp(td *runtime.TypeDef) *runtime.TypeDef {
+	if td != nil && td.Kind == runtime.KindPointer {
+		if td.Elem == nil {
+			// `&v` where the pointee's typedef could not be recovered
+			// (e.g. `var v any` carries an untyped iface nil) — decode
+			// as `any` rather than wrapping the value in a cell.
+			return nil
+		}
+		return td.Elem
+	}
+	return td
+}
+
+// jsonShape converts a decoded JSON tree (map[string]any / []any /
+// scalars from encoding/json) into the runtime shape a declared typedef
+// expects: structs get their declared fields by json tag, numeric fields
+// land as int64/float64 per the declared scalar, and slices/maps keep
+// their typedef tags. Unresolvable shapes fall back to scriptVal.
+func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef) runtime.Value {
+	if td == nil {
+		return scriptVal(jsonDeep(dec))
+	}
+	switch td.Kind {
+	case runtime.KindStruct:
+		m, ok := dec.(map[string]any)
+		if !ok {
+			if dec == nil {
+				return c.Zero(td)
+			}
+			return scriptVal(jsonDeep(dec))
+		}
+		z, ok := c.Zero(td).(*runtime.Struct)
+		if !ok {
+			return scriptVal(jsonDeep(dec))
+		}
+		for i, name := range z.Def.Fields {
+			key, _, skip := jsonFieldKey(z.Def, name)
+			if skip {
+				continue
+			}
+			if fv, ok := jsonLookup(m, key); ok {
+				z.Fields[i] = jsonShape(c, fv, c.TypeOf(z.Fields[i]))
+			}
+		}
+		return z
+	case runtime.KindSlice:
+		arr, ok := dec.([]any)
+		if !ok {
+			if dec == nil {
+				return c.Zero(td)
+			}
+			return scriptVal(jsonDeep(dec))
+		}
+		et := c.TypeOf(c.ElemZero(td))
+		el := make([]runtime.Value, len(arr))
+		for i := range arr {
+			el[i] = jsonShape(c, arr[i], et)
+		}
+		return &runtime.Slice{Elems: el, Typ: td}
+	case runtime.KindMap:
+		m, ok := dec.(map[string]any)
+		if !ok {
+			if dec == nil {
+				return c.Zero(td)
+			}
+			return scriptVal(jsonDeep(dec))
+		}
+		et := c.TypeOf(c.ElemZero(td))
+		rm := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}, Typ: td}
+		for k, e := range m {
+			kk := runtime.Value(k)
+			ck := runtime.CanonicalKey(kk)
+			if _, dup := rm.Pairs[ck]; !dup {
+				rm.Order = append(rm.Order, kk)
+			}
+			rm.Pairs[ck] = jsonShape(c, e, et)
+		}
+		return rm
+	case runtime.KindPointer:
+		if dec == nil {
+			return c.Zero(td)
+		}
+		return &runtime.Cell{Elem: jsonShape(c, dec, c.TypeOf(c.ElemZero(td)))}
+	case runtime.KindInterface:
+		return scriptVal(jsonDeep(dec))
+	}
+	return jsonScalar(c, dec, td)
+}
+
+// jsonScalar coerces a decoded JSON scalar into a builtin scalar type.
+// JSON numbers always arrive as float64, so int-typed targets convert;
+// anything else (null, mismatch, unknown typedef) defers to scriptVal.
+func jsonScalar(c runtime.VMCaller, dec any, td *runtime.TypeDef) runtime.Value {
+	switch td.Name {
+	case "string":
+		s, _ := dec.(string)
+		return s
+	case "bool":
+		b, _ := dec.(bool)
+		return b
+	case "float64", "float32":
+		f, _ := dec.(float64)
+		return f
+	case "int", "int8", "int16", "int32", "int64",
+		"uint", "uint8", "uint16", "uint32", "uint64",
+		"byte", "rune", "uintptr":
+		f, _ := dec.(float64)
+		return int64(f)
+	}
+	if dec == nil {
+		return c.Zero(td)
+	}
+	return scriptVal(jsonDeep(dec))
 }
 
 // jsonDeep rewrites the tree encoding/json produces — map[string]any keys —
@@ -1801,6 +2223,23 @@ func (e *scriptError) Error() string {
 	return s
 }
 
+// Unwrap lets a script-declared `Unwrap() error` method join the host
+// errors chain — errors.Unwrap/Is/As walk through it like Go's.
+func (e *scriptError) Unwrap() error {
+	m, ok := e.c.Member(e.v, "Unwrap")
+	if !ok {
+		return nil
+	}
+	r, err := e.c.Call(m, nil)
+	if err != nil {
+		return nil
+	}
+	if _, isNil := r.(runtime.Nil); isNil {
+		return nil
+	}
+	return hostErrOf(e.c, r)
+}
+
 // wrapError is fmt.Errorf's %w product: message plus one cause.
 type wrapError struct {
 	msg string
@@ -1822,6 +2261,11 @@ func hostErrOf(c runtime.VMCaller, v runtime.Value) error {
 		return fmt.Errorf("%v", x.V)
 	case *runtime.Named:
 		return hostErrOf(c, x.V)
+	case runtime.Nil, *runtime.IfaceNil:
+		// an untyped nil error unwraps to nothing — a typed nil
+		// (TypedNil) still carries its declared error type and must
+		// stay wrapped so As/Is can match on it.
+		return nil
 	default:
 		return &scriptError{c: c, v: v}
 	}
@@ -1852,6 +2296,16 @@ func cellElemTyp(v runtime.Value) *runtime.TypeDef {
 		return e.Def
 	case *runtime.Named:
 		return e.Typ
+	case *runtime.Cell:
+		// the variable's VALUE is itself a pointer (a cell): `&p` where
+		// p is declared `*T` — the assignable target type is T.
+		if e.Typ != nil {
+			return e.Typ
+		}
+		if s, ok := e.Elem.(*runtime.Struct); ok {
+			return s.Def
+		}
+		return nil
 	}
 	return nil
 }
@@ -2009,6 +2463,13 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		if verb == 'T' {
 			return typedefSpelling(v.Typ)
 		}
+		// an int64 carrying a uint64/uintptr tag must format its bits as
+		// unsigned — host fmt would read the int64 as signed otherwise.
+		if unsignedIntTyp(v.Typ) {
+			if iv, ok := v.V.(int64); ok {
+				return fmt.Sprintf(formatOf(f, verb), uint64(iv))
+			}
+		}
 		return (&fmtValue{c: s.c, x: v.V, depth: s.depth + 1}).render(verb, f)
 	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
 		dv, ok := runtime.Deref(v)
@@ -2083,16 +2544,29 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		case 'T':
 			return typedefSpelling(v.Typ)
 		}
-		parts := make([]string, 0, len(v.Order))
-		for _, k := range v.Order {
+		// Go's fmt prints maps in sorted-key order (fmtsort), not
+		// insertion order — sort a copy of Order the same way.
+		order := append([]runtime.Value{}, v.Order...)
+		sort.SliceStable(order, func(i, j int) bool {
+			a, b := order[i], order[j]
+			if lessScript(a, b) {
+				return true
+			}
+			if lessScript(b, a) {
+				return false
+			}
+			// unordered kinds (bool, composites, mixed): order by the
+			// rendered key like fmtsort's fallback.
+			ka := (&fmtValue{c: s.c, x: a, depth: s.depth + 1}).render('v', f)
+			kb := (&fmtValue{c: s.c, x: b, depth: s.depth + 1}).render('v', f)
+			return ka < kb
+		})
+		parts := make([]string, 0, len(order))
+		for _, k := range order {
 			e := v.Pairs[runtime.CanonicalKey(k)]
 			kr := (&fmtValue{c: s.c, x: k, depth: s.depth + 1}).render('v', f)
 			vr := (&fmtValue{c: s.c, x: e, depth: s.depth + 1}).render('v', f)
-			if f.Flag('+') || f.Flag('#') {
-				parts = append(parts, kr+":"+vr)
-			} else {
-				parts = append(parts, kr+":"+vr)
-			}
+			parts = append(parts, kr+":"+vr)
 		}
 		return "map[" + strings.Join(parts, " ") + "]"
 	case *runtime.Tuple:
@@ -2135,6 +2609,26 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		return typedefSpelling(v)
 	}
 	return fmt.Sprintf(formatOf(f, verb), x)
+}
+
+// unsignedIntTyp reports whether td denotes an unsigned 64-bit integer —
+// the declared name or its underlying ident (a `type U uint64` decl).
+func unsignedIntTyp(td *runtime.TypeDef) bool {
+	if td == nil {
+		return false
+	}
+	switch td.Name {
+	case "uint64", "uintptr":
+		return true
+	}
+	x := td.Anon
+	if x == nil && td.Spec != nil {
+		x = td.Spec.Type
+	}
+	if id, ok := x.(*ast.Ident); ok {
+		return id.Name == "uint64" || id.Name == "uintptr"
+	}
+	return false
 }
 
 // elemVerb picks the verb applied to elements inside a composite:
