@@ -200,3 +200,27 @@ DIR/define.go:6:1: missing ',' in parameter list
 		t.Errorf("output must not be written, stat err = %v", err)
 	}
 }
+
+func TestRunRejectsBadDefineFile(t *testing.T) {
+	dir := t.TempDir()
+	const fix = "Fix the command-line arguments: -file takes the path of a Go define file (e.g. -file ./define.go)"
+	cases := []struct {
+		name string
+		file string
+		want string
+	}{
+		{"missing", filepath.Join(dir, "nope.go"), "define file DIR/nope.go does not exist. " + fix},
+		{"directory", dir, "define file DIR is a directory. " + fix},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := run(context.Background(), tc.file, filepath.Join(dir, "generated.go"), false, "", false)
+			if err == nil {
+				t.Fatal("want an error")
+			}
+			if diff := cmp.Diff(tc.want, strings.ReplaceAll(err.Error(), dir, "DIR")); diff != "" {
+				t.Errorf("mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}

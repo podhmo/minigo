@@ -26,6 +26,11 @@ type ComputedField struct {
 	// ("Inner.X") whose intermediate fields are pointers. Filled by the
 	// generator's emit pass; "" for a top-level field.
 	Prelude string
+	// ExprType is Expr's type when it is knowable without a type
+	// checker (a src field path, or a call of a non-generic package
+	// func with one result); nil means unknown. The generator warns
+	// when the destination field cannot hold it.
+	ExprType *xinspect.TypeExpr
 }
 
 // FieldMap defines a mapping between a source and destination field,

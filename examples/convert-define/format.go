@@ -8,6 +8,8 @@ import (
 	"go/parser"
 	"go/scanner"
 	"go/token"
+	"io/fs"
+	"os"
 	"path"
 	"regexp"
 	"slices"
@@ -186,6 +188,25 @@ func excerpt(lines []string, line, ctx int) string {
 		fmt.Fprintf(&b, "  %s %*d | %s\n", mark, width, n, lines[n-1])
 	}
 	return b.String()
+}
+
+// checkDefineFile rejects a -file argument that cannot be a define file,
+// before the interpreter wraps the OS error in loader context.
+func checkDefineFile(path string) error {
+	const fix = "Fix the command-line arguments: -file takes the path of a Go define file (e.g. -file ./define.go)"
+	if path == "" {
+		return fmt.Errorf("no define file given. %s", fix)
+	}
+	fi, err := os.Stat(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("define file %s does not exist. %s", path, fix)
+	case err != nil:
+		return fmt.Errorf("define file %s cannot be read: %v. %s", path, err, fix)
+	case fi.IsDir():
+		return fmt.Errorf("define file %s is a directory. %s", path, fix)
+	}
+	return nil
 }
 
 // buildConstraintHeader validates -tags as a build constraint

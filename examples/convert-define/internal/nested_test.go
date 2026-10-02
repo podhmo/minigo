@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/podhmo/minigo/examples/convert-define/generator"
 	"github.com/podhmo/minigo/examples/convert-define/model"
 )
@@ -346,7 +347,10 @@ func TestParserExplicitTypeArgs(t *testing.T) {
 	wantComputed := []model.ComputedField{
 		{DstName: "Tag", Expr: "src.Name"},
 	}
-	if diff := cmp.Diff(wantComputed, pair.Computed); diff != "" {
+	if diff := cmp.Diff(wantComputed, pair.Computed, cmpopts.IgnoreFields(model.ComputedField{}, "ExprType")); diff != "" {
 		t.Errorf("pair.Computed mismatch (-want +got):\n%s", diff)
+	}
+	if te := pair.Computed[0].ExprType; te == nil || te.Text != "string" {
+		t.Errorf("pair.Computed[0].ExprType: want string, got %v", te)
 	}
 }

@@ -121,11 +121,14 @@ Every failure exits non-zero and writes nothing. Most say in their first line **
 | first line says | cause | what to do |
 |---|---|---|
 | `invalid -tags "...": ... Fix the command-line arguments` | malformed `-tags` expression | fix the flag |
+| `define file ... does not exist. Fix the command-line arguments` | `-file` names a missing path or a directory | pass the path of the define file |
 | `define file ... does not parse (N errors). Fix the define file` | syntax error in the DSL file; every distinct error follows with a numbered excerpt | fix the define file |
 | `failed to run definition script: ... define.go:12:2: ...` followed by a `Traceback` | the definitions name something that does not resolve (unknown field in `c.Map`, bad `define.Rule` signature, ...) | fix the define file at that position, or the types |
-| `-strict: N field pair(s) would not compile` | a field pair no rule/cast covers, listed as `converter: dst.Field: reason` | add a `define.Rule` for the type pair, or `c.Convert` the field |
+| `-strict: N field pair(s) would not compile` | a field pair no rule/cast covers, or a `c.Compute` expression whose type the field cannot hold, listed as `converter: dst.Field: reason` | add a `define.Rule` for the type pair, or `c.Convert` the field; for `c.Compute`, fix the expression |
 | `generated code does not parse ... This is a convert-define generator bug` | the generator emitted broken syntax; each error names the converter and field (`emitted by: converter convertAToB, field Items`) | report it with the message; rerun with `-log-level debug` for the raw source |
 | `generated code uses N package(s) the generator did not import ... generator bug` | the generator used a package without registering its import; names the path and its first use | report it with the message |
+
+`c.Compute` expressions are type-checked only where the type is knowable without a type checker: a `src` field path (`src.N`) or a call of a non-generic package func with one result (`funcs.Itoa(src.N)`). Other expressions (`src.S + "!"`, generic calls) are not checked and fail only at `go build`.
 
 Without `-strict`, a field pair that will not compile still produces output: the warning is printed via `slog` and listed under "Generation warnings" in the converter's doc comment, and `go build` then fails on that assignment. Search the generated file for the `ec.Enter("Field")` line above the failing line to find the field.
 

@@ -235,9 +235,28 @@ Codex が衝突の例に挙げた `Pair.Variables` は、どこからも値が�
 
 README の Debugging 節を書いている途中で、DSL の誤用エラー（`c.Map(dst.W, src.W)` など）だけは 1 行目で「誰が直すか」を言っていないことに気づいた。README は実態に合わせて書き（位置とトレースバックがあることを明記）、直すのは TODO に回した。エラーの発生源が minigo の runtime trap で、範囲が convert-define の外に広がるためである。
 
+### D11. 満足度評価の 2 件は、どちらも convert-define 側で直した
+
+別のエージェントによる満足度評価で、2 件の指摘を受けた。
+
+- 存在しない `-file` を渡すと、`failed to run definition script: loading define file into interpreter: parse ...: no such file or directory` という、層を重ねただけのエラーになる。直し方が書かれていない。
+- `c.Compute(dst.Value, src.N)`（int を string に入れる）が `-strict` でも通り、`go build` で初めて失敗する。
+
+最初に、minigo 本体の変更が必要かどうかを判断した。前者は CLI の入力検査なので、convert-define だけの問題である。後者も、必要な情報はすでに minigo の公開 API で取れる。src のフィールドの型は `model.ResolveFieldPath` で、関数の結果型は `ResolveSymbol` → `Index.Funcs` → `inspect.SignatureOf` で取れる。そこで、どちらも base ブランチ（exp/issue48-frag）で直し、派生ブランチ（exp/issue48-dsl-errors）はその上に rebase することにした。
+
+前者は、`run` の最初で `os.Stat` するようにした。`-tags` と同じく「Fix the command-line arguments」で始まり、ディレクトリを渡した場合も同じように扱う。
+
+後者は、型を推論する範囲を意図的に狭くした。minigo には型検査器がない（`go/types` は使わない制約がある）。そこで、型検査器なしで型が確定する形だけを推論する。一つは src のフィールドパス（`src.A.B`）、もう一つはジェネリックでない、結果が 1 つのパッケージ関数の呼び出しである。それ以外の式（`src.S + "!"`、ジェネリック関数の呼び出し）は「不明」として扱い、警告は出さない。誤検知を出すくらいなら黙る、という方針である。名前付き型と型リテラル（`[]T` など）の組も、基底型を通して代入できる可能性があり、`go/types` なしでは判定できないので黙る。
+
+### D12. 型推論のテストを書いたら、import の登録漏れが見つかった
+
+`funcs.Itoa(src.N)` のテストケースは、型の判定より前に、D9 で入れた検査（goimports が import を補ったら失敗）で落ちた。`c.Compute` の式の中でだけ参照されるパッケージが、`info.Imports` に一度も登録されていなかったのである。`c.Convert` のコンバータのパッケージは登録されていたが、`c.Compute` の式は文字列のまま出力されるだけだった。
+
+既存の integration テストが通っていたのは、同じ define ファイルの `c.Convert(dst.Contact, src.ContactInfo, funcs.ConvertSrcContactToDstContact)` が、同じ `funcs` パッケージをたまたま登録していたからにすぎない。main では goimports が黙って補うので、このバグは見えなかった。いまは、式の中の `pkg.Name` をすべて辿って登録している。D9 の検査が、入れてすぐに 2 件目のバグを見つけたことになる。
+
 ## 8. 残課題（TODO.md に記載）
 
-- （対応済み）`ConversionPair.Variables`、同じパッケージの識別子との衝突、`-tags` の検証、本番での import 補完の失敗化、provenance の範囲
+- （対応済み）`ConversionPair.Variables`、同じパッケージの識別子との衝突、`-tags` の検証、本番での import 補完の失敗化、provenance の範囲、`-file` の検査、`c.Compute` の型検査（D11）
 - DSL の誤用エラーが、1 行目で「誰が直すか」を言わない（D10）
 - 構文は正しいが型エラーになるコードの provenance。既知の leaf の不一致は `-strict` で対応済み。それ以外は任意の `-check` として [issue #49](https://github.com/podhmo/minigo/issues/49) に切り出した
 

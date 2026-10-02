@@ -56,6 +56,10 @@ func run(ctx context.Context, defineFile, output string, dryRun bool, buildTags 
 		return err
 	}
 
+	if err := checkDefineFile(defineFile); err != nil {
+		return err
+	}
+
 	slog.InfoContext(ctx, "Starting parser", "file", defineFile)
 
 	runner, err := internal.NewRunner()

@@ -401,6 +401,11 @@ func Generate(res xinspect.Resolver, info *model.ParsedInfo, opts Options) ([]by
 				return nil, fmt.Errorf("computing %s -> %s field %s: %w", tp.SrcType.Name, tp.DstType.Name, tp.Pair.Computed[j].DstName, err)
 			}
 			tp.Pair.Computed[j].Prelude = dstInits(im, chain, "dst")
+			if c := tp.Pair.Computed[j]; c.ExprType != nil && len(chain) > 0 {
+				if m := computeMismatch(im, res, c.Expr, c.ExprType, chain[len(chain)-1].FieldType); m != "" {
+					diag.at("dst." + c.DstName).warn(m)
+				}
+			}
 		}
 		tp.Warnings = diag.warnings()
 		for _, w := range tp.Warnings {
@@ -1115,6 +1120,36 @@ func leafMismatch(im *ImportManager, res xinspect.Resolver, srcT, dstT *xinspect
 		}
 	}
 	return fmt.Sprintf("no conversion covers %s -> %s", getTypeName(im, srcT), getTypeName(im, dstT))
+}
+
+// computeMismatch describes a c.Compute expression whose inferred type
+// the destination field cannot hold. The expression is emitted as the
+// user wrote it (no cast), so anything short of an identical or safely
+// assignable type will not compile. An unnamed composite and a named
+// type may still be assignable through their underlying type, which
+// cannot be checked without go/types — that case stays quiet.
+func computeMismatch(im *ImportManager, res xinspect.Resolver, expr string, exprT, dstT *xinspect.TypeExpr) string {
+	if exprT.SameType(dstT, res) {
+		return ""
+	}
+	if isUnnamed(exprT) != isUnnamed(dstT) {
+		return ""
+	}
+	if leafMismatch(im, res, exprT, dstT) == "" {
+		return ""
+	}
+	msg := fmt.Sprintf("c.Compute expression %s is %s, not %s", expr, getTypeName(im, exprT), getTypeName(im, dstT))
+	if _, ok := leafCast(im, res, exprT, dstT, expr); ok {
+		msg += fmt.Sprintf(" (write %s(...) in the define file)", getTypeName(im, dstT))
+	}
+	return msg
+}
+
+// isUnnamed reports whether te is a type literal ([]T, *T, map[K]V,
+// ...) rather than a named or predeclared type.
+func isUnnamed(te *xinspect.TypeExpr) bool {
+	_, named := te.SymbolID()
+	return !named
 }
 
 // isIfaceDecl reports whether the declaration is a named interface type.
