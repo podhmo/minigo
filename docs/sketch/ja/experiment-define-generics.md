@@ -67,7 +67,20 @@ DSL の呼び出し形は一切変わらない（全て型推論で書ける）�
 - `make e2e`: `generated.go` を再生成して e2e PASS（生成物は変更なし）。
 - convert-define fuzz コーパス（`podhmo/minigo-usecasefuzz`, `MINIGO_DIR` = 本 checkout）: **23/23 expected**（leaf-mismatch=BUILD-FAIL, neg*=GEN-FAIL を含む）。
 
-## 7. 残件
+## 7. 副次的な確認: 「壊れたコード」の上でも動くか
+
+minigo は型検査をしない AST インタプリタなので、go/packages 前提のツールと違って**入力が `go build` を通らなくても生成できる**。実測（minigo-usecasefuzz の `broken-*` ケースとして登録）:
+
+| 壊れ方 | 結果 |
+|---|---|
+| source パッケージの関数本体に型エラー | 生成**成功**（フィールド走査は型を解決しない）。`go build ./...` が入力パッケージ自体で落ちるので最終 BUILD-FAIL — ただし生成物は正しい |
+| struct のフィールド型が未解決（`V Ghost`） | 生成**成功**。`Ghost` は leaf として扱われ `dst.V = int64(src.V)` のキャストが出る — 欠損型でも何かを吐く設計 |
+| DSL ファイル自体がコンパイル不能（未使用 import、`ghost()`、`var x int = "no"`） | 生成**成功**・生成物コンパイル OK — DSL はパース＋walk されるだけで評価もコンパイルもされない |
+| source が構文エラー | GEN-FAIL — **パースできることが唯一の境界** |
+
+つまり「src/dst は更新したが変換関数がまだ壊れている」という途中状態でもツールは回せる。go/packages 系ツールでよくある「まずビルドを通せ」制約は存在しない。
+
+## 8. 残件
 
 - `go.mod` の言語バージョン未強制（§5）— TODO.md に `[ ]` で起票。
 - `c.Map[T]` のような厳格版 Map を提供するかどうかは今後の論点（現状 `[]SrcItem`→`[]DstItem` を拒否してしまう過剰制約になるため不採用）。
