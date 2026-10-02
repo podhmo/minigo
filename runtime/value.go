@@ -421,6 +421,26 @@ func nextKeyNonce() int64 {
 	return keyNonce.Add(1)
 }
 
+// PtrArrayType returns the fixed-size ArrayType behind a *[N]T
+// typedef, or nil — `var p *[3]int` peels the StarExpr to its array.
+func PtrArrayType(td *TypeDef) *ast.ArrayType {
+	if td == nil {
+		return nil
+	}
+	x := td.Anon
+	if x == nil && td.Spec != nil {
+		x = td.Spec.Type
+	}
+	st, ok := x.(*ast.StarExpr)
+	if !ok {
+		return nil
+	}
+	if at, ok := st.X.(*ast.ArrayType); ok && at.Len != nil {
+		return at
+	}
+	return nil
+}
+
 // arrayTypedef reports whether a typedef is a fixed-size array — its
 // underlying AST is an ArrayType carrying a length (slices have none).
 func arrayTypedef(td *TypeDef) bool {
@@ -721,6 +741,11 @@ type VMCaller interface {
 	// Task returns the handle of the calling goroutine — nil on the
 	// root goroutine — for ancestry-aware cycle checks.
 	Task() *Task
+	// ArrayLenOf reports the element count of an array typedef — an
+	// *ast.ArrayType that kept its length ([3]int, [N]int, [N*2]int);
+	// ok=false for non-array shapes. Lets len()/cap() on a nil *[N]T
+	// constant-fold like Go without a live frame.
+	ArrayLenOf(td *TypeDef) (n int64, ok bool)
 }
 
 // Function is a compiled-or-compilable function. Chunk is produced lazily
@@ -767,6 +792,9 @@ type Iterator struct {
 	Idx    int
 	Limit  int // for integer ranges
 	String string
+	// NilArr marks an 'i' iterator walking the indices of a nil *[N]T —
+	// the index sequence is legal Go but reading an element derefs nil.
+	NilArr bool
 	// ChRV is the reflect channel a channel range receives from; ETyp is
 	// its element typedef for closed-receive zero values.
 	ChRV reflect.Value
