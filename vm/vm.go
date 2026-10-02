@@ -298,7 +298,7 @@ func (v *VM) Task() *runtime.Task { return v.task }
 
 // maxFrames bounds the call stack; exceeding it traps instead of letting
 // unbounded script recursion blow the host goroutine stack (a fatal,
-// untraceable crash in Go).
+// untraceable crash in Go) — VM frames do consume host stack.
 const maxFrames = 10000
 
 type deferredCall struct {
@@ -6049,8 +6049,13 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 	}
 	// a Named value converts through its underlying value — `string(x)` on
 	// a named string value works like the underlying conversion; `T(x)`
-	// on the same declared type is a no-op.
-	if n, ok := x.(*runtime.Named); ok {
+	// on the same declared type is a no-op. Nested tags peel too — a
+	// `type Tsmallv byte` value carries Named{Tsmallv, Named{byte, v}}.
+	for {
+		n, ok := x.(*runtime.Named)
+		if !ok {
+			break
+		}
 		if sameTypeDef(n.Typ, td) {
 			return x, nil
 		}
@@ -7415,6 +7420,12 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		// type — aliases count (they ARE the type), `type A B` chains do
 		// not (Go: named-to-named needs a conversion).
 		if sameTypeDef(n.Typ, td) || sameTypeDef(n.Typ, v.peelAlias(td)) {
+			return x
+		}
+		// an unnamed target assigns any value whose underlying type is
+		// identical — `type Number *Number`'s `*x` (Number) binds a
+		// *Number parameter; a named target still needs the conversion.
+		if !tagIsNamed(td) && v.tdShapeEq(n.Typ, td) {
 			return x
 		}
 		f.trap("cannot use %s as %s", tdName(n.Typ), tdName(td))
