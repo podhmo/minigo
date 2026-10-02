@@ -105,4 +105,8 @@ type hidden struct{ x int }
 
 var hiddenVar = 1
 
+// Path deliberately collides with the *runtime.Package.Path metadata
+// field — member access resolves the package namespace first.
+var Path = "member-shadow"
+
 func main() {}

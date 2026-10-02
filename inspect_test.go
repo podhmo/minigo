@@ -46,6 +46,7 @@ func TestInspect(t *testing.T) {
 		"HostMethodSym",
 		"SourceOfStruct",
 		"VarValueRead", // flips the package State to "ready"
+		"PkgFields",    // field/method fallback on *runtime.Package (#26)
 	} {
 		if got := run(t, e, "./testdata/inspectuse", fn); got != "ok" {
 			t.Errorf("%s: %v", fn, got)
@@ -62,12 +63,15 @@ func TestInspect(t *testing.T) {
 	}
 	// remaining documented limitations must also trap, not misreport
 	for _, fn := range []string{
-		"DefVarTrap",       // Def is TypeSpec-only — var/const types unreachable
-		"ResolveBoundTrap", // the resolver cannot descend into a bound pkg
-		"MissingSymTrap",   // unknown symbol name
-		"BoundFieldTrap",   // bound type has no decl for Fields
-		"BoundMethodTrap",  // bound type has no index for Methods
-		"HostSigTrap",      // intrinsic without Target has no signature
+		"DefVarTrap",        // Def is TypeSpec-only — var/const types unreachable
+		"ResolveBoundTrap",  // the resolver cannot descend into a bound pkg
+		"MissingSymTrap",    // unknown symbol name
+		"BoundFieldTrap",    // bound type has no decl for Fields
+		"BoundMethodTrap",   // bound type has no index for Methods
+		"HostSigTrap",       // intrinsic without Target has no signature
+		"ImportRefTrap",     // import refs stay namespace-strict (no field fallback)
+		"PkgUnknownTrap",    // neither member nor field -> undefined
+		"PkgUnexportedTrap", // unexported names trap before the fallback
 	} {
 		if _, err := e.Run(context.Background(), "./testdata/inspectuse", fn); err == nil {
 			t.Errorf("%s: expected trap, got nil", fn)

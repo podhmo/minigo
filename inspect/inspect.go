@@ -35,8 +35,12 @@ const BuiltinPackagePath = ":builtin:"
 // the script API speaks of; renamed here to avoid colliding with the
 // Symbol stub function).
 type Decl struct {
-	Package *runtime.Package // owning package — SymbolOf(x).Package chains
-	Kind    string           // "func"|"method"|"var"|"const"|"type"|"host"
+	// owning package — SymbolOf(x).Package chains. Member access on it
+	// resolves the package namespace first; when no member matches,
+	// the exported *runtime.Package fields (Path, Name, Dir, ...) and
+	// methods (State, ...) read as on any host value.
+	Package *runtime.Package
+	Kind    string // "func"|"method"|"var"|"const"|"type"|"host"
 	Name    string
 	File    string // declaring file name ("" for host symbols)
 	Pos     string // "file.go:12:6" ("" for host symbols)
