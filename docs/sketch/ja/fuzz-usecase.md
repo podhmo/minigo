@@ -3,7 +3,7 @@
 対象: `podhmo/minigo` の `main`（言語仕様回 `fuzz-language.md` がマージ済みの状態）
 方法: 前回は言語仕様の網羅を狙ったが、今回は「Go の代表的なユースケースがそのまま動くか」を見る。実際に人が書く形のプログラム（テキスト処理・スクリプト用途を優先、バイナリ操作は低優先）を 27 本書き、`go run` を oracle として minigo の出力と diff する。差分が出たら潰す、のループ。加えて `lim-*` プローブで「バインド外パッケージに踏み込んだ時どう見えるか」を観測した。
 
-ハーネス: `~/usecasefuzz/`（`cases/<name>/main.go` + `run.sh`）。各ケースが使っている機能の一覧は `~/usecasefuzz/README.md` を参照。
+ハーネス: [podhmo/minigo-usecasefuzz](https://github.com/podhmo/minigo-usecasefuzz)（`cases/<name>/main.go` + `run.sh`）。各ケースが使っている機能の一覧は同リポジトリの README.md を参照。`./run.sh` で再実行可能（`MINIGO_DIR` 未設定時は podhmo/minigo を隣に clone）。
 
 **最終状態: PASS=28, DIFF=0, TRAP=8（全て lim-* の意図プローブ）, ACCEPT=1（`inspectuse` — `minigo.dev/inspect` は minigo 独自機能で Go ではコンパイルできない意図的なもの）**
 
@@ -75,4 +75,4 @@
 
 ## 4. 回帰テスト
 
-`make format` / `make lint` / `make test` 全て緑。ユースケースコーパスは `~/usecasefuzz`（リポジトリ外）に残置。
+`make format` / `make lint` / `make test` 全て緑。ユースケースコーパスは [podhmo/minigo-usecasefuzz](https://github.com/podhmo/minigo-usecasefuzz) に残置。
