@@ -109,3 +109,12 @@ The tool leans entirely on the interpreter it already runs in:
 *   `engine.Package` locates/parses/indexes exactly the packages the DSL touches; `inspect.FieldsOf`, `SignatureOf`, `DefOf` provide decl views; `TypeExpr`'s `Kind`/`Children`/`Unref`/`Resolve` walk type structure lazily.
 *   Bound stdlib packages (e.g. `time`) have no source index, so known members surface as host pseudo-decls — the role `scanner.ExternalTypeOverride` used to play.
 *   `generator.ImportManager` manages imports dynamically in the generated code (moved out of the vendored tree; it never depended on a scanner).
+
+## Works on non-compiling input
+
+Unlike `go/packages`-based tools, the generator does not require the input to compile — minigo reads ASTs and never type-checks, so **parseable code is enough**:
+
+*   Type errors anywhere in `source`/`destination` (undefined identifiers in function bodies, fields of unresolvable types) do not stop generation.
+*   The DSL file itself is never compiled — it is interpreted, and the mapping function literal is only walked as AST, not evaluated — so it may contain unused imports or dead code inside the literal that `go build` would reject (statements elsewhere in `main()` do execute).
+*   Regeneration works while the generated package is broken: the typical field add/remove workflow leaves a stale `generated.go` referencing deleted fields, yet `convert -file define.go` runs fine and the fresh output un-breaks the package.
+*   The only real boundary is **syntax**: a file that does not parse fails generation. Separately, names the DSL actually mentions (types in the `Convert` signature, fields in `c.Map` paths) must resolve — stale references there are generation errors, not ignored.
