@@ -649,6 +649,24 @@ func (c *compiler) isIfaceExpr(e ast.Expr) bool {
 	return false
 }
 
+// constExpr emits a constant declaration's initializer: when the whole
+// expression is a compile-time constant it stays a UConst so each use
+// materializes for its own context (`const c = 1e3; var i int = c`
+// binds int 1000 where storing float64(1000) would reject the int
+// conversion). A non-constant expression compiles normally and traps
+// wherever it must.
+func (c *compiler) constExpr(e ast.Expr) {
+	if cv, ok := constValue(e); ok {
+		u := &runtime.UConst{V: cv}
+		if hasCharLit(e) {
+			u.Rune = true
+		}
+		c.emit(bytecode.OpConst, c.constIdx(u), 0, e.Pos())
+		return
+	}
+	c.expr(e)
+}
+
 // valueSpec emits a whole var/const spec: all of its names are bound.
 // Vars become package cells (OpNewGlobal); consts read-only cells
 // (OpNewGlobal with B=1) so a later `k = v` store traps like Go.
@@ -706,7 +724,11 @@ func (c *compiler) valueSpec(vs *ast.ValueSpec, d *index.Decl) {
 		}
 	default:
 		for i, name := range vs.Names {
-			c.expr(vals[i])
+			if isConst {
+				c.constExpr(vals[i])
+			} else {
+				c.expr(vals[i])
+			}
 			coerceTop()
 			bind(name)
 			coerceVar(name)
@@ -794,7 +816,11 @@ func (c *compiler) stmt(s ast.Stmt) {
 					if len(vals) == 0 {
 						c.emit(bytecode.OpNil, 0, 0, name.Pos())
 					} else {
-						c.expr(vals[i])
+						if isConst {
+							c.constExpr(vals[i])
+						} else {
+							c.expr(vals[i])
+						}
 						coerceTop()
 					}
 					coerce(name, c.bindLocal(name.Name, name.Pos(), isConst))
@@ -2280,6 +2306,14 @@ func constValue(e ast.Expr) (cv constant.Value, ok bool) {
 		}
 		switch x.Op {
 		case token.SHL, token.SHR:
+			// integer-valued float constants shift in the exact
+			// integer domain (`1e100 >> 1000`, `x << 1.`).
+			if lv.Kind() == constant.Float {
+				lv = constant.ToInt(lv)
+			}
+			if rv.Kind() == constant.Float {
+				rv = constant.ToInt(rv)
+			}
 			s, ok := constant.Uint64Val(rv)
 			if !ok {
 				return nil, false
