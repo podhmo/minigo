@@ -17,12 +17,6 @@ type ParsedInfo struct {
 	Structs         map[string]*StructInfo
 }
 
-// Variable defines a variable to be declared in the converter function.
-type Variable struct {
-	Name string
-	Type string
-}
-
 // ComputedField defines a field that is computed from an expression.
 type ComputedField struct {
 	DstName string
@@ -59,7 +53,6 @@ type ConversionPair struct {
 	DstTypeInfo *xinspect.Decl
 	Mapping     *MappingInfo // Explicit mapping rules from the mapping function body
 	MaxErrors   int
-	Variables   []Variable
 	Computed    []ComputedField // TODO: This might be deprecated in favor of Mapping.Computes
 }
 

@@ -9,12 +9,12 @@ import (
 
 // TestEmitterFreshAvoidsVisibleNames pins the temporary-name invariant:
 // hoisted temporaries skip every identifier visible in the converter —
-// params, user-declared variables, same-package funcs, import aliases.
+// params, same-package funcs, import aliases.
 func TestEmitterFreshAvoidsVisibleNames(t *testing.T) {
 	im := NewImportManager("example.com/self")
 	im.Add("example.com/s", "s")
 	info := &model.ParsedInfo{GlobalRules: []model.TypeRule{{UsingFunc: "item"}}}
-	pair := &TemplatePair{Pair: model.ConversionPair{Variables: []model.Variable{{Name: "v", Type: "int"}}}}
+	pair := &TemplatePair{Fields: []FieldMap{{Converter: "v"}}}
 	e := newEmitter(im, nil, info, funcNamer{}, newGenDiags(), pair)
 
 	got := []string{e.fresh("s"), e.fresh("item"), e.fresh("v"), e.fresh("src"), e.fresh("s")}

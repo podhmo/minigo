@@ -54,9 +54,6 @@ func {{ .ConvName }}(ctx context.Context, ec *model.ErrorCollector, src *{{ .Src
 	if src == nil {
 		return nil
 	}
-	{{ range .Pair.Variables -}}
-	var {{ .Name }} {{ .Type }}
-	{{ end -}}
 	dst := &{{ .DstTypeName }}{}
 	{{ range .Fields -}}
 	if ec.MaxErrorsReached() { return dst }
@@ -705,15 +702,11 @@ type emitter struct {
 }
 
 // newEmitter reserves every identifier visible inside the converter
-// body: its parameters and locals, the user-declared variables, the
-// fixed imports, and the unqualified (same-package) rule and converter
+// body: its parameters and locals, the fixed imports, and the unqualified (same-package) rule and converter
 // funcs. Import aliases are checked at allocation time (fresh) because
 // the ImportManager keeps growing during the emit pass.
 func newEmitter(im *ImportManager, res xinspect.Resolver, info *model.ParsedInfo, fn funcNamer, diag *genDiags, pair *TemplatePair) *emitter {
 	taken := map[string]bool{"ctx": true, "ec": true, "src": true, "dst": true, "context": true, "errors": true, "fmt": true, "model": true}
-	for _, v := range pair.Pair.Variables {
-		taken[v.Name] = true
-	}
 	for _, r := range info.GlobalRules {
 		taken[r.UsingFunc] = true
 	}
