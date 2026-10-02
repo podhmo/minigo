@@ -185,7 +185,8 @@ PR #27 で「並行動作を実装した」と言いつつ、`sync` パッケー
 対象バグは `struct{ sync.Mutex; sync.RWMutex }` の `t.Lock()` が先勝ちで `Mutex` を選ぶこと。実装を追うと host 埋め込みの解決は **first-wins の2系統に散っていた**: 読みは `findMethod` の `HostNew` 分岐、書きは `promotedHostField`。個別に ambiguity を足すと判定ルールが散在するため、**host 埋め込みを `promotedField` の BFS に統合する**判断をした — スクリプト埋め込みと同じ「浅い深さ優先・同深度ヒットは ambiguous trap・nil ポインタ経路は dereference panic」のルールにそのまま乗る。
 
 - `promotedField` の戻り値を `(*runtime.Struct, int, runtime.Value, bool)` に拡張（3番目 = host レシーバ）。呼び出し側（`structMember`/`namedMember`/`setField`/`setLitField`）は `hrecv != nil` なら `selectMember`/`setField` に流すだけで、解決機構は1本に集約された。`promotedHostField` は削除。
-- host 埋め込みはリーフ: `hostMemberExists(embTd.HostNew(), name)` が **boxed 型のゼロ値** で exported フィールド/メソッドの存在を見る。型レベルで調べるので格納値が nil でも名前解決は成功し、その後 `hostNilEmbed` が nil ポインタ経路として `nilDepth`/`nilPaths` 会計に載せる（script 側 nil-ptr 埋め込みと同じ nil pointer panic になる）。
+- host 埋め込みはリーフ: `hostMemberExists(embTd.HostNew(), name)` が boxed 型の promoted メンバーの存在を見る。格納値が nil でも名前解決は成功し、その後 `hostNilEmbed` が nil ポインタ経路として `nilDepth`/`nilPaths` 会計に載せる（script 側 nil-ptr 埋め込みと同じ nil pointer panic になる）。
+- **存在確認は型レベルで行う（レビュー指摘で修正）**: 初版は `hostField(zero, name)` — ゼロ値を dereference して `reflect.Value.FieldByName` を呼んでいたため、`struct{ *template.Template }` のように「host 型自身が nil の匿名ポインタフィールドを持つ」ケースで promoted フィールド（`s.Root`）の存在確認自体が `reflect: indirection through nil pointer` で panic した。`reflect.Type.FieldByName`（`PkgPath` で非公開を除外）に変更し、dereference は実際のメンバーアクセス側に委ねた（`HostSubEmbedField` = `s.Root != nil` で固定）。
 - `embedTypeDepth` にも host リーフ判定を追加（host 型の内部は minigo から不透明なので d=1 で打ち止め — nil `*sync.Pool` 埋め込み経由の「型レベルで存在確認」にも使われる）。
 - script メソッドも `embTd.Methods[name]` で `methHits` として計数するよう拡張。メソッド自体は `findMethod` に委譲して戻り値にはしないが、同深度での衝突は数える: `{sync.Mutex; locker2}`（host メソッド vs script メソッド）も `{mA; mB}`（script メソッド同士）も ambiguous trap になる。mixed-kind（host メソッド vs script フィールド等）も同様。
 
@@ -195,7 +196,7 @@ PR #27 で「並行動作を実装した」と言いつつ、`sync` パッケー
 
 ### 8.3 nil `*T` host 埋め込みの扱い（計画外の意思決定② + レビュー指摘で修正）
 
-`struct{ *sync.Pool }` で格納値が nil のケース。Go はセレクタ自体を静的に解決するため「フィールドがない」ではなく dereference で panic する。`hostMemberExists` を型のゼロ値で評価する設計にしたことで、このケースは script 側の nil-ptr 埋め込みと同じ nilPaths 機構に自然に乗る — 単独パスなら nil pointer panic、実パスと同深度なら ambiguous trap、という対称性が無料で得られた（`NilHostPtrEmbed` で固定）。
+`struct{ *sync.Pool }` で格納値が nil のケース。Go はセレクタ自体を静的に解決するため「フィールドがない」ではなく dereference で panic する。`hostMemberExists` を型レベルで評価する設計にしたことで、このケースは script 側の nil-ptr 埋め込みと同じ nilPaths 機構に自然に乗る — 単独パスなら nil pointer panic、実パスと同深度なら ambiguous trap、という対称性が無料で得られた（`NilHostPtrEmbed` で固定）。
 
 ただし一律 panic は誤りだった: **nil レシーバを許容するポインタレシーバのメソッドは Go では呼べる**（レシーバに nil がそのまま渡るだけ）。`hostNilCallable` を追加し、メンバー種別で分けた: フィールドと値レシーバのメソッド（`T.MethodByName` で見つかる = レシーバ評価が deref を要する）は従来どおり panic、ポインタレシーバのみのメソッド（`*T` にだけ存在）は nil を通して呼び出す（`NilMethod`=7、`NilValueMethod`/`NilField`=panic で固定）。
 
@@ -210,6 +211,7 @@ PR #27 で「並行動作を実装した」と言いつつ、`sync` パッケー
 - `TestDefinedTypeMethodSet`: `NamedHostMethodEmbed`（`{MyMutex}` の `Lock`）`NamedScriptMethodEmbed`（`{bDefined}` の `M`）— 全て "has no field or method" trap 期待
 - `TestAfterFuncNilFire` + `AfterFuncNilStop`（表）: nil コールバックは登録できる — Stop すれば成功、発火すれば nil-call panic が goroutine 失敗経路で `Run` に返る
 - `TestNilHostPtrMember`: `probehost`（Bind した `*T` host 型）の nil `*T` 埋め込み — ポインタレシーバ `M()` は nil レシーバで 7、値レシーバ `V()` と フィールド `N` は nil pointer panic
+- `HostSubEmbedField`（表）: `struct{ *template.Template }` の promoted `Root` — host 型のゼロ値が nil 匿名ポインタを持っていても型レベルで解決し、実値の `*common` はアクセス時に deref される
 - `TestNilHostPtrEmbed`: nil `*sync.Pool` 埋め込みへの `New` 書き込みで nil pointer panic
 
 ### 8.5 検証

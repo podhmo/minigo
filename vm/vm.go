@@ -2721,15 +2721,23 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 }
 
 // hostMemberExists reports whether a host-typed embed promotes name —
-// an exported field or method on the boxed type. The zero value stands
-// in for the stored one so a nil pointer embed still resolves. methods
-// is false for a defined type over a host type: it carries fields, not
-// the method set.
+// an exported field or method on the boxed type. Existence is answered
+// at type level (StructField via Type.FieldByName, Method via
+// Type.MethodByName) so a zero whose anonymous pointer fields are nil
+// — e.g. *template.Template's *common — still resolves; only actual
+// member access dereferences the stored value. methods is false for a
+// defined type over a host type: it carries fields, not the method set.
 func (v *VM) hostMemberExists(zero any, name string, methods bool) bool {
-	if _, ok := hostField(zero, name); ok {
-		return true
+	t := reflect.TypeOf(zero)
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
 	}
-	if !methods {
+	if t != nil && t.Kind() == reflect.Struct {
+		if sf, ok := t.FieldByName(name); ok && sf.PkgPath == "" {
+			return true
+		}
+	}
+	if !methods || t == nil {
 		return false
 	}
 	_, ok := reflect.TypeOf(zero).MethodByName(name)

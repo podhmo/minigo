@@ -4,6 +4,7 @@ import (
 	"runtime"
 	"sort"
 	"sync"
+	"text/template"
 	"time"
 )
 
@@ -1026,6 +1027,20 @@ func AfterFuncNilStop() int {
 func AfterFuncNilFire() int {
 	time.AfterFunc(time.Hour, nil)
 	select {}
+}
+
+// HostSubEmbedField: *template.Template's own anonymous *common is nil
+// inside the bound type's zero — a promoted field reachable only
+// through it must still resolve (existence is a type-level question;
+// only member access dereferences the stored value).
+type tplWrap struct{ *template.Template }
+
+func HostSubEmbedField() int {
+	s := tplWrap{Template: template.Must(template.New("x").Parse("hello"))}
+	if s.Root != nil {
+		return 1
+	}
+	return -1
 }
 
 var afterFuncFired int
