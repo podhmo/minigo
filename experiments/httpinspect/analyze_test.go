@@ -33,7 +33,7 @@ func TestAnalyze(t *testing.T) {
 		{"IfShadow", []string{"header:X-Inner:string:false", "query:inside:string:false", "query:outer:string:false"}, "binary expression"},
 		{"NamedResult", []string{"query:named:integer:false"}, ""},
 		{"UnknownMutation", nil, "statement unsupported: ForStmt"},
-		{"Closure", nil, "expression unsupported: FuncLit"},
+		{"Closure", []string{"query:closure:string:false"}, ""},
 		{"BranchResult", []string{"query:early:integer:false", "query:late:integer:false"}, "binary expression"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

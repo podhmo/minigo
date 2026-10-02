@@ -157,3 +157,8 @@ git diff --check
 - 13 fixture の候補と incomplete の期待値、呼び出しの戻り値トレース、ステップ上限、ソース読み込み境界、通常実行との初期化の違い、スクリプトからのボディ走査と型文脈をテストで検証した。
 
 残件は TODO.md にチェックボックスで追加した。完了した「関数ボディの公開＋浅い解析の実験」は Implemented セクションにまとめた。完全な OpenAPI 生成、専用解析VM、完全な名前・型解決は未実装として区別している。
+
+
+## 続きの実験
+
+上のケース別観測値は初回コミット `b5e5a57` 時点の記録。メソッドとクロージャの続きは [experiment-inspect-methods-closures.md](./experiment-inspect-methods-closures.md) に記録した。続きの実装では Closure ケースも解析可能になり、抽象操作のカウンターも変わっている。

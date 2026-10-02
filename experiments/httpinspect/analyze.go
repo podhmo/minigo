@@ -11,7 +11,6 @@ import (
 
 	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/inspect"
-	"github.com/podhmo/minigo/runtime"
 )
 
 // Parameter is an OpenAPI parameter candidate, not a validated API contract.
@@ -34,6 +33,7 @@ type Trace struct {
 	Args     []string `json:"args"`
 	Results  []string `json:"results"`
 	Boundary bool     `json:"boundary"`
+	Captures []string `json:"captures,omitempty"`
 }
 type Report struct {
 	Parameters  []Parameter  `json:"parameters"`
@@ -47,9 +47,20 @@ type Limits struct {
 	Steps int
 }
 
-type atom struct{ kind, text, origin string }
+type atom struct {
+	kind, text, origin string
+	fn                 *callable
+	object             *sourceObject
+}
 type value []atom
-type env map[string]value
+
+// Names are lexical bindings; the store is copied per abstract path. Callable
+// captures refer to binding IDs rather than an environment snapshot.
+type env struct {
+	names map[string]string
+	local map[string]bool
+	store map[string]value
+}
 type flow struct {
 	vars     env
 	returned []value
@@ -59,6 +70,7 @@ type frame struct {
 	decl    *inspect.Decl
 	imports map[string]string
 	depth   int
+	results []parameter
 }
 type analyzer struct {
 	engine    *minigo.Engine
@@ -68,6 +80,7 @@ type analyzer struct {
 	params    map[string]*Parameter
 	diagnosed map[string]bool
 	exhausted bool
+	nextID    int
 }
 
 // Analyze follows source helpers on demand and substitutes summaries for known
@@ -106,7 +119,7 @@ func Analyze(ctx context.Context, e *minigo.Engine, decl *inspect.Decl, limits L
 		return Report{}, fmt.Errorf("entry %s needs an explicit *net/http.Request parameter", decl.Name)
 	}
 	a := &analyzer{engine: e, ctx: ctx, limits: limits, params: map[string]*Parameter{}, diagnosed: map[string]bool{}}
-	a.invoke(decl, args, 0, nil)
+	a.invoke(sourceFunction(decl), args, 0, nil, map[string]value{})
 	for _, p := range a.params {
 		sort.Strings(p.Evidence)
 		a.report.Parameters = append(a.report.Parameters, *p)
@@ -120,12 +133,46 @@ func Analyze(ctx context.Context, e *minigo.Engine, decl *inspect.Decl, limits L
 }
 func scalar(kind, text string) value { return value{{kind: kind, text: text}} }
 func unknown() value                 { return scalar("unknown", "") }
-func clone(v env) env {
-	out := env{}
-	for k, x := range v {
-		out[k] = x
+func copyNames(xs map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range xs {
+		out[k] = v
 	}
 	return out
+}
+func clone(v env) env {
+	out := env{names: copyNames(v.names), local: map[string]bool{}, store: map[string]value{}}
+	for k, x := range v.local {
+		out.local[k] = x
+	}
+	for k, x := range v.store {
+		out.store[k] = x
+	}
+	return out
+}
+func (v env) lookup(name string) (value, bool) {
+	id, ok := v.names[name]
+	if !ok {
+		return nil, false
+	}
+	x, ok := v.store[id]
+	if !ok {
+		return unknown(), true
+	}
+	return x, true
+}
+func (a *analyzer) allocate() string { a.nextID++; return fmt.Sprintf("b%d", a.nextID) }
+func (a *analyzer) bind(v env, name string, x value, declare bool) {
+	if name == "_" || name == "" {
+		return
+	}
+	id, exists := v.names[name]
+	if declare && !v.local[name] || !exists {
+		id = a.allocate()
+		v.names[name] = id
+		v.local[name] = true
+	}
+	v.store[id] = a.copyValue(x, v.store)
 }
 func union(a, b value) value {
 	out := append(value(nil), a...)
@@ -147,7 +194,13 @@ func describe(v value) string {
 	var xs []string
 	for _, x := range v {
 		s := x.kind
-		if x.text != "" {
+		if x.fn != nil {
+			s = functionDescription(x)
+		}
+		if x.object != nil {
+			s += ":" + objectDescription(x)
+		}
+		if x.text != "" && x.object == nil {
 			s += ":" + x.text
 		}
 		if x.origin != "" {
@@ -211,64 +264,57 @@ func (a *analyzer) tick(n *inspect.Node) bool {
 	a.report.Steps++
 	return true
 }
-func (a *analyzer) invoke(d *inspect.Decl, args []value, depth int, site *inspect.Node) []value {
+func (a *analyzer) invoke(fn *callable, args []value, depth int, site *inspect.Node, store map[string]value) []value {
 	if depth >= a.limits.Depth {
-		a.diagnostic(site, "call depth limit: "+d.Name)
+		a.diagnostic(site, "call depth limit: "+fn.name)
 		return []value{unknown()}
 	}
-	body, err := inspect.BodyOf(d)
-	if err != nil || body == nil {
-		a.diagnostic(site, "source body unavailable: "+d.Name)
+	if fn.body == nil {
+		a.diagnostic(site, "source body unavailable: "+fn.name)
 		return []value{unknown()}
 	}
-	sig, err := inspect.SignatureOf(d)
-	if err != nil {
-		a.diagnostic(site, err.Error())
-		return []value{unknown()}
+	f := frame{decl: fn.owner, depth: depth, imports: importsOf(fn.owner), results: fn.results}
+	vars := env{names: copyNames(fn.captures), local: map[string]bool{}, store: store}
+	var captures []string
+	for name, id := range fn.captures {
+		captures = append(captures, name+"="+describe(store[id]))
 	}
-	f := frame{decl: d, depth: depth, imports: map[string]string{}}
-	for _, sf := range d.Package.Files {
-		if sf.Name == d.File {
-			for _, im := range inspect.ImportsOf(inspect.NewFile(d.Package, sf)) {
-				f.imports[im.Name] = im.Path
-			}
-		}
+	sort.Strings(captures)
+	if fn.receiver != nil {
+		a.bind(vars, fn.receiverName, fn.receiver, true)
 	}
-	for _, field := range sig.ParamFields() {
-		if field.Type.Kind == "Ellipsis" {
-			a.diagnostic(site, "variadic function binding unsupported")
-		}
+	if fn.variadic {
+		a.diagnostic(site, "variadic function binding unsupported")
 	}
-	if fields, _ := inspect.TypeParamsOf(d); len(fields) > 0 {
+	if fn.generic {
 		a.diagnostic(site, "generic function binding unsupported")
 	}
-	vars := env{}
-	i := 0
-	for _, field := range sig.ParamFields() {
-		for _, name := range field.Names {
-			v := unknown()
-			if i < len(args) {
-				v = args[i]
-			}
-			vars[name] = v
-			i++
+	if len(args) != len(fn.params) {
+		a.diagnostic(site, "argument count mismatch: "+fn.name)
+	}
+	for i, param := range fn.params {
+		v := unknown()
+		if i < len(args) {
+			v = args[i]
 		}
+		a.bind(vars, param.name, v, true)
 	}
-	for _, field := range sig.ResultFields() {
-		for _, name := range field.Names {
-			vars[name] = unknown()
-		}
+	for _, param := range fn.results {
+		a.bind(vars, param.name, unknown(), true)
 	}
-	if sig.Recv != nil {
-		a.diagnostic(site, "method receiver binding is unsupported")
-	}
-	flows := a.block(body, []flow{{vars: vars}}, f)
+	flows := a.block(fn.body, []flow{{vars: vars}}, f)
 	var result []value
+	joined := map[string]value{}
 	for _, p := range flows {
+		for id, v := range p.vars.store {
+			joined[id] = union(joined[id], v)
+		}
 		rs := p.returned
-		if !p.done && len(sig.ResultFields()) > 0 {
-			a.diagnostic(body, "result fallthrough is unsupported")
-			rs = []value{unknown()}
+		if !p.done && len(fn.results) > 0 {
+			a.diagnostic(fn.body, "result fallthrough is unsupported")
+			for range fn.results {
+				rs = append(rs, unknown())
+			}
 		}
 		for j, v := range rs {
 			for len(result) <= j {
@@ -277,7 +323,15 @@ func (a *analyzer) invoke(d *inspect.Decl, args []value, depth int, site *inspec
 			result[j] = union(result[j], v)
 		}
 	}
-	a.report.Calls = append(a.report.Calls, Trace{Target: d.Package.Path + "." + d.Name, Args: describeAll(args), Results: describeAll(result)})
+	// Copy the joined store back so captured writes and escaped local bindings
+	// survive the call, without sharing branch stores with other paths.
+	for id := range store {
+		delete(store, id)
+	}
+	for id, v := range joined {
+		store[id] = v
+	}
+	a.report.Calls = append(a.report.Calls, Trace{Target: fn.name, Args: describeAll(args), Results: describeAll(result), Captures: captures})
 	return result
 }
 func (a *analyzer) block(n *inspect.Node, paths []flow, f frame) []flow {
@@ -301,12 +355,46 @@ func (a *analyzer) stmt(n *inspect.Node, p flow, f frame) []flow {
 	switch n.Kind {
 	case "AssignStmt":
 		lhs, rhs := children(n, "Lhs"), children(n, "Rhs")
+		slots := make([][]string, len(lhs))
+		for i, l := range lhs {
+			if l.Kind == "SelectorExpr" {
+				slots[i] = a.fieldSlots(l, p.vars, f)
+			}
+		}
 		var vals []value
 		for _, r := range rhs {
 			vals = append(vals, a.expr(r, p.vars, f)...)
 		}
+		// Pointer reads on the left may be evaluated before or after an RHS
+		// call. Keep both destinations when a pure receiver read changed.
+		for i, l := range lhs {
+			if l.Kind == "SelectorExpr" && canReRead(child(l, "X")) {
+				later := a.fieldSlots(l, p.vars, f)
+				if !sameSlots(slots[i], later) {
+					a.diagnostic(l, "evaluation order may change assignment destination")
+					slots[i] = mergeSlots(slots[i], later)
+				}
+			}
+		}
 		// Evaluate all RHS expressions before writing any LHS slot.
 		for i, l := range lhs {
+			if l.Kind == "SelectorExpr" {
+				v := unknown()
+				if i < len(vals) && n.Token == "=" {
+					v = vals[i]
+				}
+				if n.Token != "=" {
+					a.diagnostic(n, "compound field assignment unsupported")
+				}
+				for _, id := range slots[i] {
+					next := a.copyValue(v, p.vars.store)
+					if len(slots[i]) > 1 {
+						next = union(p.vars.store[id], next)
+					}
+					p.vars.store[id] = next
+				}
+				continue
+			}
 			if l.Kind != "Ident" {
 				a.diagnostic(l, "assignment target unsupported")
 				continue
@@ -322,7 +410,7 @@ func (a *analyzer) stmt(n *inspect.Node, p flow, f frame) []flow {
 				v = unknown()
 				a.diagnostic(n, "compound assignment unsupported")
 			}
-			p.vars[l.Text] = v
+			a.bind(p.vars, l.Text, v, n.Token == ":=")
 		}
 	case "DeclStmt":
 		for _, spec := range children(child(n, "Decl"), "Specs") {
@@ -339,7 +427,7 @@ func (a *analyzer) stmt(n *inspect.Node, p flow, f frame) []flow {
 				if i < len(vals) {
 					v = vals[i]
 				}
-				p.vars[name.Text] = v
+				a.bind(p.vars, name.Text, v, true)
 			}
 		}
 	case "ExprStmt":
@@ -350,23 +438,19 @@ func (a *analyzer) stmt(n *inspect.Node, p flow, f frame) []flow {
 			p.returned = append(p.returned, a.expr(r, p.vars, f)...)
 		}
 		if len(p.returned) == 0 {
-			sig, _ := inspect.SignatureOf(f.decl)
-			for _, field := range sig.ResultFields() {
-				for _, name := range field.Names {
-					p.returned = append(p.returned, p.vars[name])
+			for _, param := range f.results {
+				v, _ := p.vars.lookup(param.name)
+				if v == nil {
+					v = unknown()
 				}
+				p.returned = append(p.returned, v)
 			}
 		}
 	case "IfStmt":
-		local := clone(p.vars)
-		initShadows := map[string]bool{}
+		outer := p.vars
+		local := env{names: copyNames(outer.names), local: map[string]bool{}, store: outer.store}
 		if init := child(n, "Init"); init != nil {
 			a.stmt(init, flow{vars: local}, f)
-			if init.Kind == "AssignStmt" && init.Token == ":=" {
-				for _, id := range children(init, "Lhs") {
-					initShadows[id.Text] = true
-				}
-			}
 		}
 		a.expr(child(n, "Cond"), local, f)
 		then := a.scopedBlock(child(n, "Body"), flow{vars: clone(local)}, f)
@@ -378,16 +462,10 @@ func (a *analyzer) stmt(n *inspect.Node, p flow, f frame) []flow {
 				other = a.stmt(els, other[0], f)
 			}
 		}
-		// Keep alternatives separate. Branch locals do not escape the if scope.
 		all := append(then, other...)
 		for i := range all {
-			for k := range all[i].vars {
-				if old, ok := p.vars[k]; !ok {
-					delete(all[i].vars, k)
-				} else if initShadows[k] {
-					all[i].vars[k] = old
-				}
-			}
+			all[i].vars.names = copyNames(outer.names)
+			all[i].vars.local = outer.local
 		}
 		return all
 	case "BlockStmt":
@@ -395,8 +473,8 @@ func (a *analyzer) stmt(n *inspect.Node, p flow, f frame) []flow {
 	case "EmptyStmt":
 	default:
 		a.diagnostic(n, "statement unsupported: "+n.Kind)
-		for name := range p.vars {
-			p.vars[name] = unknown()
+		for id := range p.vars.store {
+			p.vars.store[id] = unknown()
 		}
 		// Do not inspect an unsupported subtree with fabricated execution semantics.
 	}
@@ -404,35 +482,11 @@ func (a *analyzer) stmt(n *inspect.Node, p flow, f frame) []flow {
 }
 func (a *analyzer) scopedBlock(n *inspect.Node, p flow, f frame) []flow {
 	outer := p.vars
-	p.vars = clone(outer)
+	p.vars = env{names: copyNames(outer.names), local: map[string]bool{}, store: outer.store}
 	out := a.block(n, []flow{p}, f)
-	// Restore names introduced by := in this scope, including shadows. Existing
-	// variables assigned with = retain their new value.
-	shadows := map[string]bool{}
-	for _, s := range children(n, "List") {
-		if s.Kind == "AssignStmt" && s.Token == ":=" {
-			for _, l := range children(s, "Lhs") {
-				if l.Kind == "Ident" {
-					shadows[l.Text] = true
-				}
-			}
-		}
-		if s.Kind == "DeclStmt" {
-			for _, sp := range children(child(s, "Decl"), "Specs") {
-				for _, id := range children(sp, "Names") {
-					shadows[id.Text] = true
-				}
-			}
-		}
-	}
 	for i := range out {
-		for k := range out[i].vars {
-			if v, ok := outer[k]; !ok {
-				delete(out[i].vars, k)
-			} else if shadows[k] {
-				out[i].vars[k] = v
-			}
-		}
+		out[i].vars.names = copyNames(outer.names)
+		out[i].vars.local = outer.local
 	}
 	return out
 }
@@ -442,8 +496,15 @@ func (a *analyzer) expr(n *inspect.Node, vars env, f frame) []value {
 	}
 	switch n.Kind {
 	case "Ident":
-		if v, ok := vars[n.Text]; ok {
+		if v, ok := vars.lookup(n.Text); ok {
 			return []value{v}
+		}
+		if d := f.decl.Package.Index.Funcs[n.Text]; d != nil {
+			return []value{{atom{kind: "function", fn: sourceFunction(inspect.NewDecl(f.decl.Package, d))}}}
+		}
+		if td := f.decl.Package.Index.Types[n.Text]; td != nil {
+			d := inspect.NewDecl(f.decl.Package, td.Decl)
+			return []value{{{kind: "type", text: d.Package.Path + "." + d.Name, object: &sourceObject{typ: d}}}}
 		}
 		return []value{unknown()}
 	case "BasicLit":
@@ -457,20 +518,35 @@ func (a *analyzer) expr(n *inspect.Node, vars env, f frame) []value {
 	case "ParenExpr":
 		return a.expr(child(n, "X"), vars, f)
 	case "SelectorExpr":
-		x := a.expr(child(n, "X"), vars, f)[0]
-		name := child(n, "Sel").Text
+		return []value{a.selectValue(n, vars, f)}
+	case "FuncLit":
+		return []value{a.literal(n, vars)}
+	case "CompositeLit":
+		return []value{a.composite(n, vars, f)}
+	case "StarExpr":
+		xs := dereferenceObjects(a.expr(child(n, "X"), vars, f)[0], vars.store)
 		var out value
-		for _, v := range x {
-			kind := "unknown"
-			if v.kind == "request" && name == "URL" {
-				kind = "url"
+		for _, x := range xs {
+			if x.object == nil {
+				a.diagnostic(n, "dereference operand unsupported")
+				out = union(out, unknown())
+				continue
 			}
-			if v.kind == "request" && name == "Header" {
-				kind = "header"
+			obj := *x.object
+			obj.pointer = x.kind == "type"
+			if x.kind != "type" {
+				obj.binding = ""
 			}
-			out = union(out, scalar(kind, ""))
+			x.object = &obj
+			out = union(out, value{x})
 		}
 		return []value{out}
+	case "UnaryExpr":
+		if n.Token == "&" {
+			return []value{a.address(n, vars, f)}
+		}
+		a.diagnostic(n, "unary expression unsupported: "+n.Token)
+		return []value{unknown()}
 	case "CallExpr":
 		return a.call(n, vars, f)
 	case "BinaryExpr":
@@ -518,86 +594,146 @@ func (a *analyzer) call(n *inspect.Node, vars env, f frame) []value {
 	if n.Token == "..." {
 		a.diagnostic(n, "variadic call expansion unsupported")
 	}
+	// Calls are sequenced lexically, but plain receiver/argument reads can
+	// move relative to neighboring calls. Start with one traversal order,
+	// then retain alternative pure reads if those calls changed their value.
 	fun := child(n, "Fun")
+	targets := a.expr(fun, vars, f)[0]
 	var args []value
-	for _, arg := range children(n, "Args") {
-		vs := a.expr(arg, vars, f)
-		args = append(args, vs...)
+	type argSpan struct {
+		node       *inspect.Node
+		start, end int
 	}
-	if fun == nil {
-		a.diagnostic(n, "missing call target")
+	var spans []argSpan
+	for _, arg := range children(n, "Args") {
+		start := len(args)
+		for _, v := range a.expr(arg, vars, f) {
+			args = append(args, a.copyValue(v, vars.store))
+		}
+		spans = append(spans, argSpan{arg, start, len(args)})
+	}
+	if canReRead(fun) {
+		later := a.expr(fun, vars, f)[0]
+		if semanticKey(targets, vars.store) != semanticKey(later, vars.store) {
+			a.diagnostic(n, "evaluation order may change call target or receiver")
+			targets = union(targets, later)
+		}
+	}
+	for _, span := range spans {
+		if !canReRead(span.node) {
+			continue
+		}
+		later := a.expr(span.node, vars, f)
+		if len(later) != span.end-span.start {
+			continue
+		}
+		for j, v := range later {
+			i := span.start + j
+			if semanticKey(args[i], vars.store) != semanticKey(v, vars.store) {
+				a.diagnostic(n, "evaluation order may change argument value")
+				args[i] = union(args[i], a.copyValue(v, vars.store))
+			}
+		}
+	}
+	var results []value
+	// Alternative callees start from the same store; one alternative's captured
+	// writes must not affect the next alternative's input.
+	joined := map[string]value{}
+	for _, target := range targets {
+		branch := clone(vars)
+		var rs []value
+		switch {
+		case target.fn != nil:
+			fn := target.fn
+			callArgs := args
+			if fn.methodExpression {
+				if len(args) == 0 {
+					a.diagnostic(n, "method expression needs receiver")
+					rs = []value{unknown()}
+					break
+				}
+				copied := *fn
+				copied.receiver = dereferenceObjects(args[0], branch.store)
+				converted := append(value(nil), copied.receiver...)
+				for i, r := range converted {
+					if r.object == nil {
+						continue
+					}
+					obj := *r.object
+					obj.pointer = copied.receiverPointer
+					if !obj.pointer {
+						obj.binding = ""
+					}
+					converted[i].object = &obj
+				}
+				copied.receiver = converted
+				for _, r := range args[0] {
+					if r.object == nil || r.object.pointer != copied.expressionPointer {
+						a.diagnostic(n, "method expression receiver shape mismatch")
+					}
+				}
+				copied.methodExpression = false
+				fn = &copied
+				callArgs = args[1:]
+			}
+			rs = a.invoke(fn, callArgs, f.depth+1, n, branch.store)
+		case target.kind == "summary":
+			rs = a.summary(target.text, args, n)
+		case target.kind == "opaque":
+			a.diagnostic(n, "opaque call: "+target.text)
+			rs = a.boundary(target.text, args, []value{unknown()})
+		default:
+			a.diagnostic(n, "dynamic call target: "+child(n, "Fun").Text)
+			rs = []value{unknown()}
+		}
+		for j, v := range rs {
+			for len(results) <= j {
+				results = append(results, nil)
+			}
+			results[j] = union(results[j], v)
+		}
+		for id, v := range branch.store {
+			joined[id] = union(joined[id], v)
+		}
+	}
+	for id := range vars.store {
+		delete(vars.store, id)
+	}
+	for id, v := range joined {
+		vars.store[id] = v
+	}
+	if len(results) == 0 {
 		return []value{unknown()}
 	}
-	if fun.Kind == "SelectorExpr" {
-		recv, name := child(fun, "X"), child(fun, "Sel").Text
-		if recv.Kind == "Ident" {
-			if _, shadow := vars[recv.Text]; !shadow {
-				if path, ok := f.imports[recv.Text]; ok {
-					if path == "strconv" && name == "Atoi" && len(args) == 1 {
-						var converted value
-						for _, v := range args[0] {
-							if p := a.params[v.origin]; p != nil {
-								p.Schema.Type = "integer"
-								a.evidence(p, n.Pos)
-								converted = union(converted, value{{kind: "integer", origin: v.origin}})
-							} else {
-								converted = union(converted, unknown())
-							}
-						}
-						return a.boundary("strconv.Atoi", args, []value{converted, unknown()})
-					}
-					pkg, err := a.engine.Package(a.ctx, path)
-					if err != nil {
-						a.diagnostic(n, err.Error())
-						return []value{unknown()}
-					}
-					if pkg.Standard || pkg.Index == nil {
-						a.diagnostic(n, "opaque call: "+path+"."+name)
-						return a.boundary(path+"."+name, args, []value{unknown()})
-					}
-					return a.sourceCall(pkg, name, args, f, n)
-				}
-			}
-		}
-		receivers := a.expr(recv, vars, f)[0]
-		var out value
-		matched := false
-		for _, r := range receivers {
-			var v value
-			switch {
-			case r.kind == "url" && name == "Query" && len(args) == 0:
-				v = scalar("query", "")
-			case r.kind == "query" && name == "Get" && len(args) == 1:
-				v = a.parameter(n, "query", args[0])
-			case r.kind == "header" && name == "Get" && len(args) == 1:
-				v = a.parameter(n, "header", args[0])
-			case r.kind == "request" && name == "PathValue" && len(args) == 1:
-				v = a.parameter(n, "path", args[0])
-			default:
-				a.diagnostic(n, "opaque method: "+r.kind+"."+name)
-				v = unknown()
-			}
-			matched = true
-			out = union(out, v)
-		}
-		if matched {
-			return a.boundary("request-model."+name, args, []value{out})
-		}
-	}
-	if fun.Kind == "Ident" {
-		if _, shadow := vars[fun.Text]; !shadow {
-			return a.sourceCall(f.decl.Package, fun.Text, args, f, n)
-		}
-	}
-	a.diagnostic(n, "dynamic call target: "+fun.Text)
-	return a.boundary(fun.Text, args, []value{unknown()})
+	return results
 }
-func (a *analyzer) sourceCall(pkg *runtime.Package, name string, args []value, f frame, n *inspect.Node) []value {
-	if pkg.Index != nil {
-		if d := pkg.Index.Funcs[name]; d != nil {
-			return a.invoke(inspect.NewDecl(pkg, d), args, f.depth+1, n)
+func (a *analyzer) summary(target string, args []value, n *inspect.Node) []value {
+	if target == "strconv.Atoi" && len(args) == 1 {
+		var converted value
+		for _, v := range args[0] {
+			if p := a.params[v.origin]; p != nil {
+				p.Schema.Type = "integer"
+				a.evidence(p, n.Pos)
+				converted = union(converted, value{{kind: "integer", origin: v.origin}})
+			} else {
+				converted = union(converted, unknown())
+			}
 		}
+		return a.boundary(target, args, []value{converted, unknown()})
 	}
-	a.diagnostic(n, "unresolved function: "+name)
-	return []value{unknown()}
+	var out value
+	switch {
+	case target == "url.Query" && len(args) == 0:
+		out = scalar("query", "")
+	case target == "query.Get" && len(args) == 1:
+		out = a.parameter(n, "query", args[0])
+	case target == "header.Get" && len(args) == 1:
+		out = a.parameter(n, "header", args[0])
+	case target == "request.PathValue" && len(args) == 1:
+		out = a.parameter(n, "path", args[0])
+	default:
+		a.diagnostic(n, "summary argument mismatch: "+target)
+		out = unknown()
+	}
+	return a.boundary(target, args, []value{out})
 }
