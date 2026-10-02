@@ -1047,12 +1047,19 @@ func (v *VM) loop(f *frame) {
 			f.push(b)
 		case bytecode.OpFieldRef:
 			base := f.pop()
-			v.checkAddrBase(base, nil)
+			if ins.B == 0 {
+				// address-of target: the nil check fires now; B=1 marks a
+				// store target, where Go checks at store time so the RHS
+				// still evaluates first (p.f = before()).
+				v.checkAddrBase(base, nil)
+			}
 			f.push(&runtime.FieldRef{Base: base, Name: consts[ins.A].(string)})
 		case bytecode.OpIndexRef:
 			key := f.pop()
 			base := f.pop()
-			v.checkAddrBase(base, key)
+			if ins.B == 0 {
+				v.checkAddrBase(base, key)
+			}
 			if _, isMap := runtime.Unwrap(base).(*runtime.Map); isMap && ins.B == 0 {
 				// Go rejects &m[k] at compile time: map elements are
 				// not addressable — B=1 marks a multi-assign store
@@ -3405,6 +3412,8 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 			panic(&runtime.Panic{Value: "assignment to entry in nil map"})
 		case runtime.KindSlice:
 			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: fmt.Sprintf("index out of range [%v] with length 0", runtime.Unwrap(idx))}})
+		case runtime.KindPointer:
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "invalid memory address or nil pointer dereference"}})
 		default:
 			f.trap("index assign on nil %s", tdName(b.Typ))
 		}
