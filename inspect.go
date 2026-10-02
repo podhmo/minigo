@@ -269,6 +269,33 @@ func (e *Engine) installInspect() {
 			return &runtime.GoValue{V: runtime.SymbolID{PackagePath: path, Name: s.Name}}, nil
 		}),
 		// ---- syntax layer ----
+		"Body": bf("Body", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, argerr("Body", "one declaration")
+			}
+			s, err := declViewOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			n, err := xinspect.BodyOf(s)
+			if err != nil {
+				return nil, err
+			}
+			if n == nil {
+				return runtime.NIL, nil
+			}
+			return &runtime.GoValue{V: n}, nil
+		}),
+		"SyntaxChildren": bf("SyntaxChildren", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, argerr("SyntaxChildren", "one syntax node")
+			}
+			n, err := goView[xinspect.Node](args[0], "syntax node")
+			if err != nil {
+				return nil, err
+			}
+			return boxedSlice(n.ChildNodes()), nil
+		}),
 		"Fields": bf("Fields", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {
