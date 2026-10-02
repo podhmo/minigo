@@ -1037,11 +1037,7 @@ func (c *compiler) callStmt(call *ast.CallExpr, op bytecode.Op, pos token.Pos) {
 	for _, a := range call.Args {
 		c.expr(a)
 	}
-	spread := 0
-	if call.Ellipsis.IsValid() {
-		spread = 1
-	}
-	c.emit(op, len(call.Args), spread, pos)
+	c.emit(op, len(call.Args), callSpread(call), pos)
 }
 
 // assign handles =, :=, and compound ops.
@@ -2487,11 +2483,31 @@ unwrapped:
 		}
 		c.expr(a)
 	}
-	spread := 0
+	c.emit(bytecode.OpCall, len(x.Args), callSpread(x), x.Pos())
+}
+
+// callSpread reports the OpCall B flag for the argument list: 1
+// spreads a trailing `x...`; 2 marks a lone call argument whose
+// result tuple spreads into the callee's params (`swap(swap(a, b))`
+// — the only multi-value spread Go allows).
+func callSpread(x *ast.CallExpr) int {
 	if x.Ellipsis.IsValid() {
-		spread = 1
+		return 1
 	}
-	c.emit(bytecode.OpCall, len(x.Args), spread, x.Pos())
+	if len(x.Args) == 1 {
+		arg := x.Args[0]
+		for {
+			if p, ok := arg.(*ast.ParenExpr); ok {
+				arg = p.X
+				continue
+			}
+			break
+		}
+		if _, ok := arg.(*ast.CallExpr); ok {
+			return 2
+		}
+	}
+	return 0
 }
 
 // trySpecial emits OpSpecialCall when the call's callee resolves to a

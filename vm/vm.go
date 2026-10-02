@@ -1313,7 +1313,7 @@ func (v *VM) loop(f *frame) {
 			// coerces like a store into `var p T`.
 			f.push(&runtime.Cell{Elem: x, Typ: declaredTag(x)})
 		case bytecode.OpCall:
-			args := v.popArgs(f, int(ins.A), ins.B == 1, ins.Pos)
+			args := v.popArgs(f, int(ins.A), int(ins.B), ins.Pos)
 			fn := f.pop()
 			r, err := v.call(fn, args)
 			if err != nil {
@@ -1323,13 +1323,13 @@ func (v *VM) loop(f *frame) {
 		case bytecode.OpDefer:
 			// callee + args are evaluated now (Go semantics); the call itself
 			// runs at frame teardown, LIFO.
-			args := v.popArgs(f, int(ins.A), ins.B == 1, ins.Pos)
+			args := v.popArgs(f, int(ins.A), int(ins.B), ins.Pos)
 			fn := f.pop()
 			f.defers = append(f.defers, deferredCall{fn: fn, args: args, pos: ins.Pos})
 		case bytecode.OpGo:
 			// `go f(x)` spawns a real goroutine in this process: callee and
 			// args are evaluated now; the call runs concurrently.
-			args := v.popArgs(f, int(ins.A), ins.B == 1, ins.Pos)
+			args := v.popArgs(f, int(ins.A), int(ins.B), ins.Pos)
 			fn := f.pop()
 			v.Spawn(fn, args)
 		case bytecode.OpEvalAST:
@@ -6561,17 +6561,27 @@ func (v *VM) elemFamily(et *runtime.TypeDef) byte {
 
 // ---- references, spread, types, specials (round 4) ----
 
-// popArgs pops argc args off the stack. When spread is set the last arg
-// must be a *Slice (f(xs...)) and is expanded in place.
-func (v *VM) popArgs(f *frame, argc int, spread bool, pos token.Pos) []runtime.Value {
+// popArgs pops argc args off the stack. mode is the OpCall B flag: 1
+// expands a trailing slice/string spread (`f(xs...)`); 2 spreads a
+// lone call argument's result tuple (`f(g())`).
+func (v *VM) popArgs(f *frame, argc int, mode int, pos token.Pos) []runtime.Value {
 	args := make([]runtime.Value, argc)
 	for i := argc - 1; i >= 0; i-- {
 		args[i] = f.pop()
 	}
+	// a lone call argument spreads its result tuple into the callee's
+	// params — `swap(swap(a, b))` — the only multi-value spread Go
+	// allows; any other single value stays one argument.
+	if mode == 2 && argc == 1 {
+		if t, ok := args[0].(*runtime.Tuple); ok {
+			args = t.Elems
+		}
+		return args
+	}
 	// args stay lazy across the boundary: the callee's declared-param
 	// coerce applies Go's constant-to-type conversion (`f('a')` into an
 	// int param), and host marshaling materializes what is left.
-	if spread {
+	if mode == 1 {
 		if argc == 0 {
 			f.trap("spread call with no arguments")
 		}
