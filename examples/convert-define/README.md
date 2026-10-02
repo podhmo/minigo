@@ -116,14 +116,14 @@ Note on identical names across packages: two struct types that merely share a na
 
 ### Reading a failure
 
-Every failure exits non-zero and writes nothing. Most say in their first line **who has to fix it**; DSL evaluation errors instead carry the define-file position and a traceback:
+Every failure exits non-zero, writes nothing, and its first line says **who has to fix it**:
 
 | first line says | cause | what to do |
 |---|---|---|
 | `invalid -tags "...": ... Fix the command-line arguments` | malformed `-tags` expression | fix the flag |
 | `define file ... does not exist. Fix the command-line arguments` | `-file` names a missing path or a directory | pass the path of the define file |
 | `define file ... does not parse (N errors). Fix the define file` | syntax error in the DSL file; every distinct error follows with a numbered excerpt | fix the define file |
-| `failed to run definition script: ... define.go:12:2: ...` followed by a `Traceback` | the definitions name something that does not resolve (unknown field in `c.Map`, bad `define.Rule` signature, ...) | fix the define file at that position, or the types |
+| `define file ... is invalid at L:C: c.Map: ... Fix the define file at that position` | the definitions name something that does not resolve (unknown field in `c.Map`, bad `define.Rule` signature, ...); the position is the offending call, with an excerpt, plus `reached via` frames when `define.Convert` was called from a helper | fix the define file at that position, or the types |
 | `-strict: N field pair(s) would not compile` | a field pair no rule/cast covers, or a `c.Compute` expression whose type the field cannot hold, listed as `converter: dst.Field: reason` | add a `define.Rule` for the type pair, or `c.Convert` the field; for `c.Compute`, fix the expression |
 | `generated code does not parse ... This is a convert-define generator bug` | the generator emitted broken syntax; each error names the converter and field (`emitted by: converter convertAToB, field Items`) | report it with the message; rerun with `-log-level debug` for the raw source |
 | `generated code uses N package(s) the generator did not import ... generator bug` | the generator used a package without registering its import; names the path and its first use | report it with the message |

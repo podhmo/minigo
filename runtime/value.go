@@ -911,7 +911,15 @@ type Trap struct {
 	Pos    token.Pos
 	Reason string
 	Frames []string // "func at file:line" entries collected while unwinding
+	// Err is the host error the trap was raised from (a special-form
+	// handler, builtin or host call that returned an error), or nil for
+	// a trap the VM raised itself. Reason is its text; keeping the value
+	// lets hosts errors.As their own typed errors through the trap.
+	Err error
 }
+
+// Unwrap exposes the host error a trap was raised from.
+func (t *Trap) Unwrap() error { return t.Err }
 
 func (t *Trap) Error() string {
 	if len(t.Frames) == 0 {

@@ -201,6 +201,108 @@ DIR/define.go:6:1: missing ',' in parameter list
 	}
 }
 
+// TestRunReportsDSLMisuse pins the DSL-misuse report: the user's to
+// fix, at the offending c.Map call (not the enclosing define.Convert),
+// with an excerpt; the DSL call path appears only when a helper was
+// involved. Nothing is written.
+func TestRunReportsDSLMisuse(t *testing.T) {
+	types := map[string]string{
+		"go.mod":                     "module example.com/dslerr\ngo 1.22\n",
+		"source/source.go":           "package source\n\ntype A struct{ V int }\n",
+		"destination/destination.go": "package destination\n\ntype B struct{ V int }\n",
+	}
+	tests := []struct {
+		name   string
+		define string
+		want   string
+	}{
+		{
+			name: "in main",
+			define: `package main
+
+import (
+	"example.com/dslerr/destination"
+	"example.com/dslerr/source"
+	"github.com/podhmo/minigo/examples/convert-define/define"
+)
+
+func main() {
+	define.Convert(func(c *define.Config, dst *destination.B, src *source.A) {
+		c.Map(dst.V, src.W)
+	})
+}
+`,
+			want: `define file DIR/define.go is invalid at 11:3: c.Map: source: field path "W": A has no field "W"
+Fix the define file at that position; no code was generated.
+
+     9 | func main() {
+    10 | 	define.Convert(func(c *define.Config, dst *destination.B, src *source.A) {
+  > 11 | 		c.Map(dst.V, src.W)
+    12 | 	})
+    13 | }
+`,
+		},
+		{
+			name: "via a helper",
+			define: `package main
+
+import (
+	"example.com/dslerr/destination"
+	"example.com/dslerr/source"
+	"github.com/podhmo/minigo/examples/convert-define/define"
+)
+
+func main() {
+	register()
+}
+
+func register() {
+	define.Convert(func(c *define.Config, dst *destination.B, src *source.A) {
+		c.Map(dst.W, src.V)
+	})
+}
+`,
+			want: `define file DIR/define.go is invalid at 15:3: c.Map: destination: field path "W": B has no field "W"
+Fix the define file at that position; no code was generated.
+
+    13 | func register() {
+    14 | 	define.Convert(func(c *define.Config, dst *destination.B, src *source.A) {
+  > 15 | 		c.Map(dst.W, src.V)
+    16 | 	})
+    17 | }
+
+reached via (most recent call first):
+  File "DIR/define.go", line 14, in register()
+      define.Convert(func(c *define.Config, dst *destination.B, src *source.A) {
+  File "DIR/define.go", line 10, in main()
+      register()
+`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"define.go": tt.define}
+			for k, v := range types {
+				files[k] = v
+			}
+			dir := writeFiles(t, files)
+			outputFile := filepath.Join(dir, "generated.go")
+			err := run(context.Background(), filepath.Join(dir, "define.go"), outputFile, false, "", false)
+			var de *dslError
+			if !errors.As(err, &de) {
+				t.Fatalf("want *dslError, got %T: %v", err, err)
+			}
+			got := strings.ReplaceAll(err.Error(), dir, "DIR")
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("report mismatch (-want +got):\n%s", diff)
+			}
+			if _, err := os.Stat(outputFile); !os.IsNotExist(err) {
+				t.Errorf("output must not be written, stat err = %v", err)
+			}
+		})
+	}
+}
+
 func TestRunRejectsBadDefineFile(t *testing.T) {
 	dir := t.TempDir()
 	const fix = "Fix the command-line arguments: -file takes the path of a Go define file (e.g. -file ./define.go)"

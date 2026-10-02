@@ -4,6 +4,7 @@ package internal
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/printer"
@@ -141,6 +142,16 @@ func (r *Runner) Run(ctx context.Context, filename string) error {
 		r.dirPkg = dirPkg
 	}
 	if _, err := engine.Call(ctx, pkg, "main"); err != nil {
+		// A DSL misuse arrives as the handler's *DefineError wrapped
+		// in the trap (Trap.Unwrap); hand it out with the trap's frames.
+		var de *DefineError
+		if errors.As(err, &de) {
+			var trap *runtime.Trap
+			if errors.As(err, &trap) {
+				de.Frames = trap.Frames
+			}
+			return de
+		}
 		return fmt.Errorf("evaluating define file: %w", err)
 	}
 	return nil
@@ -149,14 +160,14 @@ func (r *Runner) Run(ctx context.Context, filename string) error {
 func (r *Runner) handleConvert(ctx runtime.SpecialContext, call *runtime.QuotedCall) (runtime.Value, error) {
 	args := call.Call.Args
 	if len(args) != 1 {
-		return nil, ctx.Errorf(call.Call, "Convert() expects 1 argument (the mapping function), got %d", len(args))
+		return nil, r.errorf(ctx, call.Call, "Convert() expects 1 argument (the mapping function), got %d", len(args))
 	}
 	fnLit, ok := args[0].(*ast.FuncLit)
 	if !ok {
-		return nil, ctx.Errorf(call.Call, "argument to Convert() must be a function literal")
+		return nil, r.errorf(ctx, call.Call, "argument to Convert() must be a function literal")
 	}
 	if fnLit.Type == nil || fnLit.Type.Params == nil || len(fnLit.Type.Params.List) != 3 {
-		return nil, ctx.Errorf(call.Call, "mapping function must have the signature func(c *Config, dst *DstType, src *SrcType)")
+		return nil, r.errorf(ctx, call.Call, "mapping function must have the signature func(c *Config, dst *DstType, src *SrcType)")
 	}
 
 	// Infer types from function signature: func(c *Config, dst *Dst, src *Src)
@@ -167,21 +178,21 @@ func (r *Runner) handleConvert(ctx runtime.SpecialContext, call *runtime.QuotedC
 	srcTE := xinspect.NewTypeExpr(fnLit.Type.Params.List[2].Type, ctx.File(), ctx.Package())
 
 	if dstTE.Kind != "StarExpr" {
-		return nil, ctx.Errorf(call.Call, "destination type in mapping function must be a pointer")
+		return nil, r.errorf(ctx, call.Call, "destination type in mapping function must be a pointer")
 	}
 	if srcTE.Kind != "StarExpr" {
-		return nil, ctx.Errorf(call.Call, "source type in mapping function must be a pointer")
+		return nil, r.errorf(ctx, call.Call, "source type in mapping function must be a pointer")
 	}
 
 	srcType, err := r.resolveTypeExpr(ctx, srcTE)
 	if err != nil {
-		return nil, ctx.Errorf(call.Call, "could not resolve source type from mapping function: %v", err)
+		return nil, r.errorf(ctx, call.Call, "could not resolve source type from mapping function: %v", err)
 	}
 	r.ensureStructInfo(srcType)
 
 	dstType, err := r.resolveTypeExpr(ctx, dstTE)
 	if err != nil {
-		return nil, ctx.Errorf(call.Call, "could not resolve destination type from mapping function: %v", err)
+		return nil, r.errorf(ctx, call.Call, "could not resolve destination type from mapping function: %v", err)
 	}
 	r.ensureStructInfo(dstType)
 
@@ -206,15 +217,15 @@ func (r *Runner) handleConvert(ctx runtime.SpecialContext, call *runtime.QuotedC
 		srcName: paramName(fnLit.Type.Params.List[2], "src"),
 	}
 	if walker.srcInfo == nil {
-		return nil, ctx.Errorf(call.Call, "source type %s must be a struct", srcType.Name)
+		return nil, r.errorf(ctx, call.Call, "source type %s must be a struct", srcType.Name)
 	}
 	if walker.dstInfo == nil {
-		return nil, ctx.Errorf(call.Call, "destination type %s must be a struct", dstType.Name)
+		return nil, r.errorf(ctx, call.Call, "destination type %s must be a struct", dstType.Name)
 	}
 
 	ast.Walk(walker, fnLit.Body)
 	if walker.err != nil {
-		return nil, ctx.Errorf(call.Call, "error while parsing mapping function: %v", walker.err)
+		return nil, r.errorf(ctx, walker.errCall, "c.%s: %v", walker.errMethod, walker.err)
 	}
 
 	r.Info.ConversionPairs = append(r.Info.ConversionPairs, pair)
@@ -287,26 +298,26 @@ func (r *Runner) resolveTypeExpr(ctx runtime.SpecialContext, te *xinspect.TypeEx
 func (r *Runner) handleRule(ctx runtime.SpecialContext, call *runtime.QuotedCall) (runtime.Value, error) {
 	args := call.Call.Args
 	if len(args) != 1 {
-		return nil, ctx.Errorf(call.Call, "Rule() expects 1 argument, got %d", len(args))
+		return nil, r.errorf(ctx, call.Call, "Rule() expects 1 argument, got %d", len(args))
 	}
 	funcExpr, ok := args[0].(*ast.SelectorExpr)
 	if !ok {
-		return nil, ctx.Errorf(call.Call, "argument to Rule() must be a function selector (e.g., pkg.Func)")
+		return nil, r.errorf(ctx, call.Call, "argument to Rule() must be a function selector (e.g., pkg.Func)")
 	}
 	pkgIdent, ok := funcExpr.X.(*ast.Ident)
 	if !ok {
-		return nil, ctx.Errorf(call.Call, "receiver of function selector must be a package identifier")
+		return nil, r.errorf(ctx, call.Call, "receiver of function selector must be a package identifier")
 	}
 	sym, err := ctx.ResolveSymbol(funcExpr)
 	if err != nil {
-		return nil, err
+		return nil, r.errorf(ctx, call.Call, "%v", err)
 	}
 	pkgPath, funcName := sym.PackagePath, sym.Name
 
 	gctx := context.Background()
 	p, err := r.engine.Package(gctx, pkgPath)
 	if err != nil {
-		return nil, ctx.Errorf(call.Call, "could not load package %q: %v", pkgPath, err)
+		return nil, r.errorf(ctx, call.Call, "could not load package %q: %v", pkgPath, err)
 	}
 	var fnDecl *xinspect.Decl
 	if p.Index != nil {
@@ -315,11 +326,11 @@ func (r *Runner) handleRule(ctx runtime.SpecialContext, call *runtime.QuotedCall
 		}
 	}
 	if fnDecl == nil {
-		return nil, ctx.Errorf(call.Call, "function %q not found in package %q", funcName, pkgPath)
+		return nil, r.errorf(ctx, call.Call, "function %q not found in package %q", funcName, pkgPath)
 	}
 	sig, err := xinspect.SignatureOf(fnDecl)
 	if err != nil {
-		return nil, ctx.Errorf(call.Call, "rule function %s has no readable signature: %v", funcName, err)
+		return nil, r.errorf(ctx, call.Call, "rule function %s has no readable signature: %v", funcName, err)
 	}
 	params, results := sig.ParamFields(), sig.ResultFields()
 	// The generated call site is f(ctx, ec, src): enforce the contract —
@@ -327,7 +338,7 @@ func (r *Runner) handleRule(ctx runtime.SpecialContext, call *runtime.QuotedCall
 	if len(params) != 3 || len(results) != 1 ||
 		params[0].Type.CanonicalName() != "context.Context" ||
 		params[1].Type.CanonicalName() != "*"+modelPkgPath+".ErrorCollector" {
-		return nil, ctx.Errorf(call.Call, "rule function %s must have signature func(ctx context.Context, ec *model.ErrorCollector, src SrcType) DstType", funcName)
+		return nil, r.errorf(ctx, call.Call, "rule function %s must have signature func(ctx context.Context, ec *model.ErrorCollector, src SrcType) DstType", funcName)
 	}
 
 	srcTE := params[len(params)-1].Type
@@ -335,17 +346,17 @@ func (r *Runner) handleRule(ctx runtime.SpecialContext, call *runtime.QuotedCall
 	res := r.TypeResolver()
 	srcTypeInfo, err := model.ResolveNamed(res, srcTE)
 	if err != nil {
-		return nil, ctx.Errorf(call.Call, "could not resolve source type for rule: %v", err)
+		return nil, r.errorf(ctx, call.Call, "could not resolve source type for rule: %v", err)
 	}
 	dstTypeInfo, err := model.ResolveNamed(res, dstTE)
 	if err != nil {
-		return nil, ctx.Errorf(call.Call, "could not resolve destination type for rule: %v", err)
+		return nil, r.errorf(ctx, call.Call, "could not resolve destination type for rule: %v", err)
 	}
 	if srcTypeInfo == nil && !isBuiltinType(srcTE) {
-		return nil, ctx.Errorf(call.Call, "could not resolve source type definition for rule: %s", srcTE.Text)
+		return nil, r.errorf(ctx, call.Call, "could not resolve source type definition for rule: %s", srcTE.Text)
 	}
 	if dstTypeInfo == nil && !isBuiltinType(dstTE) {
-		return nil, ctx.Errorf(call.Call, "could not resolve destination type definition for rule: %s", dstTE.Text)
+		return nil, r.errorf(ctx, call.Call, "could not resolve destination type definition for rule: %s", dstTE.Text)
 	}
 
 	usingFunc := fmt.Sprintf("%s.%s", pkgIdent.Name, funcName)
@@ -378,6 +389,10 @@ type mappingWalker struct {
 	dstName string // name of the dst parameter in the mapping func
 	srcName string // name of the src parameter in the mapping func
 	err     error
+	// errCall/errMethod locate the c.Map/c.Convert/c.Compute call that
+	// failed, so the error points at it rather than at define.Convert.
+	errCall   *ast.CallExpr
+	errMethod string
 }
 
 func (w *mappingWalker) Visit(node ast.Node) ast.Visitor {
@@ -417,6 +432,9 @@ unwrapped:
 		w.err = w.parseConvertCall(call)
 	case "Compute":
 		w.err = w.parseComputeCall(call)
+	}
+	if w.err != nil {
+		w.errCall, w.errMethod = call, sel.Sel.Name
 	}
 	return w
 }

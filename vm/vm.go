@@ -812,14 +812,14 @@ func (v *VM) invokeDeferred(d deferredCall) {
 			v.pushDeferredSentinel(c.Name)
 			defer v.framesPop()
 			if _, err := c.Fn(v, d.args); err != nil {
-				panic(&runtime.Trap{Pos: d.pos, Reason: err.Error()})
+				panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
 			}
 			return
 		case *runtime.TypeDef:
 			v.pushDeferredSentinel(c.Name)
 			defer v.framesPop()
 			if _, err := v.convert(c, firstArg(d.args)); err != nil {
-				panic(&runtime.Trap{Pos: d.pos, Reason: err.Error()})
+				panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
 			}
 			return
 		case *runtime.Named:
@@ -835,7 +835,7 @@ func (v *VM) invokeDeferred(d deferredCall) {
 	}
 	fr, err := v.prepFrame(callee, d.args)
 	if err != nil {
-		panic(&runtime.Trap{Pos: d.pos, Reason: err.Error()})
+		panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
 	}
 	fr.deferred = true
 	v.exec(fr)
@@ -1172,7 +1172,7 @@ func (v *VM) loop(f *frame) {
 			}
 			res, err := h(&specialCtx{v: v, f: f, q: q}, q)
 			if err != nil {
-				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error()})
+				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
 			}
 			f.push(res)
 		case bytecode.OpBox:
@@ -1185,7 +1185,7 @@ func (v *VM) loop(f *frame) {
 			fn := f.pop()
 			r, err := v.call(fn, args)
 			if err != nil {
-				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error()})
+				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
 			}
 			f.push(r)
 		case bytecode.OpDefer:
@@ -1207,11 +1207,11 @@ func (v *VM) loop(f *frame) {
 			}
 			ch, err := v.H.CompileExpr(f.fn.Pkg, frag.File, frag.Expr)
 			if err != nil {
-				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error()})
+				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
 			}
 			r, err := v.call(&runtime.Function{Pkg: f.fn.Pkg, File: frag.File, Name: "<eval>", Chunk: ch}, nil)
 			if err != nil {
-				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error()})
+				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
 			}
 			f.push(r)
 		case bytecode.OpPack:
@@ -3583,7 +3583,7 @@ func (v *VM) driveFuncIter(f *frame, it *runtime.Iterator, nvars, top, end int) 
 		},
 	}
 	if _, err := v.call(it.Fn, []runtime.Value{yield}); err != nil {
-		panic(&runtime.Trap{Pos: f.pos(), Reason: err.Error()})
+		panic(&runtime.Trap{Pos: f.pos(), Reason: err.Error(), Err: err})
 	}
 }
 
