@@ -97,9 +97,43 @@ All three accept **dotted field paths**, not just top-level fields: `c.Map(dst.I
 
 Fields are matched in this order: an explicit `c.Map`/`c.Convert` entry, then the normalized `json` tag, then the normalized field name. For each matched pair the generator emits, in order: the explicit converter, a matching `define.Rule`, or the default shape conversion — direct assignment for identical types, struct-to-struct via the discovered sub-converter, element-wise slices/arrays/maps, pointer un/re-wrapping, and finally a `DstT(src)` cast for castable leaf pairs (named scalar types, numeric pairs, `string` <-> `[]byte`/`[]rune`).
 
-A leaf pair no rule and no cast covers (e.g. `int` -> `string`) still emits the honest raw assignment — which will not compile — but is also reported as a **generation warning** on the converter's doc comment and via `slog`, so the failure is visible before compile time.
+A leaf pair no rule and no cast covers (e.g. `int` -> `string`) still emits the honest raw assignment — which will not compile — but is also reported as a **generation warning** on the converter's doc comment and via `slog`, so the failure is visible before compile time. Pass `-strict` to make such warnings fail the run instead (see [Debugging](#debugging)).
 
 Note on identical names across packages: two struct types that merely share a name (e.g. `a.User` and `b.User`) are *not* the same type — the generator converts them field by field. Struct identity is checked by canonical package-qualified name plus structural shape; same-name cross-package types whose fields differ still get a per-field converter, which is the intended behavior.
+
+## Debugging
+
+### Flags
+
+| flag | use |
+|---|---|
+| `-file <define.go>` | the definition file (required) |
+| `-output <file>` | where to write; its directory is the package the converters join (default `generated.go`) |
+| `-dry-run` | print the generated code to stdout instead of writing it |
+| `-log-level debug` | log the parsed definitions (`parsed_info`), discovered sub-conversions, and — when generated code does not parse — the full unformatted source |
+| `-tags <expr>` | a build constraint written as the output's `//go:build` line (validated; e.g. `-tags e2e`) |
+| `-strict` | fail instead of writing output when a field pair would not compile (generation warnings become errors) |
+
+### Reading a failure
+
+Every failure exits non-zero and writes nothing. Most say in their first line **who has to fix it**; DSL evaluation errors instead carry the define-file position and a traceback:
+
+| first line says | cause | what to do |
+|---|---|---|
+| `invalid -tags "...": ... Fix the command-line arguments` | malformed `-tags` expression | fix the flag |
+| `define file ... does not parse (N errors). Fix the define file` | syntax error in the DSL file; every distinct error follows with a numbered excerpt | fix the define file |
+| `failed to run definition script: ... define.go:12:2: ...` followed by a `Traceback` | the definitions name something that does not resolve (unknown field in `c.Map`, bad `define.Rule` signature, ...) | fix the define file at that position, or the types |
+| `-strict: N field pair(s) would not compile` | a field pair no rule/cast covers, listed as `converter: dst.Field: reason` | add a `define.Rule` for the type pair, or `c.Convert` the field |
+| `generated code does not parse ... This is a convert-define generator bug` | the generator emitted broken syntax; each error names the converter and field (`emitted by: converter convertAToB, field Items`) | report it with the message; rerun with `-log-level debug` for the raw source |
+| `generated code uses N package(s) the generator did not import ... generator bug` | the generator used a package without registering its import; names the path and its first use | report it with the message |
+
+Without `-strict`, a field pair that will not compile still produces output: the warning is printed via `slog` and listed under "Generation warnings" in the converter's doc comment, and `go build` then fails on that assignment. Search the generated file for the `ec.Enter("Field")` line above the failing line to find the field.
+
+### A typical loop
+
+1. `go run ... -file define.go -dry-run` — check what would be generated without touching the package.
+2. If a field looks wrong, rerun with `-log-level debug` and check `parsed_info` (which pairs and mappings the DSL produced) and the discovered sub-conversions.
+3. Run with `-strict` in CI so an uncovered field pair fails generation rather than a later build.
 
 ## Role of `minigo` and `inspect`
 
