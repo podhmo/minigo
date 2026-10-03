@@ -217,78 +217,47 @@ func (e *Engine) installStdlib() {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("strings.TrimFunc needs 2 args")
 			}
-			pred, cerr := runePred(v, args[1])
-			out := strings.TrimFunc(str(args[0]), pred)
-			if *cerr != nil {
-				return nil, *cerr
-			}
+			out := strings.TrimFunc(str(args[0]), runePred(v, args[1]))
 			return out, nil
 		}},
 		"TrimLeftFunc": &runtime.BuiltinFunc{Name: "strings.TrimLeftFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("strings.TrimLeftFunc needs 2 args")
 			}
-			pred, cerr := runePred(v, args[1])
-			out := strings.TrimLeftFunc(str(args[0]), pred)
-			if *cerr != nil {
-				return nil, *cerr
-			}
+			out := strings.TrimLeftFunc(str(args[0]), runePred(v, args[1]))
 			return out, nil
 		}},
 		"TrimRightFunc": &runtime.BuiltinFunc{Name: "strings.TrimRightFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("strings.TrimRightFunc needs 2 args")
 			}
-			pred, cerr := runePred(v, args[1])
-			out := strings.TrimRightFunc(str(args[0]), pred)
-			if *cerr != nil {
-				return nil, *cerr
-			}
+			out := strings.TrimRightFunc(str(args[0]), runePred(v, args[1]))
 			return out, nil
 		}},
 		"IndexFunc": &runtime.BuiltinFunc{Name: "strings.IndexFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("strings.IndexFunc needs 2 args")
 			}
-			pred, cerr := runePred(v, args[1])
-			out := strings.IndexFunc(str(args[0]), pred)
-			if *cerr != nil {
-				return nil, *cerr
-			}
+			out := strings.IndexFunc(str(args[0]), runePred(v, args[1]))
 			return int64(out), nil
 		}},
 		"LastIndexFunc": &runtime.BuiltinFunc{Name: "strings.LastIndexFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("strings.LastIndexFunc needs 2 args")
 			}
-			pred, cerr := runePred(v, args[1])
-			out := strings.LastIndexFunc(str(args[0]), pred)
-			if *cerr != nil {
-				return nil, *cerr
-			}
+			out := strings.LastIndexFunc(str(args[0]), runePred(v, args[1]))
 			return int64(out), nil
 		}},
 		"Map": &runtime.BuiltinFunc{Name: "strings.Map", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("strings.Map needs 2 args")
 			}
-			var cerr error
 			mapping := func(r rune) rune {
-				if cerr != nil {
-					return r
-				}
-				res, err := v.Call(args[0], []runtime.Value{int64(r)})
-				if err != nil {
-					cerr = err
-					return r
-				}
+				res := callOrPanic(v, args[0], []runtime.Value{int64(r)})
 				// a negative result drops the rune in Go
 				return rune(int64Of(goNative(res)))
 			}
 			out := strings.Map(mapping, str(args[1]))
-			if cerr != nil {
-				return nil, cerr
-			}
 			return out, nil
 		}},
 	})
@@ -561,10 +530,7 @@ func (e *Engine) installStdlib() {
 			}
 			less := args[1]
 			for i := len(s.Elems) - 1; i > 0; i-- {
-				r, err := v.Call(less, []runtime.Value{int64(i), int64(i - 1)})
-				if err != nil {
-					return nil, err
-				}
+				r := callOrPanic(v, less, []runtime.Value{int64(i), int64(i - 1)})
 				if b, _ := r.(bool); b {
 					return false, nil
 				}
@@ -577,10 +543,7 @@ func (e *Engine) installStdlib() {
 			i, j := int64(0), n
 			for i < j {
 				m := int64(uint64(i+j) >> 1)
-				r, err := v.Call(f, []runtime.Value{m})
-				if err != nil {
-					return nil, err
-				}
+				r := callOrPanic(v, f, []runtime.Value{m})
 				if b, _ := r.(bool); b {
 					j = m
 				} else {
@@ -595,20 +558,12 @@ func (e *Engine) installStdlib() {
 				return nil, fmt.Errorf("sort.SliceStable: first arg must be a slice")
 			}
 			less := args[1]
-			var cerr error
 			sort.SliceStable(s.Elems, func(i, j int) bool {
-				if cerr != nil {
-					return false
-				}
-				r, err := v.Call(less, []runtime.Value{int64(i), int64(j)})
-				if err != nil {
-					cerr = err
-					return false
-				}
+				r := callOrPanic(v, less, []runtime.Value{int64(i), int64(j)})
 				b, _ := r.(bool)
 				return b
 			})
-			return runtime.NIL, cerr
+			return runtime.NIL, nil
 		}},
 	})
 	e.Bind("slices", map[string]runtime.Value{
@@ -655,22 +610,15 @@ func (e *Engine) installStdlib() {
 			}
 			target := args[1]
 			cf := args[2]
-			cmpAt := func(i int) (int64, error) {
-				r, err := v.Call(cf, []runtime.Value{s.Elems[i], target})
-				if err != nil {
-					return 0, err
-				}
+			cmpAt := func(i int) int64 {
+				r := callOrPanic(v, cf, []runtime.Value{s.Elems[i], target})
 				n, _ := runtime.Unwrap(r).(int64)
-				return n, nil
+				return n
 			}
 			i, j := 0, len(s.Elems)
 			for i < j {
 				m := int(uint(i+j) >> 1)
-				n, err := cmpAt(m)
-				if err != nil {
-					return nil, err
-				}
-				if n < 0 {
+				if cmpAt(m) < 0 {
 					i = m + 1
 				} else {
 					j = m
@@ -678,11 +626,7 @@ func (e *Engine) installStdlib() {
 			}
 			found := false
 			if i < len(s.Elems) {
-				n, err := cmpAt(i)
-				if err != nil {
-					return nil, err
-				}
-				found = n == 0
+				found = cmpAt(i) == 0
 			}
 			return &runtime.Tuple{Elems: []runtime.Value{int64(i), found}}, nil
 		}},
@@ -697,10 +641,7 @@ func (e *Engine) installStdlib() {
 				return false, nil
 			}
 			for i := range a.Elems {
-				r, err := v.Call(eq, []runtime.Value{a.Elems[i], b.Elems[i]})
-				if err != nil {
-					return nil, err
-				}
+				r := callOrPanic(v, eq, []runtime.Value{a.Elems[i], b.Elems[i]})
 				if ok, _ := r.(bool); !ok {
 					return false, nil
 				}
@@ -713,10 +654,7 @@ func (e *Engine) installStdlib() {
 				return nil, fmt.Errorf("slices.IndexFunc: first arg must be a slice")
 			}
 			for i, el := range s.Elems {
-				r, err := v.Call(args[1], []runtime.Value{el})
-				if err != nil {
-					return nil, err
-				}
+				r := callOrPanic(v, args[1], []runtime.Value{el})
 				if ok, _ := r.(bool); ok {
 					return int64(i), nil
 				}
@@ -1078,10 +1016,7 @@ func (e *Engine) installStdlib() {
 						sp = rel
 					}
 				}
-				r, cerr := v.Call(cb, []runtime.Value{sp, &runtime.GoValue{V: d}, errVal(werr)})
-				if cerr != nil {
-					return cerr
-				}
+				r := callOrPanic(v, cb, []runtime.Value{sp, &runtime.GoValue{V: d}, errVal(werr)})
 				return asErr(goNative(r))
 			})
 			return errVal(werr), nil
@@ -1851,10 +1786,7 @@ func (h *hostHelpers) sortSlice(v runtime.VMCaller, args []runtime.Value) (runti
 	}
 	less := args[1]
 	sort.Slice(s.Elems, func(i, j int) bool {
-		r, err := v.Call(less, []runtime.Value{int64(i), int64(j)})
-		if err != nil {
-			return false
-		}
+		r := callOrPanic(v, less, []runtime.Value{int64(i), int64(j)})
 		b, _ := r.(bool)
 		return b
 	})
@@ -1871,22 +1803,11 @@ func (h *hostHelpers) sortByCmpFunc(name string) *runtime.BuiltinFunc {
 			return nil, fmt.Errorf("%s: first arg must be a slice", name)
 		}
 		cmp := args[1]
-		var cerr error
 		sort.SliceStable(s.Elems, func(i, j int) bool {
-			if cerr != nil {
-				return false
-			}
-			r, err := v.Call(cmp, []runtime.Value{s.Elems[i], s.Elems[j]})
-			if err != nil {
-				cerr = err
-				return false
-			}
+			r := callOrPanic(v, cmp, []runtime.Value{s.Elems[i], s.Elems[j]})
 			n, _ := runtime.Unwrap(r).(int64)
 			return n < 0
 		})
-		if cerr != nil {
-			return nil, cerr
-		}
 		return runtime.NIL, nil
 	}}
 }
@@ -2332,23 +2253,30 @@ func strArgs(a []any) []string {
 	return out
 }
 
+// callOrPanic invokes a script callback from inside a host call and
+// re-raises any failure as a Go panic: v.Call delivers a script panic
+// (or trap) as an error across its boundary, but returning that as the
+// builtin's error would turn a recoverable panic into a runtime trap —
+// in Go a failure inside strings.Map's callback just propagates as a
+// panic, and a trap or process exit keeps its own kind through
+// asScriptPanic.
+func callOrPanic(v runtime.VMCaller, fn runtime.Value, args []runtime.Value) runtime.Value {
+	r, err := v.Call(fn, args)
+	if err != nil {
+		panic(err)
+	}
+	return r
+}
+
 // runePred adapts a script `func(rune) bool` to the host signature for
-// strings.*Func calls; the returned error slot captures a callback
-// failure so the builtin can surface it after the host call returns.
-func runePred(v runtime.VMCaller, fn runtime.Value) (func(rune) bool, *error) {
-	cerr := new(error)
+// strings.*Func calls; a panic inside the callback propagates through
+// the host call like Go's.
+func runePred(v runtime.VMCaller, fn runtime.Value) func(rune) bool {
 	return func(r rune) bool {
-		if *cerr != nil {
-			return false
-		}
-		res, err := v.Call(fn, []runtime.Value{int64(r)})
-		if err != nil {
-			*cerr = err
-			return false
-		}
+		res := callOrPanic(v, fn, []runtime.Value{int64(r)})
 		b, _ := res.(bool)
 		return b
-	}, cerr
+	}
 }
 
 // asWriter pulls an io.Writer out of a bound stdio handle (os.Stdout,
