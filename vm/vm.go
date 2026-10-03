@@ -1856,7 +1856,10 @@ func goValueOf(rv reflect.Value) runtime.Value {
 	case bool:
 		return v
 	case float32:
-		return float64(v)
+		// keep the declared width like a float32(x) conversion does —
+		// equality and map keys need the float32 tag, the payload rides
+		// in the float64 domain.
+		return &runtime.Named{Typ: &runtime.TypeDef{Name: "float32", Kind: runtime.KindNamedBasic}, V: float64(v)}
 	case float64:
 		return v
 	case time.Duration:
@@ -1903,8 +1906,10 @@ func goValueOf(rv reflect.Value) runtime.Value {
 		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}}
 		for k, e := range v {
 			kv := goValueOf(reflect.ValueOf(k))
-			m.Pairs[runtime.CanonicalKey(kv)] = goValueOf(reflect.ValueOf(e))
+			ck := runtime.CanonicalKey(kv)
+			m.Pairs[ck] = goValueOf(reflect.ValueOf(e))
 			m.Order = append(m.Order, kv)
+			m.Keys = append(m.Keys, ck)
 		}
 		return m
 	case error:
@@ -2104,8 +2109,8 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 			return reflect.Value{}, fmt.Errorf("cannot convert script map to %s", t)
 		}
 		out := reflect.MakeMapWithSize(t, len(x.Pairs))
-		for _, k := range x.Order {
-			e := x.Pairs[runtime.CanonicalKey(k)]
+		for i, k := range x.Order {
+			e := x.Pairs[x.Keys[i]]
 			kv, err := toReflectValue(k, t.Key(), vc)
 			if err != nil {
 				return reflect.Value{}, fmt.Errorf("map key: %w", err)
@@ -2178,8 +2183,8 @@ func deepHost(v runtime.Value) runtime.Value {
 		return out
 	case *runtime.Map:
 		out := make(map[any]any, len(x.Pairs))
-		for _, k := range x.Order {
-			out[deepHost(k)] = deepHost(x.Pairs[runtime.CanonicalKey(k)])
+		for i, k := range x.Order {
+			out[deepHost(k)] = deepHost(x.Pairs[x.Keys[i]])
 		}
 		return out
 	}
@@ -3272,6 +3277,7 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 		ck := runtime.CanonicalKey(idx)
 		if _, exists := b.Pairs[ck]; !exists {
 			b.Order = append(b.Order, idx)
+			b.Keys = append(b.Keys, ck)
 		}
 		b.Pairs[ck] = val
 	default:
@@ -3509,6 +3515,7 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 			ck := runtime.CanonicalKey(k)
 			if _, exists := m.Pairs[ck]; !exists {
 				m.Order = append(m.Order, k)
+				m.Keys = append(m.Keys, ck)
 			}
 			m.Pairs[ck] = v.coerce(f, raw[i*2+1], et)
 		}
@@ -3808,8 +3815,8 @@ func (v *VM) newIterator(f *frame, coll runtime.Value) *runtime.Iterator {
 		return &runtime.Iterator{Kind: 's', Elems: c.Elems}
 	case *runtime.Map:
 		it := &runtime.Iterator{Kind: 'm', Keys: c.Order}
-		for _, k := range c.Order {
-			it.Elems = append(it.Elems, c.Pairs[runtime.CanonicalKey(k)])
+		for i := range c.Order {
+			it.Elems = append(it.Elems, c.Pairs[c.Keys[i]])
 		}
 		return it
 	case *runtime.Chan:
@@ -5010,6 +5017,8 @@ func eqlValue(a, b runtime.Value) bool {
 			return ai == bv
 		case float64:
 			return float64(ai) == bv
+		case float32:
+			return float64(ai) == float64(bv)
 		}
 		return false
 	}
@@ -5018,6 +5027,21 @@ func eqlValue(a, b runtime.Value) bool {
 		case int64:
 			return af == float64(bv)
 		case float64:
+			return af == bv
+		case float32:
+			return af == float64(bv)
+		}
+		return false
+	}
+	// host-returned float32 values (math.Float32frombits, ...) stay raw;
+	// compare them numerically so -0 == +0 holds like Go.
+	if af, ok := a.(float32); ok {
+		switch bv := b.(type) {
+		case int64:
+			return float64(af) == float64(bv)
+		case float64:
+			return float64(af) == bv
+		case float32:
 			return af == bv
 		}
 		return false

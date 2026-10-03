@@ -172,10 +172,13 @@ func builtins(e *Engine) *runtime.Env {
 		drop := func(m *runtime.Map) {
 			delete(m.Pairs, key)
 			// the key also leaves the insertion-order list — a stale
-			// entry there would render/range as `k:<nil>`.
-			for i, k := range m.Order {
-				if runtime.CanonicalKey(k) == key {
+			// entry there would render/range as `k:<nil>`. The canonical
+			// key stored per slot tells us which one (a NaN slot's key can
+			// never be recomputed into `key`).
+			for i := range m.Order {
+				if m.Keys[i] == key {
 					m.Order = append(m.Order[:i], m.Order[i+1:]...)
+					m.Keys = append(m.Keys[:i], m.Keys[i+1:]...)
 					break
 				}
 			}
@@ -375,6 +378,7 @@ func builtins(e *Engine) *runtime.Env {
 		case *runtime.Map:
 			m.Pairs = map[runtime.Value]runtime.Value{}
 			m.Order = nil
+			m.Keys = nil
 		case *runtime.Slice:
 			zero := runtime.Value(runtime.NIL)
 			if ez, ok := v.(interface {
@@ -590,7 +594,7 @@ func display(v runtime.Value) any {
 			if i > 0 {
 				sb.WriteByte(' ')
 			}
-			sb.WriteString(fmt.Sprintf("%v:%v", display(k), display(x.Pairs[runtime.CanonicalKey(k)])))
+			sb.WriteString(fmt.Sprintf("%v:%v", display(k), display(x.Pairs[x.Keys[i]])))
 		}
 		sb.WriteByte(']')
 		return sb.String()

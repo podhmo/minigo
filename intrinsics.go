@@ -428,6 +428,10 @@ func (e *Engine) installStdlib() {
 		"Nextafter":              h.fn2("math.Nextafter", func(a []any) (any, error) { return math.Nextafter(floatOf(a[0]), floatOf(a[1])), nil }, math.Nextafter),
 		"Copysign":               h.fn2("math.Copysign", func(a []any) (any, error) { return math.Copysign(floatOf(a[0]), floatOf(a[1])), nil }, math.Copysign),
 		"Signbit":                h.fn("math.Signbit", func(a []any) (any, error) { return math.Signbit(floatOf(a[0])), nil }, math.Signbit),
+		"Float32bits":            h.fn("math.Float32bits", func(a []any) (any, error) { return math.Float32bits(float32(floatOf(a[0]))), nil }, math.Float32bits),
+		"Float64bits":            h.fn("math.Float64bits", func(a []any) (any, error) { return math.Float64bits(floatOf(a[0])), nil }, math.Float64bits),
+		"Float32frombits":        h.fn("math.Float32frombits", func(a []any) (any, error) { return math.Float32frombits(uint32(intOf(a[0]))), nil }, math.Float32frombits),
+		"Float64frombits":        h.fn("math.Float64frombits", func(a []any) (any, error) { return math.Float64frombits(uint64(intOf(a[0]))), nil }, math.Float64frombits),
 		"IsNaN":                  h.fn("math.IsNaN", func(a []any) (any, error) { return math.IsNaN(floatOf(a[0])), nil }, math.IsNaN),
 		"IsInf":                  h.fn2("math.IsInf", func(a []any) (any, error) { return math.IsInf(floatOf(a[0]), intOf(a[1])), nil }, math.IsInf),
 		"NaN":                    h.fn("math.NaN", func(a []any) (any, error) { return math.NaN(), nil }, math.NaN),
@@ -750,7 +754,7 @@ func (e *Engine) installStdlib() {
 				}
 				// keep the declared map type: without Typ a missing key
 				// reads NIL and `c[k]++` traps instead of zero-starting.
-				return &runtime.Map{Pairs: pairs, Order: append([]runtime.Value{}, m.Order...), Typ: m.Typ}
+				return &runtime.Map{Pairs: pairs, Order: append([]runtime.Value{}, m.Order...), Keys: append([]runtime.Value{}, m.Keys...), Typ: m.Typ}
 			}
 			switch m := args[0].(type) {
 			case *runtime.TypedNil:
@@ -774,11 +778,12 @@ func (e *Engine) installStdlib() {
 			if dst == nil || src == nil {
 				return nil, fmt.Errorf("maps.Copy: args must be maps")
 			}
-			for _, k := range src.Order {
-				v := src.Pairs[runtime.CanonicalKey(k)]
+			for i, k := range src.Order {
+				v := src.Pairs[src.Keys[i]]
 				ck := runtime.CanonicalKey(k)
 				if _, ok := dst.Pairs[ck]; !ok {
 					dst.Order = append(dst.Order, k)
+					dst.Keys = append(dst.Keys, ck)
 				}
 				dst.Pairs[ck] = v
 			}
@@ -1961,6 +1966,11 @@ func scriptVal(v any) runtime.Value {
 		return namedSized(x, reflect.ValueOf(x).Int())
 	case uint, uint8, uint16, uint32, uintptr:
 		return namedSized(x, int64(reflect.ValueOf(x).Uint()))
+	case float32:
+		// keep the declared width like a float32(x) conversion does —
+		// equality and map keys need the float32 tag, the payload rides
+		// in the float64 domain.
+		return &runtime.Named{Typ: &runtime.TypeDef{Name: "float32", Kind: runtime.KindNamedBasic}, V: float64(x)}
 	case []byte:
 		// a []byte result unmarshals to a slice of int64s so `string(b)`
 		// and indexing behave like Go source suggests.
@@ -1988,6 +1998,7 @@ func scriptVal(v any) runtime.Value {
 			ck := runtime.CanonicalKey(kk)
 			if _, ok := m.Pairs[ck]; !ok {
 				m.Order = append(m.Order, kk)
+				m.Keys = append(m.Keys, ck)
 			}
 			m.Pairs[ck] = scriptVal(vv)
 		}
@@ -2087,8 +2098,8 @@ func goNative(v runtime.Value) any {
 		return out
 	case *runtime.Map:
 		out := make(map[any]any, len(x.Pairs))
-		for _, k := range x.Order {
-			out[goNative(k)] = goNative(x.Pairs[runtime.CanonicalKey(k)])
+		for i, k := range x.Order {
+			out[goNative(k)] = goNative(x.Pairs[x.Keys[i]])
 		}
 		return out
 	case *runtime.Struct:
@@ -2317,6 +2328,8 @@ func floatOf(v any) float64 {
 		return floatOf(x.V)
 	case float64:
 		return x
+	case float32:
+		return float64(x)
 	case int64:
 		return float64(x)
 	case int:
@@ -2476,8 +2489,8 @@ func goJSON(v any) any {
 		return out
 	case *runtime.Map:
 		m := make(map[string]any, len(x.Pairs))
-		for _, k := range x.Order {
-			m[str(goNative(k))] = goJSON(x.Pairs[runtime.CanonicalKey(k)])
+		for i, k := range x.Order {
+			m[str(goNative(k))] = goJSON(x.Pairs[x.Keys[i]])
 		}
 		return m
 	case *runtime.GoValue:
@@ -2673,6 +2686,7 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef) runtime.Value {
 			ck := runtime.CanonicalKey(kk)
 			if _, dup := rm.Pairs[ck]; !dup {
 				rm.Order = append(rm.Order, kk)
+				rm.Keys = append(rm.Keys, ck)
 			}
 			rm.Pairs[ck] = jsonShape(c, e, et)
 		}
@@ -2753,8 +2767,8 @@ func mapValues(v any) *runtime.Slice {
 	}
 	if m, ok := v.(*runtime.Map); ok {
 		el := make([]runtime.Value, len(m.Order))
-		for i, k := range m.Order {
-			el[i] = m.Pairs[runtime.CanonicalKey(k)]
+		for i := range m.Order {
+			el[i] = m.Pairs[m.Keys[i]]
 		}
 		return &runtime.Slice{Elems: el}
 	}
