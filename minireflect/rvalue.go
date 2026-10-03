@@ -1705,6 +1705,36 @@ func (v *RValue) Set(x *RValue) {
 	if vt, xt := v.Type(), x.Type(); vt != nil && xt != nil && !xt.AssignableTo(vt) {
 		plain("reflect.Set: value of type %s is not assignable to type %s", xt.String(), vt.String())
 	}
+	// a tagged host box keeps its object identity across Set: Go's
+	// (*p).Set(x) writes into the pointee, so the write must land
+	// inside the boxed *T — storing a bare payload over the cell
+	// would drop the pointer that the type's methods and aliases
+	// live on. Only fires when the cell's box tag is the declared
+	// type (an any-typed slot holding a box is a replacement, not a
+	// pointee write).
+	if cur, ok := v.get().(*runtime.Named); ok && cur.Typ != nil && cur.Typ == v.td && cur.Typ.HostNew != nil {
+		if gv, ok := cur.V.(*runtime.GoValue); ok {
+			if hv := reflect.ValueOf(gv.V); hv.IsValid() && hv.Kind() == reflect.Pointer && !hv.IsNil() {
+				payload := x.ifaceVal()
+				if nb, ok := payload.(*runtime.Named); ok {
+					payload = nb.V
+				}
+				// a script box reads as its *T payload; the pointee
+				// write needs the T inside it
+				if pg, ok := payload.(*runtime.GoValue); ok {
+					if pv := reflect.ValueOf(pg.V); pv.IsValid() && pv.Kind() == reflect.Pointer && !pv.IsNil() {
+						payload = pv.Elem().Interface()
+					}
+				}
+				xv, err := toHost(payload, hv.Type().Elem())
+				if err != nil {
+					trap("reflect.Value.Set: %s", err)
+				}
+				hv.Elem().Set(xv)
+				return
+			}
+		}
+	}
 	val := x.get()
 	if x.host() {
 		val = &runtime.GoValue{V: x.rv.Interface()}

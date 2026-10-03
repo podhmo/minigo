@@ -1,0 +1,8 @@
+after Set: true
+still usable: again
+copied: hi
+no alias: hi hi!
+field after Set: true
+field usable: z
+any replaced: bytes.Buffer hi!
+panic: reflect: reflect.Value.Set using unaddressable value
