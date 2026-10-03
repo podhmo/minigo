@@ -25,26 +25,32 @@ import (
 	"github.com/podhmo/minigo/syntax"
 )
 
+// binding is everything the compiler knows about one declared name:
+// its slot and declaring position plus, for local `type` decls, the
+// type metadata the decl carries. One record per name keeps the
+// name->slot map and the type metadata on the same block lifetime —
+// a popped block drops its types entirely and a shadowing decl
+// replaces the record whole.
+type binding struct {
+	slot     int              // local slot the name occupies
+	pos      token.Pos        // declaring position (goto scoping)
+	typeDecl bool             // bound by a local `type` decl, not a var
+	tspec    *ast.TypeSpec    // the `type` decl's spec (shape checks)
+	tdef     *runtime.TypeDef // the `type` decl's typedef (local embed resolution)
+	ifaceT   bool             // the `type` decl's spec is an interface
+	ifaceVar bool             // a var declared interface-typed
+}
+
 // fscope is the static scope model of one function while compiling.
 type fscope struct {
 	parent   *fscope
-	blocks   []map[string]int       // name -> local slot
-	blockIDs []int                  // unique id per open block, for goto scoping
-	declPos  []map[string]token.Pos // name -> declaring position (goto scoping)
+	blocks   []map[string]*binding // name -> binding
+	blockIDs []int                 // unique id per open block, for goto scoping
 	nextID   int
-	// per-block type-decl metadata, parallel to blocks: a `type` decl
-	// writes its entries into the map of the block it belongs to, so a
-	// shadowing decl never overwrites an outer one and a popped block
-	// drops its types entirely.
-	typeDecls  []map[string]bool             // names bound by local `type` decls (not vars)
-	typeSpecs  []map[string]*ast.TypeSpec    // local `type` decl specs, for shape checks
-	typeDefs   []map[string]*runtime.TypeDef // local `type` decl typedefs, for local embed resolution
-	ifaceTypes []map[string]bool             // local `type` decls whose spec is an interface
-	ifaceVars  []map[string]bool             // per-block: vars declared interface-typed
-	iota       int                           // slot backing the `iota` builtin in local const specs; -1 until declared
-	nlocals    int
-	upvals     []bytecode.UpvalDesc
-	upmap      map[string]int
+	iota     int // slot backing the `iota` builtin in local const specs; -1 until declared
+	nlocals  int
+	upvals   []bytecode.UpvalDesc
+	upmap    map[string]int
 }
 
 func newFScope(parent *fscope) *fscope {
@@ -66,45 +72,32 @@ func (s *fscope) iotaSlot() int {
 		if len(s.blocks) == 0 {
 			s.pushBlock()
 		}
-		s.blocks[len(s.blocks)-1]["iota"] = s.iota
+		s.blocks[len(s.blocks)-1]["iota"] = &binding{slot: s.iota}
 	}
 	return s.iota
 }
 
 func (s *fscope) pushBlock() {
 	s.nextID++
-	s.blocks = append(s.blocks, map[string]int{})
+	s.blocks = append(s.blocks, map[string]*binding{})
 	s.blockIDs = append(s.blockIDs, s.nextID)
-	s.declPos = append(s.declPos, map[string]token.Pos{})
-	s.ifaceVars = append(s.ifaceVars, map[string]bool{})
-	s.typeDecls = append(s.typeDecls, map[string]bool{})
-	s.typeSpecs = append(s.typeSpecs, map[string]*ast.TypeSpec{})
-	s.typeDefs = append(s.typeDefs, map[string]*runtime.TypeDef{})
-	s.ifaceTypes = append(s.ifaceTypes, map[string]bool{})
 }
 func (s *fscope) popBlock() {
 	s.blocks = s.blocks[:len(s.blocks)-1]
 	s.blockIDs = s.blockIDs[:len(s.blockIDs)-1]
-	s.declPos = s.declPos[:len(s.declPos)-1]
-	s.ifaceVars = s.ifaceVars[:len(s.ifaceVars)-1]
-	s.typeDecls = s.typeDecls[:len(s.typeDecls)-1]
-	s.typeSpecs = s.typeSpecs[:len(s.typeSpecs)-1]
-	s.typeDefs = s.typeDefs[:len(s.typeDefs)-1]
-	s.ifaceTypes = s.ifaceTypes[:len(s.ifaceTypes)-1]
 }
 
-// recordType binds a local `type` decl's metadata into the current
-// block — the binding itself lands in blocks via declare.
+// recordType marks a just-declared name as a local `type` decl,
+// attaching the spec/typedef/interface metadata the decl carries.
 func (s *fscope) recordType(name string, ts *ast.TypeSpec, td *runtime.TypeDef, iface bool) {
 	if len(s.blocks) == 0 {
-		s.pushBlock()
+		return
 	}
-	i := len(s.blocks) - 1
-	s.typeDecls[i][name] = true
-	s.typeSpecs[i][name] = ts
-	s.typeDefs[i][name] = td
-	if iface {
-		s.ifaceTypes[i][name] = true
+	if b := s.blocks[len(s.blocks)-1][name]; b != nil {
+		b.typeDecl = true
+		b.tspec = ts
+		b.tdef = td
+		b.ifaceT = iface
 	}
 }
 
@@ -112,21 +105,32 @@ func (s *fscope) recordType(name string, ts *ast.TypeSpec, td *runtime.TypeDef, 
 // type annotation or initializer was an interface type/expression).
 // Interface-tag switches use it to pick pair-strict case equality.
 func (s *fscope) markIface(name string) {
-	if len(s.ifaceVars) == 0 {
+	if len(s.blocks) == 0 {
 		return
 	}
-	s.ifaceVars[len(s.ifaceVars)-1][name] = true
+	if b := s.blocks[len(s.blocks)-1][name]; b != nil {
+		b.ifaceVar = true
+	}
+}
+
+// lookupBinding walks the scope chain for the innermost declaration of
+// name and returns its binding record.
+func (s *fscope) lookupBinding(name string) *binding {
+	for cur := s; cur != nil; cur = cur.parent {
+		for i := len(cur.blocks) - 1; i >= 0; i-- {
+			if b, declared := cur.blocks[i][name]; declared {
+				return b
+			}
+		}
+	}
+	return nil
 }
 
 // isIfaceVar reports whether the innermost declaration of name was
 // interface-typed; an unmarked shadow decl clears an outer mark.
 func (s *fscope) isIfaceVar(name string) bool {
-	for cur := s; cur != nil; cur = cur.parent {
-		for i := len(cur.blocks) - 1; i >= 0; i-- {
-			if _, declared := cur.blocks[i][name]; declared {
-				return cur.ifaceVars[i][name]
-			}
-		}
+	if b := s.lookupBinding(name); b != nil {
+		return b.ifaceVar
 	}
 	return false
 }
@@ -135,12 +139,8 @@ func (s *fscope) isIfaceVar(name string) bool {
 // identifier (walking enclosing function scopes); nil when none or
 // when a closer declaration shadows it.
 func (s *fscope) typeSpec(name string) *ast.TypeSpec {
-	for cur := s; cur != nil; cur = cur.parent {
-		for i := len(cur.blocks) - 1; i >= 0; i-- {
-			if _, declared := cur.blocks[i][name]; declared {
-				return cur.typeSpecs[i][name]
-			}
-		}
+	if b := s.lookupBinding(name); b != nil {
+		return b.tspec
 	}
 	return nil
 }
@@ -152,16 +152,16 @@ func (s *fscope) localTypeDefs() map[string]*runtime.TypeDef {
 	var out map[string]*runtime.TypeDef
 	for cur := s; cur != nil; cur = cur.parent {
 		for i := len(cur.blocks) - 1; i >= 0; i-- {
-			for name := range cur.blocks[i] {
+			for name, b := range cur.blocks[i] {
 				if seen[name] {
 					continue
 				}
 				seen[name] = true
-				if td, ok := cur.typeDefs[i][name]; ok {
+				if b.tdef != nil {
 					if out == nil {
 						out = map[string]*runtime.TypeDef{}
 					}
-					out[name] = td
+					out[name] = b.tdef
 				}
 			}
 		}
@@ -173,12 +173,8 @@ func (s *fscope) localTypeDefs() map[string]*runtime.TypeDef {
 // named this identifier is visible (walking enclosing function
 // scopes); a shadowing variable hides it.
 func (s *fscope) isIfaceTypeName(name string) bool {
-	for cur := s; cur != nil; cur = cur.parent {
-		for i := len(cur.blocks) - 1; i >= 0; i-- {
-			if _, declared := cur.blocks[i][name]; declared {
-				return cur.ifaceTypes[i][name]
-			}
-		}
+	if b := s.lookupBinding(name); b != nil {
+		return b.ifaceT
 	}
 	return false
 }
@@ -195,13 +191,13 @@ func (s *fscope) scopeSnapshot() (blocks map[int]bool, vars map[string]token.Pos
 		blocks[id] = true
 	}
 	vars = map[string]token.Pos{}
-	for i := len(s.declPos) - 1; i >= 0; i-- {
-		for n, dpos := range s.declPos[i] {
+	for i := len(s.blocks) - 1; i >= 0; i-- {
+		for n, b := range s.blocks[i] {
 			if s.isTypeDeclName(n) || strings.HasPrefix(n, "$") {
 				continue // type decls and internal slots are not variable decls
 			}
 			if _, seen := vars[n]; !seen {
-				vars[n] = dpos
+				vars[n] = b.pos
 			}
 		}
 	}
@@ -214,15 +210,14 @@ func (s *fscope) declare(name string, pos token.Pos) int {
 	if len(s.blocks) == 0 {
 		s.pushBlock()
 	}
-	s.blocks[len(s.blocks)-1][name] = slot
-	s.declPos[len(s.declPos)-1][name] = pos
+	s.blocks[len(s.blocks)-1][name] = &binding{slot: slot, pos: pos}
 	return slot
 }
 
 func (s *fscope) lookupLocal(name string) (int, bool) {
 	for i := len(s.blocks) - 1; i >= 0; i-- {
-		if slot, ok := s.blocks[i][name]; ok {
-			return slot, true
+		if b, ok := s.blocks[i][name]; ok {
+			return b.slot, true
 		}
 	}
 	return 0, false
@@ -547,7 +542,7 @@ func ExprScoped(pkg *runtime.Package, file *syntax.File, e ast.Expr, locals, upv
 	c.fs.pushBlock()
 	max := -1
 	for name, slot := range locals {
-		c.fs.blocks[0][name] = slot
+		c.fs.blocks[0][name] = &binding{slot: slot}
 		if slot > max {
 			max = slot
 		}
@@ -1091,9 +1086,9 @@ func (c *compiler) localTypeDecl(ts *ast.TypeSpec) {
 		td.Kind = runtime.KindAlias
 	}
 	td.LocalTypes = c.fs.localTypeDefs()
+	slot := c.fs.declare(ts.Name.Name, ts.Pos())
 	c.fs.recordType(ts.Name.Name, ts, td, isIface)
 	c.emit(bytecode.OpConst, c.constIdx(td), 0, ts.Pos())
-	slot := c.fs.declare(ts.Name.Name, ts.Pos())
 	c.emit(bytecode.OpNewLocal, slot, 0, ts.Pos())
 }
 
@@ -2587,12 +2582,8 @@ var predeclaredTypeNames = map[string]bool{
 // isTypeDeclName reports whether the innermost local/upval declaration of
 // name is a `type` decl rather than a variable (walking enclosing scopes).
 func (s *fscope) isTypeDeclName(name string) bool {
-	for cur := s; cur != nil; cur = cur.parent {
-		for i := len(cur.blocks) - 1; i >= 0; i-- {
-			if _, declared := cur.blocks[i][name]; declared {
-				return cur.typeDecls[i][name]
-			}
-		}
+	if b := s.lookupBinding(name); b != nil {
+		return b.typeDecl
 	}
 	return false
 }
@@ -2962,8 +2953,8 @@ func (c *compiler) trySpecial(x *ast.CallExpr, sel *ast.SelectorExpr) bool {
 	q := &runtime.QuotedCall{Call: x, File: c.file, Locals: map[string]int{}, Upvals: map[string]int{}}
 	// snapshot every visible name: outer blocks first, inner shadows win
 	for _, block := range c.fs.blocks {
-		for name, slot := range block {
-			q.Locals[name] = slot
+		for name, b := range block {
+			q.Locals[name] = b.slot
 		}
 	}
 	for name, i := range c.fs.upmap {
