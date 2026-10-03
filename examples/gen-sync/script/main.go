@@ -191,7 +191,7 @@ func directivesFor(ex *scanx.Explorer, scans []pkgScan, s pkgScan, d *inspect.De
 	if inspect.Kind(d) != "type" {
 		return out
 	}
-	if scanx.IsAlias(d) {
+	if inspect.IsAlias(d) {
 		return out // an alias earns no directives of its own
 	}
 	name := d.Name

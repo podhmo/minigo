@@ -108,15 +108,6 @@ func TestGenerateRunEnd(t *testing.T) {
 	}
 }
 
-func TestPosFilePosLine(t *testing.T) {
-	if got := PosFile("/a/b/c.go:12:5"); got != "/a/b/c.go" {
-		t.Errorf("PosFile = %q", got)
-	}
-	if got := PosLine("/a/b/c.go:12:5"); got != 12 {
-		t.Errorf("PosLine = %d", got)
-	}
-}
-
 func TestInsertAnchor(t *testing.T) {
 	lines := []string{
 		"// Package x docs.",

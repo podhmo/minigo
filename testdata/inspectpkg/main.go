@@ -44,6 +44,29 @@ type PInt *MyInt
 // AInt aliases int.
 type AInt = int
 
+// Dur aliases a foreign type.
+type Dur = time.Duration
+
+type (
+	// AFloat aliases a basic type inside a grouped decl.
+	AFloat = float64
+	// BFloat is a defined type in the same group — per-spec Assign.
+	BFloat float64
+)
+
+// Tricky is a defined type whose line carries a '=' — only in a comment.
+type Tricky int // = not an alias
+
+// AliasEnum aliases int; constants can still be typed with it —
+// enum-ness is orthogonal to alias-ness.
+type AliasEnum = int
+
+// AE1 is an enum member of an alias type.
+const AE1 AliasEnum = 1
+
+// APair is a generic alias.
+type APair[T any] = Pair[T]
+
 // StrList is a named slice type.
 type StrList []string
 

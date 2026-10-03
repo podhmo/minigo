@@ -371,6 +371,13 @@ func (e *Engine) installInspect() {
 			}
 			return &runtime.GoValue{V: te}, nil
 		}),
+		"IsAlias": bf("IsAlias", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			s, err := declViewOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			return xinspect.IsAliasOf(s)
+		}),
 		"Children": bf("Children", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			te, err := typeExprOf(args[0])
 			if err != nil {

@@ -871,6 +871,40 @@ func EnumWalk() string {
 	return "ok"
 }
 
+// AliasWalk: IsAlias partitions type decls into alias vs defined —
+// the one axis Kind:"type" hides. Enum-ness is orthogonal.
+func AliasWalk() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+
+	// alias forms: plain, foreign selector, grouped, generic.
+	for _, name := range []string{"AInt", "Dur", "AFloat", "APair"} {
+		if !inspect.IsAlias(inspect.Symbol(p, name)) {
+			return name + " should be an alias"
+		}
+	}
+	// defined forms: basic newtype, struct, interface, grouped,
+	// pointer-underlying.
+	for _, name := range []string{"MyInt", "User", "Speaker", "BFloat", "PInt"} {
+		if inspect.IsAlias(inspect.Symbol(p, name)) {
+			return name + " should be defined"
+		}
+	}
+	// a '=' in a comment is not an alias declaration.
+	if inspect.IsAlias(inspect.Symbol(p, "Tricky")) {
+		return "comment '=' misread as alias"
+	}
+	// enum-ness is a usage property, not a declaration form: an alias
+	// can still type constants.
+	ae := inspect.Symbol(p, "AliasEnum")
+	if !inspect.IsAlias(ae) {
+		return "AliasEnum should be an alias"
+	}
+	if len(inspect.EnumMembers(ae)) != 1 {
+		return "alias enum members lost"
+	}
+	return "ok"
+}
+
 // ---- trap checkers: each must surface an intrinsic error Go-side
 // (scripts cannot catch traps) ----
 
@@ -971,6 +1005,19 @@ func DeclTypeFuncTrap() string {
 func DeclTypeTypeTrap() string {
 	p := inspect.DirOf("./testdata/inspectpkg")
 	inspect.DeclType(inspect.Symbol(p, "Status"))
+	return "swallowed"
+}
+
+// IsAliasFuncTrap: IsAlias is a type-symbol view.
+func IsAliasFuncTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	inspect.IsAlias(inspect.Symbol(p, "Hello"))
+	return "swallowed"
+}
+
+// IsAliasBoundTrap: a bound type carries no declaration.
+func IsAliasBoundTrap() string {
+	inspect.IsAlias(inspect.Symbol(inspect.PackageOf("strings"), "Builder"))
 	return "swallowed"
 }
 

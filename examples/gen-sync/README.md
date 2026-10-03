@@ -80,8 +80,7 @@ the interpreter:
    The script's mechanics — tag parsing, sentinel/managed-region
    handling — live in `scanx`, a sibling package the script imports
    and the engine interprets like any other module-local source. `scanx`
-   papers over the gaps in what `inspect` exposes (alias-ness isn't on
-   `Decl`, `Pos` is a `"file:line:col"` string, `MReqs` traps on
+   papers over the gaps in what `inspect` exposes (`MReqs` traps on
    non-interfaces) — see the plan doc's limitations list.
 
 ## Demo

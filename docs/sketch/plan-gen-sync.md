@@ -186,8 +186,9 @@ textually — candidates for the inspect wishlist, not the example's:
   access must be gated behind `Def(d).Kind == "InterfaceType"` (a
   kind-checked accessor, or non-trapping empty result, would remove the
   ceremony).
-- **Alias vs defined type isn't on the view** — `type X = int` vs
-  `type X int` is decided by `=` on the decl's own line.
+- ~~Alias vs defined type isn't on the view~~ — fixed: `inspect.IsAlias`
+  reads `TypeSpec.Assign` directly; the raw-line `IsAlias`/`DeclLine`/
+  `IsAliasLine`/`PosFile`/`PosLine`/`LinesOf` helpers are deleted.
 - **`inspect.Pos` is a `"file:line:col"` string** — line numbers come
   from splitting it; a structured accessor would remove the parse.
 - **Bound/stdlib/external packages carry no index** — `Decls`/`Fields`/

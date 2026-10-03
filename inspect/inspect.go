@@ -497,6 +497,26 @@ func DeclTypeOf(s *Decl) (*TypeExpr, error) {
 	return NewTypeExpr(t, s.file, s.Package), nil
 }
 
+// IsAliasOf reports whether a type decl spells an alias declaration
+// (`type X = int`) rather than a defined type (`type X int`) — the `=`
+// in the spec is the only difference, so the two forms partition type
+// decls: every source type symbol is exactly one. An alias denotes its
+// target rather than declaring a type of its own, so codegen consumers
+// skip it for directives and method generation. The distinction is
+// orthogonal to enum-ness — a const may still be typed with the alias
+// (EnumMembers lists it) — and to the underlying shape (Def reads it).
+// Non-type symbols report an error.
+func IsAliasOf(s *Decl) (bool, error) {
+	if s.decl == nil {
+		return false, fmt.Errorf("inspect.IsAlias: host symbol %s has no declaration", s.Name)
+	}
+	ts, ok := s.decl.Spec.(*ast.TypeSpec)
+	if !ok {
+		return false, fmt.Errorf("inspect.IsAlias: %s is a %s, not a type", s.Name, s.Kind)
+	}
+	return ts.Assign.IsValid(), nil
+}
+
 // Expr exposes the underlying ast.Expr — engine-only, out of the FFI
 // (member dispatch sees only exported fields).
 func (te *TypeExpr) Expr() ast.Expr { return te.expr }

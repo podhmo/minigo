@@ -47,6 +47,7 @@ func TestInspect(t *testing.T) {
 		"HostMethodSym",
 		"SourceOfStruct",
 		"EnumWalk",
+		"AliasWalk",
 		"VarValueRead", // flips the package State to "ready"
 		"PkgMetaView",  // metadata via accessors; member shadow wins (#26)
 	} {
@@ -70,6 +71,8 @@ func TestInspect(t *testing.T) {
 		"DeclTypeTypeTrap",
 		"EnumMembersFuncTrap",  // EnumMembers is a type view — funcs trap
 		"EnumMembersBoundTrap", // bound types carry no index to walk
+		"IsAliasFuncTrap",      // IsAlias is a type view — funcs trap
+		"IsAliasBoundTrap",     // bound types carry no declaration
 		"ResolveBoundTrap",     // the resolver cannot descend into a bound pkg
 		"MissingSymTrap",       // unknown symbol name
 		"BoundFieldTrap",       // bound type has no decl for Fields

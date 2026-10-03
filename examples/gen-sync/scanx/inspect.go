@@ -1,53 +1,11 @@
-// inspect.go holds the helpers that speak inspect view types — the
-// half of scanx a script needs to paper over what the Decl view does
-// not expose (alias-ness, per-spec file positions).
+// inspect.go holds the helpers that speak inspect view types —
+// method-set queries the script's inference rules phrase directly.
 // The pure-text counterparts live in scanx.go.
 package scanx
 
 import (
-	"os"
-	"strings"
-
 	"github.com/podhmo/minigo/inspect"
 )
-
-// lineCache maps file path to its contents as first read. Decl
-// positions refer to that snapshot; a run plans every file before
-// writing any, so the cache never goes stale mid-scan.
-var lineCache = map[string][]string{}
-
-// LinesOf reads a file into lines, cached across calls.
-func LinesOf(path string) []string {
-	if ls, ok := lineCache[path]; ok {
-		return ls
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return []string{}
-	}
-	ls := strings.Split(string(data), "\n")
-	lineCache[path] = ls
-	return ls
-}
-
-// DeclLine returns the decl's own source line, read from the file its
-// Pos names — which is not necessarily the file currently being synced.
-func DeclLine(d *inspect.Decl) string {
-	pos := inspect.Pos(d)
-	n := PosLine(pos)
-	ls := LinesOf(PosFile(pos))
-	if n <= 0 || n > len(ls) {
-		return ""
-	}
-	return ls[n-1]
-}
-
-// IsAlias reports whether a type decl spells `type X = ...` — aliases
-// never earn directives of their own. The Decl view does not expose
-// alias-ness, so the decl's own line is the source of truth.
-func IsAlias(d *inspect.Decl) bool {
-	return IsAliasLine(DeclLine(d))
-}
 
 // HasMethod reports whether the type declares a nullary method with the
 // given result types — scanx.HasMethod(d, "Discriminator", "string")

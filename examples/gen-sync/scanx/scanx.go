@@ -1,48 +1,17 @@
 // Package scanx is the helper library gen-sync's script scans with:
-// "file:line:col" positions, struct-tag lookups, const-spec type
-// detection, and sentinel-guided rewriting of //go:generate regions.
-// It is ordinary Go; minigo interprets it too when the gen-sync script
-// imports it, so it doubles as a demo of a tool growing its own
-// module-local library.
+// struct-tag lookups and sentinel-guided rewriting of //go:generate
+// regions. It is ordinary Go; minigo interprets it too when the
+// gen-sync script imports it, so it doubles as a demo of a tool
+// growing its own module-local library.
 package scanx
 
 import (
-	"strconv"
 	"strings"
 )
 
 // Sentinel is the comment line that opens a file's managed region:
 // every real //go:generate line below it belongs to the tool.
 const Sentinel = "// Code generated directives below are managed by gen-sync. DO NOT EDIT."
-
-// PosFile returns the file part of an inspect-style "file:line:col"
-// position. The file name may itself contain ':' (e.g. Windows drive
-// letters), so the split is taken from the end.
-func PosFile(pos string) string {
-	if i := strings.LastIndex(pos, ":"); i >= 0 {
-		pos = pos[:i]
-	}
-	if i := strings.LastIndex(pos, ":"); i >= 0 {
-		return pos[:i]
-	}
-	return ""
-}
-
-// PosLine returns the line number of an inspect-style "file:line:col"
-// position, or 0 when it cannot be parsed.
-func PosLine(pos string) int {
-	i := strings.LastIndex(pos, ":")
-	if i < 0 {
-		return 0
-	}
-	line := pos[:i]
-	j := strings.LastIndex(line, ":")
-	if j < 0 {
-		return 0
-	}
-	n, _ := strconv.Atoi(line[j+1:])
-	return n
-}
 
 // TagField is one `key:"value"` entry of a struct tag.
 type TagField struct {
@@ -113,16 +82,6 @@ func TagHasElement(tag, key, elem string) bool {
 		}
 	}
 	return false
-}
-
-// IsAliasLine reports whether a type-decl source line spells an alias
-// (`type X = int`) rather than a defined type. `=` inside struct tags
-// does not count.
-func IsAliasLine(line string) bool {
-	if i := strings.Index(line, "`"); i >= 0 {
-		line = line[:i]
-	}
-	return strings.Contains(line, "=")
 }
 
 // InsertAnchor locates the line after the package clause and import

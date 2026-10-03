@@ -106,6 +106,14 @@ func Def(s *Decl) *TypeExpr { panic("minigo intrinsic") }
 // Status = e`). Untyped value specs report nil; other decl kinds trap.
 func DeclType(s *Decl) *TypeExpr { panic("minigo intrinsic") }
 
+// IsAlias reports whether a type decl spells an alias declaration
+// (`type X = int`) rather than a defined type (`type X int`) — the `=`
+// in the spec is the only difference, so the two forms partition type
+// decls. An alias denotes its target: it earns no directives and no
+// methods of its own. Enum-ness is orthogonal — a const may still be
+// typed with the alias (EnumMembers lists it). Non-type symbols trap.
+func IsAlias(s *Decl) bool { panic("minigo intrinsic") }
+
 // Children drills into a composite type expression.
 func Children(te *TypeExpr) []*TypeExpr { panic("minigo intrinsic") }
 
