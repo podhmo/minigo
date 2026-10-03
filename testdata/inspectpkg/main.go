@@ -392,3 +392,30 @@ var hiddenVar = 1
 var Path = "member-shadow"
 
 func main() {}
+
+// ErrTalker requires the embedded `error` spec — Error() string —
+// plus Talk; a Talk-only type must not satisfy it.
+type ErrTalker interface {
+	error
+	Talk() string
+}
+
+// TalkErr declares Talk and Error — it satisfies ErrTalker (OnlyTalk
+// and BothTalk, which lack Error, must not).
+type TalkErr struct{}
+
+// Talk matches the named spec.
+func (TalkErr) Talk() string { return "talk" }
+
+// Error covers the embedded error spec.
+func (TalkErr) Error() string { return "boom" }
+
+// TalkerAlias spells Talker through an alias — embedding the alias
+// must still promote the target's specs.
+type TalkerAlias = Talker
+
+// AliasEmbedder embeds the alias spelling; its method set promotes
+// Talker's Speak + Talk specs.
+type AliasEmbedder interface {
+	TalkerAlias
+}

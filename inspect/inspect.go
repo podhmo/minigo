@@ -571,54 +571,30 @@ func chaseType(sub *TypeExpr, visited map[runtime.SymbolID]bool, res Resolver) *
 	return nil
 }
 
+// errorSpec is the synthesized method spec an embedded `error`
+// element contributes: Error() string.
+var errorSpec = &ast.FuncType{Results: &ast.FieldList{List: []*ast.Field{{Type: ast.NewIdent("string")}}}}
+
 // promoteIfaceSpecs lists an interface's members as method-set
-// entries: named specs become spec-backed Methods (no Decl); embedded
-// elements recurse so the promoted set is transitive.
+// entries: the shared walker yields every reachable named spec,
+// which becomes a spec-backed Method (no Decl). Constraint elements
+// are irrelevant on this side — they promote nothing — so the
+// walker's error is ignored.
 func promoteIfaceSpecs(it *ast.InterfaceType, owner *Decl, res Resolver, seen map[string]bool, visited map[runtime.SymbolID]bool, out *[]*Method) {
-	for _, fd := range fieldList(it.Methods, owner.file, owner.Package) {
-		if !fd.Embedded {
-			if seen[fd.Names[0]] {
-				continue
-			}
-			seen[fd.Names[0]] = true
-			ft, ok := fd.Type.Expr().(*ast.FuncType)
-			if !ok {
-				continue // named interface specs are FuncType in parsed code
-			}
-			*out = append(*out, &Method{
-				Name: fd.Names[0],
-				Sig: &Sig{
-					Params:  boxFields(fieldList(ft.Params, owner.file, owner.Package)),
-					Results: boxFields(fieldList(ft.Results, owner.file, owner.Package)),
-				},
-				Via: owner,
-			})
-			continue
+	_ = walkIfaceSpecs(it, owner, res, visited, func(name string, ft *ast.FuncType, src *Decl) {
+		if seen[name] {
+			return
 		}
-		// an embedded element promotes the elements it names —
-		// including an anonymous interface literal, which flattens in
-		// place under the same owner.
-		if anon, ok := fd.Type.Expr().(*ast.InterfaceType); ok {
-			promoteIfaceSpecs(anon, owner, res, seen, visited, out)
-			continue
-		}
-		sid, ok := fd.Type.SymbolID()
-		if !ok || sid.PackagePath == BuiltinPackagePath || visited[sid] {
-			continue
-		}
-		visited[sid] = true
-		d, err := res(sid)
-		if err != nil || d == nil || d.decl == nil {
-			continue
-		}
-		ts, ok := d.decl.Spec.(*ast.TypeSpec)
-		if !ok {
-			continue
-		}
-		if sub, ok := ts.Type.(*ast.InterfaceType); ok {
-			promoteIfaceSpecs(sub, d, res, seen, visited, out)
-		}
-	}
+		seen[name] = true
+		*out = append(*out, &Method{
+			Name: name,
+			Sig: &Sig{
+				Params:  boxFields(fieldList(ft.Params, src.file, src.Package)),
+				Results: boxFields(fieldList(ft.Results, src.file, src.Package)),
+			},
+			Via: src,
+		})
+	})
 }
 
 // ImplementersOf returns the type decls of p whose method set covers
@@ -671,61 +647,89 @@ func ImplementersOf(p *runtime.Package, iface *Decl, res Resolver) ([]*Decl, err
 }
 
 // requiredSpecs collects an interface's required method specs
-// transitively: named specs append in place, embedded elements resolve
-// and recurse so the requirement set of Talker{ Greeter; Talk() }
-// carries Greet too. Any element that makes the interface a
-// constraint — a ~T term or A|B union, an embedded decl that is not an
-// interface, or an unresolvable builtin like comparable — reports an
-// error instead of silently dropping the requirement. Unresolvable
-// package paths contribute nothing (the same approximation as
-// promoteIfaceSpecs).
+// transitively through the shared walker — Talker{ Greeter; Talk() }
+// carries Greet too, and an embedded `error` requires its Error()
+// string spec. Elements that make the interface a constraint — ~T
+// terms, A|B unions, embedded non-interface decls, other builtins —
+// report an error instead of silently dropping the requirement.
+// Unresolvable package paths contribute nothing.
 func requiredSpecs(it *ast.InterfaceType, owner *Decl, res Resolver, visited map[runtime.SymbolID]bool, specs *[]ifaceSpec) error {
-	for _, fd := range fieldList(it.Methods, owner.file, owner.Package) {
-		if !fd.Embedded {
-			ft, ok := fd.Type.Expr().(*ast.FuncType)
+	return walkIfaceSpecs(it, owner, res, visited, func(name string, ft *ast.FuncType, src *Decl) {
+		*specs = append(*specs, ifaceSpec{name: name, ft: ft, file: src.file, pkg: src.Package})
+	})
+}
+
+// walkIfaceSpecs is the shared embedded-interface flattener for both
+// the requirement side (requiredSpecs) and the candidate side
+// (promoteIfaceSpecs): it yields every named method spec reachable
+// from it — own specs, embedded interface literals flattened in
+// place, and embedded named interfaces resolved transitively
+// (aliases chase to their target decl). A builtin `error` element
+// yields the synthesized Error() string spec; `any` contributes
+// nothing. Elements that turn the interface into a constraint (~T
+// terms, unions, embedded non-interface decls, other builtins) are
+// skipped but recorded: the first such error returns after the walk
+// completes, and the caller decides whether it is fatal — implementer
+// checking must not silently drop requirements, method-set promotion
+// can ignore it since constraint terms promote nothing.
+func walkIfaceSpecs(it *ast.InterfaceType, owner *Decl, res Resolver, visited map[runtime.SymbolID]bool, yield func(name string, ft *ast.FuncType, owner *Decl)) error {
+	var firstErr error
+	constraint := func() {
+		if firstErr == nil {
+			firstErr = fmt.Errorf("inspect.Implementers: %s is a constraint interface — nothing can implement it", owner.Name)
+		}
+	}
+	var walk func(it *ast.InterfaceType, owner *Decl)
+	walk = func(it *ast.InterfaceType, owner *Decl) {
+		for _, fd := range fieldList(it.Methods, owner.file, owner.Package) {
+			if !fd.Embedded {
+				if ft, ok := fd.Type.Expr().(*ast.FuncType); ok {
+					yield(fd.Names[0], ft, owner)
+				}
+				continue
+			}
+			switch fd.Type.Expr().(type) {
+			case *ast.UnaryExpr, *ast.BinaryExpr: // ~T and union terms: a constraint, not an interface
+				constraint()
+				continue
+			}
+			if anon, ok := fd.Type.Expr().(*ast.InterfaceType); ok {
+				walk(anon, owner) // an interface literal flattens in place
+				continue
+			}
+			sid, ok := fd.Type.SymbolID()
+			if !ok {
+				continue // unspellable embedded element — nothing follows
+			}
+			if sid.PackagePath == BuiltinPackagePath {
+				switch sid.Name {
+				case "error":
+					yield("Error", errorSpec, owner)
+				case "any":
+					// any carries no requirement
+				default:
+					constraint() // comparable et al. make it a constraint
+				}
+				continue
+			}
+			ed := chaseType(fd.Type, visited, res)
+			if ed == nil {
+				continue // type params and foreign packages resolve to nothing
+			}
+			ts, ok := ed.decl.Spec.(*ast.TypeSpec)
 			if !ok {
 				continue
 			}
-			*specs = append(*specs, ifaceSpec{name: fd.Names[0], ft: ft, file: owner.file, pkg: owner.Package})
-			continue
-		}
-		switch fd.Type.Expr().(type) {
-		case *ast.UnaryExpr, *ast.BinaryExpr: // ~T and union terms: a constraint, not an interface
-			return fmt.Errorf("inspect.Implementers: %s is a constraint interface — nothing can implement it", owner.Name)
-		}
-		if anon, ok := fd.Type.Expr().(*ast.InterfaceType); ok {
-			if err := requiredSpecs(anon, owner, res, visited, specs); err != nil {
-				return err
-			}
-			continue // embedded interface literal flattens in place
-		}
-		sid, ok := fd.Type.SymbolID()
-		if !ok {
-			continue // unspellable embedded element — nothing follows
-		}
-		if sid.PackagePath == BuiltinPackagePath {
-			if sid.Name == "error" || sid.Name == "any" {
+			ie, ok := ts.Type.(*ast.InterfaceType)
+			if !ok {
+				constraint() // an embedded non-interface is a type-set term
 				continue
 			}
-			return fmt.Errorf("inspect.Implementers: %s is a constraint interface — nothing can implement it", owner.Name)
-		}
-		ed := chaseType(fd.Type, visited, res)
-		if ed == nil {
-			continue // type params and foreign packages resolve to nothing
-		}
-		ts, ok := ed.decl.Spec.(*ast.TypeSpec)
-		if !ok {
-			continue
-		}
-		ie, ok := ts.Type.(*ast.InterfaceType)
-		if !ok {
-			return fmt.Errorf("inspect.Implementers: %s is a constraint interface — nothing can implement it", owner.Name)
-		}
-		if err := requiredSpecs(ie, ed, res, visited, specs); err != nil {
-			return err
+			walk(ie, ed)
 		}
 	}
-	return nil
+	walk(it, owner)
+	return firstErr
 }
 
 // ifaceSpec is one named method spec of an interface — what a type

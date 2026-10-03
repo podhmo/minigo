@@ -793,6 +793,18 @@ func PromotedWalk() string {
 	if len(sm.Sig.ResultFields()) != 1 || sm.Sig.ResultFields()[0].Type.Text != "string" {
 		return "shallow M has the wrong signature"
 	}
+	// an embedded `error` promotes its spec: ErrTalker's method set
+	// carries Error() string alongside Talk.
+	ems := inspect.MethodSet(inspect.Symbol(p, "ErrTalker"))
+	if find(ems, "Error") == nil || find(ems, "Talk") == nil {
+		return "embedded error did not promote its spec"
+	}
+	// an alias spelling promotes through to the target interface:
+	// AliasEmbedder gets Talker's Speak and Talk.
+	ams := inspect.MethodSet(inspect.Symbol(p, "AliasEmbedder"))
+	if find(ams, "Speak") == nil || find(ams, "Talk") == nil {
+		return "alias embed did not promote through"
+	}
 	return "ok"
 }
 
@@ -1230,6 +1242,25 @@ func ImplementersWalk() string {
 	if !got["MStr"] || !got["ShallowY"] || !got["ShadowS"] ||
 		got["MidA"] || got["DeepX"] || len(got) != 3 {
 		return "bad mstr set"
+	}
+	// an embedded `error` is a real requirement: ErrTalker needs
+	// Error() string plus Talk — OnlyTalk and BothTalk lack Error.
+	got = map[string]bool{}
+	for _, d := range inspect.Implementers(p, inspect.Symbol(p, "ErrTalker")) {
+		got[d.Name] = true
+	}
+	if !got["ErrTalker"] || !got["TalkErr"] || got["OnlyTalk"] || got["BothTalk"] || len(got) != 2 {
+		return "bad errtalker set"
+	}
+	// an alias embed resolves on the requirement side too:
+	// AliasEmbedder requires Speak + Talk — TalkerAlias borrows
+	// Talker's set and Talker itself declares it.
+	got = map[string]bool{}
+	for _, d := range inspect.Implementers(p, inspect.Symbol(p, "AliasEmbedder")) {
+		got[d.Name] = true
+	}
+	if !got["AliasEmbedder"] || !got["TalkerAlias"] || !got["Talker"] || len(got) != 3 {
+		return "bad aliasembedder set"
 	}
 	return "ok"
 }
