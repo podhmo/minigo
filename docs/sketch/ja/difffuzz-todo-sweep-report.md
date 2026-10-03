@@ -1,5 +1,7 @@
 # difffuzz TODO sweep レポート — 大規模差分潰し
 
+> 注記: このレポート PR は Stack #73 の中間位置にある。§6 に記した修正（#108–#119 等）は本 PR より**上位**の積層ブランチにあり、このブランチのツリーを checkout しても修正コードは含まれない。検証する場合はスタックトップ（`devin/1790987393-switchdefault` 以降）を使うこと。
+
 対象: `podhmo/minigo` の `main`（[fuzz-usecase.md](./fuzz-usecase.md)・[difffuzz-harness.md](./difffuzz-harness.md) までの資産を引き継いだ状態）
 方法: `tools/difffuzz`（生成プログラムを `go run` と minigo で流して差分を拾うハーネス）を回し、TODO.md の difffuzz 系 todo を起点に、枯れたら `gen` で補充しながら順に潰すループ。verdict は PASS / TRAP（受理できる差）/ SILENT（バグ）/ CRASH / HANG。修正は「1 PR = 1 根本原因」で、回帰は `testdata/difffuzz/` のピン（`main.go` + `want.stdout`）で固定する。
 
