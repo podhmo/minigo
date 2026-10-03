@@ -257,7 +257,9 @@ func (e *Env) valueOfValue(vc runtime.VMCaller, v runtime.Value) *RValue {
 		return &RValue{e: e, vc: vc}
 	case *runtime.GoValue:
 		if rv, ok := x.V.(*RValue); ok {
-			return rv
+			// reflecting a facade value itself yields the reflect.Value
+			// struct like Go — not the script value it views
+			return &RValue{e: e, vc: vc, rv: reflect.ValueOf(rv).Elem()}
 		}
 		if x.V == nil {
 			return &RValue{e: e, vc: vc}
@@ -291,11 +293,10 @@ func (e *Env) indirect(vc runtime.VMCaller, args []runtime.Value) (runtime.Value
 	if v == nil {
 		return nil, fmt.Errorf("reflect.Indirect: arg is %T, not a reflect.Value", args[0])
 	}
+	// Indirect dereferences exactly once like Go (v.Elem() when ptr) —
+	// looping would skip one indirection too many for **T.
 	out := v
-	for out.Kind() == reflect.Ptr {
-		if out.IsNil() {
-			return &runtime.GoValue{V: out.Elem()}, nil
-		}
+	if out.Kind() == reflect.Ptr {
 		out = out.Elem()
 	}
 	return &runtime.GoValue{V: out}, nil
