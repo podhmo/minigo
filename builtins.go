@@ -333,7 +333,7 @@ func builtins(e *Engine) *runtime.Env {
 			return nil, fmt.Errorf("real of %T", args[0])
 		}
 		if w == 64 {
-			return runtime.Tag(&runtime.TypeDef{Name: "float32", Kind: runtime.KindNamedBasic}, float64(real(complex64(cv)))), nil
+			return runtime.Tag(runtime.BasicTypedef("float32"), float64(real(complex64(cv)))), nil
 		}
 		return real(cv), nil
 	})
@@ -346,7 +346,7 @@ func builtins(e *Engine) *runtime.Env {
 			return nil, fmt.Errorf("imag of %T", args[0])
 		}
 		if w == 64 {
-			return runtime.Tag(&runtime.TypeDef{Name: "float32", Kind: runtime.KindNamedBasic}, float64(imag(complex64(cv)))), nil
+			return runtime.Tag(runtime.BasicTypedef("float32"), float64(imag(complex64(cv)))), nil
 		}
 		return imag(cv), nil
 	})
@@ -534,9 +534,13 @@ func orderedLess(a, b runtime.Value) bool {
 // instead, so the constant must land as its default-type value.
 func constNative(v runtime.Value) runtime.Value {
 	if u, ok := v.(*runtime.UConst); ok {
-		if nv, err := uconstNative(u); err == nil {
-			return nv
+		nv, err := uconstNative(u)
+		if err != nil {
+			// a builtin arg position materializes the constant — an
+			// unmaterializable one is a program failure, like intOf.
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: err.Error()}})
 		}
+		return nv
 	}
 	return v
 }

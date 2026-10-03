@@ -81,24 +81,23 @@ func basicTypedefName(name string) bool {
 	return basicTypeNames[name]
 }
 
-// basicTypedefs caches the shared basic-type typedefs handed to values
+// basicTypedefs are the shared basic-type typedefs handed to values
 // materialized outside name resolution (host-unboxed slice elements) —
 // one object per name keeps the a == b fast path and matches the
-// builtin environment's typedefs under canonical-name identity.
-var basicTypedefs = map[string]*TypeDef{}
+// builtin environment's typedefs under canonical-name identity. Built
+// eagerly so reads are goroutine-safe by construction.
+var basicTypedefs = func() map[string]*TypeDef {
+	tds := make(map[string]*TypeDef, len(basicTypeNames))
+	for name := range basicTypeNames {
+		tds[name] = &TypeDef{Name: name, Kind: KindNamedBasic}
+	}
+	return tds
+}()
 
 // BasicTypedef returns the shared predeclared basic typedef for name —
 // nil for non-basic names.
 func BasicTypedef(name string) *TypeDef {
-	if !basicTypedefName(name) {
-		return nil
-	}
-	if td, ok := basicTypedefs[name]; ok {
-		return td
-	}
-	td := &TypeDef{Name: name, Kind: KindNamedBasic}
-	basicTypedefs[name] = td
-	return td
+	return basicTypedefs[name]
 }
 
 // canonBasicName folds predeclared aliases: byte is uint8 and rune is

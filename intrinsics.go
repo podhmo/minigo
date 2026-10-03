@@ -2195,7 +2195,7 @@ func goNative(v runtime.Value) any {
 	case *runtime.UConst:
 		nv, err := uconstNative(x)
 		if err != nil {
-			panic(&runtime.Panic{Value: err.Error()})
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: err.Error()}})
 		}
 		return nv
 	case *runtime.Named:
@@ -2266,7 +2266,7 @@ func intOf(v any) int {
 		// type — Go folds these calls at compile time.
 		nv, err := uconstNative(x)
 		if err != nil {
-			panic(&runtime.Panic{Value: err.Error()})
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: err.Error()}})
 		}
 		return intOf(nv)
 	case int64:
@@ -2438,11 +2438,11 @@ func bytesSlices(v any) [][]byte {
 }
 
 // bytesSliceOf lifts a [][]byte result into []any so scriptVal turns each
-// element into a script []byte slice. A nil result stays a typed nil,
-// matching the []any typing of the non-nil path.
+// element into a script []byte slice. A nil result keeps the [][]uint8
+// spelling so %T matches Go on a nil [][]byte.
 func bytesSliceOf(bb [][]byte) any {
 	if bb == nil {
-		return &runtime.TypedNil{Typ: anonSliceTyp("any")}
+		return &runtime.TypedNil{Typ: anonSliceTyp("[]uint8")}
 	}
 	out := make([]any, len(bb))
 	for i, b := range bb {
@@ -3477,7 +3477,7 @@ func (s *fmtValue) leaf(x runtime.Value, verb rune, f fmt.State) string {
 	if u, ok := x.(*runtime.UConst); ok {
 		nv, err := uconstNative(u)
 		if err != nil {
-			panic(&runtime.Panic{Value: err.Error()})
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: err.Error()}})
 		}
 		x = nv
 	}
@@ -4064,7 +4064,7 @@ func fmtArg(v runtime.VMCaller, x runtime.Value) any {
 	case *runtime.UConst:
 		nv, err := uconstNative(x)
 		if err != nil {
-			panic(&runtime.Panic{Value: err.Error()})
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: err.Error()}})
 		}
 		if i, ok := nv.(int64); ok {
 			return int(i)
