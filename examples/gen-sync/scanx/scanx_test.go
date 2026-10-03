@@ -123,4 +123,17 @@ func TestInsertAnchor(t *testing.T) {
 	if got := InsertAnchor(lines); got != 6 {
 		t.Errorf("InsertAnchor = %d; want 6 (after the import block)", got)
 	}
+
+	// a one-line grouped import is complete on its own line — the
+	// anchor must advance past it, not stay at the package clause.
+	lines = []string{
+		"package x",
+		"",
+		`import ("fmt")`,
+		"",
+		"type X int",
+	}
+	if got := InsertAnchor(lines); got != 3 {
+		t.Errorf("InsertAnchor = %d; want 3 (after the single-line import)", got)
+	}
 }

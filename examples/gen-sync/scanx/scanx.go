@@ -106,7 +106,11 @@ func InsertAnchor(lines []string) int {
 		case anchor < 0:
 			// still before the package clause
 		case strings.HasPrefix(t, "import (") || t == "import(":
-			inImports = true
+			if strings.Contains(t, ")") {
+				anchor = i + 1 // single-line group: import ("fmt")
+			} else {
+				inImports = true
+			}
 		case strings.HasPrefix(t, "import "):
 			anchor = i + 1
 		case t == "" || strings.HasPrefix(t, "//"):

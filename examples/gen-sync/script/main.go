@@ -139,9 +139,9 @@ func syncFile(p filePlan, check bool, wd string) bool {
 		out = append(out, "")
 		rest := lines[midx+1:]
 		tail := rest[scanx.GenerateRunEnd(rest):]
-		if len(tail) == 0 {
-			tail = []string{""}
-		}
+		// an empty tail means the managed run reached EOF: the ""
+		// separator above already yields the file's trailing newline —
+		// appending anything more would leave a stray blank line.
 		out = append(out, tail...)
 	} else {
 		// no managed region yet: insert sentinel + block after the

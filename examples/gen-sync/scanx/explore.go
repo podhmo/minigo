@@ -26,7 +26,9 @@ func TypeRefName(te *inspect.TypeExpr) string {
 	if sid == nil {
 		return "" // names nothing — a composite or unqualified selector
 	}
-	// package paths without "/" are not distinguished from builtins.
+	// package paths without "/" are not distinguished from builtins —
+	// the host package's BuiltinPackagePath sentinel can't be named
+	// from interpreted code, so the path-shape check stays.
 	if !strings.Contains(sid.PackagePath, "/") {
 		return ""
 	}

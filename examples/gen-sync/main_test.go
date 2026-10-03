@@ -96,7 +96,8 @@ func TestSync(t *testing.T) {
 	app := filepath.Join(dir, "app")
 
 	// first run: files with stale or missing managed blocks get synced;
-	// status.go is already in sync and the decoy files stay untouched.
+	// status.go and eof.go (managed block at end of file) are already in
+	// sync and the decoy files stay untouched.
 	n, err := run(context.Background(), dir, scriptDir(t), app, false, false)
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +107,7 @@ func TestSync(t *testing.T) {
 	}
 	for _, name := range []string{
 		"level", "job", "config", "store", "events",
-		"shapes", "phase", "ops", "retired", "status", "graph",
+		"shapes", "phase", "ops", "retired", "status", "graph", "eof",
 	} {
 		assertSameFile(t, filepath.Join(app, name+".go"), "testdata/"+name+".golden")
 	}
