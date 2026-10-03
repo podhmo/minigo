@@ -2273,6 +2273,36 @@ func (v *VM) initHostLiteral(f *frame, td *runtime.TypeDef, hv any, raw []runtim
 	}
 }
 
+// initHostPositional fills a host-backed struct literal `T{v1, v2, ...}`:
+// Go requires exactly NumField values, each assignable to the field in
+// declaration order (unicode.RangeTable entries arrive this way).
+func (v *VM) initHostPositional(f *frame, td *runtime.TypeDef, hv any, raw []runtime.Value) {
+	rv := reflect.ValueOf(hv)
+	for rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			f.trap("cannot initialize host type %s: nil struct", td.Name)
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Struct {
+		f.trap("cannot initialize host type %s with fields", td.Name)
+	}
+	if len(raw) != rv.NumField() {
+		f.trap("wrong number of fields in literal of host type %s: %d != %d", td.Name, len(raw), rv.NumField())
+	}
+	for i, e := range raw {
+		fv := rv.Field(i)
+		if !fv.CanSet() {
+			f.trap("implicit assignment to unexported field %s of host type %s", rv.Type().Field(i).Name, td.Name)
+		}
+		val, err := toReflectValue(e, fv.Type(), v)
+		if err != nil {
+			f.trap("%s.%s: %s", td.Name, rv.Type().Field(i).Name, err)
+		}
+		fv.Set(val)
+	}
+}
+
 // toReflectValue marshals a runtime value to a reflect.Value of the
 // requested type: empty interfaces carry the value verbatim (a *Cell stays
 // a pointer, slices/maps cross unconverted), func types wrap the callable
@@ -2386,6 +2416,11 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 	}
 	if av.Type().AssignableTo(t) {
 		return av, nil
+	}
+	// a host-typed composite literal boxes `*T`; placing it inside a
+	// `T` field/element (e.g. []unicode.Range16{{...}}) needs the pointee.
+	if av.Kind() == reflect.Pointer && !av.IsNil() && av.Type().Elem().AssignableTo(t) {
+		return av.Elem(), nil
 	}
 	if av.Type().ConvertibleTo(t) {
 		return av.Convert(t), nil
@@ -3738,9 +3773,10 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 		hv := td.HostNew()
 		if n > 0 {
 			if !kv {
-				f.trap("cannot initialize host type %s with positional fields", td.Name)
+				v.initHostPositional(f, td, hv, raw[:n])
+			} else {
+				v.initHostLiteral(f, td, hv, raw[:2*n])
 			}
-			v.initHostLiteral(f, td, hv, raw[:2*n])
 		}
 		return &runtime.GoValue{V: hv}
 	}
@@ -7485,15 +7521,18 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 	// fires only when the target is named too: an unnamed target
 	// (`var m map[string]int = om`) stays a shape check, and anonymous
 	// values carry no tag at all.
+	utd := v.peelNamed(td)
 	if tag := declaredTag(x); tag != nil {
 		if sameTypeDef(tag, td) || sameTypeDef(tag, v.peelAlias(td)) {
 			return x
 		}
-		if tagIsNamed(td) {
+		// a named target whose underlying is an interface (`type Token
+		// any`) assigns by interface satisfaction below, not by tag —
+		// the tag mismatch is only fatal for concrete targets.
+		if tagIsNamed(td) && (utd == nil || utd.Kind != runtime.KindInterface) {
 			f.trap("cannot use %s as %s", tdName(tag), tdName(td))
 		}
 	}
-	utd := v.peelNamed(td)
 	if utd.Kind == runtime.KindPointer && v.H.ElemOf != nil {
 		// `var p P = &v` — the pointee's declared type must match the
 		// pointer's element type (a named pointer binds only its own
