@@ -167,7 +167,7 @@ func TestDeferRecover(t *testing.T) {
 		{"RecoverOutsideDefer", int64(1)}, // recover outside defer is nil
 		{"StillPanic", runtime.NIL},       // recovered panic returns normally
 		{"DeferBuiltinClose", int64(2)},   // deferred builtin runs at teardown
-		{"DeferBuiltinRecover", int64(3)}, // defer recover() catches the panic
+		{"DeferBuiltinRecover", int64(3)}, // defer func(){ defer recover() } catches
 	}
 	for _, c := range cases {
 		got := run(t, e, "./testdata/deferchan", c.fn)
@@ -175,8 +175,14 @@ func TestDeferRecover(t *testing.T) {
 			t.Errorf("%s mismatch (-want +got):\n%s", c.fn, diff)
 		}
 	}
+	// `defer recover()` itself cannot recover: zero non-wrapper frames
+	// sit between gorecover and gopanic, so the panic propagates like Go.
+	_, err := e.Run(context.Background(), "./testdata/deferchan", "DeferBuiltinRecoverPanic")
+	if err == nil || !strings.Contains(err.Error(), "swallowed") {
+		t.Fatalf("DeferBuiltinRecoverPanic: expected 'swallowed' panic, got %v", err)
+	}
 	// a panic raised inside a defer propagates
-	_, err := e.Run(context.Background(), "./testdata/deferchan", "ReraiseReplace")
+	_, err = e.Run(context.Background(), "./testdata/deferchan", "ReraiseReplace")
 	if err == nil || !strings.Contains(err.Error(), "second") {
 		t.Fatalf("ReraiseReplace: expected 'second' panic, got %v", err)
 	}

@@ -180,11 +180,22 @@ func DeferBuiltinClose() int {
 	return len(ch) + 1 // closed but still queued: len 1 -> 2
 }
 
-// DeferBuiltinRecover: `defer recover()` is a deferred builtin and still
-// catches the unwinding panic.
+// DeferBuiltinRecover: a `defer recover()` inside a deferred function
+// runs at that function's epilogue, one frame from gopanic — so it
+// catches the panic that invoked it.
 func DeferBuiltinRecover() (r int) {
-	defer recover()
+	defer func() {
+		defer recover()
+	}()
 	r = 3
+	panic("swallowed")
+}
+
+// DeferBuiltinRecoverPanic: `defer recover()` itself cannot recover —
+// zero non-wrapper frames sit between gorecover and gopanic, so the
+// panic propagates like Go.
+func DeferBuiltinRecoverPanic() int {
+	defer recover()
 	panic("swallowed")
 }
 
