@@ -847,15 +847,19 @@ func (v *VM) unwind(f *frame, r any) {
 		}
 	}
 	if r != nil {
-		if p != nil {
-			// a panic raised inside a deferred call supersedes — take
-			// whatever the drain left as this frame's outcome.
+		if p != nil || (v.inflight != saved && v.inflight != nil) {
+			// the drain left a panic to propagate — either the original
+			// still unwinding or one a deferred call raised. The latter
+			// must be picked up even after a mid-drain recovery set p
+			// to nil: a panic raised in a later deferred call would
+			// otherwise be dropped (and leak into inflight for an
+			// unrelated recover() to find).
 			p = v.inflight
 			v.inflight = saved
 			v.unwindDepth = savedD
 		}
-		// consumed mid-drain: the transition already restored the outer
-		// panic state; what remains in inflight belongs to that unwind.
+		// consumed mid-drain with no new panic: the transition already
+		// restored the outer panic state.
 	} else if v.inflight != saved && v.inflight != nil {
 		// a deferred call panicked during a normal drain — propagate it
 		// as this frame's panic. A consumed outer panic leaves inflight
