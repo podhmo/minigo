@@ -12,8 +12,11 @@ sync with it.
 Emitting `//go:generate` (rather than generating code itself) is the lazy
 shape of the demo: most of the "anything" metadata collection enables is
 already done by existing tools, so writing the *directive* exercises the
-SSoT/sync pattern for free. See `docs/sketch/plan-gen-sync.md` for the
-design note.
+SSoT/sync pattern for free. And because `inspect` reads declarations from
+the index — parse cost only — the scan works on real code: the target
+package never has to be pure, self-contained, or cheap to load (a `model`
+package dragging heavy transitive deps is the normal case). See
+`docs/sketch/plan-gen-sync.md` for the design note.
 
 ## How it works
 

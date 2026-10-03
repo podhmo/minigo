@@ -24,6 +24,16 @@ writing *the go:generate statement* demos the SSoT/sync pattern — the
 declaration is the single source of truth, the directive is kept in sync
 with it — without paying for a real generator).
 
+A second constraint pushed the same direction: **legacy code can't be
+asked to be a pure definition**. A tool that needs the package compiled or
+fully loaded puts demands on the scanned code — buildable, self-contained,
+cheap to load — that real codebases don't satisfy (a `model` package with
+heavy transitive deps is the norm, not the exception; a "clean seed" for
+loading doesn't exist). `inspect` reads declarations from the index —
+parse cost only — so scanning works on code that was never shaped to be
+scanned. That tolerance, not the `//go:generate` output itself, is what a
+real-world version of this pattern needs.
+
 ## Where it sits among the examples
 
 | | `task-run` | `convert-define` | `gen-sync` |
