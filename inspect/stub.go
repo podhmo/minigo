@@ -103,8 +103,10 @@ func Methods(s *Decl) []*Decl { panic("minigo intrinsic") }
 // non-pointer-receiver members, struct{ *T } and interface embeds lift
 // all, and a pointer embed on the path down keeps deeper pointer
 // receivers visible. Shallower spellings shadow deeper ones by name;
-// declared members always win. The list is sorted by name. Non-type
-// symbols trap.
+// a same-depth conflict between distinct members is an ambiguous
+// selector and drops out entirely (Go's rule), while declared
+// members always win. The list is sorted by name. Non-type symbols
+// trap.
 func MethodSet(s *Decl) []*Method { panic("minigo intrinsic") }
 
 // EnumMembers returns a type symbol's enum members: the package's

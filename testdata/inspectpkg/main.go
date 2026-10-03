@@ -419,3 +419,42 @@ type TalkerAlias = Talker
 type AliasEmbedder interface {
 	TalkerAlias
 }
+
+// Winner is the ambiguity fixture's requirement.
+type Winner interface {
+	W() int
+}
+
+// AmbA and AmbB declare W at the same promotion depth — AmbS's W
+// selector is ambiguous, and Go excludes the member entirely.
+type AmbA struct{}
+
+// W claims the name for AmbA.
+func (AmbA) W() int { return 1 }
+
+type AmbB struct{}
+
+// W claims the name for AmbB.
+func (AmbB) W() int { return 2 }
+
+// AmbS embeds both — W must NOT appear in its method set.
+type AmbS struct {
+	AmbA
+	AmbB
+}
+
+// DiaBase's W reaches DiaS through two paths but as the same member —
+// a diamond embed is not a conflict.
+type DiaBase struct{}
+
+// W is the shared member both paths reach.
+func (DiaBase) W() int { return 0 }
+
+type DiaA struct{ DiaBase }
+type DiaB struct{ DiaBase }
+
+// DiaS embeds both sides of the diamond — W stays in its method set.
+type DiaS struct {
+	DiaA
+	DiaB
+}

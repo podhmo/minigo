@@ -805,6 +805,16 @@ func PromotedWalk() string {
 	if find(ams, "Speak") == nil || find(ams, "Talk") == nil {
 		return "alias embed did not promote through"
 	}
+	// same-depth conflict between distinct members is ambiguous:
+	// AmbS{AmbA, AmbB} must lose W entirely, while DiaS's diamond
+	// reaches the same member twice and keeps it.
+	if find(inspect.MethodSet(inspect.Symbol(p, "AmbS")), "W") != nil {
+		return "ambiguous W was kept"
+	}
+	dm := find(inspect.MethodSet(inspect.Symbol(p, "DiaS")), "W")
+	if dm == nil || dm.Via == nil || dm.Via.Name != "DiaBase" {
+		return "diamond-promoted W was dropped"
+	}
 	return "ok"
 }
 
@@ -1261,6 +1271,17 @@ func ImplementersWalk() string {
 	}
 	if !got["AliasEmbedder"] || !got["TalkerAlias"] || !got["Talker"] || len(got) != 3 {
 		return "bad aliasembedder set"
+	}
+	// ambiguity excludes: AmbS has no W, but the single-path and
+	// diamond-promoted carriers all satisfy Winner.
+	got = map[string]bool{}
+	for _, d := range inspect.Implementers(p, inspect.Symbol(p, "Winner")) {
+		got[d.Name] = true
+	}
+	if got["AmbS"] || !got["AmbA"] || !got["AmbB"] ||
+		!got["DiaBase"] || !got["DiaA"] || !got["DiaB"] || !got["DiaS"] ||
+		!got["Winner"] || len(got) != 7 {
+		return "bad winner set"
 	}
 	return "ok"
 }

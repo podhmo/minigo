@@ -434,10 +434,12 @@ type Method struct {
 // deeper pointer receivers visible. Alias and generic-instantiation
 // embeds resolve to the underlying named decl first; type parameters
 // and unresolvable embeds contribute nothing. Members promote
-// breadth-first: a shallower spelling shadows a deeper one by name —
-// a same-depth conflict is an ambiguous selector in Go, and here the
-// first in declaration order wins — and declared members always win.
-// The result is sorted by name so script consumers see a stable order.
+// breadth-first: a shallower spelling shadows a deeper one by name,
+// and a same-depth conflict between distinct members is an ambiguous
+// selector — Go excludes it and so does this set (two paths reaching
+// the SAME declaring decl count once, so diamond embeds stay legal).
+// Declared members always win. The result is sorted by name so script
+// consumers see a stable order.
 func MethodSetOf(s *Decl, res Resolver) ([]*Method, error) {
 	if s.decl == nil || s.Package == nil || s.Package.Index == nil {
 		return nil, fmt.Errorf("inspect.MethodSet: %s has no index", s.Name)
@@ -446,9 +448,30 @@ func MethodSetOf(s *Decl, res Resolver) ([]*Method, error) {
 	if !ok {
 		return nil, fmt.Errorf("inspect.MethodSet: %s is not a type", s.Name)
 	}
-	seen := map[string]bool{}
 	visited := map[runtime.SymbolID]bool{}
 	var out []*Method
+	// winners records the depth and declaring-decl key that claimed
+	// each member name; ambig collects names claimed by two DISTINCT
+	// declaring decls at the winning depth — ambiguous selectors,
+	// which Go excludes from the set. Arrivals at a deeper level lose
+	// silently, and the same declaring decl reached through two paths
+	// (a diamond embed) counts once, not as a conflict.
+	type win struct {
+		depth int
+		key   string
+	}
+	winners := map[string]win{}
+	ambig := map[string]bool{}
+	record := func(name string, depth int, key string) bool {
+		if w, ok := winners[name]; ok {
+			if w.depth == depth && w.key != key {
+				ambig[name] = true // a distinct member at the same depth
+			}
+			return false
+		}
+		winners[name] = win{depth, key}
+		return true
+	}
 	// queue entries are the decls that own members, one per resolved
 	// embedded field — walked breadth-first so promotion depth, not
 	// field order, decides which spelling a name keeps.
@@ -457,15 +480,16 @@ func MethodSetOf(s *Decl, res Resolver) ([]*Method, error) {
 		owner *Decl // the resolved embedded decl — fields and specs read from it
 		via   *Decl // the decl this item was promoted from (nil for the queried type)
 		ptr   bool  // the path down to owner crossed a pointer embed
+		depth int
 	}
-	queue := []embedDecl{{td, s, nil, false}}
+	queue := []embedDecl{{td, s, nil, false, 0}}
 	// an alias borrows its target's set — GB = GreetBase carries
 	// GreetBase's methods identically, pointer receivers included, so
 	// the target walks with a nil via (the alias IS the type).
 	if ts, ok := s.decl.Spec.(*ast.TypeSpec); ok && ts.Assign.IsValid() {
 		if ed := chaseType(NewTypeExpr(ts.Type, s.file, s.Package), visited, res); ed != nil {
 			if ntd, ok := ed.Package.Index.Types[ed.Name]; ok {
-				queue = append(queue, embedDecl{ntd, ed, nil, false})
+				queue = append(queue, embedDecl{ntd, ed, nil, false, 0})
 			}
 		}
 	}
@@ -477,14 +501,11 @@ func MethodSetOf(s *Decl, res Resolver) ([]*Method, error) {
 				// embedded interfaces promote their method specs — all
 				// at this decl's depth: interface embedding flattens
 				// into the set, it does not add a promotion hop.
-				promoteIfaceSpecs(it, cur.owner, res, seen, visited, &out)
+				promoteIfaceSpecs(it, cur.owner, cur.depth, res, record, visited, &out)
 				continue
 			}
 		}
 		for _, md := range cur.td.Methods {
-			if seen[md.Name] {
-				continue
-			}
 			m := NewDecl(cur.owner.Package, md)
 			sig, err := SignatureOf(m)
 			if err != nil {
@@ -493,7 +514,9 @@ func MethodSetOf(s *Decl, res Resolver) ([]*Method, error) {
 			if !cur.ptr && cur.via != nil && sig.Recv != nil && sig.Recv.Type.Kind == "StarExpr" {
 				continue // value method sets skip pointer receivers
 			}
-			seen[md.Name] = true
+			if !record(md.Name, cur.depth, declKey(cur.owner)) {
+				continue
+			}
 			out = append(out, &Method{Name: md.Name, Sig: sig, Decl: m, Via: cur.via})
 		}
 		fs, err := FieldsOf(cur.owner)
@@ -519,13 +542,29 @@ func MethodSetOf(s *Decl, res Resolver) ([]*Method, error) {
 			if ntd, ok := ed.Package.Index.Types[ed.Name]; ok {
 				// pointer-ness accumulates: a pointer embed anywhere on
 				// the path down keeps deeper pointer receivers visible.
-				queue = append(queue, embedDecl{ntd, ed, ed, cur.ptr || byPtr})
+				queue = append(queue, embedDecl{ntd, ed, ed, cur.ptr || byPtr, cur.depth + 1})
 			}
 		}
+	}
+	// ambiguous selectors drop out entirely: the winner recorded
+	// earlier was only provisionally emitted.
+	if len(ambig) > 0 {
+		kept := out[:0]
+		for _, m := range out {
+			if !ambig[m.Name] {
+				kept = append(kept, m)
+			}
+		}
+		out = kept
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }
+
+// declKey identifies the decl a member was read from: two paths
+// reaching the same decl provide the same member (a diamond, not a
+// conflict), while distinct decls provide distinct members.
+func declKey(d *Decl) string { return d.Package.Path + "." + d.Name }
 
 // chaseType follows a type spelling to the decl that owns it: a named
 // reference resolves directly, instantiation bases (Pair[int]) and
@@ -577,15 +616,17 @@ var errorSpec = &ast.FuncType{Results: &ast.FieldList{List: []*ast.Field{{Type: 
 
 // promoteIfaceSpecs lists an interface's members as method-set
 // entries: the shared walker yields every reachable named spec,
-// which becomes a spec-backed Method (no Decl). Constraint elements
-// are irrelevant on this side — they promote nothing — so the
-// walker's error is ignored.
-func promoteIfaceSpecs(it *ast.InterfaceType, owner *Decl, res Resolver, seen map[string]bool, visited map[runtime.SymbolID]bool, out *[]*Method) {
+// which becomes a spec-backed Method (no Decl). Spec members claim
+// their name at the depth the interface was embedded — interface
+// flattening adds no promotion hop — and the record hook decides
+// shadowing and ambiguity exactly like declared members. Constraint
+// elements are irrelevant on this side — they promote nothing — so
+// the walker's error is ignored.
+func promoteIfaceSpecs(it *ast.InterfaceType, owner *Decl, depth int, res Resolver, record func(name string, depth int, key string) bool, visited map[runtime.SymbolID]bool, out *[]*Method) {
 	_ = walkIfaceSpecs(it, owner, res, visited, func(name string, ft *ast.FuncType, src *Decl) {
-		if seen[name] {
+		if !record(name, depth, declKey(src)) {
 			return
 		}
-		seen[name] = true
 		*out = append(*out, &Method{
 			Name: name,
 			Sig: &Sig{
