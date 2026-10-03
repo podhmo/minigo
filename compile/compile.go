@@ -1111,16 +1111,33 @@ func (c *compiler) rangeStmt(st *ast.RangeStmt) {
 	}
 	lc := &ctrlCtx{isLoop: true, labels: c.takeLabels()}
 	c.ctrl = append(c.ctrl, lc)
+	// An `=` range target is a per-iteration multi-assign: OpRangeNext
+	// pushes the (key, val) pair, then the LHS refs evaluate — still
+	// seeing the targets' pre-iteration operands (`for i, x[i] =` binds
+	// x[i] through the previous i, and `*getvar(&x)` runs once per live
+	// iteration, not on the exit probe). `:=` only allows ident targets
+	// and keeps the store-target path.
+	useRefs := st.Tok != token.DEFINE
 	topIP := len(c.ch.Code)
 	nextI := c.emit3(bytecode.OpRangeNext, 0, itSlot, nvars, st.Pos())
 	lc.continueIP = topIP
 
-	// OpRangeNext pushes nvars values (key, val); bind in reverse.
-	if st.Value != nil {
-		c.bindRangeVar(st.Value, st.Tok == token.DEFINE)
-	}
-	if st.Key != nil {
-		c.bindRangeVar(st.Key, st.Tok == token.DEFINE)
+	if useRefs {
+		if st.Key != nil {
+			c.refTarget(st.Key)
+		}
+		if st.Value != nil {
+			c.refTarget(st.Value)
+		}
+		c.emit3(bytecode.OpSetRefs, nvars, 1, 0, st.Pos())
+	} else {
+		// OpRangeNext pushes nvars values (key, val); bind in reverse.
+		if st.Value != nil {
+			c.bindRangeVar(st.Value, st.Tok == token.DEFINE)
+		}
+		if st.Key != nil {
+			c.bindRangeVar(st.Key, st.Tok == token.DEFINE)
+		}
 	}
 	c.stmt(st.Body)
 	c.emit(bytecode.OpJump, topIP, 0, st.Pos())

@@ -1133,12 +1133,24 @@ func (v *VM) loop(f *frame) {
 			// RHS evaluated (Go spec); stores land left-to-right.
 			n := int(ins.A)
 			vals := make([]runtime.Value, n)
-			for i := n - 1; i >= 0; i-- {
-				vals[i] = f.pop()
-			}
 			refs := make([]runtime.Value, n)
-			for i := n - 1; i >= 0; i-- {
-				refs[i] = f.pop()
+			if ins.B == 1 {
+				// range-assign order: the iter pair is already pushed,
+				// the LHS refs (evaluated with pre-iteration operands)
+				// sit on top.
+				for i := n - 1; i >= 0; i-- {
+					refs[i] = f.pop()
+				}
+				for i := n - 1; i >= 0; i-- {
+					vals[i] = f.pop()
+				}
+			} else {
+				for i := n - 1; i >= 0; i-- {
+					vals[i] = f.pop()
+				}
+				for i := n - 1; i >= 0; i-- {
+					refs[i] = f.pop()
+				}
 			}
 			for i := 0; i < n; i++ {
 				v.assignRef(f, refs[i], vals[i])
