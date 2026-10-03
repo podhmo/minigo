@@ -1374,7 +1374,7 @@ func (v *RValue) Bytes() any {
 	}
 	if et := v.e.elemOf(s.Typ); et != nil && et.Name != "" &&
 		et.Name != "byte" && et.Name != "uint8" {
-		trap("reflect.Value.Bytes of non-byte slice")
+		plain("reflect.Value.Bytes of non-byte slice")
 	}
 	st := s.Typ
 	if st == nil {

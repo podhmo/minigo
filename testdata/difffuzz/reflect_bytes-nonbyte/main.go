@@ -108,10 +108,9 @@ func id[T any](x T) T { return x }
 
 func main() {
 	try(0, func() any {
-		v0 := reflect.TypeOf((*fmt.Stringer)(nil)).Elem()
-		v1 := rMethodType(v0)
-		v2 := v1.In(0)
-		v3 := v2.Kind()
-		return v3
+		v0 := reflect.ValueOf(r_slice)
+		v1 := v0.Slice(0, 1)
+		v2 := fmt.Sprintf("%v", v1.Bytes())
+		return v2
 	})
 }
