@@ -4052,6 +4052,7 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 	}
 	var dirs []dir
 	argNum, maxArg := 0, 0
+	reordered := false
 	for i := 0; i < len(spec); {
 		j := strings.IndexByte(spec[i:], '%')
 		if j < 0 {
@@ -4082,6 +4083,7 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 					// n+1, n+2", 1-based).
 					argNum = n
 					indexed = true
+					reordered = true
 				}
 				i = k + 1
 			case ch == '*':
@@ -4168,8 +4170,11 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 	}
 	sb.WriteString(spec[prev:])
 	// args past the highest consumed position print as %!(EXTRA ...) —
-	// carry them across untouched.
-	na = append(na, a[off+maxArg:]...)
+	// carry them across untouched. Go suppresses the EXTRA report once
+	// any %[n] index reordered the arg list.
+	if !reordered {
+		na = append(na, a[off+maxArg:]...)
+	}
 	return sb.String(), na
 }
 
