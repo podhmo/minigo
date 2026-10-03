@@ -2077,25 +2077,25 @@ func (v *RValue) Comparable() bool {
 	return v.Type().Comparable()
 }
 
-// Equal reports Go's equality: values of uncomparable type panic, and
-// mismatched types report false rather than comparing through. Same
-// type delegates to value equality.
+// Equal reports Go's equality: mismatched types report false BEFORE
+// the comparability check, same-typed uncomparable values panic, and
+// two invalid Values compare equal. Same type delegates to value
+// equality.
 func (v *RValue) Equal(u *RValue) bool {
-	if u == nil || !u.IsValid() {
-		return !v.IsValid()
+	vok := v != nil && v.IsValid()
+	uok := u != nil && u.IsValid()
+	if !vok || !uok {
+		return vok == uok
 	}
 	if v.host() && u.host() {
 		return v.rv.Equal(u.rv)
 	}
 	vt, ut := v.Type(), u.Type()
+	if vt != ut {
+		return false // reflect's Equal needs identical types — checked first
+	}
 	if vt != nil && !vt.Comparable() {
-		panic(&runtime.Panic{Value: fmt.Sprintf("reflect.Value.Equal: comparing uncomparable type %s", vt.String())})
-	}
-	if ut != nil && !ut.Comparable() {
-		panic(&runtime.Panic{Value: fmt.Sprintf("reflect.Value.Equal: comparing uncomparable type %s", ut.String())})
-	}
-	if vt != nil && ut != nil && vt != ut {
-		return false // reflect's Equal needs identical types
+		panic(&runtime.Panic{Value: fmt.Sprintf("reflect.Value.Equal: values of type %s are not comparable", vt.String())})
 	}
 	return valueEqual(v.ifaceVal(), u.ifaceVal(), 0)
 }
