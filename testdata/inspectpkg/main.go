@@ -183,6 +183,26 @@ type Inst struct {
 	D Two[int, string]
 }
 
+// I0 is an embed target for Anon's interface field.
+type I0 interface {
+	Zero()
+}
+
+// Anon carries anonymous composite fields for TypeFields coverage.
+type Anon struct {
+	F struct {
+		W string `json:"w"`
+		N int
+	}
+	G interface {
+		M(int) string
+		I0
+	}
+	S []struct {
+		X int `json:"x"`
+	}
+}
+
 type hidden struct{ x int }
 
 var hiddenVar = 1

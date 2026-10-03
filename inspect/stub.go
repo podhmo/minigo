@@ -114,6 +114,13 @@ func DeclType(s *Decl) *TypeExpr { panic("minigo intrinsic") }
 // typed with the alias (EnumMembers lists it). Non-type symbols trap.
 func IsAlias(s *Decl) bool { panic("minigo intrinsic") }
 
+// TypeFields returns the member elements of a composite type
+// expression — a struct spelling's fields (names, type, tag) or an
+// interface spelling's elements — so tags inside anonymous struct
+// types are readable where no decl names the composite. Other shapes
+// trap.
+func TypeFields(te *TypeExpr) []*Field { panic("minigo intrinsic") }
+
 // Children drills into a composite type expression: []T -> T,
 // map[K]V -> K then V, func(A) B -> A then B, and F[A] -> F then A —
 // a generic instantiation's base leads its type arguments, so walks

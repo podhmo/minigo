@@ -84,12 +84,19 @@ type Vault[T any] struct {
 	Item T `required:"true"`
 }
 
-// Inline hides a required tag inside an anonymous struct field. Tags
-// inside anonymous struct types are not readable through the decl view,
-// so this is an honest miss — no directive.
+// Inline hides a required tag inside an anonymous struct field — the
+// tag is readable through TypeFields, so this earns the directive.
 type Inline struct {
 	F struct {
 		W string `required:"true"`
+	}
+}
+
+// ListAnon holds a slice of an anonymous struct whose field carries
+// the tag — composites that compose a struct count too.
+type ListAnon struct {
+	Items []struct {
+		X int `required:"true"`
 	}
 }
 

@@ -278,9 +278,41 @@ func reachHasRequired(ex *scanx.Explorer, d *inspect.Decl) bool {
 // required check: `required:"true"`, or `required` as a whole element
 // of the validate/binding lists. Textual substrings — a `notrequired`
 // key, `json:"required"`, `binding:"notrequired"` — do not count.
+// Tags inside anonymous struct fields count: their fields are part of
+// this decl's shape, so `F struct{ W string `+"`required:\"true\"`"+` }`
+// marks the decl required-bearing.
 func hasRequiredTag(d *inspect.Decl) bool {
-	for _, fd := range inspect.Fields(d) {
+	return fieldsWantRequired(inspect.Fields(d))
+}
+
+// fieldsWantRequired walks a field list — descending into anonymous
+// struct spellings and the composites that can carry one ([]struct,
+// map[string]struct, *struct).
+func fieldsWantRequired(fs []*inspect.Field) bool {
+	for _, fd := range fs {
 		if wantsRequired(fd.Tag) {
+			return true
+		}
+		if fd.Type != nil && typeHasRequiredField(fd.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+// typeHasRequiredField reports whether a type expression is, or
+// composes, an anonymous struct with a required-bearing field.
+func typeHasRequiredField(te *inspect.TypeExpr) bool {
+	if te.Kind == "StructType" {
+		for _, fd := range inspect.TypeFields(te) {
+			if wantsRequired(fd.Tag) || (fd.Type != nil && typeHasRequiredField(fd.Type)) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, c := range inspect.Children(te) {
+		if typeHasRequiredField(c) {
 			return true
 		}
 	}

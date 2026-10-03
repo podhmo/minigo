@@ -385,6 +385,17 @@ func (e *Engine) installInspect() {
 			}
 			return boxedSlice(te.Children()), nil
 		}),
+		"TypeFields": bf("TypeFields", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			te, err := typeExprOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			fs, err := xinspect.TypeFieldsOf(te)
+			if err != nil {
+				return nil, err
+			}
+			return boxedSlice(fs), nil
+		}),
 		"UnWrap": bf("UnWrap", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			te, err := typeExprOf(args[0])
 			if err != nil {

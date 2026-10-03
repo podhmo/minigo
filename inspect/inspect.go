@@ -600,6 +600,52 @@ func (te *TypeExpr) hostChildren() []*TypeExpr {
 	return out
 }
 
+// TypeFieldsOf returns the member elements of a composite type
+// expression: a struct spelling yields its fields (names, type, tag),
+// an interface spelling yields its elements (method specs named with a
+// FuncType TypeExpr; embedded and constraint elements Embedded). This
+// is the TypeExpr-level counterpart of FieldsOf — anonymous composite
+// types inside a decl's fields become readable without naming the
+// decl. Other shapes report an error.
+func TypeFieldsOf(te *TypeExpr) ([]*Field, error) {
+	if te.ht != nil {
+		return hostTypeFields(te.ht)
+	}
+	switch e := te.expr.(type) {
+	case *ast.StructType:
+		return fieldList(e.Fields, te.file, te.pkg), nil
+	case *ast.InterfaceType:
+		return fieldList(e.Methods, te.file, te.pkg), nil
+	}
+	return nil, fmt.Errorf("inspect.TypeFields: %s is not a struct or interface type expression", te.Kind)
+}
+
+func hostTypeFields(t reflect.Type) ([]*Field, error) {
+	switch t.Kind() {
+	case reflect.Struct:
+		out := make([]*Field, 0, t.NumField())
+		for i := 0; i < t.NumField(); i++ {
+			sf := t.Field(i)
+			fv := &Field{Type: NewHostType(sf.Type), Tag: string(sf.Tag), Embedded: sf.Anonymous}
+			if !sf.Anonymous {
+				fv.Names = []string{sf.Name}
+			}
+			out = append(out, fv)
+		}
+		return out, nil
+	case reflect.Interface:
+		// reflect flattens embedded interfaces, so every method reads
+		// as a named spec — the Embedded distinction is source-level.
+		out := make([]*Field, 0, t.NumMethod())
+		for i := 0; i < t.NumMethod(); i++ {
+			m := t.Method(i)
+			out = append(out, &Field{Names: []string{m.Name}, Type: NewHostType(m.Type)})
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("inspect.TypeFields: host type %s is not a struct or interface", t)
+}
+
 // Unref strips one pointer layer: *T -> T; other shapes pass through.
 // (Named Unref — UnRef is taken by the stub declaration.)
 func (te *TypeExpr) Unref() *TypeExpr {

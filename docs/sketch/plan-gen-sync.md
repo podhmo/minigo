@@ -199,9 +199,12 @@ textually — candidates for the inspect wishlist, not the example's:
   base (`List[Inner]` → `List` then `Inner`), so walks enter generic
   containers through instantiations of them (the fixture's `Safe`
   reaches `Vault` — and earns `requiredgen` — through the base alone).
-- **Tags inside anonymous struct types are unreadable** — a field like
-  `F struct{ W string \`required:"true"\` }` carries its tag where the
-  decl view can't reach; the fixture keeps it as an honest miss.
+- ~~**Tags inside anonymous struct types are unreadable**~~ — fixed:
+  `inspect.TypeFields` returns a composite spelling's member elements
+  (names, type, tag for structs; specs vs embeds for interfaces), the
+  TypeExpr-level counterpart of `Fields`. `hasRequiredTag` descends
+  into anonymous composites, so `Inline` (and `ListAnon`, a slice of
+  anonymous struct) earn `requiredgen`.
 - **Promoted methods are invisible** — `inspect.Methods` lists only
   methods declared on the type, so an embed-only implementer of
   `Envelope` is missed by the variant collection while the compiler

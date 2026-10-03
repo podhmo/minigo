@@ -647,6 +647,68 @@ func Instantiation() string {
 	return "ok"
 }
 
+// AnonFieldWalk: tags and names inside anonymous composite types are
+// readable through TypeFields — where no decl names the composite.
+func AnonFieldWalk() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	fs := inspect.Fields(inspect.Symbol(p, "Anon"))
+	// F: anonymous struct — names, types, and tags inside it.
+	f := fs[0]
+	if f.Type.Kind != "StructType" {
+		return "bad anon kind: " + f.Type.Kind
+	}
+	inner := inspect.TypeFields(f.Type)
+	if len(inner) != 2 || inner[0].Names[0] != "W" || inner[1].Names[0] != "N" {
+		return "bad inner fields"
+	}
+	if inner[0].Tag != "json:\"w\"" {
+		return "bad inner tag: " + inner[0].Tag
+	}
+	if inner[0].Embedded {
+		return "named field marked embedded"
+	}
+	// G: anonymous interface — method specs named, embeds marked.
+	g := fs[1]
+	if g.Type.Kind != "InterfaceType" {
+		return "bad iface kind: " + g.Type.Kind
+	}
+	ms := inspect.TypeFields(g.Type)
+	if len(ms) != 2 {
+		return "bad iface members"
+	}
+	if len(ms[0].Names) != 1 || ms[0].Names[0] != "M" || ms[0].Embedded {
+		return "bad method spec"
+	}
+	if ms[0].Type.Kind != "FuncType" {
+		return "bad method type: " + ms[0].Type.Kind
+	}
+	if !ms[1].Embedded {
+		return "embed not marked"
+	}
+	if inspect.Resolve(ms[1].Type).Name != "I0" {
+		return "embed unresolved"
+	}
+	// S: slice-of-anon-struct — the composite arrives through Children.
+	s := fs[2]
+	kids := inspect.Children(s.Type)
+	if len(kids) != 1 || kids[0].Kind != "StructType" {
+		return "bad slice elem"
+	}
+	sf := inspect.TypeFields(kids[0])
+	if len(sf) != 1 || sf[0].Tag != "json:\"x\"" {
+		return "bad slice field"
+	}
+	return "ok"
+}
+
+// TypeFieldsIdentTrap: a named leaf is not a composite — it traps.
+func TypeFieldsIdentTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	fs := inspect.Fields(inspect.Symbol(p, "User"))
+	inspect.TypeFields(fs[0].Type)
+	return "expected trap"
+}
+
 // TypeParamsList: generic type and generic func expose their params;
 // a named constraint resolves to its interface decl.
 func TypeParamsList() string {
