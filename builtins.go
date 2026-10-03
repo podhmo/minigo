@@ -169,18 +169,29 @@ func builtins(e *Engine) *runtime.Env {
 			kv = nv
 		}
 		key := runtime.CanonicalKey(kv)
+		drop := func(m *runtime.Map) {
+			delete(m.Pairs, key)
+			// the key also leaves the insertion-order list — a stale
+			// entry there would render/range as `k:<nil>`.
+			for i, k := range m.Order {
+				if runtime.CanonicalKey(k) == key {
+					m.Order = append(m.Order[:i], m.Order[i+1:]...)
+					break
+				}
+			}
+		}
 		switch m := args[0].(type) {
 		case *runtime.Named:
 			if mm, ok := m.V.(*runtime.Map); ok {
-				delete(mm.Pairs, key)
+				drop(mm)
 				return runtime.NIL, nil
 			}
 			return nil, fmt.Errorf("delete on named %s", m.Typ.Name)
 		case *runtime.Map:
-			delete(m.Pairs, key)
+			drop(m)
 		case *runtime.Cell:
 			if mm, ok := m.Elem.(*runtime.Map); ok {
-				delete(mm.Pairs, key)
+				drop(mm)
 				return runtime.NIL, nil
 			}
 			return nil, fmt.Errorf("delete on %T", args[0])
