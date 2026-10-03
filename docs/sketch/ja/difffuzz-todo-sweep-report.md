@@ -46,6 +46,9 @@
 
 - 1 根本原因 = 1 PR。回帰は testdata/difffuzz/<verdict>_<slug>/（main.go + want.stdout）にピンする
 - 修正 PR は stacked PR にして（各 PR の base を前の devin ブランチにして `git_stack` で既存の stack に追加、無ければ新規作成。マージ・base 変更は GitHub の retarget 任せで自分では行わない）
+- レポート・docs の PR は必ずスタックの**最上位**に作る（中間に置くと、そのブランチを checkout した検証者に上位の修正が見えず「未修正」と誤報される — 本ラウンドで発生）
+- `git_stack unstack` は指定 PR だけでなく**スタック全体を解体**するので使わない（順序変更が必要なら `git_stack create` に全 PR の順序リストを渡して作り直す）
+- レビュー指摘は現スタックトップで再現を確認してから直す（レビューのベースが古いことが多く、今回 3/5・次回 5/7 が既修正だった）
 - 境界クラスは潰し対象外: unsafe.Pointer → issue #40、GC fidelity、script 値の reflect.ValueOf、unsafe.String/Offsetof、gcgort（Go でもデッドロック）、スループット差の HANG
 - 最後に usecasefuzz（github.com/podhmo/minigo-usecasefuzz、`MINIGO_DIR=<checkout> bash run.sh`）を回してリグレッション確認
 - 終了時に docs/sketch/ja/ にレポート（実施内容・残り状況・不備の振り返り・計画外の記録と判断）
