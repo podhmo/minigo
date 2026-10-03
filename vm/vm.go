@@ -5204,8 +5204,43 @@ func eqlValue(a, b runtime.Value) bool {
 			return av.V == bg.V
 		}
 		return false
+	case *runtime.Cell:
+		if cb, ok := b.(*runtime.Cell); ok {
+			// Go allocates zero-size pointees at runtime.zerobase — two
+			// distinct cells still compare equal, like `new([0]int)`.
+			if zeroSizeValue(av.Elem) && zeroSizeValue(cb.Elem) {
+				return true
+			}
+			return av == cb
+		}
+		return false
 	}
 	return a == b // pointers, strings, bools
+}
+
+// zeroSizeValue reports whether a value's type occupies no bytes — an
+// empty struct, a [0]T array, or a composite of only zero-size fields.
+// Go stores all such values at the same address (runtime.zerobase).
+func zeroSizeValue(v runtime.Value) bool {
+	switch x := v.(type) {
+	case *runtime.Named:
+		return zeroSizeValue(x.V)
+	case *runtime.Struct:
+		if len(x.Fields) == 0 {
+			return true
+		}
+		for _, fv := range x.Fields {
+			if !zeroSizeValue(fv) {
+				return false
+			}
+		}
+		return true
+	case *runtime.Slice:
+		// a zero-length value is only zero-size when its typedef says
+		// array — an empty []T slice is a header, not zerobase.
+		return len(x.Elems) == 0 && isArrayTyp(x.Typ)
+	}
+	return false
 }
 
 // isArrayTyp reports whether td keeps a fixed array length — the value
