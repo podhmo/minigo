@@ -6391,7 +6391,10 @@ func anonArrayTyp(n int, name string) *runtime.TypeDef {
 func (v *VM) convertArray(td *runtime.TypeDef, x runtime.Value, n int64) (runtime.Value, error) {
 	if tn, isNil := asTypedNil(x); isNil {
 		if ut := v.peelNamed(tn.Typ); ut != nil && ut.Kind == runtime.KindSlice {
-			// a nil slice converts to the zero array — nothing to copy.
+			// a nil slice has length 0 — too short for a non-zero array.
+			if n > 0 {
+				panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: fmt.Sprintf("cannot convert slice with length %d to array or pointer to array with length %d", 0, n)}})
+			}
 			return &runtime.Slice{Elems: v.zeroElems(v.topFrame(), td, n), Typ: td}, nil
 		}
 		return nil, fmt.Errorf("cannot convert %s to %s", tdName(tn.Typ), tdName(td))
