@@ -60,3 +60,6 @@ Call-few: panic: reflect: Call with too few input arguments
 Call-many: panic: reflect: Call with too many input arguments
 Call-nonvariadic-1: panic: reflect: Call with too few input arguments
 Call-variadic-0: ok
+Call-badarg: panic: reflect: Call using string as type int
+CallSlice-bad: panic: reflect: CallSlice using string as type []int
+CallSlice-ok: ok

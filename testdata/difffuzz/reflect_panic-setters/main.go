@@ -117,4 +117,10 @@ func main() {
 	try("Call-many", func() { reflect.ValueOf(f1).Call([]reflect.Value{reflect.ValueOf(1), reflect.ValueOf(2)}) })
 	try("Call-nonvariadic-1", func() { reflect.ValueOf(f2).Call([]reflect.Value{reflect.ValueOf(1)}) })
 	try("Call-variadic-0", func() { reflect.ValueOf(fv).Call(nil); fmt.Println("Call-variadic-0: ok") })
+	try("Call-badarg", func() { reflect.ValueOf(f1).Call([]reflect.Value{reflect.ValueOf("s")}) })
+	try("CallSlice-bad", func() { reflect.ValueOf(fv).CallSlice([]reflect.Value{reflect.ValueOf("s")}) })
+	try("CallSlice-ok", func() {
+		reflect.ValueOf(fv).CallSlice([]reflect.Value{reflect.ValueOf([]int{1})})
+		fmt.Println("CallSlice-ok: ok")
+	})
 }

@@ -1674,29 +1674,8 @@ func (v *RValue) Call(in []*RValue) []*RValue {
 	if v.vc == nil {
 		trap("minireflect: reflect.Value.Call needs a caller context")
 	}
-	// Go reports arity before touching argument values: `reflect: Call
-	// with too few/too many input arguments`.
-	if ft := v.callSig(); ft != nil && ft.Params != nil {
-		// count parameters, not field entries — `a, b int` is two.
-		numIn := 0
-		for _, f := range ft.Params.List {
-			if n := len(f.Names); n > 0 {
-				numIn += n
-			} else {
-				numIn++
-			}
-		}
-		variadic := false
-		if n := len(ft.Params.List); n > 0 {
-			_, variadic = ft.Params.List[n-1].Type.(*ast.Ellipsis)
-		}
-		switch {
-		case len(in) < numIn && (!variadic || len(in) < numIn-1):
-			plain("reflect: Call with too few input arguments")
-		case len(in) > numIn && !variadic:
-			plain("reflect: Call with too many input arguments")
-		}
-	}
+	v.checkCallArgs(in, false)
+
 	args := make([]runtime.Value, len(in))
 	for i, a := range in {
 		if a == nil {
@@ -1739,6 +1718,68 @@ func (v *RValue) callOut(r runtime.Value) []*RValue {
 		return res
 	}
 	return []*RValue{v.e.wrap(v.vc, r, nil, typeOfValue(v.e, r))}
+}
+
+// checkCallArgs replays Go's arity and per-argument assignability
+// gates for Call/CallSlice, so a bad call panics with `reflect: Call
+// with too few input arguments` / `reflect: Call using X as type Y`
+// before the callee runs.
+func (v *RValue) checkCallArgs(in []*RValue, sliceMode bool) {
+	ft := v.callSig()
+	if ft == nil || ft.Params == nil {
+		return
+	}
+	// count parameters, not field entries — `a, b int` is two.
+	numIn := 0
+	for _, f := range ft.Params.List {
+		if n := len(f.Names); n > 0 {
+			numIn += n
+		} else {
+			numIn++
+		}
+	}
+	variadic := false
+	if n := len(ft.Params.List); n > 0 {
+		_, variadic = ft.Params.List[n-1].Type.(*ast.Ellipsis)
+	}
+	name := "Call"
+	if sliceMode {
+		name = "CallSlice"
+	}
+	switch {
+	case len(in) < numIn && (!variadic || len(in) < numIn-1):
+		plain("reflect: %s with too few input arguments", name)
+	case len(in) > numIn && (!variadic || sliceMode):
+		plain("reflect: %s with too many input arguments", name)
+	}
+	t := v.Type()
+	if t == nil {
+		return
+	}
+	for i, a := range in {
+		var pt *RType
+		switch {
+		case sliceMode && i == numIn-1:
+			pt = t.In(numIn - 1) // the whole []T tail param
+		case variadic && !sliceMode && i >= numIn-1:
+			if last := t.In(numIn - 1); last != nil {
+				pt = last.Elem()
+			}
+		default:
+			if i < numIn {
+				pt = t.In(i)
+			}
+		}
+		if a == nil || a.Type() == nil {
+			plain("reflect: %s using zero Value argument", name)
+		}
+		if pt == nil {
+			continue
+		}
+		if xt := a.Type(); xt != nil && !xt.AssignableTo(pt) {
+			plain("reflect: %s using %s as type %s", name, xt.String(), pt.String())
+		}
+	}
 }
 
 // callSig finds the callee's declared signature — the function's own
@@ -1794,9 +1835,6 @@ func (v *RValue) CallSlice(in []*RValue) []*RValue {
 	if v.vc == nil {
 		trap("minireflect: reflect.Value.CallSlice needs a caller context")
 	}
-	if len(in) == 0 {
-		trap("reflect.Value.CallSlice with empty input slice")
-	}
 	if ft := v.callSig(); ft != nil {
 		variadic := false
 		if ft.Params != nil && len(ft.Params.List) > 0 {
@@ -1806,6 +1844,11 @@ func (v *RValue) CallSlice(in []*RValue) []*RValue {
 			trap("reflect.Value.CallSlice of a non-variadic function")
 		}
 	}
+	if len(in) == 0 {
+		trap("CallSlice with empty input slice")
+	}
+	v.checkCallArgs(in, true)
+
 	last := in[len(in)-1]
 	last.mustValid("CallSlice")
 	var s *runtime.Slice
