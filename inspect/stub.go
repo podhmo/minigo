@@ -75,6 +75,16 @@ func Fields(s *Decl) []*Field { panic("minigo intrinsic") }
 // Methods returns the method decls of a type symbol.
 func Methods(s *Decl) []*Decl { panic("minigo intrinsic") }
 
+// MethodSet returns the flattened method set of a type symbol — its
+// declared methods plus members promoted through embedded fields,
+// walked transitively. Each member carries Name and Sig; a promoted
+// member's Via names the decl it was promoted from, and its Decl is
+// the underlying method decl (nil for interface method specs, which
+// are not declarations). Promotion follows the value method-set rule:
+// struct{ T } lifts T's non-pointer-receiver members, struct{ *T } and
+// interface embeds lift all. Non-type symbols trap.
+func MethodSet(s *Decl) []*Method { panic("minigo intrinsic") }
+
 // EnumMembers returns a type symbol's enum members: the package's
 // const declarations that are explicitly typed with it, in source
 // order — `const X Status = ...` specs, including empty specs that

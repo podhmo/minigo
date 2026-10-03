@@ -42,6 +42,7 @@ func TestInspect(t *testing.T) {
 		"NamedFieldType",
 		"Instantiation",
 		"AnonFieldWalk",
+		"PromotedWalk",
 		"TypeParamsList",
 		"TypeOfNamed",
 		"BoundTypeSym",
@@ -75,6 +76,7 @@ func TestInspect(t *testing.T) {
 		"IsAliasFuncTrap",      // IsAlias is a type view — funcs trap
 		"IsAliasBoundTrap",     // bound types carry no declaration
 		"TypeFieldsIdentTrap",  // a named leaf is not a composite
+		"MethodSetFuncTrap",    // the method set is a type view
 		"ResolveBoundTrap",     // the resolver cannot descend into a bound pkg
 		"MissingSymTrap",       // unknown symbol name
 		"BoundFieldTrap",       // bound type has no decl for Fields

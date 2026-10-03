@@ -205,10 +205,12 @@ textually — candidates for the inspect wishlist, not the example's:
   TypeExpr-level counterpart of `Fields`. `hasRequiredTag` descends
   into anonymous composites, so `Inline` (and `ListAnon`, a slice of
   anonymous struct) earn `requiredgen`.
-- **Promoted methods are invisible** — `inspect.Methods` lists only
-  methods declared on the type, so an embed-only implementer of
-  `Envelope` is missed by the variant collection while the compiler
-  accepts it (`var _ Envelope = EmbedEvent{}` pins the irony).
+- ~~**Promoted methods are invisible**~~ — fixed: `inspect.MethodSet`
+  flattens the declared methods with members promoted through embedded
+  fields (transitively, following the value method-set rule —
+  `struct{ T }` lifts non-pointer receivers, `struct{ *T }` and
+  interface embeds lift all). `EmbedEvent` joins the `-variants=` list
+  and earns `oneofgen` like the compiler already accepted.
 - **`inspect.SymbolID` returns `runtime.NIL` for non-named exprs** — a
   value the script can't nil-check against its real-Go struct signature
   (`sid != nil` doesn't compile on the facade). Canonical names are

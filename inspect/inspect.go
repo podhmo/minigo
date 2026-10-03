@@ -371,6 +371,163 @@ func MethodsOf(s *Decl) ([]*Decl, error) {
 	return out, nil
 }
 
+// Method is a member of a type's method set: a method declared on the
+// type (Decl set, Via nil) or one promoted through an embedded field
+// (Via names the decl the member was promoted from). Members promoted
+// out of an embedded interface are method specs — they carry Name and
+// Sig but no Decl, since a spec is not a declaration.
+type Method struct {
+	Name string
+	Sig  *Sig
+	Decl *Decl // nil when the member is an interface method spec
+	Via  *Decl // nil when declared on the type itself
+}
+
+// MethodSetOf returns the flattened method set of a type symbol: its
+// declared methods plus the members promoted through embedded fields,
+// walked transitively. Promotion follows Go's value method-set rule —
+// a by-value embed (struct{ T }) lifts T's non-pointer-receiver
+// members, a pointer embed (struct{ *T }) and interface embeds lift
+// everything. Alias and generic-instantiation embeds resolve to the
+// underlying named decl first; type parameters and unresolvable embeds
+// contribute nothing. A shallower promotion shadows a deeper one by
+// name; declared members always win.
+func MethodSetOf(s *Decl, res Resolver) ([]*Method, error) {
+	if s.decl == nil || s.Package == nil || s.Package.Index == nil {
+		return nil, fmt.Errorf("inspect.MethodSet: %s has no index", s.Name)
+	}
+	td, ok := s.Package.Index.Types[s.Name]
+	if !ok {
+		return nil, fmt.Errorf("inspect.MethodSet: %s is not a type", s.Name)
+	}
+	seen := map[string]bool{}
+	visited := map[runtime.SymbolID]bool{}
+	var out []*Method
+	var walk func(td *index.TypeDeclInfo, owner *Decl, via *Decl, ptrEmbed bool)
+	walk = func(td *index.TypeDeclInfo, owner *Decl, via *Decl, ptrEmbed bool) {
+		for _, md := range td.Methods {
+			if seen[md.Name] {
+				continue
+			}
+			m := NewDecl(owner.Package, md)
+			sig, err := SignatureOf(m)
+			if err != nil {
+				continue
+			}
+			if !ptrEmbed && via != nil && sig.Recv != nil && sig.Recv.Type.Kind == "StarExpr" {
+				continue // value method sets skip pointer receivers
+			}
+			seen[md.Name] = true
+			out = append(out, &Method{Name: md.Name, Sig: sig, Decl: m, Via: via})
+		}
+		fs, err := FieldsOf(owner)
+		if err != nil {
+			return // not a struct or interface — nothing to promote from
+		}
+		for _, fd := range fs {
+			if !fd.Embedded {
+				continue
+			}
+			sub, byPtr := fd.Type, false
+			if sub.Kind == "StarExpr" {
+				byPtr = true
+				sub = sub.Unref()
+			}
+			// resolve the embedded spelling to the decl that owns the
+			// members — alias layers chase to the target, and the
+			// instantiation base covers Pair[int]-style embeds.
+			var ed *Decl
+			for i := 0; i < 8; i++ {
+				sid, ok := sub.SymbolID()
+				if !ok {
+					if kids := sub.Children(); len(kids) > 0 {
+						sub = kids[0]
+						continue
+					}
+					break
+				}
+				if sid.PackagePath == BuiltinPackagePath || visited[sid] {
+					break
+				}
+				visited[sid] = true
+				d, err := res(sid)
+				if err != nil || d == nil || d.decl == nil {
+					break
+				}
+				ts, ok := d.decl.Spec.(*ast.TypeSpec)
+				if !ok {
+					break
+				}
+				ed = d
+				switch ts.Type.(type) {
+				case *ast.Ident, *ast.SelectorExpr:
+					sub = NewTypeExpr(ts.Type, d.file, d.Package)
+					continue // another named layer — keep chasing
+				}
+				break
+			}
+			if ed == nil {
+				continue
+			}
+			if it, ok := ed.decl.Spec.(*ast.TypeSpec).Type.(*ast.InterfaceType); ok {
+				// embedded interfaces promote their method specs —
+				// recursively including the specs' own embeds.
+				promoteIfaceSpecs(it, ed, res, seen, visited, &out)
+				continue
+			}
+			if ntd, ok := ed.Package.Index.Types[ed.Name]; ok {
+				walk(ntd, ed, ed, byPtr)
+			}
+		}
+	}
+	if it, ok := s.decl.Spec.(*ast.TypeSpec).Type.(*ast.InterfaceType); ok {
+		promoteIfaceSpecs(it, s, res, seen, visited, &out)
+	}
+	walk(td, s, nil, false)
+	return out, nil
+}
+
+// promoteIfaceSpecs lists an interface's members as method-set
+// entries: named specs become spec-backed Methods (no Decl); embedded
+// elements recurse so the promoted set is transitive.
+func promoteIfaceSpecs(it *ast.InterfaceType, owner *Decl, res Resolver, seen map[string]bool, visited map[runtime.SymbolID]bool, out *[]*Method) {
+	for _, fd := range fieldList(it.Methods, owner.file, owner.Package) {
+		if !fd.Embedded {
+			if seen[fd.Names[0]] {
+				continue
+			}
+			seen[fd.Names[0]] = true
+			ft, _ := fd.Type.Expr().(*ast.FuncType)
+			*out = append(*out, &Method{
+				Name: fd.Names[0],
+				Sig: &Sig{
+					Params:  boxFields(fieldList(ft.Params, owner.file, owner.Package)),
+					Results: boxFields(fieldList(ft.Results, owner.file, owner.Package)),
+				},
+				Via: owner,
+			})
+			continue
+		}
+		// an embedded element promotes the elements it names.
+		sid, ok := fd.Type.SymbolID()
+		if !ok || sid.PackagePath == BuiltinPackagePath || visited[sid] {
+			continue
+		}
+		visited[sid] = true
+		d, err := res(sid)
+		if err != nil || d == nil || d.decl == nil {
+			continue
+		}
+		ts, ok := d.decl.Spec.(*ast.TypeSpec)
+		if !ok {
+			continue
+		}
+		if sub, ok := ts.Type.(*ast.InterfaceType); ok {
+			promoteIfaceSpecs(sub, d, res, seen, visited, out)
+		}
+	}
+}
+
 // EnumMembersOf returns a type symbol's enum members: the package's
 // const declarations that are explicitly typed with it, in source
 // order. Untyped constants and foreign-typed ones never match, so an

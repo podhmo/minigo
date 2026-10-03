@@ -233,11 +233,10 @@ func directivesFor(ex *scanx.Explorer, scans []pkgScan, s pkgScan, d *inspect.De
 }
 
 // implementers lists the names of types across the walked import
-// closure that declare `Discriminator() string` — the method-set view
-// the interface's requirement implies. Names outside the interface's
-// own package are qualified with the package's base name. Promoted
-// (embedded) methods are invisible in the decl view, so a type that
-// only implements the interface through embedding honestly misses.
+// closure whose method set carries `Discriminator() string` — the
+// requirement the interface spells, flattened over embeds. Names
+// outside the interface's own package are qualified with the
+// package's base name.
 func implementers(scans []pkgScan, selfPath string) []string {
 	vars := []string{}
 	for _, s := range scans {

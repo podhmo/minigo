@@ -203,6 +203,71 @@ type Anon struct {
 	}
 }
 
+// Greeter is an embed target interface for MethodSet coverage.
+type Greeter interface {
+	Greet() string
+}
+
+// GreetBase declares the promoted method.
+type GreetBase struct{}
+
+// Greet is promoted through embedding.
+func (GreetBase) Greet() string { return "base" }
+
+// GreetEmbed promotes Greet through a by-value embed.
+type GreetEmbed struct {
+	GreetBase
+}
+
+// GreetPtr has only a pointer-receiver method.
+type GreetPtr struct{}
+
+// PtrOnly is visible only through pointer embeddings.
+func (*GreetPtr) PtrOnly() {}
+
+// GreetPtrEmbed promotes PtrOnly through a pointer embed.
+type GreetPtrEmbed struct {
+	*GreetPtr
+}
+
+// GreetValEmbed cannot see PtrOnly — value method sets exclude
+// pointer receivers.
+type GreetValEmbed struct {
+	GreetPtr
+}
+
+// GreetIface promotes the Greeter spec through an interface embed.
+type GreetIface struct {
+	Greeter
+}
+
+// GB is an alias embed — the method set resolves through it.
+type GB = GreetBase
+
+// GreetAliasEmbed promotes through an alias.
+type GreetAliasEmbed struct {
+	GB
+}
+
+// CycA and CycB embed each other through pointers — the walk must
+// terminate on the cycle.
+type CycA struct {
+	*CycB
+}
+
+type CycB struct {
+	*CycA
+}
+
+// GreetShadow declares Greet itself and embeds GreetBase — the
+// declared method wins the name.
+type GreetShadow struct {
+	GreetBase
+}
+
+// Greet shadows the promoted spelling.
+func (GreetShadow) Greet() string { return "shadow" }
+
 type hidden struct{ x int }
 
 var hiddenVar = 1

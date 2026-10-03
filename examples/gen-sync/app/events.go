@@ -39,9 +39,8 @@ type PingBase struct{}
 func (PingBase) Discriminator() string { return "base" }
 
 // EmbedEvent implements Envelope only through promotion — the method
-// never appears as a method of this type in the decl view, so the
-// variant collection honestly misses it even though the compiler
-// accepts it as a variant.
+// set flattens the embed, so the variant collection sees it just as
+// the compiler does.
 type EmbedEvent struct{ PingBase }
 
 var _ Envelope = EmbedEvent{}

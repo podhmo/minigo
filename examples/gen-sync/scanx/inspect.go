@@ -7,19 +7,26 @@ import (
 	"github.com/podhmo/minigo/inspect"
 )
 
-// HasMethod reports whether the type declares a nullary method with the
-// given result types — scanx.HasMethod(d, "Discriminator", "string")
-// matches `func (T) Discriminator() string` (either receiver form) but
-// not `func (T) Discriminator() int`.
+// HasMethod reports whether a concrete type's method set carries a
+// nullary method with the given result types — scanx.HasMethod(d,
+// "Discriminator", "string") matches `func (T) Discriminator() string`
+// (either receiver form, declared or promoted through an embed) but
+// not `func (T) Discriminator() int`. Interface decls answer false —
+// their method set is their own specs, which is a different question
+// (RequiresMethod asks it).
 func HasMethod(d *inspect.Decl, name string, results ...string) bool {
 	if inspect.Kind(d) != "type" {
 		return false
 	}
-	for _, m := range inspect.Methods(d) {
+	def := inspect.Def(d)
+	if def == nil || def.Kind == "InterfaceType" {
+		return false
+	}
+	for _, m := range inspect.MethodSet(d) {
 		if m.Name != name {
 			continue
 		}
-		sig := inspect.Signature(m)
+		sig := m.Sig
 		if sig == nil {
 			continue
 		}

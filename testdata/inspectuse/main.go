@@ -709,6 +709,69 @@ func TypeFieldsIdentTrap() string {
 	return "expected trap"
 }
 
+// PromotedWalk: MethodSet flattens promoted members — embeds lift
+// declared methods (Via + Decl), interface embeds lift specs (Decl
+// nil), value method sets exclude pointer receivers, and declared
+// methods shadow promoted spellings by name.
+func PromotedWalk() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	find := func(ms []*inspect.Method, name string) *inspect.Method {
+		for _, m := range ms {
+			if m.Name == name {
+				return m
+			}
+		}
+		return nil
+	}
+	// by-value embed: Greet promoted with decl and origin.
+	ms := inspect.MethodSet(inspect.Symbol(p, "GreetEmbed"))
+	g := find(ms, "Greet")
+	if g == nil || g.Decl == nil || g.Via == nil || g.Via.Name != "GreetBase" {
+		return "embed promotion missing"
+	}
+	if len(g.Sig.ParamFields()) != 0 || len(g.Sig.ResultFields()) != 1 {
+		return "bad promoted sig"
+	}
+	// pointer embed lifts pointer receivers; by-value embed does not.
+	if find(inspect.MethodSet(inspect.Symbol(p, "GreetPtrEmbed")), "PtrOnly") == nil {
+		return "ptr embed lost ptr method"
+	}
+	if find(inspect.MethodSet(inspect.Symbol(p, "GreetValEmbed")), "PtrOnly") != nil {
+		return "value embed lifted ptr method"
+	}
+	// interface embed: the spec promotes — no decl behind it.
+	gi := find(inspect.MethodSet(inspect.Symbol(p, "GreetIface")), "Greet")
+	if gi == nil || gi.Decl != nil || gi.Via == nil || gi.Via.Name != "Greeter" {
+		return "iface spec not promoted"
+	}
+	// alias embed resolves to the target.
+	if find(inspect.MethodSet(inspect.Symbol(p, "GreetAliasEmbed")), "Greet") == nil {
+		return "alias embed unresolved"
+	}
+	// an interface's own set is its specs.
+	own := find(inspect.MethodSet(inspect.Symbol(p, "Greeter")), "Greet")
+	if own == nil || own.Decl != nil {
+		return "iface set missing spec"
+	}
+	// a mutual embed cycle terminates.
+	if inspect.MethodSet(inspect.Symbol(p, "CycA")) == nil {
+		return "cycle walk lost"
+	}
+	// declared methods shadow promoted spellings: Via stays nil.
+	gs := find(inspect.MethodSet(inspect.Symbol(p, "GreetShadow")), "Greet")
+	if gs == nil || gs.Via != nil || gs.Decl == nil {
+		return "declared method did not win"
+	}
+	return "ok"
+}
+
+// MethodSetFuncTrap: the method set is a type view — funcs trap.
+func MethodSetFuncTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	inspect.MethodSet(inspect.Symbol(p, "Reduce"))
+	return "expected trap"
+}
+
 // TypeParamsList: generic type and generic func expose their params;
 // a named constraint resolves to its interface decl.
 func TypeParamsList() string {

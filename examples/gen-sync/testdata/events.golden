@@ -1,11 +1,12 @@
 package app
 
 // Code generated directives below are managed by gen-sync. DO NOT EDIT.
-//go:generate oneofgen -type=Envelope -variants=PingBase,PingEvent,PongEvent,Pulse,clone,mood.Signal
+//go:generate oneofgen -type=Envelope -variants=EmbedEvent,PingBase,PingEvent,PongEvent,Pulse,clone,mood.Signal
 //go:generate oneofgen -type=PingEvent
 //go:generate oneofgen -type=PongEvent
 //go:generate oneofgen -type=Pulse
 //go:generate oneofgen -type=PingBase
+//go:generate oneofgen -type=EmbedEvent
 //go:generate oneofgen -type=clone
 
 // Envelope is a discriminated union of events (OpenAPI oneOf style) —
@@ -47,9 +48,8 @@ type PingBase struct{}
 func (PingBase) Discriminator() string { return "base" }
 
 // EmbedEvent implements Envelope only through promotion — the method
-// never appears as a method of this type in the decl view, so the
-// variant collection honestly misses it even though the compiler
-// accepts it as a variant.
+// set flattens the embed, so the variant collection sees it just as
+// the compiler does.
 type EmbedEvent struct{ PingBase }
 
 var _ Envelope = EmbedEvent{}

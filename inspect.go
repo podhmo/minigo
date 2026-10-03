@@ -291,6 +291,17 @@ func (e *Engine) installInspect() {
 			}
 			return boxedSlice(ms), nil
 		}),
+		"MethodSet": bf("MethodSet", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			s, err := declViewOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			ms, err := xinspect.MethodSetOf(s, e.resolverForInspect())
+			if err != nil {
+				return nil, err
+			}
+			return boxedSlice(ms), nil
+		}),
 		"EnumMembers": bf("EnumMembers", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {
