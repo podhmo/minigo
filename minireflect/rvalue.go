@@ -627,7 +627,7 @@ func (v *RValue) Field(i int) *RValue {
 		trap("call of reflect.Value.Field on %s Value", v.kindStr())
 	}
 	if i < 0 || i >= len(s.Fields) {
-		panic(&runtime.Panic{Value: fmt.Sprintf("reflect: Field index %d out of range", i)})
+		panic(&runtime.Panic{Value: "reflect: Field index out of range"})
 	}
 	def := s.Def
 	var ftd *runtime.TypeDef
@@ -886,7 +886,10 @@ func (v *RValue) Index(i int) *RValue {
 	switch x := v.get().(type) {
 	case *runtime.Slice:
 		if i < 0 || i >= len(x.Elems) {
-			panic(&runtime.Panic{Value: fmt.Sprintf("reflect: slice index %d out of range", i)})
+			if arrayTypeOf(x.Typ) != nil {
+				panic(&runtime.Panic{Value: "reflect: array index out of range"})
+			}
+			panic(&runtime.Panic{Value: "reflect: slice index out of range"})
 		}
 		var ref runtime.Value
 		if arrayTypeOf(x.Typ) != nil {
@@ -906,7 +909,7 @@ func (v *RValue) Index(i int) *RValue {
 			ref: ref, td: etd, ro: v.ro}
 	case string:
 		if i < 0 || i >= len(x) {
-			panic(&runtime.Panic{Value: fmt.Sprintf("reflect: string index %d out of range", i)})
+			panic(&runtime.Panic{Value: "reflect: string index out of range"})
 		}
 		return &RValue{e: v.e, vc: v.vc, val: int64(x[i]), td: &runtime.TypeDef{Name: "uint8"}}
 	case *runtime.Named:
@@ -1732,7 +1735,7 @@ func (v *RValue) Method(i int) *RValue {
 	}
 	names := exportedMethodNames(v.e.methodSet(v.td))
 	if i < 0 || i >= len(names) {
-		panic(&runtime.Panic{Value: fmt.Sprintf("reflect: Method index %d out of range", i)})
+		panic(&runtime.Panic{Value: "reflect: Method index out of range"})
 	}
 	return v.MethodByName(names[i])
 }
@@ -1764,7 +1767,10 @@ func (v *RValue) MethodByName(name string) *RValue {
 	if !ok {
 		return &RValue{e: v.e, vc: v.vc}
 	}
-	return v.e.wrap(v.vc, m, nil, &runtime.TypeDef{Kind: runtime.KindFunc})
+	// Type() of a bound method value reports the signature with the
+	// receiver consumed — func() int for T{}.M — which the member's own
+	// typedef already spells.
+	return v.e.wrap(v.vc, m, nil, typeOfValue(v.e, m))
 }
 
 // ---- conversions / misc ----

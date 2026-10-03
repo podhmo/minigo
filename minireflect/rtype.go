@@ -642,7 +642,7 @@ func (t *RType) Field(i int) *StructField {
 		trap("Field of non-struct type %s", t.String())
 	}
 	if i < 0 || i >= len(t.td.Fields) {
-		panic(&runtime.Panic{Value: fmt.Sprintf("reflect: Field index %d out of range", i)})
+		panic(&runtime.Panic{Value: "reflect: Field index out of bounds"})
 	}
 	fts := t.e.fieldTypes(t.td)
 	var ft *RType
@@ -753,7 +753,17 @@ func (t *RType) Method(i int) *Method {
 	set := t.e.methodSet(t.td)
 	names := exportedMethodNames(set)
 	if i < 0 || i >= len(names) {
-		panic(&runtime.Panic{Value: fmt.Sprintf("reflect: Method index %d out of range", i)})
+		// An interface type's requirements are a plain list in Go:
+		// out-of-range returns the zero Method instead of panicking.
+		if t.td.Kind == runtime.KindInterface {
+			return &Method{}
+		}
+		panic(&runtime.Panic{Value: "reflect: Method index out of range"})
+	}
+	// Interface requirements carry no receiver in Method.Type —
+	// func(int) string, not func(main.I, int) string.
+	if t.td.Kind == runtime.KindInterface {
+		return &Method{Name: names[i], Type: t.e.methodType(nil, set[names[i]]), Index: i}
 	}
 	return &Method{Name: names[i], Type: t.e.methodType(t, set[names[i]]), Index: i}
 }

@@ -1,0 +1,13 @@
+0: panic: reflect: Field index out of range
+1: panic: reflect: Field index out of range
+2: panic: reflect: slice index out of range
+3: panic: reflect: array index out of range
+4: panic: reflect: string index out of range
+5: panic: reflect: Method index out of range
+6: func() int
+7: panic: reflect: Field index out of bounds
+8: panic: reflect: Method index out of range
+9: true true 0
+10: M func(int) string 0
+11: panic: reflect: Field index out of range
+12: panic: reflect: Field index out of bounds
