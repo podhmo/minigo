@@ -1,0 +1,6 @@
+*strings.Reader
+strings.Reader
+struct strings
+*bytes.Buffer bytes.Buffer
+2
+0
