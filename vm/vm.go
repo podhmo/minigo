@@ -5617,9 +5617,17 @@ func eqlValue(a, b runtime.Value) bool {
 		return false
 	case *runtime.IndexRef:
 		if br, ok := b.(*runtime.IndexRef); ok {
-			// &s[i] compares by the backing array, not the ref node —
-			// the same slice (possibly under different wrappers) with
-			// the same index is the same element address.
+			// &s[i] compares by the backing element slot, not the ref
+			// node — (*[N]T)(s) re-views s's backing array, so
+			// &s5[0] == &ss[0] even through distinct slice headers.
+			as, bs := av.Slice(), br.Slice()
+			ai, aok := av.Key.(int64)
+			bi, bok := br.Key.(int64)
+			if as != nil && bs != nil && aok && bok &&
+				ai >= 0 && ai < int64(len(as.Elems)) &&
+				bi >= 0 && bi < int64(len(bs.Elems)) {
+				return &as.Elems[ai] == &bs.Elems[bi]
+			}
 			return refBase(av.Base) == refBase(br.Base) && eqlValue(av.Key, br.Key)
 		}
 		return false
@@ -6019,7 +6027,29 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 			}
 		}
 		switch k {
-		case runtime.KindSlice, runtime.KindMap, runtime.KindChan, runtime.KindFunc, runtime.KindPointer:
+		case runtime.KindPointer:
+			// (*[N]T)(nilSlice) is a slice conversion, not a re-tag —
+			// convertPointer decides by the target's array length.
+			if ut := v.peelNamed(tn.Typ); ut != nil && ut.Kind == runtime.KindSlice {
+				break
+			}
+			if tn.Typ != nil && !v.convShapeEq(tn.Typ, td) {
+				return nil, fmt.Errorf("cannot convert %s to %s", tdName(tn.Typ), tdName(td))
+			}
+			return &runtime.TypedNil{Typ: td}, nil
+		case runtime.KindSlice:
+			// [N]T(nilSlice) is a slice-to-array conversion producing
+			// the zero array — convertArray decides, not the re-tag.
+			if ut := v.peelNamed(tn.Typ); ut != nil && ut.Kind == runtime.KindSlice {
+				if _, isArr := v.arrayLen(v.topFrame(), td); isArr {
+					break
+				}
+			}
+			if tn.Typ != nil && !v.convShapeEq(tn.Typ, td) {
+				return nil, fmt.Errorf("cannot convert %s to %s", tdName(tn.Typ), tdName(td))
+			}
+			return &runtime.TypedNil{Typ: td}, nil
+		case runtime.KindMap, runtime.KindChan, runtime.KindFunc:
 			if tn.Typ != nil && !v.convShapeEq(tn.Typ, td) {
 				return nil, fmt.Errorf("cannot convert %s to %s", tdName(tn.Typ), tdName(td))
 			}
@@ -6193,6 +6223,9 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 	}
 	switch td.Kind {
 	case runtime.KindSlice:
+		if an, isArr := v.arrayLen(v.topFrame(), td); isArr {
+			return v.convertArray(td, x, an)
+		}
 		return v.convertSlice(td, x)
 	case runtime.KindMap:
 		return v.convertMap(td, x)
@@ -6290,6 +6323,47 @@ func anonArrayTyp(n int, name string) *runtime.TypeDef {
 	}}
 }
 
+// convertArray implements `[N]T(s)` on array typedefs (Go 1.20): the
+// result is a fresh array copying the slice's first N elements — a
+// too-short or wrongly-shaped source panics/errors like Go.
+func (v *VM) convertArray(td *runtime.TypeDef, x runtime.Value, n int64) (runtime.Value, error) {
+	if tn, isNil := asTypedNil(x); isNil {
+		if ut := v.peelNamed(tn.Typ); ut != nil && ut.Kind == runtime.KindSlice {
+			// a nil slice converts to the zero array — nothing to copy.
+			return &runtime.Slice{Elems: v.zeroElems(v.topFrame(), td, n), Typ: td}, nil
+		}
+		return nil, fmt.Errorf("cannot convert %s to %s", tdName(tn.Typ), tdName(td))
+	}
+	if s, ok := runtime.Unwrap(x).(*runtime.Slice); ok {
+		// an array source converts only to the identical array type —
+		// slicing out a different length is a slice conversion's job.
+		if s.Typ != nil {
+			if _, srcIsArr := v.arrayLen(v.topFrame(), s.Typ); srcIsArr && !v.tdShapeEq(s.Typ, td) {
+				return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
+			}
+		}
+		if int64(len(s.Elems)) < n {
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: fmt.Sprintf("cannot convert slice with length %d to array or pointer to array with length %d", len(s.Elems), n)}})
+		}
+		out := v.zeroElems(v.topFrame(), td, n)
+		copy(out, s.Elems[:n])
+		return &runtime.Slice{Elems: out, Typ: td}, nil
+	}
+	return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
+}
+
+// zeroElems fills an array's element slots with the element type's zero.
+func (v *VM) zeroElems(f *frame, td *runtime.TypeDef, n int64) []runtime.Value {
+	out := make([]runtime.Value, n)
+	if et := v.elemTypedef(f, td); et != nil {
+		z := v.zeroValue(f, et)
+		for i := range out {
+			out[i] = z
+		}
+	}
+	return out
+}
+
 // convertSlice implements `[]T(x)`: the special string->byte/rune-slice
 // conversions plus slice->slice when the underlying shapes are identical
 // (element types compare by identity — []int does not convert to
@@ -6365,6 +6439,21 @@ func (v *VM) convertChan(td *runtime.TypeDef, x runtime.Value) (runtime.Value, e
 // the conversion checks the pointee's declared shape when one is known
 // and passes the pointer itself through.
 func (v *VM) convertPointer(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error) {
+	if tn, isNil := asTypedNil(x); isNil {
+		// (*[N]T)(nilSlice) — a nil slice converts to a nil array
+		// pointer only when N == 0; a larger array conversion panics
+		// on the missing backing store like Go.
+		if ut := v.peelNamed(tn.Typ); ut != nil && ut.Kind == runtime.KindSlice {
+			if et := v.elemTypedef(v.topFrame(), td); et != nil {
+				if an, isArr := v.arrayLen(v.topFrame(), et); isArr {
+					if an == 0 {
+						return &runtime.TypedNil{Typ: td}, nil
+					}
+					panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: fmt.Sprintf("cannot convert slice with length %d to array or pointer to array with length %d", 0, an)}})
+				}
+			}
+		}
+	}
 	if s, isSlice := runtime.Unwrap(x).(*runtime.Slice); isSlice {
 		// (*[N]T)(s) — slice-to-array-pointer conversion shares the
 		// slice's backing array (too-short slices panic like Go's).
