@@ -2,6 +2,7 @@ package minigo
 
 import (
 	"fmt"
+	"go/ast"
 	"go/constant"
 	"os"
 	"strings"
@@ -441,7 +442,22 @@ func builtins(e *Engine) *runtime.Env {
 	}
 	// any / error: predeclared interface typedefs (assertion + decl targets)
 	env.Set("any", &runtime.TypeDef{Name: "any", Kind: runtime.KindInterface})
-	env.Set("error", &runtime.TypeDef{Name: "error", Kind: runtime.KindInterface, MReqs: []string{"Error"}})
+	// error carries its requirement as a real interface AST so the
+	// facade's signature machinery (ifaceSigsOf → methodSet) can check
+	// Implements/TypeAssert against `Error() string` rather than
+	// degenerating to the empty interface.
+	env.Set("error", &runtime.TypeDef{
+		Name:  "error",
+		Kind:  runtime.KindInterface,
+		MReqs: []string{"Error"},
+		Anon: &ast.InterfaceType{Methods: &ast.FieldList{List: []*ast.Field{{
+			Names: []*ast.Ident{{Name: "Error"}},
+			Type: &ast.FuncType{
+				Params:  &ast.FieldList{},
+				Results: &ast.FieldList{List: []*ast.Field{{Type: ast.NewIdent("string")}}},
+			},
+		}}}},
+	})
 	return env
 }
 
