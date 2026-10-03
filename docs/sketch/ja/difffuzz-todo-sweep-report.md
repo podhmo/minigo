@@ -212,4 +212,40 @@ usecasefuzz 再実行: 0 DIFF / 1 ACCEPT / 4 TRAP（lim-http/toml/xml/yaml — �
 
 - **corpus 外の新規作業ゼロ**: TODO 残件は全て境界クラスで、コーパス再スイープからも潰し対象の新規 SILENT は出なかった（recover.go のみ）。hunt の新 seed 補充は不要と判断 — gen は同シードガードで clean。
 - **`defer recover()` のテスト期待値是正を同 PR に同梱**: 実装変更とテストデータ是正は1根因（one-frame 規則）として同一 PR にした — pin しないと片方だけ残る危険があった。
+
+### 6.10 レビュー第7ラウンド: unwind bookkeeping の3件（1件は回帰）
+
+[#153](https://github.com/podhmo/minigo/pull/153) への独立レビューが `#149`–`#152` の unwind モデルに3件の不具合を上げ、全て現スタックトップ（`4a15545`）で再現を確認して修正した（`go run` と minigo の双方で検証）。
+
+| 指摘 | 根因 | PR |
+|------|------|-----|
+| **回帰**: mid-drain recover 後の deferred call が panic すると新 panic が飲まれる — `recovered: P` の後 `f returned` / `outer: <nil>` で E2 が消失。さらに `v.inflight` に残り、無関係な後続 `recover()` が死んだ panic を拾う（`h sees: E2`） | drain 終了時の outcome 取得は「元 panic `p != nil` の時だけ `v.inflight` を拾う」形だった。consume 遷移が `p = nil` にした後で later deferred が raise した panic は誰も拾わない | [#154](https://github.com/podhmo/minigo/pull/154) — 条件を `p != nil \|\| (inflight != saved && inflight != nil)` に統一 |
+| `runtime.Callers` が consume 後に owner フレームを二重表示（live + stale unwound） | consume 遷移で `v.unwinding` の死んだ panic のエントリが残ったまま — Go は recovery 後に unwound フレームを**一切**出さない（実測: supersede された元 panic の残りも含めて消える） | [#155](https://github.com/podhmo/minigo/pull/155) — `unwinding` エントリを panic タグ付きにして、遷移で consume 側+frame 自身の panic のエントリを除去（outer の live unwind は保持） |
+| 新 panic が mid-drain で supersede すると `Callers` の unwound 順が狂う（`f.func2` が `g,f` の後に埋まる） | `unwinding` が panic をまたいで append 順一本 — Go は**新しい gopanic の unwound フレームを先**に、古い unwind の残りをその後に出す | [#156](https://github.com/podhmo/minigo/pull/156) — タグでグループ化し「最後に pop があった panic」を先に出力 |
+
+実測で確定した Go セマンティクス（panic.go の `gopanic`/`recovery` と挙動プローブ）:
+- deferred call が panic した時点で元 panic は**死亡**（superseded）— 新 panic を recover しても元 panic は復活せず、関数は正常終了する（`f-d2 recover: P` → `f returned` → `outer: <nil>`）。
+- panic が recover で consume されると、その unwind が pop したフレームは Callers から**全て**消える — supersede 歴の残りも含め、live フレームだけが残る。
+- `unwinding` のリスト順 = 「panic 単位のグループ化、新しい panic を先」— 単一 append 順では supersede 時に新 panic の frame が古い unwind の残りに埋もれる。
+
+回帰 pin: `text_value_deferpanicrecover`（propagate+stale inflight）、`text_value_defercallersclean`（consume 後の二重表示）、`text_value_defercallerssuper`（panic グループ順）。
+
+#### リファクタリング提案の評価（第7ラウンド）
+
+| 提案 | 判定 | 対応 |
+|------|------|------|
+| `frame.deferred` は write-only | 正しい — `sentinel` が marker の役割を担う | 削除（#156 内の cleanup コミット） |
+| `invokeDeferred` の doc が「`defer recover()` が unwind 中の panic を拾う」と旧仕様のまま | 正しい — one-frame 規則と矛盾 | doc 書き換え（sentinel = wrapper slot、0フレーム → nil / 1フレーム → recover） |
+| `imag` が TypeDef を inline 構築 | 妥当 | `real` も同形だったので両方 `runtime.BasicTypedef("float32")` に |
+| `basicTypedefs` の lazy map は `builtins()` pre-fill 頼み | 妥当 — goroutine-safe の根拠が暗黙 | init 時 eager 構築に変更、`BasicTypedef` は map lookup のみに |
+| `constNative` が `uconstNative` エラーを飲むのは `intOf`（panic）と非対称 | 妥当 — builtin 引数位置では materialize できない定数はプログラムの失敗 | `constNative` も `RuntimeError` payload で panic する形に統一 |
+| `intOf` の panic payload が string（Go は error） | 妥当 — `recover()` で `r.(error)` が効かない | 4箇所の `uconstNative` 失敗点を `&runtime.RuntimeError{Msg:...}` に |
+| `v.pcSites` が Callers のたびに無限増殖 | 正しい — ただし pre-existing・低頻度 | 本ラウンドは見送り（残課題; snapshot 単位なので実害は長寿命 REPL に限られる） |
+| `bytesSliceOf` の nil が `[]interface {}` 綴り | 妥当 — `%T` が `[][]uint8` になるよう修正 | `anonSliceTyp("[]uint8")` で Typ を保持 |
+
+#### 不備の振り返り（第7ラウンド）
+
+- **`inflight` の pickup が「`p != nil` 前提」で設計されていた**: consume 遷移が `p = nil` にする経路を作った時点で、後置ブロックの取得条件を見直すべきだった — 「`p` は遷移後も panic の残存を意味するか」という不変条件の検証漏れで、本スタック自身が回帰を入れた形。
+- **`unwinding` のライフサイクル管理が「全部消す/残す」の二値だった**: 初版（#150）は `v.unwinding = nil` で全部消していたため outer unwind のエントリまで消せず、残す方向に倒したら consume 後の stale が出た。panic タグ付きにして「死んだ panic のエントリだけ落とす」が正しい粒度だった。
+- **レビューの repro は最初から全件現トップで再現した**: 前ラウンド（3/5・5/7 が既修正）と違い、今回は 3/3 が真の未修正だった — unwind bookkeeping は相互に絡むため「直したつもりの組合せケース」がまだ抜けていた。
 - **#151 は修正 PR ではなくハーネス PR**: 根因は「ジェネレータが実装依存の出力を生成する」側なので、minigo 側の挙動は変えていない（評価順の厳密 LTR は合法）。
