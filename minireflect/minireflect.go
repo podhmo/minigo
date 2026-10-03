@@ -424,6 +424,9 @@ func (e *Env) arrayOf(vc runtime.VMCaller, args []runtime.Value) (runtime.Value,
 	if t == nil {
 		return nil, fmt.Errorf("reflect.ArrayOf: arg 1 is %T, not a reflect.Type", args[1])
 	}
+	if n < 0 {
+		panic(&runtime.Panic{Value: "reflect: negative length"})
+	}
 	if t.rt != nil {
 		return &runtime.GoValue{V: e.hostTypeOf(reflect.ArrayOf(int(n), t.rt))}, nil
 	}
@@ -444,8 +447,21 @@ func (e *Env) makeSlice(vc runtime.VMCaller, args []runtime.Value) (runtime.Valu
 	if t.rt != nil {
 		return &runtime.GoValue{V: &RValue{e: e, vc: vc, rv: reflect.MakeSlice(t.rt, l, c)}}, nil
 	}
+	if t.Kind() != reflect.Slice {
+		panic(&runtime.Panic{Value: fmt.Sprintf("reflect.MakeSlice of non-slice type %s", t.String())})
+	}
+	if l < 0 {
+		panic(&runtime.Panic{Value: fmt.Sprintf("reflect.MakeSlice: negative len %d", l)})
+	}
+	if c < 0 {
+		panic(&runtime.Panic{Value: fmt.Sprintf("reflect.MakeSlice: negative cap %d", c)})
+	}
+	if l > c {
+		panic(&runtime.Panic{Value: fmt.Sprintf("reflect.MakeSlice: len %d greater than cap %d", l, c)})
+	}
 	et := e.elemOf(t.td)
-	elems := make([]runtime.Value, l)
+	// the requested cap lands in the Go backing so Cap() reports it
+	elems := make([]runtime.Value, l, c)
 	for i := range elems {
 		elems[i] = e.zeroOf(vc, et)
 	}
