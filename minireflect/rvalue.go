@@ -1063,6 +1063,45 @@ func (v *RValue) Slice(i, j int) *RValue {
 	return nil
 }
 
+// Grow expands a slice's capacity like Go 1.20 — Go checks
+// addressability before the slice kind, and only the cap side of the
+// header changes (len stays).
+func (v *RValue) Grow(n int) {
+	v.mustValid("Grow")
+	if v.host() {
+		v.rv.Grow(n)
+		return
+	}
+	v.mustBeSettable("Grow")
+	if v.Kind() != reflect.Slice {
+		trap("call of reflect.Value.Grow on %s Value", v.kindStr())
+	}
+	sl, _ := runtime.Unwrap(v.get()).(*runtime.Slice)
+	if sl == nil {
+		// a nil slice grows like an empty one — the header's cap
+		// rises and the value becomes a live (non-nil) slice.
+		sl = &runtime.Slice{Typ: v.td}
+	}
+	if need := len(sl.Elems) + n; need > cap(sl.Elems) {
+		// Go's growslice steps: an empty slice allocates need directly,
+		// <256 doubles, then quarters past 768.
+		newcap := cap(sl.Elems)
+		if newcap == 0 {
+			newcap = need
+		}
+		for newcap < need {
+			if newcap < 256 {
+				newcap *= 2
+			} else {
+				newcap = (newcap + 768) / 4
+			}
+		}
+		grown := make([]runtime.Value, len(sl.Elems), newcap)
+		copy(grown, sl.Elems)
+		v.set(&runtime.Slice{Elems: grown, Typ: sl.Typ})
+	}
+}
+
 // MapIndex looks up a map value; missing keys give an invalid Value.
 func (v *RValue) MapIndex(k *RValue) *RValue {
 	v.mustValid("MapIndex")
