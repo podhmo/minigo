@@ -403,8 +403,10 @@ func (v *RValue) Elem() *RValue {
 			// dereferencing a nil pointer value gives the invalid Value
 			return &RValue{e: v.e, vc: v.vc}
 		}
-		// the pointee is addressable: writes go back through the ptr
-		return v.e.wrap(v.vc, dv, ptr, v.e.elemOf(v.td))
+		// the pointee is addressable: writes go back through the ptr;
+		// read-only provenance survives the deref like Go's flagRO
+		return &RValue{e: v.e, vc: v.vc, val: dv, ref: ptr,
+			td: v.e.elemOf(v.td), ro: v.ro}
 	case reflect.Interface:
 		d := v.get()
 		if d == nil || d == runtime.NIL {
@@ -413,9 +415,10 @@ func (v *RValue) Elem() *RValue {
 		if tn, isNil := d.(*runtime.TypedNil); isNil {
 			// an interface holding a typed nil: Elem exposes the typed
 			// nil's value like Go's v.Elem() on a non-nil interface
-			return v.e.wrap(v.vc, tn, nil, tn.Typ)
+			return &RValue{e: v.e, vc: v.vc, val: tn, td: tn.Typ, ro: v.ro}
 		}
-		return v.e.wrap(v.vc, d, nil, typeOfValue(v.e, d))
+		return &RValue{e: v.e, vc: v.vc, val: d,
+			td: typeOfValue(v.e, d), ro: v.ro}
 	}
 	trap("call of reflect.Value.Elem on %s Value", v.kindStr())
 	return nil
@@ -829,9 +832,11 @@ func (v *RValue) Slice(i, j int) *RValue {
 			}
 			st := &runtime.TypeDef{Kind: runtime.KindSlice, Elem: v.e.elemOf(s.Typ),
 				Anon: &ast.ArrayType{Elt: at.Elt}}
-			return v.e.wrap(v.vc, &runtime.Slice{Elems: s.Elems[i:j], Typ: st}, nil, st)
+			return &RValue{e: v.e, vc: v.vc,
+				val: &runtime.Slice{Elems: s.Elems[i:j], Typ: st}, td: st, ro: v.ro}
 		}
-		return v.e.wrap(v.vc, &runtime.Slice{Elems: s.Elems[i:j], Typ: s.Typ}, nil, v.td)
+		return &RValue{e: v.e, vc: v.vc,
+			val: &runtime.Slice{Elems: s.Elems[i:j], Typ: s.Typ}, td: v.td, ro: v.ro}
 	}
 	trap("call of reflect.Value.Slice on %s Value", v.kindStr())
 	return nil
@@ -1113,26 +1118,37 @@ func (v *RValue) Bool() bool {
 	return false
 }
 
-// Bytes reads a []byte value.
-func (v *RValue) Bytes() []byte {
+// Bytes reads a []byte value. A script slice shares its backing —
+// the returned value aliases the same elements like Go's Bytes, so
+// writes through it reach the original slice (an unexported field's
+// slice included: Go's Bytes ignores the read-only flag).
+func (v *RValue) Bytes() any {
 	v.mustValid()
 	if v.host() {
 		return v.rv.Bytes()
 	}
+	var s *runtime.Slice
 	switch x := v.get().(type) {
 	case string:
 		return []byte(x)
 	case *runtime.Slice:
-		out := make([]byte, len(x.Elems))
-		for i, el := range x.Elems {
-			out[i] = byte(intOf(el))
-		}
-		return out
+		s = x
 	case *runtime.Named:
-		return v.e.wrap(v.vc, x.V, v.ref, v.td).Bytes()
+		s, _ = x.V.(*runtime.Slice)
 	}
-	trap("call of reflect.Value.Bytes on %s Value", v.kindStr())
-	return nil
+	if s == nil {
+		trap("call of reflect.Value.Bytes on %s Value", v.kindStr())
+		return nil
+	}
+	if et := v.e.elemOf(s.Typ); et != nil && et.Name != "" &&
+		et.Name != "byte" && et.Name != "uint8" {
+		trap("reflect.Value.Bytes of non-byte slice")
+	}
+	st := s.Typ
+	if st == nil {
+		st = v.e.compositeTd(runtime.KindSlice, &runtime.TypeDef{Name: "byte"})
+	}
+	return &runtime.Slice{Elems: s.Elems, Typ: st}
 }
 
 // String reads a string value; on non-string kinds it reports the
