@@ -5047,6 +5047,16 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 		}
 		return res
 	}
+	// equality works on any comparable pair and must see the boxed
+	// dynamic types — unwrapping a host numeric here would turn
+	// `any(time.Weekday(4)) == any(int(4))` into a true int64 compare
+	// where Go reports false.
+	switch op {
+	case bytecode.BinEql:
+		return eqlValue(a, b)
+	case bytecode.BinNeq:
+		return !eqlValue(a, b)
+	}
 	// bound time.* constants and reflect-produced durations arrive as
 	// raw time.Duration values — they behave as their int64 underlying
 	// in arithmetic and comparisons (2*time.Second, d < timeout), and
@@ -5068,6 +5078,10 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 	// arithmetic on them computes mod 2^64 in int64 (same bits) and
 	// re-boxes so formatting keeps the unsigned domain.
 	var ubox bool
+	// numTag remembers the named host int an operand was unwrapped from
+	// (reflect.Kind and friends) so an arithmetic result can be re-boxed
+	// into the same type — `reflect.Int + 1` stays a reflect.Kind.
+	var numTag reflect.Type
 	if g, ok := a.(*runtime.GoValue); ok {
 		if u, isU := g.V.(uint64); isU {
 			a = int64(u)
@@ -5077,6 +5091,7 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 			// other named host ints) unwraps for arithmetic and
 			// comparisons like an ordinary named int.
 			a = iv
+			numTag = reflect.TypeOf(g.V)
 		}
 	}
 	if g, ok := b.(*runtime.GoValue); ok {
@@ -5085,14 +5100,14 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 			ubox = true
 		} else if iv, ok := smallIntOf(g.V); ok {
 			b = iv
+			if bt := reflect.TypeOf(g.V); numTag != nil && bt != numTag {
+				// Go rejects arithmetic on differently-named ints
+				// (reflect.Kind + time.Weekday) at compile time.
+				f.trap("invalid operation: mismatched types %s and %s", numTag, bt)
+			} else {
+				numTag = bt
+			}
 		}
-	}
-	// equality works on any comparable pair
-	switch op {
-	case bytecode.BinEql:
-		return eqlValue(a, b)
-	case bytecode.BinNeq:
-		return !eqlValue(a, b)
 	}
 	if s, ok := a.(string); ok {
 		return stringBinOp(f, op, s, b)
@@ -5119,6 +5134,17 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 				return iv // d/d is unitless in Go
 			case dmark:
 				return time.Duration(iv)
+			case numTag != nil:
+				// re-box into the unwrapped operand's named host type —
+				// `reflect.Int + 1` is a reflect.Kind, not an int.
+				rv := reflect.New(numTag).Elem()
+				switch numTag.Kind() {
+				case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+					rv.SetInt(iv)
+				default:
+					rv.SetUint(uint64(iv))
+				}
+				return &runtime.GoValue{V: rv.Interface()}
 			}
 		}
 		return res

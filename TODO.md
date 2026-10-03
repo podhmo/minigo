@@ -42,7 +42,7 @@ Skeleton landed: lazy per-package loading, per-function compile, struct/method/c
     - [ ] g5 `SetInt`/`SetUint` narrowing to the declared width (pinned: `reflect_set-int-width`; MRE: set-uint-width)
     - [ ] g6 type aliases share the target's identity — `TypeFor[byte]() == TypeFor[uint8]()` (pinned: `reflect_alias-identity`)
     - [ ] g7 local + instantiated named types keep distinct identity — `S[int]` vs `S[string]` (pinned: `reflect_generic-identity`; MRE: local-type-identity)
-    - [ ] g8 host numeric boxing loses identity — `any(time.Weekday(4)) == any(int(4))` regressed to true; `reflect.Int+1` lost its `reflect.Kind` tag (pinned: `reflect_host-numeric-regression`; MREs: host-numeric-equality, host-numeric-type)
+    - [x] g8 host numeric boxing loses identity — `any(time.Weekday(4)) == any(int(4))` regressed to true; `reflect.Int+1` lost its `reflect.Kind` tag (pinned: `reflect_host-numeric-regression`; MREs: host-numeric-equality, host-numeric-type). Fixed — `binaryOp` evaluates `==`/`!=` on the boxed operands so `eqlValue` sees dynamic types, and re-boxes int results into the unwrapped operand's named host type (`numTag`; mismatched named ints trap).
     - [ ] g9 `NewSession` does not inherit `WithPackageModes` — a denied package imports fine from a child session (host-side MRE: session-policy)
     - [ ] g10 `Indirect` must dereference a pointer once, not loop (pinned: `reflect_indirect-depth`)
     - [ ] g11 `ValueOf` must reflect a `reflect.Value` itself as a struct (MRE: value-of-value)
