@@ -4262,7 +4262,11 @@ func deepEqlSeen(a, b runtime.Value, seen map[devisit]bool) bool {
 		return true
 	case *runtime.Struct:
 		bs, ok := b.(*runtime.Struct)
-		if !ok || !deepDefEq(av.Def, bs.Def) || len(av.Fields) != len(bs.Fields) {
+		// struct defs need full type identity — field names alone let
+		// struct{ X int } equal struct{ X any }. Named types match
+		// only the same declaration; anonymous ones compare spelling
+		// (field types, tags, order).
+		if !ok || !deepTypeEq(av.Def, bs.Def) || len(av.Fields) != len(bs.Fields) {
 			return false
 		}
 		if av == bs {
@@ -4311,13 +4315,15 @@ func deepEqlSeen(a, b runtime.Value, seen map[devisit]bool) bool {
 }
 
 // deepDefEq reports whether two struct defs spell the same type — the
-// same def object, or anonymous defs with equal shapes (kind + name +
-// field names): `struct{}` literals at different sites are one Go type.
+// same def object, or anonymous defs with equal shapes (kind + field
+// names): `struct{}` literals at different sites are one Go type, but
+// two `type T struct{...}` declarations are distinct types even when
+// they spell identically, so a named def only matches itself.
 func deepDefEq(a, b *runtime.TypeDef) bool {
 	if a == b {
 		return true
 	}
-	if a == nil || b == nil || a.Kind != b.Kind || a.Name != b.Name || len(a.Fields) != len(b.Fields) {
+	if a == nil || b == nil || a.Name != "" || b.Name != "" || a.Kind != b.Kind || a.Name != b.Name || len(a.Fields) != len(b.Fields) {
 		return false
 	}
 	for i := range a.Fields {
