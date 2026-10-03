@@ -1919,6 +1919,12 @@ func (v *RValue) CallSlice(in []*RValue) []*RValue {
 			v.rv.CallSlice(nil)
 		}
 		mt := v.rv.Type()
+		// Go rejects a non-variadic callee before counting or
+		// marshalling any args — In(-1) on a niladic signature
+		// would panic 'index out of range' instead.
+		if !mt.IsVariadic() {
+			plain("reflect: CallSlice of non-variadic function")
+		}
 		args := make([]reflect.Value, len(in))
 		for i, a := range in {
 			pt := mt.In(min(i, mt.NumIn()-1))
