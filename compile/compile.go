@@ -135,16 +135,6 @@ func (s *fscope) isIfaceVar(name string) bool {
 	return false
 }
 
-// typeSpec returns the spec of a local `type` decl named this
-// identifier (walking enclosing function scopes); nil when none or
-// when a closer declaration shadows it.
-func (s *fscope) typeSpec(name string) *ast.TypeSpec {
-	if b := s.lookupBinding(name); b != nil {
-		return b.tspec
-	}
-	return nil
-}
-
 // localTypeDefs collects the typedefs of every local `type` decl
 // visible from this scope — inner declarations shadow outer ones.
 func (s *fscope) localTypeDefs() map[string]*runtime.TypeDef {
@@ -167,16 +157,6 @@ func (s *fscope) localTypeDefs() map[string]*runtime.TypeDef {
 		}
 	}
 	return out
-}
-
-// isIfaceTypeName reports whether a local `type I interface{...}` decl
-// named this identifier is visible (walking enclosing function
-// scopes); a shadowing variable hides it.
-func (s *fscope) isIfaceTypeName(name string) bool {
-	if b := s.lookupBinding(name); b != nil {
-		return b.ifaceT
-	}
-	return false
 }
 
 // scopeSnapshot captures which blocks are open and which variables are
@@ -368,24 +348,75 @@ func (c *compiler) getRef(name string, pos token.Pos) {
 	}
 }
 
-// declared reports whether name resolves through a declaration rather
-// than a builtin — a local/upval from fscope, a generic instantiation
-// binding, or a package-level decl in the index — so `const true = 31`
-// shadows the predeclared literal.
-func (c *compiler) declared(name string) bool {
-	if _, _, ok := c.fs.find(name); ok {
-		return true
+// nameInfo is what an identifier resolves to: whether it names a
+// type, plus the type details callers inspect (its decl spec, its
+// typedef, and whether the resolved type is an interface).
+type nameInfo struct {
+	isType bool
+	tspec  *ast.TypeSpec    // decl spec when syntactically known (local `type` or package index)
+	td     *runtime.TypeDef // typedef when the resolution carries one (index, binds)
+	iface  bool             // the resolved type is an interface type
+}
+
+// resolveName reports what an identifier resolves to, walking the one
+// scope ladder every name classifier shares: innermost local/upval
+// binding, generic instantiation binds, package index decls, then
+// predeclared types. A nearer declaration always wins — a local var
+// shadows a package `type` of the same name, which the hand-duplicated
+// ladders used to miss.
+func (c *compiler) resolveName(name string) (nameInfo, bool) {
+	// lookupBinding is a pure scope walk — find() would capture an
+	// enclosing name into this function's upvals as a side effect,
+	// and a classifier must never emit.
+	if b := c.fs.lookupBinding(name); b != nil {
+		if b.typeDecl {
+			return nameInfo{isType: true, tspec: b.tspec, td: b.tdef, iface: b.ifaceT}, true
+		}
+		return nameInfo{}, true // a var/const binding — never a type
 	}
-	if _, bound := c.binds[name]; bound {
-		return true
+	if _, isUp := c.fs.upmap[name]; isUp {
+		return nameInfo{}, true // an already-captured var
+	}
+	if bv, bound := c.binds[name]; bound {
+		info := nameInfo{isType: true} // generic instantiation binds name a type
+		if td, ok := bv.(*runtime.TypeDef); ok && td != nil {
+			info.td = td
+			info.iface = td.Kind == runtime.KindInterface
+		}
+		return info, true
 	}
 	if c.pkg != nil && c.pkg.Index != nil {
 		idx := c.pkg.Index
-		if idx.Consts[name] != nil || idx.Vars[name] != nil || idx.Funcs[name] != nil || idx.Types[name] != nil {
-			return true
+		if tdi := idx.Types[name]; tdi != nil {
+			info := nameInfo{isType: true}
+			// a methods-only index entry (a `func (x T) M` decl whose T
+			// lives in another file/package, e.g. a REPL graft) has no
+			// Decl — the name still resolves to a type.
+			if tdi.Decl != nil {
+				if ts, ok := tdi.Decl.Spec.(*ast.TypeSpec); ok {
+					info.tspec = ts
+					_, info.iface = ts.Type.(*ast.InterfaceType)
+				}
+			}
+			return info, true
+		}
+		if idx.Vars[name] != nil || idx.Funcs[name] != nil || idx.Consts[name] != nil {
+			return nameInfo{}, true
 		}
 	}
-	return false
+	if predeclaredTypeNames[name] {
+		return nameInfo{isType: true, iface: name == "any" || name == "error"}, true
+	}
+	return nameInfo{}, false
+}
+
+// declared reports whether name resolves through a declaration rather
+// than a builtin — a local/upval from fscope, a generic instantiation
+// binding, a package-level decl in the index, or a predeclared type —
+// so `const true = 31` shadows the predeclared literal.
+func (c *compiler) declared(name string) bool {
+	_, found := c.resolveName(name)
+	return found
 }
 
 func (c *compiler) setRef(name string, pos token.Pos) {
@@ -673,20 +704,8 @@ func (c *compiler) isIfaceTypeExpr(e ast.Expr) bool {
 	case *ast.ParenExpr:
 		return c.isIfaceTypeExpr(t.X)
 	case *ast.Ident:
-		if t.Name == "any" || t.Name == "error" {
-			return true
-		}
-		if c.fs.isIfaceTypeName(t.Name) {
-			return true
-		}
-		if c.pkg != nil && c.pkg.Index != nil {
-			if td := c.pkg.Index.Types[t.Name]; td != nil {
-				if ts, ok := td.Decl.Spec.(*ast.TypeSpec); ok {
-					_, isI := ts.Type.(*ast.InterfaceType)
-					return isI
-				}
-			}
-		}
+		info, found := c.resolveName(t.Name)
+		return found && info.iface
 	}
 	return false
 }
@@ -2617,22 +2636,8 @@ func (c *compiler) conversionCall(x *ast.CallExpr) bool {
 // local `type` decl, a package-level type decl, or a predeclared type —
 // unless a nearer variable shadows it.
 func (c *compiler) isTypeName(name string) bool {
-	if _, bound := c.binds[name]; bound {
-		return true
-	}
-	if _, _, found := c.fs.find(name); found {
-		return c.fs.isTypeDeclName(name)
-	}
-	if c.pkg != nil && c.pkg.Index != nil {
-		idx := c.pkg.Index
-		if idx.Types[name] != nil {
-			return true
-		}
-		if idx.Vars[name] != nil || idx.Funcs[name] != nil || idx.Consts[name] != nil {
-			return false
-		}
-	}
-	return predeclaredTypeNames[name]
+	info, found := c.resolveName(name)
+	return found && info.isType
 }
 
 // hoistedArgCalls lists the call-time operations inside an argument that
@@ -3090,15 +3095,8 @@ func (c *compiler) isKeyedLitShape(t ast.Expr, fuel int) bool {
 		if fuel <= 0 {
 			return false
 		}
-		if ts := c.fs.typeSpec(tt.Name); ts != nil {
-			return c.isKeyedLitShape(ts.Type, fuel-1)
-		}
-		if c.pkg != nil && c.pkg.Index != nil {
-			if td := c.pkg.Index.Types[tt.Name]; td != nil && td.Decl != nil {
-				if ts, ok := td.Decl.Spec.(*ast.TypeSpec); ok {
-					return c.isKeyedLitShape(ts.Type, fuel-1)
-				}
-			}
+		if info, found := c.resolveName(tt.Name); found && info.isType && info.tspec != nil {
+			return c.isKeyedLitShape(info.tspec.Type, fuel-1)
 		}
 	}
 	return false
