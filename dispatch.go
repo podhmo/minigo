@@ -474,6 +474,9 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 // resolved from its underlying type AST (Anon or Spec.Type). Used by
 // elided composite literal elements and pointer member dispatch.
 func (e *Engine) elemOf(td *runtime.TypeDef) (*runtime.TypeDef, error) {
+	if td.Elem != nil {
+		return td.Elem, nil
+	}
 	x := td.Anon
 	if x == nil && td.Spec != nil {
 		x = td.Spec.Type
