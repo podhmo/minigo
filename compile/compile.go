@@ -106,30 +106,42 @@ func (s *fscope) isIfaceVar(name string) bool {
 
 // typeSpec returns the spec of a local `type` decl named this
 // identifier (walking enclosing function scopes); nil when none or
-// when a closer type decl shadowed an outer one.
+// when a closer declaration shadows it. The spec metadata outlives
+// its block, so a name only counts while a live block binds it.
 func (s *fscope) typeSpec(name string) *ast.TypeSpec {
 	for cur := s; cur != nil; cur = cur.parent {
-		if ts, ok := cur.typeSpecs[name]; ok {
-			return ts
-		}
-		if cur.typeDecls[name] {
-			return nil
+		for i := len(cur.blocks) - 1; i >= 0; i-- {
+			if _, declared := cur.blocks[i][name]; declared {
+				if cur.typeDecls[name] {
+					return cur.typeSpecs[name]
+				}
+				return nil
+			}
 		}
 	}
 	return nil
 }
 
 // localTypeDefs collects the typedefs of every local `type` decl
-// visible from this scope — inner declarations shadow outer ones.
+// visible from this scope — inner declarations shadow outer ones,
+// and a decl only counts while a live block binds its name (the
+// typedef metadata is function-wide and outlives its block).
 func (s *fscope) localTypeDefs() map[string]*runtime.TypeDef {
+	seen := map[string]bool{}
 	var out map[string]*runtime.TypeDef
 	for cur := s; cur != nil; cur = cur.parent {
-		for name, td := range cur.typeDefs {
-			if _, seen := out[name]; !seen {
-				if out == nil {
-					out = map[string]*runtime.TypeDef{}
+		for i := len(cur.blocks) - 1; i >= 0; i-- {
+			for name := range cur.blocks[i] {
+				if seen[name] {
+					continue
 				}
-				out[name] = td
+				seen[name] = true
+				if td, ok := cur.typeDefs[name]; ok && cur.typeDecls[name] {
+					if out == nil {
+						out = map[string]*runtime.TypeDef{}
+					}
+					out[name] = td
+				}
 			}
 		}
 	}
@@ -137,14 +149,15 @@ func (s *fscope) localTypeDefs() map[string]*runtime.TypeDef {
 }
 
 // isIfaceTypeName reports whether a local `type I interface{...}` decl
-// named this identifier (walking enclosing function scopes).
+// named this identifier is visible (walking enclosing function scopes).
+// Like the other type-decl lookups, the name only counts while a live
+// block binds it — a shadowing variable or an ended block hides it.
 func (s *fscope) isIfaceTypeName(name string) bool {
 	for cur := s; cur != nil; cur = cur.parent {
-		if cur.ifaceTypes[name] {
-			return true
-		}
-		if cur.typeDecls[name] {
-			return false
+		for i := len(cur.blocks) - 1; i >= 0; i-- {
+			if _, declared := cur.blocks[i][name]; declared {
+				return cur.ifaceTypes[name]
+			}
 		}
 	}
 	return false
