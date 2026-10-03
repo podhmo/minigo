@@ -2649,13 +2649,19 @@ func (c *compiler) isTypeName(name string) bool {
 	return found && info.isType
 }
 
-// hoistedArgCalls lists the call-time operations inside an argument that
-// Go orders like calls — CallExpr nodes that aren't conversions, plus
-// channel receives — in lexical order. Conversions are transparent
-// (their argument expressions' calls still hoist, but the conversion
-// itself is a deferred non-call op). Returns ok=false when the argument
-// contains conditional call sites (&&/||) or other shapes hoisting would
-// reorder; the caller then falls back to plain sequential evaluation.
+// hoistedArgCalls lists the operations inside an argument that Go
+// materializes eagerly, in lexical order: non-conversion CallExpr nodes,
+// channel receives, slice expressions, type assertions, and map literals
+// (gc's order pass lowers these to temporaries during its left-to-right
+// operand walk — an out-of-range s[i:j] panics before a later argument's
+// call runs). Conversions and index/deref/arithmetic stay deferred (their
+// eager sub-expressions still hoist — index can panic but gc schedules it
+// at the call site, not at a temp). Only the outermost op of a nested
+// chain is listed — its own operands already evaluate left-to-right, so
+// descending would double-evaluate them. Returns ok=false when the
+// argument contains conditional call sites (&&/||) or other shapes
+// hoisting would reorder; the caller then falls back to plain sequential
+// evaluation.
 func (c *compiler) hoistedArgCalls(e ast.Expr) (calls []ast.Expr, ok bool) {
 	ok = true
 	ast.Inspect(e, func(n ast.Node) bool {
@@ -2679,6 +2685,20 @@ func (c *compiler) hoistedArgCalls(e ast.Expr) (calls []ast.Expr, ok bool) {
 		case *ast.UnaryExpr:
 			if t.Op == token.ARROW {
 				calls = append(calls, t) // receive: ordered like a call
+				return false
+			}
+		case *ast.SliceExpr:
+			calls = append(calls, t) // bounds materialize eagerly
+			return false
+		case *ast.TypeAssertExpr:
+			calls = append(calls, t) // assertions materialize eagerly
+			return false
+		case *ast.CompositeLit:
+			if _, isMap := t.Type.(*ast.MapType); isMap {
+				// a map literal builds eagerly entry-by-entry; struct,
+				// array and slice literals stay inline like their
+				// element expressions.
+				calls = append(calls, t)
 				return false
 			}
 		}
@@ -2806,12 +2826,15 @@ func substCallArg(e ast.Expr, subs map[ast.Expr]string) ast.Expr {
 	return e
 }
 
-// callArgs emits call arguments in Go's two-phase order: function calls
-// (and channel receives) inside the arguments evaluate first in lexical
-// order across the whole argument list, and each argument's non-call
-// computation — index/slice/deref/arithmetic/conversion — materializes
+// callArgs emits call arguments in Go's two-phase order: the eager
+// operations inside the arguments (calls, channel receives, slices,
+// assertions, map literals — hoistedArgCalls) evaluate first in lexical
+// order across the whole argument list, and each argument's deferred
+// computation — index/deref/arithmetic/conversion — materializes
 // afterwards in argument order. Go schedules s[i]'s bounds check past a
-// later argument's call: fmt.Sprintf("%d", s[10], f()) reports f's panic.
+// later argument's call — fmt.Sprintf("%d", s[10], f()) reports f's
+// panic — but a slice's bounds check happens eagerly:
+// fmt.Sprintf("%d", s[10:0], f()) reports the slice's panic.
 func (c *compiler) callArgs(args []ast.Expr) {
 	var perArg [][]ast.Expr
 	unsafe := false
