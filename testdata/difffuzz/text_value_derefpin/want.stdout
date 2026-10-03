@@ -1,0 +1,3 @@
+p nil: true
+q==r: true *q: 42 *old: 1
+s: [9 9 9] os: [1 7 3]

@@ -1161,7 +1161,7 @@ func (c *compiler) assign(st *ast.AssignStmt) {
 			// ref time: ref, rhs, then read+op+store. The ref resolves
 			// to the variable's live storage, so a RHS that replaces
 			// the variable lands the result there.
-			c.refTarget(lhs)
+			c.refTarget(lhs, false)
 			c.expr(st.Rhs[0])
 			c.emit(bytecode.OpSwap, 0, 0, lhs.Pos())
 			c.emit(bytecode.OpDup, 0, 0, lhs.Pos())
@@ -1183,8 +1183,13 @@ func (c *compiler) assign(st *ast.AssignStmt) {
 	// only allows identifier targets, so it keeps the value-stack path.
 	useRefs := !isDefine
 	if useRefs {
+		// multi-assign pins deref/index operands like gc's ascompatee
+		// save pass — `p, *p = fp()` binds *p through the old p; a
+		// single `*p = f()` keeps the live-deref store (f reseating p
+		// redirects the write, matching OAS).
+		pin := len(st.Lhs) > 1
 		for _, l := range st.Lhs {
-			c.refTarget(l)
+			c.refTarget(l, pin)
 		}
 	}
 	if len(st.Rhs) == 1 && n > 1 {
@@ -1274,8 +1279,12 @@ func (c *compiler) noteIfaceBinds(st *ast.AssignStmt) {
 // refTarget emits code pushing the assignment target's storage reference
 // — the phase-1 operand evaluation Go runs before the right side: cells
 // for names, FieldRef/IndexRef for `s.f` / `s[i]`, the pointer itself for
-// `*p`. `_` pushes nil — OpSetRefs discards its value.
-func (c *compiler) refTarget(lhs ast.Expr) {
+// `*p`. `_` pushes nil — OpSetRefs discards its value. pin is multi-assign
+// mode: a deref/index operand evaluates to its value now (gc's ascompatee
+// copies operands a previous target could overwrite — `p, *p = fp()` still
+// writes the old pointee) instead of re-resolving the live storage at
+// store time.
+func (c *compiler) refTarget(lhs ast.Expr, pin bool) {
 	target := lhs
 	for {
 		if p, isParen := target.(*ast.ParenExpr); isParen {
@@ -1304,25 +1313,37 @@ func (c *compiler) refTarget(lhs ast.Expr) {
 		// the RHS still evaluates first (p.f = before()). The base is a
 		// storage ref, not a value snapshot: `s.f` is s's storage + f,
 		// so `s.f = replace(&s)` still targets s's live fields after the
-		// RHS rewrites the whole variable.
-		c.refTargetBase(t.X)
+		// RHS rewrites the whole variable. gc drills a value-field path
+		// to its named root the same way — only `(*p).f`'s pointer
+		// operand pins (handled by refTargetBase).
+		c.refTargetBase(t.X, pin)
 		c.emit(bytecode.OpFieldRef, c.nameIdx(t.Sel.Name), 1, t.Pos())
 	case *ast.IndexExpr:
 		// B=1: the ref is a store target — a map element is legal here
 		// (m[k] = v), unlike `&` which Go forbids on map values, and the
 		// bounds check defers to the store so the RHS evaluates first.
-		// The base keeps its storage ref (s[i] resolves s at store time,
-		// so `s[i] = f()` writes the new slice when f replaces s); the
-		// key is the evaluated value Go pins at ref time.
-		c.refTargetBase(t.X)
+		// Single-assign keeps the storage ref (s[i] resolves s at store
+		// time — `s[i] = f()` writes the new slice when f replaces s);
+		// multi-assign pins the container value like gc's save pass
+		// (`s, s[i] = f()` writes the old s's element).
+		if pin {
+			c.expr(t.X)
+		} else {
+			c.refTargetBase(t.X, pin)
+		}
 		c.expr(t.Index)
 		c.emit(bytecode.OpIndexRef, 0, 1, t.Pos())
 	case *ast.StarExpr:
-		if c.isStorageBase(t.X) {
+		if pin {
+			// `*p` pins the pointer operand — `p, *p = fp()` writes
+			// through the old p like gc's operand save, not the nil p
+			// lands after the earlier store.
+			c.expr(t.X)
+		} else if c.isStorageBase(t.X) {
 			// `*p` is the location p points at — resolve p's storage at
 			// store time so `*p = f()` still writes the live pointee
 			// when f reseats p.
-			c.refTargetBase(t.X)
+			c.refTargetBase(t.X, pin)
 			c.emit(bytecode.OpDerefRef, 0, 0, t.Pos())
 		} else {
 			c.expr(t.X)
@@ -1354,7 +1375,8 @@ func (c *compiler) isStorageBase(e ast.Expr) bool {
 // refTargetBase emits the operand of a field/index ref — a storage ref
 // for addressable bases (idents, fields, elements, derefs), the
 // evaluated value for anything else (e.g. a call returning a pointer).
-func (c *compiler) refTargetBase(e ast.Expr) {
+// pin propagates multi-assign pinning into deref bases (`(*p).f`).
+func (c *compiler) refTargetBase(e ast.Expr, pin bool) {
 	// A package name evaluates to the package object — it has no
 	// storage ref, and OpFieldRef/OpSelect must see the value.
 	if id, isIdent := e.(*ast.Ident); isIdent && c.isImportName(id.Name) {
@@ -1362,7 +1384,7 @@ func (c *compiler) refTargetBase(e ast.Expr) {
 		return
 	}
 	if c.isStorageBase(e) {
-		c.refTarget(e)
+		c.refTarget(e, pin)
 		return
 	}
 	c.expr(e)
@@ -1534,10 +1556,10 @@ func (c *compiler) rangeStmt(st *ast.RangeStmt) {
 
 	if useRefs {
 		if st.Key != nil {
-			c.refTarget(st.Key)
+			c.refTarget(st.Key, true)
 		}
 		if st.Value != nil {
-			c.refTarget(st.Value)
+			c.refTarget(st.Value, true)
 		}
 		c.emit3(bytecode.OpSetRefs, nvars, 1, 0, st.Pos())
 	} else {
@@ -2304,7 +2326,7 @@ func (c *compiler) unary(x *ast.UnaryExpr) {
 			c.compositeLit(t)
 			c.emit(bytecode.OpBox, 0, 0, x.Pos())
 		case *ast.SelectorExpr:
-			c.refTargetBase(t.X)
+			c.refTargetBase(t.X, false)
 			c.emit(bytecode.OpFieldRef, c.nameIdx(t.Sel.Name), 0, t.Pos())
 		case *ast.IndexExpr:
 			c.expr(t.X)
