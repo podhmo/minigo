@@ -4178,6 +4178,13 @@ type callerFunc struct{ name string }
 // Name implements (*runtime.Func).Name.
 func (f *callerFunc) Name() string { return f.name }
 
+// devisit marks a pair of composite values already under comparison.
+// A reference cycle (a map or slice containing itself, two structures
+// pointing at each other) reaches the same pair again, which Go's
+// DeepEqual treats coinductively as equal — recording the pair both
+// terminates the walk and answers the recurrence.
+type devisit struct{ a, b runtime.Value }
+
 // deepEql implements reflect.DeepEqual over script values: nil-ness and
 // type identity are honored, composites compare recursively, and
 // leaf/host values compare as marshaled natives. Named tags and
@@ -4185,6 +4192,10 @@ func (f *callerFunc) Name() string { return f.name }
 // type mismatch is a type mismatch, so *T never equals T and a named
 // type never equals a different name for the same underlying type.
 func deepEql(a, b runtime.Value) bool {
+	return deepEqlSeen(a, b, map[devisit]bool{})
+}
+
+func deepEqlSeen(a, b runtime.Value, seen map[devisit]bool) bool {
 	for {
 		an, aNamed := a.(*runtime.Named)
 		bn, bNamed := b.(*runtime.Named)
@@ -4235,8 +4246,16 @@ func deepEql(a, b runtime.Value) bool {
 		if !ok || len(av.Elems) != len(bs.Elems) || !deepTypeEq(av.Typ, bs.Typ) {
 			return false
 		}
+		if av == bs {
+			return true
+		}
+		v := devisit{av, bs}
+		if seen[v] {
+			return true
+		}
+		seen[v] = true
 		for i := range av.Elems {
-			if !deepEql(av.Elems[i], bs.Elems[i]) {
+			if !deepEqlSeen(av.Elems[i], bs.Elems[i], seen) {
 				return false
 			}
 		}
@@ -4246,8 +4265,16 @@ func deepEql(a, b runtime.Value) bool {
 		if !ok || !deepDefEq(av.Def, bs.Def) || len(av.Fields) != len(bs.Fields) {
 			return false
 		}
+		if av == bs {
+			return true
+		}
+		v := devisit{av, bs}
+		if seen[v] {
+			return true
+		}
+		seen[v] = true
 		for i := range av.Fields {
-			if !deepEql(av.Fields[i], bs.Fields[i]) {
+			if !deepEqlSeen(av.Fields[i], bs.Fields[i], seen) {
 				return false
 			}
 		}
@@ -4257,6 +4284,14 @@ func deepEql(a, b runtime.Value) bool {
 		if !ok || len(av.Pairs) != len(bm.Pairs) || !deepTypeEq(av.Typ, bm.Typ) {
 			return false
 		}
+		if av == bm {
+			return true
+		}
+		v := devisit{av, bm}
+		if seen[v] {
+			return true
+		}
+		seen[v] = true
 		// keys match by the map's own equality — the canonical key in
 		// Pairs — not by deep equality: two distinct pointer keys with
 		// equal pointees are different keys in Go. Only the values
@@ -4266,7 +4301,7 @@ func deepEql(a, b runtime.Value) bool {
 			if !found {
 				return false
 			}
-			if !deepEql(aval, bval) {
+			if !deepEqlSeen(aval, bval, seen) {
 				return false
 			}
 		}
