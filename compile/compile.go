@@ -2105,6 +2105,11 @@ func (c *compiler) expr(e ast.Expr) {
 		c.trap(x.Pos(), "bare ellipsis is not supported")
 	case *ast.KeyValueExpr:
 		c.trap(x.Pos(), "key:value outside composite literal")
+	case *ast.InterfaceType, *ast.StructType, *ast.FuncType,
+		*ast.ArrayType, *ast.MapType, *ast.ChanType:
+		// a type expression in value position — `interface{ m() }.m`
+		// (anonymous-interface method expression) compiles the typedef.
+		c.typeExpr(x)
 	default:
 		c.trap(e.Pos(), "unsupported expression %T", e)
 	}

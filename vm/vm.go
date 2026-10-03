@@ -1784,7 +1784,15 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 			// method set (value and pointer receivers alike).
 			if et := v.elemTypedef(f, b); et != nil {
 				if m, ok := et.Methods[name]; ok {
-					return m
+					if m.PtrRecv {
+						return m // receiver param *T binds the Cell argument
+					}
+					return v.methodExprDeref(b, m)
+				}
+				// promoted through an embedded field — re-select on the
+				// actual receiver argument (`(*U).Sum` reaches I's value).
+				if len(et.EmbedSpecs) > 0 || et.Kind == runtime.KindInterface {
+					return v.methodExprThunk(b, name)
 				}
 			}
 			f.trap("type %s has no method %s", tdName(b), name)
@@ -1794,6 +1802,12 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 				f.trap("invalid method expression %s.%s (needs pointer receiver)", tdName(b), name)
 			}
 			return m // method expression: T.M(recv, ...)
+		}
+		// `U.Sum` — a promoted method through an embedded field — or
+		// `I.m` — an interface requirement — dispatches on the concrete
+		// receiver argument, like Go's selector lowering.
+		if len(b.EmbedSpecs) > 0 || b.Kind == runtime.KindInterface {
+			return v.methodExprThunk(b, name)
 		}
 		f.trap("type %s has no method %s", b.Name, name)
 	case runtime.Nil:
@@ -2425,6 +2439,47 @@ func adaptFunc(x runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.Va
 		return out
 	})
 	return fv, nil
+}
+
+// methodExprThunk builds a T.M/(*T).M method-expression value for a
+// method reached through an embedded field or an interface
+// requirement: `U.Sum`/`(*U).Sum`/`I.m` compile to a func(recv,
+// args...) that re-selects the member on its receiver argument, so
+// embedded and interface dispatch run on the concrete value like Go's
+// selector lowering.
+func (v *VM) methodExprThunk(td *runtime.TypeDef, name string) runtime.Value {
+	return &runtime.BuiltinFunc{
+		Name: tdName(td) + "." + name,
+		Fn: func(vm runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) == 0 {
+				return nil, fmt.Errorf("method expression %s.%s needs a receiver argument", tdName(td), name)
+			}
+			m, ok := vm.Member(args[0], name)
+			if !ok {
+				return nil, fmt.Errorf("type %s has no method %s", tdName(td), name)
+			}
+			return vm.Call(m, args[1:])
+		},
+	}
+}
+
+// methodExprDeref adapts a value-receiver method for the (*T).M method
+// expression: the receiver argument arrives as *T and binds its
+// pointee, `(*S).val(&s)` calling val with s.
+func (v *VM) methodExprDeref(td *runtime.TypeDef, m *runtime.Function) runtime.Value {
+	return &runtime.BuiltinFunc{
+		Name: tdName(td) + "." + m.Name,
+		Fn: func(vm runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) == 0 {
+				return nil, fmt.Errorf("method expression %s.%s needs a receiver argument", tdName(td), m.Name)
+			}
+			recv, ok := runtime.Deref(args[0])
+			if !ok {
+				return nil, fmt.Errorf("cannot use %T as %s receiver in method expression", args[0], tdName(td))
+			}
+			return vm.Call(m, append([]runtime.Value{recv}, args[1:]...))
+		},
+	}
 }
 
 func (v *VM) structMember(f *frame, s *runtime.Struct, name string, recv runtime.Value) runtime.Value {
