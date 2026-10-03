@@ -7140,18 +7140,71 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 		n, err := strconv.ParseInt(l.Value, 0, 64)
 		return n, err == nil
 	case *ast.Ident:
-		// a named const: resolve through the typedef's package index.
-		if td.Pkg != nil && td.Pkg.Index != nil && v.H.Materialize != nil {
-			if d := td.Pkg.Index.Consts[l.Name]; d != nil {
-				if mv, err := v.H.Materialize(td.Pkg, d); err == nil {
-					if n, ok := runtime.Unwrap(mv).(int64); ok {
-						return n, true
+		// a named const: its value lives in the package env once init
+		// ran (Materialize returns NIL for const decls); fall back to the
+		// index for a const declared below the use or not yet bound.
+		if td.Pkg != nil {
+			if gv, ok := td.Pkg.Globals.Get(l.Name); ok {
+				if d, ok2 := runtime.Deref(gv); ok2 {
+					gv = d
+				}
+				if n, ok2 := runtime.Unwrap(gv).(int64); ok2 {
+					return n, true
+				}
+			}
+			if td.Pkg.Index != nil && v.H.Materialize != nil {
+				if d := td.Pkg.Index.Consts[l.Name]; d != nil {
+					if mv, err := v.H.Materialize(td.Pkg, d); err == nil {
+						if n, ok := runtime.Unwrap(mv).(int64); ok {
+							return n, true
+						}
 					}
 				}
 			}
 		}
 	}
+	// any other constant form ([N*2]int, [N+1]int): compile the length
+	// expression and run it in the typedef's package scope — const
+	// names resolve through globals like a normal expression. A
+	// non-constant shape ([...]T's Ellipsis, a call) can't evaluate;
+	// its trap is swallowed so the typedef stays non-array (ok=false).
+	if td.Pkg != nil && v.H.CompileExpr != nil && lenConstShaped(at.Len) {
+		var n int64
+		var ok bool
+		func() {
+			defer func() { _ = recover() }()
+			if ch, err := v.H.CompileExpr(td.Pkg, td.File, at.Len); err == nil && ch != nil {
+				if r, err2 := v.call(&runtime.Function{Pkg: td.Pkg, File: td.File, Name: "<arraylen>", Chunk: ch}, nil); err2 == nil {
+					if iv, ok2 := runtime.Unwrap(r).(int64); ok2 {
+						n, ok = iv, true
+					}
+				}
+			}
+		}()
+		if ok {
+			return n, true
+		}
+	}
 	return 0, false
+}
+
+// lenConstShaped reports whether an array-length expression can only be
+// a constant expression — names, literals, parens and constant
+// arithmetic. Anything else (ellipsis, calls, indexing) is either the
+// `[...]T` form or a non-constant Go would reject, and is not worth
+// evaluating.
+func lenConstShaped(e ast.Expr) bool {
+	switch x := e.(type) {
+	case *ast.BasicLit, *ast.Ident:
+		return true
+	case *ast.ParenExpr:
+		return lenConstShaped(x.X)
+	case *ast.UnaryExpr:
+		return lenConstShaped(x.X)
+	case *ast.BinaryExpr:
+		return lenConstShaped(x.X) && lenConstShaped(x.Y)
+	}
+	return false
 }
 
 // copyArray clones an array value for Go's assignment semantics —
