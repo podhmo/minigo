@@ -4728,6 +4728,12 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 	}
 	if n, ok := b.(*runtime.Named); ok {
 		if tag != nil && !sameTypeDef(tag, n.Typ) {
+			// equality is lawful between differently-typed dynamic
+			// values — `any(u64) != any(u32)` is true in Go; the
+			// ordered ops and arithmetic stay a type error.
+			if isCompareOp(op) && (op == bytecode.BinEql || op == bytecode.BinNeq) {
+				return op == bytecode.BinNeq
+			}
 			f.trap("invalid operation: mismatched types %s and %s", tdName(tag), tdName(n.Typ))
 		}
 		tag = n.Typ
