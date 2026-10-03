@@ -819,9 +819,9 @@ func (t *RType) FieldByName(name string) (*StructField, bool) {
 			if sub := t.e.rtypeOf(etd); sub.Kind() == reflect.Struct {
 				if f, ok := sub.FieldByName(name); ok {
 					f.Index = append([]int{ei}, f.Index...)
-					// the promoted offset adds the embedding
-					// field's own slot, like Go's layout
-					f.Offset += fieldOffset(t, ei)
+					// Go reports the field's LOCAL offset inside the
+					// declaring struct — same as FieldByIndex — not
+					// the top-level position the embed chain implies.
 					return f, true
 				}
 			}

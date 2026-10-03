@@ -1,0 +1,7 @@
+FieldByName(Y): 8 [1 1] true
+FieldByIndex([1,1]): 8
+Field(1) Inner: 8 true
+ptr FieldByName(Y): 8 [1 1] true
+deep FieldByName(Y): 8 [1 1 1] true
+deep FieldByName(A): 0 [1 1 0] true
+missing: false
