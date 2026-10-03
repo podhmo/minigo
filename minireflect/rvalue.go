@@ -71,6 +71,39 @@ func (e *Env) wrap(vc runtime.VMCaller, val, ref runtime.Value, td *runtime.Type
 	return &RValue{e: e, vc: vc, val: val, ref: ref, td: td}
 }
 
+// Unwrap exposes the payload a host fmt should print in place of the
+// Value itself — mirroring fmt's one-level reflect.Value unwrap, which
+// reads through the unexported-field flag. Host-domain values yield
+// their interface payload when they can; a non-interfacable host value
+// degrades to its scalar accessor or, past those, to the RValue itself
+// so at least its `<T Value>` String shows. Script-domain values yield
+// the viewed runtime.Value. The payload may itself be a Value: fmt
+// renders that one through String (Go's nested `<T Value>` form), it
+// does not unwrap twice. Callers gate IsValid themselves.
+func (v *RValue) Unwrap() any {
+	if v.host() {
+		if v.rv.CanInterface() {
+			return v.rv.Interface()
+		}
+		switch v.rv.Kind() {
+		case reflect.Bool:
+			return v.rv.Bool()
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return v.rv.Int()
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			return v.rv.Uint()
+		case reflect.Float32, reflect.Float64:
+			return v.rv.Float()
+		case reflect.Complex64, reflect.Complex128:
+			return v.rv.Complex()
+		case reflect.String:
+			return v.rv.String()
+		}
+		return v
+	}
+	return v.get()
+}
+
 // unwrap views a Named value through its underlying value so
 // kind-dispatched accessors reach the concrete branch. The ref is
 // dropped on purpose: get() prefers it, and dereferencing the same

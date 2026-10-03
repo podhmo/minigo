@@ -42,6 +42,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/podhmo/minigo/minireflect"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/vm"
 )
@@ -3283,6 +3284,11 @@ func ptrSpelling(c runtime.VMCaller, x runtime.Value) string {
 		// a non-nil interface holding a nil pointer still prints 0x0
 		return "0x0"
 	case *runtime.GoValue:
+		if rv, ok := t.V.(*minireflect.RValue); ok {
+			// %p never unwraps the Value — Go emits the
+			// %!p(reflect.Value=<underlying %v>) bad-verb form.
+			return badVerb('p', "reflect.Value", fmt.Sprintf("%v", fmtRValue(c, rv)))
+		}
 		return fmt.Sprintf("%p", t.V)
 	case *runtime.Slice:
 		if isArrayTyp(t.Typ) {
@@ -3918,6 +3924,18 @@ func scriptTypeString(x runtime.Value) string {
 		if se, ok := t.V.(*scriptError); ok {
 			return scriptTypeString(se.v)
 		}
+		switch t.V.(type) {
+		case *minireflect.RValue:
+			return "reflect.Value"
+		case *minireflect.RType:
+			return "*reflect.rtype"
+		case *minireflect.MapIter:
+			return "*reflect.MapIter"
+		case *minireflect.StructField:
+			return "reflect.StructField"
+		case *minireflect.Method:
+			return "reflect.Method"
+		}
 		return fmt.Sprintf("%T", t.V)
 	case int64:
 		return "int"
@@ -4162,9 +4180,39 @@ func fmtArg(v runtime.VMCaller, x runtime.Value) any {
 		}
 		return nv
 	case *runtime.GoValue:
+		if rv, ok := x.V.(*minireflect.RValue); ok {
+			return fmtRValue(v, rv)
+		}
 		return goNative(x)
 	default:
 		return &fmtValue{c: v, x: x}
+	}
+}
+
+// fmtRValue routes a facade reflect.Value to host fmt the way Go routes
+// a reflect.Value: the argument unwraps exactly once — an invalid Value
+// prints `<invalid reflect.Value>` and a payload that is itself a Value
+// stays wrapped so its String still yields Go's nested `<T Value>` form
+// — while every other payload formats as the viewed value under any
+// verb. %T/%p are rewritten before this runs (rewriteTypeVerbs).
+func fmtRValue(c runtime.VMCaller, rv *minireflect.RValue) any {
+	if !rv.IsValid() {
+		return "<invalid reflect.Value>"
+	}
+	switch u := rv.Unwrap().(type) {
+	case *minireflect.RValue:
+		return u
+	case minireflect.RValue:
+		return &u
+	case *runtime.GoValue:
+		if inner, ok := u.V.(*minireflect.RValue); ok {
+			return inner
+		}
+		return goNative(u)
+	case runtime.Value:
+		return fmtArg(c, u)
+	default:
+		return u
 	}
 }
 
