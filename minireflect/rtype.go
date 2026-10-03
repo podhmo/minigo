@@ -196,8 +196,11 @@ func (e *Env) exprOf(td *runtime.TypeDef) ast.Expr {
 		} else {
 			x = ast.NewIdent(name)
 		}
-		if td.Pkg != nil && td.Pkg.Name != "" {
-			x = &ast.SelectorExpr{X: ast.NewIdent(td.Pkg.Name), Sel: ast.NewIdent(name)}
+		if td.Pkg != nil && td.Pkg.Path != "" {
+			// qualify by package PATH, not Name: the own package of a
+			// script is `main` under `go run` but the canonical type
+			// key spells the module path (ucreflectclone.AppConfig).
+			x = &ast.SelectorExpr{X: ast.NewIdent(td.Pkg.Path), Sel: ast.NewIdent(name)}
 		}
 		if len(td.TParams) > 0 && len(td.Binds) > 0 {
 			var args []ast.Expr

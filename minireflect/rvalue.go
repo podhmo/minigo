@@ -737,6 +737,12 @@ func (v *RValue) Len() int {
 		return len(x.C)
 	case *runtime.Named:
 		return v.unwrap().Len()
+	case runtime.Nil, *runtime.TypedNil:
+		// a nil slice/map/chan reports 0 like Go
+		switch v.Kind() {
+		case reflect.Slice, reflect.Map, reflect.Chan:
+			return 0
+		}
 	}
 	trap("call of reflect.Value.Len on %s Value", v.kindStr())
 	return 0
@@ -786,6 +792,11 @@ func (v *RValue) Cap() int {
 		return cap(x.C)
 	case *runtime.Named:
 		return v.unwrap().Cap()
+	case runtime.Nil, *runtime.TypedNil:
+		switch v.Kind() {
+		case reflect.Slice, reflect.Chan:
+			return 0
+		}
 	}
 	trap("call of reflect.Value.Cap on %s Value", v.kindStr())
 	return 0
@@ -891,6 +902,13 @@ func (v *RValue) MapIndex(k *RValue) *RValue {
 	}
 	m, ok := v.get().(*runtime.Map)
 	if !ok {
+		if _, isNil := v.get().(*runtime.TypedNil); isNil && v.Kind() == reflect.Map {
+			// a nil map reads as empty: every key misses
+			return &RValue{e: v.e, vc: v.vc}
+		}
+		if v.get() == runtime.NIL && v.Kind() == reflect.Map {
+			return &RValue{e: v.e, vc: v.vc}
+		}
 		trap("call of reflect.Value.MapIndex on %s Value", v.kindStr())
 	}
 	var etd *runtime.TypeDef
@@ -918,6 +936,12 @@ func (v *RValue) MapKeys() []*RValue {
 	}
 	m, ok := v.get().(*runtime.Map)
 	if !ok {
+		switch v.get().(type) {
+		case runtime.Nil, *runtime.TypedNil:
+			if v.Kind() == reflect.Map {
+				return nil
+			}
+		}
 		trap("call of reflect.Value.MapKeys on %s Value", v.kindStr())
 	}
 	var ktd *runtime.TypeDef
