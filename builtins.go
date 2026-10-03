@@ -100,6 +100,15 @@ func builtins(e *Engine) *runtime.Env {
 					}
 					a = nv
 				}
+			} else if et != nil {
+				// a materialized scalar converts like the constant it
+				// came from — append(f, 0) on []float64 stores 0.0.
+				switch a.(type) {
+				case int64, int, uint64, rune, float64:
+					if cv, err := v.Call(et, []runtime.Value{a}); err == nil {
+						a = cv
+					}
+				}
 			}
 			add[i] = a
 		}
