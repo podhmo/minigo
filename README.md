@@ -84,6 +84,16 @@ a different module's tree. External module source is interpreted like
 any other package; what still traps is cgo and `unsafe`-dependent
 internals (e.g. `reflect`'s `internal/abi` init).
 
+### Currently unsupported
+
+- **cgo** — `import "C"` is rejected at load
+  (`cgo is not supported: import "C"`)
+- **`unsafe.Pointer` reinterpretation** — anything that needs
+  `unsafe.Pointer`/`SliceHeader` tricks traps (e.g. go-toml's
+  `internal/danger`, `reflect`'s `internal/abi` internals)
+
+Smaller gaps shift as work lands — see `TODO.md` for the live list.
+
 ## Provenance
 
 This repository is a reboot of [`minigo2/`](https://github.com/podhmo/go-scan/tree/main/minigo2)
