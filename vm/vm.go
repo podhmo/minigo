@@ -4329,6 +4329,48 @@ func isPlainConst(x runtime.Value) bool {
 	return false
 }
 
+// adaptConst materializes an untyped constant operand for a binary op.
+// When the other operand is a named numeric, the const adopts ITS type
+// (Go spec: `x op y` where x is an untyped constant representable as
+// T(y) converts x to T(y) — `'a' + uint16var` is uint16 arithmetic);
+// otherwise it takes its default type. An unconvertible const keeps
+// the default materialization so the mismatch trap reports like Go's
+// compile error.
+func adaptConst(f *frame, u *runtime.UConst, other runtime.Value) runtime.Value {
+	if nb, ok := other.(*runtime.Named); ok {
+		if r, ok2 := constToBasic(u, basicNameOf(nb.Typ)); ok2 {
+			return &runtime.Named{Typ: nb.Typ, V: r}
+		}
+	}
+	return materialize(f, u)
+}
+
+// constToBasic converts a constant to a builtin numeric value by name —
+// the operand-type adoption rule's conversion half.
+func constToBasic(u *runtime.UConst, name string) (runtime.Value, bool) {
+	switch {
+	case sizedIntName(name) || name == "int" || name == "int64":
+		i, ok := fitsIntConst(u.V, name)
+		if !ok {
+			return nil, false
+		}
+		return i, true
+	case name == "float32":
+		fv, ok := constFloat(u.V)
+		if !ok || math.IsInf(fv, 0) {
+			return nil, false
+		}
+		return float64(float32(fv)), true
+	case name == "float64":
+		fv, ok := constFloat(u.V)
+		if !ok || math.IsInf(fv, 0) {
+			return nil, false
+		}
+		return fv, true
+	}
+	return nil, false
+}
+
 func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 	// untyped constants fold in the arbitrary-precision constant domain
 	// while both sides read as constants — a bare int64/float64 operand
@@ -4336,7 +4378,7 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 	// computes exactly). With a real value a constant materializes to
 	// its default type instead (and can fail to, like Go's compile-time
 	// "constant overflows int").
-	if _, isA := a.(*runtime.UConst); isA {
+	if ua, isA := a.(*runtime.UConst); isA {
 		if _, isB := b.(*runtime.UConst); isB || isPlainConst(b) {
 			ca, _ := constOf(a)
 			cb, _ := constOf(b)
@@ -4344,9 +4386,9 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 				return r
 			}
 		}
-		a = materialize(f, a)
+		a = adaptConst(f, ua, b)
 	}
-	if _, ok := b.(*runtime.UConst); ok {
+	if ub, ok := b.(*runtime.UConst); ok {
 		if isPlainConst(a) {
 			ca, _ := constOf(a)
 			cb, _ := constOf(b)
@@ -4354,7 +4396,7 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 				return r
 			}
 		}
-		b = materialize(f, b)
+		b = adaptConst(f, ub, a)
 	}
 	// shifts evaluate in the left operand's signedness — Go types the
 	// result by the left side alone, so `^uintptr(0) >> 63` must shift
