@@ -99,6 +99,15 @@ func builtins(e *Engine) *runtime.Env {
 			}
 			add[i] = a
 		}
+		if s == nil && len(add) == 0 && rtyp != nil {
+			// appending nothing to a nil slice keeps the nil — Go's
+			// append(nilSlice) is still nil, not an empty slice.
+			res := runtime.Value(&runtime.TypedNil{Typ: rtyp})
+			if tag != nil {
+				return &runtime.Named{Typ: tag, V: res}, nil
+			}
+			return res, nil
+		}
 		// appending onto the backing array itself keeps Go's sharing
 		// semantics: within spare capacity the result aliases the same
 		// storage, past it the host append allocates a fresh array.
