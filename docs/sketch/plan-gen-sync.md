@@ -1,157 +1,131 @@
-# plan-gen-sync.md — keeping `//go:generate` directives in sync from the inspect index
+# plan-gen-sync.md — collecting package metadata to keep `//go:generate` in sync
 
-Companion to `docs/sketch/experiment-convert-define-on-inspect.md` and
-`plan-package-introspection.md`. This file explains what `examples/gen-sync`
-is for and why it is built the way it is. (Retrospective: this note should
-have been written *before* the implementation — sketch-first is the
-convention; this one documents a design that was iterated in chat instead.)
+Companion to `docs/sketch/plan-task-runner.md` and
+`experiment-convert-define-on-inspect.md`. This note records what
+`examples/gen-sync` is for and what it cost to build.
 
-## Intent: what this example demonstrates
+## Motivation
 
-The `inspect` layer is not just read-only introspection. Combined with the
-`os`/`strings`/`filepath` intrinsics, a minigo script can drive a real
-codegen *orchestrator* — a tool whose output is source edits in the very
-files it scanned.
+A usage of minigo that neither `examples/task-run` nor
+`examples/convert-define` could express: **read package metadata out of
+the index layer and act on it**. Two capabilities matter:
 
-`gen-sync` walks a package through the index layer, infers which
-declarations want generation tooling, and rewrites a managed block of
-`//go:generate` lines in each file. It is deliberately the inverse of
-`convert-define`: that example reads quoted call syntax to emit *new* code;
-this one scans declarations and writes edits *back into the same files*.
-Together they show the two directions of "minigo touching source":
-syntax → generated code, and index → generated directive kept in sync.
+- **package walking** — enumerating decls across a package, and (with
+  `-deps`) across its same-module import closure
+- **metadata collection** — gathering declarations that satisfy a
+  condition out of the scanned decls' surfaces
 
-Three smaller things it exercises along the way:
-
-- **Package walking** — `DirOf`/`Files`/`Decls`, plus transitive
-  same-module imports via `Imports` + `PackageOf` (`-deps`).
-- **The "metadata → generated directive" pattern** — a sentinel-managed
-  region that a tool owns wholesale and regenerates every run. The same
-  shape `nixo`/`protodesc`-style sync tools use.
-- **Where the inspect view is thin** — const `ValueSpec` types are not on
-  `inspect.Decl`, so enum detection drops to raw source lines at
-  `inspect.Pos` coordinates. That gap is the interesting part: the script
-  shows how index answers and textual answers compose.
+Once metadata can be collected by condition, "anything" is possible — and
+many of those anythings are already done by existing tools. So the example
+emits `//go:generate` directives pointing at plausible tools instead of
+generating code itself. The directive lines are the artifact; whether
+`requiredgen`/`oneofgen` exist doesn't matter (this is the lazy part:
+writing *the go:generate statement* demos the SSoT/sync pattern — the
+declaration is the single source of truth, the directive is kept in sync
+with it — without paying for a real generator).
 
 ## Where it sits among the examples
-
-The three `examples/` each consume a different minigo capability, and
-together they triangulate what the interpreter is for:
 
 | | `task-run` | `convert-define` | `gen-sync` |
 |---|---|---|---|
 | What the script *is* | a trusted build file (Taskfile) | a DSL: quoted `define.Convert` calls | a scanning tool over user code |
 | Engine feature exercised | intrinsic-bound stub package (`task.*`), `os`/`exec`, virtual cwd | special forms (quoted AST args) + lazy package loading | the `inspect` index layer + `os` write intrinsics |
-| Data direction | reads a file → runs side effects | reads call syntax → emits new code | reads the index → edits the same files it scanned |
+| Data direction | reads parts of a file → executes them | reads the whole script → emits new code | reads the index → edits the same files it scanned |
 | Trust model | unrestricted (build scripts) | unrestricted | unrestricted (writes real sources) |
 
-So: task-run proves minigo can host a *tool-shaped runtime*; convert-define
-proves it can host a *codegen DSL*; gen-sync proves the index layer alone —
-no special forms, no stub package — is enough to write a *source-rewriting
-orchestrator*. The scanning half is pure `inspect`; the writing half is
-plain `os` intrinsics. The only bespoke knowledge lives in the inference
-rules, which is exactly the part a real user would rewrite.
+task-run proves minigo can host a tool-shaped runtime (it pulls out and
+runs only the functions it was asked to); convert-define proves it can
+host a codegen DSL (the whole definition file is interpreted); gen-sync
+proves the index layer alone — no special forms, no stub package — is
+enough to collect metadata and put it to work.
 
-## Key design decision: no magic comments
+## What gets collected, and how
 
-An early sketch had a `// @gen mock` doc marker triggering a directive.
-Dropped, per feedback: if the author has to write a marker anyway, they
-might as well write the `//go:generate` line itself — the tool's value is
-*inference from what the code already says*. So every rule reads the
-declaration's surface:
+Every rule infers the target from the declaration's own surface — no
+marker comments (a `// @gen` marker would be the same labor as writing
+`//go:generate` directly, so it buys nothing):
 
-| Signal (what the code already says) | Rule | Directive |
+| Signal (what the code already says) | Rule | Directive emitted |
 |---|---|---|
-| `type X int`/`string` + a `const` block of `X` | enum | `stringer -type=X` |
+| `type X int`/`string` + a `const` block of `X` in the same file | enum | `stringer -type=X` |
 | interface named `*Service`/`*Store`/`*Client`/`*Repository` | service boundary | `mockgen -source=<file> -destination=mock_<file>` |
 | struct field tag containing `required` | validation candidate | `requiredgen -type=X` |
-| type declaring `Discriminator() string` | OpenAPI `oneOf` variant | `oneofgen -type=X` |
+| type declaring a `Discriminator() string` method | OpenAPI `oneOf` variant | `oneofgen -type=X` |
 
-`requiredgen`/`oneofgen` are hypothetical tool names — the point is that
-*commands go:generate could run* fall out of a scan, not that those tools
-exist. (Side observation recorded for the follow-up pile: for simple cases
-like enum `String()`, the generator itself could be minigo — no
-`stringer` subprocess at all. Out of scope here.)
+A decl can earn several directives or none; all `//go:generate` output is
+just the collected set, deduplicated.
 
-## Managed region: sentinel owns everything below it
+## Behavior: the managed region
 
-Each synced file carries one sentinel line:
+Synced directives live under a sentinel line:
 
 ```go
 // Code generated directives below are managed by gen-sync. DO NOT EDIT.
 //go:generate stringer -type=Status
 ```
 
-Every `//go:generate` line below the sentinel is tool-owned: each run wipes
-them all and writes the freshly-computed expected set. This makes staleness
-a non-problem — a `-type=Priority` directive for a type renamed to `Level`
-disappears with no diffing logic, and an orphan directive for a deleted
-type vanishes the same way. "If it gets confusing, delete all" turned out
-to be the simpler correct rule, not a compromise.
+Each run wipes every `//go:generate` below the sentinel and writes the
+freshly collected set — stale and orphaned directives disappear with no
+diffing logic. The sentinel is honestly a safeguard, not the point: it
+keeps the tool from destroying `//go:generate` lines the user wrote by
+hand (everything above it is untouched), and it's what makes "regenerate
+from scratch each run" safe. Files without a sentinel gain the block
+after the package clause and imports.
 
-Files without a sentinel gain the block right after the package clause and
-imports; everything above the sentinel — user `//go:generate` lines,
-package doc, build tags — is never touched. The block lives near the top
-rather than per-decl so one file's directives are greppable in one place
-(`go generate` does not care about position).
+Idempotence is free: `inspect.Doc` reads `CommentGroup.Text()`, which
+excludes `//go:generate` lines, so the tool's own output never feeds back
+into the next scan.
 
-Idempotence falls out for free: `inspect.Doc` reads
-`CommentGroup.Text()`, which already excludes `//go:generate` lines, so the
-directives the tool wrote never feed back into the next scan.
+## Implementation notes — where the interesting parts live
 
-## Implementation
+`main.go` is a thin host: `-check` / `-deps` / positional `dir` (default
+`./app`), then `e.Run(ctx, "./script", "Main", dir, check, deps)` on a
+`NewEngine(".")` (unrestricted — the script writes real files). The
+script is `script/main.go`, `package script`, entry
+`Main(dir string, check, deps bool) int` returning the changed/drifting
+file count. It imports the real path `github.com/podhmo/minigo/inspect`
+rather than `minigo.dev/inspect` so `go build`/`go vet` stay green on the
+script itself; the engine binds both paths to the same intrinsics.
 
-- `main.go` — thin host: `-check` / `-deps` / positional `dir` (default
-  `./app`), then `e.Run(ctx, "./script", "Main", dir, check, deps)`. The
-  engine is `NewEngine(".")` with default (unrestricted) roots — the
-  script writes real files, same trust model as task-run.
-- `script/main.go` — `package script`, entry `Main(dir string, check,
-  deps bool) int` returning the changed/drifting file count. It imports
-  the real path `github.com/podhmo/minigo/inspect` (not the
-  `minigo.dev/inspect` alias) so `go build`/`go vet` stay green on the
-  script file itself.
-- `app/` — deliberately drifted fixture: `status.go` already in sync,
-  `level.go` carries a stale `-type=Priority`, `job.go` has no block, and
-  `app/internal/mood` is reachable only under `-deps`.
-- `testdata/*.golden` — expected post-sync files asserted by tests.
+- **Scan**: `inspect.DirOf(dir)` → `inspect.Files` → `inspect.Decls`.
+  Under `-deps`, a BFS over `inspect.Imports(f)` → `inspect.PackageOf`
+  follows only paths under the module prefix (`filepath.Dir(Path(root)) +
+  "/"`), so stdlib and bound packages are never entered.
+- **Where the index is thin** — `inspect.Decl` gives `Kind`/`Name`/`File`/
+  `Pos`/`Doc` but not `ValueSpec.Type`, so enum detection (`hasConstOfType`)
+  reads the raw source line at `posLine(c)` and splits fields before `=`;
+  type-omitted specs walk back up to the `const (` block's first spec
+  (iota inheritance). `type X = int` vs `type X int` is decided by `=` on
+  the decl's own line.
+- **Decls are touchable** — `inspect.Def(d)` gives the type expr
+  (`Kind` = ast node name: `Ident`/`StructType`/`InterfaceType`),
+  `inspect.Fields(d)` the struct fields incl. tags, `inspect.Methods(d)`
+  the method set (that's where `Discriminator` is found), `inspect.Pos(d)`
+  the `"file:line:col"` anchor used for all textual fallback reads.
+- **Insertion** — `insertAnchor` finds the end of the package clause +
+  import decls (skipping doc comments and build tags above `package`),
+  and the managed block is spliced in there with one blank line on each
+  side.
 
-### Script-side workarounds for index gaps
-
-- **const spec types** — `inspect.Decl` exposes `Kind`/`Name`/`File`/`Pos`/
-  `Doc` but not `ValueSpec.Type`, so `hasConstOfType` reads the raw line at
-  `posLine(c)` and fields-splits before `=`. Specs that omit the type walk
-  back up to the `const (` block's first spec (iota-style inherited types).
-- **alias vs defined type** — `type X = int` vs `type X int` is decided by
-  `=` on the decl's own line (before any struct-tag backtick).
-- **Discriminator** — `inspect.Methods(d)` gives method decls; name match
-  on `Discriminator` is distinctive enough that the signature check
-  (`inspect.Signature`) was unnecessary.
-
-## Deliberately not done (follow-ups)
+## Deliberately not done
 
 - **Per-decl placement** — directives cluster in one managed block rather
-  than riding above each decl. Per-decl anchoring is possible (`Pos` is
-  right there) but reintroduces the diffing the sentinel avoids.
-- **Grouped `type (...)` decls** — a `type (` block containing several
-  specs gets one directive set but the anchor math is per-file, not
-  per-spec; not exercised by the fixture.
-- **Smarter `-check` output** — it reports the expected directive count,
-  not a unified diff. `difffuzz` has the diff machinery if this graduates.
-- **Exclude rules** — no `//gen-sync:ignore` or path filter; a real user
-  would need one before a file they hand-manage.
-- **Bound packages** — `Imports` edges into host/stdlib packages aren't
-  introspectable (no index); `-deps` only follows import paths under the
-  scanned module prefix, which sidesteps it.
-- **Ordering** — directives emit in `Decls` order (file order); stable
-  because the scan is deterministic, but not sorted.
+  than riding above each decl (`Pos` could anchor them, but per-decl
+  placement reintroduces the diffing the sentinel avoids).
+- **Grouped `type (...)` decls** — one directive set per file; per-spec
+  anchoring isn't exercised.
+- **Smarter `-check` output** — reports the expected directive count, not
+  a diff.
+- **Ignore rules** — no `gen-sync:ignore` or path filter.
+- **Ordering** — emits in `Decls` (file) order; deterministic but unsorted.
 
 ## Verification
 
-- `go -C ./examples/gen-sync test ./...` — `TestSync` (first run: 2 files
-  rewritten to goldens; second run: 0 changes), `TestCheck` (drift
-  reported, nothing written; clean after a real sync), `TestDeps`
-  (`internal/mood` untouched without `-deps`, synced with it).
+- `go -C ./examples/gen-sync test ./...` — `TestSync` (2 files rewritten
+  to goldens; second run idempotent), `TestCheck` (drift reported,
+  nothing written; clean after a real sync), `TestDeps` (`internal/mood`
+  untouched without `-deps`, synced with it).
 - `make -C examples/gen-sync demo` — runs the sync twice and prints the
-  `app/` diff: the before/after the README shows.
+  `app/` diff.
 
 ## (end)
