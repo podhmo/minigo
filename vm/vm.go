@@ -106,6 +106,11 @@ type VM struct {
 	// inflight is the script panic currently being propagated, visible to
 	// recover() only while a frame's defers are running.
 	inflight *runtime.Panic
+	// unwindDepth is the frame-stack index where the inflight panic's
+	// deferred-call chain roots — the gopanic position in Go's terms.
+	// recover() counts real frames pushed at or above it: exactly one
+	// means legal. Meaningful only while inflight is non-nil.
+	unwindDepth int
 	// unwinding lists frames popped by the in-flight panic — kept so
 	// runtime.Callers still sees the panicking frames while defers run,
 	// like Go's traceback does.
@@ -317,7 +322,10 @@ type frame struct {
 
 	defers   []deferredCall // LIFO
 	deferred bool           // frame created for a deferred call
-	retNamed bool           // gather named result slots after defers run
+	sentinel bool           // placeholder frame for a deferred builtin — a
+	// wrapper in Go's terms: it does not count toward recover()'s
+	// one-frame distance rule
+	retNamed bool // gather named result slots after defers run
 	results  []runtime.Value
 
 	// boundLo/boundHi bound a re-entrant loop run (range-over-func yield):
@@ -628,7 +636,26 @@ func (v *VM) Copy(x runtime.Value) runtime.Value {
 
 // Recover implements the recover() builtin for VMCaller: it returns the
 func (v *VM) Recover() runtime.Value {
-	if n := len(v.frames); n > 0 && v.frames[n-1].deferred && v.inflight != nil {
+	if v.inflight == nil {
+		return runtime.NIL
+	}
+	// Go's rule (gorecover): exactly one non-wrapper frame may sit
+	// between the recover() call and the panic's unwind — recover()
+	// works when the deferred function calls it directly. `defer
+	// recover()` puts zero frames between (the panic's own unwind runs
+	// the builtin), and a recover() inside a nested callee puts two or
+	// more — both return nil. Sentinel frames are the wrappers and do
+	// not count.
+	dist := 0
+	for i := len(v.frames) - 1; i >= v.unwindDepth && i >= 0; i-- {
+		if !v.frames[i].sentinel {
+			dist++
+		}
+	}
+	if dist != 1 {
+		return runtime.NIL
+	}
+	{
 		val := v.inflight.Value
 		v.inflight = nil
 		// a runtime-error payload surfaces as the boxed host error Go's
@@ -786,13 +813,55 @@ func (v *VM) unwind(f *frame, r any) {
 	}
 	// v.inflight is visible to recover() only while this frame's defers run.
 	// os.Exit skips the defers on every frame like a real process exit.
+	// A frame completing normally (r == nil) owns neither: it stays on the
+	// frame stack while its defers run, a real frame between their
+	// recover() calls and the panic still unwinding below — the way a
+	// `defer recover()` inside a deferred call catches the panic that
+	// invoked it.
 	saved := v.inflight
-	v.inflight = p
-	if _, isExit := r.(*ExitRequest); !isExit {
-		v.runDefers(f)
+	savedD := v.unwindDepth
+	// dpos is the frame's logical position while its defers drain — the
+	// boundary a panic raised inside one of them unwinds to.
+	dpos := len(v.frames)
+	if r != nil {
+		v.inflight = p
+		v.unwindDepth = dpos
+	} else {
+		v.frames = append(v.frames, f)
+		defer v.framesPop()
 	}
-	p = v.inflight
-	v.inflight = saved
+	if _, isExit := r.(*ExitRequest); !isExit {
+		// A panic consumed partway through the drain hands the rest of
+		// the list to the outer context — Go's recovery lands on the
+		// frame's deferreturn, where `defer recover()` sees the panic
+		// that was unwinding below (recover1.go test6).
+		for len(f.defers) > 0 {
+			if p != nil && v.inflight == nil {
+				v.inflight = saved
+				v.unwindDepth = savedD
+				v.frames = append(v.frames, f)
+				defer v.framesPop()
+				p = nil
+			}
+			v.runOneDefer(f, dpos)
+		}
+	}
+	if r != nil {
+		if p != nil {
+			// a panic raised inside a deferred call supersedes — take
+			// whatever the drain left as this frame's outcome.
+			p = v.inflight
+			v.inflight = saved
+			v.unwindDepth = savedD
+		}
+		// consumed mid-drain: the transition already restored the outer
+		// panic state; what remains in inflight belongs to that unwind.
+	} else if v.inflight != saved && v.inflight != nil {
+		// a deferred call panicked during a normal drain — propagate it
+		// as this frame's panic. A consumed outer panic leaves inflight
+		// nil and dies with it.
+		p = v.inflight
+	}
 	if r != nil && p == nil {
 		// the panic died here (recovered, or it was a Trap swallowed
 		// at a boundary) — no frames are still unwinding.
@@ -932,41 +1001,38 @@ func nthLine(src []byte, line int) string {
 	return ""
 }
 
-// runDefers drains the frame's defer list LIFO. As in Go, a script panic
-// inside a deferred call supersedes the panic being unwound but the
-// remaining defers still run; a Trap aborts the rest.
-func (v *VM) runDefers(f *frame) {
-	for len(f.defers) > 0 {
-		d := f.defers[len(f.defers)-1]
-		f.defers = f.defers[:len(f.defers)-1]
-		func() {
-			defer func() {
-				r := asScriptPanic(recover())
-				if r == nil {
-					return
-				}
-				// a panic raised by the deferred call has no link back to
-				// the frame that registered it — record the defer site as a
-				// synthetic entry so the traceback shows who deferred it.
-				entry := v.frameLine(f, d.pos, v.frameName(f)+" (deferred call)")
-				switch e := r.(type) {
-				case *runtime.Panic:
-					e.Frames = append(e.Frames, entry)
-					v.inflight = e
-				case *runtime.Trap:
-					e.Frames = append(e.Frames, entry)
-					panic(r)
-				case procExit:
-					// process teardown: a deferred call that parks again
-					// exits immediately — keep draining the remaining
-					// defers (Goexit drains them too)
-				default:
-					panic(r)
-				}
-			}()
-			v.invokeDeferred(d)
-		}()
-	}
+// runOneDefer invokes the innermost pending deferred call of f. dpos is
+// f's frame-stack position while its defers drain: a panic raised inside
+// the call unwinds f from there, so it becomes recover()'s boundary.
+func (v *VM) runOneDefer(f *frame, dpos int) {
+	d := f.defers[len(f.defers)-1]
+	f.defers = f.defers[:len(f.defers)-1]
+	defer func() {
+		r := asScriptPanic(recover())
+		if r == nil {
+			return
+		}
+		// a panic raised by the deferred call has no link back to
+		// the frame that registered it — record the defer site as a
+		// synthetic entry so the traceback shows who deferred it.
+		entry := v.frameLine(f, d.pos, v.frameName(f)+" (deferred call)")
+		switch e := r.(type) {
+		case *runtime.Panic:
+			e.Frames = append(e.Frames, entry)
+			v.inflight = e
+			v.unwindDepth = dpos
+		case *runtime.Trap:
+			e.Frames = append(e.Frames, entry)
+			panic(r)
+		case procExit:
+			// process teardown: a deferred call that parks again
+			// exits immediately — keep draining the remaining
+			// defers (Goexit drains them too)
+		default:
+			panic(r)
+		}
+	}()
+	v.invokeDeferred(d)
 }
 
 // invokeDeferred runs one deferred call. Callees without a bytecode frame
@@ -1023,7 +1089,7 @@ func (v *VM) invokeDeferred(d deferredCall) {
 // Recover() treats it as the innermost deferred function. It is not a real
 // frame: no chunk, no locals — only the deferred flag matters.
 func (v *VM) pushDeferredSentinel(name string) {
-	v.frames = append(v.frames, &frame{fn: &runtime.Function{Name: name}, deferred: true})
+	v.frames = append(v.frames, &frame{fn: &runtime.Function{Name: name}, deferred: true, sentinel: true})
 }
 
 func (v *VM) framesPop() { v.frames = v.frames[:len(v.frames)-1] }
