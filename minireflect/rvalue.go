@@ -1667,10 +1667,10 @@ func (v *RValue) Convert(t *RType) *RValue {
 			if f, ok := x.V.(float64); ok {
 				out = int64(f)
 			} else {
-				out = v.Int()
+				out = v.convInt()
 			}
 		default:
-			out = v.Int()
+			out = v.convInt()
 		}
 	case reflect.Float32, reflect.Float64:
 		switch x := v.get().(type) {
@@ -1703,13 +1703,13 @@ func (v *RValue) Convert(t *RType) *RValue {
 				}
 				out = sb.String()
 			} else {
-				out = string(rune(v.Int()))
+				out = string(rune(v.convInt()))
 			}
 		case string:
 			out = x
 		default:
 			if k := v.Kind(); k >= reflect.Int && k <= reflect.Uintptr {
-				out = string(rune(v.Int()))
+				out = string(rune(v.convInt()))
 			} else {
 				out = v.String()
 			}
@@ -1733,6 +1733,16 @@ func (v *RValue) Convert(t *RType) *RValue {
 		out = &runtime.Named{Typ: ntd, V: out}
 	}
 	return v.e.wrap(v.vc, out, nil, ntd)
+}
+
+// convInt reads an integer permissively for Convert — unlike Int it
+// accepts either signedness, since a conversion rather than an
+// accessor read is being performed.
+func (v *RValue) convInt() int64 {
+	if k := v.Kind(); k >= reflect.Uint && k <= reflect.Uintptr {
+		return int64(v.Uint())
+	}
+	return v.Int()
 }
 
 // Comparable reports comparability.
