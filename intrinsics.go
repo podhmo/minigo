@@ -3962,6 +3962,9 @@ func chanTypSpelling(td *runtime.TypeDef) string {
 // "[]int", "main.Point" — using the typedef, not the Go wrapper type.
 func scriptTypeString(x runtime.Value) string {
 	switch t := x.(type) {
+	case nil, runtime.Nil:
+		// a nil interface has no dynamic type — %T spells <nil>.
+		return "<nil>"
 	case *runtime.UConst:
 		return t.DefaultName()
 	case *runtime.Named:
