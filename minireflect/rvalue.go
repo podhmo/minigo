@@ -309,6 +309,24 @@ func kindOfValue(x runtime.Value) reflect.Kind {
 		return reflect.Chan
 	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
 		return reflect.Func
+	case *runtime.UConst:
+		// an untyped constant reads at its default type's kind
+		switch v.V.Kind() {
+		case constant.Bool:
+			return reflect.Bool
+		case constant.String:
+			return reflect.String
+		case constant.Int:
+			if v.Rune {
+				return reflect.Int32
+			}
+			return reflect.Int
+		case constant.Float:
+			return reflect.Float64
+		case constant.Complex:
+			return reflect.Complex128
+		}
+		return reflect.Invalid
 	case *runtime.GoValue:
 		if v.V == nil {
 			return reflect.Invalid
@@ -439,6 +457,18 @@ func (v *RValue) CanSet() bool {
 	return v.ref != nil && !v.ro
 }
 
+// expectKind panics like Go's reflect when the value's kind is not one
+// the accessor admits.
+func (v *RValue) expectKind(name string, kinds ...reflect.Kind) {
+	k := v.Kind()
+	for _, kk := range kinds {
+		if k == kk {
+			return
+		}
+	}
+	trap("reflect: call of reflect.Value.%s on %s Value", name, v.kindStr())
+}
+
 // IsNil reports nil-ness for nilable kinds.
 func (v *RValue) IsNil() bool {
 	v.mustValid()
@@ -450,6 +480,8 @@ func (v *RValue) IsNil() bool {
 		}
 		trap("call of reflect.Value.IsNil on %s Value", v.kindStr())
 	}
+	v.expectKind("IsNil", reflect.Chan, reflect.Func, reflect.Interface,
+		reflect.Map, reflect.Ptr, reflect.Slice, reflect.UnsafePointer)
 	// in the cell model a ref-view IS a pointer and is never nil; a nil
 	// pointer value arrives as the TypedNil it stores.
 	switch x := unwrapRef(v.get()).(type) {
@@ -463,11 +495,11 @@ func (v *RValue) IsNil() bool {
 	return false
 }
 
-// IsZero reports whether the value is its type's zero.
+// IsZero reports whether the value is its type's zero — a non-nil
+// slice or map is never zero even when empty, an array is zero only
+// when every element is, and the call panics on an invalid Value.
 func (v *RValue) IsZero() bool {
-	if !v.IsValid() {
-		return true
-	}
+	v.mustValid()
 	if v.host() {
 		return v.rv.IsZero()
 	}
@@ -488,9 +520,17 @@ func (v *RValue) IsZero() bool {
 	case bool:
 		return !t
 	case *runtime.Slice:
-		return t == nil || (len(t.Elems) == 0)
+		if arrayTypeOf(t.Typ) != nil {
+			for i := range t.Elems {
+				if !v.Index(i).IsZero() {
+					return false
+				}
+			}
+			return true
+		}
+		return false // a non-nil slice is never the zero value
 	case *runtime.Map:
-		return t == nil || t.Len() == 0
+		return false // a non-nil map is never the zero value
 	case *runtime.Struct:
 		for i := range t.Fields {
 			if !v.Field(i).IsZero() {
@@ -517,6 +557,11 @@ func (v *RValue) Field(i int) *RValue {
 		}
 		f := rv.Field(i)
 		return &RValue{e: v.e, vc: v.vc, rv: f, ro: !f.CanInterface()}
+	}
+	// Field admits only a struct kind — structOf would happily deref a
+	// pointer, but Go panics on *S values.
+	if v.Kind() != reflect.Struct {
+		trap("call of reflect.Value.Field on %s Value", v.kindStr())
 	}
 	s := structOf(v.get())
 	if s == nil {
@@ -867,9 +912,24 @@ func (v *RValue) SetMapIndex(k, x *RValue) {
 	if !ok {
 		trap("call of reflect.Value.SetMapIndex on %s Value", v.kindStr())
 	}
+	// key and value must be assignable to the map's declared types, like
+	// Go's `reflect.SetMapIndex: value of type string is not assignable
+	// to type int`.
+	if ktd := v.e.keyTdOf(v.td); ktd != nil {
+		kt, xt := v.e.rtypeOf(ktd), k.Type()
+		if xt != nil && !xt.AssignableTo(kt) {
+			trap("reflect.SetMapIndex: value of type %s is not assignable to type %s", xt.String(), kt.String())
+		}
+	}
 	if !x.IsValid() {
 		m.Delete(normVal(k.ifaceVal()))
 		return
+	}
+	if etd := v.e.elemOf(v.td); etd != nil {
+		et, xt := v.e.rtypeOf(etd), x.Type()
+		if xt != nil && !xt.AssignableTo(et) {
+			trap("reflect.SetMapIndex: value of type %s is not assignable to type %s", xt.String(), et.String())
+		}
 	}
 	m.Insert(normVal(k.ifaceVal()), normVal(x.ifaceVal()))
 }
@@ -965,6 +1025,8 @@ func (v *RValue) Int() int64 {
 	if v.host() {
 		return v.rv.Int()
 	}
+	v.expectKind("Int", reflect.Int, reflect.Int8, reflect.Int16,
+		reflect.Int32, reflect.Int64)
 	switch x := v.get().(type) {
 	case int64:
 		return x
@@ -987,6 +1049,8 @@ func (v *RValue) Uint() uint64 {
 	if v.host() {
 		return v.rv.Uint()
 	}
+	v.expectKind("Uint", reflect.Uint, reflect.Uint8, reflect.Uint16,
+		reflect.Uint32, reflect.Uint64, reflect.Uintptr)
 	switch x := v.get().(type) {
 	case int64:
 		return uint64(x)
@@ -1007,6 +1071,7 @@ func (v *RValue) Float() float64 {
 	if v.host() {
 		return v.rv.Float()
 	}
+	v.expectKind("Float", reflect.Float32, reflect.Float64)
 	switch x := v.get().(type) {
 	case float64:
 		return x
@@ -1144,7 +1209,9 @@ func (v *RValue) tagged(val runtime.Value) runtime.Value {
 	return val
 }
 
-// Set assigns another value's content.
+// Set assigns another value's content — the source must be assignable
+// to the target's declared type, like `reflect.Set: value of type
+// string is not assignable to type int`.
 func (v *RValue) Set(x *RValue) {
 	v.mustValid()
 	if x == nil || !x.IsValid() {
@@ -1158,6 +1225,9 @@ func (v *RValue) Set(x *RValue) {
 		}
 		v.rv.Set(rv)
 		return
+	}
+	if vt, xt := v.Type(), x.Type(); vt != nil && xt != nil && !xt.AssignableTo(vt) {
+		trap("reflect.Set: value of type %s is not assignable to type %s", xt.String(), vt.String())
 	}
 	val := x.get()
 	if x.host() {
@@ -1173,28 +1243,100 @@ func (v *RValue) SetBool(b bool) {
 		v.rv.SetBool(b)
 		return
 	}
+	v.expectKind("SetBool", reflect.Bool)
 	v.set(b)
 }
 
-// SetInt writes an int64.
+// intWidths maps declared integer type names to their storage width —
+// the width SetInt/SetUint truncate to, like Go's reflect setters.
+var intWidths = map[string]struct {
+	bits   int
+	signed bool
+}{
+	"int": {64, true}, "int8": {8, true}, "int16": {16, true},
+	"int32": {32, true}, "int64": {64, true}, "rune": {32, true},
+	"uint": {64, false}, "uint8": {8, false}, "uint16": {16, false},
+	"uint32": {32, false}, "uint64": {64, false}, "uintptr": {64, false},
+	"byte": {8, false},
+}
+
+// declTd resolves the type the location was declared as — the slot's
+// own typedef, a field's declared type through the owning struct, or a
+// slice/array element typedef — used to answer "what width does this
+// store truncate to".
+func (v *RValue) declTd() *runtime.TypeDef {
+	if v.ref == nil {
+		return v.td
+	}
+	switch x := v.ref.(type) {
+	case *runtime.Cell:
+		if x.Typ != nil {
+			return x.Typ
+		}
+	case *runtime.FieldRef:
+		if s := structOf(x.Base); s != nil && s.Def != nil {
+			if fts := v.e.fieldTypes(s.Def); fts != nil {
+				for i, fn := range s.Def.Fields {
+					if fn == x.Name && i < len(fts) {
+						return fts[i]
+					}
+				}
+			}
+		}
+	case *runtime.IndexRef:
+		if s := x.Slice(); s != nil && s.Typ != nil {
+			return v.e.elemOf(s.Typ)
+		}
+	}
+	if v.td != nil {
+		return v.td
+	}
+	if dv, ok := runtime.Deref(v.ref); ok {
+		return typeOfValue(v.e, dv)
+	}
+	return nil
+}
+
+// truncInt masks/sign-extends x to the declared width — SetInt on an
+// int8 cell stores int8(257) == 1, never a panic and never 257.
+func truncInt(td *runtime.TypeDef, x int64) int64 {
+	if td == nil || td.Name == "" {
+		return x
+	}
+	w, ok := intWidths[td.Name]
+	if !ok || w.bits >= 64 {
+		return x
+	}
+	if w.signed {
+		return x << (64 - w.bits) >> (64 - w.bits)
+	}
+	return x & ((1 << w.bits) - 1)
+}
+
+// SetInt writes an int64, truncated to the declared width.
 func (v *RValue) SetInt(x int64) {
 	v.mustValid()
 	if v.host() {
 		v.rv.SetInt(x)
 		return
 	}
-	v.set(x)
+	v.expectKind("SetInt", reflect.Int, reflect.Int8, reflect.Int16,
+		reflect.Int32, reflect.Int64)
+	v.set(truncInt(v.declTd(), x))
 }
 
-// SetUint writes a uint64 (kept as int64 in the script domain).
+// SetUint writes a uint64 (kept as int64 in the script domain),
+// truncated to the declared width.
 func (v *RValue) SetUint(x uint64) {
 	v.mustValid()
 	if v.host() {
 		v.rv.SetUint(x)
 		return
 	}
+	v.expectKind("SetUint", reflect.Uint, reflect.Uint8, reflect.Uint16,
+		reflect.Uint32, reflect.Uint64, reflect.Uintptr)
 	if x <= 0x7fffffffffffffff {
-		v.set(int64(x))
+		v.set(truncInt(v.declTd(), int64(x)))
 		return
 	}
 	v.set(&runtime.GoValue{V: x})
@@ -1207,6 +1349,7 @@ func (v *RValue) SetFloat(x float64) {
 		v.rv.SetFloat(x)
 		return
 	}
+	v.expectKind("SetFloat", reflect.Float32, reflect.Float64)
 	v.set(x)
 }
 
@@ -1227,6 +1370,7 @@ func (v *RValue) SetString(x string) {
 		v.rv.SetString(x)
 		return
 	}
+	v.expectKind("SetString", reflect.String)
 	v.set(x)
 }
 
@@ -1371,9 +1515,33 @@ func (v *RValue) Convert(t *RType) *RValue {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
 		reflect.Uintptr:
-		out = v.Int()
+		// permissive read — a float or unsigned source converts too,
+		// where the Int/Uint accessors would (correctly) kind-gate
+		switch x := v.get().(type) {
+		case float64:
+			out = int64(x)
+		case *runtime.Named:
+			if f, ok := x.V.(float64); ok {
+				out = int64(f)
+			} else {
+				out = v.Int()
+			}
+		default:
+			out = v.Int()
+		}
 	case reflect.Float32, reflect.Float64:
-		out = v.Float()
+		switch x := v.get().(type) {
+		case int64:
+			out = float64(x)
+		case *runtime.Named:
+			if i, ok := x.V.(int64); ok {
+				out = float64(i)
+			} else {
+				out = v.Float()
+			}
+		default:
+			out = v.Float()
+		}
 	case reflect.String:
 		// Convert produces a string, it does not format: a []byte/[]rune
 		// decodes to its contents and an integer to a one-rune string.

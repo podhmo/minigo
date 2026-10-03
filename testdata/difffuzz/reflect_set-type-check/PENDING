@@ -1,3 +1,0 @@
-SILENT/missing-panic (seed from minigo-usecasefuzz tmp-reflect review, group 15)
-go:     panic
-minigo: bad
