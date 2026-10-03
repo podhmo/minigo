@@ -2349,10 +2349,6 @@ func intOf(v any) int {
 		return int(x)
 	case *runtime.GoValue:
 		return intOf(x.V)
-	case *runtime.UConst:
-		if nv, err := uconstNative(x); err == nil {
-			return intOf(nv)
-		}
 	}
 	return 0
 }

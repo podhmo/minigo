@@ -40,6 +40,7 @@ type Engine struct {
 	initMode   InitMode
 	specials   map[runtime.SymbolID]runtime.SpecialFunc
 	hostPolicy func(importPath, symbol string) bool // nil = allow all bound intrinsics
+	pkgModes   map[string]PackageMode               // per-path import mode; nil = ModeAuto everywhere
 	out        io.Writer                            // print/println/fmt.Print* destination; nil = io.Discard
 	cwd        string                               // virtual cwd for os.* path intrinsics (defaults to startDir)
 	args       []string                             // script-visible os.Args; nil = host process argv
@@ -81,6 +82,30 @@ func WithBuildConfig(cfg resolve.BuildConfig) Option {
 // WithInitMode sets how eagerly package initializers run (see InitMode).
 func WithInitMode(m InitMode) Option {
 	return func(e *Engine) { e.initMode = m }
+}
+
+// PackageMode selects how an import path is satisfied.
+type PackageMode int
+
+const (
+	// ModeAuto answers an import with a bound host package when one is
+	// registered, else falls back to lazy source interpretation.
+	ModeAuto PackageMode = iota
+	// ModeSource forces source interpretation, bypassing a bound shadow:
+	// the package is located, parsed, and indexed as if it were unbound.
+	ModeSource
+	// ModeDeny rejects the import outright — the script's import fails
+	// with a clear error instead of half-working or trapping later.
+	ModeDeny
+)
+
+// WithPackageModes sets the package mode for specific import paths:
+// ModeSource forces source interpretation where a bound host package
+// would otherwise answer (useful to test interpretation coverage), and
+// ModeDeny makes the import fail cleanly for unsupported packages.
+// Paths not listed use ModeAuto.
+func WithPackageModes(modes map[string]PackageMode) Option {
+	return func(e *Engine) { e.pkgModes = modes }
 }
 
 // WithAllowedRoots restricts the directories the resolver may hand out:
@@ -474,8 +499,14 @@ func lastElem(path string) string {
 // ---- loading ----
 
 func (e *Engine) loadPath(ctx context.Context, path string) (*runtime.Package, error) {
+	mode := e.pkgModes[path]
+	if mode == ModeDeny {
+		return nil, fmt.Errorf("minigo: import of %q denied by package policy", path)
+	}
 	e.mu.Lock()
-	if p, ok := e.pkgs[path]; ok {
+	if p, ok := e.pkgs[path]; ok && (mode != ModeSource || p.Index != nil) {
+		// a ModeSource path answers only from a source-built package —
+		// a bound shadow (unindexed) falls through to the build.
 		e.mu.Unlock()
 		return p, nil
 	}
@@ -566,11 +597,15 @@ func (e *Engine) buildPackage(meta *resolve.PackageMeta) (*runtime.Package, erro
 	defer e.buildMu.Unlock()
 
 	e.mu.Lock()
-	if p, ok := e.pkgs[meta.ImportPath]; ok {
+	if p, ok := e.pkgs[meta.ImportPath]; ok && (e.pkgModes[meta.ImportPath] != ModeSource || p.Index != nil) {
 		e.mu.Unlock()
 		return p, nil
 	}
 	e.mu.Unlock()
+
+	if e.pkgModes[meta.ImportPath] == ModeDeny {
+		return nil, fmt.Errorf("minigo: import of %q denied by package policy", meta.ImportPath)
+	}
 
 	p := e.newPackage(meta.ImportPath, meta.Name, meta.Dir)
 	p.Standard = meta.Standard
