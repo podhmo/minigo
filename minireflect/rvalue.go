@@ -970,13 +970,21 @@ type MapIter struct {
 	hit  *reflect.MapIter
 }
 
-// Next advances the iterator.
+// Next advances the iterator. A key deleted mid-iteration is skipped,
+// like Go's map iterator (keys added during iteration may not appear —
+// Go leaves that unspecified and the snapshot keeps them out).
 func (it *MapIter) Next() bool {
 	if it.hit != nil {
 		return it.hit.Next()
 	}
-	it.i++
-	return it.i <= len(it.keys)
+	for it.i+1 <= len(it.keys) {
+		it.i++
+		if _, ok := it.m.Get(it.keys[it.i-1]); ok {
+			return true
+		}
+	}
+	it.i++ // past the end — Key/Value must trap like Go
+	return false
 }
 
 // Key reports the current key.
