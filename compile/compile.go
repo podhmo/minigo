@@ -2795,13 +2795,13 @@ unwrapped:
 	// base, then OpLenIdxFold skips the emitted index+OpIndex+OpCall
 	// run when the runtime element typedef turns out to be an array.
 	// Two guards keep the fold honest: a user declaration of len/cap
-	// wins (Go calls it like any function), and an index containing a
-	// call or receive still evaluates (Go skips the index only when
-	// nothing in it can call out).
+	// wins (Go calls it like any function), and any call or receive in
+	// the operand — the index or the indexed base alike — still
+	// evaluates (Go folds only when nothing in the operand calls out).
 	if id, ok := fun.(*ast.Ident); ok && (id.Name == "len" || id.Name == "cap") &&
 		len(x.Args) == 1 && !x.Ellipsis.IsValid() && !c.declared(id.Name) {
 		if ix, ok := x.Args[0].(*ast.IndexExpr); ok {
-			calls, linear := c.hoistedArgCalls(ix.Index)
+			calls, linear := c.hoistedArgCalls(ix)
 			if linear && len(calls) == 0 {
 				c.calleeExpr(x.Fun)
 				c.expr(ix.X)
