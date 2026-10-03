@@ -1185,21 +1185,48 @@ func (t *RType) Bits() int {
 	return 0
 }
 
-// Align reports the type's alignment — the facade does not model
-// machine layout, so script types report 0.
+// Align reports the type's alignment for a 64-bit target: scalars by
+// size, aggregates by their widest member (slice/map/chan/func/ptr/
+// iface are all word-sized).
 func (t *RType) Align() int {
 	if t.rt != nil {
 		return t.rt.Align()
 	}
-	return 0
+	return t.alignOf()
 }
 
-// FieldAlign reports the field alignment.
+// FieldAlign reports the field alignment — identical to Align on
+// amd64 (the platforms where they differ only affect 32-bit targets).
 func (t *RType) FieldAlign() int {
 	if t.rt != nil {
 		return t.rt.FieldAlign()
 	}
-	return 0
+	return t.alignOf()
+}
+
+// alignOf computes the amd64 alignment of a script type. A struct
+// aligns to its widest field (empty struct → 1); an array to its
+// element; word-sized containers and pointers to 8.
+func (t *RType) alignOf() int {
+	switch t.Kind() {
+	case reflect.Int8, reflect.Uint8, reflect.Bool:
+		return 1
+	case reflect.Int16, reflect.Uint16:
+		return 2
+	case reflect.Int32, reflect.Uint32, reflect.Float32, reflect.Complex64:
+		return 4
+	case reflect.Struct:
+		n := 1
+		for i := 0; i < t.NumField(); i++ {
+			if a := t.Field(i).Type.alignOf(); a > n {
+				n = a
+			}
+		}
+		return n
+	case reflect.Array:
+		return t.Elem().alignOf()
+	}
+	return 8
 }
 
 // NumIn reports a func type's input count.
