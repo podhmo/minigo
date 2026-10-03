@@ -1250,11 +1250,14 @@ func (c *compiler) refTarget(lhs ast.Expr) {
 			c.emit(bytecode.OpUpvalRef, idx, 0, t.Pos())
 		}
 	case *ast.SelectorExpr:
+		// B=1: store target — the nil-base check defers to the store so
+		// the RHS still evaluates first (p.f = before()).
 		c.expr(t.X)
-		c.emit(bytecode.OpFieldRef, c.nameIdx(t.Sel.Name), 0, t.Pos())
+		c.emit(bytecode.OpFieldRef, c.nameIdx(t.Sel.Name), 1, t.Pos())
 	case *ast.IndexExpr:
 		// B=1: the ref is a store target — a map element is legal here
-		// (m[k] = v), unlike `&` which Go forbids on map values.
+		// (m[k] = v), unlike `&` which Go forbids on map values, and the
+		// bounds check defers to the store so the RHS evaluates first.
 		c.expr(t.X)
 		c.expr(t.Index)
 		c.emit(bytecode.OpIndexRef, 0, 1, t.Pos())
