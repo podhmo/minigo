@@ -149,18 +149,21 @@ type Domain struct {
 	Name    string
 	Types   []*Typ
 	Imports []string
+	Decls   []string // extra top-level declarations emitted verbatim
 	expr    func(g *Gen, t *Typ, depth int) *Node
+	probe   func(g *Gen, depth int) Probe // non-expr domains (reflect)
 }
 
 var (
 	numDomain  = &Domain{Name: "num", Types: allTypes, Imports: []string{"fmt"}}
 	textDomain = &Domain{Name: "text", Types: textTypes, Imports: textImports}
-	domains    = map[string]*Domain{"num": numDomain, "text": textDomain}
+	domains    = map[string]*Domain{"num": numDomain, "text": textDomain, "reflect": reflDomain}
 )
 
 func init() {
 	numDomain.expr = (*Gen).numExpr
 	textDomain.expr = (*Gen).textExpr
+	reflDomain.probe = (*Gen).reflProbe
 }
 
 func (g *Gen) pick(xs []*Typ) *Typ { return xs[g.R.IntN(len(xs))] }
@@ -285,10 +288,12 @@ func (g *Gen) stringExpr(depth int) *Node {
 
 // Probe is one line of a generated program: an expression evaluated in one
 // of several statement contexts, which reach different compile paths.
+// Reflect-domain probes instead carry R, a statement-sequence chain.
 type Probe struct {
 	D    *Domain
 	Ctx  string // see Body
 	Root *Node
+	R    *rchain // non-nil for the reflect domain
 }
 
 // Valid reports whether the probe still compiles under gc after a shrink
@@ -296,6 +301,11 @@ type Probe struct {
 // diagnostics), no untyped constant as a shift's left operand, and no
 // untyped constant feeding a `t := ...` declaration.
 func (p Probe) Valid() bool {
+	if p.R != nil {
+		// a reflect chain must have at least one step and end in an
+		// observation — anything else renders to dead code or no output.
+		return len(p.R.Steps) > 0 && p.R.Steps[len(p.R.Steps)-1].Kind == 'o'
+	}
 	if p.Root.Op == "lit" || !noConstOps(p.Root) {
 		return false
 	}
@@ -325,12 +335,30 @@ func noConstOps(n *Node) bool {
 	return !allConst
 }
 
-func (p Probe) Size() int { return p.Root.Size() }
+func (p Probe) Size() int {
+	if p.R != nil {
+		return len(p.R.Steps) + 1
+	}
+	return p.Root.Size()
+}
 
-func (p Probe) Shape() string { return p.Ctx + ":" + p.Root.Shape() }
+func (p Probe) Shape() string {
+	if p.R != nil {
+		var b strings.Builder
+		fmt.Fprintf(&b, "%s:%s", p.Ctx, p.R.Seed)
+		for _, s := range p.R.Steps {
+			fmt.Fprintf(&b, " %s", s.Text)
+		}
+		return b.String()
+	}
+	return p.Ctx + ":" + p.Root.Shape()
+}
 
 // Body renders the closure body producing the probe's value.
 func (p Probe) Body() string {
+	if p.R != nil {
+		return p.R.body()
+	}
 	n := p.Root
 	switch p.Ctx {
 	case "assign": // t := a; t op= b — the compound-assign path
@@ -363,6 +391,9 @@ func (p Probe) Body() string {
 var metaCtxs = []string{"generic", "field", "closure", "defer"}
 
 func (g *Gen) Probe(depth int) Probe {
+	if g.D.probe != nil {
+		return g.D.probe(g, depth)
+	}
 	t := g.pick(g.D.Types)
 	n := g.Expr(t, depth)
 	for range 3 { // a bare variable tests nothing interesting
@@ -405,6 +436,9 @@ func Program(d *Domain, probes []Probe, ids []int) string {
 			fmt.Fprintf(&b, "type %s %s\n", t.Name, t.Under)
 		}
 	}
+	for _, dcl := range d.Decls {
+		fmt.Fprintf(&b, "%s\n\n", dcl)
+	}
 	b.WriteString("\nvar (\n")
 	for _, t := range d.Types {
 		for i, v := range t.Values {
@@ -436,6 +470,9 @@ func main() {
 // replaced by a same-typed leaf, and every variable swapped for the
 // "simplest" value of its type.
 func Shrink(p Probe) []Probe {
+	if p.R != nil {
+		return reflShrink(p)
+	}
 	var out []Probe
 	seen := map[string]bool{p.Body(): true}
 	add := func(n *Node, ctx string) {

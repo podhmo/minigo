@@ -1,0 +1,4 @@
+SILENT/panic-message (seen ×1)
+shape:  seq:reflect.TypeOf(r_func) .Elem() .Kind()
+go:     panic: reflect: Elem of invalid type func(int) int
+minigo: panic: reflect: call of reflect.Type.Elem on type func(int)(int)

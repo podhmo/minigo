@@ -34,7 +34,7 @@ func TestGeneratedProgramsCompile(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds generated programs")
 	}
-	for _, d := range []*Domain{numDomain, textDomain} {
+	for _, d := range []*Domain{numDomain, textDomain, reflDomain} {
 		t.Run(d.Name, func(t *testing.T) { testCompiles(t, d) })
 	}
 }

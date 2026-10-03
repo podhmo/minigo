@@ -1,0 +1,4 @@
+SILENT/missing-panic (seen ×9)
+shape:  seq:reflect.ValueOf(r_f0) .Convert(reflect.TypeOf(r_s0)) 
+go:     panic: reflect.Value.Convert: value of type float64 cannot be converted to type string
+minigo: string "<float64 Value>"
