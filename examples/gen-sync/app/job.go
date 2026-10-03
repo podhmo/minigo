@@ -1,0 +1,51 @@
+package app
+
+import "github.com/podhmo/minigo/examples/gen-sync/app/internal/mood"
+
+var _ = mood.Happy // dependency edge for -deps scans
+
+// Mode is a job mode.
+type Mode int
+
+const (
+	ModeFast Mode = iota
+	ModeSafe
+)
+
+// Config is a job config.
+type Config struct {
+	Name string `required:"true"`
+	Port int
+}
+
+// Store persists jobs.
+type Store interface {
+	Get(id int) string
+}
+
+// Envelope is a discriminated union of events (OpenAPI oneOf style).
+type Envelope interface {
+	Discriminator() string
+}
+
+// PingEvent is an Envelope variant.
+type PingEvent struct{ Seq int }
+
+func (PingEvent) Discriminator() string { return "ping" }
+
+// PongEvent is an Envelope variant.
+type PongEvent struct{ Seq int }
+
+func (PongEvent) Discriminator() string { return "pong" }
+
+// Default is a non-matching var declaration.
+var Default = PingEvent{Seq: 0}
+
+// Do is a non-matching func declaration.
+func Do() {}
+
+// Point is a non-matching struct (no required tags).
+type Point struct{ X, Y int }
+
+// Score is a non-matching alias type.
+type Score = int

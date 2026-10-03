@@ -1,0 +1,13 @@
+// Package mood is a leaf package reached only with -deps.
+package mood
+
+// Code generated directives below are managed by gen-sync. DO NOT EDIT.
+//go:generate stringer -type=Mood
+
+// Mood is a mood.
+type Mood int
+
+const (
+	Happy Mood = iota
+	Sad
+)
