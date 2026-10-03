@@ -19,6 +19,7 @@ import (
 	"go/printer"
 	"go/token"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -405,6 +406,7 @@ func MethodsOf(s *Decl) ([]*Decl, error) {
 	for _, md := range td.Methods {
 		out = append(out, NewDecl(s.Package, md))
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name }) // map order is not stable
 	return out, nil
 }
 
@@ -420,15 +422,22 @@ type Method struct {
 	Via  *Decl // nil when declared on the type itself
 }
 
-// MethodSetOf returns the flattened method set of a type symbol: its
-// declared methods plus the members promoted through embedded fields,
-// walked transitively. Promotion follows Go's value method-set rule —
-// a by-value embed (struct{ T }) lifts T's non-pointer-receiver
+// MethodSetOf returns the flattened method set of a type symbol —
+// "the members usable through *T": the type's declared methods with
+// either receiver (a pointer-receiver method declared on T is callable
+// on a *T, so it counts here even though Go's *value* method set of T
+// would not contain it), plus the members promoted through embedded
+// fields, walked transitively. Promotion follows Go's value method-set
+// rule — a by-value embed (struct{ T }) lifts T's non-pointer-receiver
 // members, a pointer embed (struct{ *T }) and interface embeds lift
-// everything. Alias and generic-instantiation embeds resolve to the
-// underlying named decl first; type parameters and unresolvable embeds
-// contribute nothing. A shallower promotion shadows a deeper one by
-// name; declared members always win.
+// everything, and a pointer embed anywhere on the path down keeps
+// deeper pointer receivers visible. Alias and generic-instantiation
+// embeds resolve to the underlying named decl first; type parameters
+// and unresolvable embeds contribute nothing. Members promote
+// breadth-first: a shallower spelling shadows a deeper one by name —
+// a same-depth conflict is an ambiguous selector in Go, and here the
+// first in declaration order wins — and declared members always win.
+// The result is sorted by name so script consumers see a stable order.
 func MethodSetOf(s *Decl, res Resolver) ([]*Method, error) {
 	if s.decl == nil || s.Package == nil || s.Package.Index == nil {
 		return nil, fmt.Errorf("inspect.MethodSet: %s has no index", s.Name)
@@ -440,26 +449,56 @@ func MethodSetOf(s *Decl, res Resolver) ([]*Method, error) {
 	seen := map[string]bool{}
 	visited := map[runtime.SymbolID]bool{}
 	var out []*Method
-	var walk func(td *index.TypeDeclInfo, owner *Decl, via *Decl, ptrEmbed bool)
-	walk = func(td *index.TypeDeclInfo, owner *Decl, via *Decl, ptrEmbed bool) {
-		for _, md := range td.Methods {
+	// queue entries are the decls that own members, one per resolved
+	// embedded field — walked breadth-first so promotion depth, not
+	// field order, decides which spelling a name keeps.
+	type embedDecl struct {
+		td    *index.TypeDeclInfo
+		owner *Decl // the resolved embedded decl — fields and specs read from it
+		via   *Decl // the decl this item was promoted from (nil for the queried type)
+		ptr   bool  // the path down to owner crossed a pointer embed
+	}
+	queue := []embedDecl{{td, s, nil, false}}
+	// an alias borrows its target's set — GB = GreetBase carries
+	// GreetBase's methods identically, pointer receivers included, so
+	// the target walks with a nil via (the alias IS the type).
+	if ts, ok := s.decl.Spec.(*ast.TypeSpec); ok && ts.Assign.IsValid() {
+		if ed := chaseType(NewTypeExpr(ts.Type, s.file, s.Package), visited, res); ed != nil {
+			if ntd, ok := ed.Package.Index.Types[ed.Name]; ok {
+				queue = append(queue, embedDecl{ntd, ed, nil, false})
+			}
+		}
+	}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if ts, ok := cur.owner.decl.Spec.(*ast.TypeSpec); ok {
+			if it, ok := ts.Type.(*ast.InterfaceType); ok {
+				// embedded interfaces promote their method specs — all
+				// at this decl's depth: interface embedding flattens
+				// into the set, it does not add a promotion hop.
+				promoteIfaceSpecs(it, cur.owner, res, seen, visited, &out)
+				continue
+			}
+		}
+		for _, md := range cur.td.Methods {
 			if seen[md.Name] {
 				continue
 			}
-			m := NewDecl(owner.Package, md)
+			m := NewDecl(cur.owner.Package, md)
 			sig, err := SignatureOf(m)
 			if err != nil {
 				continue
 			}
-			if !ptrEmbed && via != nil && sig.Recv != nil && sig.Recv.Type.Kind == "StarExpr" {
+			if !cur.ptr && cur.via != nil && sig.Recv != nil && sig.Recv.Type.Kind == "StarExpr" {
 				continue // value method sets skip pointer receivers
 			}
 			seen[md.Name] = true
-			out = append(out, &Method{Name: md.Name, Sig: sig, Decl: m, Via: via})
+			out = append(out, &Method{Name: md.Name, Sig: sig, Decl: m, Via: cur.via})
 		}
-		fs, err := FieldsOf(owner)
+		fs, err := FieldsOf(cur.owner)
 		if err != nil {
-			return // not a struct or interface — nothing to promote from
+			continue // not a struct — nothing to promote from
 		}
 		for _, fd := range fs {
 			if !fd.Embedded {
@@ -477,33 +516,14 @@ func MethodSetOf(s *Decl, res Resolver) ([]*Method, error) {
 			if ed == nil {
 				continue
 			}
-			if it, ok := ed.decl.Spec.(*ast.TypeSpec).Type.(*ast.InterfaceType); ok {
-				// embedded interfaces promote their method specs —
-				// recursively including the specs' own embeds.
-				promoteIfaceSpecs(it, ed, res, seen, visited, &out)
-				continue
-			}
 			if ntd, ok := ed.Package.Index.Types[ed.Name]; ok {
-				walk(ntd, ed, ed, byPtr)
+				// pointer-ness accumulates: a pointer embed anywhere on
+				// the path down keeps deeper pointer receivers visible.
+				queue = append(queue, embedDecl{ntd, ed, ed, cur.ptr || byPtr})
 			}
 		}
 	}
-	if it, ok := s.decl.Spec.(*ast.TypeSpec).Type.(*ast.InterfaceType); ok {
-		promoteIfaceSpecs(it, s, res, seen, visited, &out)
-	}
-	walk(td, s, nil, false)
-	// an alias borrows its target's set — GB = GreetBase carries
-	// GreetBase's methods identically, pointer receivers included, so
-	// the target walks with a nil via (the alias IS the type).
-	if ts, ok := s.decl.Spec.(*ast.TypeSpec); ok && ts.Assign.IsValid() {
-		if ed := chaseType(NewTypeExpr(ts.Type, s.file, s.Package), visited, res); ed != nil && ed != s {
-			if it, ok := ed.decl.Spec.(*ast.TypeSpec).Type.(*ast.InterfaceType); ok {
-				promoteIfaceSpecs(it, ed, res, seen, visited, &out)
-			} else if ntd, ok := ed.Package.Index.Types[ed.Name]; ok {
-				walk(ntd, ed, nil, false)
-			}
-		}
-	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }
 
@@ -516,8 +536,15 @@ func chaseType(sub *TypeExpr, visited map[runtime.SymbolID]bool, res Resolver) *
 	for i := 0; i < 8; i++ {
 		sid, ok := sub.SymbolID()
 		if !ok {
-			if kids := sub.Children(); len(kids) > 0 {
-				sub = kids[0]
+			// only the composite spellings that can denote the embedded
+			// or aliased named type chase a decl: *T (borrowing *T's
+			// set means T's methods), (T), and the base of a generic
+			// instantiation F[A]. Other composites — slices, maps,
+			// chans, func types, constraint elements — name no type, so
+			// there is no method set to borrow.
+			switch sub.expr.(type) {
+			case *ast.StarExpr, *ast.ParenExpr, *ast.IndexExpr, *ast.IndexListExpr:
+				sub = sub.Children()[0]
 				continue
 			}
 			return nil
@@ -554,7 +581,10 @@ func promoteIfaceSpecs(it *ast.InterfaceType, owner *Decl, res Resolver, seen ma
 				continue
 			}
 			seen[fd.Names[0]] = true
-			ft, _ := fd.Type.Expr().(*ast.FuncType)
+			ft, ok := fd.Type.Expr().(*ast.FuncType)
+			if !ok {
+				continue // named interface specs are FuncType in parsed code
+			}
 			*out = append(*out, &Method{
 				Name: fd.Names[0],
 				Sig: &Sig{
@@ -565,7 +595,13 @@ func promoteIfaceSpecs(it *ast.InterfaceType, owner *Decl, res Resolver, seen ma
 			})
 			continue
 		}
-		// an embedded element promotes the elements it names.
+		// an embedded element promotes the elements it names —
+		// including an anonymous interface literal, which flattens in
+		// place under the same owner.
+		if anon, ok := fd.Type.Expr().(*ast.InterfaceType); ok {
+			promoteIfaceSpecs(anon, owner, res, seen, visited, out)
+			continue
+		}
 		sid, ok := fd.Type.SymbolID()
 		if !ok || sid.PackagePath == BuiltinPackagePath || visited[sid] {
 			continue
@@ -586,13 +622,18 @@ func promoteIfaceSpecs(it *ast.InterfaceType, owner *Decl, res Resolver, seen ma
 }
 
 // ImplementersOf returns the type decls of p whose method set covers
-// iface's named requirements — the index-level "every type
-// implementing I" for one package (walking the import closure for the
-// full picture stays the caller's job). Interface decls count too: an
-// interface embedding the required specs satisfies them, and iface
-// itself is included — callers wanting only concrete types filter by
-// Def(d).Kind. iface must be an interface type decl; other shapes
-// report an error, as do index-less packages.
+// iface's requirements — named specs plus everything the embedded
+// interfaces pull in transitively, flattened the same way
+// promoteIfaceSpecs flattens the candidate side. "Method set" follows
+// MethodSetOf's contract: a type whose only matching method is
+// pointer-receiver still counts (the set answers "usable through *T",
+// not "assignable as T"). Interface decls count too: an interface
+// embedding the required specs satisfies them, and iface itself is
+// included — callers wanting only concrete types filter by
+// Def(d).Kind. iface must be an interface type decl, and a constraint
+// interface — one carrying ~T terms, unions, or embedded non-interface
+// types — reports an error: no value type can implement it. Other
+// shapes report an error too, as do index-less packages.
 func ImplementersOf(p *runtime.Package, iface *Decl, res Resolver) ([]*Decl, error) {
 	if p == nil || p.Index == nil {
 		name := "<nil>"
@@ -609,13 +650,8 @@ func ImplementersOf(p *runtime.Package, iface *Decl, res Resolver) ([]*Decl, err
 		return nil, fmt.Errorf("inspect.Implementers: %s is not an interface type", iface.Name)
 	}
 	var specs []ifaceSpec
-	for _, fd := range it.Methods.List {
-		if len(fd.Names) == 0 {
-			continue
-		}
-		if ft, ok := fd.Type.(*ast.FuncType); ok {
-			specs = append(specs, ifaceSpec{name: fd.Names[0].Name, ft: ft})
-		}
+	if err := requiredSpecs(it, iface, res, map[runtime.SymbolID]bool{}, &specs); err != nil {
+		return nil, err
 	}
 	var out []*Decl
 	for _, d := range p.Index.Decls {
@@ -627,27 +663,90 @@ func ImplementersOf(p *runtime.Package, iface *Decl, res Resolver) ([]*Decl, err
 		if err != nil {
 			return nil, err
 		}
-		if covers(ms, specs, iface.file, iface.Package, res) {
+		if covers(ms, specs, res) {
 			out = append(out, td)
 		}
 	}
 	return out, nil
 }
 
-// ifaceSpec is one named method spec of an interface.
+// requiredSpecs collects an interface's required method specs
+// transitively: named specs append in place, embedded elements resolve
+// and recurse so the requirement set of Talker{ Greeter; Talk() }
+// carries Greet too. Any element that makes the interface a
+// constraint — a ~T term or A|B union, an embedded decl that is not an
+// interface, or an unresolvable builtin like comparable — reports an
+// error instead of silently dropping the requirement. Unresolvable
+// package paths contribute nothing (the same approximation as
+// promoteIfaceSpecs).
+func requiredSpecs(it *ast.InterfaceType, owner *Decl, res Resolver, visited map[runtime.SymbolID]bool, specs *[]ifaceSpec) error {
+	for _, fd := range fieldList(it.Methods, owner.file, owner.Package) {
+		if !fd.Embedded {
+			ft, ok := fd.Type.Expr().(*ast.FuncType)
+			if !ok {
+				continue
+			}
+			*specs = append(*specs, ifaceSpec{name: fd.Names[0], ft: ft, file: owner.file, pkg: owner.Package})
+			continue
+		}
+		switch fd.Type.Expr().(type) {
+		case *ast.UnaryExpr, *ast.BinaryExpr: // ~T and union terms: a constraint, not an interface
+			return fmt.Errorf("inspect.Implementers: %s is a constraint interface — nothing can implement it", owner.Name)
+		}
+		if anon, ok := fd.Type.Expr().(*ast.InterfaceType); ok {
+			if err := requiredSpecs(anon, owner, res, visited, specs); err != nil {
+				return err
+			}
+			continue // embedded interface literal flattens in place
+		}
+		sid, ok := fd.Type.SymbolID()
+		if !ok {
+			continue // unspellable embedded element — nothing follows
+		}
+		if sid.PackagePath == BuiltinPackagePath {
+			if sid.Name == "error" || sid.Name == "any" {
+				continue
+			}
+			return fmt.Errorf("inspect.Implementers: %s is a constraint interface — nothing can implement it", owner.Name)
+		}
+		ed := chaseType(fd.Type, visited, res)
+		if ed == nil {
+			continue // type params and foreign packages resolve to nothing
+		}
+		ts, ok := ed.decl.Spec.(*ast.TypeSpec)
+		if !ok {
+			continue
+		}
+		ie, ok := ts.Type.(*ast.InterfaceType)
+		if !ok {
+			return fmt.Errorf("inspect.Implementers: %s is a constraint interface — nothing can implement it", owner.Name)
+		}
+		if err := requiredSpecs(ie, ed, res, visited, specs); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ifaceSpec is one named method spec of an interface — what a type
+// must provide to be an implementer — kept with the decl it was read
+// from so signature comparisons resolve type names in the spec's own
+// file context (flattened requirements span decls and packages).
 type ifaceSpec struct {
 	name string
 	ft   *ast.FuncType
+	file *syntax.File
+	pkg  *runtime.Package
 }
 
 // covers reports whether the method set ms satisfies every spec:
 // each spec name must appear with an identical signature — parameters,
 // results, and variadicity compared via SameType.
-func covers(ms []*Method, specs []ifaceSpec, f *syntax.File, p *runtime.Package, res Resolver) bool {
+func covers(ms []*Method, specs []ifaceSpec, res Resolver) bool {
 	for _, sp := range specs {
 		found := false
 		for _, m := range ms {
-			if m.Name == sp.name && sigMatch(m, sp.ft, f, p, res) {
+			if m.Name == sp.name && sigMatch(m, sp, res) {
 				found = true
 				break
 			}
@@ -662,24 +761,24 @@ func covers(ms []*Method, specs []ifaceSpec, f *syntax.File, p *runtime.Package,
 // sigMatch compares a method-set member's signature against an
 // interface spec's FuncType: parameter count, result count, variadic
 // flag, and each position's type.
-func sigMatch(m *Method, ft *ast.FuncType, f *syntax.File, p *runtime.Package, res Resolver) bool {
+func sigMatch(m *Method, spec ifaceSpec, res Resolver) bool {
 	if m.Sig == nil {
 		return false
 	}
-	sp, sv := paramTypes(ft.Params)
-	sr, _ := paramTypes(ft.Results)
+	sp, sv := paramTypes(spec.ft.Params)
+	sr, _ := paramTypes(spec.ft.Results)
 	mp, mv := expandFieldTypes(m.Sig.ParamFields())
 	mr, _ := expandFieldTypes(m.Sig.ResultFields())
 	if sv != mv || len(sp) != len(mp) || len(sr) != len(mr) {
 		return false
 	}
 	for i := range sp {
-		if !NewTypeExpr(sp[i], f, p).SameType(mp[i], res) {
+		if !NewTypeExpr(sp[i], spec.file, spec.pkg).SameType(mp[i], res) {
 			return false
 		}
 	}
 	for i := range sr {
-		if !NewTypeExpr(sr[i], f, p).SameType(mr[i], res) {
+		if !NewTypeExpr(sr[i], spec.file, spec.pkg).SameType(mr[i], res) {
 			return false
 		}
 	}

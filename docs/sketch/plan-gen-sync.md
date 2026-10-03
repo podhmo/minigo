@@ -212,10 +212,14 @@ textually — candidates for the inspect wishlist, not the example's:
   anonymous struct) earn `requiredgen`.
 - ~~**Promoted methods are invisible**~~ — fixed: `inspect.MethodSet`
   flattens the declared methods with members promoted through embedded
-  fields (transitively, following the value method-set rule —
-  `struct{ T }` lifts non-pointer receivers, `struct{ *T }` and
-  interface embeds lift all). `EmbedEvent` joins the `-variants=` list
-  and earns `oneofgen` like the compiler already accepted.
+  fields (transitively — the set answers "usable through *T": declared
+  methods count with either receiver, while promotion follows the
+  value method-set rule, `struct{ T }` lifts non-pointer receivers,
+  `struct{ *T }` and interface embeds lift all, and a pointer embed on
+  the path down keeps deeper pointer receivers visible; shallower
+  spellings shadow deeper ones breadth-first). `EmbedEvent` joins the
+  `-variants=` list and earns `oneofgen` like the compiler already
+  accepted.
 - ~~**`inspect.SymbolID` returns `runtime.NIL` for non-named exprs**~~ —
   fixed: it now returns `*runtime.SymbolID` — nil for non-named
   exprs — so `sid == nil` is both valid Go and correct under minigo.
@@ -224,8 +228,10 @@ textually — candidates for the inspect wishlist, not the example's:
 - ~~**No subtype lookup**~~ — fixed: `inspect.Implementers(p, iface)`
   answers "every type implementing I" at index level per package —
   declared methods, promoted members, and alias-borrowed sets all
-  count, with signatures compared position-wise via `SameType`
-  (params, results, variadicity). `implementers` dropped its
+  count, requirements collecting transitively through embedded
+  interfaces, with signatures compared position-wise via `SameType`
+  (params, results, variadicity). Constraint interfaces report an
+  error rather than an empty answer. `implementers` dropped its
   per-decl `HasMethod` scan for it.
 
 ## Verification

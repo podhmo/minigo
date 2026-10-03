@@ -765,6 +765,34 @@ func PromotedWalk() string {
 	if gs == nil || gs.Via != nil || gs.Decl == nil {
 		return "declared method did not win"
 	}
+	// composite aliases borrow nothing; the pointer alias borrows *T's set.
+	if len(inspect.MethodSet(inspect.Symbol(p, "SliceAlias"))) != 0 {
+		return "slice alias borrowed a method set"
+	}
+	if len(inspect.MethodSet(inspect.Symbol(p, "MapAlias"))) != 0 {
+		return "map alias borrowed a method set"
+	}
+	if len(inspect.MethodSet(inspect.Symbol(p, "FuncAlias"))) != 0 {
+		return "func alias borrowed a method set"
+	}
+	if find(inspect.MethodSet(inspect.Symbol(p, "PtrAlias")), "Greet") == nil {
+		return "ptr alias lost Greet"
+	}
+	// a pointer embed keeps the path pointer-ish all the way down:
+	// ChainS{*ChainA}, ChainA{ChainB} still lifts ChainB's PtrM.
+	cs := inspect.MethodSet(inspect.Symbol(p, "ChainS"))
+	if find(cs, "PtrM") == nil || find(cs, "ValM") == nil {
+		return "ptr embed did not propagate down the chain"
+	}
+	// the shallower promotion shadows the deeper one: ShadowS.M is
+	// ShallowY's M() string, not DeepX's M() int.
+	sm := find(inspect.MethodSet(inspect.Symbol(p, "ShadowS")), "M")
+	if sm == nil || sm.Via == nil || sm.Via.Name != "ShallowY" {
+		return "deeper promotion won over shallower"
+	}
+	if len(sm.Sig.ResultFields()) != 1 || sm.Sig.ResultFields()[0].Type.Text != "string" {
+		return "shallow M has the wrong signature"
+	}
 	return "ok"
 }
 
@@ -1149,6 +1177,10 @@ func ImplementersWalk() string {
 		"GreetAliasEmbed", "GB", "GreetShadow", "User",
 		// User's Greet is pointer-receiver — still part of the declared
 		// method set, so the named type satisfies.
+		"GreetTalker", "BothTalk", "PtrAlias",
+		// GreetTalker embeds Greeter and BothTalk declares Greet —
+		// both satisfy; the composite aliases (SliceAlias, MapAlias,
+		// FuncAlias) borrow nothing and must not appear.
 	}
 	got := map[string]bool{}
 	for _, d := range inspect.Implementers(p, inspect.Symbol(p, "Greeter")) {
@@ -1180,7 +1212,34 @@ func ImplementersWalk() string {
 	if !got["Summer"] || !got["SumImpl"] || got["SumArr"] || len(got) != 2 {
 		return "bad summer set"
 	}
+	// embedded requirements count: GreetTalker needs Greet AND Talk —
+	// OnlyTalk covers only the named spec and must not satisfy.
+	got = map[string]bool{}
+	for _, d := range inspect.Implementers(p, inspect.Symbol(p, "GreetTalker")) {
+		got[d.Name] = true
+	}
+	if !got["GreetTalker"] || !got["BothTalk"] || got["OnlyTalk"] || len(got) != 2 {
+		return "bad greettalker set"
+	}
+	// promotion depth decides shadowing: ShadowS's M is ShallowY's
+	// M() string, so ShadowS satisfies MStr.
+	got = map[string]bool{}
+	for _, d := range inspect.Implementers(p, inspect.Symbol(p, "MStr")) {
+		got[d.Name] = true
+	}
+	if !got["MStr"] || !got["ShallowY"] || !got["ShadowS"] ||
+		got["MidA"] || got["DeepX"] || len(got) != 3 {
+		return "bad mstr set"
+	}
 	return "ok"
+}
+
+// ImplementersConstraintTrap: a constraint interface has no
+// implementers — the question is loud, not empty.
+func ImplementersConstraintTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	inspect.Implementers(p, inspect.Symbol(p, "Number"))
+	return "swallowed"
 }
 
 // ImplementersStructTrap: the iface argument must be an interface.

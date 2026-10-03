@@ -72,20 +72,21 @@ func TestInspect(t *testing.T) {
 		"EnumMembersFuncTrap",  // EnumMembers is a type view — funcs trap
 		"EnumMembersBoundTrap", // bound types carry no index to walk
 		"ImplementersStructTrap",
-		"IsAliasFuncTrap",     // IsAlias is a type view — funcs trap
-		"IsAliasBoundTrap",    // bound types carry no declaration
-		"TypeFieldsIdentTrap", // a named leaf is not a composite
-		"MethodSetFuncTrap",   // the method set is a type view
-		"ResolveBoundTrap",    // the resolver cannot descend into a bound pkg
-		"MissingSymTrap",      // unknown symbol name
-		"BoundFieldTrap",      // bound type has no decl for Fields
-		"BoundMethodTrap",     // bound type has no index for Methods
-		"HostSigTrap",         // intrinsic without Target has no signature
-		"ImportRefTrap",       // import refs stay namespace-strict
-		"PkgUnknownTrap",      // neither member nor field -> undefined
-		"PkgUnexportedTrap",   // unexported names trap
-		"PkgDirTrap",          // metadata field names trap with an inspect.* hint
-		"CurPkgPathTrap",      // the reported d.Package.Path shape stays loud
+		"ImplementersConstraintTrap", // constraint interfaces have no implementers
+		"IsAliasFuncTrap",            // IsAlias is a type view — funcs trap
+		"IsAliasBoundTrap",           // bound types carry no declaration
+		"TypeFieldsIdentTrap",        // a named leaf is not a composite
+		"MethodSetFuncTrap",          // the method set is a type view
+		"ResolveBoundTrap",           // the resolver cannot descend into a bound pkg
+		"MissingSymTrap",             // unknown symbol name
+		"BoundFieldTrap",             // bound type has no decl for Fields
+		"BoundMethodTrap",            // bound type has no index for Methods
+		"HostSigTrap",                // intrinsic without Target has no signature
+		"ImportRefTrap",              // import refs stay namespace-strict
+		"PkgUnknownTrap",             // neither member nor field -> undefined
+		"PkgUnexportedTrap",          // unexported names trap
+		"PkgDirTrap",                 // metadata field names trap with an inspect.* hint
+		"CurPkgPathTrap",             // the reported d.Package.Path shape stays loud
 	} {
 		if _, err := e.Run(context.Background(), "./testdata/inspectuse", fn); err == nil {
 			t.Errorf("%s: expected trap, got nil", fn)

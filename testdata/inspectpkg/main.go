@@ -268,6 +268,89 @@ type GreetShadow struct {
 // Greet shadows the promoted spelling.
 func (GreetShadow) Greet() string { return "shadow" }
 
+// GreetTalker embeds Greeter and adds a named spec — implementers
+// must cover BOTH the embedded and the declared requirements.
+type GreetTalker interface {
+	Greeter
+	Talk() string
+}
+
+// OnlyTalk has Talk alone — the missing Greet must fail it.
+type OnlyTalk struct{}
+
+// Talk matches the named spec only.
+func (OnlyTalk) Talk() string { return "talk" }
+
+// BothTalk has both — it satisfies.
+type BothTalk struct{}
+
+// Talk matches the named spec.
+func (BothTalk) Talk() string { return "talk" }
+
+// Greet matches the embedded spec.
+func (BothTalk) Greet() string { return "both" }
+
+// Composite aliases name no type — none may borrow GreetBase's set.
+type SliceAlias = []GreetBase
+
+// MapAlias is a composite alias — no borrowing.
+type MapAlias = map[string]GreetBase
+
+// FuncAlias is a composite alias — no borrowing.
+type FuncAlias = func(GreetBase) int
+
+// PtrAlias borrows legitimately: *GreetBase carries Greet.
+type PtrAlias = *GreetBase
+
+// ChainB is the deepest embed in the ptrEmbed-propagation chain.
+type ChainB struct{}
+
+// ValM is a value receiver — promoted through either embed shape.
+func (ChainB) ValM() {}
+
+// PtrM is a pointer receiver — reachable only through a pointer path.
+func (*ChainB) PtrM() {}
+
+// ChainA embeds ChainB by value.
+type ChainA struct {
+	ChainB
+}
+
+// ChainS embeds ChainA by pointer — PtrM survives both hops
+// (var s ChainS; s.PtrM() compiles via s.ChainA.ChainB.PtrM()).
+type ChainS struct {
+	*ChainA
+}
+
+// DeepX sits two embed hops below ShadowS.
+type DeepX struct{}
+
+// M is the deeper promotion spelling (depth 2 through MidA).
+func (DeepX) M() int { return 0 }
+
+// MidA carries DeepX's members one level down.
+type MidA struct {
+	DeepX
+}
+
+// ShallowY has M at depth 1.
+type ShallowY struct{}
+
+// M shadows the deeper DeepX.M by shallowness.
+func (ShallowY) M() string { return "shallow" }
+
+// MStr is satisfied through ShallowY, never through DeepX.
+type MStr interface {
+	M() string
+}
+
+// ShadowS embeds MidA (M at depth 2) and ShallowY (M at depth 1) —
+// the shallower spelling must win the name.
+type ShadowS struct {
+	MidA
+	ShallowY
+}
+
 // Adder is a signature-shaped interface for Implementers coverage.
 type Adder interface {
 	Add(a, b int) int

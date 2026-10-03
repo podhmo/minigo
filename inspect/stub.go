@@ -53,12 +53,17 @@ func Decls(x any) []*Decl { panic("minigo intrinsic") }
 func Symbol(p *runtime.Package, name string) *Decl { panic("minigo intrinsic") }
 
 // Implementers returns the type decls of p whose method set covers
-// iface's named requirements — the index-level subtype question for
-// one package (walking the import closure for the full picture stays
-// the caller's job). Interface decls count: an interface embedding the
-// required specs satisfies them, and iface itself is included — filter
-// by Def(d).Kind for concrete types only. iface must be an interface
-// type decl; other shapes trap.
+// iface's requirements — its named specs plus everything embedded
+// interfaces pull in transitively — the index-level subtype question
+// for one package (walking the import closure for the full picture
+// stays the caller's job). The method set answers "usable through *T":
+// a pointer-receiver method declared on the type itself still counts.
+// Interface decls count: an interface embedding the required specs
+// satisfies them, and iface itself is included — filter by
+// Def(d).Kind for concrete types only. iface must be an interface
+// type decl; a constraint interface (~T terms, unions, embedded
+// non-interface types) traps — no value type implements it — and
+// other shapes trap.
 func Implementers(p *runtime.Package, iface *Decl) []*Decl { panic("minigo intrinsic") }
 
 // Files lists a package's source files.
@@ -86,14 +91,20 @@ func Fields(s *Decl) []*Field { panic("minigo intrinsic") }
 // Methods returns the method decls of a type symbol.
 func Methods(s *Decl) []*Decl { panic("minigo intrinsic") }
 
-// MethodSet returns the flattened method set of a type symbol — its
-// declared methods plus members promoted through embedded fields,
-// walked transitively. Each member carries Name and Sig; a promoted
-// member's Via names the decl it was promoted from, and its Decl is
-// the underlying method decl (nil for interface method specs, which
-// are not declarations). Promotion follows the value method-set rule:
-// struct{ T } lifts T's non-pointer-receiver members, struct{ *T } and
-// interface embeds lift all. Non-type symbols trap.
+// MethodSet returns the flattened method set of a type symbol — the
+// members "usable through *T": the type's declared methods with either
+// receiver (a pointer-receiver method declared on T counts, though
+// Go's value method set of T would not contain it) plus members
+// promoted through embedded fields, walked transitively. Each member
+// carries Name and Sig; a promoted member's Via names the decl it was
+// promoted from, and its Decl is the underlying method decl (nil for
+// interface method specs, which are not declarations). Promotion
+// follows the value method-set rule: struct{ T } lifts T's
+// non-pointer-receiver members, struct{ *T } and interface embeds lift
+// all, and a pointer embed on the path down keeps deeper pointer
+// receivers visible. Shallower spellings shadow deeper ones by name;
+// declared members always win. The list is sorted by name. Non-type
+// symbols trap.
 func MethodSet(s *Decl) []*Method { panic("minigo intrinsic") }
 
 // EnumMembers returns a type symbol's enum members: the package's
