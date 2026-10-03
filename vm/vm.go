@@ -6801,20 +6801,12 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 		}
 		return xv.Def != nil && td.Name != "" && td.Pkg != nil && sameTypeDef(xv.Def, td)
 	case int64:
-		switch td.Name {
-		case "int", "int8", "int16", "int32", "int64", "uint", "uint8",
-			"uint16", "uint32", "uint64", "byte", "rune", "uintptr":
-			return true
-		}
-		// named basic type: match its underlying literal type name
-		if td.Kind == runtime.KindNamedBasic && td.Anon != nil {
-			if id, ok := td.Anon.(*ast.Ident); ok {
-				return v.typeMatches(f, &runtime.TypeDef{Kind: td.Kind, Name: id.Name}, x)
-			}
-		}
-		return false
+		// a bare int64's dynamic type is int — int64(x) conversions and
+		// the sized ints carry Named tags, so x.(int64), x.(int8) or
+		// x.(MyInt) must not match here.
+		return td.Name == "int"
 	case float64:
-		return td.Name == "float64" || td.Name == "float32"
+		return td.Name == "float64"
 	case string:
 		return td.Name == "string"
 	case bool:
