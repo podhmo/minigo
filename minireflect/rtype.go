@@ -1235,6 +1235,27 @@ func (t *RType) alignOf() int {
 	return 8
 }
 
+// ChanDir reports a chan type's direction — an Anon ChanType carries
+// the declared direction; a bare chan defaults to BothDir. Go panics
+// on non-chan types.
+func (t *RType) ChanDir() reflect.ChanDir {
+	if t.rt != nil {
+		return t.rt.ChanDir()
+	}
+	if t.Kind() != reflect.Chan {
+		panic(&runtime.Panic{Value: fmt.Sprintf("reflect: ChanDir of non-chan type %s", t.String())})
+	}
+	if ct, ok := t.e.exprOf(t.td).(*ast.ChanType); ok {
+		switch ct.Dir {
+		case ast.RECV:
+			return reflect.RecvDir
+		case ast.SEND:
+			return reflect.SendDir
+		}
+	}
+	return reflect.BothDir
+}
+
 // NumIn reports a func type's input count.
 func (t *RType) NumIn() int {
 	if t.rt != nil {
