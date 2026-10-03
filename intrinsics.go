@@ -817,14 +817,9 @@ func (e *Engine) installStdlib() {
 			if dst == nil || src == nil {
 				return nil, fmt.Errorf("maps.Copy: args must be maps")
 			}
-			for i, k := range src.Order {
-				v := src.Pairs[src.Keys[i]]
-				ck := runtime.CanonicalKey(k)
-				if _, ok := dst.Pairs[ck]; !ok {
-					dst.Order = append(dst.Order, k)
-					dst.Keys = append(dst.Keys, ck)
-				}
-				dst.Pairs[ck] = v
+			for i := 0; i < src.Len(); i++ {
+				k, e := src.At(i)
+				dst.Insert(k, e)
 			}
 			return runtime.NIL, nil
 		}},
@@ -2116,13 +2111,7 @@ func scriptVal(v any) runtime.Value {
 	case map[any]any:
 		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}}
 		for k, vv := range x {
-			kk := scriptVal(k)
-			ck := runtime.CanonicalKey(kk)
-			if _, ok := m.Pairs[ck]; !ok {
-				m.Order = append(m.Order, kk)
-				m.Keys = append(m.Keys, ck)
-			}
-			m.Pairs[ck] = scriptVal(vv)
+			m.Insert(scriptVal(k), scriptVal(vv))
 		}
 		return m
 	case runtime.Nil, *runtime.Tuple, *runtime.Cell, *runtime.Slice,
@@ -2219,9 +2208,10 @@ func goNative(v runtime.Value) any {
 		}
 		return out
 	case *runtime.Map:
-		out := make(map[any]any, len(x.Pairs))
-		for i, k := range x.Order {
-			out[goNative(k)] = goNative(x.Pairs[x.Keys[i]])
+		out := make(map[any]any, x.Len())
+		for i := 0; i < x.Len(); i++ {
+			k, e := x.At(i)
+			out[goNative(k)] = goNative(e)
 		}
 		return out
 	case *runtime.Struct:
@@ -2610,9 +2600,10 @@ func goJSON(v any) any {
 		}
 		return out
 	case *runtime.Map:
-		m := make(map[string]any, len(x.Pairs))
-		for i, k := range x.Order {
-			m[str(goNative(k))] = goJSON(x.Pairs[x.Keys[i]])
+		m := make(map[string]any, x.Len())
+		for i := 0; i < x.Len(); i++ {
+			k, e := x.At(i)
+			m[str(goNative(k))] = goJSON(e)
 		}
 		return m
 	case *runtime.GoValue:
@@ -2804,13 +2795,7 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef) runtime.Value {
 		et := c.TypeOf(c.ElemZero(td))
 		rm := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}, Typ: td}
 		for k, e := range m {
-			kk := runtime.Value(k)
-			ck := runtime.CanonicalKey(kk)
-			if _, dup := rm.Pairs[ck]; !dup {
-				rm.Order = append(rm.Order, kk)
-				rm.Keys = append(rm.Keys, ck)
-			}
-			rm.Pairs[ck] = jsonShape(c, e, et)
+			rm.Insert(runtime.Value(k), jsonShape(c, e, et))
 		}
 		return rm
 	case runtime.KindPointer:
@@ -2888,9 +2873,9 @@ func mapValues(v any) *runtime.Slice {
 		return mapValues(n.V)
 	}
 	if m, ok := v.(*runtime.Map); ok {
-		el := make([]runtime.Value, len(m.Order))
-		for i := range m.Order {
-			el[i] = m.Pairs[m.Keys[i]]
+		el := make([]runtime.Value, m.Len())
+		for i := range el {
+			_, el[i] = m.At(i)
 		}
 		return &runtime.Slice{Elems: el}
 	}
@@ -3379,7 +3364,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		ev := elemVerb(verb)
 		parts := make([]string, 0, len(order))
 		for _, k := range order {
-			e := v.Pairs[runtime.CanonicalKey(k)]
+			e, _ := v.Get(k)
 			kr := (&fmtValue{c: s.c, x: k, et: kt, depth: s.depth + 1}).render(ev, f)
 			vr := (&fmtValue{c: s.c, x: e, et: vt, depth: s.depth + 1}).render(ev, f)
 			parts = append(parts, kr+":"+vr)

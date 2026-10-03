@@ -666,6 +666,70 @@ type Map struct {
 	Typ *TypeDef // declared map type (nil => missing keys yield NIL)
 }
 
+// Len reports the number of stored pairs.
+func (m *Map) Len() int {
+	return len(m.Order)
+}
+
+// At returns the i-th pair in insertion order — the key as written at
+// insert plus its current value.
+func (m *Map) At(i int) (Value, Value) {
+	return m.Order[i], m.Pairs[m.Keys[i]]
+}
+
+// Get reports the value stored under k's canonical key. Raw-key lookup
+// only: callers already holding a canonical key (iterating Pairs) read
+// the table directly — re-canonicalizing a canonical key (a NaN nonce)
+// never reconstructs it.
+func (m *Map) Get(k Value) (Value, bool) {
+	v, ok := m.Pairs[CanonicalKey(k)]
+	return v, ok
+}
+
+// Insert stores v under k's canonical key, appending k to the insertion
+// order only when the key is new. Keeping canonicalization and the
+// order/keys append in one place is what makes the NaN-nonce key policy
+// hold at every write site.
+func (m *Map) Insert(k, v Value) {
+	ck := CanonicalKey(k)
+	if m.Pairs == nil {
+		m.Pairs = map[Value]Value{}
+	}
+	if _, exists := m.Pairs[ck]; !exists {
+		m.Order = append(m.Order, k)
+		m.Keys = append(m.Keys, ck)
+	}
+	m.Pairs[ck] = v
+}
+
+// Delete drops k's canonical key and its insertion-order slot — a stale
+// order entry would render and range as `k:<nil>`. The canonical key
+// stored per slot tells which one to drop; a NaN slot's stored nonce can
+// never be recomputed, matching Go's unreachable-NaN-key semantics.
+// Reports whether the key was present.
+func (m *Map) Delete(k Value) bool {
+	ck := CanonicalKey(k)
+	if _, ok := m.Pairs[ck]; !ok {
+		return false
+	}
+	delete(m.Pairs, ck)
+	for i := range m.Order {
+		if m.Keys[i] == ck {
+			m.Order = append(m.Order[:i], m.Order[i+1:]...)
+			m.Keys = append(m.Keys[:i], m.Keys[i+1:]...)
+			break
+		}
+	}
+	return true
+}
+
+// Clear drops every pair and order slot.
+func (m *Map) Clear() {
+	m.Pairs = map[Value]Value{}
+	m.Order = nil
+	m.Keys = nil
+}
+
 // Chan is a channel value backed by a real host channel: sends and
 // receives block exactly as in Go, capacity is honored, and close wakes
 // every parked receiver. Blocking operations also watch the owning
