@@ -52,6 +52,15 @@ func Decls(x any) []*Decl { panic("minigo intrinsic") }
 // Symbol looks up one declaration by name.
 func Symbol(p *runtime.Package, name string) *Decl { panic("minigo intrinsic") }
 
+// Implementers returns the type decls of p whose method set covers
+// iface's named requirements — the index-level subtype question for
+// one package (walking the import closure for the full picture stays
+// the caller's job). Interface decls count: an interface embedding the
+// required specs satisfies them, and iface itself is included — filter
+// by Def(d).Kind for concrete types only. iface must be an interface
+// type decl; other shapes trap.
+func Implementers(p *runtime.Package, iface *Decl) []*Decl { panic("minigo intrinsic") }
+
 // Files lists a package's source files.
 func Files(p *runtime.Package) []*File { panic("minigo intrinsic") }
 

@@ -221,9 +221,12 @@ textually — candidates for the inspect wishlist, not the example's:
   exprs — so `sid == nil` is both valid Go and correct under minigo.
   `TypeRefName` keys on the id's fields directly instead of parsing
   `CanonicalName`.
-- **No subtype lookup** — the index is per-declaration, so "every type
-  implementing I" is derived by scanning method sets across the walked
-  closure; `-variants=` is that derivation.
+- ~~**No subtype lookup**~~ — fixed: `inspect.Implementers(p, iface)`
+  answers "every type implementing I" at index level per package —
+  declared methods, promoted members, and alias-borrowed sets all
+  count, with signatures compared position-wise via `SameType`
+  (params, results, variadicity). `implementers` dropped its
+  per-decl `HasMethod` scan for it.
 
 ## Verification
 

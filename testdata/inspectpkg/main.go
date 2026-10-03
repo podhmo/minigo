@@ -268,6 +268,38 @@ type GreetShadow struct {
 // Greet shadows the promoted spelling.
 func (GreetShadow) Greet() string { return "shadow" }
 
+// Adder is a signature-shaped interface for Implementers coverage.
+type Adder interface {
+	Add(a, b int) int
+}
+
+// Calc satisfies Adder exactly.
+type Calc struct{}
+
+// Add matches the spec — same signature, position for position.
+func (Calc) Add(a, b int) int { return a + b }
+
+// Almost has the right name, wrong signature — must not satisfy.
+type Almost struct{}
+
+// Add returns string, not int.
+func (Almost) Add(a, b int) string { return "no" }
+
+// Summer is a variadic interface — the flag must match too.
+type Summer interface {
+	Sum(xs ...int) int
+}
+
+// SumImpl implements it.
+type SumImpl struct{}
+
+func (SumImpl) Sum(xs ...int) int { return 0 }
+
+// SumArr has the right name but a fixed array, not variadic.
+type SumArr struct{}
+
+func (SumArr) Sum(xs [2]int) int { return 0 }
+
 type hidden struct{ x int }
 
 var hiddenVar = 1

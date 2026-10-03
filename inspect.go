@@ -305,6 +305,24 @@ func (e *Engine) installInspect() {
 			}
 			return boxedSlice(ms), nil
 		}),
+		"Implementers": bf("Implementers", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, argerr("Implementers", "a package and an interface decl")
+			}
+			p, err := e.pkgOf(runtime.Unwrap(args[0]))
+			if err != nil {
+				return nil, err
+			}
+			s, err := declViewOf(args[1])
+			if err != nil {
+				return nil, err
+			}
+			ds, err := xinspect.ImplementersOf(p, s, e.resolverForInspect())
+			if err != nil {
+				return nil, err
+			}
+			return boxedSlice(ds), nil
+		}),
 		"EnumMembers": bf("EnumMembers", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {

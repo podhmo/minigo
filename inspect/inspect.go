@@ -473,36 +473,7 @@ func MethodSetOf(s *Decl, res Resolver) ([]*Method, error) {
 			// resolve the embedded spelling to the decl that owns the
 			// members — alias layers chase to the target, and the
 			// instantiation base covers Pair[int]-style embeds.
-			var ed *Decl
-			for i := 0; i < 8; i++ {
-				sid, ok := sub.SymbolID()
-				if !ok {
-					if kids := sub.Children(); len(kids) > 0 {
-						sub = kids[0]
-						continue
-					}
-					break
-				}
-				if sid.PackagePath == BuiltinPackagePath || visited[sid] {
-					break
-				}
-				visited[sid] = true
-				d, err := res(sid)
-				if err != nil || d == nil || d.decl == nil {
-					break
-				}
-				ts, ok := d.decl.Spec.(*ast.TypeSpec)
-				if !ok {
-					break
-				}
-				ed = d
-				switch ts.Type.(type) {
-				case *ast.Ident, *ast.SelectorExpr:
-					sub = NewTypeExpr(ts.Type, d.file, d.Package)
-					continue // another named layer — keep chasing
-				}
-				break
-			}
+			ed := chaseType(sub, visited, res)
 			if ed == nil {
 				continue
 			}
@@ -521,7 +492,56 @@ func MethodSetOf(s *Decl, res Resolver) ([]*Method, error) {
 		promoteIfaceSpecs(it, s, res, seen, visited, &out)
 	}
 	walk(td, s, nil, false)
+	// an alias borrows its target's set — GB = GreetBase carries
+	// GreetBase's methods identically, pointer receivers included, so
+	// the target walks with a nil via (the alias IS the type).
+	if ts, ok := s.decl.Spec.(*ast.TypeSpec); ok && ts.Assign.IsValid() {
+		if ed := chaseType(NewTypeExpr(ts.Type, s.file, s.Package), visited, res); ed != nil && ed != s {
+			if it, ok := ed.decl.Spec.(*ast.TypeSpec).Type.(*ast.InterfaceType); ok {
+				promoteIfaceSpecs(it, ed, res, seen, visited, &out)
+			} else if ntd, ok := ed.Package.Index.Types[ed.Name]; ok {
+				walk(ntd, ed, nil, false)
+			}
+		}
+	}
 	return out, nil
+}
+
+// chaseType follows a type spelling to the decl that owns it: a named
+// reference resolves directly, instantiation bases (Pair[int]) and
+// further named layers (defined types and aliases) keep chasing.
+// Returns nil when the name leaves the index — builtins, foreign
+// packages, type parameters, or a cycle through the visited set.
+func chaseType(sub *TypeExpr, visited map[runtime.SymbolID]bool, res Resolver) *Decl {
+	for i := 0; i < 8; i++ {
+		sid, ok := sub.SymbolID()
+		if !ok {
+			if kids := sub.Children(); len(kids) > 0 {
+				sub = kids[0]
+				continue
+			}
+			return nil
+		}
+		if sid.PackagePath == BuiltinPackagePath || visited[sid] {
+			return nil
+		}
+		visited[sid] = true
+		d, err := res(sid)
+		if err != nil || d == nil || d.decl == nil {
+			return nil
+		}
+		ts, ok := d.decl.Spec.(*ast.TypeSpec)
+		if !ok {
+			return nil
+		}
+		switch ts.Type.(type) {
+		case *ast.Ident, *ast.SelectorExpr:
+			sub = NewTypeExpr(ts.Type, d.file, d.Package)
+			continue // another named layer — keep chasing
+		}
+		return d
+	}
+	return nil
 }
 
 // promoteIfaceSpecs lists an interface's members as method-set
@@ -563,6 +583,151 @@ func promoteIfaceSpecs(it *ast.InterfaceType, owner *Decl, res Resolver, seen ma
 			promoteIfaceSpecs(sub, d, res, seen, visited, out)
 		}
 	}
+}
+
+// ImplementersOf returns the type decls of p whose method set covers
+// iface's named requirements — the index-level "every type
+// implementing I" for one package (walking the import closure for the
+// full picture stays the caller's job). Interface decls count too: an
+// interface embedding the required specs satisfies them, and iface
+// itself is included — callers wanting only concrete types filter by
+// Def(d).Kind. iface must be an interface type decl; other shapes
+// report an error, as do index-less packages.
+func ImplementersOf(p *runtime.Package, iface *Decl, res Resolver) ([]*Decl, error) {
+	if p == nil || p.Index == nil {
+		name := "<nil>"
+		if p != nil {
+			name = p.Path
+		}
+		return nil, fmt.Errorf("inspect.Implementers: %s has no index", name)
+	}
+	it, err := ifaceOf("Implementers", iface)
+	if err != nil {
+		return nil, err
+	}
+	if it == nil {
+		return nil, fmt.Errorf("inspect.Implementers: %s is not an interface type", iface.Name)
+	}
+	var specs []ifaceSpec
+	for _, fd := range it.Methods.List {
+		if len(fd.Names) == 0 {
+			continue
+		}
+		if ft, ok := fd.Type.(*ast.FuncType); ok {
+			specs = append(specs, ifaceSpec{name: fd.Names[0].Name, ft: ft})
+		}
+	}
+	var out []*Decl
+	for _, d := range p.Index.Decls {
+		if d.Kind != index.TypeDecl {
+			continue
+		}
+		td := NewDecl(p, d)
+		ms, err := MethodSetOf(td, res)
+		if err != nil {
+			return nil, err
+		}
+		if covers(ms, specs, iface.file, iface.Package, res) {
+			out = append(out, td)
+		}
+	}
+	return out, nil
+}
+
+// ifaceSpec is one named method spec of an interface.
+type ifaceSpec struct {
+	name string
+	ft   *ast.FuncType
+}
+
+// covers reports whether the method set ms satisfies every spec:
+// each spec name must appear with an identical signature — parameters,
+// results, and variadicity compared via SameType.
+func covers(ms []*Method, specs []ifaceSpec, f *syntax.File, p *runtime.Package, res Resolver) bool {
+	for _, sp := range specs {
+		found := false
+		for _, m := range ms {
+			if m.Name == sp.name && sigMatch(m, sp.ft, f, p, res) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// sigMatch compares a method-set member's signature against an
+// interface spec's FuncType: parameter count, result count, variadic
+// flag, and each position's type.
+func sigMatch(m *Method, ft *ast.FuncType, f *syntax.File, p *runtime.Package, res Resolver) bool {
+	if m.Sig == nil {
+		return false
+	}
+	sp, sv := paramTypes(ft.Params)
+	sr, _ := paramTypes(ft.Results)
+	mp, mv := expandFieldTypes(m.Sig.ParamFields())
+	mr, _ := expandFieldTypes(m.Sig.ResultFields())
+	if sv != mv || len(sp) != len(mp) || len(sr) != len(mr) {
+		return false
+	}
+	for i := range sp {
+		if !NewTypeExpr(sp[i], f, p).SameType(mp[i], res) {
+			return false
+		}
+	}
+	for i := range sr {
+		if !NewTypeExpr(sr[i], f, p).SameType(mr[i], res) {
+			return false
+		}
+	}
+	return true
+}
+
+// paramTypes flattens an ast.FieldList to one expression per declared
+// parameter — a, b int yields two — in declaration order, flagging a
+// trailing ellipsis as variadic.
+func paramTypes(fl *ast.FieldList) ([]ast.Expr, bool) {
+	if fl == nil {
+		return nil, false
+	}
+	var out []ast.Expr
+	variadic := false
+	for i, fd := range fl.List {
+		n := len(fd.Names)
+		if n == 0 {
+			n = 1
+		}
+		if i == len(fl.List)-1 {
+			_, variadic = fd.Type.(*ast.Ellipsis)
+		}
+		for j := 0; j < n; j++ {
+			out = append(out, fd.Type)
+		}
+	}
+	return out, variadic
+}
+
+// expandFieldTypes flattens view Fields the same way — sig fields keep
+// one Field per written field group, so a, b int expands to two.
+func expandFieldTypes(fs []*Field) ([]*TypeExpr, bool) {
+	var out []*TypeExpr
+	variadic := false
+	for i, fv := range fs {
+		n := len(fv.Names)
+		if n == 0 {
+			n = 1
+		}
+		if i == len(fs)-1 && fv.Type.Kind == "Ellipsis" {
+			variadic = true
+		}
+		for j := 0; j < n; j++ {
+			out = append(out, fv.Type)
+		}
+	}
+	return out, variadic
 }
 
 // EnumMembersOf returns a type symbol's enum members: the package's

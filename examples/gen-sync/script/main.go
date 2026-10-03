@@ -224,7 +224,7 @@ func directivesFor(ex *scanx.Explorer, scans []pkgScan, s pkgScan, d *inspect.De
 		out = append(out, "//go:generate oneofgen -type="+name)
 	} else if scanx.RequiresMethod(d, "Discriminator", "func() string") {
 		gen := "//go:generate oneofgen -type=" + name
-		if vars := implementers(scans, s.path); len(vars) > 0 {
+		if vars := implementers(scans, s.path, d); len(vars) > 0 {
 			gen += " -variants=" + strings.Join(vars, ",")
 		}
 		out = append(out, gen)
@@ -233,16 +233,19 @@ func directivesFor(ex *scanx.Explorer, scans []pkgScan, s pkgScan, d *inspect.De
 }
 
 // implementers lists the names of types across the walked import
-// closure whose method set carries `Discriminator() string` — the
-// requirement the interface spells, flattened over embeds. Names
-// outside the interface's own package are qualified with the
-// package's base name.
-func implementers(scans []pkgScan, selfPath string) []string {
+// closure that satisfy the interface — `inspect.Implementers` is the
+// index-level subtype lookup per scanned package; the name check and
+// signature match (params, results, variadicity via SameType) all
+// happen inside it. Interface decls are skipped: a variants list
+// wants concrete types. Names outside the interface's own package are
+// qualified with the package's base name.
+func implementers(scans []pkgScan, selfPath string, iface *inspect.Decl) []string {
 	vars := []string{}
 	for _, s := range scans {
-		for _, c := range s.decls {
-			if !scanx.HasMethod(c, "Discriminator", "string") {
-				continue
+		for _, c := range inspect.Implementers(inspect.SourceOf(s.path), iface) {
+			def := inspect.Def(c)
+			if def != nil && def.Kind == "InterfaceType" {
+				continue // a variants list wants concrete types
 			}
 			if s.path == selfPath {
 				vars = append(vars, c.Name)

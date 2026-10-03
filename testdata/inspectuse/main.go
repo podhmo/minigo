@@ -1139,6 +1139,57 @@ func EnumMembersBoundTrap() string {
 	return "swallowed"
 }
 
+// ImplementersWalk: the index-level subtype question — declared,
+// promoted, and alias-borrowed implementations all answer, and
+// signature mismatches (wrong result, wrong variadicity) do not.
+func ImplementersWalk() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	want := []string{
+		"Greeter", "GreetBase", "GreetEmbed", "GreetIface",
+		"GreetAliasEmbed", "GB", "GreetShadow", "User",
+		// User's Greet is pointer-receiver — still part of the declared
+		// method set, so the named type satisfies.
+	}
+	got := map[string]bool{}
+	for _, d := range inspect.Implementers(p, inspect.Symbol(p, "Greeter")) {
+		got[d.Name] = true
+	}
+	for _, n := range want {
+		if !got[n] {
+			return "missing " + n
+		}
+		delete(got, n)
+	}
+	for n := range got {
+		return "unexpected " + n
+	}
+	// signature equality is real: Calc's Add(a,b int) int satisfies,
+	// Almost's string result does not.
+	got = map[string]bool{}
+	for _, d := range inspect.Implementers(p, inspect.Symbol(p, "Adder")) {
+		got[d.Name] = true
+	}
+	if !got["Adder"] || !got["Calc"] || got["Almost"] || len(got) != 2 {
+		return "bad adder set"
+	}
+	// variadicity too: ...int satisfies, [2]int does not.
+	got = map[string]bool{}
+	for _, d := range inspect.Implementers(p, inspect.Symbol(p, "Summer")) {
+		got[d.Name] = true
+	}
+	if !got["Summer"] || !got["SumImpl"] || got["SumArr"] || len(got) != 2 {
+		return "bad summer set"
+	}
+	return "ok"
+}
+
+// ImplementersStructTrap: the iface argument must be an interface.
+func ImplementersStructTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	inspect.Implementers(p, inspect.Symbol(p, "User"))
+	return "swallowed"
+}
+
 // DeclTypeFuncTrap: DeclType is a value-spec view — funcs trap.
 func DeclTypeFuncTrap() string {
 	p := inspect.DirOf("./testdata/inspectpkg")
