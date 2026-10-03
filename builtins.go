@@ -19,20 +19,24 @@ func builtins(e *Engine) *runtime.Env {
 	}
 
 	bf("len", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-		switch x := args[0].(type) {
-		case *runtime.Cell:
-			return lenOf(x.Elem)
-		default:
-			return lenOf(x)
+		x := args[0]
+		if c, ok := x.(*runtime.Cell); ok {
+			x = c.Elem
 		}
+		if n, ok := nilArrLen(v, x); ok {
+			return n, nil
+		}
+		return lenOf(x)
 	})
 	bf("cap", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-		switch x := args[0].(type) {
-		case *runtime.Cell:
-			return capOf(x.Elem)
-		default:
-			return capOf(x)
+		x := args[0]
+		if c, ok := x.(*runtime.Cell); ok {
+			x = c.Elem
 		}
+		if n, ok := nilArrLen(v, x); ok {
+			return n, nil
+		}
+		return capOf(x)
 	})
 	bf("append", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		var s *runtime.Slice
@@ -431,6 +435,26 @@ func builtins(e *Engine) *runtime.Env {
 	env.Set("any", &runtime.TypeDef{Name: "any", Kind: runtime.KindInterface})
 	env.Set("error", &runtime.TypeDef{Name: "error", Kind: runtime.KindInterface, MReqs: []string{"Error"}})
 	return env
+}
+
+// nilArrLen folds len/cap of a nil *[N]T to its constant N — Go's len
+// of an array-typed operand never evaluates the operand.
+func nilArrLen(v runtime.VMCaller, x runtime.Value) (runtime.Value, bool) {
+	if n, ok := x.(*runtime.Named); ok {
+		x = n.V
+	}
+	tn, ok := x.(*runtime.TypedNil)
+	if !ok || tn.Typ == nil || tn.Typ.Kind != runtime.KindPointer {
+		return nil, false
+	}
+	at := runtime.PtrArrayType(tn.Typ)
+	if at == nil {
+		return nil, false
+	}
+	if n, ok := v.ArrayLenOf(&runtime.TypeDef{Anon: at, Pkg: tn.Typ.Pkg, File: tn.Typ.File}); ok {
+		return n, true
+	}
+	return nil, false
 }
 
 func lenOf(v runtime.Value) (runtime.Value, error) {

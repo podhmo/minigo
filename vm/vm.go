@@ -2607,6 +2607,9 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 			return v.mapZero(f, b.Typ) // reading a nil map yields the zero value
 		case runtime.KindSlice:
 			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: fmt.Sprintf("index out of range [%v] with length 0", runtime.Unwrap(idx))}})
+		case runtime.KindPointer:
+			// p[i] on a nil *[N]T dereferences the pointer
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "runtime error: invalid memory address or nil pointer dereference"}})
 		default:
 			f.trap("index on nil %s", tdName(b.Typ))
 		}
@@ -3836,11 +3839,20 @@ func (v *VM) newIterator(f *frame, coll runtime.Value) *runtime.Iterator {
 	case string:
 		return &runtime.Iterator{Kind: 'x', String: c}
 	case *runtime.TypedNil, *runtime.IfaceNil:
-		// range over a nil slice/map iterates zero times
-		if tn, ok := coll.(*runtime.TypedNil); ok && tn.Typ != nil && tn.Typ.Kind == runtime.KindChan {
-			// a nil channel range blocks forever, as in Go
-			return &runtime.Iterator{Kind: 'c', ChRV: nilChanRV, ETyp: v.elemTypedef(f, tn.Typ)}
+		if tn, ok := coll.(*runtime.TypedNil); ok && tn.Typ != nil {
+			if tn.Typ.Kind == runtime.KindChan {
+				// a nil channel range blocks forever, as in Go
+				return &runtime.Iterator{Kind: 'c', ChRV: nilChanRV, ETyp: v.elemTypedef(f, tn.Typ)}
+			}
+			// `for i := range p` over a nil *[N]T yields 0..N-1 — only the
+			// element read would dereference the nil pointer.
+			if at := runtime.PtrArrayType(tn.Typ); at != nil {
+				if n, ok := v.arrayLen(f, &runtime.TypeDef{Anon: at, Pkg: tn.Typ.Pkg, File: tn.Typ.File}); ok {
+					return &runtime.Iterator{Kind: 'i', Limit: int(n), NilArr: true}
+				}
+			}
 		}
+		// range over a nil slice/map iterates zero times
 		return &runtime.Iterator{Kind: 's'}
 	case nil, runtime.Nil:
 		return &runtime.Iterator{Kind: 's'}
@@ -3878,6 +3890,11 @@ func (v *VM) iterNext(f *frame, it *runtime.Iterator, nvars int) bool {
 	case 'i':
 		if it.Idx >= it.Limit {
 			return false
+		}
+		if it.NilArr && nvars == 2 {
+			// `for i, v := range p` on a nil *[N]T reads p[i] — a nil
+			// pointer dereference on the first iteration.
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "runtime error: invalid memory address or nil pointer dereference"}})
 		}
 		push(int64(it.Idx), int64(it.Idx))
 		it.Idx++
@@ -7204,6 +7221,12 @@ func (v *VM) ElemZero(td *runtime.TypeDef) runtime.Value {
 		return runtime.NIL
 	}
 	return v.zeroSeen(nil, et, map[*runtime.TypeDef]bool{})
+}
+
+// ArrayLenOf exposes arrayLen to builtins through VMCaller — len()/cap()
+// on a nil *[N]T needs the constant length without a live frame.
+func (v *VM) ArrayLenOf(td *runtime.TypeDef) (int64, bool) {
+	return v.arrayLen(v.topFrame(), td)
 }
 
 // arrayLen reports the element count of an array typedef — an
