@@ -895,6 +895,16 @@ func (e *emitter) conv(src string, srcT, dstT *xinspect.TypeExpr) frag {
 		return pure(fmt.Sprintf("*%s(%s, %s, %s)", e.fn.call(srcDecl, dstDecl), e.ctxVar, e.ecVar, srcPtr))
 	}
 
+	// Named composites — `type IDs []int`, `type Table map[string]Row`.
+	// The dispatch above only sees the written spelling, so a named
+	// slice/map/array/pointer (an Ident or SelectorExpr) lands here; a
+	// plain dstT(src) cast — the leafCast fallback — only compiles when
+	// the underlying types are identical. Unwrap the declared names and
+	// run the same element-wise shapes on the underlying types.
+	if f, ok := e.namedComposite(src, srcT, dstT); ok {
+		return f
+	}
+
 	// Basic assignment — with a type conversion when the canonical names
 	// differ but the shape is castable (named leaf types, numeric pairs).
 	// When neither applies the raw assignment is kept (it is what the
@@ -905,6 +915,97 @@ func (e *emitter) conv(src string, srcT, dstT *xinspect.TypeExpr) frag {
 	}
 	e.diag.warn(leafMismatch(e.im, e.res, srcT, dstT))
 	return pure(src)
+}
+
+// namedComposite converts a pair where at least one side is a named
+// type over a composite spec by running the pointer/slice/array/map
+// shapes on the underlying types, then re-tagging the result with the
+// written dst name. Reports false when neither side is a named type
+// over a composite (ordinary literals — the dispatch above owns them)
+// or when the unwrapped pair has no element-wise shape (named scalars,
+// chan/func — leafCast owns those too).
+func (e *emitter) namedComposite(src string, srcT, dstT *xinspect.TypeExpr) (frag, bool) {
+	srcU, dstU := underlyingOf(e.res, srcT), underlyingOf(e.res, dstT)
+	if srcU == srcT && dstU == dstT {
+		return frag{}, false
+	}
+	// Identical underlying types — including both sides named scalars —
+	// convert by a single cast (Names([]string{...}), Celsius(x)).
+	if srcU.SameType(dstU, e.res) {
+		return pure(castExpr(e.im, dstT, src)), true
+	}
+	// Both written types are decls over generic instantiations
+	// (type A List[int] vs type B List[int64]): Unwrap stops at the
+	// instantiation — the spec beyond is parametric ([]T), so the
+	// element types are invisible. leafCast would emit an optimistic
+	// cast that cannot compile; warn and keep the honest raw assignment.
+	if instExpr(srcU) && instExpr(dstU) {
+		e.diag.warn(fmt.Sprintf("no conversion covers %s -> %s (generic instantiation)", getTypeName(e.im, srcT), getTypeName(e.im, dstT)))
+		return pure(src), true
+	}
+	var f frag
+	switch {
+	case isPtr(srcU) && isPtr(dstU):
+		f = e.ptrToPtr(src, srcU, dstU)
+	case isPtr(srcU):
+		// dstT (not dstU) so the dereferenced value is built as the
+		// written dst type — an anonymous struct spec would lose the
+		// name that picks the element converter.
+		f = e.ptrToValue(src, srcU, dstT)
+	case isPtr(dstU):
+		// srcT (not srcU) so the value the pointer wraps is the named
+		// src type — `v := Celsius(src)` keeps &v a *Celsius.
+		f = e.valueToPtr(src, srcT, dstU)
+	case isSlice(srcU) && isSlice(dstU):
+		f = e.slice(src, srcU, dstU)
+	case isArray(srcU) && isArray(dstU):
+		f = e.array(src, srcU, dstU)
+	case isMap(srcU) && isMap(dstU):
+		f = e.mapOf(src, srcU, dstU)
+	default:
+		return frag{}, false
+	}
+	if dstU != dstT {
+		f.expr = castExpr(e.im, dstT, f.expr)
+	}
+	return f, true
+}
+
+// underlyingOf peels declared layers (named types and aliases) one
+// Unwrap at a time until the composite or leaf underneath shows — the
+// shape `type IDs []int` really has.
+func underlyingOf(res xinspect.Resolver, te *xinspect.TypeExpr) *xinspect.TypeExpr {
+	for {
+		u := te.Unwrap(res)
+		if u == te {
+			return te
+		}
+		te = u
+	}
+}
+
+// instExpr reports whether te spells a generic instantiation —
+// List[int], Pair[K, V]. Unwrap stops there: SymbolID cannot resolve
+// the instantiation itself, so the parametric spec behind it stays
+// invisible.
+func instExpr(te *xinspect.TypeExpr) bool {
+	switch te.Expr().(type) {
+	case *ast.IndexExpr, *ast.IndexListExpr:
+		return true
+	}
+	return false
+}
+
+// castExpr renders `T(x)`; a composite spelling needs parens —
+// `(*int)(x)` parses where `*int(x)` does not.
+func castExpr(im *ImportManager, te *xinspect.TypeExpr, x string) string {
+	name := getTypeName(im, te)
+	for _, part := range strings.Split(name, ".") {
+		if !token.IsIdentifier(part) {
+			return "(" + name + ")(" + x + ")"
+		}
+	}
+	return name + "(" + x + ")"
 }
 
 func (e *emitter) ptrToPtr(src string, srcT, dstT *xinspect.TypeExpr) frag {

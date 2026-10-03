@@ -653,6 +653,89 @@ func convertSrcShapesToDstShapes(ctx context.Context, ec *model.ErrorCollector, 
 		dst.PSlice = v
 	}
 	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("NamedIDs")
+	{
+		s := make([]int64, len(src.NamedIDs))
+		for i, item := range src.NamedIDs {
+			ec.Enter(fmt.Sprintf("[%d]", i))
+			s[i] = int64(item)
+			ec.Leave()
+		}
+		dst.NamedIDs = destination.DstIDs(s)
+	}
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("NamedItems")
+	{
+		s := make([]destination.DstLeaf, len(src.NamedItems))
+		for i, item := range src.NamedItems {
+			ec.Enter(fmt.Sprintf("[%d]", i))
+			s[i] = *convertSrcLeafToDstLeaf(ctx, ec, &item)
+			ec.Leave()
+		}
+		dst.NamedItems = destination.DstLeafList(s)
+	}
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("NamedPtr")
+	dst.NamedPtr = destination.DstPtr(convertSrcLeafToDstLeaf(ctx, ec, src.NamedPtr))
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("NamedPtrVal")
+	{
+		var v destination.DstLeaf
+		if src.NamedPtrVal != nil {
+			v = *convertSrcLeafToDstLeaf(ctx, ec, &(*src.NamedPtrVal))
+		}
+		dst.NamedPtrVal = destination.DstLeaf(v)
+	}
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("NamedValPtr")
+	{
+		v := *convertSrcLeafToDstLeaf(ctx, ec, &src.NamedValPtr)
+		dst.NamedValPtr = destination.DstPtr(&v)
+	}
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("NamedMap")
+	{
+		m := make(map[string]int64, len(src.NamedMap))
+		for key, value := range src.NamedMap {
+			ec.Enter(fmt.Sprintf("[%v]", key))
+			m[key] = int64(value)
+			ec.Leave()
+		}
+		dst.NamedMap = destination.DstScores(m)
+	}
+	ec.Leave()
+	if ec.MaxErrorsReached() {
+		return dst
+	}
+	ec.Enter("RawIDs")
+	{
+		s := make([]int64, len(src.RawIDs))
+		for i, item := range src.RawIDs {
+			ec.Enter(fmt.Sprintf("[%d]", i))
+			s[i] = int64(item)
+			ec.Leave()
+		}
+		dst.RawIDs = destination.DstIDs(s)
+	}
+	ec.Leave()
 	return dst
 }
 

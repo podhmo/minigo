@@ -174,6 +174,8 @@ func TestGeneratedShapesConversion(t *testing.T) {
 	i64 := func(v int64) *int64 { return &v }
 	leafPP := func(v int) **source.SrcLeaf { p := &source.SrcLeaf{V: v}; return &p }
 	dleafPP := func(v int64) **destination.DstLeaf { p := &destination.DstLeaf{V: v}; return &p }
+	srcPtr := func(v int) source.SrcPtr { return source.SrcPtr(&source.SrcLeaf{V: v}) }
+	dstPtr := func(v int64) destination.DstPtr { return destination.DstPtr(&destination.DstLeaf{V: v}) }
 	var nilLeaf *source.SrcLeaf
 	var nilDLeaf *destination.DstLeaf
 	pslice := []int{7, 8}
@@ -197,6 +199,14 @@ func TestGeneratedShapesConversion(t *testing.T) {
 				MapSlice:    map[int][]*int{1: {i(9), nil}},
 				Arr:         [2]*int{i(10), nil},
 				PSlice:      &pslice,
+
+				NamedIDs:    source.SrcIDs{11, 12},
+				NamedItems:  source.SrcLeafList{{V: 13}, {V: 14}},
+				NamedPtr:    srcPtr(15),
+				NamedPtrVal: srcPtr(16),
+				NamedValPtr: source.SrcLeaf{V: 17},
+				NamedMap:    source.SrcScores{"k": 18},
+				RawIDs:      []int{19, 20},
 			},
 			want: &destination.DstShapes{
 				PtrToVal:    1,
@@ -210,6 +220,14 @@ func TestGeneratedShapesConversion(t *testing.T) {
 				MapSlice:    map[int64][]int64{1: {9, 0}},
 				Arr:         [2]int64{10, 0},
 				PSlice:      []int64{7, 8},
+
+				NamedIDs:    destination.DstIDs{11, 12},
+				NamedItems:  destination.DstLeafList{{V: 13}, {V: 14}},
+				NamedPtr:    dstPtr(15),
+				NamedPtrVal: destination.DstLeaf{V: 16},
+				NamedValPtr: dstPtr(17),
+				NamedMap:    destination.DstScores{"k": 18},
+				RawIDs:      destination.DstIDs{19, 20},
 			},
 		},
 		{
@@ -223,6 +241,14 @@ func TestGeneratedShapesConversion(t *testing.T) {
 				SliceValPtr: []*int64{},
 				Nested:      [][]int64{},
 				MapSlice:    map[int64][]int64{},
+
+				// nil srcs stay nil/zero; a named composite dst still
+				// re-tags the (empty) converted container.
+				NamedIDs:    destination.DstIDs{},
+				NamedItems:  destination.DstLeafList{},
+				NamedMap:    destination.DstScores{},
+				RawIDs:      destination.DstIDs{},
+				NamedValPtr: dstPtr(0),
 			},
 		},
 	}
