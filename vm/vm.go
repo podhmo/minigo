@@ -6218,6 +6218,13 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 			if err != nil {
 				return nil, err
 			}
+			// the inner conversion tags the underlying name — MyI16's
+			// int16 — leaving Named{MyI16, Named{int16, v}}; binary ops
+			// peel one level and would lose the declared tag. Flatten
+			// to the single level the const-materialized form carries.
+			if cn, ok := cv.(*runtime.Named); ok && sameTypeDef(cn.Typ, u) {
+				cv = cn.V
+			}
 			return &runtime.Named{Typ: td, V: cv}, nil
 		}
 	}
