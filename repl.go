@@ -8,10 +8,13 @@ import (
 	"go/scanner"
 	"go/token"
 	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/resolve"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
 )
@@ -57,7 +60,11 @@ type REPL struct {
 	pendingWrite   []string
 	pendingDecls   []string
 	pendingMethods []methodPatch
-	n              int
+	// hasValue marks that the current input ended in an expression
+	// statement — only then does EvalLine return the step's value;
+	// other inputs (decls, assignments, :=) evaluate for effect only.
+	hasValue bool
+	n        int
 }
 
 // namedExpr pairs a hoisted name with an AST expression (a declared type
@@ -102,15 +109,16 @@ func (r *REPL) Reset() {
 	*r = *fresh
 }
 
-// EvalLine evaluates one REPL input and returns its value. Declaration input
-// (imports, func and type declarations) updates the persistent package and
-// returns nil. Statement input runs as a generated step function; a trailing
-// expression statement becomes the return value. Lines beginning with `:` are
-// meta commands handled by the caller, not EvalLine.
+// EvalLine evaluates one REPL input and returns its value — nil when the
+// input produced none. Declaration input (imports, func and type
+// declarations) and statements not ending in an expression update the
+// persistent package for effect only; a trailing expression statement
+// becomes the return value. Lines beginning with `:` are meta commands
+// handled by the caller, not EvalLine.
 func (r *REPL) EvalLine(ctx context.Context, input string) (runtime.Value, error) {
 	input = strings.TrimSpace(input)
 	if input == "" {
-		return runtime.NIL, nil
+		return nil, nil
 	}
 	r.pending = nil
 	r.pendingTyped = nil
@@ -118,6 +126,7 @@ func (r *REPL) EvalLine(ctx context.Context, input string) (runtime.Value, error
 	r.pendingWrite = nil
 	r.pendingDecls = nil
 	r.pendingMethods = nil
+	r.hasValue = false
 
 	// Snapshot the accumulated source so a post-accept failure can roll
 	// back exactly what this input appended.
@@ -126,7 +135,7 @@ func (r *REPL) EvalLine(ctx context.Context, input string) (runtime.Value, error
 	// Classify: does the input parse as top-level declarations?
 	fset := token.NewFileSet()
 	if sf, err := syntax.ParseFile(fset, "repl-decl.go", []byte("package repl\n"+input)); err == nil {
-		step, err := r.acceptDecls(fset, sf.AST)
+		step, err := r.acceptDecls(ctx, fset, sf.AST)
 		if err != nil {
 			return nil, err
 		}
@@ -136,7 +145,7 @@ func (r *REPL) EvalLine(ctx context.Context, input string) (runtime.Value, error
 		if step == "" {
 			r.sealConsts()
 			r.commitWrites()
-			return runtime.NIL, nil
+			return nil, nil
 		}
 		return r.runStep(ctx, step)
 	}
@@ -161,7 +170,7 @@ func (r *REPL) EvalLine(ctx context.Context, input string) (runtime.Value, error
 	if step == "" {
 		r.sealConsts()
 		r.commitWrites()
-		return runtime.NIL, nil
+		return nil, nil
 	}
 	return r.runStep(ctx, step)
 }
@@ -275,6 +284,9 @@ func (r *REPL) runStep(ctx context.Context, name string) (runtime.Value, error) 
 	}
 	r.sealConsts()
 	r.commitWrites()
+	if !r.hasValue {
+		return nil, nil
+	}
 	return v, nil
 }
 
@@ -437,16 +449,26 @@ func (r *REPL) graftScope(p *runtime.Package, f *syntax.File) {
 // acceptDecls folds top-level declarations into the REPL state and returns
 // the generated step name when the input needs runtime evaluation (var/const
 // declarations with values).
-func (r *REPL) acceptDecls(fset *token.FileSet, f *ast.File) (string, error) {
+func (r *REPL) acceptDecls(ctx context.Context, fset *token.FileSet, f *ast.File) (string, error) {
 	var stepBody []ast.Stmt
 	for _, d := range f.Decls {
 		switch d := d.(type) {
 		case *ast.GenDecl:
 			switch d.Tok {
 			case token.IMPORT:
+				var specs []string
 				for _, spec := range d.Specs {
-					r.imports = append(r.imports, formatNode(fset, spec))
+					is, ok := spec.(*ast.ImportSpec)
+					if !ok {
+						continue
+					}
+					text, err := r.acceptImport(ctx, fset, is)
+					if err != nil {
+						return "", err
+					}
+					specs = append(specs, text)
 				}
+				r.imports = append(r.imports, specs...)
 			case token.VAR, token.CONST:
 				stepBody = append(stepBody, r.hoistSpecs(d)...)
 			case token.TYPE:
@@ -477,6 +499,43 @@ func (r *REPL) acceptDecls(fset *token.FileSet, f *ast.File) (string, error) {
 		}
 	}
 	return r.addStep(fset, stepBody)
+}
+
+// acceptImport records one import spec for the rebuilt source. Directory
+// refs ("./x", "../x", "/abs/x") — illegal in real Go source but natural
+// at a prompt launched from a project root — resolve eagerly against the
+// engine's start directory: a typo fails the import line itself rather
+// than the first use, and the spec is rewritten to name the package's
+// declared name when the directory basename would bind the wrong (or an
+// invalid) identifier. Everything else keeps the lazy-load semantics of
+// ordinary imports: accepted now, resolved on first use.
+func (r *REPL) acceptImport(ctx context.Context, fset *token.FileSet, spec *ast.ImportSpec) (string, error) {
+	path, err := strconv.Unquote(spec.Path.Value)
+	if err != nil {
+		return "", fmt.Errorf("repl: bad import path: %w", err)
+	}
+	if !resolve.LooksLikeDir(path) {
+		return formatNode(fset, spec), nil
+	}
+	p, err := r.engine.loadDir(ctx, r.anchor(path))
+	if err != nil {
+		return "", err
+	}
+	// an explicit alias wins over the declared package name, just as Go
+	if spec.Name != nil || p.Name == (&syntax.Import{Path: path}).LocalName() {
+		return formatNode(fset, spec), nil
+	}
+	return p.Name + " " + strconv.Quote(path), nil
+}
+
+// anchor resolves a directory-ish import path against the engine's start
+// directory — the same root the module resolver anchors to — so
+// `import "./x"` means the same thing wherever the host process chdirs.
+func (r *REPL) anchor(path string) string {
+	if filepath.IsAbs(path) || r.engine.cwd == "" {
+		return path
+	}
+	return filepath.Join(r.engine.cwd, path)
 }
 
 // hoistSpecs promotes each declared name to a package-global cell and lowers
@@ -556,6 +615,7 @@ func (r *REPL) acceptStmts(fset *token.FileSet, body []ast.Stmt) (string, error)
 	if n := len(out); n > 0 {
 		if es, ok := out[n-1].(*ast.ExprStmt); ok {
 			out[n-1] = &ast.ReturnStmt{Results: []ast.Expr{es.X}}
+			r.hasValue = true
 		}
 	}
 	return r.addStep(fset, out)
@@ -687,7 +747,15 @@ func (r *REPL) reload() error {
 		ref := &runtime.ImportRef{
 			Path:  imp.Path,
 			Alias: imp.Alias,
-			Load:  func(path string) (*runtime.Package, error) { return r.engine.loadPath(context.Background(), path) },
+		}
+		if path := imp.Path; resolve.LooksLikeDir(path) {
+			// a directory spec recorded by acceptImport (possibly under
+			// the package's real name) loads by directory, not import path
+			ref.Load = func(string) (*runtime.Package, error) {
+				return r.engine.loadDir(context.Background(), r.anchor(path))
+			}
+		} else {
+			ref.Load = func(path string) (*runtime.Package, error) { return r.engine.loadPath(context.Background(), path) }
 		}
 		p.Imports[sf] = append(p.Imports[sf], ref)
 		if imp.Alias != "_" && imp.Alias != "." {

@@ -183,9 +183,10 @@ const replHelp = `commands:
   :exit   quit (also :quit, :q, Ctrl-D)
 input is a top-level declaration or statements; a trailing
 expression is printed. new names introduced by := / var / const
-persist as globals across lines. a line ending inside an open
-() [] {} group (or after an operator) continues with a ".. "
-prompt until it closes.`
+persist as globals across lines. imports accept directories too
+(import "./dir" — resolved eagerly, bound under the package's
+declared name). a line ending inside an open () [] {} group (or
+after an operator) continues with a ".. " prompt until it closes.`
 
 func runREPL(ctx context.Context, in io.Reader, out io.Writer) error {
 	cwd, err := os.Getwd()
