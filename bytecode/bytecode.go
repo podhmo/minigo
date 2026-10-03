@@ -32,6 +32,7 @@ const (
 	OpUpval    // push cell(upval A).Elem
 	OpUpvalTyp // push the declared typedef stamped on upval cell A (NIL when untyped)
 	OpSetUpval // pop -> cell(upval A).Elem
+	OpUpvalRef // push the upval cell at index A itself (multi-assign target)
 
 	// global / package scope
 	OpGlobal    // push resolve(name Consts[A]): file imports -> pkg env -> builtins
@@ -49,6 +50,7 @@ const (
 	OpSlice    // pop hi, pop lo, pop base -> base[lo:hi] (Nil bounds = absent); B=1: pop max first -> base[lo:hi:max]
 	OpDeref    // pop cell -> push cell.Elem
 	OpSetInd   // pop value, pop cell -> cell.Elem = value (*p = v)
+	OpSetRefs  // A: n targets; pop A values then A refs, store ref_i <- val_i left-to-right (multi-assign)
 	OpBox      // pop value -> push &Cell{value} (address-of composite literal)
 
 	// calls and literals
@@ -87,7 +89,7 @@ const (
 	// references (address-of on field/index expressions)
 	OpDup2     // duplicate top two slots: a,b -> a,b,a,b
 	OpFieldRef // A: name const; pop base -> push *FieldRef{base, name} (&s.f)
-	OpIndexRef // pop key, pop base -> push *IndexRef{base, key} (&s[i])
+	OpIndexRef // pop key, pop base -> push *IndexRef{base, key} (&s[i]); B=1: store target (map bases allowed)
 
 	// types / interfaces / generics
 	OpAssert      // pop typedef, pop value -> push asserted value (script panic on mismatch); B=1: a static-typedef operand sits between value and typedef
