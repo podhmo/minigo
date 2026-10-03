@@ -178,3 +178,38 @@ usecasefuzz 再実行: 0 DIFF / 1 ACCEPT / 4 TRAP（lim-http/toml/xml/yaml — �
 - **funclit の invented params は `ic.fresh`（#137）**: 子コンパイラ側の hoisted `$argN` は ic の seq から採番されるため、param 名も親ではなく ic の seq から採る — 同一 seq 空間に揃えないと子スコープ内で衝突しうる。
 - **UConst はタグ統一の対象外（#138）**: 提案は Named/UConst を併記していたが、UConst は `constant.Value` を包む別形で、materialize 入口（`materializeConst`/`materializeConstErr`）は既に一本化済み。`Tag`/`Unwrap` は Named のみに限定した。
 - **`eqlValue` の Function arm は panic 維持（#135）**: 異なる func 型同士の比較も Go では false だが、関数値が signature typedef を持たないため同一性ゲートを掛けられない — 既存の近似（無条件 panic）を残した。
+
+### 6.9 実施ラウンド（round-8）: コーパス SILENT 掃討 — recover/Callers の unwind モデル
+
+`$GOROOT/test` コーパス再スイープ（145 programs）の残り SILENT を潰した。Stack #144 の最上位に3本の修正 PR（[#149](https://github.com/podhmo/minigo/pull/149)–[#152](https://github.com/podhmo/minigo/pull/152)）を積んだ。
+
+| 対象 | 根因 | PR |
+|------|------|-----|
+| `recover1.go`（4行の差分） | `recover()` が「defers を持つ任意フレーム」から panic を見ていた。Go の `gorecover` は recover 呼出と panic の間に**非 wrapper フレームがちょうど1つ**ある場合のみ成功とする | [#149](https://github.com/podhmo/minigo/pull/149) |
+| `devirtualization_nil_panics.go`（panic 行番号 -1） | `runtime.Callers` が unwind 済みフレームをスナップショット末尾に並べていたため、`CallersFrames` の `for f,next:=Next(); next` 走査が panic フレームに到達しなかった。unwind 境界（`unwindDepth`）に挿入する Go のトレースバック順へ | [#150](https://github.com/podhmo/minigo/pull/150) |
+| ハーネス artifact（seed 20261003 の SILENT） | `x[lo:CALL(...)]` 形で複数の panic 源が競合 — Go は非 call オペランドの評価順を規定していないため、先に panic する側は実装依存。minigo の panic テキストが go 自身が同プログラムで出力したものなら order-legal として Pass に再分類 | [#151](https://github.com/podhmo/minigo/pull/151) |
+| `recover.go`（`panic: 5` が脱出） | 正常 return 後の drain 中に deferred call が panic した場合、unwind 先は**スタック上に残る owner フレーム** — `runOneDefer` が境界を `dpos`（owner のスロット）に立てていたため owner が2フレーム目に数えられ recover が nil を返した。境界は「呼び出した deferred call が占めるスロット」（= `len(v.frames)`、unwind drain 中は `dpos` と一致） | [#152](https://github.com/podhmo/minigo/pull/152) |
+
+#### 実施内容
+
+- **Go セマンティクスの導出**: `gorecover`/`gopanic`/`recovery`（/usr/local/go/src/runtime/panic.go）と実測プローブで確定した規則 — (a) recover 合法条件は「recover から gopanic まで非 wrapper フレームちょうど1つ」、(b) `defer recover()` は0フレームで**絶対に回復しない**（`func(){defer recover(); panic(5)}()` は Go でも `panic: 5` で落ちる）、(c) panic が drain 途中で consume されると `recovery` は当該フレームの deferreturn に着地し、残り defers は外側 panic が見える文脈で走る（recover1 test6 が黙る理由）、(d) deferred call 内の panic は同じフレームの残り defers へリンクスキップで継続。
+- **`DeferBuiltinRecover` の既存期待値が非 Go だった**: 「`defer recover()` が panic を飲む」という古い pin は実測で Go と矛盾すると確認し、ワーカー func 経由の正当な形（`defer func(){ defer recover() }()`）に差し替え + 伝播を assert する `DeferBuiltinRecoverPanic` を追加。
+- **unwind 境界の2段階**: `unwindDepth`（panic の deferred-call 連鎖が根付くフレームスタック index）を導入。pop 済みフレームの unwind drain では `dpos`、正常 drain では deferred call の invoke index（owner がスタック上に居るため +1）。同じ `unwindDepth` が `runtime.Callers` の unwinding スプライス点にも使えた。
+
+#### 残りの状況
+
+- コーパス SILENT は全て既知の境界クラスに帰着: GC/finalizer 系（closure/deferfin/finprofiled/gc2/mallocfin/stackobj/stackobj3/tinyfin/heapsampling/init1）、unsafe.Pointer（initialize → #40）、スループット HANG（copy/divmod/maplinear/winbatch/heapsampling — copy.go は 50s で正解確認済み）、gcgort（Go でもデッドロック）、linkmain_run（ツールチェーンの tmpdir ノイズ）。新規の潰せる残件はゼロ。
+- TRAP backlog（次に実装すべき面）: `unsafe.Pointer`×13、`reflect.*`×7、`complit.go` の `cannot use [...]*T as [*ast.CallExpr]*T`、`map.go` の `index assign on *runtime.IndexRef`、`turing.go` の `index on *runtime.UConst`、`peano.go` の stack exhausted — 全て main と同一（回帰なし）。
+- usecasefuzz 再実行: 33 PASS / 0 DIFF / 1 ACCEPT / 4 TRAP（lim-http/toml/xml/yaml — 既知境界）— **リグレッションなし**。seed-20261003 ガード再実行: SILENT 1→0。
+
+#### 不備の振り返り
+
+- **`unwinding` リストの用途発見が後出し**: Callers の unwind-order は recover 用 `unwindDepth` と同じ境界を再利用できたが、初版はリスト末尾への append で「最後尾=スキップ」という見えにくい欠陥を持っていた。frame/frames の論理順序（deferred 連鎖 → unwinding → その下の live）を最初から1箇所のスプライス関数にしておけば Callers・Recover の双方で順序バグが入らなかった。
+- **recover の距離カウントは「境界の定義」が本質だった**: PR #149 は `dpos`（unwound フレームの論理位置）で全件整合したが、recover.go の正常 drain（owner がスタック上に残る形）では同じ `dpos` が境界として使えず「呼び出しスロット」が要った。「panic が unwind する先のフレームがスタックに居るか」で boundary が ±1 変わる — `runOneDefer` が `len(v.frames)` を取る形にして両ケースを一意にした。
+- **ハーネスの false positive は mask ではなく意味論で解いた**: 「両側 panic でメッセージ違い」を無条件に揉めば数字系の真バグを隠す。go が同プログラムの別プローブで同じ panic を出していれば「その panic は authentic」= order-legal と判定する相互参照方式にし、unique-to-minigo の panic は引き続き flag する。
+
+#### 計画外の記録と判断
+
+- **corpus 外の新規作業ゼロ**: TODO 残件は全て境界クラスで、コーパス再スイープからも潰し対象の新規 SILENT は出なかった（recover.go のみ）。hunt の新 seed 補充は不要と判断 — gen は同シードガードで clean。
+- **`defer recover()` のテスト期待値是正を同 PR に同梱**: 実装変更とテストデータ是正は1根因（one-frame 規則）として同一 PR にした — pin しないと片方だけ残る危険があった。
+- **#151 は修正 PR ではなくハーネス PR**: 根因は「ジェネレータが実装依存の出力を生成する」側なので、minigo 側の挙動は変えていない（評価順の厳密 LTR は合法）。
