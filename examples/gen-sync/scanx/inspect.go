@@ -1,6 +1,6 @@
 // inspect.go holds the helpers that speak inspect view types — the
 // half of scanx a script needs to paper over what the Decl view does
-// not expose (ValueSpec types, alias-ness, per-spec file positions).
+// not expose (alias-ness, per-spec file positions).
 // The pure-text counterparts live in scanx.go.
 package scanx
 
@@ -47,48 +47,6 @@ func DeclLine(d *inspect.Decl) string {
 // alias-ness, so the decl's own line is the source of truth.
 func IsAlias(d *inspect.Decl) bool {
 	return IsAliasLine(DeclLine(d))
-}
-
-// HasConstOfType reports whether some const spec in decls (usually the
-// whole package's decls, so constants in sibling files count) declares
-// the named type. Specs that omit the type inherit it from the block's
-// first spec — the file is scanned upwards to the enclosing `const (`,
-// which also means `Cadence Level = "4/4"; Beat` types Beat as Level,
-// not as the queried name.
-func HasConstOfType(decls []*inspect.Decl, name string) bool {
-	for _, c := range decls {
-		if inspect.Kind(c) != "const" {
-			continue
-		}
-		pos := inspect.Pos(c)
-		ls := LinesOf(PosFile(pos))
-		n := PosLine(pos)
-		if n <= 0 || n > len(ls) {
-			continue
-		}
-		if SpecHasType(ls[n-1], name) {
-			return true
-		}
-		if !strings.Contains(ls[n-1], "=") {
-			// no `=` on the spec: it repeats the nearest spec above
-			// that carries one — walk up inside the block and check
-			// that line. Either way keep scanning decls, since other
-			// blocks may still declare the name.
-			for j := n - 2; j >= 0; j-- {
-				t := strings.TrimSpace(ls[j])
-				if strings.HasPrefix(t, "const") || t == ")" {
-					break
-				}
-				if strings.Contains(t, "=") {
-					if SpecHasType(ls[j], name) {
-						return true
-					}
-					break
-				}
-			}
-		}
-	}
-	return false
 }
 
 // HasMethod reports whether the type declares a nullary method with the

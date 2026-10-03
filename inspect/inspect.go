@@ -371,6 +371,51 @@ func MethodsOf(s *Decl) ([]*Decl, error) {
 	return out, nil
 }
 
+// EnumMembersOf returns a type symbol's enum members: the package's
+// const declarations that are explicitly typed with it, in source
+// order. Untyped constants and foreign-typed ones never match, so an
+// empty slice means the type is not an enum. Non-type symbols report
+// an error.
+func EnumMembersOf(s *Decl) ([]*Decl, error) {
+	if s.decl == nil || s.Package == nil || s.Package.Index == nil {
+		return nil, fmt.Errorf("inspect.EnumMembers: %s has no index", s.Name)
+	}
+	if s.decl.Kind != index.TypeDecl {
+		return nil, fmt.Errorf("inspect.EnumMembers: %s is a %s, not a type", s.Name, s.Kind)
+	}
+	var out []*Decl
+	for _, cd := range s.Package.Index.Decls {
+		if cd.Kind != index.ConstDecl {
+			continue
+		}
+		t := valueSpecType(cd)
+		if t == nil {
+			continue
+		}
+		sid, ok := NewTypeExpr(t, cd.File, s.Package).SymbolID()
+		if !ok || sid.PackagePath != s.Package.Path || sid.Name != s.Name {
+			continue
+		}
+		out = append(out, NewDecl(s.Package, cd))
+	}
+	return out, nil
+}
+
+// valueSpecType returns the type expression declared on a var or
+// const decl: the spec's explicit type, or the type an empty const
+// spec inherits from the nearest non-empty spec above it. Untyped
+// specs report nil.
+func valueSpecType(d *index.Decl) ast.Expr {
+	vs, ok := d.Spec.(*ast.ValueSpec)
+	if !ok {
+		return nil
+	}
+	if vs.Type != nil {
+		return vs.Type
+	}
+	return d.InheritedType
+}
+
 // SignatureOf returns the func/method signature, or the synthesized
 // host signature for a bound intrinsic that carries a Target.
 func SignatureOf(s *Decl) (*Sig, error) {
@@ -429,6 +474,27 @@ func DefOf(s *Decl) (*TypeExpr, error) {
 		return nil, fmt.Errorf("inspect.Def: %s is not a type", s.Name)
 	}
 	return NewTypeExpr(ts.Type, s.file, s.Package), nil
+}
+
+// DeclTypeOf returns the type expression declared on a var or const
+// decl — the explicit annotation (`const X Status = ...`, `var x
+// Status`), or the type an empty const spec inherits (`B` under `A
+// Status = e`). Untyped value specs report nil; other decl kinds and
+// host symbols report an error.
+func DeclTypeOf(s *Decl) (*TypeExpr, error) {
+	if s.decl == nil {
+		return nil, fmt.Errorf("inspect.DeclType: host symbol %s has no declaration", s.Name)
+	}
+	switch s.decl.Kind {
+	case index.VarDecl, index.ConstDecl:
+	default:
+		return nil, fmt.Errorf("inspect.DeclType: %s is a %s, not a var/const", s.Name, s.Kind)
+	}
+	t := valueSpecType(s.decl)
+	if t == nil {
+		return nil, nil
+	}
+	return NewTypeExpr(t, s.file, s.Package), nil
 }
 
 // Expr exposes the underlying ast.Expr — engine-only, out of the FFI

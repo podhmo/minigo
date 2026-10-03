@@ -115,22 +115,6 @@ func TagHasElement(tag, key, elem string) bool {
 	return false
 }
 
-// SpecHasType reports whether a const spec line declares the given type
-// name before its `=` — `StatusOpen Status = iota` or
-// `A, B Status = 1, 2`, but not `Default = Status(1)` where the name
-// only appears in value position.
-func SpecHasType(line string, name string) bool {
-	for i, w := range strings.Fields(line) {
-		if strings.HasPrefix(w, "=") {
-			return false
-		}
-		if i > 0 && w == name {
-			return true
-		}
-	}
-	return false
-}
-
 // IsAliasLine reports whether a type-decl source line spells an alias
 // (`type X = int`) rather than a defined type. `=` inside struct tags
 // does not count.

@@ -291,6 +291,17 @@ func (e *Engine) installInspect() {
 			}
 			return boxedSlice(ms), nil
 		}),
+		"EnumMembers": bf("EnumMembers", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			s, err := declViewOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			ms, err := xinspect.EnumMembersOf(s)
+			if err != nil {
+				return nil, err
+			}
+			return boxedSlice(ms), nil
+		}),
 		"MReqs": bf("MReqs", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {
@@ -343,6 +354,20 @@ func (e *Engine) installInspect() {
 			te, err := xinspect.DefOf(s)
 			if err != nil {
 				return nil, err
+			}
+			return &runtime.GoValue{V: te}, nil
+		}),
+		"DeclType": bf("DeclType", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			s, err := declViewOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			te, err := xinspect.DeclTypeOf(s)
+			if err != nil {
+				return nil, err
+			}
+			if te == nil {
+				return runtime.NIL, nil
 			}
 			return &runtime.GoValue{V: te}, nil
 		}),

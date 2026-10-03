@@ -58,7 +58,7 @@ func SymbolView() string {
 	if !strings.Contains(s.Doc, "plain function") {
 		return "bad doc: " + s.Doc
 	}
-	if !strings.Contains(s.Pos, "main.go:27:") {
+	if !strings.Contains(s.Pos, "main.go:30:") {
 		return "bad pos: " + s.Pos
 	}
 	u := inspect.Symbol(p, "User")
@@ -262,7 +262,7 @@ func CurrentPkg() string {
 func ImportsList() string {
 	f := inspect.FileOf("./testdata/inspectpkg/main.go")
 	imps := inspect.Imports(f)
-	if len(imps) != 1 || imps[0].Path != "strings" {
+	if len(imps) != 2 || imps[0].Path != "strings" || imps[1].Path != "time" {
 		return "bad imports"
 	}
 	used := inspect.UsedSymbols(f)
@@ -812,6 +812,65 @@ func PkgMetaView() string {
 	return "ok"
 }
 
+// EnumWalk: enum members collect through EnumMembers, and DeclType
+// reads a value spec's annotation — explicit or iota-inherited.
+func EnumWalk() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+
+	st := inspect.Symbol(p, "Status")
+	var names string
+	for _, m := range inspect.EnumMembers(st) {
+		if m.Kind != "const" {
+			return "non-const member: " + m.Name
+		}
+		names += m.Name + ","
+	}
+	want := "StatusUnknown,StatusTodo,StatusDone,StatusExtra,FlagA,FlagB,"
+	if names != want {
+		return "bad Status members: " + names
+	}
+
+	names = ""
+	for _, m := range inspect.EnumMembers(inspect.Symbol(p, "Priority")) {
+		names += m.Name + ","
+	}
+	if names != "Low,High,PA,PB," {
+		return "bad Priority members: " + names
+	}
+	// a named type with no matching constants is not an enum
+	if len(inspect.EnumMembers(inspect.Symbol(p, "MyInt"))) != 0 {
+		return "MyInt should not be an enum"
+	}
+
+	// DeclType: explicit annotations and iota inheritance.
+	if got := inspect.DeclType(inspect.Symbol(p, "StatusUnknown")); got == nil || got.Text != "Status" {
+		return "explicit type lost"
+	}
+	if got := inspect.DeclType(inspect.Symbol(p, "StatusTodo")); got == nil || got.Text != "Status" {
+		return "inherited type lost"
+	}
+	// FlagD inherits the untyped spec above it — no type, no member.
+	if got := inspect.DeclType(inspect.Symbol(p, "FlagD")); got != nil {
+		return "FlagD should be untyped"
+	}
+	if got := inspect.DeclType(inspect.Symbol(p, "Loose")); got != nil {
+		return "untyped const typed?"
+	}
+	if got := inspect.DeclType(inspect.Symbol(p, "CurrentStatus")); got == nil || got.Text != "Status" {
+		return "var type lost"
+	}
+	fd := inspect.DeclType(inspect.Symbol(p, "ForDur"))
+	if fd == nil || fd.Kind != "SelectorExpr" {
+		return "foreign type lost"
+	}
+	// the linking primitive composes: member type -> SymbolID.
+	sid := inspect.SymbolID(inspect.DeclType(inspect.Symbol(p, "StatusDone")))
+	if sid == nil || sid.Name != "Status" || !strings.HasSuffix(sid.PackagePath, "inspectpkg") {
+		return "bad member sid"
+	}
+	return "ok"
+}
+
 // ---- trap checkers: each must surface an intrinsic error Go-side
 // (scripts cannot catch traps) ----
 
@@ -886,6 +945,33 @@ func PkgDirTrap() string {
 // reported issue's `d.Package.Path` shape stays a loud trap.
 func CurPkgPathTrap() string {
 	return inspect.Current().Path
+}
+
+// EnumMembersFuncTrap: EnumMembers is a type-symbol view.
+func EnumMembersFuncTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	inspect.EnumMembers(inspect.Symbol(p, "Hello"))
+	return "swallowed"
+}
+
+// EnumMembersBoundTrap: a bound type has no index to read.
+func EnumMembersBoundTrap() string {
+	inspect.EnumMembers(inspect.Symbol(inspect.PackageOf("strings"), "Builder"))
+	return "swallowed"
+}
+
+// DeclTypeFuncTrap: DeclType is a value-spec view — funcs trap.
+func DeclTypeFuncTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	inspect.DeclType(inspect.Symbol(p, "Hello"))
+	return "swallowed"
+}
+
+// DeclTypeTypeTrap: DeclType on a type decl traps — Def reads types.
+func DeclTypeTypeTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	inspect.DeclType(inspect.Symbol(p, "Status"))
+	return "swallowed"
 }
 
 func main() {}

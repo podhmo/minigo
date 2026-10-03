@@ -46,6 +46,7 @@ func TestInspect(t *testing.T) {
 		"BoundTypeSym",
 		"HostMethodSym",
 		"SourceOfStruct",
+		"EnumWalk",
 		"VarValueRead", // flips the package State to "ready"
 		"PkgMetaView",  // metadata via accessors; member shadow wins (#26)
 	} {
@@ -64,17 +65,21 @@ func TestInspect(t *testing.T) {
 	}
 	// remaining documented limitations must also trap, not misreport
 	for _, fn := range []string{
-		"DefVarTrap",        // Def is TypeSpec-only — var/const types unreachable
-		"ResolveBoundTrap",  // the resolver cannot descend into a bound pkg
-		"MissingSymTrap",    // unknown symbol name
-		"BoundFieldTrap",    // bound type has no decl for Fields
-		"BoundMethodTrap",   // bound type has no index for Methods
-		"HostSigTrap",       // intrinsic without Target has no signature
-		"ImportRefTrap",     // import refs stay namespace-strict
-		"PkgUnknownTrap",    // neither member nor field -> undefined
-		"PkgUnexportedTrap", // unexported names trap
-		"PkgDirTrap",        // metadata field names trap with an inspect.* hint
-		"CurPkgPathTrap",    // the reported d.Package.Path shape stays loud
+		"DefVarTrap",       // Def is TypeSpec-only — var/const types unreachable
+		"DeclTypeFuncTrap", // DeclType is ValueSpec-only — funcs/types trap
+		"DeclTypeTypeTrap",
+		"EnumMembersFuncTrap",  // EnumMembers is a type view — funcs trap
+		"EnumMembersBoundTrap", // bound types carry no index to walk
+		"ResolveBoundTrap",     // the resolver cannot descend into a bound pkg
+		"MissingSymTrap",       // unknown symbol name
+		"BoundFieldTrap",       // bound type has no decl for Fields
+		"BoundMethodTrap",      // bound type has no index for Methods
+		"HostSigTrap",          // intrinsic without Target has no signature
+		"ImportRefTrap",        // import refs stay namespace-strict
+		"PkgUnknownTrap",       // neither member nor field -> undefined
+		"PkgUnexportedTrap",    // unexported names trap
+		"PkgDirTrap",           // metadata field names trap with an inspect.* hint
+		"CurPkgPathTrap",       // the reported d.Package.Path shape stays loud
 	} {
 		if _, err := e.Run(context.Background(), "./testdata/inspectuse", fn); err == nil {
 			t.Errorf("%s: expected trap, got nil", fn)

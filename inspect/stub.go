@@ -75,6 +75,14 @@ func Fields(s *Decl) []*Field { panic("minigo intrinsic") }
 // Methods returns the method decls of a type symbol.
 func Methods(s *Decl) []*Decl { panic("minigo intrinsic") }
 
+// EnumMembers returns a type symbol's enum members: the package's
+// const declarations that are explicitly typed with it, in source
+// order — `const X Status = ...` specs, including empty specs that
+// inherit the type (`B` under `A Status = e`). Untyped constants and
+// foreign-typed ones never list, so an empty result means the type is
+// not an enum. Non-type symbols trap.
+func EnumMembers(s *Decl) []*Decl { panic("minigo intrinsic") }
+
 // MReqs returns the named member requirements of an interface type
 // symbol — the method specs; embedded/constraint elements are skipped.
 func MReqs(s *Decl) []*Field { panic("minigo intrinsic") }
@@ -91,6 +99,12 @@ func TypeParams(s *Decl) []*Field { panic("minigo intrinsic") }
 
 // Def returns a type symbol's declared TypeExpr.
 func Def(s *Decl) *TypeExpr { panic("minigo intrinsic") }
+
+// DeclType returns the type expression declared on a var or const
+// decl — the explicit annotation (`const X Status = ...`, `var x
+// Status`), or the type an empty const spec inherits (`B` under `A
+// Status = e`). Untyped value specs report nil; other decl kinds trap.
+func DeclType(s *Decl) *TypeExpr { panic("minigo intrinsic") }
 
 // Children drills into a composite type expression.
 func Children(te *TypeExpr) []*TypeExpr { panic("minigo intrinsic") }

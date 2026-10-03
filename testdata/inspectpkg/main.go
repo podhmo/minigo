@@ -1,7 +1,10 @@
 // Package inspectpkg is the introspection subject for inspect tests.
 package inspectpkg
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // Base is embedded into User.
 type Base struct {
@@ -69,6 +72,43 @@ type ArrM [sizeM]int
 type Speaker interface {
 	Speak() string
 }
+
+// Status is an int enum type.
+type Status int
+
+const (
+	StatusUnknown Status = iota
+	StatusTodo
+	StatusDone
+)
+
+// StatusExtra is a member in a separate const decl.
+const StatusExtra Status = 99
+
+const (
+	FlagA Status = iota
+	FlagB        // inherits the Status type
+	FlagC = 100  // untyped spec — breaks the inheritance chain
+	FlagD        // inherits the untyped spec: NOT a member
+)
+
+// Priority is a string enum type with a multi-name spec.
+type Priority string
+
+const (
+	Low    Priority = "low"
+	High   Priority = "high"
+	PA, PB Priority = "pa", "pb"
+)
+
+// Loose is an untyped constant — never an enum member.
+const Loose = 42
+
+// ForDur is a const typed by a foreign package — never an enum member.
+const ForDur time.Duration = time.Second
+
+// CurrentStatus is a var of the enum type — not an enum member.
+var CurrentStatus Status = StatusTodo
 
 // Talker embeds Speaker and adds a named method spec.
 type Talker interface {

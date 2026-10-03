@@ -77,12 +77,12 @@ the interpreter:
    code position only, so quoting it inside a `/* */` block or a raw
    string does not open a managed region.
 
-   The script's mechanics — tag parsing, spec-type reads, sentinel/managed-
-   region handling — live in `scanx`, a sibling package the script imports
+   The script's mechanics — tag parsing, sentinel/managed-region
+   handling — live in `scanx`, a sibling package the script imports
    and the engine interprets like any other module-local source. `scanx`
-   papers over the gaps in what `inspect` exposes (const `ValueSpec` types
-   and alias-ness aren't on `Decl`, `Pos` is a `"file:line:col"` string,
-   `MReqs` traps on non-interfaces) — see the plan doc's limitations list.
+   papers over the gaps in what `inspect` exposes (alias-ness isn't on
+   `Decl`, `Pos` is a `"file:line:col"` string, `MReqs` traps on
+   non-interfaces) — see the plan doc's limitations list.
 
 ## Demo
 

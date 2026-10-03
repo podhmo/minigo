@@ -136,13 +136,12 @@ script itself; the engine binds both paths to the same intrinsics.
   (same precedent as convert-define's `define`/`convutil`), so `go build`
   compiles the script *and* the interpreter can run it. `script/main.go`
   keeps only the policy.
-- **Where `inspect` is thin** — `inspect.Decl` gives `Kind`/`Name`/`File`/
-  `Pos`/`Doc` but not `ValueSpec.Type`, so enum detection
-  (`scanx.HasConstOfType`) reads the raw source line at `Pos` and splits
-  fields before `=`; type-omitted specs walk up to the nearest `=`-carrying
-  spec inside the block (iota inheritance — `Cadence Level = "4/4"; Beat`
-  types `Beat` as `Level`). `type X = int` vs `type X int` is decided by
-  `=` on the decl's own line.
+- **Enum detection is native now** — the rule is
+  `len(inspect.EnumMembers(d)) > 0`: the engine links every const spec
+  carrying the type name (explicit `vs.Type` or the `InheritedType` an
+  empty spec picks up) back to the type decl, so `Cadence Level = "4/4";
+  Beat` types `Beat` as `Level` without any line reading. `type X = int`
+  vs `type X int` is still decided by `=` on the decl's own line.
 - **Decls are touchable** — `inspect.Def(d)` gives the type expr
   (`Kind` = ast node name: `Ident`/`StructType`/`InterfaceType`),
   `inspect.Fields(d)` the struct fields incl. tags, `inspect.Methods(d)`
@@ -183,10 +182,6 @@ Skipped for scope, not blocked by anything:
 Gaps in the `inspect`/index surface itself that the script works around
 textually — candidates for the inspect wishlist, not the example's:
 
-- **`inspect.Decl` hides `ValueSpec.Type`/`InheritedType`** — a const
-  spec's declared type is invisible, so the enum rule reads raw source
-  lines at `Pos` coordinates and re-derives iota inheritance by
-  walking up to the nearest `=`-carrying spec.
 - **`inspect.MReqs` traps on non-interface decls** — interface-member
   access must be gated behind `Def(d).Kind == "InterfaceType"` (a
   kind-checked accessor, or non-trapping empty result, would remove the

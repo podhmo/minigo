@@ -198,9 +198,9 @@ func directivesFor(ex *scanx.Explorer, scans []pkgScan, s pkgScan, d *inspect.De
 	def := inspect.Def(d)
 	switch def.Kind {
 	case "Ident":
-		// enum-style: `type X int`/`string` with a const block of X
+		// enum-style: `type X int`/`string` with a const of X declared
 		// anywhere in the package.
-		if (def.Text == "int" || def.Text == "string") && scanx.HasConstOfType(s.decls, name) {
+		if (def.Text == "int" || def.Text == "string") && len(inspect.EnumMembers(d)) > 0 {
 			out = append(out, "//go:generate stringer -type="+name)
 		}
 	case "StructType":

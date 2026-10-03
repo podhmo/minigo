@@ -51,24 +51,6 @@ func TestTagHasElement(t *testing.T) {
 	}
 }
 
-func TestSpecHasType(t *testing.T) {
-	cases := []struct {
-		line string
-		want bool
-	}{
-		{"	StatusOpen Status = iota", true},
-		{"const A, B Status = 1, 2", true},
-		{"	Default = Status(1)", false}, // value position only
-		{"	StatusClosed", false},        // bare spec, no type
-		{"	NotStatus int = 0", false},   // different type
-	}
-	for _, c := range cases {
-		if got := SpecHasType(c.line, "Status"); got != c.want {
-			t.Errorf("SpecHasType(%q, Status) = %v; want %v", c.line, got, c.want)
-		}
-	}
-}
-
 func TestFindSentinel(t *testing.T) {
 	lines := []string{
 		"package x",
