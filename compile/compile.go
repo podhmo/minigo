@@ -2763,17 +2763,24 @@ unwrapped:
 	// folds to a constant — Go never evaluates the index. Emit the
 	// base, then OpLenIdxFold skips the emitted index+OpIndex+OpCall
 	// run when the runtime element typedef turns out to be an array.
+	// Two guards keep the fold honest: a user declaration of len/cap
+	// wins (Go calls it like any function), and an index containing a
+	// call or receive still evaluates (Go skips the index only when
+	// nothing in it can call out).
 	if id, ok := fun.(*ast.Ident); ok && (id.Name == "len" || id.Name == "cap") &&
-		len(x.Args) == 1 && !x.Ellipsis.IsValid() {
+		len(x.Args) == 1 && !x.Ellipsis.IsValid() && !c.declared(id.Name) {
 		if ix, ok := x.Args[0].(*ast.IndexExpr); ok {
-			c.calleeExpr(x.Fun)
-			c.expr(ix.X)
-			jm := c.emit(bytecode.OpLenIdxFold, 0, 0, x.Pos())
-			c.expr(ix.Index)
-			c.emit(bytecode.OpIndex, 0, 0, ix.Pos())
-			c.emit(bytecode.OpCall, 1, 0, x.Pos())
-			c.patchA(jm, len(c.ch.Code))
-			return
+			calls, linear := c.hoistedArgCalls(ix.Index)
+			if linear && len(calls) == 0 {
+				c.calleeExpr(x.Fun)
+				c.expr(ix.X)
+				jm := c.emit(bytecode.OpLenIdxFold, 0, 0, x.Pos())
+				c.expr(ix.Index)
+				c.emit(bytecode.OpIndex, 0, 0, ix.Pos())
+				c.emit(bytecode.OpCall, 1, 0, x.Pos())
+				c.patchA(jm, len(c.ch.Code))
+				return
+			}
 		}
 	}
 	c.calleeExpr(x.Fun)
