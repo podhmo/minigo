@@ -1363,8 +1363,6 @@ func (v *RValue) Bytes() any {
 	}
 	var s *runtime.Slice
 	switch x := v.get().(type) {
-	case string:
-		return []byte(x)
 	case *runtime.Slice:
 		s = x
 	case *runtime.Named:
