@@ -1,0 +1,6 @@
+8
+1 4
+runtime error: makeslice: len out of range
+runtime error: makeslice: cap out of range
+runtime error: makeslice: len out of range
+no panic

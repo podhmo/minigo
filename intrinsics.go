@@ -1883,7 +1883,26 @@ func unsafeSizeOf(v runtime.Value) int64 {
 			n += unsafeSizeOf(f)
 		}
 		return n
-	case runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
+	case *runtime.TypedNil:
+		// a typed nil knows its declared type: a pointer nil is
+		// pointer-sized, not the interface pair an untyped nil would be.
+		if x.Typ != nil && x.Typ.Kind == runtime.KindPointer {
+			return 8
+		}
+		return 16 // interface pair
+	case *runtime.Named:
+		if x.Typ != nil {
+			switch x.Typ.Name {
+			case "int8", "uint8", "byte":
+				return 1
+			case "int16", "uint16":
+				return 2
+			case "int32", "uint32", "float32", "rune":
+				return 4
+			}
+		}
+		return 8
+	case runtime.Nil, *runtime.IfaceNil:
 		return 16 // interface pair
 	default:
 		return 8 // pointer-sized boxes
