@@ -88,3 +88,16 @@
 
 1. **`deepEql` を型比較・pointer 比較・値比較のフェーズ分割 — 妥当だが、大半は第1〜2ラウンドの修正で既に実現済み**。Go の `deepValueEqual` も「動的型一致 → 値の再帰」の2段で、現在の deepEql は lockstep peel（Named/deref 層の型一致）+ `deepTypeEq`（複合 arm での型一致）+ nilish arm の3層が先に走る構造になっており、実質フェーズ1は前倒しされている。形式的な3関数分割を別途やる価値は「読みやすさ」のみで、新しい正しさは生まれない。優先度: 低。やるなら `deepTypeEq` を entry で一度だけ行う形への集約が自然。
 2. **format 書き換えの中間表現化 — 妥当。そして指摘された `%p` バグの修正そのものになった（#116 で実装済み）**。directive+operand index の IR（`dir{start,end,pos,verb,stars}`）→ sequential spec + rebuilt args、という構成がレビュー提案そのまま。`%[n]`・`*`・EXTRA の扱いを IR 上で考えられるようになったおかげで、shared slot を消せただけでなく暗黙 arg カウンタの不整合（`%[2]v %p` が誤 operand を変換し得た潜在バグ）も同時に潰れた。提案の方向は正しかったと結論できる。
+
+### 6.4 レビュー第3ラウンド: 5件の検証と2件の修正
+
+第3ラウンドは5件報告されたが、現スタックトップで再現を確認したところ **3件は既に直っていた**（レビューのベースが古い状態での検出と思われる）。残り2件のみ diverge。
+
+- **既修正（再現せず）**: `len(a[i()])` の call 省略と shadow された `len`/`cap` の畳み込み（#108）、`DeepEqual([]int{1}, []int64{1})` / `(*int)(nil) vs (*string)(nil)`（#111/#114）。全て現トップで `go run` と一致することを確認。
+- **入れ子呼出しの引数スクラッチ衝突（#118）** — `callArgs` の `$argN` カウンタが call site ごとに 0 始まりだったため、`foo(f(), bar(g()))` で `bar` 側の hoist が外側の `$arg0` を上書きし `(10,21)` が `(20,21)` に。カウンタを `compiler.tmpSeq` に昇格し関数全体で一意化。評価順二相化（#105）で入れた機構の、入れ子ケースの見落とし。
+- **`default` の無条件選択（#119）** — switchStmt が default clause に skip-jump を出さず、ソース位置で即 body に落ちていた（`switch 1 {default:; case 1:}` → `default`）。非最終 default も他 clause と同じく次テストへの jump を出し、「全テスト不成立」の継続先を default body に patch。fallthrough の前後接続は従来通りソース順。
+
+#### リファクタリング提案の評価（第3ラウンド）
+
+1. **一時変数生成の専用ヘルパー集約 — 妥当（中）**。今回の `$argN` 衝突は「採番スコープを呼び出し側が握る」構造が原因で、`c.tmpSeq` で回避したが、`$tag`・named result slots・funclit 名など compiler 内の合成名は同じ罠を持つ。`c.fresh("$arg")` 的な発番ヘルパーに集約すれば今後の衝突を構造的に防げる。ただし現状の衝突面は `$arg` だけなので、効果は予防的。
+2. **VM・intrinsics 間の型同一性判定の共通化 — 妥当（中）**。`deepTypeEq`/`deepDefEq`/`deepTypSpelling`（intrinsics）と VM 側の assignability・interface switch strict 比較・comparable 判定は同じ「typedef の同一性」を別々に判定している。実際にずれが存在する: DeepEqual は spelling 比較で匿名型を区別するが、VM の `BinEqlIface` は `==`/`deepDefEq` 系で `[]int` vs `[]string` の要素型を見ない方向の判定になっている経路がある。`typedefIdentical(a, b)` のような単一 API に集約し、各判定が「構造的同一性のどの側面を見るか」を明示できると、指摘系の再発を防げる。`deepTypSpelling`（AST printing）が runtime 非依存のまま `runtime` パッケージ側へ移せるかが設計の肝 — `ast.Expr` と `*runtime.TypeDef` だけに依存するので移動自体は可能。
