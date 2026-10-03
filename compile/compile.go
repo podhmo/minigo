@@ -27,24 +27,28 @@ import (
 
 // fscope is the static scope model of one function while compiling.
 type fscope struct {
-	parent     *fscope
-	blocks     []map[string]int       // name -> local slot
-	blockIDs   []int                  // unique id per open block, for goto scoping
-	declPos    []map[string]token.Pos // name -> declaring position (goto scoping)
-	nextID     int
-	typeDecls  map[string]bool             // names bound by local `type` decls (not vars)
-	typeSpecs  map[string]*ast.TypeSpec    // local `type` decl specs, for shape checks
-	typeDefs   map[string]*runtime.TypeDef // local `type` decl typedefs, for local embed resolution
-	ifaceTypes map[string]bool             // local `type` decls whose spec is an interface
-	ifaceVars  []map[string]bool           // per-block: vars declared interface-typed
-	iota       int                         // slot backing the `iota` builtin in local const specs; -1 until declared
+	parent   *fscope
+	blocks   []map[string]int       // name -> local slot
+	blockIDs []int                  // unique id per open block, for goto scoping
+	declPos  []map[string]token.Pos // name -> declaring position (goto scoping)
+	nextID   int
+	// per-block type-decl metadata, parallel to blocks: a `type` decl
+	// writes its entries into the map of the block it belongs to, so a
+	// shadowing decl never overwrites an outer one and a popped block
+	// drops its types entirely.
+	typeDecls  []map[string]bool             // names bound by local `type` decls (not vars)
+	typeSpecs  []map[string]*ast.TypeSpec    // local `type` decl specs, for shape checks
+	typeDefs   []map[string]*runtime.TypeDef // local `type` decl typedefs, for local embed resolution
+	ifaceTypes []map[string]bool             // local `type` decls whose spec is an interface
+	ifaceVars  []map[string]bool             // per-block: vars declared interface-typed
+	iota       int                           // slot backing the `iota` builtin in local const specs; -1 until declared
 	nlocals    int
 	upvals     []bytecode.UpvalDesc
 	upmap      map[string]int
 }
 
 func newFScope(parent *fscope) *fscope {
-	return &fscope{parent: parent, iota: -1, upmap: map[string]int{}, typeDecls: map[string]bool{}, typeSpecs: map[string]*ast.TypeSpec{}, typeDefs: map[string]*runtime.TypeDef{}, ifaceTypes: map[string]bool{}}
+	return &fscope{parent: parent, iota: -1, upmap: map[string]int{}}
 }
 
 // iotaSlot lazily declares the hidden local backing the `iota` builtin
@@ -73,12 +77,35 @@ func (s *fscope) pushBlock() {
 	s.blockIDs = append(s.blockIDs, s.nextID)
 	s.declPos = append(s.declPos, map[string]token.Pos{})
 	s.ifaceVars = append(s.ifaceVars, map[string]bool{})
+	s.typeDecls = append(s.typeDecls, map[string]bool{})
+	s.typeSpecs = append(s.typeSpecs, map[string]*ast.TypeSpec{})
+	s.typeDefs = append(s.typeDefs, map[string]*runtime.TypeDef{})
+	s.ifaceTypes = append(s.ifaceTypes, map[string]bool{})
 }
 func (s *fscope) popBlock() {
 	s.blocks = s.blocks[:len(s.blocks)-1]
 	s.blockIDs = s.blockIDs[:len(s.blockIDs)-1]
 	s.declPos = s.declPos[:len(s.declPos)-1]
 	s.ifaceVars = s.ifaceVars[:len(s.ifaceVars)-1]
+	s.typeDecls = s.typeDecls[:len(s.typeDecls)-1]
+	s.typeSpecs = s.typeSpecs[:len(s.typeSpecs)-1]
+	s.typeDefs = s.typeDefs[:len(s.typeDefs)-1]
+	s.ifaceTypes = s.ifaceTypes[:len(s.ifaceTypes)-1]
+}
+
+// recordType binds a local `type` decl's metadata into the current
+// block — the binding itself lands in blocks via declare.
+func (s *fscope) recordType(name string, ts *ast.TypeSpec, td *runtime.TypeDef, iface bool) {
+	if len(s.blocks) == 0 {
+		s.pushBlock()
+	}
+	i := len(s.blocks) - 1
+	s.typeDecls[i][name] = true
+	s.typeSpecs[i][name] = ts
+	s.typeDefs[i][name] = td
+	if iface {
+		s.ifaceTypes[i][name] = true
+	}
 }
 
 // markIface records a just-declared name as interface-typed (its decl's
@@ -106,16 +133,12 @@ func (s *fscope) isIfaceVar(name string) bool {
 
 // typeSpec returns the spec of a local `type` decl named this
 // identifier (walking enclosing function scopes); nil when none or
-// when a closer declaration shadows it. The spec metadata outlives
-// its block, so a name only counts while a live block binds it.
+// when a closer declaration shadows it.
 func (s *fscope) typeSpec(name string) *ast.TypeSpec {
 	for cur := s; cur != nil; cur = cur.parent {
 		for i := len(cur.blocks) - 1; i >= 0; i-- {
 			if _, declared := cur.blocks[i][name]; declared {
-				if cur.typeDecls[name] {
-					return cur.typeSpecs[name]
-				}
-				return nil
+				return cur.typeSpecs[i][name]
 			}
 		}
 	}
@@ -123,9 +146,7 @@ func (s *fscope) typeSpec(name string) *ast.TypeSpec {
 }
 
 // localTypeDefs collects the typedefs of every local `type` decl
-// visible from this scope — inner declarations shadow outer ones,
-// and a decl only counts while a live block binds its name (the
-// typedef metadata is function-wide and outlives its block).
+// visible from this scope — inner declarations shadow outer ones.
 func (s *fscope) localTypeDefs() map[string]*runtime.TypeDef {
 	seen := map[string]bool{}
 	var out map[string]*runtime.TypeDef
@@ -136,7 +157,7 @@ func (s *fscope) localTypeDefs() map[string]*runtime.TypeDef {
 					continue
 				}
 				seen[name] = true
-				if td, ok := cur.typeDefs[name]; ok && cur.typeDecls[name] {
+				if td, ok := cur.typeDefs[i][name]; ok {
 					if out == nil {
 						out = map[string]*runtime.TypeDef{}
 					}
@@ -149,14 +170,13 @@ func (s *fscope) localTypeDefs() map[string]*runtime.TypeDef {
 }
 
 // isIfaceTypeName reports whether a local `type I interface{...}` decl
-// named this identifier is visible (walking enclosing function scopes).
-// Like the other type-decl lookups, the name only counts while a live
-// block binds it — a shadowing variable or an ended block hides it.
+// named this identifier is visible (walking enclosing function
+// scopes); a shadowing variable hides it.
 func (s *fscope) isIfaceTypeName(name string) bool {
 	for cur := s; cur != nil; cur = cur.parent {
 		for i := len(cur.blocks) - 1; i >= 0; i-- {
 			if _, declared := cur.blocks[i][name]; declared {
-				return cur.ifaceTypes[name]
+				return cur.ifaceTypes[i][name]
 			}
 		}
 	}
@@ -177,7 +197,7 @@ func (s *fscope) scopeSnapshot() (blocks map[int]bool, vars map[string]token.Pos
 	vars = map[string]token.Pos{}
 	for i := len(s.declPos) - 1; i >= 0; i-- {
 		for n, dpos := range s.declPos[i] {
-			if s.typeDecls[n] || strings.HasPrefix(n, "$") {
+			if s.isTypeDeclName(n) || strings.HasPrefix(n, "$") {
 				continue // type decls and internal slots are not variable decls
 			}
 			if _, seen := vars[n]; !seen {
@@ -1016,6 +1036,7 @@ func (c *compiler) localTypeDecl(ts *ast.TypeSpec) {
 			}
 		}
 	}
+	isIface := false
 	switch t := ts.Type.(type) {
 	case *ast.StructType:
 		td.Kind = runtime.KindStruct
@@ -1043,7 +1064,7 @@ func (c *compiler) localTypeDecl(ts *ast.TypeSpec) {
 		}
 	case *ast.InterfaceType:
 		td.Kind = runtime.KindInterface
-		c.fs.ifaceTypes[ts.Name.Name] = true
+		isIface = true
 		for _, m := range t.Methods.List {
 			if len(m.Names) == 0 {
 				td.IEmbeds = append(td.IEmbeds, m.Type)
@@ -1070,9 +1091,7 @@ func (c *compiler) localTypeDecl(ts *ast.TypeSpec) {
 		td.Kind = runtime.KindAlias
 	}
 	td.LocalTypes = c.fs.localTypeDefs()
-	c.fs.typeDecls[ts.Name.Name] = true
-	c.fs.typeSpecs[ts.Name.Name] = ts
-	c.fs.typeDefs[ts.Name.Name] = td
+	c.fs.recordType(ts.Name.Name, ts, td, isIface)
 	c.emit(bytecode.OpConst, c.constIdx(td), 0, ts.Pos())
 	slot := c.fs.declare(ts.Name.Name, ts.Pos())
 	c.emit(bytecode.OpNewLocal, slot, 0, ts.Pos())
@@ -2521,7 +2540,7 @@ func (s *fscope) isTypeDeclName(name string) bool {
 	for cur := s; cur != nil; cur = cur.parent {
 		for i := len(cur.blocks) - 1; i >= 0; i-- {
 			if _, declared := cur.blocks[i][name]; declared {
-				return cur.typeDecls[name]
+				return cur.typeDecls[i][name]
 			}
 		}
 	}
