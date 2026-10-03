@@ -2222,23 +2222,68 @@ func (v *RValue) Equal(u *RValue) bool {
 	return valueEqual(v.ifaceVal(), u.ifaceVal(), 0)
 }
 
-// Pointer / UnsafePointer / UnsafeAddr are the unsafe surface: the
-// facade refuses them loudly.
+// Pointer reports the underlying address as a uintptr — the facade
+// cannot mint real addresses, so a live pointer reads as a fixed
+// nonzero sentinel and a nil one as 0, like Go's nil-vs-non-nil split.
 func (v *RValue) Pointer() uintptr {
-	trap("minireflect: reflect.Value.Pointer is not supported")
+	v.mustValid("Pointer")
+	if v.host() {
+		return v.rv.Pointer()
+	}
+	switch v.Kind() {
+	case reflect.String:
+		// the string-data pointer: empty reads 0, non-empty nonzero.
+		if s, ok := runtime.Unwrap(unwrapRef(v.get())).(string); ok && s == "" {
+			return 0
+		}
+		return 0x6d696e69676f
+	case reflect.Chan, reflect.Func, reflect.Map, reflect.Ptr,
+		reflect.Slice, reflect.UnsafePointer:
+		if v.IsNil() {
+			return 0
+		}
+		return 0x6d696e69676f
+	}
+	trap("call of reflect.Value.Pointer on %s Value", v.kindStr())
 	return 0
 }
 
-// UnsafePointer is unsupported.
+// UnsafePointer reports the same address as an any — non-nil for a live
+// pointer, nil for a nil one (the script cannot compare addresses).
 func (v *RValue) UnsafePointer() any {
-	trap("minireflect: reflect.Value.UnsafePointer is not supported")
+	v.mustValid("UnsafePointer")
+	if v.host() {
+		return v.rv.UnsafePointer()
+	}
+	switch v.Kind() {
+	case reflect.String:
+		if s, ok := runtime.Unwrap(unwrapRef(v.get())).(string); ok && s == "" {
+			return nil
+		}
+		return v.get()
+	case reflect.Chan, reflect.Func, reflect.Map, reflect.Ptr,
+		reflect.Slice, reflect.UnsafePointer:
+		if v.IsNil() {
+			return nil
+		}
+		return v.get()
+	}
+	trap("call of reflect.Value.UnsafePointer on %s Value", v.kindStr())
 	return nil
 }
 
-// UnsafeAddr is unsupported.
+// UnsafeAddr requires an addressable value — Go panics
+// 'reflect.Value.UnsafeAddr of unaddressable value' otherwise — and
+// likewise reports a nonzero sentinel, never a real address.
 func (v *RValue) UnsafeAddr() uintptr {
-	trap("minireflect: reflect.Value.UnsafeAddr is not supported")
-	return 0
+	v.mustValid("UnsafeAddr")
+	if v.host() {
+		return v.rv.UnsafeAddr()
+	}
+	if v.ref == nil {
+		plain("reflect.Value.UnsafeAddr of unaddressable value")
+	}
+	return 0x6d696e69676f
 }
 
 // CanComplex / Overflow* follow.
