@@ -7844,8 +7844,22 @@ func (v *VM) CallerPCs() []uintptr {
 	for i := len(v.frames) - 1; i >= depth; i-- {
 		sites = append(sites, v.callSite(v.frames[i]))
 	}
-	for i := 0; i < len(v.unwinding); i++ {
-		sites = append(sites, v.callSite(v.unwinding[i].f))
+	// unwound frames list grouped by their panic, newest unwind first:
+	// a superseding panic's frames precede the superseded panic's
+	// leftovers, matching Go's per-panic traceback order. Groups are
+	// keyed by panic and ordered by their last pop.
+	seen := map[*runtime.Panic]bool{}
+	for i := len(v.unwinding) - 1; i >= 0; i-- {
+		pn := v.unwinding[i].pn
+		if seen[pn] {
+			continue
+		}
+		seen[pn] = true
+		for _, e := range v.unwinding {
+			if e.pn == pn {
+				sites = append(sites, v.callSite(e.f))
+			}
+		}
 	}
 	for i := depth - 1; i >= 0; i-- {
 		sites = append(sites, v.callSite(v.frames[i]))
