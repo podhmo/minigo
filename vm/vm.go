@@ -327,7 +327,6 @@ type frame struct {
 	ip     int
 
 	defers   []deferredCall // LIFO
-	deferred bool           // frame created for a deferred call
 	sentinel bool           // placeholder frame for a deferred builtin — a
 	// wrapper in Go's terms: it does not count toward recover()'s
 	// one-frame distance rule
@@ -1087,9 +1086,11 @@ func (v *VM) runOneDefer(f *frame) {
 
 // invokeDeferred runs one deferred call. Callees without a bytecode frame
 // (BuiltinFunc, TypeDef conversion, Cell-wrapped values) still run at
-// teardown; a sentinel frame marked deferred is pushed for them so
-// recover() still sees the call as a deferred function — matching Go,
-// where `defer recover()` catches the panic being unwound.
+// teardown; a sentinel frame is pushed for them so recover() counts the
+// distance correctly: the sentinel marks the deferred call's own wrapper
+// slot without counting as a real frame — `defer recover()` sees zero
+// frames and returns nil, while `defer recover()` inside a deferred
+// function sees exactly one and recovers, matching Go.
 func (v *VM) invokeDeferred(d deferredCall) {
 	callee := d.fn
 	for {
@@ -1131,15 +1132,15 @@ func (v *VM) invokeDeferred(d deferredCall) {
 	if err != nil {
 		panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
 	}
-	fr.deferred = true
 	v.exec(fr)
 }
 
 // pushDeferredSentinel records a deferred host call on the frame stack so
-// Recover() treats it as the innermost deferred function. It is not a real
-// frame: no chunk, no locals — only the deferred flag matters.
+// Recover() measures the right distance to the panic's unwind. It is not
+// a real frame: no chunk, no locals — it occupies the deferred call's
+// slot without counting as a frame between.
 func (v *VM) pushDeferredSentinel(name string) {
-	v.frames = append(v.frames, &frame{fn: &runtime.Function{Name: name}, deferred: true, sentinel: true})
+	v.frames = append(v.frames, &frame{fn: &runtime.Function{Name: name}, sentinel: true})
 }
 
 func (v *VM) framesPop() { v.frames = v.frames[:len(v.frames)-1] }
