@@ -26,11 +26,8 @@ func TypeRefName(te *inspect.TypeExpr) string {
 	if sid == nil {
 		return "" // names nothing — a composite or unqualified selector
 	}
-	// package paths without "/" are not distinguished from builtins —
-	// the host package's BuiltinPackagePath sentinel can't be named
-	// from interpreted code, so the path-shape check stays.
-	if !strings.Contains(sid.PackagePath, "/") {
-		return ""
+	if sid.PackagePath == inspect.BuiltinPackagePath {
+		return "" // a builtin names no declaration
 	}
 	return sid.PackagePath + "." + sid.Name
 }
@@ -42,9 +39,6 @@ func TypeRefName(te *inspect.TypeExpr) string {
 // interface method types). A named leaf is not descended into — its
 // own children, if any, belong to the resolved decl, not to this
 // spelling.
-//
-// Known blind spots: module paths without "/" cannot be told apart
-// from builtins.
 func TypeRefs(te *inspect.TypeExpr) []string {
 	out := []string{}
 	var walk func(t *inspect.TypeExpr)

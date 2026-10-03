@@ -32,6 +32,10 @@ func (e *Engine) installInspect() {
 	}
 
 	pkg := map[string]runtime.Value{
+		// the pseudo import path predeclared identifiers resolve to —
+		// bound as a plain string so interpreted code can compare a
+		// SymbolID's PackagePath against it directly.
+		"BuiltinPackagePath": xinspect.BuiltinPackagePath,
 		// ---- locators ----
 		"PackageOf": bf("PackageOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {

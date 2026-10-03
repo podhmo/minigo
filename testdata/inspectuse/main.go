@@ -1350,3 +1350,18 @@ func IsAliasBoundTrap() string {
 }
 
 func main() {}
+
+// BuiltinPathConst: the package exposes the builtin sentinel as a
+// script-visible value — :builtin: — so a SymbolID's PackagePath can
+// be compared without a shape heuristic.
+func BuiltinPathConst() string {
+	if inspect.BuiltinPackagePath != ":builtin:" {
+		return "unexpected: " + inspect.BuiltinPackagePath
+	}
+	p := inspect.DirOf("./testdata/inspectpkg")
+	sid := inspect.SymbolID(inspect.Symbol(p, "AInt"))
+	if sid == nil || sid.PackagePath == inspect.BuiltinPackagePath {
+		return "AInt must not look builtin"
+	}
+	return "ok"
+}

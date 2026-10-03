@@ -54,6 +54,7 @@ func TestInspect(t *testing.T) {
 		"AliasWalk",
 		"VarValueRead", // flips the package State to "ready"
 		"PkgMetaView",  // metadata via accessors; member shadow wins (#26)
+		"BuiltinPathConst",
 	} {
 		if got := run(t, e, "./testdata/inspectuse", fn); got != "ok" {
 			t.Errorf("%s: %v", fn, got)
