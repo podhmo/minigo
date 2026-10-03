@@ -458,3 +458,35 @@ type DiaS struct {
 	DiaA
 	DiaB
 }
+
+// AliasCalc declares Add over alias spellings — AInt collapses to
+// int, so it satisfies Adder exactly like Calc.
+type AliasCalc struct{}
+
+// Add is spelled with the alias on both sides.
+func (AliasCalc) Add(a, b AInt) AInt { return 0 }
+
+// AAdder spells the Add requirement through the alias — identical to
+// Adder for implementer purposes.
+type AAdder interface {
+	Add(a, b AInt) AInt
+}
+
+// MyIntCalc declares Add over a DEFINED type — MyInt is not int, so
+// it must NOT satisfy either interface.
+type MyIntCalc struct{}
+
+// Add keeps the defined type distinct.
+func (MyIntCalc) Add(a, b MyInt) MyInt { return 0 }
+
+// Totaler is the nested case: alias elements inside a composite
+// parameter spelling collapse too.
+type Totaler interface {
+	Total(xs []int) int
+}
+
+// AliasTotal takes []AInt — it satisfies Totaler.
+type AliasTotal struct{}
+
+// Total is spelled with the aliased element type.
+func (AliasTotal) Total(xs []AInt) int { return 0 }

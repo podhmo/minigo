@@ -818,16 +818,70 @@ func sigMatch(m *Method, spec ifaceSpec, res Resolver) bool {
 		return false
 	}
 	for i := range sp {
-		if !NewTypeExpr(sp[i], spec.file, spec.pkg).SameType(mp[i], res) {
+		if !specSame(NewTypeExpr(sp[i], spec.file, spec.pkg), mp[i], res) {
 			return false
 		}
 	}
 	for i := range sr {
-		if !NewTypeExpr(sr[i], spec.file, spec.pkg).SameType(mr[i], res) {
+		if !specSame(NewTypeExpr(sr[i], spec.file, spec.pkg), mr[i], res) {
 			return false
 		}
 	}
 	return true
+}
+
+// specSame mirrors SameType for spec/method signature positions,
+// with one relaxation: alias spellings collapse to their target
+// decls at every node — `type Str = string` IS string in Go, so a
+// method spelled with the alias satisfies a spec spelled with the
+// target (and vice versa). A defined type still does not collapse.
+func specSame(a, b *TypeExpr, res Resolver) bool {
+	a, b = collapseAlias(a, res), collapseAlias(b, res)
+	sa, oka := a.SymbolID()
+	sb, okb := b.SymbolID()
+	if oka || okb {
+		return oka && okb && sa == sb
+	}
+	if a.Kind != b.Kind {
+		return false
+	}
+	if !a.sameShapeExtra(b, res) {
+		return false
+	}
+	ca, cb := a.Children(), b.Children()
+	if len(ca) != len(cb) {
+		return false
+	}
+	for i := range ca {
+		if !specSame(ca[i], cb[i], res) {
+			return false
+		}
+	}
+	return true
+}
+
+// collapseAlias unwraps alias layers — `type Str = string`,
+// `type S2 = Str` — until it reaches a non-alias decl, a builtin, or
+// an unresolvable spelling. A defined type stays put: it is not its
+// underlying type. The unwrapped expression is re-rooted in its own
+// file context so SameType resolves it correctly.
+func collapseAlias(te *TypeExpr, res Resolver) *TypeExpr {
+	for i := 0; i < 8; i++ {
+		sid, ok := te.SymbolID()
+		if !ok || sid.PackagePath == BuiltinPackagePath {
+			return te
+		}
+		d, err := res(sid)
+		if err != nil || d == nil || d.decl == nil {
+			return te
+		}
+		ts, ok := d.decl.Spec.(*ast.TypeSpec)
+		if !ok || !ts.Assign.IsValid() {
+			return te // a defined type does not collapse
+		}
+		te = NewTypeExpr(ts.Type, d.file, d.Package)
+	}
+	return te
 }
 
 // paramTypes flattens an ast.FieldList to one expression per declared

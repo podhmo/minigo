@@ -1218,13 +1218,34 @@ func ImplementersWalk() string {
 		return "unexpected " + n
 	}
 	// signature equality is real: Calc's Add(a,b int) int satisfies,
-	// Almost's string result does not.
+	// Almost's string result does not. AliasCalc spells the same
+	// signature through the AInt alias — an alias IS its target —
+	// while MyIntCalc's defined type stays distinct.
 	got = map[string]bool{}
 	for _, d := range inspect.Implementers(p, inspect.Symbol(p, "Adder")) {
 		got[d.Name] = true
 	}
-	if !got["Adder"] || !got["Calc"] || got["Almost"] || len(got) != 2 {
+	if !got["Adder"] || !got["AAdder"] || !got["Calc"] || !got["AliasCalc"] ||
+		got["Almost"] || got["MyIntCalc"] || len(got) != 4 {
 		return "bad adder set"
+	}
+	// the collapse runs both ways: a spec spelled with the alias is
+	// the same requirement, and AliasCalc/Calc satisfy it.
+	got = map[string]bool{}
+	for _, d := range inspect.Implementers(p, inspect.Symbol(p, "AAdder")) {
+		got[d.Name] = true
+	}
+	if !got["AAdder"] || !got["Adder"] || !got["Calc"] || !got["AliasCalc"] ||
+		got["MyIntCalc"] || len(got) != 4 {
+		return "bad aadder set"
+	}
+	// aliases collapse inside composite spellings too: []AInt is []int.
+	got = map[string]bool{}
+	for _, d := range inspect.Implementers(p, inspect.Symbol(p, "Totaler")) {
+		got[d.Name] = true
+	}
+	if !got["Totaler"] || !got["AliasTotal"] || len(got) != 2 {
+		return "bad totaler set"
 	}
 	// variadicity too: ...int satisfies, [2]int does not.
 	got = map[string]bool{}
