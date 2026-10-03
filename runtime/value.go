@@ -478,7 +478,7 @@ func CanonicalKey(v Value) Value {
 		// only fixed-size arrays are comparable; a slice key panics
 		// like Go's runtime unhashable-type check.
 		if !arrayTypedef(x.Typ) {
-			panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type " + typeTagOf(x.Typ)}})
+			panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type " + msgTypeName(x.Typ)}})
 		}
 		for _, e := range x.Elems {
 			if unhashableKey(e) {
@@ -489,7 +489,7 @@ func CanonicalKey(v Value) Value {
 		writeKeyRepr(&sb, x.Elems)
 		return mapKey{typ: typeTagOf(x.Typ), repr: sb.String()}
 	case *Map:
-		panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type " + typeTagOf(x.Typ)}})
+		panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type " + msgTypeName(x.Typ)}})
 	case *Function, *Closure, *BoundMethod, *BuiltinFunc:
 		panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type func()"}})
 	case *GoValue:
@@ -548,8 +548,21 @@ func msgTypeName(td *TypeDef) string {
 		return "?"
 	}
 	if td.Name != "" {
-		if td.Pkg != nil && td.Pkg.Name != "" {
-			return td.Pkg.Name + "." + td.Name
+		// the qualifier is the package's declared NAME — dir-loaded
+		// packages keep a synthesized import path in Pkg.Name, so the
+		// file's own package clause wins when it exists.
+		pkg := ""
+		if td.Pkg != nil {
+			pkg = td.Pkg.Name
+		}
+		if td.File != nil && td.File.AST != nil && td.File.AST.Name != nil {
+			pkg = td.File.AST.Name.Name
+		}
+		if pkg != "" {
+			if i := strings.LastIndex(td.Name, "."); i >= 0 {
+				return pkg + td.Name[i:]
+			}
+			return pkg + "." + td.Name
 		}
 		return td.Name
 	}
@@ -606,7 +619,7 @@ func writeKeyElem(sb *strings.Builder, v Value) {
 		writeKeyRepr(sb, x.Fields)
 	case *Slice:
 		if !arrayTypedef(x.Typ) {
-			panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type " + typeTagOf(x.Typ)}})
+			panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type " + msgTypeName(x.Typ)}})
 		}
 		writeKeyRepr(sb, x.Elems)
 	case float64:

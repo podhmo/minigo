@@ -305,7 +305,14 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 		if pkg != nil {
 			// Go's Type.String qualifies by package NAME — the main
 			// package of `module uc1` spells `main.Box`, not `uc1.Box`.
-			return pkg.Name + "." + t.Name
+			// Synthesized composites carry the elem's identity name —
+			// "pkg/path.T" — so a path-qualified ident loses its own
+			// package prefix before requalifying by name.
+			name := t.Name
+			if pkg.Path != "" {
+				name = strings.TrimPrefix(name, pkg.Path+".")
+			}
+			return pkg.Name + "." + name
 		}
 		return canonBasicName(t.Name)
 	case *ast.StarExpr:
@@ -332,7 +339,27 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 	case *ast.SelectorExpr:
 		if id, ok := t.X.(*ast.Ident); ok {
 			if p := typImportPath(file, id.Name); p != "" {
-				return p + "." + t.Sel.Name
+				// Go qualifies by the imported package's clause name —
+				// `net/http.Client` spells `http.Client`.
+				return p[strings.LastIndex(p, "/")+1:] + "." + t.Sel.Name
+			}
+			// exprOf renders a named typedef's identity name as
+			// `pkg/path . T`; display requalifies the path by the
+			// declaring package's clause name, and imports by their
+			// local alias.
+			if pkg != nil && id.Name == pkg.Path {
+				return pkg.Name + "." + t.Sel.Name
+			}
+			if file != nil {
+				for _, im := range file.Imports {
+					if im.Path == id.Name {
+						alias := im.Alias
+						if alias == "" || alias == "_" || alias == "." {
+							alias = im.Path[strings.LastIndex(im.Path, "/")+1:]
+						}
+						return alias + "." + t.Sel.Name
+					}
+				}
 			}
 		}
 		return TypGoSpelling(t.X, ctx) + "." + t.Sel.Name

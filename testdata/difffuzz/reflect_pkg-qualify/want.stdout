@@ -1,0 +1,10 @@
+0: string main.RTag
+1: string *main.RTag
+2: string []main.RTag
+3: panic: reflect.Value.Convert: value of type *main.RTag cannot be converted to type main.RNamed
+4: string main
+5: string 
+6: string 
+7: string bytes.Buffer
+8: string bytes
+9: panic: runtime error: hash of unhashable type []int
