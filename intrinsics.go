@@ -3333,24 +3333,32 @@ func (s *fmtValue) render(verb rune, f fmt.State) string {
 				}
 				break
 			}
-			if str, ok := callStringer(s.c, s.x, "String"); ok {
+			// Go's fmt consults error before Stringer — a value
+			// implementing both prints its Error().
+			if str, ok := callStringer(s.c, s.x, "Error"); ok {
 				return withWidth(f, str)
 			}
-			if str, ok := callStringer(s.c, s.x, "Error"); ok {
+			if str, ok := callStringer(s.c, s.x, "String"); ok {
 				return withWidth(f, str)
 			}
 		case 's':
-			if str, ok := callStringer(s.c, s.x, "String"); ok {
-				return withWidth(f, str)
-			}
 			if str, ok := callStringer(s.c, s.x, "Error"); ok {
 				return withWidth(f, str)
 			}
+			if str, ok := callStringer(s.c, s.x, "String"); ok {
+				return withWidth(f, str)
+			}
 		case 'q':
+			if str, ok := callStringer(s.c, s.x, "Error"); ok {
+				return strconv.Quote(str)
+			}
 			if str, ok := callStringer(s.c, s.x, "String"); ok {
 				return strconv.Quote(str)
 			}
 		case 'x', 'X':
+			if str, ok := callStringer(s.c, s.x, "Error"); ok {
+				return fmt.Sprintf("%"+string(verb), str)
+			}
 			if str, ok := callStringer(s.c, s.x, "String"); ok {
 				return fmt.Sprintf("%"+string(verb), str)
 			}
