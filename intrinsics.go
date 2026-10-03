@@ -25,7 +25,6 @@ import (
 	"io/fs"
 	"maps"
 	"math"
-	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -52,8 +51,16 @@ import (
 func (e *Engine) installStdlib() {
 	h := &hostHelpers{e: e}
 	e.Bind("fmt", map[string]runtime.Value{
-		"Print":   h.ffn("fmt.Print", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprint(h.out(), a...)) }),
-		"Println": h.ffn("fmt.Println", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprintln(h.out(), a...)) }),
+		// fmt's interfaces are needed as types by interpreted sources that
+		// reflect on them or assert (e.g. template's fmt.Stringer probes,
+		// math/big's compile-time fmt.Scanner assertion).
+		"Stringer":   &runtime.TypeDef{Name: "fmt.Stringer", Kind: runtime.KindInterface, MReqs: []string{"String"}},
+		"GoStringer": &runtime.TypeDef{Name: "fmt.GoStringer", Kind: runtime.KindInterface, MReqs: []string{"GoString"}},
+		"Formatter":  &runtime.TypeDef{Name: "fmt.Formatter", Kind: runtime.KindInterface, MReqs: []string{"Format"}},
+		"Scanner":    &runtime.TypeDef{Name: "fmt.Scanner", Kind: runtime.KindInterface, MReqs: []string{"Scan"}},
+		"State":      &runtime.TypeDef{Name: "fmt.State", Kind: runtime.KindInterface, MReqs: []string{"Write", "Width", "Precision", "Flag"}},
+		"Print":      h.ffn("fmt.Print", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprint(h.out(), a...)) }),
+		"Println":    h.ffn("fmt.Println", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprintln(h.out(), a...)) }),
 		"Printf": h.ffn("fmt.Printf", 0, 1, func(a []any) (any, error) {
 			return retErr(fmt.Fprintf(h.out(), str(a[0]), a[1:]...))
 		}),
@@ -483,6 +490,7 @@ func (e *Engine) installStdlib() {
 		"DecodedLen":     h.fn("hex.DecodedLen", func(a []any) (any, error) { return int64(hex.DecodedLen(intOf(a[0]))), nil }),
 	})
 	e.Bind("encoding/json", map[string]runtime.Value{
+		"Number": &runtime.TypeDef{Name: "encoding/json.Number", Kind: runtime.KindNamedBasic},
 		// Marshal/MarshalIndent take raw runtime args — h.fn's goNative
 		// would stringify *runtime.Struct before goJSON can field-map it.
 		"Marshal": &runtime.BuiltinFunc{Name: "json.Marshal", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -523,14 +531,17 @@ func (e *Engine) installStdlib() {
 		}},
 		"Valid": h.fn("json.Valid", func(a []any) (any, error) { return json.Valid(byteSlice(a[0])), nil }, json.Valid),
 	})
-	e.Bind("net/url", map[string]runtime.Value{
-		"QueryEscape":   h.fn("url.QueryEscape", func(a []any) (any, error) { return url.QueryEscape(str(a[0])), nil }, url.QueryEscape),
-		"PathEscape":    h.fn("url.PathEscape", func(a []any) (any, error) { return url.PathEscape(str(a[0])), nil }, url.PathEscape),
-		"QueryUnescape": h.fn("url.QueryUnescape", func(a []any) (any, error) { return retErr2(url.QueryUnescape(str(a[0]))) }),
-		"PathUnescape":  h.fn("url.PathUnescape", func(a []any) (any, error) { return retErr2(url.PathUnescape(str(a[0]))) }),
-		"JoinPath": h.fn("url.JoinPath", func(a []any) (any, error) {
-			return retErr2(url.JoinPath(str(a[0]), strArgs(a[1:])...))
+	// net/url needs no intrinsic: its source interprets cleanly once
+	// the internal/godebug stub answers the knob lookups below.
+	// internal/godebug cannot be imported outside GOROOT, so a stub
+	// Setting answers the knobs stdlib sources consult: Value() reports
+	// "" — every gate defaults to its enabled behavior (e.g. url's
+	// query-param limit check in ParseQuery).
+	e.Bind("internal/godebug", map[string]runtime.Value{
+		"New": h.fn1("godebug.New", func(a []any) (any, error) {
+			return &runtime.GoValue{V: &godebugSetting{}}, nil
 		}),
+		"Setting": hostType("internal/godebug.Setting", func() any { return &godebugSetting{} }),
 	})
 	e.Bind("html", map[string]runtime.Value{
 		"EscapeString":   h.fn("html.EscapeString", func(a []any) (any, error) { return html.EscapeString(str(a[0])), nil }, html.EscapeString),
@@ -549,22 +560,16 @@ func (e *Engine) installStdlib() {
 			return &runtime.Tuple{Elems: []runtime.Value{d, f}}, nil
 		}),
 	})
-	e.Bind("reflect", map[string]runtime.Value{
-		// full reflect fidelity means interpreting reflect's own
-		// unsafe.Pointer-heavy source — a script-value deep equal
-		// covers the corpus uses (comparing result slices/maps).
-		"DeepEqual": &runtime.BuiltinFunc{Name: "reflect.DeepEqual", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			if len(args) != 2 {
-				return nil, errors.New("reflect.DeepEqual needs 2 args")
-			}
-			return deepEql(args[0], args[1]), nil
-		}},
-	})
+	// reflect is bound by installReflect (the minireflect facade).
+	e.installReflect()
 	e.Bind("sort", map[string]runtime.Value{
 		"Ints":     h.sortInPlace("sort.Ints"),
 		"Float64s": h.sortInPlace("sort.Float64s"),
 		"Strings":  h.sortInPlace("sort.Strings"),
-		"Slice":    &runtime.BuiltinFunc{Name: "sort.Slice", Fn: h.sortSlice},
+		// sort.Sort adapts a script object with Len/Less/Swap methods to
+		// a host sort.Interface (a GoValue sort.Interface passes through).
+		"Sort":  &runtime.BuiltinFunc{Name: "sort.Sort", Fn: h.sortInterface},
+		"Slice": &runtime.BuiltinFunc{Name: "sort.Slice", Fn: h.sortSlice},
 		"SliceIsSorted": &runtime.BuiltinFunc{Name: "sort.SliceIsSorted", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, ok := args[0].(*runtime.Slice)
 			if !ok {
@@ -1340,6 +1345,9 @@ func (e *Engine) installStdlib() {
 		"Unix": h.fn2("time.Unix", func(a []any) (any, error) {
 			return &runtime.GoValue{V: time.Unix(int64Of(a[0]), int64Of(a[1]))}, nil
 		}),
+		"FixedZone": h.fn2("time.FixedZone", func(a []any) (any, error) {
+			return &runtime.GoValue{V: time.FixedZone(str(a[0]), int(int64Of(a[1])))}, nil
+		}),
 		"Nanosecond":  time.Nanosecond,
 		"Microsecond": time.Microsecond,
 		"Second":      time.Second,
@@ -1603,6 +1611,9 @@ func (e *Engine) installStdlib() {
 	// bufio: Scanner/Reader/Writer box the host types — Scan/Text/Err and
 	// friends dispatch through reflection.
 	e.Bind("bufio", map[string]runtime.Value{
+		// the sentinel is the real host error: `err == bufio.ErrBufferFull`
+		// in csv's reader compares GoValues by identity.
+		"ErrBufferFull": errVal(bufio.ErrBufferFull),
 		"NewScanner": h.fn1("bufio.NewScanner", func(a []any) (any, error) {
 			r, err := asReader(a[0])
 			if err != nil {
@@ -1953,6 +1964,61 @@ func equalScript(a, b runtime.Value) bool {
 	return a == b
 }
 
+// sortInterface adapts a script value's Len/Less/Swap members into a
+// host sort.Interface for sort.Sort: the callbacks run on the calling
+// VM (the usual host-callback hazard — results are only read during the
+// call).
+func (h *hostHelpers) sortInterface(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("sort.Sort needs 1 arg, got %d", len(args))
+	}
+	if ifc, ok := goNative(args[0]).(sort.Interface); ok {
+		sort.Sort(ifc)
+		return runtime.NIL, nil
+	}
+	dv, ok := runtime.Deref(args[0])
+	if !ok {
+		dv = args[0]
+	}
+	lenFn, lok := vc.Member(dv, "Len")
+	lessFn, sok := vc.Member(dv, "Less")
+	swapFn, wok := vc.Member(dv, "Swap")
+	if !lok || !sok || !wok {
+		return nil, fmt.Errorf("sort.Sort: %T does not implement sort.Interface", args[0])
+	}
+	sort.Sort(&scriptSortable{vc: vc, lenFn: lenFn, lessFn: lessFn, swapFn: swapFn})
+	return runtime.NIL, nil
+}
+
+// scriptSortable is the sort.Interface view of a script object.
+type scriptSortable struct {
+	vc                    runtime.VMCaller
+	lenFn, lessFn, swapFn runtime.Value
+}
+
+func (s *scriptSortable) Len() int {
+	r, err := s.vc.Call(s.lenFn, nil)
+	if err != nil {
+		panic(err)
+	}
+	return int(int64Of(r))
+}
+
+func (s *scriptSortable) Less(i, j int) bool {
+	r, err := s.vc.Call(s.lessFn, []runtime.Value{int64(i), int64(j)})
+	if err != nil {
+		panic(err)
+	}
+	b, _ := r.(bool)
+	return b
+}
+
+func (s *scriptSortable) Swap(i, j int) {
+	if _, err := s.vc.Call(s.swapFn, []runtime.Value{int64(i), int64(j)}); err != nil {
+		panic(err)
+	}
+}
+
 func (h *hostHelpers) sortSlice(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 	s, ok := args[0].(*runtime.Slice)
 	if !ok {
@@ -2283,6 +2349,10 @@ func intOf(v any) int {
 		return int(x)
 	case *runtime.GoValue:
 		return intOf(x.V)
+	case *runtime.UConst:
+		if nv, err := uconstNative(x); err == nil {
+			return intOf(nv)
+		}
 	}
 	return 0
 }
@@ -4338,3 +4408,14 @@ func deepNilish(v runtime.Value) bool {
 	}
 	return v == nil || v == runtime.NIL
 }
+
+// godebugSetting stands in for internal/godebug.Setting (which cannot be
+// imported outside GOROOT): it answers the methods stdlib sources call
+// on their godebug knobs with the defaults — Value() reports "".
+type godebugSetting struct{}
+
+func (s *godebugSetting) Value() string      { return "" }
+func (s *godebugSetting) Name() string       { return "" }
+func (s *godebugSetting) Undocumented() bool { return false }
+func (s *godebugSetting) String() string     { return "" }
+func (s *godebugSetting) IncNonDefault()     {}
