@@ -22,6 +22,7 @@ func (e *Engine) installReflect() {
 		IfaceReqs:   e.ifaceReqs,
 		Underlying:  e.underlying,
 		AliasOf:     e.aliasOf,
+		MethodSet:   e.methodSet,
 	})
 	syms["DeepEqual"] = &runtime.BuiltinFunc{Name: "reflect.DeepEqual", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) != 2 {
