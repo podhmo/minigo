@@ -371,6 +371,22 @@ func (v *VM) assignCell(f *frame, c *runtime.Cell, val runtime.Value) {
 	c.Elem = valueCopy(val)
 }
 
+// checkAddrBase panics like Go when the address-of target's base is a
+// nil pointer (invalid memory address) or a nil slice (index out of
+// range — key renders the failed index).
+func (v *VM) checkAddrBase(base, key runtime.Value) {
+	tn, isNil := asTypedNil(base)
+	if !isNil {
+		return
+	}
+	switch v.peelNamed(tn.Typ).Kind {
+	case runtime.KindPointer:
+		panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "invalid memory address or nil pointer dereference"}})
+	case runtime.KindSlice:
+		panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: fmt.Sprintf("index out of range [%v] with length 0", runtime.Unwrap(key))}})
+	}
+}
+
 // assignRef stores a value into a resolved assignment target — the
 // phase-2 store of OpSetRefs. The ref carries the target's storage
 // shape: IndexRef/FieldRef go through the typed index/field stores so
@@ -1031,10 +1047,12 @@ func (v *VM) loop(f *frame) {
 			f.push(b)
 		case bytecode.OpFieldRef:
 			base := f.pop()
+			v.checkAddrBase(base, nil)
 			f.push(&runtime.FieldRef{Base: base, Name: consts[ins.A].(string)})
 		case bytecode.OpIndexRef:
 			key := f.pop()
 			base := f.pop()
+			v.checkAddrBase(base, key)
 			if _, isMap := runtime.Unwrap(base).(*runtime.Map); isMap && ins.B == 0 {
 				// Go rejects &m[k] at compile time: map elements are
 				// not addressable — B=1 marks a multi-assign store
@@ -1042,6 +1060,10 @@ func (v *VM) loop(f *frame) {
 				f.trap("cannot take the address of map element")
 			}
 			f.push(&runtime.IndexRef{Base: base, Key: key})
+		case bytecode.OpNilPtrCheck:
+			base := f.pop()
+			v.checkAddrBase(base, nil)
+			f.push(base)
 		case bytecode.OpSwap:
 			n := len(f.stack)
 			f.stack[n-1], f.stack[n-2] = f.stack[n-2], f.stack[n-1]
