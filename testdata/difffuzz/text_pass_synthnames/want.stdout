@@ -1,0 +1,6 @@
+nested-sel 1 2
+seq-sel 3
+nested-switch 7 s
+range-switch 4 7
+range-switch 5 7
+funclit 9

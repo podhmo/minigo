@@ -299,10 +299,23 @@ type compiler struct {
 	symName  string
 	litCount int
 
-	// tmpSeq numbers hoisted call-argument scratch slots — a nested
-	// call's callArgs runs while the outer call's slots are live, so
-	// the counter must not restart per call site.
-	tmpSeq int
+	// synthSeq numbers every compiler-synthesized local name. Hoisted
+	// call-argument scratch slots, invented param/receiver names and
+	// iterator/tag/select scratch slots all mint through c.fresh, so a
+	// $-name can never collide with one still live in the same scope —
+	// the class of bug where a nested call's $argN overwrote the outer
+	// call's (#118).
+	synthSeq int
+}
+
+// fresh mints a synthetic local name unique across the whole
+// compilation: c.fresh("$arg") -> "$arg3". Numbering all $-names from
+// one sequence is the simplest way to keep every synthesized slot
+// distinct regardless of which construct produced it.
+func (c *compiler) fresh(base string) string {
+	name := fmt.Sprintf("%s%d", base, c.synthSeq)
+	c.synthSeq++
+	return name
 }
 
 func (c *compiler) emit(op bytecode.Op, a, b int, pos token.Pos) int {
@@ -458,7 +471,7 @@ func Func(fn *runtime.Function) error {
 	var coerces []paramCoerce // declared-type coercions for the prologue
 	nparams := 0
 	if fn.Decl.Recv != nil {
-		recv := "$recv"
+		recv := c.fresh("$recv")
 		var recvType ast.Expr
 		if len(fn.Decl.Recv.List) > 0 {
 			if len(fn.Decl.Recv.List[0].Names) > 0 {
@@ -482,7 +495,7 @@ func Func(fn *runtime.Function) error {
 		for _, field := range fn.Decl.Type.Params.List {
 			names := field.Names
 			if len(names) == 0 {
-				names = []*ast.Ident{{Name: fmt.Sprintf("$arg%d", nparams)}}
+				names = []*ast.Ident{{Name: c.fresh("$arg")}}
 			}
 			for _, n := range names {
 				slot := c.fs.declare(n.Name, n.Pos())
@@ -1496,7 +1509,7 @@ func (c *compiler) rangeStmt(st *ast.RangeStmt) {
 	c.fs.pushBlock()
 	c.expr(st.X)
 	c.emit(bytecode.OpIter, 0, 0, st.X.Pos())
-	itSlot := c.fs.declare("$it", token.NoPos)
+	itSlot := c.fs.declare(c.fresh("$it"), token.NoPos)
 	c.emit(bytecode.OpNewLocal, itSlot, 0, st.X.Pos())
 
 	nvars := 0
@@ -1564,7 +1577,7 @@ func (c *compiler) switchStmt(st *ast.SwitchStmt) {
 	strict := false
 	if st.Tag != nil {
 		c.expr(st.Tag)
-		tagSlot = c.fs.declare("$tag", token.NoPos)
+		tagSlot = c.fs.declare(c.fresh("$tag"), token.NoPos)
 		c.emit(bytecode.OpNewLocal, tagSlot, 0, st.Tag.Pos())
 		// An interface-typed tag compares dynamic (type, value) pairs:
 		// `case 1:` (int) must not match an any(float64(1.0)) tag.
@@ -1679,7 +1692,6 @@ func (c *compiler) selectStmt(st *ast.SelectStmt) {
 	var cases []selCase
 	var defaultBody []ast.Stmt
 	hasDefault := false
-	tmp := 0
 	for _, s := range st.Body.List {
 		clause := s.(*ast.CommClause)
 		if clause.Comm == nil {
@@ -1693,10 +1705,8 @@ func (c *compiler) selectStmt(st *ast.SelectStmt) {
 		switch comm := clause.Comm.(type) {
 		case *ast.SendStmt:
 			sc.send = true
-			sc.chanSlot = c.fs.declare(fmt.Sprintf("$sel%d", tmp), token.NoPos)
-			tmp++
-			sc.valSlot = c.fs.declare(fmt.Sprintf("$sel%d", tmp), token.NoPos)
-			tmp++
+			sc.chanSlot = c.fs.declare(c.fresh("$sel"), token.NoPos)
+			sc.valSlot = c.fs.declare(c.fresh("$sel"), token.NoPos)
 			c.expr(comm.Chan)
 			c.emit(bytecode.OpSetLocal, sc.chanSlot, 0, comm.Chan.Pos())
 			c.expr(comm.Value)
@@ -1707,8 +1717,7 @@ func (c *compiler) selectStmt(st *ast.SelectStmt) {
 				c.trap(clause.Comm.Pos(), "unsupported select case %T", clause.Comm)
 				continue
 			}
-			sc.chanSlot = c.fs.declare(fmt.Sprintf("$sel%d", tmp), token.NoPos)
-			tmp++
+			sc.chanSlot = c.fs.declare(c.fresh("$sel"), token.NoPos)
 			c.expr(recv.X)
 			c.emit(bytecode.OpSetLocal, sc.chanSlot, 0, recv.X.Pos())
 			sc.nrecv = len(lhs)
@@ -2048,7 +2057,7 @@ func (c *compiler) typeSwitchStmt(st *ast.TypeSwitchStmt) {
 		return
 	}
 	c.expr(subj)
-	tagSlot := c.fs.declare("$tsubj", token.NoPos)
+	tagSlot := c.fs.declare(c.fresh("$tsubj"), token.NoPos)
 	c.emit(bytecode.OpNewLocal, tagSlot, 0, subj.Pos())
 	cc := &ctrlCtx{labels: c.takeLabels()}
 	c.ctrl = append(c.ctrl, cc)
@@ -2829,8 +2838,7 @@ func (c *compiler) callArgs(args []ast.Expr) {
 	for _, calls := range perArg {
 		for _, call := range calls {
 			c.expr(call)
-			name := fmt.Sprintf("$arg%d", c.tmpSeq)
-			c.tmpSeq++
+			name := c.fresh("$arg")
 			slot := c.fs.declare(name, call.Pos())
 			c.emit(bytecode.OpNewLocal, slot, 0, call.Pos())
 			names[call] = name
@@ -3216,7 +3224,9 @@ func (c *compiler) funcLit(x *ast.FuncLit) {
 		for _, field := range x.Type.Params.List {
 			names := field.Names
 			if len(names) == 0 {
-				names = []*ast.Ident{{Name: fmt.Sprintf("$arg%d", nparams)}}
+				// minted on the funclit's own compiler so it stays
+				// unique against $arg hoists inside the body.
+				names = []*ast.Ident{{Name: ic.fresh("$arg")}}
 			}
 			for _, n := range names {
 				slot := ic.fs.declare(n.Name, n.Pos())
