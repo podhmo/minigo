@@ -70,6 +70,24 @@ func (e *Env) wrap(vc runtime.VMCaller, val, ref runtime.Value, td *runtime.Type
 	return &RValue{e: e, vc: vc, val: val, ref: ref, td: td}
 }
 
+// unwrap views a Named value through its underlying value so
+// kind-dispatched accessors reach the concrete branch. The ref is
+// dropped on purpose: get() prefers it, and dereferencing the same
+// location hands the Named tag right back — forwarding it here was an
+// infinite recursion (Index/Len/Cap on `ValueOf(&named).Elem()` never
+// terminated). Callers keep v.td so kind strings still name the
+// declared type; elements of named arrays lose ref addressability as
+// a corner case.
+func (v *RValue) unwrap() *RValue {
+	x, ok := v.get().(*runtime.Named)
+	if !ok {
+		return v
+	}
+	w := v.e.wrap(v.vc, x.V, nil, v.td)
+	w.ro = v.ro
+	return w
+}
+
 // wrapHost builds a host-domain rvalue.
 func (e *Env) wrapHost(vc runtime.VMCaller, rv reflect.Value) *RValue {
 	return &RValue{e: e, vc: vc, rv: rv}
@@ -713,7 +731,7 @@ func (v *RValue) Len() int {
 	case *runtime.Chan:
 		return len(x.C)
 	case *runtime.Named:
-		return v.e.wrap(v.vc, x.V, v.ref, v.td).Len()
+		return v.unwrap().Len()
 	}
 	trap("call of reflect.Value.Len on %s Value", v.kindStr())
 	return 0
@@ -762,7 +780,7 @@ func (v *RValue) Cap() int {
 	case *runtime.Chan:
 		return cap(x.C)
 	case *runtime.Named:
-		return v.e.wrap(v.vc, x.V, v.ref, v.td).Cap()
+		return v.unwrap().Cap()
 	}
 	trap("call of reflect.Value.Cap on %s Value", v.kindStr())
 	return 0
@@ -809,7 +827,7 @@ func (v *RValue) Index(i int) *RValue {
 		}
 		return &RValue{e: v.e, vc: v.vc, val: int64(x[i]), td: &runtime.TypeDef{Name: "uint8"}}
 	case *runtime.Named:
-		return v.e.wrap(v.vc, x.V, v.ref, v.td).Index(i)
+		return v.unwrap().Index(i)
 	}
 	trap("call of reflect.Value.Index on %s Value", v.kindStr())
 	return nil
