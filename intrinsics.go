@@ -44,6 +44,7 @@ import (
 
 	"github.com/podhmo/minigo/minireflect"
 	"github.com/podhmo/minigo/runtime"
+	"github.com/podhmo/minigo/syntax"
 	"github.com/podhmo/minigo/vm"
 )
 
@@ -60,8 +61,8 @@ func (e *Engine) installStdlib() {
 		"Formatter":  &runtime.TypeDef{Name: "fmt.Formatter", Kind: runtime.KindInterface, MReqs: []string{"Format"}},
 		"Scanner":    &runtime.TypeDef{Name: "fmt.Scanner", Kind: runtime.KindInterface, MReqs: []string{"Scan"}},
 		"State":      &runtime.TypeDef{Name: "fmt.State", Kind: runtime.KindInterface, MReqs: []string{"Write", "Width", "Precision", "Flag"}},
-		"Print":      h.ffn("fmt.Print", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprint(h.out(), a...)) }),
-		"Println":    h.ffn("fmt.Println", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprintln(h.out(), a...)) }),
+		"Print":      h.ffn("fmt.Print", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprint(h.out(), a...)) }, fmt.Print),
+		"Println":    h.ffn("fmt.Println", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprintln(h.out(), a...)) }, fmt.Println),
 		"Printf": h.ffn("fmt.Printf", 0, 1, func(a []any) (any, error) {
 			return retErr(fmt.Fprintf(h.out(), str(a[0]), a[1:]...))
 		}),
@@ -3394,7 +3395,10 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 			}
 		}
 		// scalar pointer: Go prints the address — a host pointer repr
-		// is the closest readable stand-in.
+		// is the closest readable stand-in; %#v wraps it as (*T)(0xADDR).
+		if verb == 'v' && f.Flag('#') {
+			return fmt.Sprintf("(*%s)(%p)", scriptTypeString(dv), v)
+		}
 		return fmt.Sprintf("%p", v)
 	case *runtime.Struct:
 		switch verb {
@@ -3527,18 +3531,29 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		switch verb {
 		case 'T':
 			return typedefSpelling(v.Typ)
-		case 'v', 'p':
+		case 'v':
+			// %#v spells pointer-shaped values as (T)(0xADDR).
+			if f.Flag('#') {
+				return fmt.Sprintf("(%s)(%p)", chanTypSpelling(v.Typ), v)
+			}
+			return fmt.Sprintf("%p", v)
+		case 'p':
 			return fmt.Sprintf("%p", v)
 		}
 		return badVerb(verb, typedefSpelling(v.Typ), fmt.Sprintf("%p", v))
 	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
 		switch verb {
 		case 'T':
-			return "func"
-		case 'v', 'p':
+			return funcSigSpelling(v)
+		case 'v':
+			if f.Flag('#') {
+				return fmt.Sprintf("(%s)(%p)", funcSigSpelling(v), v)
+			}
+			return fmt.Sprintf("%p", v)
+		case 'p':
 			return fmt.Sprintf("%p", v)
 		}
-		return badVerb(verb, "func()", fmt.Sprintf("%p", v))
+		return badVerb(verb, funcSigSpelling(v), fmt.Sprintf("%p", v))
 	case *runtime.GoValue:
 		return fmt.Sprintf(formatOf(f, verb), v.V)
 	case *runtime.TypeDef:
@@ -3893,6 +3908,53 @@ func sliceBytes(v *runtime.Slice) ([]byte, bool) {
 	return bs, true
 }
 
+// funcSigSpelling renders a function value's signature for %T and the
+// %#v pointer wrapper — `func(int) int`, `func(...int)` — falling back
+// to `func()` when the declaration isn't reachable (plain builtins).
+func funcSigSpelling(v runtime.Value) string {
+	var ft *ast.FuncType
+	var pkg *runtime.Package
+	var file *syntax.File
+	var binds map[string]runtime.Value
+	if fn := funcFn(v); fn != nil {
+		if fn.Decl != nil {
+			ft = fn.Decl.Type
+		}
+		pkg, file, binds = fn.Pkg, fn.File, fn.Binds
+	}
+	if ft == nil {
+		if bf, ok := v.(*runtime.BuiltinFunc); ok && bf.Target != nil {
+			// a bound host func spells its real signature — host fmt's
+			// %T of a func IS the signature (func(...interface {}) (int, error))
+			return fmt.Sprintf("%T", bf.Target)
+		}
+		return "func()"
+	}
+	return runtime.TypGoSpelling(ft, &runtime.TypeDef{Pkg: pkg, File: file, Binds: binds})
+}
+
+// funcFn unwraps the *runtime.Function inside a function value.
+func funcFn(v runtime.Value) *runtime.Function {
+	switch x := v.(type) {
+	case *runtime.Function:
+		return x
+	case *runtime.Closure:
+		return x.Fn
+	case *runtime.BoundMethod:
+		return x.Fn
+	}
+	return nil
+}
+
+// chanTypSpelling spells a channel's typedef for the %#v wrapper —
+// `chan int`/`chan<- T`/`<-chan T` — `chan interface{}` when unknown.
+func chanTypSpelling(td *runtime.TypeDef) string {
+	if td == nil {
+		return "chan interface{}"
+	}
+	return typedefSpelling(td)
+}
+
 // scriptTypeString spells a value's type the way Go's %T does —
 // "[]int", "main.Point" — using the typedef, not the Go wrapper type.
 func scriptTypeString(x runtime.Value) string {
@@ -3946,7 +4008,7 @@ func scriptTypeString(x runtime.Value) string {
 	case bool:
 		return "bool"
 	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
-		return "func"
+		return funcSigSpelling(t)
 	default:
 		return fmt.Sprintf("%T", x)
 	}
@@ -4285,7 +4347,7 @@ func anonTypeSpelling(e ast.Expr, pkg *runtime.Package) string {
 	case *ast.StructType:
 		return "struct{}"
 	case *ast.FuncType:
-		return "func()"
+		return runtime.TypGoSpelling(t, &runtime.TypeDef{Pkg: pkg})
 	}
 	return fmt.Sprintf("%T", e)
 }
