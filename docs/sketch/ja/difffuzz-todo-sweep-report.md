@@ -73,3 +73,18 @@
 3. **`RuntimeError` 生成の共通ヘルパー — 妥当、低リスク（整合性効果）**。`&runtime.Panic{Value: &runtime.RuntimeError{Msg: ...}}` の組み立てが vm.go+builtins.go で40箇所。recover の `.(error)` が効くかはペイロードの型依存（#55/#76 で直した系）で、文字列 payload と混在すると静かに壊れる。`runtime` 側に `BoundsError(i, n)` 系コンストラクタ、vm 側に `panicRuntime` 系の一括経路を置けばメッセージ形式と wrapper の一貫性が担保できる。ただしメッセージ文言がサイトごとに違うので「完全な一本化」より「wrapper 生成だけ共通化」の粒度が適切。
 
 補足: いずれも挙動中立の整理なので、diverge 修正と混ぜるとレビューが追いにくい。ピン済みの corpus が緑のまま通ることを確認しながら別 PR で進めるのが安全。
+
+### 6.3 レビュー第2ラウンド: 5件の修正とリファクタリング評価
+
+第2ラウンドのレビューでさらに5件が報告された。全て `go run` との差分を確認の上で修正（[#113](https://github.com/podhmo/minigo/pull/113)–[#117](https://github.com/podhmo/minigo/pull/117)、Stack #73 積み増し）。
+
+- **nil slice → 非ゼロ長配列変換（#113）** — `convertArray` の nil-slice arm が無条件でゼロ配列を返していた。`var s []int; _ = [1]int(s)` は Go では長さ不足の runtime panic。`n > 0` で panic、`n == 0` のみゼロ配列に。
+- **DeepEqual の typed nil 同一性（#114）** — nilish 判定が `Typ.Name` だけを見ていたため `(*int)(nil) == (*string)(nil)`、`[]int(nil) == nil` が true。`runtime.TypedNil` 同士は `deepTypeEq`（kind + AST spelling）で比較し、untyped nil / empty-iface nil 同士は「ただの nil」として相等 — 実機で `DeepEqual(io.Reader(nil), nil) == true`、`io.Reader(nil) == io.Writer(nil) == true` を確認して分岐を設計した。
+- **DeepEqual の map key 照合（#115）** — key を deepEql していたため、pointee が等しい別アドレスの pointer key が一致扱い（Go では map lookup の等値性＝ポインタ同一性）。`Pairs` の canonical key で `bm.Pairs[ak]` を直接引く形に変更し、value だけを再帰比較 — canonical key は map の等値性そのものをエンコードしているので仕様と一致。
+- **`%p`/`%T` の共有 operand 破壊（#116）** — rewriteTypeVerbs が `a[off+pos]` を直接上書きするため `fmt.Printf("%v %[1]p", p)` が `0x… 0x…` に。directive を `{pos, verb, stars}` の中間表現で収集し、spec を sequential 化（`[n]` 剥がし）+ arg tail を作り直す構成に変更 — 各 verb が専用 operand を持つので共有 slot は消えた。ついでに `%[n]` 後の implicit-arg カウンタ（`argNum = n`）と `*` operand の consumption、`%!(EXTRA …)` の高水位保持も Go 準拠に。
+- **`runtime.Frames.Next` の more（#117）** — 最終フレームでも `more=true` 固定だったため canonical ループが空フレームを余計に処理。`cf.i < len(cf.sites)` を返す。加えて `text_pass_nilpanic` pin の `for f, next := Next(); next;` イディオム自体が最終フレームを読み落とすバグだった（Go では runtime フレームが後ろに居て隠れていた）ので正規形に修正。
+
+#### リファクタリング提案の評価（第2ラウンド）
+
+1. **`deepEql` を型比較・pointer 比較・値比較のフェーズ分割 — 妥当だが、大半は第1〜2ラウンドの修正で既に実現済み**。Go の `deepValueEqual` も「動的型一致 → 値の再帰」の2段で、現在の deepEql は lockstep peel（Named/deref 層の型一致）+ `deepTypeEq`（複合 arm での型一致）+ nilish arm の3層が先に走る構造になっており、実質フェーズ1は前倒しされている。形式的な3関数分割を別途やる価値は「読みやすさ」のみで、新しい正しさは生まれない。優先度: 低。やるなら `deepTypeEq` を entry で一度だけ行う形への集約が自然。
+2. **format 書き換えの中間表現化 — 妥当。そして指摘された `%p` バグの修正そのものになった（#116 で実装済み）**。directive+operand index の IR（`dir{start,end,pos,verb,stars}`）→ sequential spec + rebuilt args、という構成がレビュー提案そのまま。`%[n]`・`*`・EXTRA の扱いを IR 上で考えられるようになったおかげで、shared slot を消せただけでなく暗黙 arg カウンタの不整合（`%[2]v %p` が誤 operand を変換し得た潜在バグ）も同時に潰れた。提案の方向は正しかったと結論できる。
