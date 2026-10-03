@@ -1,0 +1,3 @@
+SILENT/value (seed from minigo-usecasefuzz tmp-reflect review, group 4)
+go:     true false false
+minigo: false true true
