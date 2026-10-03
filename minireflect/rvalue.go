@@ -709,8 +709,28 @@ func (v *RValue) NumField() int {
 
 // FieldByIndex resolves a nested field path.
 func (v *RValue) FieldByIndex(idx []int) *RValue {
+	if v.host() {
+		f := v.rv.FieldByIndex(idx)
+		ro := false
+		if f.IsValid() {
+			ro = !f.CanInterface()
+		}
+		return &RValue{e: v.e, vc: v.vc, rv: f, ro: ro}
+	}
 	cur := v
-	for _, i := range idx {
+	for depth, i := range idx {
+		// embedded traversal derefs a ptr-to-struct field between
+		// steps; a nil embedded pointer dies on 'indirection through
+		// nil pointer to embedded struct' like Go's FieldByIndexErr.
+		if depth > 0 && cur.Kind() == reflect.Ptr {
+			if cur.Type() != nil && cur.Type().Elem() != nil && cur.Type().Elem().Kind() == reflect.Struct {
+				ev := cur.Elem()
+				if !ev.IsValid() {
+					panic(&runtime.Panic{Value: "reflect: indirection through nil pointer to embedded struct"})
+				}
+				cur = ev
+			}
+		}
 		cur = cur.Field(i)
 	}
 	return cur
