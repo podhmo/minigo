@@ -181,27 +181,31 @@ func typeOfValue(e *Env, v runtime.Value) *runtime.TypeDef {
 		if rv, ok := x.V.(*RValue); ok {
 			return rv.staticTd()
 		}
-		return &runtime.TypeDef{Name: reflect.TypeOf(x.V).String()}
+		name := reflect.TypeOf(x.V).String()
+		if btd := runtime.BasicTypedef(name); btd != nil {
+			return btd
+		}
+		return &runtime.TypeDef{Name: name}
 	case int64:
-		return &runtime.TypeDef{Name: "int"}
+		return runtime.BasicTypedef("int")
 	case float64:
-		return &runtime.TypeDef{Name: "float64"}
+		return runtime.BasicTypedef("float64")
 	case string:
-		return &runtime.TypeDef{Name: "string"}
+		return runtime.BasicTypedef("string")
 	case bool:
-		return &runtime.TypeDef{Name: "bool"}
+		return runtime.BasicTypedef("bool")
 	case *runtime.UConst:
 		switch x.V.Kind() {
 		case constant.Bool:
-			return &runtime.TypeDef{Name: "bool"}
+			return runtime.BasicTypedef("bool")
 		case constant.String:
-			return &runtime.TypeDef{Name: "string"}
+			return runtime.BasicTypedef("string")
 		case constant.Float:
-			return &runtime.TypeDef{Name: "float64"}
+			return runtime.BasicTypedef("float64")
 		case constant.Complex:
-			return &runtime.TypeDef{Name: "complex128"}
+			return runtime.BasicTypedef("complex128")
 		default:
-			return &runtime.TypeDef{Name: "int"}
+			return runtime.BasicTypedef("int")
 		}
 	}
 	return nil
@@ -733,6 +737,12 @@ func (v *RValue) Len() int {
 		return len(x.C)
 	case *runtime.Named:
 		return v.unwrap().Len()
+	case runtime.Nil, *runtime.TypedNil:
+		// a nil slice/map/chan reports 0 like Go
+		switch v.Kind() {
+		case reflect.Slice, reflect.Map, reflect.Chan:
+			return 0
+		}
 	}
 	trap("call of reflect.Value.Len on %s Value", v.kindStr())
 	return 0
@@ -782,6 +792,11 @@ func (v *RValue) Cap() int {
 		return cap(x.C)
 	case *runtime.Named:
 		return v.unwrap().Cap()
+	case runtime.Nil, *runtime.TypedNil:
+		switch v.Kind() {
+		case reflect.Slice, reflect.Chan:
+			return 0
+		}
 	}
 	trap("call of reflect.Value.Cap on %s Value", v.kindStr())
 	return 0
@@ -840,14 +855,23 @@ func (v *RValue) Slice(i, j int) *RValue {
 	if v.host() {
 		return v.e.wrapHost(v.vc, v.rv.Slice(i, j))
 	}
-	if s, ok := v.get().(*runtime.Slice); ok {
+	switch s := v.get().(type) {
+	case string:
+		if i < 0 || j > len(s) || i > j {
+			plain("reflect.Value.Slice: string slice index out of bounds")
+		}
+		return &RValue{e: v.e, vc: v.vc, val: s[i:j], td: v.td, ro: v.ro}
+	case *runtime.Slice:
+		if i < 0 || j > len(s.Elems) || i > j {
+			plain("reflect.Value.Slice: slice index out of bounds")
+		}
 		if at := arrayTypeOf(s.Typ); at != nil {
 			// slicing an array borrows its storage, so the array must
 			// be addressable — and the result is a slice type, not the
 			// array's. The Anon keeps the []T spelling so the produced
 			// type interns to the same RType as a script []T literal.
 			if v.ref == nil {
-				trap("reflect.Value.Slice: slice of unaddressable array")
+				plain("reflect.Value.Slice: slice of unaddressable array")
 			}
 			st := &runtime.TypeDef{Kind: runtime.KindSlice, Elem: v.e.elemOf(s.Typ),
 				Anon: &ast.ArrayType{Elt: at.Elt}}
@@ -856,6 +880,11 @@ func (v *RValue) Slice(i, j int) *RValue {
 		}
 		return &RValue{e: v.e, vc: v.vc,
 			val: &runtime.Slice{Elems: s.Elems[i:j], Typ: s.Typ}, td: v.td, ro: v.ro}
+	case *runtime.Named:
+		// named string/slice values view through the underlying like
+		// every other kind-dispatched accessor.
+		nv := &RValue{e: v.e, vc: v.vc, val: s.V, td: v.td, ro: v.ro}
+		return nv.Slice(i, j)
 	}
 	trap("call of reflect.Value.Slice on %s Value", v.kindStr())
 	return nil
@@ -873,6 +902,13 @@ func (v *RValue) MapIndex(k *RValue) *RValue {
 	}
 	m, ok := v.get().(*runtime.Map)
 	if !ok {
+		if _, isNil := v.get().(*runtime.TypedNil); isNil && v.Kind() == reflect.Map {
+			// a nil map reads as empty: every key misses
+			return &RValue{e: v.e, vc: v.vc}
+		}
+		if v.get() == runtime.NIL && v.Kind() == reflect.Map {
+			return &RValue{e: v.e, vc: v.vc}
+		}
 		trap("call of reflect.Value.MapIndex on %s Value", v.kindStr())
 	}
 	var etd *runtime.TypeDef
@@ -900,6 +936,12 @@ func (v *RValue) MapKeys() []*RValue {
 	}
 	m, ok := v.get().(*runtime.Map)
 	if !ok {
+		switch v.get().(type) {
+		case runtime.Nil, *runtime.TypedNil:
+			if v.Kind() == reflect.Map {
+				return nil
+			}
+		}
 		trap("call of reflect.Value.MapKeys on %s Value", v.kindStr())
 	}
 	var ktd *runtime.TypeDef
@@ -1432,12 +1474,25 @@ func (v *RValue) SetBytes(x []byte) {
 		v.rv.SetBytes(x)
 		return
 	}
+	// Go's order: settable first, then the []uint8-element gate.
+	if v.ro {
+		trap("reflect.Value.SetBytes using value obtained using unexported field")
+	}
+	if v.ref == nil {
+		trap("reflect.Value.SetBytes using unaddressable value")
+	}
+	if v.Kind() != reflect.Slice {
+		trap("call of reflect.Value.SetBytes on %s Value", v.kindStr())
+	}
+	if et := v.e.elemOf(v.td); et == nil || v.e.kindOfTd(et) != reflect.Uint8 {
+		trap("call of reflect.Value.SetBytes on %s Value", v.kindStr())
+	}
 	elems := make([]runtime.Value, len(x))
 	for i, b := range x {
 		elems[i] = int64(b)
 	}
 	v.set(&runtime.Slice{Elems: elems, Typ: &runtime.TypeDef{
-		Kind: runtime.KindSlice, Elem: &runtime.TypeDef{Name: "byte"}}})
+		Kind: runtime.KindSlice, Elem: runtime.BasicTypedef("byte")}})
 }
 
 // SetLen is not part of reflect.Value — kept absent.
@@ -1660,6 +1715,10 @@ func (v *RValue) Convert(t *RType) *RValue {
 			trap("reflect.Value.Convert: %s", err)
 		}
 		return v.e.wrapHost(v.vc, rv.Convert(t.rt))
+	}
+	if st := v.Type(); st != nil && !st.ConvertibleTo(t) {
+		plain("reflect.Value.Convert: value of type %s cannot be converted to type %s",
+			st.String(), t.String())
 	}
 	k := t.Kind()
 	var out runtime.Value

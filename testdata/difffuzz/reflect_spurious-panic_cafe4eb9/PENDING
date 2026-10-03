@@ -1,4 +1,0 @@
-SILENT/spurious-panic (seen ×1)
-shape:  seq:reflect.TypeOf(r_funcv) .In(0) .Kind()
-go:     reflect.Kind slice
-minigo: panic: reflect: minireflect: unsupported embedded type expression *ast.Ellipsis

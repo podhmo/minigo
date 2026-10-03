@@ -1,4 +1,0 @@
-SILENT/value (seen ×1)
-shape:  seq:reflect.ValueOf(r_s0) .Slice(0, 1) 
-go:     string "h"
-minigo: string []byte{0x7a}

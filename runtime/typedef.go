@@ -303,7 +303,9 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 			return canonBasicName(t.Name)
 		}
 		if pkg != nil {
-			return pkg.Path + "." + t.Name
+			// Go's Type.String qualifies by package NAME — the main
+			// package of `module uc1` spells `main.Box`, not `uc1.Box`.
+			return pkg.Name + "." + t.Name
 		}
 		return canonBasicName(t.Name)
 	case *ast.StarExpr:

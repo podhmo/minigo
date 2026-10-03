@@ -1,4 +1,0 @@
-SILENT/missing-panic (seen ×1)
-shape:  seq:reflect.ValueOf(&r_i0).Elem() .SetBytes([]byte("zz")) 
-go:     panic: reflect: call of reflect.Value.SetBytes on int Value
-minigo: string []byte{0x7a, 0x7a}

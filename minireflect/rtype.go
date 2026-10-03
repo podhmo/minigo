@@ -196,8 +196,11 @@ func (e *Env) exprOf(td *runtime.TypeDef) ast.Expr {
 		} else {
 			x = ast.NewIdent(name)
 		}
-		if td.Pkg != nil && td.Pkg.Name != "" {
-			x = &ast.SelectorExpr{X: ast.NewIdent(td.Pkg.Name), Sel: ast.NewIdent(name)}
+		if td.Pkg != nil && td.Pkg.Path != "" {
+			// qualify by package PATH, not Name: the own package of a
+			// script is `main` under `go run` but the canonical type
+			// key spells the module path (ucreflectclone.AppConfig).
+			x = &ast.SelectorExpr{X: ast.NewIdent(td.Pkg.Path), Sel: ast.NewIdent(name)}
 		}
 		if len(td.TParams) > 0 && len(td.Binds) > 0 {
 			var args []ast.Expr
@@ -1238,6 +1241,15 @@ func (t *RType) IsVariadic() bool {
 func (t *RType) resolveIn(x ast.Expr) *RType {
 	if t.e.h.ResolveType == nil {
 		trap("minireflect: func signature resolution needs ResolveType hook")
+	}
+	if ell, ok := x.(*ast.Ellipsis); ok {
+		// a variadic param's In type is the []T slice, like Go.
+		td, err := t.e.h.ResolveType(t.td, ell.Elt)
+		if err != nil {
+			trap("minireflect: %s", err)
+		}
+		return t.e.rtypeOf(&runtime.TypeDef{Kind: runtime.KindSlice, Elem: td,
+			Anon: &ast.ArrayType{Elt: ell.Elt}})
 	}
 	td, err := t.e.h.ResolveType(t.td, x)
 	if err != nil {
