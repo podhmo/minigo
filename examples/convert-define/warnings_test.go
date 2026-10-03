@@ -143,6 +143,52 @@ func main() {
 	}
 }
 
+// TestRunStrictRejectsGenericInstantiation pins the named-composite
+// cul-de-sac: `type SrcList List[int]` unwraps to the instantiation
+// `List[int]` — the spec beyond is parametric ([]T), so no
+// element-wise shape is reachable and the leafCast optimism would emit
+// a cast that cannot compile. The pair warns (and -strict fails).
+func TestRunStrictRejectsGenericInstantiation(t *testing.T) {
+	dir := writeFiles(t, map[string]string{
+		"go.mod": "module example.com/geninst\ngo 1.22\n",
+		"define.go": `
+package main
+
+import (
+	"example.com/geninst/destination"
+	"example.com/geninst/source"
+	"github.com/podhmo/minigo/examples/convert-define/define"
+)
+
+func main() {
+	define.Convert(func(c *define.Config, dst *destination.Dst, src *source.Src) {
+	})
+}
+`,
+		"source/source.go":           "package source\n\ntype List[T any] []T\n\ntype SrcList List[int]\n\ntype Src struct {\n\tV SrcList\n}\n",
+		"destination/destination.go": "package destination\n\ntype List[T any] []T\n\ntype DstList List[int64]\n\ntype Dst struct {\n\tV DstList\n}\n",
+	})
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(cwd)
+
+	outputFile := filepath.Join(dir, "generated.go")
+	err = run(context.Background(), filepath.Join(dir, "define.go"), outputFile, false, "", true /* strict */, false /* check */)
+	want := "-strict: 1 field pair(s) would not compile; no output was written. Fix the define file or the types: add a define.Rule for the type pair, or c.Convert the field with a converter function.\n" +
+		"  - convertSrcToDst: dst.V: no conversion covers source.SrcList -> destination.DstList (generic instantiation)\n"
+	if err == nil {
+		t.Fatal("want an error in strict mode")
+	}
+	if diff := cmp.Diff(want, err.Error()); diff != "" {
+		t.Errorf("mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestRunStrictChecksComputeTypes(t *testing.T) {
 	const prefix = "-strict: 1 field pair(s) would not compile; no output was written. Fix the define file or the types: add a define.Rule for the type pair, or c.Convert the field with a converter function.\n"
 	cases := []struct {

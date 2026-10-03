@@ -934,6 +934,15 @@ func (e *emitter) namedComposite(src string, srcT, dstT *xinspect.TypeExpr) (fra
 	if srcU.SameType(dstU, e.res) {
 		return pure(castExpr(e.im, dstT, src)), true
 	}
+	// Both written types are decls over generic instantiations
+	// (type A List[int] vs type B List[int64]): Unwrap stops at the
+	// instantiation — the spec beyond is parametric ([]T), so the
+	// element types are invisible. leafCast would emit an optimistic
+	// cast that cannot compile; warn and keep the honest raw assignment.
+	if instExpr(srcU) && instExpr(dstU) {
+		e.diag.warn(fmt.Sprintf("no conversion covers %s -> %s (generic instantiation)", getTypeName(e.im, srcT), getTypeName(e.im, dstT)))
+		return pure(src), true
+	}
 	var f frag
 	switch {
 	case isPtr(srcU) && isPtr(dstU):
@@ -973,6 +982,18 @@ func underlyingOf(res xinspect.Resolver, te *xinspect.TypeExpr) *xinspect.TypeEx
 		}
 		te = u
 	}
+}
+
+// instExpr reports whether te spells a generic instantiation —
+// List[int], Pair[K, V]. Unwrap stops there: SymbolID cannot resolve
+// the instantiation itself, so the parametric spec behind it stays
+// invisible.
+func instExpr(te *xinspect.TypeExpr) bool {
+	switch te.Expr().(type) {
+	case *ast.IndexExpr, *ast.IndexListExpr:
+		return true
+	}
+	return false
 }
 
 // castExpr renders `T(x)`; a composite spelling needs parens —
