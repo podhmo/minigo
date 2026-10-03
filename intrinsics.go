@@ -313,8 +313,11 @@ func (e *Engine) installStdlib() {
 		// `var buf bytes.Buffer` / `new(bytes.Buffer)` box a real
 		// *bytes.Buffer so methods (WriteString, String, ...) dispatch
 		// on the host value.
-		"Buffer":          hostType("bytes.Buffer", func() any { return &bytes.Buffer{} }),
-		"NewBuffer":       h.fn("bytes.NewBuffer", func(a []any) (any, error) { return bytes.NewBuffer(byteSlice(a[0])), nil }, bytes.NewBuffer),
+		"Buffer":    hostType("bytes.Buffer", func() any { return &bytes.Buffer{} }),
+		"NewBuffer": h.fn("bytes.NewBuffer", func(a []any) (any, error) { return bytes.NewBuffer(byteSlice(a[0])), nil }, bytes.NewBuffer),
+		"NewReader": h.fn("bytes.NewReader", func(a []any) (any, error) {
+			return &runtime.GoValue{V: bytes.NewReader(byteSlice(a[0]))}, nil
+		}, bytes.NewReader),
 		"NewBufferString": h.fn("bytes.NewBufferString", func(a []any) (any, error) { return bytes.NewBufferString(str(a[0])), nil }, bytes.NewBufferString),
 		"Contains":        h.fn2("bytes.Contains", func(a []any) (any, error) { return bytes.Contains(byteSlice(a[0]), byteSlice(a[1])), nil }, bytes.Contains),
 		"Index":           h.fn2("bytes.Index", func(a []any) (any, error) { return bytes.Index(byteSlice(a[0]), byteSlice(a[1])), nil }),
@@ -364,8 +367,26 @@ func (e *Engine) installStdlib() {
 		"ToUpper":   h.fn("unicode.ToUpper", func(a []any) (any, error) { return unicode.ToUpper(runeOf(a[0])), nil }),
 		"ToTitle":   h.fn("unicode.ToTitle", func(a []any) (any, error) { return unicode.ToTitle(runeOf(a[0])), nil }),
 		"To":        h.fn2("unicode.To", func(a []any) (any, error) { return unicode.To(intOf(a[0]), runeOf(a[1])), nil }),
+		// RangeTable membership checks — encoding/xml's isName builds its
+		// own tables and calls these.
+		"Is": h.fn2("unicode.Is", func(a []any) (any, error) {
+			return unicode.Is(goNative(a[0]).(*unicode.RangeTable), runeOf(a[1])), nil
+		}, unicode.Is),
+		"In": h.fn2("unicode.In", func(a []any) (any, error) {
+			var tabs []*unicode.RangeTable
+			for _, t := range a[1:] {
+				tabs = append(tabs, goNative(t).(*unicode.RangeTable))
+			}
+			return unicode.In(runeOf(a[0]), tabs...), nil
+		}),
 		"UpperCase": int64(unicode.UpperCase), "LowerCase": int64(unicode.LowerCase), "TitleCase": int64(unicode.TitleCase),
 		"MaxRune": int64(unicode.MaxRune), "MaxASCII": int64(unicode.MaxASCII), "ReplacementChar": int64(unicode.ReplacementChar),
+		// stdlib code (encoding/xml's init) builds RangeTables as composite
+		// literals — bind the range structs as host types.
+		"RangeTable": hostType("unicode.RangeTable", func() any { return &unicode.RangeTable{} }),
+		"Range16":    hostType("unicode.Range16", func() any { return &unicode.Range16{} }),
+		"Range32":    hostType("unicode.Range32", func() any { return &unicode.Range32{} }),
+		"CaseRange":  hostType("unicode.CaseRange", func() any { return &unicode.CaseRange{} }),
 	})
 	e.Bind("unicode/utf8", map[string]runtime.Value{
 		"RuneCountInString": h.fn("utf8.RuneCountInString", func(a []any) (any, error) { return utf8.RuneCountInString(str(a[0])), nil }),
