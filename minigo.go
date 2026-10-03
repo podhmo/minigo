@@ -229,9 +229,10 @@ func (e *Engine) newVM() *vm.VM {
 }
 
 // NewSession returns a fresh engine sharing this engine's resolver, build
-// config, specials, host policy and output writer — but with an empty
-// package cache and its own VM. Repeated script runs in a REPL each get
-// isolated state while keeping one resolution/indexing setup.
+// config, specials, host policy, package modes and output writer — but
+// with an empty package cache and its own VM. Repeated script runs in a
+// REPL each get isolated state while keeping one resolution/indexing
+// setup.
 func (e *Engine) NewSession() *Engine {
 	s := &Engine{
 		resolver:   e.resolver,
@@ -240,8 +241,10 @@ func (e *Engine) NewSession() *Engine {
 		initMode:   e.initMode,
 		specials:   e.specials,
 		hostPolicy: e.hostPolicy,
+		pkgModes:   e.pkgModes,
 		out:        e.out,
 		cwd:        e.cwd,
+		args:       e.args,
 		pkgs:       map[string]*runtime.Package{},
 		byDir:      map[string]*runtime.Package{},
 		files:      map[string]*runtime.Package{},
