@@ -855,8 +855,9 @@ func hostIfaceImplemented(u reflect.Type, have map[string]*runtime.Function) boo
 	return true
 }
 
-// AssignableTo reports assignment compatibility (approximation: equal
-// canonical types, or u an interface the type implements).
+// AssignableTo reports Go's assignment rule: identical types, an
+// interface the type implements, or identical underlying types where
+// at least one side is unnamed (a named S -> []int, never S -> T).
 func (t *RType) AssignableTo(u *RType) bool {
 	if u == nil {
 		return false
@@ -864,13 +865,25 @@ func (t *RType) AssignableTo(u *RType) bool {
 	if t == u || t.key == u.key {
 		return true
 	}
+	if t.rt != nil && u.rt != nil {
+		return t.rt.AssignableTo(u.rt)
+	}
 	if u.Kind() == reflect.Interface {
 		return t.Implements(u)
+	}
+	if t.td != nil && u.td != nil &&
+		runtime.TypUnderlyingSpelling(t.td) == runtime.TypUnderlyingSpelling(u.td) {
+		return t.td.Name == "" || u.td.Name == ""
 	}
 	return false
 }
 
-// ConvertibleTo is the loose conversion rule the facade supports.
+// ConvertibleTo reports reflect's conversion rules — narrower than the
+// language's: identical underlying types, non-complex numerics between
+// themselves, complex only to complex, integer<->string (rune), and
+// []byte/[]rune<->string. A slice also converts to an array of the same
+// element. Anything else is false (string -> []int, []int -> string,
+// int -> complex all report false like Go).
 func (t *RType) ConvertibleTo(u *RType) bool {
 	if u == nil {
 		return false
@@ -878,27 +891,88 @@ func (t *RType) ConvertibleTo(u *RType) bool {
 	if t == u || t.key == u.key {
 		return true
 	}
+	if t.rt != nil && u.rt != nil {
+		return t.rt.ConvertibleTo(u.rt)
+	}
+	if t.td != nil && u.td != nil &&
+		runtime.TypUnderlyingSpelling(t.td) == runtime.TypUnderlyingSpelling(u.td) {
+		return true
+	}
 	tk, uk := t.Kind(), u.Kind()
-	numeric := func(k reflect.Kind) bool {
-		return k >= reflect.Int && k <= reflect.Complex128
+	complexKind := func(k reflect.Kind) bool {
+		return k == reflect.Complex64 || k == reflect.Complex128
 	}
-	if numeric(tk) && numeric(uk) {
+	if complexKind(tk) || complexKind(uk) {
+		return complexKind(tk) && complexKind(uk)
+	}
+	intKind := func(k reflect.Kind) bool {
+		return k >= reflect.Int && k <= reflect.Uintptr
+	}
+	floatKind := func(k reflect.Kind) bool {
+		return k == reflect.Float32 || k == reflect.Float64
+	}
+	if (intKind(tk) || floatKind(tk)) && (intKind(uk) || floatKind(uk)) {
 		return true
 	}
-	if (tk == reflect.String && uk == reflect.Slice) || (tk == reflect.Slice && uk == reflect.String) {
-		return true
+	runeSlice := func(rt *RType) bool {
+		if rt.Kind() != reflect.Slice {
+			return false
+		}
+		et := rt.Elem()
+		if et == nil {
+			return false
+		}
+		switch et.Kind() {
+		case reflect.Uint8, reflect.Int32:
+			return true
+		}
+		return false
+	}
+	if intKind(tk) && uk == reflect.String {
+		return true // integer converts to a one-rune string
+	}
+	if tk == reflect.String && runeSlice(u) {
+		return true // string -> []byte / []rune
+	}
+	if runeSlice(t) && uk == reflect.String {
+		return true // []byte / []rune -> string
+	}
+	if tk == reflect.Slice && uk == reflect.Array {
+		// slice -> array needs identical element types
+		return t.Elem() != nil && u.Elem() != nil && t.Elem().key == u.Elem().key
 	}
 	return false
 }
 
-// Comparable reports whether values of the type can be compared.
+// Comparable reports whether values of the type can be compared — the
+// check recurses: a struct is comparable only when every field is, an
+// array only when its element is, like Go's own rule.
 func (t *RType) Comparable() bool {
 	if t.rt != nil {
 		return t.rt.Comparable()
 	}
-	switch t.Kind() {
+	return t.e.comparableTd(t.td, map[*runtime.TypeDef]bool{})
+}
+
+// comparableTd recurses the comparable rule through struct fields and
+// composite elements.
+func (e *Env) comparableTd(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool) bool {
+	if td == nil || seen[td] {
+		return true
+	}
+	seen[td] = true
+	switch e.kindOfTd(td) {
 	case reflect.Slice, reflect.Map, reflect.Func:
 		return false
+	case reflect.Struct:
+		for _, ft := range e.fieldTypes(td) {
+			if ft != nil && !e.comparableTd(ft, seen) {
+				return false
+			}
+		}
+		return true
+	case reflect.Array, reflect.Pointer:
+		return e.comparableTd(e.elemOf(td), seen)
 	}
 	return true
 }
