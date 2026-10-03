@@ -211,11 +211,11 @@ textually — candidates for the inspect wishlist, not the example's:
   `struct{ T }` lifts non-pointer receivers, `struct{ *T }` and
   interface embeds lift all). `EmbedEvent` joins the `-variants=` list
   and earns `oneofgen` like the compiler already accepted.
-- **`inspect.SymbolID` returns `runtime.NIL` for non-named exprs** — a
-  value the script can't nil-check against its real-Go struct signature
-  (`sid != nil` doesn't compile on the facade). Canonical names are
-  used instead; a `*SymbolID` or `(SymbolID, bool)` shape would let the
-  script ask the question directly.
+- ~~**`inspect.SymbolID` returns `runtime.NIL` for non-named exprs**~~ —
+  fixed: it now returns `*runtime.SymbolID` — nil for non-named
+  exprs — so `sid == nil` is both valid Go and correct under minigo.
+  `TypeRefName` keys on the id's fields directly instead of parsing
+  `CanonicalName`.
 - **No subtype lookup** — the index is per-declaration, so "every type
   implementing I" is derived by scanning method sets across the walked
   closure; `-variants=` is that derivation.

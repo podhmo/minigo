@@ -16,21 +16,21 @@ import (
 // TypeRefName reports the canonical "import/path.Name" of the type a
 // type expression names, or "" when it names nothing resolvable — a
 // builtin, a composite, or a selector that is not a package qualifier.
-// CanonicalName already collapses local aliases through the declaring
-// file's import table, so the same type read through two files reports
-// the same name.
+// SymbolID collapses local aliases through the declaring file's import
+// table, so the same type read through two files reports the same id.
 func TypeRefName(te *inspect.TypeExpr) string {
 	if te == nil || (te.Kind != "Ident" && te.Kind != "SelectorExpr" && !strings.HasPrefix(te.Kind, "reflect:")) {
 		return ""
 	}
-	cn := te.CanonicalName()
-	// canonical names either carry a package path (contains "/") or are
-	// bare predeclared/builtin spellings — package paths without "/" are
-	// not distinguished here.
-	if !strings.Contains(cn, "/") {
+	sid := inspect.SymbolID(te)
+	if sid == nil {
+		return "" // names nothing — a composite or unqualified selector
+	}
+	// package paths without "/" are not distinguished from builtins.
+	if !strings.Contains(sid.PackagePath, "/") {
 		return ""
 	}
-	return cn
+	return sid.PackagePath + "." + sid.Name
 }
 
 // TypeRefs collects the named type references inside a type expression,

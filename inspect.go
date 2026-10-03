@@ -256,7 +256,7 @@ func (e *Engine) installInspect() {
 				if !ok {
 					return runtime.NIL, nil
 				}
-				return &runtime.GoValue{V: sid}, nil
+				return &runtime.GoValue{V: &sid}, nil
 			}
 			s, err := declViewOf(args[0])
 			if err != nil {
@@ -266,7 +266,7 @@ func (e *Engine) installInspect() {
 			if s.Package != nil {
 				path = s.Package.Path
 			}
-			return &runtime.GoValue{V: runtime.SymbolID{PackagePath: path, Name: s.Name}}, nil
+			return &runtime.GoValue{V: &runtime.SymbolID{PackagePath: path, Name: s.Name}}, nil
 		}),
 		// ---- syntax layer ----
 		"Fields": bf("Fields", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {

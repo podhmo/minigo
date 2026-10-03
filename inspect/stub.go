@@ -146,8 +146,12 @@ func UnRef(te *TypeExpr) *TypeExpr { panic("minigo intrinsic") }
 // Origin chases pointers and type transitions to the base expression.
 func Origin(te *TypeExpr) *TypeExpr { panic("minigo intrinsic") }
 
-// SymbolID resolves a type expression to the SymbolID it names.
-func SymbolID(te *TypeExpr) runtime.SymbolID { panic("minigo intrinsic") }
+// SymbolID resolves a type expression to the SymbolID it names — nil
+// when it names nothing (a composite like []T, or an instantiation
+// like Pair[int] whose base is a child, not the expression itself).
+// The pointer return is the (SymbolID, bool) question a script can
+// ask directly: sid == nil compiles and reads as real Go.
+func SymbolID(te *TypeExpr) *runtime.SymbolID { panic("minigo intrinsic") }
 
 // Resolve follows a type expression to its declaration view.
 func Resolve(te *TypeExpr) *Decl { panic("minigo intrinsic") }
