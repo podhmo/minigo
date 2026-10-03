@@ -1307,11 +1307,10 @@ func (t *RType) In(i int) *RType {
 	if t.rt != nil {
 		return t.e.hostTypeOf(t.rt.In(i))
 	}
-	x := funcParam(t, i, false)
-	if x == nil {
+	if funcSig(t) == nil {
 		trap("In of non-func type %s", t.String())
 	}
-	return t.resolveIn(x)
+	return t.resolveIn(funcParam(t, i, false))
 }
 
 // Out resolves a func type's i'th output type.
@@ -1319,11 +1318,10 @@ func (t *RType) Out(i int) *RType {
 	if t.rt != nil {
 		return t.e.hostTypeOf(t.rt.Out(i))
 	}
-	x := funcParam(t, i, true)
-	if x == nil {
+	if funcSig(t) == nil {
 		trap("Out of non-func type %s", t.String())
 	}
-	return t.resolveIn(x)
+	return t.resolveIn(funcParam(t, i, true))
 }
 
 // IsVariadic reports whether a func type is variadic.
@@ -1375,29 +1373,31 @@ func funcSig(t *RType) *ast.FuncType {
 }
 
 // funcParam resolves the i'th param/result expr of a FuncType,
-// counting unnamed entries singly.
+// counting unnamed entries singly. The caller must have verified
+// funcSig is non-nil; an out-of-range index panics like Go — a bare
+// 'index out of range' runtime error, not a reflect-worded one.
 func funcParam(t *RType, i int, results bool) ast.Expr {
 	ft := funcSig(t)
-	if ft == nil {
-		return nil
-	}
 	list := ft.Params
 	if results {
 		list = ft.Results
 	}
-	if list == nil {
-		return nil
-	}
 	n := 0
-	for _, f := range list.List {
-		cnt := len(f.Names)
-		if cnt == 0 {
-			cnt = 1
+	if list != nil {
+		for _, f := range list.List {
+			cnt := len(f.Names)
+			if cnt == 0 {
+				cnt = 1
+			}
+			if i >= n && i < n+cnt {
+				return f.Type
+			}
+			n += cnt
 		}
-		if i < n+cnt {
-			return f.Type
-		}
-		n += cnt
 	}
+	if i < 0 {
+		panic(runtime.RuntimePanic(fmt.Sprintf("index out of range [%d]", i)))
+	}
+	panic(runtime.BoundsPanic(i, n))
 	return nil
 }
