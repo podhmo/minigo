@@ -950,6 +950,14 @@ func (v *VM) invokeDeferred(d deferredCall) {
 		}
 		break
 	}
+	// calling a nil function value panics like a nil deref in Go — at
+	// the deferred call's invocation, not when `defer` registered it.
+	if callee == nil || callee == runtime.NIL {
+		panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "invalid memory address or nil pointer dereference"}})
+	}
+	if _, ok := asTypedNil(callee); ok {
+		panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "invalid memory address or nil pointer dereference"}})
+	}
 	fr, err := v.prepFrame(callee, d.args)
 	if err != nil {
 		panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
