@@ -1,0 +1,8 @@
+package app
+
+// Code generated directives below are managed by gen-sync. DO NOT EDIT.
+//go:generate stringer -type=Retired
+
+// Gone used to back the managed line above; the sync should now find a
+// file whose managed region is empty.
+type Gone string
