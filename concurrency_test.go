@@ -3,7 +3,6 @@ package minigo_test
 import (
 	"context"
 	"strings"
-	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -286,22 +285,20 @@ func TestDetachedLeak(t *testing.T) {
 // the assertion: it is a net count, so one unrelated goroutine death in
 // the window masks the leaked +1 permanently (the observed CI flake).
 // Instead the spawned goroutine proves itself — the bound builtin reports
-// that it entered a host call, then parks it on a WaitGroup the test owns.
+// that it reached the park point, and the only ops between that report and
+// inner.Wait() (member load + reflect call, neither watches proc.done)
+// guarantee it parks in a real WaitGroup.Wait: that is the leak.
 func TestHostParkLeak(t *testing.T) {
 	parked := make(chan struct{})
-	var parkWg sync.WaitGroup
-	parkWg.Add(1)
-	t.Cleanup(parkWg.Done) // release the leaked goroutine at test end
 	e := newEngine(t)
 	e.Bind("parkprobe", map[string]runtime.Value{
-		"Wait": &runtime.BuiltinFunc{
-			Name: "parkprobe.Wait",
+		"Parked": &runtime.BuiltinFunc{
+			Name: "parkprobe.Parked",
 			// runs on the spawned goroutine: by the time Run returns
 			// its process is dead, yet the goroutine still enters —
 			// and stays inside — a host call: that is the leak.
 			Fn: func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
 				close(parked)
-				parkWg.Wait()
 				return nil, nil
 			},
 		},
@@ -310,7 +307,7 @@ func TestHostParkLeak(t *testing.T) {
 	select {
 	case <-parked:
 	case <-time.After(30 * time.Second): // anti-hang bound, not a timing check
-		t.Fatal("spawned goroutine never entered the host park call")
+		t.Fatal("spawned goroutine never reached the host park call")
 	}
 }
 
