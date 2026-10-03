@@ -1,0 +1,1 @@
+0: panic: reflect: Elem of invalid type func(int) int

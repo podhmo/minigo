@@ -1,0 +1,4 @@
+SILENT/panic-message (seen ×512)
+shape:  seq:reflect.ValueOf(r_s0) .Convert(reflect.TypeOf(r_i0)) 
+go:     panic: reflect.Value.Convert: value of type string cannot be converted to type int
+minigo: panic: reflect: reflect: call of reflect.Value.Int on string Value

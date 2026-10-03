@@ -144,7 +144,21 @@ func foldDerived(bugs map[string]*finding) {
 		b := bugs[keys[i]]
 		for _, ka := range keys[:i] {
 			a := bugs[ka]
-			if a.Probe.Root.Op == "var" || a.Probe.Size() >= b.Probe.Size() {
+			if a.Probe.Size() >= b.Probe.Size() {
+				continue
+			}
+			if a.Probe.R != nil || b.Probe.R != nil {
+				// chain probes fold by shape prefix: a reduced chain is a
+				// literal prefix of the longer one it came from.
+				if a.Probe.R != nil && b.Probe.R != nil && strings.HasPrefix(b.Probe.Shape(), a.Probe.Shape()) {
+					a.Derived = append(a.Derived, b)
+					a.Count += b.Count
+					delete(bugs, keys[i])
+					break
+				}
+				continue
+			}
+			if a.Probe.Root.Op == "var" {
 				continue
 			}
 			if strings.Contains(b.Probe.Root.Expr(), a.Probe.Root.Expr()) {
@@ -165,7 +179,7 @@ func cmdGen(ctx context.Context, args []string) error {
 	batches := fs.Int("batches", 8, "number of generated programs")
 	nprobes := fs.Int("probes", 200, "probes per program")
 	depth := fs.Int("depth", 4, "max expression depth")
-	domain := fs.String("domain", "text", "probe domain: text (strings/strconv/fmt/collections — minigo's main use) or num (sized ints, shifts, conversions)")
+	domain := fs.String("domain", "text", "probe domain: text (strings/strconv/fmt/collections), num (sized ints, shifts, conversions), or reflect (facade operation chains)")
 	shrinkRounds := fs.Int("shrink", 12, "max shrink rounds per finding (0 disables)")
 	perBucket := fs.Int("per-bucket", 2, "findings shrunk per fingerprint group")
 	emit := fs.String("emit", "", "write each reduced bug as <dir>/<slug>/{main.go,want.stdout,PENDING} — the layout TestDiffRegressions runs")
@@ -391,10 +405,17 @@ func coarseShape(s string) string {
 }
 
 // fingerprint is the pre-shrink grouping key: how the line diverged, the
-// types on both sides, the statement context and the root operator.
+// types on both sides, the statement context and the root operator (the
+// last chain step for reflect probes).
 func fingerprint(f finding) string {
 	w, g := parseObs(f.Result.Want), parseObs(f.Result.Got)
-	return strings.Join([]string{string(f.Result.Verdict), f.Result.Symptom, w.Type, g.Type, f.Probe.Ctx, f.Probe.Root.Op}, "|")
+	op := ""
+	if f.Probe.R != nil {
+		op = f.Probe.R.Steps[len(f.Probe.R.Steps)-1].Text
+	} else {
+		op = f.Probe.Root.Op
+	}
+	return strings.Join([]string{string(f.Result.Verdict), f.Result.Symptom, w.Type, g.Type, f.Probe.Ctx, op}, "|")
 }
 
 func prelude(d *Domain) string {
