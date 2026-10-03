@@ -245,6 +245,12 @@ type compiler struct {
 	pendingGotos  []pendingGoto
 	pendingLabels []*labelInfo // labels waiting to be claimed by a construct
 	falls         *[]int       // fallthrough jump sites in the current case body
+
+	// symName is the enclosing function's Go-style symbol name
+	// ("main.main"); litCount numbers its func literals so a literal
+	// spells "main.main.func1" like the toolchain names it.
+	symName  string
+	litCount int
 }
 
 func (c *compiler) emit(op bytecode.Op, a, b int, pos token.Pos) int {
@@ -318,7 +324,10 @@ func (c *compiler) refRef(name string, pos token.Pos) {
 
 // Func compiles fn.Decl into fn.Chunk.
 func Func(fn *runtime.Function) error {
-	c := &compiler{pkg: fn.Pkg, file: fn.File, fs: newFScope(nil), ch: &bytecode.Chunk{Name: fn.Name}, labels: map[string]*labelInfo{}, binds: fn.Binds}
+	c := &compiler{pkg: fn.Pkg, file: fn.File, fs: newFScope(nil), ch: &bytecode.Chunk{Name: fn.Name}, labels: map[string]*labelInfo{}, binds: fn.Binds, symName: fn.Name}
+	if fn.Pkg != nil {
+		c.symName = fn.Pkg.Name + "." + fn.Name
+	}
 	c.fs.pushBlock()
 
 	// Params (and the receiver for methods) are pre-bound by the VM into
@@ -1935,7 +1944,10 @@ func (c *compiler) expr(e ast.Expr) {
 		}
 	case *ast.SelectorExpr:
 		c.expr(x.X)
-		c.emit(bytecode.OpSelect, c.nameIdx(x.Sel.Name), 0, x.Pos())
+		// the member's own position — Go reports a select failure at the
+		// .Sel token, which matters when the callee wraps to the next
+		// line (`v.\n\t\tA()` reports A's line, not v's).
+		c.emit(bytecode.OpSelect, c.nameIdx(x.Sel.Name), 0, x.Sel.Pos())
 	case *ast.IndexExpr:
 		// OpInstantiate doubles as indexing: non-generic bases fall back to
 		// an index lookup, so `a[i]` and `F[T]` share one encoding. A type
@@ -2642,8 +2654,13 @@ func (c *compiler) typeExpr(e ast.Expr) {
 func (c *compiler) funcLit(x *ast.FuncLit) {
 	// a synthetic Decl carries the signature so inference can unify a
 	// funclit argument against `func(E) R`-shaped parameters.
-	inner := &runtime.Function{Pkg: c.pkg, File: c.file, Name: "<funclit>", Decl: &ast.FuncDecl{Type: x.Type, Body: x.Body}}
-	ic := &compiler{pkg: c.pkg, file: c.file, fs: newFScope(c.fs), ch: &bytecode.Chunk{Name: "<funclit>"}, labels: map[string]*labelInfo{}, binds: c.binds}
+	c.litCount++
+	litName := c.symName + ".func" + strconv.Itoa(c.litCount)
+	if c.symName == "" {
+		litName = "<funclit>"
+	}
+	inner := &runtime.Function{Pkg: c.pkg, File: c.file, Name: litName, Decl: &ast.FuncDecl{Type: x.Type, Body: x.Body}}
+	ic := &compiler{pkg: c.pkg, file: c.file, fs: newFScope(c.fs), ch: &bytecode.Chunk{Name: litName}, labels: map[string]*labelInfo{}, binds: c.binds, symName: litName}
 	ic.fs.pushBlock()
 	nparams := 0
 	var coerces []paramCoerce
