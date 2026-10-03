@@ -53,10 +53,11 @@ func (v *RValue) ifaceVal() any {
 	return runtime.Copy(v.get())
 }
 
-// mustValid traps on a zero/invalid Value like reflect does.
-func (v *RValue) mustValid() {
+// mustValid traps on a zero/invalid Value like reflect does —
+// `reflect: call of reflect.Value.X on zero Value`.
+func (v *RValue) mustValid(op string) {
 	if !v.IsValid() {
-		trap("call of method on zero Value")
+		trap("call of reflect.Value.%s on zero Value", op)
 	}
 }
 
@@ -374,7 +375,7 @@ func kindOfValue(x runtime.Value) reflect.Kind {
 
 // Type reports the value's type.
 func (v *RValue) Type() *RType {
-	v.mustValid()
+	v.mustValid("Type")
 	if v.host() {
 		return v.e.hostTypeOf(v.rv.Type())
 	}
@@ -390,7 +391,7 @@ func (v *RValue) Type() *RType {
 
 // Interface returns the value as any.
 func (v *RValue) Interface() any {
-	v.mustValid()
+	v.mustValid("Interface")
 	if v.ro {
 		trap("reflect.Value.Interface: cannot return value obtained from unexported field or method")
 	}
@@ -404,7 +405,7 @@ func (v *RValue) CanInterface() bool {
 
 // Elem dereferences a pointer or interface value.
 func (v *RValue) Elem() *RValue {
-	v.mustValid()
+	v.mustValid("Elem")
 	if v.host() {
 		switch v.rv.Kind() {
 		case reflect.Ptr, reflect.Interface:
@@ -444,7 +445,7 @@ func (v *RValue) Elem() *RValue {
 
 // Addr takes the address of an addressable value.
 func (v *RValue) Addr() *RValue {
-	v.mustValid()
+	v.mustValid("Addr")
 	if v.host() {
 		if !v.rv.CanAddr() {
 			trap("call of reflect.Value.Addr on unaddressable value")
@@ -492,7 +493,7 @@ func (v *RValue) expectKind(name string, kinds ...reflect.Kind) {
 
 // IsNil reports nil-ness for nilable kinds.
 func (v *RValue) IsNil() bool {
-	v.mustValid()
+	v.mustValid("IsNil")
 	if v.host() {
 		switch v.rv.Kind() {
 		case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
@@ -520,7 +521,7 @@ func (v *RValue) IsNil() bool {
 // slice or map is never zero even when empty, an array is zero only
 // when every element is, and the call panics on an invalid Value.
 func (v *RValue) IsZero() bool {
-	v.mustValid()
+	v.mustValid("IsZero")
 	if v.host() {
 		return v.rv.IsZero()
 	}
@@ -567,7 +568,7 @@ func (v *RValue) IsZero() bool {
 
 // Field reports a struct's i'th field.
 func (v *RValue) Field(i int) *RValue {
-	v.mustValid()
+	v.mustValid("Field")
 	if v.host() {
 		rv := v.rv
 		if rv.Kind() == reflect.Ptr {
@@ -624,7 +625,7 @@ func (v *RValue) Field(i int) *RValue {
 
 // NumField reports a struct value's field count.
 func (v *RValue) NumField() int {
-	v.mustValid()
+	v.mustValid("NumField")
 	if v.host() {
 		rv := v.rv
 		for rv.Kind() == reflect.Ptr {
@@ -651,7 +652,7 @@ func (v *RValue) FieldByIndex(idx []int) *RValue {
 // FieldByName looks up a struct field by name, including promotion
 // through embedded fields (value or pointer).
 func (v *RValue) FieldByName(name string) *RValue {
-	v.mustValid()
+	v.mustValid("FieldByName")
 	if v.host() {
 		rv := v.rv
 		for rv.Kind() == reflect.Ptr {
@@ -717,7 +718,7 @@ func (v *RValue) fieldByNameRec(s *runtime.Struct, name string) *RValue {
 
 // Len reports len() of a slice/array/string/map/chan value.
 func (v *RValue) Len() int {
-	v.mustValid()
+	v.mustValid("Len")
 	if v.host() {
 		return v.rv.Len()
 	}
@@ -745,7 +746,7 @@ func (v *RValue) SetLen(n int) {
 		v.rv.SetLen(n)
 		return
 	}
-	v.mustValid()
+	v.mustValid("SetLen")
 	if v.ref == nil {
 		trap("reflect.Value.SetLen using unaddressable value")
 	}
@@ -770,7 +771,7 @@ func (v *RValue) SetLen(n int) {
 
 // Cap reports cap() of a slice/array/chan value.
 func (v *RValue) Cap() int {
-	v.mustValid()
+	v.mustValid("Cap")
 	if v.host() {
 		return v.rv.Cap()
 	}
@@ -788,7 +789,7 @@ func (v *RValue) Cap() int {
 
 // Index reports a slice/array/string's i'th element.
 func (v *RValue) Index(i int) *RValue {
-	v.mustValid()
+	v.mustValid("Index")
 	if v.host() {
 		if v.rv.Kind() == reflect.String {
 			return &RValue{e: v.e, vc: v.vc, rv: v.rv.Index(i)}
@@ -835,7 +836,7 @@ func (v *RValue) Index(i int) *RValue {
 
 // Slice produces a subslice view sharing the backing store.
 func (v *RValue) Slice(i, j int) *RValue {
-	v.mustValid()
+	v.mustValid("Slice")
 	if v.host() {
 		return v.e.wrapHost(v.vc, v.rv.Slice(i, j))
 	}
@@ -862,7 +863,7 @@ func (v *RValue) Slice(i, j int) *RValue {
 
 // MapIndex looks up a map value; missing keys give an invalid Value.
 func (v *RValue) MapIndex(k *RValue) *RValue {
-	v.mustValid()
+	v.mustValid("MapIndex")
 	if v.host() {
 		kr, err := toHost(k.ifaceVal(), v.rv.Type().Key())
 		if err != nil {
@@ -889,7 +890,7 @@ func (v *RValue) MapIndex(k *RValue) *RValue {
 
 // MapKeys reports the map's keys.
 func (v *RValue) MapKeys() []*RValue {
-	v.mustValid()
+	v.mustValid("MapKeys")
 	if v.host() {
 		var out []*RValue
 		for _, k := range v.rv.MapKeys() {
@@ -914,7 +915,7 @@ func (v *RValue) MapKeys() []*RValue {
 
 // SetMapIndex assigns or deletes a map entry.
 func (v *RValue) SetMapIndex(k, x *RValue) {
-	v.mustValid()
+	v.mustValid("SetMapIndex")
 	if v.host() {
 		kr, err := toHost(k.ifaceVal(), v.rv.Type().Key())
 		if err != nil {
@@ -959,7 +960,7 @@ func (v *RValue) SetMapIndex(k, x *RValue) {
 
 // MapRange starts a map iteration.
 func (v *RValue) MapRange() *MapIter {
-	v.mustValid()
+	v.mustValid("MapRange")
 	if v.host() {
 		return &MapIter{e: v.e, vc: v.vc, hit: v.rv.MapRange()}
 	}
@@ -1052,7 +1053,7 @@ func (v *RValue) SetIterValue(it *MapIter) {
 
 // Int reads an integer value.
 func (v *RValue) Int() int64 {
-	v.mustValid()
+	v.mustValid("Int")
 	if v.host() {
 		return v.rv.Int()
 	}
@@ -1076,7 +1077,7 @@ func (v *RValue) Int() int64 {
 
 // Uint reads an unsigned value.
 func (v *RValue) Uint() uint64 {
-	v.mustValid()
+	v.mustValid("Uint")
 	if v.host() {
 		return v.rv.Uint()
 	}
@@ -1098,7 +1099,7 @@ func (v *RValue) Uint() uint64 {
 
 // Float reads a float value.
 func (v *RValue) Float() float64 {
-	v.mustValid()
+	v.mustValid("Float")
 	if v.host() {
 		return v.rv.Float()
 	}
@@ -1124,7 +1125,7 @@ func (v *RValue) Float() float64 {
 
 // Bool reads a bool value.
 func (v *RValue) Bool() bool {
-	v.mustValid()
+	v.mustValid("Bool")
 	if v.host() {
 		return v.rv.Bool()
 	}
@@ -1149,7 +1150,7 @@ func (v *RValue) Bool() bool {
 // writes through it reach the original slice (an unexported field's
 // slice included: Go's Bytes ignores the read-only flag).
 func (v *RValue) Bytes() any {
-	v.mustValid()
+	v.mustValid("Bytes")
 	if v.host() {
 		return v.rv.Bytes()
 	}
@@ -1199,7 +1200,7 @@ func (v *RValue) String() string {
 
 // Complex reads a complex value.
 func (v *RValue) Complex() complex128 {
-	v.mustValid()
+	v.mustValid("Complex")
 	if v.host() {
 		return v.rv.Complex()
 	}
@@ -1255,7 +1256,7 @@ func (v *RValue) tagged(val runtime.Value) runtime.Value {
 // to the target's declared type, like `reflect.Set: value of type
 // string is not assignable to type int`.
 func (v *RValue) Set(x *RValue) {
-	v.mustValid()
+	v.mustValid("Set")
 	if x == nil || !x.IsValid() {
 		trap("reflect.Value.Set: value of type %s is not assignable to type %s",
 			"<invalid>", v.Type().String())
@@ -1268,8 +1269,16 @@ func (v *RValue) Set(x *RValue) {
 		v.rv.Set(rv)
 		return
 	}
+	// Go's order: the target must be settable before the source's
+	// assignability is even considered.
+	if v.ro {
+		trap("reflect.Value.Set using value obtained using unexported field")
+	}
+	if v.ref == nil {
+		trap("reflect.Value.Set using unaddressable value")
+	}
 	if vt, xt := v.Type(), x.Type(); vt != nil && xt != nil && !xt.AssignableTo(vt) {
-		trap("reflect.Set: value of type %s is not assignable to type %s", xt.String(), vt.String())
+		trap("Set: value of type %s is not assignable to type %s", xt.String(), vt.String())
 	}
 	val := x.get()
 	if x.host() {
@@ -1280,7 +1289,7 @@ func (v *RValue) Set(x *RValue) {
 
 // SetBool writes a bool.
 func (v *RValue) SetBool(b bool) {
-	v.mustValid()
+	v.mustValid("SetBool")
 	if v.host() {
 		v.rv.SetBool(b)
 		return
@@ -1357,7 +1366,7 @@ func truncInt(td *runtime.TypeDef, x int64) int64 {
 
 // SetInt writes an int64, truncated to the declared width.
 func (v *RValue) SetInt(x int64) {
-	v.mustValid()
+	v.mustValid("SetInt")
 	if v.host() {
 		v.rv.SetInt(x)
 		return
@@ -1370,7 +1379,7 @@ func (v *RValue) SetInt(x int64) {
 // SetUint writes a uint64 (kept as int64 in the script domain),
 // truncated to the declared width.
 func (v *RValue) SetUint(x uint64) {
-	v.mustValid()
+	v.mustValid("SetUint")
 	if v.host() {
 		v.rv.SetUint(x)
 		return
@@ -1386,7 +1395,7 @@ func (v *RValue) SetUint(x uint64) {
 
 // SetFloat writes a float64.
 func (v *RValue) SetFloat(x float64) {
-	v.mustValid()
+	v.mustValid("SetFloat")
 	if v.host() {
 		v.rv.SetFloat(x)
 		return
@@ -1397,7 +1406,7 @@ func (v *RValue) SetFloat(x float64) {
 
 // SetComplex writes a complex value.
 func (v *RValue) SetComplex(x complex128) {
-	v.mustValid()
+	v.mustValid("SetComplex")
 	if v.host() {
 		v.rv.SetComplex(x)
 		return
@@ -1407,7 +1416,7 @@ func (v *RValue) SetComplex(x complex128) {
 
 // SetString writes a string.
 func (v *RValue) SetString(x string) {
-	v.mustValid()
+	v.mustValid("SetString")
 	if v.host() {
 		v.rv.SetString(x)
 		return
@@ -1418,7 +1427,7 @@ func (v *RValue) SetString(x string) {
 
 // SetBytes writes a []byte.
 func (v *RValue) SetBytes(x []byte) {
-	v.mustValid()
+	v.mustValid("SetBytes")
 	if v.host() {
 		v.rv.SetBytes(x)
 		return
@@ -1437,7 +1446,7 @@ func (v *RValue) SetBytes(x []byte) {
 
 // Call invokes a func value.
 func (v *RValue) Call(in []*RValue) []*RValue {
-	v.mustValid()
+	v.mustValid("Call")
 	if v.host() {
 		args := make([]reflect.Value, len(in))
 		mt := v.rv.Type()
@@ -1538,7 +1547,7 @@ func (v *RValue) callSig() *ast.FuncType {
 // Go assigns the slice to the variadic parameter, so the script side
 // spreads its elements into the trailing args, mirroring `f(xs...)`.
 func (v *RValue) CallSlice(in []*RValue) []*RValue {
-	v.mustValid()
+	v.mustValid("CallSlice")
 	if v.host() {
 		mt := v.rv.Type()
 		args := make([]reflect.Value, len(in))
@@ -1573,7 +1582,7 @@ func (v *RValue) CallSlice(in []*RValue) []*RValue {
 		}
 	}
 	last := in[len(in)-1]
-	last.mustValid()
+	last.mustValid("CallSlice")
 	var s *runtime.Slice
 	switch x := last.get().(type) {
 	case *runtime.Slice:
@@ -1595,7 +1604,7 @@ func (v *RValue) CallSlice(in []*RValue) []*RValue {
 // Method returns the value's i'th method (not supported: ordering
 // script method sets needs the typedef machinery).
 func (v *RValue) Method(i int) *RValue {
-	v.mustValid()
+	v.mustValid("Method")
 	if v.host() {
 		return v.e.wrapHost(v.vc, v.rv.Method(i))
 	}
@@ -1608,7 +1617,7 @@ func (v *RValue) Method(i int) *RValue {
 
 // NumMethod reports the exported bound method count.
 func (v *RValue) NumMethod() int {
-	v.mustValid()
+	v.mustValid("NumMethod")
 	if v.host() {
 		return v.rv.NumMethod()
 	}
@@ -1618,7 +1627,7 @@ func (v *RValue) NumMethod() int {
 // MethodByName binds an exported method by name through the caller's
 // member dispatch — unexported members stay invisible, like Go.
 func (v *RValue) MethodByName(name string) *RValue {
-	v.mustValid()
+	v.mustValid("MethodByName")
 	if v.host() {
 		m := v.rv.MethodByName(name)
 		return v.e.wrapHost(v.vc, m)
@@ -1641,7 +1650,7 @@ func (v *RValue) MethodByName(name string) *RValue {
 // Convert converts the value to type t for the subset the facade
 // supports (numeric widening, string<->[]byte).
 func (v *RValue) Convert(t *RType) *RValue {
-	v.mustValid()
+	v.mustValid("Convert")
 	if t == nil {
 		trap("reflect.Value.Convert to nil type")
 	}
@@ -1858,7 +1867,7 @@ func (v *RValue) OverflowComplex(x complex128) bool {
 
 // Recv receives from a chan value.
 func (v *RValue) Recv() (*RValue, bool) {
-	v.mustValid()
+	v.mustValid("Recv")
 	if v.host() {
 		x, ok := v.rv.Recv()
 		return v.e.wrapHost(v.vc, x), ok
@@ -1873,7 +1882,7 @@ func (v *RValue) Recv() (*RValue, bool) {
 
 // Send sends on a chan value.
 func (v *RValue) Send(x *RValue) {
-	v.mustValid()
+	v.mustValid("Send")
 	if v.host() {
 		xr, err := toHost(x.ifaceVal(), v.rv.Type().Elem())
 		if err != nil {
@@ -1891,7 +1900,7 @@ func (v *RValue) Send(x *RValue) {
 
 // TryRecv polls a chan value.
 func (v *RValue) TryRecv() (*RValue, bool) {
-	v.mustValid()
+	v.mustValid("TryRecv")
 	if v.host() {
 		x, ok := v.rv.TryRecv()
 		return v.e.wrapHost(v.vc, x), ok
@@ -1910,7 +1919,7 @@ func (v *RValue) TryRecv() (*RValue, bool) {
 
 // TrySend attempts a non-blocking send.
 func (v *RValue) TrySend(x *RValue) bool {
-	v.mustValid()
+	v.mustValid("TrySend")
 	if v.host() {
 		xr, err := toHost(x.ifaceVal(), v.rv.Type().Elem())
 		if err != nil {
@@ -1932,7 +1941,7 @@ func (v *RValue) TrySend(x *RValue) bool {
 
 // Close closes a chan value.
 func (v *RValue) Close() {
-	v.mustValid()
+	v.mustValid("Close")
 	if v.host() {
 		v.rv.Close()
 		return

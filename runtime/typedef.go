@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 	"go/ast"
+	"strconv"
 	"strings"
 
 	"github.com/podhmo/minigo/syntax"
@@ -278,6 +279,165 @@ func typSpelling(e ast.Expr, ctx *TypeDef, under bool) string {
 		return sb.String()
 	}
 	return fmt.Sprintf("%T", e)
+}
+
+// TypGoSpelling renders e the way Go's reflect.Type.String does —
+// unlike TypSpelling (an identity key), the display form drops result
+// parentheses for single results, writes variadics as `...T`, and pads
+// interface/struct braces: `func(int) int`, `interface { M(int) string }`,
+// `struct { x int "tag" }`. Names of params/results are dropped, and
+// `a, b int` expands to `a int, b int` like the go/types printer.
+func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
+	var binds map[string]Value
+	var file *syntax.File
+	var pkg *Package
+	if ctx != nil {
+		binds, file, pkg = ctx.Binds, ctx.File, ctx.Pkg
+	}
+	switch t := e.(type) {
+	case *ast.Ident:
+		if btd := boundTypedef(binds, t.Name); btd != nil {
+			return typBoundSpellingU(btd, false)
+		}
+		if predeclaredTypeName(t.Name) {
+			return canonBasicName(t.Name)
+		}
+		if pkg != nil {
+			return pkg.Path + "." + t.Name
+		}
+		return canonBasicName(t.Name)
+	case *ast.StarExpr:
+		return "*" + TypGoSpelling(t.X, ctx)
+	case *ast.ArrayType:
+		if t.Len != nil {
+			return "[" + typLenName(t.Len) + "]" + TypGoSpelling(t.Elt, ctx)
+		}
+		return "[]" + TypGoSpelling(t.Elt, ctx)
+	case *ast.Ellipsis:
+		return "..." + TypGoSpelling(t.Elt, ctx)
+	case *ast.MapType:
+		return "map[" + TypGoSpelling(t.Key, ctx) + "]" + TypGoSpelling(t.Value, ctx)
+	case *ast.ChanType:
+		switch t.Dir {
+		case ast.RECV:
+			return "<-chan " + TypGoSpelling(t.Value, ctx)
+		case ast.SEND:
+			return "chan<- " + TypGoSpelling(t.Value, ctx)
+		}
+		return "chan " + TypGoSpelling(t.Value, ctx)
+	case *ast.ParenExpr:
+		return TypGoSpelling(t.X, ctx)
+	case *ast.SelectorExpr:
+		if id, ok := t.X.(*ast.Ident); ok {
+			if p := typImportPath(file, id.Name); p != "" {
+				return p + "." + t.Sel.Name
+			}
+		}
+		return TypGoSpelling(t.X, ctx) + "." + t.Sel.Name
+	case *ast.IndexExpr:
+		return TypGoSpelling(t.X, ctx) + "[" + TypGoSpelling(t.Index, ctx) + "]"
+	case *ast.IndexListExpr:
+		s := TypGoSpelling(t.X, ctx) + "["
+		for i, x := range t.Indices {
+			if i > 0 {
+				s += ","
+			}
+			s += TypGoSpelling(x, ctx)
+		}
+		return s + "]"
+	case *ast.InterfaceType:
+		if t.Methods == nil || len(t.Methods.List) == 0 {
+			return "interface {}"
+		}
+		var ms []string
+		for _, m := range t.Methods.List {
+			if len(m.Names) == 0 {
+				// embedded interface — the type itself stands in
+				ms = append(ms, TypGoSpelling(m.Type, ctx))
+				continue
+			}
+			for _, n := range m.Names {
+				if ft, ok := m.Type.(*ast.FuncType); ok {
+					ms = append(ms, n.Name+goFuncSig(ft, ctx))
+				}
+			}
+		}
+		return "interface { " + strings.Join(ms, "; ") + " }"
+	case *ast.StructType:
+		if t.Fields == nil || len(t.Fields.List) == 0 {
+			return "struct {}"
+		}
+		var fs []string
+		for _, f := range t.Fields.List {
+			typ := TypGoSpelling(f.Type, ctx)
+			if f.Tag != nil {
+				tag := f.Tag.Value
+				if len(tag) >= 2 && tag[0] == '`' {
+					tag = tag[1 : len(tag)-1]
+				}
+				typ += " " + strconv.Quote(tag)
+			}
+			if len(f.Names) == 0 {
+				fs = append(fs, typ)
+				continue
+			}
+			for _, n := range f.Names {
+				fs = append(fs, n.Name+" "+typ)
+			}
+		}
+		return "struct { " + strings.Join(fs, "; ") + " }"
+	case *ast.FuncType:
+		return "func" + goFuncSig(t, ctx)
+	}
+	return fmt.Sprintf("%T", e)
+}
+
+// goFuncSig renders a signature as `(params) results` with Go's spacing:
+// params are `, `-joined types (names dropped), zero results render
+// nothing, a single result goes unparenthesized, and several wrap in
+// parens. `func(int) int` is `func` + `(int) int`.
+func goFuncSig(t *ast.FuncType, ctx *TypeDef) string {
+	var sb strings.Builder
+	sb.WriteString("(")
+	sb.WriteString(goFieldSpellings(t.Params, ctx))
+	sb.WriteString(")")
+	if t.Results == nil || len(t.Results.List) == 0 {
+		return sb.String()
+	}
+	nr := 0
+	for _, f := range t.Results.List {
+		if n := len(f.Names); n > 0 {
+			nr += n
+		} else {
+			nr++
+		}
+	}
+	res := goFieldSpellings(t.Results, ctx)
+	if nr > 1 {
+		sb.WriteString(" (" + res + ")")
+	} else {
+		sb.WriteString(" " + res)
+	}
+	return sb.String()
+}
+
+// goFieldSpellings renders a signature field list like typFieldSpellings
+// but with `, ` separators, for display rather than identity.
+func goFieldSpellings(fl *ast.FieldList, ctx *TypeDef) string {
+	if fl == nil {
+		return ""
+	}
+	var parts []string
+	for _, f := range fl.List {
+		n := len(f.Names)
+		if n == 0 {
+			n = 1
+		}
+		for i := 0; i < n; i++ {
+			parts = append(parts, TypGoSpelling(f.Type, ctx))
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // TypUnderlyingSpelling spells a typedef's underlying type — its Anon

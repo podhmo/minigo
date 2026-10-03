@@ -275,7 +275,7 @@ func (e *Env) typeName(td *runtime.TypeDef) string {
 		return td.Name
 	}
 	if td.Anon != nil {
-		return runtime.TypSpelling(td.Anon, td)
+		return runtime.TypGoSpelling(td.Anon, td)
 	}
 	if td.Elem != nil {
 		switch td.Kind {
@@ -574,7 +574,7 @@ func (t *RType) Elem() *RType {
 	case reflect.Ptr, reflect.Slice, reflect.Map, reflect.Chan, reflect.Array:
 		return t.e.rtypeOf(t.e.elemOf(t.td))
 	}
-	trap("call of reflect.Type.Elem on type %s", t.String())
+	trap("Elem of invalid type %s", t.String())
 	return nil
 }
 
@@ -587,7 +587,7 @@ func (t *RType) Key() *RType {
 		return t.e.rtypeOf(t.keyTd)
 	}
 	if t.Kind() != reflect.Map {
-		trap("call of reflect.Type.Key on type %s", t.String())
+		trap("Key of non-map type %s", t.String())
 	}
 	return t.e.rtypeOf(t.e.keyTdOf(t.td))
 }
@@ -607,7 +607,7 @@ func (t *RType) Len() int {
 			}
 		}
 	}
-	trap("call of reflect.Type.Len on type %s", t.String())
+	trap("Len of non-array type %s", t.String())
 	return 0
 }
 
@@ -617,7 +617,7 @@ func (t *RType) NumField() int {
 		return t.rt.NumField()
 	}
 	if t.Kind() != reflect.Struct {
-		trap("call of reflect.Type.NumField on type %s", t.String())
+		trap("NumField of non-struct type %s", t.String())
 	}
 	return len(t.td.Fields)
 }
@@ -636,7 +636,7 @@ func (t *RType) Field(i int) *StructField {
 		}
 	}
 	if t.Kind() != reflect.Struct {
-		trap("call of reflect.Type.Field on type %s", t.String())
+		trap("Field of non-struct type %s", t.String())
 	}
 	if i < 0 || i >= len(t.td.Fields) {
 		panic(&runtime.Panic{Value: fmt.Sprintf("reflect: Field index %d out of range", i)})
@@ -676,6 +676,11 @@ func (t *RType) FieldByIndex(idx []int) *StructField {
 	cur := t
 	var f *StructField
 	for _, i := range idx {
+		// Go checks each level: descending into a non-struct panics
+		// with the level's type, not the top type.
+		if cur.Kind() != reflect.Struct {
+			trap("FieldByIndex of non-struct type %s", cur.String())
+		}
 		f = cur.Field(i)
 		if f.Type != nil {
 			cur = f.Type
@@ -697,7 +702,7 @@ func (t *RType) FieldByName(name string) (*StructField, bool) {
 			Anonymous: f.Anonymous}, true
 	}
 	if t.Kind() != reflect.Struct {
-		trap("call of reflect.Type.FieldByName on type %s", t.String())
+		trap("FieldByName of non-struct type %s", t.String())
 	}
 	for i, fn := range t.td.Fields {
 		if fn == name {
@@ -1125,7 +1130,7 @@ func (t *RType) Bits() int {
 	case reflect.Int, reflect.Uint:
 		return 64 // minigo's int is int64
 	}
-	trap("call of reflect.Type.Bits on type %s", t.String())
+	trap("Bits of non-arithmetic Type %s", t.String())
 	return 0
 }
 
@@ -1153,7 +1158,7 @@ func (t *RType) NumIn() int {
 	}
 	ft := funcSig(t)
 	if ft == nil {
-		trap("call of reflect.Type.NumIn on type %s", t.String())
+		trap("NumIn of non-func type %s", t.String())
 	}
 	if ft.Params == nil {
 		return 0
@@ -1176,7 +1181,7 @@ func (t *RType) NumOut() int {
 	}
 	ft := funcSig(t)
 	if ft == nil {
-		trap("call of reflect.Type.NumOut on type %s", t.String())
+		trap("NumOut of non-func type %s", t.String())
 	}
 	if ft.Results == nil {
 		return 0
@@ -1199,7 +1204,7 @@ func (t *RType) In(i int) *RType {
 	}
 	x := funcParam(t, i, false)
 	if x == nil {
-		trap("call of reflect.Type.In on type %s", t.String())
+		trap("In of non-func type %s", t.String())
 	}
 	return t.resolveIn(x)
 }
@@ -1211,7 +1216,7 @@ func (t *RType) Out(i int) *RType {
 	}
 	x := funcParam(t, i, true)
 	if x == nil {
-		trap("call of reflect.Type.Out on type %s", t.String())
+		trap("Out of non-func type %s", t.String())
 	}
 	return t.resolveIn(x)
 }
