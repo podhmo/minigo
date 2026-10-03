@@ -3207,7 +3207,7 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 		l, h := bounds(f, lo, hi, 0)
 		m := maxBound(f, max, 0)
 		if l != 0 || h != 0 || m != 0 {
-			panic(&runtime.Panic{Value: "runtime error: slice bounds out of range"})
+			panic(&runtime.Panic{Value: nilSliceBoundsReason(l, h, m, three)})
 		}
 		return b
 	case *runtime.Slice:
@@ -3228,6 +3228,36 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 	default:
 		f.trap("slice on %T", base)
 		return nil
+	}
+}
+
+// nilSliceBoundsReason renders Go's boundsError text for a failed slice
+// operation on a nil slice — a live *runtime.Slice panics inside Go's
+// own indexing, which already spells the full message, so only the
+// nil path needs the formats reproduced (cap is 0 throughout).
+func nilSliceBoundsReason(l, h, m int64, three bool) string {
+	const p = "runtime error: slice bounds out of range"
+	if three {
+		switch {
+		case m < 0:
+			return fmt.Sprintf("%s [::%d]", p, m)
+		case m > 0:
+			return fmt.Sprintf("%s [::%d] with capacity 0", p, m)
+		case h < 0 || h > m:
+			return fmt.Sprintf("%s [:%d:%d]", p, h, m)
+		default:
+			return fmt.Sprintf("%s [%d:%d:%d]", p, l, h, m)
+		}
+	}
+	switch {
+	case h < 0:
+		return fmt.Sprintf("%s [:%d]", p, h)
+	case h > 0:
+		return fmt.Sprintf("%s [:%d] with capacity 0", p, h)
+	case l < 0:
+		return fmt.Sprintf("%s [%d:]", p, l)
+	default:
+		return fmt.Sprintf("%s [%d:0]", p, l)
 	}
 }
 
