@@ -228,10 +228,10 @@ func builtins(e *Engine) *runtime.Env {
 			// corpus only asks for panics far above the practical limit.
 			const maxSliceElems = 1 << 32
 			if n < 0 || n > maxSliceElems {
-				panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "makeslice: len out of range"}})
+				panic(runtime.MakeslicePanic("len"))
 			}
 			if cap < n || cap > maxSliceElems {
-				panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "makeslice: cap out of range"}})
+				panic(runtime.MakeslicePanic("cap"))
 			}
 			el := make([]runtime.Value, n, cap)
 			zero := runtime.Value(runtime.NIL)
@@ -281,12 +281,12 @@ func builtins(e *Engine) *runtime.Env {
 		case *runtime.Cell:
 			ch, _ = x.Elem.(*runtime.Chan)
 		case *runtime.TypedNil, *runtime.IfaceNil, runtime.Nil:
-			panic(&runtime.Panic{Value: "close of nil channel"})
+			panic(runtime.CloseNilChanPanic())
 		default:
 			return nil, fmt.Errorf("close of non-channel %T", args[0])
 		}
 		if ch == nil || ch.C == nil {
-			panic(&runtime.Panic{Value: "close of nil channel"})
+			panic(runtime.CloseNilChanPanic())
 		}
 		// a second close — or a send past close — panics via the host
 		// channel itself, which the VM surfaces as a script panic
