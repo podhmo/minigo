@@ -107,20 +107,52 @@ script itself; the engine binds both paths to the same intrinsics.
   and the managed block is spliced in there with one blank line on each
   side.
 
-## Deliberately not done
+## Remaining work — if this were done seriously
 
-- **Per-decl placement** — directives cluster in one managed block rather
-  than riding above each decl (`Pos` could anchor them, but per-decl
-  placement reintroduces the diffing the sentinel avoids).
-- **Grouped `type (...)` decls** — honest laziness, not a limitation: the
-  index emits one `Decl` per `TypeSpec` with the spec's own `Pos`, and the
-  managed block is per-file anyway, so a `type ( A int; B struct{...} )`
-  group should already collect correctly. It's just not covered by the
-  fixture — a TODO-flavored verification gap more than a design gap.
-- **Smarter `-check` output** — reports the expected directive count, not
-  a diff.
-- **Ignore rules** — no `gen-sync:ignore` or path filter.
-- **Ordering** — emits in `Decls` (file) order; deterministic but unsorted.
+Skipped for scope, not blocked by anything:
+
+- **Recursive exploration** — every rule reads only the decl's own
+  surface. A serious version would chase field types and method sets
+  through `TypeExpr` (`Sub`/`Resolve`) into other specs and packages:
+  a field whose type itself carries `required`, or collecting every
+  implementer of the `Envelope` interface instead of checking
+  `Discriminator` per type.
+- **Exploration cut-off controls** — `-deps` is a flat BFS gated only by
+  the module prefix. A real pass wants a stop predicate: max depth, a
+  boundary predicate over import paths, per-package opt-out.
+- **External packages** — traversal ends at the module prefix; following
+  a field type into another module is unexplored (see limitations below
+  for where it would break today).
+- **Grouped `type (...)` decls** — honest laziness: the index emits one
+  `Decl` per `TypeSpec` with its own `Pos`, and the managed block is
+  per-file anyway, so groups should already collect correctly — the
+  fixture just doesn't cover it.
+- **Per-decl placement** — `Pos` could anchor each directive above its
+  decl, but that reintroduces the diffing the sentinel avoids.
+- **Signature-precise rules** — `Discriminator` matches on the method
+  name; `inspect.Signature` exists for exact signatures.
+- **Real tag parsing** — `strings.Contains(tag, "required")` is textual.
+- **Smarter `-check` output**, **ignore rules** (`gen-sync:ignore` /
+  path filters), **sorted output** — emits in `Decls` order today.
+
+## Limitations hit along the way
+
+Gaps in the `inspect`/index surface itself that the script works around
+textually — candidates for the inspect wishlist, not the example's:
+
+- **`inspect.Decl` hides `ValueSpec.Type`/`InheritedType`** — a const
+  spec's declared type is invisible, so the enum rule reads raw source
+  lines at `posLine` coordinates and re-derives iota inheritance by
+  walking up to `const (`.
+- **Alias vs defined type isn't on the view** — `type X = int` vs
+  `type X int` is decided by `=` on the decl's own line.
+- **`inspect.Pos` is a `"file:line:col"` string** — line numbers come
+  from splitting it; a structured accessor would remove the parse.
+- **Bound/stdlib/external packages carry no index** — `Decls`/`Fields`/
+  `Methods` can't introspect them at all; `-deps` only works because the
+  module-prefix gate never enters them.
+- **No subtype lookup** — the index is per-declaration, so "every type
+  implementing I" has to be derived by scanning method sets.
 
 ## Verification
 
