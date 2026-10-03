@@ -263,13 +263,20 @@ func (e *Env) typeName(td *runtime.TypeDef) string {
 	}
 	if td.Name != "" {
 		if td.Pkg != nil && td.Pkg.Name != "" {
+			// the qualifier is the package's declared NAME — dir-loaded
+			// packages keep the synthesized import path in Pkg.Name, so
+			// prefer the file's own package clause when available.
+			pkg := td.Pkg.Name
+			if td.File != nil && td.File.AST != nil && td.File.AST.Name != nil {
+				pkg = td.File.AST.Name.Name
+			}
 			if strings.HasPrefix(td.Name, td.Pkg.Path+".") {
-				return td.Pkg.Name + "." + td.Name[len(td.Pkg.Path)+1:]
+				return pkg + "." + td.Name[len(td.Pkg.Path)+1:]
 			}
 			if i := strings.LastIndex(td.Name, "."); i >= 0 {
-				return td.Pkg.Name + td.Name[i:]
+				return pkg + td.Name[i:]
 			}
-			return td.Pkg.Name + "." + td.Name
+			return pkg + "." + td.Name
 		}
 		if i := strings.LastIndex(td.Name, "."); i >= 0 {
 			// bound typedefs name themselves "pkgpath.Name"
@@ -561,7 +568,18 @@ func (t *RType) PkgPath() string {
 	if t.td == nil {
 		return ""
 	}
+	if t.td.Name == "" {
+		// unnamed types carry no package path
+		return ""
+	}
 	if t.td.Pkg != nil {
+		// a type in package main reports "main", not the directory or
+		// synthesized import path its package object was loaded under.
+		if t.td.File != nil && t.td.File.AST != nil && t.td.File.AST.Name != nil {
+			if t.td.File.AST.Name.Name == "main" {
+				return "main"
+			}
+		}
 		return t.td.Pkg.Path
 	}
 	if i := strings.LastIndex(t.td.Name, "."); i >= 0 {
