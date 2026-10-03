@@ -5378,7 +5378,7 @@ func unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value {
 				return &runtime.Named{Typ: tag, V: maskInt(iv, sizedNameOf(tag))}
 			}
 			switch r.(type) {
-			case float64, string, bool:
+			case float64, string, bool, *runtime.GoValue:
 				return &runtime.Named{Typ: tag, V: r}
 			}
 		}
@@ -5401,7 +5401,7 @@ func unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value {
 			// -u on a wide uint64 wraps mod 2^64, re-boxed so the unsigned
 			// domain survives.
 			if u, ok := x.V.(uint64); ok {
-				return &runtime.GoValue{V: -u}
+				return retag(&runtime.GoValue{V: -u})
 			}
 			switch c := x.V.(type) {
 			case complex64:
@@ -5417,7 +5417,7 @@ func unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value {
 		}
 		if g, ok := a.(*runtime.GoValue); ok {
 			if u, ok := g.V.(uint64); ok {
-				return &runtime.GoValue{V: ^u}
+				return retag(&runtime.GoValue{V: ^u})
 			}
 		}
 		f.trap("unary ^ on %T", a)
