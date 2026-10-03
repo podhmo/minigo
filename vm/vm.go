@@ -2097,16 +2097,30 @@ func goValueOf(rv reflect.Value) runtime.Value {
 	case int:
 		return int64(v)
 	case int64:
-		return v
+		// a concrete int64 keeps its width so %T spells `int64`; a
+		// payload unwrapped from an interface is a script int, spelled
+		// `int` (both store int64 — only rv's own kind can tell them
+		// apart).
+		if rv.Kind() == reflect.Interface {
+			return v
+		}
+		return runtime.Tag(sizedIntTyp(reflect.Int64), v)
 	case int8, int16, int32:
 		// sized ints keep their declared width so %T spells them
-		// like Go (int32 also covers rune — an alias).
-		return runtime.Tag(sizedIntTyp(rv.Kind()), rv.Int())
+		// like Go (int32 also covers rune — an alias). The tag reads
+		// the payload's kind: rv may be interface-shaped while x is
+		// the concrete payload.
+		pv := reflect.ValueOf(v)
+		return runtime.Tag(sizedIntTyp(pv.Kind()), pv.Int())
 	case uint, uint8, uint16, uint32, uintptr:
-		return runtime.Tag(sizedIntTyp(rv.Kind()), int64(reflect.ValueOf(v).Uint()))
+		pv := reflect.ValueOf(v)
+		return runtime.Tag(sizedIntTyp(pv.Kind()), int64(pv.Uint()))
 	case uint64:
 		if v <= math.MaxInt64 {
-			return int64(v)
+			if rv.Kind() == reflect.Interface {
+				return int64(v)
+			}
+			return runtime.Tag(sizedIntTyp(reflect.Uint64), int64(v))
 		}
 		return &runtime.GoValue{V: x}
 	case string:
