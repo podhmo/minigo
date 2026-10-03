@@ -34,17 +34,18 @@ the interpreter:
 
 1. **Scan** — `inspect.DirOf(dir)` gives the package; `inspect.Files` /
    `inspect.Decls` enumerate declarations. With `-deps`, `inspect.Imports` +
-   `inspect.PackageOf` BFS the same-module import closure (the
-   `app -> app/internal/mood` edge is only followed then).
+   `inspect.PackageOf` BFS the imports inside the scanned package's subtree
+   (`app -> app/internal/mood` is followed; `app -> scanx`, the tool's own
+   helper, leaves the subtree and is never followed).
 2. **Collect** — no magic comments; each declaration's own surface (type
    shape, struct tags, method set, name) decides which generators it wants:
 
    | Signal | Rule | Directive |
    |---|---|---|
-   | `type X int`/`string` + a `const` block of `X` | enum | `stringer -type=X` |
-   | interface named `*Service`/`*Store`/`*Client`/`*Repository` | service boundary | `mockgen -source=<file> -destination=mock_<file>` |
-   | struct field tag containing `required` | validation candidate | `requiredgen -type=X` |
-   | type declaring `Discriminator() string` | OpenAPI-style `oneOf` variant | `oneofgen -type=X` |
+   | `type X int`/`string` + a `const` block of `X` in the package | enum | `stringer -type=X` |
+   | non-alias interface named `*Service`/`*Store`/`*Client`/`*Repository` | service boundary | `mockgen -source=<file> -destination=mock_<file>` |
+   | struct field tag `required:"true"`, or `required` as a `validate:`/`binding:` element | validation candidate | `requiredgen -type=X` |
+   | type declaring `Discriminator() string`, or interface requiring it | OpenAPI-style `oneOf` variant/union | `oneofgen -type=X` |
 
    `stringer`/`mockgen` are real tools; `requiredgen`/`oneofgen` are
    hypothetical — the *directives* are the demo's output, not something
@@ -57,38 +58,52 @@ the interpreter:
    //go:generate stringer -type=Status
    ```
 
-   Every `//go:generate` below the sentinel is regenerated from scratch on
-   each run, so stale (`-type=Priority` after `Priority` was renamed) and
-   orphaned directives disappear without diffing. The sentinel is a
-   safeguard, not the feature: it keeps the tool from destroying
-   user-written directives above it — those are never touched. Files
-   without a sentinel gain the block after the package clause and imports.
+   Each run regenerates the *run* of `//go:generate` lines directly under
+   the sentinel, so stale (`-type=Priority` after `Priority` was renamed)
+   and orphaned directives disappear without diffing — while hand-written
+   directives anywhere else (above the sentinel, or below it but separated
+   by a non-directive line) survive. The sentinel itself is recognized at
+   code position only, so quoting it inside a `/* */` block or a raw
+   string does not open a managed region.
 
-   Along the way the script works around a few gaps in what `inspect`
-   exposes (const `ValueSpec` types and alias-ness aren't on `Decl`,
-   `Pos` is a `"file:line:col"` string) by reading raw lines at
-   `inspect.Pos` coordinates — see the plan doc's limitations list.
+   The script's mechanics — tag parsing, spec-type reads, sentinel/managed-
+   region handling — live in `scanx`, a sibling package the script imports
+   and the engine interprets like any other module-local source. `scanx`
+   papers over the gaps in what `inspect` exposes (const `ValueSpec` types
+   and alias-ness aren't on `Decl`, `Pos` is a `"file:line:col"` string,
+   `MReqs` traps on non-interfaces) — see the plan doc's limitations list.
 
 ## Demo
 
-`app/` is deliberately out of sync: `level.go` carries a stale directive,
-`job.go` has none, `status.go` is already correct, and
-`app/internal/mood` only lights up with `-deps`.
+`app/` is deliberately hostile: `level.go` carries a stale directive,
+`status.go` is already correct, `retired.go` manages a type that no longer
+exists, and the rest of the package is seeded with distractors —
+decoy consts that inherit another enum's type, alias types wearing
+matchable names, a `Discriminator() int` and a free `func Discriminator`,
+tags like `json:"required,omitempty"` and `notrequired:"true"`, a
+hand-written `//go:generate` the sync must not eat, and the sentinel text
+itself quoted inside a block comment and a raw string literal.
+`app/internal/mood` only lights up with `-deps`; `app/internal/meta` is
+reached with `-deps` and matches nothing.
 
 ```console
 $ go run ./
-gen-sync: app/job.go inserted managed block (5 directive(s))
+gen-sync: app/config.go inserted managed block (2 directive(s))
+gen-sync: app/events.go inserted managed block (4 directive(s))
+gen-sync: app/job.go inserted managed block (1 directive(s))
 gen-sync: app/level.go rewrote managed block (1 directive(s))
+gen-sync: app/ops.go inserted managed block (1 directive(s))
+gen-sync: app/phase.go inserted managed block (1 directive(s))
+gen-sync: app/retired.go rewrote managed block (0 directive(s))
+gen-sync: app/shapes.go inserted managed block (1 directive(s))
 gen-sync: app/status.go up to date
-2 file(s) updated
-
-$ git --no-pager diff examples/gen-sync/app/
-# + managed block in job.go, -type=Priority -> -type=Level in level.go
+gen-sync: app/store.go inserted managed block (1 directive(s))
+9 file(s) updated
 
 $ go run ./
-gen-sync: app/job.go up to date
-gen-sync: app/level.go up to date
-gen-sync: app/status.go up to date
+gen-sync: app/config.go up to date
+...
+gen-sync: app/store.go up to date
 0 file(s) updated
 ```
 
@@ -98,7 +113,9 @@ the fixture.
 ## Layout
 
 - `main.go` — flag parsing + `minigo.NewEngine` + `e.Run(ctx, "./script", "Main", ...)`
-- `script/main.go` — the interpreter-executed body (`package script`): scan, collect, rewrite
-- `app/` — the scanned fixture (enums, a tagged struct, a `Store` interface, `Discriminator` types, and non-matching decls)
+- `script/main.go` — the interpreter-executed body (`package script`): the sync *policy* — scan, collect, rewrite
+- `scanx/` — the scanning *mechanics* library the script imports (tag/spec parsing, sentinel + managed-region handling, `inspect`-view helpers); interpreted along with the script
+- `app/` — the scanned fixture: matching decls mixed with decoys designed to defeat naive matching
 - `app/internal/mood/` — same-module leaf package, reached only with `-deps`
+- `app/internal/meta/` — leaf package reached with `-deps`, matching nothing
 - `testdata/` — expected post-sync files asserted by `main_test.go`

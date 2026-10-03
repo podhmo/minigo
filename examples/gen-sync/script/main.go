@@ -5,7 +5,9 @@
 //
 // The //go:generate lines are the OUTPUT of this tool: targets are
 // inferred from the declarations themselves (type shapes, struct tags,
-// method sets, names), never from magic comments.
+// method sets, names), never from magic comments. Scan mechanics live in
+// the scanx package — this file keeps only the policy: which signal
+// wants which directive.
 package script
 
 import (
@@ -15,41 +17,63 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/podhmo/minigo/examples/gen-sync/scanx"
 	"github.com/podhmo/minigo/inspect"
 )
 
-// marker identifies the sentinel comment that opens a file's managed
-// region: every //go:generate line below it belongs to gen-sync.
-const marker = "managed by gen-sync"
-
-const sentinel = "// Code generated directives below are managed by gen-sync. DO NOT EDIT."
-
 // Main scans dir (a package directory) and syncs each file's managed
-// directives. With deps it also follows same-module imports transitively.
-// With check it only reports drift and writes nothing. It returns the
-// number of files changed — or, in check mode, the number drifting.
+// directives. With deps it also follows imports inside the scanned
+// package's subtree transitively. With check it only reports drift and
+// writes nothing. It returns the number of files changed — or, in check
+// mode, the number drifting.
 func Main(dir string, check bool, deps bool) int {
 	wd, _ := os.Getwd()
-	files := collectFiles(dir, deps)
+	plans := collect(dir, deps)
 	changed := 0
-	for _, f := range files {
-		if syncFile(f, check, wd) {
+	for _, p := range plans {
+		if syncFile(p, check, wd) {
 			changed++
 		}
 	}
 	return changed
 }
 
-// collectFiles lists the package's files, BFSing into same-module imports
-// when deps is set. The module subtree root is the parent of the scanned
-// package's own import path.
-func collectFiles(dir string, deps bool) []*inspect.File {
+// filePlan pairs a file with the directives its decls want — computed
+// for every file before any write, so decl positions always refer to
+// the pre-sync snapshot.
+type filePlan struct {
+	file     *inspect.File
+	expected []string
+}
+
+// collect builds the sync plan for the scanned package, BFSing into
+// same-subtree imports when deps is set: only imports under the scanned
+// package's own path are followed — an edge that leaves the subtree
+// (e.g. app -> the tool's own scanx helper) is external to the run and
+// must not be rewritten by it.
+func collect(dir string, deps bool) []filePlan {
+	plans := []filePlan{}
+	visit := func(files []*inspect.File) {
+		decls := []*inspect.Decl{}
+		for _, f := range files {
+			decls = append(decls, inspect.Decls(f)...)
+		}
+		for _, f := range files {
+			expected := []string{}
+			for _, d := range inspect.Decls(f) {
+				expected = append(expected, directivesFor(d, f, decls)...)
+			}
+			plans = append(plans, filePlan{f, scanx.Dedupe(expected)})
+		}
+	}
+
 	root := inspect.DirOf(dir)
 	files := inspect.Files(root)
+	visit(files)
 	if !deps {
-		return files
+		return plans
 	}
-	prefix := filepath.Dir(inspect.Path(root)) + "/"
+	prefix := inspect.Path(root) + "/"
 	seen := map[string]bool{inspect.Path(root): true}
 	queue := []string{}
 	enqueue := func(fs []*inspect.File) {
@@ -69,16 +93,17 @@ func collectFiles(dir string, deps bool) []*inspect.File {
 		queue = queue[1:]
 		p := inspect.PackageOf(path)
 		fs := inspect.Files(p)
-		files = append(files, fs...)
+		visit(fs)
 		enqueue(fs)
 	}
-	return files
+	return plans
 }
 
-// syncFile computes the file's expected directives and rewrites the
-// managed region, returning whether the file changed (or would, in
-// check mode).
-func syncFile(f *inspect.File, check bool, wd string) bool {
+// syncFile rewrites the file's managed region to the plan's expected
+// directives, returning whether the file changed (or would, in check
+// mode).
+func syncFile(p filePlan, check bool, wd string) bool {
+	f := p.file
 	path := f.Name
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -87,21 +112,9 @@ func syncFile(f *inspect.File, check bool, wd string) bool {
 	}
 	src := string(data)
 	lines := strings.Split(src, "\n")
-	decls := inspect.Decls(f)
+	expected := p.expected
 
-	expected := []string{}
-	for _, d := range decls {
-		expected = append(expected, directivesFor(d, f, lines, decls)...)
-	}
-	expected = dedupe(expected)
-
-	midx := -1
-	for i, ln := range lines {
-		if strings.Contains(ln, marker) {
-			midx = i
-			break
-		}
-	}
+	midx := scanx.FindSentinel(lines)
 	if midx < 0 && len(expected) == 0 {
 		return false // nothing to manage here
 	}
@@ -109,25 +122,28 @@ func syncFile(f *inspect.File, check bool, wd string) bool {
 	var out []string
 	inserted := false
 	if midx >= 0 {
-		// the managed region: keep everything through the marker, drop
-		// every //go:generate below it, then write the expected set.
+		// the managed region is the sentinel plus the run of
+		// //go:generate lines directly under it: regenerate the run,
+		// and leave everything past it — including hand-written
+		// directives — alone.
 		out = append(out, lines[:midx+1]...)
 		out = append(out, expected...)
-		for _, ln := range lines[midx+1:] {
-			if strings.HasPrefix(strings.TrimSpace(ln), "//go:generate") {
-				continue
-			}
-			out = append(out, ln)
+		out = append(out, "")
+		rest := lines[midx+1:]
+		tail := rest[scanx.GenerateRunEnd(rest):]
+		if len(tail) == 0 {
+			tail = []string{""}
 		}
+		out = append(out, tail...)
 	} else {
 		// no managed region yet: insert sentinel + block after the
 		// package clause and imports.
-		anchor := insertAnchor(lines)
+		anchor := scanx.InsertAnchor(lines)
 		out = append(out, lines[:anchor]...)
 		if anchor > 0 && strings.TrimSpace(lines[anchor-1]) != "" {
 			out = append(out, "")
 		}
-		out = append(out, sentinel)
+		out = append(out, scanx.Sentinel)
 		out = append(out, expected...)
 		out = append(out, "")
 		tail := lines[anchor:]
@@ -162,22 +178,26 @@ func syncFile(f *inspect.File, check bool, wd string) bool {
 
 // directivesFor infers the directives a declaration wants. Every rule is
 // independent: a decl can earn several directives, or none.
-func directivesFor(d *inspect.Decl, f *inspect.File, lines []string, decls []*inspect.Decl) []string {
+func directivesFor(d *inspect.Decl, f *inspect.File, decls []*inspect.Decl) []string {
 	out := []string{}
 	if inspect.Kind(d) != "type" {
 		return out
+	}
+	if scanx.IsAlias(d) {
+		return out // an alias earns no directives of its own
 	}
 	name := d.Name
 	def := inspect.Def(d)
 	switch def.Kind {
 	case "Ident":
-		// enum-style: `type X int`/`string` with a const block of X.
-		if (def.Text == "int" || def.Text == "string") && !isAlias(d, lines) && hasConstOfType(decls, name, lines) {
+		// enum-style: `type X int`/`string` with a const block of X
+		// anywhere in the package.
+		if (def.Text == "int" || def.Text == "string") && scanx.HasConstOfType(decls, name) {
 			out = append(out, "//go:generate stringer -type="+name)
 		}
 	case "StructType":
-		// field-tag inference: any field tag mentioning `required` opts
-		// the struct into the (hypothetical) required-check generator.
+		// field-tag inference: a field whose tag requests the required
+		// check opts the struct into the (hypothetical) generator.
 		if hasRequiredTag(d) {
 			out = append(out, "//go:generate requiredgen -type="+name)
 		}
@@ -188,85 +208,35 @@ func directivesFor(d *inspect.Decl, f *inspect.File, lines []string, decls []*in
 			out = append(out, "//go:generate mockgen -source="+base+" -destination=mock_"+base)
 		}
 	}
-	// method-set inference: types carrying OpenAPI-style
-	// Discriminator() are oneOf variants for the unmarshal generator.
-	if hasDiscriminator(d) {
+	// method-set inference: a concrete `Discriminator() string` marks a
+	// oneOf variant; the same requirement on an interface marks the
+	// union type itself.
+	if scanx.HasMethod(d, "Discriminator", "string") ||
+		scanx.RequiresMethod(d, "Discriminator", "func() string") {
 		out = append(out, "//go:generate oneofgen -type="+name)
 	}
 	return out
 }
 
-// hasConstOfType reports whether some const spec in the file is declared
-// with the type name — the enum signal inspect can't see
-// (ValueSpec types are not exposed on the Decl view, so the raw lines
-// are checked).
-func hasConstOfType(decls []*inspect.Decl, name string, lines []string) bool {
-	for _, c := range decls {
-		if inspect.Kind(c) != "const" {
-			continue
-		}
-		n := posLine(c)
-		if n <= 0 || n > len(lines) {
-			continue
-		}
-		if specHasType(lines[n-1], name) {
-			return true
-		}
-		// specs that omit the type inherit it from the block's first
-		// spec — scan up to the enclosing `const (`.
-		if !strings.Contains(lines[n-1], "=") {
-			for j := n - 2; j >= 0; j-- {
-				t := strings.TrimSpace(lines[j])
-				if strings.HasPrefix(t, "const (") || t == "const(" {
-					return specHasType(lines[j+1], name)
-				}
-				if t == ")" || strings.HasPrefix(t, "const ") {
-					break
-				}
-			}
-		}
-	}
-	return false
-}
-
-// specHasType reports whether a const spec line declares the given type
-// name before its `=` (e.g. `StatusOpen Status = iota` or
-// `const A, B Status = 1, 2`).
-func specHasType(line string, name string) bool {
-	for i, w := range strings.Fields(line) {
-		if w == "=" || strings.HasPrefix(w, "=") {
-			return false
-		}
-		if i > 0 && w == name {
-			return true
-		}
-	}
-	return false
-}
-
-// isAlias reports whether the type decl is an alias (`type X = int`)
-// rather than a defined type — read off the decl's own source line.
-func isAlias(d *inspect.Decl, lines []string) bool {
-	n := posLine(d)
-	if n <= 0 || n > len(lines) {
-		return false
-	}
-	line := lines[n-1]
-	if i := strings.Index(line, "`"); i >= 0 {
-		line = line[:i] // ignore `=` inside struct tags
-	}
-	return strings.Contains(line, "=")
-}
-
-// hasRequiredTag reports whether any struct field carries a `required`
-// tag (e.g. `required:"true"` or `validate:"required"`).
+// hasRequiredTag reports whether any struct field's tag requests the
+// required check: `required:"true"`, or `required` as a whole element
+// of the validate/binding lists. Textual substrings — a `notrequired`
+// key, `json:"required"`, `binding:"notrequired"` — do not count.
 func hasRequiredTag(d *inspect.Decl) bool {
 	for _, fd := range inspect.Fields(d) {
-		if strings.Contains(fd.Tag, "required") {
+		if wantsRequired(fd.Tag) {
 			return true
 		}
 	}
 	return false
+}
+
+func wantsRequired(tag string) bool {
+	if v, ok := scanx.LookupTag(tag, "required"); ok && v == "true" {
+		return true
+	}
+	return scanx.TagHasElement(tag, "validate", "required") ||
+		scanx.TagHasElement(tag, "binding", "required")
 }
 
 // isMockable reports whether an interface name looks like a service
@@ -278,77 +248,6 @@ func isMockable(name string) bool {
 		}
 	}
 	return false
-}
-
-// hasDiscriminator reports whether the type declares a Discriminator
-// method — the oneOf-variant convention (a signature check is possible
-// via inspect.Signature; the name alone is distinctive enough here).
-func hasDiscriminator(d *inspect.Decl) bool {
-	for _, m := range inspect.Methods(d) {
-		if m.Name == "Discriminator" {
-			return true
-		}
-	}
-	return false
-}
-
-// insertAnchor locates the line after the package clause and import
-// decls — where a fresh managed block goes. Package doc comments and
-// build tags live above the clause; blank lines and comments between
-// decls are skipped without moving the anchor.
-func insertAnchor(lines []string) int {
-	anchor := -1
-	inImports := false
-	for i, ln := range lines {
-		t := strings.TrimSpace(ln)
-		if inImports {
-			if t == ")" {
-				anchor = i + 1
-				inImports = false
-			}
-			continue
-		}
-		switch {
-		case strings.HasPrefix(t, "package "):
-			anchor = i + 1
-		case anchor < 0:
-			// still before the package clause
-		case strings.HasPrefix(t, "import (") || t == "import(":
-			inImports = true
-		case strings.HasPrefix(t, "import "):
-			anchor = i + 1
-		case t == "" || strings.HasPrefix(t, "//"):
-			// blank lines and comments don't end the search
-		default:
-			return anchor
-		}
-	}
-	if anchor < 0 {
-		return len(lines)
-	}
-	return anchor
-}
-
-// posLine parses the line number out of a decl's "file:line:col" pos.
-func posLine(d *inspect.Decl) int {
-	parts := strings.Split(inspect.Pos(d), ":")
-	if len(parts) < 3 {
-		return 0
-	}
-	n, _ := strconv.Atoi(parts[len(parts)-2])
-	return n
-}
-
-func dedupe(xs []string) []string {
-	seen := map[string]bool{}
-	out := []string{}
-	for _, x := range xs {
-		if !seen[x] {
-			seen[x] = true
-			out = append(out, x)
-		}
-	}
-	return out
 }
 
 func displayPath(wd, path string) string {

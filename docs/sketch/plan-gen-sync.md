@@ -57,10 +57,10 @@ marker comments (a `// @gen` marker would be the same labor as writing
 
 | Signal (what the code already says) | Rule | Directive emitted |
 |---|---|---|
-| `type X int`/`string` + a `const` block of `X` in the same file | enum | `stringer -type=X` |
-| interface named `*Service`/`*Store`/`*Client`/`*Repository` | service boundary | `mockgen -source=<file> -destination=mock_<file>` |
-| struct field tag containing `required` | validation candidate | `requiredgen -type=X` |
-| type declaring a `Discriminator() string` method | OpenAPI `oneOf` variant | `oneofgen -type=X` |
+| `type X int`/`string` + a `const` block of `X` in the package | enum | `stringer -type=X` |
+| non-alias interface named `*Service`/`*Store`/`*Client`/`*Repository` | service boundary | `mockgen -source=<file> -destination=mock_<file>` |
+| struct field tag `required:"true"`, or `required` as a whole element of `validate:`/`binding:` | validation candidate | `requiredgen -type=X` |
+| type declaring `Discriminator() string`, or interface requiring it | OpenAPI `oneOf` variant/union | `oneofgen -type=X` |
 
 A decl can earn several directives or none; all `//go:generate` output is
 just the collected set, deduplicated.
@@ -74,13 +74,18 @@ Synced directives live under a sentinel line:
 //go:generate stringer -type=Status
 ```
 
-Each run wipes every `//go:generate` below the sentinel and writes the
-freshly collected set — stale and orphaned directives disappear with no
-diffing logic. The sentinel is honestly a safeguard, not the point: it
-keeps the tool from destroying `//go:generate` lines the user wrote by
-hand (everything above it is untouched), and it's what makes "regenerate
-from scratch each run" safe. Files without a sentinel gain the block
-after the package clause and imports.
+Each run rewrites the *run* of `//go:generate` lines directly under the
+sentinel with the freshly collected set — stale and orphaned directives
+disappear with no diffing logic, while hand-written directives survive
+everywhere else: above the sentinel, or below it once a non-directive,
+non-blank line breaks the run. (The earlier wipe-everything-below design
+was abandoned: a hand-written directive that ends up *below* an inserted
+sentinel would have been eaten — `ops.go` in the fixture pins this.)
+The sentinel itself is recognized at code position only: a little
+line-scanner skips `/* */` blocks and raw strings, so quoting the marker
+text inside a comment or string literal does not open a managed region.
+Files without a sentinel gain the block after the package clause and
+imports.
 
 Idempotence is free: `inspect.Doc` reads `CommentGroup.Text()`, which
 excludes `//go:generate` lines, so the tool's own output never feeds back
@@ -97,22 +102,40 @@ file count. It imports the real path `github.com/podhmo/minigo/inspect`
 rather than `minigo.dev/inspect` so `go build`/`go vet` stay green on the
 script itself; the engine binds both paths to the same intrinsics.
 
-- **Scan**: `inspect.DirOf(dir)` → `inspect.Files` → `inspect.Decls`.
-  Under `-deps`, a BFS over `inspect.Imports(f)` → `inspect.PackageOf`
-  follows only paths under the module prefix (`filepath.Dir(Path(root)) +
-  "/"`), so stdlib and bound packages are never entered.
+- **Scan**: `inspect.DirOf(dir)` → `inspect.Files` → `inspect.Decls`,
+  then two passes — every file's expected directives are computed before
+  any write, so decl positions always refer to the pre-sync snapshot
+  (writes and scans interleaved would move decls' line numbers). Under
+  `-deps`, a BFS over `inspect.Imports(f)` → `inspect.PackageOf` follows
+  only paths under `inspect.Path(root) + "/"` — the scanned package's own
+  subtree, narrowed from the module prefix once `app` itself imports the
+  tool's helper: an edge `app -> scanx` leaves the subtree and must never
+  be followed or rewritten.
+- **`scanx`, the helper library** — the mechanics (raw-line spec reads,
+  tag parsing, alias detection, sentinel/managed-region logic, method and
+  interface-requirement checks) live in a sibling package
+  `github.com/podhmo/minigo/examples/gen-sync/scanx` that the script
+  imports like any other module-local source: the engine interprets it
+  (same precedent as convert-define's `define`/`convutil`), so `go build`
+  compiles the script *and* the interpreter can run it. `script/main.go`
+  keeps only the policy.
 - **Where `inspect` is thin** — `inspect.Decl` gives `Kind`/`Name`/`File`/
-  `Pos`/`Doc` but not `ValueSpec.Type`, so enum detection (`hasConstOfType`)
-  reads the raw source line at `posLine(c)` and splits fields before `=`;
-  type-omitted specs walk back up to the `const (` block's first spec
-  (iota inheritance). `type X = int` vs `type X int` is decided by `=` on
-  the decl's own line.
+  `Pos`/`Doc` but not `ValueSpec.Type`, so enum detection
+  (`scanx.HasConstOfType`) reads the raw source line at `Pos` and splits
+  fields before `=`; type-omitted specs walk up to the nearest `=`-carrying
+  spec inside the block (iota inheritance — `Cadence Level = "4/4"; Beat`
+  types `Beat` as `Level`). `type X = int` vs `type X int` is decided by
+  `=` on the decl's own line.
 - **Decls are touchable** — `inspect.Def(d)` gives the type expr
   (`Kind` = ast node name: `Ident`/`StructType`/`InterfaceType`),
   `inspect.Fields(d)` the struct fields incl. tags, `inspect.Methods(d)`
   the method set (that's where `Discriminator` is found), `inspect.Pos(d)`
   the `"file:line:col"` anchor used for all textual fallback reads.
-- **Insertion** — `insertAnchor` finds the end of the package clause +
+  `scanx.HasMethod`/`RequiresMethod` check signatures via
+  `sig.ParamFields()`/`ResultFields()` — the `[]*Field` accessors that
+  compile in real Go and unbox fine interpreted (the FFI `Params`/`Results`
+  slices themselves don't `len()` outside the interpreter).
+- **Insertion** — `scanx.InsertAnchor` finds the end of the package clause +
   import decls (skipping doc comments and build tags above `package`),
   and the managed block is spliced in there with one blank line on each
   side.
@@ -133,15 +156,8 @@ Skipped for scope, not blocked by anything:
 - **External packages** — traversal ends at the module prefix; following
   a field type into another module is unexplored (see limitations below
   for where it would break today).
-- **Grouped `type (...)` decls** — honest laziness: the index emits one
-  `Decl` per `TypeSpec` with its own `Pos`, and the managed block is
-  per-file anyway, so groups should already collect correctly — the
-  fixture just doesn't cover it.
 - **Per-decl placement** — `Pos` could anchor each directive above its
   decl, but that reintroduces the diffing the sentinel avoids.
-- **Signature-precise rules** — `Discriminator` matches on the method
-  name; `inspect.Signature` exists for exact signatures.
-- **Real tag parsing** — `strings.Contains(tag, "required")` is textual.
 - **Smarter `-check` output**, **ignore rules** (`gen-sync:ignore` /
   path filters), **sorted output** — emits in `Decls` order today.
 
@@ -152,8 +168,12 @@ textually — candidates for the inspect wishlist, not the example's:
 
 - **`inspect.Decl` hides `ValueSpec.Type`/`InheritedType`** — a const
   spec's declared type is invisible, so the enum rule reads raw source
-  lines at `posLine` coordinates and re-derives iota inheritance by
-  walking up to `const (`.
+  lines at `Pos` coordinates and re-derives iota inheritance by
+  walking up to the nearest `=`-carrying spec.
+- **`inspect.MReqs` traps on non-interface decls** — interface-member
+  access must be gated behind `Def(d).Kind == "InterfaceType"` (a
+  kind-checked accessor, or non-trapping empty result, would remove the
+  ceremony).
 - **Alias vs defined type isn't on the view** — `type X = int` vs
   `type X int` is decided by `=` on the decl's own line.
 - **`inspect.Pos` is a `"file:line:col"` string** — line numbers come
@@ -166,10 +186,13 @@ textually — candidates for the inspect wishlist, not the example's:
 
 ## Verification
 
-- `go -C ./examples/gen-sync test ./...` — `TestSync` (2 files rewritten
-  to goldens; second run idempotent), `TestCheck` (drift reported,
-  nothing written; clean after a real sync), `TestDeps` (`internal/mood`
-  untouched without `-deps`, synced with it).
+- `go -C ./examples/gen-sync test ./...` — `TestSync` (9 files rewritten
+  to goldens across the distractor-seeded fixture; second run idempotent,
+  hand-written directive in `ops.go` surviving), `TestCheck` (drift
+  reported, nothing written; clean after a real sync), `TestDeps`
+  (`internal/mood` untouched without `-deps`, synced with it; `internal/meta`
+  visited and left alone; the `app -> scanx` edge never followed), plus
+  `scanx`'s own unit tests for the mechanics.
 - `make -C examples/gen-sync demo` — runs the sync twice and prints the
   `app/` diff.
 

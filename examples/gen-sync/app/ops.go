@@ -1,0 +1,22 @@
+package app
+
+// NOTE: the directives in this file are not managed by gen-sync — the
+// line below is hand-maintained and must survive a sync.
+//
+//go:generate bespokegen -x=1
+
+/*
+For reference, the managed marker spelled literally:
+
+	// Code generated directives below are managed by gen-sync. DO NOT EDIT.
+
+Quoting it inside a block comment must not open a managed region.
+*/
+
+// Route is an enum in a file that already has its own generate wiring.
+type Route string
+
+const (
+	RouteV1 Route = "v1"
+	RouteV2 Route = "v2"
+)
