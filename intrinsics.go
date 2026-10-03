@@ -20,8 +20,6 @@ import (
 	"fmt"
 	"go/ast"
 	"go/constant"
-	"go/printer"
-	"go/token"
 	"html"
 	"io"
 	"io/fs"
@@ -4188,7 +4186,7 @@ func deepEqlSeen(a, b runtime.Value, seen map[devisit]bool) bool {
 			return false
 		}
 		if aNamed {
-			if !deepDefEq(an.Typ, bn.Typ) {
+			if !runtime.TypIdenticalStrict(an.Typ, bn.Typ) {
 				return false
 			}
 			a, b = an.V, bn.V
@@ -4219,7 +4217,7 @@ func deepEqlSeen(a, b runtime.Value, seen map[devisit]bool) bool {
 			return false
 		}
 		if aTyped {
-			return deepTypeEq(at.Typ, bt.Typ)
+			return runtime.TypIdenticalStrict(at.Typ, bt.Typ)
 		}
 		return true
 	}
@@ -4228,7 +4226,7 @@ func deepEqlSeen(a, b runtime.Value, seen map[devisit]bool) bool {
 		bs, ok := b.(*runtime.Slice)
 		// both arrays and slices are runtime.Slice — the typedef's
 		// spelling carries the kind and element type ([]T != [N]T).
-		if !ok || len(av.Elems) != len(bs.Elems) || !deepTypeEq(av.Typ, bs.Typ) {
+		if !ok || len(av.Elems) != len(bs.Elems) || !runtime.TypIdenticalStrict(av.Typ, bs.Typ) {
 			return false
 		}
 		if av == bs {
@@ -4251,7 +4249,7 @@ func deepEqlSeen(a, b runtime.Value, seen map[devisit]bool) bool {
 		// struct{ X int } equal struct{ X any }. Named types match
 		// only the same declaration; anonymous ones compare spelling
 		// (field types, tags, order).
-		if !ok || !deepTypeEq(av.Def, bs.Def) || len(av.Fields) != len(bs.Fields) {
+		if !ok || !runtime.TypIdenticalStrict(av.Def, bs.Def) || len(av.Fields) != len(bs.Fields) {
 			return false
 		}
 		if av == bs {
@@ -4270,7 +4268,7 @@ func deepEqlSeen(a, b runtime.Value, seen map[devisit]bool) bool {
 		return true
 	case *runtime.Map:
 		bm, ok := b.(*runtime.Map)
-		if !ok || len(av.Pairs) != len(bm.Pairs) || !deepTypeEq(av.Typ, bm.Typ) {
+		if !ok || len(av.Pairs) != len(bm.Pairs) || !runtime.TypIdenticalStrict(av.Typ, bm.Typ) {
 			return false
 		}
 		if av == bm {
@@ -4297,57 +4295,6 @@ func deepEqlSeen(a, b runtime.Value, seen map[devisit]bool) bool {
 		return true
 	}
 	return reflect.DeepEqual(goNative(a), goNative(b))
-}
-
-// deepDefEq reports whether two struct defs spell the same type — the
-// same def object, or anonymous defs with equal shapes (kind + field
-// names): `struct{}` literals at different sites are one Go type, but
-// two `type T struct{...}` declarations are distinct types even when
-// they spell identically, so a named def only matches itself.
-func deepDefEq(a, b *runtime.TypeDef) bool {
-	if a == b {
-		return true
-	}
-	if a == nil || b == nil || a.Name != "" || b.Name != "" || a.Kind != b.Kind || a.Name != b.Name || len(a.Fields) != len(b.Fields) {
-		return false
-	}
-	for i := range a.Fields {
-		if a.Fields[i] != b.Fields[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// deepTypeEq reports whether two typedefs spell the same type for
-// DeepEqual: the def equality of deepDefEq plus the underlying type's
-// AST spelling, which distinguishes slices from arrays and element
-// types ([]int vs [1]int vs []string).
-func deepTypeEq(a, b *runtime.TypeDef) bool {
-	if !deepDefEq(a, b) {
-		return false
-	}
-	return deepTypSpelling(a) == deepTypSpelling(b)
-}
-
-// deepTypSpelling renders a typedef's underlying type for equality —
-// Anon or Spec.Type printed without positions.
-func deepTypSpelling(td *runtime.TypeDef) string {
-	if td == nil {
-		return ""
-	}
-	x := td.Anon
-	if x == nil && td.Spec != nil {
-		x = td.Spec.Type
-	}
-	if x == nil {
-		return td.Name
-	}
-	var b strings.Builder
-	if err := printer.Fprint(&b, token.NewFileSet(), x); err != nil {
-		return td.Name
-	}
-	return b.String()
 }
 
 // deepNilish reports whether v is any nil flavor (typed nil, iface nil,

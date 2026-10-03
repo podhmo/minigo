@@ -5461,30 +5461,6 @@ func unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value {
 	return nil
 }
 
-// structDefsEq reports whether two struct typedefs are the same type:
-// identical pointers, or two anonymous struct typedefs carrying the same
-// field-name list — Go treats `struct{A int}` written twice as one type.
-func structDefsEq(a, b *runtime.TypeDef) bool {
-	if a == b {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	if a.Name != "" || b.Name != "" {
-		return a.Name == b.Name && a.Pkg == b.Pkg
-	}
-	if len(a.Fields) != len(b.Fields) {
-		return false
-	}
-	for i := range a.Fields {
-		if a.Fields[i] != b.Fields[i] {
-			return false
-		}
-	}
-	return true
-}
-
 func eqlValue(a, b runtime.Value) bool {
 	if n, ok := a.(*runtime.Named); ok {
 		a = n.V
@@ -5552,14 +5528,22 @@ func eqlValue(a, b runtime.Value) bool {
 		return false
 	}
 	if tn, ok := a.(*runtime.TypedNil); ok {
-		// a typed nil of a slice/map/func type is still uncomparable —
-		// Go panics on the TYPE even when the value is nil.
-		if _, ok2 := b.(*runtime.TypedNil); ok2 && uncomparableTyp(tn.Typ) {
-			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "comparing uncomparable type " + spelledTyp(tn.Typ)}})
-		}
 		switch bi := b.(type) {
-		case runtime.Nil, *runtime.TypedNil:
+		case runtime.Nil:
 			return true // a nil pointer/slice/map/chan/func == nil
+		case *runtime.TypedNil:
+			// two typed nils of different dynamic types are just unequal
+			// (Go's interface == compares the (type, value) pair);
+			// only the SAME type can panic for being uncomparable.
+			if !runtime.TypIdentical(tn.Typ, bi.Typ) {
+				return false
+			}
+			// a typed nil of a slice/map/func type is still uncomparable —
+			// Go panics on the TYPE even when the value is nil.
+			if uncomparableTyp(tn.Typ) {
+				panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "comparing uncomparable type " + spelledTyp(tn.Typ)}})
+			}
+			return true
 		case *runtime.IfaceNil:
 			return sameTypeDef(tn.Typ, bi.Typ)
 		}
@@ -5578,7 +5562,7 @@ func eqlValue(a, b runtime.Value) bool {
 		// type — anonymous struct typedefs with the same field list are
 		// the same type (Go's identical-underlying rule).
 		bs, ok := b.(*runtime.Struct)
-		if !ok || !structDefsEq(av.Def, bs.Def) || len(av.Fields) != len(bs.Fields) {
+		if !ok || !runtime.TypIdentical(av.Def, bs.Def) || len(av.Fields) != len(bs.Fields) {
 			return false
 		}
 		for i := range av.Fields {
@@ -5594,6 +5578,11 @@ func eqlValue(a, b runtime.Value) bool {
 		return true
 	case *runtime.Slice:
 		if bs, ok := b.(*runtime.Slice); ok {
+			// different element types make different dynamic types —
+			// any([]int{...}) == any([]string{...}) is false, not a panic.
+			if !runtime.TypIdentical(av.Typ, bs.Typ) {
+				return false
+			}
 			// array-typed values compare element-wise; plain slices are
 			// uncomparable and the comparison panics, like Go.
 			if isArrayTyp(av.Typ) && isArrayTyp(bs.Typ) {
@@ -5611,7 +5600,10 @@ func eqlValue(a, b runtime.Value) bool {
 		}
 		return false
 	case *runtime.Map:
-		if _, ok := b.(*runtime.Map); ok {
+		if bm, ok := b.(*runtime.Map); ok {
+			if !runtime.TypIdentical(av.Typ, bm.Typ) {
+				return false
+			}
 			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "comparing uncomparable type " + spelledTyp(av.Typ)}})
 		}
 		return false
@@ -5785,70 +5777,15 @@ func typeExprFor(td *runtime.TypeDef) ast.Expr {
 	return ast.NewIdent("interface{}")
 }
 
-// sameTypeDef reports whether two typedefs name the same type: identical
-// typedefs, equal named types (name+package), or anonymous types with the
-// same shape spelling ([]int, *Sq, map[string]int, ...).
+// sameTypeDef reports whether two typedefs name the same type — the
+// shared runtime.TypIdentical judgment (decl object, or name+package+
+// binds for named types, or equal shape spellings for anonymous ones).
 func sameTypeDef(a, b *runtime.TypeDef) bool {
-	if a == b {
-		return true
-	}
-	if a == nil || b == nil || a.Kind != b.Kind {
-		return false
-	}
-	if a.Name != "" || b.Name != "" {
-		return a.Name != "" && canonBasicName(a.Name) == canonBasicName(b.Name) && a.Pkg == b.Pkg && bindsEq(a.Binds, b.Binds)
-	}
-	if a.Anon != nil && b.Anon != nil {
-		return typeExprNameCtx(a.Anon, a.File, a.Pkg) == typeExprNameCtx(b.Anon, b.File, b.Pkg)
-	}
-	return false
+	return runtime.TypIdentical(a, b)
 }
 
-// canonBasicName folds predeclared aliases: byte is uint8 and rune is int32
-// — an alias spelled at a call site and its canonical name are the same type.
-func canonBasicName(n string) string {
-	switch n {
-	case "byte":
-		return "uint8"
-	case "rune":
-		return "int32"
-	}
-	return n
-}
-
-// bindsEq compares generic instantiation bindings: `Wrap[int]` and
-// `Wrap[string]` share Name+Pkg but instantiate differently — a declared
-// type is identical only when its type arguments are.
-func bindsEq(a, b map[string]runtime.Value) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, av := range a {
-		bv, ok := b[k]
-		if !ok || !bindArgEq(av, bv) {
-			return false
-		}
-	}
-	return true
-}
-
-func bindArgEq(a, b runtime.Value) bool {
-	at, aok := a.(*runtime.TypeDef)
-	bt, bok := b.(*runtime.TypeDef)
-	if aok != bok {
-		return false
-	}
-	if !aok {
-		return a == b
-	}
-	return sameTypeDef(at, bt)
-}
-
-// typeExprName renders a type AST to a comparable shape string for
-// anonymous-type identity (approximation: structural equality by shape,
-// not by the go/types identity rules).
-// lenExprName renders an array-length expression inside a type-identity
-// spelling — the `3` of `[3]int`, a named const, or `...`.
+// lenExprName renders an array-length expression inside a type spelling
+// — the `3` of `[3]int`, a named const, or `...`.
 func lenExprName(e ast.Expr) string {
 	switch l := e.(type) {
 	case nil:
@@ -5863,6 +5800,9 @@ func lenExprName(e ast.Expr) string {
 	return fmt.Sprintf("%T", e)
 }
 
+// typeExprName renders a type AST to a comparable shape string for
+// anonymous-type identity (approximation: structural equality by shape,
+// not by the go/types identity rules).
 func typeExprName(e ast.Expr) string {
 	switch t := e.(type) {
 	case *ast.Ident:
@@ -5900,91 +5840,6 @@ func typeExprName(e ast.Expr) string {
 		return "func()"
 	}
 	return fmt.Sprintf("%T", e)
-}
-
-// typeExprNameCtx renders a type AST like typeExprName but package-aware:
-// a non-predeclared ident spells as pkgPath.Name, and a selector `a.T`
-// resolves through the file's import table to the imported path — so
-// `[]Foo` typedefs written in different packages never spell equal, and
-// `a.Foo`/`b.Foo` written under different aliases compare correctly.
-// Predeclared names and unresolved selectors stay unqualified.
-func typeExprNameCtx(e ast.Expr, file *syntax.File, pkg *runtime.Package) string {
-	switch t := e.(type) {
-	case *ast.Ident:
-		if predeclaredTypeName(t.Name) {
-			return t.Name
-		}
-		if pkg != nil {
-			return pkg.Path + "." + t.Name
-		}
-		return t.Name
-	case *ast.StarExpr:
-		return "*" + typeExprNameCtx(t.X, file, pkg)
-	case *ast.ArrayType:
-		return "[" + lenExprName(t.Len) + "]" + typeExprNameCtx(t.Elt, file, pkg)
-	case *ast.MapType:
-		return "map[" + typeExprNameCtx(t.Key, file, pkg) + "]" + typeExprNameCtx(t.Value, file, pkg)
-	case *ast.ChanType:
-		return "chan " + typeExprNameCtx(t.Value, file, pkg)
-	case *ast.SelectorExpr:
-		if id, ok := t.X.(*ast.Ident); ok {
-			if p := importPathFor(file, id.Name); p != "" {
-				return p + "." + t.Sel.Name
-			}
-		}
-		return typeExprNameCtx(t.X, file, pkg) + "." + t.Sel.Name
-	case *ast.IndexExpr:
-		return typeExprNameCtx(t.X, file, pkg) + "[" + typeExprNameCtx(t.Index, file, pkg) + "]"
-	case *ast.IndexListExpr:
-		s := typeExprNameCtx(t.X, file, pkg) + "["
-		for i, x := range t.Indices {
-			if i > 0 {
-				s += ","
-			}
-			s += typeExprNameCtx(x, file, pkg)
-		}
-		return s + "]"
-	case *ast.ParenExpr:
-		return typeExprNameCtx(t.X, file, pkg)
-	case *ast.Ellipsis:
-		return "..." + typeExprNameCtx(t.Elt, file, pkg)
-	case *ast.InterfaceType:
-		return "interface{}"
-	case *ast.StructType:
-		return "struct{}"
-	case *ast.FuncType:
-		return "func()"
-	}
-	return fmt.Sprintf("%T", e)
-}
-
-// predeclaredTypeName reports whether name is a predeclared type-ish
-// identifier — basic types, aliases (byte, rune) and pseudo-types
-// (error, any, comparable) — which never carry a package qualifier.
-func predeclaredTypeName(name string) bool {
-	switch name {
-	case "bool", "string",
-		"int", "int8", "int16", "int32", "int64",
-		"uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
-		"byte", "rune", "float32", "float64", "complex64", "complex128",
-		"error", "any", "comparable":
-		return true
-	}
-	return false
-}
-
-// importPathFor resolves a file-local import alias (explicit or the
-// basename-derived default) to its import path.
-func importPathFor(file *syntax.File, alias string) string {
-	if file == nil {
-		return ""
-	}
-	for _, im := range file.Imports {
-		if im.LocalName() == alias {
-			return im.Path
-		}
-	}
-	return ""
 }
 
 // tdName is a readable name for a typedef in diagnostics.
@@ -6619,191 +6474,7 @@ func (v *VM) underlyingShape(td *runtime.TypeDef) string {
 	if u == nil {
 		return ""
 	}
-	src := u.Anon
-	if src == nil && u.Spec != nil {
-		src = u.Spec.Type
-	}
-	if src != nil {
-		return v.shapeSpelling(src, u)
-	}
-	return normBasicName(u.Name)
-}
-
-// shapeSpelling renders a type expression to a comparable string in the
-// context of its declaring typedef: generic binds substitute bound type
-// parameters, non-predeclared idents qualify by package path, and
-// `a.T` selectors resolve through the file's import table — so `[]Foo`
-// in two packages never collides. byte and rune normalize to their
-// canonical names so []byte and []uint8 spell identically (byte IS uint8).
-func (v *VM) shapeSpelling(e ast.Expr, ctx *runtime.TypeDef) string {
-	binds := ctx.Binds
-	switch t := e.(type) {
-	case *ast.Ident:
-		if btd := boundTypedef(binds, t.Name); btd != nil {
-			return v.boundShape(btd)
-		}
-		if predeclaredTypeName(t.Name) {
-			return normBasicName(t.Name)
-		}
-		if ctx.Pkg != nil {
-			return ctx.Pkg.Path + "." + t.Name
-		}
-		return normBasicName(t.Name)
-	case *ast.StarExpr:
-		return "*" + v.shapeSpelling(t.X, ctx)
-	case *ast.ArrayType:
-		if t.Len != nil {
-			return "[" + lenExprName(t.Len) + "]" + v.shapeSpelling(t.Elt, ctx)
-		}
-		return "[]" + v.shapeSpelling(t.Elt, ctx)
-	case *ast.Ellipsis:
-		return "[]" + v.shapeSpelling(t.Elt, ctx)
-	case *ast.MapType:
-		return "map[" + v.shapeSpelling(t.Key, ctx) + "]" + v.shapeSpelling(t.Value, ctx)
-	case *ast.ChanType:
-		return "chan " + v.shapeSpelling(t.Value, ctx)
-	case *ast.ParenExpr:
-		return v.shapeSpelling(t.X, ctx)
-	case *ast.SelectorExpr:
-		if id, ok := t.X.(*ast.Ident); ok {
-			if p := importPathFor(ctx.File, id.Name); p != "" {
-				return p + "." + t.Sel.Name
-			}
-		}
-		return v.shapeSpelling(t.X, ctx) + "." + t.Sel.Name
-	case *ast.IndexExpr:
-		return v.shapeSpelling(t.X, ctx) + "[" + v.shapeSpelling(t.Index, ctx) + "]"
-	case *ast.IndexListExpr:
-		s := v.shapeSpelling(t.X, ctx) + "["
-		for i, x := range t.Indices {
-			if i > 0 {
-				s += ","
-			}
-			s += v.shapeSpelling(x, ctx)
-		}
-		return s + "]"
-	case *ast.InterfaceType:
-		// methods decide identity, so spell them — an empty interface
-		// still renders "interface{}".
-		if t.Methods == nil || len(t.Methods.List) == 0 {
-			return "interface{}"
-		}
-		var sb strings.Builder
-		sb.WriteString("interface{")
-		for _, m := range t.Methods.List {
-			for _, n := range m.Names {
-				sb.WriteString(n.Name)
-			}
-			sb.WriteString(v.shapeSpelling(m.Type, ctx))
-			sb.WriteString(";")
-		}
-		sb.WriteString("}")
-		return sb.String()
-	case *ast.StructType:
-		// field names, types and tags all decide identity — an empty
-		// struct still renders "struct{}".
-		var sb strings.Builder
-		sb.WriteString("struct{")
-		if t.Fields != nil {
-			for _, f := range t.Fields.List {
-				for i, n := range f.Names {
-					if i > 0 {
-						sb.WriteString(",")
-					}
-					sb.WriteString(n.Name)
-				}
-				if len(f.Names) > 0 {
-					sb.WriteString(" ")
-				}
-				sb.WriteString(v.shapeSpelling(f.Type, ctx))
-				if f.Tag != nil {
-					sb.WriteString(" ")
-					sb.WriteString(f.Tag.Value)
-				}
-				sb.WriteString(";")
-			}
-		}
-		sb.WriteString("}")
-		return sb.String()
-	case *ast.FuncType:
-		var sb strings.Builder
-		sb.WriteString("func(")
-		sb.WriteString(v.fieldTypeSpellings(t.Params, ctx))
-		sb.WriteString(")")
-		if res := v.fieldTypeSpellings(t.Results, ctx); res != "" {
-			sb.WriteString("(")
-			sb.WriteString(res)
-			sb.WriteString(")")
-		}
-		return sb.String()
-	}
-	return fmt.Sprintf("%T", e)
-}
-
-// fieldTypeSpellings renders a signature field list as its comma-joined
-// type spellings — `a, b int` contributes `int,int` since parameter
-// names are not part of a func type's identity.
-func (v *VM) fieldTypeSpellings(fl *ast.FieldList, ctx *runtime.TypeDef) string {
-	if fl == nil {
-		return ""
-	}
-	var parts []string
-	for _, f := range fl.List {
-		n := len(f.Names)
-		if n == 0 {
-			n = 1
-		}
-		for i := 0; i < n; i++ {
-			parts = append(parts, v.shapeSpelling(f.Type, ctx))
-		}
-	}
-	return strings.Join(parts, ",")
-}
-
-// boundShape spells an instantiated type argument: a named type keeps its
-// declared identity (T=MyInt spells "pkg.MyInt", not "int"), an anonymous
-// shape spells structurally.
-func (v *VM) boundShape(td *runtime.TypeDef) string {
-	if td.Name != "" {
-		if td.Pkg != nil {
-			return td.Pkg.Path + "." + td.Name
-		}
-		return normBasicName(td.Name)
-	}
-	src := td.Anon
-	if src == nil && td.Spec != nil {
-		src = td.Spec.Type
-	}
-	if src != nil {
-		return v.shapeSpelling(src, td)
-	}
-	return fmt.Sprintf("%p", td)
-}
-
-// boundTypedef returns the typedef a type parameter binds to, if any.
-func boundTypedef(binds map[string]runtime.Value, name string) *runtime.TypeDef {
-	if binds == nil {
-		return nil
-	}
-	if bv, ok := binds[name]; ok {
-		if btd, ok := bv.(*runtime.TypeDef); ok {
-			return btd
-		}
-	}
-	return nil
-}
-
-// normBasicName maps the predeclared aliases to their canonical names:
-// byte IS uint8 and rune IS int32, so shapes spelled with either compare
-// equal.
-func normBasicName(name string) string {
-	switch name {
-	case "byte":
-		return "uint8"
-	case "rune":
-		return "int32"
-	}
-	return name
+	return runtime.TypUnderlyingSpelling(u)
 }
 
 // elemFamily classifies a slice element typedef for the special string
@@ -7115,7 +6786,7 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 		if td.Name == "" && xv.Def != nil && xv.Def.Name == "" {
 			return v.convShapeEq(xv.Def, td)
 		}
-		return xv.Def != nil && td.Name != "" && xv.Def.Name == td.Name && xv.Def.Pkg == td.Pkg && td.Pkg != nil && bindsEq(xv.Def.Binds, td.Binds)
+		return xv.Def != nil && td.Name != "" && td.Pkg != nil && sameTypeDef(xv.Def, td)
 	case int64:
 		switch td.Name {
 		case "int", "int8", "int16", "int32", "int64", "uint", "uint8",
@@ -7828,7 +7499,7 @@ func (v *VM) tdShapeEq(a, b *runtime.TypeDef) bool {
 		return true
 	}
 	if pa.Anon != nil && pb.Anon != nil {
-		return typeExprNameCtx(pa.Anon, pa.File, pa.Pkg) == typeExprNameCtx(pb.Anon, pb.File, pb.Pkg)
+		return runtime.TypSpelling(pa.Anon, pa) == runtime.TypSpelling(pb.Anon, pb)
 	}
 	return pa.Anon == nil && pb.Anon == nil
 }
