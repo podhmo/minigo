@@ -307,6 +307,26 @@ func (c *compiler) getRef(name string, pos token.Pos) {
 	}
 }
 
+// declared reports whether name resolves through a declaration rather
+// than a builtin — a local/upval from fscope, a generic instantiation
+// binding, or a package-level decl in the index — so `const true = 31`
+// shadows the predeclared literal.
+func (c *compiler) declared(name string) bool {
+	if _, _, ok := c.fs.find(name); ok {
+		return true
+	}
+	if _, bound := c.binds[name]; bound {
+		return true
+	}
+	if c.pkg != nil && c.pkg.Index != nil {
+		idx := c.pkg.Index
+		if idx.Consts[name] != nil || idx.Vars[name] != nil || idx.Funcs[name] != nil || idx.Types[name] != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *compiler) setRef(name string, pos token.Pos) {
 	isUp, idx, ok := c.fs.find(name)
 	switch {
@@ -1996,12 +2016,21 @@ func (c *compiler) expr(e ast.Expr) {
 		c.emit(bytecode.OpConst, c.constIdx(v), 0, x.Pos())
 	case *ast.Ident:
 		switch x.Name {
-		case "nil":
-			c.emit(bytecode.OpNil, 0, 0, x.Pos())
-		case "true":
-			c.emit(bytecode.OpConst, c.constIdx(true), 0, x.Pos())
-		case "false":
-			c.emit(bytecode.OpConst, c.constIdx(false), 0, x.Pos())
+		case "nil", "true", "false":
+			// a declaration shadows the predeclared literal — Go lets
+			// users redeclare every predeclared name (`const true = 31`).
+			if c.declared(x.Name) {
+				c.getRef(x.Name, x.Pos())
+				return
+			}
+			switch x.Name {
+			case "nil":
+				c.emit(bytecode.OpNil, 0, 0, x.Pos())
+			case "true":
+				c.emit(bytecode.OpConst, c.constIdx(true), 0, x.Pos())
+			case "false":
+				c.emit(bytecode.OpConst, c.constIdx(false), 0, x.Pos())
+			}
 		default:
 			c.getRef(x.Name, x.Pos())
 		}
