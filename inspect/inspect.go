@@ -810,20 +810,20 @@ func sigMatch(m *Method, spec ifaceSpec, res Resolver) bool {
 	if m.Sig == nil {
 		return false
 	}
-	sp, sv := paramTypes(spec.ft.Params)
-	sr, _ := paramTypes(spec.ft.Results)
+	sp, sv := paramTypes(spec.ft.Params, spec.file, spec.pkg)
+	sr, _ := paramTypes(spec.ft.Results, spec.file, spec.pkg)
 	mp, mv := expandFieldTypes(m.Sig.ParamFields())
 	mr, _ := expandFieldTypes(m.Sig.ResultFields())
 	if sv != mv || len(sp) != len(mp) || len(sr) != len(mr) {
 		return false
 	}
 	for i := range sp {
-		if !specSame(NewTypeExpr(sp[i], spec.file, spec.pkg), mp[i], res) {
+		if !specSame(sp[i], mp[i], res) {
 			return false
 		}
 	}
 	for i := range sr {
-		if !specSame(NewTypeExpr(sr[i], spec.file, spec.pkg), mr[i], res) {
+		if !specSame(sr[i], mr[i], res) {
 			return false
 		}
 	}
@@ -884,28 +884,15 @@ func collapseAlias(te *TypeExpr, res Resolver) *TypeExpr {
 	return te
 }
 
-// paramTypes flattens an ast.FieldList to one expression per declared
-// parameter — a, b int yields two — in declaration order, flagging a
-// trailing ellipsis as variadic.
-func paramTypes(fl *ast.FieldList) ([]ast.Expr, bool) {
+// paramTypes flattens an ast.FieldList to one type expression per
+// declared parameter — a, b int yields two — in declaration order,
+// flagging a trailing ellipsis as variadic. The Field view is the
+// shared shape: it delegates to expandFieldTypes.
+func paramTypes(fl *ast.FieldList, file *syntax.File, pkg *runtime.Package) ([]*TypeExpr, bool) {
 	if fl == nil {
 		return nil, false
 	}
-	var out []ast.Expr
-	variadic := false
-	for i, fd := range fl.List {
-		n := len(fd.Names)
-		if n == 0 {
-			n = 1
-		}
-		if i == len(fl.List)-1 {
-			_, variadic = fd.Type.(*ast.Ellipsis)
-		}
-		for j := 0; j < n; j++ {
-			out = append(out, fd.Type)
-		}
-	}
-	return out, variadic
+	return expandFieldTypes(fieldList(fl, file, pkg))
 }
 
 // expandFieldTypes flattens view Fields the same way — sig fields keep
