@@ -435,9 +435,11 @@ func (v *RValue) Interface() any {
 	return v.ifaceVal()
 }
 
-// CanInterface reports whether Interface is legal.
+// CanInterface reports whether Interface is legal. A zero Value
+// panics here like Go — unlike CanAddr/CanSet which answer false.
 func (v *RValue) CanInterface() bool {
-	return v.IsValid() && !v.ro
+	v.mustValid("CanInterface")
+	return !v.ro
 }
 
 // Elem dereferences a pointer or interface value.
@@ -525,7 +527,19 @@ func (v *RValue) expectKind(name string, kinds ...reflect.Kind) {
 			return
 		}
 	}
-	trap("reflect: call of reflect.Value.%s on %s Value", name, v.kindStr())
+	plain("reflect: call of reflect.Value.%s on %s Value", name, v.kindStr())
+}
+
+// mustBeSettable checks Go's mustBeAssignable — the ro/unaddressable
+// gates run before the kind gate in every scalar setter, and the panic
+// names the caller's method, not Set.
+func (v *RValue) mustBeSettable(name string) {
+	if v.ro {
+		trap("reflect.Value.%s using value obtained using unexported field", name)
+	}
+	if v.ref == nil {
+		trap("reflect.Value.%s using unaddressable value", name)
+	}
 }
 
 // IsNil reports nil-ness for nilable kinds.
@@ -790,9 +804,7 @@ func (v *RValue) SetLen(n int) {
 		return
 	}
 	v.mustValid("SetLen")
-	if v.ref == nil {
-		trap("reflect.Value.SetLen using unaddressable value")
-	}
+	v.mustBeSettable("SetLen")
 	if n2, isN := v.get().(*runtime.Named); isN {
 		if s, ok := n2.V.(*runtime.Slice); ok {
 			if n >= 0 && n <= cap(s.Elems) {
@@ -807,7 +819,7 @@ func (v *RValue) SetLen(n int) {
 		trap("call of reflect.Value.SetLen on %s Value", v.kindStr())
 	}
 	if n < 0 || n > cap(s.Elems) {
-		trap("reflect.Value.SetLen: length %d exceeds capacity %d", n, cap(s.Elems))
+		trap("slice length out of range in SetLen")
 	}
 	v.set(&runtime.Slice{Elems: s.Elems[:n], Typ: s.Typ})
 }
@@ -821,12 +833,7 @@ func (v *RValue) SetCap(n int) {
 		return
 	}
 	v.mustValid("SetCap")
-	if v.ro {
-		trap("reflect.Value.SetCap using value obtained using unexported field")
-	}
-	if v.ref == nil {
-		trap("reflect.Value.SetCap using unaddressable value")
-	}
+	v.mustBeSettable("SetCap")
 	if n2, isN := v.get().(*runtime.Named); isN {
 		if s, ok := n2.V.(*runtime.Slice); ok {
 			if n >= len(s.Elems) && n <= cap(s.Elems) {
@@ -914,6 +921,10 @@ func (v *RValue) Index(i int) *RValue {
 		return &RValue{e: v.e, vc: v.vc, val: int64(x[i]), td: &runtime.TypeDef{Name: "uint8"}}
 	case *runtime.Named:
 		return v.unwrap().Index(i)
+	case *runtime.TypedNil:
+		if v.Kind() == reflect.Slice {
+			panic(&runtime.Panic{Value: "reflect: slice index out of range"})
+		}
 	}
 	trap("call of reflect.Value.Index on %s Value", v.kindStr())
 	return nil
@@ -955,6 +966,10 @@ func (v *RValue) Slice(i, j int) *RValue {
 		// every other kind-dispatched accessor.
 		nv := &RValue{e: v.e, vc: v.vc, val: s.V, td: v.td, ro: v.ro}
 		return nv.Slice(i, j)
+	case *runtime.TypedNil:
+		if v.Kind() == reflect.Slice {
+			plain("reflect.Value.Slice: slice index out of bounds")
+		}
 	}
 	trap("call of reflect.Value.Slice on %s Value", v.kindStr())
 	return nil
@@ -1045,27 +1060,39 @@ func (v *RValue) SetMapIndex(k, x *RValue) {
 		return
 	}
 	m, ok := v.get().(*runtime.Map)
+	nilMap := false
 	if !ok {
-		trap("call of reflect.Value.SetMapIndex on %s Value", v.kindStr())
+		_, isNil := v.get().(*runtime.TypedNil)
+		nilMap = (isNil || v.get() == runtime.NIL) && v.Kind() == reflect.Map
+		if !nilMap {
+			trap("call of reflect.Value.SetMapIndex on %s Value", v.kindStr())
+		}
 	}
 	// key and value must be assignable to the map's declared types, like
-	// Go's `reflect.SetMapIndex: value of type string is not assignable
-	// to type int`.
+	// Go's `reflect.Value.SetMapIndex: value of type string is not
+	// assignable to type int` (no `reflect:` prefix) — and that check
+	// still rules on a nil map: Go judges it before touching the
+	// backing, while a delete there is a no-op.
 	if ktd := v.e.keyTdOf(v.td); ktd != nil {
 		kt, xt := v.e.rtypeOf(ktd), k.Type()
 		if xt != nil && !xt.AssignableTo(kt) {
-			trap("reflect.SetMapIndex: value of type %s is not assignable to type %s", xt.String(), kt.String())
+			plain("reflect.Value.SetMapIndex: value of type %s is not assignable to type %s", xt.String(), kt.String())
 		}
 	}
 	if !x.IsValid() {
-		m.Delete(normVal(k.ifaceVal()))
+		if m != nil {
+			m.Delete(normVal(k.ifaceVal()))
+		}
 		return
 	}
 	if etd := v.e.elemOf(v.td); etd != nil {
 		et, xt := v.e.rtypeOf(etd), x.Type()
 		if xt != nil && !xt.AssignableTo(et) {
-			trap("reflect.SetMapIndex: value of type %s is not assignable to type %s", xt.String(), et.String())
+			plain("reflect.Value.SetMapIndex: value of type %s is not assignable to type %s", xt.String(), et.String())
 		}
+	}
+	if nilMap {
+		plain("assignment to entry in nil map")
 	}
 	m.Insert(normVal(k.ifaceVal()), normVal(x.ifaceVal()))
 }
@@ -1151,14 +1178,35 @@ func (it *MapIter) Reset(v *RValue) {
 	*it = *nv
 }
 
-// SetIterKey assigns the current iteration key.
+// SetIterKey assigns the current iteration key. Go evaluates the
+// iterator first — before Next the panic is `reflect: Value.SetIterKey
+// called before Next`, ahead of the target's settable check — and an
+// unassignable key reports under `reflect.MapIter.SetKey:`.
 func (v *RValue) SetIterKey(it *MapIter) {
-	v.Set(it.Key())
+	if it != nil && it.hit == nil && (it.i == 0 || it.i > len(it.keys)) {
+		plain("reflect: Value.SetIterKey called before Next")
+	}
+	x := it.Key()
+	v.mustValid("SetIterKey")
+	v.mustBeSettable("SetIterKey")
+	if vt, xt := v.Type(), x.Type(); vt != nil && xt != nil && !xt.AssignableTo(vt) {
+		plain("reflect.MapIter.SetKey: value of type %s is not assignable to type %s", xt.String(), vt.String())
+	}
+	v.set(x.get())
 }
 
 // SetIterValue assigns the current iteration value.
 func (v *RValue) SetIterValue(it *MapIter) {
-	v.Set(it.Value())
+	if it != nil && it.hit == nil && (it.i == 0 || it.i > len(it.keys)) {
+		plain("reflect: Value.SetIterValue called before Next")
+	}
+	x := it.Value()
+	v.mustValid("SetIterValue")
+	v.mustBeSettable("SetIterValue")
+	if vt, xt := v.Type(), x.Type(); vt != nil && xt != nil && !xt.AssignableTo(vt) {
+		plain("reflect.MapIter.SetValue: value of type %s is not assignable to type %s", xt.String(), vt.String())
+	}
+	v.set(x.get())
 }
 
 // ---- scalar reads ----
@@ -1369,10 +1417,6 @@ func (v *RValue) tagged(val runtime.Value) runtime.Value {
 // string is not assignable to type int`.
 func (v *RValue) Set(x *RValue) {
 	v.mustValid("Set")
-	if x == nil || !x.IsValid() {
-		trap("reflect.Value.Set: value of type %s is not assignable to type %s",
-			"<invalid>", v.Type().String())
-	}
 	if v.host() {
 		rv, err := toHost(x.ifaceVal(), v.rv.Type())
 		if err != nil {
@@ -1381,16 +1425,15 @@ func (v *RValue) Set(x *RValue) {
 		v.rv.Set(rv)
 		return
 	}
-	// Go's order: the target must be settable before the source's
-	// assignability is even considered.
-	if v.ro {
-		trap("reflect.Value.Set using value obtained using unexported field")
-	}
-	if v.ref == nil {
-		trap("reflect.Value.Set using unaddressable value")
+	// Go's order: the target must be settable, then the source must be
+	// a usable Value (`call of reflect.Value.Set on zero Value`), and
+	// only then is its assignability judged.
+	v.mustBeSettable("Set")
+	if x == nil || !x.IsValid() {
+		trap("call of reflect.Value.Set on zero Value")
 	}
 	if vt, xt := v.Type(), x.Type(); vt != nil && xt != nil && !xt.AssignableTo(vt) {
-		trap("Set: value of type %s is not assignable to type %s", xt.String(), vt.String())
+		plain("reflect.Set: value of type %s is not assignable to type %s", xt.String(), vt.String())
 	}
 	val := x.get()
 	if x.host() {
@@ -1406,6 +1449,7 @@ func (v *RValue) SetBool(b bool) {
 		v.rv.SetBool(b)
 		return
 	}
+	v.mustBeSettable("SetBool")
 	v.expectKind("SetBool", reflect.Bool)
 	v.set(b)
 }
@@ -1483,6 +1527,7 @@ func (v *RValue) SetInt(x int64) {
 		v.rv.SetInt(x)
 		return
 	}
+	v.mustBeSettable("SetInt")
 	v.expectKind("SetInt", reflect.Int, reflect.Int8, reflect.Int16,
 		reflect.Int32, reflect.Int64)
 	v.set(truncInt(v.declTd(), x))
@@ -1496,6 +1541,7 @@ func (v *RValue) SetUint(x uint64) {
 		v.rv.SetUint(x)
 		return
 	}
+	v.mustBeSettable("SetUint")
 	v.expectKind("SetUint", reflect.Uint, reflect.Uint8, reflect.Uint16,
 		reflect.Uint32, reflect.Uint64, reflect.Uintptr)
 	if x <= 0x7fffffffffffffff {
@@ -1512,6 +1558,7 @@ func (v *RValue) SetFloat(x float64) {
 		v.rv.SetFloat(x)
 		return
 	}
+	v.mustBeSettable("SetFloat")
 	v.expectKind("SetFloat", reflect.Float32, reflect.Float64)
 	v.set(x)
 }
@@ -1523,6 +1570,8 @@ func (v *RValue) SetComplex(x complex128) {
 		v.rv.SetComplex(x)
 		return
 	}
+	v.mustBeSettable("SetComplex")
+	v.expectKind("SetComplex", reflect.Complex64, reflect.Complex128)
 	v.set(&runtime.GoValue{V: x})
 }
 
@@ -1533,6 +1582,7 @@ func (v *RValue) SetString(x string) {
 		v.rv.SetString(x)
 		return
 	}
+	v.mustBeSettable("SetString")
 	v.expectKind("SetString", reflect.String)
 	v.set(x)
 }
@@ -1544,18 +1594,14 @@ func (v *RValue) SetBytes(x []byte) {
 		v.rv.SetBytes(x)
 		return
 	}
-	// Go's order: settable first, then the []uint8-element gate.
-	if v.ro {
-		trap("reflect.Value.SetBytes using value obtained using unexported field")
-	}
-	if v.ref == nil {
-		trap("reflect.Value.SetBytes using unaddressable value")
-	}
+	// Go's order: settable first, then the slice kind, then the
+	// []uint8-element gate — whose panic carries no `reflect:` prefix.
+	v.mustBeSettable("SetBytes")
 	if v.Kind() != reflect.Slice {
 		trap("call of reflect.Value.SetBytes on %s Value", v.kindStr())
 	}
 	if et := v.e.elemOf(v.td); et == nil || v.e.kindOfTd(et) != reflect.Uint8 {
-		trap("call of reflect.Value.SetBytes on %s Value", v.kindStr())
+		plain("reflect.Value.SetBytes of non-byte slice")
 	}
 	elems := make([]runtime.Value, len(x))
 	for i, b := range x {
@@ -1595,6 +1641,7 @@ func (v *RValue) Call(in []*RValue) []*RValue {
 		}
 		return res
 	}
+	v.expectKind("Call", reflect.Func)
 	if v.vc == nil {
 		trap("minireflect: reflect.Value.Call needs a caller context")
 	}
@@ -1691,6 +1738,7 @@ func (v *RValue) CallSlice(in []*RValue) []*RValue {
 		}
 		return res
 	}
+	v.expectKind("CallSlice", reflect.Func)
 	if v.vc == nil {
 		trap("minireflect: reflect.Value.CallSlice needs a caller context")
 	}
@@ -1937,10 +1985,13 @@ func (v *RValue) UnsafeAddr() uintptr {
 
 // OverflowInt reports whether x fits the value's int kind.
 func (v *RValue) OverflowInt(x int64) bool {
+	v.mustValid("OverflowInt")
 	if v.host() {
 		return v.rv.OverflowInt(x)
 	}
 	switch v.Kind() {
+	case reflect.Int:
+		return x != int64(int(x))
 	case reflect.Int8:
 		return x < -128 || x > 127
 	case reflect.Int16:
@@ -1951,15 +2002,19 @@ func (v *RValue) OverflowInt(x int64) bool {
 		reflect.Uint64, reflect.Uintptr:
 		return x < 0
 	}
+	plain("reflect: call of reflect.Value.OverflowInt on %s Value", v.kindStr())
 	return false
 }
 
 // OverflowUint reports whether x fits the value's uint kind.
 func (v *RValue) OverflowUint(x uint64) bool {
+	v.mustValid("OverflowUint")
 	if v.host() {
 		return v.rv.OverflowUint(x)
 	}
 	switch v.Kind() {
+	case reflect.Uint, reflect.Uint64, reflect.Uintptr:
+		return x != uint64(uint(x))
 	case reflect.Uint8:
 		return x > 255
 	case reflect.Uint16:
@@ -1969,29 +2024,40 @@ func (v *RValue) OverflowUint(x uint64) bool {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		return x > 0x7fffffffffffffff
 	}
+	plain("reflect: call of reflect.Value.OverflowUint on %s Value", v.kindStr())
 	return false
 }
 
 // OverflowFloat reports whether x fits a float32.
 func (v *RValue) OverflowFloat(x float64) bool {
+	v.mustValid("OverflowFloat")
 	if v.host() {
 		return v.rv.OverflowFloat(x)
 	}
-	if v.Kind() == reflect.Float32 {
+	switch v.Kind() {
+	case reflect.Float32:
 		return x > 3.4028234663852886e+38 || x < -3.4028234663852886e+38
+	case reflect.Float64:
+		return false
 	}
+	plain("reflect: call of reflect.Value.OverflowFloat on %s Value", v.kindStr())
 	return false
 }
 
 // OverflowComplex reports whether x fits a complex64.
 func (v *RValue) OverflowComplex(x complex128) bool {
+	v.mustValid("OverflowComplex")
 	if v.host() {
 		return v.rv.OverflowComplex(x)
 	}
-	if v.Kind() == reflect.Complex64 {
+	switch v.Kind() {
+	case reflect.Complex64:
 		const lim = 3.4028234663852886e+38
 		return real(x) > lim || real(x) < -lim || imag(x) > lim || imag(x) < -lim
+	case reflect.Complex128:
+		return false
 	}
+	plain("reflect: call of reflect.Value.OverflowComplex on %s Value", v.kindStr())
 	return false
 }
 

@@ -1,0 +1,47 @@
+SetInt-unaddr: panic: reflect: reflect.Value.SetInt using unaddressable value
+SetInt-wrongkind-unaddr: panic: reflect: reflect.Value.SetInt using unaddressable value
+SetInt-wrongkind-addr: panic: reflect: call of reflect.Value.SetInt on string Value
+SetInt-ro: panic: reflect: reflect.Value.SetInt using value obtained using unexported field
+SetString-unaddr: panic: reflect: reflect.Value.SetString using unaddressable value
+SetBool-unaddr: panic: reflect: reflect.Value.SetBool using unaddressable value
+SetUint-unaddr: panic: reflect: reflect.Value.SetUint using unaddressable value
+SetFloat-unaddr: panic: reflect: reflect.Value.SetFloat using unaddressable value
+SetComplex-unaddr: panic: reflect: reflect.Value.SetComplex using unaddressable value
+SetComplex-addr-struct: panic: reflect: call of reflect.Value.SetComplex on int Value
+Set-unaddr-assign: panic: reflect: reflect.Value.Set using unaddressable value
+Set-addr-assign: panic: reflect.Set: value of type int is not assignable to type string
+Set-invalid-x: panic: reflect: call of reflect.Value.Set on zero Value
+SetBytes-nonslice: panic: reflect: call of reflect.Value.SetBytes on string Value
+SetBytes-nonbyte: panic: reflect.Value.SetBytes of non-byte slice
+SetBytes-unaddr: panic: reflect: reflect.Value.SetBytes using unaddressable value
+SetLen-nonslice: panic: reflect: call of reflect.Value.SetLen on int Value
+SetLen-unaddr: panic: reflect: reflect.Value.SetLen using unaddressable value
+SetLen-overcap: panic: reflect: slice length out of range in SetLen
+SetLen-ro: panic: reflect: reflect.Value.SetLen using value obtained using unexported field
+SetCap-nonslice: panic: reflect: call of reflect.Value.SetCap on int Value
+SetCap-unaddr: panic: reflect: reflect.Value.SetCap using unaddressable value
+SetIterKey-beforeNext: panic: reflect: Value.SetIterKey called before Next
+SetIterValue-beforeNext: panic: reflect: Value.SetIterValue called before Next
+SetIterKey-unaddr: panic: reflect: Value.SetIterKey called before Next
+SetIterKey-wrongkind: panic: reflect.MapIter.SetKey: value of type string is not assignable to type int
+SetMapIndex-nilmap: panic: assignment to entry in nil map
+SetMapIndex-badkey: panic: reflect.Value.SetMapIndex: value of type int is not assignable to type string
+SetMapIndex-badval: panic: reflect.Value.SetMapIndex: value of type string is not assignable to type int
+Call-int: panic: reflect: call of reflect.Value.Call on int Value
+CallSlice-int: panic: reflect: call of reflect.Value.CallSlice on int Value
+OverflowInt-str: panic: reflect: call of reflect.Value.OverflowInt on string Value
+OverflowInt-int: false
+OverflowUint-str: panic: reflect: call of reflect.Value.OverflowUint on string Value
+OverflowFloat-str: panic: reflect: call of reflect.Value.OverflowFloat on string Value
+OverflowFloat-f64: false
+OverflowComplex-str: panic: reflect: call of reflect.Value.OverflowComplex on string Value
+CanInterface-zero: panic: reflect: call of reflect.Value.CanInterface on zero Value
+Interface-zero: panic: reflect: call of reflect.Value.Interface on zero Value
+Index-nilslice: panic: reflect: slice index out of range
+Slice-nilslice: panic: reflect.Value.Slice: slice index out of bounds
+FieldByIndex-deep: panic: reflect: Field of non-struct type int
+FieldByIndex-top: panic: reflect: FieldByIndex of non-struct type *[]int
+Key-nonmap-byte: panic: reflect: Key of non-map type uint8
+IsNil-struct: panic: reflect: call of reflect.Value.IsNil on struct Value
+Float-int: panic: reflect: call of reflect.Value.Float on int Value
+Int-str: panic: reflect: call of reflect.Value.Int on string Value

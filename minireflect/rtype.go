@@ -275,6 +275,16 @@ func (e *Env) typeName(td *runtime.TypeDef) string {
 			// bound typedefs name themselves "pkgpath.Name"
 			return td.Name[i+1:]
 		}
+		// reflect spells the predeclared aliases by their canonical
+		// types: `byte` prints `uint8`, `rune` prints `int32`.
+		if td.Pkg == nil && td.Spec == nil {
+			switch td.Name {
+			case "byte":
+				return "uint8"
+			case "rune":
+				return "int32"
+			}
+		}
 		return td.Name
 	}
 	if td.Anon != nil {
@@ -678,11 +688,15 @@ func (t *RType) Field(i int) *StructField {
 func (t *RType) FieldByIndex(idx []int) *StructField {
 	cur := t
 	var f *StructField
-	for _, i := range idx {
+	for depth, i := range idx {
 		// Go checks each level: descending into a non-struct panics
-		// with the level's type, not the top type.
+		// with the level's type, not the top type — and the deeper
+		// levels fail inside Field, so the wording changes.
 		if cur.Kind() != reflect.Struct {
-			trap("FieldByIndex of non-struct type %s", cur.String())
+			if depth == 0 {
+				trap("FieldByIndex of non-struct type %s", cur.String())
+			}
+			trap("Field of non-struct type %s", cur.String())
 		}
 		f = cur.Field(i)
 		if f.Type != nil {
