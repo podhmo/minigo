@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"reflect"
 )
 
@@ -17,4 +18,14 @@ func main() {
 	fmt.Println(reflect.DeepEqual(&x, x))
 	fmt.Println(reflect.DeepEqual(&x, &x))
 	fmt.Println(reflect.DeepEqual([]int{1}, []int{1}))
+	// typed nils compare by typedef identity; an untyped or
+	// empty-interface nil is just nil.
+	fmt.Println(reflect.DeepEqual((*int)(nil), (*string)(nil)))
+	fmt.Println(reflect.DeepEqual([]int(nil), nil))
+	fmt.Println(reflect.DeepEqual([]int(nil), []int(nil)))
+	fmt.Println(reflect.DeepEqual([]int(nil), []string(nil)))
+	var r io.Reader
+	var w io.Writer
+	fmt.Println(reflect.DeepEqual(r, nil))
+	fmt.Println(reflect.DeepEqual(r, w))
 }
