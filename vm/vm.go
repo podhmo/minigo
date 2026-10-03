@@ -5214,8 +5214,28 @@ func eqlValue(a, b runtime.Value) bool {
 			return av == cb
 		}
 		return false
+	case *runtime.IndexRef:
+		if br, ok := b.(*runtime.IndexRef); ok {
+			// &s[i] compares by the backing array, not the ref node —
+			// the same slice (possibly under different wrappers) with
+			// the same index is the same element address.
+			return refBase(av.Base) == refBase(br.Base) && eqlValue(av.Key, br.Key)
+		}
+		return false
 	}
 	return a == b // pointers, strings, bools
+}
+
+// refBase unwraps a ref's base to the identity object pointer
+// equality means: the container behind any Cell/Named wrappers.
+func refBase(v runtime.Value) runtime.Value {
+	for {
+		if dv, ok := runtime.Deref(v); ok {
+			v = dv
+			continue
+		}
+		return v
+	}
 }
 
 // zeroSizeValue reports whether a value's type occupies no bytes — an
