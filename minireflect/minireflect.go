@@ -53,6 +53,12 @@ type Hooks struct {
 	// (one hop — `type A = B` gives B itself). Nil leaves alias typedefs
 	// keyed by their declared name.
 	AliasOf func(td *runtime.TypeDef) (*runtime.TypeDef, error)
+	// MethodSet returns the typedef's method FUNCTIONS — declared plus
+	// promoted, honoring Go's receiver rule (pointer-receiver methods
+	// join only through a pointer type or embedded pointer field) —
+	// unexported members included; callers filter visibility. Interface
+	// typedefs yield members carrying each required method's signature.
+	MethodSet func(td *runtime.TypeDef) (map[string]*runtime.Function, error)
 }
 
 // Env is the facade's shared state: the type interner plus the engine

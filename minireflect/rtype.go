@@ -355,28 +355,63 @@ func (e *Env) fieldTypes(td *runtime.TypeDef) []*runtime.TypeDef {
 	return fts
 }
 
-// typeMethods wraps the hook.
-func (e *Env) typeMethods(td *runtime.TypeDef) map[string]bool {
-	if e.h.TypeMethods == nil || td == nil {
+// methodSet wraps the hook: the typedef's method functions, declared
+// plus promoted under Go's receiver rule, unexported included.
+func (e *Env) methodSet(td *runtime.TypeDef) map[string]*runtime.Function {
+	if e.h.MethodSet == nil || td == nil {
 		return nil
 	}
-	m, err := e.h.TypeMethods(td)
+	m, err := e.h.MethodSet(td)
 	if err != nil {
 		return nil
 	}
 	return m
 }
 
-// ifaceReqs wraps the hook.
-func (e *Env) ifaceReqs(td *runtime.TypeDef) map[string]bool {
-	if e.h.IfaceReqs == nil || td == nil {
+// exportedMethodNames sorts the exported names of a method set —
+// reflect's NumMethod/Method expose exported methods only.
+func exportedMethodNames(set map[string]*runtime.Function) []string {
+	var out []string
+	for name := range set {
+		if ast.IsExported(name) {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// methodSig spells a member's signature for Implements comparison — the
+// declared FuncType under the member's own package/binds context.
+func methodSig(m *runtime.Function) string {
+	if m == nil || m.Decl == nil {
+		return ""
+	}
+	ctx := &runtime.TypeDef{Pkg: m.Pkg, File: m.File, Binds: m.Binds}
+	return runtime.TypSpelling(m.Decl.Type, ctx)
+}
+
+// methodType builds the RType Go reports as Method.Type — the declared
+// signature with the receiver prepended as the first parameter, so
+// S{}.F on type S reads func(main.S).
+func (e *Env) methodType(t *RType, m *runtime.Function) *RType {
+	if m == nil || m.Decl == nil {
 		return nil
 	}
-	m, err := e.h.IfaceReqs(td)
-	if err != nil {
-		return nil
+	ft := m.Decl.Type
+	params := &ast.FieldList{}
+	if t != nil && t.td != nil {
+		params.List = append(params.List, &ast.Field{Type: e.exprOf(t.td)})
 	}
-	return m
+	if ft.Params != nil {
+		params.List = append(params.List, ft.Params.List...)
+	}
+	td := &runtime.TypeDef{
+		Kind: runtime.KindFunc,
+		Anon: &ast.FuncType{Params: params, Results: ft.Results},
+		Pkg:  m.Pkg, File: m.File, Binds: m.Binds,
+	}
+	return e.rtypeOf(td)
 }
 
 // basicKinds maps builtin type names to reflect kinds.
@@ -625,8 +660,9 @@ func (t *RType) Field(i int) *StructField {
 		Index:     []int{i},
 		Anonymous: embedded,
 	}
-	if !embedded && name != "" && !unicode.IsUpper(rune(name[0])) {
-		// unexported field: reflect reports the declaring pkg path
+	if name != "" && !unicode.IsUpper(rune(name[0])) {
+		// unexported field — embedded or not — carries the declaring
+		// package path, like Go's reflect.
 		sf.PkgPath = t.PkgPath()
 	}
 	if t.td.FTags != nil {
@@ -671,7 +707,14 @@ func (t *RType) FieldByName(name string) (*StructField, bool) {
 	fts := t.e.fieldTypes(t.td)
 	for _, ei := range t.td.EmbedIdx {
 		if ei < len(fts) && fts[ei] != nil {
-			if sub := t.e.rtypeOf(fts[ei]); sub.Kind() == reflect.Struct {
+			etd := fts[ei]
+			if etd.Kind == runtime.KindPointer {
+				// promotion through an embedded pointer field (*Inner)
+				if et := t.e.elemOf(etd); et != nil {
+					etd = et
+				}
+			}
+			if sub := t.e.rtypeOf(etd); sub.Kind() == reflect.Struct {
 				if f, ok := sub.FieldByName(name); ok {
 					f.Index = append([]int{ei}, f.Index...)
 					return f, true
@@ -682,29 +725,33 @@ func (t *RType) FieldByName(name string) (*StructField, bool) {
 	return nil, false
 }
 
-// NumMethod reports the method set size.
+// NumMethod reports the exported method count — pointer-receiver
+// members count only under a pointer type, like Go's method sets.
 func (t *RType) NumMethod() int {
 	if t.rt != nil {
 		return t.rt.NumMethod()
 	}
-	return len(t.e.typeMethods(t.td))
+	return len(exportedMethodNames(t.e.methodSet(t.td)))
 }
 
-// Method reports the i'th method in sorted order.
+// Method reports the i'th exported method in sorted order, carrying its
+// signature (the receiver is the first parameter, as Go reports it).
 func (t *RType) Method(i int) *Method {
 	if t.rt != nil {
 		m := t.rt.Method(i)
 		return &Method{Name: m.Name, PkgPath: m.PkgPath,
 			Type: t.e.hostTypeOf(m.Type), Index: m.Index}
 	}
-	names := sortedKeys(t.e.typeMethods(t.td))
+	set := t.e.methodSet(t.td)
+	names := exportedMethodNames(set)
 	if i < 0 || i >= len(names) {
 		panic(&runtime.Panic{Value: fmt.Sprintf("reflect: Method index %d out of range", i)})
 	}
-	return &Method{Name: names[i], PkgPath: t.PkgPath(), Index: i}
+	return &Method{Name: names[i], Type: t.e.methodType(t, set[names[i]]), Index: i}
 }
 
-// MethodByName looks up a method by name.
+// MethodByName looks up an exported method by name — like Go's reflect,
+// unexported members are not reachable through the facade.
 func (t *RType) MethodByName(name string) (*Method, bool) {
 	if t.rt != nil {
 		m, ok := t.rt.MethodByName(name)
@@ -714,25 +761,30 @@ func (t *RType) MethodByName(name string) (*Method, bool) {
 		return &Method{Name: m.Name, PkgPath: m.PkgPath,
 			Type: t.e.hostTypeOf(m.Type), Index: m.Index}, true
 	}
-	names := sortedKeys(t.e.typeMethods(t.td))
-	for i, n := range names {
+	set := t.e.methodSet(t.td)
+	for i, n := range exportedMethodNames(set) {
 		if n == name {
-			return &Method{Name: n, PkgPath: t.PkgPath(), Index: i}, true
+			return &Method{Name: n, Type: t.e.methodType(t, set[n]), Index: i}, true
 		}
 	}
 	return nil, false
 }
 
-// Implements reports whether the type implements interface u.
+// Implements reports whether the type implements interface u. The check
+// compares names AND signatures, so F(int) no longer satisfies a
+// required F(string). A non-interface argument panics like Go.
 func (t *RType) Implements(u *RType) bool {
+	if u != nil && u.Kind() != reflect.Interface {
+		panic(&runtime.Panic{Value: "reflect: non-interface type passed to Type.Implements"})
+	}
 	if t.rt != nil {
 		if u.rt != nil {
 			return t.rt.Implements(u.rt)
 		}
-		return u.scriptImplements(t.hostMethodSet())
+		return u.scriptImplements(t)
 	}
 	if u.rt != nil {
-		return hostIfaceImplemented(u.rt, t.e.typeMethods(t.td))
+		return hostIfaceImplemented(u.rt, t.e.methodSet(t.td))
 	}
 	if u.td == nil {
 		return false
@@ -740,46 +792,63 @@ func (t *RType) Implements(u *RType) bool {
 	if len(u.td.MReqs) == 0 && len(u.td.IEmbeds) == 0 {
 		return true
 	}
-	reqs := t.e.ifaceReqs(u.td)
-	have := t.e.typeMethods(t.td)
-	for m := range reqs {
-		if !have[m] {
+	reqs := t.e.methodSet(u.td)
+	have := t.e.methodSet(t.td)
+	for name, req := range reqs {
+		hm := have[name]
+		if hm == nil || methodSig(hm) != methodSig(req) {
 			return false
 		}
 	}
 	return true
 }
 
-// scriptImplements checks a host method set against this script
-// interface type.
-func (t *RType) scriptImplements(have map[string]bool) bool {
+// scriptImplements checks a host type's method set against this script
+// interface type, name and signature alike.
+func (t *RType) scriptImplements(h *RType) bool {
 	if t.td == nil {
 		return false
 	}
 	if len(t.td.MReqs) == 0 && len(t.td.IEmbeds) == 0 {
 		return true
 	}
-	for m := range t.e.ifaceReqs(t.td) {
-		if !have[m] {
+	reqs := t.e.methodSet(t.td)
+	have := map[string]reflect.Type{}
+	for i := 0; i < h.rt.NumMethod(); i++ {
+		m := h.rt.Method(i)
+		// reflect reports a method-set Type with the receiver as first
+		// parameter; interface requirements carry no receiver — strip it.
+		mt := m.Type
+		if mt.NumIn() > 0 {
+			ins := make([]reflect.Type, 0, mt.NumIn()-1)
+			for j := 1; j < mt.NumIn(); j++ {
+				ins = append(ins, mt.In(j))
+			}
+			outs := make([]reflect.Type, 0, mt.NumOut())
+			for j := 0; j < mt.NumOut(); j++ {
+				outs = append(outs, mt.Out(j))
+			}
+			mt = reflect.FuncOf(ins, outs, mt.IsVariadic())
+		}
+		have[m.Name] = mt
+	}
+	for name, req := range reqs {
+		ht, ok := have[name]
+		if !ok || ht.String() != methodSig(req) {
 			return false
 		}
 	}
 	return true
 }
 
-func (t *RType) hostMethodSet() map[string]bool {
-	out := map[string]bool{}
-	for i := 0; i < t.rt.NumMethod(); i++ {
-		out[t.rt.Method(i).Name] = true
-	}
-	return out
-}
-
 // hostIfaceImplemented reports whether the script method set satisfies
-// a host interface type.
-func hostIfaceImplemented(u reflect.Type, have map[string]bool) bool {
+// a host interface type, name and signature alike — script signatures
+// spell like reflect.Type.String() for the basic forms.
+func hostIfaceImplemented(u reflect.Type, have map[string]*runtime.Function) bool {
 	for i := 0; i < u.NumMethod(); i++ {
-		if !have[u.Method(i).Name] {
+		m := u.Method(i)
+		hm := have[m.Name]
+		if hm == nil || methodSig(hm) != m.Type.String() {
 			return false
 		}
 	}
@@ -1006,14 +1075,4 @@ func funcParam(t *RType, i int, results bool) ast.Expr {
 		n += cnt
 	}
 	return nil
-}
-
-// sortedKeys sorts a method-name set for deterministic NumMethod/Method.
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }
