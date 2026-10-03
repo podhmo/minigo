@@ -843,7 +843,7 @@ func (v *VM) unwind(f *frame, r any) {
 				defer v.framesPop()
 				p = nil
 			}
-			v.runOneDefer(f, dpos)
+			v.runOneDefer(f)
 		}
 	}
 	if r != nil {
@@ -1001,12 +1001,16 @@ func nthLine(src []byte, line int) string {
 	return ""
 }
 
-// runOneDefer invokes the innermost pending deferred call of f. dpos is
-// f's frame-stack position while its defers drain: a panic raised inside
-// the call unwinds f from there, so it becomes recover()'s boundary.
-func (v *VM) runOneDefer(f *frame, dpos int) {
+// runOneDefer invokes the innermost pending deferred call of f.
+func (v *VM) runOneDefer(f *frame) {
 	d := f.defers[len(f.defers)-1]
 	f.defers = f.defers[:len(f.defers)-1]
+	// depth is the slot this deferred call's frame occupies — the boundary
+	// a panic it raises unwinds to. While the owner drains after a normal
+	// return the owner is still on the stack (depth > dpos); while its
+	// unwind drains, depth == dpos. A recover() inside a later deferred
+	// call counts frames above depth — the owner below does not count.
+	depth := len(v.frames)
 	defer func() {
 		r := asScriptPanic(recover())
 		if r == nil {
@@ -1020,7 +1024,7 @@ func (v *VM) runOneDefer(f *frame, dpos int) {
 		case *runtime.Panic:
 			e.Frames = append(e.Frames, entry)
 			v.inflight = e
-			v.unwindDepth = dpos
+			v.unwindDepth = depth
 		case *runtime.Trap:
 			e.Frames = append(e.Frames, entry)
 			panic(r)
