@@ -207,6 +207,7 @@ func (e *Engine) installStdlib() {
 		"LastIndex":    h.fn2("strings.LastIndex", func(a []any) (any, error) { return int64(strings.LastIndex(str(a[0]), str(a[1]))), nil }),
 		"LastIndexAny": h.fn2("strings.LastIndexAny", func(a []any) (any, error) { return int64(strings.LastIndexAny(str(a[0]), str(a[1]))), nil }),
 		"IndexAny":     h.fn2("strings.IndexAny", func(a []any) (any, error) { return int64(strings.IndexAny(str(a[0]), str(a[1]))), nil }),
+		"IndexByte":    h.fn2("strings.IndexByte", func(a []any) (any, error) { return int64(strings.IndexByte(str(a[0]), byte(intOf(a[1])))), nil }),
 		"IndexRune":    h.fn2("strings.IndexRune", func(a []any) (any, error) { return int64(strings.IndexRune(str(a[0]), runeOf(a[1]))), nil }),
 		"ContainsRune": h.fn2("strings.ContainsRune", func(a []any) (any, error) { return strings.ContainsRune(str(a[0]), runeOf(a[1])), nil }, strings.ContainsRune),
 		"ToTitle":      h.fn("strings.ToTitle", func(a []any) (any, error) { return strings.ToTitle(str(a[0])), nil }, strings.ToTitle),
@@ -248,6 +249,13 @@ func (e *Engine) installStdlib() {
 			}
 			out := strings.LastIndexFunc(str(args[0]), runePred(v, args[1]))
 			return int64(out), nil
+		}},
+		"FieldsFunc": &runtime.BuiltinFunc{Name: "strings.FieldsFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("strings.FieldsFunc needs 2 args")
+			}
+			out := strings.FieldsFunc(str(args[0]), runePred(v, args[1]))
+			return strsSlice(out), nil
 		}},
 		"Map": &runtime.BuiltinFunc{Name: "strings.Map", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
