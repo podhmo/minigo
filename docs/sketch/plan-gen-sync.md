@@ -248,15 +248,53 @@ textually — candidates for the inspect wishlist, not the example's:
 
 ## (end)
 
-## Round-2 notes: external review — the sync mechanics survived, the naming did not
+## Round-2 notes: the scanx rewrite — and the external review it earned
 
-Same review cycle as the inspect side (`plan-package-introspection.md`
-round-5): bugs fixed on `devin/1791052394-inspect-implementers`, then
-refactors judged and stacked (#253–#260). The scanning model itself —
-lazy in-subtree import walk, managed regions, idempotent rewrites —
-held up; every finding sat at an edge case of spelling or ordering.
+This round rewrote the example end to end: the scan mechanics moved
+into `scanx`, a sibling package the interpreted script imports like
+any module-local source, while `script/main.go` keeps only the policy.
+The work then went through the same external review as the inspect
+side (`plan-package-introspection.md` round-5): two edge-case bugs
+fixed on `devin/1791052394-inspect-implementers`, refactors judged and
+stacked (#253–#260). The scanning model itself — lazy in-subtree
+import walk, managed regions, idempotent rewrites — held up; every
+finding sat at an edge case of spelling or ordering.
 
-### What the bug pass fixed
+### What the feature pass implemented
+
+- **The `scanx` helper library** — tag parsing (`ParseTag`,
+  `LookupTag`, `TagHasElement`) reimplemented because `reflect`'s
+  StructTag methods aren't reachable from interpreted code; a small
+  `lineScan` lexer for comment/directive detection; `FindSentinel` at
+  code position (quoted sentinel text in comments and raw strings does
+  not open a region); `InsertAnchor`, `Dedupe`, `GenerateRunEnd`.
+- **Recursive type exploration** — `TypeRefs`/`SplitTypeRef`/
+  `TypeRefName` walk composite type expressions for named leaves;
+  `Explorer` resolves canonical names scope-gated to the scanned
+  package's subtree with lazy per-package caching; `Reach` breadth-
+  first follows references with a visited set (cycles terminate).
+- **Two explicit scopes** — `collect` always walks the in-subtree
+  import closure as the search space; `-deps` only widens the write
+  set. A cross-package type earns a directive even when its own file
+  isn't a sync target.
+- **`directivesFor` rules** — enum (`Ident` int/string +
+  `EnumMembers`, aliases gated out), requiredgen (tag on the struct or
+  on any struct reachable through its field types), mockgen
+  (`isMockable` name), oneofgen (`inspect.Implementers` over the
+  closure + `-variants=`, interfaces filtered by `Def(d).Kind`).
+- **The managed region** — sentinel plus the run of `//go:generate`
+  lines directly under it; `syncFile` computes the expected output
+  whole and only then writes, so nothing it reads goes stale;
+  hand-written directives outside the region survive.
+- **A hostile fixture** — `app/` grew distractors for every rule:
+  decoy consts inheriting another enum's type, aliases wearing
+  matchable names, a `Discriminator() int` near-miss, tag baits
+  (`json:"required"`, `notrequired`), sentinel/directive text quoted
+  inside block comments and raw strings, mutual/self cycles, a
+  same-name cross-package shadow, and a bound package behind
+  `inspect.SourceOf`.
+
+### What the external review found — the bug pass
 
 - **`syncFile` appended a stray blank line at EOF** — a file ending
   right after its managed directives got `expected + "\n" + [""]`,
@@ -277,6 +315,18 @@ held up; every finding sat at an edge case of spelling or ordering.
 
 ### Unplanned events
 
+- **Bound packages stopped the walk silently** — `Explorer.Lookup`
+  asked `inspect.PackageOf`, so a `Bind()`ed path answered with host
+  pseudo-decls and the subtree walk ended without a word. The
+  `inspect.SourceOf` accessor was added mid-round for exactly this
+  (`app/internal/bound` pins it).
+- **`MReqs`/`IEmbeds` trapping made scripts ceremonial** — every call
+  needed a `Def(d).Kind` pre-gate; they now report nil on
+  non-interface type decls, which is why `RequiresMethod` reads flat.
+- **An embed-promoted implementer the decl view couldn't see** — the
+  round-1 `EmbedEvent` distractor compiled but didn't collect, which
+  is what `inspect.MethodSet` (and later `Implementers`) exists for;
+  it joins `-variants=` now.
 - **goimports strips a name-mismatched import** — the fixture's
   `".../internal/envel"` import was removed because the declared
   package name `shade` doesn't match the path base; the import now
@@ -289,6 +339,12 @@ held up; every finding sat at an edge case of spelling or ordering.
 
 ### Decisions and residual
 
+- **The script keeps only policy** — anything mechanical lives in
+  `scanx` so the interpreted file reads as rules: enum means "a typed
+  int/string const set", requiredgen means "a `required` tag reachable
+  through fields", oneofgen means "an interface with implementers".
+  Reimplementation is accepted where the host can't reach it (tag
+  parsing vs `reflect.StructTag`).
 - The `-variants=` policy is unchanged: promoted implementers count
   (the "usable through `*T`" contract), interfaces are filtered out by
   `Def(d).Kind` — `EmbedEvent` staying in the list is intended.
@@ -296,3 +352,6 @@ held up; every finding sat at an edge case of spelling or ordering.
   the script side, so a method returning an alias spelling won't match
   a spec written with the target type. Same gap class as the one
   `specSame` closed host-side.
+- Scope stays a caller choice — the import closure is always searched
+  but only the root subtree is written unless `-deps`; a directive can
+  therefore outrun what a plain `go generate` run would touch.
