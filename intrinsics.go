@@ -389,6 +389,19 @@ func (e *Engine) installStdlib() {
 		"Sqrt2": math.Sqrt2, "SqrtE": math.SqrtE, "SqrtPi": math.SqrtPi, "SqrtPhi": math.SqrtPhi,
 		"Ln2": math.Ln2, "Log2E": math.Log2E, "Ln10": math.Ln10, "Log10E": math.Log10E,
 		"MaxInt": int64(math.MaxInt), "MinInt": int64(math.MinInt),
+		"MaxInt8": int64(math.MaxInt8), "MinInt8": int64(math.MinInt8),
+		"MaxInt16": int64(math.MaxInt16), "MinInt16": int64(math.MinInt16),
+		"MaxInt32": int64(math.MaxInt32), "MinInt32": int64(math.MinInt32),
+		"MaxInt64": int64(math.MaxInt64), "MinInt64": int64(math.MinInt64),
+		"MaxUint8":  int64(math.MaxUint8),
+		"MaxUint16": int64(math.MaxUint16),
+		"MaxUint32": int64(math.MaxUint32),
+		// the 64-bit ceiling constants don't fit int64 — they stay
+		// untyped constants so `x << (math.MaxUint + 0.)` still
+		// evaluates in the constant domain like Go's declaration.
+		"MaxUint64":  &runtime.UConst{V: constant.MakeUint64(math.MaxUint64)},
+		"MaxUint":    &runtime.UConst{V: constant.MakeUint64(math.MaxUint)},
+		"MaxUintptr": &runtime.UConst{V: constant.MakeUint64(math.MaxUint64)},
 		"MaxFloat32": float64(math.MaxFloat32), "MaxFloat64": math.MaxFloat64,
 		"SmallestNonzeroFloat32": float64(math.SmallestNonzeroFloat32),
 		"SmallestNonzeroFloat64": math.SmallestNonzeroFloat64,

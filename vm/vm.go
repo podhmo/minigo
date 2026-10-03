@@ -4150,7 +4150,14 @@ func (v *VM) materializeConstErr(u *runtime.UConst, td *runtime.TypeDef) (runtim
 	switch name {
 	case "int", "int8", "int16", "int32", "int64", "rune",
 		"uint", "uint8", "byte", "uint16", "uint32", "uint64", "uintptr":
-		if u.V.Kind() != constant.Int {
+		// an integer-valued float constant is int-assignable (`var i
+		// int = 1e3`); a fractional one is Go's "cannot use 1.5 as int".
+		if u.V.Kind() == constant.Float {
+			if _, ok := toIntConst(u.V); !ok {
+				return nil, fmt.Errorf("cannot use constant %s as %s", u.V, name)
+			}
+		}
+		if u.V.Kind() != constant.Int && u.V.Kind() != constant.Float {
 			return nil, fmt.Errorf("cannot use constant %s as %s", u.V, name)
 		}
 		i, ok := fitsIntConst(u.V, name)
@@ -4227,7 +4234,12 @@ func constFloat(cv constant.Value) (float64, bool) {
 	default:
 		return 0, false
 	}
-	return constant.Float64Val(cv)
+	// Float64Val's second result is exactness, not representability —
+	// Go rounds an exact-but-wide constant into the type (`float64 =
+	// 1e100 >> 1000` compiles, losing precision). Overflow instead
+	// reports through IsInf at the caller.
+	f, _ := constant.Float64Val(cv)
+	return f, true
 }
 
 func constComplex(cv constant.Value) (complex128, bool) {
@@ -4247,9 +4259,29 @@ func constComplexVal(cv constant.Value) complex128 {
 	return complex(re, im)
 }
 
-// fitsIntConst reports whether an integer constant is representable as
-// the named Go int type — Go's constant-to-type conversion check.
+// toIntConst converts an integer-valued Float constant to Int kind —
+// go/constant's ToInt panics on a fractional input, so it returns ok
+// instead.
+func toIntConst(cv constant.Value) (i constant.Value, ok bool) {
+	defer func() {
+		if recover() != nil {
+			i, ok = nil, false
+		}
+	}()
+	return constant.ToInt(cv), true
+}
+
+// fitsIntConst reports whether a constant is representable as the
+// named Go int type — Go's constant-to-type conversion check; an
+// integer-valued Float constant is int-convertible.
 func fitsIntConst(cv constant.Value, name string) (int64, bool) {
+	if cv.Kind() == constant.Float {
+		ti, ok := toIntConst(cv)
+		if !ok {
+			return 0, false
+		}
+		cv = ti
+	}
 	i, iok := constant.Int64Val(cv)
 	switch name {
 	case "int", "int64":
@@ -4298,11 +4330,22 @@ func constBinary(op bytecode.BinOp, ua, ub *runtime.UConst) (res runtime.Value, 
 		// `if x != c` (default case → always true).
 		return constant.Compare(ua.V, tok, ub.V), true
 	case token.SHL, token.SHR:
-		s, ok := constant.Uint64Val(ub.V)
+		lv := ua.V
+		if lv.Kind() == constant.Float {
+			// `1e100 >> 1000` is a valid untyped constant expression:
+			// the float constant is integer-valued, so the shift
+			// computes in the exact integer domain.
+			lv = constant.ToInt(lv)
+		}
+		rv := ub.V
+		if rv.Kind() == constant.Float {
+			rv = constant.ToInt(rv)
+		}
+		s, ok := constant.Uint64Val(rv)
 		if !ok {
 			return nil, false
 		}
-		return &runtime.UConst{V: constant.Shift(ua.V, tok, uint(s)), Rune: ua.Rune || ub.Rune}, true
+		return &runtime.UConst{V: constant.Shift(lv, tok, uint(s)), Rune: ua.Rune || ub.Rune}, true
 	case token.QUO:
 		if ua.V.Kind() == constant.Int && ub.V.Kind() == constant.Int {
 			// integer constants divide truncated (7/2 is 3), like
@@ -4401,7 +4444,8 @@ func complexResult(cv complex128, wa, wb int) runtime.Value {
 
 // constOf lifts a value back into the constant domain: a UConst is
 // already there; a bare literal value re-wraps as one. A Named value
-// stays out — it is typed, not a constant.
+// stays out — it is typed, not a constant. A GoValue boxing a basic
+// numeric (folded literals wider than int64 land there) lifts too.
 func constOf(x runtime.Value) (*runtime.UConst, bool) {
 	switch v := x.(type) {
 	case *runtime.UConst:
@@ -4414,19 +4458,115 @@ func constOf(x runtime.Value) (*runtime.UConst, bool) {
 		return &runtime.UConst{V: constant.MakeString(v)}, true
 	case bool:
 		return &runtime.UConst{V: constant.MakeBool(v)}, true
+	case *runtime.GoValue:
+		switch n := v.V.(type) {
+		case int:
+			return &runtime.UConst{V: constant.MakeInt64(int64(n))}, true
+		case int64:
+			return &runtime.UConst{V: constant.MakeInt64(n)}, true
+		case uint64:
+			return &runtime.UConst{V: constant.MakeUint64(n)}, true
+		case float64:
+			return &runtime.UConst{V: constant.MakeFloat64(n)}, true
+		case string:
+			return &runtime.UConst{V: constant.MakeString(n)}, true
+		case bool:
+			return &runtime.UConst{V: constant.MakeBool(n)}, true
+		}
 	}
 	return nil, false
 }
 
 // isPlainConst reports whether x reads as a compile-time constant for
-// mixed folding — bare numerics and strings do, typed (Named) values
-// and everything else do not.
+// mixed folding — bare numerics, strings, and GoValue-boxed basic
+// numerics do; typed (Named) values and everything else do not.
 func isPlainConst(x runtime.Value) bool {
-	switch x.(type) {
+	switch x := x.(type) {
 	case int64, float64, string, bool:
+		return true
+	case *runtime.GoValue:
+		switch x.V.(type) {
+		case int, int64, uint64, float64, string, bool:
+			return true
+		}
+	}
+	return false
+}
+
+// isCompareOp reports whether the op is a value comparison —
+// constants in those adopt the operand's type instead of folding.
+func isCompareOp(op bytecode.BinOp) bool {
+	switch op {
+	case bytecode.BinEql, bytecode.BinNeq, bytecode.BinLss,
+		bytecode.BinLeq, bytecode.BinGtr, bytecode.BinGeq:
 		return true
 	}
 	return false
+}
+
+// scalarConst converts an untyped constant to the runtime type of a
+// scalar operand — comparisons first convert, then compare values
+// (`f float64 == hugeconst` rounds the constant, not the operand).
+func scalarConst(u *runtime.UConst, b runtime.Value) (runtime.Value, bool) {
+	switch b.(type) {
+	case int64:
+		i, ok := fitsIntConst(u.V, "int")
+		if !ok {
+			return nil, false
+		}
+		return i, true
+	case float64:
+		fv, ok := constFloat(u.V)
+		if !ok || math.IsInf(fv, 0) {
+			return nil, false
+		}
+		return fv, true
+	case string:
+		if u.V.Kind() != constant.String {
+			return nil, false
+		}
+		return constant.StringVal(u.V), true
+	case bool:
+		if u.V.Kind() != constant.Bool {
+			return nil, false
+		}
+		return constant.BoolVal(u.V), true
+	}
+	if g, ok := b.(*runtime.GoValue); ok {
+		switch g.V.(type) {
+		case int, int64:
+			i, ok := fitsIntConst(u.V, "int64")
+			if !ok {
+				return nil, false
+			}
+			return &runtime.GoValue{V: i}, true
+		case uint64:
+			i, ok := fitsIntConst(u.V, "uint64")
+			if !ok {
+				return nil, false
+			}
+			return &runtime.GoValue{V: uint64(i)}, true
+		case float64:
+			fv, ok := constFloat(u.V)
+			if !ok || math.IsInf(fv, 0) {
+				return nil, false
+			}
+			return &runtime.GoValue{V: fv}, true
+		case complex64:
+			cv, ok := constComplex(u.V)
+			if !ok {
+				return nil, false
+			}
+			return &runtime.GoValue{V: complex64(cv)}, true
+		case complex128:
+			cv, ok := constComplex(u.V)
+			if !ok {
+				return nil, false
+			}
+			return &runtime.GoValue{V: cv}, true
+		}
+	}
+	return nil, false
 }
 
 // adaptConst materializes an untyped constant operand for a binary op.
@@ -4513,26 +4653,61 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 	// came from a folded literal and can lift back (`const C = B - 1<<99`
 	// computes exactly). With a real value a constant materializes to
 	// its default type instead (and can fail to, like Go's compile-time
-	// "constant overflows int").
+	// "constant overflows int"). The exception is comparisons: Go
+	// converts the constant to the operand's type and compares the
+	// resulting values, so `f == 1e100-1` rounds the constant into
+	// float64 where an exact-domain compare would report false.
 	if ua, isA := a.(*runtime.UConst); isA {
+		resolved := false
 		if _, isB := b.(*runtime.UConst); isB || isPlainConst(b) {
-			ca, _ := constOf(a)
-			cb, _ := constOf(b)
-			if r, ok := constBinary(op, ca, cb); ok {
-				return r
+			switch {
+			case !isB && isCompareOp(op):
+				if s, ok := scalarConst(ua, b); ok {
+					a, resolved = s, true
+				}
+			case op == bytecode.BinShl || op == bytecode.BinShr:
+				// a shift is never constant-folded when one side is a
+				// runtime value — shiftOp reads a constant count as the
+				// unsigned integer Go requires (`x << (math.MaxUint+0)`),
+				// so the operand keeps its UConst form.
+				resolved = true
+			default:
+				ca, _ := constOf(a)
+				cb, _ := constOf(b)
+				if r, ok := constBinary(op, ca, cb); ok {
+					return r
+				}
 			}
 		}
-		a = adaptConst(f, ua, b)
+		if !resolved {
+			a = adaptConst(f, ua, b)
+		}
 	}
 	if ub, ok := b.(*runtime.UConst); ok {
-		if isPlainConst(a) {
-			ca, _ := constOf(a)
-			cb, _ := constOf(b)
-			if r, ok2 := constBinary(op, ca, cb); ok2 {
-				return r
+		resolved := false
+		switch {
+		case op == bytecode.BinShl || op == bytecode.BinShr:
+			// a shift is never constant-folded when one side is a
+			// runtime value — shiftOp reads a constant count as the
+			// unsigned integer Go requires (`x << (math.MaxUint+0)`),
+			// whatever the left operand's shape.
+			resolved = true
+		case isPlainConst(a):
+			if isCompareOp(op) {
+				if s, ok := scalarConst(ub, a); ok {
+					b, resolved = s, true
+				}
+			} else {
+				ca, _ := constOf(a)
+				cb, _ := constOf(b)
+				if r, ok2 := constBinary(op, ca, cb); ok2 {
+					return r
+				}
 			}
 		}
-		b = adaptConst(f, ub, a)
+		if !resolved {
+			b = adaptConst(f, ub, a)
+		}
 	}
 	// shifts evaluate in the left operand's signedness — Go types the
 	// result by the left side alone, so `^uintptr(0) >> 63` must shift
@@ -4765,20 +4940,74 @@ func uintBinOp(f *frame, op bytecode.BinOp, a, b uint64) (res runtime.Value, isI
 	return nil, false
 }
 
+// constShift folds a constant shift; go/constant panics past its
+// representable range, which the caller treats as "didn't fold".
+func constShift(lv constant.Value, op bytecode.BinOp, count uint64) (res constant.Value, ok bool) {
+	defer func() {
+		if recover() != nil {
+			res, ok = nil, false
+		}
+	}()
+	tok, ok := binOpToken(op)
+	if !ok {
+		return nil, false
+	}
+	return constant.Shift(lv, tok, uint(count)), true
+}
+
 // shiftOp evaluates << and >> in the left operand's signedness: Go types
 // the result by the left side alone (the count is always an unsigned
 // count), so a uintptr/uint64 value shifts logically while int64 shifts
 // arithmetically. A declared-width operand re-tags and re-masks.
 func shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
+	var count uint64
+	var countOK bool
+	if uc, isU := b.(*runtime.UConst); isU {
+		// an untyped constant count is legal whenever it is
+		// representable as an unsigned integer (`x << (M+0)` with M =
+		// math.MaxUint reads as uint64), even past int64 —
+		// materializeDefault would overflow-report where Go does not.
+		iv := uc.V
+		if iv.Kind() != constant.Int {
+			// integer-valued Float/Complex constants (`1.`, `1+0i`)
+			// count too; non-integral ones fall through to the
+			// materialized-count path, which rejects them like Go.
+			if ti, ok := toIntConst(iv); ok {
+				iv = ti
+			}
+		}
+		if iv.Kind() == constant.Int {
+			if s, ok := constant.Uint64Val(iv); ok {
+				count, countOK = s, true
+			}
+		}
+	}
+	if !countOK {
+		b = materialize(f, b)
+		count, countOK = shiftCount(b)
+	}
+	if !countOK {
+		f.trap("unsupported shift count %T", b)
+	}
+	if uc, isU := a.(*runtime.UConst); isU {
+		// both sides in the constant domain: Go folds the shift —
+		// `const c1 = chuge >> 100` (chuge = 1<<100) is the constant
+		// 1. A float/complex LHS reads as its integer value; one that
+		// is not integral falls through and materializes.
+		lv := uc.V
+		if lv.Kind() != constant.Int {
+			lv, _ = toIntConst(lv)
+		}
+		if lv != nil {
+			if res, ok := constShift(lv, op, count); ok {
+				return &runtime.UConst{V: res, Rune: uc.Rune}
+			}
+		}
+	}
 	a = materialize(f, a)
-	b = materialize(f, b)
 	var tag *runtime.TypeDef
 	if n, ok := a.(*runtime.Named); ok {
 		tag, a = n.Typ, n.V
-	}
-	count, ok := shiftCount(b)
-	if !ok {
-		f.trap("unsupported shift count %T", b)
 	}
 	unsigned := unsignedName(sizedNameOf(tag))
 	switch x := a.(type) {
@@ -4795,7 +5024,31 @@ func shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 		return r
 	case time.Duration:
 		return time.Duration(shiftInt(op, int64(x), count))
+	case float64:
+		// an untyped constant left operand of a non-constant shift
+		// takes the integer interpretation (`x<<(1.<<x)` is int
+		// arithmetic in Go); a genuine float64 operand reaching here
+		// is a program Go rejects anyway.
+		if x == math.Trunc(x) {
+			if x >= math.MaxInt64 {
+				x = math.MaxInt64
+			} else if x <= math.MinInt64 {
+				x = math.MinInt64
+			}
+			return shiftInt(op, int64(x), count)
+		}
 	case *runtime.GoValue:
+		if c, isC := x.V.(complex128); isC {
+			re, im := real(c), imag(c)
+			if im == 0 && re == math.Trunc(re) {
+				if re >= math.MaxInt64 {
+					re = math.MaxInt64
+				} else if re <= math.MinInt64 {
+					re = math.MinInt64
+				}
+				return shiftInt(op, int64(re), count)
+			}
+		}
 		if u, ok := x.V.(uint64); ok {
 			r := shiftUint(op, u, count)
 			if tag != nil {
@@ -4825,6 +5078,20 @@ func shiftCount(b runtime.Value) (uint64, bool) {
 			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "negative shift amount"}})
 		}
 		return uint64(x), true
+	case float64:
+		// an untyped float constant is a legal count when it is
+		// integral (`x << 1.`); a non-integral or negative one is a
+		// compile-time rejection in Go, so it keeps trapping here.
+		if x != math.Trunc(x) {
+			return 0, false
+		}
+		if x < 0 {
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "negative shift amount"}})
+		}
+		if x >= math.MaxUint64 {
+			return math.MaxUint64, true
+		}
+		return uint64(x), true
 	case *runtime.GoValue:
 		switch u := x.V.(type) {
 		case uint64:
@@ -4833,9 +5100,30 @@ func shiftCount(b runtime.Value) (uint64, bool) {
 			return uint64(u), true
 		case uint8, uint16, uint32, uintptr:
 			return reflect.ValueOf(u).Uint(), true
+		case complex64:
+			return complexShiftCount(complex128(u))
+		case complex128:
+			return complexShiftCount(u)
 		}
 	}
 	return 0, false
+}
+
+// complexShiftCount reads a complex constant as a shift count: a zero
+// imaginary part and integral real part make `x << (1+0i)` legal, like
+// an integral float constant.
+func complexShiftCount(c complex128) (uint64, bool) {
+	re, im := real(c), imag(c)
+	if im != 0 || re != math.Trunc(re) {
+		return 0, false
+	}
+	if re < 0 {
+		panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "negative shift amount"}})
+	}
+	if re >= math.MaxUint64 {
+		return math.MaxUint64, true
+	}
+	return uint64(re), true
 }
 
 // shiftInt shifts int64 with Go's saturation: `x << c` loses bits past
@@ -7535,6 +7823,26 @@ func (v *VM) callSite(f *frame) runtime.CallSite {
 	return site
 }
 
+// lenConstInt reads an array-length value: a materialized int64, or a
+// UConst still carrying its constant — const decls keep the UConst
+// form so each use materializes for context (`const N = 5; [N]T`).
+func lenConstInt(x runtime.Value) (int64, bool) {
+	switch v := runtime.Unwrap(x).(type) {
+	case int64:
+		return v, true
+	case *runtime.UConst:
+		iv := v.V
+		if iv.Kind() != constant.Int {
+			var ok bool
+			if iv, ok = toIntConst(iv); !ok {
+				return 0, false
+			}
+		}
+		return constant.Int64Val(iv)
+	}
+	return 0, false
+}
+
 // arrayLen reports the element count of an array typedef — an
 // *ast.ArrayType that kept its length. The length may be a literal
 // (`[3]int`) or a package-level const name (`[N]int`); slice typedefs
@@ -7560,14 +7868,14 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 				if d, ok2 := runtime.Deref(gv); ok2 {
 					gv = d
 				}
-				if n, ok2 := runtime.Unwrap(gv).(int64); ok2 {
+				if n, ok2 := lenConstInt(gv); ok2 {
 					return n, true
 				}
 			}
 			if td.Pkg.Index != nil && v.H.Materialize != nil {
 				if d := td.Pkg.Index.Consts[l.Name]; d != nil {
 					if mv, err := v.H.Materialize(td.Pkg, d); err == nil {
-						if n, ok := runtime.Unwrap(mv).(int64); ok {
+						if n, ok := lenConstInt(mv); ok {
 							return n, true
 						}
 					}
@@ -7587,7 +7895,7 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 			defer func() { _ = recover() }()
 			if ch, err := v.H.CompileExpr(td.Pkg, td.File, at.Len); err == nil && ch != nil {
 				if r, err2 := v.call(&runtime.Function{Pkg: td.Pkg, File: td.File, Name: "<arraylen>", Chunk: ch}, nil); err2 == nil {
-					if iv, ok2 := runtime.Unwrap(r).(int64); ok2 {
+					if iv, ok2 := lenConstInt(r); ok2 {
 						n, ok = iv, true
 					}
 				}
