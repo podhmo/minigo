@@ -2,6 +2,7 @@ package minireflect
 
 import (
 	"fmt"
+	"go/ast"
 	"go/constant"
 	"reflect"
 	"unicode"
@@ -489,10 +490,20 @@ func (v *RValue) Field(i int) *RValue {
 		name = def.Fields[i]
 	}
 	ro := v.ro || (name != "" && !isExported(name))
+	var ref runtime.Value
+	if v.ref != nil {
+		// the field's location is the parent's, not this struct object:
+		// a later Set through v replaces the storage wholesale (struct
+		// assignment overwrites the same memory in Go), and a ref pinned
+		// to the old object would write into a detached copy. An
+		// unaddressable parent yields an unaddressable field — Go only
+		// inherits addressability through Elem() of a pointer.
+		ref = &runtime.FieldRef{Base: v.ref, Name: name}
+	}
 	return &RValue{
 		e: v.e, vc: v.vc,
 		val: s.Fields[i],
-		ref: &runtime.FieldRef{Base: s, Name: name},
+		ref: ref,
 		td:  ftd,
 		ro:  ro,
 	}
@@ -637,8 +648,22 @@ func (v *RValue) Index(i int) *RValue {
 		if i < 0 || i >= len(x.Elems) {
 			panic(&runtime.Panic{Value: fmt.Sprintf("reflect: slice index %d out of range", i)})
 		}
+		var ref runtime.Value
+		if arrayTypeOf(x.Typ) != nil {
+			// array elements are addressable only when the array is, and
+			// they track the parent's location — array assignment
+			// overwrites the same storage in Go.
+			if v.ref != nil {
+				ref = &runtime.IndexRef{Base: v.ref, Key: int64(i)}
+			}
+		} else {
+			// slice elements are always addressable — they live in the
+			// shared backing captured here, so a later reassignment of
+			// the slice variable does not move the element's view.
+			ref = &runtime.IndexRef{Base: x, Key: int64(i)}
+		}
 		return &RValue{e: v.e, vc: v.vc, val: x.Elems[i],
-			ref: &runtime.IndexRef{Base: x, Key: int64(i)}, td: etd, ro: v.ro}
+			ref: ref, td: etd, ro: v.ro}
 	case string:
 		if i < 0 || i >= len(x) {
 			panic(&runtime.Panic{Value: fmt.Sprintf("reflect: string index %d out of range", i)})
@@ -658,6 +683,18 @@ func (v *RValue) Slice(i, j int) *RValue {
 		return v.e.wrapHost(v.vc, v.rv.Slice(i, j))
 	}
 	if s, ok := v.get().(*runtime.Slice); ok {
+		if at := arrayTypeOf(s.Typ); at != nil {
+			// slicing an array borrows its storage, so the array must
+			// be addressable — and the result is a slice type, not the
+			// array's. The Anon keeps the []T spelling so the produced
+			// type interns to the same RType as a script []T literal.
+			if v.ref == nil {
+				trap("reflect.Value.Slice: slice of unaddressable array")
+			}
+			st := &runtime.TypeDef{Kind: runtime.KindSlice, Elem: v.e.elemOf(s.Typ),
+				Anon: &ast.ArrayType{Elt: at.Elt}}
+			return v.e.wrap(v.vc, &runtime.Slice{Elems: s.Elems[i:j], Typ: st}, nil, st)
+		}
 		return v.e.wrap(v.vc, &runtime.Slice{Elems: s.Elems[i:j], Typ: s.Typ}, nil, v.td)
 	}
 	trap("call of reflect.Value.Slice on %s Value", v.kindStr())
@@ -1460,6 +1497,24 @@ func isExported(name string) bool {
 		return false
 	}
 	return unicode.IsUpper(rune(name[0]))
+}
+
+// arrayTypeOf returns td's underlying ArrayType when td spells a
+// fixed-size array — its AST carries a length (slices have none),
+// mirroring runtime's arrayTypedef.
+func arrayTypeOf(td *runtime.TypeDef) *ast.ArrayType {
+	if td == nil {
+		return nil
+	}
+	x := td.Anon
+	if x == nil && td.Spec != nil {
+		x = td.Spec.Type
+	}
+	at, _ := x.(*ast.ArrayType)
+	if at != nil && at.Len != nil {
+		return at
+	}
+	return nil
 }
 
 // unwrapRef strips Named wrappers down to the ref-view underneath so
