@@ -1,4 +1,0 @@
-SILENT/spurious-panic (seen ×1)
-shape:  seq:reflect.New(reflect.TypeOf(r_i0)).Elem() .Convert(reflect.TypeOf(r_i0)) 
-go:     string 0
-minigo: panic: reflect: call of reflect.Value.Int on int Value

@@ -1239,6 +1239,15 @@ func (t *RType) resolveIn(x ast.Expr) *RType {
 	if t.e.h.ResolveType == nil {
 		trap("minireflect: func signature resolution needs ResolveType hook")
 	}
+	if ell, ok := x.(*ast.Ellipsis); ok {
+		// a variadic param's In type is the []T slice, like Go.
+		td, err := t.e.h.ResolveType(t.td, ell.Elt)
+		if err != nil {
+			trap("minireflect: %s", err)
+		}
+		return t.e.rtypeOf(&runtime.TypeDef{Kind: runtime.KindSlice, Elem: td,
+			Anon: &ast.ArrayType{Elt: ell.Elt}})
+	}
 	td, err := t.e.h.ResolveType(t.td, x)
 	if err != nil {
 		trap("minireflect: %s", err)

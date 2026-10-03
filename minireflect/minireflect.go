@@ -216,6 +216,13 @@ func trap(format string, args ...any) {
 	panic(&runtime.Panic{Value: fmt.Sprintf("reflect: "+format, args...)})
 }
 
+// plain panics like trap but without the `reflect:` prefix — some
+// reflect runtime panics (`reflect.Value.Convert: ...`,
+// `reflect.Value.Slice: ...`) carry their own spelling.
+func plain(format string, args ...any) {
+	panic(&runtime.Panic{Value: fmt.Sprintf(format, args...)})
+}
+
 // asRValue unwraps a script argument to its facade value: a GoValue
 // boxing an *RValue returns the facade object itself.
 func asRValue(v runtime.Value) *RValue {
