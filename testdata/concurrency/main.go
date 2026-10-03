@@ -380,22 +380,6 @@ func SortInGoroutine() int {
 	return <-ch // 1
 }
 
-// DetachedWait: a goroutine parked inside a host call (WaitGroup.Wait —
-// no select, no done arm) is not released when the process dies — this
-// leaks the host goroutine (unlike channel parking, which procExit frees).
-func DetachedWait() int {
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		var inner sync.WaitGroup
-		inner.Add(1)
-		inner.Wait() // parks inside a host call — survives proc kill
-	}()
-	time.Sleep(1 * time.Millisecond) // let the goroutine reach Wait
-	return 1
-}
-
 // ---- sync package surface ----
 
 // SyncMapBasic: Store/Load/Range carry script values through the host

@@ -2,7 +2,6 @@ package minigo_test
 
 import (
 	"context"
-	goruntime "runtime"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -280,19 +279,35 @@ func TestDetachedLeak(t *testing.T) {
 
 // TestHostParkLeak documents a known limitation: a script goroutine parked
 // inside a host call (WaitGroup.Wait, Mutex.Lock, time.Sleep) outlives its
-// process — only select-based blocking watches proc.done, so the host
+// process — only select/channel blocking watches proc.done, so the host
 // goroutine leaks. A synctest bubble reports it as "blocked goroutines
-// remain", so this assertion runs on the real clock.
+// remain", so the check runs on the real clock. NumGoroutine cannot carry
+// the assertion: it is a net count, so one unrelated goroutine death in
+// the window masks the leaked +1 permanently (the observed CI flake).
+// Instead the spawned goroutine proves itself — the bound builtin reports
+// that it reached the park point, and the only ops between that report and
+// inner.Wait() (member load + reflect call, neither watches proc.done)
+// guarantee it parks in a real WaitGroup.Wait: that is the leak.
 func TestHostParkLeak(t *testing.T) {
-	before := goruntime.NumGoroutine()
+	parked := make(chan struct{})
 	e := newEngine(t)
-	run(t, e, "./testdata/concurrency", "DetachedWait")
-	deadline := time.Now().Add(2 * time.Second)
-	for goruntime.NumGoroutine() <= before && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if goruntime.NumGoroutine() <= before {
-		t.Fatal("expected the Wait-parked goroutine to leak")
+	e.Bind("parkprobe", map[string]runtime.Value{
+		"Parked": &runtime.BuiltinFunc{
+			Name: "parkprobe.Parked",
+			// runs on the spawned goroutine: by the time Run returns
+			// its process is dead, yet the goroutine still enters —
+			// and stays inside — a host call: that is the leak.
+			Fn: func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
+				close(parked)
+				return nil, nil
+			},
+		},
+	})
+	run(t, e, "./testdata/hostpark", "DetachedWait")
+	select {
+	case <-parked:
+	case <-time.After(30 * time.Second): // anti-hang bound, not a timing check
+		t.Fatal("spawned goroutine never reached the host park call")
 	}
 }
 
