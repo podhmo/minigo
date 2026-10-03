@@ -84,6 +84,26 @@ a different module's tree. External module source is interpreted like
 any other package; what still traps is cgo and `unsafe`-dependent
 internals (e.g. `reflect`'s `internal/abi` init).
 
+### Currently unsupported
+
+Deliberate boundaries and known gaps (details live in `TODO.md`):
+
+- **cgo** — `import "C"` is rejected at load
+  (`cgo is not supported: import "C"`)
+- **`unsafe.Pointer` reinterpretation** — anything that needs
+  `unsafe.Pointer`/`SliceHeader` tricks traps (e.g. go-toml's
+  `internal/danger`, `reflect`'s `internal/abi` internals)
+- **modules outside the `go.mod` graph** — imports resolved only via
+  the current module's `require` + `replace` + `GOROOT`
+  (e.g. `net/http` still fails on `golang.org/x/net/http/httpguts`)
+- **`reflect` facade leftovers** — `NewAt`, `StructOf`, `Select`,
+  `Swapper` are explicit unsupported traps; `TypeAssert[T]` (explicit
+  type args on a bound builtin) is not implemented; `Value.SetCap` is
+  unbound; `fmt` prints a facade `reflect.Value` as `<T Value>` rather
+  than unwrapping it
+- **`go.mod` `go` directive** — language-version gating (`-lang`) is
+  not enforced; scripts may use newer features than the module declares
+
 ## Provenance
 
 This repository is a reboot of [`minigo2/`](https://github.com/podhmo/go-scan/tree/main/minigo2)
