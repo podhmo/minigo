@@ -351,11 +351,15 @@ func (e *Env) valueOfValue(vc runtime.VMCaller, v runtime.Value) *RValue {
 				// reflect.Value struct, like the GoValue arm below
 				return &RValue{e: e, vc: vc, rv: reflect.ValueOf(reflect.ValueOf(rv))}
 			}
-			// a tagged host box (host composite literal T{}): reflect
-			// the addressable value inside — Type reads T, not *T.
+			// a tagged host box (host composite literal T{}): the box
+			// holds *T so the value reads as T, not *T. ValueOf copies
+			// its argument like Go — re-boxing through Interface drops
+			// the pointer's addressability (CanSet/CanAddr false, Set
+			// panics) instead of handing back the script's live host
+			// object.
 			rv := reflect.ValueOf(gv.V)
 			if rv.IsValid() && rv.Kind() == reflect.Pointer && !rv.IsNil() {
-				rv = rv.Elem()
+				rv = reflect.ValueOf(rv.Elem().Interface())
 			}
 			return &RValue{e: e, vc: vc, rv: rv}
 		}

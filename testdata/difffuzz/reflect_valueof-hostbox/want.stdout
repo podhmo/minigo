@@ -1,0 +1,13 @@
+ValueOf(b): Kind struct Type bytes.Buffer CanSet false CanAddr false CanInterface true
+Elem(&b): CanSet true CanAddr true
+set-unaddr: panic: reflect: reflect.Value.Set using unaddressable value
+addr-unaddr: panic: reflect.Value.Addr of unaddressable value
+elem-struct: panic: reflect: call of reflect.Value.Elem on struct Value
+setbytes-unaddr: panic: reflect: reflect.Value.SetBytes using unaddressable value
+Field(0): CanSet false CanAddr false CanInterface false
+iface ValueOf: CanSet false CanAddr false
+literal ValueOf: CanSet false CanAddr false
+Interface: bytes.Buffer
+ValueOf(t): CanSet false CanAddr false
+MethodByName(String): valid true
+call: 0001-01-01 00:00:00 +0000 UTC
