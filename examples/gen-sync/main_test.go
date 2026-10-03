@@ -167,20 +167,21 @@ func TestDeps(t *testing.T) {
 	assertSameFile(t, filepath.Join(app, "internal", "mood", "mood.go"), "app/internal/mood/mood.go")
 
 	// with -deps, the import edges into the app/ subtree are followed
-	// (mood and bound get blocks, meta is visited and left alone), while
-	// the edge to scanx leaves the subtree and is never followed — the
-	// tool's own helper is not a sync target.
+	// (mood, bound, and envel get blocks, meta is visited and left
+	// alone), while the edge to scanx leaves the subtree and is never
+	// followed — the tool's own helper is not a sync target.
 	dir = setupModule(t)
 	app = filepath.Join(dir, "app")
 	n, err := run(context.Background(), dir, scriptDir(t), app, false, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 12 {
-		t.Fatalf("expected 12 files changed with -deps, got %d", n)
+	if n != 13 {
+		t.Fatalf("expected 13 files changed with -deps, got %d", n)
 	}
 	assertSameFile(t, filepath.Join(app, "internal", "mood", "mood.go"), "testdata/mood.golden")
 	assertSameFile(t, filepath.Join(app, "internal", "bound", "bound.go"), "testdata/bound.golden")
+	assertSameFile(t, filepath.Join(app, "internal", "envel", "shade.go"), "testdata/shade.golden")
 	assertSameFile(t, filepath.Join(app, "internal", "meta", "meta.go"), "app/internal/meta/meta.go")
 	assertSameFile(t, filepath.Join(dir, "scanx", "scanx.go"), "scanx/scanx.go")
 	assertSameFile(t, filepath.Join(dir, "scanx", "inspect.go"), "scanx/inspect.go")

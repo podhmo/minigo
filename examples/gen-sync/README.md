@@ -90,7 +90,7 @@ the interpreter:
 exists, and the rest of the package is seeded with distractors —
 decoy consts that inherit another enum's type, alias types wearing
 matchable names, a `Discriminator() int` and a free `func Discriminator`,
-an embed-promoted implementer the collection can't see, tags like
+an embed-promoted implementer a name-only scan can't see, tags like
 `json:"required,omitempty"` and `notrequired:"true"`, a
 hand-written `//go:generate` the sync must not eat, and the sentinel text
 itself quoted inside a block comment and a raw string literal.
@@ -100,7 +100,9 @@ a same-name shadow in another package, and an anonymous-struct bait
 that honestly misses. `app/internal/mood` is always read — `Remote`
 reaches its `required`-bearing `Marked`, and `Signal` lands in the
 `-variants=` list — but is only rewritten with `-deps`;
-`app/internal/meta` is reached and matches nothing.
+`app/internal/meta` is reached and matches nothing, and
+`app/internal/envel` holds `package shade` — a directory/name
+mismatch whose implementer must still spell `shade.Ghost`.
 
 ```console
 $ go run ./

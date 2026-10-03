@@ -238,11 +238,13 @@ func directivesFor(ex *scanx.Explorer, scans []pkgScan, s pkgScan, d *inspect.De
 // signature match (params, results, variadicity via SameType) all
 // happen inside it. Interface decls are skipped: a variants list
 // wants concrete types. Names outside the interface's own package are
-// qualified with the package's base name.
+// qualified by the package's clause name (a directory can spell a
+// different name than the package it holds).
 func implementers(scans []pkgScan, selfPath string, iface *inspect.Decl) []string {
 	vars := []string{}
 	for _, s := range scans {
-		for _, c := range inspect.Implementers(inspect.SourceOf(s.path), iface) {
+		sp := inspect.SourceOf(s.path)
+		for _, c := range inspect.Implementers(sp, iface) {
 			def := inspect.Def(c)
 			if def != nil && def.Kind == "InterfaceType" {
 				continue // a variants list wants concrete types
@@ -250,7 +252,7 @@ func implementers(scans []pkgScan, selfPath string, iface *inspect.Decl) []strin
 			if s.path == selfPath {
 				vars = append(vars, c.Name)
 			} else {
-				vars = append(vars, filepath.Base(s.path)+"."+c.Name)
+				vars = append(vars, inspect.Name(sp)+"."+c.Name)
 			}
 		}
 	}
