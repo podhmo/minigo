@@ -112,8 +112,11 @@ script itself; the engine binds both paths to the same intrinsics.
 - **Per-decl placement** — directives cluster in one managed block rather
   than riding above each decl (`Pos` could anchor them, but per-decl
   placement reintroduces the diffing the sentinel avoids).
-- **Grouped `type (...)` decls** — one directive set per file; per-spec
-  anchoring isn't exercised.
+- **Grouped `type (...)` decls** — honest laziness, not a limitation: the
+  index emits one `Decl` per `TypeSpec` with the spec's own `Pos`, and the
+  managed block is per-file anyway, so a `type ( A int; B struct{...} )`
+  group should already collect correctly. It's just not covered by the
+  fixture — a TODO-flavored verification gap more than a design gap.
 - **Smarter `-check` output** — reports the expected directive count, not
   a diff.
 - **Ignore rules** — no `gen-sync:ignore` or path filter.
