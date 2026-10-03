@@ -7780,15 +7780,25 @@ func (v *VM) ArrayLenOf(td *runtime.TypeDef) (int64, bool) {
 }
 
 // CallerPCs implements VMCaller: it snapshots the call stack — live
-// frames (top first) followed by frames the in-flight panic already
-// unwound — and returns one opaque uintptr handle per site.
+// frames (top first) with the frames the in-flight panic already unwound
+// spliced in at the unwind boundary, where Go's traceback lists them:
+// between the deferred-call chain and the still-live frames below.
 func (v *VM) CallerPCs() []uintptr {
 	sites := make([]runtime.CallSite, 0, len(v.frames)+len(v.unwinding))
-	for i := len(v.frames) - 1; i >= 0; i-- {
+	depth := len(v.frames)
+	// unwinding stays populated through the drain even after the panic is
+	// consumed, so the splice point is unwindDepth whenever it is non-empty.
+	if len(v.unwinding) > 0 && v.unwindDepth < depth {
+		depth = v.unwindDepth
+	}
+	for i := len(v.frames) - 1; i >= depth; i-- {
 		sites = append(sites, v.callSite(v.frames[i]))
 	}
-	for i := len(v.unwinding) - 1; i >= 0; i-- {
+	for i := 0; i < len(v.unwinding); i++ {
 		sites = append(sites, v.callSite(v.unwinding[i]))
+	}
+	for i := depth - 1; i >= 0; i-- {
+		sites = append(sites, v.callSite(v.frames[i]))
 	}
 	base := len(v.pcSites)
 	v.pcSites = append(v.pcSites, sites...)
