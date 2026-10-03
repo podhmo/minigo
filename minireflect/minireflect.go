@@ -622,6 +622,11 @@ func (e *Env) append_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value,
 		elems = append(elems, rv.ifaceVal())
 	}
 	if s.rv.IsValid() {
+		if s.rv.Kind() != reflect.Slice {
+			// Go checks the kind before touching the elements — let
+			// reflect.Append raise its own 'unknown method' panic.
+			reflect.Append(s.rv)
+		}
 		in := make([]reflect.Value, len(elems))
 		for i, el := range elems {
 			rv, err := toHost(el, s.rv.Type().Elem())
@@ -631,6 +636,11 @@ func (e *Env) append_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value,
 			in[i] = rv
 		}
 		return &runtime.GoValue{V: &RValue{e: e, vc: vc, rv: reflect.Append(s.rv, in...)}}, nil
+	}
+	// Go's MustBe(Slice) rejects every other kind — arrays included —
+	// with 'reflect: call of unknown method on X Value'.
+	if s.Kind() != reflect.Slice {
+		trap("call of unknown method on %s Value", s.Kind())
 	}
 	sl, ok := s.get().(*runtime.Slice)
 	if !ok {
@@ -651,7 +661,20 @@ func (e *Env) appendSlice(vc runtime.VMCaller, args []runtime.Value) (runtime.Va
 		return nil, fmt.Errorf("reflect.AppendSlice: args must be reflect.Value")
 	}
 	if s.rv.IsValid() && t.rv.IsValid() {
+		if s.rv.Kind() != reflect.Slice || t.rv.Kind() != reflect.Slice {
+			// Go checks both kinds before copying — let AppendSlice
+			// raise its own 'unknown method' panic.
+			reflect.AppendSlice(s.rv, t.rv)
+		}
 		return &runtime.GoValue{V: &RValue{e: e, vc: vc, rv: reflect.AppendSlice(s.rv, t.rv)}}, nil
+	}
+	// Go's MustBe(Slice) fires on either operand before copying —
+	// 'reflect: call of unknown method on X Value' names the bad kind.
+	if s.Kind() != reflect.Slice {
+		trap("call of unknown method on %s Value", s.Kind())
+	}
+	if t.Kind() != reflect.Slice {
+		trap("call of unknown method on %s Value", t.Kind())
 	}
 	sl, ok1 := s.get().(*runtime.Slice)
 	tl, ok2 := t.get().(*runtime.Slice)
@@ -677,12 +700,29 @@ func (e *Env) copy_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, e
 	if d.rv.IsValid() && s.rv.IsValid() {
 		return int64(reflect.Copy(d.rv, s.rv)), nil
 	}
+	// Go's checks, in order: the destination must be a slice or an
+	// addressable array, the source a slice/array (or a string into a
+	// byte destination), and only then does the copy run.
+	dk := d.Kind()
+	if dk != reflect.Slice && dk != reflect.Array {
+		trap("call of reflect.Copy on %s Value", d.kindStr())
+	}
+	if dk == reflect.Array && !d.CanAddr() {
+		trap("unknown method using unaddressable value")
+	}
+	sk := s.Kind()
+	if sk != reflect.Slice && sk != reflect.Array && sk != reflect.String {
+		trap("call of reflect.Copy on %s Value", s.kindStr())
+	}
 	ds, dok := d.get().(*runtime.Slice)
 	var ss []runtime.Value
 	switch sv := s.get().(type) {
 	case *runtime.Slice:
 		ss = sv.Elems
 	case string:
+		if et := e.elemOf(d.td); et != nil && e.kindOfTd(et) != reflect.Uint8 {
+			trap("call of reflect.Copy on string Value")
+		}
 		for i := 0; i < len(sv); i++ {
 			ss = append(ss, int64(sv[i]))
 		}

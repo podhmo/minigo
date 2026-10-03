@@ -721,7 +721,14 @@ func (v *RValue) FieldByName(name string) *RValue {
 			rv = rv.Elem()
 		}
 		f := rv.FieldByName(name)
-		return &RValue{e: v.e, vc: v.vc, rv: f, ro: !f.CanInterface()}
+		// a miss yields the zero Value — ro means nothing there and
+		// CanInterface on a zero Value itself panics; only a live field
+		// can carry the unexported flag.
+		ro := false
+		if f.IsValid() {
+			ro = !f.CanInterface()
+		}
+		return &RValue{e: v.e, vc: v.vc, rv: f, ro: ro}
 	}
 	if v.Kind() != reflect.Struct {
 		trap("call of reflect.Value.FieldByName on %s Value", v.kindStr())
@@ -1032,6 +1039,12 @@ func (v *RValue) Slice(i, j int) *RValue {
 func (v *RValue) MapIndex(k *RValue) *RValue {
 	v.mustValid("MapIndex")
 	if v.host() {
+		// Go judges the map kind before marshalling the key — let
+		// MapIndex raise its own 'call of reflect.Value.MapIndex on
+		// X Value' instead of Type().Key()'s 'non-map type' panic.
+		if v.rv.Kind() != reflect.Map {
+			v.rv.MapIndex(v.rv)
+		}
 		kr, err := toHost(k.ifaceVal(), v.rv.Type().Key())
 		if err != nil {
 			trap("reflect.Value.MapIndex: %s", err)
@@ -1106,6 +1119,11 @@ func (v *RValue) MapKeys() []*RValue {
 func (v *RValue) SetMapIndex(k, x *RValue) {
 	v.mustValid("SetMapIndex")
 	if v.host() {
+		// same order as MapIndex: the kind check precedes the
+		// key/value marshal.
+		if v.rv.Kind() != reflect.Map {
+			v.rv.SetMapIndex(v.rv, v.rv)
+		}
 		kr, err := toHost(k.ifaceVal(), v.rv.Type().Key())
 		if err != nil {
 			trap("reflect.Value.SetMapIndex: %s", err)
@@ -1495,6 +1513,13 @@ func (v *RValue) tagged(val runtime.Value) runtime.Value {
 func (v *RValue) Set(x *RValue) {
 	v.mustValid("Set")
 	if v.host() {
+		// Go judges settability before marshalling the source — an
+		// unaddressable target dies on 'using unaddressable value'
+		// even when the source would not marshal. Let rv.Set deliver
+		// that panic itself.
+		if !v.rv.CanSet() {
+			v.rv.Set(v.rv)
+		}
 		rv, err := toHost(x.ifaceVal(), v.rv.Type())
 		if err != nil {
 			trap("reflect.Value.Set: %s", err)
@@ -1696,6 +1721,12 @@ func (v *RValue) SetBytes(x []byte) {
 func (v *RValue) Call(in []*RValue) []*RValue {
 	v.mustValid("Call")
 	if v.host() {
+		// Go checks the func kind before reading the signature — a
+		// non-func receiver dies on 'call of reflect.Value.Call on
+		// X Value', not on IsVariadic's 'non-func type' panic.
+		if v.rv.Kind() != reflect.Func {
+			v.rv.Call(nil)
+		}
 		args := make([]reflect.Value, len(in))
 		mt := v.rv.Type()
 		for i, a := range in {
@@ -1862,6 +1893,11 @@ func (v *RValue) callSig() *ast.FuncType {
 func (v *RValue) CallSlice(in []*RValue) []*RValue {
 	v.mustValid("CallSlice")
 	if v.host() {
+		// same order as Call: the kind check precedes the
+		// signature reads.
+		if v.rv.Kind() != reflect.Func {
+			v.rv.CallSlice(nil)
+		}
 		mt := v.rv.Type()
 		args := make([]reflect.Value, len(in))
 		for i, a := range in {
@@ -2248,6 +2284,13 @@ func (v *RValue) Recv() (*RValue, bool) {
 func (v *RValue) Send(x *RValue) {
 	v.mustValid("Send")
 	if v.host() {
+		// Go checks the chan kind before touching the element — a
+		// non-chan receiver dies on 'call of reflect.Value.Send on
+		// X Value' even when the arg would not marshal. Let rv.Send
+		// deliver that panic itself.
+		if v.rv.Kind() != reflect.Chan {
+			v.rv.Send(v.rv)
+		}
 		xr, err := toHost(x.ifaceVal(), v.rv.Type().Elem())
 		if err != nil {
 			trap("reflect.Value.Send: %s", err)
@@ -2285,6 +2328,11 @@ func (v *RValue) TryRecv() (*RValue, bool) {
 func (v *RValue) TrySend(x *RValue) bool {
 	v.mustValid("TrySend")
 	if v.host() {
+		// same order as Send: the receiver kind check precedes any
+		// work on the argument.
+		if v.rv.Kind() != reflect.Chan {
+			v.rv.TrySend(v.rv)
+		}
 		xr, err := toHost(x.ifaceVal(), v.rv.Type().Elem())
 		if err != nil {
 			trap("reflect.Value.TrySend: %s", err)
