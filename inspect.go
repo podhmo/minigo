@@ -196,7 +196,10 @@ func (e *Engine) installInspect() {
 			if err != nil {
 				return nil, err
 			}
-			return s.Pos, nil
+			if s.Pos == nil {
+				return runtime.NIL, nil
+			}
+			return &runtime.GoValue{V: s.Pos}, nil
 		}),
 		"Name": bf("Name", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
@@ -693,17 +696,19 @@ func (e *Engine) hostMethodPkg(m *reflect.Method) *runtime.Package {
 
 // hostMethodPos locates the method's definition through its Func PC —
 // the bound method value's PC is a reflect thunk and can't be used.
-func hostMethodPos(m *reflect.Method) string {
+// The column is runtime-only information a PC can't recover, so it
+// stays 0.
+func hostMethodPos(m *reflect.Method) *xinspect.Position {
 	pc := m.Func.Pointer()
 	fn := goruntime.FuncForPC(pc)
 	if fn == nil {
-		return ""
+		return nil
 	}
 	file, line := fn.FileLine(pc)
 	if file == "" {
-		return ""
+		return nil
 	}
-	return fmt.Sprintf("%s:%d", file, line)
+	return &xinspect.Position{File: file, Line: line}
 }
 
 // declsOf implements inspect.Decls(x): a package's top-level decls from

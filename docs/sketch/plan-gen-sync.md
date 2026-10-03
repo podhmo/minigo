@@ -189,8 +189,10 @@ textually — candidates for the inspect wishlist, not the example's:
 - ~~Alias vs defined type isn't on the view~~ — fixed: `inspect.IsAlias`
   reads `TypeSpec.Assign` directly; the raw-line `IsAlias`/`DeclLine`/
   `IsAliasLine`/`PosFile`/`PosLine`/`LinesOf` helpers are deleted.
-- **`inspect.Pos` is a `"file:line:col"` string** — line numbers come
-  from splitting it; a structured accessor would remove the parse.
+- ~~**`inspect.Pos` is a `"file:line:col"` string**~~ — fixed: `Decl`,
+  `Field`, and `Import` `Pos` fields plus `inspect.Pos(d)` now return
+  `*inspect.Position{File, Line, Column}` (nil for host symbols, still
+  `String()`-printable), so scripts read fields instead of splitting.
 - **Bound/stdlib/external packages carry no index** — `Decls`/`Fields`/
   `Methods` can't introspect them at all; the subtree gates never enter
   them (`time.Time` fields are simply never resolved).

@@ -64,8 +64,10 @@ func Kind(s *Decl) string { panic("minigo intrinsic") }
 // Doc returns a symbol's doc comment text.
 func Doc(s *Decl) string { panic("minigo intrinsic") }
 
-// Pos returns a symbol's "file.go:line:col" position.
-func Pos(s *Decl) string { panic("minigo intrinsic") }
+// Pos returns a decl's declaring position — nil for host symbols.
+// The *Position view carries File/Line/Column fields so scripts
+// never split "file:line:col" text.
+func Pos(s *Decl) *Position { panic("minigo intrinsic") }
 
 // Fields returns the declared fields of a struct type symbol, or the
 // member elements of an interface type symbol (named method specs and

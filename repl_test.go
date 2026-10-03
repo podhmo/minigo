@@ -625,13 +625,13 @@ func TestREPLPinWrite(t *testing.T) {
 	if got, err := eval(`inspect.SymbolOf(Wrap).Kind`); err != nil || got != "func" {
 		t.Fatalf("SymbolOf(Wrap): %v %v", got, err)
 	}
-	if got, err := eval(`inspect.Pos(inspect.SymbolOf(Wrap))`); err != nil ||
-		!strings.HasPrefix(got.(string), "repl.go:") {
+	if got, err := eval(`inspect.Pos(inspect.SymbolOf(Wrap)).File`); err != nil ||
+		!strings.HasPrefix(got.(string), "repl.go") {
 		t.Fatalf("SymbolOf(Wrap) pos: %v %v", got, err)
 	}
 	// a patched name reports the repl decl, not the shadowed original
-	if got, err := eval(`inspect.Pos(inspect.SymbolOf(Hello))`); err != nil ||
-		!strings.HasPrefix(got.(string), "repl.go:") {
+	if got, err := eval(`inspect.Pos(inspect.SymbolOf(Hello)).File`); err != nil ||
+		!strings.HasPrefix(got.(string), "repl.go") {
 		t.Fatalf("SymbolOf(Hello) pos: %v %v", got, err)
 	}
 	if got, err := eval(`inspect.SymbolOf(T2).Kind`); err != nil || got != "type" {

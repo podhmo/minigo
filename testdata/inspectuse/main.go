@@ -58,8 +58,8 @@ func SymbolView() string {
 	if !strings.Contains(s.Doc, "plain function") {
 		return "bad doc: " + s.Doc
 	}
-	if !strings.Contains(s.Pos, "main.go:30:") {
-		return "bad pos: " + s.Pos
+	if s.Pos == nil || !strings.HasSuffix(s.Pos.File, "main.go") || s.Pos.Line != 30 {
+		return "bad pos: " + s.Pos.String()
 	}
 	u := inspect.Symbol(p, "User")
 	if !strings.Contains(u.Doc, "struct type to walk") {
@@ -515,8 +515,8 @@ func DeclMeta() string {
 		if !strings.HasSuffix(s.File, "inspectpkg/main.go") {
 			return name + " bad file: " + s.File
 		}
-		if !strings.Contains(inspect.Pos(s), "main.go:") {
-			return name + " bad pos: " + inspect.Pos(s)
+		if pos := inspect.Pos(s); pos == nil || !strings.HasSuffix(pos.File, "main.go") {
+			return name + " bad pos: " + pos.String()
 		}
 	}
 	for _, name := range []string{"Hello", "User", "MyInt", "Count", "Label"} {
@@ -527,7 +527,7 @@ func DeclMeta() string {
 	// method decls carry the same metadata as top-level decls
 	for _, m := range inspect.Methods(inspect.Symbol(p, "User")) {
 		if !strings.HasSuffix(m.File, "main.go") ||
-			!strings.Contains(inspect.Pos(m), "main.go:") || m.Doc == "" {
+			inspect.Pos(m) == nil || !strings.HasSuffix(inspect.Pos(m).File, "main.go") || m.Doc == "" {
 			return "bad method meta: " + m.Name
 		}
 	}
@@ -538,13 +538,13 @@ func DeclMeta() string {
 func FieldPos() string {
 	p := inspect.DirOf("./testdata/inspectpkg")
 	for _, f := range inspect.Fields(inspect.Symbol(p, "User")) {
-		if !strings.Contains(f.Pos, "main.go:") {
-			return "bad field pos: " + f.Pos
+		if f.Pos == nil || !strings.HasSuffix(f.Pos.File, "main.go") {
+			return "bad field pos: " + f.Pos.String()
 		}
 	}
 	sig := inspect.Signature(inspect.Symbol(p, "Hello"))
 	if sig.Params[0].Names[0] != "s" ||
-		!strings.Contains(sig.Params[0].Pos, "main.go:") {
+		sig.Params[0].Pos == nil || !strings.HasSuffix(sig.Params[0].Pos.File, "main.go") {
 		return "bad param meta"
 	}
 	return "ok"
@@ -833,8 +833,8 @@ func HostMethodSym() string {
 	if inspect.PathOf(r.Size) != "strings" {
 		return "bad host method path"
 	}
-	if !strings.Contains(inspect.Pos(s), "reader.go:") {
-		return "bad host method pos: " + inspect.Pos(s)
+	if pos := inspect.Pos(s); pos == nil || !strings.HasSuffix(pos.File, "reader.go") {
+		return "bad host method pos: " + pos.String()
 	}
 	sig := inspect.Signature(s)
 	if sig == nil || sig.Recv == nil || sig.Recv.Type.Text != "*strings.Reader" {
@@ -868,8 +868,8 @@ func SourceOfStruct() string {
 	if b == nil || b.Kind != "type" {
 		return "bad src builder"
 	}
-	if !strings.Contains(inspect.Pos(b), ".go:") {
-		return "no src pos: " + inspect.Pos(b)
+	if pos := inspect.Pos(b); pos == nil || pos.Line == 0 {
+		return "no src pos"
 	}
 	if inspect.State(src) != "indexed" {
 		return "bad src state: " + inspect.State(src)
@@ -878,7 +878,7 @@ func SourceOfStruct() string {
 	for _, m := range inspect.Methods(b) {
 		if m.Name == "WriteString" {
 			found = true
-			if !strings.Contains(inspect.Pos(m), ".go:") {
+			if pos := inspect.Pos(m); pos == nil || pos.Line == 0 {
 				return "no src method pos"
 			}
 			sig := inspect.Signature(m)

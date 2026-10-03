@@ -42,9 +42,9 @@ type Decl struct {
 	Package *runtime.Package
 	Kind    string // "func"|"method"|"var"|"const"|"type"|"host"
 	Name    string
-	File    string // declaring file name ("" for host symbols)
-	Pos     string // "file.go:12:6" ("" for host symbols)
-	Doc     string // doc comment text ("" for host symbols)
+	File    string    // declaring file name ("" for host symbols)
+	Pos     *Position // declaring position (nil for host symbols)
+	Doc     string    // doc comment text ("" for host symbols)
 
 	decl  *index.Decl
 	file  *syntax.File
@@ -65,7 +65,7 @@ func NewDecl(pkg *runtime.Package, d *index.Decl) *Decl {
 		s.File = d.File.Name
 	}
 	if pkg != nil && pkg.Fset != nil {
-		s.Pos = pkg.Fset.Position(d.Pos).String()
+		s.Pos = posOf(pkg.Fset, d.Pos)
 	}
 	switch d.Kind {
 	case index.FuncDecl:
@@ -127,11 +127,44 @@ func NewFile(pkg *runtime.Package, sf *syntax.File) *File {
 	return f
 }
 
+// Position is a structured source position — the script-facing
+// counterpart of token.Position, so scripts read File/Line/Column
+// instead of splitting "file:line:col" text.
+type Position struct {
+	File   string
+	Line   int
+	Column int
+}
+
+// String renders the token.Position "file:line:col" spelling (or
+// "file:line" when the column is unknown). "" on nil.
+func (p *Position) String() string {
+	if p == nil {
+		return ""
+	}
+	if p.Column > 0 {
+		return fmt.Sprintf("%s:%d:%d", p.File, p.Line, p.Column)
+	}
+	return fmt.Sprintf("%s:%d", p.File, p.Line)
+}
+
+// posOf structures a token.Pos; nil when the fset can't resolve it.
+func posOf(fset *token.FileSet, pos token.Pos) *Position {
+	if fset == nil {
+		return nil
+	}
+	tp := fset.Position(pos)
+	if tp.Filename == "" {
+		return nil
+	}
+	return &Position{File: tp.Filename, Line: tp.Line, Column: tp.Column}
+}
+
 // Import is one entry of a file's import table.
 type Import struct {
 	Path string
 	Name string // local name: alias or the package's declared name
-	Pos  string
+	Pos  *Position
 
 	ref *runtime.ImportRef // materializes on demand
 }
@@ -140,7 +173,7 @@ type Import struct {
 func NewImport(fset *token.FileSet, imp *syntax.Import, ref *runtime.ImportRef) *Import {
 	i := &Import{Path: imp.Path, Name: imp.LocalName(), ref: ref}
 	if fset != nil {
-		i.Pos = fset.Position(imp.Pos).String()
+		i.Pos = posOf(fset, imp.Pos)
 	}
 	return i
 }
@@ -156,7 +189,7 @@ type Field struct {
 	Tag      string // struct tag, unquoted
 	Doc      string
 	Embedded bool
-	Pos      string
+	Pos      *Position
 }
 
 // Sig is a func/method declaration's shape (the "Signature" the script
@@ -240,7 +273,7 @@ func fieldList(fl *ast.FieldList, f *syntax.File, p *runtime.Package) []*Field {
 			fv.Tag = strings.Trim(fd.Tag.Value, "`")
 		}
 		if p != nil && p.Fset != nil {
-			fv.Pos = p.Fset.Position(fd.Pos()).String()
+			fv.Pos = posOf(p.Fset, fd.Pos())
 		}
 		out = append(out, fv)
 	}
@@ -594,7 +627,7 @@ func SignatureOf(s *Decl) (*Sig, error) {
 			fv.Names = append(fv.Names, n.Name)
 		}
 		if s.Package != nil && s.Package.Fset != nil {
-			fv.Pos = s.Package.Fset.Position(recv.Pos()).String()
+			fv.Pos = posOf(s.Package.Fset, recv.Pos())
 		}
 		sig.Recv = fv
 	}
