@@ -247,3 +247,52 @@ textually — candidates for the inspect wishlist, not the example's:
   `app/` diff.
 
 ## (end)
+
+## Round-2 notes: external review — the sync mechanics survived, the naming did not
+
+Same review cycle as the inspect side (`plan-package-introspection.md`
+round-5): bugs fixed on `devin/1791052394-inspect-implementers`, then
+refactors judged and stacked (#253–#260). The scanning model itself —
+lazy in-subtree import walk, managed regions, idempotent rewrites —
+held up; every finding sat at an edge case of spelling or ordering.
+
+### What the bug pass fixed
+
+- **`syncFile` appended a stray blank line at EOF** — a file ending
+  right after its managed directives got `expected + "\n" + [""]`,
+  reporting "rewrote" once and growing `\n\n`. The empty-tail special
+  case is gone; a file in sync from birth reports "up to date" on the
+  first run. Pinned by `app/eof.go`, whose managed block runs to EOF.
+- **`scanx.InsertAnchor` never left `inImports` for `import ("x")`** —
+  a single-line grouped import set `inImports` and never closed it, so
+  a fresh block anchored above the import. A line containing both
+  `import (` and `)` is a completed import and advances the anchor.
+- **`implementers` qualified foreign packages by directory name** —
+  `filepath.Base(s.path)` prints `envel.Ghost` for a dir holding
+  `package shade`. Refactor #253 switches to the clause name via
+  `inspect.Name(inspect.SourceOf(path))`; pinned by the new
+  `app/internal/envel` fixture (`package shade`, `Ghost` implementing
+  `Envelope`) — `-variants=` spells `shade.Ghost`, `-deps` syncs the
+  new package (`testdata/shade.golden`, dep count 12 → 13).
+
+### Unplanned events
+
+- **goimports strips a name-mismatched import** — the fixture's
+  `".../internal/envel"` import was removed because the declared
+  package name `shade` doesn't match the path base; the import now
+  carries an explicit `shade` alias so the mismatch is spelled out —
+  which is also the honest spelling a reader wants.
+- **`inspect` constants were unreachable from interpreted code** —
+  the round-1 `TypeRefName` fix fell back to a `"/"` heuristic because
+  `BuiltinPackagePath` couldn't be named; round-2 binds it as a plain
+  value and the heuristic (plus its documented blind spot) is gone.
+
+### Decisions and residual
+
+- The `-variants=` policy is unchanged: promoted implementers count
+  (the "usable through `*T`" contract), interfaces are filtered out by
+  `Def(d).Kind` — `EmbedEvent` staying in the list is intended.
+- `scanx.HasMethod` still compares `Type.Text` — no resolver exists on
+  the script side, so a method returning an alias spelling won't match
+  a spec written with the target type. Same gap class as the one
+  `specSame` closed host-side.

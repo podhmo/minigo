@@ -610,3 +610,100 @@ revealed — including the item that needed no code.
   `model/typeref.go` `TypeKey` for the engine-side pieces here. Nothing
   else surfaced — decl-granular views remain sufficient for a real
   code generator.
+
+## Round-5 notes: external review — bug fixes and the refactor stack
+
+A code review of `devin/1791052394-inspect-implementers` (#197) ran in
+two passes: confirmed bugs fixed on the branch itself, then a refactor
+list judged item by item and landed as stacked PRs (#253–#260, stack
+#261). This note covers the inspect side; the gen-sync half is in
+`plan-gen-sync.md` round-2.
+
+### What the bug pass fixed
+
+- **`ImplementersOf` ignored embedded-interface requirements** — the
+  false-positive source of the round. `requiredSpecs` now collects the
+  spec set transitively through embedded interface decls, and
+  constraint elements (`~T`, unions, embedded non-interfaces) report a
+  loud error instead of a silently empty requirement.
+- **`chaseType` borrowed `kids[0]` of any composite** — `[]T`, `map[K]T`,
+  `func(T)` aliases stole the element's method set. The descent is now
+  restricted to `StarExpr`/`ParenExpr`/`IndexExpr`/`IndexListExpr` —
+  the spellings that actually denote the named decl.
+- **`ptrEmbed` did not propagate** — `S{*A}` with `A{B}` lost `B`'s
+  pointer-receiver members. The BFS queue carries `cur.ptr || byPtr`.
+- **Shadowing ignored promotion depth** — DFS field order let a deeper
+  member claim a name first. Promotion is now breadth-first; the
+  shallower spelling shadows.
+- **Contract documented, not changed** — the set answers "usable
+  through `*T`": declared methods count with either receiver while
+  promotion follows the value rules. Now stated on `MethodSetOf`,
+  `ImplementersOf`, and the stubs.
+
+### What the refactor pass landed
+
+- **Shared embedded-interface flattener** (#254): `requiredSpecs` and
+  `promoteIfaceSpecs` each walked embedded elements with subtly
+  different rules — the asymmetry that produced the first bug. Both now
+  call `walkIfaceSpecs`, a yield-driven walker; the caller decides
+  whether a constraint element is fatal (required side) or irrelevant
+  (promotion side).
+- **Embedded `error` is a real spec** (#254): it used to be skipped
+  like `any`; the walker yields a synthesized `Error() string` —
+  `interface{ error; Talk() }` now rejects Talk-only types and
+  `MethodSet` reports the promoted `Error`.
+- **Alias embeds promote through** (#254): the promotion side resolved
+  embeds by `res(sid)` alone, so `interface{ AliasOfIface }` promoted
+  nothing; `chaseType` handles the alias layer on both sides.
+- **Same-depth ambiguity excludes** (#256): the earlier "first in
+  declaration order wins" approximation is replaced by Go's rule —
+  `winners` records (depth, declaring-decl key) per name, a second
+  *distinct* decl at the winning depth marks the selector ambiguous
+  and drops the member, while two paths to the same decl (a diamond)
+  count once.
+- **Aliases collapse in signature matching** (#258): `specSame`
+  mirrors `SameType` and unwraps alias layers at every node via
+  `collapseAlias` — `M() Str` with `Str = string` satisfies
+  `M() string`. Public `SameType` keeps declared identity — the two
+  APIs answer different questions (declaration identity vs Go's
+  identical-types).
+- **`BuiltinPackagePath` script-visible** (#259): bound as a plain
+  string on the `inspect` package (the `runtime.GOOS` precedent), so
+  interpreted code compares `sid.PackagePath` against the real
+  sentinel instead of a `"/"` shape heuristic.
+- **One flattener for field lists** (#260): `paramTypes` builds the
+  `Field` view and delegates to `expandFieldTypes`.
+
+### Unplanned events
+
+- **`inspect` constants are unreachable from interpreted code** — the
+  bind map carried only `BuiltinFunc`s, so the bug pass could not use
+  `BuiltinPackagePath` in `scanx` and documented a `"/"` heuristic
+  instead. The refactor pass resolved it by binding raw values — no
+  new mechanism was needed, the map accepted them all along.
+- **Package metadata is gated script-side** — `sp.Name` traps; the
+  package-name fix uses `inspect.Name(inspect.SourceOf(path))`, which
+  is why it took an API-level accessor and not a field read.
+
+### Decisions and kept approximations
+
+- 要: the shared walker, error spec, ambiguity exclusion, alias
+  collapse in matching, the bound constant, the flattener merge, the
+  gen-sync package-name fix. 不要: anything already resolved in the
+  bug pass (sorts, dead `ed != s`, `ft` assert guard, anonymous
+  literals — verified and skipped).
+- Kept on purpose: the "usable through `*T`" contract (neither Go's
+  `T` nor `*T` set — callers wanting assignability filter receiver
+  themselves); unresolvable foreign-package embeds contributing
+  nothing; constraint errors after a complete walk, not at the first
+  element.
+
+### Residual
+
+- `scanx.HasMethod` still compares `Type.Text` — the script layer
+  holds no `Resolver`, so alias collapsing stays unreachable there.
+- Requirement-side same-name specs (an interface spelling `M` twice
+  with different signatures — invalid Go anyway) just cannot be
+  satisfied: `covers` requires every spec independently.
+- The interpreter's own `findMethod` remains DFS first-wins — a
+  different code path tracked separately in TODO.md.
