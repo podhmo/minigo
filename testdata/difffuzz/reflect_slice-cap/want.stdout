@@ -1,0 +1,3 @@
+0: []int []int{4, 5}
+1: []int []int(nil)
+2: panic: reflect.Value.Slice: slice index out of bounds
