@@ -2032,11 +2032,7 @@ func goValueOf(rv reflect.Value) runtime.Value {
 		}
 		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}}
 		for k, e := range v {
-			kv := goValueOf(reflect.ValueOf(k))
-			ck := runtime.CanonicalKey(kv)
-			m.Pairs[ck] = goValueOf(reflect.ValueOf(e))
-			m.Order = append(m.Order, kv)
-			m.Keys = append(m.Keys, ck)
+			m.Insert(goValueOf(reflect.ValueOf(k)), goValueOf(reflect.ValueOf(e)))
 		}
 		return m
 	case error:
@@ -2235,9 +2231,9 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 		if t.Kind() != reflect.Map {
 			return reflect.Value{}, fmt.Errorf("cannot convert script map to %s", t)
 		}
-		out := reflect.MakeMapWithSize(t, len(x.Pairs))
-		for i, k := range x.Order {
-			e := x.Pairs[x.Keys[i]]
+		out := reflect.MakeMapWithSize(t, x.Len())
+		for i := 0; i < x.Len(); i++ {
+			k, e := x.At(i)
 			kv, err := toReflectValue(k, t.Key(), vc)
 			if err != nil {
 				return reflect.Value{}, fmt.Errorf("map key: %w", err)
@@ -2309,9 +2305,10 @@ func deepHost(v runtime.Value) runtime.Value {
 		}
 		return out
 	case *runtime.Map:
-		out := make(map[any]any, len(x.Pairs))
-		for i, k := range x.Order {
-			out[deepHost(k)] = deepHost(x.Pairs[x.Keys[i]])
+		out := make(map[any]any, x.Len())
+		for i := 0; i < x.Len(); i++ {
+			k, e := x.At(i)
+			out[deepHost(k)] = deepHost(e)
 		}
 		return out
 	}
@@ -2808,7 +2805,7 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 		}
 		return v.elemRead(f, b.Typ, b.Elems[i])
 	case *runtime.Map:
-		val, found := b.Pairs[runtime.CanonicalKey(idx)]
+		val, found := b.Get(idx)
 		if !found {
 			val = v.mapZero(f, b.Typ)
 		}
@@ -3416,7 +3413,7 @@ func (v *VM) indexOK(f *frame, base, idx runtime.Value) runtime.Value {
 		return &runtime.Tuple{Elems: []runtime.Value{v.index(f, base, idx), true}}
 	}
 	if m, ok := base.(*runtime.Map); ok {
-		val, found := m.Pairs[runtime.CanonicalKey(idx)]
+		val, found := m.Get(idx)
 		if !found {
 			val = v.mapZero(f, m.Typ)
 		}
@@ -3467,12 +3464,7 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 		if et := v.elemTypedef(f, b.Typ); et != nil {
 			val = v.coerce(f, val, et)
 		}
-		ck := runtime.CanonicalKey(idx)
-		if _, exists := b.Pairs[ck]; !exists {
-			b.Order = append(b.Order, idx)
-			b.Keys = append(b.Keys, ck)
-		}
-		b.Pairs[ck] = val
+		b.Insert(idx, val)
 	default:
 		f.trap("index assign on %T", base)
 	}
@@ -3705,12 +3697,7 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 				f.trap("positional element in keyed map literal")
 			}
 			k := runtime.Unwrap(materialize(f, raw[i*2]))
-			ck := runtime.CanonicalKey(k)
-			if _, exists := m.Pairs[ck]; !exists {
-				m.Order = append(m.Order, k)
-				m.Keys = append(m.Keys, ck)
-			}
-			m.Pairs[ck] = v.coerce(f, raw[i*2+1], et)
+			m.Insert(k, v.coerce(f, raw[i*2+1], et))
 		}
 		return m
 	case runtime.KindPointer:
@@ -4008,8 +3995,9 @@ func (v *VM) newIterator(f *frame, coll runtime.Value) *runtime.Iterator {
 		return &runtime.Iterator{Kind: 's', Elems: c.Elems}
 	case *runtime.Map:
 		it := &runtime.Iterator{Kind: 'm', Keys: c.Order}
-		for i := range c.Order {
-			it.Elems = append(it.Elems, c.Pairs[c.Keys[i]])
+		for i := 0; i < c.Len(); i++ {
+			_, e := c.At(i)
+			it.Elems = append(it.Elems, e)
 		}
 		return it
 	case *runtime.Chan:

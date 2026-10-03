@@ -181,20 +181,8 @@ func builtins(e *Engine) *runtime.Env {
 			}
 			kv = nv
 		}
-		key := runtime.CanonicalKey(kv)
 		drop := func(m *runtime.Map) {
-			delete(m.Pairs, key)
-			// the key also leaves the insertion-order list — a stale
-			// entry there would render/range as `k:<nil>`. The canonical
-			// key stored per slot tells us which one (a NaN slot's key can
-			// never be recomputed into `key`).
-			for i := range m.Order {
-				if m.Keys[i] == key {
-					m.Order = append(m.Order[:i], m.Order[i+1:]...)
-					m.Keys = append(m.Keys[:i], m.Keys[i+1:]...)
-					break
-				}
-			}
+			m.Delete(kv)
 		}
 		switch m := args[0].(type) {
 		case *runtime.Named:
@@ -389,9 +377,7 @@ func builtins(e *Engine) *runtime.Env {
 	bf("clear", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		switch m := runtime.Unwrap(args[0]).(type) {
 		case *runtime.Map:
-			m.Pairs = map[runtime.Value]runtime.Value{}
-			m.Order = nil
-			m.Keys = nil
+			m.Clear()
 		case *runtime.Slice:
 			zero := runtime.Value(runtime.NIL)
 			if ez, ok := v.(interface {
@@ -473,7 +459,7 @@ func lenOf(v runtime.Value) (runtime.Value, error) {
 	case *runtime.Slice:
 		return int64(len(x.Elems)), nil
 	case *runtime.Map:
-		return int64(len(x.Pairs)), nil
+		return int64(x.Len()), nil
 	case *runtime.Chan:
 		return int64(len(x.C)), nil
 	case string:
@@ -625,11 +611,12 @@ func display(v runtime.Value) any {
 	case *runtime.Map:
 		var sb strings.Builder
 		sb.WriteString("map[")
-		for i, k := range x.Order {
+		for i := 0; i < x.Len(); i++ {
+			k, e := x.At(i)
 			if i > 0 {
 				sb.WriteByte(' ')
 			}
-			sb.WriteString(fmt.Sprintf("%v:%v", display(k), display(x.Pairs[x.Keys[i]])))
+			sb.WriteString(fmt.Sprintf("%v:%v", display(k), display(e)))
 		}
 		sb.WriteByte(']')
 		return sb.String()
