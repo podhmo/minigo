@@ -193,9 +193,12 @@ textually — candidates for the inspect wishlist, not the example's:
   `Field`, and `Import` `Pos` fields plus `inspect.Pos(d)` now return
   `*inspect.Position{File, Line, Column}` (nil for host symbols, still
   `String()`-printable), so scripts read fields instead of splitting.
-- **Bound/stdlib/external packages carry no index** — `Decls`/`Fields`/
-  `Methods` can't introspect them at all; the subtree gates never enter
-  them (`time.Time` fields are simply never resolved).
+- ~~**Bound/stdlib/external packages carry no index**~~ — fixed:
+  `Explorer.Lookup` asks `inspect.SourceOf`, which builds the source
+  index behind a bound shadow (unbound paths behave as before), so
+  bound packages under the subtree are introspected through their real
+  decls. `BoundRef`→`bound.Marked` earns `requiredgen` while the test
+  `Bind()`s the package.
 - ~~**The *base* of a generic instantiation is unreachable**~~ — fixed:
   `TypeExpr.Children()` now leads an instantiation's children with the
   base (`List[Inner]` → `List` then `Inner`), so walks enter generic

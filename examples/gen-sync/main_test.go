@@ -2,12 +2,17 @@ package main
 
 import (
 	"context"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+
+	"github.com/podhmo/minigo"
+	"github.com/podhmo/minigo/runtime"
 )
 
 // setupModule copies the example's go.mod, the app fixture, and the
@@ -161,8 +166,8 @@ func TestDeps(t *testing.T) {
 	assertSameFile(t, filepath.Join(app, "internal", "mood", "mood.go"), "app/internal/mood/mood.go")
 
 	// with -deps, the import edges into the app/ subtree are followed
-	// (mood gets a block, meta is visited and left alone), while the
-	// edge to scanx leaves the subtree and is never followed — the
+	// (mood and bound get blocks, meta is visited and left alone), while
+	// the edge to scanx leaves the subtree and is never followed — the
 	// tool's own helper is not a sync target.
 	dir = setupModule(t)
 	app = filepath.Join(dir, "app")
@@ -170,11 +175,35 @@ func TestDeps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 11 {
-		t.Fatalf("expected 11 files changed with -deps, got %d", n)
+	if n != 12 {
+		t.Fatalf("expected 12 files changed with -deps, got %d", n)
 	}
 	assertSameFile(t, filepath.Join(app, "internal", "mood", "mood.go"), "testdata/mood.golden")
+	assertSameFile(t, filepath.Join(app, "internal", "bound", "bound.go"), "testdata/bound.golden")
 	assertSameFile(t, filepath.Join(app, "internal", "meta", "meta.go"), "app/internal/meta/meta.go")
 	assertSameFile(t, filepath.Join(dir, "scanx", "scanx.go"), "scanx/scanx.go")
 	assertSameFile(t, filepath.Join(dir, "scanx", "inspect.go"), "scanx/inspect.go")
+}
+
+func TestBoundPackage(t *testing.T) {
+	dir := setupModule(t)
+	app := filepath.Join(dir, "app")
+
+	// Bind() shadows the package path behind a host package — the way
+	// bound stdlib packages answer inspect.PackageOf. Exploration still
+	// enters through inspect.SourceOf, so BoundRef earns its directive
+	// from bound.Marked's required field behind the shadow.
+	e := minigo.NewEngine(dir, minigo.WithOutput(io.Discard))
+	e.Bind("github.com/podhmo/minigo/examples/gen-sync/app/internal/bound",
+		map[string]runtime.Value{"Sentinel": int64(0)})
+	if _, err := e.Run(context.Background(), scriptDir(t), "Main", app, false, false); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(app, "graph.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "requiredgen -type=BoundRef") {
+		t.Error("BoundRef did not earn requiredgen behind the bound shadow")
+	}
 }

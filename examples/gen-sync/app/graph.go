@@ -3,6 +3,7 @@ package app
 import (
 	"time"
 
+	"github.com/podhmo/minigo/examples/gen-sync/app/internal/bound"
 	"github.com/podhmo/minigo/examples/gen-sync/app/internal/meta"
 	"github.com/podhmo/minigo/examples/gen-sync/app/internal/mood"
 )
@@ -115,4 +116,11 @@ type Shadow struct {
 // subtree, sync scope is the visited packages).
 type Remote struct {
 	M *mood.Marked
+}
+
+// BoundRef reaches into a package the engine can shadow with a bound
+// host package (tests Bind() it): the walk still enters bound.Marked's
+// source decls through inspect.SourceOf and earns the directive.
+type BoundRef struct {
+	B bound.Marked
 }

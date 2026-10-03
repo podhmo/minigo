@@ -111,7 +111,11 @@ func (e *Explorer) Lookup(cn string) *inspect.Decl {
 	if !ok {
 		m = map[string]*inspect.Decl{}
 		e.decls[pkgPath] = m
-		if p := inspect.PackageOf(pkgPath); p != nil {
+		// SourceOf, not PackageOf: a bound path answers PackageOf with
+		// the host package whose index is empty — decls there can't be
+		// introspected. SourceOf builds the source index behind the
+		// bound shadow (and falls back to PackageOf when unbound).
+		if p := inspect.SourceOf(pkgPath); p != nil {
 			for _, d := range inspect.Decls(p) {
 				m[d.Name] = d
 			}

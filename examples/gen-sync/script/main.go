@@ -257,9 +257,10 @@ func implementers(scans []pkgScan, selfPath string) []string {
 
 // reachHasRequired reports whether some struct reachable from d's field
 // types requests the required check. Exploration stays inside the
-// scanned package's subtree (cross-package refs resolve, external and
-// bound paths are never entered), each shared package is read once, and
-// type cycles terminate on the visited set.
+// scanned package's subtree (cross-package refs resolve through
+// SourceOf — bound paths are entered via their source index, external
+// ones are never entered), each shared package is read once, and type
+// cycles terminate on the visited set.
 func reachHasRequired(ex *scanx.Explorer, d *inspect.Decl) bool {
 	found := false
 	ex.Reach(d, func(nd *inspect.Decl) bool {
