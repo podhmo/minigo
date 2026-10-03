@@ -3291,6 +3291,21 @@ func maxBound(f *frame, max runtime.Value, capN int64) int64 {
 	return capN
 }
 
+// litKeyIndex resolves a composite-literal key to its int index: a
+// *runtime.ImplicitIndex positional continues the running index `last`;
+// named constants unwrap to int64. ok=false for anything else.
+func litKeyIndex(f *frame, k runtime.Value, last int64) (int64, bool) {
+	if _, isImp := k.(*runtime.ImplicitIndex); isImp {
+		return last + 1, true
+	}
+	k = materialize(f, k)
+	if nk, ok := k.(*runtime.Named); ok {
+		k = nk.V
+	}
+	iv, ok := k.(int64)
+	return iv, ok
+}
+
 func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 	n := int(ins.A)
 	kv := ins.B == 1
@@ -3343,15 +3358,13 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 				s.Elems[i] = zv
 			}
 			if kv {
+				last := int64(-1)
 				for i := 0; i < n; i++ {
-					k := raw[i*2]
-					if nk, ok := k.(*runtime.Named); ok {
-						k = nk.V
-					}
-					ival, ok := k.(int64)
+					ival, ok := litKeyIndex(f, raw[i*2], last)
 					if !ok {
 						f.trap("array literal index %T", raw[i*2])
 					}
+					last = ival
 					if ival < 0 || ival >= an {
 						f.trap("array index %d out of bounds [0:%d]", ival, an)
 					}
@@ -3372,23 +3385,22 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 			// A named const index (`[T]{MyKind: v}`) unwraps to int64.
 			idx := make([]int64, n)
 			max := int64(-1)
+			last := int64(-1)
 			for i := 0; i < n; i++ {
-				k := raw[i*2]
-				if nk, ok := k.(*runtime.Named); ok {
-					k = nk.V
-				}
-				ival, ok := k.(int64)
+				ival, ok := litKeyIndex(f, raw[i*2], last)
 				if !ok {
 					f.trap("slice literal index %T", raw[i*2])
 				}
+				last = ival
 				idx[i] = ival
 				if ival > max {
 					max = ival
 				}
 			}
 			s.Elems = make([]runtime.Value, max+1)
+			zv := v.zeroValue(f, v.elemTypedef(f, td))
 			for i := range s.Elems {
-				s.Elems[i] = runtime.NIL
+				s.Elems[i] = zv
 			}
 			for i := 0; i < n; i++ {
 				s.Elems[idx[i]] = raw[i*2+1]
@@ -3407,6 +3419,9 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}, Typ: td}
 		et := v.elemTypedef(f, td)
 		for i := 0; i < n; i++ {
+			if _, isImp := raw[i*2].(*runtime.ImplicitIndex); isImp {
+				f.trap("positional element in keyed map literal")
+			}
 			k := runtime.Unwrap(materialize(f, raw[i*2]))
 			ck := runtime.CanonicalKey(k)
 			if _, exists := m.Pairs[ck]; !exists {

@@ -48,6 +48,11 @@ type TypedNil struct{ Typ *TypeDef }
 // recorded dynamic type.
 type IfaceNil struct{ Typ *TypeDef }
 
+// ImplicitIndex marks the key of a positional element inside a mixed
+// keyed/positional composite literal — `[8]int{3: 1, 2}` — where Go
+// assigns it the running index (one past the previous element's).
+type ImplicitIndex struct{}
+
 // Named is a value of a declared named basic type (`type MyInt int`,
 // `type A B`): the underlying value plus the typedef it was declared
 // under. Zeros, coercion sites and conversions tag the value so its
