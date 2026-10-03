@@ -1,0 +1,12 @@
+package app
+
+// Code generated directives below are managed by gen-sync. DO NOT EDIT.
+//go:generate stringer -type=Level
+
+// Level is a log level.
+type Level string
+
+const (
+	LevelDebug Level = "debug"
+	LevelInfo  Level = "info"
+)
