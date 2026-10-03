@@ -1,0 +1,3 @@
+SILENT/missing-panic (seed from minigo-usecasefuzz tmp-reflect review, group 1)
+go:     panic
+minigo: 9
