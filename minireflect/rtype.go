@@ -786,7 +786,8 @@ func (t *RType) Method(i int) *Method {
 	if t.rt != nil {
 		m := t.rt.Method(i)
 		return &Method{Name: m.Name, PkgPath: m.PkgPath,
-			Type: t.e.hostTypeOf(m.Type), Index: m.Index}
+			Type: t.e.hostTypeOf(m.Type), Index: m.Index,
+			Func: t.e.wrapHost(nil, m.Func)}
 	}
 	set := t.e.methodSet(t.td)
 	names := exportedMethodNames(set)
@@ -801,9 +802,14 @@ func (t *RType) Method(i int) *Method {
 	// Interface requirements carry no receiver in Method.Type —
 	// func(int) string, not func(main.I, int) string.
 	if t.td.Kind == runtime.KindInterface {
-		return &Method{Name: names[i], Type: t.e.methodType(nil, set[names[i]]), Index: i}
+		// Go reports a zero Func for interface requirements — the
+		// requirement has no implementation to call.
+		return &Method{Name: names[i], Type: t.e.methodType(nil, set[names[i]]), Index: i,
+			Func: &RValue{e: t.e}}
 	}
-	return &Method{Name: names[i], Type: t.e.methodType(t, set[names[i]]), Index: i}
+	fn := set[names[i]]
+	return &Method{Name: names[i], Type: t.e.methodType(t, fn), Index: i,
+		Func: t.e.wrap(nil, fn, nil, t.e.methodType(t, fn).td)}
 }
 
 // MethodByName looks up an exported method by name — like Go's reflect,
@@ -815,16 +821,19 @@ func (t *RType) MethodByName(name string) (*Method, bool) {
 			return &Method{}, false
 		}
 		return &Method{Name: m.Name, PkgPath: m.PkgPath,
-			Type: t.e.hostTypeOf(m.Type), Index: m.Index}, true
+			Type: t.e.hostTypeOf(m.Type), Index: m.Index,
+			Func: t.e.wrapHost(nil, m.Func)}, true
 	}
 	set := t.e.methodSet(t.td)
 	for i, n := range exportedMethodNames(set) {
 		if n == name {
 			// interface requirements carry no receiver, like Method.
 			if t.td.Kind == runtime.KindInterface {
-				return &Method{Name: n, Type: t.e.methodType(nil, set[n]), Index: i}, true
+				return &Method{Name: n, Type: t.e.methodType(nil, set[n]), Index: i,
+					Func: &RValue{e: t.e}}, true
 			}
-			return &Method{Name: n, Type: t.e.methodType(t, set[n]), Index: i}, true
+			return &Method{Name: n, Type: t.e.methodType(t, set[n]), Index: i,
+				Func: t.e.wrap(nil, set[n], nil, t.e.methodType(t, set[n]).td)}, true
 		}
 	}
 	// Go returns a zero Method value — m.Name reads "" where a nil

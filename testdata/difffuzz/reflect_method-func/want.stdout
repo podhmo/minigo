@@ -1,0 +1,6 @@
+func
+func(main.S) int
+func
+func(main.S) int
+invalid
+panic: reflect: call of reflect.Value.Interface on zero Value
