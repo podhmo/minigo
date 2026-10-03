@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/constant"
 	"reflect"
+	"strings"
 	"unicode"
 
 	"github.com/podhmo/minigo/runtime"
@@ -1374,7 +1375,34 @@ func (v *RValue) Convert(t *RType) *RValue {
 	case reflect.Float32, reflect.Float64:
 		out = v.Float()
 	case reflect.String:
-		out = v.String()
+		// Convert produces a string, it does not format: a []byte/[]rune
+		// decodes to its contents and an integer to a one-rune string.
+		switch x := v.get().(type) {
+		case *runtime.Slice:
+			var sb strings.Builder
+			for _, el := range x.Elems {
+				sb.WriteByte(byte(intOf(el)))
+			}
+			out = sb.String()
+		case *runtime.Named:
+			if s, ok := x.V.(*runtime.Slice); ok {
+				var sb strings.Builder
+				for _, el := range s.Elems {
+					sb.WriteByte(byte(intOf(el)))
+				}
+				out = sb.String()
+			} else {
+				out = string(rune(v.Int()))
+			}
+		case string:
+			out = x
+		default:
+			if k := v.Kind(); k >= reflect.Int && k <= reflect.Uintptr {
+				out = string(rune(v.Int()))
+			} else {
+				out = v.String()
+			}
+		}
 	case reflect.Bool:
 		out = v.Bool()
 	case reflect.Slice:
@@ -1401,13 +1429,25 @@ func (v *RValue) Comparable() bool {
 	return v.Type().Comparable()
 }
 
-// Equal reports deep-ish equality against u.
+// Equal reports Go's equality: values of uncomparable type panic, and
+// mismatched types report false rather than comparing through. Same
+// type delegates to value equality.
 func (v *RValue) Equal(u *RValue) bool {
 	if u == nil || !u.IsValid() {
 		return !v.IsValid()
 	}
 	if v.host() && u.host() {
 		return v.rv.Equal(u.rv)
+	}
+	vt, ut := v.Type(), u.Type()
+	if vt != nil && !vt.Comparable() {
+		panic(&runtime.Panic{Value: fmt.Sprintf("reflect.Value.Equal: comparing uncomparable type %s", vt.String())})
+	}
+	if ut != nil && !ut.Comparable() {
+		panic(&runtime.Panic{Value: fmt.Sprintf("reflect.Value.Equal: comparing uncomparable type %s", ut.String())})
+	}
+	if vt != nil && ut != nil && vt != ut {
+		return false // reflect's Equal needs identical types
 	}
 	return valueEqual(v.ifaceVal(), u.ifaceVal(), 0)
 }
@@ -1737,6 +1777,9 @@ func valueEqual(a, b any, depth int) bool {
 		y, ok := b.(bool)
 		return ok && x == y
 	case *runtime.Named:
+		if y, ok := b.(*runtime.Named); ok {
+			return valueEqual(x.V, y.V, depth+1)
+		}
 		return valueEqual(x.V, b, depth+1)
 	case *runtime.Struct:
 		if y, ok := b.(*runtime.Struct); ok {
