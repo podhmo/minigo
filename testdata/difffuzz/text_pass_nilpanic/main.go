@@ -81,9 +81,13 @@ func shouldNilPanic(wantLine int, f func()) {
 
 			frames := runtime.CallersFrames(callers)
 			line := -1
-			for f, next := frames.Next(); next; f, next = frames.Next() {
-				if f.Func.Name() == fmt.Sprintf("main.main.func%v", cnt) {
+			for {
+				f, more := frames.Next()
+				if f.Func != nil && f.Func.Name() == fmt.Sprintf("main.main.func%v", cnt) {
 					line = f.Line
+					break
+				}
+				if !more {
 					break
 				}
 			}
