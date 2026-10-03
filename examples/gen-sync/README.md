@@ -1,15 +1,19 @@
 # go:generate Directive Sync (`examples/gen-sync`)
 
-`gen-sync` is a code-generation *orchestrator*: a minigo script scans a package
-through the `inspect` index layer, infers which declarations want generation
-tooling, and rewrites a managed `//go:generate` block in each source file.
-Running the generated commands afterwards is still `go generate`'s job — this
-tool only keeps the directives in sync with the code.
+A minigo usage neither `task-run` nor `convert-define` covers: read
+**package metadata through `inspect`** — the bound package that answers
+"which declarations live in this package" (`DirOf`/`Files`/`Decls`/`Fields`/
+`Methods`/`Imports`/`PackageOf`) — and put it to work. The script walks a
+package, collects declarations that match a condition from their own
+surfaces, and rewrites a managed `//go:generate` block in each scanned
+file — the declaration is the source of truth, the directive is kept in
+sync with it.
 
-It is the inverse of `convert-define`: that example reads call-site syntax to
-emit new code, while this one walks the package index and writes edits *back
-into the same files that were scanned* — the "metadata → generated directive
-kept in sync" pattern.
+Emitting `//go:generate` (rather than generating code itself) is the lazy
+shape of the demo: most of the "anything" metadata collection enables is
+already done by existing tools, so writing the *directive* exercises the
+SSoT/sync pattern for free. See `docs/sketch/plan-gen-sync.md` for the
+design note.
 
 ## How it works
 
@@ -29,38 +33,38 @@ the interpreter:
    `inspect.Decls` enumerate declarations. With `-deps`, `inspect.Imports` +
    `inspect.PackageOf` BFS the same-module import closure (the
    `app -> app/internal/mood` edge is only followed then).
-2. **Infer** — no magic comments. Each declaration's surface (type shape,
-   struct tags, method set, name) decides which generators it opts into:
+2. **Collect** — no magic comments; each declaration's own surface (type
+   shape, struct tags, method set, name) decides which generators it wants:
 
    | Signal | Rule | Directive |
    |---|---|---|
    | `type X int`/`string` + a `const` block of `X` | enum | `stringer -type=X` |
    | interface named `*Service`/`*Store`/`*Client`/`*Repository` | service boundary | `mockgen -source=<file> -destination=mock_<file>` |
-   | struct field tag containing `required` (recursive field walk) | validation candidate | `requiredgen -type=X` |
+   | struct field tag containing `required` | validation candidate | `requiredgen -type=X` |
    | type declaring `Discriminator() string` | OpenAPI-style `oneOf` variant | `oneofgen -type=X` |
 
    `stringer`/`mockgen` are real tools; `requiredgen`/`oneofgen` are
-   hypothetical — the *directives* are the demo's output, not something this
-   example expects you to run.
-3. **Rewrite** — each file owns one managed region, introduced by a sentinel
-   line:
+   hypothetical — the *directives* are the demo's output, not something
+   `go generate` is expected to run here.
+3. **Rewrite** — collected directives live under a sentinel line in each
+   file:
 
    ```go
    // Code generated directives below are managed by gen-sync. DO NOT EDIT.
    //go:generate stringer -type=Status
    ```
 
-   Every `//go:generate` line below the sentinel is regenerated from scratch
-   on each run — stale directives (`-type=Priority` for a type renamed to
-   `Level`) and orphaned ones disappear automatically. Files without a
-   sentinel gain the block right after the package clause and imports.
-   Everything above the sentinel is left untouched.
+   Every `//go:generate` below the sentinel is regenerated from scratch on
+   each run, so stale (`-type=Priority` after `Priority` was renamed) and
+   orphaned directives disappear without diffing. The sentinel is a
+   safeguard, not the feature: it keeps the tool from destroying
+   user-written directives above it — those are never touched. Files
+   without a sentinel gain the block after the package clause and imports.
 
-   Two index-layer gaps are worked around textually: const `ValueSpec` types
-   are not on the `inspect.Decl` view (enum detection reads the raw spec
-   lines via `inspect.Pos`), and a decl's doc comment is only reached through
-   `inspect.Doc` (which already excludes `//go:generate` lines, so inserted
-   directives never confuse the next scan).
+   Along the way the script works around a few gaps in what `inspect`
+   exposes (const `ValueSpec` types and alias-ness aren't on `Decl`,
+   `Pos` is a `"file:line:col"` string) by reading raw lines at
+   `inspect.Pos` coordinates — see the plan doc's limitations list.
 
 ## Demo
 
@@ -91,7 +95,7 @@ the fixture.
 ## Layout
 
 - `main.go` — flag parsing + `minigo.NewEngine` + `e.Run(ctx, "./script", "Main", ...)`
-- `script/main.go` — the interpreter-executed body (`package script`): scan, infer, rewrite
+- `script/main.go` — the interpreter-executed body (`package script`): scan, collect, rewrite
 - `app/` — the scanned fixture (enums, a tagged struct, a `Store` interface, `Discriminator` types, and non-matching decls)
 - `app/internal/mood/` — same-module leaf package, reached only with `-deps`
 - `testdata/` — expected post-sync files asserted by `main_test.go`

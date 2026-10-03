@@ -1,4 +1,4 @@
-# plan-gen-sync.md — collecting package metadata to keep `//go:generate` in sync
+# plan-gen-sync.md — collecting package metadata via `inspect` to keep `//go:generate` in sync
 
 Companion to `docs/sketch/plan-task-runner.md` and
 `experiment-convert-define-on-inspect.md`. This note records what
@@ -7,8 +7,8 @@ Companion to `docs/sketch/plan-task-runner.md` and
 ## Motivation
 
 A usage of minigo that neither `examples/task-run` nor
-`examples/convert-define` could express: **read package metadata out of
-the index layer and act on it**. Two capabilities matter:
+`examples/convert-define` could express: **read package metadata through
+the `inspect` API and act on it**. Two capabilities matter:
 
 - **package walking** — enumerating decls across a package, and (with
   `-deps`) across its same-module import closure
@@ -29,14 +29,14 @@ with it — without paying for a real generator).
 | | `task-run` | `convert-define` | `gen-sync` |
 |---|---|---|---|
 | What the script *is* | a trusted build file (Taskfile) | a DSL: quoted `define.Convert` calls | a scanning tool over user code |
-| Engine feature exercised | intrinsic-bound stub package (`task.*`), `os`/`exec`, virtual cwd | special forms (quoted AST args) + lazy package loading | the `inspect` index layer + `os` write intrinsics |
+| Engine feature exercised | intrinsic-bound stub package (`task.*`), `os`/`exec`, virtual cwd | special forms (quoted AST args) + lazy package loading | the `inspect` API + `os` write intrinsics |
 | Data direction | reads parts of a file → executes them | reads the whole script → emits new code | reads the index → edits the same files it scanned |
 | Trust model | unrestricted (build scripts) | unrestricted | unrestricted (writes real sources) |
 
 task-run proves minigo can host a tool-shaped runtime (it pulls out and
 runs only the functions it was asked to); convert-define proves it can
 host a codegen DSL (the whole definition file is interpreted); gen-sync
-proves the index layer alone — no special forms, no stub package — is
+proves `inspect` alone — no special forms, no stub package — is
 enough to collect metadata and put it to work.
 
 ## What gets collected, and how
@@ -91,7 +91,7 @@ script itself; the engine binds both paths to the same intrinsics.
   Under `-deps`, a BFS over `inspect.Imports(f)` → `inspect.PackageOf`
   follows only paths under the module prefix (`filepath.Dir(Path(root)) +
   "/"`), so stdlib and bound packages are never entered.
-- **Where the index is thin** — `inspect.Decl` gives `Kind`/`Name`/`File`/
+- **Where `inspect` is thin** — `inspect.Decl` gives `Kind`/`Name`/`File`/
   `Pos`/`Doc` but not `ValueSpec.Type`, so enum detection (`hasConstOfType`)
   reads the raw source line at `posLine(c)` and splits fields before `=`;
   type-omitted specs walk back up to the `const (` block's first spec

@@ -1,6 +1,6 @@
 // Package script is the body of the gen-sync tool, executed by the minigo
 // interpreter (see ../main.go). It walks a package through the inspect
-// index layer, infers which declarations want generation tooling, and
+// API, infers which declarations want generation tooling, and
 // rewrites each file's managed //go:generate block so it stays in sync.
 //
 // The //go:generate lines are the OUTPUT of this tool: targets are
@@ -197,7 +197,7 @@ func directivesFor(d *inspect.Decl, f *inspect.File, lines []string, decls []*in
 }
 
 // hasConstOfType reports whether some const spec in the file is declared
-// with the type name — the enum marker the index layer can't see
+// with the type name — the enum signal inspect can't see
 // (ValueSpec types are not exposed on the Decl view, so the raw lines
 // are checked).
 func hasConstOfType(decls []*inspect.Decl, name string, lines []string) bool {
