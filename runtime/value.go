@@ -210,23 +210,64 @@ func (r *FieldRef) structOf() *Struct {
 	}
 }
 
+// promotedStructs expands one BFS level of embedded fields — Go
+// resolves promoted members by depth (shallowest wins), not by
+// declaration order.
+func promotedStructs(level []*Struct) (next []*Struct) {
+	for _, st := range level {
+		if st == nil || st.Def == nil {
+			continue
+		}
+		for _, i := range st.Def.EmbedIdx {
+			if i < len(st.Fields) {
+				if emb := (&FieldRef{Base: st.Fields[i]}).structOf(); emb != nil {
+					next = append(next, emb)
+				}
+			}
+		}
+	}
+	return next
+}
+
+// fieldHits collects (struct, index) pairs named by r.Name across one
+// BFS level — every hit here shares the same promotion depth.
+func (r *FieldRef) fieldHits(level []*Struct) (hits []struct {
+	st  *Struct
+	idx int
+}) {
+	for _, st := range level {
+		if st == nil || st.Def == nil {
+			continue
+		}
+		for i, n := range st.Def.Fields {
+			if n == r.Name {
+				hits = append(hits, struct {
+					st  *Struct
+					idx int
+				}{st, i})
+			}
+		}
+	}
+	return hits
+}
+
 // Get reads the field value.
 func (r *FieldRef) Get() (Value, bool) {
 	s := r.structOf()
 	if s == nil {
 		return nil, false
 	}
-	for i, n := range s.Def.Fields {
-		if n == r.Name {
-			return s.Fields[i], true
-		}
-	}
-	// a promoted field lives on an embedded struct: descend through each
-	// anonymous field (first match wins — same-depth ambiguity is a
-	// compile error the index would have rejected earlier).
-	for _, i := range s.Def.EmbedIdx {
-		if v, ok := (&FieldRef{Base: s.Fields[i], Name: r.Name}).Get(); ok {
-			return v, true
+	// promoted fields resolve breadth-first like Go: the shallowest
+	// match wins and a same-depth tie is ambiguous.
+	level := []*Struct{s}
+	for depth := 0; len(level) > 0 && depth < 32; depth++ {
+		switch hits := r.fieldHits(level); len(hits) {
+		case 0:
+			level = promotedStructs(level)
+		case 1:
+			return hits[0].st.Fields[hits[0].idx], true
+		default:
+			panic(&Panic{Value: fmt.Sprintf("ambiguous selector %s", r.Name)})
 		}
 	}
 	return nil, false
@@ -238,15 +279,16 @@ func (r *FieldRef) Set(v Value) bool {
 	if s == nil {
 		return false
 	}
-	for i, n := range s.Def.Fields {
-		if n == r.Name {
-			s.Fields[i] = v
+	level := []*Struct{s}
+	for depth := 0; len(level) > 0 && depth < 32; depth++ {
+		switch hits := r.fieldHits(level); len(hits) {
+		case 0:
+			level = promotedStructs(level)
+		case 1:
+			hits[0].st.Fields[hits[0].idx] = v
 			return true
-		}
-	}
-	for _, i := range s.Def.EmbedIdx {
-		if (&FieldRef{Base: s.Fields[i], Name: r.Name}).Set(v) {
-			return true
+		default:
+			panic(&Panic{Value: fmt.Sprintf("ambiguous selector %s", r.Name)})
 		}
 	}
 	return false
