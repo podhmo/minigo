@@ -117,7 +117,7 @@ func builtins(e *Engine) *runtime.Env {
 			// append(nilSlice) is still nil, not an empty slice.
 			res := runtime.Value(&runtime.TypedNil{Typ: rtyp})
 			if tag != nil {
-				return &runtime.Named{Typ: tag, V: res}, nil
+				return runtime.Tag(tag, res), nil
 			}
 			return res, nil
 		}
@@ -126,7 +126,7 @@ func builtins(e *Engine) *runtime.Env {
 		// storage, past it the host append allocates a fresh array.
 		res := &runtime.Slice{Elems: append(elems, add...), Typ: rtyp}
 		if tag != nil {
-			return &runtime.Named{Typ: tag, V: res}, nil // append keeps the declared type
+			return runtime.Tag(tag, res), nil // append keeps the declared type
 		}
 		return res, nil
 	})
@@ -333,7 +333,7 @@ func builtins(e *Engine) *runtime.Env {
 			return nil, fmt.Errorf("real of %T", args[0])
 		}
 		if w == 64 {
-			return &runtime.Named{Typ: &runtime.TypeDef{Name: "float32", Kind: runtime.KindNamedBasic}, V: float64(real(complex64(cv)))}, nil
+			return runtime.Tag(&runtime.TypeDef{Name: "float32", Kind: runtime.KindNamedBasic}, float64(real(complex64(cv)))), nil
 		}
 		return real(cv), nil
 	})
@@ -346,7 +346,7 @@ func builtins(e *Engine) *runtime.Env {
 			return nil, fmt.Errorf("imag of %T", args[0])
 		}
 		if w == 64 {
-			return &runtime.Named{Typ: &runtime.TypeDef{Name: "float32", Kind: runtime.KindNamedBasic}, V: float64(imag(complex64(cv)))}, nil
+			return runtime.Tag(&runtime.TypeDef{Name: "float32", Kind: runtime.KindNamedBasic}, float64(imag(complex64(cv)))), nil
 		}
 		return imag(cv), nil
 	})

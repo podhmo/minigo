@@ -634,7 +634,7 @@ func (e *Engine) installStdlib() {
 					return s, nil
 				}
 				if sl, ok := s.V.(*runtime.Slice); ok {
-					return &runtime.Named{Typ: s.Typ, V: &runtime.Slice{Elems: append([]runtime.Value{}, sl.Elems...), Typ: sl.Typ}}, nil
+					return runtime.Tag(s.Typ, &runtime.Slice{Elems: append([]runtime.Value{}, sl.Elems...), Typ: sl.Typ}), nil
 				}
 			}
 			return nil, fmt.Errorf("slices.Clone: arg must be a slice")
@@ -804,7 +804,7 @@ func (e *Engine) installStdlib() {
 					return m, nil
 				}
 				if mm, ok := m.V.(*runtime.Map); ok {
-					return &runtime.Named{Typ: m.Typ, V: clone(mm)}, nil
+					return runtime.Tag(m.Typ, clone(mm)), nil
 				}
 			}
 			return nil, fmt.Errorf("maps.Clone: arg must be a map")
@@ -2063,7 +2063,7 @@ func errVal(err error) runtime.Value {
 // namedSized boxes a host-sized int with its declared typedef so %T
 // spells int8/int16/int32/int64/uintN like Go (rune is int32).
 func namedSized(x any, v int64) runtime.Value {
-	return &runtime.Named{Typ: &runtime.TypeDef{Name: fmt.Sprintf("%T", x), Kind: runtime.KindNamedBasic}, V: v}
+	return runtime.Tag(&runtime.TypeDef{Name: fmt.Sprintf("%T", x), Kind: runtime.KindNamedBasic}, v)
 }
 
 // scriptVal converts a Go-native result back to a runtime value. Concrete
@@ -2085,7 +2085,7 @@ func scriptVal(v any) runtime.Value {
 		// keep the declared width like a float32(x) conversion does —
 		// equality and map keys need the float32 tag, the payload rides
 		// in the float64 domain.
-		return &runtime.Named{Typ: &runtime.TypeDef{Name: "float32", Kind: runtime.KindNamedBasic}, V: float64(x)}
+		return runtime.Tag(&runtime.TypeDef{Name: "float32", Kind: runtime.KindNamedBasic}, float64(x))
 	case []byte:
 		// a []byte result unmarshals to a slice of int64s so `string(b)`
 		// and indexing behave like Go source suggests.

@@ -65,14 +65,36 @@ type Named struct {
 	V   Value    // the underlying value
 }
 
-// Unwrap peels a Named to its underlying value; any other value passes
-// through unchanged. Consumption sites (index, arithmetic, marshaling)
-// unwrap so a named value behaves like its underlying value.
-func Unwrap(v Value) Value {
+// Tag attaches the declared-type tag td to v. An existing Named tag is
+// peeled first — values are never tagged twice, so `Tag(T, Named{U})`
+// yields `Named{T, inner}` rather than the `Named{Named{...}}` shape
+// that needed peeling downstream. This is the one place Named values
+// get constructed.
+func Tag(td *TypeDef, v Value) *Named {
+	return &Named{Typ: td, V: Unwrap(v)}
+}
+
+// TagOf reads the outermost declared-type tag of v, or nil when v is
+// untagged. Use it where the tag itself matters — method dispatch, type
+// assertions, formatting — and Unwrap where the underlying value does.
+func TagOf(v Value) *TypeDef {
 	if n, ok := v.(*Named); ok {
-		return n.V
+		return n.Typ
 	}
-	return v
+	return nil
+}
+
+// Unwrap peels every Named tag from v; any other value passes through
+// unchanged. Consumption sites (index, arithmetic, marshaling) unwrap
+// so a named value behaves like its underlying value.
+func Unwrap(v Value) Value {
+	for {
+		if n, ok := v.(*Named); ok {
+			v = n.V
+			continue
+		}
+		return v
+	}
 }
 
 // Zero returns the zero value of a typedef: a Struct with nil fields,
