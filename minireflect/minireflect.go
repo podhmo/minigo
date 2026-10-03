@@ -252,7 +252,10 @@ func (e *Env) valueOfValue(vc runtime.VMCaller, v runtime.Value) *RValue {
 		}
 		return &RValue{e: e, vc: vc, rv: reflect.ValueOf(x.V)}
 	}
-	return &RValue{e: e, vc: vc, val: v, td: typeOfValue(e, v)}
+	// reflect.ValueOf copies its argument into the interface — a script
+	// struct must be snapshotted, or later script writes leak into the
+	// stored value (slices/maps/pointers keep sharing, like Go).
+	return &RValue{e: e, vc: vc, val: runtime.Copy(v), td: typeOfValue(e, v)}
 }
 
 func (e *Env) typeOf(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -489,7 +492,9 @@ func (e *Env) append_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value,
 	if !ok {
 		return nil, fmt.Errorf("reflect.Append on %s", s.Kind())
 	}
-	out := &runtime.Slice{Elems: append(append([]runtime.Value{}, sl.Elems...), elems...), Typ: sl.Typ}
+	// append into the live backing: spare capacity is reused, so writes
+	// through the result's elements land in the caller's array like Go.
+	out := &runtime.Slice{Elems: append(sl.Elems, elems...), Typ: sl.Typ}
 	return &runtime.GoValue{V: &RValue{e: e, vc: vc, val: out, td: s.td}}, nil
 }
 
@@ -509,7 +514,11 @@ func (e *Env) appendSlice(vc runtime.VMCaller, args []runtime.Value) (runtime.Va
 	if !ok1 || !ok2 {
 		return nil, fmt.Errorf("reflect.AppendSlice on non-slice")
 	}
-	out := &runtime.Slice{Elems: append(append([]runtime.Value{}, sl.Elems...), tl.Elems...), Typ: sl.Typ}
+	elems := make([]runtime.Value, len(tl.Elems))
+	for i, el := range tl.Elems {
+		elems[i] = runtime.Copy(el)
+	}
+	out := &runtime.Slice{Elems: append(sl.Elems, elems...), Typ: sl.Typ}
 	return &runtime.GoValue{V: &RValue{e: e, vc: vc, val: out, td: s.td}}, nil
 }
 
@@ -541,7 +550,10 @@ func (e *Env) copy_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, e
 	if len(ds.Elems) < n {
 		n = len(ds.Elems)
 	}
-	copy(ds.Elems, ss[:n])
+	// each element is assigned by value — struct elements deep-copy.
+	for i := 0; i < n; i++ {
+		ds.Elems[i] = runtime.Copy(ss[i])
+	}
 	return int64(n), nil
 }
 
