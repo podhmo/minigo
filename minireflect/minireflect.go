@@ -344,9 +344,9 @@ func (e *Env) valueOfValue(vc runtime.VMCaller, v runtime.Value) *RValue {
 	case *runtime.Named:
 		if gv, ok := x.V.(*runtime.GoValue); ok {
 			if rv, ok := gv.V.(*RValue); ok {
-				// a tagged facade box (reflect.Value{}) reflects to the
-				// facade struct itself, like the GoValue arm below
-				return &RValue{e: e, vc: vc, rv: reflect.ValueOf(rv).Elem()}
+				// a tagged facade box (reflect.Value{}) reflects to a real
+				// reflect.Value struct, like the GoValue arm below
+				return &RValue{e: e, vc: vc, rv: reflect.ValueOf(reflect.ValueOf(rv))}
 			}
 			// a tagged host box (host composite literal T{}): reflect
 			// the addressable value inside — Type reads T, not *T.
@@ -361,9 +361,10 @@ func (e *Env) valueOfValue(vc runtime.VMCaller, v runtime.Value) *RValue {
 		// the named value back for TypeAssert/%T).
 	case *runtime.GoValue:
 		if rv, ok := x.V.(*RValue); ok {
-			// reflecting a facade value itself yields the reflect.Value
-			// struct like Go — not the script value it views
-			return &RValue{e: e, vc: vc, rv: reflect.ValueOf(rv).Elem()}
+			// reflecting a facade value itself yields Go's reflect.Value
+			// struct (typ/ptr/flag), not the facade implementation struct
+			// and not the script value it views
+			return &RValue{e: e, vc: vc, rv: reflect.ValueOf(reflect.ValueOf(rv))}
 		}
 		if x.V == nil {
 			return &RValue{e: e, vc: vc}
