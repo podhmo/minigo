@@ -784,7 +784,7 @@ func (t *RType) Implements(u *RType) bool {
 		return u.scriptImplements(t)
 	}
 	if u.rt != nil {
-		return hostIfaceImplemented(u.rt, t.e.methodSet(t.td))
+		return t.e.hostIfaceImplemented(u.rt, t.e.methodSet(t.td))
 	}
 	if u.td == nil {
 		return false
@@ -834,7 +834,7 @@ func (t *RType) scriptImplements(h *RType) bool {
 	}
 	for name, req := range reqs {
 		ht, ok := have[name]
-		if !ok || ht.String() != methodSig(req) {
+		if !ok || !t.e.sameFuncSig(req, ht) {
 			return false
 		}
 	}
@@ -842,17 +842,141 @@ func (t *RType) scriptImplements(h *RType) bool {
 }
 
 // hostIfaceImplemented reports whether the script method set satisfies
-// a host interface type, name and signature alike — script signatures
-// spell like reflect.Type.String() for the basic forms.
-func hostIfaceImplemented(u reflect.Type, have map[string]*runtime.Function) bool {
+// a host interface type, name and signature alike.
+func (e *Env) hostIfaceImplemented(u reflect.Type, have map[string]*runtime.Function) bool {
 	for i := 0; i < u.NumMethod(); i++ {
 		m := u.Method(i)
 		hm := have[m.Name]
-		if hm == nil || methodSig(hm) != m.Type.String() {
+		if hm == nil || !e.sameFuncSig(hm, m.Type) {
 			return false
 		}
 	}
 	return true
+}
+
+// sameFuncSig reports whether a script member's declared signature
+// matches a host method's reflect func type — in/out arity, each
+// element type's canonical spelling, and variadicness. String
+// comparison cannot work: reflect.Type.String writes `func() int`
+// where the script spelling writes `func()(int)` — every cross-domain
+// interface check whose method had results failed to match.
+func (e *Env) sameFuncSig(fn *runtime.Function, ht reflect.Type) (same bool) {
+	defer func() {
+		// an unresolvable signature element is a mismatch, not a
+		// panic — Implements never traps on either side
+		if recover() != nil {
+			same = false
+		}
+	}()
+	st := e.methodType(nil, fn) // the declared signature, no receiver
+	if st == nil || ht.Kind() != reflect.Func {
+		return false
+	}
+	if st.NumIn() != ht.NumIn() || st.NumOut() != ht.NumOut() ||
+		st.IsVariadic() != ht.IsVariadic() {
+		return false
+	}
+	for i := 0; i < ht.NumIn(); i++ {
+		if e.canonType(st.In(i)) != e.canonType(e.hostTypeOf(ht.In(i))) {
+			return false
+		}
+	}
+	for i := 0; i < ht.NumOut(); i++ {
+		if e.canonType(st.Out(i)) != e.canonType(e.hostTypeOf(ht.Out(i))) {
+			return false
+		}
+	}
+	return true
+}
+
+// canonType renders a type canonically for cross-domain comparison:
+// named types intern under "pkgpath.Name" on both sides already, while
+// anonymous shapes must be spelled structurally — reflect.Type.String
+// and the script spelling disagree on surface details (result parens,
+// interface and struct braces, spacing).
+func (e *Env) canonType(t *RType) string {
+	if t == nil {
+		return "<nil>"
+	}
+	if t.rt != nil && t.rt.Name() != "" {
+		return t.key
+	}
+	// `any` is the empty interface on both sides — the script side
+	// spells it like a name where the host side is anonymous.
+	if t.td != nil && t.td.Name != "" && t.td.Name != "any" {
+		return t.key
+	}
+	var sb strings.Builder
+	switch t.Kind() {
+	case reflect.Func:
+		sb.WriteString("func(")
+		for i := 0; i < t.NumIn(); i++ {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			sb.WriteString(e.canonType(t.In(i)))
+		}
+		if t.IsVariadic() {
+			sb.WriteByte('.')
+		}
+		sb.WriteString(")(")
+		for i := 0; i < t.NumOut(); i++ {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			sb.WriteString(e.canonType(t.Out(i)))
+		}
+		sb.WriteByte(')')
+	case reflect.Interface:
+		sb.WriteString("interface{")
+		if t.rt != nil {
+			for i := 0; i < t.rt.NumMethod(); i++ {
+				m := t.rt.Method(i)
+				if !ast.IsExported(m.Name) {
+					continue // symmetric with the script side's exported-only set
+				}
+				sb.WriteString(m.Name)
+				sb.WriteString(e.canonType(e.hostTypeOf(m.Type)))
+				sb.WriteByte(';')
+			}
+		} else {
+			set := t.e.methodSet(t.td)
+			for _, name := range exportedMethodNames(set) {
+				sb.WriteString(name)
+				// interface methods carry no receiver — build the
+				// bare signature, not methodType's receiver form
+				sb.WriteString(e.canonType(e.methodType(nil, set[name])))
+				sb.WriteByte(';')
+			}
+		}
+		sb.WriteString("}")
+	case reflect.Struct:
+		sb.WriteString("struct{")
+		for i := 0; i < t.NumField(); i++ {
+			f := t.Field(i)
+			if f.Anonymous {
+				sb.WriteByte('&')
+			}
+			if f.PkgPath != "" {
+				sb.WriteString(f.PkgPath)
+				sb.WriteByte('.')
+			}
+			sb.WriteString(f.Name)
+			sb.WriteByte(' ')
+			sb.WriteString(e.canonType(f.Type))
+			if f.Tag != "" {
+				sb.WriteByte(' ')
+				sb.WriteString(string(f.Tag))
+			}
+			sb.WriteByte(';')
+		}
+		sb.WriteString("}")
+	default:
+		// pointer/slice/map/chan/array/basic spellings agree across
+		// domains — the interning key is already canonical.
+		sb.WriteString(t.key)
+	}
+	return sb.String()
 }
 
 // AssignableTo reports Go's assignment rule: identical types, an
@@ -971,8 +1095,13 @@ func (e *Env) comparableTd(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool) 
 			}
 		}
 		return true
-	case reflect.Array, reflect.Pointer:
+	case reflect.Array:
 		return e.comparableTd(e.elemOf(td), seen)
+	case reflect.Pointer:
+		// pointers are always comparable — only the pointer identity
+		// is compared, never the pointee (an array IS different: its
+		// elements are compared one by one).
+		return true
 	}
 	return true
 }
