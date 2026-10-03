@@ -56,3 +56,33 @@ func TestPanicConstructors(t *testing.T) {
 		}
 	}
 }
+
+func TestTagTagOfUnwrap(t *testing.T) {
+	td := &TypeDef{Name: "MyInt", Kind: KindNamedBasic}
+	u := &TypeDef{Name: "OtherInt", Kind: KindNamedBasic}
+
+	// Tag is the single construction point — it peels an existing
+	// Named tag so values are never double-tagged.
+	n := Tag(td, Tag(u, int64(3)))
+	if n.Typ != td || n.V != int64(3) {
+		t.Fatalf("nested Tag = %+v", n)
+	}
+	if _, nested := n.V.(*Named); nested {
+		t.Fatal("Tag must not nest Named inside Named")
+	}
+
+	if TagOf(n) != td {
+		t.Fatal("TagOf should return the outermost tag")
+	}
+	if TagOf(int64(3)) != nil {
+		t.Fatal("TagOf of untagged value should be nil")
+	}
+
+	// Unwrap peels however many layers a stale value still carries.
+	if got := Unwrap(&Named{Typ: td, V: &Named{Typ: u, V: int64(3)}}); got != int64(3) {
+		t.Fatalf("Unwrap nested = %v", got)
+	}
+	if got := Unwrap(int64(3)); got != int64(3) {
+		t.Fatalf("Unwrap passthrough = %v", got)
+	}
+}

@@ -564,7 +564,7 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value) (runtime.Value, er
 			panic(runtime.NilDerefPanic())
 		case *runtime.Named:
 			// a value of a named func type calls through its underlying
-			callee = c.V
+			callee = runtime.Unwrap(callee)
 			continue
 		case *runtime.GoValue:
 			if fv := reflect.ValueOf(c.V); fv.IsValid() && fv.Kind() == reflect.Func {
@@ -993,7 +993,7 @@ func (v *VM) invokeDeferred(d deferredCall) {
 			}
 			return
 		case *runtime.Named:
-			callee = c.V
+			callee = runtime.Unwrap(callee)
 			continue
 		default:
 			if dv, ok := runtime.Deref(callee); ok {
@@ -1971,9 +1971,9 @@ func goValueOf(rv reflect.Value) runtime.Value {
 	case int8, int16, int32:
 		// sized ints keep their declared width so %T spells them
 		// like Go (int32 also covers rune — an alias).
-		return &runtime.Named{Typ: sizedIntTyp(rv.Kind()), V: rv.Int()}
+		return runtime.Tag(sizedIntTyp(rv.Kind()), rv.Int())
 	case uint, uint8, uint16, uint32, uintptr:
-		return &runtime.Named{Typ: sizedIntTyp(rv.Kind()), V: int64(reflect.ValueOf(v).Uint())}
+		return runtime.Tag(sizedIntTyp(rv.Kind()), int64(reflect.ValueOf(v).Uint()))
 	case uint64:
 		if v <= math.MaxInt64 {
 			return int64(v)
@@ -1987,7 +1987,7 @@ func goValueOf(rv reflect.Value) runtime.Value {
 		// keep the declared width like a float32(x) conversion does —
 		// equality and map keys need the float32 tag, the payload rides
 		// in the float64 domain.
-		return &runtime.Named{Typ: &runtime.TypeDef{Name: "float32", Kind: runtime.KindNamedBasic}, V: float64(v)}
+		return runtime.Tag(&runtime.TypeDef{Name: "float32", Kind: runtime.KindNamedBasic}, float64(v))
 	case float64:
 		return v
 	case time.Duration:
@@ -2440,7 +2440,7 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 				if iv, ok := vv.(int64); ok {
 					vv = maskInt(iv, sizedNameOf(n.Typ))
 				}
-				val = &runtime.Named{Typ: n.Typ, V: vv}
+				val = runtime.Tag(n.Typ, vv)
 			}
 		}
 		runtime.SetRef(ref, val)
@@ -2649,7 +2649,7 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 			if dv, ok := runtime.Deref(sv); ok {
 				sv = dv
 			}
-			r = valueCopy(&runtime.Named{Typ: td, V: sv})
+			r = valueCopy(runtime.Tag(td, sv))
 		} else {
 			// a value receiver binds a copy of the named value — for a
 			// pointer-underlying declaration (`type P *Sq`) the pointer
@@ -2816,7 +2816,7 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 		if !ok {
 			f.trap("string index is %T", idx)
 		}
-		return &runtime.Named{Typ: v.builtinTypedef("uint8"), V: int64(b[i])}
+		return runtime.Tag(v.builtinTypedef("uint8"), int64(b[i]))
 	default:
 		f.trap("index on %T", base)
 		return nil
@@ -3861,7 +3861,7 @@ func valueCopy(v runtime.Value) runtime.Value {
 		return v
 	case *runtime.Named:
 		// assignment copies the underlying value but keeps the declared tag
-		return &runtime.Named{Typ: x.Typ, V: valueCopy(x.V)}
+		return runtime.Tag(x.Typ, valueCopy(x.V))
 	}
 	return v
 }
@@ -4226,7 +4226,7 @@ func materializeDefault(u *runtime.UConst) (runtime.Value, error) {
 	case constant.Int:
 		if u.Rune {
 			if i, ok := constant.Int64Val(u.V); ok {
-				return &runtime.Named{Typ: &runtime.TypeDef{Name: "rune", Kind: runtime.KindNamedBasic}, V: i}, nil
+				return runtime.Tag(&runtime.TypeDef{Name: "rune", Kind: runtime.KindNamedBasic}, i), nil
 			}
 			return nil, fmt.Errorf("constant %s overflows rune", u.V)
 		}
@@ -4349,7 +4349,7 @@ func (v *VM) materializeConstErr(u *runtime.UConst, td *runtime.TypeDef) (runtim
 	// spelled bare).
 	if td != nil && (declaredType(td) || sizedIntName(td.Name) || td.Name == "int64" ||
 		td.Name == "float32" || td.Name == "complex64") {
-		return &runtime.Named{Typ: td, V: x}, nil
+		return runtime.Tag(td, x), nil
 	}
 	return x, nil
 }
@@ -4707,7 +4707,7 @@ func scalarConst(u *runtime.UConst, b runtime.Value) (runtime.Value, bool) {
 func adaptConst(f *frame, u *runtime.UConst, other runtime.Value) runtime.Value {
 	if nb, ok := other.(*runtime.Named); ok {
 		if r, ok2 := constToBasic(u, basicNameOf(nb.Typ)); ok2 {
-			return &runtime.Named{Typ: nb.Typ, V: r}
+			return runtime.Tag(nb.Typ, r)
 		}
 	}
 	return materialize(f, u)
@@ -4897,7 +4897,7 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 			}
 			if tag != nil {
 				if _, isBool := r.(bool); !isBool {
-					return &runtime.Named{Typ: tag, V: r}
+					return runtime.Tag(tag, r)
 				}
 			}
 			return r
@@ -4914,13 +4914,13 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 					if !isInt {
 						return res
 					}
-					return &runtime.Named{Typ: tag, V: maskInt(int64(res.(uint64)), uname)}
+					return runtime.Tag(tag, maskInt(int64(res.(uint64)), uname))
 				}
 			}
 		}
 		res := binaryOp(f, op, a, b)
 		if iv, ok := res.(int64); ok {
-			return &runtime.Named{Typ: tag, V: maskInt(iv, sizedNameOf(tag))}
+			return runtime.Tag(tag, maskInt(iv, sizedNameOf(tag)))
 		}
 		if fv, ok := res.(float64); ok {
 			// a float32-flavored tag narrows the result the way an
@@ -4928,10 +4928,10 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 			if basicNameOf(tag) == "float32" {
 				fv = float64(float32(fv))
 			}
-			return &runtime.Named{Typ: tag, V: fv}
+			return runtime.Tag(tag, fv)
 		}
 		if _, ok := res.(string); ok {
-			return &runtime.Named{Typ: tag, V: res}
+			return runtime.Tag(tag, res)
 		}
 		return res
 	}
@@ -5153,7 +5153,7 @@ func shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 			r = shiftInt(op, x, count)
 		}
 		if tag != nil {
-			return &runtime.Named{Typ: tag, V: maskInt(r, sizedNameOf(tag))}
+			return runtime.Tag(tag, maskInt(r, sizedNameOf(tag)))
 		}
 		return r
 	case time.Duration:
@@ -5186,7 +5186,7 @@ func shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 		if u, ok := x.V.(uint64); ok {
 			r := shiftUint(op, u, count)
 			if tag != nil {
-				return &runtime.Named{Typ: tag, V: maskInt(int64(r), sizedNameOf(tag))}
+				return runtime.Tag(tag, maskInt(int64(r), sizedNameOf(tag)))
 			}
 			return &runtime.GoValue{V: r}
 		}
@@ -5411,11 +5411,11 @@ func unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value {
 	retag := func(r runtime.Value) runtime.Value {
 		if tag != nil {
 			if iv, ok := r.(int64); ok {
-				return &runtime.Named{Typ: tag, V: maskInt(iv, sizedNameOf(tag))}
+				return runtime.Tag(tag, maskInt(iv, sizedNameOf(tag)))
 			}
 			switch r.(type) {
 			case float64, string, bool, *runtime.GoValue:
-				return &runtime.Named{Typ: tag, V: r}
+				return runtime.Tag(tag, r)
 			}
 		}
 		return r
@@ -6027,19 +6027,19 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 			// domain for %x/%d. `int64(x)` tags too — an explicit
 			// conversion declares its type — while bare ints stay
 			// untagged (their %T already spells "int").
-			return &runtime.Named{Typ: td, V: maskInt(iv, td.Name)}, nil
+			return runtime.Tag(td, maskInt(iv, td.Name)), nil
 		}
 		return maskInt(iv, td.Name), nil
 	case "float32":
 		if iv, ok := x.(int64); ok && srcUnsigned {
-			return &runtime.Named{Typ: td, V: float64(float32(uint64(iv)))}, nil
+			return runtime.Tag(td, float64(float32(uint64(iv)))), nil
 		}
 		if f, ok := hostFloat(x); ok {
-			return &runtime.Named{Typ: td, V: float64(float32(f))}, nil
+			return runtime.Tag(td, float64(float32(f))), nil
 		}
 		switch x.(type) {
 		case int64, float64:
-			return &runtime.Named{Typ: td, V: float64(float32(toFloat(x)))}, nil
+			return runtime.Tag(td, float64(float32(toFloat(x)))), nil
 		}
 		return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), td.Name)
 	case "float64":
@@ -6135,7 +6135,7 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 			if cn, ok := cv.(*runtime.Named); ok && sameTypeDef(cn.Typ, u) {
 				cv = cn.V
 			}
-			return &runtime.Named{Typ: td, V: cv}, nil
+			return runtime.Tag(td, cv), nil
 		}
 	}
 	switch td.Kind {
@@ -6167,7 +6167,7 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 			// and member access sees only F's declared method set —
 			// function values carry no swappable tag otherwise.
 			if td.Spec != nil {
-				return &runtime.Named{Typ: td, V: x}, nil
+				return runtime.Tag(td, x), nil
 			}
 			return x, nil // signatures are not modeled
 		}
@@ -6190,7 +6190,7 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 			}
 			u = cv
 		}
-		return &runtime.Named{Typ: td, V: u}, nil
+		return runtime.Tag(td, u), nil
 	}
 	if td.Name != "" {
 		return x, nil
@@ -6357,7 +6357,7 @@ func (v *VM) convertMap(td *runtime.TypeDef, x runtime.Value) (runtime.Value, er
 	if m.Typ != nil && !v.convShapeEq(m.Typ, td) {
 		return nil, fmt.Errorf("cannot convert %s to %s", tdName(m.Typ), tdName(td))
 	}
-	return &runtime.Named{Typ: td, V: m}, nil
+	return runtime.Tag(td, m), nil
 }
 
 // convertChan implements `C(x)` on channel typedefs: identical underlying
@@ -6372,7 +6372,7 @@ func (v *VM) convertChan(td *runtime.TypeDef, x runtime.Value) (runtime.Value, e
 	if ch.Typ != nil && !v.convShapeEq(ch.Typ, td) {
 		return nil, fmt.Errorf("cannot convert %s to %s", tdName(ch.Typ), tdName(td))
 	}
-	return &runtime.Named{Typ: td, V: ch}, nil
+	return runtime.Tag(td, ch), nil
 }
 
 // convertPointer implements `*T(x)` and `P(x)` on pointer typedefs. A
@@ -6427,11 +6427,11 @@ func (v *VM) convertPointer(td *runtime.TypeDef, x runtime.Value) (runtime.Value
 	// but the value must keep T's declared identity so interface checks
 	// and method dispatch see the pointee's method set.
 	if td.Spec != nil {
-		return &runtime.Named{Typ: td, V: x}, nil
+		return runtime.Tag(td, x), nil
 	}
 	if v.H.ElemOf != nil {
 		if et, err := v.H.ElemOf(td); err == nil && et != nil && declaredType(et) {
-			return &runtime.Named{Typ: td, V: x}, nil
+			return runtime.Tag(td, x), nil
 		}
 	}
 	return x, nil
@@ -7289,7 +7289,7 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 					x = &runtime.GoValue{V: cv}
 				}
 				if td != nil && declaredType(td) {
-					return &runtime.Named{Typ: td, V: x}
+					return runtime.Tag(td, x)
 				}
 			}
 		case uint64:
@@ -7297,7 +7297,7 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 			// tag like a fitting constant would — `var u uint =
 			// 18446744073709551615` is a uint, not a bare uint64.
 			if n := basicNameOf(v.peelNamed(td)); sizedIntName(n) {
-				return &runtime.Named{Typ: td, V: gv}
+				return runtime.Tag(td, gv)
 			}
 		}
 		return x // host boundary: assignability is unknowable
@@ -7417,7 +7417,7 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		// value already spells them.
 		if declaredType(td) || sizedIntName(td.Name) ||
 			td.Name == "int64" || td.Name == "float32" {
-			return &runtime.Named{Typ: td, V: x}
+			return runtime.Tag(td, x)
 		}
 	case runtime.KindPointer, runtime.KindFunc:
 		// declared pointer/func types tag the bound value so asserts
@@ -7425,7 +7425,7 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		// declared method set. Anonymous *T/func() binds stay bare —
 		// they carry the pointee's members (T's method set promotes).
 		if td.Spec != nil {
-			return &runtime.Named{Typ: td, V: x}
+			return runtime.Tag(td, x)
 		}
 	}
 	return x
@@ -7676,7 +7676,7 @@ func (v *VM) wrapZero(td *runtime.TypeDef, z runtime.Value) runtime.Value {
 	if _, ok := z.(runtime.Nil); ok {
 		return z
 	}
-	return &runtime.Named{Typ: td, V: z}
+	return runtime.Tag(td, z)
 }
 
 // Zero implements the VMCaller hook for the new() builtin.
