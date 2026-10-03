@@ -2087,6 +2087,9 @@ func scriptVal(v any) runtime.Value {
 		// in the float64 domain.
 		return runtime.Tag(&runtime.TypeDef{Name: "float32", Kind: runtime.KindNamedBasic}, float64(x))
 	case []byte:
+		if x == nil {
+			return &runtime.TypedNil{Typ: anonSliceTyp("byte")}
+		}
 		// a []byte result unmarshals to a slice of int64s so `string(b)`
 		// and indexing behave like Go source suggests.
 		el := make([]runtime.Value, len(x))
@@ -2101,12 +2104,19 @@ func scriptVal(v any) runtime.Value {
 		// dispatch through reflection and binaryOp unwraps for arithmetic.
 		return x
 	case []any:
+		if x == nil {
+			return &runtime.TypedNil{Typ: anonSliceTyp("any")}
+		}
 		el := make([]runtime.Value, len(x))
 		for i, e := range x {
 			el[i] = scriptVal(e)
 		}
 		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("any")}
 	case map[any]any:
+		if x == nil {
+			return &runtime.TypedNil{Typ: &runtime.TypeDef{Kind: runtime.KindMap,
+				Anon: &ast.MapType{Key: ast.NewIdent("any"), Value: ast.NewIdent("any")}}}
+		}
 		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}}
 		for k, vv := range x {
 			m.Insert(scriptVal(k), scriptVal(vv))
@@ -2116,7 +2126,7 @@ func scriptVal(v any) runtime.Value {
 		*runtime.Map, *runtime.Struct, *runtime.Function, *runtime.Closure,
 		*runtime.BoundMethod, *runtime.BuiltinFunc, *runtime.GoValue,
 		*runtime.Chan, *runtime.TypeDef, *runtime.Iterator, *runtime.Package,
-		*runtime.ImportRef, *runtime.Named:
+		*runtime.ImportRef, *runtime.Named, *runtime.TypedNil:
 		return x
 	default:
 		return &runtime.GoValue{V: x}
@@ -2387,7 +2397,11 @@ func anySlice(v any) []any {
 	return nil
 }
 
-func strsSlice(ss []string) *runtime.Slice {
+func strsSlice(ss []string) runtime.Value {
+	if ss == nil {
+		// a nil []string result stays nil — SplitN(s, sep, 0) == nil.
+		return &runtime.TypedNil{Typ: anonSliceTyp("string")}
+	}
 	el := make([]runtime.Value, len(ss))
 	for i, s := range ss {
 		el[i] = s
@@ -2423,8 +2437,12 @@ func bytesSlices(v any) [][]byte {
 }
 
 // bytesSliceOf lifts a [][]byte result into []any so scriptVal turns each
-// element into a script []byte slice.
+// element into a script []byte slice. A nil result stays a typed nil,
+// matching the []any typing of the non-nil path.
 func bytesSliceOf(bb [][]byte) any {
+	if bb == nil {
+		return &runtime.TypedNil{Typ: anonSliceTyp("any")}
+	}
 	out := make([]any, len(bb))
 	for i, b := range bb {
 		out[i] = b
@@ -2434,6 +2452,9 @@ func bytesSliceOf(bb [][]byte) any {
 
 // runeSlice lifts a []rune result into a script slice of int64s.
 func runeSlice(rs []rune) any {
+	if rs == nil {
+		return &runtime.TypedNil{Typ: anonSliceTyp("rune")}
+	}
 	out := make([]runtime.Value, len(rs))
 	for i, r := range rs {
 		out[i] = int64(r)
