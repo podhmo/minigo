@@ -115,3 +115,15 @@
 - **終了ブロックのローカル型が残留（#123）** — `typeSpecs`/`typeDefs`/`ifaceTypes` が関数単位のフラット map で `popBlock` と連動せず、`{type T struct{Y}}` 終了後の `type U struct{T}` が死んだ T を埋め込んで `u.X` が trap。3つの検索を `isTypeDeclName` と同じ「live ブロックに binding があるか」基準に統一 — ついでに local var `T` が外側の `type T` を透過させる var-shadow 穴も塞いだ。
 
 いずれも「メタデータの寿命 ≠ 名前 binding の寿命」「最適化ガードの対象範囲の切り方」という §3 の構造的な反省の再発型。fscope の型メタデータ系は block 連動に揃えたので、この系の個別指摘はここで打ち止めのはず。
+
+### 6.6 レビュー第5ラウンド: 3件の修正
+
+第5ラウンドは3件とも現スタックトップで再現した（[#124](https://github.com/podhmo/minigo/pull/124)、[#125](https://github.com/podhmo/minigo/pull/125)、[#126](https://github.com/podhmo/minigo/pull/126)）。
+
+- **[P1] DeepEqual の循環参照でホスト死（#124）** — `m["self"]=m` の比較が無制限再帰で recover 不能の stack overflow（Go は `true`）。`devisit{a,b}` の seen-pairs を Map/Slice/Struct の各 arm に入れ、再訪ペアは coinductive に `true`。`av == bs` のポインタ同一性ショートカットも併設（Go は「構造が同じ循環」を真とみなすので参照一致性判定で十分）。
+- **[P2] struct の型同一性（#125）** — フィールド名だけの比較だったため `struct{X int}` ≡ `struct{X any}` が `true`、さらに兄弟ブロックの同名 `type T` 同士も一致。struct arm を `deepTypeEq`（AST spelling 含む完全な型同一性）経由にし、named def は宣言オブジェクト同一のみ一致へ。匿名 struct は従来通り形状比較なので別リテラルサイト同士は同一型のまま。
+- **[P2] 内側 type 宣言が外側のメタデータを上書き（#126）** — `typeDecls`/`typeSpecs`/`typeDefs`/`ifaceTypes` が関数単位フラット map だったため `{ type M struct{...} }` が外側 `type M map[int]int` のエントリを破壊し、ブロック終了後も誤った型で解決し続けた。4 map を `blocks` と同じ per-block slice に変え、`recordType` で宣言ブロックへ書く構造に — §6.5 で「打ち止め」と書いたが、#123 は lookup の liveness を直しただけで書き込み側は依然フラットだった。この case が本当の打ち止め。
+
+#### リファクタリング提案の評価（第5ラウンド）
+
+- **ブロックの binding に slot・宣言種別・型情報をまとめる — 妥当（中）。#126 はその弱い版として実装した**。提案は `blocks[name]→slot`、`typeDecls`、`typeSpecs`、`typeDefs`、`ifaceTypes`、`declPos`、`ifaceVars` を `[]map[string]binding` の単一レコードへ統合する方向。今回は「既存の並列 map を同じ push/pop 寿命に揃える」形に留めた: 参照点7箇所の修正で済み、効果も等しい（全 map がブロックと同じ寿命を持つので、取り違え・残留・上書きの系は構造的に消えた）。統合版の追加利得は「1フィールド追加＝1箇所変更」の見通しだけで、新たな正しさは生まれない。ただし fscope は現在 8 本の並列スライスを push/pop で揃えており、将来フィールド追加時の同期漏れリスクは残る — 次にこの構造を触る変更（例: 別種のブロックスコープ情報の追加）が出た時点で `binding` レコード化を検討するのが適切なタイミング。
