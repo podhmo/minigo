@@ -34,24 +34,30 @@ type RNStr string
 type RNMap map[string]int
 
 var (
-	r_i0       = 42
-	r_s0       = "hi"
-	r_f0       = 1.5
-	r_b0       = true
-	r_slice    = []int{3, 4, 5}
-	r_arr      = [3]int{1, 2, 3}
-	r_map      = map[string]int{"a": 1, "b": 2}
-	r_struct   = RTag{A: 7, B: "t"}
-	r_outer    = ROuter{RInner: RInner{X: 9}, B: 8}
-	r_hidden   = RHidden{x: 1, Y: 2}
-	r_named    = RNamed(5)
-	r_iface    = any("iface")
-	r_nilptr   = (*int)(nil)
-	r_nilmap   = map[string]int(nil)
-	r_bytes    = []byte("abc")
-	r_chan     = make(chan int, 1)
-	r_func     = func(x int) int { return x * 2 }
-	r_funcv    = func(xs ...int) int { s := 0; for _, x := range xs { s += x }; return s }
+	r_i0     = 42
+	r_s0     = "hi"
+	r_f0     = 1.5
+	r_b0     = true
+	r_slice  = []int{3, 4, 5}
+	r_arr    = [3]int{1, 2, 3}
+	r_map    = map[string]int{"a": 1, "b": 2}
+	r_struct = RTag{A: 7, B: "t"}
+	r_outer  = ROuter{RInner: RInner{X: 9}, B: 8}
+	r_hidden = RHidden{x: 1, Y: 2}
+	r_named  = RNamed(5)
+	r_iface  = any("iface")
+	r_nilptr = (*int)(nil)
+	r_nilmap = map[string]int(nil)
+	r_bytes  = []byte("abc")
+	r_chan   = make(chan int, 1)
+	r_func   = func(x int) int { return x * 2 }
+	r_funcv  = func(xs ...int) int {
+		s := 0
+		for _, x := range xs {
+			s += x
+		}
+		return s
+	}
 	r_empty    = any(nil)
 	r_strslice = []string{"p", "q"}
 	r_sptr     = &r_struct
@@ -160,7 +166,7 @@ func rFieldByNameFuncV(v reflect.Value) reflect.Value {
 // rUnsafePointerB / rUnsafeAddrB bool-ize the address accessors so a
 // live pointer still compares deterministically.
 func rOverflowComplexB(v reflect.Value) string {
-	return fmt.Sprintf("%v", v.OverflowComplex(1 + 2i))
+	return fmt.Sprintf("%v", v.OverflowComplex(1+2i))
 }
 
 func rPointerB(v reflect.Value) string { return fmt.Sprintf("%v", v.Pointer() != 0) }
@@ -175,10 +181,7 @@ func rUnsafeAddrB(v reflect.Value) string { return fmt.Sprintf("%v", v.UnsafeAdd
 // pre-fills; on any non-chan value it panics like the other ops.
 func rRecvV(v reflect.Value) reflect.Value { r, _ := v.Recv(); return r }
 
-
-
-var (
-)
+var ()
 
 func try(i int, f func() any) {
 	defer func() {
@@ -193,5 +196,13 @@ func try(i int, f func() any) {
 func id[T any](x T) T { return x }
 
 func main() {
-	try(0, func() any { v0 := reflect.ValueOf(r_rstr); v1 := v0.Type(); v2 := v1.Method(0).Func; v3 := v2.CallSlice([]reflect.Value{reflect.ValueOf(r_slice)}); v4 := v3[0]; v5 := fmt.Sprintf("%#v", v4.Interface()); return v5 })
+	try(0, func() any {
+		v0 := reflect.ValueOf(r_rstr)
+		v1 := v0.Type()
+		v2 := v1.Method(0).Func
+		v3 := v2.CallSlice([]reflect.Value{reflect.ValueOf(r_slice)})
+		v4 := v3[0]
+		v5 := fmt.Sprintf("%#v", v4.Interface())
+		return v5
+	})
 }
