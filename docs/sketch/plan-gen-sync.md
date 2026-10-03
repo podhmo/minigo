@@ -194,10 +194,11 @@ textually — candidates for the inspect wishlist, not the example's:
 - **Bound/stdlib/external packages carry no index** — `Decls`/`Fields`/
   `Methods` can't introspect them at all; the subtree gates never enter
   them (`time.Time` fields are simply never resolved).
-- **The *base* of a generic instantiation is unreachable** —
-  `TypeExpr.Children()` exposes `List[Inner]`'s argument but not `List`,
-  so generic containers are never entered through instantiations of
-  them (the fixture's `Holder` reaches `Inner` via the argument only).
+- ~~**The *base* of a generic instantiation is unreachable**~~ — fixed:
+  `TypeExpr.Children()` now leads an instantiation's children with the
+  base (`List[Inner]` → `List` then `Inner`), so walks enter generic
+  containers through instantiations of them (the fixture's `Safe`
+  reaches `Vault` — and earns `requiredgen` — through the base alone).
 - **Tags inside anonymous struct types are unreadable** — a field like
   `F struct{ W string \`required:"true"\` }` carries its tag where the
   decl view can't reach; the fixture keeps it as an honest miss.

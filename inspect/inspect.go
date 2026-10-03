@@ -522,7 +522,8 @@ func IsAliasOf(s *Decl) (bool, error) {
 func (te *TypeExpr) Expr() ast.Expr { return te.expr }
 
 // Children drills into a composite type expression: []T -> T,
-// map[K]V -> K then V, *T -> T, func(A) B -> A then B.
+// map[K]V -> K then V, *T -> T, func(A) B -> A then B,
+// F[A] -> F then A (the generic's base leads the arguments).
 func (te *TypeExpr) Children() []*TypeExpr {
 	if te.ht != nil {
 		return te.hostChildren()
@@ -543,8 +544,9 @@ func (te *TypeExpr) Children() []*TypeExpr {
 	case *ast.ParenExpr:
 		out = append(out, wrap(e.X))
 	case *ast.IndexExpr:
-		out = append(out, wrap(e.Index))
+		out = append(out, wrap(e.X), wrap(e.Index))
 	case *ast.IndexListExpr:
+		out = append(out, wrap(e.X))
 		for _, ix := range e.Indices {
 			out = append(out, wrap(ix))
 		}

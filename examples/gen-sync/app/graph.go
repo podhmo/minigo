@@ -60,10 +60,8 @@ type ViaAlias struct {
 	A Alias
 }
 
-// Holder reaches Inner through a generic instantiation argument. The
-// List decl itself is never entered — the instantiation's base is not
-// among the children the view exposes — so this is reach via the
-// argument, not via List's body.
+// Holder reaches Inner through a generic instantiation's base and
+// argument — both are children the view exposes.
 type Holder struct {
 	L List[Inner]
 }
@@ -72,6 +70,18 @@ type Holder struct {
 // names a type parameter, which is not a decl).
 type List[T any] struct {
 	V T
+}
+
+// Safe reaches Vault only through the instantiation's base — its
+// argument (int) leads nowhere.
+type Safe struct {
+	V Vault[int]
+}
+
+// Vault is a generic container carrying the required tag; it is
+// reachable only through an instantiation's base.
+type Vault[T any] struct {
+	Item T `required:"true"`
 }
 
 // Inline hides a required tag inside an anonymous struct field. Tags

@@ -164,6 +164,25 @@ type Pair[T any] struct {
 // Reduce is a generic function for TypeParams coverage.
 func Reduce[T Number](xs []T, init T) T { return init }
 
+// Cage is a second generic — SameType must not collapse distinct
+// instantiations that share arguments.
+type Cage[T any] struct {
+	V T
+}
+
+// Two is a two-parameter generic for IndexListExpr coverage.
+type Two[K, V any] struct {
+	First  K
+	Second V
+}
+
+// Inst holds instantiations of different generics.
+type Inst struct {
+	P Pair[int]
+	C Cage[int]
+	D Two[int, string]
+}
+
 type hidden struct{ x int }
 
 var hiddenVar = 1

@@ -36,14 +36,13 @@ func TypeRefName(te *inspect.TypeExpr) string {
 // TypeRefs collects the named type references inside a type expression,
 // as their canonical "import/path.Name" names: every named leaf found
 // by walking composite children (ptr, slice, array, map, chan, func
-// params and results, generic instantiation arguments, interface method
-// types). A named leaf is not descended into — its own children, if
-// any, belong to the resolved decl, not to this spelling.
+// params and results, generic instantiation bases and arguments,
+// interface method types). A named leaf is not descended into — its
+// own children, if any, belong to the resolved decl, not to this
+// spelling.
 //
-// Known blind spots: the *base* of a generic instantiation (List in
-// List[T]) is not among the children inspect exposes, so generic
-// declarations are never reached through instantiations of them; and
-// module paths without "/" cannot be told apart from builtins.
+// Known blind spots: module paths without "/" cannot be told apart
+// from builtins.
 func TypeRefs(te *inspect.TypeExpr) []string {
 	out := []string{}
 	var walk func(t *inspect.TypeExpr)

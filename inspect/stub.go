@@ -114,7 +114,10 @@ func DeclType(s *Decl) *TypeExpr { panic("minigo intrinsic") }
 // typed with the alias (EnumMembers lists it). Non-type symbols trap.
 func IsAlias(s *Decl) bool { panic("minigo intrinsic") }
 
-// Children drills into a composite type expression.
+// Children drills into a composite type expression: []T -> T,
+// map[K]V -> K then V, func(A) B -> A then B, and F[A] -> F then A —
+// a generic instantiation's base leads its type arguments, so walks
+// reach the generic decl itself (F in F[A]) not just its arguments.
 func Children(te *TypeExpr) []*TypeExpr { panic("minigo intrinsic") }
 
 // UnWrap peels one declared-type layer.

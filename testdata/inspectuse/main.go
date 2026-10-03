@@ -612,7 +612,8 @@ func NamedFieldType() string {
 }
 
 // Instantiation: a Pair[int] field reads as IndexExpr — the generic
-// origin is NOT reachable (SymbolID -> nil, Children yields args).
+// origin resolves through Children, which lead with the base (Pair
+// then int); the instantiation itself names nothing (SymbolID -> nil).
 func Instantiation() string {
 	p := inspect.DirOf("./testdata/inspectpkg")
 	fs := inspect.Fields(inspect.Symbol(p, "Rec"))
@@ -621,11 +622,27 @@ func Instantiation() string {
 		return "bad inst: " + ip.Text + "/" + ip.Kind
 	}
 	kids := inspect.Children(ip)
-	if len(kids) != 1 || kids[0].Text != "int" {
+	if len(kids) != 2 || kids[0].Text != "Pair" || kids[1].Text != "int" {
 		return "bad inst children"
+	}
+	// the base is a named leaf — it resolves to its decl like any other.
+	b := inspect.Resolve(kids[0])
+	if b == nil || b.Name != "Pair" {
+		return "inst base unresolved"
 	}
 	if inspect.SymbolID(ip) != nil {
 		return "unexpected inst sid"
+	}
+	// a two-argument instantiation lists base then both arguments.
+	fs2 := inspect.Fields(inspect.Symbol(p, "Inst"))
+	dk := inspect.Children(fs2[2].Type)
+	if len(dk) != 3 || dk[0].Text != "Two" || dk[1].Text != "int" || dk[2].Text != "string" {
+		return "bad list inst children"
+	}
+	// distinct generics sharing every argument are not the same type —
+	// the base now participates in the comparison.
+	if inspect.SameType(fs2[0].Type, fs2[1].Type) {
+		return "distinct instantiations collapsed"
 	}
 	return "ok"
 }
