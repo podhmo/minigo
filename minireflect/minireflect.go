@@ -23,7 +23,9 @@ package minireflect
 import (
 	"fmt"
 	"go/ast"
+	"go/token"
 	"reflect"
+	"strconv"
 	"sync"
 
 	"github.com/podhmo/minigo/runtime"
@@ -47,6 +49,10 @@ type Hooks struct {
 	IfaceReqs func(td *runtime.TypeDef) (map[string]bool, error)
 	// Underlying resolves a typedef's underlying type.
 	Underlying func(td *runtime.TypeDef) (*runtime.TypeDef, error)
+	// AliasOf resolves a KindAlias typedef to its direct target typedef
+	// (one hop — `type A = B` gives B itself). Nil leaves alias typedefs
+	// keyed by their declared name.
+	AliasOf func(td *runtime.TypeDef) (*runtime.TypeDef, error)
 }
 
 // Env is the facade's shared state: the type interner plus the engine
@@ -301,7 +307,8 @@ func (e *Env) new_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, er
 		return &runtime.GoValue{V: &RValue{e: e, vc: vc, rv: reflect.New(t.rt)}}, nil
 	}
 	// a pointer is a cell; New(t) is the cell holding t's zero.
-	ptd := &runtime.TypeDef{Kind: runtime.KindPointer, Elem: t.td}
+	ptd := &runtime.TypeDef{Kind: runtime.KindPointer, Elem: t.td,
+		Anon: &ast.StarExpr{X: e.exprOf(t.td)}}
 	return &runtime.GoValue{V: &RValue{e: e, vc: vc, val: &runtime.Cell{Elem: e.zeroOf(vc, t.td)}, td: ptd}}, nil
 }
 
@@ -341,7 +348,8 @@ func (e *Env) ptrTo(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, e
 	if t.rt != nil {
 		return &runtime.GoValue{V: e.hostTypeOf(reflect.PointerTo(t.rt))}, nil
 	}
-	return &runtime.GoValue{V: e.rtypeOf(&runtime.TypeDef{Kind: runtime.KindPointer, Elem: t.td})}, nil
+	return &runtime.GoValue{V: e.rtypeOf(&runtime.TypeDef{Kind: runtime.KindPointer, Elem: t.td,
+		Anon: &ast.StarExpr{X: e.exprOf(t.td)}})}, nil
 }
 
 func (e *Env) sliceOf(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -355,7 +363,8 @@ func (e *Env) sliceOf(vc runtime.VMCaller, args []runtime.Value) (runtime.Value,
 	if t.rt != nil {
 		return &runtime.GoValue{V: e.hostTypeOf(reflect.SliceOf(t.rt))}, nil
 	}
-	return &runtime.GoValue{V: e.rtypeOf(&runtime.TypeDef{Kind: runtime.KindSlice, Elem: t.td})}, nil
+	return &runtime.GoValue{V: e.rtypeOf(&runtime.TypeDef{Kind: runtime.KindSlice, Elem: t.td,
+		Anon: &ast.ArrayType{Elt: e.exprOf(t.td)}})}, nil
 }
 
 func (e *Env) mapOf(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -369,11 +378,9 @@ func (e *Env) mapOf(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, e
 	if k.rt != nil && v.rt != nil {
 		return &runtime.GoValue{V: e.hostTypeOf(reflect.MapOf(k.rt, v.rt))}, nil
 	}
-	key := "map[" + e.keyOf(k.td) + "]" + e.keyOf(v.td)
-	return &runtime.GoValue{V: e.internT(key, &RType{
-		td:    &runtime.TypeDef{Kind: runtime.KindMap, Elem: v.td},
-		keyTd: k.td,
-	})}, nil
+	mtd := &runtime.TypeDef{Kind: runtime.KindMap, Elem: v.td,
+		Anon: &ast.MapType{Key: e.exprOf(k.td), Value: e.exprOf(v.td)}}
+	return &runtime.GoValue{V: e.internT(e.keyOf(mtd), &RType{td: mtd, keyTd: k.td})}, nil
 }
 
 func (e *Env) chanOf(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -389,7 +396,18 @@ func (e *Env) chanOf(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, 
 			return &runtime.GoValue{V: e.hostTypeOf(reflect.ChanOf(dir, t.rt))}, nil
 		}
 	}
-	return &runtime.GoValue{V: e.rtypeOf(&runtime.TypeDef{Kind: runtime.KindChan, Elem: t.td})}, nil
+	// direction is part of the type — it rides on the Anon ChanType.
+	adir := ast.RECV | ast.SEND
+	if dir, ok := dirOf(args[0]); ok {
+		switch dir {
+		case reflect.RecvDir:
+			adir = ast.RECV
+		case reflect.SendDir:
+			adir = ast.SEND
+		}
+	}
+	return &runtime.GoValue{V: e.rtypeOf(&runtime.TypeDef{Kind: runtime.KindChan, Elem: t.td,
+		Anon: &ast.ChanType{Dir: adir, Value: e.exprOf(t.td)}})}, nil
 }
 
 func (e *Env) arrayOf(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -403,12 +421,10 @@ func (e *Env) arrayOf(vc runtime.VMCaller, args []runtime.Value) (runtime.Value,
 	if t.rt != nil {
 		return &runtime.GoValue{V: e.hostTypeOf(reflect.ArrayOf(int(n), t.rt))}, nil
 	}
-	key := fmt.Sprintf("[%d]%s", n, e.keyOf(t.td))
-	return &runtime.GoValue{V: e.internT(key, &RType{
-		td:      &runtime.TypeDef{Kind: runtime.KindSlice, Elem: t.td},
-		isArray: true,
-		alen:    int(n),
-	})}, nil
+	mtd := &runtime.TypeDef{Kind: runtime.KindSlice, Elem: t.td,
+		Anon: &ast.ArrayType{Len: &ast.BasicLit{Kind: token.INT, Value: strconv.FormatInt(n, 10)},
+			Elt: e.exprOf(t.td)}}
+	return &runtime.GoValue{V: e.internT(e.keyOf(mtd), &RType{td: mtd, isArray: true, alen: int(n)})}, nil
 }
 
 func (e *Env) makeSlice(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {

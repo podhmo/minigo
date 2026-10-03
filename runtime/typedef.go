@@ -153,6 +153,13 @@ func bindArgEq(a, b Value) bool {
 // field names, types, tags, signatures — since those decide identity.
 // A nil ctx renders unqualified (a type written at top level).
 func TypSpelling(e ast.Expr, ctx *TypeDef) string {
+	return typSpelling(e, ctx, false)
+}
+
+// typSpelling spells e like TypSpelling; under=true renders the
+// underlying-type view instead, where channel direction is ignored
+// (`chan T`, `<-chan T` and `chan<- T` share the underlying chan T).
+func typSpelling(e ast.Expr, ctx *TypeDef, under bool) string {
 	var binds map[string]Value
 	var file *syntax.File
 	var pkg *Package
@@ -162,7 +169,7 @@ func TypSpelling(e ast.Expr, ctx *TypeDef) string {
 	switch t := e.(type) {
 	case *ast.Ident:
 		if btd := boundTypedef(binds, t.Name); btd != nil {
-			return typBoundSpelling(btd)
+			return typBoundSpellingU(btd, under)
 		}
 		if predeclaredTypeName(t.Name) {
 			return canonBasicName(t.Name)
@@ -172,36 +179,47 @@ func TypSpelling(e ast.Expr, ctx *TypeDef) string {
 		}
 		return canonBasicName(t.Name)
 	case *ast.StarExpr:
-		return "*" + TypSpelling(t.X, ctx)
+		return "*" + typSpelling(t.X, ctx, under)
 	case *ast.ArrayType:
 		if t.Len != nil {
-			return "[" + typLenName(t.Len) + "]" + TypSpelling(t.Elt, ctx)
+			return "[" + typLenName(t.Len) + "]" + typSpelling(t.Elt, ctx, under)
 		}
-		return "[]" + TypSpelling(t.Elt, ctx)
+		return "[]" + typSpelling(t.Elt, ctx, under)
 	case *ast.Ellipsis:
-		return "[]" + TypSpelling(t.Elt, ctx)
+		return "[]" + typSpelling(t.Elt, ctx, under)
 	case *ast.MapType:
-		return "map[" + TypSpelling(t.Key, ctx) + "]" + TypSpelling(t.Value, ctx)
+		return "map[" + typSpelling(t.Key, ctx, under) + "]" + typSpelling(t.Value, ctx, under)
 	case *ast.ChanType:
-		return "chan " + TypSpelling(t.Value, ctx)
+		// direction is part of the type identity but not of the
+		// underlying type: <-chan T, chan<- T and chan T are three
+		// different types sharing the underlying chan T.
+		if !under {
+			switch t.Dir {
+			case ast.RECV:
+				return "<-chan " + typSpelling(t.Value, ctx, under)
+			case ast.SEND:
+				return "chan<- " + typSpelling(t.Value, ctx, under)
+			}
+		}
+		return "chan " + typSpelling(t.Value, ctx, under)
 	case *ast.ParenExpr:
-		return TypSpelling(t.X, ctx)
+		return typSpelling(t.X, ctx, under)
 	case *ast.SelectorExpr:
 		if id, ok := t.X.(*ast.Ident); ok {
 			if p := typImportPath(file, id.Name); p != "" {
 				return p + "." + t.Sel.Name
 			}
 		}
-		return TypSpelling(t.X, ctx) + "." + t.Sel.Name
+		return typSpelling(t.X, ctx, under) + "." + t.Sel.Name
 	case *ast.IndexExpr:
-		return TypSpelling(t.X, ctx) + "[" + TypSpelling(t.Index, ctx) + "]"
+		return typSpelling(t.X, ctx, under) + "[" + typSpelling(t.Index, ctx, under) + "]"
 	case *ast.IndexListExpr:
-		s := TypSpelling(t.X, ctx) + "["
+		s := typSpelling(t.X, ctx, under) + "["
 		for i, x := range t.Indices {
 			if i > 0 {
 				s += ","
 			}
-			s += TypSpelling(x, ctx)
+			s += typSpelling(x, ctx, under)
 		}
 		return s + "]"
 	case *ast.InterfaceType:
@@ -216,7 +234,7 @@ func TypSpelling(e ast.Expr, ctx *TypeDef) string {
 			for _, n := range m.Names {
 				sb.WriteString(n.Name)
 			}
-			sb.WriteString(TypSpelling(m.Type, ctx))
+			sb.WriteString(typSpelling(m.Type, ctx, under))
 			sb.WriteString(";")
 		}
 		sb.WriteString("}")
@@ -237,7 +255,7 @@ func TypSpelling(e ast.Expr, ctx *TypeDef) string {
 				if len(f.Names) > 0 {
 					sb.WriteString(" ")
 				}
-				sb.WriteString(TypSpelling(f.Type, ctx))
+				sb.WriteString(typSpelling(f.Type, ctx, under))
 				if f.Tag != nil {
 					sb.WriteString(" ")
 					sb.WriteString(f.Tag.Value)
@@ -250,9 +268,9 @@ func TypSpelling(e ast.Expr, ctx *TypeDef) string {
 	case *ast.FuncType:
 		var sb strings.Builder
 		sb.WriteString("func(")
-		sb.WriteString(typFieldSpellings(t.Params, ctx))
+		sb.WriteString(typFieldSpellings(t.Params, ctx, under))
 		sb.WriteString(")")
-		if res := typFieldSpellings(t.Results, ctx); res != "" {
+		if res := typFieldSpellings(t.Results, ctx, under); res != "" {
 			sb.WriteString("(")
 			sb.WriteString(res)
 			sb.WriteString(")")
@@ -274,15 +292,20 @@ func TypUnderlyingSpelling(td *TypeDef) string {
 		src = td.Spec.Type
 	}
 	if src != nil {
-		return TypSpelling(src, td)
+		return typSpelling(src, td, true)
 	}
 	return canonBasicName(td.Name)
 }
 
-// typBoundSpelling spells an instantiated type argument: a named type
+// typBoundSpellingU spells an instantiated type argument: a named type
 // keeps its declared identity (T=MyInt spells "pkg.MyInt", not "int"),
-// an anonymous shape spells structurally.
-func typBoundSpelling(td *TypeDef) string {
+// an anonymous shape spells structurally. under=true renders its
+// underlying type instead, since a type argument's underlying
+// substitutes into the instantiated type's underlying.
+func typBoundSpellingU(td *TypeDef, under bool) string {
+	if under {
+		return TypUnderlyingSpelling(td)
+	}
 	if td.Name != "" {
 		if td.Pkg != nil {
 			return td.Pkg.Path + "." + td.Name
@@ -315,7 +338,7 @@ func boundTypedef(binds map[string]Value, name string) *TypeDef {
 // typFieldSpellings renders a signature field list as its comma-joined
 // type spellings — `a, b int` contributes `int,int` since parameter
 // names are not part of a func type's identity.
-func typFieldSpellings(fl *ast.FieldList, ctx *TypeDef) string {
+func typFieldSpellings(fl *ast.FieldList, ctx *TypeDef, under bool) string {
 	if fl == nil {
 		return ""
 	}
@@ -326,7 +349,7 @@ func typFieldSpellings(fl *ast.FieldList, ctx *TypeDef) string {
 			n = 1
 		}
 		for i := 0; i < n; i++ {
-			parts = append(parts, TypSpelling(f.Type, ctx))
+			parts = append(parts, typSpelling(f.Type, ctx, under))
 		}
 	}
 	return strings.Join(parts, ",")
