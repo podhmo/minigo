@@ -111,10 +111,16 @@ type VM struct {
 	// recover() counts real frames pushed at or above it: exactly one
 	// means legal. Meaningful only while inflight is non-nil.
 	unwindDepth int
-	// unwinding lists frames popped by the in-flight panic — kept so
-	// runtime.Callers still sees the panicking frames while defers run,
-	// like Go's traceback does.
-	unwinding []*frame
+	// unwinding lists frames popped by panics, each tagged with the
+	// panic that unwound it — kept so runtime.Callers still sees the
+	// panicking frames while defers run, like Go's traceback does. A
+	// consumed panic's entries are dropped at the transition: Go lists
+	// no unwound frames for a dead unwind.
+	unwinding []unwoundFrame
+	// consumedPanic records the panic recover() just consumed, so
+	// unwind can drop its unwound frames even when a superseding panic
+	// was in flight (the consumed one differs from the frame's own).
+	consumedPanic *runtime.Panic
 	// pcSites is the registry behind runtime.Callers' opaque uintptr
 	// handles: CallerPCs appends a snapshot, CallerFrame resolves one.
 	pcSites []runtime.CallSite
@@ -657,6 +663,7 @@ func (v *VM) Recover() runtime.Value {
 	}
 	{
 		val := v.inflight.Value
+		v.consumedPanic = v.inflight
 		v.inflight = nil
 		// a runtime-error payload surfaces as the boxed host error Go's
 		// recover() returns — `err.(error)` asserts and `.Error()` calls
@@ -775,7 +782,7 @@ func (v *VM) exec(f *frame) {
 			// keep the panicking frame visible to Callers while the
 			// unwind propagates — Go's traceback lists it until the
 			// panic dies or a defer recovers it.
-			v.unwinding = append(v.unwinding, f)
+			v.unwinding = append(v.unwinding, unwoundFrame{f: f, pn: p})
 		}
 		v.unwind(f, asScriptPanic(r))
 	}()
@@ -799,6 +806,29 @@ func asScriptPanic(r any) any {
 	default:
 		return &runtime.Panic{Value: &runtime.GoValue{V: r}, GoStack: string(debug.Stack())}
 	}
+}
+
+// unwoundFrame is a frame an in-flight panic unwound, tagged with that
+// panic so unwind can drop the entries of a panic that dies (recovered
+// or superseded) without disturbing another live unwind's frames.
+type unwoundFrame struct {
+	f  *frame
+	pn *runtime.Panic
+}
+
+// dropUnwound removes every unwound frame belonging to p — a nil p
+// drops nothing.
+func (v *VM) dropUnwound(p *runtime.Panic) {
+	if p == nil {
+		return
+	}
+	kept := v.unwinding[:0]
+	for _, e := range v.unwinding {
+		if e.pn != p {
+			kept = append(kept, e)
+		}
+	}
+	v.unwinding = kept
 }
 
 // unwind runs the frame's defers and resolves the outcome of r, the value
@@ -839,6 +869,13 @@ func (v *VM) unwind(f *frame, r any) {
 			if p != nil && v.inflight == nil {
 				v.inflight = saved
 				v.unwindDepth = savedD
+				// the consumed panic's unwound frames die with it — Go
+				// lists only live frames once an unwind is recovered.
+				// Drop the frame's own panic too: it is dead whether it
+				// was consumed itself or superseded mid-drain.
+				v.dropUnwound(p)
+				v.dropUnwound(v.consumedPanic)
+				v.consumedPanic = nil
 				v.frames = append(v.frames, f)
 				defer v.framesPop()
 				p = nil
@@ -868,8 +905,13 @@ func (v *VM) unwind(f *frame, r any) {
 	}
 	if r != nil && p == nil {
 		// the panic died here (recovered, or it was a Trap swallowed
-		// at a boundary) — no frames are still unwinding.
-		v.unwinding = nil
+		// at a boundary) — its unwound frames die with it; entries of
+		// a still-live outer unwind stay.
+		if sp, ok := r.(*runtime.Panic); ok {
+			v.dropUnwound(sp)
+		}
+		v.dropUnwound(v.consumedPanic)
+		v.consumedPanic = nil
 	}
 	switch {
 	case p != nil:
@@ -7803,7 +7845,7 @@ func (v *VM) CallerPCs() []uintptr {
 		sites = append(sites, v.callSite(v.frames[i]))
 	}
 	for i := 0; i < len(v.unwinding); i++ {
-		sites = append(sites, v.callSite(v.unwinding[i]))
+		sites = append(sites, v.callSite(v.unwinding[i].f))
 	}
 	for i := depth - 1; i >= 0; i-- {
 		sites = append(sites, v.callSite(v.frames[i]))
