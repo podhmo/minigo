@@ -375,8 +375,8 @@ issue には「着手する前に、`-strict` で拾えずに `-check` でしか
 - （対応済み）`ConversionPair.Variables`、同じパッケージの識別子との衝突、`-tags` の検証、本番での import 補完の失敗化、provenance の範囲、`-file` の検査、`c.Compute` の型検査（D11）
 - （対応済み・§8）DSL の誤用エラーが、1 行目で「誰が直すか」を言わない（D10）
 - （対応済み・§9）構文は正しいが型エラーになるコードの provenance。既知の leaf の不一致は `-strict`、それ以外は任意の `-check`（[issue #49](https://github.com/podhmo/minigo/issues/49)）
-- 名前付きの合成型同士（`IDs []int` → `Names []string`）をキャストで済ませている（D16）
-- import の冗長な alias（`fmt "fmt"`）。省くには本当のパッケージ名が要る（§9.2）
+- （対応済み・§12）名前付きの合成型同士（`IDs []int` → `Names []string`）をキャストで済ませている（D16）
+- （削除・§12 D21）import の冗長な alias（`fmt "fmt"`）。本当のパッケージ名を配管するコストが見合わず、常時 alias は安全側の既定と判断した
 
 ## 11. 「LLM・エージェントに親切なツール」への含意
 
@@ -423,3 +423,43 @@ LLM が直接書いたコードなら、エージェントは出力を見て、�
 
 - **テストの期待値は、バグも固定してしまう。** provenance の誤帰属は、私が自分で書いた golden に入っていた。1 引数の関数リテラルを正しい入力として固定したパーサーのテストもあった（D17）。
 - **一つのことに実装を一つだけ。** `frag` 化のあとは、形状を 1 つ追加・修正するときに触る場所が 1 箇所になった。import の出所を ImportManager の 1 つにまとめたのも、同じ考え方である（§9.2）。
+
+## 12. round-3: 名前付き合成型を基底形で要素変換する（TODO 消化）
+
+`type IDs []int` → `type Names []string` が、コンパイルできない `destination.Names(src.V)` というキャストに落ちていた（D16 で TODO にしたもの）。round-3 はこれを直し、あわせて convert-define 関係の TODO 項目を整理した。
+
+### 12.1 何をしたか
+
+- `conv` に `namedComposite` の枝を足した。少なくとも片側が複合型の spec を持つ宣言名なら、`underlyingOf`（`Unwrap` の反復）で基底形まで剥がし、ptr/slice/array/map のいつもの形状に再ディスパッチする。基底型が同一なら従来どおり 1 キャスト。生成式は `destination.DstIDs(s)` のように、書かれた dst の名前で再タグする。
+- 再帰の接線が 2 箇所あった。`ptrToValue` には書かれた dstT を渡す（剥がした構造体リテラルには、要素コンバータを選ぶ名前が残っていない）。`valueToPtr` には書かれた srcT を渡す（`v := Celsius(src)` とキャストさせて、`&v` が `*Celsius` になるように）。
+- `model.StructElemOf` も宣言層を剥がすようにした。`type Items []SrcInner` のフィールドから `SrcInner`→`DstInner` のペアが発見され、要素コンバータが実在する。
+- キャストの綴りは `castExpr` に集約した。`*int(x)` は `*(int(x))` と読まれるので、複合スペルには `(*int)(x)` と括弧を置く。
+- e2e の `SrcShapes`/`DstShapes` に `Named*` フィールドを足し、named slice/map/ptr、ptr↔value の両方向、unnamed↔named を実行時検証した。
+
+### 12.2 計画外の遭遇と意思決定
+
+#### D19. `[]int` ← `type IDs []int` の、構文上は正しい代入を伴う偽の警告を消した
+
+直す前は、キャスト不能と判定された組は「raw 代入 + 警告」だった。`IDs → []int` は基底同一なので代入そのものはコンパイルが通るのに、警告まで出ていた（偽陽性）。今は基底同一なら警告なしの 1 キャストになる。偽陽性の警告は本物の警告の信頼を削るので、消せたのは副産物として良い。
+
+#### D20. `check03-named-slice` は BUILD-FAIL のまま、しかし「よりよい失敗」になった
+
+`IDs []int → Names []string` は要素（`int`→`string`）が leaf-mismatch 族なので、依然としてコンパイルできない。ただし出力は「丸ごとキャスト」から「要素ごとのループ + `s[i] = item` の raw 代入 + 警告（`dst.V: no conversion covers int -> string`）」に変わった。欠けている `define.Rule` を足せば治る、という失敗の意味は保たれた。成功側を固定するケース `c22-named-composites`（named slice/map/ptr + unnamed→named）を usecasefuzz に追加し、コーパスは 35 件になった。
+
+#### D21. import の冗長な alias の項目は、直さずに削除した
+
+TODO に残っていた `fmt "fmt"` の化粧直しは、落とすには import 先の本当のパッケージ名が要る。`filepath.Base(path)` は `math/rand/v2`（パッケージ名は `rand`）のような版付きディレクトリで確実に誤る。つまり「常に alias を書く」現状は、dir 名とパッケージ名が違うケースを一様に正しく扱う安全側の既定であり、見た目の重複はその代償である。本物の名前を取るには解決済み decl から `Package.Name` を Qualify の利用経路すべてに配管する必要があり、化粧だけのための変更としては見合わない。取るに足らない項目として TODO.md から削除し、この判断をここに記録する。
+
+#### D22. ImportManager のテストを書いたら、`_` の alias が素通りすることが分かった
+
+`token.IsIdentifier("_")` は true だが、import の alias としての `_` は blank import でしかなく、`Qualify` は `_.Type` を吐いてしまう。`Add` の識別子検査に `"_"` を加えて、通常の fallback（`pkg_` 系）に流すようにした。ユニットテストの追加を依頼された時点で初めて見えた、小さいが本物の穴だった。
+
+#### D23. Stacked PRs で出す
+
+依頼により、修正（namedComposite 系）と、テスト・文書の更新を 2 本の PR に分けて積んだ。
+
+#### D24. レビュー指摘の generics: 宣言越し instantiate が「静かに壊れる」側だったので warn に変えた
+
+PR のレビューで「ユーザー定義の generics には対応してたんでしたっけ？」と来た。実際に試すと 2 系統に分かれた。書かれた `List[int]`→`List[int64]` は leaf-mismatch の警告 + raw 代入で最初から loud だった。一方 `type SrcList List[int]`→`type DstList List[int64]`（宣言越しの instantiate）は、`Unwrap`/`SymbolID` が instantiate 式（`IndexExpr`）を解けないため剥がしがそこで止まり、leafCast の楽観キャストが `destination.DstList(src)` を**警告なし**で吐いていた — 基底が違うのでコンパイルは通らない、D16 が言う「静かに壊れる」形である。
+
+対応: 両側の剥がし先が instantiation なら「基底が `[]T` のパラメトリックで要素型が見えない」とわかるので、leafCast に落とさず warn（`no conversion covers ... (generic instantiation)`）+ 正直な raw 代入に変えた（`-strict` でも拒否される）。片側だけ instantiation のケース（`type C List[int]`→`[]int` など）は leafCast のキャストがコンパイルできる余地があるので、偽陽性を避けるため warn は両側のときだけに絞った。コーパスに `check04-generic-instantiation`（BUILD-FAIL 固定）を追加した。完全対応には型引数の代入（spec の `[]T` を `[]int` に instantiate する）が要るが、それは inspect 層が意図的に踏み込まない領域なので、TODO.md に `[ ]` で残した。

@@ -116,7 +116,9 @@ func (im *ImportManager) Add(path string, requestedAlias string) string {
 	}
 
 	// Now, ensure the (potentially keyword-adjusted) alias is a valid identifier.
-	if aliasCandidate == "" || !token.IsIdentifier(aliasCandidate) {
+	// "_" is a valid identifier but only ever a blank import — Qualify
+	// would emit "_.Type", so it takes the fallback path like a bad name.
+	if aliasCandidate == "" || aliasCandidate == "_" || !token.IsIdentifier(aliasCandidate) {
 		// If path itself was something like ".", base becomes "." then "_", then invalid.
 		// Or if user provided "123", it becomes invalid.
 		// Or if keyword adjustment made it invalid (unlikely for "_pkg" suffix).
