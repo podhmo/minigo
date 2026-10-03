@@ -1479,12 +1479,16 @@ func (c *compiler) switchStmt(st *ast.SwitchStmt) {
 
 	var jumpOuts []int
 	var pendingFalls []int // fallthrough sites in the previous clause body
-	for _, s := range st.Body.List {
+	defaultBody := -1      // body start of the default clause, if any
+	lastJNext := -1        // "all tests failed" continuation of the last clause
+	for i, s := range st.Body.List {
 		clause := s.(*ast.CaseClause)
 		// tests: tag == e (or truthy e for tag-less switch); JumpTrue -> body.
-		// `default:` is an unconditional match at its source position —
-		// it may fall through into a clause written after it.
+		// `default:` matches only after every other clause fails — it
+		// has no tests, but a non-final default still needs a jump
+		// past its body so later clauses' tests run first.
 		isDefault := clause.List == nil
+		isLast := i == len(st.Body.List)-1
 		bodyJumps := []int{}
 		for _, e := range clause.List {
 			if tagSlot >= 0 {
@@ -1501,13 +1505,16 @@ func (c *compiler) switchStmt(st *ast.SwitchStmt) {
 			bodyJumps = append(bodyJumps, c.emit(bytecode.OpJumpTrue, 0, 0, e.Pos()))
 		}
 		// no test matched: continue to next clause's tests (emitted after
-		// this body). A default clause has no tests — control reaching its
-		// position drops straight into the body.
+		// this body). A final default clause just drops into its body —
+		// it is where "all failed" lands.
 		jNext := -1
-		if !isDefault {
+		if !isDefault || !isLast {
 			jNext = c.emit(bytecode.OpJump, 0, 0, clause.Pos())
 		}
 		bodyStart := len(c.ch.Code)
+		if isDefault {
+			defaultBody = bodyStart
+		}
 		for _, bj := range bodyJumps {
 			c.patchA(bj, bodyStart)
 		}
@@ -1526,8 +1533,13 @@ func (c *compiler) switchStmt(st *ast.SwitchStmt) {
 		pendingFalls = falls
 		jumpOuts = append(jumpOuts, c.emit(bytecode.OpJump, 0, 0, clause.Pos()))
 		if jNext >= 0 {
+			lastJNext = jNext
 			c.patchA(jNext, len(c.ch.Code))
 		}
+	}
+	// every clause's tests failed: run the default body if one exists.
+	if defaultBody >= 0 && lastJNext >= 0 {
+		c.patchA(lastJNext, defaultBody)
 	}
 	if len(pendingFalls) > 0 {
 		ti := c.trap(st.Pos(), "fallthrough out of the final case clause")
