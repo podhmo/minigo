@@ -535,7 +535,19 @@ func namedFloat32(x runtime.Value) bool {
 
 func display(v runtime.Value) any {
 	switch x := v.(type) {
-	case runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
+	case runtime.Nil, *runtime.IfaceNil:
+		return nil
+	case *runtime.TypedNil:
+		// print/println spell a nil pointer-ish value like the runtime:
+		// 0x0 for pointers/chans/maps/funcs, [0/0]0x0 for a nil slice.
+		if x.Typ != nil {
+			switch x.Typ.Kind {
+			case runtime.KindSlice:
+				return "[0/0]0x0"
+			case runtime.KindPointer, runtime.KindChan, runtime.KindMap, runtime.KindFunc:
+				return "0x0"
+			}
+		}
 		return nil
 	case *runtime.UConst:
 		nv, err := uconstNative(x)
