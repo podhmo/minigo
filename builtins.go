@@ -576,7 +576,9 @@ func namedFloat32(x runtime.Value) bool {
 func display(v runtime.Value) any {
 	switch x := v.(type) {
 	case runtime.Nil, *runtime.IfaceNil:
-		return nil
+		// print/println spell a nil interface like the runtime's
+		// printeface: the (type,value) pair of nil pointers.
+		return "(0x0,0x0)"
 	case *runtime.TypedNil:
 		// print/println spell a nil pointer-ish value like the runtime:
 		// 0x0 for pointers/chans/maps/funcs, [0/0]0x0 for a nil slice.
@@ -622,6 +624,10 @@ func display(v runtime.Value) any {
 		}
 		sb.WriteByte(']')
 		return sb.String()
+	case *runtime.GoValue:
+		// a host box prints its payload — complex128 as (9+10i),
+		// not the wrapper's &{...} pointer spelling.
+		return x.V
 	default:
 		return x
 	}
