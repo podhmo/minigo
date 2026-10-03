@@ -1,0 +1,29 @@
+len=100 cap=128 grow(200) -> len=100 cap=336
+len=0 cap=0 grow(1) -> len=0 cap=1
+len=0 cap=0 grow(5) -> len=0 cap=6
+len=10 cap=16 grow(10) -> len=10 cap=32
+len=50 cap=64 grow(100) -> len=50 cap=160
+len=100 cap=128 grow(100) -> len=100 cap=256
+len=200 cap=256 grow(100) -> len=200 cap=512
+len=200 cap=256 grow(400) -> len=200 cap=608
+len=0 cap=300 grow(100) -> len=0 cap=300
+len=0 cap=512 grow(1) -> len=0 cap=512
+len=300 cap=512 grow(300) -> len=300 cap=848
+len=0 cap=0 grow(300) -> len=0 cap=336
+len=0 cap=0 grow(2000) -> len=0 cap=2048
+len=100 cap=128 grow(10) -> len=100 cap=128
+len=100 cap=128 grow(0) -> len=100 cap=128
+len=100 cap=128 grow(-5) -> panic: reflect.Value.Grow: negative len
+len=100 cap=128 grow(200) -> len=100 cap=320
+len=100 cap=128 grow(200) -> len=100 cap=320
+len=100 cap=128 grow(200) -> len=100 cap=336
+len=100 cap=128 grow(200) -> len=100 cap=303
+len=100 cap=128 grow(200) -> len=100 cap=303
+len=100 cap=128 grow(200) -> len=100 cap=335
+len=100 cap=128 grow(200) -> len=100 cap=300
+len=100 cap=128 grow(200) -> len=100 cap=304
+len=100 cap=128 grow(200) -> len=100 cap=303
+len=10 cap=16 grow(20) -> len=10 cap=32
+nil grow(7) -> len=0 cap=8 nil=false
+unaddr grow -> panic: reflect: reflect.Value.Grow using unaddressable value
+nonslice grow -> panic: reflect: call of reflect.Value.Grow on int Value

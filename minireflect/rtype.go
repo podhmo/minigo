@@ -1335,6 +1335,28 @@ func (t *RType) sizeOf() uintptr {
 	return 8
 }
 
+// hasPointers reports whether a value of the type contains pointers —
+// the scan/noscan split the runtime's growslice uses to reserve an
+// 8-byte malloc header (go1.26+). Containers and strings hold data
+// pointers; numbers, bool and uintptr do not.
+func (t *RType) hasPointers() bool {
+	switch t.Kind() {
+	case reflect.Ptr, reflect.Map, reflect.Chan, reflect.Func,
+		reflect.Slice, reflect.String, reflect.Interface,
+		reflect.UnsafePointer:
+		return true
+	case reflect.Array:
+		return t.Elem().hasPointers()
+	case reflect.Struct:
+		for i := 0; i < t.NumField(); i++ {
+			if t.Field(i).Type.hasPointers() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // alignOf computes the amd64 alignment of a script type. A struct
 // aligns to its widest field (empty struct → 1); an array to its
 // element; word-sized containers and pointers to 8.
