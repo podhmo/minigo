@@ -33,7 +33,11 @@ type Decl struct {
 	Idx       int           // spec index within Gen (iota)
 	NameIdx   int           // index of this name within Spec.Names
 	Inherited []ast.Expr    // const spec: previous spec's values when empty
-	Pos       token.Pos
+	// InheritedType is the type the values came from — Go substitutes
+	// "the first preceding non-empty expression list and its type if
+	// any", so `B` under `A T = e` is really `B T = e`.
+	InheritedType ast.Expr
+	Pos           token.Pos
 }
 
 // TypeDeclInfo is a named type plus the methods declared on it.
@@ -78,22 +82,26 @@ func Build(files []*syntax.File) (*Index, error) {
 				ix.Funcs[dl.Name] = dl
 			case *ast.GenDecl:
 				var prevValues []ast.Expr
+				var prevType ast.Expr
 				for i, spec := range d.Specs {
 					switch d.Tok {
 					case token.VAR, token.CONST:
 						vs := spec.(*ast.ValueSpec)
 						inherited := []ast.Expr(nil)
+						var inheritedType ast.Expr
 						if d.Tok == token.CONST && len(vs.Values) == 0 {
 							inherited = prevValues
+							inheritedType = prevType
 						} else {
 							prevValues = vs.Values
+							prevType = vs.Type
 						}
 						for j, name := range vs.Names {
 							kind := VarDecl
 							if d.Tok == token.CONST {
 								kind = ConstDecl
 							}
-							dl := &Decl{Kind: kind, Name: name.Name, File: f, Gen: d, Spec: vs, Idx: i, NameIdx: j, Inherited: inherited, Pos: name.Pos()}
+							dl := &Decl{Kind: kind, Name: name.Name, File: f, Gen: d, Spec: vs, Idx: i, NameIdx: j, Inherited: inherited, InheritedType: inheritedType, Pos: name.Pos()}
 							ix.Decls = append(ix.Decls, dl)
 							if kind == VarDecl {
 								ix.Vars[name.Name] = dl
