@@ -127,3 +127,19 @@
 #### リファクタリング提案の評価（第5ラウンド）
 
 - **ブロックの binding に slot・宣言種別・型情報をまとめる — 妥当（中）。#126 はその弱い版として実装した**。提案は `blocks[name]→slot`、`typeDecls`、`typeSpecs`、`typeDefs`、`ifaceTypes`、`declPos`、`ifaceVars` を `[]map[string]binding` の単一レコードへ統合する方向。今回は「既存の並列 map を同じ push/pop 寿命に揃える」形に留めた: 参照点7箇所の修正で済み、効果も等しい（全 map がブロックと同じ寿命を持つので、取り違え・残留・上書きの系は構造的に消えた）。統合版の追加利得は「1フィールド追加＝1箇所変更」の見通しだけで、新たな正しさは生まれない。ただし fscope は現在 8 本の並列スライスを push/pop で揃えており、将来フィールド追加時の同期漏れリスクは残る — 次にこの構造を触る変更（例: 別種のブロックスコープ情報の追加）が出た時点で `binding` レコード化を検討するのが適切なタイミング。
+
+### 6.7 レビュー第6ラウンド: 代入ターゲットの live storage 解決
+
+第6ラウンドは1件、現スタックトップで再現した（[#127](https://github.com/podhmo/minigo/pull/127)）。
+
+- **[P2] フィールド代入先が古い構造体を掴む（#127）** — `refTarget` が RHS 評価前に base を**値**として確定していたため、`s.X = replace(&s)`（replace は `*s = S{X:1}` で s 全体を置換）が死んだ Struct に書き込み `s.X == 1`（Go: `2`）。
+
+調査で Go の lvalue モデルを実測で確定した: **代入先の base は格納時に解決される live なストレージ参照チェーンで、key/添字だけが評価時スナップショット**。`p.X = reseat(&p,q)` は新 pointee に書き、`s[i] = f()` は新 slice に書き、`m[k] = f()` は新 map に書く。一方 `&s[0]`（slice の要素アドレス）は評価時の配列を pin する — `&` 経路と `=` 経路で非対称になる。
+
+修正は3層: (a) `refTargetBase` — base がストレージ運搬形（Ident/Selector/Index/Star）なら `refTarget` で live ref を吐き、それ以外（call・`&x` 式）は従来通り `expr` の値評価。(b) `*p = v` 用に `DerefRef`（格納時に `Deref(ptr)` を解く遅延 ref）と `OpDerefRef` を新設 — ポインタ値をそのまま積むと pointee がスナップショットされるため。(c) compound assign（`x op= y`）を同じ ref パイプラインに統一 — こちらは「ref 評価 → rhs 評価 → 読み出し+op+store」の順で、Go が読み出しを RHS 評価時に行うことも実測で確認済み（`s.X += f()` で `10+5=15` ではなく `1+5=6`）。`OpFieldRef` の cell 正規化は `&` 経路（B=0）のみに限定し、store 経路（B=1）は生のストレージ cell を保持。
+
+付随修正: パッケージ修飾ターゲット（`runtime.MemProfileRate = v`）は base がパッケージオブジェクト（ストレージではない）なので `isImportName` で `expr` へ振り分け、`OpDeref` 上の IndexRef は `v.index`（map 対応の完全経路）へ流す。
+
+#### リファクタリング提案の評価（第6ラウンド）
+
+- **`refTarget` を「変数ストレージを保持するケース」と「評価時点の参照先を保持するケース」に分ける — 妥当。そして今回の修正がほぼそのままの形になった（高）**。`isStorageBase`/`refTargetBase` が提案の分岐そのもの: ストレージ運搬形（Ident・Selector・Index・Star・Paren unwrap）は ref、非ストレージ形（call・`&`式・型名）は値。実装して分かったのは、提案が暗に想定する二分では収まらない点が2つ — `*p` は「評価時の pointee」ではなく「p が指す場所」を格納時に解く第三のケース（`DerefRef`）で、Ident だけ import 名判定が必要（パッケージは値オブジェクト）。つまり分岐は「storage / value」の2値ではなく「storage / 評価時 pointee / value」の3値が正確なモデルで、提案の方向は正しいが粒度はもう一段細かい。複合代入も同じ構造に乗せられたので、「この種の不具合を防ぐ」という狙い自体は達成されたと評価できる。
