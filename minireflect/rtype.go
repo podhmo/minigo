@@ -85,11 +85,37 @@ func (e *Env) keyOf(td *runtime.TypeDef) string {
 	if td == nil {
 		return "<nil type>"
 	}
-	if td.Name != "" {
-		if td.Pkg != nil && td.Pkg.Path != "" && !strings.HasPrefix(td.Name, td.Pkg.Path+".") {
-			return td.Pkg.Path + "." + td.Name
+	if td.Local {
+		// a function-local declaration is its own type — `type X int`
+		// in two different functions are distinct even though they
+		// share a name and package. The Spec pointer is the declaration
+		// object, so it carries the identity; type args still separate
+		// instantiations of a local generic.
+		return fmt.Sprintf("td:%p%s", td.Spec, e.bindsKeyOf(td))
+	}
+	if td.Kind == runtime.KindAlias && e.h.AliasOf != nil {
+		// an alias shares its target's identity: `type A = int` IS int.
+		if t, err := e.h.AliasOf(td); err == nil && t != nil && t != td {
+			return e.keyOf(t)
 		}
-		return td.Name
+	}
+	if td.Name != "" {
+		name := td.Name
+		if td.Pkg != nil && td.Pkg.Path != "" && !strings.HasPrefix(name, td.Pkg.Path+".") {
+			name = td.Pkg.Path + "." + name
+		}
+		// predeclared aliases fold to their canonical type: byte IS
+		// uint8, rune IS int32 — but only when the name is the builtin
+		// itself (a user `type byte int` keeps its own identity).
+		if td.Spec == nil && td.Pkg == nil {
+			switch name {
+			case "byte":
+				name = "uint8"
+			case "rune":
+				name = "int32"
+			}
+		}
+		return name + e.bindsKeyOf(td)
 	}
 	if td.Anon != nil {
 		if s := runtime.TypSpelling(td.Anon, td); s != "" {
@@ -99,17 +125,116 @@ func (e *Env) keyOf(td *runtime.TypeDef) string {
 	if td.Elem != nil {
 		switch td.Kind {
 		case runtime.KindPointer:
-			return "*" + e.keyOf(td.Elem)
+			return "anon:*" + e.spellOf(td.Elem)
 		case runtime.KindSlice:
-			return "[]" + e.keyOf(td.Elem)
+			return "anon:[]" + e.spellOf(td.Elem)
 		case runtime.KindChan:
-			return "chan " + e.keyOf(td.Elem)
+			return "anon:chan " + e.spellOf(td.Elem)
 		case runtime.KindMap:
 			// map keys ride on td.Anon (or keyTd on RType) — the
 			// spelling branch above catches the anon case.
 		}
 	}
 	return fmt.Sprintf("td:%p", td)
+}
+
+// bindsKeyOf renders a typedef's instantiation arguments as the
+// "[arg,...]" suffix of its canonical name — `S[int]` and `S[string]`
+// share a declared name but are different types.
+func (e *Env) bindsKeyOf(td *runtime.TypeDef) string {
+	if len(td.TParams) == 0 || len(td.Binds) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("[")
+	wrote := false
+	for _, tp := range td.TParams {
+		bv, ok := td.Binds[tp]
+		if !ok {
+			continue
+		}
+		atd, _ := bv.(*runtime.TypeDef)
+		if wrote {
+			sb.WriteString(",")
+		}
+		sb.WriteString(e.keyOf(atd))
+		wrote = true
+	}
+	if !wrote {
+		return ""
+	}
+	sb.WriteString("]")
+	return sb.String()
+}
+
+// spellOf renders a typedef the way it would appear inside a composite
+// type spelling — matching TypSpelling's canonicalization (predeclared
+// aliases fold, named types qualify by package).
+func (e *Env) spellOf(td *runtime.TypeDef) string {
+	if td == nil {
+		return "interface{}"
+	}
+	return runtime.TypSpelling(e.exprOf(td), td)
+}
+
+// exprOf renders a typedef back as a type-expression AST so a
+// synthesized composite keeps a canonical Anon spelling: named types
+// spell by name (package-qualified by selector, instantiated by index),
+// anonymous typedefs reuse their declared expression, and Elem-only
+// typedefs rebuild structurally.
+func (e *Env) exprOf(td *runtime.TypeDef) ast.Expr {
+	if td == nil {
+		return ast.NewIdent("interface{}")
+	}
+	if td.Name != "" {
+		name := td.Name
+		var x ast.Expr
+		if i := strings.LastIndex(name, "."); i >= 0 {
+			// bound typedefs name themselves "pkgpath.Name" — the
+			// qualifier doubles as the package reference.
+			x = &ast.SelectorExpr{X: ast.NewIdent(name[:i]), Sel: ast.NewIdent(name[i+1:])}
+		} else {
+			x = ast.NewIdent(name)
+		}
+		if td.Pkg != nil && td.Pkg.Name != "" {
+			x = &ast.SelectorExpr{X: ast.NewIdent(td.Pkg.Name), Sel: ast.NewIdent(name)}
+		}
+		if len(td.TParams) > 0 && len(td.Binds) > 0 {
+			var args []ast.Expr
+			for _, tp := range td.TParams {
+				if bv, ok := td.Binds[tp]; ok {
+					if atd, ok := bv.(*runtime.TypeDef); ok {
+						args = append(args, e.exprOf(atd))
+					}
+				}
+			}
+			switch len(args) {
+			case 0:
+			case 1:
+				x = &ast.IndexExpr{X: x, Index: args[0]}
+			default:
+				x = &ast.IndexListExpr{X: x, Indices: args}
+			}
+		}
+		return x
+	}
+	if td.Anon != nil {
+		return td.Anon
+	}
+	if td.Spec != nil {
+		return td.Spec.Type
+	}
+	if td.Elem != nil {
+		switch td.Kind {
+		case runtime.KindPointer:
+			return &ast.StarExpr{X: e.exprOf(td.Elem)}
+		case runtime.KindSlice:
+			return &ast.ArrayType{Elt: e.exprOf(td.Elem)}
+		case runtime.KindChan:
+			return &ast.ChanType{Dir: ast.RECV | ast.SEND, Value: e.exprOf(td.Elem)}
+		}
+	}
+	return ast.NewIdent("interface{}")
 }
 
 // hostTypeKey mirrors keyOf for host types: named types key by

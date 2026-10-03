@@ -97,7 +97,7 @@ func typeOfValue(e *Env, v runtime.Value) *runtime.TypeDef {
 		if len(x.Elems) > 0 {
 			et = typeOfValue(e, x.Elems[0])
 		}
-		return &runtime.TypeDef{Kind: runtime.KindSlice, Elem: et}
+		return e.compositeTd(runtime.KindSlice, et)
 	case *runtime.Map:
 		if x.Typ != nil {
 			return x.Typ
@@ -115,7 +115,7 @@ func typeOfValue(e *Env, v runtime.Value) *runtime.TypeDef {
 		if x.Typ != nil {
 			et = x.Typ
 		}
-		return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: et}
+		return e.pointerTd(et)
 	case *runtime.FieldRef:
 		// the declared field type comes from the owner's typedef
 		var et *runtime.TypeDef
@@ -134,7 +134,7 @@ func typeOfValue(e *Env, v runtime.Value) *runtime.TypeDef {
 				et = typeOfValue(e, dv)
 			}
 		}
-		return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: et}
+		return e.pointerTd(et)
 	case *runtime.IndexRef:
 		var et *runtime.TypeDef
 		if s, ok := x.Base.(*runtime.Slice); ok && s.Typ != nil {
@@ -145,15 +145,15 @@ func typeOfValue(e *Env, v runtime.Value) *runtime.TypeDef {
 				et = typeOfValue(e, dv)
 			}
 		}
-		return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: et}
+		return e.pointerTd(et)
 	case *runtime.DerefRef:
 		var et *runtime.TypeDef
 		if dv, ok := runtime.Deref(v); ok {
 			et = typeOfValue(e, dv)
 		}
-		return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: et}
+		return e.pointerTd(et)
 	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
-		return &runtime.TypeDef{Kind: runtime.KindFunc}
+		return e.funcTd(x)
 	case *runtime.GoValue:
 		if x.V == nil {
 			return nil
@@ -185,6 +185,52 @@ func typeOfValue(e *Env, v runtime.Value) *runtime.TypeDef {
 		}
 	}
 	return nil
+}
+
+// pointerTd builds a *T typedef carrying its spelling — synthesized
+// composites keep an Anon so they intern to the same RType as the
+// equivalent declared type (and as a host *T).
+func (e *Env) pointerTd(et *runtime.TypeDef) *runtime.TypeDef {
+	td := &runtime.TypeDef{Kind: runtime.KindPointer, Elem: et}
+	if et != nil {
+		td.Anon = &ast.StarExpr{X: e.exprOf(et)}
+	}
+	return td
+}
+
+// compositeTd builds an element-composite typedef carrying its spelling
+// for the same interning reason as pointerTd. Only slice is needed —
+// map and chan without a declared typedef lack the rest of their shape.
+func (e *Env) compositeTd(kind runtime.TypeKind, et *runtime.TypeDef) *runtime.TypeDef {
+	td := &runtime.TypeDef{Kind: kind, Elem: et}
+	if et != nil && kind == runtime.KindSlice {
+		td.Anon = &ast.ArrayType{Elt: e.exprOf(et)}
+	}
+	return td
+}
+
+// funcTd builds the dynamic typedef of a function value: its identity
+// is the signature, spelled through the declaration's FuncType so two
+// functions of the same signature intern to the same type.
+func (e *Env) funcTd(v runtime.Value) *runtime.TypeDef {
+	var decl *ast.FuncDecl
+	switch x := v.(type) {
+	case *runtime.Function:
+		decl = x.Decl
+	case *runtime.Closure:
+		if x.Fn != nil {
+			decl = x.Fn.Decl
+		}
+	case *runtime.BoundMethod:
+		if x.Fn != nil {
+			decl = x.Fn.Decl
+		}
+	}
+	td := &runtime.TypeDef{Kind: runtime.KindFunc}
+	if decl != nil {
+		td.Anon = decl.Type
+	}
+	return td
 }
 
 // staticTd reports the static type of a value (for nested ValueOf).

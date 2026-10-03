@@ -1087,7 +1087,7 @@ func (c *compiler) bindLocal(name string, pos token.Pos, isConst bool) int {
 func (c *compiler) localTypeDecl(ts *ast.TypeSpec) {
 	td := &runtime.TypeDef{
 		Pkg: c.pkg, File: c.file, Name: ts.Name.Name,
-		Spec: ts, Anon: ts.Type, Binds: c.binds,
+		Spec: ts, Anon: ts.Type, Binds: c.binds, Local: true,
 	}
 	if ts.TypeParams != nil {
 		for _, tp := range ts.TypeParams.List {
