@@ -38,6 +38,34 @@ design, `TODO.md` for current coverage and remaining gaps, and
 `examples/task-run` for an embedding example and `examples/convert-define`
 for a DSL tool built on special forms.
 
+## REPL
+
+`minigo repl` is an interactive session over a scratch `<repl>` package.
+Each line is a top-level declaration or a statement list; a trailing
+expression prints its value. Names introduced by `:=`, `var`, and `const`
+persist as globals across lines.
+
+```
+>> import "fmt"
+>> fmt.Println("hello")
+hello
+(6, <nil>)
+>> import "./sub"
+>> sub.Greet("bob")
+hi bob
+```
+
+Imports are ordinary Go syntax — `import "path"`, `import name "path"`,
+`import . "path"`, `import _ "path"` — resolved by the same module rules
+as `minigo run` (below), plus `./dir`/`/abs/dir` conveniences that load a
+directory eagerly and bind the package's declared name (`import "./odd"`
+on a dir declaring `package oddpkg` binds `oddpkg`).
+
+Inside the session, `:help` lists the meta commands: `:cd <ref>` /
+`:cd -` scope-switches into a package (unexported names included),
+`:ls [ref]` lists top-level decls, `:pin` / `:unpin` monkey-patch the
+entered package's globals, `:reset` clears the session, `:exit` quits.
+
 ## Import resolution
 
 Package loading follows the Go module on disk — there is no `go list` and
