@@ -1,4 +1,0 @@
-SILENT/panic-message (seen ×1)
-shape:  seq:reflect.ValueOf(r_s0) .Set(reflect.ValueOf(r_i0)) 
-go:     panic: reflect: reflect.Value.Set using unaddressable value
-minigo: panic: reflect: reflect.Set: value of type int is not assignable to type string

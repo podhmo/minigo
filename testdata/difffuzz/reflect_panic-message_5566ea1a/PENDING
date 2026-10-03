@@ -1,4 +1,0 @@
-SILENT/panic-message (seen ×334)
-shape:  seq:reflect.TypeOf(r_map) .FieldByIndex([]int{0, 0}).Type .Kind()
-go:     panic: reflect: FieldByIndex of non-struct type map[string]int
-minigo: panic: reflect: call of reflect.Type.Field on type map[string]int
