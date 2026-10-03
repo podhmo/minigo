@@ -1792,14 +1792,27 @@ func (v *VM) resolveGlobalE(f *frame, name string) (runtime.Value, error) {
 	// when the package clause says `package realname`. Learn the real
 	// name lazily by materializing the package.
 	if file != nil {
+		var loadErr error
+		var loadPath string
 		for _, ref := range pkg.Imports[file] {
 			if ref.Alias != "" {
 				continue
 			}
 			p, err := ref.Materialize()
-			if err == nil && p != nil && p.Name == name {
+			if err != nil {
+				// a denied or broken import explains the failure better
+				// than a bare "undefined" once every candidate is missed.
+				if loadErr == nil {
+					loadErr, loadPath = err, ref.Path
+				}
+				continue
+			}
+			if p != nil && p.Name == name {
 				return ref, nil
 			}
+		}
+		if loadErr != nil {
+			return nil, fmt.Errorf("import %s: %w", loadPath, loadErr)
 		}
 	}
 	// 3. dot imports: index without initializing, then initialize the package
@@ -2899,6 +2912,7 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 		return v.index(f, dv, idx)
 	}
 	idx = runtime.Unwrap(materialize(f, idx)) // named key/index types hash as their value
+	base = materialize(f, base)               // `const s = "x"; s[0]` indexes a UConst
 	switch b := base.(type) {
 	case *runtime.Named:
 		return v.index(f, b.V, idx)
@@ -3747,7 +3761,7 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 			zv := v.zeroValue(f, et)
 			s.Elems = make([]runtime.Value, an)
 			for i := range s.Elems {
-				s.Elems[i] = zv
+				s.Elems[i] = valueCopy(zv)
 			}
 			if kv {
 				last := int64(-1)
@@ -3792,7 +3806,7 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 			s.Elems = make([]runtime.Value, max+1)
 			zv := v.zeroValue(f, v.elemTypedef(f, td))
 			for i := range s.Elems {
-				s.Elems[i] = zv
+				s.Elems[i] = valueCopy(zv)
 			}
 			for i := 0; i < n; i++ {
 				s.Elems[idx[i]] = raw[i*2+1]
@@ -3957,30 +3971,11 @@ func (v *VM) setLitField(f *frame, s *runtime.Struct, def *runtime.TypeDef, fts 
 	return false
 }
 
-// valueCopy implements Go assignment semantics: structs copy by value;
+// valueCopy implements Go assignment semantics: structs copy by value —
+// recursively, since a struct field is itself a copied value — while
 // slices, maps and pointers share.
 func valueCopy(v runtime.Value) runtime.Value {
-	switch x := v.(type) {
-	case *runtime.Struct:
-		cp := &runtime.Struct{Def: x.Def, Fields: make([]runtime.Value, len(x.Fields))}
-		copy(cp.Fields, x.Fields)
-		return cp
-	case *runtime.Slice:
-		// arrays copy on assignment like structs — nested arrays copy
-		// recursively. Plain slices share their backing (Go semantics).
-		if isArrayTyp(x.Typ) {
-			el := make([]runtime.Value, len(x.Elems))
-			for i, e := range x.Elems {
-				el[i] = valueCopy(e)
-			}
-			return &runtime.Slice{Elems: el, Typ: x.Typ}
-		}
-		return v
-	case *runtime.Named:
-		// assignment copies the underlying value but keeps the declared tag
-		return runtime.Tag(x.Typ, valueCopy(x.V))
-	}
-	return v
+	return runtime.Copy(v)
 }
 
 // channels — real blocking semantics. Channels are host `chan Value`s:
@@ -5052,6 +5047,16 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 		}
 		return res
 	}
+	// equality works on any comparable pair and must see the boxed
+	// dynamic types — unwrapping a host numeric here would turn
+	// `any(time.Weekday(4)) == any(int(4))` into a true int64 compare
+	// where Go reports false.
+	switch op {
+	case bytecode.BinEql:
+		return eqlValue(a, b)
+	case bytecode.BinNeq:
+		return !eqlValue(a, b)
+	}
 	// bound time.* constants and reflect-produced durations arrive as
 	// raw time.Duration values — they behave as their int64 underlying
 	// in arithmetic and comparisons (2*time.Second, d < timeout), and
@@ -5073,24 +5078,36 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 	// arithmetic on them computes mod 2^64 in int64 (same bits) and
 	// re-boxes so formatting keeps the unsigned domain.
 	var ubox bool
+	// numTag remembers the named host int an operand was unwrapped from
+	// (reflect.Kind and friends) so an arithmetic result can be re-boxed
+	// into the same type — `reflect.Int + 1` stays a reflect.Kind.
+	var numTag reflect.Type
 	if g, ok := a.(*runtime.GoValue); ok {
 		if u, isU := g.V.(uint64); isU {
 			a = int64(u)
 			ubox = true
+		} else if iv, ok := smallIntOf(g.V); ok {
+			// a GoValue carrying an ordered numeric (reflect.Kind and
+			// other named host ints) unwraps for arithmetic and
+			// comparisons like an ordinary named int.
+			a = iv
+			numTag = reflect.TypeOf(g.V)
 		}
 	}
 	if g, ok := b.(*runtime.GoValue); ok {
 		if u, isU := g.V.(uint64); isU {
 			b = int64(u)
 			ubox = true
+		} else if iv, ok := smallIntOf(g.V); ok {
+			b = iv
+			if bt := reflect.TypeOf(g.V); numTag != nil && bt != numTag {
+				// Go rejects arithmetic on differently-named ints
+				// (reflect.Kind + time.Weekday) at compile time.
+				f.trap("invalid operation: mismatched types %s and %s", numTag, bt)
+			} else {
+				numTag = bt
+			}
 		}
-	}
-	// equality works on any comparable pair
-	switch op {
-	case bytecode.BinEql:
-		return eqlValue(a, b)
-	case bytecode.BinNeq:
-		return !eqlValue(a, b)
 	}
 	if s, ok := a.(string); ok {
 		return stringBinOp(f, op, s, b)
@@ -5117,6 +5134,17 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 				return iv // d/d is unitless in Go
 			case dmark:
 				return time.Duration(iv)
+			case numTag != nil:
+				// re-box into the unwrapped operand's named host type —
+				// `reflect.Int + 1` is a reflect.Kind, not an int.
+				rv := reflect.New(numTag).Elem()
+				switch numTag.Kind() {
+				case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+					rv.SetInt(iv)
+				default:
+					rv.SetUint(uint64(iv))
+				}
+				return &runtime.GoValue{V: rv.Interface()}
 			}
 		}
 		return res
@@ -5146,6 +5174,22 @@ func uintOperand(v runtime.Value) (uint64, bool) {
 	case *runtime.GoValue:
 		if u, ok := x.V.(uint64); ok {
 			return u, true
+		}
+	}
+	return 0, false
+}
+
+// smallIntOf reads a host numeric that fits the int64 domain — named
+// integer kinds like reflect.Kind travel as GoValue and need unwrapping
+// before arithmetic/comparison (full-width uint64 stays boxed instead).
+func smallIntOf(x any) (int64, bool) {
+	rv := reflect.ValueOf(x)
+	switch rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return rv.Int(), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uintptr:
+		if u := rv.Uint(); u <= math.MaxInt64 {
+			return int64(u), true
 		}
 	}
 	return 0, false
@@ -7153,6 +7197,9 @@ func (v *VM) memberOfType(f *frame, td *runtime.TypeDef, name string, recv runti
 // Declared named basic types tag the result as *runtime.Named so the
 // declared identity survives reads.
 func (v *VM) coerce(f *frame, x runtime.Value, td *runtime.TypeDef) runtime.Value {
+	// a slot store copies like a Go assignment: `key{mark: p.mark}` must
+	// not alias p.mark through the literal's field slot.
+	x = valueCopy(x)
 	if td == nil {
 		return x
 	}
@@ -7756,7 +7803,7 @@ func (v *VM) zeroSeen(f *frame, td *runtime.TypeDef, seen map[*runtime.TypeDef]b
 		zv := v.zeroSeen(f, v.elemTypedef(f, td), seen)
 		el := make([]runtime.Value, n)
 		for i := range el {
-			el[i] = zv
+			el[i] = valueCopy(zv)
 		}
 		return v.wrapZero(orig, &runtime.Slice{Elems: el, Typ: td})
 	}
@@ -8223,6 +8270,18 @@ func (v *VM) instantiate(f *frame, base runtime.Value, targs []runtime.Value, po
 			f.trap("cannot instantiate %s: needs %d type arguments, got %d", g.Fn.Name, len(g.Fn.TParams), len(targs))
 		}
 		return &runtime.BoundMethod{Recv: g.Recv, Fn: v.instantiateFunc(f, g.Fn, targs)}
+	case *runtime.BuiltinFunc:
+		if g.GenFn == nil {
+			return v.indexFallback(f, base, targs)
+		}
+		gen := g.GenFn
+		return &runtime.BuiltinFunc{
+			Name: g.Name,
+			Pkg:  g.Pkg,
+			Fn: func(vm runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+				return gen(vm, targs, args)
+			},
+		}
 	case *runtime.TypeDef:
 		if len(g.TParams) == 0 {
 			return v.indexFallback(f, base, targs)

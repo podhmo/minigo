@@ -110,7 +110,7 @@ func builtins(e *Engine) *runtime.Env {
 					}
 				}
 			}
-			add[i] = a
+			add[i] = v.Copy(a)
 		}
 		if s == nil && len(add) == 0 && rtyp != nil {
 			// appending nothing to a nil slice keeps the nil — Go's
@@ -166,7 +166,20 @@ func builtins(e *Engine) *runtime.Env {
 		if dst == nil || src == nil {
 			return int64(0), nil
 		}
-		n := copy(dst.Elems, src.Elems)
+		n := len(dst.Elems)
+		if len(src.Elems) < n {
+			n = len(src.Elems)
+		}
+		// copy through a snapshot: dst and src may overlap in the same
+		// backing array (e.g. copy(s[2:], s[1:]) shifting a queue), and a
+		// forward element loop would cascade-write the source.
+		tmp := make([]runtime.Value, n)
+		for i := 0; i < n; i++ {
+			tmp[i] = v.Copy(src.Elems[i])
+		}
+		for i := 0; i < n; i++ {
+			dst.Elems[i] = tmp[i]
+		}
 		return int64(n), nil
 	})
 	bf("delete", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -241,7 +254,7 @@ func builtins(e *Engine) *runtime.Env {
 				zero = ez.ElemZero(td)
 			}
 			for i := range el {
-				el[i] = zero
+				el[i] = v.Copy(zero)
 			}
 			return &runtime.Slice{Elems: el, Typ: td}, nil
 		case runtime.KindMap:

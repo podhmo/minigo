@@ -423,6 +423,40 @@ func (c *compiler) resolveName(name string) (nameInfo, bool) {
 	return nameInfo{}, false
 }
 
+// typeIdent emits the typedef an identifier names in type position —
+// `var x T`, `f() T`, `x.(T)`. A type-position name prefers the nearest
+// TYPE declaration: a shadowing var (`case item := <-ch` inside a
+// function returning `item`) must not push the variable where
+// OpCoerce* expects a typedef.
+func (c *compiler) typeIdent(e ast.Expr, name string) {
+	if b := c.fs.lookupBinding(name); b != nil {
+		if b.typeDecl {
+			if b.tdef != nil {
+				c.emit(bytecode.OpConst, c.constIdx(b.tdef), 0, e.Pos())
+				return
+			}
+			c.expr(e)
+			return
+		}
+		// a var/const shadows the name here — resolve the type it hides.
+		if bv, bound := c.binds[name]; bound {
+			if td, ok := bv.(*runtime.TypeDef); ok {
+				c.emit(bytecode.OpConst, c.constIdx(td), 0, e.Pos())
+				return
+			}
+		}
+		if c.pkg != nil && c.pkg.Index != nil && c.pkg.Index.Types[name] != nil {
+			c.emit(bytecode.OpGlobal, c.nameIdx(name), 0, e.Pos())
+			return
+		}
+		if predeclaredTypeNames[name] {
+			c.emit(bytecode.OpGlobal, c.nameIdx(name), 0, e.Pos())
+			return
+		}
+	}
+	c.expr(e)
+}
+
 // declared reports whether name resolves through a declaration rather
 // than a builtin — a local/upval from fscope, a generic instantiation
 // binding, a package-level decl in the index, or a predeclared type —
@@ -2217,7 +2251,7 @@ func (c *compiler) expr(e ast.Expr) {
 		// form arg (F[[]int]) compiles to a typedef; anything else stays a
 		// value expr (ident type args resolve through getRef too).
 		c.expr(x.X)
-		if isTypeForm(x.Index) {
+		if c.isTypeForm(x.Index) {
 			c.typeExpr(x.Index)
 		} else {
 			c.expr(x.Index)
@@ -2643,7 +2677,7 @@ func (s *fscope) isTypeDeclName(name string) bool {
 // argument evaluation order (T(x)'s own computation defers like an
 // index or arithmetic op, unlike a real call).
 func (c *compiler) conversionCall(x *ast.CallExpr) bool {
-	if isTypeForm(x.Fun) {
+	if c.isTypeForm(x.Fun) {
 		return true // []T(x), *T(x), struct{...}(x) — syntactic type forms
 	}
 	switch f := x.Fun.(type) {
@@ -2953,7 +2987,7 @@ unwrapped:
 	// type form compiles as a type, anything else evaluates to a
 	// value and the builtin distinguishes a typedef argument from
 	// a value at run time.
-	if len(args) > 0 && (isTypePositionCall(x) || (newCall && isTypeForm(args[0]))) {
+	if len(args) > 0 && (isTypePositionCall(x) || (newCall && c.isTypeForm(args[0]))) {
 		c.typeExpr(args[0])
 		args = args[1:]
 	}
@@ -3025,7 +3059,7 @@ func (c *compiler) trySpecial(x *ast.CallExpr, sel *ast.SelectorExpr) bool {
 // calleeExpr compiles the called expression; a syntactic type form means a
 // conversion call T(x).
 func (c *compiler) calleeExpr(fun ast.Expr) {
-	if isTypeForm(fun) {
+	if c.isTypeForm(fun) {
 		c.typeExpr(fun)
 		return
 	}
@@ -3048,13 +3082,46 @@ func isNewCall(x *ast.CallExpr) bool {
 
 // isTypeForm reports whether e is syntactically a type expression (and thus
 // a conversion when used as a call callee).
-func isTypeForm(e ast.Expr) bool {
+func (c *compiler) isTypeForm(e ast.Expr) bool {
 	switch t := e.(type) {
 	case *ast.ParenExpr:
-		return isTypeForm(t.X) // (*T)(x) is a conversion, not a deref call
+		return c.isTypeForm(t.X) // (*T)(x) is a conversion, not a deref call
+	case *ast.StarExpr:
+		// `*T` is a pointer type but `*p` is a dereference — the forms
+		// coincide only in syntax (`a[*i]` vs `F[*T]`), so the operand
+		// name decides: a variable is a dereference, a type a pointer.
+		return !c.starOperandIsValue(t.X)
 	case *ast.ArrayType, *ast.MapType, *ast.StructType, *ast.FuncType,
-		*ast.InterfaceType, *ast.StarExpr, *ast.ChanType:
+		*ast.InterfaceType, *ast.ChanType:
 		return true
+	}
+	return false
+}
+
+// starOperandIsValue reports whether X in `*X` is a value expression —
+// `*p` dereferences a pointer where `*T` names a pointer type, and the
+// two are syntactically identical. The operand resolves like any name:
+// a local var or a package-level value is a dereference operand; a type
+// decl or type parameter keeps `*X` a type form. Unresolvable operands
+// (imported `pkg.T` members, forward refs) default to type form,
+// matching the old blanket rule.
+func (c *compiler) starOperandIsValue(e ast.Expr) bool {
+	switch t := e.(type) {
+	case *ast.Ident:
+		info, found := c.resolveName(t.Name)
+		return found && !info.isType
+	case *ast.SelectorExpr:
+		// `*x.f` dereferences x's field; `*pkg.T` is a pointer type.
+		// A qualifier resolving to a value is a dereference base.
+		if id, ok := t.X.(*ast.Ident); ok {
+			info, found := c.resolveName(id.Name)
+			return found && !info.isType
+		}
+		return false
+	case *ast.ParenExpr:
+		return c.starOperandIsValue(t.X)
+	case *ast.StarExpr:
+		return c.starOperandIsValue(t.X)
 	}
 	return false
 }
@@ -3182,8 +3249,10 @@ func peelLitType(t ast.Expr, depth int) ast.Expr {
 // typeExpr emits a push of *runtime.TypeDef for a type expression.
 func (c *compiler) typeExpr(e ast.Expr) {
 	switch t := e.(type) {
-	case *ast.Ident, *ast.SelectorExpr:
-		// named type: resolves through globals/imports at run time
+	case *ast.Ident:
+		c.typeIdent(e, t.Name)
+	case *ast.SelectorExpr:
+		// pkg.Type: a selector cannot be shadowed by a local var
 		c.expr(t)
 	case *ast.ArrayType:
 		// Anon/Pkg/File let OpElemType resolve the element typedef later;

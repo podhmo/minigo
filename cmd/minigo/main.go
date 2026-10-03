@@ -49,7 +49,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
-  minigo run <dir-or-importpath> [--entry Func] [-- script args...]
+  minigo run <dir-or-importpath> [--entry Func] [--deny pkg,...] [--src pkg,...] [-- script args...]
   minigo <dir-or-importpath> [Func] [-- script args...]
   minigo repl
   minigo vet <dir-or-importpath> [--special import/path.Sym]...
@@ -68,10 +68,12 @@ func run(ctx context.Context, args []string) error {
 			break
 		}
 	}
-	// extract -entry/--entry anywhere: Go's flag package stops at the
-	// first positional, but `minigo run ./pkg --entry F` should work
+	// extract -entry/--entry and package-mode flags anywhere: Go's flag
+	// package stops at the first positional, but `minigo run ./pkg
+	// --entry F` should work
 	var entry string
 	var rest []string
+	var denys, srcs []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -83,8 +85,24 @@ func run(ctx context.Context, args []string) error {
 			entry = args[i]
 		case strings.HasPrefix(a, "--entry="), strings.HasPrefix(a, "-entry="):
 			entry = strings.SplitN(a, "=", 2)[1]
+		case a == "--deny" || a == "-deny":
+			i++
+			if i >= len(args) {
+				return fmt.Errorf("--deny requires an import path")
+			}
+			denys = append(denys, strings.Split(args[i], ",")...)
+		case strings.HasPrefix(a, "--deny="), strings.HasPrefix(a, "-deny="):
+			denys = append(denys, strings.Split(strings.SplitN(a, "=", 2)[1], ",")...)
+		case a == "--src" || a == "-src":
+			i++
+			if i >= len(args) {
+				return fmt.Errorf("--src requires an import path")
+			}
+			srcs = append(srcs, strings.Split(args[i], ",")...)
+		case strings.HasPrefix(a, "--src="), strings.HasPrefix(a, "-src="):
+			srcs = append(srcs, strings.Split(strings.SplitN(a, "=", 2)[1], ",")...)
 		case strings.HasPrefix(a, "-"):
-			return fmt.Errorf("unknown flag %q (supported: --entry)", a)
+			return fmt.Errorf("unknown flag %q (supported: --entry, --deny, --src)", a)
 		default:
 			rest = append(rest, a)
 		}
@@ -101,8 +119,21 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	e := minigo.NewEngine(cwd, minigo.WithOutput(os.Stdout),
-		minigo.WithArgs(append([]string{ref}, scriptArgs...)))
+	modes := map[string]minigo.PackageMode{}
+	for _, p := range denys {
+		modes[p] = minigo.ModeDeny
+	}
+	for _, p := range srcs {
+		modes[p] = minigo.ModeSource
+	}
+	opts := []minigo.Option{
+		minigo.WithOutput(os.Stdout),
+		minigo.WithArgs(append([]string{ref}, scriptArgs...)),
+	}
+	if len(modes) > 0 {
+		opts = append(opts, minigo.WithPackageModes(modes))
+	}
+	e := minigo.NewEngine(cwd, opts...)
 	r, err := e.Run(ctx, ref, fn)
 	if err != nil {
 		return err

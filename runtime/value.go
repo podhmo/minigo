@@ -221,6 +221,14 @@ func (r *FieldRef) Get() (Value, bool) {
 			return s.Fields[i], true
 		}
 	}
+	// a promoted field lives on an embedded struct: descend through each
+	// anonymous field (first match wins — same-depth ambiguity is a
+	// compile error the index would have rejected earlier).
+	for _, i := range s.Def.EmbedIdx {
+		if v, ok := (&FieldRef{Base: s.Fields[i], Name: r.Name}).Get(); ok {
+			return v, true
+		}
+	}
 	return nil, false
 }
 
@@ -233,6 +241,11 @@ func (r *FieldRef) Set(v Value) bool {
 	for i, n := range s.Def.Fields {
 		if n == r.Name {
 			s.Fields[i] = v
+			return true
+		}
+	}
+	for _, i := range s.Def.EmbedIdx {
+		if (&FieldRef{Base: s.Fields[i], Name: r.Name}).Set(v) {
 			return true
 		}
 	}
@@ -338,8 +351,42 @@ func Deref(v Value) (Value, bool) {
 	return nil, false
 }
 
+// Copy implements Go assignment semantics: structs copy by value —
+// recursively, since a struct field is itself a copied value — while
+// slices, maps, pointers, channels and funcs share. Storing without it
+// leaves the target aliasing the source's fields (`var k = p.key;
+// p.key.mark.c++` would leak into k).
+func Copy(v Value) Value {
+	switch x := v.(type) {
+	case *Struct:
+		cp := &Struct{Def: x.Def, Fields: make([]Value, len(x.Fields))}
+		for i, e := range x.Fields {
+			cp.Fields[i] = Copy(e)
+		}
+		return cp
+	case *Slice:
+		// arrays copy on assignment like structs — nested arrays copy
+		// recursively. Plain slices share their backing (Go semantics).
+		if arrayTypedef(x.Typ) {
+			el := make([]Value, len(x.Elems))
+			for i, e := range x.Elems {
+				el[i] = Copy(e)
+			}
+			return &Slice{Elems: el, Typ: x.Typ}
+		}
+		return v
+	case *Named:
+		// assignment copies the underlying value but keeps the declared tag
+		return Tag(x.Typ, Copy(x.V))
+	}
+	return v
+}
+
 // SetRef stores through any pointer-like value: Cell, FieldRef or IndexRef.
+// The stored value is copied like any Go assignment — otherwise a struct
+// RHS would alias the slot.
 func SetRef(v, val Value) bool {
+	val = Copy(val)
 	switch r := v.(type) {
 	case *Cell:
 		r.Elem = val
@@ -892,6 +939,10 @@ type BuiltinFunc struct {
 	// reads it for the owner (receiver package), signature, and
 	// definition position. Nil for plain builtins.
 	Method *reflect.Method
+	// GenFn, when set, makes this a generic builtin: instantiating it
+	// (F[T]) produces a plain BuiltinFunc that calls GenFn with the
+	// bound type arguments (e.g. reflect.TypeFor[T]).
+	GenFn func(vm VMCaller, targs []Value, args []Value) (Value, error)
 }
 
 // VMCaller is the piece of the VM builtins need (kept narrow to avoid a
