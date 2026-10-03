@@ -614,11 +614,13 @@ func (e *Env) append_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value,
 		return nil, fmt.Errorf("reflect.Append: arg 0 is %T, not a reflect.Value", args[0])
 	}
 	elems := make([]runtime.Value, 0, len(args)-1)
+	xvs := make([]*RValue, 0, len(args)-1)
 	for _, a := range args[1:] {
 		rv := asRValue(a)
 		if rv == nil {
 			return nil, fmt.Errorf("reflect.Append: arg is %T, not a reflect.Value", a)
 		}
+		xvs = append(xvs, rv)
 		elems = append(elems, rv.ifaceVal())
 	}
 	if s.rv.IsValid() {
@@ -645,6 +647,18 @@ func (e *Env) append_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value,
 	sl, ok := s.get().(*runtime.Slice)
 	if !ok {
 		return nil, fmt.Errorf("reflect.Append on %s", s.Kind())
+	}
+	// Go's internal grow assigns each arg to the slice's element type —
+	// a mismatched arg dies as 'reflect.Set: value of type X is not
+	// assignable to type Y' before anything is appended.
+	if etd := e.elemOf(s.td); etd != nil {
+		et := e.rtypeOf(etd)
+		for _, xv := range xvs {
+			xt := xv.Type()
+			if xt != nil && !xt.AssignableTo(et) {
+				plain("reflect.Set: value of type %s is not assignable to type %s", xt.String(), et.String())
+			}
+		}
 	}
 	// append into the live backing: spare capacity is reused, so writes
 	// through the result's elements land in the caller's array like Go.
@@ -680,6 +694,14 @@ func (e *Env) appendSlice(vc runtime.VMCaller, args []runtime.Value) (runtime.Va
 	tl, ok2 := t.get().(*runtime.Slice)
 	if !ok1 || !ok2 {
 		return nil, fmt.Errorf("reflect.AppendSlice on non-slice")
+	}
+	// Go requires identical element types — 'reflect.AppendSlice:
+	// uint8 != int' names dst-elem first.
+	if detd, setd := e.elemOf(s.td), e.elemOf(t.td); detd != nil && setd != nil {
+		dt, st := e.rtypeOf(detd), e.rtypeOf(setd)
+		if dt.key != st.key {
+			plain("reflect.AppendSlice: %s != %s", dt.String(), st.String())
+		}
 	}
 	elems := make([]runtime.Value, len(tl.Elems))
 	for i, el := range tl.Elems {
@@ -718,6 +740,14 @@ func (e *Env) copy_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, e
 	var ss []runtime.Value
 	switch sv := s.get().(type) {
 	case *runtime.Slice:
+		// element types must be identical — 'reflect.Copy: uint8 != int'
+		// names dst-elem first.
+		if detd, setd := e.elemOf(d.td), e.elemOf(s.td); detd != nil && setd != nil {
+			dt, st := e.rtypeOf(detd), e.rtypeOf(setd)
+			if dt.key != st.key {
+				plain("reflect.Copy: %s != %s", dt.String(), st.String())
+			}
+		}
 		ss = sv.Elems
 	case string:
 		if et := e.elemOf(d.td); et != nil && e.kindOfTd(et) != reflect.Uint8 {
