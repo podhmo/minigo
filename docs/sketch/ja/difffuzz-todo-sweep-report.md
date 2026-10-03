@@ -106,3 +106,12 @@
 
 1. **一時変数生成の専用ヘルパー集約 — 妥当（中）**。今回の `$argN` 衝突は「採番スコープを呼び出し側が握る」構造が原因で、`c.tmpSeq` で回避したが、`$tag`・named result slots・funclit 名など compiler 内の合成名は同じ罠を持つ。`c.fresh("$arg")` 的な発番ヘルパーに集約すれば今後の衝突を構造的に防げる。ただし現状の衝突面は `$arg` だけなので、効果は予防的。
 2. **VM・intrinsics 間の型同一性判定の共通化 — 妥当（中）**。`deepTypeEq`/`deepDefEq`/`deepTypSpelling`（intrinsics）と VM 側の assignability・interface switch strict 比較・comparable 判定は同じ「typedef の同一性」を別々に判定している。実際にずれが存在する: DeepEqual は spelling 比較で匿名型を区別するが、VM の `BinEqlIface` は `==`/`deepDefEq` 系で `[]int` vs `[]string` の要素型を見ない方向の判定になっている経路がある。`typedefIdentical(a, b)` のような単一 API に集約し、各判定が「構造的同一性のどの側面を見るか」を明示できると、指摘系の再発を防げる。`deepTypSpelling`（AST printing）が runtime 非依存のまま `runtime` パッケージ側へ移せるかが設計の肝 — `ast.Expr` と `*runtime.TypeDef` だけに依存するので移動自体は可能。
+
+### 6.5 レビュー第4ラウンド: 2件の修正
+
+第4ラウンドは2件とも現スタックトップで再現した（[#122](https://github.com/podhmo/minigo/pull/122)、[#123](https://github.com/podhmo/minigo/pull/123)）。リファクタリング提案なし。
+
+- **len/cap fold が operand base の call を見逃す（#122）** — `hoistedArgCalls` の対象が `ix.Index` だけだったため、`len(f()[0])` で base の `f()` が fold に巻き込まれて消えた（Go は index を fold するのは operand 全体に call/受信が無いときだけ）。`ast.Inspect` ベースなので対象を index 式全体（`ix`）に広げただけで base 側の call も拾える。評価順二相化のガード範囲の見落とし。
+- **終了ブロックのローカル型が残留（#123）** — `typeSpecs`/`typeDefs`/`ifaceTypes` が関数単位のフラット map で `popBlock` と連動せず、`{type T struct{Y}}` 終了後の `type U struct{T}` が死んだ T を埋め込んで `u.X` が trap。3つの検索を `isTypeDeclName` と同じ「live ブロックに binding があるか」基準に統一 — ついでに local var `T` が外側の `type T` を透過させる var-shadow 穴も塞いだ。
+
+いずれも「メタデータの寿命 ≠ 名前 binding の寿命」「最適化ガードの対象範囲の切り方」という §3 の構造的な反省の再発型。fscope の型メタデータ系は block 連動に揃えたので、この系の個別指摘はここで打ち止めのはず。
