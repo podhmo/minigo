@@ -1,0 +1,8 @@
+package app
+
+// Code generated directives below are managed by gen-sync. DO NOT EDIT.
+//go:generate stringer -type=Phase
+
+// Phase is a pipeline phase. Its constants live in phase_consts.go —
+// a per-file scan would miss the enum signal.
+type Phase int

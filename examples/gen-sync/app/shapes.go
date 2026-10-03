@@ -1,0 +1,23 @@
+package app
+
+// Score is an alias — never a generation target.
+type Score = int
+
+// OldStatus aliases the real enum. Its const below is typed OldStatus,
+// which is exactly what a defined enum would look like — but the alias
+// must not get a stringer of its own.
+type OldStatus = Status
+
+const LegacyStatus OldStatus = StatusOpen
+
+type (
+	// Size is a defined type with constants: an enum.
+	Size int
+	// SizeKey is an alias sharing the same declaration group.
+	SizeKey = string
+)
+
+const (
+	SizeBig Size = iota
+	SizeHuge
+)
