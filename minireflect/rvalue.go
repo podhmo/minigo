@@ -1434,6 +1434,28 @@ func (v *RValue) Call(in []*RValue) []*RValue {
 	if err != nil {
 		panic(&runtime.Panic{Value: fmt.Sprintf("reflect.Value.Call: %s", err)})
 	}
+	return v.callOut(r)
+}
+
+// callOut marshals the callee's raw result into Go's result arity: the
+// VM returns NIL for a void call, so the declared signature's result
+// count decides how many RValues surface.
+func (v *RValue) callOut(r runtime.Value) []*RValue {
+	if ft := v.callSig(); ft != nil {
+		n := 0
+		if ft.Results != nil {
+			for _, f := range ft.Results.List {
+				if len(f.Names) > 0 {
+					n += len(f.Names)
+				} else {
+					n++
+				}
+			}
+		}
+		if n == 0 {
+			return nil
+		}
+	}
 	if tup, ok := r.(*runtime.Tuple); ok {
 		res := make([]*RValue, len(tup.Elems))
 		for i, el := range tup.Elems {
@@ -1444,9 +1466,88 @@ func (v *RValue) Call(in []*RValue) []*RValue {
 	return []*RValue{v.e.wrap(v.vc, r, nil, typeOfValue(v.e, r))}
 }
 
-// CallSlice invokes a variadic func value with a slice as the tail.
+// callSig finds the callee's declared signature — the function's own
+// decl type, a closure's literal type, a bound method's decl type, or
+// the typedef's FuncType spec when the value is opaque.
+func (v *RValue) callSig() *ast.FuncType {
+	var decl *ast.FuncDecl
+	switch fn := v.get().(type) {
+	case *runtime.Function:
+		decl = fn.Decl
+	case *runtime.Closure:
+		if fn.Fn != nil {
+			decl = fn.Fn.Decl
+		}
+	case *runtime.BoundMethod:
+		if fn.Fn != nil {
+			decl = fn.Fn.Decl
+		}
+	}
+	if decl != nil && decl.Type != nil {
+		return decl.Type
+	}
+	if t := v.Type(); t != nil {
+		return funcSig(t)
+	}
+	return nil
+}
+
+// CallSlice invokes a variadic func value with a slice as the tail —
+// Go assigns the slice to the variadic parameter, so the script side
+// spreads its elements into the trailing args, mirroring `f(xs...)`.
 func (v *RValue) CallSlice(in []*RValue) []*RValue {
-	return v.Call(in)
+	v.mustValid()
+	if v.host() {
+		mt := v.rv.Type()
+		args := make([]reflect.Value, len(in))
+		for i, a := range in {
+			pt := mt.In(min(i, mt.NumIn()-1))
+			rv, err := toHost(a.ifaceVal(), pt)
+			if err != nil {
+				trap("reflect.Value.CallSlice: %s", err)
+			}
+			args[i] = rv
+		}
+		out := v.rv.CallSlice(args)
+		var res []*RValue
+		for _, o := range out {
+			res = append(res, v.e.wrapHost(v.vc, o))
+		}
+		return res
+	}
+	if v.vc == nil {
+		trap("minireflect: reflect.Value.CallSlice needs a caller context")
+	}
+	if len(in) == 0 {
+		trap("reflect.Value.CallSlice with empty input slice")
+	}
+	if ft := v.callSig(); ft != nil {
+		variadic := false
+		if ft.Params != nil && len(ft.Params.List) > 0 {
+			_, variadic = ft.Params.List[len(ft.Params.List)-1].Type.(*ast.Ellipsis)
+		}
+		if !variadic {
+			trap("reflect.Value.CallSlice of a non-variadic function")
+		}
+	}
+	last := in[len(in)-1]
+	last.mustValid()
+	var s *runtime.Slice
+	switch x := last.get().(type) {
+	case *runtime.Slice:
+		s = x
+	case *runtime.Named:
+		s, _ = x.V.(*runtime.Slice)
+	}
+	if s == nil {
+		trap("reflect.Value.CallSlice: last argument must be a slice")
+	}
+	spread := make([]*RValue, 0, len(in)-1+len(s.Elems))
+	spread = append(spread, in[:len(in)-1]...)
+	for _, el := range s.Elems {
+		spread = append(spread, v.e.wrap(v.vc, el, nil, typeOfValue(v.e, el)))
+	}
+	return v.Call(spread)
 }
 
 // Method returns the value's i'th method (not supported: ordering
