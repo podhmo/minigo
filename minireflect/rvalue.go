@@ -581,7 +581,8 @@ func (v *RValue) FieldByIndex(idx []int) *RValue {
 	return cur
 }
 
-// FieldByName looks up a struct field by name (no promotion).
+// FieldByName looks up a struct field by name, including promotion
+// through embedded fields (value or pointer).
 func (v *RValue) FieldByName(name string) *RValue {
 	v.mustValid()
 	if v.host() {
@@ -599,6 +600,49 @@ func (v *RValue) FieldByName(name string) *RValue {
 	for i, fn := range s.Def.Fields {
 		if fn == name {
 			return v.Field(i)
+		}
+	}
+	for _, ei := range s.Def.EmbedIdx {
+		sub := v.Field(ei)
+		for {
+			if st := structOf(sub.get()); st != nil {
+				if r := sub.fieldByNameRec(st, name); r.IsValid() {
+					return r
+				}
+				break
+			}
+			ev := sub.Elem()
+			if !ev.IsValid() {
+				break
+			}
+			sub = ev
+		}
+	}
+	return &RValue{e: v.e, vc: v.vc}
+}
+
+// fieldByNameRec resolves name on the struct value's own fields, then
+// descends into embedded fields — the promotion walk of FieldByName.
+func (v *RValue) fieldByNameRec(s *runtime.Struct, name string) *RValue {
+	for i, fn := range s.Def.Fields {
+		if fn == name {
+			return v.Field(i)
+		}
+	}
+	for _, ei := range s.Def.EmbedIdx {
+		sub := v.Field(ei)
+		for {
+			if st := structOf(sub.get()); st != nil {
+				if r := sub.fieldByNameRec(st, name); r.IsValid() {
+					return r
+				}
+				break
+			}
+			ev := sub.Elem()
+			if !ev.IsValid() {
+				break
+			}
+			sub = ev
 		}
 	}
 	return &RValue{e: v.e, vc: v.vc}
@@ -1267,29 +1311,32 @@ func (v *RValue) Method(i int) *RValue {
 	if v.host() {
 		return v.e.wrapHost(v.vc, v.rv.Method(i))
 	}
-	names := sortedKeys(v.e.typeMethods(v.td))
+	names := exportedMethodNames(v.e.methodSet(v.td))
 	if i < 0 || i >= len(names) {
 		panic(&runtime.Panic{Value: fmt.Sprintf("reflect: Method index %d out of range", i)})
 	}
 	return v.MethodByName(names[i])
 }
 
-// NumMethod reports the bound method count.
+// NumMethod reports the exported bound method count.
 func (v *RValue) NumMethod() int {
 	v.mustValid()
 	if v.host() {
 		return v.rv.NumMethod()
 	}
-	return len(v.e.typeMethods(v.td))
+	return len(exportedMethodNames(v.e.methodSet(v.td)))
 }
 
-// MethodByName binds a method by name through the caller's member
-// dispatch.
+// MethodByName binds an exported method by name through the caller's
+// member dispatch — unexported members stay invisible, like Go.
 func (v *RValue) MethodByName(name string) *RValue {
 	v.mustValid()
 	if v.host() {
 		m := v.rv.MethodByName(name)
 		return v.e.wrapHost(v.vc, m)
+	}
+	if !ast.IsExported(name) {
+		return &RValue{e: v.e, vc: v.vc}
 	}
 	if v.vc == nil {
 		trap("minireflect: reflect.Value.MethodByName needs a caller context")
