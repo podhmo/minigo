@@ -971,7 +971,7 @@ func (v *RValue) Slice(i, j int) *RValue {
 		if i < 0 || j > len(s) || i > j {
 			plain("reflect.Value.Slice: string slice index out of bounds")
 		}
-		return &RValue{e: v.e, vc: v.vc, val: s[i:j], td: v.td, ro: v.ro}
+		return &RValue{e: v.e, vc: v.vc, val: s[i:j], ref: v.ref, td: v.td, ro: v.ro}
 	case *runtime.Slice:
 		// an unaddressable array rejects Slice before the bounds are
 		// ever looked at — Go checks addressability first.
@@ -991,20 +991,20 @@ func (v *RValue) Slice(i, j int) *RValue {
 			st := &runtime.TypeDef{Kind: runtime.KindSlice, Elem: v.e.elemOf(s.Typ),
 				Anon: &ast.ArrayType{Elt: at.Elt}}
 			return &RValue{e: v.e, vc: v.vc,
-				val: &runtime.Slice{Elems: s.Elems[i:j], Typ: st}, td: st, ro: v.ro}
+				val: &runtime.Slice{Elems: s.Elems[i:j], Typ: st}, ref: v.ref, td: st, ro: v.ro}
 		}
 		return &RValue{e: v.e, vc: v.vc,
-			val: &runtime.Slice{Elems: s.Elems[i:j], Typ: s.Typ}, td: v.td, ro: v.ro}
+			val: &runtime.Slice{Elems: s.Elems[i:j], Typ: s.Typ}, ref: v.ref, td: v.td, ro: v.ro}
 	case *runtime.Named:
 		// named string/slice values view through the underlying like
 		// every other kind-dispatched accessor.
-		nv := &RValue{e: v.e, vc: v.vc, val: s.V, td: v.td, ro: v.ro}
+		nv := &RValue{e: v.e, vc: v.vc, val: s.V, ref: v.ref, td: v.td, ro: v.ro}
 		return nv.Slice(i, j)
 	case *runtime.TypedNil:
 		if v.Kind() == reflect.Slice {
 			if i == 0 && j == 0 {
 				// a nil slice reslices to itself — s[:0] stays nil.
-				return &RValue{e: v.e, vc: v.vc, val: s, td: v.td, ro: v.ro}
+				return &RValue{e: v.e, vc: v.vc, val: s, ref: v.ref, td: v.td, ro: v.ro}
 			}
 			plain("reflect.Value.Slice: slice index out of bounds")
 		}
