@@ -53,6 +53,7 @@ type filePlan struct {
 // must not be rewritten by it.
 func collect(dir string, deps bool) []filePlan {
 	plans := []filePlan{}
+	var ex *scanx.Explorer
 	visit := func(files []*inspect.File) {
 		decls := []*inspect.Decl{}
 		for _, f := range files {
@@ -61,13 +62,14 @@ func collect(dir string, deps bool) []filePlan {
 		for _, f := range files {
 			expected := []string{}
 			for _, d := range inspect.Decls(f) {
-				expected = append(expected, directivesFor(d, f, decls)...)
+				expected = append(expected, directivesFor(ex, d, f, decls)...)
 			}
 			plans = append(plans, filePlan{f, scanx.Dedupe(expected)})
 		}
 	}
 
 	root := inspect.DirOf(dir)
+	ex = scanx.NewExplorer(inspect.Path(root))
 	files := inspect.Files(root)
 	visit(files)
 	if !deps {
@@ -178,7 +180,7 @@ func syncFile(p filePlan, check bool, wd string) bool {
 
 // directivesFor infers the directives a declaration wants. Every rule is
 // independent: a decl can earn several directives, or none.
-func directivesFor(d *inspect.Decl, f *inspect.File, decls []*inspect.Decl) []string {
+func directivesFor(ex *scanx.Explorer, d *inspect.Decl, f *inspect.File, decls []*inspect.Decl) []string {
 	out := []string{}
 	if inspect.Kind(d) != "type" {
 		return out
@@ -196,9 +198,10 @@ func directivesFor(d *inspect.Decl, f *inspect.File, decls []*inspect.Decl) []st
 			out = append(out, "//go:generate stringer -type="+name)
 		}
 	case "StructType":
-		// field-tag inference: a field whose tag requests the required
-		// check opts the struct into the (hypothetical) generator.
-		if hasRequiredTag(d) {
+		// field-tag inference, recursively: a struct opts into the
+		// (hypothetical) generator when it — or any struct reachable
+		// through its field types — requests the required check.
+		if hasRequiredTag(d) || reachHasRequired(ex, d) {
 			out = append(out, "//go:generate requiredgen -type="+name)
 		}
 	case "InterfaceType":
@@ -216,6 +219,24 @@ func directivesFor(d *inspect.Decl, f *inspect.File, decls []*inspect.Decl) []st
 		out = append(out, "//go:generate oneofgen -type="+name)
 	}
 	return out
+}
+
+// reachHasRequired reports whether some struct reachable from d's field
+// types requests the required check. Exploration stays inside the
+// scanned package's subtree (cross-package refs resolve, external and
+// bound paths are never entered), each shared package is read once, and
+// type cycles terminate on the visited set.
+func reachHasRequired(ex *scanx.Explorer, d *inspect.Decl) bool {
+	found := false
+	ex.Reach(d, func(nd *inspect.Decl) bool {
+		def := inspect.Def(nd)
+		if def != nil && def.Kind == "StructType" && hasRequiredTag(nd) {
+			found = true
+			return false // stop early
+		}
+		return true
+	})
+	return found
 }
 
 // hasRequiredTag reports whether any struct field's tag requests the

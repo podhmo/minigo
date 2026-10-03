@@ -96,12 +96,12 @@ func TestSync(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 9 {
-		t.Fatalf("expected 9 files changed, got %d", n)
+	if n != 10 {
+		t.Fatalf("expected 10 files changed, got %d", n)
 	}
 	for _, name := range []string{
 		"level", "job", "config", "store", "events",
-		"shapes", "phase", "ops", "retired", "status",
+		"shapes", "phase", "ops", "retired", "status", "graph",
 	} {
 		assertSameFile(t, filepath.Join(app, name+".go"), "testdata/"+name+".golden")
 	}
@@ -131,8 +131,8 @@ func TestCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 9 {
-		t.Fatalf("expected 9 drifting files, got %d", n)
+	if n != 10 {
+		t.Fatalf("expected 10 drifting files, got %d", n)
 	}
 	assertSameFile(t, filepath.Join(app, "job.go"), "app/job.go")
 	assertSameFile(t, filepath.Join(app, "level.go"), "app/level.go")
@@ -170,8 +170,8 @@ func TestDeps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 10 {
-		t.Fatalf("expected 10 files changed with -deps, got %d", n)
+	if n != 11 {
+		t.Fatalf("expected 11 files changed with -deps, got %d", n)
 	}
 	assertSameFile(t, filepath.Join(app, "internal", "mood", "mood.go"), "testdata/mood.golden")
 	assertSameFile(t, filepath.Join(app, "internal", "meta", "meta.go"), "app/internal/meta/meta.go")
