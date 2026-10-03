@@ -189,6 +189,140 @@ func TestREPLConstAndTypedVar(t *testing.T) {
 	}
 }
 
+// TestREPLDirImport covers directory-form imports — `import "./x"`,
+// `import "../x"`, `import "/abs/x"` — which real Go forbids but a
+// project-root REPL needs. They anchor to the engine's start directory
+// (the same root module resolution uses), resolve eagerly at the import
+// line, and bind the package's declared name like Go does.
+func TestREPLDirImport(t *testing.T) {
+	ctx := context.Background()
+	e := NewEngine("testdata")
+	r := e.NewREPL()
+
+	eval := func(line string) (any, error) {
+		v, err := r.EvalLine(ctx, line)
+		if err != nil {
+			return nil, err
+		}
+		return r.Display(v), nil
+	}
+
+	// a directory import makes the package usable qualified
+	if _, err := r.EvalLine(ctx, `import "./inspectpkg"`); err != nil {
+		t.Fatalf("dir import: %v", err)
+	}
+	if got, err := eval(`inspectpkg.Hello("y")`); err != nil || got != "hello y" {
+		t.Fatalf("dir-imported func: %v %v", got, err)
+	}
+	if got, err := eval(`inspectpkg.Count`); err != nil || got != int64(3) {
+		t.Fatalf("dir-imported var: %v %v", got, err)
+	}
+	// the binding survives later reloads (each line re-parses the spec)
+	if got, err := eval(`inspectpkg.User{Name: "n"}.Greet()`); err != nil || got != "hi n" {
+		t.Fatalf("dir-imported method: %v %v", got, err)
+	}
+
+	// the declared package name wins over the directory basename
+	// (testdata/oddname declares package oddpkg)
+	if _, err := r.EvalLine(ctx, `import "./oddname"`); err != nil {
+		t.Fatalf("oddname import: %v", err)
+	}
+	if got, err := eval(`oddpkg.Magic()`); err != nil || got != int64(7) {
+		t.Fatalf("declared-name import: %v %v", got, err)
+	}
+	if _, err := eval(`oddname.Magic()`); err == nil {
+		t.Fatal("the directory basename must not bind")
+	}
+
+	// an explicit alias wins over the declared name, like Go
+	if _, err := r.EvalLine(ctx, `import odd "./oddname"`); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := eval(`odd.Magic()`); err != nil || got != int64(7) {
+		t.Fatalf("aliased dir import: %v %v", got, err)
+	}
+
+	// a dot dir-import exposes exported members unqualified
+	if _, err := r.EvalLine(ctx, `import . "./inspectpkg"`); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := eval(`Hello("d")`); err != nil || got != "hello d" {
+		t.Fatalf("dot dir import: %v %v", got, err)
+	}
+
+	// a missing dir fails at the import line and poisons nothing
+	if _, err := r.EvalLine(ctx, `import "./missing"`); err == nil {
+		t.Fatal("expected error for a missing dir import")
+	}
+	if got, err := eval(`inspectpkg.Hello("z")`); err != nil || got != "hello z" {
+		t.Fatalf("session after failed dir import: %v %v", got, err)
+	}
+}
+
+// TestREPLResultEcho pins the value-echo contract: only an input that
+// ends in an expression returns a value; declarations and assignments
+// evaluate silently. A multi-return call renders as a tuple.
+func TestREPLResultEcho(t *testing.T) {
+	ctx := context.Background()
+	r := NewEngine("testdata").NewREPL()
+
+	for _, line := range []string{
+		`import "strings"`,
+		`x := 1`,
+		`x = 2`,
+		`func f() int { return 1 }`,
+		`type T struct{ V int }`,
+		`var y int`,
+		`const k = 1`,
+	} {
+		v, err := r.EvalLine(ctx, line)
+		if err != nil {
+			t.Fatalf("EvalLine(%q): %v", line, err)
+		}
+		if v != nil {
+			t.Fatalf("EvalLine(%q) returned %v — declarations must be silent", line, v)
+		}
+		if d := r.Display(v); d != nil {
+			t.Fatalf("EvalLine(%q) displays %v — nothing should echo", line, d)
+		}
+	}
+
+	// a trailing expression still echoes — including a literal nil
+	v, err := r.EvalLine(ctx, "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(int64(2), r.Display(v)); diff != "" {
+		t.Fatalf("x (-want +got):\n%s", diff)
+	}
+	// a literal nil is an expression too — it echoes its nil spelling
+	v, err = r.EvalLine(ctx, "nil")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("(0x0,0x0)", r.Display(v)); diff != "" {
+		t.Fatalf("nil (-want +got):\n%s", diff)
+	}
+	v, err = r.EvalLine(ctx, `strings.TrimPrefix("foo", "f")`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("oo", r.Display(v)); diff != "" {
+		t.Fatalf("TrimPrefix (-want +got):\n%s", diff)
+	}
+	// a multi-return call echoes its tuple — (3, <nil>), not a raw box
+	if _, err := r.EvalLine(ctx, `import "fmt"`); err != nil {
+		t.Fatal(err)
+	}
+	v, err = r.EvalLine(ctx, `fmt.Println("hi")`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("(3, <nil>)", r.Display(v)); diff != "" {
+		t.Fatalf("Println result (-want +got):\n%s", diff)
+	}
+}
+
 func TestIncompleteInput(t *testing.T) {
 	cases := []struct {
 		src  string

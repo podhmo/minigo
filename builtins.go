@@ -602,6 +602,18 @@ func display(v runtime.Value) any {
 			parts[i] = display(e)
 		}
 		return parts
+	case *runtime.Tuple:
+		// a multi-return value prints like Go's comma-separated values
+		parts := make([]string, len(x.Elems))
+		for i, e := range x.Elems {
+			switch e.(type) {
+			case runtime.Nil, *runtime.IfaceNil:
+				parts[i] = "<nil>"
+			default:
+				parts[i] = fmt.Sprint(display(e))
+			}
+		}
+		return "(" + strings.Join(parts, ", ") + ")"
 	case *runtime.Struct:
 		parts := make([]any, len(x.Fields))
 		for i, e := range x.Fields {
