@@ -973,6 +973,11 @@ func (v *RValue) Slice(i, j int) *RValue {
 		}
 		return &RValue{e: v.e, vc: v.vc, val: s[i:j], td: v.td, ro: v.ro}
 	case *runtime.Slice:
+		// an unaddressable array rejects Slice before the bounds are
+		// ever looked at — Go checks addressability first.
+		if at := arrayTypeOf(s.Typ); at != nil && v.ref == nil {
+			plain("reflect.Value.Slice: slice of unaddressable array")
+		}
 		// Go bounds a reslice by capacity, not length — s[:1] can
 		// grow back to cap(s).
 		if i < 0 || j > cap(s.Elems) || i > j {
@@ -983,9 +988,6 @@ func (v *RValue) Slice(i, j int) *RValue {
 			// be addressable — and the result is a slice type, not the
 			// array's. The Anon keeps the []T spelling so the produced
 			// type interns to the same RType as a script []T literal.
-			if v.ref == nil {
-				plain("reflect.Value.Slice: slice of unaddressable array")
-			}
 			st := &runtime.TypeDef{Kind: runtime.KindSlice, Elem: v.e.elemOf(s.Typ),
 				Anon: &ast.ArrayType{Elt: at.Elt}}
 			return &RValue{e: v.e, vc: v.vc,
