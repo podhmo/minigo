@@ -302,7 +302,17 @@ func (e *Env) typeName(td *runtime.TypeDef) string {
 		return td.Name
 	}
 	if td.Anon != nil {
-		return runtime.TypGoSpelling(td.Anon, td)
+		// synthesized composites keep an identity-path qualifier in
+		// their Anon selector (*<dir>/x.T); Go's Type.String requalifies
+		// it by the declaring package's clause name (*main.T). Borrow
+		// the element's package context for display only — identity
+		// spelling (TypSpelling/keyOf) keeps running on td itself.
+		cd := *td
+		for at := td; cd.Pkg == nil && at.Elem != nil; at = at.Elem {
+			cd.Pkg = at.Elem.Pkg
+			cd.File = at.Elem.File
+		}
+		return runtime.TypGoSpelling(td.Anon, &cd)
 	}
 	if td.Elem != nil {
 		switch td.Kind {
