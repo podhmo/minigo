@@ -316,6 +316,13 @@ type mapKey struct {
 func CanonicalKey(v Value) Value {
 	switch x := Unwrap(v).(type) {
 	case *Struct:
+		// an unhashable field panics naming the outer struct type —
+		// Go's "hash of unhashable type main.T", nil or not.
+		for _, e := range x.Fields {
+			if unhashableKey(e) {
+				panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type " + msgTypeName(x.Def)}})
+			}
+		}
 		var sb strings.Builder
 		sb.WriteString(typeTagOf(x.Def))
 		writeKeyRepr(&sb, x.Fields)
@@ -325,6 +332,11 @@ func CanonicalKey(v Value) Value {
 		// like Go's runtime unhashable-type check.
 		if !arrayTypedef(x.Typ) {
 			panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type " + typeTagOf(x.Typ)}})
+		}
+		for _, e := range x.Elems {
+			if unhashableKey(e) {
+				panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type " + msgTypeName(x.Typ)}})
+			}
 		}
 		var sb strings.Builder
 		writeKeyRepr(&sb, x.Elems)
@@ -339,8 +351,16 @@ func CanonicalKey(v Value) Value {
 		}
 		return x.V
 	case *TypedNil:
+		// a nil slice/map/func key is still unhashable — the TYPE
+		// decides, like Go's runtime check.
+		if unhashableKind(x.Typ) {
+			panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type " + msgTypeName(x.Typ)}})
+		}
 		return mapKey{typ: typeTagOf(x.Typ), repr: "nil"}
 	case *IfaceNil:
+		if unhashableKind(x.Typ) {
+			panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type " + msgTypeName(x.Typ)}})
+		}
 		return mapKey{typ: typeTagOf(x.Typ), repr: "nil"}
 	case *Cell, *FieldRef, *IndexRef, *Chan:
 		// pointer-shaped keys hash by identity — the wrapper itself
@@ -372,6 +392,48 @@ func CanonicalKey(v Value) Value {
 	default:
 		return x
 	}
+}
+
+// msgTypeName renders a typedef for panic text — the package NAME
+// qualifier like Go's "main.T", or the anonymous type spelling.
+func msgTypeName(td *TypeDef) string {
+	if td == nil {
+		return "?"
+	}
+	if td.Name != "" {
+		if td.Pkg != nil && td.Pkg.Name != "" {
+			return td.Pkg.Name + "." + td.Name
+		}
+		return td.Name
+	}
+	x := td.Anon
+	if x == nil && td.Spec != nil {
+		x = td.Spec.Type
+	}
+	if x != nil {
+		return anonTag(x)
+	}
+	return "?"
+}
+
+// unhashableKind reports whether a typedef's kind is unhashable — a
+// nil slice/map/func still fails Go's map-key check by type.
+func unhashableKind(td *TypeDef) bool {
+	return td != nil && (td.Kind == KindSlice || td.Kind == KindMap || td.Kind == KindFunc)
+}
+
+// unhashableKey reports whether hashing v as part of a composite key
+// must panic — non-array slices, maps, funcs and their typed nils.
+func unhashableKey(v Value) bool {
+	switch x := Unwrap(v).(type) {
+	case *Slice:
+		return !arrayTypedef(x.Typ)
+	case *Map, *Function, *Closure, *BoundMethod, *BuiltinFunc:
+		return true
+	case *TypedNil:
+		return unhashableKind(x.Typ)
+	}
+	return false
 }
 
 var keyNonce atomic.Int64

@@ -1,0 +1,5 @@
+interface conversion: interface {} is int, not float32
+runtime error: comparing uncomparable type main.T
+runtime error: hash of unhashable type main.T
+runtime error: hash of unhashable type []int
+done
