@@ -219,9 +219,9 @@ usecasefuzz 再実行: 0 DIFF / 1 ACCEPT / 4 TRAP（lim-http/toml/xml/yaml — �
 
 | 指摘 | 根因 | PR |
 |------|------|-----|
-| **回帰**: mid-drain recover 後の deferred call が panic すると新 panic が飲まれる — `recovered: P` の後 `f returned` / `outer: <nil>` で E2 が消失。さらに `v.inflight` に残り、無関係な後続 `recover()` が死んだ panic を拾う（`h sees: E2`） | drain 終了時の outcome 取得は「元 panic `p != nil` の時だけ `v.inflight` を拾う」形だった。consume 遷移が `p = nil` にした後で later deferred が raise した panic は誰も拾わない | [#154](https://github.com/podhmo/minigo/pull/154) — 条件を `p != nil \|\| (inflight != saved && inflight != nil)` に統一 |
-| `runtime.Callers` が consume 後に owner フレームを二重表示（live + stale unwound） | consume 遷移で `v.unwinding` の死んだ panic のエントリが残ったまま — Go は recovery 後に unwound フレームを**一切**出さない（実測: supersede された元 panic の残りも含めて消える） | [#155](https://github.com/podhmo/minigo/pull/155) — `unwinding` エントリを panic タグ付きにして、遷移で consume 側+frame 自身の panic のエントリを除去（outer の live unwind は保持） |
-| 新 panic が mid-drain で supersede すると `Callers` の unwound 順が狂う（`f.func2` が `g,f` の後に埋まる） | `unwinding` が panic をまたいで append 順一本 — Go は**新しい gopanic の unwound フレームを先**に、古い unwind の残りをその後に出す | [#156](https://github.com/podhmo/minigo/pull/156) — タグでグループ化し「最後に pop があった panic」を先に出力 |
+| **回帰**: mid-drain recover 後の deferred call が panic すると新 panic が飲まれる — `recovered: P` の後 `f returned` / `outer: <nil>` で E2 が消失。さらに `v.inflight` に残り、無関係な後続 `recover()` が死んだ panic を拾う（`h sees: E2`） | drain 終了時の outcome 取得は「元 panic `p != nil` の時だけ `v.inflight` を拾う」形だった。consume 遷移が `p = nil` にした後で later deferred が raise した panic は誰も拾わない | [#156](https://github.com/podhmo/minigo/pull/156) — 条件を `p != nil \|\| (inflight != saved && inflight != nil)` に統一 |
+| `runtime.Callers` が consume 後に owner フレームを二重表示（live + stale unwound） | consume 遷移で `v.unwinding` の死んだ panic のエントリが残ったまま — Go は recovery 後に unwound フレームを**一切**出さない（実測: supersede された元 panic の残りも含めて消える） | [#157](https://github.com/podhmo/minigo/pull/157) — `unwinding` エントリを panic タグ付きにして、遷移で consume 側+frame 自身の panic のエントリを除去（outer の live unwind は保持） |
+| 新 panic が mid-drain で supersede すると `Callers` の unwound 順が狂う（`f.func2` が `g,f` の後に埋まる） | `unwinding` が panic をまたいで append 順一本 — Go は**新しい gopanic の unwound フレームを先**に、古い unwind の残りをその後に出す | [#158](https://github.com/podhmo/minigo/pull/158) — タグでグループ化し「最後に pop があった panic」を先に出力 |
 
 実測で確定した Go セマンティクス（panic.go の `gopanic`/`recovery` と挙動プローブ）:
 - deferred call が panic した時点で元 panic は**死亡**（superseded）— 新 panic を recover しても元 panic は復活せず、関数は正常終了する（`f-d2 recover: P` → `f returned` → `outer: <nil>`）。
@@ -234,7 +234,7 @@ usecasefuzz 再実行: 0 DIFF / 1 ACCEPT / 4 TRAP（lim-http/toml/xml/yaml — �
 
 | 提案 | 判定 | 対応 |
 |------|------|------|
-| `frame.deferred` は write-only | 正しい — `sentinel` が marker の役割を担う | 削除（#156 内の cleanup コミット） |
+| `frame.deferred` は write-only | 正しい — `sentinel` が marker の役割を担う | 削除（#159 内の cleanup コミット） |
 | `invokeDeferred` の doc が「`defer recover()` が unwind 中の panic を拾う」と旧仕様のまま | 正しい — one-frame 規則と矛盾 | doc 書き換え（sentinel = wrapper slot、0フレーム → nil / 1フレーム → recover） |
 | `imag` が TypeDef を inline 構築 | 妥当 | `real` も同形だったので両方 `runtime.BasicTypedef("float32")` に |
 | `basicTypedefs` の lazy map は `builtins()` pre-fill 頼み | 妥当 — goroutine-safe の根拠が暗黙 | init 時 eager 構築に変更、`BasicTypedef` は map lookup のみに |
