@@ -1927,7 +1927,12 @@ func (v *RValue) MethodByName(name string) *RValue {
 // Convert converts the value to type t for the subset the facade
 // supports (numeric widening, string<->[]byte).
 func (v *RValue) Convert(t *RType) *RValue {
-	v.mustValid("Convert")
+	if !v.IsValid() {
+		// Go's Convert dereferences the source type before any
+		// validity gate, so a zero Value dies as a nil pointer
+		// dereference rather than "call of ... on zero Value".
+		panic(runtime.NilDerefPanic())
+	}
 	if t == nil {
 		trap("reflect.Value.Convert to nil type")
 	}
