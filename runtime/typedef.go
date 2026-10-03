@@ -210,6 +210,12 @@ func typSpelling(e ast.Expr, ctx *TypeDef, under bool) string {
 			if p := typImportPath(file, id.Name); p != "" {
 				return p + "." + t.Sel.Name
 			}
+			// an unresolved selector qualifier is a package reference,
+			// not a local type name — spell it literally. Type-name
+			// spelling would prefix the enclosing package's path and
+			// double-qualify synthesized exprs ("bytes.Buffer" coming
+			// out "bytes.bytes.Buffer").
+			return id.Name + "." + t.Sel.Name
 		}
 		return typSpelling(t.X, ctx, under) + "." + t.Sel.Name
 	case *ast.IndexExpr:
@@ -508,6 +514,10 @@ func typBoundSpellingU(td *TypeDef, under bool) string {
 	}
 	if td.Name != "" {
 		if td.Pkg != nil {
+			// a host-bound td's Name is already "pkgpath.Name"
+			if strings.HasPrefix(td.Name, td.Pkg.Path+".") {
+				return td.Name
+			}
 			return td.Pkg.Path + "." + td.Name
 		}
 		return canonBasicName(td.Name)
