@@ -2845,6 +2845,15 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 	if dv, ok := runtime.Deref(n.V); ok {
 		sv = dv
 	}
+	if gv, isGo := sv.(*runtime.GoValue); isGo {
+		// a host-boxed payload (a tagged host composite literal — its
+		// Named tag only names the declared type) resolves fields and
+		// methods on the box itself, e.g. p.Get() on &sync.Pool{...}.
+		if mv, ok := v.hostMember(gv.V, name); ok {
+			return mv
+		}
+		f.trap("no member %s on host value %T", name, gv.V)
+	}
 	if s, isStruct := sv.(*runtime.Struct); isStruct {
 		for i, fn := range s.Def.Fields {
 			if fn == name {
@@ -3792,7 +3801,11 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 				v.initHostLiteral(f, td, hv, raw[:2*n])
 			}
 		}
-		return &runtime.GoValue{V: hv}
+		// the literal is value semantics (T{}, not &T{} — the & applies
+		// outside and re-wraps as *T); tag the box with its declared
+		// typedef so %T/TypeOf read T while the pointer-shaped payload
+		// keeps pointer methods callable.
+		return runtime.Tag(td, &runtime.GoValue{V: hv})
 	}
 	// a type alias builds the underlying composite
 	if td.Kind == runtime.KindAlias && v.H.Underlying != nil {

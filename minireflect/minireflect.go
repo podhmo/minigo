@@ -305,7 +305,7 @@ func plain(format string, args ...any) {
 // asRValue unwraps a script argument to its facade value: a GoValue
 // boxing an *RValue returns the facade object itself.
 func asRValue(v runtime.Value) *RValue {
-	if gv, ok := v.(*runtime.GoValue); ok {
+	if gv, ok := runtime.Unwrap(v).(*runtime.GoValue); ok {
 		if rv, ok := gv.V.(*RValue); ok {
 			return rv
 		}
@@ -315,7 +315,7 @@ func asRValue(v runtime.Value) *RValue {
 
 // asRType unwraps a script argument to its facade type.
 func asRType(v runtime.Value) *RType {
-	if gv, ok := v.(*runtime.GoValue); ok {
+	if gv, ok := runtime.Unwrap(v).(*runtime.GoValue); ok {
 		if rt, ok := gv.V.(*RType); ok {
 			return rt
 		}
@@ -341,6 +341,24 @@ func (e *Env) valueOfValue(vc runtime.VMCaller, v runtime.Value) *RValue {
 	case *runtime.IfaceNil:
 		// an interface holding nil has no dynamic type
 		return &RValue{e: e, vc: vc}
+	case *runtime.Named:
+		if gv, ok := x.V.(*runtime.GoValue); ok {
+			if rv, ok := gv.V.(*RValue); ok {
+				// a tagged facade box (reflect.Value{}) reflects to the
+				// facade struct itself, like the GoValue arm below
+				return &RValue{e: e, vc: vc, rv: reflect.ValueOf(rv).Elem()}
+			}
+			// a tagged host box (host composite literal T{}): reflect
+			// the addressable value inside — Type reads T, not *T.
+			rv := reflect.ValueOf(gv.V)
+			if rv.IsValid() && rv.Kind() == reflect.Pointer && !rv.IsNil() {
+				rv = rv.Elem()
+			}
+			return &RValue{e: e, vc: vc, rv: rv}
+		}
+		// a tag on a script payload keeps its declared type — fall
+		// through to the copy-and-td path below (Interface must hand
+		// the named value back for TypeAssert/%T).
 	case *runtime.GoValue:
 		if rv, ok := x.V.(*RValue); ok {
 			// reflecting a facade value itself yields the reflect.Value

@@ -4229,6 +4229,14 @@ func fmtArgs(v runtime.VMCaller, args []runtime.Value) ([]any, []runtime.Value) 
 // Go natives; composites keep their script shape inside a fmtValue.
 func fmtArg(v runtime.VMCaller, x runtime.Value) any {
 	switch x := x.(type) {
+	case *runtime.Named:
+		// the tag only names the declared type — a host-boxed payload
+		// still unwraps to fmtRValue, while other payloads keep
+		// fmtValue's tag-aware rendering (float32 tags, named scalars).
+		if gv, ok := x.V.(*runtime.GoValue); ok {
+			return fmtArg(v, gv)
+		}
+		return &fmtValue{c: v, x: x}
 	case int64:
 		// script ints store int64 but spell int — bad-verb markers
 		// (%!s(int=1)) and %T-adjacent spellings need the real width.
@@ -4288,7 +4296,15 @@ func typedefSpelling(td *runtime.TypeDef) string {
 	}
 	if td.Name != "" {
 		if td.Pkg != nil && td.Pkg.Name != "" {
-			return td.Pkg.Name + "." + td.Name
+			// identity names carry the import path (or, for bound
+			// packages, the package name) — strip the qualifier
+			// before requalifying by the clause name.
+			local := td.Name
+			if td.Pkg.Path != "" {
+				local = strings.TrimPrefix(local, td.Pkg.Path+".")
+			}
+			local = strings.TrimPrefix(local, td.Pkg.Name+".")
+			return td.Pkg.Name + "." + local
 		}
 		switch td.Name {
 		case "byte":

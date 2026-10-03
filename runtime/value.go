@@ -107,7 +107,10 @@ func Zero(td *TypeDef) Value {
 		return NIL
 	}
 	if td.HostNew != nil {
-		return &GoValue{V: td.HostNew()}
+		// keep the declared tag so %T/TypeOf read T while the box is
+		// pointer-shaped (`var b bytes.Buffer` → bytes.Buffer, not
+		// *bytes.Buffer).
+		return Tag(td, &GoValue{V: td.HostNew()})
 	}
 	switch td.Kind {
 	case KindInterface:

@@ -1,0 +1,11 @@
+bytes.Buffer
+*bytes.Buffer
+bytes.Buffer
+*bytes.Buffer
+strings.Reader
+strings.Builder
+sync.Mutex
+*sync.Pool
+*sync.Pool 7
+bytes.Buffer *sync.Pool
+xy
