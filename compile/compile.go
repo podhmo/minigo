@@ -290,6 +290,11 @@ type compiler struct {
 	// spells "main.main.func1" like the toolchain names it.
 	symName  string
 	litCount int
+
+	// tmpSeq numbers hoisted call-argument scratch slots — a nested
+	// call's callArgs runs while the outer call's slots are live, so
+	// the counter must not restart per call site.
+	tmpSeq int
 }
 
 func (c *compiler) emit(op bytecode.Op, a, b int, pos token.Pos) int {
@@ -2734,7 +2739,8 @@ func (c *compiler) callArgs(args []ast.Expr) {
 	for _, calls := range perArg {
 		for _, call := range calls {
 			c.expr(call)
-			name := fmt.Sprintf("$arg%d", len(names))
+			name := fmt.Sprintf("$arg%d", c.tmpSeq)
+			c.tmpSeq++
 			slot := c.fs.declare(name, call.Pos())
 			c.emit(bytecode.OpNewLocal, slot, 0, call.Pos())
 			names[call] = name
