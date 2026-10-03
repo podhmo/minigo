@@ -294,6 +294,10 @@ func (e *Engine) installStdlib() {
 		"CanBackquote": h.fn("strconv.CanBackquote", func(a []any) (any, error) { return strconv.CanBackquote(str(a[0])), nil }, strconv.CanBackquote),
 	})
 	e.Bind("bytes", map[string]runtime.Value{
+		// `var buf bytes.Buffer` / `new(bytes.Buffer)` box a real
+		// *bytes.Buffer so methods (WriteString, String, ...) dispatch
+		// on the host value.
+		"Buffer":          hostType("bytes.Buffer", func() any { return &bytes.Buffer{} }),
 		"NewBuffer":       h.fn("bytes.NewBuffer", func(a []any) (any, error) { return bytes.NewBuffer(byteSlice(a[0])), nil }, bytes.NewBuffer),
 		"NewBufferString": h.fn("bytes.NewBufferString", func(a []any) (any, error) { return bytes.NewBufferString(str(a[0])), nil }, bytes.NewBufferString),
 		"Contains":        h.fn2("bytes.Contains", func(a []any) (any, error) { return bytes.Contains(byteSlice(a[0]), byteSlice(a[1])), nil }, bytes.Contains),
@@ -1167,8 +1171,53 @@ func (e *Engine) installStdlib() {
 			// parallelism.
 			return int64(goruntime.GOMAXPROCS(0)), nil
 		}},
-		"Version": h.fn("runtime.Version", func(a []any) (any, error) { return goruntime.Version(), nil }),
-		"GC":      h.fn("runtime.GC", func(a []any) (any, error) { return nil, nil }),
+		"Version":  h.fn("runtime.Version", func(a []any) (any, error) { return goruntime.Version(), nil }),
+		"GC":       h.fn("runtime.GC", func(a []any) (any, error) { return nil, nil }),
+		"Compiler": "gc",
+		// runtime.GOROOT is deprecated for the host; report the env's
+		// root, falling back to `go env GOROOT` like go/build does.
+		"GOROOT": h.fn("runtime.GOROOT", func(a []any) (any, error) {
+			if gr := os.Getenv("GOROOT"); gr != "" {
+				return gr, nil
+			}
+			out, err := exec.Command("go", "env", "GOROOT").Output()
+			if err != nil {
+				return "", err
+			}
+			return strings.TrimSpace(string(out)), nil
+		}),
+		// a debugger trap is a no-op for the interpreter — the program
+		// just continues, which is what these tests rely on.
+		"Breakpoint": h.fn("runtime.Breakpoint", func(a []any) (any, error) { return nil, nil }),
+		// no GC: registering a finalizer is accepted but never fires —
+		// same observable behavior as a run with no GC pressure.
+		"SetFinalizer": h.fn("runtime.SetFinalizer", func(a []any) (any, error) {
+			if len(a) != 2 {
+				return nil, errors.New("runtime.SetFinalizer needs 2 args")
+			}
+			return nil, nil
+		}),
+		"MemProfileRate": &runtime.Cell{Elem: int64(512 * 1024)},
+		// liveness hints and heap profiling have no GC to act on —
+		// KeepAlive is a no-op; MemProfile reports no records.
+		"KeepAlive": h.fn("runtime.KeepAlive", func(a []any) (any, error) { return nil, nil }),
+		"MemProfile": &runtime.BuiltinFunc{Name: "runtime.MemProfile", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			return &runtime.Tuple{Elems: []runtime.Value{int64(0), true}}, nil
+		}},
+		"MemProfileRecord": &runtime.TypeDef{
+			Name: "runtime.MemProfileRecord", Kind: runtime.KindStruct,
+			Fields: []string{"AllocBytes", "FreeBytes", "AllocObjects", "FreeObjects"},
+		},
+		"Error":    &runtime.TypeDef{Name: "runtime.Error", Kind: runtime.KindInterface, MReqs: []string{"Error"}},
+		"MemStats": hostType("runtime.MemStats", func() any { return &goruntime.MemStats{} }),
+		"ReadMemStats": h.fn("runtime.ReadMemStats", func(a []any) (any, error) {
+			m, ok := a[0].(*goruntime.MemStats)
+			if !ok {
+				return nil, fmt.Errorf("ReadMemStats needs *runtime.MemStats, got %T", a[0])
+			}
+			goruntime.ReadMemStats(m)
+			return nil, nil
+		}),
 		"Callers": &runtime.BuiltinFunc{Name: "runtime.Callers", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) < 2 {
 				return nil, errors.New("runtime.Callers needs 2 args")
