@@ -36,13 +36,24 @@ type fscope struct {
 	typeSpecs  map[string]*ast.TypeSpec // local `type` decl specs, for shape checks
 	ifaceTypes map[string]bool          // local `type` decls whose spec is an interface
 	ifaceVars  []map[string]bool        // per-block: vars declared interface-typed
+	iota       int                      // slot backing the `iota` builtin in local const specs; -1 until declared
 	nlocals    int
 	upvals     []bytecode.UpvalDesc
 	upmap      map[string]int
 }
 
 func newFScope(parent *fscope) *fscope {
-	return &fscope{parent: parent, upmap: map[string]int{}, typeDecls: map[string]bool{}, typeSpecs: map[string]*ast.TypeSpec{}, ifaceTypes: map[string]bool{}}
+	return &fscope{parent: parent, iota: -1, upmap: map[string]int{}, typeDecls: map[string]bool{}, typeSpecs: map[string]*ast.TypeSpec{}, ifaceTypes: map[string]bool{}}
+}
+
+// iotaSlot lazily declares the hidden local backing the `iota` builtin
+// inside this function's local const specs — a user `const iota = ...`
+// shadows it like any other declared name.
+func (s *fscope) iotaSlot() int {
+	if s.iota < 0 {
+		s.iota = s.declare("iota", token.NoPos)
+	}
+	return s.iota
 }
 
 func (s *fscope) pushBlock() {
@@ -718,61 +729,78 @@ func (c *compiler) stmt(s ast.Stmt) {
 		c.emit(bytecode.OpPop, 0, 0, st.Pos())
 	case *ast.DeclStmt:
 		gd := st.Decl.(*ast.GenDecl)
-		for _, spec := range gd.Specs {
+		// an empty const spec repeats the previous non-empty spec's
+		// expression list AND its type — tracked per GenDecl.
+		var prevVals []ast.Expr
+		var prevType ast.Expr
+		for specIdx, spec := range gd.Specs {
 			switch gd.Tok {
 			case token.VAR, token.CONST:
 				vs := spec.(*ast.ValueSpec)
 				isConst := gd.Tok == token.CONST
+				vals := vs.Values
+				effType := vs.Type
+				if isConst {
+					// iota is the spec's own index in the GenDecl;
+					// a hidden local carries it so `iota` just reads a name.
+					c.emit(bytecode.OpConst, c.constIdx(int64(specIdx)), 0, vs.Pos())
+					c.emit(bytecode.OpSetLocal, c.fs.iotaSlot(), 0, vs.Pos())
+					if len(vals) == 0 && prevVals != nil {
+						vals, effType = prevVals, prevType
+					} else {
+						prevVals, prevType = vals, effType
+					}
+				}
 				// `var x T` binds a typed zero / typed nil via OpCoerce; typed
 				// consts coerce the same way — locals are always cells.
 				coerce := func(name *ast.Ident, slot int) {
-					if vs.Type == nil || slot < 0 {
+					if effType == nil || slot < 0 {
 						return
 					}
-					c.emitTypeCoerce(slot, vs.Type, name.Pos())
+					c.emitTypeCoerce(slot, effType, name.Pos())
 				}
 				// A declared type coerces the value on the stack before the
 				// bind: an untyped constant converts straight to T (`var r
 				// MyRune = 'a'`) instead of first materializing its default.
 				coerceTop := func() {
-					if vs.Type == nil {
+					if effType == nil {
 						return
 					}
-					c.typeExpr(vs.Type)
+					c.typeExpr(effType)
 					c.emit(bytecode.OpCoerceTop, 0, 0, vs.Pos())
 				}
 				// interface-typed decls mark their names so an
 				// interface-tag switch compares strict pairs.
-				ifaceType := vs.Type != nil && c.isIfaceTypeExpr(vs.Type)
+				ifaceType := effType != nil && c.isIfaceTypeExpr(effType)
 				markIface := func(name *ast.Ident, rhs ast.Expr) {
 					if name.Name == "_" {
 						return
 					}
-					if ifaceType || (vs.Type == nil && rhs != nil && c.isIfaceExpr(rhs)) {
+					if ifaceType || (effType == nil && rhs != nil && c.isIfaceExpr(rhs)) {
 						c.fs.markIface(name.Name)
 					}
 				}
-				if len(vs.Values) == 1 && len(vs.Names) > 1 {
-					c.expr(vs.Values[0])
+				if len(vals) == 1 && len(vs.Names) > 1 {
+					c.expr(vals[0])
 					c.emit3(bytecode.OpUnpack, len(vs.Names), 0, 0, vs.Pos())
 					for i := len(vs.Names) - 1; i >= 0; i-- {
 						coerceTop()
 						coerce(vs.Names[i], c.bindLocal(vs.Names[i].Name, vs.Names[i].Pos(), isConst))
-						markIface(vs.Names[i], vs.Values[0])
+						markIface(vs.Names[i], vals[0])
 					}
 					break
 				}
 				for i, name := range vs.Names {
-					if len(vs.Values) == 0 {
+					if len(vals) == 0 {
 						c.emit(bytecode.OpNil, 0, 0, name.Pos())
 					} else {
-						c.expr(vs.Values[i])
+						c.expr(vals[i])
 						coerceTop()
 					}
 					coerce(name, c.bindLocal(name.Name, name.Pos(), isConst))
 					var rhs ast.Expr
-					if i < len(vs.Values) {
-						rhs = vs.Values[i]
+					if i < len(vals) {
+						rhs = vals[i]
 					}
 					markIface(name, rhs)
 				}
