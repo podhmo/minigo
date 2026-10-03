@@ -457,3 +457,9 @@ TODO に残っていた `fmt "fmt"` の化粧直しは、落とすには import 
 #### D23. Stacked PRs で出す
 
 依頼により、修正（namedComposite 系）と、テスト・文書の更新を 2 本の PR に分けて積んだ。
+
+#### D24. レビュー指摘の generics: 宣言越し instantiate が「静かに壊れる」側だったので warn に変えた
+
+PR のレビューで「ユーザー定義の generics には対応してたんでしたっけ？」と来た。実際に試すと 2 系統に分かれた。書かれた `List[int]`→`List[int64]` は leaf-mismatch の警告 + raw 代入で最初から loud だった。一方 `type SrcList List[int]`→`type DstList List[int64]`（宣言越しの instantiate）は、`Unwrap`/`SymbolID` が instantiate 式（`IndexExpr`）を解けないため剥がしがそこで止まり、leafCast の楽観キャストが `destination.DstList(src)` を**警告なし**で吐いていた — 基底が違うのでコンパイルは通らない、D16 が言う「静かに壊れる」形である。
+
+対応: 両側の剥がし先が instantiation なら「基底が `[]T` のパラメトリックで要素型が見えない」とわかるので、leafCast に落とさず warn（`no conversion covers ... (generic instantiation)`）+ 正直な raw 代入に変えた（`-strict` でも拒否される）。片側だけ instantiation のケース（`type C List[int]`→`[]int` など）は leafCast のキャストがコンパイルできる余地があるので、偽陽性を避けるため warn は両側のときだけに絞った。コーパスに `check04-generic-instantiation`（BUILD-FAIL 固定）を追加した。完全対応には型引数の代入（spec の `[]T` を `[]int` に instantiate する）が要るが、それは inspect 層が意図的に踏み込まない領域なので、TODO.md に `[ ]` で残した。
