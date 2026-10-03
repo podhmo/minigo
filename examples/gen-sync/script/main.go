@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -46,40 +47,32 @@ type filePlan struct {
 	expected []string
 }
 
-// collect builds the sync plan for the scanned package, BFSing into
-// same-subtree imports when deps is set: only imports under the scanned
-// package's own path are followed — an edge that leaves the subtree
-// (e.g. app -> the tool's own scanx helper) is external to the run and
-// must not be rewritten by it.
-func collect(dir string, deps bool) []filePlan {
-	plans := []filePlan{}
-	var ex *scanx.Explorer
-	visit := func(files []*inspect.File) {
-		decls := []*inspect.Decl{}
-		for _, f := range files {
-			decls = append(decls, inspect.Decls(f)...)
-		}
-		for _, f := range files {
-			expected := []string{}
-			for _, d := range inspect.Decls(f) {
-				expected = append(expected, directivesFor(ex, d, f, decls)...)
-			}
-			plans = append(plans, filePlan{f, scanx.Dedupe(expected)})
-		}
-	}
+// pkgScan is one package's contribution to the run: the files that may
+// be synced and the decls that feed inference rules.
+type pkgScan struct {
+	path  string
+	files []*inspect.File
+	decls []*inspect.Decl
+}
 
+// collect builds the sync plan for the scanned package. It always walks
+// the in-subtree import closure — the implementer search space and the
+// reference-exploration scope both see the whole subtree regardless of
+// deps — but only the scanned package's own files become sync targets
+// unless deps is set. Edges that leave the subtree (e.g. app -> the
+// tool's own scanx helper) are never followed: external packages are
+// neither read nor written.
+func collect(dir string, deps bool) []filePlan {
 	root := inspect.DirOf(dir)
-	ex = scanx.NewExplorer(inspect.Path(root))
-	files := inspect.Files(root)
-	visit(files)
-	if !deps {
-		return plans
-	}
+	ex := scanx.NewExplorer(inspect.Path(root))
 	prefix := inspect.Path(root) + "/"
 	seen := map[string]bool{inspect.Path(root): true}
 	queue := []string{}
-	enqueue := func(fs []*inspect.File) {
-		for _, f := range fs {
+	scans := []pkgScan{}
+	visit := func(path string, files []*inspect.File) {
+		decls := []*inspect.Decl{}
+		for _, f := range files {
+			decls = append(decls, inspect.Decls(f)...)
 			for _, im := range inspect.Imports(f) {
 				p := im.Path
 				if strings.HasPrefix(p, prefix) && !seen[p] {
@@ -88,15 +81,28 @@ func collect(dir string, deps bool) []filePlan {
 				}
 			}
 		}
+		scans = append(scans, pkgScan{path, files, decls})
 	}
-	enqueue(files)
+	visit(inspect.Path(root), inspect.Files(root))
 	for len(queue) > 0 {
 		path := queue[0]
 		queue = queue[1:]
-		p := inspect.PackageOf(path)
-		fs := inspect.Files(p)
-		visit(fs)
-		enqueue(fs)
+		visit(path, inspect.Files(inspect.PackageOf(path)))
+	}
+
+	limit := len(scans)
+	if !deps {
+		limit = 1 // scans[0] is always the root package
+	}
+	plans := []filePlan{}
+	for _, s := range scans[:limit] {
+		for _, f := range s.files {
+			expected := []string{}
+			for _, d := range inspect.Decls(f) {
+				expected = append(expected, directivesFor(ex, scans, s, d, f)...)
+			}
+			plans = append(plans, filePlan{f, scanx.Dedupe(expected)})
+		}
 	}
 	return plans
 }
@@ -180,7 +186,7 @@ func syncFile(p filePlan, check bool, wd string) bool {
 
 // directivesFor infers the directives a declaration wants. Every rule is
 // independent: a decl can earn several directives, or none.
-func directivesFor(ex *scanx.Explorer, d *inspect.Decl, f *inspect.File, decls []*inspect.Decl) []string {
+func directivesFor(ex *scanx.Explorer, scans []pkgScan, s pkgScan, d *inspect.Decl, f *inspect.File) []string {
 	out := []string{}
 	if inspect.Kind(d) != "type" {
 		return out
@@ -194,7 +200,7 @@ func directivesFor(ex *scanx.Explorer, d *inspect.Decl, f *inspect.File, decls [
 	case "Ident":
 		// enum-style: `type X int`/`string` with a const block of X
 		// anywhere in the package.
-		if (def.Text == "int" || def.Text == "string") && scanx.HasConstOfType(decls, name) {
+		if (def.Text == "int" || def.Text == "string") && scanx.HasConstOfType(s.decls, name) {
 			out = append(out, "//go:generate stringer -type="+name)
 		}
 	case "StructType":
@@ -212,13 +218,42 @@ func directivesFor(ex *scanx.Explorer, d *inspect.Decl, f *inspect.File, decls [
 		}
 	}
 	// method-set inference: a concrete `Discriminator() string` marks a
-	// oneOf variant; the same requirement on an interface marks the
-	// union type itself.
-	if scanx.HasMethod(d, "Discriminator", "string") ||
-		scanx.RequiresMethod(d, "Discriminator", "func() string") {
+	// oneOf variant; the same requirement on an interface marks the union
+	// type itself, and collects its implementers as -variants=.
+	if scanx.HasMethod(d, "Discriminator", "string") {
 		out = append(out, "//go:generate oneofgen -type="+name)
+	} else if scanx.RequiresMethod(d, "Discriminator", "func() string") {
+		gen := "//go:generate oneofgen -type=" + name
+		if vars := implementers(scans, s.path); len(vars) > 0 {
+			gen += " -variants=" + strings.Join(vars, ",")
+		}
+		out = append(out, gen)
 	}
 	return out
+}
+
+// implementers lists the names of types across the walked import
+// closure that declare `Discriminator() string` — the method-set view
+// the interface's requirement implies. Names outside the interface's
+// own package are qualified with the package's base name. Promoted
+// (embedded) methods are invisible in the decl view, so a type that
+// only implements the interface through embedding honestly misses.
+func implementers(scans []pkgScan, selfPath string) []string {
+	vars := []string{}
+	for _, s := range scans {
+		for _, c := range s.decls {
+			if !scanx.HasMethod(c, "Discriminator", "string") {
+				continue
+			}
+			if s.path == selfPath {
+				vars = append(vars, c.Name)
+			} else {
+				vars = append(vars, filepath.Base(s.path)+"."+c.Name)
+			}
+		}
+	}
+	sort.Strings(vars)
+	return vars
 }
 
 // reachHasRequired reports whether some struct reachable from d's field

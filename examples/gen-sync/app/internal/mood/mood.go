@@ -15,3 +15,10 @@ const (
 type Marked struct {
 	Label string `required:"true"`
 }
+
+// Signal implements app's Envelope from another package in the subtree:
+// the variant collection sees it through the import closure either way,
+// and -deps turns this file into a sync target too.
+type Signal struct{ At int64 }
+
+func (Signal) Discriminator() string { return "signal" }

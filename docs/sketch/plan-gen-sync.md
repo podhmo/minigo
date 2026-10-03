@@ -10,10 +10,12 @@ A usage of minigo that neither `examples/task-run` nor
 `examples/convert-define` could express: **read package metadata through
 the `inspect` API and act on it**. Two capabilities matter:
 
-- **package walking** — enumerating decls across a package, and (with
-  `-deps`) across its same-module import closure
+- **package walking** — enumerating decls across a package and its
+  same-module import closure, and following named type references
+  between decls (recursive exploration)
 - **metadata collection** — gathering declarations that satisfy a
-  condition out of the scanned decls' surfaces
+  condition out of the scanned decls' surfaces — including surfaces
+  reachable through their field types and method sets
 
 Once metadata can be collected by condition, "anything" is possible — and
 many of those anythings are already done by existing tools. So the example
@@ -59,8 +61,9 @@ marker comments (a `// @gen` marker would be the same labor as writing
 |---|---|---|
 | `type X int`/`string` + a `const` block of `X` in the package | enum | `stringer -type=X` |
 | non-alias interface named `*Service`/`*Store`/`*Client`/`*Repository` | service boundary | `mockgen -source=<file> -destination=mock_<file>` |
-| struct field tag `required:"true"`, or `required` as a whole element of `validate:`/`binding:` | validation candidate | `requiredgen -type=X` |
-| type declaring `Discriminator() string`, or interface requiring it | OpenAPI `oneOf` variant/union | `oneofgen -type=X` |
+| struct field tag `required:"true"`, or `required` as a whole element of `validate:`/`binding:` — on the struct or any struct reachable through its field types | validation candidate, recursively | `requiredgen -type=X` |
+| type declaring `Discriminator() string` | OpenAPI `oneOf` variant | `oneofgen -type=X` |
+| interface requiring `Discriminator() string` | `oneOf` union; implementers collected over the walked closure | `oneofgen -type=X -variants=a,b,pkg.c` |
 
 A decl can earn several directives or none; all `//go:generate` output is
 just the collected set, deduplicated.
@@ -105,12 +108,26 @@ script itself; the engine binds both paths to the same intrinsics.
 - **Scan**: `inspect.DirOf(dir)` → `inspect.Files` → `inspect.Decls`,
   then two passes — every file's expected directives are computed before
   any write, so decl positions always refer to the pre-sync snapshot
-  (writes and scans interleaved would move decls' line numbers). Under
-  `-deps`, a BFS over `inspect.Imports(f)` → `inspect.PackageOf` follows
-  only paths under `inspect.Path(root) + "/"` — the scanned package's own
-  subtree, narrowed from the module prefix once `app` itself imports the
-  tool's helper: an edge `app -> scanx` leaves the subtree and must never
-  be followed or rewritten.
+  (writes and scans interleaved would move decls' line numbers). The
+  in-subtree import closure is always walked — a BFS over
+  `inspect.Imports(f)` → `inspect.PackageOf` restricted to paths under
+  `inspect.Path(root) + "/"` — because it is the search space for both
+  recursive rules. `-deps` only widens the *write set*: without it, only
+  the scanned package's own files become sync targets. An edge that
+  leaves the subtree (`app -> scanx`) is never followed or rewritten.
+- **Exploration machinery** — `scanx/explore.go`: `TypeRefs` walks a
+  `TypeExpr`'s composite children and collects the named leaves as
+  canonical `path.Name` names (`CanonicalName` collapses local import
+  aliases through the declaring file's table); `Explorer` resolves those
+  names scope-gated to the subtree — `InScope`, lazy `Lookup` building
+  each package's decl table at most once (a type referenced by forty
+  fields costs one package read); `Reach` breadth-first follows
+  references with a visited set keyed by canonical name, so cyclic type
+  graphs terminate and every shared dependency is visited once. The
+  `requiredgen` rule is `Reach` with an early-stop predicate; the
+  `oneofgen` union rule enumerates implementers across the walked
+  closure instead — cross-package variants are emitted qualified
+  (`mood.Signal`).
 - **`scanx`, the helper library** — the mechanics (raw-line spec reads,
   tag parsing, alias detection, sentinel/managed-region logic, method and
   interface-requirement checks) live in a sibling package
@@ -144,22 +161,22 @@ script itself; the engine binds both paths to the same intrinsics.
 
 Skipped for scope, not blocked by anything:
 
-- **Recursive exploration** — every rule reads only the decl's own
-  surface. A serious version would chase field types and method sets
-  through `TypeExpr` (`Sub`/`Resolve`) into other specs and packages:
-  a field whose type itself carries `required`, or collecting every
-  implementer of the `Envelope` interface instead of checking
-  `Discriminator` per type.
-- **Exploration cut-off controls** — `-deps` is a flat BFS gated only by
-  the module prefix. A real pass wants a stop predicate: max depth, a
+- **Exploration cut-off controls** — `Reach` walks the whole reachable
+  subtree in one pass. A real pass wants a stop predicate: max depth, a
   boundary predicate over import paths, per-package opt-out.
-- **External packages** — traversal ends at the module prefix; following
-  a field type into another module is unexplored (see limitations below
-  for where it would break today).
+- **External packages** — traversal and enumeration both end at the
+  subtree; following a field type or finding an implementer in another
+  module is unexplored (see limitations below for where it would break
+  today).
+- **Implementer completeness** — the `-variants=` collection is a
+  method-set scan over the walked import closure: types that implement
+  the interface only through embedding are invisible in the decl view,
+  and implementers in unimported subtree packages are never enumerated
+  (a dir-walk would be needed, not an import walk).
 - **Per-decl placement** — `Pos` could anchor each directive above its
   decl, but that reintroduces the diffing the sentinel avoids.
 - **Smarter `-check` output**, **ignore rules** (`gen-sync:ignore` /
-  path filters), **sorted output** — emits in `Decls` order today.
+  path filters).
 
 ## Limitations hit along the way
 
@@ -179,20 +196,37 @@ textually — candidates for the inspect wishlist, not the example's:
 - **`inspect.Pos` is a `"file:line:col"` string** — line numbers come
   from splitting it; a structured accessor would remove the parse.
 - **Bound/stdlib/external packages carry no index** — `Decls`/`Fields`/
-  `Methods` can't introspect them at all; `-deps` only works because the
-  module-prefix gate never enters them.
+  `Methods` can't introspect them at all; the subtree gates never enter
+  them (`time.Time` fields are simply never resolved).
+- **The *base* of a generic instantiation is unreachable** —
+  `TypeExpr.Children()` exposes `List[Inner]`'s argument but not `List`,
+  so generic containers are never entered through instantiations of
+  them (the fixture's `Holder` reaches `Inner` via the argument only).
+- **Tags inside anonymous struct types are unreadable** — a field like
+  `F struct{ W string \`required:"true"\` }` carries its tag where the
+  decl view can't reach; the fixture keeps it as an honest miss.
+- **Promoted methods are invisible** — `inspect.Methods` lists only
+  methods declared on the type, so an embed-only implementer of
+  `Envelope` is missed by the variant collection while the compiler
+  accepts it (`var _ Envelope = EmbedEvent{}` pins the irony).
+- **`inspect.SymbolID` returns `runtime.NIL` for non-named exprs** — a
+  value the script can't nil-check against its real-Go struct signature
+  (`sid != nil` doesn't compile on the facade). Canonical names are
+  used instead; a `*SymbolID` or `(SymbolID, bool)` shape would let the
+  script ask the question directly.
 - **No subtype lookup** — the index is per-declaration, so "every type
-  implementing I" has to be derived by scanning method sets.
+  implementing I" is derived by scanning method sets across the walked
+  closure; `-variants=` is that derivation.
 
 ## Verification
 
-- `go -C ./examples/gen-sync test ./...` — `TestSync` (9 files rewritten
-  to goldens across the distractor-seeded fixture; second run idempotent,
-  hand-written directive in `ops.go` surviving), `TestCheck` (drift
-  reported, nothing written; clean after a real sync), `TestDeps`
-  (`internal/mood` untouched without `-deps`, synced with it; `internal/meta`
-  visited and left alone; the `app -> scanx` edge never followed), plus
-  `scanx`'s own unit tests for the mechanics.
+- `go -C ./examples/gen-sync test ./...` — `TestSync` (10 files
+  rewritten to goldens across the distractor-seeded fixture; second run
+  idempotent, hand-written directive in `ops.go` surviving), `TestCheck`
+  (drift reported, nothing written; clean after a real sync), `TestDeps`
+  (`internal/mood` untouched without `-deps`, synced with it;
+  `internal/meta` visited and left alone; the `app -> scanx` edge never
+  followed), plus `scanx`'s own unit tests for the mechanics.
 - `make -C examples/gen-sync demo` — runs the sync twice and prints the
   `app/` diff.
 

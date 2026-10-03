@@ -24,7 +24,7 @@ package dragging heavy transitive deps is the normal case). See
 $ go run ./          # sync ./app
 $ go run ./          # run again: idempotent — 0 file(s) updated
 $ go run ./ -check   # report drift without writing (for CI), exit 1 if stale
-$ go run ./ -deps    # also follow same-module imports transitively
+$ go run ./ -deps    # also rewrite files in followed same-module imports
 ```
 
 The host (`main.go`) is thin: it parses flags, starts a minigo engine rooted
@@ -33,19 +33,30 @@ the interesting work happens in the script (`script/main.go`), running inside
 the interpreter:
 
 1. **Scan** — `inspect.DirOf(dir)` gives the package; `inspect.Files` /
-   `inspect.Decls` enumerate declarations. With `-deps`, `inspect.Imports` +
-   `inspect.PackageOf` BFS the imports inside the scanned package's subtree
-   (`app -> app/internal/mood` is followed; `app -> scanx`, the tool's own
-   helper, leaves the subtree and is never followed).
+   `inspect.Decls` enumerate declarations. The in-subtree import closure
+   is always walked (`inspect.Imports` + `inspect.PackageOf` BFS paths
+   under `inspect.Path(root)+"/"`) — it's the search space for
+   exploration and enumeration. `-deps` only widens the *write set*:
+   without it, only the scanned package's own files are rewritten
+   (`app -> app/internal/mood` is always read, synced only with `-deps`;
+   `app -> scanx`, the tool's own helper, leaves the subtree and is
+   never followed).
 2. **Collect** — no magic comments; each declaration's own surface (type
-   shape, struct tags, method set, name) decides which generators it wants:
+   shape, struct tags, method set, name) — plus what it reaches —
+   decides which generators it wants:
 
    | Signal | Rule | Directive |
    |---|---|---|
    | `type X int`/`string` + a `const` block of `X` in the package | enum | `stringer -type=X` |
    | non-alias interface named `*Service`/`*Store`/`*Client`/`*Repository` | service boundary | `mockgen -source=<file> -destination=mock_<file>` |
-   | struct field tag `required:"true"`, or `required` as a `validate:`/`binding:` element | validation candidate | `requiredgen -type=X` |
-   | type declaring `Discriminator() string`, or interface requiring it | OpenAPI-style `oneOf` variant/union | `oneofgen -type=X` |
+   | struct field tag `required:"true"`, or `required` as a `validate:`/`binding:` element — on the struct *or any struct reachable through its field types* | validation candidate, recursively | `requiredgen -type=X` |
+   | type declaring `Discriminator() string` | `oneOf` variant | `oneofgen -type=X` |
+   | interface requiring `Discriminator() string` | `oneOf` union + implementers | `oneofgen -type=X -variants=a,b,pkg.c` |
+
+   The recursive half lives in `scanx`'s `Explorer`: named type
+   references resolve to canonical `path.Name` names, scope-gated to the
+   subtree, resolved lazily with per-package caching, and walked BFS
+   with a visited set so cyclic type graphs terminate.
 
    `stringer`/`mockgen` are real tools; `requiredgen`/`oneofgen` are
    hypothetical — the *directives* are the demo's output, not something
@@ -80,16 +91,23 @@ the interpreter:
 exists, and the rest of the package is seeded with distractors —
 decoy consts that inherit another enum's type, alias types wearing
 matchable names, a `Discriminator() int` and a free `func Discriminator`,
-tags like `json:"required,omitempty"` and `notrequired:"true"`, a
+an embed-promoted implementer the collection can't see, tags like
+`json:"required,omitempty"` and `notrequired:"true"`, a
 hand-written `//go:generate` the sync must not eat, and the sentinel text
 itself quoted inside a block comment and a raw string literal.
-`app/internal/mood` only lights up with `-deps`; `app/internal/meta` is
-reached with `-deps` and matches nothing.
+`graph.go` seeds the exploration itself: pointer/slice/map/generic-arg
+indirections, mutual and self cycles that must terminate, an alias hop,
+a same-name shadow in another package, and an anonymous-struct bait
+that honestly misses. `app/internal/mood` is always read — `Remote`
+reaches its `required`-bearing `Marked`, and `Signal` lands in the
+`-variants=` list — but is only rewritten with `-deps`;
+`app/internal/meta` is reached and matches nothing.
 
 ```console
 $ go run ./
 gen-sync: app/config.go inserted managed block (2 directive(s))
-gen-sync: app/events.go inserted managed block (4 directive(s))
+gen-sync: app/events.go inserted managed block (6 directive(s))
+gen-sync: app/graph.go inserted managed block (8 directive(s))
 gen-sync: app/job.go inserted managed block (1 directive(s))
 gen-sync: app/level.go rewrote managed block (1 directive(s))
 gen-sync: app/ops.go inserted managed block (1 directive(s))
@@ -98,7 +116,7 @@ gen-sync: app/retired.go rewrote managed block (0 directive(s))
 gen-sync: app/shapes.go inserted managed block (1 directive(s))
 gen-sync: app/status.go up to date
 gen-sync: app/store.go inserted managed block (1 directive(s))
-9 file(s) updated
+10 file(s) updated
 
 $ go run ./
 gen-sync: app/config.go up to date
@@ -116,6 +134,6 @@ the fixture.
 - `script/main.go` — the interpreter-executed body (`package script`): the sync *policy* — scan, collect, rewrite
 - `scanx/` — the scanning *mechanics* library the script imports (tag/spec parsing, sentinel + managed-region handling, `inspect`-view helpers); interpreted along with the script
 - `app/` — the scanned fixture: matching decls mixed with decoys designed to defeat naive matching
-- `app/internal/mood/` — same-module leaf package, reached only with `-deps`
-- `app/internal/meta/` — leaf package reached with `-deps`, matching nothing
+- `app/internal/mood/` — same-module leaf package: always read for exploration and variant collection, rewritten only with `-deps`
+- `app/internal/meta/` — leaf package reached the same way, matching nothing (and shadowing `app.Inner`'s name)
 - `testdata/` — expected post-sync files asserted by `main_test.go`

@@ -31,3 +31,29 @@ func (Tick) Discriminator() int { return 60 }
 // Discriminator is a plain function that shares the marker name; it is
 // not a method, so it marks nothing.
 func Discriminator() string { return "decoy" }
+
+// PingBase is an implementer hiding behind an embed — it declares the
+// method itself, so it still lists as a variant.
+type PingBase struct{}
+
+func (PingBase) Discriminator() string { return "base" }
+
+// EmbedEvent implements Envelope only through promotion — the method
+// never appears as a method of this type in the decl view, so the
+// variant collection honestly misses it even though the compiler
+// accepts it as a variant.
+type EmbedEvent struct{ PingBase }
+
+var _ Envelope = EmbedEvent{}
+
+// clone is a non-struct implementer: method-set inference is about the
+// method, not the underlying kind.
+type clone int
+
+func (clone) Discriminator() string { return "clone" }
+
+// NotUnion asks for the right method name with the wrong signature —
+// an interface-shaped decoy that earns no directive.
+type NotUnion interface {
+	Discriminator() int
+}
