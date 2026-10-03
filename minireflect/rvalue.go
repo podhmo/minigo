@@ -684,6 +684,11 @@ func (v *RValue) NumField() int {
 		}
 		return rv.NumField()
 	}
+	// struct-of-pointers do not deref here — Go's NumField must be a
+	// struct kind directly.
+	if v.Kind() != reflect.Struct {
+		trap("call of reflect.Value.NumField on %s Value", v.kindStr())
+	}
 	if s := structOf(v.get()); s != nil {
 		return len(s.Fields)
 	}
@@ -711,6 +716,9 @@ func (v *RValue) FieldByName(name string) *RValue {
 		}
 		f := rv.FieldByName(name)
 		return &RValue{e: v.e, vc: v.vc, rv: f, ro: !f.CanInterface()}
+	}
+	if v.Kind() != reflect.Struct {
+		trap("call of reflect.Value.FieldByName on %s Value", v.kindStr())
 	}
 	s := structOf(v.get())
 	if s == nil {
@@ -816,7 +824,13 @@ func (v *RValue) SetLen(n int) {
 	}
 	s, ok := v.get().(*runtime.Slice)
 	if !ok {
-		trap("call of reflect.Value.SetLen on %s Value", v.kindStr())
+		if tn, isNil := v.get().(*runtime.TypedNil); isNil && v.Kind() == reflect.Slice {
+			s = &runtime.Slice{Elems: nil, Typ: tn.Typ}
+			ok = true
+		}
+		if !ok {
+			trap("call of reflect.Value.SetLen on %s Value", v.kindStr())
+		}
 	}
 	if n < 0 || n > cap(s.Elems) {
 		trap("slice length out of range in SetLen")
@@ -845,7 +859,13 @@ func (v *RValue) SetCap(n int) {
 	}
 	s, ok := v.get().(*runtime.Slice)
 	if !ok {
-		trap("call of reflect.Value.SetCap on %s Value", v.kindStr())
+		if tn, isNil := v.get().(*runtime.TypedNil); isNil && v.Kind() == reflect.Slice {
+			s = &runtime.Slice{Elems: nil, Typ: tn.Typ}
+			ok = true
+		}
+		if !ok {
+			trap("call of reflect.Value.SetCap on %s Value", v.kindStr())
+		}
 	}
 	if n < len(s.Elems) || n > cap(s.Elems) {
 		trap("slice capacity out of range in SetCap")
@@ -984,6 +1004,15 @@ func (v *RValue) MapIndex(k *RValue) *RValue {
 			trap("reflect.Value.MapIndex: %s", err)
 		}
 		return &RValue{e: v.e, vc: v.vc, rv: v.rv.MapIndex(kr)}
+	}
+	// the key must be assignable to the map's declared key type — Go
+	// reports `reflect.Value.MapIndex: value of type X is not
+	// assignable to type Y` instead of a silent miss.
+	if ktd := v.e.keyTdOf(v.td); ktd != nil {
+		kt, xt := v.e.rtypeOf(ktd), k.Type()
+		if xt != nil && !xt.AssignableTo(kt) {
+			plain("reflect.Value.MapIndex: value of type %s is not assignable to type %s", xt.String(), kt.String())
+		}
 	}
 	m, ok := v.get().(*runtime.Map)
 	if !ok {
@@ -1644,6 +1673,29 @@ func (v *RValue) Call(in []*RValue) []*RValue {
 	v.expectKind("Call", reflect.Func)
 	if v.vc == nil {
 		trap("minireflect: reflect.Value.Call needs a caller context")
+	}
+	// Go reports arity before touching argument values: `reflect: Call
+	// with too few/too many input arguments`.
+	if ft := v.callSig(); ft != nil && ft.Params != nil {
+		// count parameters, not field entries — `a, b int` is two.
+		numIn := 0
+		for _, f := range ft.Params.List {
+			if n := len(f.Names); n > 0 {
+				numIn += n
+			} else {
+				numIn++
+			}
+		}
+		variadic := false
+		if n := len(ft.Params.List); n > 0 {
+			_, variadic = ft.Params.List[n-1].Type.(*ast.Ellipsis)
+		}
+		switch {
+		case len(in) < numIn && (!variadic || len(in) < numIn-1):
+			plain("reflect: Call with too few input arguments")
+		case len(in) > numIn && !variadic:
+			plain("reflect: Call with too many input arguments")
+		}
 	}
 	args := make([]runtime.Value, len(in))
 	for i, a := range in {

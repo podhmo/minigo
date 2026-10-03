@@ -45,3 +45,18 @@ Key-nonmap-byte: panic: reflect: Key of non-map type uint8
 IsNil-struct: panic: reflect: call of reflect.Value.IsNil on struct Value
 Float-int: panic: reflect: call of reflect.Value.Float on int Value
 Int-str: panic: reflect: call of reflect.Value.Int on string Value
+SetLen-nilslice: panic: reflect: slice length out of range in SetLen
+SetCap-nilslice: panic: reflect: slice capacity out of range in SetCap
+SetLen-nilslice-0: ok
+FieldByName-ptr: panic: reflect: call of reflect.Value.FieldByName on ptr Value
+NumField-ptr: panic: reflect: call of reflect.Value.NumField on ptr Value
+Field-ptr: panic: reflect: call of reflect.Value.Field on ptr Value
+MapIndex-badkey: panic: reflect.Value.MapIndex: value of type int is not assignable to type string
+MapIndex-ok: 1
+MapIndex-nilmap-ok: false
+IsVariadic-int: panic: reflect: IsVariadic of non-func type int
+IsVariadic-func: true
+Call-few: panic: reflect: Call with too few input arguments
+Call-many: panic: reflect: Call with too many input arguments
+Call-nonvariadic-1: panic: reflect: Call with too few input arguments
+Call-variadic-0: ok

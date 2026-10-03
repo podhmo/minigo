@@ -94,4 +94,27 @@ func main() {
 	try("IsNil-struct", func() { reflect.ValueOf(hidden).IsNil() })
 	try("Float-int", func() { reflect.ValueOf(i0).Float() })
 	try("Int-str", func() { reflect.ValueOf(s0).Int() })
+
+	// second sweep: nil-slice reslicing, struct kind gates, map key
+	// assignability, func-type reads, and Call arity wordings.
+	try("SetLen-nilslice", func() { reflect.New(reflect.TypeOf(nilslice)).Elem().SetLen(2) })
+	try("SetCap-nilslice", func() { reflect.New(reflect.TypeOf(nilslice)).Elem().SetCap(2) })
+	try("SetLen-nilslice-0", func() { s := []int(nil); reflect.ValueOf(&s).Elem().SetLen(0); fmt.Println("SetLen-nilslice-0: ok") })
+	try("FieldByName-ptr", func() { reflect.ValueOf(&slice).FieldByName("x") })
+	try("NumField-ptr", func() { reflect.ValueOf(&slice).NumField() })
+	try("Field-ptr", func() { reflect.ValueOf(&slice).Field(0) })
+	try("MapIndex-badkey", func() { reflect.ValueOf(m).MapIndex(reflect.ValueOf(3)) })
+	try("MapIndex-ok", func() { fmt.Println("MapIndex-ok:", reflect.ValueOf(m).MapIndex(reflect.ValueOf("a")).Interface()) })
+	try("MapIndex-nilmap-ok", func() {
+		fmt.Println("MapIndex-nilmap-ok:", reflect.ValueOf(nilmap).MapIndex(reflect.ValueOf("k")).IsValid())
+	})
+	try("IsVariadic-int", func() { reflect.ValueOf(i0).Type().IsVariadic() })
+	try("IsVariadic-func", func() { fmt.Println("IsVariadic-func:", reflect.ValueOf(func(x ...int) {}).Type().IsVariadic()) })
+	f1 := func(x int) int { return x * 2 }
+	f2 := func(a, b int) {}
+	fv := func(xs ...int) {}
+	try("Call-few", func() { reflect.ValueOf(f1).Call(nil) })
+	try("Call-many", func() { reflect.ValueOf(f1).Call([]reflect.Value{reflect.ValueOf(1), reflect.ValueOf(2)}) })
+	try("Call-nonvariadic-1", func() { reflect.ValueOf(f2).Call([]reflect.Value{reflect.ValueOf(1)}) })
+	try("Call-variadic-0", func() { reflect.ValueOf(fv).Call(nil); fmt.Println("Call-variadic-0: ok") })
 }

@@ -1254,7 +1254,10 @@ func (t *RType) IsVariadic() bool {
 		return t.rt.IsVariadic()
 	}
 	ft := funcSig(t)
-	if ft == nil || ft.Params == nil || len(ft.Params.List) == 0 {
+	if ft == nil {
+		trap("IsVariadic of non-func type %s", t.String())
+	}
+	if ft.Params == nil || len(ft.Params.List) == 0 {
 		return false
 	}
 	last := ft.Params.List[len(ft.Params.List)-1]
