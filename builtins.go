@@ -424,7 +424,7 @@ func builtins(e *Engine) *runtime.Env {
 		"float32", "float64", "complex64", "complex128",
 		"string", "bool", "byte", "rune",
 	} {
-		env.Set(n, &runtime.TypeDef{Name: n, Kind: runtime.KindNamedBasic})
+		env.Set(n, runtime.BasicTypedef(n))
 	}
 	// any / error: predeclared interface typedefs (assertion + decl targets)
 	env.Set("any", &runtime.TypeDef{Name: "any", Kind: runtime.KindInterface})

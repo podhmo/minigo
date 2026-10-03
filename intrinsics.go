@@ -2063,7 +2063,7 @@ func errVal(err error) runtime.Value {
 // namedSized boxes a host-sized int with its declared typedef so %T
 // spells int8/int16/int32/int64/uintN like Go (rune is int32).
 func namedSized(x any, v int64) runtime.Value {
-	return runtime.Tag(&runtime.TypeDef{Name: fmt.Sprintf("%T", x), Kind: runtime.KindNamedBasic}, v)
+	return runtime.Tag(runtime.BasicTypedef(fmt.Sprintf("%T", x)), v)
 }
 
 // scriptVal converts a Go-native result back to a runtime value. Concrete
@@ -2085,16 +2085,17 @@ func scriptVal(v any) runtime.Value {
 		// keep the declared width like a float32(x) conversion does —
 		// equality and map keys need the float32 tag, the payload rides
 		// in the float64 domain.
-		return runtime.Tag(&runtime.TypeDef{Name: "float32", Kind: runtime.KindNamedBasic}, float64(x))
+		return runtime.Tag(runtime.BasicTypedef("float32"), float64(x))
 	case []byte:
 		if x == nil {
 			return &runtime.TypedNil{Typ: anonSliceTyp("byte")}
 		}
-		// a []byte result unmarshals to a slice of int64s so `string(b)`
-		// and indexing behave like Go source suggests.
+		// a []byte result unmarshals to byte-tagged elements so
+		// `string(b)` and indexing behave like Go source suggests, and
+		// elements compare like a []byte{...} literal's.
 		el := make([]runtime.Value, len(x))
 		for i, b := range x {
-			el[i] = int64(b)
+			el[i] = runtime.Tag(runtime.BasicTypedef("byte"), int64(b))
 		}
 		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("byte")}
 	case []string:
@@ -2450,14 +2451,15 @@ func bytesSliceOf(bb [][]byte) any {
 	return out
 }
 
-// runeSlice lifts a []rune result into a script slice of int64s.
+// runeSlice lifts a []rune result into a script slice of rune-tagged
+// int64s — the same element representation a []rune{...} literal makes.
 func runeSlice(rs []rune) any {
 	if rs == nil {
 		return &runtime.TypedNil{Typ: anonSliceTyp("rune")}
 	}
 	out := make([]runtime.Value, len(rs))
 	for i, r := range rs {
-		out[i] = int64(r)
+		out[i] = runtime.Tag(runtime.BasicTypedef("rune"), int64(r))
 	}
 	return &runtime.Slice{Elems: out, Typ: anonSliceTyp("rune")}
 }

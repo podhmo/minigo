@@ -2003,7 +2003,7 @@ func goValueOf(rv reflect.Value) runtime.Value {
 		}
 		el := make([]runtime.Value, len(v))
 		for i, b := range v {
-			el[i] = int64(b)
+			el[i] = namedBasicElem("byte", int64(b))
 		}
 		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("byte")}
 	case []string:
@@ -6233,17 +6233,25 @@ func unboxGoValue(x runtime.Value) runtime.Value {
 	case []byte:
 		el := make([]runtime.Value, len(h))
 		for i, b := range h {
-			el[i] = int64(b)
+			el[i] = namedBasicElem("byte", int64(b))
 		}
 		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("byte")}
 	case []rune:
 		el := make([]runtime.Value, len(h))
 		for i, r := range h {
-			el[i] = int64(r)
+			el[i] = namedBasicElem("rune", int64(r))
 		}
 		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("rune")}
 	}
 	return x
+}
+
+// namedBasicElem tags a materialized element with its basic type — a
+// slice literal's elements coerce through the element typedef (byte
+// elements read as uint8s), so unboxed host slices carry the same tag
+// or deep equality / %T see a different element type.
+func namedBasicElem(name string, x runtime.Value) runtime.Value {
+	return runtime.Tag(runtime.BasicTypedef(name), x)
 }
 
 // anonSliceTyp builds the anonymous []name typedef used to tag slices
@@ -6312,17 +6320,21 @@ func (v *VM) zeroElems(f *frame, td *runtime.TypeDef, n int64) []runtime.Value {
 func (v *VM) convertSlice(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error) {
 	switch s := x.(type) {
 	case string:
-		switch v.elemFamily(v.elemTypedef(v.topFrame(), td)) {
+		et := v.elemTypedef(v.topFrame(), td)
+		switch v.elemFamily(et) {
 		case 'b':
 			el := make([]runtime.Value, 0, len(s))
 			for _, b := range []byte(s) {
-				el = append(el, int64(b))
+				// elements coerce through the declared element type —
+				// []byte("x") carries byte-tagged elements like the
+				// []byte{...} literal does.
+				el = append(el, v.coerce(v.topFrame(), int64(b), et))
 			}
 			return &runtime.Slice{Elems: el, Typ: td}, nil
 		case 'r':
 			el := make([]runtime.Value, 0, len(s))
 			for _, r := range s {
-				el = append(el, int64(r))
+				el = append(el, v.coerce(v.topFrame(), int64(r), et))
 			}
 			return &runtime.Slice{Elems: el, Typ: td}, nil
 		}

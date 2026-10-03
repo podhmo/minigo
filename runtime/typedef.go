@@ -53,9 +53,52 @@ func TypIdenticalStrict(a, b *TypeDef) bool {
 		return false
 	}
 	if a.Name != "" || b.Name != "" {
+		// predeclared basic typedefs are global identities — a builtin
+		// name built at different sites still names the same type, and
+		// the aliases fold: byte is uint8, rune is int32. Declared
+		// names (a `type T` decl) stay distinct objects.
+		if basicTypedefName(a.Name) && basicTypedefName(b.Name) {
+			return canonBasicName(a.Name) == canonBasicName(b.Name)
+		}
 		return false
 	}
 	return TypUnderlyingSpelling(a) == TypUnderlyingSpelling(b)
+}
+
+// basicTypeNames is the predeclared basic-type set — the names the
+// builtin environment binds as KindNamedBasic.
+var basicTypeNames = map[string]bool{
+	"int": true, "int8": true, "int16": true, "int32": true, "int64": true,
+	"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true,
+	"uintptr": true, "float32": true, "float64": true,
+	"complex64": true, "complex128": true,
+	"string": true, "bool": true, "byte": true, "rune": true,
+}
+
+// basicTypedefName reports whether name is a predeclared basic type —
+// the typedefs whose identity is the name itself.
+func basicTypedefName(name string) bool {
+	return basicTypeNames[name]
+}
+
+// basicTypedefs caches the shared basic-type typedefs handed to values
+// materialized outside name resolution (host-unboxed slice elements) —
+// one object per name keeps the a == b fast path and matches the
+// builtin environment's typedefs under canonical-name identity.
+var basicTypedefs = map[string]*TypeDef{}
+
+// BasicTypedef returns the shared predeclared basic typedef for name —
+// nil for non-basic names.
+func BasicTypedef(name string) *TypeDef {
+	if !basicTypedefName(name) {
+		return nil
+	}
+	if td, ok := basicTypedefs[name]; ok {
+		return td
+	}
+	td := &TypeDef{Name: name, Kind: KindNamedBasic}
+	basicTypedefs[name] = td
+	return td
 }
 
 // canonBasicName folds predeclared aliases: byte is uint8 and rune is
