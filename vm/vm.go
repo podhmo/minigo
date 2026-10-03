@@ -2535,6 +2535,11 @@ func (v *VM) structMember(f *frame, s *runtime.Struct, name string, recv runtime
 			} else {
 				if dv, ok := runtime.Deref(r); ok {
 					r = dv
+				} else if tn, isNil := r.(*runtime.TypedNil); isNil && tn.Typ != nil && tn.Typ.Kind == runtime.KindPointer {
+					// a value method promoted through a nil embedded
+					// pointer dereferences it at selection — `a.h()`
+					// on A{B{*D}} with D nil panics like Go.
+					panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: "invalid memory address or nil pointer dereference"}})
 				}
 				r = valueCopy(r)
 			}

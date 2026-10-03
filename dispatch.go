@@ -300,6 +300,16 @@ func (e *Engine) findMethod(s *runtime.Struct, name string) (*runtime.Function, 
 			if m, rr, ok := e.findMethod(rs, name); ok {
 				return m, rr, true
 			}
+		} else if emb.Kind == runtime.KindStruct {
+			// a nil embedded pointer still carries the method set — Go
+			// resolves the method but the receiver's implicit deref
+			// panics. Descend on the bare type (the synthetic fields are
+			// unread — the caller keeps the nil field as the receiver
+			// so binding panics like Go).
+			zs := &runtime.Struct{Def: emb, Fields: make([]runtime.Value, len(emb.Fields))}
+			if m, _, ok := e.findMethod(zs, name); ok {
+				return m, recv, true
+			}
 		}
 	}
 	return nil, nil, false
