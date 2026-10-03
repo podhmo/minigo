@@ -4146,8 +4146,19 @@ func deepEql(a, b runtime.Value) bool {
 		if !(an && bn) {
 			return false
 		}
-		// two typed nils are equal only for the same type
-		return deepTypName(a) == deepTypName(b)
+		// an untyped nil and an empty-interface nil are just nil —
+		// equal to each other; a typed nil carries a dynamic type so
+		// only another typed nil of the same typedef compares equal
+		// (kind + spelling — anonymous typedefs all spell "" by name).
+		at, aTyped := a.(*runtime.TypedNil)
+		bt, bTyped := b.(*runtime.TypedNil)
+		if aTyped != bTyped {
+			return false
+		}
+		if aTyped {
+			return deepTypeEq(at.Typ, bt.Typ)
+		}
+		return true
 	}
 	switch av := a.(type) {
 	case *runtime.Slice:
@@ -4256,19 +4267,4 @@ func deepNilish(v runtime.Value) bool {
 		return true
 	}
 	return v == nil || v == runtime.NIL
-}
-
-// deepTypName names a nil value's type for typed-nil comparisons.
-func deepTypName(v runtime.Value) string {
-	switch n := v.(type) {
-	case *runtime.TypedNil:
-		if n.Typ != nil {
-			return n.Typ.Name
-		}
-	case *runtime.IfaceNil:
-		if n.Typ != nil {
-			return n.Typ.Name
-		}
-	}
-	return ""
 }
