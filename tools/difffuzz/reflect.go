@@ -83,6 +83,19 @@ type RHidden struct {
 	Y int
 }
 
+// RStr is the only prelude type carrying a method set — value and
+// pointer receivers — so NumMethod/Method(i)/MethodByName/Method.Func
+// are exercised on a script type, not just host interfaces.
+type RStr string
+
+func (s RStr) String() string { return "S<" + string(s) + ">" }
+func (s RStr) Twice() string  { return string(s) + string(s) }
+func (s *RStr) Yell() string  { return "[" + string(*s) + "]" }
+
+type RNSlice []int
+type RNStr string
+type RNMap map[string]int
+
 var (
 	r_i0       = 42
 	r_s0       = "hi"
@@ -107,6 +120,10 @@ var (
 	r_sptr     = &r_struct
 	r_nested   = [][]int{{1, 2}, {3}}
 	r_mapslice = map[string][]int{"k": {4, 5}}
+	r_rstr     = RStr("rs")
+	r_nslice   = RNSlice{6, 7}
+	r_nstr     = RNStr("nm")
+	r_nmap     = RNMap{"m": 1}
 )
 
 // r_mkchan gives each probe its own buffered, prefilled channel — a
@@ -148,72 +165,125 @@ func rMethodType(t reflect.Type) reflect.Type {
 	}
 	return m.Type
 }
+
+// rFieldType probes Type.FieldByName — a two-result call like
+// MethodByName; the miss path just returns the receiver.
+func rFieldType(t reflect.Type) reflect.Type {
+	f, ok := t.FieldByName("A")
+	if !ok {
+		return t
+	}
+	return f.Type
+}
+
+// rAppendV / rAppendSliceV / rCopyI probe reflect.Append/AppendSlice/Copy
+// — package-level slice ops that take the chain value as their first
+// arg. Append returns a fresh Value (the seed's header is untouched),
+// Copy returns an int (stringified to keep %T out of the output).
+func rAppendV(v reflect.Value) reflect.Value {
+	return reflect.Append(v, reflect.ValueOf(9))
+}
+
+func rAppendSliceV(v reflect.Value) reflect.Value {
+	return reflect.AppendSlice(v, reflect.ValueOf([]int{1, 2}))
+}
+
+func rCopyI(v reflect.Value) string {
+	return fmt.Sprintf("%v", reflect.Copy(v, reflect.ValueOf([]int{1, 2})))
+}
 `
+
+// reflSeed is a chain starter: the seed expression plus the receiver
+// kind it feeds ('v' reflect.Value, 't' reflect.Type). Type constructors
+// (SliceOf/MapOf/...) yield Type directly, so the kind is explicit
+// rather than inferred from the text.
+type reflSeed struct {
+	Expr string
+	Kind byte
+}
 
 // seedExprs are the chain starters. Each entry is the full seed expression;
 // addressable/mutable variants go through reflect.New on the same var's
 // type so seeds stay per-probe.
-var reflSeedExprs = []string{
-	"reflect.ValueOf(r_i0)",
-	"reflect.ValueOf(r_s0)",
-	"reflect.ValueOf(r_f0)",
-	"reflect.ValueOf(r_b0)",
-	"reflect.ValueOf(r_slice)",
-	"reflect.ValueOf(r_arr)",
-	"reflect.ValueOf(r_map)",
-	"reflect.ValueOf(r_struct)",
-	"reflect.ValueOf(r_outer)",
-	"reflect.ValueOf(r_hidden)",
-	"reflect.ValueOf(r_named)",
-	"reflect.ValueOf(r_iface)",
-	"reflect.ValueOf(r_nilptr)",
-	"reflect.ValueOf(r_nilmap)",
-	"reflect.ValueOf(r_bytes)",
-	"reflect.ValueOf(r_mkchan())",
-	"reflect.ValueOf(r_func)",
-	"reflect.ValueOf(r_funcv)",
-	"reflect.ValueOf(r_empty)",
-	"reflect.ValueOf(r_strslice)",
-	"reflect.ValueOf(&r_i0).Elem()",
-	"reflect.ValueOf(&r_s0).Elem()",
-	"reflect.ValueOf(&r_slice).Elem()",
-	"reflect.ValueOf(&r_map).Elem()",
-	"reflect.ValueOf(&r_struct).Elem()",
-	"reflect.ValueOf(&r_outer).Elem()",
-	"reflect.ValueOf(&r_hidden).Elem()",
-	"reflect.ValueOf(&r_named).Elem()",
-	"reflect.ValueOf(&r_bytes).Elem()",
-	"reflect.New(reflect.TypeOf(r_struct)).Elem()",
-	"reflect.New(reflect.TypeOf(r_outer)).Elem()",
-	"reflect.New(reflect.TypeOf(r_hidden)).Elem()",
-	"reflect.New(reflect.TypeOf(r_i0)).Elem()",
-	"reflect.New(reflect.TypeOf(r_map)).Elem()",
-	"reflect.New(reflect.TypeOf(r_slice)).Elem()",
-	"reflect.New(reflect.TypeOf(r_named)).Elem()",
-	"reflect.TypeOf(r_struct)",
-	"reflect.TypeOf(r_outer)",
-	"reflect.TypeOf(r_hidden)",
-	"reflect.TypeOf(r_slice)",
-	"reflect.TypeOf(r_map)",
-	"reflect.TypeOf(r_named)",
-	"reflect.TypeOf(r_chan)",
-	"reflect.TypeOf(r_func)",
-	"reflect.TypeOf(r_funcv)",
-	"reflect.TypeOf(r_empty)",
-	"reflect.TypeOf(r_nilptr)",
-	"reflect.Zero(reflect.TypeOf(r_slice))",
-	"reflect.Zero(reflect.TypeOf(r_map))",
-	"reflect.Zero(reflect.TypeOf(r_struct))",
-	"reflect.Indirect(reflect.ValueOf(r_sptr))",
-	"reflect.ValueOf(r_sptr)",
-	"reflect.ValueOf(r_sptr).Elem()",
-	"reflect.ValueOf(r_nilptr).Elem()",
-	"reflect.ValueOf(&r_i0)",
-	"reflect.ValueOf(r_nested)",
-	"reflect.ValueOf(r_mapslice)",
-	"reflect.TypeOf((*error)(nil)).Elem()",
-	"reflect.TypeOf((*fmt.Stringer)(nil)).Elem()",
-	"reflect.Zero(reflect.TypeOf((*error)(nil)).Elem())",
+var reflSeedExprs = []reflSeed{
+	{"reflect.ValueOf(r_i0)", 'v'},
+	{"reflect.ValueOf(r_s0)", 'v'},
+	{"reflect.ValueOf(r_f0)", 'v'},
+	{"reflect.ValueOf(r_b0)", 'v'},
+	{"reflect.ValueOf(r_slice)", 'v'},
+	{"reflect.ValueOf(r_arr)", 'v'},
+	{"reflect.ValueOf(r_map)", 'v'},
+	{"reflect.ValueOf(r_struct)", 'v'},
+	{"reflect.ValueOf(r_outer)", 'v'},
+	{"reflect.ValueOf(r_hidden)", 'v'},
+	{"reflect.ValueOf(r_named)", 'v'},
+	{"reflect.ValueOf(r_iface)", 'v'},
+	{"reflect.ValueOf(r_nilptr)", 'v'},
+	{"reflect.ValueOf(r_nilmap)", 'v'},
+	{"reflect.ValueOf(r_bytes)", 'v'},
+	{"reflect.ValueOf(r_mkchan())", 'v'},
+	{"reflect.ValueOf(r_func)", 'v'},
+	{"reflect.ValueOf(r_funcv)", 'v'},
+	{"reflect.ValueOf(r_empty)", 'v'},
+	{"reflect.ValueOf(r_strslice)", 'v'},
+	{"reflect.ValueOf(&r_i0).Elem()", 'v'},
+	{"reflect.ValueOf(&r_s0).Elem()", 'v'},
+	{"reflect.ValueOf(&r_slice).Elem()", 'v'},
+	{"reflect.ValueOf(&r_map).Elem()", 'v'},
+	{"reflect.ValueOf(&r_struct).Elem()", 'v'},
+	{"reflect.ValueOf(&r_outer).Elem()", 'v'},
+	{"reflect.ValueOf(&r_hidden).Elem()", 'v'},
+	{"reflect.ValueOf(&r_named).Elem()", 'v'},
+	{"reflect.ValueOf(&r_bytes).Elem()", 'v'},
+	{"reflect.New(reflect.TypeOf(r_struct)).Elem()", 'v'},
+	{"reflect.New(reflect.TypeOf(r_outer)).Elem()", 'v'},
+	{"reflect.New(reflect.TypeOf(r_hidden)).Elem()", 'v'},
+	{"reflect.New(reflect.TypeOf(r_i0)).Elem()", 'v'},
+	{"reflect.New(reflect.TypeOf(r_map)).Elem()", 'v'},
+	{"reflect.New(reflect.TypeOf(r_slice)).Elem()", 'v'},
+	{"reflect.New(reflect.TypeOf(r_named)).Elem()", 'v'},
+	{"reflect.TypeOf(r_struct)", 't'},
+	{"reflect.TypeOf(r_outer)", 't'},
+	{"reflect.TypeOf(r_hidden)", 't'},
+	{"reflect.TypeOf(r_slice)", 't'},
+	{"reflect.TypeOf(r_map)", 't'},
+	{"reflect.TypeOf(r_named)", 't'},
+	{"reflect.TypeOf(r_chan)", 't'},
+	{"reflect.TypeOf(r_func)", 't'},
+	{"reflect.TypeOf(r_funcv)", 't'},
+	{"reflect.TypeOf(r_empty)", 't'},
+	{"reflect.TypeOf(r_nilptr)", 't'},
+	{"reflect.Zero(reflect.TypeOf(r_slice))", 'v'},
+	{"reflect.Zero(reflect.TypeOf(r_map))", 'v'},
+	{"reflect.Zero(reflect.TypeOf(r_struct))", 'v'},
+	{"reflect.Indirect(reflect.ValueOf(r_sptr))", 'v'},
+	{"reflect.ValueOf(r_sptr)", 'v'},
+	{"reflect.ValueOf(r_sptr).Elem()", 'v'},
+	{"reflect.ValueOf(r_nilptr).Elem()", 'v'},
+	{"reflect.ValueOf(&r_i0)", 'v'},
+	{"reflect.ValueOf(r_nested)", 'v'},
+	{"reflect.ValueOf(r_mapslice)", 'v'},
+	{"reflect.TypeOf((*error)(nil)).Elem()", 't'},
+	{"reflect.TypeOf((*fmt.Stringer)(nil)).Elem()", 't'},
+	{"reflect.Zero(reflect.TypeOf((*error)(nil)).Elem())", 'v'},
+	{"reflect.ValueOf(r_rstr)", 'v'},
+	{"reflect.ValueOf(&r_rstr)", 'v'},
+	{"reflect.ValueOf(&r_rstr).Elem()", 'v'},
+	{"reflect.ValueOf(r_nslice)", 'v'},
+	{"reflect.ValueOf(&r_nslice).Elem()", 'v'},
+	{"reflect.ValueOf(r_nstr)", 'v'},
+	{"reflect.ValueOf(&r_nstr).Elem()", 'v'},
+	{"reflect.ValueOf(r_nmap)", 'v'},
+	{"reflect.ValueOf(&r_nmap).Elem()", 'v'},
+	{"reflect.ValueOf(reflect.MakeSlice(reflect.TypeOf(r_slice), 2, 4))", 'v'},
+	{"reflect.ValueOf(reflect.MakeMap(reflect.TypeOf(r_map)))", 'v'},
+	{"reflect.Zero(reflect.SliceOf(reflect.TypeOf(r_s0)))", 'v'},
+	{"reflect.New(reflect.MapOf(reflect.TypeOf(r_s0), reflect.TypeOf(r_i0))).Elem()", 'v'},
+	{"reflect.SliceOf(reflect.TypeOf(r_i0))", 't'},
+	{"reflect.MapOf(reflect.TypeOf(r_s0), reflect.TypeOf(r_i0))", 't'},
+	{"reflect.PtrTo(reflect.TypeOf(r_struct))", 't'},
+	{"reflect.ChanOf(reflect.BothDir, reflect.TypeOf(r_i0))", 't'},
+	{"reflect.ArrayOf(3, reflect.TypeOf(r_i0))", 't'},
 }
 
 // --- step tables -----------------------------------------------------------
@@ -268,6 +338,8 @@ var valueSteps = []rstep{
 	{Text: ".Type()", Kind: 't'},
 	{Text: "reflect.Indirect", Kind: 'v', Wrap: true},
 	{Text: "rTryRecvV", Kind: 'v', Wrap: true},
+	{Text: "rAppendV", Kind: 'v', Wrap: true},
+	{Text: "rAppendSliceV", Kind: 'v', Wrap: true},
 	// calls — variadic and fixed
 	// Call/CallSlice return []reflect.Value — a 's' receiver the chain
 	// must unwrap via .Index before observing.
@@ -336,6 +408,7 @@ var valueObs = []rstep{
 	{Text: "rTrySendB", Kind: 'o', Wrap: true},
 	{Text: "rAssertInt", Kind: 'o', Wrap: true},
 	{Text: "rAssertStr", Kind: 'o', Wrap: true},
+	{Text: "rCopyI", Kind: 'o', Wrap: true},
 	{Kind: 'o', Printf: "v"},
 	{Kind: 'o', Printf: "#v"},
 	{Kind: 'o', Printf: "#v"},
@@ -358,6 +431,7 @@ var typeSteps = []rstep{
 	{Text: ".FieldByIndex([]int{0, 1}).Type", Kind: 't'},
 	{Text: ".Method(0).Func", Kind: 'v'},
 	{Text: "rMethodType", Kind: 't', Wrap: true},
+	{Text: "rFieldType", Kind: 't', Wrap: true},
 }
 
 // typeObs are terminal observations on a reflect.Type — same %T-safe
@@ -404,20 +478,21 @@ var reflDomain = &Domain{
 	Decls:   []string{reflDecls},
 }
 
-// seedKind reports which receiver kind a seed feeds: only a bare
-// reflect.TypeOf seed yields a Type — New/Zero/Indirect/ValueOf all
-// return reflect.Value.
+// seedKind reports which receiver kind a seed feeds — looked up in
+// reflSeedExprs (each seed carries an explicit kind tag now).
 func seedKind(seed string) byte {
-	if strings.HasPrefix(seed, "reflect.TypeOf(") {
-		return 't'
+	for _, s := range reflSeedExprs {
+		if s.Expr == seed {
+			return s.Kind
+		}
 	}
 	return 'v'
 }
 
 func (g *Gen) reflProbe(depth int) Probe {
-	seed := reflSeedExprs[g.R.IntN(len(reflSeedExprs))]
-	kind := seedKind(seed)
-	r := &rchain{Seed: seed}
+	sd := reflSeedExprs[g.R.IntN(len(reflSeedExprs))]
+	kind := sd.Kind
+	r := &rchain{Seed: sd.Expr}
 	steps := 1 + g.R.IntN(depth+2)
 	for i := 0; i < steps; i++ {
 		s := g.reflStep(kind)
@@ -524,9 +599,9 @@ func reflShrink(p Probe) []Probe {
 	// run on a reflect.Value seed or vice versa.
 	sk := seedKind(p.R.Seed)
 	for _, seed := range reflSeedExprs {
-		if seedKind(seed) == sk && len(seed) < len(p.R.Seed) {
+		if seed.Kind == sk && len(seed.Expr) < len(p.R.Seed) {
 			steps := append([]rstep{}, p.R.Steps...)
-			add(&rchain{Seed: seed, Steps: steps})
+			add(&rchain{Seed: seed.Expr, Steps: steps})
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Size() < out[j].Size() })
