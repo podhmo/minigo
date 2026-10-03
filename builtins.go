@@ -249,7 +249,7 @@ func builtins(e *Engine) *runtime.Env {
 		case runtime.KindChan:
 			buf := int64(0)
 			if len(args) > 1 {
-				buf, _ = runtime.Unwrap(args[1]).(int64)
+				buf = int64Of(runtime.Unwrap(args[1]))
 			}
 			return &runtime.Chan{C: make(chan runtime.Value, int(buf)), Typ: td}, nil
 		default:
@@ -456,6 +456,14 @@ func lenOf(v runtime.Value) (runtime.Value, error) {
 	switch x := v.(type) {
 	case *runtime.Named:
 		return lenOf(x.V)
+	case *runtime.UConst:
+		// len("lit")/len(NamedConstStr) — Go folds the call on a
+		// constant operand; materialize before measuring.
+		nv, err := uconstNative(x)
+		if err != nil {
+			return nil, err
+		}
+		return lenOf(nv)
 	case *runtime.Slice:
 		return int64(len(x.Elems)), nil
 	case *runtime.Map:
@@ -493,6 +501,11 @@ func capOf(v runtime.Value) (runtime.Value, error) {
 func orderedLess(a, b runtime.Value) bool {
 	a = runtime.Unwrap(a)
 	b = runtime.Unwrap(b)
+	// const operands compare by their default-type value — min/max
+	// of constants is itself a constant expression in Go, so the
+	// winning (still-UConst) argument is what gets returned.
+	a = constNative(a)
+	b = constNative(b)
 	switch x := a.(type) {
 	case int64:
 		switch y := b.(type) {
@@ -514,6 +527,18 @@ func orderedLess(a, b runtime.Value) bool {
 		}
 	}
 	return false
+}
+
+// constNative materializes an untyped constant reaching a builtin
+// argument — the call Go would fold at compile time runs at runtime
+// instead, so the constant must land as its default-type value.
+func constNative(v runtime.Value) runtime.Value {
+	if u, ok := v.(*runtime.UConst); ok {
+		if nv, err := uconstNative(u); err == nil {
+			return nv
+		}
+	}
+	return v
 }
 
 // argFloat reads a builtin argument as float64 (ints promote).

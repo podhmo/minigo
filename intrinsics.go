@@ -2249,6 +2249,15 @@ func intOf(v any) int {
 	switch x := v.(type) {
 	case *runtime.Named:
 		return intOf(x.V)
+	case *runtime.UConst:
+		// a named constant stays a UConst through declaration storage;
+		// a builtin argument position materializes it at its default
+		// type — Go folds these calls at compile time.
+		nv, err := uconstNative(x)
+		if err != nil {
+			panic(&runtime.Panic{Value: err.Error()})
+		}
+		return intOf(nv)
 	case int64:
 		return int(x)
 	case int:
