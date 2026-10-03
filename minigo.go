@@ -685,6 +685,12 @@ func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File) error {
 	for _, sf := range files {
 		m := map[string]*runtime.ImportRef{}
 		for _, imp := range sf.Imports {
+			if imp.Path == "C" {
+				// the cgo pseudo-package: the interpreter cannot link
+				// native code, so fail the load up front instead of
+				// trapping later on an unresolvable `C.foo` reference
+				return fmt.Errorf("%s: cgo is not supported: import %q", p.Fset.Position(imp.Pos), imp.Path)
+			}
 			ref := &runtime.ImportRef{
 				Path:  imp.Path,
 				Alias: imp.Alias,
