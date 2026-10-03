@@ -33,6 +33,25 @@ Three smaller things it exercises along the way:
   `inspect.Pos` coordinates. That gap is the interesting part: the script
   shows how index answers and textual answers compose.
 
+## Where it sits among the examples
+
+The three `examples/` each consume a different minigo capability, and
+together they triangulate what the interpreter is for:
+
+| | `task-run` | `convert-define` | `gen-sync` |
+|---|---|---|---|
+| What the script *is* | a trusted build file (Taskfile) | a DSL: quoted `define.Convert` calls | a scanning tool over user code |
+| Engine feature exercised | intrinsic-bound stub package (`task.*`), `os`/`exec`, virtual cwd | special forms (quoted AST args) + lazy package loading | the `inspect` index layer + `os` write intrinsics |
+| Data direction | reads a file → runs side effects | reads call syntax → emits new code | reads the index → edits the same files it scanned |
+| Trust model | unrestricted (build scripts) | unrestricted | unrestricted (writes real sources) |
+
+So: task-run proves minigo can host a *tool-shaped runtime*; convert-define
+proves it can host a *codegen DSL*; gen-sync proves the index layer alone —
+no special forms, no stub package — is enough to write a *source-rewriting
+orchestrator*. The scanning half is pure `inspect`; the writing half is
+plain `os` intrinsics. The only bespoke knowledge lives in the inference
+rules, which is exactly the part a real user would rewrite.
+
 ## Key design decision: no magic comments
 
 An early sketch had a `// @gen mock` doc marker triggering a directive.
