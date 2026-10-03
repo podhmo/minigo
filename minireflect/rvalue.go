@@ -633,10 +633,9 @@ func (v *RValue) Field(i int) *RValue {
 	v.mustValid("Field")
 	if v.host() {
 		rv := v.rv
-		if rv.Kind() == reflect.Ptr {
-			rv = rv.Elem()
-		}
 		if rv.Kind() != reflect.Struct {
+			// Go panics Field on a ptr — only Elem() first can
+			// reach the pointee's fields.
 			trap("call of reflect.Value.Field on %s Value", v.kindStr())
 		}
 		f := rv.Field(i)
@@ -689,11 +688,9 @@ func (v *RValue) Field(i int) *RValue {
 func (v *RValue) NumField() int {
 	v.mustValid("NumField")
 	if v.host() {
-		rv := v.rv
-		for rv.Kind() == reflect.Ptr {
-			rv = rv.Elem()
-		}
-		return rv.NumField()
+		// like Field, NumField must be a struct kind directly —
+		// rv.NumField fires Go's own kind panic.
+		return v.rv.NumField()
 	}
 	// struct-of-pointers do not deref here — Go's NumField must be a
 	// struct kind directly.
@@ -741,11 +738,9 @@ func (v *RValue) FieldByIndex(idx []int) *RValue {
 func (v *RValue) FieldByName(name string) *RValue {
 	v.mustValid("FieldByName")
 	if v.host() {
-		rv := v.rv
-		for rv.Kind() == reflect.Ptr {
-			rv = rv.Elem()
-		}
-		f := rv.FieldByName(name)
+		// no deref here either — FieldByName on a ptr dies on
+		// 'call of reflect.Value.FieldByName on ptr Value'.
+		f := v.rv.FieldByName(name)
 		// a miss yields the zero Value — ro means nothing there and
 		// CanInterface on a zero Value itself panics; only a live field
 		// can carry the unexported flag.
