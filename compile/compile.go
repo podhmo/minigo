@@ -1129,33 +1129,19 @@ func (c *compiler) assign(st *ast.AssignStmt) {
 			break
 		}
 		switch lhs := target.(type) {
-		case *ast.Ident:
-			c.getRef(lhs.Name, lhs.Pos())
+		case *ast.Ident, *ast.SelectorExpr, *ast.IndexExpr, *ast.StarExpr:
+			// `x op= y` reads x's value when the RHS evaluates, not at
+			// ref time: ref, rhs, then read+op+store. The ref resolves
+			// to the variable's live storage, so a RHS that replaces
+			// the variable lands the result there.
+			c.refTarget(lhs)
 			c.expr(st.Rhs[0])
-			c.emit(bytecode.OpBinary, int(op), 0, st.Pos())
-			c.setRef(lhs.Name, lhs.Pos())
-		case *ast.SelectorExpr:
-			c.expr(lhs.X)
-			c.emit(bytecode.OpDup, 0, 0, lhs.Pos())
-			c.emit(bytecode.OpSelect, c.nameIdx(lhs.Sel.Name), 0, lhs.Pos())
-			c.expr(st.Rhs[0])
-			c.emit(bytecode.OpBinary, int(op), 0, st.Pos())
-			c.emit(bytecode.OpSetField, c.nameIdx(lhs.Sel.Name), 0, st.Pos())
-		case *ast.IndexExpr:
-			c.expr(lhs.X)
-			c.expr(lhs.Index)
-			c.emit(bytecode.OpDup2, 0, 0, lhs.Pos())
-			c.emit(bytecode.OpIndex, 0, 0, lhs.Pos())
-			c.expr(st.Rhs[0])
-			c.emit(bytecode.OpBinary, int(op), 0, st.Pos())
-			c.emit(bytecode.OpSetIndex, 0, 0, st.Pos())
-		case *ast.StarExpr:
-			c.expr(lhs.X)
+			c.emit(bytecode.OpSwap, 0, 0, lhs.Pos())
 			c.emit(bytecode.OpDup, 0, 0, lhs.Pos())
 			c.emit(bytecode.OpDeref, 0, 0, lhs.Pos())
-			c.expr(st.Rhs[0])
+			c.emit(bytecode.OpRot3, 0, 0, lhs.Pos())
 			c.emit(bytecode.OpBinary, int(op), 0, st.Pos())
-			c.emit(bytecode.OpSetInd, 0, 0, st.Pos())
+			c.emit(bytecode.OpSetRefs, 1, 0, st.Pos())
 		default:
 			c.trap(st.Pos(), "compound assignment on %T is not supported", lhs)
 		}
@@ -1288,21 +1274,85 @@ func (c *compiler) refTarget(lhs ast.Expr) {
 		}
 	case *ast.SelectorExpr:
 		// B=1: store target — the nil-base check defers to the store so
-		// the RHS still evaluates first (p.f = before()).
-		c.expr(t.X)
+		// the RHS still evaluates first (p.f = before()). The base is a
+		// storage ref, not a value snapshot: `s.f` is s's storage + f,
+		// so `s.f = replace(&s)` still targets s's live fields after the
+		// RHS rewrites the whole variable.
+		c.refTargetBase(t.X)
 		c.emit(bytecode.OpFieldRef, c.nameIdx(t.Sel.Name), 1, t.Pos())
 	case *ast.IndexExpr:
 		// B=1: the ref is a store target — a map element is legal here
 		// (m[k] = v), unlike `&` which Go forbids on map values, and the
 		// bounds check defers to the store so the RHS evaluates first.
-		c.expr(t.X)
+		// The base keeps its storage ref (s[i] resolves s at store time,
+		// so `s[i] = f()` writes the new slice when f replaces s); the
+		// key is the evaluated value Go pins at ref time.
+		c.refTargetBase(t.X)
 		c.expr(t.Index)
 		c.emit(bytecode.OpIndexRef, 0, 1, t.Pos())
 	case *ast.StarExpr:
-		c.expr(t.X)
+		if c.isStorageBase(t.X) {
+			// `*p` is the location p points at — resolve p's storage at
+			// store time so `*p = f()` still writes the live pointee
+			// when f reseats p.
+			c.refTargetBase(t.X)
+			c.emit(bytecode.OpDerefRef, 0, 0, t.Pos())
+		} else {
+			c.expr(t.X)
+		}
 	default:
 		c.trap(lhs.Pos(), "unsupported assignment target %T", lhs)
 	}
+}
+
+// isStorageBase reports whether an expression denotes a storage
+// location (an ident, field, element, or deref of one) — as opposed to
+// a value-producing expression like a call, whose pointer result is the
+// target itself.
+func (c *compiler) isStorageBase(e ast.Expr) bool {
+	for {
+		p, isParen := e.(*ast.ParenExpr)
+		if !isParen {
+			break
+		}
+		e = p.X
+	}
+	switch e.(type) {
+	case *ast.Ident, *ast.SelectorExpr, *ast.IndexExpr, *ast.StarExpr:
+		return true
+	}
+	return false
+}
+
+// refTargetBase emits the operand of a field/index ref — a storage ref
+// for addressable bases (idents, fields, elements, derefs), the
+// evaluated value for anything else (e.g. a call returning a pointer).
+func (c *compiler) refTargetBase(e ast.Expr) {
+	// A package name evaluates to the package object — it has no
+	// storage ref, and OpFieldRef/OpSelect must see the value.
+	if id, isIdent := e.(*ast.Ident); isIdent && c.isImportName(id.Name) {
+		c.expr(e)
+		return
+	}
+	if c.isStorageBase(e) {
+		c.refTarget(e)
+		return
+	}
+	c.expr(e)
+}
+
+// isImportName reports whether an identifier names an import in this
+// file's scope (unless a closer declaration shadows it) — `pkg.X = v`
+// assigns through the package value, not a storage ref.
+func (c *compiler) isImportName(name string) bool {
+	if _, _, found := c.fs.find(name); found {
+		return false
+	}
+	if c.pkg == nil || c.file == nil {
+		return false
+	}
+	_, ok := c.pkg.Scopes[c.file][name]
+	return ok
 }
 
 // storeTarget emits the store for one LHS expression; the value is on stack.
@@ -2231,7 +2281,7 @@ func (c *compiler) unary(x *ast.UnaryExpr) {
 			c.compositeLit(t)
 			c.emit(bytecode.OpBox, 0, 0, x.Pos())
 		case *ast.SelectorExpr:
-			c.expr(t.X)
+			c.refTargetBase(t.X)
 			c.emit(bytecode.OpFieldRef, c.nameIdx(t.Sel.Name), 0, t.Pos())
 		case *ast.IndexExpr:
 			c.expr(t.X)

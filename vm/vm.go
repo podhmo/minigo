@@ -403,6 +403,14 @@ func (v *VM) assignRef(f *frame, ref, val runtime.Value) {
 	case *runtime.Cell:
 		v.assignCell(f, r, val)
 		return
+	case *runtime.DerefRef:
+		loc, ok := runtime.Deref(r.Ptr)
+		if !ok {
+			f.trap("deref of non-pointer %T", r.Ptr)
+			return
+		}
+		v.assignRef(f, loc, val)
+		return
 	case runtime.Nil:
 		return // `_` — the value is discarded
 	}
@@ -1048,9 +1056,26 @@ func (v *VM) loop(f *frame) {
 		case bytecode.OpFieldRef:
 			base := f.pop()
 			if ins.B == 0 {
-				// address-of target: the nil check fires now; B=1 marks a
-				// store target, where Go checks at store time so the RHS
-				// still evaluates first (p.f = before()).
+				// Address-of target pins what the operand evaluated to: a
+				// cell holding a struct is the variable's storage (its
+				// address is stable), but a pointer variable's operand
+				// evaluated to its pointee — snapshot it, so `fp := &p.f`
+				// doesn't follow a reseated p.
+				if c, ok := base.(*runtime.Cell); ok {
+					e := c.Elem
+					for {
+						if n, isNamed := e.(*runtime.Named); isNamed {
+							e = n.V
+							continue
+						}
+						break
+					}
+					if _, isStruct := e.(*runtime.Struct); !isStruct {
+						base = c.Elem
+					}
+				}
+				// the nil check fires now; B=1 marks a store target, where
+				// Go checks at store time so the RHS evaluates first.
 				v.checkAddrBase(base, nil)
 			}
 			f.push(&runtime.FieldRef{Base: base, Name: consts[ins.A].(string)})
@@ -1067,6 +1092,8 @@ func (v *VM) loop(f *frame) {
 				f.trap("cannot take the address of map element")
 			}
 			f.push(&runtime.IndexRef{Base: base, Key: key})
+		case bytecode.OpDerefRef:
+			f.push(&runtime.DerefRef{Ptr: f.pop()})
 		case bytecode.OpNilPtrCheck:
 			base := f.pop()
 			v.checkAddrBase(base, nil)
@@ -1185,7 +1212,12 @@ func (v *VM) loop(f *frame) {
 			f.push(v.slice(f, base, lo, hi, max))
 		case bytecode.OpDeref:
 			x := f.pop()
-			if td, ok := x.(*runtime.TypeDef); ok {
+			if ir, isIR := x.(*runtime.IndexRef); isIR {
+				// a ref's element read goes through the full index path —
+				// map bases, nil-map zero values, and live cell bases all
+				// resolve there (IndexRef.Get only knows slices).
+				f.push(v.index(f, ir.Base, ir.Key))
+			} else if td, ok := x.(*runtime.TypeDef); ok {
 				// `(*T)` in a method-expression position evaluates to the
 				// pointer typedef so selectMember can bind pointer methods.
 				f.push(&runtime.TypeDef{Kind: runtime.KindPointer, Anon: &ast.StarExpr{X: typeExprFor(td)}, Pkg: td.Pkg, File: td.File})

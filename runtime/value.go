@@ -217,6 +217,34 @@ func (r *FieldRef) Set(v Value) bool {
 	return false
 }
 
+// DerefRef is the location `*p` names when the pointer itself has a
+// tracked storage ref: `*p = v` resolves what the pointer refers to at
+// store time, so a RHS that reseats p still writes the live pointee.
+type DerefRef struct {
+	Ptr Value // the storage ref whose value is the pointer
+}
+
+// loc resolves the pointer's storage to the current pointee location.
+func (r *DerefRef) loc() (Value, bool) { return Deref(r.Ptr) }
+
+// Get reads the value at the pointee location.
+func (r *DerefRef) Get() (Value, bool) {
+	loc, ok := r.loc()
+	if !ok {
+		return nil, false
+	}
+	return Deref(loc)
+}
+
+// Set writes through the resolved pointee location.
+func (r *DerefRef) Set(v Value) bool {
+	loc, ok := r.loc()
+	if !ok {
+		return false
+	}
+	return SetRef(loc, v)
+}
+
 // IndexRef is the address-of a slice element (`&s[i]`) — a cell-view over
 // base[key]. (Map values are unaddressable in Go, so only slices qualify.)
 type IndexRef struct {
@@ -280,6 +308,8 @@ func Deref(v Value) (Value, bool) {
 		return r.Get()
 	case *IndexRef:
 		return r.Get()
+	case *DerefRef:
+		return r.Get()
 	case *Named:
 		return Deref(r.V)
 	}
@@ -295,6 +325,8 @@ func SetRef(v, val Value) bool {
 	case *FieldRef:
 		return r.Set(val)
 	case *IndexRef:
+		return r.Set(val)
+	case *DerefRef:
 		return r.Set(val)
 	case *Named:
 		return SetRef(r.V, val)

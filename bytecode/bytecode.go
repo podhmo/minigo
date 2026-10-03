@@ -92,6 +92,7 @@ const (
 	OpFieldRef    // A: name const; pop base -> push *FieldRef{base, name} (&s.f)
 	OpIndexRef    // pop key, pop base -> push *IndexRef{base, key} (&s[i]); B=1: store target (map bases allowed)
 	OpNilPtrCheck // pop v -> panic on a nil pointer value; push v (&*p is still a dereference)
+	OpDerefRef    // pop ref -> push *DerefRef{ref} — the location the ref's value points at (`*p` store target)
 
 	// types / interfaces / generics
 	OpAssert      // pop typedef, pop value -> push asserted value (script panic on mismatch); B=1: a static-typedef operand sits between value and typedef
