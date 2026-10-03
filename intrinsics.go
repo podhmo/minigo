@@ -4190,18 +4190,16 @@ func deepEql(a, b runtime.Value) bool {
 		if !ok || len(av.Pairs) != len(bm.Pairs) || !deepTypeEq(av.Typ, bm.Typ) {
 			return false
 		}
+		// keys match by the map's own equality — the canonical key in
+		// Pairs — not by deep equality: two distinct pointer keys with
+		// equal pointees are different keys in Go. Only the values
+		// compare recursively.
 		for ak, aval := range av.Pairs {
-			found := false
-			for bk, bval := range bm.Pairs {
-				if deepEql(ak, bk) {
-					if !deepEql(aval, bval) {
-						return false
-					}
-					found = true
-					break
-				}
-			}
+			bval, found := bm.Pairs[ak]
 			if !found {
+				return false
+			}
+			if !deepEql(aval, bval) {
 				return false
 			}
 		}
