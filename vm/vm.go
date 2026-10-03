@@ -1728,6 +1728,12 @@ func (v *VM) hostMember(hv any, name string) (runtime.Value, bool) {
 	return bf, true
 }
 
+// sizedIntTyp names the builtin typedef for a sized int kind — the
+// reflect kind string spells the Go name exactly ("int8", "uint32").
+func sizedIntTyp(k reflect.Kind) *runtime.TypeDef {
+	return &runtime.TypeDef{Name: k.String(), Kind: runtime.KindNamedBasic}
+}
+
 // goValueOf adapts a reflect result to a runtime value: script-native types
 // pass through, everything else stays boxed as a host GoValue. Value is
 // `any`, so the pass-through list names the concrete runtime types.
@@ -1752,9 +1758,11 @@ func goValueOf(rv reflect.Value) runtime.Value {
 	case int64:
 		return v
 	case int8, int16, int32:
-		return int64(reflect.ValueOf(v).Int())
-	case uint, uint8, uint16, uint32:
-		return int64(reflect.ValueOf(v).Uint())
+		// sized ints keep their declared width so %T spells them
+		// like Go (int32 also covers rune — an alias).
+		return &runtime.Named{Typ: sizedIntTyp(rv.Kind()), V: rv.Int()}
+	case uint, uint8, uint16, uint32, uintptr:
+		return &runtime.Named{Typ: sizedIntTyp(rv.Kind()), V: int64(reflect.ValueOf(v).Uint())}
 	case uint64:
 		if v <= math.MaxInt64 {
 			return int64(v)

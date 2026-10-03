@@ -339,10 +339,10 @@ func (e *Engine) installStdlib() {
 		"IsSymbol":  h.fn("unicode.IsSymbol", func(a []any) (any, error) { return unicode.IsSymbol(runeOf(a[0])), nil }, unicode.IsSymbol),
 		"IsTitle":   h.fn("unicode.IsTitle", func(a []any) (any, error) { return unicode.IsTitle(runeOf(a[0])), nil }, unicode.IsTitle),
 		"IsUpper":   h.fn("unicode.IsUpper", func(a []any) (any, error) { return unicode.IsUpper(runeOf(a[0])), nil }, unicode.IsUpper),
-		"ToLower":   h.fn("unicode.ToLower", func(a []any) (any, error) { return int64(unicode.ToLower(runeOf(a[0]))), nil }),
-		"ToUpper":   h.fn("unicode.ToUpper", func(a []any) (any, error) { return int64(unicode.ToUpper(runeOf(a[0]))), nil }),
-		"ToTitle":   h.fn("unicode.ToTitle", func(a []any) (any, error) { return int64(unicode.ToTitle(runeOf(a[0]))), nil }),
-		"To":        h.fn2("unicode.To", func(a []any) (any, error) { return int64(unicode.To(intOf(a[0]), runeOf(a[1]))), nil }),
+		"ToLower":   h.fn("unicode.ToLower", func(a []any) (any, error) { return unicode.ToLower(runeOf(a[0])), nil }),
+		"ToUpper":   h.fn("unicode.ToUpper", func(a []any) (any, error) { return unicode.ToUpper(runeOf(a[0])), nil }),
+		"ToTitle":   h.fn("unicode.ToTitle", func(a []any) (any, error) { return unicode.ToTitle(runeOf(a[0])), nil }),
+		"To":        h.fn2("unicode.To", func(a []any) (any, error) { return unicode.To(intOf(a[0]), runeOf(a[1])), nil }),
 		"UpperCase": int64(unicode.UpperCase), "LowerCase": int64(unicode.LowerCase), "TitleCase": int64(unicode.TitleCase),
 		"MaxRune": int64(unicode.MaxRune), "MaxASCII": int64(unicode.MaxASCII), "ReplacementChar": int64(unicode.ReplacementChar),
 	})
@@ -358,15 +358,15 @@ func (e *Engine) installStdlib() {
 		"FullRuneInString":  h.fn("utf8.FullRuneInString", func(a []any) (any, error) { return utf8.FullRuneInString(str(a[0])), nil }, utf8.FullRuneInString),
 		"DecodeRuneInString": h.fn("utf8.DecodeRuneInString", func(a []any) (any, error) {
 			r, n := utf8.DecodeRuneInString(str(a[0]))
-			return &runtime.Tuple{Elems: []runtime.Value{int64(r), int64(n)}}, nil
+			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(r), int64(n)}}, nil
 		}),
 		"DecodeRune": h.fn("utf8.DecodeRune", func(a []any) (any, error) {
 			r, n := utf8.DecodeRune(byteSlice(a[0]))
-			return &runtime.Tuple{Elems: []runtime.Value{int64(r), int64(n)}}, nil
+			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(r), int64(n)}}, nil
 		}),
 		"DecodeLastRuneInString": h.fn("utf8.DecodeLastRuneInString", func(a []any) (any, error) {
 			r, n := utf8.DecodeLastRuneInString(str(a[0]))
-			return &runtime.Tuple{Elems: []runtime.Value{int64(r), int64(n)}}, nil
+			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(r), int64(n)}}, nil
 		}),
 		// Script-shaped: stdlib EncodeRune writes into a caller []byte;
 		// here it returns the encoded rune as a string.
@@ -1917,6 +1917,12 @@ func errVal(err error) runtime.Value {
 	return &runtime.GoValue{V: err} // boxed: method calls (Error(), Unwrap()) dispatch via reflection
 }
 
+// namedSized boxes a host-sized int with its declared typedef so %T
+// spells int8/int16/int32/int64/uintN like Go (rune is int32).
+func namedSized(x any, v int64) runtime.Value {
+	return &runtime.Named{Typ: &runtime.TypeDef{Name: fmt.Sprintf("%T", x), Kind: runtime.KindNamedBasic}, V: v}
+}
+
 // scriptVal converts a Go-native result back to a runtime value. Concrete
 // runtime types pass through; anything else (errors, host structs) is boxed
 // as a GoValue — Value is `any`, so it cannot be a type-switch case itself.
@@ -1924,10 +1930,14 @@ func scriptVal(v any) runtime.Value {
 	switch x := v.(type) {
 	case nil:
 		return runtime.NIL
-	case bool, string, int64, float64:
+	case bool, string, float64, int64:
 		return x
 	case int:
 		return int64(x)
+	case int8, int16, int32:
+		return namedSized(x, reflect.ValueOf(x).Int())
+	case uint, uint8, uint16, uint32, uintptr:
+		return namedSized(x, int64(reflect.ValueOf(x).Uint()))
 	case []byte:
 		// a []byte result unmarshals to a slice of int64s so `string(b)`
 		// and indexing behave like Go source suggests.
