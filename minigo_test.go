@@ -1199,6 +1199,32 @@ func TestSessionInheritsBinds(t *testing.T) {
 	}
 }
 
+// TestSessionInheritsPackageModes: a WithPackageModes policy applies to a
+// NewSession the same as on the parent engine — a denied import must fail
+// in both.
+func TestSessionInheritsPackageModes(t *testing.T) {
+	e := minigo.NewEngine(".", minigo.WithPackageModes(map[string]minigo.PackageMode{
+		"strings": minigo.ModeDeny,
+	}))
+	if _, err := e.Run(context.Background(), "./testdata/sessdeny", "Main"); err == nil || !strings.Contains(err.Error(), "denied") {
+		t.Fatalf("parent: expected deny error, got %v", err)
+	}
+	if _, err := e.NewSession().Run(context.Background(), "./testdata/sessdeny", "Main"); err == nil || !strings.Contains(err.Error(), "denied") {
+		t.Fatalf("session: expected deny error, got %v", err)
+	}
+}
+
+// TestSessionInheritsArgs: a session must see the same script argv the
+// parent engine was configured with — os.Args binds at installStdlib
+// time, so a dropped e.args silently reports the host argv instead.
+func TestSessionInheritsArgs(t *testing.T) {
+	e := minigo.NewEngine(".", minigo.WithArgs([]string{"./testdata/fuzzfix", "-v", "x"}))
+	got := run(t, e.NewSession(), "./testdata/fuzzfix", "OsArgs")
+	if got != "./testdata/fuzzfix,-v,x" {
+		t.Errorf("OsArgs = %v", got)
+	}
+}
+
 func TestImportByDeclaredName(t *testing.T) {
 	e := newEngine(t)
 	// the package clause wins over the import path's last element
