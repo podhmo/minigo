@@ -32,6 +32,7 @@ func TestInspect(t *testing.T) {
 		"HostPtrOwner",
 		"TypeOfType",
 		"IfaceMembers",
+		"MReqsStructEmpty",
 		"SourceOfSrc",
 		// coverage-gap pass — see the round-3 audit in
 		// docs/sketch/plan-package-introspection.md
@@ -61,10 +62,6 @@ func TestInspect(t *testing.T) {
 	// TypeOf on a non-type decl must trap, not return a func value
 	if _, err := e.Run(context.Background(), "./testdata/inspectuse", "TypeOfFuncTrap"); err == nil {
 		t.Error("TypeOfFuncTrap: expected trap for func decl, got nil")
-	}
-	// MReqs on a non-interface decl must trap too
-	if _, err := e.Run(context.Background(), "./testdata/inspectuse", "MReqsStructTrap"); err == nil {
-		t.Error("MReqsStructTrap: expected trap for struct decl, got nil")
 	}
 	// remaining documented limitations must also trap, not misreport
 	for _, fn := range []string{

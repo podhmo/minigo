@@ -54,10 +54,6 @@ func RequiresMethod(d *inspect.Decl, name, sig string) bool {
 	if inspect.Kind(d) != "type" {
 		return false
 	}
-	def := inspect.Def(d)
-	if def == nil || def.Kind != "InterfaceType" {
-		return false
-	}
 	for _, req := range inspect.MReqs(d) {
 		if len(req.Names) > 0 && req.Names[0] == name && req.Type.Text == sig {
 			return true

@@ -339,10 +339,11 @@ func FieldsOf(s *Decl) ([]*Field, error) {
 // MReqsOf returns the named member requirements of an interface type
 // symbol — the method specs, each Field carrying its name and signature
 // (a FuncType TypeExpr). Embedded and constraint elements are skipped;
-// IEmbeds covers them. Non-interface symbols report an error.
+// IEmbeds covers them. Non-interface type decls report empty; non-type
+// decls still report an error.
 func MReqsOf(s *Decl) ([]*Field, error) {
 	it, err := ifaceOf("MReqs", s)
-	if err != nil {
+	if err != nil || it == nil {
 		return nil, err
 	}
 	var out []*Field
@@ -356,11 +357,11 @@ func MReqsOf(s *Decl) ([]*Field, error) {
 
 // IEmbedsOf returns the embedded elements of an interface type symbol —
 // embedded interface names and constraint elements (~T, union
-// expressions) as their written TypeExprs. Non-interface symbols
-// report an error.
+// expressions) as their written TypeExprs. Non-interface type decls
+// report empty; non-type decls still report an error.
 func IEmbedsOf(s *Decl) ([]*TypeExpr, error) {
 	it, err := ifaceOf("IEmbeds", s)
-	if err != nil {
+	if err != nil || it == nil {
 		return nil, err
 	}
 	var out []*TypeExpr
@@ -383,7 +384,10 @@ func ifaceOf(op string, s *Decl) (*ast.InterfaceType, error) {
 	}
 	it, ok := ts.Type.(*ast.InterfaceType)
 	if !ok {
-		return nil, fmt.Errorf("inspect.%s: %s is not an interface type", op, s.Name)
+		// a non-interface *type* decl has no requirements or embeds —
+		// report empty rather than trapping, so scripts don't gate
+		// behind Def(d).Kind. Non-type decls still trap above.
+		return nil, nil
 	}
 	return it, nil
 }

@@ -97,10 +97,12 @@ func EnumMembers(s *Decl) []*Decl { panic("minigo intrinsic") }
 
 // MReqs returns the named member requirements of an interface type
 // symbol — the method specs; embedded/constraint elements are skipped.
+// Non-interface type decls return nil; non-type decls trap.
 func MReqs(s *Decl) []*Field { panic("minigo intrinsic") }
 
 // IEmbeds returns the embedded elements of an interface type symbol —
 // embedded interfaces and constraint elements (~T, unions).
+// Non-interface type decls return nil; non-type decls trap.
 func IEmbeds(s *Decl) []*TypeExpr { panic("minigo intrinsic") }
 
 // Signature returns a func/method's {Recv, Params, Results}.

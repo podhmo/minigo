@@ -435,15 +435,18 @@ func IfaceMembers() string {
 	return "ok"
 }
 
-// MReqsStructTrap: MReqs on a non-interface decl traps (asserted
-// Go-side — scripts cannot catch intrinsic errors).
-func MReqsStructTrap() string {
+// MReqsStructEmpty: MReqs/IEmbeds on a non-interface type decl report
+// empty, not a trap — the script asks without a Def(d).Kind pre-gate.
+func MReqsStructEmpty() string {
 	p := inspect.DirOf("./testdata/inspectpkg")
 	s := inspect.Symbol(p, "User")
-	if inspect.MReqs(s) != nil {
-		return "expected trap"
+	if r := inspect.MReqs(s); len(r) != 0 {
+		return "mreqs on struct"
 	}
-	return "swallowed"
+	if e := inspect.IEmbeds(s); len(e) != 0 {
+		return "iembeds on struct"
+	}
+	return "ok"
 }
 
 // SourceOfSrc: a bound-shadowed path still yields its GOROOT source —

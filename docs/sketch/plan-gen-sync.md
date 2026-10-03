@@ -182,10 +182,10 @@ Skipped for scope, not blocked by anything:
 Gaps in the `inspect`/index surface itself that the script works around
 textually — candidates for the inspect wishlist, not the example's:
 
-- **`inspect.MReqs` traps on non-interface decls** — interface-member
-  access must be gated behind `Def(d).Kind == "InterfaceType"` (a
-  kind-checked accessor, or non-trapping empty result, would remove the
-  ceremony).
+- ~~**`inspect.MReqs` traps on non-interface decls**~~ — fixed:
+  `MReqs`/`IEmbeds` return nil on non-interface *type* decls (non-type
+  decls still trap), so `RequiresMethod` asks `MReqs` directly without
+  the `Def(d).Kind == "InterfaceType"` pre-gate.
 - ~~Alias vs defined type isn't on the view~~ — fixed: `inspect.IsAlias`
   reads `TypeSpec.Assign` directly; the raw-line `IsAlias`/`DeclLine`/
   `IsAliasLine`/`PosFile`/`PosLine`/`LinesOf` helpers are deleted.
