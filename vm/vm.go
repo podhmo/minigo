@@ -8350,6 +8350,7 @@ func (v *VM) specializeType(g *runtime.TypeDef, targs []runtime.Value) *runtime.
 		TConstraints: g.TConstraints, Binds: binds,
 		MReqs: g.MReqs, IEmbeds: g.IEmbeds,
 		EmbedSpecs: g.EmbedSpecs, EmbedIdx: g.EmbedIdx, Embeds: g.Embeds,
+		Local: g.Local,
 	}
 	if len(g.Methods) > 0 {
 		td.Methods = make(map[string]*runtime.Function, len(g.Methods))

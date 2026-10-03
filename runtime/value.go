@@ -894,6 +894,12 @@ type TypeDef struct {
 	// instead of a *Struct so member access dispatches through the host
 	// method set. Set only on bound intrinsics' typedefs.
 	HostNew func() any
+
+	// Local marks a typedef declared inside a function body: Go gives
+	// every such declaration its own identity, so same-named local types
+	// in two different functions are distinct types (unlike package-level
+	// types, which dedupe by package path + name).
+	Local bool
 }
 
 // TypeKind classifies a named type's underlying shape.
