@@ -1,0 +1,4 @@
+0: panic: runtime error: index out of range [10] with length 0
+1: panic: strings: negative Repeat count
+2: string 182|7
+3: string 4|7
