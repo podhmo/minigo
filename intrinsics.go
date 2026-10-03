@@ -4143,8 +4143,10 @@ type callerFrames struct {
 	i     int
 }
 
-// Next implements (*runtime.Frames).Next — Go stops at an empty next
-// flag, so the loop `for f, next := frames.Next(); next` ends here.
+// Next implements (*runtime.Frames).Next — the bool reports whether a
+// further call would yield another frame, so the last real frame
+// returns false and `for { f, more := frames.Next(); ...; if !more {
+// break } }` does not process an extra empty frame.
 func (cf *callerFrames) Next() (callerFrame, bool) {
 	if cf.i >= len(cf.sites) {
 		return callerFrame{}, false
@@ -4157,7 +4159,7 @@ func (cf *callerFrames) Next() (callerFrame, bool) {
 		Function: s.Name,
 		File:     s.File,
 		Line:     s.Line,
-	}, true
+	}, cf.i < len(cf.sites)
 }
 
 // callerFrame is the script-side runtime.Frame.
