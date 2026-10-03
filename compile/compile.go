@@ -2356,6 +2356,23 @@ unwrapped:
 	if sel, ok := fun.(*ast.SelectorExpr); ok && c.trySpecial(x, sel) {
 		return
 	}
+	// len(x[i]) / cap(x[i]): when x's element type is an array the call
+	// folds to a constant — Go never evaluates the index. Emit the
+	// base, then OpLenIdxFold skips the emitted index+OpIndex+OpCall
+	// run when the runtime element typedef turns out to be an array.
+	if id, ok := fun.(*ast.Ident); ok && (id.Name == "len" || id.Name == "cap") &&
+		len(x.Args) == 1 && !x.Ellipsis.IsValid() {
+		if ix, ok := x.Args[0].(*ast.IndexExpr); ok {
+			c.calleeExpr(x.Fun)
+			c.expr(ix.X)
+			jm := c.emit(bytecode.OpLenIdxFold, 0, 0, x.Pos())
+			c.expr(ix.Index)
+			c.emit(bytecode.OpIndex, 0, 0, ix.Pos())
+			c.emit(bytecode.OpCall, 1, 0, x.Pos())
+			c.patchA(jm, len(c.ch.Code))
+			return
+		}
+	}
 	c.calleeExpr(x.Fun)
 	newCall := isNewCall(x)
 	for i, a := range x.Args {

@@ -1400,6 +1400,18 @@ func (v *VM) loop(f *frame) {
 			if truthy(f.pop()) {
 				f.ip = int(ins.A)
 			}
+		case bytecode.OpLenIdxFold:
+			// len(x[i]) / cap(x[i]): when x's element typedef is an
+			// array the fold is a constant — Go never evaluates the
+			// index, so skip the emitted index+index-op+call run.
+			// The stack is [callee, base]; the fold collapses both
+			// into the result so no call happens.
+			base := f.stack[len(f.stack)-1]
+			if n, ok := v.lenIdxFold(f, base); ok {
+				f.stack = f.stack[:len(f.stack)-2]
+				f.push(n)
+				f.ip = int(ins.A)
+			}
 		case bytecode.OpIter:
 			f.push(v.newIterator(f, materialize(f, f.pop())))
 		case bytecode.OpRangeNext:
@@ -7384,6 +7396,48 @@ func (v *VM) CallerFrame(pc uintptr) (runtime.CallSite, bool) {
 		return runtime.CallSite{}, false
 	}
 	return v.pcSites[pc-1], true
+}
+
+// lenIdxFold reports the constant length of x[i] when x's element
+// typedef is an array — Go folds len/cap of an index into an
+// array-typed element without evaluating the index at all.
+func (v *VM) lenIdxFold(f *frame, base runtime.Value) (runtime.Value, bool) {
+	td := typedefOf(base)
+	if td == nil {
+		// typed nils and live containers carry their declared typedef —
+		// `var s [][30]int` is a TypedNil, not something Deref peels.
+		switch b := base.(type) {
+		case *runtime.TypedNil:
+			td = b.Typ
+		case *runtime.Slice:
+			td = b.Typ
+		case *runtime.Map:
+			td = b.Typ
+		case *runtime.Named:
+			td = b.Typ
+		}
+	}
+	if td == nil || td.Anon == nil {
+		return nil, false
+	}
+	var elt ast.Expr
+	switch t := td.Anon.(type) {
+	case *ast.ArrayType:
+		elt = t.Elt // x[i] on an array/slice has the element's type
+	case *ast.MapType:
+		elt = t.Value // x[k] on a map has the value's type
+	default:
+		return nil, false
+	}
+	at, ok := elt.(*ast.ArrayType)
+	if !ok || at.Len == nil {
+		return nil, false
+	}
+	n, ok := v.arrayLen(f, &runtime.TypeDef{Anon: at, Kind: runtime.KindSlice})
+	if !ok {
+		return nil, false
+	}
+	return int64(n), true
 }
 
 // callSite renders one frame for runtime.Callers: the function's Go
