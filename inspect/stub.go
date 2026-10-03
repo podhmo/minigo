@@ -86,6 +86,26 @@ func IEmbeds(s *Decl) []*TypeExpr { panic("minigo intrinsic") }
 // Signature returns a func/method's {Recv, Params, Results}.
 func Signature(s *Decl) *Sig { panic("minigo intrinsic") }
 
+// Body returns a func/method decl's body view — its block statement
+// node. Non-func decls report nil. Nodes carries the traversal
+// children; Kind/Op/Name/Value/Names/Pos/Text fields describe each
+// node. (experimental)
+func Body(s *Decl) *Node { panic("minigo intrinsic") }
+
+// Nodes lists a body node's children in source order (experimental).
+func Nodes(n *Node) []*Node { panic("minigo intrinsic") }
+
+// AsExpr re-wraps an expression node/op as a TypeExpr so SymbolID,
+// Resolve, and the type-navigation functions apply to it
+// (experimental). Non-expression nodes report nil.
+func AsExpr(x any) *TypeExpr { panic("minigo intrinsic") }
+
+// Ops compiles a func/method decl — or a "func" op (a function
+// literal) — into the flat op list for tracking call arguments and
+// return values. Leading "bind" ops with Tok "param" bind the
+// parameter names (experimental).
+func Ops(x any) []*Op { panic("minigo intrinsic") }
+
 // TypeParams returns a generic decl's type parameter fields.
 func TypeParams(s *Decl) []*Field { panic("minigo intrinsic") }
 
@@ -104,11 +124,19 @@ func UnRef(te *TypeExpr) *TypeExpr { panic("minigo intrinsic") }
 // Origin chases pointers and type transitions to the base expression.
 func Origin(te *TypeExpr) *TypeExpr { panic("minigo intrinsic") }
 
-// SymbolID resolves a type expression to the SymbolID it names.
-func SymbolID(te *TypeExpr) runtime.SymbolID { panic("minigo intrinsic") }
+// SymbolID resolves a type expression (or an expression node/op, via
+// AsExpr) to the SymbolID it names.
+func SymbolID(x any) runtime.SymbolID { panic("minigo intrinsic") }
 
-// Resolve follows a type expression to its declaration view.
-func Resolve(te *TypeExpr) *Decl { panic("minigo intrinsic") }
+// Resolve follows a type expression (or an expression node/op) to its
+// declaration view.
+func Resolve(x any) *Decl { panic("minigo intrinsic") }
+
+// Lookup is Resolve's non-trapping twin for body traversal: an
+// unresolvable or missing symbol reports nil instead of an error —
+// a local variable's identifier can't be told apart from a package
+// decl's until lookup is attempted. (experimental)
+func Lookup(x any) *Decl { panic("minigo intrinsic") }
 
 // UsedSymbols lists every imported member a file references.
 func UsedSymbols(f *File) []runtime.SymbolID { panic("minigo intrinsic") }
