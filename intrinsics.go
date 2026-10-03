@@ -44,6 +44,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/podhmo/minigo/runtime"
+	"github.com/podhmo/minigo/vm"
 )
 
 // installStdlib binds the intrinsic packages onto the engine's import-path
@@ -802,7 +803,7 @@ func (e *Engine) installStdlib() {
 		}},
 	})
 	// os: an interpreted program must never observe or terminate the host
-	// process — Exit is always a trap; the environment/argv surface is only
+	// process — Exit unwinds out as a process exit; the environment/argv surface is only
 	// bound when the engine is unrestricted (no AllowedRoots). File-system
 	// operations are always bound: each path argument resolves through
 	// e.fsPath, which anchors relative paths at the engine's virtual cwd
@@ -810,7 +811,10 @@ func (e *Engine) installStdlib() {
 	// file policy (host-surface gating stays per-symbol via WithHostPolicy).
 	ospkg := map[string]runtime.Value{
 		"Exit": h.fn("os.Exit", func(a []any) (any, error) {
-			return nil, errors.New("os.Exit is not supported: an interpreted program cannot terminate the host process")
+			// os.Exit unwinds past every defer straight out of the
+			// interpreter — ExitRequest ends the run at the Call
+			// boundary: 0 cleanly, N as `exit status N`.
+			panic(&vm.ExitRequest{Code: int(intOf(a[0]))})
 		}),
 		"Stat":     h.fn1("os.Stat", func(a []any) (any, error) { return fsOp2(e, "os.Stat", a, os.Stat) }),
 		"Lstat":    h.fn1("os.Lstat", func(a []any) (any, error) { return fsOp2(e, "os.Lstat", a, os.Lstat) }),

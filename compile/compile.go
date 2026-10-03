@@ -27,19 +27,21 @@ import (
 
 // fscope is the static scope model of one function while compiling.
 type fscope struct {
-	parent    *fscope
-	blocks    []map[string]int       // name -> local slot
-	blockIDs  []int                  // unique id per open block, for goto scoping
-	declPos   []map[string]token.Pos // name -> declaring position (goto scoping)
-	nextID    int
-	typeDecls map[string]bool // names bound by local `type` decls (not vars)
-	nlocals   int
-	upvals    []bytecode.UpvalDesc
-	upmap     map[string]int
+	parent     *fscope
+	blocks     []map[string]int       // name -> local slot
+	blockIDs   []int                  // unique id per open block, for goto scoping
+	declPos    []map[string]token.Pos // name -> declaring position (goto scoping)
+	nextID     int
+	typeDecls  map[string]bool   // names bound by local `type` decls (not vars)
+	ifaceTypes map[string]bool   // local `type` decls whose spec is an interface
+	ifaceVars  []map[string]bool // per-block: vars declared interface-typed
+	nlocals    int
+	upvals     []bytecode.UpvalDesc
+	upmap      map[string]int
 }
 
 func newFScope(parent *fscope) *fscope {
-	return &fscope{parent: parent, upmap: map[string]int{}, typeDecls: map[string]bool{}}
+	return &fscope{parent: parent, upmap: map[string]int{}, typeDecls: map[string]bool{}, ifaceTypes: map[string]bool{}}
 }
 
 func (s *fscope) pushBlock() {
@@ -47,11 +49,50 @@ func (s *fscope) pushBlock() {
 	s.blocks = append(s.blocks, map[string]int{})
 	s.blockIDs = append(s.blockIDs, s.nextID)
 	s.declPos = append(s.declPos, map[string]token.Pos{})
+	s.ifaceVars = append(s.ifaceVars, map[string]bool{})
 }
 func (s *fscope) popBlock() {
 	s.blocks = s.blocks[:len(s.blocks)-1]
 	s.blockIDs = s.blockIDs[:len(s.blockIDs)-1]
 	s.declPos = s.declPos[:len(s.declPos)-1]
+	s.ifaceVars = s.ifaceVars[:len(s.ifaceVars)-1]
+}
+
+// markIface records a just-declared name as interface-typed (its decl's
+// type annotation or initializer was an interface type/expression).
+// Interface-tag switches use it to pick pair-strict case equality.
+func (s *fscope) markIface(name string) {
+	if len(s.ifaceVars) == 0 {
+		return
+	}
+	s.ifaceVars[len(s.ifaceVars)-1][name] = true
+}
+
+// isIfaceVar reports whether the innermost declaration of name was
+// interface-typed; an unmarked shadow decl clears an outer mark.
+func (s *fscope) isIfaceVar(name string) bool {
+	for cur := s; cur != nil; cur = cur.parent {
+		for i := len(cur.blocks) - 1; i >= 0; i-- {
+			if _, declared := cur.blocks[i][name]; declared {
+				return cur.ifaceVars[i][name]
+			}
+		}
+	}
+	return false
+}
+
+// isIfaceTypeName reports whether a local `type I interface{...}` decl
+// named this identifier (walking enclosing function scopes).
+func (s *fscope) isIfaceTypeName(name string) bool {
+	for cur := s; cur != nil; cur = cur.parent {
+		if cur.ifaceTypes[name] {
+			return true
+		}
+		if cur.typeDecls[name] {
+			return false
+		}
+	}
+	return false
 }
 
 // scopeSnapshot captures which blocks are open and which variables are
@@ -297,6 +338,9 @@ func Func(fn *runtime.Function) error {
 			}
 			for _, n := range names {
 				slot := c.fs.declare(n.Name, n.Pos())
+				if c.isIfaceTypeExpr(field.Type) {
+					c.fs.markIface(n.Name)
+				}
 				coerces = append(coerces, paramCoerce{slot: slot, typ: field.Type})
 				nparams++
 			}
@@ -319,6 +363,9 @@ func Func(fn *runtime.Function) error {
 		for _, field := range fn.Decl.Type.Results.List {
 			for _, n := range field.Names {
 				slot := c.fs.declare(n.Name, n.Pos())
+				if c.isIfaceTypeExpr(field.Type) {
+					c.fs.markIface(n.Name)
+				}
 				c.ch.NamedSlots = append(c.ch.NamedSlots, slot)
 				c.emit(bytecode.OpNil, 0, 0, n.Pos())
 				c.emit(bytecode.OpNewLocal, slot, 0, n.Pos())
@@ -493,6 +540,74 @@ func InitFunc(pkg *runtime.Package) (*bytecode.Chunk, error) {
 	return c.ch, nil
 }
 
+// isIfaceTypeExpr reports whether e syntactically names an interface
+// type: `interface{...}`, `any`, `error`, a local `type I interface{}`
+// decl, or a package typedef whose spec is an interface. Used to pick
+// pair-strict equality for interface-typed switch tags.
+func (c *compiler) isIfaceTypeExpr(e ast.Expr) bool {
+	switch t := e.(type) {
+	case *ast.InterfaceType:
+		return true
+	case *ast.ParenExpr:
+		return c.isIfaceTypeExpr(t.X)
+	case *ast.Ident:
+		if t.Name == "any" || t.Name == "error" {
+			return true
+		}
+		if c.fs.isIfaceTypeName(t.Name) {
+			return true
+		}
+		if c.pkg != nil && c.pkg.Index != nil {
+			if td := c.pkg.Index.Types[t.Name]; td != nil {
+				if ts, ok := td.Decl.Spec.(*ast.TypeSpec); ok {
+					_, isI := ts.Type.(*ast.InterfaceType)
+					return isI
+				}
+			}
+		}
+	}
+	return false
+}
+
+// isIfaceExpr reports whether e statically yields an interface value:
+// a conversion to an interface type (`any(x)`, `interface{}(x)`,
+// `error(v)`) or a type assert to one (`v.(I)`).
+func (c *compiler) isIfaceExpr(e ast.Expr) bool {
+	switch x := e.(type) {
+	case *ast.ParenExpr:
+		return c.isIfaceExpr(x.X)
+	case *ast.CallExpr:
+		return len(x.Args) == 1 && c.isIfaceTypeExpr(x.Fun)
+	case *ast.TypeAssertExpr:
+		return x.Type != nil && c.isIfaceTypeExpr(x.Type)
+	case *ast.Ident:
+		if c.fs.isIfaceVar(x.Name) {
+			return true
+		}
+		// a package-level `var x any [= iface-typed init]` marks it too —
+		// global names resolve through the index, not the local scopes.
+		if c.pkg != nil && c.pkg.Index != nil {
+			if vd := c.pkg.Index.Vars[x.Name]; vd != nil {
+				if vs, ok := vd.Spec.(*ast.ValueSpec); ok {
+					if vs.Type != nil && c.isIfaceTypeExpr(vs.Type) {
+						return true
+					}
+					if vs.Type == nil && len(vs.Values) > 0 {
+						vi := vd.NameIdx
+						if len(vs.Values) == 1 {
+							vi = 0
+						}
+						if vi < len(vs.Values) && c.isIfaceExpr(vs.Values[vi]) {
+							return true
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
 // valueSpec emits a whole var/const spec: all of its names are bound.
 // Vars become package cells (OpNewGlobal); consts read-only cells
 // (OpNewGlobal with B=1) so a later `k = v` store traps like Go.
@@ -592,12 +707,24 @@ func (c *compiler) stmt(s ast.Stmt) {
 					c.typeExpr(vs.Type)
 					c.emit(bytecode.OpCoerceTop, 0, 0, vs.Pos())
 				}
+				// interface-typed decls mark their names so an
+				// interface-tag switch compares strict pairs.
+				ifaceType := vs.Type != nil && c.isIfaceTypeExpr(vs.Type)
+				markIface := func(name *ast.Ident, rhs ast.Expr) {
+					if name.Name == "_" {
+						return
+					}
+					if ifaceType || (vs.Type == nil && rhs != nil && c.isIfaceExpr(rhs)) {
+						c.fs.markIface(name.Name)
+					}
+				}
 				if len(vs.Values) == 1 && len(vs.Names) > 1 {
 					c.expr(vs.Values[0])
 					c.emit3(bytecode.OpUnpack, len(vs.Names), 0, 0, vs.Pos())
 					for i := len(vs.Names) - 1; i >= 0; i-- {
 						coerceTop()
 						coerce(vs.Names[i], c.bindLocal(vs.Names[i].Name, vs.Names[i].Pos(), isConst))
+						markIface(vs.Names[i], vs.Values[0])
 					}
 					break
 				}
@@ -609,6 +736,11 @@ func (c *compiler) stmt(s ast.Stmt) {
 						coerceTop()
 					}
 					coerce(name, c.bindLocal(name.Name, name.Pos(), isConst))
+					var rhs ast.Expr
+					if i < len(vs.Values) {
+						rhs = vs.Values[i]
+					}
+					markIface(name, rhs)
 				}
 			case token.TYPE:
 				// `type S struct{...}` inside a function binds the TypeDef as a
@@ -757,6 +889,7 @@ func (c *compiler) localTypeDecl(ts *ast.TypeSpec) {
 		}
 	case *ast.InterfaceType:
 		td.Kind = runtime.KindInterface
+		c.fs.ifaceTypes[ts.Name.Name] = true
 		for _, m := range t.Methods.List {
 			if len(m.Names) == 0 {
 				td.IEmbeds = append(td.IEmbeds, m.Type)
@@ -881,6 +1014,7 @@ func (c *compiler) assign(st *ast.AssignStmt) {
 					c.emit(bytecode.OpRecvOK, 0, 0, x.Pos())
 					c.emit3(bytecode.OpUnpack, 2, 0, 0, st.Pos())
 					c.storeAll(st.Lhs, isDefine, useRefs, st.Pos())
+					c.noteIfaceBinds(st)
 					return
 				}
 			case *ast.IndexExpr:
@@ -890,6 +1024,7 @@ func (c *compiler) assign(st *ast.AssignStmt) {
 				c.emit(bytecode.OpIndexOK, 0, 0, x.Pos())
 				c.emit3(bytecode.OpUnpack, 2, 0, 0, st.Pos())
 				c.storeAll(st.Lhs, isDefine, useRefs, st.Pos())
+				c.noteIfaceBinds(st)
 				return
 			case *ast.TypeAssertExpr:
 				// comma-ok assert: v, ok := x.(T)
@@ -902,6 +1037,7 @@ func (c *compiler) assign(st *ast.AssignStmt) {
 				c.emit(bytecode.OpAssertOK, 0, 0, x.Pos())
 				c.emit3(bytecode.OpUnpack, 2, 0, 0, st.Pos())
 				c.storeAll(st.Lhs, isDefine, useRefs, st.Pos())
+				c.noteIfaceBinds(st)
 				return
 			}
 		}
@@ -913,6 +1049,7 @@ func (c *compiler) assign(st *ast.AssignStmt) {
 		}
 	}
 	c.storeAll(st.Lhs, isDefine, useRefs, st.Pos())
+	c.noteIfaceBinds(st)
 }
 
 // storeAll emits the phase-2 stores for an assignment: OpSetRefs when the
@@ -925,6 +1062,29 @@ func (c *compiler) storeAll(lhs []ast.Expr, isDefine, useRefs bool, pos token.Po
 	}
 	for i := len(lhs) - 1; i >= 0; i-- {
 		c.storeTarget(lhs[i], isDefine)
+	}
+}
+
+// noteIfaceBinds marks names a `:=` binds to an interface-typed RHS
+// (`any(x)`, `v.(I)`) so an interface-tag switch later picks strict
+// pair equality. A multi-value RHS marks every bound name — `v, ok :=`
+// forms keep the value slot's type on name[0].
+func (c *compiler) noteIfaceBinds(st *ast.AssignStmt) {
+	if st.Tok != token.DEFINE {
+		return
+	}
+	for i, l := range st.Lhs {
+		id, ok := l.(*ast.Ident)
+		if !ok || id.Name == "_" {
+			continue
+		}
+		rhs := st.Rhs[0]
+		if len(st.Rhs) == len(st.Lhs) {
+			rhs = st.Rhs[i]
+		}
+		if c.isIfaceExpr(rhs) {
+			c.fs.markIface(id.Name)
+		}
 	}
 }
 
@@ -1164,38 +1324,48 @@ func (c *compiler) switchStmt(st *ast.SwitchStmt) {
 		c.stmt(st.Init)
 	}
 	tagSlot := -1
+	strict := false
 	if st.Tag != nil {
 		c.expr(st.Tag)
 		tagSlot = c.fs.declare("$tag", token.NoPos)
 		c.emit(bytecode.OpNewLocal, tagSlot, 0, st.Tag.Pos())
+		// An interface-typed tag compares dynamic (type, value) pairs:
+		// `case 1:` (int) must not match an any(float64(1.0)) tag.
+		strict = c.isIfaceExpr(st.Tag)
 	}
 	cc := &ctrlCtx{labels: c.takeLabels()}
 	c.ctrl = append(c.ctrl, cc)
 
-	var defaultBody []ast.Stmt
 	var jumpOuts []int
 	var pendingFalls []int // fallthrough sites in the previous clause body
 	for _, s := range st.Body.List {
 		clause := s.(*ast.CaseClause)
-		if clause.List == nil {
-			defaultBody = clause.Body
-			continue
-		}
-		// tests: tag == e (or truthy e for tag-less switch); JumpTrue -> body
+		// tests: tag == e (or truthy e for tag-less switch); JumpTrue -> body.
+		// `default:` is an unconditional match at its source position —
+		// it may fall through into a clause written after it.
+		isDefault := clause.List == nil
 		bodyJumps := []int{}
 		for _, e := range clause.List {
 			if tagSlot >= 0 {
 				c.emit(bytecode.OpLocal, tagSlot, 0, e.Pos())
 				c.expr(e)
-				c.emit(bytecode.OpBinary, int(bytecode.BinEql), 0, e.Pos())
+				op := bytecode.BinEql
+				if strict {
+					op = bytecode.BinEqlIface
+				}
+				c.emit(bytecode.OpBinary, int(op), 0, e.Pos())
 			} else {
 				c.expr(e)
 			}
 			bodyJumps = append(bodyJumps, c.emit(bytecode.OpJumpTrue, 0, 0, e.Pos()))
 		}
 		// no test matched: continue to next clause's tests (emitted after
-		// this body)
-		jNext := c.emit(bytecode.OpJump, 0, 0, clause.Pos())
+		// this body). A default clause has no tests — control reaching its
+		// position drops straight into the body.
+		jNext := -1
+		if !isDefault {
+			jNext = c.emit(bytecode.OpJump, 0, 0, clause.Pos())
+		}
 		bodyStart := len(c.ch.Code)
 		for _, bj := range bodyJumps {
 			c.patchA(bj, bodyStart)
@@ -1214,16 +1384,8 @@ func (c *compiler) switchStmt(st *ast.SwitchStmt) {
 		c.fs.popBlock()
 		pendingFalls = falls
 		jumpOuts = append(jumpOuts, c.emit(bytecode.OpJump, 0, 0, clause.Pos()))
-		c.patchA(jNext, len(c.ch.Code))
-	}
-	if defaultBody != nil {
-		defStart := len(c.ch.Code)
-		for _, fi := range pendingFalls {
-			c.patchA(fi, defStart)
-		}
-		pendingFalls = nil
-		for _, bs := range defaultBody {
-			c.stmt(bs)
+		if jNext >= 0 {
+			c.patchA(jNext, len(c.ch.Code))
 		}
 	}
 	if len(pendingFalls) > 0 {

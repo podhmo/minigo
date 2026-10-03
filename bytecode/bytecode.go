@@ -114,25 +114,26 @@ const (
 type BinOp uint8
 
 const (
-	BinAdd    BinOp = iota // +
-	BinSub                 // -
-	BinMul                 // *
-	BinQuo                 // /
-	BinRem                 // %
-	BinAnd                 // &
-	BinOr                  // |
-	BinXor                 // ^
-	BinAndNot              // &^
-	BinShl                 // <<
-	BinShr                 // >>
-	BinLAnd                // &&
-	BinLOr                 // ||
-	BinEql                 // ==
-	BinNeq                 // !=
-	BinLss                 // <
-	BinLeq                 // <=
-	BinGtr                 // >
-	BinGeq                 // >=
+	BinAdd      BinOp = iota // +
+	BinSub                   // -
+	BinMul                   // *
+	BinQuo                   // /
+	BinRem                   // %
+	BinAnd                   // &
+	BinOr                    // |
+	BinXor                   // ^
+	BinAndNot                // &^
+	BinShl                   // <<
+	BinShr                   // >>
+	BinLAnd                  // &&
+	BinLOr                   // ||
+	BinEql                   // ==
+	BinNeq                   // !=
+	BinLss                   // <
+	BinLeq                   // <=
+	BinGtr                   // >
+	BinGeq                   // >=
+	BinEqlIface              // == against an interface-typed switch tag
 )
 
 var binOpSyms = [...]string{
@@ -140,7 +141,8 @@ var binOpSyms = [...]string{
 	BinAnd: "&", BinOr: "|", BinXor: "^", BinAndNot: "&^",
 	BinShl: "<<", BinShr: ">>", BinLAnd: "&&", BinLOr: "||",
 	BinEql: "==", BinNeq: "!=", BinLss: "<", BinLeq: "<=",
-	BinGtr: ">", BinGeq: ">=",
+	BinEqlIface: "==",
+	BinGtr:      ">", BinGeq: ">=",
 }
 
 // String renders the operator's source spelling, for error messages.

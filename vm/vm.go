@@ -164,6 +164,14 @@ type procExit struct{}
 
 func (procExit) Error() string { return "minigo: process exited" }
 
+// ExitRequest unwinds out of os.Exit(code): like a real process exit it
+// skips every pending defer, cannot be recovered by the script, and
+// stops the process's other goroutines. At the outermost Call it either
+// ends cleanly (code 0) or reports `exit status N`.
+type ExitRequest struct{ Code int }
+
+func (e *ExitRequest) Error() string { return fmt.Sprintf("exit status %d", e.Code) }
+
 // IsProcExit reports whether err is the process-exit sentinel — for host
 // code collecting Task errors that wants the real failure, not the noise
 // of siblings killed alongside it.
@@ -453,7 +461,15 @@ func (v *VM) Call(callee runtime.Value, args []runtime.Value) (result runtime.Va
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			result, err = nil, asError(r)
+			if ex, isExit := r.(*ExitRequest); isExit {
+				v.proc.kill()
+				result, err = nil, nil
+				if ex.Code != 0 {
+					err = ex
+				}
+			} else {
+				result, err = nil, asError(r)
+			}
 		}
 		// a goroutine's panic fails the process like Go's crash: report
 		// the real failure over this call's own outcome (including a
@@ -701,9 +717,9 @@ func (v *VM) exec(f *frame) {
 // Trap and Panic pass through unchanged.
 func asScriptPanic(r any) any {
 	switch r.(type) {
-	// procExit passes through like Trap: a process-exit unwind must not
-	// become a recoverable script panic.
-	case nil, *runtime.Trap, *runtime.Panic, procExit:
+	// procExit and ExitRequest pass through like Trap: a process-exit
+	// unwind must not become a recoverable script panic.
+	case nil, *runtime.Trap, *runtime.Panic, procExit, *ExitRequest:
 		return r
 	default:
 		return &runtime.Panic{Value: &runtime.GoValue{V: r}, GoStack: string(debug.Stack())}
@@ -721,9 +737,12 @@ func (v *VM) unwind(f *frame, r any) {
 		p = sp
 	}
 	// v.inflight is visible to recover() only while this frame's defers run.
+	// os.Exit skips the defers on every frame like a real process exit.
 	saved := v.inflight
 	v.inflight = p
-	v.runDefers(f)
+	if _, isExit := r.(*ExitRequest); !isExit {
+		v.runDefers(f)
+	}
 	p = v.inflight
 	v.inflight = saved
 	switch {
@@ -4371,7 +4390,43 @@ func constToBasic(u *runtime.UConst, name string) (runtime.Value, bool) {
 	return nil, false
 }
 
+// ifaceEql is the strict (type, value) pair equality an interface-typed
+// switch tag uses: `case 1:` materializes to int and never matches an
+// any(float64(1.0)) tag — plain BinEql would coerce it equal. A named
+// tag only pairs with the same named type; the nil-ish operands keep
+// the interface nil rules from eqlValue.
+func ifaceEql(f *frame, a, b runtime.Value) bool {
+	a, b = materialize(f, a), materialize(f, b)
+	an, aNamed := a.(*runtime.Named)
+	bn, bNamed := b.(*runtime.Named)
+	if aNamed != bNamed {
+		return false
+	}
+	if aNamed {
+		if !sameTypeDef(an.Typ, bn.Typ) {
+			return false
+		}
+		a, b = an.V, bn.V
+	}
+	switch a.(type) {
+	case runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
+		return eqlValue(a, b)
+	}
+	switch b.(type) {
+	case runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
+		return eqlValue(a, b)
+	}
+	if reflect.TypeOf(a) != reflect.TypeOf(b) {
+		return false
+	}
+	return eqlValue(a, b)
+}
+
 func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
+	// an interface-typed switch tag compares pairs, not coerced values.
+	if op == bytecode.BinEqlIface {
+		return ifaceEql(f, a, b)
+	}
 	// untyped constants fold in the arbitrary-precision constant domain
 	// while both sides read as constants — a bare int64/float64 operand
 	// came from a folded literal and can lift back (`const C = B - 1<<99`
@@ -5427,6 +5482,19 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 	if u, ok := x.(*runtime.UConst); ok {
 		return v.materializeConstErr(u, td)
 	}
+	// an interface conversion keeps the dynamic pair: the value
+	// satisfies the interface's methods AS its dynamic type —
+	// `interface{}(F(3))` stays a main.F, never the unwrapped float64.
+	if td.Kind == runtime.KindInterface {
+		ok, err := v.ifaceSatisfied(td, x)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
+		}
+		return x, nil
+	}
 	// a Named value converts through its underlying value — `string(x)` on
 	// a named string value works like the underlying conversion; `T(x)`
 	// on the same declared type is a no-op.
@@ -5577,15 +5645,6 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 		return v.convertPointer(td, x)
 	case runtime.KindStruct:
 		return v.convertStruct(td, x)
-	case runtime.KindInterface:
-		ok, err := v.ifaceSatisfied(td, x)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
-		}
-		return x, nil
 	case runtime.KindFunc:
 		// generalized inference (Go 1.27): `F(Id)` instantiates the
 		// generic function against F's signature first — the inferred
