@@ -95,7 +95,8 @@ func (e *Engine) installStdlib() {
 			}
 			a, flat := fmtArgs(v, args)
 			spec := str(a[0])
-			spec = rewriteTypeVerbs(spec, a, flat, 0, v)
+			spec, tail := rewriteTypeVerbs(spec, a, flat, 0, v)
+			a = append(a[:1], tail...)
 			spec, wrapPos := rewriteWrapVerbs(spec)
 			msg := fmt.Sprintf(spec, a[1:]...)
 			if wrapPos >= 0 && wrapPos < len(args)-1 {
@@ -3115,7 +3116,9 @@ func (h *hostHelpers) vffn(name string, formatAt, minArgs int, f func(runtime.VM
 		a, flat := fmtArgs(v, args)
 		if formatAt >= 0 && formatAt < len(a) {
 			if spec, ok := a[formatAt].(string); ok {
-				a[formatAt] = rewriteTypeVerbs(spec, a, flat, formatAt, v)
+				ns, tail := rewriteTypeVerbs(spec, a, flat, formatAt, v)
+				a[formatAt] = ns
+				a = append(a[:formatAt+1], tail...)
 			}
 		}
 		r, err := f(v, a)
@@ -3829,27 +3832,41 @@ func scriptTypeString(x runtime.Value) string {
 // without calling Formatter — %T (type spelling) and %p (address) —
 // rewriting each spec verb to %s over a pre-rendered string. Positional
 // indexes %[n] count arguments after the format string, as does
-// implicit order.
-func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt int, c runtime.VMCaller) string {
+// implicit order. The rewrite renumbers every directive to sequential
+// order and rebuilds the argument list to match, so a shared operand —
+// "%v %[1]p" — keeps its original value for %v while %p sees the
+// address string; mutating the operand slot in place would corrupt
+// both — the rebuilt list can outgrow the original tail, so callers
+// replace a[formatAt+1:] with the returned tail. Exotic mixes of %[n]
+// and * in one directive, or operands past the argument list, pass
+// through untouched.
+func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt int, c runtime.VMCaller) (string, []any) {
 	vals := rawArgs[formatAt+1:]
 	off := formatAt + 1
-	var sb strings.Builder
-	seq := 0
+	type dir struct {
+		start, end int   // the directive's span in spec
+		pos        int   // resolved operand index, 0-based
+		verb       byte  // final verb letter
+		stars      []int // operand positions each * consumed, in order
+		starIdx    bool  // mixes * and %[n] — bail out below
+	}
+	var dirs []dir
+	argNum, maxArg := 0, 0
 	for i := 0; i < len(spec); {
 		j := strings.IndexByte(spec[i:], '%')
 		if j < 0 {
-			sb.WriteString(spec[i:])
 			break
 		}
-		sb.WriteString(spec[i : i+j])
 		i += j
 		pct := i
 		i++ // past '%'
 		if i >= len(spec) {
-			sb.WriteByte('%')
 			break
 		}
 		pos := -1
+		var stars []int
+		var star, indexed bool
+	scan:
 		for i < len(spec) {
 			ch := spec[i]
 			switch {
@@ -3860,52 +3877,100 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 				}
 				if n, err := strconv.Atoi(spec[i+1 : k]); err == nil {
 					pos = n - 1
+					// after %[n] the next implicit argument is n (Go
+					// fmt: "subsequent verbs will use arguments
+					// n+1, n+2", 1-based).
+					argNum = n
+					indexed = true
 				}
 				i = k + 1
 			case ch == '*':
 				if pos < 0 {
-					seq++
+					stars = append(stars, argNum)
+					argNum++
+					if argNum > maxArg {
+						maxArg = argNum
+					}
 				}
+				star = true
 				i++
 			case ch == '#' || ch == '+' || ch == '-' || ch == ' ' || ch == '.' || (ch >= '0' && ch <= '9'):
 				i++
 			default:
-				goto gotVerb
+				break scan
 			}
 		}
-		break
-	gotVerb:
 		if i >= len(spec) {
-			sb.WriteString(spec[pct:])
 			break
 		}
 		verb := spec[i]
 		i++
 		if verb == '%' {
-			sb.WriteString("%%")
 			continue
 		}
 		if pos < 0 {
-			pos = seq
-			seq++
+			pos = argNum
+			argNum++
 		}
-		if pos >= 0 && pos < len(vals) && off+pos < len(a) {
-			switch verb {
-			case 'T':
-				sb.WriteString("%s")
-				a[off+pos] = scriptTypeString(vals[pos])
-				continue
-			case 'p':
-				// keep flags/width/index, swap only the verb byte
-				sb.WriteString(spec[pct : i-1])
-				sb.WriteByte('s')
-				a[off+pos] = ptrSpelling(c, vals[pos])
-				continue
+		if pos+1 > maxArg {
+			maxArg = pos + 1
+		}
+		dirs = append(dirs, dir{start: pct, end: i, pos: pos, verb: verb, stars: stars, starIdx: star && indexed})
+	}
+	// rebuild only when every operand resolves inside the arg list and
+	// no directive mixes * with an index — anything else keeps the
+	// original spec (and operands) so host fmt reports it as before.
+	for _, d := range dirs {
+		if d.starIdx || d.pos < 0 || d.pos >= len(vals) || off+d.pos >= len(a) {
+			return spec, a[off:]
+		}
+		for _, sp := range d.stars {
+			if sp < 0 || sp >= len(vals) || off+sp >= len(a) {
+				return spec, a[off:]
 			}
 		}
-		sb.WriteString(spec[pct:i])
 	}
-	return sb.String()
+	var sb strings.Builder
+	var na []any
+	prev := 0
+	for _, d := range dirs {
+		sb.WriteString(spec[prev:d.start])
+		sb.WriteByte('%')
+		// flags/width survive; the [n] index does not — newArgs is
+		// emitted in directive order, so every operand is implicit.
+		tail := spec[d.start+1 : d.end-1]
+		for k := 0; k < len(tail); {
+			if tail[k] == '[' {
+				for k < len(tail) && tail[k] != ']' {
+					k++
+				}
+				k++
+				continue
+			}
+			sb.WriteByte(tail[k])
+			k++
+		}
+		for _, sp := range d.stars {
+			na = append(na, a[off+sp])
+		}
+		switch d.verb {
+		case 'T':
+			sb.WriteByte('s')
+			na = append(na, scriptTypeString(vals[d.pos]))
+		case 'p':
+			sb.WriteByte('s')
+			na = append(na, ptrSpelling(c, vals[d.pos]))
+		default:
+			sb.WriteByte(d.verb)
+			na = append(na, a[off+d.pos])
+		}
+		prev = d.end
+	}
+	sb.WriteString(spec[prev:])
+	// args past the highest consumed position print as %!(EXTRA ...) —
+	// carry them across untouched.
+	na = append(na, a[off+maxArg:]...)
+	return sb.String(), na
 }
 
 // formatOf rebuilds a fmt directive from the verb and the flags/width a
