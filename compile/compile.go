@@ -49,10 +49,20 @@ func newFScope(parent *fscope) *fscope {
 
 // iotaSlot lazily declares the hidden local backing the `iota` builtin
 // inside this function's local const specs — a user `const iota = ...`
-// shadows it like any other declared name.
+// shadows it like any other declared name. The slot lives for the whole
+// function but its name binding lives in the declaring block, so a const
+// in a sibling block re-binds it: `{const A = iota}; {const B = iota}`
+// resolves iota in both blocks while a user-declared iota keeps winning.
 func (s *fscope) iotaSlot() int {
 	if s.iota < 0 {
 		s.iota = s.declare("iota", token.NoPos)
+		return s.iota
+	}
+	if _, found := s.lookupLocal("iota"); !found {
+		if len(s.blocks) == 0 {
+			s.pushBlock()
+		}
+		s.blocks[len(s.blocks)-1]["iota"] = s.iota
 	}
 	return s.iota
 }
