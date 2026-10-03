@@ -171,7 +171,7 @@ func (e *Engine) installStdlib() {
 	e.Bind("strings", map[string]runtime.Value{
 		"Contains":    h.fn2("strings.Contains", func(a []any) (any, error) { return strings.Contains(str(a[0]), str(a[1])), nil }, strings.Contains),
 		"ContainsAny": h.fn2("strings.ContainsAny", func(a []any) (any, error) { return strings.ContainsAny(str(a[0]), str(a[1])), nil }, strings.ContainsAny),
-		"Compare":     h.fn2("strings.Compare", func(a []any) (any, error) { return int64(strings.Compare(str(a[0]), str(a[1]))), nil }),
+		"Compare":     h.fn2("strings.Compare", func(a []any) (any, error) { return strings.Compare(str(a[0]), str(a[1])), nil }),
 		"Replace":     h.fn3("strings.Replace", func(a []any) (any, error) { return strings.Replace(str(a[0]), str(a[1]), str(a[2]), intOf(a[3])), nil }, strings.Replace),
 		"Cut": h.fn2("strings.Cut", func(a []any) (any, error) {
 			b, af, ok := strings.Cut(str(a[0]), str(a[1]))
@@ -187,7 +187,7 @@ func (e *Engine) installStdlib() {
 		}),
 		"HasPrefix":  h.fn2("strings.HasPrefix", func(a []any) (any, error) { return strings.HasPrefix(str(a[0]), str(a[1])), nil }, strings.HasPrefix),
 		"HasSuffix":  h.fn2("strings.HasSuffix", func(a []any) (any, error) { return strings.HasSuffix(str(a[0]), str(a[1])), nil }, strings.HasSuffix),
-		"Index":      h.fn2("strings.Index", func(a []any) (any, error) { return int64(strings.Index(str(a[0]), str(a[1]))), nil }),
+		"Index":      h.fn2("strings.Index", func(a []any) (any, error) { return strings.Index(str(a[0]), str(a[1])), nil }),
 		"Join":       h.fn2("strings.Join", func(a []any) (any, error) { return strings.Join(strSlice(a[0]), str(a[1])), nil }, strings.Join),
 		"Split":      h.fn2("strings.Split", func(a []any) (any, error) { return strsSlice(strings.Split(str(a[0]), str(a[1]))), nil }),
 		"ToUpper":    h.fn("strings.ToUpper", func(a []any) (any, error) { return strings.ToUpper(str(a[0])), nil }, strings.ToUpper),
@@ -201,7 +201,7 @@ func (e *Engine) installStdlib() {
 		"NewReplacer": h.fn("strings.NewReplacer", func(a []any) (any, error) { return strings.NewReplacer(strArgs(a)...), nil }, strings.NewReplacer),
 		"Fields":      h.fn("strings.Fields", func(a []any) (any, error) { return strsSlice(strings.Fields(str(a[0]))), nil }),
 		"EqualFold":   h.fn2("strings.EqualFold", func(a []any) (any, error) { return strings.EqualFold(str(a[0]), str(a[1])), nil }, strings.EqualFold),
-		"Count":       h.fn2("strings.Count", func(a []any) (any, error) { return int64(strings.Count(str(a[0]), str(a[1]))), nil }),
+		"Count":       h.fn2("strings.Count", func(a []any) (any, error) { return strings.Count(str(a[0]), str(a[1])), nil }),
 		"SplitN":      h.fn3("strings.SplitN", func(a []any) (any, error) { return strsSlice(strings.SplitN(str(a[0]), str(a[1]), intOf(a[2]))), nil }),
 		"SplitAfter":  h.fn2("strings.SplitAfter", func(a []any) (any, error) { return strsSlice(strings.SplitAfter(str(a[0]), str(a[1]))), nil }),
 		"SplitAfterN": h.fn3("strings.SplitAfterN", func(a []any) (any, error) {
@@ -212,11 +212,11 @@ func (e *Engine) installStdlib() {
 		"TrimSuffix":   h.fn2("strings.TrimSuffix", func(a []any) (any, error) { return strings.TrimSuffix(str(a[0]), str(a[1])), nil }, strings.TrimSuffix),
 		"TrimLeft":     h.fn2("strings.TrimLeft", func(a []any) (any, error) { return strings.TrimLeft(str(a[0]), str(a[1])), nil }, strings.TrimLeft),
 		"TrimRight":    h.fn2("strings.TrimRight", func(a []any) (any, error) { return strings.TrimRight(str(a[0]), str(a[1])), nil }, strings.TrimRight),
-		"LastIndex":    h.fn2("strings.LastIndex", func(a []any) (any, error) { return int64(strings.LastIndex(str(a[0]), str(a[1]))), nil }),
-		"LastIndexAny": h.fn2("strings.LastIndexAny", func(a []any) (any, error) { return int64(strings.LastIndexAny(str(a[0]), str(a[1]))), nil }),
-		"IndexAny":     h.fn2("strings.IndexAny", func(a []any) (any, error) { return int64(strings.IndexAny(str(a[0]), str(a[1]))), nil }),
-		"IndexByte":    h.fn2("strings.IndexByte", func(a []any) (any, error) { return int64(strings.IndexByte(str(a[0]), byte(intOf(a[1])))), nil }),
-		"IndexRune":    h.fn2("strings.IndexRune", func(a []any) (any, error) { return int64(strings.IndexRune(str(a[0]), runeOf(a[1]))), nil }),
+		"LastIndex":    h.fn2("strings.LastIndex", func(a []any) (any, error) { return strings.LastIndex(str(a[0]), str(a[1])), nil }),
+		"LastIndexAny": h.fn2("strings.LastIndexAny", func(a []any) (any, error) { return strings.LastIndexAny(str(a[0]), str(a[1])), nil }),
+		"IndexAny":     h.fn2("strings.IndexAny", func(a []any) (any, error) { return strings.IndexAny(str(a[0]), str(a[1])), nil }),
+		"IndexByte":    h.fn2("strings.IndexByte", func(a []any) (any, error) { return strings.IndexByte(str(a[0]), byte(intOf(a[1]))), nil }),
+		"IndexRune":    h.fn2("strings.IndexRune", func(a []any) (any, error) { return strings.IndexRune(str(a[0]), runeOf(a[1])), nil }),
 		"ContainsRune": h.fn2("strings.ContainsRune", func(a []any) (any, error) { return strings.ContainsRune(str(a[0]), runeOf(a[1])), nil }, strings.ContainsRune),
 		"ToTitle":      h.fn("strings.ToTitle", func(a []any) (any, error) { return strings.ToTitle(str(a[0])), nil }, strings.ToTitle),
 		//lint:ignore SA1019 mirrors the deprecated stdlib symbol for script parity
@@ -317,11 +317,11 @@ func (e *Engine) installStdlib() {
 		"NewBuffer":       h.fn("bytes.NewBuffer", func(a []any) (any, error) { return bytes.NewBuffer(byteSlice(a[0])), nil }, bytes.NewBuffer),
 		"NewBufferString": h.fn("bytes.NewBufferString", func(a []any) (any, error) { return bytes.NewBufferString(str(a[0])), nil }, bytes.NewBufferString),
 		"Contains":        h.fn2("bytes.Contains", func(a []any) (any, error) { return bytes.Contains(byteSlice(a[0]), byteSlice(a[1])), nil }, bytes.Contains),
-		"Index":           h.fn2("bytes.Index", func(a []any) (any, error) { return int64(bytes.Index(byteSlice(a[0]), byteSlice(a[1]))), nil }),
-		"LastIndex":       h.fn2("bytes.LastIndex", func(a []any) (any, error) { return int64(bytes.LastIndex(byteSlice(a[0]), byteSlice(a[1]))), nil }),
-		"Count":           h.fn2("bytes.Count", func(a []any) (any, error) { return int64(bytes.Count(byteSlice(a[0]), byteSlice(a[1]))), nil }),
+		"Index":           h.fn2("bytes.Index", func(a []any) (any, error) { return bytes.Index(byteSlice(a[0]), byteSlice(a[1])), nil }),
+		"LastIndex":       h.fn2("bytes.LastIndex", func(a []any) (any, error) { return bytes.LastIndex(byteSlice(a[0]), byteSlice(a[1])), nil }),
+		"Count":           h.fn2("bytes.Count", func(a []any) (any, error) { return bytes.Count(byteSlice(a[0]), byteSlice(a[1])), nil }),
 		"Equal":           h.fn2("bytes.Equal", func(a []any) (any, error) { return bytes.Equal(byteSlice(a[0]), byteSlice(a[1])), nil }, bytes.Equal),
-		"Compare":         h.fn2("bytes.Compare", func(a []any) (any, error) { return int64(bytes.Compare(byteSlice(a[0]), byteSlice(a[1]))), nil }),
+		"Compare":         h.fn2("bytes.Compare", func(a []any) (any, error) { return bytes.Compare(byteSlice(a[0]), byteSlice(a[1])), nil }),
 		"HasPrefix":       h.fn2("bytes.HasPrefix", func(a []any) (any, error) { return bytes.HasPrefix(byteSlice(a[0]), byteSlice(a[1])), nil }, bytes.HasPrefix),
 		"HasSuffix":       h.fn2("bytes.HasSuffix", func(a []any) (any, error) { return bytes.HasSuffix(byteSlice(a[0]), byteSlice(a[1])), nil }, bytes.HasSuffix),
 		"Fields":          h.fn("bytes.Fields", func(a []any) (any, error) { return bytesSliceOf(bytes.Fields(byteSlice(a[0]))), nil }),
@@ -337,8 +337,8 @@ func (e *Engine) installStdlib() {
 		"ToLower":   h.fn("bytes.ToLower", func(a []any) (any, error) { return bytes.ToLower(byteSlice(a[0])), nil }, bytes.ToLower),
 		"ToTitle":   h.fn("bytes.ToTitle", func(a []any) (any, error) { return bytes.ToTitle(byteSlice(a[0])), nil }, bytes.ToTitle),
 		"Runes":     h.fn("bytes.Runes", func(a []any) (any, error) { return runeSlice(bytes.Runes(byteSlice(a[0]))), nil }),
-		"IndexByte": h.fn2("bytes.IndexByte", func(a []any) (any, error) { return int64(bytes.IndexByte(byteSlice(a[0]), byte(intOf(a[1])))), nil }),
-		"IndexRune": h.fn2("bytes.IndexRune", func(a []any) (any, error) { return int64(bytes.IndexRune(byteSlice(a[0]), runeOf(a[1]))), nil }),
+		"IndexByte": h.fn2("bytes.IndexByte", func(a []any) (any, error) { return bytes.IndexByte(byteSlice(a[0]), byte(intOf(a[1]))), nil }),
+		"IndexRune": h.fn2("bytes.IndexRune", func(a []any) (any, error) { return bytes.IndexRune(byteSlice(a[0]), runeOf(a[1])), nil }),
 		"Replace": h.arity("bytes.Replace", 4, func(a []any) (any, error) {
 			return bytes.Replace(byteSlice(a[0]), byteSlice(a[1]), byteSlice(a[2]), intOf(a[3])), nil
 		}),
@@ -368,9 +368,9 @@ func (e *Engine) installStdlib() {
 		"MaxRune": int64(unicode.MaxRune), "MaxASCII": int64(unicode.MaxASCII), "ReplacementChar": int64(unicode.ReplacementChar),
 	})
 	e.Bind("unicode/utf8", map[string]runtime.Value{
-		"RuneCountInString": h.fn("utf8.RuneCountInString", func(a []any) (any, error) { return int64(utf8.RuneCountInString(str(a[0]))), nil }),
-		"RuneCount":         h.fn("utf8.RuneCount", func(a []any) (any, error) { return int64(utf8.RuneCount(byteSlice(a[0]))), nil }),
-		"RuneLen":           h.fn("utf8.RuneLen", func(a []any) (any, error) { return int64(utf8.RuneLen(runeOf(a[0]))), nil }),
+		"RuneCountInString": h.fn("utf8.RuneCountInString", func(a []any) (any, error) { return utf8.RuneCountInString(str(a[0])), nil }),
+		"RuneCount":         h.fn("utf8.RuneCount", func(a []any) (any, error) { return utf8.RuneCount(byteSlice(a[0])), nil }),
+		"RuneLen":           h.fn("utf8.RuneLen", func(a []any) (any, error) { return utf8.RuneLen(runeOf(a[0])), nil }),
 		"RuneStart":         h.fn("utf8.RuneStart", func(a []any) (any, error) { return utf8.RuneStart(byte(intOf(a[0]))), nil }, utf8.RuneStart),
 		"Valid":             h.fn("utf8.Valid", func(a []any) (any, error) { return utf8.Valid(byteSlice(a[0])), nil }, utf8.Valid),
 		"ValidString":       h.fn("utf8.ValidString", func(a []any) (any, error) { return utf8.ValidString(str(a[0])), nil }, utf8.ValidString),
@@ -486,8 +486,8 @@ func (e *Engine) installStdlib() {
 	e.Bind("encoding/hex", map[string]runtime.Value{
 		"EncodeToString": h.fn("hex.EncodeToString", func(a []any) (any, error) { return hex.EncodeToString(byteSlice(a[0])), nil }, hex.EncodeToString),
 		"DecodeString":   h.fn("hex.DecodeString", func(a []any) (any, error) { return retErr2(hex.DecodeString(str(a[0]))) }),
-		"EncodedLen":     h.fn("hex.EncodedLen", func(a []any) (any, error) { return int64(hex.EncodedLen(intOf(a[0]))), nil }),
-		"DecodedLen":     h.fn("hex.DecodedLen", func(a []any) (any, error) { return int64(hex.DecodedLen(intOf(a[0]))), nil }),
+		"EncodedLen":     h.fn("hex.EncodedLen", func(a []any) (any, error) { return hex.EncodedLen(intOf(a[0])), nil }),
+		"DecodedLen":     h.fn("hex.DecodedLen", func(a []any) (any, error) { return hex.DecodedLen(intOf(a[0])), nil }),
 	})
 	e.Bind("encoding/json", map[string]runtime.Value{
 		"Number": &runtime.TypeDef{Name: "encoding/json.Number", Kind: runtime.KindNamedBasic},
@@ -619,7 +619,7 @@ func (e *Engine) installStdlib() {
 			return slices.Contains(anySlice(a[0]), a[1]), nil
 		}),
 		"Index": h.fn2("slices.Index", func(a []any) (any, error) {
-			return int64(slices.Index(anySlice(a[0]), a[1])), nil
+			return slices.Index(anySlice(a[0]), a[1]), nil
 		}),
 		"Clone": &runtime.BuiltinFunc{Name: "slices.Clone", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
@@ -1191,18 +1191,18 @@ func (e *Engine) installStdlib() {
 		"GOOS":   goruntime.GOOS,
 		"GOARCH": goruntime.GOARCH,
 		"NumGoroutine": h.fn("runtime.NumGoroutine", func(a []any) (any, error) {
-			return int64(goruntime.NumGoroutine()), nil
+			return goruntime.NumGoroutine(), nil
 		}),
 		"Gosched": h.fn("runtime.Gosched", func(a []any) (any, error) {
 			goruntime.Gosched()
 			return nil, nil
 		}),
-		"NumCPU": h.fn("runtime.NumCPU", func(a []any) (any, error) { return int64(goruntime.NumCPU()), nil }),
+		"NumCPU": h.fn("runtime.NumCPU", func(a []any) (any, error) { return goruntime.NumCPU(), nil }),
 		"GOMAXPROCS": &runtime.BuiltinFunc{Name: "runtime.GOMAXPROCS", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			// read-only on the script side: GOMAXPROCS(0) reports the
 			// current setting without mutating the host process's
 			// parallelism.
-			return int64(goruntime.GOMAXPROCS(0)), nil
+			return goruntime.GOMAXPROCS(0), nil
 		}},
 		"Version":  h.fn("runtime.Version", func(a []any) (any, error) { return goruntime.Version(), nil }),
 		"GC":       h.fn("runtime.GC", func(a []any) (any, error) { return nil, nil }),
@@ -2139,8 +2139,12 @@ func scriptVal(v any) runtime.Value {
 	switch x := v.(type) {
 	case nil:
 		return runtime.NIL
-	case bool, string, float64, int64:
+	case bool, string, float64:
 		return x
+	case int64:
+		// int64 is a named type in Go — distinct from int at assert time —
+		// so host int64 results ride in the box like the other sized ints.
+		return namedSized(x, x)
 	case int:
 		return int64(x)
 	case int8, int16, int32:
