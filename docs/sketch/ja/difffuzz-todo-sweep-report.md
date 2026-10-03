@@ -151,3 +151,30 @@
 #### リファクタリング提案の評価（第6ラウンド）
 
 - **`refTarget` を「変数ストレージを保持するケース」と「評価時点の参照先を保持するケース」に分ける — 妥当。そして今回の修正がほぼそのままの形になった（高）**。`isStorageBase`/`refTargetBase` が提案の分岐そのもの: ストレージ運搬形（Ident・Selector・Index・Star・Paren unwrap）は ref、非ストレージ形（call・`&`式・型名）は値。実装して分かったのは、提案が暗に想定する二分では収まらない点が2つ — `*p` は「評価時の pointee」ではなく「p が指す場所」を格納時に解く第三のケース（`DerefRef`）で、Ident だけ import 名判定が必要（パッケージは値オブジェクト）。つまり分岐は「storage / value」の2値ではなく「storage / 評価時 pointee / value」の3値が正確なモデルで、提案の方向は正しいが粒度はもう一段細かい。複合代入も同じ構造に乗せられたので、「この種の不具合を防ぐ」という狙い自体は達成されたと評価できる。
+
+### 6.8 実施ラウンド（round-7）: リファクタリング提案の実行
+
+§6.2–§6.7 で「妥当」と評価した提案を stacked PR として実施した（[Stack #139](https://github.com/podhmo/minigo/pull/138)、[#128](https://github.com/podhmo/minigo/pull/128)–[#138](https://github.com/podhmo/minigo/pull/138)）。実施結果:
+
+| 提案 | 状態 | PR |
+|------|------|-----|
+| `runtime.Map` insert/delete/clear メソッド集約 (§6.2-1) | 実施 | [#128](https://github.com/podhmo/minigo/pull/128) |
+| compiler 型・名前解決の共通化 (§6.2-2) | 実施 | [#129](https://github.com/podhmo/minigo/pull/129)（binding レコード、§6.6 統合案も兼ねる）、[#131](https://github.com/podhmo/minigo/pull/131)（`resolveName` ラダー） |
+| `RuntimeError` 生成ヘルパー (§6.2-3) | 実施 | [#136](https://github.com/podhmo/minigo/pull/136)（`runtime/errors.go` のコンストラクタ群） |
+| `deepEql` フェーズ分割 (§6.3-1) | 省略 | 報告自身の評価どおり「新しい正しさは生まれない」 — lockstep peel + `TypIdenticalStrict` で実質実現済み |
+| format 書き換え IR (§6.3-2) | 実施済み | #116（当時） |
+| `c.fresh` 一時変数ヘルパー (§6.4-1) | 実施 | [#137](https://github.com/podhmo/minigo/pull/137) |
+| 型同一性判定の共通化 (§6.4-2) | 実施 | [#135](https://github.com/podhmo/minigo/pull/135)（`runtime.TypIdentical`/`TypIdenticalStrict`） |
+| fscope binding レコード (§6.6) | 実施 | [#129](https://github.com/podhmo/minigo/pull/129) |
+| `refTarget` storage/value 分岐 (§6.7) | 実施済み | #127（当時） |
+| Named/UConst タグ操作の統一入口 (§3) | 実施 | [#138](https://github.com/podhmo/minigo/pull/138)（`runtime.Tag`/`TagOf`/`Unwrap`） |
+
+usecasefuzz 再実行: 0 DIFF / 1 ACCEPT / 4 TRAP（lim-http/toml/xml/yaml — 既知境界）— **リグレッションなし**。
+
+#### 計画外の意思決定
+
+- **型同一性の統合が実害 diverge を露出（#135）**: `eqlValue` の動的型ゲートが Go の (type, value) ペア比較からずれていた — `any((*int)(nil)) == any((*string)(nil))` が true、`any([]int) == any([]string)` が uncomparable panic（Go は false）、`structDefsEq` が `Binds` を見ていなかった。「判定器を一本化する」作業が各 arm の前提ずれを可視化したため、リファクタと同じ PR でゲート自体も修正（回帰 pin: `text_pass_ifaceeqtypes`）。deepEql の struct arm は `deepTypeEq`→`TypIdentical` に移し、REPL の decl 再マテリアライズ（cache eviction 後）でも name+pkg で一致する強度を選んだ — object identity だと同一宣言の再構築を別型とみなしてしまう。
+- **panic payload の3系統整理（#136）**: 41 サイトの Message を族分けすると、文字列 payload（`r.(error)` が効かない）・`runtime error:` 二重プレフィックス（2サイト、Error() が再付与するため）・Go 1.23 以前の range-yield 文言が混在していた。`PlainError`（Go の plainError 系 — error 型だが Error() にプレフィックスなし）を新設し、`Recover()` は error-typed payload 全般を GoValue 化する形に一般化（PanicNilError も通る）。意図しない変更は fixture（`text_pass_panicpayload`）で `r.(error)` の成否まで含めて pin した。
+- **funclit の invented params は `ic.fresh`（#137）**: 子コンパイラ側の hoisted `$argN` は ic の seq から採番されるため、param 名も親ではなく ic の seq から採る — 同一 seq 空間に揃えないと子スコープ内で衝突しうる。
+- **UConst はタグ統一の対象外（#138）**: 提案は Named/UConst を併記していたが、UConst は `constant.Value` を包む別形で、materialize 入口（`materializeConst`/`materializeConstErr`）は既に一本化済み。`Tag`/`Unwrap` は Named のみに限定した。
+- **`eqlValue` の Function arm は panic 維持（#135）**: 異なる func 型同士の比較も Go では false だが、関数値が signature typedef を持たないため同一性ゲートを掛けられない — 既存の近似（無条件 panic）を残した。
