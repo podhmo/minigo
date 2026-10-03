@@ -40,11 +40,15 @@ func (v *RValue) get() runtime.Value {
 
 // ifaceVal produces the interface{} payload: raw script values pass
 // through untouched, host values stay boxed one level shallower.
+// Boxing a script value into an interface copies it like a Go
+// assignment — structs detach, slices/maps/pointers share — so a
+// payload handed to Interface/Append/SetMapIndex/Send cannot alias
+// the location it was read from.
 func (v *RValue) ifaceVal() any {
 	if v.host() {
 		return v.rv.Interface()
 	}
-	return v.get()
+	return runtime.Copy(v.get())
 }
 
 // mustValid traps on a zero/invalid Value like reflect does.
@@ -678,10 +682,11 @@ func (v *RValue) MapIndex(k *RValue) *RValue {
 	if v.td != nil {
 		etd = v.e.elemOf(v.td)
 	}
-	// map values are copies in Go — no ref-view, matching minigo's own
-	// map model (IndexRef on a map writes nothing useful).
+	// map values are copies in Go — the read detaches the stored value
+	// and there is no ref-view, matching minigo's own map model
+	// (IndexRef on a map writes nothing useful).
 	if got, ok := m.Get(normVal(k.ifaceVal())); ok {
-		return v.e.wrap(v.vc, got, nil, etd)
+		return v.e.wrap(v.vc, runtime.Copy(got), nil, etd)
 	}
 	return &RValue{e: v.e, vc: v.vc}
 }
@@ -801,7 +806,7 @@ func (it *MapIter) Value() *RValue {
 		trap("call of MapIter.Value before Next")
 	}
 	got, _ := it.m.Get(it.keys[it.i-1])
-	return it.e.wrap(it.vc, got, nil, it.etd)
+	return it.e.wrap(it.vc, runtime.Copy(got), nil, it.etd)
 }
 
 // Reset restarts the iterator on v.
@@ -1369,7 +1374,7 @@ func (v *RValue) Recv() (*RValue, bool) {
 	}
 	if c, ok := v.get().(*runtime.Chan); ok {
 		x, ok := <-c.C
-		return v.e.wrap(v.vc, x, nil, v.e.elemOf(v.td)), ok
+		return v.e.wrap(v.vc, runtime.Copy(x), nil, v.e.elemOf(v.td)), ok
 	}
 	trap("call of reflect.Value.Recv on %s Value", v.kindStr())
 	return nil, false
@@ -1403,7 +1408,7 @@ func (v *RValue) TryRecv() (*RValue, bool) {
 	if c, ok := v.get().(*runtime.Chan); ok {
 		select {
 		case x, ok := <-c.C:
-			return v.e.wrap(v.vc, x, nil, v.e.elemOf(v.td)), ok
+			return v.e.wrap(v.vc, runtime.Copy(x), nil, v.e.elemOf(v.td)), ok
 		default:
 			return &RValue{e: v.e, vc: v.vc}, false
 		}
