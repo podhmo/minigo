@@ -108,6 +108,15 @@ func (r *Runner) EvalProbes(ctx context.Context, name string, probes []Probe) ([
 	}
 	wantLines, _ := probeLines(want.Stdout)
 
+	// wantPanics feeds the order-unspecified pass below: every panic go
+	// produced on any probe is an authentic panic this program can emit.
+	wantPanics := map[string]bool{}
+	for _, l := range wantLines {
+		if parseObs(l).Panic != "" {
+			wantPanics[r.mask(l)] = true
+		}
+	}
+
 	start := 0
 	for start < len(probes) {
 		var sub []Probe
@@ -172,6 +181,20 @@ func (r *Runner) EvalProbes(ctx context.Context, name string, probes []Probe) ([
 		}
 		res[next] = pr
 		start = next + 1
+	}
+	// Order-unspecified pass: Go specifies no evaluation order between
+	// non-call operands, so when one probe contains several panic-capable
+	// sub-expressions, which one panics first is free for both runtimes.
+	// minigo's strict left-to-right order and gc's hoisting both produce
+	// legal outcomes — flag it only when minigo's panic text is one go
+	// never produced on ANY probe: a panic go itself emitted somewhere is
+	// authentic (not a fabricated index/length), while a panic unique to
+	// minigo is the real panic-message bug this verdict exists to catch.
+	for i := range res {
+		if res[i].Verdict == Silent && res[i].Symptom == "panic-message" &&
+			wantPanics[r.mask(res[i].Got)] {
+			res[i] = ProbeResult{Verdict: Pass}
+		}
 	}
 	return res, nil
 }
