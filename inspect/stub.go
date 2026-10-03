@@ -136,3 +136,11 @@ func State(p *runtime.Package) string { panic("minigo intrinsic") }
 
 // Standard reports whether a package is inside GOROOT.
 func Standard(p *runtime.Package) bool { panic("minigo intrinsic") }
+
+// Body returns a function/method's syntax body without executing it.
+// Bodyless source declarations return nil; host/non-function decls trap.
+func Body(s *Decl) *Node { panic("minigo intrinsic") }
+
+// SyntaxChildren returns direct statement/expression/type children, with Role
+// and Index describing their position in the parent. It does not resolve names.
+func SyntaxChildren(n *Node) []*Node { panic("minigo intrinsic") }
