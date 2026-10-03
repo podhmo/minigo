@@ -77,8 +77,22 @@ type DstShapes struct {
 	MapSlice    map[int64][]int64
 	Arr         [2]int64
 	PSlice      []int64
+
+	NamedIDs    DstIDs
+	NamedItems  DstLeafList
+	NamedPtr    DstPtr
+	NamedPtrVal DstLeaf
+	NamedValPtr DstPtr
+	NamedMap    DstScores
+	RawIDs      DstIDs
 }
 
 type DstLeaf struct {
 	V int64
 }
+
+// Named composites — declared names over composite specs.
+type DstIDs []int64
+type DstLeafList []DstLeaf
+type DstPtr *DstLeaf
+type DstScores map[string]int64

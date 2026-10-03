@@ -85,6 +85,10 @@ type SrcNestedInner struct {
 // SrcShapes exercises every container/pointer shape in nested
 // (expression) positions — the paths that used to be implemented twice
 // (statement mode vs. expression mode) in the generator.
+//
+// The Named* fields exercise the same shapes behind a declared name —
+// `type SrcIDs []int` spells an identifier, so conversion must unwrap
+// the declaration to reach the element-wise shape.
 type SrcShapes struct {
 	PtrToVal    *int
 	ValToPtr    int
@@ -97,8 +101,22 @@ type SrcShapes struct {
 	MapSlice    map[int][]*int
 	Arr         [2]*int
 	PSlice      *[]int
+
+	NamedIDs    SrcIDs
+	NamedItems  SrcLeafList
+	NamedPtr    SrcPtr
+	NamedPtrVal SrcPtr
+	NamedValPtr SrcLeaf
+	NamedMap    SrcScores
+	RawIDs      []int
 }
 
 type SrcLeaf struct {
 	V int
 }
+
+// Named composites — declared names over composite specs.
+type SrcIDs []int
+type SrcLeafList []SrcLeaf
+type SrcPtr *SrcLeaf
+type SrcScores map[string]int

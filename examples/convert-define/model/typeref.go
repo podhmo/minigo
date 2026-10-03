@@ -51,6 +51,10 @@ func IsStructDecl(d *xinspect.Decl) bool {
 // StructElemOf peels pointer, slice, array and map layers off a TypeExpr
 // and resolves the remaining named type — the type a nested conversion
 // would target. Reports nil when the core is not a struct decl.
+//
+// A named type whose spec is itself a composite (type IDs []SrcInner)
+// is unwrapped one declared layer at a time so the inner element decl is
+// still discovered; a decl over a non-struct (type Celsius int) ends nil.
 func StructElemOf(res xinspect.Resolver, te *xinspect.TypeExpr) *xinspect.Decl {
 	for te != nil {
 		switch te.Kind {
@@ -67,11 +71,14 @@ func StructElemOf(res xinspect.Resolver, te *xinspect.TypeExpr) *xinspect.Decl {
 			}
 			te = cs[1]
 		default:
-			d, err := ResolveNamed(res, te)
-			if err != nil || !IsStructDecl(d) {
+			if d, err := ResolveNamed(res, te); err == nil && IsStructDecl(d) {
+				return d
+			}
+			u := te.Unwrap(res)
+			if u == te {
 				return nil
 			}
-			return d
+			te = u
 		}
 	}
 	return nil
