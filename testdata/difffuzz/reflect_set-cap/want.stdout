@@ -1,0 +1,9 @@
+0: 2 4 [7 9]
+1: panic: reflect: reflect.Value.SetCap using unaddressable value
+2: panic: reflect: reflect.Value.SetCap using value obtained using unexported field
+3: panic: reflect: call of reflect.Value.SetCap on int Value
+4: panic: reflect: slice capacity out of range in SetCap
+5: panic: reflect: slice capacity out of range in SetCap
+6: panic: reflect: call of reflect.Value.SetCap on zero Value
+7: main.S 2 3
+8: 5 5 42 42
