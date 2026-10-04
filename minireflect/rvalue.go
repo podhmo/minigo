@@ -1872,6 +1872,56 @@ func (v *RValue) driveSeq(vc runtime.VMCaller, yield runtime.Value, n int) error
 	return fmt.Errorf("cannot produce iter.Seq%d", n)
 }
 
+// Fields is Go 1.26's iter.Seq2[StructField, Value]: each yield pairs
+// the field descriptor with that field's value on the receiver.
+func (v *RValue) Fields() runtime.Value {
+	t := v.Type()
+	if t.Kind() != reflect.Struct {
+		plain("reflect: Fields of non-struct type %s", t)
+	}
+	return &runtime.BuiltinFunc{Name: "reflect.Value.Fields", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("Fields expects a yield function")
+		}
+		for i := 0; i < v.NumField(); i++ {
+			f := &runtime.GoValue{V: t.Field(i)}
+			x := &runtime.GoValue{V: v.Field(i)}
+			r, err := vc.Call(args[0], []runtime.Value{f, x})
+			if err != nil {
+				return nil, err
+			}
+			if b, ok := r.(bool); !ok || !b {
+				return nil, nil
+			}
+		}
+		return nil, nil
+	}}
+}
+
+// Methods is the iter.Seq2[Method, Value] counterpart: each yield
+// pairs the method descriptor with the bound method value, equivalent
+// to v.Method(i) for i in 0..NumMethod()-1.
+func (v *RValue) Methods() runtime.Value {
+	t := v.Type()
+	return &runtime.BuiltinFunc{Name: "reflect.Value.Methods", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("Methods expects a yield function")
+		}
+		for i := 0; i < v.NumMethod(); i++ {
+			m := &runtime.GoValue{V: t.Method(i)}
+			f := &runtime.GoValue{V: v.Method(i)}
+			r, err := vc.Call(args[0], []runtime.Value{m, f})
+			if err != nil {
+				return nil, err
+			}
+			if b, ok := r.(bool); !ok || !b {
+				return nil, nil
+			}
+		}
+		return nil, nil
+	}}
+}
+
 // ---- scalar reads ----
 
 // Int reads an integer value.
