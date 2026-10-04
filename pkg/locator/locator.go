@@ -156,6 +156,22 @@ func (l *Locator) ModulePath() string {
 
 // FindPackageDir converts an import path to a physical directory path.
 func (l *Locator) FindPackageDir(importPath string) (string, error) {
+	return l.FindPackageDirFrom("", importPath)
+}
+
+// FindPackageDirFrom resolves importPath as imported by the package in
+// fromDir. When the importer lives inside GOROOT/src, vendored
+// dependencies are searched through the ancestor vendor directories
+// first — the same rule the toolchain applies to standard-library code
+// (e.g. net/http importing golang.org/x/net/http/httpguts resolves to
+// $GOROOT/src/vendor/golang.org/x/net/http/httpguts). A fromDir outside
+// GOROOT skips the vendor search entirely.
+func (l *Locator) FindPackageDirFrom(fromDir, importPath string) (string, error) {
+	// 0. Vendored dependencies of a GOROOT importer.
+	if dir, ok := l.findInVendor(fromDir, importPath); ok {
+		return dir, nil
+	}
+
 	// 1. Check replace directives
 	for _, r := range l.replaces {
 		if strings.HasPrefix(importPath, r.OldPath) {
@@ -249,6 +265,39 @@ func (l *Locator) FindPackageDir(importPath string) (string, error) {
 		return "", fmt.Errorf("import path %q could not be resolved. Current module is %q (root: %s)", importPath, l.modulePath, l.rootDir)
 	}
 	return "", fmt.Errorf("import path %q could not be resolved", importPath)
+}
+
+// findInVendor searches vendor directories for importPath, walking from
+// fromDir up to the source root — mirroring the toolchain's vendoring:
+// each ancestor dir's vendor/ subtree is tried in order. The search only
+// applies when the importer lives inside GOROOT/src, the one place
+// vendored stdlib dependencies (golang.org/x/net, golang.org/x/crypto,
+// ...) are resolvable. Module-level vendor/ trees are out of scope.
+func (l *Locator) findInVendor(fromDir, importPath string) (string, bool) {
+	if l.goRoot == "" || fromDir == "" {
+		return "", false
+	}
+	srcRoot := filepath.Join(l.goRoot, "src")
+	if !isWithinDir(srcRoot, fromDir) {
+		return "", false
+	}
+	for d := fromDir; ; d = filepath.Dir(d) {
+		candidate := filepath.Join(d, "vendor", filepath.FromSlash(importPath))
+		if st, err := os.Stat(candidate); err == nil && st.IsDir() {
+			return candidate, true
+		}
+		if d == srcRoot {
+			return "", false
+		}
+	}
+}
+
+// isWithinDir reports whether path is root itself or lives under it.
+func isWithinDir(root, path string) bool {
+	if path == root {
+		return true
+	}
+	return strings.HasPrefix(path, root+string(filepath.Separator))
 }
 
 // findModuleRoot searches for any go.mod starting from a given directory and moving upwards.

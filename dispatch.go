@@ -161,6 +161,21 @@ func (e *Engine) underlying(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 	return td, nil
 }
 
+// peelAliasTd follows a typedef's alias links — `type A = B` IS B, so
+// method sets, interface requirements and signatures all read through
+// the alias to the aliased declaration. Named basics stay put: `type A B`
+// declares a distinct method set, not B's.
+func (e *Engine) peelAliasTd(td *runtime.TypeDef) *runtime.TypeDef {
+	for i := 0; td != nil && td.Kind == runtime.KindAlias && i < 32; i++ {
+		next, err := e.aliasOf(td)
+		if err != nil || next == nil || next == td {
+			break
+		}
+		td = next
+	}
+	return td
+}
+
 // methodSetOfU collects declared + promoted method names of a typedef —
 // generic methods (Go 1.27) are excluded as they never satisfy
 // interfaces — plus an "unsure" report: true when an embedded type could
@@ -168,6 +183,7 @@ func (e *Engine) underlying(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 // satisfaction treats such sets as optimistic — a missing requirement
 // may live on the unresolved embed.
 func (e *Engine) methodSetOfU(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool) (map[string]bool, bool) {
+	td = e.peelAliasTd(td)
 	if td == nil || seen[td] {
 		return nil, false
 	}
@@ -215,6 +231,7 @@ func (e *Engine) methodSet(td *runtime.TypeDef) (map[string]*runtime.Function, e
 // exported methods only). An interface typedef yields synthesized
 // members carrying each required method's declared signature.
 func (e *Engine) methodFuncs(td *runtime.TypeDef, ptr bool, seen map[*runtime.TypeDef]bool) map[string]*runtime.Function {
+	td = e.peelAliasTd(td)
 	if td == nil || seen[td] {
 		return nil
 	}
@@ -279,6 +296,7 @@ type ifaceSig struct {
 // signatures — a name-only set can't distinguish F(int) from F(string),
 // which interface satisfaction via reflect needs.
 func (e *Engine) ifaceSigsOf(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool) map[string]ifaceSig {
+	td = e.peelAliasTd(td)
 	if td == nil || seen[td] {
 		return nil
 	}
@@ -328,6 +346,7 @@ func (e *Engine) ifaceReqs(td *runtime.TypeDef) (map[string]bool, error) {
 }
 
 func (e *Engine) ifaceReqsRec(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool) map[string]bool {
+	td = e.peelAliasTd(td)
 	if td == nil || seen[td] {
 		return nil
 	}
@@ -592,7 +611,10 @@ func (e *Engine) instantiateRef(from *runtime.TypeDef, base *runtime.TypeDef, ar
 		if i >= len(args) {
 			break
 		}
-		at, err := e.resolveTypeRef(from, args[i])
+		// type args are full type expressions: a `*T` argument binds the
+		// pointer typedef, not its pointee — `mapping[string, *routingNode]`
+		// holds V=*routingNode (net/http's routing tree).
+		at, err := e.elemTypeRef(from, args[i])
 		if err != nil || at == nil {
 			if id, ok := args[i].(*ast.Ident); ok {
 				at = &runtime.TypeDef{Kind: runtime.KindNamedBasic, Name: id.Name, Pkg: from.Pkg, File: from.File}
@@ -608,6 +630,8 @@ func (e *Engine) instantiateRef(from *runtime.TypeDef, base *runtime.TypeDef, ar
 		TConstraints: base.TConstraints, Binds: binds,
 		MReqs: base.MReqs, IEmbeds: base.IEmbeds,
 		EmbedSpecs: base.EmbedSpecs, EmbedIdx: base.EmbedIdx, Embeds: base.Embeds,
+		LocalTypes: base.LocalTypes, Elem: base.Elem, HostNew: base.HostNew,
+		Local: base.Local,
 	}
 	if len(base.Methods) > 0 {
 		td.Methods = make(map[string]*runtime.Function, len(base.Methods))

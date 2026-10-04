@@ -28,7 +28,7 @@ func NewGoScanResolver(startDir string, cfg BuildConfig) (*GoScanResolver, error
 
 // Locate implements Resolver.
 func (r *GoScanResolver) Locate(ctx context.Context, fromDir, importPath string) (*PackageMeta, error) {
-	dir, err := r.loc.FindPackageDir(importPath)
+	dir, err := r.loc.FindPackageDirFrom(fromDir, importPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolving import %q: %w", importPath, err)
 	}

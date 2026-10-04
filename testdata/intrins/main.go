@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
+	"io"
 	"math"
 	"net/url"
 	"path"
@@ -17,6 +20,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"unicode"
 	"unicode/utf8"
 	"unsafe"
@@ -260,6 +264,98 @@ func JsonUnmarshal() string {
 		return "ok"
 	}
 	return "bad"
+}
+
+// StrconvAppendInt exercises the Append family — writeStatusLine in
+// net/http formats the status code through it.
+func StrconvAppendInt() string {
+	return string(strconv.AppendInt(nil, 255, 16)) // "ff"
+}
+
+// bytesCut exercises bytes.Cut's (before, after, found) tuple.
+func BytesCut() string {
+	before, after, found := bytes.Cut([]byte("a:b"), []byte(":"))
+	if !found {
+		return "miss"
+	}
+	return string(before) + "|" + string(after)
+}
+
+// upperReader is a script-defined io.Reader: its Read method serves a
+// canned string through the host callback proxy.
+type upperReader struct {
+	s   string
+	pos int
+}
+
+func (r *upperReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.s) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.s[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+// IoReadAllScript feeds a script struct advertising Read to bound
+// io.ReadAll — the proxy must forward and the byte buffer must flow
+// back through the script slice.
+func IoReadAllScript() string {
+	b, err := io.ReadAll(&upperReader{s: "proxy-ok"})
+	if err != nil {
+		return "err"
+	}
+	return string(b)
+}
+
+// IoReadFullCopy verifies a host-side fill lands back in the script
+// slice's elements.
+func IoReadFullCopy() string {
+	buf := make([]byte, 5)
+	if _, err := io.ReadFull(strings.NewReader("hello world"), buf); err != nil {
+		return "err"
+	}
+	return string(buf)
+}
+
+// scrSink is a script-defined io.Writer target for bufio.
+type scrSink struct{ got string }
+
+func (w *scrSink) Write(p []byte) (int, error) {
+	w.got += string(p)
+	return len(p), nil
+}
+
+// BufioOverScriptWriter writes through bound bufio.NewWriter —
+// bufio.Reset must accept the script struct as an io.Writer (interface
+// adaptation) and Flush must reach the script Write method.
+func BufioOverScriptWriter() string {
+	w := &scrSink{}
+	bw := bufio.NewWriter(w)
+	if _, err := bw.WriteString("buf"); err != nil {
+		return "err"
+	}
+	if err := bw.Flush(); err != nil {
+		return "flush"
+	}
+	return w.got
+}
+
+// AtomicInt64Ops runs the bound sync/atomic typed cell.
+func AtomicInt64Ops() int64 {
+	var n atomic.Int64
+	n.Add(40)
+	n.Store(2)
+	return n.Load()
+}
+
+// ContextCancel confirms bound context constructors hand real host
+// contexts back and their CancelFunc is deferred-callable.
+func ContextCancel() bool {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancel()
+	return ctx.Err() != nil
 }
 
 func main() {}
