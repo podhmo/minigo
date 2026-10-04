@@ -734,9 +734,23 @@ func (t *RType) Field(i int) *StructField {
 
 // FieldByIndex resolves a nested field path.
 func (t *RType) FieldByIndex(idx []int) *StructField {
+	if t.rt != nil {
+		f := t.rt.FieldByIndex(idx)
+		return &StructField{Name: f.Name, PkgPath: f.PkgPath,
+			Type: t.e.hostTypeOf(f.Type), Tag: f.Tag, Offset: f.Offset,
+			Index: f.Index, Anonymous: f.Anonymous}
+	}
 	cur := t
 	var f *StructField
 	for depth, i := range idx {
+		// embedded traversal derefs a ptr-to-struct field between
+		// steps — [ptrField, inner] walks the pointee like Go.
+		if depth > 0 && cur.Kind() == reflect.Ptr {
+			et := cur.Elem()
+			if et != nil && et.Kind() == reflect.Struct {
+				cur = et
+			}
+		}
 		// Go checks each level: descending into a non-struct panics
 		// with the level's type, not the top type — and the deeper
 		// levels fail inside Field, so the wording changes.
