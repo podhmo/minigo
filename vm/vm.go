@@ -423,6 +423,11 @@ func (v *VM) assignRef(f *frame, ref, val runtime.Value) {
 	case *runtime.DerefRef:
 		loc, ok := runtime.Deref(r.Ptr)
 		if !ok {
+			// `*m[k].p = v`: the pointer field read crosses the map
+			// element's copy — resolve it like an interior write.
+			loc, ok = v.refThrough(f, r.Ptr)
+		}
+		if !ok {
 			f.trap("deref of non-pointer %T", r.Ptr)
 			return
 		}
@@ -3406,6 +3411,26 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 			}
 		}
 		p.Globals.Set(name, val)
+	case *runtime.FieldRef:
+		// interior write through a field select crossing a map element
+		// (m[k].f.g = v): the field read lands on the element copy, so
+		// Go allows it only when the field itself is reference-shaped —
+		// m[k].g.x on a struct field stays a compile rejection here.
+		x, shared := v.refThrough(f, b)
+		if !shared {
+			f.trap("set field %s on %T", name, base)
+		}
+		v.setField(f, x, name, val)
+	case *runtime.IndexRef:
+		// interior write through an index select crossing a map
+		// element (m[k].f[0].x = v on a slice-of-struct field): the
+		// element's storage is shared through the slice, so the field
+		// write lands — through an array element it stays rejected.
+		x, shared := v.refThrough(f, b)
+		if !shared {
+			f.trap("set field %s on %T", name, base)
+		}
+		v.setField(f, x, name, val)
 	default:
 		f.trap("set field %s on %T", name, base)
 	}
@@ -4243,8 +4268,14 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 		// evaluates the outer index against the stored slice — read the
 		// ref's element (v.index, not Get: it also yields the map zero
 		// for a missing key) and assign through it, sharing the stored
-		// backing like Go.
-		x := v.index(f, b.Base, b.Key)
+		// backing like Go. refThrough also resolves a base that itself
+		// crosses a map element (m[k].f[i][j] over a slice field) — its
+		// value is usable for reads even where it reports unwritable.
+		bx, _ := v.refThrough(f, b.Base)
+		if bx == nil {
+			bx = b.Base
+		}
+		x := v.index(f, bx, b.Key)
 		if m := b.Map(); m != nil && !runtime.SharedElem(x) {
 			// Go rejects interior writes on a non-reference map
 			// element at compile time (m[k] is a copy) — trap
@@ -4252,8 +4283,81 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 			f.trap("index assign on %T", base)
 		}
 		v.setIndex(f, x, idx, val)
+	case *runtime.FieldRef:
+		// interior write through a field select crossing a map element
+		// (m[k].f[i] = v on a struct element): the field read lands on
+		// the element copy, so Go allows it only when the field itself
+		// is reference-shaped — an array or struct field stays a
+		// compile rejection here.
+		x, _ := v.refThrough(f, b)
+		if x == nil || !runtime.SharedElem(x) {
+			f.trap("index assign on %T", base)
+		}
+		v.setIndex(f, x, idx, val)
 	default:
 		f.trap("index assign on %T", base)
+	}
+}
+
+// refThrough resolves an lvalue ref chain to its current value where
+// runtime.Deref fails because the chain crosses a map element —
+// IndexRef.Get and FieldRef.Get stay gated so `m[k][i] = v` and
+// `m[k].f = v` keep their traps. The bool reports whether an interior
+// write into the resolved value's storage is legal Go: a map element
+// reads as a copy (writable only when the element is reference-shaped
+// itself), while a hop into shared storage keeps or restores
+// writability — m[k].g.s[i] through a struct field g and a slice field
+// s is legal, m[k].g.x is not. A nil value means the chain cannot
+// resolve at all.
+func (v *VM) refThrough(f *frame, base runtime.Value) (runtime.Value, bool) {
+	switch b := base.(type) {
+	case *runtime.IndexRef:
+		if x, ok := b.Get(); ok {
+			return x, true // a resolved element is storage
+		}
+		if m := b.Map(); m != nil {
+			// Get is gated for copies; the raw element read lands on
+			// the map element itself (writable only when it is
+			// reference-shaped) or the map zero for a missing key.
+			x, found := m.Get(b.Key)
+			if !found {
+				x = v.index(f, b.Base, b.Key)
+			}
+			return x, runtime.SharedElem(x)
+		}
+		bv, shared := v.refThrough(f, b.Base)
+		if bv == nil {
+			return nil, false
+		}
+		switch cb := runtime.Unwrap(bv).(type) {
+		case *runtime.Map:
+			x, found := cb.Get(b.Key)
+			if !found {
+				x = v.index(f, bv, b.Key)
+			}
+			return x, runtime.SharedElem(x)
+		case *runtime.Slice:
+			i, ok := runtime.Unwrap(b.Key).(int64)
+			if !ok {
+				return nil, false
+			}
+			// raw element read — v.index would copy a struct element
+			// and silently lose the write.
+			return cb.Elems[i], shared
+		}
+		x := v.index(f, bv, b.Key)
+		return x, shared
+	case *runtime.FieldRef:
+		bv, shared := v.refThrough(f, b.Base)
+		if bv == nil {
+			return nil, false
+		}
+		x := v.selectMember(f, bv, b.Name)
+		return x, runtime.SharedElem(x) || shared
+	case *runtime.DerefRef:
+		return v.refThrough(f, b.Ptr)
+	default:
+		return runtime.Deref(base)
 	}
 }
 
@@ -4385,6 +4489,15 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 	if !ok {
 		f.trap("composite literal on non-type %T", tdv)
 	}
+	return v.compositeOf(f, td, n, kv, raw)
+}
+
+// compositeOf builds a T{...} value for td — makeComposite's body once
+// the typedef and element values are known. A pointer element literal
+// (`[]*T{{...}}`, `map[K]*T{"k": {...}}`) recurses into it so the elided
+// `&T{...}` pointee constructs like a direct T{...} — structs included,
+// but also arrays, slices and maps.
+func (v *VM) compositeOf(f *frame, td *runtime.TypeDef, n int, kv bool, raw []runtime.Value) runtime.Value {
 	if td.HostNew != nil {
 		// host-backed type (sync.Mutex, sync.Pool, ...): the literal
 		// yields a fresh boxed host value; keyed fields initialize the
@@ -4506,8 +4619,9 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 		}
 		return m
 	case runtime.KindPointer:
-		// elided `&T{...}` inside a []*T{...} literal: build the element
-		// composite and wrap it in a fresh cell (a pointer).
+		// elided `&T{...}` inside a []*T{...} literal: build the pointee
+		// composite exactly like a direct T{...} (a struct fills fields,
+		// an array/slice/map its elements) and box it in a fresh cell.
 		if v.H.ElemOf == nil {
 			f.trap("pointer element types require engine hooks")
 		}
@@ -4521,38 +4635,7 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 				f.trap("cannot resolve element type of %s", tdName(td))
 			}
 		}
-		var es *runtime.Struct
-		if z, isStruct := v.zeroValue(f, et).(*runtime.Struct); isStruct {
-			es = z
-		} else {
-			es = &runtime.Struct{Def: et, Fields: make([]runtime.Value, len(et.Fields))}
-			for i := range es.Fields {
-				es.Fields[i] = runtime.NIL
-			}
-		}
-		if kv {
-			fts := v.fieldTypedefs(et)
-			for i := 0; i < n; i++ {
-				name, ok := raw[i*2].(string)
-				if !ok {
-					f.trap("struct literal key %T", raw[i*2])
-				}
-				found := v.setLitField(f, es, et, fts, name, raw[i*2+1])
-				if !found {
-					f.trap("%s has no field %s", tdName(et), name)
-				}
-			}
-		} else {
-			fts := v.fieldTypedefs(et)
-			for i := 0; i < n && i < len(es.Fields); i++ {
-				var ft *runtime.TypeDef
-				if i < len(fts) {
-					ft = fts[i]
-				}
-				es.Fields[i] = v.coerce(f, raw[i], ft)
-			}
-		}
-		return &runtime.Cell{Elem: es}
+		return &runtime.Cell{Elem: v.compositeOf(f, et, n, kv, raw)}
 	case runtime.KindStruct, runtime.KindNamedBasic:
 		// `type A B` literals build the underlying composite while keeping
 		// the declared tag: zeroValue returns Named{A, <underlying>}, and
