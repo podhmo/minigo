@@ -111,6 +111,7 @@ func Symbols(h Hooks) map[string]runtime.Value {
 		"MakeSlice":       e.fn("reflect.MakeSlice", e.makeSlice),
 		"MakeMap":         e.fn("reflect.MakeMap", e.makeMap),
 		"MakeMapWithSize": e.fn("reflect.MakeMapWithSize", e.makeMapWithSize),
+		"MakeFunc":        e.fn("reflect.MakeFunc", e.makeFunc),
 		"MakeChan":        e.fn("reflect.MakeChan", e.unsupported("reflect.MakeChan")),
 		"Append":          e.fn("reflect.Append", e.append_),
 		"AppendSlice":     e.fn("reflect.AppendSlice", e.appendSlice),
@@ -572,6 +573,89 @@ func (e *Env) arrayOf(vc runtime.VMCaller, args []runtime.Value) (runtime.Value,
 		Anon: &ast.ArrayType{Len: &ast.BasicLit{Kind: token.INT, Value: strconv.FormatInt(n, 10)},
 			Elt: e.exprOf(t.td)}}
 	return &runtime.GoValue{V: e.internT(e.keyOf(mtd), &RType{td: mtd, isArray: true, alen: int(n)})}, nil
+}
+
+// makeFunc implements reflect.MakeFunc: the produced func value
+// dispatches calls to the `func([]reflect.Value) []reflect.Value`
+// callback, packing the arguments into one RValue slice and unpacking
+// the callback's results to runtime values. Host-typed signatures go
+// through reflect.MakeFunc so the callback sees real reflect.Values.
+func (e *Env) makeFunc(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("reflect.MakeFunc needs 2 args, got %d", len(args))
+	}
+	t := asRType(args[0])
+	if t == nil {
+		panic(&runtime.Panic{Value: "reflect: MakeFunc: type must be a reflect.Type"})
+	}
+	if t.Kind() != reflect.Func {
+		panic(&runtime.Panic{Value: fmt.Sprintf("reflect: MakeFunc: type must be a func type: %s", t.String())})
+	}
+	// fn is the `func([]reflect.Value) []reflect.Value` callback — a
+	// plain callable, not a reflect.Value.
+	callee := runtime.Unwrap(args[1])
+	if kindOfValue(callee) != reflect.Func {
+		panic(&runtime.Panic{Value: "reflect: MakeFunc: fn must be a function"})
+	}
+	var produced *RValue
+	bf := &runtime.BuiltinFunc{
+		Name: "MakeFunc",
+		Fn: func(callVc runtime.VMCaller, cargs []runtime.Value) (runtime.Value, error) {
+			inSlice := &runtime.Slice{Elems: make([]runtime.Value, len(cargs))}
+			ins := make([]*RValue, len(cargs))
+			for i, a := range cargs {
+				var rv *RValue
+				if rv = asRValue(a); rv == nil {
+					// bare script values borrow the declared param type
+					// so the signature check sees `func()` not `<unnamed>`.
+					var pt *runtime.TypeDef
+					if rt := t.In(i); rt != nil {
+						pt = rt.td
+					}
+					rv = e.wrap(callVc, a, nil, pt)
+				}
+				ins[i] = rv
+				inSlice.Elems[i] = &runtime.GoValue{V: rv}
+			}
+			if produced != nil {
+				// Go's MakeFunc'd funcs enforce the declared signature —
+				// `reflect: Call with too few/too many input arguments`.
+				produced.checkCallArgs(ins, false)
+			}
+			r, err := callVc.Call(callee, []runtime.Value{inSlice})
+			if err != nil {
+				return nil, err
+			}
+			raw := runtime.Unwrap(r)
+			if tn, ok := raw.(*runtime.TypedNil); ok && tn.Typ != nil && tn.Typ.Kind == runtime.KindSlice {
+				return runtime.NIL, nil // `return nil` — no outputs
+			}
+			if raw == runtime.NIL {
+				return runtime.NIL, nil
+			}
+			outs, ok := raw.(*runtime.Slice)
+			if !ok || outs == nil {
+				return nil, fmt.Errorf("reflect.MakeFunc: callback returned %T, not []reflect.Value", r)
+			}
+			vals := make([]runtime.Value, len(outs.Elems))
+			for i, el := range outs.Elems {
+				if rv := asRValue(el); rv != nil {
+					vals[i] = normVal(rv.ifaceVal())
+				} else {
+					vals[i] = el
+				}
+			}
+			switch len(vals) {
+			case 0:
+				return runtime.NIL, nil
+			case 1:
+				return vals[0], nil
+			}
+			return &runtime.Tuple{Elems: vals}, nil
+		},
+	}
+	produced = e.wrap(vc, bf, nil, t.td)
+	return &runtime.GoValue{V: produced}, nil
 }
 
 func (e *Env) makeSlice(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
