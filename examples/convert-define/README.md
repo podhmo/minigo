@@ -1,4 +1,4 @@
-# Go Type Converter (`examples/convert-define`)
+# Go Type Converter
 
 This directory contains `convert-define`, a command-line tool that automatically generates Go type conversion functions. The definition file runs inside the `minigo` interpreter itself: `define.Convert`/`define.Rule` are registered special forms, so their arguments arrive as quoted AST. Type information comes from minigo's own lazy package loading (`engine.Package`) viewed through the `inspect` layer (`inspect/inspect.go`) — the vendored copy of `go-scan` this tool used to ship under `pkg/` is gone.
 
