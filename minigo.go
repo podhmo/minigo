@@ -218,7 +218,7 @@ func (e *Engine) newVM() *vm.VM {
 		MethodsOf:   e.methodsOfValue,
 		MethodSetOf: e.methodSetOfValue,
 		IfaceReqs:   e.ifaceReqs,
-		FindMethod:  e.findMethod,
+
 		ElemOf:      e.elemOf,
 		TypeMethods: e.typeMethods,
 		Underlying:  e.underlying,

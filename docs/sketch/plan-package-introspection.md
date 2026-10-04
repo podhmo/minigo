@@ -787,8 +787,10 @@ needed none of it (the one exception, `Children` bases, also repaired
 - Requirement-side same-name specs (an interface spelling `M` twice
   with different signatures — invalid Go anyway) just cannot be
   satisfied: `covers` requires every spec independently.
-- The interpreter's own `findMethod` remains DFS first-wins — a
-  different code path tracked separately in TODO.md.
+- ~~The interpreter's own `findMethod` remains DFS first-wins~~ — the
+  interpreter now resolves every promoted member through
+  `promotedMember`'s breadth-first walk (the same walk fields use);
+  `findMethod` and the `FindMethod` hook are gone.
 - Per-package scope stands — `Implementers` answers for one package's
   index; walking the import closure for the full picture is the
   caller's job (gen-sync does it with `collect`).

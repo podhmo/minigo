@@ -1143,6 +1143,55 @@ func TestGo127(t *testing.T) {
 	}
 }
 
+func TestPromotedMethodResolution(t *testing.T) {
+	e := newEngine(t)
+	// Go's promotion rule is breadth-first: the shallowest embed depth
+	// wins and a same-depth collision is an ambiguous selector. The
+	// promoted method walk used to be DFS first-wins — a deeper method
+	// could shadow a shallower one — and is now unified with the field
+	// walk. Values verified against `go run` (see fixture comments).
+	goods := []struct {
+		fn   string
+		want runtime.Value
+	}{
+		{"ShadowOrder", "shallow"},
+		{"ShadowMethodExpr", "shallow"},
+		{"ShadowBoundMethod", "shallow"},
+		{"ShadowIface", "shallow"},
+		{"IfaceOnlyDispatch", "shallow"},
+		{"NilEmbedPtrRecv", "nil-recv"},
+		{"NilEmbedPtrRecvMid", "nil-recv"},
+		{"RecField", int64(3)},
+	}
+	for _, c := range goods {
+		got := run(t, e, "./testdata/methoddepth", c.fn)
+		if diff := cmp.Diff(c.want, got); diff != "" {
+			t.Errorf("%s mismatch (-want +got):\n%s", c.fn, diff)
+		}
+	}
+	// Same-depth collisions trap "ambiguous selector" — the runtime
+	// stand-in for Go's compile-time rejection — and nil-embed value
+	// receivers panic on the implicit dereference.
+	bads := []struct {
+		fn  string
+		sub string
+	}{
+		{"Ambig", "ambiguous"},
+		{"IfaceAmbig", "ambiguous"},
+		{"IfaceMethodAmbig", "ambiguous"},
+		{"NilEmbedPtrRecvDeep", "nil pointer"},
+		{"NilEmbedValRecv", "nil pointer"},
+		{"NilEmbedValRecvDeep", "nil pointer"},
+		{"RecNoMember", "has no field or method"},
+	}
+	for _, c := range bads {
+		if _, err := e.Run(context.Background(), "./testdata/methoddepth", c.fn); err == nil ||
+			!strings.Contains(err.Error(), c.sub) {
+			t.Fatalf("%s: expected %q error, got %v", c.fn, c.sub, err)
+		}
+	}
+}
+
 // toolchainAtLeast reports whether the host Go toolchain is >= major.minor
 // — the parsed language surface (go/parser) depends on it.
 func toolchainAtLeast(major, minor int) bool {

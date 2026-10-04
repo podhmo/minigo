@@ -907,7 +907,7 @@ type TypeDef struct {
 
 	// Embedding: for each embedded struct field (no declared name),
 	// EmbedSpecs[i] is its type AST and EmbedIdx[i] its index in Fields.
-	// Resolved lazily into Embeds by the engine's FindMethod/MethodsOf.
+	// Resolved lazily into Embeds by the engine's TypeMethods/MethodsOf.
 	EmbedSpecs []ast.Expr
 	EmbedIdx   []int
 	Embeds     []*TypeDef
