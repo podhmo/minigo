@@ -459,6 +459,8 @@ func TestMapElemLvalueWrites(t *testing.T) {
 		{"StructArrSliceField", 22},
 		{"StructSliceOfStruct", 33},
 		{"StructInnerSlice", 8},
+		{"StructArrPtrField", 9},
+		{"StructPtrArrField", 9},
 	} {
 		got, err := e.Run(context.Background(), "./testdata/maplval", tc.fn)
 		if err != nil {
@@ -857,6 +859,11 @@ func TestFeatures(t *testing.T) {
 		{"CommaOkZero", int64(5)},
 		{"ElidedLits", int64(19)},
 		{"NamedElided", int64(5)},
+		// named types over composite literals
+		{"NamedCompArr", int64(3)},
+		{"NamedCompSlice", int64(4)},
+		{"NamedCompMap", int64(5)},
+		{"NamedCompPtrElided", int64(3)},
 		// generics
 		{"GenericFns", int64(42)},
 		{"GenericConvert", int64(42)},

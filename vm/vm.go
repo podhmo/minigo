@@ -4287,10 +4287,11 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 		// interior write through a field select crossing a map element
 		// (m[k].f[i] = v on a struct element): the field read lands on
 		// the element copy, so Go allows it only when the field itself
-		// is reference-shaped — an array or struct field stays a
-		// compile rejection here.
-		x, _ := v.refThrough(f, b)
-		if x == nil || !runtime.SharedElem(x) {
+		// is reference-shaped or reachable through shared storage
+		// (m[k].p.a[i] writes the pointee's array) — an array or
+		// struct field stays a compile rejection here.
+		x, shared := v.refThrough(f, b)
+		if x == nil || !shared {
 			f.trap("index assign on %T", base)
 		}
 		v.setIndex(f, x, idx, val)
@@ -4342,8 +4343,11 @@ func (v *VM) refThrough(f *frame, base runtime.Value) (runtime.Value, bool) {
 				return nil, false
 			}
 			// raw element read — v.index would copy a struct element
-			// and silently lose the write.
-			return cb.Elems[i], shared
+			// and silently lose the write. The element's own shape
+			// counts too: m[k].a[i].x writes through when a is
+			// [N]*S (a pointer element) even though a itself is a copy.
+			x := cb.Elems[i]
+			return x, shared || runtime.SharedElem(x)
 		}
 		x := v.index(f, bv, b.Key)
 		return x, shared
@@ -4645,6 +4649,15 @@ func (v *VM) compositeOf(f *frame, td *runtime.TypeDef, n int, kv bool, raw []ru
 			if p := v.peelNamed(td); p != nil && p != td {
 				etd = p
 			}
+		}
+		switch etd.Kind {
+		case runtime.KindSlice, runtime.KindMap:
+			// a named type over a composite (`type B [2]int`,
+			// `type B A`, `type B []int`, `type B map[K]V`): the literal
+			// is the underlying composite built through the same kind
+			// switch, tagged with the declared type — the struct fill
+			// below would produce a bogus empty *Struct.
+			return &runtime.Named{Typ: td, V: v.compositeOf(f, etd, n, kv, raw)}
 		}
 		z := v.zeroValue(f, td)
 		wrap, _ := z.(*runtime.Named)

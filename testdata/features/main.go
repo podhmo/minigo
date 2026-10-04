@@ -269,6 +269,39 @@ func NamedElided() int {
 	return m[0][1] + m[1][0] // 2+3
 }
 
+// ---- named types over composite literals ----
+// `type B A` where A is an array/slice/map keeps the declared tag but
+// builds the underlying composite — the literal must not produce a
+// bogus *Struct (ptr-element elision exercises the same path through
+// []*B{{...}}).
+
+type ArrA [2]int
+type ArrB ArrA
+type SlcA []int
+type SlcB SlcA
+type MapA map[string]int
+type MapB MapA
+
+func NamedCompArr() int {
+	var b ArrB = ArrB{1, 2}
+	return b[0] + b[1] // 3
+}
+
+func NamedCompSlice() int {
+	var b SlcB = SlcB{3, 4}
+	return b[1] // 4
+}
+
+func NamedCompMap() int {
+	var b MapB = MapB{"x": 5}
+	return b["x"] // 5
+}
+
+func NamedCompPtrElided() int {
+	s := []*ArrB{{1, 2}}
+	return (*s[0])[0] + (*s[0])[1] // 3
+}
+
 // ---- generics ----
 
 func Id[T any](v T) T { return v }

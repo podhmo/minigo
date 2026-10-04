@@ -125,11 +125,31 @@ func StructInnerSlice() int {
 	return m["k"].g2.s2[0]
 }
 
+// m[k].ap[i].x = v is legal: the array field is a copy, but its
+// pointer elements still point at shared storage.
+func StructArrPtrField() int {
+	m := map[string]g{"k": {ap: [2]*s{{x: 1}, {x: 2}}}}
+	m["k"].ap[0].x = 9
+	return m["k"].ap[0].x
+}
+
+// m[k].pa.a[i] = v is legal: the pointee's array is addressable
+// through the shared pointer field.
+func StructPtrArrField() int {
+	m := map[string]g{"k": {pa: &sa{a: [3]int{1, 2, 3}}}}
+	m["k"].pa.a[0] = 9
+	return m["k"].pa.a[0]
+}
+
+type sa struct{ a [3]int }
+
 type g struct {
 	f   []int
 	ms  map[string]int
 	ms2 map[string]s
 	p   *s
+	pa  *sa
+	ap  [2]*s
 	a2  [2][]int
 	a3  [3]int
 	ss  []s
