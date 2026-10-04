@@ -499,12 +499,12 @@ func (v *RValue) Addr() *RValue {
 	v.mustValid("Addr")
 	if v.host() {
 		if !v.rv.CanAddr() {
-			trap("call of reflect.Value.Addr on unaddressable value")
+			plain("reflect.Value.Addr of unaddressable value")
 		}
 		return v.e.wrapHost(v.vc, v.rv.Addr())
 	}
 	if v.ref == nil {
-		trap("call of reflect.Value.Addr on unaddressable value")
+		plain("reflect.Value.Addr of unaddressable value")
 	}
 	ptd := &runtime.TypeDef{Kind: runtime.KindPointer, Elem: v.td, Pkg: v.td.Pkg, File: v.td.File}
 	// the ref-view object itself IS the pointer value
