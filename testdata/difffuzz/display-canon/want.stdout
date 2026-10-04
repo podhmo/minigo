@@ -1,0 +1,9 @@
+panic: runtime error: comparing uncomparable type map[uint8]int
+panic: runtime error: comparing uncomparable type map[int32]int
+panic: runtime error: comparing uncomparable type map[weird.T]int
+panic: runtime error: comparing uncomparable type struct { f []int }
+anon struct %T: struct { X int }
+array %T: [3]uint8
+imported %T: weird.T
+iface String: interface { M() }
+panic: runtime error: hash of unhashable type map[uint8]int

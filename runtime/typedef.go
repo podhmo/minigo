@@ -210,6 +210,12 @@ func typSpelling(e ast.Expr, ctx *TypeDef, under bool) string {
 			if p := typImportPath(file, id.Name); p != "" {
 				return p + "." + t.Sel.Name
 			}
+			// an unresolved selector qualifier is a package reference,
+			// not a local type name — spell it literally. Type-name
+			// spelling would prefix the enclosing package's path and
+			// double-qualify synthesized exprs ("bytes.Buffer" coming
+			// out "bytes.bytes.Buffer").
+			return id.Name + "." + t.Sel.Name
 		}
 		return typSpelling(t.X, ctx, under) + "." + t.Sel.Name
 	case *ast.IndexExpr:
@@ -347,7 +353,13 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 		if id, ok := t.X.(*ast.Ident); ok {
 			if p := typImportPath(file, id.Name); p != "" {
 				// Go qualifies by the imported package's clause name —
-				// `net/http.Client` spells `http.Client`.
+				// `net/http.Client` spells `http.Client`, and an
+				// `import o "x/odd"` whose package declares `package
+				// weird` spells `weird.T`, not the alias or the path
+				// basename.
+				if name := importClauseName(pkg, file, id.Name); name != "" {
+					return name + "." + t.Sel.Name
+				}
 				return p[strings.LastIndex(p, "/")+1:] + "." + t.Sel.Name
 			}
 			// exprOf renders a named typedef's identity name as
@@ -432,6 +444,109 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 	return fmt.Sprintf("%T", e)
 }
 
+// importClauseName resolves a file import's package clause name — the
+// qualifier Go's type display uses regardless of the local import alias
+// (`import o "x/odd"` where odd's clause is `package weird` displays
+// `weird.T`). Returns "" when the import cannot be materialized (the
+// caller falls back to the import-path basename).
+func importClauseName(pkg *Package, file *syntax.File, alias string) string {
+	if pkg == nil || file == nil {
+		return ""
+	}
+	scopes := pkg.Scopes
+	if scopes == nil {
+		return ""
+	}
+	im := scopes[file][alias]
+	if im == nil {
+		return ""
+	}
+	p, err := im.Materialize()
+	if err != nil || p == nil {
+		return ""
+	}
+	return p.Name
+}
+
+// DisplayName renders td the way Go prints the type to the user —
+// reflect.Type.String(), %T, and runtime panic text all share it: the
+// qualifier is the declaring package's clause name, anonymous types
+// spell canonically (`struct { f int }`, `interface { M() }`), and the
+// predeclared aliases fold to their canonical types (byte→uint8).
+func DisplayName(td *TypeDef) string {
+	if td == nil {
+		return "<nil>"
+	}
+	if td.Name != "" {
+		if td.Pkg != nil && td.Pkg.Name != "" {
+			// the qualifier is the package's declared NAME — prefer the
+			// file's own package clause when available (a dir-loaded
+			// package's Pkg.Name can be a synthesized import path).
+			pkg := td.Pkg.Name
+			if td.File != nil && td.File.AST != nil && td.File.AST.Name != nil {
+				pkg = td.File.AST.Name.Name
+			}
+			if strings.HasPrefix(td.Name, td.Pkg.Path+".") {
+				return pkg + "." + td.Name[len(td.Pkg.Path)+1:]
+			}
+			if i := strings.LastIndex(td.Name, "."); i >= 0 {
+				return pkg + td.Name[i:]
+			}
+			return pkg + "." + td.Name
+		}
+		if i := strings.LastIndex(td.Name, "/"); i >= 0 {
+			// a bound typedef's identity name is "pkgpath.Name" — display
+			// keeps the last element like Go's package-name qualifier.
+			return td.Name[i+1:]
+		}
+		// reflect spells the predeclared aliases by their canonical
+		// types: `byte` prints `uint8`, `rune` prints `int32`.
+		if td.Pkg == nil && td.Spec == nil {
+			switch td.Name {
+			case "byte":
+				return "uint8"
+			case "rune":
+				return "int32"
+			case "any":
+				return "interface {}"
+			}
+		}
+		return td.Name
+	}
+	anon := td.Anon
+	if anon == nil && td.Spec != nil {
+		anon = td.Spec.Type
+	}
+	if anon != nil {
+		// synthesized composites keep an identity-path qualifier in
+		// their Anon selector (*<dir>/x.T); Go's Type.String requalifies
+		// it by the declaring package's clause name (*main.T). Borrow
+		// the element's package context for display only — identity
+		// spelling (TypSpelling/keyOf) keeps running on td itself.
+		cd := *td
+		for at := td; cd.Pkg == nil && at.Elem != nil; at = at.Elem {
+			cd.Pkg = at.Elem.Pkg
+			cd.File = at.Elem.File
+		}
+		return TypGoSpelling(anon, &cd)
+	}
+	if td.Elem != nil {
+		switch td.Kind {
+		case KindPointer:
+			return "*" + DisplayName(td.Elem)
+		case KindSlice:
+			return "[]" + DisplayName(td.Elem)
+		case KindMap:
+			return "map[?]" + DisplayName(td.Elem)
+		case KindChan:
+			return "chan " + DisplayName(td.Elem)
+		case KindInterface:
+			return "interface {}"
+		}
+	}
+	return "<unnamed>"
+}
+
 // goFuncSig renders a signature as `(params) results` with Go's spacing:
 // params are `, `-joined types (names dropped), zero results render
 // nothing, a single result goes unparenthesized, and several wrap in
@@ -508,6 +623,10 @@ func typBoundSpellingU(td *TypeDef, under bool) string {
 	}
 	if td.Name != "" {
 		if td.Pkg != nil {
+			// a host-bound td's Name is already "pkgpath.Name"
+			if strings.HasPrefix(td.Name, td.Pkg.Path+".") {
+				return td.Name
+			}
 			return td.Pkg.Path + "." + td.Name
 		}
 		return canonBasicName(td.Name)

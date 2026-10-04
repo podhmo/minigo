@@ -1,0 +1,8 @@
+elem == TypeOf(&b): true
+nil ptr == TypeOf(&b): true
+assignable *T -> *T: true
+ptr replaced: true
+slice: true
+map: true
+chan: true
+assignable *T -> int: false
