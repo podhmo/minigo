@@ -3274,6 +3274,12 @@ func (c *compiler) emitLenFolds(e ast.Expr) {
 	case *ast.FuncType:
 		c.emitFieldListLens(t.Params)
 		c.emitFieldListLens(t.Results)
+	case *ast.StructType:
+		c.emitFieldListLens(t.Fields)
+	case *ast.InterfaceType:
+		c.emitFieldListLens(t.Methods)
+	case *ast.Ellipsis:
+		c.emitLenFolds(t.Elt)
 	case *ast.IndexExpr:
 		c.emitLenFolds(t.Index)
 	case *ast.IndexListExpr:
@@ -3309,10 +3315,12 @@ func (c *compiler) typeExpr(e ast.Expr) {
 		c.emitLenFolds(t)
 	case *ast.MapType:
 		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindMap, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds}), 0, e.Pos())
+		c.emitLenFolds(t)
 	case *ast.StarExpr:
 		// *T is a real typedef now: `var p *int` yields a TypedNil,
 		// `x.(*T)` asserts on pointer identity, `[]*T{{...}}` auto-takes &.
 		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindPointer, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds}), 0, e.Pos())
+		c.emitLenFolds(t)
 	case *ast.StructType:
 		td := &runtime.TypeDef{Kind: runtime.KindStruct, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds}
 		td.FTags = runtime.StructFieldTags(t)
@@ -3328,10 +3336,12 @@ func (c *compiler) typeExpr(e ast.Expr) {
 			}
 		}
 		c.emit(bytecode.OpConst, c.constIdx(td), 0, e.Pos())
+		c.emitLenFolds(t)
 	case *ast.FuncType:
 		// the signature AST rides on the typedef so generalized inference
 		// (Go 1.27) can unify it against a generic function's parameters.
 		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindFunc, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds}), 0, e.Pos())
+		c.emitLenFolds(t)
 	case *ast.InterfaceType:
 		td := &runtime.TypeDef{Kind: runtime.KindInterface, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds}
 		for _, m := range t.Methods.List {
@@ -3344,6 +3354,7 @@ func (c *compiler) typeExpr(e ast.Expr) {
 			}
 		}
 		c.emit(bytecode.OpConst, c.constIdx(td), 0, e.Pos())
+		c.emitLenFolds(t)
 	case *ast.ParenExpr:
 		c.typeExpr(t.X)
 	case *ast.IndexExpr:
@@ -3361,8 +3372,10 @@ func (c *compiler) typeExpr(e ast.Expr) {
 		// ...T binds as []T: a variadic param's declared type IS a slice,
 		// so a missing rest coerces to TypedNil{slice}, not the elem zero
 		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Lbrack: t.Pos(), Elt: t.Elt}, Pkg: c.pkg, File: c.file, Binds: c.binds}), 0, e.Pos())
+		c.emitLenFolds(t)
 	case *ast.ChanType:
 		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindChan, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds}), 0, e.Pos())
+		c.emitLenFolds(t)
 	default:
 		c.trap(e.Pos(), "unsupported type expression %T", e)
 	}

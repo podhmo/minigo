@@ -8501,6 +8501,12 @@ func foldNextArrLen(e ast.Expr, n int64) bool {
 			return true
 		}
 		return foldFieldListLens(t.Results, n)
+	case *ast.StructType:
+		return foldFieldListLens(t.Fields, n)
+	case *ast.InterfaceType:
+		return foldFieldListLens(t.Methods, n)
+	case *ast.Ellipsis:
+		return foldNextArrLen(t.Elt, n)
 	case *ast.IndexExpr:
 		return foldNextArrLen(t.Index, n)
 	case *ast.IndexListExpr:
