@@ -254,45 +254,40 @@ func (r *FieldRef) fieldHits(level []*Struct) (hits []struct {
 	return hits
 }
 
-// Get reads the field value.
-func (r *FieldRef) Get() (Value, bool) {
+// find resolves the promoted field target breadth-first like Go: the
+// shallowest match wins and a same-depth tie is ambiguous.
+func (r *FieldRef) find() (st *Struct, idx int, ok bool) {
 	s := r.structOf()
 	if s == nil {
-		return nil, false
+		return nil, 0, false
 	}
-	// promoted fields resolve breadth-first like Go: the shallowest
-	// match wins and a same-depth tie is ambiguous.
 	level := []*Struct{s}
 	for depth := 0; len(level) > 0 && depth < 32; depth++ {
 		switch hits := r.fieldHits(level); len(hits) {
 		case 0:
 			level = promotedStructs(level)
 		case 1:
-			return hits[0].st.Fields[hits[0].idx], true
+			return hits[0].st, hits[0].idx, true
 		default:
 			panic(&Panic{Value: fmt.Sprintf("ambiguous selector %s", r.Name)})
 		}
+	}
+	return nil, 0, false
+}
+
+// Get reads the field value.
+func (r *FieldRef) Get() (Value, bool) {
+	if st, idx, ok := r.find(); ok {
+		return st.Fields[idx], true
 	}
 	return nil, false
 }
 
 // Set writes the field value.
 func (r *FieldRef) Set(v Value) bool {
-	s := r.structOf()
-	if s == nil {
-		return false
-	}
-	level := []*Struct{s}
-	for depth := 0; len(level) > 0 && depth < 32; depth++ {
-		switch hits := r.fieldHits(level); len(hits) {
-		case 0:
-			level = promotedStructs(level)
-		case 1:
-			hits[0].st.Fields[hits[0].idx] = v
-			return true
-		default:
-			panic(&Panic{Value: fmt.Sprintf("ambiguous selector %s", r.Name)})
-		}
+	if st, idx, ok := r.find(); ok {
+		st.Fields[idx] = v
+		return true
 	}
 	return false
 }
