@@ -2573,11 +2573,14 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 	return reflect.Value{}, fmt.Errorf("cannot use %s as %s", av.Type(), t)
 }
 
-// adaptIface reports a scriptIface proxy for v when v declares every
-// method interface t requires. The proxy is one concrete type covering
-// the io-family shapes host stdlib helpers demand — pure reflect cannot
-// fabricate interface impls, so the adapter's static method set must
-// contain t's, which AssignableTo verifies.
+// adaptIface reports a scriptIface-family proxy for v when v declares
+// every method interface t requires. Pure reflect cannot fabricate
+// interface impls, so the adapter's static method set must contain t's
+// — and the proxy variant is picked by whether the script declares the
+// OPTIONAL-probe methods (io.WriterTo/io.ReaderFrom, asserted by
+// io.Copy and friends): a Read-only script value adapted to io.Reader
+// must NOT satisfy WriterTo, or io.Copy calls a method that does not
+// exist and returns its error instead of copying through Read.
 func adaptIface(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.Value, bool) {
 	if vc == nil {
 		return reflect.Value{}, false
@@ -2588,8 +2591,19 @@ func adaptIface(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.V
 		return reflect.Value{}, false
 	}
 	si := &scriptIface{vc: vc, recv: v}
-	st := reflect.TypeOf(si)
-	if !st.AssignableTo(t) {
+	_, hasWT := vc.Member(v, "WriteTo")
+	_, hasRF := vc.Member(v, "ReadFrom")
+	var proxy any = si
+	switch {
+	case hasWT && hasRF:
+		proxy = scriptIfaceWTRF{si}
+	case hasWT:
+		proxy = scriptIfaceWT{si}
+	case hasRF:
+		proxy = scriptIfaceRF{si}
+	}
+	st := reflect.TypeOf(proxy)
+	if !st.Implements(t) {
 		return reflect.Value{}, false
 	}
 	for i := 0; i < t.NumMethod(); i++ {
@@ -2598,16 +2612,34 @@ func adaptIface(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.V
 		}
 	}
 	out := reflect.New(t).Elem()
-	out.Set(reflect.ValueOf(si))
+	out.Set(reflect.ValueOf(proxy))
 	return out, true
+}
+
+// scriptIfaceWT/scriptIfaceRF/scriptIfaceWTRF carry the io extension
+// methods a script value may declare: embedding *scriptIface promotes
+// its methods and the variant adds only the probe methods the script
+// actually has, so the concrete method set stays honest.
+type (
+	scriptIfaceWT   struct{ *scriptIface }
+	scriptIfaceRF   struct{ *scriptIface }
+	scriptIfaceWTRF struct{ *scriptIface }
+)
+
+func (s scriptIfaceWT) WriteTo(w io.Writer) (int64, error)   { return s.writeTo(w) }
+func (s scriptIfaceRF) ReadFrom(r io.Reader) (int64, error)  { return s.readFrom(r) }
+func (s scriptIfaceWTRF) WriteTo(w io.Writer) (int64, error) { return s.writeTo(w) }
+func (s scriptIfaceWTRF) ReadFrom(r io.Reader) (int64, error) {
+	return s.readFrom(r)
 }
 
 // scriptIface forwards host-interface calls into script: the script
 // value's Read/Write/Close/... methods run through vc, so an
 // interpreted type can serve as an io.Writer or error to bound host
-// helpers. The extra methods beyond what any one script type declares
-// are never selected — adaptIface only hands the proxy out for
-// interfaces whose requirements the script value satisfies.
+// helpers. Its method set omits the io extension methods WriteTo and
+// ReadFrom — host code probes those opportunistically (io.Copy asserts
+// them on its io.Reader/io.Writer args), so they only appear on the
+// scriptIfaceW* variants adaptIface picks when the script declares them.
 type scriptIface struct {
 	vc   runtime.VMCaller
 	recv runtime.Value
@@ -2809,7 +2841,11 @@ func (s *scriptIface) Swap(i, j int) {
 	s.call("Swap", int64(i), int64(j))
 }
 
-func (s *scriptIface) WriteTo(w io.Writer) (int64, error) {
+// writeTo/readFrom back the io extension methods — they are
+// deliberately unexported so *scriptIface's method set never claims an
+// io.WriterTo/io.ReaderFrom the script value does not declare (only the
+// scriptIfaceW* wrapper types surface them).
+func (s *scriptIface) writeTo(w io.Writer) (int64, error) {
 	rs, err := s.call("WriteTo", &runtime.GoValue{V: w})
 	if err != nil {
 		return 0, err
@@ -2817,7 +2853,7 @@ func (s *scriptIface) WriteTo(w io.Writer) (int64, error) {
 	return intOut(rs, 0), errOut(rs, 1)
 }
 
-func (s *scriptIface) ReadFrom(r io.Reader) (int64, error) {
+func (s *scriptIface) readFrom(r io.Reader) (int64, error) {
 	rs, err := s.call("ReadFrom", &runtime.GoValue{V: r})
 	if err != nil {
 		return 0, err

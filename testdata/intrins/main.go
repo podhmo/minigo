@@ -358,4 +358,67 @@ func ContextCancel() bool {
 	return ctx.Err() != nil
 }
 
+// AtomicAndOrOld: sync/atomic's And/Or return the value before the
+// update, unlike Add which returns the new one.
+func AtomicAndOrOld() int64 {
+	var n int64 = 0b1100
+	old := atomic.AndInt64(&n, 0b1010)
+	return old*100 + n // 12*100 + 8 = 1208
+}
+
+// SlicesSortedSeq drives a bound seq producer (strings.SplitSeq returns
+// a callable iter.Seq) — sorting must consume it through a yield call.
+func SlicesSortedSeq() string {
+	return strings.Join(slices.Sorted(strings.SplitSeq("b,a,c", ",")), "|")
+}
+
+// SlicesDeleteFuncAlias: DeleteFunc updates the shared backing — the
+// original slice keeps its length, kept elements pack to the front, and
+// the vacated tail is zeroed.
+func SlicesDeleteFuncAlias() string {
+	s := []int{1, 2, 3}
+	_ = slices.DeleteFunc(s, func(i int) bool { return i == 2 })
+	return fmt.Sprint(s[0], s[1], s[2]) // "1 3 0"
+}
+
+// IoMultiReaderEmpty: a zero-arg MultiReader is a valid empty reader.
+func IoMultiReaderEmpty() int {
+	b, _ := io.ReadAll(io.MultiReader())
+	return len(b)
+}
+
+// IoCopyScriptPair: io.Copy probes src for WriterTo and dst for
+// ReaderFrom — script structs declaring only Read/Write must still
+// copy through those base methods.
+func IoCopyScriptPair() string {
+	src := &upperReader{s: "copy-pair"}
+	dst := &scrSink{}
+	if _, err := io.Copy(dst, src); err != nil {
+		return "err"
+	}
+	return dst.got
+}
+
+// ContextAfterFunc registers then cancels inside the run: the callback
+// may land before or after the process ends — either way it must not
+// crash the host.
+func ContextAfterFunc() string {
+	ctx, cancel := context.WithCancel(context.Background())
+	context.AfterFunc(ctx, func() {})
+	cancel()
+	return "ok"
+}
+
+// BufioReaderWriteToScript exercises the adapted-interface probe path:
+// (*bufio.Reader).WriteTo asserts io.ReaderFrom on the dst writer — a
+// writer that does not declare ReadFrom must copy through plain Write.
+func BufioReaderWriteToScript() string {
+	w := &scrSink{}
+	br := bufio.NewReader(&upperReader{s: "via-writeto"})
+	if _, err := br.WriteTo(w); err != nil {
+		return "err"
+	}
+	return w.got
+}
+
 func main() {}

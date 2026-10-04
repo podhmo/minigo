@@ -796,13 +796,17 @@ func (e *Engine) installStdlib() {
 			el := scriptElems(a[0])
 			return sort.SliceIsSorted(el, func(i, j int) bool { return lessScript(el[i], el[j]) }), nil
 		}),
-		"Sorted": h.fn("slices.Sorted", func(a []any) (any, error) {
-			// iter.Seq inputs arrive already materialized: bound
-			// maps.Keys and friends hand back flat slices.
-			el := append([]runtime.Value{}, scriptElems(a[0])...)
+		"Sorted": &runtime.BuiltinFunc{Name: "slices.Sorted", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("slices.Sorted needs 1 arg")
+			}
+			el, err := seqElems(vc, args[0])
+			if err != nil {
+				return nil, fmt.Errorf("slices.Sorted: %w", err)
+			}
 			sort.Slice(el, func(i, j int) bool { return lessScript(el[i], el[j]) })
-			return &runtime.Slice{Elems: el, Typ: sliceTypOf(a[0])}, nil
-		}),
+			return &runtime.Slice{Elems: el, Typ: sliceTypOf(args[0])}, nil
+		}},
 		"DeleteFunc": &runtime.BuiltinFunc{Name: "slices.DeleteFunc", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("slices.DeleteFunc needs 2 args")
@@ -824,7 +828,7 @@ func (e *Engine) installStdlib() {
 					out = append(out, el)
 				}
 			}
-			return &runtime.Slice{Elems: out, Typ: s.Typ}, nil
+			return h.packSlice(s, out), nil
 		}},
 		"Compact": &runtime.BuiltinFunc{Name: "slices.Compact", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
@@ -844,7 +848,7 @@ func (e *Engine) installStdlib() {
 				}
 				out = append(out, el)
 			}
-			return &runtime.Slice{Elems: out, Typ: s.Typ}, nil
+			return h.packSlice(s, out), nil
 		}},
 		"Repeat": &runtime.BuiltinFunc{Name: "slices.Repeat", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
@@ -1811,7 +1815,11 @@ func (e *Engine) installStdlib() {
 			f := args[1]
 			stop := context.AfterFunc(c, func() {
 				if _, err := vc.Call(f, nil); err != nil {
-					panic(err)
+					// a dead process refuses the spawn — the callback
+					// dies with the run like a Go timer's pending call.
+					if !vm.IsProcExit(err) {
+						panic(err)
+					}
 				}
 			})
 			return &runtime.BuiltinFunc{Name: "context.AfterFunc.stop", Fn: func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
@@ -1979,9 +1987,7 @@ func (e *Engine) installStdlib() {
 		return &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			n := len(spec)
 			if n > 0 && spec[n-1] == '*' {
-				if len(args) == 0 {
-					return nil, fmt.Errorf("%s needs at least 1 arg", name)
-				}
+				// variadic: io.MultiReader() with zero args is valid
 			} else if len(args) != n {
 				return nil, fmt.Errorf("%s needs %d args, got %d", name, n, len(args))
 			}
@@ -2518,9 +2524,15 @@ func atomicOp(name string, op atomicOpKind) *runtime.BuiltinFunc {
 			return true, nil
 		}
 		n := int64Of(cur)
-		switch op {
-		case atomicOpAdd:
+		if op == atomicOpAdd {
 			n += int64Of(args[1])
+			if err := set(n); err != nil {
+				return nil, err
+			}
+			// Add returns the NEW value.
+			return n, nil
+		}
+		switch op {
 		case atomicOpAnd:
 			n &= int64Of(args[1])
 		case atomicOpOr:
@@ -2529,7 +2541,8 @@ func atomicOp(name string, op atomicOpKind) *runtime.BuiltinFunc {
 		if err := set(n); err != nil {
 			return nil, err
 		}
-		return n, nil
+		// And/Or return the OLD value.
+		return cur, nil
 	}}
 }
 
@@ -3275,6 +3288,41 @@ func sliceOf(v runtime.Value) (*runtime.Slice, bool) {
 	}
 	s, ok := runtime.Unwrap(v).(*runtime.Slice)
 	return s, ok
+}
+
+// packSlice moves kept elements to the front of s's backing array and
+// zeroes the vacated tail, then returns the len(kept) view sharing it —
+// the same update Go's slices.DeleteFunc performs, so slices re-sliced
+// from the original observe the deletion.
+func (h *hostHelpers) packSlice(s *runtime.Slice, kept []runtime.Value) *runtime.Slice {
+	copy(s.Elems, kept)
+	var etd *runtime.TypeDef
+	if s.Typ != nil && h.e != nil {
+		etd, _ = h.e.elemOf(s.Typ)
+	}
+	for i := len(kept); i < len(s.Elems); i++ {
+		s.Elems[i] = runtime.Zero(etd)
+	}
+	return &runtime.Slice{Elems: s.Elems[:len(kept)], Typ: s.Typ}
+}
+
+// seqElems collects a seq argument's elements: a *runtime.Slice reads
+// verbatim, and an iter.Seq-shaped callable (seqOf's BuiltinFunc, or a
+// script func used as a seq) is driven with a yield that gathers each
+// element — the seq stops when yield reports false.
+func seqElems(vc runtime.VMCaller, v runtime.Value) ([]runtime.Value, error) {
+	if s, ok := sliceOf(v); ok {
+		return append([]runtime.Value{}, s.Elems...), nil
+	}
+	var out []runtime.Value
+	yield := &runtime.BuiltinFunc{Name: "seq yield", Fn: func(_ runtime.VMCaller, ya []runtime.Value) (runtime.Value, error) {
+		out = append(out, ya...)
+		return true, nil
+	}}
+	if _, err := vc.Call(v, []runtime.Value{yield}); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // strPieces boxes string pieces as script values for seqOf.

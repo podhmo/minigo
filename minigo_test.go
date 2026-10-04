@@ -281,6 +281,13 @@ func TestStdlibIntrinsics(t *testing.T) {
 		{"BufioOverScriptWriter", "buf"},
 		{"AtomicInt64Ops", int64(2)},
 		{"ContextCancel", true},
+		{"AtomicAndOrOld", int64(1208)},
+		{"SlicesSortedSeq", "a|b|c"},
+		{"SlicesDeleteFuncAlias", "1 3 0"},
+		{"IoMultiReaderEmpty", int64(0)},
+		{"ContextAfterFunc", "ok"},
+		{"IoCopyScriptPair", "copy-pair"},
+		{"BufioReaderWriteToScript", "via-writeto"},
 	}
 	for _, c := range cases {
 		got := run(t, e, "./testdata/intrins", c.fn)
