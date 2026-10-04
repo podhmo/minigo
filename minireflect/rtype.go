@@ -1313,6 +1313,81 @@ func (t *RType) canRange(seq int) bool {
 	return o.Kind() == reflect.Bool && o.PkgPath() == ""
 }
 
+// Fields is Go 1.26's iter.Seq[StructField] over a struct type's
+// fields — a script-callable yield producer like Value.Seq, so both
+// for-range and direct calls enumerate Field(i) in order.
+func (t *RType) Fields() runtime.Value {
+	if t.Kind() != reflect.Struct {
+		plain("reflect: Fields of non-struct type %s", t)
+	}
+	return t.iterValues("reflect.Type.Fields", t.NumField(), func(i int) any {
+		if t.rt != nil {
+			return t.rt.Field(i)
+		}
+		return t.Field(i)
+	})
+}
+
+// Methods enumerates the type's method set — no kind gate; a type
+// with no methods simply yields nothing.
+func (t *RType) Methods() runtime.Value {
+	return t.iterValues("reflect.Type.Methods", t.NumMethod(), func(i int) any {
+		if t.rt != nil {
+			return t.rt.Method(i)
+		}
+		return t.Method(i)
+	})
+}
+
+// Ins enumerates a func type's parameter types.
+func (t *RType) Ins() runtime.Value {
+	if t.Kind() != reflect.Func {
+		plain("reflect: Ins of non-func type %s", t)
+	}
+	return t.iterValues("reflect.Type.Ins", t.NumIn(), func(i int) any {
+		if t.rt != nil {
+			return t.rt.In(i)
+		}
+		return t.In(i)
+	})
+}
+
+// Outs enumerates a func type's result types.
+func (t *RType) Outs() runtime.Value {
+	if t.Kind() != reflect.Func {
+		plain("reflect: Outs of non-func type %s", t)
+	}
+	return t.iterValues("reflect.Type.Outs", t.NumOut(), func(i int) any {
+		if t.rt != nil {
+			return t.rt.Out(i)
+		}
+		return t.Out(i)
+	})
+}
+
+// iterValues is the shared yield-driver for the type iterator
+// accessors: `at` produces element i, boxed as a GoValue so untyped
+// range variables resolve members through host dispatch (the same
+// trick Value.Seq's yield uses — StructField/Method/RType all answer
+// their fields and methods via hostMember).
+func (t *RType) iterValues(name string, n int, at func(i int) any) runtime.Value {
+	return &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("%s expects a yield function", name)
+		}
+		for i := 0; i < n; i++ {
+			r, err := vc.Call(args[0], []runtime.Value{&runtime.GoValue{V: at(i)}})
+			if err != nil {
+				return nil, err
+			}
+			if b, ok := r.(bool); !ok || !b {
+				return nil, nil
+			}
+		}
+		return nil, nil
+	}}
+}
+
 // comparableTd recurses the comparable rule through struct fields and
 // composite elements.
 func (e *Env) comparableTd(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool) bool {

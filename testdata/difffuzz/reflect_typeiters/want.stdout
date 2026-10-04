@@ -1,0 +1,15 @@
+f X int json:"x" false [0] false
+f Y string tag:"y" false [1] false
+f z bool  false [2] true
+fields-stopped 2
+m Do func(main.T, int) string 0
+m DoMore func(main.T, int, int) 1
+im Do func(int) string
+int-methods 0
+in int
+in string
+out int int
+out interface error
+0: panic: reflect: Fields of non-struct type int
+1: panic: reflect: Ins of non-func type main.S
+2: panic: reflect: Outs of non-func type main.S
