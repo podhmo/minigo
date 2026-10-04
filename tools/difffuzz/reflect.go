@@ -46,7 +46,11 @@ func (r *rchain) body() string {
 		nv := fmt.Sprintf("v%d", i+1)
 		switch {
 		case s.Kind == 'x':
-			fmt.Fprintf(&b, "; %s%s", v, s.Text)
+			if s.Wrap {
+				fmt.Fprintf(&b, "; %s(%s)", s.Text, v)
+			} else {
+				fmt.Fprintf(&b, "; %s%s", v, s.Text)
+			}
 		case s.Printf != "":
 			src := v + s.Text
 			if s.Text == "" {
@@ -191,6 +195,52 @@ func rAppendSliceV(v reflect.Value) reflect.Value {
 func rCopyI(v reflect.Value) string {
 	return fmt.Sprintf("%v", reflect.Copy(v, reflect.ValueOf([]int{1, 2})))
 }
+
+// rGrowS / rSetZeroS / rSetComplexS probe the remaining mutators —
+// each returns a small string so the panic-vs-value boundary prints.
+func rGrowS(v reflect.Value) string { v.Grow(2); return "grown" }
+
+func rSetZeroS(v reflect.Value) string { v.SetZero(); return "zeroed" }
+
+func rSetComplexS(v reflect.Value) string {
+	v.SetComplex(1 + 2i)
+	return fmt.Sprintf("%v", v.Complex())
+}
+
+// rSlice3V / rFieldByIndexErrV / rFieldByNameFuncV probe Value methods
+// beyond the 2-index slice and the bool-less field walk.
+func rSlice3V(v reflect.Value) reflect.Value { return v.Slice3(0, 1, 1) }
+
+func rFieldByIndexErrV(v reflect.Value) reflect.Value {
+	f, err := v.FieldByIndexErr([]int{0, 0})
+	if err != nil {
+		return reflect.ValueOf(err.Error())
+	}
+	return f
+}
+
+func rFieldByNameFuncV(v reflect.Value) reflect.Value {
+	return v.FieldByNameFunc(func(s string) bool { return s == "A" })
+}
+
+// rOverflowComplexB probes the complex Overflow arm; rPointerB /
+// rUnsafePointerB / rUnsafeAddrB bool-ize the address accessors so a
+// live pointer still compares deterministically.
+func rOverflowComplexB(v reflect.Value) string {
+	return fmt.Sprintf("%v", v.OverflowComplex(1 + 2i))
+}
+
+func rPointerB(v reflect.Value) string { return fmt.Sprintf("%v", v.Pointer() != 0) }
+
+func rUnsafePointerB(v reflect.Value) string {
+	return fmt.Sprintf("%v", v.UnsafePointer() != nil)
+}
+
+func rUnsafeAddrB(v reflect.Value) string { return fmt.Sprintf("%v", v.UnsafeAddr() != 0) }
+
+// rRecvV probes the blocking Recv — safe only because r_mkchan
+// pre-fills; on any non-chan value it panics like the other ops.
+func rRecvV(v reflect.Value) reflect.Value { r, _ := v.Recv(); return r }
 `
 
 // reflSeed is a chain starter: the seed expression plus the receiver
@@ -367,6 +417,13 @@ var valueSteps = []rstep{
 	// panic identically to reflect's own panics.
 	{Text: ".SetIterKey(reflect.ValueOf(r_map).MapRange())", Kind: 'x'},
 	{Text: ".SetIterValue(reflect.ValueOf(r_map).MapRange())", Kind: 'x'},
+	{Text: "rGrowS", Kind: 'x', Wrap: true},
+	{Text: "rSetZeroS", Kind: 'x', Wrap: true},
+	{Text: "rSetComplexS", Kind: 'x', Wrap: true},
+	{Text: "rSlice3V", Kind: 'v', Wrap: true},
+	{Text: "rFieldByIndexErrV", Kind: 'v', Wrap: true},
+	{Text: "rFieldByNameFuncV", Kind: 'v', Wrap: true},
+	{Text: "rRecvV", Kind: 'v', Wrap: true},
 }
 
 // valueObs are terminal observations on a reflect.Value — restricted to
@@ -409,6 +466,10 @@ var valueObs = []rstep{
 	{Text: "rAssertInt", Kind: 'o', Wrap: true},
 	{Text: "rAssertStr", Kind: 'o', Wrap: true},
 	{Text: "rCopyI", Kind: 'o', Wrap: true},
+	{Text: "rOverflowComplexB", Kind: 'o', Wrap: true},
+	{Text: "rPointerB", Kind: 'o', Wrap: true},
+	{Text: "rUnsafePointerB", Kind: 'o', Wrap: true},
+	{Text: "rUnsafeAddrB", Kind: 'o', Wrap: true},
 	{Kind: 'o', Printf: "v"},
 	{Kind: 'o', Printf: "#v"},
 	{Kind: 'o', Printf: "#v"},
