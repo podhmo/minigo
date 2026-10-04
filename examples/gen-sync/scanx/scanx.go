@@ -183,7 +183,10 @@ func leadingComment(ln string, st *lineScan) (string, bool) {
 				continue
 			}
 			if c == '/' && i+1 < len(ln) && ln[i+1] == '/' {
-				return strings.TrimRight(ln[i:], " \t"), clean
+				// trim \r too: a CRLF line ends in "\r\n" and the split
+				// leaves the \r attached — without it the sentinel never
+				// matches and a second managed block gets inserted.
+				return strings.TrimRight(ln[i:], " \t\r"), clean
 			}
 			clean = false
 			switch {

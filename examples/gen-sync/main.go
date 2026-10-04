@@ -14,9 +14,12 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 
 	"github.com/podhmo/minigo"
+	"github.com/podhmo/minigo/runtime"
 )
 
 func main() {
@@ -31,11 +34,18 @@ func runMain(ctx context.Context, argv []string) int {
 	if err := fs.Parse(argv); err != nil {
 		return 2
 	}
+	if fs.NArg() > 1 {
+		// `./app -check` puts -check in the positional args too —
+		// silently dropping it would run a *write* where a check was
+		// meant. Refuse rather than guess.
+		fmt.Fprintf(os.Stderr, "gen-sync: unexpected extra arguments: %s\n", strings.Join(fs.Args()[1:], " "))
+		return 2
+	}
 	dir := "./app"
-	if fs.NArg() > 0 {
+	if fs.NArg() == 1 {
 		dir = fs.Arg(0)
 	}
-	n, err := run(ctx, ".", "./script", dir, *check, *deps)
+	n, err := run(ctx, ".", "./script", dir, *check, *deps, os.Stdout)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "gen-sync:", err)
 		return 1
@@ -53,18 +63,48 @@ func runMain(ctx context.Context, argv []string) int {
 }
 
 // run executes script.Main(dir, check, deps) through a minigo engine
-// rooted at engineDir.
-func run(ctx context.Context, engineDir, scriptDir, dir string, check, deps bool) (int, error) {
-	e := minigo.NewEngine(engineDir, minigo.WithOutput(os.Stdout))
+// rooted at engineDir. The script returns (changed, error): files it
+// could not sync ride the error so a failed file never reads as
+// "nothing to do".
+func run(ctx context.Context, engineDir, scriptDir, dir string, check, deps bool, out io.Writer) (int, error) {
+	e := minigo.NewEngine(engineDir, minigo.WithOutput(out))
 	res, err := e.Run(ctx, scriptDir, "Main", dir, check, deps)
 	if err != nil {
 		return 0, err
 	}
-	switch n := res.(type) {
+	tup, ok := res.(*runtime.Tuple)
+	if !ok {
+		return 0, fmt.Errorf("unexpected result type %T (want (int, error))", res)
+	}
+	if len(tup.Elems) != 2 {
+		return 0, fmt.Errorf("unexpected result arity %d (want (int, error))", len(tup.Elems))
+	}
+	n, err := intResult(tup.Elems[0])
+	if err != nil {
+		return 0, err
+	}
+	return n, errorResult(tup.Elems[1])
+}
+
+func intResult(v runtime.Value) (int, error) {
+	switch n := runtime.Unwrap(v).(type) {
 	case int:
 		return n, nil
 	case int64:
 		return int(n), nil
 	}
-	return 0, fmt.Errorf("unexpected result type %T", res)
+	return 0, fmt.Errorf("unexpected result type %T (want int)", v)
+}
+
+func errorResult(v runtime.Value) error {
+	e := runtime.Unwrap(v)
+	if e == nil || e == runtime.NIL {
+		return nil
+	}
+	if gv, ok := e.(*runtime.GoValue); ok {
+		if err, ok := gv.V.(error); ok {
+			return err
+		}
+	}
+	return fmt.Errorf("unexpected error result %T", v)
 }

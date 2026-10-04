@@ -11,6 +11,7 @@
 package script
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,17 +27,37 @@ import (
 // directives. With deps it also follows imports inside the scanned
 // package's subtree transitively. With check it only reports drift and
 // writes nothing. It returns the number of files changed — or, in check
-// mode, the number drifting.
-func Main(dir string, check bool, deps bool) int {
+// mode, the number drifting — plus an error joining every file the run
+// could not account for. A nonzero error means the reported count did
+// not see the whole picture; success is never faked.
+func Main(dir string, check bool, deps bool) (int, error) {
 	wd, _ := os.Getwd()
-	plans := collect(dir, deps)
+	rootAbs, err := filepath.Abs(dir)
+	if err != nil {
+		return 0, fmt.Errorf("gen-sync: resolve %s: %w", dir, err)
+	}
+	plans, warns, errs := collect(dir, deps)
+	for _, w := range warns {
+		fmt.Println("gen-sync:", w)
+	}
+	if len(errs) > 0 {
+		// the scan itself is degraded (a file it should see is
+		// unreadable, or the dir has no module context) — any managed
+		// block written now could regress, so refuse to write at all.
+		return 0, errors.Join(errs...)
+	}
 	changed := 0
 	for _, p := range plans {
-		if syncFile(p, check, wd) {
+		c, err := syncFile(p, check, wd, rootAbs)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if c {
 			changed++
 		}
 	}
-	return changed
+	return changed, errors.Join(errs...)
 }
 
 // filePlan pairs a file with the directives its decls want — computed
@@ -62,8 +83,28 @@ type pkgScan struct {
 // unless deps is set. Edges that leave the subtree (e.g. app -> the
 // tool's own scanx helper) are never followed: external packages are
 // neither read nor written.
-func collect(dir string, deps bool) []filePlan {
+//
+// Alongside the plans it reports warnings (files skipped the way `go
+// build` would skip them — the run may continue) and errors (the scan
+// is degraded — the caller refuses to write from it).
+func collect(dir string, deps bool) ([]filePlan, []string, []error) {
+	dirAbs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, nil, []error{fmt.Errorf("gen-sync: resolve %s: %w", dir, err)}
+	}
+	if moduleRoot(dirAbs) == "" {
+		// outside any module the import path is synthetic:
+		// cross-package references never resolve, so requiredgen /
+		// -variants inference would silently shrink and the regressed
+		// output would be written. Fail instead.
+		return nil, nil, []error{fmt.Errorf("gen-sync: %s is outside any Go module; references cannot resolve and the scan would silently degrade", dir)}
+	}
 	root := inspect.DirOf(dir)
+	if strings.HasPrefix(inspect.Path(root), "<dir>") {
+		// the same condition seen from the other side: the dir exists
+		// inside a module tree but the resolver could not place it.
+		return nil, nil, []error{fmt.Errorf("gen-sync: %s resolves to a synthetic package path %q; the scan would silently degrade", dir, inspect.Path(root))}
+	}
 	ex := scanx.NewExplorer(inspect.Path(root))
 	prefix := inspect.Path(root) + "/"
 	seen := map[string]bool{inspect.Path(root): true}
@@ -90,6 +131,18 @@ func collect(dir string, deps bool) []filePlan {
 		visit(path, inspect.Files(inspect.PackageOf(path)))
 	}
 
+	// A .go file the package index does not carry was dropped by
+	// ctx.MatchFile — build constraints (fine, like `go build`) or an
+	// unreadable file (not fine: its decls *and its import edges*
+	// vanish, so directives elsewhere silently lose variants).
+	warns := []string{}
+	errs := []error{}
+	for _, s := range scans {
+		w, e := droppedFiles(s)
+		warns = append(warns, w...)
+		errs = append(errs, e...)
+	}
+
 	limit := len(scans)
 	if !deps {
 		limit = 1 // scans[0] is always the root package
@@ -104,31 +157,104 @@ func collect(dir string, deps bool) []filePlan {
 			plans = append(plans, filePlan{f, scanx.Dedupe(expected)})
 		}
 	}
-	return plans
+	return plans, warns, errs
+}
+
+// moduleRoot walks up from dir until a go.mod appears and returns its
+// directory — "" when the tree is not a module (references cannot
+// resolve there).
+func moduleRoot(dir string) string {
+	for d := dir; ; {
+		if _, err := os.Stat(filepath.Join(d, "go.mod")); err == nil {
+			return d
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return ""
+		}
+		d = parent
+	}
+}
+
+// droppedFiles lists the .go files present on disk in a scanned
+// package's directory but absent from the package index. Unreadable
+// ones are errors (the scan is missing decls it cannot even name);
+// readable-but-excluded ones are warnings (build constraints — the same
+// set `go build` would see, just made visible).
+func droppedFiles(s pkgScan) ([]string, []error) {
+	if len(s.files) == 0 {
+		return nil, nil
+	}
+	d := filepath.Dir(s.files[0].Name)
+	entries, err := os.ReadDir(d)
+	if err != nil {
+		return nil, []error{fmt.Errorf("gen-sync: scan %s: %w", d, err)}
+	}
+	indexed := map[string]bool{}
+	for _, f := range s.files {
+		indexed[f.Name] = true
+	}
+	warns := []string{}
+	errs := []error{}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		path := filepath.Join(d, name)
+		if indexed[path] {
+			continue
+		}
+		if _, rerr := os.ReadFile(path); rerr != nil {
+			errs = append(errs, fmt.Errorf("gen-sync: %s: %w", path, rerr))
+		} else {
+			warns = append(warns, path+": not in the package index (excluded by build constraints?)")
+		}
+	}
+	return warns, errs
 }
 
 // syncFile rewrites the file's managed region to the plan's expected
 // directives, returning whether the file changed (or would, in check
-// mode).
-func syncFile(p filePlan, check bool, wd string) bool {
+// mode). Failures — an unreadable file, an unwritable one, a file that
+// resolves outside the scanned directory — are returned, not printed:
+// a file the tool could not sync must never look like "no change".
+func syncFile(p filePlan, check bool, wd, rootAbs string) (bool, error) {
 	f := p.file
 	path := f.Name
+	shown := displayPath(wd, path)
+	// The plan's file names come from the package index, which keys on
+	// import paths: a dir arg whose import path is claimed by another
+	// tree (module shadowing, a stale cache) would silently rewrite
+	// files the caller never pointed at. Refuse to leave rootAbs.
+	if rel, err := filepath.Rel(rootAbs, path); err != nil || rel == ".." ||
+		strings.HasPrefix(rel, "../") || strings.HasPrefix(rel, `..\`) || filepath.IsAbs(rel) {
+		return false, fmt.Errorf("gen-sync: %s: refusing to write outside the scanned directory %s", shown, rootAbs)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Println("gen-sync:", path, ":", err)
-		return false
+		return false, fmt.Errorf("gen-sync: %s: %w", shown, err)
 	}
 	src := string(data)
-	lines := strings.Split(src, "\n")
+	lines, sep := splitLines(src)
 	expected := p.expected
 
 	midx := scanx.FindSentinel(lines)
 	if midx < 0 && len(expected) == 0 {
-		return false // nothing to manage here
+		return false, nil // nothing to manage here
+	}
+
+	// A file another generator owns ("// Code generated ... DO NOT
+	// EDIT.") is not ours to edit — the next regen would discard the
+	// block and check mode would report drift forever. Its decls still
+	// feed inference; the write is what is refused.
+	if hasGeneratedMarker(lines) {
+		return false, fmt.Errorf("gen-sync: %s: refusing to manage a file marked \"// Code generated ... DO NOT EDIT.\"", shown)
 	}
 
 	var out []string
 	inserted := false
+	var dropped, added []string
 	if midx >= 0 {
 		// the managed region is the sentinel plus the run of
 		// //go:generate lines directly under it: regenerate the run,
@@ -138,7 +264,11 @@ func syncFile(p filePlan, check bool, wd string) bool {
 		out = append(out, expected...)
 		out = append(out, "")
 		rest := lines[midx+1:]
-		tail := rest[scanx.GenerateRunEnd(rest):]
+		runEnd := scanx.GenerateRunEnd(rest)
+		have := scanx.Dedupe(nonBlank(rest[:runEnd]))
+		dropped = missingFrom(have, expected)
+		added = missingFrom(expected, have)
+		tail := rest[runEnd:]
 		// an empty tail means the managed run reached EOF: the ""
 		// separator above already yields the file's trailing newline —
 		// appending anything more would leave a stray blank line.
@@ -154,6 +284,7 @@ func syncFile(p filePlan, check bool, wd string) bool {
 		out = append(out, scanx.Sentinel)
 		out = append(out, expected...)
 		out = append(out, "")
+		added = expected
 		tail := lines[anchor:]
 		for len(tail) > 0 && strings.TrimSpace(tail[0]) == "" {
 			tail = tail[1:] // single blank line between block and decls
@@ -162,26 +293,111 @@ func syncFile(p filePlan, check bool, wd string) bool {
 		inserted = true
 	}
 
-	newsrc := strings.Join(out, "\n")
-	shown := displayPath(wd, path)
+	newsrc := strings.Join(out, sep)
 	if newsrc == src {
 		fmt.Println("gen-sync:", shown, "up to date")
-		return false
+		return false, nil
 	}
+	// say which directives the change drops and adds — "rewrote (5
+	// directive(s))" alone cannot distinguish a stale cleanup from a
+	// regression.
+	for _, l := range dropped {
+		fmt.Println("gen-sync:", shown, "- "+l)
+	}
+	for _, l := range added {
+		fmt.Println("gen-sync:", shown, "+ "+l)
+	}
+	delta := deltaNote(len(dropped), len(added))
 	if check {
-		fmt.Println("gen-sync:", shown, "drift:", len(expected), "directive(s) out of sync")
-		return true
+		fmt.Println("gen-sync:", shown, "drift:", len(expected), "directive(s) out of sync"+delta)
+		return true, nil
 	}
 	if err := os.WriteFile(path, []byte(newsrc), 0644); err != nil {
-		fmt.Println("gen-sync:", path, ":", err)
-		return false
+		return false, fmt.Errorf("gen-sync: %s: %w", shown, err)
 	}
 	if inserted {
 		fmt.Println("gen-sync:", shown, "inserted managed block ("+strconv.Itoa(len(expected)), "directive(s))")
 	} else {
-		fmt.Println("gen-sync:", shown, "rewrote managed block ("+strconv.Itoa(len(expected)), "directive(s))")
+		fmt.Println("gen-sync:", shown, "rewrote managed block ("+strconv.Itoa(len(expected)), "directive(s))"+delta)
 	}
-	return true
+	return true, nil
+}
+
+// splitLines splits src on \n like strings.Split but also reports the
+// file's line separator — "\r\n" when any CRLF is present — and strips
+// the stray \r from each element, so joining the lines back with that
+// separator reproduces the original bytes exactly (instead of mixing
+// fresh LF lines into a CRLF file).
+func splitLines(src string) ([]string, string) {
+	sep := "\n"
+	if strings.Contains(src, "\r\n") {
+		sep = "\r\n"
+	}
+	lines := strings.Split(src, "\n")
+	for i, ln := range lines {
+		if s, ok := strings.CutSuffix(ln, "\r"); ok {
+			lines[i] = s
+		}
+	}
+	return lines, sep
+}
+
+// hasGeneratedMarker reports whether the file carries the Go
+// convention's generated-file marker — a `// Code generated ... DO NOT
+// EDIT.` comment line before the package clause.
+func hasGeneratedMarker(lines []string) bool {
+	for _, ln := range lines {
+		t := strings.TrimSpace(ln)
+		if strings.HasPrefix(t, "package ") {
+			return false
+		}
+		if strings.HasPrefix(t, "// Code generated ") && strings.Contains(t, "DO NOT EDIT") {
+			return true
+		}
+	}
+	return false
+}
+
+// nonBlank drops empty entries from a managed run's lines.
+func nonBlank(lines []string) []string {
+	out := []string{}
+	for _, ln := range lines {
+		if strings.TrimSpace(ln) != "" {
+			out = append(out, ln)
+		}
+	}
+	return out
+}
+
+// missingFrom returns the elements of xs absent from ys, in order.
+func missingFrom(xs, ys []string) []string {
+	have := map[string]bool{}
+	for _, y := range ys {
+		have[y] = true
+	}
+	out := []string{}
+	for _, x := range xs {
+		if !have[x] {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// deltaNote renders the dropped/added counts a managed-block change
+// made, e.g. "; dropped 1, added 2" — empty when nothing moved.
+func deltaNote(dropped, added int) string {
+	parts := []string{}
+	if dropped > 0 {
+		parts = append(parts, "dropped "+strconv.Itoa(dropped))
+	}
+	if added > 0 {
+		parts = append(parts, "added "+strconv.Itoa(added))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "; " + strings.Join(parts, ", ")
 }
 
 // directivesFor infers the directives a declaration wants. Every rule is

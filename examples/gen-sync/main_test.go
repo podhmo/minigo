@@ -98,7 +98,7 @@ func TestSync(t *testing.T) {
 	// first run: files with stale or missing managed blocks get synced;
 	// status.go and eof.go (managed block at end of file) are already in
 	// sync and the decoy files stay untouched.
-	n, err := run(context.Background(), dir, scriptDir(t), app, false, false)
+	n, err := run(context.Background(), dir, scriptDir(t), app, false, false, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestSync(t *testing.T) {
 
 	// second run: idempotent — and ops.go's hand-written directive below
 	// the inserted sentinel survives regeneration.
-	n, err = run(context.Background(), dir, scriptDir(t), app, false, false)
+	n, err = run(context.Background(), dir, scriptDir(t), app, false, false, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestCheck(t *testing.T) {
 	app := filepath.Join(dir, "app")
 
 	// check mode reports drift but writes nothing.
-	n, err := run(context.Background(), dir, scriptDir(t), app, true, false)
+	n, err := run(context.Background(), dir, scriptDir(t), app, true, false, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,10 +144,10 @@ func TestCheck(t *testing.T) {
 	assertSameFile(t, filepath.Join(app, "level.go"), "app/level.go")
 
 	// after a real sync, check is clean.
-	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false); err != nil {
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	n, err = run(context.Background(), dir, scriptDir(t), app, true, false)
+	n, err = run(context.Background(), dir, scriptDir(t), app, true, false, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestDeps(t *testing.T) {
 	app := filepath.Join(dir, "app")
 
 	// without -deps, internal/mood is not reached.
-	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false); err != nil {
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	assertSameFile(t, filepath.Join(app, "internal", "mood", "mood.go"), "app/internal/mood/mood.go")
@@ -172,7 +172,7 @@ func TestDeps(t *testing.T) {
 	// followed — the tool's own helper is not a sync target.
 	dir = setupModule(t)
 	app = filepath.Join(dir, "app")
-	n, err := run(context.Background(), dir, scriptDir(t), app, false, true)
+	n, err := run(context.Background(), dir, scriptDir(t), app, false, true, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,5 +207,233 @@ func TestBoundPackage(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "requiredgen -type=BoundRef") {
 		t.Error("BoundRef did not earn requiredgen behind the bound shadow")
+	}
+}
+
+// failure modes, from docs/sketch/ja/experiment-gen-sync-errors.md:
+// the tool must never report success while silently losing work.
+
+func TestUnreadableTargetFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod-000 is readable for root")
+	}
+	dir := setupModule(t)
+	app := filepath.Join(dir, "app")
+	target := filepath.Join(app, "job.go")
+	if err := os.Chmod(target, 0000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(target, 0644)
+
+	// the file drops out of the package index silently — which also
+	// drops its import edges, so sibling files would be rewritten with
+	// regressed directives. The run must refuse to write at all.
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, io.Discard); err == nil {
+		t.Fatal("expected an error for an unreadable file, got none")
+	} else if !strings.Contains(err.Error(), "job.go") {
+		t.Fatalf("error does not name the unreadable file: %v", err)
+	}
+	// nothing was written: events.go (which would have lost variants)
+	// still matches its fixture.
+	assertSameFile(t, filepath.Join(app, "events.go"), "app/events.go")
+
+	// check mode sees the same failure — a file it cannot read might be
+	// hiding drift, so "clean" would be a lie.
+	if _, err := run(context.Background(), dir, scriptDir(t), app, true, false, io.Discard); err == nil {
+		t.Fatal("expected check mode to fail too")
+	}
+}
+
+func TestWriteFailurePropagates(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod-444 is writable for root")
+	}
+	dir := setupModule(t)
+	app := filepath.Join(dir, "app")
+	// status.go is already in sync (no write needed); level.go needs a
+	// rewrite — make it read-only so WriteFile fails.
+	target := filepath.Join(app, "level.go")
+	if err := os.Chmod(target, 0444); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(target, 0644)
+
+	n, err := run(context.Background(), dir, scriptDir(t), app, false, false, io.Discard)
+	if err == nil {
+		t.Fatal("expected an error for an unwritable file, got none")
+	}
+	if !strings.Contains(err.Error(), "level.go") {
+		t.Fatalf("error does not name the unwritable file: %v", err)
+	}
+	// other files still synced — the failure is per-file, not a panic.
+	if n == 0 {
+		t.Fatal("expected other files to sync before the failure")
+	}
+	// the file keeps its stale directive — the reported write failed.
+	assertSameFile(t, target, "app/level.go")
+}
+
+func TestWritesStayInsideScannedDir(t *testing.T) {
+	dir := setupModule(t)
+	// An absolute-path replace makes the locator prefer the repo's
+	// tree: the script's own `.../scanx` import lands on
+	// /repo/.../scanx.go, and ./scanx's index lookup (same import
+	// path) answers with those files — writes would escape the dir the
+	// caller named.
+	repoRoot, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gomod, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gomod = []byte(strings.Replace(string(gomod), "=> ../../", "=> "+repoRoot, 1))
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), gomod, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(context.Background(), dir, scriptDir(t), filepath.Join(dir, "scanx"), false, false, io.Discard); err == nil {
+		t.Fatal("expected an outside-directory refusal, got nil error")
+	} else if !strings.Contains(err.Error(), "outside the scanned directory") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// the repo's own helper is untouched.
+	assertSameFile(t, "scanx/scanx.go", "scanx/scanx.go")
+}
+
+func TestOutsideModuleFails(t *testing.T) {
+	dir := setupModule(t) // the engine needs a module root for its own imports
+	// a package dir outside any module gets a synthetic <dir> import
+	// path: references never resolve, so inference would silently
+	// shrink and regressed blocks would be written.
+	pkg := filepath.Join(t.TempDir(), "pkg")
+	if err := os.MkdirAll(pkg, 0755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile("app/level.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkg, "level.go"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(context.Background(), dir, scriptDir(t), pkg, false, false, io.Discard); err == nil {
+		t.Fatal("expected an error for a dir outside any module")
+	} else if !strings.Contains(err.Error(), "outside any Go module") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExtraArgsRejected(t *testing.T) {
+	// `gen-sync ./app -check` puts -check into positional args — taking
+	// it silently would run a *write* where a check was meant.
+	if got := runMain(context.Background(), []string{"./app", "-check"}); got != 2 {
+		t.Fatalf("expected exit 2 for trailing flag-as-arg, got %d", got)
+	}
+	if got := runMain(context.Background(), []string{"./app", "./other"}); got != 2 {
+		t.Fatalf("expected exit 2 for extra positional args, got %d", got)
+	}
+}
+
+func TestCRLFSentinel(t *testing.T) {
+	dir := setupModule(t)
+	app := filepath.Join(dir, "app")
+	// a CRLF file already carrying a correct managed block: before the
+	// fix the \r defeated the sentinel match, so a second managed block
+	// was inserted above the first.
+	level, err := os.ReadFile("testdata/level.golden")
+	if err != nil {
+		t.Fatal(err)
+	}
+	crlf := []byte(strings.ReplaceAll(string(level), "\n", "\r\n"))
+	target := filepath.Join(app, "level.go")
+	if err := os.WriteFile(target, crlf, 0644); err != nil {
+		t.Fatal(err)
+	}
+	var buf strings.Builder
+	n, err := run(context.Background(), dir, scriptDir(t), app, false, false, &buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(crlf) {
+		t.Fatalf("in-sync CRLF file was rewritten:\n%s", cmp.Diff(string(crlf), string(got)))
+	}
+	_ = n // other fixture files legitimately change; level.go must not
+	if !strings.Contains(buf.String(), "level.go up to date") {
+		t.Fatalf("CRLF file not recognized as in-sync:\n%s", buf.String())
+	}
+}
+
+func TestCRLFPreservesLineEndings(t *testing.T) {
+	dir := setupModule(t)
+	app := filepath.Join(dir, "app")
+	// a CRLF file with no managed block but a decl that wants one:
+	// the inserted block must join with the file's own separator, not
+	// mix LF lines in.
+	data, err := os.ReadFile("app/job.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	crlf := []byte(strings.ReplaceAll(string(data), "\n", "\r\n"))
+	target := filepath.Join(app, "job.go")
+	if err := os.WriteFile(target, crlf, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ReplaceAll(string(got), "\r\n", ""), "\n") {
+		t.Fatal("LF line endings were mixed into a CRLF file")
+	}
+	if !strings.Contains(string(got), "//go:generate") {
+		t.Fatal("managed block was not inserted")
+	}
+}
+
+func TestGeneratedFileRefused(t *testing.T) {
+	dir := setupModule(t)
+	app := filepath.Join(dir, "app")
+	// a file another generator owns: writing a managed block into it
+	// means two tools fight over the same lines on every regen.
+	content := "// Code generated by mockgen. DO NOT EDIT.\n\npackage app\n\ntype MockKind int\n\nconst (\n\tMockA MockKind = iota\n\tMockB\n)\n"
+	target := filepath.Join(app, "mock_gen.go")
+	if err := os.WriteFile(target, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, io.Discard); err == nil {
+		t.Fatal("expected refusal to write into a generated file")
+	} else if !strings.Contains(err.Error(), "DO NOT EDIT") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, _ := os.ReadFile(target)
+	if string(got) != content {
+		t.Fatal("the generated file was modified")
+	}
+}
+
+func TestDriftReportNamesDirectives(t *testing.T) {
+	dir := setupModule(t)
+	app := filepath.Join(dir, "app")
+	// retired.go's managed block holds a directive for a type that no
+	// longer exists: the report must name the dropped line, not just a
+	// count.
+	var buf strings.Builder
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, &buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "- //go:generate") {
+		t.Fatalf("no dropped-directive line in output:\n%s", out)
+	}
+	if !strings.Contains(out, "dropped") {
+		t.Fatalf("no dropped count in output:\n%s", out)
 	}
 }

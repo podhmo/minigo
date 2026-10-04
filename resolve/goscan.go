@@ -50,8 +50,11 @@ func (r *GoScanResolver) LocateDir(ctx context.Context, dir string) (*PackageMet
 		return nil, err
 	}
 	st, err := os.Stat(abs)
-	if err != nil || !st.IsDir() {
+	if err != nil {
 		return nil, fmt.Errorf("entry directory %q not found: %w", dir, err)
+	}
+	if !st.IsDir() {
+		return nil, fmt.Errorf("entry directory %q is not a directory", dir)
 	}
 	importPath, err := r.loc.PathToImport(abs)
 	if err != nil || importPath == "" {
