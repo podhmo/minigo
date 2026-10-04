@@ -21,12 +21,14 @@ import (
 // call applied to the previous value ("reflect.Indirect"). Printf marks
 // an observation rendered as fmt.Sprintf — needed for Interface(): its
 // %T would diverge trivially (minigo's int is int64), while %#v prints
-// the same digits on both sides.
+// the same digits on both sides. With Text also set, Printf renders the
+// call result instead ("%v" of v.Len()), hiding int-vs-int64 the same
+// way — this is how int/uint64/uintptr-returning ops are observed.
 type rstep struct {
 	Text   string
 	Kind   byte   // 'v' reflect.Value, 's' []reflect.Value, 't' reflect.Type, 'o' observable, 'x' void stmt
 	Wrap   bool   // Text is a package func applied to the previous var
-	Printf string // "v" or "#v": render `vN := fmt.Sprintf("%<Printf>", v.Interface())`
+	Printf string // "v" or "#v": render `vN := fmt.Sprintf("%<Printf>", <v><Text> or v.Interface())`
 }
 
 // rchain is a reflect probe: seed expression + ordered steps. Steps after
@@ -46,7 +48,11 @@ func (r *rchain) body() string {
 		case s.Kind == 'x':
 			fmt.Fprintf(&b, "; %s%s", v, s.Text)
 		case s.Printf != "":
-			fmt.Fprintf(&b, "; %s := fmt.Sprintf(\"%%%s\", %s.Interface())", nv, s.Printf, v)
+			src := v + s.Text
+			if s.Text == "" {
+				src = v + ".Interface()"
+			}
+			fmt.Fprintf(&b, "; %s := fmt.Sprintf(\"%%%s\", %s)", nv, s.Printf, src)
 			v = nv
 		case s.Wrap:
 			fmt.Fprintf(&b, "; %s := %s(%s)", nv, s.Text, v)
@@ -99,7 +105,49 @@ var (
 	r_empty    = any(nil)
 	r_strslice = []string{"p", "q"}
 	r_sptr     = &r_struct
+	r_nested   = [][]int{{1, 2}, {3}}
+	r_mapslice = map[string][]int{"k": {4, 5}}
 )
+
+// r_mkchan gives each probe its own buffered, prefilled channel — a
+// shared channel would carry Sends across probes (cap-1 would block the
+// whole program) and a bare Recv could block forever.
+func r_mkchan() chan int { c := make(chan int, 32); c <- 7; return c }
+
+// rTryRecvV / rTrySendB probe the non-blocking channel ops as values
+// (Recv itself can block, so it is never probed).
+func rTryRecvV(v reflect.Value) reflect.Value {
+	r, ok := v.TryRecv()
+	if !ok {
+		return reflect.ValueOf("none")
+	}
+	return r
+}
+
+func rTrySendB(v reflect.Value) string {
+	return fmt.Sprintf("%v", v.TrySend(reflect.ValueOf(9)))
+}
+
+// rAssertInt / rAssertStr probe reflect.TypeAssert[T] — a two-result
+// generic call the chain model cannot express directly.
+func rAssertInt(v reflect.Value) string {
+	n, ok := reflect.TypeAssert[int](v)
+	return fmt.Sprintf("%d %v", n, ok)
+}
+
+func rAssertStr(v reflect.Value) string {
+	s, ok := reflect.TypeAssert[string](v)
+	return fmt.Sprintf("%q %v", s, ok)
+}
+
+// rMethodType probes Type.MethodByName — also a two-result call.
+func rMethodType(t reflect.Type) reflect.Type {
+	m, ok := t.MethodByName("String")
+	if !ok {
+		return t
+	}
+	return m.Type
+}
 `
 
 // seedExprs are the chain starters. Each entry is the full seed expression;
@@ -121,7 +169,7 @@ var reflSeedExprs = []string{
 	"reflect.ValueOf(r_nilptr)",
 	"reflect.ValueOf(r_nilmap)",
 	"reflect.ValueOf(r_bytes)",
-	"reflect.ValueOf(r_chan)",
+	"reflect.ValueOf(r_mkchan())",
 	"reflect.ValueOf(r_func)",
 	"reflect.ValueOf(r_funcv)",
 	"reflect.ValueOf(r_empty)",
@@ -160,6 +208,12 @@ var reflSeedExprs = []string{
 	"reflect.ValueOf(r_sptr)",
 	"reflect.ValueOf(r_sptr).Elem()",
 	"reflect.ValueOf(r_nilptr).Elem()",
+	"reflect.ValueOf(&r_i0)",
+	"reflect.ValueOf(r_nested)",
+	"reflect.ValueOf(r_mapslice)",
+	"reflect.TypeOf((*error)(nil)).Elem()",
+	"reflect.TypeOf((*fmt.Stringer)(nil)).Elem()",
+	"reflect.Zero(reflect.TypeOf((*error)(nil)).Elem())",
 }
 
 // --- step tables -----------------------------------------------------------
@@ -200,6 +254,7 @@ var valueSteps = []rstep{
 	{Text: ".MapIndex(reflect.ValueOf(\"a\"))", Kind: 'v'},
 	{Text: ".MapIndex(reflect.ValueOf(\"nosuch\"))", Kind: 'v'},
 	{Text: ".MapIndex(reflect.ValueOf(3))", Kind: 'v'},
+	{Text: ".MapKeys()", Kind: 's'},
 	{Text: ".Method(0)", Kind: 'v'},
 	{Text: ".MethodByName(\"String\")", Kind: 'v'},
 	// .Addr() is excluded: %#v of a pointer prints a raw address that
@@ -212,6 +267,7 @@ var valueSteps = []rstep{
 	{Text: ".Convert(reflect.TypeOf(r_s0))", Kind: 'v'},
 	{Text: ".Type()", Kind: 't'},
 	{Text: "reflect.Indirect", Kind: 'v', Wrap: true},
+	{Text: "rTryRecvV", Kind: 'v', Wrap: true},
 	// calls — variadic and fixed
 	// Call/CallSlice return []reflect.Value — a 's' receiver the chain
 	// must unwrap via .Index before observing.
@@ -238,6 +294,7 @@ var valueSteps = []rstep{
 	// intentionally-unsupported surface and boundary accessors — must
 	// panic identically to reflect's own panics.
 	{Text: ".SetIterKey(reflect.ValueOf(r_map).MapRange())", Kind: 'x'},
+	{Text: ".SetIterValue(reflect.ValueOf(r_map).MapRange())", Kind: 'x'},
 }
 
 // valueObs are terminal observations on a reflect.Value — restricted to
@@ -263,6 +320,22 @@ var valueObs = []rstep{
 	{Text: ".Type().PkgPath()", Kind: 'o'},
 	{Text: ".Type().Comparable()", Kind: 'o'},
 	{Text: ".OverflowInt(1)", Kind: 'o'},
+	{Text: ".OverflowFloat(1.5)", Kind: 'o'},
+	{Text: ".OverflowUint(3)", Kind: 'o'},
+	{Text: ".Equal(reflect.ValueOf(3))", Kind: 'o'},
+	{Text: ".Equal(reflect.ValueOf(r_i0))", Kind: 'o'},
+	{Text: ".Complex()", Kind: 'o'},
+	// int/uint64-returning accessors render via %v — their %T would
+	// diverge trivially (int vs int64).
+	{Text: ".Len()", Kind: 'o', Printf: "v"},
+	{Text: ".Cap()", Kind: 'o', Printf: "v"},
+	{Text: ".NumField()", Kind: 'o', Printf: "v"},
+	{Text: ".NumMethod()", Kind: 'o', Printf: "v"},
+	{Text: ".Bytes()", Kind: 'o', Printf: "v"},
+	{Text: ".Uint()", Kind: 'o', Printf: "v"},
+	{Text: "rTrySendB", Kind: 'o', Wrap: true},
+	{Text: "rAssertInt", Kind: 'o', Wrap: true},
+	{Text: "rAssertStr", Kind: 'o', Wrap: true},
 	{Kind: 'o', Printf: "v"},
 	{Kind: 'o', Printf: "#v"},
 	{Kind: 'o', Printf: "#v"},
@@ -282,6 +355,9 @@ var typeSteps = []rstep{
 	{Text: ".Out(0)", Kind: 't'},
 	{Text: ".FieldByIndex([]int{0}).Type", Kind: 't'},
 	{Text: ".FieldByIndex([]int{0, 0}).Type", Kind: 't'},
+	{Text: ".FieldByIndex([]int{0, 1}).Type", Kind: 't'},
+	{Text: ".Method(0).Func", Kind: 'v'},
+	{Text: "rMethodType", Kind: 't', Wrap: true},
 }
 
 // typeObs are terminal observations on a reflect.Type — same %T-safe
@@ -304,6 +380,20 @@ var typeObs = []rstep{
 	{Text: ".Field(0).Tag.Get(\"json\")", Kind: 'o'},
 	{Text: ".Field(1).Tag.Get(\"json\")", Kind: 'o'},
 	{Text: ".FieldByIndex([]int{9}).Name", Kind: 'o'},
+	{Text: ".Field(0).Name", Kind: 'o'},
+	{Text: ".Field(0).Anonymous", Kind: 'o'},
+	{Text: ".Method(0).Name", Kind: 'o'},
+	{Text: ".ChanDir()", Kind: 'o', Printf: "v"},
+	// int/uintptr-returning Type accessors render via %v, same rule as
+	// the Value int accessors above.
+	{Text: ".Bits()", Kind: 'o', Printf: "v"},
+	{Text: ".Align()", Kind: 'o', Printf: "v"},
+	{Text: ".FieldAlign()", Kind: 'o', Printf: "v"},
+	{Text: ".Len()", Kind: 'o', Printf: "v"},
+	{Text: ".NumField()", Kind: 'o', Printf: "v"},
+	{Text: ".NumMethod()", Kind: 'o', Printf: "v"},
+	{Text: ".Field(0).Index", Kind: 'o', Printf: "v"},
+	{Text: ".Field(0).Offset", Kind: 'o', Printf: "v"},
 }
 
 // --- probe generation ------------------------------------------------------
