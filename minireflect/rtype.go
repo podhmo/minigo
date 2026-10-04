@@ -275,6 +275,16 @@ func (e *Env) typeName(td *runtime.TypeDef) string {
 			// bound typedefs name themselves "pkgpath.Name"
 			return td.Name[i+1:]
 		}
+		// reflect spells the predeclared aliases by their canonical
+		// types: `byte` prints `uint8`, `rune` prints `int32`.
+		if td.Pkg == nil && td.Spec == nil {
+			switch td.Name {
+			case "byte":
+				return "uint8"
+			case "rune":
+				return "int32"
+			}
+		}
 		return td.Name
 	}
 	if td.Anon != nil {
@@ -642,7 +652,7 @@ func (t *RType) Field(i int) *StructField {
 		trap("Field of non-struct type %s", t.String())
 	}
 	if i < 0 || i >= len(t.td.Fields) {
-		panic(&runtime.Panic{Value: fmt.Sprintf("reflect: Field index %d out of range", i)})
+		panic(&runtime.Panic{Value: "reflect: Field index out of bounds"})
 	}
 	fts := t.e.fieldTypes(t.td)
 	var ft *RType
@@ -678,11 +688,15 @@ func (t *RType) Field(i int) *StructField {
 func (t *RType) FieldByIndex(idx []int) *StructField {
 	cur := t
 	var f *StructField
-	for _, i := range idx {
+	for depth, i := range idx {
 		// Go checks each level: descending into a non-struct panics
-		// with the level's type, not the top type.
+		// with the level's type, not the top type — and the deeper
+		// levels fail inside Field, so the wording changes.
 		if cur.Kind() != reflect.Struct {
-			trap("FieldByIndex of non-struct type %s", cur.String())
+			if depth == 0 {
+				trap("FieldByIndex of non-struct type %s", cur.String())
+			}
+			trap("Field of non-struct type %s", cur.String())
 		}
 		f = cur.Field(i)
 		if f.Type != nil {
@@ -753,7 +767,17 @@ func (t *RType) Method(i int) *Method {
 	set := t.e.methodSet(t.td)
 	names := exportedMethodNames(set)
 	if i < 0 || i >= len(names) {
-		panic(&runtime.Panic{Value: fmt.Sprintf("reflect: Method index %d out of range", i)})
+		// An interface type's requirements are a plain list in Go:
+		// out-of-range returns the zero Method instead of panicking.
+		if t.td.Kind == runtime.KindInterface {
+			return &Method{}
+		}
+		panic(&runtime.Panic{Value: "reflect: Method index out of range"})
+	}
+	// Interface requirements carry no receiver in Method.Type —
+	// func(int) string, not func(main.I, int) string.
+	if t.td.Kind == runtime.KindInterface {
+		return &Method{Name: names[i], Type: t.e.methodType(nil, set[names[i]]), Index: i}
 	}
 	return &Method{Name: names[i], Type: t.e.methodType(t, set[names[i]]), Index: i}
 }
@@ -1230,7 +1254,10 @@ func (t *RType) IsVariadic() bool {
 		return t.rt.IsVariadic()
 	}
 	ft := funcSig(t)
-	if ft == nil || ft.Params == nil || len(ft.Params.List) == 0 {
+	if ft == nil {
+		trap("IsVariadic of non-func type %s", t.String())
+	}
+	if ft.Params == nil || len(ft.Params.List) == 0 {
 		return false
 	}
 	last := ft.Params.List[len(ft.Params.List)-1]
