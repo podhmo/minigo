@@ -23,6 +23,12 @@ type File struct {
 	// generated files); nil when the parser read the file from disk.
 	// Traceback rendering uses it for source-line snippets.
 	Src []byte
+	// LangMod is the `go` directive of the module owning this file, as raw
+	// directive text like "1.26.0" (see resolve.ModuleLang). "" means the
+	// file lives outside any module — unversioned, so CheckLang leaves it
+	// unbounded like `go run` on a module-less file. REPL inputs are never
+	// versioned either.
+	LangMod string
 }
 
 // Import is one import declaration.

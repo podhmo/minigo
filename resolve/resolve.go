@@ -96,6 +96,10 @@ type PackageMeta struct {
 	GoFiles    []string // absolute paths, filtered by build constraints
 	Standard   bool     // inside GOROOT
 	ModulePath string   // owning module path, "" if unknown
+	// Lang is the `go` directive of the module enclosing Dir (raw text like
+	// "1.26.0"); "" when the directory is outside any module. Each file's
+	// effective -lang still honors its own //go:build version constraint.
+	Lang string
 }
 
 // Resolver locates a package. It must NOT recursively resolve the package's
@@ -154,6 +158,7 @@ func ReadPackageFiles(dir, importPath string, cfg BuildConfig) (*PackageMeta, er
 		Dir:        dir,
 		GoFiles:    files,
 		Standard:   strings.HasPrefix(dir, build.Default.GOROOT),
+		Lang:       ModuleLang(dir),
 	}, nil
 }
 
