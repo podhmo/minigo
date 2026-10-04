@@ -250,6 +250,9 @@ func typeOfValue(e *Env, v runtime.Value) *runtime.TypeDef {
 func (e *Env) pointerTd(et *runtime.TypeDef) *runtime.TypeDef {
 	td := &runtime.TypeDef{Kind: runtime.KindPointer, Elem: et}
 	if et != nil {
+		// the elem's package context lets display spellings requalify
+		// the synthesized path-typed ident back to the declared name.
+		td.Pkg, td.File = et.Pkg, et.File
 		td.Anon = &ast.StarExpr{X: e.exprOf(et)}
 	}
 	return td
@@ -260,8 +263,11 @@ func (e *Env) pointerTd(et *runtime.TypeDef) *runtime.TypeDef {
 // map and chan without a declared typedef lack the rest of their shape.
 func (e *Env) compositeTd(kind runtime.TypeKind, et *runtime.TypeDef) *runtime.TypeDef {
 	td := &runtime.TypeDef{Kind: kind, Elem: et}
-	if et != nil && kind == runtime.KindSlice {
-		td.Anon = &ast.ArrayType{Elt: e.exprOf(et)}
+	if et != nil {
+		td.Pkg, td.File = et.Pkg, et.File
+		if kind == runtime.KindSlice {
+			td.Anon = &ast.ArrayType{Elt: e.exprOf(et)}
+		}
 	}
 	return td
 }
@@ -494,7 +500,7 @@ func (v *RValue) Addr() *RValue {
 	if v.ref == nil {
 		trap("call of reflect.Value.Addr on unaddressable value")
 	}
-	ptd := &runtime.TypeDef{Kind: runtime.KindPointer, Elem: v.td}
+	ptd := &runtime.TypeDef{Kind: runtime.KindPointer, Elem: v.td, Pkg: v.td.Pkg, File: v.td.File}
 	// the ref-view object itself IS the pointer value
 	return v.e.wrap(v.vc, v.ref, nil, ptd)
 }
