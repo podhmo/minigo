@@ -676,10 +676,10 @@ func (e *Env) append_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value,
 	if s.Kind() != reflect.Slice {
 		trap("call of unknown method on %s Value", s.kindStr())
 	}
-	sl, ok := s.get().(*runtime.Slice)
-	if !ok {
-		return nil, fmt.Errorf("reflect.Append on %s", s.Kind())
-	}
+	// nil and named slices normalize to a slice header like every other
+	// slice accessor — a nil slice appends into fresh backing, and the
+	// result keeps the declared type's tag.
+	sl := s.sliceView()
 	// Go's internal grow assigns each arg to the slice's element type —
 	// a mismatched arg dies as 'reflect.Set: value of type X is not
 	// assignable to type Y' before anything is appended.
@@ -695,7 +695,11 @@ func (e *Env) append_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value,
 	// append into the live backing: spare capacity is reused, so writes
 	// through the result's elements land in the caller's array like Go.
 	out := &runtime.Slice{Elems: append(sl.Elems, elems...), Typ: sl.Typ}
-	return &runtime.GoValue{V: &RValue{e: e, vc: vc, val: out, td: s.td}}, nil
+	var val runtime.Value = out
+	if n, ok := s.get().(*runtime.Named); ok {
+		val = &runtime.Named{Typ: n.Typ, V: out}
+	}
+	return &runtime.GoValue{V: &RValue{e: e, vc: vc, val: val, td: s.td}}, nil
 }
 
 func (e *Env) appendSlice(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -722,11 +726,9 @@ func (e *Env) appendSlice(vc runtime.VMCaller, args []runtime.Value) (runtime.Va
 	if t.Kind() != reflect.Slice {
 		trap("call of unknown method on %s Value", t.kindStr())
 	}
-	sl, ok1 := s.get().(*runtime.Slice)
-	tl, ok2 := t.get().(*runtime.Slice)
-	if !ok1 || !ok2 {
-		return nil, fmt.Errorf("reflect.AppendSlice on non-slice")
-	}
+	// nil and named slices normalize to slice headers like Append — a
+	// nil source appends nothing.
+	sl, tl := s.sliceView(), t.sliceView()
 	// Go requires identical element types — 'reflect.AppendSlice:
 	// uint8 != int' names dst-elem first.
 	if detd, setd := e.elemOf(s.td), e.elemOf(t.td); detd != nil && setd != nil {
@@ -740,7 +742,11 @@ func (e *Env) appendSlice(vc runtime.VMCaller, args []runtime.Value) (runtime.Va
 		elems[i] = runtime.Copy(el)
 	}
 	out := &runtime.Slice{Elems: append(sl.Elems, elems...), Typ: sl.Typ}
-	return &runtime.GoValue{V: &RValue{e: e, vc: vc, val: out, td: s.td}}, nil
+	var val runtime.Value = out
+	if n, ok := s.get().(*runtime.Named); ok {
+		val = &runtime.Named{Typ: n.Typ, V: out}
+	}
+	return &runtime.GoValue{V: &RValue{e: e, vc: vc, val: val, td: s.td}}, nil
 }
 
 func (e *Env) copy_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -768,9 +774,11 @@ func (e *Env) copy_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, e
 	if sk != reflect.Slice && sk != reflect.Array && sk != reflect.String {
 		trap("call of reflect.Copy on %s Value", s.kindStr())
 	}
-	ds, dok := d.get().(*runtime.Slice)
+	// nil and named slices normalize to slice headers like Append —
+	// copying to or from a nil slice copies zero elements.
+	ds := d.sliceView()
 	var ss []runtime.Value
-	switch sv := s.get().(type) {
+	switch sv := runtime.Unwrap(s.get()).(type) {
 	case *runtime.Slice:
 		// element types must be identical — 'reflect.Copy: uint8 != int'
 		// names dst-elem first.
@@ -781,6 +789,9 @@ func (e *Env) copy_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, e
 			}
 		}
 		ss = sv.Elems
+	case *runtime.TypedNil:
+		// a nil slice source copies zero elements.
+		ss = []runtime.Value{}
 	case string:
 		if et := e.elemOf(d.td); et != nil && e.kindOfTd(et) != reflect.Uint8 {
 			trap("call of reflect.Copy on string Value")
@@ -789,7 +800,7 @@ func (e *Env) copy_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, e
 			ss = append(ss, int64(sv[i]))
 		}
 	}
-	if !dok || ss == nil {
+	if ss == nil {
 		return nil, fmt.Errorf("reflect.Copy on non-slice")
 	}
 	n := len(ss)
