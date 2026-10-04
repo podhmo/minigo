@@ -1,10 +1,9 @@
 # TODO
 
-> **Note on updating this file:**
-> -   This file is an index only — task entries live in the topic files under `docs/todo/`. Add new tasks to the `## Open` section of the matching `docs/todo/<topic>.md` as `- [ ]` (or `- [-]` when partially done). If no topic fits, create a new topic file and add a row to the table below.
-> -   Keep open entries compact: a bold title, 1–3 sentences of what remains, and links to `docs/sketch/` reports or issues/PRs for detail. Do not write investigation narratives here — they belong in `docs/sketch/`.
-> -   When a task is done, move its entry to the same file's `## Done` section and mark it `[x]`. Done entries may keep their full text as history; do not grow them after the move.
-> -   Update the topic's row below whenever its open count changes or a topic file is added/removed.
+> **Note on updating this file:** upkeep rules live in
+> [`.claude/skills/todo-md/SKILL.md`](.claude/skills/todo-md/SKILL.md) —
+> follow them whenever you add or complete a task. Short version: this file
+> is an index; task entries live in `docs/todo/<topic>.md`.
 
 This file is the index of the project's task tracker; task entries live in
 the topic files under `docs/todo/`.
