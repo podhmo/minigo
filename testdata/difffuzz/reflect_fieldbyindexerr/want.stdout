@@ -1,0 +1,9 @@
+valid=false err=reflect: indirection through nil pointer to embedded struct field Inner
+0: panic: reflect: indirection through nil pointer to embedded struct
+valid=true err=<nil>
+1: panic: reflect: call of reflect.Value.FieldByIndexErr on int Value
+2: panic: reflect: call of reflect.Value.Field on int Value
+3: panic: reflect: Field index out of range
+7 <nil>
+9
+8 true

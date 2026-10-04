@@ -1,6 +1,7 @@
 package minireflect
 
 import (
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/constant"
@@ -741,6 +742,45 @@ func (v *RValue) FieldByIndex(idx []int) *RValue {
 		cur = cur.Field(i)
 	}
 	return cur
+}
+
+// FieldByIndexErr resolves a nested field path like FieldByIndex, but
+// reports a nil embedded-pointer traversal as an error naming the
+// pointed-at struct type instead of panicking. A one-step index is
+// just Field — its panic names Field, like Go.
+func (v *RValue) FieldByIndexErr(idx []int) (*RValue, error) {
+	if len(idx) == 1 {
+		return v.Field(idx[0]), nil
+	}
+	if v.host() {
+		f, err := v.rv.FieldByIndexErr(idx)
+		if !f.IsValid() {
+			return &RValue{e: v.e, vc: v.vc}, err
+		}
+		return &RValue{e: v.e, vc: v.vc, rv: f, ro: !f.CanInterface()}, err
+	}
+	if v.Kind() != reflect.Struct {
+		trap("call of reflect.Value.FieldByIndexErr on %s Value", v.kindStr())
+	}
+	cur := v
+	for depth, i := range idx {
+		if depth > 0 && cur.Kind() == reflect.Ptr {
+			var et *RType
+			if ct := cur.Type(); ct != nil {
+				et = ct.Elem()
+			}
+			if et != nil && et.Kind() == reflect.Struct {
+				ev := cur.Elem()
+				if !ev.IsValid() {
+					return &RValue{e: v.e, vc: v.vc},
+						errors.New("reflect: indirection through nil pointer to embedded struct field " + et.Name())
+				}
+				cur = ev
+			}
+		}
+		cur = cur.Field(i)
+	}
+	return cur, nil
 }
 
 // FieldByName looks up a struct field by name, including promotion
