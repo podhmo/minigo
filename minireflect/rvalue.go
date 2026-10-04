@@ -1997,6 +1997,8 @@ func (v *RValue) Convert(t *RType) *RValue {
 					sb.WriteByte(byte(intOf(el)))
 				}
 				out = sb.String()
+			} else if s, ok := x.V.(string); ok {
+				out = s
 			} else {
 				out = string(rune(v.convInt()))
 			}
