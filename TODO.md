@@ -1,11 +1,9 @@
 # TODO
 
-> **Note on updating this file:**
-> -   This file lists **only open work**: `[ ]` = open, `[-]` = partially done.
-> -   Completed work is recorded in the linked `docs/sketch/*` reports, the PRs that landed it, and this file's git history (`git log -p TODO.md`) — never in this file. Do not add `[x]` entries.
-> -   Keep each entry short: a bold title, 1–3 sentences of **what remains**, and links to `docs/sketch/*` reports, issues, or PRs. Fix narratives and status logs do not belong here.
-> -   When a task completes, delete its line in the same PR. Completed sub-items of a still-open `[-]` parent are deleted the same way; the parent stays while open work remains.
-> -   If a task needs more than a few lines of context, write the detail in `docs/sketch/` and link to it.
+> **Note on updating this file:** upkeep rules live in
+> [`.claude/skills/todo-md/SKILL.md`](.claude/skills/todo-md/SKILL.md) —
+> follow them whenever you add or complete a task. Short version: this file
+> lists open work only (`[ ]` / `[-]`); completed entries are deleted.
 
 This file lists only open work. Completed work is recorded in the linked
 `docs/sketch/*` reports, the PRs that landed it, and this file's git history
