@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/podhmo/minigo/runtime"
 )
 
 func candNames(cands []Candidate) []string {
@@ -168,6 +170,132 @@ func TestCompleteEnumMembers(t *testing.T) {
 	}
 }
 
+func TestCompleteDefinedType(t *testing.T) {
+	ctx := context.Background()
+	e := NewEngine("testdata")
+	r := e.NewREPL()
+
+	for _, line := range []string{
+		`type Base struct { X int }`,
+		`func (b Base) M() int { return b.X }`,
+		`type Copy Base`,
+		`func (c Copy) Own() int { return 1 }`,
+		`var c2 Copy = Copy{9}`,
+	} {
+		if _, err := r.EvalLine(ctx, line); err != nil {
+			t.Fatalf("EvalLine(%q): %v", line, err)
+		}
+	}
+	// `type A B` shares B's storage: the inner struct's decl answers the
+	// field layout, but its method set is not inherited — c2.M traps.
+	cands := r.Complete("c2.")
+	for _, want := range []string{"X", "Own"} {
+		if !hasCand(cands, want) {
+			t.Fatalf("%s missing in c2. -> %v", want, candNames(cands))
+		}
+	}
+	if hasCand(cands, "M") {
+		t.Fatalf("inherited M leaked into c2. -> %v", candNames(cands))
+	}
+	cands = r.Complete("Copy.")
+	if !hasCand(cands, "Own") {
+		t.Fatalf("Own missing in Copy. -> %v", candNames(cands))
+	}
+	if hasCand(cands, "M") {
+		t.Fatalf("inherited M leaked into Copy. -> %v", candNames(cands))
+	}
+}
+
+func TestCompleteNamedSliceElement(t *testing.T) {
+	ctx := context.Background()
+	e := NewEngine("testdata")
+	r := e.NewREPL()
+
+	for _, line := range []string{
+		`import "./inspectpkg"`,
+		`type Users []inspectpkg.User`,
+		`type W struct { Items Users }`,
+		`u := inspectpkg.User{}`,
+		`w := W{Items: Users{u}}`,
+	} {
+		if _, err := r.EvalLine(ctx, line); err != nil {
+			t.Fatalf("EvalLine(%q): %v", line, err)
+		}
+	}
+	// a field of `type T []E` stores a Named-wrapped Slice — indexing
+	// unwraps through the tag to reach the elements.
+	cands := r.Complete("w.Items[0].")
+	for _, want := range []string{"Name", "Greet"} {
+		if !hasCand(cands, want) {
+			t.Fatalf("%s missing in w.Items[0]. -> %v", want, candNames(cands))
+		}
+	}
+}
+
+func TestCompleteMethodExprValueSet(t *testing.T) {
+	ctx := context.Background()
+	e := NewEngine("testdata")
+	r := e.NewREPL()
+
+	for _, line := range []string{
+		`type Pair struct { A int; B string }`,
+		`func (p Pair) Sum() string { return p.B }`,
+		`func (p *Pair) SetB(s string) { p.B = s }`,
+		`var p Pair`,
+		`var pp *Pair`,
+	} {
+		if _, err := r.EvalLine(ctx, line); err != nil {
+			t.Fatalf("EvalLine(%q): %v", line, err)
+		}
+	}
+	// addressable variables take the whole method set…
+	cands := r.Complete("p.")
+	for _, want := range []string{"Sum", "SetB"} {
+		if !hasCand(cands, want) {
+			t.Fatalf("%s missing in p. -> %v", want, candNames(cands))
+		}
+	}
+	cands = r.Complete("pp.")
+	for _, want := range []string{"Sum", "SetB"} {
+		if !hasCand(cands, want) {
+			t.Fatalf("%s missing in pp. -> %v", want, candNames(cands))
+		}
+	}
+	// …but `T.M` is a method expression: pointer receivers trap, so the
+	// type-level selector keeps only the value method set.
+	cands = r.Complete("Pair.")
+	if !hasCand(cands, "Sum") {
+		t.Fatalf("Sum missing in Pair. -> %v", candNames(cands))
+	}
+	if hasCand(cands, "SetB") {
+		t.Fatalf("ptr-receiver SetB leaked into Pair. -> %v", candNames(cands))
+	}
+}
+
+type hostInner struct{ ID int64 }
+type hostOuter struct {
+	hostInner
+	Name string
+}
+
+func TestCompleteHostEmbeddedFields(t *testing.T) {
+	e := NewEngine("testdata")
+	r := e.NewREPL()
+	r.pkg.Globals.Set("hv", &runtime.GoValue{V: hostOuter{Name: "x"}})
+
+	// embedded fields promote: hv.ID is reachable through hostInner even
+	// though NumField only counts the two direct fields.
+	cands := r.Complete("hv.")
+	for _, want := range []string{"Name", "ID"} {
+		if !hasCand(cands, want) {
+			t.Fatalf("%s missing in hv. -> %v", want, candNames(cands))
+		}
+	}
+	if hasCand(cands, "hostInner") {
+		t.Fatalf("unexported embedded field leaked: %v", candNames(cands))
+	}
+}
+
 func TestCompleteHostType(t *testing.T) {
 	ctx := context.Background()
 	e := NewEngine("testdata")
@@ -211,9 +339,14 @@ func TestCompleteDirPackage(t *testing.T) {
 	if hasCand(cands, "hiddenFn") {
 		t.Fatalf("unexported member leaked: %v", candNames(cands))
 	}
-	// type-level members of a package type
-	if !hasCand(r.Complete("inspectpkg.User."), "Greet") {
-		t.Fatalf("Greet missing in inspectpkg.User. -> %v", candNames(r.Complete("inspectpkg.User.")))
+	// type-level members of a package type: `User.M` is a method
+	// expression, so pointer receivers (Greet) stay out.
+	user := r.Complete("inspectpkg.User.")
+	if !hasCand(user, "Bye") {
+		t.Fatalf("Bye missing in inspectpkg.User. -> %v", candNames(user))
+	}
+	if hasCand(user, "Greet") {
+		t.Fatalf("ptr-receiver Greet leaked into inspectpkg.User. -> %v", candNames(user))
 	}
 	// enum members from the index; a var typed with the enum type is
 	// not a member (T.Var is not valid Go), and untyped const specs

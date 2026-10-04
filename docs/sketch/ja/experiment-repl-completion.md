@@ -116,10 +116,16 @@ package ./inspectpkg    dir
 - **`var x = f()` の型推論なし**: 宣言型のない var は値を見るしかない。REPL 自身の名前は hoist された実値があるので解決できるが、未 init の外部パッケージの `var s = compute()` には静的にも実行時にも型がない。
 - **文字列コンテキストは import のみ**: map key、`:cd`/`:ls`/`:comp` の引数は対象外。`:` 行そのものの補完はフロントエンド側の仕事（コマンド表は cmd/minigo にしかない）。importable 集合の列挙も近似: GOROOT は「ディレクトリに非 main パッケージがある」判定でビルド制約までは見ない、`replace` の影響は require の綴りだけ反映（import パスは module path のままなので実害なし）、`internal` は一律 prune（本来は近接ルール）。セッション中に作ったディレクトリは `importCands` キャッシュの関係で出ない。
 - **same-depth の昇格曖昧性**: 本物は compile error だが、補完は最初のヒットを取る（候補を出す側は審判ではない、という割り切り）。
-- **過剰なメソッド候補**: `methodFuncs` を ptr=true/false 両方で呼ぶので、文脈上取り得ないレシーバのメソッドも出ることがある。REPL の変数は全部 addressable なので実害は少ない。Named host box に宣言メソッドがある場合も reflect セットが併記される（実行時は declared-only）— 補完として多めに出すのは害が少ない判断。
+- **過剰なメソッド候補（値コンテキストのみ）**: 値基底では `methodFuncs` を ptr=true/false 両方で呼ぶので、文脈上取り得ないレシーバのメソッドも出ることがある。REPL の変数は全部 addressable なので実害は少ない。型レベル基底（`T.`）は method expression なので値メソッド集合だけに絞ってある（`func (p *T) M` は `T.M` では trap する）。Named host box に宣言メソッドがある場合も reflect セットが併記される（実行時は declared-only）— 補完として多めに出すのは害が少ない判断。
 - **昇格メソッドの Detail**: 宣言元ファイルのスコープで `TypGoSpelling` を呼ぶので、selector 修飾された型が曖昧に見えることがある。
 - **suffix fallback の誤爆**: `(u.` は正しく `u` のメンバーを出すが、`m[k.`（開いた index 式の中の `.`）も `k` のメンバーを出してしまう。`.` 末尾のコンテキストを未閉鎖グループ内と区別するには `resolveBase` 側の括弧深度追跡が要る — TODO に積んだ。
 - **adapter 系 builtin は Detail が空**: `strings.Compare` など `fn*` ラッパーは `Target` を持たないので reflect シグネチャを描けない。嘘の `func(...) any` より空の方がまし、という判断。
+
+補足 — レビューで見つかった「読み取り版と selectMember の意味論差分」は修正済み（いずれもミラーする側の見落としで、方式の限界ではない）:
+
+- `type A B` は B のストレージを共有するがメソッド集合を継承しない。値は `Named{A, Struct{Def:B}}` なので、内側の Def までなめると B のメソッドが漏れる — フィールドは内側 Def（実レイアウト）から、メソッドは宣言側 typedef から取るようにした。
+- host reflect のフィールドを `NumField` の直舐めにしていたので昇格フィールドが抜けていた。`reflect.VisibleFields`（昇格を flatten し、影になる深いフィールドを落とす）に差し替え。
+- `type T []E` のフィールドは `Named` tag 付きで格納されるので、`x.F[0].` の index 解決が Deref の時点で詰まっていた。Unwrap を差し込んで解消。
 
 ## 5. 考察 — 「処理系の機能として何が必要か」の答え
 

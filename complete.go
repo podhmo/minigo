@@ -339,11 +339,13 @@ func (r *REPL) resolveExpr(x ast.Expr) (runtime.Value, bool) {
 		if err != nil {
 			return nil, false
 		}
-		dv, ok := runtime.Deref(base)
-		if !ok {
-			return nil, false
+		// `type T []E` stores the Slice under a Named tag — peel it around
+		// the reference dereference (either layer may carry the tag).
+		v := runtime.Unwrap(base)
+		if dv, ok := runtime.Deref(v); ok {
+			v = runtime.Unwrap(dv)
 		}
-		s, ok := dv.(*runtime.Slice)
+		s, ok := v.(*runtime.Slice)
 		if !ok || i < 0 || i >= len(s.Elems) {
 			return nil, false
 		}
@@ -756,8 +758,16 @@ func (c *completer) members(v runtime.Value, out *[]Candidate, depth int) {
 		c.structFields(b.Def, out)
 		c.typedefMethods(b.Def, out)
 	case *runtime.Named:
-		c.typedefMethods(b.Typ, out)
-		c.members(b.V, out, depth+1) // underlying: struct fields, host box
+		td := c.r.engine.peelAliasTd(b.Typ)
+		c.typedefMethods(td, out)
+		if st, ok := b.V.(*runtime.Struct); ok && td == b.Typ {
+			// `type A B` shares B's storage: the inner struct's Def is B's
+			// decl — its fields are the layout, but its method set is not
+			// inherited (A has only its own methods).
+			c.structFields(st.Def, out)
+		} else {
+			c.members(b.V, out, depth+1) // underlying: struct fields, host box
+		}
 	case *runtime.Cell:
 		c.typedefMethods(b.Typ, out) // declared-type stamp (`var x T`)
 		if dv, ok := runtime.Deref(v); ok {
@@ -768,11 +778,11 @@ func (c *completer) members(v runtime.Value, out *[]Candidate, depth int) {
 			c.members(dv, out, depth+1)
 		}
 	case *runtime.TypeDef:
-		c.typeMembers(b, out)
+		c.typeMembers(b, out, false) // method expressions need the value set
 	case *runtime.TypedNil:
-		c.typeMembers(b.Typ, out)
+		c.typeMembers(b.Typ, out, true)
 	case *runtime.IfaceNil:
-		c.typeMembers(b.Typ, out)
+		c.typeMembers(b.Typ, out, true)
 	case *runtime.Slice:
 		c.typedefMethods(b.Typ, out)
 	case *runtime.Map:
@@ -789,8 +799,10 @@ func (c *completer) members(v runtime.Value, out *[]Candidate, depth int) {
 // typeMembers enumerates a type-level selector's members: the method set
 // plus enum members (`Color.Red` on `type Color int`) — REPL-hoisted
 // cells stamped with the typedef first, then the package's const decls.
-func (c *completer) typeMembers(td *runtime.TypeDef, out *[]Candidate) {
-	c.typedefMethods(td, out)
+// ptrRecv=false restricts to the value method set: `T.M` is a method
+// expression, which rejects pointer receivers; `var x T` stays addressable.
+func (c *completer) typeMembers(td *runtime.TypeDef, out *[]Candidate, ptrRecv bool) {
+	c.typedefMethodsOpt(td, out, ptrRecv)
 	if td == nil || td.Pkg == nil || td.Name == "" {
 		return
 	}
@@ -813,10 +825,20 @@ func (c *completer) typeMembers(td *runtime.TypeDef, out *[]Candidate) {
 // Both value- and pointer-receiver methods are offered: REPL globals
 // are addressable cells, so `s.SetX` is valid even on a value-typed s.
 func (c *completer) typedefMethods(td *runtime.TypeDef, out *[]Candidate) {
+	c.typedefMethodsOpt(td, out, true)
+}
+
+// typedefMethodsOpt is typedefMethods with a knob for pointer-receiver
+// methods — dropped for type-level selectors (`T.M` method expressions).
+func (c *completer) typedefMethodsOpt(td *runtime.TypeDef, out *[]Candidate, ptrRecv bool) {
 	if td == nil {
 		return
 	}
-	for _, ptr := range []bool{false, true} {
+	ptrs := []bool{false}
+	if ptrRecv {
+		ptrs = append(ptrs, true)
+	}
+	for _, ptr := range ptrs {
 		for name, m := range c.r.engine.methodFuncs(td, ptr, map[*runtime.TypeDef]bool{}) {
 			c.add(out, name, CandMethod, funcDetail(m))
 		}
@@ -864,12 +886,13 @@ func (c *completer) hostMembers(x any, out *[]Candidate) {
 		fv = fv.Elem()
 	}
 	if fv.IsValid() && fv.Kind() == reflect.Struct {
-		t := fv.Type()
-		for i := 0; i < t.NumField(); i++ {
-			if !fv.Field(i).CanInterface() {
+		// VisibleFields flattens promoted (embedded) fields and drops the
+		// shadowed deeper ones — hostMember's FieldByName promotes the
+		// same way. Unexported entries stay out, as they cannot interface.
+		for _, sf := range reflect.VisibleFields(fv.Type()) {
+			if !sf.IsExported() {
 				continue // unexported
 			}
-			sf := t.Field(i)
 			c.add(out, sf.Name, CandField, sf.Type.String())
 		}
 	}
