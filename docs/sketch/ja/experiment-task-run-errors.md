@@ -127,9 +127,9 @@ func Default() { task.Log("second") }
 
 `go build` では `Default redeclared` のコンパイルエラー。task-run では `-l` には 1 つだけ並び、実行すると **無言で後者が走る**（`second`）。定義側の壊れ（コピペ事故、merge の残骸）を「成功したふり」で通す。index が name → decl の map なのでエンジン側で重複検出しないと見えない。
 
-### G7. スタック枯渇のトレースバックが全フレームをダンプする
+### G7. スタック枯渇のトレースバックが読めない量になる
 
-再帰（`func f() { f() }`）は `runtime trap: stack exhausted: frame limit 10000` と**約 10,000 フレーム分**の `File "...", line 3, in f()` を吐く。失敗するのは正しいが、人間もエージェントも読めない量になる。同一フレームの連続反復は `... repeated N times` 程度に畳むのが親切（CPython の `RecursionError` がやっている形）。
+再帰（`func f() { f() }`）は `runtime trap: stack exhausted: frame limit 10000` と**約 300 エントリ（~600 行）**の同一 `File "...", line 3, in f()` を吐く。エンジンには既に上限がある（`renderFrames` の `maxTracebackEntries = 1000` で先頭500+末尾500+中央 `... N frames elided ...`）が、これは件数の cap であり、同一フレームの連続反復は畳まれない。失敗するのは正しいが、数百行の同一行は人間もエージェントも読めない。`エントリ + ... repeated N times ...` 程度に畳むのが親切（CPython の `RecursionError` がやっている形。既存の head/tail cap とは補完関係）。
 
 ### G8. その他・小さいもの
 
