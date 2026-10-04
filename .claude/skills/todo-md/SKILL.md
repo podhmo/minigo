@@ -18,16 +18,31 @@ mid-task get an entry too. Never write done-work narratives here.
 
 ## Completing a task
 
-In the same PR that lands the work:
+In the PR that lands the work, mark the entry `- [x]` and leave it —
+deleting it outright is also fine. Completed children of a still-open `[-]`
+parent are marked the same way; the parent stays until its last open child
+resolves.
 
-1. Delete the entry from `TODO.md`.
-2. Append it to the **end** of `TODO-archive.md` as a `- [x]` line, verbatim.
-   If it was nested under a parent item, prepend one context line
-   `> parent: <parent's title text>` (the parent's own text, *without* its
-   `[ ]`/`[-]` marker) so the line is self-contained. Deeper nesting:
+**Do not edit `TODO-archive.md` in a feature PR.** Consolidation is
+asynchronous so the archive can never conflict between branches.
+
+## GC: consolidating completed entries
+
+Run whenever `[x]` entries accumulate in `TODO.md` — any session may do it
+(e.g. at the end of a work round); there is no fixed schedule. For each
+`[x]` entry in `TODO.md`:
+
+1. Delete it from `TODO.md`.
+2. Append it to the **end** of `TODO-archive.md` verbatim, keeping the
+   `- [x]` marker. If it was nested under a parent item, prepend one context
+   line `> parent: <parent's title text>` (the parent's own text, *without*
+   its `[ ]`/`[-]` marker) so the line is self-contained. Deeper nesting:
    collapse the ancestor chain into that one line (`> parent: A › B › …`).
-3. Completed children of a still-open `[-]` parent move the same way; the
-   parent stays in `TODO.md` until its last open child resolves.
+   If the parent's title has drifted, use its current text — the GC pass is
+   where such drift gets reconciled.
+
+Only GC writes to `TODO-archive.md`, so the file stays append-only and
+conflict-free.
 
 ## Reading the archive
 
