@@ -1,0 +1,14 @@
+0: [2 3] []int len=2 cap=3
+1: [2 3] []int len=2 cap=2
+2: panic: reflect.Value.Slice3: slice index out of bounds
+3: panic: reflect.Value.Slice3: slice index out of bounds
+4: panic: reflect.Value.Slice3: slice index out of bounds
+5: [1 2 3 4] []int len=4 cap=4
+6: panic: reflect.Value.Slice3: slice of unaddressable array
+7: [1 2] []int len=2 cap=3
+8: panic: reflect: call of reflect.Value.Slice3 on string Value
+9: [2 3] main.NS len=2 cap=3
+10: [2 3] main.NS len=2 cap=3
+11: [] []int len=0 cap=0
+12: panic: reflect: call of reflect.Value.Slice3 on int Value
+13: [2 3] len=2 cap=2
