@@ -436,7 +436,7 @@ func (v *RValue) Type() *RType {
 func (v *RValue) Interface() any {
 	v.mustValid("Interface")
 	if v.ro {
-		trap("reflect.Value.Interface: cannot return value obtained from unexported field or method")
+		plain("reflect.Value.Interface: cannot return value obtained from unexported field or method")
 	}
 	return v.ifaceVal()
 }
@@ -1847,7 +1847,7 @@ func (v *RValue) CallSlice(in []*RValue) []*RValue {
 			_, variadic = ft.Params.List[len(ft.Params.List)-1].Type.(*ast.Ellipsis)
 		}
 		if !variadic {
-			trap("reflect.Value.CallSlice of a non-variadic function")
+			trap("CallSlice of non-variadic function")
 		}
 	}
 	if len(in) == 0 {
