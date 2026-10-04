@@ -1376,6 +1376,15 @@ func (v *RValue) Bytes() any {
 	if v.host() {
 		return v.rv.Bytes()
 	}
+	// Go dispatches on the kind, not the payload's shape: slice and
+	// array must carry a byte element (a named elem whose kind is
+	// still uint8 passes), anything else is a bad call — so a nil
+	// non-byte slice reports "non-byte slice" like any other.
+	kind := v.Kind()
+	if kind != reflect.Slice && kind != reflect.Array {
+		trap("call of reflect.Value.Bytes on %s Value", v.kindStr())
+		return nil
+	}
 	var s *runtime.Slice
 	switch x := v.get().(type) {
 	case *runtime.Slice:
@@ -1383,13 +1392,21 @@ func (v *RValue) Bytes() any {
 	case *runtime.Named:
 		s, _ = x.V.(*runtime.Slice)
 	}
-	if s == nil {
-		trap("call of reflect.Value.Bytes on %s Value", v.kindStr())
-		return nil
+	if s == nil { // a zero/nil Value of slice type (reflect.Zero)
+		s = &runtime.Slice{Typ: v.td}
 	}
-	if et := v.e.elemOf(s.Typ); et != nil && et.Name != "" &&
-		et.Name != "byte" && et.Name != "uint8" {
+	et := v.e.elemOf(v.td)
+	if et == nil {
+		et = v.e.elemOf(s.Typ)
+	}
+	if et != nil && v.e.kindOfTd(et) != reflect.Uint8 {
+		if kind == reflect.Array {
+			plain("reflect.Value.Bytes of non-byte array")
+		}
 		plain("reflect.Value.Bytes of non-byte slice")
+	}
+	if kind == reflect.Array && !v.CanAddr() {
+		plain("reflect.Value.Bytes of unaddressable byte array")
 	}
 	st := s.Typ
 	if st == nil {
