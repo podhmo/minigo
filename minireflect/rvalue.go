@@ -1790,10 +1790,14 @@ func (v *RValue) Call(in []*RValue) []*RValue {
 		return res
 	}
 	v.expectKind("Call", reflect.Func)
+	// Go reports arity before touching argument values: `reflect: Call
+	// with too few/too many input arguments`. The signature gates
+	// precede the caller check — a vc-less Func Value (e.g.
+	// Type.Method(i).Func) still panics on arity like Go.
+	v.checkCallArgs(in, false)
 	if v.vc == nil {
 		trap("minireflect: reflect.Value.Call needs a caller context")
 	}
-	v.checkCallArgs(in, false)
 
 	args := make([]runtime.Value, len(in))
 	for i, a := range in {
@@ -1866,7 +1870,7 @@ func (v *RValue) checkCallArgs(in []*RValue, sliceMode bool) {
 		name = "CallSlice"
 	}
 	switch {
-	case len(in) < numIn && (!variadic || len(in) < numIn-1):
+	case len(in) < numIn && (!variadic || len(in) < numIn-1 || sliceMode):
 		plain("reflect: %s with too few input arguments", name)
 	case len(in) > numIn && (!variadic || sliceMode):
 		plain("reflect: %s with too many input arguments", name)
@@ -1901,10 +1905,16 @@ func (v *RValue) checkCallArgs(in []*RValue, sliceMode bool) {
 	}
 }
 
-// callSig finds the callee's declared signature — the function's own
-// decl type, a closure's literal type, a bound method's decl type, or
-// the typedef's FuncType spec when the value is opaque.
+// callSig finds the callee's reflect signature — the typedef's
+// FuncType first (a Method Func's signature prepends the receiver,
+// which the decl's own FuncType does not carry), then the function's
+// own decl type for values that lost their typedef.
 func (v *RValue) callSig() *ast.FuncType {
+	if t := v.Type(); t != nil {
+		if ft := funcSig(t); ft != nil {
+			return ft
+		}
+	}
 	var decl *ast.FuncDecl
 	switch fn := v.get().(type) {
 	case *runtime.Function:
@@ -1920,9 +1930,6 @@ func (v *RValue) callSig() *ast.FuncType {
 	}
 	if decl != nil && decl.Type != nil {
 		return decl.Type
-	}
-	if t := v.Type(); t != nil {
-		return funcSig(t)
 	}
 	return nil
 }
@@ -1962,9 +1969,10 @@ func (v *RValue) CallSlice(in []*RValue) []*RValue {
 		return res
 	}
 	v.expectKind("CallSlice", reflect.Func)
-	if v.vc == nil {
-		trap("minireflect: reflect.Value.CallSlice needs a caller context")
-	}
+	// Go's gate order — variadic, exact arity (NumIn counts the
+	// variadic slice as one), last-arg assignability — all signature
+	// work precedes the caller check so vc-less Func Values panic
+	// like Go.
 	if ft := v.callSig(); ft != nil {
 		variadic := false
 		if ft.Params != nil && len(ft.Params.List) > 0 {
@@ -1974,10 +1982,13 @@ func (v *RValue) CallSlice(in []*RValue) []*RValue {
 			trap("CallSlice of non-variadic function")
 		}
 	}
+	v.checkCallArgs(in, true)
+	if v.vc == nil {
+		trap("minireflect: reflect.Value.CallSlice needs a caller context")
+	}
 	if len(in) == 0 {
 		trap("CallSlice with empty input slice")
 	}
-	v.checkCallArgs(in, true)
 
 	last := in[len(in)-1]
 	last.mustValid("CallSlice")
