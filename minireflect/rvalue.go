@@ -1568,6 +1568,11 @@ func (v *RValue) MapRange() *MapIter {
 	}
 	m, ok := v.get().(*runtime.Map)
 	if !ok {
+		// a nil map is iterable — MapRange returns an already-exhausted
+		// iterator (empty key snapshot), not a kind trap.
+		if _, isNil := runtime.Unwrap(v.get()).(*runtime.TypedNil); isNil && v.Kind() == reflect.Map {
+			return &MapIter{e: v.e, vc: v.vc}
+		}
 		trap("call of reflect.Value.MapRange on %s Value", v.kindStr())
 	}
 	keys := append([]runtime.Value{}, m.Order...)
@@ -1613,8 +1618,11 @@ func (it *MapIter) Key() *RValue {
 	if it.hit != nil {
 		return it.e.wrapHost(it.vc, it.hit.Key())
 	}
-	if it.i == 0 || it.i > len(it.keys) {
-		trap("call of MapIter.Key before Next")
+	if it.i == 0 {
+		plain("MapIter.Key called before Next")
+	}
+	if it.i > len(it.keys) {
+		plain("MapIter.Key called on exhausted iterator")
 	}
 	return it.e.wrap(it.vc, it.keys[it.i-1], nil, it.ktd)
 }
@@ -1624,8 +1632,11 @@ func (it *MapIter) Value() *RValue {
 	if it.hit != nil {
 		return it.e.wrapHost(it.vc, it.hit.Value())
 	}
-	if it.i == 0 || it.i > len(it.keys) {
-		trap("call of MapIter.Value before Next")
+	if it.i == 0 {
+		plain("MapIter.Value called before Next")
+	}
+	if it.i > len(it.keys) {
+		plain("MapIter.Value called on exhausted iterator")
 	}
 	got, _ := it.m.Get(it.keys[it.i-1])
 	return it.e.wrap(it.vc, runtime.Copy(got), nil, it.etd)
@@ -1646,8 +1657,13 @@ func (it *MapIter) Reset(v *RValue) {
 // called before Next`, ahead of the target's settable check — and an
 // unassignable key reports under `reflect.MapIter.SetKey:`.
 func (v *RValue) SetIterKey(it *MapIter) {
-	if it != nil && it.hit == nil && (it.i == 0 || it.i > len(it.keys)) {
-		plain("reflect: Value.SetIterKey called before Next")
+	if it != nil && it.hit == nil {
+		if it.i == 0 {
+			plain("reflect: Value.SetIterKey called before Next")
+		}
+		if it.i > len(it.keys) {
+			plain("reflect: Value.SetIterKey called on exhausted iterator")
+		}
 	}
 	x := it.Key()
 	v.mustValid("SetIterKey")
@@ -1660,8 +1676,13 @@ func (v *RValue) SetIterKey(it *MapIter) {
 
 // SetIterValue assigns the current iteration value.
 func (v *RValue) SetIterValue(it *MapIter) {
-	if it != nil && it.hit == nil && (it.i == 0 || it.i > len(it.keys)) {
-		plain("reflect: Value.SetIterValue called before Next")
+	if it != nil && it.hit == nil {
+		if it.i == 0 {
+			plain("reflect: Value.SetIterValue called before Next")
+		}
+		if it.i > len(it.keys) {
+			plain("reflect: Value.SetIterValue called on exhausted iterator")
+		}
 	}
 	x := it.Value()
 	v.mustValid("SetIterValue")
