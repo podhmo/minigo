@@ -944,7 +944,11 @@ func (v *RValue) Index(i int) *RValue {
 		if i < 0 || i >= len(x) {
 			panic(&runtime.Panic{Value: "reflect: string index out of range"})
 		}
-		return &RValue{e: v.e, vc: v.vc, val: int64(x[i]), td: &runtime.TypeDef{Name: "uint8"}}
+		// the element is a byte — tag it so %T reads uint8 and
+		// Interface() surfaces a typed byte, like a []uint8 element.
+		btd := runtime.BasicTypedef("uint8")
+		return &RValue{e: v.e, vc: v.vc,
+			val: runtime.Tag(btd, int64(x[i])), td: btd}
 	case *runtime.Named:
 		return v.unwrap().Index(i)
 	case *runtime.TypedNil:
