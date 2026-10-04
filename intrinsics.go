@@ -3867,14 +3867,16 @@ func formatOfNoHash(f fmt.State, verb rune) string {
 	return sb.String()
 }
 
-// unsignedIntTyp reports whether td denotes an unsigned 64-bit integer —
-// the declared name or its underlying ident (a `type U uint64` decl).
+// unsignedIntTyp reports whether td denotes an unsigned integer — the
+// declared name or its underlying ident (a `type U uint64` decl).
+// Unsigned kinds format their int64-carried bits as unsigned, and %#v
+// spells them in hex like Go.
 func unsignedIntTyp(td *runtime.TypeDef) bool {
 	if td == nil {
 		return false
 	}
 	switch td.Name {
-	case "uint", "uint64", "uintptr":
+	case "uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "byte":
 		return true
 	}
 	x := td.Anon
@@ -3883,7 +3885,7 @@ func unsignedIntTyp(td *runtime.TypeDef) bool {
 	}
 	if id, ok := x.(*ast.Ident); ok {
 		switch id.Name {
-		case "uint", "uint64", "uintptr":
+		case "uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "byte":
 			return true
 		}
 	}
