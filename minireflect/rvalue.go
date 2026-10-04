@@ -715,6 +715,31 @@ func (v *RValue) NumField() int {
 	return 0
 }
 
+// fieldByIndexWalk runs the shared embedded-path traversal of
+// FieldByIndex and FieldByIndexErr: each step derefs a ptr-to-struct
+// field before indexing into it. onNilPtr decides how a nil embedded
+// pointer ends the walk — FieldByIndex panics, Err reports an error.
+func (v *RValue) fieldByIndexWalk(idx []int, onNilPtr func(et *RType) (*RValue, error)) (*RValue, error) {
+	cur := v
+	for depth, i := range idx {
+		if depth > 0 && cur.Kind() == reflect.Ptr {
+			var et *RType
+			if ct := cur.Type(); ct != nil {
+				et = ct.Elem()
+			}
+			if et != nil && et.Kind() == reflect.Struct {
+				ev := cur.Elem()
+				if !ev.IsValid() {
+					return onNilPtr(et)
+				}
+				cur = ev
+			}
+		}
+		cur = cur.Field(i)
+	}
+	return cur, nil
+}
+
 // FieldByIndex resolves a nested field path.
 func (v *RValue) FieldByIndex(idx []int) *RValue {
 	if v.host() {
@@ -725,22 +750,12 @@ func (v *RValue) FieldByIndex(idx []int) *RValue {
 		}
 		return &RValue{e: v.e, vc: v.vc, rv: f, ro: ro}
 	}
-	cur := v
-	for depth, i := range idx {
-		// embedded traversal derefs a ptr-to-struct field between
-		// steps; a nil embedded pointer dies on 'indirection through
-		// nil pointer to embedded struct' like Go's FieldByIndexErr.
-		if depth > 0 && cur.Kind() == reflect.Ptr {
-			if cur.Type() != nil && cur.Type().Elem() != nil && cur.Type().Elem().Kind() == reflect.Struct {
-				ev := cur.Elem()
-				if !ev.IsValid() {
-					panic(&runtime.Panic{Value: "reflect: indirection through nil pointer to embedded struct"})
-				}
-				cur = ev
-			}
-		}
-		cur = cur.Field(i)
-	}
+	// embedded traversal derefs a ptr-to-struct field between steps; a
+	// nil embedded pointer dies on 'indirection through nil pointer to
+	// embedded struct' like Go's FieldByIndex.
+	cur, _ := v.fieldByIndexWalk(idx, func(et *RType) (*RValue, error) {
+		panic(&runtime.Panic{Value: "reflect: indirection through nil pointer to embedded struct"})
+	})
 	return cur
 }
 
@@ -762,25 +777,10 @@ func (v *RValue) FieldByIndexErr(idx []int) (*RValue, error) {
 	if v.Kind() != reflect.Struct {
 		trap("call of reflect.Value.FieldByIndexErr on %s Value", v.kindStr())
 	}
-	cur := v
-	for depth, i := range idx {
-		if depth > 0 && cur.Kind() == reflect.Ptr {
-			var et *RType
-			if ct := cur.Type(); ct != nil {
-				et = ct.Elem()
-			}
-			if et != nil && et.Kind() == reflect.Struct {
-				ev := cur.Elem()
-				if !ev.IsValid() {
-					return &RValue{e: v.e, vc: v.vc},
-						errors.New("reflect: indirection through nil pointer to embedded struct field " + et.Name())
-				}
-				cur = ev
-			}
-		}
-		cur = cur.Field(i)
-	}
-	return cur, nil
+	return v.fieldByIndexWalk(idx, func(et *RType) (*RValue, error) {
+		return &RValue{e: v.e, vc: v.vc},
+			errors.New("reflect: indirection through nil pointer to embedded struct field " + et.Name())
+	})
 }
 
 // FieldByName looks up a struct field by name, including promotion
