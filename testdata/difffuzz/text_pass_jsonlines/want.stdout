@@ -1,0 +1,3 @@
+{"level":"error","ms":812,"msg":"dial timeout"}
+{"level":"error","ms":44,"msg":"retry"}
+errors: 2
