@@ -1,0 +1,13 @@
+f X int 1 int
+f Y string s string
+f z bool <ro> bool
+9
+stopped 2
+m Name func(main.T) string
+m Sum func(main.T, int, int) int
+call 10
+im Name
+im Sum
+int-methods 0
+0: panic: reflect: Fields of non-struct type int
+1: panic: reflect: Fields of non-struct type *main.S
