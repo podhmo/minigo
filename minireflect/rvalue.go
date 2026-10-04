@@ -888,6 +888,40 @@ func (v *RValue) CanConvert(t *RType) bool {
 	return true
 }
 
+// Clear empties the value in place like Go 1.21: a slice's elements
+// all go to the element zero (the header's len stays), a map loses
+// every entry. Go's kind gate is the only check — there is no
+// settability or read-only gate, so an unaddressable slice still
+// clears its backing and nil slice/map receivers are no-ops.
+func (v *RValue) Clear() {
+	v.mustValid("Clear")
+	if v.host() {
+		v.rv.Clear()
+		return
+	}
+	switch v.Kind() {
+	case reflect.Slice:
+		sl := v.sliceView()
+		etd := v.e.elemOf(sl.Typ)
+		if etd == nil {
+			etd = v.e.elemOf(v.td)
+		}
+		// each element gets a fresh zero — sharing one across slots
+		// would alias struct elements through the same pointer.
+		for i := range sl.Elems {
+			sl.Elems[i] = v.e.zeroOf(v.vc, etd)
+		}
+	case reflect.Map:
+		if m, ok := runtime.Unwrap(v.get()).(*runtime.Map); ok {
+			m.Pairs = map[runtime.Value]runtime.Value{}
+			m.Order = nil
+			m.Keys = nil
+		}
+	default:
+		trap("call of reflect.Value.Clear on %s Value", v.kindStr())
+	}
+}
+
 // CanInt reports whether Int can be used without panicking — the
 // zero Value reads kind Invalid and answers false like every other.
 func (v *RValue) CanInt() bool {

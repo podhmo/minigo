@@ -1,0 +1,14 @@
+false
+[0 0 0]
+[0 0]
+0
+0
+0
+true true
+0: panic: reflect: call of reflect.Value.Clear on string Value
+1: panic: reflect: call of reflect.Value.Clear on struct Value
+2: panic: reflect: call of reflect.Value.Clear on int Value
+3: panic: reflect: call of reflect.Value.Clear on zero Value
+4: panic: reflect: call of reflect.Value.Clear on int Value
+5: [0 0]
+6: map[]
