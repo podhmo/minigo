@@ -1591,6 +1591,7 @@ func TestFuzzFixes(t *testing.T) {
 		{"ChanAnySlice", "[1 2 3]"},
 		{"IoReadAll", "payload <nil>"},
 		{"IoReadFullEOF", `0 "\x00\x00\x00\x00"`},
+		{"IoReadFullFill", `8 "abcdefgh" <nil>`},
 		{"IoCopy", "2 xy <nil>"},
 		{"Sha256Bind", "2cf24dba 2cf24dba"},
 		{"CsvBind", "[[a b]] <nil>"},

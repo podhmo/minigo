@@ -1557,14 +1557,22 @@ func (e *Engine) installStdlib() {
 			n, cerr := io.CopyN(w, r, int64Of(a[2]))
 			return &runtime.Tuple{Elems: []runtime.Value{int64(n), errVal(cerr)}}, nil
 		}, io.CopyN),
-		"ReadFull": h.fn2("io.ReadFull", func(a []any) (any, error) {
-			r, err := asReader(a[0])
+		// ReadFull borrows the script buffer instead of h.fn's byteSlice
+		// copy — a copy would drop the reader's writes and leave the
+		// script slice untouched (#362).
+		"ReadFull": &runtime.BuiltinFunc{Name: "io.ReadFull", Target: io.ReadFull, Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) < 2 {
+				return nil, fmt.Errorf("io.ReadFull needs 2 args, got %d", len(args))
+			}
+			r, err := asReader(goNative(args[0]))
 			if err != nil {
 				return nil, err
 			}
-			n, rerr := io.ReadFull(r, byteSlice(a[1]))
+			bs, commit := borrowBytes(args[1])
+			n, rerr := io.ReadFull(r, bs)
+			commit()
 			return &runtime.Tuple{Elems: []runtime.Value{int64(n), errVal(rerr)}}, nil
-		}, io.ReadFull),
+		}},
 		"LimitReader": h.fn2("io.LimitReader", func(a []any) (any, error) {
 			r, err := asReader(a[0])
 			if err != nil {
@@ -2449,6 +2457,43 @@ func (e *Engine) cwdAbs(p string) string {
 		return filepath.Clean(p)
 	}
 	return filepath.Join(e.cwd, p)
+}
+
+// borrowBytes marshals a script value to []byte for a host call that
+// writes into the buffer: the returned commit writes the bytes back
+// into the script slice's elements. It must see the arg before goNative
+// flattens it — an []any has lost the script slice it came from. Values
+// already sharing their backing (a host []byte inside a GoValue) need
+// no commit; read-only consumers keep using byteSlice.
+func borrowBytes(v runtime.Value) ([]byte, func()) {
+	u := v
+	for {
+		if n, ok := u.(*runtime.Named); ok {
+			u = n.V
+			continue
+		}
+		if dv, ok := runtime.Deref(u); ok {
+			u = dv
+			continue
+		}
+		break
+	}
+	switch x := u.(type) {
+	case *runtime.Slice:
+		bs := byteSlice(x)
+		return bs, func() {
+			td := runtime.BasicTypedef("byte")
+			for i := range bs {
+				x.Elems[i] = runtime.Tag(td, int64(bs[i]))
+			}
+		}
+	case *runtime.GoValue:
+		if bs, ok := x.V.([]byte); ok {
+			// shared backing — host writes are already visible
+			return bs, func() {}
+		}
+	}
+	return byteSlice(v), func() {}
 }
 
 // byteSlice unmarshals a script value to []byte for os.WriteFile & co:
