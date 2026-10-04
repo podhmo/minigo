@@ -38,6 +38,7 @@ type StructField struct {
 	PkgPath   string
 	Type      *RType
 	Tag       reflect.StructTag
+	Offset    uintptr
 	Index     []int
 	Anonymous bool
 }
@@ -668,6 +669,7 @@ func (t *RType) Field(i int) *StructField {
 			PkgPath:   f.PkgPath,
 			Type:      t.e.hostTypeOf(f.Type),
 			Tag:       f.Tag,
+			Offset:    f.Offset,
 			Index:     f.Index,
 			Anonymous: f.Anonymous,
 		}
@@ -694,6 +696,7 @@ func (t *RType) Field(i int) *StructField {
 	sf := &StructField{
 		Name:      name,
 		Type:      ft,
+		Offset:    fieldOffset(t, i),
 		Index:     []int{i},
 		Anonymous: embedded,
 	}
@@ -739,8 +742,8 @@ func (t *RType) FieldByName(name string) (*StructField, bool) {
 			return nil, false
 		}
 		return &StructField{Name: f.Name, PkgPath: f.PkgPath,
-			Type: t.e.hostTypeOf(f.Type), Tag: f.Tag, Index: f.Index,
-			Anonymous: f.Anonymous}, true
+			Type: t.e.hostTypeOf(f.Type), Tag: f.Tag, Offset: f.Offset,
+			Index: f.Index, Anonymous: f.Anonymous}, true
 	}
 	if t.Kind() != reflect.Struct {
 		trap("FieldByName of non-struct type %s", t.String())
@@ -763,6 +766,9 @@ func (t *RType) FieldByName(name string) (*StructField, bool) {
 			if sub := t.e.rtypeOf(etd); sub.Kind() == reflect.Struct {
 				if f, ok := sub.FieldByName(name); ok {
 					f.Index = append([]int{ei}, f.Index...)
+					// the promoted offset adds the embedding
+					// field's own slot, like Go's layout
+					f.Offset += fieldOffset(t, ei)
 					return f, true
 				}
 			}
@@ -1217,6 +1223,63 @@ func (t *RType) FieldAlign() int {
 		return t.rt.FieldAlign()
 	}
 	return t.alignOf()
+}
+
+// fieldOffset lays out the struct's fields on amd64 up to field i:
+// each field sits at the next offset aligned to its own alignment.
+func fieldOffset(t *RType, i int) uintptr {
+	fts := t.e.fieldTypes(t.td)
+	var off uintptr
+	for j := 0; j < i && j < len(fts); j++ {
+		if fts[j] == nil {
+			continue
+		}
+		fj := t.e.rtypeOf(fts[j])
+		off = roundUp(off, uintptr(fj.alignOf())) + fj.sizeOf()
+	}
+	if i < len(fts) && fts[i] != nil {
+		off = roundUp(off, uintptr(t.e.rtypeOf(fts[i]).alignOf()))
+	}
+	return off
+}
+
+func roundUp(off, a uintptr) uintptr {
+	if a == 0 {
+		return off
+	}
+	return (off + a - 1) / a * a
+}
+
+// sizeOf computes the amd64 size of a script type in bytes: scalars
+// by width, string/interface headers 16, slices 24, arrays elem*N,
+// structs padded to their own alignment; word-sized containers and
+// pointers are 8.
+func (t *RType) sizeOf() uintptr {
+	switch t.Kind() {
+	case reflect.Bool, reflect.Int8, reflect.Uint8:
+		return 1
+	case reflect.Int16, reflect.Uint16:
+		return 2
+	case reflect.Int32, reflect.Uint32, reflect.Float32, reflect.Complex64:
+		return 4
+	case reflect.Int, reflect.Uint, reflect.Int64, reflect.Uint64,
+		reflect.Uintptr, reflect.Float64, reflect.Complex128:
+		return 8
+	case reflect.String, reflect.Interface:
+		return 16
+	case reflect.Slice:
+		return 24
+	case reflect.Array:
+		return t.Elem().sizeOf() * uintptr(t.Len())
+	case reflect.Struct:
+		var off uintptr
+		for i := 0; i < t.NumField(); i++ {
+			ft := t.Field(i).Type
+			off = roundUp(off, uintptr(ft.alignOf())) + ft.sizeOf()
+		}
+		return roundUp(off, uintptr(t.alignOf()))
+	}
+	return 8
 }
 
 // alignOf computes the amd64 alignment of a script type. A struct
