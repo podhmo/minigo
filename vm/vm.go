@@ -2059,6 +2059,9 @@ func (v *VM) hostMember(hv any, name string) (runtime.Value, bool) {
 	bf := &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		return callReflectFunc(name, m, vc, args)
 	}}
+	// the bound method value spells the receiver-less signature
+	// (`func() int` for Len) under %T.
+	bf.Target = m.Interface()
 	// the method value's own PC is a thunk (reflect.methodValueCall)
 	// — the declared method's Func is the only handle that still
 	// points at the real code, so keep it for inspect.
