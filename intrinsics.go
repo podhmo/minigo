@@ -11,6 +11,7 @@ package minigo
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/csv"
@@ -25,6 +26,8 @@ import (
 	"io/fs"
 	"maps"
 	"math"
+	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path"
@@ -37,6 +40,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"text/template"
 	"time"
 	"unicode"
@@ -141,6 +145,9 @@ func (e *Engine) installStdlib() {
 	})
 	e.Bind("errors", map[string]runtime.Value{
 		"New": h.fn("errors.New", func(a []any) (any, error) { return errors.New(str(a[0])), nil }, errors.New),
+		// sentinel vars ride GoValue boxes so `err == errors.ErrUnsupported`
+		// and errors.Is against the chain see the real objects.
+		"ErrUnsupported": &runtime.GoValue{V: errors.ErrUnsupported},
 		"Join": &runtime.BuiltinFunc{Name: "errors.Join", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			var errs []error
 			for _, x := range args {
@@ -239,13 +246,44 @@ func (e *Engine) installStdlib() {
 		"SplitAfterN": h.fn3("strings.SplitAfterN", func(a []any) (any, error) {
 			return strsSlice(strings.SplitAfterN(str(a[0]), str(a[1]), intOf(a[2]))), nil
 		}),
-		"Trim":         h.fn2("strings.Trim", func(a []any) (any, error) { return strings.Trim(str(a[0]), str(a[1])), nil }, strings.Trim),
-		"TrimPrefix":   h.fn2("strings.TrimPrefix", func(a []any) (any, error) { return strings.TrimPrefix(str(a[0]), str(a[1])), nil }, strings.TrimPrefix),
-		"TrimSuffix":   h.fn2("strings.TrimSuffix", func(a []any) (any, error) { return strings.TrimSuffix(str(a[0]), str(a[1])), nil }, strings.TrimSuffix),
-		"TrimLeft":     h.fn2("strings.TrimLeft", func(a []any) (any, error) { return strings.TrimLeft(str(a[0]), str(a[1])), nil }, strings.TrimLeft),
-		"TrimRight":    h.fn2("strings.TrimRight", func(a []any) (any, error) { return strings.TrimRight(str(a[0]), str(a[1])), nil }, strings.TrimRight),
-		"LastIndex":    h.fn2("strings.LastIndex", func(a []any) (any, error) { return strings.LastIndex(str(a[0]), str(a[1])), nil }),
-		"LastIndexAny": h.fn2("strings.LastIndexAny", func(a []any) (any, error) { return strings.LastIndexAny(str(a[0]), str(a[1])), nil }),
+		"Trim":          h.fn2("strings.Trim", func(a []any) (any, error) { return strings.Trim(str(a[0]), str(a[1])), nil }, strings.Trim),
+		"TrimPrefix":    h.fn2("strings.TrimPrefix", func(a []any) (any, error) { return strings.TrimPrefix(str(a[0]), str(a[1])), nil }, strings.TrimPrefix),
+		"TrimSuffix":    h.fn2("strings.TrimSuffix", func(a []any) (any, error) { return strings.TrimSuffix(str(a[0]), str(a[1])), nil }, strings.TrimSuffix),
+		"TrimLeft":      h.fn2("strings.TrimLeft", func(a []any) (any, error) { return strings.TrimLeft(str(a[0]), str(a[1])), nil }, strings.TrimLeft),
+		"TrimRight":     h.fn2("strings.TrimRight", func(a []any) (any, error) { return strings.TrimRight(str(a[0]), str(a[1])), nil }, strings.TrimRight),
+		"LastIndex":     h.fn2("strings.LastIndex", func(a []any) (any, error) { return strings.LastIndex(str(a[0]), str(a[1])), nil }),
+		"LastIndexAny":  h.fn2("strings.LastIndexAny", func(a []any) (any, error) { return strings.LastIndexAny(str(a[0]), str(a[1])), nil }),
+		"LastIndexByte": h.fn2("strings.LastIndexByte", func(a []any) (any, error) { return strings.LastIndexByte(str(a[0]), byte(intOf(a[1]))), nil }),
+		"Lines": &runtime.BuiltinFunc{Name: "strings.Lines", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("strings.Lines needs 1 arg")
+			}
+			return seqOf("strings.Lines", strPieces(slices.Collect(strings.Lines(str(args[0]))))), nil
+		}},
+		"SplitSeq": &runtime.BuiltinFunc{Name: "strings.SplitSeq", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("strings.SplitSeq needs 2 args")
+			}
+			return seqOf("strings.SplitSeq", strPieces(slices.Collect(strings.SplitSeq(str(args[0]), str(args[1]))))), nil
+		}},
+		"SplitAfterSeq": &runtime.BuiltinFunc{Name: "strings.SplitAfterSeq", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("strings.SplitAfterSeq needs 2 args")
+			}
+			return seqOf("strings.SplitAfterSeq", strPieces(slices.Collect(strings.SplitAfterSeq(str(args[0]), str(args[1]))))), nil
+		}},
+		"FieldsSeq": &runtime.BuiltinFunc{Name: "strings.FieldsSeq", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("strings.FieldsSeq needs 1 arg")
+			}
+			return seqOf("strings.FieldsSeq", strPieces(slices.Collect(strings.FieldsSeq(str(args[0]))))), nil
+		}},
+		"FieldsFuncSeq": &runtime.BuiltinFunc{Name: "strings.FieldsFuncSeq", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("strings.FieldsFuncSeq needs 2 args")
+			}
+			return seqOf("strings.FieldsFuncSeq", strPieces(strings.FieldsFunc(str(args[0]), runePred(v, args[1])))), nil
+		}},
 		"IndexAny":     h.fn2("strings.IndexAny", func(a []any) (any, error) { return strings.IndexAny(str(a[0]), str(a[1])), nil }),
 		"IndexByte":    h.fn2("strings.IndexByte", func(a []any) (any, error) { return strings.IndexByte(str(a[0]), byte(intOf(a[1]))), nil }),
 		"IndexRune":    h.fn2("strings.IndexRune", func(a []any) (any, error) { return strings.IndexRune(str(a[0]), runeOf(a[1])), nil }),
@@ -340,6 +378,36 @@ func (e *Engine) installStdlib() {
 		"IsPrint":      h.fn("strconv.IsPrint", func(a []any) (any, error) { return strconv.IsPrint(runeOf(a[0])), nil }, strconv.IsPrint),
 		"IsGraphic":    h.fn("strconv.IsGraphic", func(a []any) (any, error) { return strconv.IsGraphic(runeOf(a[0])), nil }, strconv.IsGraphic),
 		"CanBackquote": h.fn("strconv.CanBackquote", func(a []any) (any, error) { return strconv.CanBackquote(str(a[0])), nil }, strconv.CanBackquote),
+		// The Append family appends to dst and returns the extended slice;
+		// callers always use the return value, so crossing dst as a host
+		// copy is faithful (net/http's writeStatusLine builds into a
+		// scratch buffer this way).
+		"AppendBool": h.fn2("strconv.AppendBool", func(a []any) (any, error) {
+			b, _ := a[1].(bool)
+			return strconv.AppendBool(byteSlice(a[0]), b), nil
+		}),
+		"AppendInt": h.fn3("strconv.AppendInt", func(a []any) (any, error) {
+			return strconv.AppendInt(byteSlice(a[0]), int64Of(a[1]), intOf(a[2])), nil
+		}),
+		"AppendUint": h.fn3("strconv.AppendUint", func(a []any) (any, error) {
+			return strconv.AppendUint(byteSlice(a[0]), uint64(int64Of(a[1])), intOf(a[2])), nil
+		}),
+		"AppendFloat": h.fn("strconv.AppendFloat", func(a []any) (any, error) {
+			f, _ := a[1].(float64)
+			return strconv.AppendFloat(byteSlice(a[0]), f, byte(intOf(a[2])), intOf(a[3]), intOf(a[4])), nil
+		}),
+		"AppendQuote": h.fn2("strconv.AppendQuote", func(a []any) (any, error) {
+			return strconv.AppendQuote(byteSlice(a[0]), str(a[1])), nil
+		}),
+		"AppendQuoteToASCII": h.fn2("strconv.AppendQuoteToASCII", func(a []any) (any, error) {
+			return strconv.AppendQuoteToASCII(byteSlice(a[0]), str(a[1])), nil
+		}),
+		"AppendQuoteRune": h.fn2("strconv.AppendQuoteRune", func(a []any) (any, error) {
+			return strconv.AppendQuoteRune(byteSlice(a[0]), runeOf(a[1])), nil
+		}),
+		"AppendQuoteRuneToASCII": h.fn2("strconv.AppendQuoteRuneToASCII", func(a []any) (any, error) {
+			return strconv.AppendQuoteRuneToASCII(byteSlice(a[0]), runeOf(a[1])), nil
+		}),
 	})
 	e.Bind("bytes", map[string]runtime.Value{
 		// `var buf bytes.Buffer` / `new(bytes.Buffer)` box a real
@@ -365,15 +433,32 @@ func (e *Engine) installStdlib() {
 		"SplitN": h.fn3("bytes.SplitN", func(a []any) (any, error) {
 			return bytesSliceOf(bytes.SplitN(byteSlice(a[0]), byteSlice(a[1]), intOf(a[2]))), nil
 		}),
-		"Repeat":    h.fn2("bytes.Repeat", func(a []any) (any, error) { return bytes.Repeat(byteSlice(a[0]), intOf(a[1])), nil }, bytes.Repeat),
-		"Trim":      h.fn2("bytes.Trim", func(a []any) (any, error) { return bytes.Trim(byteSlice(a[0]), str(a[1])), nil }, bytes.Trim),
-		"TrimSpace": h.fn("bytes.TrimSpace", func(a []any) (any, error) { return bytes.TrimSpace(byteSlice(a[0])), nil }, bytes.TrimSpace),
-		"ToUpper":   h.fn("bytes.ToUpper", func(a []any) (any, error) { return bytes.ToUpper(byteSlice(a[0])), nil }, bytes.ToUpper),
-		"ToLower":   h.fn("bytes.ToLower", func(a []any) (any, error) { return bytes.ToLower(byteSlice(a[0])), nil }, bytes.ToLower),
-		"ToTitle":   h.fn("bytes.ToTitle", func(a []any) (any, error) { return bytes.ToTitle(byteSlice(a[0])), nil }, bytes.ToTitle),
-		"Runes":     h.fn("bytes.Runes", func(a []any) (any, error) { return runeSlice(bytes.Runes(byteSlice(a[0]))), nil }),
-		"IndexByte": h.fn2("bytes.IndexByte", func(a []any) (any, error) { return bytes.IndexByte(byteSlice(a[0]), byte(intOf(a[1]))), nil }),
-		"IndexRune": h.fn2("bytes.IndexRune", func(a []any) (any, error) { return bytes.IndexRune(byteSlice(a[0]), runeOf(a[1])), nil }),
+		"Cut": h.fn2("bytes.Cut", func(a []any) (any, error) {
+			b, af, ok := bytes.Cut(byteSlice(a[0]), byteSlice(a[1]))
+			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(b), scriptVal(af), ok}}, nil
+		}),
+		"CutPrefix": h.fn2("bytes.CutPrefix", func(a []any) (any, error) {
+			af, ok := bytes.CutPrefix(byteSlice(a[0]), byteSlice(a[1]))
+			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(af), ok}}, nil
+		}),
+		"CutSuffix": h.fn2("bytes.CutSuffix", func(a []any) (any, error) {
+			af, ok := bytes.CutSuffix(byteSlice(a[0]), byteSlice(a[1]))
+			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(af), ok}}, nil
+		}),
+		"Clone":      h.fn("bytes.Clone", func(a []any) (any, error) { return bytes.Clone(byteSlice(a[0])), nil }, bytes.Clone),
+		"TrimPrefix": h.fn2("bytes.TrimPrefix", func(a []any) (any, error) { return bytes.TrimPrefix(byteSlice(a[0]), byteSlice(a[1])), nil }, bytes.TrimPrefix),
+		"TrimSuffix": h.fn2("bytes.TrimSuffix", func(a []any) (any, error) { return bytes.TrimSuffix(byteSlice(a[0]), byteSlice(a[1])), nil }, bytes.TrimSuffix),
+		"TrimLeft":   h.fn2("bytes.TrimLeft", func(a []any) (any, error) { return bytes.TrimLeft(byteSlice(a[0]), str(a[1])), nil }, bytes.TrimLeft),
+		"TrimRight":  h.fn2("bytes.TrimRight", func(a []any) (any, error) { return bytes.TrimRight(byteSlice(a[0]), str(a[1])), nil }, bytes.TrimRight),
+		"Repeat":     h.fn2("bytes.Repeat", func(a []any) (any, error) { return bytes.Repeat(byteSlice(a[0]), intOf(a[1])), nil }, bytes.Repeat),
+		"Trim":       h.fn2("bytes.Trim", func(a []any) (any, error) { return bytes.Trim(byteSlice(a[0]), str(a[1])), nil }, bytes.Trim),
+		"TrimSpace":  h.fn("bytes.TrimSpace", func(a []any) (any, error) { return bytes.TrimSpace(byteSlice(a[0])), nil }, bytes.TrimSpace),
+		"ToUpper":    h.fn("bytes.ToUpper", func(a []any) (any, error) { return bytes.ToUpper(byteSlice(a[0])), nil }, bytes.ToUpper),
+		"ToLower":    h.fn("bytes.ToLower", func(a []any) (any, error) { return bytes.ToLower(byteSlice(a[0])), nil }, bytes.ToLower),
+		"ToTitle":    h.fn("bytes.ToTitle", func(a []any) (any, error) { return bytes.ToTitle(byteSlice(a[0])), nil }, bytes.ToTitle),
+		"Runes":      h.fn("bytes.Runes", func(a []any) (any, error) { return runeSlice(bytes.Runes(byteSlice(a[0]))), nil }),
+		"IndexByte":  h.fn2("bytes.IndexByte", func(a []any) (any, error) { return bytes.IndexByte(byteSlice(a[0]), byte(intOf(a[1]))), nil }),
+		"IndexRune":  h.fn2("bytes.IndexRune", func(a []any) (any, error) { return bytes.IndexRune(byteSlice(a[0]), runeOf(a[1])), nil }),
 		"Replace": h.arity("bytes.Replace", 4, func(a []any) (any, error) {
 			return bytes.Replace(byteSlice(a[0]), byteSlice(a[1]), byteSlice(a[2]), intOf(a[3])), nil
 		}),
@@ -543,7 +628,7 @@ func (e *Engine) installStdlib() {
 		"DecodedLen":     h.fn("hex.DecodedLen", func(a []any) (any, error) { return hex.DecodedLen(intOf(a[0])), nil }),
 	})
 	e.Bind("encoding/json", map[string]runtime.Value{
-		"Number": &runtime.TypeDef{Name: "encoding/json.Number", Kind: runtime.KindNamedBasic},
+		"Number": &runtime.TypeDef{Name: "encoding/json.Number", Kind: runtime.KindNamedBasic, Anon: ast.NewIdent("string")},
 		// Marshal/MarshalIndent take raw runtime args — h.fn's goNative
 		// would stringify *runtime.Struct before goJSON can field-map it.
 		"Marshal": &runtime.BuiltinFunc{Name: "json.Marshal", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -711,6 +796,78 @@ func (e *Engine) installStdlib() {
 			el := scriptElems(a[0])
 			return sort.SliceIsSorted(el, func(i, j int) bool { return lessScript(el[i], el[j]) }), nil
 		}),
+		"Sorted": &runtime.BuiltinFunc{Name: "slices.Sorted", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("slices.Sorted needs 1 arg")
+			}
+			el, err := seqElems(vc, args[0])
+			if err != nil {
+				return nil, fmt.Errorf("slices.Sorted: %w", err)
+			}
+			sort.Slice(el, func(i, j int) bool { return lessScript(el[i], el[j]) })
+			return &runtime.Slice{Elems: el, Typ: sliceTypOf(args[0])}, nil
+		}},
+		"DeleteFunc": &runtime.BuiltinFunc{Name: "slices.DeleteFunc", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("slices.DeleteFunc needs 2 args")
+			}
+			s, ok := sliceOf(args[0])
+			if !ok {
+				if nilish(args[0]) {
+					return args[0], nil // deleting from nil yields nil
+				}
+				return nil, fmt.Errorf("slices.DeleteFunc: arg must be a slice")
+			}
+			var out []runtime.Value
+			for _, el := range s.Elems {
+				r, err := vc.Call(args[1], []runtime.Value{el})
+				if err != nil {
+					return nil, err
+				}
+				if drop, _ := r.(bool); !drop {
+					out = append(out, el)
+				}
+			}
+			return h.packSlice(s, out), nil
+		}},
+		"Compact": &runtime.BuiltinFunc{Name: "slices.Compact", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("slices.Compact needs 1 arg")
+			}
+			s, ok := sliceOf(args[0])
+			if !ok {
+				if nilish(args[0]) {
+					return args[0], nil
+				}
+				return nil, fmt.Errorf("slices.Compact: arg must be a slice")
+			}
+			var out []runtime.Value
+			for i, el := range s.Elems {
+				if i > 0 && atomicCellEq(out[len(out)-1], el) {
+					continue
+				}
+				out = append(out, el)
+			}
+			return h.packSlice(s, out), nil
+		}},
+		"Repeat": &runtime.BuiltinFunc{Name: "slices.Repeat", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("slices.Repeat needs 2 args")
+			}
+			s, ok := sliceOf(args[0])
+			if !ok {
+				return nil, fmt.Errorf("slices.Repeat: arg must be a slice")
+			}
+			n := int64Of(args[1])
+			if n < 0 {
+				return nil, fmt.Errorf("slices.Repeat: negative count %d", n)
+			}
+			var out []runtime.Value
+			for i := int64(0); i < n; i++ {
+				out = append(out, s.Elems...)
+			}
+			return &runtime.Slice{Elems: out, Typ: s.Typ}, nil
+		}},
 		"SortFunc":       h.sortByCmpFunc("slices.SortFunc"),
 		"SortStableFunc": h.sortByCmpFunc("slices.SortStableFunc"),
 		"BinarySearch": &runtime.BuiltinFunc{Name: "slices.BinarySearch", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -1311,6 +1468,21 @@ func (e *Engine) installStdlib() {
 			*m = memStatsSnapshot
 			return nil, nil
 		}),
+		"Caller": &runtime.BuiltinFunc{Name: "runtime.Caller", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) < 1 {
+				return nil, errors.New("runtime.Caller needs 1 arg")
+			}
+			// pcs is top-first: index 0 is the innermost live frame —
+			// the builtin's own call site, which is Caller(0) in Go.
+			skip := intOf(goNative(args[0]))
+			pcs := vc.CallerPCs()
+			if skip < 0 || skip >= len(pcs) {
+				return &runtime.Tuple{Elems: []runtime.Value{int64(0), "", int64(0), false}}, nil
+			}
+			pc := pcs[skip]
+			s, _ := vc.CallerFrame(pc)
+			return &runtime.Tuple{Elems: []runtime.Value{int64(pc), s.File, int64(s.Line), true}}, nil
+		}},
 		"Callers": &runtime.BuiltinFunc{Name: "runtime.Callers", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) < 2 {
 				return nil, errors.New("runtime.Callers needs 2 args")
@@ -1384,7 +1556,7 @@ func (e *Engine) installStdlib() {
 		}},
 		"Now":      h.fn("time.Now", func(a []any) (any, error) { return time.Now(), nil }, time.Now),
 		"Time":     hostType("time.Time", func() any { return time.Time{} }),
-		"Duration": &runtime.TypeDef{Name: "time.Duration", Kind: runtime.KindNamedBasic},
+		"Duration": &runtime.TypeDef{Name: "time.Duration", Kind: runtime.KindNamedBasic, Anon: ast.NewIdent("int64")},
 		"Location": hostType("time.Location", func() any { return time.Local }),
 		"UTC":      &runtime.GoValue{V: time.UTC},
 		"Local":    &runtime.GoValue{V: time.Local},
@@ -1476,10 +1648,375 @@ func (e *Engine) installStdlib() {
 			return syncOnceWrap("sync.OnceValues", args)
 		}},
 	})
+	// sync/atomic: the source implementation reinterprets values through
+	// unsafe.Pointer, so the package is bound instead. The scalar types
+	// are real host values; Value and Pointer[T] share a mutex-guarded
+	// box holding script values verbatim (deepHost already flattens
+	// containers at the call boundary, everything else stays raw), and
+	// the pointer-taking functions operate on script cells through
+	// Deref/SetRef — atomic in intent, since a script &x has no host
+	// address to hand the real runtime.
+	e.Bind("sync/atomic", map[string]runtime.Value{
+		"Bool":    hostType("sync/atomic.Bool", func() any { return &atomic.Bool{} }),
+		"Int32":   hostType("sync/atomic.Int32", func() any { return &atomic.Int32{} }),
+		"Int64":   hostType("sync/atomic.Int64", func() any { return &atomic.Int64{} }),
+		"Uint32":  hostType("sync/atomic.Uint32", func() any { return &atomic.Uint32{} }),
+		"Uint64":  hostType("sync/atomic.Uint64", func() any { return &atomic.Uint64{} }),
+		"Uintptr": hostType("sync/atomic.Uintptr", func() any { return &atomic.Uintptr{} }),
+		"Value":   hostType("sync/atomic.Value", func() any { return &atomicBox{} }),
+		// generic: a host reflect instantiation is impossible, so the
+		// typedef declares T and HostNew boxes the same cell for every
+		// instantiation — the stored script values carry the typing.
+		"Pointer": &runtime.TypeDef{
+			Name: "sync/atomic.Pointer", Kind: runtime.KindStruct,
+			TParams: []string{"T"},
+			HostNew: func() any { return &atomicBox{} },
+		},
+		"AddInt32":              atomicOp("atomic.AddInt32", atomicOpAdd),
+		"AddInt64":              atomicOp("atomic.AddInt64", atomicOpAdd),
+		"AddUint32":             atomicOp("atomic.AddUint32", atomicOpAdd),
+		"AddUint64":             atomicOp("atomic.AddUint64", atomicOpAdd),
+		"AddUintptr":            atomicOp("atomic.AddUintptr", atomicOpAdd),
+		"AndInt32":              atomicOp("atomic.AndInt32", atomicOpAnd),
+		"AndInt64":              atomicOp("atomic.AndInt64", atomicOpAnd),
+		"AndUint32":             atomicOp("atomic.AndUint32", atomicOpAnd),
+		"AndUint64":             atomicOp("atomic.AndUint64", atomicOpAnd),
+		"AndUintptr":            atomicOp("atomic.AndUintptr", atomicOpAnd),
+		"OrInt32":               atomicOp("atomic.OrInt32", atomicOpOr),
+		"OrInt64":               atomicOp("atomic.OrInt64", atomicOpOr),
+		"OrUint32":              atomicOp("atomic.OrUint32", atomicOpOr),
+		"OrUint64":              atomicOp("atomic.OrUint64", atomicOpOr),
+		"OrUintptr":             atomicOp("atomic.OrUintptr", atomicOpOr),
+		"CompareAndSwapInt32":   atomicOp("atomic.CompareAndSwapInt32", atomicOpCAS),
+		"CompareAndSwapInt64":   atomicOp("atomic.CompareAndSwapInt64", atomicOpCAS),
+		"CompareAndSwapUint32":  atomicOp("atomic.CompareAndSwapUint32", atomicOpCAS),
+		"CompareAndSwapUint64":  atomicOp("atomic.CompareAndSwapUint64", atomicOpCAS),
+		"CompareAndSwapUintptr": atomicOp("atomic.CompareAndSwapUintptr", atomicOpCAS),
+		"CompareAndSwapPointer": atomicOp("atomic.CompareAndSwapPointer", atomicOpCAS),
+		"LoadInt32":             atomicOp("atomic.LoadInt32", atomicOpLoad),
+		"LoadInt64":             atomicOp("atomic.LoadInt64", atomicOpLoad),
+		"LoadUint32":            atomicOp("atomic.LoadUint32", atomicOpLoad),
+		"LoadUint64":            atomicOp("atomic.LoadUint64", atomicOpLoad),
+		"LoadUintptr":           atomicOp("atomic.LoadUintptr", atomicOpLoad),
+		"LoadPointer":           atomicOp("atomic.LoadPointer", atomicOpLoad),
+		"StoreInt32":            atomicOp("atomic.StoreInt32", atomicOpStore),
+		"StoreInt64":            atomicOp("atomic.StoreInt64", atomicOpStore),
+		"StoreUint32":           atomicOp("atomic.StoreUint32", atomicOpStore),
+		"StoreUint64":           atomicOp("atomic.StoreUint64", atomicOpStore),
+		"StoreUintptr":          atomicOp("atomic.StoreUintptr", atomicOpStore),
+		"StorePointer":          atomicOp("atomic.StorePointer", atomicOpStore),
+		"SwapInt32":             atomicOp("atomic.SwapInt32", atomicOpSwap),
+		"SwapInt64":             atomicOp("atomic.SwapInt64", atomicOpSwap),
+		"SwapUint32":            atomicOp("atomic.SwapUint32", atomicOpSwap),
+		"SwapUint64":            atomicOp("atomic.SwapUint64", atomicOpSwap),
+		"SwapUintptr":           atomicOp("atomic.SwapUintptr", atomicOpSwap),
+		"SwapPointer":           atomicOp("atomic.SwapPointer", atomicOpSwap),
+	})
+	// context: bound so script code hands REAL host contexts to bound
+	// APIs (net.Dialer.DialContext, http transports) — an interpreted
+	// context object cannot satisfy a host context.Context parameter.
+	// With* family values ride GoValue boxes; CancelFunc results arrive
+	// as plain host funcs.
+	e.Bind("context", map[string]runtime.Value{
+		"Context": &runtime.TypeDef{Name: "context.Context", Kind: runtime.KindInterface,
+			MReqs: []string{"Deadline", "Done", "Err", "Value"}},
+		"CancelFunc": &runtime.TypeDef{Name: "context.CancelFunc", Kind: runtime.KindFunc,
+			Anon: &ast.FuncType{Params: &ast.FieldList{}}},
+		"CancelCauseFunc": &runtime.TypeDef{Name: "context.CancelCauseFunc", Kind: runtime.KindFunc,
+			Anon: &ast.FuncType{Params: &ast.FieldList{List: []*ast.Field{{Type: ast.NewIdent("error")}}}}},
+		"Canceled":         &runtime.GoValue{V: context.Canceled},
+		"DeadlineExceeded": &runtime.GoValue{V: context.DeadlineExceeded},
+		"Background":       h.fn("context.Background", func(a []any) (any, error) { return context.Background(), nil }, context.Background),
+		"TODO":             h.fn("context.TODO", func(a []any) (any, error) { return context.TODO(), nil }, context.TODO),
+		"WithCancel": h.fn("context.WithCancel", func(a []any) (any, error) {
+			c, err := asCtx(a[0])
+			if err != nil {
+				return nil, err
+			}
+			nc, cancel := context.WithCancel(c)
+			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(nc), scriptVal(cancel)}}, nil
+		}),
+		"WithCancelCause": h.fn("context.WithCancelCause", func(a []any) (any, error) {
+			c, err := asCtx(a[0])
+			if err != nil {
+				return nil, err
+			}
+			nc, cancel := context.WithCancelCause(c)
+			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(nc), scriptVal(cancel)}}, nil
+		}),
+		"WithDeadline": h.fn("context.WithDeadline", func(a []any) (any, error) {
+			c, err := asCtx(a[0])
+			if err != nil {
+				return nil, err
+			}
+			d, ok := a[1].(time.Time)
+			if !ok {
+				return nil, fmt.Errorf("context.WithDeadline needs a time.Time, got %T", a[1])
+			}
+			nc, cancel := context.WithDeadline(c, d)
+			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(nc), scriptVal(cancel)}}, nil
+		}),
+		"WithDeadlineCause": h.fn("context.WithDeadlineCause", func(a []any) (any, error) {
+			c, err := asCtx(a[0])
+			if err != nil {
+				return nil, err
+			}
+			d, ok := a[1].(time.Time)
+			if !ok {
+				return nil, fmt.Errorf("context.WithDeadlineCause needs a time.Time, got %T", a[1])
+			}
+			nc, cancel := context.WithDeadlineCause(c, d, asErr(a[2]))
+			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(nc), scriptVal(cancel)}}, nil
+		}),
+		"WithTimeout": h.fn("context.WithTimeout", func(a []any) (any, error) {
+			c, err := asCtx(a[0])
+			if err != nil {
+				return nil, err
+			}
+			nc, cancel := context.WithTimeout(c, durOf(a[1]))
+			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(nc), scriptVal(cancel)}}, nil
+		}),
+		"WithTimeoutCause": h.fn("context.WithTimeoutCause", func(a []any) (any, error) {
+			c, err := asCtx(a[0])
+			if err != nil {
+				return nil, err
+			}
+			nc, cancel := context.WithTimeoutCause(c, durOf(a[1]), asErr(a[2]))
+			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(nc), scriptVal(cancel)}}, nil
+		}),
+		"WithoutCancel": h.fn("context.WithoutCancel", func(a []any) (any, error) {
+			c, err := asCtx(a[0])
+			if err != nil {
+				return nil, err
+			}
+			return context.WithoutCancel(c), nil
+		}, context.WithoutCancel),
+		// WithValue keeps raw script args: the key must stay the same
+		// object (identity keying, e.g. http.LocalAddrContextKey), not a
+		// flattened host copy.
+		"WithValue": &runtime.BuiltinFunc{Name: "context.WithValue", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 3 {
+				return nil, fmt.Errorf("context.WithValue needs 3 args, got %d", len(args))
+			}
+			c, err := asCtx(goNative(args[0]))
+			if err != nil {
+				return nil, err
+			}
+			return &runtime.GoValue{V: context.WithValue(c, args[1], args[2])}, nil
+		}},
+		"AfterFunc": &runtime.BuiltinFunc{Name: "context.AfterFunc", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("context.AfterFunc needs 2 args, got %d", len(args))
+			}
+			c, err := asCtx(goNative(args[0]))
+			if err != nil {
+				return nil, err
+			}
+			f := args[1]
+			stop := context.AfterFunc(c, func() {
+				if _, err := vc.Call(f, nil); err != nil {
+					// a dead process refuses the spawn — the callback
+					// dies with the run like a Go timer's pending call.
+					if !vm.IsProcExit(err) {
+						panic(err)
+					}
+				}
+			})
+			return &runtime.BuiltinFunc{Name: "context.AfterFunc.stop", Fn: func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
+				return stop(), nil
+			}}, nil
+		}},
+		"Cause": h.fn("context.Cause", func(a []any) (any, error) {
+			c, err := asCtx(a[0])
+			if err != nil {
+				return nil, err
+			}
+			return errVal(context.Cause(c)), nil
+		}),
+	})
+	// net: sockets, DNS and syscall plumbing cannot be interpreted, so
+	// the package is bound wholesale. The interfaces stay typedefs so
+	// script code declares net.Conn/net.Listener/net.Addr/net.Error;
+	// concrete values arrive as GoValue boxes whose methods dispatch
+	// through reflection, and script pointers (e.g. &net.TCPAddr{...})
+	// unbox via goNative at call boundaries.
+	e.Bind("net", map[string]runtime.Value{
+		"Addr":             &runtime.TypeDef{Name: "net.Addr", Kind: runtime.KindInterface, MReqs: []string{"Network", "String"}},
+		"Conn":             &runtime.TypeDef{Name: "net.Conn", Kind: runtime.KindInterface, MReqs: []string{"Read", "Write", "Close", "LocalAddr", "RemoteAddr", "SetDeadline", "SetReadDeadline", "SetWriteDeadline"}},
+		"Listener":         &runtime.TypeDef{Name: "net.Listener", Kind: runtime.KindInterface, MReqs: []string{"Accept", "Close", "Addr"}},
+		"PacketConn":       &runtime.TypeDef{Name: "net.PacketConn", Kind: runtime.KindInterface, MReqs: []string{"ReadFrom", "WriteTo", "Close", "LocalAddr", "SetDeadline", "SetReadDeadline", "SetWriteDeadline"}},
+		"Error":            &runtime.TypeDef{Name: "net.Error", Kind: runtime.KindInterface, MReqs: []string{"Error", "Timeout", "Temporary"}},
+		"Buffers":          hostType("net.Buffers", func() any { return &net.Buffers{} }),
+		"Dialer":           hostType("net.Dialer", func() any { return &net.Dialer{} }),
+		"ListenConfig":     hostType("net.ListenConfig", func() any { return &net.ListenConfig{} }),
+		"Resolver":         hostType("net.Resolver", func() any { return &net.Resolver{} }),
+		"Interface":        hostType("net.Interface", func() any { return net.Interface{} }),
+		"HardwareAddr":     hostType("net.HardwareAddr", func() any { return net.HardwareAddr{} }),
+		"IP":               hostType("net.IP", func() any { return net.IP{} }),
+		"IPAddr":           hostType("net.IPAddr", func() any { return &net.IPAddr{} }),
+		"IPNet":            hostType("net.IPNet", func() any { return &net.IPNet{} }),
+		"TCPAddr":          hostType("net.TCPAddr", func() any { return &net.TCPAddr{} }),
+		"TCPConn":          hostType("net.TCPConn", func() any { return &net.TCPConn{} }),
+		"TCPListener":      hostType("net.TCPListener", func() any { return &net.TCPListener{} }),
+		"UDPAddr":          hostType("net.UDPAddr", func() any { return &net.UDPAddr{} }),
+		"UDPConn":          hostType("net.UDPConn", func() any { return &net.UDPConn{} }),
+		"UnixAddr":         hostType("net.UnixAddr", func() any { return &net.UnixAddr{} }),
+		"UnixConn":         hostType("net.UnixConn", func() any { return &net.UnixConn{} }),
+		"UnixListener":     hostType("net.UnixListener", func() any { return &net.UnixListener{} }),
+		"OpError":          hostType("net.OpError", func() any { return &net.OpError{} }),
+		"DNSError":         hostType("net.DNSError", func() any { return &net.DNSError{} }),
+		"AddrError":        hostType("net.AddrError", func() any { return &net.AddrError{} }),
+		"ParseError":       hostType("net.ParseError", func() any { return &net.ParseError{} }),
+		"InvalidAddrError": hostType("net.InvalidAddrError", func() any { return net.InvalidAddrError("") }),
+		"Dial":             h.fn("net.Dial", func(a []any) (any, error) { return retErr2(net.Dial(str(a[0]), str(a[1]))) }),
+		"DialIP":           h.fn("net.DialIP", func(a []any) (any, error) { return retErr2(net.DialIP(str(a[0]), ipAddrOf(a[1]), ipAddrOf(a[2]))) }),
+		"DialTCP":          h.fn("net.DialTCP", func(a []any) (any, error) { return retErr2(net.DialTCP(str(a[0]), tcpAddrOf(a[1]), tcpAddrOf(a[2]))) }),
+		"DialTimeout":      h.fn("net.DialTimeout", func(a []any) (any, error) { return retErr2(net.DialTimeout(str(a[0]), str(a[1]), durOf(a[2]))) }),
+		"DialUDP":          h.fn("net.DialUDP", func(a []any) (any, error) { return retErr2(net.DialUDP(str(a[0]), udpAddrOf(a[1]), udpAddrOf(a[2]))) }),
+		"DialUnix": h.fn("net.DialUnix", func(a []any) (any, error) {
+			return retErr2(net.DialUnix(str(a[0]), unixAddrOf(a[1]), unixAddrOf(a[2])))
+		}),
+		"Listen":       h.fn("net.Listen", func(a []any) (any, error) { return retErr2(net.Listen(str(a[0]), str(a[1]))) }),
+		"ListenIP":     h.fn("net.ListenIP", func(a []any) (any, error) { return retErr2(net.ListenIP(str(a[0]), ipAddrOf(a[1]))) }),
+		"ListenPacket": h.fn("net.ListenPacket", func(a []any) (any, error) { return retErr2(net.ListenPacket(str(a[0]), str(a[1]))) }),
+		"ListenTCP":    h.fn("net.ListenTCP", func(a []any) (any, error) { return retErr2(net.ListenTCP(str(a[0]), tcpAddrOf(a[1]))) }),
+		"ListenUDP":    h.fn("net.ListenUDP", func(a []any) (any, error) { return retErr2(net.ListenUDP(str(a[0]), udpAddrOf(a[1]))) }),
+		"ListenUnix":   h.fn("net.ListenUnix", func(a []any) (any, error) { return retErr2(net.ListenUnix(str(a[0]), unixAddrOf(a[1]))) }),
+		"ListenMulticastUDP": h.fn("net.ListenMulticastUDP", func(a []any) (any, error) {
+			return retErr2(net.ListenMulticastUDP(str(a[0]), netIfaceOf(a[1]), udpAddrOf(a[2])))
+		}),
+		"FileConn":       h.fn("net.FileConn", func(a []any) (any, error) { return retErr2(net.FileConn(netFileOf(a[0]))) }),
+		"FileListener":   h.fn("net.FileListener", func(a []any) (any, error) { return retErr2(net.FileListener(netFileOf(a[0]))) }),
+		"FilePacketConn": h.fn("net.FilePacketConn", func(a []any) (any, error) { return retErr2(net.FilePacketConn(netFileOf(a[0]))) }),
+		"Pipe": h.fn("net.Pipe", func(a []any) (any, error) {
+			c1, c2 := net.Pipe()
+			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(c1), scriptVal(c2)}}, nil
+		}),
+		"ResolveTCPAddr":      h.fn("net.ResolveTCPAddr", func(a []any) (any, error) { return retErr2(net.ResolveTCPAddr(str(a[0]), str(a[1]))) }),
+		"ResolveUDPAddr":      h.fn("net.ResolveUDPAddr", func(a []any) (any, error) { return retErr2(net.ResolveUDPAddr(str(a[0]), str(a[1]))) }),
+		"ResolveIPAddr":       h.fn("net.ResolveIPAddr", func(a []any) (any, error) { return retErr2(net.ResolveIPAddr(str(a[0]), str(a[1]))) }),
+		"ResolveUnixAddr":     h.fn("net.ResolveUnixAddr", func(a []any) (any, error) { return retErr2(net.ResolveUnixAddr(str(a[0]), str(a[1]))) }),
+		"TCPAddrFromAddrPort": h.fn("net.TCPAddrFromAddrPort", func(a []any) (any, error) { return net.TCPAddrFromAddrPort(addrPortOf(a[0])), nil }),
+		"UDPAddrFromAddrPort": h.fn("net.UDPAddrFromAddrPort", func(a []any) (any, error) { return net.UDPAddrFromAddrPort(addrPortOf(a[0])), nil }),
+		"SplitHostPort": h.fn("net.SplitHostPort", func(a []any) (any, error) {
+			h, p, err := net.SplitHostPort(str(a[0]))
+			return &runtime.Tuple{Elems: []runtime.Value{h, p, errVal(err)}}, nil
+		}),
+		"JoinHostPort": h.fn("net.JoinHostPort", func(a []any) (any, error) { return net.JoinHostPort(str(a[0]), str(a[1])), nil }),
+		"ParseIP":      h.fn("net.ParseIP", func(a []any) (any, error) { return net.ParseIP(str(a[0])), nil }),
+		"ParseCIDR": h.fn("net.ParseCIDR", func(a []any) (any, error) {
+			ip, ipn, err := net.ParseCIDR(str(a[0]))
+			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(ip), scriptVal(ipn), errVal(err)}}, nil
+		}),
+		"IPv4": h.fn("net.IPv4", func(a []any) (any, error) {
+			return net.IPv4(byte(intOf(a[0])), byte(intOf(a[1])), byte(intOf(a[2])), byte(intOf(a[3]))), nil
+		}),
+		"IPv4Mask": h.fn("net.IPv4Mask", func(a []any) (any, error) {
+			return net.IPv4Mask(byte(intOf(a[0])), byte(intOf(a[1])), byte(intOf(a[2])), byte(intOf(a[3]))), nil
+		}),
+		"CIDRMask":    h.fn("net.CIDRMask", func(a []any) (any, error) { return net.CIDRMask(intOf(a[0]), intOf(a[1])), nil }),
+		"LookupAddr":  h.fn("net.LookupAddr", func(a []any) (any, error) { return retErr2(net.LookupAddr(str(a[0]))) }),
+		"LookupCNAME": h.fn("net.LookupCNAME", func(a []any) (any, error) { return retErr2(net.LookupCNAME(str(a[0]))) }),
+		"LookupHost":  h.fn("net.LookupHost", func(a []any) (any, error) { return retErr2(net.LookupHost(str(a[0]))) }),
+		"LookupIP":    h.fn("net.LookupIP", func(a []any) (any, error) { return retErr2(net.LookupIP(str(a[0]))) }),
+		"LookupMX":    h.fn("net.LookupMX", func(a []any) (any, error) { return retErr2(net.LookupMX(str(a[0]))) }),
+		"LookupNS":    h.fn("net.LookupNS", func(a []any) (any, error) { return retErr2(net.LookupNS(str(a[0]))) }),
+		"LookupPort":  h.fn("net.LookupPort", func(a []any) (any, error) { return retErr2(net.LookupPort(str(a[0]), str(a[1]))) }),
+		"LookupSRV": h.fn("net.LookupSRV", func(a []any) (any, error) {
+			cname, srvs, err := net.LookupSRV(str(a[0]), str(a[1]), str(a[2]))
+			return &runtime.Tuple{Elems: []runtime.Value{cname, scriptVal(srvs), errVal(err)}}, nil
+		}),
+		"LookupTXT":                  h.fn("net.LookupTXT", func(a []any) (any, error) { return retErr2(net.LookupTXT(str(a[0]))) }),
+		"Interfaces":                 h.fn("net.Interfaces", func(a []any) (any, error) { return retErr2(net.Interfaces()) }),
+		"InterfaceAddrs":             h.fn("net.InterfaceAddrs", func(a []any) (any, error) { return retErr2(net.InterfaceAddrs()) }),
+		"InterfaceByIndex":           h.fn("net.InterfaceByIndex", func(a []any) (any, error) { return retErr2(net.InterfaceByIndex(intOf(a[0]))) }),
+		"InterfaceByName":            h.fn("net.InterfaceByName", func(a []any) (any, error) { return retErr2(net.InterfaceByName(str(a[0]))) }),
+		"DefaultResolver":            &runtime.GoValue{V: net.DefaultResolver},
+		"ErrClosed":                  &runtime.GoValue{V: net.ErrClosed},
+		"ErrWriteToConnected":        &runtime.GoValue{V: net.ErrWriteToConnected},
+		"IPv4zero":                   &runtime.GoValue{V: net.IPv4zero},
+		"IPv4bcast":                  &runtime.GoValue{V: net.IPv4bcast},
+		"IPv4allsys":                 &runtime.GoValue{V: net.IPv4allsys},
+		"IPv4allrouter":              &runtime.GoValue{V: net.IPv4allrouter},
+		"IPv6zero":                   &runtime.GoValue{V: net.IPv6zero},
+		"IPv6unspecified":            &runtime.GoValue{V: net.IPv6unspecified},
+		"IPv6interfacelocalallnodes": &runtime.GoValue{V: net.IPv6interfacelocalallnodes},
+		"IPv6linklocalallnodes":      &runtime.GoValue{V: net.IPv6linklocalallnodes},
+		"IPv6linklocalallrouters":    &runtime.GoValue{V: net.IPv6linklocalallrouters},
+		"IPv6loopback":               &runtime.GoValue{V: net.IPv6loopback},
+	})
+	// net/netip: the value types back net/http's addr plumbing
+	// (TCPAddrFromAddrPort and friends); bound as host values like net.
+	e.Bind("net/netip", map[string]runtime.Value{
+		"Addr":       hostType("net/netip.Addr", func() any { return netip.Addr{} }),
+		"AddrPort":   hostType("net/netip.AddrPort", func() any { return netip.AddrPort{} }),
+		"Prefix":     hostType("net/netip.Prefix", func() any { return netip.Prefix{} }),
+		"AddrFrom4":  h.fn("netip.AddrFrom4", func(a []any) (any, error) { return netip.AddrFrom4(byteSlice4(a[0])), nil }),
+		"AddrFrom16": h.fn("netip.AddrFrom16", func(a []any) (any, error) { return netip.AddrFrom16(byteSlice16(a[0])), nil }),
+		"AddrFromSlice": h.fn("netip.AddrFromSlice", func(a []any) (any, error) {
+			ip, ok := netip.AddrFromSlice(byteSlice(a[0]))
+			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(ip), ok}}, nil
+		}),
+		"AddrPortFrom": h.fn("netip.AddrPortFrom", func(a []any) (any, error) {
+			return netip.AddrPortFrom(netipAddrOf(a[0]), uint16(intOf(a[1]))), nil
+		}),
+		"PrefixFrom": h.fn("netip.PrefixFrom", func(a []any) (any, error) {
+			return netip.PrefixFrom(netipAddrOf(a[0]), intOf(a[1])), nil
+		}),
+		"MustParseAddr":         h.fn("netip.MustParseAddr", func(a []any) (any, error) { return netip.MustParseAddr(str(a[0])), nil }),
+		"MustParseAddrPort":     h.fn("netip.MustParseAddrPort", func(a []any) (any, error) { return netip.MustParseAddrPort(str(a[0])), nil }),
+		"MustParsePrefix":       h.fn("netip.MustParsePrefix", func(a []any) (any, error) { return netip.MustParsePrefix(str(a[0])), nil }),
+		"ParseAddr":             h.fn("netip.ParseAddr", func(a []any) (any, error) { return retErr2(netip.ParseAddr(str(a[0]))) }),
+		"ParsePrefix":           h.fn("netip.ParsePrefix", func(a []any) (any, error) { return retErr2(netip.ParsePrefix(str(a[0]))) }),
+		"IPv4Unspecified":       h.fn("netip.IPv4Unspecified", func(a []any) (any, error) { return netip.IPv4Unspecified(), nil }),
+		"IPv6LinkLocalAllNodes": h.fn("netip.IPv6LinkLocalAllNodes", func(a []any) (any, error) { return netip.IPv6LinkLocalAllNodes(), nil }),
+		"IPv6Loopback":          h.fn("netip.IPv6Loopback", func(a []any) (any, error) { return netip.IPv6Loopback(), nil }),
+		"IPv6Unspecified":       h.fn("netip.IPv6Unspecified", func(a []any) (any, error) { return netip.IPv6Unspecified(), nil }),
+	})
 	// io: bound as natives because the interpreted io package cannot provide
 	// singleton identity — `err == io.EOF` compares GoValues by pointer, so
 	// EOF must be the real host sentinel. Reader/Writer interfaces are
 	// typedefs so script values can declare and satisfy them.
+	// ioCall adapts host io helpers: each spec letter picks how an arg is
+	// adapted — 'r' an io.Reader, 'w' an io.Writer (both through the
+	// caller's VM so script types like http.bodyEOFSignal resolve by
+	// method set), 'v' a value used verbatim (byteSlice/str/intOf see the
+	// raw runtime.Value). A trailing '*' repeats the first spec letter
+	// over every arg for variadic helpers.
+	ioCall := func(name, spec string, f func(a []any) (any, error)) *runtime.BuiltinFunc {
+		return &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			n := len(spec)
+			if n > 0 && spec[n-1] == '*' {
+				// variadic: io.MultiReader() with zero args is valid
+			} else if len(args) != n {
+				return nil, fmt.Errorf("%s needs %d args, got %d", name, n, len(args))
+			}
+			a := make([]any, len(args))
+			for i := range args {
+				c := spec[0]
+				if n > 0 && spec[n-1] != '*' {
+					c = spec[i]
+				}
+				switch c {
+				case 'r':
+					r, err := h.asReaderVM(vc, args[i])
+					if err != nil {
+						return nil, err
+					}
+					a[i] = r
+				case 'w':
+					w, err := asWriterVM(vc, args[i])
+					if err != nil {
+						return nil, err
+					}
+					a[i] = w
+				default:
+					a[i] = args[i]
+				}
+			}
+			return f(a)
+		}}
+	}
 	e.Bind("io", map[string]runtime.Value{
 		"Reader":       &runtime.TypeDef{Name: "io.Reader", Kind: runtime.KindInterface, MReqs: []string{"Read"}},
 		"Writer":       &runtime.TypeDef{Name: "io.Writer", Kind: runtime.KindInterface, MReqs: []string{"Write"}},
@@ -1526,112 +2063,78 @@ func (e *Engine) installStdlib() {
 		"ErrShortWrite":    errVal(io.ErrShortWrite),
 		"ErrUnexpectedEOF": errVal(io.ErrUnexpectedEOF),
 		"Discard":          &runtime.GoValue{V: io.Discard},
-		"SeekStart":        int64(io.SeekStart),
-		"SeekCurrent":      int64(io.SeekCurrent),
-		"SeekEnd":          int64(io.SeekEnd),
-		"ReadAll": h.fn1("io.ReadAll", func(a []any) (any, error) {
-			r, err := asReader(a[0])
-			if err != nil {
-				return nil, err
-			}
-			b, rerr := io.ReadAll(r)
+		// *io.LimitedReader assertions (http's body.readLocked probes
+		// `lr.N == 0` for early-EOF) need the typedef; field reads like
+		// `lr.N` dispatch on the host struct through reflection.
+		"LimitedReader": hostType("io.LimitedReader", func() any { return &io.LimitedReader{} }),
+		"SeekStart":     int64(io.SeekStart),
+		"SeekCurrent":   int64(io.SeekCurrent),
+		"SeekEnd":       int64(io.SeekEnd),
+		"ReadAll": ioCall("io.ReadAll", "r", func(a []any) (any, error) {
+			b, rerr := io.ReadAll(a[0].(io.Reader))
 			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(b), errVal(rerr)}}, nil
-		}, io.ReadAll),
-		"WriteString": h.fn2("io.WriteString", func(a []any) (any, error) {
-			w, err := asWriter(a[0])
-			if err != nil {
-				return nil, err
-			}
-			n, werr := io.WriteString(w, str(a[1]))
+		}),
+		"WriteString": ioCall("io.WriteString", "wv", func(a []any) (any, error) {
+			n, werr := io.WriteString(a[0].(io.Writer), str(a[1]))
 			return &runtime.Tuple{Elems: []runtime.Value{int64(n), errVal(werr)}}, nil
-		}, io.WriteString),
-		"Copy": h.fn2("io.Copy", func(a []any) (any, error) {
-			w, err := asWriter(a[0])
-			if err != nil {
-				return nil, err
-			}
-			r, err := asReader(a[1])
-			if err != nil {
-				return nil, err
-			}
-			n, cerr := io.Copy(w, r)
+		}),
+		"Copy": ioCall("io.Copy", "wr", func(a []any) (any, error) {
+			n, cerr := io.Copy(a[0].(io.Writer), a[1].(io.Reader))
 			return &runtime.Tuple{Elems: []runtime.Value{int64(n), errVal(cerr)}}, nil
-		}, io.Copy),
-		"CopyN": h.fn3("io.CopyN", func(a []any) (any, error) {
-			w, err := asWriter(a[0])
-			if err != nil {
-				return nil, err
-			}
-			r, err := asReader(a[1])
-			if err != nil {
-				return nil, err
-			}
-			n, cerr := io.CopyN(w, r, int64Of(a[2]))
+		}),
+		"CopyBuffer": ioCall("io.CopyBuffer", "wrv", func(a []any) (any, error) {
+			n, cerr := io.CopyBuffer(a[0].(io.Writer), a[1].(io.Reader), byteSlice(a[2]))
 			return &runtime.Tuple{Elems: []runtime.Value{int64(n), errVal(cerr)}}, nil
-		}, io.CopyN),
-		// ReadFull borrows the script buffer instead of h.fn's byteSlice
-		// copy — a copy would drop the reader's writes and leave the
-		// script slice untouched (#362).
-		"ReadFull": &runtime.BuiltinFunc{Name: "io.ReadFull", Target: io.ReadFull, Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			if len(args) < 2 {
-				return nil, fmt.Errorf("io.ReadFull needs 2 args, got %d", len(args))
-			}
-			r, err := asReader(goNative(args[0]))
-			if err != nil {
-				return nil, err
-			}
-			bs, commit := borrowBytes(args[1])
-			n, rerr := io.ReadFull(r, bs)
+		}),
+		"CopyN": ioCall("io.CopyN", "wrv", func(a []any) (any, error) {
+			n, cerr := io.CopyN(a[0].(io.Writer), a[1].(io.Reader), int64Of(a[2]))
+			return &runtime.Tuple{Elems: []runtime.Value{int64(n), errVal(cerr)}}, nil
+		}),
+		// ReadFull borrows the script buffer instead of a byteSlice copy —
+		// a copy would drop the reader's writes and leave the script slice
+		// untouched (#362).
+		"ReadFull": ioCall("io.ReadFull", "rv", func(a []any) (any, error) {
+			bs, commit := borrowBytes(a[1])
+			n, rerr := io.ReadFull(a[0].(io.Reader), bs)
 			commit()
 			return &runtime.Tuple{Elems: []runtime.Value{int64(n), errVal(rerr)}}, nil
-		}},
-		"LimitReader": h.fn2("io.LimitReader", func(a []any) (any, error) {
-			r, err := asReader(a[0])
-			if err != nil {
-				return nil, err
-			}
-			return &runtime.GoValue{V: io.LimitReader(r, int64Of(a[1]))}, nil
-		}, io.LimitReader),
-		"TeeReader": h.fn2("io.TeeReader", func(a []any) (any, error) {
-			r, err := asReader(a[0])
-			if err != nil {
-				return nil, err
-			}
-			w, err := asWriter(a[1])
-			if err != nil {
-				return nil, err
-			}
-			return &runtime.GoValue{V: io.TeeReader(r, w)}, nil
-		}, io.TeeReader),
-		"MultiReader": h.fn("io.MultiReader", func(a []any) (any, error) {
+		}),
+		"ReadAtLeast": ioCall("io.ReadAtLeast", "rvv", func(a []any) (any, error) {
+			bs, commit := borrowBytes(a[1])
+			n, rerr := io.ReadAtLeast(a[0].(io.Reader), bs, intOf(a[2]))
+			commit()
+			return &runtime.Tuple{Elems: []runtime.Value{int64(n), errVal(rerr)}}, nil
+		}),
+		"LimitReader": ioCall("io.LimitReader", "rv", func(a []any) (any, error) {
+			return &runtime.GoValue{V: io.LimitReader(a[0].(io.Reader), int64Of(a[1]))}, nil
+		}),
+		"TeeReader": ioCall("io.TeeReader", "rw", func(a []any) (any, error) {
+			return &runtime.GoValue{V: io.TeeReader(a[0].(io.Reader), a[1].(io.Writer))}, nil
+		}),
+		"MultiReader": ioCall("io.MultiReader", "r*", func(a []any) (any, error) {
 			rs := make([]io.Reader, len(a))
 			for i, x := range a {
-				r, err := asReader(x)
-				if err != nil {
-					return nil, err
-				}
-				rs[i] = r
+				rs[i] = x.(io.Reader)
 			}
 			return &runtime.GoValue{V: io.MultiReader(rs...)}, nil
-		}, io.MultiReader),
-		"MultiWriter": h.fn("io.MultiWriter", func(a []any) (any, error) {
+		}),
+		"MultiWriter": ioCall("io.MultiWriter", "w*", func(a []any) (any, error) {
 			ws := make([]io.Writer, len(a))
 			for i, x := range a {
-				w, err := asWriter(x)
-				if err != nil {
-					return nil, err
-				}
-				ws[i] = w
+				ws[i] = x.(io.Writer)
 			}
 			return &runtime.GoValue{V: io.MultiWriter(ws...)}, nil
-		}, io.MultiWriter),
-		"NopCloser": h.fn1("io.NopCloser", func(a []any) (any, error) {
-			r, err := asReader(a[0])
+		}),
+		"NopCloser": &runtime.BuiltinFunc{Name: "io.NopCloser", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("io.NopCloser needs 1 arg, got %d", len(args))
+			}
+			r, err := h.asReaderVM(vc, args[0])
 			if err != nil {
 				return nil, err
 			}
 			return &runtime.GoValue{V: io.NopCloser(r)}, nil
-		}, io.NopCloser),
+		}},
 		"Pipe": h.fn("io.Pipe", func(a []any) (any, error) {
 			pr, pw := io.Pipe()
 			return &runtime.Tuple{Elems: []runtime.Value{&runtime.GoValue{V: pr}, &runtime.GoValue{V: pw}}}, nil
@@ -1682,41 +2185,62 @@ func (e *Engine) installStdlib() {
 		// the sentinel is the real host error: `err == bufio.ErrBufferFull`
 		// in csv's reader compares GoValues by identity.
 		"ErrBufferFull": errVal(bufio.ErrBufferFull),
-		"NewScanner": h.fn1("bufio.NewScanner", func(a []any) (any, error) {
-			r, err := asReader(a[0])
+		// type assertions like `w.(*bufio.Writer)` need the typedefs;
+		// methods run on the boxed host object through reflection.
+		"Reader":     hostType("bufio.Reader", func() any { return bufio.NewReader(nil) }),
+		"Writer":     hostType("bufio.Writer", func() any { return bufio.NewWriter(io.Discard) }),
+		"Scanner":    hostType("bufio.Scanner", func() any { return bufio.NewScanner(nil) }),
+		"ReadWriter": hostType("bufio.ReadWriter", func() any { return bufio.NewReadWriter(bufio.NewReader(nil), bufio.NewWriter(io.Discard)) }),
+		"NewScanner": &runtime.BuiltinFunc{Name: "bufio.NewScanner", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("bufio.NewScanner needs 1 arg")
+			}
+			r, err := h.asReaderVM(vc, args[0])
 			if err != nil {
 				return nil, err
 			}
 			return &runtime.GoValue{V: bufio.NewScanner(r)}, nil
-		}, bufio.NewScanner),
-		"NewReader": h.fn1("bufio.NewReader", func(a []any) (any, error) {
-			r, err := asReader(a[0])
+		}},
+		"NewReader": &runtime.BuiltinFunc{Name: "bufio.NewReader", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("bufio.NewReader needs 1 arg")
+			}
+			r, err := h.asReaderVM(vc, args[0])
 			if err != nil {
 				return nil, err
 			}
 			return &runtime.GoValue{V: bufio.NewReader(r)}, nil
-		}, bufio.NewReader),
-		"NewReaderSize": h.fn2("bufio.NewReaderSize", func(a []any) (any, error) {
-			r, err := asReader(a[0])
+		}},
+		"NewReaderSize": &runtime.BuiltinFunc{Name: "bufio.NewReaderSize", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("bufio.NewReaderSize needs 2 args")
+			}
+			r, err := h.asReaderVM(vc, args[0])
 			if err != nil {
 				return nil, err
 			}
-			return &runtime.GoValue{V: bufio.NewReaderSize(r, int(int64Of(a[1])))}, nil
-		}, bufio.NewReaderSize),
-		"NewWriter": h.fn1("bufio.NewWriter", func(a []any) (any, error) {
-			w, err := asWriter(a[0])
+			return &runtime.GoValue{V: bufio.NewReaderSize(r, int(int64Of(args[1])))}, nil
+		}},
+		"NewWriter": &runtime.BuiltinFunc{Name: "bufio.NewWriter", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("bufio.NewWriter needs 1 arg")
+			}
+			w, err := asWriterVM(vc, args[0])
 			if err != nil {
 				return nil, err
 			}
 			return &runtime.GoValue{V: bufio.NewWriter(w)}, nil
-		}, bufio.NewWriter),
-		"NewWriterSize": h.fn2("bufio.NewWriterSize", func(a []any) (any, error) {
-			w, err := asWriter(a[0])
+		}},
+		"NewWriterSize": &runtime.BuiltinFunc{Name: "bufio.NewWriterSize", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("bufio.NewWriterSize needs 2 args")
+			}
+			w, err := asWriterVM(vc, args[0])
 			if err != nil {
 				return nil, err
 			}
-			return &runtime.GoValue{V: bufio.NewWriterSize(w, int(int64Of(a[1])))}, nil
-		}, bufio.NewWriterSize),
+			return &runtime.GoValue{V: bufio.NewWriterSize(w, int(int64Of(args[1])))}, nil
+		}},
 	})
 	// text/template: New/Parse/Must box *template.Template — Execute's
 	// io.Writer arg adapts `&b` cells via toReflectValue's auto-pointer
@@ -1824,6 +2348,202 @@ func syncOnceWrap(name string, args []runtime.Value) (runtime.Value, error) {
 		}
 		return res, nil
 	}}, nil
+}
+
+// ---- sync/atomic ----
+
+// atomicBox backs the bound sync/atomic Value and Pointer[T]: the cell
+// holds script values verbatim under a mutex so Load hands back the same
+// objects Store received (a host atomic.Value would serve identically —
+// the boundary already decides what crosses — but the box keeps the
+// semantics obvious and needs no per-instantiation host type).
+type atomicBox struct {
+	mu sync.Mutex
+	v  any
+}
+
+func (b *atomicBox) Load() (old any) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.v
+}
+
+func (b *atomicBox) Store(x any) {
+	b.mu.Lock()
+	b.v = x
+	b.mu.Unlock()
+}
+
+func (b *atomicBox) Swap(x any) (old any) {
+	b.mu.Lock()
+	old, b.v = b.v, x
+	b.mu.Unlock()
+	return old
+}
+
+func (b *atomicBox) CompareAndSwap(old, new any) (swapped bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !atomicCellEq(b.v, old) {
+		return false
+	}
+	b.v = new
+	return true
+}
+
+// atomicCellEq compares a stored value against a CAS old operand: nils
+// match nils, non-comparable payloads never match (real atomic.Value
+// panics on them), identical references or scalars match.
+func atomicCellEq(a, b any) bool {
+	ua, ub := runtime.Unwrap(a), runtime.Unwrap(b)
+	if ua == nil || ub == nil {
+		return ua == nil && ub == nil
+	}
+	if ua == runtime.NIL || ub == runtime.NIL {
+		return ua == ub
+	}
+	ta, tb := reflect.TypeOf(ua), reflect.TypeOf(ub)
+	if ta != tb {
+		// int-family payloads across a named re-wrap (CAS(0, 1) on a
+		// uint32-tagged cell) compare in the int64 domain.
+		ai, aok := ua.(int64)
+		bi, bok := ub.(int64)
+		return aok && bok && ai == bi
+	}
+	if !ta.Comparable() {
+		return false
+	}
+	return ua == ub
+}
+
+// asCtx resolves a script value to a host context.Context — bound
+// context producers (Background, With*) all yield GoValue boxes, so the
+// host value is already unwrapped by goNative upstream.
+func asCtx(v any) (context.Context, error) {
+	if v == nil {
+		return nil, errors.New("context: nil parent")
+	}
+	if c, ok := v.(context.Context); ok {
+		return c, nil
+	}
+	return nil, fmt.Errorf("not a context.Context: %T", v)
+}
+
+// net pointer/addr unwrappers: a script &net.TCPAddr{...} arrives at a
+// host call boundary as a GoValue box, unboxed by goNative upstream;
+// nil stays a nil pointer like Go's optional-addr arguments.
+func tcpAddrOf(v any) *net.TCPAddr    { t, _ := v.(*net.TCPAddr); return t }
+func udpAddrOf(v any) *net.UDPAddr    { t, _ := v.(*net.UDPAddr); return t }
+func unixAddrOf(v any) *net.UnixAddr  { t, _ := v.(*net.UnixAddr); return t }
+func ipAddrOf(v any) *net.IPAddr      { t, _ := v.(*net.IPAddr); return t }
+func netIfaceOf(v any) *net.Interface { t, _ := v.(*net.Interface); return t }
+func netFileOf(v any) *os.File        { t, _ := v.(*os.File); return t }
+func netipAddrOf(v any) netip.Addr    { t, _ := v.(netip.Addr); return t }
+func addrPortOf(v any) netip.AddrPort { t, _ := v.(netip.AddrPort); return t }
+
+// byteSlice4/byteSlice16 read a script [4]byte/[16]byte (or []byte) into
+// the fixed-size array netip's AddrFrom* take.
+func byteSlice4(v any) (out [4]byte) {
+	for i, b := range byteSlice(v) {
+		if i >= 4 {
+			break
+		}
+		out[i] = b
+	}
+	return out
+}
+
+func byteSlice16(v any) (out [16]byte) {
+	for i, b := range byteSlice(v) {
+		if i >= 16 {
+			break
+		}
+		out[i] = b
+	}
+	return out
+}
+
+// atomicOpKind selects which of the pointer-taking sync/atomic function
+// families an atomicOp builds.
+type atomicOpKind int
+
+const (
+	atomicOpLoad atomicOpKind = iota
+	atomicOpStore
+	atomicOpAdd
+	atomicOpAnd
+	atomicOpOr
+	atomicOpSwap
+	atomicOpCAS
+)
+
+// atomicOp builds one of the bound sync/atomic *T-pointer functions.
+// A script &x has no host address, so the builtins load and store the
+// pointed-to cell through Deref/SetRef; arithmetic happens in the int64
+// domain. Load* returns the cell content verbatim — a Named uint32
+// keeps its tag, LoadPointer hands the stored pointer back untyped.
+func atomicOp(name string, op atomicOpKind) *runtime.BuiltinFunc {
+	want := 1
+	switch op {
+	case atomicOpStore, atomicOpAdd, atomicOpAnd, atomicOpOr, atomicOpSwap:
+		want = 2
+	case atomicOpCAS:
+		want = 3
+	}
+	return &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) != want {
+			return nil, fmt.Errorf("%s needs %d args, got %d", name, want, len(args))
+		}
+		cur, ok := runtime.Deref(args[0])
+		if !ok {
+			return nil, fmt.Errorf("%s needs a pointer operand, got %T", name, args[0])
+		}
+		set := func(v runtime.Value) error {
+			if !runtime.SetRef(args[0], v) {
+				return fmt.Errorf("%s needs a pointer operand, got %T", name, args[0])
+			}
+			return nil
+		}
+		switch op {
+		case atomicOpLoad:
+			return cur, nil
+		case atomicOpStore:
+			return runtime.NIL, set(args[1])
+		case atomicOpSwap:
+			if err := set(args[1]); err != nil {
+				return nil, err
+			}
+			return cur, nil
+		case atomicOpCAS:
+			if !atomicCellEq(cur, args[1]) {
+				return false, nil
+			}
+			if err := set(args[2]); err != nil {
+				return nil, err
+			}
+			return true, nil
+		}
+		n := int64Of(cur)
+		if op == atomicOpAdd {
+			n += int64Of(args[1])
+			if err := set(n); err != nil {
+				return nil, err
+			}
+			// Add returns the NEW value.
+			return n, nil
+		}
+		switch op {
+		case atomicOpAnd:
+			n &= int64Of(args[1])
+		case atomicOpOr:
+			n |= int64Of(args[1])
+		}
+		if err := set(n); err != nil {
+			return nil, err
+		}
+		// And/Or return the OLD value.
+		return cur, nil
+	}}
 }
 
 // ---- value marshalling ----
@@ -2106,9 +2826,12 @@ func (h *hostHelpers) sortSlice(v runtime.VMCaller, args []runtime.Value) (runti
 // like Go's implementation.
 func (h *hostHelpers) sortByCmpFunc(name string) *runtime.BuiltinFunc {
 	return &runtime.BuiltinFunc{Name: name, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-		s, ok := args[0].(*runtime.Slice)
+		s, ok := sliceOf(args[0])
 		if !ok {
-			return nil, fmt.Errorf("%s: first arg must be a slice", name)
+			if nilish(args[0]) {
+				return args[0], nil // sorting a nil slice is a no-op
+			}
+			return nil, fmt.Errorf("%s: first arg must be a slice, got %T", name, args[0])
 		}
 		cmp := args[1]
 		sort.SliceStable(s.Elems, func(i, j int) bool {
@@ -2556,6 +3279,103 @@ func strSlice(v any) []string {
 	return nil
 }
 
+// sliceOf unwraps a script slice (cell/pointer derefed, Named-peeled,
+// or bare); typed nils and non-slices report not-ok so callers can give
+// their own error.
+func sliceOf(v runtime.Value) (*runtime.Slice, bool) {
+	if d, ok := runtime.Deref(v); ok {
+		v = d
+	}
+	s, ok := runtime.Unwrap(v).(*runtime.Slice)
+	return s, ok
+}
+
+// packSlice moves kept elements to the front of s's backing array and
+// zeroes the vacated tail, then returns the len(kept) view sharing it —
+// the same update Go's slices.DeleteFunc performs, so slices re-sliced
+// from the original observe the deletion.
+func (h *hostHelpers) packSlice(s *runtime.Slice, kept []runtime.Value) *runtime.Slice {
+	copy(s.Elems, kept)
+	var etd *runtime.TypeDef
+	if s.Typ != nil && h.e != nil {
+		etd, _ = h.e.elemOf(s.Typ)
+	}
+	for i := len(kept); i < len(s.Elems); i++ {
+		s.Elems[i] = runtime.Zero(etd)
+	}
+	return &runtime.Slice{Elems: s.Elems[:len(kept)], Typ: s.Typ}
+}
+
+// seqElems collects a seq argument's elements: a *runtime.Slice reads
+// verbatim, and an iter.Seq-shaped callable (seqOf's BuiltinFunc, or a
+// script func used as a seq) is driven with a yield that gathers each
+// element — the seq stops when yield reports false.
+func seqElems(vc runtime.VMCaller, v runtime.Value) ([]runtime.Value, error) {
+	if s, ok := sliceOf(v); ok {
+		return append([]runtime.Value{}, s.Elems...), nil
+	}
+	var out []runtime.Value
+	yield := &runtime.BuiltinFunc{Name: "seq yield", Fn: func(_ runtime.VMCaller, ya []runtime.Value) (runtime.Value, error) {
+		out = append(out, ya...)
+		return true, nil
+	}}
+	if _, err := vc.Call(v, []runtime.Value{yield}); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// strPieces boxes string pieces as script values for seqOf.
+func strPieces(ss []string) []runtime.Value {
+	out := make([]runtime.Value, len(ss))
+	for i, s := range ss {
+		out[i] = s
+	}
+	return out
+}
+
+// seqOf builds an iter.Seq-shaped value: a callable the range-over-func
+// loop drives through its yield builtin — the producer runs once and the
+// loop body executes inside each yield call, so early exit just reports
+// false back. Pieces are materialized up front; laziness is unobservable
+// from a script.
+func seqOf(name string, pieces []runtime.Value) runtime.Value {
+	return &runtime.BuiltinFunc{Name: "iter.Seq(" + name + ")", Fn: func(vc runtime.VMCaller, ya []runtime.Value) (runtime.Value, error) {
+		if len(ya) != 1 {
+			return nil, fmt.Errorf("%s: Seq needs a yield func", name)
+		}
+		for _, p := range pieces {
+			r, err := vc.Call(ya[0], []runtime.Value{p})
+			if err != nil {
+				return nil, err
+			}
+			if goon, ok := r.(bool); ok && !goon {
+				return false, nil
+			}
+		}
+		return true, nil
+	}}
+}
+
+// nilish reports whether a value carries no concrete content — bare nil,
+// a typed nil, or a named wrapper around one.
+func nilish(v runtime.Value) bool {
+	switch runtime.Unwrap(v).(type) {
+	case runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
+		return true
+	}
+	return false
+}
+
+// sliceTypOf keeps a bound slice op's declared element type — a new
+// []string built without the tag loses `[]string` reads downstream.
+func sliceTypOf(v any) *runtime.TypeDef {
+	if s, ok := runtime.Unwrap(v).(*runtime.Slice); ok {
+		return s.Typ
+	}
+	return nil
+}
+
 func anySlice(v any) []any {
 	if n, ok := v.(*runtime.Named); ok {
 		return anySlice(n.V)
@@ -2724,6 +3544,143 @@ func asWriterVM(vc runtime.VMCaller, v any) (io.Writer, error) {
 	return nil, fmt.Errorf("not an io.Writer: %T", v)
 }
 
+// asReaderVM is asReader plus script-defined readers: when the VM is
+// available, a script value advertising a Read method adapts to io.Reader
+// through a callback proxy, like asWriterVM does for writers. When the
+// value also advertises WriteTo the proxy implements it too — Go's
+// NopCloser picks its concrete type off that interface, so the probe
+// keeps `io.nopCloserWriterTo` vs `io.nopCloser` faithful. Advertisement
+// is checked on the method set, not member selection: a method promoted
+// from an embedded interface (net/http's nopCloser type probes) has no
+// selectable member yet still declares the interface.
+func (h *hostHelpers) asReaderVM(vc runtime.VMCaller, v any) (io.Reader, error) {
+	if fv, ok := v.(*fmtValue); ok {
+		v = fv.x
+	}
+	if v == nil || v == runtime.NIL {
+		return nil, nil
+	}
+	if dv, ok := runtime.Deref(v); ok {
+		v = dv
+	}
+	if g, ok := v.(*runtime.GoValue); ok {
+		v = g.V
+	}
+	if r, ok := v.(io.Reader); ok {
+		return r, nil
+	}
+	if vc != nil && v != nil && v != runtime.NIL {
+		set, _, _ := h.e.methodSetOfValue(v)
+		if set["Read"] {
+			if set["WriteTo"] {
+				return &scriptReaderWriterTo{v: vc, recv: v}, nil
+			}
+			return &scriptReader{v: vc, recv: v}, nil
+		}
+	}
+	return nil, fmt.Errorf("not an io.Reader: %T", v)
+}
+
+// scriptReader adapts a script-side Read method to io.Reader so host
+// calls read through a reader implemented in the script. The member is
+// resolved at call time: promoted interface methods advertise in the
+// method set without a selectable member (the embedded slot may be nil,
+// which then errors like a Go nil-interface dispatch).
+type scriptReader struct {
+	v    runtime.VMCaller
+	recv runtime.Value
+}
+
+func (s *scriptReader) Read(p []byte) (int, error) {
+	m, ok := s.v.Member(s.recv, "Read")
+	if !ok || m == nil || m == runtime.NIL {
+		return 0, fmt.Errorf("runtime error: invalid memory address or nil pointer dereference")
+	}
+	pv := scriptVal(p)
+	r, err := s.v.Call(m, []runtime.Value{pv})
+	n, err2 := readResult(r)
+	copyBackBytes(p, pv, n)
+	if err != nil {
+		return 0, err
+	}
+	return n, err2
+}
+
+// copyBackBytes mirrors a callee's writes to the script slice back into
+// the host caller's buffer — a []byte param crossed to the script as a
+// fresh element copy (see scriptVal), so writes the inner callReflectFunc
+// already copied into the slice's elements would otherwise be lost (a
+// reader that fills nothing visible makes every ReadLine loop forever).
+func copyBackBytes(dst []byte, src runtime.Value, n int) {
+	sl, ok := src.(*runtime.Slice)
+	if !ok {
+		return
+	}
+	for i := 0; i < n && i < len(sl.Elems) && i < len(dst); i++ {
+		dst[i] = byte(int64Of(sl.Elems[i]))
+	}
+}
+
+// scriptReaderWriterTo adds a WriteTo proxy: the pair of interfaces is
+// what net/http's nopCloser type probes dispatch on.
+type scriptReaderWriterTo struct {
+	v    runtime.VMCaller
+	recv runtime.Value
+}
+
+func (s *scriptReaderWriterTo) Read(p []byte) (int, error) {
+	m, ok := s.v.Member(s.recv, "Read")
+	if !ok || m == nil || m == runtime.NIL {
+		return 0, fmt.Errorf("runtime error: invalid memory address or nil pointer dereference")
+	}
+	pv := scriptVal(p)
+	r, err := s.v.Call(m, []runtime.Value{pv})
+	n, err2 := readResult(r)
+	copyBackBytes(p, pv, n)
+	if err != nil {
+		return 0, err
+	}
+	return n, err2
+}
+
+func (s *scriptReaderWriterTo) WriteTo(w io.Writer) (int64, error) {
+	m, ok := s.v.Member(s.recv, "WriteTo")
+	if !ok || m == nil || m == runtime.NIL {
+		return 0, fmt.Errorf("runtime error: invalid memory address or nil pointer dereference")
+	}
+	r, err := s.v.Call(m, []runtime.Value{&runtime.GoValue{V: w}})
+	if err != nil {
+		return 0, err
+	}
+	return readResult64(r)
+}
+
+// readResult decodes a script (n int, err error) pair.
+func readResult(r runtime.Value) (int, error) {
+	n, err := readResult64(r)
+	return int(n), err
+}
+
+func readResult64(r runtime.Value) (int64, error) {
+	if t, ok := r.(*runtime.Tuple); ok {
+		var n int64
+		if len(t.Elems) > 0 {
+			if i, ok := runtime.Unwrap(t.Elems[0]).(int64); ok {
+				n = i
+			}
+		}
+		var werr error
+		if len(t.Elems) > 1 {
+			werr = asErr(goNative(t.Elems[1]))
+		}
+		return n, werr
+	}
+	if i, ok := runtime.Unwrap(r).(int64); ok {
+		return i, nil
+	}
+	return 0, nil
+}
+
 // scriptWriter adapts a script-side Write method to io.Writer so
 // fmt.Fprint* writes through a writer implemented in the script.
 type scriptWriter struct {
@@ -2757,10 +3714,14 @@ func (s *scriptWriter) Write(p []byte) (int, error) {
 }
 
 // asReader mirrors asWriter for io.Reader args: `strings.NewReader`'s
-// GoValue unwraps to the real reader, `&r` cells deref through.
+// GoValue unwraps to the real reader, `&r` cells deref through. A nil
+// argument is a valid (nil) io.Reader — `io.NopCloser(nil)` is legal Go.
 func asReader(v any) (io.Reader, error) {
 	if fv, ok := v.(*fmtValue); ok {
 		v = fv.x
+	}
+	if v == nil {
+		return nil, nil
 	}
 	if dv, ok := runtime.Deref(v); ok {
 		v = dv

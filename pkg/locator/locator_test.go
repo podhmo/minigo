@@ -774,3 +774,33 @@ func main() {}
 		})
 	}
 }
+
+// TestFindPackageDirFromVendor pins the GOROOT vendor rule: an importer
+// living under GOROOT/src resolves vendored dependencies through the
+// ancestor vendor directories first (net/http ->
+// $GOROOT/src/vendor/golang.org/x/net/http/httpguts), while an importer
+// outside GOROOT never enters the vendor search.
+func TestFindPackageDirFromVendor(t *testing.T) {
+	goRoot := t.TempDir()
+	importerDir := filepath.Join(goRoot, "src", "net", "http")
+	vendored := filepath.Join(goRoot, "src", "vendor", "golang.org", "x", "net", "http", "httpguts")
+	for _, d := range []string{importerDir, vendored} {
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+	l := &Locator{goRoot: goRoot}
+
+	got, err := l.FindPackageDirFrom(importerDir, "golang.org/x/net/http/httpguts")
+	if err != nil {
+		t.Fatalf("vendor lookup failed: %v", err)
+	}
+	if diff := cmp.Diff(vendored, got); diff != "" {
+		t.Errorf("vendor dir mismatch (-want +got):\n%s", diff)
+	}
+
+	// an importer outside GOROOT skips the vendor search entirely.
+	if _, err := l.FindPackageDirFrom(t.TempDir(), "golang.org/x/net/http/httpguts"); err == nil {
+		t.Errorf("expected resolution to fail for a non-GOROOT importer")
+	}
+}

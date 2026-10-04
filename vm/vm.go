@@ -10,6 +10,7 @@ import (
 	"go/constant"
 	"go/format"
 	"go/token"
+	"io"
 	"math"
 	"os"
 	"reflect"
@@ -77,6 +78,14 @@ type Hooks struct {
 	// anonymous typedefs. Used for promoted-field lookup, constraint
 	// resolution and generalized type inference.
 	ResolveType func(td *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, error)
+	// Linkname resolves a bodiless function carrying a two-arg
+	// `//go:linkname local importpath.symbol` doc directive to the
+	// target's callable value — stdlib internals (net/http's
+	// readMIMEHeader -> net/textproto's real body) wire their
+	// implementation this way. A nil hook, a one-arg directive, or an
+	// unresolvable target reports false and the declaration keeps its
+	// zero-return shim.
+	Linkname func(vc runtime.VMCaller, fn *runtime.Function) (runtime.Value, bool, error)
 }
 
 // VM is a stack machine. Each VM is confined to one goroutine; the `go`
@@ -700,6 +709,18 @@ func (v *VM) prepFrame(callee runtime.Value, args []runtime.Value) (*frame, erro
 	default:
 		return nil, fmt.Errorf("value of type %T is not callable", callee)
 	}
+	// a bodiless declaration may carry a //go:linkname directive whose
+	// target argument wires it to a real implementation in another
+	// package — substitute the resolved target and re-dispatch.
+	if fn != nil && fn.Decl != nil && fn.Decl.Body == nil && v.H.Linkname != nil {
+		tv, ok, err := v.H.Linkname(v, fn)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			return v.prepFrame(tv, args)
+		}
+	}
 	// generic function called without instantiation (Id(40)): infer the
 	// unbound type arguments from the runtime argument types. A method of
 	// an instantiated generic type arrives partly bound — the receiver's
@@ -1107,6 +1128,20 @@ func (v *VM) invokeDeferred(d deferredCall) {
 		case *runtime.Named:
 			callee = runtime.Unwrap(callee)
 			continue
+		case *runtime.GoValue:
+			// a deferred host func — context.WithCancel's CancelFunc
+			// boxes run the same way a direct Call does, through
+			// reflect, on a sentinel frame so recover() distances hold.
+			fv := reflect.ValueOf(c.V)
+			if !fv.IsValid() || fv.Kind() != reflect.Func {
+				break
+			}
+			v.pushDeferredSentinel(fv.Type().String())
+			defer v.framesPop()
+			if _, err := callReflectFunc(fv.Type().String(), fv, v, d.args); err != nil {
+				panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
+			}
+			return
 		default:
 			if dv, ok := runtime.Deref(callee); ok {
 				callee = dv
@@ -2526,7 +2561,304 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 			return pv, nil
 		}
 	}
+	// a script value that declares the interface's methods adapts to a
+	// live proxy: host code calling back into script — bufio.Reset on an
+	// interpreted chunkWriter, or io.Copy fed an interpreted body — can
+	// reach the script methods through it.
+	if t.Kind() == reflect.Interface && t.NumMethod() > 0 {
+		if pv, ok := adaptIface(v, t, vc); ok {
+			return pv, nil
+		}
+	}
 	return reflect.Value{}, fmt.Errorf("cannot use %s as %s", av.Type(), t)
+}
+
+// adaptIface reports a scriptIface-family proxy for v when v declares
+// every method interface t requires. Pure reflect cannot fabricate
+// interface impls, so the adapter's static method set must contain t's
+// — and the proxy variant is picked by whether the script declares the
+// OPTIONAL-probe methods (io.WriterTo/io.ReaderFrom, asserted by
+// io.Copy and friends): a Read-only script value adapted to io.Reader
+// must NOT satisfy WriterTo, or io.Copy calls a method that does not
+// exist and returns its error instead of copying through Read.
+func adaptIface(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.Value, bool) {
+	if vc == nil {
+		return reflect.Value{}, false
+	}
+	switch v.(type) {
+	case *runtime.Struct:
+	default:
+		return reflect.Value{}, false
+	}
+	si := &scriptIface{vc: vc, recv: v}
+	_, hasWT := vc.Member(v, "WriteTo")
+	_, hasRF := vc.Member(v, "ReadFrom")
+	var proxy any = si
+	switch {
+	case hasWT && hasRF:
+		proxy = scriptIfaceWTRF{si}
+	case hasWT:
+		proxy = scriptIfaceWT{si}
+	case hasRF:
+		proxy = scriptIfaceRF{si}
+	}
+	st := reflect.TypeOf(proxy)
+	if !st.Implements(t) {
+		return reflect.Value{}, false
+	}
+	for i := 0; i < t.NumMethod(); i++ {
+		if _, ok := vc.Member(v, t.Method(i).Name); !ok {
+			return reflect.Value{}, false
+		}
+	}
+	out := reflect.New(t).Elem()
+	out.Set(reflect.ValueOf(proxy))
+	return out, true
+}
+
+// scriptIfaceWT/scriptIfaceRF/scriptIfaceWTRF carry the io extension
+// methods a script value may declare: embedding *scriptIface promotes
+// its methods and the variant adds only the probe methods the script
+// actually has, so the concrete method set stays honest.
+type (
+	scriptIfaceWT   struct{ *scriptIface }
+	scriptIfaceRF   struct{ *scriptIface }
+	scriptIfaceWTRF struct{ *scriptIface }
+)
+
+func (s scriptIfaceWT) WriteTo(w io.Writer) (int64, error)   { return s.writeTo(w) }
+func (s scriptIfaceRF) ReadFrom(r io.Reader) (int64, error)  { return s.readFrom(r) }
+func (s scriptIfaceWTRF) WriteTo(w io.Writer) (int64, error) { return s.writeTo(w) }
+func (s scriptIfaceWTRF) ReadFrom(r io.Reader) (int64, error) {
+	return s.readFrom(r)
+}
+
+// scriptIface forwards host-interface calls into script: the script
+// value's Read/Write/Close/... methods run through vc, so an
+// interpreted type can serve as an io.Writer or error to bound host
+// helpers. Its method set omits the io extension methods WriteTo and
+// ReadFrom — host code probes those opportunistically (io.Copy asserts
+// them on its io.Reader/io.Writer args), so they only appear on the
+// scriptIfaceW* variants adaptIface picks when the script declares them.
+type scriptIface struct {
+	vc   runtime.VMCaller
+	recv runtime.Value
+}
+
+func (s *scriptIface) call(name string, args ...runtime.Value) ([]runtime.Value, error) {
+	m, ok := s.vc.Member(s.recv, name)
+	if !ok || m == nil || m == runtime.NIL {
+		return nil, fmt.Errorf("runtime error: invalid memory address or nil pointer dereference")
+	}
+	r, err := s.vc.Call(m, args)
+	if err != nil {
+		return nil, err
+	}
+	if t, ok := r.(*runtime.Tuple); ok {
+		return t.Elems, nil
+	}
+	return []runtime.Value{r}, nil
+}
+
+// errOut extracts the error slot of a script (x, err) pair: host error
+// sentinels (io.EOF) arrive as GoValues and pass through verbatim so
+// identity comparisons host-side still hold.
+func errOut(rs []runtime.Value, i int) error {
+	if i >= len(rs) {
+		return nil
+	}
+	switch e := rs[i].(type) {
+	case nil, runtime.Nil:
+		return nil
+	case *runtime.TypedNil, *runtime.IfaceNil:
+		return nil
+	case *runtime.GoValue:
+		if err, ok := e.V.(error); ok {
+			return err
+		}
+		return fmt.Errorf("%v", e.V)
+	default:
+		return fmt.Errorf("%v", rs[i])
+	}
+}
+
+func intOut(rs []runtime.Value, i int) int64 {
+	if i >= len(rs) {
+		return 0
+	}
+	switch n := runtime.Unwrap(rs[i]).(type) {
+	case int64:
+		return n
+	case float64:
+		return int64(n)
+	}
+	return 0
+}
+
+// byteSliceArg boxes a host []byte as a script slice of byte-tagged
+// elements — the shape a script `[]byte` parameter receives.
+func byteSliceArg(p []byte) *runtime.Slice {
+	el := make([]runtime.Value, len(p))
+	for i, b := range p {
+		el[i] = runtime.Tag(runtime.BasicTypedef("byte"), int64(b))
+	}
+	return &runtime.Slice{Elems: el, Typ: &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: ast.NewIdent("byte")}}}
+}
+
+// backBytes mirrors a script callee's writes to the boxed slice back
+// into the host buffer — the []byte crossing is element-copied, so
+// fills the callee performed would otherwise be invisible to the host.
+func backBytes(dst []byte, src runtime.Value, n int) {
+	sl, ok := src.(*runtime.Slice)
+	if !ok {
+		return
+	}
+	for i := 0; i < n && i < len(sl.Elems) && i < len(dst); i++ {
+		if b, ok := runtime.Unwrap(sl.Elems[i]).(int64); ok {
+			dst[i] = byte(b)
+		}
+	}
+}
+
+func (s *scriptIface) Write(p []byte) (int, error) {
+	pv := byteSliceArg(p)
+	rs, err := s.call("Write", pv)
+	n := int(intOut(rs, 0))
+	backBytes(p, pv, n)
+	if err != nil {
+		return 0, err
+	}
+	return n, errOut(rs, 1)
+}
+
+func (s *scriptIface) Read(p []byte) (int, error) {
+	pv := byteSliceArg(p)
+	rs, err := s.call("Read", pv)
+	n := int(intOut(rs, 0))
+	backBytes(p, pv, n)
+	if err != nil {
+		return 0, err
+	}
+	return n, errOut(rs, 1)
+}
+
+func (s *scriptIface) Close() error {
+	rs, err := s.call("Close")
+	if err != nil {
+		return err
+	}
+	return errOut(rs, 0)
+}
+
+func (s *scriptIface) WriteString(str string) (int, error) {
+	rs, err := s.call("WriteString", str)
+	if err != nil {
+		return 0, err
+	}
+	return int(intOut(rs, 0)), errOut(rs, 1)
+}
+
+func (s *scriptIface) ReadByte() (byte, error) {
+	rs, err := s.call("ReadByte")
+	if err != nil {
+		return 0, err
+	}
+	return byte(intOut(rs, 0)), errOut(rs, 1)
+}
+
+func (s *scriptIface) WriteByte(b byte) error {
+	rs, err := s.call("WriteByte", runtime.Tag(runtime.BasicTypedef("byte"), int64(b)))
+	if err != nil {
+		return err
+	}
+	return errOut(rs, 0)
+}
+
+func (s *scriptIface) ReadRune() (rune, int, error) {
+	rs, err := s.call("ReadRune")
+	if err != nil {
+		return 0, 0, err
+	}
+	return rune(intOut(rs, 0)), int(intOut(rs, 1)), errOut(rs, 2)
+}
+
+func (s *scriptIface) Seek(offset int64, whence int) (int64, error) {
+	rs, err := s.call("Seek", offset, int64(whence))
+	if err != nil {
+		return 0, err
+	}
+	return intOut(rs, 0), errOut(rs, 1)
+}
+
+func (s *scriptIface) Flush() error {
+	rs, err := s.call("Flush")
+	if err != nil {
+		return err
+	}
+	return errOut(rs, 0)
+}
+
+func (s *scriptIface) Error() string {
+	rs, err := s.call("Error")
+	if err != nil || len(rs) == 0 {
+		return "script error"
+	}
+	if str, ok := runtime.Unwrap(rs[0]).(string); ok {
+		return str
+	}
+	return "script error"
+}
+
+func (s *scriptIface) String() string {
+	rs, err := s.call("String")
+	if err != nil || len(rs) == 0 {
+		return ""
+	}
+	if str, ok := runtime.Unwrap(rs[0]).(string); ok {
+		return str
+	}
+	return ""
+}
+
+func (s *scriptIface) Len() int {
+	rs, err := s.call("Len")
+	if err != nil {
+		return 0
+	}
+	return int(intOut(rs, 0))
+}
+
+func (s *scriptIface) Less(i, j int) bool {
+	rs, err := s.call("Less", int64(i), int64(j))
+	if err != nil || len(rs) == 0 {
+		return false
+	}
+	b, _ := runtime.Unwrap(rs[0]).(bool)
+	return b
+}
+
+func (s *scriptIface) Swap(i, j int) {
+	s.call("Swap", int64(i), int64(j))
+}
+
+// writeTo/readFrom back the io extension methods — they are
+// deliberately unexported so *scriptIface's method set never claims an
+// io.WriterTo/io.ReaderFrom the script value does not declare (only the
+// scriptIfaceW* wrapper types surface them).
+func (s *scriptIface) writeTo(w io.Writer) (int64, error) {
+	rs, err := s.call("WriteTo", &runtime.GoValue{V: w})
+	if err != nil {
+		return 0, err
+	}
+	return intOut(rs, 0), errOut(rs, 1)
+}
+
+func (s *scriptIface) readFrom(r io.Reader) (int64, error) {
+	rs, err := s.call("ReadFrom", &runtime.GoValue{V: r})
+	if err != nil {
+		return 0, err
+	}
+	return intOut(rs, 0), errOut(rs, 1)
 }
 
 // deepHost converts a script value for an `any` parameter: containers
@@ -7864,6 +8196,13 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		return x
 	}
 	if !v.shapeOK(f, x, utd) {
+		// a raw host value of a bound named basic carries no tag the
+		// declared-tag check could see — arithmetic on time.Second
+		// yields a bare time.Duration, so a declared target of the same
+		// name binds it by name (identical types assign in Go).
+		if td.Name != "" && typeNameOf(x) == td.Name {
+			return runtime.Tag(td, x)
+		}
 		f.trap("cannot use %s as %s", typeNameOf(x), tdName(td))
 	}
 	// array-typed slots copy on assignment: `var b = a` owns its own
@@ -8734,6 +9073,7 @@ func (v *VM) specializeType(g *runtime.TypeDef, targs []runtime.Value) *runtime.
 		TConstraints: g.TConstraints, Binds: binds,
 		MReqs: g.MReqs, IEmbeds: g.IEmbeds,
 		EmbedSpecs: g.EmbedSpecs, EmbedIdx: g.EmbedIdx, Embeds: g.Embeds,
+		LocalTypes: g.LocalTypes, Elem: g.Elem, HostNew: g.HostNew,
 		Local: g.Local,
 	}
 	if len(g.Methods) > 0 {

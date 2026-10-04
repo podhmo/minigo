@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
+	"io"
 	"math"
 	"net/url"
 	"path"
@@ -17,6 +20,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"unicode"
 	"unicode/utf8"
 	"unsafe"
@@ -260,6 +264,161 @@ func JsonUnmarshal() string {
 		return "ok"
 	}
 	return "bad"
+}
+
+// StrconvAppendInt exercises the Append family — writeStatusLine in
+// net/http formats the status code through it.
+func StrconvAppendInt() string {
+	return string(strconv.AppendInt(nil, 255, 16)) // "ff"
+}
+
+// bytesCut exercises bytes.Cut's (before, after, found) tuple.
+func BytesCut() string {
+	before, after, found := bytes.Cut([]byte("a:b"), []byte(":"))
+	if !found {
+		return "miss"
+	}
+	return string(before) + "|" + string(after)
+}
+
+// upperReader is a script-defined io.Reader: its Read method serves a
+// canned string through the host callback proxy.
+type upperReader struct {
+	s   string
+	pos int
+}
+
+func (r *upperReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.s) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.s[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+// IoReadAllScript feeds a script struct advertising Read to bound
+// io.ReadAll — the proxy must forward and the byte buffer must flow
+// back through the script slice.
+func IoReadAllScript() string {
+	b, err := io.ReadAll(&upperReader{s: "proxy-ok"})
+	if err != nil {
+		return "err"
+	}
+	return string(b)
+}
+
+// IoReadFullCopy verifies a host-side fill lands back in the script
+// slice's elements.
+func IoReadFullCopy() string {
+	buf := make([]byte, 5)
+	if _, err := io.ReadFull(strings.NewReader("hello world"), buf); err != nil {
+		return "err"
+	}
+	return string(buf)
+}
+
+// scrSink is a script-defined io.Writer target for bufio.
+type scrSink struct{ got string }
+
+func (w *scrSink) Write(p []byte) (int, error) {
+	w.got += string(p)
+	return len(p), nil
+}
+
+// BufioOverScriptWriter writes through bound bufio.NewWriter —
+// bufio.Reset must accept the script struct as an io.Writer (interface
+// adaptation) and Flush must reach the script Write method.
+func BufioOverScriptWriter() string {
+	w := &scrSink{}
+	bw := bufio.NewWriter(w)
+	if _, err := bw.WriteString("buf"); err != nil {
+		return "err"
+	}
+	if err := bw.Flush(); err != nil {
+		return "flush"
+	}
+	return w.got
+}
+
+// AtomicInt64Ops runs the bound sync/atomic typed cell.
+func AtomicInt64Ops() int64 {
+	var n atomic.Int64
+	n.Add(40)
+	n.Store(2)
+	return n.Load()
+}
+
+// ContextCancel confirms bound context constructors hand real host
+// contexts back and their CancelFunc is deferred-callable.
+func ContextCancel() bool {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancel()
+	return ctx.Err() != nil
+}
+
+// AtomicAndOrOld: sync/atomic's And/Or return the value before the
+// update, unlike Add which returns the new one.
+func AtomicAndOrOld() int64 {
+	var n int64 = 0b1100
+	old := atomic.AndInt64(&n, 0b1010)
+	return old*100 + n // 12*100 + 8 = 1208
+}
+
+// SlicesSortedSeq drives a bound seq producer (strings.SplitSeq returns
+// a callable iter.Seq) — sorting must consume it through a yield call.
+func SlicesSortedSeq() string {
+	return strings.Join(slices.Sorted(strings.SplitSeq("b,a,c", ",")), "|")
+}
+
+// SlicesDeleteFuncAlias: DeleteFunc updates the shared backing — the
+// original slice keeps its length, kept elements pack to the front, and
+// the vacated tail is zeroed.
+func SlicesDeleteFuncAlias() string {
+	s := []int{1, 2, 3}
+	_ = slices.DeleteFunc(s, func(i int) bool { return i == 2 })
+	return fmt.Sprint(s[0], s[1], s[2]) // "1 3 0"
+}
+
+// IoMultiReaderEmpty: a zero-arg MultiReader is a valid empty reader.
+func IoMultiReaderEmpty() int {
+	b, _ := io.ReadAll(io.MultiReader())
+	return len(b)
+}
+
+// IoCopyScriptPair: io.Copy probes src for WriterTo and dst for
+// ReaderFrom — script structs declaring only Read/Write must still
+// copy through those base methods.
+func IoCopyScriptPair() string {
+	src := &upperReader{s: "copy-pair"}
+	dst := &scrSink{}
+	if _, err := io.Copy(dst, src); err != nil {
+		return "err"
+	}
+	return dst.got
+}
+
+// ContextAfterFunc registers then cancels inside the run: the callback
+// may land before or after the process ends — either way it must not
+// crash the host.
+func ContextAfterFunc() string {
+	ctx, cancel := context.WithCancel(context.Background())
+	context.AfterFunc(ctx, func() {})
+	cancel()
+	return "ok"
+}
+
+// BufioReaderWriteToScript exercises the adapted-interface probe path:
+// (*bufio.Reader).WriteTo asserts io.ReaderFrom on the dst writer — a
+// writer that does not declare ReadFrom must copy through plain Write.
+func BufioReaderWriteToScript() string {
+	w := &scrSink{}
+	br := bufio.NewReader(&upperReader{s: "via-writeto"})
+	if _, err := br.WriteTo(w); err != nil {
+		return "err"
+	}
+	return w.got
 }
 
 func main() {}

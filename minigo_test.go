@@ -274,12 +274,40 @@ func TestStdlibIntrinsics(t *testing.T) {
 		{"JsonMarshal", `{"x":1,"ys":["a","b"]}`},
 		{"JsonMarshalStruct", `{"X":1,"Y":"a"}`},
 		{"JsonUnmarshal", "ok"},
+		{"StrconvAppendInt", "ff"},
+		{"BytesCut", "a|b"},
+		{"IoReadAllScript", "proxy-ok"},
+		{"IoReadFullCopy", "hello"},
+		{"BufioOverScriptWriter", "buf"},
+		{"AtomicInt64Ops", int64(2)},
+		{"ContextCancel", true},
+		{"AtomicAndOrOld", int64(1208)},
+		{"SlicesSortedSeq", "a|b|c"},
+		{"SlicesDeleteFuncAlias", "1 3 0"},
+		{"IoMultiReaderEmpty", int64(0)},
+		{"ContextAfterFunc", "ok"},
+		{"IoCopyScriptPair", "copy-pair"},
+		{"BufioReaderWriteToScript", "via-writeto"},
 	}
 	for _, c := range cases {
 		got := run(t, e, "./testdata/intrins", c.fn)
 		if diff := cmp.Diff(c.want, got); diff != "" {
 			t.Errorf("%s mismatch (-want +got):\n%s", c.fn, diff)
 		}
+	}
+}
+
+// TestNetHTTPRoundtrip serves and fetches a real HTTP request on
+// loopback: net/http itself is interpreted from GOROOT source — vendored
+// imports (golang.org/x/net/http/httpguts), //go:linkname bodiless decls
+// (readMIMEHeader), script values crossing host io.Reader/Writer
+// boundaries, and bound context/sync-atomic leaves all line up for a
+// `200 OK` answer.
+func TestNetHTTPRoundtrip(t *testing.T) {
+	e := newEngine(t)
+	got := run(t, e, "./testdata/httpio", "Roundtrip")
+	if diff := cmp.Diff("200 OK|hi /hello", got); diff != "" {
+		t.Errorf("Roundtrip mismatch (-want +got):\n%s", diff)
 	}
 }
 

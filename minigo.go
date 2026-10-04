@@ -46,11 +46,12 @@ type Engine struct {
 	args       []string                             // script-visible os.Args; nil = host process argv
 
 	mu    sync.Mutex
-	pkgs  map[string]*runtime.Package // by import path
-	byDir map[string]*runtime.Package // synthetic packages by dir
-	files map[string]*runtime.Package // single-file packages by abs path
-	binds map[string]*runtime.Package // host-bound packages (sessions inherit)
-	srcs  map[string]*runtime.Package // source packages behind bound paths (inspect.SourceOf)
+	pkgs  map[string]*runtime.Package     // by import path
+	byDir map[string]*runtime.Package     // synthetic packages by dir
+	files map[string]*runtime.Package     // single-file packages by abs path
+	binds map[string]*runtime.Package     // host-bound packages (sessions inherit)
+	srcs  map[string]*runtime.Package     // source packages behind bound paths (inspect.SourceOf)
+	links map[*runtime.Function]linkEntry // //go:linkname resolutions, cached per decl
 
 	// buildMu serializes package construction (locate/parse/index): two
 	// goroutines cold-loading the same package converge on one build.
@@ -225,7 +226,65 @@ func (e *Engine) newVM() *vm.VM {
 		AliasOf:     e.aliasOf,
 		FieldTypes:  e.fieldTypes,
 		ResolveType: e.resolveTypeRef,
+		Linkname:    e.linknameTarget,
 	}}
+}
+
+type linkEntry struct {
+	v   runtime.Value
+	ok  bool
+	err error
+}
+
+// linknameTarget implements the VM's Linkname hook: a bodiless
+// declaration carrying `//go:linkname local importpath.symbol` is wired
+// to that target's real implementation — stdlib internals like
+// net/http's readMIMEHeader (which links to net/textproto's) otherwise
+// compile to the zero-return shim and silently lose parsed data. A
+// one-arg directive exports the local name only, so it resolves nothing.
+func (e *Engine) linknameTarget(vc runtime.VMCaller, fn *runtime.Function) (runtime.Value, bool, error) {
+	if fn == nil || fn.Decl == nil || fn.Decl.Body != nil || fn.Decl.Doc == nil {
+		return nil, false, nil
+	}
+	e.mu.Lock()
+	if e.links == nil {
+		e.links = map[*runtime.Function]linkEntry{}
+	}
+	if ent, found := e.links[fn]; found {
+		e.mu.Unlock()
+		return ent.v, ent.ok, ent.err
+	}
+	e.mu.Unlock()
+
+	var spec string
+	for _, c := range fn.Decl.Doc.List {
+		line := strings.TrimSpace(strings.TrimPrefix(c.Text, "//"))
+		if !strings.HasPrefix(line, "go:linkname") {
+			continue
+		}
+		if f := strings.Fields(line); len(f) == 3 {
+			spec = f[2]
+		}
+	}
+	var v runtime.Value
+	var lerr error
+	ok := false
+	if i := strings.LastIndex(spec, "."); i > 0 && strings.Contains(spec[:i], "/") {
+		p, err := e.Package(context.Background(), spec[:i])
+		if err != nil {
+			lerr = err
+		} else {
+			v, lerr = p.MemberV(spec[i+1:], e.materialize, func(f *runtime.Function) error {
+				_, rerr := vc.Call(f, nil)
+				return rerr
+			})
+			ok = lerr == nil && v != nil
+		}
+	}
+	e.mu.Lock()
+	e.links[fn] = linkEntry{v: v, ok: ok, err: lerr}
+	e.mu.Unlock()
+	return v, ok, lerr
 }
 
 // NewSession returns a fresh engine sharing this engine's resolver, build
@@ -502,6 +561,13 @@ func lastElem(path string) string {
 // ---- loading ----
 
 func (e *Engine) loadPath(ctx context.Context, path string) (*runtime.Package, error) {
+	return e.loadPathFrom(ctx, "", path)
+}
+
+// loadPathFrom resolves path as imported from the package in fromDir —
+// resolver vendoring (e.g. GOROOT's src/vendor) keys off the importer's
+// location, so interpreted packages pass their own Dir through.
+func (e *Engine) loadPathFrom(ctx context.Context, fromDir, path string) (*runtime.Package, error) {
 	mode := e.pkgModes[path]
 	if mode == ModeDeny {
 		return nil, fmt.Errorf("minigo: import of %q denied by package policy", path)
@@ -518,7 +584,7 @@ func (e *Engine) loadPath(ctx context.Context, path string) (*runtime.Package, e
 	if e.resolver == nil {
 		return nil, fmt.Errorf("minigo: no resolver configured; cannot import %q", path)
 	}
-	meta, err := e.resolver.Locate(ctx, "", path)
+	meta, err := e.resolver.Locate(ctx, fromDir, path)
 	if err != nil {
 		return nil, fmt.Errorf("resolve %q: %w", path, err)
 	}
@@ -694,7 +760,7 @@ func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File) error {
 			ref := &runtime.ImportRef{
 				Path:  imp.Path,
 				Alias: imp.Alias,
-				Load:  func(path string) (*runtime.Package, error) { return e.loadPath(context.Background(), path) },
+				Load:  func(path string) (*runtime.Package, error) { return e.loadPathFrom(context.Background(), p.Dir, path) },
 			}
 			p.Imports[sf] = append(p.Imports[sf], ref)
 			if imp.Alias != "_" && imp.Alias != "." {

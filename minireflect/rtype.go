@@ -43,6 +43,10 @@ type StructField struct {
 	Anonymous bool
 }
 
+// IsExported mirrors reflect.StructField.IsExported: a field is
+// exported iff it carries no package path.
+func (f *StructField) IsExported() bool { return f.PkgPath == "" }
+
 // Method mirrors reflect.Method for the subset the facade reports.
 // Func is the method-expression value: on a pointer receiver type a
 // value-receiver member derefs its *T argument, and a promoted or
