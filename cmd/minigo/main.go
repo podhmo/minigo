@@ -211,6 +211,7 @@ const replHelp = `commands:
           globals (monkey-patch: visible to every importer here)
   :unpin  stop writing into the package; decls land in <repl> again
   :ls [ref]  list top-level decls of the current (or given) package
+  :comp <text>  print completion candidates for a code fragment
   :exit   quit (also :quit, :q, Ctrl-D)
 input is a top-level declaration or statements; a trailing
 expression is printed. new names introduced by := / var / const
@@ -304,6 +305,14 @@ func runREPL(ctx context.Context, in io.Reader, out io.Writer) error {
 					} else {
 						for _, l := range lines {
 							fmt.Fprintln(out, l)
+						}
+					}
+				case ":comp":
+					for _, c := range r.Complete(strings.TrimSpace(arg)) {
+						if c.Detail != "" {
+							fmt.Fprintf(out, "%s\t%s\t%s\n", c.Kind, c.Name, c.Detail)
+						} else {
+							fmt.Fprintf(out, "%s\t%s\n", c.Kind, c.Name)
 						}
 					}
 				case ":help":
