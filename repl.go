@@ -64,7 +64,11 @@ type REPL struct {
 	// statement — only then does EvalLine return the step's value;
 	// other inputs (decls, assignments, :=) evaluate for effect only.
 	hasValue bool
-	n        int
+	// importCands caches the import-path candidate list built for
+	// `import "..."` completion — enumerated once per session (newly
+	// fetched modules or changed go.mod requires do not refresh it).
+	importCands []Candidate
+	n           int
 }
 
 // namedExpr pairs a hoisted name with an AST expression (a declared type

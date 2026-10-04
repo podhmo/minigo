@@ -26,6 +26,15 @@ func NewGoScanResolver(startDir string, cfg BuildConfig) (*GoScanResolver, error
 	return &GoScanResolver{loc: l, cfg: cfg}, nil
 }
 
+// RootDir returns the module root the locator anchored to.
+func (r *GoScanResolver) RootDir() string { return r.loc.RootDir() }
+
+// ModulePath returns the go.mod module path ("" when there is none).
+func (r *GoScanResolver) ModulePath() string { return r.loc.ModulePath() }
+
+// Requires returns the go.mod require directives (module path -> version).
+func (r *GoScanResolver) Requires() map[string]string { return r.loc.Requires() }
+
 // Locate implements Resolver.
 func (r *GoScanResolver) Locate(ctx context.Context, fromDir, importPath string) (*PackageMeta, error) {
 	dir, err := r.loc.FindPackageDirFrom(fromDir, importPath)

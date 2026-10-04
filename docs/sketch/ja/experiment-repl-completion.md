@@ -44,7 +44,7 @@
 
 ## 2. minigo の補完に必要なもの
 
-分解すると4つの部品になる:
+分解すると5つの部品になる:
 
 1. **コンテキスト判定** — 入力の末尾を字句解析し、「`x.` や `x.pa` のセレクタ補完」か「`pa` の裸名補完」か「それ以外（`f(` の直後など、名前全般を出す）」を分類する。`go/scanner` の末尾2トークンで決まる。罠が1つ: scanner が自動挿入するセミコロン（`lit == "\n"`）はトークン列から捨てないと `x.pa` が誤分類される。
 2. **裸名の列挙** — VM の識別子解決順序をそのままなぞる: file-scope の import 名 → Globals → Index（decls）→ 無名 import のパッケージ名 → dot import のメンバー（`:cd` の疑似 import もここに乗る）→ builtins → キーワード・predeclared。要するに「読み取り版の名前解決」。
@@ -55,11 +55,13 @@
    - `hostMember` 相当 — ホスト値の reflect フィールド/メソッド列挙（`CanInterface` で未エクスポートを除く）
    - `Package` / `ImportRef` — Globals + Index。ただし **`EnsureReady` は呼ばない** — パッケージ init を走らせるのは副作用。`MemberV` の `LazyInit` 分岐と同じ制約（func/type は materialize 可、var/const は init が要る → 宣言型にフォールバック）。
 
-加えて候補のメタ情報: `Candidate{Name, Kind, Detail}`。Kind は `func/method/field/var/const/type/package/keyword/builtin`、Detail は `TypGoSpelling` / `DisplayName` でレンダリングしたシグネチャや宣言型。UI がグループ化やアイコン表示に使える粒度。
+5. **import パス列挙** — `import "...` の文字列コンテキストでは importable パスの列挙が要る。`go list` は使えないので手で集める: `e.binds`（バインド済み stdlib）、GOROOT/src のディレクトリ走査（`_`/`.`/`internal`/`testdata`/`vendor`/`cmd`/`builtin` を prune、main パッケージを除く）、go.mod の require と自モジュール配下のパッケージ（locator が既に go.mod/root/modulePath を持っている — `Requires()` だけ公開した）、そして REPL 独自の `./`/`../`/`/abs` ディレクトリ import。
+
+加えて候補のメタ情報: `Candidate{Name, Kind, Detail}`。Kind は `func/method/field/var/const/type/package/keyword/builtin`、Detail は `TypGoSpelling` / `DisplayName` でレンダリングしたシグネチャや宣言型（import パスでは `bound`/`stdlib`/`module`/`dir` の由来タグ）。UI がグループ化やアイコン表示に使える粒度。
 
 ## 3. プロトタイプ
 
-- `complete.go` — `(*REPL).Complete(line string) []Candidate`。分類 → 裸名列挙 or 基底解決 + メンバー列挙 → prefix フィルタ → ソート。
+- `complete.go` — `(*REPL).Complete(line string) []Candidate`。分類 → 裸名列挙 or 基底解決 + メンバー列挙 or importable 列挙 → prefix フィルタ → ソート。
 - `cmd/minigo` — `:comp <text>` デバッグコマンドを追加（行編集 UI は今回のスコープ外。liner/readline 系を入れれば TAB で駆動できる）。
 
 実際の出力（`var u inspectpkg.User` の後で）:
@@ -77,7 +79,22 @@ field   Name    string
 method  WriteString  func(string) (int, error)   ← nil のフィールドも宣言型で辿る
 ```
 
-テスト（`complete_test.go`、10 ケース、全て pass）:
+import 補完の実際の出力（testdata/ から）:
+
+```
+>> :comp import "str
+package strconv    bound
+package strings    bound
+package structs    stdlib
+>> :comp import "github.com/podhmo/
+package github.com/podhmo/minigo/resolve    module
+...                                    （自モジュール配下 + require）
+>> :comp import "./
+package ./inspectpkg    dir
+...                                    （cwd 配下の Go ファイルを持つディレクトリ）
+```
+
+テスト（`complete_test.go`、11 ケース、全て pass）:
 
 | ケース | 内容 |
 |---|---|
@@ -91,12 +108,13 @@ method  WriteString  func(string) (int, error)   ← nil のフィールドも�
 | chain + embeds | `u.Builder.`（nil フィールドの宣言型フォールバック）、`u.I`（nil 埋め込み `*Base` 経由の昇格フィールド）、`println(u.`（suffix fallback） |
 | dot import | `import . "./inspectpkg"` → 裸名に `Hello` |
 | slice index | `xs[0].` |
+| import paths | `import "str` → bound/stdlib、`github.com/...` → module/requires、`import "./` → ディレクトリ、エイリアス・dot 形式 |
 
 ## 4. 限界（この方式の穴）
 
 - **呼び出し結果は見えない**: `f().`/`m[k].`/`a+b.` は基底を解決できないので候補なし。eval ベースの completer なら出る。minigo には `Engine.EvalExpr`（`OpEvalAST` ブリッジ）が既にあるので、IPython 式に評価ポリシーを引数化すれば "minimal" の上の段を足せる。ただし eval はユーザーコードの副作用を走らせる — 対話の補完ではデフォルト minimal が妥当と考える。
 - **`var x = f()` の型推論なし**: 宣言型のない var は値を見るしかない。REPL 自身の名前は hoist された実値があるので解決できるが、未 init の外部パッケージの `var s = compute()` には静的にも実行時にも型がない。
-- **文字列コンテキストなし**: `import "…"` のパス、map key、`:cd`/`:ls`/`:comp` の引数は対象外。`:` 行そのものの補完はフロントエンド側の仕事（コマンド表は cmd/minigo にしかない）。
+- **文字列コンテキストは import のみ**: map key、`:cd`/`:ls`/`:comp` の引数は対象外。`:` 行そのものの補完はフロントエンド側の仕事（コマンド表は cmd/minigo にしかない）。importable 集合の列挙も近似: GOROOT は「ディレクトリに非 main パッケージがある」判定でビルド制約までは見ない、`replace` の影響は require の綴りだけ反映（import パスは module path のままなので実害なし）、`internal` は一律 prune（本来は近接ルール）。セッション中に作ったディレクトリは `importCands` キャッシュの関係で出ない。
 - **same-depth の昇格曖昧性**: 本物は compile error だが、補完は最初のヒットを取る（候補を出す側は審判ではない、という割り切り）。
 - **過剰なメソッド候補**: `methodFuncs` を ptr=true/false 両方で呼ぶので、文脈上取り得ないレシーバのメソッドも出ることがある。REPL の変数は全部 addressable なので実害は少ない。Named host box に宣言メソッドがある場合も reflect セットが併記される（実行時は declared-only）— 補完として多めに出すのは害が少ない判断。
 - **昇格メソッドの Detail**: 宣言元ファイルのスコープで `TypGoSpelling` を呼ぶので、selector 修飾された型が曖昧に見えることがある。
@@ -122,4 +140,4 @@ TODO.md の "REPL completion" エントリに列挙。大きいのは:
 
 - 行編集 UI（liner/readline 系）との接続 — `Complete` は処理系 API、TAB で駆動するにはフロントエンドが要る
 - eval ポリシー階層（`f().` など呼び出し結果の補完）
-- 文字列コンテキスト（import パス・`:cd` 引数・map key）
+- 残りの文字列コンテキスト（`:cd` 引数・map key）

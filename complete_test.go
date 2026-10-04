@@ -3,6 +3,7 @@ package minigo
 import (
 	"context"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -294,5 +295,48 @@ func TestCompleteSelectors(t *testing.T) {
 	}
 	if !hasCand(r.Complete("xs[0]."), "Greet") {
 		t.Fatalf("Greet missing in xs[0]. -> %v", candNames(r.Complete("xs[0].")))
+	}
+}
+
+func TestCompleteImportPaths(t *testing.T) {
+	e := NewEngine("testdata")
+	r := e.NewREPL()
+
+	// bound intrinsics + GOROOT stdlib share one namespace
+	cands := r.Complete(`import "str`)
+	for _, want := range []string{"strings", "strconv"} {
+		if !hasCand(cands, want) {
+			t.Fatalf("%s missing in import \"str -> %v", want, candNames(cands))
+		}
+	}
+	if hasCand(cands, "strlen") {
+		t.Fatalf("nonexistent path leaked: %v", candNames(cands))
+	}
+
+	// the module's own packages and its go.mod requires
+	if !hasCand(r.Complete(`import "github.com/podhmo/minigo/`), "github.com/podhmo/minigo/resolve") {
+		t.Fatalf("module package missing: %v", candNames(r.Complete(`import "github.com/podhmo/minigo/`)))
+	}
+	if !hasCand(r.Complete(`import "github.com/google/`), "github.com/google/go-cmp") {
+		t.Fatalf("require missing: %v", candNames(r.Complete(`import "github.com/google/`)))
+	}
+
+	// the REPL's own `./` dir imports, relative to the engine cwd
+	dc := r.Complete(`import "./`)
+	if !hasCand(dc, "./inspectpkg") {
+		t.Fatalf("./inspectpkg missing: %v", candNames(dc))
+	}
+	for _, cand := range dc {
+		if !strings.HasPrefix(cand.Name, "./") {
+			t.Fatalf("non-dir candidate leaked: %+v", cand)
+		}
+	}
+
+	// alias and dot forms end in the same string context
+	if !hasCand(r.Complete(`import s "str`), "strings") {
+		t.Fatalf("strings missing under alias import: %v", candNames(r.Complete(`import s "str`)))
+	}
+	if !hasCand(r.Complete(`import . "str`), "strings") {
+		t.Fatalf("strings missing under dot import: %v", candNames(r.Complete(`import . "str`)))
 	}
 }

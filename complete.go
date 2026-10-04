@@ -22,9 +22,13 @@ package minigo
 
 import (
 	"go/ast"
+	"go/build"
 	"go/parser"
 	"go/scanner"
 	"go/token"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strconv"
@@ -72,14 +76,20 @@ var predeclared = []string{"nil", "true", "false", "iota"}
 // cursor at end of line. A `x.` or `x.pa` tail completes selector
 // members of the base expression; an identifier tail completes bare
 // names in scope; anything else completes all bare names (e.g. after
-// `x := `). Meta-command lines (`:`-prefixed) and string literals are
-// not completed here — they belong to the front-end's own completer.
+// `x := `). An `import "...` tail completes import paths (bound
+// intrinsics, GOROOT stdlib, go.mod requires and the module's own
+// packages, or `./`/`../`/`/abs` directory imports). Meta-command
+// lines (`:`-prefixed) are not completed here — they belong to the
+// front-end's own completer.
 func (r *REPL) Complete(line string) []Candidate {
 	line = strings.TrimRight(line, " \t")
 	if strings.HasPrefix(strings.TrimSpace(line), ":") {
 		return nil
 	}
 	ctx := completeContext(line)
+	if ctx.imp {
+		return r.importCandidates(ctx.prefix)
+	}
 	c := &completer{r: r, seen: map[string]bool{}}
 	var out []Candidate
 	if ctx.selector {
@@ -102,12 +112,14 @@ func (r *REPL) Complete(line string) []Candidate {
 	return out
 }
 
-// completionCtx is the lexical tail of the line: either "selector after
-// a dot" (with the base expression's source) or "bare identifier prefix".
+// completionCtx is the lexical tail of the line: "selector after a dot"
+// (with the base expression's source), "inside an import string", or
+// "bare identifier prefix".
 type completionCtx struct {
 	selector bool   // completing after `.`
+	imp      bool   // completing inside an `import "..."` string
 	base     string // source text of the selector's base expression
-	prefix   string // the partial identifier being typed
+	prefix   string // the partial identifier (or import path) being typed
 }
 
 // completeContext tokenizes the line and classifies its tail. Only the
@@ -145,6 +157,14 @@ func completeContext(line string) completionCtx {
 		return completionCtx{}
 	}
 	last := toks[n-1]
+	// `import "str` (also `import . "`, `import name "`, `import (`)
+	// ends inside a string literal: complete import paths, not code.
+	if last.tok == token.STRING && toks[0].tok == token.IMPORT {
+		prefix := last.lit
+		prefix = strings.TrimPrefix(prefix, `"`)
+		prefix = strings.TrimSuffix(prefix, `"`)
+		return completionCtx{imp: true, prefix: prefix}
+	}
 	if last.tok == token.PERIOD {
 		return completionCtx{selector: true, base: line[:last.off]}
 	}
@@ -960,4 +980,180 @@ func (c *completer) declDetail(p *runtime.Package, d *index.Decl) string {
 		}
 	}
 	return ""
+}
+
+// importCandidates completes import paths inside `import "..."`. A
+// `./`, `../` or `/`-leading prefix completes directories (the REPL's
+// own directory-import extension); anything else completes from the
+// cached importables set.
+func (r *REPL) importCandidates(prefix string) []Candidate {
+	var out []Candidate
+	if strings.HasPrefix(prefix, ".") || strings.HasPrefix(prefix, "/") {
+		out = r.dirImportCandidates(prefix)
+	} else {
+		for _, cand := range r.importables() {
+			if strings.HasPrefix(cand.Name, prefix) {
+				out = append(out, cand)
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// dirImportCandidates lists directories holding Go files that match the
+// typed `./`, `../` or `/abs` prefix — the dir-import forms REPL
+// accepts but real Go source does not.
+func (r *REPL) dirImportCandidates(prefix string) []Candidate {
+	i := strings.LastIndex(prefix, "/")
+	dirPart := prefix[:i+1] // "./", "../x/", "/abs/to/"
+	var dir string
+	if strings.HasPrefix(dirPart, "/") {
+		dir = filepath.Clean(dirPart)
+	} else {
+		dir = filepath.Join(r.engine.WorkingDir(), dirPart)
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []Candidate
+	for _, e := range ents {
+		name := e.Name()
+		if !e.IsDir() || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") {
+			continue
+		}
+		full := dirPart + name
+		if !strings.HasPrefix(full, prefix) {
+			continue
+		}
+		if hasGoFiles(filepath.Join(dir, name)) {
+			out = append(out, Candidate{Name: full, Kind: CandPackage, Detail: "dir"})
+		}
+	}
+	return out
+}
+
+// importables enumerates the importable package paths: bound intrinsics
+// first (they shadow same-named source packages), then GOROOT stdlib,
+// then the module's own packages and its go.mod requires. Built once
+// and cached on the REPL — path sets do not change mid-session.
+func (r *REPL) importables() []Candidate {
+	if r.importCands != nil {
+		return r.importCands
+	}
+	var out []Candidate
+	seen := map[string]bool{}
+	add := func(path, detail string) {
+		if path == "" || seen[path] {
+			return
+		}
+		seen[path] = true
+		out = append(out, Candidate{Name: path, Kind: CandPackage, Detail: detail})
+	}
+	for path := range r.engine.binds {
+		add(path, "bound")
+	}
+	// stdlib: walk GOROOT/src the same way `go list std` would — dirs
+	// holding non-main Go packages, minus trees user code cannot import.
+	if goroot := build.Default.GOROOT; goroot != "" {
+		src := filepath.Join(goroot, "src")
+		_ = filepath.WalkDir(src, func(dir string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return filepath.SkipDir
+			}
+			if !d.IsDir() || dir == src {
+				return nil
+			}
+			base := d.Name()
+			if strings.HasPrefix(base, "_") || strings.HasPrefix(base, ".") ||
+				base == "internal" || base == "testdata" || base == "vendor" ||
+				base == "cmd" || base == "builtin" {
+				return filepath.SkipDir
+			}
+			if hasPackageFiles(dir) {
+				rel, _ := filepath.Rel(src, dir)
+				add(filepath.ToSlash(rel), "stdlib")
+			}
+			return nil
+		})
+	}
+	// the module: its own packages (modulePath/rel) and its requires —
+	// the spellings go.mod actually lets you import.
+	type moduleLocator interface {
+		RootDir() string
+		ModulePath() string
+		Requires() map[string]string
+	}
+	if loc, ok := r.engine.resolver.(moduleLocator); ok {
+		for mod := range loc.Requires() {
+			add(mod, "module")
+		}
+		root, mod := loc.RootDir(), loc.ModulePath()
+		if mod != "" {
+			_ = filepath.WalkDir(root, func(dir string, d fs.DirEntry, err error) error {
+				if err != nil || !d.IsDir() {
+					return nil
+				}
+				base := d.Name()
+				if strings.HasPrefix(base, "_") || strings.HasPrefix(base, ".") ||
+					base == "vendor" || base == "testdata" {
+					return filepath.SkipDir
+				}
+				if dir != root {
+					if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+						return filepath.SkipDir // nested module
+					}
+				}
+				if hasPackageFiles(dir) {
+					if rel, _ := filepath.Rel(root, dir); rel == "." {
+						add(mod, "module")
+					} else {
+						add(mod+"/"+filepath.ToSlash(rel), "module")
+					}
+				}
+				return nil
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	r.importCands = out
+	return out
+}
+
+// hasPackageFiles reports whether dir directly contains at least one
+// non-test .go file belonging to a non-main package — the cheap shape
+// of "importable" (a directory of only main/ test files cannot be).
+func hasPackageFiles(dir string) bool {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range ents {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.PackageClauseOnly)
+		if err == nil && f.Name != nil && f.Name.Name != "main" {
+			return true
+		}
+	}
+	return false
+}
+
+// hasGoFiles reports whether dir directly contains at least one non-test
+// .go file — for `./` dir imports even a main package is loadable.
+func hasGoFiles(dir string) bool {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range ents {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".go") && !strings.HasSuffix(e.Name(), "_test.go") {
+			return true
+		}
+	}
+	return false
 }
