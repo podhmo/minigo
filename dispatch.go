@@ -1,6 +1,7 @@
 package minigo
 
 import (
+	"context"
 	"fmt"
 	"go/ast"
 	"reflect"
@@ -596,7 +597,20 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 		}
 		ref, ok := scope[id.Name]
 		if !ok {
-			return nil, fmt.Errorf("unknown import %s", id.Name)
+			// minireflect's exprOf qualifies a named typedef by package
+			// PATH (e.g. <dir>/prog/x.T, reflect.Value) — the selector's
+			// qualifier is a path, not a file-scope import alias. The
+			// local package resolves through its own index; anything
+			// else loads by path.
+			if from.Pkg.Path == id.Name {
+				return e.resolveTypeRef(from, ast.NewIdent(t.Sel.Name))
+			}
+			ref = &runtime.ImportRef{
+				Path: id.Name,
+				Load: func(path string) (*runtime.Package, error) {
+					return e.loadPath(context.Background(), path)
+				},
+			}
 		}
 		p, err := ref.Materialize()
 		if err != nil {
