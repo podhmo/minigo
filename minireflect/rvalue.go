@@ -1921,6 +1921,24 @@ func (v *RValue) MethodByName(name string) *RValue {
 	if !ast.IsExported(name) {
 		return &RValue{e: v.e, vc: v.vc}
 	}
+	if v.td != nil && v.td.Kind == runtime.KindInterface {
+		// An interface-typed Value exposes only the interface's own
+		// requirements — MethodByName filters through them like Go.
+		inSet := false
+		for _, n := range exportedMethodNames(v.e.methodSet(v.td)) {
+			if n == name {
+				inSet = true
+				break
+			}
+		}
+		if !inSet {
+			return &RValue{e: v.e, vc: v.vc}
+		}
+		if v.IsNil() {
+			// Method(i) forwards here — the panic spells "Method".
+			panic(&runtime.Panic{Value: "reflect: Method on nil interface value"})
+		}
+	}
 	if v.vc == nil {
 		trap("minireflect: reflect.Value.MethodByName needs a caller context")
 	}
