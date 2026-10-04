@@ -111,6 +111,9 @@ const (
 
 	// special forms (quoted Go)
 	OpSpecialCall // A: const idx *SymbolID; B: const idx *QuotedCall — quoted args, handler fires at run time
+
+	// types / interfaces / generics (cont.)
+	OpFoldArrayLen // pop len value, pop typedef -> fold len into the typedef's array AST -> push typedef
 )
 
 // BinOp is an OpBinary sub-op.
