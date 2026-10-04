@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -99,5 +100,46 @@ func TestMapDeleteAndClear(t *testing.T) {
 	}
 	if _, ok := m.Get("b"); ok {
 		t.Fatalf("Get(b) still present after Clear")
+	}
+}
+
+// TestFoldRepeatedFrames: consecutive identical frames (recursion dumps)
+// collapse to "<entry>\n... repeated N times ..." before the head/tail
+// cap applies.
+func TestFoldRepeatedFrames(t *testing.T) {
+	f := func(s string) string { return `File "t.go", line 1, in ` + s + `()` }
+
+	// all-identical run (direct recursion) folds to entry + marker
+	frames := []string{f("f"), f("f"), f("f"), f("f")}
+	got := renderFrames(frames)
+	want := f("f") + "\n... repeated 3 more times ..."
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("all-identical run (-want +got):\n%s", diff)
+	}
+
+	// mixed runs fold independently, singletons pass through
+	frames = []string{f("a"), f("b"), f("b"), f("c"), f("d"), f("d"), f("d")}
+	want = f("a") + "\n" + f("b") + "\n... repeated 1 more times ...\n" + f("c") + "\n" + f("d") + "\n... repeated 2 more times ..."
+	got = renderFrames(frames)
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("mixed runs (-want +got):\n%s", diff)
+	}
+
+	// distinct entries are untouched
+	frames = []string{f("a"), f("b"), f("c")}
+	if got := renderFrames(frames); got != strings.Join(frames, "\n") {
+		t.Errorf("distinct frames changed:\n%s", got)
+	}
+
+	// folding precedes the cap: >maxTracebackEntries identical frames
+	// render as the single folded pair, not head/tail elision
+	frames = make([]string, maxTracebackEntries*2)
+	for i := range frames {
+		frames[i] = f("f")
+	}
+	got = renderFrames(frames)
+	want = f("f") + "\n... repeated 1999 more times ..."
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("cap-after-fold (-want +got):\n%s", diff)
 	}
 }

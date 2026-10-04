@@ -1295,6 +1295,7 @@ type SpecialContext interface {
 const maxTracebackEntries = 1000
 
 func renderFrames(frames []string) string {
+	frames = foldRepeatedFrames(frames)
 	if len(frames) <= maxTracebackEntries {
 		return strings.Join(frames, "\n")
 	}
@@ -1302,6 +1303,28 @@ func renderFrames(frames []string) string {
 	return strings.Join(frames[:half], "\n") +
 		fmt.Sprintf("\n... %d frames elided ...\n", len(frames)-maxTracebackEntries) +
 		strings.Join(frames[len(frames)-half:], "\n")
+}
+
+// foldRepeatedFrames collapses runs of the same entry into
+// "<entry>\n... repeated N times ..." — the shape CPython prints for a
+// RecursionError. A stack-exhausted recursion otherwise renders the same
+// frame hundreds of times, which is noise for a human and context poison
+// for an agent. Folding runs before the head/tail cap so the cap
+// measures the folded list.
+func foldRepeatedFrames(frames []string) []string {
+	out := make([]string, 0, len(frames))
+	for i := 0; i < len(frames); {
+		j := i + 1
+		for j < len(frames) && frames[j] == frames[i] {
+			j++
+		}
+		out = append(out, frames[i])
+		if n := j - i; n > 1 {
+			out = append(out, fmt.Sprintf("... repeated %d more times ...", n-1))
+		}
+		i = j
+	}
+	return out
 }
 
 // Panic is a script-level panic value; catchable by recover().
