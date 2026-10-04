@@ -53,11 +53,6 @@ type Hooks struct {
 	MethodSetOf func(v runtime.Value) (map[string]bool, bool, error)
 	// IfaceReqs returns the required method set of an interface typedef.
 	IfaceReqs func(td *runtime.TypeDef) (map[string]bool, error)
-	// FindMethod resolves a promoted method on a struct through embedded
-	// fields: (fn, recv, true) binds fn to recv; (nil, field, true) means
-	// the embedded field is interface-typed and the VM should select the
-	// member on the stored concrete value.
-	FindMethod func(s *runtime.Struct, name string) (*runtime.Function, runtime.Value, bool)
 	// ElemOf returns the element typedef of a container typedef ([]T->T,
 	// map[K]V->V, chan T->T, *T->T) — used by elided composite literal
 	// elements (`{{1,2}}` inside `[][]int`).
@@ -2759,43 +2754,46 @@ func (v *VM) structMember(f *frame, s *runtime.Struct, name string, recv runtime
 		}
 		return &runtime.BoundMethod{Recv: r, Fn: m}
 	}
-	// promoted field: embedded fields expose their members one level up
-	// (Go 1.27 also accepts them as composite-literal keys). Breadth
-	// beats depth here the same way it does for promoted methods.
-	if inner, j, hrecv, ok := v.promotedField(f, s, name, true); ok {
-		if hrecv != nil {
-			return v.selectMember(f, hrecv, name)
+	// promoted member: fields, methods, interface-stored values and
+	// host members all compete at promotion depth, breadth-first like
+	// Go (the same walk composite-literal keys use).
+	if pr, ok := v.promotedMember(f, s, name, true); ok {
+		switch {
+		case pr.host != nil:
+			return v.selectMember(f, pr.host, name)
+		case pr.st != nil:
+			return pr.st.Fields[pr.idx]
+		case pr.m == nil:
+			// interface-typed embedded field: dispatch on the
+			// stored concrete value.
+			return v.selectMember(f, pr.recv, name)
 		}
-		return inner.Fields[j]
-	}
-	// promoted method: reach through embedded fields via the engine hook
-	if v.H.FindMethod != nil {
-		if m, rcv, ok := v.H.FindMethod(s, name); ok {
-			if m == nil {
-				// interface-typed embedded field: dispatch on the stored value
-				return v.selectMember(f, rcv, name)
-			}
-			if err := m.EnsureCompiled(); err != nil {
-				f.trap("%s", err)
-			}
-			r := rcv
-			if m.PtrRecv {
-				if _, ok := runtime.Deref(r); !ok {
+		m := pr.m
+		if err := m.EnsureCompiled(); err != nil {
+			f.trap("%s", err)
+		}
+		r := pr.recv
+		if m.PtrRecv {
+			// pointer receiver needs an addressable reference —
+			// except a nil embedded pointer, which Go passes to
+			// the method as the nil receiver itself.
+			if _, ok := runtime.Deref(r); !ok {
+				if _, isNil := r.(*runtime.TypedNil); !isNil {
 					r = &runtime.Cell{Elem: r}
 				}
-			} else {
-				if dv, ok := runtime.Deref(r); ok {
-					r = dv
-				} else if tn, isNil := r.(*runtime.TypedNil); isNil && tn.Typ != nil && tn.Typ.Kind == runtime.KindPointer {
-					// a value method promoted through a nil embedded
-					// pointer dereferences it at selection — `a.h()`
-					// on A{B{*D}} with D nil panics like Go.
-					panic(runtime.NilDerefPanic())
-				}
-				r = valueCopy(r)
 			}
-			return &runtime.BoundMethod{Recv: r, Fn: m}
+		} else {
+			if dv, ok := runtime.Deref(r); ok {
+				r = dv
+			} else if tn, isNil := r.(*runtime.TypedNil); isNil && tn.Typ != nil && tn.Typ.Kind == runtime.KindPointer {
+				// a value method promoted through a nil embedded
+				// pointer dereferences it at selection — `a.h()`
+				// on A{B{*D}} with D nil panics like Go.
+				panic(runtime.NilDerefPanic())
+			}
+			r = valueCopy(r)
 		}
+		return &runtime.BoundMethod{Recv: r, Fn: m}
 	}
 	f.trap("%s has no field or method %s", def.Name, name)
 	return nil
@@ -2863,11 +2861,15 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 				return s.Fields[i]
 			}
 		}
-		if inner, j, hrecv, ok := v.promotedField(f, s, name, true); ok {
-			if hrecv != nil {
-				return v.selectMember(f, hrecv, name)
+		if pr, ok := v.promotedMember(f, s, name, true); ok {
+			if pr.host != nil {
+				return v.selectMember(f, pr.host, name)
 			}
-			return inner.Fields[j]
+			if pr.st != nil {
+				return pr.st.Fields[pr.idx]
+			}
+			// a defined type does not inherit promoted methods or
+			// interface specs — fall through to the no-member trap.
 		}
 	}
 	f.trap("%s has no field or method %s", tdName(n.Typ), name)
@@ -2903,16 +2905,21 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 				return
 			}
 		}
-		if inner, j, hrecv, ok := v.promotedField(f, b, name, true); ok {
-			if hrecv != nil {
-				v.setField(f, hrecv, name, val)
+		if pr, ok := v.promotedMember(f, b, name, true); ok {
+			if pr.host != nil {
+				v.setField(f, pr.host, name, val)
 				return
 			}
-			var ft *runtime.TypeDef
-			if fts := v.fieldTypedefs(inner.Def); j < len(fts) {
-				ft = fts[j]
+			if pr.st == nil {
+				// a promoted method/interface member is not
+				// assignable — `s.M = x` has no field in Go either.
+				f.trap("%s has no field %s", b.Def.Name, name)
 			}
-			inner.Fields[j] = v.coerce(f, val, ft)
+			var ft *runtime.TypeDef
+			if fts := v.fieldTypedefs(pr.st.Def); pr.idx < len(fts) {
+				ft = fts[pr.idx]
+			}
+			pr.st.Fields[pr.idx] = v.coerce(f, val, ft)
 			return
 		}
 		f.trap("%s has no field %s", b.Def.Name, name)
@@ -3029,46 +3036,66 @@ func (v *VM) fieldTypedefs(td *runtime.TypeDef) []*runtime.TypeDef {
 	return fts
 }
 
-// promotedField locates `name` among s's promoted (embedded) fields,
-// breadth-first: the shallowest level wins and multiple hits at the same
-// level trap as ambiguous (Go rejects them at compile time). Host-typed
-// embeds (sync.Mutex, sync.Pool, ...) join the search as leaves — their
+// promoted is the promoted (embedded) member that won the breadth-first
+// search in promotedMember — exactly one shape is set:
+//
+//   - st+idx: a field — st.Fields[idx] is the value
+//   - m+recv: a method — recv is the embedded field value it binds to
+//   - recv only (m == nil): an interface-typed embedded field — the
+//     member dispatches dynamically on the stored value
+//   - host: a value reached through a host-embedded field — the member
+//     still has to be selected on it (host fields and methods share the
+//     namespace there)
+type promoted struct {
+	st   *runtime.Struct
+	idx  int
+	m    *runtime.Function
+	recv runtime.Value
+	host runtime.Value
+}
+
+// methCand is a promoted method found at one BFS level: the declared
+// function plus the embedded field value it binds to.
+type methCand struct {
+	m    *runtime.Function
+	recv runtime.Value
+}
+
+// promotedMember locates `name` among s's promoted (embedded) members —
+// fields, methods, interface-stored values and host members — using the
+// same breadth-first layering as inspect.MethodSetOf: the shallowest
+// embed depth wins and multiple hits at the same level trap as
+// ambiguous (Go rejects them at compile time). Host-typed embeds
+// (sync.Mutex, sync.Pool, ...) join the search as leaves — their
 // promoted surface is the boxed value's exported fields and methods, so
 // a name promoted through a host embed and a script embed at the same
-// depth is ambiguous too. A host hit returns the embedded value itself
-// (third result) for the caller to select on. Script-embed methods are
-// counted for the ambiguity check but not returned (they dispatch
-// through findMethod). allowPtr controls whether *T embeds are
-// traversed — composite-literal keys forbid pointer indirection (Go
-// reports "invalid implicit pointer indirection"), while selector
-// access allows it and a nil embedded pointer panics on the way
-// through, like Go.
-func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bool) (*runtime.Struct, int, runtime.Value, bool) {
-	if v.H.ResolveType == nil {
-		return nil, 0, nil, false
-	}
-	type slot struct {
-		st  *runtime.Struct
-		idx int
-	}
-	// a host member's absolute resolution depth includes the embedding
-	// inside the host type itself (template.Template → *parse.Tree →
-	// Root), so a hit can land below the level that discovered it.
-	type hostHit struct {
-		abs  int
-		recv runtime.Value
+// depth is ambiguous too. Members that exist only through a nil
+// embedded pointer are recorded as they cross the nil link: a nil path
+// strictly shallower than every real hit still wins — Go selects it,
+// then a field read or value-receiver call panics on the implicit
+// dereference while a pointer-receiver method binds the nil — and a
+// same-depth tie is ambiguous like Go's compile-time rejection.
+// allowPtr controls whether *T embeds are traversed — composite-literal
+// keys forbid pointer indirection (Go reports "invalid implicit pointer
+// indirection"), while selector access allows it.
+func (v *VM) promotedMember(f *frame, s *runtime.Struct, name string, allowPtr bool) (*promoted, bool) {
+	if v.H.ResolveType == nil || v.H.IfaceReqs == nil {
+		return nil, false
 	}
 	var hostHits []hostHit
 	level := []*runtime.Struct{s}
 	// nilDepth/nilPaths track resolutions that exist only through a nil
-	// embedded pointer: Go selects fields statically, so such a field is
-	// not "undefined" — reaching it panics on the implicit dereference
-	// (and a same-depth tie with a real path is ambiguous, like Go's
-	// compile-time rejection).
+	// embedded pointer: Go selects members statically, so such a member
+	// is not "undefined" — reaching it binds a nil receiver or panics
+	// on the implicit dereference (and a same-depth tie with a real
+	// path is ambiguous, like Go's compile-time rejection). Members
+	// behind the nil are never bindable — reaching them dereferences
+	// the nil pointer, so a winning nil path always panics.
 	nilDepth, nilPaths := 0, 0
 	for depth := 0; len(level) > 0 && depth < 32; depth++ {
 		var hits []slot
-		methHits := 0
+		var methCands []methCand
+		var ifaceCands []runtime.Value
 		var next []*runtime.Struct
 		for _, st := range level {
 			if st == nil || st.Def == nil {
@@ -3095,6 +3122,18 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 				raw := embTd
 				embTd = v.peelNamed(embTd)
 				if embTd == nil {
+					continue
+				}
+				if embTd.Kind == runtime.KindInterface {
+					// an interface embed promises its method set
+					// through the stored value — it competes at the
+					// same depth as fields and declared methods, and
+					// dispatches dynamically on the concrete value.
+					if idx < len(st.Fields) {
+						if reqs, err := v.H.IfaceReqs(embTd); err == nil && reqs[name] {
+							ifaceCands = append(ifaceCands, st.Fields[idx])
+						}
+					}
 					continue
 				}
 				if embTd.HostNew != nil {
@@ -3130,19 +3169,22 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 					hostHits = append(hostHits, hostHit{abs, runtime.Unwrap(recv)})
 					continue
 				}
-				if _, ok := raw.Methods[name]; ok {
-					// promoted methods resolve through findMethod, but
-					// they still collide: a same-depth field or host
-					// member with the name makes the selector ambiguous,
-					// like Go's compile-time rejection. Only the embed's
-					// own methods count — a defined type does not inherit
-					// the underlying type's methods.
-					methHits++
-					continue
+				// a promoted method competes at the same depth as a
+				// field — the receiver is the embedded field value
+				// itself. Only the embed's own methods count — a
+				// defined type does not inherit the underlying type's
+				// methods — except through an alias, which IS its
+				// target type (`type A = T` promotes T's methods).
+				mtd := raw
+				if raw.Kind == runtime.KindAlias {
+					mtd = embTd
+				}
+				if m, ok := mtd.Methods[name]; ok && idx < len(st.Fields) {
+					methCands = append(methCands, methCand{m, st.Fields[idx]})
 				}
 				if len(embTd.Fields) == 0 {
-					// non-struct embeds (interfaces, basics) promote no
-					// fields — methods dispatch through FindMethod.
+					// non-struct embeds (interfaces, basics) promote
+					// nothing else.
 					continue
 				}
 				j := -1
@@ -3160,9 +3202,17 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 					}
 					if ptr {
 						// a nil embedded pointer cannot be searched
-						// by value — ask the type whether the field
+						// by value — ask the type whether the member
 						// exists deeper, and at which depth.
 						if d, c := v.embedTypeDepth(embTd, name, map[*runtime.TypeDef]bool{}); d > 0 {
+							abs := depth + 1 + d
+							if nilDepth == 0 || abs < nilDepth {
+								nilDepth, nilPaths = abs, c
+							} else if abs == nilDepth {
+								nilPaths += c
+							}
+						}
+						if d, c := v.embedTypeMethodDepth(embTd, name, map[*runtime.TypeDef]bool{}); d > 0 {
 							abs := depth + 1 + d
 							if nilDepth == 0 || abs < nilDepth {
 								nilDepth, nilPaths = abs, c
@@ -3194,25 +3244,31 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 			}
 		}
 		hostHits = keep
-		total := len(hits) + len(thisHost) + methHits
+		total := len(hits) + len(thisHost) + len(methCands) + len(ifaceCands)
 		if total > 0 {
 			if nilDepth > 0 && nilDepth <= depth+1 {
-				// a nil path ties the real field's depth — Go
-				// rejects the selector as ambiguous.
-				f.trap("ambiguous selector %s", name)
+				// a nil path at this level makes the selector
+				// ambiguous; a strictly shallower nil member wins
+				// outright — Go selects it, then the nil binds or
+				// panics.
+				if nilDepth == depth+1 || nilPaths > 1 {
+					f.trap("ambiguous selector %s", name)
+				}
+				panic(runtime.NilDerefPanic())
 			}
 			if total > 1 {
 				f.trap("ambiguous selector %s", name)
 			}
-			if len(thisHost) == 1 {
-				return nil, 0, thisHost[0], true
+			switch {
+			case len(thisHost) == 1:
+				return &promoted{host: thisHost[0]}, true
+			case len(methCands) == 1:
+				return &promoted{m: methCands[0].m, recv: methCands[0].recv}, true
+			case len(ifaceCands) == 1:
+				return &promoted{recv: ifaceCands[0]}, true
+			default:
+				return &promoted{st: hits[0].st, idx: hits[0].idx}, true
 			}
-			if len(hits) == 1 {
-				return hits[0].st, hits[0].idx, nil, true
-			}
-			// a sole promoted-method hit at this depth — it is
-			// not a field, so let findMethod bind it below.
-			return nil, 0, nil, false
 		}
 		if nilDepth > 0 && nilDepth <= depth+1 {
 			if nilPaths > 1 {
@@ -3248,7 +3304,7 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 		if n > 1 {
 			f.trap("ambiguous selector %s", name)
 		}
-		return nil, 0, recv, true
+		return &promoted{host: recv}, true
 	}
 	if nilDepth > 0 {
 		if nilPaths > 1 {
@@ -3256,7 +3312,22 @@ func (v *VM) promotedField(f *frame, s *runtime.Struct, name string, allowPtr bo
 		}
 		panic(runtime.NilDerefPanic())
 	}
-	return nil, 0, nil, false
+	return nil, false
+}
+
+type slot struct {
+	st  *runtime.Struct
+	idx int
+}
+
+// hostHit is a host member's pending resolution: the absolute depth at
+// which it would win — which includes the embedding inside the host
+// type itself (template.Template → *parse.Tree → Root), so a hit can
+// land below the level that discovered it — and the embedded value to
+// select on.
+type hostHit struct {
+	abs  int
+	recv runtime.Value
 }
 
 // hostMemberInner reports how deeply name is promoted inside the boxed
@@ -3431,6 +3502,79 @@ func (v *VM) embedTypeDepth(td *runtime.TypeDef, name string, seen map[*runtime.
 				if sd, sc := v.embedTypeDepth(et, name, seen); sd > 0 {
 					d, c = 1+sd, sc
 				}
+			}
+		}
+		if d == 0 {
+			continue
+		}
+		if best == 0 || d < best {
+			best, cnt = d, c
+		} else if d == best {
+			cnt += c
+		}
+	}
+	return best, cnt
+}
+
+// embedTypeMethodDepth is embedTypeDepth for methods: whether `name`
+// promotes through td's own embedded types, the shallowest relative
+// depth at which it resolves (1 = a method declared on a type embedded
+// in td), and how many distinct paths reach it at that depth. Any
+// member found this way lives inside the nil pointer that triggered the
+// type-level walk — reaching its receiver dereferences the nil, so the
+// hit is never bindable: it counts for depth and ambiguity and panics
+// on use. Depth 0 means unreachable.
+func (v *VM) embedTypeMethodDepth(td *runtime.TypeDef, name string, seen map[*runtime.TypeDef]bool) (int, int) {
+	if td == nil || seen[td] || v.H.ResolveType == nil || v.H.IfaceReqs == nil {
+		return 0, 0
+	}
+	seen[td] = true
+	defer delete(seen, td)
+	best, cnt := 0, 0
+	for k, spec := range td.EmbedSpecs {
+		texpr := spec
+		if sx, ok := spec.(*ast.StarExpr); ok {
+			texpr = sx.X
+		}
+		if k >= len(td.EmbedIdx) {
+			continue
+		}
+		et, err := v.H.ResolveType(td, texpr)
+		if err != nil || et == nil {
+			continue
+		}
+		raw := et
+		et = v.peelNamed(et)
+		if et == nil {
+			continue
+		}
+		d, c := 0, 1
+		switch {
+		case et.Kind == runtime.KindInterface:
+			// an embedded interface promises name through the
+			// stored value — it exists at this depth.
+			if reqs, err := v.H.IfaceReqs(et); err == nil && reqs[name] {
+				d = 1
+			}
+		case et.HostNew != nil:
+			if inner := hostMemberInner(et.HostNew(), name, et == raw); inner >= 0 {
+				d = 1 + inner
+			}
+		default:
+			// only the embed's own methods — a defined type does not
+			// inherit the underlying type's methods — except through
+			// an alias, which IS its target type.
+			mtd := raw
+			if raw.Kind == runtime.KindAlias {
+				mtd = et
+			}
+			if _, ok := mtd.Methods[name]; ok {
+				d = 1
+			}
+		}
+		if d == 0 {
+			if sd, sc := v.embedTypeMethodDepth(et, name, seen); sd > 0 {
+				d, c = 1+sd, sc
 			}
 		}
 		if d == 0 {
@@ -4009,7 +4153,7 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 // declared field wins by name; otherwise the key resolves through
 // promoted (embedded) fields — Go 1.27's promoted-field literal keys.
 // Pointer embeds cannot supply literal keys (Go rejects "invalid
-// implicit pointer indirection"), so promotedField is called with
+// implicit pointer indirection"), so promotedMember is called with
 // allowPtr=false.
 func (v *VM) setLitField(f *frame, s *runtime.Struct, def *runtime.TypeDef, fts []*runtime.TypeDef, name string, val runtime.Value) bool {
 	for fi, fn := range def.Fields {
@@ -4022,16 +4166,19 @@ func (v *VM) setLitField(f *frame, s *runtime.Struct, def *runtime.TypeDef, fts 
 			return true
 		}
 	}
-	if inner, j, hrecv, ok := v.promotedField(f, s, name, false); ok {
-		if hrecv != nil {
-			v.setField(f, hrecv, name, val)
+	if pr, ok := v.promotedMember(f, s, name, false); ok {
+		if pr.host != nil {
+			v.setField(f, pr.host, name, val)
 			return true
 		}
-		var ft *runtime.TypeDef
-		if ifts := v.fieldTypedefs(inner.Def); j < len(ifts) {
-			ft = ifts[j]
+		if pr.st == nil {
+			return false // methods don't promote into literal keys
 		}
-		inner.Fields[j] = v.coerce(f, val, ft)
+		var ft *runtime.TypeDef
+		if ifts := v.fieldTypedefs(pr.st.Def); pr.idx < len(ifts) {
+			ft = ifts[pr.idx]
+		}
+		pr.st.Fields[pr.idx] = v.coerce(f, val, ft)
 		return true
 	}
 	return false
