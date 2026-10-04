@@ -6900,26 +6900,7 @@ func spelledTyp(td *runtime.TypeDef) string {
 	if td == nil {
 		return "interface {}"
 	}
-	if td.Name != "" {
-		switch td.Name {
-		case "byte":
-			return "uint8"
-		case "rune":
-			return "int32"
-		case "any":
-			return "interface {}"
-		}
-		// imported typedefs spell their own package ("io.Writer"); only
-		// the script's own names need the package prefix.
-		if td.Pkg != nil && td.Pkg.Name != "" && !strings.Contains(td.Name, ".") {
-			return td.Pkg.Name + "." + td.Name
-		}
-		return td.Name
-	}
-	if td.Anon != nil {
-		return typeExprName(td.Anon)
-	}
-	return tdName(td)
+	return runtime.DisplayName(td)
 }
 
 // typeAssertOK implements the comma-ok form: pushes Tuple{val, ok}.
