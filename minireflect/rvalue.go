@@ -1795,6 +1795,29 @@ func (v *RValue) Set(x *RValue) {
 	v.set(val)
 }
 
+// SetZero resets the value to its type's zero value — Go 1.20's
+// writable zeroing. Same settability gates as Set; works on every
+// kind, so there is no type check on the way out.
+func (v *RValue) SetZero() {
+	v.mustValid("SetZero")
+	if v.host() {
+		v.rv.SetZero()
+		return
+	}
+	v.mustBeSettable("SetZero")
+	// a tagged host box zeroes through its pointer like Set's pointee
+	// write — the box keeps its identity, its contents go to zero.
+	if cur, ok := v.get().(*runtime.Named); ok && cur.Typ != nil && cur.Typ == v.td && cur.Typ.HostNew != nil {
+		if gv, ok := cur.V.(*runtime.GoValue); ok {
+			if hv := reflect.ValueOf(gv.V); hv.IsValid() && hv.Kind() == reflect.Pointer && !hv.IsNil() {
+				hv.Elem().SetZero()
+				return
+			}
+		}
+	}
+	v.set(v.e.zeroOf(v.vc, v.td))
+}
+
 // SetBool writes a bool.
 func (v *RValue) SetBool(b bool) {
 	v.mustValid("SetBool")
