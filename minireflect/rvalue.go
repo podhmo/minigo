@@ -1080,12 +1080,9 @@ func (v *RValue) Grow(n int) {
 	if v.Kind() != reflect.Slice {
 		trap("call of reflect.Value.Grow on %s Value", v.kindStr())
 	}
-	sl, _ := runtime.Unwrap(v.get()).(*runtime.Slice)
-	if sl == nil {
-		// a nil slice grows like an empty one — the header's cap
-		// rises and the value becomes a live (non-nil) slice.
-		sl = &runtime.Slice{Typ: v.td}
-	}
+	// a nil slice grows like an empty one — the header's cap
+	// rises and the value becomes a live (non-nil) slice.
+	sl := v.sliceView()
 	// Go judges the argument before the capacity math: a negative n
 	// panics even when the slice could absorb it.
 	if n < 0 {
@@ -1557,16 +1554,9 @@ func (v *RValue) Bytes() any {
 		trap("call of reflect.Value.Bytes on %s Value", v.kindStr())
 		return nil
 	}
-	var s *runtime.Slice
-	switch x := v.get().(type) {
-	case *runtime.Slice:
-		s = x
-	case *runtime.Named:
-		s, _ = x.V.(*runtime.Slice)
-	}
-	if s == nil { // a zero/nil Value of slice type (reflect.Zero)
-		s = &runtime.Slice{Typ: v.td}
-	}
+	// a zero/nil Value of slice type (reflect.Zero) reads as an
+	// empty header of the declared type.
+	s := v.sliceView()
 	et := v.e.elemOf(v.td)
 	if et == nil {
 		et = v.e.elemOf(s.Typ)
@@ -1831,6 +1821,19 @@ func (v *RValue) SetInt(x int64) {
 	v.expectKind("SetInt", reflect.Int, reflect.Int8, reflect.Int16,
 		reflect.Int32, reflect.Int64)
 	v.set(truncInt(v.declTd(), x))
+}
+
+// sliceView resolves the *runtime.Slice a slice accessor reads — Named
+// boxes unwrap to their payload — and a nil or non-slice value yields
+// an empty header of the declared type. Grow and Bytes normalize their
+// targets this way; SetLen/SetCap keep their own read since a non-slice
+// Named must still trap rather than normalize.
+func (v *RValue) sliceView() *runtime.Slice {
+	s, _ := runtime.Unwrap(v.get()).(*runtime.Slice)
+	if s == nil {
+		s = &runtime.Slice{Typ: v.td}
+	}
+	return s
 }
 
 // SetUint writes a uint64 (kept as int64 in the script domain),
