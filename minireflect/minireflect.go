@@ -27,6 +27,7 @@ import (
 	"reflect"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/podhmo/minigo/runtime"
 )
@@ -65,7 +66,26 @@ type Hooks struct {
 // hooks. One Env backs one engine's reflect bind.
 type Env struct {
 	h     Hooks
-	types sync.Map // canonical key -> *RType
+	types sync.Map     // canonical key -> *RType
+	vc    atomic.Value // runtime.VMCaller — the engine that bound this Env
+}
+
+// note records the engine's caller context on every builtin entry. One
+// Env serves one engine, so the first non-nil caller is the right VM
+// for facade callbacks created on secondary paths (Type.Method Func,
+// host method thunks) that hold no caller of their own.
+func (e *Env) note(vc runtime.VMCaller) {
+	if vc != nil {
+		e.vc.Store(vc)
+	}
+}
+
+// caller returns the recorded engine caller, nil before any builtin ran.
+func (e *Env) caller() runtime.VMCaller {
+	if x := e.vc.Load(); x != nil {
+		return x.(runtime.VMCaller)
+	}
+	return nil
 }
 
 // Symbols returns the symbols bound under the "reflect" import path.
@@ -173,7 +193,10 @@ func Symbols(h Hooks) map[string]runtime.Value {
 
 // fn wraps a facade function as a BuiltinFunc.
 func (e *Env) fn(name string, f func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error)) *runtime.BuiltinFunc {
-	return &runtime.BuiltinFunc{Name: name, Fn: f}
+	return &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		e.note(vc)
+		return f(vc, args)
+	}}
 }
 
 // typeFor is the generic builtin behind reflect.TypeFor[T]: the type
@@ -184,7 +207,8 @@ func (e *Env) typeFor() *runtime.BuiltinFunc {
 		Fn: func(runtime.VMCaller, []runtime.Value) (runtime.Value, error) {
 			return nil, fmt.Errorf("reflect.TypeFor requires a type argument")
 		},
-		GenFn: func(vm runtime.VMCaller, targs []runtime.Value, args []runtime.Value) (runtime.Value, error) {
+		GenFn: func(vc runtime.VMCaller, targs []runtime.Value, args []runtime.Value) (runtime.Value, error) {
+			e.note(vc)
 			if len(targs) != 1 {
 				return nil, fmt.Errorf("reflect.TypeFor takes 1 type argument, got %d", len(targs))
 			}
@@ -214,6 +238,7 @@ func (e *Env) typeAssert() *runtime.BuiltinFunc {
 			return nil, fmt.Errorf("reflect.TypeAssert requires a type argument")
 		},
 		GenFn: func(vc runtime.VMCaller, targs []runtime.Value, args []runtime.Value) (runtime.Value, error) {
+			e.note(vc)
 			if len(targs) != 1 {
 				return nil, fmt.Errorf("reflect.TypeAssert takes 1 type argument, got %d", len(targs))
 			}
