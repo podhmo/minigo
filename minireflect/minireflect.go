@@ -627,18 +627,38 @@ func (e *Env) makeFunc(vc runtime.VMCaller, args []runtime.Value) (runtime.Value
 				return nil, err
 			}
 			raw := runtime.Unwrap(r)
+			var outElems []runtime.Value
 			if tn, ok := raw.(*runtime.TypedNil); ok && tn.Typ != nil && tn.Typ.Kind == runtime.KindSlice {
-				return runtime.NIL, nil // `return nil` — no outputs
+				outElems = nil // `return nil` — an empty out list
+			} else if raw == runtime.NIL {
+				outElems = nil
+			} else {
+				outs, ok := raw.(*runtime.Slice)
+				if !ok || outs == nil {
+					return nil, fmt.Errorf("reflect.MakeFunc: callback returned %T, not []reflect.Value", r)
+				}
+				outElems = outs.Elems
 			}
-			if raw == runtime.NIL {
-				return runtime.NIL, nil
+			// Go checks the callback's outputs against the produced
+			// func's signature as the call returns: the count must
+			// match exactly and every out must be assignable to the
+			// declared type (`return nil` counts as zero outs).
+			if len(outElems) != t.NumOut() {
+				plain("reflect: wrong return count from function created by MakeFunc")
 			}
-			outs, ok := raw.(*runtime.Slice)
-			if !ok || outs == nil {
-				return nil, fmt.Errorf("reflect.MakeFunc: callback returned %T, not []reflect.Value", r)
+			for i, el := range outElems {
+				if rv := asRValue(el); rv != nil {
+					if !rv.IsValid() {
+						plain("reflect: function created by MakeFunc using closure returned zero Value")
+					}
+					xt := rv.Type()
+					if ot := t.Out(i); ot != nil && xt != nil && !xt.AssignableTo(ot) {
+						plain("reflect.MakeFunc: value of type %s is not assignable to type %s", xt.String(), ot.String())
+					}
+				}
 			}
-			vals := make([]runtime.Value, len(outs.Elems))
-			for i, el := range outs.Elems {
+			vals := make([]runtime.Value, len(outElems))
+			for i, el := range outElems {
 				if rv := asRValue(el); rv != nil {
 					vals[i] = normVal(rv.ifaceVal())
 				} else {
