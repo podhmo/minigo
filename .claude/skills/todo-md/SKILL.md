@@ -49,4 +49,12 @@ conflict-free.
 Never read it whole. `rg <symbol>` to find the entry, then read the
 surrounding window (`rg -C 20`, or an offset read).
 
+## Porting this scheme to another repo
+
+Copy this skill directory wholesale, then seed the tracker from the
+bundled starters — [example-TODO.md](example-TODO.md) and
+[example-TODO-archive.md](example-TODO-archive.md) — which carry the
+header notices and a minimal worked example (open/`[-]`/`[x]` shapes plus
+`> parent:` archive lines).
+
 See [why.md](why.md) for the background of this scheme.
