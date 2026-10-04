@@ -1073,6 +1073,60 @@ func (v *RValue) Slice(i, j int) *RValue {
 	return nil
 }
 
+// Slice3 produces a capacity-bounded subslice like Go's three-index
+// slicing: the result has len j-i and cap k-i, so i <= j <= k <= cap.
+// Strings are not sliceable this way — only slices and addressable
+// arrays, matching the ValueError kind check.
+func (v *RValue) Slice3(i, j, k int) *RValue {
+	v.mustValid("Slice3")
+	if v.host() {
+		return v.e.wrapHost(v.vc, v.rv.Slice3(i, j, k))
+	}
+	switch s := v.get().(type) {
+	case *runtime.Slice:
+		// same addressability-before-bounds order as Slice.
+		if at := arrayTypeOf(s.Typ); at != nil && v.ref == nil {
+			plain("reflect.Value.Slice3: slice of unaddressable array")
+		}
+		if i < 0 || j < i || j > k || k > cap(s.Elems) {
+			plain("reflect.Value.Slice3: slice index out of bounds")
+		}
+		// the three-index Elems[i:j:k] clamps the view's cap to k-i —
+		// reslicing the result stays bounded by k like Go.
+		if at := arrayTypeOf(s.Typ); at != nil {
+			st := &runtime.TypeDef{Kind: runtime.KindSlice, Elem: v.e.elemOf(s.Typ),
+				Anon: &ast.ArrayType{Elt: at.Elt}}
+			return &RValue{e: v.e, vc: v.vc,
+				val: &runtime.Slice{Elems: s.Elems[i:j:k], Typ: st}, td: st, ro: v.ro}
+		}
+		return &RValue{e: v.e, vc: v.vc,
+			val: &runtime.Slice{Elems: s.Elems[i:j:k], Typ: s.Typ}, td: v.td, ro: v.ro}
+	case *runtime.Named:
+		// named slices view through the underlying like Slice — and a
+		// named string traps as a string, not a slice.
+		var ref runtime.Value
+		if v.ref != nil {
+			ref = &runtime.Cell{Elem: s.V}
+		}
+		nv := &RValue{e: v.e, vc: v.vc, val: s.V, ref: ref, td: v.td, ro: v.ro}
+		r := nv.Slice3(i, j, k)
+		if _, typed := r.val.(*runtime.TypedNil); !typed {
+			r.val = &runtime.Named{Typ: s.Typ, V: runtime.Unwrap(r.val)}
+		}
+		return r
+	case *runtime.TypedNil:
+		if v.Kind() == reflect.Slice {
+			// a nil slice's cap is 0, so only the zero reslice fits.
+			if i == 0 && j == 0 && k == 0 {
+				return &RValue{e: v.e, vc: v.vc, val: s, td: v.td, ro: v.ro}
+			}
+			plain("reflect.Value.Slice3: slice index out of bounds")
+		}
+	}
+	trap("call of reflect.Value.Slice3 on %s Value", v.kindStr())
+	return nil
+}
+
 // Grow expands a slice's capacity like Go 1.20 — Go checks
 // addressability before the slice kind, and only the cap side of the
 // header changes (len stays). The resulting cap follows the runtime's
