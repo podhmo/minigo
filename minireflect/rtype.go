@@ -263,74 +263,6 @@ func hostTypeKey(rt reflect.Type) string {
 	return "anon:" + rt.String()
 }
 
-// displayName renders a td the way reflect.Type.String() would.
-func (e *Env) typeName(td *runtime.TypeDef) string {
-	if td == nil {
-		return "<nil>"
-	}
-	if td.Name != "" {
-		if td.Pkg != nil && td.Pkg.Name != "" {
-			// the qualifier is the package's declared NAME — dir-loaded
-			// packages keep the synthesized import path in Pkg.Name, so
-			// prefer the file's own package clause when available.
-			pkg := td.Pkg.Name
-			if td.File != nil && td.File.AST != nil && td.File.AST.Name != nil {
-				pkg = td.File.AST.Name.Name
-			}
-			if strings.HasPrefix(td.Name, td.Pkg.Path+".") {
-				return pkg + "." + td.Name[len(td.Pkg.Path)+1:]
-			}
-			if i := strings.LastIndex(td.Name, "."); i >= 0 {
-				return pkg + td.Name[i:]
-			}
-			return pkg + "." + td.Name
-		}
-		if i := strings.LastIndex(td.Name, "."); i >= 0 {
-			// bound typedefs name themselves "pkgpath.Name"
-			return td.Name[i+1:]
-		}
-		// reflect spells the predeclared aliases by their canonical
-		// types: `byte` prints `uint8`, `rune` prints `int32`.
-		if td.Pkg == nil && td.Spec == nil {
-			switch td.Name {
-			case "byte":
-				return "uint8"
-			case "rune":
-				return "int32"
-			}
-		}
-		return td.Name
-	}
-	if td.Anon != nil {
-		// synthesized composites keep an identity-path qualifier in
-		// their Anon selector (*<dir>/x.T); Go's Type.String requalifies
-		// it by the declaring package's clause name (*main.T). Borrow
-		// the element's package context for display only — identity
-		// spelling (TypSpelling/keyOf) keeps running on td itself.
-		cd := *td
-		for at := td; cd.Pkg == nil && at.Elem != nil; at = at.Elem {
-			cd.Pkg = at.Elem.Pkg
-			cd.File = at.Elem.File
-		}
-		return runtime.TypGoSpelling(td.Anon, &cd)
-	}
-	if td.Elem != nil {
-		switch td.Kind {
-		case runtime.KindPointer:
-			return "*" + e.typeName(td.Elem)
-		case runtime.KindSlice:
-			return "[]" + e.typeName(td.Elem)
-		case runtime.KindMap:
-			return "map[?]" + e.typeName(td.Elem)
-		case runtime.KindChan:
-			return "chan " + e.typeName(td.Elem)
-		case runtime.KindInterface:
-			return "interface {}"
-		}
-	}
-	return "<unnamed>"
-}
-
 // elemOf resolves a td's element/pointee typedef.
 func (e *Env) elemOf(td *runtime.TypeDef) *runtime.TypeDef {
 	if td == nil {
@@ -639,7 +571,7 @@ func (t *RType) String() string {
 	if t.rt != nil {
 		return t.rt.String()
 	}
-	return t.e.typeName(t.td)
+	return runtime.DisplayName(t.td)
 }
 
 // Elem resolves the element type.

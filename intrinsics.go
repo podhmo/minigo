@@ -4329,86 +4329,13 @@ func fmtRValue(c runtime.VMCaller, rv *minireflect.RValue) any {
 	}
 }
 
-// typedefSpelling renders a typedef for %T/#v output.
+// typedefSpelling renders a typedef for %T/#v output — it delegates to
+// the canonical display speller.
 func typedefSpelling(td *runtime.TypeDef) string {
 	if td == nil {
 		return "interface{}"
 	}
-	if td.Name != "" {
-		if td.Pkg != nil && td.Pkg.Name != "" {
-			// identity names carry the import path (or, for bound
-			// packages, the package name) — strip the qualifier
-			// before requalifying by the clause name.
-			local := td.Name
-			if td.Pkg.Path != "" {
-				local = strings.TrimPrefix(local, td.Pkg.Path+".")
-			}
-			local = strings.TrimPrefix(local, td.Pkg.Name+".")
-			return td.Pkg.Name + "." + local
-		}
-		switch td.Name {
-		case "byte":
-			return "uint8"
-		case "rune":
-			return "int32"
-		}
-		return td.Name
-	}
-	if td.Anon != nil {
-		return anonTypeSpelling(td.Anon, td.Pkg)
-	}
-	return "interface{}"
-}
-
-// anonTypeSpelling renders an anonymous type AST for %T/#v output;
-// idents naming a type declared in pkg spell pkg-qualified like Go.
-func anonTypeSpelling(e ast.Expr, pkg *runtime.Package) string {
-	switch t := e.(type) {
-	case *ast.Ident:
-		switch t.Name {
-		case "byte":
-			return "uint8"
-		case "rune":
-			return "int32"
-		}
-		if pkg != nil && pkg.Index != nil {
-			if _, ok := pkg.Index.Types[t.Name]; ok {
-				return pkg.Name + "." + t.Name
-			}
-		}
-		return t.Name
-	case *ast.StarExpr:
-		return "*" + anonTypeSpelling(t.X, pkg)
-	case *ast.ArrayType:
-		n := ""
-		if t.Len != nil {
-			if bl, ok := t.Len.(*ast.BasicLit); ok {
-				n = bl.Value
-			} else if id, ok := t.Len.(*ast.Ident); ok {
-				n = id.Name
-			}
-		}
-		return "[" + n + "]" + anonTypeSpelling(t.Elt, pkg)
-	case *ast.MapType:
-		return "map[" + anonTypeSpelling(t.Key, pkg) + "]" + anonTypeSpelling(t.Value, pkg)
-	case *ast.ChanType:
-		return "chan " + anonTypeSpelling(t.Value, pkg)
-	case *ast.SelectorExpr:
-		return anonTypeSpelling(t.X, pkg) + "." + t.Sel.Name
-	case *ast.IndexExpr:
-		return anonTypeSpelling(t.X, pkg) + "[" + anonTypeSpelling(t.Index, pkg) + "]"
-	case *ast.ParenExpr:
-		return anonTypeSpelling(t.X, pkg)
-	case *ast.Ellipsis:
-		return "[]" + anonTypeSpelling(t.Elt, pkg)
-	case *ast.InterfaceType:
-		return "interface{}"
-	case *ast.StructType:
-		return "struct{}"
-	case *ast.FuncType:
-		return runtime.TypGoSpelling(t, &runtime.TypeDef{Pkg: pkg})
-	}
-	return fmt.Sprintf("%T", e)
+	return runtime.DisplayName(td)
 }
 
 // callerFrames is the script-side *runtime.Frames: it iterates the
