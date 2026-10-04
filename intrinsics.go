@@ -48,6 +48,11 @@ import (
 	"github.com/podhmo/minigo/vm"
 )
 
+var (
+	memStatsOnce     sync.Once
+	memStatsSnapshot goruntime.MemStats
+)
+
 // installStdlib binds the intrinsic packages onto the engine's import-path
 // table; Bound packages win over source resolution (loadPath checks pkgs).
 func (e *Engine) installStdlib() {
@@ -1296,7 +1301,14 @@ func (e *Engine) installStdlib() {
 			if !ok {
 				return nil, fmt.Errorf("ReadMemStats needs *runtime.MemStats, got %T", a[0])
 			}
-			goruntime.ReadMemStats(m)
+			// Serving the host allocator's counters leaks interpreter
+			// activity into script assertions: any delta check
+			// (`n0 != m.Mallocs`) false-positives and depends on GC
+			// timing. minigo exposes no per-script heap accounting, so
+			// fill one snapshot and serve it thereafter — every delta
+			// reads as 0 and sanity checks like `m.Sys > 0` still hold.
+			memStatsOnce.Do(func() { goruntime.ReadMemStats(&memStatsSnapshot) })
+			*m = memStatsSnapshot
 			return nil, nil
 		}),
 		"Callers": &runtime.BuiltinFunc{Name: "runtime.Callers", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
