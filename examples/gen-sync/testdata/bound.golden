@@ -1,0 +1,15 @@
+// Package bound exists so tests can Bind() its import path and shadow
+// its source behind a host package — the path a bound stdlib package
+// takes through the engine. Its decls stay introspectable through
+// inspect.SourceOf even while inspect.PackageOf reports the shadow.
+package bound
+
+// Code generated directives below are managed by gen-sync. DO NOT EDIT.
+//go:generate requiredgen -type=Marked
+
+// Marked carries a required tag behind the bound shadow: app's BoundRef
+// reaches it through the subtree, proving exploration enters bound
+// packages' source decls rather than stopping at the host pseudo-decls.
+type Marked struct {
+	Label string `required:"true"`
+}

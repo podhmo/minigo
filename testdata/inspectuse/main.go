@@ -58,8 +58,8 @@ func SymbolView() string {
 	if !strings.Contains(s.Doc, "plain function") {
 		return "bad doc: " + s.Doc
 	}
-	if !strings.Contains(s.Pos, "main.go:27:") {
-		return "bad pos: " + s.Pos
+	if s.Pos == nil || !strings.HasSuffix(s.Pos.File, "main.go") || s.Pos.Line != 30 {
+		return "bad pos: " + s.Pos.String()
 	}
 	u := inspect.Symbol(p, "User")
 	if !strings.Contains(u.Doc, "struct type to walk") {
@@ -262,7 +262,7 @@ func CurrentPkg() string {
 func ImportsList() string {
 	f := inspect.FileOf("./testdata/inspectpkg/main.go")
 	imps := inspect.Imports(f)
-	if len(imps) != 1 || imps[0].Path != "strings" {
+	if len(imps) != 2 || imps[0].Path != "strings" || imps[1].Path != "time" {
 		return "bad imports"
 	}
 	used := inspect.UsedSymbols(f)
@@ -435,15 +435,18 @@ func IfaceMembers() string {
 	return "ok"
 }
 
-// MReqsStructTrap: MReqs on a non-interface decl traps (asserted
-// Go-side — scripts cannot catch intrinsic errors).
-func MReqsStructTrap() string {
+// MReqsStructEmpty: MReqs/IEmbeds on a non-interface type decl report
+// empty, not a trap — the script asks without a Def(d).Kind pre-gate.
+func MReqsStructEmpty() string {
 	p := inspect.DirOf("./testdata/inspectpkg")
 	s := inspect.Symbol(p, "User")
-	if inspect.MReqs(s) != nil {
-		return "expected trap"
+	if r := inspect.MReqs(s); len(r) != 0 {
+		return "mreqs on struct"
 	}
-	return "swallowed"
+	if e := inspect.IEmbeds(s); len(e) != 0 {
+		return "iembeds on struct"
+	}
+	return "ok"
 }
 
 // SourceOfSrc: a bound-shadowed path still yields its GOROOT source —
@@ -515,8 +518,8 @@ func DeclMeta() string {
 		if !strings.HasSuffix(s.File, "inspectpkg/main.go") {
 			return name + " bad file: " + s.File
 		}
-		if !strings.Contains(inspect.Pos(s), "main.go:") {
-			return name + " bad pos: " + inspect.Pos(s)
+		if pos := inspect.Pos(s); pos == nil || !strings.HasSuffix(pos.File, "main.go") {
+			return name + " bad pos: " + pos.String()
 		}
 	}
 	for _, name := range []string{"Hello", "User", "MyInt", "Count", "Label"} {
@@ -527,7 +530,7 @@ func DeclMeta() string {
 	// method decls carry the same metadata as top-level decls
 	for _, m := range inspect.Methods(inspect.Symbol(p, "User")) {
 		if !strings.HasSuffix(m.File, "main.go") ||
-			!strings.Contains(inspect.Pos(m), "main.go:") || m.Doc == "" {
+			inspect.Pos(m) == nil || !strings.HasSuffix(inspect.Pos(m).File, "main.go") || m.Doc == "" {
 			return "bad method meta: " + m.Name
 		}
 	}
@@ -538,13 +541,13 @@ func DeclMeta() string {
 func FieldPos() string {
 	p := inspect.DirOf("./testdata/inspectpkg")
 	for _, f := range inspect.Fields(inspect.Symbol(p, "User")) {
-		if !strings.Contains(f.Pos, "main.go:") {
-			return "bad field pos: " + f.Pos
+		if f.Pos == nil || !strings.HasSuffix(f.Pos.File, "main.go") {
+			return "bad field pos: " + f.Pos.String()
 		}
 	}
 	sig := inspect.Signature(inspect.Symbol(p, "Hello"))
 	if sig.Params[0].Names[0] != "s" ||
-		!strings.Contains(sig.Params[0].Pos, "main.go:") {
+		sig.Params[0].Pos == nil || !strings.HasSuffix(sig.Params[0].Pos.File, "main.go") {
 		return "bad param meta"
 	}
 	return "ok"
@@ -612,7 +615,8 @@ func NamedFieldType() string {
 }
 
 // Instantiation: a Pair[int] field reads as IndexExpr — the generic
-// origin is NOT reachable (SymbolID -> nil, Children yields args).
+// origin resolves through Children, which lead with the base (Pair
+// then int); the instantiation itself names nothing (SymbolID -> nil).
 func Instantiation() string {
 	p := inspect.DirOf("./testdata/inspectpkg")
 	fs := inspect.Fields(inspect.Symbol(p, "Rec"))
@@ -621,13 +625,204 @@ func Instantiation() string {
 		return "bad inst: " + ip.Text + "/" + ip.Kind
 	}
 	kids := inspect.Children(ip)
-	if len(kids) != 1 || kids[0].Text != "int" {
+	if len(kids) != 2 || kids[0].Text != "Pair" || kids[1].Text != "int" {
 		return "bad inst children"
+	}
+	// the base is a named leaf — it resolves to its decl like any other.
+	b := inspect.Resolve(kids[0])
+	if b == nil || b.Name != "Pair" {
+		return "inst base unresolved"
 	}
 	if inspect.SymbolID(ip) != nil {
 		return "unexpected inst sid"
 	}
+	// a two-argument instantiation lists base then both arguments.
+	fs2 := inspect.Fields(inspect.Symbol(p, "Inst"))
+	dk := inspect.Children(fs2[2].Type)
+	if len(dk) != 3 || dk[0].Text != "Two" || dk[1].Text != "int" || dk[2].Text != "string" {
+		return "bad list inst children"
+	}
+	// distinct generics sharing every argument are not the same type —
+	// the base now participates in the comparison.
+	if inspect.SameType(fs2[0].Type, fs2[1].Type) {
+		return "distinct instantiations collapsed"
+	}
 	return "ok"
+}
+
+// AnonFieldWalk: tags and names inside anonymous composite types are
+// readable through TypeFields — where no decl names the composite.
+func AnonFieldWalk() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	fs := inspect.Fields(inspect.Symbol(p, "Anon"))
+	// F: anonymous struct — names, types, and tags inside it.
+	f := fs[0]
+	if f.Type.Kind != "StructType" {
+		return "bad anon kind: " + f.Type.Kind
+	}
+	inner := inspect.TypeFields(f.Type)
+	if len(inner) != 2 || inner[0].Names[0] != "W" || inner[1].Names[0] != "N" {
+		return "bad inner fields"
+	}
+	if inner[0].Tag != "json:\"w\"" {
+		return "bad inner tag: " + inner[0].Tag
+	}
+	if inner[0].Embedded {
+		return "named field marked embedded"
+	}
+	// G: anonymous interface — method specs named, embeds marked.
+	g := fs[1]
+	if g.Type.Kind != "InterfaceType" {
+		return "bad iface kind: " + g.Type.Kind
+	}
+	ms := inspect.TypeFields(g.Type)
+	if len(ms) != 2 {
+		return "bad iface members"
+	}
+	if len(ms[0].Names) != 1 || ms[0].Names[0] != "M" || ms[0].Embedded {
+		return "bad method spec"
+	}
+	if ms[0].Type.Kind != "FuncType" {
+		return "bad method type: " + ms[0].Type.Kind
+	}
+	if !ms[1].Embedded {
+		return "embed not marked"
+	}
+	if inspect.Resolve(ms[1].Type).Name != "I0" {
+		return "embed unresolved"
+	}
+	// S: slice-of-anon-struct — the composite arrives through Children.
+	s := fs[2]
+	kids := inspect.Children(s.Type)
+	if len(kids) != 1 || kids[0].Kind != "StructType" {
+		return "bad slice elem"
+	}
+	sf := inspect.TypeFields(kids[0])
+	if len(sf) != 1 || sf[0].Tag != "json:\"x\"" {
+		return "bad slice field"
+	}
+	return "ok"
+}
+
+// TypeFieldsIdentTrap: a named leaf is not a composite — it traps.
+func TypeFieldsIdentTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	fs := inspect.Fields(inspect.Symbol(p, "User"))
+	inspect.TypeFields(fs[0].Type)
+	return "expected trap"
+}
+
+// PromotedWalk: MethodSet flattens promoted members — embeds lift
+// declared methods (Via + Decl), interface embeds lift specs (Decl
+// nil), value method sets exclude pointer receivers, and declared
+// methods shadow promoted spellings by name.
+func PromotedWalk() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	find := func(ms []*inspect.Method, name string) *inspect.Method {
+		for _, m := range ms {
+			if m.Name == name {
+				return m
+			}
+		}
+		return nil
+	}
+	// by-value embed: Greet promoted with decl and origin.
+	ms := inspect.MethodSet(inspect.Symbol(p, "GreetEmbed"))
+	g := find(ms, "Greet")
+	if g == nil || g.Decl == nil || g.Via == nil || g.Via.Name != "GreetBase" {
+		return "embed promotion missing"
+	}
+	if len(g.Sig.ParamFields()) != 0 || len(g.Sig.ResultFields()) != 1 {
+		return "bad promoted sig"
+	}
+	// pointer embed lifts pointer receivers; by-value embed does not.
+	if find(inspect.MethodSet(inspect.Symbol(p, "GreetPtrEmbed")), "PtrOnly") == nil {
+		return "ptr embed lost ptr method"
+	}
+	if find(inspect.MethodSet(inspect.Symbol(p, "GreetValEmbed")), "PtrOnly") != nil {
+		return "value embed lifted ptr method"
+	}
+	// interface embed: the spec promotes — no decl behind it.
+	gi := find(inspect.MethodSet(inspect.Symbol(p, "GreetIface")), "Greet")
+	if gi == nil || gi.Decl != nil || gi.Via == nil || gi.Via.Name != "Greeter" {
+		return "iface spec not promoted"
+	}
+	// alias embed resolves to the target.
+	if find(inspect.MethodSet(inspect.Symbol(p, "GreetAliasEmbed")), "Greet") == nil {
+		return "alias embed unresolved"
+	}
+	// an interface's own set is its specs.
+	own := find(inspect.MethodSet(inspect.Symbol(p, "Greeter")), "Greet")
+	if own == nil || own.Decl != nil {
+		return "iface set missing spec"
+	}
+	// a mutual embed cycle terminates.
+	if inspect.MethodSet(inspect.Symbol(p, "CycA")) == nil {
+		return "cycle walk lost"
+	}
+	// declared methods shadow promoted spellings: Via stays nil.
+	gs := find(inspect.MethodSet(inspect.Symbol(p, "GreetShadow")), "Greet")
+	if gs == nil || gs.Via != nil || gs.Decl == nil {
+		return "declared method did not win"
+	}
+	// composite aliases borrow nothing; the pointer alias borrows *T's set.
+	if len(inspect.MethodSet(inspect.Symbol(p, "SliceAlias"))) != 0 {
+		return "slice alias borrowed a method set"
+	}
+	if len(inspect.MethodSet(inspect.Symbol(p, "MapAlias"))) != 0 {
+		return "map alias borrowed a method set"
+	}
+	if len(inspect.MethodSet(inspect.Symbol(p, "FuncAlias"))) != 0 {
+		return "func alias borrowed a method set"
+	}
+	if find(inspect.MethodSet(inspect.Symbol(p, "PtrAlias")), "Greet") == nil {
+		return "ptr alias lost Greet"
+	}
+	// a pointer embed keeps the path pointer-ish all the way down:
+	// ChainS{*ChainA}, ChainA{ChainB} still lifts ChainB's PtrM.
+	cs := inspect.MethodSet(inspect.Symbol(p, "ChainS"))
+	if find(cs, "PtrM") == nil || find(cs, "ValM") == nil {
+		return "ptr embed did not propagate down the chain"
+	}
+	// the shallower promotion shadows the deeper one: ShadowS.M is
+	// ShallowY's M() string, not DeepX's M() int.
+	sm := find(inspect.MethodSet(inspect.Symbol(p, "ShadowS")), "M")
+	if sm == nil || sm.Via == nil || sm.Via.Name != "ShallowY" {
+		return "deeper promotion won over shallower"
+	}
+	if len(sm.Sig.ResultFields()) != 1 || sm.Sig.ResultFields()[0].Type.Text != "string" {
+		return "shallow M has the wrong signature"
+	}
+	// an embedded `error` promotes its spec: ErrTalker's method set
+	// carries Error() string alongside Talk.
+	ems := inspect.MethodSet(inspect.Symbol(p, "ErrTalker"))
+	if find(ems, "Error") == nil || find(ems, "Talk") == nil {
+		return "embedded error did not promote its spec"
+	}
+	// an alias spelling promotes through to the target interface:
+	// AliasEmbedder gets Talker's Speak and Talk.
+	ams := inspect.MethodSet(inspect.Symbol(p, "AliasEmbedder"))
+	if find(ams, "Speak") == nil || find(ams, "Talk") == nil {
+		return "alias embed did not promote through"
+	}
+	// same-depth conflict between distinct members is ambiguous:
+	// AmbS{AmbA, AmbB} must lose W entirely, while DiaS's diamond
+	// reaches the same member twice and keeps it.
+	if find(inspect.MethodSet(inspect.Symbol(p, "AmbS")), "W") != nil {
+		return "ambiguous W was kept"
+	}
+	dm := find(inspect.MethodSet(inspect.Symbol(p, "DiaS")), "W")
+	if dm == nil || dm.Via == nil || dm.Via.Name != "DiaBase" {
+		return "diamond-promoted W was dropped"
+	}
+	return "ok"
+}
+
+// MethodSetFuncTrap: the method set is a type view — funcs trap.
+func MethodSetFuncTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	inspect.MethodSet(inspect.Symbol(p, "Reduce"))
+	return "expected trap"
 }
 
 // TypeParamsList: generic type and generic func expose their params;
@@ -691,8 +886,8 @@ func HostMethodSym() string {
 	if inspect.PathOf(r.Size) != "strings" {
 		return "bad host method path"
 	}
-	if !strings.Contains(inspect.Pos(s), "reader.go:") {
-		return "bad host method pos: " + inspect.Pos(s)
+	if pos := inspect.Pos(s); pos == nil || !strings.HasSuffix(pos.File, "reader.go") {
+		return "bad host method pos: " + pos.String()
 	}
 	sig := inspect.Signature(s)
 	if sig == nil || sig.Recv == nil || sig.Recv.Type.Text != "*strings.Reader" {
@@ -726,8 +921,8 @@ func SourceOfStruct() string {
 	if b == nil || b.Kind != "type" {
 		return "bad src builder"
 	}
-	if !strings.Contains(inspect.Pos(b), ".go:") {
-		return "no src pos: " + inspect.Pos(b)
+	if pos := inspect.Pos(b); pos == nil || pos.Line == 0 {
+		return "no src pos"
 	}
 	if inspect.State(src) != "indexed" {
 		return "bad src state: " + inspect.State(src)
@@ -736,7 +931,7 @@ func SourceOfStruct() string {
 	for _, m := range inspect.Methods(b) {
 		if m.Name == "WriteString" {
 			found = true
-			if !strings.Contains(inspect.Pos(m), ".go:") {
+			if pos := inspect.Pos(m); pos == nil || pos.Line == 0 {
 				return "no src method pos"
 			}
 			sig := inspect.Signature(m)
@@ -808,6 +1003,99 @@ func PkgMetaView() string {
 	b := inspect.PackageOf("strings")
 	if inspect.Path(b) != "strings" || inspect.Name(b) != "strings" || !inspect.Standard(b) {
 		return "bad bound meta"
+	}
+	return "ok"
+}
+
+// EnumWalk: enum members collect through EnumMembers, and DeclType
+// reads a value spec's annotation — explicit or iota-inherited.
+func EnumWalk() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+
+	st := inspect.Symbol(p, "Status")
+	var names string
+	for _, m := range inspect.EnumMembers(st) {
+		if m.Kind != "const" {
+			return "non-const member: " + m.Name
+		}
+		names += m.Name + ","
+	}
+	want := "StatusUnknown,StatusTodo,StatusDone,StatusExtra,FlagA,FlagB,"
+	if names != want {
+		return "bad Status members: " + names
+	}
+
+	names = ""
+	for _, m := range inspect.EnumMembers(inspect.Symbol(p, "Priority")) {
+		names += m.Name + ","
+	}
+	if names != "Low,High,PA,PB," {
+		return "bad Priority members: " + names
+	}
+	// a named type with no matching constants is not an enum
+	if len(inspect.EnumMembers(inspect.Symbol(p, "MyInt"))) != 0 {
+		return "MyInt should not be an enum"
+	}
+
+	// DeclType: explicit annotations and iota inheritance.
+	if got := inspect.DeclType(inspect.Symbol(p, "StatusUnknown")); got == nil || got.Text != "Status" {
+		return "explicit type lost"
+	}
+	if got := inspect.DeclType(inspect.Symbol(p, "StatusTodo")); got == nil || got.Text != "Status" {
+		return "inherited type lost"
+	}
+	// FlagD inherits the untyped spec above it — no type, no member.
+	if got := inspect.DeclType(inspect.Symbol(p, "FlagD")); got != nil {
+		return "FlagD should be untyped"
+	}
+	if got := inspect.DeclType(inspect.Symbol(p, "Loose")); got != nil {
+		return "untyped const typed?"
+	}
+	if got := inspect.DeclType(inspect.Symbol(p, "CurrentStatus")); got == nil || got.Text != "Status" {
+		return "var type lost"
+	}
+	fd := inspect.DeclType(inspect.Symbol(p, "ForDur"))
+	if fd == nil || fd.Kind != "SelectorExpr" {
+		return "foreign type lost"
+	}
+	// the linking primitive composes: member type -> SymbolID.
+	sid := inspect.SymbolID(inspect.DeclType(inspect.Symbol(p, "StatusDone")))
+	if sid == nil || sid.Name != "Status" || !strings.HasSuffix(sid.PackagePath, "inspectpkg") {
+		return "bad member sid"
+	}
+	return "ok"
+}
+
+// AliasWalk: IsAlias partitions type decls into alias vs defined —
+// the one axis Kind:"type" hides. Enum-ness is orthogonal.
+func AliasWalk() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+
+	// alias forms: plain, foreign selector, grouped, generic.
+	for _, name := range []string{"AInt", "Dur", "AFloat", "APair"} {
+		if !inspect.IsAlias(inspect.Symbol(p, name)) {
+			return name + " should be an alias"
+		}
+	}
+	// defined forms: basic newtype, struct, interface, grouped,
+	// pointer-underlying.
+	for _, name := range []string{"MyInt", "User", "Speaker", "BFloat", "PInt"} {
+		if inspect.IsAlias(inspect.Symbol(p, name)) {
+			return name + " should be defined"
+		}
+	}
+	// a '=' in a comment is not an alias declaration.
+	if inspect.IsAlias(inspect.Symbol(p, "Tricky")) {
+		return "comment '=' misread as alias"
+	}
+	// enum-ness is a usage property, not a declaration form: an alias
+	// can still type constants.
+	ae := inspect.Symbol(p, "AliasEnum")
+	if !inspect.IsAlias(ae) {
+		return "AliasEnum should be an alias"
+	}
+	if len(inspect.EnumMembers(ae)) != 1 {
+		return "alias enum members lost"
 	}
 	return "ok"
 }
@@ -888,4 +1176,192 @@ func CurPkgPathTrap() string {
 	return inspect.Current().Path
 }
 
+// EnumMembersFuncTrap: EnumMembers is a type-symbol view.
+func EnumMembersFuncTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	inspect.EnumMembers(inspect.Symbol(p, "Hello"))
+	return "swallowed"
+}
+
+// EnumMembersBoundTrap: a bound type has no index to read.
+func EnumMembersBoundTrap() string {
+	inspect.EnumMembers(inspect.Symbol(inspect.PackageOf("strings"), "Builder"))
+	return "swallowed"
+}
+
+// ImplementersWalk: the index-level subtype question — declared,
+// promoted, and alias-borrowed implementations all answer, and
+// signature mismatches (wrong result, wrong variadicity) do not.
+func ImplementersWalk() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	want := []string{
+		"Greeter", "GreetBase", "GreetEmbed", "GreetIface",
+		"GreetAliasEmbed", "GB", "GreetShadow", "User",
+		// User's Greet is pointer-receiver — still part of the declared
+		// method set, so the named type satisfies.
+		"GreetTalker", "BothTalk", "PtrAlias",
+		// GreetTalker embeds Greeter and BothTalk declares Greet —
+		// both satisfy; the composite aliases (SliceAlias, MapAlias,
+		// FuncAlias) borrow nothing and must not appear.
+	}
+	got := map[string]bool{}
+	for _, d := range inspect.Implementers(p, inspect.Symbol(p, "Greeter")) {
+		got[d.Name] = true
+	}
+	for _, n := range want {
+		if !got[n] {
+			return "missing " + n
+		}
+		delete(got, n)
+	}
+	for n := range got {
+		return "unexpected " + n
+	}
+	// signature equality is real: Calc's Add(a,b int) int satisfies,
+	// Almost's string result does not. AliasCalc spells the same
+	// signature through the AInt alias — an alias IS its target —
+	// while MyIntCalc's defined type stays distinct.
+	got = map[string]bool{}
+	for _, d := range inspect.Implementers(p, inspect.Symbol(p, "Adder")) {
+		got[d.Name] = true
+	}
+	if !got["Adder"] || !got["AAdder"] || !got["Calc"] || !got["AliasCalc"] ||
+		got["Almost"] || got["MyIntCalc"] || len(got) != 4 {
+		return "bad adder set"
+	}
+	// the collapse runs both ways: a spec spelled with the alias is
+	// the same requirement, and AliasCalc/Calc satisfy it.
+	got = map[string]bool{}
+	for _, d := range inspect.Implementers(p, inspect.Symbol(p, "AAdder")) {
+		got[d.Name] = true
+	}
+	if !got["AAdder"] || !got["Adder"] || !got["Calc"] || !got["AliasCalc"] ||
+		got["MyIntCalc"] || len(got) != 4 {
+		return "bad aadder set"
+	}
+	// aliases collapse inside composite spellings too: []AInt is []int.
+	got = map[string]bool{}
+	for _, d := range inspect.Implementers(p, inspect.Symbol(p, "Totaler")) {
+		got[d.Name] = true
+	}
+	if !got["Totaler"] || !got["AliasTotal"] || len(got) != 2 {
+		return "bad totaler set"
+	}
+	// variadicity too: ...int satisfies, [2]int does not.
+	got = map[string]bool{}
+	for _, d := range inspect.Implementers(p, inspect.Symbol(p, "Summer")) {
+		got[d.Name] = true
+	}
+	if !got["Summer"] || !got["SumImpl"] || got["SumArr"] || len(got) != 2 {
+		return "bad summer set"
+	}
+	// embedded requirements count: GreetTalker needs Greet AND Talk —
+	// OnlyTalk covers only the named spec and must not satisfy.
+	got = map[string]bool{}
+	for _, d := range inspect.Implementers(p, inspect.Symbol(p, "GreetTalker")) {
+		got[d.Name] = true
+	}
+	if !got["GreetTalker"] || !got["BothTalk"] || got["OnlyTalk"] || len(got) != 2 {
+		return "bad greettalker set"
+	}
+	// promotion depth decides shadowing: ShadowS's M is ShallowY's
+	// M() string, so ShadowS satisfies MStr.
+	got = map[string]bool{}
+	for _, d := range inspect.Implementers(p, inspect.Symbol(p, "MStr")) {
+		got[d.Name] = true
+	}
+	if !got["MStr"] || !got["ShallowY"] || !got["ShadowS"] ||
+		got["MidA"] || got["DeepX"] || len(got) != 3 {
+		return "bad mstr set"
+	}
+	// an embedded `error` is a real requirement: ErrTalker needs
+	// Error() string plus Talk — OnlyTalk and BothTalk lack Error.
+	got = map[string]bool{}
+	for _, d := range inspect.Implementers(p, inspect.Symbol(p, "ErrTalker")) {
+		got[d.Name] = true
+	}
+	if !got["ErrTalker"] || !got["TalkErr"] || got["OnlyTalk"] || got["BothTalk"] || len(got) != 2 {
+		return "bad errtalker set"
+	}
+	// an alias embed resolves on the requirement side too:
+	// AliasEmbedder requires Speak + Talk — TalkerAlias borrows
+	// Talker's set and Talker itself declares it.
+	got = map[string]bool{}
+	for _, d := range inspect.Implementers(p, inspect.Symbol(p, "AliasEmbedder")) {
+		got[d.Name] = true
+	}
+	if !got["AliasEmbedder"] || !got["TalkerAlias"] || !got["Talker"] || len(got) != 3 {
+		return "bad aliasembedder set"
+	}
+	// ambiguity excludes: AmbS has no W, but the single-path and
+	// diamond-promoted carriers all satisfy Winner.
+	got = map[string]bool{}
+	for _, d := range inspect.Implementers(p, inspect.Symbol(p, "Winner")) {
+		got[d.Name] = true
+	}
+	if got["AmbS"] || !got["AmbA"] || !got["AmbB"] ||
+		!got["DiaBase"] || !got["DiaA"] || !got["DiaB"] || !got["DiaS"] ||
+		!got["Winner"] || len(got) != 7 {
+		return "bad winner set"
+	}
+	return "ok"
+}
+
+// ImplementersConstraintTrap: a constraint interface has no
+// implementers — the question is loud, not empty.
+func ImplementersConstraintTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	inspect.Implementers(p, inspect.Symbol(p, "Number"))
+	return "swallowed"
+}
+
+// ImplementersStructTrap: the iface argument must be an interface.
+func ImplementersStructTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	inspect.Implementers(p, inspect.Symbol(p, "User"))
+	return "swallowed"
+}
+
+// DeclTypeFuncTrap: DeclType is a value-spec view — funcs trap.
+func DeclTypeFuncTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	inspect.DeclType(inspect.Symbol(p, "Hello"))
+	return "swallowed"
+}
+
+// DeclTypeTypeTrap: DeclType on a type decl traps — Def reads types.
+func DeclTypeTypeTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	inspect.DeclType(inspect.Symbol(p, "Status"))
+	return "swallowed"
+}
+
+// IsAliasFuncTrap: IsAlias is a type-symbol view.
+func IsAliasFuncTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	inspect.IsAlias(inspect.Symbol(p, "Hello"))
+	return "swallowed"
+}
+
+// IsAliasBoundTrap: a bound type carries no declaration.
+func IsAliasBoundTrap() string {
+	inspect.IsAlias(inspect.Symbol(inspect.PackageOf("strings"), "Builder"))
+	return "swallowed"
+}
+
 func main() {}
+
+// BuiltinPathConst: the package exposes the builtin sentinel as a
+// script-visible value — :builtin: — so a SymbolID's PackagePath can
+// be compared without a shape heuristic.
+func BuiltinPathConst() string {
+	if inspect.BuiltinPackagePath != ":builtin:" {
+		return "unexpected: " + inspect.BuiltinPackagePath
+	}
+	p := inspect.DirOf("./testdata/inspectpkg")
+	sid := inspect.SymbolID(inspect.Symbol(p, "AInt"))
+	if sid == nil || sid.PackagePath == inspect.BuiltinPackagePath {
+		return "AInt must not look builtin"
+	}
+	return "ok"
+}

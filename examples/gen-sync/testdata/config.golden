@@ -1,0 +1,23 @@
+package app
+
+// Code generated directives below are managed by gen-sync. DO NOT EDIT.
+//go:generate requiredgen -type=Config
+//go:generate requiredgen -type=Ticket
+
+// Config is a job config.
+type Config struct {
+	Name string `required:"true"`
+	Port int
+}
+
+// Ticket is a validation candidate — and a reminder that matching the
+// substring "required" anywhere in a tag is not the same as matching it
+// as a key or as a whole list element.
+type Ticket struct {
+	Title    string `required:"true"`
+	Assignee string `validate:"required"`
+	Ref      string `json:"required,omitempty"` // a json NAME, not a validation rule
+	Hint     string `notrequired:"true"`        // a different key containing the substring
+	Note     string `binding:"notrequired"`     // a different element containing it
+	Legacy   string `required:"false"`          // the right key, opted out
+}

@@ -32,6 +32,10 @@ func (e *Engine) installInspect() {
 	}
 
 	pkg := map[string]runtime.Value{
+		// the pseudo import path predeclared identifiers resolve to —
+		// bound as a plain string so interpreted code can compare a
+		// SymbolID's PackagePath against it directly.
+		"BuiltinPackagePath": xinspect.BuiltinPackagePath,
 		// ---- locators ----
 		"PackageOf": bf("PackageOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
@@ -196,7 +200,10 @@ func (e *Engine) installInspect() {
 			if err != nil {
 				return nil, err
 			}
-			return s.Pos, nil
+			if s.Pos == nil {
+				return runtime.NIL, nil
+			}
+			return &runtime.GoValue{V: s.Pos}, nil
 		}),
 		"Name": bf("Name", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
@@ -256,7 +263,7 @@ func (e *Engine) installInspect() {
 				if !ok {
 					return runtime.NIL, nil
 				}
-				return &runtime.GoValue{V: sid}, nil
+				return &runtime.GoValue{V: &sid}, nil
 			}
 			s, err := declViewOf(args[0])
 			if err != nil {
@@ -266,7 +273,7 @@ func (e *Engine) installInspect() {
 			if s.Package != nil {
 				path = s.Package.Path
 			}
-			return &runtime.GoValue{V: runtime.SymbolID{PackagePath: path, Name: s.Name}}, nil
+			return &runtime.GoValue{V: &runtime.SymbolID{PackagePath: path, Name: s.Name}}, nil
 		}),
 		// ---- syntax layer ----
 		"Fields": bf("Fields", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -286,6 +293,46 @@ func (e *Engine) installInspect() {
 				return nil, err
 			}
 			ms, err := xinspect.MethodsOf(s)
+			if err != nil {
+				return nil, err
+			}
+			return boxedSlice(ms), nil
+		}),
+		"MethodSet": bf("MethodSet", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			s, err := declViewOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			ms, err := xinspect.MethodSetOf(s, e.resolverForInspect())
+			if err != nil {
+				return nil, err
+			}
+			return boxedSlice(ms), nil
+		}),
+		"Implementers": bf("Implementers", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, argerr("Implementers", "a package and an interface decl")
+			}
+			p, err := e.pkgOf(runtime.Unwrap(args[0]))
+			if err != nil {
+				return nil, err
+			}
+			s, err := declViewOf(args[1])
+			if err != nil {
+				return nil, err
+			}
+			ds, err := xinspect.ImplementersOf(p, s, e.resolverForInspect())
+			if err != nil {
+				return nil, err
+			}
+			return boxedSlice(ds), nil
+		}),
+		"EnumMembers": bf("EnumMembers", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			s, err := declViewOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			ms, err := xinspect.EnumMembersOf(s)
 			if err != nil {
 				return nil, err
 			}
@@ -346,12 +393,44 @@ func (e *Engine) installInspect() {
 			}
 			return &runtime.GoValue{V: te}, nil
 		}),
+		"DeclType": bf("DeclType", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			s, err := declViewOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			te, err := xinspect.DeclTypeOf(s)
+			if err != nil {
+				return nil, err
+			}
+			if te == nil {
+				return runtime.NIL, nil
+			}
+			return &runtime.GoValue{V: te}, nil
+		}),
+		"IsAlias": bf("IsAlias", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			s, err := declViewOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			return xinspect.IsAliasOf(s)
+		}),
 		"Children": bf("Children", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			te, err := typeExprOf(args[0])
 			if err != nil {
 				return nil, err
 			}
 			return boxedSlice(te.Children()), nil
+		}),
+		"TypeFields": bf("TypeFields", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			te, err := typeExprOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			fs, err := xinspect.TypeFieldsOf(te)
+			if err != nil {
+				return nil, err
+			}
+			return boxedSlice(fs), nil
 		}),
 		"UnWrap": bf("UnWrap", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			te, err := typeExprOf(args[0])
@@ -639,17 +718,19 @@ func (e *Engine) hostMethodPkg(m *reflect.Method) *runtime.Package {
 
 // hostMethodPos locates the method's definition through its Func PC —
 // the bound method value's PC is a reflect thunk and can't be used.
-func hostMethodPos(m *reflect.Method) string {
+// The column is runtime-only information a PC can't recover, so it
+// stays 0.
+func hostMethodPos(m *reflect.Method) *xinspect.Position {
 	pc := m.Func.Pointer()
 	fn := goruntime.FuncForPC(pc)
 	if fn == nil {
-		return ""
+		return nil
 	}
 	file, line := fn.FileLine(pc)
 	if file == "" {
-		return ""
+		return nil
 	}
-	return fmt.Sprintf("%s:%d", file, line)
+	return &xinspect.Position{File: file, Line: line}
 }
 
 // declsOf implements inspect.Decls(x): a package's top-level decls from

@@ -1,0 +1,28 @@
+package app
+
+// Code generated directives below are managed by gen-sync. DO NOT EDIT.
+//go:generate mockgen -source=store.go -destination=mock_store.go
+
+// Store persists jobs.
+type Store interface {
+	Get(id int) string
+}
+
+// HealthChecker is an interface — but its name does not read like a
+// service boundary, so no mock is wanted.
+type HealthChecker interface {
+	Check() error
+}
+
+// PingerClient wears a mockable name but is an alias to an anonymous
+// interface: aliasing an existing contract earns no directive.
+type PingerClient = interface {
+	Ping()
+}
+
+// MemoryStore is a Store-flavored name on a concrete type — mocks are
+// for interfaces, not implementations.
+type MemoryStore struct{}
+
+// Get reads a job by id.
+func (MemoryStore) Get(id int) string { return "" }

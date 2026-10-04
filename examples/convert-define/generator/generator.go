@@ -665,8 +665,7 @@ func qualifyFunc(im *ImportManager, info *model.ParsedInfo, funcName string) str
 
 // registerImports qualifies every named type reachable through the
 // TypeExpr — pointers, slices, maps, func types, and generic
-// instantiation bases (pkg.List in pkg.List[T]), which Children() does
-// not yield and so are reached via Sub.
+// instantiation bases and arguments, all yielded by Children().
 func registerImports(im *ImportManager, te *xinspect.TypeExpr) {
 	if te == nil {
 		return
@@ -676,12 +675,6 @@ func registerImports(im *ImportManager, te *xinspect.TypeExpr) {
 			im.Qualify(sid.PackagePath, sid.Name)
 		}
 		return
-	}
-	switch e := te.Expr().(type) {
-	case *ast.IndexExpr:
-		registerImports(im, te.Sub(e.X))
-	case *ast.IndexListExpr:
-		registerImports(im, te.Sub(e.X))
 	}
 	for _, c := range te.Children() {
 		registerImports(im, c)

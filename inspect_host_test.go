@@ -72,7 +72,7 @@ func TestEngineSourceOf(t *testing.T) {
 		t.Error("source strings not marked standard")
 	}
 	d := lookupType(t, src, "Builder")
-	if d.File == "" || d.Pos == "" {
+	if d.File == "" || d.Pos == nil {
 		t.Errorf("source decl lacks position info: %+v", d)
 	}
 	if fs, err := xinspect.FieldsOf(d); err != nil || len(fs) == 0 {

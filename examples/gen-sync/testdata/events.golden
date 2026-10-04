@@ -1,0 +1,67 @@
+package app
+
+// Code generated directives below are managed by gen-sync. DO NOT EDIT.
+//go:generate oneofgen -type=Envelope -variants=EmbedEvent,PingBase,PingEvent,PongEvent,Pulse,clone,mood.Signal,shade.Ghost
+//go:generate oneofgen -type=PingEvent
+//go:generate oneofgen -type=PongEvent
+//go:generate oneofgen -type=Pulse
+//go:generate oneofgen -type=PingBase
+//go:generate oneofgen -type=EmbedEvent
+//go:generate oneofgen -type=clone
+
+// Envelope is a discriminated union of events (OpenAPI oneOf style) —
+// the union itself wants the generator, like its variants.
+type Envelope interface {
+	Discriminator() string
+}
+
+// PingEvent is an Envelope variant.
+type PingEvent struct{ Seq int }
+
+func (PingEvent) Discriminator() string { return "ping" }
+
+// PongEvent is an Envelope variant with a pointer receiver.
+type PongEvent struct{ Seq int }
+
+func (p *PongEvent) Discriminator() string { return "pong" }
+
+// Pulse is a oneOf-shaped type outside Envelope.
+type Pulse struct{ At int64 }
+
+func (Pulse) Discriminator() string { return "pulse" }
+
+// Tick carries the right method NAME with the wrong signature — a
+// name-only scan would emit a directive for it.
+type Tick struct{}
+
+// Discriminator reports the tick length, not a variant name.
+func (Tick) Discriminator() int { return 60 }
+
+// Discriminator is a plain function that shares the marker name; it is
+// not a method, so it marks nothing.
+func Discriminator() string { return "decoy" }
+
+// PingBase is an implementer hiding behind an embed — it declares the
+// method itself, so it still lists as a variant.
+type PingBase struct{}
+
+func (PingBase) Discriminator() string { return "base" }
+
+// EmbedEvent implements Envelope only through promotion — the method
+// set flattens the embed, so the variant collection sees it just as
+// the compiler does.
+type EmbedEvent struct{ PingBase }
+
+var _ Envelope = EmbedEvent{}
+
+// clone is a non-struct implementer: method-set inference is about the
+// method, not the underlying kind.
+type clone int
+
+func (clone) Discriminator() string { return "clone" }
+
+// NotUnion asks for the right method name with the wrong signature —
+// an interface-shaped decoy that earns no directive.
+type NotUnion interface {
+	Discriminator() int
+}
