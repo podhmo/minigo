@@ -49,7 +49,8 @@ type Runner struct {
 	stderr io.Writer
 
 	mu        sync.Mutex
-	depStates map[string]*depState // dep key -> lifecycle (dedup + cycles)
+	depStates map[string]*depState        // dep key -> lifecycle (dedup + cycles)
+	waits     map[*runtime.Task]*depState // task -> dep it is currently blocked on
 }
 
 // syncWriter serializes writes across dep goroutines: parallel deps
@@ -86,6 +87,26 @@ func (st *depState) wait() error {
 	}
 	<-st.done
 	return st.err
+}
+
+// finished reports whether the dep's outcome is already known without
+// blocking — a closed task Done or serial done channel. Used to stop a
+// wait-chain walk at stale edges left by tasks that died mid-wait.
+func (st *depState) finished() bool {
+	if st.task != nil {
+		select {
+		case <-st.task.Done:
+			return true
+		default:
+			return false
+		}
+	}
+	select {
+	case <-st.done:
+		return true
+	default:
+		return false
+	}
 }
 
 // waiter returns the task a second claimant would wait on: the spawned
@@ -125,6 +146,53 @@ func (r *Runner) claimDep(key string, cur *runtime.Task, label string, spawn fun
 	return st, true
 }
 
+// await blocks cur on st like st.wait, but first registers the pending
+// wait edge: if the dep's own wait chain leads back to cur, the wait
+// would deadlock — reported as a dependency cycle instead. The claim-time
+// ancestry check only sees the spawn tree, so sibling spawned goroutines
+// that wait on each other (task.Deps(A, B) with A->B and B->A) can only
+// be caught here, at wait time.
+func (r *Runner) await(cur *runtime.Task, st *depState, label string) error {
+	r.mu.Lock()
+	if st.finished() {
+		r.mu.Unlock()
+		return st.wait()
+	}
+	r.waits[cur] = st
+	// Walk the wait chain from the dep cur is about to block on: if it
+	// leads back to cur, blocking would deadlock — report a cycle.
+	labels := []string{st.label}
+	cyclic := false
+	for w := st.waiter(); w != nil; {
+		if w == cur {
+			cyclic = true
+			break
+		}
+		nx, ok := r.waits[w]
+		if !ok || nx.finished() {
+			break
+		}
+		labels = append(labels, nx.label)
+		w = nx.waiter()
+	}
+	if cyclic {
+		delete(r.waits, cur)
+		r.mu.Unlock()
+		labels = append(labels, labels[0])
+		return fmt.Errorf("%s: dependency cycle: %s", label, strings.Join(labels, " -> "))
+	}
+	r.mu.Unlock()
+	defer r.unwait(cur)
+	return st.wait()
+}
+
+// unwait drops cur's registered wait edge after its wait resolves.
+func (r *Runner) unwait(cur *runtime.Task) {
+	r.mu.Lock()
+	delete(r.waits, cur)
+	r.mu.Unlock()
+}
+
 // NewRunner creates a runner whose working directory is dir — scripts and
 // subprocesses alike see it as their cwd (the engine's virtual cwd plus
 // cmd.Dir on every spawned command).
@@ -134,6 +202,7 @@ func NewRunner(dir string, stdout, stderr io.Writer) *Runner {
 		stdout:    syncWriter{mu: ioMu, w: stdout},
 		stderr:    syncWriter{mu: ioMu, w: stderr},
 		depStates: map[string]*depState{},
+		waits:     map[*runtime.Task]*depState{},
 	}
 	e := minigo.NewEngine(dir,
 		minigo.WithWorkingDir(dir),
@@ -363,7 +432,7 @@ func (r *Runner) deps(v runtime.VMCaller, args []runtime.Value) (runtime.Value, 
 		states = append(states, st)
 	}
 	for _, st := range states {
-		if err := st.wait(); err != nil {
+		if err := r.await(cur, st, "task.Deps"); err != nil {
 			return nil, fmt.Errorf("dep %s: %w", st.label, err)
 		}
 	}
@@ -385,7 +454,7 @@ func (r *Runner) serialDeps(v runtime.VMCaller, args []runtime.Value) (runtime.V
 			if w := st.waiter(); w == cur || taskInAncestry(w, cur) {
 				return nil, fmt.Errorf("task.SerialDeps: dependency cycle at %s", label)
 			}
-			if err := st.wait(); err != nil {
+			if err := r.await(cur, st, "task.SerialDeps"); err != nil {
 				return nil, fmt.Errorf("dep %s: %w", label, err)
 			}
 			continue

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 )
@@ -114,6 +115,93 @@ func B() { task.Deps(A) }
 	err := r.RunTask(context.Background(), file, "A", nil)
 	if err == nil || !strings.Contains(err.Error(), "cycle") {
 		t.Fatalf("expected a dependency-cycle error, got %v", err)
+	}
+}
+
+// TestDepsCycleAcrossBranches: a cycle whose edges are claimed by sibling
+// spawned goroutines is invisible to the spawn-ancestry check — it must
+// be caught by the wait-time check, not deadlocked.
+func TestDepsCycleAcrossBranches(t *testing.T) {
+	_, file := writeTaskfile(t, `package main
+
+import "task"
+
+func Default() { task.Deps(A, B) }
+
+func A() { task.Deps(B) }
+
+func B() { task.Deps(A) }
+`)
+	r := NewRunner(filepath.Dir(file), io.Discard, io.Discard)
+	done := make(chan error, 1)
+	go func() { done <- r.RunTask(context.Background(), file, "Default", nil) }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "cycle") {
+			t.Fatalf("expected a dependency-cycle error, got %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("cross-branch dependency cycle deadlocked instead of erroring")
+	}
+}
+
+// TestDepsCycleAcrossBranches3: a three-dep cycle spread across sibling
+// claims (A waits B, B waits C, C waits A) is detected the same way.
+func TestDepsCycleAcrossBranches3(t *testing.T) {
+	_, file := writeTaskfile(t, `package main
+
+import "task"
+
+func Default() { task.Deps(A, B, C) }
+
+func A() { task.Deps(B) }
+
+func B() { task.Deps(C) }
+
+func C() { task.Deps(A) }
+`)
+	r := NewRunner(filepath.Dir(file), io.Discard, io.Discard)
+	done := make(chan error, 1)
+	go func() { done <- r.RunTask(context.Background(), file, "Default", nil) }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "cycle") {
+			t.Fatalf("expected a dependency-cycle error, got %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("cross-branch dependency cycle deadlocked instead of erroring")
+	}
+}
+
+// TestDepsDiamond: sibling deps sharing a dep is not a cycle — the
+// shared dep must run once and both branches proceed.
+func TestDepsDiamond(t *testing.T) {
+	_, file := writeTaskfile(t, `package main
+
+import "task"
+
+func Default() { task.Deps(A, B) }
+
+func A() { task.Deps(Shared) }
+
+func B() { task.Deps(Shared) }
+
+func Shared() { task.Log("shared ran") }
+`)
+	var errb bytes.Buffer
+	r := NewRunner(filepath.Dir(file), io.Discard, &errb)
+	done := make(chan error, 1)
+	go func() { done <- r.RunTask(context.Background(), file, "Default", nil) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("diamond deps reported a cycle: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("diamond deps deadlocked")
+	}
+	if n := strings.Count(errb.String(), "shared ran"); n != 1 {
+		t.Fatalf("Shared ran %d times, want 1 (dedup)", n)
 	}
 }
 
