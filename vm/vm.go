@@ -1558,6 +1558,13 @@ func (v *VM) loop(f *frame) {
 			f.push(v.makeComposite(f, ins))
 		case bytecode.OpMakeClosure:
 			proto := consts[ins.A].(*runtime.Function)
+			if len(proto.Chunk.Upvals) == 0 {
+				// a capture-free literal evaluates to the proto itself —
+				// Go hoists it to a static func value, so repeated evals
+				// share one object instead of allocating a Closure.
+				f.push(proto)
+				continue
+			}
 			cl := &runtime.Closure{Fn: proto}
 			for _, d := range proto.Chunk.Upvals {
 				if d.FromParentUpval {
