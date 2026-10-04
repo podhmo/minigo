@@ -38,11 +38,12 @@ make test
 
 # TODO.md
 
-TODO.mdに残りのタスクを追記してください。
-タスクとは関係のないバグを見つけた場合も追記してください、
+`TODO.md` is an index only — task entries live in the topic files under `docs/todo/` (one file per topic). Record remaining tasks there; also record a task when you find a bug unrelated to your current work.
 
-- 未実装のタスクと実装済みのタスクをチェックボックスで管理してください
-- 機能全体が完了した場合にはimplementedのセクションに移動します
+- Add open tasks to the `## Open` section of the matching `docs/todo/<topic>.md` as `- [ ]`, or `- [-]` when partially done. If no topic fits, create a new topic file and add a row to the index table in `TODO.md`.
+- Keep open entries compact: a bold title, 1–3 sentences of what remains, and links to `docs/sketch/` reports or issues/PRs for detail. Do not write root-cause or fix narratives here — those belong in `docs/sketch/`.
+- When a task is done, move its entry to the same file's `## Done` section and mark it `[x]`. Done entries may keep their full text as history; do not grow them after the move.
+- Update the topic's row in `TODO.md` whenever its open count changes or a topic file is added/removed. Never add task entries to `TODO.md` itself.
 
 # 制約事項
 
