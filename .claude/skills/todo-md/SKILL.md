@@ -51,10 +51,9 @@ surrounding window (`rg -C 20`, or an offset read).
 
 ## Porting this scheme to another repo
 
-Copy this skill directory wholesale, then seed the tracker from the
-bundled starters — [example-TODO.md](example-TODO.md) and
-[example-TODO-archive.md](example-TODO-archive.md) — which carry the
-header notices and a minimal worked example (open/`[-]`/`[x]` shapes plus
-`> parent:` archive lines).
+Reference starters are bundled:
+[example-TODO.md](example-TODO.md) /
+[example-TODO-archive.md](example-TODO-archive.md). They ship under
+`example-*` names so nothing reads them as the live files day to day.
 
 See [why.md](why.md) for the background of this scheme.
