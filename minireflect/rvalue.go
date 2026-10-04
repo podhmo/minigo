@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/constant"
 	"reflect"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -1065,7 +1066,10 @@ func (v *RValue) Slice(i, j int) *RValue {
 
 // Grow expands a slice's capacity like Go 1.20 — Go checks
 // addressability before the slice kind, and only the cap side of the
-// header changes (len stays).
+// header changes (len stays). The resulting cap follows the runtime's
+// growslice: nextslicecap picks the unrounded cap, then the backing
+// size rounds up to the malloc size class holding that many elements
+// (pointerful elements reserve an 8-byte malloc header since go1.26).
 func (v *RValue) Grow(n int) {
 	v.mustValid("Grow")
 	if v.host() {
@@ -1082,24 +1086,107 @@ func (v *RValue) Grow(n int) {
 		// rises and the value becomes a live (non-nil) slice.
 		sl = &runtime.Slice{Typ: v.td}
 	}
+	// Go judges the argument before the capacity math: a negative n
+	// panics even when the slice could absorb it.
+	if n < 0 {
+		plain("reflect.Value.Grow: negative len")
+	}
+	if len(sl.Elems)+n < 0 {
+		plain("reflect.Value.Grow: slice overflow")
+	}
 	if need := len(sl.Elems) + n; need > cap(sl.Elems) {
-		// Go's growslice steps: an empty slice allocates need directly,
-		// <256 doubles, then quarters past 768.
-		newcap := cap(sl.Elems)
-		if newcap == 0 {
-			newcap = need
-		}
-		for newcap < need {
-			if newcap < 256 {
-				newcap *= 2
+		newcap := nextSliceCap(need, cap(sl.Elems))
+		if esize, noscan, ok := v.e.elemLayout(sl.Typ); ok {
+			if esize == 0 {
+				// zero-sized elements share zerobase: the runtime
+				// reports cap == newLen.
+				newcap = need
 			} else {
-				newcap = (newcap + 768) / 4
+				if uintptr(newcap) > maxAlloc/esize {
+					plain("growslice: len out of range")
+				}
+				newcap = int(roundupSize(uintptr(newcap)*esize, noscan) / esize)
 			}
 		}
 		grown := make([]runtime.Value, len(sl.Elems), newcap)
 		copy(grown, sl.Elems)
 		v.set(&runtime.Slice{Elems: grown, Typ: sl.Typ})
 	}
+}
+
+// nextSliceCap mirrors the runtime's nextslicecap: a need past double
+// the old cap allocates the need directly, below 256 the cap doubles
+// once, and at 256+ it grows by quarters until it covers need.
+func nextSliceCap(need, oldCap int) int {
+	newcap := oldCap
+	if need > newcap+newcap {
+		return need
+	}
+	if newcap < 256 {
+		return newcap + newcap
+	}
+	for newcap < need {
+		newcap += (newcap + 3*256) >> 2
+	}
+	return newcap
+}
+
+// maxAlloc is the runtime's addressable-allocation bound on amd64 —
+// growslice panics when the requested bytes can't span it.
+const maxAlloc = uintptr(1) << 48
+
+// sizeClassToSize is the runtime's malloc size-class table on amd64:
+// the byte size mallocgc actually allocates for a small request.
+var sizeClassToSize = [...]uint16{
+	0, 8, 16, 24, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208,
+	224, 240, 256, 288, 320, 352, 384, 416, 448, 480, 512, 576, 640, 704,
+	768, 896, 1024, 1152, 1280, 1408, 1536, 1792, 2048, 2304, 2688, 3072,
+	3200, 3456, 4096, 4864, 5376, 6144, 6528, 6784, 6912, 8192, 9472,
+	9728, 10240, 10880, 12288, 13568, 14336, 16384, 18432, 19072, 20480,
+	21760, 24576, 27264, 28672, 32768,
+}
+
+// roundupSize mirrors the runtime's roundupsize: requests up to the
+// small-object bound land in the smallest covering size class — since
+// go1.26 a pointerful object past 512 bytes also carries an 8-byte
+// malloc header inside its class — and larger requests align to pages.
+func roundupSize(size uintptr, noscan bool) uintptr {
+	const (
+		mallocHeaderSize       = 8
+		minSizeForMallocHeader = 512 // goarch.PtrSize * goarch.PtrBits on amd64
+		maxSmallSize           = 32768
+		pageSize               = 4096
+	)
+	req := size
+	if req <= maxSmallSize-mallocHeaderSize {
+		if !noscan && req > minSizeForMallocHeader {
+			req += mallocHeaderSize
+		}
+		// the runtime's two lookup tables just index the same sorted
+		// class list — the answer is the smallest covering class.
+		i := sort.Search(len(sizeClassToSize), func(i int) bool {
+			return uintptr(sizeClassToSize[i]) >= req
+		})
+		return uintptr(sizeClassToSize[i]) - (req - size)
+	}
+	req += pageSize - 1
+	if req < size {
+		return size
+	}
+	return req &^ (pageSize - 1)
+}
+
+// elemLayout resolves a slice typedef's element layout for growslice:
+// byte size and the noscan flag (true when elements contain no
+// pointers). ok is false when the element type cannot be resolved —
+// the caller then grows to the unrounded cap.
+func (e *Env) elemLayout(td *runtime.TypeDef) (size uintptr, noscan bool, ok bool) {
+	et := e.elemOf(td)
+	if et == nil {
+		return 0, false, false
+	}
+	rt := e.rtypeOf(et)
+	return rt.sizeOf(), !rt.hasPointers(), true
 }
 
 // MapIndex looks up a map value; missing keys give an invalid Value.
