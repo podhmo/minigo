@@ -199,7 +199,10 @@ func (e *Engine) installStdlib() {
 		"Repeat":     h.fn2("strings.Repeat", func(a []any) (any, error) { return strings.Repeat(str(a[0]), intOf(a[1])), nil }, strings.Repeat),
 		// a Builder's zero is the host *strings.Builder so Write*/String
 		// methods dispatch through reflection like sync.Mutex's.
-		"Builder":     hostType("strings.Builder", func() any { return &strings.Builder{} }),
+		"Builder": hostType("strings.Builder", func() any { return &strings.Builder{} }),
+		// Reader likewise: `strings.Reader{}` and `(*strings.Reader)(nil)`
+		// resolve to the named host type (Elem of *T reads strings.Reader).
+		"Reader":      hostType("strings.Reader", func() any { return &strings.Reader{} }),
 		"NewReplacer": h.fn("strings.NewReplacer", func(a []any) (any, error) { return strings.NewReplacer(strArgs(a)...), nil }, strings.NewReplacer),
 		"Fields":      h.fn("strings.Fields", func(a []any) (any, error) { return strsSlice(strings.Fields(str(a[0]))), nil }),
 		"EqualFold":   h.fn2("strings.EqualFold", func(a []any) (any, error) { return strings.EqualFold(str(a[0]), str(a[1])), nil }, strings.EqualFold),
