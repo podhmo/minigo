@@ -1,0 +1,14 @@
+[1 2 3]
+hi
+map[a:1]
+reflect.Value|7|"hi"|hi
+<invalid reflect.Value>
+<invalid reflect.Value>
+1
+<int Value>
+<nil>
+{2 0}
+[s <invalid Value>]
+map[string]int{"a":1}
+int
+*reflect.rtype|[]int
