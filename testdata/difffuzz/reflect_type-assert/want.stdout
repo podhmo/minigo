@@ -1,0 +1,13 @@
+0: int 42 true
+1: string  false
+2: false
+3: main.MyErr x true
+4: main.MyErr S:x true
+5: int 7 true
+6: int 42 true
+7: main.MyInt 3 true
+8: int 0 false
+9: *int <nil> true
+10: panic: reflect: call of reflect.TypeAssert on zero Value
+11: panic: reflect.TypeAssert: cannot return value obtained from unexported field or method
+12: []int [1] true

@@ -98,7 +98,7 @@ func Symbols(h Hooks) map[string]runtime.Value {
 		"Select":          e.fn("reflect.Select", e.unsupported("reflect.Select")),
 		"Swapper":         e.fn("reflect.Swapper", e.unsupported("reflect.Swapper")),
 		"VisibleFields":   e.fn("reflect.VisibleFields", e.unsupported("reflect.VisibleFields")),
-		"TypeAssert":      e.fn("reflect.TypeAssert", e.unsupported("reflect.TypeAssert")),
+		"TypeAssert":      e.typeAssert(),
 		"TypeFor":         e.typeFor(),
 		// The two public shell types. `var v reflect.Value` produces a
 		// host-boxed zero facade value; `var t reflect.Type` is an
@@ -196,6 +196,85 @@ func (e *Env) typeFor() *runtime.BuiltinFunc {
 				return nil, fmt.Errorf("reflect.TypeFor: type argument is %T, not a type", targs[0])
 			}
 			return &runtime.GoValue{V: e.rtypeOf(td)}, nil
+		},
+	}
+}
+
+// typeAssert is the generic builtin behind reflect.TypeAssert[T]: the
+// comma-ok type assertion over a facade Value, matching Go 1.25's
+// semantics — panic on a zero or read-only Value, otherwise return the
+// payload typed as T with ok, or T's zero with !ok. Concrete T requires
+// the payload's exact type; interface T requires the dynamic type to
+// implement it; an interface-typed v asserts its dynamic payload (a nil
+// interface asserts to nothing).
+func (e *Env) typeAssert() *runtime.BuiltinFunc {
+	return &runtime.BuiltinFunc{
+		Name: "reflect.TypeAssert",
+		Fn: func(runtime.VMCaller, []runtime.Value) (runtime.Value, error) {
+			return nil, fmt.Errorf("reflect.TypeAssert requires a type argument")
+		},
+		GenFn: func(vc runtime.VMCaller, targs []runtime.Value, args []runtime.Value) (runtime.Value, error) {
+			if len(targs) != 1 {
+				return nil, fmt.Errorf("reflect.TypeAssert takes 1 type argument, got %d", len(targs))
+			}
+			if len(args) != 1 {
+				return nil, fmt.Errorf("reflect.TypeAssert takes 1 value argument, got %d", len(args))
+			}
+			td, ok := targs[0].(*runtime.TypeDef)
+			if !ok {
+				return nil, fmt.Errorf("reflect.TypeAssert: type argument is %T, not a type", targs[0])
+			}
+			v := asRValue(args[0])
+			if v == nil {
+				return nil, fmt.Errorf("reflect.TypeAssert: arg is %T, not a reflect.Value", args[0])
+			}
+			if !v.IsValid() {
+				trap("call of reflect.TypeAssert on zero Value")
+			}
+			if v.ro {
+				plain("reflect.TypeAssert: cannot return value obtained from unexported field or method")
+			}
+			tR := e.rtypeOf(td)
+			// the type checked against T: the payload's dynamic type.
+			// An interface-typed v carries its concrete payload like Go's
+			// v.Interface(), so Type() is enough for concrete v while an
+			// interface-kind v needs the payload inside it.
+			var vt *RType
+			switch {
+			case v.host():
+				if v.rv.Kind() == reflect.Interface {
+					if x := v.rv.Interface(); x != nil {
+						vt = e.hostTypeOf(reflect.TypeOf(x))
+					}
+				} else {
+					vt = v.Type()
+				}
+			case v.Kind() == reflect.Interface:
+				if dt := typeOfValue(e, v.get()); dt != nil {
+					vt = e.rtypeOf(dt)
+				}
+			default:
+				vt = v.Type()
+			}
+			ok = false
+			if vt != nil {
+				if td.Kind == runtime.KindInterface {
+					ok = vt.Implements(tR)
+				} else {
+					ok = vt == tR
+				}
+			}
+			if !ok {
+				return &runtime.Tuple{Elems: []runtime.Value{e.zeroOf(vc, td), false}}, nil
+			}
+			var out runtime.Value
+			switch x := v.ifaceVal().(type) {
+			case runtime.Value:
+				out = x
+			default:
+				out = &runtime.GoValue{V: x}
+			}
+			return &runtime.Tuple{Elems: []runtime.Value{out, true}}, nil
 		},
 	}
 }
