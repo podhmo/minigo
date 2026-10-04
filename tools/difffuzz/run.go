@@ -50,7 +50,14 @@ type Runner struct {
 	seq   atomic.Int64
 }
 
+// hexAddr hides Go pointer addresses — %#v/%p render the runtime
+// address, which differs on every run of either side, so byte-compare
+// can never match. 6+ hex digits keeps byte literals like 0x62
+// sensitive while masking pointers.
+var hexAddr = regexp.MustCompile(`0x[0-9a-fA-F]{6,}`)
+
 func (r *Runner) mask(s string) string {
+	s = hexAddr.ReplaceAllString(s, "0x…")
 	for _, m := range r.Masks {
 		s = m.ReplaceAllString(s, "…")
 	}
