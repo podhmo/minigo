@@ -1,0 +1,9 @@
+next: false
+next2: false
+k: reflect: Value.SetIterKey called on exhausted iterator
+k0: MapIter.Key called before Next
+v0: MapIter.Value called before Next
+ek: MapIter.Key called on exhausted iterator
+ev: MapIter.Value called on exhausted iterator
+sk: reflect: Value.SetIterKey called on exhausted iterator
+sv: reflect: Value.SetIterValue called on exhausted iterator
