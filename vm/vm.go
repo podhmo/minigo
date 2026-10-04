@@ -3891,6 +3891,13 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 			val = v.coerce(f, val, et)
 		}
 		b.Insert(idx, val)
+	case *runtime.IndexRef:
+		// a nested index lvalue like m[k][i] = v over a map of slices
+		// evaluates the outer index against the stored slice — read the
+		// ref's element (Get can't see a map base) and assign through
+		// it, sharing the stored backing like Go.
+		x := v.index(f, b.Base, b.Key)
+		v.setIndex(f, x, idx, val)
 	default:
 		f.trap("index assign on %T", base)
 	}

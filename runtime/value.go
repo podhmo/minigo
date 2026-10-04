@@ -351,12 +351,36 @@ func (r *IndexRef) sliceOf() *Slice {
 	}
 }
 
+// mapOf resolves the base to the map being referenced.
+func (r *IndexRef) mapOf() *Map {
+	v := r.Base
+	for {
+		if m, ok := v.(*Map); ok {
+			return m
+		}
+		if n, ok := v.(*Named); ok {
+			v = n.V
+			continue
+		}
+		dv, ok := Deref(v)
+		if !ok {
+			return nil
+		}
+		v = dv
+	}
+}
+
 // Slice resolves the base to the referenced slice — exported so the VM
 // can compare two refs by backing-array identity.
 func (r *IndexRef) Slice() *Slice { return r.sliceOf() }
 
 // Get reads the element value.
 func (r *IndexRef) Get() (Value, bool) {
+	if m := r.mapOf(); m != nil {
+		// a missing key reports no value — callers needing the zero
+		// go through the VM's index path, which knows the elem typedef.
+		return m.Get(r.Key)
+	}
 	s := r.sliceOf()
 	i, ok := r.Key.(int64)
 	if s == nil || !ok || i < 0 || i >= int64(len(s.Elems)) {
@@ -367,6 +391,10 @@ func (r *IndexRef) Get() (Value, bool) {
 
 // Set writes the element value.
 func (r *IndexRef) Set(v Value) bool {
+	if m := r.mapOf(); m != nil {
+		m.Insert(r.Key, v)
+		return true
+	}
 	s := r.sliceOf()
 	i, ok := r.Key.(int64)
 	if s == nil || !ok || i < 0 || i >= int64(len(s.Elems)) {
