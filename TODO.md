@@ -6,7 +6,9 @@
 > -   When a task is done, move its entry to the same file's `## Done` section and mark it `[x]`. Done entries may keep their full text as history; do not grow them after the move.
 > -   Update the topic's row below whenever its open count changes or a topic file is added/removed.
 
-This file tracks implemented features and immediate, concrete tasks.
+This file is the index of the project's task tracker; task entries live in
+the topic files under `docs/todo/`.
+
 It was seeded from `podhmo/go-scan`'s TODO.md (the `minigo2` section) at
 migration; history above that point lives in the source repository.
 
