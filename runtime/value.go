@@ -374,12 +374,16 @@ type IndexRef struct {
 	Key  Value
 }
 
-// sliceOf resolves the base to the slice being referenced.
-func (r *IndexRef) sliceOf() *Slice {
+// container resolves the base to the referenced slice or map — one
+// shared walk for sliceOf and mapOf. Reaching the other container
+// kind still reports the caller's kind as absent: a map base cannot
+// resolve a slice element.
+func (r *IndexRef) container() Value {
 	v := r.Base
 	for {
-		if s, ok := v.(*Slice); ok {
-			return s
+		switch v.(type) {
+		case *Slice, *Map:
+			return v
 		}
 		if n, ok := v.(*Named); ok {
 			v = n.V
@@ -393,23 +397,16 @@ func (r *IndexRef) sliceOf() *Slice {
 	}
 }
 
+// sliceOf resolves the base to the slice being referenced.
+func (r *IndexRef) sliceOf() *Slice {
+	s, _ := r.container().(*Slice)
+	return s
+}
+
 // mapOf resolves the base to the map being referenced.
 func (r *IndexRef) mapOf() *Map {
-	v := r.Base
-	for {
-		if m, ok := v.(*Map); ok {
-			return m
-		}
-		if n, ok := v.(*Named); ok {
-			v = n.V
-			continue
-		}
-		dv, ok := Deref(v)
-		if !ok {
-			return nil
-		}
-		v = dv
-	}
+	m, _ := r.container().(*Map)
+	return m
 }
 
 // Slice resolves the base to the referenced slice — exported so the VM
