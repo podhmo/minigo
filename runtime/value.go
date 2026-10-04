@@ -686,6 +686,10 @@ func typeTagOf(td *TypeDef) string {
 	}
 	if td.Name != "" {
 		if td.Pkg != nil && td.Pkg.Path != "" {
+			// a host-bound td's Name is already "pkgpath.Name"
+			if strings.HasPrefix(td.Name, td.Pkg.Path+".") {
+				return td.Name
+			}
 			return td.Pkg.Path + "." + td.Name
 		}
 		return td.Name
