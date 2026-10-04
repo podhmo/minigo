@@ -4515,9 +4515,11 @@ func (v *VM) driveFuncIter(f *frame, it *runtime.Iterator, nvars, top, end int) 
 			if it.Exited {
 				panic(runtime.RuntimePanic("range function continued iteration after function for loop body returned false"))
 			}
-			if nvars > 0 && len(args) != nvars {
+			if nvars > 0 && len(args) < nvars {
 				return nil, fmt.Errorf("yield must be called with %d argument(s), got %d", nvars, len(args))
 			}
+			// a producer may yield more values than the loop binds —
+			// `for m := range seq2` keeps only the first, like Go.
 			for i := 0; i < nvars && i < len(args); i++ {
 				f.push(args[i])
 			}
