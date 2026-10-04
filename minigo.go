@@ -641,6 +641,7 @@ func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, e
 			p.SetState(runtime.Failed)
 			return nil, fmt.Errorf("parse %s: %w", f, err)
 		}
+		sf.LangMod = meta.Lang
 		files = append(files, sf)
 	}
 	if err := e.indexFiles(p, files); err != nil {
@@ -694,6 +695,7 @@ func (e *Engine) buildPackage(meta *resolve.PackageMeta) (*runtime.Package, erro
 			p.FinishIndexing()
 			return nil, fmt.Errorf("parse %s: %w", f, err)
 		}
+		sf.LangMod = meta.Lang
 		files = append(files, sf)
 	}
 	if err := e.indexFiles(p, files); err != nil {
@@ -738,6 +740,15 @@ func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File) error {
 	p.FileByName = map[string]*syntax.File{}
 	for _, sf := range files {
 		p.FileByName[sf.Name] = sf
+	}
+
+	// language-version gate: files under a versioned module may only use
+	// features their effective -lang reaches (see syntax.CheckLang)
+	declared := syntax.DeclaredKinds(files)
+	for _, sf := range files {
+		if err := syntax.CheckLang(e.fset, sf, declared); err != nil {
+			return err
+		}
 	}
 
 	ix, err := index.Build(files)
@@ -802,6 +813,7 @@ func (e *Engine) LoadFile(ctx context.Context, filename string) (*runtime.Packag
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", filename, err)
 	}
+	sf.LangMod = resolve.ModuleLang(filepath.Dir(abs))
 
 	p := e.newPackage("<file>"+filepath.ToSlash(abs), sf.AST.Name.Name, filepath.Dir(abs))
 	if err := e.indexFiles(p, []*syntax.File{sf}); err != nil {

@@ -1,8 +1,13 @@
+//go:build go1.27
+
 package main
 
 // Go 1.27-only syntax: go/parser on a go1.26 toolchain rejects method
 // type parameters entirely, so this package lives in its own directory
-// and the test skips itself when the host toolchain is older.
+// and the test skips itself when the host toolchain is older. The
+// //go:build go1.27 line is also what lifts this file's -lang above the
+// module's `go 1.26` — syntax.CheckLang otherwise rejects the method type
+// parameters like `go build` does.
 
 // ---- generic methods ----
 

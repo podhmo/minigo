@@ -1739,3 +1739,65 @@ func TestSpecialFormErrorUnwrap(t *testing.T) {
 		t.Errorf("frames mismatch (-want +got):\n%s", diff)
 	}
 }
+
+// TestLangGate: files under a module carry that module's `go` directive as
+// their -lang, exactly like `go build`; a file's own `//go:build go1.x`
+// constraint replaces it (floored at go1.21). Feature use newer than the
+// effective lang is a compile-time error with gc's wording.
+func TestLangGate(t *testing.T) {
+	e := newEngine(t)
+	rejects := []struct {
+		dir string
+		sub string
+	}{
+		{"./testdata/langgate/g117", "type parameter requires go1.18 or later (-lang was set to go1.17; check go.mod)"},
+		{"./testdata/langgate/m126", "generic method requires go1.27 or later (-lang was set to go1.26; check go.mod)"},
+		{"./testdata/langgate/u117", "embedding interface element ~int | ~float64 requires go1.18 or later"},
+		{"./testdata/langgate/a117", "predeclared any requires go1.18 or later"},
+		{"./testdata/langgate/n125", "new(42) requires go1.26 or later (-lang was set to go1.25; check go.mod)"},
+		{"./testdata/langgate/r121", "cannot range over 10 (untyped int constant): requires go1.22 or later"},
+		{"./testdata/langgate/b117", "built-in min requires go1.21 or later"},
+		{"./testdata/langgate/i117", "type instantiation requires go1.18 or later"},
+		// //go:build go1.19 in a go1.17 module: effective lang is
+		// max(1.19, 1.21) = 1.21 — range-over-int (1.22) still fails and
+		// the error reports the module's -lang, like gc.
+		{"./testdata/langgate/tfl", "cannot range over 10 (untyped int constant): requires go1.22 or later (-lang was set to go1.17; check go.mod)"},
+		// //go:build go1.26 in a go1.25 module: effective lang is 1.26 —
+		// generic methods (1.27) fail and the error names the file's own
+		// declared version, like gc.
+		{"./testdata/langgate/tdc", "generic method requires go1.27 or later (file declares //go:build go1.26)"},
+	}
+	for _, c := range rejects {
+		_, err := e.Run(context.Background(), c.dir, "main")
+		if err == nil || !strings.Contains(err.Error(), c.sub) {
+			t.Fatalf("%s: expected %q error, got %v", c.dir, c.sub, err)
+		}
+	}
+
+	// a go1.18 build tag lifts a go1.17 module's file to go1.18: generics OK.
+	if got := run(t, e, "./testdata/langgate/tok", "Answer"); got != int64(42) {
+		t.Fatalf("tok/Answer: got %v", got)
+	}
+	// package-declared `any`/`min`/`new` shadow the predeclared names:
+	// the gate must not flag them (gc doesn't).
+	if got := run(t, e, "./testdata/langgate/sh117", "M"); got != int64(1) {
+		t.Fatalf("sh117/M: got %v", got)
+	}
+
+	// outside any module there is no -lang at all — everything goes,
+	// like `go run` on module-less files.
+	dir := t.TempDir()
+	src := `package main
+
+func Id[T any](x T) T { return x }
+
+func Answer() int { return Id(42) }
+`
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e2 := minigo.NewEngine(dir)
+	if got := run(t, e2, dir, "Answer"); got != int64(42) {
+		t.Fatalf("unbounded/Answer: got %v", got)
+	}
+}
