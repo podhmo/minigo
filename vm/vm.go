@@ -1404,6 +1404,18 @@ func (v *VM) loop(f *frame) {
 			}
 			base := f.pop()
 			f.push(v.instantiate(f, base, targs, ins.Pos))
+		case bytecode.OpFoldArrayLen:
+			// [td, len] on the stack: evaluate-at-use constants like
+			// `[n]int`/`[len(a)]*T` fold into the typedef's AST so type
+			// identity spells the concrete `[3]*T` like Go. The op
+			// folds the next un-folded len node in DFS order — the same
+			// order the compiler emitted the evals.
+			lv := f.pop()
+			td := f.pop().(*runtime.TypeDef)
+			if n, ok := lenConstInt(lv); ok {
+				foldNextArrLen(td.Anon, n)
+			}
+			f.push(td)
 		case bytecode.OpElemType:
 			td := typedefOf(f.pop())
 			if td == nil {
@@ -4125,6 +4137,14 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 				raw[i] = v.coerce(f, raw[i], et)
 			}
 			s.Elems = raw
+		}
+		if at, ok := td.Anon.(*ast.ArrayType); ok {
+			if _, isEll := at.Len.(*ast.Ellipsis); isEll {
+				// `[...]T` takes its length from the element count —
+				// fold it into the AST so the typedef spells the
+				// concrete [N]T like Go's inferred length.
+				at.Len = &ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(len(s.Elems))}
+			}
 		}
 		return s
 	case runtime.KindMap:
@@ -7874,7 +7894,7 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 			if ct.Name != "" && td.Name != "" {
 				f.trap("cannot use %s as %s", tdName(ct), tdName(td))
 			}
-			if !v.tdShapeEq(ct, td) {
+			if !v.tdShapeEval(f, ct, td) {
 				f.trap("cannot use %s as %s", tdName(ct), tdName(td))
 			}
 		}
@@ -7975,6 +7995,26 @@ func (v *VM) tdShapeEq(a, b *runtime.TypeDef) bool {
 		return runtime.TypSpelling(pa.Anon, pa) == runtime.TypSpelling(pb.Anon, pb)
 	}
 	return pa.Anon == nil && pb.Anon == nil
+}
+
+// tdShapeEval is tdShapeEq with evaluated array lengths: `[len(x)]*T`
+// and `[3]*T` spell differently but name the same type once len(x)
+// folds. Only reached when the plain spelling compare failed.
+func (v *VM) tdShapeEval(f *frame, a, b *runtime.TypeDef) bool {
+	if v.tdShapeEq(a, b) {
+		return true
+	}
+	na, aok := v.arrayLen(f, a)
+	nb, bok := v.arrayLen(f, b)
+	if !aok || !bok || na != nb {
+		return false
+	}
+	ea := v.elemTypedef(f, a)
+	eb := v.elemTypedef(f, b)
+	if ea == nil || eb == nil {
+		return ea == nil && eb == nil
+	}
+	return v.tdShapeEval(f, ea, eb)
 }
 
 // structFieldsEq compares two struct typedefs by field name lists —
@@ -8337,14 +8377,14 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 					gv = d
 				}
 				if n, ok2 := lenConstInt(gv); ok2 {
-					return n, true
+					return v.foldArrLen(at, n), true
 				}
 			}
 			if td.Pkg.Index != nil && v.H.Materialize != nil {
 				if d := td.Pkg.Index.Consts[l.Name]; d != nil {
 					if mv, err := v.H.Materialize(td.Pkg, d); err == nil {
 						if n, ok := lenConstInt(mv); ok {
-							return n, true
+							return v.foldArrLen(at, n), true
 						}
 					}
 				}
@@ -8370,7 +8410,7 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 			}
 		}()
 		if ok {
-			return n, true
+			return v.foldArrLen(at, n), true
 		}
 	}
 	return 0, false
@@ -8391,6 +8431,75 @@ func lenConstShaped(e ast.Expr) bool {
 		return lenConstShaped(x.X)
 	case *ast.BinaryExpr:
 		return lenConstShaped(x.X) && lenConstShaped(x.Y)
+	case *ast.CallExpr:
+		// len/cap of an array is a constant expression — `len(a)`
+		// and `cap(a)` fold to the array's size; other calls are
+		// non-constant and Go rejects them.
+		id, ok := x.Fun.(*ast.Ident)
+		return ok && (id.Name == "len" || id.Name == "cap")
+	}
+	return false
+}
+
+// foldArrLen rewrites an array typedef's length expression to the
+// evaluated count so type spellings — `[3]*T`, `[N]T` — compare
+// identically after folding, like Go's constant evaluation.
+func (v *VM) foldArrLen(at *ast.ArrayType, n int64) int64 {
+	at.Len = &ast.BasicLit{Kind: token.INT, Value: strconv.FormatInt(n, 10)}
+	return n
+}
+
+// foldNextArrLen rewrites the first not-yet-folded array-length
+// expression in a type AST (DFS order — the order emitLenFolds emits
+// evals) to its evaluated count.
+func foldNextArrLen(e ast.Expr, n int64) bool {
+	switch t := e.(type) {
+	case *ast.ArrayType:
+		switch t.Len.(type) {
+		case nil, *ast.BasicLit, *ast.Ellipsis:
+		default:
+			t.Len = &ast.BasicLit{Kind: token.INT, Value: strconv.FormatInt(n, 10)}
+			return true
+		}
+		return foldNextArrLen(t.Elt, n)
+	case *ast.MapType:
+		if foldNextArrLen(t.Key, n) {
+			return true
+		}
+		return foldNextArrLen(t.Value, n)
+	case *ast.StarExpr:
+		return foldNextArrLen(t.X, n)
+	case *ast.ParenExpr:
+		return foldNextArrLen(t.X, n)
+	case *ast.ChanType:
+		return foldNextArrLen(t.Value, n)
+	case *ast.FuncType:
+		if foldFieldListLens(t.Params, n) {
+			return true
+		}
+		return foldFieldListLens(t.Results, n)
+	case *ast.IndexExpr:
+		return foldNextArrLen(t.Index, n)
+	case *ast.IndexListExpr:
+		for _, ix := range t.Indices {
+			if foldNextArrLen(ix, n) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// foldFieldListLens folds the first un-folded array length in a func
+// signature's parameter or result list.
+func foldFieldListLens(fl *ast.FieldList, n int64) bool {
+	if fl == nil {
+		return false
+	}
+	for _, fd := range fl.List {
+		if foldNextArrLen(fd.Type, n) {
+			return true
+		}
 	}
 	return false
 }

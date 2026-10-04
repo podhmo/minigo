@@ -3246,6 +3246,54 @@ func peelLitType(t ast.Expr, depth int) ast.Expr {
 	return t
 }
 
+// emitLenFolds emits the in-scope evaluation of every non-literal array
+// length inside a type AST (DFS order — nested arrays like
+// `[][len(a)]*T` count too). Each OpFoldArrayLen folds one len node into
+// the typedef's AST so `[n]int`/`[len(a)]*T` spell the concrete `[3]*T`
+// at type-identity compares, like Go's constant folding. `[]T`, `[3]T`
+// and `[...]T` emit nothing.
+func (c *compiler) emitLenFolds(e ast.Expr) {
+	switch t := e.(type) {
+	case *ast.ArrayType:
+		switch t.Len.(type) {
+		case nil, *ast.BasicLit, *ast.Ellipsis:
+		default:
+			c.expr(t.Len)
+			c.emit(bytecode.OpFoldArrayLen, 0, 0, e.Pos())
+		}
+		c.emitLenFolds(t.Elt)
+	case *ast.MapType:
+		c.emitLenFolds(t.Key)
+		c.emitLenFolds(t.Value)
+	case *ast.StarExpr:
+		c.emitLenFolds(t.X)
+	case *ast.ParenExpr:
+		c.emitLenFolds(t.X)
+	case *ast.ChanType:
+		c.emitLenFolds(t.Value)
+	case *ast.FuncType:
+		c.emitFieldListLens(t.Params)
+		c.emitFieldListLens(t.Results)
+	case *ast.IndexExpr:
+		c.emitLenFolds(t.Index)
+	case *ast.IndexListExpr:
+		for _, ix := range t.Indices {
+			c.emitLenFolds(ix)
+		}
+	}
+}
+
+// emitFieldListLens folds array lengths in a function signature's
+// parameter or result list.
+func (c *compiler) emitFieldListLens(fl *ast.FieldList) {
+	if fl == nil {
+		return
+	}
+	for _, fd := range fl.List {
+		c.emitLenFolds(fd.Type)
+	}
+}
+
 // typeExpr emits a push of *runtime.TypeDef for a type expression.
 func (c *compiler) typeExpr(e ast.Expr) {
 	switch t := e.(type) {
@@ -3258,6 +3306,7 @@ func (c *compiler) typeExpr(e ast.Expr) {
 		// Anon/Pkg/File let OpElemType resolve the element typedef later;
 		// Binds carries the generic instantiation so `[]T` resolves T.
 		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindSlice, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds}), 0, e.Pos())
+		c.emitLenFolds(t)
 	case *ast.MapType:
 		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindMap, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds}), 0, e.Pos())
 	case *ast.StarExpr:
