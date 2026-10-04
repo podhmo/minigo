@@ -42,6 +42,11 @@
 | 存在しないコマンド (Run) | `task Missing: exec: "nosuchcmd-xyz": executable file not found in $PATH` | コマンド名あり |
 | `task.RunIn` の存在しない dir | `task RunInMissing: chdir /abs/no-such-dir: no such file or directory` | 解決後パスを名指す |
 | `task.Output` の失敗 | `(v="", err=exit status 1)` — 2 値契約を維持 | 契約破壊なし |
+| 存在しないコマンド (Sh) | `sh: 1: no-such-cmd-xyz: not found` が stderr に流れつつ `task MissingSh: exit status 127` | shell の言葉は届くがラッパ側は G2（スタック適用後は `sh -c "...": exit status 127`） |
+| 存在しないコマンド (Output) | `err=exec: "no-such-cmd-xyz": executable file not found in $PATH` | Run と同じ exec エラーが 2 値目に返る |
+| 成功時のストリーム分離 | `task.Sh("echo out; echo err >&2")` → `out` は stdout、`err` は stderr（`2>/dev/null` / `1>/dev/null` で分離検証） | チャネルが正しく分かれる |
+| 失敗時も途中出力を捨てない | `echo partial-out; echo partial-err >&2; exit 3` → partial-out→stdout、partial-err→stderr、その後 `exit status 3` | 失敗しても子の出力は流れ残る |
+| dep 連鎖の失敗 | `SerialDeps(A→B→C)` で C が失敗 → `task TopChain: runtime trap: dep A: ... dep B: ... dep C: exit status 1` + 各階層ごとの Traceback ブロック | どの経路で落ちたか連鎖で読める |
 | `task.Target` の dep 欠損 | `ok=false err=stat /abs/no-such-dep.txt: no such file or directory` | パスを名指す（§3 の注意書きあり） |
 | 別 cwd からの実行 | Taskfile ディレクトリ基準で動く（設計通り） | — |
 | 再帰呼出 | `runtime trap: stack exhausted: frame limit 10000` で死ぬ（プロセスは死なない） | loud failure ではある（§3-G7 参照） |
@@ -180,7 +185,7 @@ func Default() { task.Log("second") }
 - CLI 層: `-f` に非存在/ディレクトリ/空文字、未知 flag、タスク名なし、`Task:`、`:foo`、引数過不足、`Default -l` の順
 - スクリプト層: 構文エラー、未定義識別子、`panic`、型エラー、`error` 返却、init 時 panic、import 欠落、兄弟ファイル参照、関数再宣言、再帰
 - dep 層: 直系サイクル、兄弟 claim 経由サイクル（デッドロック再現）、dep の error/panic、`task.F` の引数違い・型違い、非関数 dep、nil dep、builtin dep、self dep、serial/parallel 混在
-- コマンド層: `task.Sh` の `false`/未存在 cmd/exit 2/空文字/非文字列、`task.Run` の未存在/権限/非文字列、`task.RunIn` の未存在 dir/絶対パス、`task.Output` の失敗、stderr passthrough、ハング
+- コマンド層: `task.Sh` の `false`/未存在 cmd/exit 2/空文字/非文字列、`task.Run` の未存在/権限/非文字列、`task.RunIn` の未存在 dir/絶対パス、`task.Output` の失敗・未存在 cmd、stderr passthrough、stdout/stderr の分離（成功時・途中失敗時）、dep 連鎖（`SerialDeps(A→B→C)`）のエラーラベル、ハング
 - 環境・不整合層: `task.Target` の dep 欠損・target 欠損・dir dep、別 cwd からの呼出し、`-l` が init 失敗を無視すること、生成物（`app.out`）がディレクトリ化している場合など
 
 観測日: 2026-10-04。`task-run` の実装は `runner.go`（claimDep/depState/ ancestry チェック、`strOf` による緩い marshalling、`errOf(cmd.Run())` による素の ExitError 返却）と `main.go`（`task %s:` による一律 prefix）に由来する。
