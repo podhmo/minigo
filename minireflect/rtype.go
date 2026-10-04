@@ -1261,6 +1261,58 @@ func (t *RType) Comparable() bool {
 	return t.e.comparableTd(t.td, map[*runtime.TypeDef]bool{})
 }
 
+// CanSeq reports whether a value of this type produces an
+// iter.Seq[Value]: ints and uints, array, slice, chan, string, map,
+// ptr-to-array, and func(yield-1) producers.
+func (t *RType) CanSeq() bool {
+	if t.rt != nil {
+		return t.rt.CanSeq()
+	}
+	switch t.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Array, reflect.Slice, reflect.Chan, reflect.String, reflect.Map:
+		return true
+	case reflect.Func:
+		return t.canRange(1)
+	case reflect.Ptr:
+		return t.Elem().Kind() == reflect.Array
+	}
+	return false
+}
+
+// CanSeq2 reports the same for iter.Seq2[Value, Value]: array, slice,
+// string, map, ptr-to-array, and func(yield-2) producers.
+func (t *RType) CanSeq2() bool {
+	if t.rt != nil {
+		return t.rt.CanSeq2()
+	}
+	switch t.Kind() {
+	case reflect.Array, reflect.Slice, reflect.String, reflect.Map:
+		return true
+	case reflect.Func:
+		return t.canRange(2)
+	case reflect.Ptr:
+		return t.Elem().Kind() == reflect.Array
+	}
+	return false
+}
+
+// canRange mirrors reflect's canRangeFunc: a func type is a Seq
+// producer when it takes exactly one func parameter — the yield —
+// which itself takes `seq` inputs and returns one unnamed bool.
+func (t *RType) canRange(seq int) bool {
+	if t.NumIn() != 1 || t.NumOut() != 0 {
+		return false
+	}
+	y := t.In(0)
+	if y.Kind() != reflect.Func || y.NumIn() != seq || y.NumOut() != 1 {
+		return false
+	}
+	o := y.Out(0)
+	return o.Kind() == reflect.Bool && o.PkgPath() == ""
+}
+
 // comparableTd recurses the comparable rule through struct fields and
 // composite elements.
 func (e *Env) comparableTd(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool) bool {

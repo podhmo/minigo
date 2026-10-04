@@ -1672,6 +1672,206 @@ func (v *RValue) SetIterValue(it *MapIter) {
 	v.set(x.get())
 }
 
+// Seq returns Go 1.23's iter.Seq[Value] producer: a script-callable
+// taking a yield function, so `for x := range v.Seq()` and
+// `v.Seq()(func(x) bool { ... })` both work — the range machinery's
+// driveFuncIter feeds the same yield a direct call would. Single-var
+// ranging yields keys and indices like Go: ints 0..n-1 (converted to
+// a named int type), slices/arrays/strings/ptr-to-arrays the index,
+// maps the key, chans each received element.
+func (v *RValue) Seq() runtime.Value {
+	if !v.Type().CanSeq() {
+		plain("reflect: %s cannot produce iter.Seq[Value]", v.Type())
+	}
+	return &runtime.BuiltinFunc{Name: "reflect.Value.Seq", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("Seq expects a yield function")
+		}
+		return nil, v.driveSeq(vc, args[0], 1)
+	}}
+}
+
+// Seq2 is the two-var counterpart: slices/arrays/ptr-to-arrays yield
+// (index, element), strings (byte offset, rune), maps (key, value).
+func (v *RValue) Seq2() runtime.Value {
+	if !v.Type().CanSeq2() {
+		plain("reflect: %s cannot produce iter.Seq2[Value, Value]", v.Type())
+	}
+	return &runtime.BuiltinFunc{Name: "reflect.Value.Seq2", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("Seq2 expects a yield function")
+		}
+		return nil, v.driveSeq(vc, args[0], 2)
+	}}
+}
+
+// driveSeq pushes the iteration values Seq/Seq2 describe to the
+// script yield function, stopping on the first false return. Func
+// receivers invert control: the receiver itself is the producer and
+// gets a yield that repackages its arguments into RValues — script
+// producers via vc.Call, host producers through reflect.MakeFunc.
+func (v *RValue) driveSeq(vc runtime.VMCaller, yield runtime.Value, n int) error {
+	call := func(vals ...runtime.Value) (bool, error) {
+		// yield args are boxed as host values: the loop variables of a
+		// `for x := range v.Seq()` bind untyped, and only *GoValue
+		// reaches selectMember's host-method dispatch — a bare RValue
+		// would trap "select X on *minireflect.RValue" there.
+		boxed := make([]runtime.Value, len(vals))
+		for i, x := range vals {
+			if rv, ok := x.(*RValue); ok {
+				x = &runtime.GoValue{V: rv}
+			}
+			boxed[i] = x
+		}
+		r, err := vc.Call(yield, boxed)
+		if err != nil {
+			return false, err
+		}
+		b, _ := r.(bool)
+		return b, nil
+	}
+	wrapIdx := func(i int) *RValue {
+		return v.e.wrap(vc, int64(i), nil, nil)
+	}
+	if v.Kind() == reflect.Func {
+		// the receiver is a func(yield) producer: give it a yield that
+		// wraps each argument as an RValue and forwards to the script
+		// yield, honoring its false.
+		if v.host() {
+			yieldT := v.rv.Type().In(0)
+			rf := reflect.MakeFunc(yieldT, func(in []reflect.Value) []reflect.Value {
+				vals := make([]runtime.Value, len(in))
+				for i, a := range in {
+					vals[i] = v.e.wrapHost(vc, a)
+				}
+				ok, err := call(vals...)
+				if err != nil {
+					panic(err)
+				}
+				return []reflect.Value{reflect.ValueOf(ok)}
+			})
+			v.rv.Call([]reflect.Value{rf})
+			return nil
+		}
+		inner := &runtime.BuiltinFunc{Name: "yield", Fn: func(yc runtime.VMCaller, yargs []runtime.Value) (runtime.Value, error) {
+			vals := make([]runtime.Value, len(yargs))
+			for i, a := range yargs {
+				vals[i] = v.e.wrap(yc, a, nil, nil)
+			}
+			ok, err := call(vals...)
+			if err != nil {
+				return nil, err
+			}
+			return ok, nil
+		}}
+		_, err := vc.Call(v.get(), []runtime.Value{inner})
+		return err
+	}
+	k := v.Kind()
+	if k == reflect.Map {
+		it := v.MapRange()
+		for it.Next() {
+			var ok bool
+			var err error
+			if n == 1 {
+				ok, err = call(it.Key())
+			} else {
+				ok, err = call(it.Key(), it.Value())
+			}
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return nil
+			}
+		}
+		return nil
+	}
+	if n == 1 && k >= reflect.Int && k <= reflect.Uintptr {
+		// integers range 0..v-1; a named int type yields converted
+		// values like Go's rangeNum.
+		var count int64
+		if k >= reflect.Uint {
+			count = int64(v.Uint())
+		} else {
+			count = v.Int()
+		}
+		for i := int64(0); i < count; i++ {
+			iv := v.e.wrap(vc, i, nil, nil).Convert(v.Type())
+			ok, err := call(iv)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return nil
+			}
+		}
+		return nil
+	}
+	if n == 1 && k == reflect.Chan {
+		for {
+			x, ok := v.Recv()
+			if !ok {
+				return nil
+			}
+			cont, err := call(x)
+			if err != nil {
+				return err
+			}
+			if !cont {
+				return nil
+			}
+		}
+	}
+	if k == reflect.String {
+		// both arities walk runes: Seq yields each byte offset (which
+		// skips multibyte continuations like Go's `for i := range s`),
+		// Seq2 pairs it with the rune.
+		for i, r := range v.String() {
+			var ok bool
+			var err error
+			if n == 1 {
+				ok, err = call(wrapIdx(i))
+			} else {
+				rtd := runtime.BasicTypedef("int32")
+				ok, err = call(wrapIdx(i), &RValue{e: v.e, vc: vc,
+					val: runtime.Tag(rtd, int64(r)), td: rtd})
+			}
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return nil
+			}
+		}
+		return nil
+	}
+	if k == reflect.Array || k == reflect.Slice ||
+		(k == reflect.Ptr && v.Type().Elem().Kind() == reflect.Array) {
+		arr := v
+		if k == reflect.Ptr {
+			arr = v.Elem()
+		}
+		for i := 0; i < arr.Len(); i++ {
+			var ok bool
+			var err error
+			if n == 1 {
+				ok, err = call(wrapIdx(i))
+			} else {
+				ok, err = call(wrapIdx(i), arr.Index(i))
+			}
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return nil
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("cannot produce iter.Seq%d", n)
+}
+
 // ---- scalar reads ----
 
 // Int reads an integer value.
