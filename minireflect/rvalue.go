@@ -969,7 +969,9 @@ func (v *RValue) Slice(i, j int) *RValue {
 		}
 		return &RValue{e: v.e, vc: v.vc, val: s[i:j], td: v.td, ro: v.ro}
 	case *runtime.Slice:
-		if i < 0 || j > len(s.Elems) || i > j {
+		// Go bounds a reslice by capacity, not length — s[:1] can
+		// grow back to cap(s).
+		if i < 0 || j > cap(s.Elems) || i > j {
 			plain("reflect.Value.Slice: slice index out of bounds")
 		}
 		if at := arrayTypeOf(s.Typ); at != nil {
@@ -994,6 +996,10 @@ func (v *RValue) Slice(i, j int) *RValue {
 		return nv.Slice(i, j)
 	case *runtime.TypedNil:
 		if v.Kind() == reflect.Slice {
+			if i == 0 && j == 0 {
+				// a nil slice reslices to itself — s[:0] stays nil.
+				return &RValue{e: v.e, vc: v.vc, val: s, td: v.td, ro: v.ro}
+			}
 			plain("reflect.Value.Slice: slice index out of bounds")
 		}
 	}
