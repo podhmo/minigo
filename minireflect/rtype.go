@@ -812,7 +812,7 @@ func (t *RType) MethodByName(name string) (*Method, bool) {
 	if t.rt != nil {
 		m, ok := t.rt.MethodByName(name)
 		if !ok {
-			return nil, false
+			return &Method{}, false
 		}
 		return &Method{Name: m.Name, PkgPath: m.PkgPath,
 			Type: t.e.hostTypeOf(m.Type), Index: m.Index}, true
@@ -820,10 +820,16 @@ func (t *RType) MethodByName(name string) (*Method, bool) {
 	set := t.e.methodSet(t.td)
 	for i, n := range exportedMethodNames(set) {
 		if n == name {
+			// interface requirements carry no receiver, like Method.
+			if t.td.Kind == runtime.KindInterface {
+				return &Method{Name: n, Type: t.e.methodType(nil, set[n]), Index: i}, true
+			}
 			return &Method{Name: n, Type: t.e.methodType(t, set[n]), Index: i}, true
 		}
 	}
-	return nil, false
+	// Go returns a zero Method value — m.Name reads "" where a nil
+	// *Method would dereference nil.
+	return &Method{}, false
 }
 
 // Implements reports whether the type implements interface u. The check

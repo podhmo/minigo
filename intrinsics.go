@@ -56,13 +56,35 @@ func (e *Engine) installStdlib() {
 		// fmt's interfaces are needed as types by interpreted sources that
 		// reflect on them or assert (e.g. template's fmt.Stringer probes,
 		// math/big's compile-time fmt.Scanner assertion).
-		"Stringer":   &runtime.TypeDef{Name: "fmt.Stringer", Kind: runtime.KindInterface, MReqs: []string{"String"}},
-		"GoStringer": &runtime.TypeDef{Name: "fmt.GoStringer", Kind: runtime.KindInterface, MReqs: []string{"GoString"}},
-		"Formatter":  &runtime.TypeDef{Name: "fmt.Formatter", Kind: runtime.KindInterface, MReqs: []string{"Format"}},
-		"Scanner":    &runtime.TypeDef{Name: "fmt.Scanner", Kind: runtime.KindInterface, MReqs: []string{"Scan"}},
-		"State":      &runtime.TypeDef{Name: "fmt.State", Kind: runtime.KindInterface, MReqs: []string{"Write", "Width", "Precision", "Flag"}},
-		"Print":      h.ffn("fmt.Print", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprint(h.out(), a...)) }, fmt.Print),
-		"Println":    h.ffn("fmt.Println", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprintln(h.out(), a...)) }, fmt.Println),
+		// Stringer/GoStringer carry their requirement as a real interface
+		// AST (same pattern as `error`) so the facade's signature
+		// machinery can report NumMethod/Method/MethodByName and check
+		// Implements against `String() string`.
+		"Stringer": &runtime.TypeDef{
+			Name: "fmt.Stringer", Kind: runtime.KindInterface, MReqs: []string{"String"},
+			Anon: &ast.InterfaceType{Methods: &ast.FieldList{List: []*ast.Field{{
+				Names: []*ast.Ident{{Name: "String"}},
+				Type: &ast.FuncType{
+					Params:  &ast.FieldList{},
+					Results: &ast.FieldList{List: []*ast.Field{{Type: ast.NewIdent("string")}}},
+				},
+			}}}},
+		},
+		"GoStringer": &runtime.TypeDef{
+			Name: "fmt.GoStringer", Kind: runtime.KindInterface, MReqs: []string{"GoString"},
+			Anon: &ast.InterfaceType{Methods: &ast.FieldList{List: []*ast.Field{{
+				Names: []*ast.Ident{{Name: "GoString"}},
+				Type: &ast.FuncType{
+					Params:  &ast.FieldList{},
+					Results: &ast.FieldList{List: []*ast.Field{{Type: ast.NewIdent("string")}}},
+				},
+			}}}},
+		},
+		"Formatter": &runtime.TypeDef{Name: "fmt.Formatter", Kind: runtime.KindInterface, MReqs: []string{"Format"}},
+		"Scanner":   &runtime.TypeDef{Name: "fmt.Scanner", Kind: runtime.KindInterface, MReqs: []string{"Scan"}},
+		"State":     &runtime.TypeDef{Name: "fmt.State", Kind: runtime.KindInterface, MReqs: []string{"Write", "Width", "Precision", "Flag"}},
+		"Print":     h.ffn("fmt.Print", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprint(h.out(), a...)) }, fmt.Print),
+		"Println":   h.ffn("fmt.Println", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprintln(h.out(), a...)) }, fmt.Println),
 		"Printf": h.ffn("fmt.Printf", 0, 1, func(a []any) (any, error) {
 			return retErr(fmt.Fprintf(h.out(), str(a[0]), a[1:]...))
 		}),
