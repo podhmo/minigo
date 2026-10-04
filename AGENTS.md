@@ -38,11 +38,13 @@ make test
 
 # TODO.md
 
-TODO.mdに残りのタスクを追記してください。
-タスクとは関係のないバグを見つけた場合も追記してください、
+Record remaining tasks in TODO.md. If you find a bug unrelated to your task, add it there too.
 
-- 未実装のタスクと実装済みのタスクをチェックボックスで管理してください
-- 機能全体が完了した場合にはimplementedのセクションに移動します
+- TODO.md lists open work only: `[ ]` = open, `[-]` = partially done. Never add `[x]` entries — completed work does not live in this file.
+- Keep each entry short: a bold title, 1-3 sentences of what remains (not what was done), and links to `docs/sketch/*` reports, issues, or PRs. Fix narratives and status logs belong in the sketch doc or the PR body, never in TODO.md.
+- When a task completes, delete its line in the same PR that completes it. Completed sub-items of a still-open `[-]` parent are deleted the same way; the `[-]` parent stays while open work remains under it.
+- Completed work stays traceable through the linked `docs/sketch/*` reports, the PRs that landed it, and this file's git history (`git log -p TODO.md`).
+- If a new task needs more than a few lines of context, write the detail in `docs/sketch/` and link to it.
 
 # 制約事項
 
