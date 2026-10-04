@@ -7299,6 +7299,17 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 		// anonymous func shapes kind-match; a declared func type asserts
 		// on its Named tag only.
 		return td.Kind == runtime.KindFunc && td.Spec == nil
+	case *runtime.GoValue:
+		// a host box's dynamic type is its native Go type — complex64
+		// boxes (there is no script complex type) assert back to
+		// complex64, and interface{}(bytes.Buffer{}) asserts to
+		// bytes.Buffer. Compare type spellings like the KindPointer
+		// GoValue branch above.
+		rt := reflect.TypeOf(xv.V)
+		if rt == nil {
+			return false
+		}
+		return rt.String() == tdName(td)
 	default:
 		return false
 	}
