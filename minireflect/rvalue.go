@@ -1984,7 +1984,8 @@ func (v *RValue) Convert(t *RType) *RValue {
 		if err != nil {
 			trap("reflect.Value.Convert: %s", err)
 		}
-		return v.e.wrapHost(v.vc, rv.Convert(t.rt))
+		cv := rv.Convert(t.rt)
+		return &RValue{e: v.e, vc: v.vc, rv: cv, ro: v.ro || !cv.CanInterface()}
 	}
 	if st := v.Type(); st != nil && !st.ConvertibleTo(t) {
 		plain("reflect.Value.Convert: value of type %s cannot be converted to type %s",
@@ -2072,7 +2073,9 @@ func (v *RValue) Convert(t *RType) *RValue {
 	if ntd != nil && ntd.Name != "" && ntd.Kind == runtime.KindNamedBasic {
 		out = &runtime.Named{Typ: ntd, V: out}
 	}
-	return v.e.wrap(v.vc, out, nil, ntd)
+	// the read-only flag is sticky through Convert like Go's flagRO —
+	// an unexported-field value converts to an unexportable value.
+	return &RValue{e: v.e, vc: v.vc, val: out, td: ntd, ro: v.ro}
 }
 
 // convInt reads an integer permissively for Convert — unlike Int it
