@@ -37,9 +37,12 @@ func (e *Engine) methodSetOfValue(v runtime.Value) (map[string]bool, bool, error
 		// on the tag rather than deref past it.
 		if n, ok := v.(*runtime.Named); ok {
 			if gv, ok := runtime.Unwrap(n.V).(*runtime.GoValue); ok {
-				// a tagged host box (host composite literal T{}) — the
-				// method set is the boxed host type's reflect set;
-				// td.Methods is empty for host typedefs.
+				// a named type boxing a host value (type C128 complex128)
+				// still exposes its declared methods — the reflect set
+				// only fills in when the tag declares none (host box).
+				if n.Typ != nil && len(n.Typ.Methods) > 0 {
+					return e.typeMethodsU(n.Typ)
+				}
 				return hostMethodSet(gv.V), false, nil
 			}
 			return e.typeMethodsU(n.Typ)
