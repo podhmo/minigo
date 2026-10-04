@@ -72,8 +72,13 @@ func (v *RValue) kindStr() string {
 	return "zero"
 }
 
-// wrap builds a script-domain rvalue view.
+// wrap builds a script-domain rvalue view. A nil caller defaults to
+// the engine's recorded caller — secondary constructions (Type.Method
+// Func, host method thunks) reach the VM through it all the same.
 func (e *Env) wrap(vc runtime.VMCaller, val, ref runtime.Value, td *runtime.TypeDef) *RValue {
+	if vc == nil {
+		vc = e.caller()
+	}
 	return &RValue{e: e, vc: vc, val: val, ref: ref, td: td}
 }
 
@@ -128,8 +133,12 @@ func (v *RValue) unwrap() *RValue {
 	return w
 }
 
-// wrapHost builds a host-domain rvalue.
+// wrapHost builds a host-domain rvalue. A nil caller defaults to the
+// engine's recorded caller, like wrap.
 func (e *Env) wrapHost(vc runtime.VMCaller, rv reflect.Value) *RValue {
+	if vc == nil {
+		vc = e.caller()
+	}
 	return &RValue{e: e, vc: vc, rv: rv}
 }
 

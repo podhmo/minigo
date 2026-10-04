@@ -44,8 +44,10 @@ type StructField struct {
 }
 
 // Method mirrors reflect.Method for the subset the facade reports.
-// Func stays nil for script methods — calling them goes through the
-// owning value's MethodByName, which has a caller context.
+// Func is the method-expression value: on a pointer receiver type a
+// value-receiver member derefs its *T argument, and a promoted or
+// interface member re-selects on the receiver argument — the same
+// values `(*T).M`/`T.M` compile to.
 type Method struct {
 	Name    string
 	PkgPath string
@@ -799,8 +801,9 @@ func (t *RType) Method(i int) *Method {
 			Func: &RValue{e: t.e}}
 	}
 	fn := set[names[i]]
-	return &Method{Name: names[i], Type: t.e.methodType(t, fn), Index: i,
-		Func: t.e.wrap(nil, fn, nil, t.e.methodType(t, fn).td)}
+	mt := t.e.methodType(t, fn)
+	return &Method{Name: names[i], Type: mt, Index: i,
+		Func: t.e.wrap(nil, t.methodFunc(fn, names[i]), nil, mt.td)}
 }
 
 // MethodByName looks up an exported method by name — like Go's reflect,
@@ -823,13 +826,29 @@ func (t *RType) MethodByName(name string) (*Method, bool) {
 				return &Method{Name: n, Type: t.e.methodType(nil, set[n]), Index: i,
 					Func: &RValue{e: t.e}}, true
 			}
-			return &Method{Name: n, Type: t.e.methodType(t, set[n]), Index: i,
-				Func: t.e.wrap(nil, set[n], nil, t.e.methodType(t, set[n]).td)}, true
+			mt := t.e.methodType(t, set[n])
+			return &Method{Name: n, Type: mt, Index: i,
+				Func: t.e.wrap(nil, t.methodFunc(set[n], n), nil, mt.td)}, true
 		}
 	}
 	// Go returns a zero Method value — m.Name reads "" where a nil
 	// *Method would dereference nil.
 	return &Method{}, false
+}
+
+// methodFunc returns the callable behind a script method's Method.Func:
+// the method expression the compiler would emit for `t.td.name`, so
+// pointer receiver types deref value receivers and promoted members
+// re-select on the concrete receiver. Without a recorded caller the
+// raw declared function still spells the signature, but Call on it
+// reports the missing caller context.
+func (t *RType) methodFunc(fn *runtime.Function, name string) runtime.Value {
+	if vc := t.e.caller(); vc != nil {
+		if m, ok := vc.Member(t.td, name); ok && m != nil {
+			return m
+		}
+	}
+	return fn
 }
 
 // Implements reports whether the type implements interface u. The check
