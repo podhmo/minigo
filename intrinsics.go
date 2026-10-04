@@ -4312,7 +4312,7 @@ func fmtRValue(c runtime.VMCaller, rv *minireflect.RValue) any {
 	if !rv.IsValid() {
 		return "<invalid reflect.Value>"
 	}
-	switch u := rv.Unwrap().(type) {
+	switch u := rv.Payload().(type) {
 	case *minireflect.RValue:
 		return u
 	case minireflect.RValue:

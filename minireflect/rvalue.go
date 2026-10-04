@@ -77,7 +77,7 @@ func (e *Env) wrap(vc runtime.VMCaller, val, ref runtime.Value, td *runtime.Type
 	return &RValue{e: e, vc: vc, val: val, ref: ref, td: td}
 }
 
-// Unwrap exposes the payload a host fmt should print in place of the
+// Payload exposes the payload a host fmt should print in place of the
 // Value itself — mirroring fmt's one-level reflect.Value unwrap, which
 // reads through the unexported-field flag. Host-domain values yield
 // their interface payload when they can; a non-interfacable host value
@@ -86,7 +86,7 @@ func (e *Env) wrap(vc runtime.VMCaller, val, ref runtime.Value, td *runtime.Type
 // the viewed runtime.Value. The payload may itself be a Value: fmt
 // renders that one through String (Go's nested `<T Value>` form), it
 // does not unwrap twice. Callers gate IsValid themselves.
-func (v *RValue) Unwrap() any {
+func (v *RValue) Payload() any {
 	if v.host() {
 		if v.rv.CanInterface() {
 			return v.rv.Interface()
