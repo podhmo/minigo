@@ -1965,6 +1965,7 @@ func (v *RValue) Call(in []*RValue) []*RValue {
 	// precede the caller check — a vc-less Func Value (e.g.
 	// Type.Method(i).Func) still panics on arity like Go.
 	v.checkCallArgs(in, false)
+
 	if v.vc == nil {
 		trap("minireflect: reflect.Value.Call needs a caller context")
 	}
@@ -2022,19 +2023,8 @@ func (v *RValue) checkCallArgs(in []*RValue, sliceMode bool) {
 	if ft == nil || ft.Params == nil {
 		return
 	}
-	// count parameters, not field entries — `a, b int` is two.
-	numIn := 0
-	for _, f := range ft.Params.List {
-		if n := len(f.Names); n > 0 {
-			numIn += n
-		} else {
-			numIn++
-		}
-	}
-	variadic := false
-	if n := len(ft.Params.List); n > 0 {
-		_, variadic = ft.Params.List[n-1].Type.(*ast.Ellipsis)
-	}
+	numIn, ell := numParams(ft)
+	variadic := ell != nil
 	name := "Call"
 	if sliceMode {
 		name = "CallSlice"
@@ -2073,6 +2063,23 @@ func (v *RValue) checkCallArgs(in []*RValue, sliceMode bool) {
 			plain("reflect: %s using %s as type %s", name, xt.String(), pt.String())
 		}
 	}
+}
+
+// numParams counts a signature's input parameters — `a, b int` is two —
+// and reports whether the last is a variadic ellipsis. Call and
+// CallSlice gate their arity checks on the same count.
+func numParams(ft *ast.FuncType) (numIn int, ell *ast.Ellipsis) {
+	for _, f := range ft.Params.List {
+		if n := len(f.Names); n > 0 {
+			numIn += n
+		} else {
+			numIn++
+		}
+	}
+	if n := len(ft.Params.List); n > 0 {
+		ell, _ = ft.Params.List[n-1].Type.(*ast.Ellipsis)
+	}
+	return numIn, ell
 }
 
 // callSig finds the callee's reflect signature — the typedef's
@@ -2143,12 +2150,10 @@ func (v *RValue) CallSlice(in []*RValue) []*RValue {
 	// variadic slice as one), last-arg assignability — all signature
 	// work precedes the caller check so vc-less Func Values panic
 	// like Go.
-	if ft := v.callSig(); ft != nil {
-		variadic := false
-		if ft.Params != nil && len(ft.Params.List) > 0 {
-			_, variadic = ft.Params.List[len(ft.Params.List)-1].Type.(*ast.Ellipsis)
-		}
-		if !variadic {
+	if ft := v.callSig(); ft != nil && ft.Params != nil {
+		_, ell := numParams(ft)
+		if ell == nil {
+
 			trap("CallSlice of non-variadic function")
 		}
 
