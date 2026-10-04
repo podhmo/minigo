@@ -325,8 +325,55 @@ func (r *DerefRef) Set(v Value) bool {
 	return SetRef(loc, v)
 }
 
+// SharedElem reports whether an interior write through v reaches shared
+// storage — Go allows `m[k][i] = v` and `m[k].f = v` on a map element
+// only when the element is a reference (slice, map, chan, func) or a
+// pointer, because the element read is a copy. Arrays, structs, scalars
+// and strings are copies: their interiors cannot be assigned through
+// `m[k]` at all.
+func SharedElem(v Value) bool {
+	for {
+		switch x := v.(type) {
+		case *Named:
+			if arrayTypedef(x.Typ) {
+				return false // `type A [N]T` stores an array copy
+			}
+			v = x.V
+			continue
+		case *Slice:
+			return !arrayTypedef(x.Typ)
+		case *Map, *Chan,
+			*Function, *Closure, *BoundMethod, *BuiltinFunc,
+			*Cell, *FieldRef, *IndexRef, *DerefRef:
+			return true
+		case *GoValue:
+			// host values share only through pointers, like Go's
+			// implicit deref of `m[k]` on a map of *T.
+			return x.V != nil && reflect.TypeOf(x.V).Kind() == reflect.Pointer
+		case *TypedNil, *IfaceNil:
+			var td *TypeDef
+			switch t := x.(type) {
+			case *TypedNil:
+				td = t.Typ
+			case *IfaceNil:
+				td = t.Typ
+			}
+			if td == nil || arrayTypedef(td) {
+				return false
+			}
+			switch td.Kind {
+			case KindSlice, KindMap, KindPointer, KindChan, KindFunc:
+				return true
+			}
+			return false
+		}
+		return false
+	}
+}
+
 // IndexRef is the address-of a slice element (`&s[i]`) — a cell-view over
-// base[key]. (Map values are unaddressable in Go, so only slices qualify.)
+// base[key]. (Map values are unaddressable in Go, so a ref over a map
+// only resolves reference-shaped elements; see SharedElem.)
 type IndexRef struct {
 	Base Value
 	Key  Value
@@ -374,12 +421,26 @@ func (r *IndexRef) mapOf() *Map {
 // can compare two refs by backing-array identity.
 func (r *IndexRef) Slice() *Slice { return r.sliceOf() }
 
+// Map resolves the base to the referenced map, or nil — exported so the
+// VM can tell a map-element lvalue (m[k], a copy in Go) apart from a
+// slice-element one.
+func (r *IndexRef) Map() *Map { return r.mapOf() }
+
 // Get reads the element value.
 func (r *IndexRef) Get() (Value, bool) {
 	if m := r.mapOf(); m != nil {
 		// a missing key reports no value — callers needing the zero
 		// go through the VM's index path, which knows the elem typedef.
-		return m.Get(r.Key)
+		v, ok := m.Get(r.Key)
+		if !ok || !SharedElem(v) {
+			// interior access on a non-reference element must not
+			// resolve: `m[k]` reads a copy in Go, so writes like
+			// `m[k][i] = v` on a map of arrays are compile-time
+			// rejections, and reporting no location keeps the store
+			// paths on their traps.
+			return nil, false
+		}
+		return v, true
 	}
 	s := r.sliceOf()
 	i, ok := r.Key.(int64)

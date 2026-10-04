@@ -3906,9 +3906,16 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 	case *runtime.IndexRef:
 		// a nested index lvalue like m[k][i] = v over a map of slices
 		// evaluates the outer index against the stored slice — read the
-		// ref's element (Get can't see a map base) and assign through
-		// it, sharing the stored backing like Go.
+		// ref's element (v.index, not Get: it also yields the map zero
+		// for a missing key) and assign through it, sharing the stored
+		// backing like Go.
 		x := v.index(f, b.Base, b.Key)
+		if m := b.Map(); m != nil && !runtime.SharedElem(x) {
+			// Go rejects interior writes on a non-reference map
+			// element at compile time (m[k] is a copy) — trap
+			// instead of mutating the stored value.
+			f.trap("index assign on %T", base)
+		}
 		v.setIndex(f, x, idx, val)
 	default:
 		f.trap("index assign on %T", base)

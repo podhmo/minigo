@@ -385,6 +385,30 @@ func TestConstAssignTraps(t *testing.T) {
 	}
 }
 
+func TestMapElemLvalueTraps(t *testing.T) {
+	// Writing through m[k] when the element reads as a copy (array,
+	// struct, scalar) is invalid Go and must trap — only
+	// reference-shaped elements may write through.
+	e := newEngine(t)
+	for _, tc := range []struct {
+		fn   string
+		want string
+	}{
+		{"MapArrIndex", "index assign"},
+		{"MapStructField", "set field"},
+		{"MapNamedArrIndex", "index assign"},
+		{"MapScalarIndex", "index assign"},
+	} {
+		_, err := e.Run(context.Background(), "./testdata/maplval", tc.fn)
+		if err == nil {
+			t.Fatalf("%s: expected a trap", tc.fn)
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: unexpected error: %v", tc.fn, err)
+		}
+	}
+}
+
 func TestEvalExpr(t *testing.T) {
 	e := newEngine(t)
 	pkg, err := e.Package(context.Background(), "./testdata/t1")
