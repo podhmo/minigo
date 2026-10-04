@@ -4126,8 +4126,13 @@ func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
 			for i := range s.Elems {
 				s.Elems[i] = valueCopy(zv)
 			}
+			// keyed values coerce like positional ones — otherwise an
+			// untyped constant element keeps its UConst box, which reads
+			// as a different dynamic type under DeepEqual/`%T` than the
+			// coerced element a positional literal produces.
+			et := v.elemTypedef(f, td)
 			for i := 0; i < n; i++ {
-				s.Elems[idx[i]] = raw[i*2+1]
+				s.Elems[idx[i]] = v.coerce(f, raw[i*2+1], et)
 			}
 		} else {
 			// elements coerce to the declared element type — `[]any{x}`
