@@ -1,0 +1,13 @@
+&[1 2 3 4] &[1 2] &[7 8] &map[k:1]
+true true true
+&[] &map[] &{0} true
+true true
+true
+true
+[[1]]
+&main.S{A:3}
+true
+&[]int(nil)
+true
+true
+true

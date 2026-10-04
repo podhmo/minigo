@@ -3464,11 +3464,29 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		if !ok {
 			return "<nil>"
 		}
-		if _, isStruct := dv.(*runtime.Struct); isStruct {
+		// Go's printPtr descends one level only when the pointee is a
+		// composite — struct, array, slice, or map — spelling `&[...]`/
+		// `&{...}`/`&map[...]`; every other pointee (scalars, other
+		// pointers, chans, funcs) reads as the address. The descent only
+		// happens at the top level: a pointer nested inside a composite
+		// prints 0x... — []*S{p} renders [0xADDR], and under %#v
+		// [(*S)(0xADDR)].
+		composite := func(x runtime.Value) bool {
+			switch t := x.(type) {
+			case *runtime.Struct, *runtime.Slice, *runtime.Map:
+				return true
+			case *runtime.TypedNil:
+				// &ns for a nil slice/map spells &[]/&map[]
+				return t.Typ != nil &&
+					(t.Typ.Kind == runtime.KindSlice || t.Typ.Kind == runtime.KindMap)
+			}
+			return false
+		}
+		if s.depth == 0 && composite(dv) {
 			return "&" + (&fmtValue{c: s.c, x: dv, depth: s.depth + 1}).render(verb, f)
 		}
-		if n, isNamed := dv.(*runtime.Named); isNamed {
-			if _, isStruct := n.V.(*runtime.Struct); isStruct {
+		if s.depth == 0 {
+			if n, isNamed := dv.(*runtime.Named); isNamed && composite(n.V) {
 				return "&" + (&fmtValue{c: s.c, x: n.V, depth: s.depth + 1}).render(verb, f)
 			}
 		}
