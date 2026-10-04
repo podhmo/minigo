@@ -1674,6 +1674,16 @@ func (v *RValue) Set(x *RValue) {
 		if !v.rv.CanSet() {
 			v.rv.Set(v.rv)
 		}
+		// the source gates mirror the script path: a zero Value dies
+		// on 'on zero Value', a read through an unexported field on
+		// 'using value obtained using unexported field' — both before
+		// the source marshals.
+		if x == nil || !x.IsValid() {
+			trap("call of reflect.Value.Set on zero Value")
+		}
+		if x.ro {
+			trap("reflect.Value.Set using value obtained using unexported field")
+		}
 		rv, err := toHost(x.ifaceVal(), v.rv.Type())
 		if err != nil {
 			trap("reflect.Value.Set: %s", err)
@@ -1682,11 +1692,15 @@ func (v *RValue) Set(x *RValue) {
 		return
 	}
 	// Go's order: the target must be settable, then the source must be
-	// a usable Value (`call of reflect.Value.Set on zero Value`), and
+	// a usable Value (`call of reflect.Value.Set on zero Value`) that
+	// was not read through an unexported field (x.mustBeExported), and
 	// only then is its assignability judged.
 	v.mustBeSettable("Set")
 	if x == nil || !x.IsValid() {
 		trap("call of reflect.Value.Set on zero Value")
+	}
+	if x.ro {
+		trap("reflect.Value.Set using value obtained using unexported field")
 	}
 	if vt, xt := v.Type(), x.Type(); vt != nil && xt != nil && !xt.AssignableTo(vt) {
 		plain("reflect.Set: value of type %s is not assignable to type %s", xt.String(), vt.String())
