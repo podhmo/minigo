@@ -859,6 +859,73 @@ func (v *RValue) FieldByNameFunc(match func(string) bool) *RValue {
 	return &RValue{e: v.e, vc: v.vc}
 }
 
+// CanConvert reports whether Convert would succeed — Go's check is
+// ConvertibleTo plus the runtime-dependent slice→array and
+// slice→*array length rules. A zero Value dies on the Type panic,
+// because Go reads v.Type() before anything else.
+func (v *RValue) CanConvert(t *RType) bool {
+	vt := v.Type()
+	if v.host() {
+		if t != nil && t.rt != nil {
+			return v.rv.CanConvert(t.rt)
+		}
+		return false
+	}
+	if t == nil || !vt.ConvertibleTo(t) {
+		return false
+	}
+	switch {
+	case vt.Kind() == reflect.Slice && t.Kind() == reflect.Array:
+		if t.Len() > v.Len() {
+			return false
+		}
+	case vt.Kind() == reflect.Slice && t.Kind() == reflect.Ptr &&
+		t.Elem() != nil && t.Elem().Kind() == reflect.Array:
+		if t.Elem().Len() > v.Len() {
+			return false
+		}
+	}
+	return true
+}
+
+// CanInt reports whether Int can be used without panicking — the
+// zero Value reads kind Invalid and answers false like every other.
+func (v *RValue) CanInt() bool {
+	switch v.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return true
+	}
+	return false
+}
+
+// CanUint reports whether Uint can be used without panicking.
+func (v *RValue) CanUint() bool {
+	switch v.Kind() {
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32,
+		reflect.Uint64, reflect.Uintptr:
+		return true
+	}
+	return false
+}
+
+// CanFloat reports whether Float can be used without panicking.
+func (v *RValue) CanFloat() bool {
+	switch v.Kind() {
+	case reflect.Float32, reflect.Float64:
+		return true
+	}
+	return false
+}
+
+// CanComplex reports whether Complex can be used without panicking.
+func (v *RValue) CanComplex() bool {
+	switch v.Kind() {
+	case reflect.Complex64, reflect.Complex128:
+		return true
+	}
+	return false
+}
+
 // fieldByNameRec resolves name on the struct value's own fields, then
 // descends into embedded fields — the promotion walk of FieldByName.
 func (v *RValue) fieldByNameRec(s *runtime.Struct, name string) *RValue {
@@ -2510,6 +2577,33 @@ func (v *RValue) Convert(t *RType) *RValue {
 	case reflect.Slice:
 		if v.Kind() == reflect.String {
 			out = strToBytes(v.String())
+		} else {
+			out = v.get()
+		}
+	case reflect.Array:
+		if v.Kind() == reflect.Slice {
+			// slice -> array copies the first N elements into fresh
+			// storage — the result does not alias the source backing.
+			sv := v.sliceView()
+			n := t.Len()
+			if len(sv.Elems) < n {
+				plain("reflect: cannot convert slice with length %d to array with length %d", len(sv.Elems), n)
+			}
+			out = &runtime.Slice{Elems: append([]runtime.Value{}, sv.Elems[:n]...), Typ: t.td}
+		} else {
+			out = v.get()
+		}
+	case reflect.Ptr:
+		if v.Kind() == reflect.Slice && t.Elem() != nil && t.Elem().Kind() == reflect.Array {
+			// slice -> *array points at the first N elements of the
+			// live backing — writes through the pointer reach the
+			// slice like Go's conversion.
+			sv := v.sliceView()
+			n := t.Elem().Len()
+			if len(sv.Elems) < n {
+				plain("reflect: cannot convert slice with length %d to pointer to array with length %d", len(sv.Elems), n)
+			}
+			out = &runtime.Cell{Elem: &runtime.Slice{Elems: sv.Elems[:n], Typ: t.Elem().td}}
 		} else {
 			out = v.get()
 		}

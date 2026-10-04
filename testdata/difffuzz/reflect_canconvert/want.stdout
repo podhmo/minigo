@@ -1,0 +1,24 @@
+true false false false
+false true false
+false true
+true false
+false false
+true true
+true
+true
+true
+true
+true
+false
+true
+false
+true true
+true
+false
+[97 98 99 100] [4]uint8
+[97 98 99 100] *[4]uint8
+0: panic: reflect: cannot convert slice with length 2 to array with length 4
+1: panic: reflect: cannot convert slice with length 2 to pointer to array with length 4
+true true
+Zbcd
+2: panic: reflect: call of reflect.Value.Type on zero Value
