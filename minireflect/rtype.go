@@ -564,6 +564,17 @@ func (t *RType) Name() string {
 	if i := strings.LastIndex(name, "."); i >= 0 {
 		return name[i+1:]
 	}
+	// the predeclared aliases are identity, not names — byte reports
+	// uint8 and rune int32 like Go's reflect (a user-declared
+	// `type byte int` keeps its own name; only the builtin folds).
+	if t.td.Spec == nil && t.td.Pkg == nil {
+		switch name {
+		case "byte":
+			return "uint8"
+		case "rune":
+			return "int32"
+		}
+	}
 	return name
 }
 
