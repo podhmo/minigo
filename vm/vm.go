@@ -2067,6 +2067,44 @@ func (v *VM) hostMember(hv any, name string) (runtime.Value, bool) {
 	return bf, true
 }
 
+// hostNilMethod binds a host-backed method to a nil *T receiver: Go
+// dispatches pointer methods on nil receivers, so `var b *bytes.Buffer;
+// b.String()` calls String on (*bytes.Buffer)(nil) and the method's own
+// nil handling decides the outcome (Buffer.String reports "<nil>").
+// td is the anonymous *T typedef; a declared pointer typedef
+// (`type P *T`) carries no promoted set, matching Go. The receiver
+// reflect type is *U where U is the element typedef's boxed value type
+// — a HostNew that returns a pointer already is the *T box.
+func (v *VM) hostNilMethod(td *runtime.TypeDef, name string) (runtime.Value, bool) {
+	if td == nil || td.Spec != nil || td.Kind != runtime.KindPointer {
+		return nil, false
+	}
+	if v.H.ElemOf == nil {
+		return nil, false
+	}
+	et, err := v.H.ElemOf(td)
+	if err != nil || et == nil || et.HostNew == nil {
+		return nil, false
+	}
+	rt := reflect.TypeOf(et.HostNew())
+	if rt.Kind() != reflect.Pointer {
+		rt = reflect.PointerTo(rt)
+	}
+	m := reflect.Zero(rt).MethodByName(name)
+	if !m.IsValid() {
+		return nil, false
+	}
+	bf := &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		return callReflectFunc(name, m, vc, args)
+	}}
+	bf.Target = m.Interface()
+	if tm, ok := rt.MethodByName(name); ok {
+		tm := tm
+		bf.Method = &tm
+	}
+	return bf, true
+}
+
 // sizedIntTyp names the builtin typedef for a sized int kind — the
 // reflect kind string spells the Go name exactly ("int8", "uint32").
 func sizedIntTyp(k reflect.Kind) *runtime.TypeDef {
@@ -7413,11 +7451,20 @@ func (v *VM) memberOfType(f *frame, td *runtime.TypeDef, name string, recv runti
 		peeled = true
 	}
 	// field access on a nil pointer panics in Go; on a nil slice/map/chan
-	// it is a plain invalid select.
+	// it is a plain invalid select. A nil *T may still carry methods —
+	// Go dispatches pointer methods on nil receivers and the method
+	// body decides, so a host-backed typedef tries a bound zero-receiver
+	// method before giving up to the deref panic.
 	if tn, ok := recv.(*runtime.TypedNil); ok && tn.Typ.Kind == runtime.KindPointer {
+		if bf, ok := v.hostNilMethod(tn.Typ, name); ok {
+			return bf
+		}
 		panic(runtime.NilDerefPanic())
 	}
 	if in, ok := recv.(*runtime.IfaceNil); ok && in.Typ.Kind == runtime.KindPointer {
+		if bf, ok := v.hostNilMethod(in.Typ, name); ok {
+			return bf
+		}
 		panic(runtime.NilDerefPanic())
 	}
 	if isIface {
