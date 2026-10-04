@@ -38,6 +38,7 @@ type StructField struct {
 	PkgPath   string
 	Type      *RType
 	Tag       reflect.StructTag
+	Offset    uintptr
 	Index     []int
 	Anonymous bool
 }
@@ -262,64 +263,6 @@ func hostTypeKey(rt reflect.Type) string {
 	return "anon:" + rt.String()
 }
 
-// displayName renders a td the way reflect.Type.String() would.
-func (e *Env) typeName(td *runtime.TypeDef) string {
-	if td == nil {
-		return "<nil>"
-	}
-	if td.Name != "" {
-		if td.Pkg != nil && td.Pkg.Name != "" {
-			// the qualifier is the package's declared NAME — dir-loaded
-			// packages keep the synthesized import path in Pkg.Name, so
-			// prefer the file's own package clause when available.
-			pkg := td.Pkg.Name
-			if td.File != nil && td.File.AST != nil && td.File.AST.Name != nil {
-				pkg = td.File.AST.Name.Name
-			}
-			if strings.HasPrefix(td.Name, td.Pkg.Path+".") {
-				return pkg + "." + td.Name[len(td.Pkg.Path)+1:]
-			}
-			if i := strings.LastIndex(td.Name, "."); i >= 0 {
-				return pkg + td.Name[i:]
-			}
-			return pkg + "." + td.Name
-		}
-		if i := strings.LastIndex(td.Name, "."); i >= 0 {
-			// bound typedefs name themselves "pkgpath.Name"
-			return td.Name[i+1:]
-		}
-		// reflect spells the predeclared aliases by their canonical
-		// types: `byte` prints `uint8`, `rune` prints `int32`.
-		if td.Pkg == nil && td.Spec == nil {
-			switch td.Name {
-			case "byte":
-				return "uint8"
-			case "rune":
-				return "int32"
-			}
-		}
-		return td.Name
-	}
-	if td.Anon != nil {
-		return runtime.TypGoSpelling(td.Anon, td)
-	}
-	if td.Elem != nil {
-		switch td.Kind {
-		case runtime.KindPointer:
-			return "*" + e.typeName(td.Elem)
-		case runtime.KindSlice:
-			return "[]" + e.typeName(td.Elem)
-		case runtime.KindMap:
-			return "map[?]" + e.typeName(td.Elem)
-		case runtime.KindChan:
-			return "chan " + e.typeName(td.Elem)
-		case runtime.KindInterface:
-			return "interface {}"
-		}
-	}
-	return "<unnamed>"
-}
-
 // elemOf resolves a td's element/pointee typedef.
 func (e *Env) elemOf(td *runtime.TypeDef) *runtime.TypeDef {
 	if td == nil {
@@ -346,12 +289,30 @@ func (e *Env) elemOf(td *runtime.TypeDef) *runtime.TypeDef {
 			x = a.Value
 		}
 		if x != nil {
-			if et, err := e.h.ResolveType(td, x); err == nil {
+			if et, err := e.resolveExpr(td, x); err == nil {
 				return et
 			}
 		}
 	}
 	return nil
+}
+
+// resolveExpr resolves a full type expression to a typedef — unlike the
+// embed-spec resolver it keeps StarExpr as a pointer typedef, so
+// `func(*T)` params and `[]*T`/`map[K]*T` elements retain the star.
+func (e *Env) resolveExpr(from *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, error) {
+	if st, ok := x.(*ast.StarExpr); ok {
+		etd, err := e.resolveExpr(from, st.X)
+		if err != nil {
+			return nil, err
+		}
+		return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: etd,
+			Anon: st, Pkg: from.Pkg, File: from.File, Binds: from.Binds}, nil
+	}
+	if e.h.ResolveType == nil {
+		return nil, fmt.Errorf("minireflect: type resolution needs ResolveType hook")
+	}
+	return e.h.ResolveType(from, x)
 }
 
 // keyTdOf resolves a map td's key type.
@@ -361,7 +322,7 @@ func (e *Env) keyTdOf(td *runtime.TypeDef) *runtime.TypeDef {
 	}
 	if e.h.ResolveType != nil {
 		if mt, ok := td.Anon.(*ast.MapType); ok {
-			if kt, err := e.h.ResolveType(td, mt.Key); err == nil {
+			if kt, err := e.resolveExpr(td, mt.Key); err == nil {
 				return kt
 			}
 		}
@@ -563,6 +524,17 @@ func (t *RType) Name() string {
 	if i := strings.LastIndex(name, "."); i >= 0 {
 		return name[i+1:]
 	}
+	// the predeclared aliases are identity, not names — byte reports
+	// uint8 and rune int32 like Go's reflect (a user-declared
+	// `type byte int` keeps its own name; only the builtin folds).
+	if t.td.Spec == nil && t.td.Pkg == nil {
+		switch name {
+		case "byte":
+			return "uint8"
+		case "rune":
+			return "int32"
+		}
+	}
 	return name
 }
 
@@ -599,7 +571,7 @@ func (t *RType) String() string {
 	if t.rt != nil {
 		return t.rt.String()
 	}
-	return t.e.typeName(t.td)
+	return runtime.DisplayName(t.td)
 }
 
 // Elem resolves the element type.
@@ -668,6 +640,7 @@ func (t *RType) Field(i int) *StructField {
 			PkgPath:   f.PkgPath,
 			Type:      t.e.hostTypeOf(f.Type),
 			Tag:       f.Tag,
+			Offset:    f.Offset,
 			Index:     f.Index,
 			Anonymous: f.Anonymous,
 		}
@@ -694,6 +667,7 @@ func (t *RType) Field(i int) *StructField {
 	sf := &StructField{
 		Name:      name,
 		Type:      ft,
+		Offset:    fieldOffset(t, i),
 		Index:     []int{i},
 		Anonymous: embedded,
 	}
@@ -710,9 +684,23 @@ func (t *RType) Field(i int) *StructField {
 
 // FieldByIndex resolves a nested field path.
 func (t *RType) FieldByIndex(idx []int) *StructField {
+	if t.rt != nil {
+		f := t.rt.FieldByIndex(idx)
+		return &StructField{Name: f.Name, PkgPath: f.PkgPath,
+			Type: t.e.hostTypeOf(f.Type), Tag: f.Tag, Offset: f.Offset,
+			Index: f.Index, Anonymous: f.Anonymous}
+	}
 	cur := t
 	var f *StructField
 	for depth, i := range idx {
+		// embedded traversal derefs a ptr-to-struct field between
+		// steps — [ptrField, inner] walks the pointee like Go.
+		if depth > 0 && cur.Kind() == reflect.Ptr {
+			et := cur.Elem()
+			if et != nil && et.Kind() == reflect.Struct {
+				cur = et
+			}
+		}
 		// Go checks each level: descending into a non-struct panics
 		// with the level's type, not the top type — and the deeper
 		// levels fail inside Field, so the wording changes.
@@ -739,8 +727,8 @@ func (t *RType) FieldByName(name string) (*StructField, bool) {
 			return nil, false
 		}
 		return &StructField{Name: f.Name, PkgPath: f.PkgPath,
-			Type: t.e.hostTypeOf(f.Type), Tag: f.Tag, Index: f.Index,
-			Anonymous: f.Anonymous}, true
+			Type: t.e.hostTypeOf(f.Type), Tag: f.Tag, Offset: f.Offset,
+			Index: f.Index, Anonymous: f.Anonymous}, true
 	}
 	if t.Kind() != reflect.Struct {
 		trap("FieldByName of non-struct type %s", t.String())
@@ -763,6 +751,9 @@ func (t *RType) FieldByName(name string) (*StructField, bool) {
 			if sub := t.e.rtypeOf(etd); sub.Kind() == reflect.Struct {
 				if f, ok := sub.FieldByName(name); ok {
 					f.Index = append([]int{ei}, f.Index...)
+					// Go reports the field's LOCAL offset inside the
+					// declaring struct — same as FieldByIndex — not
+					// the top-level position the embed chain implies.
 					return f, true
 				}
 			}
@@ -786,7 +777,8 @@ func (t *RType) Method(i int) *Method {
 	if t.rt != nil {
 		m := t.rt.Method(i)
 		return &Method{Name: m.Name, PkgPath: m.PkgPath,
-			Type: t.e.hostTypeOf(m.Type), Index: m.Index}
+			Type: t.e.hostTypeOf(m.Type), Index: m.Index,
+			Func: t.e.wrapHost(nil, m.Func)}
 	}
 	set := t.e.methodSet(t.td)
 	names := exportedMethodNames(set)
@@ -801,9 +793,14 @@ func (t *RType) Method(i int) *Method {
 	// Interface requirements carry no receiver in Method.Type —
 	// func(int) string, not func(main.I, int) string.
 	if t.td.Kind == runtime.KindInterface {
-		return &Method{Name: names[i], Type: t.e.methodType(nil, set[names[i]]), Index: i}
+		// Go reports a zero Func for interface requirements — the
+		// requirement has no implementation to call.
+		return &Method{Name: names[i], Type: t.e.methodType(nil, set[names[i]]), Index: i,
+			Func: &RValue{e: t.e}}
 	}
-	return &Method{Name: names[i], Type: t.e.methodType(t, set[names[i]]), Index: i}
+	fn := set[names[i]]
+	return &Method{Name: names[i], Type: t.e.methodType(t, fn), Index: i,
+		Func: t.e.wrap(nil, fn, nil, t.e.methodType(t, fn).td)}
 }
 
 // MethodByName looks up an exported method by name — like Go's reflect,
@@ -812,18 +809,27 @@ func (t *RType) MethodByName(name string) (*Method, bool) {
 	if t.rt != nil {
 		m, ok := t.rt.MethodByName(name)
 		if !ok {
-			return nil, false
+			return &Method{}, false
 		}
 		return &Method{Name: m.Name, PkgPath: m.PkgPath,
-			Type: t.e.hostTypeOf(m.Type), Index: m.Index}, true
+			Type: t.e.hostTypeOf(m.Type), Index: m.Index,
+			Func: t.e.wrapHost(nil, m.Func)}, true
 	}
 	set := t.e.methodSet(t.td)
 	for i, n := range exportedMethodNames(set) {
 		if n == name {
-			return &Method{Name: n, Type: t.e.methodType(t, set[n]), Index: i}, true
+			// interface requirements carry no receiver, like Method.
+			if t.td.Kind == runtime.KindInterface {
+				return &Method{Name: n, Type: t.e.methodType(nil, set[n]), Index: i,
+					Func: &RValue{e: t.e}}, true
+			}
+			return &Method{Name: n, Type: t.e.methodType(t, set[n]), Index: i,
+				Func: t.e.wrap(nil, set[n], nil, t.e.methodType(t, set[n]).td)}, true
 		}
 	}
-	return nil, false
+	// Go returns a zero Method value — m.Name reads "" where a nil
+	// *Method would dereference nil.
+	return &Method{}, false
 }
 
 // Implements reports whether the type implements interface u. The check
@@ -1185,21 +1191,148 @@ func (t *RType) Bits() int {
 	return 0
 }
 
-// Align reports the type's alignment — the facade does not model
-// machine layout, so script types report 0.
+// Align reports the type's alignment for a 64-bit target: scalars by
+// size, aggregates by their widest member (slice/map/chan/func/ptr/
+// iface are all word-sized).
 func (t *RType) Align() int {
 	if t.rt != nil {
 		return t.rt.Align()
 	}
-	return 0
+	return t.alignOf()
 }
 
-// FieldAlign reports the field alignment.
+// FieldAlign reports the field alignment — identical to Align on
+// amd64 (the platforms where they differ only affect 32-bit targets).
 func (t *RType) FieldAlign() int {
 	if t.rt != nil {
 		return t.rt.FieldAlign()
 	}
-	return 0
+	return t.alignOf()
+}
+
+// fieldOffset lays out the struct's fields on amd64 up to field i:
+// each field sits at the next offset aligned to its own alignment.
+func fieldOffset(t *RType, i int) uintptr {
+	fts := t.e.fieldTypes(t.td)
+	var off uintptr
+	for j := 0; j < i && j < len(fts); j++ {
+		if fts[j] == nil {
+			continue
+		}
+		fj := t.e.rtypeOf(fts[j])
+		off = roundUp(off, uintptr(fj.alignOf())) + fj.sizeOf()
+	}
+	if i < len(fts) && fts[i] != nil {
+		off = roundUp(off, uintptr(t.e.rtypeOf(fts[i]).alignOf()))
+	}
+	return off
+}
+
+func roundUp(off, a uintptr) uintptr {
+	if a == 0 {
+		return off
+	}
+	return (off + a - 1) / a * a
+}
+
+// sizeOf computes the amd64 size of a script type in bytes: scalars
+// by width, string/interface headers 16, slices 24, arrays elem*N,
+// structs padded to their own alignment; word-sized containers and
+// pointers are 8.
+func (t *RType) sizeOf() uintptr {
+	switch t.Kind() {
+	case reflect.Bool, reflect.Int8, reflect.Uint8:
+		return 1
+	case reflect.Int16, reflect.Uint16:
+		return 2
+	case reflect.Int32, reflect.Uint32, reflect.Float32, reflect.Complex64:
+		return 4
+	case reflect.Int, reflect.Uint, reflect.Int64, reflect.Uint64,
+		reflect.Uintptr, reflect.Float64, reflect.Complex128:
+		return 8
+	case reflect.String, reflect.Interface:
+		return 16
+	case reflect.Slice:
+		return 24
+	case reflect.Array:
+		return t.Elem().sizeOf() * uintptr(t.Len())
+	case reflect.Struct:
+		var off uintptr
+		for i := 0; i < t.NumField(); i++ {
+			ft := t.Field(i).Type
+			off = roundUp(off, uintptr(ft.alignOf())) + ft.sizeOf()
+		}
+		return roundUp(off, uintptr(t.alignOf()))
+	}
+	return 8
+}
+
+// hasPointers reports whether a value of the type contains pointers —
+// the scan/noscan split the runtime's growslice uses to reserve an
+// 8-byte malloc header (go1.26+). Containers and strings hold data
+// pointers; numbers, bool and uintptr do not.
+func (t *RType) hasPointers() bool {
+	switch t.Kind() {
+	case reflect.Ptr, reflect.Map, reflect.Chan, reflect.Func,
+		reflect.Slice, reflect.String, reflect.Interface,
+		reflect.UnsafePointer:
+		return true
+	case reflect.Array:
+		return t.Elem().hasPointers()
+	case reflect.Struct:
+		for i := 0; i < t.NumField(); i++ {
+			if t.Field(i).Type.hasPointers() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// alignOf computes the amd64 alignment of a script type. A struct
+// aligns to its widest field (empty struct → 1); an array to its
+// element; word-sized containers and pointers to 8.
+func (t *RType) alignOf() int {
+	switch t.Kind() {
+	case reflect.Int8, reflect.Uint8, reflect.Bool:
+		return 1
+	case reflect.Int16, reflect.Uint16:
+		return 2
+	case reflect.Int32, reflect.Uint32, reflect.Float32, reflect.Complex64:
+		return 4
+	case reflect.Struct:
+		n := 1
+		for i := 0; i < t.NumField(); i++ {
+			if a := t.Field(i).Type.alignOf(); a > n {
+				n = a
+			}
+		}
+		return n
+	case reflect.Array:
+		return t.Elem().alignOf()
+	}
+	return 8
+}
+
+// ChanDir reports a chan type's direction — an Anon ChanType carries
+// the declared direction; a bare chan defaults to BothDir. Go panics
+// on non-chan types.
+func (t *RType) ChanDir() reflect.ChanDir {
+	if t.rt != nil {
+		return t.rt.ChanDir()
+	}
+	if t.Kind() != reflect.Chan {
+		panic(&runtime.Panic{Value: fmt.Sprintf("reflect: ChanDir of non-chan type %s", t.String())})
+	}
+	if ct, ok := t.e.exprOf(t.td).(*ast.ChanType); ok {
+		switch ct.Dir {
+		case ast.RECV:
+			return reflect.RecvDir
+		case ast.SEND:
+			return reflect.SendDir
+		}
+	}
+	return reflect.BothDir
 }
 
 // NumIn reports a func type's input count.
@@ -1253,11 +1386,10 @@ func (t *RType) In(i int) *RType {
 	if t.rt != nil {
 		return t.e.hostTypeOf(t.rt.In(i))
 	}
-	x := funcParam(t, i, false)
-	if x == nil {
+	if funcSig(t) == nil {
 		trap("In of non-func type %s", t.String())
 	}
-	return t.resolveIn(x)
+	return t.resolveIn(funcParam(t, i, false))
 }
 
 // Out resolves a func type's i'th output type.
@@ -1265,11 +1397,10 @@ func (t *RType) Out(i int) *RType {
 	if t.rt != nil {
 		return t.e.hostTypeOf(t.rt.Out(i))
 	}
-	x := funcParam(t, i, true)
-	if x == nil {
+	if funcSig(t) == nil {
 		trap("Out of non-func type %s", t.String())
 	}
-	return t.resolveIn(x)
+	return t.resolveIn(funcParam(t, i, true))
 }
 
 // IsVariadic reports whether a func type is variadic.
@@ -1295,14 +1426,14 @@ func (t *RType) resolveIn(x ast.Expr) *RType {
 	}
 	if ell, ok := x.(*ast.Ellipsis); ok {
 		// a variadic param's In type is the []T slice, like Go.
-		td, err := t.e.h.ResolveType(t.td, ell.Elt)
+		td, err := t.e.resolveExpr(t.td, ell.Elt)
 		if err != nil {
 			trap("minireflect: %s", err)
 		}
 		return t.e.rtypeOf(&runtime.TypeDef{Kind: runtime.KindSlice, Elem: td,
 			Anon: &ast.ArrayType{Elt: ell.Elt}})
 	}
-	td, err := t.e.h.ResolveType(t.td, x)
+	td, err := t.e.resolveExpr(t.td, x)
 	if err != nil {
 		trap("minireflect: %s", err)
 	}
@@ -1321,29 +1452,31 @@ func funcSig(t *RType) *ast.FuncType {
 }
 
 // funcParam resolves the i'th param/result expr of a FuncType,
-// counting unnamed entries singly.
+// counting unnamed entries singly. The caller must have verified
+// funcSig is non-nil; an out-of-range index panics like Go — a bare
+// 'index out of range' runtime error, not a reflect-worded one.
 func funcParam(t *RType, i int, results bool) ast.Expr {
 	ft := funcSig(t)
-	if ft == nil {
-		return nil
-	}
 	list := ft.Params
 	if results {
 		list = ft.Results
 	}
-	if list == nil {
-		return nil
-	}
 	n := 0
-	for _, f := range list.List {
-		cnt := len(f.Names)
-		if cnt == 0 {
-			cnt = 1
+	if list != nil {
+		for _, f := range list.List {
+			cnt := len(f.Names)
+			if cnt == 0 {
+				cnt = 1
+			}
+			if i >= n && i < n+cnt {
+				return f.Type
+			}
+			n += cnt
 		}
-		if i < n+cnt {
-			return f.Type
-		}
-		n += cnt
 	}
+	if i < 0 {
+		panic(runtime.RuntimePanic(fmt.Sprintf("index out of range [%d]", i)))
+	}
+	panic(runtime.BoundsPanic(i, n))
 	return nil
 }

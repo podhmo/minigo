@@ -544,39 +544,11 @@ func CanonicalKey(v Value) Value {
 	}
 }
 
-// msgTypeName renders a typedef for panic text — the package NAME
-// qualifier like Go's "main.T", or the anonymous type spelling.
+// msgTypeName renders a typedef for panic text — it delegates to the
+// canonical display speller (package-name qualifier like Go's "main.T",
+// canonical anonymous spellings).
 func msgTypeName(td *TypeDef) string {
-	if td == nil {
-		return "?"
-	}
-	if td.Name != "" {
-		// the qualifier is the package's declared NAME — dir-loaded
-		// packages keep a synthesized import path in Pkg.Name, so the
-		// file's own package clause wins when it exists.
-		pkg := ""
-		if td.Pkg != nil {
-			pkg = td.Pkg.Name
-		}
-		if td.File != nil && td.File.AST != nil && td.File.AST.Name != nil {
-			pkg = td.File.AST.Name.Name
-		}
-		if pkg != "" {
-			if i := strings.LastIndex(td.Name, "."); i >= 0 {
-				return pkg + td.Name[i:]
-			}
-			return pkg + "." + td.Name
-		}
-		return td.Name
-	}
-	x := td.Anon
-	if x == nil && td.Spec != nil {
-		x = td.Spec.Type
-	}
-	if x != nil {
-		return anonTag(x)
-	}
-	return "?"
+	return DisplayName(td)
 }
 
 // unhashableKind reports whether a typedef's kind is unhashable — a
@@ -686,6 +658,10 @@ func typeTagOf(td *TypeDef) string {
 	}
 	if td.Name != "" {
 		if td.Pkg != nil && td.Pkg.Path != "" {
+			// a host-bound td's Name is already "pkgpath.Name"
+			if strings.HasPrefix(td.Name, td.Pkg.Path+".") {
+				return td.Name
+			}
 			return td.Pkg.Path + "." + td.Name
 		}
 		return td.Name

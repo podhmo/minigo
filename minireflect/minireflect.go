@@ -231,7 +231,10 @@ func (e *Env) typeAssert() *runtime.BuiltinFunc {
 			if !v.IsValid() {
 				trap("call of reflect.TypeAssert on zero Value")
 			}
-			if v.ro {
+			// Go gates on flagRO — for a host value that flag lives
+			// inside v.rv (CanInterface), not in our ro field, so a
+			// chain like Field(unexported).Indirect still counts.
+			if v.ro || (v.host() && !v.rv.CanInterface()) {
 				plain("reflect.TypeAssert: cannot return value obtained from unexported field or method")
 			}
 			tR := e.rtypeOf(td)
@@ -344,15 +347,19 @@ func (e *Env) valueOfValue(vc runtime.VMCaller, v runtime.Value) *RValue {
 	case *runtime.Named:
 		if gv, ok := x.V.(*runtime.GoValue); ok {
 			if rv, ok := gv.V.(*RValue); ok {
-				// a tagged facade box (reflect.Value{}) reflects to the
-				// facade struct itself, like the GoValue arm below
-				return &RValue{e: e, vc: vc, rv: reflect.ValueOf(rv).Elem()}
+				// a tagged facade box (reflect.Value{}) reflects to a real
+				// reflect.Value struct, like the GoValue arm below
+				return &RValue{e: e, vc: vc, rv: reflect.ValueOf(reflect.ValueOf(rv))}
 			}
-			// a tagged host box (host composite literal T{}): reflect
-			// the addressable value inside — Type reads T, not *T.
+			// a tagged host box (host composite literal T{}): the box
+			// holds *T so the value reads as T, not *T. ValueOf copies
+			// its argument like Go — re-boxing through Interface drops
+			// the pointer's addressability (CanSet/CanAddr false, Set
+			// panics) instead of handing back the script's live host
+			// object.
 			rv := reflect.ValueOf(gv.V)
 			if rv.IsValid() && rv.Kind() == reflect.Pointer && !rv.IsNil() {
-				rv = rv.Elem()
+				rv = reflect.ValueOf(rv.Elem().Interface())
 			}
 			return &RValue{e: e, vc: vc, rv: rv}
 		}
@@ -361,9 +368,10 @@ func (e *Env) valueOfValue(vc runtime.VMCaller, v runtime.Value) *RValue {
 		// the named value back for TypeAssert/%T).
 	case *runtime.GoValue:
 		if rv, ok := x.V.(*RValue); ok {
-			// reflecting a facade value itself yields the reflect.Value
-			// struct like Go — not the script value it views
-			return &RValue{e: e, vc: vc, rv: reflect.ValueOf(rv).Elem()}
+			// reflecting a facade value itself yields Go's reflect.Value
+			// struct (typ/ptr/flag), not the facade implementation struct
+			// and not the script value it views
+			return &RValue{e: e, vc: vc, rv: reflect.ValueOf(reflect.ValueOf(rv))}
 		}
 		if x.V == nil {
 			return &RValue{e: e, vc: vc}
@@ -613,14 +621,21 @@ func (e *Env) append_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value,
 		return nil, fmt.Errorf("reflect.Append: arg 0 is %T, not a reflect.Value", args[0])
 	}
 	elems := make([]runtime.Value, 0, len(args)-1)
+	xvs := make([]*RValue, 0, len(args)-1)
 	for _, a := range args[1:] {
 		rv := asRValue(a)
 		if rv == nil {
 			return nil, fmt.Errorf("reflect.Append: arg is %T, not a reflect.Value", a)
 		}
+		xvs = append(xvs, rv)
 		elems = append(elems, rv.ifaceVal())
 	}
 	if s.rv.IsValid() {
+		if s.rv.Kind() != reflect.Slice {
+			// Go checks the kind before touching the elements — let
+			// reflect.Append raise its own 'unknown method' panic.
+			reflect.Append(s.rv)
+		}
 		in := make([]reflect.Value, len(elems))
 		for i, el := range elems {
 			rv, err := toHost(el, s.rv.Type().Elem())
@@ -631,9 +646,26 @@ func (e *Env) append_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value,
 		}
 		return &runtime.GoValue{V: &RValue{e: e, vc: vc, rv: reflect.Append(s.rv, in...)}}, nil
 	}
+	// Go's MustBe(Slice) rejects every other kind — arrays included —
+	// with 'reflect: call of unknown method on X Value'.
+	if s.Kind() != reflect.Slice {
+		trap("call of unknown method on %s Value", s.kindStr())
+	}
 	sl, ok := s.get().(*runtime.Slice)
 	if !ok {
 		return nil, fmt.Errorf("reflect.Append on %s", s.Kind())
+	}
+	// Go's internal grow assigns each arg to the slice's element type —
+	// a mismatched arg dies as 'reflect.Set: value of type X is not
+	// assignable to type Y' before anything is appended.
+	if etd := e.elemOf(s.td); etd != nil {
+		et := e.rtypeOf(etd)
+		for _, xv := range xvs {
+			xt := xv.Type()
+			if xt != nil && !xt.AssignableTo(et) {
+				plain("reflect.Set: value of type %s is not assignable to type %s", xt.String(), et.String())
+			}
+		}
 	}
 	// append into the live backing: spare capacity is reused, so writes
 	// through the result's elements land in the caller's array like Go.
@@ -650,12 +682,33 @@ func (e *Env) appendSlice(vc runtime.VMCaller, args []runtime.Value) (runtime.Va
 		return nil, fmt.Errorf("reflect.AppendSlice: args must be reflect.Value")
 	}
 	if s.rv.IsValid() && t.rv.IsValid() {
+		if s.rv.Kind() != reflect.Slice || t.rv.Kind() != reflect.Slice {
+			// Go checks both kinds before copying — let AppendSlice
+			// raise its own 'unknown method' panic.
+			reflect.AppendSlice(s.rv, t.rv)
+		}
 		return &runtime.GoValue{V: &RValue{e: e, vc: vc, rv: reflect.AppendSlice(s.rv, t.rv)}}, nil
+	}
+	// Go's MustBe(Slice) fires on either operand before copying —
+	// 'reflect: call of unknown method on X Value' names the bad kind.
+	if s.Kind() != reflect.Slice {
+		trap("call of unknown method on %s Value", s.kindStr())
+	}
+	if t.Kind() != reflect.Slice {
+		trap("call of unknown method on %s Value", t.kindStr())
 	}
 	sl, ok1 := s.get().(*runtime.Slice)
 	tl, ok2 := t.get().(*runtime.Slice)
 	if !ok1 || !ok2 {
 		return nil, fmt.Errorf("reflect.AppendSlice on non-slice")
+	}
+	// Go requires identical element types — 'reflect.AppendSlice:
+	// uint8 != int' names dst-elem first.
+	if detd, setd := e.elemOf(s.td), e.elemOf(t.td); detd != nil && setd != nil {
+		dt, st := e.rtypeOf(detd), e.rtypeOf(setd)
+		if dt.key != st.key {
+			plain("reflect.AppendSlice: %s != %s", dt.String(), st.String())
+		}
 	}
 	elems := make([]runtime.Value, len(tl.Elems))
 	for i, el := range tl.Elems {
@@ -676,12 +729,37 @@ func (e *Env) copy_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, e
 	if d.rv.IsValid() && s.rv.IsValid() {
 		return int64(reflect.Copy(d.rv, s.rv)), nil
 	}
+	// Go's checks, in order: the destination must be a slice or an
+	// addressable array, the source a slice/array (or a string into a
+	// byte destination), and only then does the copy run.
+	dk := d.Kind()
+	if dk != reflect.Slice && dk != reflect.Array {
+		trap("call of reflect.Copy on %s Value", d.kindStr())
+	}
+	if dk == reflect.Array && !d.CanAddr() {
+		trap("unknown method using unaddressable value")
+	}
+	sk := s.Kind()
+	if sk != reflect.Slice && sk != reflect.Array && sk != reflect.String {
+		trap("call of reflect.Copy on %s Value", s.kindStr())
+	}
 	ds, dok := d.get().(*runtime.Slice)
 	var ss []runtime.Value
 	switch sv := s.get().(type) {
 	case *runtime.Slice:
+		// element types must be identical — 'reflect.Copy: uint8 != int'
+		// names dst-elem first.
+		if detd, setd := e.elemOf(d.td), e.elemOf(s.td); detd != nil && setd != nil {
+			dt, st := e.rtypeOf(detd), e.rtypeOf(setd)
+			if dt.key != st.key {
+				plain("reflect.Copy: %s != %s", dt.String(), st.String())
+			}
+		}
 		ss = sv.Elems
 	case string:
+		if et := e.elemOf(d.td); et != nil && e.kindOfTd(et) != reflect.Uint8 {
+			trap("call of reflect.Copy on string Value")
+		}
 		for i := 0; i < len(sv); i++ {
 			ss = append(ss, int64(sv[i]))
 		}

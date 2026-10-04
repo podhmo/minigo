@@ -249,3 +249,48 @@ usecasefuzz 再実行: 0 DIFF / 1 ACCEPT / 4 TRAP（lim-http/toml/xml/yaml — �
 - **`unwinding` のライフサイクル管理が「全部消す/残す」の二値だった**: 初版（#150）は `v.unwinding = nil` で全部消していたため outer unwind のエントリまで消せず、残す方向に倒したら consume 後の stale が出た。panic タグ付きにして「死んだ panic のエントリだけ落とす」が正しい粒度だった。
 - **レビューの repro は最初から全件現トップで再現した**: 前ラウンド（3/5・5/7 が既修正）と違い、今回は 3/3 が真の未修正だった — unwind bookkeeping は相互に絡むため「直したつもりの組合せケース」がまだ抜けていた。
 - **#151 は修正 PR ではなくハーネス PR**: 根因は「ジェネレータが実装依存の出力を生成する」側なので、minigo 側の挙動は変えていない（評価順の厳密 LTR は合法）。
+
+### 6.11 実施ラウンド（round-9）: reflect TODO 掃討 + difffuzz 供給フェーズ
+
+TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで潰し、その後 difffuzz `-domain reflect` の hunt→triage→pin→fix を回した。さらにレビューで指摘されたバグ4件＋重複/リファクタ5件を子セッションに要/不要判断させ、要のものを同じスタックへ継続積みした。[Stack #201](https://github.com/podhmo/minigo/pull/199)（[#199](https://github.com/podhmo/minigo/pull/199)–[#275](https://github.com/podhmo/minigo/pull/275)、69 PRs、main 直積み）。
+
+#### 実施内容
+
+| フェーズ | 内容 | PR |
+|------|------|-----|
+| TODO 5件 | `fmt` が facade `reflect.Value` を1段 unwrap、`reflect.TypeAssert[T]` バインド（lim-xml ブロッカー解消）、`Value.SetCap` バインド、index-panic 文言修正、shared-global 破壊経由の発散2件 | [#199](https://github.com/podhmo/minigo/pull/199)–[#205](https://github.com/podhmo/minigo/pull/205) |
+| 供給フェーズ前半 | `Type.In/Out` bounds、`OverflowInt/Uint` 符号跨ぎ、`Bytes` の kind ディスパッチ、`Method(i).Func`、`StructField.Offset`（amd64 layout）、`Slice`/`Convert` の ref・ro 伝播、`Type.Name` alias 畳み込み、`ValueOf` on facade、`FieldByIndex` embedded ptr、`Append*`/`Copy` 要素型等 | [#229](https://github.com/podhmo/minigo/pull/229)–[#250](https://github.com/podhmo/minigo/pull/250) |
+| generator 拡張 | (a) `Runner.mask` が `0x[0-9a-fA-F]{6,}` → `0x…` を畳む（アドレス揺らぎで PASS↔SILENT が反転するのを止める）、(b) kind タグ付き 78 seeds＋合成 ctor（`SliceOf`/`MapOf`/`PtrTo`/`ChanOf`/`ArrayOf`/`New`/`MakeSlice`/`MakeMap`）、(c) `Grow`/`Slice3`/`FieldByIndexErr`/`FieldByNameFunc`/`SetZero`/`Complex`/`Pointer`/`UnsafePointer`/`UnsafeAddr`/`Recv` の probe 群 | [#220](https://github.com/podhmo/minigo/pull/220), [#222](https://github.com/podhmo/minigo/pull/222), [#242](https://github.com/podhmo/minigo/pull/242), [#251](https://github.com/podhmo/minigo/pull/251) |
+| 供給フェーズ後半 | `kindStr` の `on zero Value`、`Field`/`NumField`/`FieldByName` が host ptr を deref しない、`CallSlice` variadic→exact arity→`[]Elem` 代入性、`Call` arity が vc チェックに先行、`callSig` は typedef シグネチャ（receiver 込み）優先、`TypeAssert` が host `flagRO` を見る、`Pointer`/`UnsafePointer`/`UnsafeAddr` 実装、path 修飾 selector の `resolveTypeRef` 解決、`resolveExpr` が `*T` を保持、`Value.Grow` バインド | [#243](https://github.com/podhmo/minigo/pull/243)–[#263](https://github.com/podhmo/minigo/pull/263) |
+| レビュー駆動 バグ修正 | 全4件 NEED 判定（子セッションが oracle probe で実測検証）: (a) `Grow` cap≥256 での第二無限ループ — `(newcap+768)/4` 代入で縮小、`nextslicecap`/`roundupsize` を go1.26 実装（sizeclass・malloc header・noscan 分岐）まで忠実ミラー、29ケース一致; (b) `Set` のソース側 `ro` チェック欠落（SILENT — host 側分岐も同じ欠落を発見・同修正）; (c) `ValueOf` on タグ付き host box で `CanSet=true`＋Set がライブ状態を書き換え → copy semantics 復元（複合的根因で3PR: `(*p).Set` 型の pointee 書込み、`typSpelling` の二重修飾 `bytes.bytes.Buffer` による複合 td 別キー化）; (d) `FieldByName` が昇格フィールドの Offset を加算 → Go 通りローカル値 | [#265](https://github.com/podhmo/minigo/pull/265)–[#270](https://github.com/podhmo/minigo/pull/270) |
+| レビュー駆動 重複/リファクタ | `runtime.DisplayName` 新設で表示名ロジック4実装を集約（`typeName`/`msgTypeName`/`typedefSpelling`/`TypGoSpelling` — 指摘の表記ブレは再現せずも別の本物を発見: `map[byte]int`、alias import 修飾、無名 struct が `struct{}` に潰れる）、`numParams`/`sliceView`/`hostMethodSet` 抽出、`RValue.Unwrap`→`Payload` 改名、nil `.V` ガード | [#271](https://github.com/podhmo/minigo/pull/271)–[#275](https://github.com/podhmo/minigo/pull/275) |
+
+全 fix は `testdata/difffuzz/<slug>/` に seed pin（PENDING なし → 即必須テスト昇格）。
+
+#### 残りの状況
+
+- TODO.md の reflect 系 `[ ]` は全て `[x]`。
+- difffuzz yield は減衰: 現カバレッジで ~1/15–20 seeds。generator 拡張（#251）で新 probe 面が開き、即座に pointer-accessor・selector-path・callslice-gates・star-param の4件を供給した。
+- 未バインド op（`no member` trap → 実害ありの backlog）: `Slice3`/`FieldByIndexErr`/`FieldByNameFunc`/`SetZero`/`CanConvert`。probe 済みなので hunt が回れば発散として浮く。
+- レビュー全項目を処理済み: バグ4件は全て NEED、重複/リファクタ5件は 4件採用＋1件部分採用（`sliceView` — 重複は実際は Grow+Bytes のみ、SetLen/SetCap は非 slice Named を trap する意図的形状）。子セッションが「やらない」と判断した残置: `anonTag`（identity 側）、`tdName` 系（内部 diagnostics 用）、無効パッケージ限定の乖離（oracle が走らず seed 化不可）。
+- 残存する facade 制約: vc なし `Func` Value（`Type.Method(i).Func`）は正しい arity でも `needs a caller context`（VMCaller を facade 側で作れない構造制約。arity gate は先行するので fuzz が拾う panic 文言は正しい）。
+- pin 不可 artifact（記録のみ）: (a) `MapKeys()` 順は Go 自身がランダム化 — map 順に依存する発散は pin しない、(b) `reflect.Value` 内部 `flag` バイトを直接読む合成プローブ（実害なし）。
+- `usecasefuzz` 再実行: 41 PASS / 1 ACCEPT（inspectuse）/ 1 REJECT（lim-cgo — cgo 既知境界）/ 2 TRAP（lim-http, lim-xml — 既知境界）。`lim-yaml` は TRAP↔DIFF↔PASS の揺らぎ（map 順 artifact と思われる — 単独再実行では PASS）。`lim-toml` は TRAP から PASS に改善。**リグレッションなし**。
+
+#### 不備の振り返り
+
+- **スタックブランチへの誤コミットが3回**: `git branch --show-current` を commit 前に確認せず、同じファイルを触る PR 間で hop して混入した。`git reset --hard`+`push -f`→cherry-pick と file 単位の patch 分割（`git diff` → `@@` 単位で `git apply` 分け）で回復したが、確認はコストゼロなので常時行うべきだった。
+- **generator の 'x'+Wrap emit バグ（#251 内で自爆）**: `rchain.body()` の 'x' 分岐が Wrap を honor せず `v1rGrowS` を生成 — `TestGeneratedProgramsCompile` が `undefined: v1rGrowS` で捕捉。generator を拡張するときは「emitted プログラムが go でコンパイルされる」までを1ケースとして回すべきだった。
+- **`Grow` の `newcap=0` 無限ループ**: growslice 近似ループで `0 *= 2` が停止しない — 実害テスト（nil slice への Grow）で初めて出た。uint loop の termination 条件は初期値 0 の corner を常に疑う。
+- **detached-cell の Named 喪失（#248 の根因）**: `*runtime.Cell` が裸の underlying を保持し `Deref` が `Named` を剥がすため、cell 経由の `get()` は宣言型タグを失う — `MethodByName` の member 解決は `td` 駆動の再タグ retry が要った。「cell 越しの値」は identity 層が一個外れる、という不変条件の見落とし。
+- **host `flagRO` の居所（#250 の根因）**: facade `v.ro` は script-domain のみ — host 値の read-only は `!v.rv.CanInterface()` に居る。`Set`/`Interface` は host-op 先行の自己呼びで拾えていたが、`TypeAssert` は facade 側ゲートだったため `rv` を見る必要があった — 「gate をどちら側で置くか」の一貫したポリシー（host arm は host op 自身の panic を先に発火させる、facade arm は facade 側値の flag を見る）を最初に立てるべきだった。レビューで判明した `Set` のソース側欠落（#266）も同じ居所問題 — dst だけ見て src を見ていなかった。
+- **`Grow` の第二ループバグがレビューまで残った（#263 → #265）**: 上記 `newcap=0` を直したとき、同じループの `(newcap+768)/4` が加算ではなく代入であることを見落とし、cap≥256 で縮小→無限ループのハングを本スタックに残した（本レポート自身が「newcap=0 側を潰した」と書いている間に ≥256 側が生存していた）。実害テストは `cap0 → need` 起点しか書いておらず、成長経路の別区間を probe していなかった — corner を1個潰してもループ全体の Go 対応表（cap→cap）を検証するまで「近似ループの正当化」は終わっていない。最終的に `nextslicecap`/`roundupsize` の sizeclass 丸め込み忠実ミラーに置き換えた（近似でなく写経、が正解だった）。
+- **レビューが「自分で追加したコード」の退化を掴んだ（#210 系 → #267–#269）**: host 値への typedef タグ付け（`Named{td, GoValue{*T}}` box）はそのラウンドで正しかったが、`ValueOf` 経路が box をそのまま返して copy semantics を壊し、さらに `Set` が cell 内の box 形状を剥がす・`typSpelling` が selector 修飾子を型名として再修飾する、という3つの連鎖根因を生んでいた。追加した機構の「値が何経路で流れるか」の網羅確認が不足していた — box 形状は `get()`/`set()`/deref/ValueOf/Set の全経路で不変条件として検証すべきだった。
+
+#### 計画外の記録と判断
+
+- **harness 側の修正が混ざった (#220, #222, #242, #251)**: 「発散」ではなく「generator が拾える形にする」PR として別積み。発散供給が枯れたら generator 面を広げるのが次の正規手段 — yield の天井を上げる投資として 4 本は妥当だった。
+- **dispatch.go の engine 側修正が1件だけ混じった (#255)**: `resolveTypeRef` の SelectorExpr が path 修飾を unknown import にしていた — minireflect ではなく engine の型解決。reflect 系の外側に見えるが、発散の根因は exprOf の PATH 修飾 AST が解決経路に流れ込むことなので 1 root cause として残した。
+- **`reflect_grow` は emitted 形式の手書き seed**: 修正後の build では emit がこの発散をもはや生成できないため、emitted 形状（try() ラッパ + panic 文言プリント）の最小プローブを手で pin。pin の目的は回帰防止であり provenance 純度ではない、という判断。
+- **hunt の打ち切り判断**: yield ~1/15–20 seeds に逓減し、残件は `no member` 系 backlog + pin 不可 artifact に集約 — 追加 hunt より binding 実装の方が価値が高い局面に入ったところで打ち切り依頼。進行中の `Grow` だけ仕上げて停止。
+- **レビュー駆動フェーズは子セッションへ委譲**: ユーザー指示により、バグ4件→リファクタ5件の順で「各項目を子が oracle probe で要/不要判断→要のものを重要度順に 1 根因 1 PR で同スタック継続積み」。子は bug3 が複合的根因であることを検証中に自力で2件の別根因（cell box 剥がし・typSpelling 二重修飾）を発見し 3PR に分割、レビュー指摘の表記ブレ主張は再現しないことを実測で否定しつつ別の本物のブレを掴んだ — 「レビュー文面の検証」が「レビュー趣旨の回収」に昇格した好例。リファクタ項目は純粋な整理は seed なし、挙動変化（DisplayName 集約に伴う表記修正）のみ seed pin という線引きを適用。

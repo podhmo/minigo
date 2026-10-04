@@ -56,13 +56,35 @@ func (e *Engine) installStdlib() {
 		// fmt's interfaces are needed as types by interpreted sources that
 		// reflect on them or assert (e.g. template's fmt.Stringer probes,
 		// math/big's compile-time fmt.Scanner assertion).
-		"Stringer":   &runtime.TypeDef{Name: "fmt.Stringer", Kind: runtime.KindInterface, MReqs: []string{"String"}},
-		"GoStringer": &runtime.TypeDef{Name: "fmt.GoStringer", Kind: runtime.KindInterface, MReqs: []string{"GoString"}},
-		"Formatter":  &runtime.TypeDef{Name: "fmt.Formatter", Kind: runtime.KindInterface, MReqs: []string{"Format"}},
-		"Scanner":    &runtime.TypeDef{Name: "fmt.Scanner", Kind: runtime.KindInterface, MReqs: []string{"Scan"}},
-		"State":      &runtime.TypeDef{Name: "fmt.State", Kind: runtime.KindInterface, MReqs: []string{"Write", "Width", "Precision", "Flag"}},
-		"Print":      h.ffn("fmt.Print", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprint(h.out(), a...)) }, fmt.Print),
-		"Println":    h.ffn("fmt.Println", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprintln(h.out(), a...)) }, fmt.Println),
+		// Stringer/GoStringer carry their requirement as a real interface
+		// AST (same pattern as `error`) so the facade's signature
+		// machinery can report NumMethod/Method/MethodByName and check
+		// Implements against `String() string`.
+		"Stringer": &runtime.TypeDef{
+			Name: "fmt.Stringer", Kind: runtime.KindInterface, MReqs: []string{"String"},
+			Anon: &ast.InterfaceType{Methods: &ast.FieldList{List: []*ast.Field{{
+				Names: []*ast.Ident{{Name: "String"}},
+				Type: &ast.FuncType{
+					Params:  &ast.FieldList{},
+					Results: &ast.FieldList{List: []*ast.Field{{Type: ast.NewIdent("string")}}},
+				},
+			}}}},
+		},
+		"GoStringer": &runtime.TypeDef{
+			Name: "fmt.GoStringer", Kind: runtime.KindInterface, MReqs: []string{"GoString"},
+			Anon: &ast.InterfaceType{Methods: &ast.FieldList{List: []*ast.Field{{
+				Names: []*ast.Ident{{Name: "GoString"}},
+				Type: &ast.FuncType{
+					Params:  &ast.FieldList{},
+					Results: &ast.FieldList{List: []*ast.Field{{Type: ast.NewIdent("string")}}},
+				},
+			}}}},
+		},
+		"Formatter": &runtime.TypeDef{Name: "fmt.Formatter", Kind: runtime.KindInterface, MReqs: []string{"Format"}},
+		"Scanner":   &runtime.TypeDef{Name: "fmt.Scanner", Kind: runtime.KindInterface, MReqs: []string{"Scan"}},
+		"State":     &runtime.TypeDef{Name: "fmt.State", Kind: runtime.KindInterface, MReqs: []string{"Write", "Width", "Precision", "Flag"}},
+		"Print":     h.ffn("fmt.Print", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprint(h.out(), a...)) }, fmt.Print),
+		"Println":   h.ffn("fmt.Println", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprintln(h.out(), a...)) }, fmt.Println),
 		"Printf": h.ffn("fmt.Printf", 0, 1, func(a []any) (any, error) {
 			return retErr(fmt.Fprintf(h.out(), str(a[0]), a[1:]...))
 		}),
@@ -3333,24 +3355,32 @@ func (s *fmtValue) render(verb rune, f fmt.State) string {
 				}
 				break
 			}
-			if str, ok := callStringer(s.c, s.x, "String"); ok {
+			// Go's fmt consults error before Stringer — a value
+			// implementing both prints its Error().
+			if str, ok := callStringer(s.c, s.x, "Error"); ok {
 				return withWidth(f, str)
 			}
-			if str, ok := callStringer(s.c, s.x, "Error"); ok {
+			if str, ok := callStringer(s.c, s.x, "String"); ok {
 				return withWidth(f, str)
 			}
 		case 's':
-			if str, ok := callStringer(s.c, s.x, "String"); ok {
-				return withWidth(f, str)
-			}
 			if str, ok := callStringer(s.c, s.x, "Error"); ok {
 				return withWidth(f, str)
 			}
+			if str, ok := callStringer(s.c, s.x, "String"); ok {
+				return withWidth(f, str)
+			}
 		case 'q':
+			if str, ok := callStringer(s.c, s.x, "Error"); ok {
+				return strconv.Quote(str)
+			}
 			if str, ok := callStringer(s.c, s.x, "String"); ok {
 				return strconv.Quote(str)
 			}
 		case 'x', 'X':
+			if str, ok := callStringer(s.c, s.x, "Error"); ok {
+				return fmt.Sprintf("%"+string(verb), str)
+			}
 			if str, ok := callStringer(s.c, s.x, "String"); ok {
 				return fmt.Sprintf("%"+string(verb), str)
 			}
@@ -3859,14 +3889,16 @@ func formatOfNoHash(f fmt.State, verb rune) string {
 	return sb.String()
 }
 
-// unsignedIntTyp reports whether td denotes an unsigned 64-bit integer —
-// the declared name or its underlying ident (a `type U uint64` decl).
+// unsignedIntTyp reports whether td denotes an unsigned integer — the
+// declared name or its underlying ident (a `type U uint64` decl).
+// Unsigned kinds format their int64-carried bits as unsigned, and %#v
+// spells them in hex like Go.
 func unsignedIntTyp(td *runtime.TypeDef) bool {
 	if td == nil {
 		return false
 	}
 	switch td.Name {
-	case "uint", "uint64", "uintptr":
+	case "uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "byte":
 		return true
 	}
 	x := td.Anon
@@ -3875,7 +3907,7 @@ func unsignedIntTyp(td *runtime.TypeDef) bool {
 	}
 	if id, ok := x.(*ast.Ident); ok {
 		switch id.Name {
-		case "uint", "uint64", "uintptr":
+		case "uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "byte":
 			return true
 		}
 	}
@@ -4044,6 +4076,7 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 	}
 	var dirs []dir
 	argNum, maxArg := 0, 0
+	reordered := false
 	for i := 0; i < len(spec); {
 		j := strings.IndexByte(spec[i:], '%')
 		if j < 0 {
@@ -4074,6 +4107,7 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 					// n+1, n+2", 1-based).
 					argNum = n
 					indexed = true
+					reordered = true
 				}
 				i = k + 1
 			case ch == '*':
@@ -4160,8 +4194,11 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 	}
 	sb.WriteString(spec[prev:])
 	// args past the highest consumed position print as %!(EXTRA ...) —
-	// carry them across untouched.
-	na = append(na, a[off+maxArg:]...)
+	// carry them across untouched. Go suppresses the EXTRA report once
+	// any %[n] index reordered the arg list.
+	if !reordered {
+		na = append(na, a[off+maxArg:]...)
+	}
 	return sb.String(), na
 }
 
@@ -4275,7 +4312,7 @@ func fmtRValue(c runtime.VMCaller, rv *minireflect.RValue) any {
 	if !rv.IsValid() {
 		return "<invalid reflect.Value>"
 	}
-	switch u := rv.Unwrap().(type) {
+	switch u := rv.Payload().(type) {
 	case *minireflect.RValue:
 		return u
 	case minireflect.RValue:
@@ -4292,86 +4329,13 @@ func fmtRValue(c runtime.VMCaller, rv *minireflect.RValue) any {
 	}
 }
 
-// typedefSpelling renders a typedef for %T/#v output.
+// typedefSpelling renders a typedef for %T/#v output — it delegates to
+// the canonical display speller.
 func typedefSpelling(td *runtime.TypeDef) string {
 	if td == nil {
 		return "interface{}"
 	}
-	if td.Name != "" {
-		if td.Pkg != nil && td.Pkg.Name != "" {
-			// identity names carry the import path (or, for bound
-			// packages, the package name) — strip the qualifier
-			// before requalifying by the clause name.
-			local := td.Name
-			if td.Pkg.Path != "" {
-				local = strings.TrimPrefix(local, td.Pkg.Path+".")
-			}
-			local = strings.TrimPrefix(local, td.Pkg.Name+".")
-			return td.Pkg.Name + "." + local
-		}
-		switch td.Name {
-		case "byte":
-			return "uint8"
-		case "rune":
-			return "int32"
-		}
-		return td.Name
-	}
-	if td.Anon != nil {
-		return anonTypeSpelling(td.Anon, td.Pkg)
-	}
-	return "interface{}"
-}
-
-// anonTypeSpelling renders an anonymous type AST for %T/#v output;
-// idents naming a type declared in pkg spell pkg-qualified like Go.
-func anonTypeSpelling(e ast.Expr, pkg *runtime.Package) string {
-	switch t := e.(type) {
-	case *ast.Ident:
-		switch t.Name {
-		case "byte":
-			return "uint8"
-		case "rune":
-			return "int32"
-		}
-		if pkg != nil && pkg.Index != nil {
-			if _, ok := pkg.Index.Types[t.Name]; ok {
-				return pkg.Name + "." + t.Name
-			}
-		}
-		return t.Name
-	case *ast.StarExpr:
-		return "*" + anonTypeSpelling(t.X, pkg)
-	case *ast.ArrayType:
-		n := ""
-		if t.Len != nil {
-			if bl, ok := t.Len.(*ast.BasicLit); ok {
-				n = bl.Value
-			} else if id, ok := t.Len.(*ast.Ident); ok {
-				n = id.Name
-			}
-		}
-		return "[" + n + "]" + anonTypeSpelling(t.Elt, pkg)
-	case *ast.MapType:
-		return "map[" + anonTypeSpelling(t.Key, pkg) + "]" + anonTypeSpelling(t.Value, pkg)
-	case *ast.ChanType:
-		return "chan " + anonTypeSpelling(t.Value, pkg)
-	case *ast.SelectorExpr:
-		return anonTypeSpelling(t.X, pkg) + "." + t.Sel.Name
-	case *ast.IndexExpr:
-		return anonTypeSpelling(t.X, pkg) + "[" + anonTypeSpelling(t.Index, pkg) + "]"
-	case *ast.ParenExpr:
-		return anonTypeSpelling(t.X, pkg)
-	case *ast.Ellipsis:
-		return "[]" + anonTypeSpelling(t.Elt, pkg)
-	case *ast.InterfaceType:
-		return "interface{}"
-	case *ast.StructType:
-		return "struct{}"
-	case *ast.FuncType:
-		return runtime.TypGoSpelling(t, &runtime.TypeDef{Pkg: pkg})
-	}
-	return fmt.Sprintf("%T", e)
+	return runtime.DisplayName(td)
 }
 
 // callerFrames is the script-side *runtime.Frames: it iterates the

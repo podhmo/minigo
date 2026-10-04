@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/constant"
 	"reflect"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -61,9 +62,14 @@ func (v *RValue) mustValid(op string) {
 	}
 }
 
-// kindStr renders a kind for messages.
+// kindStr renders a kind for messages. Go's ValueError spells the
+// invalid kind "zero", not its Kind().String() — every `call of
+// reflect.Value.X on zero Value` trap goes through here.
 func (v *RValue) kindStr() string {
-	return v.Kind().String()
+	if k := v.Kind(); k != reflect.Invalid {
+		return k.String()
+	}
+	return "zero"
 }
 
 // wrap builds a script-domain rvalue view.
@@ -71,7 +77,7 @@ func (e *Env) wrap(vc runtime.VMCaller, val, ref runtime.Value, td *runtime.Type
 	return &RValue{e: e, vc: vc, val: val, ref: ref, td: td}
 }
 
-// Unwrap exposes the payload a host fmt should print in place of the
+// Payload exposes the payload a host fmt should print in place of the
 // Value itself — mirroring fmt's one-level reflect.Value unwrap, which
 // reads through the unexported-field flag. Host-domain values yield
 // their interface payload when they can; a non-interfacable host value
@@ -80,7 +86,7 @@ func (e *Env) wrap(vc runtime.VMCaller, val, ref runtime.Value, td *runtime.Type
 // the viewed runtime.Value. The payload may itself be a Value: fmt
 // renders that one through String (Go's nested `<T Value>` form), it
 // does not unwrap twice. Callers gate IsValid themselves.
-func (v *RValue) Unwrap() any {
+func (v *RValue) Payload() any {
 	if v.host() {
 		if v.rv.CanInterface() {
 			return v.rv.Interface()
@@ -436,7 +442,7 @@ func (v *RValue) Type() *RType {
 func (v *RValue) Interface() any {
 	v.mustValid("Interface")
 	if v.ro {
-		trap("reflect.Value.Interface: cannot return value obtained from unexported field or method")
+		plain("reflect.Value.Interface: cannot return value obtained from unexported field or method")
 	}
 	return v.ifaceVal()
 }
@@ -493,12 +499,12 @@ func (v *RValue) Addr() *RValue {
 	v.mustValid("Addr")
 	if v.host() {
 		if !v.rv.CanAddr() {
-			trap("call of reflect.Value.Addr on unaddressable value")
+			plain("reflect.Value.Addr of unaddressable value")
 		}
 		return v.e.wrapHost(v.vc, v.rv.Addr())
 	}
 	if v.ref == nil {
-		trap("call of reflect.Value.Addr on unaddressable value")
+		plain("reflect.Value.Addr of unaddressable value")
 	}
 	ptd := &runtime.TypeDef{Kind: runtime.KindPointer, Elem: v.td, Pkg: v.td.Pkg, File: v.td.File}
 	// the ref-view object itself IS the pointer value
@@ -628,10 +634,9 @@ func (v *RValue) Field(i int) *RValue {
 	v.mustValid("Field")
 	if v.host() {
 		rv := v.rv
-		if rv.Kind() == reflect.Ptr {
-			rv = rv.Elem()
-		}
 		if rv.Kind() != reflect.Struct {
+			// Go panics Field on a ptr — only Elem() first can
+			// reach the pointee's fields.
 			trap("call of reflect.Value.Field on %s Value", v.kindStr())
 		}
 		f := rv.Field(i)
@@ -684,11 +689,9 @@ func (v *RValue) Field(i int) *RValue {
 func (v *RValue) NumField() int {
 	v.mustValid("NumField")
 	if v.host() {
-		rv := v.rv
-		for rv.Kind() == reflect.Ptr {
-			rv = rv.Elem()
-		}
-		return rv.NumField()
+		// like Field, NumField must be a struct kind directly —
+		// rv.NumField fires Go's own kind panic.
+		return v.rv.NumField()
 	}
 	// struct-of-pointers do not deref here — Go's NumField must be a
 	// struct kind directly.
@@ -704,8 +707,28 @@ func (v *RValue) NumField() int {
 
 // FieldByIndex resolves a nested field path.
 func (v *RValue) FieldByIndex(idx []int) *RValue {
+	if v.host() {
+		f := v.rv.FieldByIndex(idx)
+		ro := false
+		if f.IsValid() {
+			ro = !f.CanInterface()
+		}
+		return &RValue{e: v.e, vc: v.vc, rv: f, ro: ro}
+	}
 	cur := v
-	for _, i := range idx {
+	for depth, i := range idx {
+		// embedded traversal derefs a ptr-to-struct field between
+		// steps; a nil embedded pointer dies on 'indirection through
+		// nil pointer to embedded struct' like Go's FieldByIndexErr.
+		if depth > 0 && cur.Kind() == reflect.Ptr {
+			if cur.Type() != nil && cur.Type().Elem() != nil && cur.Type().Elem().Kind() == reflect.Struct {
+				ev := cur.Elem()
+				if !ev.IsValid() {
+					panic(&runtime.Panic{Value: "reflect: indirection through nil pointer to embedded struct"})
+				}
+				cur = ev
+			}
+		}
 		cur = cur.Field(i)
 	}
 	return cur
@@ -716,12 +739,17 @@ func (v *RValue) FieldByIndex(idx []int) *RValue {
 func (v *RValue) FieldByName(name string) *RValue {
 	v.mustValid("FieldByName")
 	if v.host() {
-		rv := v.rv
-		for rv.Kind() == reflect.Ptr {
-			rv = rv.Elem()
+		// no deref here either — FieldByName on a ptr dies on
+		// 'call of reflect.Value.FieldByName on ptr Value'.
+		f := v.rv.FieldByName(name)
+		// a miss yields the zero Value — ro means nothing there and
+		// CanInterface on a zero Value itself panics; only a live field
+		// can carry the unexported flag.
+		ro := false
+		if f.IsValid() {
+			ro = !f.CanInterface()
 		}
-		f := rv.FieldByName(name)
-		return &RValue{e: v.e, vc: v.vc, rv: f, ro: !f.CanInterface()}
+		return &RValue{e: v.e, vc: v.vc, rv: f, ro: ro}
 	}
 	if v.Kind() != reflect.Struct {
 		trap("call of reflect.Value.FieldByName on %s Value", v.kindStr())
@@ -944,7 +972,11 @@ func (v *RValue) Index(i int) *RValue {
 		if i < 0 || i >= len(x) {
 			panic(&runtime.Panic{Value: "reflect: string index out of range"})
 		}
-		return &RValue{e: v.e, vc: v.vc, val: int64(x[i]), td: &runtime.TypeDef{Name: "uint8"}}
+		// the element is a byte — tag it so %T reads uint8 and
+		// Interface() surfaces a typed byte, like a []uint8 element.
+		btd := runtime.BasicTypedef("uint8")
+		return &RValue{e: v.e, vc: v.vc,
+			val: runtime.Tag(btd, int64(x[i])), td: btd}
 	case *runtime.Named:
 		return v.unwrap().Index(i)
 	case *runtime.TypedNil:
@@ -967,9 +999,24 @@ func (v *RValue) Slice(i, j int) *RValue {
 		if i < 0 || j > len(s) || i > j {
 			plain("reflect.Value.Slice: string slice index out of bounds")
 		}
-		return &RValue{e: v.e, vc: v.vc, val: s[i:j], td: v.td, ro: v.ro}
+		// Go keeps flagAddr on a sliced string: CanSet reports true
+		// and Set writes the view's own header, leaving the parent
+		// untouched — a detached cell models exactly that. (ref is an
+		// interface: a nil *Cell would deref through get().)
+		var ref runtime.Value
+		if v.ref != nil {
+			ref = &runtime.Cell{Elem: s[i:j]}
+		}
+		return &RValue{e: v.e, vc: v.vc, val: s[i:j], ref: ref, td: v.td, ro: v.ro}
 	case *runtime.Slice:
-		if i < 0 || j > len(s.Elems) || i > j {
+		// an unaddressable array rejects Slice before the bounds are
+		// ever looked at — Go checks addressability first.
+		if at := arrayTypeOf(s.Typ); at != nil && v.ref == nil {
+			plain("reflect.Value.Slice: slice of unaddressable array")
+		}
+		// Go bounds a reslice by capacity, not length — s[:1] can
+		// grow back to cap(s).
+		if i < 0 || j > cap(s.Elems) || i > j {
 			plain("reflect.Value.Slice: slice index out of bounds")
 		}
 		if at := arrayTypeOf(s.Typ); at != nil {
@@ -977,9 +1024,6 @@ func (v *RValue) Slice(i, j int) *RValue {
 			// be addressable — and the result is a slice type, not the
 			// array's. The Anon keeps the []T spelling so the produced
 			// type interns to the same RType as a script []T literal.
-			if v.ref == nil {
-				plain("reflect.Value.Slice: slice of unaddressable array")
-			}
 			st := &runtime.TypeDef{Kind: runtime.KindSlice, Elem: v.e.elemOf(s.Typ),
 				Anon: &ast.ArrayType{Elt: at.Elt}}
 			return &RValue{e: v.e, vc: v.vc,
@@ -989,11 +1033,30 @@ func (v *RValue) Slice(i, j int) *RValue {
 			val: &runtime.Slice{Elems: s.Elems[i:j], Typ: s.Typ}, td: v.td, ro: v.ro}
 	case *runtime.Named:
 		// named string/slice values view through the underlying like
-		// every other kind-dispatched accessor.
-		nv := &RValue{e: v.e, vc: v.vc, val: s.V, td: v.td, ro: v.ro}
-		return nv.Slice(i, j)
+		// every other kind-dispatched accessor. An addressable named
+		// keeps settability the same way the string arm does — the
+		// cell unwraps to the underlying value, never the Named
+		// itself (a Named-typed ref would recurse back here).
+		var ref runtime.Value
+		if v.ref != nil {
+			ref = &runtime.Cell{Elem: s.V}
+		}
+		nv := &RValue{e: v.e, vc: v.vc, val: s.V, ref: ref, td: v.td, ro: v.ro}
+		r := nv.Slice(i, j)
+		// the result stays the named type — Go reports
+		// Type()=main.RStr and its method set survives the slice, so
+		// re-tag unless the result already carries declared identity
+		// (the TypedNil arm returns the same nil it sliced).
+		if _, typed := r.val.(*runtime.TypedNil); !typed {
+			r.val = &runtime.Named{Typ: s.Typ, V: runtime.Unwrap(r.val)}
+		}
+		return r
 	case *runtime.TypedNil:
 		if v.Kind() == reflect.Slice {
+			if i == 0 && j == 0 {
+				// a nil slice reslices to itself — s[:0] stays nil.
+				return &RValue{e: v.e, vc: v.vc, val: s, td: v.td, ro: v.ro}
+			}
 			plain("reflect.Value.Slice: slice index out of bounds")
 		}
 	}
@@ -1001,10 +1064,138 @@ func (v *RValue) Slice(i, j int) *RValue {
 	return nil
 }
 
+// Grow expands a slice's capacity like Go 1.20 — Go checks
+// addressability before the slice kind, and only the cap side of the
+// header changes (len stays). The resulting cap follows the runtime's
+// growslice: nextslicecap picks the unrounded cap, then the backing
+// size rounds up to the malloc size class holding that many elements
+// (pointerful elements reserve an 8-byte malloc header since go1.26).
+func (v *RValue) Grow(n int) {
+	v.mustValid("Grow")
+	if v.host() {
+		v.rv.Grow(n)
+		return
+	}
+	v.mustBeSettable("Grow")
+	if v.Kind() != reflect.Slice {
+		trap("call of reflect.Value.Grow on %s Value", v.kindStr())
+	}
+	// a nil slice grows like an empty one — the header's cap
+	// rises and the value becomes a live (non-nil) slice.
+	sl := v.sliceView()
+	// Go judges the argument before the capacity math: a negative n
+	// panics even when the slice could absorb it.
+	if n < 0 {
+		plain("reflect.Value.Grow: negative len")
+	}
+	if len(sl.Elems)+n < 0 {
+		plain("reflect.Value.Grow: slice overflow")
+	}
+	if need := len(sl.Elems) + n; need > cap(sl.Elems) {
+		newcap := nextSliceCap(need, cap(sl.Elems))
+		if esize, noscan, ok := v.e.elemLayout(sl.Typ); ok {
+			if esize == 0 {
+				// zero-sized elements share zerobase: the runtime
+				// reports cap == newLen.
+				newcap = need
+			} else {
+				if uintptr(newcap) > maxAlloc/esize {
+					plain("growslice: len out of range")
+				}
+				newcap = int(roundupSize(uintptr(newcap)*esize, noscan) / esize)
+			}
+		}
+		grown := make([]runtime.Value, len(sl.Elems), newcap)
+		copy(grown, sl.Elems)
+		v.set(&runtime.Slice{Elems: grown, Typ: sl.Typ})
+	}
+}
+
+// nextSliceCap mirrors the runtime's nextslicecap: a need past double
+// the old cap allocates the need directly, below 256 the cap doubles
+// once, and at 256+ it grows by quarters until it covers need.
+func nextSliceCap(need, oldCap int) int {
+	newcap := oldCap
+	if need > newcap+newcap {
+		return need
+	}
+	if newcap < 256 {
+		return newcap + newcap
+	}
+	for newcap < need {
+		newcap += (newcap + 3*256) >> 2
+	}
+	return newcap
+}
+
+// maxAlloc is the runtime's addressable-allocation bound on amd64 —
+// growslice panics when the requested bytes can't span it.
+const maxAlloc = uintptr(1) << 48
+
+// sizeClassToSize is the runtime's malloc size-class table on amd64:
+// the byte size mallocgc actually allocates for a small request.
+var sizeClassToSize = [...]uint16{
+	0, 8, 16, 24, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208,
+	224, 240, 256, 288, 320, 352, 384, 416, 448, 480, 512, 576, 640, 704,
+	768, 896, 1024, 1152, 1280, 1408, 1536, 1792, 2048, 2304, 2688, 3072,
+	3200, 3456, 4096, 4864, 5376, 6144, 6528, 6784, 6912, 8192, 9472,
+	9728, 10240, 10880, 12288, 13568, 14336, 16384, 18432, 19072, 20480,
+	21760, 24576, 27264, 28672, 32768,
+}
+
+// roundupSize mirrors the runtime's roundupsize: requests up to the
+// small-object bound land in the smallest covering size class — since
+// go1.26 a pointerful object past 512 bytes also carries an 8-byte
+// malloc header inside its class — and larger requests align to pages.
+func roundupSize(size uintptr, noscan bool) uintptr {
+	const (
+		mallocHeaderSize       = 8
+		minSizeForMallocHeader = 512 // goarch.PtrSize * goarch.PtrBits on amd64
+		maxSmallSize           = 32768
+		pageSize               = 4096
+	)
+	req := size
+	if req <= maxSmallSize-mallocHeaderSize {
+		if !noscan && req > minSizeForMallocHeader {
+			req += mallocHeaderSize
+		}
+		// the runtime's two lookup tables just index the same sorted
+		// class list — the answer is the smallest covering class.
+		i := sort.Search(len(sizeClassToSize), func(i int) bool {
+			return uintptr(sizeClassToSize[i]) >= req
+		})
+		return uintptr(sizeClassToSize[i]) - (req - size)
+	}
+	req += pageSize - 1
+	if req < size {
+		return size
+	}
+	return req &^ (pageSize - 1)
+}
+
+// elemLayout resolves a slice typedef's element layout for growslice:
+// byte size and the noscan flag (true when elements contain no
+// pointers). ok is false when the element type cannot be resolved —
+// the caller then grows to the unrounded cap.
+func (e *Env) elemLayout(td *runtime.TypeDef) (size uintptr, noscan bool, ok bool) {
+	et := e.elemOf(td)
+	if et == nil {
+		return 0, false, false
+	}
+	rt := e.rtypeOf(et)
+	return rt.sizeOf(), !rt.hasPointers(), true
+}
+
 // MapIndex looks up a map value; missing keys give an invalid Value.
 func (v *RValue) MapIndex(k *RValue) *RValue {
 	v.mustValid("MapIndex")
 	if v.host() {
+		// Go judges the map kind before marshalling the key — let
+		// MapIndex raise its own 'call of reflect.Value.MapIndex on
+		// X Value' instead of Type().Key()'s 'non-map type' panic.
+		if v.rv.Kind() != reflect.Map {
+			v.rv.MapIndex(v.rv)
+		}
 		kr, err := toHost(k.ifaceVal(), v.rv.Type().Key())
 		if err != nil {
 			trap("reflect.Value.MapIndex: %s", err)
@@ -1079,6 +1270,11 @@ func (v *RValue) MapKeys() []*RValue {
 func (v *RValue) SetMapIndex(k, x *RValue) {
 	v.mustValid("SetMapIndex")
 	if v.host() {
+		// same order as MapIndex: the kind check precedes the
+		// key/value marshal.
+		if v.rv.Kind() != reflect.Map {
+			v.rv.SetMapIndex(v.rv, v.rv)
+		}
 		kr, err := toHost(k.ifaceVal(), v.rv.Type().Key())
 		if err != nil {
 			trap("reflect.Value.SetMapIndex: %s", err)
@@ -1349,22 +1545,30 @@ func (v *RValue) Bytes() any {
 	if v.host() {
 		return v.rv.Bytes()
 	}
-	var s *runtime.Slice
-	switch x := v.get().(type) {
-	case string:
-		return []byte(x)
-	case *runtime.Slice:
-		s = x
-	case *runtime.Named:
-		s, _ = x.V.(*runtime.Slice)
-	}
-	if s == nil {
+	// Go dispatches on the kind, not the payload's shape: slice and
+	// array must carry a byte element (a named elem whose kind is
+	// still uint8 passes), anything else is a bad call — so a nil
+	// non-byte slice reports "non-byte slice" like any other.
+	kind := v.Kind()
+	if kind != reflect.Slice && kind != reflect.Array {
 		trap("call of reflect.Value.Bytes on %s Value", v.kindStr())
 		return nil
 	}
-	if et := v.e.elemOf(s.Typ); et != nil && et.Name != "" &&
-		et.Name != "byte" && et.Name != "uint8" {
-		trap("reflect.Value.Bytes of non-byte slice")
+	// a zero/nil Value of slice type (reflect.Zero) reads as an
+	// empty header of the declared type.
+	s := v.sliceView()
+	et := v.e.elemOf(v.td)
+	if et == nil {
+		et = v.e.elemOf(s.Typ)
+	}
+	if et != nil && v.e.kindOfTd(et) != reflect.Uint8 {
+		if kind == reflect.Array {
+			plain("reflect.Value.Bytes of non-byte array")
+		}
+		plain("reflect.Value.Bytes of non-byte slice")
+	}
+	if kind == reflect.Array && !v.CanAddr() {
+		plain("reflect.Value.Bytes of unaddressable byte array")
 	}
 	st := s.Typ
 	if st == nil {
@@ -1453,6 +1657,23 @@ func (v *RValue) tagged(val runtime.Value) runtime.Value {
 func (v *RValue) Set(x *RValue) {
 	v.mustValid("Set")
 	if v.host() {
+		// Go judges settability before marshalling the source — an
+		// unaddressable target dies on 'using unaddressable value'
+		// even when the source would not marshal. Let rv.Set deliver
+		// that panic itself.
+		if !v.rv.CanSet() {
+			v.rv.Set(v.rv)
+		}
+		// the source gates mirror the script path: a zero Value dies
+		// on 'on zero Value', a read through an unexported field on
+		// 'using value obtained using unexported field' — both before
+		// the source marshals.
+		if x == nil || !x.IsValid() {
+			trap("call of reflect.Value.Set on zero Value")
+		}
+		if x.ro {
+			trap("reflect.Value.Set using value obtained using unexported field")
+		}
 		rv, err := toHost(x.ifaceVal(), v.rv.Type())
 		if err != nil {
 			trap("reflect.Value.Set: %s", err)
@@ -1461,14 +1682,48 @@ func (v *RValue) Set(x *RValue) {
 		return
 	}
 	// Go's order: the target must be settable, then the source must be
-	// a usable Value (`call of reflect.Value.Set on zero Value`), and
+	// a usable Value (`call of reflect.Value.Set on zero Value`) that
+	// was not read through an unexported field (x.mustBeExported), and
 	// only then is its assignability judged.
 	v.mustBeSettable("Set")
 	if x == nil || !x.IsValid() {
 		trap("call of reflect.Value.Set on zero Value")
 	}
+	if x.ro {
+		trap("reflect.Value.Set using value obtained using unexported field")
+	}
 	if vt, xt := v.Type(), x.Type(); vt != nil && xt != nil && !xt.AssignableTo(vt) {
 		plain("reflect.Set: value of type %s is not assignable to type %s", xt.String(), vt.String())
+	}
+	// a tagged host box keeps its object identity across Set: Go's
+	// (*p).Set(x) writes into the pointee, so the write must land
+	// inside the boxed *T — storing a bare payload over the cell
+	// would drop the pointer that the type's methods and aliases
+	// live on. Only fires when the cell's box tag is the declared
+	// type (an any-typed slot holding a box is a replacement, not a
+	// pointee write).
+	if cur, ok := v.get().(*runtime.Named); ok && cur.Typ != nil && cur.Typ == v.td && cur.Typ.HostNew != nil {
+		if gv, ok := cur.V.(*runtime.GoValue); ok {
+			if hv := reflect.ValueOf(gv.V); hv.IsValid() && hv.Kind() == reflect.Pointer && !hv.IsNil() {
+				payload := x.ifaceVal()
+				if nb, ok := payload.(*runtime.Named); ok {
+					payload = nb.V
+				}
+				// a script box reads as its *T payload; the pointee
+				// write needs the T inside it
+				if pg, ok := payload.(*runtime.GoValue); ok {
+					if pv := reflect.ValueOf(pg.V); pv.IsValid() && pv.Kind() == reflect.Pointer && !pv.IsNil() {
+						payload = pv.Elem().Interface()
+					}
+				}
+				xv, err := toHost(payload, hv.Type().Elem())
+				if err != nil {
+					trap("reflect.Value.Set: %s", err)
+				}
+				hv.Elem().Set(xv)
+				return
+			}
+		}
 	}
 	val := x.get()
 	if x.host() {
@@ -1568,6 +1823,19 @@ func (v *RValue) SetInt(x int64) {
 	v.set(truncInt(v.declTd(), x))
 }
 
+// sliceView resolves the *runtime.Slice a slice accessor reads — Named
+// boxes unwrap to their payload — and a nil or non-slice value yields
+// an empty header of the declared type. Grow and Bytes normalize their
+// targets this way; SetLen/SetCap keep their own read since a non-slice
+// Named must still trap rather than normalize.
+func (v *RValue) sliceView() *runtime.Slice {
+	s, _ := runtime.Unwrap(v.get()).(*runtime.Slice)
+	if s == nil {
+		s = &runtime.Slice{Typ: v.td}
+	}
+	return s
+}
+
 // SetUint writes a uint64 (kept as int64 in the script domain),
 // truncated to the declared width.
 func (v *RValue) SetUint(x uint64) {
@@ -1654,8 +1922,26 @@ func (v *RValue) SetBytes(x []byte) {
 func (v *RValue) Call(in []*RValue) []*RValue {
 	v.mustValid("Call")
 	if v.host() {
+		// Go checks the func kind before reading the signature — a
+		// non-func receiver dies on 'call of reflect.Value.Call on
+		// X Value', not on IsVariadic's 'non-func type' panic.
+		if v.rv.Kind() != reflect.Func {
+			v.rv.Call(nil)
+		}
 		args := make([]reflect.Value, len(in))
 		mt := v.rv.Type()
+		// Go reports arity before touching argument values — reading
+		// mt.In(i) past NumIn dies as 'index out of range', not the
+		// Call wording. Variadic accepts NumIn-1 or more.
+		if n := mt.NumIn(); mt.IsVariadic() {
+			if len(in) < n-1 {
+				plain("reflect: Call with too few input arguments")
+			}
+		} else if len(in) < n {
+			plain("reflect: Call with too few input arguments")
+		} else if len(in) > n {
+			plain("reflect: Call with too many input arguments")
+		}
 		for i, a := range in {
 			var pt reflect.Type
 			if mt.IsVariadic() && i >= mt.NumIn()-1 {
@@ -1677,10 +1963,15 @@ func (v *RValue) Call(in []*RValue) []*RValue {
 		return res
 	}
 	v.expectKind("Call", reflect.Func)
+	// Go reports arity before touching argument values: `reflect: Call
+	// with too few/too many input arguments`. The signature gates
+	// precede the caller check — a vc-less Func Value (e.g.
+	// Type.Method(i).Func) still panics on arity like Go.
+	v.checkCallArgs(in, false)
+
 	if v.vc == nil {
 		trap("minireflect: reflect.Value.Call needs a caller context")
 	}
-	v.checkCallArgs(in, false)
 
 	args := make([]runtime.Value, len(in))
 	for i, a := range in {
@@ -1735,25 +2026,14 @@ func (v *RValue) checkCallArgs(in []*RValue, sliceMode bool) {
 	if ft == nil || ft.Params == nil {
 		return
 	}
-	// count parameters, not field entries — `a, b int` is two.
-	numIn := 0
-	for _, f := range ft.Params.List {
-		if n := len(f.Names); n > 0 {
-			numIn += n
-		} else {
-			numIn++
-		}
-	}
-	variadic := false
-	if n := len(ft.Params.List); n > 0 {
-		_, variadic = ft.Params.List[n-1].Type.(*ast.Ellipsis)
-	}
+	numIn, ell := numParams(ft)
+	variadic := ell != nil
 	name := "Call"
 	if sliceMode {
 		name = "CallSlice"
 	}
 	switch {
-	case len(in) < numIn && (!variadic || len(in) < numIn-1):
+	case len(in) < numIn && (!variadic || len(in) < numIn-1 || sliceMode):
 		plain("reflect: %s with too few input arguments", name)
 	case len(in) > numIn && (!variadic || sliceMode):
 		plain("reflect: %s with too many input arguments", name)
@@ -1788,10 +2068,33 @@ func (v *RValue) checkCallArgs(in []*RValue, sliceMode bool) {
 	}
 }
 
-// callSig finds the callee's declared signature — the function's own
-// decl type, a closure's literal type, a bound method's decl type, or
-// the typedef's FuncType spec when the value is opaque.
+// numParams counts a signature's input parameters — `a, b int` is two —
+// and reports whether the last is a variadic ellipsis. Call and
+// CallSlice gate their arity checks on the same count.
+func numParams(ft *ast.FuncType) (numIn int, ell *ast.Ellipsis) {
+	for _, f := range ft.Params.List {
+		if n := len(f.Names); n > 0 {
+			numIn += n
+		} else {
+			numIn++
+		}
+	}
+	if n := len(ft.Params.List); n > 0 {
+		ell, _ = ft.Params.List[n-1].Type.(*ast.Ellipsis)
+	}
+	return numIn, ell
+}
+
+// callSig finds the callee's reflect signature — the typedef's
+// FuncType first (a Method Func's signature prepends the receiver,
+// which the decl's own FuncType does not carry), then the function's
+// own decl type for values that lost their typedef.
 func (v *RValue) callSig() *ast.FuncType {
+	if t := v.Type(); t != nil {
+		if ft := funcSig(t); ft != nil {
+			return ft
+		}
+	}
 	var decl *ast.FuncDecl
 	switch fn := v.get().(type) {
 	case *runtime.Function:
@@ -1808,9 +2111,6 @@ func (v *RValue) callSig() *ast.FuncType {
 	if decl != nil && decl.Type != nil {
 		return decl.Type
 	}
-	if t := v.Type(); t != nil {
-		return funcSig(t)
-	}
 	return nil
 }
 
@@ -1820,7 +2120,18 @@ func (v *RValue) callSig() *ast.FuncType {
 func (v *RValue) CallSlice(in []*RValue) []*RValue {
 	v.mustValid("CallSlice")
 	if v.host() {
+		// same order as Call: the kind check precedes the
+		// signature reads.
+		if v.rv.Kind() != reflect.Func {
+			v.rv.CallSlice(nil)
+		}
 		mt := v.rv.Type()
+		// Go rejects a non-variadic callee before counting or
+		// marshalling any args — In(-1) on a niladic signature
+		// would panic 'index out of range' instead.
+		if !mt.IsVariadic() {
+			plain("reflect: CallSlice of non-variadic function")
+		}
 		args := make([]reflect.Value, len(in))
 		for i, a := range in {
 			pt := mt.In(min(i, mt.NumIn()-1))
@@ -1838,22 +2149,25 @@ func (v *RValue) CallSlice(in []*RValue) []*RValue {
 		return res
 	}
 	v.expectKind("CallSlice", reflect.Func)
+	// Go's gate order — variadic, exact arity (NumIn counts the
+	// variadic slice as one), last-arg assignability — all signature
+	// work precedes the caller check so vc-less Func Values panic
+	// like Go.
+	if ft := v.callSig(); ft != nil && ft.Params != nil {
+		_, ell := numParams(ft)
+		if ell == nil {
+
+			trap("CallSlice of non-variadic function")
+		}
+
+	}
+	v.checkCallArgs(in, true)
 	if v.vc == nil {
 		trap("minireflect: reflect.Value.CallSlice needs a caller context")
-	}
-	if ft := v.callSig(); ft != nil {
-		variadic := false
-		if ft.Params != nil && len(ft.Params.List) > 0 {
-			_, variadic = ft.Params.List[len(ft.Params.List)-1].Type.(*ast.Ellipsis)
-		}
-		if !variadic {
-			trap("reflect.Value.CallSlice of a non-variadic function")
-		}
 	}
 	if len(in) == 0 {
 		trap("CallSlice with empty input slice")
 	}
-	v.checkCallArgs(in, true)
 
 	last := in[len(in)-1]
 	last.mustValid("CallSlice")
@@ -1909,10 +2223,35 @@ func (v *RValue) MethodByName(name string) *RValue {
 	if !ast.IsExported(name) {
 		return &RValue{e: v.e, vc: v.vc}
 	}
+	if v.td != nil && v.td.Kind == runtime.KindInterface {
+		// An interface-typed Value exposes only the interface's own
+		// requirements — MethodByName filters through them like Go.
+		inSet := false
+		for _, n := range exportedMethodNames(v.e.methodSet(v.td)) {
+			if n == name {
+				inSet = true
+				break
+			}
+		}
+		if !inSet {
+			return &RValue{e: v.e, vc: v.vc}
+		}
+		if v.IsNil() {
+			// Method(i) forwards here — the panic spells "Method".
+			panic(&runtime.Panic{Value: "reflect: Method on nil interface value"})
+		}
+	}
 	if v.vc == nil {
 		trap("minireflect: reflect.Value.MethodByName needs a caller context")
 	}
 	m, ok := v.vc.Member(v.get(), name)
+	if !ok && v.td != nil && v.td.Spec != nil {
+		// a detached storage cell (e.g. Slice of an addressable
+		// named string) stores the bare underlying value, and get()
+		// derefs through it — the declared typedef still knows the
+		// method set, so retry on a re-tagged value.
+		m, ok = v.vc.Member(runtime.Tag(v.td, v.get()), name)
+	}
 	if !ok {
 		return &RValue{e: v.e, vc: v.vc}
 	}
@@ -1927,7 +2266,12 @@ func (v *RValue) MethodByName(name string) *RValue {
 // Convert converts the value to type t for the subset the facade
 // supports (numeric widening, string<->[]byte).
 func (v *RValue) Convert(t *RType) *RValue {
-	v.mustValid("Convert")
+	if !v.IsValid() {
+		// Go's Convert dereferences the source type before any
+		// validity gate, so a zero Value dies as a nil pointer
+		// dereference rather than "call of ... on zero Value".
+		panic(runtime.NilDerefPanic())
+	}
 	if t == nil {
 		trap("reflect.Value.Convert to nil type")
 	}
@@ -1936,7 +2280,8 @@ func (v *RValue) Convert(t *RType) *RValue {
 		if err != nil {
 			trap("reflect.Value.Convert: %s", err)
 		}
-		return v.e.wrapHost(v.vc, rv.Convert(t.rt))
+		cv := rv.Convert(t.rt)
+		return &RValue{e: v.e, vc: v.vc, rv: cv, ro: v.ro || !cv.CanInterface()}
 	}
 	if st := v.Type(); st != nil && !st.ConvertibleTo(t) {
 		plain("reflect.Value.Convert: value of type %s cannot be converted to type %s",
@@ -1992,6 +2337,8 @@ func (v *RValue) Convert(t *RType) *RValue {
 					sb.WriteByte(byte(intOf(el)))
 				}
 				out = sb.String()
+			} else if s, ok := x.V.(string); ok {
+				out = s
 			} else {
 				out = string(rune(v.convInt()))
 			}
@@ -2022,7 +2369,9 @@ func (v *RValue) Convert(t *RType) *RValue {
 	if ntd != nil && ntd.Name != "" && ntd.Kind == runtime.KindNamedBasic {
 		out = &runtime.Named{Typ: ntd, V: out}
 	}
-	return v.e.wrap(v.vc, out, nil, ntd)
+	// the read-only flag is sticky through Convert like Go's flagRO —
+	// an unexported-field value converts to an unexportable value.
+	return &RValue{e: v.e, vc: v.vc, val: out, td: ntd, ro: v.ro}
 }
 
 // convInt reads an integer permissively for Convert — unlike Int it
@@ -2040,46 +2389,91 @@ func (v *RValue) Comparable() bool {
 	return v.Type().Comparable()
 }
 
-// Equal reports Go's equality: values of uncomparable type panic, and
-// mismatched types report false rather than comparing through. Same
-// type delegates to value equality.
+// Equal reports Go's equality: mismatched types report false BEFORE
+// the comparability check, same-typed uncomparable values panic, and
+// two invalid Values compare equal. Same type delegates to value
+// equality.
 func (v *RValue) Equal(u *RValue) bool {
-	if u == nil || !u.IsValid() {
-		return !v.IsValid()
+	vok := v != nil && v.IsValid()
+	uok := u != nil && u.IsValid()
+	if !vok || !uok {
+		return vok == uok
 	}
 	if v.host() && u.host() {
 		return v.rv.Equal(u.rv)
 	}
 	vt, ut := v.Type(), u.Type()
+	if vt != ut {
+		return false // reflect's Equal needs identical types — checked first
+	}
 	if vt != nil && !vt.Comparable() {
-		panic(&runtime.Panic{Value: fmt.Sprintf("reflect.Value.Equal: comparing uncomparable type %s", vt.String())})
-	}
-	if ut != nil && !ut.Comparable() {
-		panic(&runtime.Panic{Value: fmt.Sprintf("reflect.Value.Equal: comparing uncomparable type %s", ut.String())})
-	}
-	if vt != nil && ut != nil && vt != ut {
-		return false // reflect's Equal needs identical types
+		panic(&runtime.Panic{Value: fmt.Sprintf("reflect.Value.Equal: values of type %s are not comparable", vt.String())})
 	}
 	return valueEqual(v.ifaceVal(), u.ifaceVal(), 0)
 }
 
-// Pointer / UnsafePointer / UnsafeAddr are the unsafe surface: the
-// facade refuses them loudly.
+// Pointer reports the underlying address as a uintptr — the facade
+// cannot mint real addresses, so a live pointer reads as a fixed
+// nonzero sentinel and a nil one as 0, like Go's nil-vs-non-nil split.
 func (v *RValue) Pointer() uintptr {
-	trap("minireflect: reflect.Value.Pointer is not supported")
+	v.mustValid("Pointer")
+	if v.host() {
+		return v.rv.Pointer()
+	}
+	switch v.Kind() {
+	case reflect.String:
+		// the string-data pointer: empty reads 0, non-empty nonzero.
+		if s, ok := runtime.Unwrap(unwrapRef(v.get())).(string); ok && s == "" {
+			return 0
+		}
+		return 0x6d696e69676f
+	case reflect.Chan, reflect.Func, reflect.Map, reflect.Ptr,
+		reflect.Slice, reflect.UnsafePointer:
+		if v.IsNil() {
+			return 0
+		}
+		return 0x6d696e69676f
+	}
+	trap("call of reflect.Value.Pointer on %s Value", v.kindStr())
 	return 0
 }
 
-// UnsafePointer is unsupported.
+// UnsafePointer reports the same address as an any — non-nil for a live
+// pointer, nil for a nil one (the script cannot compare addresses).
 func (v *RValue) UnsafePointer() any {
-	trap("minireflect: reflect.Value.UnsafePointer is not supported")
+	v.mustValid("UnsafePointer")
+	if v.host() {
+		return v.rv.UnsafePointer()
+	}
+	switch v.Kind() {
+	case reflect.String:
+		if s, ok := runtime.Unwrap(unwrapRef(v.get())).(string); ok && s == "" {
+			return nil
+		}
+		return v.get()
+	case reflect.Chan, reflect.Func, reflect.Map, reflect.Ptr,
+		reflect.Slice, reflect.UnsafePointer:
+		if v.IsNil() {
+			return nil
+		}
+		return v.get()
+	}
+	trap("call of reflect.Value.UnsafePointer on %s Value", v.kindStr())
 	return nil
 }
 
-// UnsafeAddr is unsupported.
+// UnsafeAddr requires an addressable value — Go panics
+// 'reflect.Value.UnsafeAddr of unaddressable value' otherwise — and
+// likewise reports a nonzero sentinel, never a real address.
 func (v *RValue) UnsafeAddr() uintptr {
-	trap("minireflect: reflect.Value.UnsafeAddr is not supported")
-	return 0
+	v.mustValid("UnsafeAddr")
+	if v.host() {
+		return v.rv.UnsafeAddr()
+	}
+	if v.ref == nil {
+		plain("reflect.Value.UnsafeAddr of unaddressable value")
+	}
+	return 0x6d696e69676f
 }
 
 // CanComplex / Overflow* follow.
@@ -2099,9 +2493,6 @@ func (v *RValue) OverflowInt(x int64) bool {
 		return x < -32768 || x > 32767
 	case reflect.Int32:
 		return x < -2147483648 || x > 2147483647
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32,
-		reflect.Uint64, reflect.Uintptr:
-		return x < 0
 	}
 	plain("reflect: call of reflect.Value.OverflowInt on %s Value", v.kindStr())
 	return false
@@ -2122,8 +2513,6 @@ func (v *RValue) OverflowUint(x uint64) bool {
 		return x > 65535
 	case reflect.Uint32:
 		return x > 4294967295
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return x > 0x7fffffffffffffff
 	}
 	plain("reflect: call of reflect.Value.OverflowUint on %s Value", v.kindStr())
 	return false
@@ -2183,6 +2572,13 @@ func (v *RValue) Recv() (*RValue, bool) {
 func (v *RValue) Send(x *RValue) {
 	v.mustValid("Send")
 	if v.host() {
+		// Go checks the chan kind before touching the element — a
+		// non-chan receiver dies on 'call of reflect.Value.Send on
+		// X Value' even when the arg would not marshal. Let rv.Send
+		// deliver that panic itself.
+		if v.rv.Kind() != reflect.Chan {
+			v.rv.Send(v.rv)
+		}
 		xr, err := toHost(x.ifaceVal(), v.rv.Type().Elem())
 		if err != nil {
 			trap("reflect.Value.Send: %s", err)
@@ -2220,6 +2616,11 @@ func (v *RValue) TryRecv() (*RValue, bool) {
 func (v *RValue) TrySend(x *RValue) bool {
 	v.mustValid("TrySend")
 	if v.host() {
+		// same order as Send: the receiver kind check precedes any
+		// work on the argument.
+		if v.rv.Kind() != reflect.Chan {
+			v.rv.TrySend(v.rv)
+		}
 		xr, err := toHost(x.ifaceVal(), v.rv.Type().Elem())
 		if err != nil {
 			trap("reflect.Value.TrySend: %s", err)

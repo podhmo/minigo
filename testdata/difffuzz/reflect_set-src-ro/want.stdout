@@ -1,0 +1,9 @@
+src CanInterface/CanSet: false false
+ro-src-sametype: panic: reflect: reflect.Value.Set using value obtained using unexported field
+ro-src-wrongtype: panic: reflect: reflect.Value.Set using value obtained using unexported field
+ro-src-unsettable-dst: panic: reflect: reflect.Value.Set using unaddressable value
+ro-src-iface: panic: reflect: reflect.Value.Set using value obtained using unexported field
+ro-src-hostdst: panic: reflect: reflect.Value.Set using value obtained using unexported field
+zero-src-hostdst: panic: reflect: call of reflect.Value.Set on zero Value
+rodst-ro-src: panic: reflect: reflect.Value.Set using value obtained using unexported field
+src read: 1
