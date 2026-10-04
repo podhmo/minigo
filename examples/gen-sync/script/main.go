@@ -205,13 +205,186 @@ func droppedFiles(s pkgScan) ([]string, []error) {
 		if indexed[path] {
 			continue
 		}
-		if _, rerr := os.ReadFile(path); rerr != nil {
+		data, rerr := os.ReadFile(path)
+		switch {
+		case rerr != nil:
 			errs = append(errs, fmt.Errorf("gen-sync: %s: %w", path, rerr))
-		} else {
+		case exclusionVisible(string(data), name):
 			warns = append(warns, path+": not in the package index (excluded by build constraints?)")
+		default:
+			// go/build drops a file not only on a constraint miss but
+			// also when MatchFile cannot parse its constraint lines —
+			// that is a broken file masquerading as an exclusion, and
+			// its decls vanish all the same.
+			errs = append(errs, fmt.Errorf("gen-sync: %s: skipped: the Go build system could not parse it (malformed build constraint?)", path))
 		}
 	}
 	return warns, errs
+}
+
+// exclusionVisible reports whether a readable file missing from the
+// package index carries a legible reason for exclusion — a well-formed
+// //go:build or // +build marker, or a _GOOS/_GOARCH filename suffix.
+// A marker that does not parse is not an exclusion: it is the error
+// that made go/build drop the file.
+func exclusionVisible(src, name string) bool {
+	marker := false
+	for _, ln := range strings.Split(src, "\n") {
+		t := strings.TrimSpace(ln)
+		if strings.HasPrefix(t, "//go:build") {
+			marker = true
+			if !goBuildExprOK(strings.TrimSpace(t[len("//go:build"):])) {
+				return false
+			}
+		}
+		if strings.HasPrefix(t, "// +build") {
+			marker = true
+			if !plusBuildExprOK(strings.TrimSpace(t[len("// +build"):])) {
+				return false
+			}
+		}
+	}
+	return marker || platformSuffixExcluded(name)
+}
+
+// goBuildExprOK validates a //go:build constraint expression — the
+// grammar go/build enforces: ||, &&, !, parens and tag literals.
+func goBuildExprOK(s string) bool {
+	bs := []byte(s)
+	pos := 0
+	pos, ok := buildOr(bs, pos)
+	if !ok {
+		return false
+	}
+	pos = buildSkipWS(bs, pos)
+	return pos == len(bs)
+}
+
+func buildOr(bs []byte, pos int) (int, bool) {
+	pos, ok := buildAnd(bs, pos)
+	if !ok {
+		return pos, false
+	}
+	for {
+		save := pos
+		pos = buildSkipWS(bs, pos)
+		if pos+1 < len(bs) && bs[pos] == '|' && bs[pos+1] == '|' {
+			pos, ok = buildAnd(bs, pos+2)
+			if !ok {
+				return pos, false
+			}
+			continue
+		}
+		return save, true
+	}
+}
+
+func buildAnd(bs []byte, pos int) (int, bool) {
+	pos, ok := buildAtom(bs, pos)
+	if !ok {
+		return pos, false
+	}
+	for {
+		save := pos
+		pos = buildSkipWS(bs, pos)
+		if pos+1 < len(bs) && bs[pos] == '&' && bs[pos+1] == '&' {
+			pos, ok = buildAtom(bs, pos+2)
+			if !ok {
+				return pos, false
+			}
+			continue
+		}
+		return save, true
+	}
+}
+
+func buildAtom(bs []byte, pos int) (int, bool) {
+	pos = buildSkipWS(bs, pos)
+	if pos < len(bs) && bs[pos] == '!' {
+		return buildAtom(bs, pos+1)
+	}
+	if pos < len(bs) && bs[pos] == '(' {
+		pos, ok := buildOr(bs, pos+1)
+		if !ok {
+			return pos, false
+		}
+		pos = buildSkipWS(bs, pos)
+		if pos >= len(bs) || bs[pos] != ')' {
+			return pos, false
+		}
+		return pos + 1, true
+	}
+	return buildTag(bs, pos)
+}
+
+func buildSkipWS(bs []byte, pos int) int {
+	for pos < len(bs) && (bs[pos] == ' ' || bs[pos] == '\t') {
+		pos++
+	}
+	return pos
+}
+
+func buildTag(bs []byte, pos int) (int, bool) {
+	start := pos
+	for pos < len(bs) && isTagChar(bs[pos]) {
+		pos++
+	}
+	return pos, pos > start
+}
+
+func isTagChar(c byte) bool {
+	return c == '_' || c == '.' ||
+		(c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+func isTag(s string) bool {
+	bs := []byte(s)
+	for _, c := range bs {
+		if !isTagChar(c) {
+			return false
+		}
+	}
+	return len(bs) > 0
+}
+
+// plusBuildExprOK validates a legacy // +build line: space-separated
+// OR fields of comma-separated AND tags, each optionally !-negated.
+func plusBuildExprOK(s string) bool {
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return false
+	}
+	for _, f := range fields {
+		for _, tag := range strings.Split(f, ",") {
+			if strings.HasPrefix(tag, "!") {
+				tag = tag[1:]
+			}
+			if !isTag(tag) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// platformSuffixExcluded reports whether the filename itself explains
+// the exclusion — a _GOOS, _GOARCH, or _GOOS_GOARCH suffix before .go.
+var knownPlatforms = map[string]bool{
+	"386": true, "amd64": true, "arm": true, "arm64": true,
+	"loong64": true, "mips": true, "mipsle": true, "mips64": true, "mips64le": true,
+	"ppc64": true, "ppc64le": true, "riscv64": true, "s390x": true, "sparc64": true, "wasm": true,
+	"aix": true, "android": true, "darwin": true, "dragonfly": true, "freebsd": true,
+	"illumos": true, "ios": true, "js": true, "linux": true, "netbsd": true,
+	"openbsd": true, "plan9": true, "solaris": true, "wasip1": true, "windows": true,
+}
+
+func platformSuffixExcluded(name string) bool {
+	base, _ := strings.CutSuffix(name, ".go")
+	parts := strings.Split(base, "_")
+	if knownPlatforms[parts[len(parts)-1]] {
+		return true
+	}
+	return len(parts) >= 3 && knownPlatforms[parts[len(parts)-2]]
 }
 
 // syncFile rewrites the file's managed region to the plan's expected
@@ -236,7 +409,7 @@ func syncFile(p filePlan, check bool, wd, rootAbs string) (bool, error) {
 		return false, fmt.Errorf("gen-sync: %s: %w", shown, err)
 	}
 	src := string(data)
-	lines, sep := splitLines(src)
+	lines, ends, sep := splitLines(src)
 	expected := p.expected
 
 	midx := scanx.FindSentinel(lines)
@@ -252,7 +425,21 @@ func syncFile(p filePlan, check bool, wd, rootAbs string) (bool, error) {
 		return false, fmt.Errorf("gen-sync: %s: refusing to manage a file marked \"// Code generated ... DO NOT EDIT.\"", shown)
 	}
 
+	// out/outEnds are parallel: untouched lines keep their own line
+	// endings (mixed-EOL files stay mixed), only lines the tool writes
+	// take the file's dominant separator.
 	var out []string
+	var outEnds []string
+	push := func(ls, es []string) {
+		out = append(out, ls...)
+		outEnds = append(outEnds, es...)
+	}
+	pushNew := func(ls ...string) {
+		for _, l := range ls {
+			out = append(out, l)
+			outEnds = append(outEnds, sep)
+		}
+	}
 	inserted := false
 	var dropped, added []string
 	if midx >= 0 {
@@ -260,40 +447,45 @@ func syncFile(p filePlan, check bool, wd, rootAbs string) (bool, error) {
 		// //go:generate lines directly under it: regenerate the run,
 		// and leave everything past it — including hand-written
 		// directives — alone.
-		out = append(out, lines[:midx+1]...)
-		out = append(out, expected...)
-		out = append(out, "")
+		push(lines[:midx+1], ends[:midx+1])
+		pushNew(expected...)
 		rest := lines[midx+1:]
 		runEnd := scanx.GenerateRunEnd(rest)
-		have := scanx.Dedupe(nonBlank(rest[:runEnd]))
+		// keep duplicates: a doubled directive is a line the rewrite
+		// removes, so it must surface in the diff and the count.
+		have := nonBlank(rest[:runEnd])
 		dropped = missingFrom(have, expected)
 		added = missingFrom(expected, have)
-		tail := rest[runEnd:]
-		// an empty tail means the managed run reached EOF: the ""
-		// separator above already yields the file's trailing newline —
-		// appending anything more would leave a stray blank line.
-		out = append(out, tail...)
+		// an empty tail means the managed run reached EOF: the
+		// directives' own line ends already yield the file's trailing
+		// newline — a separator here would leave a stray blank line.
+		if runEnd < len(rest) {
+			pushNew("")
+		}
+		push(rest[runEnd:], ends[midx+1+runEnd:])
 	} else {
 		// no managed region yet: insert sentinel + block after the
 		// package clause and imports.
 		anchor := scanx.InsertAnchor(lines)
-		out = append(out, lines[:anchor]...)
+		push(lines[:anchor], ends[:anchor])
 		if anchor > 0 && strings.TrimSpace(lines[anchor-1]) != "" {
-			out = append(out, "")
+			pushNew("")
 		}
-		out = append(out, scanx.Sentinel)
-		out = append(out, expected...)
-		out = append(out, "")
+		pushNew(scanx.Sentinel)
+		pushNew(expected...)
 		added = expected
-		tail := lines[anchor:]
-		for len(tail) > 0 && strings.TrimSpace(tail[0]) == "" {
-			tail = tail[1:] // single blank line between block and decls
+		k := anchor
+		for k < len(lines) && strings.TrimSpace(lines[k]) == "" {
+			k++ // single blank line between block and decls
 		}
-		out = append(out, tail...)
+		if k < len(lines) {
+			pushNew("")
+		}
+		push(lines[k:], ends[k:])
 		inserted = true
 	}
 
-	newsrc := strings.Join(out, sep)
+	newsrc := joinLines(out, outEnds)
 	if newsrc == src {
 		fmt.Println("gen-sync:", shown, "up to date")
 		return false, nil
@@ -324,22 +516,40 @@ func syncFile(p filePlan, check bool, wd, rootAbs string) (bool, error) {
 }
 
 // splitLines splits src on \n like strings.Split but also reports the
-// file's line separator — "\r\n" when any CRLF is present — and strips
-// the stray \r from each element, so joining the lines back with that
-// separator reproduces the original bytes exactly (instead of mixing
-// fresh LF lines into a CRLF file).
-func splitLines(src string) ([]string, string) {
+// terminator that followed each line ("\r\n", "\n", or "" for the
+// final fragment of a file without a trailing newline) plus the
+// file's dominant separator — "\r\n" when any CRLF is present. A
+// mixed-EOL file keeps its own endings on lines the tool never
+// touched; only lines it writes take the dominant one.
+func splitLines(src string) ([]string, []string, string) {
 	sep := "\n"
 	if strings.Contains(src, "\r\n") {
 		sep = "\r\n"
 	}
 	lines := strings.Split(src, "\n")
+	ends := make([]string, len(lines))
 	for i, ln := range lines {
-		if s, ok := strings.CutSuffix(ln, "\r"); ok {
-			lines[i] = s
+		switch {
+		case i == len(lines)-1:
+			ends[i] = ""
+		case strings.HasSuffix(ln, "\r"):
+			lines[i] = ln[:len(ln)-1]
+			ends[i] = "\r\n"
+		default:
+			ends[i] = "\n"
 		}
 	}
-	return lines, sep
+	return lines, ends, sep
+}
+
+// joinLines concatenates each line with its recorded terminator — the
+// inverse of splitLines.
+func joinLines(lines, ends []string) string {
+	out := ""
+	for i, ln := range lines {
+		out += ln + ends[i]
+	}
+	return out
 }
 
 // hasGeneratedMarker reports whether the file carries the Go
@@ -369,17 +579,22 @@ func nonBlank(lines []string) []string {
 	return out
 }
 
-// missingFrom returns the elements of xs absent from ys, in order.
+// missingFrom returns the elements of xs not covered by ys, in order,
+// counting multiplicity: a line twice in xs and once in ys reports its
+// extra copy — a duplicated managed directive the rewrite removes must
+// show up as a drop, not vanish uncounted.
 func missingFrom(xs, ys []string) []string {
-	have := map[string]bool{}
+	have := map[string]int{}
 	for _, y := range ys {
-		have[y] = true
+		have[y]++
 	}
 	out := []string{}
 	for _, x := range xs {
-		if !have[x] {
-			out = append(out, x)
+		if have[x] > 0 {
+			have[x]--
+			continue
 		}
+		out = append(out, x)
 	}
 	return out
 }

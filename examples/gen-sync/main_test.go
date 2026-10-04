@@ -437,3 +437,80 @@ func TestDriftReportNamesDirectives(t *testing.T) {
 		t.Fatalf("no dropped count in output:\n%s", out)
 	}
 }
+
+func TestDuplicateDirectiveReported(t *testing.T) {
+	dir := setupModule(t)
+	app := filepath.Join(dir, "app")
+	// a doubled directive inside the managed run is removed by the
+	// rewrite: the diff must show the removed copy, not silently lose it.
+	content := "package app\n\n// Code generated directives below are managed by gen-sync. DO NOT EDIT.\n//go:generate stringer -type=Dup\n//go:generate stringer -type=Dup\n\ntype Dup int\n\nconst DupA Dup = 1\n"
+	target := filepath.Join(app, "dup.go")
+	if err := os.WriteFile(target, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var buf strings.Builder
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, &buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "- //go:generate stringer -type=Dup") {
+		t.Fatalf("the removed duplicate is missing from the diff:\n%s", out)
+	}
+	if !strings.Contains(out, "dropped 1") {
+		t.Fatalf("the removed duplicate is missing from the count:\n%s", out)
+	}
+	got, _ := os.ReadFile(target)
+	if strings.Count(string(got), "//go:generate stringer -type=Dup") != 1 {
+		t.Fatal("the duplicate directive was not removed")
+	}
+}
+
+func TestMixedEOLKeepsUntouchedLines(t *testing.T) {
+	dir := setupModule(t)
+	app := filepath.Join(dir, "app")
+	// a mixed-EOL file — CRLF header and managed run, LF decls. The
+	// rewrite must only re-render the managed region; LF lines outside
+	// it keep their endings.
+	content := "package app\r\n\r\n// Code generated directives below are managed by gen-sync. DO NOT EDIT.\r\n//go:generate stringer -type=Old\r\n\r\ntype New int\n\nconst NewA New = 1\n"
+	target := filepath.Join(app, "mixed.go")
+	if err := os.WriteFile(target, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(got)
+	if !strings.Contains(s, "//go:generate stringer -type=New\r\n") {
+		t.Fatalf("managed region did not take the file's dominant separator:\n%q", s)
+	}
+	if !strings.Contains(s, "type New int\n") || strings.Contains(s, "type New int\r\n") {
+		t.Fatalf("untouched LF lines were rewritten as CRLF:\n%q", s)
+	}
+	if strings.Contains(s, "const NewA New = 1\r\n") {
+		t.Fatalf("untouched LF lines were rewritten as CRLF:\n%q", s)
+	}
+}
+
+func TestMalformedConstraintFails(t *testing.T) {
+	dir := setupModule(t)
+	app := filepath.Join(dir, "app")
+	// go/build drops a file whose //go:build line does not parse — the
+	// same silent exclusion a valid constraint causes, but the file is
+	// broken, not excluded: its decls vanish, so the run must fail.
+	content := "//go:build ((broken\n\npackage app\n\ntype Broken struct{}\n"
+	target := filepath.Join(app, "broken.go")
+	if err := os.WriteFile(target, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := run(context.Background(), dir, scriptDir(t), app, false, false, io.Discard)
+	if err == nil {
+		t.Fatal("expected an error for a file the build system could not parse")
+	}
+	if !strings.Contains(err.Error(), "broken.go") {
+		t.Fatalf("error does not name the broken file: %v", err)
+	}
+}
