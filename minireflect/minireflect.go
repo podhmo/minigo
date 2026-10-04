@@ -231,7 +231,10 @@ func (e *Env) typeAssert() *runtime.BuiltinFunc {
 			if !v.IsValid() {
 				trap("call of reflect.TypeAssert on zero Value")
 			}
-			if v.ro {
+			// Go gates on flagRO — for a host value that flag lives
+			// inside v.rv (CanInterface), not in our ro field, so a
+			// chain like Field(unexported).Indirect still counts.
+			if v.ro || (v.host() && !v.rv.CanInterface()) {
 				plain("reflect.TypeAssert: cannot return value obtained from unexported field or method")
 			}
 			tR := e.rtypeOf(td)
