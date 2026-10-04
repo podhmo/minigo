@@ -1,11 +1,11 @@
 # TODO archive
 
-> **What this file is:** append-mostly history of completed work moved out of
-> `TODO.md`. When a task there completes, its entry lands here **verbatim** —
-> appended at the **end of this file** as a `- [x]` line — nested items get a
-> `> parent: <title>` context line first (see
-> `.claude/skills/todo-md/SKILL.md` for the rule). Entries are never rewritten; links into `docs/sketch/*`,
-> issues, and PRs are preserved.
+> **What this file is:** append-only history of completed work moved out of
+> `TODO.md` by a periodic GC sweep (see `.claude/skills/todo-md/SKILL.md` —
+> feature PRs never write here, so this file never conflicts). Entries land
+> **verbatim** at the end of the file as `- [x]` lines; nested items get a
+> `> parent: <title>` context line first. Entries are never rewritten;
+> links into `docs/sketch/*`, issues, and PRs are preserved.
 >
 > Initial split: every `[x]` entry from `TODO.md`, plus the completed `[x]`
 > children of still-open `[-]` parents, plus the verbatim status text of
