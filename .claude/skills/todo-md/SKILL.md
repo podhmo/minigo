@@ -49,4 +49,11 @@ conflict-free.
 Never read it whole. `rg <symbol>` to find the entry, then read the
 surrounding window (`rg -C 20`, or an offset read).
 
+## Porting this scheme to another repo
+
+Reference starters are bundled:
+[example-TODO.md](example-TODO.md) /
+[example-TODO-archive.md](example-TODO-archive.md). They ship under
+`example-*` names so nothing reads them as the live files day to day.
+
 See [why.md](why.md) for the background of this scheme.
