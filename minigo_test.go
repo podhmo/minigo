@@ -426,6 +426,10 @@ func TestMapElemLvalueTraps(t *testing.T) {
 		{"MapStructField", "set field"},
 		{"MapNamedArrIndex", "index assign"},
 		{"MapScalarIndex", "index assign"},
+		{"MapStructSliceFieldAssign", "set field"},
+		{"MapStructArrFieldIndex", "index assign"},
+		{"MapStructInnerField", "set field"},
+		{"MapStructMapElemField", "set field"},
 	} {
 		_, err := e.Run(context.Background(), "./testdata/maplval", tc.fn)
 		if err == nil {
@@ -433,6 +437,37 @@ func TestMapElemLvalueTraps(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), tc.want) {
 			t.Fatalf("%s: unexpected error: %v", tc.fn, err)
+		}
+	}
+}
+
+func TestMapElemLvalueWrites(t *testing.T) {
+	// Interior writes that land in storage shared with the map element
+	// are legal Go: stored pointers, and slice/map/pointer fields of a
+	// copied struct element. Each pin performs one write and returns
+	// the mutated cell.
+	e := newEngine(t)
+	for _, tc := range []struct {
+		fn   string
+		want int64
+	}{
+		{"PtrArrElemIndex", 9},
+		{"StructSliceFieldIndex", 9},
+		{"StructMapFieldIndex", 7},
+		{"StructPtrFieldX", 42},
+		{"StructPtrFieldDeref", 5},
+		{"StructArrSliceField", 22},
+		{"StructSliceOfStruct", 33},
+		{"StructInnerSlice", 8},
+		{"StructArrPtrField", 9},
+		{"StructPtrArrField", 9},
+	} {
+		got, err := e.Run(context.Background(), "./testdata/maplval", tc.fn)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.fn, err)
+		}
+		if diff := cmp.Diff(tc.want, got); diff != "" {
+			t.Errorf("%s mismatch (-want +got):\n%s", tc.fn, diff)
 		}
 	}
 }
@@ -824,6 +859,11 @@ func TestFeatures(t *testing.T) {
 		{"CommaOkZero", int64(5)},
 		{"ElidedLits", int64(19)},
 		{"NamedElided", int64(5)},
+		// named types over composite literals
+		{"NamedCompArr", int64(3)},
+		{"NamedCompSlice", int64(4)},
+		{"NamedCompMap", int64(5)},
+		{"NamedCompPtrElided", int64(3)},
 		// generics
 		{"GenericFns", int64(42)},
 		{"GenericConvert", int64(42)},
