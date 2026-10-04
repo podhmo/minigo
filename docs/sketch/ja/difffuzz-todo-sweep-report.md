@@ -295,7 +295,40 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 - **hunt の打ち切り判断**: yield ~1/15–20 seeds に逓減し、残件は `no member` 系 backlog + pin 不可 artifact に集約 — 追加 hunt より binding 実装の方が価値が高い局面に入ったところで打ち切り依頼。進行中の `Grow` だけ仕上げて停止。
 - **レビュー駆動フェーズは子セッションへ委譲**: ユーザー指示により、バグ4件→リファクタ5件の順で「各項目を子が oracle probe で要/不要判断→要のものを重要度順に 1 根因 1 PR で同スタック継続積み」。子は bug3 が複合的根因であることを検証中に自力で2件の別根因（cell box 剥がし・typSpelling 二重修飾）を発見し 3PR に分割、レビュー指摘の表記ブレ主張は再現しないことを実測で否定しつつ別の本物のブレを掴んだ — 「レビュー文面の検証」が「レビュー趣旨の回収」に昇格した好例。リファクタ項目は純粋な整理は seed なし、挙動変化（DisplayName 集約に伴う表記修正）のみ seed pin という線引きを適用。
 
-### 6.12 実施ラウンド（round-10）: Stack #333 の連鎖 rebase とレビュー7件の判定
+### 6.12 実施ラウンド（round-10）: Stack #333 — difffuzz TODO 残件・reflect 掃討・corpus sweep 2 ラウンド
+
+本セッションの全体像。発端は TODO.md の difffuzz 系未完了項目を「1 root cause = 1 PR」で stacked PR に積む指示（上限 30 PR、枯渇時点で終了、枯れたら `gen` hunt で補充）。成果: **Stack #333 に 27 PR（#331–#359）を構築 + レビュー対応 8 PR（§6.13）で計 35 PR**。queued の全 difffuzz 項目を潰し、追加で reflect TRAP バケット・API 面監査・`$GOROOT/test` コーパス再スイープ×2を流した。
+
+#### 実施内容
+
+| フェーズ | 内容 | PR |
+|------|------|-----|
+| TODO difffuzz 残件 | reflect backlog の掃討 — `Method.Func` のメソッド式＋caller 接続、`Append`/`AppendSlice`/`Copy` の nil/named 正規化、`Value.Slice3`、`Value.SetZero`、`Value.FieldByIndexErr`、`FieldByNameFunc`（Go の annihilation まで忠実移植）、`Can*` 系一式（CanConvert 含む）。併せて手書きシナリオ用の `casefuzz` skill を追加 | [#331](https://github.com/podhmo/minigo/pull/331)–[#339](https://github.com/podhmo/minigo/pull/339)（#332 は casefuzz skill） |
+| API 面監査 | 185 件の reflect TRAP 消化後に残差を棚卸し — `Value.Clear`（kind ゲートのみ・settable 非必須の Go 仕様）、`Value.Seq`/`Seq2`＋`Type.CanSeq`/`CanSeq2`（yield を GoValue 箱化して range 変数のメソッド解決を通す）、`Type.Fields`/`Methods`/`Ins`/`Outs` 反復子、fmt の `&[..]`/`&map[..]` ポインタ描画（Go printPtr: トップレベルのみ下降）、range-over-func の over-yield 許容、`Value.Fields`/`Methods` | [#340](https://github.com/podhmo/minigo/pull/340)–[#345](https://github.com/podhmo/minigo/pull/345) |
+| nil レシーバ・埋め込み解決 | nil `*T` ホストレシーバへのメソッド dispatch、promoted pointer method の nil 埋め込み `*T` 束縛、promoted method の BFS shallowest-wins（後述 §6.13 で #348 に包含）、nil map の MapIter、capture-free func literal の共有（Go static funcs 相当）、map base の `IndexRef` 解決（write-through — §6.13 の回帰源）、evaluated array length の typedef AST fold、GoValue box 上の named 型メソッド集合 | [#346](https://github.com/podhmo/minigo/pull/346)–[#354](https://github.com/podhmo/minigo/pull/354) |
+| corpus sweep 第 2 ラウンド | `reflect.MakeFunc` 実装（callback は plain callable、生成 func は typedef 付き BuiltinFunc+RValue — `recover.go` を byte-identical PASS 化）、`ReadMemStats` を安定スナップショット化（`closure.go`/`gc2.go` — ホストアロケータのカウンタが script の delta 判定を誤爆させていた）、keyed array/slice literal 要素の `v.coerce`（`initialize.go` — `UConst` 残り vs `Named{byte}` で DeepEqual が false になっていた）、`typeMatches` の `*runtime.GoValue` case（`gcgort.go` — `interface {} is complex64, not complex64` の trap が host WaitGroup で masked され「本物の deadlock」と誤分類されていた）＋ TODO 記録 | [#355](https://github.com/podhmo/minigo/pull/355)–[#359](https://github.com/podhmo/minigo/pull/359) |
+
+#### 残りの状況
+
+- difffuzz 系キューは枯渇して終了（27/30 PR、上限未到達）。gen hunt は text/num/reflect 全ドメイン・depth 6 まで飽和（新規 SILENT 0）。
+- 残件は全て境界クラス: GC-finalizer 系 6（`SetFinalizer` は no-op 設計）、`unsafe.Pointer`×13＋`unsafe.String`/`Offsetof`/`FuncForPC`（#40 ポインタモデル・ホスト PC 境界）、`peano.go` フレーム上限、`linkmain_run.go` tmpdir 非決定、HANG×6 は main でも再現するスループット限界。
+- レビューで2件の新規記録が TODO.md に入った（`map[string]*[3]int` 内部書き込み trap、struct 要素 field write の uniform trap）— 次ラウンド入口。
+
+#### 不備の振り返り
+
+- **MakeFunc は 1 根因に3つの層症状**（callable≠reflect.Value・`return nil`=TypedNil slice・bare 引数の typedef 欠如）をひとつの bridging 修正で閉じた — callback の in/out 両側を「呼び出しとして捉える」視点が初版に欠け、後に #365 で out 側 arity/assignability 検査が別 PR として必要になった（§6.13）。
+- **ホスト側の共有リソースが script の観測値を汚す**: `ReadMemStats` が `goruntime.ReadMemStats` を素通ししていたため interpreter 自身の allocation が script の delta assert（`n0 != m.Mallocs`）を GC タイミングで不定に誤爆させた。「ホストカウンタは script には見せない」を明示しないと、同一クラス（runtime.GOMAXPROCS・NumGoroutine 等）で再発しうる。
+- **コピー忘れの要素経路**: keyed literal は positional 側が既に coerce していたのに要素格納で素通し — 「literal 要素は全経路で coerce する」不変条件が kv 分岐に書かれていなかった。deepEql の Named-peel strictness（`aNamed != bNamed → false`）がこの形状差を検出した — 型タグの厳密化がかえって別バグを晒した構造。
+- **panic が host 呼び出し内部で飲まれる観測性ギャップ**: goroutine panic → `proc.fail` → 後続 spawn は未実行 Task 化 → host WaitGroup のカウントが下りず、root が `WaitGroup.Wait` 内で blocked だと真の panic が表示されず deadlock に見える。「`fatal error: all goroutines are asleep` = 別 goroutine が既に trapped」と見抜く bisect 手順（worker body を逐次実行して真の panic を露出）を TODO.md＋メモリに記録。構造修正（abortable host call）は未着手。
+- **`typeMatches` の GoValue 網羅漏れ**: host box 値（complex64 — script 複素型が存在しない、bytes.Buffer）が全 concrete assert で `interface {} is complex64, not complex64`。KindPointer の GoValue 分岐と同じ native-type 比較を top-level にも置く見落とし — assert 判定器の分岐表に「host box」列がなかった。
+
+#### 計画外の記録と判断
+
+- **誤分類の訂正を TODO.md に記録**: `initialize.go`（以前「DeepEqual/unsafe.Pointer 境界」と注記）は実は keyed 要素の uncoerced 格納、`gcgort.go`（「本物の deadlock」）は masked trap — sweep 中に境界と分類していた項目が probe で真のバグと判明した分を訂正した。
+- **deadlock masking は修正せず記録に留めた**: root が host call 内 blocked のとき panic を露出するには abortable な host 呼出し設計が要り、本ラウンドの粒度を超える。観測手順だけ確立して残置。
+- **30 PR 上限には達せず枯渇終了**: キューが先に尽きたため打ち切りルール（30到達）を発動せず終了 — §5 の再開 prompt がそのまま通用する状態に戻った。
+
+### 6.13 実施ラウンド（round-11）: Stack #333 の連鎖 rebase とレビュー7件の判定
 
 Stack #333（27 PRs — difffuzz TODO 系・reflect 系・corpus sweep 第2ラウンド）に対して、別エージェントが `main...corpus-todo` のコードレビューを行った。対応前に main が +1 コミット進んでいた（#348 promoted-method BFS が別経路でマージ）ため、まず全ブランチの連鎖 rebase を行い、その後レビュー7件を子セッションに要/不要判断させて対応した（[#364](https://github.com/podhmo/minigo/pull/364)–[#370](https://github.com/podhmo/minigo/pull/370)、Stack #333 の末尾に積み増し → 計 34 PRs）。
 
