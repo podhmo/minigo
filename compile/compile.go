@@ -3247,56 +3247,15 @@ func peelLitType(t ast.Expr, depth int) ast.Expr {
 }
 
 // emitLenFolds emits the in-scope evaluation of every non-literal array
-// length inside a type AST (DFS order — nested arrays like
-// `[][len(a)]*T` count too). Each OpFoldArrayLen folds one len node into
+// length inside a type AST. Each OpFoldArrayLen folds one len node into
 // the typedef's AST so `[n]int`/`[len(a)]*T` spell the concrete `[3]*T`
-// at type-identity compares, like Go's constant folding. `[]T`, `[3]T`
-// and `[...]T` emit nothing.
+// at type-identity compares, like Go's constant folding. The DFS order
+// is runtime.ArrayLenNodes — the same walk the VM folds against, so
+// `[]T`, `[3]T` and `[...]T` emit nothing on either side.
 func (c *compiler) emitLenFolds(e ast.Expr) {
-	switch t := e.(type) {
-	case *ast.ArrayType:
-		switch t.Len.(type) {
-		case nil, *ast.BasicLit, *ast.Ellipsis:
-		default:
-			c.expr(t.Len)
-			c.emit(bytecode.OpFoldArrayLen, 0, 0, e.Pos())
-		}
-		c.emitLenFolds(t.Elt)
-	case *ast.MapType:
-		c.emitLenFolds(t.Key)
-		c.emitLenFolds(t.Value)
-	case *ast.StarExpr:
-		c.emitLenFolds(t.X)
-	case *ast.ParenExpr:
-		c.emitLenFolds(t.X)
-	case *ast.ChanType:
-		c.emitLenFolds(t.Value)
-	case *ast.FuncType:
-		c.emitFieldListLens(t.Params)
-		c.emitFieldListLens(t.Results)
-	case *ast.StructType:
-		c.emitFieldListLens(t.Fields)
-	case *ast.InterfaceType:
-		c.emitFieldListLens(t.Methods)
-	case *ast.Ellipsis:
-		c.emitLenFolds(t.Elt)
-	case *ast.IndexExpr:
-		c.emitLenFolds(t.Index)
-	case *ast.IndexListExpr:
-		for _, ix := range t.Indices {
-			c.emitLenFolds(ix)
-		}
-	}
-}
-
-// emitFieldListLens folds array lengths in a function signature's
-// parameter or result list.
-func (c *compiler) emitFieldListLens(fl *ast.FieldList) {
-	if fl == nil {
-		return
-	}
-	for _, fd := range fl.List {
-		c.emitLenFolds(fd.Type)
+	for _, at := range runtime.ArrayLenNodes(e) {
+		c.expr(at.Len)
+		c.emit(bytecode.OpFoldArrayLen, 0, 0, e.Pos())
 	}
 }
 

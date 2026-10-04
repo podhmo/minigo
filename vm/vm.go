@@ -1408,12 +1408,15 @@ func (v *VM) loop(f *frame) {
 			// [td, len] on the stack: evaluate-at-use constants like
 			// `[n]int`/`[len(a)]*T` fold into the typedef's AST so type
 			// identity spells the concrete `[3]*T` like Go. The op
-			// folds the next un-folded len node in DFS order — the same
-			// order the compiler emitted the evals.
+			// folds the next un-folded len node — runtime.ArrayLenNodes
+			// is the same DFS walk the compiler emitted the evals in,
+			// and folded nodes drop out so nodes[0] is always next.
 			lv := f.pop()
 			td := f.pop().(*runtime.TypeDef)
 			if n, ok := lenConstInt(lv); ok {
-				foldNextArrLen(td.Anon, n)
+				if nodes := runtime.ArrayLenNodes(td.Anon); len(nodes) > 0 {
+					nodes[0].Len = &ast.BasicLit{Kind: token.INT, Value: strconv.FormatInt(n, 10)}
+				}
 			}
 			f.push(td)
 		case bytecode.OpElemType:
@@ -8470,67 +8473,6 @@ func lenConstShaped(e ast.Expr) bool {
 func (v *VM) foldArrLen(at *ast.ArrayType, n int64) int64 {
 	at.Len = &ast.BasicLit{Kind: token.INT, Value: strconv.FormatInt(n, 10)}
 	return n
-}
-
-// foldNextArrLen rewrites the first not-yet-folded array-length
-// expression in a type AST (DFS order — the order emitLenFolds emits
-// evals) to its evaluated count.
-func foldNextArrLen(e ast.Expr, n int64) bool {
-	switch t := e.(type) {
-	case *ast.ArrayType:
-		switch t.Len.(type) {
-		case nil, *ast.BasicLit, *ast.Ellipsis:
-		default:
-			t.Len = &ast.BasicLit{Kind: token.INT, Value: strconv.FormatInt(n, 10)}
-			return true
-		}
-		return foldNextArrLen(t.Elt, n)
-	case *ast.MapType:
-		if foldNextArrLen(t.Key, n) {
-			return true
-		}
-		return foldNextArrLen(t.Value, n)
-	case *ast.StarExpr:
-		return foldNextArrLen(t.X, n)
-	case *ast.ParenExpr:
-		return foldNextArrLen(t.X, n)
-	case *ast.ChanType:
-		return foldNextArrLen(t.Value, n)
-	case *ast.FuncType:
-		if foldFieldListLens(t.Params, n) {
-			return true
-		}
-		return foldFieldListLens(t.Results, n)
-	case *ast.StructType:
-		return foldFieldListLens(t.Fields, n)
-	case *ast.InterfaceType:
-		return foldFieldListLens(t.Methods, n)
-	case *ast.Ellipsis:
-		return foldNextArrLen(t.Elt, n)
-	case *ast.IndexExpr:
-		return foldNextArrLen(t.Index, n)
-	case *ast.IndexListExpr:
-		for _, ix := range t.Indices {
-			if foldNextArrLen(ix, n) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// foldFieldListLens folds the first un-folded array length in a func
-// signature's parameter or result list.
-func foldFieldListLens(fl *ast.FieldList, n int64) bool {
-	if fl == nil {
-		return false
-	}
-	for _, fd := range fl.List {
-		if foldNextArrLen(fd.Type, n) {
-			return true
-		}
-	}
-	return false
 }
 
 // copyArray clones an array value for Go's assignment semantics —
