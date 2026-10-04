@@ -1,0 +1,11 @@
+0
+""
+[] true
+{A:0 B:}
+true
+""
+true
+0: panic: reflect: reflect.Value.SetZero using unaddressable value
+1: panic: reflect: reflect.Value.SetZero using unaddressable value
+2: panic: reflect: call of reflect.Value.SetZero on zero Value
+true
