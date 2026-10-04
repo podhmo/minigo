@@ -1,0 +1,12 @@
+5
+0
+
+false
+9
+false
+false
+[Inner Other B X Y]
+X [0 0] true
+0: panic: reflect: FieldByNameFunc of non-struct type int
+1: panic: reflect: FieldByNameFunc of non-struct type int
+2: panic: runtime error: invalid memory address or nil pointer dereference
