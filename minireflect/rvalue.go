@@ -1041,7 +1041,15 @@ func (v *RValue) Slice(i, j int) *RValue {
 			ref = &runtime.Cell{Elem: s.V}
 		}
 		nv := &RValue{e: v.e, vc: v.vc, val: s.V, ref: ref, td: v.td, ro: v.ro}
-		return nv.Slice(i, j)
+		r := nv.Slice(i, j)
+		// the result stays the named type — Go reports
+		// Type()=main.RStr and its method set survives the slice, so
+		// re-tag unless the result already carries declared identity
+		// (the TypedNil arm returns the same nil it sliced).
+		if _, typed := r.val.(*runtime.TypedNil); !typed {
+			r.val = &runtime.Named{Typ: s.Typ, V: runtime.Unwrap(r.val)}
+		}
+		return r
 	case *runtime.TypedNil:
 		if v.Kind() == reflect.Slice {
 			if i == 0 && j == 0 {
@@ -2035,6 +2043,13 @@ func (v *RValue) MethodByName(name string) *RValue {
 		trap("minireflect: reflect.Value.MethodByName needs a caller context")
 	}
 	m, ok := v.vc.Member(v.get(), name)
+	if !ok && v.td != nil && v.td.Spec != nil {
+		// a detached storage cell (e.g. Slice of an addressable
+		// named string) stores the bare underlying value, and get()
+		// derefs through it — the declared typedef still knows the
+		// method set, so retry on a re-tagged value.
+		m, ok = v.vc.Member(runtime.Tag(v.td, v.get()), name)
+	}
 	if !ok {
 		return &RValue{e: v.e, vc: v.vc}
 	}
