@@ -640,7 +640,7 @@ func (e *Env) append_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value,
 	// Go's MustBe(Slice) rejects every other kind — arrays included —
 	// with 'reflect: call of unknown method on X Value'.
 	if s.Kind() != reflect.Slice {
-		trap("call of unknown method on %s Value", s.Kind())
+		trap("call of unknown method on %s Value", s.kindStr())
 	}
 	sl, ok := s.get().(*runtime.Slice)
 	if !ok {
@@ -671,10 +671,10 @@ func (e *Env) appendSlice(vc runtime.VMCaller, args []runtime.Value) (runtime.Va
 	// Go's MustBe(Slice) fires on either operand before copying —
 	// 'reflect: call of unknown method on X Value' names the bad kind.
 	if s.Kind() != reflect.Slice {
-		trap("call of unknown method on %s Value", s.Kind())
+		trap("call of unknown method on %s Value", s.kindStr())
 	}
 	if t.Kind() != reflect.Slice {
-		trap("call of unknown method on %s Value", t.Kind())
+		trap("call of unknown method on %s Value", t.kindStr())
 	}
 	sl, ok1 := s.get().(*runtime.Slice)
 	tl, ok2 := t.get().(*runtime.Slice)

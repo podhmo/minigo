@@ -61,9 +61,14 @@ func (v *RValue) mustValid(op string) {
 	}
 }
 
-// kindStr renders a kind for messages.
+// kindStr renders a kind for messages. Go's ValueError spells the
+// invalid kind "zero", not its Kind().String() — every `call of
+// reflect.Value.X on zero Value` trap goes through here.
 func (v *RValue) kindStr() string {
-	return v.Kind().String()
+	if k := v.Kind(); k != reflect.Invalid {
+		return k.String()
+	}
+	return "zero"
 }
 
 // wrap builds a script-domain rvalue view.
