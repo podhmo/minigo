@@ -18,8 +18,13 @@ func ModuleLang(dir string) string {
 		data, err := os.ReadFile(filepath.Join(d, "go.mod"))
 		if err == nil {
 			f, err := modfile.Parse(filepath.Join(d, "go.mod"), data, nil)
-			if err != nil || f.Go == nil {
+			if err != nil {
 				return ""
+			}
+			if f.Go == nil {
+				// the go command assumes go1.16 for a go.mod with no
+				// `go` directive, and compiles with -lang=go1.16
+				return "1.16"
 			}
 			return f.Go.Version
 		}

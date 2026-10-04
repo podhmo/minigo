@@ -1757,6 +1757,16 @@ func TestLangGate(t *testing.T) {
 		{"./testdata/langgate/r121", "cannot range over 10 (untyped int constant): requires go1.22 or later"},
 		{"./testdata/langgate/b117", "built-in min requires go1.21 or later"},
 		{"./testdata/langgate/i117", "type instantiation requires go1.18 or later"},
+		// versioned names and instantiation inside builtin-call arguments
+		// and conversions, plus instantiation through a selector
+		{"./testdata/langgate/mk117", "predeclared any requires go1.18 or later"},      // make([]any, 0)
+		{"./testdata/langgate/nw117", "predeclared any requires go1.18 or later"},      // new([]any)
+		{"./testdata/langgate/cv117", "predeclared any requires go1.18 or later"},      // []any(nil)
+		{"./testdata/langgate/sel", "function instantiation requires go1.18 or later"}, // lib.Id[[]int]
+		{"./testdata/langgate/im117", "implicit function instantiation requires go1.18 or later"},
+		// a go.mod with no `go` directive compiles at go1.16, like the
+		// toolchain's documented default
+		{"./testdata/langgate/nd16", "type parameter requires go1.18 or later (-lang was set to go1.16; check go.mod)"},
 		// //go:build go1.19 in a go1.17 module: effective lang is
 		// max(1.19, 1.21) = 1.21 — range-over-int (1.22) still fails and
 		// the error reports the module's -lang, like gc.
@@ -1799,6 +1809,23 @@ func TestLangGate(t *testing.T) {
 	// the gate must not flag them (gc doesn't).
 	if got := run(t, e, "./testdata/langgate/sh117", "M"); got != int64(1) {
 		t.Fatalf("sh117/M: got %v", got)
+	}
+	// function-level declarations shadow them too, scoped to their
+	// block: locals `min`/`new`/`clear`, params, and local `type any`.
+	lo := []struct {
+		fn   string
+		want runtime.Value
+	}{
+		{"Lo", int64(1)},  // min := func(a,b int) int
+		{"Pm2", int64(2)}, // param `min func(a,b int) int`
+		{"Ty", int64(5)},  // local `type any = int`
+		{"If", int64(7)},  // if-init `new := func(int) *int`
+		{"Sel", int64(0)}, // local `clear` func over a map
+	}
+	for _, c := range lo {
+		if got := run(t, e, "./testdata/langgate/lo117", c.fn); got != c.want {
+			t.Fatalf("lo117/%s: got %v", c.fn, got)
+		}
 	}
 
 	// outside any module there is no -lang at all — everything goes,

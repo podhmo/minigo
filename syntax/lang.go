@@ -31,6 +31,9 @@ const (
 	DeclOther DeclKind = iota // var/const, or undeclared
 	DeclType
 	DeclFunc
+	// DeclGeneric marks decls carrying a type-parameter list —
+	// use sites of such names may be implicit instantiations.
+	DeclGeneric = 4
 )
 
 // DeclaredKinds collects package-level declared names across a package's
@@ -48,7 +51,11 @@ func DeclaredKinds(files []*File) map[string]DeclKind {
 				for _, sp := range d.Specs {
 					switch s := sp.(type) {
 					case *ast.TypeSpec:
-						m[s.Name.Name] = DeclType
+						k := DeclType
+						if s.TypeParams != nil {
+							k |= DeclGeneric
+						}
+						m[s.Name.Name] = k
 					case *ast.ValueSpec:
 						for _, n := range s.Names {
 							m[n.Name] = DeclOther
@@ -57,7 +64,11 @@ func DeclaredKinds(files []*File) map[string]DeclKind {
 				}
 			case *ast.FuncDecl:
 				if d.Recv == nil {
-					m[d.Name.Name] = DeclFunc
+					k := DeclFunc
+					if d.Type.TypeParams != nil {
+						k |= DeclGeneric
+					}
+					m[d.Name.Name] = k
 				}
 			}
 		}
@@ -119,6 +130,7 @@ func CheckLang(fset *token.FileSet, f *File, declared map[string]DeclKind) error
 		lang:     lang,
 		suffix:   f.langSuffix(),
 		declared: declared,
+		locals:   localDecls(f.AST),
 		seen:     map[ast.Node]bool{},
 	}
 	ast.Inspect(f.AST, c.node)
@@ -130,10 +142,168 @@ type langChecker struct {
 	lang     string
 	suffix   string
 	declared map[string]DeclKind
+	// locals records the [decl, scope-end) spans of function-level names so
+	// shadowedAt can answer "is this ident a local, not the builtin" —
+	// `min := func(...)` in one function does not make another function's
+	// builtin `min(...)` call legal, so a flat name set is not enough.
+	locals map[string][]declSpan
 	// seen marks nodes already gated by the type-grammar walk so the
 	// expression pass does not re-flag (or mis-word) them.
 	seen map[ast.Node]bool
 	err  error
+}
+
+// declSpan marks where a locally declared name is in scope: from its
+// declaration position to the end of the enclosing scope.
+type declSpan struct{ lo, hi token.Pos }
+
+// localDecls collects the function-level declarations of f: signature
+// names (receivers, params, named results, type params), := assignments,
+// local type/var/const decls, and range/comm-clause variables. gc gates
+// versioned predeclared names only when they resolve to the universe —
+// a local `min`/`any`/`new` keeps its user meaning.
+func localDecls(f *ast.File) map[string][]declSpan {
+	m := map[string][]declSpan{}
+	// stack entries with a nonzero end open a scope (function bodies,
+	// blocks, statement clauses); endOf finds the innermost open scope.
+	type frame struct {
+		end token.Pos
+	}
+	var stack []frame
+	endOf := func() token.Pos {
+		for i := len(stack) - 1; i >= 0; i-- {
+			if stack[i].end != 0 {
+				return stack[i].end
+			}
+		}
+		return token.NoPos
+	}
+	add := func(name string, lo, hi token.Pos) {
+		if name == "_" || hi == token.NoPos {
+			return
+		}
+		m[name] = append(m[name], declSpan{lo, hi})
+	}
+	addFields := func(fl *ast.FieldList) {
+		if fl == nil {
+			return
+		}
+		hi := endOf()
+		for _, fd := range fl.List {
+			for _, n := range fd.Names {
+				add(n.Name, n.Pos(), hi)
+			}
+		}
+	}
+	ast.Inspect(f, func(n ast.Node) bool {
+		if n == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		switch n := n.(type) {
+		case *ast.FuncDecl:
+			end := n.End()
+			if n.Body != nil {
+				end = n.Body.End()
+			}
+			stack = append(stack, frame{end})
+			addFields(n.Recv)
+			if n.Type != nil {
+				addFields(n.Type.Params)
+				addFields(n.Type.Results)
+				addFields(n.Type.TypeParams)
+			}
+			return true
+		case *ast.FuncLit:
+			stack = append(stack, frame{n.Body.End()})
+			addFields(n.Type.Params)
+			addFields(n.Type.Results)
+			addFields(n.Type.TypeParams)
+			return true
+		case *ast.RangeStmt:
+			stack = append(stack, frame{n.Body.End()})
+			if n.Tok == token.DEFINE {
+				for _, e := range []ast.Expr{n.Key, n.Value} {
+					if id, ok := e.(*ast.Ident); ok {
+						add(id.Name, id.Pos(), n.Body.End())
+					}
+				}
+			}
+			return true
+		case *ast.BlockStmt, *ast.IfStmt, *ast.ForStmt, *ast.SwitchStmt,
+			*ast.TypeSwitchStmt, *ast.SelectStmt, *ast.CaseClause, *ast.CommClause:
+			stack = append(stack, frame{n.End()})
+			return true
+		case *ast.AssignStmt:
+			stack = append(stack, frame{0})
+			if n.Tok == token.DEFINE {
+				hi := endOf()
+				for _, e := range n.Lhs {
+					if id, ok := e.(*ast.Ident); ok {
+						add(id.Name, id.Pos(), hi)
+					}
+				}
+			}
+			return true
+		case *ast.GenDecl:
+			// a decl inside any scope is local (top-level decls live in
+			// declared, collected package-wide by DeclaredKinds)
+			if hi := endOf(); hi != token.NoPos {
+				for _, sp := range n.Specs {
+					switch s := sp.(type) {
+					case *ast.TypeSpec:
+						add(s.Name.Name, s.Pos(), hi)
+					case *ast.ValueSpec:
+						for _, id := range s.Names {
+							add(id.Name, id.Pos(), hi)
+						}
+					}
+				}
+			}
+			stack = append(stack, frame{0})
+			return true
+		default:
+			stack = append(stack, frame{0})
+			return true
+		}
+	})
+	return m
+}
+
+// shadowedAt reports whether name resolves to a package-level or
+// function-level declaration at pos rather than to a predeclared builtin.
+func (c *langChecker) shadowedAt(name string, pos token.Pos) bool {
+	if _, ok := c.declared[name]; ok {
+		return true
+	}
+	return c.localAt(name, pos)
+}
+
+// localAt reports whether a function-level declaration of name is in
+// scope at pos — for the implicit-instantiation check, where the
+// package-level generic decl is the target, not a shadow.
+func (c *langChecker) localAt(name string, pos token.Pos) bool {
+	for _, s := range c.locals[name] {
+		if s.lo <= pos && pos < s.hi {
+			return true
+		}
+	}
+	return false
+}
+
+// typeishIndex reports whether an index expression's argument is
+// unambiguously a type — used to gate pkg.F[T] instantiation without
+// mistaking package-level indexing (pkg.V[k]) for it. A bare Ident index
+// (pkg.F[T] vs pkg.V[k]) is undecidable without imports and is skipped.
+func typeishIndex(e ast.Expr) bool {
+	switch e.(type) {
+	case *ast.SelectorExpr, *ast.IndexExpr, *ast.IndexListExpr, *ast.StarExpr,
+		*ast.ArrayType, *ast.MapType, *ast.ChanType, *ast.Ellipsis,
+		*ast.StructType, *ast.InterfaceType, *ast.FuncType,
+		*ast.UnaryExpr, *ast.BinaryExpr:
+		return true
+	}
+	return false
 }
 
 func (c *langChecker) fail(pos token.Pos, minv, feat string) {
@@ -189,6 +359,21 @@ func (c *langChecker) node(n ast.Node) bool {
 		c.sigTypes(n, false)
 	case *ast.CallExpr:
 		c.builtinCall(n)
+		// a conversion on a composite type keeps its type in Fun —
+		// `[]any(x)` — which the value walk would miss.
+		switch n.Fun.(type) {
+		case *ast.ArrayType, *ast.MapType, *ast.ChanType, *ast.StructType,
+			*ast.InterfaceType, *ast.Ellipsis:
+			c.typeExpr(n.Fun)
+		}
+		// `Id(1)` on a declared generic func is gc's implicit instantiation —
+		// unless a function-level decl rebinds the name at the call site.
+		if id, ok := n.Fun.(*ast.Ident); ok &&
+			c.declared[id.Name]&DeclGeneric != 0 &&
+			c.declared[id.Name]&DeclFunc == DeclFunc &&
+			!c.localAt(id.Name, id.Pos()) {
+			c.fail(n.Fun.Pos(), "go1.18", "implicit function instantiation")
+		}
 	case *ast.RangeStmt:
 		if lit, ok := n.X.(*ast.BasicLit); ok && lit.Kind == token.INT {
 			c.fail(lit.Pos(), "go1.22",
@@ -196,13 +381,22 @@ func (c *langChecker) node(n ast.Node) bool {
 		}
 	case *ast.IndexExpr:
 		// F[T] in expression position is ambiguous with indexing — flag
-		// only when the declared kind settles it.
-		if id, ok := n.X.(*ast.Ident); ok {
-			switch c.declared[id.Name] {
+		// only when the declared kind or a clearly-typed index settles it.
+		switch x := n.X.(type) {
+		case *ast.Ident:
+			switch c.declared[x.Name] &^ DeclGeneric {
 			case DeclFunc:
 				c.fail(n.Pos(), "go1.18", "function instantiation")
 			case DeclType:
 				c.fail(n.Pos(), "go1.18", "type instantiation")
+			}
+		case *ast.SelectorExpr:
+			// pkg.F[T]: indexing a package member is possible too
+			// (pkg.V[k]) — flag only an unmistakable type index. The
+			// member kind is unknowable here; call sites are usually
+			// functions, so the wording prefers "function".
+			if typeishIndex(n.Index) {
+				c.fail(n.Pos(), "go1.18", "function instantiation")
 			}
 		}
 	case *ast.IndexListExpr:
@@ -210,12 +404,14 @@ func (c *langChecker) node(n ast.Node) bool {
 		// wording gc uses.
 		feat := "instantiation"
 		if id, ok := n.X.(*ast.Ident); ok {
-			switch c.declared[id.Name] {
+			switch c.declared[id.Name] &^ DeclGeneric {
 			case DeclType:
 				feat = "type instantiation"
 			case DeclFunc:
 				feat = "function instantiation"
 			}
+		} else if _, ok := n.X.(*ast.SelectorExpr); ok {
+			feat = "function instantiation"
 		}
 		c.fail(n.Pos(), "go1.18", feat)
 	case *ast.CompositeLit:
@@ -236,7 +432,26 @@ func (c *langChecker) builtinCall(n *ast.CallExpr) {
 	if !ok {
 		return
 	}
-	if _, shadowed := c.declared[id.Name]; shadowed {
+	// type-position arguments are versioned no matter who the callee
+	// resolves to: make's first argument is always a type, and new's
+	// argument is a type unless it takes the go1.26 value form.
+	switch id.Name {
+	case "make":
+		if len(n.Args) > 0 {
+			c.typeExpr(n.Args[0])
+		}
+	case "new":
+		if len(n.Args) == 1 {
+			switch n.Args[0].(type) {
+			case *ast.BasicLit, *ast.CompositeLit, *ast.CallExpr,
+				*ast.BinaryExpr, *ast.UnaryExpr:
+				// value form — gated below
+			default:
+				c.typeExpr(n.Args[0])
+			}
+		}
+	}
+	if c.shadowedAt(id.Name, id.Pos()) {
 		return
 	}
 	switch id.Name {
@@ -318,7 +533,7 @@ func (c *langChecker) typeExpr(e ast.Expr) {
 	c.seen[e] = true
 	switch t := e.(type) {
 	case *ast.Ident:
-		if _, shadowed := c.declared["any"]; t.Name == "any" && !shadowed {
+		if t.Name == "any" && !c.shadowedAt("any", t.Pos()) {
 			c.fail(t.Pos(), "go1.18", "predeclared any")
 		}
 	case *ast.IndexExpr:
