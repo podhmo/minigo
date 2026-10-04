@@ -35,6 +35,17 @@ func (e *Engine) methodSetOfValue(v runtime.Value) (map[string]bool, bool, error
 		// loop: a pointer like &c lands on a *Cell{Named} and must stop
 		// on the tag rather than deref past it.
 		if n, ok := v.(*runtime.Named); ok {
+			if gv, ok := runtime.Unwrap(n.V).(*runtime.GoValue); ok {
+				// a tagged host box (host composite literal T{}) — the
+				// method set is the boxed host type's reflect set;
+				// td.Methods is empty for host typedefs.
+				t := reflect.TypeOf(gv.V)
+				set := map[string]bool{}
+				for i := 0; i < t.NumMethod(); i++ {
+					set[t.Method(i).Name] = true
+				}
+				return set, false, nil
+			}
 			return e.typeMethodsU(n.Typ)
 		}
 		dv, ok := runtime.Deref(v)
@@ -98,6 +109,18 @@ func (e *Engine) typeMethodsU(td *runtime.TypeDef) (map[string]bool, bool, error
 	}
 	if td.Kind == runtime.KindInterface {
 		return e.ifaceReqsRec(td, map[*runtime.TypeDef]bool{}), unsure, nil
+	}
+	if td.HostNew != nil {
+		// a host-backed typedef's method set is the boxed host type's
+		// reflect set — td.Methods is empty by construction, so
+		// `var l sync.Locker = &sync.Mutex{}` and Type.Method both see
+		// the real methods.
+		t := reflect.TypeOf(td.HostNew())
+		set := map[string]bool{}
+		for i := 0; i < t.NumMethod(); i++ {
+			set[t.Method(i).Name] = true
+		}
+		return set, unsure, nil
 	}
 	set, subUnsure := e.methodSetOfU(td, map[*runtime.TypeDef]bool{})
 	return set, unsure || subUnsure, nil

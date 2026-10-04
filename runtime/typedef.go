@@ -312,6 +312,13 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 			if pkg.Path != "" {
 				name = strings.TrimPrefix(name, pkg.Path+".")
 			}
+			// host-bound packages carry no import path — their typedef
+			// names are already name-qualified ("bytes.Buffer"), so a
+			// requalifying wrapper strips the name prefix too, or it
+			// would double ("bytes.bytes.Buffer").
+			if pkg.Name != "" {
+				name = strings.TrimPrefix(name, pkg.Name+".")
+			}
 			return pkg.Name + "." + name
 		}
 		return canonBasicName(t.Name)
@@ -361,6 +368,10 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 					}
 				}
 			}
+			// an unresolved ident qualifier is a package reference, not
+			// a typename — requalifying it through the ident arm would
+			// double the prefix (`bytes.bytes.Buffer` for bound pkgs).
+			return id.Name + "." + t.Sel.Name
 		}
 		return TypGoSpelling(t.X, ctx) + "." + t.Sel.Name
 	case *ast.IndexExpr:
