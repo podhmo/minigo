@@ -100,6 +100,8 @@ method  WriteString  func(string) (int, error)   ← nil のフィールドも�
 - **same-depth の昇格曖昧性**: 本物は compile error だが、補完は最初のヒットを取る（候補を出す側は審判ではない、という割り切り）。
 - **過剰なメソッド候補**: `methodFuncs` を ptr=true/false 両方で呼ぶので、文脈上取り得ないレシーバのメソッドも出ることがある。REPL の変数は全部 addressable なので実害は少ない。Named host box に宣言メソッドがある場合も reflect セットが併記される（実行時は declared-only）— 補完として多めに出すのは害が少ない判断。
 - **昇格メソッドの Detail**: 宣言元ファイルのスコープで `TypGoSpelling` を呼ぶので、selector 修飾された型が曖昧に見えることがある。
+- **suffix fallback の誤爆**: `(u.` は正しく `u` のメンバーを出すが、`m[k.`（開いた index 式の中の `.`）も `k` のメンバーを出してしまう。`.` 末尾のコンテキストを未閉鎖グループ内と区別するには `resolveBase` 側の括弧深度追跡が要る — TODO に積んだ。
+- **adapter 系 builtin は Detail が空**: `strings.Compare` など `fn*` ラッパーは `Target` を持たないので reflect シグネチャを描けない。嘘の `func(...) any` より空の方がまし、という判断。
 
 ## 5. 考察 — 「処理系の機能として何が必要か」の答え
 

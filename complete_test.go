@@ -156,6 +156,15 @@ func TestCompleteEnumMembers(t *testing.T) {
 			t.Fatalf("%s missing in Color. -> %v", want, candNames(cands))
 		}
 	}
+
+	// a var stamped with the typedef is not a type member — enum
+	// candidates come from read-only const cells only.
+	if _, err := r.EvalLine(ctx, `var Cur Color`); err != nil {
+		t.Fatalf("EvalLine: %v", err)
+	}
+	if hasCand(r.Complete("Color."), "Cur") {
+		t.Fatalf("var leaked into Color. -> %v", candNames(r.Complete("Color.")))
+	}
 }
 
 func TestCompleteHostType(t *testing.T) {
@@ -204,6 +213,20 @@ func TestCompleteDirPackage(t *testing.T) {
 	// type-level members of a package type
 	if !hasCand(r.Complete("inspectpkg.User."), "Greet") {
 		t.Fatalf("Greet missing in inspectpkg.User. -> %v", candNames(r.Complete("inspectpkg.User.")))
+	}
+	// enum members from the index; a var typed with the enum type is
+	// not a member (T.Var is not valid Go), and untyped const specs
+	// (FlagC/FlagD) break the type-inheritance chain.
+	status := r.Complete("inspectpkg.Status.")
+	for _, want := range []string{"StatusTodo", "StatusExtra", "FlagA", "FlagB"} {
+		if !hasCand(status, want) {
+			t.Fatalf("%s missing in inspectpkg.Status. -> %v", want, candNames(status))
+		}
+	}
+	for _, not := range []string{"CurrentStatus", "FlagC", "FlagD"} {
+		if hasCand(status, not) {
+			t.Fatalf("%s leaked into inspectpkg.Status. -> %v", not, candNames(status))
+		}
 	}
 	// unexported members of the uninitialised package stay hidden, and the
 	// package never had to run init to answer.

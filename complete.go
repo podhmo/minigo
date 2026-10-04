@@ -612,7 +612,9 @@ func (r *REPL) typeMemberValue(td *runtime.TypeDef, name string) (runtime.Value,
 	}
 	if td != nil && td.Pkg != nil {
 		if gv, ok := td.Pkg.Globals.Get(name); ok {
-			if cell, ok := gv.(*runtime.Cell); ok && cell.Typ != nil && runtime.TypIdentical(cell.Typ, td) {
+			// const cells are sealed read-only; a var stamped with the
+			// typedef is not a type member (T.Var is not valid Go).
+			if cell, ok := gv.(*runtime.Cell); ok && cell.ReadOnly && cell.Typ != nil && runtime.TypIdentical(cell.Typ, td) {
 				return gv, true
 			}
 		}
@@ -774,7 +776,9 @@ func (c *completer) typeMembers(td *runtime.TypeDef, out *[]Candidate) {
 	}
 	for _, name := range td.Pkg.Globals.Names() {
 		gv, _ := td.Pkg.Globals.Get(name)
-		if cell, ok := gv.(*runtime.Cell); ok && cell.Typ != nil && runtime.TypIdentical(cell.Typ, td) {
+		// enum members are read-only const cells; a var stamped with
+		// the typedef is a package var, not a member of the type.
+		if cell, ok := gv.(*runtime.Cell); ok && cell.ReadOnly && cell.Typ != nil && runtime.TypIdentical(cell.Typ, td) {
 			c.add(out, name, CandConst, "")
 		}
 	}
