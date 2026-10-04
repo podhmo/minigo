@@ -1,0 +1,54 @@
+true true
+true true
+true true
+true false
+false true
+true true
+true false
+s1 0 int
+s1 1 int
+s2 0 a
+s2 1 b
+m1 x
+m2 x 1
+msum [x y] 3
+i1 0
+i1 1
+i1 3
+i1 4
+i1 5
+i2 0 104
+i2 1 233
+i2 3 108
+i2 4 108
+i2 5 111
+n 0
+n 1
+n 2
+N 0 main.N
+N 1 main.N
+pa 0
+pa 1
+pa 2
+pa2 0 7
+pa2 1 8
+pa2 2 9
+stopped 1
+f 0
+f 10
+f 20
+f2 a 1
+f2 b 2
+true false
+false true
+true
+true
+false
+false
+false
+0: panic: reflect: bool cannot produce iter.Seq[Value]
+1: panic: reflect: float64 cannot produce iter.Seq[Value]
+2: panic: reflect: int cannot produce iter.Seq2[Value, Value]
+3: panic: reflect: chan int cannot produce iter.Seq2[Value, Value]
+4: panic: reflect: call of reflect.Value.Type on zero Value
+5: panic: reflect: *[]string cannot produce iter.Seq[Value]
