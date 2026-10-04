@@ -377,6 +377,15 @@ func IoReadFullEOF() string {
 	return fmt.Sprintf("%d %q", n, buf)
 }
 
+// io.ReadFull commits the read bytes back into the script's byte
+// slice — a borrowed buffer that never writes back leaves zeros (#362).
+func IoReadFullFill() string {
+	r := strings.NewReader("abcdefgh")
+	buf := make([]byte, 8)
+	n, err := io.ReadFull(r, buf)
+	return fmt.Sprintf("%d %q %v", n, buf, err)
+}
+
 // io.Copy from a host reader to a host writer.
 func IoCopy() string {
 	var sb strings.Builder

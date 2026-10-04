@@ -2386,6 +2386,19 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 			return reflect.Value{}, fmt.Errorf("cannot convert script slice to %s", t)
 		}
 		out := reflect.New(t).Elem()
+		// byte slices marshal in one pass — the element loop below
+		// builds a reflect.Value per byte otherwise (issue #362).
+		if t.Elem().Kind() == reflect.Uint8 {
+			if bs, ok := scriptBytes(x); ok {
+				if t.Kind() == reflect.Slice {
+					av = reflect.ValueOf(bs)
+				} else {
+					reflect.Copy(out, reflect.ValueOf(bs))
+					av = out
+				}
+				break
+			}
+		}
 		if t.Kind() == reflect.Slice {
 			out.Set(reflect.MakeSlice(t, len(x.Elems), len(x.Elems)))
 		}
@@ -2493,6 +2506,22 @@ func deepHost(v runtime.Value) runtime.Value {
 	return v
 }
 
+// scriptBytes reads a script slice's elements as bytes in one pass —
+// marshaling element-wise would box a reflect.Value per byte. Elements
+// must all unwrap to an in-range int64; anything else reports false so
+// the caller falls back to the generic loop (issue #362).
+func scriptBytes(x *runtime.Slice) ([]byte, bool) {
+	bs := make([]byte, len(x.Elems))
+	for i, e := range x.Elems {
+		n, ok := runtime.Unwrap(e).(int64)
+		if !ok || n < 0 || n > 255 {
+			return nil, false
+		}
+		bs[i] = byte(n)
+	}
+	return bs, true
+}
+
 // argBack pairs an argument with the host value it marshaled to so a
 // callee's writes through it can mirror back into the script value.
 type argBack struct {
@@ -2589,6 +2618,19 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 				rv = rv.Elem()
 			}
 			if rv.IsValid() && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) {
+				// a []byte arg commits in one pass — goValueOf per
+				// element would box and tag every byte again (#362).
+				// Unaddressable arrays can't view as Bytes — they keep
+				// the generic element loop.
+				if rv.Type().Elem().Kind() == reflect.Uint8 && (rv.Kind() == reflect.Slice || rv.CanAddr()) {
+					bs := rv.Bytes()
+					td := sizedIntTyp(reflect.Uint8)
+					for i := 0; i < len(bs) && i < len(ss.Elems); i++ {
+						ss.Elems[i] = runtime.Tag(td, int64(bs[i]))
+					}
+					handled = true
+					continue
+				}
 				for i := 0; i < rv.Len() && i < len(ss.Elems); i++ {
 					ss.Elems[i] = goValueOf(rv.Index(i))
 				}
