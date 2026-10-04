@@ -1757,6 +1757,18 @@ func (v *RValue) Call(in []*RValue) []*RValue {
 		}
 		args := make([]reflect.Value, len(in))
 		mt := v.rv.Type()
+		// Go reports arity before touching argument values — reading
+		// mt.In(i) past NumIn dies as 'index out of range', not the
+		// Call wording. Variadic accepts NumIn-1 or more.
+		if n := mt.NumIn(); mt.IsVariadic() {
+			if len(in) < n-1 {
+				plain("reflect: Call with too few input arguments")
+			}
+		} else if len(in) < n {
+			plain("reflect: Call with too few input arguments")
+		} else if len(in) > n {
+			plain("reflect: Call with too many input arguments")
+		}
 		for i, a := range in {
 			var pt reflect.Type
 			if mt.IsVariadic() && i >= mt.NumIn()-1 {
