@@ -718,3 +718,62 @@ func typImportPath(file *syntax.File, alias string) string {
 	}
 	return ""
 }
+
+// ArrayLenNodes lists the *ast.ArrayType nodes inside a type AST whose
+// length is not a literal, in DFS order — `[]T`, `[3]T` and `[...]T`
+// yield no nodes. This one walk defines the order the compiler emits
+// length evals (OpFoldArrayLen) and the VM applies them: folding a
+// node rewrites its Len to a BasicLit, so re-running the walk always
+// finds the next un-folded length first.
+func ArrayLenNodes(e ast.Expr) []*ast.ArrayType {
+	var out []*ast.ArrayType
+	var walk func(e ast.Expr)
+	var walkList func(fl *ast.FieldList)
+	walk = func(e ast.Expr) {
+		switch t := e.(type) {
+		case *ast.ArrayType:
+			switch t.Len.(type) {
+			case nil, *ast.BasicLit, *ast.Ellipsis:
+			default:
+				out = append(out, t)
+			}
+			walk(t.Elt)
+		case *ast.MapType:
+			walk(t.Key)
+			walk(t.Value)
+		case *ast.StarExpr:
+			walk(t.X)
+		case *ast.ParenExpr:
+			walk(t.X)
+		case *ast.ChanType:
+			walk(t.Value)
+		case *ast.FuncType:
+			walkList(t.Params)
+			walkList(t.Results)
+		case *ast.StructType:
+			walkList(t.Fields)
+		case *ast.InterfaceType:
+			walkList(t.Methods)
+		case *ast.Ellipsis:
+			walk(t.Elt)
+		case *ast.IndexExpr:
+			walk(t.Index)
+		case *ast.IndexListExpr:
+			for _, ix := range t.Indices {
+				walk(ix)
+			}
+		}
+	}
+	walkList = func(fl *ast.FieldList) {
+		if fl == nil {
+			return
+		}
+		for _, fd := range fl.List {
+			walk(fd.Type)
+		}
+	}
+	if e != nil {
+		walk(e)
+	}
+	return out
+}
