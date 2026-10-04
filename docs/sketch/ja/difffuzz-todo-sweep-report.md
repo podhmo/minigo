@@ -294,3 +294,41 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 - **`reflect_grow` は emitted 形式の手書き seed**: 修正後の build では emit がこの発散をもはや生成できないため、emitted 形状（try() ラッパ + panic 文言プリント）の最小プローブを手で pin。pin の目的は回帰防止であり provenance 純度ではない、という判断。
 - **hunt の打ち切り判断**: yield ~1/15–20 seeds に逓減し、残件は `no member` 系 backlog + pin 不可 artifact に集約 — 追加 hunt より binding 実装の方が価値が高い局面に入ったところで打ち切り依頼。進行中の `Grow` だけ仕上げて停止。
 - **レビュー駆動フェーズは子セッションへ委譲**: ユーザー指示により、バグ4件→リファクタ5件の順で「各項目を子が oracle probe で要/不要判断→要のものを重要度順に 1 根因 1 PR で同スタック継続積み」。子は bug3 が複合的根因であることを検証中に自力で2件の別根因（cell box 剥がし・typSpelling 二重修飾）を発見し 3PR に分割、レビュー指摘の表記ブレ主張は再現しないことを実測で否定しつつ別の本物のブレを掴んだ — 「レビュー文面の検証」が「レビュー趣旨の回収」に昇格した好例。リファクタ項目は純粋な整理は seed なし、挙動変化（DisplayName 集約に伴う表記修正）のみ seed pin という線引きを適用。
+
+### 6.12 実施ラウンド（round-10）: Stack #333 の連鎖 rebase とレビュー7件の判定
+
+Stack #333（27 PRs — difffuzz TODO 系・reflect 系・corpus sweep 第2ラウンド）に対して、別エージェントが `main...corpus-todo` のコードレビューを行った。対応前に main が +1 コミット進んでいた（#348 promoted-method BFS が別経路でマージ）ため、まず全ブランチの連鎖 rebase を行い、その後レビュー7件を子セッションに要/不要判断させて対応した（[#364](https://github.com/podhmo/minigo/pull/364)–[#370](https://github.com/podhmo/minigo/pull/370)、Stack #333 の末尾に積み増し → 計 34 PRs）。
+
+#### 実施内容
+
+| フェーズ | 内容 | PR |
+|------|------|-----|
+| 連鎖 rebase | 27 ブランチを新 main（+#348）上に `git rebase --onto <new prev> <old prev> <branch>` で底から順に巻き上げ。conflict は #347/#349 系のみ（#348 と同一領域）。#349 の実装部分は main の `promotedMember`（BFS + shallowest-wins + ambiguity + nil-path）に完全包含されたため pin のみに縮退、タイトル/本文を「difffuzz: pin the shallowest-wins promoted-method case」に差し替え（pin は main の実装でも PASS 確認済み） | #349（内容縮退） |
+| バグ ①（回帰） | map 要素への lvalue write-through が型を問わず効いていた — `ma["a"][1]=9`（map[string][3]int）や `mp["a"].X=9`（map[string]struct）が Go では compile error のところ格納オブジェクトを黙って書き換える（#352 で入れた IndexRef write-through の TRAP→SILENT 転化）。`runtime.SharedElem` で参照形要素（slice/map/chan/func/pointer 系）のみ write-through に絞り、array/struct/scalar 要素は従来通り trap。`m[k]=v`/`+=`/`++` の全体代入は不変 | [#364](https://github.com/podhmo/minigo/pull/364)（pin: `mapref_elemref` + `TestMapElemLvalueTraps`） |
+| バグ ② | `reflect.MakeFunc` がコールバックの**出力**側を一切検査していなかった — `func() (int,int)` シグネチャに 1 値しか返すコールバックで Go は panic するが黙って `len(outs)==1`。呼び出し時に Go と同じ panic 文言で wrong-return-count / zero-Value / not-assignable を検査（assignability≠convertibility — `int32`→`int64` は panic、実測で確認） | [#365](https://github.com/podhmo/minigo/pull/365)（pin: `reflect_makefunc-outs`） |
+| 欠落 ③（判断: 要） | `emitLenFolds` が汎用実装なのに `*ast.ArrayType` トップレベルでしか呼ばれず、ネストした型式の非定数 array length が未 fold。probe すると `*[N]`/`func`/`struct`/`interface` は lazy package-scope path で既に動いており、実質の穴は `map[K][N]V` と `chan[N]T` のみだった → 全 typeExpr case から一様に呼ぶ形に拡張（無効/寛容 corner のみ差分 — Go の評価順と byte-identical を確認） | [#366](https://github.com/podhmo/minigo/pull/366)（pin: `arraylen_nestfold`） |
+| リファクタ ① | 「3 か所並存の埋め込み BFS」は rebase 後に縮小済み（`findMethod`/`hostFieldName` は #348 で削除）— 残る `promotedMember`（値レベル）vs `RType.FieldByNameFunc`（型レベルの annihilation 移植）は別アルゴリズムで統合対象外。実質的重複は `FieldRef.Get`/`Set` の同一 11 行ループのみ → `FieldRef.find()` に共通化（挙動不変） | [#367](https://github.com/podhmo/minigo/pull/367) |
+| リファクタ ② | `FieldByIndex`（panic）/`FieldByIndexErr`（error）の nil-ptr 差分だけを hook に分離して一本化（`fieldByIndexWalk`） | [#368](https://github.com/podhmo/minigo/pull/368) |
+| リファクタ ③ | `IndexRef.sliceOf`/`mapOf` の Named+Deref 同一ループを `IndexRef.container()` に統合 | [#369](https://github.com/podhmo/minigo/pull/369) |
+| リファクタ ④ | `foldNextArrLen`(vm) と `emitLenFolds`(compile) の平行 DFS — assert 追加ではなく共有化を選択。`runtime.ArrayLenNodes` が走査順の単一 source を提供し、compiler は emit、VM は nodes[0] を fold — 両側の平行実装約 80 行を解消 | [#370](https://github.com/podhmo/minigo/pull/370) |
+
+#### 残りの状況
+
+- レビュー指摘は全件処理済み（バグ2件は回帰含め全 fix、欠落1件は要と判定して拡張、リファクタ4件は全て要と判定して実施 — 不要判定なし）。
+- 子セッションが probe 中に新規の legal-Go ギャップを2件発見し、修正には混ぜず stack 先端の TODO.md に記録: **`map[string]*[3]int` の内部書き込みが依然 trap**（`*[N]T` 要素も参照形だが SharedElem の ptr 系判定に未収録の可能性）、**struct 要素の field write が一律 trap**（`mp["a"].X=v` は Go でも compile error だが、struct 要素経由の他の書き込み形も uniform に trap している旨）。
+- Stack #333 は 34 PRs。CI は rebase 後の先端および各追加 PR で緑（head が全祖先を含むため累積検証になっている）。
+- リファクタ4件は全て挙動不変 — difffuzz pins は全緑のまま。
+
+#### 不備の振り返り
+
+- **write-through の適用範囲に「参照形」という不変条件を書いていなかった（#352 → #364）**: IndexRef の write-through を入れたとき「map 要素が書き戻せるか」を kind 無しに開けたため、Go の compile error に相当するケース（array/struct 要素の部分書き込み）まで静かに通した。「どの要素型なら write-through が Go と等価か」を SharedElem の形で明示しなかったのが根因 — 格納コピー vs live 参照の区別は §6.7（#127）で一度構造化した系で、同じ鏡をもう一度踏んだ形。
+- **コールバック境界の検査が入力側だけだった（#355 → #365）**: MakeFunc 実装時に `checkCallArgs` を入力（呼び出し引数）にのみ適用し、コールバックの戻り値側（arity・assignability）に同型のゲートを置かなかった。「ホスト⇄script の両方向でシグネチャ制約が効くか」はセットで確認すべき項目だった。
+- **汎用機構を置いても配線が一箇所止まり（#353 → #366）**: `emitLenFolds` は汎用に書いたのに呼び出しが `*ast.ArrayType` のみ — 「機構が対象となる AST 形すべてから呼ばれるか」は配線の網羅確認が要る。probe 後は実質穴が map/chan のみと分かったが、一様呼出し化で残差も含めて閉じた。
+- **平行実装のドリフトは「共有 source」で解く方が正しい（④）**: `foldNextArrLen` と `emitLenFolds` は DFS 順序一致を暗黙に要求する平行 DFS — 順序 assert のテスト追加も選択肢だったが、子セッションは走査自体を `runtime.ArrayLenNodes` に共有化する方を選んだ。assert は「ずれたら教えてくれる」止まりで、共有化はずれる余地自体を消す — 後者が正しい判断。
+
+#### 計画外の記録と判断
+
+- **#349 が rebase で pin のみに縮退**: stack 内の promoted-method BFS 実装が main 側の #348 に完全包含されていたため、rebase 適用後の diff は testdata pin のみに。実装を消し込んで pin と差し替えた PR タイトル/本文も追従更新 — 「stack 内の別 PR が main で別実装として着陸」した場合の自然な帰結。force-push による全ブランチ書き換えは破壊的操作だが、ユーザーの明示指示（「開始前にmainからrebaseしたほうが良いかも」）で実施。
+- **レビューは rebase 前の差分に対するもの**: 指摘の半分は現行コードで部分的に陳腐化していた（findMethod 系の並存指摘、emitLenFolds の「まだ trap」範囲）。各項目を現スタック先端で再検証してから判断させる運用を子セッションにも継承 — §5 の「レビュー指摘は現スタックトップで再現を確認してから直す」と同じ教訓の再確認。
+- **子セッションへの委譲**: バグ2件＋欠落判定1件＋リファクタ4件の計7件を、各項目ごとに oracle probe（`go run`）で要/不要を判断させて 1 根因=1 PR で積ませる形に委譲。リファクタ①の「3本BFS」は実際には縮小済みで実質重複のみ残部修正、④は提案外の共有化アプローチを採用 — 文面通りではなく趣旨に沿った判断を要求した結果として妥当。
+- **新規ギャップの分離記録**: probe 中に見つかった `map[string]*[3]int` 内部書き込み・struct 要素 field write の残存 trap は「この stack の指摘項目」ではないため TODO.md への記録に留め、次ラウンドの入口とした。
