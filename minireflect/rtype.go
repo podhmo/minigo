@@ -1241,6 +1241,13 @@ func (t *RType) ConvertibleTo(u *RType) bool {
 		// slice -> array needs identical element types
 		return t.Elem() != nil && u.Elem() != nil && t.Elem().key == u.Elem().key
 	}
+	if tk == reflect.Slice && uk == reflect.Ptr {
+		// slice -> *array needs identical element types
+		if ue := u.Elem(); ue != nil && ue.Kind() == reflect.Array {
+			return t.Elem() != nil && ue.Elem() != nil && t.Elem().key == ue.Elem().key
+		}
+		return false
+	}
 	return false
 }
 
