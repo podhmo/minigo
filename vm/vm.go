@@ -2856,9 +2856,11 @@ func (v *VM) structMember(f *frame, s *runtime.Struct, name string, recv runtime
 		if m.PtrRecv {
 			// pointer receiver needs an addressable reference —
 			// except a nil embedded pointer, which Go passes to
-			// the method as the nil receiver itself.
+			// the method as the nil receiver itself — `t == nil`
+			// and dereferences behave like Go, not a **T pointing
+			// at the field slot.
 			if _, ok := runtime.Deref(r); !ok {
-				if _, isNil := r.(*runtime.TypedNil); !isNil {
+				if tn, isNil := r.(*runtime.TypedNil); !(isNil && tn.Typ != nil && tn.Typ.Kind == runtime.KindPointer) {
 					r = &runtime.Cell{Elem: r}
 				}
 			}
