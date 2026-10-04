@@ -764,6 +764,101 @@ func (t *RType) FieldByName(name string) (*StructField, bool) {
 	return nil, false
 }
 
+// FieldByNameFunc finds the field whose name satisfies match, including
+// promotion through embedded fields. The traversal is Go's own: breadth
+// first search, one depth level at a time, where two matches at the same
+// depth annihilate each other and a struct type reachable through
+// multiple embedded paths annihilates its own matches.
+func (t *RType) FieldByNameFunc(match func(string) bool) (*StructField, bool) {
+	if t.rt != nil {
+		f, ok := t.rt.FieldByNameFunc(match)
+		if !ok {
+			return nil, false
+		}
+		return &StructField{Name: f.Name, PkgPath: f.PkgPath,
+			Type: t.e.hostTypeOf(f.Type), Tag: f.Tag, Offset: f.Offset,
+			Index: f.Index, Anonymous: f.Anonymous}, true
+	}
+	if t.Kind() != reflect.Struct {
+		trap("FieldByNameFunc of non-struct type %s", t.String())
+	}
+	type scan struct {
+		td    *runtime.TypeDef
+		index []int
+	}
+	embedded := func(td *runtime.TypeDef, i int) bool {
+		for _, ei := range td.EmbedIdx {
+			if ei == i {
+				return true
+			}
+		}
+		return false
+	}
+	next := []scan{{td: t.td}}
+	var nextCount map[*runtime.TypeDef]int
+	visited := map[*runtime.TypeDef]bool{}
+	var result *StructField
+	ok := false
+	for len(next) > 0 {
+		var current []scan
+		current, next = next, current
+		count := nextCount
+		nextCount = nil
+		for _, sc := range current {
+			st := sc.td
+			if visited[st] {
+				continue
+			}
+			visited[st] = true
+			fts := t.e.fieldTypes(st)
+			for i, fname := range st.Fields {
+				var ntyp *runtime.TypeDef
+				if embedded(st, i) && i < len(fts) {
+					ntyp = fts[i]
+					if ntyp != nil && ntyp.Kind == runtime.KindPointer {
+						ntyp = t.e.elemOf(ntyp)
+					}
+				}
+				if match(fname) {
+					// a second match at this depth annihilates both —
+					// Go reports no field at all.
+					if count[st] > 1 || ok {
+						return nil, false
+					}
+					f := t.e.rtypeOf(st).Field(i)
+					f.Index = append(append([]int{}, sc.index...), i)
+					result = f
+					ok = true
+					continue
+				}
+				// embedded struct fields queue for the next depth —
+				// only while no match exists at this one, and a type
+				// already queued marks itself multiply-reachable.
+				if ok || ntyp == nil || ntyp.Kind != runtime.KindStruct {
+					continue
+				}
+				if nextCount[ntyp] > 0 {
+					nextCount[ntyp] = 2
+					continue
+				}
+				if nextCount == nil {
+					nextCount = map[*runtime.TypeDef]int{}
+				}
+				nextCount[ntyp] = 1
+				if count[st] > 1 {
+					nextCount[ntyp] = 2
+				}
+				next = append(next, scan{td: ntyp,
+					index: append(append([]int{}, sc.index...), i)})
+			}
+		}
+		if ok {
+			break
+		}
+	}
+	return result, ok
+}
+
 // NumMethod reports the exported method count — pointer-receiver
 // members count only under a pointer type, like Go's method sets.
 func (t *RType) NumMethod() int {

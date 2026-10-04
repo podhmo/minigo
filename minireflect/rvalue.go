@@ -831,6 +831,34 @@ func (v *RValue) FieldByName(name string) *RValue {
 	return &RValue{e: v.e, vc: v.vc}
 }
 
+// FieldByNameFunc finds the field whose name satisfies match — Go
+// routes through the receiver's type, so a non-struct dies on the
+// Type-level panic 'FieldByNameFunc of non-struct type X'.
+func (v *RValue) FieldByNameFunc(match func(string) bool) *RValue {
+	// Go's v.typ() yields a nil type on a zero Value and the
+	// FieldByNameFunc walk derefs it — the observed panic is a raw
+	// nil-pointer runtime error, not the usual 'on zero Value'.
+	if !v.IsValid() {
+		plain("runtime error: invalid memory address or nil pointer dereference")
+	}
+	if v.host() {
+		f := v.rv.FieldByNameFunc(match)
+		ro := false
+		if f.IsValid() {
+			ro = !f.CanInterface()
+		}
+		return &RValue{e: v.e, vc: v.vc, rv: f, ro: ro}
+	}
+	vt := v.Type()
+	if vt == nil {
+		trap("FieldByNameFunc of non-struct type %s", v.kindStr())
+	}
+	if f, ok := vt.FieldByNameFunc(match); ok {
+		return v.FieldByIndex(f.Index)
+	}
+	return &RValue{e: v.e, vc: v.vc}
+}
+
 // fieldByNameRec resolves name on the struct value's own fields, then
 // descends into embedded fields — the promotion walk of FieldByName.
 func (v *RValue) fieldByNameRec(s *runtime.Struct, name string) *RValue {
