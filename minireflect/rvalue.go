@@ -1981,6 +1981,7 @@ func (v *RValue) CallSlice(in []*RValue) []*RValue {
 		if !variadic {
 			trap("CallSlice of non-variadic function")
 		}
+
 	}
 	v.checkCallArgs(in, true)
 	if v.vc == nil {

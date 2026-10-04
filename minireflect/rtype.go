@@ -357,12 +357,30 @@ func (e *Env) elemOf(td *runtime.TypeDef) *runtime.TypeDef {
 			x = a.Value
 		}
 		if x != nil {
-			if et, err := e.h.ResolveType(td, x); err == nil {
+			if et, err := e.resolveExpr(td, x); err == nil {
 				return et
 			}
 		}
 	}
 	return nil
+}
+
+// resolveExpr resolves a full type expression to a typedef — unlike the
+// embed-spec resolver it keeps StarExpr as a pointer typedef, so
+// `func(*T)` params and `[]*T`/`map[K]*T` elements retain the star.
+func (e *Env) resolveExpr(from *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, error) {
+	if st, ok := x.(*ast.StarExpr); ok {
+		etd, err := e.resolveExpr(from, st.X)
+		if err != nil {
+			return nil, err
+		}
+		return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: etd,
+			Anon: st, Pkg: from.Pkg, File: from.File, Binds: from.Binds}, nil
+	}
+	if e.h.ResolveType == nil {
+		return nil, fmt.Errorf("minireflect: type resolution needs ResolveType hook")
+	}
+	return e.h.ResolveType(from, x)
 }
 
 // keyTdOf resolves a map td's key type.
@@ -372,7 +390,7 @@ func (e *Env) keyTdOf(td *runtime.TypeDef) *runtime.TypeDef {
 	}
 	if e.h.ResolveType != nil {
 		if mt, ok := td.Anon.(*ast.MapType); ok {
-			if kt, err := e.h.ResolveType(td, mt.Key); err == nil {
+			if kt, err := e.resolveExpr(td, mt.Key); err == nil {
 				return kt
 			}
 		}
@@ -1454,14 +1472,14 @@ func (t *RType) resolveIn(x ast.Expr) *RType {
 	}
 	if ell, ok := x.(*ast.Ellipsis); ok {
 		// a variadic param's In type is the []T slice, like Go.
-		td, err := t.e.h.ResolveType(t.td, ell.Elt)
+		td, err := t.e.resolveExpr(t.td, ell.Elt)
 		if err != nil {
 			trap("minireflect: %s", err)
 		}
 		return t.e.rtypeOf(&runtime.TypeDef{Kind: runtime.KindSlice, Elem: td,
 			Anon: &ast.ArrayType{Elt: ell.Elt}})
 	}
-	td, err := t.e.h.ResolveType(t.td, x)
+	td, err := t.e.resolveExpr(t.td, x)
 	if err != nil {
 		trap("minireflect: %s", err)
 	}
