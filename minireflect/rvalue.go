@@ -2136,9 +2136,6 @@ func (v *RValue) OverflowInt(x int64) bool {
 		return x < -32768 || x > 32767
 	case reflect.Int32:
 		return x < -2147483648 || x > 2147483647
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32,
-		reflect.Uint64, reflect.Uintptr:
-		return x < 0
 	}
 	plain("reflect: call of reflect.Value.OverflowInt on %s Value", v.kindStr())
 	return false
@@ -2159,8 +2156,6 @@ func (v *RValue) OverflowUint(x uint64) bool {
 		return x > 65535
 	case reflect.Uint32:
 		return x > 4294967295
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return x > 0x7fffffffffffffff
 	}
 	plain("reflect: call of reflect.Value.OverflowUint on %s Value", v.kindStr())
 	return false
