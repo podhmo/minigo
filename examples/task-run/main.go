@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -64,7 +65,13 @@ func runMain(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 			name, args = spec[:i], strings.Split(spec[i+1:], ",")
 		}
 		if err := r.RunTask(ctx, abs, name, args); err != nil {
-			fmt.Fprintf(stderr, "task %s: %v\n", name, err)
+			// load errors blame the Taskfile/-f flag, not the task name
+			var le *loadError
+			if errors.As(err, &le) {
+				fmt.Fprintln(stderr, err)
+			} else {
+				fmt.Fprintf(stderr, "task %s: %v\n", name, err)
+			}
 			return 1
 		}
 	}

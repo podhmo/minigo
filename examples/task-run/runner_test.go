@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -363,6 +364,102 @@ func FailCap() {
 	}
 	if diff := cmp.Diff("caught: true\n", errb.String()); diff != "" {
 		t.Errorf("Output error path (-want +got):\n%s", diff)
+	}
+}
+
+// TestStrictStringArgs: args declared `string` in the stub reject
+// non-string values using script-side type names, rather than being
+// silently stringified into a misleading exec error.
+func TestStrictStringArgs(t *testing.T) {
+	_, file := writeTaskfile(t, `package main
+
+import "task"
+
+func RunInt() { task.Run(42) }
+
+func ShTwo() { task.Sh("a", "b") }
+
+func RunNamed() error {
+	type Str string
+	return task.Run(Str("echo"), "named-ok")
+}
+`)
+	r := NewRunner(filepath.Dir(file), io.Discard, io.Discard)
+	ctx := context.Background()
+
+	err := r.RunTask(ctx, file, "RunInt", nil)
+	if err == nil || !strings.Contains(err.Error(), "task.Run arg 1 must be a string, got int") {
+		t.Fatalf("Run(42) should be a type error in the script's vocabulary, got %v", err)
+	}
+	err = r.RunTask(ctx, file, "ShTwo", nil)
+	if err == nil || !strings.Contains(err.Error(), "task.Sh takes 1 arg, got 2") {
+		t.Fatalf("extra Sh arg should not be silently dropped, got %v", err)
+	}
+	// a defined string type still unwraps to a string
+	if err := r.RunTask(ctx, file, "RunNamed", nil); err != nil {
+		t.Fatalf("named string arg should be accepted, got %v", err)
+	}
+}
+
+// TestExitErrLabel: a non-zero exit names the command the script spelled,
+// not just "exit status N".
+func TestExitErrLabel(t *testing.T) {
+	_, file := writeTaskfile(t, `package main
+
+import "task"
+
+func Boom() error { return task.Sh("false") }
+`)
+	r := NewRunner(filepath.Dir(file), io.Discard, io.Discard)
+	err := r.RunTask(context.Background(), file, "Boom", nil)
+	if err == nil || !strings.Contains(err.Error(), `sh -c "false": exit status 1`) {
+		t.Fatalf("exit error should name the spelled command, got %v", err)
+	}
+}
+
+// TestTaskfileErr: LoadFile failures blame the Taskfile or the -f flag —
+// classified by who must fix them, never prefixed with the task name.
+func TestTaskfileErr(t *testing.T) {
+	dir := t.TempDir()
+	r := NewRunner(dir, io.Discard, io.Discard)
+	ctx := context.Background()
+
+	err := r.RunTask(ctx, filepath.Join(dir, "Nope.go"), "Default", nil)
+	if err == nil || !strings.Contains(err.Error(), "does not exist. Fix the -f argument") {
+		t.Fatalf("missing taskfile should blame the -f argument, got %v", err)
+	}
+	var le *loadError
+	if !errors.As(err, &le) {
+		t.Fatal("missing taskfile error should be a *loadError")
+	}
+
+	bad := filepath.Join(dir, "Bad.go")
+	if werr := os.WriteFile(bad, []byte("package main\nfunc {"), 0644); werr != nil {
+		t.Fatal(werr)
+	}
+	err = r.RunTask(ctx, bad, "Default", nil)
+	if err == nil || !strings.Contains(err.Error(), "Fix the Taskfile") {
+		t.Fatalf("parse failure should blame the Taskfile, got %v", err)
+	}
+
+	// a directory is not a taskfile — still the -f argument's fault
+	err = r.RunTask(ctx, dir, "Default", nil)
+	if err == nil || !strings.Contains(err.Error(), "is a directory. Fix the -f argument") {
+		t.Fatalf("directory taskfile should blame the -f argument, got %v", err)
+	}
+}
+
+// TestRunMainLoadErr: a load failure prints without the "task Default:"
+// prefix — the named task never ran.
+func TestRunMainLoadErr(t *testing.T) {
+	dir := t.TempDir()
+	var errb bytes.Buffer
+	code := runMain(context.Background(), []string{"-f", filepath.Join(dir, "Nope.go")}, io.Discard, &errb)
+	if code != 1 {
+		t.Fatalf("runMain missing file: code %d", code)
+	}
+	if strings.Contains(errb.String(), "task ") || !strings.Contains(errb.String(), "does not exist") {
+		t.Fatalf("load error should not be prefixed with a task name: %q", errb.String())
 	}
 }
 
