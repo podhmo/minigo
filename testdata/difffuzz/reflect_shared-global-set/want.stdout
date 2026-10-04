@@ -1,0 +1,7 @@
+0: panic: reflect.Set: value of type []uint8 is not assignable to type main.RTag
+1: *reflect.rtype int
+2: reflect.Kind struct
+3: panic: reflect.Set: value of type int is not assignable to type main.RTag
+4: reflect.Kind struct
+5: string assigned
+6: int 9
