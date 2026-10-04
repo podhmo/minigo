@@ -2,8 +2,9 @@
 
 > **What this file is:** append-mostly history of completed work moved out of
 > `TODO.md`. When a task there completes, its entry lands here **verbatim** —
-> appended at the bottom of the matching section (see `AGENTS.md` -> `# TODO.md`
-> for the rule). Entries are never rewritten; links into `docs/sketch/*`,
+> appended at the **end of this file** as a `- [x]` line — nested items get a
+> `> parent: <title>` context line first (see
+> `.claude/skills/todo-md/SKILL.md` for the rule). Entries are never rewritten; links into `docs/sketch/*`,
 > issues, and PRs are preserved.
 >
 > Initial split: every `[x]` entry from `TODO.md`, plus the completed `[x]`

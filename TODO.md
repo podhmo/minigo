@@ -1,10 +1,10 @@
 # TODO
 
-> **Note on updating this file:**
-> -   This file tracks **actionable work only**: `[ ]` = open, `[-]` = partially done. Completed work lives in `TODO-archive.md`.
-> -   When an item completes, move its text to `TODO-archive.md` verbatim — do not leave `[x]` entries behind. Completed sub-items of a still-open `[-]` parent move to the archive under the parent's name.
-> -   Keep each entry short: a bold title, 1–3 sentences of **what remains**, and links (`docs/sketch/*` reports, issues/PRs). Done-work narrative and status logs belong in the archive or a sketch doc, not here.
-> -   If a new task needs more than a few lines of context, write it in `docs/sketch/` and link to it.
+> **Note on updating this file:** upkeep rules live in
+> [`.claude/skills/todo-md/SKILL.md`](.claude/skills/todo-md/SKILL.md) —
+> follow them whenever you add or complete a task. Short version: this file
+> lists actionable work only (`[ ]` / `[-]`); completed entries append to
+> `TODO-archive.md`.
 
 This file tracks actionable tasks only; completed work lives in `TODO-archive.md`.
 It was seeded from `podhmo/go-scan`'s TODO.md (the `minigo2` section) at
