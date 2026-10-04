@@ -295,9 +295,9 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 - **hunt の打ち切り判断**: yield ~1/15–20 seeds に逓減し、残件は `no member` 系 backlog + pin 不可 artifact に集約 — 追加 hunt より binding 実装の方が価値が高い局面に入ったところで打ち切り依頼。進行中の `Grow` だけ仕上げて停止。
 - **レビュー駆動フェーズは子セッションへ委譲**: ユーザー指示により、バグ4件→リファクタ5件の順で「各項目を子が oracle probe で要/不要判断→要のものを重要度順に 1 根因 1 PR で同スタック継続積み」。子は bug3 が複合的根因であることを検証中に自力で2件の別根因（cell box 剥がし・typSpelling 二重修飾）を発見し 3PR に分割、レビュー指摘の表記ブレ主張は再現しないことを実測で否定しつつ別の本物のブレを掴んだ — 「レビュー文面の検証」が「レビュー趣旨の回収」に昇格した好例。リファクタ項目は純粋な整理は seed なし、挙動変化（DisplayName 集約に伴う表記修正）のみ seed pin という線引きを適用。
 
-### 6.12 実施ラウンド（round-10）: Stack #333 — difffuzz TODO 残件・reflect 掃討・corpus sweep 2 ラウンド
+### 6.12 実施ラウンド（round-10）: Stack #333 — difffuzz 掃討・corpus sweep・連鎖 rebase・レビュー対応
 
-本セッションの全体像。発端は TODO.md の difffuzz 系未完了項目を「1 root cause = 1 PR」で stacked PR に積む指示（上限 30 PR、枯渇時点で終了、枯れたら `gen` hunt で補充）。成果: **Stack #333 に 27 PR（#331–#359）を構築 + レビュー対応 8 PR（§6.13）で計 35 PR**。queued の全 difffuzz 項目を潰し、追加で reflect TRAP バケット・API 面監査・`$GOROOT/test` コーパス再スイープ×2を流した。
+本セッションの全体像。発端は TODO.md の difffuzz 系未完了項目を「1 root cause = 1 PR」で stacked PR に積む指示（上限 30 PR、枯渇時点で終了、枯れたら `gen` hunt で補充）。成果: **Stack #333 に 27 PR（#331–#359）を構築し、続けて連鎖 rebase＋別エージェントのレビュー7件対応＋本レポートで計 35 PR**。queued の全 difffuzz 項目を潰し、追加で reflect TRAP バケット・API 面監査・`$GOROOT/test` コーパス再スイープ×2を流した。
 
 #### 実施内容
 
@@ -305,57 +305,33 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 |------|------|-----|
 | TODO difffuzz 残件 | reflect backlog の掃討 — `Method.Func` のメソッド式＋caller 接続、`Append`/`AppendSlice`/`Copy` の nil/named 正規化、`Value.Slice3`、`Value.SetZero`、`Value.FieldByIndexErr`、`FieldByNameFunc`（Go の annihilation まで忠実移植）、`Can*` 系一式（CanConvert 含む）。併せて手書きシナリオ用の `casefuzz` skill を追加 | [#331](https://github.com/podhmo/minigo/pull/331)–[#339](https://github.com/podhmo/minigo/pull/339)（#332 は casefuzz skill） |
 | API 面監査 | 185 件の reflect TRAP 消化後に残差を棚卸し — `Value.Clear`（kind ゲートのみ・settable 非必須の Go 仕様）、`Value.Seq`/`Seq2`＋`Type.CanSeq`/`CanSeq2`（yield を GoValue 箱化して range 変数のメソッド解決を通す）、`Type.Fields`/`Methods`/`Ins`/`Outs` 反復子、fmt の `&[..]`/`&map[..]` ポインタ描画（Go printPtr: トップレベルのみ下降）、range-over-func の over-yield 許容、`Value.Fields`/`Methods` | [#340](https://github.com/podhmo/minigo/pull/340)–[#345](https://github.com/podhmo/minigo/pull/345) |
-| nil レシーバ・埋め込み解決 | nil `*T` ホストレシーバへのメソッド dispatch、promoted pointer method の nil 埋め込み `*T` 束縛、promoted method の BFS shallowest-wins（後述 §6.13 で #348 に包含）、nil map の MapIter、capture-free func literal の共有（Go static funcs 相当）、map base の `IndexRef` 解決（write-through — §6.13 の回帰源）、evaluated array length の typedef AST fold、GoValue box 上の named 型メソッド集合 | [#346](https://github.com/podhmo/minigo/pull/346)–[#354](https://github.com/podhmo/minigo/pull/354) |
+| nil レシーバ・埋め込み解決 | nil `*T` ホストレシーバへのメソッド dispatch、promoted pointer method の nil 埋め込み `*T` 束縛、promoted method の BFS shallowest-wins（後述 — #348 に包含）、nil map の MapIter、capture-free func literal の共有（Go static funcs 相当）、map base の `IndexRef` 解決（write-through — レビューで回帰が見つかった箇所）、evaluated array length の typedef AST fold、GoValue box 上の named 型メソッド集合 | [#346](https://github.com/podhmo/minigo/pull/346)–[#354](https://github.com/podhmo/minigo/pull/354) |
 | corpus sweep 第 2 ラウンド | `reflect.MakeFunc` 実装（callback は plain callable、生成 func は typedef 付き BuiltinFunc+RValue — `recover.go` を byte-identical PASS 化）、`ReadMemStats` を安定スナップショット化（`closure.go`/`gc2.go` — ホストアロケータのカウンタが script の delta 判定を誤爆させていた）、keyed array/slice literal 要素の `v.coerce`（`initialize.go` — `UConst` 残り vs `Named{byte}` で DeepEqual が false になっていた）、`typeMatches` の `*runtime.GoValue` case（`gcgort.go` — `interface {} is complex64, not complex64` の trap が host WaitGroup で masked され「本物の deadlock」と誤分類されていた）＋ TODO 記録 | [#355](https://github.com/podhmo/minigo/pull/355)–[#359](https://github.com/podhmo/minigo/pull/359) |
+| 連鎖 rebase | main が +1 コミット進んだ（#348 promoted-method BFS が別経路でマージ）ため、27 ブランチを `git rebase --onto <new prev> <old prev> <branch>` で底から順に巻き上げ。conflict は #347/#349 系のみ（#348 と同一領域）。#349 の実装部分は main の `promotedMember`（BFS + shallowest-wins + ambiguity + nil-path）に完全包含されたため pin のみに縮退、タイトル/本文を「difffuzz: pin the shallowest-wins promoted-method case」に差し替え（pin は main の実装でも PASS 確認済み） | #349（内容縮退） |
+| レビュー バグ ①（回帰） | map 要素への lvalue write-through が型を問わず効いていた — `ma["a"][1]=9`（map[string][3]int）や `mp["a"].X=9`（map[string]struct）が Go では compile error のところ格納オブジェクトを黙って書き換える（#352 の IndexRef write-through の TRAP→SILENT 転化）。`runtime.SharedElem` で参照形要素（slice/map/chan/func/pointer 系）のみ write-through に絞り、array/struct/scalar 要素は従来通り trap。`m[k]=v`/`+=`/`++` の全体代入は不変 | [#364](https://github.com/podhmo/minigo/pull/364)（pin: `mapref_elemref` + `TestMapElemLvalueTraps`） |
+| レビュー バグ ② | `reflect.MakeFunc` がコールバックの**出力**側を一切検査していなかった — `func() (int,int)` シグネチャに 1 値しか返すコールバックで Go は panic するが黙って `len(outs)==1`。呼び出し時に Go と同じ panic 文言で wrong-return-count / zero-Value / not-assignable を検査（assignability≠convertibility — `int32`→`int64` は panic、実測で確認） | [#365](https://github.com/podhmo/minigo/pull/365)（pin: `reflect_makefunc-outs`） |
+| レビュー 欠落 ③（判断: 要） | `emitLenFolds` が汎用実装なのに `*ast.ArrayType` トップレベルでしか呼ばれず、ネストした型式の非定数 array length が未 fold。probe すると `*[N]`/`func`/`struct`/`interface` は lazy package-scope path で既に動いており、実質の穴は `map[K][N]V` と `chan[N]T` のみだった → 全 typeExpr case から一様に呼ぶ形に拡張（Go の評価順と byte-identical を確認） | [#366](https://github.com/podhmo/minigo/pull/366)（pin: `arraylen_nestfold`） |
+| レビュー リファクタ ① | 「3 か所並存の埋め込み BFS」は rebase 後に縮小済み（`findMethod`/`hostFieldName` は #348 で削除）— 残る `promotedMember`（値レベル）vs `RType.FieldByNameFunc`（型レベルの annihilation 移植）は別アルゴリズムで統合対象外。実質的重複は `FieldRef.Get`/`Set` の同一 11 行ループのみ → `FieldRef.find()` に共通化（挙動不変） | [#367](https://github.com/podhmo/minigo/pull/367) |
+| レビュー リファクタ ② | `FieldByIndex`（panic）/`FieldByIndexErr`（error）の nil-ptr 差分だけを hook に分離して一本化（`fieldByIndexWalk`） | [#368](https://github.com/podhmo/minigo/pull/368) |
+| レビュー リファクタ ③ | `IndexRef.sliceOf`/`mapOf` の Named+Deref 同一ループを `IndexRef.container()` に統合 | [#369](https://github.com/podhmo/minigo/pull/369) |
+| レビュー リファクタ ④ | `foldNextArrLen`(vm) と `emitLenFolds`(compile) の平行 DFS — assert 追加ではなく共有化を選択。`runtime.ArrayLenNodes` が走査順の単一 source を提供し、compiler は emit、VM は nodes[0] を fold — 両側の平行実装約 80 行を解消 | [#370](https://github.com/podhmo/minigo/pull/370) |
+| 本レポート | この round-10 セクションの追記 | #371 |
 
 #### 残りの状況
 
-- difffuzz 系キューは枯渇して終了（27/30 PR、上限未到達）。gen hunt は text/num/reflect 全ドメイン・depth 6 まで飽和（新規 SILENT 0）。
+- difffuzz 系キューは枯渇して終了（掃討フェーズ 27/30 PR、上限未到達）。gen hunt は text/num/reflect 全ドメイン・depth 6 まで飽和（新規 SILENT 0）。レビュー指摘は全件処理済み（バグ2件＋欠落1件＋リファクタ4件、不要判定なし）。
 - 残件は全て境界クラス: GC-finalizer 系 6（`SetFinalizer` は no-op 設計）、`unsafe.Pointer`×13＋`unsafe.String`/`Offsetof`/`FuncForPC`（#40 ポインタモデル・ホスト PC 境界）、`peano.go` フレーム上限、`linkmain_run.go` tmpdir 非決定、HANG×6 は main でも再現するスループット限界。
-- レビューで2件の新規記録が TODO.md に入った（`map[string]*[3]int` 内部書き込み trap、struct 要素 field write の uniform trap）— 次ラウンド入口。
+- レビュー/ probe で見つかった新規ギャップは stack 先端の TODO.md に記録: **`map[string]*[3]int` の内部書き込みが依然 trap**、**struct 要素の field write が一律 trap** — 次ラウンドの入口。
+- Stack #333 は計 35 PR。CI は rebase 後の先端および各追加 PR で緑（head が全祖先を含むため累積検証）。リファクタ4件は全て挙動不変 — difffuzz pins は全緑のまま。
 
 #### 不備の振り返り
 
-- **MakeFunc は 1 根因に3つの層症状**（callable≠reflect.Value・`return nil`=TypedNil slice・bare 引数の typedef 欠如）をひとつの bridging 修正で閉じた — callback の in/out 両側を「呼び出しとして捉える」視点が初版に欠け、後に #365 で out 側 arity/assignability 検査が別 PR として必要になった（§6.13）。
+- **write-through の適用範囲に「参照形」という不変条件を書いていなかった（#352 → #364）**: IndexRef の write-through を入れたとき「map 要素が書き戻せるか」を kind 無しに開けたため、Go の compile error に相当するケース（array/struct 要素の部分書き込み）まで静かに通した。格納コピー vs live 参照の区別は §6.7（#127）で一度構造化した系で、同じ鏡をもう一度踏んだ形。
+- **コールバック境界の検査が入力側だけだった（#355 → #365）**: MakeFunc 実装時に `checkCallArgs` を入力（呼び出し引数）にのみ適用し、コールバックの戻り値側（arity・assignability）に同型のゲートを置かなかった。MakeFunc は 1 根因に3つの層症状（callable≠reflect.Value・`return nil`=TypedNil slice・bare 引数の typedef 欠如）をひとつの bridging 修正で閉じていたが、「ホスト⇄script の両方向でシグネチャ制約が効くか」の確認が out 側に及んでいなかった。
 - **ホスト側の共有リソースが script の観測値を汚す**: `ReadMemStats` が `goruntime.ReadMemStats` を素通ししていたため interpreter 自身の allocation が script の delta assert（`n0 != m.Mallocs`）を GC タイミングで不定に誤爆させた。「ホストカウンタは script には見せない」を明示しないと、同一クラス（runtime.GOMAXPROCS・NumGoroutine 等）で再発しうる。
 - **コピー忘れの要素経路**: keyed literal は positional 側が既に coerce していたのに要素格納で素通し — 「literal 要素は全経路で coerce する」不変条件が kv 分岐に書かれていなかった。deepEql の Named-peel strictness（`aNamed != bNamed → false`）がこの形状差を検出した — 型タグの厳密化がかえって別バグを晒した構造。
 - **panic が host 呼び出し内部で飲まれる観測性ギャップ**: goroutine panic → `proc.fail` → 後続 spawn は未実行 Task 化 → host WaitGroup のカウントが下りず、root が `WaitGroup.Wait` 内で blocked だと真の panic が表示されず deadlock に見える。「`fatal error: all goroutines are asleep` = 別 goroutine が既に trapped」と見抜く bisect 手順（worker body を逐次実行して真の panic を露出）を TODO.md＋メモリに記録。構造修正（abortable host call）は未着手。
 - **`typeMatches` の GoValue 網羅漏れ**: host box 値（complex64 — script 複素型が存在しない、bytes.Buffer）が全 concrete assert で `interface {} is complex64, not complex64`。KindPointer の GoValue 分岐と同じ native-type 比較を top-level にも置く見落とし — assert 判定器の分岐表に「host box」列がなかった。
-
-#### 計画外の記録と判断
-
-- **誤分類の訂正を TODO.md に記録**: `initialize.go`（以前「DeepEqual/unsafe.Pointer 境界」と注記）は実は keyed 要素の uncoerced 格納、`gcgort.go`（「本物の deadlock」）は masked trap — sweep 中に境界と分類していた項目が probe で真のバグと判明した分を訂正した。
-- **deadlock masking は修正せず記録に留めた**: root が host call 内 blocked のとき panic を露出するには abortable な host 呼出し設計が要り、本ラウンドの粒度を超える。観測手順だけ確立して残置。
-- **30 PR 上限には達せず枯渇終了**: キューが先に尽きたため打ち切りルール（30到達）を発動せず終了 — §5 の再開 prompt がそのまま通用する状態に戻った。
-
-### 6.13 実施ラウンド（round-11）: Stack #333 の連鎖 rebase とレビュー7件の判定
-
-Stack #333（27 PRs — difffuzz TODO 系・reflect 系・corpus sweep 第2ラウンド）に対して、別エージェントが `main...corpus-todo` のコードレビューを行った。対応前に main が +1 コミット進んでいた（#348 promoted-method BFS が別経路でマージ）ため、まず全ブランチの連鎖 rebase を行い、その後レビュー7件を子セッションに要/不要判断させて対応した（[#364](https://github.com/podhmo/minigo/pull/364)–[#370](https://github.com/podhmo/minigo/pull/370)、Stack #333 の末尾に積み増し → 計 34 PRs）。
-
-#### 実施内容
-
-| フェーズ | 内容 | PR |
-|------|------|-----|
-| 連鎖 rebase | 27 ブランチを新 main（+#348）上に `git rebase --onto <new prev> <old prev> <branch>` で底から順に巻き上げ。conflict は #347/#349 系のみ（#348 と同一領域）。#349 の実装部分は main の `promotedMember`（BFS + shallowest-wins + ambiguity + nil-path）に完全包含されたため pin のみに縮退、タイトル/本文を「difffuzz: pin the shallowest-wins promoted-method case」に差し替え（pin は main の実装でも PASS 確認済み） | #349（内容縮退） |
-| バグ ①（回帰） | map 要素への lvalue write-through が型を問わず効いていた — `ma["a"][1]=9`（map[string][3]int）や `mp["a"].X=9`（map[string]struct）が Go では compile error のところ格納オブジェクトを黙って書き換える（#352 で入れた IndexRef write-through の TRAP→SILENT 転化）。`runtime.SharedElem` で参照形要素（slice/map/chan/func/pointer 系）のみ write-through に絞り、array/struct/scalar 要素は従来通り trap。`m[k]=v`/`+=`/`++` の全体代入は不変 | [#364](https://github.com/podhmo/minigo/pull/364)（pin: `mapref_elemref` + `TestMapElemLvalueTraps`） |
-| バグ ② | `reflect.MakeFunc` がコールバックの**出力**側を一切検査していなかった — `func() (int,int)` シグネチャに 1 値しか返すコールバックで Go は panic するが黙って `len(outs)==1`。呼び出し時に Go と同じ panic 文言で wrong-return-count / zero-Value / not-assignable を検査（assignability≠convertibility — `int32`→`int64` は panic、実測で確認） | [#365](https://github.com/podhmo/minigo/pull/365)（pin: `reflect_makefunc-outs`） |
-| 欠落 ③（判断: 要） | `emitLenFolds` が汎用実装なのに `*ast.ArrayType` トップレベルでしか呼ばれず、ネストした型式の非定数 array length が未 fold。probe すると `*[N]`/`func`/`struct`/`interface` は lazy package-scope path で既に動いており、実質の穴は `map[K][N]V` と `chan[N]T` のみだった → 全 typeExpr case から一様に呼ぶ形に拡張（無効/寛容 corner のみ差分 — Go の評価順と byte-identical を確認） | [#366](https://github.com/podhmo/minigo/pull/366)（pin: `arraylen_nestfold`） |
-| リファクタ ① | 「3 か所並存の埋め込み BFS」は rebase 後に縮小済み（`findMethod`/`hostFieldName` は #348 で削除）— 残る `promotedMember`（値レベル）vs `RType.FieldByNameFunc`（型レベルの annihilation 移植）は別アルゴリズムで統合対象外。実質的重複は `FieldRef.Get`/`Set` の同一 11 行ループのみ → `FieldRef.find()` に共通化（挙動不変） | [#367](https://github.com/podhmo/minigo/pull/367) |
-| リファクタ ② | `FieldByIndex`（panic）/`FieldByIndexErr`（error）の nil-ptr 差分だけを hook に分離して一本化（`fieldByIndexWalk`） | [#368](https://github.com/podhmo/minigo/pull/368) |
-| リファクタ ③ | `IndexRef.sliceOf`/`mapOf` の Named+Deref 同一ループを `IndexRef.container()` に統合 | [#369](https://github.com/podhmo/minigo/pull/369) |
-| リファクタ ④ | `foldNextArrLen`(vm) と `emitLenFolds`(compile) の平行 DFS — assert 追加ではなく共有化を選択。`runtime.ArrayLenNodes` が走査順の単一 source を提供し、compiler は emit、VM は nodes[0] を fold — 両側の平行実装約 80 行を解消 | [#370](https://github.com/podhmo/minigo/pull/370) |
-
-#### 残りの状況
-
-- レビュー指摘は全件処理済み（バグ2件は回帰含め全 fix、欠落1件は要と判定して拡張、リファクタ4件は全て要と判定して実施 — 不要判定なし）。
-- 子セッションが probe 中に新規の legal-Go ギャップを2件発見し、修正には混ぜず stack 先端の TODO.md に記録: **`map[string]*[3]int` の内部書き込みが依然 trap**（`*[N]T` 要素も参照形だが SharedElem の ptr 系判定に未収録の可能性）、**struct 要素の field write が一律 trap**（`mp["a"].X=v` は Go でも compile error だが、struct 要素経由の他の書き込み形も uniform に trap している旨）。
-- Stack #333 は 34 PRs。CI は rebase 後の先端および各追加 PR で緑（head が全祖先を含むため累積検証になっている）。
-- リファクタ4件は全て挙動不変 — difffuzz pins は全緑のまま。
-
-#### 不備の振り返り
-
-- **write-through の適用範囲に「参照形」という不変条件を書いていなかった（#352 → #364）**: IndexRef の write-through を入れたとき「map 要素が書き戻せるか」を kind 無しに開けたため、Go の compile error に相当するケース（array/struct 要素の部分書き込み）まで静かに通した。「どの要素型なら write-through が Go と等価か」を SharedElem の形で明示しなかったのが根因 — 格納コピー vs live 参照の区別は §6.7（#127）で一度構造化した系で、同じ鏡をもう一度踏んだ形。
-- **コールバック境界の検査が入力側だけだった（#355 → #365）**: MakeFunc 実装時に `checkCallArgs` を入力（呼び出し引数）にのみ適用し、コールバックの戻り値側（arity・assignability）に同型のゲートを置かなかった。「ホスト⇄script の両方向でシグネチャ制約が効くか」はセットで確認すべき項目だった。
 - **汎用機構を置いても配線が一箇所止まり（#353 → #366）**: `emitLenFolds` は汎用に書いたのに呼び出しが `*ast.ArrayType` のみ — 「機構が対象となる AST 形すべてから呼ばれるか」は配線の網羅確認が要る。probe 後は実質穴が map/chan のみと分かったが、一様呼出し化で残差も含めて閉じた。
 - **平行実装のドリフトは「共有 source」で解く方が正しい（④）**: `foldNextArrLen` と `emitLenFolds` は DFS 順序一致を暗黙に要求する平行 DFS — 順序 assert のテスト追加も選択肢だったが、子セッションは走査自体を `runtime.ArrayLenNodes` に共有化する方を選んだ。assert は「ずれたら教えてくれる」止まりで、共有化はずれる余地自体を消す — 後者が正しい判断。
 
@@ -363,5 +339,8 @@ Stack #333（27 PRs — difffuzz TODO 系・reflect 系・corpus sweep 第2ラ�
 
 - **#349 が rebase で pin のみに縮退**: stack 内の promoted-method BFS 実装が main 側の #348 に完全包含されていたため、rebase 適用後の diff は testdata pin のみに。実装を消し込んで pin と差し替えた PR タイトル/本文も追従更新 — 「stack 内の別 PR が main で別実装として着陸」した場合の自然な帰結。force-push による全ブランチ書き換えは破壊的操作だが、ユーザーの明示指示（「開始前にmainからrebaseしたほうが良いかも」）で実施。
 - **レビューは rebase 前の差分に対するもの**: 指摘の半分は現行コードで部分的に陳腐化していた（findMethod 系の並存指摘、emitLenFolds の「まだ trap」範囲）。各項目を現スタック先端で再検証してから判断させる運用を子セッションにも継承 — §5 の「レビュー指摘は現スタックトップで再現を確認してから直す」と同じ教訓の再確認。
+- **誤分類の訂正を TODO.md に記録**: `initialize.go`（以前「DeepEqual/unsafe.Pointer 境界」と注記）は実は keyed 要素の uncoerced 格納、`gcgort.go`（「本物の deadlock」）は masked trap — sweep 中に境界と分類していた項目が probe で真のバグと判明した分を訂正した。
+- **deadlock masking は修正せず記録に留めた**: root が host call 内 blocked のとき panic を露出するには abortable な host 呼出し設計が要り、本ラウンドの粒度を超える。観測手順だけ確立して残置。
 - **子セッションへの委譲**: バグ2件＋欠落判定1件＋リファクタ4件の計7件を、各項目ごとに oracle probe（`go run`）で要/不要を判断させて 1 根因=1 PR で積ませる形に委譲。リファクタ①の「3本BFS」は実際には縮小済みで実質重複のみ残部修正、④は提案外の共有化アプローチを採用 — 文面通りではなく趣旨に沿った判断を要求した結果として妥当。
 - **新規ギャップの分離記録**: probe 中に見つかった `map[string]*[3]int` 内部書き込み・struct 要素 field write の残存 trap は「この stack の指摘項目」ではないため TODO.md への記録に留め、次ラウンドの入口とした。
+- **30 PR 上限には達せず枯渇終了**: 掃討キューが先に尽きたため打ち切りルール（30到達）を発動せず終了 — §5 の再開 prompt がそのまま通用する状態に戻った。
