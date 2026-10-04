@@ -812,6 +812,40 @@ func (v *RValue) SetLen(n int) {
 	v.set(&runtime.Slice{Elems: s.Elems[:n], Typ: s.Typ})
 }
 
+// SetCap reslices the target slice's header in place like
+// reflect.Value.SetCap: only the capacity changes — the length and the
+// backing stay — so n must lie in [len, cap].
+func (v *RValue) SetCap(n int) {
+	if v.host() {
+		v.rv.SetCap(n)
+		return
+	}
+	v.mustValid("SetCap")
+	if v.ro {
+		trap("reflect.Value.SetCap using value obtained using unexported field")
+	}
+	if v.ref == nil {
+		trap("reflect.Value.SetCap using unaddressable value")
+	}
+	if n2, isN := v.get().(*runtime.Named); isN {
+		if s, ok := n2.V.(*runtime.Slice); ok {
+			if n >= len(s.Elems) && n <= cap(s.Elems) {
+				v.set(&runtime.Named{Typ: n2.Typ, V: &runtime.Slice{Elems: s.Elems[:len(s.Elems):n], Typ: s.Typ}})
+				return
+			}
+			trap("slice capacity out of range in SetCap")
+		}
+	}
+	s, ok := v.get().(*runtime.Slice)
+	if !ok {
+		trap("call of reflect.Value.SetCap on %s Value", v.kindStr())
+	}
+	if n < len(s.Elems) || n > cap(s.Elems) {
+		trap("slice capacity out of range in SetCap")
+	}
+	v.set(&runtime.Slice{Elems: s.Elems[:len(s.Elems):n], Typ: s.Typ})
+}
+
 // Cap reports cap() of a slice/array/chan value.
 func (v *RValue) Cap() int {
 	v.mustValid("Cap")
