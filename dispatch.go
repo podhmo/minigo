@@ -40,12 +40,7 @@ func (e *Engine) methodSetOfValue(v runtime.Value) (map[string]bool, bool, error
 				// a tagged host box (host composite literal T{}) — the
 				// method set is the boxed host type's reflect set;
 				// td.Methods is empty for host typedefs.
-				t := reflect.TypeOf(gv.V)
-				set := map[string]bool{}
-				for i := 0; i < t.NumMethod(); i++ {
-					set[t.Method(i).Name] = true
-				}
-				return set, false, nil
+				return hostMethodSet(gv.V), false, nil
 			}
 			return e.typeMethodsU(n.Typ)
 		}
@@ -72,15 +67,25 @@ func (e *Engine) methodSetOfValue(v runtime.Value) (map[string]bool, bool, error
 	case *runtime.Chan:
 		return e.typeMethodsU(x.Typ)
 	case *runtime.GoValue:
-		t := reflect.TypeOf(x.V)
-		set := map[string]bool{}
-		for i := 0; i < t.NumMethod(); i++ {
-			set[t.Method(i).Name] = true
-		}
-		return set, false, nil
+		return hostMethodSet(x.V), false, nil
 	default:
 		return nil, false, nil
 	}
+}
+
+// hostMethodSet reports a host value's reflect method names — the empty
+// set when the box holds nil (a nil interface boxes no methods, and
+// TypeOf would nil-deref).
+func hostMethodSet(x any) map[string]bool {
+	set := map[string]bool{}
+	t := reflect.TypeOf(x)
+	if t == nil {
+		return set
+	}
+	for i := 0; i < t.NumMethod(); i++ {
+		set[t.Method(i).Name] = true
+	}
+	return set
 }
 
 // typeMethods implements the Hooks.TypeMethods hook: the method set of a
