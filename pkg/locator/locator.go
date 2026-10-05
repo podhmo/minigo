@@ -154,6 +154,17 @@ func (l *Locator) ModulePath() string {
 	return l.modulePath
 }
 
+// Requires returns the go.mod require directives as module path -> version.
+// The map is a copy; it is empty when module resolution is off or no
+// go.mod was found.
+func (l *Locator) Requires() map[string]string {
+	out := make(map[string]string, len(l.requires))
+	for k, v := range l.requires {
+		out[k] = v
+	}
+	return out
+}
+
 // FindPackageDir converts an import path to a physical directory path.
 func (l *Locator) FindPackageDir(importPath string) (string, error) {
 	return l.FindPackageDirFrom("", importPath)
