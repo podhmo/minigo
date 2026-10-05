@@ -1,0 +1,5 @@
+0: string rec:boom
+1: bool false
+2: string done
+3: int 1
+4: panic: héllo
