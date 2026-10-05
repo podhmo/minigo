@@ -12,6 +12,7 @@ interpreted by [`minigo`](../../). See
 go run ./ -f testdata/Taskfile.go -l      # list tasks (name + doc comment)
 go run ./ -f testdata/Taskfile.go Default # run a task
 go run ./ -f testdata/Taskfile.go Greet:world Clean
+go run ./ -f testdata/Taskfile.go -n Default # dry run: print, don't execute
 
 # or install once, then run from anywhere with zero rebuild
 go install                                # into $(go env GOPATH)/bin
@@ -30,3 +31,30 @@ shell commands anchor at the **Taskfile's directory** — the interpreter's
 virtual cwd — so the same relative path names the same file no matter
 where you invoke the binary from, and a task that runs `os.Chdir` never
 moves your shell.
+
+## Dry run (`-n`)
+
+Like `make -n`, `-n` prints what a task would do instead of doing it:
+
+- `task.Sh` / `task.Run` / `task.RunIn` / `task.Output` print the command
+  line to stdout. `task.Output` returns `""` and a nil error, so code that
+  consumes its result sees an empty value.
+- The error-only `os` mutators (`WriteFile`, `Remove`, `RemoveAll`,
+  `Mkdir`, `MkdirAll`, `Rename`, `Truncate`) print as `# os.Name args...`
+  and return nil.
+
+The rest of the Taskfile still runs: `fmt.Println`, `task.Log`, and reads
+like `task.Target` / `os.Stat` behave normally, so `-n` shows the path the
+tasks take against the current filesystem state. `os.Create` / `os.OpenFile`
+(which hand back a file) are not intercepted.
+
+```console
+$ task-run -f testdata/Taskfile.go -n Default
+linting...
+echo 'gofmt ok'
+building...
+go version
+compiler:
+# os.WriteFile app.out ... 0644
+done
+```
