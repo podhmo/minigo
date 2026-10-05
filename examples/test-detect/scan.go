@@ -126,7 +126,7 @@ func modulePathOf(goModPath string) (string, error) {
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return "", err
+		return "", fmt.Errorf("%s: %w", goModPath, err)
 	}
 	return "", fmt.Errorf("%s: no module directive", goModPath)
 }
