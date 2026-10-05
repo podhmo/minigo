@@ -355,3 +355,41 @@ finding sat at an edge case of spelling or ordering.
 - Scope stays a caller choice — the import closure is always searched
   but only the root subtree is written unless `-deps`; a directive can
   therefore outrun what a plain `go generate` run would touch.
+
+## Round-3 notes: error-vocabulary experiment
+
+Full writeup: `docs/sketch/ja/experiment-gen-sync-errors.md` — roughly
+30 breakage cases run against a copy of the tool (broken inputs, broken
+definitions, module-level inconsistencies), graded against the
+convert-define README ideal: answer *where/why/whose-fault* in the
+caller's vocabulary, and never pretend success.
+
+### What the experiment found
+
+- **Parse/resolve failures are the healthy path** — file:line:col and
+  import paths survive into the message; only the `runtime trap` +
+  script-frame traceback wrapper is engine vocabulary.
+- **Three pretend-success channels**: `syncFile` swallows I/O errors
+  into stdout + exit 0; `ctx.MatchFile` drops unreadable files from the
+  index silently (losing their import edges regresses *other* files'
+  managed blocks); the module-path resolver falls back to a shadow
+  tree, so deleted/broken local packages are silently read from the
+  other copy — and writes can cross trees via the `e.pkgs` cache.
+- **Real bugs**: `%!w(<nil>)` on a file-as-dir lookup; CRLF files miss
+  the sentinel (a second managed block is inserted, mixed EOL);
+  trailing-position flags (`./app -check`) run a *write*; extra
+  positional args are discarded silently.
+- **Vocabulary gaps**: `drift: N directive(s)` and
+  `rewrote managed block (N directive(s))` report counts, never which
+  directives changed or why — a regression (variants dropped) reads
+  the same as a legitimate cleanup.
+
+### Improvement set (stacked PR)
+
+Script layer: propagate I/O failures to a nonzero exit, report
+index-dropped `.go` files, guard writes to the scanned subtree, report
+dropped/added directives, warn on degraded no-module scans. Host layer:
+reject >1 positional args. Engine one-liner: `%!w(<nil>)` →
+`not a directory`. Out of scope this round: resolver module priority,
+index-level `MatchFile` visibility, mixed-package policy,
+`// Code generated` file handling.
