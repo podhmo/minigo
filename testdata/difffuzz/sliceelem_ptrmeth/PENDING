@@ -1,5 +1,0 @@
-SILENT/value (lang hunt, seed 20261005, emitted lang_value_4b500c90)
-shape:  s[i].Scale(2) inside `for i := range s` on []Point
-go:     [{2 4} {0 0}]
-minigo: [{1 2} {0 0}]  -- pointer-receiver method call on a slice element
-mutates a copy instead of writing back

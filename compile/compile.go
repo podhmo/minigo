@@ -1406,6 +1406,45 @@ func (c *compiler) isStorageBase(e ast.Expr) bool {
 	return false
 }
 
+// indexOperand unwraps parens and reports e as an index expression.
+func indexOperand(e ast.Expr) (*ast.IndexExpr, bool) {
+	for {
+		if p, ok := e.(*ast.ParenExpr); ok {
+			e = p.X
+			continue
+		}
+		ix, ok := e.(*ast.IndexExpr)
+		return ix, ok
+	}
+}
+
+// refableIndexBase reports whether an index operand's base denotes
+// storage a selector's element ref can resolve — a var, a nested
+// lvalue (x.f[i], (*p)[i], a[i][j]) — so a pointer-receiver method
+// writes through like (&s[i]).M(). A type name means F[T]
+// instantiation, and a package qualifier or a call result has no
+// writable element storage; both stay on the value path.
+func (c *compiler) refableIndexBase(e ast.Expr) bool {
+	for {
+		if p, ok := e.(*ast.ParenExpr); ok {
+			e = p.X
+			continue
+		}
+		break
+	}
+	switch t := e.(type) {
+	case *ast.Ident:
+		info, found := c.resolveName(t.Name)
+		return found && !info.isType
+	case *ast.SelectorExpr:
+		id, ok := t.X.(*ast.Ident)
+		return ok && !c.isImportName(id.Name)
+	case *ast.IndexExpr, *ast.StarExpr:
+		return true
+	}
+	return false
+}
+
 // refTargetBase emits the operand of a field/index ref — a storage ref
 // for addressable bases (idents, fields, elements, derefs), the
 // evaluated value for anything else (e.g. a call returning a pointer).
@@ -2240,7 +2279,18 @@ func (c *compiler) expr(e ast.Expr) {
 			c.getRef(x.Name, x.Pos())
 		}
 	case *ast.SelectorExpr:
-		c.expr(x.X)
+		// `s[i].M()` is `(&s[i]).M()` — Go's selector lowering hands the
+		// element's storage to a pointer receiver. Emit the element's ref
+		// (a tolerated map element resolves to its copy at select time) so
+		// the write lands; a type-form operand (F[T].M) stays an
+		// instantiation.
+		if ix, ok := indexOperand(x.X); ok && !c.isTypeForm(ix.Index) && c.refableIndexBase(ix.X) {
+			c.refTargetBase(ix.X, false)
+			c.expr(ix.Index)
+			c.emit(bytecode.OpIndexRef, 0, 1, ix.Pos())
+		} else {
+			c.expr(x.X)
+		}
 		// the member's own position — Go reports a select failure at the
 		// .Sel token, which matters when the callee wraps to the next
 		// line (`v.\n\t\tA()` reports A's line, not v's).
