@@ -150,19 +150,21 @@ type Domain struct {
 	Types   []*Typ
 	Imports []string
 	Decls   []string // extra top-level declarations emitted verbatim
+	Sigs    []*Sig   // signature table for table-driven domains (text, lang)
 	expr    func(g *Gen, t *Typ, depth int) *Node
 	probe   func(g *Gen, depth int) Probe // non-expr domains (reflect)
 }
 
 var (
 	numDomain  = &Domain{Name: "num", Types: allTypes, Imports: []string{"fmt"}}
-	textDomain = &Domain{Name: "text", Types: textTypes, Imports: textImports}
-	domains    = map[string]*Domain{"num": numDomain, "text": textDomain, "reflect": reflDomain}
+	textDomain = &Domain{Name: "text", Types: textTypes, Imports: textImports, Sigs: textSigs}
+	domains    = map[string]*Domain{"num": numDomain, "text": textDomain, "reflect": reflDomain, "lang": langDomain}
 )
 
 func init() {
 	numDomain.expr = (*Gen).numExpr
 	textDomain.expr = (*Gen).textExpr
+	langDomain.expr = (*Gen).textExpr
 	reflDomain.probe = (*Gen).reflProbe
 }
 

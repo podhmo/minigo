@@ -179,7 +179,7 @@ func cmdGen(ctx context.Context, args []string) error {
 	batches := fs.Int("batches", 8, "number of generated programs")
 	nprobes := fs.Int("probes", 200, "probes per program")
 	depth := fs.Int("depth", 4, "max expression depth")
-	domain := fs.String("domain", "text", "probe domain: text (strings/strconv/fmt/collections), num (sized ints, shifts, conversions), or reflect (facade operation chains)")
+	domain := fs.String("domain", "text", "probe domain: text (strings/strconv/fmt/collections), num (sized ints, shifts, conversions), reflect (facade operation chains), or lang (structs/methods/interfaces, control flow, generics)")
 	shrinkRounds := fs.Int("shrink", 12, "max shrink rounds per finding (0 disables)")
 	perBucket := fs.Int("per-bucket", 2, "findings shrunk per fingerprint group")
 	emit := fs.String("emit", "", "write each reduced bug as <dir>/<slug>/{main.go,want.stdout,PENDING} — the layout TestDiffRegressions runs")

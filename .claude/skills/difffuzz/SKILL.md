@@ -28,7 +28,7 @@ code and commits, Japanese replies to the user, TODO.md upkeep).
 
 ## `/difffuzz hunt [domain] [seed]`
 
-1. Run the generator (default domain `text`); use a fresh seed and record it:
+1. Run the generator (default domain `text`; also `num`, `reflect`, `lang`); use a fresh seed and record it:
    ```
    go -C ./tools/difffuzz run ./ gen -domain text -seed <N> -batches 16 -per-bucket 1 \
      -emit /tmp/difffuzz-emit -out /tmp/difffuzz-<N>.md
@@ -91,6 +91,11 @@ Grow the generator where the project's real usage is:
   shapes (loops, switch, maps, closures) go in as IIFE templates. Prefer
   surface that scripts actually use (strings/strconv/fmt verbs, maps,
   sort/slices, regexp, encoding/json, path/filepath, time formatting).
+- Lang domain (`-domain lang`): add rows to `langSigs` in
+  `tools/difffuzz/lang.go`; prelude types, methods and generic helpers go in
+  `langDecls` (fmt-only — it is emitted into every program). Templates must
+  never mutate package-level values (minigo re-runs from the next probe
+  with fresh globals after a trap) — copy into a local first.
 - New types: add a `*Typ` with edge-case `Values` (include nil/empty and
   non-ASCII) to `textTypes`.
 - New metamorphic carriers: add a context to `Probe.Body` + `metaCtxs`.

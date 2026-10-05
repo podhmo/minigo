@@ -180,9 +180,9 @@ var textSigs = []*Sig{
 
 var textImports = []string{"bytes", "fmt", "maps", "regexp", "slices", "sort", "strconv", "strings", "unicode", "unicode/utf8"}
 
-func sigsReturning(t *Typ) []*Sig {
+func sigsReturning(sigs []*Sig, t *Typ) []*Sig {
 	var out []*Sig
-	for _, s := range textSigs {
+	for _, s := range sigs {
 		if s.Ret == t {
 			out = append(out, s)
 		}
@@ -191,7 +191,7 @@ func sigsReturning(t *Typ) []*Sig {
 }
 
 func (g *Gen) textExpr(t *Typ, depth int) *Node {
-	sigs := sigsReturning(t)
+	sigs := sigsReturning(g.D.Sigs, t)
 	if depth <= 0 || len(sigs) == 0 || g.R.IntN(4) == 0 {
 		return g.leaf(t)
 	}
