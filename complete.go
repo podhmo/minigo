@@ -82,13 +82,25 @@ var predeclared = []string{"nil", "true", "false", "iota"}
 // lines (`:`-prefixed) are not completed here — they belong to the
 // front-end's own completer.
 func (r *REPL) Complete(line string) []Candidate {
+	_, cands := r.complete(line)
+	return cands
+}
+
+// CompleteToken is Complete plus the byte offset where the replaceable
+// token begins — every candidate splices over line[start:]. A line
+// editor needs it to insert a candidate without re-lexing the tail.
+func (r *REPL) CompleteToken(line string) (start int, cands []Candidate) {
+	return r.complete(line)
+}
+
+func (r *REPL) complete(line string) (start int, cands []Candidate) {
 	line = strings.TrimRight(line, " \t")
 	if strings.HasPrefix(strings.TrimSpace(line), ":") {
-		return nil
+		return len(line), nil
 	}
 	ctx := completeContext(line)
 	if ctx.imp {
-		return r.importCandidates(ctx.prefix)
+		return ctx.start, r.importCandidates(ctx.prefix)
 	}
 	c := &completer{r: r, seen: map[string]bool{}}
 	var out []Candidate
@@ -109,7 +121,7 @@ func (r *REPL) Complete(line string) []Candidate {
 		out = keep
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out
+	return ctx.start, out
 }
 
 // completionCtx is the lexical tail of the line: "selector after a dot"
@@ -120,6 +132,7 @@ type completionCtx struct {
 	imp      bool   // completing inside an `import "..."` string
 	base     string // source text of the selector's base expression
 	prefix   string // the partial identifier (or import path) being typed
+	start    int    // byte offset where the replaceable token begins
 }
 
 // completeContext tokenizes the line and classifies its tail. Only the
@@ -154,7 +167,7 @@ func completeContext(line string) completionCtx {
 	}
 	n := len(toks)
 	if n == 0 {
-		return completionCtx{}
+		return completionCtx{start: len(line)}
 	}
 	last := toks[n-1]
 	// `import "str` (also `import . "`, `import name "`, `import (`)
@@ -162,19 +175,21 @@ func completeContext(line string) completionCtx {
 	if last.tok == token.STRING && toks[0].tok == token.IMPORT {
 		prefix := last.lit
 		prefix = strings.TrimPrefix(prefix, `"`)
+		prefix = strings.TrimPrefix(prefix, "`")
 		prefix = strings.TrimSuffix(prefix, `"`)
-		return completionCtx{imp: true, prefix: prefix}
+		prefix = strings.TrimSuffix(prefix, "`")
+		return completionCtx{imp: true, prefix: prefix, start: last.off + 1}
 	}
 	if last.tok == token.PERIOD {
-		return completionCtx{selector: true, base: line[:last.off]}
+		return completionCtx{selector: true, base: line[:last.off], start: last.off + 1}
 	}
 	if last.tok == token.IDENT && n >= 2 && toks[n-2].tok == token.PERIOD {
-		return completionCtx{selector: true, base: line[:toks[n-2].off], prefix: last.lit}
+		return completionCtx{selector: true, base: line[:toks[n-2].off], prefix: last.lit, start: last.off}
 	}
 	if last.tok == token.IDENT {
-		return completionCtx{prefix: last.lit}
+		return completionCtx{prefix: last.lit, start: last.off}
 	}
-	return completionCtx{}
+	return completionCtx{start: len(line)}
 }
 
 // completer accumulates candidates for one Complete call; seen dedupes

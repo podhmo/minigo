@@ -272,6 +272,27 @@ func TestCompleteMethodExprValueSet(t *testing.T) {
 	}
 }
 
+func TestCompleteTokenStart(t *testing.T) {
+	e := NewEngine("testdata")
+	r := e.NewREPL()
+	for _, tc := range []struct {
+		line  string
+		start int
+	}{
+		{"pri", 0},         // bare ident: replace the whole tail
+		{"x.pri", 2},       // selector prefix: replace after the dot
+		{"x.", 2},          // dot tail: insert after the dot
+		{`import "str`, 8}, // inside the import literal
+		{"f(", 2},          // no token: pure insertion point
+		{":comp x", 7},     // meta lines are not completed here
+	} {
+		start, _ := r.CompleteToken(tc.line)
+		if start != tc.start {
+			t.Fatalf("CompleteToken(%q).start = %d, want %d", tc.line, start, tc.start)
+		}
+	}
+}
+
 type hostInner struct{ ID int64 }
 type hostOuter struct {
 	hostInner

@@ -19,6 +19,7 @@ import (
 
 	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/runtime"
+	"golang.org/x/term"
 )
 
 func main() {
@@ -219,36 +220,53 @@ persist as globals across lines. imports are ordinary Go syntax —
 import "fmt" — plus directory forms import "./dir" or "/abs/dir"
 (resolved eagerly, bound under the package's declared name). a
 line ending inside an open () [] {} group (or after an operator)
-continues with a ".. " prompt until it closes.`
+continues with a ".. " prompt until it closes. on a real terminal
+the input line is editable: arrows/Home/End move the cursor, Up/Down
+recall history, and TAB completes code (and :command names).`
 
 func runREPL(ctx context.Context, in io.Reader, out io.Writer) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
 	}
+	var src replSource = &scannerSource{sc: bufio.NewScanner(in), out: out}
+	// On a real terminal, upgrade to a raw-mode line editor: cursor
+	// keys and in-session history come from x/term, and TAB drives
+	// (*REPL).Complete. Pipes keep the plain scanner path.
+	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		if state, err := term.MakeRaw(int(f.Fd())); err == nil {
+			defer func() { _ = term.Restore(int(f.Fd()), state) }()
+			out = writeWithCRLF{out}
+			src = &termSource{t: term.NewTerminal(readWriter{f, out}, "")}
+		}
+	}
 	e := minigo.NewEngine(cwd, minigo.WithOutput(out))
 	r := e.NewREPL()
+	if ts, ok := src.(*termSource); ok {
+		ts.t.AutoCompleteCallback = completerFor(r, ts.t)
+	}
 	fmt.Fprintln(out, "minigo repl (:help for commands)")
-	sc := bufio.NewScanner(in)
 	var frag strings.Builder
 	for {
-		if frag.Len() == 0 {
-			fmt.Fprint(out, ">> ")
-		} else {
-			fmt.Fprint(out, ".. ")
+		prompt := ">> "
+		if frag.Len() > 0 {
+			prompt = ".. "
 		}
-		if !sc.Scan() {
-			if frag.Len() > 0 {
-				// EOF mid-fragment: surface the parse error rather
-				// than dropping the input silently.
-				if _, err := r.EvalLine(ctx, frag.String()); err != nil {
-					fmt.Fprintf(out, "error: %s\n", err)
+		text, err := src.next(prompt)
+		if err != nil {
+			if err == io.EOF {
+				if frag.Len() > 0 {
+					// EOF mid-fragment: surface the parse error rather
+					// than dropping the input silently.
+					if _, err := r.EvalLine(ctx, frag.String()); err != nil {
+						fmt.Fprintf(out, "error: %s\n", err)
+					}
 				}
+				fmt.Fprintln(out)
+				return nil
 			}
-			fmt.Fprintln(out)
-			return sc.Err()
+			return err
 		}
-		text := sc.Text()
 		if frag.Len() == 0 {
 			line := strings.TrimSpace(text)
 			if line == "" {
