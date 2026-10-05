@@ -303,7 +303,11 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 	switch t := e.(type) {
 	case *ast.Ident:
 		if btd := boundTypedef(binds, t.Name); btd != nil {
-			return typBoundSpellingU(btd, false)
+			// display, not identity: a bound argument qualifies by the
+			// package's clause name like every other Type.String path —
+			// typBoundSpellingU's Pkg.Path qualifier is for identity
+			// spelling (<dir>/x.Point would leak the synthetic path).
+			return DisplayName(btd)
 		}
 		if predeclaredTypeName(t.Name) {
 			return canonBasicName(t.Name)
