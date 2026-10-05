@@ -327,66 +327,29 @@ Prompt for the round:
 
 ## Spike feedback — what building it taught us
 
-From `examples/minigo-generate` as it stands:
+From `examples/minigo-generate` as it stands, sorted by what kind of
+finding each is.
 
-- **`[]string` does not cross `Engine.Call` unboxed.** Scalars (string,
-  int, bool) pass as `runtime.Value` directly, but a host `[]string`
-  arg arrives as the raw Go slice and the callee's param coerce traps
-  `cannot use []string as []string` — the shape check wants a
-  `*runtime.Slice`. The runner boxes it explicitly:
-  `&runtime.Slice{Elems: elems}` — task-run already imports `runtime`
-  for the same reason. Worth noting upstream: `Call` could apply the
-  `goValueOf` unboxing reflect-call results already get, so host
-  containers cross the boundary the same way script values do.
-- **Directive discovery needed the raw comment table, as predicted** —
-  `//minigo:generate` is a directive comment so `CommentGroup.Text()`
-  strips it. `sf.AST.Comments` (already retained by `syntax.ParseFile`)
-  keeps it, and `c.Text` still carries its `//` vs `/*` marker, so a
-  plain prefix check excludes block comments for free.
+### Verified facts
+
 - **The `Main(args []string) int` contract held up end-to-end** —
   `flag.NewFlagSet` runs under interpretation, so the demo tool parses
   real flags with zero adaptation, and `main()` wrapping `Main` makes
   the same file a working `go run` command. `os.Getenv`/`os.WriteFile`
   intrinsics give the `go generate` env contract for free.
-- **Per-directive env needs save/restore**, not just `os.Setenv` — the
-  first version leaked `GOFILEPATH` into the host process (and would
-  leak it into the next directive). Now the four vars are swapped in
-  around the call and restored after — `TestGenerate` pins the
-  restoration with a sentinel.
-- **An `inspect`-based stringer is genuinely small** (~100 lines):
-  `DirOf` → `Files` → `Decls` → `EnumMembers` (source order, which is
-  also the declaration order real stringer emits) → emit. The numeric
-  fallback's base type comes from `inspect.Def(target).Text`.
-- **No const values — and no comments, for plugins either.** `inspect`
-  surfaces declarations, not evaluated values — stringer only needs
-  the member *names* for its switch, so the spike never felt it, but a
-  tool that needs iota results or explicit values is out of `inspect`'s
-  current reach. The same gap applies to doc text: `inspect.Doc` goes
-  through `CommentGroup.Text()`, which strips directive comments, so a
-  plugin wanting "the comment above this decl" (a common codegen
-  input) has no inspect entry point — it would have to re-parse the
-  file through `syntax` itself.
+- **Directive discovery needed the raw comment table, as predicted** —
+  `//minigo:generate` is a directive comment so `CommentGroup.Text()`
+  strips it. `sf.AST.Comments` (already retained by `syntax.ParseFile`)
+  keeps it, and `c.Text` still carries its `//` vs `/*` marker, so a
+  plain prefix check excludes block comments for free.
 - **The host extends what a plugin may import — `Engine.Bind` + a
   `*runtime.GoValue`-wrapped func is a native binding.** Verified:
   `e.Bind("go/format", {"Source": &runtime.GoValue{V: format.Source}})`
   makes `format.Source(src)` callable from interpreted code, multi-value
   returns and all (a bare Go func value is *not* callable — the binding
-  needs the `GoValue` or `BuiltinFunc` wrapper, task-run's shape). So
-  "plugin imports are limited to bound/interpretable packages" is a
-  default, not a wall: the runner binds `go/format` and both demo tools
-  now format their output like real tools. A plugin that needs an
-  import the host didn't bind still hits the interpretation wall —
-  the bound surface is the runner's contract surface.
-- **Alias-targeted `-type` fails generically.** Verified: pointing a
-  directive at `type StatusAlias = Status` yields "no enum consts" —
-  `EnumMembers` matches consts typed by the name itself and does not
-  follow the alias. Correct-ish, but a real-world footgun worth
-  documenting rather than fixing.
-- **Env is the *only* per-directive context channel** — which is
-  exactly what blocks the deferred parallel path: four process-global
-  vars can't carry context to N concurrent Calls. The plan's bound
-  `generate` package keyed on `runtime.VMCaller` identity is no longer
-  optional for parallelism, it's the design.
+  needs the `GoValue` or `BuiltinFunc` wrapper, task-run's shape). The
+  runner binds `go/format` and both demo tools format their output like
+  real tools.
 - **Interpreted `fmt` is faithful** — `fmt.Fprintf` with too few args
   renders `%!s(MISSING)` exactly like the host toolchain (hit and
   fixed in enumvals' emit).
@@ -397,12 +360,81 @@ From `examples/minigo-generate` as it stands:
   `Call` with its own `GOLINE`; the second tool's package loads through
   the same warm cache. Multiple tools across one file never needed
   special machinery.
-- **Tests copy a patched module** like gen-sync's: the fixture's go.mod
-  ships `replace github.com/podhmo/minigo => ../../`, and the temp copy
-  rewrites it to the absolute checkout so the tool's `inspect` import
-  still resolves.
+- **Alias-targeted `-type` fails generically** — pointing a directive
+  at `type StatusAlias = Status` yields "no enum consts" (see
+  limitations below for the `EnumMembers` reason).
 - **Speed was not the hard part.** Scan + three interpreted tool calls
   (each indexing the package via `inspect`, parsing `flag`, writing a
   file) complete in tens of milliseconds in tests — the shared-cache
   thesis holds; the friction was all at the value boundary, not the
   interpreter loop.
+
+### What became clear
+
+- **Per-directive env needs save/restore**, not just `os.Setenv` — the
+  first version leaked `GOFILEPATH` into the host process (and would
+  leak it into the next directive). Now the four vars are swapped in
+  around the call and restored after — `TestGenerate` pins the
+  restoration with a sentinel.
+- **An `inspect`-based stringer is genuinely small** (~100 lines):
+  `DirOf` → `Files` → `Decls` → `EnumMembers` (source order, which is
+  also the declaration order real stringer emits) → emit. The numeric
+  fallback's base type comes from `inspect.Def(target).Text`.
+- **Env is the *only* per-directive context channel** — which is
+  exactly what blocks the deferred parallel path: four process-global
+  vars can't carry context to N concurrent Calls. The plan's bound
+  `generate` package keyed on `runtime.VMCaller` identity is no longer
+  optional for parallelism, it's the design.
+- **Tests copy a patched module** like gen-sync's: the fixture's go.mod
+  ships `replace github.com/podhmo/minigo => ../../`, and the temp copy
+  rewrites it to the absolute checkout so the tool's `inspect` import
+  still resolves.
+
+### minigo limitations found
+
+- **Host container args don't cross `Engine.Call`.** Scalars (string,
+  int, bool) pass as `runtime.Value` directly, but a host `[]string`
+  arg arrives as the raw Go slice and the callee's param coerce traps
+  `cannot use []string as []string` — the shape check wants a
+  `*runtime.Slice`. The runner boxes it explicitly:
+  `&runtime.Slice{Elems: elems}` (task-run already imports `runtime`
+  for the same reason). Filed in TODO.md.
+- **`inspect` surfaces declarations, not values or comments.** A tool
+  needing iota results or explicit const values is out of `inspect`'s
+  current reach; and since `inspect.Doc` goes through
+  `CommentGroup.Text()`, a plugin wanting "the comment above this
+  decl" (a common codegen input) has no inspect entry point — it would
+  have to re-parse the file through `syntax` itself.
+- **`EnumMembers` doesn't follow aliases** — matching is by the const's
+  own type name, so `type StatusAlias = Status` reports no members.
+  Correct-ish, but a real-world footgun.
+- **A plugin importing an unbound package hits the interpretation
+  wall** — "imports limited to the bound surface" is a default, not a
+  wall (see `go/format` above), but anything the host didn't bind still
+  has to interpret cleanly from source. The bound surface *is* the
+  runner's contract surface.
+
+### Asks of minigo (filed/wished)
+
+- **`Engine.Call` should unbox host container args** — apply the
+  `goValueOf` conversion reflect-call results already get, so host
+  containers cross the boundary the same way script values do.
+  TODO.md entry.
+- **Enumerate installed native bindings** — an accessor over `e.binds`
+  (std intrinsics + user `Bind`s alike), so a plugin can ask "is
+  `go/format` bound?" before importing, and errors gain "not bound by
+  this runner" vocabulary. TODO.md entry.
+- **`inspect` const-value evaluation and comment access** — the two
+  surfaces above (evaluated consts, per-decl raw comments) would close
+  the remaining codegen gaps without plugins re-parsing.
+
+### Future work
+
+- **The bound `generate` package** — a `VMCaller`-keyed
+  `generate.File()`/`Line()`/`Package()` channel replacing the env
+  swap; it's what unblocks parallel directive execution.
+- **The combined round with gen-sync** — the `//minigo:generate` emit
+  mode (or flag) plus the `//go:generate minigo-generate .` meta-line
+  from the chapter above.
+- The standing deferred list (registry/bare names, `./...` recursion,
+  `cmd/minigo-generate`, sandboxing) is unchanged.
