@@ -161,7 +161,9 @@ func scanModule(g *graph, m *module) error {
 					return fs.SkipDir
 				}
 				// A nested module's files are not part of this module.
-				if _, err := os.Stat(filepath.Join(path, "go.mod")); err == nil {
+				// The go.mod must be a file — a subdirectory named
+				// go.mod does not declare a module.
+				if info, err := os.Stat(filepath.Join(path, "go.mod")); err == nil && !info.IsDir() {
 					return fs.SkipDir
 				}
 			}
