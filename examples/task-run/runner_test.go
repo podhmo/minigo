@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"go/constant"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/podhmo/minigo/runtime"
 )
 
 func writeTaskfile(t *testing.T, src string) (dir, file string) {
@@ -401,6 +403,91 @@ func RunNamed() error {
 	}
 }
 
+// TestConstStringArgs: `const N = "echo"` is a valid `string` arg in Go —
+// untyped constants materialize at the call boundary, so the strict
+// check must unwrap *runtime.UConst instead of rejecting the call as
+// `got *runtime.UConst`.
+func TestConstStringArgs(t *testing.T) {
+	_, file := writeTaskfile(t, `package main
+
+import "task"
+
+const N = "echo"
+const Cmd = "echo const-sh-ok"
+const Dir = "."
+const F = "Taskfile.go"
+const Typed string = "echo"
+
+type S string
+
+const Named S = "echo"
+
+func RunConst() error { return task.Run(N, "-n", "const-run-ok") }
+
+func ShConst() error { return task.Sh(Cmd) }
+
+func RunInConst() error { return task.RunIn(Dir, N, "-n", "const-in-ok") }
+
+func RunTyped() error { return task.Run(Typed, "-n", "const-typed-ok") }
+
+func RunNamedConst() error { return task.Run(Named, "-n", "const-named-ok") }
+
+func TargetConst() error {
+	ok, _ := task.Target(F)
+	if !ok {
+		task.Log("target should exist:", F)
+	}
+	return nil
+}
+`)
+	var out, errb bytes.Buffer
+	r := NewRunner(filepath.Dir(file), &out, &errb)
+	ctx := context.Background()
+	for _, name := range []string{"RunConst", "ShConst", "RunInConst", "RunTyped", "RunNamedConst", "TargetConst"} {
+		if err := r.RunTask(ctx, file, name, nil); err != nil {
+			t.Errorf("%s: untyped/typed/named string consts must be accepted, got %v", name, err)
+		}
+	}
+	got := out.String()
+	for _, want := range []string{"const-run-ok", "const-sh-ok", "const-in-ok", "const-typed-ok", "const-named-ok"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("const arg should have reached the command: want %q in\n%s", want, got)
+		}
+	}
+}
+
+// TestStrValUConst: the unit-level half of the const fix — strVal peels
+// Named then materializes string UConsts; non-string UConsts still fail.
+func TestStrValUConst(t *testing.T) {
+	if s, ok := strVal(&runtime.UConst{V: constant.MakeString("x")}); !ok || s != "x" {
+		t.Errorf("string UConst should materialize, got %q, %v", s, ok)
+	}
+	if s, ok := strVal(&runtime.UConst{V: constant.MakeInt64(1)}); ok {
+		t.Errorf("int UConst is not a string arg, got %q", s)
+	}
+	// kindOf names a rejected UConst by its Go default type
+	if got := kindOf(&runtime.UConst{V: constant.MakeInt64(1)}); got != "int" {
+		t.Errorf("kindOf(UConst int) = %q, want int", got)
+	}
+}
+
+// TestCmdLabel: command-line boundaries stay readable — plain args bare,
+// space/quote-bearing args %q-quoted like task.Sh's `sh -c %q` spelling.
+func TestCmdLabel(t *testing.T) {
+	if got := cmdLabel("", "sh", []string{"-c", "exit 3"}); got != `sh -c "exit 3"` {
+		t.Errorf("cmdLabel sh = %q", got)
+	}
+	if got := cmdLabel("", "echo", []string{"hello", "world"}); got != "echo hello world" {
+		t.Errorf("cmdLabel echo = %q", got)
+	}
+	if got := cmdLabel("sub", "go", []string{"build", "./..."}); got != "(in sub) go build ./..." {
+		t.Errorf("cmdLabel dir = %q", got)
+	}
+	if got := cmdLabel("", "echo", []string{""}); got != `echo ""` {
+		t.Errorf("cmdLabel empty arg = %q", got)
+	}
+}
+
 // TestExitErrLabel: a non-zero exit names the command the script spelled,
 // not just "exit status N".
 func TestExitErrLabel(t *testing.T) {
@@ -422,6 +509,7 @@ func Boom() error { return task.Sh("false") }
 func TestTaskfileErr(t *testing.T) {
 	dir := t.TempDir()
 	r := NewRunner(dir, io.Discard, io.Discard)
+	r.explicitFile = true // simulates an explicit -f from main
 	ctx := context.Background()
 
 	err := r.RunTask(ctx, filepath.Join(dir, "Nope.go"), "Default", nil)
@@ -447,6 +535,14 @@ func TestTaskfileErr(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "is a directory. Fix the -f argument") {
 		t.Fatalf("directory taskfile should blame the -f argument, got %v", err)
 	}
+
+	// without -f there is no -f argument to fix: the default file's
+	// advice is to create it or pass -f — never "fix the -f argument"
+	r2 := NewRunner(dir, io.Discard, io.Discard)
+	err = r2.RunTask(ctx, filepath.Join(dir, "Taskfile.go"), "Default", nil)
+	if err == nil || !strings.Contains(err.Error(), "does not exist. Pass -f") {
+		t.Fatalf("missing default taskfile should not blame a -f that was never given, got %v", err)
+	}
 }
 
 // TestRunMainLoadErr: a load failure prints without the "task Default:"
@@ -460,6 +556,21 @@ func TestRunMainLoadErr(t *testing.T) {
 	}
 	if strings.Contains(errb.String(), "task ") || !strings.Contains(errb.String(), "does not exist") {
 		t.Fatalf("load error should not be prefixed with a task name: %q", errb.String())
+	}
+}
+
+// TestRunMainDefaultFileErr: with no -f flag at all, a missing default
+// Taskfile.go must not say "fix the -f argument" — there was none.
+func TestRunMainDefaultFileErr(t *testing.T) {
+	t.Chdir(t.TempDir()) // cwd has no Taskfile.go
+	var errb bytes.Buffer
+	code := runMain(context.Background(), []string{"-l"}, io.Discard, &errb)
+	if code != 1 {
+		t.Fatalf("runMain missing default file: code %d", code)
+	}
+	got := errb.String()
+	if !strings.Contains(got, "Taskfile.go does not exist") || strings.Contains(got, "Fix the -f") {
+		t.Fatalf("missing default taskfile should not blame -f: %q", got)
 	}
 }
 

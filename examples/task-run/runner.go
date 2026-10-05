@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/constant"
 	"io"
 	"os"
 	"os/exec"
@@ -47,6 +48,10 @@ type Runner struct {
 	engine *minigo.Engine
 	stdout io.Writer
 	stderr io.Writer
+
+	// explicitFile records whether the user picked the taskfile with -f;
+	// load errors blame "the -f argument" only when one was given.
+	explicitFile bool
 
 	mu        sync.Mutex
 	depStates map[string]*depState        // dep key -> lifecycle (dedup + cycles)
@@ -221,7 +226,7 @@ func NewRunner(dir string, stdout, stderr io.Writer) *Runner {
 func (r *Runner) Tasks(ctx context.Context, file string) ([]TaskInfo, error) {
 	pkg, err := r.engine.LoadFile(ctx, file)
 	if err != nil {
-		return nil, taskfileErr(file, err)
+		return nil, taskfileErr(file, err, r.explicitFile)
 	}
 	var tasks []TaskInfo
 	for name, d := range pkg.Index.Funcs {
@@ -249,7 +254,7 @@ func (r *Runner) Tasks(ctx context.Context, file string) ([]TaskInfo, error) {
 func (r *Runner) RunTask(ctx context.Context, file, name string, args []string) error {
 	pkg, err := r.engine.LoadFile(ctx, file)
 	if err != nil {
-		return taskfileErr(file, err)
+		return taskfileErr(file, err, r.explicitFile)
 	}
 	d, ok := pkg.Index.Funcs[name]
 	if !ok || !ast.IsExported(name) {
@@ -550,11 +555,27 @@ func exitErr(err error, label string) error {
 }
 
 // cmdLabel renders the spawned command in the script's own vocabulary:
-// "prog arg1 arg2", or "(in dir) prog arg1 arg2" for task.RunIn.
+// `prog arg1 arg2`, or `(in dir) prog arg1 arg2` for task.RunIn. Args
+// needing it are %q-quoted so word boundaries stay unambiguous — the
+// same spelling task.Sh's `sh -c %q` produces for a one-line command.
 func cmdLabel(dir, name string, args []string) string {
-	s := strings.Join(append([]string{name}, args...), " ")
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, quoteArg(name))
+	for _, a := range args {
+		parts = append(parts, quoteArg(a))
+	}
+	s := strings.Join(parts, " ")
 	if dir != "" {
 		return "(in " + dir + ") " + s
+	}
+	return s
+}
+
+// quoteArg leaves a plain arg bare but %q-quotes one whose boundary in a
+// joined command line would be ambiguous (whitespace, quotes, empty).
+func quoteArg(s string) string {
+	if s == "" || strings.ContainsAny(s, " \t\n\"'") {
+		return strconv.Quote(s)
 	}
 	return s
 }
@@ -655,10 +676,19 @@ func strArgs(label string, args []runtime.Value, from int) ([]string, error) {
 }
 
 // strVal reads a script value as a string, honoring the declared `string`
-// contract: a Named tag unwraps to the underlying value first.
+// contract: a Named tag unwraps to the underlying value first, and an
+// untyped string constant (const N = "echo") materializes like Go's
+// default-type rule — `go build` accepts both as `string` args, so the
+// strict check must too.
 func strVal(v runtime.Value) (string, bool) {
 	if n, ok := v.(*runtime.Named); ok {
 		v = n.V
+	}
+	if u, ok := v.(*runtime.UConst); ok {
+		if u.V.Kind() == constant.String {
+			return constant.StringVal(u.V), true
+		}
+		return "", false
 	}
 	s, ok := v.(string)
 	return s, ok
@@ -691,6 +721,8 @@ func kindOf(v runtime.Value) string {
 		return "builtin " + x.Name
 	case *runtime.BoundMethod:
 		return "bound method " + x.Fn.Name
+	case *runtime.UConst:
+		return x.DefaultName()
 	default:
 		return fmt.Sprintf("%T", v)
 	}
@@ -703,16 +735,26 @@ type loadError struct{ err error }
 func (e *loadError) Error() string { return e.err.Error() }
 func (e *loadError) Unwrap() error { return e.err }
 
-// taskfileErr classifies a LoadFile failure by who has to fix it: a
-// missing path or a directory is a bad -f argument; anything else is the
-// Taskfile's contents (parse errors, undeclared names, unsupported
-// syntax).
-func taskfileErr(file string, err error) error {
-	if st, statErr := os.Stat(file); statErr == nil && st.IsDir() {
-		return &loadError{fmt.Errorf("taskfile %s is a directory. Fix the -f argument", file)}
+// taskfileErr classifies a LoadFile failure by who has to fix it. The
+// file's own os.Stat decides — not errors.Is on LoadFile's error, which
+// would blame -f for any not-exist error bubbling out of LoadFile's
+// internals and drop the real message. "Fix the -f argument" only
+// appears when -f was actually passed; the default file's advice is to
+// create it or pick another file. Anything else is the Taskfile's
+// contents (parse errors, undeclared names, unsupported syntax).
+func taskfileErr(file string, err error, explicit bool) error {
+	hint := "Pass -f to load a different file"
+	if explicit {
+		hint = "Fix the -f argument"
 	}
-	if errors.Is(err, os.ErrNotExist) {
-		return &loadError{fmt.Errorf("taskfile %s does not exist. Fix the -f argument", file)}
+	st, statErr := os.Stat(file)
+	switch {
+	case statErr != nil && errors.Is(statErr, os.ErrNotExist):
+		return &loadError{fmt.Errorf("taskfile %s does not exist. %s", file, hint)}
+	case statErr != nil:
+		return &loadError{fmt.Errorf("taskfile %s: %v. %s", file, statErr, hint)}
+	case st.IsDir():
+		return &loadError{fmt.Errorf("taskfile %s is a directory. %s", file, hint)}
 	}
 	return &loadError{fmt.Errorf("%s. Fix the Taskfile", err)}
 }

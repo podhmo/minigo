@@ -29,6 +29,12 @@ func runMain(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(argv); err != nil {
 		return 2
 	}
+	explicitF := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "f" {
+			explicitF = true
+		}
+	})
 
 	abs, err := filepath.Abs(*file)
 	if err != nil {
@@ -36,6 +42,7 @@ func runMain(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	r := NewRunner(filepath.Dir(abs), stdout, stderr)
+	r.explicitFile = explicitF
 
 	if *list {
 		tasks, err := r.Tasks(ctx, abs)
