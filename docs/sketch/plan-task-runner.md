@@ -26,6 +26,7 @@ real tool-shaped consumer, not to clone go-task.
 ```
 task-run [-f Taskfile.go] -l
 task-run [-f Taskfile.go] Name[:arg1,arg2] ...
+task-run [-f Taskfile.go] -n Name ...      # dry run (§6)
 ```
 
 - default taskfile: `./Taskfile.go`
@@ -95,7 +96,70 @@ it lazily, and calling it is the script's decision.
 - `[]byte`/`[]string`/`time.Duration`/integer-width unmarshalling in
   `goValueOf`/`scriptVal`, so `cmd.Output()`'s `[]byte` feeds `string(b)`.
 
-## 6. Deliberately not done (follow-ups)
+## 6. Dry run (`-n`): swap the standard library, not the script
+
+The aim: **because the Taskfile is interpreted, the host owns every effect
+boundary**, so `make -n`-style "show me what would run" falls out of
+rebinding a handful of standard-library symbols — the script itself is
+not rewritten, annotated, or written against a special API.
+
+Compare the alternatives:
+
+- **make -n** only knows recipe lines as text. It prints them, but
+  `$(shell ...)` still runs, and anything a recipe does through an
+  interpreter it spawns is opaque.
+- **mage** compiles the magefile into a real binary: `os.WriteFile` or
+  `exec.Command(...).Run()` in a target is a direct syscall path. A dry
+  run is only possible if every target routes through `sh.Run`-style
+  helpers that check a flag — plain Go calls cannot be intercepted.
+- **task-run** resolves `os`, `os/exec` and `task` to host bindings
+  (`Engine.Bind`), and the bindings are looked up through the package's
+  globals at call time. `Runner.SetDryRun` fetches the bound packages via
+  `Engine.Package(ctx, "os")` and replaces individual entries:
+
+| binding | dry-run replacement |
+|---------|---------------------|
+| `task.Sh` / `Run` / `RunIn` / `Output` | print the command line; `Output` returns `""`, nil |
+| `os.WriteFile` / `Remove` / `RemoveAll` / `Mkdir` / `MkdirAll` / `Rename` / `Truncate` | print `# os.Name args...`, return nil |
+| `exec.Command` | returns `dryCmd`, a stand-in for `*exec.Cmd` |
+
+`dryCmd` works because host values are reached by reflection (§5): field
+set (`cmd.Dir = "sub"`, `cmd.Stdout = os.Stdout`) and method calls
+(`Run`/`Start`/`Wait`/`Output`/`CombinedOutput`) dispatch on whatever
+concrete type the GoValue boxes. Printing happens at `Run` time, not at
+`Command` time, so a `Dir` set after construction shows up as `(in dir)`
+and a command built but never run prints nothing. It even passes through
+a script function typed `func(c *exec.Cmd)` — the interpreter does not
+check the boxed host type against the declared one.
+
+Everything else keeps running for real: control flow, `fmt.Println`,
+`task.Log`, and **reads** (`task.Target`, `os.Stat`, `os.ReadFile`,
+`filepath.Glob`). The dry run therefore follows the branch the tasks
+would take against the current filesystem state, which is what makes it
+useful as "what would `Dist` do right now?".
+
+Known gaps, by design of the replacement rule ("only error-returning
+calls are safe to fake"):
+
+- Values a fake cannot know are empty: `task.Output` returns `""`,
+  `cmd.Output()` returns no bytes. Code branching on command output may
+  take a different path than the real run (make -n avoids this for
+  `$(shell)` by running it; here safety wins).
+- Handle-returning calls (`os.Create`, `os.OpenFile`, `os.CreateTemp`,
+  `os.MkdirTemp`) and env mutation (`os.Setenv`) are not intercepted.
+- Effects reached through other bound packages (e.g. a future `net/http`
+  binding) are not covered until they get their own replacement.
+
+The same lever generalizes beyond `-n` — sketches, not plans:
+
+- **trace mode**: wrap instead of replace (print, then delegate to the
+  original binding) for an `-x`-style execution log.
+- **sandboxed run**: point the write-side `os` bindings at a scratch dir
+  or an in-memory FS and diff the result.
+- **recorded outputs**: feed `task.Output` / `cmd.Output()` from a
+  fixture file so dry runs and tests can follow output-dependent branches.
+
+## 7. Deliberately not done (follow-ups)
 
 - **`[]byte` spellings.** `[]byte("x")` conversion is still unimplemented
   in the interpreter — task scripts use `os.WriteFile(p, "x", 0644)` (the
@@ -116,13 +180,15 @@ it lazily, and calling it is the script's decision.
   automatically (all members are bound), but a `--special`-style check that
   task names exist could catch typos statically.
 
-## 7. Verification
+## 8. Verification
 
 - `runner_test.go` — `TestTasks` (listing + docs + params), `TestRunTask`
   (Default dep-chain writing `app.out`), `TestDepsDedup`,
   `TestDepsCycle`, `TestDepsWithArgs` (`task.F`), `TestShAndTarget`
   (cwd anchoring + mtime check), `TestRunOutput`, `TestTaskErrors`
-  (error propagation, non-task rejection), `TestRunMainList`.
+  (error propagation, non-task rejection), `TestRunMainList`,
+  `TestDryRun` / `TestDryRunExec` (`-n` prints `task.*`, `os` mutators and
+  `os/exec` commands; the Taskfile's directory is left untouched).
 - `minigo` intrinsic coverage: `TestFSIntrinsics`, `TestVirtualCwd`,
   `TestExecIntrinsics`, `TestFSRestricted` in `minigo_test.go` over
   `testdata/fsops`.

@@ -133,7 +133,7 @@ spawned goroutine が並列に解決する可能性のある箇所を洗い出�
 
 ## 7. task-run の follow-up
 
-`plan-task-runner.md` §6 で「far-future」とされていた parallel deps が本物になった。残りの課題:
+`plan-task-runner.md` §7 で「far-future」とされていた parallel deps が本物になった。残りの課題:
 
 - task arg typing（`task-run Build:dbg` スタイルのフラグ/環境変数バインド）
 - discovery（`-f` 以外の上行探索）
