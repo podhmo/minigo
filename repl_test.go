@@ -755,3 +755,42 @@ func TestREPLListHoistedKinds(t *testing.T) {
 		t.Errorf("List (-want +got):\n%s", diff)
 	}
 }
+
+func TestREPLConstIota(t *testing.T) {
+	ctx := context.Background()
+	r := NewEngine("testdata").NewREPL()
+	for _, line := range []string{
+		"const (A = iota; B; C)",
+		"const (_ = iota; KB = 1 << (10 * iota); MB)",
+		"type W int",
+		"const (Sun W = iota; Mon)",
+		"const (x, y = iota, iota * 10; z, w)",
+		"const (p = 5; q)",
+	} {
+		if _, err := r.EvalLine(ctx, line); err != nil {
+			t.Fatalf("%s: %v", line, err)
+		}
+	}
+	for _, c := range []struct {
+		expr string
+		want any
+	}{
+		{"A + B*10 + C*100", int64(210)},
+		{"MB", int64(1 << 20)},
+		{"Mon", int64(1)},
+		{"Mon == W(1)", true}, // implicit repetition keeps the spec's type
+		{"z + w", int64(11)},
+		{"q", int64(5)},
+	} {
+		v, err := r.EvalLine(ctx, c.expr)
+		if err != nil {
+			t.Fatalf("%s: %v", c.expr, err)
+		}
+		if diff := cmp.Diff(c.want, r.Display(v)); diff != "" {
+			t.Errorf("%s (-want +got):\n%s", c.expr, diff)
+		}
+	}
+	if _, err := r.EvalLine(ctx, "B = 3"); err == nil || !strings.Contains(err.Error(), "cannot assign to constant") {
+		t.Errorf("B = 3: want constant assignment error, got %v", err)
+	}
+}

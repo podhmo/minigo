@@ -203,14 +203,17 @@ func TestREPLLoadCurrentDirUnexported(t *testing.T) {
 	}
 	// unexported funcs, vars, consts, types and methods are package-block
 	// names: the prompt reaches them like any file of the package would
-	for line, want := range map[string]any{
-		"bump()":            int64(11),
-		"counter":           int64(11),
-		"point{1, 2}.sum()": int64(3),
-		"base":              int64(5),
+	for _, c := range []struct {
+		line string
+		want any
+	}{
+		{"bump()", int64(11)}, // ordered: bump mutates counter
+		{"counter", int64(11)},
+		{"point{1, 2}.sum()", int64(3)},
+		{"base", int64(5)},
 	} {
-		if diff := cmp.Diff(want, replEval(t, r, line)); diff != "" {
-			t.Errorf("%s (-want +got):\n%s", line, diff)
+		if diff := cmp.Diff(c.want, replEval(t, r, c.line)); diff != "" {
+			t.Errorf("%s (-want +got):\n%s", c.line, diff)
 		}
 	}
 }
