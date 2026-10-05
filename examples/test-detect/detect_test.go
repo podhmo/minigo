@@ -291,6 +291,58 @@ func TestEmptyChangeSetProducesEmptyOutput(t *testing.T) {
 	}
 }
 
+// A broken go.mod aborts the whole run (by design — no degrade), so its
+// error must name the offending file; an unnamed failure would send the
+// user hunting every go.mod under -root.
+func TestModulePathOfErrorsNameTheFile(t *testing.T) {
+	dir := t.TempDir()
+
+	// A "go.mod" that is a directory: the underlying read error must
+	// surface with the path attached.
+	modDir := filepath.Join(dir, "gomoddir")
+	if err := os.Mkdir(modDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dirAsMod := filepath.Join(modDir, "go.mod")
+	if err := os.Mkdir(dirAsMod, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := modulePathOf(dirAsMod); err == nil {
+		t.Error("directory go.mod: want error, got nil")
+	} else if !strings.Contains(err.Error(), dirAsMod) {
+		t.Errorf("directory go.mod: error %q does not name the path", err)
+	}
+
+	// Scanner-level failure (a line beyond the buffer): the path was
+	// missing from this error before the wrap.
+	bad := filepath.Join(dir, "bad")
+	if err := os.Mkdir(bad, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	badMod := filepath.Join(bad, "go.mod")
+	if err := os.WriteFile(badMod, []byte(strings.Repeat("x", 100000)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := modulePathOf(badMod); err == nil {
+		t.Error("oversized go.mod line: want error, got nil")
+	} else if !strings.Contains(err.Error(), badMod) {
+		t.Errorf("oversized go.mod line: error %q does not name the path", err)
+	}
+}
+
+// Same contract at the detect level: one malformed nested go.mod aborts
+// the scan, and the error says which file broke it.
+func TestBrokenGoModAbortsNamingItsPath(t *testing.T) {
+	root := testRepo(t)
+	writeTree(t, root, map[string]string{"sub/broken/go.mod": "go 1.26.0\n"}) // no module directive
+	broken := filepath.Join(root, "sub", "broken", "go.mod")
+	if _, err := detectChanged(root, []string{"a/a.go"}, options{}); err == nil {
+		t.Fatal("want abort on broken nested go.mod")
+	} else if !strings.Contains(err.Error(), broken) {
+		t.Errorf("error %q does not name the broken go.mod", err)
+	}
+}
+
 func TestModulePathOfHandlesCommentsAndQuotes(t *testing.T) {
 	dir := t.TempDir()
 	for _, tc := range []struct {
