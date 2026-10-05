@@ -358,6 +358,9 @@ func cmdGen(ctx context.Context, args []string) error {
 
 // emitCase writes a standalone, go-runnable regression case. want.stdout is
 // go's output; PENDING marks it as a known failure until minigo is fixed.
+// The case is verified standalone before it is written: a finding that does
+// not reproduce alone (the batch program's shared state made it diverge, or
+// the reduced program kills the go oracle itself) makes a false PENDING.
 func emitCase(ctx context.Context, r *Runner, dir string, f *finding) error {
 	src := Program(f.Probe.D, []Probe{f.Probe}, []int{0})
 	c, err := r.Materialize("emit", src)
@@ -367,6 +370,17 @@ func emitCase(ctx context.Context, r *Runner, dir string, f *finding) error {
 	want, err := r.RunGo(ctx, c)
 	if err != nil {
 		return err
+	}
+	if want.Exit != 0 {
+		return fmt.Errorf("skip emit %s: go exits %d on the reduced program: %s",
+			f.Probe.Shape(), want.Exit, goPanic(want.Stderr))
+	}
+	got, err := r.RunMinigo(ctx, c)
+	if err != nil {
+		return err
+	}
+	if got.Exit == 0 && got.Stdout == want.Stdout {
+		return fmt.Errorf("skip emit %s: no divergence standalone", f.Probe.Shape())
 	}
 	slug := fmt.Sprintf("%s_%s_%08x", f.Probe.D.Name, f.Result.Symptom, fnv32(src))
 	out := filepath.Join(dir, slug)

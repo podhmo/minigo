@@ -108,6 +108,12 @@ func (r *Runner) EvalProbes(ctx context.Context, name string, probes []Probe) ([
 	}
 	wantLines, _ := probeLines(want.Stdout)
 
+	// go may have died mid-program with an unrecoverable error — e.g. a
+	// probe's spawned goroutine panicking escapes every recover — leaving
+	// no oracle line for that probe and every later one. Those probes are
+	// unobservable, not divergent: Skip them and say why the oracle ended.
+	markOracleGaps(res, want, wantLines)
+
 	// wantPanics feeds the order-unspecified pass below: every panic go
 	// produced on any probe is an authentic panic this program can emit.
 	wantPanics := map[string]bool{}
@@ -197,6 +203,25 @@ func (r *Runner) EvalProbes(ctx context.Context, name string, probes []Probe) ([
 		}
 	}
 	return res, nil
+}
+
+// markOracleGaps marks unjudged probes the go oracle never reached as Skip.
+// When the oracle program exits non-zero — e.g. a probe's spawned goroutine
+// panicking escapes every recover — all probes after the death point have
+// no line in wantLines; without this they would flag Silent on Want:"".
+func markOracleGaps(res []ProbeResult, want Outcome, wantLines map[int]string) {
+	if want.Exit == 0 {
+		return
+	}
+	death := goPanic(want.Stderr)
+	if death == "" {
+		death = "exit " + fmt.Sprint(want.Exit)
+	}
+	for i := range res {
+		if _, ok := wantLines[i]; res[i].Verdict == "" && !ok {
+			res[i] = ProbeResult{Verdict: Skip, Detail: "oracle ended before this probe: " + death}
+		}
+	}
 }
 
 var (
