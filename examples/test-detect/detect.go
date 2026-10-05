@@ -42,7 +42,7 @@ func detectChanged(root string, changed []string, o options) (*detection, error)
 	if err != nil {
 		return nil, err
 	}
-	d := &detection{graph: g, root: root}
+	d := &detection{graph: g, root: root, warnings: g.warnings}
 	d.stats.modules = len(g.modules)
 	for _, p := range g.byDir {
 		d.stats.files += len(p.files)

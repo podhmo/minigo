@@ -213,6 +213,14 @@ finding each is.
 - **Unresolvable inputs degrade to warnings, empty diffs to empty
   output** — a docs-only `git diff` produces no stdout, exit 0; the
   CI-side `has_tests=false` case falls out without a flag.
+- **The loud-failure rule had to apply to the tool's own I/O too**
+  (reviewed): a truncated import declaration errors *and* still yields
+  its recovered imports — so parse failures warn instead of silently
+  dropping coverage; a `module path // comment` line and a quoted
+  module path both parse; a truncated stdin read is a non-zero exit
+  rather than a partial change set; and `space`/`dir`/`pkg` output is
+  byte-empty on an empty set so `$(test-detect ...)` can't expand into
+  "test the current package".
 
 ### What became clear
 

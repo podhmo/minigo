@@ -51,7 +51,12 @@ func runMain(ctx context.Context, argv []string) int {
 
 	changed := fs.Args()
 	if *stdin || len(changed) == 0 {
-		changed = append(changed, readLines(os.Stdin)...)
+		lines, err := readLines(os.Stdin)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "test-detect: reading stdin:", err)
+			return 1
+		}
+		changed = append(changed, lines...)
 	}
 
 	absRoot, err := absPath(*root)
@@ -90,13 +95,13 @@ func runMain(ctx context.Context, argv []string) int {
 	return 0
 }
 
-func readLines(f *os.File) []string {
+func readLines(f *os.File) ([]string, error) {
 	var lines []string
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		lines = append(lines, sc.Text())
 	}
-	return lines
+	return lines, sc.Err()
 }
 
 func absPath(p string) (string, error) {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -51,7 +52,7 @@ func testRepo(t *testing.T) string {
 		"tdep/t.go":         "package tdep\n",
 		"tdep/t_test.go":    "package tdep\n",
 		"util/u.go":         "package util\n",                 // isolated, no tests
-		"broken/b.go":       "package broken\nfunc broken(\n", // unparseable
+		"broken/b.go":       "package broken\nfunc broken(\n", // body error: invisible to ImportsOnly by design
 		"sub/go.mod":        "module example.com/sub\n\ngo 1.26.0\n",
 		"sub/x/x.go":        "package x\n\nimport \"example.com/m/a\"\n",
 		"sub/x/x_test.go":   "package x\n",
@@ -269,11 +270,68 @@ func TestEmptyChangeSetProducesEmptyOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := d.render("pkg")
+	for _, format := range []string{"pkg", "space", "dir"} {
+		out, err := d.render(format)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out) != 0 {
+			t.Errorf("format %q: want empty output, got %q", format, out)
+		}
+	}
+}
+
+func TestModulePathOfHandlesCommentsAndQuotes(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		content string
+		want    string
+	}{
+		{"module example.com/m\n", "example.com/m"},
+		{"module example.com/m // trailing comment\n", "example.com/m"},
+		{"module \"example.com/m\"\n", "example.com/m"},
+		{"module \"example.com/m\" // both\n", "example.com/m"},
+		{"// lead\nmodule example.com/m\ngo 1.26.0\n", "example.com/m"},
+	} {
+		path := filepath.Join(dir, "go.mod")
+		if err := os.WriteFile(path, []byte(tc.content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := modulePathOf(path)
+		if err != nil {
+			t.Fatalf("content %q: %v", tc.content, err)
+		}
+		if got != tc.want {
+			t.Errorf("content %q: got %q, want %q", tc.content, got, tc.want)
+		}
+	}
+}
+
+func TestParseErrorKeepsRecoveredImportsAndWarns(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		"go.mod":          "module example.com/m\n",
+		"a/a.go":          "package a\n",
+		"a/a_test.go":     "package a\n",
+		"bad/bad.go":      "package bad\n\nimport \"example.com/m/a\"\nimport (\n", // truncated decl
+		"bad/bad_test.go": "package bad\n",
+	})
+	d, err := detectChanged(root, []string{"a/a.go"}, options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out) != 0 {
-		t.Errorf("want empty output, got %q", out)
+	// The truncated second import decl errors, but the recovered import
+	// still creates the a→bad edge — and the failure is loud.
+	if diff := cmp.Diff([]string{"example.com/m/a", "example.com/m/bad"}, keptPaths(t, d)); diff != "" {
+		t.Errorf("kept mismatch (-want +got):\n%s", diff)
+	}
+	found := false
+	for _, w := range d.warnings {
+		if strings.Contains(w, "bad.go") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a parse warning mentioning bad.go, got %v", d.warnings)
 	}
 }

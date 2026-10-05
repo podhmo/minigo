@@ -22,7 +22,7 @@ github.com/podhmo/minigo/cmd/minigo
 $ git diff --name-only origin/main HEAD | go run . -stdin
 ...
 
-$ go test $(go run . -format space inspect/inspect.go)
+$ pkgs=$(go run . -format space inspect/inspect.go) && [ -n "$pkgs" ] && go test $pkgs
 ```
 
 ## Flags
@@ -48,4 +48,10 @@ $ go test $(go run . -format space inspect/inspect.go)
   propagate impact to their dependents.
 - Changed paths that do not resolve to a scanned package produce a
   stderr warning and are skipped — a silently dropped file would
-  silently drop test coverage.
+  silently drop test coverage. The same rule applies to the tool's own
+  failures: a file whose import block fails to parse keeps whatever
+  imports were recovered *and* warns; a truncated stdin read exits
+  non-zero rather than answering with a partial change set.
+- Empty result means empty output (no padding), so `$(test-detect ...)`
+  never expands into "test the current package" — callers should still
+  gate on non-emptiness, as in the example above.

@@ -34,6 +34,9 @@ func (d *detection) render(format string) ([]byte, error) {
 		}
 		return []byte(strings.Join(paths, "\n") + "\n"), nil
 	case "space":
+		if len(paths) == 0 {
+			return nil, nil
+		}
 		return []byte(strings.Join(paths, " ") + "\n"), nil
 	case "dir":
 		var dirs []string

@@ -33,10 +33,11 @@ type pkg struct {
 
 // graph is the repository's internal import graph plus lookups.
 type graph struct {
-	modules []*module
-	byDir   map[string]*pkg   // abs dir -> pkg
-	rev     map[string][]*pkg // imported path -> importing packages (internal only)
-	paths   []string          // known module path prefixes
+	modules  []*module
+	byDir    map[string]*pkg   // abs dir -> pkg
+	rev      map[string][]*pkg // imported path -> importing packages (internal only)
+	paths    []string          // known module path prefixes
+	warnings []string          // non-fatal scan diagnostics (parse errors)
 }
 
 // scanRepo walks every Go module under root and builds the reverse
@@ -47,6 +48,9 @@ func scanRepo(root string) (*graph, error) {
 	mods, err := findModules(root)
 	if err != nil {
 		return nil, err
+	}
+	if len(mods) == 0 {
+		return nil, fmt.Errorf("%s: no go.mod found", root)
 	}
 	g := &graph{
 		modules: mods,
@@ -106,6 +110,8 @@ func findModules(root string) ([]*module, error) {
 }
 
 // modulePathOf reads the `module <path>` line from a go.mod file.
+// go.mod allows a `//` line comment and a quoted module path; both are
+// handled here (a module directive never appears inside a block).
 func modulePathOf(goModPath string) (string, error) {
 	f, err := os.Open(goModPath)
 	if err != nil {
@@ -114,15 +120,31 @@ func modulePathOf(goModPath string) (string, error) {
 	defer f.Close()
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
-		fields := strings.Fields(sc.Text())
-		if len(fields) == 2 && fields[0] == "module" {
-			return fields[1], nil
+		fields := strings.Fields(cutComment(sc.Text()))
+		if len(fields) >= 2 && fields[0] == "module" {
+			return strings.Trim(fields[1], `"`), nil
 		}
 	}
 	if err := sc.Err(); err != nil {
 		return "", err
 	}
 	return "", fmt.Errorf("%s: no module directive", goModPath)
+}
+
+// cutComment drops a `//` line comment that is not inside double quotes.
+func cutComment(s string) string {
+	inQuotes := false
+	for i := 0; i+1 < len(s); i++ {
+		switch s[i] {
+		case '"':
+			inQuotes = !inQuotes
+		case '/':
+			if !inQuotes && s[i+1] == '/' {
+				return s[:i]
+			}
+		}
+	}
+	return s
 }
 
 // scanModule walks one module's directory and parses every .go file.
@@ -153,14 +175,18 @@ func scanModule(g *graph, m *module) error {
 }
 
 // addFile parses one .go file for its imports and merges it into its
-// directory's package node.
+// directory's package node. A parse failure still keeps whatever imports
+// were recovered (ImportsOnly only reads the header, so failures live in
+// the package/import declarations) and records a warning — silently
+// dropping the file would silently drop test coverage.
 func addFile(g *graph, m *module, path string) error {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
 	if err != nil {
-		// A file that does not parse still belongs to its directory;
-		// imports are simply unknown. Keep going rather than fail.
-		return nil
+		g.warnings = append(g.warnings, fmt.Sprintf("%s: parse error (%v); imports may be incomplete", path, err))
+		if f == nil {
+			return nil
+		}
 	}
 	dir := filepath.Dir(path)
 	p, ok := g.byDir[dir]
