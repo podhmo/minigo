@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -1029,6 +1030,39 @@ func TestHostPolicy(t *testing.T) {
 	_, err := e.Run(context.Background(), "./testdata/hostpolicy", "PolicyDenied")
 	if err == nil || !strings.Contains(err.Error(), "Getenv") {
 		t.Fatalf("os.Getenv must be denied by policy, got %v", err)
+	}
+}
+
+func TestBoundPackages(t *testing.T) {
+	e := minigo.NewEngine("..", minigo.WithHostPolicy(func(path, sym string) bool {
+		return !(path == "example.com/probe" && sym == "Denied")
+	}))
+	e.Bind("example.com/probe", map[string]runtime.Value{
+		"B": int64(2), "A": int64(1), "Denied": int64(3),
+	})
+
+	paths := e.BoundPackages()
+	for _, want := range []string{"encoding/json", "example.com/probe", "fmt"} {
+		if !slices.Contains(paths, want) {
+			t.Errorf("BoundPackages missing %q: %v", want, paths)
+		}
+	}
+	if !slices.IsSorted(paths) {
+		t.Errorf("BoundPackages not sorted: %v", paths)
+	}
+	if got := e.NewREPL().BoundPackages(); !slices.Contains(got, "example.com/probe") {
+		t.Errorf("REPL session must inherit user binds: %v", got)
+	}
+
+	syms, ok := e.BoundSymbols("example.com/probe")
+	if !ok {
+		t.Fatal("BoundSymbols: example.com/probe should be bound")
+	}
+	if diff := cmp.Diff([]string{"A", "B"}, syms); diff != "" {
+		t.Errorf("BoundSymbols (-want +got):\n%s", diff)
+	}
+	if _, ok := e.BoundSymbols("encoding/base32"); ok {
+		t.Error("BoundSymbols: encoding/base32 is not bound")
 	}
 }
 
