@@ -1,0 +1,6 @@
+TRAP (lang hunt, seed 20261005, emitted lang__0113bfab — hung there because
+the same trap fired inside a goroutine holding a mutex, deadlocking Wait)
+shape:  Sum(n...) with n a nil []int (inferred type args)
+go:     0
+minigo: runtime trap: undefined: T  -- type inference reads the nil slice's
+runtime value instead of its declared element type
