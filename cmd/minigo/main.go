@@ -223,6 +223,9 @@ const replHelp = `commands:
                       note: this is the Go toolchain's documentation, not
                       minigo's — a bound package may expose fewer symbols
                       (:ls <pkg> shows what minigo actually provides)
+  :dump <expr>  evaluate expr and print it in Go syntax, like fmt's
+                #v verb (type and field names, quoted strings, T(nil)) —
+                for debugging nested values (also :p)
   :comp <text>  print completion candidates for a code fragment — the
                 same candidates [TAB] offers while typing (on a terminal)
   :bindings [prefix]  list host-bound (native) import paths; :ls <path>
@@ -375,6 +378,23 @@ func runREPL(ctx context.Context, in io.Reader, out io.Writer) error {
 					}
 				case ":doc":
 					runDoc(ctx, out, r, cwd, arg)
+				case ":dump", ":p":
+					arg = strings.TrimSpace(arg)
+					if arg == "" {
+						fmt.Fprintln(out, "usage: :dump <expr>")
+						break
+					}
+					v, err := r.EvalLine(ctx, arg)
+					for _, w := range r.Warnings() {
+						fmt.Fprintf(out, "warning: %s\n", w)
+					}
+					if err != nil {
+						fmt.Fprintf(out, "error: %s\n", err)
+						break
+					}
+					if d := r.Dump(v); d != nil {
+						fmt.Fprintf(out, "%v\n", d)
+					}
 				case ":comp":
 					for _, c := range r.Complete(strings.TrimSpace(arg)) {
 						if c.Detail != "" {

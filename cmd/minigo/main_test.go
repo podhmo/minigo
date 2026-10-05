@@ -58,6 +58,27 @@ func TestRunREPLBindings(t *testing.T) {
 	}
 }
 
+func TestRunREPLPrintGoSyntax(t *testing.T) {
+	in := strings.NewReader("type P struct{ S string; L []int }\n:dump P{S: \"x\"}\n:p\n:p _1\n_1\n:exit\n")
+	var out bytes.Buffer
+	if err := runREPL(context.Background(), in, &out); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	// :dump, then its :p alias on the remembered result
+	if n := strings.Count(got, `repl.P{S:"x", L:[]int(nil)}`+"\n"); n != 2 {
+		t.Errorf("Go-syntax lines = %d, want 2\n---\n%s", n, got)
+	}
+	for _, want := range []string{
+		"usage: :dump <expr>\n",
+		"{x []int(nil)}\n", // :p results are remembered like any other
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q\n---\n%s", want, got)
+		}
+	}
+}
+
 func TestRunREPLLoad(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fib.go")
