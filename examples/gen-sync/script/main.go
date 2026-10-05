@@ -198,193 +198,28 @@ func droppedFiles(s pkgScan) ([]string, []error) {
 	errs := []error{}
 	for _, e := range entries {
 		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+		// _- and .-prefixed files are invisible to the Go build system
+		// entirely — same ignore rule as go/build's MatchFile.
+		if e.IsDir() || strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".") ||
+			!strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
 		path := filepath.Join(d, name)
 		if indexed[path] {
 			continue
 		}
-		data, rerr := os.ReadFile(path)
-		switch {
-		case rerr != nil:
+		if _, rerr := os.ReadFile(path); rerr != nil {
+			// an unreadable file loses decls AND import edges — the scan
+			// is degraded, so the caller refuses to write from it.
 			errs = append(errs, fmt.Errorf("gen-sync: %s: %w", path, rerr))
-		case exclusionVisible(string(data), name):
+		} else {
+			// readable but outside the index: build-constraint exclusion
+			// (or, rarely, a constraint that does not parse). go/build
+			// would skip it the same way, so a warning is honest.
 			warns = append(warns, path+": not in the package index (excluded by build constraints?)")
-		default:
-			// go/build drops a file not only on a constraint miss but
-			// also when MatchFile cannot parse its constraint lines —
-			// that is a broken file masquerading as an exclusion, and
-			// its decls vanish all the same.
-			errs = append(errs, fmt.Errorf("gen-sync: %s: skipped: the Go build system could not parse it (malformed build constraint?)", path))
 		}
 	}
 	return warns, errs
-}
-
-// exclusionVisible reports whether a readable file missing from the
-// package index carries a legible reason for exclusion — a well-formed
-// //go:build or // +build marker, or a _GOOS/_GOARCH filename suffix.
-// A marker that does not parse is not an exclusion: it is the error
-// that made go/build drop the file.
-func exclusionVisible(src, name string) bool {
-	marker := false
-	for _, ln := range strings.Split(src, "\n") {
-		t := strings.TrimSpace(ln)
-		if strings.HasPrefix(t, "//go:build") {
-			marker = true
-			if !goBuildExprOK(strings.TrimSpace(t[len("//go:build"):])) {
-				return false
-			}
-		}
-		if strings.HasPrefix(t, "// +build") {
-			marker = true
-			if !plusBuildExprOK(strings.TrimSpace(t[len("// +build"):])) {
-				return false
-			}
-		}
-	}
-	return marker || platformSuffixExcluded(name)
-}
-
-// goBuildExprOK validates a //go:build constraint expression — the
-// grammar go/build enforces: ||, &&, !, parens and tag literals.
-func goBuildExprOK(s string) bool {
-	bs := []byte(s)
-	pos := 0
-	pos, ok := buildOr(bs, pos)
-	if !ok {
-		return false
-	}
-	pos = buildSkipWS(bs, pos)
-	return pos == len(bs)
-}
-
-func buildOr(bs []byte, pos int) (int, bool) {
-	pos, ok := buildAnd(bs, pos)
-	if !ok {
-		return pos, false
-	}
-	for {
-		save := pos
-		pos = buildSkipWS(bs, pos)
-		if pos+1 < len(bs) && bs[pos] == '|' && bs[pos+1] == '|' {
-			pos, ok = buildAnd(bs, pos+2)
-			if !ok {
-				return pos, false
-			}
-			continue
-		}
-		return save, true
-	}
-}
-
-func buildAnd(bs []byte, pos int) (int, bool) {
-	pos, ok := buildAtom(bs, pos)
-	if !ok {
-		return pos, false
-	}
-	for {
-		save := pos
-		pos = buildSkipWS(bs, pos)
-		if pos+1 < len(bs) && bs[pos] == '&' && bs[pos+1] == '&' {
-			pos, ok = buildAtom(bs, pos+2)
-			if !ok {
-				return pos, false
-			}
-			continue
-		}
-		return save, true
-	}
-}
-
-func buildAtom(bs []byte, pos int) (int, bool) {
-	pos = buildSkipWS(bs, pos)
-	if pos < len(bs) && bs[pos] == '!' {
-		return buildAtom(bs, pos+1)
-	}
-	if pos < len(bs) && bs[pos] == '(' {
-		pos, ok := buildOr(bs, pos+1)
-		if !ok {
-			return pos, false
-		}
-		pos = buildSkipWS(bs, pos)
-		if pos >= len(bs) || bs[pos] != ')' {
-			return pos, false
-		}
-		return pos + 1, true
-	}
-	return buildTag(bs, pos)
-}
-
-func buildSkipWS(bs []byte, pos int) int {
-	for pos < len(bs) && (bs[pos] == ' ' || bs[pos] == '\t') {
-		pos++
-	}
-	return pos
-}
-
-func buildTag(bs []byte, pos int) (int, bool) {
-	start := pos
-	for pos < len(bs) && isTagChar(bs[pos]) {
-		pos++
-	}
-	return pos, pos > start
-}
-
-func isTagChar(c byte) bool {
-	return c == '_' || c == '.' ||
-		(c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-}
-
-func isTag(s string) bool {
-	bs := []byte(s)
-	for _, c := range bs {
-		if !isTagChar(c) {
-			return false
-		}
-	}
-	return len(bs) > 0
-}
-
-// plusBuildExprOK validates a legacy // +build line: space-separated
-// OR fields of comma-separated AND tags, each optionally !-negated.
-func plusBuildExprOK(s string) bool {
-	fields := strings.Fields(s)
-	if len(fields) == 0 {
-		return false
-	}
-	for _, f := range fields {
-		for _, tag := range strings.Split(f, ",") {
-			if strings.HasPrefix(tag, "!") {
-				tag = tag[1:]
-			}
-			if !isTag(tag) {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// platformSuffixExcluded reports whether the filename itself explains
-// the exclusion — a _GOOS, _GOARCH, or _GOOS_GOARCH suffix before .go.
-var knownPlatforms = map[string]bool{
-	"386": true, "amd64": true, "arm": true, "arm64": true,
-	"loong64": true, "mips": true, "mipsle": true, "mips64": true, "mips64le": true,
-	"ppc64": true, "ppc64le": true, "riscv64": true, "s390x": true, "sparc64": true, "wasm": true,
-	"aix": true, "android": true, "darwin": true, "dragonfly": true, "freebsd": true,
-	"illumos": true, "ios": true, "js": true, "linux": true, "netbsd": true,
-	"openbsd": true, "plan9": true, "solaris": true, "wasip1": true, "windows": true,
-}
-
-func platformSuffixExcluded(name string) bool {
-	base, _ := strings.CutSuffix(name, ".go")
-	parts := strings.Split(base, "_")
-	if knownPlatforms[parts[len(parts)-1]] {
-		return true
-	}
-	return len(parts) >= 3 && knownPlatforms[parts[len(parts)-2]]
 }
 
 // syncFile rewrites the file's managed region to the plan's expected
@@ -419,10 +254,12 @@ func syncFile(p filePlan, check bool, wd, rootAbs string) (bool, error) {
 
 	// A file another generator owns ("// Code generated ... DO NOT
 	// EDIT.") is not ours to edit — the next regen would discard the
-	// block and check mode would report drift forever. Its decls still
-	// feed inference; the write is what is refused.
+	// block. Its decls still feed inference; the write is skipped
+	// with a warning, not an error — generated files living inside a
+	// scanned package is the normal case, not a breakage.
 	if hasGeneratedMarker(lines) {
-		return false, fmt.Errorf("gen-sync: %s: refusing to manage a file marked \"// Code generated ... DO NOT EDIT.\"", shown)
+		fmt.Println("gen-sync:", shown, "skipping: another generator owns this file (// Code generated ... DO NOT EDIT.)")
+		return false, nil
 	}
 
 	// out/outEnds are parallel: untouched lines keep their own line
@@ -554,10 +391,14 @@ func joinLines(lines, ends []string) string {
 
 // hasGeneratedMarker reports whether the file carries the Go
 // convention's generated-file marker — a `// Code generated ... DO NOT
-// EDIT.` comment line before the package clause.
+// EDIT.` comment line before the package clause. gen-sync's own
+// sentinel matches that pattern; it is never a refusal.
 func hasGeneratedMarker(lines []string) bool {
 	for _, ln := range lines {
 		t := strings.TrimSpace(ln)
+		if t == scanx.Sentinel {
+			continue
+		}
 		if strings.HasPrefix(t, "package ") {
 			return false
 		}

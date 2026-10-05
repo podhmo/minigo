@@ -47,7 +47,9 @@ func runMain(ctx context.Context, argv []string) int {
 	}
 	n, err := run(ctx, ".", "./script", dir, *check, *deps, os.Stdout)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "gen-sync:", err)
+		// errors from the script already carry their own "gen-sync:"
+		// prefix — adding another would print "gen-sync: gen-sync: ..."
+		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 	if *check {
@@ -74,10 +76,10 @@ func run(ctx context.Context, engineDir, scriptDir, dir string, check, deps bool
 	}
 	tup, ok := res.(*runtime.Tuple)
 	if !ok {
-		return 0, fmt.Errorf("unexpected result type %T (want (int, error))", res)
+		return 0, fmt.Errorf("gen-sync: unexpected result type %T (want (int, error))", res)
 	}
 	if len(tup.Elems) != 2 {
-		return 0, fmt.Errorf("unexpected result arity %d (want (int, error))", len(tup.Elems))
+		return 0, fmt.Errorf("gen-sync: unexpected result arity %d (want (int, error))", len(tup.Elems))
 	}
 	n, err := intResult(tup.Elems[0])
 	if err != nil {
@@ -93,7 +95,7 @@ func intResult(v runtime.Value) (int, error) {
 	case int64:
 		return int(n), nil
 	}
-	return 0, fmt.Errorf("unexpected result type %T (want int)", v)
+	return 0, fmt.Errorf("gen-sync: unexpected result type %T (want int)", v)
 }
 
 func errorResult(v runtime.Value) error {
@@ -106,5 +108,5 @@ func errorResult(v runtime.Value) error {
 			return err
 		}
 	}
-	return fmt.Errorf("unexpected error result %T", v)
+	return fmt.Errorf("gen-sync: unexpected error result %T", v)
 }

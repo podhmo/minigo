@@ -161,12 +161,11 @@ could not account for is returned as an error and exits nonzero.
 | `runtime trap: parse <file>: <file>:<line>:<col>: ...` | a file in the scanned package does not parse — fix the input file |
 | `runtime trap: import ...: resolving import "...": import path "..." could not be resolved` | an import cannot be resolved — fix the package's imports or go.mod |
 | `gen-sync: <path>: <err>` (e.g. `permission denied`) joined into the returned error | a file could not be read or written — fix the filesystem |
-| `gen-sync: <path>: not in the package index (excluded by build constraints?)` | warning only: the file is skipped the way `go build` skips it |
-| `gen-sync: <path>: skipped: the Go build system could not parse it (malformed build constraint?)` | the file is excluded *because it is broken* — `go/build`'s `MatchFile` drops it with an error, its decls vanish, and the whole run refuses to write |
+| `gen-sync: <path>: not in the package index (excluded by build constraints?)` | warning only: the file is skipped the way `go build` skips it (`_`-/`.`-prefixed files are ignored entirely, like `go build`) |
 | `gen-sync: <path>: <err>` where the file vanished from the index | the file is unreadable — decls *and import edges* vanish, so the whole run refuses to write (blocks elsewhere would regress) |
 | `gen-sync: <dir> is outside any Go module` | no go.mod ancestor — references cannot resolve, so the scan would degrade silently; the run refuses |
 | `gen-sync: <path>: refusing to write outside the scanned directory` | the import path resolved to a different tree (module shadowing) — fix go.mod / replace rules |
-| `gen-sync: <path>: refusing to manage a file marked "// Code generated ... DO NOT EDIT."` | another generator owns the file — the next regen would discard the block |
+| `gen-sync: <path>: skipping: another generator owns this file (// Code generated ... DO NOT EDIT.)` | warning only: the file still feeds inference but is never written — the next regen would discard the block |
 | `gen-sync: unexpected extra arguments: -check` | a flag landed in the positional args (e.g. `gen-sync ./app -check`) — put flags before the dir |
 
 Individual file failures do not stop the run — other files still sync —
