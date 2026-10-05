@@ -17,6 +17,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strings"
 )
 
 func main() {
@@ -50,6 +52,17 @@ func runMain(ctx context.Context, argv []string) int {
 	}
 
 	changed := fs.Args()
+	// flag.Parse stops at the first positional argument, so a flag placed
+	// after file paths lands in changed and — not ending in .go — would be
+	// ignored silently. Reject it instead of answering in the wrong format.
+	if !slices.Contains(argv, "--") {
+		for _, a := range changed {
+			if strings.HasPrefix(a, "-") {
+				fmt.Fprintf(os.Stderr, "test-detect: %q looks like a flag but follows a file argument; put flags before file paths (or use -- for unusual file names)\n", a)
+				return 2
+			}
+		}
+	}
 	if *stdin || len(changed) == 0 {
 		lines, err := readLines(os.Stdin)
 		if err != nil {
