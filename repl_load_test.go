@@ -91,9 +91,9 @@ func TestREPLLoadFile(t *testing.T) {
 		line string
 		want any
 	}{
-		{"len(memo)", int64(2)}, // init() ran at load
-		{"Fib(10)", int64(55)},
-		{"Base", int64(2)},
+		{"len(memo)", "2"}, // init() ran at load
+		{"Fib(10)", "55"},
+		{"Base", "2"},
 		{"X{3}.Show()", "X(3)!"}, // the file's own import alias resolves
 	} {
 		if diff := cmp.Diff(c.want, replEval(t, r, c.line)); diff != "" {
@@ -106,7 +106,7 @@ func TestREPLLoadFile(t *testing.T) {
 	// the prompt shares the package block: types extend, methods attach
 	replEval(t, r, "type XX X")
 	replEval(t, r, "func (x X) Twice() int { return x.N * 2 }")
-	if diff := cmp.Diff(int64(8), replEval(t, r, "XX{N: 1}.N + X{N: 2}.Twice() + 3")); diff != "" {
+	if diff := cmp.Diff("8", replEval(t, r, "XX{N: 1}.N + X{N: 2}.Twice() + 3")); diff != "" {
 		t.Errorf("prompt extension (-want +got):\n%s", diff)
 	}
 	if diff := cmp.Diff([]string{filepath.Join(dir, "fib.go")}, r.Loaded()); diff != "" {
@@ -143,9 +143,9 @@ func TestREPLLoadDir(t *testing.T) {
 		t.Errorf("Load paths: want a.go b.go c.go, got %v", paths)
 	}
 	for line, want := range map[string]any{
-		"A":            int64(42), // cross-file dependency order
+		"A":            "42", // cross-file dependency order
 		`Up("hi")`:     "HI",
-		`Len("  ab ")`: int64(2),
+		`Len("  ab ")`: "2",
 		"Call()":       "sub", // relative import anchors at the file's dir
 	} {
 		if diff := cmp.Diff(want, replEval(t, r, line)); diff != "" {
@@ -166,17 +166,17 @@ func TestREPLLoadShadowAndReload(t *testing.T) {
 	if _, err := r.Load(ctx, "m.go"); err != nil {
 		t.Fatal(err)
 	}
-	if diff := cmp.Diff(int64(1), replEval(t, r, "F()")); diff != "" {
+	if diff := cmp.Diff("1", replEval(t, r, "F()")); diff != "" {
 		t.Errorf("load over prompt (-want +got):\n%s", diff)
 	}
 	// a failed input does not keep shadowing the file's F
 	replFails(t, r, "import _ \"example.com/nosuch\"\nfunc F() int { return 0 }", "nosuch")
-	if diff := cmp.Diff(int64(1), replEval(t, r, "F()")); diff != "" {
+	if diff := cmp.Diff("1", replEval(t, r, "F()")); diff != "" {
 		t.Errorf("after failed input (-want +got):\n%s", diff)
 	}
 	// a later prompt redefinition wins until the next load
 	replEval(t, r, "func F() int { return 2 }")
-	if diff := cmp.Diff(int64(12), replEval(t, r, "F() + G()")); diff != "" {
+	if diff := cmp.Diff("12", replEval(t, r, "F() + G()")); diff != "" {
 		t.Errorf("prompt over load (-want +got):\n%s", diff)
 	}
 
@@ -185,7 +185,7 @@ func TestREPLLoadShadowAndReload(t *testing.T) {
 	if _, err := r.Load(ctx, "m.go"); err != nil {
 		t.Fatal(err)
 	}
-	if diff := cmp.Diff(int64(3), replEval(t, r, "F()")); diff != "" {
+	if diff := cmp.Diff("3", replEval(t, r, "F()")); diff != "" {
 		t.Errorf("after reload (-want +got):\n%s", diff)
 	}
 	replFails(t, r, "G()", "undefined: G")
@@ -208,10 +208,10 @@ func TestREPLLoadCurrentDirUnexported(t *testing.T) {
 		line string
 		want any
 	}{
-		{"bump()", int64(11)}, // ordered: bump mutates counter
-		{"counter", int64(11)},
-		{"point{1, 2}.sum()", int64(3)},
-		{"base", int64(5)},
+		{"bump()", "11"}, // ordered: bump mutates counter
+		{"counter", "11"},
+		{"point{1, 2}.sum()", "3"},
+		{"base", "5"},
 	} {
 		if diff := cmp.Diff(c.want, replEval(t, r, c.line)); diff != "" {
 			t.Errorf("%s (-want +got):\n%s", c.line, diff)
@@ -258,7 +258,7 @@ func TestREPLLoadErrors(t *testing.T) {
 	if diff := cmp.Diff([]string{filepath.Join(dir, "m.go")}, r.Loaded()); diff != "" {
 		t.Errorf("Loaded after failures (-want +got):\n%s", diff)
 	}
-	if diff := cmp.Diff(int64(1), replEval(t, r, "F()")); diff != "" {
+	if diff := cmp.Diff("1", replEval(t, r, "F()")); diff != "" {
 		t.Errorf("F after failures (-want +got):\n%s", diff)
 	}
 	replFails(t, r, "P()", "undefined: P")
@@ -286,7 +286,7 @@ func TestREPLConstRedeclare(t *testing.T) {
 	if diff := cmp.Diff([]string{"const C redeclared (was 10)"}, r.Warnings()); diff != "" {
 		t.Errorf("redeclare warnings (-want +got):\n%s", diff)
 	}
-	if diff := cmp.Diff(int64(30), replEval(t, r, "C")); diff != "" {
+	if diff := cmp.Diff("30", replEval(t, r, "C")); diff != "" {
 		t.Errorf("C (-want +got):\n%s", diff)
 	}
 	// a failing redeclaration keeps the old const and drops the warning
@@ -294,7 +294,7 @@ func TestREPLConstRedeclare(t *testing.T) {
 	if len(r.Warnings()) != 0 {
 		t.Errorf("failed redeclaration must not warn: %v", r.Warnings())
 	}
-	if diff := cmp.Diff(int64(30), replEval(t, r, "C")); diff != "" {
+	if diff := cmp.Diff("30", replEval(t, r, "C")); diff != "" {
 		t.Errorf("C after failed redeclaration (-want +got):\n%s", diff)
 	}
 
@@ -319,7 +319,7 @@ func TestREPLConstRedeclare(t *testing.T) {
 			t.Errorf("%s warnings (-want +got):\n%s", c.input, diff)
 		}
 	}
-	if diff := cmp.Diff(int64(40), replEval(t, r, "C")); diff != "" {
+	if diff := cmp.Diff("40", replEval(t, r, "C")); diff != "" {
 		t.Errorf("C after load (-want +got):\n%s", diff)
 	}
 	replFails(t, r, "C = 2", "cannot assign to constant")
@@ -352,7 +352,7 @@ func TestREPLLoadFileThenDir(t *testing.T) {
 	if len(r.Warnings()) != 0 {
 		t.Errorf("absorbing its own const must not warn: %v", r.Warnings())
 	}
-	if diff := cmp.Diff(int64(3), replEval(t, r, "F() + G()")); diff != "" {
+	if diff := cmp.Diff("3", replEval(t, r, "F() + G()")); diff != "" {
 		t.Errorf("F() + G() (-want +got):\n%s", diff)
 	}
 	// a file of a loaded directory reloads through the directory
@@ -374,7 +374,7 @@ func TestREPLReviewRegressions(t *testing.T) {
 		r := NewEngine(t.TempDir()).NewREPL()
 		replEval(t, r, "G := 1")
 		replFails(t, r, "func G() {}\nvar z Nope", "Nope")
-		if diff := cmp.Diff(int64(1), replEval(t, r, "G")); diff != "" {
+		if diff := cmp.Diff("1", replEval(t, r, "G")); diff != "" {
 			t.Errorf("G (-want +got):\n%s", diff)
 		}
 	})
@@ -390,7 +390,7 @@ func TestREPLReviewRegressions(t *testing.T) {
 		if _, err := r.Load(ctx, "w.go"); err == nil {
 			t.Fatal("want init failure")
 		}
-		if diff := cmp.Diff(int64(10), replEval(t, r, "W + F()")); diff != "" {
+		if diff := cmp.Diff("10", replEval(t, r, "W + F()")); diff != "" {
 			t.Errorf("W + F() (-want +got):\n%s", diff)
 		}
 		replFails(t, r, "X", "undefined: X")
@@ -405,7 +405,7 @@ func TestREPLReviewRegressions(t *testing.T) {
 		if _, err := r.Load(ctx, "d.go"); err == nil {
 			t.Fatal("want init failure")
 		}
-		if diff := cmp.Diff(int64(8), replEval(t, r, "C + V")); diff != "" {
+		if diff := cmp.Diff("8", replEval(t, r, "C + V")); diff != "" {
 			t.Errorf("C + V (-want +got):\n%s", diff)
 		}
 		if len(r.Warnings()) != 0 {
@@ -420,7 +420,7 @@ func TestREPLReviewRegressions(t *testing.T) {
 		if _, err := r.Load(ctx, "i.go"); err != nil {
 			t.Fatal(err)
 		}
-		if diff := cmp.Diff(int64(11), replEval(t, r, "hits")); diff != "" {
+		if diff := cmp.Diff("11", replEval(t, r, "hits")); diff != "" {
 			t.Errorf("hits (-want +got):\n%s", diff)
 		}
 	})
@@ -436,21 +436,21 @@ func TestREPLReviewRegressions(t *testing.T) {
 		if _, err := r.Load(ctx, "h.go"); err != nil {
 			t.Fatal(err)
 		}
-		if diff := cmp.Diff(int64(1), replEval(t, r, "H()")); diff != "" {
+		if diff := cmp.Diff("1", replEval(t, r, "H()")); diff != "" {
 			t.Errorf("loaded func over prompt var (-want +got):\n%s", diff)
 		}
 		if _, err := r.Load(ctx, "v.go"); err != nil {
 			t.Fatal(err)
 		}
 		replEval(t, r, "func V() int { return 2 }")
-		if diff := cmp.Diff(int64(2), replEval(t, r, "V()")); diff != "" {
+		if diff := cmp.Diff("2", replEval(t, r, "V()")); diff != "" {
 			t.Errorf("prompt func over loaded var (-want +got):\n%s", diff)
 		}
 		// the next load restores the file's var
 		if _, err := r.Load(ctx, "v.go"); err != nil {
 			t.Fatal(err)
 		}
-		if diff := cmp.Diff(int64(10), replEval(t, r, "V")); diff != "" {
+		if diff := cmp.Diff("10", replEval(t, r, "V")); diff != "" {
 			t.Errorf("V after re-load (-want +got):\n%s", diff)
 		}
 	})
@@ -472,14 +472,14 @@ func TestREPLReviewRegressions(t *testing.T) {
 		if _, err := r.Load(ctx, "ld/f.go"); err != nil {
 			t.Fatal(err)
 		}
-		if diff := cmp.Diff(int64(99), replEval(t, r, "F()")); diff != "" {
+		if diff := cmp.Diff("99", replEval(t, r, "F()")); diff != "" {
 			t.Errorf("F after load under pin (-want +got):\n%s", diff)
 		}
 		replEval(t, r, "const K = 5")
 		if diff := cmp.Diff([]string{"const K redeclared in package " + r.Current().Path + " (was 1): every importer sees the new value"}, r.Warnings()); diff != "" {
 			t.Errorf("pinned const warning (-want +got):\n%s", diff)
 		}
-		if diff := cmp.Diff(int64(5), replEval(t, r, "G()")); diff != "" {
+		if diff := cmp.Diff("5", replEval(t, r, "G()")); diff != "" {
 			t.Errorf("G sees the patched const (-want +got):\n%s", diff)
 		}
 	})
@@ -497,7 +497,7 @@ func TestREPLReviewRegressions(t *testing.T) {
 		if _, err := r.Load(ctx, "dd"); err != nil {
 			t.Fatal(err)
 		}
-		if diff := cmp.Diff(int64(3), replEval(t, r, "A() + T1()")); diff != "" {
+		if diff := cmp.Diff("3", replEval(t, r, "A() + T1()")); diff != "" {
 			t.Errorf("A() + T1() (-want +got):\n%s", diff)
 		}
 		if _, err := r.Load(ctx, "dd/a_test.go"); err != nil {
@@ -511,7 +511,7 @@ func TestREPLImportBoundVersionedPath(t *testing.T) {
 	e.Bind("example.com/foo/v2", map[string]runtime.Value{"X": int64(3)})
 	r := e.NewREPL()
 	replEval(t, r, `import "example.com/foo/v2"`)
-	if diff := cmp.Diff(int64(3), replEval(t, r, "foo.X")); diff != "" {
+	if diff := cmp.Diff("3", replEval(t, r, "foo.X")); diff != "" {
 		t.Errorf("foo.X (-want +got):\n%s", diff)
 	}
 }
