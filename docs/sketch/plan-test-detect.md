@@ -145,3 +145,129 @@ Honest answer, asked last as requested: **partially.**
 
 So: valid as an `examples/` experiment about source-level analysis;
 if it graduates to a product, it wants its own repo.
+
+## Combined world: detection on the shared pass
+
+The interesting version of this tool is not the standalone binary — it
+is detection as a *step inside one scripted run* over the same parse
+the other example tools already pay for.
+
+`examples/gen-sync` reads declarations out of `index.Build`, which is
+fed by `syntax.ParseFile` (a full parse). `examples/minigo-generate`
+shares one package cache across directive calls. `test-detect`, alone,
+walks with `parser.ImportsOnly`. Three tools, three passes over the
+same tree.
+
+Measured on this repository (117 files, ~1.7MB): imports-only parse
+≈ **1.2ms**, the `syntax.ParseFile` mode ≈ **33ms** — a ~28× gap. So:
+
+- Run alone, detection wants its own cheap walk; paying a full parse
+  just for imports is a tax.
+- Run *with* the others, the accounting flips: `syntax.File.Imports`
+  already holds every import, so the dependency graph is a BFS over
+  data the index build produced anyway — detection becomes a **free
+  query**, not a second walk.
+
+That reframes what the detector is in a scripted world: not a scanner
+but a *scheduler input*. The affected set can drive more than
+`go test` — scope a `gen-sync` scan to affected directories, dispatch
+`//minigo:generate` directives only in affected packages, then test the
+same set. Detection decides *where the work lands*; the other tools do
+the work. One walk, one parse, three consumers — the shared-cache
+thesis from minigo-generate, applied repo-wide.
+
+The standalone CLI stays as built: CI detection that runs before
+`go mod download` cannot wait for a full load. What a combined variant
+would share is the graph builder — only the source of `(imports,
+hasTests)` changes, from "parse files yourself" to "ask the index".
+
+## Spike feedback — what building it taught us
+
+From `examples/test-detect` as it stands, sorted by what kind of
+finding each is.
+
+### Verified facts
+
+- **The whole detect run is single-digit milliseconds on this repo** —
+  5 modules, 117 files, 67 internal edges in ~2.5ms end-to-end
+  (`-verbose` measured). The imports-only walk is ~1.2ms of that; BFS
+  and output are noise.
+- **Imports-only vs full parse measured ~28×** (1.2ms vs 33ms over the
+  same 117 files in the `syntax.ParseFile` mode) — the number behind
+  the combined-world accounting above.
+- **Dir-level package nodes held**: the external `foo_test` package
+  merges into its directory for free, and imports that exist only in
+  `_test.go` files create edges — pinned by a unit test where `tdep`
+  reaches `b` exclusively through `b/b_test.go`.
+- **Multi-module discovery held on the real repo, not just fixtures** —
+  `inspect/inspect.go` yields 9 affected packages spanning the root
+  module plus `convert-define`, `gen-sync`, and `task-run`; nested
+  `go.mod`s are skipped by their parent's walk and get their own.
+- **`hasTests` from the `_test.go` filename was enough** —
+  `go/build.ImportDir`'s `TestGoFiles`/`XTestGoFiles` split was never
+  needed, so nothing lost by not evaluating build constraints.
+- **A nice emergent property**: `inspect/` itself has no `_test.go`
+  files — its coverage lives in the root package's tests — so touching
+  `inspect/inspect.go` surfaces as "test the root package", which is
+  the semantics actually wanted.
+- **Unresolvable inputs degrade to warnings, empty diffs to empty
+  output** — a docs-only `git diff` produces no stdout, exit 0; the
+  CI-side `has_tests=false` case falls out without a flag.
+
+### What became clear
+
+- **"Internal" is the union of discovered `go.mod` paths, not one
+  module** — this repo's `examples/*` modules `replace`-import the
+  root, so a single-module assumption silently drops real edges. The
+  pasted spec's one-`moduleName` model would have missed
+  `inspect/` → `gen-sync` entirely.
+- **Filtering belongs at output, never at traversal** — `-exclude` and
+  the untested filter run *after* the BFS; cutting them mid-walk would
+  hide dependents of excluded packages (a generated-code hub is exactly
+  the case that breaks).
+- **Deleted files resolve through their directory** — dir-level nodes
+  mean a deleted file in a live dir still seeds correctly; a deleted
+  *dir* warns and skips, which is fine because its dependents stop
+  compiling anyway (a build-level concern, not test selection).
+- **Skipping build-constraint evaluation is the right bias** — parsing
+  every `.go` file over-approximates edges (a `_windows.go` import
+  still registers on a Linux run). For detection, wider sets cost extra
+  tests; missed edges cost coverage. Over-approximation wins.
+- **On a repo this size the real win is ordering, not speed** — at
+  117 files both parse strategies are instant; what ImportsOnly buys is
+  running *before* `go mod download`, on sparse checkouts, with zero
+  module resolution. The 28× ratio is what that property compounds
+  into on a thousand-package monorepo.
+
+### minigo limitations found
+
+- **None exercised — by construction.** The spike never calls the
+  interpreter, which is itself the on-theme answer restated as
+  evidence. What a *scripted* detector would need is below.
+- **Enumeration is the gap, not the data.** `syntax.File.Imports`
+  already retains per-file imports and `inspect.ImportsOf` exposes
+  them — but `pkg/locator` only resolves a *named* import inside one
+  module; nothing enumerates "every package under a root, across
+  nested `go.mod`s" or marks test-file presence at package level. A
+  scripted detector has the graph for free once files are loaded; it
+  lacks the loader that finds the files.
+- **`syntax.ParseFile` is full-parse only** — there is no
+  imports-only-flavored entry, so a script can't do the cheap scan;
+  it has to ride on someone else's full parse to stay fast (which is
+  exactly the combined-world shape).
+
+### Asks of minigo (filed/wished)
+
+- **A repo-enumeration surface** — "all packages under a root, across
+  nested modules, with per-package imports and test-file presence" —
+  the missing piece that would let detection run as a script step on
+  the shared pass. Filed in TODO.md.
+
+### Future work
+
+- **The combined/scripted round** — detection as a query over the same
+  index pass the other tools pay for, and the affected set as scheduler
+  input for scoped `gen-sync`/directive runs (chapter above).
+- **Sharding the affected set** (`-shard k/N`) for parallel CI jobs.
+- **CI wiring** — a `has_tests` output so an empty result skips the
+  test job, and per-module `go -C` test loops over the JSON format.
