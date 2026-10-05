@@ -54,6 +54,14 @@ Domains:
   switch) as IIFE templates. Table-driven: add a row to `textSigs`.
 - `num` — sized/named ints, floats, shifts, conversions, compound
   assignment and `++/--`.
+- `lang` — the language core beyond string helpers: user structs with
+  value/pointer methods, method values/expressions, embedding/promotion,
+  interfaces (typed nils, assertions, type switches, fmt's Stringer/error
+  dispatch), control flow (labels, goto, fallthrough, defer/recover,
+  per-iteration loop vars, range-over-int/func, channels, goroutines) and
+  user-defined generics. Shares the text domain's signature machinery;
+  rows live in `langSigs`, the prelude types/generics in `langDecls`
+  (`tools/difffuzz/lang.go`).
 
 Metamorphic contexts re-evaluate the same expression through a generic
 `id[T]`, a struct field, a closure call and a deferred assignment.
