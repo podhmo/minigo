@@ -1,4 +1,0 @@
-SILENT/type (lang hunt, seed 20261005, emitted lang_type_891f8723)
-shape:  fmt %T on any(Pair[string,int]{...})
-go:     main.Pair[string,int]
-minigo: main.Pair  -- %T drops the instantiation's type arguments

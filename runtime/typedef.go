@@ -473,11 +473,37 @@ func importClauseName(pkg *Package, file *syntax.File, alias string) string {
 // qualifier is the declaring package's clause name, anonymous types
 // spell canonically (`struct { f int }`, `interface { M() }`), and the
 // predeclared aliases fold to their canonical types (byte→uint8).
+// instArgsSpelling renders an instantiated generic's type arguments the
+// way Go's Type.String does — `Pair[string,int]` keeps its binds in
+// declaration order — and reports "" for unbound typedefs or binds that
+// cannot spell every declared parameter.
+func instArgsSpelling(td *TypeDef) string {
+	if len(td.TParams) == 0 || len(td.Binds) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteByte('[')
+	for i, p := range td.TParams {
+		bv, ok := td.Binds[p]
+		btd, isTd := bv.(*TypeDef)
+		if !ok || !isTd {
+			return ""
+		}
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(DisplayName(btd))
+	}
+	b.WriteByte(']')
+	return b.String()
+}
+
 func DisplayName(td *TypeDef) string {
 	if td == nil {
 		return "<nil>"
 	}
 	if td.Name != "" {
+		name := td.Name
 		if td.Pkg != nil && td.Pkg.Name != "" {
 			// the qualifier is the package's declared NAME — prefer the
 			// file's own package clause when available (a dir-loaded
@@ -487,31 +513,29 @@ func DisplayName(td *TypeDef) string {
 				pkg = td.File.AST.Name.Name
 			}
 			if strings.HasPrefix(td.Name, td.Pkg.Path+".") {
-				return pkg + "." + td.Name[len(td.Pkg.Path)+1:]
+				name = pkg + "." + td.Name[len(td.Pkg.Path)+1:]
+			} else if i := strings.LastIndex(td.Name, "."); i >= 0 {
+				name = pkg + td.Name[i:]
+			} else {
+				name = pkg + "." + td.Name
 			}
-			if i := strings.LastIndex(td.Name, "."); i >= 0 {
-				return pkg + td.Name[i:]
-			}
-			return pkg + "." + td.Name
-		}
-		if i := strings.LastIndex(td.Name, "/"); i >= 0 {
+		} else if i := strings.LastIndex(td.Name, "/"); i >= 0 {
 			// a bound typedef's identity name is "pkgpath.Name" — display
 			// keeps the last element like Go's package-name qualifier.
-			return td.Name[i+1:]
-		}
-		// reflect spells the predeclared aliases by their canonical
-		// types: `byte` prints `uint8`, `rune` prints `int32`.
-		if td.Pkg == nil && td.Spec == nil {
+			name = td.Name[i+1:]
+		} else if td.Pkg == nil && td.Spec == nil {
+			// reflect spells the predeclared aliases by their canonical
+			// types: `byte` prints `uint8`, `rune` prints `int32`.
 			switch td.Name {
 			case "byte":
-				return "uint8"
+				name = "uint8"
 			case "rune":
-				return "int32"
+				name = "int32"
 			case "any":
-				return "interface {}"
+				name = "interface {}"
 			}
 		}
-		return td.Name
+		return name + instArgsSpelling(td)
 	}
 	anon := td.Anon
 	if anon == nil && td.Spec != nil {
