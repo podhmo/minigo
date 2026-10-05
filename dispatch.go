@@ -195,9 +195,22 @@ func (e *Engine) peelAliasTd(td *runtime.TypeDef) *runtime.TypeDef {
 // anonymous *T typedef, or an embedded pointer field (or any embed under
 // a pointer parent, since &s.f stays addressable there).
 func (e *Engine) methodSetOfU(td *runtime.TypeDef, ptr bool, seen map[*runtime.TypeDef]bool) (map[string]bool, bool) {
+	set, _, unsure := e.methodWalkU(td, ptr, seen)
+	return set, unsure
+}
+
+// methodWalkU is the single traversal behind both methodSetOfU (the
+// callable-name set) and methodFuncs (the member-function map): one
+// walk applies alias peeling, the anonymous-*T elem peel, Go's receiver
+// rule, the per-path cycle guard and unsure tracking so the two views
+// cannot drift apart (they once disagreed on embedded interface facades
+// that carry MReqs without an AST). An interface typedef contributes
+// its requirement names to the name set — including AST-less facades —
+// while the func map only gains members backed by a declared signature.
+func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.TypeDef]bool) (names map[string]bool, funcs map[string]*runtime.Function, unsure bool) {
 	td = e.peelAliasTd(td)
 	if td == nil || seen[td] {
-		return nil, false
+		return nil, nil, false
 	}
 	// seen guards cycles along a path only — a sibling embed path that
 	// reaches the same type under a different ptr condition still has
@@ -207,16 +220,32 @@ func (e *Engine) methodSetOfU(td *runtime.TypeDef, ptr bool, seen map[*runtime.T
 	// methodInner's.
 	seen[td] = true
 	defer delete(seen, td)
-	set := map[string]bool{}
-	var unsure bool
+	// an anonymous *T typedef sees T's method set including pointer
+	// receivers; a declared pointer typedef keeps only its own decls.
+	if td.Kind == runtime.KindPointer && td.Spec == nil {
+		if et, err := e.elemOf(td); err == nil && et != nil {
+			td, ptr = et, true
+		}
+	}
+	if td.Kind == runtime.KindInterface {
+		names = e.ifaceReqsRec(td, map[*runtime.TypeDef]bool{})
+		funcs = map[string]*runtime.Function{}
+		for name, sig := range e.ifaceSigsOf(td, map[*runtime.TypeDef]bool{}) {
+			funcs[name] = ifaceSigFunc(sig)
+		}
+		return names, funcs, false
+	}
+	names = map[string]bool{}
+	funcs = map[string]*runtime.Function{}
 	for name, m := range td.Methods {
-		if len(m.TParams) > 0 {
+		if m == nil || len(m.TParams) > 0 {
 			continue // a generic method contributes no interface method
 		}
 		if m.PtrRecv && !ptr {
 			continue // pointer receivers live only on *T's method set
 		}
-		set[name] = true
+		names[name] = true
+		funcs[name] = m
 	}
 	for _, spec := range td.EmbedSpecs {
 		emb, err := e.resolveTypeRef(td, spec)
@@ -225,9 +254,17 @@ func (e *Engine) methodSetOfU(td *runtime.TypeDef, ptr bool, seen map[*runtime.T
 			continue
 		}
 		if emb.Kind == runtime.KindInterface {
-			// an embedded interface field satisfies its own requirements
+			// an embedded interface field satisfies its own requirements:
+			// the name set covers every required name (facade typedefs
+			// without AST still count) while the func map keeps only the
+			// members a signature can be synthesized for.
 			for m := range e.ifaceReqsRec(emb, map[*runtime.TypeDef]bool{}) {
-				set[m] = true
+				names[m] = true
+			}
+			for name, sig := range e.ifaceSigsOf(emb, map[*runtime.TypeDef]bool{}) {
+				if _, dup := funcs[name]; !dup {
+					funcs[name] = ifaceSigFunc(sig)
+				}
 			}
 			continue
 		}
@@ -238,13 +275,28 @@ func (e *Engine) methodSetOfU(td *runtime.TypeDef, ptr bool, seen map[*runtime.T
 		if _, isStar := spec.(*ast.StarExpr); isStar || emb.Kind == runtime.KindPointer {
 			embPtr = true
 		}
-		sub, subUnsure := e.methodSetOfU(emb, embPtr, seen)
+		subNames, subFuncs, subUnsure := e.methodWalkU(emb, embPtr, seen)
 		unsure = unsure || subUnsure
-		for m := range sub {
-			set[m] = true
+		for m := range subNames {
+			names[m] = true
+		}
+		for name, m := range subFuncs {
+			if _, dup := funcs[name]; !dup {
+				funcs[name] = m
+			}
 		}
 	}
-	return set, unsure
+	return names, funcs, unsure
+}
+
+// ifaceSigFunc synthesizes the member Function an interface typedef's
+// required method resolves to — the declared signature plus the typedef
+// context (package, file imports, binds) that spells it.
+func ifaceSigFunc(sig ifaceSig) *runtime.Function {
+	return &runtime.Function{
+		Decl: &ast.FuncDecl{Type: sig.decl},
+		Pkg:  sig.ctx.Pkg, File: sig.ctx.File, Binds: sig.ctx.Binds,
+	}
 }
 
 // methodSet implements the minireflect MethodSet hook.
@@ -260,61 +312,8 @@ func (e *Engine) methodSet(td *runtime.TypeDef) (map[string]*runtime.Function, e
 // exported methods only). An interface typedef yields synthesized
 // members carrying each required method's declared signature.
 func (e *Engine) methodFuncs(td *runtime.TypeDef, ptr bool, seen map[*runtime.TypeDef]bool) map[string]*runtime.Function {
-	td = e.peelAliasTd(td)
-	if td == nil || seen[td] {
-		return nil
-	}
-	// per-path cycle guard like methodSetOfU's: the same type reached
-	// through a different embed path (another ptr condition) keeps its
-	// own contribution, so the mark lifts on unwind.
-	seen[td] = true
-	defer delete(seen, td)
-	// an anonymous *T typedef sees T's method set including pointer
-	// receivers; a declared pointer typedef keeps only its own decls.
-	if td.Kind == runtime.KindPointer && td.Spec == nil {
-		if et, err := e.elemOf(td); err == nil && et != nil {
-			td, ptr = et, true
-		}
-	}
-	if td.Kind == runtime.KindInterface {
-		out := map[string]*runtime.Function{}
-		for name, sig := range e.ifaceSigsOf(td, map[*runtime.TypeDef]bool{}) {
-			out[name] = &runtime.Function{
-				Decl: &ast.FuncDecl{Type: sig.decl},
-				Pkg:  sig.ctx.Pkg, File: sig.ctx.File, Binds: sig.ctx.Binds,
-			}
-		}
-		return out
-	}
-	out := map[string]*runtime.Function{}
-	for name, m := range td.Methods {
-		if m == nil || len(m.TParams) > 0 {
-			continue // generic methods never join the method set
-		}
-		if m.PtrRecv && !ptr {
-			continue
-		}
-		out[name] = m
-	}
-	for _, spec := range td.EmbedSpecs {
-		emb, err := e.resolveTypeRef(td, spec)
-		if err != nil || emb == nil {
-			continue
-		}
-		// methods of an embedded pointer field promote with their
-		// receiver kind intact; an embedded value field promotes only
-		// its value receivers (plus all receivers under a *S parent).
-		embPtr := ptr
-		if _, isStar := spec.(*ast.StarExpr); isStar || emb.Kind == runtime.KindPointer {
-			embPtr = true
-		}
-		for name, m := range e.methodFuncs(emb, embPtr, seen) {
-			if _, dup := out[name]; !dup {
-				out[name] = m
-			}
-		}
-	}
-	return out
+	_, funcs, _ := e.methodWalkU(td, ptr, seen)
+	return funcs
 }
 
 // ifaceSig is an interface's required method together with the typedef
