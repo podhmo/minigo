@@ -567,6 +567,16 @@ func (v *VM) callBounded(callee runtime.Value, args []runtime.Value, spreadTd *r
 // spreadTd carries the element typedef a trailing `xs...` slice supplied
 // at the call site; nil when the call had no spread.
 func (v *VM) call(callee runtime.Value, args []runtime.Value, spreadTd *runtime.TypeDef) (runtime.Value, error) {
+	if p := v.proc; p != nil {
+		select {
+		case <-p.done:
+			// the process ended while this call was queued — a sibling
+			// panic already won; die like Go's exit() rather than
+			// running the call's observable effects.
+			panic(procExit{})
+		default:
+		}
+	}
 	for {
 		switch c := callee.(type) {
 		case *runtime.BuiltinFunc:
@@ -974,14 +984,34 @@ func (v *VM) unwind(f *frame, r any) {
 	}
 	switch {
 	case p != nil:
+		v.failProc(p)
 		panic(p) // still panicking, or a deferred call panicked
 	case r != nil:
 		if _, ok := r.(*runtime.Panic); !ok {
+			v.failProc(r)
 			panic(r) // Trap/host panic: recover() must not swallow it
 		}
 		fallthrough // script panic recovered by a deferred function
 	default:
 		f.stack = []runtime.Value{f.finalResult()}
+	}
+}
+
+// failProc ends the process when an unrecovered panic or trap reaches a
+// goroutine's root frame — the instant Go exits on. Killing here, inside
+// the unwind that just decided the panic is fatal, beats waiting for the
+// spawn boundary's error path: a sibling a dying defer unblocked (wg.Done
+// mid-unwind) is already dead when it resumes instead of printing past
+// the crash. procExit and ExitRequest are excluded — the process is
+// already ending on its own terms, and recording procExit as the fatal
+// would mask the real failure on the root call.
+func (v *VM) failProc(r any) {
+	if len(v.frames) != 0 || v.proc == nil {
+		return
+	}
+	switch r.(type) {
+	case *runtime.Panic, *runtime.Trap:
+		v.proc.fail(asError(r))
 	}
 }
 

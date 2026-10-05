@@ -118,6 +118,25 @@ func TestGoroutinePanic(t *testing.T) {
 	})
 }
 
+// TestWaitUnblockThenPanic: a panic kills the process while a sibling is
+// released mid-unwind — the dying goroutine's defer runs wg.Done, so the
+// sibling resumes between Done and the process exit. Go's crash gives
+// the sibling no post-exit progress: its next call dies with the
+// process, and the package flag it would have set stays 0.
+func TestWaitUnblockThenPanic(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEngine(t)
+		_, err := runErr(e, "./testdata/concurrency", "WaitUnblockThenPanic")
+		if err == nil || !strings.Contains(err.Error(), "boom") {
+			t.Fatalf("expected goroutine panic to fail the run, got %v", err)
+		}
+		got := run(t, e, "./testdata/concurrency", "WaitUnblockRead")
+		if diff := cmp.Diff(int64(0), got); diff != "" {
+			t.Errorf("WaitUnblockRead mismatch (-want +got):\n%s", diff)
+		}
+	})
+}
+
 // TestBlockedSiblingReleased: a panic in one goroutine releases siblings
 // parked forever (empty select, nil-channel send) — the run resolves to
 // the panic rather than hanging.
@@ -278,28 +297,40 @@ func TestDetachedLeak(t *testing.T) {
 }
 
 // TestHostParkLeak documents a known limitation: a script goroutine parked
-// inside a host call (WaitGroup.Wait, Mutex.Lock, time.Sleep) outlives its
-// process — only select/channel blocking watches proc.done, so the host
+// inside a host call (WaitGroup.Wait, Mutex.Lock, a blocked builtin)
+// outlives its process — proc death is checked at the call boundary and
+// on channel parking, not inside a running host call, so the host
 // goroutine leaks. A synctest bubble reports it as "blocked goroutines
-// remain", so the check runs on the real clock. NumGoroutine cannot carry
-// the assertion: it is a net count, so one unrelated goroutine death in
-// the window masks the leaked +1 permanently (the observed CI flake).
-// Instead the spawned goroutine proves itself — the bound builtin reports
-// that it reached the park point, and the only ops between that report and
-// inner.Wait() (member load + reflect call, neither watches proc.done)
-// guarantee it parks in a real WaitGroup.Wait: that is the leak.
+// remain", so the check runs on the real clock. The bound builtin both
+// reports that the goroutine entered it and blocks inside it forever:
+// main's IsParked spin exits only after the goroutine is provably parked
+// in the host call, so no goroutine counting or timing is involved.
 func TestHostParkLeak(t *testing.T) {
 	parked := make(chan struct{})
+	never := make(chan struct{})
 	e := newEngine(t)
 	e.Bind("parkprobe", map[string]runtime.Value{
 		"Parked": &runtime.BuiltinFunc{
 			Name: "parkprobe.Parked",
-			// runs on the spawned goroutine: by the time Run returns
-			// its process is dead, yet the goroutine still enters —
-			// and stays inside — a host call: that is the leak.
+			// runs on the spawned goroutine while the process is still
+			// alive (main spins on IsParked), then blocks inside the
+			// host call — past every proc-death check, so it stays
+			// parked when the run ends: that is the leak.
 			Fn: func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
 				close(parked)
+				<-never
 				return nil, nil
+			},
+		},
+		"IsParked": &runtime.BuiltinFunc{
+			Name: "parkprobe.IsParked",
+			Fn: func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
+				select {
+				case <-parked:
+					return int64(1), nil
+				default:
+					return int64(0), nil
+				}
 			},
 		},
 	})
