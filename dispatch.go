@@ -199,7 +199,14 @@ func (e *Engine) methodSetOfU(td *runtime.TypeDef, ptr bool, seen map[*runtime.T
 	if td == nil || seen[td] {
 		return nil, false
 	}
+	// seen guards cycles along a path only — a sibling embed path that
+	// reaches the same type under a different ptr condition still has
+	// methods to contribute (`struct{ A; *T }` where A embeds T:
+	// visiting A.T as a value must not hide the *T embed's pointer
+	// receivers), so the mark lifts when the path unwinds like
+	// methodInner's.
 	seen[td] = true
+	defer delete(seen, td)
 	set := map[string]bool{}
 	var unsure bool
 	for name, m := range td.Methods {
@@ -257,7 +264,11 @@ func (e *Engine) methodFuncs(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 	if td == nil || seen[td] {
 		return nil
 	}
+	// per-path cycle guard like methodSetOfU's: the same type reached
+	// through a different embed path (another ptr condition) keeps its
+	// own contribution, so the mark lifts on unwind.
 	seen[td] = true
+	defer delete(seen, td)
 	// an anonymous *T typedef sees T's method set including pointer
 	// receivers; a declared pointer typedef keeps only its own decls.
 	if td.Kind == runtime.KindPointer && td.Spec == nil {
