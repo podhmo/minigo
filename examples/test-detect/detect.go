@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -62,12 +63,19 @@ func detectChanged(root string, changed []string, o options) (*detection, error)
 // Non-.go inputs are ignored; .go files whose directory is not in the
 // graph (deleted trees, testdata, files outside the modules) produce a
 // warning — a silently dropped file would silently drop test coverage.
+// Inputs that clearly are not files at all (directories, Windows-style
+// `\` separators on this platform) warn too: they claim a package the
+// tool cannot see.
 func (d *detection) resolveChanged(changed []string) []*pkg {
 	var seeds []*pkg
 	seen := map[*pkg]bool{}
 	for _, f := range changed {
 		f = strings.TrimSpace(f)
-		if f == "" || !strings.HasSuffix(f, ".go") {
+		if f == "" {
+			continue
+		}
+		if filepath.Separator != '\\' && strings.ContainsRune(f, '\\') {
+			d.warnings = append(d.warnings, fmt.Sprintf("%s: contains '\\'; pass '/'-separated paths on this platform (skipped)", f))
 			continue
 		}
 		abs := f
@@ -75,6 +83,13 @@ func (d *detection) resolveChanged(changed []string) []*pkg {
 			abs = filepath.Join(d.root, f)
 		}
 		abs = filepath.Clean(abs)
+		if info, err := os.Stat(abs); err == nil && info.IsDir() {
+			d.warnings = append(d.warnings, fmt.Sprintf("%s: is a directory, not a .go file (skipped)", f))
+			continue
+		}
+		if !strings.HasSuffix(f, ".go") {
+			continue
+		}
 		p, ok := d.graph.byDir[filepath.Dir(abs)]
 		if !ok {
 			d.warnings = append(d.warnings, fmt.Sprintf("%s: not in scanned graph (skipped)", f))

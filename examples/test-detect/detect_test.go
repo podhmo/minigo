@@ -317,6 +317,33 @@ func TestModulePathOfHandlesCommentsAndQuotes(t *testing.T) {
 	}
 }
 
+func TestDirectoryAndBackslashInputsWarn(t *testing.T) {
+	root := testRepo(t)
+	writeTree(t, root, map[string]string{"x.go/inner.go": "package z\n"})
+	d, err := detectChanged(root, []string{
+		"a",      // a real directory, no .go suffix: used to drop silently
+		"x.go",   // a directory whose name ends in .go: used to mis-seed its parent
+		`a\a.go`, // Windows-style separator on a unix run
+		"a/a.go", // a real file still resolves
+	}, options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var warnText string
+	for _, w := range d.warnings {
+		warnText += w + "\n"
+	}
+	for _, want := range []string{"a: is a directory", "x.go: is a directory", `a\a.go: contains '\'`} {
+		if !strings.Contains(warnText, want) {
+			t.Errorf("want a warning containing %q, got:\n%s", want, warnText)
+		}
+	}
+	// Only the real file seeded anything.
+	if len(keptPaths(t, d)) == 0 {
+		t.Error("a/a.go should still seed its affected set")
+	}
+}
+
 func TestGoModNamedDirectoryDoesNotHidePackage(t *testing.T) {
 	root := t.TempDir()
 	writeTree(t, root, map[string]string{
