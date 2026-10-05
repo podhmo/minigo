@@ -119,16 +119,17 @@ func Main(args []string) int
   trick. A tool dir that is `package main` with a real `func main()`
   can *also* run under plain `go run` — one source, both runners.
 
-## Demo: `tools/stringer`
+## Demo: `tools/stringer` + `tools/enumvals`
 
-A minigo-native stringer: `-type=X` finds the type decl via `inspect`
-(`DirOf` over `GOFILEPATH`'s dir → `Decls` → `EnumMembers`) and emits
-`<lower(type)>_string.go` next to the source — `func (x X) String()`
-as a name switch plus a typed fallback, the same shape real stringer
-writes. The fixture is a small `app/` package with enum decls and
-decoys (alias types, a named int with no consts, a directive trailing
-its type) — and the `//minigo:generate ../tools/stringer -type=X`
-lines that invoke it.
+Two demo tools — the issue's "plugins" — each a package dir with a
+`Main`: `tools/stringer` (`-type=X` → `func (x X) String()` as a name
+switch plus typed fallback, via `DirOf`/`Decls`/`EnumMembers` over
+`GOFILEPATH`'s package) and `tools/enumvals` (`-type=X` → a `Values()`
+slice in declaration order). The `app/` fixture exercises the shapes a
+runner must take in stride: **stacked directives** on `Status` (two
+lines, two tools, one type — the multi-command case), solo directives
+on `Priority` and `Level`, plus decoys — an alias wearing a matchable
+name, a named int with no consts, a directive trailing its type.
 
 ## CLI
 
@@ -201,6 +202,11 @@ From `examples/minigo-generate` as it stands:
   values is out of `inspect`'s current reach.
 - **Refs anchored at the directive file's directory** worked naturally —
   `../tools/stringer` inside `app/` resolves without a registry.
+- **Stacked directives cost nothing extra** — the demo's `Status` runs
+  two tools on adjacent lines, and each is just another independent
+  `Call` with its own `GOLINE`; the second tool's package loads through
+  the same warm cache. Multiple tools across one file never needed
+  special machinery.
 - **Tests copy a patched module** like gen-sync's: the fixture's go.mod
   ships `replace github.com/podhmo/minigo => ../../`, and the temp copy
   rewrites it to the absolute checkout so the tool's `inspect` import
