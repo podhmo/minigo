@@ -317,6 +317,23 @@ func TestModulePathOfHandlesCommentsAndQuotes(t *testing.T) {
 	}
 }
 
+func TestGoModNamedDirectoryDoesNotHidePackage(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		"go.mod":             "module example.com/m\n",
+		"a/a.go":             "package a\n",
+		"a/a_test.go":        "package a\n",
+		"a/go.mod/keepme.md": "notes\n", // a subdirectory named go.mod is not a module
+	})
+	d, err := detectChanged(root, []string{"a/a.go"}, options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff([]string{"example.com/m/a"}, keptPaths(t, d)); diff != "" {
+		t.Errorf("kept mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParseErrorKeepsRecoveredImportsAndWarns(t *testing.T) {
 	root := t.TempDir()
 	writeTree(t, root, map[string]string{
