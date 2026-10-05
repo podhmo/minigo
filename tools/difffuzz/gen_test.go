@@ -35,7 +35,11 @@ func TestGeneratedProgramsCompile(t *testing.T) {
 		t.Skip("builds generated programs")
 	}
 	for _, d := range []*Domain{numDomain, textDomain, reflDomain, langDomain} {
-		t.Run(d.Name, func(t *testing.T) { testCompiles(t, d) })
+		// each domain builds in its own scratch module, so they run in parallel
+		t.Run(d.Name, func(t *testing.T) {
+			t.Parallel()
+			testCompiles(t, d)
+		})
 	}
 }
 
