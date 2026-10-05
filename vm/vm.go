@@ -3060,6 +3060,27 @@ func refArg(a runtime.Value) (ref runtime.Value, leaf runtime.Value) {
 	return ref, u
 }
 
+// blockingHostMethods names host methods that can park indefinitely —
+// their m.Call runs on a helper goroutine selected against proc.done, so
+// process death unwinds the script frame with procExit even though the
+// real call keeps running (the helper leaks — the documented host-park
+// limit). Matching is by method name: Wait/Lock/RLock cover the sync
+// primitives; Do covers sync.Once (its argument can itself block).
+var blockingHostMethods = map[string]bool{
+	"Wait": true, "WaitTimeout": true,
+	"Lock": true, "RLock": true, "LockTimeout": true, "TryLockTimeout": true,
+	"Do": true,
+}
+
+// procDoneOf reports the caller VM's proc-done channel; non-*VM callers
+// (host-side VMCaller implementations) have no process to watch.
+func procDoneOf(vc runtime.VMCaller) <-chan struct{} {
+	if v, ok := vc.(*VM); ok && v.proc != nil {
+		return v.proc.done
+	}
+	return nil
+}
+
 // callReflectFunc invokes a host func reflect.Value with script args:
 // arity checks, variadic/CallSlice handling, and result marshaling —
 // shared by host method values and callable GoValue funcs.
@@ -3098,10 +3119,51 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 		backs = append(backs, argBack{arg: a, rv: rv})
 	}
 	var out []reflect.Value
-	if useSlice {
-		out = m.CallSlice(in)
-	} else {
-		out = m.Call(in)
+	watched := false
+	if blockingHostMethods[name] {
+		if done := procDoneOf(vc); done != nil {
+			watched = true
+			// a method that can park indefinitely must not outlive its
+			// process: run it on a helper goroutine and select on
+			// proc.done, so a sibling's death unwinds this frame with
+			// procExit instead of hanging the process (mu held by a
+			// dead goroutine never releases its Lock waiters). The
+			// helper keeps running the real call — a leaked goroutine,
+			// the same documented limit as any host park.
+			type callRes struct {
+				out []reflect.Value
+				p   any
+			}
+			resCh := make(chan callRes, 1)
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						resCh <- callRes{p: r}
+					}
+				}()
+				if useSlice {
+					resCh <- callRes{out: m.CallSlice(in)}
+				} else {
+					resCh <- callRes{out: m.Call(in)}
+				}
+			}()
+			select {
+			case <-done:
+				panic(procExit{})
+			case r := <-resCh:
+				if r.p != nil {
+					panic(r.p)
+				}
+				out = r.out
+			}
+		}
+	}
+	if !watched {
+		if useSlice {
+			out = m.CallSlice(in)
+		} else {
+			out = m.Call(in)
+		}
 	}
 	// callee writes propagate back: a script slice crossed as a fresh
 	// host slice shares nothing (Reader.Read's buffer), and an
