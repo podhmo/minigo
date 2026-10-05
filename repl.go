@@ -568,33 +568,55 @@ func (r *REPL) anchor(path string) string {
 // the spec to assignments executed as a step. Const names are recorded in
 // pendingConsts (sealed read-only after the step) and names with an explicit
 // type in pendingTyped (the cell is stamped with T's typedef after reload).
+// Const groups follow Go's rules: a value-less spec repeats the previous
+// spec's type and values, and `iota` is the spec's index — bound by a
+// local `const iota = i` around the spec's assignment.
 func (r *REPL) hoistSpecs(d *ast.GenDecl) []ast.Stmt {
 	var out []ast.Stmt
 	isConst := d.Tok == token.CONST
-	for _, spec := range d.Specs {
+	var prevValues []ast.Expr
+	var prevType ast.Expr
+	for i, spec := range d.Specs {
 		vs, ok := spec.(*ast.ValueSpec)
 		if !ok {
 			continue
+		}
+		values, typ := vs.Values, vs.Type
+		if isConst {
+			if len(values) == 0 {
+				values, typ = prevValues, prevType
+			} else {
+				prevValues, prevType = values, typ
+			}
 		}
 		for _, name := range vs.Names {
 			r.hoist(name.Name)
 			if isConst {
 				r.pendingConsts = append(r.pendingConsts, name.Name)
 			}
-			if vs.Type != nil {
-				r.pendingTyped = append(r.pendingTyped, namedExpr{name: name.Name, expr: vs.Type})
+			if typ != nil {
+				r.pendingTyped = append(r.pendingTyped, namedExpr{name: name.Name, expr: typ})
 			}
 		}
-		if len(vs.Values) > 0 {
+		if len(values) > 0 {
 			lhs := make([]ast.Expr, len(vs.Names))
 			for i, n := range vs.Names {
 				lhs[i] = n
 			}
-			out = append(out, &ast.AssignStmt{Lhs: lhs, Tok: token.ASSIGN, Rhs: vs.Values})
+			var assign ast.Stmt = &ast.AssignStmt{Lhs: lhs, Tok: token.ASSIGN, Rhs: values}
+			if isConst && mentionsIota(values) {
+				assign = &ast.BlockStmt{List: []ast.Stmt{
+					&ast.DeclStmt{Decl: &ast.GenDecl{Tok: token.CONST, Specs: []ast.Spec{&ast.ValueSpec{
+						Names:  []*ast.Ident{ast.NewIdent("iota")},
+						Values: []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(i)}},
+					}}}},
+					assign,
+				}}
+			}
+			out = append(out, assign)
 			continue
 		}
-		// `var x T` without a value initializes to a zero value. A value-less
-		// const keeps its nil cell and is only sealed read-only.
+		// `var x T` without a value initializes to a zero value.
 		if !isConst && vs.Type != nil {
 			for _, n := range vs.Names {
 				out = append(out, &ast.AssignStmt{
@@ -609,6 +631,32 @@ func (r *REPL) hoistSpecs(d *ast.GenDecl) []ast.Stmt {
 		}
 	}
 	return out
+}
+
+// mentionsIota reports whether any expression refers to the identifier
+// iota (selector field names aside).
+func mentionsIota(exprs []ast.Expr) bool {
+	found := false
+	for _, e := range exprs {
+		ast.Inspect(e, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.SelectorExpr:
+				ast.Inspect(n.X, func(m ast.Node) bool {
+					if id, ok := m.(*ast.Ident); ok && id.Name == "iota" {
+						found = true
+					}
+					return !found
+				})
+				return false
+			case *ast.Ident:
+				if n.Name == "iota" {
+					found = true
+				}
+			}
+			return !found
+		})
+	}
+	return found
 }
 
 // acceptStmts rewrites a statement list so new `:=`/`var`/`const` names become
