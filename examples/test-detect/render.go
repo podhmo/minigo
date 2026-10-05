@@ -53,7 +53,16 @@ func (d *detection) render(format string) ([]byte, error) {
 		return []byte(strings.Join(dirs, "\n") + "\n"), nil
 	case "json":
 		groups := d.groupByModule()
-		return json.Marshal(groups)
+		if groups == nil {
+			// Match the other formats' honesty about an empty set:
+			// valid JSON, not the "null" a nil slice marshals to.
+			return []byte("[]\n"), nil
+		}
+		out, err := json.Marshal(groups)
+		if err != nil {
+			return nil, err
+		}
+		return append(out, '\n'), nil
 	default:
 		return nil, fmt.Errorf("unknown -format %q (want pkg|space|dir|json)", format)
 	}

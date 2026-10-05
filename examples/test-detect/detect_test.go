@@ -279,6 +279,16 @@ func TestEmptyChangeSetProducesEmptyOutput(t *testing.T) {
 			t.Errorf("format %q: want empty output, got %q", format, out)
 		}
 	}
+	// json is the exception: an empty set is a valid empty array so a
+	// pipeline still parses the output, not the literal "null" a nil
+	// slice would marshal to.
+	out, err := d.render("json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(out), "[]\n"; got != want {
+		t.Errorf("format json: got %q, want %q", got, want)
+	}
 }
 
 func TestModulePathOfHandlesCommentsAndQuotes(t *testing.T) {
