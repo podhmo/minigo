@@ -225,6 +225,32 @@ func PanicInGoroutine() int {
 	select {}
 }
 
+var waitUnblockProgress int
+
+func markWaitProgress() int { return 1 }
+
+// WaitUnblockThenPanic: a dying goroutine's own defer releases a sibling
+// mid-unwind (wg.Done frees wg.Wait before the panic finishes). Go's
+// exit() kills the sibling's next call before it can run — the flag
+// stays 0. Runs alongside WaitUnblockRead, which observes the flag.
+func WaitUnblockThenPanic() int {
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		panic("boom")
+	}()
+	go func() {
+		wg.Wait()
+		waitUnblockProgress = markWaitProgress()
+	}()
+	select {}
+}
+
+// WaitUnblockRead: observes the package var a surviving sibling would
+// have set — stays 0 when the process died with the panic.
+func WaitUnblockRead() int { return waitUnblockProgress }
+
 // NilChanBlocksForever: send on a nil channel parks — a sibling panic
 // releases it (process exit), so the call still resolves to the panic.
 func NilChanBlocksThenPanic() int {
