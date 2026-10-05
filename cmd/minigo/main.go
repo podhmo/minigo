@@ -15,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/podhmo/minigo"
@@ -213,11 +214,15 @@ const replHelp = `commands:
   :unpin  stop writing into the package; decls land in <repl> again
   :ls [ref]  list top-level decls of the current (or given) package;
              ref is a path, ./dir, or a name bound by an import here
+  :load <file|dir>  read a .go file (or a directory's files) into the
+                    session: its decls become callable here, each file
+                    keeps its own imports; again reloads, :load alone lists
   :doc <pkg>[.<sym>]  run go doc (pkg: imported name, "path", or path).
                       note: this is the Go toolchain's documentation, not
                       minigo's — a bound package may expose fewer symbols
                       (:ls <pkg> shows what minigo actually provides)
-  :comp <text>  print completion candidates for a code fragment
+  :comp <text>  print completion candidates for a code fragment — the
+                same candidates [TAB] offers while typing (on a terminal)
   :bindings [prefix]  list host-bound (native) import paths; :ls <path>
                       shows a bound package's symbols
   :exit   quit (also :quit, :q, Ctrl-D)
@@ -342,6 +347,25 @@ func runREPL(ctx context.Context, in io.Reader, out io.Writer) error {
 						if strings.HasPrefix(path, prefix) {
 							fmt.Fprintln(out, path)
 						}
+					}
+				case ":load":
+					arg = strings.TrimSpace(arg)
+					if arg == "" {
+						for _, origin := range r.Loaded() {
+							fmt.Fprintln(out, origin)
+						}
+						break
+					}
+					paths, err := r.Load(ctx, arg)
+					if err != nil {
+						fmt.Fprintf(out, "error: %s\n", err)
+						break
+					}
+					for _, path := range paths {
+						if rel, err := filepath.Rel(cwd, path); err == nil && !strings.HasPrefix(rel, "..") {
+							path = rel
+						}
+						fmt.Fprintf(out, "loaded %s\n", path)
 					}
 				case ":doc":
 					runDoc(ctx, out, r, cwd, arg)
