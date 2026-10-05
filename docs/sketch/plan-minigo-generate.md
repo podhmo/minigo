@@ -161,6 +161,45 @@ Skipped for scope, not blocked:
 - **moving to `cmd/minigo-generate`** — deliberately still an example
   (issue's own note: "これはcmd/minigo-generateに実装して良い気がする"
   is the eventual home, once the contract settles).
+- **the error-friendliness experiment** — deferred to a later round;
+  the prepared prompt is below, in the same shape as the task-run /
+  gen-sync rounds.
+
+## Deferred experiment: does it stay agent-friendly when inputs break?
+
+Same question as the task-run / gen-sync rounds: when inputs or plugin
+definitions break, does the tool return "where, why, and whose fault"
+in the *input side's* vocabulary — and refuse to fake success when it
+can't? For minigo-generate the input side has three layers the error
+must place correctly: the directive (`file:line`, ref, args), the
+plugin package (the `Main(args []string) int` contract), and the
+interpreted machinery (which must not leak VM-internal vocabulary).
+The point of the sweep is separating the findings into **minigo-side
+problems worth fixing** (filed in TODO.md) versus tool-side or
+by-design behavior.
+
+Seeded by a quick probe (7 malformed inputs injected): failures
+already attribute to `directive file:line` and the run continues +
+exits 1 — but `undefined: main.Main` and `too many arguments to Main`
+don't name the contract violation in plugin vocabulary, the
+missing-dir error repeats the same path three times, and near-miss
+markers (`// minigo:generate`, `//minigo:generatex`) are skipped
+silently with exit 0 — the "pretending success" shape to verify.
+
+Prompt for the round:
+
+    @podhmo/minigo examples/minigo-generateでもexamples/convert-defineのREADME.mdなどを参考に
+    入力が壊れた。あるいはプラグインが壊れた場合に「要するに、エージェントに親切なツールとは、
+    直接書く場合に得られていたフィードバック（どこが、なぜ、誰のせいで壊れたか）を、入力側の
+    語彙で返し直してくれるツールだと考えます。そして、それができないときに、成功したふりを
+    しないツールです。」という理想のようにどのような動作をしたら良いかエラーメッセージなど
+    から察することが可能か色々な操作を試して確認してください。ここでの色々な操作とは日常的な
+    コーディング及び開発時に起きうる不整合情報の混入を含みます。ディレクティブの不備（壊れた
+    ref・引数・マーカー表記ゆれ）とプラグイン側の不備（Main契約違反・panic・非0終了・import
+    失敗）、スキャン対象パッケージの不備（構文エラー・alias・constの無い型）などいろいろ
+    あるでしょう。runner/ツール側の不備とminigo interpreter側の機能不足・不備は分けて洗い出し
+    てください。実験レポートを書いてください。ここでPRを作成してください。余力があればその
+    レポートを元に改善を試みたPRをstacked PRsとして追加にしてくれませんか。
 
 ## Spike feedback — what building it taught us
 
