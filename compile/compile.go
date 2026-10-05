@@ -1163,6 +1163,7 @@ func (c *compiler) localTypeDecl(ts *ast.TypeSpec) {
 func (c *compiler) callStmt(call *ast.CallExpr, op bytecode.Op, pos token.Pos) {
 	c.calleeExpr(call.Fun)
 	c.callArgs(call.Args)
+	c.argStatics(call.Args)
 	c.emit(op, len(call.Args), callSpread(call), pos)
 }
 
@@ -3116,6 +3117,7 @@ unwrapped:
 				jm := c.emit(bytecode.OpLenIdxFold, 0, 0, x.Pos())
 				c.expr(ix.Index)
 				c.emit(bytecode.OpIndex, 0, 0, ix.Pos())
+				c.emit(bytecode.OpNil, 0, 0, x.Pos())
 				c.emit(bytecode.OpCall, 1, 0, x.Pos())
 				c.patchA(jm, len(c.ch.Code))
 				return
@@ -3135,7 +3137,23 @@ unwrapped:
 		args = args[1:]
 	}
 	c.callArgs(args)
+	c.argStatics(x.Args)
 	c.emit(bytecode.OpCall, len(x.Args), callSpread(x), x.Pos())
+}
+
+// argStatics pushes each argument's declared typedef (or nil) so generic
+// calls unify type arguments against the argument's static type — Go's
+// inference binds T to the declared type, not the value's dynamic one:
+// `Describe(v)` with `var v Shape` binds T=Shape even while v holds a
+// *Tri, and `id(e)` with `var e error` binds T=error. One typedef is
+// pushed per source argument, above the argument values, so OpCall's
+// popArgs pops them alongside the args; a trailing `xs...` source's
+// static is the slice type and is dropped in favour of the element
+// typedef popArgs already carries as spreadTd.
+func (c *compiler) argStatics(args []ast.Expr) {
+	for _, a := range args {
+		c.staticTyp(a)
+	}
 }
 
 // callSpread reports the OpCall B flag for the argument list: 1

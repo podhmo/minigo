@@ -1,0 +1,8 @@
+0: <nil> <nil>
+1: *main.MyErr code 404
+2: *main.MyErr code 404
+3: string *main.Tri:<nil>
+4: string main.Rect:2x3
+5: string *main.MyErr:<nil>
+6: *main.MyErr <nil>
+7: *main.Tri &{3 4}
