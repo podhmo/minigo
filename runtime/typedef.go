@@ -303,7 +303,11 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 	switch t := e.(type) {
 	case *ast.Ident:
 		if btd := boundTypedef(binds, t.Name); btd != nil {
-			return typBoundSpellingU(btd, false)
+			// display, not identity: a bound argument qualifies by the
+			// package's clause name like every other Type.String path —
+			// typBoundSpellingU's Pkg.Path qualifier is for identity
+			// spelling (<dir>/x.Point would leak the synthetic path).
+			return DisplayName(btd)
 		}
 		if predeclaredTypeName(t.Name) {
 			return canonBasicName(t.Name)
@@ -442,6 +446,28 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 		return "func" + goFuncSig(t, ctx)
 	}
 	return fmt.Sprintf("%T", e)
+}
+
+// FuncGoSpelling renders a script function value's declared signature
+// the way Go's reflect.Type.String does — `func(int) int`, `func()
+// error` — resolving names through the function's own package, file
+// imports and type binds (an instantiated `func(T) T` spells its bound
+// argument). ok=false when the value carries no declaration to spell —
+// plain builtins, nil members — so each caller picks its own fallback.
+func FuncGoSpelling(v Value) (string, bool) {
+	var fn *Function
+	switch x := v.(type) {
+	case *Function:
+		fn = x
+	case *Closure:
+		fn = x.Fn
+	case *BoundMethod:
+		fn = x.Fn
+	}
+	if fn == nil || fn.Decl == nil || fn.Decl.Type == nil {
+		return "", false
+	}
+	return TypGoSpelling(fn.Decl.Type, &TypeDef{Pkg: fn.Pkg, File: fn.File, Binds: fn.Binds}), true
 }
 
 // importClauseName resolves a file import's package clause name — the
