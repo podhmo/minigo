@@ -4,6 +4,7 @@
 //
 //	task-run [-f Taskfile.go] -l          list tasks
 //	task-run [-f Taskfile.go] [task ...]  run tasks (default: Default)
+//	task-run [-f Taskfile.go] -n [task ...]  print commands without running them
 package main
 
 import (
@@ -26,6 +27,7 @@ func runMain(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	file := fs.String("f", "Taskfile.go", "task file to load")
 	list := fs.Bool("l", false, "list tasks and exit")
+	dryRun := fs.Bool("n", false, "dry run: print commands and file mutations instead of executing them")
 	if err := fs.Parse(argv); err != nil {
 		return 2
 	}
@@ -43,6 +45,12 @@ func runMain(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 	}
 	r := NewRunner(filepath.Dir(abs), stdout, stderr)
 	r.explicitFile = explicitF
+	if *dryRun {
+		if err := r.SetDryRun(ctx); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+	}
 
 	if *list {
 		tasks, err := r.Tasks(ctx, abs)

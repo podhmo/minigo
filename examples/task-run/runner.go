@@ -53,6 +53,11 @@ type Runner struct {
 	// load errors blame "the -f argument" only when one was given.
 	explicitFile bool
 
+	// dryRun (-n) prints the commands task.Sh/Run/RunIn/Output would
+	// spawn, and the filesystem mutations the os package would make,
+	// instead of performing them — like `make -n`.
+	dryRun bool
+
 	mu        sync.Mutex
 	depStates map[string]*depState        // dep key -> lifecycle (dedup + cycles)
 	waits     map[*runtime.Task]*depState // task -> dep it is currently blocked on
@@ -221,6 +226,67 @@ func NewRunner(dir string, stdout, stderr io.Writer) *Runner {
 	return r
 }
 
+// osMutators are the os functions a dry run suppresses: each returns only
+// an error, so printing the call and returning nil keeps the script's
+// control flow intact. Handle-returning calls (Create, OpenFile) still run.
+var osMutators = []string{"WriteFile", "Remove", "RemoveAll", "Mkdir", "MkdirAll", "Rename", "Truncate"}
+
+// SetDryRun switches the runner into dry-run mode (-n): spawned commands
+// and the os mutators are printed to stdout instead of executed. Reads
+// (task.Target, os.Stat, os.ReadFile) still touch the real filesystem.
+func (r *Runner) SetDryRun(ctx context.Context) error {
+	r.dryRun = true
+	ospkg, err := r.engine.Package(ctx, "os")
+	if err != nil {
+		return err
+	}
+	for _, name := range osMutators {
+		v, ok := ospkg.Globals.Get(name)
+		if !ok {
+			continue
+		}
+		orig, ok := v.(*runtime.BuiltinFunc)
+		if !ok {
+			continue
+		}
+		label := orig.Name
+		ospkg.Globals.Set(name, &runtime.BuiltinFunc{Name: orig.Name, Pkg: orig.Pkg, Target: orig.Target,
+			Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+				parts := make([]string, 0, len(args))
+				for i, a := range args {
+					if label == "os.WriteFile" && i == 1 {
+						parts = append(parts, "...") // file contents: noise, not a command
+						continue
+					}
+					if n, ok := a.(int64); ok && label != "os.Truncate" {
+						parts = append(parts, fmt.Sprintf("%#o", n)) // a file mode: 0644, not 420
+						continue
+					}
+					parts = append(parts, quoteArg(strOf(a)))
+				}
+				r.echo("# " + label + " " + strings.Join(parts, " "))
+				return runtime.NIL, nil
+			}})
+	}
+	// os/exec: Command hands back a dryCmd whose Run/Output/... print the
+	// command line, so subprocesses spawned without task.* are covered too
+	execpkg, err := r.engine.Package(ctx, "os/exec")
+	if err != nil {
+		return err
+	}
+	if v, ok := execpkg.Globals.Get("Command"); ok {
+		if orig, ok := v.(*runtime.BuiltinFunc); ok {
+			execpkg.Globals.Set("Command", &runtime.BuiltinFunc{Name: orig.Name, Pkg: orig.Pkg, Fn: r.dryExecCommand})
+		}
+	}
+	return nil
+}
+
+// echo prints one dry-run line to stdout.
+func (r *Runner) echo(line string) {
+	fmt.Fprintln(r.stdout, line)
+}
+
 // Tasks loads a Taskfile and lists its tasks: exported top-level functions
 // whose params are all `string` and whose result is empty or `error`.
 func (r *Runner) Tasks(ctx context.Context, file string) ([]TaskInfo, error) {
@@ -357,6 +423,10 @@ func (r *Runner) taskBinds() map[string]runtime.Value {
 			if err != nil {
 				return nil, err
 			}
+			if r.dryRun {
+				r.echo(cmdline)
+				return runtime.NIL, nil
+			}
 			cmd := exec.Command("sh", "-c", cmdline)
 			cmd.Dir = r.engine.WorkingDir()
 			cmd.Stdout, cmd.Stderr = r.stdout, r.stderr
@@ -380,6 +450,12 @@ func (r *Runner) taskBinds() map[string]runtime.Value {
 			argv, err := strArgs("task.Output", args[1:], 2)
 			if err != nil {
 				return nil, err
+			}
+			if r.dryRun {
+				// the script consumes the output, so there is nothing
+				// truthful to return: an empty string and nil error
+				r.echo(cmdLabel("", name, argv))
+				return &runtime.Tuple{Elems: []runtime.Value{"", runtime.NIL}}, nil
 			}
 			cmd := exec.Command(name, argv...)
 			cmd.Dir = r.engine.WorkingDir()
@@ -529,6 +605,10 @@ func (r *Runner) runCmd(dir string, args []runtime.Value, namePos int, label str
 	argv, err := strArgs(label, args[namePos+1:], namePos+2)
 	if err != nil {
 		return err
+	}
+	if r.dryRun {
+		r.echo(cmdLabel(dir, name, argv))
+		return nil
 	}
 	cmd := exec.Command(name, argv...)
 	if dir == "" {

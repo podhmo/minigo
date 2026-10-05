@@ -37,7 +37,7 @@ func TestTasks(t *testing.T) {
 	for _, ti := range tasks {
 		byName[ti.Name] = ti
 	}
-	for _, name := range []string{"Default", "Lint", "Build", "Clean", "Dist", "Greet", "Paths"} {
+	for _, name := range []string{"Default", "Lint", "Build", "Clean", "Dist", "Greet", "Paths", "Info"} {
 		ti, ok := byName[name]
 		if !ok {
 			t.Errorf("task %s missing from -l list", name)
@@ -718,5 +718,128 @@ func Two() (a, b error) { return nil, nil }
 	// two error results is not a task
 	if err := r.RunTask(ctx, file, "Two", nil); err == nil || !strings.Contains(err.Error(), "not a task") {
 		t.Fatalf("Two() (a, b error) must not be a task, got %v", err)
+	}
+}
+
+func TestDryRun(t *testing.T) {
+	dir, file := writeTaskfile(t, `package main
+
+import (
+	"os"
+
+	"task"
+)
+
+func Default() error {
+	if err := task.Sh("touch sh.out"); err != nil {
+		return err
+	}
+	if err := task.Run("touch", "run.out"); err != nil {
+		return err
+	}
+	if err := task.RunIn("sub", "touch", "in.out"); err != nil {
+		return err
+	}
+	v, err := task.Output("echo", "hi there")
+	if err != nil {
+		return err
+	}
+	task.Log("output:", v)
+	if err := os.MkdirAll("build", 0755); err != nil {
+		return err
+	}
+	if err := os.WriteFile("build/app.out", "x", 0644); err != nil {
+		return err
+	}
+	return os.Remove("gone.txt")
+}
+`)
+	var out, errb bytes.Buffer
+	if code := runMain(context.Background(), []string{"-f", file, "-n"}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	want := `touch sh.out
+touch run.out
+(in sub) touch in.out
+echo "hi there"
+# os.MkdirAll build 0755
+# os.WriteFile build/app.out ... 0644
+# os.Remove gone.txt
+`
+	if diff := cmp.Diff(want, out.String()); diff != "" {
+		t.Errorf("dry-run output (-want +got):\n%s", diff)
+	}
+	// nothing on disk changed: only the Taskfile remains
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range ents {
+		names = append(names, e.Name())
+	}
+	if diff := cmp.Diff([]string{"Taskfile.go"}, names); diff != "" {
+		t.Errorf("dry run touched the filesystem (-want +got):\n%s", diff)
+	}
+}
+
+func TestDryRunExec(t *testing.T) {
+	dir, file := writeTaskfile(t, `package main
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+)
+
+func run(c *exec.Cmd) error { return c.Run() }
+
+func Default() error {
+	cmd := exec.Command("touch", "run.out")
+	cmd.Stdout = os.Stdout
+	if err := run(cmd); err != nil {
+		return err
+	}
+	out, err := exec.Command("echo", "hi there").Output()
+	if err != nil {
+		return err
+	}
+	fmt.Println("out:", len(out))
+	extra := []string{"in.out"}
+	c := exec.Command("touch", extra...)
+	c.Dir = "sub"
+	if _, err := c.CombinedOutput(); err != nil {
+		return err
+	}
+	s := exec.Command("touch", "start.out")
+	if err := s.Start(); err != nil {
+		return err
+	}
+	if err := s.Wait(); err != nil {
+		return err
+	}
+	exec.Command("touch", "never.out") // built but never run: not printed
+	return nil
+}
+`)
+	var out, errb bytes.Buffer
+	if code := runMain(context.Background(), []string{"-f", file, "-n"}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	want := `touch run.out
+echo "hi there"
+out: 0
+(in sub) touch in.out
+touch start.out
+`
+	if diff := cmp.Diff(want, out.String()); diff != "" {
+		t.Errorf("dry-run output (-want +got):\n%s", diff)
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != 1 {
+		t.Errorf("dry run touched the filesystem: %v", ents)
 	}
 }

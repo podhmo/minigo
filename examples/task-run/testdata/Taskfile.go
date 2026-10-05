@@ -8,6 +8,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/podhmo/minigo/examples/task-run/task"
@@ -74,4 +75,13 @@ func Paths() {
 	for _, p := range m {
 		fmt.Println("src:", p)
 	}
+}
+
+// Info prints the target platform via os/exec — plain Go subprocesses
+// work too, not only the task.* helpers.
+func Info() error {
+	cmd := exec.Command("go", "env", "GOOS", "GOARCH")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
