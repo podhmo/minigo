@@ -30,6 +30,7 @@ func (e *Engine) methodsOfValue(v runtime.Value) (map[string]bool, error) {
 // (e.g. a vendored stdlib package), so the returned set may be missing
 // promoted methods that the embed would have contributed.
 func (e *Engine) methodSetOfValue(v runtime.Value) (map[string]bool, bool, error) {
+	ptr := false
 	for {
 		// a Named value exposes its own declared method set — `type A B`
 		// does not inherit B's methods (Go). Checked inside the deref
@@ -41,34 +42,37 @@ func (e *Engine) methodSetOfValue(v runtime.Value) (map[string]bool, bool, error
 				// still exposes its declared methods — the reflect set
 				// only fills in when the tag declares none (host box).
 				if n.Typ != nil && len(n.Typ.Methods) > 0 {
-					return e.typeMethodsU(n.Typ)
+					return e.typeMethodsU(n.Typ, ptr)
 				}
 				return hostMethodSet(gv.V), false, nil
 			}
-			return e.typeMethodsU(n.Typ)
+			return e.typeMethodsU(n.Typ, ptr)
 		}
 		dv, ok := runtime.Deref(v)
 		if !ok {
 			break
 		}
+		// reached through a pointer: the pointee's method set includes
+		// pointer receivers — `var _ Stringer = &c` sees c's (*C).String.
 		v = dv
+		ptr = true
 	}
 	switch x := v.(type) {
 	case *runtime.Struct:
-		set, unsure := e.methodSetOfU(x.Def, map[*runtime.TypeDef]bool{})
+		set, unsure := e.methodSetOfU(x.Def, ptr, map[*runtime.TypeDef]bool{})
 		return set, unsure, nil
 	case *runtime.TypedNil:
-		return e.typeMethodsU(x.Typ)
+		return e.typeMethodsU(x.Typ, ptr)
 	case *runtime.IfaceNil:
-		return e.typeMethodsU(x.Typ)
+		return e.typeMethodsU(x.Typ, ptr)
 	case *runtime.Slice:
 		// a slice carrying a declared typedef (`type htmlSig []byte`)
 		// exposes that type's methods — same for maps and channels.
-		return e.typeMethodsU(x.Typ)
+		return e.typeMethodsU(x.Typ, ptr)
 	case *runtime.Map:
-		return e.typeMethodsU(x.Typ)
+		return e.typeMethodsU(x.Typ, ptr)
 	case *runtime.Chan:
-		return e.typeMethodsU(x.Typ)
+		return e.typeMethodsU(x.Typ, ptr)
 	case *runtime.GoValue:
 		return hostMethodSet(x.V), false, nil
 	default:
@@ -94,24 +98,29 @@ func hostMethodSet(x any) map[string]bool {
 // typeMethods implements the Hooks.TypeMethods hook: the method set of a
 // typedef (a typed nil still dispatches its declared methods, like Go).
 func (e *Engine) typeMethods(td *runtime.TypeDef) (map[string]bool, error) {
-	set, _, err := e.typeMethodsU(td)
+	// a typedef queried on its own reports the VALUE method set — the
+	// pointer method set asks through the *T typedef, which peels to ptr.
+	set, _, err := e.typeMethodsU(td, false)
 	return set, err
 }
 
 // typeMethodsU is typeMethods plus an "unsure" report: true when a
 // pointer's pointee or an embedded type failed to resolve, so the set
 // may be missing methods the unresolved type would have contributed.
-func (e *Engine) typeMethodsU(td *runtime.TypeDef) (map[string]bool, bool, error) {
+// ptr reports whether the set is computed through a pointer — Go's
+// method set for *T includes pointer receivers while T's does not.
+func (e *Engine) typeMethodsU(td *runtime.TypeDef, ptr bool) (map[string]bool, bool, error) {
 	if td == nil {
 		return nil, false, nil
 	}
 	var unsure bool
-	// an anonymous *T typedef sees T's method set; a declared pointer
-	// typedef (`type P *Sq`) keeps only methods declared on P itself —
-	// Go forbids those outright, so in valid programs the set is empty.
+	// an anonymous *T typedef sees T's method set including pointer
+	// receivers; a declared pointer typedef (`type P *Sq`) keeps only
+	// methods declared on P itself — Go forbids those outright, so in
+	// valid programs the set is empty.
 	if td.Kind == runtime.KindPointer && td.Spec == nil {
 		if et, err := e.elemOf(td); err == nil && et != nil {
-			td = et
+			td, ptr = et, true
 		} else {
 			unsure = true
 		}
@@ -131,7 +140,7 @@ func (e *Engine) typeMethodsU(td *runtime.TypeDef) (map[string]bool, bool, error
 		}
 		return set, unsure, nil
 	}
-	set, subUnsure := e.methodSetOfU(td, map[*runtime.TypeDef]bool{})
+	set, subUnsure := e.methodSetOfU(td, ptr, map[*runtime.TypeDef]bool{})
 	return set, unsure || subUnsure, nil
 }
 
@@ -181,8 +190,11 @@ func (e *Engine) peelAliasTd(td *runtime.TypeDef) *runtime.TypeDef {
 // interfaces — plus an "unsure" report: true when an embedded type could
 // not be resolved, so the set may be missing promoted methods. Interface
 // satisfaction treats such sets as optimistic — a missing requirement
-// may live on the unresolved embed.
-func (e *Engine) methodSetOfU(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool) (map[string]bool, bool) {
+// may live on the unresolved embed. ptr is Go's receiver rule: pointer-
+// receiver methods join the set only through a pointer type — *T, an
+// anonymous *T typedef, or an embedded pointer field (or any embed under
+// a pointer parent, since &s.f stays addressable there).
+func (e *Engine) methodSetOfU(td *runtime.TypeDef, ptr bool, seen map[*runtime.TypeDef]bool) (map[string]bool, bool) {
 	td = e.peelAliasTd(td)
 	if td == nil || seen[td] {
 		return nil, false
@@ -193,6 +205,9 @@ func (e *Engine) methodSetOfU(td *runtime.TypeDef, seen map[*runtime.TypeDef]boo
 	for name, m := range td.Methods {
 		if len(m.TParams) > 0 {
 			continue // a generic method contributes no interface method
+		}
+		if m.PtrRecv && !ptr {
+			continue // pointer receivers live only on *T's method set
 		}
 		set[name] = true
 	}
@@ -209,7 +224,14 @@ func (e *Engine) methodSetOfU(td *runtime.TypeDef, seen map[*runtime.TypeDef]boo
 			}
 			continue
 		}
-		sub, subUnsure := e.methodSetOfU(emb, seen)
+		// methods of an embedded pointer field promote with their
+		// receiver kind intact; an embedded value field promotes only
+		// its value receivers (plus all receivers under a *S parent).
+		embPtr := ptr
+		if _, isStar := spec.(*ast.StarExpr); isStar || emb.Kind == runtime.KindPointer {
+			embPtr = true
+		}
+		sub, subUnsure := e.methodSetOfU(emb, embPtr, seen)
 		unsure = unsure || subUnsure
 		for m := range sub {
 			set[m] = true

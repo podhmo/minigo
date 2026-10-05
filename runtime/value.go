@@ -1077,6 +1077,14 @@ type VMCaller interface {
 	// script-defined Unwrap on an error value); ok=false when the member
 	// does not exist or selection traps.
 	Member(base Value, name string) (m Value, ok bool)
+	// MethodSetOf returns the names in v's dynamic method set under Go's
+	// receiver rule — a value's set excludes pointer receivers while a
+	// pointer's includes them — so host intrinsics answering "does v
+	// implement X" (fmt's Stringer probe, io.Reader adapters) apply the
+	// same rule the VM's interface checks do. unsure=true means embedded
+	// types failed to resolve and the set may be incomplete; nil set
+	// means the engine offers no method-set hook.
+	MethodSetOf(v Value) (set map[string]bool, unsure bool)
 	// Zero returns the Go zero value of a typedef (struct fields get
 	// typed zeros, nilable kinds get TypedNil) — used by new().
 	Zero(td *TypeDef) Value
