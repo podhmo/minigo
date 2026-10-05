@@ -55,3 +55,9 @@ func TestRunMainRejectsFlagAfterFileArg(t *testing.T) {
 		}
 	}
 }
+
+func TestRunMainRejectsUnknownOnUnresolved(t *testing.T) {
+	if code := runMain(context.Background(), []string{"-on-unresolved", "bogus", "a/a.go"}); code != 2 {
+		t.Errorf("-on-unresolved bogus: want exit 2, got %d", code)
+	}
+}

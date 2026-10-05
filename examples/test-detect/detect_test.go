@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -478,5 +479,133 @@ func TestParseErrorKeepsRecoveredImportsAndWarns(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("want a parse warning mentioning bad.go, got %v", d.warnings)
+	}
+}
+
+// withRootPkg returns the testRepo plus a tested package at its root, so
+// basename-only inputs have a root package to magnet onto.
+func withRootPkg(t *testing.T) string {
+	t.Helper()
+	root := testRepo(t)
+	writeTree(t, root, map[string]string{
+		"root.go":      "package m\n",
+		"root_test.go": "package m\n",
+	})
+	return root
+}
+
+var allTestPkgs = []string{
+	"example.com/m",
+	"example.com/m/a",
+	"example.com/m/b",
+	"example.com/m/c",
+	"example.com/m/depgen",
+	"example.com/m/e",
+	"example.com/m/tdep",
+	"example.com/sub/x",
+}
+
+func TestOnUnresolvedAllFallsBackToEveryPackage(t *testing.T) {
+	root := withRootPkg(t)
+	for _, inputs := range [][]string{
+		{"a/testdata/fix.go"}, // exists, but testdata is skipped by the walk
+		{"go.mod"},            // not a .go file — module files change everything anyway
+		{"README.md"},         // not a .go file
+		{"typo.go"},           // missing basename: would otherwise magnet onto the root pkg
+		{"gone/g.go"},         // a deleted directory
+		{"a/old.go"},          // rename old path: missing in an existing dir
+		{"a/deleted.go"},      // deleted file: dir resolution is no longer verifiable
+		{"a"},                 // a directory, not a file
+		{`a\a.go`},            // a Windows separator pointing at nothing
+		{"a/a.go", "go.mod"},  // one bad input ruins an otherwise good set
+	} {
+		d, err := detectChanged(root, inputs, options{onUnresolvedAll: true})
+		if err != nil {
+			t.Fatalf("%v: %v", inputs, err)
+		}
+		if diff := cmp.Diff(allTestPkgs, keptPaths(t, d)); diff != "" {
+			t.Errorf("%v: fallback mismatch (-want +got):\n%s", inputs, diff)
+		}
+		found := false
+		for _, w := range d.warnings {
+			if strings.Contains(w, "listing every package") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%v: want a fallback warning, got %v", inputs, d.warnings)
+		}
+	}
+}
+
+func TestOnUnresolvedAllRespectsFilters(t *testing.T) {
+	root := withRootPkg(t)
+	// -exclude applies after the fallback, same as after a BFS.
+	d, err := detectChanged(root, []string{"go.mod"}, options{
+		onUnresolvedAll: true,
+		exclude:         []*regexp.Regexp{regexp.MustCompile(`example\.com/m/b`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"example.com/m",
+		"example.com/m/a",
+		"example.com/m/c",
+		"example.com/m/depgen",
+		"example.com/m/e",
+		"example.com/m/tdep",
+		"example.com/sub/x",
+	}
+	if diff := cmp.Diff(want, keptPaths(t, d)); diff != "" {
+		t.Errorf("exclude mismatch (-want +got):\n%s", diff)
+	}
+	// -include-untested widens the fallback to untested packages too.
+	d, err = detectChanged(root, []string{"go.mod"}, options{
+		onUnresolvedAll: true,
+		includeUntested: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantAll := append(append([]string{}, allTestPkgs[:6]...),
+		"example.com/m/broken", "example.com/m/d", "example.com/m/util")
+	wantAll = append(wantAll, allTestPkgs[6:]...)
+	sort.Strings(wantAll)
+	if diff := cmp.Diff(wantAll, keptPaths(t, d)); diff != "" {
+		t.Errorf("include-untested mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestOnUnresolvedWarnKeepsOldBehavior(t *testing.T) {
+	root := withRootPkg(t)
+	// Default warn mode: a missing .go in an existing dir still resolves
+	// through its directory (deleted-file semantics) instead of
+	// falling back.
+	d, err := detectChanged(root, []string{"a/old.go"}, options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"example.com/m/a",
+		"example.com/m/b",
+		"example.com/m/c",
+		"example.com/m/depgen",
+		"example.com/m/e",
+		"example.com/sub/x",
+	}
+	if diff := cmp.Diff(want, keptPaths(t, d)); diff != "" {
+		t.Errorf("deleted-file resolution mismatch (-want +got):\n%s", diff)
+	}
+	// And a non-.go input is still ignored silently, no warning.
+	d, err = detectChanged(root, []string{"go.mod"}, options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := keptPaths(t, d); len(got) != 0 {
+		t.Errorf("go.mod should produce no packages, got %v", got)
+	}
+	if len(d.warnings) != 0 {
+		t.Errorf("go.mod should not warn in warn mode, got %v", d.warnings)
 	}
 }
