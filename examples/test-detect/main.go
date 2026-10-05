@@ -64,6 +64,22 @@ func runMain(ctx context.Context, argv []string) int {
 		fmt.Fprintln(os.Stderr, "test-detect:", err)
 		return 1
 	}
+	if info, err := os.Stat(absRoot); err != nil {
+		fmt.Fprintf(os.Stderr, "test-detect: -root %s: %v\n", *root, err)
+		return 1
+	} else if !info.IsDir() {
+		fmt.Fprintf(os.Stderr, "test-detect: -root %s is not a directory\n", *root)
+		return 1
+	}
+	// The tree walk uses Lstat and never descends through a symlink, so
+	// a symlinked -root would scan nothing and report "no go.mod found".
+	// Resolve it up front.
+	if resolved, err := filepath.EvalSymlinks(absRoot); err != nil {
+		fmt.Fprintf(os.Stderr, "test-detect: -root %s: %v\n", *root, err)
+		return 1
+	} else {
+		absRoot = resolved
+	}
 
 	d, err := detectChanged(absRoot, changed, options{
 		includeUntested: *includeUntested,
