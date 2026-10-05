@@ -1,0 +1,2 @@
+panic: interface conversion: interface {} is *main.Point, not int
+panic: interface conversion: interface {} is []int, not int

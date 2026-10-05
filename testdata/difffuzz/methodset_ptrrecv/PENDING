@@ -1,0 +1,5 @@
+SILENT/value (lang hunt, seed 20261005, emitted lang_value_fe7c68b7)
+shape:  fmt.Println(Counter{1}, &Counter{1}) where String is on *Counter
+go:     {1} #1
+minigo: #1 #1  -- a value type's method set wrongly includes pointer-receiver
+methods (interface satisfaction + fmt Stringer dispatch)
