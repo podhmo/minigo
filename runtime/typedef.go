@@ -444,6 +444,28 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 	return fmt.Sprintf("%T", e)
 }
 
+// FuncGoSpelling renders a script function value's declared signature
+// the way Go's reflect.Type.String does — `func(int) int`, `func()
+// error` — resolving names through the function's own package, file
+// imports and type binds (an instantiated `func(T) T` spells its bound
+// argument). ok=false when the value carries no declaration to spell —
+// plain builtins, nil members — so each caller picks its own fallback.
+func FuncGoSpelling(v Value) (string, bool) {
+	var fn *Function
+	switch x := v.(type) {
+	case *Function:
+		fn = x
+	case *Closure:
+		fn = x.Fn
+	case *BoundMethod:
+		fn = x.Fn
+	}
+	if fn == nil || fn.Decl == nil || fn.Decl.Type == nil {
+		return "", false
+	}
+	return TypGoSpelling(fn.Decl.Type, &TypeDef{Pkg: fn.Pkg, File: fn.File, Binds: fn.Binds}), true
+}
+
 // importClauseName resolves a file import's package clause name — the
 // qualifier Go's type display uses regardless of the local import alias
 // (`import o "x/odd"` where odd's clause is `package weird` displays

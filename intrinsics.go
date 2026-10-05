@@ -48,7 +48,6 @@ import (
 
 	"github.com/podhmo/minigo/minireflect"
 	"github.com/podhmo/minigo/runtime"
-	"github.com/podhmo/minigo/syntax"
 	"github.com/podhmo/minigo/vm"
 )
 
@@ -4983,38 +4982,15 @@ func sliceBytes(v *runtime.Slice) ([]byte, bool) {
 // %#v pointer wrapper — `func(int) int`, `func(...int)` — falling back
 // to `func()` when the declaration isn't reachable (plain builtins).
 func funcSigSpelling(v runtime.Value) string {
-	var ft *ast.FuncType
-	var pkg *runtime.Package
-	var file *syntax.File
-	var binds map[string]runtime.Value
-	if fn := funcFn(v); fn != nil {
-		if fn.Decl != nil {
-			ft = fn.Decl.Type
-		}
-		pkg, file, binds = fn.Pkg, fn.File, fn.Binds
+	if s, ok := runtime.FuncGoSpelling(v); ok {
+		return s
 	}
-	if ft == nil {
-		if bf, ok := v.(*runtime.BuiltinFunc); ok && bf.Target != nil {
-			// a bound host func spells its real signature — host fmt's
-			// %T of a func IS the signature (func(...interface {}) (int, error))
-			return fmt.Sprintf("%T", bf.Target)
-		}
-		return "func()"
+	if bf, ok := v.(*runtime.BuiltinFunc); ok && bf.Target != nil {
+		// a bound host func spells its real signature — host fmt's
+		// %T of a func IS the signature (func(...interface {}) (int, error))
+		return fmt.Sprintf("%T", bf.Target)
 	}
-	return runtime.TypGoSpelling(ft, &runtime.TypeDef{Pkg: pkg, File: file, Binds: binds})
-}
-
-// funcFn unwraps the *runtime.Function inside a function value.
-func funcFn(v runtime.Value) *runtime.Function {
-	switch x := v.(type) {
-	case *runtime.Function:
-		return x
-	case *runtime.Closure:
-		return x.Fn
-	case *runtime.BoundMethod:
-		return x.Fn
-	}
-	return nil
+	return "func()"
 }
 
 // chanTypSpelling spells a channel's typedef for the %#v wrapper —

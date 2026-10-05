@@ -9442,8 +9442,8 @@ func typeBaseName(x runtime.Value) string {
 // funcTypeName renders a script function's declared signature for the
 // panic text — Go spells `func(int)`, `func() error` and friends.
 func funcTypeName(xv *runtime.Function) string {
-	if xv != nil && xv.Decl != nil && xv.Decl.Type != nil {
-		return runtime.TypGoSpelling(xv.Decl.Type, nil)
+	if s, ok := runtime.FuncGoSpelling(xv); ok {
+		return s
 	}
 	return "func"
 }
