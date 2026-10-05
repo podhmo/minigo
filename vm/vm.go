@@ -2734,7 +2734,7 @@ func adaptIface(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.V
 		return reflect.Value{}, false
 	}
 	// script containers only — a struct value or a pointer box (cell,
-	// field/index ref) or named tag carrying one. The ifaceOffer probes
+	// field/index ref) or named tag carrying one. The IfaceMember probes
 	// below apply the receiver rule to whatever box arrived.
 	switch v.(type) {
 	case *runtime.Struct, *runtime.Named,
@@ -2749,8 +2749,8 @@ func adaptIface(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.V
 	// the probe answers "does the arg offer this method" — the value's
 	// method set under Go's receiver rule, so a bare struct no longer
 	// advertises a WriteTo it could never satisfy.
-	_, hasWT := ifaceOffer(vc, v, "WriteTo")
-	_, hasRF := ifaceOffer(vc, v, "ReadFrom")
+	_, hasWT := runtime.IfaceMember(vc, v, "WriteTo")
+	_, hasRF := runtime.IfaceMember(vc, v, "ReadFrom")
 	var proxy any = si
 	switch {
 	case hasWT && hasRF:
@@ -2765,26 +2765,13 @@ func adaptIface(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.V
 		return reflect.Value{}, false
 	}
 	for i := 0; i < t.NumMethod(); i++ {
-		if _, ok := ifaceOffer(vc, v, t.Method(i).Name); !ok {
+		if _, ok := runtime.IfaceMember(vc, v, t.Method(i).Name); !ok {
 			return reflect.Value{}, false
 		}
 	}
 	out := reflect.New(t).Elem()
 	out.Set(reflect.ValueOf(proxy))
 	return out, true
-}
-
-// ifaceOffer selects a member through the interface lens Go's implicit
-// assertions apply: pointer receivers are absent from a value's method
-// set, so adapting a bare *runtime.Struct to io.Reader and friends must
-// not find methods it cannot offer. When the engine offers no method
-// set — or reports it unsure — selection falls back to Member's
-// existence check.
-func ifaceOffer(c runtime.VMCaller, v runtime.Value, name string) (runtime.Value, bool) {
-	if set, unsure := c.MethodSetOf(v); set != nil && !set[name] && !unsure {
-		return nil, false
-	}
-	return c.Member(v, name)
 }
 
 // scriptIfaceWT/scriptIfaceRF/scriptIfaceWTRF carry the io extension
