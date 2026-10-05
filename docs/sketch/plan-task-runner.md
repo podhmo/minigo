@@ -144,7 +144,11 @@ calls are safe to fake"):
 - Values a fake cannot know are empty: `task.Output` returns `""`,
   `cmd.Output()` returns no bytes. Code branching on command output may
   take a different path than the real run (make -n avoids this for
-  `$(shell)` by running it; here safety wins).
+  `$(shell)` by running it; here safety wins). Worse, a task that
+  *consumes* the result can get stuck: parsing `""` fails, or indexing
+  `strings.Fields(out)[0]` panics, and the dry run aborts there — every
+  command after that point goes unreported. The "recorded outputs" idea
+  below is the natural fix.
 - Handle-returning calls (`os.Create`, `os.OpenFile`, `os.CreateTemp`,
   `os.MkdirTemp`) and env mutation (`os.Setenv`) are not intercepted.
 - Effects reached through other bound packages (e.g. a future `net/http`
