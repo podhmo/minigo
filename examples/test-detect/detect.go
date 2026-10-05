@@ -95,7 +95,7 @@ func (d *detection) resolveChanged(changed []string) []*pkg {
 		}
 		p, ok := d.graph.byDir[filepath.Dir(abs)]
 		if !ok {
-			d.warnings = append(d.warnings, fmt.Sprintf("%s: not in scanned graph (skipped)", f))
+			d.warnings = append(d.warnings, fmt.Sprintf("%s: %s (skipped)", f, d.whyNotInGraph(abs)))
 			continue
 		}
 		if !seen[p] {
@@ -104,6 +104,49 @@ func (d *detection) resolveChanged(changed []string) []*pkg {
 		}
 	}
 	return seeds
+}
+
+// whyNotInGraph explains why an input's directory produced no package
+// node: the same failure has different fixes depending on whether the
+// path escaped -root, the directory is gone, or the walk skipped it.
+func (d *detection) whyNotInGraph(abs string) string {
+	if abs != d.root && !strings.HasPrefix(abs, d.root+string(filepath.Separator)) {
+		return "outside -root"
+	}
+	dir := filepath.Dir(abs)
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return fmt.Sprintf("directory %s does not exist", relDisplay(d.root, dir))
+	}
+	// The directory exists but produced no package node: either the walk
+	// skipped it by convention or it holds no .go files.
+	rel := relDisplay(d.root, dir)
+	for _, seg := range strings.Split(rel, string(filepath.Separator)) {
+		if seg != "." && seg != "" && skipDir(seg) {
+			return fmt.Sprintf("directory %s is skipped by the walk", rel)
+		}
+	}
+	if entries, err := os.ReadDir(dir); err == nil {
+		hasGo := false
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".go") {
+				hasGo = true
+				break
+			}
+		}
+		if !hasGo {
+			return fmt.Sprintf("directory %s has no .go files", rel)
+		}
+	}
+	return "not in scanned graph"
+}
+
+// relDisplay renders dir relative to root for messages, keeping the
+// absolute path when it does not lie underneath.
+func relDisplay(root, dir string) string {
+	if rel, err := filepath.Rel(root, dir); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return rel
+	}
+	return dir
 }
 
 // bfs walks reverse-dependency edges from the seed packages and returns

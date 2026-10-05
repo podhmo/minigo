@@ -355,6 +355,34 @@ func TestDirectoryAndBackslashInputsWarn(t *testing.T) {
 	}
 }
 
+func TestNotInGraphWarningsSayWhy(t *testing.T) {
+	root := testRepo(t)
+	writeTree(t, root, map[string]string{"docs/note.md": "hi\n"})
+	d, err := detectChanged(root, []string{
+		"../escape/x.go",    // resolves outside -root
+		"gone/g.go",         // directory does not exist
+		"a/testdata/fix.go", // skipped by convention
+		"docs/x.go",         // exists, no .go files
+	}, options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var warnText string
+	for _, w := range d.warnings {
+		warnText += w + "\n"
+	}
+	for _, want := range []string{
+		"../escape/x.go: outside -root",
+		"gone/g.go: directory gone does not exist",
+		"a/testdata/fix.go: directory a/testdata is skipped by the walk",
+		"docs/x.go: directory docs has no .go files",
+	} {
+		if !strings.Contains(warnText, want) {
+			t.Errorf("want a warning containing %q, got:\n%s", want, warnText)
+		}
+	}
+}
+
 func TestGoModNamedDirectoryDoesNotHidePackage(t *testing.T) {
 	root := t.TempDir()
 	writeTree(t, root, map[string]string{
