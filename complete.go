@@ -244,9 +244,6 @@ func (c *completer) scopeNames(out *[]Candidate) {
 	file := r.file()
 	if file != nil {
 		for name, ref := range r.pkg.Scopes[file] {
-			if !token.IsIdentifier(name) {
-				continue // a path tail like yaml.v3 is no bindable name
-			}
 			c.add(out, name, CandPackage, ref.Path)
 		}
 	}
