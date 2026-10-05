@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"io/fs"
 	"os"
@@ -539,5 +540,193 @@ func TestExcludedFileWarns(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "broken.go") || !strings.Contains(buf.String(), "not in the package index") {
 		t.Fatalf("no exclusion warning for the dropped file:\n%s", buf.String())
+	}
+}
+
+func TestForeignPackageSkipped(t *testing.T) {
+	dir := setupModule(t)
+	app := filepath.Join(dir, "app")
+	// a file declaring a different package clause is part of a
+	// different package — go build would reject the whole directory
+	// ("found packages app and otherpkg"). The index merges it anyway,
+	// so the tool must warn and skip: no managed block written, and its
+	// decls must not feed inference.
+	content := "package otherpkg\n\ntype Foreign int\n\nconst (\n\tForeignA Foreign = iota\n\tForeignB\n)\n"
+	target := filepath.Join(app, "foreign.go")
+	if err := os.WriteFile(target, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var buf strings.Builder
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, &buf); err != nil {
+		t.Fatalf("a foreign-package file must not fail the run: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "foreign.go") || !strings.Contains(out, "declares package otherpkg") {
+		t.Fatalf("no foreign-package warning:\n%s", out)
+	}
+	got, _ := os.ReadFile(target)
+	if string(got) != content {
+		t.Fatal("the foreign-package file was modified")
+	}
+	// its decls must not leak into sibling inference: Foreign's enum
+	// members stay in otherpkg, so no directive may name it.
+	if strings.Contains(out, "-type=Foreign") {
+		t.Fatalf("a foreign decl fed inference:\n%s", out)
+	}
+}
+
+func TestHandwrittenManagedLineDropAnnounced(t *testing.T) {
+	dir := setupModule(t)
+	app := filepath.Join(dir, "app")
+	// a hand-written directive placed inside the managed run is the
+	// tool's to remove — but the removal must be announced, not silent:
+	// the diff shows it as a dropped line (the run belongs to gen-sync;
+	// the line moves outside the run or it is deleted).
+	content := "package app\n\n// Code generated directives below are managed by gen-sync. DO NOT EDIT.\n//go:generate stringer -type=Dup\n//go:generate handtool -x\n\ntype Dup int\n\nconst DupA Dup = 1\n"
+	target := filepath.Join(app, "dup.go")
+	if err := os.WriteFile(target, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var buf strings.Builder
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, &buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "- //go:generate handtool -x") {
+		t.Fatalf("the dropped hand-written line was not announced:\n%s", out)
+	}
+	if !strings.Contains(out, "dropped 1") {
+		t.Fatalf("the dropped line is missing from the count:\n%s", out)
+	}
+	got, _ := os.ReadFile(target)
+	if strings.Contains(string(got), "handtool") {
+		t.Fatal("the hand-written directive inside the managed run survived")
+	}
+	if !strings.Contains(string(got), "//go:generate stringer -type=Dup") {
+		t.Fatal("the inferred directive was lost")
+	}
+}
+
+// setupRunnable is setupModule plus the tool's own script, and moves
+// the test's working directory into the module so runMain can be
+// exercised end to end (its "./script" and "." are resolved from CWD).
+func setupRunnable(t *testing.T) string {
+	t.Helper()
+	dir := setupModule(t)
+	copyTree(t, "script", filepath.Join(dir, "script"))
+	t.Chdir(dir)
+	return dir
+}
+
+func TestCheckExitCodes(t *testing.T) {
+	// -check reserves exit 1 for "drift found"; a run that could not
+	// see or write the whole picture exits 2 instead.
+	dir := setupRunnable(t)
+
+	// drift: exit 1, nothing written.
+	if got := runMain(context.Background(), []string{"-check", "./app"}); got != 1 {
+		t.Fatalf("expected exit 1 for drift, got %d", got)
+	}
+	assertSameFile(t, filepath.Join(dir, "app", "job.go"), "app/job.go")
+
+	// a real failure — an unreadable input file — exits 2.
+	target := filepath.Join(dir, "app", "job.go")
+	if err := os.Chmod(target, 0000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(target, 0644)
+	if os.Geteuid() == 0 {
+		t.Skip("chmod-000 is readable for root")
+	}
+	if got := runMain(context.Background(), []string{"-check", "./app"}); got != 2 {
+		t.Fatalf("expected exit 2 for an unreadable file, got %d", got)
+	}
+	// a missing dir (the argument itself is wrong) also exits 2.
+	if got := runMain(context.Background(), []string{"-check", "./nope"}); got != 2 {
+		t.Fatalf("expected exit 2 for a bad dir argument, got %d", got)
+	}
+	// write mode keeps exit 1 on real errors.
+	if got := runMain(context.Background(), []string{"./app"}); got != 1 {
+		t.Fatalf("expected exit 1 for an unreadable file in write mode, got %d", got)
+	}
+}
+
+func TestNoBuildableReasonNamed(t *testing.T) {
+	dir := setupModule(t)
+
+	// a dir whose only .go file is build-constrained out must say so —
+	// a permission problem and a constraint read identically without
+	// the reason, and the package name belongs in the message.
+	constr := filepath.Join(dir, "onlyconstr")
+	if err := os.MkdirAll(constr, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(constr, "x.go"), []byte("//go:build ignore\n\npackage onlyconstr\n\ntype X int\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := run(context.Background(), dir, scriptDir(t), constr, false, false, io.Discard)
+	if err == nil {
+		t.Fatal("expected an error for a fully constrained package")
+	}
+	for _, want := range []string{"no buildable Go source files", "onlyconstr", "build constraints"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error does not say %q: %v", want, err)
+		}
+	}
+
+	// a dir whose only file is unreadable must say permission, not
+	// "no buildable" alone — the two cases are indistinguishable
+	// without the reason.
+	if os.Geteuid() == 0 {
+		t.Skip("chmod-000 is readable for root")
+	}
+	unread := filepath.Join(dir, "onlyunread")
+	if err := os.MkdirAll(unread, 0755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(unread, "y.go")
+	if err := os.WriteFile(target, []byte("package onlyunread\n\ntype Y int\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(target, 0644)
+	_, err = run(context.Background(), dir, scriptDir(t), unread, false, false, io.Discard)
+	if err == nil {
+		t.Fatal("expected an error for an unreadable-only package")
+	}
+	if !strings.Contains(err.Error(), "permission denied") || !strings.Contains(err.Error(), "y.go") {
+		t.Fatalf("error does not name the permission problem: %v", err)
+	}
+}
+
+func TestDescribeFailureBlames(t *testing.T) {
+	// the first line of a failure names who must fix it: the dir
+	// argument, an input file at a position, a dependency, or the tool.
+	trap := func(cause string) error {
+		return &runtime.Trap{Reason: cause + "\nTraceback ...", Err: errors.New(cause)}
+	}
+	for _, c := range []struct {
+		name string
+		err  error
+		dir  string
+		want string
+	}{
+		{"dir arg not found", trap(`resolve dir "./nope": entry directory "./nope" not found: stat /x/nope: no such file`), "./nope", "fix the dir argument"},
+		{"dir arg not buildable", trap(`resolve dir "./app": no buildable Go source files in package m/app (/x/app): all 1 .go file(s) excluded by build constraints`), "./app", "fix the dir argument"},
+		{"script dir missing is a tool problem", trap(`resolve dir "./script": entry directory "./script" not found`), "./app", "gen-sync bug"},
+		{"input file parse", trap(`parse /x/app/level.go: /x/app/level.go:3:1: expected ';'`), "/x/app", "fix the input file"},
+		{"dep file parse", trap(`parse /x/deps/mood/m.go: /x/deps/mood/m.go:1:1: expected`), "/x/app", "dependency"},
+		{"import unresolvable", trap(`resolve "example.com/gone": resolving import "example.com/gone": import path "example.com/gone" could not be resolved`), "./app", "imports or the module"},
+		{"script errors pass through", errors.New("gen-sync: /x/app/level.go: open /x/app/level.go: permission denied"), "./app", "gen-sync: /x/app/level.go"},
+	} {
+		got := describeFailure(c.err, c.dir, "./script")
+		if !strings.Contains(got, c.want) {
+			t.Errorf("%s: want blame %q in:\n%s", c.name, c.want, got)
+		}
+		if !strings.HasPrefix(got, "gen-sync:") && !strings.Contains(c.want, "gen-sync:") {
+			t.Errorf("%s: output lost the gen-sync prefix:\n%s", c.name, got)
+		}
 	}
 }

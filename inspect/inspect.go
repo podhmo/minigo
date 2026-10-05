@@ -112,6 +112,11 @@ func NewHostDecl(pkg *runtime.Package, name string, sig *Sig, target reflect.Typ
 type File struct {
 	Name string
 	Doc  string
+	// PkgName is the file's own package clause. It usually equals the
+	// package's Name, but a directory mixing clauses (`package app`
+	// next to `package other` — go build rejects that) still indexes
+	// every file, so callers checking for foreign files compare.
+	PkgName string
 
 	pkg  *runtime.Package
 	sf   *syntax.File
@@ -122,8 +127,13 @@ type File struct {
 func NewFile(pkg *runtime.Package, sf *syntax.File) *File {
 	f := &File{pkg: pkg, sf: sf, fset: pkg.Fset}
 	f.Name = sf.Name
-	if sf.AST != nil && sf.AST.Doc != nil {
-		f.Doc = sf.AST.Doc.Text()
+	if sf.AST != nil {
+		if sf.AST.Name != nil {
+			f.PkgName = sf.AST.Name.Name
+		}
+		if sf.AST.Doc != nil {
+			f.Doc = sf.AST.Doc.Text()
+		}
 	}
 	return f
 }

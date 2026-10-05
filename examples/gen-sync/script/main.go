@@ -36,7 +36,7 @@ func Main(dir string, check bool, deps bool) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("gen-sync: resolve %s: %w", dir, err)
 	}
-	plans, warns, errs := collect(dir, deps)
+	plans, warns, errs := collect(dir, deps, wd)
 	for _, w := range warns {
 		fmt.Println("gen-sync:", w)
 	}
@@ -69,11 +69,16 @@ type filePlan struct {
 }
 
 // pkgScan is one package's contribution to the run: the files that may
-// be synced and the decls that feed inference rules.
+// be synced and the decls that feed inference rules. foreign names the
+// files whose package clause differs from the package's own — the index
+// merges them (a dir of `package app` next to `package other` is one
+// package to the index, while `go build` rejects it) so they must not
+// feed inference or be written to either.
 type pkgScan struct {
-	path  string
-	files []*inspect.File
-	decls []*inspect.Decl
+	path    string
+	files   []*inspect.File
+	decls   []*inspect.Decl
+	foreign map[string]bool
 }
 
 // collect builds the sync plan for the scanned package. It always walks
@@ -87,7 +92,7 @@ type pkgScan struct {
 // Alongside the plans it reports warnings (files skipped the way `go
 // build` would skip them — the run may continue) and errors (the scan
 // is degraded — the caller refuses to write from it).
-func collect(dir string, deps bool) ([]filePlan, []string, []error) {
+func collect(dir string, deps bool, wd string) ([]filePlan, []string, []error) {
 	dirAbs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, nil, []error{fmt.Errorf("gen-sync: resolve %s: %w", dir, err)}
@@ -110,33 +115,48 @@ func collect(dir string, deps bool) ([]filePlan, []string, []error) {
 	seen := map[string]bool{inspect.Path(root): true}
 	queue := []string{}
 	scans := []pkgScan{}
-	visit := func(path string, files []*inspect.File) {
+	warns := []string{}
+	errs := []error{}
+	visit := func(path string) {
+		p := inspect.PackageOf(path)
+		// A file whose package clause differs from the package's own is
+		// foreign to the directory — `go build` reports "found packages
+		// app and other" and rejects the whole dir, so silently indexing
+		// it (and writing a managed block into it) misleads twice. Warn
+		// and skip: no decls, no import edges, no sync target.
+		pkgName := inspect.Name(p)
 		decls := []*inspect.Decl{}
-		for _, f := range files {
+		files := []*inspect.File{}
+		foreign := map[string]bool{}
+		for _, f := range inspect.Files(p) {
+			if f.PkgName != "" && f.PkgName != pkgName {
+				foreign[f.Name] = true
+				warns = append(warns, fmt.Sprintf("%s declares package %s, but the directory's package is %s — skipping (go build would reject the directory)", displayPath(wd, f.Name), f.PkgName, pkgName))
+				continue
+			}
+			files = append(files, f)
 			decls = append(decls, inspect.Decls(f)...)
 			for _, im := range inspect.Imports(f) {
-				p := im.Path
-				if strings.HasPrefix(p, prefix) && !seen[p] {
-					seen[p] = true
-					queue = append(queue, p)
+				ip := im.Path
+				if strings.HasPrefix(ip, prefix) && !seen[ip] {
+					seen[ip] = true
+					queue = append(queue, ip)
 				}
 			}
 		}
-		scans = append(scans, pkgScan{path, files, decls})
+		scans = append(scans, pkgScan{path, files, decls, foreign})
 	}
-	visit(inspect.Path(root), inspect.Files(root))
+	visit(inspect.Path(root))
 	for len(queue) > 0 {
 		path := queue[0]
 		queue = queue[1:]
-		visit(path, inspect.Files(inspect.PackageOf(path)))
+		visit(path)
 	}
 
 	// A .go file the package index does not carry was dropped by
 	// ctx.MatchFile — build constraints (fine, like `go build`) or an
 	// unreadable file (not fine: its decls *and its import edges*
 	// vanish, so directives elsewhere silently lose variants).
-	warns := []string{}
-	errs := []error{}
 	for _, s := range scans {
 		w, e := droppedFiles(s)
 		warns = append(warns, w...)
@@ -180,12 +200,23 @@ func moduleRoot(dir string) string {
 // package's directory but absent from the package index. Unreadable
 // ones are errors (the scan is missing decls it cannot even name);
 // readable-but-excluded ones are warnings (build constraints — the same
-// set `go build` would see, just made visible).
+// set `go build` would see, just made visible). Foreign-package files
+// count as indexed: visit already warned about them.
 func droppedFiles(s pkgScan) ([]string, []error) {
-	if len(s.files) == 0 {
+	d := ""
+	if len(s.files) > 0 {
+		d = filepath.Dir(s.files[0].Name)
+	} else {
+		// every indexed file was foreign — the dir is still worth
+		// checking for unreadable files the index never saw.
+		for name := range s.foreign {
+			d = filepath.Dir(name)
+			break
+		}
+	}
+	if d == "" {
 		return nil, nil
 	}
-	d := filepath.Dir(s.files[0].Name)
 	entries, err := os.ReadDir(d)
 	if err != nil {
 		return nil, []error{fmt.Errorf("gen-sync: scan %s: %w", d, err)}
@@ -193,6 +224,9 @@ func droppedFiles(s pkgScan) ([]string, []error) {
 	indexed := map[string]bool{}
 	for _, f := range s.files {
 		indexed[f.Name] = true
+	}
+	for name := range s.foreign {
+		indexed[name] = true
 	}
 	warns := []string{}
 	errs := []error{}
@@ -471,8 +505,16 @@ func directivesFor(ex *scanx.Explorer, scans []pkgScan, s pkgScan, d *inspect.De
 	switch def.Kind {
 	case "Ident":
 		// enum-style: `type X int`/`string` with a const of X declared
-		// anywhere in the package.
-		if (def.Text == "int" || def.Text == "string") && len(inspect.EnumMembers(d)) > 0 {
+		// anywhere in the package — counting only consts declared in
+		// this package's own files (a foreign-package file's consts
+		// cannot legally type against the enum).
+		members := []*inspect.Decl{}
+		for _, m := range inspect.EnumMembers(d) {
+			if !s.foreign[m.File] {
+				members = append(members, m)
+			}
+		}
+		if (def.Text == "int" || def.Text == "string") && len(members) > 0 {
 			out = append(out, "//go:generate stringer -type="+name)
 		}
 	case "StructType":
@@ -517,6 +559,9 @@ func implementers(scans []pkgScan, selfPath string, iface *inspect.Decl) []strin
 	for _, s := range scans {
 		sp := inspect.SourceOf(s.path)
 		for _, c := range inspect.Implementers(sp, iface) {
+			if s.foreign[c.File] {
+				continue // declared in a foreign-package file
+			}
 			def := inspect.Def(c)
 			if def != nil && def.Kind == "InterfaceType" {
 				continue // a variants list wants concrete types
