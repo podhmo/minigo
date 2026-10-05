@@ -2473,9 +2473,76 @@ func (c *compiler) binary(x *ast.BinaryExpr) {
 			c.trap(x.Pos(), "unsupported binary %s", x.Op)
 			return
 		}
-		c.expr(x.X)
-		c.expr(x.Y)
+		if pureOperand(x.X) {
+			// gc defers reading a pure left operand to the operation
+			// point — `c + inc()` runs inc() before loading c, so the
+			// call's side effects show in the left operand. Evaluate
+			// right first, then swap into operand order.
+			c.expr(x.Y)
+			c.expr(x.X)
+			c.emit(bytecode.OpSwap, 0, 0, x.Pos())
+		} else {
+			c.expr(x.X)
+			c.expr(x.Y)
+		}
 		c.emit(bytecode.OpBinary, int(op), 0, x.Pos())
+	}
+}
+
+// pureOperand reports whether an operand can defer its evaluation to the
+// operation point — gc reads pure operands (variables, fields, indexes,
+// literals) when the operator runs, not in operand order, so `c + inc()`
+// sees inc()'s side effects in c. Calls, sends/receives and anything
+// that may not be pure disqualify (a CallExpr stays conservative even
+// for builtins like len()).
+func pureOperand(x ast.Expr) bool {
+	switch x := x.(type) {
+	case *ast.Ident, *ast.BasicLit, *ast.FuncLit:
+		return true
+	case *ast.ParenExpr:
+		return pureOperand(x.X)
+	case *ast.StarExpr:
+		return pureOperand(x.X)
+	case *ast.UnaryExpr:
+		return x.Op != token.ARROW && pureOperand(x.X)
+	case *ast.BinaryExpr:
+		return pureOperand(x.X) && pureOperand(x.Y)
+	case *ast.SelectorExpr:
+		return pureOperand(x.X)
+	case *ast.IndexExpr:
+		return pureOperand(x.X) && pureOperand(x.Index)
+	case *ast.IndexListExpr:
+		if !pureOperand(x.X) {
+			return false
+		}
+		for _, i := range x.Indices {
+			if !pureOperand(i) {
+				return false
+			}
+		}
+		return true
+	case *ast.SliceExpr:
+		for _, e := range []ast.Expr{x.X, x.Low, x.High, x.Max} {
+			if e != nil && !pureOperand(e) {
+				return false
+			}
+		}
+		return true
+	case *ast.TypeAssertExpr:
+		return pureOperand(x.X)
+	case *ast.CompositeLit:
+		for _, e := range x.Elts {
+			if kv, ok := e.(*ast.KeyValueExpr); ok {
+				if !pureOperand(kv.Key) || !pureOperand(kv.Value) {
+					return false
+				}
+			} else if !pureOperand(e) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
 	}
 }
 
