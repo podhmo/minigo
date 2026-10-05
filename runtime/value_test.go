@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -100,4 +101,67 @@ func TestMapDeleteAndClear(t *testing.T) {
 	if _, ok := m.Get("b"); ok {
 		t.Fatalf("Get(b) still present after Clear")
 	}
+}
+
+// TestFoldRepeatedFrames: consecutive identical frames (recursion dumps)
+// keep their first maxRunShown verbatim then fold the rest into
+// "... repeated N more times ..." — ~50 real frames stay visible for
+// debugging instead of a thousand-line dump or a 2-line stub.
+func TestFoldRepeatedFrames(t *testing.T) {
+	f := func(s string) string { return `File "t.go", line 1, in ` + s + `()` }
+
+	// a run at or under maxRunShown renders untouched — small repeats
+	// are real context, not noise
+	frames := []string{f("f"), f("f"), f("f"), f("f")}
+	got := renderFrames(frames)
+	if diff := cmp.Diff(strings.Join(frames, "\n"), got); diff != "" {
+		t.Errorf("short identical run (-want +got):\n%s", diff)
+	}
+
+	// a long run keeps its first maxRunShown, then one marker line
+	frames = make([]string, maxRunShown+10)
+	for i := range frames {
+		frames[i] = f("f")
+	}
+	got = renderFrames(frames)
+	want := strings.Repeat(f("f")+"\n", maxRunShown) + "... repeated 10 more times ..."
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("long identical run (-want +got):\n%s", diff)
+	}
+
+	// mixed runs fold independently, singletons pass through
+	frames = append([]string{f("a")}, rep(f("b"), maxRunShown+2)...)
+	frames = append(frames, f("c"))
+	want = f("a") + "\n" + strings.Repeat(f("b")+"\n", maxRunShown) +
+		"... repeated 2 more times ...\n" + f("c")
+	got = renderFrames(frames)
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("mixed runs (-want +got):\n%s", diff)
+	}
+
+	// distinct entries are untouched
+	frames = []string{f("a"), f("b"), f("c")}
+	if got := renderFrames(frames); got != strings.Join(frames, "\n") {
+		t.Errorf("distinct frames changed:\n%s", got)
+	}
+
+	// folding precedes the cap: >maxTracebackEntries identical frames
+	// render as maxRunShown frames + marker, not head/tail elision
+	frames = make([]string, maxTracebackEntries*2)
+	for i := range frames {
+		frames[i] = f("f")
+	}
+	got = renderFrames(frames)
+	want = strings.Repeat(f("f")+"\n", maxRunShown) + "... repeated 1950 more times ..."
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("cap-after-fold (-want +got):\n%s", diff)
+	}
+}
+
+func rep(s string, n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = s
+	}
+	return out
 }
