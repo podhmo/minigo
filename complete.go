@@ -94,11 +94,13 @@ func (r *REPL) CompleteToken(line string) (start int, cands []Candidate) {
 }
 
 func (r *REPL) complete(line string) (start int, cands []Candidate) {
-	line = strings.TrimRight(line, " \t")
 	if strings.HasPrefix(strings.TrimSpace(line), ":") {
 		return len(line), nil
 	}
 	ctx := completeContext(line)
+	if ctx.done {
+		return ctx.start, nil
+	}
 	if ctx.imp {
 		return ctx.start, r.importCandidates(ctx.prefix)
 	}
@@ -130,6 +132,7 @@ func (r *REPL) complete(line string) (start int, cands []Candidate) {
 type completionCtx struct {
 	selector bool   // completing after `.`
 	imp      bool   // completing inside an `import "..."` string
+	done     bool   // no completion at this tail (e.g. a closed import literal)
 	base     string // source text of the selector's base expression
 	prefix   string // the partial identifier (or import path) being typed
 	start    int    // byte offset where the replaceable token begins
@@ -173,12 +176,25 @@ func completeContext(line string) completionCtx {
 	// `import "str` (also `import . "`, `import name "`, `import (`)
 	// ends inside a string literal: complete import paths, not code.
 	if last.tok == token.STRING && toks[0].tok == token.IMPORT {
+		// a closed literal (`import "strings"`) is past the import
+		// context — offering paths here would splice over the
+		// closing quote.
+		if lit := last.lit; len(lit) >= 2 && lit[len(lit)-1] == lit[0] {
+			return completionCtx{done: true, start: len(line)}
+		}
 		prefix := last.lit
 		prefix = strings.TrimPrefix(prefix, `"`)
 		prefix = strings.TrimPrefix(prefix, "`")
 		prefix = strings.TrimSuffix(prefix, `"`)
 		prefix = strings.TrimSuffix(prefix, "`")
 		return completionCtx{imp: true, prefix: prefix, start: last.off + 1}
+	}
+	// A line ending in whitespace sits on a fresh empty token: the
+	// last scanned token is not the replacement target (`var |x`
+	// must splice at the cursor, not pull the space into the token
+	// and produce `varx`).
+	if line[len(line)-1] == ' ' || line[len(line)-1] == '\t' {
+		return completionCtx{start: len(line)}
 	}
 	if last.tok == token.PERIOD {
 		return completionCtx{selector: true, base: line[:last.off], start: last.off + 1}
@@ -333,7 +349,9 @@ func (r *REPL) resolveExpr(x ast.Expr) (runtime.Value, bool) {
 		// peel through every reference layer — minigo's pointers are
 		// cells, and `*x`'s operand arrives as its variable cell. For
 		// completion the deepest pointee is the useful approximation.
-		for {
+		// The bound keeps a cyclic store (`var x any; x = &x`) from
+		// hanging the walk.
+		for i := 0; i < 32; i++ {
 			dv, ok := runtime.Deref(base)
 			if !ok {
 				break
@@ -607,11 +625,18 @@ func structOfValue(v runtime.Value) *runtime.Struct {
 // typeMethodValue walks a typedef's own methods, promoted methods
 // through embeds, host boxes and anonymous-pointer pointee methods.
 func (r *REPL) typeMethodValue(td *runtime.TypeDef, name string) (runtime.Value, bool) {
+	return r.typeMethodValueOf(td, name, map[*runtime.TypeDef]bool{})
+}
+
+// typeMethodValueOf is typeMethodValue with a visited set — recursive
+// embeds (`type Node struct{ *Node }`) are legal Go and must terminate.
+func (r *REPL) typeMethodValueOf(td *runtime.TypeDef, name string, seen map[*runtime.TypeDef]bool) (runtime.Value, bool) {
 	for td != nil {
 		td = r.engine.peelAliasTd(td)
-		if td == nil {
+		if td == nil || seen[td] {
 			return nil, false
 		}
+		seen[td] = true
 		if m, ok := td.Methods[name]; ok {
 			return m, true
 		}
@@ -620,7 +645,7 @@ func (r *REPL) typeMethodValue(td *runtime.TypeDef, name string) (runtime.Value,
 			if err != nil || emb == nil {
 				continue
 			}
-			if m, ok := r.typeMethodValue(emb, name); ok {
+			if m, ok := r.typeMethodValueOf(emb, name, seen); ok {
 				return m, true
 			}
 		}
@@ -796,6 +821,24 @@ func (c *completer) members(v runtime.Value, out *[]Candidate, depth int) {
 		c.typeMembers(b, out, false) // method expressions need the value set
 	case *runtime.TypedNil:
 		c.typeMembers(b.Typ, out, true)
+		// a typed nil pointer (`var p *T`) holds no live pointee —
+		// its fields still come from the declared element type.
+		td := b.Typ
+		for i := 0; i < 8 && td != nil && td.Kind == runtime.KindPointer; i++ {
+			et, err := c.r.engine.elemOf(td)
+			if err != nil || et == nil {
+				td = nil
+				break
+			}
+			td = et
+		}
+		switch {
+		case td == nil:
+		case td.HostNew != nil:
+			c.hostMembers(td.HostNew(), out)
+		case td.Kind == runtime.KindStruct:
+			c.structFields(td, out)
+		}
 	case *runtime.IfaceNil:
 		c.typeMembers(b.Typ, out, true)
 	case *runtime.Slice:
@@ -865,9 +908,16 @@ func (c *completer) typedefMethodsOpt(td *runtime.TypeDef, out *[]Candidate, ptr
 
 // structFields enumerates declared and promoted (embedded) fields.
 func (c *completer) structFields(td *runtime.TypeDef, out *[]Candidate) {
-	if td == nil {
+	c.structFieldsOf(td, out, map[*runtime.TypeDef]bool{})
+}
+
+// structFieldsOf is structFields with a visited set — recursive embeds
+// (`type Node struct{ *Node }`) are legal Go and must terminate.
+func (c *completer) structFieldsOf(td *runtime.TypeDef, out *[]Candidate, seen map[*runtime.TypeDef]bool) {
+	if td == nil || seen[td] {
 		return
 	}
+	seen[td] = true
 	fts, _ := c.r.engine.fieldTypes(td)
 	for i, name := range td.Fields {
 		var detail string
@@ -881,7 +931,7 @@ func (c *completer) structFields(td *runtime.TypeDef, out *[]Candidate) {
 		if err != nil || emb == nil {
 			continue
 		}
-		c.structFields(emb, out)
+		c.structFieldsOf(emb, out, seen)
 	}
 }
 

@@ -111,6 +111,38 @@ func TestCompleteSpliceEmpty(t *testing.T) {
 	}
 }
 
+func TestCompleteSpliceWhitespace(t *testing.T) {
+	r := testREPL(t)
+	// `var |x`: the cursor sits on a fresh empty token — tab must not
+	// pull the space into the replacement (`varx`).
+	newLine, _, _, ok := completeSplice(r, "var x", 4)
+	if !ok {
+		t.Fatal("no splice on an empty token")
+	}
+	if newLine != "var x" {
+		t.Fatalf("space eaten: %q", newLine)
+	}
+	// a closed import literal offers nothing — the closing quote is
+	// not part of the token.
+	if _, _, _, ok := completeSplice(r, `import "strings"`, 16); ok {
+		t.Fatal("closed import literal unexpectedly spliced")
+	}
+}
+
+func TestCommonPrefixRunes(t *testing.T) {
+	// the shared cut must land on a rune boundary — a byte-wise walk
+	// leaves a dangling first byte when the prefix ends mid-rune.
+	if got := commonPrefix([]string{"日本", "日曜"}); got != "日" {
+		t.Fatalf("commonPrefix(日本,日曜) = %q", got)
+	}
+	if got := commonPrefix([]string{"日本", "日本語"}); got != "日本" {
+		t.Fatalf("commonPrefix(日本,日本語) = %q", got)
+	}
+	if got := commonPrefix([]string{"abc", "abd"}); got != "ab" {
+		t.Fatalf("commonPrefix(abc,abd) = %q", got)
+	}
+}
+
 func TestWriteWithCRLF(t *testing.T) {
 	var b bytes.Buffer
 	w := writeWithCRLF{&b}

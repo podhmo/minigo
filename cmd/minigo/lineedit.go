@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/podhmo/minigo"
 	"golang.org/x/term"
@@ -157,14 +158,19 @@ func candidateNames(cands []minigo.Candidate) []string {
 	return out
 }
 
+// commonPrefix shrinks names[0] until every name shares it. The cut
+// steps whole runes — a byte-wise walk can end mid-rune (`日`+`曜` vs
+// `日`+`本` shares only 日, and the naive byte cut leaves a dangling
+// first byte of 本).
 func commonPrefix(names []string) string {
 	if len(names) == 0 {
 		return ""
 	}
 	p := names[0]
 	for _, n := range names[1:] {
-		for !strings.HasPrefix(n, p) {
-			p = p[:len(p)-1]
+		for len(p) > 0 && !strings.HasPrefix(n, p) {
+			_, size := utf8.DecodeLastRuneInString(p)
+			p = p[:len(p)-size]
 		}
 	}
 	return p

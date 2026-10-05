@@ -285,11 +285,84 @@ func TestCompleteTokenStart(t *testing.T) {
 		{`import "str`, 8}, // inside the import literal
 		{"f(", 2},          // no token: pure insertion point
 		{":comp x", 7},     // meta lines are not completed here
+		{"var ", 4},        // trailing space: fresh empty token at the cursor
+		{"x. ", 3},         // space after the dot: fresh empty token
 	} {
 		start, _ := r.CompleteToken(tc.line)
 		if start != tc.start {
 			t.Fatalf("CompleteToken(%q).start = %d, want %d", tc.line, start, tc.start)
 		}
+	}
+}
+
+func TestCompleteClosedImportLiteral(t *testing.T) {
+	e := NewEngine("testdata")
+	r := e.NewREPL()
+
+	// a closed literal is past the import context — offering paths
+	// here would splice over the closing quote.
+	start, cands := r.CompleteToken(`import "strings"`)
+	if len(cands) != 0 {
+		t.Fatalf("closed import literal yielded %v", candNames(cands)[:5])
+	}
+	if start != len(`import "strings"`) {
+		t.Fatalf("start = %d", start)
+	}
+	// still-open literals complete as before
+	if _, cands := r.CompleteToken(`import "str`); len(cands) == 0 {
+		t.Fatal("open import literal lost its candidates")
+	}
+}
+
+func TestCompleteRecursiveEmbed(t *testing.T) {
+	ctx := context.Background()
+	e := NewEngine("testdata")
+	r := e.NewREPL()
+
+	// `type Node struct{ *Node }` is legal Go — the enumeration walk
+	// must break the cycle, not recurse until the process dies.
+	for _, line := range []string{
+		`type Node struct { *Node; Value int }`,
+		`var n Node`,
+	} {
+		if _, err := r.EvalLine(ctx, line); err != nil {
+			t.Fatalf("EvalLine(%q): %v", line, err)
+		}
+	}
+	cands := r.Complete("n.")
+	for _, want := range []string{"Node", "Value"} {
+		if !hasCand(cands, want) {
+			t.Fatalf("%s missing in n. -> %v", want, candNames(cands))
+		}
+	}
+	// one level deeper still resolves instead of hanging
+	cands = r.Complete("n.Node.")
+	if !hasCand(cands, "Value") {
+		t.Fatalf("Value missing in n.Node. -> %v", candNames(cands))
+	}
+}
+
+func TestCompleteNilPointerFields(t *testing.T) {
+	ctx := context.Background()
+	e := NewEngine("testdata")
+	r := e.NewREPL()
+
+	// `var p *Inner` holds a typed nil — no live pointee — but its
+	// fields come from the declared element type.
+	for _, line := range []string{
+		`type Inner struct { X int }`,
+		`var p *Inner`,
+		`var pp **Inner`,
+	} {
+		if _, err := r.EvalLine(ctx, line); err != nil {
+			t.Fatalf("EvalLine(%q): %v", line, err)
+		}
+	}
+	if !hasCand(r.Complete("p."), "X") {
+		t.Fatalf("X missing in p. -> %v", candNames(r.Complete("p.")))
+	}
+	if !hasCand(r.Complete("pp."), "X") {
+		t.Fatalf("X missing in pp. -> %v", candNames(r.Complete("pp.")))
 	}
 }
 
