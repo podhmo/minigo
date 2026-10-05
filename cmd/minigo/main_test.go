@@ -37,3 +37,20 @@ func TestRunREPLMultiLine(t *testing.T) {
 		}
 	}
 }
+
+func TestRunREPLBindings(t *testing.T) {
+	in := strings.NewReader(":bindings encoding/\n:exit\n")
+	var out bytes.Buffer
+	if err := runREPL(context.Background(), in, &out); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "encoding/json\n") {
+		t.Errorf("output missing encoding/json\n---\n%s", got)
+	}
+	for _, unwanted := range []string{"fmt\n", "encoding/base32\n"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("output must not contain %q\n---\n%s", unwanted, got)
+		}
+	}
+}

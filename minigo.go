@@ -17,6 +17,7 @@ import (
 	"io"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 
@@ -547,6 +548,39 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value) {
 	e.pkgs[importPath] = p
 	e.binds[importPath] = p
 	e.mu.Unlock()
+}
+
+// BoundPackages returns the sorted import paths of every host-bound
+// package (std intrinsics and user Binds alike) — the paths a script can
+// import without interpreting source.
+func (e *Engine) BoundPackages() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	paths := make([]string, 0, len(e.binds))
+	for path := range e.binds {
+		paths = append(paths, path)
+	}
+	slices.Sort(paths)
+	return paths
+}
+
+// BoundSymbols returns the sorted symbol names a bound package exposes to
+// scripts (host-policy denials already removed); ok is false when
+// importPath is not bound.
+func (e *Engine) BoundSymbols(importPath string) (names []string, ok bool) {
+	e.mu.Lock()
+	p, ok := e.binds[importPath]
+	e.mu.Unlock()
+	if !ok {
+		return nil, false
+	}
+	for _, name := range p.Globals.Names() {
+		if !strings.HasPrefix(name, "__") {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	return names, true
 }
 
 func lastElem(path string) string {

@@ -946,6 +946,12 @@ func (r *REPL) List(ctx context.Context, ref string) ([]string, error) {
 	return out, nil
 }
 
+// BoundPackages lists the session engine's host-bound import paths —
+// :bindings output.
+func (r *REPL) BoundPackages() []string {
+	return r.engine.BoundPackages()
+}
+
 // loadRef resolves a :cd/:ls argument: an existing directory goes through
 // loadDir, anything else is treated as an import path.
 func (r *REPL) loadRef(ctx context.Context, ref string) (*runtime.Package, error) {

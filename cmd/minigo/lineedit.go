@@ -91,7 +91,7 @@ func (w writeWithCRLF) Write(p []byte) (int, error) {
 // metaCommands are the `:`-lines the front-end completes itself — the
 // processor-side completer stays out of this namespace.
 var metaCommands = []string{
-	":cd", ":comp", ":exit", ":help", ":ls",
+	":bindings", ":cd", ":comp", ":exit", ":help", ":ls",
 	":pin", ":q", ":quit", ":reset", ":unpin",
 }
 

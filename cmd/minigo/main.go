@@ -213,6 +213,8 @@ const replHelp = `commands:
   :unpin  stop writing into the package; decls land in <repl> again
   :ls [ref]  list top-level decls of the current (or given) package
   :comp <text>  print completion candidates for a code fragment
+  :bindings [prefix]  list host-bound (native) import paths; :ls <path>
+                      shows a bound package's symbols
   :exit   quit (also :quit, :q, Ctrl-D)
 input is a top-level declaration or statements; a trailing
 expression is printed. new names introduced by := / var / const
@@ -327,6 +329,13 @@ func runREPL(ctx context.Context, in io.Reader, out io.Writer) error {
 					} else {
 						for _, l := range lines {
 							fmt.Fprintln(out, l)
+						}
+					}
+				case ":bindings":
+					prefix := strings.TrimSpace(arg)
+					for _, path := range r.BoundPackages() {
+						if strings.HasPrefix(path, prefix) {
+							fmt.Fprintln(out, path)
 						}
 					}
 				case ":comp":
