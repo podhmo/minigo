@@ -68,7 +68,11 @@ type REPL struct {
 	// `import "..."` completion — enumerated once per session (newly
 	// fetched modules or changed go.mod requires do not refresh it).
 	importCands []Candidate
-	n           int
+	// loads are the :load units, in load order (repl_load.go);
+	// pendingShadow the loaded decls the current input redefined.
+	loads         []*loadUnit
+	pendingShadow []shadowMark
+	n             int
 }
 
 // namedExpr pairs a hoisted name with an AST expression (a declared type
@@ -130,6 +134,7 @@ func (r *REPL) EvalLine(ctx context.Context, input string) (runtime.Value, error
 	r.pendingWrite = nil
 	r.pendingDecls = nil
 	r.pendingMethods = nil
+	r.pendingShadow = nil
 	r.hasValue = false
 
 	// Snapshot the accumulated source so a post-accept failure can roll
@@ -141,6 +146,9 @@ func (r *REPL) EvalLine(ctx context.Context, input string) (runtime.Value, error
 	if sf, err := syntax.ParseFile(fset, "repl-decl.go", []byte("package repl\n"+input)); err == nil {
 		step, err := r.acceptDecls(ctx, fset, sf.AST)
 		if err != nil {
+			// decls accepted before the failing one (and loaded decls
+			// they shadowed) must not leak into the next reload
+			r.rollbackSource(il, dl, sl)
 			return nil, err
 		}
 		if err := r.applyInput(ctx, il, dl, sl); err != nil {
@@ -230,6 +238,10 @@ func (r *REPL) rollbackSource(il, dl, sl int) {
 	r.pendingWrite = nil
 	r.pendingDecls = nil
 	r.pendingMethods = nil
+	for _, m := range r.pendingShadow {
+		delete(m.unit.shadowed, m.key)
+	}
+	r.pendingShadow = nil
 	_ = r.reload() // best effort; the original error is the one that matters
 }
 
@@ -476,6 +488,7 @@ func (r *REPL) acceptDecls(ctx context.Context, fset *token.FileSet, f *ast.File
 			case token.VAR, token.CONST:
 				stepBody = append(stepBody, r.hoistSpecs(d)...)
 			case token.TYPE:
+				r.shadowLoaded(d)
 				r.decls = append(r.decls, formatNode(fset, d))
 				if r.writeMode {
 					for _, spec := range d.Specs {
@@ -488,6 +501,7 @@ func (r *REPL) acceptDecls(ctx context.Context, fset *token.FileSet, f *ast.File
 				return "", fmt.Errorf("repl: unsupported declaration: %s", d.Tok)
 			}
 		case *ast.FuncDecl:
+			r.shadowLoaded(d)
 			r.decls = append(r.decls, formatNode(fset, d))
 			if r.writeMode {
 				if d.Recv == nil {
@@ -719,7 +733,12 @@ func (r *REPL) reload() error {
 	if err != nil {
 		return fmt.Errorf("repl: internal error: accumulated source does not parse: %w\n%s", err, b.String())
 	}
-	idx, err := index.Build([]*syntax.File{sf})
+	loaded, err := r.loadedFiles()
+	if err != nil {
+		return err
+	}
+	files := append([]*syntax.File{sf}, loaded...)
+	idx, err := index.Build(files)
 	if err != nil {
 		return fmt.Errorf("repl: internal error: %w", err)
 	}
@@ -731,6 +750,29 @@ func (r *REPL) reload() error {
 	// Decls published into the entered package under :pin keep their
 	// shared binding: evicting would split `T` (fresh typedef) from
 	// `pkg.T` (the published one).
+	// Names the previous index declared but the new one does not (a
+	// re-:load dropped them) go entirely — their var/const cells too:
+	// prompt-hoisted names never enter the index, so an indexed var is
+	// always a loaded file's.
+	if p.Index != nil {
+		for _, d := range p.Index.Decls {
+			if _, still := idx.Funcs[d.Name]; still {
+				continue
+			}
+			if _, still := idx.Types[d.Name]; still {
+				continue
+			}
+			if _, still := idx.Vars[d.Name]; still {
+				continue
+			}
+			if _, still := idx.Consts[d.Name]; still {
+				continue
+			}
+			if !r.pinnedDecls[d.Name] && d.Name != "init" {
+				p.Globals.Delete(d.Name)
+			}
+		}
+	}
 	for _, d := range idx.Decls {
 		if gv, ok := p.Globals.Get(d.Name); ok {
 			switch gv.(type) {
@@ -742,11 +784,17 @@ func (r *REPL) reload() error {
 			}
 		}
 	}
-	p.Files = []*syntax.File{sf}
-	p.FileByName = map[string]*syntax.File{sf.Name: sf}
+	p.Files = files
+	p.FileByName = map[string]*syntax.File{}
+	for _, f := range files {
+		p.FileByName[f.Name] = f
+	}
 	p.Index = idx
 	p.Scopes = map[*syntax.File]map[string]*runtime.ImportRef{sf: {}}
 	p.Imports = map[*syntax.File][]*runtime.ImportRef{sf: {}}
+	for _, f := range loaded {
+		p.Scopes[f], p.Imports[f] = r.loadedImportRefs(f)
+	}
 	for _, imp := range sf.Imports {
 		ref := &runtime.ImportRef{
 			Path:  imp.Path,
@@ -901,8 +949,8 @@ func (r *REPL) List(ctx context.Context, ref string) ([]string, error) {
 	seen := map[string]bool{}
 	if p.Index != nil {
 		for _, d := range p.Index.Decls {
-			if strings.HasPrefix(d.Name, "__") {
-				continue // repl internals (__stepN, __init__)
+			if strings.HasPrefix(d.Name, "__") || (d.Kind == index.FuncDecl && d.Name == "init") {
+				continue // repl internals (__stepN, __init__); init is unnamable
 			}
 			var kind string
 			switch d.Kind {
