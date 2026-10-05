@@ -625,6 +625,25 @@ func (v *VM) Member(base runtime.Value, name string) (m runtime.Value, ok bool) 
 	return v.selectMember(fr, base, name), true
 }
 
+// MethodSetOf implements VMCaller.MethodSetOf: the names a dynamic value
+// offers interface checks. A nil set reports "no engine hook" — callers
+// then fall back to Member's existence check.
+func (v *VM) MethodSetOf(x runtime.Value) (map[string]bool, bool) {
+	if v.H.MethodSetOf != nil {
+		if set, unsure, err := v.H.MethodSetOf(x); err == nil {
+			return set, unsure
+		}
+	}
+	if v.H.MethodsOf == nil {
+		return nil, false
+	}
+	set, err := v.H.MethodsOf(x)
+	if err != nil {
+		return nil, true // unsure: don't gate on a failed lookup
+	}
+	return set, false
+}
+
 // Package implements VMCaller.Package: the package of the innermost
 // running frame, i.e. the builtin's caller.
 func (v *VM) Package() *runtime.Package {
@@ -2461,7 +2480,11 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 	// final value was loaded through: when the parameter wants a pointer
 	// the callee can write through, a fresh host pointer is built here
 	// and callReflectFunc copies the pointee back into holder.
+	// orig keeps the arg as passed — a `&w` cell, a field ref — so the
+	// interface adaptation below sees the arg's method set under Go's
+	// receiver rule (a pointer's set includes pointer receivers).
 	var holder runtime.Value
+	orig := v
 	for {
 		if n, ok := v.(*runtime.Named); ok {
 			v = n.V
@@ -2575,7 +2598,7 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 	// interpreted chunkWriter, or io.Copy fed an interpreted body — can
 	// reach the script methods through it.
 	if t.Kind() == reflect.Interface && t.NumMethod() > 0 {
-		if pv, ok := adaptIface(v, t, vc); ok {
+		if pv, ok := adaptIface(orig, t, vc); ok {
 			return pv, nil
 		}
 	}
@@ -2594,14 +2617,24 @@ func adaptIface(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.V
 	if vc == nil {
 		return reflect.Value{}, false
 	}
+	// script containers only — a struct value or a pointer box (cell,
+	// field/index ref) or named tag carrying one. The ifaceOffer probes
+	// below apply the receiver rule to whatever box arrived.
 	switch v.(type) {
-	case *runtime.Struct:
+	case *runtime.Struct, *runtime.Named,
+		*runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
 	default:
 		return reflect.Value{}, false
 	}
+	// v is the arg as passed — a bare *Struct or a pointer box wrapping
+	// it. Go stores the pointer when the caller passes &s, so the
+	// adapter's declared surface must come from that box's method set.
 	si := &scriptIface{vc: vc, recv: v}
-	_, hasWT := vc.Member(v, "WriteTo")
-	_, hasRF := vc.Member(v, "ReadFrom")
+	// the probe answers "does the arg offer this method" — the value's
+	// method set under Go's receiver rule, so a bare struct no longer
+	// advertises a WriteTo it could never satisfy.
+	_, hasWT := ifaceOffer(vc, v, "WriteTo")
+	_, hasRF := ifaceOffer(vc, v, "ReadFrom")
 	var proxy any = si
 	switch {
 	case hasWT && hasRF:
@@ -2616,13 +2649,26 @@ func adaptIface(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.V
 		return reflect.Value{}, false
 	}
 	for i := 0; i < t.NumMethod(); i++ {
-		if _, ok := vc.Member(v, t.Method(i).Name); !ok {
+		if _, ok := ifaceOffer(vc, v, t.Method(i).Name); !ok {
 			return reflect.Value{}, false
 		}
 	}
 	out := reflect.New(t).Elem()
 	out.Set(reflect.ValueOf(proxy))
 	return out, true
+}
+
+// ifaceOffer selects a member through the interface lens Go's implicit
+// assertions apply: pointer receivers are absent from a value's method
+// set, so adapting a bare *runtime.Struct to io.Reader and friends must
+// not find methods it cannot offer. When the engine offers no method
+// set — or reports it unsure — selection falls back to Member's
+// existence check.
+func ifaceOffer(c runtime.VMCaller, v runtime.Value, name string) (runtime.Value, bool) {
+	if set, unsure := c.MethodSetOf(v); set != nil && !set[name] && !unsure {
+		return nil, false
+	}
+	return c.Member(v, name)
 }
 
 // scriptIfaceWT/scriptIfaceRF/scriptIfaceWTRF carry the io extension

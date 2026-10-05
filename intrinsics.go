@@ -2295,12 +2295,8 @@ func lockerOf(vc runtime.VMCaller, v runtime.Value) (sync.Locker, error) {
 	if l, ok := goNative(v).(sync.Locker); ok {
 		return l, nil
 	}
-	dv, ok := runtime.Deref(v)
-	if !ok {
-		dv = v
-	}
-	lock, lok := vc.Member(dv, "Lock")
-	unlock, uok := vc.Member(dv, "Unlock")
+	lock, lok := ifaceMember(vc, v, "Lock")
+	unlock, uok := ifaceMember(vc, v, "Unlock")
 	if lok && uok {
 		return &scriptLocker{vc: vc, lock: lock, unlock: unlock}, nil
 	}
@@ -2764,13 +2760,9 @@ func (h *hostHelpers) sortInterface(vc runtime.VMCaller, args []runtime.Value) (
 		sort.Sort(ifc)
 		return runtime.NIL, nil
 	}
-	dv, ok := runtime.Deref(args[0])
-	if !ok {
-		dv = args[0]
-	}
-	lenFn, lok := vc.Member(dv, "Len")
-	lessFn, sok := vc.Member(dv, "Less")
-	swapFn, wok := vc.Member(dv, "Swap")
+	lenFn, lok := ifaceMember(vc, args[0], "Len")
+	lessFn, sok := ifaceMember(vc, args[0], "Less")
+	swapFn, wok := ifaceMember(vc, args[0], "Swap")
 	if !lok || !sok || !wok {
 		return nil, fmt.Errorf("sort.Sort: %T does not implement sort.Interface", args[0])
 	}
@@ -3527,7 +3519,11 @@ func asWriterVM(vc runtime.VMCaller, v any) (io.Writer, error) {
 	if fv, ok := v.(*fmtValue); ok {
 		v = fv.x
 	}
-	if dv, ok := runtime.Deref(v); ok {
+	// the method-set check runs on the box (&w keeps its pointer
+	// receivers); the Write callback itself resolves on the unwrapped
+	// value like before.
+	orig := v
+	if dv, ok := runtime.Deref(orig); ok {
 		v = dv
 	}
 	if g, ok := v.(*runtime.GoValue); ok {
@@ -3537,7 +3533,7 @@ func asWriterVM(vc runtime.VMCaller, v any) (io.Writer, error) {
 		return w, nil
 	}
 	if vc != nil && v != nil && v != runtime.NIL {
-		if m, ok := vc.Member(v, "Write"); ok && m != nil && m != runtime.NIL {
+		if m, ok := ifaceMember(vc, orig, "Write"); ok && m != nil && m != runtime.NIL {
 			return &scriptWriter{v: vc, write: m}, nil
 		}
 	}
@@ -3560,7 +3556,11 @@ func (h *hostHelpers) asReaderVM(vc runtime.VMCaller, v any) (io.Reader, error) 
 	if v == nil || v == runtime.NIL {
 		return nil, nil
 	}
-	if dv, ok := runtime.Deref(v); ok {
+	// the method-set check runs on the box (&r keeps its pointer
+	// receivers in the set, a bare value loses them — Go's rule for
+	// io.Reader); the Read callback binds through the same box.
+	orig := v
+	if dv, ok := runtime.Deref(orig); ok {
 		v = dv
 	}
 	if g, ok := v.(*runtime.GoValue); ok {
@@ -3570,12 +3570,12 @@ func (h *hostHelpers) asReaderVM(vc runtime.VMCaller, v any) (io.Reader, error) 
 		return r, nil
 	}
 	if vc != nil && v != nil && v != runtime.NIL {
-		set, _, _ := h.e.methodSetOfValue(v)
+		set, _, _ := h.e.methodSetOfValue(orig)
 		if set["Read"] {
 			if set["WriteTo"] {
-				return &scriptReaderWriterTo{v: vc, recv: v}, nil
+				return &scriptReaderWriterTo{v: vc, recv: orig}, nil
 			}
-			return &scriptReader{v: vc, recv: v}, nil
+			return &scriptReader{v: vc, recv: orig}, nil
 		}
 	}
 	return nil, fmt.Errorf("not an io.Reader: %T", v)
@@ -4074,7 +4074,7 @@ func (e *scriptError) Error() string {
 // Unwrap lets a script-declared `Unwrap() error` method join the host
 // errors chain — errors.Unwrap/Is/As walk through it like Go's.
 func (e *scriptError) Unwrap() error {
-	m, ok := e.c.Member(e.v, "Unwrap")
+	m, ok := ifaceMember(e.c, e.v, "Unwrap")
 	if !ok {
 		return nil
 	}
@@ -5270,10 +5270,25 @@ func withWidth(f fmt.State, s string) string {
 	return fmt.Sprintf(formatOf(f, 's'), s)
 }
 
+// ifaceMember selects a member through the interface lens Go's implicit
+// assertions apply: pointer-receiver methods are absent from a value's
+// method set, so fmt's Stringer probe and the host-iface adapters
+// (Locker, sort.Interface, io.Reader/Writer, error Unwrap) skip a method
+// a bare value cannot offer. When the engine offers no method set — or
+// reports it unsure — selection falls back to Member's existence check.
+func ifaceMember(c runtime.VMCaller, v runtime.Value, name string) (runtime.Value, bool) {
+	if set, unsure := c.MethodSetOf(v); set != nil && !set[name] && !unsure {
+		return nil, false
+	}
+	return c.Member(v, name)
+}
+
 // callStringer invokes a declared String()/Error() method through the VM
-// when the value carries one; a panicking or absent method reports false.
+// when the value's method set offers one (a pointer receiver on a bare
+// value does not count — Go prints the struct instead); a panicking or
+// absent method reports false.
 func callStringer(c runtime.VMCaller, x runtime.Value, name string) (string, bool) {
-	m, ok := c.Member(x, name)
+	m, ok := ifaceMember(c, x, name)
 	if !ok {
 		return "", false
 	}
