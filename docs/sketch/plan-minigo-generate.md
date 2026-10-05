@@ -196,10 +196,35 @@ From `examples/minigo-generate` as it stands:
   fallback's base type comes from `inspect.Def(target).Text`. Output is
   emitted pre-formatted — running `go/format` would mean interpreting
   `go/parser`+`go/printer` inside the tool.
-- **No const values.** `inspect` surfaces declarations, not evaluated
-  values — stringer only needs the member *names* for its switch, so
-  the spike never felt it; a tool that needs iota results or explicit
-  values is out of `inspect`'s current reach.
+- **No const values — and no comments, for plugins either.** `inspect`
+  surfaces declarations, not evaluated values — stringer only needs
+  the member *names* for its switch, so the spike never felt it, but a
+  tool that needs iota results or explicit values is out of `inspect`'s
+  current reach. The same gap applies to doc text: `inspect.Doc` goes
+  through `CommentGroup.Text()`, which strips directive comments, so a
+  plugin wanting "the comment above this decl" (a common codegen
+  input) has no inspect entry point — it would have to re-parse the
+  file through `syntax` itself.
+- **Plugin imports are limited to bound/interpretable packages.** A
+  real `go generate` tool imports anything; an interpreted one
+  effectively lives on the stdlib/minigo-bound surface — `flag`, `os`,
+  `strings`, `fmt`, `inspect` are all intrinsics or bound packages.
+  Notably absent: `go/format` — generated code must be emitted
+  pre-formatted (the demo's two-line template care). A plugin that
+  needs arbitrary third-party imports is out of scope by construction.
+- **Alias-targeted `-type` fails generically.** Verified: pointing a
+  directive at `type StatusAlias = Status` yields "no enum consts" —
+  `EnumMembers` matches consts typed by the name itself and does not
+  follow the alias. Correct-ish, but a real-world footgun worth
+  documenting rather than fixing.
+- **Env is the *only* per-directive context channel** — which is
+  exactly what blocks the deferred parallel path: four process-global
+  vars can't carry context to N concurrent Calls. The plan's bound
+  `generate` package keyed on `runtime.VMCaller` identity is no longer
+  optional for parallelism, it's the design.
+- **Interpreted `fmt` is faithful** — `fmt.Fprintf` with too few args
+  renders `%!s(MISSING)` exactly like the host toolchain (hit and
+  fixed in enumvals' emit).
 - **Refs anchored at the directive file's directory** worked naturally —
   `../tools/stringer` inside `app/` resolves without a registry.
 - **Stacked directives cost nothing extra** — the demo's `Status` runs
