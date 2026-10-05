@@ -850,16 +850,14 @@ func TestREPLResultVars(t *testing.T) {
 		{"x := 1", nil},        // no printed value: nothing remembered
 		{"_3 + _2", int64(33)}, // _1="s", _2=30, _3=3
 		{`func pair() (int, string) { return 7, "seven" }`, nil},
-		{"pair()", nil},    // checked below
-		{"_1[1]", "seven"}, // a multi-value result is a []any
 	} {
-		got := eval(c.line)
-		if c.line == "pair()" {
-			continue
-		}
-		if diff := cmp.Diff(c.want, got); diff != "" {
+		if diff := cmp.Diff(c.want, eval(c.line)); diff != "" {
 			t.Errorf("%s (-want +got):\n%s", c.line, diff)
 		}
+	}
+	eval("pair()")
+	if diff := cmp.Diff("seven", eval("_1[1]")); diff != "" { // a multi-value result is a []any
+		t.Errorf("_1[1] (-want +got):\n%s", diff)
 	}
 	// a failing input remembers nothing
 	if _, err := r.EvalLine(ctx, "undefinedName"); err == nil {
