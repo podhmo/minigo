@@ -211,7 +211,12 @@ const replHelp = `commands:
   :pin    write following declarations into the entered package's
           globals (monkey-patch: visible to every importer here)
   :unpin  stop writing into the package; decls land in <repl> again
-  :ls [ref]  list top-level decls of the current (or given) package
+  :ls [ref]  list top-level decls of the current (or given) package;
+             ref is a path, ./dir, or a name bound by an import here
+  :doc <pkg>[.<sym>]  run go doc (pkg: imported name, "path", or path).
+                      note: this is the Go toolchain's documentation, not
+                      minigo's — a bound package may expose fewer symbols
+                      (:ls <pkg> shows what minigo actually provides)
   :comp <text>  print completion candidates for a code fragment
   :bindings [prefix]  list host-bound (native) import paths; :ls <path>
                       shows a bound package's symbols
@@ -338,6 +343,8 @@ func runREPL(ctx context.Context, in io.Reader, out io.Writer) error {
 							fmt.Fprintln(out, path)
 						}
 					}
+				case ":doc":
+					runDoc(ctx, out, r, cwd, arg)
 				case ":comp":
 					for _, c := range r.Complete(strings.TrimSpace(arg)) {
 						if c.Detail != "" {
