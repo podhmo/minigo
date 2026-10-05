@@ -2376,10 +2376,36 @@ func (c *compiler) expr(e ast.Expr) {
 
 // staticTyp pushes the declared type the operand of an assertion is
 // bound under — Go's "main.I" in "interface conversion: main.I is main.T,
-// not io.Writer". Only a bare identifier carries a static type into the
-// runtime; other expressions (or untyped cells) yield NIL and the panic
-// message falls back to "interface {}".
+// not io.Writer". A bare identifier carries its cell's declared typedef;
+// conversions T(v) spell T; a single-result call on a func literal
+// (`func() S {…}()`) spells its declared result. Anything else — and
+// untyped cells — yields NIL and the panic falls back to "interface {}".
 func (c *compiler) staticTyp(e ast.Expr) {
+	switch x := e.(type) {
+	case *ast.ParenExpr:
+		c.staticTyp(x.X)
+		return
+	case *ast.CallExpr:
+		switch {
+		case c.conversionCall(x):
+			// T(v).(U) — the operand's static type is the conversion's
+			// target type.
+			c.typeExpr(x.Fun)
+			return
+		default:
+			if lit, ok := x.Fun.(*ast.FuncLit); ok {
+				rs := lit.Type.Results
+				if rs != nil && len(rs.List) == 1 && len(rs.List[0].Names) <= 1 {
+					// (func() S {…})().(T) — the call's static type is
+					// the literal's declared result.
+					c.typeExpr(rs.List[0].Type)
+					return
+				}
+			}
+		}
+		c.emit(bytecode.OpNil, 0, 0, e.Pos())
+		return
+	}
 	id, ok := e.(*ast.Ident)
 	if !ok {
 		c.emit(bytecode.OpNil, 0, 0, e.Pos())
