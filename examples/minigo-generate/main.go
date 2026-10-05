@@ -11,6 +11,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"go/format"
 	"io"
 	"os"
 	"path/filepath"
@@ -65,6 +66,12 @@ func runMain(ctx context.Context, argv []string) int {
 // packages parsed and indexed exactly once.
 func run(ctx context.Context, dir string, ds []directive, re *regexp.Regexp, dry, echo bool, out io.Writer) int {
 	e := minigo.NewEngine(dir, minigo.WithWorkingDir(dir), minigo.WithOutput(out))
+	// a host-bound package: interpreted tools see a working go/format
+	// even though nothing interprets go/printer. Binding is how the
+	// runner extends what a plugin may import.
+	e.Bind("go/format", map[string]runtime.Value{
+		"Source": &runtime.GoValue{V: format.Source},
+	})
 	failures := 0
 	for _, d := range ds {
 		if re != nil && !re.MatchString(d.text) {

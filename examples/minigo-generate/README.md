@@ -45,6 +45,16 @@ func Main(args []string) int
 `args` is the directive's arguments — `argv[1:]` of the equivalent
 command. The file context arrives through the environment, so a tool
 reads `os.Getenv("GOFILEPATH")` exactly as it would under `go generate`.
+
+The runner also *binds* packages for the tools — user-side code can
+extend what a plugin may import via `Engine.Bind`, and the demo binds
+`go/format` so generated output is formatted exactly like a real
+tool's (`format.Source` is a native call, no interpreted go/printer):
+
+```go
+e.Bind("go/format", map[string]runtime.Value{"Source": &runtime.GoValue{V: format.Source}})
+```
+
 `Main` also means the same source doubles as a real command:
 
 ```go
@@ -59,8 +69,9 @@ Two tools — the issue's "plugins" — each just a package dir with a
 `DirOf`/`Files`/`Decls`/`EnumMembers`/`Def`): no `go/types`, no
 `go/packages`, no binary — it finds the `-type` in `GOFILEPATH`'s
 package, switches on its enum consts, and writes `<type>_string.go`
-next to the source. `tools/enumvals` is its companion: a `Values()`
-slice listing the members in declaration order.
+next to the source — `format.Source`ed like the real thing, via the
+runner's `go/format` binding. `tools/enumvals` is its companion: a
+`Values()` slice listing the members in declaration order.
 
 `app/` seeds three enums plus decoys — an alias wearing a matchable
 name, a const-less named int, a directive that trails its type instead
