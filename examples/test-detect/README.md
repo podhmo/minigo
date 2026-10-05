@@ -55,3 +55,9 @@ $ pkgs=$(go run . -format space inspect/inspect.go) && [ -n "$pkgs" ] && go test
 - Empty result means empty output (no padding), so `$(test-detect ...)`
   never expands into "test the current package" — callers should still
   gate on non-emptiness, as in the example above.
+- Resolution is by directory, not by file name — that is what makes
+  deleted files work, but a resolving path is not necessarily a correct
+  one: a mistyped or cwd-relative input can silently resolve to a
+  package it does not belong to (a basename like `typo.go` has no
+  directory part and collapses onto the root package). This cannot be
+  detected mechanically; feed exact `git diff --name-only` paths.
