@@ -1,0 +1,9 @@
+0: panic: runtime error: comparing uncomparable type []int
+1: panic: runtime error: comparing uncomparable type []int
+2: panic: runtime error: comparing uncomparable type []int
+3: panic: runtime error: comparing uncomparable type map[string]int
+4: bool false
+5: bool false
+6: bool false
+7: bool true
+8: panic: runtime error: comparing uncomparable type []int

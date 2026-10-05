@@ -6648,6 +6648,14 @@ func eqlValue(a, b runtime.Value) bool {
 		}
 		return false
 	}
+	// two interface values with the same uncomparable dynamic type panic
+	// on == — `any([]int(nil)) == any([]int{1})` traps on the *type*,
+	// not the values — whatever nil-ness the pair holds.
+	if ua := uncomparableDynamicTyp(a); ua != nil {
+		if ub := uncomparableDynamicTyp(b); ub != nil && sameTypeDef(ua, ub) {
+			panic(runtime.ComparingUncomparablePanic(spelledTyp(ua)))
+		}
+	}
 	if in, ok := a.(*runtime.IfaceNil); ok {
 		// interface value holding a typed nil: nil only to a same-typed nil
 		switch bi := b.(type) {
@@ -6878,6 +6886,30 @@ func sliceTypOf(td *runtime.TypeDef) *runtime.TypeDef {
 // Go — slices, maps and funcs panic on == even when nil.
 func uncomparableTyp(td *runtime.TypeDef) bool {
 	return td != nil && (td.Kind == runtime.KindSlice || td.Kind == runtime.KindMap || td.Kind == runtime.KindFunc)
+}
+
+// uncomparableDynamicTyp returns the value's dynamic typedef when its
+// type is uncomparable — a slice, map or nil-of-either — so an ==
+// between two interface values carrying the same uncomparable dynamic
+// type panics like Go, including nil-of-slice against a live slice.
+func uncomparableDynamicTyp(v runtime.Value) *runtime.TypeDef {
+	switch x := v.(type) {
+	case *runtime.Slice:
+		if x.Typ != nil && !isArrayTyp(x.Typ) {
+			return x.Typ
+		}
+	case *runtime.Map:
+		return x.Typ
+	case *runtime.TypedNil:
+		if uncomparableTyp(x.Typ) {
+			return x.Typ
+		}
+	case *runtime.IfaceNil:
+		if uncomparableTyp(x.Typ) {
+			return x.Typ
+		}
+	}
+	return nil
 }
 
 // uncomparableValue reports whether an == over v must panic: slices,
