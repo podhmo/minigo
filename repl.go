@@ -1146,6 +1146,17 @@ func (r *REPL) loadRef(ctx context.Context, ref string) (*runtime.Package, error
 // map keeps %#v's T(nil) spelling so it reads apart from an empty one.
 // A multi-value result renders as (a, b). nil means nothing to print.
 func (r *REPL) Display(v runtime.Value) any {
+	return r.render(v, "%v")
+}
+
+// Dump renders a runtime value in Go syntax like fmt's %#v — type names,
+// field names, quoted strings, T(nil) — for :dump. String/Error are not
+// consulted (GoString is).
+func (r *REPL) Dump(v runtime.Value) any {
+	return r.render(v, "%#v")
+}
+
+func (r *REPL) render(v runtime.Value, spec string) any {
 	if v == nil {
 		return nil
 	}
@@ -1153,7 +1164,7 @@ func (r *REPL) Display(v runtime.Value) any {
 	vmm.EnsureProc()
 	defer vmm.ReleaseProc()
 	format := func(x runtime.Value) string {
-		return fmt.Sprintf("%v", &fmtValue{c: vmm, x: x, nilSyntax: true})
+		return fmt.Sprintf(spec, &fmtValue{c: vmm, x: x, nilSyntax: true})
 	}
 	if t, ok := v.(*runtime.Tuple); ok {
 		parts := make([]string, len(t.Elems))

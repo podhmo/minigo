@@ -909,3 +909,37 @@ func TestREPLDisplay(t *testing.T) {
 		}
 	}
 }
+
+func TestREPLDump(t *testing.T) {
+	ctx := context.Background()
+	r := NewEngine("testdata").NewREPL()
+	for _, line := range []string{
+		`type In struct{ A int }`,
+		`type T struct{ N int }`,
+		`func (t T) String() string { return "T" }`,
+		`type Out struct { S string; P *In; L []In; T T }`,
+	} {
+		if _, err := r.EvalLine(ctx, line); err != nil {
+			t.Fatalf("%s: %v", line, err)
+		}
+	}
+	// Go syntax like %#v: String is not consulted
+	for _, c := range []struct {
+		line string
+		want any
+	}{
+		{`Out{S: "x"}`, `repl.Out{S:"x", P:(*repl.In)(nil), L:[]repl.In(nil), T:repl.T{N:0}}`},
+		{"&In{1}", "&repl.In{A:1}"},
+		{"[]int{}", "[]int{}"},
+		{`func pair() (int, string) { return 7, "s" }`, nil},
+		{"pair()", `(7, "s")`},
+	} {
+		v, err := r.EvalLine(ctx, c.line)
+		if err != nil {
+			t.Fatalf("%s: %v", c.line, err)
+		}
+		if diff := cmp.Diff(c.want, r.Dump(v)); diff != "" {
+			t.Errorf("%s (-want +got):\n%s", c.line, diff)
+		}
+	}
+}

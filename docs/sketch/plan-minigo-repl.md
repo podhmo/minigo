@@ -52,6 +52,10 @@ after every input (`reload`).
   `map[]`). The distinction matters for `== nil` and for JSON (`null`
   vs `[]`). A multi-value result prints `(a, b)`. The `print`/`println`
   builtins keep the Go runtime's spelling (`0x0`, `[0/0]0x0`).
+- **`:dump <expr>`** (alias `:p`) evaluates like any input but prints the
+  result in Go syntax, as `%#v` does: type and field names, quoted
+  strings, `T(nil)`. `String()` is not consulted. It is for debugging
+  nested values. The result is remembered in `_1` like any other.
 - **Result variables.** The last three printed results are kept as `_1`
   (newest), `_2` and `_3`, the counterpart of IPython's `_`, `__`, `___`
   (Go's `_` is the blank identifier and cannot be read). A multi-value
@@ -202,6 +206,7 @@ keeps the published patch.
 | `:ls [ref]` | top-level decls (`func`/`type`/`var`/`const`/`method`, bound symbols as `host`); ref = path, `./dir`, quoted path, or a session import name |
 | `:load [<file\|dir>]` | read files into the session / list loads |
 | `:doc <pkg>[.<sym>]` | run the Go toolchain's `go doc` |
+| `:dump <expr>` / `:p <expr>` | print a result in Go syntax (`%#v`) |
 | `:comp <text>` | print completion candidates (what TAB offers) |
 | `:bindings [prefix]` | list host-bound (native) import paths |
 | `:exit` / `:quit` / `:q` | quit |
