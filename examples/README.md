@@ -1,7 +1,9 @@
 # Examples
 
 Each subdirectory is a self-contained Go module that uses `minigo` to
-interpret user-supplied Go files at runtime.
+interpret user-supplied Go files at runtime. The exception is
+`test-detect`, a pure-stdlib experiment that shares the theme —
+Go source as data — without running the interpreter.
 
 ## task-run — a mage-style task runner
 
@@ -43,3 +45,16 @@ imports transitively; `-check` reports drift for CI.
 
 See [gen-sync/README.md](./gen-sync/README.md) and the design notes in
 [docs/sketch/plan-gen-sync.md](../docs/sketch/plan-gen-sync.md).
+
+## test-detect — affected test package detection
+
+Given the changed `.go` files of a commit (e.g. `git diff --name-only`),
+print the packages whose tests the change can break. The repository's
+internal import graph is built by parsing every `.go` file with
+`parser.ImportsOnly` — package clause and import declarations only — so
+no `go list`, no module resolution, no network. Reverse dependencies
+are walked from the changed files, across this repository's nested
+modules; packages without tests are dropped from the output by default.
+
+See [test-detect/README.md](./test-detect/README.md) and the design notes in
+[docs/sketch/plan-test-detect.md](../docs/sketch/plan-test-detect.md).
