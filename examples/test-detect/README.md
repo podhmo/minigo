@@ -63,3 +63,15 @@ $ pkgs=$(go run . -format space inspect/inspect.go) && [ -n "$pkgs" ] && go test
   `$(test-detect ...)` never expands into "test the current package" —
   callers should still gate on non-emptiness, as in the example above.
   `json` emits `[]` instead: valid JSON a pipeline can still parse.
+- `-on-unresolved=all` is the CI-safe mode: if even one input fails to
+  resolve — a non-.go file (`go.mod`, docs, `//go:embed` targets, cgo
+  headers), a path under a skipped directory like `testdata`, a
+  directory argument, or any path that does not exist (deleted files,
+  rename old paths, typos) — the selection is untrusted and every
+  package is listed instead of risking an empty answer that reads as
+  "nothing to test". The usual filters still apply: `-exclude` drops
+  matches and `-include-untested` also lists untested packages. Under
+  `all` a missing `.go` file no longer resolves through its directory
+  (an unverifiable path is indistinguishable from a typo), so a diff
+  containing deletions falls back entirely; the default `warn` keeps
+  the old skip-with-warning behavior.
