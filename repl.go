@@ -981,8 +981,12 @@ func (r *REPL) List(ctx context.Context, ref string) ([]string, error) {
 			continue // index already listed the materialized decl
 		}
 		if v, ok := p.Globals.Get(name); ok {
-			if _, isCell := v.(*runtime.Cell); isCell {
-				out = append(out, fmt.Sprintf("var %s", name)) // hoisted repl name
+			if c, isCell := v.(*runtime.Cell); isCell {
+				kind := "var" // hoisted repl name
+				if c.ReadOnly {
+					kind = "const" // sealed by sealConsts
+				}
+				out = append(out, fmt.Sprintf("%s %s", kind, name))
 			} else if r.pinnedDecls[name] {
 				out = append(out, fmt.Sprintf("patch %s", name)) // decl published by :pin
 			} else if p.Index == nil || p.Index.Decls == nil {

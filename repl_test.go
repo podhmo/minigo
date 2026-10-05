@@ -737,3 +737,21 @@ func TestREPLImportNameRefs(t *testing.T) {
 		t.Errorf("List(inspectpkg) missing func Hello: %v", lines)
 	}
 }
+
+func TestREPLListHoistedKinds(t *testing.T) {
+	ctx := context.Background()
+	r := NewEngine("testdata").NewREPL()
+	for _, line := range []string{"const C = 1", "var v = 2", "x := 3", "const (A = 1; B = 2)"} {
+		if _, err := r.EvalLine(ctx, line); err != nil {
+			t.Fatalf("%s: %v", line, err)
+		}
+	}
+	lines, err := r.List(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"const A", "const B", "const C", "var v", "var x"}
+	if diff := cmp.Diff(want, lines); diff != "" {
+		t.Errorf("List (-want +got):\n%s", diff)
+	}
+}
