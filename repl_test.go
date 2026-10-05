@@ -828,3 +828,44 @@ func TestREPLImportResolvesEagerly(t *testing.T) {
 		t.Errorf("package candidates for odd (-want +got):\n%s", diff)
 	}
 }
+
+func TestREPLResultVars(t *testing.T) {
+	ctx := context.Background()
+	r := NewEngine("testdata").NewREPL()
+	eval := func(line string) any {
+		t.Helper()
+		v, err := r.EvalLine(ctx, line)
+		if err != nil {
+			t.Fatalf("%s: %v", line, err)
+		}
+		return r.Display(v)
+	}
+	for _, c := range []struct {
+		line string
+		want any
+	}{
+		{"1 + 2", int64(3)},
+		{"_1 * 10", int64(30)},
+		{`"s"`, "s"},
+		{"x := 1", nil},        // no printed value: nothing remembered
+		{"_3 + _2", int64(33)}, // _1="s", _2=30, _3=3
+		{`func pair() (int, string) { return 7, "seven" }`, nil},
+		{"pair()", nil},    // checked below
+		{"_1[1]", "seven"}, // a multi-value result is a []any
+	} {
+		got := eval(c.line)
+		if c.line == "pair()" {
+			continue
+		}
+		if diff := cmp.Diff(c.want, got); diff != "" {
+			t.Errorf("%s (-want +got):\n%s", c.line, diff)
+		}
+	}
+	// a failing input remembers nothing
+	if _, err := r.EvalLine(ctx, "undefinedName"); err == nil {
+		t.Fatal("want error")
+	}
+	if diff := cmp.Diff("seven", eval("_1")); diff != "" {
+		t.Errorf("_1 after failure (-want +got):\n%s", diff)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -319,7 +320,31 @@ func (r *REPL) runStep(ctx context.Context, name string) (runtime.Value, error) 
 	if !r.hasValue {
 		return nil, nil
 	}
+	r.rememberResult(v)
 	return v, nil
+}
+
+// resultNames hold the latest printed results, newest first — IPython's
+// `_`, `__`, `___` (Go's `_` is the blank identifier and cannot be read).
+var resultNames = []string{"_1", "_2", "_3"}
+
+// rememberResult shifts _1.._3 and binds the newest result to _1. A
+// multi-value result is stored as a []any, since a tuple has no Go
+// spelling (`_1[1]` is the second value). Results the REPL does not
+// print (no value) are not remembered.
+func (r *REPL) rememberResult(v runtime.Value) {
+	if display(v) == nil {
+		return
+	}
+	if t, ok := v.(*runtime.Tuple); ok {
+		v = &runtime.Slice{Elems: slices.Clone(t.Elems)}
+	}
+	for i := len(resultNames) - 1; i > 0; i-- {
+		if prev, ok := r.pkg.Globals.Get(resultNames[i-1]); ok {
+			r.pkg.Globals.Set(resultNames[i], prev)
+		}
+	}
+	r.pkg.Globals.Set(resultNames[0], &runtime.Cell{Elem: v})
 }
 
 // commitWrites publishes a successful input's write-mode declarations
