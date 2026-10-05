@@ -1,0 +1,5 @@
+0: panic: runtime error: invalid memory address or nil pointer dereference
+1: string 1
+2: panic: close of closed channel
+3: string ok
+4: string rec:own
