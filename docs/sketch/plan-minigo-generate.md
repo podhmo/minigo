@@ -90,7 +90,14 @@ process scopes, so fan-out is *possible* later — but it needs a
 semaphore (the issue's own memory concern is correct: N interpreted
 packages + N VMs is not free) and a race-free context channel. Both are
 deferred; `task-run`'s `Deps` machinery is the proven pattern when the
-time comes.
+time comes. And the premise bounds how far speed is even the goal:
+minigo competes on startup + short runs — work where execution speed
+would dominate (long runs, heavy compute) should go to Go anyway,
+bound natively like the demo's `format.Source`. So a future fan-out is
+about *bounding* concurrency for throughput, not about chasing
+interpreter speed: the axis that actually trades off is memory, and
+the sharing question is tracked in
+[issue #396](https://github.com/podhmo/minigo/issues/396).
 
 What fan-out shares, verified in the source: each `Call` builds its own
 VM (`e.newVM()` + `EnsureProc`/`ReleaseProc` — "concurrent Calls never
