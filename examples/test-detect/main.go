@@ -44,6 +44,7 @@ func runMain(ctx context.Context, argv []string) int {
 	format := fs.String("format", "pkg", "output format: pkg|space|dir|json")
 	stdin := fs.Bool("stdin", false, "read changed file paths from stdin (one per line)")
 	includeUntested := fs.Bool("include-untested", false, "also list packages without _test.go files")
+	onUnresolved := fs.String("on-unresolved", "warn", "what to do when an input cannot be resolved to a scanned package: warn (skip it with a warning) or all (list every package — the safe choice for CI)")
 	verbose := fs.Bool("verbose", false, "report scan stats on stderr")
 	var excludes regexList
 	fs.Var(&excludes, "exclude", "regexp matching import paths to drop from output (repeatable)")
@@ -105,9 +106,20 @@ func runMain(ctx context.Context, argv []string) int {
 		absRoot = resolved
 	}
 
+	var onUnresolvedAll bool
+	switch *onUnresolved {
+	case "warn":
+	case "all":
+		onUnresolvedAll = true
+	default:
+		fmt.Fprintf(os.Stderr, "test-detect: -on-unresolved must be warn or all, got %q\n", *onUnresolved)
+		return 2
+	}
+
 	d, err := detectChanged(absRoot, changed, options{
 		includeUntested: *includeUntested,
 		exclude:         excludes,
+		onUnresolvedAll: onUnresolvedAll,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "test-detect:", err)

@@ -14,6 +14,10 @@ import (
 type options struct {
 	includeUntested bool
 	exclude         []*regexp.Regexp
+	// onUnresolvedAll reports every package when at least one input
+	// cannot be resolved — the conservative answer for CI, where an
+	// empty result looks like "nothing to test".
+	onUnresolvedAll bool
 }
 
 // stats reports scan cost for -verbose.
@@ -52,8 +56,16 @@ func detectChanged(root string, changed []string, o options) (*detection, error)
 		d.stats.edges += len(parents)
 	}
 
-	seeds := d.resolveChanged(changed)
-	affected := bfs(g, seeds)
+	seeds, unresolved := d.resolveChanged(changed, o.onUnresolvedAll)
+	var affected []*pkg
+	if o.onUnresolvedAll && len(unresolved) > 0 {
+		d.warnings = append(d.warnings, fmt.Sprintf("%d input(s) did not resolve to a scanned package; listing every package", len(unresolved)))
+		for _, p := range g.byDir {
+			affected = append(affected, p)
+		}
+	} else {
+		affected = bfs(g, seeds)
+	}
 	d.packages, d.dropped = filterAffected(affected, o)
 	d.stats.elapsed = time.Since(start)
 	return d, nil
@@ -66,8 +78,13 @@ func detectChanged(root string, changed []string, o options) (*detection, error)
 // Inputs that clearly are not files at all (directories, Windows-style
 // `\` separators pointing at nothing) warn too: they claim a package
 // the tool cannot see.
-func (d *detection) resolveChanged(changed []string) []*pkg {
-	var seeds []*pkg
+//
+// The second return value lists the inputs that produced no package —
+// with strict=true (the -on-unresolved=all fallback) that includes
+// every silent case: non-.go inputs, and .go paths that do not exist
+// (a missing file can no longer be resolved through its directory,
+// because an unverifiable path is indistinguishable from a typo).
+func (d *detection) resolveChanged(changed []string, strict bool) (seeds []*pkg, unresolved []string) {
 	seen := map[*pkg]bool{}
 	for _, f := range changed {
 		f = strings.TrimSpace(f)
@@ -82,20 +99,35 @@ func (d *detection) resolveChanged(changed []string) []*pkg {
 		info, statErr := os.Stat(abs)
 		if statErr == nil && info.IsDir() {
 			d.warnings = append(d.warnings, fmt.Sprintf("%s: is a directory, not a .go file (skipped)", f))
+			unresolved = append(unresolved, f)
 			continue
 		}
 		// A '\' in a path that does not exist is almost certainly a
 		// Windows separator; a real file may legitimately contain one.
 		if statErr != nil && filepath.Separator != '\\' && strings.ContainsRune(f, '\\') {
 			d.warnings = append(d.warnings, fmt.Sprintf("%s: contains '\\'; pass '/'-separated paths on this platform (skipped)", f))
+			unresolved = append(unresolved, f)
 			continue
 		}
 		if !strings.HasSuffix(f, ".go") {
+			if strict {
+				d.warnings = append(d.warnings, fmt.Sprintf("%s: not a .go file (skipped)", f))
+			}
+			unresolved = append(unresolved, f)
+			continue
+		}
+		if statErr != nil && strict {
+			// A deleted file normally resolves through its directory,
+			// but a missing path is indistinguishable from a typo —
+			// under the fallback it must not silently pick a package.
+			d.warnings = append(d.warnings, fmt.Sprintf("%s: does not exist (skipped)", f))
+			unresolved = append(unresolved, f)
 			continue
 		}
 		p, ok := d.graph.byDir[filepath.Dir(abs)]
 		if !ok {
 			d.warnings = append(d.warnings, fmt.Sprintf("%s: %s (skipped)", f, d.whyNotInGraph(abs)))
+			unresolved = append(unresolved, f)
 			continue
 		}
 		if !seen[p] {
@@ -103,7 +135,7 @@ func (d *detection) resolveChanged(changed []string) []*pkg {
 			seeds = append(seeds, p)
 		}
 	}
-	return seeds
+	return seeds, unresolved
 }
 
 // whyNotInGraph explains why an input's directory produced no package

@@ -34,6 +34,7 @@ $ pkgs=$(go run . -format space inspect/inspect.go) && [ -n "$pkgs" ] && go test
 | `-format` | `pkg` (default), `space`, `dir`, or `json` |
 | `-exclude` | regexp of import paths to drop from output (repeatable; traversal still propagates through them) |
 | `-include-untested` | also list packages without `_test.go` files |
+| `-on-unresolved` | `warn` (default) or `all` — what to do when an input cannot be resolved to a scanned package |
 | `-verbose` | module/file/edge counts and dropped packages on stderr |
 
 ## Behavior notes
