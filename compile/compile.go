@@ -3261,6 +3261,20 @@ func (c *compiler) starOperandIsValue(e ast.Expr) bool {
 			return found && !info.isType
 		}
 		return false
+	case *ast.IndexExpr:
+		// `*s[i]` dereferences an element; `*List[T]` is a pointer to an
+		// instantiation — the indexed operand decides like a selector.
+		return c.starOperandIsValue(t.X)
+	case *ast.IndexListExpr:
+		// same, for multi-arg instantiations `*Pair[K,V]`.
+		return c.starOperandIsValue(t.X)
+	case *ast.UnaryExpr, *ast.CallExpr, *ast.CompositeLit,
+		*ast.BasicLit, *ast.BinaryExpr, *ast.SliceExpr,
+		*ast.TypeAssertExpr, *ast.FuncLit:
+		// Value-producing operands — &x, f(), T{...}, literals, x.(T) —
+		// none of them can name a pointer type, so `*` must dereference
+		// (e.g. `*(&Point{})` is a deref, not a `*T` type).
+		return true
 	case *ast.ParenExpr:
 		return c.starOperandIsValue(t.X)
 	case *ast.StarExpr:
