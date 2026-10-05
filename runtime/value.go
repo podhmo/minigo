@@ -1305,12 +1305,18 @@ func renderFrames(frames []string) string {
 		strings.Join(frames[len(frames)-half:], "\n")
 }
 
-// foldRepeatedFrames collapses runs of the same entry into
-// "<entry>\n... repeated N times ..." — the shape CPython prints for a
-// RecursionError. A stack-exhausted recursion otherwise renders the same
-// frame hundreds of times, which is noise for a human and context poison
-// for an agent. Folding runs before the head/tail cap so the cap
-// measures the folded list.
+// maxRunShown bounds how many entries of one repeated run render
+// verbatim before folding: a stack trace with ~50 real frames is still
+// debuggable, while a runaway recursion's thousands are not.
+const maxRunShown = 50
+
+// foldRepeatedFrames collapses long runs of the same entry into
+// "<entry> x50\n... repeated N more times ..." — a bounded-verbosity
+// version of the fold CPython does for a RecursionError. A
+// stack-exhausted recursion otherwise renders the same frame hundreds of
+// times, which is noise for a human and context poison for an agent;
+// keeping the run's first maxRunShown preserves the depth feel. Folding
+// runs before the head/tail cap so the cap measures the folded list.
 func foldRepeatedFrames(frames []string) []string {
 	out := make([]string, 0, len(frames))
 	for i := 0; i < len(frames); {
@@ -1318,9 +1324,11 @@ func foldRepeatedFrames(frames []string) []string {
 		for j < len(frames) && frames[j] == frames[i] {
 			j++
 		}
-		out = append(out, frames[i])
-		if n := j - i; n > 1 {
-			out = append(out, fmt.Sprintf("... repeated %d more times ...", n-1))
+		if n := j - i; n > maxRunShown {
+			out = append(out, frames[i:i+maxRunShown]...)
+			out = append(out, fmt.Sprintf("... repeated %d more times ...", n-maxRunShown))
+		} else {
+			out = append(out, frames[i:j]...)
 		}
 		i = j
 	}

@@ -104,22 +104,36 @@ func TestMapDeleteAndClear(t *testing.T) {
 }
 
 // TestFoldRepeatedFrames: consecutive identical frames (recursion dumps)
-// collapse to "<entry>\n... repeated N times ..." before the head/tail
-// cap applies.
+// keep their first maxRunShown verbatim then fold the rest into
+// "... repeated N more times ..." — ~50 real frames stay visible for
+// debugging instead of a thousand-line dump or a 2-line stub.
 func TestFoldRepeatedFrames(t *testing.T) {
 	f := func(s string) string { return `File "t.go", line 1, in ` + s + `()` }
 
-	// all-identical run (direct recursion) folds to entry + marker
+	// a run at or under maxRunShown renders untouched — small repeats
+	// are real context, not noise
 	frames := []string{f("f"), f("f"), f("f"), f("f")}
 	got := renderFrames(frames)
-	want := f("f") + "\n... repeated 3 more times ..."
+	if diff := cmp.Diff(strings.Join(frames, "\n"), got); diff != "" {
+		t.Errorf("short identical run (-want +got):\n%s", diff)
+	}
+
+	// a long run keeps its first maxRunShown, then one marker line
+	frames = make([]string, maxRunShown+10)
+	for i := range frames {
+		frames[i] = f("f")
+	}
+	got = renderFrames(frames)
+	want := strings.Repeat(f("f")+"\n", maxRunShown) + "... repeated 10 more times ..."
 	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("all-identical run (-want +got):\n%s", diff)
+		t.Errorf("long identical run (-want +got):\n%s", diff)
 	}
 
 	// mixed runs fold independently, singletons pass through
-	frames = []string{f("a"), f("b"), f("b"), f("c"), f("d"), f("d"), f("d")}
-	want = f("a") + "\n" + f("b") + "\n... repeated 1 more times ...\n" + f("c") + "\n" + f("d") + "\n... repeated 2 more times ..."
+	frames = append([]string{f("a")}, rep(f("b"), maxRunShown+2)...)
+	frames = append(frames, f("c"))
+	want = f("a") + "\n" + strings.Repeat(f("b")+"\n", maxRunShown) +
+		"... repeated 2 more times ...\n" + f("c")
 	got = renderFrames(frames)
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("mixed runs (-want +got):\n%s", diff)
@@ -132,14 +146,22 @@ func TestFoldRepeatedFrames(t *testing.T) {
 	}
 
 	// folding precedes the cap: >maxTracebackEntries identical frames
-	// render as the single folded pair, not head/tail elision
+	// render as maxRunShown frames + marker, not head/tail elision
 	frames = make([]string, maxTracebackEntries*2)
 	for i := range frames {
 		frames[i] = f("f")
 	}
 	got = renderFrames(frames)
-	want = f("f") + "\n... repeated 1999 more times ..."
+	want = strings.Repeat(f("f")+"\n", maxRunShown) + "... repeated 1950 more times ..."
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("cap-after-fold (-want +got):\n%s", diff)
 	}
+}
+
+func rep(s string, n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = s
+	}
+	return out
 }
