@@ -223,6 +223,7 @@ func TestREPLLoadErrors(t *testing.T) {
 		"other/o.go":   "package other\nfunc F() {}\n",
 		"twice/a.go":   "package twice\nfunc T() {}\n",
 		"twice/b.go":   "package twice\nfunc T() {}\n",
+		"same.go":      "package s\nfunc F() {}\nfunc G() {}\nfunc F() {}\n",
 		"bad.go":       "package bad\nfunc Oops( {\n",
 		"panic.go":     "package p\nfunc init() { panic(\"boom\") }\nfunc P() int { return 1 }\n",
 		"notes.txt":    "hi",
@@ -235,7 +236,8 @@ func TestREPLLoadErrors(t *testing.T) {
 	}
 	for ref, want := range map[string]string{
 		"other":     "F in " + filepath.Join(dir, "other/o.go") + " is already declared by :load " + filepath.Join(dir, "m.go"),
-		"twice":     "T redeclared in",
+		"twice":     "b.go:2:1: T redeclared (previous declaration at " + filepath.Join(dir, "twice/a.go") + ":2:1)",
+		"same.go":   "same.go:4:1: F redeclared (previous declaration at " + filepath.Join(dir, "same.go") + ":2:1)",
 		"bad.go":    "expected ')'",
 		"panic.go":  "boom",
 		"notes.txt": "is not a .go file",
@@ -262,4 +264,59 @@ func TestREPLLoadErrors(t *testing.T) {
 		t.Errorf("Reset must drop loads: %v", r.Loaded())
 	}
 	replFails(t, r, "F()", "undefined: F")
+}
+
+func TestREPLConstRedeclare(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{"c.go": "package c\nconst C = 40\n"})
+	r := NewEngine(dir).NewREPL()
+
+	replEval(t, r, "const C = 10")
+	replFails(t, r, "C = 20", "cannot assign to constant") // assignment stays an error
+	if len(r.Warnings()) != 0 {
+		t.Errorf("failed assignment must not warn: %v", r.Warnings())
+	}
+	// redeclaration is a new definition: allowed, with a warning
+	replEval(t, r, "const C = 30")
+	if diff := cmp.Diff([]string{"const C redeclared (was 10)"}, r.Warnings()); diff != "" {
+		t.Errorf("redeclare warnings (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(int64(30), replEval(t, r, "C")); diff != "" {
+		t.Errorf("C (-want +got):\n%s", diff)
+	}
+	// a failing redeclaration keeps the old const and drops the warning
+	replFails(t, r, "const C = missing()", "missing")
+	if len(r.Warnings()) != 0 {
+		t.Errorf("failed redeclaration must not warn: %v", r.Warnings())
+	}
+	if diff := cmp.Diff(int64(30), replEval(t, r, "C")); diff != "" {
+		t.Errorf("C after failed redeclaration (-want +got):\n%s", diff)
+	}
+
+	// :load replacing a prompt const warns; re-loading its own does not
+	for _, c := range []struct {
+		input string
+		want  []string
+	}{
+		{":load", []string{"const C redeclared by c.go (was 30)"}},
+		{":load", nil},
+		{"const C = 1", []string{"const C redeclared (was 40)"}},
+		{":load", []string{"const C redeclared by c.go (was 1)"}},
+	} {
+		if c.input == ":load" {
+			if _, err := r.Load(ctx, "c.go"); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			replEval(t, r, c.input)
+		}
+		if diff := cmp.Diff(c.want, r.Warnings()); diff != "" {
+			t.Errorf("%s warnings (-want +got):\n%s", c.input, diff)
+		}
+	}
+	if diff := cmp.Diff(int64(40), replEval(t, r, "C")); diff != "" {
+		t.Errorf("C after load (-want +got):\n%s", diff)
+	}
+	replFails(t, r, "C = 2", "cannot assign to constant")
 }

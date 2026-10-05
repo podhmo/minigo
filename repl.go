@@ -72,7 +72,18 @@ type REPL struct {
 	// pendingShadow the loaded decls the current input redefined.
 	loads         []*loadUnit
 	pendingShadow []shadowMark
+	// pendingRedecl saves the const cells the current input redeclared
+	// (restored if it fails); warnings are the notes the last input
+	// produced for the front-end (Warnings).
+	pendingRedecl []namedValue
+	warnings      []string
 	n             int
+}
+
+// namedValue pairs a global name with the value it was bound to.
+type namedValue struct {
+	name  string
+	value runtime.Value
 }
 
 // namedExpr pairs a hoisted name with an AST expression (a declared type
@@ -135,6 +146,8 @@ func (r *REPL) EvalLine(ctx context.Context, input string) (runtime.Value, error
 	r.pendingDecls = nil
 	r.pendingMethods = nil
 	r.pendingShadow = nil
+	r.pendingRedecl = nil
+	r.warnings = nil
 	r.hasValue = false
 
 	// Snapshot the accumulated source so a post-accept failure can roll
@@ -229,10 +242,7 @@ func (r *REPL) rollbackSource(il, dl, sl int) {
 	r.imports = r.imports[:il]
 	r.decls = r.decls[:dl]
 	r.steps = r.steps[:sl]
-	for _, n := range r.pending {
-		r.pkg.Globals.Delete(n)
-	}
-	r.pending = nil
+	r.dropPending()
 	r.pendingTyped = nil
 	r.pendingConsts = nil
 	r.pendingWrite = nil
@@ -293,9 +303,7 @@ func (r *REPL) sealConsts() {
 func (r *REPL) runStep(ctx context.Context, name string) (runtime.Value, error) {
 	v, err := r.engine.Call(ctx, r.pkg, name)
 	if err != nil {
-		for _, n := range r.pending {
-			r.pkg.Globals.Delete(n)
-		}
+		r.dropPending()
 		return nil, err
 	}
 	r.sealConsts()
@@ -673,8 +681,15 @@ func (r *REPL) hoist(name string) {
 			}
 		}
 	}
-	if _, ok := r.pkg.Globals.Get(name); ok {
-		return
+	if gv, ok := r.pkg.Globals.Get(name); ok {
+		c, isCell := gv.(*runtime.Cell)
+		if !isCell || !c.ReadOnly {
+			return
+		}
+		// redeclaring a const: the newest definition wins, as with func
+		// redefinition and :load — but say so, since `C = v` alone traps
+		r.pendingRedecl = append(r.pendingRedecl, namedValue{name: name, value: gv})
+		r.warnings = append(r.warnings, fmt.Sprintf("const %s redeclared (was %v)", name, display(c.Elem)))
 	}
 	r.pending = append(r.pending, name)
 	c := &runtime.Cell{Elem: runtime.NIL}
@@ -683,6 +698,26 @@ func (r *REPL) hoist(name string) {
 		r.sharedCells[name] = c
 		r.pendingWrite = append(r.pendingWrite, name)
 	}
+}
+
+// dropPending removes the globals the failed input hoisted and restores
+// the const cells it redeclared.
+func (r *REPL) dropPending() {
+	for _, n := range r.pending {
+		r.pkg.Globals.Delete(n)
+	}
+	for _, nv := range r.pendingRedecl {
+		r.pkg.Globals.Set(nv.name, nv.value)
+	}
+	r.pending = nil
+	r.pendingRedecl = nil
+	r.warnings = nil
+}
+
+// Warnings returns the notes the last EvalLine produced (e.g. a const
+// redeclared) — the front-end prints them; they are not errors.
+func (r *REPL) Warnings() []string {
+	return r.warnings
 }
 
 // addStep emits `func __stepN() any { <body> }` and returns its name; it
@@ -981,8 +1016,12 @@ func (r *REPL) List(ctx context.Context, ref string) ([]string, error) {
 			continue // index already listed the materialized decl
 		}
 		if v, ok := p.Globals.Get(name); ok {
-			if _, isCell := v.(*runtime.Cell); isCell {
-				out = append(out, fmt.Sprintf("var %s", name)) // hoisted repl name
+			if c, isCell := v.(*runtime.Cell); isCell {
+				kind := "var" // hoisted repl name
+				if c.ReadOnly {
+					kind = "const" // sealed by sealConsts
+				}
+				out = append(out, fmt.Sprintf("%s %s", kind, name))
 			} else if r.pinnedDecls[name] {
 				out = append(out, fmt.Sprintf("patch %s", name)) // decl published by :pin
 			} else if p.Index == nil || p.Index.Decls == nil {
