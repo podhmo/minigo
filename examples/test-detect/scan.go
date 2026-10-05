@@ -110,9 +110,17 @@ func findModules(root string) ([]*module, error) {
 	return mods, nil
 }
 
-// modulePathOf reads the `module <path>` line from a go.mod file.
-// go.mod allows a `//` line comment and a quoted module path; both are
-// handled here (a module directive never appears inside a block).
+// modulePathOf reads the `module <path>` directive from a go.mod file.
+// The directive takes exactly one path — bare or double-quoted — or the
+// block form, which `go mod edit` accepts only when '(' ends the line:
+//
+//	module (
+//		example.com/m
+//	)
+//
+// Anything else — extra arguments, a backquoted path, an unterminated
+// quote or block — aborts naming the file: a misread module path
+// corrupts every import lookup downstream, silently.
 func modulePathOf(goModPath string) (string, error) {
 	f, err := os.Open(goModPath)
 	if err != nil {
@@ -120,16 +128,113 @@ func modulePathOf(goModPath string) (string, error) {
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
+	var args []string
+	inBlock := false
 	for sc.Scan() {
-		fields := strings.Fields(cutComment(sc.Text()))
-		if len(fields) >= 2 && fields[0] == "module" {
-			return strings.Trim(fields[1], `"`), nil
+		toks := modTokens(cutComment(sc.Text()))
+		if inBlock {
+			for i, t := range toks {
+				switch {
+				case t == "(":
+					return "", fmt.Errorf("%s: usage: module module/path", goModPath)
+				case t == ")":
+					if i != len(toks)-1 {
+						return "", fmt.Errorf("%s: usage: module module/path", goModPath)
+					}
+					return modulePathFromArgs(goModPath, args)
+				default:
+					args = append(args, t)
+				}
+			}
+			continue
 		}
+		if len(toks) == 0 || toks[0] != "module" {
+			continue
+		}
+		rest := toks[1:]
+		if len(rest) > 0 && rest[0] == "(" {
+			// Block form: '(' must end the line; the path follows on
+			// later lines until ')'. `go mod edit` rejects a
+			// single-line `module ( path )` — match it.
+			if len(rest) != 1 {
+				return "", fmt.Errorf("%s: usage: module module/path", goModPath)
+			}
+			inBlock = true
+			continue
+		}
+		return modulePathFromArgs(goModPath, rest)
 	}
 	if err := sc.Err(); err != nil {
 		return "", fmt.Errorf("%s: %w", goModPath, err)
 	}
+	if inBlock {
+		return "", fmt.Errorf("%s: unterminated module block", goModPath)
+	}
 	return "", fmt.Errorf("%s: no module directive", goModPath)
+}
+
+// modulePathFromArgs validates the module directive's argument list —
+// exactly one path — and decodes it. Bare and double-quoted paths are
+// the forms `go mod edit` accepts.
+func modulePathFromArgs(goModPath string, args []string) (string, error) {
+	if len(args) != 1 {
+		return "", fmt.Errorf("%s: usage: module module/path", goModPath)
+	}
+	s := args[0]
+	switch {
+	case strings.HasPrefix(s, `"`):
+		p, err := strconv.Unquote(s)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", goModPath, err)
+		}
+		return p, nil
+	case strings.ContainsAny(s, "\"`"):
+		return "", fmt.Errorf("%s: usage: module module/path", goModPath)
+	default:
+		return s, nil
+	}
+}
+
+// modTokens splits one go.mod line into tokens: '(' and ')' are always
+// their own tokens, and a quoted string stays one token (unterminated,
+// it runs to end of line and validation rejects it downstream). The
+// line reaches here already comment-stripped.
+func modTokens(s string) []string {
+	var toks []string
+	for i := 0; i < len(s); {
+		switch c := s[i]; {
+		case c == ' ' || c == '\t' || c == '\r':
+			i++
+		case c == '(' || c == ')':
+			toks = append(toks, s[i:i+1])
+			i++
+		case c == '"' || c == '`':
+			j := i + 1
+			for ; j < len(s); j++ {
+				if c == '"' && s[j] == '\\' {
+					j++
+					continue
+				}
+				if s[j] == c {
+					break
+				}
+			}
+			if j < len(s) {
+				j++ // include the closing quote
+			}
+			toks = append(toks, s[i:j])
+			i = j
+		default:
+			j := i
+			for j < len(s) && s[j] != ' ' && s[j] != '\t' && s[j] != '\r' &&
+				s[j] != '(' && s[j] != ')' {
+				j++
+			}
+			toks = append(toks, s[i:j])
+			i = j
+		}
+	}
+	return toks
 }
 
 // cutComment drops a `//` line comment that is not inside double quotes.
