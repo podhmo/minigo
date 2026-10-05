@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"sync"
 )
 
 type Point struct{ X, Y int }
@@ -225,16 +224,12 @@ func id[T any](x T) T { return x }
 
 func main() {
 	try(0, func() any {
-		return func() int {
-			var wg sync.WaitGroup
-			var mu sync.Mutex
-			t := 0
-			for i := range 4 {
-				wg.Add(1)
-				go func() { defer wg.Done(); mu.Lock(); t += i * Sum(v_is_0...); mu.Unlock() }()
+		return fmt.Sprint(func() Shape {
+			if v_n_0 > 1 {
+				return &Tri{v_n_0, v_n_1}
 			}
-			wg.Wait()
+			var t *Tri
 			return t
-		}()
+		}().(Rect))
 	})
 }
