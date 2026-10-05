@@ -609,3 +609,61 @@ func TestOnUnresolvedWarnKeepsOldBehavior(t *testing.T) {
 		t.Errorf("go.mod should not warn in warn mode, got %v", d.warnings)
 	}
 }
+
+// Import literals are decoded as Go strings: a backquoted raw string or
+// an escaped path still names the same dependency, and a literal that
+// cannot be decoded is loud, not silently dropped.
+func TestImportLiteralDecoding(t *testing.T) {
+	for _, imp := range []string{
+		"import `example.com/m/a`\n",
+		"import \"example.com/m/\\x61\"\n",
+	} {
+		t.Run(imp[:6]+imp[7:12], func(t *testing.T) {
+			root := t.TempDir()
+			writeTree(t, root, map[string]string{
+				"go.mod":      "module example.com/m\n",
+				"a/a.go":      "package a\n",
+				"a/a_test.go": "package a\n",
+				"b/b.go":      "package b\n\n" + imp,
+				"b/b_test.go": "package b\n",
+			})
+			d, err := detectChanged(root, []string{"a/a.go"}, options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"example.com/m/a", "example.com/m/b"}
+			if diff := cmp.Diff(want, keptPaths(t, d)); diff != "" {
+				t.Errorf("kept mismatch (-want +got):\n%s", diff)
+			}
+			if len(d.warnings) != 0 {
+				t.Errorf("unexpected warnings: %v", d.warnings)
+			}
+		})
+	}
+}
+
+func TestMalformedImportLiteralWarnsAndKeepsImport(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		"go.mod":      "module example.com/m\n",
+		"a/a.go":      "package a\n",
+		"a/a_test.go": "package a\n",
+		// An illegal escape: the parser recovers the import spec, but the
+		// literal cannot be decoded — warn and keep it rather than drop.
+		"bad/bad.go":      "package bad\n\nimport \"a\\x\"\n",
+		"bad/bad_test.go": "package bad\n",
+	})
+	d, err := detectChanged(root, []string{"a/a.go"}, options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, w := range d.warnings {
+		if strings.Contains(w, "bad.go") && strings.Contains(w, "malformed import literal") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a malformed-literal warning mentioning bad.go, got %v", d.warnings)
+	}
+}
