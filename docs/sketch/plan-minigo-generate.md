@@ -51,6 +51,12 @@ interpreter can host.
 `//minigo:generate <ref> [args...]`, an exact-prefix line comment
 (leading `//minigo:generate`, no space after `//`, like `//go:generate`)
 anywhere in a `.go` file — tied to a position, not to a declaration.
+Placement was deliberately left unrestricted (a directive inside a
+function body works, as it does under `go generate`'s line scan):
+restricting to file-header or file-scope comments was considered and
+rejected — it adds a filter without removing code, and a header-only
+rule would outlaw the canonical `//go:generate stringer -type=X`
+directly-above-the-type idiom this tool exists to host.
 
 - **ref** is a package directory resolved relative to the *directive
   file's directory* (`./tools/stringer`, `../shared/tools/x`). Bare
