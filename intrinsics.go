@@ -2295,8 +2295,8 @@ func lockerOf(vc runtime.VMCaller, v runtime.Value) (sync.Locker, error) {
 	if l, ok := goNative(v).(sync.Locker); ok {
 		return l, nil
 	}
-	lock, lok := ifaceMember(vc, v, "Lock")
-	unlock, uok := ifaceMember(vc, v, "Unlock")
+	lock, lok := runtime.IfaceMember(vc, v, "Lock")
+	unlock, uok := runtime.IfaceMember(vc, v, "Unlock")
 	if lok && uok {
 		return &scriptLocker{vc: vc, lock: lock, unlock: unlock}, nil
 	}
@@ -2760,9 +2760,9 @@ func (h *hostHelpers) sortInterface(vc runtime.VMCaller, args []runtime.Value) (
 		sort.Sort(ifc)
 		return runtime.NIL, nil
 	}
-	lenFn, lok := ifaceMember(vc, args[0], "Len")
-	lessFn, sok := ifaceMember(vc, args[0], "Less")
-	swapFn, wok := ifaceMember(vc, args[0], "Swap")
+	lenFn, lok := runtime.IfaceMember(vc, args[0], "Len")
+	lessFn, sok := runtime.IfaceMember(vc, args[0], "Less")
+	swapFn, wok := runtime.IfaceMember(vc, args[0], "Swap")
 	if !lok || !sok || !wok {
 		return nil, fmt.Errorf("sort.Sort: %T does not implement sort.Interface", args[0])
 	}
@@ -3533,7 +3533,7 @@ func asWriterVM(vc runtime.VMCaller, v any) (io.Writer, error) {
 		return w, nil
 	}
 	if vc != nil && v != nil && v != runtime.NIL {
-		if m, ok := ifaceMember(vc, orig, "Write"); ok && m != nil && m != runtime.NIL {
+		if m, ok := runtime.IfaceMember(vc, orig, "Write"); ok && m != nil && m != runtime.NIL {
 			return &scriptWriter{v: vc, write: m}, nil
 		}
 	}
@@ -4074,7 +4074,7 @@ func (e *scriptError) Error() string {
 // Unwrap lets a script-declared `Unwrap() error` method join the host
 // errors chain — errors.Unwrap/Is/As walk through it like Go's.
 func (e *scriptError) Unwrap() error {
-	m, ok := ifaceMember(e.c, e.v, "Unwrap")
+	m, ok := runtime.IfaceMember(e.c, e.v, "Unwrap")
 	if !ok {
 		return nil
 	}
@@ -5270,25 +5270,12 @@ func withWidth(f fmt.State, s string) string {
 	return fmt.Sprintf(formatOf(f, 's'), s)
 }
 
-// ifaceMember selects a member through the interface lens Go's implicit
-// assertions apply: pointer-receiver methods are absent from a value's
-// method set, so fmt's Stringer probe and the host-iface adapters
-// (Locker, sort.Interface, io.Reader/Writer, error Unwrap) skip a method
-// a bare value cannot offer. When the engine offers no method set — or
-// reports it unsure — selection falls back to Member's existence check.
-func ifaceMember(c runtime.VMCaller, v runtime.Value, name string) (runtime.Value, bool) {
-	if set, unsure := c.MethodSetOf(v); set != nil && !set[name] && !unsure {
-		return nil, false
-	}
-	return c.Member(v, name)
-}
-
 // callStringer invokes a declared String()/Error() method through the VM
 // when the value's method set offers one (a pointer receiver on a bare
 // value does not count — Go prints the struct instead); a panicking or
 // absent method reports false.
 func callStringer(c runtime.VMCaller, x runtime.Value, name string) (string, bool) {
-	m, ok := ifaceMember(c, x, name)
+	m, ok := runtime.IfaceMember(c, x, name)
 	if !ok {
 		return "", false
 	}

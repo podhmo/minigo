@@ -1431,3 +1431,17 @@ func StructFieldTags(st *ast.StructType) map[string]string {
 	}
 	return out
 }
+
+// IfaceMember selects a member through the interface lens Go's implicit
+// assertions apply: pointer-receiver methods are absent from a value's
+// method set, so satisfaction probes (fmt's Stringer check, host-iface
+// adapters like Locker, sort.Interface, io.Reader/Writer, error Unwrap)
+// skip a method a bare value cannot offer. When the engine offers no
+// method set — or reports it unsure — selection falls back to Member's
+// existence check.
+func IfaceMember(c VMCaller, v Value, name string) (Value, bool) {
+	if set, unsure := c.MethodSetOf(v); set != nil && !set[name] && !unsure {
+		return nil, false
+	}
+	return c.Member(v, name)
+}
