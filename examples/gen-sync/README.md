@@ -106,16 +106,32 @@ mismatch whose implementer must still spell `shade.Ghost`.
 
 ```console
 $ go run ./
+gen-sync: app/config.go + //go:generate requiredgen -type=Config
+gen-sync: app/config.go + //go:generate requiredgen -type=Ticket
 gen-sync: app/config.go inserted managed block (2 directive(s))
-gen-sync: app/events.go inserted managed block (6 directive(s))
-gen-sync: app/graph.go inserted managed block (8 directive(s))
+gen-sync: app/eof.go up to date
+gen-sync: app/events.go + //go:generate oneofgen -type=Envelope -variants=EmbedEvent,PingBase,PingEvent,PongEvent,Pulse,clone,mood.Signal,shade.Ghost
+gen-sync: app/events.go + //go:generate oneofgen -type=PingEvent
+...
+gen-sync: app/events.go inserted managed block (7 directive(s))
+gen-sync: app/graph.go + //go:generate requiredgen -type=Outer
+...
+gen-sync: app/graph.go inserted managed block (13 directive(s))
+gen-sync: app/job.go + //go:generate stringer -type=Mode
 gen-sync: app/job.go inserted managed block (1 directive(s))
-gen-sync: app/level.go rewrote managed block (1 directive(s))
+gen-sync: app/level.go - //go:generate stringer -type=Priority
+gen-sync: app/level.go + //go:generate stringer -type=Level
+gen-sync: app/level.go rewrote managed block (1 directive(s)); dropped 1, added 1
+gen-sync: app/ops.go + //go:generate stringer -type=Route
 gen-sync: app/ops.go inserted managed block (1 directive(s))
+gen-sync: app/phase.go + //go:generate stringer -type=Phase
 gen-sync: app/phase.go inserted managed block (1 directive(s))
-gen-sync: app/retired.go rewrote managed block (0 directive(s))
+gen-sync: app/retired.go - //go:generate stringer -type=Retired
+gen-sync: app/retired.go rewrote managed block (0 directive(s)); dropped 1
+gen-sync: app/shapes.go + //go:generate stringer -type=Size
 gen-sync: app/shapes.go inserted managed block (1 directive(s))
 gen-sync: app/status.go up to date
+gen-sync: app/store.go + //go:generate mockgen -source=store.go -destination=mock_store.go
 gen-sync: app/store.go inserted managed block (1 directive(s))
 10 file(s) updated
 
@@ -128,6 +144,34 @@ gen-sync: app/store.go up to date
 
 `make demo` runs both invocations and prints the diff; `make clean` restores
 the fixture.
+
+Every change reports *which* directive lines it dropped (`-`) and added
+(`+`), not just a count — `rewrote managed block (0 directive(s))` on its
+own cannot tell a stale cleanup from a regression, so the lines are named
+too.
+
+## Failure modes
+
+The tool never reports success while silently losing work: anything it
+could not account for is returned as an error and exits nonzero.
+
+| Symptom | Meaning |
+|---|---|
+| `runtime trap: resolve dir "...": entry directory ... not found` / `is not a directory` | the dir argument is wrong — fix the command-line arguments |
+| `runtime trap: parse <file>: <file>:<line>:<col>: ...` | a file in the scanned package does not parse — fix the input file |
+| `runtime trap: import ...: resolving import "...": import path "..." could not be resolved` | an import cannot be resolved — fix the package's imports or go.mod |
+| `gen-sync: <path>: <err>` (e.g. `permission denied`) joined into the returned error | a file could not be read or written — fix the filesystem |
+| `gen-sync: <path>: not in the package index (excluded by build constraints?)` | warning only: the file is skipped the way `go build` skips it (`_`-/`.`-prefixed files are ignored entirely, like `go build`) |
+| `gen-sync: <path>: <err>` where the file vanished from the index | the file is unreadable — decls *and import edges* vanish, so the whole run refuses to write (blocks elsewhere would regress) |
+| `gen-sync: <dir> is outside any Go module` | no go.mod ancestor — references cannot resolve, so the scan would degrade silently; the run refuses |
+| `gen-sync: <path>: refusing to write outside the scanned directory` | the import path resolved to a different tree (module shadowing) — fix go.mod / replace rules |
+| `gen-sync: <path>: skipping: another generator owns this file (// Code generated ... DO NOT EDIT.)` | warning only: the file still feeds inference but is never written — the next regen would discard the block |
+| `gen-sync: unexpected extra arguments: -check` | a flag landed in the positional args (e.g. `gen-sync ./app -check`) — put flags before the dir |
+
+Individual file failures do not stop the run — other files still sync —
+but the joined error keeps the exit nonzero, and a *degraded scan* (an
+unreadable indexed file, a missing module) refuses to write at all,
+because its managed blocks would be built on missing decls.
 
 ## Layout
 
