@@ -973,8 +973,15 @@ func (v *VM) unwind(f *frame, r any) {
 	} else if v.inflight != saved && v.inflight != nil {
 		// a deferred call panicked during a normal drain — propagate it
 		// as this frame's panic. A consumed outer panic leaves inflight
-		// nil and dies with it.
+		// nil and dies with it. Restore the outer panic state like the
+		// r!=nil path: runOneDefer installs the deferred panic on
+		// inflight, and propagating it upward while inflight still holds
+		// it makes every enclosing unwind read it as the *outer* panic —
+		// a try-style recover then restores the consumed panic into
+		// inflight, leaking it into an unrelated later recover().
 		p = v.inflight
+		v.inflight = saved
+		v.unwindDepth = savedD
 	}
 	if r != nil && p == nil {
 		// the panic died here (recovered, or it was a Trap swallowed
