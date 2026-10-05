@@ -22,8 +22,9 @@ check-toolchains:
 update-golden:
 	go test -v . -update
 
+# e2e_test/ is tracked; `e2e` only rewrites generated.go, so restore it.
 clean:
-	rm -rf e2e_test
+	git checkout -- e2e_test/generated.go
 
 e2e:
 	go run . -file ./e2e_test/mappings.go -output ./e2e_test/generated.go --tags e2e
