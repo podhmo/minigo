@@ -782,3 +782,64 @@ echo "hi there"
 		t.Errorf("dry run touched the filesystem (-want +got):\n%s", diff)
 	}
 }
+
+func TestDryRunExec(t *testing.T) {
+	dir, file := writeTaskfile(t, `package main
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+)
+
+func run(c *exec.Cmd) error { return c.Run() }
+
+func Default() error {
+	cmd := exec.Command("touch", "run.out")
+	cmd.Stdout = os.Stdout
+	if err := run(cmd); err != nil {
+		return err
+	}
+	out, err := exec.Command("echo", "hi there").Output()
+	if err != nil {
+		return err
+	}
+	fmt.Println("out:", len(out))
+	extra := []string{"in.out"}
+	c := exec.Command("touch", extra...)
+	c.Dir = "sub"
+	if _, err := c.CombinedOutput(); err != nil {
+		return err
+	}
+	s := exec.Command("touch", "start.out")
+	if err := s.Start(); err != nil {
+		return err
+	}
+	if err := s.Wait(); err != nil {
+		return err
+	}
+	exec.Command("touch", "never.out") // built but never run: not printed
+	return nil
+}
+`)
+	var out, errb bytes.Buffer
+	if code := runMain(context.Background(), []string{"-f", file, "-n"}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	want := `touch run.out
+echo "hi there"
+out: 0
+(in sub) touch in.out
+touch start.out
+`
+	if diff := cmp.Diff(want, out.String()); diff != "" {
+		t.Errorf("dry-run output (-want +got):\n%s", diff)
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != 1 {
+		t.Errorf("dry run touched the filesystem: %v", ents)
+	}
+}

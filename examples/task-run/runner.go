@@ -268,6 +268,17 @@ func (r *Runner) SetDryRun(ctx context.Context) error {
 				return runtime.NIL, nil
 			}})
 	}
+	// os/exec: Command hands back a dryCmd whose Run/Output/... print the
+	// command line, so subprocesses spawned without task.* are covered too
+	execpkg, err := r.engine.Package(ctx, "os/exec")
+	if err != nil {
+		return err
+	}
+	if v, ok := execpkg.Globals.Get("Command"); ok {
+		if orig, ok := v.(*runtime.BuiltinFunc); ok {
+			execpkg.Globals.Set("Command", &runtime.BuiltinFunc{Name: orig.Name, Pkg: orig.Pkg, Fn: r.dryExecCommand})
+		}
+	}
 	return nil
 }
 

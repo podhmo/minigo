@@ -42,6 +42,11 @@ Like `make -n`, `-n` prints what a task would do instead of doing it:
 - The error-only `os` mutators (`WriteFile`, `Remove`, `RemoveAll`,
   `Mkdir`, `MkdirAll`, `Rename`, `Truncate`) print as `# os.Name args...`
   and return nil.
+- `os/exec`: `exec.Command` returns a stand-in whose `Run` / `Start` /
+  `Output` / `CombinedOutput` print the command line (prefixed with
+  `(in dir)` when `cmd.Dir` is set) instead of spawning it; the output
+  methods return no bytes. A command that is built but never run prints
+  nothing.
 
 The rest of the Taskfile still runs: `fmt.Println`, `task.Log`, and reads
 like `task.Target` / `os.Stat` behave normally, so `-n` shows the path the
