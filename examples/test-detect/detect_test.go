@@ -355,6 +355,12 @@ func TestModulePathOfHandlesCommentsAndQuotes(t *testing.T) {
 		{"module \"example.com/m\"\n", "example.com/m"},
 		{"module \"example.com/m\" // both\n", "example.com/m"},
 		{"// lead\nmodule example.com/m\ngo 1.26.0\n", "example.com/m"},
+		// The block form `go mod edit` accepts: '(' ends the line and
+		// the path follows on its own line; comments are fine inside.
+		{"module (\n\texample.com/m\n)\n", "example.com/m"},
+		{"module (\n\t// comment inside block\n\texample.com/m\n)\n", "example.com/m"},
+		{"module (\n\texample.com/m\n)\ngo 1.26.0\n", "example.com/m"},
+		{"module (\n\t\"example.com/m\"\n)\n", "example.com/m"},
 	} {
 		path := filepath.Join(dir, "go.mod")
 		if err := os.WriteFile(path, []byte(tc.content), 0o644); err != nil {
@@ -367,6 +373,39 @@ func TestModulePathOfHandlesCommentsAndQuotes(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("content %q: got %q, want %q", tc.content, got, tc.want)
 		}
+	}
+}
+
+// Declarations `go mod edit` rejects must abort naming the file — a
+// misread module path would corrupt every import lookup downstream.
+func TestModulePathOfRejectsMalformedDirectives(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name    string
+		content string
+	}{
+		{"no args", "module\n"},
+		{"extra arg", "module example.com/m extra\n"},
+		{"unterminated quote", "module \"example.com/m\n"},
+		{"backquoted path", "module `example.com/m`\n"},
+		{"quote inside bare path", "module example.com/m\"x\n"},
+		{"single-line block", "module ( example.com/m )\n"},
+		{"block not closed", "module (\n\texample.com/m\n"},
+		{"block two args", "module (\n\ta b\n)\n"},
+		{"block close mid-line", "module (\n\texample.com/m ) junk\n)\n"},
+		{"block nested paren", "module (\n\t(\n)\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, "go.mod")
+			if err := os.WriteFile(path, []byte(tc.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := modulePathOf(path); err == nil {
+				t.Fatalf("content %q: want error, got nil", tc.content)
+			} else if !strings.Contains(err.Error(), path) {
+				t.Errorf("content %q: error %q does not name the go.mod", tc.content, err)
+			}
+		})
 	}
 }
 
