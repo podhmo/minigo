@@ -92,6 +92,26 @@ packages + N VMs is not free) and a race-free context channel. Both are
 deferred; `task-run`'s `Deps` machinery is the proven pattern when the
 time comes.
 
+What fan-out shares, verified in the source: each `Call` builds its own
+VM (`e.newVM()` + `EnsureProc`/`ReleaseProc` — "concurrent Calls never
+share interpreter state"), while the package objects — index, AST,
+materialized decls — in `e.pkgs` are shared across concurrent Calls.
+The caches are already convergent rather than racy: `e.mu` guards the
+maps, `buildMu` serializes cold builds so two goroutines loading one
+package converge on a single build, and `runtime.Package` runs
+`__init__` under `initOnce` with an atomic state machine plus
+`sync.Once`-built `MatCache` — so no `sync.Map` or single-writer
+manager goroutine is needed; the existing lazy write-through gives the
+same safety without turning every load into a channel round-trip. The
+real boundary is package `Globals`: package-level `var`s persist across
+`Call`s (unlike `go generate`'s fresh process per line), so a stateful
+plugin leaks state between invocations sequentially and *races* under
+fan-out — the isolation unit there is `e.NewSession()` (empty package
+cache, inherited binds, own VM), at the price of rebuilding each
+session's index. Sharing the parse products across sessions too would
+want a read-only parent layer — the package objects are effectively
+read-only after `buildMu` built them, `Globals` aside.
+
 ## Tool contract
 
 ```go
