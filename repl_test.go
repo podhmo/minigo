@@ -2,6 +2,8 @@ package minigo
 
 import (
 	"context"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -689,5 +691,49 @@ func TestREPLPinWrite(t *testing.T) {
 	}
 	if got, err := eval(`User{Name: "n"}.Shout()`); err != nil || got != "!N" {
 		t.Fatalf("patched method after re-enter: %v %v", got, err)
+	}
+}
+
+func TestREPLImportNameRefs(t *testing.T) {
+	ctx := context.Background()
+	e := NewEngine(".")
+	r := e.NewREPL()
+	for _, line := range []string{`import foo "encoding/json"`, `import "./testdata/inspectpkg"`, `import "strings"`} {
+		if _, err := r.EvalLine(ctx, line); err != nil {
+			t.Fatalf("%s: %v", line, err)
+		}
+	}
+
+	abs, err := filepath.Abs("testdata/inspectpkg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{"foo": "encoding/json", "strings": "strings", "inspectpkg": abs} {
+		got, ok := r.ImportPathOf(name)
+		if !ok || got != want {
+			t.Errorf("ImportPathOf(%q) = %q, %v; want %q", name, got, ok, want)
+		}
+	}
+	if _, ok := r.ImportPathOf("json"); ok {
+		t.Error("ImportPathOf(json): the import is aliased to foo")
+	}
+
+	// :ls takes an import-bound name or a quoted path like an import spec
+	want := []string{"host Marshal", "host MarshalIndent", "host Number", "host Unmarshal", "host Valid"}
+	for _, ref := range []string{"foo", `"encoding/json"`} {
+		lines, err := r.List(ctx, ref)
+		if err != nil {
+			t.Fatalf("List(%s): %v", ref, err)
+		}
+		if diff := cmp.Diff(want, lines); diff != "" {
+			t.Errorf("List(%s) (-want +got):\n%s", ref, diff)
+		}
+	}
+	lines, err := r.List(ctx, "inspectpkg")
+	if err != nil {
+		t.Fatalf("List(inspectpkg): %v", err)
+	}
+	if !slices.Contains(lines, "func Hello") {
+		t.Errorf("List(inspectpkg) missing func Hello: %v", lines)
 	}
 }

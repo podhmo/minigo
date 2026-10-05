@@ -952,9 +952,48 @@ func (r *REPL) BoundPackages() []string {
 	return r.engine.BoundPackages()
 }
 
-// loadRef resolves a :cd/:ls argument: an existing directory goes through
-// loadDir, anything else is treated as an import path.
+// ImportPathOf maps a name bound by a session import (`json` after
+// `import "encoding/json"`, `foo` after `import foo "encoding/json"`) to
+// the imported path; directory imports come back anchored at the engine's
+// start directory. ok is false when no session import binds name.
+func (r *REPL) ImportPathOf(name string) (path string, ok bool) {
+	file := r.file()
+	if file == nil {
+		return "", false
+	}
+	ref, ok := r.pkg.Scopes[file][name]
+	if !ok {
+		// an unaliased import binds its declared package name, which may
+		// differ from the path tail the scope is keyed by (yaml.v3 → yaml)
+		for _, imp := range r.pkg.Imports[file] {
+			if imp.Alias != "" {
+				continue
+			}
+			if p, err := imp.Materialize(); err == nil && p != nil && p.Name == name {
+				ref, ok = imp, true
+				break
+			}
+		}
+	}
+	if !ok {
+		return "", false
+	}
+	if resolve.LooksLikeDir(ref.Path) {
+		return r.anchor(ref.Path), true
+	}
+	return ref.Path, true
+}
+
+// loadRef resolves a :cd/:ls argument (optionally a quoted path): a name bound by a session import
+// stands for its path, an existing directory goes through loadDir, and
+// anything else is treated as an import path.
 func (r *REPL) loadRef(ctx context.Context, ref string) (*runtime.Package, error) {
+	if unq, err := strconv.Unquote(ref); err == nil {
+		ref = unq // `:ls "encoding/json"` spells the path as in an import
+	}
+	if path, ok := r.ImportPathOf(ref); ok {
+		ref = path
+	}
 	if st, err := os.Stat(ref); err == nil && st.IsDir() {
 		return r.engine.loadDir(ctx, ref)
 	}
