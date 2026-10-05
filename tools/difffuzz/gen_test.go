@@ -4,6 +4,7 @@ import (
 	"context"
 	"math/rand/v2"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,6 +99,42 @@ func TestSymptom(t *testing.T) {
 	for _, c := range cases {
 		if got := symptom(c.want, c.got); got != c.sym {
 			t.Errorf("symptom(%q, %q) = %q, want %q", c.want, c.got, got, c.sym)
+		}
+	}
+}
+
+// When the oracle dies mid-program (e.g. a probe's spawned goroutine
+// panics outside every recover), probes past the death point have no
+// oracle line — they must be Skip, not Silent on an empty want.
+func TestMarkOracleGaps(t *testing.T) {
+	res := make([]ProbeResult, 4)
+	res[0] = ProbeResult{Verdict: Pass}
+	res[1] = ProbeResult{Verdict: Skip, Detail: "rejected by gc"}
+	want := Outcome{
+		Exit:   2,
+		Stdout: "0: int 0\n",
+		Stderr: "panic: runtime error: invalid memory address or nil pointer dereference\n",
+	}
+	wantLines, _ := probeLines(want.Stdout)
+	markOracleGaps(res, want, wantLines)
+	if res[0].Verdict != Pass || res[1].Verdict != Skip || res[1].Detail != "rejected by gc" {
+		t.Errorf("judged/skipped probes must be untouched: %+v", res)
+	}
+	for _, i := range []int{2, 3} {
+		if res[i].Verdict != Skip {
+			t.Errorf("res[%d].Verdict = %s, want Skip (oracle never reached it)", i, res[i].Verdict)
+		}
+		if !strings.Contains(res[i].Detail, "nil pointer dereference") {
+			t.Errorf("res[%d].Detail = %q, want the oracle's death cause", i, res[i].Detail)
+		}
+	}
+
+	// a clean oracle exit leaves every probe judgeable
+	res2 := make([]ProbeResult, 2)
+	markOracleGaps(res2, Outcome{Stdout: "0: int 0\n"}, map[int]string{0: "int 0"})
+	for i := range res2 {
+		if res2[i].Verdict != "" {
+			t.Errorf("exit-0 oracle: res[%d] = %s, want untouched", i, res2[i].Verdict)
 		}
 	}
 }
