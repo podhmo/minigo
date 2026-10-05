@@ -9106,17 +9106,85 @@ func maskInt(n int64, name string) int64 {
 	return n
 }
 
+// typeNameOf spells x's dynamic type the way Go names it in conversion
+// panics: pointer boxes count one leading star per hop (*runtime.Cell →
+// *main.Point) and container/func/typed-nil leaves spell their declared
+// typedef ([]int, map[string]int, *main.Point) instead of the runtime
+// Go struct name.
 func typeNameOf(x runtime.Value) string {
+	depth := 0
+	for {
+		switch x.(type) {
+		case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
+			depth++
+		case *runtime.DerefRef:
+			// *p is a view of base's pointee — the pointer layer
+			// belongs to the base's type, not the ref.
+		default:
+			goto base
+		}
+		dv, ok := runtime.Deref(x)
+		if !ok {
+			goto base
+		}
+		x = dv
+	}
+base:
+	name := typeBaseName(x)
+	for ; depth > 0; depth-- {
+		name = "*" + name
+	}
+	return name
+}
+
+// typeBaseName spells a non-reference value's dynamic type.
+func typeBaseName(x runtime.Value) string {
 	switch xv := x.(type) {
 	case *runtime.UConst:
 		return xv.DefaultName()
 	case *runtime.Named:
 		return spelledTyp(xv.Typ)
 	case *runtime.Struct:
-		if xv.Def != nil && xv.Def.Name != "" {
+		if xv.Def != nil {
 			return spelledTyp(xv.Def)
 		}
 		return "struct"
+	case *runtime.TypedNil:
+		return spelledTyp(xv.Typ)
+	case *runtime.IfaceNil:
+		if xv.Typ != nil {
+			return spelledTyp(xv.Typ)
+		}
+		return "nil"
+	case *runtime.Slice:
+		if xv.Typ != nil {
+			return spelledTyp(xv.Typ)
+		}
+		return "slice"
+	case *runtime.Map:
+		if xv.Typ != nil {
+			return spelledTyp(xv.Typ)
+		}
+		return "map"
+	case *runtime.Chan:
+		if xv.Typ != nil {
+			return spelledTyp(xv.Typ)
+		}
+		return "chan"
+	case *runtime.Function:
+		return funcTypeName(xv)
+	case *runtime.Closure:
+		return funcTypeName(xv.Fn)
+	case *runtime.BoundMethod:
+		return funcTypeName(xv.Fn)
+	case *runtime.BuiltinFunc:
+		if m := xv.Method; m != nil {
+			return m.Type.String()
+		}
+		if xv.Target != nil {
+			return fmt.Sprintf("%T", xv.Target)
+		}
+		return "func"
 	case *runtime.GoValue:
 		// a host box names its Go type — "*errors.errorString" in a
 		// conversion panic, like the real runtime prints it.
@@ -9131,15 +9199,20 @@ func typeNameOf(x runtime.Value) string {
 		return "string"
 	case bool:
 		return "bool"
-	case *runtime.Slice:
-		return "slice"
-	case *runtime.Map:
-		return "map"
 	case runtime.Nil:
 		return "nil"
 	default:
 		return fmt.Sprintf("%T", x)
 	}
+}
+
+// funcTypeName renders a script function's declared signature for the
+// panic text — Go spells `func(int)`, `func() error` and friends.
+func funcTypeName(xv *runtime.Function) string {
+	if xv != nil && xv.Decl != nil && xv.Decl.Type != nil {
+		return runtime.TypGoSpelling(xv.Decl.Type, nil)
+	}
+	return "func"
 }
 
 // instantiate implements F[T, U] / T[Args] on generic functions and types;

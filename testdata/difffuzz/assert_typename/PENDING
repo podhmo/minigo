@@ -1,5 +1,0 @@
-SILENT/panic-message (lang hunt, seed 20261005, emitted lang_panic-message_*)
-shape:  a.(int) failing on a boxed *Point / []int
-go:     interface {} is *main.Point / []int
-minigo: interface {} is *runtime.Cell / slice  -- internal runtime spellings
-leak into the interface-conversion panic message
