@@ -17,6 +17,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strings"
 )
 
 func main() {
@@ -50,6 +52,28 @@ func runMain(ctx context.Context, argv []string) int {
 	}
 
 	changed := fs.Args()
+	// flag.Parse stops at the first positional argument, so a flag placed
+	// after file paths lands in changed and — not ending in .go — would be
+	// ignored silently. Reject it instead of answering in the wrong
+	// format. A "--" — consumed by flag parsing or left in changed as a
+	// literal — exempts genuinely odd file names (e.g. "-weird.go"), but
+	// a token spelling a real flag is a mistake even there.
+	afterDD := len(changed)
+	if i := slices.Index(changed, "--"); i >= 0 {
+		afterDD = i + 1
+	} else if i := slices.Index(argv, "--"); i >= 0 {
+		afterDD = len(changed) - (len(argv) - i - 1)
+	}
+	for i, a := range changed {
+		if a == "--" || !strings.HasPrefix(a, "-") {
+			continue
+		}
+		if i >= afterDD && !namesFlag(fs, a) {
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "test-detect: %q looks like a flag but follows a file argument; put flags before file paths (or use -- for unusual file names)\n", a)
+		return 2
+	}
 	if *stdin || len(changed) == 0 {
 		lines, err := readLines(os.Stdin)
 		if err != nil {
@@ -109,6 +133,20 @@ func runMain(ctx context.Context, argv []string) int {
 	}
 	_, _ = os.Stdout.Write(out)
 	return 0
+}
+
+// namesFlag reports whether arg — a positional token flag parsing left
+// alone — spells a defined flag name, a strong sign it was meant as a
+// flag rather than as a file name.
+func namesFlag(fs *flag.FlagSet, arg string) bool {
+	name := strings.TrimLeft(arg, "-")
+	if i := strings.IndexByte(name, '='); i >= 0 {
+		name = name[:i]
+	}
+	if name == "h" || name == "help" {
+		return true
+	}
+	return fs.Lookup(name) != nil
 }
 
 func readLines(f *os.File) ([]string, error) {

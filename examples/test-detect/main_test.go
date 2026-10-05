@@ -30,3 +30,28 @@ func TestRunMainFollowsSymlinkedRoot(t *testing.T) {
 		t.Errorf("-root %q (symlink to repo): want exit 0, got %d", link, code)
 	}
 }
+
+func TestRunMainRejectsFlagAfterFileArg(t *testing.T) {
+	code := runMain(context.Background(), []string{"a/a.go", "-format", "space"})
+	if code != 2 {
+		t.Errorf("flag after file arg: want exit 2, got %d", code)
+	}
+	// -- exempts: a leading-dash file name is then genuinely positional
+	// (resolves to this package's directory and exits 0).
+	code = runMain(context.Background(), []string{"--", "-weird.go"})
+	if code != 0 {
+		t.Errorf("-- -weird.go should reach resolution (exit 0), got %d", code)
+	}
+	// But -- does not make a real flag name into a file: these must
+	// still fail loudly instead of silently ignoring the flag.
+	for _, args := range [][]string{
+		{"t.json", "--", "-format", "json"},
+		{"a/a.go", "--", "-format", "json"},
+		{"a/a.go", "--", "-format=json"},
+		{"a/a.go", "--", "-h"},
+	} {
+		if code := runMain(context.Background(), args); code != 2 {
+			t.Errorf("%v: want exit 2, got %d", args, code)
+		}
+	}
+}
