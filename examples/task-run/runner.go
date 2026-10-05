@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/constant"
 	"io"
 	"os"
 	"os/exec"
@@ -47,6 +48,10 @@ type Runner struct {
 	engine *minigo.Engine
 	stdout io.Writer
 	stderr io.Writer
+
+	// explicitFile records whether the user picked the taskfile with -f;
+	// load errors blame "the -f argument" only when one was given.
+	explicitFile bool
 
 	mu        sync.Mutex
 	depStates map[string]*depState        // dep key -> lifecycle (dedup + cycles)
@@ -221,7 +226,7 @@ func NewRunner(dir string, stdout, stderr io.Writer) *Runner {
 func (r *Runner) Tasks(ctx context.Context, file string) ([]TaskInfo, error) {
 	pkg, err := r.engine.LoadFile(ctx, file)
 	if err != nil {
-		return nil, err
+		return nil, taskfileErr(file, err, r.explicitFile)
 	}
 	var tasks []TaskInfo
 	for name, d := range pkg.Index.Funcs {
@@ -249,7 +254,7 @@ func (r *Runner) Tasks(ctx context.Context, file string) ([]TaskInfo, error) {
 func (r *Runner) RunTask(ctx context.Context, file, name string, args []string) error {
 	pkg, err := r.engine.LoadFile(ctx, file)
 	if err != nil {
-		return err
+		return taskfileErr(file, err, r.explicitFile)
 	}
 	d, ok := pkg.Index.Funcs[name]
 	if !ok || !ast.IsExported(name) {
@@ -345,6 +350,9 @@ func (r *Runner) taskBinds() map[string]runtime.Value {
 			return &runtime.GoValue{V: taskCall{fn: args[0], args: args[1:]}}, nil
 		}},
 		"Sh": &runtime.BuiltinFunc{Name: "task.Sh", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, argErr("task.Sh takes 1 arg, got %d", len(args))
+			}
 			cmdline, err := strArg("task.Sh", args, 0)
 			if err != nil {
 				return nil, err
@@ -352,28 +360,32 @@ func (r *Runner) taskBinds() map[string]runtime.Value {
 			cmd := exec.Command("sh", "-c", cmdline)
 			cmd.Dir = r.engine.WorkingDir()
 			cmd.Stdout, cmd.Stderr = r.stdout, r.stderr
-			return errOf(cmd.Run())
+			return errOf(exitErr(cmd.Run(), fmt.Sprintf("sh -c %q", cmdline)))
 		}},
 		"Run": &runtime.BuiltinFunc{Name: "task.Run", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			return errOf(r.runCmd("", args, "task.Run"))
+			return errOf(r.runCmd("", args, 0, "task.Run"))
 		}},
 		"RunIn": &runtime.BuiltinFunc{Name: "task.RunIn", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			dir, err := strArg("task.RunIn", args, 0)
 			if err != nil {
 				return nil, err
 			}
-			return errOf(r.runCmd(dir, args[1:], "task.RunIn"))
+			return errOf(r.runCmd(dir, args, 1, "task.RunIn"))
 		}},
 		"Output": &runtime.BuiltinFunc{Name: "task.Output", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			name, err := strArg("task.Output", args, 0)
 			if err != nil {
 				return nil, err
 			}
-			cmd := exec.Command(name, strArgs(args[1:])...)
+			argv, err := strArgs("task.Output", args[1:], 2)
+			if err != nil {
+				return nil, err
+			}
+			cmd := exec.Command(name, argv...)
 			cmd.Dir = r.engine.WorkingDir()
 			cmd.Stderr = r.stderr
 			out, err := cmd.Output()
-			ev, _ := errOf(err)
+			ev, _ := errOf(exitErr(err, cmdLabel("", name, argv)))
 			return &runtime.Tuple{Elems: []runtime.Value{strings.TrimRight(string(out), "\n"), ev}}, nil
 		}},
 		"Target": &runtime.BuiltinFunc{Name: "task.Target", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -388,6 +400,9 @@ func (r *Runner) taskBinds() map[string]runtime.Value {
 			return runtime.NIL, nil
 		}},
 		"Env": &runtime.BuiltinFunc{Name: "task.Env", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, argErr("task.Env takes 1 arg, got %d", len(args))
+			}
 			name, err := strArg("task.Env", args, 0)
 			if err != nil {
 				return nil, err
@@ -504,13 +519,18 @@ func depLabel(fn runtime.Value) string {
 }
 
 // runCmd executes a program with stdio on the runner's streams. dir==""
-// uses the engine's virtual cwd.
-func (r *Runner) runCmd(dir string, args []runtime.Value, label string) error {
-	name, err := strArg(label, args, 0)
+// uses the engine's virtual cwd. namePos is the index of the program
+// name in args (Run: 0; RunIn: 1, after the dir arg).
+func (r *Runner) runCmd(dir string, args []runtime.Value, namePos int, label string) error {
+	name, err := strArg(label, args, namePos)
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(name, strArgs(args[1:])...)
+	argv, err := strArgs(label, args[namePos+1:], namePos+2)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(name, argv...)
 	if dir == "" {
 		cmd.Dir = r.engine.WorkingDir()
 	} else if filepath.IsAbs(dir) {
@@ -519,16 +539,59 @@ func (r *Runner) runCmd(dir string, args []runtime.Value, label string) error {
 		cmd.Dir = filepath.Join(r.engine.WorkingDir(), dir)
 	}
 	cmd.Stdout, cmd.Stderr = r.stdout, r.stderr
-	return cmd.Run()
+	return exitErr(cmd.Run(), cmdLabel(dir, name, argv))
+}
+
+// exitErr rewrites a bare "exit status N" into "cmd ...: exit status N" —
+// *exec.ExitError does not name the command that failed, so without this
+// a failing dep reports only a number. Startup failures (missing binary,
+// bad dir, permissions) already name their target and pass through.
+func exitErr(err error, label string) error {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return fmt.Errorf("%s: %w", label, err)
+	}
+	return err
+}
+
+// cmdLabel renders the spawned command in the script's own vocabulary:
+// `prog arg1 arg2`, or `(in dir) prog arg1 arg2` for task.RunIn. Args
+// needing it are %q-quoted so word boundaries stay unambiguous — the
+// same spelling task.Sh's `sh -c %q` produces for a one-line command.
+func cmdLabel(dir, name string, args []string) string {
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, quoteArg(name))
+	for _, a := range args {
+		parts = append(parts, quoteArg(a))
+	}
+	s := strings.Join(parts, " ")
+	if dir != "" {
+		return "(in " + dir + ") " + s
+	}
+	return s
+}
+
+// quoteArg leaves a plain arg bare but %q-quotes one whose boundary in a
+// joined command line would be ambiguous (whitespace, quotes, empty).
+func quoteArg(s string) string {
+	if s == "" || strings.ContainsAny(s, " \t\n\"'") {
+		return strconv.Quote(s)
+	}
+	return s
 }
 
 // target implements task.Target: target is up to date when it exists and
 // is newer than (or equal to) every dep file's mtime.
 func (r *Runner) target(args []runtime.Value) (runtime.Value, error) {
-	if len(args) == 0 {
-		return nil, errors.New("task.Target needs a target path")
+	tp, err := strArg("task.Target", args, 0)
+	if err != nil {
+		return nil, err
 	}
-	t := r.resolvePath(strOf(args[0]))
+	deps, err := strArgs("task.Target", args[1:], 2)
+	if err != nil {
+		return nil, err
+	}
+	t := r.resolvePath(tp)
 	st, err := os.Stat(t)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -537,9 +600,9 @@ func (r *Runner) target(args []runtime.Value) (runtime.Value, error) {
 		return &runtime.Tuple{Elems: []runtime.Value{false, &runtime.GoValue{V: err}}}, nil
 	}
 	mtime := st.ModTime()
-	for _, d := range args[1:] {
-		dp := r.resolvePath(strOf(d))
-		ds, err := os.Stat(dp)
+	for _, dp := range deps {
+		p := r.resolvePath(dp)
+		ds, err := os.Stat(p)
 		if err != nil {
 			return &runtime.Tuple{Elems: []runtime.Value{false, &runtime.GoValue{V: err}}}, nil
 		}
@@ -581,23 +644,142 @@ func strOf(v runtime.Value) string {
 	}
 }
 
+// strArg returns the string the script passed at position i. The stub
+// signatures declare `string`, so anything else is the same bug `go
+// build` would reject — silently stringifying it misnames the failure
+// (task.Run(42) would report "exec: \"42\": file not found", blaming
+// PATH instead of the call site).
 func strArg(label string, args []runtime.Value, i int) (string, error) {
 	if i >= len(args) {
-		return "", fmt.Errorf("%s needs arg %d", label, i+1)
+		return "", argErr("%s needs arg %d", label, i+1)
 	}
-	return strOf(args[i]), nil
+	s, ok := strVal(args[i])
+	if !ok {
+		return "", argErr("%s arg %d must be a string, got %s", label, i+1, kindOf(args[i]))
+	}
+	return s, nil
 }
 
-func strArgs(args []runtime.Value) []string {
+// strArgs converts the argument tail starting at 1-based position `from`
+// (the position args[0] occupies in the full call — 2 after a name arg,
+// 3 for RunIn's dir+name).
+func strArgs(label string, args []runtime.Value, from int) ([]string, error) {
 	out := make([]string, len(args))
 	for i, a := range args {
-		out[i] = strOf(a)
+		s, ok := strVal(a)
+		if !ok {
+			return nil, argErr("%s arg %d must be a string, got %s", label, from+i, kindOf(a))
+		}
+		out[i] = s
 	}
-	return out
+	return out, nil
+}
+
+// strVal reads a script value as a string, honoring the declared `string`
+// contract: a Named tag unwraps to the underlying value first, and an
+// untyped string constant (const N = "echo") materializes like Go's
+// default-type rule — `go build` accepts both as `string` args, so the
+// strict check must too.
+func strVal(v runtime.Value) (string, bool) {
+	if n, ok := v.(*runtime.Named); ok {
+		v = n.V
+	}
+	if u, ok := v.(*runtime.UConst); ok {
+		if u.V.Kind() == constant.String {
+			return constant.StringVal(u.V), true
+		}
+		return "", false
+	}
+	s, ok := v.(string)
+	return s, ok
+}
+
+// kindOf names a script value's type the way the Taskfile author spells
+// it — "int", "func A", "Seconds" — not the runtime struct name.
+func kindOf(v runtime.Value) string {
+	switch x := v.(type) {
+	case nil, runtime.Nil:
+		return "nil"
+	case *runtime.Named:
+		if x.Typ != nil {
+			return x.Typ.Name
+		}
+		return kindOf(x.V)
+	case int64:
+		return "int"
+	case float64:
+		return "float64"
+	case bool:
+		return "bool"
+	case string:
+		return "string"
+	case *runtime.Function:
+		return "func " + x.Name
+	case *runtime.Closure:
+		return "func literal"
+	case *runtime.BuiltinFunc:
+		return "builtin " + x.Name
+	case *runtime.BoundMethod:
+		return "bound method " + x.Fn.Name
+	case *runtime.UConst:
+		return x.DefaultName()
+	default:
+		return fmt.Sprintf("%T", v)
+	}
+}
+
+// loadError wraps a LoadFile failure so the CLI can attribute it to the
+// Taskfile or the -f flag instead of prefixing it with the task name.
+type loadError struct{ err error }
+
+func (e *loadError) Error() string { return e.err.Error() }
+func (e *loadError) Unwrap() error { return e.err }
+
+// taskfileErr classifies a LoadFile failure by who has to fix it. The
+// file's own os.Stat decides — not errors.Is on LoadFile's error, which
+// would blame -f for any not-exist error bubbling out of LoadFile's
+// internals and drop the real message. "Fix the -f argument" only
+// appears when -f was actually passed; the default file's advice is to
+// create it or pick another file. Anything else is the Taskfile's
+// contents (parse errors, undeclared names, unsupported syntax).
+func taskfileErr(file string, err error, explicit bool) error {
+	hint := "Pass -f to load a different file"
+	if explicit {
+		hint = "Fix the -f argument"
+	}
+	st, statErr := os.Stat(file)
+	switch {
+	case statErr != nil && errors.Is(statErr, os.ErrNotExist):
+		return &loadError{fmt.Errorf("taskfile %s does not exist. %s", file, hint)}
+	case statErr != nil:
+		return &loadError{fmt.Errorf("taskfile %s: %v. %s", file, statErr, hint)}
+	case st.IsDir():
+		return &loadError{fmt.Errorf("taskfile %s is a directory. %s", file, hint)}
+	}
+	return &loadError{fmt.Errorf("%s. Fix the Taskfile", err)}
+}
+
+// argError marks a call-contract violation (wrong arg type or count).
+// errOf escalates it to a call error: the script called the function
+// wrong — like `task.Run(42)`, which `go build` would reject — so it
+// must surface even from a `func()` task that ignores the error result.
+type argError struct{ err error }
+
+func (e *argError) Error() string { return e.err.Error() }
+func (e *argError) Unwrap() error { return e.err }
+
+func argErr(format string, args ...any) error {
+	return &argError{err: fmt.Errorf(format, args...)}
 }
 
 // errOf marshals a host error to the script-visible (err) convention.
+// Contract violations (argError) are not marshaled: they escalate to a
+// call error instead of an ignorable error return value.
 func errOf(err error) (runtime.Value, error) {
+	var ae *argError
+	if errors.As(err, &ae) {
+		return nil, ae
+	}
 	if err != nil {
 		return &runtime.GoValue{V: err}, nil
 	}
