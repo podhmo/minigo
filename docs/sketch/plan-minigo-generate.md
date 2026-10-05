@@ -238,9 +238,7 @@ From `examples/minigo-generate` as it stands:
 - **An `inspect`-based stringer is genuinely small** (~100 lines):
   `DirOf` → `Files` → `Decls` → `EnumMembers` (source order, which is
   also the declaration order real stringer emits) → emit. The numeric
-  fallback's base type comes from `inspect.Def(target).Text`. Output is
-  emitted pre-formatted — running `go/format` would mean interpreting
-  `go/parser`+`go/printer` inside the tool.
+  fallback's base type comes from `inspect.Def(target).Text`.
 - **No const values — and no comments, for plugins either.** `inspect`
   surfaces declarations, not evaluated values — stringer only needs
   the member *names* for its switch, so the spike never felt it, but a
@@ -250,13 +248,17 @@ From `examples/minigo-generate` as it stands:
   plugin wanting "the comment above this decl" (a common codegen
   input) has no inspect entry point — it would have to re-parse the
   file through `syntax` itself.
-- **Plugin imports are limited to bound/interpretable packages.** A
-  real `go generate` tool imports anything; an interpreted one
-  effectively lives on the stdlib/minigo-bound surface — `flag`, `os`,
-  `strings`, `fmt`, `inspect` are all intrinsics or bound packages.
-  Notably absent: `go/format` — generated code must be emitted
-  pre-formatted (the demo's two-line template care). A plugin that
-  needs arbitrary third-party imports is out of scope by construction.
+- **The host extends what a plugin may import — `Engine.Bind` + a
+  `*runtime.GoValue`-wrapped func is a native binding.** Verified:
+  `e.Bind("go/format", {"Source": &runtime.GoValue{V: format.Source}})`
+  makes `format.Source(src)` callable from interpreted code, multi-value
+  returns and all (a bare Go func value is *not* callable — the binding
+  needs the `GoValue` or `BuiltinFunc` wrapper, task-run's shape). So
+  "plugin imports are limited to bound/interpretable packages" is a
+  default, not a wall: the runner binds `go/format` and both demo tools
+  now format their output like real tools. A plugin that needs an
+  import the host didn't bind still hits the interpretation wall —
+  the bound surface is the runner's contract surface.
 - **Alias-targeted `-type` fails generically.** Verified: pointing a
   directive at `type StatusAlias = Status` yields "no enum consts" —
   `EnumMembers` matches consts typed by the name itself and does not
