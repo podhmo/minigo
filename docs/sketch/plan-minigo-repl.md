@@ -44,6 +44,13 @@ after every input (`reload`).
   The step runs once and stays in the source, so the package keeps
   parsing the same way. A trailing expression statement becomes the
   step's return value, and the REPL prints it.
+- **Result variables.** The last three printed results are kept as `_1`
+  (newest), `_2` and `_3`, the counterpart of IPython's `_`, `__`, `___`
+  (Go's `_` is the blank identifier and cannot be read). A multi-value
+  result has no Go spelling as a tuple, so it is stored as a `[]any`:
+  `strconv.Atoi("42")` then `_1[0]`. Inputs that print nothing, and
+  failing inputs, leave them unchanged. A user binding named `_1` is
+  overwritten by the next result.
 - **Hoisting.** Names introduced by `x := e`, `var` and `const` are
   promoted to package-global cells (`hoist`), so they persist across
   lines. `x := e` reuses an existing global instead of shadowing it. This

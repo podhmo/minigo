@@ -229,7 +229,8 @@ const replHelp = `commands:
                       shows a bound package's symbols
   :exit   quit (also :quit, :q, Ctrl-D)
 input is a top-level declaration or statements; a trailing
-expression is printed. new names introduced by := / var / const
+expression is printed, and the last three printed results are kept
+as _1 (newest), _2, _3 (a multi-value result as a []any). new names introduced by := / var / const
 persist as globals across lines. imports are ordinary Go syntax —
 import "fmt" — plus directory forms import "./dir" or "/abs/dir"
 (resolved eagerly, bound under the package's declared name). a
