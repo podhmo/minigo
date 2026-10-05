@@ -14,7 +14,7 @@ type Ratio float64
 // A directive does not have to sit above its type — position only feeds
 // GOLINE. This one runs like any other.
 //
-//minigo:generate ../tools/stringer -type=Level
+//minigo:generate ../tools/enumvals -type=Level
 type Level int
 
 const (

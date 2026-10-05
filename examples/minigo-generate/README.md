@@ -5,7 +5,8 @@ A `go generate`-shaped runner that never builds or execs a tool
 package directory holding `func Main(args []string) int`; the runner
 invokes it inside one shared minigo engine — no process spawn, no
 build cost, and the engine's package caches stay warm across
-directives. The marker is deliberately its own word: `//go:generate`
+directives — a file may list several, each picking its own tool.
+The marker is deliberately its own word: `//go:generate`
 lines keep going to `go generate`; a file opts individual tools into
 interpreted execution.
 
@@ -52,23 +53,36 @@ func main() { os.Exit(Main(os.Args[1:])) }   // tools/stringer
 
 ## Demo
 
-`tools/stringer` is a String() generator written on `inspect` — the
-package that answers "which declarations live in this package"
-(`DirOf`/`Files`/`Decls`/`EnumMembers`/`Def`). No `go/types`, no
-`go/packages`, no binary: it finds the `-type` in `GOFILEPATH`'s
-package, switches on its enum consts, and writes
-`<type>_string.go` next to the source. `app/` seeds three enums plus
-decoys — an alias wearing a matchable name, a const-less named int, a
-directive that trails its type instead of preceding it.
+Two tools — the issue's "plugins" — each just a package dir with a
+`Main`. `tools/stringer` is a String() generator written on `inspect`
+(the package that answers "which declarations live in this package":
+`DirOf`/`Files`/`Decls`/`EnumMembers`/`Def`): no `go/types`, no
+`go/packages`, no binary — it finds the `-type` in `GOFILEPATH`'s
+package, switches on its enum consts, and writes `<type>_string.go`
+next to the source. `tools/enumvals` is its companion: a `Values()`
+slice listing the members in declaration order.
+
+`app/` seeds three enums plus decoys — an alias wearing a matchable
+name, a const-less named int, a directive that trails its type instead
+of preceding it. `Status` carries **stacked directives** — two lines,
+two tools, one type — which is the multi-command case:
+
+```go
+//minigo:generate ../tools/stringer -type=Status
+//minigo:generate ../tools/enumvals -type=Status
+type Status int
+```
 
 ```console
 $ go run ./ -x ./app
 app/models.go:3: ../tools/stringer -type=Status
 stringer: wrote .../app/status_string.go
-app/models.go:12: ../tools/stringer -type=Priority
+app/models.go:4: ../tools/enumvals -type=Status
+enumvals: wrote .../app/status_values.go
+app/models.go:13: ../tools/stringer -type=Priority
 stringer: wrote .../app/priority_string.go
-app/decoys.go:17: ../tools/stringer -type=Level
-stringer: wrote .../app/level_string.go
+app/decoys.go:17: ../tools/enumvals -type=Level
+enumvals: wrote .../app/level_values.go
 ```
 
 `make demo` runs it twice to show regeneration is stable; `make clean`
@@ -80,5 +94,7 @@ removes the generated files (they are untracked — output, not fixture).
 - `scan.go` — `//minigo:generate` discovery on the raw comment table
 - `tools/stringer/` — the interpreted tool: `package main` with a
   `Main(args []string) int` body, dual-mode as a real command
+- `tools/enumvals/` — a second plugin: `Values()` over the enum's
+  members; `Status` stacks both tools' directives on one type
 - `app/` — the scanned fixture: enums to generate, decoys to ignore
 - `testdata/` — expected generated files asserted by `main_test.go`

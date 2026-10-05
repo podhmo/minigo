@@ -131,8 +131,10 @@ func TestGenerate(t *testing.T) {
 	if code := runPkg(t, app, nil, false); code != 0 {
 		t.Fatalf("run exited %d", code)
 	}
-	for _, name := range []string{"status", "priority", "level"} {
-		assertSameFile(t, filepath.Join(app, name+"_string.go"), "testdata/"+name+"_string.golden")
+	// two tools over one fixture: stringer on Status+Priority, enumvals
+	// on Status (stacked directive lines) and Level.
+	for _, name := range []string{"status_string", "priority_string", "status_values", "level_values"} {
+		assertSameFile(t, filepath.Join(app, name+".go"), "testdata/"+name+".golden")
 	}
 	if v := os.Getenv("GOFILE"); v != "sentinel.go" {
 		t.Fatalf("GOFILE leaked through the run: %q", v)
@@ -172,10 +174,23 @@ func TestRunFilter(t *testing.T) {
 		t.Fatalf("run exited %d", code)
 	}
 	assertSameFile(t, filepath.Join(app, "priority_string.go"), "testdata/priority_string.golden")
-	for _, name := range []string{"status_string.go", "level_string.go"} {
+	for _, name := range []string{"status_string.go", "status_values.go", "level_values.go"} {
 		if _, err := os.Stat(filepath.Join(app, name)); !os.IsNotExist(err) {
 			t.Errorf("-run=Priority also wrote %s", name)
 		}
+	}
+
+	// filtering on the tool name runs only that tool's directives.
+	dir = setupModule(t)
+	app = filepath.Join(dir, "app")
+	re = regexp.MustCompile("enumvals")
+	if code := runPkg(t, app, re, false); code != 0 {
+		t.Fatalf("run exited %d", code)
+	}
+	assertSameFile(t, filepath.Join(app, "status_values.go"), "testdata/status_values.golden")
+	assertSameFile(t, filepath.Join(app, "level_values.go"), "testdata/level_values.golden")
+	if _, err := os.Stat(filepath.Join(app, "status_string.go")); !os.IsNotExist(err) {
+		t.Error("-run=enumvals also ran stringer")
 	}
 }
 

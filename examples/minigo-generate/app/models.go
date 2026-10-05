@@ -1,6 +1,7 @@
 package app
 
 //minigo:generate ../tools/stringer -type=Status
+//minigo:generate ../tools/enumvals -type=Status
 type Status int
 
 const (
