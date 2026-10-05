@@ -171,6 +171,76 @@ Skipped for scope, not blocked:
   the prepared prompt is below, in the same shape as the task-run /
   gen-sync rounds.
 
+## Combined world: gen-sync × minigo-generate
+
+The two examples meet at the directive line — one *writes* them, the
+other *runs* them. gen-sync scans declarations through `inspect`,
+infers which generators each declaration wants, and rewrites the
+managed `//go:generate` block in each file (the declaration is the
+SSoT; the directive is kept in sync). Its artifact is deliberately
+inert: `stringer`/`mockgen` are real tools, `requiredgen`/`oneofgen`
+are hypothetical, and nothing emitted ever has to run. minigo-generate
+is the other half: it scans raw comments and executes the referenced
+plugin in the shared engine — the plugin must exist and satisfy the
+`Main` contract. Three compositions suggest themselves:
+
+- **gen-sync emits `//minigo:generate`** — the natural one. Today's
+  rules table produces inert `//go:generate` lines; emitting
+  `//minigo:generate ../tools/x -type=X` instead closes the loop
+  end-to-end — declaration → directive → interpreted plugin →
+  generated code, all inside one engine, where the scan's `inspect`
+  index and the plugin's own reads share the same cache. It also
+  un-hypotheticals the tail of the table: `requiredgen` and `oneofgen`
+  are inspect-shaped tools already, and the spike's stringer (~100
+  lines) is the proof of their size.
+- **One tool source, two runtimes** — a plugin file carrying `Main`
+  plus the thin `main()` wrapper is simultaneously a
+  `//minigo:generate` target *and* a `go run ./tools/x` target under
+  real `go generate` (the dual mode the demo already ships). A
+  combined gen-sync could emit both lines into the managed block —
+  `//go:generate go run ../tools/x -type=X` next to
+  `//minigo:generate ../tools/x -type=X` — so a repo keeps the real
+  toolchain path while gaining the interpreted one.
+- **gen-sync as a plugin** — `//minigo:generate ../tools/gen-sync`:
+  the directive-maintaining tool itself run interpreted (directives
+  that maintain directives). Meta — and nearly free: its script entry
+  is `Main(dir string, check, deps bool)`, a thin flag-shim away from
+  the `Main(args []string) int` contract rather than a redesign.
+
+And the honest flip side — each is also a thing you can choose *not*
+to use:
+
+- **Skip gen-sync** when the directive set is stable and hand-written:
+  syncing buys nothing when declarations rarely gain or lose
+  generators, when the args carry out-of-band knowledge no declaration
+  surface can infer (a hand-curated `-variants=` list, a destination
+  path convention), or when the inference rules themselves are the
+  labor — plan-gen-sync already concedes a `// @gen` marker is the
+  same labor as the directive it would emit.
+- **Skip minigo-generate** when the tool needs what interpretation
+  can't reach — arbitrary third-party imports, `go/types`, codegen
+  heavy enough to notice interpreted speed — or when the generator is
+  already an installed binary (`go generate` + `go run` covers it
+  with zero new machinery), or must run in parallel / under a sandbox
+  (both deferred).
+- **Skip both** — the real baseline is `go generate` plus installed
+  tools, which already does the job. The combined world earns its
+  keep only where that assumption is the thing that hurts: the plugin
+  is a repo-local package rather than an external tool to vendor or
+  `go install` (no version skew between tool and tree), directive
+  maintenance and execution share the interpreter's `inspect` cache,
+  and "compile a helper binary first" disappears from the pipeline.
+- **Use them together** where both pains are real at once: directive
+  churn (declarations gaining/losing generators as the model evolves —
+  hand-synced `//go:generate` blocks drift) *and* install-free
+  execution (the plugin lives in the same module, not on someone's
+  `PATH`).
+
+Today this is on paper: gen-sync emits `//go:generate` only, and a
+combined round would teach it a `//minigo:generate` emit mode (or a
+flag) whose refs resolve into the same engine. Neither tool blocks
+the other; each already stands alone.
+
 ## Deferred experiment: does it stay agent-friendly when inputs break?
 
 Same question as the task-run / gen-sync rounds: when inputs or plugin
