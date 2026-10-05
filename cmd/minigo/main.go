@@ -221,7 +221,8 @@ const replHelp = `commands:
                       note: this is the Go toolchain's documentation, not
                       minigo's — a bound package may expose fewer symbols
                       (:ls <pkg> shows what minigo actually provides)
-  :comp <text>  print completion candidates for a code fragment
+  :comp <text>  print completion candidates for a code fragment — the
+                same candidates [TAB] offers while typing (on a terminal)
   :bindings [prefix]  list host-bound (native) import paths; :ls <path>
                       shows a bound package's symbols
   :exit   quit (also :quit, :q, Ctrl-D)
