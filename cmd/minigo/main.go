@@ -237,7 +237,11 @@ func runREPL(ctx context.Context, in io.Reader, out io.Writer) error {
 		if state, err := term.MakeRaw(int(f.Fd())); err == nil {
 			defer func() { _ = term.Restore(int(f.Fd()), state) }()
 			out = writeWithCRLF{out}
-			src = &termSource{t: term.NewTerminal(readWriter{f, out}, "")}
+			t := term.NewTerminal(readWriter{f, out}, "")
+			if path, err := defaultHistoryPath(); err == nil {
+				t.History = newFileHistory(path, 1000)
+			}
+			src = &termSource{t: t}
 		}
 	}
 	e := minigo.NewEngine(cwd, minigo.WithOutput(out))
