@@ -145,6 +145,12 @@ type VM struct {
 	// run never starts on a detached process.
 	procDead bool
 	task     *runtime.Task // this VM's own spawn handle; nil on the root
+	// syncCall marks a VM spawned for a synchronous re-entry — a
+	// callback the host invokes inside a blocking host call
+	// (sync.Once.Do's f) reaching Call from the helper goroutine. Its
+	// panic propagates back through the joining Call instead of
+	// failing the process the way a real goroutine's would.
+	syncCall bool
 }
 
 // proc is one interpreter process: the goroutines belonging to a root Call.
@@ -153,6 +159,14 @@ type proc struct {
 	doneOnce sync.Once
 	mu       sync.Mutex
 	fatal    error // first goroutine failure (panic/trap/builtin error)
+	// syncCallers are the helper goroutines callReflectFunc runs a
+	// blocking host call on. A Call arriving from one is a synchronous
+	// re-entry — the host invoking a script callback inside the call
+	// (sync.Once.Do's f) — so its panic propagates back through the join
+	// like any nested call's; only a genuinely foreign callback
+	// (WaitGroup.Go, time.AfterFunc) fails the process the way a Go
+	// goroutine's panic crashes the program.
+	syncCallers map[int64]struct{}
 }
 
 func newProc() *proc { return &proc{done: make(chan struct{})} }
@@ -168,6 +182,31 @@ func (p *proc) fail(err error) {
 	}
 	p.mu.Unlock()
 	p.kill()
+}
+
+// watchCallFrom marks gid as a synchronous re-entry source — see
+// syncCallers — and returns the func that unmarks it.
+func (p *proc) watchCallFrom(gid int64) func() {
+	p.mu.Lock()
+	if p.syncCallers == nil {
+		p.syncCallers = map[int64]struct{}{}
+	}
+	p.syncCallers[gid] = struct{}{}
+	p.mu.Unlock()
+	return func() {
+		p.mu.Lock()
+		delete(p.syncCallers, gid)
+		p.mu.Unlock()
+	}
+}
+
+// isSyncCaller reports whether gid is a helper running a blocking host
+// call — a Call from it re-enters synchronously (see syncCallers).
+func (p *proc) isSyncCaller(gid int64) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, ok := p.syncCallers[gid]
+	return ok
 }
 
 func (p *proc) fatalErr() error {
@@ -240,13 +279,18 @@ var nilChanValue = reflect.ValueOf((chan struct{})(nil))
 
 // Spawn implements VMCaller.Spawn — the `go` statement's machinery.
 func (v *VM) Spawn(fn runtime.Value, args []runtime.Value) *runtime.Task {
-	return v.spawn(fn, args, nil, nil)
+	return v.spawn(fn, args, nil, nil, true)
 }
 
 // spawn is Spawn carrying the call site's spread element typedef into
 // generic inference — `go Sum(n...)` binds the same T=int the OpCall
-// path does. The public Spawn signature stays (fn, args).
-func (v *VM) spawn(fn runtime.Value, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) *runtime.Task {
+// path does. The public Spawn signature stays (fn, args). failProc is
+// Go's crash rule: a panic in a genuinely concurrent execution fails
+// the process, while a synchronous re-entry (a callback the host
+// invokes inside a blocking call — sync.Once.Do's f) must instead
+// propagate its panic back through the join so the caller's recover
+// can run.
+func (v *VM) spawn(fn runtime.Value, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef, failProc bool) *runtime.Task {
 	v.callMu.Lock()
 	if v.proc == nil {
 		if v.procDead {
@@ -277,12 +321,12 @@ func (v *VM) spawn(fn runtime.Value, args []runtime.Value, statics []*runtime.Ty
 	}
 	v.callMu.Unlock()
 	t := &runtime.Task{Done: make(chan struct{}), Parent: v.task}
-	child := &VM{H: v.H, proc: p, task: t}
+	child := &VM{H: v.H, proc: p, task: t, syncCall: !failProc}
 	go func() {
 		r, err := child.callBounded(fn, args, statics, spreadTd)
 		t.Result = r
 		t.Finish(err, IsProcExit(err))
-		if err != nil && !IsProcExit(err) {
+		if err != nil && !IsProcExit(err) && failProc {
 			p.fail(err)
 		}
 	}()
@@ -522,7 +566,18 @@ func (v *VM) callBounded(callee runtime.Value, args []runtime.Value, statics []*
 		// script goroutine): the owning goroutine holds this frame
 		// stack, so run the call on a spawned child VM of the same
 		// process and join it instead of racing the owner's frames.
-		t := v.spawn(callee, args, statics, spreadTd)
+		// a Call from a helper running one of this process's blocking
+		// host calls is a synchronous re-entry — the host invoking a
+		// script callback inside the call (sync.Once.Do's f). Its panic
+		// propagates back through the join: the helper's recover hands
+		// it to callReflectFunc, which re-panics it on the calling
+		// goroutine where the script's own recover can see it. Failing
+		// the process here would kill it before that recover runs.
+		failProc := true
+		if p := v.proc; p != nil && p.isSyncCaller(gid) {
+			failProc = false
+		}
+		t := v.spawn(callee, args, statics, spreadTd, failProc)
 		werr := t.Wait()
 		return t.Result, werr
 	}
@@ -1017,7 +1072,7 @@ func (v *VM) unwind(f *frame, r any) {
 // already ending on its own terms, and recording procExit as the fatal
 // would mask the real failure on the root call.
 func (v *VM) failProc(r any) {
-	if len(v.frames) != 0 || v.proc == nil {
+	if len(v.frames) != 0 || v.proc == nil || v.syncCall {
 		return
 	}
 	switch r.(type) {
@@ -1650,7 +1705,7 @@ func (v *VM) loop(f *frame) {
 			// args are evaluated now; the call runs concurrently.
 			args, statics, spreadTd := v.popArgs(f, int(ins.A), int(ins.B), ins.Pos)
 			fn := f.pop()
-			v.spawn(fn, args, statics, spreadTd)
+			v.spawn(fn, args, statics, spreadTd, true)
 		case bytecode.OpEvalAST:
 			frag := consts[ins.A].(*bytecode.ASTFragment)
 			if v.H.CompileExpr == nil {
@@ -3147,6 +3202,13 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 			}
 			resCh := make(chan callRes, 1)
 			go func() {
+				// register before m.Call can invoke a script callback:
+				// a Call arriving from this goroutine re-enters the VM
+				// synchronously, so its panic propagates back through the
+				// join rather than failing the process.
+				if v, ok := vc.(*VM); ok && v.proc != nil {
+					defer v.proc.watchCallFrom(goroutineID())()
+				}
 				defer func() {
 					if r := recover(); r != nil {
 						resCh <- callRes{p: r}
