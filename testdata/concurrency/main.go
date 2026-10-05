@@ -251,6 +251,29 @@ func WaitUnblockThenPanic() int {
 // have set — stays 0 when the process died with the panic.
 func WaitUnblockRead() int { return waitUnblockProgress }
 
+// HostLockThenPanic: a goroutine parked inside a real host blocking
+// call — mu.Lock on a mutex main holds forever — while a sibling
+// panics. The parked Lock can only leave via process death: without
+// proc.done watching the host call, the run hangs inside Lock (the
+// emitted difffuzz case timed out on most runs).
+func HostLockThenPanic() int {
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	parked := make(chan struct{})
+	mu.Lock()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		close(parked) // at the Lock call; the host call itself parks next
+		mu.Lock()
+		mu.Unlock()
+	}()
+	<-parked // let the sibling reach the parked Lock before the panic
+	go func() { panic("boom") }()
+	wg.Wait()
+	return 0
+}
+
 // NilChanBlocksForever: send on a nil channel parks — a sibling panic
 // releases it (process exit), so the call still resolves to the panic.
 func NilChanBlocksThenPanic() int {

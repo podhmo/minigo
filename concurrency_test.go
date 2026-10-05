@@ -137,6 +137,22 @@ func TestWaitUnblockThenPanic(t *testing.T) {
 	})
 }
 
+// TestHostBlockingCallReleased: a sibling parked inside a real host
+// blocking call — mu.Lock on a mutex main holds forever — can't be
+// woken by channel select; proc.done must release it, so the panic
+// resolves the run instead of hanging inside Lock. Before blocking host
+// methods were watched, the emitted difffuzz shape hung on most runs.
+// No synctest: the helper goroutine that keeps running the real Lock is
+// a leaked park — not durable under the bubble — it would hold the
+// bubble open forever.
+func TestHostBlockingCallReleased(t *testing.T) {
+	e := newEngine(t)
+	_, err := runErr(e, "./testdata/concurrency", "HostLockThenPanic")
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("expected goroutine panic to fail the run, got %v", err)
+	}
+}
+
 // TestBlockedSiblingReleased: a panic in one goroutine releases siblings
 // parked forever (empty select, nil-channel send) — the run resolves to
 // the panic rather than hanging.
