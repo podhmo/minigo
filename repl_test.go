@@ -26,13 +26,13 @@ func TestREPL(t *testing.T) {
 	}
 
 	// a bare expression evaluates and prints
-	if diff := cmp.Diff(int64(3), eval("1 + 2")); diff != "" {
+	if diff := cmp.Diff("3", eval("1 + 2")); diff != "" {
 		t.Fatalf("1+2 (-want +got):\n%s", diff)
 	}
 
 	// := introduces a persistent global
 	eval("x := 10")
-	if diff := cmp.Diff(int64(20), eval("x * 2")); diff != "" {
+	if diff := cmp.Diff("20", eval("x * 2")); diff != "" {
 		t.Fatalf("x*2 (-want +got):\n%s", diff)
 	}
 
@@ -42,26 +42,26 @@ func TestREPL(t *testing.T) {
 		t.Fatalf(`y+"!" (-want +got):\n%s`, diff)
 	}
 	eval("var z int")
-	if diff := cmp.Diff(int64(0), eval("z")); diff != "" {
+	if diff := cmp.Diff("0", eval("z")); diff != "" {
 		t.Fatalf("z (-want +got):\n%s", diff)
 	}
 
 	// := on an existing name re-assigns it rather than shadowing
 	eval("x := 99")
-	if diff := cmp.Diff(int64(99), eval("x")); diff != "" {
+	if diff := cmp.Diff("99", eval("x")); diff != "" {
 		t.Fatalf("x (-want +got):\n%s", diff)
 	}
 
 	// func declarations persist and can call globals
 	eval("func double(n int) int { return n * 2 }")
-	if diff := cmp.Diff(int64(198), eval("double(x)")); diff != "" {
+	if diff := cmp.Diff("198", eval("double(x)")); diff != "" {
 		t.Fatalf("double(x) (-want +got):\n%s", diff)
 	}
 
 	// type declarations persist
 	eval("type Pair struct { A int\nB int }")
 	eval("p := Pair{A: 1, B: 2}")
-	if diff := cmp.Diff(int64(2), eval("p.B")); diff != "" {
+	if diff := cmp.Diff("2", eval("p.B")); diff != "" {
 		t.Fatalf("p.B (-want +got):\n%s", diff)
 	}
 
@@ -72,7 +72,7 @@ func TestREPL(t *testing.T) {
 	}
 
 	// multi-statement input works; trailing expr is the value
-	if diff := cmp.Diff(int64(5), eval("a := 2\nb := 3\na + b")); diff != "" {
+	if diff := cmp.Diff("5", eval("a := 2\nb := 3\na + b")); diff != "" {
 		t.Fatalf("a+b (-want +got):\n%s", diff)
 	}
 
@@ -80,7 +80,7 @@ func TestREPL(t *testing.T) {
 	if _, err := r.EvalLine(ctx, "x +"); err == nil {
 		t.Fatal("expected parse error")
 	}
-	if diff := cmp.Diff(int64(99), eval("x")); diff != "" {
+	if diff := cmp.Diff("99", eval("x")); diff != "" {
 		t.Fatalf("x after error (-want +got):\n%s", diff)
 	}
 
@@ -101,7 +101,7 @@ func TestREPLRedefinition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if diff := cmp.Diff(int64(1), r.Display(v)); diff != "" {
+	if diff := cmp.Diff("1", r.Display(v)); diff != "" {
 		t.Fatalf("f() (-want +got):\n%s", diff)
 	}
 	// redefining must evict the cached materialization
@@ -112,7 +112,7 @@ func TestREPLRedefinition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if diff := cmp.Diff(int64(2), r.Display(v)); diff != "" {
+	if diff := cmp.Diff("2", r.Display(v)); diff != "" {
 		t.Fatalf("f() after redefinition (-want +got):\n%s", diff)
 	}
 }
@@ -141,7 +141,7 @@ func TestREPLCrossLineDecl(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if diff := cmp.Diff(int64(42), r.Display(v)); diff != "" {
+	if diff := cmp.Diff("42", r.Display(v)); diff != "" {
 		t.Fatalf("k (-want +got):\n%s", diff)
 	}
 }
@@ -178,7 +178,7 @@ func TestREPLConstAndTypedVar(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if diff := cmp.Diff(int64(7), r.Display(v)); diff != "" {
+	if diff := cmp.Diff("7", r.Display(v)); diff != "" {
 		t.Fatalf("n (-want +got):\n%s", diff)
 	}
 
@@ -216,7 +216,7 @@ func TestREPLDirImport(t *testing.T) {
 	if got, err := eval(`inspectpkg.Hello("y")`); err != nil || got != "hello y" {
 		t.Fatalf("dir-imported func: %v %v", got, err)
 	}
-	if got, err := eval(`inspectpkg.Count`); err != nil || got != int64(3) {
+	if got, err := eval(`inspectpkg.Count`); err != nil || got != "3" {
 		t.Fatalf("dir-imported var: %v %v", got, err)
 	}
 	// the binding survives later reloads (each line re-parses the spec)
@@ -229,7 +229,7 @@ func TestREPLDirImport(t *testing.T) {
 	if _, err := r.EvalLine(ctx, `import "./oddname"`); err != nil {
 		t.Fatalf("oddname import: %v", err)
 	}
-	if got, err := eval(`oddpkg.Magic()`); err != nil || got != int64(7) {
+	if got, err := eval(`oddpkg.Magic()`); err != nil || got != "7" {
 		t.Fatalf("declared-name import: %v %v", got, err)
 	}
 	if _, err := eval(`oddname.Magic()`); err == nil {
@@ -240,7 +240,7 @@ func TestREPLDirImport(t *testing.T) {
 	if _, err := r.EvalLine(ctx, `import odd "./oddname"`); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := eval(`odd.Magic()`); err != nil || got != int64(7) {
+	if got, err := eval(`odd.Magic()`); err != nil || got != "7" {
 		t.Fatalf("aliased dir import: %v %v", got, err)
 	}
 
@@ -294,7 +294,7 @@ func TestREPLResultEcho(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if diff := cmp.Diff(int64(2), r.Display(v)); diff != "" {
+	if diff := cmp.Diff("2", r.Display(v)); diff != "" {
 		t.Fatalf("x (-want +got):\n%s", diff)
 	}
 	// a literal nil is an expression too — it echoes its nil spelling
@@ -302,7 +302,7 @@ func TestREPLResultEcho(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if diff := cmp.Diff("(0x0,0x0)", r.Display(v)); diff != "" {
+	if diff := cmp.Diff("<nil>", r.Display(v)); diff != "" {
 		t.Fatalf("nil (-want +got):\n%s", diff)
 	}
 	v, err = r.EvalLine(ctx, `strings.TrimPrefix("foo", "f")`)
@@ -424,7 +424,7 @@ func TestREPLCdLs(t *testing.T) {
 	}
 
 	// bare names — including unexported — resolve while inside
-	if got, err := eval("hiddenVar"); err != nil || got != int64(1) {
+	if got, err := eval("hiddenVar"); err != nil || got != "1" {
 		t.Fatalf("hiddenVar: %v %v", got, err)
 	}
 	if got, err := eval(`Hello("y")`); err != nil || got != "hello y" {
@@ -589,12 +589,12 @@ func TestREPLPinWrite(t *testing.T) {
 	if _, ok := p.Globals.Get("T2"); !ok {
 		t.Fatal("T2 not published")
 	}
-	if got, err := eval("T2{V: 9}.V"); err != nil || got != int64(9) {
+	if got, err := eval("T2{V: 9}.V"); err != nil || got != "9" {
 		t.Fatalf("T2 literal: %v %v", got, err)
 	}
 	// a method on a repl-declared type grafts onto the published typedef
 	mustEval(`func (t T2) M() int { return t.V + 1 }`)
-	if got, err := eval("T2{V: 2}.M()"); err != nil || got != int64(3) {
+	if got, err := eval("T2{V: 2}.M()"); err != nil || got != "3" {
 		t.Fatalf("method on published type: %v %v", got, err)
 	}
 
@@ -654,7 +654,7 @@ func TestREPLPinWrite(t *testing.T) {
 		t.Fatalf("written value lost on unpin: %v", got)
 	}
 	// the repl binding shadowed by the alias is restored, value intact
-	if got, err := eval("hiddenVar"); err != nil || got != int64(100) {
+	if got, err := eval("hiddenVar"); err != nil || got != "100" {
 		t.Fatalf("hiddenVar after unpin: %v %v", got, err)
 	}
 	// assigns now land in <repl> only — a plain shadow, not a patch
@@ -664,11 +664,11 @@ func TestREPLPinWrite(t *testing.T) {
 	if got := globalCell(p, "hiddenVar").Elem; got != int64(8) {
 		t.Fatalf("unpinned write leaked into the package: %v", got)
 	}
-	if got, err := eval("hiddenVar"); err != nil || got != int64(99) {
+	if got, err := eval("hiddenVar"); err != nil || got != "99" {
 		t.Fatalf("repl shadow: %v %v", got, err)
 	}
 	// a borrowed name (published var) still resolves through the dot-import
-	if got, err := eval("newvar"); err != nil || got != int64(5) {
+	if got, err := eval("newvar"); err != nil || got != "5" {
 		t.Fatalf("newvar after unpin: %v %v", got, err)
 	}
 
@@ -775,12 +775,12 @@ func TestREPLConstIota(t *testing.T) {
 		expr string
 		want any
 	}{
-		{"A + B*10 + C*100", int64(210)},
-		{"MB", int64(1 << 20)},
-		{"Mon", int64(1)},
-		{"Mon == W(1)", true}, // implicit repetition keeps the spec's type
-		{"z + w", int64(11)},
-		{"q", int64(5)},
+		{"A + B*10 + C*100", "210"},
+		{"MB", "1048576"},
+		{"Mon", "1"},
+		{"Mon == W(1)", "true"}, // implicit repetition keeps the spec's type
+		{"z + w", "11"},
+		{"q", "5"},
 	} {
 		v, err := r.EvalLine(ctx, c.expr)
 		if err != nil {
@@ -815,7 +815,7 @@ func TestREPLImportResolvesEagerly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if diff := cmp.Diff(int64(7), r.Display(v)); diff != "" {
+	if diff := cmp.Diff("7", r.Display(v)); diff != "" {
 		t.Errorf("oddpkg.Magic() (-want +got):\n%s", diff)
 	}
 	var pkgs []string
@@ -844,11 +844,11 @@ func TestREPLResultVars(t *testing.T) {
 		line string
 		want any
 	}{
-		{"1 + 2", int64(3)},
-		{"_1 * 10", int64(30)},
+		{"1 + 2", "3"},
+		{"_1 * 10", "30"},
 		{`"s"`, "s"},
-		{"x := 1", nil},        // no printed value: nothing remembered
-		{"_3 + _2", int64(33)}, // _1="s", _2=30, _3=3
+		{"x := 1", nil},   // no printed value: nothing remembered
+		{"_3 + _2", "33"}, // _1="s", _2=30, _3=3
 		{`func pair() (int, string) { return 7, "seven" }`, nil},
 	} {
 		if diff := cmp.Diff(c.want, eval(c.line)); diff != "" {
@@ -865,5 +865,47 @@ func TestREPLResultVars(t *testing.T) {
 	}
 	if diff := cmp.Diff("seven", eval("_1")); diff != "" {
 		t.Errorf("_1 after failure (-want +got):\n%s", diff)
+	}
+}
+
+func TestREPLDisplay(t *testing.T) {
+	ctx := context.Background()
+	r := NewEngine("testdata").NewREPL()
+	for _, line := range []string{
+		`import "fmt"`,
+		`type In struct{ A int }`,
+		`type T struct{ N int }`,
+		`func (t T) String() string { return fmt.Sprintf("T<%d>", t.N) }`,
+		`type Out struct { P *In; L []In; M map[string]In; E error; T T }`,
+		`var ns []int`,
+	} {
+		if _, err := r.EvalLine(ctx, line); err != nil {
+			t.Fatalf("%s: %v", line, err)
+		}
+	}
+	// %v layout, except a nil slice/map keeps %#v's T(nil) spelling so it
+	// reads apart from an empty one
+	for _, c := range []struct {
+		line string
+		want any
+	}{
+		{"Out{}", "{<nil> []repl.In(nil) map[string]repl.In(nil) <nil> T<0>}"},
+		{"Out{L: []In{}, M: map[string]In{}}", "{<nil> [] map[] <nil> T<0>}"},
+		{"&In{1}", "&{1}"},
+		{"T{5}", "T<5>"},
+		{"[]*In{nil}", "[<nil>]"},
+		{"ns", "[]int(nil)"},
+		{"nil", "<nil>"},
+		{`"s"`, "s"},
+		{`func pair() (int, error) { return 7, nil }`, nil},
+		{"pair()", "(7, <nil>)"},
+	} {
+		v, err := r.EvalLine(ctx, c.line)
+		if err != nil {
+			t.Fatalf("%s: %v", c.line, err)
+		}
+		if diff := cmp.Diff(c.want, r.Display(v)); diff != "" {
+			t.Errorf("%s (-want +got):\n%s", c.line, diff)
+		}
 	}
 }

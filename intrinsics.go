@@ -4291,6 +4291,9 @@ type fmtValue struct {
 	x     runtime.Value
 	et    *runtime.TypeDef // declared element/field typedef, for bad-verb naming
 	depth int
+	// nilSyntax spells a nil slice or map in %#v's T(nil) form under %v
+	// too, so REPL output tells it apart from an empty one ([] / map[]).
+	nilSyntax bool
 }
 
 func (s *fmtValue) Format(f fmt.State, verb rune) {
@@ -4431,7 +4434,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 				return fmt.Sprintf(formatOf(f, verb), float32(fv))
 			}
 		}
-		return (&fmtValue{c: s.c, x: v.V, et: v.Typ, depth: s.depth + 1}).render(verb, f)
+		return (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: v.V, et: v.Typ, depth: s.depth + 1}).render(verb, f)
 	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
 		dv, ok := runtime.Deref(v)
 		if !ok {
@@ -4456,11 +4459,11 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 			return false
 		}
 		if s.depth == 0 && composite(dv) {
-			return "&" + (&fmtValue{c: s.c, x: dv, depth: s.depth + 1}).render(verb, f)
+			return "&" + (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: dv, depth: s.depth + 1}).render(verb, f)
 		}
 		if s.depth == 0 {
 			if n, isNamed := dv.(*runtime.Named); isNamed && composite(n.V) {
-				return "&" + (&fmtValue{c: s.c, x: n.V, depth: s.depth + 1}).render(verb, f)
+				return "&" + (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: n.V, depth: s.depth + 1}).render(verb, f)
 			}
 		}
 		// scalar pointer: Go prints the address — a host pointer repr
@@ -4478,7 +4481,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		}
 		parts := make([]string, len(v.Fields))
 		for i, e := range v.Fields {
-			fv := (&fmtValue{c: s.c, x: e, et: fieldTypOf(v.Def, i), depth: s.depth + 1}).render(elemVerb(verb), f)
+			fv := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, et: fieldTypOf(v.Def, i), depth: s.depth + 1}).render(elemVerb(verb), f)
 			if f.Flag('+') && i < len(v.Def.Fields) {
 				fv = v.Def.Fields[i] + ":" + fv
 			}
@@ -4556,8 +4559,8 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 			}
 			// unordered kinds (bool, composites, mixed): order by the
 			// rendered key like fmtsort's fallback.
-			ka := (&fmtValue{c: s.c, x: a, depth: s.depth + 1}).render('v', f)
-			kb := (&fmtValue{c: s.c, x: b, depth: s.depth + 1}).render('v', f)
+			ka := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: a, depth: s.depth + 1}).render('v', f)
+			kb := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: b, depth: s.depth + 1}).render('v', f)
 			return ka < kb
 		})
 		kt, vt := mapElemTyps(v.Typ)
@@ -4565,8 +4568,8 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		parts := make([]string, 0, len(order))
 		for _, k := range order {
 			e, _ := v.Get(k)
-			kr := (&fmtValue{c: s.c, x: k, et: kt, depth: s.depth + 1}).render(ev, f)
-			vr := (&fmtValue{c: s.c, x: e, et: vt, depth: s.depth + 1}).render(ev, f)
+			kr := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: k, et: kt, depth: s.depth + 1}).render(ev, f)
+			vr := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, et: vt, depth: s.depth + 1}).render(ev, f)
 			parts = append(parts, kr+":"+vr)
 		}
 		if f.Flag('#') {
@@ -4576,7 +4579,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 	case *runtime.Tuple:
 		parts := make([]string, len(v.Elems))
 		for i, e := range v.Elems {
-			parts[i] = (&fmtValue{c: s.c, x: e, depth: s.depth + 1}).render(verb, f)
+			parts[i] = (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, depth: s.depth + 1}).render(verb, f)
 		}
 		return strings.Join(parts, " ")
 	case *runtime.TypedNil:
@@ -4642,7 +4645,7 @@ func (s *fmtValue) renderList(v *runtime.Slice, verb rune, f fmt.State) string {
 	ev := elemVerb(verb)
 	parts := make([]string, len(v.Elems))
 	for i, e := range v.Elems {
-		parts[i] = (&fmtValue{c: s.c, x: e, et: et, depth: s.depth + 1}).render(ev, f)
+		parts[i] = (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, et: et, depth: s.depth + 1}).render(ev, f)
 	}
 	if f.Flag('#') && verb == 'v' {
 		return typedefSpelling(v.Typ) + "{" + strings.Join(parts, ", ") + "}"
@@ -4674,7 +4677,7 @@ func (s *fmtValue) leaf(x runtime.Value, verb rune, f fmt.State) string {
 		if name == "" {
 			name = scriptScalarName(x)
 		}
-		return badVerb(verb, name, (&fmtValue{c: s.c, x: x, depth: s.depth + 1}).render('v', f))
+		return badVerb(verb, name, (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: x, depth: s.depth + 1}).render('v', f))
 	}
 	if i, ok := x.(int64); ok {
 		// script ints store int64 but spell int — including inside
@@ -4695,6 +4698,10 @@ func (s *fmtValue) leaf(x runtime.Value, verb rune, f fmt.State) string {
 // conversion form T(nil): []string(nil), map[string]int(nil), (*int)(nil).
 func (s *fmtValue) nilTyp(verb rune, f fmt.State, td *runtime.TypeDef) string {
 	if verb == 'v' && f.Flag('#') {
+		return nilGoSyntax(td)
+	}
+	if verb == 'v' && s.nilSyntax && td != nil &&
+		(td.Kind == runtime.KindSlice || td.Kind == runtime.KindMap) {
 		return nilGoSyntax(td)
 	}
 	if td == nil {

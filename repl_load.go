@@ -209,7 +209,7 @@ func (r *REPL) Load(ctx context.Context, ref string) ([]string, error) {
 	for _, k := range unit.keys {
 		if gv, ok := r.pkg.Globals.Get(k); ok {
 			if c, isCell := gv.(*runtime.Cell); isCell && c.ReadOnly && prevCells[k] != c {
-				redecl = append(redecl, fmt.Sprintf("const %s redeclared by %s (was %v)", k, filepath.Base(owner[k]), display(c.Elem)))
+				redecl = append(redecl, fmt.Sprintf("const %s redeclared by %s (was %v)", k, filepath.Base(owner[k]), r.Display(c.Elem)))
 			}
 		}
 	}

@@ -44,6 +44,14 @@ after every input (`reload`).
   The step runs once and stays in the source, so the package keeps
   parsing the same way. A trailing expression statement becomes the
   step's return value, and the REPL prints it.
+- **Result display** (`REPL.Display`) follows fmt's `%v`. `String()` and
+  `Error()` are honored, a pointer to a composite prints `&{...}`, and a
+  nil pointer or interface prints `<nil>`. The exception is a nil slice or
+  map, which keeps `%#v`'s spelling (`[]int(nil)`,
+  `map[string]int(nil)`), so it reads apart from an empty one (`[]`,
+  `map[]`). The distinction matters for `== nil` and for JSON (`null`
+  vs `[]`). A multi-value result prints `(a, b)`. The `print`/`println`
+  builtins keep the Go runtime's spelling (`0x0`, `[0/0]0x0`).
 - **Result variables.** The last three printed results are kept as `_1`
   (newest), `_2` and `_3`, the counterpart of IPython's `_`, `__`, `___`
   (Go's `_` is the blank identifier and cannot be read). A multi-value

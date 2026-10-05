@@ -333,7 +333,7 @@ var resultNames = []string{"_1", "_2", "_3"}
 // spelling (`_1[1]` is the second value). Results the REPL does not
 // print (no value) are not remembered.
 func (r *REPL) rememberResult(v runtime.Value) {
-	if display(v) == nil {
+	if v == nil {
 		return
 	}
 	if t, ok := v.(*runtime.Tuple); ok {
@@ -758,9 +758,9 @@ func (r *REPL) hoist(name string) {
 		}
 		r.pendingRedecl = append(r.pendingRedecl, namedValue{name: name, value: gv})
 		if pc, ok := r.enteredCell(name); ok && pc == c && r.writeMode {
-			r.warnings = append(r.warnings, fmt.Sprintf("const %s redeclared in package %s (was %v): every importer sees the new value", name, r.entered.Path, display(c.Elem)))
+			r.warnings = append(r.warnings, fmt.Sprintf("const %s redeclared in package %s (was %v): every importer sees the new value", name, r.entered.Path, r.Display(c.Elem)))
 		} else {
-			r.warnings = append(r.warnings, fmt.Sprintf("const %s redeclared (was %v)", name, display(c.Elem)))
+			r.warnings = append(r.warnings, fmt.Sprintf("const %s redeclared (was %v)", name, r.Display(c.Elem)))
 		}
 	}
 	r.pending = append(r.pending, name)
@@ -1140,9 +1140,29 @@ func (r *REPL) loadRef(ctx context.Context, ref string) (*runtime.Package, error
 	return r.engine.loadPath(ctx, ref)
 }
 
-// Display renders a runtime value for REPL output.
+// Display renders a runtime value for REPL output the way fmt's %v
+// does — String/Error methods, &{...} for a pointer to a composite,
+// <nil> for nil pointers and interfaces — except that a nil slice or
+// map keeps %#v's T(nil) spelling so it reads apart from an empty one.
+// A multi-value result renders as (a, b). nil means nothing to print.
 func (r *REPL) Display(v runtime.Value) any {
-	return display(v)
+	if v == nil {
+		return nil
+	}
+	vmm := r.engine.newVM()
+	vmm.EnsureProc()
+	defer vmm.ReleaseProc()
+	format := func(x runtime.Value) string {
+		return fmt.Sprintf("%v", &fmtValue{c: vmm, x: x, nilSyntax: true})
+	}
+	if t, ok := v.(*runtime.Tuple); ok {
+		parts := make([]string, len(t.Elems))
+		for i, e := range t.Elems {
+			parts[i] = format(e)
+		}
+		return "(" + strings.Join(parts, ", ") + ")"
+	}
+	return format(v)
 }
 
 // IncompleteInput reports whether a REPL fragment needs more input: either
