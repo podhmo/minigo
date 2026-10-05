@@ -241,6 +241,54 @@ combined round would teach it a `//minigo:generate` emit mode (or a
 flag) whose refs resolve into the same engine. Neither tool blocks
 the other; each already stands alone.
 
+### One `go generate` to run them all
+
+Suppose the `//minigo:generate` directive exists and a repo wants a
+single `go generate` (or `go generate ./...`) to cover it too. The
+answer is the meta-directive: one `//go:generate` line per package
+that invokes the *runner*, which fans out to every
+`//minigo:generate` in that directory.
+
+```go
+//go:generate go run <module>/cmd/minigo-generate .
+//     — or, once it ships as a binary on PATH:
+//go:generate minigo-generate
+```
+
+Under `go generate`, cwd is the file's own directory, so `.` is the
+package; the runner scans the dir's files and executes each
+`//minigo:generate` found there — one meta-line per directory, and
+`go generate ./...` behaves like the real thing. Two details make it
+correct rather than merely working:
+
+- **The runner must *re*-derive the env, not inherit it.** Under
+  `go generate` the ambient `GOFILE`/`GOPACKAGE`/`GOLINE` point at
+  the meta-line's file and position — forwarding them verbatim would
+  hand every inner tool the wrong context. The spike already sets
+  env from each directive's own `file:line`, which is exactly the
+  right behavior here.
+- **The scan happens per package, not per line.** One runner
+  invocation per directory (an engine start + a comment scan —
+  sub-second either way) rather than one `go run` per directive;
+  `go build` caching keeps the `go run` spelling cheap.
+
+gen-sync slots in naturally: its managed block can emit the meta-line
+as a *constant* — the run doesn't churn with the collected set — plus
+the `//minigo:generate` lines it inferred below it, so a file carries
+exactly one `//go:generate` while the interpreted set stays synced:
+
+```go
+// Code generated directives below are managed by gen-sync. DO NOT EDIT.
+//go:generate minigo-generate .
+//minigo:generate ../tools/stringer -type=Status
+//minigo:generate ../tools/enumvals -type=Status
+```
+
+That is the full loop: the declaration decides what runs, one
+`go generate` runs the runner, the runner runs every interpreted
+plugin in the package — and `//minigo:generate` never needs a real
+toolchain beyond the host binary to work.
+
 ## Deferred experiment: does it stay agent-friendly when inputs break?
 
 Same question as the task-run / gen-sync rounds: when inputs or plugin
