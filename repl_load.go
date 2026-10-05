@@ -32,6 +32,9 @@ type loadUnit struct {
 	// redefine.
 	keys []string
 	defs map[string]bool
+	// cells are the globals the load's initializers bound — a re-load
+	// replacing its own const is no redeclaration worth a warning.
+	cells map[string]*runtime.Cell
 	// shadowed names the unit's func/type/method keys redefined at the
 	// prompt since the load — reload drops them from the file's AST so
 	// the newer prompt definition wins. A fresh :load clears it.
@@ -58,6 +61,7 @@ type shadowMark struct {
 // until the next load. ref is a path, optionally quoted, relative to the
 // engine's start directory. It returns the loaded file paths.
 func (r *REPL) Load(ctx context.Context, ref string) ([]string, error) {
+	r.warnings = nil
 	if unq, err := strconv.Unquote(ref); err == nil {
 		ref = unq
 	}
@@ -87,22 +91,30 @@ func (r *REPL) Load(ctx context.Context, ref string) ([]string, error) {
 	}
 
 	unit := &loadUnit{origin: origin, defs: map[string]bool{}, shadowed: map[string]bool{}}
-	owner := map[string]string{} // decl key -> defining file
+	owner := map[string]string{}          // decl key -> defining file
+	declAt := map[string]token.Position{} // decl key -> where, for duplicate reports
 	for _, path := range paths {
 		src, err := os.ReadFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("load: %w", err)
 		}
-		sf, err := syntax.ParseFile(token.NewFileSet(), path, src)
+		fset := token.NewFileSet()
+		sf, err := syntax.ParseFile(fset, path, src)
 		if err != nil {
 			return nil, fmt.Errorf("load: %w", err)
 		}
-		for _, k := range fileDeclKeys(sf.AST, true) {
-			if prev, dup := owner[k]; dup {
-				return nil, fmt.Errorf("load: %s redeclared in %s and %s", k, prev, path)
+		// like Go, a name declared twice in the package (same file or
+		// not) rejects the load — no last-wins inside a load
+		for _, d := range sf.AST.Decls {
+			for _, k := range declKeys(d, true) {
+				at := fset.Position(d.Pos())
+				if prev, dup := declAt[k]; dup {
+					return nil, fmt.Errorf("load: %s: %s redeclared (previous declaration at %s)", at, k, prev)
+				}
+				declAt[k] = at
+				owner[k] = path
+				unit.keys = append(unit.keys, k)
 			}
-			owner[k] = path
-			unit.keys = append(unit.keys, k)
 		}
 		for _, k := range fileDeclKeys(sf.AST, false) {
 			unit.defs[k] = true
@@ -130,6 +142,23 @@ func (r *REPL) Load(ctx context.Context, ref string) ([]string, error) {
 		_ = r.reload() // best effort; the original error is the one that matters
 	}
 
+	// a const the prompt (or another file) holds is replaced like any
+	// redefinition — but say so, since `C = v` alone traps
+	var redecl []string
+	var prevCells map[string]*runtime.Cell
+	for _, u := range r.loads {
+		if u.origin == origin {
+			prevCells = u.cells
+		}
+	}
+	for _, k := range unit.keys {
+		if gv, ok := r.pkg.Globals.Get(k); ok {
+			if c, isCell := gv.(*runtime.Cell); isCell && c.ReadOnly && prevCells[k] != c {
+				redecl = append(redecl, fmt.Sprintf("const %s redeclared by %s (was %v)", k, filepath.Base(owner[k]), display(c.Elem)))
+			}
+		}
+	}
+
 	// the load is the newest definition: prompt decls of the same names go
 	r.decls = slices.DeleteFunc(r.decls, func(d string) bool {
 		for _, k := range promptDeclKeys(d) {
@@ -152,6 +181,15 @@ func (r *REPL) Load(ctx context.Context, ref string) ([]string, error) {
 		rollback()
 		return nil, err
 	}
+	unit.cells = map[string]*runtime.Cell{}
+	for _, k := range unit.keys {
+		if gv, ok := r.pkg.Globals.Get(k); ok {
+			if c, isCell := gv.(*runtime.Cell); isCell {
+				unit.cells[k] = c
+			}
+		}
+	}
+	r.warnings = redecl
 	return paths, nil
 }
 

@@ -357,6 +357,9 @@ func runREPL(ctx context.Context, in io.Reader, out io.Writer) error {
 						break
 					}
 					paths, err := r.Load(ctx, arg)
+					for _, w := range r.Warnings() {
+						fmt.Fprintf(out, "warning: %s\n", w)
+					}
 					if err != nil {
 						fmt.Fprintf(out, "error: %s\n", err)
 						break
@@ -395,6 +398,9 @@ func runREPL(ctx context.Context, in io.Reader, out io.Writer) error {
 		}
 		frag.Reset()
 		v, err := r.EvalLine(ctx, src)
+		for _, w := range r.Warnings() {
+			fmt.Fprintf(out, "warning: %s\n", w)
+		}
 		if err != nil {
 			fmt.Fprintf(out, "error: %s\n", err)
 			continue
