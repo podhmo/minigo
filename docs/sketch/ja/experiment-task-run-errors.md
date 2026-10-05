@@ -134,7 +134,7 @@ func Default() { task.Log("second") }
 
 ### G7. スタック枯渇のトレースバックが読めない量になる
 
-再帰（`func f() { f() }`）は `runtime trap: stack exhausted: frame limit 10000` と同一 `File "...", line 3, in f()` の羅列を吐く。エンジンには既に上限があり、`renderFrames` の `maxTracebackEntries = 1000` で先頭500+`... 9000 frames elided ...`+末尾500（実測 ~2000 行）まで絞られる。ただしこれは件数の cap であり、同一フレームの連続反復は畳まれない — cap 後でも ~2000 行の同一行が残り、人間もエージェントも読めない。`エントリ + ... repeated N times ...` 程度に畳むのが親切（CPython の `RecursionError` がやっている形。既存の head/tail cap とは補完関係で、fold を cap より先に走らせると同一再帰は ~7 行になる）。
+再帰（`func f() { f() }`）は `runtime trap: stack exhausted: frame limit 10000` と同一 `File "...", line 3, in f()` の羅列を吐く。エンジンには既に上限があり、`renderFrames` の `maxTracebackEntries = 1000` で先頭500+`... 9000 frames elided ...`+末尾500（実測 ~2000 行）まで絞られる。ただしこれは件数の cap であり、同一フレームの連続反復は畳まれない — cap 後でも ~2000 行の同一行が残り、人間もエージェントも読めない。長い run を `先頭 ~50 フレーム + ... repeated N more times ...` 程度に畳むのが親切（CPython の `RecursionError` がやっている形を、デバッグに必要な実フレーム数を残して控えめにした形。既存の head/tail cap とは補完関係で、fold を cap より先に走らせると同一再帰は ~50 行になる）。
 
 ### G8. その他・小さいもの
 
