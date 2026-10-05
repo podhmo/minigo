@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -213,16 +214,24 @@ func addFile(g *graph, m *module, path string) error {
 	if strings.HasSuffix(path, "_test.go") {
 		p.hasTests = true
 	}
-	mergeImports(p, f)
+	mergeImports(g, p, path, f)
 	return nil
 }
 
 // mergeImports unions a parsed file's imports into the package's set —
 // test-file imports included, so test-only dependencies create edges.
-func mergeImports(p *pkg, f *ast.File) {
+// The literal is decoded with strconv.Unquote so backquoted raw strings
+// and escapes resolve to the path the compiler sees; a literal that does
+// not decode is kept verbatim with a warning — keeping it can only widen
+// the affected set, while dropping it could silently drop coverage.
+func mergeImports(g *graph, p *pkg, path string, f *ast.File) {
 	for _, imp := range f.Imports {
-		path := strings.Trim(imp.Path.Value, `"`)
-		p.imports[path] = struct{}{}
+		ip, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			g.warnings = append(g.warnings, fmt.Sprintf("%s: malformed import literal %s (%v)", path, imp.Path.Value, err))
+			ip = strings.Trim(imp.Path.Value, `"`)
+		}
+		p.imports[ip] = struct{}{}
 	}
 }
 
