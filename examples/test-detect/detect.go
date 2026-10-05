@@ -64,8 +64,8 @@ func detectChanged(root string, changed []string, o options) (*detection, error)
 // graph (deleted trees, testdata, files outside the modules) produce a
 // warning — a silently dropped file would silently drop test coverage.
 // Inputs that clearly are not files at all (directories, Windows-style
-// `\` separators on this platform) warn too: they claim a package the
-// tool cannot see.
+// `\` separators pointing at nothing) warn too: they claim a package
+// the tool cannot see.
 func (d *detection) resolveChanged(changed []string) []*pkg {
 	var seeds []*pkg
 	seen := map[*pkg]bool{}
@@ -74,17 +74,20 @@ func (d *detection) resolveChanged(changed []string) []*pkg {
 		if f == "" {
 			continue
 		}
-		if filepath.Separator != '\\' && strings.ContainsRune(f, '\\') {
-			d.warnings = append(d.warnings, fmt.Sprintf("%s: contains '\\'; pass '/'-separated paths on this platform (skipped)", f))
-			continue
-		}
 		abs := f
 		if !filepath.IsAbs(abs) {
 			abs = filepath.Join(d.root, f)
 		}
 		abs = filepath.Clean(abs)
-		if info, err := os.Stat(abs); err == nil && info.IsDir() {
+		info, statErr := os.Stat(abs)
+		if statErr == nil && info.IsDir() {
 			d.warnings = append(d.warnings, fmt.Sprintf("%s: is a directory, not a .go file (skipped)", f))
+			continue
+		}
+		// A '\' in a path that does not exist is almost certainly a
+		// Windows separator; a real file may legitimately contain one.
+		if statErr != nil && filepath.Separator != '\\' && strings.ContainsRune(f, '\\') {
+			d.warnings = append(d.warnings, fmt.Sprintf("%s: contains '\\'; pass '/'-separated paths on this platform (skipped)", f))
 			continue
 		}
 		if !strings.HasSuffix(f, ".go") {

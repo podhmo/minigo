@@ -320,12 +320,20 @@ func TestModulePathOfHandlesCommentsAndQuotes(t *testing.T) {
 func TestDirectoryAndBackslashInputsWarn(t *testing.T) {
 	root := testRepo(t)
 	writeTree(t, root, map[string]string{"x.go/inner.go": "package z\n"})
-	d, err := detectChanged(root, []string{
+	inputs := []string{
 		"a",      // a real directory, no .go suffix: used to drop silently
 		"x.go",   // a directory whose name ends in .go: used to mis-seed its parent
 		`a\a.go`, // Windows-style separator on a unix run
 		"a/a.go", // a real file still resolves
-	}, options{})
+	}
+	// A real file may legitimately contain '\' on unix: it must resolve,
+	// not warn. Only nonexistent '\' paths are Windows-separator mistakes.
+	unixBackslash := filepath.Separator != '\\'
+	if unixBackslash {
+		writeTree(t, root, map[string]string{`a/we\ird.go`: "package a\n"})
+		inputs = append(inputs, `a/we\ird.go`)
+	}
+	d, err := detectChanged(root, inputs, options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,6 +345,9 @@ func TestDirectoryAndBackslashInputsWarn(t *testing.T) {
 		if !strings.Contains(warnText, want) {
 			t.Errorf("want a warning containing %q, got:\n%s", want, warnText)
 		}
+	}
+	if unixBackslash && strings.Contains(warnText, `we\ird.go`) {
+		t.Errorf("existing a/we\\ird.go must not warn, got:\n%s", warnText)
 	}
 	// Only the real file seeded anything.
 	if len(keptPaths(t, d)) == 0 {
