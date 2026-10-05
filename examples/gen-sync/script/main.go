@@ -30,7 +30,7 @@ import (
 // mode, the number drifting — plus an error joining every file the run
 // could not account for. A nonzero error means the reported count did
 // not see the whole picture; success is never faked.
-func Main(dir string, check bool, deps bool) (int, error) {
+func Main(dir string, check bool, deps bool, explain bool) (int, error) {
 	wd, _ := os.Getwd()
 	rootAbs, err := filepath.Abs(dir)
 	if err != nil {
@@ -47,17 +47,27 @@ func Main(dir string, check bool, deps bool) (int, error) {
 		return 0, errors.Join(errs...)
 	}
 	changed := 0
+	var fileErrs []error
 	for _, p := range plans {
-		c, err := syncFile(p, check, wd, rootAbs)
+		c, err := syncFile(p, check, explain, wd, rootAbs)
 		if err != nil {
-			errs = append(errs, err)
+			fileErrs = append(fileErrs, err)
 			continue
 		}
 		if c {
 			changed++
 		}
 	}
-	return changed, errors.Join(errs...)
+	if len(fileErrs) > 0 {
+		// a run that synced nine files and failed the tenth must not
+		// read as a clean pass — say how many failed, not just which.
+		action := "failed to write"
+		if check {
+			action = "could not be checked"
+		}
+		fmt.Printf("gen-sync: %d file(s) %s\n", len(fileErrs), action)
+	}
+	return changed, errors.Join(fileErrs...)
 }
 
 // filePlan pairs a file with the directives its decls want — computed
@@ -65,7 +75,28 @@ func Main(dir string, check bool, deps bool) (int, error) {
 // the pre-sync snapshot.
 type filePlan struct {
 	file     *inspect.File
-	expected []string
+	expected []directive
+}
+
+// directive pairs an inferred //go:generate line with the reason it was
+// inferred — `-explain` prints the reason back in input vocabulary.
+type directive struct {
+	line   string
+	reason string
+}
+
+// dedupeDirectives drops repeat lines keeping the first occurrence (and
+// its reason) — two rules can name the same tool line.
+func dedupeDirectives(ds []directive) []directive {
+	seen := map[string]bool{}
+	out := []directive{}
+	for _, d := range ds {
+		if !seen[d.line] {
+			seen[d.line] = true
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // pkgScan is one package's contribution to the run: the files that may
@@ -170,11 +201,11 @@ func collect(dir string, deps bool, wd string) ([]filePlan, []string, []error) {
 	plans := []filePlan{}
 	for _, s := range scans[:limit] {
 		for _, f := range s.files {
-			expected := []string{}
+			expected := []directive{}
 			for _, d := range inspect.Decls(f) {
 				expected = append(expected, directivesFor(ex, scans, s, d, f)...)
 			}
-			plans = append(plans, filePlan{f, scanx.Dedupe(expected)})
+			plans = append(plans, filePlan{f, dedupeDirectives(expected)})
 		}
 	}
 	return plans, warns, errs
@@ -261,7 +292,7 @@ func droppedFiles(s pkgScan) ([]string, []error) {
 // mode). Failures — an unreadable file, an unwritable one, a file that
 // resolves outside the scanned directory — are returned, not printed:
 // a file the tool could not sync must never look like "no change".
-func syncFile(p filePlan, check bool, wd, rootAbs string) (bool, error) {
+func syncFile(p filePlan, check bool, explain bool, wd, rootAbs string) (bool, error) {
 	f := p.file
 	path := f.Name
 	shown := displayPath(wd, path)
@@ -280,20 +311,35 @@ func syncFile(p filePlan, check bool, wd, rootAbs string) (bool, error) {
 	src := string(data)
 	lines, ends, sep := splitLines(src)
 	expected := p.expected
+	expectedLines := make([]string, len(expected))
+	for i, d := range expected {
+		expectedLines[i] = d.line
+	}
 
-	midx := scanx.FindSentinel(lines)
-	if midx < 0 && len(expected) == 0 {
-		return false, nil // nothing to manage here
+	// explain fires for every file whose decls earned directives,
+	// written or not — a generated file's unwritten directives are
+	// exactly the ones worth explaining.
+	if explain {
+		for _, d := range expected {
+			fmt.Println("gen-sync:", shown, "explain:", d.line, "—", d.reason)
+		}
 	}
 
 	// A file another generator owns ("// Code generated ... DO NOT
 	// EDIT.") is not ours to edit — the next regen would discard the
 	// block. Its decls still feed inference; the write is skipped
 	// with a warning, not an error — generated files living inside a
-	// scanned package is the normal case, not a breakage.
+	// scanned package is the normal case, not a breakage. Checked
+	// before the nothing-to-do return: a generated file with no
+	// directives still earns the line saying it was seen and skipped.
 	if hasGeneratedMarker(lines) {
 		fmt.Println("gen-sync:", shown, "skipping: another generator owns this file (// Code generated ... DO NOT EDIT.)")
 		return false, nil
+	}
+
+	midx := scanx.FindSentinel(lines)
+	if midx < 0 && len(expected) == 0 {
+		return false, nil // nothing to manage here
 	}
 
 	// out/outEnds are parallel: untouched lines keep their own line
@@ -319,14 +365,14 @@ func syncFile(p filePlan, check bool, wd, rootAbs string) (bool, error) {
 		// and leave everything past it — including hand-written
 		// directives — alone.
 		push(lines[:midx+1], ends[:midx+1])
-		pushNew(expected...)
+		pushNew(expectedLines...)
 		rest := lines[midx+1:]
 		runEnd := scanx.GenerateRunEnd(rest)
 		// keep duplicates: a doubled directive is a line the rewrite
 		// removes, so it must surface in the diff and the count.
 		have := nonBlank(rest[:runEnd])
-		dropped = missingFrom(have, expected)
-		added = missingFrom(expected, have)
+		dropped = missingFrom(have, expectedLines)
+		added = missingFrom(expectedLines, have)
 		// an empty tail means the managed run reached EOF: the
 		// directives' own line ends already yield the file's trailing
 		// newline — a separator here would leave a stray blank line.
@@ -343,8 +389,8 @@ func syncFile(p filePlan, check bool, wd, rootAbs string) (bool, error) {
 			pushNew("")
 		}
 		pushNew(scanx.Sentinel)
-		pushNew(expected...)
-		added = expected
+		pushNew(expectedLines...)
+		added = expectedLines
 		k := anchor
 		for k < len(lines) && strings.TrimSpace(lines[k]) == "" {
 			k++ // single blank line between block and decls
@@ -491,9 +537,10 @@ func deltaNote(dropped, added int) string {
 }
 
 // directivesFor infers the directives a declaration wants. Every rule is
-// independent: a decl can earn several directives, or none.
-func directivesFor(ex *scanx.Explorer, scans []pkgScan, s pkgScan, d *inspect.Decl, f *inspect.File) []string {
-	out := []string{}
+// independent: a decl can earn several directives, or none. Each line
+// carries its reason — the inference path `-explain` prints.
+func directivesFor(ex *scanx.Explorer, scans []pkgScan, s pkgScan, d *inspect.Decl, f *inspect.File) []directive {
+	out := []directive{}
 	if inspect.Kind(d) != "type" {
 		return out
 	}
@@ -515,33 +562,61 @@ func directivesFor(ex *scanx.Explorer, scans []pkgScan, s pkgScan, d *inspect.De
 			}
 		}
 		if (def.Text == "int" || def.Text == "string") && len(members) > 0 {
-			out = append(out, "//go:generate stringer -type="+name)
+			out = append(out, directive{
+				line:   "//go:generate stringer -type=" + name,
+				reason: fmt.Sprintf("enum: defined type + %d const member(s), first in %s", len(members), filepath.Base(members[0].File)),
+			})
 		}
 	case "StructType":
 		// field-tag inference, recursively: a struct opts into the
 		// (hypothetical) generator when it — or any struct reachable
 		// through its field types — requests the required check.
-		if hasRequiredTag(d) || reachHasRequired(ex, d) {
-			out = append(out, "//go:generate requiredgen -type="+name)
+		if hasRequiredTag(d) {
+			out = append(out, directive{
+				line:   "//go:generate requiredgen -type=" + name,
+				reason: "struct: field tag requests required in " + filepath.Base(f.Name),
+			})
+		} else if reachHasRequired(ex, d) {
+			out = append(out, directive{
+				line:   "//go:generate requiredgen -type=" + name,
+				reason: "struct: a reachable field type requests required",
+			})
 		}
 	case "InterfaceType":
 		// name inference: service-shaped interfaces get a mock.
 		if isMockable(name) {
 			base := filepath.Base(f.Name)
-			out = append(out, "//go:generate mockgen -source="+base+" -destination=mock_"+base)
+			out = append(out, directive{
+				line:   "//go:generate mockgen -source=" + base + " -destination=mock_" + base,
+				reason: "interface: name " + name + " matches the service suffixes",
+			})
 		}
 	}
 	// method-set inference: a concrete `Discriminator() string` marks a
 	// oneOf variant; the same requirement on an interface marks the union
 	// type itself, and collects its implementers as -variants=.
-	if scanx.HasMethod(d, s.foreign, "Discriminator", "string") {
-		out = append(out, "//go:generate oneofgen -type="+name)
+	if m := scanx.MethodNamed(d, s.foreign, "Discriminator", "string"); m != nil {
+		reason := "method set carries Discriminator() string"
+		if m.Via != nil {
+			reason += ", promoted from " + m.Via.Name
+		}
+		if m.Decl != nil {
+			reason += ", declared in " + filepath.Base(m.Decl.File)
+		}
+		out = append(out, directive{
+			line:   "//go:generate oneofgen -type=" + name,
+			reason: reason,
+		})
 	} else if scanx.RequiresMethod(d, "Discriminator", "func() string") {
 		gen := "//go:generate oneofgen -type=" + name
+		reason := "interface requires Discriminator() in " + filepath.Base(f.Name)
 		if vars := implementers(scans, s.path, d); len(vars) > 0 {
 			gen += " -variants=" + strings.Join(vars, ",")
+			reason += fmt.Sprintf("; %d implementer(s) found in the scanned subtree", len(vars))
+		} else {
+			reason += "; no implementers found"
 		}
-		out = append(out, gen)
+		out = append(out, directive{line: gen, reason: reason})
 	}
 	return out
 }

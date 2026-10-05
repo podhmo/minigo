@@ -3,11 +3,12 @@
 // logic is a minigo script (./script); this host only parses flags and
 // drives the interpreter.
 //
-//	gen-sync [-check] [-deps] [dir]
+//	gen-sync [-check] [-deps] [-explain] [dir]
 //
-//	-check  report drift instead of writing (for CI)
-//	-deps   also follow same-module imports transitively
-//	dir     package directory to scan (default ./app)
+//	-check    report drift instead of writing (for CI)
+//	-deps     also follow same-module imports transitively
+//	-explain  print why each directive was inferred
+//	dir       package directory to scan (default ./app)
 package main
 
 import (
@@ -33,6 +34,7 @@ func runMain(ctx context.Context, argv []string) int {
 	fs.SetOutput(os.Stderr)
 	check := fs.Bool("check", false, "report drift without writing (for CI)")
 	deps := fs.Bool("deps", false, "follow same-module imports transitively")
+	explain := fs.Bool("explain", false, "print why each directive was inferred")
 	if err := fs.Parse(argv); err != nil {
 		return 2
 	}
@@ -47,7 +49,7 @@ func runMain(ctx context.Context, argv []string) int {
 	if fs.NArg() == 1 {
 		dir = fs.Arg(0)
 	}
-	n, err := run(ctx, ".", "./script", dir, *check, *deps, os.Stdout)
+	n, err := run(ctx, ".", "./script", dir, *check, *deps, *explain, os.Stdout)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, describeFailure(err, dir, "./script"))
 		if *check {
@@ -69,13 +71,13 @@ func runMain(ctx context.Context, argv []string) int {
 	return 0
 }
 
-// run executes script.Main(dir, check, deps) through a minigo engine
-// rooted at engineDir. The script returns (changed, error): files it
-// could not sync ride the error so a failed file never reads as
+// run executes script.Main(dir, check, deps, explain) through a minigo
+// engine rooted at engineDir. The script returns (changed, error): files
+// it could not sync ride the error so a failed file never reads as
 // "nothing to do".
-func run(ctx context.Context, engineDir, scriptDir, dir string, check, deps bool, out io.Writer) (int, error) {
+func run(ctx context.Context, engineDir, scriptDir, dir string, check, deps, explain bool, out io.Writer) (int, error) {
 	e := minigo.NewEngine(engineDir, minigo.WithOutput(out))
-	res, err := e.Run(ctx, scriptDir, "Main", dir, check, deps)
+	res, err := e.Run(ctx, scriptDir, "Main", dir, check, deps, explain)
 	if err != nil {
 		return 0, err
 	}
