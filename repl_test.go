@@ -794,3 +794,37 @@ func TestREPLConstIota(t *testing.T) {
 		t.Errorf("B = 3: want constant assignment error, got %v", err)
 	}
 }
+
+func TestREPLImportResolvesEagerly(t *testing.T) {
+	ctx := context.Background()
+	r := NewEngine(".").NewREPL()
+
+	// an unresolvable path fails the import line, not the first use
+	if _, err := r.EvalLine(ctx, `import "nosuch/pkg"`); err == nil || !strings.Contains(err.Error(), `import "nosuch/pkg"`) {
+		t.Fatalf("want import error, got %v", err)
+	}
+	if _, ok := r.ImportPathOf("pkg"); ok {
+		t.Error("a failed import must not bind its name")
+	}
+
+	// the declared package name binds, not the path's last element
+	if _, err := r.EvalLine(ctx, `import "github.com/podhmo/minigo/testdata/oddname"`); err != nil {
+		t.Fatal(err)
+	}
+	v, err := r.EvalLine(ctx, "oddpkg.Magic()")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(int64(7), r.Display(v)); diff != "" {
+		t.Errorf("oddpkg.Magic() (-want +got):\n%s", diff)
+	}
+	var pkgs []string
+	for _, c := range r.Complete("odd") {
+		if c.Kind == CandPackage {
+			pkgs = append(pkgs, c.Name)
+		}
+	}
+	if diff := cmp.Diff([]string{"oddpkg"}, pkgs); diff != "" {
+		t.Errorf("package candidates for odd (-want +got):\n%s", diff)
+	}
+}

@@ -527,28 +527,33 @@ func (r *REPL) acceptDecls(ctx context.Context, fset *token.FileSet, f *ast.File
 	return r.addStep(fset, stepBody)
 }
 
-// acceptImport records one import spec for the rebuilt source. Directory
-// refs ("./x", "../x", "/abs/x") — illegal in real Go source but natural
-// at a prompt launched from a project root — resolve eagerly against the
-// engine's start directory: a typo fails the import line itself rather
-// than the first use, and the spec is rewritten to name the package's
-// declared name when the directory basename would bind the wrong (or an
-// invalid) identifier. Everything else keeps the lazy-load semantics of
-// ordinary imports: accepted now, resolved on first use.
+// acceptImport records one import spec for the rebuilt source. Every
+// import resolves eagerly so a typo or a path outside the module's
+// requires fails the import line itself rather than the first use.
+// Directory refs ("./x", "../x", "/abs/x") — illegal in real Go source
+// but natural at a prompt launched from a project root — resolve against
+// the engine's start directory. When the import is unaliased and the
+// package's declared name differs from the path's last element
+// (gopkg.in/yaml.v3 declares yaml; a dir basename may not even be an
+// identifier), the spec is rewritten to bind the declared name. The
+// package is located and indexed here; its initializers still run on
+// first use.
 func (r *REPL) acceptImport(ctx context.Context, fset *token.FileSet, spec *ast.ImportSpec) (string, error) {
 	path, err := strconv.Unquote(spec.Path.Value)
 	if err != nil {
 		return "", fmt.Errorf("repl: bad import path: %w", err)
 	}
-	if !resolve.LooksLikeDir(path) {
-		return formatNode(fset, spec), nil
+	var p *runtime.Package
+	if resolve.LooksLikeDir(path) {
+		p, err = r.engine.loadDir(ctx, r.anchor(path))
+	} else {
+		p, err = r.engine.loadPath(ctx, path)
 	}
-	p, err := r.engine.loadDir(ctx, r.anchor(path))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("import %q: %w", path, err)
 	}
 	// an explicit alias wins over the declared package name, just as Go
-	if spec.Name != nil || p.Name == (&syntax.Import{Path: path}).LocalName() {
+	if spec.Name != nil || p.Name == "" || p.Name == (&syntax.Import{Path: path}).LocalName() {
 		return formatNode(fset, spec), nil
 	}
 	return p.Name + " " + strconv.Quote(path), nil
