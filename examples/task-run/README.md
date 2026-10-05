@@ -32,6 +32,10 @@ virtual cwd — so the same relative path names the same file no matter
 where you invoke the binary from, and a task that runs `os.Chdir` never
 moves your shell.
 
+Besides the `task` helpers, a Taskfile may spawn subprocesses with plain
+`os/exec` (`exec.Command(...).Run()`, `Output()`, ...); commands default
+to the Taskfile's directory as their working directory, like `task.Run`.
+
 ## Dry run (`-n`)
 
 Like `make -n`, `-n` prints what a task would do instead of doing it:
@@ -54,7 +58,7 @@ tasks take against the current filesystem state. `os.Create` / `os.OpenFile`
 (which hand back a file) are not intercepted.
 
 ```console
-$ task-run -f testdata/Taskfile.go -n Default
+$ task-run -f testdata/Taskfile.go -n Default Clean Info
 linting...
 echo 'gofmt ok'
 building...
@@ -62,4 +66,12 @@ go version
 compiler:
 # os.WriteFile app.out ... 0644
 done
+cleaning...
+# os.Remove app.out
+go env GOOS GOARCH
 ```
+
+`task.Deps` runs Lint and Build in parallel, so their lines may interleave
+in another order. Commands go to stdout next to the script's own prints,
+while `task.Log` goes to stderr — `task-run -n ... 2>/dev/null` drops the
+log lines and keeps the commands.

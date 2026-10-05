@@ -37,7 +37,7 @@ func TestTasks(t *testing.T) {
 	for _, ti := range tasks {
 		byName[ti.Name] = ti
 	}
-	for _, name := range []string{"Default", "Lint", "Build", "Clean", "Dist", "Greet", "Paths"} {
+	for _, name := range []string{"Default", "Lint", "Build", "Clean", "Dist", "Greet", "Paths", "Info"} {
 		ti, ok := byName[name]
 		if !ok {
 			t.Errorf("task %s missing from -l list", name)
