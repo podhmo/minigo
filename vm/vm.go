@@ -240,6 +240,13 @@ var nilChanValue = reflect.ValueOf((chan struct{})(nil))
 
 // Spawn implements VMCaller.Spawn — the `go` statement's machinery.
 func (v *VM) Spawn(fn runtime.Value, args []runtime.Value) *runtime.Task {
+	return v.spawn(fn, args, nil)
+}
+
+// spawn is Spawn carrying the call site's spread element typedef into
+// generic inference — `go Sum(n...)` binds the same T=int the OpCall
+// path does. The public Spawn signature stays (fn, args).
+func (v *VM) spawn(fn runtime.Value, args []runtime.Value, spreadTd *runtime.TypeDef) *runtime.Task {
 	v.callMu.Lock()
 	if v.proc == nil {
 		if v.procDead {
@@ -272,7 +279,7 @@ func (v *VM) Spawn(fn runtime.Value, args []runtime.Value) *runtime.Task {
 	t := &runtime.Task{Done: make(chan struct{}), Parent: v.task}
 	child := &VM{H: v.H, proc: p, task: t}
 	go func() {
-		r, err := child.Call(fn, args)
+		r, err := child.callBounded(fn, args, spreadTd)
 		t.Result = r
 		t.Finish(err, IsProcExit(err))
 		if err != nil && !IsProcExit(err) {
@@ -320,6 +327,10 @@ type deferredCall struct {
 	fn   runtime.Value
 	args []runtime.Value
 	pos  token.Pos
+	// spreadTd is the element typedef a trailing `xs...` argument carried
+	// into the call — type inference still sees `Sum(n...)`'s []int when
+	// the nil slice expanded to zero arguments.
+	spreadTd *runtime.TypeDef
 }
 
 type frame struct {
@@ -492,6 +503,12 @@ func (v *VM) setIndirect(f *frame, ref, val runtime.Value) {
 // and are converted to errors here. The outermost Call on a VM is its
 // process's root: the proc is created lazily and killed on return.
 func (v *VM) Call(callee runtime.Value, args []runtime.Value) (result runtime.Value, err error) {
+	return v.callBounded(callee, args, nil)
+}
+
+// callBounded is Call carrying the call site's spread element typedef
+// into generic inference; nil spreadTd is an ordinary call.
+func (v *VM) callBounded(callee runtime.Value, args []runtime.Value, spreadTd *runtime.TypeDef) (result runtime.Value, err error) {
 	gid := goroutineID()
 	v.callMu.Lock()
 	if v.callDepth > 0 && v.callGid != gid {
@@ -506,6 +523,7 @@ func (v *VM) Call(callee runtime.Value, args []runtime.Value) (result runtime.Va
 		return t.Result, werr
 	}
 	v.callDepth++
+
 	v.callGid = gid
 	v.callMu.Unlock()
 	defer func() {
@@ -541,12 +559,14 @@ func (v *VM) Call(callee runtime.Value, args []runtime.Value) (result runtime.Va
 			err = ferr
 		}
 	}()
-	return v.call(callee, args)
+	return v.call(callee, args, spreadTd)
 }
 
 // call is Call without the boundary: script *Panic / *Trap propagate as Go
 // panics through intermediate frames so defers and recover() see them.
-func (v *VM) call(callee runtime.Value, args []runtime.Value) (runtime.Value, error) {
+// spreadTd carries the element typedef a trailing `xs...` slice supplied
+// at the call site; nil when the call had no spread.
+func (v *VM) call(callee runtime.Value, args []runtime.Value, spreadTd *runtime.TypeDef) (runtime.Value, error) {
 	for {
 		switch c := callee.(type) {
 		case *runtime.BuiltinFunc:
@@ -601,7 +621,7 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value) (runtime.Value, er
 		}
 		break
 	}
-	fr, err := v.prepFrame(callee, args)
+	fr, err := v.prepFrame(callee, args, spreadTd)
 	if err != nil {
 		return nil, err
 	}
@@ -718,7 +738,7 @@ func asError(r any) error {
 }
 
 // prepFrame builds the frame for callee.
-func (v *VM) prepFrame(callee runtime.Value, args []runtime.Value) (*frame, error) {
+func (v *VM) prepFrame(callee runtime.Value, args []runtime.Value, spreadTd *runtime.TypeDef) (*frame, error) {
 	var fn *runtime.Function
 	var upvals []*runtime.Cell
 	switch c := callee.(type) {
@@ -742,7 +762,7 @@ func (v *VM) prepFrame(callee runtime.Value, args []runtime.Value) (*frame, erro
 			return nil, err
 		}
 		if ok {
-			return v.prepFrame(tv, args)
+			return v.prepFrame(tv, args, spreadTd)
 		}
 	}
 	// generic function called without instantiation (Id(40)): infer the
@@ -750,7 +770,7 @@ func (v *VM) prepFrame(callee runtime.Value, args []runtime.Value) (*frame, erro
 	// an instantiated generic type arrives partly bound — the receiver's
 	// own type binds stay, only the method's own type params infer.
 	if fn != nil && len(fn.TParams) > 0 && hasUnbound(fn.TParams, fn.Binds) {
-		inferred, err := v.inferBinds(fn, args)
+		inferred, err := v.inferBinds(fn, args, spreadTd)
 		if err != nil {
 			return nil, err
 		}
@@ -1182,7 +1202,7 @@ func (v *VM) invokeDeferred(d deferredCall) {
 	if _, ok := asTypedNil(callee); ok {
 		panic(runtime.NilDerefPanic())
 	}
-	fr, err := v.prepFrame(callee, d.args)
+	fr, err := v.prepFrame(callee, d.args, d.spreadTd)
 	if err != nil {
 		panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
 	}
@@ -1571,9 +1591,9 @@ func (v *VM) loop(f *frame) {
 			// coerces like a store into `var p T`.
 			f.push(&runtime.Cell{Elem: x, Typ: declaredTag(x)})
 		case bytecode.OpCall:
-			args := v.popArgs(f, int(ins.A), int(ins.B), ins.Pos)
+			args, spreadTd := v.popArgs(f, int(ins.A), int(ins.B), ins.Pos)
 			fn := f.pop()
-			r, err := v.call(fn, args)
+			r, err := v.call(fn, args, spreadTd)
 			if err != nil {
 				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
 			}
@@ -1581,15 +1601,15 @@ func (v *VM) loop(f *frame) {
 		case bytecode.OpDefer:
 			// callee + args are evaluated now (Go semantics); the call itself
 			// runs at frame teardown, LIFO.
-			args := v.popArgs(f, int(ins.A), int(ins.B), ins.Pos)
+			args, spreadTd := v.popArgs(f, int(ins.A), int(ins.B), ins.Pos)
 			fn := f.pop()
-			f.defers = append(f.defers, deferredCall{fn: fn, args: args, pos: ins.Pos})
+			f.defers = append(f.defers, deferredCall{fn: fn, args: args, pos: ins.Pos, spreadTd: spreadTd})
 		case bytecode.OpGo:
 			// `go f(x)` spawns a real goroutine in this process: callee and
 			// args are evaluated now; the call runs concurrently.
-			args := v.popArgs(f, int(ins.A), int(ins.B), ins.Pos)
+			args, spreadTd := v.popArgs(f, int(ins.A), int(ins.B), ins.Pos)
 			fn := f.pop()
-			v.Spawn(fn, args)
+			v.spawn(fn, args, spreadTd)
 		case bytecode.OpEvalAST:
 			frag := consts[ins.A].(*bytecode.ASTFragment)
 			if v.H.CompileExpr == nil {
@@ -1599,7 +1619,7 @@ func (v *VM) loop(f *frame) {
 			if err != nil {
 				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
 			}
-			r, err := v.call(&runtime.Function{Pkg: f.fn.Pkg, File: frag.File, Name: "<eval>", Chunk: ch}, nil)
+			r, err := v.call(&runtime.Function{Pkg: f.fn.Pkg, File: frag.File, Name: "<eval>", Chunk: ch}, nil, nil)
 			if err != nil {
 				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
 			}
@@ -4847,7 +4867,7 @@ func (v *VM) memberOf(p *runtime.Package, name string) (runtime.Value, error) {
 
 // runInit executes a package __init__ function as a nested call on this VM.
 func (v *VM) runInit(fn *runtime.Function) error {
-	_, err := v.call(fn, nil)
+	_, err := v.call(fn, nil, nil)
 	return err
 }
 
@@ -5135,7 +5155,7 @@ func (v *VM) driveFuncIter(f *frame, it *runtime.Iterator, nvars, top, end int) 
 			return false, nil // body left the loop: producer must stop
 		},
 	}
-	if _, err := v.call(it.Fn, []runtime.Value{yield}); err != nil {
+	if _, err := v.call(it.Fn, []runtime.Value{yield}, nil); err != nil {
 		panic(&runtime.Trap{Pos: f.pos(), Reason: err.Error(), Err: err})
 	}
 }
@@ -7531,9 +7551,11 @@ func (v *VM) elemFamily(et *runtime.TypeDef) byte {
 // ---- references, spread, types, specials (round 4) ----
 
 // popArgs pops argc args off the stack. mode is the OpCall B flag: 1
-// expands a trailing slice/string spread (`f(xs...)`); 2 spreads a
-// lone call argument's result tuple (`f(g())`).
-func (v *VM) popArgs(f *frame, argc int, mode int, pos token.Pos) []runtime.Value {
+// expands a trailing slice/string spread (`f(xs...)`) and reports the
+// spread slice's element typedef so a generic callee can still infer
+// `Sum(n...)`'s T=int off a nil []int; 2 spreads a lone call argument's
+// result tuple (`f(g())` — the only multi-value spread Go allows).
+func (v *VM) popArgs(f *frame, argc int, mode int, pos token.Pos) ([]runtime.Value, *runtime.TypeDef) {
 	args := make([]runtime.Value, argc)
 	for i := argc - 1; i >= 0; i-- {
 		args[i] = f.pop()
@@ -7545,7 +7567,7 @@ func (v *VM) popArgs(f *frame, argc int, mode int, pos token.Pos) []runtime.Valu
 		if t, ok := args[0].(*runtime.Tuple); ok {
 			args = t.Elems
 		}
-		return args
+		return args, nil
 	}
 	// args stay lazy across the boundary: the callee's declared-param
 	// coerce applies Go's constant-to-type conversion (`f('a')` into an
@@ -7555,6 +7577,7 @@ func (v *VM) popArgs(f *frame, argc int, mode int, pos token.Pos) []runtime.Valu
 			f.trap("spread call with no arguments")
 		}
 		last := args[argc-1]
+		var declared *runtime.TypeDef
 		if dv, ok := runtime.Deref(last); ok {
 			last = dv
 		}
@@ -7565,10 +7588,13 @@ func (v *VM) popArgs(f *frame, argc int, mode int, pos token.Pos) []runtime.Valu
 			if tn.Typ.Kind != runtime.KindSlice {
 				f.trap("cannot use nil %s as spread argument", tdName(tn.Typ))
 			}
+			declared = tn.Typ
 			args = args[:argc-1] // nil slice spreads to zero args
-			return args
+			return args, v.elemTypedef(f, declared)
 		}
+		var namedTyp *runtime.TypeDef
 		if n, ok := last.(*runtime.Named); ok {
+			namedTyp = n.Typ
 			last = n.V
 		}
 		if str, ok := last.(string); ok {
@@ -7578,24 +7604,30 @@ func (v *VM) popArgs(f *frame, argc int, mode int, pos token.Pos) []runtime.Valu
 			for i := 0; i < len(str); i++ {
 				args = append(args, int64(str[i]))
 			}
-			return args
+			return args, nil
 		}
 		if _, isNil := last.(runtime.Nil); isNil {
 			args = args[:argc-1]
-			return args
+			return args, nil
 		}
 		if last == nil || last == runtime.NIL {
 			// f(nil...) on a nil slice expands to zero arguments
 			args = args[:argc-1]
-			return args
+			return args, nil
 		}
 		s, ok := last.(*runtime.Slice)
 		if !ok {
 			f.trap("cannot use %T as spread argument", last)
 		}
+		declared = s.Typ
 		args = append(args[:argc-1], s.Elems...)
+		spreadTd := v.elemTypedef(f, declared)
+		if spreadTd == nil && namedTyp != nil {
+			spreadTd = v.elemTypedef(f, namedTyp)
+		}
+		return args, spreadTd
 	}
-	return args
+	return args, nil
 }
 
 // typedefOf unwraps references down to a *TypeDef, or nil.
@@ -8942,7 +8974,7 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 		func() {
 			defer func() { _ = recover() }()
 			if ch, err := v.H.CompileExpr(td.Pkg, td.File, at.Len); err == nil && ch != nil {
-				if r, err2 := v.call(&runtime.Function{Pkg: td.Pkg, File: td.File, Name: "<arraylen>", Chunk: ch}, nil); err2 == nil {
+				if r, err2 := v.call(&runtime.Function{Pkg: td.Pkg, File: td.File, Name: "<arraylen>", Chunk: ch}, nil, nil); err2 == nil {
 					if iv, ok2 := lenConstInt(r); ok2 {
 						n, ok = iv, true
 					}
@@ -9704,7 +9736,7 @@ func hasUnbound(tparams []string, binds map[string]runtime.Value) bool {
 // instantiation) are kept, only the method's type params infer. Params
 // that stay unbound resolve to a run-time trap on use, matching the
 // compiler-is-total contract.
-func (v *VM) inferBinds(fn *runtime.Function, args []runtime.Value) (*runtime.Function, error) {
+func (v *VM) inferBinds(fn *runtime.Function, args []runtime.Value, spreadTd *runtime.TypeDef) (*runtime.Function, error) {
 	if fn.Decl == nil || fn.Decl.Type == nil || fn.Decl.Type.Params == nil {
 		return fn, nil
 	}
@@ -9751,6 +9783,12 @@ func (v *VM) inferBinds(fn *runtime.Function, args []runtime.Value) (*runtime.Fu
 		for variadic && pos < len(args) {
 			v.unifyType(ctx, tset, binds, et, args[pos])
 			pos++
+		}
+		if variadic && spreadTd != nil {
+			// `Sum(n...)` spreads n's elements away, but the slice's
+			// declared element type still teaches the bind — a nil or
+			// empty []int expands to zero args yet infers T=int.
+			v.unifyTypeDef(ctx, tset, binds, et, spreadTd)
 		}
 	}
 	if len(binds) == len(fn.Binds) {
