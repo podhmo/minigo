@@ -344,3 +344,50 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 - **子セッションへの委譲**: バグ2件＋欠落判定1件＋リファクタ4件の計7件を、各項目ごとに oracle probe（`go run`）で要/不要を判断させて 1 根因=1 PR で積ませる形に委譲。リファクタ①の「3本BFS」は実際には縮小済みで実質重複のみ残部修正、④は提案外の共有化アプローチを採用 — 文面通りではなく趣旨に沿った判断を要求した結果として妥当。
 - **新規ギャップの分離記録**: probe 中に見つかった `map[string]*[3]int` 内部書き込み・struct 要素 field write の残存 trap は「この stack の指摘項目」ではないため TODO.md への記録に留め、次ラウンドの入口とした。
 - **30 PR 上限には達せず枯渇終了**: 掃討キューが先に尽きたため打ち切りルール（30到達）を発動せず終了 — §5 の再開 prompt がそのまま通用する状態に戻った。
+
+### 6.13 実施ラウンド（round-11）: Stack #417 — difffuzz 掃討・バッチ幻影の正体・外部レビューの2段階委譲
+
+本セッションの全体像。発端は前回同様 TODO.md の difffuzz 系未完了項目を「1 root cause = 1 PR」の stacked PR で順次潰す指示（上限 100 PR — 指示文は 30 とあったが途中で「100のつもりだった」と訂正。枯渇時点で終了、枯れたら `gen` hunt で補充）。成果: **Stack #417 に 22 PR（#415–#455）を構築**。lang domain の hunt 補給から始め、SILENT/TRAP バケットを掘り進め、繰り返し出ていた「バッチ限定の幻影」の正体（panic 状態リーク）まで辿り着いた。終盤に届いた外部エージェントのレビュー（バグ2件＋リファクタ候補3件）はユーザーの指示通り「要不要判定付き」で子セッション2件に2段階委譲し、全件処理させた。
+
+#### 実施内容
+
+| フェーズ | 内容 | PR |
+|------|------|-----|
+| hunt 補給 + harness 修正 | lang domain 初回 hunt の発散を6件 PENDING pin として取り込み（`sliceelem_ptrmeth`/`methodset_ptrrecv`/`binop_evalorder`/`assert_typename`/`instant_tname`/`spread_nilinfer`）。併せて oracle が未到達の probe を gen 側で skip し emit 済み case を standalone 検証する harness 修正 | [#415](https://github.com/podhmo/minigo/pull/415)–[#416](https://github.com/podhmo/minigo/pull/416) |
+| SILENT 掃討 | index 経由の要素レシーバへ pointer method を bind（`sliceelem_ptrmeth`）、Go の receiver 規則を method set 判定と host interface probe に適用（`methodset_ptrrecv`）、純粋二項オペランドの評価を演算時点に遅延（`binop_evalorder`）、conversion panic の動的型綴りを Go の名づけ方に（`assert_typename`）、instantiation 型引数の DisplayName（`instant_tname`）、spread call の型引数を slice 要素 typedef から推論（`spread_nilinfer`） | [#418](https://github.com/podhmo/minigo/pull/418)–[#423](https://github.com/podhmo/minigo/pull/423) |
+| goroutine panic のプロセス意味論 | goroutine panic が fatal と決まった時点で proc を fail させるタイミング修正 + blocking host call 内で park した goroutine をプロセス死時に解放（goroutine 経由の spread 呼出しが hang していたのが正体）+ 回帰 pin（`spread_nilinfer_goroutine`） | [#424](https://github.com/podhmo/minigo/pull/424)–[#426](https://github.com/podhmo/minigo/pull/426) |
+| assert/deref の静的型 | assert オペランドの静的型を call/conversion 形に引き継ぐ（`assert_exprstatic`）、`starOperandIsValue` で bare name 以外の deref オペランドを値扱い（`mapkey_deref`） | [#427](https://github.com/podhmo/minigo/pull/427)–[#428](https://github.com/podhmo/minigo/pull/428) |
+| generic 推論の静的 bind | TRAP バケットの2系統（`undefined: T`×15、`cannot use interface value as *T`×9）の根因 — 型引数を値の動的型で unify していた。引数ごとの宣言 typedef をコンパイル時に積む `argStatics` を新設し、`popArgs`→`inferBinds`→`unifyType` で静的型を優先（defer/go も同じ statics を運搬） | [#432](https://github.com/podhmo/minigo/pull/432)（pin: `infer_staticbind`） |
+| バッチ幻影の正体（計画外の核心） | interface `==` の uncomparable panic — 同一 uncomparable 動的型なら nil 有無に関わらず panic（`ifaceeq_uncomparable`）。deferred call 内 panic の `inflight` リーク — 正常 drain が saved 状態を復元せず、消化済み panic が無関係な後続 `recover()` に届く（`deferpanic_stalerecover`）。後者が「standalone では発散しない」WARN の正体 | [#434](https://github.com/podhmo/minigo/pull/434), [#436](https://github.com/podhmo/minigo/pull/436) |
+| 外部レビュー phase 1（子委譲・バグ） | `sync.Once.Do` 内 panic が呼出し側 recover に届かない → helper goroutine を `proc.syncCallers` に登録し同期コールバック専用の `syncCall` 子 VM に reroute、panic を join 経由で呼出し panic に変換（`synconce_panicrecover`）。埋め込み `struct{ A; *T }` で `A.T` の値訪問が共有 `seen` を消費し直接 `*T` の pointer receiver を隠す → cycle 検出を per-path 化（`methodset_embedpath`、methodSetOfU/methodFuncs 双子両方） | [#448](https://github.com/podhmo/minigo/pull/448), [#449](https://github.com/podhmo/minigo/pull/449) |
+| 外部レビュー phase 2（子委譲・リファクタ） | `ifaceMember`≡`ifaceOffer` → `runtime.IfaceMember`（6 call site 挙動不変）。`methodSetOfU`+`methodFuncs` → `methodWalkU` 一本化 — **drift 実在**: methodFuncs が AST 無し facade interface 埋め込み（`struct{ fmt.Stringer }`）を見落としていた。`funcTypeName`+`funcSigSpelling` → `runtime.FuncGoSpelling`（Pkg/File/Binds ctx 引き継ぎ、`TypGoSpelling` で bound 型引数を clause 名で修飾） | [#452](https://github.com/podhmo/minigo/pull/452)–[#454](https://github.com/podhmo/minigo/pull/454) |
+| レビュー検証中の新規発見 | `x.(func(int) int)` が `func(Point) Point` に true — assert switch が匿名 func typedef を kind のみで受理。修正は本ラウンドの粒度を超えるため TODO.md 記録に留めた | [#455](https://github.com/podhmo/minigo/pull/455) |
+| 本レポート | この round-11 セクションの追記 | 本 PR |
+
+#### 残りの状況
+
+- difffuzz 系キューは枯渇して終了（22/100 PR、打ち切り未発動）。gen hunt は lang seeds 202610059–066 連続クリーン（前回 3 SILENT + 24 TRAP だった 059 の再実行を含み、#432 系修正の実効を確認）、num/text/reflect 各 seed 全 PASS。testdata/difffuzz に PENDING 残りなし（全て必須テストに昇格）。
+- TODO.md の difffuzz 節の open 残件は2件: `$GOROOT/test` corpus sweep（境界クラスのみ）と #455 で記録した func-signature assert gap — 次ラウンドの入口。
+- Stack #417 は 22 PR 全て OPEN・MERGEABLE・checks SUCCESS。
+- 外部レビューは全件処理: バグ2件はどちらも真（stack tip で byte-for-byte 再現確認後に委譲）、リファクタ3件は全て「要」判定で実施 + 副産物の新規ギャップ記録1件。
+
+#### 不備の振り返り
+
+- **panic bookkeeping の対称性を `r!=nil` 経路にしか書いていなかった（#436）**: `runOneDefer` が deferred call の panic を `v.inflight` にインストールする経路を入れたとき、正常 drain（`r==nil`）終端で `p = v.inflight` として取り出すだけで saved 状態を復元していなかった。結果、包囲する unwind がその panic を「外側の panic」と読み、try-recover の `v.inflight = saved` 復元で**消化済み panic が復活**し無関係な後続 `recover()` に届く — panic 状態機械として最悪の部類のリーク。panic state を touch する経路は全て saved/restore 対称を確認する必要がある。
+- **nil-ness の分岐表に型レベル規則が吸収されていた（#434）**: `IfaceNil`/`TypedNil` の switch が nil-ness で早期 return するため、「動的型が同一 uncomparable 型なら nil 同士でも panic」という Go の型規則が値の nil 分岐に隠れて素通りしていた。「値が nil か」より先に「動的型ペアが panic 条件か」を見る前置チェック（`uncomparableDynamicTyp`）を eqlValue に置いて解消。ifaceEql 側への二重チェックは Nil-family が全て eqlValue に流すため冗長と判断して置かなかった。
+- **generic unify が「値の型」を先に見ていた（#432）**: `unifyType` が引数の動的 typedef を優先し、`id(error値)` が `undefined: T`、interface 経由が `cannot use *T` に。Go の型推論は**式の宣言型**への制約解消であって値の型ではない — 動的型は spread/nil 補完の fallback に留めるべきだった。`argStatics` で「コンパイル時に分かる宣言型」を実行時に運ぶ経路を新設した。
+- **同期呼出しを goroutine で実装すると panic の帰属が変わる（#448）**: `callReflectFunc` が blocking host call を helper goroutine に逃がす実装のため、`once.Do(f)` 内の `vc.Call` が「外部 goroutine からの呼出し」に見え、子 VM の panic が `failProc`/`p.fail` でプロセス全体を殺していた。「API 上は同期だが実装上は別 goroutine」の境界では panic をどの goroutine のものとするか設計で明示しないと crash 意味論が漏れる。kill site が spawn 境界と子 VM root の2箇所ある点も子セッションの発見 — 片方だけの修正では再発する。
+- **経路共有の seen map が別経路の探索を汚す（#449）**: embed 探索の cycle 検出 `seen` を全経路共有すると「値として見た T」が「ポインタ経路の `*T`」の訪問を消費する。`defer delete(seen, td)` の per-path 化で各経路が自身の寄与を持つ形に。`methodSetOfU`/`methodFuncs` 双子関数が同一バグを共有していたのはコピー由来で、#453 の `methodWalkU` 一本化で構造的に閉じた。
+- **「リファクタ候補」の査定が実は drift の発見だった（#453）**: 重複指摘と思って統合したら、片側だけが AST 無し型（host 由来の facade interface 埋め込み）を扱えていなかった。2実装の統合は差分の照合でもあり、差が出たら oracle でどちらが正しいか決着させるのが定石。
+- **匿名 func 型の assert が kind のみで受理していた（#455 記録）**: assert switch が `KindFunc` なら全 func 値に true。子の検証で発見したが根因は別系統（typedef の signature 比較が要る）のため TODO.md 記録に留めた。
+
+#### 計画外の記録と判断
+
+- **「standalone で発散しない」WARN の繰り返しが emit ノイズではなく実バグだった**: hunt で繰り返し出ていた「バッチ内では TRAP だが単体では PASS」系を emit-skip 幻影と決めつけて棚上げしていたが、バッチプログラム（`/tmp/difffuzz-*/genN_M/main.go` — 全 probe が `try(N, ...)` で VM を共有）を minigo+go で直接走らせ、**try() prefix の delta-debug で poisoning probe（defer 内 `*v_pp_0` nil deref）まで絞り込んだ**ところ、probe 間を跨ぐ panic 状態リーク（#436）と判明。6系統の発散バッチ全てが同じ根因で修正で全消え。教訓: 「バッチ限定の幻影」はむしろ共有-VM 状態機械のバグを照らす固有の検出面であり、WARN 分類で握り潰さずバッチプログラム単位で bisect する手順を確立した。
+- **interface `==` の panic を「nil でも panic」に寄せる判断**: `any([]int(nil)) == any([]int{1})` を false と返す実装は一見 reasonable だが、Go の規則は「比較は値ではなく型に対して判定される」。pin は nil×live・live×nil・nil×nil・map・`== nil`・comparable 配列・`!=` の9 probe で境界を固定した。
+- **レビュー指摘は受理前に stack tip で再現確認**: 外部レビューの2件は古い差分への指摘の可能性があるため、委譲前に `/tmp/oncebug`/`/tmp/embedbug` の repro を自分で作り stack tip で byte-for-byte 再現を確認。両方真のバグだったので「要不要判定付き」の子委譲に回した（§6.12 の「レビュー指摘は現スタックトップで再現確認してから直す」と同じ運用）。
+- **2段階委譲を直列にした理由**: phase 2 の `methodSetOfU`/`methodFuncs` 統合候補は phase 1 の埋め込み `seen` バグと同一領域なので、バグ修正の着陸を待ってからリファクタに当たらせた。子には「要不要を自分で判断し優先度順に直す」権限を渡し、全件「要」判定で処理された。
+- **`sync.Once` の panic 意味論を3条件で固定**: 「同期コールバックの panic は呼出し側で recover 可能」「真の外部 goroutine コールバック（`wg.Go`/`time.AfterFunc`/`go`）はプロセス crash のまま」「Once は panic 後も done 扱い（Go 仕様）」を oracle と突き合わせて境界を固定。「host call は全部呼出しに返す」と雑にやると goroutine crash 意味論自体が消える。
+- **検証で見つかった新規 divergence は修正せず記録**: phase-2 子が発見した func-signature assert gap は本レビューの指摘項目ではなく根因も別系統のため、1 root cause = 1 PR の流儀通り TODO.md 記録のみの PR（#455）に切り分けて次ラウンドの入口とした。
+- **hunt 枯渇をもって完了と判断**: lang 連続クリーン（発散が出た 059 の再実行を含む）+ num/text/reflect 全 PASS で補給を打ち切り。100 上限には遠く及ばず。
+- **取りまとめ役の継続**: round-10 で確立した子セッション委譲の運用を踏襲 — バグ系・リファクタ系それぞれ全項目を要不要判定→修正→pin→CI 確認まで子に担わせ、自分は repro 検証・積み上げ管理・本レポートに集中。2件とも完遂。
