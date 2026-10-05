@@ -2,9 +2,12 @@ package minigo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/token"
+	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -26,6 +29,7 @@ import (
 // ignored.
 type loadUnit struct {
 	origin string // absolute path given to :load (file or directory)
+	dir    bool   // origin is a directory
 	files  []loadedFile
 	// keys are the decl keys the files declare (var/const names
 	// included); defs the func/type/method subset a prompt decl can
@@ -73,6 +77,9 @@ func (r *REPL) Load(ctx context.Context, ref string) ([]string, error) {
 		return nil, fmt.Errorf("load: %w", err)
 	}
 	st, err := os.Stat(origin)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("load: %s: no such file or directory (:load takes a .go file or a directory; for a package by import path use import or :cd)", ref)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("load: %w", err)
 	}
@@ -88,9 +95,19 @@ func (r *REPL) Load(ctx context.Context, ref string) ([]string, error) {
 			return nil, fmt.Errorf("load: %s is not a .go file", ref)
 		}
 		paths = []string{origin}
+		for _, u := range r.loads {
+			if u.dir && u.origin == filepath.Dir(origin) {
+				return nil, fmt.Errorf("load: %s is part of :load %s — load the directory again to reload it", ref, u.origin)
+			}
+		}
+	}
+	// replaces reports whether u is superseded by this load: the same ref
+	// again, or — loading a directory — a single file loaded from it.
+	replaces := func(u *loadUnit) bool {
+		return u.origin == origin || (st.IsDir() && !u.dir && filepath.Dir(u.origin) == origin)
 	}
 
-	unit := &loadUnit{origin: origin, defs: map[string]bool{}, shadowed: map[string]bool{}}
+	unit := &loadUnit{origin: origin, dir: st.IsDir(), defs: map[string]bool{}, shadowed: map[string]bool{}}
 	owner := map[string]string{}          // decl key -> defining file
 	declAt := map[string]token.Position{} // decl key -> where, for duplicate reports
 	for _, path := range paths {
@@ -124,7 +141,7 @@ func (r *REPL) Load(ctx context.Context, ref string) ([]string, error) {
 	// a name another load already owns is a cross-file redeclaration in
 	// Go terms — unload the other ref (or :reset) first
 	for _, u := range r.loads {
-		if u.origin == origin {
+		if replaces(u) {
 			continue
 		}
 		for _, k := range u.keys {
@@ -145,10 +162,10 @@ func (r *REPL) Load(ctx context.Context, ref string) ([]string, error) {
 	// a const the prompt (or another file) holds is replaced like any
 	// redefinition — but say so, since `C = v` alone traps
 	var redecl []string
-	var prevCells map[string]*runtime.Cell
+	prevCells := map[string]*runtime.Cell{}
 	for _, u := range r.loads {
-		if u.origin == origin {
-			prevCells = u.cells
+		if replaces(u) {
+			maps.Copy(prevCells, u.cells)
 		}
 	}
 	for _, k := range unit.keys {
@@ -168,8 +185,10 @@ func (r *REPL) Load(ctx context.Context, ref string) ([]string, error) {
 		}
 		return false
 	})
-	if i := slices.IndexFunc(r.loads, func(u *loadUnit) bool { return u.origin == origin }); i >= 0 {
+	if i := slices.IndexFunc(r.loads, replaces); i >= 0 {
+		// take the first superseded unit's place, drop the rest
 		r.loads[i] = unit
+		r.loads = slices.Concat(r.loads[:i+1], slices.DeleteFunc(slices.Clone(r.loads[i+1:]), replaces))
 	} else {
 		r.loads = append(r.loads, unit)
 	}

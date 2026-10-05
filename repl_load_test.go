@@ -320,3 +320,43 @@ func TestREPLConstRedeclare(t *testing.T) {
 	}
 	replFails(t, r, "C = 2", "cannot assign to constant")
 }
+
+func TestREPLLoadFileThenDir(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{
+		"pkg/f.go": "package p\nconst K = 1\nfunc F() int { return K }\n",
+		"pkg/g.go": "package p\nfunc G() int { return 2 }\n",
+	})
+	r := NewEngine(dir).NewREPL()
+	// f.go and ./pkg/f.go name the same load
+	for _, ref := range []string{"pkg/f.go", "./pkg/f.go"} {
+		if _, err := r.Load(ctx, ref); err != nil {
+			t.Fatalf("Load(%s): %v", ref, err)
+		}
+	}
+	if diff := cmp.Diff([]string{filepath.Join(dir, "pkg/f.go")}, r.Loaded()); diff != "" {
+		t.Errorf("Loaded (-want +got):\n%s", diff)
+	}
+	// the directory absorbs the single-file load instead of clashing on F
+	if _, err := r.Load(ctx, "./pkg"); err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff([]string{filepath.Join(dir, "pkg")}, r.Loaded()); diff != "" {
+		t.Errorf("Loaded after dir (-want +got):\n%s", diff)
+	}
+	if len(r.Warnings()) != 0 {
+		t.Errorf("absorbing its own const must not warn: %v", r.Warnings())
+	}
+	if diff := cmp.Diff(int64(3), replEval(t, r, "F() + G()")); diff != "" {
+		t.Errorf("F() + G() (-want +got):\n%s", diff)
+	}
+	// a file of a loaded directory reloads through the directory
+	if _, err := r.Load(ctx, "pkg/g.go"); err == nil || !strings.Contains(err.Error(), "is part of :load "+filepath.Join(dir, "pkg")) {
+		t.Errorf("Load(pkg/g.go): want part-of error, got %v", err)
+	}
+	// import paths are not filesystem paths
+	if _, err := r.Load(ctx, "strings"); err == nil || !strings.Contains(err.Error(), "use import or :cd") {
+		t.Errorf("Load(strings): want import-path hint, got %v", err)
+	}
+}

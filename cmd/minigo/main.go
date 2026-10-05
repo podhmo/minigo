@@ -216,7 +216,9 @@ const replHelp = `commands:
              ref is a path, ./dir, or a name bound by an import here
   :load <file|dir>  read a .go file (or a directory's files) into the
                     session: its decls become callable here, each file
-                    keeps its own imports; again reloads, :load alone lists
+                    keeps its own imports; again reloads, :load alone lists.
+                    takes filesystem paths only — for a package by import
+                    path, use import or :cd
   :doc <pkg>[.<sym>]  run go doc (pkg: imported name, "path", or path).
                       note: this is the Go toolchain's documentation, not
                       minigo's — a bound package may expose fewer symbols
