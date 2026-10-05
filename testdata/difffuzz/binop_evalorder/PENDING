@@ -1,4 +1,0 @@
-SILENT/value (lang hunt, seed 20261005, emitted lang_value_ba4e8d62)
-shape:  return c + inc() inside a function frame
-go:     6  (inc() runs before c is read: 3 + 3)
-minigo: 5  (left operand read eagerly: 2 + 3)
