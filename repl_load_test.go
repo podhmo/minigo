@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/podhmo/minigo/runtime"
 )
 
 // writeFiles lays out name -> source under dir.
@@ -361,5 +362,156 @@ func TestREPLLoadFileThenDir(t *testing.T) {
 	// import paths are not filesystem paths
 	if _, err := r.Load(ctx, "strings"); err == nil || !strings.Contains(err.Error(), "use import or :cd") {
 		t.Errorf("Load(strings): want import-path hint, got %v", err)
+	}
+}
+
+// Regression tests from the stack review: each failing input or load must
+// leave the session as it was, and the newest definition wins both ways.
+func TestREPLReviewRegressions(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("failed decl input keeps a same-named prompt var", func(t *testing.T) {
+		r := NewEngine(t.TempDir()).NewREPL()
+		replEval(t, r, "G := 1")
+		replFails(t, r, "func G() {}\nvar z Nope", "Nope")
+		if diff := cmp.Diff(int64(1), replEval(t, r, "G")); diff != "" {
+			t.Errorf("G (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("failed re-load keeps the previous load", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFiles(t, dir, map[string]string{"w.go": "package w\nvar W = 5\nfunc F() int { return W }\n"})
+		r := NewEngine(dir).NewREPL()
+		if _, err := r.Load(ctx, "w.go"); err != nil {
+			t.Fatal(err)
+		}
+		writeFiles(t, dir, map[string]string{"w.go": "package w\nvar X = boom()\nfunc boom() int { panic(\"boom\") }\nfunc F() int { return 0 }\n"})
+		if _, err := r.Load(ctx, "w.go"); err == nil {
+			t.Fatal("want init failure")
+		}
+		if diff := cmp.Diff(int64(10), replEval(t, r, "W + F()")); diff != "" {
+			t.Errorf("W + F() (-want +got):\n%s", diff)
+		}
+		replFails(t, r, "X", "undefined: X")
+	})
+
+	t.Run("failed load keeps colliding prompt const and var", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFiles(t, dir, map[string]string{"d.go": "package d\nconst C = 2\nvar V = 8\nvar X = boom()\nfunc boom() int { panic(\"boom\") }\n"})
+		r := NewEngine(dir).NewREPL()
+		replEval(t, r, "const C = 1")
+		replEval(t, r, "V := 7")
+		if _, err := r.Load(ctx, "d.go"); err == nil {
+			t.Fatal("want init failure")
+		}
+		if diff := cmp.Diff(int64(8), replEval(t, r, "C + V")); diff != "" {
+			t.Errorf("C + V (-want +got):\n%s", diff)
+		}
+		if len(r.Warnings()) != 0 {
+			t.Errorf("failed load must not warn: %v", r.Warnings())
+		}
+	})
+
+	t.Run("init runs once when load is the first input", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFiles(t, dir, map[string]string{"i.go": "package i\nvar hits int\nvar N = next()\nfunc next() int { hits++; return hits }\nfunc init() { hits += 10 }\n"})
+		r := NewEngine(dir).NewREPL()
+		if _, err := r.Load(ctx, "i.go"); err != nil {
+			t.Fatal(err)
+		}
+		if diff := cmp.Diff(int64(11), replEval(t, r, "hits")); diff != "" {
+			t.Errorf("hits (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("newest definition wins between prompt values and loaded decls", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFiles(t, dir, map[string]string{
+			"h.go": "package h\nfunc H() int { return 1 }\n",
+			"v.go": "package v\nvar V = 10\n",
+		})
+		r := NewEngine(dir).NewREPL()
+		replEval(t, r, "H := 7")
+		if _, err := r.Load(ctx, "h.go"); err != nil {
+			t.Fatal(err)
+		}
+		if diff := cmp.Diff(int64(1), replEval(t, r, "H()")); diff != "" {
+			t.Errorf("loaded func over prompt var (-want +got):\n%s", diff)
+		}
+		if _, err := r.Load(ctx, "v.go"); err != nil {
+			t.Fatal(err)
+		}
+		replEval(t, r, "func V() int { return 2 }")
+		if diff := cmp.Diff(int64(2), replEval(t, r, "V()")); diff != "" {
+			t.Errorf("prompt func over loaded var (-want +got):\n%s", diff)
+		}
+		// the next load restores the file's var
+		if _, err := r.Load(ctx, "v.go"); err != nil {
+			t.Fatal(err)
+		}
+		if diff := cmp.Diff(int64(10), replEval(t, r, "V")); diff != "" {
+			t.Errorf("V after re-load (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("pin: load redefines a published decl; const redeclaration warns", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFiles(t, dir, map[string]string{
+			"pk/pk.go": "package pk\nconst K = 1\nfunc G() int { return K }\nfunc F() int { return 1 }\n",
+			"ld/f.go":  "package ld\nfunc F() int { return 99 }\n",
+		})
+		r := NewEngine(dir).NewREPL()
+		if _, err := r.Enter(ctx, "./pk"); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Pin(); err != nil {
+			t.Fatal(err)
+		}
+		replEval(t, r, "func F() int { return 2 }")
+		if _, err := r.Load(ctx, "ld/f.go"); err != nil {
+			t.Fatal(err)
+		}
+		if diff := cmp.Diff(int64(99), replEval(t, r, "F()")); diff != "" {
+			t.Errorf("F after load under pin (-want +got):\n%s", diff)
+		}
+		replEval(t, r, "const K = 5")
+		if diff := cmp.Diff([]string{"const K redeclared in package " + r.Current().Path + " (was 1): every importer sees the new value"}, r.Warnings()); diff != "" {
+			t.Errorf("pinned const warning (-want +got):\n%s", diff)
+		}
+		if diff := cmp.Diff(int64(5), replEval(t, r, "G()")); diff != "" {
+			t.Errorf("G sees the patched const (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("dir and file overlap follows the dir's file list", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFiles(t, dir, map[string]string{
+			"dd/a.go":      "package dd\nfunc A() int { return 1 }\n",
+			"dd/a_test.go": "package dd\nfunc T1() int { return 2 }\n",
+		})
+		r := NewEngine(dir).NewREPL()
+		if _, err := r.Load(ctx, "dd/a_test.go"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Load(ctx, "dd"); err != nil {
+			t.Fatal(err)
+		}
+		if diff := cmp.Diff(int64(3), replEval(t, r, "A() + T1()")); diff != "" {
+			t.Errorf("A() + T1() (-want +got):\n%s", diff)
+		}
+		if _, err := r.Load(ctx, "dd/a_test.go"); err != nil {
+			t.Errorf("a file outside the dir's file list loads on its own: %v", err)
+		}
+	})
+}
+
+func TestREPLImportBoundVersionedPath(t *testing.T) {
+	e := NewEngine(t.TempDir())
+	e.Bind("example.com/foo/v2", map[string]runtime.Value{"X": int64(3)})
+	r := e.NewREPL()
+	replEval(t, r, `import "example.com/foo/v2"`)
+	if diff := cmp.Diff(int64(3), replEval(t, r, "foo.X")); diff != "" {
+		t.Errorf("foo.X (-want +got):\n%s", diff)
 	}
 }

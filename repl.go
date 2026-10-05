@@ -76,6 +76,9 @@ type REPL struct {
 	// (restored if it fails); warnings are the notes the last input
 	// produced for the front-end (Warnings).
 	pendingRedecl []namedValue
+	// pendingUnbind saves load-owned cells the current input's decls
+	// took over (shadowLoaded) — restored with the shadow marks.
+	pendingUnbind []namedValue
 	warnings      []string
 	n             int
 }
@@ -147,6 +150,7 @@ func (r *REPL) EvalLine(ctx context.Context, input string) (runtime.Value, error
 	r.pendingMethods = nil
 	r.pendingShadow = nil
 	r.pendingRedecl = nil
+	r.pendingUnbind = nil
 	r.warnings = nil
 	r.hasValue = false
 
@@ -251,7 +255,11 @@ func (r *REPL) rollbackSource(il, dl, sl int) {
 	for _, m := range r.pendingShadow {
 		delete(m.unit.shadowed, m.key)
 	}
+	for _, nv := range r.pendingUnbind {
+		r.pkg.Globals.Set(nv.name, nv.value)
+	}
 	r.pendingShadow = nil
+	r.pendingUnbind = nil
 	_ = r.reload() // best effort; the original error is the one that matters
 }
 
@@ -552,8 +560,11 @@ func (r *REPL) acceptImport(ctx context.Context, fset *token.FileSet, spec *ast.
 	if err != nil {
 		return "", fmt.Errorf("import %q: %w", path, err)
 	}
-	// an explicit alias wins over the declared package name, just as Go
-	if spec.Name != nil || p.Name == "" || p.Name == (&syntax.Import{Path: path}).LocalName() {
+	// an explicit alias wins over the declared package name, just as Go;
+	// a bound package has no package clause — its Name is Bind's guess
+	// from the path (`v2` for example.com/foo/v2), so the import keeps
+	// Go's path-derived name
+	if spec.Name != nil || p.Index == nil || p.Name == "" || p.Name == (&syntax.Import{Path: path}).LocalName() {
 		return formatNode(fset, spec), nil
 	}
 	return p.Name + " " + strconv.Quote(path), nil
@@ -574,8 +585,8 @@ func (r *REPL) anchor(path string) string {
 // pendingConsts (sealed read-only after the step) and names with an explicit
 // type in pendingTyped (the cell is stamped with T's typedef after reload).
 // Const groups follow Go's rules: a value-less spec repeats the previous
-// spec's type and values, and `iota` is the spec's index — bound by a
-// local `const iota = i` around the spec's assignment.
+// spec's type and values, and `iota` is the spec's index — every const
+// spec's assignment runs inside a block binding `const iota = i`.
 func (r *REPL) hoistSpecs(d *ast.GenDecl) []ast.Stmt {
 	var out []ast.Stmt
 	isConst := d.Tok == token.CONST
@@ -609,7 +620,7 @@ func (r *REPL) hoistSpecs(d *ast.GenDecl) []ast.Stmt {
 				lhs[i] = n
 			}
 			var assign ast.Stmt = &ast.AssignStmt{Lhs: lhs, Tok: token.ASSIGN, Rhs: values}
-			if isConst && mentionsIota(values) {
+			if isConst {
 				assign = &ast.BlockStmt{List: []ast.Stmt{
 					&ast.DeclStmt{Decl: &ast.GenDecl{Tok: token.CONST, Specs: []ast.Spec{&ast.ValueSpec{
 						Names:  []*ast.Ident{ast.NewIdent("iota")},
@@ -636,32 +647,6 @@ func (r *REPL) hoistSpecs(d *ast.GenDecl) []ast.Stmt {
 		}
 	}
 	return out
-}
-
-// mentionsIota reports whether any expression refers to the identifier
-// iota (selector field names aside).
-func mentionsIota(exprs []ast.Expr) bool {
-	found := false
-	for _, e := range exprs {
-		ast.Inspect(e, func(n ast.Node) bool {
-			switch n := n.(type) {
-			case *ast.SelectorExpr:
-				ast.Inspect(n.X, func(m ast.Node) bool {
-					if id, ok := m.(*ast.Ident); ok && id.Name == "iota" {
-						found = true
-					}
-					return !found
-				})
-				return false
-			case *ast.Ident:
-				if n.Name == "iota" {
-					found = true
-				}
-			}
-			return !found
-		})
-	}
-	return found
 }
 
 // acceptStmts rewrites a statement list so new `:=`/`var`/`const` names become
@@ -709,8 +694,15 @@ func (r *REPL) acceptStmts(fset *token.FileSet, body []ast.Stmt) (string, error)
 // `x = v` writes through to the package (OpSetGlobal can only reach the
 // executing function's package — sharing the cell is what makes package
 // vars patchable). Read-only cells (consts) and non-cell members are not
-// aliased — the former trap on assignment like Go, the latter take a
-// fresh cell that replaces the binding when committed.
+// aliased — they take a fresh cell that replaces the binding when
+// committed.
+//
+// Every hoist comes from a declaring form (`:=`, `var`, `const`), so a
+// name bound to a const is redeclared, not assigned: the newest
+// definition wins (as with func redefinition and :load) and a warning
+// says so. Under :pin that publishes the new const into the entered
+// package — a monkey-patch every importer sees, which the warning names.
+// A plain `C = v` still traps like Go.
 func (r *REPL) hoist(name string) {
 	if name == "_" {
 		return
@@ -739,10 +731,12 @@ func (r *REPL) hoist(name string) {
 		if !isCell || !c.ReadOnly {
 			return
 		}
-		// redeclaring a const: the newest definition wins, as with func
-		// redefinition and :load — but say so, since `C = v` alone traps
 		r.pendingRedecl = append(r.pendingRedecl, namedValue{name: name, value: gv})
-		r.warnings = append(r.warnings, fmt.Sprintf("const %s redeclared (was %v)", name, display(c.Elem)))
+		if pc, ok := r.enteredCell(name); ok && pc == c && r.writeMode {
+			r.warnings = append(r.warnings, fmt.Sprintf("const %s redeclared in package %s (was %v): every importer sees the new value", name, r.entered.Path, display(c.Elem)))
+		} else {
+			r.warnings = append(r.warnings, fmt.Sprintf("const %s redeclared (was %v)", name, display(c.Elem)))
+		}
 	}
 	r.pending = append(r.pending, name)
 	c := &runtime.Cell{Elem: runtime.NIL}
@@ -751,6 +745,19 @@ func (r *REPL) hoist(name string) {
 		r.sharedCells[name] = c
 		r.pendingWrite = append(r.pendingWrite, name)
 	}
+}
+
+// enteredCell returns the entered package's cell bound to name, if any.
+func (r *REPL) enteredCell(name string) (*runtime.Cell, bool) {
+	if r.entered == nil {
+		return nil, false
+	}
+	gv, ok := r.entered.Globals.Get(name)
+	if !ok {
+		return nil, false
+	}
+	c, ok := gv.(*runtime.Cell)
+	return c, ok
 }
 
 // dropPending removes the globals the failed input hoisted and restores
@@ -821,54 +828,35 @@ func (r *REPL) reload() error {
 	if err != nil {
 		return fmt.Errorf("repl: internal error: accumulated source does not parse: %w\n%s", err, b.String())
 	}
-	loaded, err := r.loadedFiles()
-	if err != nil {
-		return err
-	}
+	loaded := r.loadedFiles()
 	files := append([]*syntax.File{sf}, loaded...)
 	idx, err := index.Build(files)
 	if err != nil {
 		return fmt.Errorf("repl: internal error: %w", err)
 	}
 	p := r.pkg
-	// evict values cached from materialized decls so redefinitions pick
-	// up the new bodies: resolution consults Globals before the index.
-	// Only decl names holding a bare decl value are evicted — hoisted
-	// cells and values assigned under non-decl names are untouched.
-	// Decls published into the entered package under :pin keep their
-	// shared binding: evicting would split `T` (fresh typedef) from
-	// `pkg.T` (the published one).
-	// Names the previous index declared but the new one does not (a
-	// re-:load dropped them) go entirely — their var/const cells too:
-	// prompt-hoisted names never enter the index, so an indexed var is
-	// always a loaded file's.
-	if p.Index != nil {
-		for _, d := range p.Index.Decls {
-			if _, still := idx.Funcs[d.Name]; still {
-				continue
-			}
-			if _, still := idx.Types[d.Name]; still {
-				continue
-			}
-			if _, still := idx.Vars[d.Name]; still {
-				continue
-			}
-			if _, still := idx.Consts[d.Name]; still {
-				continue
-			}
-			if !r.pinnedDecls[d.Name] && d.Name != "init" {
-				p.Globals.Delete(d.Name)
-			}
+	// Evict values cached from materialized decls so redefinitions pick
+	// up the new bodies (resolution consults Globals before the index),
+	// and decls a re-:load dropped stop resolving. Only bare decl values
+	// are evicted, for names the old or the new index declares: cells
+	// belong to the prompt (hoisted names) or to a load unit (whose Load
+	// manages them) and survive reloads. Decls published into the entered
+	// package under :pin keep their shared binding: evicting would split
+	// `T` (fresh typedef) from `pkg.T` (the published one).
+	names := map[string]bool{}
+	for _, ix := range []*index.Index{p.Index, idx} {
+		if ix == nil {
+			continue
+		}
+		for _, d := range ix.Decls {
+			names[d.Name] = true
 		}
 	}
-	for _, d := range idx.Decls {
-		if gv, ok := p.Globals.Get(d.Name); ok {
+	for name := range names {
+		if gv, ok := p.Globals.Get(name); ok && !r.pinnedDecls[name] {
 			switch gv.(type) {
 			case *runtime.Function, *runtime.TypeDef:
-				if r.pinnedDecls[d.Name] {
-					continue
-				}
-				p.Globals.Delete(d.Name)
+				p.Globals.Delete(name)
 			}
 		}
 	}
@@ -878,29 +866,13 @@ func (r *REPL) reload() error {
 		p.FileByName[f.Name] = f
 	}
 	p.Index = idx
-	p.Scopes = map[*syntax.File]map[string]*runtime.ImportRef{sf: {}}
-	p.Imports = map[*syntax.File][]*runtime.ImportRef{sf: {}}
+	p.Scopes = map[*syntax.File]map[string]*runtime.ImportRef{}
+	p.Imports = map[*syntax.File][]*runtime.ImportRef{}
+	// a directory spec recorded by acceptImport (possibly under the
+	// package's real name) loads by directory, not import path
+	p.Scopes[sf], p.Imports[sf] = r.importRefs(sf, "")
 	for _, f := range loaded {
-		p.Scopes[f], p.Imports[f] = r.loadedImportRefs(f)
-	}
-	for _, imp := range sf.Imports {
-		ref := &runtime.ImportRef{
-			Path:  imp.Path,
-			Alias: imp.Alias,
-		}
-		if path := imp.Path; resolve.LooksLikeDir(path) {
-			// a directory spec recorded by acceptImport (possibly under
-			// the package's real name) loads by directory, not import path
-			ref.Load = func(string) (*runtime.Package, error) {
-				return r.engine.loadDir(context.Background(), r.anchor(path))
-			}
-		} else {
-			ref.Load = func(path string) (*runtime.Package, error) { return r.engine.loadPath(context.Background(), path) }
-		}
-		p.Imports[sf] = append(p.Imports[sf], ref)
-		if imp.Alias != "_" && imp.Alias != "." {
-			p.Scopes[sf][imp.LocalName()] = ref
-		}
+		p.Scopes[f], p.Imports[f] = r.importRefs(f, filepath.Dir(f.Name))
 	}
 	if r.entered != nil {
 		// :cd target — a pseudo dot-import that also admits unexported
@@ -1101,20 +1073,9 @@ func (r *REPL) ImportPathOf(name string) (path string, ok bool) {
 	if file == nil {
 		return "", false
 	}
+	// acceptImport rewrites unaliased imports to bind the declared
+	// package name, so the scope is keyed by the name the prompt uses
 	ref, ok := r.pkg.Scopes[file][name]
-	if !ok {
-		// an unaliased import binds its declared package name, which may
-		// differ from the path tail the scope is keyed by (yaml.v3 → yaml)
-		for _, imp := range r.pkg.Imports[file] {
-			if imp.Alias != "" {
-				continue
-			}
-			if p, err := imp.Materialize(); err == nil && p != nil && p.Name == name {
-				ref, ok = imp, true
-				break
-			}
-		}
-	}
 	if !ok {
 		return "", false
 	}
@@ -1124,18 +1085,32 @@ func (r *REPL) ImportPathOf(name string) (path string, ok bool) {
 	return ref.Path, true
 }
 
-// loadRef resolves a :cd/:ls argument (optionally a quoted path): a name bound by a session import
-// stands for its path, an existing directory goes through loadDir, and
-// anything else is treated as an import path.
-func (r *REPL) loadRef(ctx context.Context, ref string) (*runtime.Package, error) {
+func dirExists(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
+}
+
+// unquoteRef strips the quotes from a meta-command argument spelled like
+// an import path (`:ls "encoding/json"`, `:load "./f.go"`).
+func unquoteRef(ref string) string {
 	if unq, err := strconv.Unquote(ref); err == nil {
-		ref = unq // `:ls "encoding/json"` spells the path as in an import
+		return unq
 	}
+	return ref
+}
+
+// loadRef resolves a :cd/:ls argument (optionally a quoted path): a name
+// bound by a session import stands for its path, an existing directory
+// goes through loadDir, and anything else is treated as an import path.
+func (r *REPL) loadRef(ctx context.Context, ref string) (*runtime.Package, error) {
+	ref = unquoteRef(ref)
 	if path, ok := r.ImportPathOf(ref); ok {
 		ref = path
 	}
-	if st, err := os.Stat(ref); err == nil && st.IsDir() {
-		return r.engine.loadDir(ctx, ref)
+	// relative dirs anchor at the engine's start directory, like
+	// `import "./x"` and :load — not at the host process's cwd
+	if dir := r.anchor(ref); dirExists(dir) {
+		return r.engine.loadDir(ctx, dir)
 	}
 	return r.engine.loadPath(ctx, ref)
 }
