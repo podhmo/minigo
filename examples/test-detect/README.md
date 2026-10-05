@@ -58,6 +58,7 @@ $ pkgs=$(go run . -format space inspect/inspect.go) && [ -n "$pkgs" ] && go test
   package it does not belong to (a basename like `typo.go` has no
   directory part and collapses onto the root package). This cannot be
   detected mechanically; feed exact `git diff --name-only` paths.
-- Empty result means empty output (no padding), so `$(test-detect ...)`
-  never expands into "test the current package" — callers should still
-  gate on non-emptiness, as in the example above.
+- Empty result means empty output for `pkg`/`space`/`dir`, so
+  `$(test-detect ...)` never expands into "test the current package" —
+  callers should still gate on non-emptiness, as in the example above.
+  `json` emits `[]` instead: valid JSON a pipeline can still parse.
