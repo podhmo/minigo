@@ -2015,28 +2015,32 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		}
 	case *runtime.FieldRef, *runtime.IndexRef:
 		dv, ok := runtime.Deref(base)
+		recv := base
 		if !ok {
-			f.trap("select %s on unresolved reference %T", name, base)
-		}
-		if s, isStruct := dv.(*runtime.Struct); isStruct {
-			return v.structMember(f, s, name, base)
-		}
-		if n, isNamed := dv.(*runtime.Named); isNamed {
-			return v.namedMember(f, n, name, base)
+			// A receiver-position ref may sit over an operand that does
+			// not share storage — a map element reads as a copy — or
+			// over a base the ref cannot walk (m[k].f[i]). Select on
+			// what the operand reads to: the re-based element ref when
+			// storage is shared, the element value otherwise.
+			if dv, recv, ok = v.receiverOf(f, base); !ok {
+				f.trap("select %s on unresolved reference %T", name, base)
+			}
 		}
 		switch t := dv.(type) {
+		case *runtime.Struct:
+			return v.structMember(f, t, name, recv)
+		case *runtime.Named:
+			return v.namedMember(f, t, name, recv)
 		case *runtime.Slice:
-			return v.typedMember(f, t.Typ, name, base, "slice")
+			return v.typedMember(f, t.Typ, name, recv, "slice")
 		case *runtime.Map:
-			return v.typedMember(f, t.Typ, name, base, "map")
+			return v.typedMember(f, t.Typ, name, recv, "map")
 		case *runtime.Chan:
-			return v.typedMember(f, t.Typ, name, base, "chan")
-		case *runtime.GoValue:
-			return v.selectMember(f, t, name)
-		case *runtime.Package:
-			return v.selectMember(f, t, name)
+			return v.typedMember(f, t.Typ, name, recv, "chan")
 		}
-		f.trap("select %s on %T", name, dv)
+		// pointer boxes ([]*T), nils, host values, packages — dispatch
+		// on the element value itself, like an unindexed select.
+		return v.selectMember(f, dv, name)
 	case *runtime.TypeDef:
 		if _, isPtr := b.Anon.(*ast.StarExpr); isPtr {
 			// `(*T).M` — a pointer method expression sees the full
@@ -4298,6 +4302,35 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 	default:
 		f.trap("index assign on %T", base)
 	}
+}
+
+// receiverOf resolves the receiver operand of an unresolvable
+// receiver-position ref — an IndexRef emitted for `s[i].M()` whose
+// element cannot be reached by storage. A nested base the ref cannot
+// walk resolves through refThrough (m[k].f[i] reads the stored copy's
+// slice field), then: a map element reads as the Go copy it is (a
+// missing key yields the element zero through v.index), while a
+// resolvable container re-bases the ref so the element stays
+// addressable and a pointer receiver writes shared storage. An element
+// that still cannot resolve falls back to the value read, so the
+// operand's own bounds or nil panic keeps its Go shape.
+func (v *VM) receiverOf(f *frame, base runtime.Value) (dv, recv runtime.Value, ok bool) {
+	rb, isIR := base.(*runtime.IndexRef)
+	if !isIR {
+		return nil, nil, false
+	}
+	bx, _ := v.refThrough(f, rb.Base)
+	if bx == nil {
+		bx = rb.Base
+	}
+	if _, isMap := runtime.Unwrap(bx).(*runtime.Map); !isMap {
+		nr := &runtime.IndexRef{Base: bx, Key: rb.Key}
+		if e, ok := nr.Get(); ok {
+			return e, nr, true
+		}
+	}
+	dv = v.index(f, bx, rb.Key)
+	return dv, dv, true
 }
 
 // refThrough resolves an lvalue ref chain to its current value where
