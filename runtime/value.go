@@ -592,6 +592,14 @@ func CanonicalKey(v Value) Value {
 		if unhashableKind(x.Typ) {
 			panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type " + msgTypeName(x.Typ)}})
 		}
+		// A nil interface records no dynamic type — m[any(e)] on a
+		// nil error and m[nil] hash to the same eface key in Go — so
+		// it canonicalizes like bare NIL, not under its declared
+		// interface's tag. A boxed typed nil (IfaceNil{*T}) keeps
+		// its tag: (*T)(nil) is a real dynamic type.
+		if x.Typ == nil || x.Typ.Kind == KindInterface {
+			return NIL
+		}
 		return mapKey{typ: typeTagOf(x.Typ), repr: "nil"}
 	case *Cell, *FieldRef, *IndexRef, *Chan:
 		// pointer-shaped keys hash by identity — the wrapper itself
@@ -661,6 +669,10 @@ func unhashableKey(v Value) bool {
 		return true
 	case *TypedNil:
 		return unhashableKind(x.Typ)
+	case *IfaceNil:
+		// a boxed nil slice/map/func is unhashable through the
+		// interface box too.
+		return unhashableKind(x.Typ)
 	}
 	return false
 }
@@ -701,7 +713,13 @@ func writeKeyElem(sb *strings.Builder, v Value) {
 		fmt.Fprintf(sb, "%p", x)
 	case *GoValue:
 		writeKeyElem(sb, fmt.Sprintf("%#v", x.V))
-	case *TypedNil, *IfaceNil, Nil:
+	case *IfaceNil:
+		// an interface-boxed nil keeps its dynamic type in the
+		// element key — struct{any}{(*int)(nil)} and
+		// struct{any}{nil} are distinct Go keys.
+		sb.WriteString(typeTagOf(x.Typ))
+		sb.WriteString(":nil")
+	case *TypedNil, Nil:
 		sb.WriteString("nil")
 	default:
 		fmt.Fprintf(sb, "%v", x)
