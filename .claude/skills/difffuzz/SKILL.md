@@ -38,7 +38,12 @@ code and commits, Japanese replies to the user, TODO.md upkeep).
    so that a dominant known bug stops absorbing findings.
 2. Optionally run the whole-program corpus (`make difffuzz-corpus`) — GOROOT's
    `// run` tests. Most TRAPs there are out of scope (unsafe, GC, runtime
-   internals); look at SILENT/CRASH/HANG only.
+   internals); look at SILENT/CRASH/HANG only. `-goroot-tests` covers only
+   `$GOROOT/test/*.go`: the subdirectories (`typeparam`, `fixedbugs`,
+   `interface`, `chan`, `syntax`, `ken`, `abi`, `stress`, `simd`, `dwarf`)
+   are a separate, still-fertile sweep — pass each as a positional dir to
+   `corpus` (procedure, gotchas and pilot yields in the README's `corpus`
+   section). `fixedbugs` is mostly `// errorcheck` noise (SKIP).
 3. Triage the report. For each finding, decide: real bug, by-design trap,
    or generator mistake (a gc compile error is filtered automatically; a
    probe whose go output is implementation-defined is a generator bug —
