@@ -316,6 +316,71 @@ func (e *Engine) methodFuncs(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 	return funcs
 }
 
+// ifaceSigReqs implements the Hooks.IfaceSigs hook: the interface's
+// required methods that carry a declared signature, as Function shells
+// spelling that signature in their declaring typedef's context.
+func (e *Engine) ifaceSigReqs(td *runtime.TypeDef) (map[string]*runtime.Function, error) {
+	sigs := e.ifaceSigsOf(td, map[*runtime.TypeDef]bool{})
+	if len(sigs) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]*runtime.Function, len(sigs))
+	for name, sig := range sigs {
+		out[name] = ifaceSigFunc(sig)
+	}
+	return out, nil
+}
+
+// methodFuncsOfValue implements the Hooks.MethodFuncsOf hook: the
+// signature-bearing twin of methodSetOfValue — declared and promoted
+// script methods plus synthesized interface members. Host reflect
+// methods carry no decl signature, so host boxes report nil here and
+// satisfy requirements by name alone.
+func (e *Engine) methodFuncsOfValue(v runtime.Value) (map[string]*runtime.Function, error) {
+	ptr := false
+	for {
+		if n, ok := v.(*runtime.Named); ok {
+			if _, ok := runtime.Unwrap(n.V).(*runtime.GoValue); ok && (n.Typ == nil || len(n.Typ.Methods) == 0) {
+				return nil, nil
+			}
+			_, funcs, _ := e.methodWalkU(n.Typ, ptr, map[*runtime.TypeDef]bool{})
+			return funcs, nil
+		}
+		dv, ok := runtime.Deref(v)
+		if !ok {
+			break
+		}
+		v = dv
+		ptr = true
+	}
+	var td *runtime.TypeDef
+	switch x := v.(type) {
+	case *runtime.Struct:
+		td = x.Def
+	case *runtime.TypedNil:
+		td = x.Typ
+	case *runtime.IfaceNil:
+		td = x.Typ
+	case *runtime.Slice:
+		td = x.Typ
+	case *runtime.Map:
+		td = x.Typ
+	case *runtime.Chan:
+		td = x.Typ
+	default:
+		return nil, nil
+	}
+	_, funcs, _ := e.methodWalkU(td, ptr, map[*runtime.TypeDef]bool{})
+	return funcs, nil
+}
+
+// typeMethodFuncs implements the Hooks.TypeMethodFuncs hook: the
+// signature-bearing method set of a typedef.
+func (e *Engine) typeMethodFuncs(td *runtime.TypeDef) (map[string]*runtime.Function, error) {
+	_, funcs, _ := e.methodWalkU(td, false, map[*runtime.TypeDef]bool{})
+	return funcs, nil
+}
+
 // ifaceSig is an interface's required method together with the typedef
 // context that declared it — its package, file imports and binds spell
 // the signature.

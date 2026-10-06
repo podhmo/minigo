@@ -1,6 +1,0 @@
-SILENT (corpus sweep, interface/returntype.go — i1.(I2) must panic but does not)
-shape:  interface-to-interface type assertion, method present by name only
-go:     param-mismatch/return-mismatch/missing-method all panic
-minigo: only missing-method panics; signature mismatches are accepted
-hypothesis: the method-set check behind x.(I) (vm methodWalkU / typeMatches)
-matches required methods by name and never compares the declared FuncTyp.
