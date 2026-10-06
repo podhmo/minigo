@@ -1227,13 +1227,14 @@ func (e *Engine) installStdlib() {
 		ospkg["Args"] = strsSlice(argv)
 		ospkg["Hostname"] = h.fn("os.Hostname", func(a []any) (any, error) { return retErr2(os.Hostname()) })
 		// process stdio, boxed for cmd.Stdout / cmd.Stderr wiring.
-		// os.Stdout forwards to the engine's configured output so host
-		// consumers handed it — text/template's Execute above all —
-		// write where print/println write instead of escaping to the
-		// process stdout. (Stdin/Stderr keep the real files: there is
-		// no engine-level abstraction for them.)
+		// os.Stdout is a *os.File facade whose writes forward to the
+		// engine's configured output so host consumers handed it —
+		// text/template's Execute above all — write where print/println
+		// write instead of escaping to the process stdout. (Stdin/Stderr
+		// keep the real files: there is no engine-level abstraction for
+		// them.)
 		ospkg["Stdin"] = &runtime.GoValue{V: os.Stdin}
-		ospkg["Stdout"] = &runtime.GoValue{V: &engineStdout{h: h}}
+		ospkg["Stdout"] = &runtime.GoValue{V: &engineStdout{File: os.Stdout, h: h}}
 		ospkg["Stderr"] = &runtime.GoValue{V: os.Stderr}
 		ospkg["TempDir"] = h.fn("os.TempDir", func(a []any) (any, error) { return os.TempDir(), nil })
 		ospkg["UserHomeDir"] = h.fn("os.UserHomeDir", func(a []any) (any, error) { return retErr2(os.UserHomeDir()) })
@@ -2437,7 +2438,14 @@ func udpAddrOf(v any) *net.UDPAddr    { t, _ := v.(*net.UDPAddr); return t }
 func unixAddrOf(v any) *net.UnixAddr  { t, _ := v.(*net.UnixAddr); return t }
 func ipAddrOf(v any) *net.IPAddr      { t, _ := v.(*net.IPAddr); return t }
 func netIfaceOf(v any) *net.Interface { t, _ := v.(*net.Interface); return t }
-func netFileOf(v any) *os.File        { t, _ := v.(*os.File); return t }
+func netFileOf(v any) *os.File {
+	// the script-visible os.Stdout is a facade: unwrap to the real file.
+	if s, ok := v.(*engineStdout); ok {
+		return s.File
+	}
+	t, _ := v.(*os.File)
+	return t
+}
 func netipAddrOf(v any) netip.Addr    { t, _ := v.(netip.Addr); return t }
 func addrPortOf(v any) netip.AddrPort { t, _ := v.(netip.AddrPort); return t }
 
@@ -2554,11 +2562,17 @@ type hostHelpers struct {
 	e *Engine // for the configured output writer
 }
 
-// engineStdout is the script-visible os.Stdout: an io.Writer that
-// forwards to the engine's output (WithOutput) lazily, so a host callee
-// receiving os.Stdout — template.Execute, fmt.Fprint's target — lands
-// in the same stream the fmt intrinsics print to.
-type engineStdout struct{ h *hostHelpers }
+// engineStdout is the script-visible os.Stdout: a *os.File facade whose
+// writes forward to the engine's output (WithOutput) lazily, so a host
+// callee receiving os.Stdout — template.Execute, fmt.Fprint's target —
+// lands in the same stream the fmt intrinsics print to. The embedded
+// *os.File promotes the rest of the file API (Name, Fd, Stat, Sync, the
+// deadline family, Read/ReadAt/Seek, ...) onto the reflect method set,
+// so member access keeps working like Go's.
+type engineStdout struct {
+	*os.File
+	h *hostHelpers
+}
 
 func (w *engineStdout) Write(p []byte) (int, error) { return w.h.out().Write(p) }
 
@@ -2567,6 +2581,13 @@ func (w *engineStdout) WriteString(s string) (int, error) {
 		return sw.WriteString(s)
 	}
 	return w.h.out().Write([]byte(s))
+}
+
+// ReadFrom keeps io.Copy(os.Stdout, r) inside the engine's output: the
+// promoted (*os.File).ReadFrom would splice straight to the process's
+// fd 1 and escape WithOutput the way a bare os.Stdout did.
+func (w *engineStdout) ReadFrom(r io.Reader) (int64, error) {
+	return io.Copy(w.h.out(), r)
 }
 
 // out returns the engine's output writer (io.Discard when unset).
