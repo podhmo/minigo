@@ -99,7 +99,7 @@ func TestSync(t *testing.T) {
 	// first run: files with stale or missing managed blocks get synced;
 	// status.go and eof.go (managed block at end of file) are already in
 	// sync and the decoy files stay untouched.
-	n, err := run(context.Background(), dir, scriptDir(t), app, false, false, io.Discard)
+	n, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestSync(t *testing.T) {
 
 	// second run: idempotent — and ops.go's hand-written directive below
 	// the inserted sentinel survives regeneration.
-	n, err = run(context.Background(), dir, scriptDir(t), app, false, false, io.Discard)
+	n, err = run(context.Background(), dir, scriptDir(t), app, false, false, false, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestCheck(t *testing.T) {
 	app := filepath.Join(dir, "app")
 
 	// check mode reports drift but writes nothing.
-	n, err := run(context.Background(), dir, scriptDir(t), app, true, false, io.Discard)
+	n, err := run(context.Background(), dir, scriptDir(t), app, true, false, false, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,10 +145,10 @@ func TestCheck(t *testing.T) {
 	assertSameFile(t, filepath.Join(app, "level.go"), "app/level.go")
 
 	// after a real sync, check is clean.
-	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, io.Discard); err != nil {
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	n, err = run(context.Background(), dir, scriptDir(t), app, true, false, io.Discard)
+	n, err = run(context.Background(), dir, scriptDir(t), app, true, false, false, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestDeps(t *testing.T) {
 	app := filepath.Join(dir, "app")
 
 	// without -deps, internal/mood is not reached.
-	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, io.Discard); err != nil {
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	assertSameFile(t, filepath.Join(app, "internal", "mood", "mood.go"), "app/internal/mood/mood.go")
@@ -173,7 +173,7 @@ func TestDeps(t *testing.T) {
 	// followed — the tool's own helper is not a sync target.
 	dir = setupModule(t)
 	app = filepath.Join(dir, "app")
-	n, err := run(context.Background(), dir, scriptDir(t), app, false, true, io.Discard)
+	n, err := run(context.Background(), dir, scriptDir(t), app, false, true, false, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestBoundPackage(t *testing.T) {
 	e := minigo.NewEngine(dir, minigo.WithOutput(io.Discard))
 	e.Bind("github.com/podhmo/minigo/examples/gen-sync/app/internal/bound",
 		map[string]runtime.Value{"Sentinel": int64(0)})
-	if _, err := e.Run(context.Background(), scriptDir(t), "Main", app, false, false); err != nil {
+	if _, err := e.Run(context.Background(), scriptDir(t), "Main", app, false, false, false); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(app, "graph.go"))
@@ -229,7 +229,7 @@ func TestUnreadableTargetFails(t *testing.T) {
 	// the file drops out of the package index silently — which also
 	// drops its import edges, so sibling files would be rewritten with
 	// regressed directives. The run must refuse to write at all.
-	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, io.Discard); err == nil {
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, io.Discard); err == nil {
 		t.Fatal("expected an error for an unreadable file, got none")
 	} else if !strings.Contains(err.Error(), "job.go") {
 		t.Fatalf("error does not name the unreadable file: %v", err)
@@ -240,7 +240,7 @@ func TestUnreadableTargetFails(t *testing.T) {
 
 	// check mode sees the same failure — a file it cannot read might be
 	// hiding drift, so "clean" would be a lie.
-	if _, err := run(context.Background(), dir, scriptDir(t), app, true, false, io.Discard); err == nil {
+	if _, err := run(context.Background(), dir, scriptDir(t), app, true, false, false, io.Discard); err == nil {
 		t.Fatal("expected check mode to fail too")
 	}
 }
@@ -259,7 +259,7 @@ func TestWriteFailurePropagates(t *testing.T) {
 	}
 	defer os.Chmod(target, 0644)
 
-	n, err := run(context.Background(), dir, scriptDir(t), app, false, false, io.Discard)
+	n, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, io.Discard)
 	if err == nil {
 		t.Fatal("expected an error for an unwritable file, got none")
 	}
@@ -293,7 +293,7 @@ func TestWritesStayInsideScannedDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), gomod, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := run(context.Background(), dir, scriptDir(t), filepath.Join(dir, "scanx"), false, false, io.Discard); err == nil {
+	if _, err := run(context.Background(), dir, scriptDir(t), filepath.Join(dir, "scanx"), false, false, false, io.Discard); err == nil {
 		t.Fatal("expected an outside-directory refusal, got nil error")
 	} else if !strings.Contains(err.Error(), "outside the scanned directory") {
 		t.Fatalf("unexpected error: %v", err)
@@ -318,7 +318,7 @@ func TestOutsideModuleFails(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(pkg, "level.go"), data, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := run(context.Background(), dir, scriptDir(t), pkg, false, false, io.Discard); err == nil {
+	if _, err := run(context.Background(), dir, scriptDir(t), pkg, false, false, false, io.Discard); err == nil {
 		t.Fatal("expected an error for a dir outside any module")
 	} else if !strings.Contains(err.Error(), "outside any Go module") {
 		t.Fatalf("unexpected error: %v", err)
@@ -352,7 +352,7 @@ func TestCRLFSentinel(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf strings.Builder
-	n, err := run(context.Background(), dir, scriptDir(t), app, false, false, &buf)
+	n, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, &buf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,7 +384,7 @@ func TestCRLFPreservesLineEndings(t *testing.T) {
 	if err := os.WriteFile(target, crlf, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, io.Discard); err != nil {
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(target)
@@ -412,7 +412,7 @@ func TestGeneratedFileSkipped(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf strings.Builder
-	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, &buf); err != nil {
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, &buf); err != nil {
 		t.Fatalf("a generated file must not fail the run: %v", err)
 	}
 	if !strings.Contains(buf.String(), "mock_gen.go") || !strings.Contains(buf.String(), "skipping") {
@@ -437,7 +437,7 @@ func TestUnderscoreDotFilesIgnored(t *testing.T) {
 		}
 	}
 	var buf strings.Builder
-	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, &buf); err != nil {
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, &buf); err != nil {
 		t.Fatalf("_/.-prefixed files must not fail the run: %v", err)
 	}
 	if strings.Contains(buf.String(), "_skip.go") || strings.Contains(buf.String(), ".hidden.go") {
@@ -452,7 +452,7 @@ func TestDriftReportNamesDirectives(t *testing.T) {
 	// longer exists: the report must name the dropped line, not just a
 	// count.
 	var buf strings.Builder
-	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, &buf); err != nil {
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, &buf); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -475,7 +475,7 @@ func TestDuplicateDirectiveReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf strings.Builder
-	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, &buf); err != nil {
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, &buf); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -502,7 +502,7 @@ func TestMixedEOLKeepsUntouchedLines(t *testing.T) {
 	if err := os.WriteFile(target, []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, io.Discard); err != nil {
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(target)
@@ -535,7 +535,7 @@ func TestExcludedFileWarns(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf strings.Builder
-	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, &buf); err != nil {
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, &buf); err != nil {
 		t.Fatalf("an excluded file must not fail the run: %v", err)
 	}
 	if !strings.Contains(buf.String(), "broken.go") || !strings.Contains(buf.String(), "not in the package index") {
@@ -557,7 +557,7 @@ func TestForeignPackageSkipped(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf strings.Builder
-	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, &buf); err != nil {
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, &buf); err != nil {
 		t.Fatalf("a foreign-package file must not fail the run: %v", err)
 	}
 	out := buf.String()
@@ -591,7 +591,7 @@ func TestForeignPackageMethodFeedsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf strings.Builder
-	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, &buf); err != nil {
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, &buf); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -639,7 +639,7 @@ func TestForeignPackageDepDeclsHidden(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf strings.Builder
-	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, &buf); err != nil {
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, &buf); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(buf.String(), "UsesDep") || strings.Contains(buf.String(), "Hidden") {
@@ -663,7 +663,7 @@ func TestInvisibleOnlyFilesNotConstraintBlamed(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(pkg, "_skip.go"), []byte("package onlyhidden\n\ntype S int\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := run(context.Background(), dir, scriptDir(t), pkg, false, false, io.Discard)
+	_, err := run(context.Background(), dir, scriptDir(t), pkg, false, false, false, io.Discard)
 	if err == nil {
 		t.Fatal("expected a no-buildable error for a name-invisible-only dir")
 	}
@@ -688,7 +688,7 @@ func TestHandwrittenManagedLineDropAnnounced(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf strings.Builder
-	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, &buf); err != nil {
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, &buf); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -751,6 +751,151 @@ func TestCheckExitCodes(t *testing.T) {
 	}
 }
 
+func TestExplainPrintsReasons(t *testing.T) {
+	dir := setupModule(t)
+	app := filepath.Join(dir, "app")
+	// -explain prints each inferred directive with its inference path
+	// in input vocabulary — the enum rule names the const members.
+	var buf strings.Builder
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, true, &buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "level.go explain: //go:generate stringer -type=Level") {
+		t.Fatalf("-explain printed no line for the enum directive:\n%s", out)
+	}
+	if !strings.Contains(out, "enum:") {
+		t.Fatalf("-explain gave no reason for the directive:\n%s", out)
+	}
+	// EmbedEvent only carries Discriminator() through its PingBase
+	// embed — the reason must name the method set and the promotion,
+	// not claim the type declares it.
+	if !strings.Contains(out, "oneofgen -type=EmbedEvent") || !strings.Contains(out, "promoted from PingBase") {
+		t.Fatalf("-explain misdescribed the promoted method:\n%s", out)
+	}
+	// without the flag the reasons stay silent.
+	buf.Reset()
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, &buf); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "explain:") {
+		t.Fatalf("explain output leaked without -explain:\n%s", buf.String())
+	}
+}
+
+func TestGeneratedFileSkipLogged(t *testing.T) {
+	dir := setupModule(t)
+	app := filepath.Join(dir, "app")
+	// a generated-looking file is seen-and-skipped, never silent —
+	// even when it earns no directives and has no managed block.
+	content := "// Code generated by stringer -type=Level. DO NOT EDIT.\n\npackage app\n\nfunc (l Level) String() string { return \"\" }\n"
+	target := filepath.Join(app, "level_string.go")
+	if err := os.WriteFile(target, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var buf strings.Builder
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, &buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "level_string.go") || !strings.Contains(out, "skipping") {
+		t.Fatalf("no skip line for the generated file:\n%s", out)
+	}
+	got, _ := os.ReadFile(target)
+	if string(got) != content {
+		t.Fatal("the generated file was modified")
+	}
+}
+
+func TestPartialWriteSummary(t *testing.T) {
+	dir := setupModule(t)
+	app := filepath.Join(dir, "app")
+	// one file fails to write while the rest sync — the summary must
+	// say "partial", not leave the failure looking like a clean pass.
+	content := "package app\n\ntype Unwritable int\n\nconst (\n\tUnwA Unwritable = iota\n\tUnwB\n)\n"
+	target := filepath.Join(app, "unw.go")
+	if err := os.WriteFile(target, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("chmod-444 is writable for root")
+	}
+	if err := os.Chmod(target, 0444); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(target, 0644)
+	var buf strings.Builder
+	_, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, &buf)
+	if err == nil {
+		t.Fatal("expected a write failure")
+	}
+	out := buf.String()
+	if !strings.Contains(out, "1 file(s) failed to write") {
+		t.Fatalf("no partial-write summary:\n%s", out)
+	}
+	// the rest of the package still synced — the failure is partial.
+	// (runMain's own "N file(s) updated" goes to os.Stdout, not the
+	// engine's output writer — only the script's per-file lines are
+	// observable here.)
+	if !strings.Contains(out, "rewrote") && !strings.Contains(out, "inserted") && !strings.Contains(out, "up to date") {
+		t.Fatalf("other files did not sync:\n%s", out)
+	}
+}
+
+// chmodOnFirstWrite wraps the run's output and flips target unreadable
+// the moment the run first reports anything — after collect() indexed
+// the package, before the sync loop reads each file. It makes the one
+// hole in the file-level scan reproducible: a file that indexed fine
+// but fails its own read inside syncFile.
+type chmodOnFirstWrite struct {
+	w      *strings.Builder
+	target string
+	done   bool
+}
+
+func (c *chmodOnFirstWrite) Write(p []byte) (int, error) {
+	if !c.done {
+		c.done = true
+		if err := os.Chmod(c.target, 0000); err != nil {
+			return 0, err
+		}
+	}
+	return c.w.Write(p)
+}
+
+func TestCheckPartialSummary(t *testing.T) {
+	dir := setupModule(t)
+	app := filepath.Join(dir, "app")
+	// a constraint-excluded file earns a warning — printed before the
+	// sync loop, which guarantees the chmod below lands after collect()
+	// and before any file's own read (no dependence on file order).
+	if err := os.WriteFile(filepath.Join(app, "xskip.go"), []byte("//go:build ignore\n\npackage app\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// check mode never writes, so an unwritable file is not a failure —
+	// the reachable failure is a file that indexed fine but cannot be
+	// read back when its own turn comes.
+	target := filepath.Join(app, "job.go")
+	if os.Geteuid() == 0 {
+		t.Skip("chmod-000 is readable for root")
+	}
+	defer os.Chmod(target, 0644)
+	var buf strings.Builder
+	w := &chmodOnFirstWrite{w: &buf, target: target}
+	_, err := run(context.Background(), dir, scriptDir(t), app, true, false, false, w)
+	if err == nil {
+		t.Fatal("expected a check failure")
+	}
+	out := buf.String()
+	if !strings.Contains(out, "1 file(s) could not be checked") {
+		t.Fatalf("no partial-check summary:\n%s", out)
+	}
+	// the failure is partial: other files still reported drift.
+	if !strings.Contains(out, "drift:") {
+		t.Fatalf("other files were not checked:\n%s", out)
+	}
+}
+
 func TestNoBuildableReasonNamed(t *testing.T) {
 	dir := setupModule(t)
 
@@ -764,7 +909,7 @@ func TestNoBuildableReasonNamed(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(constr, "x.go"), []byte("//go:build ignore\n\npackage onlyconstr\n\ntype X int\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := run(context.Background(), dir, scriptDir(t), constr, false, false, io.Discard)
+	_, err := run(context.Background(), dir, scriptDir(t), constr, false, false, false, io.Discard)
 	if err == nil {
 		t.Fatal("expected an error for a fully constrained package")
 	}
@@ -792,7 +937,7 @@ func TestNoBuildableReasonNamed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.Chmod(target, 0644)
-	_, err = run(context.Background(), dir, scriptDir(t), unread, false, false, io.Discard)
+	_, err = run(context.Background(), dir, scriptDir(t), unread, false, false, false, io.Discard)
 	if err == nil {
 		t.Fatal("expected an error for an unreadable-only package")
 	}

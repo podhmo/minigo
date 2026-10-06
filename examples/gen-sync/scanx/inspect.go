@@ -43,6 +43,14 @@ func MethodSet(d *inspect.Decl, foreign map[string]bool) []*inspect.Method {
 // (RequiresMethod asks it). Members sourced from foreign-package files
 // do not count — see MethodSet.
 func HasMethod(d *inspect.Decl, foreign map[string]bool, name string, results ...string) bool {
+	return MethodNamed(d, foreign, name, results...) != nil
+}
+
+// MethodNamed returns the member of d's method set that matches name
+// and the given result types, or nil — the matched member, not just the
+// fact of the match, so callers can say where the method came from
+// (Decl for the declaring file, Via for the decl it promoted through).
+func MethodNamed(d *inspect.Decl, foreign map[string]bool, name string, results ...string) *inspect.Method {
 	for _, m := range MethodSet(d, foreign) {
 		if m.Name != name {
 			continue
@@ -61,10 +69,10 @@ func HasMethod(d *inspect.Decl, foreign map[string]bool, name string, results ..
 			}
 		}
 		if ok {
-			return true
+			return m
 		}
 	}
-	return false
+	return nil
 }
 
 // RequiresMethod reports whether an interface type lists a method spec
