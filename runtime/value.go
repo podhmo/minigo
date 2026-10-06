@@ -817,6 +817,9 @@ func anonTag(e ast.Expr) string {
 				sb.WriteString(n.Name)
 			}
 			sb.WriteString(":" + anonTag(f.Type))
+			if tag := structTagKey(f.Tag); tag != "" {
+				sb.WriteString(" " + tag)
+			}
 		}
 		sb.WriteString("}")
 		return sb.String()
