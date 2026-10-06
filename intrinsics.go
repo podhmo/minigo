@@ -2644,7 +2644,8 @@ func sortScript(el []runtime.Value) {
 			}
 		case float64:
 			if b, ok := bv.(float64); ok {
-				return a < b
+				// sort.Float64s orders NaN before all other values
+				return a < b || (math.IsNaN(a) && !math.IsNaN(b))
 			}
 		case string:
 			if b, ok := bv.(string); ok {
@@ -2680,7 +2681,9 @@ func lessScript(a, b runtime.Value) bool {
 	an, aok := numOf(a)
 	bn, bok := numOf(b)
 	if aok && bok {
-		return an < bn
+		// NaN orders before all other values, like cmp.Compare —
+		// slices.Sort/IsSorted/Search share this ordering.
+		return an < bn || (math.IsNaN(an) && !math.IsNaN(bn))
 	}
 	if as, ok := a.(string); ok {
 		if bs, ok := b.(string); ok {

@@ -1,5 +1,0 @@
-SILENT value: sort.Float64s leaves NaN in place instead of ordering it
-first ([2 NaN -1] vs [NaN -1 2]).
-Hypothesis: the float64Slice Less in minigo's sort port lacks the
-NaN-aware branch (x[i] < x[j] || (IsNaN(x[i]) && !IsNaN(x[j]))).
-Source: $GOROOT/test/typeparam/ordered.go (testOrdered vs sort.Float64s).
