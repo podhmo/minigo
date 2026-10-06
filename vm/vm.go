@@ -2474,6 +2474,18 @@ func goValueOf(rv reflect.Value) runtime.Value {
 			el[i] = goValueOf(reflect.ValueOf(e))
 		}
 		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("any")}
+	case scriptData:
+		// a struct's host projection folds back to the original value
+		// when an `any` round-trips it (a sync.Pool Get, say); a bare
+		// copy without the orig key reads as an ordinary map.
+		if orig := scriptDataOrig(v); orig != nil {
+			return orig
+		}
+		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}}
+		for k, e := range v {
+			m.Insert(goValueOf(reflect.ValueOf(k)), goValueOf(reflect.ValueOf(e)))
+		}
+		return m
 	case map[any]any:
 		if v == nil {
 			return &runtime.TypedNil{Typ: &runtime.TypeDef{Kind: runtime.KindMap,
@@ -3089,7 +3101,8 @@ func (s *scriptIface) readFrom(r io.Reader) (int64, error) {
 // deepHost converts a script value for an `any` parameter: containers
 // become real host values (Slice → []any, Map → map[any]any) so the
 // callee can reflect over them; Named and GoValue unwrap; typed nils
-// read as nil. Everything else — cells, funcs, structs — stays verbatim.
+// read as nil; structs marshal to field maps (see structDataHost).
+// Everything else — funcs, non-struct pointers — stays verbatim.
 func deepHost(v runtime.Value) runtime.Value {
 	switch x := v.(type) {
 	case nil, runtime.Nil:
@@ -3106,6 +3119,8 @@ func deepHost(v runtime.Value) runtime.Value {
 		return deepHost(x.V)
 	case *runtime.GoValue:
 		return x.V
+	case *runtime.Struct:
+		return structDataHost(x, x)
 	case *runtime.Slice:
 		out := make([]any, len(x.Elems))
 		for i, e := range x.Elems {
@@ -3119,8 +3134,70 @@ func deepHost(v runtime.Value) runtime.Value {
 			out[deepHost(k)] = deepHost(e)
 		}
 		return out
+	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
+		// a script pointer to a struct can't offer the host its
+		// address — only data — so it marshals like the struct value,
+		// except the pointer keeps its wider method set (pointer
+		// receivers) exactly as Go's *T does.
+		if dv, ok := runtime.Deref(x); ok {
+			if s, ok := dv.(*runtime.Struct); ok {
+				return structDataHost(x, s)
+			}
+		}
+		return v
 	}
 	return v
+}
+
+// scriptData is the host-facing projection of a script struct for an
+// `any` parameter: a named map field/method walkers — text/template's
+// evalField above all — can navigate. The empty key, unreachable
+// through Go's .Name syntax, carries the original script value so a
+// host that hands the projection back (a sync.Pool round-trip say)
+// restores the object it started from rather than a bare map.
+type scriptData map[string]any
+
+const scriptDataOrigKey = ""
+
+// scriptDataOrig returns the script value a projection was built
+// from, or nil when m is a foreign map (one not minted here).
+func scriptDataOrig(m scriptData) runtime.Value {
+	return m[scriptDataOrigKey]
+}
+
+// structDataHost marshals a script struct (or a pointer to one) for a
+// host `any` parameter as a scriptData map: exported fields plus its
+// exported methods as bound members — a map can never re-enter the
+// script for a method call, so the bound function value stands in
+// (`{{if .Maybe}}` reads it truthy like Go calling the method). Only
+// declared methods bind here — promoted ones stay out — and
+// unexported members are absent, matching Go's can't-evaluate and
+// unexported-field errors as a missing key.
+func structDataHost(recv runtime.Value, s *runtime.Struct) any {
+	td := s.Def
+	out := make(scriptData, len(s.Fields)+1)
+	out[scriptDataOrigKey] = recv
+	if td == nil {
+		return out
+	}
+	for i, name := range td.Fields {
+		if i < len(s.Fields) && ast.IsExported(name) {
+			out[name] = deepHost(s.Fields[i])
+		}
+	}
+	for name, m := range td.Methods {
+		if !ast.IsExported(name) {
+			continue
+		}
+		r := recv
+		if !m.PtrRecv {
+			if dv, ok := runtime.Deref(r); ok {
+				r = dv
+			}
+		}
+		out[name] = &runtime.BoundMethod{Recv: r, Fn: m}
+	}
+	return out
 }
 
 // scriptBytes reads a script slice's elements as bytes in one pass —
