@@ -1919,3 +1919,27 @@ func Answer() int { return Id(42) }
 		t.Fatalf("unbounded/Answer: got %v", got)
 	}
 }
+
+func TestRunFile(t *testing.T) {
+	// like `go run gen.go`: an explicit file is a one-file package —
+	// build constraints are ignored and siblings are not read — and it
+	// never replaces its directory's package.
+	dir := t.TempDir()
+	write := func(name, src string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("gen.go", "//go:build ignore\n\npackage main\n\nfunc Name() string { return \"gen\" }\n")
+	write("lib.go", "package lib\n\nfunc Name() string { return \"lib\" }\n")
+	e := newEngine(t)
+	if got := run(t, e, filepath.Join(dir, "gen.go"), "Name"); got != "gen" {
+		t.Errorf("file: got %v, want gen", got)
+	}
+	if got := run(t, e, dir, "Name"); got != "lib" {
+		t.Errorf("dir after file: got %v, want lib", got)
+	}
+	if _, err := e.Run(context.Background(), filepath.Join(dir, "missing.go"), "Name"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("missing file: got %v, want a not-found error", err)
+	}
+}
