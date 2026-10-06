@@ -15,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,7 +70,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "minigo %s: %v\n\n%s", cmd, err, helps[cmd])
 		os.Exit(2)
 	default:
-		slog.ErrorContext(ctx, "minigo", "error", err)
+		// the error carries a multi-line traceback: print it as is, like
+		// go run prints a panic, rather than escaped inside a log record.
+		fmt.Fprintf(os.Stderr, "minigo: %v\n", err)
 		os.Exit(1)
 	}
 }
