@@ -256,5 +256,27 @@ solver の結果（全22件 solved=True、試行1-3回 —— 試行数分布は
 - **バージョンスキュー**: solver パッケージに vendored される `script/` は実行時ソースなので、**バイナリだけ新しくすると全ケースが `too many arguments to Main: 4 given, want 3` で死ぬ**。逆方向も同じ —— script/ を更新した dir に古いバイナリを当てても壊れる。gen-sync の dir は実質的に「その時点の minigo 実装にピン留めされた minigo スクリプトプロジェクト」であり、**バージョンアップで既存の生成ディレクトリが壊れる**。改善版の新しい失敗語彙はこれを正しく "this looks like a gen-sync bug" と帰属した
 - 同じ構造上の曖昧さとして 12 でも: ツールの内部ソース（script/+scanx/）が入力ツリー内に同居するので、「ツールのバグ」と「入力の破損」はビット列上区別がつかない。solver は兄弟ケースの同名ファイルとの md5 照合で復元できた —— 盲検化としては穴だが、**実運用でも同じ抜け道が存在する**（vendored script が正常な別 dir から直せる）ことに注意
 
-(オラクル IMP 版・各 PR のブラインドレビュー結果は届き次第ここに追記)
+#### オラクル IMP 版・ブラインドレビュー
+
+新オラクル（dab2f69 で実施）: **discrepancies 0件**。契約は改善後も正確 —— 手計算ツリーとのバイト一致、-check は一切書かず drift=exit 1、真の失敗は exit 2、2回目は冪等。`-explain` の約30行の推論経路はすべて fixture と照合して妥当（Level の members が decoys.go にあることまで正しく数えている）。silently_wrong_paths も空。
+
+ただしブラインドレビュー（各PRを実験履歴なしで独立査読）が**実装側の穴を2件**拾った —— オラクルが見逃す層:
+
+- #447: foreign-package のスキップは不完全で、method-set 推論（HasMethod/RequiresMethod）と dep パッケージの Explorer.Lookup が生の index を読むため、**foreign ファイルのメソッドが directive を稼ぐ**（レビュアー実証: foreign な `func (V) Discriminator()` が app/v.go に oneofgen を書かせた）。decls からは外れても method set 経由では残っていた。加えて `reading package dir` blame がラッパー越しで到達不能
+- #450: `-explain` の "declares Discriminator() string" が method set 判定（昇格メソッドを含む）と食い違い、fixture 自身の EmbedEvent で**虚偽の推論経路を出力**。まさに -explain が正しくあろうとする部分での誤り
+
+これらは修正済み（次節）。レビューの存在意義が実証された形 —— 「テストは通る・契約は保つ」だけでは推論経路の虚偽は見えない。
+
+#### 総括
+
+この方法で見えたもの:
+
+1. **#381 の改善を実を実測で裏付け**: solver の生挙動が、無言喰い・引数 swallow・CRLF 二重 sentinel・exit 0 部分書き込みの全てで修正を実証（#377 の予想リストとの照合ではなく、エージェントの証拠行として）。
+2. **#377 の記述の修正**: S4 フォールバックは「cwd の上に別 go.mod がある」条件でのみ発動。単一ツリーでの mood 削除は両版とも即エラー。
+3. **新しい改善点**（実装済み）: 失敗の責任帰属行、-check exit 分割、trap のパッケージ名+理由、foreign-package 拒絶、生成物 skip の可視化、部分失敗集計、-explain。これらは §0.1 の「黙って間違える経路」の縮小である。
+4. **構造上の発見**: vendored script/ が実行時ソースなので**バージョンスキューで生成 dir ごと壊れる**（binary/script 不整合は全ケース即死 —— 新しい blame で tool 側と正しく帰属された）。ツール内部ソースが入力ツリー内に住むため「ツールバグ」と「入力破損」は区別できず、ユーザーはツールの失敗を入力で補う側に倒れた（12）。blame ヒントは帰属を直すが、直し方の範囲までは絞らない（02 の別解）。
+5. **方法論の限界**: 盲検化は完全ではない（兄弟ケース dir の共有ファイル、VM 上の repo clone）。solver の believes_solved は自己申告で、証拠行の検証は取りまとめ役の責任 —— solver を信頼しない設計が維持された。
+
+残課題（TODO.md に記録）: x01 のモジュールフォールバック方針、11a の部分書き込みロールバック是非、canonical パッケージの多数決、dedupe が残す理由は最初のみ、-explain の generated-file 非対象、scanx.Dedupe の死コード化。
+
 
