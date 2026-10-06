@@ -9925,6 +9925,9 @@ func (v *VM) specializeType(g *runtime.TypeDef, targs []runtime.Value) *runtime.
 			// List[E])` on `type List[T]` scopes E in the method body, so
 			// the receiver's own names bind to the same arguments.
 			for i, rp := range recvTypeParamNames(m.Decl) {
+				if rp == "_" {
+					continue // `_` names no parameter to bind
+				}
 				if i < len(targs) {
 					binds[rp] = targs[i]
 				}
