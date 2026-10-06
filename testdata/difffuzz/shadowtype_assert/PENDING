@@ -1,0 +1,4 @@
+SILENT missing-panic: asserting a package-type T value against a
+func-local decl that shadows T does NOT panic — local type identity is
+conflated with the same-named package type.
+Corpus: $GOROOT/test/fixedbugs/bug148.go.

@@ -1,0 +1,4 @@
+TRAP: `reflect.ValueOf((*byte)(nil)).Type()` inside a function called
+during package init fails `call of reflect.Value.Type on zero Value` —
+the typed-nil pointer loses its type becoming a zero Value (works in
+main()). $GOROOT/test/fixedbugs/issue30606b.go.

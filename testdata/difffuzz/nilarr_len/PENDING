@@ -1,0 +1,3 @@
+TRAP: `len(*nilPtrVar)` nil-panics; go treats len() on a deref of an
+addressable ptr-to-array as a static constant (no deref — only
+*func()-shaped operands deref). $GOROOT/test/fixedbugs/issue72844.go.

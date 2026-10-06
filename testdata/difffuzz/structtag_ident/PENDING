@@ -1,0 +1,3 @@
+SILENT value: `struct{x int}` vs `struct{x int ""}` compare unequal and
+unassignable — an absent tag and an empty tag are the SAME type.
+Corpus: $GOROOT/test/fixedbugs/issue15439.go.
