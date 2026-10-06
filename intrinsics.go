@@ -1226,9 +1226,14 @@ func (e *Engine) installStdlib() {
 		}
 		ospkg["Args"] = strsSlice(argv)
 		ospkg["Hostname"] = h.fn("os.Hostname", func(a []any) (any, error) { return retErr2(os.Hostname()) })
-		// process stdio, boxed for cmd.Stdout / cmd.Stderr wiring
+		// process stdio, boxed for cmd.Stdout / cmd.Stderr wiring.
+		// os.Stdout forwards to the engine's configured output so host
+		// consumers handed it — text/template's Execute above all —
+		// write where print/println write instead of escaping to the
+		// process stdout. (Stdin/Stderr keep the real files: there is
+		// no engine-level abstraction for them.)
 		ospkg["Stdin"] = &runtime.GoValue{V: os.Stdin}
-		ospkg["Stdout"] = &runtime.GoValue{V: os.Stdout}
+		ospkg["Stdout"] = &runtime.GoValue{V: &engineStdout{h: h}}
 		ospkg["Stderr"] = &runtime.GoValue{V: os.Stderr}
 		ospkg["TempDir"] = h.fn("os.TempDir", func(a []any) (any, error) { return os.TempDir(), nil })
 		ospkg["UserHomeDir"] = h.fn("os.UserHomeDir", func(a []any) (any, error) { return retErr2(os.UserHomeDir()) })
@@ -2547,6 +2552,21 @@ func atomicOp(name string, op atomicOpKind) *runtime.BuiltinFunc {
 // and results back to runtime values.
 type hostHelpers struct {
 	e *Engine // for the configured output writer
+}
+
+// engineStdout is the script-visible os.Stdout: an io.Writer that
+// forwards to the engine's output (WithOutput) lazily, so a host callee
+// receiving os.Stdout — template.Execute, fmt.Fprint's target — lands
+// in the same stream the fmt intrinsics print to.
+type engineStdout struct{ h *hostHelpers }
+
+func (w *engineStdout) Write(p []byte) (int, error) { return w.h.out().Write(p) }
+
+func (w *engineStdout) WriteString(s string) (int, error) {
+	if sw, ok := w.h.out().(io.StringWriter); ok {
+		return sw.WriteString(s)
+	}
+	return w.h.out().Write([]byte(s))
 }
 
 // out returns the engine's output writer (io.Discard when unset).

@@ -2644,7 +2644,7 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 		// slices as []any, maps as map[any]any. Pointer-like values stay
 		// verbatim: their address-ness is the point. callReflectFunc
 		// copies a converted slice's elements back after the call.
-		v = deepHost(v)
+		v = deepHost(v, vc)
 		if v == nil || v == runtime.NIL {
 			return reflect.Zero(t), nil
 		}
@@ -3089,8 +3089,9 @@ func (s *scriptIface) readFrom(r io.Reader) (int64, error) {
 // deepHost converts a script value for an `any` parameter: containers
 // become real host values (Slice → []any, Map → map[any]any) so the
 // callee can reflect over them; Named and GoValue unwrap; typed nils
-// read as nil. Everything else — cells, funcs, structs — stays verbatim.
-func deepHost(v runtime.Value) runtime.Value {
+// read as nil; structs marshal to field maps (see structDataHost).
+// Everything else — funcs, non-struct pointers — stays verbatim.
+func deepHost(v runtime.Value, vc runtime.VMCaller) runtime.Value {
 	switch x := v.(type) {
 	case nil, runtime.Nil:
 		return nil
@@ -3101,26 +3102,104 @@ func deepHost(v runtime.Value) runtime.Value {
 		if err != nil {
 			panic(&runtime.Panic{Value: &runtime.GoValue{V: err}})
 		}
-		return deepHost(mv)
+		return deepHost(mv, vc)
 	case *runtime.Named:
-		return deepHost(x.V)
+		return deepHost(x.V, vc)
 	case *runtime.GoValue:
 		return x.V
+	case *runtime.Struct:
+		return structDataHost(x, x, vc)
 	case *runtime.Slice:
 		out := make([]any, len(x.Elems))
 		for i, e := range x.Elems {
-			out[i] = deepHost(e)
+			out[i] = deepHost(e, vc)
 		}
 		return out
 	case *runtime.Map:
 		out := make(map[any]any, x.Len())
 		for i := 0; i < x.Len(); i++ {
 			k, e := x.At(i)
-			out[deepHost(k)] = deepHost(e)
+			out[deepHost(k, vc)] = deepHost(e, vc)
 		}
 		return out
+	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
+		// a script pointer to a struct can't offer the host its
+		// address — only data — so it marshals like the struct value,
+		// except the pointer keeps its wider method set (pointer
+		// receivers) exactly as Go's *T does.
+		if dv, ok := runtime.Deref(x); ok {
+			if s, ok := dv.(*runtime.Struct); ok {
+				return structDataHost(x, s, vc)
+			}
+		}
+		return v
 	}
 	return v
+}
+
+// structDataHost marshals a script struct (or a pointer to one) for a
+// host `any` parameter. Field walkers — text/template's evalField
+// above all — navigate reflect data only, so the struct arrives as a
+// map: exported fields plus the results of its exported niladic
+// methods (a map can never re-enter the script for a method call, so
+// `{{if .Maybe}}`/`{{.Maybe}}` need the method's value up front).
+// Parameterized methods and unexported members stay out, matching
+// Go's "can't evaluate"/unexported-field errors as a missing key.
+func structDataHost(recv runtime.Value, s *runtime.Struct, vc runtime.VMCaller) any {
+	td := s.Def
+	out := make(map[string]any, len(s.Fields))
+	if td != nil {
+		for i, name := range td.Fields {
+			if i < len(s.Fields) && ast.IsExported(name) {
+				out[name] = deepHost(s.Fields[i], vc)
+			}
+		}
+	}
+	if vc == nil {
+		return out
+	}
+	set, _ := vc.MethodSetOf(recv)
+	for name := range set {
+		if !ast.IsExported(name) {
+			continue
+		}
+		m, ok := vc.Member(recv, name)
+		if !ok {
+			continue
+		}
+		bm, ok := m.(*runtime.BoundMethod)
+		if !ok || bm.Fn == nil || bm.Fn.Decl == nil {
+			out[name] = m
+			continue
+		}
+		if declArity(bm.Fn.Decl.Type) != 0 {
+			out[name] = m // needs args the host can't supply; keep the member value
+			continue
+		}
+		r, err := vc.Call(bm, nil)
+		if err != nil {
+			continue
+		}
+		out[name] = deepHost(r, vc)
+	}
+	return out
+}
+
+// declArity counts a function signature's declared parameters; a
+// nameless field (`func(int)`) still takes one argument.
+func declArity(t *ast.FuncType) int {
+	if t == nil || t.Params == nil {
+		return 0
+	}
+	n := 0
+	for _, f := range t.Params.List {
+		c := len(f.Names)
+		if c == 0 {
+			c = 1
+		}
+		n += c
+	}
+	return n
 }
 
 // scriptBytes reads a script slice's elements as bytes in one pass —

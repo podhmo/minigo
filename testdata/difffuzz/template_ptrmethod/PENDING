@@ -1,8 +1,0 @@
-SILENT (corpus sweep, chan/select5.go — spurious panic, first template eval)
-shape:  text/template {{if .Maybe}} where Maybe is a *T method on a script struct
-go:     yes
-minigo: panic: template: t:1:5: executing "t" at <.Maybe>: can't evaluate
-        field Maybe in type *runtime.Cell
-hypothesis: the script *T value degrades to *runtime.Cell while flowing
-through interpreted text/template internals, so the reflect facade reports
-the host cell type and the method/field lookup fails.
