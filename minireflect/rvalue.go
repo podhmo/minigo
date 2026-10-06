@@ -292,28 +292,12 @@ func (e *Env) compositeTd(kind runtime.TypeKind, et *runtime.TypeDef) *runtime.T
 // is the signature, spelled through the declaration's FuncType so two
 // functions of the same signature intern to the same type.
 func (e *Env) funcTd(v runtime.Value) *runtime.TypeDef {
-	var decl *ast.FuncDecl
-	var fn *runtime.Function
-	switch x := v.(type) {
-	case *runtime.Function:
-		decl, fn = x.Decl, x
-	case *runtime.Closure:
-		if x.Fn != nil {
-			decl, fn = x.Fn.Decl, x.Fn
-		}
-	case *runtime.BoundMethod:
-		if x.Fn != nil {
-			decl, fn = x.Fn.Decl, x.Fn
-		}
-	}
-	td := &runtime.TypeDef{Kind: runtime.KindFunc}
-	if fn != nil {
-		// the signature's named types resolve in the declaring
-		// package's scope — `func F(p N)` resolves N through it.
-		td.Pkg, td.File, td.Binds = fn.Pkg, fn.File, fn.Binds
-	}
-	if decl != nil {
-		td.Anon = decl.Type
+	// the signature's named types resolve in the declaring package's
+	// scope — `func F(p N)` resolves N through it.
+	sig, pkg, file, binds := runtime.FuncSigOf(v)
+	td := &runtime.TypeDef{Kind: runtime.KindFunc, Pkg: pkg, File: file, Binds: binds}
+	if sig != nil {
+		td.Anon = sig
 	}
 	return td
 }
