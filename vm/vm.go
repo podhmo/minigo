@@ -2207,6 +2207,10 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		case *runtime.Package:
 			// an inspect-layer package stored in a var
 			return v.selectMember(f, e, name)
+		case runtime.Nil:
+			// a nil interface slot (var t reflect.Type; t := TypeOf(nil))
+			// — Go's nil itab deref is a recoverable panic, not a trap.
+			panic(runtime.NilDerefPanic())
 		default:
 			f.trap("select %s on cell of %T", name, b.Elem)
 		}
