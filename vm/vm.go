@@ -8380,7 +8380,7 @@ func (v *VM) funcAssert(td *runtime.TypeDef, x runtime.Value) bool {
 	}
 	if sig, pkg, file, binds := funcSig(x); sig != nil {
 		dyn := &runtime.TypeDef{Kind: runtime.KindFunc, Anon: sig, Pkg: pkg, File: file, Binds: binds}
-		return runtime.TypIdentical(td, dyn)
+		return v.sigTypEq(td, dyn)
 	}
 	if bf, ok := x.(*runtime.BuiltinFunc); ok && bf.Target != nil {
 		// a bound host func compares by its real Go signature.
@@ -8405,7 +8405,7 @@ func (v *VM) containerAssert(f *frame, td, tag *runtime.TypeDef, kind runtime.Ty
 	if td.Name != "" || tag.Name != "" {
 		return v.typeMatchesTD(f, td, tag)
 	}
-	return v.convShapeEq(td, tag)
+	return v.sigTypEq(td, tag)
 }
 
 // satisfiesIface checks a value against an interface typedef's method set.
@@ -8473,15 +8473,15 @@ func (v *VM) ifaceSigsMatch(td *runtime.TypeDef, x runtime.Value) (bool, error) 
 	if err != nil {
 		return false, err
 	}
-	return memberSigsMatch(reqFns, dynFns), nil
+	return v.memberSigsMatch(reqFns, dynFns), nil
 }
 
 // memberSigsMatch reports whether every signature-bearing requirement
 // is met by a same-named member with an identical signature. A member
 // absent from dynFns kept its name-only pass.
-func memberSigsMatch(reqFns, dynFns map[string]*runtime.Function) bool {
+func (v *VM) memberSigsMatch(reqFns, dynFns map[string]*runtime.Function) bool {
 	for m, reqFn := range reqFns {
-		if dynFn, ok := dynFns[m]; ok && !memberSigEq(reqFn, dynFn) {
+		if dynFn, ok := dynFns[m]; ok && !v.memberSigEq(reqFn, dynFn) {
 			return false
 		}
 	}
@@ -8491,13 +8491,406 @@ func memberSigsMatch(reqFns, dynFns map[string]*runtime.Function) bool {
 // memberSigEq compares two members' declared signatures — an interface
 // requirement and the concrete method offered against it. Either side
 // lacking a decl signature (synthesized shims) satisfies by name.
-func memberSigEq(req, dyn *runtime.Function) bool {
+func (v *VM) memberSigEq(req, dyn *runtime.Function) bool {
 	if req == nil || dyn == nil || req.Decl == nil || dyn.Decl == nil || req.Decl.Type == nil || dyn.Decl.Type == nil {
 		return true
 	}
 	rt := &runtime.TypeDef{Kind: runtime.KindFunc, Anon: req.Decl.Type, Pkg: req.Pkg, File: req.File, Binds: req.Binds}
 	dt := &runtime.TypeDef{Kind: runtime.KindFunc, Anon: dyn.Decl.Type, Pkg: dyn.Pkg, File: dyn.File, Binds: dyn.Binds}
-	return runtime.TypIdentical(rt, dt)
+	return v.sigTypEq(rt, dt)
+}
+
+// sigTypEq reports whether two typedefs name the same type where a
+// signature spells them — TypIdentical's judgment plus the
+// normalizations a spelling cannot see: an alias resolves to its
+// target (`type A = int` IS int), anonymous interfaces compare as
+// method SETS (member order and the any/interface{} spelling never
+// decide identity, and embedded requirements flatten into the set),
+// and composite elements — slice and array elems, map keys and
+// values, chan elems, pointer pointees, struct fields, func params
+// and results, instantiation args — compare recursively so
+// normalization reaches any depth. Named declared types keep
+// TypIdentical's decl-site identity; anything unresolvable falls back
+// to the identity spelling, so the judgment never gets weaker than
+// the spelling compare it replaces.
+func (v *VM) sigTypEq(a, b *runtime.TypeDef) bool {
+	a = v.peelAlias(a)
+	b = v.peelAlias(b)
+	if a == b {
+		return true
+	}
+	if a == nil || b == nil || a.Kind != b.Kind {
+		return false
+	}
+	if a.Kind == runtime.KindInterface {
+		return v.ifaceTypEq(a, b)
+	}
+	if a.Name != "" || b.Name != "" {
+		return v.namedTypEq(a, b)
+	}
+	aa, bb := sigAnonOf(a), sigAnonOf(b)
+	if aa == nil || bb == nil {
+		return runtime.TypIdentical(a, b)
+	}
+	switch a.Kind {
+	case runtime.KindFunc:
+		fa, oka := aa.(*ast.FuncType)
+		fb, okb := bb.(*ast.FuncType)
+		if !oka || !okb {
+			return runtime.TypIdentical(a, b)
+		}
+		return v.sigFieldListEq(fa.Params, a, fb.Params, b) &&
+			v.sigFieldListEq(fa.Results, a, fb.Results, b)
+	case runtime.KindSlice:
+		at, oka := aa.(*ast.ArrayType)
+		bt, okb := bb.(*ast.ArrayType)
+		if !oka || !okb {
+			// an element-carrying typedef has no length — it never
+			// identifies with an array.
+			if ar, ok := aa.(*ast.ArrayType); ok && ar.Len != nil {
+				return false
+			}
+			if ar, ok := bb.(*ast.ArrayType); ok && ar.Len != nil {
+				return false
+			}
+			return v.sigElemEq(a, b)
+		}
+		if (at.Len == nil) != (bt.Len == nil) {
+			return false // []T and [N]T are different types
+		}
+		if at.Len != nil && !sigLenEq(at.Len, bt.Len) {
+			return false
+		}
+		return v.sigExprEq(at.Elt, a, bt.Elt, b)
+	case runtime.KindMap:
+		am, oka := aa.(*ast.MapType)
+		bm, okb := bb.(*ast.MapType)
+		if !oka || !okb {
+			return runtime.TypIdentical(a, b)
+		}
+		return v.sigExprEq(am.Key, a, bm.Key, b) && v.sigExprEq(am.Value, a, bm.Value, b)
+	case runtime.KindChan:
+		ac, oka := aa.(*ast.ChanType)
+		bc, okb := bb.(*ast.ChanType)
+		if !oka || !okb {
+			return v.sigElemEq(a, b)
+		}
+		// direction is part of chan identity — <-chan T, chan<- T and
+		// chan T are three different types.
+		return ac.Dir == bc.Dir && v.sigExprEq(ac.Value, a, bc.Value, b)
+	case runtime.KindPointer:
+		ap, oka := aa.(*ast.StarExpr)
+		bp, okb := bb.(*ast.StarExpr)
+		if !oka || !okb {
+			return v.sigElemEq(a, b)
+		}
+		return v.sigExprEq(ap.X, a, bp.X, b)
+	case runtime.KindStruct:
+		as, oka := aa.(*ast.StructType)
+		bs, okb := bb.(*ast.StructType)
+		if !oka || !okb {
+			return runtime.TypIdentical(a, b)
+		}
+		return v.structTypEq(as, a, bs, b)
+	}
+	return runtime.TypIdentical(a, b)
+}
+
+// sigAnonOf returns the type expression a typedef spells — its Anon,
+// or the declared underlying type for a Spec-carrying typedef.
+func sigAnonOf(td *runtime.TypeDef) ast.Expr {
+	if td.Anon != nil {
+		return td.Anon
+	}
+	if td.Spec != nil {
+		return td.Spec.Type
+	}
+	return nil
+}
+
+// ifaceTypEq compares two interface typedefs as method SETS: member
+// order never decides identity, embedded requirements flatten through
+// the engine's requirement hooks, and the predeclared `any` IS the
+// empty interface. A named interface keeps decl-site identity — `I`
+// and `interface{ M() }` are different types even when I declares
+// exactly M(). Members whose signature cannot be recovered (facade
+// requirements) compare by name alone, matching memberSigsMatch.
+func (v *VM) ifaceTypEq(a, b *runtime.TypeDef) bool {
+	if sigNamedIface(a) || sigNamedIface(b) {
+		return v.namedTypEq(a, b)
+	}
+	if v.H.IfaceReqs == nil || v.H.IfaceSigs == nil {
+		return runtime.TypIdentical(a, b)
+	}
+	ra, errA := v.H.IfaceReqs(a)
+	rb, errB := v.H.IfaceReqs(b)
+	if errA != nil || errB != nil {
+		return runtime.TypIdentical(a, b)
+	}
+	if len(ra) != len(rb) {
+		return false
+	}
+	sa, errA := v.H.IfaceSigs(a)
+	sb, errB := v.H.IfaceSigs(b)
+	if errA != nil || errB != nil {
+		return runtime.TypIdentical(a, b)
+	}
+	for m := range ra {
+		if !rb[m] {
+			return false
+		}
+		fa, oka := sa[m]
+		fb, okb := sb[m]
+		if oka && okb && !v.memberSigEq(fa, fb) {
+			return false
+		}
+	}
+	return true
+}
+
+// sigNamedIface reports whether td is a NAMED interface for identity
+// purposes — everything named except the predeclared `any`, which is
+// defined as the alias of interface{} and so IS the anonymous empty
+// interface (user code cannot reach here with its own `any`: a
+// declared `type any ...` typedef carries a Spec, and an alias peels
+// before this check).
+func sigNamedIface(td *runtime.TypeDef) bool {
+	if td.Name == "" {
+		return false
+	}
+	return td.Name != "any" || td.Spec != nil || td.Pkg != nil || td.Anon != nil || len(td.MReqs) != 0 || len(td.IEmbeds) != 0
+}
+
+// namedTypEq is TypIdentical's named-typedef judgment with
+// instantiation binds compared semantically: Pair[A] and Pair[int]
+// name the same instantiation when A = int. Decl-site identity for
+// func-local types is untouched — Spec equality still decides.
+func (v *VM) namedTypEq(a, b *runtime.TypeDef) bool {
+	ca, cb := *a, *b
+	ca.Binds, cb.Binds = nil, nil
+	if !runtime.TypIdentical(&ca, &cb) {
+		return false
+	}
+	return v.bindsEqSig(a.Binds, b.Binds)
+}
+
+// bindsEqSig compares instantiation bindings like bindsEq but through
+// sigTypEq — an argument spelled by alias identifies with its target.
+func (v *VM) bindsEqSig(a, b map[string]runtime.Value) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, av := range a {
+		bv, ok := b[k]
+		if !ok || !v.bindArgEqSig(av, bv) {
+			return false
+		}
+	}
+	return true
+}
+
+func (v *VM) bindArgEqSig(a, b runtime.Value) bool {
+	at, aok := a.(*runtime.TypeDef)
+	bt, bok := b.(*runtime.TypeDef)
+	if aok != bok {
+		return false
+	}
+	if !aok {
+		return a == b
+	}
+	return v.sigTypEq(at, bt)
+}
+
+// sigFieldListEq compares two signature field lists pairwise — `a, b
+// int` expands to two int params like typFieldSpellings does, and
+// parameter names never decide identity.
+func (v *VM) sigFieldListEq(fa *ast.FieldList, ca *runtime.TypeDef, fb *ast.FieldList, cb *runtime.TypeDef) bool {
+	ea := sigFieldExprs(fa)
+	eb := sigFieldExprs(fb)
+	if len(ea) != len(eb) {
+		return false
+	}
+	for i := range ea {
+		if !v.sigExprEq(ea[i], ca, eb[i], cb) {
+			return false
+		}
+	}
+	return true
+}
+
+// sigFieldExprs expands a field list to one type expression per
+// declared name — `a, b int` contributes int twice.
+func sigFieldExprs(fl *ast.FieldList) []ast.Expr {
+	if fl == nil {
+		return nil
+	}
+	var out []ast.Expr
+	for _, f := range fl.List {
+		n := len(f.Names)
+		if n == 0 {
+			n = 1
+		}
+		for i := 0; i < n; i++ {
+			out = append(out, f.Type)
+		}
+	}
+	return out
+}
+
+// sigExprEq compares two type expressions written in different
+// declaration contexts: each resolves through the engine to a typedef
+// and compares by sigTypEq; anything unresolvable falls back to the
+// identity spelling. A variadic ellipsis is part of the signature —
+// func(...T) is never func([]T).
+func (v *VM) sigExprEq(ea ast.Expr, ca *runtime.TypeDef, eb ast.Expr, cb *runtime.TypeDef) bool {
+	ae, aIs := ea.(*ast.Ellipsis)
+	be, bIs := eb.(*ast.Ellipsis)
+	if aIs != bIs {
+		return false
+	}
+	if aIs {
+		return v.sigExprEq(ae.Elt, ca, be.Elt, cb)
+	}
+	if v.H.ResolveType != nil {
+		ta, errA := v.H.ResolveType(ca, ea)
+		tb, errB := v.H.ResolveType(cb, eb)
+		if errA == nil && errB == nil && ta != nil && tb != nil {
+			return v.sigTypEq(ta, tb)
+		}
+	}
+	return runtime.TypSpelling(ea, ca) == runtime.TypSpelling(eb, cb)
+}
+
+// sigElemOf resolves the element typedef of a container typedef whose
+// Anon cannot spell it — a synthesized `*T`, `[]T` or `chan T` that
+// carries Elem, or one resolvable through the ElemOf hook.
+func (v *VM) sigElemOf(td *runtime.TypeDef) *runtime.TypeDef {
+	if td.Elem != nil {
+		return td.Elem
+	}
+	if v.H.ElemOf != nil {
+		if et, err := v.H.ElemOf(td); err == nil {
+			return et
+		}
+	}
+	return nil
+}
+
+// sigElemEq compares element-carrying container typedefs — the
+// fallback when one side cannot spell its shape as an AST.
+func (v *VM) sigElemEq(a, b *runtime.TypeDef) bool {
+	ea, eb := v.sigElemOf(a), v.sigElemOf(b)
+	if ea == nil || eb == nil {
+		return runtime.TypIdentical(a, b)
+	}
+	return v.sigTypEq(ea, eb)
+}
+
+// structTypEq compares two struct type ASTs field by field — names,
+// types and tags in declaration order. `struct{ A }` and `struct{ T }`
+// differ even when A is T's alias, since the embedded field keeps the
+// written name; the field TYPE still compares semantically, so
+// `struct{ x A }` and `struct{ x int }` are one type when A = int.
+func (v *VM) structTypEq(sa *ast.StructType, ca *runtime.TypeDef, sb *ast.StructType, cb *runtime.TypeDef) bool {
+	fa := sigStructFields(sa.Fields)
+	fb := sigStructFields(sb.Fields)
+	if len(fa) != len(fb) {
+		return false
+	}
+	for i := range fa {
+		if fa[i].name != fb[i].name {
+			return false
+		}
+		if sigTagKey(fa[i].tag) != sigTagKey(fb[i].tag) {
+			return false
+		}
+		if !v.sigExprEq(fa[i].typ, ca, fb[i].typ, cb) {
+			return false
+		}
+	}
+	return true
+}
+
+// sigStructField is one flattened struct field for identity compare.
+type sigStructField struct {
+	name string
+	typ  ast.Expr
+	tag  *ast.BasicLit
+}
+
+// sigStructFields expands a struct's field list like sigFieldExprs,
+// keeping each field's name — embedded fields take the written type
+// name like embedFieldName does.
+func sigStructFields(fl *ast.FieldList) []sigStructField {
+	if fl == nil {
+		return nil
+	}
+	var out []sigStructField
+	for _, f := range fl.List {
+		if len(f.Names) == 0 {
+			out = append(out, sigStructField{name: sigEmbedName(f.Type), typ: f.Type, tag: f.Tag})
+			continue
+		}
+		for _, n := range f.Names {
+			out = append(out, sigStructField{name: n.Name, typ: f.Type, tag: f.Tag})
+		}
+	}
+	return out
+}
+
+// sigEmbedName derives the field name of an embedded struct field —
+// the written type name like embedBaseName: T for T or *T, T for
+// pkg.T, G for G[int].
+func sigEmbedName(x ast.Expr) string {
+	switch t := x.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.StarExpr:
+		return sigEmbedName(t.X)
+	case *ast.SelectorExpr:
+		return t.Sel.Name
+	case *ast.IndexExpr:
+		return sigEmbedName(t.X)
+	case *ast.IndexListExpr:
+		return sigEmbedName(t.X)
+	}
+	return ""
+}
+
+// sigTagKey normalizes a field tag literal for identity compare, like
+// structTagKey: absent and empty tags fold, and quote styles
+// normalize.
+func sigTagKey(tag *ast.BasicLit) string {
+	if tag == nil {
+		return ""
+	}
+	s, err := strconv.Unquote(tag.Value)
+	if err != nil || s == "" {
+		return ""
+	}
+	return strconv.Quote(s)
+}
+
+// sigLenEq compares array-length expressions for identity, mirroring
+// typLenName: literals by value, named lengths by name — a named const
+// is not folded, so [N]T and [3]T stay distinct here as they do in
+// TypSpelling.
+func sigLenEq(a, b ast.Expr) bool {
+	return sigLenKey(a) == sigLenKey(b)
+}
+
+func sigLenKey(e ast.Expr) string {
+	switch l := e.(type) {
+	case nil:
+		return ""
+	case *ast.BasicLit:
+		return l.Value
+	case *ast.Ident:
+		return l.Name
+	case *ast.Ellipsis:
+		return "..."
+	}
+	return fmt.Sprintf("%T", e)
 }
 
 // ---- declared types: zeros, typed nils, interface boxing (round 5) ----
@@ -8549,12 +8942,12 @@ func (v *VM) typeMatchesTD(f *frame, td, dyn *runtime.TypeDef) bool {
 				if err != nil {
 					f.trap("%s", err)
 				}
-				return memberSigsMatch(reqFns, dynFns)
+				return v.memberSigsMatch(reqFns, dynFns)
 			}
 		}
 		return true
 	}
-	return sameTypeDef(td, dyn)
+	return v.sigTypEq(td, dyn)
 }
 
 // typedMember resolves base.name on a container value that carries its
