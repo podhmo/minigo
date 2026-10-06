@@ -1720,7 +1720,6 @@ func funcParam(t *RType, i int, results bool) ast.Expr {
 		panic(runtime.RuntimePanic(fmt.Sprintf("index out of range [%d]", i)))
 	}
 	panic(runtime.BoundsPanic(i, n))
-	return nil
 }
 
 // reflectResolver adapts the facade's Hooks to runtime.TypeResolver so

@@ -7,6 +7,7 @@ format:
 	go tool goimports -w . # walks .go files recursively; `find` is not portable (Windows System32\find.exe shadows GNU find)
 
 lint:
+	go vet ./...
 	go tool staticcheck ./...
 
 go-mod-tidy-all:
