@@ -8568,7 +8568,7 @@ func (v *VM) funcAssert(td *runtime.TypeDef, x runtime.Value) bool {
 		// against — fall back to the kind match.
 		return td.Spec == nil
 	}
-	if sig, pkg, file, binds := funcSig(x); sig != nil {
+	if sig, pkg, file, binds := runtime.FuncSigOf(x); sig != nil {
 		dyn := &runtime.TypeDef{Kind: runtime.KindFunc, Anon: sig, Pkg: pkg, File: file, Binds: binds}
 		return v.sigTypEq(td, dyn)
 	}
@@ -10916,46 +10916,6 @@ func specTypeOf(td *runtime.TypeDef) ast.Expr {
 	return nil
 }
 
-// funcSig returns the declared signature of a function value — the type
-// the value carries when stored in an interface: a method expression
-// (T.M / (*T).M surfaces as a bare *runtime.Function) signs with its
-// receiver as the first parameter, a bound method without it.
-func funcSig(x runtime.Value) (*ast.FuncType, *runtime.Package, *syntax.File, map[string]runtime.Value) {
-	switch fn := x.(type) {
-	case *runtime.Function:
-		if sig := funcDeclSig(fn); sig != nil {
-			return sig, fn.Pkg, fn.File, fn.Binds
-		}
-	case *runtime.Closure:
-		if sig := funcDeclSig(fn.Fn); sig != nil {
-			return sig, fn.Fn.Pkg, fn.Fn.File, fn.Fn.Binds
-		}
-	case *runtime.BoundMethod:
-		if fn.Fn != nil && fn.Fn.Decl != nil && fn.Fn.Decl.Type != nil {
-			return fn.Fn.Decl.Type, fn.Fn.Pkg, fn.Fn.File, fn.Fn.Binds
-		}
-	}
-	return nil, nil, nil, nil
-}
-
-// funcDeclSig returns the signature a declared function carries as a
-// value: a method declaration signs with the receiver prepended (a bare
-// Function value only surfaces as a method expression — BoundMethod
-// takes the receiver-less path in funcSig).
-func funcDeclSig(fn *runtime.Function) *ast.FuncType {
-	if fn == nil || fn.Decl == nil || fn.Decl.Type == nil {
-		return nil
-	}
-	if fn.Decl.Recv == nil || len(fn.Decl.Recv.List) == 0 {
-		return fn.Decl.Type
-	}
-	params := []*ast.Field{fn.Decl.Recv.List[0]}
-	if fn.Decl.Type.Params != nil {
-		params = append(params, fn.Decl.Type.Params.List...)
-	}
-	return &ast.FuncType{Params: &ast.FieldList{List: params}, Results: fn.Decl.Type.Results}
-}
-
 // argTypedef is typeOfValue enriched for inference: stamped container
 // typedefs pass through, pointers remember the pointee typedef, and
 // function values carry their signature AST so `func(E) R`-shaped
@@ -10997,7 +10957,7 @@ func (v *VM) argTypedef(x runtime.Value) *runtime.TypeDef {
 		}
 		return &runtime.TypeDef{Kind: runtime.KindPointer}
 	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod:
-		if sig, pkg, file, binds := funcSig(x); sig != nil {
+		if sig, pkg, file, binds := runtime.FuncSigOf(x); sig != nil {
 			return &runtime.TypeDef{Kind: runtime.KindFunc, Anon: sig, Pkg: pkg, File: file, Binds: binds}
 		}
 		return &runtime.TypeDef{Kind: runtime.KindFunc}

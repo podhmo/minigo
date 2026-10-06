@@ -485,6 +485,49 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 	return fmt.Sprintf("%T", e)
 }
 
+// FuncSigOf returns the declared signature of a function value — the
+// type the value carries when stored in an interface: a method
+// expression (T.M / (*T).M surfaces as a bare *Function) signs with
+// its receiver as the first parameter, a bound method without it. The
+// package, file imports and type binds spell the signature's names.
+// Every nil on failure — builtins, nil members, non-func values — so
+// the caller picks its fallback.
+func FuncSigOf(v Value) (*ast.FuncType, *Package, *syntax.File, map[string]Value) {
+	switch x := v.(type) {
+	case *Function:
+		if sig := declFuncSig(x); sig != nil {
+			return sig, x.Pkg, x.File, x.Binds
+		}
+	case *Closure:
+		if sig := declFuncSig(x.Fn); sig != nil {
+			return sig, x.Fn.Pkg, x.Fn.File, x.Fn.Binds
+		}
+	case *BoundMethod:
+		if x.Fn != nil && x.Fn.Decl != nil && x.Fn.Decl.Type != nil {
+			return x.Fn.Decl.Type, x.Fn.Pkg, x.Fn.File, x.Fn.Binds
+		}
+	}
+	return nil, nil, nil, nil
+}
+
+// declFuncSig returns the signature a declared function carries as a
+// value: a method declaration signs with the receiver prepended (a bare
+// Function value only surfaces as a method expression — BoundMethod
+// takes the receiver-less path in FuncSigOf).
+func declFuncSig(fn *Function) *ast.FuncType {
+	if fn == nil || fn.Decl == nil || fn.Decl.Type == nil {
+		return nil
+	}
+	if fn.Decl.Recv == nil || len(fn.Decl.Recv.List) == 0 {
+		return fn.Decl.Type
+	}
+	params := []*ast.Field{fn.Decl.Recv.List[0]}
+	if fn.Decl.Type.Params != nil {
+		params = append(params, fn.Decl.Type.Params.List...)
+	}
+	return &ast.FuncType{Params: &ast.FieldList{List: params}, Results: fn.Decl.Type.Results}
+}
+
 // FuncGoSpelling renders a script function value's declared signature
 // the way Go's reflect.Type.String does — `func(int) int`, `func()
 // error` — resolving names through the function's own package, file
