@@ -1084,7 +1084,7 @@ func (v *VM) unwind(f *frame, r any) {
 				defer v.framesPop()
 				p = nil
 			}
-			v.runOneDefer(f)
+			v.runOneDefer(f, p)
 		}
 	}
 	if r != nil {
@@ -1279,7 +1279,9 @@ func nthLine(src []byte, line int) string {
 }
 
 // runOneDefer invokes the innermost pending deferred call of f.
-func (v *VM) runOneDefer(f *frame) {
+// unwinding is the panic unwinding f (nil on a normal-return drain or
+// once it was recovered mid-drain).
+func (v *VM) runOneDefer(f *frame, unwinding *runtime.Panic) {
 	d := f.defers[len(f.defers)-1]
 	f.defers = f.defers[:len(f.defers)-1]
 	// depth is the slot this deferred call's frame occupies — the boundary
@@ -1294,16 +1296,24 @@ func (v *VM) runOneDefer(f *frame) {
 			return
 		}
 		// a panic raised by the deferred call has no link back to
-		// the frame that registered it — record the defer site as a
-		// synthetic entry so the traceback shows who deferred it.
-		entry := v.frameLine(f, d.pos, v.frameName(f)+" (deferred call)")
+		// the frame that registered it. While f unwinds, Go runs the
+		// deferred call on top of the panicking frames, so its
+		// traceback continues with the frames the unwinding panic
+		// collected — the original panic site, even when the deferred
+		// call recovered and re-panicked. Otherwise record the defer
+		// site as a synthetic entry so the traceback shows who
+		// deferred it.
+		below := []string{v.frameLine(f, d.pos, v.frameName(f)+" (deferred call)")}
+		if unwinding != nil && len(unwinding.Frames) > 0 && r != any(unwinding) {
+			below = unwinding.Frames
+		}
 		switch e := r.(type) {
 		case *runtime.Panic:
-			e.Frames = append(e.Frames, entry)
+			e.Frames = append(e.Frames, below...)
 			v.inflight = e
 			v.unwindDepth = depth
 		case *runtime.Trap:
-			e.Frames = append(e.Frames, entry)
+			e.Frames = append(e.Frames, below...)
 			panic(r)
 		case procExit:
 			// process teardown: a deferred call that parks again

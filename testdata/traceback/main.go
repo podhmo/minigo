@@ -43,3 +43,20 @@ func DeferredCleanup() { panic("in defer") }
 func WithDefer() {
 	defer DeferredCleanup()
 }
+
+// Repanic recovers a panic and re-panics with it, like go/parser's
+// bailout handler; the traceback keeps the original panic site below
+// the deferred call, as Go's does.
+func Repanic() {
+	defer func() {
+		if r := recover(); r != nil {
+			panic(r)
+		}
+	}()
+	repanicOrigin()
+}
+
+func repanicOrigin() {
+	var m map[string]int
+	m["x"] = 1
+}
