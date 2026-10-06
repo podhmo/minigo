@@ -2391,9 +2391,24 @@ func (v *VM) hostMember(hv any, name string) (runtime.Value, bool) {
 	if !m.IsValid() {
 		return nil, false
 	}
-	bf := &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	call := func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		return callReflectFunc(name, m, vc, args)
-	}}
+	}
+	if try := uncontendedLock(hv, name); try != nil {
+		// Lock/RLock park on a helper goroutine watched against
+		// proc.done (see blockingHostMethods) — a goroutine spawn per
+		// call, which stdlib-internal mutexes (go/token's per-line
+		// lock) pay thousands of times. An uncontended lock cannot
+		// park, so take it inline and keep the helper for contention.
+		slow := call
+		call = func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) == 0 && try() {
+				return runtime.NIL, nil
+			}
+			return slow(vc, args)
+		}
+	}
+	bf := &runtime.BuiltinFunc{Name: name, Fn: call}
 	// the bound method value spells the receiver-less signature
 	// (`func() int` for Len) under %T.
 	bf.Target = m.Interface()
@@ -2405,6 +2420,24 @@ func (v *VM) hostMember(hv any, name string) (runtime.Value, bool) {
 		bf.Method = &tm
 	}
 	return bf, true
+}
+
+// uncontendedLock returns the non-blocking attempt matching a blocking
+// lock method — TryLock for Lock, TryRLock for RLock — or nil when hv
+// has none (or name is not a lock). A successful attempt is exactly the
+// effect of the blocking call.
+func uncontendedLock(hv any, name string) func() bool {
+	switch name {
+	case "Lock":
+		if l, ok := hv.(interface{ TryLock() bool }); ok {
+			return l.TryLock
+		}
+	case "RLock":
+		if l, ok := hv.(interface{ TryRLock() bool }); ok {
+			return l.TryRLock
+		}
+	}
+	return nil
 }
 
 // hostNilMethod binds a host-backed method to a nil *T receiver: Go
