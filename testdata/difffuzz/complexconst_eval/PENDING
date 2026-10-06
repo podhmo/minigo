@@ -1,4 +1,0 @@
-SILENT value: `imag(1i + complex(0,2)/3 - 5i/3)` evaluates to
--2.220446049250313e-16 instead of 0 — complex() inside untyped const
-exprs escapes exact rational arithmetic into float64.
-Corpus: $GOROOT/test/fixedbugs/issue43908.go.
