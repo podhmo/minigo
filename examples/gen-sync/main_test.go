@@ -1028,6 +1028,8 @@ func TestDescribeFailureBlames(t *testing.T) {
 		{"permission inside dep resolve", trap(`resolve "m/app/internal/mood": reading package dir /x/mood: open /x/mood/m.go: permission denied`), "./app", "permissions"},
 		{"permission inside import", trap(`import m/app: reading package dir /x/app: open /x/app/z.go: permission denied`), "./app", "permissions"},
 		{"script dir missing is a tool problem", trap(`resolve dir "./script": entry directory "./script" not found`), "./app", "gen-sync bug"},
+		{"dir arg with a quote stays a dir problem", trap(`resolve dir "weird\"dir": entry directory "weird\"dir" not found`), `weird"dir`, "fix the dir argument"},
+		{"dir arg with an escape stays a dir problem", trap(`resolve dir "my\\dir": entry directory "my\\dir" not found`), `my\dir`, "fix the dir argument"},
 		{"input file parse", trap(`parse /x/app/level.go: /x/app/level.go:3:1: expected ';'`), "/x/app", "fix the input file"},
 		{"dep file parse", trap(`parse /x/deps/mood/m.go: /x/deps/mood/m.go:1:1: expected`), "/x/app", "dependency"},
 		{"import unresolvable", trap(`resolve "example.com/gone": resolving import "example.com/gone": import path "example.com/gone" could not be resolved`), "./app", "imports or the module"},
