@@ -9829,8 +9829,9 @@ func typeBaseName(x runtime.Value) string {
 	case *runtime.Named:
 		if in, ok := xv.V.(*runtime.IfaceNil); ok && in.Typ != nil && in.Typ.Kind == runtime.KindInterface {
 			// a nil interface value wrapped in its declared tag still
-			// has no dynamic type.
-			return "<nil>"
+			// has no dynamic type — Go spells it "nil" in the
+			// "is %s, not %s" panic slot, not <nil>.
+			return "nil"
 		}
 		return spelledTyp(xv.Typ)
 	case *runtime.Struct:
@@ -9843,8 +9844,9 @@ func typeBaseName(x runtime.Value) string {
 	case *runtime.IfaceNil:
 		if xv.Typ != nil {
 			if xv.Typ.Kind == runtime.KindInterface {
-				// a nil interface value has no dynamic type.
-				return "<nil>"
+				// a nil interface value has no dynamic type — "nil",
+				// not <nil>, in Go's panic text.
+				return "nil"
 			}
 			return spelledTyp(xv.Typ)
 		}
