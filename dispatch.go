@@ -457,7 +457,19 @@ func (e *Engine) ifaceReqsRec(td *runtime.TypeDef, seen map[*runtime.TypeDef]boo
 // each field, parallel to td.Fields, resolved from the struct's field
 // ASTs (embedded fields count once, like td.Fields itself). Unresolvable
 // types yield nil entries; generic binds resolve `T`-style names first.
+// The result is cached on td: every field store consults it, and
+// resolving each field's type from AST again dominated allocation in
+// field-heavy scripts (go/parser over a large package).
 func (e *Engine) fieldTypes(td *runtime.TypeDef) ([]*runtime.TypeDef, error) {
+	if fts, ok := td.CachedFieldTypes(); ok {
+		return fts, nil
+	}
+	fts := e.resolveFieldTypes(td)
+	td.SetFieldTypes(fts)
+	return fts, nil
+}
+
+func (e *Engine) resolveFieldTypes(td *runtime.TypeDef) []*runtime.TypeDef {
 	var st *ast.StructType
 	for _, x := range []ast.Expr{td.Anon, specType(td)} {
 		if s, ok := x.(*ast.StructType); ok {
@@ -466,7 +478,7 @@ func (e *Engine) fieldTypes(td *runtime.TypeDef) ([]*runtime.TypeDef, error) {
 		}
 	}
 	if st == nil {
-		return nil, nil
+		return nil
 	}
 	out := make([]*runtime.TypeDef, len(td.Fields))
 	i := 0
@@ -502,7 +514,7 @@ func (e *Engine) fieldTypes(td *runtime.TypeDef) ([]*runtime.TypeDef, error) {
 			i++
 		}
 	}
-	return out, nil
+	return out
 }
 
 func specType(td *runtime.TypeDef) ast.Expr {

@@ -1204,7 +1204,26 @@ type TypeDef struct {
 	// in two different functions are distinct types (unlike package-level
 	// types, which dedupe by package path + name).
 	Local bool
+
+	// fieldTypes caches the engine's resolved field typedefs ([]*TypeDef,
+	// see CachedFieldTypes). A copy that changes what resolution reads
+	// (Binds, Pkg, File, LocalTypes) must call ResetCaches.
+	fieldTypes atomic.Value
 }
+
+// CachedFieldTypes returns the field typedefs stored by SetFieldTypes.
+func (td *TypeDef) CachedFieldTypes() ([]*TypeDef, bool) {
+	fts, ok := td.fieldTypes.Load().([]*TypeDef)
+	return fts, ok
+}
+
+// SetFieldTypes caches td's resolved field typedefs. They depend only on
+// td's own declaration context, so every reader of td can share them.
+func (td *TypeDef) SetFieldTypes(fts []*TypeDef) { td.fieldTypes.Store(fts) }
+
+// ResetCaches drops the lazily computed caches — for a shallow copy
+// whose resolution context differs from the original's.
+func (td *TypeDef) ResetCaches() { td.fieldTypes = atomic.Value{} }
 
 // TypeKind classifies a named type's underlying shape.
 type TypeKind uint8
