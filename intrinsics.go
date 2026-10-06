@@ -3057,31 +3057,7 @@ func float32Tag(td *runtime.TypeDef) bool {
 // the same rule the VM applies when the constant crosses a value
 // boundary. An overflowing constant reports like Go's compile error.
 func uconstNative(u *runtime.UConst) (any, error) {
-	switch u.V.Kind() {
-	case constant.Bool:
-		return constant.BoolVal(u.V), nil
-	case constant.String:
-		return constant.StringVal(u.V), nil
-	case constant.Int:
-		if i, ok := constant.Int64Val(u.V); ok {
-			return i, nil
-		}
-		if uv, ok := constant.Uint64Val(u.V); ok && uv <= math.MaxInt64 {
-			return int64(uv), nil
-		}
-		return nil, fmt.Errorf("constant %s overflows int", u.V)
-	case constant.Float:
-		f, _ := constant.Float64Val(u.V)
-		if math.IsInf(f, 0) {
-			return nil, fmt.Errorf("constant %s overflows float64", u.V)
-		}
-		return runtime.CanonConstZero(f), nil
-	case constant.Complex:
-		re, _ := constant.Float64Val(constant.Real(u.V))
-		im, _ := constant.Float64Val(constant.Imag(u.V))
-		return complex(runtime.CanonConstZero(re), runtime.CanonConstZero(im)), nil
-	}
-	return nil, fmt.Errorf("cannot materialize constant %s", u.V)
+	return runtime.UConstNative(u)
 }
 
 func goNative(v runtime.Value) any {

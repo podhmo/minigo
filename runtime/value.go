@@ -633,6 +633,40 @@ func CanonicalKey(v Value) Value {
 	}
 }
 
+// UConstNative materializes an untyped constant to its default-type
+// value — the conversion every host crossing and VM slot shares:
+// bool/string/int64/float64/complex128 with Go's int/float overflow
+// errors and the constant -0 fold. The VM-side dressings stay with
+// the caller: the rune tag for a Rune constant and the GoValue wrap a
+// complex result needs inside the VM.
+func UConstNative(u *UConst) (Value, error) {
+	switch u.V.Kind() {
+	case constant.Bool:
+		return constant.BoolVal(u.V), nil
+	case constant.String:
+		return constant.StringVal(u.V), nil
+	case constant.Int:
+		if i, ok := constant.Int64Val(u.V); ok {
+			return i, nil
+		}
+		if uv, ok := constant.Uint64Val(u.V); ok && uv <= math.MaxInt64 {
+			return int64(uv), nil
+		}
+		return nil, fmt.Errorf("constant %s overflows int", u.V)
+	case constant.Float:
+		f, _ := constant.Float64Val(u.V)
+		if math.IsInf(f, 0) {
+			return nil, fmt.Errorf("constant %s overflows float64", u.V)
+		}
+		return CanonConstZero(f), nil
+	case constant.Complex:
+		re, _ := constant.Float64Val(constant.Real(u.V))
+		im, _ := constant.Float64Val(constant.Imag(u.V))
+		return complex(CanonConstZero(re), CanonConstZero(im)), nil
+	}
+	return nil, fmt.Errorf("cannot materialize constant %s", u.V)
+}
+
 // CanonConstZero folds a materialized constant -0 to +0: untyped
 // constants have no negative zero — literal -0.0 and underflowing
 // magnitudes like -1e-10000 both read +0 in Go
