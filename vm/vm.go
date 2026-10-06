@@ -5144,12 +5144,12 @@ func (v *VM) newIterator(f *frame, coll runtime.Value) *runtime.Iterator {
 	case *runtime.Slice:
 		return &runtime.Iterator{Kind: 's', Elems: c.Elems}
 	case *runtime.Map:
-		it := &runtime.Iterator{Kind: 'm', Keys: c.Order}
-		for i := 0; i < c.Len(); i++ {
-			_, e := c.At(i)
-			it.Elems = append(it.Elems, e)
-		}
-		return it
+		// Snapshot the key ORDER only — Elems carries the display keys
+		// and Keys their canonical forms — while pairs resolve live in
+		// iterNext. Deleting the current or a reached key must not skip
+		// the next (Delete shifts m.Order in place), and an entry
+		// removed before its turn is not produced, like Go.
+		return &runtime.Iterator{Kind: 'm', M: c, Elems: append([]runtime.Value(nil), c.Order...), Keys: append([]runtime.Value(nil), c.Keys...)}
 	case *runtime.Chan:
 		return &runtime.Iterator{Kind: 'c', ChRV: reflect.ValueOf(c.C), ETyp: v.elemTypedef(f, c.Typ)}
 	case *runtime.GoValue:
@@ -5209,12 +5209,17 @@ func (v *VM) iterNext(f *frame, it *runtime.Iterator, nvars int) bool {
 		it.Idx++
 		return true
 	case 'm':
-		if it.Idx >= len(it.Keys) {
-			return false
+		for it.Idx < len(it.Keys) {
+			ck, key := it.Keys[it.Idx], it.Elems[it.Idx]
+			it.Idx++
+			val, ok := it.M.Pairs[ck]
+			if !ok {
+				continue // removed before being reached: not produced
+			}
+			push(key, val)
+			return true
 		}
-		push(it.Keys[it.Idx], it.Elems[it.Idx])
-		it.Idx++
-		return true
+		return false
 	case 'i':
 		if it.Idx >= it.Limit {
 			return false
