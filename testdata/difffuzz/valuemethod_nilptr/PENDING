@@ -1,4 +1,0 @@
-SILENT panic-message: `i.F()` on a value method reached through a nil
-*T prints go's `invalid memory address or nil pointer dereference` text
-instead of `value method main.T.F called using nil *T pointer`.
-Corpus: $GOROOT/test/fixedbugs/issue19040.go.
