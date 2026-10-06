@@ -2666,9 +2666,6 @@ func constOperand(cv constant.Value, rune bool) (v any, ok bool) {
 			return i, true
 		}
 		if u, ok := constant.Uint64Val(cv); ok {
-			if u == 1<<63 {
-				return int64(u), true
-			}
 			return &runtime.GoValue{V: u}, true
 		}
 		// beyond uint64: lazy untyped constant — `const B = 1<<100`
@@ -3660,15 +3657,12 @@ func literalValue(l *ast.BasicLit) (any, error) {
 		if i, ok := constant.Int64Val(v); ok {
 			return i, nil
 		}
-		// the one uint64-only literal Go source can spell is
-		// 9223372036854775808 — MinInt64's magnitude, spelled under a
-		// unary minus.
+		// wider uint64 literals stay boxed: arithmetic unwraps them
+		// to int64 (same bits mod 2^64) and formatting reads the box —
+		// including the one uint64-only literal Go source can spell,
+		// 9223372036854775808, MinInt64's magnitude under a unary minus
+		// (the unary fold produces its int64 value before this runs).
 		if u, ok := constant.Uint64Val(v); ok {
-			if u == 1<<63 {
-				return int64(u), nil
-			}
-			// wider uint64 literals stay boxed: arithmetic unwraps them
-			// to int64 (same bits mod 2^64) and formatting reads the box.
 			return &runtime.GoValue{V: u}, nil
 		}
 		// beyond uint64 the literal stays an untyped constant: it compiles

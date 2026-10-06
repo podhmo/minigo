@@ -7233,29 +7233,38 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 	case "int", "int8", "int16", "int32", "int64",
 		"uint", "uint8", "uint16", "uint32", "uint64", "byte", "rune", "uintptr":
 		var iv int64
+		var uv uint64
 		switch n := x.(type) {
 		case int64:
-			iv = n
+			iv, uv = n, uint64(n)
 		case float64:
-			iv = int64(n)
+			iv, uv = int64(n), uint64(n)
 		case string:
 			iv = int64([]rune(n)[0]) // int("x") is the first rune's code point
+			uv = uint64(iv)
 		case *runtime.GoValue:
 			// a boxed host integer (a wide uint64 literal, a reflect
 			// result) converts by its host kind.
 			rv := reflect.ValueOf(n.V)
 			switch rv.Kind() {
 			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-				iv = rv.Int()
+				iv, uv = rv.Int(), uint64(rv.Int())
 			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-				iv = int64(rv.Uint())
+				uv, iv = rv.Uint(), int64(rv.Uint())
 			case reflect.Float32, reflect.Float64:
-				iv = int64(rv.Float())
+				iv, uv = int64(rv.Float()), uint64(rv.Float())
 			default:
 				return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), td.Name)
 			}
 		default:
 			return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), td.Name)
+		}
+		// an unsigned conversion past MaxInt64 keeps its bits boxed —
+		// `uint64(1.6717361816799281e+19)` is 16717361816799281152, and a
+		// wrapped int64(-9.2e18) would read it as a negative float when
+		// converted back ($GOROOT/test/ken/convert.go's tu64 rows).
+		if unsignedName(td.Name) && uv > math.MaxInt64 {
+			return runtime.Tag(td, &runtime.GoValue{V: uv}), nil
 		}
 		if sizedIntName(td.Name) || td.Name == "int64" {
 			// the converted value keeps its declared tag: arithmetic
@@ -8679,7 +8688,21 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 				return runtime.Tag(td, gv)
 			}
 		}
-		return x // host boundary: assignability is unknowable
+		// a host numeric converts to a float/complex slot by value —
+		// `var f float64 = 16717361816799281152` keeps its unsigned
+		// magnitude instead of binding the GoValue raw. The narrowed
+		// float64 flows on through the same rounding and tagging a
+		// script float takes.
+		if fv, ok := hostFloat(gv); ok {
+			switch basicNameOf(v.peelNamed(td)) {
+			case "float32", "float64", "complex64", "complex128":
+				x = fv
+			default:
+				return x
+			}
+		} else {
+			return x // host boundary: assignability is unknowable
+		}
 	}
 	if tn, ok := x.(*runtime.TypedNil); ok {
 		if sameTypeDef(tn.Typ, td) || v.tdShapeEq(tn.Typ, td) {
