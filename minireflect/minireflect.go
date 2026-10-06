@@ -371,8 +371,8 @@ func (e *Env) valueOfValue(vc runtime.VMCaller, v runtime.Value) *RValue {
 		// an interface holding nil has no dynamic type — but a typed
 		// nil boxed into one keeps its concrete type: ValueOf sees a
 		// nil *byte Value, not the zero Value.
-		if x.Typ != nil && x.Typ.Kind != runtime.KindInterface {
-			return &RValue{e: e, vc: vc, val: &runtime.TypedNil{Typ: x.Typ}, td: x.Typ}
+		if td := runtime.BoxedNilTyp(x); td != nil {
+			return &RValue{e: e, vc: vc, val: &runtime.TypedNil{Typ: td}, td: td}
 		}
 		return &RValue{e: e, vc: vc}
 	case *runtime.Named:

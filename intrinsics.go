@@ -4441,7 +4441,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 	case *runtime.Named:
 		// %T keeps the declared name; other verbs render through.
 		if verb == 'T' {
-			if in, ok := v.V.(*runtime.IfaceNil); ok && in.Typ != nil && in.Typ.Kind == runtime.KindInterface {
+			if runtime.IfaceTaggedNil(v.V) != nil {
 				return "<nil>" // a nil interface has no dynamic type
 			}
 			return typedefSpelling(v.Typ)
@@ -5087,10 +5087,7 @@ func nilIfaceTyp(x runtime.Value) *runtime.TypeDef {
 	if n, ok := x.(*runtime.Named); ok {
 		x = n.V
 	}
-	if in, ok := x.(*runtime.IfaceNil); ok && in.Typ != nil && in.Typ.Kind == runtime.KindInterface {
-		return in.Typ
-	}
-	return nil
+	return runtime.IfaceTaggedNil(x)
 }
 
 // scriptTypeString spells a value's type the way Go's %T does —
