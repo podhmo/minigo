@@ -10638,8 +10638,128 @@ func (v *VM) argTypedef(x runtime.Value) *runtime.TypeDef {
 			return &runtime.TypeDef{Kind: runtime.KindFunc, Anon: sig, Pkg: pkg, File: file, Binds: binds}
 		}
 		return &runtime.TypeDef{Kind: runtime.KindFunc}
+	case *runtime.BuiltinFunc:
+		// a host builtin carries no declared signature, but its Target
+		// holds the adapted Go func — reflect its real signature into a
+		// synthesized FuncType so generic inference can bind tparams from
+		// `mapper(s, strconv.Itoa)`-style arguments.
+		if rt := reflect.TypeOf(xv.Target); rt != nil && rt.Kind() == reflect.Func {
+			if td := v.reflectFuncTypedef(rt); td != nil {
+				return td
+			}
+		}
+		return &runtime.TypeDef{Kind: runtime.KindFunc}
 	}
 	return v.typeOfValue(x)
+}
+
+// reflectFuncTypedef synthesizes a FuncType typedef from a reflected Go
+// signature so host functions without declared ASTs can still teach
+// generic inference — `strconv.Itoa`'s `func(int) string` binds T in
+// `mapper[F, T]([]F, func(F) T)`. Any component type the translator
+// cannot render conservatively aborts the whole signature (unifying on a
+// partial shape would bind tparams wrongly).
+func (v *VM) reflectFuncTypedef(rt reflect.Type) *runtime.TypeDef {
+	params := &ast.FieldList{}
+	for i := 0; i < rt.NumIn(); i++ {
+		e := reflectTypeExpr(rt.In(i))
+		if e == nil {
+			return nil
+		}
+		params.List = append(params.List, &ast.Field{Type: e})
+	}
+	results := &ast.FieldList{}
+	for i := 0; i < rt.NumOut(); i++ {
+		e := reflectTypeExpr(rt.Out(i))
+		if e == nil {
+			return nil
+		}
+		results.List = append(results.List, &ast.Field{Type: e})
+	}
+	return &runtime.TypeDef{
+		Kind: runtime.KindFunc,
+		Anon: &ast.FuncType{Params: params, Results: results},
+	}
+}
+
+// reflectTypeExpr renders a reflected Go type as the AST a comparable
+// source declaration would have had — basic names, pointer, slice,
+// array, map and chan shapes, empty interface and error. Named or
+// structural types return nil: spelling them from reflect would fabricate
+// a name the caller's file never declared.
+func reflectTypeExpr(rt reflect.Type) ast.Expr {
+	switch rt.Kind() {
+	case reflect.Bool:
+		return &ast.Ident{Name: "bool"}
+	case reflect.Int:
+		return &ast.Ident{Name: "int"}
+	case reflect.Int8:
+		return &ast.Ident{Name: "int8"}
+	case reflect.Int16:
+		return &ast.Ident{Name: "int16"}
+	case reflect.Int32:
+		return &ast.Ident{Name: "int32"}
+	case reflect.Int64:
+		return &ast.Ident{Name: "int64"}
+	case reflect.Uint:
+		return &ast.Ident{Name: "uint"}
+	case reflect.Uint8:
+		return &ast.Ident{Name: "uint8"}
+	case reflect.Uint16:
+		return &ast.Ident{Name: "uint16"}
+	case reflect.Uint32:
+		return &ast.Ident{Name: "uint32"}
+	case reflect.Uint64:
+		return &ast.Ident{Name: "uint64"}
+	case reflect.Uintptr:
+		return &ast.Ident{Name: "uintptr"}
+	case reflect.Float32:
+		return &ast.Ident{Name: "float32"}
+	case reflect.Float64:
+		return &ast.Ident{Name: "float64"}
+	case reflect.Complex64:
+		return &ast.Ident{Name: "complex64"}
+	case reflect.Complex128:
+		return &ast.Ident{Name: "complex128"}
+	case reflect.String:
+		return &ast.Ident{Name: "string"}
+	case reflect.Pointer:
+		if e := reflectTypeExpr(rt.Elem()); e != nil {
+			return &ast.StarExpr{X: e}
+		}
+	case reflect.Slice:
+		if e := reflectTypeExpr(rt.Elem()); e != nil {
+			return &ast.ArrayType{Elt: e}
+		}
+	case reflect.Array:
+		if e := reflectTypeExpr(rt.Elem()); e != nil {
+			return &ast.ArrayType{Len: &ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(rt.Len())}, Elt: e}
+		}
+	case reflect.Map:
+		k, e := reflectTypeExpr(rt.Key()), reflectTypeExpr(rt.Elem())
+		if k != nil && e != nil {
+			return &ast.MapType{Key: k, Value: e}
+		}
+	case reflect.Chan:
+		if e := reflectTypeExpr(rt.Elem()); e != nil {
+			var dir ast.ChanDir
+			switch rt.ChanDir() {
+			case reflect.RecvDir:
+				dir = ast.RECV
+			case reflect.SendDir:
+				dir = ast.SEND
+			}
+			return &ast.ChanType{Dir: dir, Value: e}
+		}
+	case reflect.Interface:
+		if rt.Name() == "error" {
+			return &ast.Ident{Name: "error"}
+		}
+		if rt.NumMethod() == 0 {
+			return &ast.Ident{Name: "any"}
+		}
+	}
+	return nil
 }
 
 // typeOfValue returns a typedef describing a runtime value, for call-site
