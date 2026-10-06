@@ -172,6 +172,11 @@ func typSpelling(e ast.Expr, ctx *TypeDef, under bool) string {
 		if btd := boundTypedef(binds, t.Name); btd != nil {
 			return typBoundSpellingU(btd, under)
 		}
+		// `any` IS interface{} — spell the expansion so a func(any) any
+		// signature identifies with func(interface{}) interface{}.
+		if t.Name == "any" {
+			return "interface{}"
+		}
 		if predeclaredTypeName(t.Name) {
 			return canonBasicName(t.Name)
 		}
@@ -187,7 +192,10 @@ func typSpelling(e ast.Expr, ctx *TypeDef, under bool) string {
 		}
 		return "[]" + typSpelling(t.Elt, ctx, under)
 	case *ast.Ellipsis:
-		return "[]" + typSpelling(t.Elt, ctx, under)
+		// a variadic param is not a slice: func(...int) and func([]int)
+		// are different types. (Array `...` lengths spell through
+		// typLenName, never reaching here.)
+		return "..." + typSpelling(t.Elt, ctx, under)
 	case *ast.MapType:
 		return "map[" + typSpelling(t.Key, ctx, under) + "]" + typSpelling(t.Value, ctx, under)
 	case *ast.ChanType:
@@ -308,6 +316,11 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 			// typBoundSpellingU's Pkg.Path qualifier is for identity
 			// spelling (<dir>/x.Point would leak the synthetic path).
 			return DisplayName(btd)
+		}
+		// Go's Type.String expands the any alias — func(any) any
+		// displays as func(interface {}) interface {}.
+		if t.Name == "any" {
+			return "interface {}"
 		}
 		if predeclaredTypeName(t.Name) {
 			return canonBasicName(t.Name)

@@ -8050,9 +8050,7 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 	case *runtime.Chan:
 		return v.containerAssert(f, td, xv.Typ, runtime.KindChan)
 	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
-		// anonymous func shapes kind-match; a declared func type asserts
-		// on its Named tag only.
-		return td.Kind == runtime.KindFunc && td.Spec == nil
+		return v.funcAssert(td, xv)
 	case *runtime.GoValue:
 		// a host box's dynamic type is its native Go type — complex64
 		// boxes (there is no script complex type) assert back to
@@ -8063,10 +8061,53 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 		if rt == nil {
 			return false
 		}
+		// a boxed host func compares signatures like a script func
+		// value — func(int) int never asserts to func(string).
+		if rt.Kind() == reflect.Func && td.Name == "" {
+			if ft, ok := td.Anon.(*ast.FuncType); ok {
+				return rt.String() == runtime.TypGoSpelling(ft, td)
+			}
+		}
 		return rt.String() == tdName(td)
 	default:
 		return false
 	}
+}
+
+// funcAssert implements x.(T) for a function value: an anonymous func
+// typedef asserts by signature identity — func(int) int matches only a
+// value declared with that signature — and a defined func type matches
+// only its own tag (the *runtime.Named branch above handles declared
+// func types, so a named target is false for every bare func value).
+func (v *VM) funcAssert(td *runtime.TypeDef, x runtime.Value) bool {
+	if td.Kind != runtime.KindFunc {
+		return false
+	}
+	if td.Name != "" {
+		// a host-bound func still names its real Go type through Target,
+		// so a bound context.CancelFunc asserts back to context.CancelFunc.
+		if bf, ok := x.(*runtime.BuiltinFunc); ok && bf.Target != nil {
+			return reflect.TypeOf(bf.Target).String() == runtime.DisplayName(td)
+		}
+		return false
+	}
+	ft, ok := td.Anon.(*ast.FuncType)
+	if !ok {
+		// the asserted func typedef carries no signature AST to compare
+		// against — fall back to the kind match.
+		return td.Spec == nil
+	}
+	if sig, pkg, file, binds := funcSig(x); sig != nil {
+		dyn := &runtime.TypeDef{Kind: runtime.KindFunc, Anon: sig, Pkg: pkg, File: file, Binds: binds}
+		return runtime.TypIdentical(td, dyn)
+	}
+	if bf, ok := x.(*runtime.BuiltinFunc); ok && bf.Target != nil {
+		// a bound host func compares by its real Go signature.
+		return reflect.TypeOf(bf.Target).String() == runtime.TypGoSpelling(ft, td)
+	}
+	// intrinsics and synthesized adapters declare no signature to check —
+	// keep the historical kind match.
+	return td.Spec == nil
 }
 
 // containerAssert runs x.(T) on a stamped slice/map/chan: a declared tag
@@ -10200,16 +10241,19 @@ func specTypeOf(td *runtime.TypeDef) ast.Expr {
 	return nil
 }
 
-// funcSig returns the declared signature of a function value.
+// funcSig returns the declared signature of a function value — the type
+// the value carries when stored in an interface: a method expression
+// (T.M / (*T).M surfaces as a bare *runtime.Function) signs with its
+// receiver as the first parameter, a bound method without it.
 func funcSig(x runtime.Value) (*ast.FuncType, *runtime.Package, *syntax.File, map[string]runtime.Value) {
 	switch fn := x.(type) {
 	case *runtime.Function:
-		if fn.Decl != nil && fn.Decl.Type != nil {
-			return fn.Decl.Type, fn.Pkg, fn.File, fn.Binds
+		if sig := funcDeclSig(fn); sig != nil {
+			return sig, fn.Pkg, fn.File, fn.Binds
 		}
 	case *runtime.Closure:
-		if fn.Fn != nil && fn.Fn.Decl != nil && fn.Fn.Decl.Type != nil {
-			return fn.Fn.Decl.Type, fn.Fn.Pkg, fn.Fn.File, fn.Fn.Binds
+		if sig := funcDeclSig(fn.Fn); sig != nil {
+			return sig, fn.Fn.Pkg, fn.Fn.File, fn.Fn.Binds
 		}
 	case *runtime.BoundMethod:
 		if fn.Fn != nil && fn.Fn.Decl != nil && fn.Fn.Decl.Type != nil {
@@ -10217,6 +10261,24 @@ func funcSig(x runtime.Value) (*ast.FuncType, *runtime.Package, *syntax.File, ma
 		}
 	}
 	return nil, nil, nil, nil
+}
+
+// funcDeclSig returns the signature a declared function carries as a
+// value: a method declaration signs with the receiver prepended (a bare
+// Function value only surfaces as a method expression — BoundMethod
+// takes the receiver-less path in funcSig).
+func funcDeclSig(fn *runtime.Function) *ast.FuncType {
+	if fn == nil || fn.Decl == nil || fn.Decl.Type == nil {
+		return nil
+	}
+	if fn.Decl.Recv == nil || len(fn.Decl.Recv.List) == 0 {
+		return fn.Decl.Type
+	}
+	params := []*ast.Field{fn.Decl.Recv.List[0]}
+	if fn.Decl.Type.Params != nil {
+		params = append(params, fn.Decl.Type.Params.List...)
+	}
+	return &ast.FuncType{Params: &ast.FieldList{List: params}, Results: fn.Decl.Type.Results}
 }
 
 // argTypedef is typeOfValue enriched for inference: stamped container
