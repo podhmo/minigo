@@ -817,6 +817,35 @@ type BetaService interface{ B() }
 	}
 }
 
+func TestExplainNamesFilesRelativeToScannedDir(t *testing.T) {
+	dir := setupModule(t)
+	app := filepath.Join(dir, "app")
+	// a reason names the file an inference saw — a bare basename is
+	// ambiguous once -deps scans sibling packages (the scanned app's
+	// level.go vs a dep's own). Reasons print relative to the scanned
+	// directory, so a dep member's file reads internal/mood/tokens.go.
+	content := `package mood
+
+type Tone int
+
+const (
+	Calm Tone = iota
+	Eager
+)
+`
+	if err := os.WriteFile(filepath.Join(app, "internal", "mood", "tokens.go"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var buf strings.Builder
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, true, true, &buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "first in internal/mood/tokens.go") {
+		t.Fatalf("-explain reason did not name the dep file unambiguously:\n%s", out)
+	}
+}
+
 func TestGeneratedFileSkipLogged(t *testing.T) {
 	dir := setupModule(t)
 	app := filepath.Join(dir, "app")

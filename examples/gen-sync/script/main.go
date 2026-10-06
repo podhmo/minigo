@@ -209,7 +209,7 @@ func collect(dir string, deps bool, wd string) ([]filePlan, []string, []error) {
 		for _, f := range s.files {
 			expected := []directive{}
 			for _, d := range inspect.Decls(f) {
-				expected = append(expected, directivesFor(ex, scans, s, d, f)...)
+				expected = append(expected, directivesFor(ex, scans, s, d, f, dirAbs)...)
 			}
 			plans = append(plans, filePlan{f, dedupeDirectives(expected)})
 		}
@@ -545,7 +545,7 @@ func deltaNote(dropped, added int) string {
 // directivesFor infers the directives a declaration wants. Every rule is
 // independent: a decl can earn several directives, or none. Each line
 // carries its reason — the inference path `-explain` prints.
-func directivesFor(ex *scanx.Explorer, scans []pkgScan, s pkgScan, d *inspect.Decl, f *inspect.File) []directive {
+func directivesFor(ex *scanx.Explorer, scans []pkgScan, s pkgScan, d *inspect.Decl, f *inspect.File, rootAbs string) []directive {
 	out := []directive{}
 	if inspect.Kind(d) != "type" {
 		return out
@@ -570,7 +570,7 @@ func directivesFor(ex *scanx.Explorer, scans []pkgScan, s pkgScan, d *inspect.De
 		if (def.Text == "int" || def.Text == "string") && len(members) > 0 {
 			out = append(out, directive{
 				line:   "//go:generate stringer -type=" + name,
-				reason: fmt.Sprintf("enum: defined type + %d const member(s), first in %s", len(members), filepath.Base(members[0].File)),
+				reason: fmt.Sprintf("enum: defined type + %d const member(s), first in %s", len(members), displayPath(rootAbs, members[0].File)),
 			})
 		}
 	case "StructType":
@@ -580,7 +580,7 @@ func directivesFor(ex *scanx.Explorer, scans []pkgScan, s pkgScan, d *inspect.De
 		if hasRequiredTag(d) {
 			out = append(out, directive{
 				line:   "//go:generate requiredgen -type=" + name,
-				reason: "struct: field tag requests required in " + filepath.Base(f.Name),
+				reason: "struct: field tag requests required in " + displayPath(rootAbs, f.Name),
 			})
 		} else if reachHasRequired(ex, d) {
 			out = append(out, directive{
@@ -607,7 +607,7 @@ func directivesFor(ex *scanx.Explorer, scans []pkgScan, s pkgScan, d *inspect.De
 			reason += ", promoted from " + m.Via.Name
 		}
 		if m.Decl != nil {
-			reason += ", declared in " + filepath.Base(m.Decl.File)
+			reason += ", declared in " + displayPath(rootAbs, m.Decl.File)
 		}
 		out = append(out, directive{
 			line:   "//go:generate oneofgen -type=" + name,
@@ -615,7 +615,7 @@ func directivesFor(ex *scanx.Explorer, scans []pkgScan, s pkgScan, d *inspect.De
 		})
 	} else if scanx.RequiresMethod(d, "Discriminator", "func() string") {
 		gen := "//go:generate oneofgen -type=" + name
-		reason := "interface requires Discriminator() in " + filepath.Base(f.Name)
+		reason := "interface requires Discriminator() in " + displayPath(rootAbs, f.Name)
 		if vars := implementers(scans, s.path, d); len(vars) > 0 {
 			gen += " -variants=" + strings.Join(vars, ",")
 			reason += fmt.Sprintf("; %d implementer(s) found in the scanned subtree", len(vars))
