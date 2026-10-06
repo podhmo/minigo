@@ -785,7 +785,7 @@ func writeKeyElem(sb *strings.Builder, v Value) {
 		// to bare nil like CanonicalKey. A boxed typed nil keeps
 		// its tag — struct{any}{(*int)(nil)} and struct{any}{nil}
 		// are distinct Go keys.
-		if x.Typ == nil || x.Typ.Kind == KindInterface {
+		if IsNilIface(x) {
 			sb.WriteString("nil")
 		} else {
 			sb.WriteString(typeTagOf(x.Typ))
