@@ -27,6 +27,10 @@ MINIGO_DIR=<this checkout> ./run.sh [task ...]   # COLD=1 adds cold-cache oracle
 Targets are pinned commits in `targets.tsv`; downloads are large (grafana
 ≈ 5 GB of modules) — keep `SRC_DIR` outside both repos. Never run
 `go clean -cache` to measure; cold timings use a throwaway `GOCACHE`.
+`run.sh` without arguments runs every task and fetches any target missing
+from `SRC_DIR`, re-fetching a checkout at the wrong commit. When reusing a
+shared or pre-fetched `SRC_DIR` you were asked not to modify, name the
+tasks (`./run.sh grafana-openapi`) so only their targets are touched.
 
 ## `/realworld run`
 
