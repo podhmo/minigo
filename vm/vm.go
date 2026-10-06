@@ -3412,6 +3412,15 @@ func (v *VM) methodExprThunk(td *runtime.TypeDef, name string) runtime.Value {
 			if len(args) == 0 {
 				return nil, fmt.Errorf("method expression %s.%s needs a receiver argument", tdName(td), name)
 			}
+			// `I.M(nil)` dispatches on the receiver's concrete value —
+			// a nil interface has none, so the call is a nil-pointer
+			// dereference panic in Go, not a lookup failure.
+			if _, isNil := args[0].(runtime.Nil); isNil {
+				panic(runtime.NilDerefPanic())
+			}
+			if in, ok := args[0].(*runtime.IfaceNil); ok && (in.Typ == nil || in.Typ.Kind == runtime.KindInterface) {
+				panic(runtime.NilDerefPanic())
+			}
 			m, ok := vm.Member(args[0], name)
 			if !ok {
 				return nil, fmt.Errorf("type %s has no method %s", tdName(td), name)

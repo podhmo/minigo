@@ -1,6 +1,0 @@
-SILENT panic-became-trap: calling an interface method expression
-f := I.M; f(nil) surfaces `runtime trap: type I has no method M`
-(unrecoverable) instead of a nil-pointer-dereference panic.
-Hypothesis: the method-expression wrapper re-resolves M on the static
-interface type rather than dispatching on the receiver value.
-Source: $GOROOT/test/typeparam/issue51521.go (interface{ M() T }.M(nil)).
