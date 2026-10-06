@@ -34,6 +34,10 @@ Targets are pinned commits in `targets.tsv`; downloads are large (grafana
 2. For each non-PASS task, triage per the next section.
 3. Compare times with the previous round's report; a PASS that got slower
    is a finding too.
+4. For a slow PASS, `PROFILE=1 ./run.sh <task>` writes cpu/allocs
+   profiles and `out/<task>.prof.txt`. On macOS check `TRACE=1` before
+   trusting a CPU profile dominated by `pthread_cond_*` (see the harness
+   README). Record tuning targets in TODO.md with the task name.
 
 ## Triage a failing task
 
