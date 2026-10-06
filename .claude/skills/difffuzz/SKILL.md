@@ -85,7 +85,8 @@ code and commits, Japanese replies to the user, TODO.md upkeep).
    push, and open a PR with `gh pr create`. The PR body lists: the case
    slug(s), root cause, fix, and before/after harness counts for the seed.
    One root cause per PR keeps review small; batch only trivially-related
-   cases.
+   cases. A fix that needs another unmerged fix is stacked on it with
+   `gh stack` (gh-stack skill); an unrelated fix branches from main.
 
 ## `/difffuzz extend <area>`
 
