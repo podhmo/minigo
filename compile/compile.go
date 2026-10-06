@@ -4154,16 +4154,35 @@ func orderSpecs(ix *index.Index, reps []*index.Decl) []*index.Decl {
 	}
 	var out []*index.Decl
 	emitted := map[*ast.ValueSpec]bool{}
+	// Const specs pop before every var spec — go/types2's priority puts
+	// constants first so a var's const dependency never holds it back
+	// (issue66575). The tier only applies among ready nodes: a minigo
+	// const still evaluates its expression at init, so a const blocked
+	// on unemitted var deps (len(b.a)) can't pop until they exist.
+	isConstSpec := func(vs *ast.ValueSpec) bool {
+		for _, n := range vs.Names {
+			if ix.Consts[n.Name] != nil {
+				return true
+			}
+		}
+		return false
+	}
 	for len(emitted) < len(reps) {
 		var best *index.Decl
 		bestDeps, bestOrder := -1, -1
+		bestRank := 1
 		for _, d := range reps {
 			vs := d.Spec.(*ast.ValueSpec)
 			if emitted[vs] {
 				continue
 			}
-			if best == nil || ndeps[vs] < bestDeps || (ndeps[vs] == bestDeps && order[vs] < bestOrder) {
-				best, bestDeps, bestOrder = d, ndeps[vs], order[vs]
+			rank := 1
+			if isConstSpec(vs) && ndeps[vs] == 0 {
+				rank = 0
+			}
+			if best == nil || rank < bestRank ||
+				(rank == bestRank && (ndeps[vs] < bestDeps || (ndeps[vs] == bestDeps && order[vs] < bestOrder))) {
+				best, bestDeps, bestOrder, bestRank = d, ndeps[vs], order[vs], rank
 			}
 		}
 		// a dependency cycle leaves every node dep-blocked; the minimum
