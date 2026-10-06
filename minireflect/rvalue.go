@@ -482,7 +482,7 @@ func (v *RValue) Elem() *RValue {
 		if d == nil || d == runtime.NIL {
 			return &RValue{e: v.e, vc: v.vc}
 		}
-		if in, isIN := d.(*runtime.IfaceNil); isIN && (in.Typ == nil || in.Typ.Kind == runtime.KindInterface) {
+		if runtime.IsNilIface(d) {
 			// a nil interface has no dynamic type — Elem() on it is
 			// the zero Value, and Interface()/Set() panic on use.
 			return &RValue{e: v.e, vc: v.vc}

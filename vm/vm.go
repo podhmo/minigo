@@ -2301,7 +2301,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		// dereference in Go — a script panic, not a trap.
 		panic(runtime.NilDerefPanic())
 	case *runtime.IfaceNil:
-		if b.Typ == nil || b.Typ.Kind == runtime.KindInterface {
+		if runtime.IsNilIface(b) {
 			// a method call on a nil interface value dereferences the
 			// nil itable — same panic as a bare nil.
 			panic(runtime.NilDerefPanic())
@@ -3663,7 +3663,7 @@ func (v *VM) methodExprThunk(td *runtime.TypeDef, name string) runtime.Value {
 			if _, isNil := args[0].(runtime.Nil); isNil {
 				panic(runtime.NilDerefPanic())
 			}
-			if in, ok := args[0].(*runtime.IfaceNil); ok && (in.Typ == nil || in.Typ.Kind == runtime.KindInterface) {
+			if runtime.IsNilIface(args[0]) {
 				panic(runtime.NilDerefPanic())
 			}
 			m, ok := vm.Member(args[0], name)
@@ -7107,7 +7107,7 @@ func eqlValue(a, b runtime.Value) bool {
 		}
 	}
 	if in, ok := a.(*runtime.IfaceNil); ok {
-		if in.Typ != nil && in.Typ.Kind == runtime.KindInterface {
+		if runtime.IfaceTaggedNil(in) != nil {
 			// a nil interface value: equal to nil and to other nil
 			// interfaces (the declared interface type is static-only),
 			// but never to a typed nil boxed in an interface.
@@ -7115,15 +7115,17 @@ func eqlValue(a, b runtime.Value) bool {
 			case runtime.Nil:
 				return true
 			case *runtime.IfaceNil:
-				return bi.Typ != nil && bi.Typ.Kind == runtime.KindInterface
+				return runtime.IfaceTaggedNil(bi) != nil
 			}
 			return false
 		}
 		// interface value holding a typed nil: nil only to a same-typed nil
 		switch bi := b.(type) {
 		case *runtime.IfaceNil:
-			return bi.Typ != nil && bi.Typ.Kind != runtime.KindInterface &&
-				sameTypeDef(in.Typ, bi.Typ)
+			if bt := runtime.BoxedNilTyp(bi); bt != nil {
+				return sameTypeDef(in.Typ, bt)
+			}
+			return false
 		case *runtime.TypedNil:
 			return sameTypeDef(in.Typ, bi.Typ)
 		}
@@ -7147,8 +7149,10 @@ func eqlValue(a, b runtime.Value) bool {
 			}
 			return true
 		case *runtime.IfaceNil:
-			return bi.Typ != nil && bi.Typ.Kind != runtime.KindInterface &&
-				sameTypeDef(tn.Typ, bi.Typ)
+			if bt := runtime.BoxedNilTyp(bi); bt != nil {
+				return sameTypeDef(tn.Typ, bt)
+			}
+			return false
 		}
 		return false
 	}
@@ -7159,7 +7163,7 @@ func eqlValue(a, b runtime.Value) bool {
 		case *runtime.IfaceNil:
 			// a nil interface value equals nil; a typed nil boxed in
 			// an interface does not.
-			return bi.Typ != nil && bi.Typ.Kind == runtime.KindInterface
+			return runtime.IfaceTaggedNil(bi) != nil
 		}
 		return false
 	}
@@ -8426,7 +8430,7 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 	if tn, ok := asTypedNil(x); ok {
 		return v.typeMatchesTD(f, td, tn.Typ)
 	}
-	if in, ok := x.(*runtime.IfaceNil); ok && in.Typ != nil && in.Typ.Kind == runtime.KindInterface {
+	if runtime.IfaceTaggedNil(x) != nil {
 		// a nil interface value has no dynamic type — every assert
 		// fails, including .(any).
 		return false
@@ -8721,10 +8725,8 @@ func asTypedNil(x runtime.Value) (*runtime.TypedNil, bool) {
 	if tn, ok := x.(*runtime.TypedNil); ok {
 		return tn, true
 	}
-	if in, ok := x.(*runtime.IfaceNil); ok && in.Typ != nil && in.Typ.Kind != runtime.KindInterface {
-		// an interface-kind IfaceNil IS the nil interface itself, not
-		// a typed nil boxed in an interface — it has no dynamic type.
-		return &runtime.TypedNil{Typ: in.Typ}, true
+	if td := runtime.BoxedNilTyp(x); td != nil {
+		return &runtime.TypedNil{Typ: td}, true
 	}
 	return nil, false
 }
@@ -8812,7 +8814,7 @@ func (v *VM) memberOfType(f *frame, td *runtime.TypeDef, name string, recv runti
 		// as a typed nil on the value path or as an interface-kind
 		// IfaceNil through a storage ref — both are the nil interface.
 		if td.Kind == runtime.KindInterface {
-			if in, isIN := recv.(*runtime.IfaceNil); isIN && (in.Typ == nil || in.Typ.Kind == runtime.KindInterface) {
+			if runtime.IsNilIface(recv) {
 				panic(runtime.NilDerefPanic())
 			}
 			if _, isNil := asTypedNil(recv); isNil {
@@ -10054,7 +10056,7 @@ func typeBaseName(x runtime.Value) string {
 	case *runtime.UConst:
 		return xv.DefaultName()
 	case *runtime.Named:
-		if in, ok := xv.V.(*runtime.IfaceNil); ok && in.Typ != nil && in.Typ.Kind == runtime.KindInterface {
+		if runtime.IfaceTaggedNil(xv.V) != nil {
 			// a nil interface value wrapped in its declared tag still
 			// has no dynamic type — Go spells it "nil" in the
 			// "is %s, not %s" panic slot, not <nil>.
@@ -10069,12 +10071,12 @@ func typeBaseName(x runtime.Value) string {
 	case *runtime.TypedNil:
 		return spelledTyp(xv.Typ)
 	case *runtime.IfaceNil:
+		if runtime.IfaceTaggedNil(xv) != nil {
+			// a nil interface value has no dynamic type — "nil",
+			// not <nil>, in Go's panic text.
+			return "nil"
+		}
 		if xv.Typ != nil {
-			if xv.Typ.Kind == runtime.KindInterface {
-				// a nil interface value has no dynamic type — "nil",
-				// not <nil>, in Go's panic text.
-				return "nil"
-			}
 			return spelledTyp(xv.Typ)
 		}
 		return "nil"
