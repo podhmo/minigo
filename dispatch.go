@@ -321,16 +321,26 @@ func ifaceSigFunc(sig ifaceSig) *runtime.Function {
 // ifaceSigFuncs maps an interface typedef's signature-bearing required
 // methods to their synthesized member Functions — nil when it declares
 // no signature (name-only requirements). The single conversion behind
-// methodWalkU's interface arms and the IfaceSigs hook.
+// methodWalkU's interface arms and the IfaceSigs hook. The result is
+// cached on td — every interface assertion and conversion consults it —
+// and its stable shells let the VM memoize signature comparisons per
+// (requirement, method) pair. Callers must not modify the map.
 func (e *Engine) ifaceSigFuncs(td *runtime.TypeDef) map[string]*runtime.Function {
-	sigs := e.ifaceSigsOf(td, map[*runtime.TypeDef]bool{})
-	if len(sigs) == 0 {
+	if td == nil {
 		return nil
 	}
-	out := make(map[string]*runtime.Function, len(sigs))
-	for name, sig := range sigs {
-		out[name] = ifaceSigFunc(sig)
+	if out, ok := td.CachedIfaceSigs(); ok {
+		return out
 	}
+	sigs := e.ifaceSigsOf(td, map[*runtime.TypeDef]bool{})
+	var out map[string]*runtime.Function
+	if len(sigs) > 0 {
+		out = make(map[string]*runtime.Function, len(sigs))
+		for name, sig := range sigs {
+			out[name] = ifaceSigFunc(sig)
+		}
+	}
+	td.SetIfaceSigs(out)
 	return out
 }
 

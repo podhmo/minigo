@@ -1209,6 +1209,10 @@ type TypeDef struct {
 	// see CachedFieldTypes). A copy that changes what resolution reads
 	// (Binds, Pkg, File, LocalTypes) must call ResetCaches.
 	fieldTypes atomic.Value
+	// ifaceSigs caches an interface typedef's signature-bearing required
+	// methods (map[string]*Function, see CachedIfaceSigs) under the same
+	// rule.
+	ifaceSigs atomic.Value
 }
 
 // CachedFieldTypes returns the field typedefs stored by SetFieldTypes.
@@ -1223,7 +1227,21 @@ func (td *TypeDef) SetFieldTypes(fts []*TypeDef) { td.fieldTypes.Store(fts) }
 
 // ResetCaches drops the lazily computed caches — for a shallow copy
 // whose resolution context differs from the original's.
-func (td *TypeDef) ResetCaches() { td.fieldTypes = atomic.Value{} }
+func (td *TypeDef) ResetCaches() {
+	td.fieldTypes = atomic.Value{}
+	td.ifaceSigs = atomic.Value{}
+}
+
+// CachedIfaceSigs returns the required-method shells stored by
+// SetIfaceSigs (a nil map when the interface declares no signature).
+func (td *TypeDef) CachedIfaceSigs() (map[string]*Function, bool) {
+	sigs, ok := td.ifaceSigs.Load().(map[string]*Function)
+	return sigs, ok
+}
+
+// SetIfaceSigs caches td's signature-bearing required methods. Readers
+// share the map and must not modify it.
+func (td *TypeDef) SetIfaceSigs(sigs map[string]*Function) { td.ifaceSigs.Store(sigs) }
 
 // TypeKind classifies a named type's underlying shape.
 type TypeKind uint8
