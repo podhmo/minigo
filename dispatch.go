@@ -30,6 +30,17 @@ func (e *Engine) methodsOfValue(v runtime.Value) (map[string]bool, error) {
 // (e.g. a vendored stdlib package), so the returned set may be missing
 // promoted methods that the embed would have contributed.
 func (e *Engine) methodSetOfValue(v runtime.Value) (map[string]bool, bool, error) {
+	set, _, unsure, err := e.methodInfoOfValue(v)
+	return set, unsure, err
+}
+
+// methodInfoOfValue is the single value walk behind the method-set
+// hooks: it resolves a dynamic value to the typedef its methods come
+// from (dereferencing pointers, honoring Named tags and host boxes) and
+// reports the callable names, the signature-bearing member functions,
+// and the unsure report in one pass — MethodSetOf and MethodFuncsOf
+// each pick their view.
+func (e *Engine) methodInfoOfValue(v runtime.Value) (map[string]bool, map[string]*runtime.Function, bool, error) {
 	ptr := false
 	for {
 		// a Named value exposes its own declared method set — `type A B`
@@ -41,12 +52,14 @@ func (e *Engine) methodSetOfValue(v runtime.Value) (map[string]bool, bool, error
 				// a named type boxing a host value (type C128 complex128)
 				// still exposes its declared methods — the reflect set
 				// only fills in when the tag declares none (host box).
+				// Host reflect methods carry no decl signature, so the
+				// func view reports nil for the pure host box.
 				if n.Typ != nil && len(n.Typ.Methods) > 0 {
-					return e.typeMethodsU(n.Typ, ptr)
+					return e.typeMethodInfoU(n.Typ, ptr)
 				}
-				return hostMethodSet(gv.V), false, nil
+				return hostMethodSet(gv.V), nil, false, nil
 			}
-			return e.typeMethodsU(n.Typ, ptr)
+			return e.typeMethodInfoU(n.Typ, ptr)
 		}
 		dv, ok := runtime.Deref(v)
 		if !ok {
@@ -59,24 +72,26 @@ func (e *Engine) methodSetOfValue(v runtime.Value) (map[string]bool, bool, error
 	}
 	switch x := v.(type) {
 	case *runtime.Struct:
-		set, unsure := e.methodSetOfU(x.Def, ptr, map[*runtime.TypeDef]bool{})
-		return set, unsure, nil
+		names, funcs, unsure := e.methodWalkU(x.Def, ptr, map[*runtime.TypeDef]bool{})
+		return names, funcs, unsure, nil
 	case *runtime.TypedNil:
-		return e.typeMethodsU(x.Typ, ptr)
+		return e.typeMethodInfoU(x.Typ, ptr)
 	case *runtime.IfaceNil:
-		return e.typeMethodsU(x.Typ, ptr)
+		return e.typeMethodInfoU(x.Typ, ptr)
 	case *runtime.Slice:
 		// a slice carrying a declared typedef (`type htmlSig []byte`)
 		// exposes that type's methods — same for maps and channels.
-		return e.typeMethodsU(x.Typ, ptr)
+		return e.typeMethodInfoU(x.Typ, ptr)
 	case *runtime.Map:
-		return e.typeMethodsU(x.Typ, ptr)
+		return e.typeMethodInfoU(x.Typ, ptr)
 	case *runtime.Chan:
-		return e.typeMethodsU(x.Typ, ptr)
+		return e.typeMethodInfoU(x.Typ, ptr)
 	case *runtime.GoValue:
-		return hostMethodSet(x.V), false, nil
+		// host values satisfy requirements by name alone — reflect
+		// methods carry no declared signature for the func view.
+		return hostMethodSet(x.V), nil, false, nil
 	default:
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 }
 
@@ -110,12 +125,21 @@ func (e *Engine) typeMethods(td *runtime.TypeDef) (map[string]bool, error) {
 // ptr reports whether the set is computed through a pointer — Go's
 // method set for *T includes pointer receivers while T's does not.
 func (e *Engine) typeMethodsU(td *runtime.TypeDef, ptr bool) (map[string]bool, bool, error) {
+	set, _, unsure, err := e.typeMethodInfoU(td, ptr)
+	return set, unsure, err
+}
+
+// typeMethodInfoU is the typedef-level dispatch behind typeMethodsU:
+// one resolution (alias peel → anonymous-*T peel → interface and host
+// checks → embedded walk) producing both views — the callable name set
+// and the signature-bearing member functions.
+func (e *Engine) typeMethodInfoU(td *runtime.TypeDef, ptr bool) (map[string]bool, map[string]*runtime.Function, bool, error) {
 	// resolve aliases first — `type A = sync.Mutex` carries A's typedef
 	// but its method set is the host type's reflect set; checking
 	// HostNew on the unresolved alias would drop it.
 	td = e.peelAliasTd(td)
 	if td == nil {
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 	var unsure bool
 	// an anonymous *T typedef sees T's method set including pointer
@@ -133,25 +157,24 @@ func (e *Engine) typeMethodsU(td *runtime.TypeDef, ptr bool) (map[string]bool, b
 	// — peel again so the interface and host checks see the real type.
 	td = e.peelAliasTd(td)
 	if td == nil {
-		return nil, unsure, nil
+		return nil, nil, unsure, nil
 	}
-	if td.Kind == runtime.KindInterface {
-		return e.ifaceReqsRec(td, map[*runtime.TypeDef]bool{}), unsure, nil
-	}
+	names, funcs, subUnsure := e.methodWalkU(td, ptr, map[*runtime.TypeDef]bool{})
+	unsure = unsure || subUnsure
 	if td.HostNew != nil {
-		// a host-backed typedef's method set is the boxed host type's
+		// a host-backed typedef's name set is the boxed host type's
 		// reflect set — td.Methods is empty by construction, so
 		// `var l sync.Locker = &sync.Mutex{}` and Type.Method both see
-		// the real methods.
+		// the real methods. The func view keeps the walk's result:
+		// host reflect methods carry no declared signature.
 		t := reflect.TypeOf(td.HostNew())
 		set := map[string]bool{}
 		for i := 0; i < t.NumMethod(); i++ {
 			set[t.Method(i).Name] = true
 		}
-		return set, unsure, nil
+		return set, funcs, unsure, nil
 	}
-	set, subUnsure := e.methodSetOfU(td, ptr, map[*runtime.TypeDef]bool{})
-	return set, unsure || subUnsure, nil
+	return names, funcs, unsure, nil
 }
 
 // aliasOf implements the Hooks.AliasOf hook: a KindAlias typedef resolves
@@ -195,28 +218,17 @@ func (e *Engine) peelAliasTd(td *runtime.TypeDef) *runtime.TypeDef {
 	return td
 }
 
-// methodSetOfU collects declared + promoted method names of a typedef —
-// generic methods (Go 1.27) are excluded as they never satisfy
-// interfaces — plus an "unsure" report: true when an embedded type could
-// not be resolved, so the set may be missing promoted methods. Interface
-// satisfaction treats such sets as optimistic — a missing requirement
-// may live on the unresolved embed. ptr is Go's receiver rule: pointer-
-// receiver methods join the set only through a pointer type — *T, an
-// anonymous *T typedef, or an embedded pointer field (or any embed under
-// a pointer parent, since &s.f stays addressable there).
-func (e *Engine) methodSetOfU(td *runtime.TypeDef, ptr bool, seen map[*runtime.TypeDef]bool) (map[string]bool, bool) {
-	set, _, unsure := e.methodWalkU(td, ptr, seen)
-	return set, unsure
-}
-
-// methodWalkU is the single traversal behind both methodSetOfU (the
+// methodWalkU is the single traversal behind the method-set views (the
 // callable-name set) and methodFuncs (the member-function map): one
 // walk applies alias peeling, the anonymous-*T elem peel, Go's receiver
 // rule, the per-path cycle guard and unsure tracking so the two views
 // cannot drift apart (they once disagreed on embedded interface facades
-// that carry MReqs without an AST). An interface typedef contributes
-// its requirement names to the name set — including AST-less facades —
-// while the func map only gains members backed by a declared signature.
+// that carry MReqs without an AST). Generic methods (Go 1.27) are
+// excluded — they never satisfy interfaces. Interface satisfaction
+// treats an unsure set as optimistic: a missing requirement may live on
+// an unresolved embed. An interface typedef contributes its requirement
+// names to the name set — including AST-less facades — while the func
+// map only gains members backed by a declared signature.
 func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.TypeDef]bool) (names map[string]bool, funcs map[string]*runtime.Function, unsure bool) {
 	td = e.peelAliasTd(td)
 	if td == nil || seen[td] {
@@ -349,41 +361,8 @@ func (e *Engine) ifaceSigReqs(td *runtime.TypeDef) (map[string]*runtime.Function
 // methods carry no decl signature, so host boxes report nil here and
 // satisfy requirements by name alone.
 func (e *Engine) methodFuncsOfValue(v runtime.Value) (map[string]*runtime.Function, error) {
-	ptr := false
-	for {
-		if n, ok := v.(*runtime.Named); ok {
-			if _, ok := runtime.Unwrap(n.V).(*runtime.GoValue); ok && (n.Typ == nil || len(n.Typ.Methods) == 0) {
-				return nil, nil
-			}
-			_, funcs, _ := e.methodWalkU(n.Typ, ptr, map[*runtime.TypeDef]bool{})
-			return funcs, nil
-		}
-		dv, ok := runtime.Deref(v)
-		if !ok {
-			break
-		}
-		v = dv
-		ptr = true
-	}
-	var td *runtime.TypeDef
-	switch x := v.(type) {
-	case *runtime.Struct:
-		td = x.Def
-	case *runtime.TypedNil:
-		td = x.Typ
-	case *runtime.IfaceNil:
-		td = x.Typ
-	case *runtime.Slice:
-		td = x.Typ
-	case *runtime.Map:
-		td = x.Typ
-	case *runtime.Chan:
-		td = x.Typ
-	default:
-		return nil, nil
-	}
-	_, funcs, _ := e.methodWalkU(td, ptr, map[*runtime.TypeDef]bool{})
-	return funcs, nil
+	_, funcs, _, err := e.methodInfoOfValue(v)
+	return funcs, err
 }
 
 // ifaceSig is an interface's required method together with the typedef
