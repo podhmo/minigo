@@ -535,19 +535,11 @@ func declFuncSig(fn *Function) *ast.FuncType {
 // argument). ok=false when the value carries no declaration to spell —
 // plain builtins, nil members — so each caller picks its own fallback.
 func FuncGoSpelling(v Value) (string, bool) {
-	var fn *Function
-	switch x := v.(type) {
-	case *Function:
-		fn = x
-	case *Closure:
-		fn = x.Fn
-	case *BoundMethod:
-		fn = x.Fn
-	}
-	if fn == nil || fn.Decl == nil || fn.Decl.Type == nil {
+	sig, pkg, file, binds := FuncSigOf(v)
+	if sig == nil {
 		return "", false
 	}
-	return TypGoSpelling(fn.Decl.Type, &TypeDef{Pkg: fn.Pkg, File: fn.File, Binds: fn.Binds}), true
+	return TypGoSpelling(sig, &TypeDef{Pkg: pkg, File: file, Binds: binds}), true
 }
 
 // TypeResolver feeds the semantic signature comparator the engine
