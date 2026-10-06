@@ -508,17 +508,11 @@ func builtins(e *Engine) *runtime.Env {
 		}
 		return runtime.NIL, nil
 	})
-	// print/println write to stderr like Go's builtins do; print spaces
-	// only between adjacent non-string operands.
+	// print/println write to stderr like Go's builtins do; gc's print
+	// concatenates operands with no separator at all (print(1, 2)
+	// writes "12"), while println always spaces them.
 	bf("print", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-		for i, a := range args {
-			if i > 0 {
-				_, prevStr := runtime.Unwrap(args[i-1]).(string)
-				_, curStr := runtime.Unwrap(a).(string)
-				if !prevStr && !curStr {
-					fmt.Fprint(os.Stderr, " ")
-				}
-			}
+		for _, a := range args {
 			fmt.Fprint(os.Stderr, display(a))
 		}
 		return runtime.NIL, nil
