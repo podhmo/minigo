@@ -250,7 +250,7 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 		}
 	}
 	if td.Kind == runtime.KindInterface {
-		names = e.ifaceReqsRec(td, map[*runtime.TypeDef]bool{})
+		names = e.ifaceReqSet(td)
 		funcs = e.ifaceSigFuncs(td)
 		return names, funcs, false
 	}
@@ -277,7 +277,7 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 			// the name set covers every required name (facade typedefs
 			// without AST still count) while the func map keeps only the
 			// members a signature can be synthesized for.
-			for m := range e.ifaceReqsRec(emb, map[*runtime.TypeDef]bool{}) {
+			for m := range e.ifaceReqSet(emb) {
 				names[m] = true
 			}
 			for name, fn := range e.ifaceSigFuncs(emb) {
@@ -321,10 +321,12 @@ func ifaceSigFunc(sig ifaceSig) *runtime.Function {
 // ifaceSigFuncs maps an interface typedef's signature-bearing required
 // methods to their synthesized member Functions — nil when it declares
 // no signature (name-only requirements). The single conversion behind
-// methodWalkU's interface arms and the IfaceSigs hook. The result is
-// cached on td — every interface assertion and conversion consults it —
-// and its stable shells let the VM memoize signature comparisons per
-// (requirement, method) pair. Callers must not modify the map.
+// methodWalkU's interface arms and the IfaceSigs hook.
+//
+// The result is cached on td (callers treat it as read-only): every
+// conversion to an interface runs this, and the stable shell pointers
+// let SigMemo remember each requirement's comparison. A set built while
+// an embed failed to resolve is not cached — it may be incomplete.
 func (e *Engine) ifaceSigFuncs(td *runtime.TypeDef) map[string]*runtime.Function {
 	if td == nil {
 		return nil
@@ -332,7 +334,8 @@ func (e *Engine) ifaceSigFuncs(td *runtime.TypeDef) map[string]*runtime.Function
 	if out, ok := td.CachedIfaceSigs(); ok {
 		return out
 	}
-	sigs := e.ifaceSigsOf(td, map[*runtime.TypeDef]bool{})
+	complete := true
+	sigs := e.ifaceSigsOf(td, map[*runtime.TypeDef]bool{}, &complete)
 	var out map[string]*runtime.Function
 	if len(sigs) > 0 {
 		out = make(map[string]*runtime.Function, len(sigs))
@@ -340,7 +343,9 @@ func (e *Engine) ifaceSigFuncs(td *runtime.TypeDef) map[string]*runtime.Function
 			out[name] = ifaceSigFunc(sig)
 		}
 	}
-	td.SetIfaceSigs(out)
+	if complete {
+		td.SetIfaceSigs(out)
+	}
 	return out
 }
 
@@ -391,7 +396,9 @@ type ifaceSig struct {
 // ifaceSigsOf maps an interface's required methods to their declared
 // signatures — a name-only set can't distinguish F(int) from F(string),
 // which interface satisfaction via reflect needs.
-func (e *Engine) ifaceSigsOf(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool) map[string]ifaceSig {
+//
+// complete turns false when an embedded element fails to resolve.
+func (e *Engine) ifaceSigsOf(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool, complete *bool) map[string]ifaceSig {
 	td = e.peelAliasTd(td)
 	if td == nil || seen[td] {
 		return nil
@@ -422,9 +429,10 @@ func (e *Engine) ifaceSigsOf(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool
 	for _, spec := range td.IEmbeds {
 		emb, err := e.resolveTypeRef(td, spec)
 		if err != nil || emb == nil {
+			*complete = false
 			continue
 		}
-		for name, sig := range e.ifaceSigsOf(emb, seen) {
+		for name, sig := range e.ifaceSigsOf(emb, seen, complete) {
 			if _, dup := out[name]; !dup {
 				out[name] = sig
 			}
@@ -438,10 +446,29 @@ func (e *Engine) ifaceSigsOf(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool
 // Constraint elements (~T, unions) are approximated away — satisfaction
 // checks treat them as fulfilled.
 func (e *Engine) ifaceReqs(td *runtime.TypeDef) (map[string]bool, error) {
-	return e.ifaceReqsRec(td, map[*runtime.TypeDef]bool{}), nil
+	return e.ifaceReqSet(td), nil
 }
 
-func (e *Engine) ifaceReqsRec(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool) map[string]bool {
+// ifaceReqSet is ifaceReqs cached on td (callers treat the set as
+// read-only). A set built while an embed failed to resolve — a
+// constraint element (~T, unions) or a not-yet-loadable package — is
+// not cached, so it is recomputed exactly as before.
+func (e *Engine) ifaceReqSet(td *runtime.TypeDef) map[string]bool {
+	if td == nil {
+		return nil
+	}
+	if set, ok := td.CachedIfaceReqs(); ok {
+		return set
+	}
+	complete := true
+	set := e.ifaceReqsRec(td, map[*runtime.TypeDef]bool{}, &complete)
+	if complete {
+		td.SetIfaceReqs(set)
+	}
+	return set
+}
+
+func (e *Engine) ifaceReqsRec(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool, complete *bool) map[string]bool {
 	td = e.peelAliasTd(td)
 	if td == nil || seen[td] {
 		return nil
@@ -454,9 +481,10 @@ func (e *Engine) ifaceReqsRec(td *runtime.TypeDef, seen map[*runtime.TypeDef]boo
 	for _, spec := range td.IEmbeds {
 		sub, err := e.resolveTypeRef(td, spec)
 		if err != nil || sub == nil {
+			*complete = false
 			continue // constraint exprs (~T, |) don't resolve to typedefs
 		}
-		for m := range e.ifaceReqsRec(sub, seen) {
+		for m := range e.ifaceReqsRec(sub, seen, complete) {
 			set[m] = true
 		}
 	}
