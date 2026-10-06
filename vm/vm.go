@@ -504,6 +504,17 @@ func (v *VM) assignRef(f *frame, ref, val runtime.Value) {
 			f.trap("deref of non-pointer %T", r.Ptr)
 			return
 		}
+		// `*p = T{...}` overwrites the pointee struct in place (see
+		// overwriteStruct) so implicit-&v receivers keep the store.
+		if c, isCell := loc.(*runtime.Cell); isCell && !c.ReadOnly {
+			cv := val
+			if c.Typ != nil {
+				cv = v.coerce(f, val, c.Typ)
+			}
+			if overwriteStruct(c, cv) {
+				return
+			}
+		}
 		v.assignRef(f, loc, val)
 		return
 	case runtime.Nil:
@@ -554,9 +565,44 @@ func (v *VM) setIndirect(f *frame, ref, val runtime.Value) {
 			val = runtime.Unwrap(val)
 		}
 	}
+	// `*p = T{...}` overwrites the pointee in place: a pointer
+	// receiver bound through an implicit `&v` (v.M(), x.f.M()) wraps
+	// the variable's struct in a fresh cell, so rebinding that cell
+	// would drop the store; copying the fields keeps the write visible
+	// to every holder of the struct, like Go's memory overwrite.
+	if overwriteStruct(ur, val) {
+		return
+	}
 	if !runtime.SetRef(ref, val) {
 		f.trap("indirect store to non-pointer %T", ref)
 	}
+}
+
+// overwriteStruct stores val into the struct a `*p` target already
+// holds, field by field, when both are structs of the same type. It
+// reports false (leaving the store to SetRef) for any other shape.
+func overwriteStruct(ref, val runtime.Value) bool {
+	if dr, ok := ref.(*runtime.DerefRef); ok {
+		loc, ok := runtime.Deref(dr.Ptr)
+		if !ok {
+			return false
+		}
+		ref = loc
+	}
+	c, ok := ref.(*runtime.Cell)
+	if !ok {
+		return false
+	}
+	dst, ok := c.Elem.(*runtime.Struct)
+	if !ok {
+		return false
+	}
+	src, ok := runtime.Copy(val).(*runtime.Struct)
+	if !ok || src.Def != dst.Def || len(src.Fields) != len(dst.Fields) {
+		return false
+	}
+	copy(dst.Fields, src.Fields)
+	return true
 }
 
 // Call invokes a function-like value: Function, Closure, BoundMethod,
