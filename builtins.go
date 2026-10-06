@@ -152,8 +152,10 @@ func builtins(e *Engine) *runtime.Env {
 		dst, ok1 := sliceOf(args[0])
 		src, ok2 := sliceOf(args[1])
 		if src == nil && ok1 {
-			// copy(dst, "str"): a string source copies into []byte.
-			if s, ok := runtime.Unwrap(args[1]).(string); ok {
+			// copy(dst, "str"): a string source copies into []byte. A
+			// declared untyped const arrives as a *UConst — materialize
+			// it like the literal Go folds at compile time.
+			if s, ok := constNative(runtime.Unwrap(args[1])).(string); ok {
 				src = &runtime.Slice{Elems: make([]runtime.Value, len(s)), Typ: dst.Typ}
 				for i := 0; i < len(s); i++ {
 					src.Elems[i] = int64(s[i])
@@ -561,6 +563,8 @@ func orderedLess(a, b runtime.Value) bool {
 // constNative materializes an untyped constant reaching a builtin
 // argument — the call Go would fold at compile time runs at runtime
 // instead, so the constant must land as its default-type value.
+// (Declared consts keep the UConst box past the call boundary: each
+// builtin materializes it at the position a concrete value is needed.)
 func constNative(v runtime.Value) runtime.Value {
 	if u, ok := v.(*runtime.UConst); ok {
 		nv, err := uconstNative(u)

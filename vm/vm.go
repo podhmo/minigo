@@ -7798,6 +7798,10 @@ func (v *VM) popArgs(f *frame, argc int, mode int, pos token.Pos) ([]runtime.Val
 			namedTyp = n.Typ
 			last = n.V
 		}
+		// a declared untyped const keeps its UConst box past the call
+		// boundary — `const s = "ab"; append(b, s...)` spreads like
+		// the literal, so materialize before the string check.
+		last = materialize(f, last)
 		if str, ok := last.(string); ok {
 			// append([]byte, s...) spreads the string's bytes — the
 			// only legal string spread in Go.
