@@ -982,27 +982,17 @@ func (c *compiler) stmt(s ast.Stmt) {
 		c.emit(bytecode.OpPop, 0, 0, st.Pos())
 	case *ast.DeclStmt:
 		gd := st.Decl.(*ast.GenDecl)
-		// an empty const spec repeats the previous non-empty spec's
-		// expression list AND its type — tracked per GenDecl.
-		var prevVals []ast.Expr
-		var prevType ast.Expr
-		for specIdx, spec := range gd.Specs {
-			switch gd.Tok {
-			case token.VAR, token.CONST:
-				vs := spec.(*ast.ValueSpec)
+		switch gd.Tok {
+		case token.VAR, token.CONST:
+			for specIdx, effective := range index.ValueSpecs(gd) {
+				vs := effective.Spec
 				isConst := gd.Tok == token.CONST
-				vals := vs.Values
-				effType := vs.Type
+				vals, effType := effective.Values, effective.Type
 				if isConst {
 					// iota is the spec's own index in the GenDecl;
 					// a hidden local carries it so `iota` just reads a name.
 					c.emit(bytecode.OpConst, c.constIdx(int64(specIdx)), 0, vs.Pos())
 					c.emit(bytecode.OpSetLocal, c.fs.iotaSlot(), 0, vs.Pos())
-					if len(vals) == 0 && prevVals != nil {
-						vals, effType = prevVals, prevType
-					} else {
-						prevVals, prevType = vals, effType
-					}
 				}
 				// `var x T` binds a typed zero / typed nil via OpCoerce; typed
 				// consts coerce the same way — locals are always cells.
@@ -1043,7 +1033,7 @@ func (c *compiler) stmt(s ast.Stmt) {
 						coerce(vs.Names[i], c.bindLocal(vs.Names[i].Name, vs.Names[i].Pos(), isConst))
 						markIface(vs.Names[i], vals[0])
 					}
-					break
+					continue
 				}
 				for i, name := range vs.Names {
 					if len(vals) == 0 {
@@ -1063,13 +1053,15 @@ func (c *compiler) stmt(s ast.Stmt) {
 					}
 					markIface(name, rhs)
 				}
-			case token.TYPE:
+			}
+		case token.TYPE:
+			for _, spec := range gd.Specs {
 				// `type S struct{...}` inside a function binds the TypeDef as a
 				// local value: S{...} literals, var x S, x.(S) all resolve it.
 				c.localTypeDecl(spec.(*ast.TypeSpec))
-			case token.IMPORT:
-				c.trap(st.Pos(), "import inside function is not valid Go")
 			}
+		case token.IMPORT:
+			c.trap(st.Pos(), "import inside function is not valid Go")
 		}
 	case *ast.AssignStmt:
 		c.assign(st)
