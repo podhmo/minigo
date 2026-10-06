@@ -374,16 +374,6 @@ func exportedMethodNames(set map[string]*runtime.Function) []string {
 	return out
 }
 
-// methodSig spells a member's signature for Implements comparison — the
-// declared FuncType under the member's own package/binds context.
-func methodSig(m *runtime.Function) string {
-	if m == nil || m.Decl == nil {
-		return ""
-	}
-	ctx := &runtime.TypeDef{Pkg: m.Pkg, File: m.File, Binds: m.Binds}
-	return runtime.TypSpelling(m.Decl.Type, ctx)
-}
-
 // methodType builds the RType Go reports as Method.Type — the declared
 // signature with the receiver prepended as the first parameter, so
 // S{}.F on type S reads func(main.S).
@@ -976,7 +966,7 @@ func (t *RType) Implements(u *RType) bool {
 	have := t.e.methodSet(t.td)
 	for name, req := range reqs {
 		hm := have[name]
-		if hm == nil || methodSig(hm) != methodSig(req) {
+		if hm == nil || !runtime.SigIdentical(req, hm) {
 			return false
 		}
 	}

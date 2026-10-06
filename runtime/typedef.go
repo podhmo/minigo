@@ -507,6 +507,22 @@ func FuncGoSpelling(v Value) (string, bool) {
 	return TypGoSpelling(fn.Decl.Type, &TypeDef{Pkg: fn.Pkg, File: fn.File, Binds: fn.Binds}), true
 }
 
+// SigIdentical compares two members' declared signatures — an interface
+// requirement and the concrete method offered against it. Either side
+// lacking a decl signature (synthesized shims) satisfies by name. The
+// single entry behind the VM's satisfaction check and the reflect
+// facade's Implements: today the compare is spelling-grade through
+// TypIdentical, so a semantic signature equality upgrades here once,
+// for both callers.
+func SigIdentical(req, dyn *Function) bool {
+	if req == nil || dyn == nil || req.Decl == nil || dyn.Decl == nil || req.Decl.Type == nil || dyn.Decl.Type == nil {
+		return true
+	}
+	rt := &TypeDef{Kind: KindFunc, Anon: req.Decl.Type, Pkg: req.Pkg, File: req.File, Binds: req.Binds}
+	dt := &TypeDef{Kind: KindFunc, Anon: dyn.Decl.Type, Pkg: dyn.Pkg, File: dyn.File, Binds: dyn.Binds}
+	return TypIdentical(rt, dt)
+}
+
 // importClauseName resolves a file import's package clause name — the
 // qualifier Go's type display uses regardless of the local import alias
 // (`import o "x/odd"` where odd's clause is `package weird` displays
