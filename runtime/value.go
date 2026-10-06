@@ -1175,6 +1175,13 @@ type Iterator struct {
 	Idx    int
 	Limit  int // for integer ranges
 	String string
+	// M is the map an 'm' iterator ranges over. Elems/Keys snapshot the
+	// display/canonical keys at iterator creation, but each pair is
+	// looked up live — an entry deleted before it is reached is skipped
+	// (Go: "if a map entry that has not yet been reached is removed
+	// during iteration, the corresponding iteration value will not be
+	// produced"), and a value written before the reach reads current.
+	M *Map
 	// NilArr marks an 'i' iterator walking the indices of a nil *[N]T —
 	// the index sequence is legal Go but reading an element derefs nil.
 	NilArr bool
