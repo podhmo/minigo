@@ -110,6 +110,10 @@ func (e *Engine) typeMethods(td *runtime.TypeDef) (map[string]bool, error) {
 // ptr reports whether the set is computed through a pointer — Go's
 // method set for *T includes pointer receivers while T's does not.
 func (e *Engine) typeMethodsU(td *runtime.TypeDef, ptr bool) (map[string]bool, bool, error) {
+	// resolve aliases first — `type A = sync.Mutex` carries A's typedef
+	// but its method set is the host type's reflect set; checking
+	// HostNew on the unresolved alias would drop it.
+	td = e.peelAliasTd(td)
 	if td == nil {
 		return nil, false, nil
 	}
@@ -124,6 +128,12 @@ func (e *Engine) typeMethodsU(td *runtime.TypeDef, ptr bool) (map[string]bool, b
 		} else {
 			unsure = true
 		}
+	}
+	// the pointee may itself be an alias (`type A = sync.Mutex` in `*A`)
+	// — peel again so the interface and host checks see the real type.
+	td = e.peelAliasTd(td)
+	if td == nil {
+		return nil, unsure, nil
 	}
 	if td.Kind == runtime.KindInterface {
 		return e.ifaceReqsRec(td, map[*runtime.TypeDef]bool{}), unsure, nil
