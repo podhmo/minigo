@@ -1,0 +1,9 @@
+SILENT (corpus sweep, ken/convert.go — every tu64/tf32/tf64 row of the
+16717361816799281152 section prints a mismatch under minigo)
+shape:  untyped int constants >= 2^63 assigned to float vars
+go:     1.6717361816799281e+19 / 9.223372036854776e+18 / 1.6717361816799281e+19
+minigo: 16717361816799281152 / -9.223372036854776e+18 / -1.7293822569102705e+18
+hypothesis: the const materializer keeps the integer representation for
+constants that do not fit int64 (f prints digits, == stays false) or wraps
+through int64 first (g goes negative); the downstream big(uint64(f)) then
+converts the stored int64 to float64.
