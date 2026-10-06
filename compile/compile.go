@@ -1432,7 +1432,14 @@ func (c *compiler) refTarget(lhs ast.Expr, pin bool) {
 		// to its named root the same way — only `(*p).f`'s pointer
 		// operand pins (handled by refTargetBase).
 		c.refTargetBase(t.X, pin)
-		c.emit(bytecode.OpFieldRef, c.nameIdx(t.Sel.Name), 1, t.Pos())
+		// B=1 store target; +2 pins pointer bases (multi-assign): p.f
+		// is an implicit indirection whose operand gc saves before the
+		// stores, so `p, p.f = new(T), v` writes the old pointee.
+		b := 1
+		if pin {
+			b |= 2
+		}
+		c.emit(bytecode.OpFieldRef, c.nameIdx(t.Sel.Name), b, t.Pos())
 	case *ast.IndexExpr:
 		// B=1: the ref is a store target — a map element is legal here
 		// (m[k] = v), unlike `&` which Go forbids on map values, and the

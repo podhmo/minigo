@@ -1426,12 +1426,13 @@ func (v *VM) loop(f *frame) {
 			f.push(b)
 		case bytecode.OpFieldRef:
 			base := f.pop()
-			if ins.B == 0 {
-				// Address-of target pins what the operand evaluated to: a
-				// cell holding a struct is the variable's storage (its
-				// address is stable), but a pointer variable's operand
-				// evaluated to its pointee — snapshot it, so `fp := &p.f`
-				// doesn't follow a reseated p.
+			if ins.B == 0 || ins.B&2 != 0 {
+				// Pinned operand (address-of target B=0, or a
+				// multi-assign store B&2): a cell holding a struct is
+				// the variable's storage (its address is stable), but
+				// a pointer variable's operand evaluated to its
+				// pointee — snapshot it, so `fp := &p.f` and
+				// `p, p.f = new(T), v` don't follow a reseated p.
 				if c, ok := base.(*runtime.Cell); ok {
 					e := c.Elem
 					for {
@@ -1445,6 +1446,8 @@ func (v *VM) loop(f *frame) {
 						base = c.Elem
 					}
 				}
+			}
+			if ins.B == 0 {
 				// the nil check fires now; B=1 marks a store target, where
 				// Go checks at store time so the RHS evaluates first.
 				v.checkAddrBase(base, nil)
