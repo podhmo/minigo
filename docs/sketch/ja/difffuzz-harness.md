@@ -236,7 +236,7 @@ usecasefuzz 側も別スキルにする価値はあると思う（今回は作�
 
 ### やらなかったこと・やるなら
 
-- `fixedbugs/`（646本）、`typeparam/`（141本）、`ken/` 等のサブディレクトリは流していない。`typeparam/` はジェネリクスの単一化（monomorphize）の検証として価値がありそうなので、次に流すならここから。`-goroot-tests` をサブディレクトリにも対応させるのは小さな変更。
+- `fixedbugs/`、`typeparam/`、`ken/` 等のサブディレクトリは長らく未踏だった（この文書執筆時点）。2026-10-06 に `corpus <dir>`（位置引数で `dir/*.go`＋`dir/*/main.go` を拾う — コード変更不要だった）でパイロットを流し、収穫を確認済み: `typeparam` 321本 → SILENT 12 / TRAP 24（型スイッチ誤マッチ、generic chan send の payload 消失、`%T` の型引数綴り漏れ等）、`ken`+`interface`+`chan` 80本 → SILENT 3 / HANG 2、`syntax`+`abi`+`stress` 61本 → SILENT 2 / HANG 3。手順と残量は README の `corpus` 節、pin への落とし方は SKILL.md の `/difffuzz hunt`。`fixedbugs/`（1854本）は `// errorcheck` 主体で SKIP が大半になるはずだが、`// run` 分は残る。
 - `// runoutput`（生成したプログラムを実行する）、`// rundir`（複数ファイル/パッケージ）、引数付きの `// run` は対象外にした。
 - `// errorcheck`（147本）は「Go がコンパイルエラーにするものを minigo が実行してしまう」逆方向の検査に使えるが、README の「compiler never fails」の設計と衝突するので見送った。
 - 対象外の領域（unsafe・runtime・GC・複素数）を事前に除外するフィルタ（import や識別子で弾く）を入れれば、残りを LL 用途の回帰として毎回流す運用はあり得る。

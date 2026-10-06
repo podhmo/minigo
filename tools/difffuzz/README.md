@@ -94,3 +94,37 @@ both and reports verdicts plus TRAP/CRASH buckets ranked by how many
 programs they block. `$GOROOT/test` `// run` files are mostly
 self-checking (they `panic` on a wrong result), so a SILENT with a minigo
 `panic:` usually means a failed self-check.
+
+Coverage: `-goroot-tests` enumerates only `$GOROOT/test/*.go` — the
+top-level files whose first line is exactly `// run` with `package main`.
+Subdirectories are never auto-included; they are hunting ground in their
+own right. A dir arg expands to `dir/*.go` plus `dir/*/main.go`, so
+sweeping one needs no code change:
+
+```
+go -C ./tools/difffuzz run ./ corpus -out /tmp/corpus-typeparam.md "$(go env GOROOT)/test/typeparam"
+```
+
+Mechanics:
+
+- flags must precede the directory list (`flag.Parse` stops at the first
+  positional — `corpus <dir> -out x` fails `stat -out`);
+- `make difffuzz-corpus` always passes `-goroot-tests`; to sweep *only*
+  subdirectories, invoke the binary directly as above.
+
+Subdirs holding `.go` files (counts at go1.27): `typeparam` (266),
+`fixedbugs` (1854, mostly `// errorcheck` → SKIP, but its `// run` files
+stay valid corpus), `ken` (40), `abi` (39), `codegen` (87, compile-time
+tests → SKIP noise), `interface`/`chan`/`syntax` (19 each), `simd` (3),
+`stress` (3), `dwarf` (2). Multi-file `*.dir` packages cannot run as
+single files — they land in SKIP; supporting them needs per-package
+assembly, not more globs.
+
+Pilot yields (one pass each, 2026-10-06): `typeparam` 321 programs →
+12 SILENT / 24 TRAP / 159 SKIP; `ken`+`interface`+`chan` 80 →
+3 SILENT / 2 HANG / 6 TRAP; `syntax`+`abi`+`stress` 61 →
+2 SILENT / 3 HANG / 2 TRAP.
+
+HANG triage: a corpus timeout is a bug only when it is not a throughput
+limit — check whether the program is a heavy loop before pinning (the
+recorded boundary classes live in TODO.md's corpus bullet).
