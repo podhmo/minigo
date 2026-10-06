@@ -2218,6 +2218,15 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		dv, ok := runtime.Deref(base)
 		recv := base
 		if !ok {
+			// a deref ref over a nil pointer is Go's nil dereference —
+			// (*p).X / (*p).M() on a nil *T panic, not trap.
+			if dr, isDR := base.(*runtime.DerefRef); isDR {
+				if px, pok := runtime.Deref(dr.Ptr); pok {
+					if tn, isTN := asTypedNil(px); isTN && tn.Typ.Kind == runtime.KindPointer {
+						panic(runtime.NilDerefPanic())
+					}
+				}
+			}
 			// A receiver-position ref may sit over an operand that does
 			// not share storage — a map element reads as a copy — or
 			// over a base the ref cannot walk (m[k].f[i]). Select on
