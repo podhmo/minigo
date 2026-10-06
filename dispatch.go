@@ -299,7 +299,9 @@ func ifaceSigFunc(sig ifaceSig) *runtime.Function {
 	}
 }
 
-// methodSet implements the minireflect MethodSet hook.
+// methodSet implements the minireflect MethodSet hook and the
+// Hooks.TypeMethodFuncs hook: the signature-bearing method set of a
+// typedef.
 func (e *Engine) methodSet(td *runtime.TypeDef) (map[string]*runtime.Function, error) {
 	return e.methodFuncs(td, false, map[*runtime.TypeDef]bool{}), nil
 }
@@ -371,13 +373,6 @@ func (e *Engine) methodFuncsOfValue(v runtime.Value) (map[string]*runtime.Functi
 		return nil, nil
 	}
 	_, funcs, _ := e.methodWalkU(td, ptr, map[*runtime.TypeDef]bool{})
-	return funcs, nil
-}
-
-// typeMethodFuncs implements the Hooks.TypeMethodFuncs hook: the
-// signature-bearing method set of a typedef.
-func (e *Engine) typeMethodFuncs(td *runtime.TypeDef) (map[string]*runtime.Function, error) {
-	_, funcs, _ := e.methodWalkU(td, false, map[*runtime.TypeDef]bool{})
 	return funcs, nil
 }
 

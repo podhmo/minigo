@@ -222,7 +222,7 @@ func (e *Engine) newVM() *vm.VM {
 		IfaceReqs:       e.ifaceReqs,
 		IfaceSigs:       e.ifaceSigReqs,
 		MethodFuncsOf:   e.methodFuncsOfValue,
-		TypeMethodFuncs: e.typeMethodFuncs,
+		TypeMethodFuncs: e.methodSet,
 
 		ElemOf:      e.elemOf,
 		TypeMethods: e.typeMethods,
