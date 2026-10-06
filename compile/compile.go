@@ -1407,6 +1407,43 @@ func (c *compiler) isStorageBase(e ast.Expr) bool {
 	return false
 }
 
+// selectorBaseIsVar reports whether a selector's base denotes a mutable
+// lvalue whose storage ref a pointer receiver can write through. Type
+// names and other value-shaped bases stay values: method expressions
+// (T.M, F[T].M, (*T).M) resolve on the type, a call result has no
+// storage, and a package qualifier is guarded inside refTargetBase.
+func (c *compiler) selectorBaseIsVar(e ast.Expr) bool {
+	for {
+		if p, ok := e.(*ast.ParenExpr); ok {
+			e = p.X
+			continue
+		}
+		break
+	}
+	switch t := e.(type) {
+	case *ast.Ident:
+		// a var (local, upval, or package-level) has storage; a type
+		// name selects a method expression on the type, and an
+		// unresolved name is an import or an error that OpGlobal
+		// reports better than OpGlobalRef ("undefined: fmt").
+		info, found := c.resolveName(t.Name)
+		return found && !info.isType
+	case *ast.SelectorExpr:
+		// x.f.M binds &x.f when the field path itself is an lvalue —
+		// a map element or a call result field reads as a copy.
+		return c.selectorBaseIsVar(t.X)
+	case *ast.IndexExpr:
+		// refable elements went through the index-ref branch already;
+		// F[T] instantiations and non-refable bases stay values.
+		return false
+	case *ast.StarExpr:
+		// (*p).M binds the pointee's ref; (*T).M, (*F[T]).M and
+		// (*pkg.T).M are pointer method expressions on the type.
+		return c.starOperandIsValue(t.X)
+	}
+	return false
+}
+
 // indexOperand unwraps parens and reports e as an index expression.
 func indexOperand(e ast.Expr) (*ast.IndexExpr, bool) {
 	for {
@@ -2326,6 +2363,11 @@ func (c *compiler) expr(e ast.Expr) {
 			c.refTargetBase(ix.X, false)
 			c.expr(ix.Index)
 			c.emit(bytecode.OpIndexRef, 0, 1, ix.Pos())
+		} else if c.selectorBaseIsVar(x.X) {
+			// `x.M()` lowers to `(&x).M()` when M needs a pointer — a
+			// scalar named value is a detached copy otherwise, so the
+			// receiver binds the var's storage ref for the write to land.
+			c.refTargetBase(x.X, false)
 		} else {
 			c.expr(x.X)
 		}
