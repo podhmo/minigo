@@ -12,10 +12,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/podhmo/minigo"
@@ -47,9 +49,12 @@ func runMain(ctx context.Context, argv []string) int {
 	}
 	n, err := run(ctx, ".", "./script", dir, *check, *deps, os.Stdout)
 	if err != nil {
-		// errors from the script already carry their own "gen-sync:"
-		// prefix — adding another would print "gen-sync: gen-sync: ..."
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, describeFailure(err, dir, "./script"))
+		if *check {
+			// a real failure is not drift — keep exit 1 for "found
+			// files out of sync" alone so CI can tell the reports apart.
+			return 2
+		}
 		return 1
 	}
 	if *check {
@@ -109,4 +114,96 @@ func errorResult(v runtime.Value) error {
 		}
 	}
 	return fmt.Errorf("gen-sync: unexpected error result %T", v)
+}
+
+// describeFailure renders a run failure with a first line naming who
+// must act, in the vocabulary of the invocation and the scanned input:
+// the dir argument, an input file at a position, a dependency, or
+// gen-sync itself. A *runtime.Trap is unwrapped to the engine error it
+// carries so the classification sees the real cause (a resolve/parse
+// failure), not the "runtime trap" wrapper. Errors returned by the
+// script already carry their own "gen-sync:" vocabulary and pass
+// through untouched.
+func describeFailure(err error, dir, scriptDir string) string {
+	u := err
+	var trap *runtime.Trap
+	if errors.As(err, &trap) && trap.Err != nil {
+		u = trap.Err
+	}
+	msg := u.Error()
+	blame := "this looks like a gen-sync bug"
+	switch {
+	case strings.HasPrefix(msg, "gen-sync:"):
+		return msg
+	case errors.Is(u, os.ErrPermission) || strings.Contains(msg, "permission denied"):
+		// a filesystem refusal stays the root cause however many
+		// wrappers sit on top — resolve dir %q / resolve %q / import %s
+		// wrap the package-dir read failure, so classifying the outer
+		// prefix alone mislabels a permissions problem as a bad dir
+		// argument.
+		blame = "check the named file or directory's permissions"
+	case strings.HasPrefix(msg, "resolve dir "):
+		// loadDir on the dir argument (inspect.DirOf in the script) —
+		// anything else is the tool's own script dir.
+		if quotedArg(msg, "resolve dir ") == dir {
+			blame = "fix the dir argument"
+		}
+	case strings.HasPrefix(msg, "resolve "), strings.Contains(msg, "could not be resolved"):
+		blame = "fix the package's imports or the module setup"
+	case strings.HasPrefix(msg, "parse "):
+		target := parseTarget(msg)
+		switch {
+		case pathInside(dir, target):
+			blame = "fix the input file at the reported position"
+		case pathInside(scriptDir, target):
+			// the tool's own script is broken — not the user's input
+		default:
+			blame = "fix a dependency file at the reported position"
+		}
+	}
+	return "gen-sync: " + blame + "\n" + err.Error()
+}
+
+// quotedArg extracts the %q-quoted operand following prefix in an
+// engine error message (e.g. `resolve dir "./app": ...` → "./app").
+func quotedArg(msg, prefix string) string {
+	rest := strings.TrimPrefix(msg, prefix)
+	if !strings.HasPrefix(rest, `"`) {
+		return ""
+	}
+	if i := strings.Index(rest[1:], `"`); i >= 0 {
+		return rest[1 : i+1]
+	}
+	return ""
+}
+
+// parseTarget extracts the file a `parse <file>: <error>` message
+// failed on — the text up to the first ": " boundary, which is where
+// the parser's own "<file>:<line>:<col>" report begins.
+func parseTarget(msg string) string {
+	rest := strings.TrimPrefix(msg, "parse ")
+	if i := strings.Index(rest, ": "); i >= 0 {
+		return rest[:i]
+	}
+	return ""
+}
+
+// pathInside reports whether path resolves inside dir.
+func pathInside(dir, path string) bool {
+	if path == "" {
+		return false
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	base, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(base, abs)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }

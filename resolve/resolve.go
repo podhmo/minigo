@@ -131,25 +131,50 @@ func ReadPackageFiles(dir, importPath string, cfg BuildConfig) (*PackageMeta, er
 
 	var files []string
 	var name string
+	var rejected []string // files MatchFile could not even read/parse
+	excluded := 0         // files build constraints filtered out
 	fset := token.NewFileSet()
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+		fname := e.Name()
+		if e.IsDir() || !strings.HasSuffix(fname, ".go") || strings.HasSuffix(fname, "_test.go") ||
+			strings.HasPrefix(fname, "_") || strings.HasPrefix(fname, ".") {
+			// _- and .-prefixed files are invisible to the Go build
+			// system entirely — MatchFile would reject them by NAME,
+			// not by constraint, so they must not inflate excluded.
 			continue
 		}
-		match, err := ctx.MatchFile(dir, e.Name())
-		if err != nil || !match {
+		match, err := ctx.MatchFile(dir, fname)
+		if err != nil {
+			rejected = append(rejected, err.Error())
 			continue
 		}
-		files = append(files, filepath.Join(dir, e.Name()))
+		if !match {
+			excluded++
+			continue
+		}
+		files = append(files, filepath.Join(dir, fname))
 		if name == "" {
-			f, err := parser.ParseFile(fset, filepath.Join(dir, e.Name()), nil, parser.PackageClauseOnly)
+			f, err := parser.ParseFile(fset, filepath.Join(dir, fname), nil, parser.PackageClauseOnly)
 			if err == nil && f != nil {
 				name = f.Name.Name
 			}
 		}
 	}
 	if len(files) == 0 {
-		return nil, fmt.Errorf("no buildable Go source files in %s", dir)
+		// "no buildable Go source files" alone cannot tell a permission
+		// problem from a //go:build exclusion — name the package and why.
+		what := dir
+		if importPath != "" && !strings.HasPrefix(importPath, "<") {
+			what = fmt.Sprintf("package %s (%s)", importPath, dir)
+		}
+		switch {
+		case len(rejected) > 0:
+			return nil, fmt.Errorf("no buildable Go source files in %s: %s", what, strings.Join(rejected, "; "))
+		case excluded > 0:
+			return nil, fmt.Errorf("no buildable Go source files in %s: all %d .go file(s) excluded by build constraints", what, excluded)
+		default:
+			return nil, fmt.Errorf("no buildable Go source files in %s", what)
+		}
 	}
 	sort.Strings(files)
 	return &PackageMeta{

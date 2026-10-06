@@ -23,7 +23,7 @@ package dragging heavy transitive deps is the normal case). See
 ```console
 $ go run ./          # sync ./app
 $ go run ./          # run again: idempotent — 0 file(s) updated
-$ go run ./ -check   # report drift without writing (for CI), exit 1 if stale
+$ go run ./ -check   # report drift without writing (for CI): exit 1 if stale, 2 on failure
 $ go run ./ -deps    # also rewrite files in followed same-module imports
 ```
 
@@ -153,16 +153,28 @@ too.
 ## Failure modes
 
 The tool never reports success while silently losing work: anything it
-could not account for is returned as an error and exits nonzero.
+could not account for is returned as an error and exits nonzero. A
+failure's first line names who must act, in the invocation's own
+vocabulary — `gen-sync: fix the dir argument` / `fix the input file at
+the reported position` / `check the named file or directory's
+permissions` / `fix the package's imports or the module setup` / `fix a
+dependency file at the reported position` — followed by the raw error.
+Errors the script already phrased (`gen-sync: <path>: <err>`) pass
+through untouched. Under `-check`, drift exits **1** while a real
+failure (a trap, unreadable input, a failed write) exits **2** — a CI
+job can tell the reports apart by exit code alone.
 
 | Symptom | Meaning |
 |---|---|
 | `runtime trap: resolve dir "...": entry directory ... not found` / `is not a directory` | the dir argument is wrong — fix the command-line arguments |
 | `runtime trap: parse <file>: <file>:<line>:<col>: ...` | a file in the scanned package does not parse — fix the input file |
 | `runtime trap: import ...: resolving import "...": import path "..." could not be resolved` | an import cannot be resolved — fix the package's imports or go.mod |
+| `... open <path>: permission denied` under any wrapper (`resolve dir`, `resolve`, `import`) | a file or directory could not be opened — fix the named path's permissions |
+| `no buildable Go source files in package <path> (<dir>)` | the dir has no usable .go files — the trailing reason says why (per-file errors verbatim, or `all N .go file(s) excluded by build constraints`) |
 | `gen-sync: <path>: <err>` (e.g. `permission denied`) joined into the returned error | a file could not be read or written — fix the filesystem |
 | `gen-sync: <path>: not in the package index (excluded by build constraints?)` | warning only: the file is skipped the way `go build` skips it (`_`-/`.`-prefixed files are ignored entirely, like `go build`) |
 | `gen-sync: <path>: <err>` where the file vanished from the index | the file is unreadable — decls *and import edges* vanish, so the whole run refuses to write (blocks elsewhere would regress) |
+| `gen-sync: <file> declares package <other>, but the directory's package is <pkg> — skipping` | warning only: a foreign-package file — `go build` would reject the directory; it is never written and feeds no inference |
 | `gen-sync: <dir> is outside any Go module` | no go.mod ancestor — references cannot resolve, so the scan would degrade silently; the run refuses |
 | `gen-sync: <path>: refusing to write outside the scanned directory` | the import path resolved to a different tree (module shadowing) — fix go.mod / replace rules |
 | `gen-sync: <path>: skipping: another generator owns this file (// Code generated ... DO NOT EDIT.)` | warning only: the file still feeds inference but is never written — the next regen would discard the block |
