@@ -278,9 +278,9 @@ func typSpelling(e ast.Expr, ctx *TypeDef, under bool) string {
 					sb.WriteString(" ")
 				}
 				sb.WriteString(typSpelling(f.Type, ctx, under))
-				if f.Tag != nil {
+				if tag := structTagKey(f.Tag); tag != "" {
 					sb.WriteString(" ")
-					sb.WriteString(f.Tag.Value)
+					sb.WriteString(tag)
 				}
 				sb.WriteString(";")
 			}
@@ -300,6 +300,23 @@ func typSpelling(e ast.Expr, ctx *TypeDef, under bool) string {
 		return sb.String()
 	}
 	return fmt.Sprintf("%T", e)
+}
+
+// structTagKey normalizes a field tag literal for identity spellings:
+// an absent tag and an empty tag literal are the same type (Go treats
+// a zero-length tag as no tag — $GOROOT/test/fixedbugs/issue15439.go),
+// and quote styles fold, so a backquoted tag and a double-quoted one
+// spell alike. Returns "" when the field carries no identity-relevant
+// tag.
+func structTagKey(tag *ast.BasicLit) string {
+	if tag == nil {
+		return ""
+	}
+	s, err := strconv.Unquote(tag.Value)
+	if err != nil || s == "" {
+		return ""
+	}
+	return strconv.Quote(s)
 }
 
 // TypGoSpelling renders e the way Go's reflect.Type.String does —

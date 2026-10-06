@@ -1,5 +1,0 @@
-SILENT value: map[interface{}] collapses two keys of anonymous struct types
-that differ only by field tag (struct{int} vs struct{int "x"}) into one entry.
-Hypothesis: map-key identity for anonymous structs ignores field tags
-(a == b is already false; only the map lookup treats them as equal).
-Source: $GOROOT/test/typeparam/issue46591.go (keys were T[struct...] instantiations).
