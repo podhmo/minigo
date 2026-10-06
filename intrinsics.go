@@ -1259,6 +1259,10 @@ func (e *Engine) installStdlib() {
 		"Match":         h.fn2("filepath.Match", func(a []any) (any, error) { return retErr2(filepath.Match(str(a[0]), str(a[1]))) }),
 		"Separator":     int64(os.PathSeparator),
 		"ListSeparator": int64(os.PathListSeparator),
+		"Split": h.fn1("filepath.Split", func(a []any) (any, error) {
+			d, f := filepath.Split(str(a[0]))
+			return &runtime.Tuple{Elems: []runtime.Value{d, f}}, nil
+		}),
 		// Abs/Rel anchor relative paths at the engine's virtual cwd, not the
 		// host process's (divergence from real filepath.Abs is deliberate).
 		"Abs": h.fn1("filepath.Abs", func(a []any) (any, error) { return retErr2(e.cwdAbs(str(a[0])), nil) }),
