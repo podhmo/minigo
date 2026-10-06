@@ -139,7 +139,10 @@ func builtins(e *Engine) *runtime.Env {
 			var dstLen, dstCap int64
 			var zero runtime.Value
 			if s != nil {
-				dstLen, dstCap, zero = s.N, s.CapN, s.Zero
+				// a real dst keeps its element COUNT in the virtual
+				// result — every element is the type's single
+				// zero-size value, so the logical length suffices.
+				dstLen, dstCap, zero = s.Len(), s.Cap(), s.Zero
 			}
 			if spread != nil {
 				if zero == nil {
@@ -172,7 +175,18 @@ func builtins(e *Engine) *runtime.Env {
 		// appending onto the backing array itself keeps Go's sharing
 		// semantics: within spare capacity the result aliases the same
 		// storage, past it the host append allocates a fresh array.
-		res := &runtime.Slice{Elems: append(elems, add...), Typ: rtyp}
+		elems2 := append(elems, add...)
+		if len(elems2) > cap(elems) && rtyp != nil {
+			// for a zero-size element Go's growslice never doubles —
+			// cap is exactly the new length — while the host []Value
+			// grew by its own rule. Clip the spare so cap() agrees.
+			if ez, ok := v.(interface {
+				ElemZero(*runtime.TypeDef) runtime.Value
+			}); ok && runtime.IsZeroSizeValue(ez.ElemZero(rtyp)) {
+				elems2 = elems2[:len(elems2):len(elems2)]
+			}
+		}
+		res := &runtime.Slice{Elems: elems2, Typ: rtyp}
 		if tag != nil {
 			return runtime.Tag(tag, res), nil // append keeps the declared type
 		}
