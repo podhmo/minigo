@@ -1771,6 +1771,22 @@ func (v *VM) loop(f *frame) {
 			f.push(v.makeComposite(f, ins))
 		case bytecode.OpMakeClosure:
 			proto := consts[ins.A].(*runtime.Function)
+			if len(f.fn.Binds) > 0 {
+				// a literal inside a generic function closes over the
+				// instantiation's binds — `func(fn func(R) bool)` in
+				// Pipe[int, int] types `func(func(int) bool)`. The
+				// proto const is shared across instantiations, so the
+				// binds attach to a copy, never to it.
+				cp := *proto
+				cp.Binds = map[string]runtime.Value{}
+				for k, bv := range f.fn.Binds {
+					cp.Binds[k] = bv
+				}
+				for k, bv := range proto.Binds {
+					cp.Binds[k] = bv
+				}
+				proto = &cp
+			}
 			if len(proto.Chunk.Upvals) == 0 {
 				// a capture-free literal evaluates to the proto itself —
 				// Go hoists it to a static func value, so repeated evals
