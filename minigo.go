@@ -478,10 +478,17 @@ func (e *Engine) WithResolver(r resolve.Resolver) *Engine {
 
 // Package returns a loaded (Indexed) package by import path or directory.
 func (e *Engine) Package(ctx context.Context, ref string) (*runtime.Package, error) {
-	if resolve.LooksLikeDir(ref) {
+	if resolve.LooksLikeDir(ref) || isGoFile(ref) {
 		return e.loadDir(ctx, ref)
 	}
 	return e.loadPath(ctx, ref)
+}
+
+// isGoFile reports whether ref names a .go file: like the go command, a
+// ref ending in ".go" is a file, never an import path, so a bare
+// `minigo run main.go` works and a missing one reports a missing file.
+func isGoFile(ref string) bool {
+	return strings.HasSuffix(ref, ".go")
 }
 
 // Call invokes a named member of a package: fn may be a function or anything
@@ -724,7 +731,7 @@ func (e *Engine) buildPackage(meta *resolve.PackageMeta) (*runtime.Package, erro
 	// publish before parsing to make import cycles convergent
 	e.mu.Lock()
 	e.pkgs[meta.ImportPath] = p
-	if meta.Dir != "" {
+	if meta.Dir != "" && !strings.HasPrefix(meta.ImportPath, resolve.FileImportPrefix) {
 		e.byDir[meta.Dir] = p
 	}
 	e.mu.Unlock()

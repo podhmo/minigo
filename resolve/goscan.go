@@ -3,8 +3,11 @@ package resolve
 import (
 	"context"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/podhmo/minigo/pkg/locator"
 )
@@ -60,10 +63,13 @@ func (r *GoScanResolver) LocateDir(ctx context.Context, dir string) (*PackageMet
 	}
 	st, err := os.Stat(abs)
 	if err != nil {
-		return nil, fmt.Errorf("entry directory %q not found: %w", dir, err)
+		return nil, fmt.Errorf("entry %q not found: %w", dir, err)
 	}
 	if !st.IsDir() {
-		return nil, fmt.Errorf("entry directory %q is not a directory", dir)
+		if strings.HasSuffix(abs, ".go") {
+			return r.locateFile(abs)
+		}
+		return nil, fmt.Errorf("entry %q is neither a directory nor a .go file", dir)
 	}
 	importPath, err := r.loc.PathToImport(abs)
 	if err != nil || importPath == "" {
@@ -76,3 +82,27 @@ func (r *GoScanResolver) LocateDir(ctx context.Context, dir string) (*PackageMet
 	meta.ModulePath = r.loc.ModulePath()
 	return meta, nil
 }
+
+// locateFile makes a one-file package out of a .go file, like `go run
+// file.go`: sibling files are not read and build constraints are ignored
+// (the `//go:build ignore` generator pattern). The import path is
+// synthetic, so the file never stands in for its directory's package.
+func (r *GoScanResolver) locateFile(abs string) (*PackageMeta, error) {
+	f, err := parser.ParseFile(token.NewFileSet(), abs, nil, parser.PackageClauseOnly)
+	if err != nil {
+		return nil, fmt.Errorf("reading package clause: %w", err)
+	}
+	dir := filepath.Dir(abs)
+	return &PackageMeta{
+		ImportPath: FileImportPrefix + abs,
+		Name:       f.Name.Name,
+		Dir:        dir,
+		GoFiles:    []string{abs},
+		ModulePath: r.loc.ModulePath(),
+		Lang:       ModuleLang(dir),
+	}, nil
+}
+
+// FileImportPrefix starts the synthetic import path of a package built
+// from a single .go file (see LocateDir).
+const FileImportPrefix = "<file>"
