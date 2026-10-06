@@ -57,20 +57,20 @@ func genIntrinsics(ctx context.Context, args []string) error {
 		case a == "-output" || a == "--output":
 			i++
 			if i >= len(args) {
-				return fmt.Errorf("-output requires a directory")
+				return usageErrorf("-output requires a directory")
 			}
 			output = args[i]
-		case a == "-h" || a == "--help":
-			return fmt.Errorf("usage: minigo gen-intrinsics -output <dir> <pkg...>")
+		case isHelpFlag(a):
+			return errHelp
 		default:
 			refs = append(refs, a)
 		}
 	}
 	if output == "" {
-		return fmt.Errorf("gen-intrinsics: -output <dir> is required")
+		return usageErrorf("-output <dir> is required")
 	}
 	if len(refs) == 0 {
-		return fmt.Errorf("gen-intrinsics: at least one package is required")
+		return usageErrorf("at least one package is required")
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
