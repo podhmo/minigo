@@ -1307,6 +1307,10 @@ type VMCaller interface {
 	// TypeOf returns the typedef describing a runtime value — used by
 	// new(expr) to type the allocated cell.
 	TypeOf(x Value) *TypeDef
+	// Convert implements the conversion T(x) on the calling goroutine —
+	// what Call(td, x) does, without the engine-boundary bookkeeping
+	// (re-entry check, panic capture) a conversion never needs.
+	Convert(td *TypeDef, x Value) (Value, error)
 	// Copy returns a copy of v following Go assignment semantics
 	// (structs copy, slices/maps/pointers share) — used by new(expr).
 	Copy(x Value) Value
