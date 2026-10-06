@@ -133,9 +133,9 @@ func (r *Runner) exec(ctx context.Context, dir, name string, args ...string) (Ou
 }
 
 var (
-	// minigo reports failures through slog: error="runtime trap: ..." or
-	// error="panic: ...".
-	reMinigoErr = regexp.MustCompile(`error="((?:[^"\\]|\\.)*)"`)
+	// minigo reports a failure as "minigo: runtime trap: ..." or
+	// "minigo: panic: ..." on stderr, followed by the traceback lines.
+	reMinigoErr = regexp.MustCompile(`(?m)^minigo: (.*)$`)
 	// a host-level panic inside the interpreter prints a goroutine trace.
 	reHostPanic = regexp.MustCompile(`(?m)^goroutine \d+ \[`)
 	reAddr      = regexp.MustCompile(`0x[0-9a-f]+`)
@@ -144,13 +144,13 @@ var (
 
 // MinigoError extracts the first line of minigo's reported error.
 func MinigoError(stderr string) string {
-	m := reMinigoErr.FindStringSubmatch(stderr)
-	if m == nil {
+	// the report is printed last; take the last match so a script's own
+	// stderr line starting with "minigo: " cannot shadow it.
+	ms := reMinigoErr.FindAllStringSubmatch(stderr, -1)
+	if ms == nil {
 		return ""
 	}
-	msg := strings.ReplaceAll(m[1], `\"`, `"`)
-	msg, _, _ = strings.Cut(msg, `\n`)
-	return msg
+	return ms[len(ms)-1][1]
 }
 
 // Signature normalizes an error line into a bucket key.
@@ -182,7 +182,7 @@ func Judge(want, got Outcome) Judgement {
 	if got.TimedOut {
 		return Judgement{Verdict: Hang, Line: -1, Detail: "timeout"}
 	}
-	if reHostPanic.MatchString(got.Stderr) && !strings.Contains(got.Stderr, "error=") {
+	if reHostPanic.MatchString(got.Stderr) && MinigoError(got.Stderr) == "" {
 		first, _, _ := strings.Cut(strings.TrimSpace(got.Stderr), "\n")
 		return Judgement{Verdict: Crash, Line: -1, Detail: first}
 	}
