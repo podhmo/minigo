@@ -10964,6 +10964,12 @@ func (v *VM) argTypedef(x runtime.Value) *runtime.TypeDef {
 			ev = v.argTypedef(xv.Elems[0])
 		}
 		if xv.Typ != nil {
+			// a resolvable static element type wins over the first
+			// element's dynamic one — `[]Node{&A{}}` binds N=Node,
+			// not *A (Go infers from the static type).
+			if st := v.elemTypedef(nil, xv.Typ); st != nil {
+				ev = st
+			}
 			return &runtime.TypeDef{
 				Kind: xv.Typ.Kind, Name: xv.Typ.Name, Pkg: xv.Typ.Pkg,
 				File: xv.Typ.File, Anon: xv.Typ.Anon, Spec: xv.Typ.Spec,

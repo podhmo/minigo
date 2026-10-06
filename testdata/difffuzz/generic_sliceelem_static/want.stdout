@@ -1,0 +1,10 @@
+[]main.Stmt sum=3
+[]main.Node sum=5
+[]main.Stmt sum=6
+[]*main.A sum=7
+[]*main.A sum=5
+[]main.Stmt sum=0
+3
+[]main.Stmt sum=3
+[]main.Node sum=15
+[]main.Node sum=9
