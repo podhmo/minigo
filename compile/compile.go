@@ -862,7 +862,12 @@ func (c *compiler) valueSpec(vs *ast.ValueSpec, d *index.Decl) {
 			coerceVar(name)
 		}
 	case len(vals) == 1 && len(vs.Names) > 1:
-		c.expr(vals[0])
+		// a two-name spec binds a comma-ok RHS — `var v, ok = m[k]`,
+		// `= x.(T)`, `= <-ch` — like the := path; a plain call/unpack
+		// RHS falls through to OpUnpack.
+		if isConst || len(vs.Names) != 2 || !c.commaOkRhs(vals[0]) {
+			c.expr(vals[0])
+		}
 		c.emit3(bytecode.OpUnpack, len(vs.Names), 0, 0, vs.Pos())
 		for i := len(vs.Names) - 1; i >= 0; i-- {
 			coerceTop()
@@ -950,7 +955,9 @@ func (c *compiler) stmt(s ast.Stmt) {
 					}
 				}
 				if len(vals) == 1 && len(vs.Names) > 1 {
-					c.expr(vals[0])
+					if isConst || len(vs.Names) != 2 || !c.commaOkRhs(vals[0]) {
+						c.expr(vals[0])
+					}
 					c.emit3(bytecode.OpUnpack, len(vs.Names), 0, 0, vs.Pos())
 					for i := len(vs.Names) - 1; i >= 0; i-- {
 						coerceTop()
@@ -1228,41 +1235,13 @@ func (c *compiler) assign(st *ast.AssignStmt) {
 		}
 	}
 	if len(st.Rhs) == 1 && n > 1 {
-		if n == 2 {
-			switch x := st.Rhs[0].(type) {
-			case *ast.UnaryExpr:
-				// comma-ok receive: v, ok := <-ch
-				if x.Op == token.ARROW {
-					c.expr(x.X)
-					c.emit(bytecode.OpRecvOK, 0, 0, x.Pos())
-					c.emit3(bytecode.OpUnpack, 2, 0, 0, st.Pos())
-					c.storeAll(st.Lhs, isDefine, useRefs, st.Pos())
-					c.noteIfaceBinds(st)
-					return
-				}
-			case *ast.IndexExpr:
-				// comma-ok map access: v, ok := m[k]
-				c.expr(x.X)
-				c.expr(x.Index)
-				c.emit(bytecode.OpIndexOK, 0, 0, x.Pos())
-				c.emit3(bytecode.OpUnpack, 2, 0, 0, st.Pos())
-				c.storeAll(st.Lhs, isDefine, useRefs, st.Pos())
-				c.noteIfaceBinds(st)
-				return
-			case *ast.TypeAssertExpr:
-				// comma-ok assert: v, ok := x.(T)
-				c.expr(x.X)
-				if x.Type == nil {
-					c.trap(x.Pos(), ".(type) outside type switch")
-					return
-				}
-				c.typeExpr(x.Type)
-				c.emit(bytecode.OpAssertOK, 0, 0, x.Pos())
-				c.emit3(bytecode.OpUnpack, 2, 0, 0, st.Pos())
-				c.storeAll(st.Lhs, isDefine, useRefs, st.Pos())
-				c.noteIfaceBinds(st)
-				return
-			}
+		// a two-target assign binds a comma-ok RHS — `v, ok := m[k]`,
+		// `:= x.(T)`, `:= <-ch`; a plain call/unpack RHS falls through.
+		if n == 2 && c.commaOkRhs(st.Rhs[0]) {
+			c.emit3(bytecode.OpUnpack, 2, 0, 0, st.Pos())
+			c.storeAll(st.Lhs, isDefine, useRefs, st.Pos())
+			c.noteIfaceBinds(st)
+			return
 		}
 		c.expr(st.Rhs[0])
 		c.emit3(bytecode.OpUnpack, n, 0, 0, st.Pos())
@@ -1273,6 +1252,36 @@ func (c *compiler) assign(st *ast.AssignStmt) {
 	}
 	c.storeAll(st.Lhs, isDefine, useRefs, st.Pos())
 	c.noteIfaceBinds(st)
+}
+
+// commaOkRhs emits the two-valued form of a comma-ok RHS — `m[k]`,
+// `x.(T)`, or `<-ch` — for `v, ok = expr` / `var v, ok = expr`
+// positions. Returns false for any other expression, which the caller
+// then emits as a plain value (a nil .Type reports the usual
+// ".(type) outside type switch" trap there).
+func (c *compiler) commaOkRhs(e ast.Expr) bool {
+	switch x := e.(type) {
+	case *ast.UnaryExpr:
+		if x.Op != token.ARROW {
+			return false
+		}
+		c.expr(x.X)
+		c.emit(bytecode.OpRecvOK, 0, 0, x.Pos())
+	case *ast.IndexExpr:
+		c.expr(x.X)
+		c.expr(x.Index)
+		c.emit(bytecode.OpIndexOK, 0, 0, x.Pos())
+	case *ast.TypeAssertExpr:
+		if x.Type == nil {
+			return false
+		}
+		c.expr(x.X)
+		c.typeExpr(x.Type)
+		c.emit(bytecode.OpAssertOK, 0, 0, x.Pos())
+	default:
+		return false
+	}
+	return true
 }
 
 // storeAll emits the phase-2 stores for an assignment: OpSetRefs when the

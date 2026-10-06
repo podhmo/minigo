@@ -1,5 +1,0 @@
-SILENT spurious-panic: `var a, b = x.(T)` (single multi-valued expr, two
-LHS names) panics `interface conversion: interface {} is nil, not bool`
-instead of taking the comma-ok path (a=false, b=false). Same family as
-the `multi-assign from non-tuple` TRAPs (map index / chan recv forms).
-Corpus: $GOROOT/test/fixedbugs/issue53619.go.
