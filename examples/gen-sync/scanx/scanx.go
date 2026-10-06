@@ -125,19 +125,6 @@ func InsertAnchor(lines []string) int {
 	return anchor
 }
 
-// Dedupe removes duplicate strings, keeping first occurrences.
-func Dedupe(xs []string) []string {
-	seen := map[string]bool{}
-	out := []string{}
-	for _, x := range xs {
-		if !seen[x] {
-			seen[x] = true
-			out = append(out, x)
-		}
-	}
-	return out
-}
-
 // lineScan is the cross-line lexer state used to decide which line
 // contents are really code: /* */ comments and `...` raw strings span
 // lines, and a //go:generate-looking line inside either is text, not a
