@@ -283,10 +283,10 @@ func (v *VM) ReleaseProc() {
 // doneRV is the process-done channel as a reflect select operand — nil
 // (never ready) when this VM has no process.
 func (v *VM) doneRV() reflect.Value {
-	if v.proc == nil {
-		return nilChanValue
+	if p := v.proc; p != nil {
+		return reflect.ValueOf(p.done)
 	}
-	return reflect.ValueOf(v.proc.done)
+	return nilChanValue
 }
 
 var nilChanValue = reflect.ValueOf((chan struct{})(nil))
@@ -3411,8 +3411,18 @@ var blockingHostMethods = map[string]bool{
 // procDoneOf reports the caller VM's proc-done channel; non-*VM callers
 // (host-side VMCaller implementations) have no process to watch.
 func procDoneOf(vc runtime.VMCaller) <-chan struct{} {
-	if v, ok := vc.(*VM); ok && v.proc != nil {
-		return v.proc.done
+	if p := procOf(vc); p != nil {
+		return p.done
+	}
+	return nil
+}
+
+// procOf returns the caller VM's current proc in one read — ReleaseProc
+// can nil v.proc concurrently, so check-then-use pairs must capture the
+// pointer first or they race a nil receiver/field panic.
+func procOf(vc runtime.VMCaller) *proc {
+	if v, ok := vc.(*VM); ok {
+		return v.proc
 	}
 	return nil
 }
@@ -3471,13 +3481,16 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 				p   any
 			}
 			resCh := make(chan callRes, 1)
+			p := procOf(vc)
 			go func() {
 				// register before m.Call can invoke a script callback:
 				// a Call arriving from this goroutine re-enters the VM
 				// synchronously, so its panic propagates back through the
-				// join rather than failing the process.
-				if v, ok := vc.(*VM); ok && v.proc != nil {
-					defer v.proc.watchCallFrom(goroutineID())()
+				// join rather than failing the process. p is captured
+				// before the goroutine starts — it may already be dead,
+				// which marking is harmless for; a nil receiver is not.
+				if p != nil {
+					defer p.watchCallFrom(goroutineID())()
 				}
 				defer func() {
 					if r := recover(); r != nil {
