@@ -122,6 +122,20 @@ func builtins(e *Engine) *runtime.Env {
 			}
 			return res, nil
 		}
+		// a virtual zero-size slice stays virtual: the appended elements
+		// are the same single value the type already vends — and the
+		// len overflow panics like Go's growslice.
+		if s != nil && s.N > 0 {
+			nn := s.N + int64(len(add))
+			if nn < 0 {
+				panic(runtime.RuntimePanic("growslice: len out of range"))
+			}
+			res := &runtime.Slice{N: nn, CapN: nn, Zero: s.Zero, Typ: rtyp}
+			if tag != nil {
+				return runtime.Tag(tag, res), nil
+			}
+			return res, nil
+		}
 		// appending onto the backing array itself keeps Go's sharing
 		// semantics: within spare capacity the result aliases the same
 		// storage, past it the host append allocates a fresh array.
@@ -242,12 +256,23 @@ func builtins(e *Engine) *runtime.Env {
 			if len(args) > 2 {
 				cap = int64Of(runtime.Unwrap(args[2]))
 			}
-			// Go's makeslice panics once len exceeds its maxAlloc bound —
-			// without a check the host make() would die as a real OOM
-			// instead of a script panic. Elements are 16-byte Values, so
-			// the bound lands below Go's, which is fine: the makeslice.go
-			// corpus only asks for panics far above the practical limit.
+			zero := runtime.Value(runtime.NIL)
+			if ez, ok := v.(interface {
+				ElemZero(*runtime.TypeDef) runtime.Value
+			}); ok {
+				zero = ez.ElemZero(td)
+			}
+			// Go's makeslice measures BYTES, so a zero-size element
+			// allocates 0 for any len — `make([]struct{}, maxInt)`
+			// succeeds ($GOROOT/test/fixedbugs/issue29190.go). A huge
+			// virtual slice keeps the logical length instead of
+			// materializing elements it would OOM on.
 			const maxSliceElems = 1 << 32
+			if n > maxSliceElems || cap > maxSliceElems {
+				if n >= 0 && cap >= n && runtime.IsZeroSizeValue(zero) {
+					return &runtime.Slice{N: n, CapN: cap, Zero: zero, Typ: td}, nil
+				}
+			}
 			if n < 0 || n > maxSliceElems {
 				panic(runtime.MakeslicePanic("len"))
 			}
@@ -255,12 +280,6 @@ func builtins(e *Engine) *runtime.Env {
 				panic(runtime.MakeslicePanic("cap"))
 			}
 			el := make([]runtime.Value, n, cap)
-			zero := runtime.Value(runtime.NIL)
-			if ez, ok := v.(interface {
-				ElemZero(*runtime.TypeDef) runtime.Value
-			}); ok {
-				zero = ez.ElemZero(td)
-			}
 			for i := range el {
 				el[i] = v.Copy(zero)
 			}
@@ -501,6 +520,9 @@ func lenOf(v runtime.Value) (runtime.Value, error) {
 		}
 		return lenOf(nv)
 	case *runtime.Slice:
+		if x.N > 0 {
+			return x.N, nil // virtual zero-size-element slice
+		}
 		return int64(len(x.Elems)), nil
 	case *runtime.Map:
 		return int64(x.Len()), nil
@@ -522,6 +544,9 @@ func capOf(v runtime.Value) (runtime.Value, error) {
 	case *runtime.Cell:
 		return capOf(x.Elem)
 	case *runtime.Slice:
+		if x.N > 0 {
+			return x.CapN, nil // virtual zero-size-element slice
+		}
 		return int64(cap(x.Elems)), nil
 	case *runtime.Chan:
 		return int64(cap(x.C)), nil

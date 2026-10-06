@@ -3725,6 +3725,13 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 		if !ok {
 			f.trap("slice index is %T", idx)
 		}
+		if b.N > 0 {
+			// a virtual zero-size slice vends its shared element value.
+			if i < 0 || i >= b.N {
+				panic(runtime.BoundsPanic(i, int(b.N)))
+			}
+			return v.elemRead(f, b.Typ, b.Zero)
+		}
 		return v.elemRead(f, b.Typ, b.Elems[i])
 	case *runtime.Map:
 		val, found := b.Get(idx)
@@ -4514,6 +4521,14 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 		if et := v.elemTypedef(f, b.Typ); et != nil {
 			val = v.coerce(f, val, et)
 		}
+		if b.N > 0 {
+			// a virtual zero-size element can't be observed — the type
+			// has a single value — but the bounds check still applies.
+			if i < 0 || i >= b.N {
+				panic(runtime.BoundsPanic(i, int(b.N)))
+			}
+			return
+		}
 		b.Elems[i] = val
 	case *runtime.Map:
 		if idx != nil && !reflect.TypeOf(idx).Comparable() {
@@ -4678,6 +4693,16 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 		}
 		return b
 	case *runtime.Slice:
+		if b.N > 0 {
+			// a virtual zero-size slice bounds-checks against its
+			// logical length; the sub-slice stays virtual.
+			l, h := bounds(f, lo, hi, b.N)
+			m := b.CapN
+			if three {
+				m = maxBound(f, max, b.CapN)
+			}
+			return &runtime.Slice{N: h - l, CapN: m - l, Zero: b.Zero, Typ: sliceTypOf(b.Typ)}
+		}
 		l, h := bounds(f, lo, hi, int64(len(b.Elems)))
 		if three {
 			m := maxBound(f, max, int64(cap(b.Elems)))
@@ -5167,6 +5192,11 @@ func (v *VM) newIterator(f *frame, coll runtime.Value) *runtime.Iterator {
 	case *runtime.Named:
 		return v.newIterator(f, c.V)
 	case *runtime.Slice:
+		if c.N > 0 {
+			// a virtual zero-size slice iterates its logical length,
+			// vending the shared element value.
+			return &runtime.Iterator{Kind: 's', Limit: int(c.N), Zero: c.Zero}
+		}
 		return &runtime.Iterator{Kind: 's', Elems: c.Elems}
 	case *runtime.Map:
 		// Snapshot the key ORDER only — Elems carries the display keys
@@ -5230,6 +5260,16 @@ func (v *VM) iterNext(f *frame, it *runtime.Iterator, nvars int, elemRead bool) 
 	}
 	switch it.Kind {
 	case 's':
+		if it.Zero != nil {
+			// a virtual zero-size-element slice: Limit counts the
+			// elements and each pair vends the shared value.
+			if it.Idx >= it.Limit {
+				return false
+			}
+			push(int64(it.Idx), it.Zero)
+			it.Idx++
+			return true
+		}
 		if it.Idx >= len(it.Elems) {
 			return false
 		}
@@ -6921,25 +6961,7 @@ func refBase(v runtime.Value) runtime.Value {
 // empty struct, a [0]T array, or a composite of only zero-size fields.
 // Go stores all such values at the same address (runtime.zerobase).
 func zeroSizeValue(v runtime.Value) bool {
-	switch x := v.(type) {
-	case *runtime.Named:
-		return zeroSizeValue(x.V)
-	case *runtime.Struct:
-		if len(x.Fields) == 0 {
-			return true
-		}
-		for _, fv := range x.Fields {
-			if !zeroSizeValue(fv) {
-				return false
-			}
-		}
-		return true
-	case *runtime.Slice:
-		// a zero-length value is only zero-size when its typedef says
-		// array — an empty []T slice is a header, not zerobase.
-		return len(x.Elems) == 0 && isArrayTyp(x.Typ)
-	}
-	return false
+	return runtime.IsZeroSizeValue(v)
 }
 
 // isArrayTyp reports whether td keeps a fixed array length — the value

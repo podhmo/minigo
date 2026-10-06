@@ -850,10 +850,53 @@ type Tuple struct{ Elems []Value }
 // Slice is a Go slice value.
 type Slice struct {
 	Elems []Value
+	// N is the logical length of a slice whose zero-size elements were
+	// never materialized — make([]struct{}, n) allocates 0 bytes for any
+	// n, like Go's zerobase ($GOROOT/test/fixedbugs/issue29190.go).
+	// Index reads vend Zero and element writes are unobservable (a
+	// zero-size type has a single value). N > 0 implies Elems is empty;
+	// CapN mirrors N as the logical cap.
+	N, CapN int64
+	Zero    Value
 	// Typ is the declared slice type when one is known (a named literal or
 	// a `var s S` bind): element stores re-coerce and named slice types
 	// keep their identity on rebinds.
 	Typ *TypeDef
+}
+
+// IsZeroSizeValue reports whether a value's type occupies no bytes — an
+// empty struct, a [0]T array, or a composite of only zero-size fields.
+// Go stores all such values at the same address (runtime.zerobase), and
+// make([]T, n) on a zero-size element allocates 0 bytes for any n.
+func IsZeroSizeValue(v Value) bool {
+	switch x := v.(type) {
+	case *Named:
+		return IsZeroSizeValue(x.V)
+	case *Struct:
+		for _, fv := range x.Fields {
+			if !IsZeroSizeValue(fv) {
+				return false
+			}
+		}
+		return true
+	case *Slice:
+		// a zero-length value is only zero-size when its typedef says
+		// array — an empty []T slice is a header, not zerobase.
+		if len(x.Elems) != 0 {
+			return false
+		}
+		td := x.Typ
+		if td == nil {
+			return false
+		}
+		a := td.Anon
+		if a == nil && td.Spec != nil {
+			a = td.Spec.Type
+		}
+		at, ok := a.(*ast.ArrayType)
+		return ok && at.Len != nil
+	}
+	return false
 }
 
 // Map is a Go map value (keys must be comparable basics for now).
@@ -1201,6 +1244,9 @@ type Iterator struct {
 	// NilArr marks an 'i' iterator walking the indices of a nil *[N]T —
 	// the index sequence is legal Go but reading an element derefs nil.
 	NilArr bool
+	// Zero marks an 's' iterator over a virtual zero-size-element slice —
+	// Limit counts the elements and each pair vends this shared value.
+	Zero Value
 	// ChRV is the reflect channel a channel range receives from; ETyp is
 	// its element typedef for closed-receive zero values.
 	ChRV reflect.Value
