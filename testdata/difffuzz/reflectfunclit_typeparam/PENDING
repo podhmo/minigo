@@ -1,0 +1,5 @@
+SILENT type: reflect.TypeOf(...).String() on a func literal inside a generic
+function prints the unresolved type-parameter name (func(func(R) bool)).
+Hypothesis: the literal's signature is built from AST types textually and
+type arguments are not substituted in the nested func type.
+Source: $GOROOT/test/typeparam/issue48645a.go.

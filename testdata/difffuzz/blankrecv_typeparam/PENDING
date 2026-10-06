@@ -1,0 +1,6 @@
+SILENT value: a method declared on *Foo[_, _] (blank receiver type params)
+is not registered on instantiations like *Foo[string,int]; fmt does not see
+the Stringer implementation and prints &{...}.
+Hypothesis: method-set construction for generic receivers requires the
+receiver's type-param names to match the declaration, dropping blank params.
+Source: $GOROOT/test/typeparam/issue50419.go.

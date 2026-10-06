@@ -1,0 +1,6 @@
+SILENT type: reflect name of a local generic type declared inside a
+generic function is main.T[int], missing the enclosing function's type
+arguments (go prints main.T[int;int]).
+Hypothesis: instantiated names for function-local generic types record
+only the type's own arguments, not the outer function's.
+Source: $GOROOT/test/typeparam/nested.go.

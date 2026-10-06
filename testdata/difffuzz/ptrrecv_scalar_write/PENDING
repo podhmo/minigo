@@ -1,0 +1,7 @@
+SILENT value: `*s = v` inside a pointer-receiver method on a named scalar
+type (type S string; also type I int) does not propagate — %p shows the
+receiver is a different pointer than &var; caller's variable stays zero.
+Field writes through a struct pointer receiver do propagate.
+Hypothesis: the pointer receiver is copied on call for scalar defined
+types, so whole-value deref-assign writes to the copy.
+Source: $GOROOT/test/typeparam/issue47713.go (UnmarshalBinary write lost).
