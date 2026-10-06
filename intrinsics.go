@@ -3044,6 +3044,10 @@ func goNative(v runtime.Value) any {
 	switch x := v.(type) {
 	case runtime.Nil:
 		return nil
+	case *runtime.IfaceNil:
+		// a nil interface value crosses to the host as nil (a typed
+		// nil stays a TypedNil — the host has no box for it).
+		return nil
 	case *runtime.UConst:
 		nv, err := uconstNative(x)
 		if err != nil {
@@ -4417,6 +4421,9 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 	case *runtime.Named:
 		// %T keeps the declared name; other verbs render through.
 		if verb == 'T' {
+			if in, ok := v.V.(*runtime.IfaceNil); ok && in.Typ != nil && in.Typ.Kind == runtime.KindInterface {
+				return "<nil>" // a nil interface has no dynamic type
+			}
 			return typedefSpelling(v.Typ)
 		}
 		// an int64 carrying a uint64/uintptr tag must format its bits as
@@ -4587,6 +4594,17 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		}
 		return s.nilTyp(verb, f, v.Typ)
 	case *runtime.IfaceNil:
+		if v.Typ != nil && v.Typ.Kind == runtime.KindInterface {
+			// a nil interface value prints like a bare nil — <nil> at
+			// top level, the slot's static type inside %#v composites.
+			if verb == 'v' && f.Flag('#') && s.et != nil {
+				return nilGoSyntax(s.et)
+			}
+			if verb == 'T' || verb == 'v' || s.depth > 0 || s.et != nil {
+				return "<nil>"
+			}
+			return badVerb(verb, "", "<nil>")
+		}
 		if verb == 'T' {
 			return typedefSpelling(v.Typ)
 		}
@@ -5041,6 +5059,20 @@ func chanTypSpelling(td *runtime.TypeDef) string {
 	return typedefSpelling(td)
 }
 
+// nilIfaceTyp reports the interface typedef when x is a nil interface
+// value — an iface-kind IfaceNil, possibly Named-wrapped — and nil for
+// any other value. A nil interface has no dynamic type: %T spells <nil>
+// at top level, while under a pointer the declared typedef still shows.
+func nilIfaceTyp(x runtime.Value) *runtime.TypeDef {
+	if n, ok := x.(*runtime.Named); ok {
+		x = n.V
+	}
+	if in, ok := x.(*runtime.IfaceNil); ok && in.Typ != nil && in.Typ.Kind == runtime.KindInterface {
+		return in.Typ
+	}
+	return nil
+}
+
 // scriptTypeString spells a value's type the way Go's %T does —
 // "[]int", "main.Point" — using the typedef, not the Go wrapper type.
 func scriptTypeString(x runtime.Value) string {
@@ -5051,6 +5083,9 @@ func scriptTypeString(x runtime.Value) string {
 	case *runtime.UConst:
 		return t.DefaultName()
 	case *runtime.Named:
+		if nilIfaceTyp(t) != nil {
+			return "<nil>" // a nil interface has no dynamic type
+		}
 		return typedefSpelling(t.Typ)
 	case *runtime.Struct:
 		return typedefSpelling(t.Def)
@@ -5063,11 +5098,19 @@ func scriptTypeString(x runtime.Value) string {
 	case *runtime.TypedNil:
 		return typedefSpelling(t.Typ)
 	case *runtime.IfaceNil:
+		if nilIfaceTyp(t) != nil {
+			return "<nil>" // a nil interface has no dynamic type
+		}
 		return typedefSpelling(t.Typ)
 	case *runtime.PanicNilError:
 		return "*runtime.PanicNilError"
 	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
 		if dv, ok := runtime.Deref(t); ok {
+			// *interface{} / *error keeps the pointee's declared name —
+			// the pointer itself is the dynamic type, not <nil>.
+			if td := nilIfaceTyp(dv); td != nil {
+				return "*" + typedefSpelling(td)
+			}
 			return "*" + scriptTypeString(dv)
 		}
 		return "unsafe.Pointer"

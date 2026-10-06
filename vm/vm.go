@@ -2252,6 +2252,11 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		// dereference in Go — a script panic, not a trap.
 		panic(runtime.NilDerefPanic())
 	case *runtime.IfaceNil:
+		if b.Typ == nil || b.Typ.Kind == runtime.KindInterface {
+			// a method call on a nil interface value dereferences the
+			// nil itable — same panic as a bare nil.
+			panic(runtime.NilDerefPanic())
+		}
 		return v.memberOfType(f, b.Typ, name, b, true)
 	case *runtime.TypedNil:
 		return v.memberOfType(f, b.Typ, name, b, false)
@@ -2864,7 +2869,7 @@ func errOut(rs []runtime.Value, i int) error {
 	if i >= len(rs) {
 		return nil
 	}
-	switch e := rs[i].(type) {
+	switch e := runtime.Unwrap(rs[i]).(type) {
 	case nil, runtime.Nil:
 		return nil
 	case *runtime.TypedNil, *runtime.IfaceNil:
@@ -6801,10 +6806,23 @@ func eqlValue(a, b runtime.Value) bool {
 		}
 	}
 	if in, ok := a.(*runtime.IfaceNil); ok {
+		if in.Typ != nil && in.Typ.Kind == runtime.KindInterface {
+			// a nil interface value: equal to nil and to other nil
+			// interfaces (the declared interface type is static-only),
+			// but never to a typed nil boxed in an interface.
+			switch bi := b.(type) {
+			case runtime.Nil:
+				return true
+			case *runtime.IfaceNil:
+				return bi.Typ != nil && bi.Typ.Kind == runtime.KindInterface
+			}
+			return false
+		}
 		// interface value holding a typed nil: nil only to a same-typed nil
 		switch bi := b.(type) {
 		case *runtime.IfaceNil:
-			return sameTypeDef(in.Typ, bi.Typ)
+			return bi.Typ != nil && bi.Typ.Kind != runtime.KindInterface &&
+				sameTypeDef(in.Typ, bi.Typ)
 		case *runtime.TypedNil:
 			return sameTypeDef(in.Typ, bi.Typ)
 		}
@@ -6828,14 +6846,19 @@ func eqlValue(a, b runtime.Value) bool {
 			}
 			return true
 		case *runtime.IfaceNil:
-			return sameTypeDef(tn.Typ, bi.Typ)
+			return bi.Typ != nil && bi.Typ.Kind != runtime.KindInterface &&
+				sameTypeDef(tn.Typ, bi.Typ)
 		}
 		return false
 	}
 	if _, ok := a.(runtime.Nil); ok {
-		switch b.(type) {
+		switch bi := b.(type) {
 		case runtime.Nil, *runtime.TypedNil:
 			return true
+		case *runtime.IfaceNil:
+			// a nil interface value equals nil; a typed nil boxed in
+			// an interface does not.
+			return bi.Typ != nil && bi.Typ.Kind == runtime.KindInterface
 		}
 		return false
 	}
@@ -7180,15 +7203,19 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 	// Nilability reads through declared chains (`type C B` where B is a
 	// slice type takes nil even though C's own kind reads NamedBasic).
 	if _, isNil := x.(runtime.Nil); isNil || x == nil {
+		utd := td
 		k := td.Kind
 		if k == runtime.KindNamedBasic || k == runtime.KindAlias {
 			if u := v.peelNamed(td); u != nil {
-				k = u.Kind
+				utd, k = u, u.Kind
 			}
 		}
 		switch k {
 		case runtime.KindInterface:
-			return runtime.NIL, nil
+			// nil converts to a nil interface of the declared kind —
+			// not bare NIL: `(*ET)(nil) == error(nil)` must be false
+			// since a typed nil boxed in an interface is non-nil.
+			return &runtime.IfaceNil{Typ: utd}, nil
 		case runtime.KindSlice, runtime.KindMap, runtime.KindChan, runtime.KindFunc, runtime.KindPointer:
 			return &runtime.TypedNil{Typ: td}, nil
 		}
@@ -8053,6 +8080,11 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 	if tn, ok := asTypedNil(x); ok {
 		return v.typeMatchesTD(f, td, tn.Typ)
 	}
+	if in, ok := x.(*runtime.IfaceNil); ok && in.Typ != nil && in.Typ.Kind == runtime.KindInterface {
+		// a nil interface value has no dynamic type — every assert
+		// fails, including .(any).
+		return false
+	}
 	if td.Kind == runtime.KindInterface {
 		return v.satisfiesIface(f, td, x)
 	}
@@ -8305,7 +8337,9 @@ func asTypedNil(x runtime.Value) (*runtime.TypedNil, bool) {
 	if tn, ok := x.(*runtime.TypedNil); ok {
 		return tn, true
 	}
-	if in, ok := x.(*runtime.IfaceNil); ok {
+	if in, ok := x.(*runtime.IfaceNil); ok && in.Typ != nil && in.Typ.Kind != runtime.KindInterface {
+		// an interface-kind IfaceNil IS the nil interface itself, not
+		// a typed nil boxed in an interface — it has no dynamic type.
 		return &runtime.TypedNil{Typ: in.Typ}, true
 	}
 	return nil, false
@@ -9112,6 +9146,12 @@ func (v *VM) zeroSeen(f *frame, td *runtime.TypeDef, seen map[*runtime.TypeDef]b
 	// zeros as "" and `type A B` chains resolve transitively. The cap
 	// keeps a self-referential chain from looping forever.
 	td = v.peelNamed(td)
+	// a nil interface value is a typed nil of the interface kind: it
+	// compares equal to nil and to other nil interfaces, but a typed
+	// nil boxed in an interface (*ET)(nil) does NOT equal it.
+	if td.Kind == runtime.KindInterface {
+		return v.wrapZero(orig, &runtime.IfaceNil{Typ: td})
+	}
 	// an array typedef materializes a fixed-length slice of element
 	// zeros — `var a [3]int` yields [0 0 0], not a nil slice.
 	if n, isArr := v.arrayLen(f, td); isArr {
@@ -9605,6 +9645,11 @@ func typeBaseName(x runtime.Value) string {
 	case *runtime.UConst:
 		return xv.DefaultName()
 	case *runtime.Named:
+		if in, ok := xv.V.(*runtime.IfaceNil); ok && in.Typ != nil && in.Typ.Kind == runtime.KindInterface {
+			// a nil interface value wrapped in its declared tag still
+			// has no dynamic type.
+			return "<nil>"
+		}
 		return spelledTyp(xv.Typ)
 	case *runtime.Struct:
 		if xv.Def != nil {
@@ -9615,6 +9660,10 @@ func typeBaseName(x runtime.Value) string {
 		return spelledTyp(xv.Typ)
 	case *runtime.IfaceNil:
 		if xv.Typ != nil {
+			if xv.Typ.Kind == runtime.KindInterface {
+				// a nil interface value has no dynamic type.
+				return "<nil>"
+			}
 			return spelledTyp(xv.Typ)
 		}
 		return "nil"

@@ -1,3 +1,0 @@
-SILENT value: `(*ET)(nil) == error(nil)` is true in minigo, false in go —
-a typed nil pointer boxed in an interface does not equal a nil interface.
-Corpus: $GOROOT/test/fixedbugs/issue19911.go.
