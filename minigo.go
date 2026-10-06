@@ -963,6 +963,14 @@ func (e *Engine) materialize(pkg *runtime.Package, d *index.Decl) (runtime.Value
 func (e *Engine) materializeOne(pkg *runtime.Package, d *index.Decl) (runtime.Value, error) {
 	switch d.Kind {
 	case index.FuncDecl:
+		// a bodiless declaration (//go:noescape assembly stub) with a
+		// registered host impl materializes as the impl itself — the
+		// zero-return shim would silently drop every result.
+		if d.Func.Body == nil {
+			if v, ok := asmImpl(pkg, d.Name); ok {
+				return v, nil
+			}
+		}
 		return &runtime.Function{Pkg: pkg, File: d.File, Decl: d.Func, Name: d.Name,
 			TParams:      typeParamNames(d.Func.Type.TypeParams),
 			TConstraints: typeParamConstraints(d.Func.Type.TypeParams),

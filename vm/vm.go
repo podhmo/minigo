@@ -8752,16 +8752,28 @@ func containerTyp(x runtime.Value) *runtime.TypeDef {
 	return nil
 }
 
-// setContainerTyp stamps a container value's declared-type tag.
-func setContainerTyp(x runtime.Value, td *runtime.TypeDef) {
+// stampContainerTyp returns x with its declared-type tag set. The tag
+// lives on the container header, which is a value in Go's terms: passing
+// a slice/map/chan copies the header and only the backing aliases, so
+// stamping must not mutate the shared header in place — a `[]Word`
+// parameter receiving a `nat` argument would otherwise strip the
+// caller's method set (math/big divW hands z to divWVW(z []Word,...)).
+func stampContainerTyp(x runtime.Value, td *runtime.TypeDef) runtime.Value {
 	switch t := x.(type) {
 	case *runtime.Map:
-		t.Typ = td
+		c := *t
+		c.Typ = td
+		return &c
 	case *runtime.Slice:
-		t.Typ = td
+		c := *t
+		c.Typ = td
+		return &c
 	case *runtime.Chan:
-		t.Typ = td
+		c := *t
+		c.Typ = td
+		return &c
 	}
+	return x
 }
 
 // coerceConcrete applies td to a non-nil x under a non-interface target.
@@ -8951,7 +8963,7 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 			// a declared container type stamps the value so element
 			// reads/writes coerce and missing-key reads yield the
 			// declared element zero instead of NIL.
-			setContainerTyp(x, td)
+			x = stampContainerTyp(x, td)
 		} else if !sameTypeDef(ct, td) {
 			// two named container types do not re-bind (Go: named-to-named
 			// needs a conversion); anonymous/underlying shapes may
@@ -8962,6 +8974,10 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 			if !v.tdShapeEval(f, ct, td) {
 				f.trap("cannot use %s as %s", tdName(ct), tdName(td))
 			}
+			// an assignable value takes the slot's declared type: `var n
+			// nat = []Word{...}` reads back as nat (its method set), not
+			// as the source value's anonymous []Word tag.
+			x = stampContainerTyp(x, td)
 		}
 	}
 	switch td.Kind {
