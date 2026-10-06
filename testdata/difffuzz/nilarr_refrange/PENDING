@@ -1,3 +1,0 @@
-TRAP: `for i, _ := range arr` on a nil *[10]int nil-panics; go iterates
-0..9 without dereferencing (the two-var form's element is never read).
-Corpus: $GOROOT/test/fixedbugs/bug454.go.

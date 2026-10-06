@@ -1632,6 +1632,15 @@ func (v *VM) loop(f *frame) {
 				f.trap("cannot resolve element type of %s", tdName(td))
 			}
 			f.push(et)
+		case bytecode.OpElemTypeOrNil:
+			// fold-probe variant: an unresolvable element type is a
+			// miss (NIL), never a trap — the caller falls back to the
+			// ordinary evaluation path.
+			if et := v.elemTypedef(f, typedefOf(f.pop())); et != nil {
+				f.push(et)
+			} else {
+				f.push(runtime.NIL)
+			}
 		case bytecode.OpCoerce:
 			td := typedefOf(f.pop())
 			if td == nil {
@@ -1807,6 +1816,22 @@ func (v *VM) loop(f *frame) {
 				f.push(n)
 				f.ip = int(ins.A)
 			}
+		case bytecode.OpLenDerefFold:
+			// len(*p) / cap(*p): the call is a constant when p's type
+			// is *[N]T — Go never evaluates the dereference. The stack
+			// is [callee, probe]: a hit collapses both into N and skips
+			// the emitted operand/deref/call run. B=0 probes the
+			// operand's declared typedef (a miss pops it — the emitted
+			// pointer expr still has to evaluate); B=1 probes the
+			// evaluated pointer itself (a miss keeps it for OpDeref).
+			top := f.stack[len(f.stack)-1]
+			if n, ok := v.lenDerefFold(f, top); ok {
+				f.stack = f.stack[:len(f.stack)-2]
+				f.push(n)
+				f.ip = int(ins.A)
+			} else if ins.B == 0 {
+				f.stack = f.stack[:len(f.stack)-1]
+			}
 		case bytecode.OpIter:
 			f.push(v.newIterator(f, materialize(f, f.pop())))
 		case bytecode.OpRangeNext:
@@ -1817,7 +1842,7 @@ func (v *VM) loop(f *frame) {
 				// loop's (top, end) instruction range. top is this
 				// instruction's index — f.ip already advanced past it.
 				top := f.ip - 1
-				v.driveFuncIter(f, it, int(ins.C), top, int(ins.A))
+				v.driveFuncIter(f, it, int(ins.C)&3, top, int(ins.A))
 				// The producer and every iteration already ran; f.ip sits
 				// where the body last stopped:
 				//   [top, end]  loop is done — take the exit jump
@@ -1826,7 +1851,7 @@ func (v *VM) loop(f *frame) {
 				if f.ip >= top && f.ip <= int(ins.A) {
 					f.ip = int(ins.A)
 				}
-			} else if !v.iterNext(f, it, int(ins.C)) {
+			} else if !v.iterNext(f, it, int(ins.C)&3, ins.C&4 != 0) {
 				f.ip = int(ins.A)
 			}
 		case bytecode.OpSend:
@@ -5191,7 +5216,10 @@ func (v *VM) newIterator(f *frame, coll runtime.Value) *runtime.Iterator {
 }
 
 // iterNext pushes nvars values (key/index, elem) and returns false when done.
-func (v *VM) iterNext(f *frame, it *runtime.Iterator, nvars int) bool {
+// elemRead reports whether a non-blank element var binds the iteration
+// value — a nil *[N]T iterator may yield indices without it, but a real
+// element binding dereferences the nil pointer like Go does.
+func (v *VM) iterNext(f *frame, it *runtime.Iterator, nvars int, elemRead bool) bool {
 	push := func(key, val runtime.Value) {
 		if nvars == 2 {
 			f.push(key)
@@ -5224,9 +5252,10 @@ func (v *VM) iterNext(f *frame, it *runtime.Iterator, nvars int) bool {
 		if it.Idx >= it.Limit {
 			return false
 		}
-		if it.NilArr && nvars == 2 {
+		if it.NilArr && nvars == 2 && elemRead {
 			// `for i, v := range p` on a nil *[N]T reads p[i] — a nil
-			// pointer dereference on the first iteration.
+			// pointer dereference on the first iteration. `for i, _ :=`
+			// binds nothing and iterates the static indices like Go.
 			panic(runtime.NilDerefPanic())
 		}
 		push(int64(it.Idx), int64(it.Idx))
@@ -9168,6 +9197,37 @@ func (v *VM) CallerFrame(pc uintptr) (runtime.CallSite, bool) {
 		return runtime.CallSite{}, false
 	}
 	return v.pcSites[pc-1], true
+}
+
+// lenDerefFold reports the constant length of *p when p's type is
+// *[N]T — Go folds len/cap of a dereferenced array pointer without
+// evaluating the deref. probe is either the operand's declared typedef
+// (the static tier: folds without evaluating anything) or the
+// evaluated pointer value (the nil-pointer tier: only a nil *[N]T
+// matters — a live pointer derefs fine on the normal path).
+func (v *VM) lenDerefFold(f *frame, probe runtime.Value) (runtime.Value, bool) {
+	var td *runtime.TypeDef
+	switch t := probe.(type) {
+	case *runtime.TypeDef:
+		td = t
+	case *runtime.TypedNil:
+		td = t.Typ
+	case *runtime.Named:
+		if tn, ok := t.V.(*runtime.TypedNil); ok {
+			td = tn.Typ
+		} else if t.Typ != nil && t.Typ.Kind == runtime.KindPointer {
+			td = t.Typ
+		}
+	}
+	at := runtime.PtrArrayType(td)
+	if at == nil {
+		return nil, false
+	}
+	n, ok := v.arrayLen(f, &runtime.TypeDef{Anon: at, Pkg: td.Pkg, File: td.File})
+	if !ok {
+		return nil, false
+	}
+	return int64(n), true
 }
 
 // lenIdxFold reports the constant length of x[i] when x's element
