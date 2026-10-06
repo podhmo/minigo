@@ -32,6 +32,13 @@ func TypIdentical(a, b *TypeDef) bool {
 		return false
 	}
 	if a.Name != "" || b.Name != "" {
+		if a.Local || b.Local {
+			// Every func-local `type` declaration has its own
+			// identity: same-named locals in different scopes are
+			// distinct types, so identity is the declaration site
+			// (Spec) plus instantiation binds — never name+package.
+			return a.Spec != nil && a.Spec == b.Spec && bindsEq(a.Binds, b.Binds)
+		}
 		return a.Name != "" && canonBasicName(a.Name) == canonBasicName(b.Name) && a.Pkg == b.Pkg && bindsEq(a.Binds, b.Binds)
 	}
 	if a.Anon != nil && b.Anon != nil {
