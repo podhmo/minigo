@@ -587,7 +587,7 @@ func constNative(v runtime.Value) runtime.Value {
 func argFloat(x runtime.Value) (float64, bool) {
 	if u, ok := x.(*runtime.UConst); ok {
 		f, _ := constant.Float64Val(u.V)
-		return f, true
+		return runtime.CanonConstZero(f), true
 	}
 	switch n := runtime.Unwrap(x).(type) {
 	case int64:

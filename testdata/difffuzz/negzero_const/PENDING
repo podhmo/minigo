@@ -1,4 +1,0 @@
-SILENT value: `var m = -1e-10000` keeps a real -0 (math.Signbit true);
-Go rounds the underflowing untyped constant to +0. Literal `-0.0` already
-rounds correctly — only the magnitude-underflow path leaks -0.
-Corpus: $GOROOT/test/fixedbugs/issue12621.go (+issue12577.go).
