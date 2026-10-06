@@ -1698,7 +1698,21 @@ func (c *compiler) switchStmt(st *ast.SwitchStmt) {
 		for _, e := range clause.List {
 			if tagSlot >= 0 {
 				c.emit(bytecode.OpLocal, tagSlot, 0, e.Pos())
-				c.expr(e)
+				// A constant case expr stays a constant: emitting the
+				// materialized value (`float64(1e19)`) would lose the
+				// constness the comparison needs to convert it to the
+				// tag's type first — `case 1e19` against a uint64 tag
+				// compares exactly only as an untyped constant
+				// ($GOROOT/test/fixedbugs/issue43480.go).
+				if cv, ok := constValue(e); ok {
+					if v, ok2 := constOperand(cv, hasCharLit(e)); ok2 {
+						c.emit(bytecode.OpConst, c.constIdx(v), 0, e.Pos())
+					} else {
+						c.expr(e)
+					}
+				} else {
+					c.expr(e)
+				}
 				op := bytecode.BinEql
 				if strict {
 					op = bytecode.BinEqlIface
