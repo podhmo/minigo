@@ -3,6 +3,7 @@ package minigo_test
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -118,18 +119,38 @@ func TestGoroutinePanic(t *testing.T) {
 	})
 }
 
-// TestWaitUnblockThenPanic: a panic kills the process while a sibling is
-// released mid-unwind — the dying goroutine's defer runs wg.Done, so the
-// sibling resumes between Done and the process exit. Go's crash gives
-// the sibling no post-exit progress: its next call dies with the
-// process, and the package flag it would have set stays 0.
+// TestWaitUnblockThenPanic: a sibling released by a dying defer may run
+// before the panic becomes fatal. Park it in a host call during unwind,
+// then release it only after Run reports process death: its next script
+// call must abort without changing the package flag.
 func TestWaitUnblockThenPanic(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		e := newEngine(t)
-		_, err := runErr(e, "./testdata/concurrency", "WaitUnblockThenPanic")
+		parked := make(chan struct{})
+		release := make(chan struct{})
+		unpark := sync.OnceFunc(func() { close(release) })
+		defer unpark()
+		park := &runtime.BuiltinFunc{
+			Name: "park",
+			Fn: func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
+				close(parked)
+				<-release
+				return nil, nil
+			},
+		}
+		waitParked := &runtime.BuiltinFunc{
+			Name: "waitParked",
+			Fn: func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
+				<-parked
+				return nil, nil
+			},
+		}
+		_, err := runErr(e, "./testdata/concurrency", "WaitUnblockThenPanic", park, waitParked)
 		if err == nil || !strings.Contains(err.Error(), "boom") {
 			t.Fatalf("expected goroutine panic to fail the run, got %v", err)
 		}
+		unpark()
+		synctest.Wait()
 		got := run(t, e, "./testdata/concurrency", "WaitUnblockRead")
 		if diff := cmp.Diff(int64(0), got); diff != "" {
 			t.Errorf("WaitUnblockRead mismatch (-want +got):\n%s", diff)

@@ -81,20 +81,14 @@ func Build(files []*syntax.File) (*Index, error) {
 				}
 				ix.Funcs[dl.Name] = dl
 			case *ast.GenDecl:
-				var prevValues []ast.Expr
-				var prevType ast.Expr
-				for i, spec := range d.Specs {
-					switch d.Tok {
-					case token.VAR, token.CONST:
-						vs := spec.(*ast.ValueSpec)
-						inherited := []ast.Expr(nil)
+				switch d.Tok {
+				case token.VAR, token.CONST:
+					for i, effective := range ValueSpecs(d) {
+						vs := effective.Spec
+						var inherited []ast.Expr
 						var inheritedType ast.Expr
 						if d.Tok == token.CONST && len(vs.Values) == 0 {
-							inherited = prevValues
-							inheritedType = prevType
-						} else {
-							prevValues = vs.Values
-							prevType = vs.Type
+							inherited, inheritedType = effective.Values, effective.Type
 						}
 						for j, name := range vs.Names {
 							kind := VarDecl
@@ -109,16 +103,18 @@ func Build(files []*syntax.File) (*Index, error) {
 								ix.Consts[name.Name] = dl
 							}
 						}
-					case token.TYPE:
+					}
+				case token.TYPE:
+					for i, spec := range d.Specs {
 						ts := spec.(*ast.TypeSpec)
 						dl := &Decl{Kind: TypeDecl, Name: ts.Name.Name, File: f, Gen: d, Spec: ts, Idx: i, Pos: ts.Pos()}
 						ix.Decls = append(ix.Decls, dl)
 						ix.Types[ts.Name.Name] = &TypeDeclInfo{Decl: dl, Methods: map[string]*Decl{}}
-					case token.IMPORT:
-						// already collected into syntax.File.Imports
-					default:
-						return nil, fmt.Errorf("unexpected GenDecl token %s", d.Tok)
 					}
+				case token.IMPORT:
+					// already collected into syntax.File.Imports
+				default:
+					return nil, fmt.Errorf("unexpected GenDecl token %s", d.Tok)
 				}
 			}
 		}

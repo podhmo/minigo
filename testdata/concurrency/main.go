@@ -229,26 +229,29 @@ var waitUnblockProgress int
 
 func markWaitProgress() int { return 1 }
 
-// WaitUnblockThenPanic: a dying goroutine's own defer releases a sibling
-// mid-unwind (wg.Done frees wg.Wait before the panic finishes). Go's
-// exit() kills the sibling's next call before it can run — the flag
-// stays 0. Runs alongside WaitUnblockRead, which observes the flag.
-func WaitUnblockThenPanic() int {
+// WaitUnblockThenPanic: the dying defer waits for the sibling to park
+// inside a host call before completing its unwind. The test releases
+// that host call only after the process dies, so markWaitProgress must
+// never run. Runs alongside WaitUnblockRead, which observes the flag.
+func WaitUnblockThenPanic(park, waitParked func()) int {
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer func() {
+			wg.Done()
+			waitParked()
+		}()
 		panic("boom")
 	}()
 	go func() {
 		wg.Wait()
+		park()
 		waitUnblockProgress = markWaitProgress()
 	}()
 	select {}
 }
 
-// WaitUnblockRead: observes the package var a surviving sibling would
-// have set — stays 0 when the process died with the panic.
+// WaitUnblockRead observes the flag after the sibling has finished.
 func WaitUnblockRead() int { return waitUnblockProgress }
 
 // HostLockThenPanic: a goroutine parked inside a real host blocking

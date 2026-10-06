@@ -615,21 +615,9 @@ func (r *REPL) anchor(path string) string {
 func (r *REPL) hoistSpecs(d *ast.GenDecl) []ast.Stmt {
 	var out []ast.Stmt
 	isConst := d.Tok == token.CONST
-	var prevValues []ast.Expr
-	var prevType ast.Expr
-	for i, spec := range d.Specs {
-		vs, ok := spec.(*ast.ValueSpec)
-		if !ok {
-			continue
-		}
-		values, typ := vs.Values, vs.Type
-		if isConst {
-			if len(values) == 0 {
-				values, typ = prevValues, prevType
-			} else {
-				prevValues, prevType = values, typ
-			}
-		}
+	for i, effective := range index.ValueSpecs(d) {
+		vs := effective.Spec
+		values, typ := effective.Values, effective.Type
 		for _, name := range vs.Names {
 			r.hoist(name.Name)
 			if isConst {
