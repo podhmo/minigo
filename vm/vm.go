@@ -7548,6 +7548,14 @@ func toFloat(v runtime.Value) float64 {
 	return 0
 }
 
+// Convert implements runtime.VMCaller.Convert: T(x) for host intrinsics
+// running on this VM's goroutine. Going through Call instead costs a
+// goroutineID (runtime.Stack parse) per conversion — measurable for
+// append on numeric slices.
+func (v *VM) Convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error) {
+	return v.convert(td, x)
+}
+
 // convert implements T(x) — a call on a *TypeDef.
 func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error) {
 	// nil converts to a typed nil for nilable kinds, NIL for interfaces.

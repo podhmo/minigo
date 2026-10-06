@@ -88,7 +88,7 @@ func builtins(e *Engine) *runtime.Env {
 		// an untyped-constant element converts through the declared
 		// element type — append(b, 'i') on []byte is Go's constant
 		// conversion; without a declared type it takes its default.
-		var et runtime.Value
+		var et *runtime.TypeDef
 		if rtyp != nil {
 			et = v.TypeOf(v.ElemZero(rtyp))
 		}
@@ -96,7 +96,7 @@ func builtins(e *Engine) *runtime.Env {
 		for i, a := range args[1:] {
 			if u, ok := a.(*runtime.UConst); ok {
 				if et != nil {
-					cv, err := v.Call(et, []runtime.Value{a})
+					cv, err := v.Convert(et, a)
 					if err != nil {
 						return nil, err
 					}
@@ -116,7 +116,7 @@ func builtins(e *Engine) *runtime.Env {
 				// came from — append(f, 0) on []float64 stores 0.0.
 				switch a.(type) {
 				case int64, int, uint64, rune, float64:
-					if cv, err := v.Call(et, []runtime.Value{a}); err == nil {
+					if cv, err := v.Convert(et, a); err == nil {
 						a = cv
 					}
 				}
