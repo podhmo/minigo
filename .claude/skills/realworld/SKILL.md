@@ -27,6 +27,10 @@ MINIGO_DIR=<this checkout> ./run.sh [task ...]   # COLD=1 adds cold-cache oracle
 Targets are pinned commits in `targets.tsv`; downloads are large (grafana
 ≈ 5 GB of modules) — keep `SRC_DIR` outside both repos. Never run
 `go clean -cache` to measure; cold timings use a throwaway `GOCACHE`.
+`run.sh` without arguments runs every task and fetches any target missing
+from `SRC_DIR`, re-fetching a checkout at the wrong commit. When reusing a
+shared or pre-fetched `SRC_DIR` you were asked not to modify, name the
+tasks (`./run.sh grafana-openapi`) so only their targets are touched.
 
 ## `/realworld run`
 
@@ -37,7 +41,45 @@ Targets are pinned commits in `targets.tsv`; downloads are large (grafana
 4. For a slow PASS, `PROFILE=1 ./run.sh <task>` writes cpu/allocs
    profiles and `out/<task>.prof.txt`. On macOS check `TRACE=1` before
    trusting a CPU profile dominated by `pthread_cond_*` (see the harness
-   README). Record tuning targets in TODO.md with the task name.
+   README). Record tuning targets in TODO.md with the task name, then
+   follow "Tuning a slow task" below.
+
+## Tuning a slow task
+
+1. **Measure honestly.** Interleave the sides (A B A B A B, ≥3 runs each)
+   with nothing else running. A background `go vet` once inflated a 5 s run
+   to 25 s. Absolute times drift between machines and days, so compare
+   sides measured in the same sitting, never against an old report's
+   number.
+2. **Locate.** Profile both sides and diff them:
+   `go tool pprof -top -diff_base old.cpu.pprof new-binary new.cpu.pprof`
+   (also `-sample_index=alloc_space` on the allocs profiles). If the
+   growth sits in GC/scheduler frames (`gcBgMarkWorker`, `madvise`,
+   `kevent`, `pthread_*`) rather than `VM.loop`, the cause is allocation:
+   read the alloc diff, not the CPU top.
+3. **A regression across commits** (for example, after rebasing onto a
+   newer main): measure the endpoints, then bisect with your own loop over
+   `git rev-list --first-parent`. Use one scratch worktree, checking out
+   each commit and applying the needed patches as a diff. **Never run the
+   harness under `git bisect run`.** It exports `GIT_DIR`, and any `git
+   init`/`fetch` underneath then rewrites the caller's repository (this
+   once set `core.bare=true` and wrote a stray `.git/shallow`). `run.sh`
+   now unsets `GIT_*`, but other scripts don't. Steps can be non-monotonic
+   when several commits each add a little; when the bisect boundary looks
+   noisy, profile the endpoints instead.
+4. **Fix** through a normal PR. Its body carries an interleaved
+   before/after table (wall time and allocated bytes), difffuzz counts for
+   the same seed before and after (`lang`, `text`, and `reflect` when
+   types or interfaces are involved), and `make format/lint/test`. Leave
+   the residual gap as TODO.md children under the hot-path entry.
+5. **Clean up.** Remove scratch worktrees (`git worktree remove`). Never
+   clear the global Go cache: `COLD=1` and any cold measurement use a
+   throwaway `GOCACHE`.
+
+PRs that depend on each other are stacked with `gh stack` (see the
+gh-stack skill), not just base-chained. After the base branch moves, replay
+each layer's own commits onto it (no merge commits) and re-measure the
+whole stack.
 
 ## Triage a failing task
 
