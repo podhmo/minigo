@@ -358,6 +358,18 @@ func TestPanicTraceback(t *testing.T) {
 		}
 	}
 
+	// a recover-then-repanic keeps the original panic site below the
+	// deferred call (Go runs it on top of the panicking frames)
+	got = runErr("Repanic")
+	for _, want := range []string{"panic: assignment to entry in nil map", "in main.Repanic.func1()", "in repanicOrigin()", `m["x"] = 1`, "in Repanic()"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Repanic traceback missing %q:\n%s", want, got)
+		}
+	}
+	if i, j := strings.Index(got, "Repanic.func1()"), strings.Index(got, "in repanicOrigin()"); i < 0 || j < i {
+		t.Errorf("Repanic traceback: the deferred call must come before the origin:\n%s", got)
+	}
+
 	// a panic inside a host builtin names the builtin itself and carries
 	// the host goroutine stack (Panic.GoStack — issue #19)
 	got = runErr("BoomViaBuiltin")
