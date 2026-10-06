@@ -8440,6 +8440,12 @@ func (v *VM) memberOfType(f *frame, td *runtime.TypeDef, name string, recv runti
 			// body decides.
 			if !m.PtrRecv {
 				if _, isNil := asTypedNil(recv); isNil && (peeled || !v.nilableTypedef(td)) {
+					if _, isIfaceNil := recv.(*runtime.IfaceNil); isIfaceNil {
+						// a value method dispatched through a nil
+						// interface box reports Go's wrapper text, not
+						// a bare nil dereference.
+						panic(runtime.PlainPanic(fmt.Sprintf("value method %s.%s called using nil *%s pointer", spelledTyp(td), name, td.Name)))
+					}
 					panic(runtime.NilDerefPanic())
 				}
 			}
