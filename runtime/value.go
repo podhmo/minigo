@@ -1407,6 +1407,29 @@ func (f *Function) EnsureCompiled() error {
 	return f.cerr
 }
 
+// WithBinds returns a copy of f carrying binds. The copy shares f's
+// compiled chunk (compiling f first if needed) and never recompiles —
+// a field-wise copy instead of `*f` keeps the sync.Once uncopied.
+func (f *Function) WithBinds(binds map[string]Value) *Function {
+	f.EnsureCompiled()
+	cp := &Function{
+		Pkg:          f.Pkg,
+		File:         f.File,
+		Decl:         f.Decl,
+		Name:         f.Name,
+		Recv:         f.Recv,
+		PtrRecv:      f.PtrRecv,
+		TParams:      f.TParams,
+		TConstraints: f.TConstraints,
+		Binds:        binds,
+		Compile:      f.Compile,
+		cerr:         f.cerr,
+		Chunk:        f.Chunk,
+	}
+	cp.once.Do(func() {})
+	return cp
+}
+
 // Closure is a function value with captured upvalue cells.
 type Closure struct {
 	Fn     *Function

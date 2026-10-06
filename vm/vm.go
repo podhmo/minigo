@@ -840,20 +840,17 @@ func (v *VM) Recover() runtime.Value {
 	if dist != 1 {
 		return runtime.NIL
 	}
-	{
-		val := v.inflight.Value
-		v.consumedPanic = v.inflight
-		v.inflight = nil
-		// a runtime-error payload surfaces as the boxed host error Go's
-		// recover() returns — `err.(error)` asserts and `.Error()` calls
-		// resolve through the reflection path. The same goes for the
-		// plainError family and panic(nil)'s PanicNilError.
-		if e, ok := val.(error); ok {
-			return &runtime.GoValue{V: e}
-		}
-		return val
+	val := v.inflight.Value
+	v.consumedPanic = v.inflight
+	v.inflight = nil
+	// a runtime-error payload surfaces as the boxed host error Go's
+	// recover() returns — `err.(error)` asserts and `.Error()` calls
+	// resolve through the reflection path. The same goes for the
+	// plainError family and panic(nil)'s PanicNilError.
+	if e, ok := val.(error); ok {
+		return &runtime.GoValue{V: e}
 	}
-	return runtime.NIL
+	return val
 }
 
 func asError(r any) error {
@@ -1849,15 +1846,14 @@ func (v *VM) loop(f *frame) {
 				// Pipe[int, int] types `func(func(int) bool)`. The
 				// proto const is shared across instantiations, so the
 				// binds attach to a copy, never to it.
-				cp := *proto
-				cp.Binds = map[string]runtime.Value{}
+				binds := map[string]runtime.Value{}
 				for k, bv := range f.fn.Binds {
-					cp.Binds[k] = bv
+					binds[k] = bv
 				}
 				for k, bv := range proto.Binds {
-					cp.Binds[k] = bv
+					binds[k] = bv
 				}
-				proto = &cp
+				proto = proto.WithBinds(binds)
 			}
 			if len(proto.Chunk.Upvals) == 0 {
 				// a capture-free literal evaluates to the proto itself —
