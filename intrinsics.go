@@ -4592,6 +4592,13 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		}
 		return s.nilTyp(verb, f, v.Typ)
 	case runtime.Nil:
+		// %#v spells a nil sitting in an interface-typed field or
+		// element with the slot's static type — error(nil),
+		// interface {}(nil) — the way reflect sees the declared type.
+		// Every other verb (and an untyped top-level nil) keeps <nil>.
+		if verb == 'v' && f.Flag('#') && s.et != nil {
+			return nilGoSyntax(s.et)
+		}
 		// a nil interface element inside a composite renders <nil>
 		// under every verb; top-level non-%v verbs get the marker.
 		if verb == 'T' || verb == 'v' || s.depth > 0 || s.et != nil {
@@ -4744,7 +4751,7 @@ func (s *fmtValue) nilTyp(verb rune, f fmt.State, td *runtime.TypeDef) string {
 // parens around the anonymous pointer/chan/func spellings that need them
 // and the top-level []byte special case for byte slices.
 func nilGoSyntax(td *runtime.TypeDef) string {
-	if td == nil || td.Kind == runtime.KindInterface {
+	if td == nil {
 		return "<nil>"
 	}
 	if td.Name == "" {
@@ -4876,7 +4883,7 @@ func sliceElemTyp(td *runtime.TypeDef) *runtime.TypeDef {
 		return td.Elem
 	}
 	if at, ok := typedefAst(td).(*ast.ArrayType); ok {
-		return elemTyp(at.Elt, td.Pkg)
+		return bindTyp(td, elemTyp(at.Elt, td.Pkg))
 	}
 	return nil
 }
@@ -4884,7 +4891,7 @@ func sliceElemTyp(td *runtime.TypeDef) *runtime.TypeDef {
 // mapElemTyps resolves a map typedef's key and value typedefs.
 func mapElemTyps(td *runtime.TypeDef) (key, val *runtime.TypeDef) {
 	if mt, ok := typedefAst(td).(*ast.MapType); ok && td != nil {
-		return elemTyp(mt.Key, td.Pkg), elemTyp(mt.Value, td.Pkg)
+		return bindTyp(td, elemTyp(mt.Key, td.Pkg)), bindTyp(td, elemTyp(mt.Value, td.Pkg))
 	}
 	return nil, nil
 }
@@ -4903,11 +4910,36 @@ func fieldTypOf(td *runtime.TypeDef, i int) *runtime.TypeDef {
 			cnt = 1
 		}
 		if i < n+cnt {
-			return elemTyp(fd.Type, td.Pkg)
+			return bindTyp(td, elemTyp(fd.Type, td.Pkg))
 		}
 		n += cnt
 	}
 	return nil
+}
+
+// bindTyp resolves a declared element typedef through the enclosing
+// typedef's instantiation binds — a `Pair[error, any]` `Key K` field's
+// declared type is `K`, but a value stored there statically has the
+// bound argument's type. Composite field types keep the binds so a
+// nested type-parameter name (a `[]K` field's element) resolves the
+// same way one level down.
+func bindTyp(td *runtime.TypeDef, et *runtime.TypeDef) *runtime.TypeDef {
+	if td == nil || et == nil || len(td.Binds) == 0 {
+		return et
+	}
+	if et.Anon == nil && et.Spec == nil {
+		if bv, ok := td.Binds[et.Name]; ok {
+			if btd, ok := bv.(*runtime.TypeDef); ok {
+				return btd
+			}
+		}
+	}
+	if len(et.Binds) == 0 {
+		cp := *et
+		cp.Binds = td.Binds
+		return &cp
+	}
+	return et
 }
 
 // formatOfNoHash is formatOf without the '#' flag — for scalar leaves

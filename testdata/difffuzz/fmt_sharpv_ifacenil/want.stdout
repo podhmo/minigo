@@ -1,0 +1,23 @@
+main.S{E:error(nil), I:interface {}(nil)}
+[]interface {}{1, interface {}(nil)}
+map[string]interface {}{"a":interface {}(nil), "b":2}
+[]error{error(nil)}
+map[string]error{"x":error(nil)}
+[]main.MyIface{main.MyIface(nil)}
+map[interface {}]int{interface {}(nil):1}
+[][]interface {}{[]interface {}{interface {}(nil)}}
+main.AnyBox{A:interface {}(nil)}
+[2]interface {}{interface {}(nil), 1}
+main.WithM{H:main.MyIface(nil)}
+&struct { E error }{E:error(nil)}
+main.Pair[error,interface {}]{Key:error(nil), Val:interface {}(nil)}
+map[string][]error{"a":[]error{error(nil)}}
+[]interface {}{(chan int)(nil)}
+{<nil> <nil>}
+[1 <nil>]
+{E:<nil> I:<nil>}
+{<nil> <nil>}
+['\x01' <nil>]
+<nil>
+<nil>
+<nil> <nil>
