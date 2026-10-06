@@ -25,10 +25,11 @@ $ go run ./          # sync ./app
 $ go run ./          # run again: idempotent — 0 file(s) updated
 $ go run ./ -check   # report drift without writing (for CI): exit 1 if stale, 2 on failure
 $ go run ./ -deps    # also rewrite files in followed same-module imports
+$ go run ./ -explain # print why each directive was inferred (before writes, generated files included)
 ```
 
 The host (`main.go`) is thin: it parses flags, starts a minigo engine rooted
-at the current directory, and calls `script.Main(dir, check, deps)`. All of
+at the current directory, and calls `script.Main(dir, check, deps, explain)`. All of
 the interesting work happens in the script (`script/main.go`), running inside
 the interpreter:
 
@@ -50,7 +51,7 @@ the interpreter:
    | `type X int`/`string` + a `const` block of `X` in the package | enum | `stringer -type=X` |
    | non-alias interface named `*Service`/`*Store`/`*Client`/`*Repository` | service boundary | `mockgen -source=<file> -destination=mock_<file>` |
    | struct field tag `required:"true"`, or `required` as a `validate:`/`binding:` element — on the struct *or any struct reachable through its field types* | validation candidate, recursively | `requiredgen -type=X` |
-   | type declaring `Discriminator() string` | `oneOf` variant | `oneofgen -type=X` |
+   | type whose method set carries `Discriminator() string` (declared or promoted) | `oneOf` variant | `oneofgen -type=X` |
    | interface requiring `Discriminator() string` | `oneOf` union + implementers | `oneofgen -type=X -variants=a,b,pkg.c` |
 
    The recursive half lives in `scanx`'s `Explorer`: named type
@@ -178,6 +179,7 @@ job can tell the reports apart by exit code alone.
 | `gen-sync: <dir> is outside any Go module` | no go.mod ancestor — references cannot resolve, so the scan would degrade silently; the run refuses |
 | `gen-sync: <path>: refusing to write outside the scanned directory` | the import path resolved to a different tree (module shadowing) — fix go.mod / replace rules |
 | `gen-sync: <path>: skipping: another generator owns this file (// Code generated ... DO NOT EDIT.)` | warning only: the file still feeds inference but is never written — the next regen would discard the block |
+| `gen-sync: N file(s) failed to write` / `N file(s) could not be checked` | summary line: some files failed mid-sync — the joined error names them; the rest still synced |
 | `gen-sync: unexpected extra arguments: -check` | a flag landed in the positional args (e.g. `gen-sync ./app -check`) — put flags before the dir |
 
 Individual file failures do not stop the run — other files still sync —

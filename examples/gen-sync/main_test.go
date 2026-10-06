@@ -767,6 +767,12 @@ func TestExplainPrintsReasons(t *testing.T) {
 	if !strings.Contains(out, "enum:") {
 		t.Fatalf("-explain gave no reason for the directive:\n%s", out)
 	}
+	// EmbedEvent only carries Discriminator() through its PingBase
+	// embed — the reason must name the method set and the promotion,
+	// not claim the type declares it.
+	if !strings.Contains(out, "oneofgen -type=EmbedEvent") || !strings.Contains(out, "promoted from PingBase") {
+		t.Fatalf("-explain misdescribed the promoted method:\n%s", out)
+	}
 	// without the flag the reasons stay silent.
 	buf.Reset()
 	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, &buf); err != nil {
@@ -828,8 +834,65 @@ func TestPartialWriteSummary(t *testing.T) {
 		t.Fatalf("no partial-write summary:\n%s", out)
 	}
 	// the rest of the package still synced — the failure is partial.
-	if !strings.Contains(out, "file(s) updated") && !strings.Contains(out, "rewrote") && !strings.Contains(out, "inserted") {
+	// (runMain's own "N file(s) updated" goes to os.Stdout, not the
+	// engine's output writer — only the script's per-file lines are
+	// observable here.)
+	if !strings.Contains(out, "rewrote") && !strings.Contains(out, "inserted") && !strings.Contains(out, "up to date") {
 		t.Fatalf("other files did not sync:\n%s", out)
+	}
+}
+
+// chmodOnFirstWrite wraps the run's output and flips target unreadable
+// the moment the run first reports anything — after collect() indexed
+// the package, before the sync loop reads each file. It makes the one
+// hole in the file-level scan reproducible: a file that indexed fine
+// but fails its own read inside syncFile.
+type chmodOnFirstWrite struct {
+	w      *strings.Builder
+	target string
+	done   bool
+}
+
+func (c *chmodOnFirstWrite) Write(p []byte) (int, error) {
+	if !c.done {
+		c.done = true
+		if err := os.Chmod(c.target, 0000); err != nil {
+			return 0, err
+		}
+	}
+	return c.w.Write(p)
+}
+
+func TestCheckPartialSummary(t *testing.T) {
+	dir := setupModule(t)
+	app := filepath.Join(dir, "app")
+	// a constraint-excluded file earns a warning — printed before the
+	// sync loop, which guarantees the chmod below lands after collect()
+	// and before any file's own read (no dependence on file order).
+	if err := os.WriteFile(filepath.Join(app, "xskip.go"), []byte("//go:build ignore\n\npackage app\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// check mode never writes, so an unwritable file is not a failure —
+	// the reachable failure is a file that indexed fine but cannot be
+	// read back when its own turn comes.
+	target := filepath.Join(app, "job.go")
+	if os.Geteuid() == 0 {
+		t.Skip("chmod-000 is readable for root")
+	}
+	defer os.Chmod(target, 0644)
+	var buf strings.Builder
+	w := &chmodOnFirstWrite{w: &buf, target: target}
+	_, err := run(context.Background(), dir, scriptDir(t), app, true, false, false, w)
+	if err == nil {
+		t.Fatal("expected a check failure")
+	}
+	out := buf.String()
+	if !strings.Contains(out, "1 file(s) could not be checked") {
+		t.Fatalf("no partial-check summary:\n%s", out)
+	}
+	// the failure is partial: other files still reported drift.
+	if !strings.Contains(out, "drift:") {
+		t.Fatalf("other files were not checked:\n%s", out)
 	}
 }
 
