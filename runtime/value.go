@@ -714,11 +714,17 @@ func writeKeyElem(sb *strings.Builder, v Value) {
 	case *GoValue:
 		writeKeyElem(sb, fmt.Sprintf("%#v", x.V))
 	case *IfaceNil:
-		// an interface-boxed nil keeps its dynamic type in the
-		// element key — struct{any}{(*int)(nil)} and
-		// struct{any}{nil} are distinct Go keys.
-		sb.WriteString(typeTagOf(x.Typ))
-		sb.WriteString(":nil")
+		// a nil interface records no dynamic type, so one that
+		// crossed (or never left) an interface-typed boundary folds
+		// to bare nil like CanonicalKey. A boxed typed nil keeps
+		// its tag — struct{any}{(*int)(nil)} and struct{any}{nil}
+		// are distinct Go keys.
+		if x.Typ == nil || x.Typ.Kind == KindInterface {
+			sb.WriteString("nil")
+		} else {
+			sb.WriteString(typeTagOf(x.Typ))
+			sb.WriteString(":nil")
+		}
 	case *TypedNil, Nil:
 		sb.WriteString("nil")
 	default:
