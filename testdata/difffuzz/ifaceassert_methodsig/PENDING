@@ -1,6 +1,0 @@
-SILENT value: i.(interface{ foo() int }) succeeds on a type whose foo()
-returns float64; the same misfire happens in a type switch
-(case interface{ foo() T } matches any foo).
-Hypothesis: interface-satisfaction / method-set comparison checks method
-presence by name only and ignores the signature.
-Source: $GOROOT/test/typeparam/typeswitch5.go.

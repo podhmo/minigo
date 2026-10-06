@@ -63,6 +63,20 @@ type Hooks struct {
 	// satisfaction check must run against a type rather than a value
 	// (typed nils in assertions).
 	TypeMethods func(td *runtime.TypeDef) (map[string]bool, error)
+	// IfaceSigs returns the required methods of an interface typedef
+	// that carry a declared signature, as Function shells spelling it
+	// in their declaring context. Facade members (MReqs without an
+	// AST) are absent and satisfy by name alone. Nil disables
+	// signature comparison in interface satisfaction.
+	IfaceSigs func(td *runtime.TypeDef) (map[string]*runtime.Function, error)
+	// MethodFuncsOf returns the signature-bearing methods callable on
+	// a dynamic value — declared and promoted script methods plus
+	// synthesized interface members; host reflect methods carry no
+	// decl signature, stay absent here and satisfy by name alone.
+	MethodFuncsOf func(v runtime.Value) (map[string]*runtime.Function, error)
+	// TypeMethodFuncs is MethodFuncsOf's typedef variant — the
+	// declared method set of a type rather than a value.
+	TypeMethodFuncs func(td *runtime.TypeDef) (map[string]*runtime.Function, error)
 	// Underlying resolves a KindAlias typedef to its underlying typedef.
 	Underlying func(td *runtime.TypeDef) (*runtime.TypeDef, error)
 	// AliasOf resolves a KindAlias typedef to its direct target typedef
@@ -8169,7 +8183,54 @@ func (v *VM) ifaceSatisfied(td *runtime.TypeDef, x runtime.Value) (bool, error) 
 			return false, nil
 		}
 	}
-	return true, nil
+	return v.ifaceSigsMatch(td, x)
+}
+
+// ifaceSigsMatch runs the signature pass of interface satisfaction: a
+// same-named method whose declared signature differs does not satisfy
+// the requirement — `foo() float64` never fulfills `foo() int`.
+// Members without a comparable signature (facade requirements, host
+// reflect methods) satisfy by name alone, as before.
+func (v *VM) ifaceSigsMatch(td *runtime.TypeDef, x runtime.Value) (bool, error) {
+	if v.H.IfaceSigs == nil || v.H.MethodFuncsOf == nil {
+		return true, nil
+	}
+	reqFns, err := v.H.IfaceSigs(td)
+	if err != nil {
+		return false, err
+	}
+	if len(reqFns) == 0 {
+		return true, nil
+	}
+	dynFns, err := v.H.MethodFuncsOf(x)
+	if err != nil {
+		return false, err
+	}
+	return memberSigsMatch(reqFns, dynFns), nil
+}
+
+// memberSigsMatch reports whether every signature-bearing requirement
+// is met by a same-named member with an identical signature. A member
+// absent from dynFns kept its name-only pass.
+func memberSigsMatch(reqFns, dynFns map[string]*runtime.Function) bool {
+	for m, reqFn := range reqFns {
+		if dynFn, ok := dynFns[m]; ok && !memberSigEq(reqFn, dynFn) {
+			return false
+		}
+	}
+	return true
+}
+
+// memberSigEq compares two members' declared signatures — an interface
+// requirement and the concrete method offered against it. Either side
+// lacking a decl signature (synthesized shims) satisfies by name.
+func memberSigEq(req, dyn *runtime.Function) bool {
+	if req == nil || dyn == nil || req.Decl == nil || dyn.Decl == nil || req.Decl.Type == nil || dyn.Decl.Type == nil {
+		return true
+	}
+	rt := &runtime.TypeDef{Kind: runtime.KindFunc, Anon: req.Decl.Type, Pkg: req.Pkg, File: req.File, Binds: req.Binds}
+	dt := &runtime.TypeDef{Kind: runtime.KindFunc, Anon: dyn.Decl.Type, Pkg: dyn.Pkg, File: dyn.File, Binds: dyn.Binds}
+	return runtime.TypIdentical(rt, dt)
 }
 
 // ---- declared types: zeros, typed nils, interface boxing (round 5) ----
@@ -8207,6 +8268,19 @@ func (v *VM) typeMatchesTD(f *frame, td, dyn *runtime.TypeDef) bool {
 		for m := range reqs {
 			if !have[m] {
 				return false
+			}
+		}
+		if v.H.IfaceSigs != nil && v.H.TypeMethodFuncs != nil {
+			reqFns, err := v.H.IfaceSigs(td)
+			if err != nil {
+				f.trap("%s", err)
+			}
+			if len(reqFns) > 0 {
+				dynFns, err := v.H.TypeMethodFuncs(dyn)
+				if err != nil {
+					f.trap("%s", err)
+				}
+				return memberSigsMatch(reqFns, dynFns)
 			}
 		}
 		return true
