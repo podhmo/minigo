@@ -19,6 +19,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/podhmo/minigo"
@@ -168,13 +169,23 @@ func describeFailure(err error, dir, scriptDir string) string {
 
 // quotedArg extracts the %q-quoted operand following prefix in an
 // engine error message (e.g. `resolve dir "./app": ...` → "./app").
+// The operand is unquoted — a dir argument containing a quote or an
+// escape sequence still compares equal to itself raw.
 func quotedArg(msg, prefix string) string {
 	rest := strings.TrimPrefix(msg, prefix)
 	if !strings.HasPrefix(rest, `"`) {
 		return ""
 	}
-	if i := strings.Index(rest[1:], `"`); i >= 0 {
-		return rest[1 : i+1]
+	for i := 1; i < len(rest); i++ {
+		switch rest[i] {
+		case '\\':
+			i++ // escaped byte: skip the pair
+		case '"':
+			if s, err := strconv.Unquote(rest[:i+1]); err == nil {
+				return s
+			}
+			return ""
+		}
 	}
 	return ""
 }
