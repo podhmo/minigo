@@ -1,0 +1,1 @@
+runtime trap: cannot use nil List as *List — implicit address-of on a nil slice-typed field for a pointer-receiver call (go/scanner.ErrorList.Add from go/parser.ParseExpr("a +")).
