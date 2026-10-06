@@ -2728,7 +2728,7 @@ func constValue(e ast.Expr) (cv constant.Value, ok bool) {
 		return constValue(x.X)
 	case *ast.BasicLit:
 		switch x.Kind {
-		case token.INT, token.FLOAT, token.CHAR, token.STRING:
+		case token.INT, token.FLOAT, token.CHAR, token.STRING, token.IMAG:
 			return constant.MakeFromLiteral(x.Value, x.Kind, 0), true
 		}
 	case *ast.UnaryExpr:
@@ -2739,6 +2739,46 @@ func constValue(e ast.Expr) (cv constant.Value, ok bool) {
 		switch x.Op {
 		case token.ADD, token.SUB, token.XOR, token.NOT:
 			return constant.UnaryOp(x.Op, xv, 0), true
+		}
+	case *ast.CallExpr:
+		// complex(), real() and imag() on constant operands are constant
+		// expressions — `imag(1i + complex(0,2)/3 - 5i/3)` must stay in
+		// exact rational arithmetic (0), not round through a runtime
+		// complex128 (-2.2e-16, $GOROOT/test/fixedbugs/issue43908.go).
+		id, ok := x.Fun.(*ast.Ident)
+		if !ok {
+			return nil, false
+		}
+		switch id.Name {
+		case "complex":
+			if len(x.Args) != 2 {
+				return nil, false
+			}
+			re, ok := constValue(x.Args[0])
+			if !ok {
+				return nil, false
+			}
+			im, ok := constValue(x.Args[1])
+			if !ok {
+				return nil, false
+			}
+			if (re.Kind() != constant.Float && re.Kind() != constant.Int) ||
+				(im.Kind() != constant.Float && im.Kind() != constant.Int) {
+				return nil, false
+			}
+			return constant.BinaryOp(re, token.ADD, constant.MakeImag(im)), true
+		case "real", "imag":
+			if len(x.Args) != 1 {
+				return nil, false
+			}
+			cv, ok := constValue(x.Args[0])
+			if !ok || cv.Kind() != constant.Complex {
+				return nil, false
+			}
+			if id.Name == "real" {
+				return constant.Real(cv), true
+			}
+			return constant.Imag(cv), true
 		}
 	case *ast.BinaryExpr:
 		lv, ok := constValue(x.X)
