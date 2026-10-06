@@ -224,4 +224,37 @@ solver 側で興味深かった行動:
 
 ### 5.6 §4 改善と §5 再計測
 
-（実施中 —— 改善 PR と before/after 表をここに追記する）
+§5.5 の穴から改善を実装した（stacked PRs #451: [#447](https://github.com/podhmo/minigo/pull/447) 失敗語彙+終了コード / [#450](https://github.com/podhmo/minigo/pull/450) 可視性 -explain/skip/部分失敗集計）。改善役も別セッション、各PRは独立したブラインドレビューセッションが査読した。
+
+実装されたもの:
+- 失敗の先頭行に「誰が直すか」を入力の語彙で出す（`gen-sync: fix the dir argument` / `fix the input file at the reported position` / `fix the package's imports or the module setup` / `this looks like a gen-sync bug`）。runtime.Trap を剥がして原因側で分類する
+- `-check` の終了コード分割: drift=1、真の失敗=2
+- `no buildable Go source files` がパッケージ名+理由（権限の拒否か build 制約か）を言う
+- 別パッケージ宣言のファイルは warn+スキップ（decls・import辺・variants・書き込み対象から外す）
+- 生成物風ファイルのスキップを報告行に、部分書き込み失敗に `N file(s) failed to write` 集計行、`-explain` で各 directive の推論経路を表示
+- 新規の拒絶・厳格化には falsifying な回帰テストを1本以上（main_test.go に8本追加）
+- 残課題は TODO.md へ: x01 のモジュールフォールバック方針、11a の部分書き込みロールバック是非
+
+#### 再計測（IMP = 改善スタック頂点 dab2f69 での fresh な 22 ソルバー + 新オラクル）
+
+壊す役を IMP でも回して同じ22状態を再現した。**出力が POST とバイト同一だったのは10件**、異なった12件はすべて改善した報告面（blame ヒント行、パッケージ名+理由、2つの新しい skip 警告、失敗集計行）。唯一の意味的な差分は x02: misplaced.go がスキップされ directive を受けなくなった（警告あり）。
+
+solver の結果（全22件 solved=True、試行1-3回 —— 試行数分布は POST とほぼ同じ）で変わったのは**責任帰属の判定**:
+
+| ケース | POST verdict | IMP verdict | 解釈 |
+|---|---|---|---|
+| 12 scanx破損 | deps / input-file | **tool-bug** | `this looks like a gen-sync bug` のヒントが「ツール側」を正しく選択させた。実際に vendored scanx の破損なので正解 |
+| 08 CRLF | input-file | **no-fix-needed** | 改善版では transcript が `up to date`（CRLF 対応済み）。意図が既に満たされていて「直すものがない」が正解 —— ケース自体が消えた |
+| 02 delete-dep | deps | input-file | ヒントは "imports or module setup" を指したが solver は mood 復元ではなく **Signal を app 内に持ち込む** 別解（variants の綴りが `Signal` に変わる意味差あり）。誘導は部分的 |
+| x02 foreign-pkg | input-file | input-file | 同じ修正（clause 修正）。違いはツールが警告を出すこと —— solver の証拠行に skip 警告が入った |
+| 11b readonly-check | filesystem | filesystem | 「-check は書き込まない」が再度正しく判断され、証拠行に失敗集計行が入った |
+
+**確認された効果**: blame ヒントが機能するケース（12）は誤分類が消えた。効かなかった側面（02）: 「imports or module setup」と言われても、依存パッケージを「再構築する」より「畳み込む」解釈が選ばれた —— ヒントは存在を教えるが、**直し方の範囲は絞らない**。回帰テストで今回の拒絶系はピン留め済み。
+
+#### 壊す役が拾った副次的な発見
+
+- **バージョンスキュー**: solver パッケージに vendored される `script/` は実行時ソースなので、**バイナリだけ新しくすると全ケースが `too many arguments to Main: 4 given, want 3` で死ぬ**。逆方向も同じ —— script/ を更新した dir に古いバイナリを当てても壊れる。gen-sync の dir は実質的に「その時点の minigo 実装にピン留めされた minigo スクリプトプロジェクト」であり、**バージョンアップで既存の生成ディレクトリが壊れる**。改善版の新しい失敗語彙はこれを正しく "this looks like a gen-sync bug" と帰属した
+- 同じ構造上の曖昧さとして 12 でも: ツールの内部ソース（script/+scanx/）が入力ツリー内に同居するので、「ツールのバグ」と「入力の破損」はビット列上区別がつかない。solver は兄弟ケースの同名ファイルとの md5 照合で復元できた —— 盲検化としては穴だが、**実運用でも同じ抜け道が存在する**（vendored script が正常な別 dir から直せる）ことに注意
+
+(オラクル IMP 版・各 PR のブラインドレビュー結果は届き次第ここに追記)
+
