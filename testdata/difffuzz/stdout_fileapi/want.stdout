@@ -1,0 +1,9 @@
+/dev/stdout
+1
+true
+stdout
+via-fprintf
+via-fprintln
+via-writestring
+via-write
+via-iocopy
