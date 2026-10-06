@@ -2162,6 +2162,13 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 	case *runtime.Named:
 		return v.namedMember(f, b, name, b)
 	case *runtime.Cell:
+		// a cell can hold another ref (`p := &s` stores a ref value) —
+		// select on the stored ref so a pointer receiver writes through
+		// to the pointee, not into p's cell.
+		switch b.Elem.(type) {
+		case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
+			return v.selectMember(f, b.Elem, name)
+		}
 		switch e := b.Elem.(type) {
 		case *runtime.Struct:
 			return v.structMember(f, e, name, b)
@@ -2187,7 +2194,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		default:
 			f.trap("select %s on cell of %T", name, b.Elem)
 		}
-	case *runtime.FieldRef, *runtime.IndexRef:
+	case *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
 		dv, ok := runtime.Deref(base)
 		recv := base
 		if !ok {
@@ -3446,10 +3453,7 @@ func (v *VM) structMember(f *frame, s *runtime.Struct, name string, recv runtime
 		}
 		r := recv
 		if m.PtrRecv {
-			// pointer receiver needs an addressable reference
-			if _, ok := runtime.Deref(r); !ok {
-				r = &runtime.Cell{Elem: r}
-			}
+			r = v.ptrReceiver(r)
 		} else {
 			// value receiver operates on a copy
 			if dv, ok := runtime.Deref(r); ok {
@@ -3479,16 +3483,7 @@ func (v *VM) structMember(f *frame, s *runtime.Struct, name string, recv runtime
 		}
 		r := pr.recv
 		if m.PtrRecv {
-			// pointer receiver needs an addressable reference —
-			// except a nil embedded pointer, which Go passes to
-			// the method as the nil receiver itself — `t == nil`
-			// and dereferences behave like Go, not a **T pointing
-			// at the field slot.
-			if _, ok := runtime.Deref(r); !ok {
-				if tn, isNil := r.(*runtime.TypedNil); !(isNil && tn.Typ != nil && tn.Typ.Kind == runtime.KindPointer) {
-					r = &runtime.Cell{Elem: r}
-				}
-			}
+			r = v.ptrReceiver(r)
 		} else {
 			if dv, ok := runtime.Deref(r); ok {
 				r = dv
@@ -3504,6 +3499,38 @@ func (v *VM) structMember(f *frame, s *runtime.Struct, name string, recv runtime
 	}
 	f.trap("%s has no field or method %s", def.Name, name)
 	return nil
+}
+
+// ptrReceiver binds the receiver of a `func (p *T) M` call for `x.M()`:
+// when x's operand is a storage ref, x may already be a *T — a stored
+// ref, a Named pointer, or a nil pointer — in which case the receiver is
+// that pointer value, not &x (writing `*p =` reaches the pointee, not
+// the variable). A plain value keeps the ref as &x; a non-ref operand
+// boxes into a fresh cell (an unaddressable base like `getS().Set`,
+// which Go rejects at compile time).
+func (v *VM) ptrReceiver(r runtime.Value) runtime.Value {
+	dv, ok := runtime.Deref(r)
+	if !ok {
+		// a nil *T receiver passes through as itself — `p == nil` and
+		// `*p =` behave like Go, not like a **T pointing at the slot.
+		if tn, isNil := r.(*runtime.TypedNil); isNil && tn.Typ != nil && tn.Typ.Kind == runtime.KindPointer {
+			return r
+		}
+		return &runtime.Cell{Elem: r}
+	}
+	switch dv := dv.(type) {
+	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
+		return dv
+	case *runtime.Named:
+		if dv.Typ != nil && dv.Typ.Kind == runtime.KindPointer {
+			return dv
+		}
+	case *runtime.TypedNil:
+		if dv.Typ != nil && dv.Typ.Kind == runtime.KindPointer {
+			return dv
+		}
+	}
+	return r
 }
 
 // namedMember resolves base.name on a Named value: methods come only from
@@ -3526,9 +3553,7 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 		}
 		r := recv
 		if m.PtrRecv {
-			if _, ok := runtime.Deref(r); !ok {
-				r = &runtime.Cell{Elem: r}
-			}
+			r = v.ptrReceiver(r)
 		} else if td != n.Typ {
 			// a value receiver reached through the peeled pointer binds
 			// the pointee, re-tagged to the declared type.
@@ -4592,22 +4617,39 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 // that still cannot resolve falls back to the value read, so the
 // operand's own bounds or nil panic keeps its Go shape.
 func (v *VM) receiverOf(f *frame, base runtime.Value) (dv, recv runtime.Value, ok bool) {
-	rb, isIR := base.(*runtime.IndexRef)
-	if !isIR {
-		return nil, nil, false
-	}
-	bx, _ := v.refThrough(f, rb.Base)
-	if bx == nil {
-		bx = rb.Base
-	}
-	if _, isMap := runtime.Unwrap(bx).(*runtime.Map); !isMap {
-		nr := &runtime.IndexRef{Base: bx, Key: rb.Key}
-		if e, ok := nr.Get(); ok {
-			return e, nr, true
+	if rb, isIR := base.(*runtime.IndexRef); isIR {
+		bx, _ := v.refThrough(f, rb.Base)
+		if bx == nil {
+			bx = rb.Base
 		}
+		if _, isMap := runtime.Unwrap(bx).(*runtime.Map); !isMap {
+			nr := &runtime.IndexRef{Base: bx, Key: rb.Key}
+			if e, ok := nr.Get(); ok {
+				return e, nr, true
+			}
+		}
+		dv = v.index(f, bx, rb.Key)
+		return dv, dv, true
 	}
-	dv = v.index(f, bx, rb.Key)
-	return dv, dv, true
+	// a FieldRef or DerefRef that cannot materialize (its chain crosses
+	// a map element or a host field) still resolves to a value — the
+	// member binds the re-based ref when the chain stays writable, the
+	// resolved value otherwise.
+	if _, isRef := base.(*runtime.FieldRef); isRef {
+		x, shared := v.refThrough(f, base)
+		if x == nil {
+			return nil, nil, false
+		}
+		if shared {
+			return x, base, true
+		}
+		return x, x, true
+	}
+	if _, isDR := base.(*runtime.DerefRef); isDR {
+		dv, ok := runtime.Deref(base)
+		return dv, base, ok
+	}
+	return nil, nil, false
 }
 
 // refThrough resolves an lvalue ref chain to its current value where
@@ -8399,9 +8441,7 @@ func (v *VM) typedMember(f *frame, td *runtime.TypeDef, name string, recv runtim
 			}
 			r := recv
 			if m.PtrRecv {
-				if _, ok := runtime.Deref(r); !ok {
-					r = &runtime.Cell{Elem: r}
-				}
+				r = v.ptrReceiver(r)
 			} else {
 				if dv, ok := runtime.Deref(r); ok {
 					r = dv
@@ -8426,8 +8466,13 @@ func (v *VM) memberOfType(f *frame, td *runtime.TypeDef, name string, recv runti
 	peeled := false
 	for td != nil {
 		// a nil interface value has no method at all — any call on it
-		// panics like a nil-pointer dereference in Go.
+		// panics like a nil-pointer dereference in Go. The nil arrives
+		// as a typed nil on the value path or as an interface-kind
+		// IfaceNil through a storage ref — both are the nil interface.
 		if td.Kind == runtime.KindInterface {
+			if in, isIN := recv.(*runtime.IfaceNil); isIN && (in.Typ == nil || in.Typ.Kind == runtime.KindInterface) {
+				panic(runtime.NilDerefPanic())
+			}
 			if _, isNil := asTypedNil(recv); isNil {
 				panic(runtime.NilDerefPanic())
 			}
