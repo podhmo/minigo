@@ -1038,6 +1038,11 @@ type TypeDef struct {
 	TParams      []string         // generic type parameter names (type Foo[T any] ...)
 	TConstraints []ast.Expr       // constraint expr per TParams entry (nil = unconstrained)
 	Binds        map[string]Value // instantiation bindings: type params -> TypeDef args
+	// OuterArgs holds the enclosing generic function's resolved type
+	// arguments when a function-local generic type instantiates inside
+	// one — Go makes them part of the closure type's identity and renders
+	// them in reflect.Type.String as `pkg.T[outerArgs;ownArgs]`.
+	OuterArgs []Value
 
 	// Interfaces: MReqs are the directly declared method names; IEmbeds are
 	// the embedded element expressions (io.Reader, ~int unions, ...). The

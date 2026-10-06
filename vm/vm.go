@@ -9855,7 +9855,7 @@ func (v *VM) instantiate(f *frame, base runtime.Value, targs []runtime.Value, po
 		if err := v.checkTArgs(ctx, g.TParams, g.TConstraints, binds); err != nil {
 			f.trap("%s", err)
 		}
-		return v.specializeType(g, targs)
+		return v.specializeType(f, g, targs)
 	default:
 		return v.indexFallback(f, base, targs)
 	}
@@ -9894,9 +9894,23 @@ func (v *VM) indexFallback(f *frame, base runtime.Value, targs []runtime.Value) 
 }
 
 // specializeType clones a generic typedef with its methods re-bound to the
-// concrete type arguments.
-func (v *VM) specializeType(g *runtime.TypeDef, targs []runtime.Value) *runtime.TypeDef {
+// concrete type arguments. A function-local generic instantiating inside
+// a generic function captures the enclosing type arguments too — they are
+// part of the closure type's identity and render in reflect.Type.String
+// as `pkg.T[outerArgs;ownArgs]`.
+func (v *VM) specializeType(f *frame, g *runtime.TypeDef, targs []runtime.Value) *runtime.TypeDef {
 	binds := map[string]runtime.Value{}
+	var outer []runtime.Value
+	if g.Local && f != nil && f.fn != nil {
+		for _, tp := range f.fn.TParams {
+			bv, ok := f.fn.Binds[tp]
+			if !ok {
+				continue
+			}
+			binds[tp] = bv
+			outer = append(outer, bv)
+		}
+	}
 	for i, tp := range g.TParams {
 		if i < len(targs) {
 			binds[tp] = targs[i]
@@ -9909,7 +9923,7 @@ func (v *VM) specializeType(g *runtime.TypeDef, targs []runtime.Value) *runtime.
 		MReqs: g.MReqs, IEmbeds: g.IEmbeds,
 		EmbedSpecs: g.EmbedSpecs, EmbedIdx: g.EmbedIdx, Embeds: g.Embeds,
 		LocalTypes: g.LocalTypes, Elem: g.Elem, HostNew: g.HostNew,
-		Local: g.Local,
+		Local: g.Local, OuterArgs: outer,
 	}
 	if len(g.Methods) > 0 {
 		td.Methods = make(map[string]*runtime.Function, len(g.Methods))
