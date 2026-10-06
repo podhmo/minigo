@@ -1,0 +1,9 @@
+"a/b/c.go" -> "a/b/" "c.go"
+"c.go" -> "" "c.go"
+"a/b/" -> "a/b/" ""
+"/" -> "/" ""
+"" -> "" ""
+"/root.txt" -> "/" "root.txt"
+"dir/日本語.txt" -> "dir/" "日本語.txt"
+"a//b" -> "a//" "b"
+true
