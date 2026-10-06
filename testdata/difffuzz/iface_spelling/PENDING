@@ -1,0 +1,4 @@
+SILENT type: `%T` on `&x` (x a nil `any`/`interface{}`) prints `*<nil>`
+instead of `*interface {}` — the verb reads the nil dynamic value inside
+the interface instead of the operand's static pointer type.
+Corpus: $GOROOT/test/fixedbugs/issue49665.go.

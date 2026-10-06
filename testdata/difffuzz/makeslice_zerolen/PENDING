@@ -1,0 +1,4 @@
+TRAP: `make([]struct{}, maxInt)` traps `makeslice: len out of range`;
+go allocates 0 bytes for a zero-size element type and succeeds. The
+makeslice limit should measure bytes, not element count.
+Corpus: $GOROOT/test/fixedbugs/issue29190.go.

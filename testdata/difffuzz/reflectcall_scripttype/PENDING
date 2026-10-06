@@ -1,0 +1,4 @@
+TRAP: `reflect.ValueOf(F).Call` traps `minireflect: cannot resolve type
+Empty` on a script-declared arg type — the reflect facade cannot bridge
+script types into reflect.Value call args.
+Corpus: $GOROOT/test/fixedbugs/issue26335.go.

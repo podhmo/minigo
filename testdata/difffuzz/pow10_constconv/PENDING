@@ -1,0 +1,3 @@
+SILENT value: `case 1e19` fails to match x=1e19 uint64 — untyped float
+consts representable in uint64 but not int64 lose precision/conv in
+case-label comparison. $GOROOT/test/fixedbugs/issue43480.go.
