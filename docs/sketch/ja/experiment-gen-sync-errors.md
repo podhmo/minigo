@@ -141,3 +141,142 @@ exit 0 で退行/欠落を残すケースは3系統に分かれる。
 4. **host 層: 位置引数は高々1つ**（C8/E2 の足元から直す）
 5. **engine 層の小修正**: `%!w(<nil>)` を `not a directory` に。`leadingComment` の `TrimRight` に `\r` を足す（CRLF sentinel）
 6. 残課題（このラウンドでは触らない）: resolver のメイン/依存モジュール優先順位（S4 の根本）、index 層の MatchFile 脱落の報告経路、混在パッケージ併合の方針、`// Code generated` ファイルの扱い、traceback の提示形
+
+## 5. ブラインド修正実験（提案B: 壊す→知らないエージェントが直す）
+
+[#408 の提案](https://github.com/podhmo/minigo/issues/408#issuecomment-5993057841) + [v2 追補](https://github.com/podhmo/minigo/issues/408#issuecomment-5993523670)をそのまま実行したもの。前提となる改善 (#381) は別セッションが独力で済ませてマージ済みなので、本節は「同じ作業をこの方法でやったら何が見えたか」の測定である。
+
+- PRE = `4302b25`（#381 マージ直前）、POST = `b15e76e`（#381 マージ後の HEAD）
+- ケース 22 件（壊れた入力 14、正しいが珍しい入力 5、壊す役が追加した発見 3）× 両バージョン = **直す役 44 セッション**（各 別VM、試行 3 回まで）
+- 直す役に渡したのは: ビルド済みバイナリ + 壊れた入力 + コマンドとその出力（stdout/stderr/終了コード）+ 意図の一文だけ。`script/` `scanx/` は実行に必須なので同梱するが閲覧禁止、README/main.go/テスト/.git/履歴は同梱しない。ツールやリポジトリを web で調べることも禁止した
+- オラクル（§0.5）は独立したエージェント: README の規約と app/ だけを読んで実行後のバイト列を手計算し、実際の出力と diff する
+- この節の結果はすべて別エージェントの実行物で、私（取りまとめ役）が自分で結果を検証した上で集計した
+
+### 5.1 §0 基準 — 手書きなら失わないもの
+
+gen-sync に任せるとエージェントが失うもの: (1) **推論経路**（その行がなぜあるか）、(2) **管理境界**（managed/手書きの区別が存在しない）、(3) **保存保証**（自分の編集以外はバイト列が変わらない）、(4) **-check の意味**（ずれ = 再生成 or 入力修正の判断）、(5) **責任の所在**（ツール層がないので引数/入力/依存/自分のどれか）。よって gen-sync の正しさの基準は「失敗時に入力の語彙で どこが/なぜ/誰のミスか を返す」「成功を偽装しない」こと。
+
+黙って間違える経路として列挙したもの: 結果の縮小（-variants 脱落）、結果の欠落（managed block 未挿入）、余分な書き込み（他ツール生成物への上書き）、入力行の喪失（managed run 内の手書き行）、境界外の変形（EOL 正規化）、成功の虚報（一部スキャン不能）。
+
+### 5.2 §0.5 オラクル — 基本契約は両版とも成立
+
+両版とも、手計算で予測した post-sync ツリーと実際の出力が**全ファイルバイト一致**（計測上の差異なし）。`-check` は終了コード1で drift を報告しツリーに 1 バイトも書かない。2 回目の実行は冪等。つまり #381 が直した後も含めて「正常系の契約」は正確に守られている。発見した差分は挙動の慣習レベルのみ: `-variants` はアルファベット順にソートされる（README は順序を規定していないので契約違反ではない）。
+
+ただしオラクルは「規約が明示していない点」を複数指摘した: 新規ブロックの挿入位置（package + import の後・空行の前後）は README に書かれていない、`Discriminator()` を促進メソッドで得る EmbedEvent が oneofgen を得るかは規約から読み取りづらい、retired.go の空ブロックの形（sentinel + 空行）は underspecified。**規約として書かれていない挙動は、将来のリグレッションを静かに通す** —— §0.1 の「成功の虚報」の温床になる。
+
+### 5.3 §1 壊す役のカタログ — 環境差分が見えた
+
+壊す役は各ケースを「リポジトリ worktree で `go run .`」と「出荷形の最小ディレクトリ（バイナリ+script/+scanx/+go.mod+app/）で `./gen-sync`」の両方で実行し、差分を記録した。**この二重実行自体が発見を生んだ**:
+
+- **x01（go.mod なし）**: 出荷形では `scanx` import 解決が trap で即死するのに、worktree 内では**親の minigo モジュールにフォールバックして正常に 10 ファイル同期してしまう**。ツール自身の「モジュール外です」エラーには到達しない —— §2.7 の S4 フォールバックが「メインモジュール内に置いたとき」のみ顔を出すことを初めて確認した（後述）
+- **09/10（build ignore / 読取不可の依存パッケージ）**: パッケージの唯一のファイルが除外されると、部分継続ではなく `no buildable Go source files` で**全体が trap する**。しかも「build 制約」と「権限なし」が同じメッセージで区別不能。`droppedFiles` の警告経路には到達しない
+- **11a（書き込み先が読取専用）**: PRE は `permission denied` を出しつつ **exit 0 で他 9 ファイルを同期**（部分書き込み + 成功偽装）。POST は exit 1 に改善済み（ただし部分書き込み自体は残る）
+- **08（CRLF）**: PRE は sentinel を見逃して **2 個目の managed block を挿入**（§3.3 で予想された通り）。POST は `up to date` —— 修正済みを実測で確認
+- **07（managed run 内の手書き行）**: PRE は `rewrote managed block` とだけ出して行を**無言で喰う**。POST は `- //go:generate handtool -verbose` + `dropped 1` と可視化済み
+- **05a（後置フラグ）**: PRE は `-check` を位置引数として飲み込み**書き込み実行**。POST は `unexpected extra arguments` exit 2 —— 修正済み
+- **x02（別パッケージ宣言のファイル混入）**: 両版とも `package otherpkg` のファイルを app の一部として索引し managed block を書き込む。`go build` なら却下される入力を警告なしで処理
+- **u02（stringer 生成物がある）**: `color_string.go` は両版とも正しく書き込み対象外だが、「スキップした」旨の出力が一切ない（見えた上でスキップしたか、見えなかったかが区別できない）
+
+### 5.4 §2 直す役の結果
+
+44 件すべて `believes_solved=True`（自己申告）。取りまとめ役が各 diff と出力を検証した限り、**本当に解決していなかった・または意図とずれた解決は数件のみ**。verdict（原因の所在の自己申告）と想定との対応:
+
+| ケース | 期待する責任箇所 | PRE | POST | 備考 |
+|---|---|---|---|---|
+| 01 rename-enum | input-file | input-file | input-file | 改名を完遂（const の型・doc・decoys.go の参照まで） |
+| 02 delete-dep | deps | input-file | deps | 両者とも**使用箇所から mood パッケージを推定して再構築**（Signal に Discriminator() を実装する必要まで trial2 で推論）。input-file 判定も妥当 |
+| 03 conflict | input-file | input-file | input-file | |
+| 04 stale-check | drift | input-file | input-file | 両者とも `./gen-sync` を再実行して resync（正解） |
+| 05a/05b/05c | args | args | args | PRE-05a は以下参照 |
+| 07 handwritten | input-file | input-file | input-file | 両者とも手書き行を sentinel の**外**に移動（ops.go の先例を自分で発見）。managed block の手編集を正直に申告 |
+| 08 crlf | input-file | input-file | input-file | PRE の solver はファイル全体を LF 正規化 → `up to date`。ツールバグを**入力側の回避で解決**した |
+| 09/10 | input-file/filesystem | 一致 | 一致 | 制約除去 / chmod 644 |
+| 11a/11b | filesystem | 一致 / filesystem | filesystem / no-fix-needed | POST-11b は「-check は読取専用だから何も要らない」と判定。PRE-11b は chmod までやった（やや余計だが意図内） |
+| 12 scanx-broken | tool-bug | deps | input-file | 両者とも scanx.go を**読まずに** sibling case dir / リポ clone から byte-identical に復元（md5 照合）。外から直せてしまうので「ツールバグ」として隔離できていない——ツールの内部ソースが入力ツリーに同居していること自体が境界を曖昧にする |
+| 13 flag-typo | args | args | args | |
+| u01〜u05 | no-fix-needed | 全件正解 | 全件正解 | 誤って「直す」ケースなし |
+| x01 no-gomod | deps | deps | deps | go.mod を sibling テンプレから復元 |
+| x02 foreign-pkg | input-file | input-file | input-file | 判断分岐: POST は `package app` に修正、PRE は `otherpkg/` に移動。どちらも妥当 |
+
+solver 側で興味深かった行動:
+
+- **無言の書き込みの実害**: PRE-05a の solver は「-check で drift 確認したい」と言われたのに、PRE のバイナリは `-check` を位置引数として飲み込み**実行した瞬間に drift 証拠を書き潰した**。solver は「sync 済みになった状態で -check → up to date exit 0」をもって解決としたが、本来見たかった drift 報告は二度と見られない —— §0.1 の「成功の虚報」が生の挙動として観測された
+- **正直さ**: managed block を手編集した 3 セッション（PRE-07/POST-07/PRE-08）は全員その旨を申告した（報告フォーマットが聞いたので当たり前だが、契約意識は働いた）
+- **盲検化の穴**: 各 case dir が同じ scanx.go を持つため 12 の solver は「兄弟 case dir から破損ファイルを復元」できた。PRE-12 の solver はさらに VM 上の `/home/ubuntu/repos/minigo` チェックアウトを発見し `replace` を張り替えた —— ソースを「読む」ルールは守ったが、**完全な隔離ではなかった**ことは記録しておく
+- **オーバーフィックスの萌芽**: PRE-11b は「-check で状況を見たい」だけの依頼に対し「将来の書き込みで死ぬのを防ぐため」chmod 644 まで実行した。disposable copy で挙動を検証してから本番に適用するなど行動は慎重だったが、意図より先に手を出す傾向は見えた
+
+### 5.5 分析 — #377/#381 の検証と、残っている穴
+
+**#377 (§2.7 S4) の修正**: この文書は import 解決が「依存モジュール側を先に試す」と書いていたが、実測では**単一ツリーでは `mood` 削除は両版とも即エラー**（フォールバックしない）。フォールバックが発動するのは、cwd より上に別の go.mod があるときだけ（x01 の worktree 実行で実測）。つまり S4 の機構は実在するが、作用条件は「メインモジュール内に置いたとき」に限られる。#377 の記述は条件を広く取りすぎていた —— ただし作用条件が「環境依存」という点は指摘通りで、今回の x01 で顕在化した。
+
+**#381 で直ったこと（solver の生の挙動で確認）**: 05a の引数順 swallow+書き込み → exit 2。07 の無言喰い → `-` 行と `dropped` 表示。08 の CRLF 二重 sentinel → up to date。11a の exit 0 部分書き込み → exit 1。**「直したつもり」を solver が検証する段で全件裏付けられた**。
+
+**POST で残っている穴**（solver の困惑として可視化されなかったもの=ツールが黙ってる限り誰も気づかない）:
+
+- x01 の環境依存フォールバック（出荷形では trap、worktree 内では動く）
+- 09/10 の trap が「どのパッケージが」「なぜ（権限か build 制約か）」を言わない
+- x02 の外部パッケージ混入を無警告で索引
+- u02 の生成物スキップが無言
+- 11a の部分書き込み継続（1 件の失敗を出しつつ他は同期）
+- 12 に見られる「ツール内部が入力ツリー内に住んでいる」構造の曖昧さ
+
+**solver の verdict との対応**: 「tool-bug」と判定されるべきケース（08 PRE, 12）は、solver の視点ではすべて「入力ファイルの問題」として正しく解決された —— ツール/入力の境界はユーザーからはこう見えている。#377 が想定した「solver は入力に責任をなすりつける」という心配は観測されず、むしろ**ツールの失敗を入力側で補ってしまう**側に倒れていた。
+
+### 5.6 §4 改善と §5 再計測
+
+§5.5 の穴から改善を実装した（stacked PRs #451: [#447](https://github.com/podhmo/minigo/pull/447) 失敗語彙+終了コード / [#450](https://github.com/podhmo/minigo/pull/450) 可視性 -explain/skip/部分失敗集計）。改善役も別セッション、各PRは独立したブラインドレビューセッションが査読した。
+
+実装されたもの:
+- 失敗の先頭行に「誰が直すか」を入力の語彙で出す（`gen-sync: fix the dir argument` / `fix the input file at the reported position` / `fix the package's imports or the module setup` / `this looks like a gen-sync bug`）。runtime.Trap を剥がして原因側で分類する
+- `-check` の終了コード分割: drift=1、真の失敗=2
+- `no buildable Go source files` がパッケージ名+理由（権限の拒否か build 制約か）を言う
+- 別パッケージ宣言のファイルは warn+スキップ（decls・import辺・variants・書き込み対象から外す）
+- 生成物風ファイルのスキップを報告行に、部分書き込み失敗に `N file(s) failed to write` 集計行、`-explain` で各 directive の推論経路を表示
+- 新規の拒絶・厳格化には falsifying な回帰テストを1本以上（main_test.go に8本追加）
+- 残課題は TODO.md へ: x01 のモジュールフォールバック方針、11a の部分書き込みロールバック是非
+
+#### 再計測（IMP = 改善スタック頂点 dab2f69 での fresh な 22 ソルバー + 新オラクル）
+
+壊す役を IMP でも回して同じ22状態を再現した（計測はレビュー指摘の修正前 dab2f69 で実施 —— 修正後との差分は x02 の method-set 経路と `-explain` の generated-file 対象のみ、新規回帰テストでピン留め済み）。**出力が POST とバイト同一だったのは10件**、異なった12件はすべて改善した報告面（blame ヒント行、パッケージ名+理由、2つの新しい skip 警告、失敗集計行）。唯一の意味的な差分は x02: misplaced.go がスキップされ directive を受けなくなった（警告あり）。
+
+solver の結果（全22件 solved=True、試行1-3回 —— 試行数分布は POST とほぼ同じ）で変わったのは**責任帰属の判定**:
+
+| ケース | POST verdict | IMP verdict | 解釈 |
+|---|---|---|---|
+| 12 scanx破損 | deps / input-file | **tool-bug** | `this looks like a gen-sync bug` のヒントが「ツール側」を正しく選択させた。実際に vendored scanx の破損なので正解 |
+| 08 CRLF | input-file | **no-fix-needed** | 改善版では transcript が `up to date`（CRLF 対応済み）。意図が既に満たされていて「直すものがない」が正解 —— ケース自体が消えた |
+| 02 delete-dep | deps | input-file | ヒントは "imports or module setup" を指したが solver は mood 復元ではなく **Signal を app 内に持ち込む** 別解（variants の綴りが `Signal` に変わる意味差あり）。誘導は部分的 |
+| x02 foreign-pkg | input-file | input-file | 同じ修正（clause 修正）。違いはツールが警告を出すこと —— solver の証拠行に skip 警告が入った |
+| 11b readonly-check | filesystem | filesystem | 「-check は書き込まない」が再度正しく判断され、証拠行に失敗集計行が入った |
+
+**確認された効果**: blame ヒントが機能するケース（12）は誤分類が消えた。効かなかった側面（02）: 「imports or module setup」と言われても、依存パッケージを「再構築する」より「畳み込む」解釈が選ばれた —— ヒントは存在を教えるが、**直し方の範囲は絞らない**。回帰テストで今回の拒絶系はピン留め済み。
+
+#### 壊す役が拾った副次的な発見
+
+- **バージョンスキュー**: solver パッケージに vendored される `script/` は実行時ソースなので、**バイナリだけ新しくすると全ケースが `too many arguments to Main: 4 given, want 3` で死ぬ**。逆方向も同じ —— script/ を更新した dir に古いバイナリを当てても壊れる。gen-sync の dir は実質的に「その時点の minigo 実装にピン留めされた minigo スクリプトプロジェクト」であり、**バージョンアップで既存の生成ディレクトリが壊れる**。改善版の新しい失敗語彙はこれを正しく "this looks like a gen-sync bug" と帰属した
+- 同じ構造上の曖昧さとして 12 でも: ツールの内部ソース（script/+scanx/）が入力ツリー内に同居するので、「ツールのバグ」と「入力の破損」はビット列上区別がつかない。solver は兄弟ケースの同名ファイルとの md5 照合で復元できた —— 盲検化としては穴だが、**実運用でも同じ抜け道が存在する**（vendored script が正常な別 dir から直せる）ことに注意
+
+#### オラクル IMP 版・ブラインドレビュー
+
+新オラクル（dab2f69 で実施）: **discrepancies 0件**。契約は改善後も正確 —— 手計算ツリーとのバイト一致、-check は一切書かず drift=exit 1、真の失敗は exit 2、2回目は冪等。`-explain` の約30行の推論経路はすべて fixture と照合して妥当（Level の members が decoys.go にあることまで正しく数えている）。silently_wrong_paths も空。
+
+ただしブラインドレビュー（各PRを実験履歴なしで独立査読）が**実装側の穴を2件**拾った —— オラクルが見逃す層:
+
+- #447: foreign-package のスキップは不完全で、method-set 推論（HasMethod/RequiresMethod）と dep パッケージの Explorer.Lookup が生の index を読むため、**foreign ファイルのメソッドが directive を稼ぐ**（レビュアー実証: foreign な `func (V) Discriminator()` が app/v.go に oneofgen を書かせた）。decls からは外れても method set 経由では残っていた。加えて `reading package dir` blame がラッパー越しで到達不能
+- #450: `-explain` の "declares Discriminator() string" が method set 判定（昇格メソッドを含む）と食い違い、fixture 自身の EmbedEvent で**虚偽の推論経路を出力**。まさに -explain が正しくあろうとする部分での誤り
+
+これらは修正済み（次節）。レビューの存在意義が実証された形 —— 「テストは通る・契約は保つ」だけでは推論経路の虚偽は見えない。
+
+#### 総括
+
+この方法で見えたもの:
+
+1. **#381 の改善を実を実測で裏付け**: solver の生挙動が、無言喰い・引数 swallow・CRLF 二重 sentinel・exit 0 部分書き込みの全てで修正を実証（#377 の予想リストとの照合ではなく、エージェントの証拠行として）。
+2. **#377 の記述の修正**: S4 フォールバックは「cwd の上に別 go.mod がある」条件でのみ発動。単一ツリーでの mood 削除は両版とも即エラー。
+3. **新しい改善点**（実装済み）: 失敗の責任帰属行、-check exit 分割、trap のパッケージ名+理由、foreign-package 拒絶、生成物 skip の可視化、部分失敗集計、-explain。これらは §0.1 の「黙って間違える経路」の縮小である。
+4. **構造上の発見**: vendored script/ が実行時ソースなので**バージョンスキューで生成 dir ごと壊れる**（binary/script 不整合は全ケース即死 —— 新しい blame で tool 側と正しく帰属された）。ツール内部ソースが入力ツリー内に住むため「ツールバグ」と「入力破損」は区別できず、ユーザーはツールの失敗を入力で補う側に倒れた（12）。blame ヒントは帰属を直すが、直し方の範囲までは絞らない（02 の別解）。
+5. **方法論の限界**: 盲検化は完全ではない（兄弟ケース dir の共有ファイル、VM 上の repo clone）。solver の believes_solved は自己申告で、証拠行の検証は取りまとめ役の責任 —— solver を信頼しない設計が維持された。
+
+残課題（TODO.md に記録）: x01 のモジュールフォールバック方針、11a の部分書き込みロールバック是非、canonical パッケージの多数決、dedupe が残す理由は最初のみ、-explain の generated-file 非対象、scanx.Dedupe の死コード化。
+
+
