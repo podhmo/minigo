@@ -457,6 +457,85 @@ func (c *compiler) typeIdent(e ast.Expr, name string) {
 	c.expr(e)
 }
 
+// recvTypeExpr rewrites blank type arguments in a method receiver's
+// instantiation — `func (f *Foo[_, _])` binds the generic's own type
+// parameters positionally, so `_` at argument i names the base type's
+// declared TParams[i], not a fresh name. Resolving it that way makes the
+// receiver's coerce target the same specialization the argument carries
+// (`*Foo[string,int]` binds `*Foo[_, _]`). The shared AST is never
+// mutated — each rewritten node is a shallow copy.
+func (c *compiler) recvTypeExpr(e ast.Expr) ast.Expr {
+	var args []ast.Expr
+	var base ast.Expr
+	star := false
+	t := e
+	if s, ok := t.(*ast.StarExpr); ok {
+		star = true
+		t = s.X
+	}
+	switch x := t.(type) {
+	case *ast.IndexExpr:
+		base = x.X
+		args = []ast.Expr{x.Index}
+	case *ast.IndexListExpr:
+		base = x.X
+		args = x.Indices
+	default:
+		return e
+	}
+	names := c.recvTParamNames(base)
+	if names == nil {
+		return e
+	}
+	var out []ast.Expr
+	for i, a := range args {
+		if id, ok := a.(*ast.Ident); ok && id.Name == "_" && i < len(names) {
+			if out == nil {
+				out = append([]ast.Expr(nil), args...)
+			}
+			out[i] = &ast.Ident{NamePos: id.NamePos, Name: names[i]}
+		}
+	}
+	if out == nil {
+		return e
+	}
+	switch x := t.(type) {
+	case *ast.IndexExpr:
+		t = &ast.IndexExpr{X: x.X, Lbrack: x.Lbrack, Index: out[0], Rbrack: x.Rbrack}
+	case *ast.IndexListExpr:
+		t = &ast.IndexListExpr{X: x.X, Lbrack: x.Lbrack, Indices: out, Rbrack: x.Rbrack}
+	}
+	if star {
+		s := e.(*ast.StarExpr)
+		return &ast.StarExpr{Star: s.Star, X: t}
+	}
+	return t
+}
+
+// recvTParamNames resolves the base of a receiver instantiation to the
+// type-parameter names its type declaration declares.
+func (c *compiler) recvTParamNames(x ast.Expr) []string {
+	id, ok := x.(*ast.Ident)
+	if !ok || c.pkg == nil || c.pkg.Index == nil {
+		return nil
+	}
+	td, ok := c.pkg.Index.Types[id.Name]
+	if !ok || td.Decl == nil {
+		return nil
+	}
+	spec, ok := td.Decl.Spec.(*ast.TypeSpec)
+	if !ok || spec.TypeParams == nil {
+		return nil
+	}
+	var names []string
+	for _, f := range spec.TypeParams.List {
+		for _, n := range f.Names {
+			names = append(names, n.Name)
+		}
+	}
+	return names
+}
+
 // declared reports whether name resolves through a declaration rather
 // than a builtin — a local/upval from fscope, a generic instantiation
 // binding, a package-level decl in the index, or a predeclared type —
@@ -511,7 +590,7 @@ func Func(fn *runtime.Function) error {
 			if len(fn.Decl.Recv.List[0].Names) > 0 {
 				recv = fn.Decl.Recv.List[0].Names[0].Name
 			}
-			recvType = fn.Decl.Recv.List[0].Type
+			recvType = c.recvTypeExpr(fn.Decl.Recv.List[0].Type)
 		}
 		rpos := token.NoPos
 		if len(fn.Decl.Recv.List[0].Names) > 0 {
