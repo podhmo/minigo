@@ -111,7 +111,7 @@ func errorResult(v runtime.Value) error {
 	if e == nil || e == runtime.NIL {
 		return nil
 	}
-	if in, isNilIface := e.(*runtime.IfaceNil); isNilIface && in.Typ != nil && in.Typ.Kind == runtime.KindInterface {
+	if runtime.IfaceTaggedNil(e) != nil {
 		// a nil interface value returned in the error slot is a nil
 		// error (IfaceNil{error} is what `return nil` now binds); a
 		// boxed typed nil stays a non-nil error.

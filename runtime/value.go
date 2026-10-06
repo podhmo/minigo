@@ -49,6 +49,38 @@ type TypedNil struct{ Typ *TypeDef }
 // recorded dynamic type.
 type IfaceNil struct{ Typ *TypeDef }
 
+// IfaceTaggedNil returns the interface typedef carried by a nil
+// interface value — an IfaceNil whose static tag is an interface kind
+// — else nil. An untagged IfaceNil (Typ == nil) has no tag to report,
+// and a concrete tag means a boxed typed nil, not the nil interface.
+func IfaceTaggedNil(v Value) *TypeDef {
+	if in, ok := v.(*IfaceNil); ok && in.Typ != nil && in.Typ.Kind == KindInterface {
+		return in.Typ
+	}
+	return nil
+}
+
+// BoxedNilTyp returns the dynamic typedef of a typed nil boxed in an
+// interface — an IfaceNil whose tag is a concrete type — else nil.
+// The distinction is observable: the boxed nil is NOT nil (it has a
+// dynamic type), `x == nil` fails and `x.(T)` sees the tag.
+func BoxedNilTyp(v Value) *TypeDef {
+	if in, ok := v.(*IfaceNil); ok && in.Typ != nil && in.Typ.Kind != KindInterface {
+		return in.Typ
+	}
+	return nil
+}
+
+// IsNilIface reports whether v is the nil interface itself — an
+// IfaceNil with no dynamic type: untagged (Typ == nil) or carrying
+// only an interface tag. A boxed typed nil reports false.
+func IsNilIface(v Value) bool {
+	if in, ok := v.(*IfaceNil); ok {
+		return in.Typ == nil || in.Typ.Kind == KindInterface
+	}
+	return false
+}
+
 // ImplicitIndex marks the key of a positional element inside a mixed
 // keyed/positional composite literal — `[8]int{3: 1, 2}` — where Go
 // assigns it the running index (one past the previous element's).
