@@ -5763,36 +5763,22 @@ func materialize(f *frame, x runtime.Value) runtime.Value {
 // materializeDefault converts an untyped constant to its Go default
 // type: bool, string, rune->int32, int, float64, or complex128.
 func materializeDefault(u *runtime.UConst) (runtime.Value, error) {
-	switch u.V.Kind() {
-	case constant.Bool:
-		return constant.BoolVal(u.V), nil
-	case constant.String:
-		return constant.StringVal(u.V), nil
-	case constant.Int:
-		if u.Rune {
-			if i, ok := constant.Int64Val(u.V); ok {
-				return runtime.Tag(&runtime.TypeDef{Name: "rune", Kind: runtime.KindNamedBasic}, i), nil
-			}
-			return nil, fmt.Errorf("constant %s overflows rune", u.V)
-		}
+	if u.V.Kind() == constant.Int && u.Rune {
 		if i, ok := constant.Int64Val(u.V); ok {
-			return i, nil
+			return runtime.Tag(&runtime.TypeDef{Name: "rune", Kind: runtime.KindNamedBasic}, i), nil
 		}
-		if uv, ok := constant.Uint64Val(u.V); ok && uv <= math.MaxInt64 {
-			return int64(uv), nil
-		}
-		return nil, fmt.Errorf("constant %s overflows int", u.V)
-	case constant.Float:
-		fv, _ := constant.Float64Val(u.V)
-		if math.IsInf(fv, 0) {
-			return nil, fmt.Errorf("constant %s overflows float64", u.V)
-		}
-		return runtime.CanonConstZero(fv), nil
-	case constant.Complex:
-		cv := constComplexVal(u.V)
+		return nil, fmt.Errorf("constant %s overflows rune", u.V)
+	}
+	mv, err := runtime.UConstNative(u)
+	if err != nil {
+		return nil, err
+	}
+	if cv, ok := mv.(complex128); ok {
+		// a complex constant rides as a GoValue inside the VM so it
+		// stays distinct from a real script number.
 		return &runtime.GoValue{V: cv}, nil
 	}
-	return nil, fmt.Errorf("cannot materialize constant %s", u.V)
+	return mv, nil
 }
 
 // materializeConst converts an untyped constant for a declared target —
