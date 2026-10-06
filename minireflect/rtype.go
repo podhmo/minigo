@@ -966,7 +966,7 @@ func (t *RType) Implements(u *RType) bool {
 	have := t.e.methodSet(t.td)
 	for name, req := range reqs {
 		hm := have[name]
-		if hm == nil || !runtime.SigIdentical(req, hm) {
+		if hm == nil || !runtime.SigIdentical(req, hm, reflectResolver{t.e}) {
 			return false
 		}
 	}
@@ -1721,4 +1721,53 @@ func funcParam(t *RType, i int, results bool) ast.Expr {
 	}
 	panic(runtime.BoundsPanic(i, n))
 	return nil
+}
+
+// reflectResolver adapts the facade's Hooks to runtime.TypeResolver so
+// Implements compares signatures with the same semantic normalization
+// (alias peel, interface method-set order) the VM applies. The facade
+// has no IfaceSigs hook, but its MethodSet hook returns an interface
+// typedef's requirement funcs — the same signature map.
+type reflectResolver struct{ e *Env }
+
+func (r reflectResolver) PeelAlias(td *runtime.TypeDef) *runtime.TypeDef {
+	for i := 0; td != nil && td.Kind == runtime.KindAlias && i < 32; i++ {
+		if r.e.h.AliasOf == nil {
+			return td
+		}
+		nt, err := r.e.h.AliasOf(td)
+		if err != nil || nt == nil || nt == td {
+			return td
+		}
+		td = nt
+	}
+	return td
+}
+
+func (r reflectResolver) IfaceReqs(td *runtime.TypeDef) (map[string]bool, error) {
+	if r.e.h.IfaceReqs == nil {
+		return nil, fmt.Errorf("no IfaceReqs hook")
+	}
+	return r.e.h.IfaceReqs(td)
+}
+
+func (r reflectResolver) IfaceSigs(td *runtime.TypeDef) (map[string]*runtime.Function, error) {
+	if r.e.h.MethodSet == nil {
+		return nil, fmt.Errorf("no MethodSet hook")
+	}
+	return r.e.h.MethodSet(td)
+}
+
+func (r reflectResolver) ResolveType(from *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, error) {
+	if r.e.h.ResolveType == nil {
+		return nil, nil
+	}
+	return r.e.h.ResolveType(from, x)
+}
+
+func (r reflectResolver) ElemOf(td *runtime.TypeDef) (*runtime.TypeDef, error) {
+	if r.e.h.ElemOf == nil {
+		return nil, nil
+	}
+	return r.e.h.ElemOf(td)
 }
