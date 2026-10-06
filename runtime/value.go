@@ -1209,9 +1209,13 @@ type TypeDef struct {
 	// see CachedFieldTypes). A copy that changes what resolution reads
 	// (Binds, Pkg, File, LocalTypes) must call ResetCaches.
 	fieldTypes atomic.Value
-	// ifaceSigs caches an interface typedef's signature-bearing required
-	// methods (map[string]*Function, see CachedIfaceSigs) under the same
-	// rule.
+	// ifaceReqs and ifaceSigs cache an interface typedef's flattened
+	// requirement names (map[string]bool) and signature shells
+	// (map[string]*Function), see CachedIfaceReqs/CachedIfaceSigs.
+	// Interface satisfaction consults both on every conversion to the
+	// interface, and rebuilding them dominated allocation in
+	// interface-heavy scripts (go/parser's ast.Expr/ast.Stmt values).
+	ifaceReqs atomic.Value
 	ifaceSigs atomic.Value
 }
 
@@ -1225,23 +1229,35 @@ func (td *TypeDef) CachedFieldTypes() ([]*TypeDef, bool) {
 // td's own declaration context, so every reader of td can share them.
 func (td *TypeDef) SetFieldTypes(fts []*TypeDef) { td.fieldTypes.Store(fts) }
 
-// ResetCaches drops the lazily computed caches — for a shallow copy
-// whose resolution context differs from the original's.
-func (td *TypeDef) ResetCaches() {
-	td.fieldTypes = atomic.Value{}
-	td.ifaceSigs = atomic.Value{}
+// CachedIfaceReqs returns the requirement names stored by SetIfaceReqs.
+func (td *TypeDef) CachedIfaceReqs() (map[string]bool, bool) {
+	reqs, ok := td.ifaceReqs.Load().(map[string]bool)
+	return reqs, ok
 }
 
-// CachedIfaceSigs returns the required-method shells stored by
-// SetIfaceSigs (a nil map when the interface declares no signature).
+// SetIfaceReqs caches an interface typedef's flattened requirement
+// names. Like the field typedefs they depend only on td's declaration
+// context; callers must treat the shared map as read-only.
+func (td *TypeDef) SetIfaceReqs(reqs map[string]bool) { td.ifaceReqs.Store(reqs) }
+
+// CachedIfaceSigs returns the signature shells stored by SetIfaceSigs.
 func (td *TypeDef) CachedIfaceSigs() (map[string]*Function, bool) {
 	sigs, ok := td.ifaceSigs.Load().(map[string]*Function)
 	return sigs, ok
 }
 
-// SetIfaceSigs caches td's signature-bearing required methods. Readers
-// share the map and must not modify it.
+// SetIfaceSigs caches an interface typedef's signature shells (nil
+// when it declares none). Stable shell pointers also let SigMemo key
+// signature comparisons; callers must treat the map as read-only.
 func (td *TypeDef) SetIfaceSigs(sigs map[string]*Function) { td.ifaceSigs.Store(sigs) }
+
+// ResetCaches drops the lazily computed caches — for a shallow copy
+// whose resolution context differs from the original's.
+func (td *TypeDef) ResetCaches() {
+	td.fieldTypes = atomic.Value{}
+	td.ifaceReqs = atomic.Value{}
+	td.ifaceSigs = atomic.Value{}
+}
 
 // TypeKind classifies a named type's underlying shape.
 type TypeKind uint8
