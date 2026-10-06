@@ -1,5 +1,0 @@
-SILENT value: go prints "abc_d" (package var init runs in dependency order:
-d's deps c,b first via the `_ = f("_", c, b)` edge, then declaration order);
-minigo prints "dcb_a" (plain declaration order). Init order ignores
-dependency analysis between package-level vars.
-Corpus: $GOROOT/test/fixedbugs/issue22326.go (also issue43444.go).

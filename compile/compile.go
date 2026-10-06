@@ -3745,34 +3745,53 @@ func orderSpecs(ix *index.Index, reps []*index.Decl) []*index.Decl {
 		deps[vs] = ds
 	}
 
-	// dependency-driven DFS: walk decls in source order; before emitting a
-	// spec, emit each spec it depends on (Go initializes a variable's
-	// dependencies at its point in the declaration order, not globally).
+	// dependency-gated priority order, matching go's types2 initOrder:
+	// repeatedly emit the unemitted spec with the fewest outstanding
+	// dependencies, breaking ties by declaration order. Dependencies
+	// only hold their dependants back — they are not pulled early — so
+	// a no-dep var declared between a dependant and its dep runs first
+	// ($GOROOT/test/fixedbugs/issue22326.go prints "abc_d": a, b, c in
+	// declaration order, then the dep-blocked `_ = f("_", c, b)`, then d).
 	bySpec := map[*ast.ValueSpec]*index.Decl{}
-	for _, d := range reps {
-		bySpec[d.Spec.(*ast.ValueSpec)] = d
-	}
-	var out []*index.Decl
-	done := map[*ast.ValueSpec]bool{}
-	visiting := map[*ast.ValueSpec]bool{} // cycle guard
-	var visit func(d *index.Decl)
-	visit = func(d *index.Decl) {
+	order := map[*ast.ValueSpec]int{}
+	for i, d := range reps {
 		vs := d.Spec.(*ast.ValueSpec)
-		if done[vs] || visiting[vs] {
-			return
-		}
-		visiting[vs] = true
+		bySpec[vs] = d
+		order[vs] = i
+	}
+	ndeps := map[*ast.ValueSpec]int{}
+	consumers := map[*ast.ValueSpec][]*ast.ValueSpec{}
+	for _, d := range reps {
+		vs := d.Spec.(*ast.ValueSpec)
+		ndeps[vs] = len(deps[vs])
 		for dep := range deps[vs] {
-			if dd, ok := bySpec[dep]; ok {
-				visit(dd)
+			if _, ok := bySpec[dep]; ok {
+				consumers[dep] = append(consumers[dep], vs)
 			}
 		}
-		delete(visiting, vs)
-		done[vs] = true
-		out = append(out, d)
 	}
-	for _, d := range reps {
-		visit(d)
+	var out []*index.Decl
+	emitted := map[*ast.ValueSpec]bool{}
+	for len(emitted) < len(reps) {
+		var best *index.Decl
+		bestDeps, bestOrder := -1, -1
+		for _, d := range reps {
+			vs := d.Spec.(*ast.ValueSpec)
+			if emitted[vs] {
+				continue
+			}
+			if best == nil || ndeps[vs] < bestDeps || (ndeps[vs] == bestDeps && order[vs] < bestOrder) {
+				best, bestDeps, bestOrder = d, ndeps[vs], order[vs]
+			}
+		}
+		// a dependency cycle leaves every node dep-blocked; the minimum
+		// still pops, keeping the order total like go's cycle fallback.
+		vs := best.Spec.(*ast.ValueSpec)
+		emitted[vs] = true
+		out = append(out, best)
+		for _, consumer := range consumers[vs] {
+			ndeps[consumer]--
+		}
 	}
 	return out
 }
