@@ -783,6 +783,40 @@ func TestExplainPrintsReasons(t *testing.T) {
 	}
 }
 
+func TestExplainCollatesSharedLineReasons(t *testing.T) {
+	dir := setupModule(t)
+	app := filepath.Join(dir, "app")
+	// two mockable interfaces in one file infer the same mockgen line —
+	// the line must appear once but collate every reason, or -explain
+	// would report only the first interface that earned it.
+	content := `package app
+
+type AlphaService interface{ A() }
+
+type BetaService interface{ B() }
+`
+	if err := os.WriteFile(filepath.Join(app, "dual.go"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var buf strings.Builder
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, true, &buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	var explainLine string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "dual.go explain:") {
+			explainLine = l
+		}
+	}
+	if explainLine == "" || strings.Count(out, "dual.go explain:") != 1 {
+		t.Fatalf("expected exactly one explain line for the shared directive:\n%s", out)
+	}
+	if !strings.Contains(explainLine, "AlphaService") || !strings.Contains(explainLine, "BetaService") {
+		t.Fatalf("-explain did not collate both interfaces' reasons:\n%s", explainLine)
+	}
+}
+
 func TestGeneratedFileSkipLogged(t *testing.T) {
 	dir := setupModule(t)
 	app := filepath.Join(dir, "app")

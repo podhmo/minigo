@@ -85,16 +85,22 @@ type directive struct {
 	reason string
 }
 
-// dedupeDirectives drops repeat lines keeping the first occurrence (and
-// its reason) — two rules can name the same tool line.
+// dedupeDirectives drops repeat lines keeping the first occurrence —
+// two rules can name the same tool line. Their reasons are kept too:
+// a shared line collates every reason it earned (joined with "; ") so
+// -explain does not report only the first rule's reasoning.
 func dedupeDirectives(ds []directive) []directive {
-	seen := map[string]bool{}
+	index := map[string]int{}
 	out := []directive{}
 	for _, d := range ds {
-		if !seen[d.line] {
-			seen[d.line] = true
-			out = append(out, d)
+		if i, ok := index[d.line]; ok {
+			if r := d.reason; r != "" && !strings.Contains(out[i].reason, r) {
+				out[i].reason += "; " + r
+			}
+			continue
 		}
+		index[d.line] = len(out)
+		out = append(out, d)
 	}
 	return out
 }
