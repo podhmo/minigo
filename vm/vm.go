@@ -903,7 +903,7 @@ func (v *VM) prepFrame(callee runtime.Value, args []runtime.Value, statics []*ru
 					if len(args) == i+1 {
 						rest = sp.S
 					} else {
-						rn := int64(len(args)-i-1) + sp.S.N
+						rn := int64(len(args)-i-1) + sp.S.Len()
 						rest = &runtime.Slice{N: rn, CapN: rn, Zero: sp.S.Zero, Typ: sp.S.Typ}
 					}
 				} else {
@@ -4011,8 +4011,8 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 		}
 		if b.Virtual() {
 			// a virtual zero-size slice vends its shared element value.
-			if i < 0 || i >= b.N {
-				panic(runtime.BoundsPanic(i, int(b.N)))
+			if l := b.Len(); i < 0 || i >= l {
+				panic(runtime.BoundsPanic(i, int(l)))
 			}
 			return v.elemRead(f, b.Typ, b.Zero)
 		}
@@ -4808,8 +4808,8 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 		if b.Virtual() {
 			// a virtual zero-size element can't be observed — the type
 			// has a single value — but the bounds check still applies.
-			if i < 0 || i >= b.N {
-				panic(runtime.BoundsPanic(i, int(b.N)))
+			if l := b.Len(); i < 0 || i >= l {
+				panic(runtime.BoundsPanic(i, int(l)))
 			}
 			return
 		}
@@ -4999,18 +4999,18 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 			// logical length and capacity like a real one — the
 			// two-index high may pass len up to cap — and the
 			// sub-slice stays virtual: s[:0] keeps the capacity.
-			l, h := bounds(f, lo, hi, b.N)
+			l, h := bounds(f, lo, hi, b.Len())
 			if three {
-				m := maxBound(f, max, b.CapN)
-				if r := sliceBoundsReason(l, h, m, b.CapN, true); r != "" {
+				m := maxBound(f, max, b.Cap())
+				if r := sliceBoundsReason(l, h, m, b.Cap(), true); r != "" {
 					panic(runtime.RuntimePanic(r))
 				}
 				return &runtime.Slice{N: h - l, CapN: m - l, Zero: b.Zero, Typ: sliceTypOf(b.Typ)}
 			}
-			if r := sliceBoundsReason(l, h, 0, b.CapN, false); r != "" {
+			if r := sliceBoundsReason(l, h, 0, b.Cap(), false); r != "" {
 				panic(runtime.RuntimePanic(r))
 			}
-			return &runtime.Slice{N: h - l, CapN: b.CapN - l, Zero: b.Zero, Typ: sliceTypOf(b.Typ)}
+			return &runtime.Slice{N: h - l, CapN: b.Cap() - l, Zero: b.Zero, Typ: sliceTypOf(b.Typ)}
 		}
 		l, h := bounds(f, lo, hi, int64(len(b.Elems)))
 		if three {
@@ -5515,7 +5515,7 @@ func (v *VM) newIterator(f *frame, coll runtime.Value) *runtime.Iterator {
 		if c.Virtual() {
 			// a virtual zero-size slice iterates its logical length,
 			// vending the shared element value.
-			return &runtime.Iterator{Kind: 's', Limit: int(c.N), Zero: c.Zero}
+			return &runtime.Iterator{Kind: 's', Limit: int(c.Len()), Zero: c.Zero}
 		}
 		return &runtime.Iterator{Kind: 's', Elems: c.Elems}
 	case *runtime.Map:

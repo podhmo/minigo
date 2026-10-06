@@ -154,7 +154,7 @@ func builtins(e *Engine) *runtime.Env {
 			// request, not to a doubling), while spare capacity stays.
 			nn := dstLen + int64(len(add))
 			if spread != nil {
-				nn += spread.N
+				nn += spread.Len()
 			}
 			if nn < 0 {
 				panic(runtime.RuntimePanic("growslice: len out of range"))
@@ -570,10 +570,7 @@ func lenOf(v runtime.Value) (runtime.Value, error) {
 		}
 		return lenOf(nv)
 	case *runtime.Slice:
-		if x.Virtual() {
-			return x.N, nil // virtual zero-size-element slice
-		}
-		return int64(len(x.Elems)), nil
+		return x.Len(), nil // N for a virtual zero-size-element slice
 	case *runtime.Map:
 		return int64(x.Len()), nil
 	case *runtime.Chan:
@@ -594,10 +591,7 @@ func capOf(v runtime.Value) (runtime.Value, error) {
 	case *runtime.Cell:
 		return capOf(x.Elem)
 	case *runtime.Slice:
-		if x.Virtual() {
-			return x.CapN, nil // virtual zero-size-element slice
-		}
-		return int64(cap(x.Elems)), nil
+		return x.Cap(), nil // CapN for a virtual zero-size-element slice
 	case *runtime.Chan:
 		return int64(cap(x.C)), nil
 	default:
