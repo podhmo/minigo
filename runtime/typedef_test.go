@@ -4,6 +4,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func typeExpr(t *testing.T, s string) ast.Expr {
@@ -91,5 +93,37 @@ func TestTypSpellingQualifiesPackage(t *testing.T) {
 	// a typedef without a package context spells unqualified.
 	if got := TypSpelling(e, nil); got != "[]Foo" {
 		t.Fatalf("nil ctx TypSpelling = %q", got)
+	}
+}
+
+func TestSigMemo(t *testing.T) {
+	pkg := &Package{Path: "example.com/p"}
+	fn := func(sig string) *Function {
+		ft := typeExpr(t, sig).(*ast.FuncType)
+		return &Function{Decl: &ast.FuncDecl{Type: ft}, Pkg: pkg}
+	}
+	req := fn("func() int")
+	same := fn("func() int")
+	diff := fn("func() float64")
+
+	var memo SigMemo
+	var nilMemo *SigMemo
+	var got []bool
+	for range 2 { // the second round answers from the memo
+		got = append(got,
+			memo.Identical(req, same, nil),
+			memo.Identical(req, diff, nil),
+			nilMemo.Identical(req, diff, nil),
+			memo.Identical(req, nil, nil), // a shim without decl satisfies by name
+		)
+	}
+	want := []bool{true, false, false, true, true, false, false, true}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("SigMemo.Identical mismatch (-want +got):\n%s", diff)
+	}
+	n := 0
+	memo.m.Range(func(any, any) bool { n++; return true })
+	if diff := cmp.Diff(2, n); diff != "" {
+		t.Errorf("memo entries (-want +got):\n%s", diff)
 	}
 }

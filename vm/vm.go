@@ -77,11 +77,9 @@ type Hooks struct {
 	// TypeMethodFuncs is MethodFuncsOf's typedef variant — the
 	// declared method set of a type rather than a value.
 	TypeMethodFuncs func(td *runtime.TypeDef) (map[string]*runtime.Function, error)
-	// SigEq memoizes memberSigEq per (requirement, method) Function pair
-	// (key sigPair, value bool) — shared by every VM of an engine. A
-	// Function's declared signature and context never change, so a pair's
-	// identity is stable; nil disables memoization.
-	SigEq *sync.Map
+	// SigMemo, when set, remembers member signature comparisons across
+	// the engine's VMs (see runtime.SigMemo). Nil compares every time.
+	SigMemo *runtime.SigMemo
 	// Underlying resolves a KindAlias typedef to its underlying typedef.
 	Underlying func(td *runtime.TypeDef) (*runtime.TypeDef, error)
 	// AliasOf resolves a KindAlias typedef to its direct target typedef
@@ -8764,21 +8762,8 @@ func (v *VM) memberSigsMatch(reqFns, dynFns map[string]*runtime.Function) bool {
 // requirement and the concrete method offered against it — through the
 // shared semantic comparator.
 func (v *VM) memberSigEq(req, dyn *runtime.Function) bool {
-	if v.H.SigEq == nil {
-		return runtime.SigIdentical(req, dyn, sigResolver{v})
-	}
-	key := sigPair{req, dyn}
-	if eq, ok := v.H.SigEq.Load(key); ok {
-		return eq.(bool)
-	}
-	eq := runtime.SigIdentical(req, dyn, sigResolver{v})
-	v.H.SigEq.Store(key, eq)
-	return eq
+	return v.H.SigMemo.Identical(req, dyn, sigResolver{v})
 }
-
-// sigPair keys Hooks.SigEq: an interface requirement and the concrete
-// member offered against it.
-type sigPair struct{ req, dyn *runtime.Function }
 
 // sigTypEq compares two typedefs by signature identity through the
 // shared semantic comparator, resolving against this VM's hooks.

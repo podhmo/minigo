@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/podhmo/minigo/syntax"
 )
@@ -594,6 +595,34 @@ func SigTypEq(a, b *TypeDef, res TypeResolver) bool {
 // reach both callers.
 func SigIdentical(req, dyn *Function, res TypeResolver) bool {
 	return sigComparer{res: orResolver(res)}.sigIdentical(req, dyn)
+}
+
+// SigMemo remembers SigIdentical verdicts per (requirement, offered)
+// member pair. Interface satisfaction compares the same pairs over and
+// over — every conversion of a *ast.Ident to ast.Expr re-checks End(),
+// Pos() and exprNode() — and each fresh compare allocates typedef
+// shells and walks both signatures. The verdict is a function of the two
+// Functions alone (their decl, package, file and binds) as long as the
+// resolver answers the same for one engine, so a memo shared by that
+// engine's VMs is safe; a Function copied with new binds is a new key.
+// The zero value is ready to use and safe for concurrent use.
+type SigMemo struct{ m sync.Map }
+
+type sigMemoKey struct{ req, dyn *Function }
+
+// Identical is SigIdentical through the memo. A nil memo compares
+// without remembering.
+func (s *SigMemo) Identical(req, dyn *Function, res TypeResolver) bool {
+	if s == nil || req == nil || dyn == nil {
+		return SigIdentical(req, dyn, res)
+	}
+	k := sigMemoKey{req, dyn}
+	if ok, hit := s.m.Load(k); hit {
+		return ok.(bool)
+	}
+	ok := SigIdentical(req, dyn, res)
+	s.m.Store(k, ok)
+	return ok
 }
 
 // sigComparer carries the resolver the semantic signature comparator
