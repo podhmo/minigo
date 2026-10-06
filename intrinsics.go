@@ -4974,6 +4974,7 @@ func bindTyp(td *runtime.TypeDef, et *runtime.TypeDef) *runtime.TypeDef {
 	}
 	if len(et.Binds) == 0 {
 		cp := *et
+		cp.ResetCaches()
 		cp.Binds = td.Binds
 		return &cp
 	}
