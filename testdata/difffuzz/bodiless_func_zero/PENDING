@@ -1,6 +1,0 @@
-SILENT value: prints 0 instead of 3. Bodiless (assembly) declarations like
-math/big's addVV compile to a no-op returning declared zero values
-(compile/compile.go, `fn.Decl.Body == nil` branch), so interpreted nat
-arithmetic silently collapses — Int.Add/Mul give 0, Rat.FloatString drops
-fraction digits, Float.SetRat miscomputes the exponent (idata's s=8).
-Source: abi/idata.go
