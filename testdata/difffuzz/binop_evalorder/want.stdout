@@ -1,1 +1,17 @@
 6
+convLR: runtime error: index out of range [-1]
+pureLR: runtime error: index out of range [5] with length 2
+assertL: interface conversion: interface {} is string, not int
+assertL2: interface conversion: interface {} is string, not int
+slicedx: runtime error: slice bounds out of range [:5] with capacity 2
+assertR: interface conversion: interface {} is string, not int
+nestbin: runtime error: index out of range [-1]
+divL: runtime error: index out of range [-1]
+pure2: runtime error: index out of range [5] with length 2
+slit: runtime error: index out of range [-1]
+alit: runtime error: index out of range [-1]
+slicelit: runtime error: index out of range [-1]
+mapidx: runtime error: index out of range [5] with length 2
+namedmap: runtime error: index out of range [5] with length 2
+itoaidx: runtime error: index out of range [-1]
+itoaidx2: runtime error: index out of range [5] with length 1
