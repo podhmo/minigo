@@ -135,10 +135,15 @@ func ReadPackageFiles(dir, importPath string, cfg BuildConfig) (*PackageMeta, er
 	excluded := 0         // files build constraints filtered out
 	fset := token.NewFileSet()
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+		fname := e.Name()
+		if e.IsDir() || !strings.HasSuffix(fname, ".go") || strings.HasSuffix(fname, "_test.go") ||
+			strings.HasPrefix(fname, "_") || strings.HasPrefix(fname, ".") {
+			// _- and .-prefixed files are invisible to the Go build
+			// system entirely — MatchFile would reject them by NAME,
+			// not by constraint, so they must not inflate excluded.
 			continue
 		}
-		match, err := ctx.MatchFile(dir, e.Name())
+		match, err := ctx.MatchFile(dir, fname)
 		if err != nil {
 			rejected = append(rejected, err.Error())
 			continue
@@ -147,9 +152,9 @@ func ReadPackageFiles(dir, importPath string, cfg BuildConfig) (*PackageMeta, er
 			excluded++
 			continue
 		}
-		files = append(files, filepath.Join(dir, e.Name()))
+		files = append(files, filepath.Join(dir, fname))
 		if name == "" {
-			f, err := parser.ParseFile(fset, filepath.Join(dir, e.Name()), nil, parser.PackageClauseOnly)
+			f, err := parser.ParseFile(fset, filepath.Join(dir, fname), nil, parser.PackageClauseOnly)
 			if err == nil && f != nil {
 				name = f.Name.Name
 			}

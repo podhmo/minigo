@@ -112,8 +112,18 @@ func (e *Explorer) Lookup(cn string) *inspect.Decl {
 		// introspected. SourceOf builds the source index behind the
 		// bound shadow (and falls back to PackageOf when unbound).
 		if p := inspect.SourceOf(pkgPath); p != nil {
-			for _, d := range inspect.Decls(p) {
-				m[d.Name] = d
+			// A file whose package clause differs from the package's
+			// own is foreign — go build rejects the directory — so its
+			// decls must not resolve (the same skip rule the script
+			// applies to the scanned package's own files).
+			pkgName := inspect.Name(p)
+			for _, f := range inspect.Files(p) {
+				if f.PkgName != "" && f.PkgName != pkgName {
+					continue
+				}
+				for _, d := range inspect.Decls(f) {
+					m[d.Name] = d
+				}
 			}
 		}
 	}

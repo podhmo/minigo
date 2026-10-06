@@ -534,7 +534,7 @@ func directivesFor(ex *scanx.Explorer, scans []pkgScan, s pkgScan, d *inspect.De
 	// method-set inference: a concrete `Discriminator() string` marks a
 	// oneOf variant; the same requirement on an interface marks the union
 	// type itself, and collects its implementers as -variants=.
-	if scanx.HasMethod(d, "Discriminator", "string") {
+	if scanx.HasMethod(d, s.foreign, "Discriminator", "string") {
 		out = append(out, "//go:generate oneofgen -type="+name)
 	} else if scanx.RequiresMethod(d, "Discriminator", "func() string") {
 		gen := "//go:generate oneofgen -type=" + name
@@ -561,6 +561,14 @@ func implementers(scans []pkgScan, selfPath string, iface *inspect.Decl) []strin
 		for _, c := range inspect.Implementers(sp, iface) {
 			if s.foreign[c.File] {
 				continue // declared in a foreign-package file
+			}
+			if !scanx.HasMethod(c, s.foreign, "Discriminator", "string") {
+				// qualifies only through a method declared in a foreign
+				// file — inspect.Implementers reads the merged method
+				// table, which a skipped file still feeds. The caller
+				// gates on RequiresMethod(Discriminator), so the union
+				// marker is what a candidate must carry on its own.
+				continue
 			}
 			def := inspect.Def(c)
 			if def != nil && def.Kind == "InterfaceType" {

@@ -135,6 +135,13 @@ func describeFailure(err error, dir, scriptDir string) string {
 	switch {
 	case strings.HasPrefix(msg, "gen-sync:"):
 		return msg
+	case errors.Is(u, os.ErrPermission) || strings.Contains(msg, "permission denied"):
+		// a filesystem refusal stays the root cause however many
+		// wrappers sit on top — resolve dir %q / resolve %q / import %s
+		// wrap the package-dir read failure, so classifying the outer
+		// prefix alone mislabels a permissions problem as a bad dir
+		// argument.
+		blame = "check the named file or directory's permissions"
 	case strings.HasPrefix(msg, "resolve dir "):
 		// loadDir on the dir argument (inspect.DirOf in the script) —
 		// anything else is the tool's own script dir.
@@ -153,8 +160,6 @@ func describeFailure(err error, dir, scriptDir string) string {
 		default:
 			blame = "fix a dependency file at the reported position"
 		}
-	case strings.HasPrefix(msg, "reading package dir "):
-		blame = "check the named directory's permissions"
 	}
 	return "gen-sync: " + blame + "\n" + err.Error()
 }

@@ -575,6 +575,106 @@ func TestForeignPackageSkipped(t *testing.T) {
 	}
 }
 
+func TestForeignPackageMethodFeedsNothing(t *testing.T) {
+	dir := setupModule(t)
+	app := filepath.Join(dir, "app")
+	// a method declared inside a foreign-package file still lands in
+	// the index's method table — before the fix it earned the type a
+	// oneofgen directive AND a spot in Envelope's -variants=. The
+	// skipped file must feed no inference channel.
+	if err := os.WriteFile(filepath.Join(app, "squatter.go"),
+		[]byte("package app\n\ntype Squatter int\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(app, "foreign.go"),
+		[]byte("package otherpkg\n\nfunc (Squatter) Discriminator() string { return \"foreign\" }\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var buf strings.Builder
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, &buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "declares package otherpkg") {
+		t.Fatalf("no foreign-package warning:\n%s", out)
+	}
+	if strings.Contains(out, "Squatter") {
+		t.Fatalf("a foreign-declared method fed inference:\n%s", out)
+	}
+	got, _ := os.ReadFile(filepath.Join(app, "squatter.go"))
+	if strings.Contains(string(got), "//go:generate") {
+		t.Fatalf("squatter.go earned a directive from a foreign method:\n%s", got)
+	}
+	// Envelope's -variants= must not list it either — the foreign
+	// method alone made Squatter an implementer.
+	events, _ := os.ReadFile(filepath.Join(app, "events.go"))
+	if strings.Contains(string(events), "Squatter") {
+		t.Fatalf("a foreign-declared method put Squatter in -variants=:\n%s", events)
+	}
+}
+
+func TestForeignPackageDepDeclsHidden(t *testing.T) {
+	dir := setupModule(t)
+	app := filepath.Join(dir, "app")
+	// a dep package whose required-bearing decl lives in a
+	// foreign-package file: Explorer lookups must not resolve it, so
+	// the struct field reaching it earns no requiredgen.
+	dep := filepath.Join(app, "internal", "reqdep")
+	if err := os.MkdirAll(dep, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dep, "dep.go"), []byte("package reqdep\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dep, "foreign.go"),
+		[]byte("package otherpkg\n\ntype Hidden struct {\n\tX string `required:\"true\"`\n}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	uses := "package app\n\nimport \"github.com/podhmo/minigo/examples/gen-sync/app/internal/reqdep\"\n\n" +
+		"// UsesDep reaches reqdep.Hidden through a field — a decl that\n" +
+		"// exists only in the dep's skipped foreign file.\n" +
+		"type UsesDep struct {\n\tR reqdep.Hidden\n}\n"
+	target := filepath.Join(app, "usesdep.go")
+	if err := os.WriteFile(target, []byte(uses), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var buf strings.Builder
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, &buf); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "UsesDep") || strings.Contains(buf.String(), "Hidden") {
+		t.Fatalf("a foreign decl fed the exploration:\n%s", buf.String())
+	}
+	got, _ := os.ReadFile(target)
+	if strings.Contains(string(got), "//go:generate") {
+		t.Fatalf("usesdep.go earned a directive through a foreign decl:\n%s", got)
+	}
+}
+
+func TestInvisibleOnlyFilesNotConstraintBlamed(t *testing.T) {
+	dir := setupModule(t)
+	// a dir whose only .go-looking file is _-prefixed is empty to the
+	// Go build system — "excluded by build constraints" is the wrong
+	// reason (the file is invisible by name, not by constraint).
+	pkg := filepath.Join(dir, "onlyhidden")
+	if err := os.MkdirAll(pkg, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkg, "_skip.go"), []byte("package onlyhidden\n\ntype S int\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := run(context.Background(), dir, scriptDir(t), pkg, false, false, io.Discard)
+	if err == nil {
+		t.Fatal("expected a no-buildable error for a name-invisible-only dir")
+	}
+	if !strings.Contains(err.Error(), "no buildable Go source files") {
+		t.Fatalf("expected a no-buildable error, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "build constraints") {
+		t.Fatalf("name-invisible files blamed on build constraints: %v", err)
+	}
+}
+
 func TestHandwrittenManagedLineDropAnnounced(t *testing.T) {
 	dir := setupModule(t)
 	app := filepath.Join(dir, "app")
@@ -715,6 +815,10 @@ func TestDescribeFailureBlames(t *testing.T) {
 	}{
 		{"dir arg not found", trap(`resolve dir "./nope": entry directory "./nope" not found: stat /x/nope: no such file`), "./nope", "fix the dir argument"},
 		{"dir arg not buildable", trap(`resolve dir "./app": no buildable Go source files in package m/app (/x/app): all 1 .go file(s) excluded by build constraints`), "./app", "fix the dir argument"},
+		{"permission inside resolve dir", trap(`resolve dir "./app": reading package dir /x/app: open /x/app: permission denied`), "./app", "permissions"},
+		{"permission inside no buildable", trap(`resolve dir "./app": no buildable Go source files in package m/app (/x/app): open /x/app/y.go: permission denied`), "./app", "permissions"},
+		{"permission inside dep resolve", trap(`resolve "m/app/internal/mood": reading package dir /x/mood: open /x/mood/m.go: permission denied`), "./app", "permissions"},
+		{"permission inside import", trap(`import m/app: reading package dir /x/app: open /x/app/z.go: permission denied`), "./app", "permissions"},
 		{"script dir missing is a tool problem", trap(`resolve dir "./script": entry directory "./script" not found`), "./app", "gen-sync bug"},
 		{"input file parse", trap(`parse /x/app/level.go: /x/app/level.go:3:1: expected ';'`), "/x/app", "fix the input file"},
 		{"dep file parse", trap(`parse /x/deps/mood/m.go: /x/deps/mood/m.go:1:1: expected`), "/x/app", "dependency"},
