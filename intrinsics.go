@@ -123,7 +123,7 @@ func (e *Engine) installStdlib() {
 		"Sprintln": h.ffn("fmt.Sprintln", -1, 0, func(a []any) (any, error) { return fmt.Sprintln(a...), nil }, fmt.Sprintln),
 		"Sprintf": h.ffn("fmt.Sprintf", 0, 1, func(a []any) (any, error) {
 			return fmt.Sprintf(str(a[0]), a[1:]...), nil
-		}),
+		}, fmt.Sprintf),
 		// Errorf is hand-bound: %w verbs wrap the cause like Go's
 		// fmt.wrapError so errors.Unwrap/Is/As see the chain.
 		"Errorf": &runtime.BuiltinFunc{Name: "fmt.Errorf", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {

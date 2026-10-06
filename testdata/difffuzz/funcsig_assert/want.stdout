@@ -1,0 +1,26 @@
+f.(func(int) int) ok: false
+panic: interface conversion: interface {} is func(main.Point) main.Point, not func(int) int
+same sig: {1 3}
+closure ok: true
+closure wrong: false
+bound ok: true
+bound wrong: false
+mexpr ok: true
+mexpr wrong: false
+pmexpr ok: true
+variadic ok: true
+variadic->slice: false
+slice->variadic: false
+nf.(F): true
+nf.(func(int) int): false
+c.(F): false
+c.(Alias): true
+ToUpper ok: true
+ToUpper wrong: false
+Sprintf ok: true
+Sprintf wrong: false
+cancel ok: true
+cancel->func(): false
+nilfunc ok: true
+nilfunc wrong: false
+tswitch hit: {9 10}
