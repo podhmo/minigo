@@ -7485,6 +7485,19 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 		// `uint64(1.6717361816799281e+19)` is 16717361816799281152, and a
 		// wrapped int64(-9.2e18) would read it as a negative float when
 		// converted back ($GOROOT/test/ken/convert.go's tu64 rows).
+		// The overflow check only applies to full-width targets — a
+		// narrowing conversion masks first: uint16(-3) is 65533, not
+		// uint64(-3).
+		if unsignedName(td.Name) {
+			switch td.Name {
+			case "uint8", "byte":
+				uv &= 0xFF
+			case "uint16":
+				uv &= 0xFFFF
+			case "uint32":
+				uv &= 0xFFFFFFFF
+			}
+		}
 		if unsignedName(td.Name) && uv > math.MaxInt64 {
 			return runtime.Tag(td, &runtime.GoValue{V: uv}), nil
 		}
