@@ -1,0 +1,5 @@
+SILENT spurious-panic: `panic: reflect: minireflect: cannot resolve type N`.
+Call's assignability gate re-resolves declared param types through the func
+typedef, but funcTd drops Pkg/File/Binds (minireflect/rvalue.go funcTd), so
+package-level named idents never resolve (dispatch.go resolveTypeRef).
+Source: abi/bad_select_crash.go
