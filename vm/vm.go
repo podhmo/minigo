@@ -2682,7 +2682,10 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 		// slices as []any, maps as map[any]any. Pointer-like values stay
 		// verbatim: their address-ness is the point. callReflectFunc
 		// copies a converted slice's elements back after the call.
-		v = deepHost(v)
+		v = deepHost(v, vc, &hostMarshal{
+			seen:   map[runtime.Value]runtime.Value{},
+			budget: hostEvalBudget,
+		})
 		if v == nil || v == runtime.NIL {
 			return reflect.Zero(t), nil
 		}
@@ -3124,12 +3127,29 @@ func (s *scriptIface) readFrom(r io.Reader) (int64, error) {
 	return intOut(rs, 0), errOut(rs, 1)
 }
 
+// hostEvalBudget bounds the eager method calls one marshal may run.
+// templateCallable methods are invoked at marshal time (see
+// structDataHost), and a method returning a fresh object would expand
+// that object's methods the same way, so without a cap a
+// method-per-object chain never terminates — the earlier unbudgeted
+// attempt hung on interpreted net/http structs.
+const hostEvalBudget = 64
+
+// hostMarshal carries the state one deepHost walk shares: seen folds
+// cyclic values back to the projection already built for them — a host
+// map or slice may legally contain itself — and budget caps the eager
+// template-method calls described above.
+type hostMarshal struct {
+	seen   map[runtime.Value]runtime.Value
+	budget int
+}
+
 // deepHost converts a script value for an `any` parameter: containers
 // become real host values (Slice → []any, Map → map[any]any) so the
 // callee can reflect over them; Named and GoValue unwrap; typed nils
 // read as nil; structs marshal to field maps (see structDataHost).
 // Everything else — funcs, non-struct pointers — stays verbatim.
-func deepHost(v runtime.Value) runtime.Value {
+func deepHost(v runtime.Value, vc runtime.VMCaller, h *hostMarshal) runtime.Value {
 	switch x := v.(type) {
 	case nil, runtime.Nil:
 		return nil
@@ -3140,34 +3160,42 @@ func deepHost(v runtime.Value) runtime.Value {
 		if err != nil {
 			panic(&runtime.Panic{Value: &runtime.GoValue{V: err}})
 		}
-		return deepHost(mv)
+		return deepHost(mv, vc, h)
 	case *runtime.Named:
-		return deepHost(x.V)
+		return deepHost(x.V, vc, h)
 	case *runtime.GoValue:
 		return x.V
 	case *runtime.Struct:
-		return structDataHost(x, x)
+		return structDataHost(x, x, vc, h)
 	case *runtime.Slice:
+		if old, ok := h.seen[x]; ok {
+			return old
+		}
 		out := make([]any, len(x.Elems))
+		h.seen[x] = out
 		for i, e := range x.Elems {
-			out[i] = deepHost(e)
+			out[i] = deepHost(e, vc, h)
 		}
 		return out
 	case *runtime.Map:
+		if old, ok := h.seen[x]; ok {
+			return old
+		}
 		out := make(map[any]any, x.Len())
+		h.seen[x] = out
 		for i := 0; i < x.Len(); i++ {
 			k, e := x.At(i)
-			out[deepHost(k)] = deepHost(e)
+			out[deepHost(k, vc, h)] = deepHost(e, vc, h)
 		}
 		return out
-	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
+	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
 		// a script pointer to a struct can't offer the host its
 		// address — only data — so it marshals like the struct value,
 		// except the pointer keeps its wider method set (pointer
 		// receivers) exactly as Go's *T does.
 		if dv, ok := runtime.Deref(x); ok {
 			if s, ok := dv.(*runtime.Struct); ok {
-				return structDataHost(x, s)
+				return structDataHost(x, s, vc, h)
 			}
 		}
 		return v
@@ -3193,37 +3221,122 @@ func scriptDataOrig(m scriptData) runtime.Value {
 
 // structDataHost marshals a script struct (or a pointer to one) for a
 // host `any` parameter as a scriptData map: exported fields plus its
-// exported methods as bound members — a map can never re-enter the
-// script for a method call, so the bound function value stands in
-// (`{{if .Maybe}}` reads it truthy like Go calling the method). Only
-// declared methods bind here — promoted ones stay out — and
-// unexported members are absent, matching Go's can't-evaluate and
+// exported methods as bound members. A map can never re-enter the
+// script for a method call, and text/template's evalField reads a map
+// key verbatim — it does not call what it finds — so a method matching
+// the template-callable shape (niladic; 1 result, or 2 with error last)
+// is invoked at marshal time and its result stands in, like Go calling
+// it on field access. The marshal's budget caps these calls; on
+// exhaustion, a pointer-receiver method on a value receiver, and any
+// non-matching shape, the bound function value stays verbatim. A call
+// that fails — panic, or a non-nil error result — drops the entry so
+// the template reports can't-evaluate, close to Go reporting the call
+// error. Only declared methods bind here — promoted ones stay out —
+// and unexported members are absent, matching Go's can't-evaluate and
 // unexported-field errors as a missing key.
-func structDataHost(recv runtime.Value, s *runtime.Struct) any {
+func structDataHost(recv runtime.Value, s *runtime.Struct, vc runtime.VMCaller, h *hostMarshal) any {
+	if old, ok := h.seen[s]; ok {
+		return old
+	}
 	td := s.Def
 	out := make(scriptData, len(s.Fields)+1)
+	h.seen[s] = out
 	out[scriptDataOrigKey] = recv
 	if td == nil {
 		return out
 	}
 	for i, name := range td.Fields {
 		if i < len(s.Fields) && ast.IsExported(name) {
-			out[name] = deepHost(s.Fields[i])
+			out[name] = deepHost(s.Fields[i], vc, h)
 		}
 	}
-	for name, m := range td.Methods {
-		if !ast.IsExported(name) {
-			continue
+	// a value receiver excludes pointer-receiver methods from the method
+	// set, exactly as Go does — a *runtime.Struct recv is the struct
+	// value, anything else is a pointer carrying its ref.
+	_, valueRecv := recv.(*runtime.Struct)
+	names := make([]string, 0, len(td.Methods))
+	for name := range td.Methods {
+		if ast.IsExported(name) {
+			names = append(names, name)
 		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		m := td.Methods[name]
 		r := recv
 		if !m.PtrRecv {
 			if dv, ok := runtime.Deref(r); ok {
 				r = dv
 			}
 		}
-		out[name] = &runtime.BoundMethod{Recv: r, Fn: m}
+		bm := &runtime.BoundMethod{Recv: r, Fn: m}
+		nout := templateCallableNout(m)
+		if vc == nil || h.budget <= 0 || nout == 0 || (m.PtrRecv && valueRecv) {
+			out[name] = bm
+			continue
+		}
+		h.budget--
+		res, err := vc.Call(bm, nil)
+		if err != nil {
+			continue
+		}
+		if nout == 2 {
+			t, ok := res.(*runtime.Tuple)
+			if !ok || len(t.Elems) != 2 || !nilish(t.Elems[1]) {
+				continue
+			}
+			res = t.Elems[0]
+		}
+		out[name] = deepHost(res, vc, h)
 	}
 	return out
+}
+
+// templateCallableNout reports whether a method matches the shape
+// text/template's evalField can invoke — niladic with 1 result, or 2
+// results whose second is error — and returns that result count, or 0
+// when the shape does not match.
+func templateCallableNout(m *runtime.Function) int {
+	if m == nil || m.Decl == nil || m.Decl.Type == nil {
+		return 0
+	}
+	ft := m.Decl.Type
+	if ft.Params != nil && len(ft.Params.List) > 0 {
+		return 0
+	}
+	if ft.Results == nil || len(ft.Results.List) == 0 {
+		return 0
+	}
+	nout := 0
+	var last ast.Expr
+	for _, f := range ft.Results.List {
+		if n := len(f.Names); n > 0 {
+			nout += n
+		} else {
+			nout++
+		}
+		last = f.Type
+	}
+	if nout > 2 {
+		return 0
+	}
+	if nout == 2 {
+		id, ok := last.(*ast.Ident)
+		if !ok || id.Name != "error" {
+			return 0
+		}
+	}
+	return nout
+}
+
+// nilish reports whether v reads as nil to a host — the same cases
+// deepHost collapses.
+func nilish(v runtime.Value) bool {
+	switch v.(type) {
+	case nil, runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
+		return true
+	}
+	return false
 }
 
 // scriptBytes reads a script slice's elements as bytes in one pass —
