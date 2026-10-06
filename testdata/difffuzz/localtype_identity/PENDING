@@ -1,5 +1,0 @@
-SILENT value: two local defined types with the same name from different
-function bodies compare == (interface equality reports them identical).
-Hypothesis: defined-type identity is keyed on the type name instead of the
-declaration site, so same-named local types collide.
-Source: $GOROOT/test/typeparam/issue54456.go (local `type T[_ any] int`).
