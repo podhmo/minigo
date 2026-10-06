@@ -2474,6 +2474,18 @@ func goValueOf(rv reflect.Value) runtime.Value {
 			el[i] = goValueOf(reflect.ValueOf(e))
 		}
 		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("any")}
+	case scriptData:
+		// a struct's host projection folds back to the original value
+		// when an `any` round-trips it (a sync.Pool Get, say); a bare
+		// copy without the orig key reads as an ordinary map.
+		if orig := scriptDataOrig(v); orig != nil {
+			return orig
+		}
+		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}}
+		for k, e := range v {
+			m.Insert(goValueOf(reflect.ValueOf(k)), goValueOf(reflect.ValueOf(e)))
+		}
+		return m
 	case map[any]any:
 		if v == nil {
 			return &runtime.TypedNil{Typ: &runtime.TypeDef{Kind: runtime.KindMap,
@@ -2644,7 +2656,7 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 		// slices as []any, maps as map[any]any. Pointer-like values stay
 		// verbatim: their address-ness is the point. callReflectFunc
 		// copies a converted slice's elements back after the call.
-		v = deepHost(v, vc)
+		v = deepHost(v)
 		if v == nil || v == runtime.NIL {
 			return reflect.Zero(t), nil
 		}
@@ -3091,7 +3103,7 @@ func (s *scriptIface) readFrom(r io.Reader) (int64, error) {
 // callee can reflect over them; Named and GoValue unwrap; typed nils
 // read as nil; structs marshal to field maps (see structDataHost).
 // Everything else — funcs, non-struct pointers — stays verbatim.
-func deepHost(v runtime.Value, vc runtime.VMCaller) runtime.Value {
+func deepHost(v runtime.Value) runtime.Value {
 	switch x := v.(type) {
 	case nil, runtime.Nil:
 		return nil
@@ -3102,24 +3114,24 @@ func deepHost(v runtime.Value, vc runtime.VMCaller) runtime.Value {
 		if err != nil {
 			panic(&runtime.Panic{Value: &runtime.GoValue{V: err}})
 		}
-		return deepHost(mv, vc)
+		return deepHost(mv)
 	case *runtime.Named:
-		return deepHost(x.V, vc)
+		return deepHost(x.V)
 	case *runtime.GoValue:
 		return x.V
 	case *runtime.Struct:
-		return structDataHost(x, x, vc)
+		return structDataHost(x, x)
 	case *runtime.Slice:
 		out := make([]any, len(x.Elems))
 		for i, e := range x.Elems {
-			out[i] = deepHost(e, vc)
+			out[i] = deepHost(e)
 		}
 		return out
 	case *runtime.Map:
 		out := make(map[any]any, x.Len())
 		for i := 0; i < x.Len(); i++ {
 			k, e := x.At(i)
-			out[deepHost(k, vc)] = deepHost(e, vc)
+			out[deepHost(k)] = deepHost(e)
 		}
 		return out
 	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
@@ -3129,7 +3141,7 @@ func deepHost(v runtime.Value, vc runtime.VMCaller) runtime.Value {
 		// receivers) exactly as Go's *T does.
 		if dv, ok := runtime.Deref(x); ok {
 			if s, ok := dv.(*runtime.Struct); ok {
-				return structDataHost(x, s, vc)
+				return structDataHost(x, s)
 			}
 		}
 		return v
@@ -3137,69 +3149,55 @@ func deepHost(v runtime.Value, vc runtime.VMCaller) runtime.Value {
 	return v
 }
 
+// scriptData is the host-facing projection of a script struct for an
+// `any` parameter: a named map field/method walkers — text/template's
+// evalField above all — can navigate. The empty key, unreachable
+// through Go's .Name syntax, carries the original script value so a
+// host that hands the projection back (a sync.Pool round-trip say)
+// restores the object it started from rather than a bare map.
+type scriptData map[string]any
+
+const scriptDataOrigKey = ""
+
+// scriptDataOrig returns the script value a projection was built
+// from, or nil when m is a foreign map (one not minted here).
+func scriptDataOrig(m scriptData) runtime.Value {
+	return m[scriptDataOrigKey]
+}
+
 // structDataHost marshals a script struct (or a pointer to one) for a
-// host `any` parameter. Field walkers — text/template's evalField
-// above all — navigate reflect data only, so the struct arrives as a
-// map: exported fields plus the results of its exported niladic
-// methods (a map can never re-enter the script for a method call, so
-// `{{if .Maybe}}`/`{{.Maybe}}` need the method's value up front).
-// Parameterized methods and unexported members stay out, matching
-// Go's "can't evaluate"/unexported-field errors as a missing key.
-func structDataHost(recv runtime.Value, s *runtime.Struct, vc runtime.VMCaller) any {
+// host `any` parameter as a scriptData map: exported fields plus its
+// exported methods as bound members — a map can never re-enter the
+// script for a method call, so the bound function value stands in
+// (`{{if .Maybe}}` reads it truthy like Go calling the method). Only
+// declared methods bind here — promoted ones stay out — and
+// unexported members are absent, matching Go's can't-evaluate and
+// unexported-field errors as a missing key.
+func structDataHost(recv runtime.Value, s *runtime.Struct) any {
 	td := s.Def
-	out := make(map[string]any, len(s.Fields))
-	if td != nil {
-		for i, name := range td.Fields {
-			if i < len(s.Fields) && ast.IsExported(name) {
-				out[name] = deepHost(s.Fields[i], vc)
-			}
-		}
-	}
-	if vc == nil {
+	out := make(scriptData, len(s.Fields)+1)
+	out[scriptDataOrigKey] = recv
+	if td == nil {
 		return out
 	}
-	set, _ := vc.MethodSetOf(recv)
-	for name := range set {
+	for i, name := range td.Fields {
+		if i < len(s.Fields) && ast.IsExported(name) {
+			out[name] = deepHost(s.Fields[i])
+		}
+	}
+	for name, m := range td.Methods {
 		if !ast.IsExported(name) {
 			continue
 		}
-		m, ok := vc.Member(recv, name)
-		if !ok {
-			continue
+		r := recv
+		if !m.PtrRecv {
+			if dv, ok := runtime.Deref(r); ok {
+				r = dv
+			}
 		}
-		bm, ok := m.(*runtime.BoundMethod)
-		if !ok || bm.Fn == nil || bm.Fn.Decl == nil {
-			out[name] = m
-			continue
-		}
-		if declArity(bm.Fn.Decl.Type) != 0 {
-			out[name] = m // needs args the host can't supply; keep the member value
-			continue
-		}
-		r, err := vc.Call(bm, nil)
-		if err != nil {
-			continue
-		}
-		out[name] = deepHost(r, vc)
+		out[name] = &runtime.BoundMethod{Recv: r, Fn: m}
 	}
 	return out
-}
-
-// declArity counts a function signature's declared parameters; a
-// nameless field (`func(int)`) still takes one argument.
-func declArity(t *ast.FuncType) int {
-	if t == nil || t.Params == nil {
-		return 0
-	}
-	n := 0
-	for _, f := range t.Params.List {
-		c := len(f.Names)
-		if c == 0 {
-			c = 1
-		}
-		n += c
-	}
-	return n
 }
 
 // scriptBytes reads a script slice's elements as bytes in one pass —
