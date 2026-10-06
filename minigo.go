@@ -53,6 +53,9 @@ type Engine struct {
 	binds map[string]*runtime.Package     // host-bound packages (sessions inherit)
 	srcs  map[string]*runtime.Package     // source packages behind bound paths (inspect.SourceOf)
 	links map[*runtime.Function]linkEntry // //go:linkname resolutions, cached per decl
+	// sigEq memoizes interface signature comparisons for every VM of
+	// this engine (vm.Hooks.SigEq).
+	sigEq sync.Map
 
 	// buildMu serializes package construction (locate/parse/index): two
 	// goroutines cold-loading the same package converge on one build.
@@ -223,6 +226,7 @@ func (e *Engine) newVM() *vm.VM {
 		IfaceSigs:       e.ifaceSigReqs,
 		MethodFuncsOf:   e.methodFuncsOfValue,
 		TypeMethodFuncs: e.methodSet,
+		SigEq:           &e.sigEq,
 
 		ElemOf:      e.elemOf,
 		TypeMethods: e.typeMethods,
