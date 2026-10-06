@@ -83,9 +83,10 @@ whole stack.
 
 ## Triage a failing task
 
-1. Read `out/<task>.got`. Locate the frame in minigo's traceback; if the
-   traceback lost the origin (recover-then-repanic), vendor the involved
-   GOROOT/third-party package into a scratch module and bisect.
+1. Read `out/<task>.got` and locate the frame in minigo's traceback
+   (`minigo: <error>`, then frames, most recent first). A
+   recover-then-repanic keeps the original panic site below the deferred
+   call, as in Go, so the failing frame is normally listed.
 2. Minimize to a `func main()` program that `go run`s. Classify with the
    difffuzz contract (SILENT = bug, TRAP = backlog, CRASH/HANG = bug).
 3. Pin it as `testdata/difffuzz/<slug>/` with `PENDING` (see the casefuzz
