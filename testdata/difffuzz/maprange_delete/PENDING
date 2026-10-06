@@ -1,0 +1,5 @@
+SILENT value: delete(m, k) inside `for k := range m` skips one entry,
+leaving len(m)==1 instead of 0.
+Hypothesis: the map iterator is positional/live and removing the current
+key makes the next key be skipped (deterministic here: leaves map[2:4]).
+Source: $GOROOT/test/typeparam/maps.go (_Sub deletes all keys of m2).

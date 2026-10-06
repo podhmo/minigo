@@ -1,0 +1,6 @@
+SILENT value: reflect.DeepEqual([]T built in a generic func, []string)
+is false — reflect.TypeOf(got) prints []main.T, i.e. make([]T,n) keeps the
+type parameter as a named element type instead of reifying []string.
+Hypothesis: instantiated container types are not substituted for reflect
+type identity (related to reflectfunclit_typeparam's unresolved R).
+Source: $GOROOT/test/typeparam/map.go (mapper + strconv.Itoa).
