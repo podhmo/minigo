@@ -5398,7 +5398,7 @@ func materializeDefault(u *runtime.UConst) (runtime.Value, error) {
 		if math.IsInf(fv, 0) {
 			return nil, fmt.Errorf("constant %s overflows float64", u.V)
 		}
-		return fv, nil
+		return runtime.CanonConstZero(fv), nil
 	case constant.Complex:
 		cv := constComplexVal(u.V)
 		return &runtime.GoValue{V: cv}, nil
@@ -5452,7 +5452,7 @@ func (v *VM) materializeConstErr(u *runtime.UConst, td *runtime.TypeDef) (runtim
 		if math.IsInf(float64(f32), 0) || math.IsInf(fv, 0) {
 			return nil, fmt.Errorf("constant %s overflows float32", u.V)
 		}
-		x = float64(f32)
+		x = float64(runtime.CanonConstZero(float64(f32)))
 	case "float64":
 		fv, ok := constFloat(u.V)
 		if !ok {
@@ -5523,7 +5523,7 @@ func constFloat(cv constant.Value) (float64, bool) {
 	// 1e100 >> 1000` compiles, losing precision). Overflow instead
 	// reports through IsInf at the caller.
 	f, _ := constant.Float64Val(cv)
-	return f, true
+	return runtime.CanonConstZero(f), true
 }
 
 func constComplex(cv constant.Value) (complex128, bool) {
@@ -5540,7 +5540,7 @@ func constComplex(cv constant.Value) (complex128, bool) {
 func constComplexVal(cv constant.Value) complex128 {
 	re, _ := constant.Float64Val(constant.Real(cv))
 	im, _ := constant.Float64Val(constant.Imag(cv))
-	return complex(re, im)
+	return complex(runtime.CanonConstZero(re), runtime.CanonConstZero(im))
 }
 
 // toIntConst converts an integer-valued Float constant to Int kind —

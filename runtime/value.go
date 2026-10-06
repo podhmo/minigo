@@ -625,6 +625,19 @@ func CanonicalKey(v Value) Value {
 	}
 }
 
+// CanonConstZero folds a materialized constant -0 to +0: untyped
+// constants have no negative zero — literal -0.0 and underflowing
+// magnitudes like -1e-10000 both read +0 in Go
+// ($GOROOT/test/fixedbugs/issue12577.go). Apply it wherever a constant
+// becomes a float64; runtime-computed -0 (from -x on a nonzero var)
+// never passes through here.
+func CanonConstZero(f float64) float64 {
+	if f == 0 {
+		return 0
+	}
+	return f
+}
+
 // msgTypeName renders a typedef for panic text — it delegates to the
 // canonical display speller (package-name qualifier like Go's "main.T",
 // canonical anonymous spellings).

@@ -3031,11 +3031,11 @@ func uconstNative(u *runtime.UConst) (any, error) {
 		if math.IsInf(f, 0) {
 			return nil, fmt.Errorf("constant %s overflows float64", u.V)
 		}
-		return f, nil
+		return runtime.CanonConstZero(f), nil
 	case constant.Complex:
 		re, _ := constant.Float64Val(constant.Real(u.V))
 		im, _ := constant.Float64Val(constant.Imag(u.V))
-		return complex(re, im), nil
+		return complex(runtime.CanonConstZero(re), runtime.CanonConstZero(im)), nil
 	}
 	return nil, fmt.Errorf("cannot materialize constant %s", u.V)
 }

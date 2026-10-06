@@ -2456,15 +2456,27 @@ func (c *compiler) unary(x *ast.UnaryExpr) {
 			c.trap(x.Pos(), "address-of %T is not supported", x.X)
 		}
 	case token.ADD:
+		if c.foldUnaryConst(x) {
+			return
+		}
 		c.expr(x.X)
 		c.emit(bytecode.OpUnary, int(bytecode.UnPos), 0, x.Pos())
 	case token.SUB:
+		if c.foldUnaryConst(x) {
+			return
+		}
 		c.expr(x.X)
 		c.emit(bytecode.OpUnary, int(bytecode.UnNeg), 0, x.Pos())
 	case token.NOT:
+		if c.foldUnaryConst(x) {
+			return
+		}
 		c.expr(x.X)
 		c.emit(bytecode.OpUnary, int(bytecode.UnNot), 0, x.Pos())
 	case token.XOR:
+		if c.foldUnaryConst(x) {
+			return
+		}
 		c.expr(x.X)
 		c.emit(bytecode.OpUnary, int(bytecode.UnXor), 0, x.Pos())
 	case token.ARROW:
@@ -2598,47 +2610,77 @@ func (c *compiler) foldConst(x *ast.BinaryExpr) bool {
 	if !ok {
 		return false
 	}
-	var v any
-	switch cv.Kind() {
-	case constant.Bool:
-		v = constant.BoolVal(cv)
-	case constant.String:
-		v = constant.StringVal(cv)
-	case constant.Float:
-		f, _ := constant.Float64Val(cv)
-		if math.IsInf(f, 0) {
-			// an overflowing constant float is still a valid untyped
-			// constant (Go compiles `const F = 1e500`); failing is the
-			// materialization boundary's job.
-			v = &runtime.UConst{V: cv}
-		} else {
-			v = f
-		}
-	case constant.Complex:
-		v = &runtime.UConst{V: cv}
-	case constant.Int:
-		if hasCharLit(x.X) || hasCharLit(x.Y) {
-			// a rune-kind constant expr defaults to rune, not int:
-			// `var y = 'a' + 1` types y as int32 in Go.
-			v = &runtime.UConst{V: cv, Rune: true}
-		} else if i, ok := constant.Int64Val(cv); ok {
-			v = i
-		} else if u, ok := constant.Uint64Val(cv); ok {
-			if u == 1<<63 {
-				v = int64(u)
-			} else {
-				// same boxing as literalValue: formatting reads the box.
-				v = &runtime.GoValue{V: u}
-			}
-		} else {
-			// beyond uint64: lazy untyped constant — `const B = 1<<100`
-			// is legal and only materializing it can overflow.
-			v = &runtime.UConst{V: cv}
-		}
-	default:
+	v, ok := constOperand(cv, hasCharLit(x.X) || hasCharLit(x.Y))
+	if !ok {
 		// Unknown kind: the operation is undefined for these operand
 		// types ("a" + 1), which Go rejects at compile time.
 		c.trap(x.Pos(), "invalid constant expression: %s %s %s", x.X, x.Op, x.Y)
+		return true
+	}
+	c.emit(bytecode.OpConst, c.constIdx(v), 0, x.Pos())
+	return true
+}
+
+// constOperand materializes a folded constant for OpConst emission:
+// scalars emit bare (ints wrap >int64 in GoValue so formatting reads
+// the box), values that only exist in the constant domain — wide ints,
+// floats that don't fit float64, complex — stay boxed UConst until a
+// materialization boundary decides. rune marks char-literal exprs
+// (`var y = 'a' + 1` types y as int32, not int). ok is false when the
+// kind is one Go rejects in constant expressions.
+func constOperand(cv constant.Value, rune bool) (v any, ok bool) {
+	switch cv.Kind() {
+	case constant.Bool:
+		return constant.BoolVal(cv), true
+	case constant.String:
+		return constant.StringVal(cv), true
+	case constant.Float:
+		// Float constants stay boxed like wide ints: materializing to
+		// float64 eagerly loses the constness later conversions need —
+		// `var f float32 = -1e-50` would narrow an already-typed -1e-50
+		// to -0, where Go's constant rounds to +0 ($GOROOT/test/
+		// fixedbugs/issue12621.go). Boxed UConsts reach every materialize
+		// boundary, which canonicalizes constant -0 to +0.
+		return &runtime.UConst{V: cv}, true
+	case constant.Complex:
+		return &runtime.UConst{V: cv}, true
+	case constant.Int:
+		if rune {
+			return &runtime.UConst{V: cv, Rune: true}, true
+		}
+		if i, ok := constant.Int64Val(cv); ok {
+			return i, true
+		}
+		if u, ok := constant.Uint64Val(cv); ok {
+			if u == 1<<63 {
+				return int64(u), true
+			}
+			return &runtime.GoValue{V: u}, true
+		}
+		// beyond uint64: lazy untyped constant — `const B = 1<<100`
+		// is legal and only materializing it can overflow.
+		return &runtime.UConst{V: cv}, true
+	}
+	return nil, false
+}
+
+// foldUnaryConst applies a unary op to a constant operand at compile
+// time, like gc — `-1e-10000` folds in the exact domain so materializing
+// it reads +0, where the runtime path would negate an already-rounded
+// literal and leak -0 ($GOROOT/test/fixedbugs/issue12621.go).
+func (c *compiler) foldUnaryConst(x *ast.UnaryExpr) bool {
+	switch x.Op {
+	case token.ADD, token.SUB, token.XOR, token.NOT:
+	default:
+		return false
+	}
+	cv, ok := constValue(x)
+	if !ok {
+		return false
+	}
+	v, ok := constOperand(cv, hasCharLit(x.X))
+	if !ok {
+		c.trap(x.Pos(), "invalid constant expression: %s", x.Op)
 		return true
 	}
 	c.emit(bytecode.OpConst, c.constIdx(v), 0, x.Pos())
