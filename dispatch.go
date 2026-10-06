@@ -251,10 +251,7 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 	}
 	if td.Kind == runtime.KindInterface {
 		names = e.ifaceReqsRec(td, map[*runtime.TypeDef]bool{})
-		funcs = map[string]*runtime.Function{}
-		for name, sig := range e.ifaceSigsOf(td, map[*runtime.TypeDef]bool{}) {
-			funcs[name] = ifaceSigFunc(sig)
-		}
+		funcs = e.ifaceSigFuncs(td)
 		return names, funcs, false
 	}
 	names = map[string]bool{}
@@ -283,9 +280,9 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 			for m := range e.ifaceReqsRec(emb, map[*runtime.TypeDef]bool{}) {
 				names[m] = true
 			}
-			for name, sig := range e.ifaceSigsOf(emb, map[*runtime.TypeDef]bool{}) {
+			for name, fn := range e.ifaceSigFuncs(emb) {
 				if _, dup := funcs[name]; !dup {
-					funcs[name] = ifaceSigFunc(sig)
+					funcs[name] = fn
 				}
 			}
 			continue
@@ -321,6 +318,22 @@ func ifaceSigFunc(sig ifaceSig) *runtime.Function {
 	}
 }
 
+// ifaceSigFuncs maps an interface typedef's signature-bearing required
+// methods to their synthesized member Functions — nil when it declares
+// no signature (name-only requirements). The single conversion behind
+// methodWalkU's interface arms and the IfaceSigs hook.
+func (e *Engine) ifaceSigFuncs(td *runtime.TypeDef) map[string]*runtime.Function {
+	sigs := e.ifaceSigsOf(td, map[*runtime.TypeDef]bool{})
+	if len(sigs) == 0 {
+		return nil
+	}
+	out := make(map[string]*runtime.Function, len(sigs))
+	for name, sig := range sigs {
+		out[name] = ifaceSigFunc(sig)
+	}
+	return out
+}
+
 // methodSet implements the minireflect MethodSet hook and the
 // Hooks.TypeMethodFuncs hook: the signature-bearing method set of a
 // typedef.
@@ -344,15 +357,7 @@ func (e *Engine) methodFuncs(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 // required methods that carry a declared signature, as Function shells
 // spelling that signature in their declaring typedef's context.
 func (e *Engine) ifaceSigReqs(td *runtime.TypeDef) (map[string]*runtime.Function, error) {
-	sigs := e.ifaceSigsOf(td, map[*runtime.TypeDef]bool{})
-	if len(sigs) == 0 {
-		return nil, nil
-	}
-	out := make(map[string]*runtime.Function, len(sigs))
-	for name, sig := range sigs {
-		out[name] = ifaceSigFunc(sig)
-	}
-	return out, nil
+	return e.ifaceSigFuncs(td), nil
 }
 
 // methodFuncsOfValue implements the Hooks.MethodFuncsOf hook: the
