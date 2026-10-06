@@ -546,6 +546,19 @@ func instArgsSpelling(td *TypeDef) string {
 	}
 	var b strings.Builder
 	b.WriteByte('[')
+	if len(td.OuterArgs) > 0 {
+		for i, ov := range td.OuterArgs {
+			otd, ok := ov.(*TypeDef)
+			if !ok {
+				return ""
+			}
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(DisplayName(otd))
+		}
+		b.WriteByte(';')
+	}
 	for i, p := range td.TParams {
 		bv, ok := td.Binds[p]
 		btd, isTd := bv.(*TypeDef)
