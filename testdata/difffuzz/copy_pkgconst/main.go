@@ -26,4 +26,10 @@ func main() {
 	// append(b, const...) spreads the const string's bytes.
 	e := append([]byte("x"), c...)
 	fmt.Println(string(e))
+
+	// a nil dst copies 0 elements — the const takes the same
+	// string-source path as the literal, without touching dst.Typ.
+	var nilb []byte
+	fmt.Println(copy(nilb, c))
+	fmt.Println(copy(nilb, "ab"))
 }

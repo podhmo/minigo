@@ -156,7 +156,12 @@ func builtins(e *Engine) *runtime.Env {
 			// declared untyped const arrives as a *UConst — materialize
 			// it like the literal Go folds at compile time.
 			if s, ok := constNative(runtime.Unwrap(args[1])).(string); ok {
-				src = &runtime.Slice{Elems: make([]runtime.Value, len(s)), Typ: dst.Typ}
+				src = &runtime.Slice{Elems: make([]runtime.Value, len(s))}
+				if dst != nil {
+					// a nil-slice dst copies 0 elements — keep Typ
+					// propagation only when there is a real dst.
+					src.Typ = dst.Typ
+				}
 				for i := 0; i < len(s); i++ {
 					src.Elems[i] = int64(s[i])
 				}
