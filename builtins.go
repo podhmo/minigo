@@ -75,6 +75,16 @@ func builtins(e *Engine) *runtime.Env {
 			elems = s.Elems
 			rtyp = s.Typ
 		}
+		// a trailing `xs...` operand rides as one lazy marker when its
+		// slice is virtual — a real spread was already expanded into
+		// args by popArgs.
+		var spread *runtime.Slice
+		if len(args) > 0 {
+			if sp, ok := args[len(args)-1].(*runtime.Spread); ok {
+				spread = sp.S
+				args = args[:len(args)-1]
+			}
+		}
 		// an untyped-constant element converts through the declared
 		// element type — append(b, 'i') on []byte is Go's constant
 		// conversion; without a declared type it takes its default.
@@ -113,7 +123,7 @@ func builtins(e *Engine) *runtime.Env {
 			}
 			add[i] = v.Copy(a)
 		}
-		if s == nil && len(add) == 0 && rtyp != nil {
+		if s == nil && len(add) == 0 && rtyp != nil && spread == nil {
 			// appending nothing to a nil slice keeps the nil — Go's
 			// append(nilSlice) is still nil, not an empty slice.
 			res := runtime.Value(&runtime.TypedNil{Typ: rtyp})
@@ -122,15 +132,38 @@ func builtins(e *Engine) *runtime.Env {
 			}
 			return res, nil
 		}
-		// a virtual zero-size slice stays virtual: the appended elements
-		// are the same single value the type already vends — and the
-		// len overflow panics like Go's growslice.
-		if s != nil && s.N > 0 {
-			nn := s.N + int64(len(add))
+		// a virtual zero-size slice stays virtual — and so does a real
+		// one that a virtual spread lands on: the appended elements are
+		// all the same single value the type already vends.
+		if (s != nil && s.Virtual()) || spread != nil {
+			var dstLen, dstCap int64
+			var zero runtime.Value
+			if s != nil {
+				dstLen, dstCap, zero = s.N, s.CapN, s.Zero
+			}
+			if spread != nil {
+				if zero == nil {
+					zero = spread.Zero
+				}
+				if rtyp == nil {
+					rtyp = spread.Typ
+				}
+			}
+			// the len overflow panics like Go's growslice; growth picks
+			// up exactly the needed length (0-byte elements round to the
+			// request, not to a doubling), while spare capacity stays.
+			nn := dstLen + int64(len(add))
+			if spread != nil {
+				nn += spread.N
+			}
 			if nn < 0 {
 				panic(runtime.RuntimePanic("growslice: len out of range"))
 			}
-			res := &runtime.Slice{N: nn, CapN: nn, Zero: s.Zero, Typ: rtyp}
+			nc := dstCap
+			if nn > nc {
+				nc = nn
+			}
+			res := &runtime.Slice{N: nn, CapN: nc, Zero: zero, Typ: rtyp}
 			if tag != nil {
 				return runtime.Tag(tag, res), nil
 			}
@@ -188,18 +221,35 @@ func builtins(e *Engine) *runtime.Env {
 		if dst == nil || src == nil {
 			return int64(0), nil
 		}
-		n := len(dst.Elems)
-		if len(src.Elems) < n {
-			n = len(src.Elems)
+		// the counts are LOGICAL: a virtual zero-size slice's elements
+		// were never materialized into Elems — N carries the length.
+		dstLen := dst.Len()
+		srcLen := src.Len()
+		n := dstLen
+		if srcLen < n {
+			n = srcLen
+		}
+		if dst.Virtual() {
+			// writes into a virtual slice are unobservable: a copied
+			// element is the type's single zero-size value either way.
+			return int64(n), nil
+		}
+		if src.Virtual() {
+			// a virtual source vends its shared zero-size element — the
+			// fill is bounded by the real destination's length.
+			for i := int64(0); i < n; i++ {
+				dst.Elems[i] = v.Copy(src.Zero)
+			}
+			return int64(n), nil
 		}
 		// copy through a snapshot: dst and src may overlap in the same
 		// backing array (e.g. copy(s[2:], s[1:]) shifting a queue), and a
 		// forward element loop would cascade-write the source.
 		tmp := make([]runtime.Value, n)
-		for i := 0; i < n; i++ {
+		for i := int64(0); i < n; i++ {
 			tmp[i] = v.Copy(src.Elems[i])
 		}
-		for i := 0; i < n; i++ {
+		for i := int64(0); i < n; i++ {
 			dst.Elems[i] = tmp[i]
 		}
 		return int64(n), nil
@@ -520,7 +570,7 @@ func lenOf(v runtime.Value) (runtime.Value, error) {
 		}
 		return lenOf(nv)
 	case *runtime.Slice:
-		if x.N > 0 {
+		if x.Virtual() {
 			return x.N, nil // virtual zero-size-element slice
 		}
 		return int64(len(x.Elems)), nil
@@ -544,7 +594,7 @@ func capOf(v runtime.Value) (runtime.Value, error) {
 	case *runtime.Cell:
 		return capOf(x.Elem)
 	case *runtime.Slice:
-		if x.N > 0 {
+		if x.Virtual() {
 			return x.CapN, nil // virtual zero-size-element slice
 		}
 		return int64(cap(x.Elems)), nil

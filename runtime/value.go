@@ -872,8 +872,10 @@ type Slice struct {
 	// never materialized — make([]struct{}, n) allocates 0 bytes for any
 	// n, like Go's zerobase ($GOROOT/test/fixedbugs/issue29190.go).
 	// Index reads vend Zero and element writes are unobservable (a
-	// zero-size type has a single value). N > 0 implies Elems is empty;
-	// CapN mirrors N as the logical cap.
+	// zero-size type has a single value). CapN is the logical capacity
+	// and can exceed N — a cap-preserving reslice (s[:0]) or a
+	// within-capacity append keeps it — so virtual-ness is a property
+	// of the representation, not of N: N > 0 || CapN > 0.
 	N, CapN int64
 	Zero    Value
 	// Typ is the declared slice type when one is known (a named literal or
@@ -881,6 +883,39 @@ type Slice struct {
 	// keep their identity on rebinds.
 	Typ *TypeDef
 }
+
+// Virtual reports whether the slice's backing is implicit — a
+// zero-size-element slice that never materialized its elements. N and
+// CapN carry the logical length and capacity while Elems stays empty;
+// a virtual slice degraded to len/cap 0 (s[:0:0]) reports false, which
+// is honest — it IS an ordinary empty slice at that point.
+func (s *Slice) Virtual() bool { return s.N > 0 || s.CapN > 0 }
+
+// Len reports the slice's logical length — N for a virtual slice whose
+// elements were never materialized, len(Elems) otherwise.
+func (s *Slice) Len() int64 {
+	if s.Virtual() {
+		return s.N
+	}
+	return int64(len(s.Elems))
+}
+
+// Cap reports the slice's logical capacity — CapN for a virtual slice,
+// cap(Elems) otherwise.
+func (s *Slice) Cap() int64 {
+	if s.Virtual() {
+		return s.CapN
+	}
+	return int64(cap(s.Elems))
+}
+
+// Spread wraps the operand of a trailing `xs...` call argument when the
+// slice is virtual: it cannot expand into one argument per element
+// (the count is astronomical), so it rides to the callee as a single
+// lazy value. append and variadic-parameter binding expand the logical
+// length; every other callee traps on the marker rather than answering
+// wrong.
+type Spread struct{ S *Slice }
 
 // IsZeroSizeValue reports whether a value's type occupies no bytes — an
 // empty struct, a [0]T array, or a composite of only zero-size fields.

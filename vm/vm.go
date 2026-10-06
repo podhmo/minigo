@@ -895,7 +895,20 @@ func (v *VM) prepFrame(callee runtime.Value, args []runtime.Value, statics []*ru
 		if ch.IsVararg && i == n-1 {
 			rest := runtime.NIL
 			if i < len(args) {
-				rest = &runtime.Slice{Elems: append([]runtime.Value{}, args[i:]...)}
+				if sp, ok := args[len(args)-1].(*runtime.Spread); ok {
+					// `f(xs...)` binds the variadic parameter to the
+					// passed slice itself (Go's no-copy special case).
+					// A virtual spread stays virtual: every element is
+					// the type's single zero-size value either way.
+					if len(args) == i+1 {
+						rest = sp.S
+					} else {
+						rn := int64(len(args)-i-1) + sp.S.N
+						rest = &runtime.Slice{N: rn, CapN: rn, Zero: sp.S.Zero, Typ: sp.S.Typ}
+					}
+				} else {
+					rest = &runtime.Slice{Elems: append([]runtime.Value{}, args[i:]...)}
+				}
 			}
 			fr.locals[i] = &runtime.Cell{Elem: rest}
 			break
@@ -3870,7 +3883,7 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 		if !ok {
 			f.trap("slice index is %T", idx)
 		}
-		if b.N > 0 {
+		if b.Virtual() {
 			// a virtual zero-size slice vends its shared element value.
 			if i < 0 || i >= b.N {
 				panic(runtime.BoundsPanic(i, int(b.N)))
@@ -4666,7 +4679,7 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 		if et := v.elemTypedef(f, b.Typ); et != nil {
 			val = v.coerce(f, val, et)
 		}
-		if b.N > 0 {
+		if b.Virtual() {
 			// a virtual zero-size element can't be observed — the type
 			// has a single value — but the bounds check still applies.
 			if i < 0 || i >= b.N {
@@ -4850,20 +4863,28 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 		// s[0:0] / s[:] on a nil slice is a valid empty result
 		l, h := bounds(f, lo, hi, 0)
 		m := maxBound(f, max, 0)
-		if l != 0 || h != 0 || m != 0 {
-			panic(runtime.RuntimePanic(nilSliceBoundsReason(l, h, m, three)))
+		if r := sliceBoundsReason(l, h, m, 0, three); r != "" {
+			panic(runtime.RuntimePanic(r))
 		}
 		return b
 	case *runtime.Slice:
-		if b.N > 0 {
+		if b.Virtual() {
 			// a virtual zero-size slice bounds-checks against its
-			// logical length; the sub-slice stays virtual.
+			// logical length and capacity like a real one — the
+			// two-index high may pass len up to cap — and the
+			// sub-slice stays virtual: s[:0] keeps the capacity.
 			l, h := bounds(f, lo, hi, b.N)
-			m := b.CapN
 			if three {
-				m = maxBound(f, max, b.CapN)
+				m := maxBound(f, max, b.CapN)
+				if r := sliceBoundsReason(l, h, m, b.CapN, true); r != "" {
+					panic(runtime.RuntimePanic(r))
+				}
+				return &runtime.Slice{N: h - l, CapN: m - l, Zero: b.Zero, Typ: sliceTypOf(b.Typ)}
 			}
-			return &runtime.Slice{N: h - l, CapN: m - l, Zero: b.Zero, Typ: sliceTypOf(b.Typ)}
+			if r := sliceBoundsReason(l, h, 0, b.CapN, false); r != "" {
+				panic(runtime.RuntimePanic(r))
+			}
+			return &runtime.Slice{N: h - l, CapN: b.CapN - l, Zero: b.Zero, Typ: sliceTypOf(b.Typ)}
 		}
 		l, h := bounds(f, lo, hi, int64(len(b.Elems)))
 		if three {
@@ -4885,34 +4906,45 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 	}
 }
 
-// nilSliceBoundsReason renders Go's boundsError text for a failed slice
-// operation on a nil slice — a live *runtime.Slice panics inside Go's
-// own indexing, which already spells the full message, so only the
-// nil path needs the formats reproduced (cap is 0 throughout).
-func nilSliceBoundsReason(l, h, m int64, three bool) string {
+// sliceBoundsReason renders Go's boundsError text for a failed slice
+// operation — mirroring the check order and message shapes of the
+// runtime's goPanicSlice* family (a live *runtime.Slice panics inside
+// Go's own indexing, which already spells the full message, so only
+// paths without a real backing — nil and virtual slices — reproduce
+// the formats here). cap is the capacity the high indices check
+// against; a negative violating index reports its bare form without
+// the capacity/length suffix, like Go's boundsNegErrorFmts. Returns
+// "" when every index is in bounds.
+func sliceBoundsReason(l, h, m, cap int64, three bool) string {
 	const p = "slice bounds out of range"
 	if three {
 		switch {
 		case m < 0:
 			return fmt.Sprintf("%s [::%d]", p, m)
-		case m > 0:
-			return fmt.Sprintf("%s [::%d] with capacity 0", p, m)
-		case h < 0 || h > m:
+		case m > cap:
+			return fmt.Sprintf("%s [::%d] with capacity %d", p, m, cap)
+		case h < 0:
+			return fmt.Sprintf("%s [:%d:]", p, h)
+		case h > m:
 			return fmt.Sprintf("%s [:%d:%d]", p, h, m)
-		default:
-			return fmt.Sprintf("%s [%d:%d:%d]", p, l, h, m)
+		case l < 0:
+			return fmt.Sprintf("%s [%d::]", p, l)
+		case l > h:
+			return fmt.Sprintf("%s [%d:%d:]", p, l, h)
 		}
+		return ""
 	}
 	switch {
 	case h < 0:
 		return fmt.Sprintf("%s [:%d]", p, h)
-	case h > 0:
-		return fmt.Sprintf("%s [:%d] with capacity 0", p, h)
+	case h > cap:
+		return fmt.Sprintf("%s [:%d] with capacity %d", p, h, cap)
 	case l < 0:
 		return fmt.Sprintf("%s [%d:]", p, l)
-	default:
-		return fmt.Sprintf("%s [%d:0]", p, l)
+	case l > h:
+		return fmt.Sprintf("%s [%d:%d]", p, l, h)
 	}
+	return ""
 }
 
 func bounds(f *frame, lo, hi runtime.Value, n int64) (int64, int64) {
@@ -5354,7 +5386,7 @@ func (v *VM) newIterator(f *frame, coll runtime.Value) *runtime.Iterator {
 	case *runtime.Named:
 		return v.newIterator(f, c.V)
 	case *runtime.Slice:
-		if c.N > 0 {
+		if c.Virtual() {
 			// a virtual zero-size slice iterates its logical length,
 			// vending the shared element value.
 			return &runtime.Iterator{Kind: 's', Limit: int(c.N), Zero: c.Zero}
@@ -7785,11 +7817,18 @@ func (v *VM) convertArray(td *runtime.TypeDef, x runtime.Value, n int64) (runtim
 				return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
 			}
 		}
-		if int64(len(s.Elems)) < n {
-			panic(runtime.SliceToArrayPanic(len(s.Elems), n))
+		if sl := s.Len(); sl < n {
+			panic(runtime.SliceToArrayPanic(sl, n))
 		}
 		out := v.zeroElems(v.topFrame(), td, n)
-		copy(out, s.Elems[:n])
+		if s.Virtual() {
+			// the elements are all the single zero-size value Zero vends.
+			for i := range out {
+				out[i] = v.Copy(s.Zero)
+			}
+		} else {
+			copy(out, s.Elems[:n])
+		}
 		return &runtime.Slice{Elems: out, Typ: td}, nil
 	}
 	return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
@@ -7837,16 +7876,25 @@ func (v *VM) convertSlice(td *runtime.TypeDef, x runtime.Value) (runtime.Value, 
 		if an, isArr := v.arrayLen(v.topFrame(), td); isArr {
 			// [N]T(s) — slice-to-array conversion copies the first N
 			// elements (too-short slices panic like Go's runtime check).
-			if int64(len(s.Elems)) < an {
-				panic(runtime.SliceToArrayPanic(len(s.Elems), an))
+			if sl := s.Len(); sl < an {
+				panic(runtime.SliceToArrayPanic(sl, an))
 			}
-			return v.copyArray(v.topFrame(), &runtime.Slice{Elems: s.Elems[:an], Typ: td}, td), nil
+			el := s.Elems[:an]
+			if s.Virtual() {
+				// every element is the single zero-size value Zero vends.
+				el = make([]runtime.Value, an)
+				for i := range el {
+					el[i] = v.Copy(s.Zero)
+				}
+			}
+			return v.copyArray(v.topFrame(), &runtime.Slice{Elems: el, Typ: td}, td), nil
 		}
 		if s.Typ != nil && !v.convShapeEq(s.Typ, td) {
 			return nil, fmt.Errorf("cannot convert %s to %s", tdName(s.Typ), tdName(td))
 		}
 		// Go shares the backing array on a conversion: re-tag, no copy.
-		return &runtime.Slice{Elems: s.Elems, Typ: td}, nil
+		// A virtual slice keeps its logical counters.
+		return &runtime.Slice{Elems: s.Elems, N: s.N, CapN: s.CapN, Zero: s.Zero, Typ: td}, nil
 	}
 	return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
 }
@@ -7906,10 +7954,19 @@ func (v *VM) convertPointer(td *runtime.TypeDef, x runtime.Value) (runtime.Value
 		// slice's backing array (too-short slices panic like Go's).
 		if et := v.elemTypedef(v.topFrame(), td); et != nil {
 			if an, isArr := v.arrayLen(v.topFrame(), et); isArr {
-				if int64(len(s.Elems)) < an {
-					panic(runtime.SliceToArrayPanic(len(s.Elems), an))
+				if sl := s.Len(); sl < an {
+					panic(runtime.SliceToArrayPanic(sl, an))
 				}
-				return &runtime.Cell{Elem: &runtime.Slice{Elems: s.Elems[:an], Typ: et}}, nil
+				el := s.Elems[:an]
+				if s.Virtual() {
+					// zero-size elements share one address in Go too — a
+					// materialized view of the single value reads the same.
+					el = make([]runtime.Value, an)
+					for i := range el {
+						el[i] = v.Copy(s.Zero)
+					}
+				}
+				return &runtime.Cell{Elem: &runtime.Slice{Elems: el, Typ: et}}, nil
 			}
 		}
 	}
@@ -8101,7 +8158,14 @@ func (v *VM) popArgs(f *frame, argc int, mode int, pos token.Pos) ([]runtime.Val
 			f.trap("cannot use %T as spread argument", last)
 		}
 		declared = s.Typ
-		args = append(args[:argc-1], s.Elems...)
+		if s.Virtual() {
+			// a virtual slice can't expand into one argument per
+			// element — the logical count rides to the callee as a
+			// marker that append and variadic binding expand lazily.
+			args = append(args[:argc-1], &runtime.Spread{S: s})
+		} else {
+			args = append(args[:argc-1], s.Elems...)
+		}
 		spreadTd := v.elemTypedef(f, declared)
 		if spreadTd == nil && namedTyp != nil {
 			spreadTd = v.elemTypedef(f, namedTyp)
