@@ -391,3 +391,60 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 - **検証で見つかった新規 divergence は修正せず記録**: phase-2 子が発見した func-signature assert gap は本レビューの指摘項目ではなく根因も別系統のため、1 root cause = 1 PR の流儀通り TODO.md 記録のみの PR（#455）に切り分けて次ラウンドの入口とした。
 - **hunt 枯渇をもって完了と判断**: lang 連続クリーン（発散が出た 059 の再実行を含む）+ num/text/reflect 全 PASS で補給を打ち切り。100 上限には遠く及ばず。
 - **取りまとめ役の継続**: round-10 で確立した子セッション委譲の運用を踏襲 — バグ系・リファクタ系それぞれ全項目を要不要判定→修正→pin→CI 確認まで子に担わせ、自分は repro 検証・積み上げ管理・本レポートに集中。2件とも完遂。
+
+### 6.14 実施ラウンド（round-12）: Stack #471 — difffuzz 掃討・枯渇判定・外部レビュー9件+リファクタ9件の委譲
+
+発端は TODO.md の difffuzz 系残件（`$GOROOT/test` コーパス未走査 subdir）を「1 root cause = 1 PR」で stacked PR に積む指示（上限 100、枯渇で終了、枯れたら `gen` で補充）。成果: **Stack #471 に 37 PR（#467–#504）を構築して掃討フェーズを枯渇終了**させ、その後届いた外部レビューのバグ9件を5子セッションに委譲して修正（#510–#514）＋CI flake の根因修正（#516）、リファクタ提案9件は要不要判定付きで直列の子1件に委譲（#518–#529）。
+
+#### 実施内容
+
+| フェーズ | 内容 | PR |
+|------|------|-----|
+| corpus sweep | 3子セッションで typeparam / ken・interface・chan / syntax・abi・stress・dwarf・simd を走査、自分で fixedbugs の `// run` 646件と codegen（87件全 SKIP）を処理。発散を PENDING pin として31件取り込み | [#467](https://github.com/podhmo/minigo/pull/467)–[#470](https://github.com/podhmo/minigo/pull/470) |
+| serial fix 前半 | local typedef identity の宣言サイト化、iface assert のシグネチャ比較、pkg var init の依存ゲート、map range の Order 共有破壊、struct tag identity 正規化、unary const fold + `-0` の materialize、case expr の定数性保持、wide uint64 の float 変換、`complex()`/`real()`/`imag()` の const fold、nil `*[N]T` の deref 省略、huge zero-size slice の virtual backing | [#472](https://github.com/podhmo/minigo/pull/472)–[#482](https://github.com/podhmo/minigo/pull/482) |
+| serial fix 後半 | nil interface vs boxed typed nil の区別、value-method の nil ディスパッチ文言、pointer receiver の lvalue storage ref 束縛、comma-ok `var a,b = rhs`、nil receiver の iface method expr、NaN sort 順、bodiless asm decl の host 実装、blank receiver tparam、`*runtime.BuiltinFunc` のジェネリック推論、ローカルジェネリックの外側型引数捕捉、minireflect の関数 typedef fn-scope、boxed typed nil の具象型保持、funclit の instantiation binds 捕捉、script struct の host `any` marshal（template 経路） | [#483](https://github.com/podhmo/minigo/pull/483)–[#496](https://github.com/podhmo/minigo/pull/496) |
+| 補充（gen hunt） | 枯渇後に gen で4件の発散を採掘して pin（#497）。修正: unsigned 縮小変換のマスク順、assert panic の nil 動的型表記、nil interface の map key 正規化、nil interface cell / nil deref ref の select panic、`reflect.Zero(iface).Elem()` の invalid 返却 | [#497](https://github.com/podhmo/minigo/pull/497)–[#503](https://github.com/podhmo/minigo/pull/503) |
+| 帳簿 | TODO.md の difffuzz 節32件 `[x]` 化 | [#504](https://github.com/podhmo/minigo/pull/504) |
+| 外部レビュー（バグ9件 → 5子委譲） | nil interface composite key（#510）、`os.Stdout` の `*os.File` facade（#511）、deepHost 循環参照 P1 + template niladic メソッド評価（#512）、シグネチャ比較の意味論化 — alias peel + 無名 iface method-set 比較（#513）、virtual slice の表現属性化 + bounds/spread/copy（#514） | [#510](https://github.com/podhmo/minigo/pull/510)–[#514](https://github.com/podhmo/minigo/pull/514) |
+| CI flake 根因 | `watchCallFrom` の nil proc レース — check-then-use の間に `ReleaseProc` が `v.proc` を nil 化（main 由来の潜伏バグ、#514 の CI で初観測） | [#516](https://github.com/podhmo/minigo/pull/516) |
+| 外部レビュー（リファクタ9件 → 直列1子委譲） | 採用7・不採用1・部分採用1。判定中に実害バグ4件を発見・修正（下表）。統合ベースの merge PR（#518）を挟んで各項目を独立 diff に | [#518](https://github.com/podhmo/minigo/pull/518)–[#529](https://github.com/podhmo/minigo/pull/529) |
+| 本レポート | この round-12 セクションの追記 | 本 PR |
+
+#### リファクタ提案9件の判定結果
+
+| # | 提案 | 判定 | PR |
+|---|------|------|-----|
+| 1 | `typeMethodFuncs` は `methodSet` の重複 → 削除 | 採用 | [#519](https://github.com/podhmo/minigo/pull/519) |
+| 2 | 値からのメソッド集合探索の二重化 | 採用 — `methodInfoOfValue` が (names, funcs, unsure) を一括返却。**実装中にバグ発見**: `type A = sync.Mutex` の alias 先の host/iface method set が見えていなかった → [#520](https://github.com/podhmo/minigo/pull/520)（pin `hostalias_methodset`） | [#520](https://github.com/podhmo/minigo/pull/520), [#521](https://github.com/podhmo/minigo/pull/521) |
+| 3 | iface sig → Function 変換ループの重複 | 採用 — `ifaceSigFuncs` に3箇所集約、nil-for-empty で統一 | [#522](https://github.com/podhmo/minigo/pull/522) |
+| 4 | シグネチャ比較の VM/minireflect 分散 | 採用 — `runtime.TypeResolver` 注入型の `sigComparer` に一本化（`runtime.SigTypEq`/`SigIdentical`）。#513 の `sigTypEq` は VM 側薄ラッパに縮退、minireflect `Implements` も同じ comparator を経由。**副次効果**: `reflect.Implements` が alias typedef を解決するようになり `reflect_implements_alias` の PENDING 解除 | [#523](https://github.com/podhmo/minigo/pull/523) |
+| 5 | func 値からシグネチャ抽出の共通化 | 採用 — `runtime.FuncSigOf`。**バグ発見**: method expr `T.M` が `func(int) int` と表示 → `func(main.T, int) int` に修正 → [#525](https://github.com/podhmo/minigo/pull/525)（pin `methexpr_sig`） | [#524](https://github.com/podhmo/minigo/pull/524), [#525](https://github.com/podhmo/minigo/pull/525) |
+| 6 | `structDataHost` が `structMember` を再実装 | **不採用** — 対象コードは #512 で全面書き換え済み（eager-eval + 呼出しバジェット = 提案が「必要」と明記した橋自体）。`structMember` へ寄せると「宣言メンバのみ投影」という明文化された挙動が変わる（昇格メンバ混入・frame 依存） | — |
+| 7 | virtual slice 操作を `Slice` に集約 | 採用 — `N` 直読みを `Len()`/`Cap()` 経由に。[#514](https://github.com/podhmo/minigo/pull/514) の表現属性化の続き。**バグ2件発見**: `append(real, vslice...)` が実要素を落とす / ゼロサイズ要素 append の cap 倍加（Go は `cap=newlen`）→ [#527](https://github.com/podhmo/minigo/pull/527)（pin `append_vspread_real`, `append_zerosize_cap`） | [#526](https://github.com/podhmo/minigo/pull/526), [#527](https://github.com/podhmo/minigo/pull/527) |
+| 8 | untyped const のデフォルト型変換の重複 | 採用 — `runtime.UConstNative` に共有コア化。rune タグ・complex の `GoValue` wrap は VM 側に残置（提案の制約どおり） | [#528](https://github.com/podhmo/minigo/pull/528) |
+| 9 | nil iface / boxed typed nil 分類の散在 | 採用 — `runtime.IfaceTaggedNil`/`BoxedNilTyp`/`IsNilIface` に集約。#510 の `writeKeyElem` 経路も同じ分類子を通す | [#529](https://github.com/podhmo/minigo/pull/529) |
+
+#### 残りの状況
+
+- difffuzz キューは掃討フェーズで枯渇: gen 全4ドメイン（text/num/reflect/lang）で stack tip 上 0 divergence（20バッチ・depth 6 の深掘りでも 0）、corpus 全 subdir 走査済み。PENDING 残りゼロ（`reflect_implements_alias` は #523 で解除）。
+- 外部レビューのバグ9件は全件真の指摘として修正済み（1件は未観測の P1 — `deepHost` の循環参照でプロセス死）。リファクタ9件も判定・実装まで完了。
+- Stack #471 は 55 PR + 本レポート PR。境界クラス（unsafe.Pointer、GC fidelity、gcgort、*.dir、cgo、スループット HANG）は引き続き対象外。
+
+#### 不備の振り返り
+
+- **`IfaceNil{interface-kind}` = 「動的型なしの nil eface」という不変条件の適用漏れ**: CanonicalKey・panic 表記・reflect.Elem・member select の4サブシステムに正しく入れたが、複合キーの `writeKeyElem` で interface-kind にも `typ:nil` を付けてしまい「`==` では等しいのに map key が別」に（#510）。ルールを宣言したとき、構造体フィールド経路にも同じ分類が要ることを書き切れていなかった — §6.13 の nil-ness 分岐表と同根。#529 で分類子自体を共有化したので再発は構造的に抑止。
+- **`deepHost`/`structDataHost` は「投射」の設計欠落が2層あった**: 循環参照の visited-set 不在（P1 — Go では `map[string]any` に循環が合法なのにプロセス死亡）と、map 投影では niladic メソッドが「呼ばれない」ことの見落とし（template の field lookup は map 値をそのまま取る）。後者は #496 時点で既知の制約と書いていたが実害級と判明 — 「書いた制約」は「検証済みの境界」ではない。eager eval は seen-map・shape filter・呼出しバジェット64の3重で境界化した（`TestNetHTTPRoundtrip` で史上2度目の eager-eval ハングを回避）。
+- **virtual slice は「`N>0` で判定」ではなく表現属性であるべきだった**: `s[:0]` で CapN 消失、bounds 非検査、append が cap を捨てる、spread/copy が論理長を無視 — 4件全て「virtual 判定が Elems を見る局所実装」に集約される。`Virtual()`/`Len()`/`Cap()` の一本化で構造的に閉じた（#514→#526）。それでも `append(real, vslice...)` の要素落としは残っていた（#527）— アクセサ化後も直読み箇所が残る限り抜ける。
+- **unsigned 縮小変換の適用順**: `uv > MaxInt64` の boxing を幅マスクより先にやっていたため `uint16(-3)` が `2^64-3` に（#498）。「変換は (a) 幅にマスク (b) 収まらなければ box」の順序を明記しておくべきだった。
+- **シグネチャ比較を spelling で実装したのが抜け道**: alias peel と匿名 iface の method-set 順序を通さない `TypIdentical` は「等しいものを違う」と言う方向にバグる（#473 → #513 で semantic 比較に置換、`any(<-chan int).(chan int)` の逆向き偽陽性も同時に潰れた — chan direction を見ていなかった）。#523 で comparator が runtime の単一実装になったため、今後の呼出し側追加は自動的に意味論比較になる。
+- **`os.Stdout` の facade 化で「Write 以外のメソッドも host 値の API」という不変条件を落とした**: リダイレクト目的の最小 wrapper が `Name()`/`Fd()`/`Stat()` を trap に。埋め込み委譲＋`Write`/`WriteString`/`ReadFrom` だけオーバーライド（#511 — `ReadFrom` は `io.Copy` が dst の ReaderFrom を優先するため、置かないと fd 1 直書きに回帰する）。
+- **sibling-stack のブランチ構造を委譲プロンプトに書いていなかった**: 修正群のブランチは全て旧 tip の「兄弟」として切られているのに、リファクタ委譲時には procrace 1本だけをベースとして渡した。子が `sigTypEq` の不存在を自ら検出して部分採用に留めたのは幸いだったが、本来はマージ済み統合 tip を先に作って渡すべきだった。同じ合流内容を必要とする後続作業には `#518` のような integration merge を先に置く運用にする。
+
+#### 計画外の記録と判断
+
+- **レビュー9件の子委譲分割**: ファイル領域で5件に束ねた（structDataHost 系・os.Stdout・virtual slice・map key・シグネチャ比較）。SWE-2 の5並列上限を踏み、完了した子は `sleep` させてスロットを開けてから5件目を起動 — 完了通知が来ても running 扱いで枠を占有し続けるのが罠。
+- **CI の flake を根因まで掘った（#516）**: #514 の `test` job が `watchCallFrom` on nil proc で SIGSEGV。main にもある潜伏レース（`v.proc` の check-then-use）で、直すべき根因として stack 最上位に1 PR 追加。再現は非決定的なので、guard を「capture してから nil 判定」に変えて構造的に消した。#514 側のジョブは空コミットで再実行。
+- **リファクタ委譲は直列**: 提案同士が dispatch.go/vm.go のメソッド機構・virtual slice・シグネチャ比較の同一領域に重なるため、ユーザーの助言通り1セッションの直列に。要不要判定権限つき（提案は stack の古い状態を見ている可能性があり、sigident・vslice・hostmarshal の着地で既に一部実現済み — 実際 item 6 は不採用だった）。
+- **リファクタは「読み比べ」で新バグを顕在化させる**: 判定・共通化の過程で4件の実害バグ（hostalias_methodset、methexpr_sig、append_vspread_real、append_zerosize_cap）が見つかった。重複コード解消は「2経路の差分」を強制的に読ませるため、差分バグの発見装置としても機能する — §6.12 と同型の観測。
+- **stacked PR 上での sibling→統合**: リファクタチェーンは複数 sibling 修正の合流内容を必要としたため、`#518`（統合 merge、自身の変更なし）を stack に1枚挟んで上位11件を独立 diff に保った。sibling が下から順に landed すれば #518 は空になり自然解消される。
+- **「全緑」の運用**: バグ修正群の着地 + 各 PR の CI 緑（flake 1件は根因修正済み）を待ってからリファクタを起動した。
