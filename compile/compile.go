@@ -1233,6 +1233,12 @@ func (c *compiler) localTypeDecl(ts *ast.TypeSpec) {
 	slot := c.fs.declare(ts.Name.Name, ts.Pos())
 	c.fs.recordType(ts.Name.Name, ts, td, isIface)
 	c.emit(bytecode.OpConst, c.constIdx(td), 0, ts.Pos())
+	// gc treats every function-local type declared inside a generic
+	// function as implicitly parameterized by the enclosing type
+	// arguments: `type X int` in F[T] is a different X per F[T]'s
+	// instantiation. OpLocalType clones the decl typedef with the
+	// resolved outer args at run time.
+	c.emit(bytecode.OpLocalType, 0, 0, ts.Pos())
 	c.emit(bytecode.OpNewLocal, slot, 0, ts.Pos())
 }
 

@@ -126,6 +126,7 @@ const (
 
 	// types / interfaces / generics (cont.)
 	OpFoldArrayLen // pop len value, pop typedef -> fold len into the typedef's array AST -> push typedef
+	OpLocalType    // pop typedef -> push typedef re-parameterized by the enclosing generic function's resolved type args
 )
 
 // BinOp is an OpBinary sub-op.

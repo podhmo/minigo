@@ -1665,6 +1665,35 @@ func (v *VM) loop(f *frame) {
 			}
 			base := f.pop()
 			f.push(v.instantiate(f, base, targs, ins.Pos))
+		case bytecode.OpLocalType:
+			// A function-local type decl runs per call; inside an
+			// instantiated generic function the enclosing type args
+			// belong to the declared type's identity (`type X int` in
+			// F[T] differs per instantiation). specializeType computes
+			// the same outer args for a local generic's T[args].
+			top := f.pop()
+			if td, ok := top.(*runtime.TypeDef); ok && td.Local && f.fn != nil && len(f.fn.TParams) > 0 {
+				var outer []runtime.Value
+				binds := map[string]runtime.Value{}
+				for k, bv := range td.Binds {
+					binds[k] = bv
+				}
+				for _, tp := range f.fn.TParams {
+					bv, ok := f.fn.Binds[tp]
+					if !ok {
+						continue
+					}
+					binds[tp] = bv // the resolved arg beats a compile placeholder
+					outer = append(outer, bv)
+				}
+				if len(outer) > 0 {
+					clone := *td
+					clone.OuterArgs = outer
+					clone.Binds = binds
+					top = &clone
+				}
+			}
+			f.push(top)
 		case bytecode.OpFoldArrayLen:
 			// [td, len] on the stack: evaluate-at-use constants like
 			// `[n]int`/`[len(a)]*T` fold into the typedef's AST so type

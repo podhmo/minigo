@@ -147,14 +147,27 @@ func (e *Env) keyOf(td *runtime.TypeDef) string {
 
 // bindsKeyOf renders a typedef's instantiation arguments as the
 // "[arg,...]" suffix of its canonical name — `S[int]` and `S[string]`
-// share a declared name but are different types.
+// share a declared name but are different types. A function-local type
+// declared inside a generic function is implicitly parameterized by the
+// enclosing type args too: they key first, separated from the type's own
+// args by ';' like instArgsSpelling's `[outer;own]` rendering.
 func (e *Env) bindsKeyOf(td *runtime.TypeDef) string {
-	if len(td.TParams) == 0 || len(td.Binds) == 0 {
+	if len(td.OuterArgs) == 0 && (len(td.TParams) == 0 || len(td.Binds) == 0) {
 		return ""
 	}
 	var sb strings.Builder
 	sb.WriteString("[")
-	wrote := false
+	for i, ov := range td.OuterArgs {
+		otd, _ := ov.(*runtime.TypeDef)
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		sb.WriteString(e.keyOf(otd))
+	}
+	wrote := len(td.OuterArgs) > 0
+	if wrote {
+		sb.WriteString(";")
+	}
 	for _, tp := range td.TParams {
 		bv, ok := td.Binds[tp]
 		if !ok {
