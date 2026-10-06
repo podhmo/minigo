@@ -1612,8 +1612,17 @@ func (c *compiler) rangeStmt(st *ast.RangeStmt) {
 	if st.Key != nil {
 		nvars++
 	}
+	// A non-blank element var reads the element every iteration — on a
+	// nil *[N]T that read is a nil dereference (Go panics).
+	// `for i, _ := range p` never reads it and iterates the static
+	// indices like the one-var form. Bit 2 of C marks the read.
+	nc := nvars
 	if st.Value != nil {
 		nvars++
+		nc = nvars
+		if !isBlankIdent(st.Value) {
+			nc |= 4
+		}
 	}
 	lc := &ctrlCtx{isLoop: true, labels: c.takeLabels()}
 	c.ctrl = append(c.ctrl, lc)
@@ -1625,7 +1634,7 @@ func (c *compiler) rangeStmt(st *ast.RangeStmt) {
 	// and keeps the store-target path.
 	useRefs := st.Tok != token.DEFINE
 	topIP := len(c.ch.Code)
-	nextI := c.emit3(bytecode.OpRangeNext, 0, itSlot, nvars, st.Pos())
+	nextI := c.emit3(bytecode.OpRangeNext, 0, itSlot, nc, st.Pos())
 	lc.continueIP = topIP
 
 	if useRefs {
@@ -1662,6 +1671,20 @@ func (c *compiler) bindRangeVar(e ast.Expr, define bool) {
 		return
 	}
 	c.storeTarget(e, define)
+}
+
+// isBlankIdent reports whether e is the blank identifier — possibly
+// parenthesized — so a range element bound to it is never read.
+func isBlankIdent(e ast.Expr) bool {
+	for {
+		if p, ok := e.(*ast.ParenExpr); ok {
+			e = p.X
+			continue
+		}
+		break
+	}
+	id, ok := e.(*ast.Ident)
+	return ok && id.Name == "_"
 }
 
 func (c *compiler) switchStmt(st *ast.SwitchStmt) {
@@ -3216,6 +3239,27 @@ unwrapped:
 				return
 			}
 		}
+		// len(*p) / cap(*p): the call is a constant when p's type is
+		// *[N]T — Go never evaluates the dereference (only operands with
+		// calls or receives evaluate). Two OpLenDerefFold probes mirror
+		// the index fold: the declared typedef tier never evaluates the
+		// operand at all, the pointer-value tier still reads p but skips
+		// the deref (covering nil pointers the static tier can't type).
+		// An operand that calls out — `len(*f())` — evaluates and derefs
+		// like any expression, so the nil panic stays faithful.
+		if st, ok := x.Args[0].(*ast.StarExpr); ok && !c.lenOperandCalls(st) {
+			c.calleeExpr(x.Fun)
+			c.lenDerefStaticTyp(st.X)
+			jm0 := c.emit(bytecode.OpLenDerefFold, 0, 0, x.Pos())
+			c.expr(st.X)
+			jm1 := c.emit(bytecode.OpLenDerefFold, 0, 1, x.Pos())
+			c.emit(bytecode.OpDeref, 0, 0, st.Pos())
+			c.emit(bytecode.OpNil, 0, 0, x.Pos())
+			c.emit(bytecode.OpCall, 1, 0, x.Pos())
+			c.patchA(jm0, len(c.ch.Code))
+			c.patchA(jm1, len(c.ch.Code))
+			return
+		}
 	}
 	c.calleeExpr(x.Fun)
 	newCall := isNewCall(x)
@@ -3232,6 +3276,62 @@ unwrapped:
 	c.callArgs(args)
 	c.argStatics(x.Args)
 	c.emit(bytecode.OpCall, len(x.Args), callSpread(x), x.Pos())
+}
+
+// lenOperandCalls reports whether a len/cap operand forces evaluation
+// in Go — only a non-conversion function call or a channel receive
+// does. Assertions, slices, indexing and literals stay constant, so
+// `len(*x.(T))` never fires the assert and `len(*s[:][i])` never
+// evaluates the slice.
+func (c *compiler) lenOperandCalls(e ast.Expr) bool {
+	calls := false
+	ast.Inspect(e, func(n ast.Node) bool {
+		if calls || n == nil {
+			return false
+		}
+		switch t := n.(type) {
+		case *ast.FuncLit:
+			return false // body calls run at invocation, not operand time
+		case *ast.CallExpr:
+			if c.conversionCall(t) {
+				return true // transparent — descend into its args
+			}
+			calls = true
+			return false
+		case *ast.UnaryExpr:
+			if t.Op == token.ARROW {
+				calls = true
+				return false
+			}
+		}
+		return true
+	})
+	return calls
+}
+
+// lenDerefStaticTyp pushes the declared typedef of a len/cap `*x`
+// operand for OpLenDerefFold's static tier — an ident's declared type
+// like staticTyp, plus the element typedef of an indexed base so
+// `len(*ps[i])`/`len(*m[k])` fold without evaluating the index either.
+// Anything else pushes NIL and the run-time tier decides.
+func (c *compiler) lenDerefStaticTyp(e ast.Expr) {
+	switch x := e.(type) {
+	case *ast.ParenExpr:
+		c.lenDerefStaticTyp(x.X)
+	case *ast.IndexExpr:
+		c.lenDerefStaticTyp(x.X)
+		c.emit(bytecode.OpElemTypeOrNil, 0, 0, e.Pos())
+	case *ast.SliceExpr:
+		c.lenDerefStaticTyp(x.X) // s[lo:hi] keeps s's element type
+	case *ast.TypeAssertExpr:
+		if x.Type != nil {
+			c.typeExpr(x.Type) // x.(T) has static type T
+		} else {
+			c.emit(bytecode.OpNil, 0, 0, e.Pos())
+		}
+	default:
+		c.staticTyp(e)
+	}
 }
 
 // argStatics pushes each argument's declared typedef (or nil) so generic

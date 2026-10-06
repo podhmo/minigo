@@ -70,10 +70,21 @@ const (
 	// control
 	OpJump       // ip = A
 	OpLenIdxFold // stack [callee, base]; if base's elem type is an array replace both with len(elem) and ip = A (skips index+index-op+call); else fall through
-	OpJumpFalse  // pop cond; if !truthy ip = A
-	OpJumpTrue   // pop cond; if truthy ip = A
-	OpIter       // pop value -> push *Iterator (range over slice/map/int/string)
-	OpRangeNext  // A: exit ip; B: iterator local slot; C: nvars; pushes C values or exits
+	// OpLenDerefFold folds len(*x)/cap(*x): Go never evaluates the deref
+	// of a *[N]T operand, so the call is the constant N. The stack is
+	// [callee, x-tier]; a hit replaces both with N and jumps to A,
+	// skipping the emitted operand/deref/call run. B=0's x is the
+	// operand's declared typedef (a miss pops it so the pointer expr
+	// still evaluates); B=1's x is the evaluated pointer itself (a miss
+	// keeps it for OpDeref).
+	OpLenDerefFold
+	OpJumpFalse // pop cond; if !truthy ip = A
+	OpJumpTrue  // pop cond; if truthy ip = A
+	OpIter      // pop value -> push *Iterator (range over slice/map/int/string)
+	// C: nvars in the low two bits; bit 2 set when a non-blank element
+	// var binds each iteration's value (reading the element is a real
+	// dereference on a nil *[N]T; a `_` binding never reads).
+	OpRangeNext // A: exit ip; B: iterator local slot; C: nvars; pushes C values or exits
 
 	// channels — real blocking semantics on host channels
 	OpSend    // pop value, pop chan -> blocking send (park until received/closed-abort)
@@ -95,10 +106,11 @@ const (
 	OpDerefRef    // pop ref -> push *DerefRef{ref} — the location the ref's value points at (`*p` store target)
 
 	// types / interfaces / generics
-	OpAssert      // pop typedef, pop value -> push asserted value (script panic on mismatch); B=1: a static-typedef operand sits between value and typedef
-	OpAssertOK    // pop typedef, pop value -> push Tuple{value, ok} (comma-ok assert)
-	OpInstantiate // A: ntypeargs; pop type args, pop generic -> push specialized value
-	OpElemType    // pop typedef -> push element typedef ([]T->T, map[K]V->V, chan T->T, *T->T)
+	OpAssert        // pop typedef, pop value -> push asserted value (script panic on mismatch); B=1: a static-typedef operand sits between value and typedef
+	OpAssertOK      // pop typedef, pop value -> push Tuple{value, ok} (comma-ok assert)
+	OpInstantiate   // A: ntypeargs; pop type args, pop generic -> push specialized value
+	OpElemType      // pop typedef -> push element typedef ([]T->T, map[K]V->V, chan T->T, *T->T)
+	OpElemTypeOrNil // OpElemType that pushes NIL instead of trapping when the operand or its element type is unknown (fold probes only)
 
 	// declared-type coercion: emitted wherever the language attaches a
 	// declared type to a binding (var x T, parameters, named results,
