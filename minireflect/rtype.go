@@ -62,7 +62,23 @@ type Method struct {
 
 // rtypeOf interns a script typedef.
 func (e *Env) rtypeOf(td *runtime.TypeDef) *RType {
+	// an alias IS its target: the Type carries the target typedef so
+	// Name, methods and Implements see the aliased declaration
+	// (kin-openapi's `type AdditionalProperties = BoolSchema`).
+	td = e.peelAlias(td)
 	return e.intern(e.keyOf(td), td, nil)
+}
+
+// peelAlias follows `type A = T` chains to the target typedef.
+func (e *Env) peelAlias(td *runtime.TypeDef) *runtime.TypeDef {
+	for i := 0; td != nil && td.Kind == runtime.KindAlias && e.h.AliasOf != nil && i < 100; i++ {
+		t, err := e.h.AliasOf(td)
+		if err != nil || t == nil || t == td {
+			break
+		}
+		td = t
+	}
+	return td
 }
 
 // hostTypeOf interns a host reflect.Type.
@@ -357,6 +373,17 @@ func (e *Env) fieldTypes(td *runtime.TypeDef) []*runtime.TypeDef {
 	fts, err := e.h.FieldTypes(td)
 	if err != nil {
 		return nil
+	}
+	// alias-typed fields view their target: Addr() of a field declared
+	// `AP AdditionalProperties` is a *BoolSchema with its methods.
+	for _, ft := range fts {
+		if ft != nil && ft.Kind == runtime.KindAlias {
+			out := make([]*runtime.TypeDef, len(fts))
+			for j, t := range fts {
+				out[j] = e.peelAlias(t)
+			}
+			return out
+		}
 	}
 	return fts
 }
