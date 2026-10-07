@@ -119,6 +119,17 @@ func builtins(e *Engine) *runtime.Env {
 					if cv, err := v.Convert(et, a); err == nil {
 						a = cv
 					}
+				case runtime.Nil:
+					// untyped nil takes the declared element
+					// type's zero — append(s, nil) on []List
+					// stores List(nil), not a bare NIL that
+					// panics on member select or prints
+					// <nil> inside the slice.
+					cv, err := v.Convert(et, a)
+					if err != nil {
+						return nil, err
+					}
+					a = cv
 				}
 			}
 			add[i] = v.Copy(a)
