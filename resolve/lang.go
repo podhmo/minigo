@@ -38,3 +38,22 @@ func ModuleLang(dir string) string {
 		d = parent
 	}
 }
+
+// ModulePath returns the module path of the module enclosing dir, or ""
+// when dir is outside any module.
+func ModulePath(dir string) string {
+	for d := dir; ; {
+		data, err := os.ReadFile(filepath.Join(d, "go.mod"))
+		if err == nil {
+			return modfile.ModulePath(data)
+		}
+		if !os.IsNotExist(err) {
+			return ""
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return ""
+		}
+		d = parent
+	}
+}
