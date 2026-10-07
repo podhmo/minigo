@@ -7791,9 +7791,12 @@ func sliceTypOf(td *runtime.TypeDef) *runtime.TypeDef {
 		return td
 	}
 	return &runtime.TypeDef{
-		Kind: runtime.KindSlice,
-		Elem: td.Elem,
-		Anon: &ast.ArrayType{Elt: at.Elt},
+		Kind:  runtime.KindSlice,
+		Elem:  td.Elem,
+		Anon:  &ast.ArrayType{Elt: at.Elt},
+		Pkg:   td.Pkg,
+		File:  td.File,
+		Binds: td.Binds,
 	}
 }
 
