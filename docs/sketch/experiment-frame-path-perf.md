@@ -1,10 +1,10 @@
 # Experiment: where does grafana-openapi's wall time go?
 
-Status: experiment (local, not necessarily for merge). Branches, stacked
-on main: `experiment/frame-alloc-batch` (step 1) ←
-`experiment/global-site-cache` (step 3) ←
+Status: step 3 is proposed in #624 (`perf/global-site-cache`). The
+other steps live on local experiment branches and are not necessarily
+for merge: `experiment/frame-alloc-batch` (step 1) and
 `experiment/iface-cache-bound` (step 4, upper-bound code, not mergeable
-as is).
+as is). Commit hashes below refer to those experiment branches.
 
 Question: the realworld profile keeps flagging `prepFrame` as the top
 allocator. Is reducing frame-path allocation the right lever for wall
