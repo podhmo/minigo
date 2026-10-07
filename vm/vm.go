@@ -5497,6 +5497,13 @@ func (v *VM) compositeOf(f *frame, td *runtime.TypeDef, n int, kv bool, raw []ru
 				if i < len(fts) {
 					ft = fts[i]
 				}
+				if i < len(etd.Fields) && etd.Fields[i] == "_" {
+					// a blank field discards its literal element —
+					// `struct{a,_,c int}{1,2,3}` stores 1,0,3 — but
+					// the element still has to be assignable.
+					_ = v.coerce(f, raw[i], ft)
+					continue
+				}
 				s.Fields[i] = v.coerce(f, raw[i], ft)
 			}
 		}
@@ -5518,6 +5525,9 @@ func (v *VM) compositeOf(f *frame, td *runtime.TypeDef, n int, kv bool, raw []ru
 // allowPtr=false.
 func (v *VM) setLitField(f *frame, s *runtime.Struct, def *runtime.TypeDef, fts []*runtime.TypeDef, name string, val runtime.Value) bool {
 	for fi, fn := range def.Fields {
+		if fn == "_" {
+			continue // Go reports `_: v` as "unknown field _"
+		}
 		if fn == name {
 			var ft *runtime.TypeDef
 			if fi < len(fts) {
