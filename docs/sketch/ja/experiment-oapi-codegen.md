@@ -85,7 +85,68 @@ bind されたパッケージにメンバが無いと `undefined` になる（�
 - 制約エラーの表示が `*ast.UnaryExpr` になる。
 - `panic(err)` が `Error()` ではなく構造体の中身を表示する。
 
+## 第2ラウンド: examples 全体（53 本の `go:generate` 行）
+
+`examples/` 配下の `go:generate go run .../cmd/oapi-codegen ARGS` 行をすべて、その行のディレクトリで実行した。`--src` の指定は第1ラウンドと同じ。各行の出力をネイティブのバイナリ（同じコミットから `go build` したもの）の出力と `diff -r` で比べた。ネイティブは 53/53 が成功し、出力はコミット済みファイルと一致する。
+
+### 結果の推移
+
+| 時点 | 成功（rc=0） | ネイティブとの出力差 |
+|---|---|---|
+| 第1ラウンド終了時 | 15/53 | — |
+| 第2ラウンド現在 | 52/53 | **なし**（成功した 52 本はすべてバイト一致） |
+
+残る 1 本は `overlay/api`（後述の章を参照）。
+
+実行時間は 1 本あたり 5.0〜8.8 s（平均 5.9 s）で、53 本の合計は 312 s。ネイティブは合計 6.8 s。重い順に webhook 8.8 s、petstore-expanded/strict 7.5 s、common/client 7.4 s。
+
+以下は、詰まっていた example ごとの章。どの修正でどの example が動くようになったかを記録する。第1ラウンドの修正で通った 15 本（only-models、extensions/* の大半など）は省略する。
+
+### 章: goimports 経路の全般（多数の example）
+
+- 症状: `cannot use map[string]bool as map[Symbol]bool`。x/tools の `imports` パッケージ内で起きる。
+- 原因: パッケージレベルの非ジェネリック alias（`type Symbol = string` の類）が、composite の中では alias 名のまま綴られていた。そのため、同じ型を指す 2 つの綴りが別の型として扱われていた。
+- 修正: `runtime: spell package-level aliases as their target inside composites`。ケースは `alias_elem_composite`。
+- 付随: `math.Frexp` / `math.Modf` のバインド（`math_frexp_modf`）。
+- 結果: クライアントやサーバのコードを生成する example（minimal-server/*、petstore-expanded/* など）の大半が、goimports を抜けるようになった。
+
+### 章: authenticated-api / anyof-allof-oneof / callback（nil map）
+
+- 症状: nil map への代入による panic。
+- 原因: `maps.Clone` が `--src maps` 下で、本体の無い linkname 関数 `maps.clone` に落ちていた。そのため nil が返っていた。
+- 修正: `asmimpl: implement the linknamed maps.clone`。runtime.Map を浅くコピーし、Named タグを保つ。ケースは `maps_clone_src`。
+- 付随: difffuzz ケースに `SRC` ファイル（`--src` にするパッケージの一覧）を置けるようにした（`test: difffuzz cases may list --src packages in a SRC file`）。
+
+### 章: webhook / petstore-expanded/chi / streaming/stdhttp/sse（compress/flate）
+
+- 症状: `IndexRef` まわりの trap と `set field lastFreq`。生成物にファイルを埋め込む（gzip + base64 の swagger spec）example で起きる。
+- 原因は 2 つ。
+  - `&a[k]` の k が型付きの値のとき、ref のキーがアンラップされていなかった（`vm: unwrap typed index keys in &a[k] refs`、`addr_index_typed_key`）。
+  - 配列への代入がストレージを差し替えていた。そのため、`(*[N]T)(s)` 経由のビューや、先に取ったポインタから変更が見えなかった（**SILENT**）。in place で上書きするようにした（`vm: array stores overwrite the array's storage in place`、`array_store_inplace` / `slice_to_arrayptr_store`）。
+- 結果: この時点で webhook と petstore-expanded/chi がネイティブとバイト一致した。
+
+### 章: output-options/preferskipoptionalpointer（alias 型フィールドの UnmarshalJSON）
+
+- 症状: `error loading swagger spec: cannot unmarshal bool into field Schema.additionalProperties of type openapi3.AdditionalProperties`。
+- 原因: kin-openapi の `type AdditionalProperties = BoolSchema` は alias。minireflect の `reflect.Type` が alias の typedef を保持したままだったので、`PointerTo(t).Implements(Unmarshaler)` が false になっていた。ソース版の encoding/json は `UnmarshalJSON` を呼ばずに bool を構造体へ入れようとした。
+- 修正: `minireflect: alias types and alias-typed fields resolve to the target`。ケースは `reflect_alias_field_unmarshaler`（SRC あり）。
+- 調べる途中で、別の不具合も見つかった。`fv.Addr().Interface()` が `*runtime.FieldRef` という **host 値**として VM に渡っていた。そのため、interface アサーションが host 側のメソッド集合（`Get` / `Set`）で判定されていた。`Set` という名前のメソッドだけ偶然通っていたので、原因の特定に時間がかかった。修正は `vm: host results that are field/index/deref refs stay script pointers`。ケースは `reflect_addr_interface_ref` と `reflect_addr_interface_alias`。
+
+### 章: overlay/api（作業中）
+
+overlay は、OpenAPI Overlay（speakeasy-api/openapi-overlay）を gopkg.in/yaml.v3 の `yaml.Node` 上で適用する。三つの障害を順に越え、現在は四つ目で止まっている。
+
+1. `cannot convert []*minireflect.RValue to keyList`: yaml.v3 encoder の `keyList(in.MapKeys())`。host の `[]*RValue` が、要素型 `*minireflect.RValue` の slice として綴られていた（`%T` も違っていた）。要素を `reflect.Value` と綴るようにした（`vm: host []*RValue results spell their elements reflect.Value`、`reflect_keylist_sort` / `reflect_mapkeys_named_slice`）。
+2. `cannot unmarshal !!map into yaml.Node`: 構造体フィールド `Update yaml.Node` の型が解決できず、穴の typedef（Kind invalid）になっていた。そのため yaml.v3 の `out.Type() == nodeType` が false だった。原因は、import path の末尾（`yaml.v3`）とパッケージ名（`yaml`）が違う場合に、型参照の解決が Scopes の basename キーしか見ていなかったこと。VM の式評価にはすでに「実名を materialize して探す」フォールバックがあり、それを型参照の解決にも入れた（`dispatch: qualified type refs find imports whose package name differs from the path`、`reflect_field_pkgname_differs`）。
+3. 現在: speakeasy-api/jsonpath のパーサで `Token has no field or method Token`。未調査。
+
+### 第2ラウンドで分かったこと
+
+- 第1ラウンドの修正の多くは「一つの example を通すため」のものだったが、それだけで 15/53 まで通った。残りは少数の障害クラスに集中していた（alias の綴り、linkname、配列の in place 更新、reflect の境界）。修正 1 つで 10 本以上が同時に通ることが多かった。
+- **成功した example では、出力の不一致が一度も出なかった。** 第1ラウンドで SILENT 系を潰したあとは、失敗はすべて「止まる」形で現れた。
+- reflect の境界（host 値と script 値の受け渡し）は、`%T` の表示、interface の判定、named slice への変換が、それぞれ別の経路で壊れていた。境界で `goValueOf` を通る値の種類を一覧にして、まとめて点検する価値がある。
+
 ## 次のステップ
 
-- examples 配下の残り 52 個の `go:generate` 行を一括で動かす。ネイティブでは 53/53 が成功し、コミット済みファイルと一致することを確認済み。
+- overlay/api の残りの障害を潰す（以降は example が 1 本通るたびに章を追加する）。
 - minigo-usecasefuzz の realworld に `oapi-codegen-examples` タスクを追加する（targets.tsv にピン留め、`go generate` 相当の出力との diff を oracle にする）。
