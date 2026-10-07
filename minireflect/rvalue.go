@@ -27,6 +27,10 @@ type RValue struct {
 	ref runtime.Value    // settable location (ref-view), or nil
 	td  *runtime.TypeDef // static type of val
 	ro  bool             // obtained through an unexported field
+	// embedRO marks ro as coming only from an unexported EMBEDDED field
+	// (Go's flagEmbedRO): selecting an exported field below it clears
+	// the restriction, as reflect does for `type T struct{ inner }`.
+	embedRO bool
 }
 
 // host reports whether this value delegates to a real reflect.Value.
@@ -670,7 +674,18 @@ func (v *RValue) Field(i int) *RValue {
 	if def != nil && i < len(def.Fields) {
 		name = def.Fields[i]
 	}
-	ro := v.ro || (name != "" && !isExported(name))
+	unexported := name != "" && !isExported(name)
+	embedded := false
+	if def != nil {
+		for _, ei := range def.EmbedIdx {
+			if ei == i {
+				embedded = true
+				break
+			}
+		}
+	}
+	sticky := (v.ro && !v.embedRO) || (unexported && !embedded)
+	ro := sticky || (unexported && embedded)
 	var ref runtime.Value
 	if v.ref != nil {
 		// the field's location is the parent's, not this struct object:
@@ -683,10 +698,11 @@ func (v *RValue) Field(i int) *RValue {
 	}
 	return &RValue{
 		e: v.e, vc: v.vc,
-		val: s.Fields[i],
-		ref: ref,
-		td:  ftd,
-		ro:  ro,
+		val:     s.Fields[i],
+		ref:     ref,
+		td:      ftd,
+		ro:      ro,
+		embedRO: ro && !sticky,
 	}
 }
 
