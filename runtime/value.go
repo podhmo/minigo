@@ -841,14 +841,43 @@ func typeTagOf(td *TypeDef) string {
 		return "?"
 	}
 	if td.Name != "" {
+		name := td.Name
 		if td.Pkg != nil && td.Pkg.Path != "" {
 			// a host-bound td's Name is already "pkgpath.Name"
-			if strings.HasPrefix(td.Name, td.Pkg.Path+".") {
-				return td.Name
+			if !strings.HasPrefix(name, td.Pkg.Path+".") {
+				name = td.Pkg.Path + "." + name
 			}
-			return td.Pkg.Path + "." + td.Name
 		}
-		return td.Name
+		if len(td.TParams) > 0 || len(td.OuterArgs) > 0 {
+			// an instantiated generic is a different type per type
+			// args — `T[struct{int}]` and `T[struct{int "x"}]` hash
+			// distinct like Go. Outer args are part of a func-local
+			// generic's identity too (the `X` of `type X int` inside
+			// F[T] differs per instantiation).
+			var sb strings.Builder
+			sb.WriteString(name)
+			sb.WriteByte('[')
+			first := true
+			for _, p := range td.TParams {
+				if !first {
+					sb.WriteByte(',')
+				}
+				first = false
+				atd, _ := td.Binds[p].(*TypeDef)
+				sb.WriteString(typeTagOf(atd))
+			}
+			for _, a := range td.OuterArgs {
+				if !first {
+					sb.WriteByte(',')
+				}
+				first = false
+				atd, _ := a.(*TypeDef)
+				sb.WriteString(typeTagOf(atd))
+			}
+			sb.WriteByte(']')
+			name = sb.String()
+		}
+		return name
 	}
 	x := td.Anon
 	if x == nil && td.Spec != nil {
