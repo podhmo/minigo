@@ -10149,8 +10149,14 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		// pointer's element type (a named pointer binds only its own
 		// pointee type); untyped pointees defer to the shape check.
 		if ptag := v.pointeeTag(x); ptag != nil {
+			// an alias pointee (`type cache = [256]string`, new(cache))
+			// IS its target: peel it, and an unnamed target compares by
+			// shape like any other anonymous type.
+			pt := v.peelAlias(ptag)
 			if et, err := v.H.ElemOf(utd); err == nil && et != nil &&
-				!sameTypeDef(ptag, et) && !sameTypeDef(ptag, v.peelAlias(et)) {
+				!sameTypeDef(ptag, et) && !sameTypeDef(ptag, v.peelAlias(et)) &&
+				!sameTypeDef(pt, v.peelAlias(et)) &&
+				(tagIsNamed(pt) || !v.tdShapeEq(pt, et)) {
 				f.trap("cannot use %s as %s", "&"+tdName(ptag), tdName(td))
 			}
 		}
