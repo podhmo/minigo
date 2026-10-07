@@ -10010,7 +10010,15 @@ func (v *VM) lenIdxFold(f *frame, base runtime.Value) (runtime.Value, bool) {
 // callSite renders one frame for runtime.Callers: the function's Go
 // symbol name and the source position it is (or was) executing.
 func (v *VM) callSite(f *frame) runtime.CallSite {
-	site := runtime.CallSite{Name: f.fn.Name}
+	name := f.fn.Name
+	// runtime.Frame.Function names the fully-qualified symbol —
+	// `main.main`, `main.call.name` for methods (Name already carries
+	// the receiver). Synthesized frames (`main.__init__`) are
+	// pre-qualified.
+	if f.fn.Pkg != nil && f.fn.Pkg.Name != "" && !strings.HasPrefix(name, f.fn.Pkg.Name+".") {
+		name = f.fn.Pkg.Name + "." + name
+	}
+	site := runtime.CallSite{Name: name}
 	pos := f.pos()
 	if !pos.IsValid() && f.fn.Decl != nil {
 		pos = f.fn.Decl.Pos()
