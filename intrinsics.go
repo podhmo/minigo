@@ -539,6 +539,9 @@ func (e *Engine) installStdlib() {
 			n := utf8.EncodeRune(buf[:], runeOf(a[0]))
 			return string(buf[:n]), nil
 		}),
+		"AppendRune": h.fn2("utf8.AppendRune", func(a []any) (any, error) {
+			return utf8.AppendRune(byteSlice(a[0]), runeOf(a[1])), nil
+		}),
 		"UTFMax":    int64(utf8.UTFMax),
 		"RuneError": int64(utf8.RuneError),
 		"RuneSelf":  int64(utf8.RuneSelf),
