@@ -8266,6 +8266,12 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 				return string(rs), nil
 			}
 			return nil, fmt.Errorf("cannot convert %s to string", tdName(sx.Typ))
+		case *runtime.GoValue:
+			// a host value of string kind — reflect.StructTag from
+			// StructField.Tag — converts by its underlying string.
+			if rv := reflect.ValueOf(sx.V); rv.Kind() == reflect.String {
+				return rv.String(), nil
+			}
 		}
 		return nil, fmt.Errorf("cannot convert %s to string", typeNameOf(x))
 	case "bool":
