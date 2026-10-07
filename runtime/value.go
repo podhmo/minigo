@@ -307,6 +307,11 @@ func (r *FieldRef) find() (st *Struct, idx int, ok bool) {
 	return nil, 0, false
 }
 
+// Find resolves the field slot the ref points at — the owning struct
+// and field index after embedded promotion, so equality and address
+// identity can compare storage rather than selector spellings.
+func (r *FieldRef) Find() (*Struct, int, bool) { return r.find() }
+
 // Get reads the field value.
 func (r *FieldRef) Get() (Value, bool) {
 	if st, idx, ok := r.find(); ok {

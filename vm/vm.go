@@ -7615,6 +7615,21 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 			return refBase(av.Base) == refBase(br.Base) && v.eqlValue(av.Key, br.Key)
 		}
 		return false
+	case *runtime.FieldRef:
+		if br, ok := b.(*runtime.FieldRef); ok {
+			// &s.f compares by the resolved field slot — two refs formed
+			// by different selector paths to the same promoted field are
+			// the same pointer (container/list's l.root.next != &l.root).
+			// Fields inside distinct struct objects never alias, even
+			// zero-size ones (Go: &x.z != &y.z for distinct x, y).
+			ast, ai, aok := av.Find()
+			bst, bi, bok := br.Find()
+			if !aok || !bok {
+				return false
+			}
+			return ast == bst && ai == bi
+		}
+		return false
 	}
 	return a == b // pointers, strings, bools
 }
