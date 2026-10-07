@@ -4415,6 +4415,16 @@ func ptrSpelling(c runtime.VMCaller, x runtime.Value) string {
 }
 
 func (s *fmtValue) render(verb rune, f fmt.State) string {
+	// fmt consults Formatter before the Stringer family, for every verb
+	// but %T/%p — a script Formatter writes to the live state itself, so
+	// a successful call already emitted its output. zeroState is the
+	// flag-less stand-in for nested renderings (bad-verb markers, %p)
+	// where Go invokes no Formatter; nothing real writes to it.
+	if s.c != nil && verb != 'T' && verb != 'p' {
+		if _, isZero := f.(zeroState); !isZero && callFormat(s.c, s.x, f, verb) {
+			return ""
+		}
+	}
 	// Stringer family first, like fmt does.
 	if s.c != nil {
 		switch verb {
@@ -5364,6 +5374,22 @@ func formatOf(f fmt.State, verb rune) string {
 
 func withWidth(f fmt.State, s string) string {
 	return fmt.Sprintf(formatOf(f, 's'), s)
+}
+
+// callFormat invokes a script fmt.Formatter — Format(fmt.State, rune) —
+// handing the live printer through as a host value so the method's
+// writes land on the real output (math/big's %d). An absent or
+// panicking method reports false, like callStringer.
+func callFormat(c runtime.VMCaller, x runtime.Value, f fmt.State, verb rune) bool {
+	m, ok := runtime.IfaceMember(c, x, "Format")
+	if !ok {
+		return false
+	}
+	_, err := c.Call(m, []runtime.Value{
+		&runtime.GoValue{V: f},
+		&runtime.UConst{V: constant.MakeInt64(int64(verb)), Rune: true},
+	})
+	return err == nil
 }
 
 // callStringer invokes a declared String()/Error() method through the VM
