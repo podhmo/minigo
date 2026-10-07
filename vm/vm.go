@@ -897,6 +897,18 @@ func (v *VM) prepFrame(callee runtime.Value, args []runtime.Value, statics []*ru
 		upvals = c.Upvals
 	case *runtime.BoundMethod:
 		fn = c.Fn
+		if !fn.PtrRecv {
+			if tn, isNil := asTypedNil(c.Recv); isNil && tn.Typ != nil && tn.Typ.Kind == runtime.KindPointer {
+				// an interface-boxed nil binds the receiver lazily; the
+				// implicit *T→T method wrapper panics when the call
+				// actually runs.
+				qual := ""
+				if fn.Pkg != nil && fn.Pkg.Name != "" {
+					qual = fn.Pkg.Name + "."
+				}
+				panic(runtime.PlainPanic(fmt.Sprintf("value method %s%s called using nil *%s pointer", qual, fn.Name, fn.Recv)))
+			}
+		}
 		args = append([]runtime.Value{c.Recv}, args...)
 	default:
 		return nil, fmt.Errorf("value of type %T is not callable", callee)
@@ -9181,8 +9193,11 @@ func (v *VM) memberOfType(f *frame, td *runtime.TypeDef, name string, recv runti
 			// dispatch — panic on nil like Go. A nil carrying a nilable
 			// typedef (declared pointer/slice/map/chan/func values can
 			// be nil) is a valid receiver: the call binds it and the
-			// body decides.
-			if !m.PtrRecv {
+			// body decides. Through an interface the box itself is the
+			// receiver — the method value binds lazily and the *T→T
+			// wrapper panics when the call runs (defer i.M() panics at
+			// invocation, not registration).
+			if !m.PtrRecv && !isIface {
 				if _, isNil := asTypedNil(rv); isNil && (peeled || !v.nilableTypedef(td)) {
 					if _, isIfaceNil := rv.(*runtime.IfaceNil); isIfaceNil {
 						// a value method dispatched through a nil
