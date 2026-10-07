@@ -450,6 +450,16 @@ func (v *VM) assignCell(f *frame, c *runtime.Cell, val runtime.Value) {
 	}
 	if c.Typ != nil {
 		val = v.coerce(f, val, c.Typ)
+	} else if u, isConst := constPayload(val); isConst {
+		// a constant bound into a variable takes the variable's type —
+		// the tag an earlier `:=` stamped on the cell (`d := Second;
+		// d = 5` stays a Duration) — else the constant's default type
+		// (`x = -float64(0)` stores +0, matching `x := +0`).
+		if en, ok := c.Elem.(*runtime.Named); ok && en.Typ != nil {
+			val = v.materializeConst(f, u, en.Typ)
+		} else {
+			val = v.materialize(f, val)
+		}
 	} else if _, isNil := val.(runtime.Nil); isNil {
 		// `p = nil` keeps the variable's inferred type — a *T var
 		// holds a nil *T, not an untyped nil (Go's zero is typed).
@@ -814,8 +824,17 @@ func (v *VM) TypeOf(x runtime.Value) *runtime.TypeDef {
 }
 
 // Copy implements the VMCaller.Copy hook: Go assignment semantics —
-// structs copy by value, slices/maps/pointers share.
+// structs copy by value, slices/maps/pointers share. A riding constant
+// (T(c), which stays a constant inside expressions) materializes at this
+// assignment boundary so stored elements carry concrete values.
 func (v *VM) Copy(x runtime.Value) runtime.Value {
+	if u, ok := constPayload(x); ok {
+		f := v.topFrame()
+		if n, isN := x.(*runtime.Named); isN {
+			return valueCopy(v.materializeConst(f, u, n.Typ))
+		}
+		return valueCopy(v.materialize(f, u))
+	}
 	return valueCopy(x)
 }
 
@@ -1522,7 +1541,7 @@ func (v *VM) loop(f *frame) {
 				// materializes its default here (`x := 'a'` is a rune, and
 				// `x := 1<<100` fails like a Go compile error). Const cells
 				// keep it lazy — an unused `const B = 1<<100` is legal.
-				x = materialize(f, x)
+				x = v.materialize(f, x)
 			}
 			f.locals[ins.A] = &runtime.Cell{Elem: valueCopy(x), ReadOnly: ins.B != 0}
 		case bytecode.OpRenewVar:
@@ -1564,7 +1583,7 @@ func (v *VM) loop(f *frame) {
 		case bytecode.OpNewGlobal:
 			x := f.pop()
 			if ins.B == 0 {
-				x = materialize(f, x)
+				x = v.materialize(f, x)
 			}
 			c := &runtime.Cell{Elem: valueCopy(x), ReadOnly: ins.B != 0}
 			f.fn.Pkg.Globals.Set(consts[ins.A].(string), c)
@@ -1939,10 +1958,10 @@ func (v *VM) loop(f *frame) {
 		case bytecode.OpBinary:
 			b := f.pop()
 			a := f.pop()
-			f.push(binaryOp(f, bytecode.BinOp(ins.A), a, b))
+			f.push(v.binaryOp(f, bytecode.BinOp(ins.A), a, b))
 		case bytecode.OpUnary:
 			a := f.pop()
-			f.push(unaryOp(f, bytecode.UnOp(ins.A), a))
+			f.push(v.unaryOp(f, bytecode.UnOp(ins.A), a))
 		case bytecode.OpJump:
 			f.ip = int(ins.A)
 		case bytecode.OpJumpFalse:
@@ -1982,7 +2001,7 @@ func (v *VM) loop(f *frame) {
 				f.stack = f.stack[:len(f.stack)-1]
 			}
 		case bytecode.OpIter:
-			coll := materialize(f, f.pop())
+			coll := v.materialize(f, f.pop())
 			if ins.B != 0 {
 				// operand was `*x`: the pointer is the rangeable — a nil
 				// *[N]T still yields indices, while `*x` on any other
@@ -2019,7 +2038,7 @@ func (v *VM) loop(f *frame) {
 			if et != nil {
 				val = v.coerce(f, val, et)
 			} else {
-				val = materialize(f, val)
+				val = v.materialize(f, val)
 			}
 			sv, err := v.chanSendValue(val, chRV.Type().Elem())
 			if err != nil {
@@ -2040,7 +2059,7 @@ func (v *VM) loop(f *frame) {
 				if et != nil {
 					val = v.coerce(f, val, et)
 				} else {
-					val = materialize(f, val)
+					val = v.materialize(f, val)
 				}
 				sv, err := v.chanSendValue(val, chRV.Type().Elem())
 				if err != nil {
@@ -4152,8 +4171,8 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 	if dv, ok := runtime.Deref(base); ok {
 		return v.index(f, dv, idx)
 	}
-	idx = runtime.Unwrap(materialize(f, idx)) // named key/index types hash as their value
-	base = materialize(f, base)               // `const s = "x"; s[0]` indexes a UConst
+	idx = runtime.Unwrap(v.materialize(f, idx)) // named key/index types hash as their value
+	base = v.materialize(f, base)               // `const s = "x"; s[0]` indexes a UConst
 	switch b := base.(type) {
 	case *runtime.Named:
 		return v.index(f, b.V, idx)
@@ -4948,7 +4967,7 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 		v.setIndex(f, n.V, idx, val)
 		return
 	}
-	idx = runtime.Unwrap(materialize(f, idx))
+	idx = runtime.Unwrap(v.materialize(f, idx))
 	switch b := base.(type) {
 	case *runtime.IfaceNil:
 		v.setIndex(f, &runtime.TypedNil{Typ: b.Typ}, idx, val)
@@ -5154,8 +5173,8 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 			f.trap("slice on nil %s", tdName(b.Typ))
 		}
 		// s[0:0] / s[:] on a nil slice is a valid empty result
-		l, h := bounds(f, lo, hi, 0)
-		m := maxBound(f, max, 0)
+		l, h := v.bounds(f, lo, hi, 0)
+		m := v.maxBound(f, max, 0)
 		if r := sliceBoundsReason(l, h, m, 0, three); r != "" {
 			panic(runtime.RuntimePanic(r))
 		}
@@ -5166,9 +5185,9 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 			// logical length and capacity like a real one — the
 			// two-index high may pass len up to cap — and the
 			// sub-slice stays virtual: s[:0] keeps the capacity.
-			l, h := bounds(f, lo, hi, b.Len())
+			l, h := v.bounds(f, lo, hi, b.Len())
 			if three {
-				m := maxBound(f, max, b.Cap())
+				m := v.maxBound(f, max, b.Cap())
 				if r := sliceBoundsReason(l, h, m, b.Cap(), true); r != "" {
 					panic(runtime.RuntimePanic(r))
 				}
@@ -5179,9 +5198,9 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 			}
 			return &runtime.Slice{N: h - l, CapN: b.Cap() - l, Zero: b.Zero, Typ: sliceTypOf(b.Typ)}
 		}
-		l, h := bounds(f, lo, hi, int64(len(b.Elems)))
+		l, h := v.bounds(f, lo, hi, int64(len(b.Elems)))
 		if three {
-			m := maxBound(f, max, int64(cap(b.Elems)))
+			m := v.maxBound(f, max, int64(cap(b.Elems)))
 			return &runtime.Slice{Elems: b.Elems[l:h:m], Typ: sliceTypOf(b.Typ)}
 		}
 		return &runtime.Slice{Elems: b.Elems[l:h], Typ: sliceTypOf(b.Typ)}
@@ -5191,7 +5210,7 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 			// loud-fail like the other compile-time checks.
 			f.trap("cannot slice a string with 3 indices")
 		}
-		l, h := bounds(f, lo, hi, int64(len(b)))
+		l, h := v.bounds(f, lo, hi, int64(len(b)))
 		return b[l:h]
 	default:
 		f.trap("slice on %T", base)
@@ -5240,13 +5259,13 @@ func sliceBoundsReason(l, h, m, cap int64, three bool) string {
 	return ""
 }
 
-func bounds(f *frame, lo, hi runtime.Value, n int64) (int64, int64) {
+func (v *VM) bounds(f *frame, lo, hi runtime.Value, n int64) (int64, int64) {
 	l := int64(0)
 	h := n
-	if lv, ok := runtime.Unwrap(materialize(f, lo)).(int64); ok {
+	if lv, ok := runtime.Unwrap(v.materialize(f, lo)).(int64); ok {
 		l = lv
 	}
-	if hv, ok := runtime.Unwrap(materialize(f, hi)).(int64); ok {
+	if hv, ok := runtime.Unwrap(v.materialize(f, hi)).(int64); ok {
 		h = hv
 	}
 	return l, h
@@ -5255,8 +5274,8 @@ func bounds(f *frame, lo, hi runtime.Value, n int64) (int64, int64) {
 // maxBound reads a 3-index slice's max operand; the full-expression form
 // `a[low:high:]` uses the container's capacity. The slice operator itself
 // (`elems[l:h:m]`) enforces low <= high <= max <= cap with Go's panic.
-func maxBound(f *frame, max runtime.Value, capN int64) int64 {
-	if mv, ok := runtime.Unwrap(materialize(f, max)).(int64); ok {
+func (v *VM) maxBound(f *frame, max runtime.Value, capN int64) int64 {
+	if mv, ok := runtime.Unwrap(v.materialize(f, max)).(int64); ok {
 		return mv
 	}
 	return capN
@@ -5265,11 +5284,11 @@ func maxBound(f *frame, max runtime.Value, capN int64) int64 {
 // litKeyIndex resolves a composite-literal key to its int index: a
 // *runtime.ImplicitIndex positional continues the running index `last`;
 // named constants unwrap to int64. ok=false for anything else.
-func litKeyIndex(f *frame, k runtime.Value, last int64) (int64, bool) {
+func (v *VM) litKeyIndex(f *frame, k runtime.Value, last int64) (int64, bool) {
 	if _, isImp := k.(*runtime.ImplicitIndex); isImp {
 		return last + 1, true
 	}
-	k = materialize(f, k)
+	k = v.materialize(f, k)
 	if nk, ok := k.(*runtime.Named); ok {
 		k = nk.V
 	}
@@ -5345,7 +5364,7 @@ func (v *VM) compositeOf(f *frame, td *runtime.TypeDef, n int, kv bool, raw []ru
 			if kv {
 				last := int64(-1)
 				for i := 0; i < n; i++ {
-					ival, ok := litKeyIndex(f, raw[i*2], last)
+					ival, ok := v.litKeyIndex(f, raw[i*2], last)
 					if !ok {
 						f.trap("array literal index %T", raw[i*2])
 					}
@@ -5372,7 +5391,7 @@ func (v *VM) compositeOf(f *frame, td *runtime.TypeDef, n int, kv bool, raw []ru
 			max := int64(-1)
 			last := int64(-1)
 			for i := 0; i < n; i++ {
-				ival, ok := litKeyIndex(f, raw[i*2], last)
+				ival, ok := v.litKeyIndex(f, raw[i*2], last)
 				if !ok {
 					f.trap("slice literal index %T", raw[i*2])
 				}
@@ -5420,7 +5439,7 @@ func (v *VM) compositeOf(f *frame, td *runtime.TypeDef, n int, kv bool, raw []ru
 			if _, isImp := raw[i*2].(*runtime.ImplicitIndex); isImp {
 				f.trap("positional element in keyed map literal")
 			}
-			k := runtime.Unwrap(materialize(f, raw[i*2]))
+			k := runtime.Unwrap(v.materialize(f, raw[i*2]))
 			m.Insert(k, v.coerce(f, raw[i*2+1], et))
 		}
 		return m
@@ -5937,7 +5956,12 @@ func truthy(v runtime.Value) bool {
 	case *runtime.IfaceNil:
 		return true // interface with a dynamic type is not nil
 	case *runtime.Named:
+		if u, ok := x.V.(*runtime.UConst); ok {
+			return constTruthy(u)
+		}
 		return truthy(x.V)
+	case *runtime.UConst:
+		return constTruthy(x)
 	case int64:
 		return x != 0
 	case float64:
@@ -5949,10 +5973,33 @@ func truthy(v runtime.Value) bool {
 	}
 }
 
+// constTruthy evaluates a constant's truthiness without materializing —
+// bool constants read directly, others compare against zero of their
+// kind (constants have no -0, so -0.0 folds to +0 and reads false).
+func constTruthy(u *runtime.UConst) bool {
+	switch u.V.Kind() {
+	case constant.Bool:
+		return constant.BoolVal(u.V)
+	case constant.Int, constant.Float, constant.Complex:
+		return constant.Sign(u.V) != 0
+	case constant.String:
+		return constant.StringVal(u.V) != ""
+	}
+	return true
+}
+
 // materialize turns an untyped constant into its default-typed value at
 // a value boundary ('a' -> rune, `1<<100` -> trap like Go's compile-time
 // "constant overflows int"); any other value passes through.
-func materialize(f *frame, x runtime.Value) runtime.Value {
+func (v *VM) materialize(f *frame, x runtime.Value) runtime.Value {
+	if n, ok := x.(*runtime.Named); ok {
+		// a typed constant materializes through its declared type's
+		// representability rules — `x := int64(1<<63)` fails like Go's
+		// compile-time "constant overflows int64".
+		if u, ok2 := n.V.(*runtime.UConst); ok2 {
+			return v.materializeConst(f, u, n.Typ)
+		}
+	}
 	u, ok := x.(*runtime.UConst)
 	if !ok {
 		return x
@@ -5962,6 +6009,20 @@ func materialize(f *frame, x runtime.Value) runtime.Value {
 		f.trap("%s", err)
 	}
 	return r
+}
+
+// constPayload reads the constant under a value: the UConst itself, or
+// one riding under a typedef tag (a T(c) typed constant's surface).
+func constPayload(x runtime.Value) (*runtime.UConst, bool) {
+	if u, ok := x.(*runtime.UConst); ok {
+		return u, true
+	}
+	if n, ok := x.(*runtime.Named); ok {
+		if u, ok2 := n.V.(*runtime.UConst); ok2 {
+			return u, true
+		}
+	}
+	return nil, false
 }
 
 // materializeDefault converts an untyped constant to its Go default
@@ -6087,6 +6148,46 @@ func (v *VM) materializeConstErr(u *runtime.UConst, td *runtime.TypeDef) (runtim
 		return runtime.Tag(td, x), nil
 	}
 	return x, nil
+}
+
+// convertConst converts an untyped constant to a numeric target. The
+// result stays a constant — T(c) is a constant expression in Go, so
+// `-float64(0)` materializes +0 (constants have no -0; bug434). A
+// declared or differently-typed target rides as a Named-tagged constant
+// until the next materialize boundary resolves it. Non-numeric
+// constants and targets (string('a'), []byte("s")) materialize now.
+func (v *VM) convertConst(td *runtime.TypeDef, u *runtime.UConst) (runtime.Value, error) {
+	name := basicNameOf(v.peelNamed(td))
+	if !numericBasicName(name) || !numericConstKind(u.V.Kind()) {
+		return v.materializeConstErr(u, td)
+	}
+	if _, err := v.materializeConstErr(u, td); err != nil {
+		return nil, err // constant not representable — Go's compile error
+	}
+	if !declaredType(td) && u.DefaultName() == name {
+		// `int(c)`/`float64(c)` — the bare constant already
+		// materializes to the target's type.
+		return u, nil
+	}
+	return runtime.Tag(td, u), nil
+}
+
+// numericConstKind reports whether the constant kind participates in
+// arithmetic conversions (int/float/complex — not bool/string).
+func numericConstKind(k constant.Kind) bool {
+	return k == constant.Int || k == constant.Float || k == constant.Complex
+}
+
+// numericBasicName reports whether a basic type name is numeric —
+// the conversion target kinds a constant stays a constant under.
+func numericBasicName(name string) bool {
+	switch name {
+	case "int", "int8", "int16", "int32", "int64", "rune",
+		"uint", "uint8", "byte", "uint16", "uint32", "uint64", "uintptr",
+		"float32", "float64", "complex64", "complex128":
+		return true
+	}
+	return false
 }
 
 // constFloat reads a numeric constant as float64; a complex constant
@@ -6439,13 +6540,13 @@ func scalarConst(u *runtime.UConst, b runtime.Value) (runtime.Value, bool) {
 // otherwise it takes its default type. An unconvertible const keeps
 // the default materialization so the mismatch trap reports like Go's
 // compile error.
-func adaptConst(f *frame, u *runtime.UConst, other runtime.Value) runtime.Value {
+func (v *VM) adaptConst(f *frame, u *runtime.UConst, other runtime.Value) runtime.Value {
 	if nb, ok := other.(*runtime.Named); ok {
 		if r, ok2 := constToBasic(u, basicNameOf(nb.Typ)); ok2 {
 			return runtime.Tag(nb.Typ, r)
 		}
 	}
-	return materialize(f, u)
+	return v.materialize(f, u)
 }
 
 // constToBasic converts a constant to a builtin numeric value by name —
@@ -6479,8 +6580,8 @@ func constToBasic(u *runtime.UConst, name string) (runtime.Value, bool) {
 // any(float64(1.0)) tag — plain BinEql would coerce it equal. A named
 // tag only pairs with the same named type; the nil-ish operands keep
 // the interface nil rules from eqlValue.
-func ifaceEql(f *frame, a, b runtime.Value) bool {
-	a, b = materialize(f, a), materialize(f, b)
+func (v *VM) ifaceEql(f *frame, a, b runtime.Value) bool {
+	a, b = v.materialize(f, a), v.materialize(f, b)
 	an, aNamed := a.(*runtime.Named)
 	bn, bNamed := b.(*runtime.Named)
 	if aNamed != bNamed {
@@ -6506,10 +6607,10 @@ func ifaceEql(f *frame, a, b runtime.Value) bool {
 	return eqlValue(a, b)
 }
 
-func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
+func (v *VM) binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 	// an interface-typed switch tag compares pairs, not coerced values.
 	if op == bytecode.BinEqlIface {
-		return ifaceEql(f, a, b)
+		return v.ifaceEql(f, a, b)
 	}
 	// untyped constants fold in the arbitrary-precision constant domain
 	// while both sides read as constants — a bare int64/float64 operand
@@ -6543,7 +6644,7 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 			}
 		}
 		if !resolved {
-			a = adaptConst(f, ua, b)
+			a = v.adaptConst(f, ua, b)
 		}
 	}
 	if ub, ok := b.(*runtime.UConst); ok {
@@ -6569,14 +6670,14 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 			}
 		}
 		if !resolved {
-			b = adaptConst(f, ub, a)
+			b = v.adaptConst(f, ub, a)
 		}
 	}
 	// shifts evaluate in the left operand's signedness — Go types the
 	// result by the left side alone, so `^uintptr(0) >> 63` must shift
 	// logically, not as int64. They get their own operator.
 	if op == bytecode.BinShl || op == bytecode.BinShr {
-		return shiftOp(f, op, a, b)
+		return v.shiftOp(f, op, a, b)
 	}
 	// named basic values operate on their underlying value; two different
 	// declared types in one operation is a type error (Go: `x + y` on
@@ -6653,7 +6754,7 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 				}
 			}
 		}
-		res := binaryOp(f, op, a, b)
+		res := v.binaryOp(f, op, a, b)
 		if iv, ok := res.(int64); ok {
 			return runtime.Tag(tag, maskInt(iv, sizedNameOf(tag)))
 		}
@@ -6667,6 +6768,12 @@ func binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 		}
 		if _, ok := res.(string); ok {
 			return runtime.Tag(tag, res)
+		}
+		if uc, ok := res.(*runtime.UConst); ok && uc.V.Kind() != constant.Bool {
+			// a folded result of a typed constant stays a typed
+			// constant — `Duration(5) + 1` is still a Duration
+			// constant; comparisons produce untyped bools.
+			return runtime.Tag(tag, uc)
 		}
 		return res
 	}
@@ -6877,7 +6984,7 @@ func constShift(lv constant.Value, op bytecode.BinOp, count uint64) (res constan
 // the result by the left side alone (the count is always an unsigned
 // count), so a uintptr/uint64 value shifts logically while int64 shifts
 // arithmetically. A declared-width operand re-tags and re-masks.
-func shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
+func (v *VM) shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 	var count uint64
 	var countOK bool
 	if uc, isU := b.(*runtime.UConst); isU {
@@ -6901,7 +7008,7 @@ func shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 		}
 	}
 	if !countOK {
-		b = materialize(f, b)
+		b = v.materialize(f, b)
 		count, countOK = shiftCount(b)
 	}
 	if !countOK {
@@ -6922,7 +7029,7 @@ func shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 			}
 		}
 	}
-	a = materialize(f, a)
+	a = v.materialize(f, a)
 	var tag *runtime.TypeDef
 	if n, ok := a.(*runtime.Named); ok {
 		tag, a = n.Typ, n.V
@@ -7177,17 +7284,21 @@ func constUnary(op bytecode.UnOp, u *runtime.UConst) (res *runtime.UConst, ok bo
 	return &runtime.UConst{V: constant.UnaryOp(tok, u.V, 0), Rune: u.Rune}, true
 }
 
-func unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value {
-	if u, ok := a.(*runtime.UConst); ok {
-		// unary ops on constants stay in the constant domain
-		if cv, ok2 := constUnary(op, u); ok2 {
-			return cv
-		}
-		a = materialize(f, a)
-	}
+func (v *VM) unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value {
 	var tag *runtime.TypeDef
 	if n, ok := a.(*runtime.Named); ok {
 		tag, a = n.Typ, n.V
+	}
+	if u, ok := a.(*runtime.UConst); ok {
+		// unary ops on constants stay in the constant domain — a typed
+		// constant keeps its tag so -float64(0) is +0, not -0.0.
+		if cv, ok2 := constUnary(op, u); ok2 {
+			if tag != nil {
+				return runtime.Tag(tag, cv)
+			}
+			return cv
+		}
+		a = v.materialize(f, a)
 	}
 	// unary results keep the operand's declared type (-x, +x, ^x, !x are
 	// all typed T when x is T); a bare result stays bare. A sized-int
@@ -7800,7 +7911,7 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 	// int64('a'), float64(1e500)'s overflow, string('a'), complex128(3)
 	// all land here.
 	if u, ok := x.(*runtime.UConst); ok {
-		return v.materializeConstErr(u, td)
+		return v.convertConst(td, u)
 	}
 	// an interface conversion keeps the dynamic pair: the value
 	// satisfies the interface's methods AS its dynamic type —
@@ -7839,6 +7950,11 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 	// a host value unboxes so its concrete value converts like a script
 	// value of the same shape (a []byte arriving boxed becomes a slice).
 	x = unboxGoValue(x)
+	if u, ok := x.(*runtime.UConst); ok {
+		// a peeled typed constant converts in the constant domain like a
+		// direct T(c) — `float64(int64(0))` stays a constant.
+		return v.convertConst(td, u)
+	}
 	switch td.Name {
 	case "int", "int8", "int16", "int32", "int64",
 		"uint", "uint8", "uint16", "uint32", "uint64", "byte", "rune", "uintptr":
@@ -8477,7 +8593,7 @@ func (v *VM) popArgs(f *frame, argc int, mode int, pos token.Pos) ([]runtime.Val
 		// a declared untyped const keeps its UConst box past the call
 		// boundary — `const s = "ab"; append(b, s...)` spreads like
 		// the literal, so materialize before the string check.
-		last = materialize(f, last)
+		last = v.materialize(f, last)
 		if str, ok := last.(string); ok {
 			// append([]byte, s...) spreads the string's bytes — the
 			// only legal string spread in Go.
@@ -9156,7 +9272,7 @@ func (v *VM) coerce(f *frame, x runtime.Value, td *runtime.TypeDef) runtime.Valu
 	if td.Kind == runtime.KindInterface {
 		// an untyped constant binds an interface at its default type —
 		// `var a any = 'a'` holds a rune, not the lazy constant.
-		x = materialize(f, x)
+		x = v.materialize(f, x)
 		if tn, ok := x.(*runtime.TypedNil); ok {
 			// boxing a typed nil still checks the method set: (*int)(nil)
 			// cannot bind an interface that requires methods.
@@ -9378,13 +9494,20 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 			return v.materializeConst(f, u, td)
 		}
 		// other targets take the default type, then assign normally.
-		x = materialize(f, x)
+		x = v.materialize(f, x)
 	}
 	if n, ok := x.(*runtime.Named); ok {
 		// a Named value keeps its identity only for the identical declared
 		// type — aliases count (they ARE the type), `type A B` chains do
 		// not (Go: named-to-named needs a conversion).
 		if sameTypeDef(n.Typ, td) || sameTypeDef(n.Typ, v.peelAlias(td)) {
+			if u, ok := n.V.(*runtime.UConst); ok {
+				// a typed constant materializes at the storage
+				// boundary — `a[i] = uint8(c)` stores a concrete
+				// uint8 so value readers (string([]byte), copy,
+				// map keys) see plain values.
+				return v.materializeConst(f, u, td)
+			}
 			return x
 		}
 		// an unnamed target assigns any value whose underlying type is
