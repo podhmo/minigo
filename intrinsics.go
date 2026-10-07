@@ -1051,7 +1051,7 @@ func (e *Engine) installStdlib() {
 				return false, nil
 			}
 			for k, av := range a.Pairs {
-				bv, ok := b.Pairs[k]
+				bv, ok := b.LookupCanonical(k)
 				if !ok || !equalScript(av, bv) {
 					return false, nil
 				}
@@ -2795,7 +2795,7 @@ func equalScript(a, b runtime.Value) bool {
 			return false
 		}
 		for k, xv := range x.Pairs {
-			yv, ok := y.Pairs[k]
+			yv, ok := y.LookupCanonical(k)
 			if !ok || !equalScript(xv, yv) {
 				return false
 			}
@@ -5642,7 +5642,7 @@ func deepEqlSeen(a, b runtime.Value, seen map[devisit]bool) bool {
 		// equal pointees are different keys in Go. Only the values
 		// compare recursively.
 		for ak, aval := range av.Pairs {
-			bval, found := bm.Pairs[ak]
+			bval, found := bm.LookupCanonical(ak)
 			if !found {
 				return false
 			}

@@ -1054,6 +1054,24 @@ func (m *Map) Get(k Value) (Value, bool) {
 	return v, ok
 }
 
+// SnapshotKeys copies the map's iteration state — the display keys as
+// written at insert plus the canonical key each hashes under — for a
+// new iterator. The canonical copy matters: a NaN key's canonical form
+// is a fresh nonce on every CanonicalKey call, so probing Pairs by the
+// stored key (LookupCanonical) reports live presence where Get on the
+// display key would report every NaN entry as deleted.
+func (m *Map) SnapshotKeys() (display, canonical []Value) {
+	return append([]Value(nil), m.Order...), append([]Value(nil), m.Keys...)
+}
+
+// LookupCanonical reads the pair stored under a canonical key — one
+// from SnapshotKeys or iterating Pairs directly. Raw keys must go
+// through Get: re-canonicalizing a canonical key never reconstructs it.
+func (m *Map) LookupCanonical(ck Value) (Value, bool) {
+	v, ok := m.Pairs[ck]
+	return v, ok
+}
+
 // Insert stores v under k's canonical key, appending k to the insertion
 // order only when the key is new. Keeping canonicalization and the
 // order/keys append in one place is what makes the NaN-nonce key policy

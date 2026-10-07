@@ -1570,12 +1570,12 @@ func (v *RValue) MapRange() *MapIter {
 		}
 		trap("call of reflect.Value.MapRange on %s Value", v.kindStr())
 	}
-	keys := append([]runtime.Value{}, m.Order...)
-	// Snapshot the canonical keys too: presence during iteration must
-	// probe Pairs by the stored canonical key — re-canonicalizing a
-	// NaN key yields a fresh nonce, so Get(k) would report every NaN
-	// entry as deleted (the VM's own map iterator does the same).
-	ckeys := append([]runtime.Value{}, m.Keys...)
+	// Snapshot the display and canonical keys: presence during
+	// iteration probes Pairs by the stored canonical key —
+	// re-canonicalizing a NaN key yields a fresh nonce, so Get(k)
+	// would report every NaN entry as deleted (the VM's own map
+	// iterator runs the same SnapshotKeys).
+	keys, ckeys := m.SnapshotKeys()
 	var ktd, etd *runtime.TypeDef
 	if v.td != nil {
 		ktd = v.e.keyTdOf(v.td)
@@ -1606,7 +1606,7 @@ func (it *MapIter) Next() bool {
 	}
 	for it.i+1 <= len(it.keys) {
 		it.i++
-		if _, ok := it.m.Pairs[it.ckeys[it.i-1]]; ok {
+		if _, ok := it.m.LookupCanonical(it.ckeys[it.i-1]); ok {
 			return true
 		}
 	}
@@ -1639,7 +1639,7 @@ func (it *MapIter) Value() *RValue {
 	if it.i > len(it.keys) {
 		plain("MapIter.Value called on exhausted iterator")
 	}
-	got := it.m.Pairs[it.ckeys[it.i-1]]
+	got, _ := it.m.LookupCanonical(it.ckeys[it.i-1])
 	return it.e.wrap(it.vc, runtime.Copy(got), nil, it.etd)
 }
 

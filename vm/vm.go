@@ -5684,7 +5684,8 @@ func (v *VM) itFrom(f *frame, coll runtime.Value, viaPtr bool) *runtime.Iterator
 		// iterNext. Deleting the current or a reached key must not skip
 		// the next (Delete shifts m.Order in place), and an entry
 		// removed before its turn is not produced, like Go.
-		return &runtime.Iterator{Kind: 'm', M: c, Elems: append([]runtime.Value(nil), c.Order...), Keys: append([]runtime.Value(nil), c.Keys...)}
+		display, canonical := c.SnapshotKeys()
+		return &runtime.Iterator{Kind: 'm', M: c, Elems: display, Keys: canonical}
 	case *runtime.Chan:
 		return &runtime.Iterator{Kind: 'c', ChRV: reflect.ValueOf(c.C), ETyp: v.elemTypedef(f, c.Typ)}
 	case *runtime.GoValue:
@@ -5760,7 +5761,7 @@ func (v *VM) iterNext(f *frame, it *runtime.Iterator, nvars int, elemRead bool) 
 		for it.Idx < len(it.Keys) {
 			ck, key := it.Keys[it.Idx], it.Elems[it.Idx]
 			it.Idx++
-			val, ok := it.M.Pairs[ck]
+			val, ok := it.M.LookupCanonical(ck)
 			if !ok {
 				continue // removed before being reached: not produced
 			}
