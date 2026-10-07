@@ -1,0 +1,5 @@
+main.Names 0 true
+1
+map[string]int
+int->string
+float64->int
