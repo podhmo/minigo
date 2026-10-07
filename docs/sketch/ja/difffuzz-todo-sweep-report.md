@@ -448,3 +448,31 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 - **リファクタは「読み比べ」で新バグを顕在化させる**: 判定・共通化の過程で4件の実害バグ（hostalias_methodset、methexpr_sig、append_vspread_real、append_zerosize_cap）が見つかった。重複コード解消は「2経路の差分」を強制的に読ませるため、差分バグの発見装置としても機能する — §6.12 と同型の観測。
 - **stacked PR 上での sibling→統合**: リファクタチェーンは複数 sibling 修正の合流内容を必要としたため、`#518`（統合 merge、自身の変更なし）を stack に1枚挟んで上位11件を独立 diff に保った。sibling が下から順に landed すれば #518 は空になり自然解消される。
 - **「全緑」の運用**: バグ修正群の着地 + 各 PR の CI 緑（flake 1件は根因修正済み）を待ってからリファクタを起動した。
+
+### 6.15 実施ラウンド（round-13）: Stack #549 — difffuzz 再開・外部レビュー5件の直列処理・範囲上限20で打ち切り
+
+発端は前回同様 TODO.md の difffuzz 系残件の「1 root cause = 1 PR」直列掃討指示（上限は当初 50 → 途中で 20 に変更）。成果: **Stack #549 に 19 修正 PR（#547–#568）＋本レポート**。途中で届いた外部レビュー（P2 バグ5件 + リファクタ提案7件）のバグ側を全件自前で修正し、リファクタ側は CAP 到達時に子セッション1件へ委譲する方針で後送りにした（ユーザー指示）。
+
+#### 実施内容
+
+| フェーズ | 内容 | PR |
+|------|------|-----|
+| 前回残件 | nil slice ptr-receiver（#547）、`append(s,nil)` の要素型 zero（#548）、`hostcycle_struct` の sync.Pool flake（#550 — 評価器依存の pool 再利用を sync.Map に置換） | [#547](https://github.com/podhmo/minigo/pull/547)–[#550](https://github.com/podhmo/minigo/pull/550) |
+| corpus triage | binop eval-order の二相評価化（#551）、`print` 非文字列間の空白除去 + `want.stderr` 対応（#552）、multi-assign の implicit-indirection pin（#555）、MapIter の canonical-key probe（#556）、const/var の init 順（#557） | [#551](https://github.com/podhmo/minigo/pull/551)–[#557](https://github.com/podhmo/minigo/pull/557) |
+| corpus triage 続き | sort の nil slice 受容（#558）、localtype の外側型引数（#559）、`range *p` の lazy pointer iteration（#560）、zerobase 要素アドレス比較（#561） | [#558](https://github.com/podhmo/minigo/pull/558)–[#561](https://github.com/podhmo/minigo/pull/561) |
+| 外部レビュー 5件 + TODO1件（自前・直列） | sort の typed-nil 型チェック（#562）、massign pin の Cell→全 ref 種一般化（#563）、array range snapshot + 2operand 物質化（#564、レビュー2件目と array-value copy の TODO を一根因で）、rangeStarLazy の call/receive 検出（#565、`lenOperandCalls` 再利用）、closure 内 localtype の外側 instantiation（#566 — `Function.OuterTParams` + `outerTypeArgs` 共有化） | [#562](https://github.com/podhmo/minigo/pull/562)–[#566](https://github.com/podhmo/minigo/pull/566) |
+| corpus 新規 | host nil chan の select arm trap（#567 — `context.Background().Done()` が `runtime.Nil` に潰れる。typeparam/orderedmap.go が通過）、instantiation の alias peel（#568 — `T[GlobalInt]` が `main.Int` に） | [#567](https://github.com/podhmo/minigo/pull/567), [#568](https://github.com/podhmo/minigo/pull/568) |
+| 本レポート + 帳簿 | TODO.md に12件 `[x]` と2件 `[ ]`（`·N` スコープマーカー・timeout 仕分け）を追記 | 本 PR |
+
+#### 残りの状況
+
+- Stack #549 は 20 PR で CAP=20 到達 — 以降のバグフィックスは停止し、レビューの純リファクタ提案（binaryOperands/callArgs 共通化、OpLocalType⇔specializeType の outer-args 収集＝#566 で一部済、mapLitType≒isKeyedLitShape、rangeStarLazy≒isStorageBase、map-iter snapshot API、型引数列挙、`ast.Unparen`）を子セッション1件に委譲して自分は検証に回る（ユーザー指定の運用）。
+- `typeparam/nested.go` の残差は `·N` スコープマーカーのみ — 機構は特定済み（noder の `declCollector` が関数内非 alias 型宣言にソース順の通し番号を振り、`qualifiedIdent` が `name·gen` として埋め込み、instance 名の args 内部でのみ表示される）が、宣言順の gen 採番を compile→runtime に通す工作が要るため TODO に記録して後送り。
+- corpus の未処理: timeout 仕分け約19件、panic-message/traceback/identity 系の差分ファミリ、issue66575/35576/59411。境界クラス（unsafe・GC・gcgort・cgo・スループット HANG）は従来通り対象外。
+
+#### 不備の振り返り
+
+- **記憶の crash 仮説ではなく再現を先にやるべき**: orderedmap.go は「FieldRef↔DerefRef の相互 unwrap で無限再帰」という仮説を持っていたが、実際に走らせると #563 までの修正で症状が変化しており `channel operation on runtime.Nil`（host nil chan の select arm）に化けていた。長い stack では下位 PR が原因をすり替えるので、原因調査前に最新 tip で repro を取り直す一手間が仮説の墓場を防ぐ。
+- **OpIter の B&2 ビットは一度書いて捨てた**: `range p` の2変数形を作りすぎた最初の設計は nil `*[0]int` で誤爆（gc は要素読み取り時にのみ panic、len-0 は無読みで ok）。プローブが「operand 数だけでなく要素到達時」の二分岐を示したので、ビット自体を消して NilArr の遅延 panic に委ねた — gc の lazy/eager 境界は AST 形 × operand 数 × 要素読み取り有無の3軸で、どれか一軸で決めた設計は必ず別ケースを壊す。
+- **zerobase は「全て同じアドレス」ではなくオブジェクト種別で分岐**: `&x[i]==&x[j]` は同一配列でも別 array オブジェクト同士では false、slice 要素はコンテナを跨いで true、`new(zerosize)` は独立オブジェクト — 6本のプローブで境界を引き、IndexRef↔IndexRef にのみ絞った。直感（ゼロサイズは全部同一）で書くと過剰折り畳みになる。
+- **alias は identity だけでなく spelling 側も peel が要る**: `T[GlobalInt]` の identity は既に正しかったのに `main.GlobalInt` と表示された — canonicalization が keyOf 側にだけ入っていると表示が漏れる。targ を binds に書く入口（`instantiate`）で peel するのが両系に効く一点。
