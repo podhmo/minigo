@@ -1214,9 +1214,16 @@ func (c *compiler) localTypeDecl(ts *ast.TypeSpec) {
 				}
 			} else {
 				// anonymous field: embed by type name
+				name := embedFieldName(fld.Type)
 				td.EmbedSpecs = append(td.EmbedSpecs, fld.Type)
 				td.EmbedIdx = append(td.EmbedIdx, len(td.Fields))
-				td.Fields = append(td.Fields, embedFieldName(fld.Type))
+				td.Fields = append(td.Fields, name)
+				if tag != "" {
+					if td.FTags == nil {
+						td.FTags = map[string]string{}
+					}
+					td.FTags[name] = tag
+				}
 			}
 		}
 	case *ast.InterfaceType:
