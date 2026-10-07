@@ -2579,11 +2579,48 @@ func (v *RValue) callOut(r runtime.Value) []*RValue {
 	if tup, ok := r.(*runtime.Tuple); ok {
 		res := make([]*RValue, len(tup.Elems))
 		for i, el := range tup.Elems {
-			res[i] = v.e.wrap(v.vc, el, nil, typeOfValue(v.e, el))
+			res[i] = v.outVal(i, el)
 		}
 		return res
 	}
-	return []*RValue{v.e.wrap(v.vc, r, nil, typeOfValue(v.e, r))}
+	return []*RValue{v.outVal(0, r)}
+}
+
+// outVal wraps the i'th result. A bare nil carries no dynamic type, so it
+// takes the declared result type — Go's Call hands back a valid nil
+// error/pointer Value (text/template's safeCall reads ret[1].IsNil()),
+// never the zero Value.
+func (v *RValue) outVal(i int, el runtime.Value) *RValue {
+	bare := el == nil || el == runtime.NIL
+	if in, ok := el.(*runtime.IfaceNil); ok && runtime.BoxedNilTyp(in) == nil {
+		bare = true
+	}
+	if bare {
+		if t := v.outType(i); t != nil {
+			if t.rt != nil {
+				return &RValue{e: v.e, vc: v.vc, rv: reflect.Zero(t.rt)}
+			}
+			if t.td != nil {
+				return v.e.wrap(v.vc, v.e.zeroOf(v.vc, t.td), nil, t.td)
+			}
+		}
+	}
+	return v.e.wrap(v.vc, el, nil, typeOfValue(v.e, el))
+}
+
+// outType resolves the declared i'th result type, or nil when the
+// signature cannot be resolved.
+func (v *RValue) outType(i int) (t *RType) {
+	defer func() {
+		if recover() != nil {
+			t = nil
+		}
+	}()
+	ft := v.Type()
+	if ft == nil || i >= ft.NumOut() {
+		return nil
+	}
+	return ft.Out(i)
 }
 
 // checkCallArgs replays Go's arity and per-argument assignability
