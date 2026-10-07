@@ -1132,7 +1132,7 @@ func (v *VM) unwind(f *frame, r any) {
 		}
 		fallthrough // script panic recovered by a deferred function
 	default:
-		f.stack = []runtime.Value{f.finalResult()}
+		f.stack = []runtime.Value{v.finalResult(f)}
 	}
 }
 
@@ -1158,14 +1158,19 @@ func (v *VM) failProc(r any) {
 // deferred function can still mutate named results (Go semantics). Named
 // slots are gathered whenever the function declares named results — even on
 // panic unwind, where no OpReturn ever ran (a recover()ing defer can set
-// them). Unnamed results come from the values OpReturn collected.
-func (f *frame) finalResult() runtime.Value {
+// them). Unnamed results come from the values OpReturn collected; a frame
+// that never reached a return — a recovered panic ended it — yields the
+// declared result types' zeros (`f() int` answers 0, not nil).
+func (v *VM) finalResult(f *frame) runtime.Value {
 	results := f.results
 	if len(f.ch.NamedSlots) > 0 {
 		results = make([]runtime.Value, len(f.ch.NamedSlots))
 		for i, s := range f.ch.NamedSlots {
 			results[i] = f.locals[s].Elem
 		}
+	}
+	if len(results) == 0 && f.ch.NResults > 0 {
+		results = v.zeroResults(f)
 	}
 	switch len(results) {
 	case 0:
@@ -1175,6 +1180,34 @@ func (f *frame) finalResult() runtime.Value {
 	default:
 		return &runtime.Tuple{Elems: results}
 	}
+}
+
+// zeroResults builds each declared result type's zero value — the value a
+// function returns when a panic recovered by a deferred call ended it
+// before its first return. Result types resolve through the frame's file
+// scope like any declared-type expression; an unresolvable one keeps NIL.
+func (v *VM) zeroResults(f *frame) []runtime.Value {
+	fn := f.fn
+	if fn == nil || fn.Decl == nil || fn.Decl.Type == nil || fn.Decl.Type.Results == nil {
+		return nil
+	}
+	s := &specialCtx{v: v, f: f, q: &runtime.QuotedCall{File: fn.File}}
+	out := make([]runtime.Value, 0, f.ch.NResults)
+	for _, fld := range fn.Decl.Type.Results.List {
+		n := len(fld.Names)
+		if n == 0 {
+			n = 1
+		}
+		td, err := s.ResolveType(fld.Type)
+		for i := 0; i < n; i++ {
+			if err != nil || td == nil {
+				out = append(out, runtime.NIL)
+				continue
+			}
+			out = append(out, v.zeroValue(f, td))
+		}
+	}
+	return out
 }
 
 // trace appends a traceback entry (PR #3's `File "...", line N, in f`
