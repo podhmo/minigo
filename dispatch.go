@@ -1,8 +1,8 @@
 package minigo
 
 import (
-	"errors"
 	"context"
+	"errors"
 	"fmt"
 	"go/ast"
 	"reflect"
