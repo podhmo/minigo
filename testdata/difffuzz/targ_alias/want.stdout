@@ -1,0 +1,4 @@
+main.T[main.Int,main.Int]
+true
+main.L[main.Int;main.Int]
+true

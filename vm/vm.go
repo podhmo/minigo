@@ -10338,6 +10338,16 @@ func (v *VM) instantiate(f *frame, base runtime.Value, targs []runtime.Value, po
 	if dv, ok := runtime.Deref(base); ok {
 		base = dv
 	}
+	for i, a := range targs {
+		// `type A = B` is transparent everywhere: binds record the
+		// canonical target so `T[Alias]` and `T[B]` spell and compare
+		// the same instantiation (main.T[main.Int], never the alias).
+		if atd, ok := a.(*runtime.TypeDef); ok {
+			if u := v.peelAlias(atd); u != atd {
+				targs[i] = u
+			}
+		}
+	}
 	switch g := base.(type) {
 	case *runtime.Function:
 		if len(g.TParams) == 0 {
