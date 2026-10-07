@@ -4207,6 +4207,19 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 	if dv, ok := runtime.Deref(n.V); ok {
 		sv = dv
 	}
+	// a pointer conversion across declared types — `(*inner.Tag)(t)` on
+	// a *Tag for `type Tag inner.Tag` — keeps the pointee's own Named
+	// tag; fields still live on the struct underneath.
+	for {
+		nn, isNamed := sv.(*runtime.Named)
+		if !isNamed {
+			break
+		}
+		sv = nn.V
+		if dv, ok := runtime.Deref(sv); ok {
+			sv = dv
+		}
+	}
 	if gv, isGo := sv.(*runtime.GoValue); isGo {
 		// a host-boxed payload (a tagged host composite literal — its
 		// Named tag only names the declared type) resolves fields and
