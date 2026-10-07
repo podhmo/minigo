@@ -3076,6 +3076,41 @@ func float32Tag(td *runtime.TypeDef) bool {
 	return false
 }
 
+// complex64Tag mirrors float32Tag for complex64 — the payload rides the
+// float64/complex128 domain but formats at complex64 width per part.
+func complex64Tag(td *runtime.TypeDef) bool {
+	if td == nil {
+		return false
+	}
+	if td.Name == "complex64" {
+		return true
+	}
+	x := td.Anon
+	if x == nil && td.Spec != nil {
+		x = td.Spec.Type
+	}
+	if id, ok := x.(*ast.Ident); ok {
+		return id.Name == "complex64"
+	}
+	return false
+}
+
+// complex64Value reads a payload as complex64 — either a complex128 box
+// or the constant domain's complex literal.
+func complex64Value(v runtime.Value) (complex64, bool) {
+	switch pv := v.(type) {
+	case complex128:
+		return complex64(pv), true
+	case *runtime.UConst:
+		if nv, err := uconstNative(pv); err == nil {
+			if cv, ok := nv.(complex128); ok {
+				return complex64(cv), true
+			}
+		}
+	}
+	return 0, false
+}
+
 // uconstNative materializes an untyped constant to its host default —
 // the same rule the VM applies when the constant crosses a value
 // boundary. An overflowing constant reports like Go's compile error.
@@ -3104,6 +3139,24 @@ func goNative(v runtime.Value) any {
 		if float32Tag(x.Typ) {
 			if fv, ok := x.V.(float64); ok {
 				return float32(fv)
+			}
+			// the payload may still ride the constant domain — a
+			// `float32(c)` conversion keeps UConst so the value stays
+			// arbitrary-precision; read it at float32 width the same
+			// way the materialized float64 path above does.
+			if uc, ok := x.V.(*runtime.UConst); ok {
+				if nv, err := uconstNative(uc); err == nil {
+					if fv, ok := nv.(float64); ok {
+						return float32(fv)
+					}
+				}
+			}
+		}
+		// a complex64-tagged value narrows each part to float32 — the
+		// constant domain's widened digits must not reach the host.
+		if complex64Tag(x.Typ) {
+			if cv, ok := complex64Value(x.V); ok {
+				return cv
 			}
 		}
 		return goNative(x.V)
@@ -4524,10 +4577,26 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 			}
 		}
 		// a float64 carrying a float32 tag formats in float32 — the
-		// rounded value, not the wider box's digits.
+		// rounded value, not the wider box's digits. A payload still
+		// riding the constant domain reads at float32 width the same
+		// way (`float32(c)` conversions keep UConst).
 		if float32Tag(v.Typ) {
 			if fv, ok := v.V.(float64); ok {
 				return fmt.Sprintf(formatOf(f, verb), float32(fv))
+			}
+			if uc, ok := v.V.(*runtime.UConst); ok {
+				if nv, err := uconstNative(uc); err == nil {
+					if fv, ok := nv.(float64); ok {
+						return fmt.Sprintf(formatOf(f, verb), float32(fv))
+					}
+				}
+			}
+		}
+		// a complex128 carrying a complex64 tag rounds each half to
+		// float32 — same gap as float32, one level wider.
+		if complex64Tag(v.Typ) {
+			if cv, ok := complex64Value(v.V); ok {
+				return fmt.Sprintf(formatOf(f, verb), cv)
 			}
 		}
 		return (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: v.V, et: v.Typ, depth: s.depth + 1}).render(verb, f)

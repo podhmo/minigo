@@ -6323,6 +6323,23 @@ func (v *VM) convertConst(td *runtime.TypeDef, u *runtime.UConst) (runtime.Value
 		// materializes to the target's type.
 		return u, nil
 	}
+	// a narrower float target rounds the constant's payload: Go
+	// evaluates `float32(c)` in float32 precision, so `float64(float32
+	// (0.01))` reads the float32 rounding, not 0.01's float64
+	// nearest. The tag keeps the constant domain; only its value is
+	// narrowed (complex64 rounds each half to float32 the same way).
+	switch name {
+	case "float32":
+		if fv, ok := constFloat(u.V); ok {
+			u = &runtime.UConst{V: constant.MakeFloat64(float64(float32(fv))), Rune: u.Rune}
+		}
+	case "complex64":
+		if cv, ok := constComplex(u.V); ok {
+			re := constant.MakeFloat64(float64(float32(real(cv))))
+			im := constant.MakeFloat64(float64(float32(imag(cv))))
+			u = &runtime.UConst{V: constant.BinaryOp(re, token.ADD, constant.MakeImag(im))}
+		}
+	}
 	return runtime.Tag(td, u), nil
 }
 
