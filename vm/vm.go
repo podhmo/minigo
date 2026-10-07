@@ -713,8 +713,25 @@ func overwriteArray(ref, val runtime.Value) bool {
 	if !ok || !isArrayTyp(src.Typ) || len(src.Elems) != len(dst.Elems) {
 		return false
 	}
-	copy(dst.Elems, src.Elems)
+	overwriteArrayElems(dst, src)
 	return true
+}
+
+// overwriteArrayElems copies one array's elements into another's
+// backing. Array-typed elements recurse: `x[0][:]` slices into the
+// inner array's backing, and a wholesale `copy(dst.Elems, src.Elems)`
+// would swap the inner *Slice header so those views keep reading the
+// stale backing — Go's memory overwrite writes through every level.
+func overwriteArrayElems(dst, src *runtime.Slice) {
+	for i := range dst.Elems {
+		di, dok := runtime.Unwrap(dst.Elems[i]).(*runtime.Slice)
+		si, sok := runtime.Unwrap(src.Elems[i]).(*runtime.Slice)
+		if dok && sok && isArrayTyp(di.Typ) && isArrayTyp(si.Typ) && len(di.Elems) == len(si.Elems) {
+			overwriteArrayElems(di, si)
+			continue
+		}
+		dst.Elems[i] = src.Elems[i]
+	}
 }
 
 // Call invokes a function-like value: Function, Closure, BoundMethod,
@@ -1648,6 +1665,20 @@ func (v *VM) loop(f *frame) {
 			// a still-untyped constant must materialize like v.index's
 			// operand does (`mss["a"][0]` keys a UConst 0 otherwise).
 			key = runtime.Unwrap(v.materialize(f, key))
+			if ins.B == 2 {
+				// a[i][:] — a ref keeps the slice bound to element
+				// storage; a base with no slice elements (map
+				// elements are unaddressable in Go, strings, call
+				// results) yields the index value, which the slice
+				// op copies like a plain element read.
+				probe := &runtime.IndexRef{Base: base, Key: key}
+				if probe.Slice() != nil {
+					f.push(probe)
+				} else {
+					f.push(v.index(f, base, key))
+				}
+				break
+			}
 			if ins.B == 0 {
 				v.checkAddrBase(base, key)
 			}

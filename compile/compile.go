@@ -2547,7 +2547,19 @@ func (c *compiler) expr(e ast.Expr) {
 		}
 		c.emit(bytecode.OpInstantiate, 1, 0, x.Lbrack)
 	case *ast.SliceExpr:
-		c.expr(x.X)
+		if ix, ok := indexOperand(x.X); ok && c.refableIndexBase(ix.X) {
+			// a[i][:] binds the element's storage like &a[i] does —
+			// an index REF keeps array elements' slices aliased to
+			// the container's backing (OpIndex would read a copy).
+			// B=2 falls back to the element value when the base has
+			// no element storage (map elements are unaddressable in
+			// Go, so m[k][:] still slices a copy).
+			c.expr(ix.X)
+			c.expr(ix.Index)
+			c.emit(bytecode.OpIndexRef, 0, 2, ix.Lbrack)
+		} else {
+			c.expr(x.X)
+		}
 		if x.Low != nil {
 			c.expr(x.Low)
 		} else {
