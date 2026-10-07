@@ -107,15 +107,20 @@ TODO.md に切り出す前の検討置き場。
 - 用途
   - gen-sync の managed import 領域
   - convert-define の生成コード
-- 未定
-  - host 側 util として置くだけか、script にも見せるか
+- 未定 → 方向は見えた
+  - 「host util か script 公開か」の二択ではなく、host 側に実装を置いて script には薄い intrinsic を被せる(inspect の stub+impl 構成と同じ)
+  - 純粋ロジック(alias 規則+衝突解決)で AST 不要なので共有しやすい
 
 ### scantest 型のテストハーネス + FileWriter
 
 - 動機
-  - examples の生成物テストが temp dir 依存になりがち
+  - examples の挙動確認テストが temp dir + 手書き helper 依存になりがち
+    - 現に gen-sync は `setupModule`/`copyTree`/`assertSameFile` を自前で持つ
+  - fuzz/difffuzz 系は対象外(差分オラクルで別物)
 - 参考実装
   - go-scan `scantest.Run`(temp module→scan→action→assert)と `memoryFileWriter`(調査 §4)
+- 対象
+  - 生成物を出す example の挙動確認テスト(gen-sync、convert-define)
 - 未定
   - どの example から適用するか
 
@@ -125,7 +130,17 @@ TODO.md に切り出す前の検討置き場。
   - 「シンボル X がどこで定義されているか」を引く index がない
   - REPL からの package introspection(既存 TODO)の足場になる
 - 参考実装
-  - go-scan `cache.go` の `symbolCache`(mtime 検証つき)(調査 §4)
+  - go-scan `cache.go` の `symbolCache`(調査 §4)
+  - 中身は JSON 1ファイル。`symbols{pkgpath.Name → relpath}` + `files{relpath → {symbols}}` の2マップ
+  - 訂正: 検証は mtime ではなく「ファイルの存在/新規/削除」ベース(mtime は go-scan 側で外された)
+- 必要な局面
+  - REPL/反復ツール時のみ。一回きりの実行ではセッション内 index が足りる
+- コスト
+  - 全ファイル前処理ではなくスキャン済み分だけ逐次蓄積。検索は map lookup + `os.Stat` 1回でほぼゼロ
+- 経路デバッグとの関係
+  - 「どのアクセスで次パッケージを読んだか」は load 時の slog(pkg 単位+caller)で足りる
+  - 全シンボルの解決履歴は重すぎる — 失敗チェーン1本だけ持つ `ResolutionPathKey` 型が限度
+  - AST は現状ヒープから解放されない(`e.pkgs`/`e.byDir` に evict なし)ので token.Pos+保持 AST で復元可能
 - 未定
   - 永続化の置き場所と粒度
 
