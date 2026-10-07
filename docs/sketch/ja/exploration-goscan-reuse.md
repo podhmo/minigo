@@ -45,7 +45,7 @@
 | scanx `TypeRefs` | `FieldType` のツリー | named leaf 収集 |
 | (なし) | `ModuleWalker` + `PackageImports` | imports-only scan + walk + 逆依存 |
 | (なし) | `ImportManager` | codegen 用 import alias 解決 |
-| (なし) | `symbolCache` / `ListExportedSymbols` / `FindSymbolDefinitionLocation` | mtime 検証つき永続シンボル索引 |
+| (なし) | `symbolCache` / `ListExportedSymbols` / `FindSymbolDefinitionLocation` | 存在/新規/削除検証つき永続シンボル索引 |
 | (なし) | `scantest` + `writer.FileWriter` | temp module + in-memory 出力キャプチャ |
 | `inspect.Implementers`/`MethodSet` | `type_relation.go` (`Implements`, `getAllInterfaceMethods`, `findMethodInfoRecursive`) | 仕様のオラクルとして読める |
 | `inspect.EnumMembers` | `scanner.resolveEnums` | 同じ意味論 |
@@ -150,6 +150,9 @@ go-scan の対応物は host 側に揃っている:
   (vendor とドット dir を除外)。「go.mod を跨いだ列挙」そのもの。
 - `examples/deps-walk` は上記を組み立てた end-to-end の実用例
   (DOT/Mermaid/JSON、hop 制限、`-test` で _test.go 込み)。
+- (余談 — PR レビュー後追記) go-scan に `astwalk` パッケージが存在
+  したが #993 で削除済み。中身は `ToplevelStructs` 1関数だけで
+  未使用だった。「器を先に作ると1関数の墓場になる」先例。
 
 minigo 側の穴:
 
@@ -187,6 +190,9 @@ minigo 側の穴:
   逆引きできる。minigo でも `index.Decl` は `Func`/`Gen`/`Spec` を
   保持しているので、engine-only accessor を inspect 側に 1 本足す形で
   両方塞がる。
+  (訂正 — PR レビュー後追記: `inspect.MethodsOf(typeDecl)` は既に
+  存在し script にも bound 済みで per-type の列挙は届く。残る穴は
+  パッケージ単位のフラット列挙 convenience のみ)
 - **generic instantiation(TODO: convert-define の `List[int]`)**:
   `FieldType.TypeArgs` + `IsTypeParam`/`IsConstraint` + decl 側の
   `TypeParamInfo`。minigo の TypeExpr は `Children` で base→args を
@@ -203,7 +209,7 @@ minigo 側の穴:
   `scantest.Run` は「temp module 組み立て → scan → action → 出力 map
   を検査」の定型。gen-sync は現状 temp dir に実 write しているので、
   examples のテスト作法の参考になる。
-- **`cache.go` の `symbolCache`**: mtime 検証つき symbol→file の永続
+- **`cache.go` の `symbolCache`**: 存在/新規/削除検証つき symbol→file の永続
   キャッシュ(`SaveSymbolCache`/`FindSymbolDefinitionLocation`/
   `ListExportedSymbols`/`getFilesToScan`)。REPL introspection や
   「repo 内のシンボル X はどこ」に使える、invalidation まで実装済みの
@@ -257,7 +263,8 @@ symgo/minigo2/minigo 自体は対象外だが、それらを使う example の�
    gen-sync の「first sorted file wins」のTODOを解決。参照:
    `scanner/scanner.go` の 2 pass。
 3. `inspect` に decl-anchored の AST handle(`Decl` の `Func`/`Spec`/
-   `Gen` を包むもの)を足す。`inspect.Decls` が methods を見落とす件、
+   `Gen` を包むもの)を足す。`inspect.Decls` が methods を見落とす件
+   (per-type は `MethodsOf` で届く、pkg 単位の列挙が残る穴)、
    free comments、const initializer の三件の前提になる。
    `PackageInfo.AstFiles`/`Node` 保持が設計参照。
 4. body 走査は「pattern-hook」型で小さく始める: `ast.Inspect` 相当の
