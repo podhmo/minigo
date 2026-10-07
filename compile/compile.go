@@ -1750,10 +1750,14 @@ func (c *compiler) rangeStmt(st *ast.RangeStmt) {
 		break
 	}
 	star := false
-	if se, ok := rx.(*ast.StarExpr); ok && rangeStarLazy(se.X) {
+	if se, ok := rx.(*ast.StarExpr); ok && st.Value == nil && rangeStarLazy(se.X) {
 		rx = se.X
 		star = true
 	}
+	// A second LHS operand — even a blank `_` — makes gc evaluate the
+	// range expression eagerly: `range *p` dereferences p (nil panics,
+	// the array is copied) instead of iterating the pointer. With at
+	// most one operand the pointer form stays lazy.
 	c.expr(rx)
 	iterB := 0
 	if star {

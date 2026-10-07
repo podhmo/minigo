@@ -1,0 +1,8 @@
+arr [1 2 3]
+ptr [1 99 3]
+star [1 99 3]
+named [4 5 6]
+star0-elem panic
+star0-blank panic
+ptr-elem panic
+ptr0-elem ok
