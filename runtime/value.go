@@ -1257,6 +1257,18 @@ type TypeDef struct {
 	// types, which dedupe by package path + name).
 	Local bool
 
+	// Gen is the decl's `·gen` index — gc numbers each non-alias
+	// function-local type in package source order and spells it inside
+	// an instantiation's arg list (`main.U[int;int]·3`). Zero for
+	// package-level and alias decls. Assigned by index.Build.
+	Gen int
+
+	// inInstArgs marks a spelling context — DisplayName copies the
+	// typedef carrying this flag so every name it reaches (via TypGoSpelling
+	// ctx, elem recursions) spells inside an instantiation's arg list
+	// and a local typedef carries its `·gen` suffix.
+	inInstArgs bool
+
 	// fieldTypes caches the engine's resolved field typedefs ([]*TypeDef,
 	// see CachedFieldTypes). A copy that changes what resolution reads
 	// (Binds, Pkg, File, LocalTypes) must call ResetCaches.

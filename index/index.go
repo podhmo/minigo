@@ -54,6 +54,18 @@ type Index struct {
 	Vars   map[string]*Decl
 	Consts map[string]*Decl
 	Inits  []*Decl // init() functions in order
+
+	// LocalGens assigns each non-alias function-local type decl its
+	// `·gen` index — gc's noder numbers them in package source order
+	// (SplitVargenSuffix) and the number spells inside an
+	// instantiation's arg list (`main.U[int;int]·3`).
+	LocalGens map[*ast.TypeSpec]int
+}
+
+// LocalGen returns ts's `·gen` index, 0 when ts is not a function-local
+// non-alias type decl of this package.
+func (ix *Index) LocalGen(ts *ast.TypeSpec) int {
+	return ix.LocalGens[ts]
 }
 
 // Build indexes all files of one package. Nothing is executed.
@@ -65,8 +77,24 @@ func Build(files []*syntax.File) (*Index, error) {
 		Consts: map[string]*Decl{},
 	}
 	var methodDecls []*Decl
+	gen := 0
 	for _, f := range files {
 		for _, gd := range f.AST.Decls {
+			if fd, ok := gd.(*ast.FuncDecl); ok && fd.Body != nil {
+				// number non-alias function-local type decls in source
+				// order — including inside nested function literals — for
+				// the `·gen` spelling inside instantiation arg lists.
+				ast.Inspect(fd.Body, func(n ast.Node) bool {
+					if ts, isTs := n.(*ast.TypeSpec); isTs && !ts.Assign.IsValid() {
+						gen++
+						if ix.LocalGens == nil {
+							ix.LocalGens = map[*ast.TypeSpec]int{}
+						}
+						ix.LocalGens[ts] = gen
+					}
+					return true
+				})
+			}
 			switch d := gd.(type) {
 			case *ast.FuncDecl:
 				dl := &Decl{Kind: FuncDecl, Name: d.Name.Name, File: f, Func: d, Pos: d.Pos()}

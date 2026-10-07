@@ -1,0 +1,4 @@
+bare: main.L0[int]
+elem: main.T[int;main.L0[int]·1]
+ptr: *main.L0[int]
+fnarg: main.T[int;func(main.U[int;int]·3)]

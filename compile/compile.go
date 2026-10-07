@@ -1180,6 +1180,11 @@ func (c *compiler) localTypeDecl(ts *ast.TypeSpec) {
 		Pkg: c.pkg, File: c.file, Name: ts.Name.Name,
 		Spec: ts, Anon: ts.Type, Binds: c.binds, Local: true,
 	}
+	// the decl's `·gen` index was assigned at index time — functions
+	// compile lazily in call order, which is not source order.
+	if !ts.Assign.IsValid() && c.pkg != nil && c.pkg.Index != nil {
+		td.Gen = c.pkg.Index.LocalGen(ts)
+	}
 	if ts.TypeParams != nil {
 		for _, tp := range ts.TypeParams.List {
 			for _, n := range tp.Names {
