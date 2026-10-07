@@ -9,7 +9,11 @@ type B struct{ X int }
 
 func (b *B) M() int { return b.X }
 
-type S struct{ A B; C [2]B; P *B }
+type S struct {
+	A B
+	C [2]B
+	P *B
+}
 
 func main() {
 	var s S
