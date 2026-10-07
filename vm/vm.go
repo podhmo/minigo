@@ -9386,6 +9386,11 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 		if rt == nil {
 			return false
 		}
+		// reflect.Value is the minireflect facade, boxed as its pointer
+		// (the typedef's HostNew) though it spells reflect.Value.
+		if td.Name == "reflect.Value" && td.HostNew != nil {
+			return rt == reflect.TypeOf(td.HostNew())
+		}
 		// a boxed host func compares signatures like a script func
 		// value — func(int) int never asserts to func(string).
 		if rt.Kind() == reflect.Func && td.Name == "" {
