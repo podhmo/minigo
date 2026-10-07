@@ -1246,12 +1246,17 @@ func (e *Engine) installStdlib() {
 		"IsPermission": h.fn1("os.IsPermission", func(a []any) (any, error) { return os.IsPermission(asErr(a[0])), nil }, os.IsPermission),
 		"IsTimeout":    h.fn1("os.IsTimeout", func(a []any) (any, error) { return os.IsTimeout(asErr(a[0])), nil }, os.IsTimeout),
 		// error sentinels for errors.Is on the script side
-		"ErrNotExist":   &runtime.GoValue{V: fs.ErrNotExist},
-		"ErrExist":      &runtime.GoValue{V: fs.ErrExist},
-		"ErrPermission": &runtime.GoValue{V: fs.ErrPermission},
-		"ErrClosed":     &runtime.GoValue{V: fs.ErrClosed},
-		"ErrInvalid":    &runtime.GoValue{V: fs.ErrInvalid},
-		"ErrNoDeadline": &runtime.GoValue{V: os.ErrNoDeadline},
+		"ErrNotExist": &runtime.GoValue{V: fs.ErrNotExist},
+		// *os.File asserts (x/tools' gocommand checks cmd.Stdout's type)
+		"File":           hostType("os.File", func() any { return &os.File{} }),
+		"Interrupt":      &runtime.GoValue{V: os.Interrupt},
+		"Kill":           &runtime.GoValue{V: os.Kill},
+		"ErrProcessDone": &runtime.GoValue{V: os.ErrProcessDone},
+		"ErrExist":       &runtime.GoValue{V: fs.ErrExist},
+		"ErrPermission":  &runtime.GoValue{V: fs.ErrPermission},
+		"ErrClosed":      &runtime.GoValue{V: fs.ErrClosed},
+		"ErrInvalid":     &runtime.GoValue{V: fs.ErrInvalid},
+		"ErrNoDeadline":  &runtime.GoValue{V: os.ErrNoDeadline},
 		// consts
 		"PathSeparator":     int64(os.PathSeparator),
 		"PathListSeparator": int64(os.PathListSeparator),
@@ -1312,6 +1317,10 @@ func (e *Engine) installStdlib() {
 		ospkg["Stdin"] = &runtime.GoValue{V: os.Stdin}
 		ospkg["Stdout"] = &runtime.GoValue{V: &engineStdout{File: os.Stdout, h: h}}
 		ospkg["Stderr"] = &runtime.GoValue{V: os.Stderr}
+		ospkg["Pipe"] = h.fn("os.Pipe", func(a []any) (any, error) {
+			r, w, err := os.Pipe()
+			return &runtime.Tuple{Elems: []runtime.Value{&runtime.GoValue{V: r}, &runtime.GoValue{V: w}, errVal(err)}}, nil
+		})
 		ospkg["TempDir"] = h.fn("os.TempDir", func(a []any) (any, error) { return os.TempDir(), nil })
 		ospkg["UserHomeDir"] = h.fn("os.UserHomeDir", func(a []any) (any, error) { return retErr2(os.UserHomeDir()) })
 		ospkg["UserCacheDir"] = h.fn("os.UserCacheDir", func(a []any) (any, error) { return retErr2(os.UserCacheDir()) })
