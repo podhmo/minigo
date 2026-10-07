@@ -1,0 +1,143 @@
+# pre-todo
+
+TODO.md に切り出す前の検討置き場。
+
+- 出典: go-scan 援用調査 [docs/sketch/ja/exploration-goscan-reuse.md](./docs/sketch/ja/exploration-goscan-reuse.md) (PR #590)
+- 一行一論点。項目ごと・行ごとに取捨できる粒度を目指す
+- 実装方針はここでは未確定でよい。案の列挙まで
+- 採用が決まったものだけ TODO.md の `- [ ]` 項目に昇格させる
+
+## 強化(既存機能の純粋強化)
+
+### syntax に軽量パース段階を追加する
+
+- 現状
+  - `syntax.ParseFile` は常にフルパース(`ParseComments` 付き)
+  - import 一覧を取るだけのためにもフルパースのコストを払っている
+- 参考実装
+  - go-scan `scanner.ScanPackageFromFilePathImports` が `parser.ImportsOnly` を使う(調査 §3)
+- 未定
+  - `parser.ImportsOnly`/`PackageClauseOnly` を `syntax`/`resolve` のどこに置くか
+
+### inspect に decl-anchored AST ハンドルを露出する
+
+- 現状
+  - `index.Decl` は `Func *ast.FuncDecl`/`Gen`/`Spec` を保持済み
+  - body や初期化式は既にメモリ上にあるが、script 側からは見えない
+- これがあると載せられる既存の TODO 項目
+  - `inspect.Decls` が method を拾わない
+  - free comment が見えない
+  - const の initializer が見えない(`inspect.Value` が `init()` を走らせる問題の代替経路にも)
+- 参考実装
+  - go-scan `PackageInfo.AstFiles`/`FunctionInfo.AstDecl` が AST をそのまま保持(調査 §1)
+- 未定
+  - node ビューの形(`TypeExpr` 式の wrapper? `{Pos, Text, Children}` の最小形?)
+  - 露出の粒度(decl 直下だけか、再帰的な node 木か)
+
+### TypeExpr の解決経路を記録する
+
+- 現状
+  - `Origin`/`chaseType` は visited set だけを持つ
+  - 循環・失敗時に「どこを辿ったか」を報告できない
+- 参考実装
+  - go-scan `FieldType.Resolve` が ctx に `ResolutionPathKey` で経路を持つ(調査 §2)
+- 未定
+  - 常時記録か、診断モードのときだけか
+
+### Unresolved の明示的マーカー
+
+- 現状
+  - scope 外の参照は「見つからない」と「スキャン対象外」を区別できない
+- 参考実装
+  - go-scan `NewUnresolvedTypeInfo`/`TypeInfo.Unresolved` フラグ(調査 §2)
+- 未定
+  - `TypeExpr` に載せるか `Decl` に載せるか、両方か
+
+### ファイルパースの並列化
+
+- 現状
+  - `minigo.go` がパッケージ内ファイルを逐次パースする
+- 参考実装
+  - go-scan `scanGoFiles` が errgroup + 並列度上限でパース(調査 §4)
+- 未定
+  - lazy スキャンでは対象ファイルが少ないので、効果が出る局面が限られるかもしれない
+
+## 豊かさ(新しい機能面)
+
+### declwalk パッケージ(仮称)
+
+- 動機
+  - func decl の body 走査は TODO.md 長年の残項目
+  - inspect = 「何か」層(identity/解決)、walk = 「列挙」層と分けると設計が楽(調査 §1)
+  - scanx 拡張は解釈側ソースなので host 機構を共有できず面倒
+- 形の案
+  - host 側 Go パッケージに本体、script 公開は薄い intrinsic(inspect の stub+impl 構成と同じ)
+  - node ビューは `{Kind, Pos, Text, Children}` の最小形 + 型位置だけ TypeExpr
+  - yield 型の `ast.Inspect` 相当(range-over-func が既に動く)
+  - もしくは go-scan docgen 式の pattern+handler フック(呼び出しサイト照合)
+- ついでにやると良いこと
+  - `inspect.UsedSymbolsOf` の file walk をこちらに集約
+  - file レベルの comment 列挙もここに載る
+- 未定
+  - 名前(declwalk/astwalk/nodewalk — stmt・expr 粒度まで行くなら declwalk は狭い)
+  - bind path(`inspect` の増補か `minigo.dev/declwalk` 新設か)
+  - 最小形だけか、pattern-hook まで入れるか
+
+### repo/package walker(ModuleWalker 相当)
+
+- 動機
+  - 「root 以下の全パッケージを nested go.mod 越しに列挙」が既存の TODO 項目
+  - go-scan `modulewalker.go` がほぼそのままの仕様(調査 §3)
+- 構成要素の案
+  - imports-only スキャンで `PackageImports{Imports, FileImports}`
+  - visitor 式 `Walk`(`./...` 展開つき BFS)
+  - `FindImporters`/逆依存 map
+  - `find-orphans` の `discoverModules`(go.work の `use`、nested go.mod)
+  - `UnscannedGoFiles` 的な drift 検出
+- 未定
+  - 上の「軽量パース段階」が先に要る
+  - script に公開するか、host ツール専用か
+
+### ImportManager 相当
+
+- 動機
+  - 生成コードの import alias 解決を各 example が手でやるのは限界
+- 参考実装
+  - go-scan `importmanager.go`(keyword→`_pkg`、競合→連番、path ハッシュ fallback、`Qualify`)(調査 §4)
+- 用途
+  - gen-sync の managed import 領域
+  - convert-define の生成コード
+- 未定
+  - host 側 util として置くだけか、script にも見せるか
+
+### scantest 型のテストハーネス + FileWriter
+
+- 動機
+  - examples の生成物テストが temp dir 依存になりがち
+- 参考実装
+  - go-scan `scantest.Run`(temp module→scan→action→assert)と `memoryFileWriter`(調査 §4)
+- 未定
+  - どの example から適用するか
+
+### 永続シンボル index(symbolCache 相当)
+
+- 動機
+  - 「シンボル X がどこで定義されているか」を引く index がない
+  - REPL からの package introspection(既存 TODO)の足場になる
+- 参考実装
+  - go-scan `cache.go` の `symbolCache`(mtime 検証つき)(調査 §4)
+- 未定
+  - 永続化の置き場所と粒度
+
+## 既存 TODO 項目との対応
+
+昇格の際に既存項目へマージまたは参照を付けるための対応表。
+
+- const `inspect.Value` が `init()` を走る → go-scan `ConstantInfo.ValExpr`/`evalConstExpr` が参照先(§4)
+- func body 走査 → declwalk 項目が本体(§1)
+- `List[int]` の instantiate 表示 → `FieldType.TypeArgs` の表現(§4)
+- canonical package 名の first-sorted-file 問題 → dominant-name 二段階。修正箇所は `resolve.ReadPackageFiles`(§4)
+- repo-enumeration surface → `ModuleWalker`/`discoverModules` が仕様(§3)
+- REPL package introspection → `symbolCache`/`FindSymbolDefinitionLocation`(§4)
+- `inspect.Decls` が method を拾わない → `PackageInfo.Functions` がモデル(§4)
+- free comments 不可視 → `AstFiles` 保持がモデル(§4)
