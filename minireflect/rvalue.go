@@ -447,6 +447,14 @@ func (v *RValue) Type() *RType {
 		return v.e.hostTypeOf(v.rv.Type())
 	}
 	td := v.td
+	if td == nil || (td.Kind == runtime.KindFunc && td.Anon == nil) {
+		// an intrinsic adapting a real Go func (strings.ToLower) has
+		// no script signature: report the target's — text/template's
+		// goodFunc reads NumIn/NumOut off FuncMap entries.
+		if bf, ok := v.get().(*runtime.BuiltinFunc); ok && bf.Target != nil {
+			return v.e.hostTypeOf(reflect.TypeOf(bf.Target))
+		}
+	}
 	if td == nil {
 		td = typeOfValue(v.e, v.get())
 	}
