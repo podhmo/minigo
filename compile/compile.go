@@ -2671,70 +2671,113 @@ func (c *compiler) binary(x *ast.BinaryExpr) {
 			c.trap(x.Pos(), "unsupported binary %s", x.Op)
 			return
 		}
-		if pureOperand(x.X) {
-			// gc defers reading a pure left operand to the operation
-			// point — `c + inc()` runs inc() before loading c, so the
-			// call's side effects show in the left operand. Evaluate
-			// right first, then swap into operand order.
-			c.expr(x.Y)
-			c.expr(x.X)
-			c.emit(bytecode.OpSwap, 0, 0, x.Pos())
-		} else {
-			c.expr(x.X)
-			c.expr(x.Y)
-		}
+		c.binaryOperands(x.X, x.Y)
 		c.emit(bytecode.OpBinary, int(op), 0, x.Pos())
 	}
+}
+
+// binaryOperands emits the operands of a plain binary op in Go's
+// two-phase order, like callArgs does for call arguments: the eager
+// operations inside the operands (calls, channel receives, slice
+// bounds, type assertions, map literals — hoistedArgCalls) materialize
+// to scratch locals first in lexical order across both operands, then
+// each operand's deferred reads run left-to-right at the operation.
+// `int(s[i]) + f(r[j])` therefore reports r[j]'s panic — a pure left
+// read defers past the right's call — and `Itoa(v)[i] + f(r[j])` calls
+// Itoa first but still checks the index after r[j]. When a conditional
+// (&&/||) inside an operand makes hoisting unsafe, the left read
+// instead defers wholesale, the model's earlier approximation.
+func (c *compiler) binaryOperands(x, y ast.Expr) {
+	xcalls, xok := c.hoistedArgCalls(x)
+	ycalls, yok := c.hoistedArgCalls(y)
+	if xok && yok && len(xcalls)+len(ycalls) > 0 {
+		names := map[ast.Expr]string{}
+		for _, call := range append(xcalls, ycalls...) {
+			c.expr(call)
+			name := c.fresh("$bin")
+			slot := c.fs.declare(name, call.Pos())
+			c.emit(bytecode.OpNewLocal, slot, 0, call.Pos())
+			names[call] = name
+		}
+		c.expr(substCallArg(x, names))
+		c.expr(substCallArg(y, names))
+		return
+	}
+	if c.pureOperand(x) && !c.pureOperand(y) {
+		c.expr(y)
+		c.expr(x)
+		c.emit(bytecode.OpSwap, 0, 0, x.Pos())
+		return
+	}
+	c.expr(x)
+	c.expr(y)
 }
 
 // pureOperand reports whether an operand can defer its evaluation to the
 // operation point — gc reads pure operands (variables, fields, indexes,
 // literals) when the operator runs, not in operand order, so `c + inc()`
-// sees inc()'s side effects in c. Calls, sends/receives and anything
-// that may not be pure disqualify (a CallExpr stays conservative even
-// for builtins like len()).
-func pureOperand(x ast.Expr) bool {
+// sees inc()'s side effects in c. Real calls, sends/receives and the
+// operations gc materializes eagerly at operand position — type
+// assertions, slice bounds checks, composite literals — disqualify.
+// A conversion is transparent here: `T(x)` defers its pure interior
+// reads like the index/arithmetic op it wraps (unlike a real call).
+func (c *compiler) pureOperand(x ast.Expr) bool {
 	switch x := x.(type) {
 	case *ast.Ident, *ast.BasicLit, *ast.FuncLit:
 		return true
 	case *ast.ParenExpr:
-		return pureOperand(x.X)
+		return c.pureOperand(x.X)
 	case *ast.StarExpr:
-		return pureOperand(x.X)
+		return c.pureOperand(x.X)
 	case *ast.UnaryExpr:
-		return x.Op != token.ARROW && pureOperand(x.X)
+		return x.Op != token.ARROW && c.pureOperand(x.X)
 	case *ast.BinaryExpr:
-		return pureOperand(x.X) && pureOperand(x.Y)
+		// a conditional op is an ordering point of its own — its
+		// operands run at its position, not at the enclosing op.
+		return x.Op != token.LAND && x.Op != token.LOR &&
+			c.pureOperand(x.X) && c.pureOperand(x.Y)
 	case *ast.SelectorExpr:
-		return pureOperand(x.X)
+		return c.pureOperand(x.X)
 	case *ast.IndexExpr:
-		return pureOperand(x.X) && pureOperand(x.Index)
+		return c.pureOperand(x.X) && c.pureOperand(x.Index)
 	case *ast.IndexListExpr:
-		if !pureOperand(x.X) {
+		if !c.pureOperand(x.X) {
 			return false
 		}
 		for _, i := range x.Indices {
-			if !pureOperand(i) {
+			if !c.pureOperand(i) {
+				return false
+			}
+		}
+		return true
+	case *ast.CallExpr:
+		if !c.conversionCall(x) {
+			return false
+		}
+		for _, a := range x.Args {
+			if !c.pureOperand(a) {
 				return false
 			}
 		}
 		return true
 	case *ast.SliceExpr:
-		for _, e := range []ast.Expr{x.X, x.Low, x.High, x.Max} {
-			if e != nil && !pureOperand(e) {
-				return false
-			}
-		}
-		return true
+		return false // gc checks the bounds at operand position
 	case *ast.TypeAssertExpr:
-		return pureOperand(x.X)
+		return false // gc materializes the check at operand position
 	case *ast.CompositeLit:
+		// a map literal lowers to runtime makemap/mapassign calls —
+		// materialized eagerly at operand position; a struct, array
+		// or slice literal's interior reads defer like other pure
+		// reads (S{v: r[i]} == f(r[j]) panics on r[j]).
+		if c.mapLitType(x.Type, 8) {
+			return false
+		}
 		for _, e := range x.Elts {
 			if kv, ok := e.(*ast.KeyValueExpr); ok {
-				if !pureOperand(kv.Key) || !pureOperand(kv.Value) {
+				if !c.pureOperand(kv.Key) || !c.pureOperand(kv.Value) {
 					return false
 				}
-			} else if !pureOperand(e) {
+			} else if !c.pureOperand(e) {
 				return false
 			}
 		}
@@ -2742,6 +2785,26 @@ func pureOperand(x ast.Expr) bool {
 	default:
 		return false
 	}
+}
+
+// mapLitType reports whether a composite literal's declared type is a
+// map — syntactically (`map[K]V{}`) or through a named type
+// (`type M map[K]V; M{}`), like isKeyedLitShape resolves.
+func (c *compiler) mapLitType(t ast.Expr, fuel int) bool {
+	switch tt := t.(type) {
+	case *ast.MapType:
+		return true
+	case *ast.ParenExpr:
+		return c.mapLitType(tt.X, fuel)
+	case *ast.Ident:
+		if fuel <= 0 {
+			return false
+		}
+		if info, found := c.resolveName(tt.Name); found && info.isType && info.tspec != nil {
+			return c.mapLitType(info.tspec.Type, fuel-1)
+		}
+	}
+	return false
 }
 
 // foldConst evaluates a constant-only binary expression in go/constant's
@@ -3132,7 +3195,7 @@ func (c *compiler) hoistedArgCalls(e ast.Expr) (calls []ast.Expr, ok bool) {
 			calls = append(calls, t) // assertions materialize eagerly
 			return false
 		case *ast.CompositeLit:
-			if _, isMap := t.Type.(*ast.MapType); isMap {
+			if c.mapLitType(t.Type, 8) {
 				// a map literal builds eagerly entry-by-entry; struct,
 				// array and slice literals stay inline like their
 				// element expressions.
