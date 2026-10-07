@@ -11901,8 +11901,11 @@ func (v *VM) satisfiesTypeElem(ctx *runtime.TypeDef, e ast.Expr, td *runtime.Typ
 				if mentionsUnbound(t.X, ctx) {
 					return compositeKindMatches(t.X, u)
 				}
-				el := &runtime.TypeDef{Anon: t.X, Pkg: ctx.Pkg, File: ctx.File, Binds: ctx.Binds}
-				return runtime.TypUnderlyingSpelling(el) == v.underlyingShape(td)
+				// only the argument's outer layer peels: E keeps its
+				// declared identity inside `[]E` (TypSpelling, not the
+				// underlying view, which would expand a named E).
+				el := &runtime.TypeDef{Pkg: ctx.Pkg, File: ctx.File, Binds: ctx.Binds}
+				return runtime.TypSpelling(t.X, el) == v.underlyingShape(td)
 			}
 			return false
 		}
