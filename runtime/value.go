@@ -1391,6 +1391,12 @@ type Function struct {
 	TConstraints []ast.Expr       // constraint expr per TParams entry
 	Binds        map[string]Value // compile-time bindings: type params -> TypeDef args
 
+	// OuterTParams names the enclosing generic instantiation's type
+	// parameters a function literal closes over — set at OpMakeClosure
+	// when the enclosing function's binds merge into the proto, so a
+	// local type declared in the body still differs per instantiation.
+	OuterTParams []string
+
 	Compile func(*Function) error // injected by the engine
 	once    sync.Once
 	cerr    error
@@ -1422,12 +1428,26 @@ func (f *Function) WithBinds(binds map[string]Value) *Function {
 		TParams:      f.TParams,
 		TConstraints: f.TConstraints,
 		Binds:        binds,
+		OuterTParams: f.OuterTParams,
 		Compile:      f.Compile,
 		cerr:         f.cerr,
 		Chunk:        f.Chunk,
 	}
 	cp.once.Do(func() {})
 	return cp
+}
+
+// OuterParamNames lists the type-parameter names visible from this
+// function's frame in declaration order — the enclosing instantiation's
+// params first (closed over by literals), then the function's own.
+func (f *Function) OuterParamNames() []string {
+	if len(f.OuterTParams) == 0 {
+		return f.TParams
+	}
+	names := make([]string, 0, len(f.OuterTParams)+len(f.TParams))
+	names = append(names, f.OuterTParams...)
+	names = append(names, f.TParams...)
+	return names
 }
 
 // Closure is a function value with captured upvalue cells.
