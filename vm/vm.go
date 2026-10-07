@@ -6328,17 +6328,18 @@ func (v *VM) convertConst(td *runtime.TypeDef, u *runtime.UConst) (runtime.Value
 	// (0.01))` reads the float32 rounding, not 0.01's float64
 	// nearest. The tag keeps the constant domain; only its value is
 	// narrowed (complex64 rounds each half to float32 the same way).
+	// constant.Float32Val rounds the EXACT constant once — going
+	// through Float64Val first would double-round tie values.
 	switch name {
 	case "float32":
-		if fv, ok := constFloat(u.V); ok {
-			u = &runtime.UConst{V: constant.MakeFloat64(float64(float32(fv))), Rune: u.Rune}
-		}
+		f32, _ := constant.Float32Val(u.V)
+		u = &runtime.UConst{V: constant.MakeFloat64(float64(f32)), Rune: u.Rune}
 	case "complex64":
-		if cv, ok := constComplex(u.V); ok {
-			re := constant.MakeFloat64(float64(float32(real(cv))))
-			im := constant.MakeFloat64(float64(float32(imag(cv))))
-			u = &runtime.UConst{V: constant.BinaryOp(re, token.ADD, constant.MakeImag(im))}
-		}
+		re, _ := constant.Float32Val(constant.Real(u.V))
+		im, _ := constant.Float32Val(constant.Imag(u.V))
+		u = &runtime.UConst{V: constant.BinaryOp(
+			constant.MakeFloat64(float64(re)), token.ADD,
+			constant.MakeImag(constant.MakeFloat64(float64(im))))}
 	}
 	return runtime.Tag(td, u), nil
 }
@@ -6734,7 +6735,10 @@ func constToBasic(u *runtime.UConst, name string) (runtime.Value, bool) {
 		if !ok || math.IsInf(fv, 0) {
 			return nil, false
 		}
-		return float64(float32(fv)), true
+		// Float32Val rounds the exact constant once — float32(fv)
+		// would double-round values past the float64 midpoint.
+		f32, _ := constant.Float32Val(u.V)
+		return float64(f32), true
 	case name == "float64":
 		fv, ok := constFloat(u.V)
 		if !ok || math.IsInf(fv, 0) {
