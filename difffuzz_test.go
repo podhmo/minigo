@@ -3,6 +3,7 @@ package minigo_test
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -35,8 +36,39 @@ func TestDiffRegressions(t *testing.T) {
 
 			var buf bytes.Buffer
 			e := minigo.NewEngine(".", minigo.WithOutput(&buf))
-			_, runErr := e.Run(context.Background(), "./"+filepath.ToSlash(dir), "")
+
+			// A case with a want.stderr file also compares stderr (e.g.
+			// builtin print/println output). Builtins write to os.Stderr
+			// directly, so the run happens with os.Stderr redirected to
+			// a pipe; subtests run serially, so the swap is safe.
+			wantErr, err := os.ReadFile(filepath.Join(dir, "want.stderr"))
+			captureErr := err == nil
+			var gotErr string
+			var runErr error
+			if captureErr {
+				r, w, err := os.Pipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				old := os.Stderr
+				os.Stderr = w
+				done := make(chan string)
+				go func() {
+					b, _ := io.ReadAll(r)
+					done <- string(b)
+				}()
+				_, runErr = e.Run(context.Background(), "./"+filepath.ToSlash(dir), "")
+				w.Close()
+				gotErr = <-done
+				os.Stderr = old
+				r.Close()
+			} else {
+				_, runErr = e.Run(context.Background(), "./"+filepath.ToSlash(dir), "")
+			}
 			diff := cmp.Diff(string(want), buf.String())
+			if captureErr && diff == "" {
+				diff = cmp.Diff(string(wantErr), gotErr)
+			}
 			switch {
 			case pending && runErr == nil && diff == "":
 				t.Errorf("%s now matches go: delete %s/PENDING to pin the fix", dir, dir)
