@@ -572,6 +572,9 @@ func (v *VM) assignRef(f *frame, ref, val runtime.Value) {
 		v.setField(f, r.Base, r.Name, val)
 		return
 	case *runtime.Cell:
+		if !r.ReadOnly && overwriteArray(r, val) {
+			return
+		}
 		v.assignCell(f, r, val)
 		return
 	case *runtime.DerefRef:
@@ -674,6 +677,9 @@ func overwriteStruct(ref, val runtime.Value) bool {
 	if !ok {
 		return false
 	}
+	if overwriteArray(c, val) {
+		return true
+	}
 	dst, ok := c.Elem.(*runtime.Struct)
 	if !ok {
 		return false
@@ -705,15 +711,23 @@ func overwriteArray(ref, val runtime.Value) bool {
 	if !ok {
 		return false
 	}
-	dst, ok := runtime.Unwrap(c.Elem).(*runtime.Slice)
-	if !ok || !isArrayTyp(dst.Typ) {
+	return overwriteArrayIn(c.Elem, val)
+}
+
+// overwriteArrayIn copies val's elements into old when both are arrays
+// of the same length — the in-place store behind overwriteArray, also
+// used for struct fields (`s.a = b` with `p := s.a[:]` live). Virtual
+// slices carry no backing Elems, so there is nothing to overwrite.
+func overwriteArrayIn(old, val runtime.Value) bool {
+	da, ok := runtime.Unwrap(old).(*runtime.Slice)
+	if !ok || !runtime.ArrayTypedef(da.Typ) || da.Virtual() {
 		return false
 	}
-	src, ok := runtime.Unwrap(runtime.Copy(val)).(*runtime.Slice)
-	if !ok || !isArrayTyp(src.Typ) || len(src.Elems) != len(dst.Elems) {
+	sa, ok := runtime.Unwrap(runtime.Copy(val)).(*runtime.Slice)
+	if !ok || sa.Virtual() || !runtime.ArrayTypedef(sa.Typ) || len(sa.Elems) != len(da.Elems) {
 		return false
 	}
-	overwriteArrayElems(dst, src)
+	overwriteArrayElems(da, sa)
 	return true
 }
 
@@ -4302,7 +4316,10 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 				if fts := v.fieldTypedefs(b.Def); i < len(fts) {
 					ft = fts[i]
 				}
-				b.Fields[i] = v.coerce(f, val, ft)
+				nv := v.coerce(f, val, ft)
+				if !overwriteArrayIn(b.Fields[i], nv) {
+					b.Fields[i] = nv
+				}
 				return
 			}
 		}
@@ -4320,7 +4337,10 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 			if fts := v.fieldTypedefs(pr.st.Def); pr.idx < len(fts) {
 				ft = fts[pr.idx]
 			}
-			pr.st.Fields[pr.idx] = v.coerce(f, val, ft)
+			nv := v.coerce(f, val, ft)
+			if !overwriteArrayIn(pr.st.Fields[pr.idx], nv) {
+				pr.st.Fields[pr.idx] = nv
+			}
 			return
 		}
 		f.trap("%s has no field %s", b.Def.Name, name)
