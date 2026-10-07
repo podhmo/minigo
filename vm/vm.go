@@ -7513,10 +7513,11 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 		if !ok || !runtime.TypIdentical(av.Def, bs.Def) || len(av.Fields) != len(bs.Fields) {
 			return false
 		}
+		fts := v.fieldTypedefs(av.Def)
 		for i := range av.Fields {
 			// an uncomparable field type panics on the struct itself —
 			// Go's message names the enclosing type, not the field's.
-			if uncomparableValue(av.Fields[i]) {
+			if uncomparableValue(av.Fields[i]) || (i < len(fts) && v.uncomparableTypDeep(fts[i])) {
 				panic(runtime.ComparingUncomparablePanic(spelledTyp(av.Def)))
 			}
 			if !v.eqlValue(av.Fields[i], bs.Fields[i]) {
@@ -7540,6 +7541,13 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 			if isArrayTyp(av.Typ) && isArrayTyp(bs.Typ) {
 				if len(av.Elems) != len(bs.Elems) {
 					return false
+				}
+				// an uncomparable element type panics on the array
+				// itself — Go names the enclosing type, not the
+				// element's. Interface-typed elements stay comparable:
+				// the dynamic type decides inside (its own panic).
+				if v.uncomparableTypDeep(v.elemTypedef(nil, av.Typ)) {
+					panic(runtime.ComparingUncomparablePanic(spelledTyp(av.Typ)))
 				}
 				for i := range av.Elems {
 					if !v.eqlValue(av.Elems[i], bs.Elems[i]) {
@@ -7711,6 +7719,31 @@ func sliceTypOf(td *runtime.TypeDef) *runtime.TypeDef {
 // Go — slices, maps and funcs panic on == even when nil.
 func uncomparableTyp(td *runtime.TypeDef) bool {
 	return td != nil && (td.Kind == runtime.KindSlice || td.Kind == runtime.KindMap || td.Kind == runtime.KindFunc)
+}
+
+// uncomparableTypDeep reports whether the typedef's shape contains an
+// uncomparable kind anywhere — an equality on the enclosing type
+// panics naming itself (Go names the outermost uncomparable type).
+// Interface-typed members stay comparable: the dynamic type decides at
+// compare time.
+func (v *VM) uncomparableTypDeep(td *runtime.TypeDef) bool {
+	if td == nil {
+		return false
+	}
+	if uncomparableTyp(td) && !isArrayTyp(td) {
+		return true // slice / map / func leaf
+	}
+	switch {
+	case isArrayTyp(td):
+		return v.uncomparableTypDeep(v.elemTypedef(nil, td))
+	case td.Kind == runtime.KindStruct:
+		for _, ft := range v.fieldTypedefs(td) {
+			if v.uncomparableTypDeep(ft) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // uncomparableDynamicTyp returns the value's dynamic typedef when its
