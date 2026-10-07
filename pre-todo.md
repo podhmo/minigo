@@ -70,7 +70,7 @@ TODO.md に切り出す前の検討置き場。
   - 価値は「読み込み範囲を制限する policy」が存在して初めて立つ — policy 導入の前提部品
     - 現状 policy 系の機能は draft 実験 PR 側にのみ存在(#24 `inspect.Ops` dataflow、#25 compiled ops body 走査、#112 trace 系)、main には無い
   - 発火条件: 途中で解釈をやめる機構の例が main に入ってから — そこで必須パーツとして復活
-  - `TypeExpr` に載せるか `Decl` に載せるか、両方か — policy 採用時に改めて
+  - 載せる場所: **両方(verdict)** — 式の中でシンボルを返せないと意味がないので TypeExpr 側は必須、Decl 側は decl 面の報告用に併記
 
 ### ファイルパースの並列化
 
