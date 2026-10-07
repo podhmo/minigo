@@ -11680,6 +11680,7 @@ func (v *VM) inferBinds(fn *runtime.Function, args []runtime.Value, statics []*r
 			v.unifyTypeDef(ctx, tset, binds, et, spreadTd)
 		}
 	}
+	v.inferCoreTypes(ctx, tset, binds, fn.TParams, fn.TConstraints)
 	if len(binds) == len(fn.Binds) {
 		return fn, nil // nothing inferred
 	}
@@ -11692,6 +11693,63 @@ func (v *VM) inferBinds(fn *runtime.Function, args []runtime.Value, statics []*r
 		TParams: fn.TParams, TConstraints: fn.TConstraints,
 		Binds: binds, Compile: fn.Compile,
 	}, nil
+}
+
+// inferCoreTypes is Go's constraint type inference: a bound parameter
+// whose constraint has a core type (`Map ~map[K]V`, `S ~[]E`) teaches the
+// parameters that core type mentions — maps.Values(m) learns K and V from
+// Map. It repeats while a round binds something new.
+func (v *VM) inferCoreTypes(ctx *runtime.TypeDef, tset map[string]bool, binds map[string]runtime.Value, tparams []string, cons []ast.Expr) {
+	for changed := true; changed; {
+		changed = false
+		for i, tp := range tparams {
+			if i >= len(cons) {
+				break
+			}
+			core := coreTypeExpr(cons[i])
+			if core == nil {
+				continue
+			}
+			td := typedefOf(binds[tp])
+			if td == nil {
+				continue
+			}
+			u := v.peelNamed(td)
+			if u == nil {
+				continue
+			}
+			if u.Anon == nil && u.Spec != nil {
+				// a declared container (`type M map[string]int`): unify
+				// against its underlying type expression.
+				u = &runtime.TypeDef{Kind: u.Kind, Anon: u.Spec.Type, Pkg: u.Pkg, File: u.File, Binds: u.Binds}
+			}
+			before := len(binds)
+			v.unifyTypeDef(ctx, tset, binds, core, u)
+			changed = changed || len(binds) > before
+		}
+	}
+}
+
+// coreTypeExpr extracts the single composite type element of a
+// constraint — `~[]E`, `[]E`, `interface{ ~map[K]V }` — or nil.
+func coreTypeExpr(c ast.Expr) ast.Expr {
+	switch t := c.(type) {
+	case *ast.ParenExpr:
+		return coreTypeExpr(t.X)
+	case *ast.UnaryExpr:
+		if t.Op == token.TILDE && isCompositeTypeExpr(t.X) {
+			return t.X
+		}
+	case *ast.InterfaceType:
+		if t.Methods != nil && len(t.Methods.List) == 1 && len(t.Methods.List[0].Names) == 0 {
+			return coreTypeExpr(t.Methods.List[0].Type)
+		}
+	default:
+		if isCompositeTypeExpr(c) {
+			return c
+		}
+	}
+	return nil
 }
 
 // unifyType learns type-argument binds by walking a parameter's declared
