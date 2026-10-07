@@ -2259,7 +2259,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		case *runtime.Named:
 			return v.namedMember(f, e, name, b)
 		case *runtime.TypedNil:
-			return v.memberOfType(f, e.Typ, name, e, false)
+			return v.memberOfType(f, e.Typ, name, b, false)
 		case *runtime.IfaceNil:
 			return v.memberOfType(f, e.Typ, name, e, true)
 		case *runtime.Slice:
@@ -2315,6 +2315,11 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 			return v.typedMember(f, t.Typ, name, recv, "map")
 		case *runtime.Chan:
 			return v.typedMember(f, t.Typ, name, recv, "chan")
+		case *runtime.TypedNil:
+			// a nil value under a ref (p.errors when errors is a nil
+			// named slice) still carries the ref so a pointer receiver
+			// binds &base.f, not a detached copy.
+			return v.memberOfType(f, t.Typ, name, recv, false)
 		}
 		// pointer boxes ([]*T), nils, host values, packages — dispatch
 		// on the element value itself, like an unindexed select.
@@ -8903,6 +8908,14 @@ func (v *VM) memberOfType(f *frame, td *runtime.TypeDef, name string, recv runti
 	// anonymous pointer chain to the pointee (a *T nil keeps *T's method
 	// set). A declared pointer typedef (`type P *Sq`) does not promote
 	// pointee methods — P's method set is only what is declared on P.
+	// recv may arrive as the operand's storage ref — `var l List; l.Add`
+	// selects through l's cell so a pointer receiver binds &l — in which
+	// case the nil checks below read the stored value (rv) while the
+	// bound receiver keeps the ref.
+	rv := recv
+	if dv, ok := runtime.Deref(recv); ok {
+		rv = dv
+	}
 	peeled := false
 	for td != nil {
 		// a nil interface value has no method at all — any call on it
@@ -8910,10 +8923,10 @@ func (v *VM) memberOfType(f *frame, td *runtime.TypeDef, name string, recv runti
 		// as a typed nil on the value path or as an interface-kind
 		// IfaceNil through a storage ref — both are the nil interface.
 		if td.Kind == runtime.KindInterface {
-			if runtime.IsNilIface(recv) {
+			if runtime.IsNilIface(rv) {
 				panic(runtime.NilDerefPanic())
 			}
-			if _, isNil := asTypedNil(recv); isNil {
+			if _, isNil := asTypedNil(rv); isNil {
 				panic(runtime.NilDerefPanic())
 			}
 		}
@@ -8924,8 +8937,8 @@ func (v *VM) memberOfType(f *frame, td *runtime.TypeDef, name string, recv runti
 			// be nil) is a valid receiver: the call binds it and the
 			// body decides.
 			if !m.PtrRecv {
-				if _, isNil := asTypedNil(recv); isNil && (peeled || !v.nilableTypedef(td)) {
-					if _, isIfaceNil := recv.(*runtime.IfaceNil); isIfaceNil {
+				if _, isNil := asTypedNil(rv); isNil && (peeled || !v.nilableTypedef(td)) {
+					if _, isIfaceNil := rv.(*runtime.IfaceNil); isIfaceNil {
 						// a value method dispatched through a nil
 						// interface box reports Go's wrapper text, not
 						// a bare nil dereference.
@@ -8935,16 +8948,20 @@ func (v *VM) memberOfType(f *frame, td *runtime.TypeDef, name string, recv runti
 				}
 			}
 			r := recv
-			if in, isNil := r.(*runtime.IfaceNil); isNil {
+			if in, isNil := rv.(*runtime.IfaceNil); isNil {
 				// an interface holding a nil binds the concrete typed
 				// nil as the receiver — `var i I = (*P)(nil); i.M()`
 				// calls M on (*P)(nil), not on a nil interface.
 				r = &runtime.TypedNil{Typ: in.Typ}
 			}
-			if !m.PtrRecv {
-				if dv, ok := runtime.Deref(r); ok {
-					r = valueCopy(dv)
-				}
+			if m.PtrRecv {
+				// a nil *T operand binds the nil itself (ptrReceiver
+				// passes a pointer-kind TypedNil through); any other
+				// nil under a storage ref binds the ref as &x, like
+				// the named/struct member paths do.
+				r = v.ptrReceiver(r)
+			} else if dv, ok := runtime.Deref(r); ok {
+				r = valueCopy(dv)
 			}
 			return &runtime.BoundMethod{Recv: r, Fn: m}
 		}
@@ -8966,13 +8983,13 @@ func (v *VM) memberOfType(f *frame, td *runtime.TypeDef, name string, recv runti
 	// Go dispatches pointer methods on nil receivers and the method
 	// body decides, so a host-backed typedef tries a bound zero-receiver
 	// method before giving up to the deref panic.
-	if tn, ok := recv.(*runtime.TypedNil); ok && tn.Typ.Kind == runtime.KindPointer {
+	if tn, ok := rv.(*runtime.TypedNil); ok && tn.Typ.Kind == runtime.KindPointer {
 		if bf, ok := v.hostNilMethod(tn.Typ, name); ok {
 			return bf
 		}
 		panic(runtime.NilDerefPanic())
 	}
-	if in, ok := recv.(*runtime.IfaceNil); ok && in.Typ.Kind == runtime.KindPointer {
+	if in, ok := rv.(*runtime.IfaceNil); ok && in.Typ.Kind == runtime.KindPointer {
 		if bf, ok := v.hostNilMethod(in.Typ, name); ok {
 			return bf
 		}
