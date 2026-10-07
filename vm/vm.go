@@ -8691,7 +8691,25 @@ func (v *VM) typeAssert(f *frame, x, tdv, static runtime.Value, pos token.Pos) r
 			staticName = "interface {}"
 		}
 	}
-	panic(&runtime.Panic{Value: &runtime.GoValue{V: fmt.Errorf("interface conversion: %s is %s, not %s", staticName, typeNameOf(x), spelledTyp(td))}})
+	got, want := typeNameOf(x), spelledTyp(td)
+	// Two distinct types can spell identically — func-local `type T`s in
+	// the same package or like-named types across packages. Go appends a
+	// disambiguator then: "is main.T, not main.T (types from different
+	// scopes)" (issue26094). Package identity compares the Pkg objects —
+	// a bound typedef's synthesized Pkg shares the script package's Path.
+	suffix := ""
+	if got == want {
+		var dynPkg *runtime.Package
+		if dyn := v.typeOfValue(x); dyn != nil {
+			dynPkg = dyn.Pkg
+		}
+		if dynPkg == td.Pkg || (dynPkg != nil && td.Pkg != nil && dynPkg.Path == td.Pkg.Path) {
+			suffix = " (types from different scopes)"
+		} else {
+			suffix = " (types from different packages)"
+		}
+	}
+	panic(&runtime.Panic{Value: &runtime.GoValue{V: fmt.Errorf("interface conversion: %s is %s, not %s%s", staticName, got, want, suffix)}})
 }
 
 // missingIfaceMethod names the first required method x lacks — Go's
