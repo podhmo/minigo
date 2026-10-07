@@ -1428,13 +1428,15 @@ func (v *VM) loop(f *frame) {
 			base := f.pop()
 			if ins.B == 0 || ins.B&2 != 0 {
 				// Pinned operand (address-of target B=0, or a
-				// multi-assign store B&2): a cell holding a struct is
+				// multi-assign store B&2): a ref holding a struct is
 				// the variable's storage (its address is stable), but
-				// a pointer variable's operand evaluated to its
-				// pointee — snapshot it, so `fp := &p.f` and
-				// `p, p.f = new(T), v` don't follow a reseated p.
-				if c, ok := base.(*runtime.Cell); ok {
-					e := c.Elem
+				// a pointer operand evaluates to its pointee —
+				// snapshot it, so `fp := &p.f` and
+				// `p, p.f = new(T), v` don't follow a reseated p. Any
+				// ref kind pins the same way: `s.P, s.P.X` and
+				// `a[0], a[0].X` resolve the stored pointer now.
+				if gv, ok := runtime.Deref(base); ok {
+					e := gv
 					for {
 						if n, isNamed := e.(*runtime.Named); isNamed {
 							e = n.V
@@ -1443,7 +1445,7 @@ func (v *VM) loop(f *frame) {
 						break
 					}
 					if _, isStruct := e.(*runtime.Struct); !isStruct {
-						base = c.Elem
+						base = gv
 					}
 				}
 			}
