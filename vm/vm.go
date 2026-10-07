@@ -992,6 +992,12 @@ func (v *VM) prepFrame(callee runtime.Value, args []runtime.Value, statics []*ru
 		fn = c.Fn
 		if !fn.PtrRecv {
 			if tn, isNil := asTypedNil(c.Recv); isNil && tn.Typ != nil && tn.Typ.Kind == runtime.KindPointer {
+				if c.Direct {
+					// a callee-position bind dispatches the *T→T
+					// wrapper directly: gc reports a nil
+					// dereference, not the checked-wrapper text.
+					panic(runtime.NilDerefPanic())
+				}
 				// an interface-boxed nil binds the receiver lazily; the
 				// implicit *T→T method wrapper panics when the call
 				// actually runs.
@@ -1721,6 +1727,13 @@ func (v *VM) loop(f *frame) {
 		case bytecode.OpSelect:
 			base := f.pop()
 			f.push(v.selectMember(f, base, consts[ins.A].(string)))
+		case bytecode.OpSelectCall:
+			base := f.pop()
+			res := v.selectMember(f, base, consts[ins.A].(string))
+			if bm, ok := res.(*runtime.BoundMethod); ok {
+				bm.Direct = true
+			}
+			f.push(res)
 		case bytecode.OpSetField:
 			val := f.pop()
 			base := f.pop()
