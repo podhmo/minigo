@@ -6,11 +6,13 @@ TODO.md に切り出す前の検討置き場。
 - 一行一論点。項目ごと・行ごとに取捨できる粒度を目指す
 - 実装方針はここでは未確定でよい。案の列挙まで
 - 採用が決まったものだけ TODO.md の `- [ ]` 項目に昇格させる
+- 各項目に **処遇** マークを付けている(昇格済み/先送り/見送り/未昇格) — 実装後に TODO.md → TODO-archive.md へ流れても判断記録はここに残る
 
 ## 強化(既存機能の純粋強化)
 
 ### syntax に軽量パース段階を追加する
 
+- 処遇: **昇格済み**(TODO.md — `ParseImports`/`ParsePackageClause`)
 - 現状
   - `syntax.ParseFile` は常にフルパース(`ParseComments` 付き)
   - import 一覧を取るだけのためにもフルパースのコストを払っている
@@ -25,6 +27,7 @@ TODO.md に切り出す前の検討置き場。
 
 ### inspect に decl-anchored AST ハンドルを露出する
 
+- 処遇: **昇格済み**(TODO.md — raw AST 素通し)
 - 現状
   - `index.Decl` は `Func *ast.FuncDecl`/`Gen`/`Spec` を保持済み
   - body や初期化式は既にメモリ上にあるが、script 側からは見えない
@@ -47,6 +50,7 @@ TODO.md に切り出す前の検討置き場。
 
 ### TypeExpr の解決経路を記録する
 
+- 処遇: **昇格済み**(TODO.md — 常時記録・call-local)
 - 現状
   - `Origin`/`chaseType` は visited set だけを持つ
   - 循環・失敗時に「どこを辿ったか」を報告できない
@@ -60,6 +64,7 @@ TODO.md に切り出す前の検討置き場。
 
 ### Unresolved の明示的マーカー
 
+- 処遇: **先送り** — TODO.md には入れない(発火条件=解釈停止機構が main に入るまで)
 - 現状
   - scope 外の参照は「見つからない」と「スキャン対象外」を区別できない
 - 参考実装
@@ -74,6 +79,7 @@ TODO.md に切り出す前の検討置き場。
 
 ### ファイルパースの並列化
 
+- 処遇: **見送り(条件付き)** — TODO.md には入れない(parse 支配が実測されたら再検討)
 - 現状
   - `minigo.go` がパッケージ内ファイルを逐次パースする
 - 参考実装
@@ -88,6 +94,7 @@ TODO.md に切り出す前の検討置き場。
 
 ### astwalk パッケージ(仮称 — 旧 declwalk 案)
 
+- 処遇: **昇格済み**(TODO.md — consumer-first 抽出として)
 - 動機
   - func decl の body 走査は TODO.md 長年の残項目
   - inspect = 「何か」層(identity/解決)、walk = 「列挙」層と分けると設計が楽(調査 §1)
@@ -115,6 +122,7 @@ TODO.md に切り出す前の検討置き場。
 
 ### modulewalk パッケージ(採用方向で確定)
 
+- 処遇: **昇格済み**(TODO.md)
 - 動機
   - 「root 以下の全パッケージを nested go.mod 越しに列挙」が既存の TODO 項目 → **採用 verdict**
   - go-scan `modulewalker.go` がほぼそのままの仕様(調査 §3)
@@ -139,6 +147,7 @@ TODO.md に切り出す前の検討置き場。
 
 ### ImportManager 相当
 
+- 処遇: **昇格済み**(TODO.md — host 実装+薄い intrinsic)
 - 動機
   - 生成コードの import alias 解決を各 example が手でやるのは限界
 - 参考実装
@@ -152,6 +161,7 @@ TODO.md に切り出す前の検討置き場。
 
 ### gentest(旧 scantest 案)型のテストハーネス + FileWriter
 
+- 処遇: **昇格済み**(TODO.md — 挙動確認系限定)
 - 動機
   - examples の挙動確認テストが temp dir + 手書き helper 依存になりがち
     - 現に gen-sync は `setupModule`/`copyTree`/`assertSameFile` を自前で持つ
@@ -165,6 +175,7 @@ TODO.md に切り出す前の検討置き場。
 
 ### 永続シンボル index(symbolCache 相当)
 
+- 処遇: **未昇格(採否未決)** — 必要な局面(REPL/反復のみ)とコスト(≈0)は見えているが採用 verdict は未だ。TODO.md には入っていない
 - 動機
   - 「シンボル X がどこで定義されているか」を引く index がない
   - REPL からの package introspection(既存 TODO)の足場になる
