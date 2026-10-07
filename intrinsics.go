@@ -4359,6 +4359,31 @@ func (zeroState) Width() (int, bool)          { return 0, false }
 func (zeroState) Precision() (int, bool)      { return 0, false }
 func (zeroState) Flag(int) bool               { return false }
 
+// captureState delegates formatting flags to the live state but
+// records writes: an element inside a composite returns its Format
+// output as the element's string for the parent's assembled output —
+// writing to the live state would emit the fragment ahead of the
+// surrounding brackets (gc renders elements through a sub-buffer).
+type captureState struct {
+	f   fmt.State
+	buf bytes.Buffer
+}
+
+func (s *captureState) Write(b []byte) (int, error) { return s.buf.Write(b) }
+func (s *captureState) Width() (int, bool)          { return s.f.Width() }
+func (s *captureState) Precision() (int, bool)      { return s.f.Precision() }
+func (s *captureState) Flag(ch int) bool            { return s.f.Flag(ch) }
+
+// nested returns the state a value inside a composite renders against —
+// a capture of the live state; internal stand-ins pass through.
+func nested(f fmt.State) fmt.State {
+	switch f.(type) {
+	case zeroState, *captureState:
+		return f
+	}
+	return &captureState{f: f}
+}
+
 // ptrSpelling renders a value for %p — host fmt never calls Format on
 // %p so rewriteTypeVerbs substitutes this string. Typed nils print 0x0
 // like Go; slices, maps, chans and script pointers print an address;
@@ -4421,7 +4446,11 @@ func (s *fmtValue) render(verb rune, f fmt.State) string {
 	// flag-less stand-in for nested renderings (bad-verb markers, %p)
 	// where Go invokes no Formatter; nothing real writes to it.
 	if s.c != nil && verb != 'T' && verb != 'p' {
-		if _, isZero := f.(zeroState); !isZero && callFormat(s.c, s.x, f, verb) {
+		if cs, isCap := f.(*captureState); isCap {
+			if callFormat(s.c, s.x, cs, verb) {
+				return cs.buf.String()
+			}
+		} else if _, isZero := f.(zeroState); !isZero && callFormat(s.c, s.x, f, verb) {
 			return ""
 		}
 	}
@@ -4522,11 +4551,11 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 			return false
 		}
 		if s.depth == 0 && composite(dv) {
-			return "&" + (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: dv, depth: s.depth + 1}).render(verb, f)
+			return "&" + (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: dv, depth: s.depth + 1}).render(verb, nested(f))
 		}
 		if s.depth == 0 {
 			if n, isNamed := dv.(*runtime.Named); isNamed && composite(n.V) {
-				return "&" + (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: n.V, depth: s.depth + 1}).render(verb, f)
+				return "&" + (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: n.V, depth: s.depth + 1}).render(verb, nested(f))
 			}
 		}
 		// scalar pointer: Go prints the address — a host pointer repr
@@ -4544,7 +4573,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		}
 		parts := make([]string, len(v.Fields))
 		for i, e := range v.Fields {
-			fv := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, et: fieldTypOf(v.Def, i), depth: s.depth + 1}).render(elemVerb(verb), f)
+			fv := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, et: fieldTypOf(v.Def, i), depth: s.depth + 1}).render(elemVerb(verb), nested(f))
 			if f.Flag('+') && i < len(v.Def.Fields) {
 				fv = v.Def.Fields[i] + ":" + fv
 			}
@@ -4622,8 +4651,8 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 			}
 			// unordered kinds (bool, composites, mixed): order by the
 			// rendered key like fmtsort's fallback.
-			ka := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: a, depth: s.depth + 1}).render('v', f)
-			kb := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: b, depth: s.depth + 1}).render('v', f)
+			ka := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: a, depth: s.depth + 1}).render('v', nested(f))
+			kb := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: b, depth: s.depth + 1}).render('v', nested(f))
 			return ka < kb
 		})
 		kt, vt := mapElemTyps(v.Typ)
@@ -4631,8 +4660,8 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		parts := make([]string, 0, len(order))
 		for _, k := range order {
 			e, _ := v.Get(k)
-			kr := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: k, et: kt, depth: s.depth + 1}).render(ev, f)
-			vr := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, et: vt, depth: s.depth + 1}).render(ev, f)
+			kr := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: k, et: kt, depth: s.depth + 1}).render(ev, nested(f))
+			vr := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, et: vt, depth: s.depth + 1}).render(ev, nested(f))
 			parts = append(parts, kr+":"+vr)
 		}
 		if f.Flag('#') {
@@ -4642,7 +4671,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 	case *runtime.Tuple:
 		parts := make([]string, len(v.Elems))
 		for i, e := range v.Elems {
-			parts[i] = (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, depth: s.depth + 1}).render(verb, f)
+			parts[i] = (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, depth: s.depth + 1}).render(verb, nested(f))
 		}
 		return strings.Join(parts, " ")
 	case *runtime.TypedNil:
@@ -4726,7 +4755,7 @@ func (s *fmtValue) renderList(v *runtime.Slice, verb rune, f fmt.State) string {
 	ev := elemVerb(verb)
 	parts := make([]string, len(v.Elems))
 	for i, e := range v.Elems {
-		parts[i] = (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, et: et, depth: s.depth + 1}).render(ev, f)
+		parts[i] = (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, et: et, depth: s.depth + 1}).render(ev, nested(f))
 	}
 	if f.Flag('#') && verb == 'v' {
 		return typedefSpelling(v.Typ) + "{" + strings.Join(parts, ", ") + "}"
@@ -4758,7 +4787,7 @@ func (s *fmtValue) leaf(x runtime.Value, verb rune, f fmt.State) string {
 		if name == "" {
 			name = scriptScalarName(x)
 		}
-		return badVerb(verb, name, (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: x, depth: s.depth + 1}).render('v', f))
+		return badVerb(verb, name, (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: x, depth: s.depth + 1}).render('v', nested(f)))
 	}
 	if i, ok := x.(int64); ok {
 		// script ints store int64 but spell int — including inside
