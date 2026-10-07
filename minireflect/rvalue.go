@@ -2787,6 +2787,17 @@ func (v *RValue) MethodByName(name string) *RValue {
 	if v.vc == nil {
 		trap("minireflect: reflect.Value.MethodByName needs a caller context")
 	}
+	// a field shadows any method of the same name, and the generic
+	// selector would hand the field back — reflect's method set never
+	// does (text/template probes MethodByName before FieldByName).
+	if base := v; base.Kind() == reflect.Pointer || base.Kind() == reflect.Struct {
+		if base.Kind() == reflect.Pointer && !base.IsNil() {
+			base = base.Elem()
+		}
+		if base.Kind() == reflect.Struct && base.FieldByName(name).IsValid() {
+			return &RValue{e: v.e, vc: v.vc}
+		}
+	}
 	m, ok := v.vc.Member(v.get(), name)
 	if !ok && v.td != nil && v.td.Spec != nil {
 		// a detached storage cell (e.g. Slice of an addressable
