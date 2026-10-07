@@ -36,8 +36,9 @@ TODO.md に切り出す前の検討置き場。
   - node ビューの形: 初版はラップなし素通し — `inspect.ASTOf(decl)` 相当で生の ast ノードを返す
     - script 側は host 値の reflect facade 経由で `.Name`/`.Body`/`.Pos()` 等に触れられる(遅いが十分)
     - `{Kind,Pos,Text,Children}` ビューは「うるさすぎたら」or「重たかったら」後で考える(consumer-first)
-    - 「遅いか」の判定は推測でなく実測で: 実用的な example(swagger:route 的な method 全数走査 / gen-sync 的な生成系)を大きな対象に向けて走らせ、host Go 版と wall time 比較
-      - 大きな対象は minigo-usecasefuzz realworld/ がそのまま使える → 性能ハーネスは usecasefuzz 行きの可能性大
+    - 「遅いか」の判定は推測でなく実測で — ただし一回きりの特性確認で足りる(repo のテストに `testing.B` 機構は増やさない)
+      - 実用的な example(swagger:route 的な method 全数走査 / gen-sync 的な生成系)を大きな対象に向けて走らせ、host Go 版と wall time 比較 — O(N) 操作なので数字が出れば判断できる
+      - 大きな対象は minigo-usecasefuzz realworld/ がそのまま使える → 性能測定は usecasefuzz 行き
   - 露出の粒度(decl 直下だけか、再帰的な node 木か)は素通しなら問い自体が消える — 生 AST なら木全体がそのまま触れる
 
 ### TypeExpr の解決経路を記録する
