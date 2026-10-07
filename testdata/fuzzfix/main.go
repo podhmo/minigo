@@ -267,10 +267,11 @@ func UnsignedOps() string {
 }
 
 // shifting by an unsigned-typed count uses its raw bit pattern:
-// `x << uint(-4)` sees a huge count -> 0.
+// `x << ^uint(3)` sees a huge count -> 0. (gc rejects `uint(4) - 8`
+// as a constant expression, so the count comes from ^ instead.)
 func ShiftUintCount() string {
 	var x int64 = 1
-	c := uint(4) - 8 // 18446744073709551612
+	c := ^uint(3) // 18446744073709551612
 	return fmt.Sprintf("%v %v", x<<c, x>>uint64(70))
 }
 
