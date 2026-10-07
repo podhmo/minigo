@@ -30,6 +30,35 @@ var asmImpls = map[string]func(vc runtime.VMCaller, args []runtime.Value) (runti
 	"math/big.rshVU":      bigRshVU,
 	"math/big.mulAddVWW":  bigMulAddVWW,
 	"math/big.addMulVVWW": bigAddMulVVWW,
+	// maps.Clone's body asserts the linknamed runtime clone's result.
+	"maps.clone": mapsClone,
+}
+
+// mapsClone is the runtime map clone behind maps.Clone: a shallow copy
+// keeping the declared map type (and a named map type's tag).
+func mapsClone(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	if len(args) != 1 {
+		return runtime.NIL, nil
+	}
+	var clone func(v runtime.Value) runtime.Value
+	clone = func(v runtime.Value) runtime.Value {
+		switch m := v.(type) {
+		case *runtime.Named:
+			return &runtime.Named{V: clone(m.V), Typ: m.Typ}
+		case *runtime.Map:
+			pairs := make(map[runtime.Value]runtime.Value, len(m.Pairs))
+			for k, e := range m.Pairs {
+				pairs[k] = e
+			}
+			return &runtime.Map{Pairs: pairs, Order: append([]runtime.Value(nil), m.Order...),
+				Keys: append([]runtime.Value(nil), m.Keys...), Typ: m.Typ}
+		}
+		if d, ok := runtime.Deref(v); ok {
+			return clone(d)
+		}
+		return v
+	}
+	return clone(args[0]), nil
 }
 
 // asmImpl resolves a bodiless func declaration to a registered host
