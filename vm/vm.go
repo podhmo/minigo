@@ -1870,19 +1870,28 @@ func (v *VM) loop(f *frame) {
 			// closes over one — the enclosing type args belong to the
 			// declared type's identity (`type X int` in F[T] differs per
 			// instantiation). specializeType computes the same outer
-			// args for a local generic's T[args].
+			// args for a local generic's T[args]. The same wrap runs
+			// after every compiled type expression (typeExpr), giving
+			// any typedef OuterSpell — the display context embedded
+			// local-type names spell with (`func(main.U[int;int]·3)`).
+			// Resolved binds and OuterArgs stay Local-only: named
+			// identity compares Binds, so folding them onto a
+			// package-level typedef would invent a different type.
 			top := f.pop()
-			if td, ok := top.(*runtime.TypeDef); ok && td.Local {
+			if td, ok := top.(*runtime.TypeDef); ok {
 				if names, outer := v.outerTypeArgs(f); len(outer) > 0 {
-					binds := map[string]runtime.Value{}
-					for k, bv := range td.Binds {
-						binds[k] = bv
-					}
-					// resolved args beat compile placeholders
-					bindArgs(binds, names, outer)
 					clone := *td
-					clone.OuterArgs = outer
-					clone.Binds = binds
+					clone.OuterSpell = outer
+					if td.Local {
+						binds := map[string]runtime.Value{}
+						for k, bv := range td.Binds {
+							binds[k] = bv
+						}
+						// resolved args beat compile placeholders
+						bindArgs(binds, names, outer)
+						clone.OuterArgs = outer
+						clone.Binds = binds
+					}
 					top = &clone
 				}
 			}
@@ -11631,8 +11640,15 @@ func (v *VM) argTypedef(x runtime.Value) *runtime.TypeDef {
 		return &runtime.TypeDef{Kind: runtime.KindChan}
 	case *runtime.Cell:
 		// a pointer: Elem records the pointee typedef — Anon cannot name
-		// it without the variable's declaration.
-		return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: v.argTypedef(xv.Elem)}
+		// it without the variable's declaration. Prefer the cell's
+		// declared type over the stored value's: `var l0 L0` inside a
+		// generic instantiation holds the outer-args clone, so `&l0`
+		// spells `*main.L0[int]` like gc.
+		pt := xv.Typ
+		if pt == nil {
+			pt = v.argTypedef(xv.Elem)
+		}
+		return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: pt}
 	case *runtime.FieldRef, *runtime.IndexRef:
 		if dv, ok := runtime.Deref(x); ok {
 			return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: v.argTypedef(dv)}

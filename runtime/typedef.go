@@ -396,6 +396,15 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 		if btd == nil && ctx != nil {
 			btd = ctx.LocalTypes[t.Name]
 		}
+		if btd != nil && ctx != nil && len(ctx.OuterSpell) > 0 && btd.Local && len(btd.OuterArgs) == 0 {
+			// a function-local decl referenced inside an instantiated
+			// generic function spells with the enclosing args —
+			// `main.L0[int]` — display only; identity lives on the
+			// runtime-declared clone.
+			bc := *btd
+			bc.OuterArgs = ctx.OuterSpell
+			btd = &bc
+		}
 		if btd != nil {
 			// display, not identity: a bound argument qualifies by the
 			// package's clause name like every other Type.String path —
@@ -494,9 +503,9 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 		}
 		return TypGoSpelling(t.X, ctx) + "." + t.Sel.Name
 	case *ast.IndexExpr:
-		return instHead(t.X, ctx) + "[" + instArgGoSpelling(t.Index, ctx) + "]" + instArgSuffix(t.X, ctx)
+		return instHead(t.X, ctx) + "[" + outerSpellPrefix(t.X, ctx) + instArgGoSpelling(t.Index, ctx) + "]" + instArgSuffix(t.X, ctx)
 	case *ast.IndexListExpr:
-		s := instHead(t.X, ctx) + "["
+		s := instHead(t.X, ctx) + "[" + outerSpellPrefix(t.X, ctx)
 		for i, x := range t.Indices {
 			if i > 0 {
 				s += ","
@@ -1256,6 +1265,19 @@ func DisplayName(td *TypeDef) string {
 		}
 		return s
 	}
+	// A pointer synthesized around a concrete pointee typedef prefers the
+	// typedef over its Anon spelling: the Anon selector names the decl
+	// site (`*main.L0`) while the pointee clone carries the enclosing
+	// instantiation's args (`*main.L0[int]`).
+	if td.Kind == KindPointer && td.Elem != nil {
+		elem := td.Elem
+		if td.inInstArgs && !elem.inInstArgs {
+			ec := *elem
+			ec.inInstArgs = true
+			elem = &ec
+		}
+		return "*" + DisplayName(elem)
+	}
 	anon := td.Anon
 	if anon == nil && td.Spec != nil {
 		anon = td.Spec.Type
@@ -1326,15 +1348,51 @@ func goFuncSig(t *ast.FuncType, ctx *TypeDef) string {
 }
 
 // instHead spells an instantiation's head (`T` in `T[A]`): the head
-// name never carries a `·gen` suffix, so it spells with a flagless
-// copy of ctx.
+// name never carries a `·gen` suffix or the enclosing args — a local
+// head's `[outer;own]` bracket carries them instead — so it spells
+// with a flagless, display-context-free copy of ctx.
 func instHead(x ast.Expr, ctx *TypeDef) string {
 	if ctx == nil {
 		return TypGoSpelling(x, ctx)
 	}
 	hc := *ctx
 	hc.inInstArgs = false
+	hc.OuterSpell = nil
 	return TypGoSpelling(x, &hc)
+}
+
+// outerSpellPrefix spells the enclosing instantiation's resolved args
+// that lead a function-local head's bracket — gc spells `U[int]` inside
+// F[int] as `main.U[int;int]·3`, the `int;` coming from the enclosing
+// instantiation. Empty for non-local heads or context-free spellings.
+func outerSpellPrefix(x ast.Expr, ctx *TypeDef) string {
+	if ctx == nil || len(ctx.OuterSpell) == 0 {
+		return ""
+	}
+	id, ok := ast.Unparen(x).(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	btd := boundTypedef(ctx.Binds, id.Name)
+	if btd == nil {
+		btd = ctx.LocalTypes[id.Name]
+	}
+	if btd == nil || !btd.Local {
+		return ""
+	}
+	var sb strings.Builder
+	for i, a := range ctx.OuterSpell {
+		otd, ok := a.(*TypeDef)
+		if !ok {
+			return ""
+		}
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		sb.WriteString(instArgName(otd))
+	}
+	sb.WriteByte(';')
+	return sb.String()
 }
 
 // instArgGoSpelling spells an instantiation's type argument: inside an
