@@ -1235,24 +1235,28 @@ func (v *VM) unwind(f *frame, r any) {
 		// frame's deferreturn, where `defer recover()` sees the panic
 		// that was unwinding below (recover1.go test6).
 		v.draining++
-		for len(f.defers) > 0 {
-			if p != nil && v.inflight == nil {
-				v.inflight = saved
-				v.unwindDepth = savedD
-				// the consumed panic's unwound frames die with it — Go
-				// lists only live frames once an unwind is recovered.
-				// Drop the frame's own panic too: it is dead whether it
-				// was consumed itself or superseded mid-drain.
-				v.dropUnwound(p)
-				v.dropUnwound(v.consumedPanic)
-				v.consumedPanic = nil
-				v.frames = append(v.frames, f)
-				defer v.framesPop()
-				p = nil
+		// runOneDefer can re-panic out of the loop (a deferred call's
+		// trap or host panic propagates); the count must not leak.
+		func() {
+			defer func() { v.draining-- }()
+			for len(f.defers) > 0 {
+				if p != nil && v.inflight == nil {
+					v.inflight = saved
+					v.unwindDepth = savedD
+					// the consumed panic's unwound frames die with it — Go
+					// lists only live frames once an unwind is recovered.
+					// Drop the frame's own panic too: it is dead whether it
+					// was consumed itself or superseded mid-drain.
+					v.dropUnwound(p)
+					v.dropUnwound(v.consumedPanic)
+					v.consumedPanic = nil
+					v.frames = append(v.frames, f)
+					defer v.framesPop()
+					p = nil
+				}
+				v.runOneDefer(f, p)
 			}
-			v.runOneDefer(f, p)
-		}
-		v.draining--
+		}()
 	}
 	if r != nil {
 		if p != nil || (v.inflight != saved && v.inflight != nil) {
@@ -6242,6 +6246,16 @@ func (v *VM) materializeConst(f *frame, u *runtime.UConst, td *runtime.TypeDef) 
 	return r
 }
 
+// materializeOperandConst resolves a still-constant operand at the
+// tag's declared width — a constant riding next to a runtime operand
+// (`v - 8`) enters the concrete op, never the constant domain.
+func (v *VM) materializeOperandConst(f *frame, x runtime.Value, td *runtime.TypeDef) runtime.Value {
+	if u, ok := constPayload(x); ok {
+		return runtime.Unwrap(v.materializeConst(f, u, td))
+	}
+	return x
+}
+
 func (v *VM) materializeConstErr(u *runtime.UConst, td *runtime.TypeDef) (runtime.Value, error) {
 	utd := v.peelNamed(td)
 	if utd == nil || utd.Kind == runtime.KindInterface {
@@ -7105,15 +7119,11 @@ func (v *VM) binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.V
 		// rest, so only those ops differ.
 		if uname := sizedNameOf(tag); unsignedName(uname) {
 			// a still-constant operand materializes at the declared
-			// width first: the untyped-domain fold of `uint(4) - 8`
-			// is -4 — unrepresentable — while the concrete uint64 op
-			// wraps to the huge value the tag implies.
-			if u, ok := constPayload(a); ok {
-				a = runtime.Unwrap(v.materializeConst(f, u, tag))
-			}
-			if u, ok := constPayload(b); ok {
-				b = runtime.Unwrap(v.materializeConst(f, u, tag))
-			}
+			// width first — the both-const fold above already ran, so
+			// this is a const riding next to a var (`v - 8`): the
+			// concrete uint op wraps, never the exact-domain reject.
+			a = v.materializeOperandConst(f, a, tag)
+			b = v.materializeOperandConst(f, b, tag)
 			if ua, aok := uintOperand(a); aok {
 				if ub, bok := uintOperand(b); bok {
 					res, isInt := uintBinOp(f, op, ua, ub)
@@ -10835,22 +10845,11 @@ func builtinTypeName(name string) bool {
 
 // basicNameOf resolves the underlying builtin basic-type name behind a
 // typedef the way sizedNameOf resolves ints: `type F32 float32` and the
-// bare float32 typedef both read "float32".
+// bare float32 typedef both read "float32". Delegates to the shared
+// runtime helper (the basic-name sets differ only on "error", which
+// none of the numeric callers can name).
 func basicNameOf(td *runtime.TypeDef) string {
-	if td == nil {
-		return ""
-	}
-	if builtinTypeName(td.Name) {
-		return td.Name
-	}
-	x := td.Anon
-	if x == nil && td.Spec != nil {
-		x = td.Spec.Type
-	}
-	if id, ok := x.(*ast.Ident); ok && builtinTypeName(id.Name) {
-		return id.Name
-	}
-	return ""
+	return runtime.BasicNameOf(td)
 }
 
 // unsignedName reports whether a sized-int typedef name is an unsigned
@@ -11829,16 +11828,26 @@ func (v *VM) argTypedef(x runtime.Value) *runtime.TypeDef {
 			return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: v.argTypedef(dv)}
 		}
 		return &runtime.TypeDef{Kind: runtime.KindPointer}
+	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
+		return v.funcTypedefOf(x)
+	}
+	return v.typeOfValue(x)
+}
+
+// funcTypedefOf is the func-value typedef shared by argTypedef and
+// typeOfValue: a declared signature via FuncSigOf, a host builtin's
+// adapted signature reflected into a synthesized FuncType (so generic
+// inference binds tparams from `mapper(s, strconv.Itoa)`-style
+// arguments and `any(f1) == any(f2)` pairs on identical signatures),
+// or a bare KindFunc when neither is resolvable.
+func (v *VM) funcTypedefOf(x runtime.Value) *runtime.TypeDef {
+	switch xv := x.(type) {
 	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod:
 		if sig, pkg, file, binds := runtime.FuncSigOf(x); sig != nil {
 			return &runtime.TypeDef{Kind: runtime.KindFunc, Anon: sig, Pkg: pkg, File: file, Binds: binds}
 		}
 		return &runtime.TypeDef{Kind: runtime.KindFunc}
 	case *runtime.BuiltinFunc:
-		// a host builtin carries no declared signature, but its Target
-		// holds the adapted Go func — reflect its real signature into a
-		// synthesized FuncType so generic inference can bind tparams from
-		// `mapper(s, strconv.Itoa)`-style arguments.
 		if rt := reflect.TypeOf(xv.Target); rt != nil && rt.Kind() == reflect.Func {
 			if td := v.reflectFuncTypedef(rt); td != nil {
 				return td
@@ -11846,7 +11855,7 @@ func (v *VM) argTypedef(x runtime.Value) *runtime.TypeDef {
 		}
 		return &runtime.TypeDef{Kind: runtime.KindFunc}
 	}
-	return v.typeOfValue(x)
+	return nil
 }
 
 // reflectFuncTypedef synthesizes a FuncType typedef from a reflected Go
@@ -12029,23 +12038,8 @@ func (v *VM) typeOfValue(x runtime.Value) *runtime.TypeDef {
 		case constant.Complex:
 			return v.builtinTypedef("complex128")
 		}
-	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod:
-		// the dynamic type of a func value is its signature — `any(f1)
-		// == any(f2)` only pairs on identical signatures, and an
-		// identical pair panics as uncomparable.
-		if sig, pkg, file, binds := runtime.FuncSigOf(x); sig != nil {
-			return &runtime.TypeDef{Kind: runtime.KindFunc, Anon: sig, Pkg: pkg, File: file, Binds: binds}
-		}
-		return &runtime.TypeDef{Kind: runtime.KindFunc}
-	case *runtime.BuiltinFunc:
-		// a host builtin's dynamic type is its adapted signature, like
-		// argTypedef reflects it for inference.
-		if rt := reflect.TypeOf(xv.Target); rt != nil && rt.Kind() == reflect.Func {
-			if td := v.reflectFuncTypedef(rt); td != nil {
-				return td
-			}
-		}
-		return &runtime.TypeDef{Kind: runtime.KindFunc}
+	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
+		return v.funcTypedefOf(x)
 	}
 	return nil
 }
