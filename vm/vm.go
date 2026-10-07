@@ -564,6 +564,9 @@ func (v *VM) assignRef(f *frame, ref, val runtime.Value) {
 		v.setField(f, r.Base, r.Name, val)
 		return
 	case *runtime.Cell:
+		if !r.ReadOnly && overwriteArray(r, val) {
+			return
+		}
 		v.assignCell(f, r, val)
 		return
 	case *runtime.DerefRef:
@@ -651,6 +654,31 @@ func (v *VM) setIndirect(f *frame, ref, val runtime.Value) {
 	}
 }
 
+// overwriteArray stores an array value into the array a cell already
+// holds, element by element. The cell may view storage shared with
+// slices (`s := arr[:]`, or a `(*[N]T)(s)` conversion), and Go's
+// `arr = b` / `*p = b` write that memory (compress/flate's indexTokens).
+func overwriteArray(c *runtime.Cell, val runtime.Value) bool {
+	return overwriteArrayIn(c.Elem, val)
+}
+
+// overwriteArrayIn copies val's elements into old when both are arrays
+// of the same length — the in-place store behind overwriteArray, also
+// used for struct fields (`s.a = b` with `p := s.a[:]` live).
+func overwriteArrayIn(old, val runtime.Value) bool {
+	da, ok := old.(*runtime.Slice)
+	if !ok || !runtime.ArrayTypedef(da.Typ) || da.Virtual() {
+		return false
+	}
+	sa, ok := runtime.Unwrap(val).(*runtime.Slice)
+	if !ok || sa.Virtual() || len(sa.Elems) != len(da.Elems) {
+		return false
+	}
+	sa, _ = runtime.Copy(sa).(*runtime.Slice)
+	copy(da.Elems, sa.Elems)
+	return true
+}
+
 // overwriteStruct stores val into the struct a `*p` target already
 // holds, field by field, when both are structs of the same type. It
 // reports false (leaving the store to SetRef) for any other shape.
@@ -665,6 +693,9 @@ func overwriteStruct(ref, val runtime.Value) bool {
 	c, ok := ref.(*runtime.Cell)
 	if !ok {
 		return false
+	}
+	if overwriteArray(c, val) {
+		return true
 	}
 	dst, ok := c.Elem.(*runtime.Struct)
 	if !ok {
@@ -4187,7 +4218,10 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 				if fts := v.fieldTypedefs(b.Def); i < len(fts) {
 					ft = fts[i]
 				}
-				b.Fields[i] = v.coerce(f, val, ft)
+				nv := v.coerce(f, val, ft)
+				if !overwriteArrayIn(b.Fields[i], nv) {
+					b.Fields[i] = nv
+				}
 				return
 			}
 		}
@@ -4205,7 +4239,10 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 			if fts := v.fieldTypedefs(pr.st.Def); pr.idx < len(fts) {
 				ft = fts[pr.idx]
 			}
-			pr.st.Fields[pr.idx] = v.coerce(f, val, ft)
+			nv := v.coerce(f, val, ft)
+			if !overwriteArrayIn(pr.st.Fields[pr.idx], nv) {
+				pr.st.Fields[pr.idx] = nv
+			}
 			return
 		}
 		f.trap("%s has no field %s", b.Def.Name, name)
