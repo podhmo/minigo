@@ -66,7 +66,9 @@
 
 ## 6. レビュー指摘への対応とリファクタリング提案の評価
 
-### 6.1 指摘された5件の修正
+運用メモ: この `## 6.N` 系列は各ラウンドの記録を1章ずつ積んだもの（見出しは当初「レビュー指摘への対応…」で始まったため番号だけが通しになっている）。新しいラウンドは直前の番号に続けて `## 6.<next>` を追記する。`## 1`–`## 5` は最初のラウンド固有の節。見出しテキストは `§6.N` の相互参照とアンカーを維持するため変更しない。
+
+## 6.1 指摘された5件の修正
 
 別エージェントのレビューで本ラウンドの変更由来の diverge が5件報告された。全て `go run` との差分を確認の上で修正（[#108](https://github.com/podhmo/minigo/pull/108)–[#111](https://github.com/podhmo/minigo/pull/111)、Stack #73 の続き）。
 
@@ -77,7 +79,7 @@
 
 いずれも「最適化・新規 op が spec 上の前提条件を検査していなかった」系で、§3 の「評価順序前提」反省と同根。fold・ref・unwrap を入れるときは「どの条件で素朴な経路と等価になるか」をガードに落とす形が必要。
 
-### 6.2 リファクタリング提案の妥当性
+## 6.2 リファクタリング提案の妥当性
 
 提案3件をコード上の実態と照合した。結論: 3件とも妥当 — ただし優先度と粒度が異なる。修正系の sweep とは別 PR・別ラウンドで扱うのが良い。
 
@@ -87,7 +89,7 @@
 
 補足: いずれも挙動中立の整理なので、diverge 修正と混ぜるとレビューが追いにくい。ピン済みの corpus が緑のまま通ることを確認しながら別 PR で進めるのが安全。
 
-### 6.3 レビュー第2ラウンド: 5件の修正とリファクタリング評価
+## 6.3 レビュー第2ラウンド: 5件の修正とリファクタリング評価
 
 第2ラウンドのレビューでさらに5件が報告された。全て `go run` との差分を確認の上で修正（[#113](https://github.com/podhmo/minigo/pull/113)–[#117](https://github.com/podhmo/minigo/pull/117)、Stack #73 積み増し）。
 
@@ -97,12 +99,12 @@
 - **`%p`/`%T` の共有 operand 破壊（#116）** — rewriteTypeVerbs が `a[off+pos]` を直接上書きするため `fmt.Printf("%v %[1]p", p)` が `0x… 0x…` に。directive を `{pos, verb, stars}` の中間表現で収集し、spec を sequential 化（`[n]` 剥がし）+ arg tail を作り直す構成に変更 — 各 verb が専用 operand を持つので共有 slot は消えた。ついでに `%[n]` 後の implicit-arg カウンタ（`argNum = n`）と `*` operand の consumption、`%!(EXTRA …)` の高水位保持も Go 準拠に。
 - **`runtime.Frames.Next` の more（#117）** — 最終フレームでも `more=true` 固定だったため canonical ループが空フレームを余計に処理。`cf.i < len(cf.sites)` を返す。加えて `text_pass_nilpanic` pin の `for f, next := Next(); next;` イディオム自体が最終フレームを読み落とすバグだった（Go では runtime フレームが後ろに居て隠れていた）ので正規形に修正。
 
-#### リファクタリング提案の評価（第2ラウンド）
+### リファクタリング提案の評価（第2ラウンド）
 
 1. **`deepEql` を型比較・pointer 比較・値比較のフェーズ分割 — 妥当だが、大半は第1〜2ラウンドの修正で既に実現済み**。Go の `deepValueEqual` も「動的型一致 → 値の再帰」の2段で、現在の deepEql は lockstep peel（Named/deref 層の型一致）+ `deepTypeEq`（複合 arm での型一致）+ nilish arm の3層が先に走る構造になっており、実質フェーズ1は前倒しされている。形式的な3関数分割を別途やる価値は「読みやすさ」のみで、新しい正しさは生まれない。優先度: 低。やるなら `deepTypeEq` を entry で一度だけ行う形への集約が自然。
 2. **format 書き換えの中間表現化 — 妥当。そして指摘された `%p` バグの修正そのものになった（#116 で実装済み）**。directive+operand index の IR（`dir{start,end,pos,verb,stars}`）→ sequential spec + rebuilt args、という構成がレビュー提案そのまま。`%[n]`・`*`・EXTRA の扱いを IR 上で考えられるようになったおかげで、shared slot を消せただけでなく暗黙 arg カウンタの不整合（`%[2]v %p` が誤 operand を変換し得た潜在バグ）も同時に潰れた。提案の方向は正しかったと結論できる。
 
-### 6.4 レビュー第3ラウンド: 5件の検証と2件の修正
+## 6.4 レビュー第3ラウンド: 5件の検証と2件の修正
 
 第3ラウンドは5件報告されたが、現スタックトップで再現を確認したところ **3件は既に直っていた**（レビューのベースが古い状態での検出と思われる）。残り2件のみ diverge。
 
@@ -110,12 +112,12 @@
 - **入れ子呼出しの引数スクラッチ衝突（#118）** — `callArgs` の `$argN` カウンタが call site ごとに 0 始まりだったため、`foo(f(), bar(g()))` で `bar` 側の hoist が外側の `$arg0` を上書きし `(10,21)` が `(20,21)` に。カウンタを `compiler.tmpSeq` に昇格し関数全体で一意化。評価順二相化（#105）で入れた機構の、入れ子ケースの見落とし。
 - **`default` の無条件選択（#119）** — switchStmt が default clause に skip-jump を出さず、ソース位置で即 body に落ちていた（`switch 1 {default:; case 1:}` → `default`）。非最終 default も他 clause と同じく次テストへの jump を出し、「全テスト不成立」の継続先を default body に patch。fallthrough の前後接続は従来通りソース順。
 
-#### リファクタリング提案の評価（第3ラウンド）
+### リファクタリング提案の評価（第3ラウンド）
 
 1. **一時変数生成の専用ヘルパー集約 — 妥当（中）**。今回の `$argN` 衝突は「採番スコープを呼び出し側が握る」構造が原因で、`c.tmpSeq` で回避したが、`$tag`・named result slots・funclit 名など compiler 内の合成名は同じ罠を持つ。`c.fresh("$arg")` 的な発番ヘルパーに集約すれば今後の衝突を構造的に防げる。ただし現状の衝突面は `$arg` だけなので、効果は予防的。
 2. **VM・intrinsics 間の型同一性判定の共通化 — 妥当（中）**。`deepTypeEq`/`deepDefEq`/`deepTypSpelling`（intrinsics）と VM 側の assignability・interface switch strict 比較・comparable 判定は同じ「typedef の同一性」を別々に判定している。実際にずれが存在する: DeepEqual は spelling 比較で匿名型を区別するが、VM の `BinEqlIface` は `==`/`deepDefEq` 系で `[]int` vs `[]string` の要素型を見ない方向の判定になっている経路がある。`typedefIdentical(a, b)` のような単一 API に集約し、各判定が「構造的同一性のどの側面を見るか」を明示できると、指摘系の再発を防げる。`deepTypSpelling`（AST printing）が runtime 非依存のまま `runtime` パッケージ側へ移せるかが設計の肝 — `ast.Expr` と `*runtime.TypeDef` だけに依存するので移動自体は可能。
 
-### 6.5 レビュー第4ラウンド: 2件の修正
+## 6.5 レビュー第4ラウンド: 2件の修正
 
 第4ラウンドは2件とも現スタックトップで再現した（[#122](https://github.com/podhmo/minigo/pull/122)、[#123](https://github.com/podhmo/minigo/pull/123)）。リファクタリング提案なし。
 
@@ -124,7 +126,7 @@
 
 いずれも「メタデータの寿命 ≠ 名前 binding の寿命」「最適化ガードの対象範囲の切り方」という §3 の構造的な反省の再発型。fscope の型メタデータ系は block 連動に揃えたので、この系の個別指摘はここで打ち止めのはず。
 
-### 6.6 レビュー第5ラウンド: 3件の修正
+## 6.6 レビュー第5ラウンド: 3件の修正
 
 第5ラウンドは3件とも現スタックトップで再現した（[#124](https://github.com/podhmo/minigo/pull/124)、[#125](https://github.com/podhmo/minigo/pull/125)、[#126](https://github.com/podhmo/minigo/pull/126)）。
 
@@ -132,11 +134,11 @@
 - **[P2] struct の型同一性（#125）** — フィールド名だけの比較だったため `struct{X int}` ≡ `struct{X any}` が `true`、さらに兄弟ブロックの同名 `type T` 同士も一致。struct arm を `deepTypeEq`（AST spelling 含む完全な型同一性）経由にし、named def は宣言オブジェクト同一のみ一致へ。匿名 struct は従来通り形状比較なので別リテラルサイト同士は同一型のまま。
 - **[P2] 内側 type 宣言が外側のメタデータを上書き（#126）** — `typeDecls`/`typeSpecs`/`typeDefs`/`ifaceTypes` が関数単位フラット map だったため `{ type M struct{...} }` が外側 `type M map[int]int` のエントリを破壊し、ブロック終了後も誤った型で解決し続けた。4 map を `blocks` と同じ per-block slice に変え、`recordType` で宣言ブロックへ書く構造に — §6.5 で「打ち止め」と書いたが、#123 は lookup の liveness を直しただけで書き込み側は依然フラットだった。この case が本当の打ち止め。
 
-#### リファクタリング提案の評価（第5ラウンド）
+### リファクタリング提案の評価（第5ラウンド）
 
 - **ブロックの binding に slot・宣言種別・型情報をまとめる — 妥当（中）。#126 はその弱い版として実装した**。提案は `blocks[name]→slot`、`typeDecls`、`typeSpecs`、`typeDefs`、`ifaceTypes`、`declPos`、`ifaceVars` を `[]map[string]binding` の単一レコードへ統合する方向。今回は「既存の並列 map を同じ push/pop 寿命に揃える」形に留めた: 参照点7箇所の修正で済み、効果も等しい（全 map がブロックと同じ寿命を持つので、取り違え・残留・上書きの系は構造的に消えた）。統合版の追加利得は「1フィールド追加＝1箇所変更」の見通しだけで、新たな正しさは生まれない。ただし fscope は現在 8 本の並列スライスを push/pop で揃えており、将来フィールド追加時の同期漏れリスクは残る — 次にこの構造を触る変更（例: 別種のブロックスコープ情報の追加）が出た時点で `binding` レコード化を検討するのが適切なタイミング。
 
-### 6.7 レビュー第6ラウンド: 代入ターゲットの live storage 解決
+## 6.7 レビュー第6ラウンド: 代入ターゲットの live storage 解決
 
 第6ラウンドは1件、現スタックトップで再現した（[#127](https://github.com/podhmo/minigo/pull/127)）。
 
@@ -148,11 +150,11 @@
 
 付随修正: パッケージ修飾ターゲット（`runtime.MemProfileRate = v`）は base がパッケージオブジェクト（ストレージではない）なので `isImportName` で `expr` へ振り分け、`OpDeref` 上の IndexRef は `v.index`（map 対応の完全経路）へ流す。
 
-#### リファクタリング提案の評価（第6ラウンド）
+### リファクタリング提案の評価（第6ラウンド）
 
 - **`refTarget` を「変数ストレージを保持するケース」と「評価時点の参照先を保持するケース」に分ける — 妥当。そして今回の修正がほぼそのままの形になった（高）**。`isStorageBase`/`refTargetBase` が提案の分岐そのもの: ストレージ運搬形（Ident・Selector・Index・Star・Paren unwrap）は ref、非ストレージ形（call・`&`式・型名）は値。実装して分かったのは、提案が暗に想定する二分では収まらない点が2つ — `*p` は「評価時の pointee」ではなく「p が指す場所」を格納時に解く第三のケース（`DerefRef`）で、Ident だけ import 名判定が必要（パッケージは値オブジェクト）。つまり分岐は「storage / value」の2値ではなく「storage / 評価時 pointee / value」の3値が正確なモデルで、提案の方向は正しいが粒度はもう一段細かい。複合代入も同じ構造に乗せられたので、「この種の不具合を防ぐ」という狙い自体は達成されたと評価できる。
 
-### 6.8 実施ラウンド（round-7）: リファクタリング提案の実行
+## 6.8 実施ラウンド（round-7）: リファクタリング提案の実行
 
 §6.2–§6.7 で「妥当」と評価した提案を stacked PR として実施した（[Stack #139](https://github.com/podhmo/minigo/pull/138)、[#128](https://github.com/podhmo/minigo/pull/128)–[#138](https://github.com/podhmo/minigo/pull/138)）。実施結果:
 
@@ -171,7 +173,7 @@
 
 usecasefuzz 再実行: 0 DIFF / 1 ACCEPT / 4 TRAP（lim-http/toml/xml/yaml — 既知境界）— **リグレッションなし**。
 
-#### 計画外の意思決定
+### 計画外の意思決定
 
 - **型同一性の統合が実害 diverge を露出（#135）**: `eqlValue` の動的型ゲートが Go の (type, value) ペア比較からずれていた — `any((*int)(nil)) == any((*string)(nil))` が true、`any([]int) == any([]string)` が uncomparable panic（Go は false）、`structDefsEq` が `Binds` を見ていなかった。「判定器を一本化する」作業が各 arm の前提ずれを可視化したため、リファクタと同じ PR でゲート自体も修正（回帰 pin: `text_pass_ifaceeqtypes`）。deepEql の struct arm は `deepTypeEq`→`TypIdentical` に移し、REPL の decl 再マテリアライズ（cache eviction 後）でも name+pkg で一致する強度を選んだ — object identity だと同一宣言の再構築を別型とみなしてしまう。
 - **panic payload の3系統整理（#136）**: 41 サイトの Message を族分けすると、文字列 payload（`r.(error)` が効かない）・`runtime error:` 二重プレフィックス（2サイト、Error() が再付与するため）・Go 1.23 以前の range-yield 文言が混在していた。`PlainError`（Go の plainError 系 — error 型だが Error() にプレフィックスなし）を新設し、`Recover()` は error-typed payload 全般を GoValue 化する形に一般化（PanicNilError も通る）。意図しない変更は fixture（`text_pass_panicpayload`）で `r.(error)` の成否まで含めて pin した。
@@ -179,7 +181,7 @@ usecasefuzz 再実行: 0 DIFF / 1 ACCEPT / 4 TRAP（lim-http/toml/xml/yaml — �
 - **UConst はタグ統一の対象外（#138）**: 提案は Named/UConst を併記していたが、UConst は `constant.Value` を包む別形で、materialize 入口（`materializeConst`/`materializeConstErr`）は既に一本化済み。`Tag`/`Unwrap` は Named のみに限定した。
 - **`eqlValue` の Function arm は panic 維持（#135）**: 異なる func 型同士の比較も Go では false だが、関数値が signature typedef を持たないため同一性ゲートを掛けられない — 既存の近似（無条件 panic）を残した。
 
-### 6.9 実施ラウンド（round-8）: コーパス SILENT 掃討 — recover/Callers の unwind モデル
+## 6.9 実施ラウンド（round-8）: コーパス SILENT 掃討 — recover/Callers の unwind モデル
 
 `$GOROOT/test` コーパス再スイープ（145 programs）の残り SILENT を潰した。Stack #144 の最上位に3本の修正 PR（[#149](https://github.com/podhmo/minigo/pull/149)–[#152](https://github.com/podhmo/minigo/pull/152)）を積んだ。
 
@@ -190,30 +192,30 @@ usecasefuzz 再実行: 0 DIFF / 1 ACCEPT / 4 TRAP（lim-http/toml/xml/yaml — �
 | ハーネス artifact（seed 20261003 の SILENT） | `x[lo:CALL(...)]` 形で複数の panic 源が競合 — Go は非 call オペランドの評価順を規定していないため、先に panic する側は実装依存。minigo の panic テキストが go 自身が同プログラムで出力したものなら order-legal として Pass に再分類 | [#151](https://github.com/podhmo/minigo/pull/151) |
 | `recover.go`（`panic: 5` が脱出） | 正常 return 後の drain 中に deferred call が panic した場合、unwind 先は**スタック上に残る owner フレーム** — `runOneDefer` が境界を `dpos`（owner のスロット）に立てていたため owner が2フレーム目に数えられ recover が nil を返した。境界は「呼び出した deferred call が占めるスロット」（= `len(v.frames)`、unwind drain 中は `dpos` と一致） | [#152](https://github.com/podhmo/minigo/pull/152) |
 
-#### 実施内容
+### 実施内容
 
 - **Go セマンティクスの導出**: `gorecover`/`gopanic`/`recovery`（/usr/local/go/src/runtime/panic.go）と実測プローブで確定した規則 — (a) recover 合法条件は「recover から gopanic まで非 wrapper フレームちょうど1つ」、(b) `defer recover()` は0フレームで**絶対に回復しない**（`func(){defer recover(); panic(5)}()` は Go でも `panic: 5` で落ちる）、(c) panic が drain 途中で consume されると `recovery` は当該フレームの deferreturn に着地し、残り defers は外側 panic が見える文脈で走る（recover1 test6 が黙る理由）、(d) deferred call 内の panic は同じフレームの残り defers へリンクスキップで継続。
 - **`DeferBuiltinRecover` の既存期待値が非 Go だった**: 「`defer recover()` が panic を飲む」という古い pin は実測で Go と矛盾すると確認し、ワーカー func 経由の正当な形（`defer func(){ defer recover() }()`）に差し替え + 伝播を assert する `DeferBuiltinRecoverPanic` を追加。
 - **unwind 境界の2段階**: `unwindDepth`（panic の deferred-call 連鎖が根付くフレームスタック index）を導入。pop 済みフレームの unwind drain では `dpos`、正常 drain では deferred call の invoke index（owner がスタック上に居るため +1）。同じ `unwindDepth` が `runtime.Callers` の unwinding スプライス点にも使えた。
 
-#### 残りの状況
+### 残りの状況
 
 - コーパス SILENT は全て既知の境界クラスに帰着: GC/finalizer 系（closure/deferfin/finprofiled/gc2/mallocfin/stackobj/stackobj3/tinyfin/heapsampling/init1）、unsafe.Pointer（initialize → #40）、スループット HANG（copy/divmod/maplinear/winbatch/heapsampling — copy.go は 50s で正解確認済み）、gcgort（Go でもデッドロック）、linkmain_run（ツールチェーンの tmpdir ノイズ）。新規の潰せる残件はゼロ。
 - TRAP backlog（次に実装すべき面）: `unsafe.Pointer`×13、`reflect.*`×7、`complit.go` の `cannot use [...]*T as [*ast.CallExpr]*T`、`map.go` の `index assign on *runtime.IndexRef`、`turing.go` の `index on *runtime.UConst`、`peano.go` の stack exhausted — 全て main と同一（回帰なし）。
 - usecasefuzz 再実行: 33 PASS / 0 DIFF / 1 ACCEPT / 4 TRAP（lim-http/toml/xml/yaml — 既知境界）— **リグレッションなし**。seed-20261003 ガード再実行: SILENT 1→0。
 
-#### 不備の振り返り
+### 不備の振り返り
 
 - **`unwinding` リストの用途発見が後出し**: Callers の unwind-order は recover 用 `unwindDepth` と同じ境界を再利用できたが、初版はリスト末尾への append で「最後尾=スキップ」という見えにくい欠陥を持っていた。frame/frames の論理順序（deferred 連鎖 → unwinding → その下の live）を最初から1箇所のスプライス関数にしておけば Callers・Recover の双方で順序バグが入らなかった。
 - **recover の距離カウントは「境界の定義」が本質だった**: PR #149 は `dpos`（unwound フレームの論理位置）で全件整合したが、recover.go の正常 drain（owner がスタック上に残る形）では同じ `dpos` が境界として使えず「呼び出しスロット」が要った。「panic が unwind する先のフレームがスタックに居るか」で boundary が ±1 変わる — `runOneDefer` が `len(v.frames)` を取る形にして両ケースを一意にした。
 - **ハーネスの false positive は mask ではなく意味論で解いた**: 「両側 panic でメッセージ違い」を無条件に揉めば数字系の真バグを隠す。go が同プログラムの別プローブで同じ panic を出していれば「その panic は authentic」= order-legal と判定する相互参照方式にし、unique-to-minigo の panic は引き続き flag する。
 
-#### 計画外の記録と判断
+### 計画外の記録と判断
 
 - **corpus 外の新規作業ゼロ**: TODO 残件は全て境界クラスで、コーパス再スイープからも潰し対象の新規 SILENT は出なかった（recover.go のみ）。hunt の新 seed 補充は不要と判断 — gen は同シードガードで clean。
 - **`defer recover()` のテスト期待値是正を同 PR に同梱**: 実装変更とテストデータ是正は1根因（one-frame 規則）として同一 PR にした — pin しないと片方だけ残る危険があった。
 
-### 6.10 レビュー第7ラウンド: unwind bookkeeping の3件（1件は回帰）
+## 6.10 レビュー第7ラウンド: unwind bookkeeping の3件（1件は回帰）
 
 [#153](https://github.com/podhmo/minigo/pull/153) への独立レビューが `#149`–`#152` の unwind モデルに3件の不具合を上げ、全て現スタックトップ（`4a15545`）で再現を確認して修正した（`go run` と minigo の双方で検証）。
 
@@ -230,7 +232,7 @@ usecasefuzz 再実行: 0 DIFF / 1 ACCEPT / 4 TRAP（lim-http/toml/xml/yaml — �
 
 回帰 pin: `text_value_deferpanicrecover`（propagate+stale inflight）、`text_value_defercallersclean`（consume 後の二重表示）、`text_value_defercallerssuper`（panic グループ順）。
 
-#### リファクタリング提案の評価（第7ラウンド）
+### リファクタリング提案の評価（第7ラウンド）
 
 | 提案 | 判定 | 対応 |
 |------|------|------|
@@ -243,18 +245,18 @@ usecasefuzz 再実行: 0 DIFF / 1 ACCEPT / 4 TRAP（lim-http/toml/xml/yaml — �
 | `v.pcSites` が Callers のたびに無限増殖 | 正しい — ただし pre-existing・低頻度 | 本ラウンドは見送り（残課題; snapshot 単位なので実害は長寿命 REPL に限られる） |
 | `bytesSliceOf` の nil が `[]interface {}` 綴り | 妥当 — `%T` が `[][]uint8` になるよう修正 | `anonSliceTyp("[]uint8")` で Typ を保持 |
 
-#### 不備の振り返り（第7ラウンド）
+### 不備の振り返り（第7ラウンド）
 
 - **`inflight` の pickup が「`p != nil` 前提」で設計されていた**: consume 遷移が `p = nil` にする経路を作った時点で、後置ブロックの取得条件を見直すべきだった — 「`p` は遷移後も panic の残存を意味するか」という不変条件の検証漏れで、本スタック自身が回帰を入れた形。
 - **`unwinding` のライフサイクル管理が「全部消す/残す」の二値だった**: 初版（#150）は `v.unwinding = nil` で全部消していたため outer unwind のエントリまで消せず、残す方向に倒したら consume 後の stale が出た。panic タグ付きにして「死んだ panic のエントリだけ落とす」が正しい粒度だった。
 - **レビューの repro は最初から全件現トップで再現した**: 前ラウンド（3/5・5/7 が既修正）と違い、今回は 3/3 が真の未修正だった — unwind bookkeeping は相互に絡むため「直したつもりの組合せケース」がまだ抜けていた。
 - **#151 は修正 PR ではなくハーネス PR**: 根因は「ジェネレータが実装依存の出力を生成する」側なので、minigo 側の挙動は変えていない（評価順の厳密 LTR は合法）。
 
-### 6.11 実施ラウンド（round-9）: reflect TODO 掃討 + difffuzz 供給フェーズ
+## 6.11 実施ラウンド（round-9）: reflect TODO 掃討 + difffuzz 供給フェーズ
 
 TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで潰し、その後 difffuzz `-domain reflect` の hunt→triage→pin→fix を回した。さらにレビューで指摘されたバグ4件＋重複/リファクタ5件を子セッションに要/不要判断させ、要のものを同じスタックへ継続積みした。[Stack #201](https://github.com/podhmo/minigo/pull/199)（[#199](https://github.com/podhmo/minigo/pull/199)–[#275](https://github.com/podhmo/minigo/pull/275)、69 PRs、main 直積み）。
 
-#### 実施内容
+### 実施内容
 
 | フェーズ | 内容 | PR |
 |------|------|-----|
@@ -267,7 +269,7 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 
 全 fix は `testdata/difffuzz/<slug>/` に seed pin（PENDING なし → 即必須テスト昇格）。
 
-#### 残りの状況
+### 残りの状況
 
 - TODO.md の reflect 系 `[ ]` は全て `[x]`。
 - difffuzz yield は減衰: 現カバレッジで ~1/15–20 seeds。generator 拡張（#251）で新 probe 面が開き、即座に pointer-accessor・selector-path・callslice-gates・star-param の4件を供給した。
@@ -277,7 +279,7 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 - pin 不可 artifact（記録のみ）: (a) `MapKeys()` 順は Go 自身がランダム化 — map 順に依存する発散は pin しない、(b) `reflect.Value` 内部 `flag` バイトを直接読む合成プローブ（実害なし）。
 - `usecasefuzz` 再実行: 41 PASS / 1 ACCEPT（inspectuse）/ 1 REJECT（lim-cgo — cgo 既知境界）/ 2 TRAP（lim-http, lim-xml — 既知境界）。`lim-yaml` は TRAP↔DIFF↔PASS の揺らぎ（map 順 artifact と思われる — 単独再実行では PASS）。`lim-toml` は TRAP から PASS に改善。**リグレッションなし**。
 
-#### 不備の振り返り
+### 不備の振り返り
 
 - **スタックブランチへの誤コミットが3回**: `git branch --show-current` を commit 前に確認せず、同じファイルを触る PR 間で hop して混入した。`git reset --hard`+`push -f`→cherry-pick と file 単位の patch 分割（`git diff` → `@@` 単位で `git apply` 分け）で回復したが、確認はコストゼロなので常時行うべきだった。
 - **generator の 'x'+Wrap emit バグ（#251 内で自爆）**: `rchain.body()` の 'x' 分岐が Wrap を honor せず `v1rGrowS` を生成 — `TestGeneratedProgramsCompile` が `undefined: v1rGrowS` で捕捉。generator を拡張するときは「emitted プログラムが go でコンパイルされる」までを1ケースとして回すべきだった。
@@ -287,7 +289,7 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 - **`Grow` の第二ループバグがレビューまで残った（#263 → #265）**: 上記 `newcap=0` を直したとき、同じループの `(newcap+768)/4` が加算ではなく代入であることを見落とし、cap≥256 で縮小→無限ループのハングを本スタックに残した（本レポート自身が「newcap=0 側を潰した」と書いている間に ≥256 側が生存していた）。実害テストは `cap0 → need` 起点しか書いておらず、成長経路の別区間を probe していなかった — corner を1個潰してもループ全体の Go 対応表（cap→cap）を検証するまで「近似ループの正当化」は終わっていない。最終的に `nextslicecap`/`roundupsize` の sizeclass 丸め込み忠実ミラーに置き換えた（近似でなく写経、が正解だった）。
 - **レビューが「自分で追加したコード」の退化を掴んだ（#210 系 → #267–#269）**: host 値への typedef タグ付け（`Named{td, GoValue{*T}}` box）はそのラウンドで正しかったが、`ValueOf` 経路が box をそのまま返して copy semantics を壊し、さらに `Set` が cell 内の box 形状を剥がす・`typSpelling` が selector 修飾子を型名として再修飾する、という3つの連鎖根因を生んでいた。追加した機構の「値が何経路で流れるか」の網羅確認が不足していた — box 形状は `get()`/`set()`/deref/ValueOf/Set の全経路で不変条件として検証すべきだった。
 
-#### 計画外の記録と判断
+### 計画外の記録と判断
 
 - **harness 側の修正が混ざった (#220, #222, #242, #251)**: 「発散」ではなく「generator が拾える形にする」PR として別積み。発散供給が枯れたら generator 面を広げるのが次の正規手段 — yield の天井を上げる投資として 4 本は妥当だった。
 - **dispatch.go の engine 側修正が1件だけ混じった (#255)**: `resolveTypeRef` の SelectorExpr が path 修飾を unknown import にしていた — minireflect ではなく engine の型解決。reflect 系の外側に見えるが、発散の根因は exprOf の PATH 修飾 AST が解決経路に流れ込むことなので 1 root cause として残した。
@@ -295,11 +297,11 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 - **hunt の打ち切り判断**: yield ~1/15–20 seeds に逓減し、残件は `no member` 系 backlog + pin 不可 artifact に集約 — 追加 hunt より binding 実装の方が価値が高い局面に入ったところで打ち切り依頼。進行中の `Grow` だけ仕上げて停止。
 - **レビュー駆動フェーズは子セッションへ委譲**: ユーザー指示により、バグ4件→リファクタ5件の順で「各項目を子が oracle probe で要/不要判断→要のものを重要度順に 1 根因 1 PR で同スタック継続積み」。子は bug3 が複合的根因であることを検証中に自力で2件の別根因（cell box 剥がし・typSpelling 二重修飾）を発見し 3PR に分割、レビュー指摘の表記ブレ主張は再現しないことを実測で否定しつつ別の本物のブレを掴んだ — 「レビュー文面の検証」が「レビュー趣旨の回収」に昇格した好例。リファクタ項目は純粋な整理は seed なし、挙動変化（DisplayName 集約に伴う表記修正）のみ seed pin という線引きを適用。
 
-### 6.12 実施ラウンド（round-10）: Stack #333 — difffuzz 掃討・corpus sweep・連鎖 rebase・レビュー対応
+## 6.12 実施ラウンド（round-10）: Stack #333 — difffuzz 掃討・corpus sweep・連鎖 rebase・レビュー対応
 
 本セッションの全体像。発端は TODO.md の difffuzz 系未完了項目を「1 root cause = 1 PR」で stacked PR に積む指示（上限 30 PR、枯渇時点で終了、枯れたら `gen` hunt で補充）。成果: **Stack #333 に 27 PR（#331–#359）を構築し、続けて連鎖 rebase＋別エージェントのレビュー7件対応＋本レポートで計 35 PR**。queued の全 difffuzz 項目を潰し、追加で reflect TRAP バケット・API 面監査・`$GOROOT/test` コーパス再スイープ×2を流した。
 
-#### 実施内容
+### 実施内容
 
 | フェーズ | 内容 | PR |
 |------|------|-----|
@@ -317,14 +319,14 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 | レビュー リファクタ ④ | `foldNextArrLen`(vm) と `emitLenFolds`(compile) の平行 DFS — assert 追加ではなく共有化を選択。`runtime.ArrayLenNodes` が走査順の単一 source を提供し、compiler は emit、VM は nodes[0] を fold — 両側の平行実装約 80 行を解消 | [#370](https://github.com/podhmo/minigo/pull/370) |
 | 本レポート | この round-10 セクションの追記 | #371 |
 
-#### 残りの状況
+### 残りの状況
 
 - difffuzz 系キューは枯渇して終了（掃討フェーズ 27/30 PR、上限未到達）。gen hunt は text/num/reflect 全ドメイン・depth 6 まで飽和（新規 SILENT 0）。レビュー指摘は全件処理済み（バグ2件＋欠落1件＋リファクタ4件、不要判定なし）。
 - 残件は全て境界クラス: GC-finalizer 系 6（`SetFinalizer` は no-op 設計）、`unsafe.Pointer`×13＋`unsafe.String`/`Offsetof`/`FuncForPC`（#40 ポインタモデル・ホスト PC 境界）、`peano.go` フレーム上限、`linkmain_run.go` tmpdir 非決定、HANG×6 は main でも再現するスループット限界。
 - レビュー/ probe で見つかった新規ギャップは stack 先端の TODO.md に記録: **`map[string]*[3]int` の内部書き込みが依然 trap**、**struct 要素の field write が一律 trap** — 次ラウンドの入口。
 - Stack #333 は計 35 PR。CI は rebase 後の先端および各追加 PR で緑（head が全祖先を含むため累積検証）。リファクタ4件は全て挙動不変 — difffuzz pins は全緑のまま。
 
-#### 不備の振り返り
+### 不備の振り返り
 
 - **write-through の適用範囲に「参照形」という不変条件を書いていなかった（#352 → #364）**: IndexRef の write-through を入れたとき「map 要素が書き戻せるか」を kind 無しに開けたため、Go の compile error に相当するケース（array/struct 要素の部分書き込み）まで静かに通した。格納コピー vs live 参照の区別は §6.7（#127）で一度構造化した系で、同じ鏡をもう一度踏んだ形。
 - **コールバック境界の検査が入力側だけだった（#355 → #365）**: MakeFunc 実装時に `checkCallArgs` を入力（呼び出し引数）にのみ適用し、コールバックの戻り値側（arity・assignability）に同型のゲートを置かなかった。MakeFunc は 1 根因に3つの層症状（callable≠reflect.Value・`return nil`=TypedNil slice・bare 引数の typedef 欠如）をひとつの bridging 修正で閉じていたが、「ホスト⇄script の両方向でシグネチャ制約が効くか」の確認が out 側に及んでいなかった。
@@ -335,7 +337,7 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 - **汎用機構を置いても配線が一箇所止まり（#353 → #366）**: `emitLenFolds` は汎用に書いたのに呼び出しが `*ast.ArrayType` のみ — 「機構が対象となる AST 形すべてから呼ばれるか」は配線の網羅確認が要る。probe 後は実質穴が map/chan のみと分かったが、一様呼出し化で残差も含めて閉じた。
 - **平行実装のドリフトは「共有 source」で解く方が正しい（④）**: `foldNextArrLen` と `emitLenFolds` は DFS 順序一致を暗黙に要求する平行 DFS — 順序 assert のテスト追加も選択肢だったが、子セッションは走査自体を `runtime.ArrayLenNodes` に共有化する方を選んだ。assert は「ずれたら教えてくれる」止まりで、共有化はずれる余地自体を消す — 後者が正しい判断。
 
-#### 計画外の記録と判断
+### 計画外の記録と判断
 
 - **#349 が rebase で pin のみに縮退**: stack 内の promoted-method BFS 実装が main 側の #348 に完全包含されていたため、rebase 適用後の diff は testdata pin のみに。実装を消し込んで pin と差し替えた PR タイトル/本文も追従更新 — 「stack 内の別 PR が main で別実装として着陸」した場合の自然な帰結。force-push による全ブランチ書き換えは破壊的操作だが、ユーザーの明示指示（「開始前にmainからrebaseしたほうが良いかも」）で実施。
 - **レビューは rebase 前の差分に対するもの**: 指摘の半分は現行コードで部分的に陳腐化していた（findMethod 系の並存指摘、emitLenFolds の「まだ trap」範囲）。各項目を現スタック先端で再検証してから判断させる運用を子セッションにも継承 — §5 の「レビュー指摘は現スタックトップで再現を確認してから直す」と同じ教訓の再確認。
@@ -345,11 +347,11 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 - **新規ギャップの分離記録**: probe 中に見つかった `map[string]*[3]int` 内部書き込み・struct 要素 field write の残存 trap は「この stack の指摘項目」ではないため TODO.md への記録に留め、次ラウンドの入口とした。
 - **30 PR 上限には達せず枯渇終了**: 掃討キューが先に尽きたため打ち切りルール（30到達）を発動せず終了 — §5 の再開 prompt がそのまま通用する状態に戻った。
 
-### 6.13 実施ラウンド（round-11）: Stack #417 — difffuzz 掃討・バッチ幻影の正体・外部レビューの2段階委譲
+## 6.13 実施ラウンド（round-11）: Stack #417 — difffuzz 掃討・バッチ幻影の正体・外部レビューの2段階委譲
 
 本セッションの全体像。発端は前回同様 TODO.md の difffuzz 系未完了項目を「1 root cause = 1 PR」の stacked PR で順次潰す指示（上限 100 PR — 指示文は 30 とあったが途中で「100のつもりだった」と訂正。枯渇時点で終了、枯れたら `gen` hunt で補充）。成果: **Stack #417 に 22 PR（#415–#455）を構築**。lang domain の hunt 補給から始め、SILENT/TRAP バケットを掘り進め、繰り返し出ていた「バッチ限定の幻影」の正体（panic 状態リーク）まで辿り着いた。終盤に届いた外部エージェントのレビュー（バグ2件＋リファクタ候補3件）はユーザーの指示通り「要不要判定付き」で子セッション2件に2段階委譲し、全件処理させた。
 
-#### 実施内容
+### 実施内容
 
 | フェーズ | 内容 | PR |
 |------|------|-----|
@@ -364,14 +366,14 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 | レビュー検証中の新規発見 | `x.(func(int) int)` が `func(Point) Point` に true — assert switch が匿名 func typedef を kind のみで受理。修正は本ラウンドの粒度を超えるため TODO.md 記録に留めた | [#455](https://github.com/podhmo/minigo/pull/455) |
 | 本レポート | この round-11 セクションの追記 | 本 PR |
 
-#### 残りの状況
+### 残りの状況
 
 - difffuzz 系キューは枯渇して終了（22/100 PR、打ち切り未発動）。gen hunt は lang seeds 202610059–066 連続クリーン（前回 3 SILENT + 24 TRAP だった 059 の再実行を含み、#432 系修正の実効を確認）、num/text/reflect 各 seed 全 PASS。testdata/difffuzz に PENDING 残りなし（全て必須テストに昇格）。
 - TODO.md の difffuzz 節の open 残件は2件: `$GOROOT/test` corpus sweep（境界クラスのみ）と #455 で記録した func-signature assert gap — 次ラウンドの入口。
 - Stack #417 は 22 PR 全て OPEN・MERGEABLE・checks SUCCESS。
 - 外部レビューは全件処理: バグ2件はどちらも真（stack tip で byte-for-byte 再現確認後に委譲）、リファクタ3件は全て「要」判定で実施 + 副産物の新規ギャップ記録1件。
 
-#### 不備の振り返り
+### 不備の振り返り
 
 - **panic bookkeeping の対称性を `r!=nil` 経路にしか書いていなかった（#436）**: `runOneDefer` が deferred call の panic を `v.inflight` にインストールする経路を入れたとき、正常 drain（`r==nil`）終端で `p = v.inflight` として取り出すだけで saved 状態を復元していなかった。結果、包囲する unwind がその panic を「外側の panic」と読み、try-recover の `v.inflight = saved` 復元で**消化済み panic が復活**し無関係な後続 `recover()` に届く — panic 状態機械として最悪の部類のリーク。panic state を touch する経路は全て saved/restore 対称を確認する必要がある。
 - **nil-ness の分岐表に型レベル規則が吸収されていた（#434）**: `IfaceNil`/`TypedNil` の switch が nil-ness で早期 return するため、「動的型が同一 uncomparable 型なら nil 同士でも panic」という Go の型規則が値の nil 分岐に隠れて素通りしていた。「値が nil か」より先に「動的型ペアが panic 条件か」を見る前置チェック（`uncomparableDynamicTyp`）を eqlValue に置いて解消。ifaceEql 側への二重チェックは Nil-family が全て eqlValue に流すため冗長と判断して置かなかった。
@@ -381,7 +383,7 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 - **「リファクタ候補」の査定が実は drift の発見だった（#453）**: 重複指摘と思って統合したら、片側だけが AST 無し型（host 由来の facade interface 埋め込み）を扱えていなかった。2実装の統合は差分の照合でもあり、差が出たら oracle でどちらが正しいか決着させるのが定石。
 - **匿名 func 型の assert が kind のみで受理していた（#455 記録）**: assert switch が `KindFunc` なら全 func 値に true。子の検証で発見したが根因は別系統（typedef の signature 比較が要る）のため TODO.md 記録に留めた。
 
-#### 計画外の記録と判断
+### 計画外の記録と判断
 
 - **「standalone で発散しない」WARN の繰り返しが emit ノイズではなく実バグだった**: hunt で繰り返し出ていた「バッチ内では TRAP だが単体では PASS」系を emit-skip 幻影と決めつけて棚上げしていたが、バッチプログラム（`/tmp/difffuzz-*/genN_M/main.go` — 全 probe が `try(N, ...)` で VM を共有）を minigo+go で直接走らせ、**try() prefix の delta-debug で poisoning probe（defer 内 `*v_pp_0` nil deref）まで絞り込んだ**ところ、probe 間を跨ぐ panic 状態リーク（#436）と判明。6系統の発散バッチ全てが同じ根因で修正で全消え。教訓: 「バッチ限定の幻影」はむしろ共有-VM 状態機械のバグを照らす固有の検出面であり、WARN 分類で握り潰さずバッチプログラム単位で bisect する手順を確立した。
 - **interface `==` の panic を「nil でも panic」に寄せる判断**: `any([]int(nil)) == any([]int{1})` を false と返す実装は一見 reasonable だが、Go の規則は「比較は値ではなく型に対して判定される」。pin は nil×live・live×nil・nil×nil・map・`== nil`・comparable 配列・`!=` の9 probe で境界を固定した。
@@ -392,11 +394,11 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 - **hunt 枯渇をもって完了と判断**: lang 連続クリーン（発散が出た 059 の再実行を含む）+ num/text/reflect 全 PASS で補給を打ち切り。100 上限には遠く及ばず。
 - **取りまとめ役の継続**: round-10 で確立した子セッション委譲の運用を踏襲 — バグ系・リファクタ系それぞれ全項目を要不要判定→修正→pin→CI 確認まで子に担わせ、自分は repro 検証・積み上げ管理・本レポートに集中。2件とも完遂。
 
-### 6.14 実施ラウンド（round-12）: Stack #471 — difffuzz 掃討・枯渇判定・外部レビュー9件+リファクタ9件の委譲
+## 6.14 実施ラウンド（round-12）: Stack #471 — difffuzz 掃討・枯渇判定・外部レビュー9件+リファクタ9件の委譲
 
 発端は TODO.md の difffuzz 系残件（`$GOROOT/test` コーパス未走査 subdir）を「1 root cause = 1 PR」で stacked PR に積む指示（上限 100、枯渇で終了、枯れたら `gen` で補充）。成果: **Stack #471 に 37 PR（#467–#504）を構築して掃討フェーズを枯渇終了**させ、その後届いた外部レビューのバグ9件を5子セッションに委譲して修正（#510–#514）＋CI flake の根因修正（#516）、リファクタ提案9件は要不要判定付きで直列の子1件に委譲（#518–#529）。
 
-#### 実施内容
+### 実施内容
 
 | フェーズ | 内容 | PR |
 |------|------|-----|
@@ -410,7 +412,7 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 | 外部レビュー（リファクタ9件 → 直列1子委譲） | 採用7・不採用1・部分採用1。判定中に実害バグ4件を発見・修正（下表）。統合ベースの merge PR（#518）を挟んで各項目を独立 diff に | [#518](https://github.com/podhmo/minigo/pull/518)–[#529](https://github.com/podhmo/minigo/pull/529) |
 | 本レポート | この round-12 セクションの追記 | 本 PR |
 
-#### リファクタ提案9件の判定結果
+### リファクタ提案9件の判定結果
 
 | # | 提案 | 判定 | PR |
 |---|------|------|-----|
@@ -424,13 +426,13 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 | 8 | untyped const のデフォルト型変換の重複 | 採用 — `runtime.UConstNative` に共有コア化。rune タグ・complex の `GoValue` wrap は VM 側に残置（提案の制約どおり） | [#528](https://github.com/podhmo/minigo/pull/528) |
 | 9 | nil iface / boxed typed nil 分類の散在 | 採用 — `runtime.IfaceTaggedNil`/`BoxedNilTyp`/`IsNilIface` に集約。#510 の `writeKeyElem` 経路も同じ分類子を通す | [#529](https://github.com/podhmo/minigo/pull/529) |
 
-#### 残りの状況
+### 残りの状況
 
 - difffuzz キューは掃討フェーズで枯渇: gen 全4ドメイン（text/num/reflect/lang）で stack tip 上 0 divergence（20バッチ・depth 6 の深掘りでも 0）、corpus 全 subdir 走査済み。PENDING 残りゼロ（`reflect_implements_alias` は #523 で解除）。
 - 外部レビューのバグ9件は全件真の指摘として修正済み（1件は未観測の P1 — `deepHost` の循環参照でプロセス死）。リファクタ9件も判定・実装まで完了。
 - Stack #471 は 55 PR + 本レポート PR。境界クラス（unsafe.Pointer、GC fidelity、gcgort、*.dir、cgo、スループット HANG）は引き続き対象外。
 
-#### 不備の振り返り
+### 不備の振り返り
 
 - **`IfaceNil{interface-kind}` = 「動的型なしの nil eface」という不変条件の適用漏れ**: CanonicalKey・panic 表記・reflect.Elem・member select の4サブシステムに正しく入れたが、複合キーの `writeKeyElem` で interface-kind にも `typ:nil` を付けてしまい「`==` では等しいのに map key が別」に（#510）。ルールを宣言したとき、構造体フィールド経路にも同じ分類が要ることを書き切れていなかった — §6.13 の nil-ness 分岐表と同根。#529 で分類子自体を共有化したので再発は構造的に抑止。
 - **`deepHost`/`structDataHost` は「投射」の設計欠落が2層あった**: 循環参照の visited-set 不在（P1 — Go では `map[string]any` に循環が合法なのにプロセス死亡）と、map 投影では niladic メソッドが「呼ばれない」ことの見落とし（template の field lookup は map 値をそのまま取る）。後者は #496 時点で既知の制約と書いていたが実害級と判明 — 「書いた制約」は「検証済みの境界」ではない。eager eval は seen-map・shape filter・呼出しバジェット64の3重で境界化した（`TestNetHTTPRoundtrip` で史上2度目の eager-eval ハングを回避）。
@@ -440,7 +442,7 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 - **`os.Stdout` の facade 化で「Write 以外のメソッドも host 値の API」という不変条件を落とした**: リダイレクト目的の最小 wrapper が `Name()`/`Fd()`/`Stat()` を trap に。埋め込み委譲＋`Write`/`WriteString`/`ReadFrom` だけオーバーライド（#511 — `ReadFrom` は `io.Copy` が dst の ReaderFrom を優先するため、置かないと fd 1 直書きに回帰する）。
 - **sibling-stack のブランチ構造を委譲プロンプトに書いていなかった**: 修正群のブランチは全て旧 tip の「兄弟」として切られているのに、リファクタ委譲時には procrace 1本だけをベースとして渡した。子が `sigTypEq` の不存在を自ら検出して部分採用に留めたのは幸いだったが、本来はマージ済み統合 tip を先に作って渡すべきだった。同じ合流内容を必要とする後続作業には `#518` のような integration merge を先に置く運用にする。
 
-#### 計画外の記録と判断
+### 計画外の記録と判断
 
 - **レビュー9件の子委譲分割**: ファイル領域で5件に束ねた（structDataHost 系・os.Stdout・virtual slice・map key・シグネチャ比較）。SWE-2 の5並列上限を踏み、完了した子は `sleep` させてスロットを開けてから5件目を起動 — 完了通知が来ても running 扱いで枠を占有し続けるのが罠。
 - **CI の flake を根因まで掘った（#516）**: #514 の `test` job が `watchCallFrom` on nil proc で SIGSEGV。main にもある潜伏レース（`v.proc` の check-then-use）で、直すべき根因として stack 最上位に1 PR 追加。再現は非決定的なので、guard を「capture してから nil 判定」に変えて構造的に消した。#514 側のジョブは空コミットで再実行。
@@ -449,11 +451,11 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 - **stacked PR 上での sibling→統合**: リファクタチェーンは複数 sibling 修正の合流内容を必要としたため、`#518`（統合 merge、自身の変更なし）を stack に1枚挟んで上位11件を独立 diff に保った。sibling が下から順に landed すれば #518 は空になり自然解消される。
 - **「全緑」の運用**: バグ修正群の着地 + 各 PR の CI 緑（flake 1件は根因修正済み）を待ってからリファクタを起動した。
 
-### 6.15 実施ラウンド（round-13）: Stack #549 — difffuzz 再開・外部レビュー5件の直列処理・範囲上限20で打ち切り
+## 6.15 実施ラウンド（round-13）: Stack #549 — difffuzz 再開・外部レビュー5件の直列処理・リファクタ委譲・範囲上限20で打ち切り
 
-発端は前回同様 TODO.md の difffuzz 系残件の「1 root cause = 1 PR」直列掃討指示（上限は当初 50 → 途中で 20 に変更）。成果: **Stack #549 に 19 修正 PR（#547–#568）＋本レポート**。途中で届いた外部レビュー（P2 バグ5件 + リファクタ提案7件）のバグ側を全件自前で修正し、リファクタ側は CAP 到達時に子セッション1件へ委譲する方針で後送りにした（ユーザー指示）。
+発端は前回同様 TODO.md の difffuzz 系残件の「1 root cause = 1 PR」直列掃討指示（上限は当初 50 → 途中で 20 に変更）。成果: **Stack #549 に 19 修正 PR（#547–#568）＋リファクタ 6 PR（#570–#575）＋本レポート**。途中で届いた外部レビュー（P2 バグ5件 + リファクタ提案7件）のバグ側を全件自前で修正し、リファクタ側は CAP 到達時に子セッション1件へ委譲する方針で後送りにした（ユーザー指示）。委譲の実施: [子セッション](https://app.devin.ai/sessions/f2ce53918c174e8da6626e4c0255a69f) が採否判定つきで実装し、自分は差分検証と stack 化に集中した。
 
-#### 実施内容
+### 実施内容
 
 | フェーズ | 内容 | PR |
 |------|------|-----|
@@ -462,17 +464,29 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 | corpus triage 続き | sort の nil slice 受容（#558）、localtype の外側型引数（#559）、`range *p` の lazy pointer iteration（#560）、zerobase 要素アドレス比較（#561） | [#558](https://github.com/podhmo/minigo/pull/558)–[#561](https://github.com/podhmo/minigo/pull/561) |
 | 外部レビュー 5件 + TODO1件（自前・直列） | sort の typed-nil 型チェック（#562）、massign pin の Cell→全 ref 種一般化（#563）、array range snapshot + 2operand 物質化（#564、レビュー2件目と array-value copy の TODO を一根因で）、rangeStarLazy の call/receive 検出（#565、`lenOperandCalls` 再利用）、closure 内 localtype の外側 instantiation（#566 — `Function.OuterTParams` + `outerTypeArgs` 共有化） | [#562](https://github.com/podhmo/minigo/pull/562)–[#566](https://github.com/podhmo/minigo/pull/566) |
 | corpus 新規 | host nil chan の select arm trap（#567 — `context.Background().Done()` が `runtime.Nil` に潰れる。typeparam/orderedmap.go が通過）、instantiation の alias peel（#568 — `T[GlobalInt]` が `main.Int` に） | [#567](https://github.com/podhmo/minigo/pull/567), [#568](https://github.com/podhmo/minigo/pull/568) |
-| 本レポート + 帳簿 | TODO.md に12件 `[x]` と2件 `[ ]`（`·N` スコープマーカー・timeout 仕分け）を追記 | 本 PR |
+| 帳簿 | TODO.md に12件 `[x]` と3件 `[ ]`（`·N` スコープマーカー・timeout 仕分け・corpus 残存ファミリ）を追記 | [#569](https://github.com/podhmo/minigo/pull/569) |
+| リファクタ（子セッション委譲） | `hoistEagerOps`（binaryOperands/callArgs の二相評価共有・#570）、`bindArgs`（name/arg→binds fold 5箇所・#571）、`resolveLitType`（peel+resolveName+tspec walk 共有・#572）、`storageShape`+`ast.Unparen`（peel ループ11箇所・#573）、`Map.SnapshotKeys`/`LookupCanonical`（NaN-key 規約を runtime.Map に集約・#574）、`TypeDef.InstArgs`/`InstArg.Bound`（outer→own 列挙共有・#575）。sort nil-slice 判別ヘルパー提案は #562 の `nilSliceArg` で実質済みと判定 | [#570](https://github.com/podhmo/minigo/pull/570)–[#575](https://github.com/podhmo/minigo/pull/575) |
+| 本レポート | `### 6.N` → `## 6.N`（1ラウンド1章化）+ 本章 | 本 PR |
 
-#### 残りの状況
+### 計画外の記録と判断
 
-- Stack #549 は 20 PR で CAP=20 到達 — 以降のバグフィックスは停止し、レビューの純リファクタ提案（binaryOperands/callArgs 共通化、OpLocalType⇔specializeType の outer-args 収集＝#566 で一部済、mapLitType≒isKeyedLitShape、rangeStarLazy≒isStorageBase、map-iter snapshot API、型引数列挙、`ast.Unparen`）を子セッション1件に委譲して自分は検証に回る（ユーザー指定の運用）。
-- `typeparam/nested.go` の残差は `·N` スコープマーカーのみ — 機構は特定済み（noder の `declCollector` が関数内非 alias 型宣言にソース順の通し番号を振り、`qualifiedIdent` が `name·gen` として埋め込み、instance 名の args 内部でのみ表示される）が、宣言順の gen 採番を compile→runtime に通す工作が要るため TODO に記録して後送り。
-- corpus の未処理: timeout 仕分け約19件、panic-message/traceback/identity 系の差分ファミリ、issue66575/35576/59411。境界クラス（unsafe・GC・gcgort・cgo・スループット HANG）は従来通り対象外。
+計画時の仮説・設計と実施後の理解がずれた点、および計画に無かった事象への判断。不一致は悪いものではなく、実態を後から理解して考慮した結果 — そのとき何を決めたかを明示する。
 
-#### 不備の振り返り
+- **orderedmap の crash 仮説はすり替わっていた**: 「FieldRef↔DerefRef の相互 unwrap で無限再帰」という持越し仮説で着手したが、最新 tip で再現すると stack 中の修正で症状が変化しており `channel operation on runtime.Nil`（host nil chan の select arm）に化けていた。→ 実際の根因は host nil chan として #567 で修正。crash 経路そのものは再現しなかったため仮説は保留扱いとし、まず repro 取り直しを行う手順に変えた。
+- **`range *p` の lazy/eager 境界は1軸ではなかった**: 当初設計は OpIter のフラグ（operand 数のみ）で切る想定だったが、プローブで gc の実際の境界が「AST 形 × operand 数 × 要素読み取り有無」の3軸と判明。→ フラグ設計を撤去し、NilArr の遅延 panic に委ねる形に変更（#564/#565）。
+- **zerobase 等値の境界はオブジェクト種別依存**: 当初の想定「ゼロサイズ要素は全て同じアドレス」は誤りで、6本のプローブが実際の分岐（同一配列内 true / 別 array オブジェクト false / slice 要素はコンテナ跨ぎ true / `new(zerosize)` 独立）を示した。→ IndexRef↔IndexRef に限定して実装（#561）。
+- **alias は identity 済み・spelling 未処理だった**: `T[GlobalInt]` は identity 側が既に正しく、canonicalization が keyOf にしか入っていなかった。→ binds 書き込み入口（`instantiate`）で peel するのが両系に効く一点と判断（#568）。
+- **`·N` スコープマーカーは見た目より大きい**: nested.go の残差は表示問題だけと見込んだが、機構は noder `declCollector` → `qualifiedIdent` の `name·gen` 埋め込みで、宣言順 gen 採番を compile→runtime に通す工作が要る。→ 本ラウンドのスコープ外として TODO に `[ ]` で記録し後送り。
+- **CAP の途中変更（50→20）とリファクタ委譲**: ユーザー指示で上限が引き下げられ、バグフィックスは20本で打ち切り。レビューのリファクタ側は子セッション1件への委譲に切替え（同じくユーザー指定）、自分は検証役に回った。→ 7提案は6採用・1既済（sort nil 判別は #562 の `nilSliceArg` で済み）と判定。
+- **検証で「挙動として保持」と判断した癖**: `lenOperandCalls` の parens 透過（`ast.Inspect` 経由なので剥がし済み/未剥がしどちらの expr を渡しても同値）、`bindsKeyOf` が own TParams 全未束縛時に末尾 `;` を出す表示癖、`instArgsSpelling` が `len(own)>0` のときだけ `;` で区切る癖 — 全て明示的に保持した。`bindArgs` の unguarded→guarded 統一2箇所は全経路で arity trap が先行するため到達不能差分（crash→trap の改善側）。`resolveLitType` の fuel（8 vs 4）は意図的な探索深さ差として共有化せず呼出側に残した。
+- **レポート構造の正規化を本 PR に同梱**: `### 6.N` が round-1 由来の `## 6.` 見出しの子に全て入れ子になっていた問題を、`## 6.N` 昇格で1ラウンド1章に解消。`§6.N` 相互参照と GitHub アンカーを守るため見出しテキストは変更せず、運用規約（新ラウンドは `## 6.<next>`）を `## 6.` 直下のメモに記録した。
 
-- **記憶の crash 仮説ではなく再現を先にやるべき**: orderedmap.go は「FieldRef↔DerefRef の相互 unwrap で無限再帰」という仮説を持っていたが、実際に走らせると #563 までの修正で症状が変化しており `channel operation on runtime.Nil`（host nil chan の select arm）に化けていた。長い stack では下位 PR が原因をすり替えるので、原因調査前に最新 tip で repro を取り直す一手間が仮説の墓場を防ぐ。
-- **OpIter の B&2 ビットは一度書いて捨てた**: `range p` の2変数形を作りすぎた最初の設計は nil `*[0]int` で誤爆（gc は要素読み取り時にのみ panic、len-0 は無読みで ok）。プローブが「operand 数だけでなく要素到達時」の二分岐を示したので、ビット自体を消して NilArr の遅延 panic に委ねた — gc の lazy/eager 境界は AST 形 × operand 数 × 要素読み取り有無の3軸で、どれか一軸で決めた設計は必ず別ケースを壊す。
-- **zerobase は「全て同じアドレス」ではなくオブジェクト種別で分岐**: `&x[i]==&x[j]` は同一配列でも別 array オブジェクト同士では false、slice 要素はコンテナを跨いで true、`new(zerosize)` は独立オブジェクト — 6本のプローブで境界を引き、IndexRef↔IndexRef にのみ絞った。直感（ゼロサイズは全部同一）で書くと過剰折り畳みになる。
-- **alias は identity だけでなく spelling 側も peel が要る**: `T[GlobalInt]` の identity は既に正しかったのに `main.GlobalInt` と表示された — canonicalization が keyOf 側にだけ入っていると表示が漏れる。targ を binds に書く入口（`instantiate`）で peel するのが両系に効く一点。
+### 残りの状況
+
+- Stack #549 は全26本（修正20 + リファクタ6）マージ済み。純リファクタ7提案は消化済み。
+- 変わらず残件: `·N` スコープマーカー（機構特定済み・実装後送り）、corpus timeout 仕分け約19件、panic-message/traceback/identity 系差分ファミリ、issue66575/35576/59411。境界クラスは対象外。
+
+### 不備の振り返り（メモ）
+
+- docs 帳簿コミットを fix ブランチに誤って積み force-push で分離 — stacked ブランチへの push 前に `git log -1` で先端を確認する習慣づけ。
+- 親子セッションの ~/memory 同時書き込みが conflict — 委譲時は memory 書き込みを親に限定する旨を明示するとよい。
