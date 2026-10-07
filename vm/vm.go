@@ -5562,6 +5562,11 @@ func (v *VM) chanOf(f *frame, x runtime.Value) (reflect.Value, *runtime.TypeDef)
 			return nilChanRV, v.elemTypedef(f, c.Typ)
 		}
 		f.trap("channel operation on %T", x)
+	case runtime.Nil:
+		// host-returned nil channels arrive untyped (goValueOf folds nil
+		// chans/pointers to Nil for `v == nil` reads); the only nil that
+		// reaches a channel op is a nil channel — park it like a typed one.
+		return nilChanRV, nil
 	case *runtime.GoValue:
 		if rv := reflect.ValueOf(c.V); rv.IsValid() && rv.Kind() == reflect.Chan {
 			return rv, nil
