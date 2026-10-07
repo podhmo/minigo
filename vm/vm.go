@@ -494,7 +494,9 @@ func (v *VM) assignCell(f *frame, c *runtime.Cell, val runtime.Value) {
 			}
 		}
 	}
-	c.Elem = valueCopy(val)
+	if !overwriteArray(c, val) {
+		c.Elem = valueCopy(val)
+	}
 }
 
 // sameBareScalar reports whether x and y are bare Go scalars of the
@@ -643,7 +645,7 @@ func (v *VM) setIndirect(f *frame, ref, val runtime.Value) {
 	// the variable's struct in a fresh cell, so rebinding that cell
 	// would drop the store; copying the fields keeps the write visible
 	// to every holder of the struct, like Go's memory overwrite.
-	if overwriteStruct(ur, val) {
+	if overwriteStruct(ur, val) || overwriteArray(ur, val) {
 		return
 	}
 	if !runtime.SetRef(ref, val) {
@@ -675,6 +677,37 @@ func overwriteStruct(ref, val runtime.Value) bool {
 		return false
 	}
 	copy(dst.Fields, src.Fields)
+	return true
+}
+
+// overwriteArray stores val into the fixed array a cell already holds,
+// element by element, when both are equal-length arrays — the array
+// counterpart of overwriteStruct. The cell's backing is shared with
+// slice views (`s := x[:]`) and (*[N]T)(s) conversion results, so
+// rebinding it would detach those aliases where Go's memory overwrite
+// keeps them (`*p = arr` on `p := &x`, `q := (*[N]T)(s); *q = arr`,
+// and plain `x = arr` alike).
+func overwriteArray(ref, val runtime.Value) bool {
+	if dr, ok := ref.(*runtime.DerefRef); ok {
+		loc, ok := runtime.Deref(dr.Ptr)
+		if !ok {
+			return false
+		}
+		ref = loc
+	}
+	c, ok := ref.(*runtime.Cell)
+	if !ok {
+		return false
+	}
+	dst, ok := runtime.Unwrap(c.Elem).(*runtime.Slice)
+	if !ok || !isArrayTyp(dst.Typ) {
+		return false
+	}
+	src, ok := runtime.Unwrap(runtime.Copy(val)).(*runtime.Slice)
+	if !ok || !isArrayTyp(src.Typ) || len(src.Elems) != len(dst.Elems) {
+		return false
+	}
+	copy(dst.Elems, src.Elems)
 	return true
 }
 
