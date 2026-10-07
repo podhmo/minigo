@@ -6292,7 +6292,11 @@ func (v *VM) materializeConstErr(u *runtime.UConst, td *runtime.TypeDef) (runtim
 		if !ok {
 			return nil, fmt.Errorf("cannot use constant %s as %s", u.V, name)
 		}
-		x = &runtime.GoValue{V: complex64(cv)}
+		c64 := complex64(cv)
+		if math.IsInf(real(complex128(c64)), 0) || math.IsInf(imag(complex128(c64)), 0) {
+			return nil, fmt.Errorf("constant %s overflows complex64", u.V)
+		}
+		x = &runtime.GoValue{V: c64}
 	case "complex128":
 		cv, ok := constComplex(u.V)
 		if !ok {
@@ -6760,8 +6764,9 @@ func (v *VM) adaptConst(f *frame, u *runtime.UConst, other runtime.Value) runtim
 			// truncated or wrapped through the default domain.
 			// Kind-mismatched consts (`v8 + "x"`) stay on the
 			// materialize path so the op's own trap reports the
-			// type error.
-			if numericTypeName(basicNameOf(nb.Typ)) {
+			// type error. The underlying chain peels through
+			// named hops (`type A B; type B int8` rejects too).
+			if numericBasicName(basicNameOf(v.peelNamed(nb.Typ))) {
 				if _, err := v.materializeConstErr(u, nb.Typ); err != nil {
 					f.trap("%s", err)
 				}
@@ -10747,17 +10752,6 @@ func builtinTypeName(name string) bool {
 		return true
 	}
 	return false
-}
-
-// numericTypeName reports whether name is a builtin numeric type —
-// the operand types a numeric untyped constant may adopt in a binary
-// op.
-func numericTypeName(name string) bool {
-	switch name {
-	case "int", "int64", "float32", "float64", "complex64", "complex128":
-		return true
-	}
-	return sizedIntName(name)
 }
 
 // basicNameOf resolves the underlying builtin basic-type name behind a

@@ -5,9 +5,11 @@ import "fmt"
 // An untyped constant in a binary op adopts the other operand's type —
 // and gc rejects the program when the constant cannot be represented
 // in it: `300 - v8`, `1.5 + v8`, `v8 == 300`, `v8 < 300`,
-// `(1+2i) - v8`, `1e300 + f32` all fail to compile (minigo rejects
-// them as runtime traps, which pins cannot express since gc never
-// runs them). These are the representable edges that must keep
+// `(1+2i) - v8`, `1e300 + f32`, `300 + a` (type A B, type B int8 —
+// the reject resolves through the named chain), `1e300 + c64` (the
+// complex64 halves overflow to +Inf) all fail to compile (minigo
+// rejects them as runtime traps, which pins cannot express since gc
+// never runs them). These are the representable edges that must keep
 // evaluating.
 
 func main() {
@@ -27,8 +29,13 @@ func main() {
 	// legal-typed pairs
 	fmt.Println(v8 == 8, f32 == 1.5) // true true
 
-	// named types adopt too
+	// named types adopt too — through a declared chain as well
 	type Small int8
+	type Smaller Small
 	var s Small = 7
-	fmt.Println(s + 100) // 107
+	var ss Smaller = 5
+	fmt.Println(s+100, ss+100) // 107 105
+
+	var c64 complex64 = 1 + 2i
+	fmt.Println(1e5+c64, c64*2) // (100001+2i) (2+4i)
 }
