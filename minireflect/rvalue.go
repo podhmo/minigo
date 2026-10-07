@@ -1571,24 +1571,30 @@ func (v *RValue) MapRange() *MapIter {
 		trap("call of reflect.Value.MapRange on %s Value", v.kindStr())
 	}
 	keys := append([]runtime.Value{}, m.Order...)
+	// Snapshot the canonical keys too: presence during iteration must
+	// probe Pairs by the stored canonical key — re-canonicalizing a
+	// NaN key yields a fresh nonce, so Get(k) would report every NaN
+	// entry as deleted (the VM's own map iterator does the same).
+	ckeys := append([]runtime.Value{}, m.Keys...)
 	var ktd, etd *runtime.TypeDef
 	if v.td != nil {
 		ktd = v.e.keyTdOf(v.td)
 		etd = v.e.elemOf(v.td)
 	}
-	return &MapIter{e: v.e, vc: v.vc, m: m, keys: keys, ktd: ktd, etd: etd}
+	return &MapIter{e: v.e, vc: v.vc, m: m, keys: keys, ckeys: ckeys, ktd: ktd, etd: etd}
 }
 
 // MapIter iterates a map.
 type MapIter struct {
-	e    *Env
-	vc   runtime.VMCaller
-	m    *runtime.Map
-	keys []runtime.Value
-	i    int
-	ktd  *runtime.TypeDef
-	etd  *runtime.TypeDef
-	hit  *reflect.MapIter
+	e     *Env
+	vc    runtime.VMCaller
+	m     *runtime.Map
+	keys  []runtime.Value
+	ckeys []runtime.Value
+	i     int
+	ktd   *runtime.TypeDef
+	etd   *runtime.TypeDef
+	hit   *reflect.MapIter
 }
 
 // Next advances the iterator. A key deleted mid-iteration is skipped,
@@ -1600,7 +1606,7 @@ func (it *MapIter) Next() bool {
 	}
 	for it.i+1 <= len(it.keys) {
 		it.i++
-		if _, ok := it.m.Get(it.keys[it.i-1]); ok {
+		if _, ok := it.m.Pairs[it.ckeys[it.i-1]]; ok {
 			return true
 		}
 	}
@@ -1633,7 +1639,7 @@ func (it *MapIter) Value() *RValue {
 	if it.i > len(it.keys) {
 		plain("MapIter.Value called on exhausted iterator")
 	}
-	got, _ := it.m.Get(it.keys[it.i-1])
+	got := it.m.Pairs[it.ckeys[it.i-1]]
 	return it.e.wrap(it.vc, runtime.Copy(got), nil, it.etd)
 }
 
