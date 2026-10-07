@@ -12147,6 +12147,20 @@ func (v *VM) builtinTypedef(name string) *runtime.TypeDef {
 // self-referential ones like `A Adder[A]` (Go 1.26), which check the
 // constraint's required methods against the argument's method set.
 func (v *VM) checkTArgs(ctx *runtime.TypeDef, tparams []string, cons []ast.Expr, binds map[string]runtime.Value) error {
+	if ctx != nil && len(binds) > 0 {
+		// constraint elements may mention the other type parameters
+		// (`S ~[]E`): spell them with this instantiation's binds.
+		c := *ctx
+		c.TParams = tparams
+		c.Binds = make(map[string]runtime.Value, len(ctx.Binds)+len(binds))
+		for k, b := range ctx.Binds {
+			c.Binds[k] = b
+		}
+		for k, b := range binds {
+			c.Binds[k] = b
+		}
+		ctx = &c
+	}
 	for i, tp := range tparams {
 		if i >= len(cons) {
 			break
@@ -12231,7 +12245,23 @@ func (v *VM) satisfiesTypeElem(ctx *runtime.TypeDef, e ast.Expr, td *runtime.Typ
 		if t.Op == token.TILDE {
 			// `~int` matches any type whose UNDERLYING type is int —
 			// a named `type MyInt int` satisfies it; peel the argument.
-			return underlyingNameOf(v.peelNamed(td)) == typeExprName(t.X)
+			u := v.peelNamed(td)
+			if underlyingNameOf(u) == typeExprName(t.X) {
+				return true
+			}
+			// a composite element usually mentions the other type
+			// parameters (`S ~[]E` in slices.Sort): spell it with the
+			// instantiation's binds (checkTArgs puts them on ctx).
+			// A parameter not inferred yet (E, bound later from S's core
+			// type) leaves only the composite's kind to check.
+			if ctx != nil && isCompositeTypeExpr(t.X) {
+				if mentionsUnbound(t.X, ctx) {
+					return compositeKindMatches(t.X, u)
+				}
+				el := &runtime.TypeDef{Anon: t.X, Pkg: ctx.Pkg, File: ctx.File, Binds: ctx.Binds}
+				return runtime.TypUnderlyingSpelling(el) == v.underlyingShape(td)
+			}
+			return false
 		}
 		return v.satisfiesTypeElem(ctx, t.X, td)
 	case *ast.ParenExpr:
@@ -12272,6 +12302,57 @@ func (v *VM) satisfiesTypeElem(ctx *runtime.TypeDef, e ast.Expr, td *runtime.Typ
 	default:
 		return typeExprName(e) == tdNameOrAnon(td)
 	}
+}
+
+// mentionsUnbound reports whether e names one of ctx's type parameters
+// that has no bind yet.
+func mentionsUnbound(e ast.Expr, ctx *runtime.TypeDef) bool {
+	found := false
+	ast.Inspect(e, func(n ast.Node) bool {
+		id, ok := n.(*ast.Ident)
+		if !ok || found {
+			return !found
+		}
+		for _, tp := range ctx.TParams {
+			if tp == id.Name {
+				if _, bound := ctx.Binds[tp]; !bound {
+					found = true
+				}
+			}
+		}
+		return true
+	})
+	return found
+}
+
+// compositeKindMatches reports whether td has the kind a composite type
+// expression spells (`[]E`, `map[K]V`, `*T`, `chan T`, `func(...)`).
+func compositeKindMatches(e ast.Expr, td *runtime.TypeDef) bool {
+	if td == nil {
+		return false
+	}
+	switch e.(type) {
+	case *ast.ArrayType:
+		return td.Kind == runtime.KindSlice
+	case *ast.MapType:
+		return td.Kind == runtime.KindMap
+	case *ast.StarExpr:
+		return td.Kind == runtime.KindPointer
+	case *ast.ChanType:
+		return td.Kind == runtime.KindChan
+	case *ast.FuncType:
+		return td.Kind == runtime.KindFunc
+	}
+	return false
+}
+
+// isCompositeTypeExpr reports whether e spells a composite type literal.
+func isCompositeTypeExpr(e ast.Expr) bool {
+	switch e.(type) {
+	case *ast.ArrayType, *ast.MapType, *ast.StarExpr, *ast.ChanType, *ast.FuncType:
+		return true
+	}
+	return false
 }
 
 // satisfiesNamed resolves a named or instantiated constraint element
