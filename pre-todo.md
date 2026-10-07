@@ -64,7 +64,7 @@ TODO.md に切り出す前の検討置き場。
 
 ## 豊かさ(新しい機能面)
 
-### declwalk パッケージ(仮称)
+### nodewalk パッケージ(仮称 — 旧 declwalk 案)
 
 - 動機
   - func decl の body 走査は TODO.md 長年の残項目
@@ -78,22 +78,30 @@ TODO.md に切り出す前の検討置き場。
 - ついでにやると良いこと
   - `inspect.UsedSymbolsOf` の file walk をこちらに集約
   - file レベルの comment 列挙もここに載る
+- 名前
+  - nodewalk を推す方向(粒度は decl に限らず stmt/expr/comment まで行く)
+  - modulewalk(次項)との対で、`go/ast` 側に相当
 - 未定
-  - 名前(declwalk/astwalk/nodewalk — stmt・expr 粒度まで行くなら declwalk は狭い)
-  - bind path(`inspect` の増補か `minigo.dev/declwalk` 新設か)
+  - bind path(`inspect` の増補か `minigo.dev/nodewalk` 新設か)
   - 最小形だけか、pattern-hook まで入れるか
 
-### repo/package walker(ModuleWalker 相当)
+### modulewalk パッケージ(仮称 — ModuleWalker 相当)
 
 - 動機
   - 「root 以下の全パッケージを nested go.mod 越しに列挙」が既存の TODO 項目
   - go-scan `modulewalker.go` がほぼそのままの仕様(調査 §3)
+  - moon ide 的な表層走査ツールのキットとして使いたい意向あり
+    - 3点セット: symbol index(場所を引く) + modulewalk(範囲を与える) + nodewalk(中身を見る)
 - 構成要素の案
   - imports-only スキャンで `PackageImports{Imports, FileImports}`
   - visitor 式 `Walk`(`./...` 展開つき BFS)
   - `FindImporters`/逆依存 map
   - `find-orphans` の `discoverModules`(go.work の `use`、nested go.mod)
   - `UnscannedGoFiles` 的な drift 検出
+- レイヤリング
+  - interpreter 層ではなく test-detect 的な tooling 層
+  - 依存は imports-only 軽量パースのみ(AST 本体は要らない)= nodewalk より下の層
+  - nodewalk との2分割は `go/build`(発見) vs `go/ast`(走査)と同じ標準的な境界
 - 未定
   - 上の「軽量パース段階」が先に要る
   - script に公開するか、host ツール専用か
