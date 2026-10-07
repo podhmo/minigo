@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -35,7 +36,18 @@ func TestDiffRegressions(t *testing.T) {
 			pending := statErr == nil
 
 			var buf bytes.Buffer
-			e := minigo.NewEngine(".", minigo.WithOutput(&buf))
+			opts := []minigo.Option{minigo.WithOutput(&buf)}
+			// A SRC file lists packages to interpret from source (the
+			// CLI's --src), one per line — for fixes on the source path
+			// of a package that also has a host binding.
+			if src, err := os.ReadFile(filepath.Join(dir, "SRC")); err == nil {
+				modes := map[string]minigo.PackageMode{}
+				for _, p := range strings.Fields(string(src)) {
+					modes[p] = minigo.ModeSource
+				}
+				opts = append(opts, minigo.WithPackageModes(modes))
+			}
+			e := minigo.NewEngine(".", opts...)
 
 			// A case with a want.stderr file also compares stderr (e.g.
 			// builtin print/println output). Builtins write to os.Stderr
