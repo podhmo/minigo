@@ -866,6 +866,11 @@ func (c *compiler) isIfaceExpr(e ast.Expr) bool {
 		}
 		// a package-level `var x any [= iface-typed init]` marks it too —
 		// global names resolve through the index, not the local scopes.
+		// Only when no local binding declares the name: a shadowing
+		// `var s []int` must not inherit a global `var s any`'s mark.
+		if c.fs.lookupBinding(x.Name) != nil {
+			return false
+		}
 		if c.pkg != nil && c.pkg.Index != nil {
 			if vd := c.pkg.Index.Vars[x.Name]; vd != nil {
 				if vs, ok := vd.Spec.(*ast.ValueSpec); ok {
@@ -2758,7 +2763,7 @@ func (c *compiler) binary(x *ast.BinaryExpr) {
 			return
 		}
 		c.binaryOperands(x.X, x.Y)
-		if (op == bytecode.BinEql || op == bytecode.BinNeq) && (c.ifaceOperand(x.X) || c.ifaceOperand(x.Y)) {
+		if (op == bytecode.BinEql || op == bytecode.BinNeq) && (c.isIfaceExpr(x.X) || c.isIfaceExpr(x.Y)) {
 			// an interface-typed operand compares (dynamic type, value)
 			// pairs: `any(ch) == any(r)` is false for chan-int and
 			// chan<-int values sharing one channel, and `any(A{}) ==
@@ -2773,28 +2778,6 @@ func (c *compiler) binary(x *ast.BinaryExpr) {
 		}
 		c.emit(bytecode.OpBinary, int(op), 0, x.Pos())
 	}
-}
-
-// ifaceOperand reports whether the operand's static type is visibly an
-// interface — a conversion to any/error, a named interface type, or an
-// interface{...} literal. Declared interface variables carry no
-// compile-time marker (cells bind typedefs at runtime), so `var i any =
-// …; i == j` still compares laxly.
-func (c *compiler) ifaceOperand(e ast.Expr) bool {
-	switch t := ast.Unparen(e).(type) {
-	case *ast.CallExpr:
-		if !c.conversionCall(t) {
-			return false
-		}
-		switch f := ast.Unparen(t.Fun).(type) {
-		case *ast.InterfaceType:
-			return true
-		case *ast.Ident:
-			info, found := c.resolveName(f.Name)
-			return found && info.iface
-		}
-	}
-	return false
 }
 
 // binaryOperands emits the operands of a plain binary op in Go's
@@ -3359,11 +3342,16 @@ func (c *compiler) hoistEagerOps(es []ast.Expr, prefix string) (subs []ast.Expr,
 		return nil, false
 	}
 	// Phase 1: evaluate each hoisted op into a scratch local, in order.
+	// An interface-typed hoisted expr marks its scratch name like a :=
+	// bind does, so a substituted == operand still picks pair equality.
 	names := map[ast.Expr]string{}
 	for _, call := range calls {
 		c.expr(call)
 		name := c.fresh(prefix)
 		slot := c.fs.declare(name, call.Pos())
+		if c.isIfaceExpr(call) {
+			c.fs.markIface(name)
+		}
 		c.emit(bytecode.OpNewLocal, slot, 0, call.Pos())
 		names[call] = name
 	}

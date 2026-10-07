@@ -6625,6 +6625,12 @@ func constToBasic(u *runtime.UConst, name string) (runtime.Value, bool) {
 // the interface nil rules from eqlValue.
 func (v *VM) ifaceEql(f *frame, a, b runtime.Value) bool {
 	a, b = v.materialize(f, a), v.materialize(f, b)
+	// a nil interface equals nil: `var a any; a == nil` is true — the
+	// pair rule below only applies when a dynamic type exists. A typed
+	// nil still carries its type, so `any((*int)(nil)) == nil` is false.
+	if isIfaceNilValue(a) || isIfaceNilValue(b) {
+		return isIfaceNilValue(a) && isIfaceNilValue(b)
+	}
 	// an interface operand is a (dynamic type, value) pair: the dynamic
 	// typedefs must be identical before values compare. Values carry
 	// their type on Typ/Def rather than only on a Named wrapper —
@@ -6658,6 +6664,20 @@ func (v *VM) ifaceEql(f *frame, a, b runtime.Value) bool {
 		return false
 	}
 	return v.eqlValue(a, b)
+}
+
+// isIfaceNilValue reports whether x carries no dynamic type — an
+// untyped nil or a nil interface value. A typed nil keeps its type
+// inside IfaceNil.Typ (coerce boxes TypedNil{*T} as IfaceNil{*T}), so
+// only an interface-typed or untagged IfaceNil counts as plain nil.
+func isIfaceNilValue(x runtime.Value) bool {
+	switch t := x.(type) {
+	case runtime.Nil:
+		return true
+	case *runtime.IfaceNil:
+		return t.Typ == nil || t.Typ.Kind == runtime.KindInterface
+	}
+	return false
 }
 
 func (v *VM) binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
