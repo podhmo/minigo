@@ -6,11 +6,13 @@ TODO.md に切り出す前の検討置き場。
 - 一行一論点。項目ごと・行ごとに取捨できる粒度を目指す
 - 実装方針はここでは未確定でよい。案の列挙まで
 - 採用が決まったものだけ TODO.md の `- [ ]` 項目に昇格させる
+- 各項目に `status:` マークを付けている(`promoted` / `deferred` / `excluded` / `undecided`) — 実装後に TODO.md → TODO-archive.md へ流れても判断記録はここに残る
 
 ## 強化(既存機能の純粋強化)
 
 ### syntax に軽量パース段階を追加する
 
+- status: `promoted`
 - 現状
   - `syntax.ParseFile` は常にフルパース(`ParseComments` 付き)
   - import 一覧を取るだけのためにもフルパースのコストを払っている
@@ -25,6 +27,7 @@ TODO.md に切り出す前の検討置き場。
 
 ### inspect に decl-anchored AST ハンドルを露出する
 
+- status: `promoted`
 - 現状
   - `index.Decl` は `Func *ast.FuncDecl`/`Gen`/`Spec` を保持済み
   - body や初期化式は既にメモリ上にあるが、script 側からは見えない
@@ -47,6 +50,7 @@ TODO.md に切り出す前の検討置き場。
 
 ### TypeExpr の解決経路を記録する
 
+- status: `promoted`
 - 現状
   - `Origin`/`chaseType` は visited set だけを持つ
   - 循環・失敗時に「どこを辿ったか」を報告できない
@@ -57,9 +61,13 @@ TODO.md に切り出す前の検討置き場。
   - 経路は call-local の一時状態でシンボル側には残さない — 解決呼び出しの性質であってシンボルの性質ではない
     - `chaseType` が既に visited set を call 毎に持つので並行して []string を1本伸ばすだけ
     - 診断モードという概念は要らない — 成功時は読まれず失敗/循環時のみエラーメッセージに使う
+  - 見せ方: メッセージ埋め込み + 抽出 API の二段(reason 取り出し系と同じ形)
+    - typed error(`*ResolveError{Path []string}` 相当)が経路を保持、`err.Error()` が `main.A → main.B → main.C → main.A (cycle)` を render
+    - 機械向けに `inspect.ResolutionPath(err)` 的な1本を添える(errors.As 的);script 側は bound error の `.Path` で届く
 
 ### Unresolved の明示的マーカー
 
+- status: `deferred` — TODO.md には入れない(発火条件=解釈停止機構が main に入るまで)
 - 現状
   - scope 外の参照は「見つからない」と「スキャン対象外」を区別できない
 - 参考実装
@@ -74,6 +82,7 @@ TODO.md に切り出す前の検討置き場。
 
 ### ファイルパースの並列化
 
+- status: `excluded` — TODO.md には入れない(parse 支配が実測されたら再検討)
 - 現状
   - `minigo.go` がパッケージ内ファイルを逐次パースする
 - 参考実装
@@ -88,6 +97,7 @@ TODO.md に切り出す前の検討置き場。
 
 ### astwalk パッケージ(仮称 — 旧 declwalk 案)
 
+- status: `promoted`
 - 動機
   - func decl の body 走査は TODO.md 長年の残項目
   - inspect = 「何か」層(identity/解決)、walk = 「列挙」層と分けると設計が楽(調査 §1)
@@ -115,6 +125,7 @@ TODO.md に切り出す前の検討置き場。
 
 ### modulewalk パッケージ(採用方向で確定)
 
+- status: `promoted`
 - 動機
   - 「root 以下の全パッケージを nested go.mod 越しに列挙」が既存の TODO 項目 → **採用 verdict**
   - go-scan `modulewalker.go` がほぼそのままの仕様(調査 §3)
@@ -139,8 +150,10 @@ TODO.md に切り出す前の検討置き場。
 
 ### ImportManager 相当
 
+- status: `promoted`
 - 動機
   - 生成コードの import alias 解決を各 example が手でやるのは限界
+  - 訂正: examples/convert-define は既に自前の実装を持つ(`generator/importmanager.go`: `Add`/`Qualify`/`Imports` + keyword マップ)。port する=この ad-hoc 実装を `pkg/` に引き上げて共有する形。採用ルールは go-scan 版と現行版を突き合わせて決める
 - 参考実装
   - go-scan `importmanager.go`(keyword→`_pkg`、競合→連番、path ハッシュ fallback、`Qualify`)(調査 §4)
 - 用途
@@ -150,8 +163,9 @@ TODO.md に切り出す前の検討置き場。
   - 「host util か script 公開か」の二択ではなく、host 側に実装を置いて script には薄い intrinsic を被せる(inspect の stub+impl 構成と同じ)
   - 純粋ロジック(alias 規則+衝突解決)で AST 不要なので共有しやすい
 
-### scantest 型のテストハーネス + FileWriter
+### gentest(旧 scantest 案)型のテストハーネス + FileWriter
 
+- status: `promoted`
 - 動機
   - examples の挙動確認テストが temp dir + 手書き helper 依存になりがち
     - 現に gen-sync は `setupModule`/`copyTree`/`assertSameFile` を自前で持つ
@@ -165,6 +179,7 @@ TODO.md に切り出す前の検討置き場。
 
 ### 永続シンボル index(symbolCache 相当)
 
+- status: `undecided` — 必要な局面(REPL/反復のみ)とコスト(≈0)は見えているが採用 verdict は未だ。TODO.md には入っていない
 - 動機
   - 「シンボル X がどこで定義されているか」を引く index がない
   - REPL からの package introspection(既存 TODO)の足場になる
