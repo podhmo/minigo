@@ -82,6 +82,11 @@ TODO.md に切り出す前の検討置き場。
   - astwalk を推す方向(「node」は広すぎ — 歩く対象は `go/ast` 構文木)
   - modulewalk(次項)と `-walk` で対称、`go/ast` 側に相当
   - 他候補: syntaxwalk(`syntax` pkg と語彙は揃うが拡張に見えて曖昧)、declwalk(decl-anchored に留まるなら正直だが狭い)、astx/astutil は x/tools と被るので不可
+- 教訓(重要)
+  - go-scan に同名の `astwalk` パッケージが存在し #993 で削除済み — 中身は `ToplevelStructs` 1関数だけで未使用だった
+  - 「先に器を作ると1関数の墓場になる」ので consumer-first: 最初の消費者が現れてから、その形で抽出する
+  - 最初の消費者候補: `inspect.UsedSymbolsOf` の file walk(抽出元)、body 走査を要する実タスク、host ツール
+  - 対照的に modulewalk は go-scan 側に実績消費者あり(find-orphans、deps-walk)= 扱いは非対称
 - 未定
   - bind path(`inspect` の増補か `minigo.dev/astwalk` 新設か)
   - 最小形だけか、pattern-hook まで入れるか
