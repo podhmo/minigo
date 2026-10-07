@@ -155,25 +155,25 @@ func (e *Env) bindsKeyOf(td *runtime.TypeDef) string {
 	if len(td.OuterArgs) == 0 && (len(td.TParams) == 0 || len(td.Binds) == 0) {
 		return ""
 	}
+	outer, own := td.InstArgs()
 	var sb strings.Builder
 	sb.WriteString("[")
-	for i, ov := range td.OuterArgs {
-		otd, _ := ov.(*runtime.TypeDef)
+	for i, a := range outer {
+		otd, _ := a.Value.(*runtime.TypeDef)
 		if i > 0 {
 			sb.WriteString(",")
 		}
 		sb.WriteString(e.keyOf(otd))
 	}
-	wrote := len(td.OuterArgs) > 0
+	wrote := len(outer) > 0
 	if wrote {
 		sb.WriteString(";")
 	}
-	for _, tp := range td.TParams {
-		bv, ok := td.Binds[tp]
-		if !ok {
+	for _, a := range own {
+		if !a.Bound {
 			continue
 		}
-		atd, _ := bv.(*runtime.TypeDef)
+		atd, _ := a.Value.(*runtime.TypeDef)
 		if wrote {
 			sb.WriteString(",")
 		}
