@@ -142,6 +142,12 @@ type VM struct {
 	// unwind can drop its unwound frames even when a superseding panic
 	// was in flight (the consumed one differs from the frame's own).
 	consumedPanic *runtime.Panic
+	// draining counts unwind loops currently running a frame's defers.
+	// While one is live a panic unwinding a deferred call has not
+	// reached its process boundary yet — the owner still has defers
+	// to run — so failProc holds off even though the popped owner no
+	// longer counts in len(v.frames).
+	draining int
 	// pcSites is the registry behind runtime.Callers' opaque uintptr
 	// handles: CallerPCs appends a snapshot, CallerFrame resolves one.
 	pcSites []runtime.CallSite
@@ -1196,6 +1202,7 @@ func (v *VM) unwind(f *frame, r any) {
 		// the list to the outer context — Go's recovery lands on the
 		// frame's deferreturn, where `defer recover()` sees the panic
 		// that was unwinding below (recover1.go test6).
+		v.draining++
 		for len(f.defers) > 0 {
 			if p != nil && v.inflight == nil {
 				v.inflight = saved
@@ -1213,6 +1220,7 @@ func (v *VM) unwind(f *frame, r any) {
 			}
 			v.runOneDefer(f, p)
 		}
+		v.draining--
 	}
 	if r != nil {
 		if p != nil || (v.inflight != saved && v.inflight != nil) {
@@ -1275,7 +1283,7 @@ func (v *VM) unwind(f *frame, r any) {
 // already ending on its own terms, and recording procExit as the fatal
 // would mask the real failure on the root call.
 func (v *VM) failProc(r any) {
-	if len(v.frames) != 0 || v.proc == nil || v.syncCall {
+	if len(v.frames) != 0 || v.draining != 0 || v.proc == nil || v.syncCall {
 		return
 	}
 	switch r.(type) {
