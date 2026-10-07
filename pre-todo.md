@@ -19,8 +19,8 @@ TODO.md に切り出す前の検討置き場。
 - 未定 → 方向は見えた
   - `ParseFile` にモードオプションは足さない — truncated `*ast.File` が同じ型で下流に流れ、フル AST 前提の処理が静かに壊れるため
   - 別関数・別戻り値型にする(go-scan `ScanPackageFromFilePathImports` と同じ切り分け)
-    - 命名案: `syntax.ParseImports`/`syntax.ParsePackageClause` — 既存 `ParseFile` ファミリに揃える
-    - `PackageClause` は spec に実在する構文名でそのまま使える;import 側は spec 的には `ImportDecl`/`ImportSpec` で「ImportsClause」は存在しないので `ParseImports` が自然
+    - 命名: `syntax.ParseImports` に**決定** — 既存 `ParseFile` ファミリに揃える
+    - `ParsePackageClause` も同じファミリで spec 実在用語;import 側は spec 的には `ImportDecl`/`ImportSpec` で「ImportsClause」は存在しないので `ParseImports` が自然
     - truncated AST はその関数内で消費・破棄されるので half-AST がパイプラインに存在しない
 
 ### inspect に decl-anchored AST ハンドルを露出する
