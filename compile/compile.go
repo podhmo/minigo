@@ -976,6 +976,22 @@ func (c *compiler) valueSpec(vs *ast.ValueSpec, d *index.Decl) {
 		c.emit(bytecode.OpCoerceTop, 0, 0, vs.Pos())
 	}
 	switch {
+	case !isConst && len(vals) == 0 && len(vs.Names) == 1 && vs.Type != nil && embedPatterns(d.Gen, vs) != nil:
+		// `//go:embed pat...` on `var x T`: the hidden embed builtin
+		// reads the matched files from the package directory and
+		// builds the string, []byte or embed.FS value.
+		pats := embedPatterns(d.Gen, vs)
+		c.expr(&ast.Ident{NamePos: vs.Pos(), Name: EmbedBuiltin})
+		c.typeExpr(vs.Type)
+		for _, pat := range pats {
+			c.emit(bytecode.OpConst, c.constIdx(pat), 0, vs.Pos())
+		}
+		for range len(pats) + 1 {
+			c.emit(bytecode.OpNil, 0, 0, vs.Pos()) // no static arg types
+		}
+		c.emit(bytecode.OpCall, len(pats)+1, 0, vs.Pos())
+		bind(vs.Names[0])
+		coerceVar(vs.Names[0])
 	case len(vals) == 0:
 		for _, name := range vs.Names {
 			c.emit(bytecode.OpNil, 0, 0, name.Pos())
@@ -1006,6 +1022,62 @@ func (c *compiler) valueSpec(vs *ast.ValueSpec, d *index.Decl) {
 			bind(name)
 			coerceVar(name)
 		}
+	}
+}
+
+// EmbedBuiltin names the hidden builtin a `//go:embed` var initializes
+// through: EmbedBuiltin(T, patterns...). The name cannot collide with a
+// Go identifier a program would write.
+const EmbedBuiltin = "__minigo_embed__"
+
+// embedPatterns collects the `//go:embed` patterns on a var spec — from
+// its own doc, or the GenDecl's for an unparenthesized `var x T`. Quoted
+// patterns ("a b" or `a b`) keep their spaces. nil when there are none.
+func embedPatterns(gen *ast.GenDecl, vs *ast.ValueSpec) []string {
+	var groups []*ast.CommentGroup
+	if vs.Doc != nil {
+		groups = append(groups, vs.Doc)
+	}
+	if gen != nil && gen.Doc != nil && !gen.Lparen.IsValid() {
+		groups = append(groups, gen.Doc)
+	}
+	var out []string
+	for _, g := range groups {
+		for _, cm := range g.List {
+			rest, ok := strings.CutPrefix(cm.Text, "//go:embed")
+			if !ok || (rest != "" && rest[0] != ' ' && rest[0] != '\t') {
+				continue
+			}
+			out = append(out, splitEmbedPatterns(rest)...)
+		}
+	}
+	return out
+}
+
+// splitEmbedPatterns splits a directive's argument list on spaces,
+// honoring Go-quoted ("...") and raw (`...`) patterns.
+func splitEmbedPatterns(s string) []string {
+	var out []string
+	for {
+		s = strings.TrimLeft(s, " \t")
+		if s == "" {
+			return out
+		}
+		if q := s[0]; q == '"' || q == '`' {
+			if pre, err := strconv.QuotedPrefix(s); err == nil {
+				if u, err := strconv.Unquote(pre); err == nil {
+					out = append(out, u)
+				}
+				s = s[len(pre):]
+				continue
+			}
+		}
+		i := strings.IndexAny(s, " \t")
+		if i < 0 {
+			return append(out, s)
+		}
+		out = append(out, s[:i])
+		s = s[i:]
 	}
 }
 

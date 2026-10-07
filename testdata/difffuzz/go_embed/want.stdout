@@ -1,0 +1,18 @@
+"hello\n" "hello\n"
+. true <nil>
+tpl true <nil>
+tpl/a.tmpl false <nil>
+tpl/sub true <nil>
+tpl/sub/b.tmpl false <nil>
+. true <nil>
+hello.txt false <nil>
+tpl true <nil>
+tpl/.hidden false <nil>
+tpl/_skip true <nil>
+tpl/_skip/s false <nil>
+tpl/a.tmpl false <nil>
+tpl/sub true <nil>
+tpl/sub/b.tmpl false <nil>
+"b\n" <nil>
+a.tmpl false
+sub true
