@@ -3060,39 +3060,13 @@ func scriptVal(v any) runtime.Value {
 // the one builtin where a float64 box and the declared width disagree in
 // formatting. `type F32 float32` tags count too (Anon names the builtin).
 func float32Tag(td *runtime.TypeDef) bool {
-	if td == nil {
-		return false
-	}
-	if td.Name == "float32" {
-		return true
-	}
-	x := td.Anon
-	if x == nil && td.Spec != nil {
-		x = td.Spec.Type
-	}
-	if id, ok := x.(*ast.Ident); ok {
-		return id.Name == "float32"
-	}
-	return false
+	return runtime.BasicNameOf(td) == "float32"
 }
 
 // complex64Tag mirrors float32Tag for complex64 — the payload rides the
 // float64/complex128 domain but formats at complex64 width per part.
 func complex64Tag(td *runtime.TypeDef) bool {
-	if td == nil {
-		return false
-	}
-	if td.Name == "complex64" {
-		return true
-	}
-	x := td.Anon
-	if x == nil && td.Spec != nil {
-		x = td.Spec.Type
-	}
-	if id, ok := x.(*ast.Ident); ok {
-		return id.Name == "complex64"
-	}
-	return false
+	return runtime.BasicNameOf(td) == "complex64"
 }
 
 // complex64Value reads a payload as complex64 — either a complex128 box

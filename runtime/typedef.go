@@ -114,6 +114,26 @@ func BasicTypedef(name string) *TypeDef {
 	return basicTypedefs[name]
 }
 
+// BasicNameOf resolves the underlying builtin basic-type name behind a
+// typedef: `type F32 float32` and the bare float32 typedef both read
+// "float32". Empty when the typedef isn't basic-named.
+func BasicNameOf(td *TypeDef) string {
+	if td == nil {
+		return ""
+	}
+	if basicTypedefName(td.Name) {
+		return td.Name
+	}
+	x := td.Anon
+	if x == nil && td.Spec != nil {
+		x = td.Spec.Type
+	}
+	if id, ok := x.(*ast.Ident); ok && basicTypedefName(id.Name) {
+		return id.Name
+	}
+	return ""
+}
+
 // canonBasicName folds predeclared aliases: byte is uint8 and rune is
 // int32 — an alias spelled at a call site and its canonical name are the
 // same type.
@@ -1192,14 +1212,21 @@ func instArgsSpelling(td *TypeDef) string {
 	return b.String()
 }
 
-// instArgName spells a typedef inside an instantiation's arg list — the
-// only position gc decorates a function-local type's name with its
-// `·gen` decl index (`main.T[main.L0·1]`); the head name of a spelled
-// type stays bare (`main.T[...]`, `main.L0`).
-func instArgName(td *TypeDef) string {
+// withInstArgs returns a clone of td flagged as spelled inside an
+// instantiation's arg list — the only position gc decorates a
+// function-local type's name with its `·gen` decl index
+// (`main.T[main.L0·1]`); the head name of a spelled type stays bare
+// (`main.T[...]`, `main.L0`).
+func withInstArgs(td *TypeDef) *TypeDef {
 	ad := *td
 	ad.inInstArgs = true
-	return DisplayName(&ad)
+	return &ad
+}
+
+// instArgName spells a typedef inside an instantiation's arg list (see
+// withInstArgs for the `·gen` rule).
+func instArgName(td *TypeDef) string {
+	return DisplayName(withInstArgs(td))
 }
 
 // InstArg is one slot of an instantiated typedef's argument list — a
@@ -1277,9 +1304,7 @@ func DisplayName(td *TypeDef) string {
 	if td.Kind == KindPointer && td.Elem != nil {
 		elem := td.Elem
 		if td.inInstArgs && !elem.inInstArgs {
-			ec := *elem
-			ec.inInstArgs = true
-			elem = &ec
+			elem = withInstArgs(elem)
 		}
 		return "*" + DisplayName(elem)
 	}
@@ -1303,9 +1328,7 @@ func DisplayName(td *TypeDef) string {
 	if td.Elem != nil {
 		elem := td.Elem
 		if td.inInstArgs && !elem.inInstArgs {
-			ec := *elem
-			ec.inInstArgs = true
-			elem = &ec
+			elem = withInstArgs(elem)
 		}
 		switch td.Kind {
 		case KindPointer:
@@ -1366,6 +1389,15 @@ func instHead(x ast.Expr, ctx *TypeDef) string {
 	return TypGoSpelling(x, &hc)
 }
 
+// localHeadTypedef resolves a head ident in an instantiation context:
+// a bound type parameter first, then a declared function-local type.
+func localHeadTypedef(ctx *TypeDef, name string) *TypeDef {
+	if btd := boundTypedef(ctx.Binds, name); btd != nil {
+		return btd
+	}
+	return ctx.LocalTypes[name]
+}
+
 // outerSpellPrefix spells the enclosing instantiation's resolved args
 // that lead a function-local head's bracket — gc spells `U[int]` inside
 // F[int] as `main.U[int;int]·3`, the `int;` coming from the enclosing
@@ -1378,10 +1410,7 @@ func outerSpellPrefix(x ast.Expr, ctx *TypeDef) string {
 	if !ok {
 		return ""
 	}
-	btd := boundTypedef(ctx.Binds, id.Name)
-	if btd == nil {
-		btd = ctx.LocalTypes[id.Name]
-	}
+	btd := localHeadTypedef(ctx, id.Name)
 	if btd == nil || !btd.Local {
 		return ""
 	}
@@ -1406,9 +1435,7 @@ func instArgGoSpelling(x ast.Expr, ctx *TypeDef) string {
 	if ctx == nil {
 		return TypGoSpelling(x, ctx)
 	}
-	ac := *ctx
-	ac.inInstArgs = true
-	return TypGoSpelling(x, &ac)
+	return TypGoSpelling(x, withInstArgs(ctx))
 }
 
 // instArgSuffix returns the `·gen` marker gc appends after the brackets
@@ -1423,10 +1450,7 @@ func instArgSuffix(x ast.Expr, ctx *TypeDef) string {
 	if !ok {
 		return ""
 	}
-	btd := boundTypedef(ctx.Binds, id.Name)
-	if btd == nil {
-		btd = ctx.LocalTypes[id.Name]
-	}
+	btd := localHeadTypedef(ctx, id.Name)
 	if btd != nil && btd.Gen > 0 {
 		return "·" + strconv.Itoa(btd.Gen)
 	}
