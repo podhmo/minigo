@@ -392,12 +392,20 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 	}
 	switch t := e.(type) {
 	case *ast.Ident:
-		if btd := boundTypedef(binds, t.Name); btd != nil {
+		btd := boundTypedef(binds, t.Name)
+		if btd == nil && ctx != nil {
+			btd = ctx.LocalTypes[t.Name]
+		}
+		if btd != nil {
 			// display, not identity: a bound argument qualifies by the
 			// package's clause name like every other Type.String path —
 			// typBoundSpellingU's Pkg.Path qualifier is for identity
 			// spelling (<dir>/x.Point would leak the synthetic path).
-			return DisplayName(btd)
+			s := DisplayName(btd)
+			if ctx != nil && ctx.inInstArgs && btd.Gen > 0 {
+				s += "\u00b7" + strconv.Itoa(btd.Gen)
+			}
+			return s
 		}
 		// Go's Type.String expands the any alias — func(any) any
 		// displays as func(interface {}) interface {}.
@@ -486,16 +494,16 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 		}
 		return TypGoSpelling(t.X, ctx) + "." + t.Sel.Name
 	case *ast.IndexExpr:
-		return TypGoSpelling(t.X, ctx) + "[" + TypGoSpelling(t.Index, ctx) + "]"
+		return instHead(t.X, ctx) + "[" + instArgGoSpelling(t.Index, ctx) + "]" + instArgSuffix(t.X, ctx)
 	case *ast.IndexListExpr:
-		s := TypGoSpelling(t.X, ctx) + "["
+		s := instHead(t.X, ctx) + "["
 		for i, x := range t.Indices {
 			if i > 0 {
 				s += ","
 			}
-			s += TypGoSpelling(x, ctx)
+			s += instArgGoSpelling(x, ctx)
 		}
-		return s + "]"
+		return s + "]" + instArgSuffix(t.X, ctx)
 	case *ast.InterfaceType:
 		if t.Methods == nil || len(t.Methods.List) == 0 {
 			return "interface {}"
@@ -1151,7 +1159,7 @@ func instArgsSpelling(td *TypeDef) string {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		b.WriteString(DisplayName(otd))
+		b.WriteString(instArgName(otd))
 	}
 	if len(outer) > 0 && len(own) > 0 {
 		b.WriteByte(';')
@@ -1164,10 +1172,20 @@ func instArgsSpelling(td *TypeDef) string {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		b.WriteString(DisplayName(btd))
+		b.WriteString(instArgName(btd))
 	}
 	b.WriteByte(']')
 	return b.String()
+}
+
+// instArgName spells a typedef inside an instantiation's arg list — the
+// only position gc decorates a function-local type's name with its
+// `·gen` decl index (`main.T[main.L0·1]`); the head name of a spelled
+// type stays bare (`main.T[...]`, `main.L0`).
+func instArgName(td *TypeDef) string {
+	ad := *td
+	ad.inInstArgs = true
+	return DisplayName(&ad)
 }
 
 // InstArg is one slot of an instantiated typedef's argument list — a
@@ -1232,7 +1250,11 @@ func DisplayName(td *TypeDef) string {
 				name = "interface {}"
 			}
 		}
-		return name + instArgsSpelling(td)
+		s := name + instArgsSpelling(td)
+		if td.inInstArgs && td.Gen > 0 {
+			s += "·" + strconv.Itoa(td.Gen)
+		}
+		return s
 	}
 	anon := td.Anon
 	if anon == nil && td.Spec != nil {
@@ -1252,15 +1274,21 @@ func DisplayName(td *TypeDef) string {
 		return TypGoSpelling(anon, &cd)
 	}
 	if td.Elem != nil {
+		elem := td.Elem
+		if td.inInstArgs && !elem.inInstArgs {
+			ec := *elem
+			ec.inInstArgs = true
+			elem = &ec
+		}
 		switch td.Kind {
 		case KindPointer:
-			return "*" + DisplayName(td.Elem)
+			return "*" + DisplayName(elem)
 		case KindSlice:
-			return "[]" + DisplayName(td.Elem)
+			return "[]" + DisplayName(elem)
 		case KindMap:
-			return "map[?]" + DisplayName(td.Elem)
+			return "map[?]" + DisplayName(elem)
 		case KindChan:
-			return "chan " + DisplayName(td.Elem)
+			return "chan " + DisplayName(elem)
 		case KindInterface:
 			return "interface {}"
 		}
@@ -1295,6 +1323,51 @@ func goFuncSig(t *ast.FuncType, ctx *TypeDef) string {
 		sb.WriteString(" " + res)
 	}
 	return sb.String()
+}
+
+// instHead spells an instantiation's head (`T` in `T[A]`): the head
+// name never carries a `·gen` suffix, so it spells with a flagless
+// copy of ctx.
+func instHead(x ast.Expr, ctx *TypeDef) string {
+	if ctx == nil {
+		return TypGoSpelling(x, ctx)
+	}
+	hc := *ctx
+	hc.inInstArgs = false
+	return TypGoSpelling(x, &hc)
+}
+
+// instArgGoSpelling spells an instantiation's type argument: inside an
+// arg list every function-local type carries its `·gen` index.
+func instArgGoSpelling(x ast.Expr, ctx *TypeDef) string {
+	if ctx == nil {
+		return TypGoSpelling(x, ctx)
+	}
+	ac := *ctx
+	ac.inInstArgs = true
+	return TypGoSpelling(x, &ac)
+}
+
+// instArgSuffix returns the `·gen` marker gc appends after the brackets
+// of a function-local instantiation spelled inside an arg list —
+// `main.T[main.U[int]·3]`. Empty outside arg context or for heads that
+// are not a local decl (a `pkg.T[...]` selector has no gen).
+func instArgSuffix(x ast.Expr, ctx *TypeDef) string {
+	if ctx == nil || !ctx.inInstArgs {
+		return ""
+	}
+	id, ok := ast.Unparen(x).(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	btd := boundTypedef(ctx.Binds, id.Name)
+	if btd == nil {
+		btd = ctx.LocalTypes[id.Name]
+	}
+	if btd != nil && btd.Gen > 0 {
+		return "·" + strconv.Itoa(btd.Gen)
+	}
+	return ""
 }
 
 // goFieldSpellings renders a signature field list like typFieldSpellings

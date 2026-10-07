@@ -1,0 +1,10 @@
+main.T[int;main.U[int;int]·2]
+main.T[int;main.T[int;main.U[int;int]·2]·1]
+main.T[int;int]
+main.U[int;int]
+main.L[int]
+main.M
+struct { f main.L[int] }
+main.G[func(main.L[int]·3)]
+main.G[*main.L[int]·3]
+main.G[main.L[int]·3]

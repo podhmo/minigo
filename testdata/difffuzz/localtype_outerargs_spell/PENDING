@@ -1,0 +1,5 @@
+A function-local type inside a generic function spells its enclosing
+type args: minigo binds the unspecialized-name typedef on display
+paths, so `main.L0` lacks the implicit `[int]` (identity already
+parameterizes correctly — see localtype_outerargs).
+Sibling gap found while fixing vargen_argspell (`·gen` markers).

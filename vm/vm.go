@@ -10946,7 +10946,7 @@ func (v *VM) specializeType(f *frame, g *runtime.TypeDef, targs []runtime.Value)
 		MReqs: g.MReqs, IEmbeds: g.IEmbeds,
 		EmbedSpecs: g.EmbedSpecs, EmbedIdx: g.EmbedIdx, Embeds: g.Embeds,
 		LocalTypes: g.LocalTypes, Elem: g.Elem, HostNew: g.HostNew,
-		Local: g.Local, OuterArgs: outer,
+		Local: g.Local, Gen: g.Gen, OuterArgs: outer,
 	}
 	if len(g.Methods) > 0 {
 		td.Methods = make(map[string]*runtime.Function, len(g.Methods))
