@@ -7398,6 +7398,17 @@ func eqlValue(a, b runtime.Value) bool {
 			if as != nil && bs != nil && aok && bok &&
 				ai >= 0 && ai < int64(len(as.Elems)) &&
 				bi >= 0 && bi < int64(len(bs.Elems)) {
+				// zero-size elements share runtime.zerobase:
+				// &x[1] == &x[2] for [N][0]byte or []struct{},
+				// and slice elements share it even across
+				// containers. Distinct ARRAY objects still
+				// fold to different objects (&x1[0] != &x2[0]).
+				if zeroSizeValue(as.Elems[ai]) && zeroSizeValue(bs.Elems[bi]) {
+					if as != bs && isArrayTyp(as.Typ) && isArrayTyp(bs.Typ) {
+						return false
+					}
+					return true
+				}
 				return &as.Elems[ai] == &bs.Elems[bi]
 			}
 			return refBase(av.Base) == refBase(br.Base) && eqlValue(av.Key, br.Key)
