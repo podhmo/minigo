@@ -1647,6 +1647,17 @@ func (e *Engine) installStdlib() {
 			t, err := time.Parse(str(a[0]), str(a[1]))
 			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(t), errVal(err)}}, nil
 		}),
+		"ParseInLocation": h.fn("time.ParseInLocation", func(a []any) (any, error) {
+			if len(a) != 3 {
+				return nil, errors.New("time.ParseInLocation needs 3 args")
+			}
+			loc, ok := a[2].(*time.Location)
+			if !ok {
+				return nil, fmt.Errorf("time.ParseInLocation: %T is not a *time.Location", a[2])
+			}
+			t, err := time.ParseInLocation(str(a[0]), str(a[1]), loc)
+			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(t), errVal(err)}}, nil
+		}),
 		"ParseDuration": h.fn1("time.ParseDuration", func(a []any) (any, error) {
 			d, err := time.ParseDuration(str(a[0]))
 			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(d), errVal(err)}}, nil
