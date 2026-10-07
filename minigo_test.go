@@ -1891,6 +1891,11 @@ func TestLangGate(t *testing.T) {
 	if got := run(t, e, "./testdata/langgate/tok", "Answer"); got != int64(42) {
 		t.Fatalf("tok/Answer: got %v", got)
 	}
+	// x.f[k] on a field/method selection with a selector or binary index
+	// is indexing, not instantiation: a go1.16 module accepts it.
+	if got := run(t, e, "./testdata/langgate/fx116", "F"); got != int64(17) {
+		t.Fatalf("fx116/F: got %v", got)
+	}
 	// package-declared `any`/`min`/`new` shadow the predeclared names:
 	// the gate must not flag them (gc doesn't).
 	if got := run(t, e, "./testdata/langgate/sh117", "M"); got != int64(1) {
