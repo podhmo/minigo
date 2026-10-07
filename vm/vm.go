@@ -2947,7 +2947,7 @@ func goValueOf(rv reflect.Value) runtime.Value {
 		*runtime.BoundMethod, *runtime.BuiltinFunc, *runtime.GoValue,
 		*runtime.Chan, *runtime.TypeDef, *runtime.Iterator, *runtime.Package,
 		*runtime.ImportRef, *runtime.TypedNil, *runtime.IfaceNil,
-		*runtime.Named:
+		*runtime.Named, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
 		return v
 	default:
 		// an unnamed host slice/array ([N]T, []T) unboxes element-wise so
