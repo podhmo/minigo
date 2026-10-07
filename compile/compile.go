@@ -2842,24 +2842,41 @@ func (c *compiler) pureOperand(x ast.Expr) bool {
 	}
 }
 
+// resolveLitType resolves a composite literal's declared type to its
+// underlying syntactic form — peeling parens and following named types
+// through local `type` decls and the package index (`type M map[K]V`
+// resolves M to the MapType). fuel bounds the named-type hops; a name
+// that does not resolve, or fuel running out mid-chain, returns the
+// expr reached so far. Callers apply their own shape predicate and
+// pick their own bound — mapLitType and isKeyedLitShape differ.
+func (c *compiler) resolveLitType(t ast.Expr, fuel int) ast.Expr {
+	for t != nil {
+		switch tt := t.(type) {
+		case *ast.ParenExpr:
+			t = tt.X
+		case *ast.Ident:
+			if fuel <= 0 {
+				return t
+			}
+			info, found := c.resolveName(tt.Name)
+			if !found || !info.isType || info.tspec == nil {
+				return t
+			}
+			t = info.tspec.Type
+			fuel--
+		default:
+			return t
+		}
+	}
+	return nil
+}
+
 // mapLitType reports whether a composite literal's declared type is a
 // map — syntactically (`map[K]V{}`) or through a named type
 // (`type M map[K]V; M{}`), like isKeyedLitShape resolves.
 func (c *compiler) mapLitType(t ast.Expr, fuel int) bool {
-	switch tt := t.(type) {
-	case *ast.MapType:
-		return true
-	case *ast.ParenExpr:
-		return c.mapLitType(tt.X, fuel)
-	case *ast.Ident:
-		if fuel <= 0 {
-			return false
-		}
-		if info, found := c.resolveName(tt.Name); found && info.isType && info.tspec != nil {
-			return c.mapLitType(info.tspec.Type, fuel-1)
-		}
-	}
-	return false
+	_, ok := c.resolveLitType(t, fuel).(*ast.MapType)
+	return ok
 }
 
 // foldConst evaluates a constant-only binary expression in go/constant's
@@ -3821,18 +3838,9 @@ func (c *compiler) literalKeysAreExprs(baseType ast.Expr, depth int) bool {
 // map[int]int` means `M{i: 1}` evaluates `i` — while unresolvable names
 // keep the struct-style field-name heuristic. fuel bounds alias chains.
 func (c *compiler) isKeyedLitShape(t ast.Expr, fuel int) bool {
-	switch tt := t.(type) {
+	switch c.resolveLitType(t, fuel).(type) {
 	case *ast.MapType, *ast.ArrayType:
 		return true
-	case *ast.ParenExpr:
-		return c.isKeyedLitShape(tt.X, fuel)
-	case *ast.Ident:
-		if fuel <= 0 {
-			return false
-		}
-		if info, found := c.resolveName(tt.Name); found && info.isType && info.tspec != nil {
-			return c.isKeyedLitShape(info.tspec.Type, fuel-1)
-		}
 	}
 	return false
 }
