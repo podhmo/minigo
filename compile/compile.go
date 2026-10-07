@@ -1348,7 +1348,7 @@ func (c *compiler) commaOkRhs(e ast.Expr) bool {
 	case *ast.IndexExpr:
 		c.expr(x.X)
 		c.expr(x.Index)
-		c.emit(bytecode.OpIndexOK, 0, 0, x.Pos())
+		c.emit(bytecode.OpIndexOK, 0, 0, x.Lbrack)
 	case *ast.TypeAssertExpr:
 		if x.Type == nil {
 			return false
@@ -2605,7 +2605,7 @@ func (c *compiler) expr(e ast.Expr) {
 		for _, i := range x.Indices {
 			c.typeExpr(i)
 		}
-		c.emit(bytecode.OpInstantiate, len(x.Indices), 0, x.Pos())
+		c.emit(bytecode.OpInstantiate, len(x.Indices), 0, x.Lbrack)
 	case *ast.Ellipsis:
 		c.trap(x.Pos(), "bare ellipsis is not supported")
 	case *ast.KeyValueExpr:
@@ -3992,13 +3992,13 @@ func (c *compiler) typeExpr(e ast.Expr) {
 		// generic instantiation T[Args]: args in type position
 		c.expr(t.X)
 		c.typeExpr(t.Index)
-		c.emit(bytecode.OpInstantiate, 1, 0, e.Pos())
+		c.emit(bytecode.OpInstantiate, 1, 0, t.Lbrack)
 	case *ast.IndexListExpr:
 		c.expr(t.X)
 		for _, i := range t.Indices {
 			c.typeExpr(i)
 		}
-		c.emit(bytecode.OpInstantiate, len(t.Indices), 0, e.Pos())
+		c.emit(bytecode.OpInstantiate, len(t.Indices), 0, t.Lbrack)
 	case *ast.Ellipsis:
 		// ...T binds as []T: a variadic param's declared type IS a slice,
 		// so a missing rest coerces to TypedNil{slice}, not the elem zero
