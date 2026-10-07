@@ -10047,8 +10047,15 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 	}
 	switch l := at.Len.(type) {
 	case *ast.BasicLit:
-		n, err := strconv.ParseInt(l.Value, 0, 64)
-		return n, err == nil
+		// the length literal evaluates in the constant domain — `1e1`,
+		// `'a'` and `1_000` all spell integer lengths that
+		// strconv.ParseInt cannot read.
+		if iv, ok := toIntConst(constant.MakeFromLiteral(l.Value, l.Kind, 0)); ok {
+			if n, ok := constant.Int64Val(iv); ok {
+				return v.foldArrLen(at, n), true
+			}
+		}
+		return 0, false
 	case *ast.Ident:
 		// a named const: its value lives in the package env once init
 		// ran (Materialize returns NIL for const decls); fall back to the
