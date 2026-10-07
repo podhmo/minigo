@@ -434,6 +434,22 @@ The by-name lookup count pointed at a cache. The real cost was the
 allocations in one of the three paths, and splitting the bound per path
 found it.
 
+## Cumulative: the whole stack (#624 → #625 → #629)
+
+One interleaved run of all four builds: main (`9f81e6cb`, the stack's
+base), #624 (step 3), #625 (step 4a) and #629 (step 7). Outputs were
+identical on every side.
+
+| build | grafana-openapi (11 rounds) | vs previous | micro (7 rounds) | vs previous |
+|---|---|---|---|---|
+| main | 3.304s | | 0.830s | |
+| #624 | 2.796s (−15.4%) | −15.4% | 0.579s (−30.2%) | −30.2% |
+| #625 | 2.603s (−21.2%) | −6.9% | 0.604s (−27.2%) | +4.4% (noise) |
+| #629 | 2.408s (−27.1%) | −7.5% | 0.577s (−30.5%) | −4.6% (noise) |
+
+The micro probe has one interface conversion and few field refs, so
+only step 3 moves it. The ±4% between its last three rows is noise.
+
 ## How to re-run
 
 The realworld `compare.sh` (podhmo/minigo-usecasefuzz) needs bash 4
