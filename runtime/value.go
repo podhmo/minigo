@@ -293,6 +293,15 @@ func (r *FieldRef) find() (st *Struct, idx int, ok bool) {
 	if s == nil {
 		return nil, 0, false
 	}
+	// a direct field needs no BFS: depth 0 has a single struct and
+	// field names within it are unique (a blank `_` is never selected).
+	if s.Def != nil {
+		for i, n := range s.Def.Fields {
+			if n == r.Name {
+				return s, i, true
+			}
+		}
+	}
 	level := []*Struct{s}
 	for depth := 0; len(level) > 0 && depth < 32; depth++ {
 		switch hits := r.fieldHits(level); len(hits) {
