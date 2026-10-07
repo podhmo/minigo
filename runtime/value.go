@@ -1717,10 +1717,32 @@ type Panic struct {
 	Value   Value
 	Frames  []string // "func at file:line" entries collected while unwinding
 	GoStack string   // host goroutine stack at panic time (host panics only)
+	// Prev is the panic this one superseded — a panic raised while
+	// another unwinds links back to it; Go prints the chain
+	// oldest-first (`panic: old` / `\tpanic: new`), rendering only the
+	// head's traceback.
+	Prev *Panic
+	// Recovered marks a panic recover() consumed — the chain renders
+	// it with gc's ` [recovered]` marker.
+	Recovered bool
 }
 
 func (p *Panic) Error() string {
-	s := fmt.Sprintf("panic: %v", panicValue(p.Value))
+	var chain []*Panic
+	for pp := p; pp != nil; pp = pp.Prev {
+		chain = append(chain, pp)
+	}
+	var sb strings.Builder
+	for i := len(chain) - 1; i >= 0; i-- {
+		if i < len(chain)-1 {
+			sb.WriteString("\n\t")
+		}
+		fmt.Fprintf(&sb, "panic: %v", panicValue(chain[i].Value))
+		if chain[i].Recovered {
+			sb.WriteString(" [recovered]")
+		}
+	}
+	s := sb.String()
 	if len(p.Frames) > 0 {
 		s += "\nTraceback (most recent call first):\n" + renderFrames(p.Frames)
 	}

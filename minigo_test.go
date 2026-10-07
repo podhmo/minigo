@@ -370,6 +370,27 @@ func TestPanicTraceback(t *testing.T) {
 		t.Errorf("Repanic traceback: the deferred call must come before the origin:\n%s", got)
 	}
 
+	// a recovered-then-repanicked panic renders gc's chain: the
+	// superseded panic first with ` [recovered]`, the new panic under a
+	// leading tab — gc: `panic: old [recovered]` / `\tpanic: new`.
+	got = runErr("RepanicChain")
+	for _, want := range []string{"panic: chain-tail [recovered]", "\n\tpanic: chain-head"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("RepanicChain traceback missing %q:\n%s", want, got)
+		}
+	}
+
+	// a repanic without recover still chains — without the marker.
+	got = runErr("RepanicPlain")
+	for _, want := range []string{"panic: chain-old", "\n\tpanic: chain-new"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("RepanicPlain traceback missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "[recovered]") {
+		t.Errorf("RepanicPlain: unrecovered panic must not render [recovered]:\n%s", got)
+	}
+
 	// a panic inside a host builtin names the builtin itself and carries
 	// the host goroutine stack (Panic.GoStack — issue #19)
 	got = runErr("BoomViaBuiltin")
