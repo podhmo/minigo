@@ -676,6 +676,21 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 			scope = from.Pkg.Scopes[from.File]
 		}
 		ref, ok := scope[id.Name]
+		if !ok && from.File != nil {
+			// an unaliased import whose package clause differs from the
+			// path's last element (gopkg.in/yaml.v3 declares yaml):
+			// Scopes keys on the basename, so learn the real name by
+			// materializing like the VM's resolveGlobal does.
+			for _, r := range from.Pkg.Imports[from.File] {
+				if r.Alias != "" {
+					continue
+				}
+				if p, err := r.Materialize(); err == nil && p != nil && p.Name == id.Name {
+					ref, ok = r, true
+					break
+				}
+			}
+		}
 		if !ok {
 			// minireflect's exprOf qualifies a named typedef by package
 			// PATH (e.g. <dir>/prog/x.T, reflect.Value) — the selector's
