@@ -653,7 +653,7 @@ func Func(fn *runtime.Function) error {
 				c.ch.NamedSlots = append(c.ch.NamedSlots, slot)
 				c.emit(bytecode.OpNil, 0, 0, n.Pos())
 				c.emit(bytecode.OpNewLocal, slot, 0, n.Pos())
-				c.emitTypeCoerce(slot, field.Type, n.Pos())
+				c.emitSigTypeCoerce(slot, field.Type, n.Pos())
 			}
 		}
 	}
@@ -673,7 +673,7 @@ func Func(fn *runtime.Function) error {
 		// compiles to a no-op returning its declared zero values.
 		for _, rt := range c.results {
 			c.emit(bytecode.OpNil, 0, 0, fn.Decl.End())
-			c.typeExpr(rt)
+			c.sigTypeExpr(rt)
 			c.emit(bytecode.OpCoerceTop, 0, 0, fn.Decl.End())
 		}
 	}
@@ -737,8 +737,33 @@ type paramCoerce struct {
 // points at the signature, not nowhere.
 func (c *compiler) emitParamCoerces(pcs []paramCoerce) {
 	for _, pc := range pcs {
-		c.emitTypeCoerce(pc.slot, pc.typ, pc.typ.Pos())
+		c.emitSigTypeCoerce(pc.slot, pc.typ, pc.typ.Pos())
 	}
+}
+
+// sigTypeExpr emits typeExpr for a type written in the function's
+// signature. Go resolves those in the enclosing scope, so the function's
+// own names are hidden meanwhile: a parameter named like an imported
+// package (`func next(token token.Token)`) must not shadow the package
+// when the parameter, a named result or a `return` coerces to it.
+func (c *compiler) sigTypeExpr(t ast.Expr) {
+	saved := c.fs.blocks
+	hidden := make([]map[string]*binding, len(saved))
+	for i := range hidden {
+		hidden[i] = map[string]*binding{}
+	}
+	c.fs.blocks = hidden
+	defer func() { c.fs.blocks = saved }()
+	c.typeExpr(t)
+}
+
+// emitSigTypeCoerce is emitTypeCoerce for a signature type.
+func (c *compiler) emitSigTypeCoerce(slot int, t ast.Expr, pos token.Pos) {
+	if t == nil {
+		return
+	}
+	c.sigTypeExpr(t)
+	c.emit(bytecode.OpCoerce, slot, 0, pos)
 }
 
 // emitTypeCoerce emits typeExpr(t) + OpCoerce(slot). The type expr keeps
@@ -2249,7 +2274,7 @@ func (c *compiler) returnStmt(st *ast.ReturnStmt) {
 		// `return` under `func f() (r *T)` yields a typed nil.
 		for i, slot := range c.ch.NamedSlots {
 			if i < len(c.results) && c.results[i] != nil {
-				c.emitTypeCoerce(slot, c.results[i], st.Pos())
+				c.emitSigTypeCoerce(slot, c.results[i], st.Pos())
 			}
 		}
 		c.emit(bytecode.OpReturn, -1, 0, st.Pos()) // -1: use named result slots
@@ -2261,7 +2286,7 @@ func (c *compiler) returnStmt(st *ast.ReturnStmt) {
 		// `any` slot still boxes a typed nil into an IfaceNil.
 		c.expr(st.Results[0])
 		for _, rt := range c.results {
-			c.typeExpr(rt)
+			c.sigTypeExpr(rt)
 		}
 		c.emit(bytecode.OpCoerceN, len(c.results), 0, st.Results[0].Pos())
 		// spread the tuple back to N values so OpReturn's named-slot
@@ -2275,7 +2300,7 @@ func (c *compiler) returnStmt(st *ast.ReturnStmt) {
 			// `return e` coerces e to the declared result type — `return nil`
 			// under a *T result yields a typed nil, under any an IfaceNil.
 			if i < len(c.results) && c.results[i] != nil {
-				c.typeExpr(c.results[i])
+				c.sigTypeExpr(c.results[i])
 				c.emit(bytecode.OpCoerceTop, 0, 0, r.Pos())
 			}
 		}
@@ -4133,7 +4158,7 @@ func (c *compiler) funcLit(x *ast.FuncLit) {
 				ic.ch.NamedSlots = append(ic.ch.NamedSlots, slot)
 				ic.emit(bytecode.OpNil, 0, 0, n.Pos())
 				ic.emit(bytecode.OpNewLocal, slot, 0, n.Pos())
-				ic.emitTypeCoerce(slot, field.Type, n.Pos())
+				ic.emitSigTypeCoerce(slot, field.Type, n.Pos())
 			}
 		}
 		ic.ch.NResults = countResults(x.Type.Results)
