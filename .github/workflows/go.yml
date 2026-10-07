@@ -6,8 +6,14 @@ name: Go
 on:
   push:
     branches: [ "main" ]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
   pull_request:
     types: [ opened, synchronize, reopened ]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
 
 # A new push to the same PR cancels the superseded run; pushes to main
 # always run to completion.
