@@ -1502,6 +1502,11 @@ func typBoundSpellingU(td *TypeDef, under bool) string {
 	if under {
 		return TypUnderlyingSpelling(td)
 	}
+	if td.Name == "any" && td.Pkg == nil {
+		// T=any spells the expansion, like a literal `any` ident does —
+		// map[K]V with V=any must match map[string]interface{}.
+		return "interface{}"
+	}
 	if td.Name != "" {
 		if td.Pkg != nil {
 			// a host-bound td's Name is already "pkgpath.Name"
