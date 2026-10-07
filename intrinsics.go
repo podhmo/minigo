@@ -686,6 +686,51 @@ func (e *Engine) installStdlib() {
 		}),
 		"Setting": hostType("internal/godebug.Setting", func() any { return &godebugSetting{} }),
 	})
+	// internal/bytealg and internal/stringslite back strings/bytes in
+	// GOROOT, and their sources lean on unsafe (bytealg's init reads
+	// unsafe.Offsetof of cpu flags). Stub the pure entry points stdlib
+	// sources call — embed.FS's lookup, for one — over strings/bytes.
+	e.Bind("internal/bytealg", map[string]runtime.Value{
+		"MaxLen":  int64(64),
+		"Compare": h.fn2("bytealg.Compare", func(a []any) (any, error) { return int64(bytes.Compare(byteSlice(a[0]), byteSlice(a[1]))), nil }),
+		"Count": h.fn2("bytealg.Count", func(a []any) (any, error) {
+			return int64(bytes.Count(byteSlice(a[0]), []byte{byte(int64Of(a[1]))})), nil
+		}),
+		"CountString": h.fn2("bytealg.CountString", func(a []any) (any, error) {
+			return int64(strings.Count(str(a[0]), string([]byte{byte(int64Of(a[1]))}))), nil
+		}),
+		"Equal":           h.fn2("bytealg.Equal", func(a []any) (any, error) { return bytes.Equal(byteSlice(a[0]), byteSlice(a[1])), nil }),
+		"Index":           h.fn2("bytealg.Index", func(a []any) (any, error) { return int64(bytes.Index(byteSlice(a[0]), byteSlice(a[1]))), nil }),
+		"IndexString":     h.fn2("bytealg.IndexString", func(a []any) (any, error) { return int64(strings.Index(str(a[0]), str(a[1]))), nil }),
+		"IndexByte":       h.fn2("bytealg.IndexByte", func(a []any) (any, error) { return int64(bytes.IndexByte(byteSlice(a[0]), byte(int64Of(a[1])))), nil }),
+		"IndexByteString": h.fn2("bytealg.IndexByteString", func(a []any) (any, error) { return int64(strings.IndexByte(str(a[0]), byte(int64Of(a[1])))), nil }),
+		"LastIndexByte": h.fn2("bytealg.LastIndexByte", func(a []any) (any, error) {
+			return int64(bytes.LastIndexByte(byteSlice(a[0]), byte(int64Of(a[1])))), nil
+		}),
+		"LastIndexByteString": h.fn2("bytealg.LastIndexByteString", func(a []any) (any, error) { return int64(strings.LastIndexByte(str(a[0]), byte(int64Of(a[1])))), nil }),
+	})
+	e.Bind("internal/stringslite", map[string]runtime.Value{
+		"HasPrefix": h.fn2("stringslite.HasPrefix", func(a []any) (any, error) { return strings.HasPrefix(str(a[0]), str(a[1])), nil }),
+		"HasSuffix": h.fn2("stringslite.HasSuffix", func(a []any) (any, error) { return strings.HasSuffix(str(a[0]), str(a[1])), nil }),
+		"IndexByte": h.fn2("stringslite.IndexByte", func(a []any) (any, error) { return int64(strings.IndexByte(str(a[0]), byte(int64Of(a[1])))), nil }),
+		"Index":     h.fn2("stringslite.Index", func(a []any) (any, error) { return int64(strings.Index(str(a[0]), str(a[1]))), nil }),
+		"Cut": h.fn2("stringslite.Cut", func(a []any) (any, error) {
+			b, f, ok := strings.Cut(str(a[0]), str(a[1]))
+			return &runtime.Tuple{Elems: []runtime.Value{b, f, ok}}, nil
+		}),
+		"CutPrefix": h.fn2("stringslite.CutPrefix", func(a []any) (any, error) {
+			r, ok := strings.CutPrefix(str(a[0]), str(a[1]))
+			return &runtime.Tuple{Elems: []runtime.Value{r, ok}}, nil
+		}),
+		"CutSuffix": h.fn2("stringslite.CutSuffix", func(a []any) (any, error) {
+			r, ok := strings.CutSuffix(str(a[0]), str(a[1]))
+			return &runtime.Tuple{Elems: []runtime.Value{r, ok}}, nil
+		}),
+		"TrimPrefix":      h.fn2("stringslite.TrimPrefix", func(a []any) (any, error) { return strings.TrimPrefix(str(a[0]), str(a[1])), nil }),
+		"TrimSuffix":      h.fn2("stringslite.TrimSuffix", func(a []any) (any, error) { return strings.TrimSuffix(str(a[0]), str(a[1])), nil }),
+		"Clone":           h.fn1("stringslite.Clone", func(a []any) (any, error) { return strings.Clone(str(a[0])), nil }),
+		"IndexByteString": h.fn2("stringslite.IndexByteString", func(a []any) (any, error) { return int64(strings.IndexByte(str(a[0]), byte(int64Of(a[1])))), nil }),
+	})
 	e.Bind("html", map[string]runtime.Value{
 		"EscapeString":   h.fn("html.EscapeString", func(a []any) (any, error) { return html.EscapeString(str(a[0])), nil }, html.EscapeString),
 		"UnescapeString": h.fn("html.UnescapeString", func(a []any) (any, error) { return html.UnescapeString(str(a[0])), nil }, html.UnescapeString),
