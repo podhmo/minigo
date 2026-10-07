@@ -65,10 +65,11 @@ TODO.md に切り出す前の検討置き場。
 - 参考実装
   - go-scan `NewUnresolvedTypeInfo`/`TypeInfo.Unresolved` フラグ(調査 §2)
   - 実体は symgo の **load policy 境界マーカー**: `Resolver.ResolveType` が `ScanPolicy(importPath)` NO で placeholder を返す + 解決失敗時にも逃げる
-- 未定 → 条件付き
+- 未定 → 先送り(発火条件つき)
   - 層: interpreter 層ではない(VM は実値が要るので placeholder では進められない)。inspect/tooling 層の型解決が作用面
   - 価値は「読み込み範囲を制限する policy」が存在して初めて立つ — policy 導入の前提部品
-    - policy を入れるなら必須パーツ、入れないなら見送り
+    - 現状 policy 系の機能は draft 実験 PR 側にのみ存在(#24 `inspect.Ops` dataflow、#25 compiled ops body 走査、#112 trace 系)、main には無い
+  - 発火条件: 途中で解釈をやめる機構の例が main に入ってから — そこで必須パーツとして復活
   - `TypeExpr` に載せるか `Decl` に載せるか、両方か — policy 採用時に改めて
 
 ### ファイルパースの並列化
