@@ -1681,9 +1681,8 @@ func (v *VM) loop(f *frame) {
 					for k, bv := range td.Binds {
 						binds[k] = bv
 					}
-					for i, n := range names {
-						binds[n] = outer[i] // resolved args beat compile placeholders
-					}
+					// resolved args beat compile placeholders
+					bindArgs(binds, names, outer)
 					clone := *td
 					clone.OuterArgs = outer
 					clone.Binds = binds
@@ -10387,9 +10386,7 @@ func (v *VM) instantiate(f *frame, base runtime.Value, targs []runtime.Value, po
 			f.trap("cannot instantiate %s: needs %d type arguments, got %d", g.Name, len(g.TParams), len(targs))
 		}
 		binds := map[string]runtime.Value{}
-		for i, tp := range g.TParams {
-			binds[tp] = targs[i]
-		}
+		bindArgs(binds, g.TParams, targs)
 		ctx := &runtime.TypeDef{Pkg: g.Pkg, File: g.File, Binds: binds}
 		if err := v.checkTArgs(ctx, g.TParams, g.TConstraints, binds); err != nil {
 			f.trap("%s", err)
@@ -10408,9 +10405,7 @@ func (v *VM) instantiateFunc(f *frame, g *runtime.Function, targs []runtime.Valu
 	for k, bv := range g.Binds {
 		binds[k] = bv
 	}
-	for i, tp := range g.TParams {
-		binds[tp] = targs[i]
-	}
+	bindArgs(binds, g.TParams, targs)
 	ctx := &runtime.TypeDef{Pkg: g.Pkg, File: g.File, Binds: binds}
 	if err := v.checkTArgs(ctx, g.TParams, g.TConstraints, binds); err != nil {
 		f.trap("%s", err)
@@ -10451,6 +10446,18 @@ func (v *VM) outerTypeArgs(f *frame) (names []string, args []runtime.Value) {
 	return names, args
 }
 
+// bindArgs folds a parallel name/argument list into binds in
+// declaration order; names past len(args) stay unbound (a compile-time
+// placeholder survives). Callers trap on arity before binding, so the
+// guard only covers unchecked internal paths.
+func bindArgs(binds map[string]runtime.Value, names []string, args []runtime.Value) {
+	for i, n := range names {
+		if i < len(args) {
+			binds[n] = args[i]
+		}
+	}
+}
+
 // specializeType clones a generic typedef with its methods re-bound to the
 // concrete type arguments. A function-local generic instantiating inside
 // a generic function captures the enclosing type arguments too — they are
@@ -10461,16 +10468,10 @@ func (v *VM) specializeType(f *frame, g *runtime.TypeDef, targs []runtime.Value)
 	var outer []runtime.Value
 	if g.Local {
 		names, args := v.outerTypeArgs(f)
-		for i, n := range names {
-			binds[n] = args[i]
-		}
+		bindArgs(binds, names, args)
 		outer = args
 	}
-	for i, tp := range g.TParams {
-		if i < len(targs) {
-			binds[tp] = targs[i]
-		}
-	}
+	bindArgs(binds, g.TParams, targs)
 	td := &runtime.TypeDef{
 		Pkg: g.Pkg, Name: g.Name, File: g.File, Spec: g.Spec, Kind: g.Kind,
 		Fields: g.Fields, FTags: g.FTags, Anon: g.Anon, TParams: g.TParams,
@@ -10487,9 +10488,7 @@ func (v *VM) specializeType(f *frame, g *runtime.TypeDef, targs []runtime.Value)
 			for k, bv := range m.Binds {
 				binds[k] = bv
 			}
-			for i, tp := range g.TParams {
-				binds[tp] = targs[i]
-			}
+			bindArgs(binds, g.TParams, targs)
 			// the receiver may rename the type's parameters — `func (l
 			// List[E])` on `type List[T]` scopes E in the method body, so
 			// the receiver's own names bind to the same arguments.
