@@ -1481,6 +1481,47 @@ func (e *Engine) installStdlib() {
 		"Offsetof": h.fn("unsafe.Offsetof", func(a []any) (any, error) {
 			return nil, errors.New("unsafe.Offsetof is not supported: selector results are not values")
 		}),
+		// Element pointers are &s[i] refs over a script slice, so the
+		// StringData/String and SliceData/Slice round trips used for
+		// zero-copy string packing (x/tools' event labels) hold.
+		"StringData": &runtime.BuiltinFunc{Name: "unsafe.StringData", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			// "" still yields a (zero-length) element ref: Go leaves its
+			// result unspecified, and a nil would not convert to a
+			// pointer type over unsafe.Pointer (label's stringptr).
+			str, _ := runtime.Unwrap(args[0]).(string)
+			if str == "" {
+				// point at a lone NUL so the ref dereferences
+				return &runtime.IndexRef{Base: unsafeBytes("\x00"), Key: int64(0)}, nil
+			}
+			return &runtime.IndexRef{Base: unsafeBytes(str), Key: int64(0)}, nil
+		}},
+		"SliceData": &runtime.BuiltinFunc{Name: "unsafe.SliceData", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			sl, ok := runtime.Unwrap(args[0]).(*runtime.Slice)
+			if !ok || len(sl.Elems) == 0 {
+				return runtime.NIL, nil
+			}
+			return &runtime.IndexRef{Base: sl, Key: int64(0)}, nil
+		}},
+		"String": &runtime.BuiltinFunc{Name: "unsafe.String", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			elems, err := unsafeElems(args[0], args[1])
+			if err != nil {
+				return nil, err
+			}
+			return string(byteSlice(&runtime.Slice{Elems: elems})), nil
+		}},
+		"Slice": &runtime.BuiltinFunc{Name: "unsafe.Slice", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			elems, err := unsafeElems(args[0], args[1])
+			if err != nil {
+				return nil, err
+			}
+			var typ *runtime.TypeDef
+			if ref, ok := runtime.Unwrap(args[0]).(*runtime.IndexRef); ok {
+				if sl := ref.Slice(); sl != nil {
+					typ = sl.Typ
+				}
+			}
+			return &runtime.Slice{Elems: elems, Typ: typ}, nil
+		}},
 	})
 	e.Bind("runtime", map[string]runtime.Value{
 		"GOOS":   goruntime.GOOS,
@@ -3333,6 +3374,37 @@ func borrowBytes(v runtime.Value) ([]byte, func()) {
 		}
 	}
 	return byteSlice(v), func() {}
+}
+
+// unsafeBytes copies str into a script []byte backing for StringData.
+func unsafeBytes(str string) *runtime.Slice {
+	el := make([]runtime.Value, len(str))
+	for i := 0; i < len(str); i++ {
+		el[i] = runtime.Tag(runtime.BasicTypedef("byte"), int64(str[i]))
+	}
+	return &runtime.Slice{Elems: el, Typ: &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: ast.NewIdent("byte")}}}
+}
+
+// unsafeElems resolves unsafe.String/Slice's (ptr, len) to the n
+// elements starting at an &s[i] ref, sharing the slice's backing.
+func unsafeElems(p, nv runtime.Value) ([]runtime.Value, error) {
+	n := int(int64Of(goNative(nv)))
+	if p == nil || p == runtime.NIL {
+		if n == 0 {
+			return nil, nil
+		}
+		return nil, errors.New("unsafe: ptr is nil and len is not zero")
+	}
+	ref, ok := runtime.Unwrap(p).(*runtime.IndexRef)
+	if !ok {
+		return nil, fmt.Errorf("unsafe: unsupported pointer %T (only element pointers)", p)
+	}
+	sl := ref.Slice()
+	i, _ := ref.Key.(int64)
+	if sl == nil || int(i)+n > cap(sl.Elems) {
+		return nil, errors.New("unsafe: pointer range out of bounds")
+	}
+	return sl.Elems[i : int(i)+n : int(i)+n], nil
 }
 
 // byteSlice unmarshals a script value to []byte for os.WriteFile & co:
