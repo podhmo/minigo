@@ -5164,7 +5164,9 @@ func (v *VM) indexOK(f *frame, base, idx runtime.Value) runtime.Value {
 	if dv, ok := runtime.Deref(base); ok {
 		return v.indexOK(f, dv, idx)
 	}
-	idx = runtime.Unwrap(idx)
+	// an untyped-const key (`const k = "x"; v, ok := m[k]`) hashes as
+	// its materialized value, like index's plain read
+	idx = runtime.Unwrap(v.materialize(f, idx))
 	if n, ok := base.(*runtime.Named); ok {
 		return v.indexOK(f, n.V, idx)
 	}
