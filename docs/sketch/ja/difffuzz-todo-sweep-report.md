@@ -566,3 +566,63 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 - iota 修正の中間プローブファイルが古い内容のまま走り `f := iota` で両系に蹴られた — 検証プローブは使い回さず毎回新規に書く。
 - FieldRef の初版は zerobase 畳み込みまで入れて pin で自己矛盾を検出 — 実装前に「Go で別 struct のゼロサイズフィールドが等しいか」を先にプローブしておけば一手省けた。
 - `isIfaceExpr` 拡張の初版は nil iface 等値と package-var shadowing を同時に退行させた（前者はピンで自己検出、後者は Devin Review 指摘）— 「判定器を広げる」変更は false-positive 側（非 iface を iface と誤認する向き）のプローブを先に書くべきだった。
+
+## 6.17 実施ラウンド（round-15）: Stack #615 — difffuzz 残件掃討・CAP10・全体差分レビュー4件+クリーンアップ5件・Devin Review 追随
+
+発端は round-14 同様、TODO.md の difffuzz 系残件を「1 root cause = 1 PR」で直列掃討する指示（CAP=10、途中 stack #618 の main マージに伴う全再 rebase あり）。成果: **Stack #615 に difffuzz 修正 10 PR（#612–#631）＋ レビュー由来 5 PR（#632–#636）＋ 本レポート**。レポート作成前の全体差分レビューを子セッション1件に委譲し（ユーザー指定フェーズ）、返答をバグ優先→リファクタの順で要否判定・対応した。レビュー対応は CAP 対象外（ユーザー明示の運用どおり）。
+
+### 実施内容
+
+| フェーズ | 内容 | PR |
+|------|------|-----|
+| difffuzz/CAP 修正 | 配列 store が共有 backing を汚す（#612）、int/float リテラルを materialize 境界まで UConst に（#614）、local iface var の nil メソッド呼び出し panic（#616）、`·gen` スコープ index スペリング（#620）、deferred panic が残り defer を止める（#621）、`[recovered]` チェーン（#622）、外側型引数スペリング（#623）、untyped const operand の型採用（#628）、iface ペア比較の動的型判定（#630）、float32/complex64 定数変換の丸め（#631、corpus bug470） | [#612](https://github.com/podhmo/minigo/pull/612)–[#631](https://github.com/podhmo/minigo/pull/631) |
+| 全体差分レビュー（バグ） | 子セッション指摘 B-1〜B-4 の精査: B-4（float32/complex64 変換の二重丸め → exact→f64→f32 経路を `Float32Val` 一発丸めへ・#632）、B-1（`a[i][:]` が要素 read コピーを bind → `OpIndexRef` B=2 の ref-or-value + `overwriteArrayElems` 再帰・#633）、B-2（表現不能 untyped const が被演算子型に採用されず wrap → `materializeConstErr` 経由の trap・#634）、B-3（型付き定数式が wrap 域で評価される → `constBinary` 正確域 fold + unary `-` の reject・#635） | [#632](https://github.com/podhmo/minigo/pull/632)–[#635](https://github.com/podhmo/minigo/pull/635) |
+| Devin Review 追随（#634 上） | 自動レビュー指摘2件を実証して修正: 多段 named チェーン（`type A B; B int8`）の overflow 非検査 → `peelNamed` 経由へ、`1e300 + c64` が complex64 +Inf を物質化 → complex64 アームに有限性検査。追加分として `1.5 + intvar` が 9.5 を返す裸スカラー/GoValue オペランド側の同根因ギャップも `scalarOperandTypedef` で閉じた | [#634](https://github.com/podhmo/minigo/pull/634)（追加コミット） |
+| レビュー由来クリーンアップ | `runtime.BasicNameOf` 公開して `float32Tag`/`complex64Tag` と `basicNameOf` を統合、`withInstArgs`/`localHeadTypedef`/`funcTypedefOf`/`materializeOperandConst` 抽出、`v.draining` の defer 化（防御的） | [#636](https://github.com/podhmo/minigo/pull/636) |
+| 帳簿 | TODO.md の各項目を `[x]` 化（pin slug 併記） | 各 PR |
+| 本レポート | 本章 | 本 PR |
+
+### レビュー指摘の判定結果
+
+| 指摘 | 判定 | PR |
+|------|------|-----|
+| B-1 ネスト配列の全体代入で内側エイリアスが切れる | 採用 — 2根因に分解（要素 read コピー + 全体 store の非再帰） | [#633](https://github.com/podhmo/minigo/pull/633) |
+| B-2 表現不能 untyped const が wrap される | 採用 — `adaptConst` の reject ゲート + 裸/GoValue・多段チェーン・complex64 Inf の拡張 | [#634](https://github.com/podhmo/minigo/pull/634) |
+| B-3 unsigned 定数式が wrap 域で評価される | 採用 — both-const fold の正確域化、`-`/`^` の非対称を修正 | [#635](https://github.com/podhmo/minigo/pull/635) |
+| B-4 float32/complex64 変換の二重丸め | 採用 — `constant.Float32Val` 一発丸め（tie 値で確認） | [#632](https://github.com/podhmo/minigo/pull/632) |
+| `v.draining++`/`--` が panic でリーク（観測不能・防御） | 採用 — defer 化（#636 内） | [#636](https://github.com/podhmo/minigo/pull/636) |
+| `float32Tag`/`complex64Tag` が `basicNameOf` の再実装 | 採用 — `runtime.BasicNameOf` を公開して両側から寄せた | [#636](https://github.com/podhmo/minigo/pull/636) |
+| `convertConst`/`constToBasic`/`scalarConst` の変換テーブル重複 | **不採用** — B-2/B-4 後に残るのはオペランド形状別のディスパッチ表（name/typedef/bare value）であって、実算法自体は `fitsIntConst`/`constFloat`/`Float32Val` に既に共有済み | — |
+| `typeOfValue` vs `argTypedef` の関数系 case 逐語複製 | 採用 — `funcTypedefOf` 抽出 | [#636](https://github.com/podhmo/minigo/pull/636) |
+| `inInstArgs` 伝播の複製（4箇所） | 採用 — `withInstArgs` | [#636](https://github.com/podhmo/minigo/pull/636) |
+| `boundTypedef → LocalTypes` フォールバック複製（2箇所） | 採用 — `localHeadTypedef` | [#636](https://github.com/podhmo/minigo/pull/636) |
+| binaryOp unsigned パスの constPayload→materializeConst 同形 | 採用 — `materializeOperandConst` | [#636](https://github.com/podhmo/minigo/pull/636) |
+
+### 計画外の記録と判断
+
+計画時の仮説・設計と実施後の理解がずれた点、および計画に無かった事象への判断。
+
+- **B-9（untyped const overflow）は「境界に range check を足す」話ではなかった**: 着手時は `int8(300)`/`var x int8 = 300` の変換境界でガードを入れるだけと見ていた。実態は int/float リテラルが `literalValue`/`constOperand` で即座に bare int64/float64 に物質化されており、定数と変数を区別する情報が境界に到達する時点で既に失われていた。→ 「全定数を materialization 境界まで `*runtime.UConst` に保つ」不変条件に一本化（rune/complex/巨大 float が既に従っていた規約と同じに揃えた形）。約10箇所の境界それぞれで materialize する設計になった。個所直しでなく規約統一だったと後から整理できた。
+- **B-1 の根因は1つではなく2つあった**: レビューは `overwriteArray` のフラット `copy` を指したが、実装中のプローブで「`x[0][:]` の bind 自体が要素 read コピー（`elemRead`→`coerce`→`valueCopy`）を拾う」という別機構が先に効いていると分かった。→ コンパイル側に `OpIndexRef` の B=2（ref-or-value: IndexRef が取れる時だけ ref、なければ要素値）を新設し、store 側は `overwriteArrayElems` の配列要素再帰で対応。単一修正では両半分を直さないと一致しないことを確認してから2箇所に分けて直した。
+- **`m[k][:]` は gc でもコンパイル拒否だった**: ピン作成時に map-of-array の `m[0][:]` を入れたら gc が `cannot slice unaddressable value` で弾く — map 要素はアドレス不能なので「ref が取れるときだけ ref 化」という B=2 のフォールバック設計そのものが gc 準拠だった。→ ピンからは外し、map-of-string の `ms[0][1:]`（合法: 文字列要素のスライスは読み取り）だけ残した。pin には gc でコンパイルできるコードしか置けない制約をここでも再確認（const_overflow の先例どおり拒否側はコメント記述）。
+- **B-2 と B-3 は同じファイルでも別機構だった**: レビューは「定数ドメインのエッジ」として一括りだったが、`adaptConst`（untyped const が被演算子型を採用できない→wrap）と `binaryOp` の const-expression fold（両辺定数なら正確域で評価→range check）が別々に壊れていた。`uint(4) - 8`（trap）と `v - 8`（wrap）の区別を保つため、`binaryOp` 先頭で `constPayload` をスナップショットしてから unwrap する構成にした — Named の unwrap 後では「typed const（Named{tag,UConst}）」と「格納済み変数（Named{tag,5}）」を区別できない。これは `#615` で UConst を Tag 内に保持する設計にしたからこそ書けた判別（B-4 の payload 丸めと同じ表面）。
+- **変数セルが UConst を保持しないことを先に検証した**: B-3 の fold が `x := int8(100); x + 100` を誤って定数式扱いしないか — `x` の cell が UConst payload を残すなら誤 trap になる。実プローブで `assignCell`→`coerce` が格納時に物質化することを確認してから fold を入れた（回帰では `x + 100` が -56 に wrap することを assert）。
+- **`-` と `^` の非対称は unary の unsigned fallback に潜んでいた**: `unaryOp` の unsigned フォールバックは「const 域の結果が表現不能なら materialize して concrete op を走らせる」で `-uint(5)` まで許していた。`^uint(0)` は定数域の -1 が uint では maxuint に写るのでフォールバックが必要、`-` は gc の reject。→ フォールバックを `op == UnXor` に限定。`uint(4) - 8` と `-uint(5)` と `^uint(0)` の3項でしか差が出ないエッジ。
+- **testdata/fuzzfix が gc 非合法なコードを抱えていた**: `ShiftUintCount` の `c := uint(4) - 8` は gc でコンパイル不能な定数式（ファイル全体が minigo 専用実行なので存在できた）。B-3 修正で意図どおり trap するようになったため、同じ巨大 count を gc 合法な `^uint(3)` に書き換え — テストの意図（unsigned な count の生ビット列でシフト）を保持したまま。
+- **自分が書いた新関数が「既存関数の再実装」だった**: B-2 用に `numericTypeName` を新設したが、直後の Devin Review 指摘（多段チェーン）を直す過程で `numericBasicName`（`builtinTypeName` から bool/string/error を除く既存セット）と `peelNamed`（多段 typedef 解決の既存経路）がそのものズバリ存在したと気づいた。→ `numericTypeName` を削除して `numericBasicName(basicNameOf(peelNamed(...)))` に置き換え。「この名前集合が欲しい」と思ったとき既存セットとの差が "error" だけだったこと、および名前解決の深さが peelNamed に既にあったこと — レビューの「再実装していないか」は自分の新コードにも向けるべきだった（§6.16 の ifaceOperand と同型の再発）。
+- **Devin Review の2指摘は実ギャップだったが、それを直すと更に同根因の面が見えた**: `type A B` チェーン + `1e300 + c64` を修正中に、裸スカラー/GoValue オペランド側（`1.5 + intvar` → 9.5、`(1+2i) + v` → (9+2i)）がまだ同じ wrap 経路を残していることを確認。Named に限る修正はクラスの半分しか閉じないため `scalarOperandTypedef` でゲートを全数値オペランド形状に拡張した（`300 + a` が 36 ですらなく 308 を出していた — wrap すらしていない別ドメイン誤りだった、という副次観測も記録）。
+- **trap 文言の class 一致を明示的に採用**: minigo の `constant 300 overflows int8` は gc の `300 (untyped int constant) overflows int8` と同じ reject クラスだが、文言規約は違う（`1.5` に対しても gc は "truncated"、こちらは "overflows"/"cannot use"）。文言一致は difffuzz の verdict クラス上「コンパイル拒否」として同格なので、同一クラス内の表記差は残す判断を明示する — 文言 fidelity が必要になったら別項目にする。
+- **`1e308 * 2` のような bare-const overflow は既存挙動と判定**: stash して確認したところ、UConst 導入前から `uconstNative`/fmt 境界で RuntimeError としてパニクる — 本ラウンドの変更によるものではなく、境界クラス（定数ドメインの物質化不能）として今回もスコープ外に置いた。
+- **「corpus sweep の1件」が想定より深かった**: CAP#10 の bug470（`float64(float32(0.01))`）は「corpus の小修整正」のつもりで拾ったが、convertConst の payload 丸めと intrinsics の fmt 幅レンダリングの2面に跨る修正になった。さらに Devin Review の B-4（tie 値の二重丸め）で同関数にもう一段踏み込んだ。小さい divergence が薄い層の下に厚い定数ドメインの問題を抱えている例。
+
+### 残りの状況
+
+- Stack #615 は 16本（CAP 修正10 + レビュー由来5 + 本レポート）。未マージ（マージはユーザー側）。
+- 残件: deadlock 検出（スケジューラ機能、TODO `[ ]` のまま）、`inspect.Value` が const read で init() を起動する件、`reflect.StructTag.Get` 欠落、境界クラス記録群。corpus sweep / gen hunt の深掘り（バッチ数・depth 引き上げの飽和確認）は次ラウンド以降の余力案件。
+- 文言 fidelity（"truncated" vs "overflows" 等）は同一 reject クラスとして扱う方針を上記のとおり明示した — 必要になれば別タスクで。
+
+### 不備の振り返り（メモ）
+
+- B-2 のコミットを B-3 と同じブランチに一度混ぜて push し、reset+force-push で剥がした — stack 運用では「今どのブランチにいるか」の確認を commit 前に毎回入れるルールが書かれていたのに漏れた。
+- 子セッションのレビュー応答は2回に渡り転送が末尾切れした — 長い構造化回答を取るときは分割取得を最初から前提にする。
+- `/tmp` のプローブは毎回単発で書き、stash/rebase 後の working tree に残らないようにした（今回は問題化しなかったが fuzzfix 書き換え判明が遅れた原因はテストスイート実行タイミング）。
