@@ -1269,6 +1269,15 @@ type TypeDef struct {
 	// and a local typedef carries its `·gen` suffix.
 	inInstArgs bool
 
+	// OuterSpell holds the enclosing generic function's resolved type
+	// arguments as display context: every typedef produced inside a
+	// generic function spells its embedded function-local type names
+	// with them (`func(main.U[int;int]·3)` inside F[int]). Display only —
+	// identity keeps its own OuterArgs on the local decl's clone, so a
+	// composite like `func(int)` dedupes across instantiations the way
+	// Go does.
+	OuterSpell []Value
+
 	// fieldTypes caches the engine's resolved field typedefs ([]*TypeDef,
 	// see CachedFieldTypes). A copy that changes what resolution reads
 	// (Binds, Pkg, File, LocalTypes) must call ResetCaches.

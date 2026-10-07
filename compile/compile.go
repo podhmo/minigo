@@ -4028,6 +4028,12 @@ func (c *compiler) typeExpr(e ast.Expr) {
 	default:
 		c.trap(e.Pos(), "unsupported type expression %T", e)
 	}
+	// Inside an instantiated generic function the enclosing type args
+	// are part of every local type's identity and of how embedded local
+	// names spell — `type L0 int` in F[int] is `main.L0[int]`, and
+	// `func(U[int])` spells `func(main.U[int;int]·3)`. OpLocalType folds
+	// them onto the pushed typedef (a no-op outside instantiations).
+	c.emit(bytecode.OpLocalType, 0, 0, e.Pos())
 }
 
 // funcLit compiles a function literal into a separate chunk and emits a
