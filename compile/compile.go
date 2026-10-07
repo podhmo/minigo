@@ -1750,7 +1750,7 @@ func (c *compiler) rangeStmt(st *ast.RangeStmt) {
 		break
 	}
 	star := false
-	if se, ok := rx.(*ast.StarExpr); ok && st.Value == nil && rangeStarLazy(se.X) {
+	if se, ok := rx.(*ast.StarExpr); ok && st.Value == nil && c.rangeStarLazy(se.X) {
 		rx = se.X
 		star = true
 	}
@@ -1827,9 +1827,11 @@ func (c *compiler) rangeStmt(st *ast.RangeStmt) {
 // rangeStarLazy reports whether e — the operand of a `range *e` — is a
 // form gc iterates through the pointer: identifiers, selectors, indexes
 // and nested dereferences are all lvalue-capable, so `*e` never
-// materializes the array and a nil pointer still yields indices. Calls,
-// receives and other rvalues evaluate `*e` eagerly and panic on nil.
-func rangeStarLazy(e ast.Expr) bool {
+// materializes the array and a nil pointer still yields indices. An
+// operand that forces evaluation — a non-conversion call or a channel
+// receive anywhere inside (`*get().P`, `*(<-ch)`) — evaluates `*e`
+// eagerly instead and panics on nil.
+func (c *compiler) rangeStarLazy(e ast.Expr) bool {
 	for {
 		if p, ok := e.(*ast.ParenExpr); ok {
 			e = p.X
@@ -1839,7 +1841,7 @@ func rangeStarLazy(e ast.Expr) bool {
 	}
 	switch e.(type) {
 	case *ast.Ident, *ast.SelectorExpr, *ast.IndexExpr, *ast.IndexListExpr, *ast.StarExpr:
-		return true
+		return !c.lenOperandCalls(e)
 	}
 	return false
 }
