@@ -1376,6 +1376,14 @@ func (v *RValue) Grow(n int) {
 		}
 		grown := make([]runtime.Value, len(sl.Elems), newcap)
 		copy(grown, sl.Elems)
+		// the spare capacity holds element zeros, as Go's growslice
+		// zero-initializes it: a later SetLen exposes these slots and
+		// Index must read a valid zero, not an absent value.
+		et := v.e.elemOf(sl.Typ)
+		spare := grown[len(grown):newcap]
+		for i := range spare {
+			spare[i] = v.e.zeroOf(v.vc, et)
+		}
 		v.set(&runtime.Slice{Elems: grown, Typ: sl.Typ})
 	}
 }
