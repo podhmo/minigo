@@ -184,6 +184,36 @@ func MutexCounter() int {
 	return count // 8
 }
 
+var (
+	sharedTotal int
+	sharedMu    sync.Mutex
+)
+
+func addShared(n int) {
+	sharedMu.Lock()
+	sharedTotal += n
+	sharedMu.Unlock()
+}
+
+// GlobalSiteShared: goroutines run the same chunks, so their global
+// reads (a package var, a helper func, a builtin) share one per-site
+// cache across VMs; every write still lands in the one shared cell.
+func GlobalSiteShared() int {
+	sharedTotal = 0
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				addShared(len("ab"))
+			}
+		}()
+	}
+	wg.Wait()
+	return sharedTotal // 8 * 50 * 2
+}
+
 // TimeAfterSelect: time.After drives a timeout — under synctest the
 // fake clock fires it instantly.
 func TimeAfterSelect() int {
