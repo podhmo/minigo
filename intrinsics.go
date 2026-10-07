@@ -41,6 +41,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"text/template"
 	"time"
 	"unicode"
@@ -685,6 +686,24 @@ func (e *Engine) installStdlib() {
 			return &runtime.GoValue{V: &godebugSetting{}}, nil
 		}),
 		"Setting": hostType("internal/godebug.Setting", func() any { return &godebugSetting{} }),
+	})
+	// syscall's sources need unsafe layout (route_bsd's Offsetof) in
+	// init. Bind the portable surface tools reach for — signals and
+	// common errnos — as host values.
+	e.Bind("syscall", map[string]runtime.Value{
+		"SIGINT":  &runtime.GoValue{V: syscall.SIGINT},
+		"SIGQUIT": &runtime.GoValue{V: syscall.SIGQUIT},
+		"SIGTERM": &runtime.GoValue{V: syscall.SIGTERM},
+		"SIGKILL": &runtime.GoValue{V: syscall.SIGKILL},
+		"SIGHUP":  &runtime.GoValue{V: syscall.SIGHUP},
+		"ENOENT":  &runtime.GoValue{V: syscall.ENOENT},
+		"EEXIST":  &runtime.GoValue{V: syscall.EEXIST},
+		"EINTR":   &runtime.GoValue{V: syscall.EINTR},
+		"EPIPE":   &runtime.GoValue{V: syscall.EPIPE},
+		"EACCES":  &runtime.GoValue{V: syscall.EACCES},
+		"ENOTDIR": &runtime.GoValue{V: syscall.ENOTDIR},
+		"EISDIR":  &runtime.GoValue{V: syscall.EISDIR},
+		"Getpid":  h.fn("syscall.Getpid", func(a []any) (any, error) { return int64(syscall.Getpid()), nil }),
 	})
 	// internal/bytealg and internal/stringslite back strings/bytes in
 	// GOROOT, and their sources lean on unsafe (bytealg's init reads
