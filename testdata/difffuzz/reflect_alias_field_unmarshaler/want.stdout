@@ -1,0 +1,5 @@
+main.BoolSchema BoolSchema 1 true
+true main.BoolSchema *main.BoolSchema
+<nil> false
+true
+<nil> true
