@@ -1,0 +1,6 @@
+int true true
+string true false
+float64 false false
+bool true false
+slice false false
+invalid true 5
