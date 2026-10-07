@@ -52,6 +52,24 @@ func (v *RValue) ifaceVal() any {
 	if v.host() {
 		return v.rv.Interface()
 	}
+	x := v.get()
+	var tag *runtime.TypeDef
+	if n, ok := x.(*runtime.Named); ok {
+		tag, x = n.Typ, n.V
+	}
+	if u, ok := x.(*runtime.UConst); ok {
+		// a still-untyped constant boxes at its default type —
+		// `args[i].Interface().(int)` must see an int, not the box;
+		// the declared tag survives like a Named payload would.
+		x, err := runtime.UConstNative(u)
+		if err != nil {
+			trap("%s", err)
+		}
+		if tag != nil {
+			return runtime.Tag(tag, x)
+		}
+		return x
+	}
 	return runtime.Copy(v.get())
 }
 

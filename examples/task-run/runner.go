@@ -258,6 +258,11 @@ func (r *Runner) SetDryRun(ctx context.Context) error {
 						parts = append(parts, "...") // file contents: noise, not a command
 						continue
 					}
+					if u, ok := a.(*runtime.UConst); ok {
+						if nv, err := runtime.UConstNative(u); err == nil {
+							a = nv
+						}
+					}
 					if n, ok := a.(int64); ok && label != "os.Truncate" {
 						parts = append(parts, fmt.Sprintf("%#o", n)) // a file mode: 0644, not 420
 						continue
@@ -709,6 +714,13 @@ func strOf(v runtime.Value) string {
 		return ""
 	case *runtime.Named:
 		return strOf(x.V)
+	case *runtime.UConst:
+		// a literal argument arrives as an untyped constant;
+		// materialize it at its default type like strVal does.
+		if nv, err := runtime.UConstNative(x); err == nil {
+			return strOf(nv)
+		}
+		return fmt.Sprint(x)
 	case string:
 		return x
 	case int64:

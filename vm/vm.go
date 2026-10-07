@@ -1615,6 +1615,10 @@ func (v *VM) loop(f *frame) {
 		case bytecode.OpIndexRef:
 			key := f.pop()
 			base := f.pop()
+			// the ref stores the resolved key: lookups hash it raw, so
+			// a still-untyped constant must materialize like v.index's
+			// operand does (`mss["a"][0]` keys a UConst 0 otherwise).
+			key = runtime.Unwrap(v.materialize(f, key))
 			if ins.B == 0 {
 				v.checkAddrBase(base, key)
 			}
@@ -6766,14 +6770,24 @@ func (v *VM) binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.V
 				// so the operand keeps its UConst form.
 				resolved = true
 			default:
-				ca, _ := constOf(a)
-				cb, _ := constOf(b)
-				if r, ok := constBinary(op, ca, cb); ok {
-					return r
+				// folding needs a constant on BOTH sides — a bare
+				// scalar is a runtime value now that every literal
+				// emits as a UConst, so `x + 1` on a variable stays
+				// concrete instead of folding into a constant.
+				if isB {
+					ca, _ := constOf(a)
+					cb, _ := constOf(b)
+					if r, ok := constBinary(op, ca, cb); ok {
+						return r
+					}
 				}
 			}
 		}
-		if !resolved {
+		if !resolved && op != bytecode.BinShl && op != bytecode.BinShr {
+			// a shift types its result by the left operand alone: an
+			// untyped-constant left side keeps its constness whatever
+			// the count's type is — `32 << tag{uint,1}` folds the
+			// untyped constant 64, not a tagged uint.
 			a = v.adaptConst(f, ua, b)
 		}
 	}
@@ -6791,13 +6805,10 @@ func (v *VM) binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.V
 				if s, ok := scalarConst(ub, a); ok {
 					b, resolved = s, true
 				}
-			} else {
-				ca, _ := constOf(a)
-				cb, _ := constOf(b)
-				if r, ok2 := constBinary(op, ca, cb); ok2 {
-					return r
-				}
 			}
+			// a bare scalar operand is a runtime value, not a
+			// constant — the constant adapts to it below rather
+			// than folding `x + 1` into a new constant.
 		}
 		if !resolved {
 			b = v.adaptConst(f, ub, a)
@@ -6874,6 +6885,16 @@ func (v *VM) binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.V
 		// comparisons in the uint64 domain — same bits as int64 for the
 		// rest, so only those ops differ.
 		if uname := sizedNameOf(tag); unsignedName(uname) {
+			// a still-constant operand materializes at the declared
+			// width first: the untyped-domain fold of `uint(4) - 8`
+			// is -4 — unrepresentable — while the concrete uint64 op
+			// wraps to the huge value the tag implies.
+			if u, ok := constPayload(a); ok {
+				a = runtime.Unwrap(v.materializeConst(f, u, tag))
+			}
+			if u, ok := constPayload(b); ok {
+				b = runtime.Unwrap(v.materializeConst(f, u, tag))
+			}
 			if ua, aok := uintOperand(a); aok {
 				if ub, bok := uintOperand(b); bok {
 					res, isInt := uintBinOp(f, op, ua, ub)
@@ -7423,12 +7444,26 @@ func (v *VM) unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value 
 		// unary ops on constants stay in the constant domain — a typed
 		// constant keeps its tag so -float64(0) is +0, not -0.0.
 		if cv, ok2 := constUnary(op, u); ok2 {
-			if tag != nil {
+			if tag == nil {
+				return cv
+			}
+			if _, err := v.materializeConstErr(cv, tag); err == nil {
 				return runtime.Tag(tag, cv)
 			}
-			return cv
+			if !unsignedName(sizedNameOf(tag)) {
+				// the constant-domain result is not representable in
+				// the declared signed type — `-int8(-128)` is Go's
+				// "constant overflows" compile error.
+				f.trap("constant %s overflows %s", cv.V, runtime.DisplayName(tag))
+			}
+			// an unsigned tag applies the op at the declared width:
+			// the constant domain's ^uint(0) is -1, but the uint
+			// constant is maxuint — materialize, run the concrete op,
+			// and retag masks it back into the width.
+			a = runtime.Unwrap(v.materializeConst(f, u, tag))
+		} else {
+			a = v.materialize(f, a)
 		}
-		a = v.materialize(f, a)
 	}
 	// unary results keep the operand's declared type (-x, +x, ^x, !x are
 	// all typed T when x is T); a bare result stays bare. A sized-int
@@ -11749,6 +11784,24 @@ func (v *VM) typeOfValue(x runtime.Value) *runtime.TypeDef {
 		return xv.Typ
 	case *runtime.IfaceNil:
 		return xv.Typ
+	case *runtime.UConst:
+		// an untyped-constant argument binds T to its default type —
+		// `id(9)` infers T=int like a var bind would materialize it.
+		switch xv.V.Kind() {
+		case constant.Int:
+			if xv.Rune {
+				return v.builtinTypedef("rune")
+			}
+			return v.builtinTypedef("int")
+		case constant.Float:
+			return v.builtinTypedef("float64")
+		case constant.String:
+			return v.builtinTypedef("string")
+		case constant.Bool:
+			return v.builtinTypedef("bool")
+		case constant.Complex:
+			return v.builtinTypedef("complex128")
+		}
 	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
 		return &runtime.TypeDef{Kind: runtime.KindFunc}
 	}

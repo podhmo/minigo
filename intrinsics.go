@@ -725,7 +725,7 @@ func (e *Engine) installStdlib() {
 			return true, nil
 		}},
 		"Search": &runtime.BuiltinFunc{Name: "sort.Search", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			n, _ := runtime.Unwrap(args[0]).(int64)
+			n := int64Of(goNative(args[0]))
 			f := args[1]
 			i, j := int64(0), n
 			for i < j {
@@ -2756,6 +2756,10 @@ func numOf(v runtime.Value) (float64, bool) {
 	switch n := v.(type) {
 	case *runtime.Named:
 		return numOf(n.V)
+	case *runtime.UConst:
+		// a constant ranks as its default-typed numeric —
+		// `slices.BinarySearch(s, 5)` compares target 5 as a number.
+		return argFloat(n)
 	case int64:
 		return float64(n), true
 	case float64:
