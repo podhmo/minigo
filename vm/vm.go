@@ -5642,18 +5642,39 @@ func (v *VM) chanZero(f *frame, a *runtime.SelArm, open bool, rv reflect.Value) 
 // iterators
 
 func (v *VM) newIterator(f *frame, coll runtime.Value) *runtime.Iterator {
+	return v.itFrom(f, coll, false)
+}
+
+// itFrom builds the iterator for coll. viaPtr is set once the operand
+// resolved through a storage ref: `range p` on a *[N]T iterates the live
+// pointee, while `range a` — an array VALUE — iterates a snapshot copy.
+func (v *VM) itFrom(f *frame, coll runtime.Value, viaPtr bool) *runtime.Iterator {
 	switch c := coll.(type) {
-	case *runtime.Cell:
-		return v.newIterator(f, c.Elem)
+	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
+		dv, ok := runtime.Deref(coll)
+		if !ok {
+			f.trap("range over %T", coll)
+			return nil
+		}
+		return v.itFrom(f, dv, true)
 	case *runtime.Named:
-		return v.newIterator(f, c.V)
+		return v.itFrom(f, c.V, viaPtr)
 	case *runtime.Slice:
 		if c.Virtual() {
 			// a virtual zero-size slice iterates its logical length,
 			// vending the shared element value.
 			return &runtime.Iterator{Kind: 's', Limit: int(c.Len()), Zero: c.Zero}
 		}
-		return &runtime.Iterator{Kind: 's', Elems: c.Elems}
+		elems := c.Elems
+		if !viaPtr && isArrayTyp(c.Typ) {
+			// `range a` evaluates the array once — the loop reads a
+			// snapshot, so writes to a's elements stay invisible.
+			elems = make([]runtime.Value, len(c.Elems))
+			for i, e := range c.Elems {
+				elems[i] = runtime.Copy(e)
+			}
+		}
+		return &runtime.Iterator{Kind: 's', Elems: elems}
 	case *runtime.Map:
 		// Snapshot the key ORDER only — Elems carries the display keys
 		// and Keys their canonical forms — while pairs resolve live in
