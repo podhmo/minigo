@@ -54,7 +54,17 @@ func (v *RValue) get() runtime.Value {
 // the location it was read from.
 func (v *RValue) ifaceVal() any {
 	if v.host() {
-		return v.rv.Interface()
+		x := v.rv.Interface()
+		// ValueOf(a reflect.Value) holds a host reflect.Value over the
+		// facade; its payload is the facade value itself, so a callee
+		// taking reflect.Value (text/template's builtins) sees the
+		// original view, not a pointer to the facade struct.
+		if hv, ok := x.(reflect.Value); ok && hv.IsValid() && hv.CanInterface() {
+			if rv, ok := hv.Interface().(*RValue); ok {
+				return rv
+			}
+		}
+		return x
 	}
 	return runtime.Copy(v.get())
 }
