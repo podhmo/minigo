@@ -11763,10 +11763,10 @@ func (v *VM) unifyTypeDef(ctx *runtime.TypeDef, tset map[string]bool, binds map[
 		}
 	case *ast.MapType:
 		if mt, ok := conc.Anon.(*ast.MapType); ok && v.H.ResolveType != nil {
-			if kt, err := v.H.ResolveType(conc, mt.Key); err == nil {
+			if kt, err := v.resolveOperandType(conc, mt.Key); err == nil {
 				v.unifyTypeDef(ctx, tset, binds, p.Key, kt)
 			}
-			if vt, err := v.H.ResolveType(conc, mt.Value); err == nil {
+			if vt, err := v.resolveOperandType(conc, mt.Value); err == nil {
 				v.unifyTypeDef(ctx, tset, binds, p.Value, vt)
 			}
 		}
@@ -11788,6 +11788,21 @@ func (v *VM) unifyTypeDef(ctx *runtime.TypeDef, tset map[string]bool, binds map[
 	case *ast.IndexListExpr:
 		v.unifyIndices(ctx, tset, binds, p.X, p.Indices, conc)
 	}
+}
+
+// resolveOperandType resolves a type expression inside conc's own type
+// (a map key or value) to the typedef it denotes. ResolveType peels *T to
+// T — right for method sets, wrong here: map[string]E over
+// map[string]*Item must bind E=*Item — so a pointer expr becomes an
+// anonymous pointer typedef in conc's context.
+func (v *VM) resolveOperandType(conc *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, error) {
+	if px, ok := x.(*ast.ParenExpr); ok {
+		return v.resolveOperandType(conc, px.X)
+	}
+	if _, ok := x.(*ast.StarExpr); ok {
+		return &runtime.TypeDef{Kind: runtime.KindPointer, Anon: x, Pkg: conc.Pkg, File: conc.File, Binds: conc.Binds}, nil
+	}
+	return v.H.ResolveType(conc, x)
 }
 
 // unifyFieldTypes zips two flattened field lists (params or results):
@@ -11813,7 +11828,7 @@ func (v *VM) unifyFieldTypes(ctx *runtime.TypeDef, tset map[string]bool, binds m
 			// approximate by unifying the element against the param as-is.
 			pv = peEl.Elt
 		}
-		ct, err := v.H.ResolveType(concCtx, cvv)
+		ct, err := v.resolveOperandType(concCtx, cvv)
 		if err != nil || ct == nil {
 			continue
 		}
