@@ -508,6 +508,19 @@ func (e *Env) kindOfAnon(td *runtime.TypeDef) reflect.Kind {
 	return reflect.Invalid
 }
 
+// structTd resolves the typedef carrying a struct's field list: a type
+// defined over another struct (`type TBis T`) has no Fields of its own,
+// so its underlying typedef supplies them.
+func (e *Env) structTd(td *runtime.TypeDef) *runtime.TypeDef {
+	if td == nil || td.Kind == runtime.KindStruct || e.h.Underlying == nil {
+		return td
+	}
+	if u, err := e.h.Underlying(td); err == nil && u != nil && u != td && u.Kind == runtime.KindStruct {
+		return u
+	}
+	return td
+}
+
 // ---- reflect.Type methods ----
 
 // Kind reports the type's kind.
@@ -637,7 +650,7 @@ func (t *RType) NumField() int {
 	if t.Kind() != reflect.Struct {
 		trap("NumField of non-struct type %s", t.String())
 	}
-	return len(t.td.Fields)
+	return len(t.e.structTd(t.td).Fields)
 }
 
 // Field reports a struct's i'th field.
@@ -657,22 +670,23 @@ func (t *RType) Field(i int) *StructField {
 	if t.Kind() != reflect.Struct {
 		trap("Field of non-struct type %s", t.String())
 	}
-	if i < 0 || i >= len(t.td.Fields) {
+	st := t.e.structTd(t.td)
+	if i < 0 || i >= len(st.Fields) {
 		panic(&runtime.Panic{Value: "reflect: Field index out of bounds"})
 	}
-	fts := t.e.fieldTypes(t.td)
+	fts := t.e.fieldTypes(st)
 	var ft *RType
 	if i < len(fts) {
 		ft = t.e.rtypeOf(fts[i])
 	}
 	embedded := false
-	for _, ei := range t.td.EmbedIdx {
+	for _, ei := range st.EmbedIdx {
 		if ei == i {
 			embedded = true
 			break
 		}
 	}
-	name := t.td.Fields[i]
+	name := st.Fields[i]
 	sf := &StructField{
 		Name:      name,
 		Type:      ft,
@@ -685,8 +699,8 @@ func (t *RType) Field(i int) *StructField {
 		// package path, like Go's reflect.
 		sf.PkgPath = t.PkgPath()
 	}
-	if t.td.FTags != nil {
-		sf.Tag = reflect.StructTag(t.td.FTags[name])
+	if st.FTags != nil {
+		sf.Tag = reflect.StructTag(st.FTags[name])
 	}
 	return sf
 }
@@ -742,13 +756,14 @@ func (t *RType) FieldByName(name string) (*StructField, bool) {
 	if t.Kind() != reflect.Struct {
 		trap("FieldByName of non-struct type %s", t.String())
 	}
-	for i, fn := range t.td.Fields {
+	st := t.e.structTd(t.td)
+	for i, fn := range st.Fields {
 		if fn == name {
 			return t.Field(i), true
 		}
 	}
-	fts := t.e.fieldTypes(t.td)
-	for _, ei := range t.td.EmbedIdx {
+	fts := t.e.fieldTypes(st)
+	for _, ei := range st.EmbedIdx {
 		if ei < len(fts) && fts[ei] != nil {
 			etd := fts[ei]
 			if etd.Kind == runtime.KindPointer {
@@ -801,7 +816,7 @@ func (t *RType) FieldByNameFunc(match func(string) bool) (*StructField, bool) {
 		}
 		return false
 	}
-	next := []scan{{td: t.td}}
+	next := []scan{{td: t.e.structTd(t.td)}}
 	var nextCount map[*runtime.TypeDef]int
 	visited := map[*runtime.TypeDef]bool{}
 	var result *StructField
@@ -812,7 +827,7 @@ func (t *RType) FieldByNameFunc(match func(string) bool) (*StructField, bool) {
 		count := nextCount
 		nextCount = nil
 		for _, sc := range current {
-			st := sc.td
+			st := t.e.structTd(sc.td)
 			if visited[st] {
 				continue
 			}
