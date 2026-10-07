@@ -490,3 +490,79 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 
 - docs 帳簿コミットを fix ブランチに誤って積み force-push で分離 — stacked ブランチへの push 前に `git log -1` で先端を確認する習慣づけ。
 - 親子セッションの ~/memory 同時書き込みが conflict — 委譲時は memory 書き込みを親に限定する旨を明示するとよい。
+
+## 6.16 実施ラウンド（round-14）: Stack #579 — difffuzz corpus 残件掃討・19 fix・全体差分レビュー10件・CAP20 で打ち切り
+
+発端は前回同様 TODO.md の difffuzz 系残件（corpus キューファミリ中心）の「1 root cause = 1 PR」直列掃討指示（CAP=20）。成果: **Stack #579 に difffuzz 修正 19 PR（#577–#599）＋ レビュー由来 10 PR（#601–#610）＋ 本レポート**。レポート作成前に全体差分（main〜stack 最上位）のコードレビューを子セッション1件に委譲し（ユーザー指定のフェーズ）、返答を「バグ優先 → リファクタ」の順で精査して対応した。レビュー発見の修正は CAP 対象外との追認（ユーザー明示）を受けて積んだ。
+
+### 実施内容
+
+| フェーズ | 内容 | PR |
+|------|------|-----|
+| corpus 等値性 | chan の動的==wrapper 比較（#577）、recover 済み panic フレームの結果ゼロ値（#578）、配列長の定数評価（#580）、ブランクフィールドの要素評価（#581）、func-local 型の無名型スペリング（#582）、ジェネリック map キーの型引数保持（#583）、名前付き配列の underlying 等値（#589） | [#577](https://github.com/podhmo/minigo/pull/577)–[#583](https://github.com/podhmo/minigo/pull/583), [#589](https://github.com/podhmo/minigo/pull/589) |
+| corpus traceback | `Frame.Function` の修飾名（#584）、`//line` 未記録ファイル名の `??`（#585）、bounds check の `[` 位置（#586） | [#584](https://github.com/podhmo/minigo/pull/584)–[#586](https://github.com/podhmo/minigo/pull/586) |
+| corpus printing/const | host uint64 結果の int64 bits 読み（#587）、typed const 変換の定数ドメイン保持（#588）、defer 中 `runtime.Caller` の gopanic 経路（#591）、script `fmt.Formatter` の verb 委譲（#592）、fmt の深さ上限撤去（#593） | [#587](https://github.com/podhmo/minigo/pull/587)–[#593](https://github.com/podhmo/minigo/pull/593) |
+| corpus 残件 | iface メソッド値の nil レシーバ lazy bind（#594）、iota 参照の定数ドメイン保持（#597）、assert 失敗の scopes/packages 曖昧さ解消サフィックス（#598）、FieldRef の解決スロット等値（#599） | [#594](https://github.com/podhmo/minigo/pull/594), [#597](https://github.com/podhmo/minigo/pull/597)–[#599](https://github.com/podhmo/minigo/pull/599) |
+| 全体差分レビュー（バグ） | 子セッション指摘 B1–B9 の精査: B1/B2（chan/array の `eqlValue` 緩和が interface-pair にも効く退行 → `BinEqlIface` で静的==と動的ペア==を分離・#601）、B3（ネスト要素の script Formatter が live state に直書き・#602）、B4（uncomparable 要素 panic が内側型を名指し・#603）、B9の一部（named struct vs 無名 literal の静的==・#604）、B5（`Frame.Function` の `(*T).P` 表記・#605）、B7/B8（`:=` セルの inferred declared type が再代入で失われる・#606） | [#601](https://github.com/podhmo/minigo/pull/601)–[#606](https://github.com/podhmo/minigo/pull/606) |
+| 全体差分レビュー（再実装・リファクタ） | `runtime.AnonFieldName`/`numericBasicName` の重複解消（#607）、index 系 op の `[` 位置統一の残り（#608）、合成 gopanic CallSite の命名（#609）、`ifaceOperand` → `isIfaceExpr` 統合＋ nil iface 短絡（#610） | [#607](https://github.com/podhmo/minigo/pull/607)–[#610](https://github.com/podhmo/minigo/pull/610) |
+| 帳簿 | TODO.md の corpus キュー項目を更新（解消22件・残 bug301/issue4562/issue54467・境界 bug260+cgo 5件を記録）＋ レビュー残件2件を `[ ]` で追記（B6 の local nil method-value panic、B9 の定数 overflow 非検査） | 本 PR |
+| 本レポート | 本章 | 本 PR |
+
+### レビュー指摘の判定結果
+
+| 指摘 | 判定 | PR |
+|------|------|-----|
+| B1 `any(chan<-T) == any(chanT)` が true（退行） | 採用 — B2 と一根因 | [#601](https://github.com/podhmo/minigo/pull/601) |
+| B2 `any(A{}) == any(B{})` が true（退行） | 採用 — B1 と一根因 | [#601](https://github.com/podhmo/minigo/pull/601) |
+| B3 ネスト script Formatter が live state に直書き | 採用 | [#602](https://github.com/podhmo/minigo/pull/602) |
+| B4 uncomparable panic が外側ではなく要素型を名指し | 採用 | [#603](https://github.com/podhmo/minigo/pull/603) |
+| B5 `Frame.Function` が `(*T).M` を返さない | 採用 | [#605](https://github.com/podhmo/minigo/pull/605) |
+| B6 local `var i I = (*T)(nil); i.M()` の panic 文言 | **記録のみ** — pre-existing（package var 側は gc どおり `valuemethod_nilptr` で pinned、local 側の分岐が残差）→ TODO `[ ]` | — |
+| B7 `x := int8(1); x = 300` でタグ喪失 | 採用 — B8 と一根因（inferred declared type をセルに保持） | [#606](https://github.com/podhmo/minigo/pull/606) |
+| B8 named-to-named の const 代入を受理 | 採用 — B7 と一根因 | [#606](https://github.com/podhmo/minigo/pull/606) |
+| B9 補助確認群 | 一部採用 — `s == struct{a int}{1}` は #604、`any(A(1))==any(int(1))` は #601 で解消。残差（`int8(300)` 受理）は pre-existing で TODO `[ ]` | [#601](https://github.com/podhmo/minigo/pull/601), [#604](https://github.com/podhmo/minigo/pull/604) |
+| `runtime.AnonFieldName` が `embeddedFieldName` と逐語同一 | 採用（vm 側を削除して runtime 側に統一） | [#607](https://github.com/podhmo/minigo/pull/607) |
+| `numericBasicName` が `builtinTypeName` の subset を再列挙 | 採用（合成に置換） | [#607](https://github.com/podhmo/minigo/pull/607) |
+| `OpIndexOK`/`OpInstantiate` の `.Pos()` 残置 | 採用 — `x.Lbrack` 統一の残り | [#608](https://github.com/podhmo/minigo/pull/608) |
+| `Line: 859` ハードコード（合成 gopanic site） | 採用 — `gopanicCallSite` 定数化＋由来コメント | [#609](https://github.com/podhmo/minigo/pull/609) |
+| `foldArrLen` が共有 AST `at.Len` を書き換え | **不採用** — `[1e1]`→`[10]` の正規化は冪等で全 consumer が同一値を期待するため実害なし。TypeDef 側キャッシュは二重管理源を増やすだけ | — |
+| `ifaceOperand` が `isIfaceExpr` の部分集合を再実装（自分の検証で発見） | 採用 — 統合したうえで declared-iface-var の残差も解消 | [#610](https://github.com/podhmo/minigo/pull/610) |
+
+私の検証で確認した差分上の注意点（全て挙動保持または gc 同方向）:
+
+- `isIfaceExpr` への置き換えで `e == nil` が `BinEqlIface` 経路に載るようになったため、`ifaceEql` に nil 短絡（`isIfaceNilValue`）を追加 — pair 規則は動的型があるときだけ適用。`TypedNil` が `coerce` で `IfaceNil{*T}` に箱化されるため `IfaceNil.Typ` が interface-kind のときだけ「無印 nil」と判定する
+- その `isIfaceExpr` 拡張はパッケージ変数 fallback が shadowing を見ない穴を持っていた（Devin Review 指摘・実害確認済み: `var s any` + local `var s []int` で `s == nil` が false）— local binding が存在するときは package index を見ない条件を追加し、ピンに同ケースを追加
+- `stampInferredTyps` は `:=` LHS に `OpCoerce` を emit するだけで `inferredTypExpr` が nil の場合のみ合成 InterfaceType を刻む — `i := any(x)` のセルは interface 型のままなので `i = 300` が int に置き換わる挙動を変えない
+- `assignCell` の named-to-named trap は `ct.Kind != KindInterface` でゲート — interface 宛の代入は従来どおり素通し
+- `OpIndexOK`/`OpInstantiate`/`typeExpr` の位置変更は trap 位置のみで値経路不変
+- `hoistEagerOps` の scratch local への `markIface` は `isIfaceExpr(call)` のときのみ — 非 interface operand の codegen は不変
+
+### 計画外の記録と判断
+
+計画時の仮説・設計と実施後の理解がずれた点、および計画に無かった事象への判断。不一致は悪いものではなく、実態を後から理解して考慮した結果 — そのとき何を決めたかを明示する。
+
+- **「corpus キュー = 個別根因」の想定は過大だった**: 着手時に22件近い queued slug を個別根因のつもりで並べたが、機構レベルでは等値性・定数ドメイン・traceback・fmt・bind の少数に集約された。実際11件の queued corpus ファイルが専用修正なしで `go run` 一致になった（bug254/266, issue21879/22662/29504/31546/35576/46591/50190/59411/66575）。→ 各 slug を直列に拾う代わりに、機構単位で dedup してから pin する手順に切り替えた。
+- **fmt の深度上限は防御的な誤りだった**: `depth > 8 → "..."` は無限再帰防止の妥当な安全弁と見ていたが、ホスト Go は循環 map でスタックオーバーフローする — 上限自体に Go 側の根拠がなかった。→ 上限撤去で gc 忠実（クラッシュ同値）に倒した（#593）。
+- **script `fmt.Formatter` の呼び出し優先度は Stringer 家族ではなかった**: `fmtValue.render` で Formatter は Stringer より先に、かつ %T/%p 以外の全 verb で参照される。`zeroState`（Go 側で Formatter が起動されない描画）を識別して除外しないと過剰委譲になることを実装中に確認。→ Formatter を Stringer ブロックの前に、zeroState 除外つきで挿入（#592）。
+- **nil レシーバのメソッド値パニックは bind 時ではなく invoke 時**: `memberOfType` で値メソッド値の生成を eager に拒否する設計を仮定していたが、Go は `x := i.M` の束縛を許し `x()` の呼び出しでパニクる。→ panic を `prepFrame` の BoundMethod ケースへ移動（#594）。panic メッセージ中の `T.T.M` 重複は `Function.Name` が既に `T.M` 形を持つことに後から気づいた修正。
+- **defer 中の `runtime.Caller` チェーンは合成フレームを含む**: 「unwindDepth より上の live frame が caller」という仮説で読んだが、ホストプローブで実際のチェーンは `g → gopanic (panic.go:859) → f@panic-site → main` と panic グループごとの合成 gopanic サイトを挟むことが判明。→ `CallerPCs` に panic グループ単位の合成 CallSite 挿入に設計変更（#591）。
+- **iota の float 化は read 側で防ぐのが正解だった**: 隠し local スロット経由で iota が int64 物質化するため `1.0/(iota+N)` が float64 に落ちる — 当初は格納側（UConst を local に入れる）を考えたが、storage は concrete value しか持てない構造で不可能と判明。→ `c.iotaVal` を const-spec コンパイル区間だけ有効にし `getRef` で `OpConst` に読み替える read 側変換を採用（#597）。また `InitFunc` は iota スロットを eager に宣言するが `fs.iota` を立てていない — 宣言直後に設定する必要があった（function-local 経路の `iotaSlot()` しかセットしていなかった盲点）。
+- **`·N` スコープマーカーは2つの仕事に分かれた**: issue26094 は機構全体（宣言順 gen 採番）を要すると見込んでいたが、ユーザー可視の差分は assert 失敗メッセージの `(types from different scopes)` サフィックスだけだった。→ サフィックスのみ実装（#598）、`·gen` 表示マーカー本体は引き続き `[ ]` で後送り。
+- **FieldRef 等値に zerobase 畳み込みは不要だった**: IndexRef のゼロサイズ要素 zerobase ルールをそのまま FieldRef に持ち込む実装を最初に書いたが、Go では `&x.z != &y.z`（別 struct 内のフィールドはゼロサイズでも別アドレス）。zerobase 共有は standalone 確保（Cell 系）に限られる。→ 畳み込みを除去し (struct, index) のスロット一致のみにした（#599）。
+- **bug301/issue4562 は修正ではなく記録に**: 実害は `[recovered]` 併記を含む panic traceback の表示形式のみで動作意味は一致（recover の非nil性は合っている）。CAP 残り枠の配分としてフォーマット追従は割に合わないと判断し、TODO に残件として記録。
+- **レビュー B1/B2 は「新バグ」ではなく本ラウンド修正の適用漏れだった**: `eqlValue` 緩和系の修正（#577 chan/#589 array）が静的==と interface-pair== を分けていない前提で書かれていた — 動的型ペア比較では identity 厳格が必須という区別が設計に無かった。→ `BinEqlIface` op を導入して2経路を構造的に分離（#601）。「値比較を緩める」ときに経路全数ではなく目の前の経路だけを見ていたのが原因で、以後の緩和系修正は「この比較は static か pair か」の確認を付ける。
+- **B6 は「修正しない」を明示判断**: local iface var の nil method-value panic 文言差分は pre-existing で、本ラウンドの修正とは無関係。CAP 対象外だがスタックの複雑度を増やす意義が薄いため TODO `[ ]` 記録に留めた。
+- **foldArrLen 不採用は「提案の前提がずれていた」例**: レビュー指摘は「共有 AST への暗黙書き換え」を問題視したが、正規化は冪等で全 reader が同一値を見るため実害なし。提案が stack のどの状態を見ているかを確認してから採否すること（§6.15 と同型）。
+- **自分の差分内に再実装が残っていた**: `ifaceOperand`（#601 で入れた判定）は `isIfaceExpr` の部分集合 — レビューの「既存関数の再実装をしていないか」問いを自分の diff に向けて #610 で統合。統合が新たな差分（declared iface var ==、shadowing、nil iface）を3件露呈させたので全部同 PR で潰した。
+
+### 残りの状況
+
+- Stack #579 は 30本（修正19 + レビュー由来10 + 本レポート）。difffuzz 採掘は CAP=20 で打ち切り、レビュー発見の修正は枠外として積んだ。未マージ。
+- 残件: `·N` スコープマーカー本体（実装後送り中）、corpus timeout 仕分け約19件（未実施）、bug301/issue4562 の traceback 形式、issue54467（未検証）、レビュー由来の B6（local nil method-value panic）・B9 残差（定数 overflow 非検査）。境界クラスは記録のみ。
+- difffuzz TODO 系キューは corpus 側がほぼ枯渇（gen hunt / corpus sweep の新規採掘は CAP のため次ラウンド）。
+
+### 不備の振り返り（メモ）
+
+- iota 修正の中間プローブファイルが古い内容のまま走り `f := iota` で両系に蹴られた — 検証プローブは使い回さず毎回新規に書く。
+- FieldRef の初版は zerobase 畳み込みまで入れて pin で自己矛盾を検出 — 実装前に「Go で別 struct のゼロサイズフィールドが等しいか」を先にプローブしておけば一手省けた。
+- `isIfaceExpr` 拡張の初版は nil iface 等値と package-var shadowing を同時に退行させた（前者はピンで自己検出、後者は Devin Review 指摘）— 「判定器を広げる」変更は false-positive 側（非 iface を iface と誤認する向き）のプローブを先に書くべきだった。
