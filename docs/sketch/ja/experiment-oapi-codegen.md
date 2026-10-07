@@ -3,7 +3,11 @@
 対象は [oapi-codegen/oapi-codegen](https://github.com/oapi-codegen/oapi-codegen) @ `43281d18a9d0`（kin-openapi v0.148.0、go.yaml.in/yaml/v3 v3.0.5、Go 1.27.1）。
 目的は「minigo-usecasefuzz の grafana 系 realworld タスクと同じ形で、実在のコード生成ツールを minigo インタプリタ上で動かせるか」の確認と、そこまでの道筋・障害の洗い出し。
 
-## 結論（第1ラウンド時点）
+## 結論
+
+- 第2ラウンドで、`examples/` の `go:generate` 行 **53 本すべて**が minigo 上で成功し、出力はネイティブとバイト一致した（詳細は後述）。
+
+## 第1ラウンドの結論
 
 - `examples/only-models` は minigo 上で最後まで動き、**`go run` の出力とバイト一致**した（ヘッダのバージョン行も含む）。
 - そこまでの修正は minigo 側の 39 コミット（整形のみのものを含む）。障害ごとに `testdata/difffuzz/<slug>` の回帰ケースを付けた。
@@ -94,11 +98,10 @@ bind されたパッケージにメンバが無いと `undefined` になる（�
 | 時点 | 成功（rc=0） | ネイティブとの出力差 |
 |---|---|---|
 | 第1ラウンド終了時 | 15/53 | — |
-| 第2ラウンド現在 | 52/53 | **なし**（成功した 52 本はすべてバイト一致） |
+| 第2ラウンド（overlay 以外） | 52/53 | **なし**（成功した 52 本はすべてバイト一致） |
+| overlay/api 完了後（全体を再実行） | **53/53** | **なし**（53 本すべてネイティブとバイト一致） |
 
-残る 1 本は `overlay/api`（後述の章を参照）。
-
-実行時間は 1 本あたり 5.0〜8.8 s（平均 5.9 s）で、53 本の合計は 312 s。ネイティブは合計 6.8 s。重い順に webhook 8.8 s、petstore-expanded/strict 7.5 s、common/client 7.4 s。
+実行時間は、53/53 を達成した最終実行で 1 本あたり平均 5.8 s（最大 7.6 s）、53 本の合計は 306 s。ネイティブは合計 6.8 s。
 
 以下は、詰まっていた example ごとの章。どの修正でどの example が動くようになったかを記録する。第1ラウンドの修正で通った 15 本（only-models、extensions/* の大半など）は省略する。
 
@@ -132,13 +135,16 @@ bind されたパッケージにメンバが無いと `undefined` になる（�
 - 修正: `minireflect: alias types and alias-typed fields resolve to the target`。ケースは `reflect_alias_field_unmarshaler`（SRC あり）。
 - 調べる途中で、別の不具合も見つかった。`fv.Addr().Interface()` が `*runtime.FieldRef` という **host 値**として VM に渡っていた。そのため、interface アサーションが host 側のメソッド集合（`Get` / `Set`）で判定されていた。`Set` という名前のメソッドだけ偶然通っていたので、原因の特定に時間がかかった。修正は `vm: host results that are field/index/deref refs stay script pointers`。ケースは `reflect_addr_interface_ref` と `reflect_addr_interface_alias`。
 
-### 章: overlay/api（作業中）
+### 章: overlay/api（完了: バイト一致、6.2 s）
 
-overlay は、OpenAPI Overlay（speakeasy-api/openapi-overlay）を gopkg.in/yaml.v3 の `yaml.Node` 上で適用する。三つの障害を順に越え、現在は四つ目で止まっている。
+overlay は、OpenAPI Overlay（speakeasy-api/openapi-overlay）を gopkg.in/yaml.v3 の `yaml.Node` 上で適用する。障害を四つ順に越え、ネイティブの出力とバイト一致した。
 
 1. `cannot convert []*minireflect.RValue to keyList`: yaml.v3 encoder の `keyList(in.MapKeys())`。host の `[]*RValue` が、要素型 `*minireflect.RValue` の slice として綴られていた（`%T` も違っていた）。要素を `reflect.Value` と綴るようにした（`vm: host []*RValue results spell their elements reflect.Value`、`reflect_keylist_sort` / `reflect_mapkeys_named_slice`）。
 2. `cannot unmarshal !!map into yaml.Node`: 構造体フィールド `Update yaml.Node` の型が解決できず、穴の typedef（Kind invalid）になっていた。そのため yaml.v3 の `out.Type() == nodeType` が false だった。原因は、import path の末尾（`yaml.v3`）とパッケージ名（`yaml`）が違う場合に、型参照の解決が Scopes の basename キーしか見ていなかったこと。VM の式評価にはすでに「実名を materialize して探す」フォールバックがあり、それを型参照の解決にも入れた（`dispatch: qualified type refs find imports whose package name differs from the path`、`reflect_field_pkgname_differs`）。
-3. 現在: speakeasy-api/jsonpath のパーサで `Token has no field or method Token`。未調査。
+3. `Token has no field or method Token`: speakeasy-api/jsonpath の `func (p *JSONPath) next(token token.Token)`。パラメータ名がパッケージ名と同じなので、prologue の型 coerce が `token.Token` をパラメータ値のフィールド選択として評価していた。Go はシグネチャの型を外側のスコープで解決する。そこで、パラメータ、名前付き結果、`return` の coerce に使う型式を、関数自身のスコープを隠した状態で評価するようにした（`compile: signature types resolve outside the function's own scope`、`param_shadows_pkg_field`）。
+4. `cannot use []*yaml.Node as []*Node`: 2 と同じクラスで、今度は型の綴り（同一性の判定と `%T`）の側の問題。`typImportPath` / `importClauseName` も、パッケージ名と path 末尾が違う import を materialize して探すようにした（`runtime: type spellings find imports whose package name differs from the path`、`assign_pkgname_differs`）。
+
+「import path の末尾とパッケージ名が違う」（gopkg.in/yaml.v3、`.vN` 接尾辞を持つもの全般）を引く経路は、VM の式評価、型参照の解決、型の綴りの 3 か所にあった。手当てされていたのは最初の 1 か所だけだった。`compile` 側の `Scopes[file][name]` 参照（compile.go の 2 か所）にも同じ前提が残っている可能性がある。
 
 ### 第2ラウンドで分かったこと
 
@@ -148,5 +154,4 @@ overlay は、OpenAPI Overlay（speakeasy-api/openapi-overlay）を gopkg.in/yam
 
 ## 次のステップ
 
-- overlay/api の残りの障害を潰す（以降は example が 1 本通るたびに章を追加する）。
 - minigo-usecasefuzz の realworld に `oapi-codegen-examples` タスクを追加する（targets.tsv にピン留め、`go generate` 相当の出力との diff を oracle にする）。
