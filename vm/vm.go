@@ -10138,6 +10138,15 @@ func (v *VM) ArrayLenOf(td *runtime.TypeDef) (int64, bool) {
 	return v.arrayLen(v.topFrame(), td)
 }
 
+// gopanicCallSite is the fabricated frame Callers interposes between a
+// deferred chain and its panic — where gc lists runtime.gopanic
+// (runtime/panic.go in the Go toolchain that generated the oracles).
+var gopanicCallSite = runtime.CallSite{
+	Name: "runtime.gopanic",
+	File: "runtime/panic.go",
+	Line: 859,
+}
+
 // CallerPCs implements VMCaller: it snapshots the call stack — live
 // frames (top first) with the frames the in-flight panic already unwound
 // spliced in at the unwind boundary, where Go's traceback lists them:
@@ -10168,11 +10177,7 @@ func (v *VM) CallerPCs() []uintptr {
 		// lists `runtime.gopanic` between the deferred chain and the
 		// panicking frames, so runtime.Caller(2) inside a deferred
 		// call resolves to the panicking frame (issue5856).
-		sites = append(sites, runtime.CallSite{
-			Name: "runtime.gopanic",
-			File: "runtime/panic.go",
-			Line: 859,
-		})
+		sites = append(sites, gopanicCallSite)
 		for _, e := range v.unwinding {
 			if e.pn == pn {
 				sites = append(sites, v.callSite(e.f))
