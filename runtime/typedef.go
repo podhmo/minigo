@@ -177,6 +177,15 @@ func typSpelling(e ast.Expr, ctx *TypeDef, under bool) string {
 	}
 	switch t := e.(type) {
 	case *ast.Ident:
+		// a func-local `type` decl shadows everything above the block:
+		// an alias spells its target (C is int32, not a pkg-qualified
+		// C — two same-named local aliases never collide) and a declared
+		// local type is unique to its decl site.
+		if ctx != nil && ctx.LocalTypes != nil {
+			if ltd := ctx.LocalTypes[t.Name]; ltd != nil {
+				return typLocalSpelling(ltd, under)
+			}
+		}
 		if btd := boundTypedef(binds, t.Name); btd != nil {
 			return typBoundSpellingU(btd, under)
 		}
@@ -264,7 +273,10 @@ func typSpelling(e ast.Expr, ctx *TypeDef, under bool) string {
 		return sb.String()
 	case *ast.StructType:
 		// field names, types and tags all decide identity — an empty
-		// struct still renders "struct{}".
+		// struct still renders "struct{}". An embedded field's name is
+		// its unqualified type name (`struct{Int}` and `struct{int}` are
+		// different types even though Int is an int alias), so embeds
+		// spell `derivedName type` like declared fields.
 		var sb strings.Builder
 		sb.WriteString("struct{")
 		if t.Fields != nil {
@@ -275,9 +287,10 @@ func typSpelling(e ast.Expr, ctx *TypeDef, under bool) string {
 					}
 					sb.WriteString(n.Name)
 				}
-				if len(f.Names) > 0 {
-					sb.WriteString(" ")
+				if len(f.Names) == 0 {
+					sb.WriteString(anonFieldName(f.Type))
 				}
+				sb.WriteString(" ")
 				sb.WriteString(typSpelling(f.Type, ctx, under))
 				if tag := structTagKey(f.Tag); tag != "" {
 					sb.WriteString(" ")
@@ -301,6 +314,50 @@ func typSpelling(e ast.Expr, ctx *TypeDef, under bool) string {
 		return sb.String()
 	}
 	return fmt.Sprintf("%T", e)
+}
+
+// typLocalSpelling spells a func-local typedef for identity. A local
+// alias names its target type — `type C = int32` written in two
+// scopes differs only in its target — while a declared local type is
+// unique to its decl site: two func-local `type D`s never identify, so
+// the spec position qualifies the package spelling. Under the
+// underlying view both spell their declared body.
+func typLocalSpelling(td *TypeDef, under bool) string {
+	if td.Anon != nil && (under || td.Kind == KindAlias) {
+		return typSpelling(td.Anon, td, under)
+	}
+	name := td.Name
+	if td.Spec != nil {
+		name += "@" + strconv.FormatInt(int64(td.Spec.Pos()), 10)
+	}
+	if td.Pkg != nil {
+		return td.Pkg.Path + "." + name
+	}
+	return name
+}
+
+// anonFieldName derives the field name of an embedded struct field —
+// the unqualified type name, ignoring pointers, packages and type
+// args. compile.embedFieldName wraps this for the compiler.
+func anonFieldName(x ast.Expr) string {
+	switch t := x.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.StarExpr:
+		return anonFieldName(t.X)
+	case *ast.SelectorExpr:
+		return t.Sel.Name
+	case *ast.IndexExpr:
+		return anonFieldName(t.X)
+	case *ast.IndexListExpr:
+		return anonFieldName(t.X)
+	}
+	return ""
+}
+
+// AnonFieldName exposes anonFieldName to the compiler.
+func AnonFieldName(x ast.Expr) string {
+	return anonFieldName(x)
 }
 
 // structTagKey normalizes a field tag literal for identity spellings:
