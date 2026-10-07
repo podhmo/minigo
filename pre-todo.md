@@ -25,9 +25,9 @@ TODO.md に切り出す前の検討置き場。
   - `index.Decl` は `Func *ast.FuncDecl`/`Gen`/`Spec` を保持済み
   - body や初期化式は既にメモリ上にあるが、script 側からは見えない
 - これがあると載せられる既存の TODO 項目
-  - `inspect.Decls` が method を拾わない → **欲しい(verdict)**
-    - method の `Decl` は既に `TypeDecl.Methods` に存在するので公開は accessor で足りる
-    - 形の候補: `inspect.MethodsOf(pkg)`(pkg 単位のフラット列挙、本命)か `Decls` 混入+`IsMethod` フラグ
+  - `inspect.Decls` が method を拾わない → **欲しい(verdict)**、ただし欠けているのは pkg-wide flatten のみ
+    - 訂正: `inspect.MethodsOf(typeDecl)` は既に存在し script にも bound 済み — per-type は既に取れる
+    - パッケージ全体は `Decls`→TypeDecl 絞り→`MethodsOf` の ~5 行ループで届く — 残るのは convenience の pkg-level 列挙(`inspect.Methods(pkg)` 相当)のみ
   - free comment が見えない
   - const の initializer が見えない(`inspect.Value` が `init()` を走らせる問題の代替経路にも)
 - 参考実装
@@ -47,8 +47,11 @@ TODO.md に切り出す前の検討置き場。
   - 循環・失敗時に「どこを辿ったか」を報告できない
 - 参考実装
   - go-scan `FieldType.Resolve` が ctx に `ResolutionPathKey` で経路を持つ(調査 §2)
-- 未定
-  - 常時記録か、診断モードのときだけか
+- 未定 → 方向は見えた
+  - 常時記録で十分 — コストは ctx put 1回 + ホップ毎のスライス append のみ(ホップは実用上数十以下)
+  - 経路は call-local の一時状態でシンボル側には残さない — 解決呼び出しの性質であってシンボルの性質ではない
+    - `chaseType` が既に visited set を call 毎に持つので並行して []string を1本伸ばすだけ
+    - 診断モードという概念は要らない — 成功時は読まれず失敗/循環時のみエラーメッセージに使う
 
 ### Unresolved の明示的マーカー
 
