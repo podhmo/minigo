@@ -168,6 +168,23 @@ func TypSpelling(e ast.Expr, ctx *TypeDef) string {
 // typSpelling spells e like TypSpelling; under=true renders the
 // underlying-type view instead, where channel direction is ignored
 // (`chan T`, `<-chan T` and `chan<- T` share the underlying chan T).
+// pkgAliasTarget resolves a non-generic package-level `type A = T` to
+// T's expression and the alias decl's spelling context.
+func pkgAliasTarget(pkg *Package, name string) (ast.Expr, *TypeDef) {
+	if pkg.Index == nil {
+		return nil, nil
+	}
+	info := pkg.Index.Types[name]
+	if info == nil || info.Decl == nil {
+		return nil, nil
+	}
+	ts, ok := info.Decl.Spec.(*ast.TypeSpec)
+	if !ok || !ts.Assign.IsValid() || ts.TypeParams != nil {
+		return nil, nil
+	}
+	return ts.Type, &TypeDef{Pkg: pkg, File: info.Decl.File}
+}
+
 func typSpelling(e ast.Expr, ctx *TypeDef, under bool) string {
 	var binds map[string]Value
 	var file *syntax.File
@@ -198,6 +215,11 @@ func typSpelling(e ast.Expr, ctx *TypeDef, under bool) string {
 			return canonBasicName(t.Name)
 		}
 		if pkg != nil {
+			// a package-level alias is transparent: map[Symbol]bool with
+			// `type Symbol = string` IS map[string]bool (x/tools' imports).
+			if x, actx := pkgAliasTarget(pkg, t.Name); x != nil {
+				return typSpelling(x, actx, under)
+			}
 			return pkg.Path + "." + t.Name
 		}
 		return canonBasicName(t.Name)
