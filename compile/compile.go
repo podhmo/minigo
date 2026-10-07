@@ -299,6 +299,12 @@ type compiler struct {
 	symName  string
 	litCount int
 
+	// iotaVal is the const spec index while compiling a const spec's
+	// values; -1 elsewhere. `iota` reads emit the constant — the hidden
+	// local backing it materializes to int64 in storage, which would
+	// drag a float-constant expression into the float64 domain.
+	iotaVal int
+
 	// synthSeq numbers every compiler-synthesized local name. Hoisted
 	// call-argument scratch slots, invented param/receiver names and
 	// iterator/tag/select scratch slots all mint through c.fresh, so a
@@ -355,6 +361,10 @@ func (c *compiler) getRef(name string, pos token.Pos) {
 		}
 		c.emit(bytecode.OpGlobal, c.nameIdx(name), 0, pos)
 	case !isUp:
+		if c.iotaVal >= 0 && idx == c.fs.iota {
+			c.emit(bytecode.OpConst, c.constIdx(&runtime.UConst{V: constant.MakeInt64(int64(c.iotaVal))}), 0, pos)
+			return
+		}
 		c.emit(bytecode.OpLocal, idx, 0, pos)
 	default:
 		c.emit(bytecode.OpUpval, idx, 0, pos)
@@ -573,7 +583,7 @@ func (c *compiler) refRef(name string, pos token.Pos) {
 
 // Func compiles fn.Decl into fn.Chunk.
 func Func(fn *runtime.Function) error {
-	c := &compiler{pkg: fn.Pkg, file: fn.File, fs: newFScope(nil), ch: &bytecode.Chunk{Name: fn.Name}, labels: map[string]*labelInfo{}, binds: fn.Binds, symName: fn.Name}
+	c := &compiler{pkg: fn.Pkg, file: fn.File, fs: newFScope(nil), ch: &bytecode.Chunk{Name: fn.Name}, labels: map[string]*labelInfo{}, binds: fn.Binds, symName: fn.Name, iotaVal: -1}
 	if fn.Pkg != nil {
 		c.symName = fn.Pkg.Name + "." + fn.Name
 	}
@@ -682,7 +692,7 @@ func Func(fn *runtime.Function) error {
 // like a function body does — locals don't exist, so free identifiers fall
 // through to package globals, imports, and builtins at run time.
 func Expr(pkg *runtime.Package, file *syntax.File, e ast.Expr) (*bytecode.Chunk, error) {
-	c := &compiler{pkg: pkg, file: file, fs: newFScope(nil), ch: &bytecode.Chunk{Name: "<eval>"}}
+	c := &compiler{pkg: pkg, file: file, fs: newFScope(nil), ch: &bytecode.Chunk{Name: "<eval>"}, iotaVal: -1}
 	c.fs.pushBlock()
 	c.expr(e)
 	c.emit(bytecode.OpReturn, 1, 0, e.End())
@@ -695,7 +705,7 @@ func Expr(pkg *runtime.Package, file *syntax.File, e ast.Expr) (*bytecode.Chunk,
 // upvalue tables. It backs special-form Eval — the produced chunk reads
 // and writes the caller's live cells.
 func ExprScoped(pkg *runtime.Package, file *syntax.File, e ast.Expr, locals, upvals map[string]int) (*bytecode.Chunk, error) {
-	c := &compiler{pkg: pkg, file: file, fs: newFScope(nil), ch: &bytecode.Chunk{Name: "<special-eval>"}, labels: map[string]*labelInfo{}}
+	c := &compiler{pkg: pkg, file: file, fs: newFScope(nil), ch: &bytecode.Chunk{Name: "<special-eval>"}, labels: map[string]*labelInfo{}, iotaVal: -1}
 	c.fs.pushBlock()
 	max := -1
 	for name, slot := range locals {
@@ -774,12 +784,13 @@ func countResults(fl *ast.FieldList) int {
 // InitFunc compiles the synthetic package initializer: const/var declarations
 // in file order, then init() calls.
 func InitFunc(pkg *runtime.Package) (*bytecode.Chunk, error) {
-	c := &compiler{pkg: pkg, fs: newFScope(nil), ch: &bytecode.Chunk{Name: pkg.Name + ".__init__"}}
+	c := &compiler{pkg: pkg, fs: newFScope(nil), ch: &bytecode.Chunk{Name: pkg.Name + ".__init__"}, iotaVal: -1}
 	c.fs.pushBlock()
 
 	// iota is a real identifier in const specs; bind it as a hidden local
 	// (declared last wins — it shadows nothing here).
 	iotaSlot := c.fs.declare("iota", token.NoPos)
+	c.fs.iota = iotaSlot
 	c.emit(bytecode.OpConst, c.constIdx(int64(0)), 0, 0)
 	c.emit(bytecode.OpNewLocal, iotaSlot, 0, 0)
 
@@ -803,8 +814,10 @@ func InitFunc(pkg *runtime.Package) (*bytecode.Chunk, error) {
 		if d.Kind == index.ConstDecl {
 			c.emit(bytecode.OpConst, c.constIdx(int64(d.Idx)), 0, d.Pos)
 			c.emit(bytecode.OpSetLocal, iotaSlot, 0, d.Pos)
+			c.iotaVal = d.Idx
 		}
 		c.valueSpec(d.Spec.(*ast.ValueSpec), d)
+		c.iotaVal = -1
 	}
 	for _, d := range pkg.Index.Inits {
 		c.file = d.File
@@ -993,6 +1006,7 @@ func (c *compiler) stmt(s ast.Stmt) {
 					// a hidden local carries it so `iota` just reads a name.
 					c.emit(bytecode.OpConst, c.constIdx(int64(specIdx)), 0, vs.Pos())
 					c.emit(bytecode.OpSetLocal, c.fs.iotaSlot(), 0, vs.Pos())
+					c.iotaVal = specIdx
 				}
 				// `var x T` binds a typed zero / typed nil via OpCoerce; typed
 				// consts coerce the same way — locals are always cells.
@@ -1033,6 +1047,7 @@ func (c *compiler) stmt(s ast.Stmt) {
 						coerce(vs.Names[i], c.bindLocal(vs.Names[i].Name, vs.Names[i].Pos(), isConst))
 						markIface(vs.Names[i], vals[0])
 					}
+					c.iotaVal = -1
 					continue
 				}
 				for i, name := range vs.Names {
@@ -1053,6 +1068,7 @@ func (c *compiler) stmt(s ast.Stmt) {
 					}
 					markIface(name, rhs)
 				}
+				c.iotaVal = -1
 			}
 		case token.TYPE:
 			for _, spec := range gd.Specs {
@@ -3905,7 +3921,7 @@ func (c *compiler) funcLit(x *ast.FuncLit) {
 		litName = "<funclit>"
 	}
 	inner := &runtime.Function{Pkg: c.pkg, File: c.file, Name: litName, Decl: &ast.FuncDecl{Type: x.Type, Body: x.Body}}
-	ic := &compiler{pkg: c.pkg, file: c.file, fs: newFScope(c.fs), ch: &bytecode.Chunk{Name: litName}, labels: map[string]*labelInfo{}, binds: c.binds, symName: litName}
+	ic := &compiler{pkg: c.pkg, file: c.file, fs: newFScope(c.fs), ch: &bytecode.Chunk{Name: litName}, labels: map[string]*labelInfo{}, binds: c.binds, symName: litName, iotaVal: -1}
 	ic.fs.pushBlock()
 	nparams := 0
 	var coerces []paramCoerce
