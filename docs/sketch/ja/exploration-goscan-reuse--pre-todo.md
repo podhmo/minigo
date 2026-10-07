@@ -2,7 +2,7 @@
 
 TODO.md に切り出す前の検討置き場。
 
-- 出典: go-scan 援用調査 [docs/sketch/ja/exploration-goscan-reuse.md](./docs/sketch/ja/exploration-goscan-reuse.md) (PR #590)
+- 出典: go-scan 援用調査 [exploration-goscan-reuse.md](./exploration-goscan-reuse.md) (PR #590)
 - 一行一論点。項目ごと・行ごとに取捨できる粒度を目指す
 - 実装方針はここでは未確定でよい。案の列挙まで
 - 採用が決まったものだけ TODO.md の `- [ ]` 項目に昇格させる
