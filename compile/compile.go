@@ -1071,14 +1071,7 @@ func (c *compiler) stmt(s ast.Stmt) {
 			op = bytecode.BinSub
 		}
 		one := func() { c.emit(bytecode.OpConst, c.constIdx(int64(1)), 0, st.Pos()) }
-		xe := st.X
-		for {
-			if p, ok := xe.(*ast.ParenExpr); ok {
-				xe = p.X
-				continue
-			}
-			break
-		}
+		xe := ast.Unparen(st.X)
 		switch t := xe.(type) {
 		case *ast.Ident:
 			c.getRef(t.Name, t.Pos())
@@ -1266,31 +1259,23 @@ func (c *compiler) assign(st *ast.AssignStmt) {
 			c.trap(st.Pos(), "unsupported assign op %s", st.Tok)
 			return
 		}
-		target := st.Lhs[0]
-		for {
-			if p, isParen := target.(*ast.ParenExpr); isParen {
-				target = p.X
-				continue
-			}
-			break
+		target := ast.Unparen(st.Lhs[0])
+		if !storageShape(target, false) {
+			c.trap(st.Pos(), "compound assignment on %T is not supported", target)
+			return
 		}
-		switch lhs := target.(type) {
-		case *ast.Ident, *ast.SelectorExpr, *ast.IndexExpr, *ast.StarExpr:
-			// `x op= y` reads x's value when the RHS evaluates, not at
-			// ref time: ref, rhs, then read+op+store. The ref resolves
-			// to the variable's live storage, so a RHS that replaces
-			// the variable lands the result there.
-			c.refTarget(lhs, false)
-			c.expr(st.Rhs[0])
-			c.emit(bytecode.OpSwap, 0, 0, lhs.Pos())
-			c.emit(bytecode.OpDup, 0, 0, lhs.Pos())
-			c.emit(bytecode.OpDeref, 0, 0, lhs.Pos())
-			c.emit(bytecode.OpRot3, 0, 0, lhs.Pos())
-			c.emit(bytecode.OpBinary, int(op), 0, st.Pos())
-			c.emit(bytecode.OpSetRefs, 1, 0, st.Pos())
-		default:
-			c.trap(st.Pos(), "compound assignment on %T is not supported", lhs)
-		}
+		// `x op= y` reads x's value when the RHS evaluates, not at
+		// ref time: ref, rhs, then read+op+store. The ref resolves
+		// to the variable's live storage, so a RHS that replaces
+		// the variable lands the result there.
+		c.refTarget(target, false)
+		c.expr(st.Rhs[0])
+		c.emit(bytecode.OpSwap, 0, 0, target.Pos())
+		c.emit(bytecode.OpDup, 0, 0, target.Pos())
+		c.emit(bytecode.OpDeref, 0, 0, target.Pos())
+		c.emit(bytecode.OpRot3, 0, 0, target.Pos())
+		c.emit(bytecode.OpBinary, int(op), 0, st.Pos())
+		c.emit(bytecode.OpSetRefs, 1, 0, st.Pos())
 		return
 	}
 
@@ -1406,14 +1391,7 @@ func (c *compiler) noteIfaceBinds(st *ast.AssignStmt) {
 // writes the old pointee) instead of re-resolving the live storage at
 // store time.
 func (c *compiler) refTarget(lhs ast.Expr, pin bool) {
-	target := lhs
-	for {
-		if p, isParen := target.(*ast.ParenExpr); isParen {
-			target = p.X
-			continue
-		}
-		break
-	}
+	target := ast.Unparen(lhs)
 	switch t := target.(type) {
 	case *ast.Ident:
 		if t.Name == "_" {
@@ -1481,23 +1459,27 @@ func (c *compiler) refTarget(lhs ast.Expr, pin bool) {
 	}
 }
 
+// storageShape reports whether e — parens transparent — has a
+// storage-location shape: an identifier, field selection, element
+// index, or nested dereference. indexList counts an F[T, ...]
+// instantiation index in: `range *e` accepts the shape, store targets
+// do not.
+func storageShape(e ast.Expr, indexList bool) bool {
+	switch ast.Unparen(e).(type) {
+	case *ast.Ident, *ast.SelectorExpr, *ast.IndexExpr, *ast.StarExpr:
+		return true
+	case *ast.IndexListExpr:
+		return indexList
+	}
+	return false
+}
+
 // isStorageBase reports whether an expression denotes a storage
 // location (an ident, field, element, or deref of one) — as opposed to
 // a value-producing expression like a call, whose pointer result is the
 // target itself.
 func (c *compiler) isStorageBase(e ast.Expr) bool {
-	for {
-		p, isParen := e.(*ast.ParenExpr)
-		if !isParen {
-			break
-		}
-		e = p.X
-	}
-	switch e.(type) {
-	case *ast.Ident, *ast.SelectorExpr, *ast.IndexExpr, *ast.StarExpr:
-		return true
-	}
-	return false
+	return storageShape(e, false)
 }
 
 // selectorBaseIsVar reports whether a selector's base denotes a mutable
@@ -1506,13 +1488,7 @@ func (c *compiler) isStorageBase(e ast.Expr) bool {
 // (T.M, F[T].M, (*T).M) resolve on the type, a call result has no
 // storage, and a package qualifier is guarded inside refTargetBase.
 func (c *compiler) selectorBaseIsVar(e ast.Expr) bool {
-	for {
-		if p, ok := e.(*ast.ParenExpr); ok {
-			e = p.X
-			continue
-		}
-		break
-	}
+	e = ast.Unparen(e)
 	switch t := e.(type) {
 	case *ast.Ident:
 		// a var (local, upval, or package-level) has storage; a type
@@ -1539,14 +1515,8 @@ func (c *compiler) selectorBaseIsVar(e ast.Expr) bool {
 
 // indexOperand unwraps parens and reports e as an index expression.
 func indexOperand(e ast.Expr) (*ast.IndexExpr, bool) {
-	for {
-		if p, ok := e.(*ast.ParenExpr); ok {
-			e = p.X
-			continue
-		}
-		ix, ok := e.(*ast.IndexExpr)
-		return ix, ok
-	}
+	ix, ok := ast.Unparen(e).(*ast.IndexExpr)
+	return ix, ok
 }
 
 // refableIndexBase reports whether an index operand's base denotes
@@ -1556,13 +1526,7 @@ func indexOperand(e ast.Expr) (*ast.IndexExpr, bool) {
 // instantiation, and a package qualifier or a call result has no
 // writable element storage; both stay on the value path.
 func (c *compiler) refableIndexBase(e ast.Expr) bool {
-	for {
-		if p, ok := e.(*ast.ParenExpr); ok {
-			e = p.X
-			continue
-		}
-		break
-	}
+	e = ast.Unparen(e)
 	switch t := e.(type) {
 	case *ast.Ident:
 		info, found := c.resolveName(t.Name)
@@ -1741,14 +1705,7 @@ func (c *compiler) rangeStmt(st *ast.RangeStmt) {
 	// materializes `*x` eagerly and panics on nil. Compiling the pointer
 	// operand lets OpIter's nil-array path handle it; B=1 keeps the
 	// deref panic for non-array pointers.
-	rx := st.X
-	for {
-		if p, ok := rx.(*ast.ParenExpr); ok {
-			rx = p.X
-			continue
-		}
-		break
-	}
+	rx := ast.Unparen(st.X)
 	star := false
 	if se, ok := rx.(*ast.StarExpr); ok && st.Value == nil && c.rangeStarLazy(se.X) {
 		rx = se.X
@@ -1832,18 +1789,7 @@ func (c *compiler) rangeStmt(st *ast.RangeStmt) {
 // receive anywhere inside (`*get().P`, `*(<-ch)`) — evaluates `*e`
 // eagerly instead and panics on nil.
 func (c *compiler) rangeStarLazy(e ast.Expr) bool {
-	for {
-		if p, ok := e.(*ast.ParenExpr); ok {
-			e = p.X
-			continue
-		}
-		break
-	}
-	switch e.(type) {
-	case *ast.Ident, *ast.SelectorExpr, *ast.IndexExpr, *ast.IndexListExpr, *ast.StarExpr:
-		return !c.lenOperandCalls(e)
-	}
-	return false
+	return storageShape(e, true) && !c.lenOperandCalls(e)
 }
 
 func (c *compiler) bindRangeVar(e ast.Expr, define bool) {
@@ -1857,14 +1803,7 @@ func (c *compiler) bindRangeVar(e ast.Expr, define bool) {
 // isBlankIdent reports whether e is the blank identifier — possibly
 // parenthesized — so a range element bound to it is never read.
 func isBlankIdent(e ast.Expr) bool {
-	for {
-		if p, ok := e.(*ast.ParenExpr); ok {
-			e = p.X
-			continue
-		}
-		break
-	}
-	id, ok := e.(*ast.Ident)
+	id, ok := ast.Unparen(e).(*ast.Ident)
 	return ok && id.Name == "_"
 }
 
@@ -3622,15 +3561,7 @@ func callSpread(x *ast.CallExpr) int {
 		return 1
 	}
 	if len(x.Args) == 1 {
-		arg := x.Args[0]
-		for {
-			if p, ok := arg.(*ast.ParenExpr); ok {
-				arg = p.X
-				continue
-			}
-			break
-		}
-		if _, ok := arg.(*ast.CallExpr); ok {
+		if _, ok := ast.Unparen(x.Args[0]).(*ast.CallExpr); ok {
 			return 2
 		}
 	}
