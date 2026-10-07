@@ -20,6 +20,19 @@ type PlainError string
 
 func (e PlainError) Error() string { return string(e) }
 
+// RuntimeError marks PlainError as a runtime.Error, like Go's plainError.
+func (PlainError) RuntimeError() {}
+
+// TypeAssertionError is Go's *runtime.TypeAssertionError payload: a
+// failed x.(T), whose Error() text is the "interface conversion: ..."
+// message.
+type TypeAssertionError struct{ Msg string }
+
+func (e *TypeAssertionError) Error() string { return e.Msg }
+
+// RuntimeError marks a failed type assertion as a runtime.Error.
+func (*TypeAssertionError) RuntimeError() {}
+
 // PlainPanic wraps msg in a plainError payload (nil-map assignment,
 // close of a nil channel, ...).
 func PlainPanic(msg string) *Panic {
