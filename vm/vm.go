@@ -6748,8 +6748,17 @@ func (v *VM) ifaceEql(f *frame, a, b runtime.Value) bool {
 	// any(A) vs any(B) differ for look-alike declared arrays (the lax
 	// eqlValue paths relax across typedefs for static =='s
 	// assignability rules).
-	if !sameTypeDef(v.typeOfValue(a), v.typeOfValue(b)) {
+	atd := v.typeOfValue(a)
+	if !sameTypeDef(atd, v.typeOfValue(b)) {
 		return false
+	}
+	// The dynamic types are identical — an uncomparable one panics on
+	// the TYPE alone: `any(f) == any(nilFunc)` and `any(mapLit) ==
+	// any(nilMap)` trap regardless of the values' wrapper shapes.
+	// Arrays stay comparable-by-element here: [N]T keeps the slice Kind
+	// on its typedef, so only a non-array shape panics this early.
+	if atd != nil && uncomparableTyp(atd) && !isArrayTyp(atd) {
+		panic(runtime.ComparingUncomparablePanic(spelledTyp(atd)))
 	}
 	an, aNamed := a.(*runtime.Named)
 	bn, bNamed := b.(*runtime.Named)
@@ -7769,7 +7778,8 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
 		switch b.(type) {
 		case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
-			panic(runtime.ComparingUncomparablePanic("func"))
+			// Go names the signature: "comparing uncomparable type func()".
+			panic(runtime.ComparingUncomparablePanic(spelledTyp(v.typeOfValue(a))))
 		}
 		return false
 	case *runtime.Chan:
@@ -11858,7 +11868,22 @@ func (v *VM) typeOfValue(x runtime.Value) *runtime.TypeDef {
 		case constant.Complex:
 			return v.builtinTypedef("complex128")
 		}
-	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
+	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod:
+		// the dynamic type of a func value is its signature — `any(f1)
+		// == any(f2)` only pairs on identical signatures, and an
+		// identical pair panics as uncomparable.
+		if sig, pkg, file, binds := runtime.FuncSigOf(x); sig != nil {
+			return &runtime.TypeDef{Kind: runtime.KindFunc, Anon: sig, Pkg: pkg, File: file, Binds: binds}
+		}
+		return &runtime.TypeDef{Kind: runtime.KindFunc}
+	case *runtime.BuiltinFunc:
+		// a host builtin's dynamic type is its adapted signature, like
+		// argTypedef reflects it for inference.
+		if rt := reflect.TypeOf(xv.Target); rt != nil && rt.Kind() == reflect.Func {
+			if td := v.reflectFuncTypedef(rt); td != nil {
+				return td
+			}
+		}
 		return &runtime.TypeDef{Kind: runtime.KindFunc}
 	}
 	return nil

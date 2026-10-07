@@ -1,0 +1,7 @@
+true true true true true
+true
+false
+true false
+func pair: runtime error: comparing uncomparable type func()
+nil func: runtime error: comparing uncomparable type func()
+nil map: runtime error: comparing uncomparable type map[int]int

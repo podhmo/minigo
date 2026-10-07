@@ -45,6 +45,11 @@ func TypIdentical(a, b *TypeDef) bool {
 	if a.Anon != nil && b.Anon != nil {
 		return TypSpelling(a.Anon, a) == TypSpelling(b.Anon, b)
 	}
+	if a.Kind == KindPointer && a.Elem != nil && b.Elem != nil {
+		// anonymous pointer typedefs fabricated from values carry no
+		// spelling AST — *T is identical to *U exactly when T ≡ U.
+		return TypIdentical(a.Elem, b.Elem)
+	}
 	return false
 }
 
