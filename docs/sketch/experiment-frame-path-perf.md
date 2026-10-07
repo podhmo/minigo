@@ -293,8 +293,11 @@ order:
    change process-wide GC settings. Decided: not pursued.
 5. Field-index inline cache per site: the largest remaining ceiling
    (~8–9%, optimistic; see step 6).
-6. Compile-time folding of the constant coerced on frame entry: a
-   cheap sub-case of `coerce` (1.6M calls per run, see step 6).
+6. A runtime fast path in `coerce` that returns early when the value
+   already has the target type (~4–6% ceiling, see step 6). Small
+   change, but it must first be confirmed that `coerce` has no other
+   effect in that case. Not compile-time foldable: the 1.6M
+   `OpConst` → `OpCoerce` pairs at frame entry are parameter coercions.
 
 ## Beyond per-site caches
 
@@ -309,7 +312,7 @@ are:
 | GC tuning | raise GOGC | ~6% (23% at `GOMAXPROCS=1`) | not pursued |
 | static binding / quickening: globals | resolve names to slots at compile time, or rewrite the instruction into a specialized form on first execution | <1% (the step 3 cache hit path is ~0.02s/run) | nothing left |
 | static binding / quickening: fields | resolve a field name to its index once per site (an inline cache keyed by the struct typedef), with no type checker needed | ~8–9% | best remaining candidate |
-| fewer `coerce` calls | skip conversions that return their input unchanged | ~4–6% | costly in general; one cheap sub-case |
+| fewer `coerce` calls | skip conversions that return their input unchanged | ~4–6% | needs a runtime type-match fast path; no compile-time sub-case |
 | value representation and instruction set | unboxed scalars; superinstructions (instruction fusion) | ~13% combined, mostly allocation; fusion alone ~1% | not committed to |
 
 Terms: instruction fusion (superinstructions) merges frequent
@@ -356,9 +359,13 @@ OpSelect` 2.6%, `OpLocalRef OpFieldRef` 2.6%, `OpBinary OpJumpFalse`
 `coerce`: 8.6M calls, 61% returning their input unchanged. By site:
 `OpCoerce` 4.05M (57% unchanged), `setField` 2.34M (66%), `OpCoerceTop`
 1.33M (66%), `assignCell` 0.53M (56%). 1.6M `OpConst` → `OpCoerce`
-pairs run as the first two instructions of a frame. That is a
-constant coerced on entry, which compile-time folding could remove
-without a type checker. Its source is not identified yet.
+pairs run as the first two instructions of a frame. These are the
+function prologue's parameter coercions (`emitParamCoerces` →
+`emitTypeCoerce` in `compile/compile.go`): the `OpConst` pushes the
+parameter's TypeDef, and `OpCoerce` converts the bound argument to it.
+The coerced value is a runtime argument, not a constant, so compile-time
+folding does not apply. (An earlier draft of this report read the pair
+as a constant coerced on entry; that was wrong.)
 
 Allocation objects (3 runs): `prepFrame` 24%, `runtime.Tag` 18% (the
 `Named` wrapper for typed values), `loop` 16%, `frame.push` 12% (stack
@@ -374,8 +381,11 @@ Reading the ceilings:
   allocations (not the name scan) and gained nothing measurable.
 - Skipping `coerce` calls that change nothing is worth ~4–6% (61% of
   ~0.23s, minus the value copy those calls still need). Proving it at
-  compile time is the hard part. The const-on-entry sub-case (1.6M,
-  ~19% of calls) is a cheap first target.
+  compile time needs a type checker. The realistic form is a runtime
+  fast path at the top of `coerce` (e.g. the struct's typedef already
+  equals the target), which covers every call site, the prologue
+  included. Its cost is reading `coerce` to confirm the early return
+  is equivalent (no cell typing or other side effect is skipped).
 - Option 4 is ~13% combined: dispatch ~6% plus main-thread allocation
   ~7%. That is below the ~15% guideline, and scalar boxing is
   negligible (<1%). Fusion by itself saves at most ~18% of dispatches,
