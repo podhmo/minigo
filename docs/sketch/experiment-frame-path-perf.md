@@ -1,10 +1,11 @@
 # Experiment: where does grafana-openapi's wall time go?
 
-Status: step 3 is proposed in #624 (`perf/global-site-cache`). The
-other steps live on local experiment branches and are not necessarily
-for merge: `experiment/frame-alloc-batch` (step 1) and
-`experiment/iface-cache-bound` (step 4, upper-bound code, not mergeable
-as is). Commit hashes below refer to those experiment branches.
+Status: step 3 is proposed in #624 (`perf/global-site-cache`), and
+step 4a is stacked on it (`perf/iface-sat-cache`). The other steps live
+on local experiment branches and are not necessarily for merge:
+`experiment/frame-alloc-batch` (step 1) and `experiment/iface-cache-bound`
+(the step 4a upper-bound code). Commit hashes in the step 1 and step 4
+sections refer to those experiment branches.
 
 Question: the realworld profile keeps flagging `prepFrame` as the top
 allocator. Is reducing frame-path allocation the right lever for wall
@@ -247,16 +248,45 @@ and `pkg.Name` resolution via `memberOf` (0.05s).
 Step 1 shows no gain at `GOMAXPROCS=1` either, within noise at 3
 rounds.
 
+## Step 5: step 4a made mergeable (`perf/iface-sat-cache`)
+
+Analysis before implementing:
+
+- What the answer depends on. `methodInfoOfValue` derives the method
+  set from the typedef alone: `Struct.Def` or `Named.Typ`, plus whether
+  the value was reached through a pointer. The one exception is a Named
+  host box whose tag declares no methods. That exposes the boxed
+  value's reflect methods, so it is left uncached. An "unsure"
+  embedded-type result is static too, so it can be cached.
+- Where a method set changes after construction. Only the REPL's
+  pin-mode graft onto a live typedef (`commitWrites`). The index-side
+  graft evicts the typedef from `Globals`, so the next lookup builds a
+  new identity.
+- Where the cache lives. A per-VM map is enough, because each
+  goroutine has its own VM. A size cap (4096, restart when full) guards
+  scripts that mint typedefs per call.
+
+Invalidation: `runtime.MethodSetsChanged` bumps a global epoch. The
+REPL graft calls it, and a VM drops its memo when the epoch has moved.
+Every `Engine.Call` (and every REPL line) runs on a fresh VM, so the
+epoch only matters for a VM that stays alive across a graft, e.g. a
+long-running goroutine. `TestIfaceMemoMethodSetEpoch` therefore reuses
+one VM across a direct graft. It fails without the epoch bump. A first
+REPL-level test did not: it passed the negative control, because each
+line got a fresh VM.
+
+| | grafana-openapi (11 rounds) | micro (5 rounds) |
+|---|---|---|
+| step 3 | 2.818s | 0.568s |
+| step 3 + 4a | 2.515s (−10.8%) | 0.579s (one interface conversion: no change) |
+
 ## Next
 
 The investigation is done for now. Implementation candidates, in
 order:
 
-1. Step 3: ready as is. It does not depend on step 1. Before a PR, add
-   a goroutine test that shares one site, and a test that dot-imported
-   names are never cached.
-2. Step 4a: needs method-set invalidation (REPL grafting) and a
-   decision on where the cache lives.
+1. Step 3: #624.
+2. Step 4a: `perf/iface-sat-cache`, stacked on #624.
 3. Step 1: optional. Fewer allocations, but no wall gain.
 4. GC tuning: GOGC=400 saves ~6% wall (23% at `GOMAXPROCS=1`). If
    anything, change it only in `cmd/minigo`; a library should not
