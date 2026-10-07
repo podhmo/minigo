@@ -61,6 +61,9 @@ TODO.md に切り出す前の検討置き場。
   - 経路は call-local の一時状態でシンボル側には残さない — 解決呼び出しの性質であってシンボルの性質ではない
     - `chaseType` が既に visited set を call 毎に持つので並行して []string を1本伸ばすだけ
     - 診断モードという概念は要らない — 成功時は読まれず失敗/循環時のみエラーメッセージに使う
+  - 見せ方: メッセージ埋め込み + 抽出 API の二段(reason 取り出し系と同じ形)
+    - typed error(`*ResolveError{Path []string}` 相当)が経路を保持、`err.Error()` が `main.A → main.B → main.C → main.A (cycle)` を render
+    - 機械向けに `inspect.ResolutionPath(err)` 的な1本を添える(errors.As 的);script 側は bound error の `.Path` で届く
 
 ### Unresolved の明示的マーカー
 
