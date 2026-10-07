@@ -10245,6 +10245,10 @@ func (v *VM) lenIdxFold(f *frame, base runtime.Value) (runtime.Value, bool) {
 // symbol name and the source position it is (or was) executing.
 func (v *VM) callSite(f *frame) runtime.CallSite {
 	name := f.fn.Name
+	if f.fn.PtrRecv && f.fn.Recv != "" && strings.HasPrefix(name, f.fn.Recv+".") {
+		// gc spells a pointer-receiver method (*T).M in Frame.Function.
+		name = "(*" + f.fn.Recv + ")" + name[len(f.fn.Recv):]
+	}
 	// runtime.Frame.Function names the fully-qualified symbol —
 	// `main.main`, `main.call.name` for methods (Name already carries
 	// the receiver). Synthesized frames (`main.__init__`) are
