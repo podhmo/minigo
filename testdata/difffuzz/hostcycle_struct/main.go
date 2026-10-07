@@ -12,15 +12,19 @@ import (
 type Node struct{ Next *Node }
 
 func main() {
-	p := sync.Pool{}
+	// sync.Map keeps the round-trip deterministic — sync.Pool could
+	// drop the entry between Put and Get and flake the assertion.
+	var m sync.Map
 	x := &Node{}
 	x.Next = x
-	p.Put(x)
-	fmt.Println(p.Get().(*Node) == x)
+	m.Store("x", x)
+	got, _ := m.Load("x")
+	fmt.Println(got.(*Node) == x)
 
 	// a two-node cycle folds the same way.
 	a, b := &Node{}, &Node{}
 	a.Next, b.Next = b, a
-	p.Put(a)
-	fmt.Println(p.Get().(*Node) == a)
+	m.Store("a", a)
+	got, _ = m.Load("a")
+	fmt.Println(got.(*Node) == a)
 }
