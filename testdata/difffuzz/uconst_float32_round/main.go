@@ -11,6 +11,9 @@ import "fmt"
 const (
 	F32 = 0.00999999977648258209228515625
 	F64 = 0.01000000000000000020816681711721685132943093776702880859375
+	// a tie value where exact→f32 differs from exact→f64→f32: the
+	// constant must round once, not twice (double rounding gives 1).
+	Tie = 1.0000000596046447753906250001
 )
 
 func main() {
@@ -18,6 +21,7 @@ func main() {
 	fmt.Println(float32(0.01))     // %v still spells the float32
 	fmt.Println(float32(16777217)) // int constants round to the width too
 	fmt.Println(complex64(0.01 + 0.02i))
+	fmt.Println(float32(Tie), complex64(Tie))
 	type MyF32 float32
 	fmt.Println(float64(MyF32(0.01)) == F32) // named float32 rounds the same
 }
