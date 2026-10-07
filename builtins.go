@@ -188,13 +188,25 @@ func builtins(e *Engine) *runtime.Env {
 		// storage, past it the host append allocates a fresh array.
 		elems2 := append(elems, add...)
 		if len(elems2) > cap(elems) && rtyp != nil {
-			// for a zero-size element Go's growslice never doubles —
-			// cap is exactly the new length — while the host []Value
-			// grew by its own rule. Clip the spare so cap() agrees.
 			if ez, ok := v.(interface {
 				ElemZero(*runtime.TypeDef) runtime.Value
-			}); ok && runtime.IsZeroSizeValue(ez.ElemZero(rtyp)) {
-				elems2 = elems2[:len(elems2):len(elems2)]
+			}); ok {
+				zero := ez.ElemZero(rtyp)
+				if runtime.IsZeroSizeValue(zero) {
+					// for a zero-size element Go's growslice never
+					// doubles — cap is exactly the new length — while
+					// the host []Value grew by its own rule. Clip the
+					// spare so cap() agrees.
+					elems2 = elems2[:len(elems2):len(elems2)]
+				} else {
+					// a fresh backing array's spare capacity holds
+					// zeros, as growslice clears it: `s[:cap(s)]`
+					// must not expose absent values.
+					spare := elems2[len(elems2):cap(elems2)]
+					for i := range spare {
+						spare[i] = v.Copy(zero)
+					}
+				}
 			}
 		}
 		res := &runtime.Slice{Elems: elems2, Typ: rtyp}
@@ -354,9 +366,12 @@ func builtins(e *Engine) *runtime.Env {
 			if cap < n || cap > maxSliceElems {
 				panic(runtime.MakeslicePanic("cap"))
 			}
+			// the spare capacity holds zeros too: `s[:cap(s)]` and
+			// reflect's SetLen expose it, and Go zero-fills the whole
+			// backing array.
 			el := make([]runtime.Value, n, cap)
-			for i := range el {
-				el[i] = v.Copy(zero)
+			for i, all := 0, el[:cap]; i < len(all); i++ {
+				all[i] = v.Copy(zero)
 			}
 			return &runtime.Slice{Elems: el, Typ: td}, nil
 		case runtime.KindMap:
