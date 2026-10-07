@@ -3326,19 +3326,31 @@ func (c *compiler) hoistedArgCalls(e ast.Expr) (calls []ast.Expr, ok bool) {
 // lexical order across the whole list, and the returned exprs rewrite
 // each hoisted node as its scratch-slot load via substCallArg. prefix
 // names the scratch locals. ok is false when a conditional call site
-// makes hoisting unsafe or when there is nothing to hoist — the
-// caller then picks its own fallback order (callArgs runs plain
-// sequential, binaryOperands tries the pure-operand defer).
+// makes hoisting unsafe, when there is nothing to hoist, or when
+// hoisting would not reorder anything — the caller then picks its own
+// fallback order (callArgs runs plain sequential, binaryOperands tries
+// the pure-operand defer).
 func (c *compiler) hoistEagerOps(es []ast.Expr, prefix string) (subs []ast.Expr, ok bool) {
 	var calls []ast.Expr
+	// inOrder stays true while every expr up to the last one holding an
+	// eager op is that op alone (`f(x) + g(y)`, `h(f(), g())`): the
+	// sequential walk then runs the same order the two phases would, so
+	// the scratch locals (a cell per slot per frame) are skipped.
+	inOrder, sawDeferred := true, false
 	for _, e := range es {
 		ec, eok := c.hoistedArgCalls(e)
 		if !eok {
 			return nil, false
 		}
+		switch {
+		case len(ec) == 0:
+			sawDeferred = true
+		case sawDeferred || len(ec) > 1 || ec[0] != ast.Unparen(e):
+			inOrder = false
+		}
 		calls = append(calls, ec...)
 	}
-	if len(calls) == 0 {
+	if len(calls) == 0 || inOrder {
 		return nil, false
 	}
 	// Phase 1: evaluate each hoisted op into a scratch local, in order.
