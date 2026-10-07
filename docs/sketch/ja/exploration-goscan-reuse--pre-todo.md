@@ -150,7 +150,7 @@ TODO.md に切り出す前の検討置き場。
   - 「host util か script 公開か」の二択ではなく、host 側に実装を置いて script には薄い intrinsic を被せる(inspect の stub+impl 構成と同じ)
   - 純粋ロジック(alias 規則+衝突解決)で AST 不要なので共有しやすい
 
-### scantest 型のテストハーネス + FileWriter
+### gentest(旧 scantest 案)型のテストハーネス + FileWriter
 
 - 動機
   - examples の挙動確認テストが temp dir + 手書き helper 依存になりがち
