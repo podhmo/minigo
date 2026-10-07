@@ -64,7 +64,7 @@ TODO.md に切り出す前の検討置き場。
 
 ## 豊かさ(新しい機能面)
 
-### nodewalk パッケージ(仮称 — 旧 declwalk 案)
+### astwalk パッケージ(仮称 — 旧 declwalk 案)
 
 - 動機
   - func decl の body 走査は TODO.md 長年の残項目
@@ -79,10 +79,11 @@ TODO.md に切り出す前の検討置き場。
   - `inspect.UsedSymbolsOf` の file walk をこちらに集約
   - file レベルの comment 列挙もここに載る
 - 名前
-  - nodewalk を推す方向(粒度は decl に限らず stmt/expr/comment まで行く)
-  - modulewalk(次項)との対で、`go/ast` 側に相当
+  - astwalk を推す方向(「node」は広すぎ — 歩く対象は `go/ast` 構文木)
+  - modulewalk(次項)と `-walk` で対称、`go/ast` 側に相当
+  - 他候補: syntaxwalk(`syntax` pkg と語彙は揃うが拡張に見えて曖昧)、declwalk(decl-anchored に留まるなら正直だが狭い)、astx/astutil は x/tools と被るので不可
 - 未定
-  - bind path(`inspect` の増補か `minigo.dev/nodewalk` 新設か)
+  - bind path(`inspect` の増補か `minigo.dev/astwalk` 新設か)
   - 最小形だけか、pattern-hook まで入れるか
 
 ### modulewalk パッケージ(仮称 — ModuleWalker 相当)
@@ -91,7 +92,7 @@ TODO.md に切り出す前の検討置き場。
   - 「root 以下の全パッケージを nested go.mod 越しに列挙」が既存の TODO 項目
   - go-scan `modulewalker.go` がほぼそのままの仕様(調査 §3)
   - moon ide 的な表層走査ツールのキットとして使いたい意向あり
-    - 3点セット: symbol index(場所を引く) + modulewalk(範囲を与える) + nodewalk(中身を見る)
+    - 3点セット: symbol index(場所を引く) + modulewalk(範囲を与える) + astwalk(中身を見る)
 - 構成要素の案
   - imports-only スキャンで `PackageImports{Imports, FileImports}`
   - visitor 式 `Walk`(`./...` 展開つき BFS)
@@ -100,8 +101,8 @@ TODO.md に切り出す前の検討置き場。
   - `UnscannedGoFiles` 的な drift 検出
 - レイヤリング
   - interpreter 層ではなく test-detect 的な tooling 層
-  - 依存は imports-only 軽量パースのみ(AST 本体は要らない)= nodewalk より下の層
-  - nodewalk との2分割は `go/build`(発見) vs `go/ast`(走査)と同じ標準的な境界
+  - 依存は imports-only 軽量パースのみ(AST 本体は要らない)= astwalk より下の層
+  - astwalk との2分割は `go/build`(発見) vs `go/ast`(走査)と同じ標準的な境界
 - 未定
   - 上の「軽量パース段階」が先に要る
   - script に公開するか、host ツール専用か
