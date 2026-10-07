@@ -3824,18 +3824,18 @@ func (c *compiler) typeExpr(e ast.Expr) {
 	case *ast.ArrayType:
 		// Anon/Pkg/File let OpElemType resolve the element typedef later;
 		// Binds carries the generic instantiation so `[]T` resolves T.
-		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindSlice, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds}), 0, e.Pos())
+		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindSlice, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}), 0, e.Pos())
 		c.emitLenFolds(t)
 	case *ast.MapType:
-		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindMap, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds}), 0, e.Pos())
+		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindMap, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}), 0, e.Pos())
 		c.emitLenFolds(t)
 	case *ast.StarExpr:
 		// *T is a real typedef now: `var p *int` yields a TypedNil,
 		// `x.(*T)` asserts on pointer identity, `[]*T{{...}}` auto-takes &.
-		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindPointer, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds}), 0, e.Pos())
+		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindPointer, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}), 0, e.Pos())
 		c.emitLenFolds(t)
 	case *ast.StructType:
-		td := &runtime.TypeDef{Kind: runtime.KindStruct, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds}
+		td := &runtime.TypeDef{Kind: runtime.KindStruct, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}
 		td.FTags = runtime.StructFieldTags(t)
 		for _, f := range t.Fields.List {
 			if len(f.Names) == 0 {
@@ -3853,10 +3853,10 @@ func (c *compiler) typeExpr(e ast.Expr) {
 	case *ast.FuncType:
 		// the signature AST rides on the typedef so generalized inference
 		// (Go 1.27) can unify it against a generic function's parameters.
-		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindFunc, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds}), 0, e.Pos())
+		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindFunc, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}), 0, e.Pos())
 		c.emitLenFolds(t)
 	case *ast.InterfaceType:
-		td := &runtime.TypeDef{Kind: runtime.KindInterface, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds}
+		td := &runtime.TypeDef{Kind: runtime.KindInterface, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}
 		for _, m := range t.Methods.List {
 			if len(m.Names) == 0 {
 				td.IEmbeds = append(td.IEmbeds, m.Type)
@@ -3884,10 +3884,10 @@ func (c *compiler) typeExpr(e ast.Expr) {
 	case *ast.Ellipsis:
 		// ...T binds as []T: a variadic param's declared type IS a slice,
 		// so a missing rest coerces to TypedNil{slice}, not the elem zero
-		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Lbrack: t.Pos(), Elt: t.Elt}, Pkg: c.pkg, File: c.file, Binds: c.binds}), 0, e.Pos())
+		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Lbrack: t.Pos(), Elt: t.Elt}, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}), 0, e.Pos())
 		c.emitLenFolds(t)
 	case *ast.ChanType:
-		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindChan, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds}), 0, e.Pos())
+		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindChan, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}), 0, e.Pos())
 		c.emitLenFolds(t)
 	default:
 		c.trap(e.Pos(), "unsupported type expression %T", e)
@@ -3960,19 +3960,7 @@ func (c *compiler) funcLit(x *ast.FuncLit) {
 // embedFieldName derives the field name of an anonymous (embedded) struct
 // field: the base type name, ignoring pointers, packages and type args.
 func embedFieldName(x ast.Expr) string {
-	switch t := x.(type) {
-	case *ast.Ident:
-		return t.Name
-	case *ast.StarExpr:
-		return embedFieldName(t.X)
-	case *ast.SelectorExpr:
-		return t.Sel.Name
-	case *ast.IndexExpr:
-		return embedFieldName(t.X)
-	case *ast.IndexListExpr:
-		return embedFieldName(t.X)
-	}
-	return ""
+	return runtime.AnonFieldName(x)
 }
 
 // literalValue converts a BasicLit to a runtime value.
