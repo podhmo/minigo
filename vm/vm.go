@@ -1633,6 +1633,14 @@ func (v *VM) loop(f *frame) {
 			f.push(b)
 		case bytecode.OpFieldRef:
 			base := f.pop()
+			if ir, isImport := base.(*runtime.ImportRef); isImport && ins.B == 0 {
+				// &pkg.V is the imported global's own storage cell,
+				// like &v for a same-package global (OpGlobalRef).
+				if c := v.importGlobalCell(f, ir, consts[ins.A].(string)); c != nil {
+					f.push(c)
+					break
+				}
+			}
 			if ins.B == 0 || ins.B&2 != 0 {
 				// Pinned operand (address-of target B=0, or a
 				// multi-assign store B&2): a ref holding a struct is
@@ -2473,6 +2481,25 @@ func lookupDecl(pkg *runtime.Package, name string) (*index.Decl, bool) {
 		return d, true
 	}
 	return nil, false
+}
+
+// importGlobalCell resolves &pkg.name to the package global's storage
+// cell, or nil when the member is not a cell-backed variable (a host
+// binding), leaving the caller's generic ref path in charge.
+func (v *VM) importGlobalCell(f *frame, b *runtime.ImportRef, name string) *runtime.Cell {
+	if !token.IsExported(name) && !b.AllNames {
+		f.trap("cannot refer to unexported name %s.%s", b.Path, name)
+	}
+	p, err := b.Materialize()
+	if err != nil {
+		f.trap("import %s: %s", b.Path, err)
+	}
+	mv, err := v.memberOf(p, name)
+	if err != nil {
+		f.trap("%s", err)
+	}
+	c, _ := mv.(*runtime.Cell)
+	return c
 }
 
 // selectMember implements base.name for import refs, packages, structs,
