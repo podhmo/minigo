@@ -4471,9 +4471,9 @@ func (s *fmtValue) render(verb rune, f fmt.State) string {
 }
 
 func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
-	if s.depth > 8 {
-		return "..."
-	}
+	// Go's fmt has no render-depth cap — a deeply nested composite
+	// prints every level (issue29264), and a cyclic one overflows the
+	// host stack just as it does under go run.
 	switch v := x.(type) {
 	case *runtime.Named:
 		// %T keeps the declared name; other verbs render through.
