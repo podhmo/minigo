@@ -1,6 +1,7 @@
 package minigo
 
 import (
+	"errors"
 	"context"
 	"fmt"
 	"go/ast"
@@ -268,6 +269,17 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 	}
 	for _, spec := range td.EmbedSpecs {
 		emb, err := e.resolveTypeRef(td, spec)
+		// the embed's package failed its init (a trap or a panic): the
+		// program is already broken there, and treating the set as
+		// unsure would make every interface assertion succeed silently.
+		var tr *runtime.Trap
+		if errors.As(err, &tr) {
+			panic(tr)
+		}
+		var pn *runtime.Panic
+		if errors.As(err, &pn) {
+			panic(pn)
+		}
 		if err != nil || emb == nil {
 			unsure = true
 			continue
