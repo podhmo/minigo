@@ -1949,7 +1949,16 @@ func (v *VM) loop(f *frame) {
 				f.stack = f.stack[:len(f.stack)-1]
 			}
 		case bytecode.OpIter:
-			f.push(v.newIterator(f, materialize(f, f.pop())))
+			coll := materialize(f, f.pop())
+			if ins.B != 0 {
+				// operand was `*x`: the pointer is the rangeable — a nil
+				// *[N]T still yields indices, while `*x` on any other
+				// nil pointer dereferences eagerly like OpDeref.
+				if tn, ok := asTypedNil(coll); ok && tn.Typ != nil && tn.Typ.Kind == runtime.KindPointer && runtime.PtrArrayType(tn.Typ) == nil {
+					panic(runtime.NilDerefPanic())
+				}
+			}
+			f.push(v.newIterator(f, coll))
 		case bytecode.OpRangeNext:
 			it := f.locals[ins.B].Elem.(*runtime.Iterator)
 			if it.Kind == 'f' {

@@ -1733,8 +1733,33 @@ func loopInitNames(s ast.Stmt) []*ast.Ident {
 
 func (c *compiler) rangeStmt(st *ast.RangeStmt) {
 	c.fs.pushBlock()
-	c.expr(st.X)
-	c.emit(bytecode.OpIter, 0, 0, st.X.Pos())
+	// `range *p` must not evaluate the dereference eagerly: ranging a
+	// nil *[N]T still yields its static indices 0..N-1 in Go — only an
+	// element read dereferences the nil pointer. gc ranges through the
+	// pointer only when the operand is lvalue-capable (a variable,
+	// selector, index, or nested deref); a call result or other rvalue
+	// materializes `*x` eagerly and panics on nil. Compiling the pointer
+	// operand lets OpIter's nil-array path handle it; B=1 keeps the
+	// deref panic for non-array pointers.
+	rx := st.X
+	for {
+		if p, ok := rx.(*ast.ParenExpr); ok {
+			rx = p.X
+			continue
+		}
+		break
+	}
+	star := false
+	if se, ok := rx.(*ast.StarExpr); ok && rangeStarLazy(se.X) {
+		rx = se.X
+		star = true
+	}
+	c.expr(rx)
+	iterB := 0
+	if star {
+		iterB = 1
+	}
+	c.emit(bytecode.OpIter, 0, iterB, st.X.Pos())
 	itSlot := c.fs.declare(c.fresh("$it"), token.NoPos)
 	c.emit(bytecode.OpNewLocal, itSlot, 0, st.X.Pos())
 
@@ -1793,6 +1818,26 @@ func (c *compiler) rangeStmt(st *ast.RangeStmt) {
 	}
 	c.ctrl = c.ctrl[:len(c.ctrl)-1]
 	c.fs.popBlock()
+}
+
+// rangeStarLazy reports whether e — the operand of a `range *e` — is a
+// form gc iterates through the pointer: identifiers, selectors, indexes
+// and nested dereferences are all lvalue-capable, so `*e` never
+// materializes the array and a nil pointer still yields indices. Calls,
+// receives and other rvalues evaluate `*e` eagerly and panic on nil.
+func rangeStarLazy(e ast.Expr) bool {
+	for {
+		if p, ok := e.(*ast.ParenExpr); ok {
+			e = p.X
+			continue
+		}
+		break
+	}
+	switch e.(type) {
+	case *ast.Ident, *ast.SelectorExpr, *ast.IndexExpr, *ast.IndexListExpr, *ast.StarExpr:
+		return true
+	}
+	return false
 }
 
 func (c *compiler) bindRangeVar(e ast.Expr, define bool) {
