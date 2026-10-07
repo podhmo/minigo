@@ -2691,8 +2691,43 @@ func (c *compiler) binary(x *ast.BinaryExpr) {
 			return
 		}
 		c.binaryOperands(x.X, x.Y)
+		if (op == bytecode.BinEql || op == bytecode.BinNeq) && (c.ifaceOperand(x.X) || c.ifaceOperand(x.Y)) {
+			// an interface-typed operand compares (dynamic type, value)
+			// pairs: `any(ch) == any(r)` is false for chan-int and
+			// chan<-int values sharing one channel, and `any(A{}) ==
+			// any(B{})` is false for look-alike declared array types —
+			// a statically typed `ch == r` still resolves by
+			// assignability and stays true.
+			c.emit(bytecode.OpBinary, int(bytecode.BinEqlIface), 0, x.Pos())
+			if op == bytecode.BinNeq {
+				c.emit(bytecode.OpUnary, int(bytecode.UnNot), 0, x.Pos())
+			}
+			return
+		}
 		c.emit(bytecode.OpBinary, int(op), 0, x.Pos())
 	}
+}
+
+// ifaceOperand reports whether the operand's static type is visibly an
+// interface — a conversion to any/error, a named interface type, or an
+// interface{...} literal. Declared interface variables carry no
+// compile-time marker (cells bind typedefs at runtime), so `var i any =
+// …; i == j` still compares laxly.
+func (c *compiler) ifaceOperand(e ast.Expr) bool {
+	switch t := ast.Unparen(e).(type) {
+	case *ast.CallExpr:
+		if !c.conversionCall(t) {
+			return false
+		}
+		switch f := ast.Unparen(t.Fun).(type) {
+		case *ast.InterfaceType:
+			return true
+		case *ast.Ident:
+			info, found := c.resolveName(f.Name)
+			return found && info.iface
+		}
+	}
+	return false
 }
 
 // binaryOperands emits the operands of a plain binary op in Go's

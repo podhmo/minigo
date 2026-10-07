@@ -6594,6 +6594,16 @@ func constToBasic(u *runtime.UConst, name string) (runtime.Value, bool) {
 // the interface nil rules from eqlValue.
 func (v *VM) ifaceEql(f *frame, a, b runtime.Value) bool {
 	a, b = v.materialize(f, a), v.materialize(f, b)
+	// an interface operand is a (dynamic type, value) pair: the dynamic
+	// typedefs must be identical before values compare. Values carry
+	// their type on Typ/Def rather than only on a Named wrapper —
+	// any(chan<-T) vs any(chan T) share a channel but not a type, and
+	// any(A) vs any(B) differ for look-alike declared arrays (the lax
+	// eqlValue paths relax across typedefs for static =='s
+	// assignability rules).
+	if !sameTypeDef(v.typeOfValue(a), v.typeOfValue(b)) {
+		return false
+	}
 	an, aNamed := a.(*runtime.Named)
 	bn, bNamed := b.(*runtime.Named)
 	if aNamed != bNamed {
