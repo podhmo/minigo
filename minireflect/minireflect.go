@@ -468,10 +468,12 @@ func (e *Env) new_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, er
 	if t.rt != nil {
 		return &runtime.GoValue{V: &RValue{e: e, vc: vc, rv: reflect.New(t.rt)}}, nil
 	}
-	// a pointer is a cell; New(t) is the cell holding t's zero.
+	// a pointer is a cell; New(t) is the cell holding t's zero, typed
+	// like new(T) so a store through it (`*p = []string{...}` in a
+	// pointer-receiver UnmarshalJSON) keeps T's identity and methods.
 	ptd := &runtime.TypeDef{Kind: runtime.KindPointer, Elem: t.td,
 		Anon: &ast.StarExpr{X: e.exprOf(t.td)}}
-	return &runtime.GoValue{V: &RValue{e: e, vc: vc, val: &runtime.Cell{Elem: e.zeroOf(vc, t.td)}, td: ptd}}, nil
+	return &runtime.GoValue{V: &RValue{e: e, vc: vc, val: &runtime.Cell{Elem: e.zeroOf(vc, t.td), Typ: t.td}, td: ptd}}, nil
 }
 
 func (e *Env) zero(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
