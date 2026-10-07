@@ -81,6 +81,31 @@ gh-stack skill), not just base-chained. After the base branch moves, replay
 each layer's own commits onto it (no merge commits) and re-measure the
 whole stack.
 
+## Checking for a performance regression
+
+When a compatibility round lands, don't re-measure by hand — run the A/B
+check in the harness repo. `compare.sh` builds two revisions into scratch
+worktrees and interleaves probe runs in the same sitting:
+
+```sh
+MINIGO_DIR=<this checkout> ./compare.sh <old-ref> <new-ref> [--full] [--profile]
+```
+
+- Probes are `probes/` (synthetic; no downloads) plus the light tasks
+  (clickhouse-settings). `--full` adds grafana-openapi — the grafana
+  checkout only, never `go mod download`. The grafana-swagger-* tasks are
+  pitch/drift checks, not regression probes: they measure where minigo
+  wins, not whether it slowed down.
+- Only same-sitting deltas mean anything: medians over RUNS=3 interleaved
+  rounds, exit code 2 when a probe's median regresses past THRESHOLD_PCT
+  (default 10). `OUTPUT-DIFF` means the two builds printed different
+  answers — a correctness divergence, not a slowdown; triage it like a
+  DIFF verdict.
+- On a regression, `--profile` writes `out/cmp/<probe>.diff.txt`
+  (`pprof -diff_base`, CPU + alloc_space). To find the culprit commit,
+  bisect over `git rev-list --first-parent` per "Tuning a slow task" —
+  never `git bisect run` with the harness.
+
 ## Triage a failing task
 
 1. Read `out/<task>.got` and locate the frame in minigo's traceback
