@@ -7386,8 +7386,12 @@ func eqlValue(a, b runtime.Value) bool {
 		}
 		return false
 	case *runtime.Chan:
-		if _, ok := b.(*runtime.Chan); ok {
-			return a == b // channel identity
+		if bc, ok := b.(*runtime.Chan); ok {
+			// channel identity is the underlying channel, not the
+			// wrapper — assigning a chan to a directional-chan slot
+			// re-stamps the container with a fresh *Chan header, so
+			// `var r <-chan T = c; c == r` must still be true.
+			return av.C == bc.C
 		}
 		return false
 	case *runtime.GoValue:
