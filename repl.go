@@ -459,6 +459,7 @@ func (r *REPL) commitWrites() {
 					td.Methods = map[string]*runtime.Function{}
 				}
 				td.Methods[m.name] = r.engine.methodFunc(p, m.recv, d)
+				runtime.MethodSetsChanged()
 			}
 		}
 	}
