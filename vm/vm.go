@@ -6686,14 +6686,18 @@ func scalarConst(u *runtime.UConst, b runtime.Value) (runtime.Value, bool) {
 // When the other operand is a named numeric, the const adopts ITS type
 // (Go spec: `x op y` where x is an untyped constant representable as
 // T(y) converts x to T(y) — `'a' + uint16var` is uint16 arithmetic);
-// otherwise it takes its default type. An unconvertible const keeps
-// the default materialization so the mismatch trap reports like Go's
-// compile error.
+// a bare scalar operand types it the same way (`k * 2e6` computes in
+// int when 2e6 is exactly representable — scalarConst is that same
+// operand-type conversion comparisons already use); otherwise it
+// takes its default type. An unconvertible const keeps the default
+// materialization so the mismatch trap reports like Go's compile error.
 func (v *VM) adaptConst(f *frame, u *runtime.UConst, other runtime.Value) runtime.Value {
 	if nb, ok := other.(*runtime.Named); ok {
 		if r, ok2 := constToBasic(u, basicNameOf(nb.Typ)); ok2 {
 			return runtime.Tag(nb.Typ, r)
 		}
+	} else if s, ok := scalarConst(u, other); ok {
+		return s
 	}
 	return v.materialize(f, u)
 }
