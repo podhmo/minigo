@@ -25,6 +25,7 @@ import (
 
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/minireflect"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
 )
@@ -2881,9 +2882,16 @@ func goValueOf(rv reflect.Value) runtime.Value {
 	}
 }
 
+// hostRValueType is the facade's host type: a host []*RValue (MapKeys,
+// Call results) spells its elements reflect.Value like Go.
+var hostRValueType = reflect.TypeOf((*minireflect.RValue)(nil))
+
 // elemTypeName names a reflect type for typedef spelling — Name() when
 // it has one, the reflect spelling otherwise (struct{...}, []string).
 func elemTypeName(t reflect.Type) string {
+	if t == hostRValueType {
+		return "reflect.Value"
+	}
 	if n := t.Name(); n != "" {
 		return n
 	}
