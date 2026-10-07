@@ -108,6 +108,9 @@ TODO.md に切り出す前の検討置き場。
   - interpreter 層ではなく test-detect 的な tooling 層
   - 依存は imports-only 軽量パースのみ(AST 本体は要らない)= astwalk より下の層
   - astwalk との2分割は `go/build`(発見) vs `go/ast`(走査)と同じ標準的な境界
+- 名前
+  - `modulewalk.Walker` — go-scan 側の `ModuleWalker` は stutter なので型名は `Walker` に落とす
+  - `Visitor` はそのまま `modulewalk.Visitor` で揃う
 - 未定
   - 上の「軽量パース段階」が先に要る
   - script に公開するか、host ツール専用か
