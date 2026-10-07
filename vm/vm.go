@@ -6925,6 +6925,13 @@ func (v *VM) binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.V
 	if op == bytecode.BinEqlIface {
 		return v.ifaceEql(f, a, b)
 	}
+	// constant payloads the operands arrived with: an op where every
+	// operand is still a constant is gc's constant EXPRESSION — it
+	// evaluates in the declared type's exact domain and an
+	// unrepresentable result is a compile error, where the same op on
+	// a var wraps (`uint(4) - 8` errors, `v - 8` wraps).
+	ca, aIsConst := constPayload(a)
+	cb, bIsConst := constPayload(b)
 	// untyped constants fold in the arbitrary-precision constant domain
 	// while both sides read as constants — a bare int64/float64 operand
 	// came from a folded literal and can lift back (`const C = B - 1<<99`
@@ -6997,6 +7004,21 @@ func (v *VM) binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.V
 	// result by the left side alone, so `^uintptr(0) >> 63` must shift
 	// logically, not as int64. They get their own operator.
 	if op == bytecode.BinShl || op == bytecode.BinShr {
+		// `uint8(1) << 8` is a constant expression too: fold in the
+		// exact domain and range-check against the LEFT operand's tag.
+		if aIsConst && bIsConst {
+			if n, ok := a.(*runtime.Named); ok && numericBasicName(basicNameOf(v.peelNamed(n.Typ))) {
+				if r, ok := constBinary(op, ca, cb); ok {
+					if ru, isConst := r.(*runtime.UConst); isConst {
+						if _, err := v.materializeConstErr(ru, n.Typ); err != nil {
+							f.trap("%s", err)
+						}
+						return runtime.Tag(n.Typ, ru)
+					}
+					return r
+				}
+			}
+		}
 		return v.shiftOp(f, op, a, b)
 	}
 	// named basic values operate on their underlying value; two different
@@ -7022,6 +7044,24 @@ func (v *VM) binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.V
 		}
 		tag = n.Typ
 		b = n.V
+	}
+	if tag != nil && aIsConst && bIsConst && numericBasicName(basicNameOf(v.peelNamed(tag))) {
+		// a constant expression evaluates in the tag's exact domain and
+		// an unrepresentable result is gc's `constant ... overflows`
+		// reject (`uint8(250) + 10`, `int8(120) + 10`, `uint8(1) << 8`,
+		// `complex64(...) + complex64(...)` past float32 range). The
+		// folded result keeps the tag so chained ops keep checking.
+		if r, ok := constBinary(op, ca, cb); ok {
+			if ru, isConst := r.(*runtime.UConst); isConst {
+				if _, err := v.materializeConstErr(ru, tag); err != nil {
+					f.trap("%s", err)
+				}
+				return runtime.Tag(tag, ru)
+			}
+			return r // comparisons fold to an untyped bool
+		}
+		// unfoldable — division by zero, mismatched kinds — falls
+		// through to the runtime path for its own trap.
 	}
 	// complex values operate in the complex domain: complex64 wins over
 	// complex128, ordered comparisons are a compile reject in Go.
@@ -7629,16 +7669,16 @@ func (v *VM) unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value 
 			if _, err := v.materializeConstErr(cv, tag); err == nil {
 				return runtime.Tag(tag, cv)
 			}
-			if !unsignedName(sizedNameOf(tag)) {
+			if !unsignedName(sizedNameOf(tag)) || op != bytecode.UnXor {
 				// the constant-domain result is not representable in
-				// the declared signed type — `-int8(-128)` is Go's
+				// the declared type — `-uint(5)`/`-int8(-128)` is Go's
 				// "constant overflows" compile error.
 				f.trap("constant %s overflows %s", cv.V, runtime.DisplayName(tag))
 			}
-			// an unsigned tag applies the op at the declared width:
-			// the constant domain's ^uint(0) is -1, but the uint
-			// constant is maxuint — materialize, run the concrete op,
-			// and retag masks it back into the width.
+			// only ^x on an unsigned tag applies the op at the
+			// declared width: the constant domain's ^uint(0) is -1,
+			// but the uint constant is maxuint — materialize, run the
+			// concrete op, and retag masks it back into the width.
 			a = runtime.Unwrap(v.materializeConst(f, u, tag))
 		} else {
 			a = v.materialize(f, a)
