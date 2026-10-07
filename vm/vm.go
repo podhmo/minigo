@@ -7508,9 +7508,16 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 	case *runtime.Struct:
 		// structs compare field-wise in Go; the defs must name the same
 		// type — anonymous struct typedefs with the same field list are
-		// the same type (Go's identical-underlying rule).
+		// the same type (Go's identical-underlying rule). A named type
+		// also compares against its anonymous spelling — `s ==
+		// struct{a int}{...}` — the same tdShapeEq relax arrays get
+		// (field types must spell identically, not just names).
 		bs, ok := b.(*runtime.Struct)
-		if !ok || !runtime.TypIdentical(av.Def, bs.Def) || len(av.Fields) != len(bs.Fields) {
+		if !ok || len(av.Fields) != len(bs.Fields) {
+			return false
+		}
+		if !runtime.TypIdentical(av.Def, bs.Def) &&
+			!(av.Def != nil && bs.Def != nil && v.tdShapeEq(av.Def, bs.Def)) {
 			return false
 		}
 		fts := v.fieldTypedefs(av.Def)
