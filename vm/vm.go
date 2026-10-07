@@ -10026,6 +10026,11 @@ func (v *VM) callSite(f *frame) runtime.CallSite {
 	if pos.IsValid() && f.fn.Pkg != nil && f.fn.Pkg.Fset != nil {
 		p := f.fn.Pkg.Fset.Position(pos)
 		site.File = p.Filename
+		if site.File == "" {
+			// a `//line :N` directive records no filename — gc renders
+			// the unrecorded file as "??" in Frame.File.
+			site.File = "??"
+		}
 		site.Line = p.Line
 	}
 	return site
