@@ -1,0 +1,5 @@
+runtime error: comparing uncomparable type main.bad
+runtime error: comparing uncomparable type main.bad2
+runtime error: comparing uncomparable type main.wrap
+runtime error: comparing uncomparable type [2]main.wrap
+runtime error: comparing uncomparable type []int
