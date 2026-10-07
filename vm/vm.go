@@ -11134,7 +11134,9 @@ func (v *VM) instantiate(f *frame, base runtime.Value, targs []runtime.Value, po
 		if len(g.TParams) == 0 {
 			return v.indexFallback(f, base, targs)
 		}
-		if len(targs) != len(g.TParams) {
+		// a partial list (slices.Grow[S]) leaves the trailing params to
+		// constraint/argument inference.
+		if len(targs) > len(g.TParams) {
 			f.trap("cannot instantiate %s: needs %d type arguments, got %d", g.Name, len(g.TParams), len(targs))
 		}
 		return v.instantiateFunc(f, g, targs)
@@ -11189,8 +11191,26 @@ func (v *VM) instantiateFunc(f *frame, g *runtime.Function, targs []runtime.Valu
 	}
 	bindArgs(binds, g.TParams, targs)
 	ctx := &runtime.TypeDef{Pkg: g.Pkg, File: g.File, Binds: binds}
-	if err := v.checkTArgs(ctx, g.TParams, g.TConstraints, binds); err != nil {
-		f.trap("%s", err)
+	if len(targs) < len(g.TParams) {
+		tset := map[string]bool{}
+		for _, t := range g.TParams[len(targs):] {
+			if _, ok := binds[t]; !ok {
+				tset[t] = true
+			}
+		}
+		v.inferCoreTypes(ctx, tset, binds, g.TParams, g.TConstraints)
+	}
+	complete := true
+	for _, t := range g.TParams {
+		if _, ok := binds[t]; !ok {
+			complete = false
+		}
+	}
+	// still-unbound params are inferred (and checked) at the call
+	if complete {
+		if err := v.checkTArgs(ctx, g.TParams, g.TConstraints, binds); err != nil {
+			f.trap("%s", err)
+		}
 	}
 	return &runtime.Function{
 		Pkg: g.Pkg, File: g.File, Decl: g.Decl, Name: g.Name,
