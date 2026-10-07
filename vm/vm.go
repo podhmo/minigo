@@ -960,6 +960,7 @@ func (v *VM) Recover() runtime.Value {
 	}
 	val := v.inflight.Value
 	v.consumedPanic = v.inflight
+	v.consumedPanic.Recovered = true
 	v.inflight = nil
 	// a runtime-error payload surfaces as the boxed host error Go's
 	// recover() returns — `err.(error)` asserts and `.Error()` calls
@@ -1177,6 +1178,20 @@ func (v *VM) unwind(f *frame, r any) {
 	var p *runtime.Panic
 	if sp, ok := r.(*runtime.Panic); ok {
 		p = sp
+		// a panic unwinding on top of another chains to it — gc prints
+		// the superseded panic first (`panic: old` / `\tpanic: new`),
+		// with ` [recovered]` when recover() had consumed it. The
+		// in-flight panic is the topmost superseded one; a consumed
+		// panic is what remains once recover() cleared inflight. p
+		// itself stays out — this is the same panic's later unwind
+		// frames.
+		if p.Prev == nil {
+			if v.inflight != nil && v.inflight != p {
+				p.Prev = v.inflight
+			} else if v.consumedPanic != nil && v.consumedPanic != p {
+				p.Prev = v.consumedPanic
+			}
+		}
 	}
 	// v.inflight is visible to recover() only while this frame's defers run.
 	// os.Exit skips the defers on every frame like a real process exit.

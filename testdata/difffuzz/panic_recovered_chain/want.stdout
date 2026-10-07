@@ -1,0 +1,7 @@
+mid recover: first
+outer recover: second
+d3 recover: orig
+d2 recover: first
+d1 recover: second
+h-inner recover: h-second
+all returned

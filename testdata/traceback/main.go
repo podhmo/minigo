@@ -60,3 +60,21 @@ func repanicOrigin() {
 	var m map[string]int
 	m["x"] = 1
 }
+
+// RepanicChain repanics after recovering: the fatal render chains the
+// superseded panic first with gc's ` [recovered]` marker, then the new
+// panic under a leading tab.
+func RepanicChain() {
+	defer func() {
+		recover()
+		panic("chain-head")
+	}()
+	panic("chain-tail")
+}
+
+// RepanicPlain repanics WITHOUT recovering: the chain still links but
+// carries no `[recovered]` marker.
+func RepanicPlain() {
+	defer func() { panic("chain-new") }()
+	panic("chain-old")
+}
