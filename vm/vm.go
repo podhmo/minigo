@@ -6228,14 +6228,9 @@ func numericConstKind(k constant.Kind) bool {
 
 // numericBasicName reports whether a basic type name is numeric —
 // the conversion target kinds a constant stays a constant under.
+// The numeric names are builtinTypeName minus bool/string/error.
 func numericBasicName(name string) bool {
-	switch name {
-	case "int", "int8", "int16", "int32", "int64", "rune",
-		"uint", "uint8", "byte", "uint16", "uint32", "uint64", "uintptr",
-		"float32", "float64", "complex64", "complex128":
-		return true
-	}
-	return false
+	return builtinTypeName(name) && name != "bool" && name != "string" && name != "error"
 }
 
 // constFloat reads a numeric constant as float64; a complex constant
@@ -11072,7 +11067,7 @@ func (s *specialCtx) ResolveType(e ast.Expr) (*runtime.TypeDef, error) {
 			if len(fld.Names) == 0 {
 				td.EmbedSpecs = append(td.EmbedSpecs, fld.Type)
 				td.EmbedIdx = append(td.EmbedIdx, len(td.Fields))
-				td.Fields = append(td.Fields, embeddedFieldName(fld.Type))
+				td.Fields = append(td.Fields, runtime.AnonFieldName(fld.Type))
 				continue
 			}
 			for _, n := range fld.Names {
@@ -11126,25 +11121,6 @@ func (s *specialCtx) instantiateType(e ast.Expr, x ast.Expr, argExprs []ast.Expr
 		return nil, s.Errorf(e, "%s is not a type", s.Format(e))
 	}
 	return td, nil
-}
-
-// embeddedFieldName derives the field name of an anonymous (embedded)
-// struct field: the base type name, ignoring pointers, packages and
-// type args. Mirrors compile's embedFieldName.
-func embeddedFieldName(x ast.Expr) string {
-	switch t := x.(type) {
-	case *ast.Ident:
-		return t.Name
-	case *ast.StarExpr:
-		return embeddedFieldName(t.X)
-	case *ast.SelectorExpr:
-		return t.Sel.Name
-	case *ast.IndexExpr:
-		return embeddedFieldName(t.X)
-	case *ast.IndexListExpr:
-		return embeddedFieldName(t.X)
-	}
-	return ""
 }
 
 // Eval compiles expr against the caller's live scope (locals/upvals snap-
