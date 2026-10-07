@@ -1089,10 +1089,10 @@ func (c *compiler) stmt(s ast.Stmt) {
 			c.expr(t.X)
 			c.expr(t.Index)
 			c.emit(bytecode.OpDup2, 0, 0, t.Pos())
-			c.emit(bytecode.OpIndex, 0, 0, t.Pos())
+			c.emit(bytecode.OpIndex, 0, 0, t.Lbrack)
 			one()
 			c.emit(bytecode.OpBinary, int(op), 0, st.Pos())
-			c.emit(bytecode.OpSetIndex, 0, 0, st.Pos())
+			c.emit(bytecode.OpSetIndex, 0, 0, t.Lbrack)
 		case *ast.StarExpr:
 			c.expr(t.X)
 			c.emit(bytecode.OpDup, 0, 0, t.Pos())
@@ -1438,7 +1438,7 @@ func (c *compiler) refTarget(lhs ast.Expr, pin bool) {
 			c.refTargetBase(t.X, pin)
 		}
 		c.expr(t.Index)
-		c.emit(bytecode.OpIndexRef, 0, 1, t.Pos())
+		c.emit(bytecode.OpIndexRef, 0, 1, t.Lbrack)
 	case *ast.StarExpr:
 		if pin {
 			// `*p` pins the pointer operand — `p, *p = fp()` writes
@@ -1597,7 +1597,7 @@ func (c *compiler) storeTarget(lhs ast.Expr, isDefine bool) {
 		c.expr(t.X)
 		c.expr(t.Index)
 		c.emit(bytecode.OpRot3, 0, 0, t.Pos())
-		c.emit(bytecode.OpSetIndex, 0, 0, t.Pos())
+		c.emit(bytecode.OpSetIndex, 0, 0, t.Lbrack)
 	case *ast.StarExpr:
 		c.expr(t.X)
 		c.emit(bytecode.OpSwap, 0, 0, t.Pos())
@@ -2445,7 +2445,7 @@ func (c *compiler) expr(e ast.Expr) {
 		if ix, ok := indexOperand(x.X); ok && !c.isTypeForm(ix.Index) && c.refableIndexBase(ix.X) {
 			c.refTargetBase(ix.X, false)
 			c.expr(ix.Index)
-			c.emit(bytecode.OpIndexRef, 0, 1, ix.Pos())
+			c.emit(bytecode.OpIndexRef, 0, 1, ix.Lbrack)
 		} else if c.selectorBaseIsVar(x.X) {
 			// `x.M()` lowers to `(&x).M()` when M needs a pointer — a
 			// scalar named value is a detached copy otherwise, so the
@@ -2469,7 +2469,7 @@ func (c *compiler) expr(e ast.Expr) {
 		} else {
 			c.expr(x.Index)
 		}
-		c.emit(bytecode.OpInstantiate, 1, 0, x.Pos())
+		c.emit(bytecode.OpInstantiate, 1, 0, x.Lbrack)
 	case *ast.SliceExpr:
 		c.expr(x.X)
 		if x.Low != nil {
@@ -2488,10 +2488,10 @@ func (c *compiler) expr(e ast.Expr) {
 			} else {
 				c.emit(bytecode.OpNil, 0, 0, x.Pos())
 			}
-			c.emit(bytecode.OpSlice, 0, 1, x.Pos())
+			c.emit(bytecode.OpSlice, 0, 1, x.Lbrack)
 			return
 		}
-		c.emit(bytecode.OpSlice, 0, 0, x.Pos())
+		c.emit(bytecode.OpSlice, 0, 0, x.Lbrack)
 	case *ast.StarExpr:
 		c.expr(x.X)
 		c.emit(bytecode.OpDeref, 0, 0, x.Pos())
@@ -2604,7 +2604,7 @@ func (c *compiler) unary(x *ast.UnaryExpr) {
 		case *ast.IndexExpr:
 			c.expr(t.X)
 			c.expr(t.Index)
-			c.emit(bytecode.OpIndexRef, 0, 0, t.Pos())
+			c.emit(bytecode.OpIndexRef, 0, 0, t.Lbrack)
 		case *ast.StarExpr:
 			// &*p is p — the address-of and the dereference cancel,
 			// but the dereference's nil check still fires (Go panics
@@ -3435,7 +3435,7 @@ unwrapped:
 				c.expr(ix.X)
 				jm := c.emit(bytecode.OpLenIdxFold, 0, 0, x.Pos())
 				c.expr(ix.Index)
-				c.emit(bytecode.OpIndex, 0, 0, ix.Pos())
+				c.emit(bytecode.OpIndex, 0, 0, ix.Lbrack)
 				c.emit(bytecode.OpNil, 0, 0, x.Pos())
 				c.emit(bytecode.OpCall, 1, 0, x.Pos())
 				c.patchA(jm, len(c.ch.Code))
