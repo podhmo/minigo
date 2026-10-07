@@ -1083,27 +1083,25 @@ func instArgsSpelling(td *TypeDef) string {
 	if len(td.Binds) == 0 || (len(td.TParams) == 0 && len(td.OuterArgs) == 0) {
 		return ""
 	}
+	outer, own := td.InstArgs()
 	var b strings.Builder
 	b.WriteByte('[')
-	if len(td.OuterArgs) > 0 {
-		for i, ov := range td.OuterArgs {
-			otd, ok := ov.(*TypeDef)
-			if !ok {
-				return ""
-			}
-			if i > 0 {
-				b.WriteByte(',')
-			}
-			b.WriteString(DisplayName(otd))
+	for i, a := range outer {
+		otd, ok := a.Value.(*TypeDef)
+		if !ok {
+			return ""
 		}
-		if len(td.TParams) > 0 {
-			b.WriteByte(';')
+		if i > 0 {
+			b.WriteByte(',')
 		}
+		b.WriteString(DisplayName(otd))
 	}
-	for i, p := range td.TParams {
-		bv, ok := td.Binds[p]
-		btd, isTd := bv.(*TypeDef)
-		if !ok || !isTd {
+	if len(outer) > 0 && len(own) > 0 {
+		b.WriteByte(';')
+	}
+	for i, a := range own {
+		btd, isTd := a.Value.(*TypeDef)
+		if !a.Bound || !isTd {
 			return ""
 		}
 		if i > 0 {
@@ -1113,6 +1111,31 @@ func instArgsSpelling(td *TypeDef) string {
 	}
 	b.WriteByte(']')
 	return b.String()
+}
+
+// InstArg is one slot of an instantiated typedef's argument list — a
+// resolved argument, or an unbound own-parameter slot (Bound=false) a
+// caller may skip or treat as failure.
+type InstArg struct {
+	Value Value
+	Bound bool
+}
+
+// InstArgs enumerates td's instantiation arguments in declaration order:
+// outer carries the enclosing instantiation's resolved arguments
+// (OuterArgs — always bound), own carries one slot per declared TParams
+// entry resolved through Binds. Renderers of the `[outer;own]` suffix
+// — instArgsSpelling for display, bindsKeyOf for canonical identity —
+// walk the two runs and stringification stays per-callsite.
+func (td *TypeDef) InstArgs() (outer, own []InstArg) {
+	for _, ov := range td.OuterArgs {
+		outer = append(outer, InstArg{Value: ov, Bound: true})
+	}
+	for _, p := range td.TParams {
+		bv, ok := td.Binds[p]
+		own = append(own, InstArg{Value: bv, Bound: ok})
+	}
+	return outer, own
 }
 
 func DisplayName(td *TypeDef) string {
