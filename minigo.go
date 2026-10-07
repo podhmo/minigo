@@ -554,7 +554,15 @@ func (e *Engine) modinfo() string {
 		b.WriteString("path\t" + e.mainPkg.Path + "\n")
 	}
 	if mod := resolve.ModulePath(e.mainPkg.Dir); mod != "" && !strings.HasPrefix(e.mainPkg.Path, "<file>") {
-		b.WriteString("mod\t" + mod + "\t(devel)\t\n")
+		// a main package outside the cwd's module (`go run dep/cmd/x`)
+		// is stamped with the version the cwd module requires
+		version := "(devel)"
+		if resolve.ModulePath(e.cwd) != mod {
+			if v, ok := resolve.RequiredVersion(e.cwd, mod); ok {
+				version = v
+			}
+		}
+		b.WriteString("mod\t" + mod + "\t" + version + "\t\n")
 	}
 	const sentinel = "0123456789abcdef" // any 16 bytes: only the length matters
 	return sentinel + b.String() + sentinel

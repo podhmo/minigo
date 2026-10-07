@@ -42,17 +42,44 @@ func ModuleLang(dir string) string {
 // ModulePath returns the module path of the module enclosing dir, or ""
 // when dir is outside any module.
 func ModulePath(dir string) string {
+	if f := enclosingModFile(dir); f != nil && f.Module != nil {
+		return f.Module.Mod.Path
+	}
+	return ""
+}
+
+// RequiredVersion reports the version the module enclosing dir requires
+// of modPath — the version a `go run` build stamps for a dependency.
+func RequiredVersion(dir, modPath string) (string, bool) {
+	f := enclosingModFile(dir)
+	if f == nil {
+		return "", false
+	}
+	for _, r := range f.Require {
+		if r.Mod.Path == modPath {
+			return r.Mod.Version, true
+		}
+	}
+	return "", false
+}
+
+func enclosingModFile(dir string) *modfile.File {
 	for d := dir; ; {
-		data, err := os.ReadFile(filepath.Join(d, "go.mod"))
+		name := filepath.Join(d, "go.mod")
+		data, err := os.ReadFile(name)
 		if err == nil {
-			return modfile.ModulePath(data)
+			f, err := modfile.Parse(name, data, nil)
+			if err != nil {
+				return nil
+			}
+			return f
 		}
 		if !os.IsNotExist(err) {
-			return ""
+			return nil
 		}
 		parent := filepath.Dir(d)
 		if parent == d {
-			return ""
+			return nil
 		}
 		d = parent
 	}
