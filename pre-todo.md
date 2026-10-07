@@ -29,7 +29,7 @@ TODO.md に切り出す前の検討置き場。
 - これがあると載せられる既存の TODO 項目
   - `inspect.Decls` が method を拾わない → **欲しい(verdict)**、ただし欠けているのは pkg-wide flatten のみ
     - 訂正: `inspect.MethodsOf(typeDecl)` は既に存在し script にも bound 済み — per-type は既に取れる
-    - パッケージ全体は `Decls`→TypeDecl 絞り→`MethodsOf` の ~5 行ループで届く — 残るのは convenience の pkg-level 列挙(`inspect.Methods(pkg)` 相当)のみ
+    - パッケージ全体は `Decls`→TypeDecl 絞り→`MethodsOf` の ~5 行ループで届く — ただし組み合わせを知らないと使えない(発見可能性がない)ので、薄い pkg-level 列挙(`inspect.Methods(pkg)` 相当)を置く意味はある
   - free comment が見えない
   - const の initializer が見えない(`inspect.Value` が `init()` を走らせる問題の代替経路にも)
 - 参考実装
