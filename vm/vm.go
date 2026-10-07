@@ -6292,7 +6292,11 @@ func (v *VM) materializeConstErr(u *runtime.UConst, td *runtime.TypeDef) (runtim
 		if !ok {
 			return nil, fmt.Errorf("cannot use constant %s as %s", u.V, name)
 		}
-		x = &runtime.GoValue{V: complex64(cv)}
+		c64 := complex64(cv)
+		if math.IsInf(real(complex128(c64)), 0) || math.IsInf(imag(complex128(c64)), 0) {
+			return nil, fmt.Errorf("constant %s overflows complex64", u.V)
+		}
+		x = &runtime.GoValue{V: c64}
 	case "complex128":
 		cv, ok := constComplex(u.V)
 		if !ok {
@@ -6439,10 +6443,15 @@ func toIntConst(cv constant.Value) (i constant.Value, ok bool) {
 func fitsIntConst(cv constant.Value, name string) (int64, bool) {
 	if cv.Kind() == constant.Float {
 		ti, ok := toIntConst(cv)
-		if !ok {
+		if !ok || ti.Kind() != constant.Int {
 			return 0, false
 		}
 		cv = ti
+	}
+	if cv.Kind() != constant.Int {
+		// complex/bool/string constants are never int-representable —
+		// Int64Val would panic on them.
+		return 0, false
 	}
 	i, iok := constant.Int64Val(cv)
 	switch name {
@@ -6719,7 +6728,11 @@ func scalarConst(u *runtime.UConst, b runtime.Value) (runtime.Value, bool) {
 			if !ok {
 				return nil, false
 			}
-			return &runtime.GoValue{V: complex64(cv)}, true
+			c64 := complex64(cv)
+			if math.IsInf(real(complex128(c64)), 0) || math.IsInf(imag(complex128(c64)), 0) {
+				return nil, false // overflows to +Inf — gc rejects
+			}
+			return &runtime.GoValue{V: c64}, true
 		case complex128:
 			cv, ok := constComplex(u.V)
 			if !ok {
@@ -6738,17 +6751,70 @@ func scalarConst(u *runtime.UConst, b runtime.Value) (runtime.Value, bool) {
 // a bare scalar operand types it the same way (`k * 2e6` computes in
 // int when 2e6 is exactly representable — scalarConst is that same
 // operand-type conversion comparisons already use); otherwise it
-// takes its default type. An unconvertible const keeps the default
-// materialization so the mismatch trap reports like Go's compile error.
+// takes its default type. An unconvertible numeric const against a
+// numeric operand is gc's compile reject and traps here; a
+// kind-mismatched one keeps the default materialization so the
+// mismatch trap reports like Go's compile error.
 func (v *VM) adaptConst(f *frame, u *runtime.UConst, other runtime.Value) runtime.Value {
 	if nb, ok := other.(*runtime.Named); ok {
 		if r, ok2 := constToBasic(u, basicNameOf(nb.Typ)); ok2 {
 			return runtime.Tag(nb.Typ, r)
 		}
+		switch u.V.Kind() {
+		case constant.Int, constant.Float, constant.Complex:
+			// a numeric const that won't convert to the numeric
+			// operand's type is gc's compile reject — `300 - v8`,
+			// `1.5 + v8`, `(1+2i) - v8` — not a value silently
+			// truncated or wrapped through the default domain.
+			// Kind-mismatched consts (`v8 + "x"`) stay on the
+			// materialize path so the op's own trap reports the
+			// type error. The underlying chain peels through
+			// named hops (`type A B; type B int8` rejects too).
+			if numericBasicName(basicNameOf(v.peelNamed(nb.Typ))) {
+				if _, err := v.materializeConstErr(u, nb.Typ); err != nil {
+					f.trap("%s", err)
+				}
+			}
+		}
 	} else if s, ok := scalarConst(u, other); ok {
 		return s
+	} else if td := scalarOperandTypedef(other); td != nil && numericConstKind(u.V.Kind()) {
+		// the same reject against bare/GoValue numeric operands —
+		// `1.5 + intvar` truncates, `(1+2i) + v` can't convert, so gc
+		// fails the program rather than promote the const's domain.
+		if _, err := v.materializeConstErr(u, td); err != nil {
+			f.trap("%s", err)
+		}
 	}
 	return v.materialize(f, u)
+}
+
+// scalarOperandTypedef maps a bare scalar or GoValue operand to the
+// basic typedef an unconvertible numeric constant is checked against —
+// the operand-type adoption rule applies there too (`1.5 + intvar`
+// converts to int and is rejected, not promoted to float).
+func scalarOperandTypedef(x runtime.Value) *runtime.TypeDef {
+	switch x.(type) {
+	case int64:
+		return runtime.BasicTypedef("int")
+	case float64:
+		return runtime.BasicTypedef("float64")
+	}
+	if g, ok := x.(*runtime.GoValue); ok {
+		switch g.V.(type) {
+		case int, int64:
+			return runtime.BasicTypedef("int64")
+		case uint64:
+			return runtime.BasicTypedef("uint64")
+		case float64:
+			return runtime.BasicTypedef("float64")
+		case complex64:
+			return runtime.BasicTypedef("complex64")
+		case complex128:
+			return runtime.BasicTypedef("complex128")
+		}
+	}
+	return nil
 }
 
 // constToBasic converts a constant to a builtin numeric value by name —
@@ -6769,6 +6835,9 @@ func constToBasic(u *runtime.UConst, name string) (runtime.Value, bool) {
 		// Float32Val rounds the exact constant once — float32(fv)
 		// would double-round values past the float64 midpoint.
 		f32, _ := constant.Float32Val(u.V)
+		if math.IsInf(float64(f32), 0) {
+			return nil, false
+		}
 		return float64(f32), true
 	case name == "float64":
 		fv, ok := constFloat(u.V)
