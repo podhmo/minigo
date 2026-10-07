@@ -15,7 +15,6 @@ import (
 	"go/ast"
 	"go/constant"
 	"go/token"
-	"math"
 	"strconv"
 	"strings"
 
@@ -2979,18 +2978,11 @@ func constOperand(cv constant.Value, rune bool) (v any, ok bool) {
 	case constant.Complex:
 		return &runtime.UConst{V: cv}, true
 	case constant.Int:
-		if rune {
-			return &runtime.UConst{V: cv, Rune: true}, true
-		}
-		if i, ok := constant.Int64Val(cv); ok {
-			return i, true
-		}
-		if u, ok := constant.Uint64Val(cv); ok {
-			return &runtime.GoValue{V: u}, true
-		}
-		// beyond uint64: lazy untyped constant — `const B = 1<<100`
-		// is legal and only materializing it can overflow.
-		return &runtime.UConst{V: cv}, true
+		// Same rule as literalValue: every int constant stays untyped
+		// until a materialization boundary, preserving the constness a
+		// conversion or declared type needs for its representability
+		// check (`int8(300)` must fail). Rune marks 'x'-derived values.
+		return &runtime.UConst{V: cv, Rune: rune}, true
 	}
 	return nil, false
 }
@@ -4086,29 +4078,19 @@ func literalValue(l *ast.BasicLit) (any, error) {
 	switch l.Kind {
 	case token.INT:
 		v := constant.MakeFromLiteral(l.Value, token.INT, 0)
-		if i, ok := constant.Int64Val(v); ok {
-			return i, nil
-		}
-		// wider uint64 literals stay boxed: arithmetic unwraps them
-		// to int64 (same bits mod 2^64) and formatting reads the box —
-		// including the one uint64-only literal Go source can spell,
-		// 9223372036854775808, MinInt64's magnitude under a unary minus
-		// (the unary fold produces its int64 value before this runs).
-		if u, ok := constant.Uint64Val(v); ok {
-			return &runtime.GoValue{V: u}, nil
-		}
-		// beyond uint64 the literal stays an untyped constant: it compiles
-		// (Go does too) and only materializing it as a value can fail.
+		// int literals stay untyped constants even when they fit an
+		// int64, like floats/runes already do: materializing eagerly
+		// loses the constness later operations need — `int8(300)` and
+		// `var x int8 = 300` must trap (constant overflows), which a
+		// bare int64 arriving at the conversion cannot distinguish from
+		// `int8(x)` on a variable, a legal truncation.
 		return &runtime.UConst{V: v}, nil
 	case token.FLOAT:
-		v := constant.MakeFromLiteral(l.Value, token.FLOAT, 0)
-		f, _ := constant.Float64Val(v)
-		if math.IsInf(f, 0) {
-			// 1e500 is a legal untyped constant; it fails only when it
-			// has to fit a float64 (`var f = 1e500` is a compile error).
-			return &runtime.UConst{V: v}, nil
-		}
-		return f, nil
+		// float literals stay untyped constants like ints (and like
+		// constOperand already emits them): exact-domain folds such as
+		// `1.0 / (iota + 4)` keep exact-rational precision, and a later
+		// float32 conversion sees the unrounded constant.
+		return &runtime.UConst{V: constant.MakeFromLiteral(l.Value, token.FLOAT, 0)}, nil
 	case token.IMAG:
 		// imaginary literals exist only in the constant domain until
 		// materialized into a complex64/128 value.

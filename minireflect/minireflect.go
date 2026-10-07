@@ -932,8 +932,12 @@ func intOf(v runtime.Value) int64 {
 	case *runtime.Named:
 		return intOf(x.V)
 	case *runtime.UConst:
-		if i, ok := runtime.Unwrap(x).(int64); ok {
-			return i
+		// materialize at the constant's default type — Unwrap alone
+		// yields the box, not an int64.
+		if i, err := runtime.UConstNative(x); err == nil {
+			if i64, ok := i.(int64); ok {
+				return i64
+			}
 		}
 	}
 	return 0
