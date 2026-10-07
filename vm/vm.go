@@ -9785,7 +9785,7 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		}
 	}
 	if tn, ok := x.(*runtime.TypedNil); ok {
-		if sameTypeDef(tn.Typ, td) || v.tdShapeEq(tn.Typ, td) {
+		if sameTypeDef(tn.Typ, td) || v.tdShapeEq(tn.Typ, td) || v.samePointeeAlias(tn.Typ, td) {
 			return &runtime.TypedNil{Typ: td} // re-tag to the declared type
 		}
 		f.trap("cannot use nil %s as %s", tdName(tn.Typ), tdName(td))
@@ -10005,6 +10005,25 @@ func (v *VM) tdShapeEq(a, b *runtime.TypeDef) bool {
 		return runtime.TypSpelling(pa.Anon, pa) == runtime.TypSpelling(pb.Anon, pb)
 	}
 	return pa.Anon == nil && pb.Anon == nil
+}
+
+// samePointeeAlias reports whether two anonymous pointer typedefs point
+// at the same type once aliases peel — a nil *inner.Tree binds *tree for
+// `type tree = inner.Tree` (kin-openapi's originTree).
+func (v *VM) samePointeeAlias(a, b *runtime.TypeDef) bool {
+	if a == nil || b == nil || a.Kind != runtime.KindPointer || b.Kind != runtime.KindPointer ||
+		a.Spec != nil || b.Spec != nil || v.H.ElemOf == nil {
+		return false
+	}
+	ea, err := v.H.ElemOf(a)
+	if err != nil || ea == nil {
+		return false
+	}
+	eb, err := v.H.ElemOf(b)
+	if err != nil || eb == nil {
+		return false
+	}
+	return sameTypeDef(v.peelAlias(ea), v.peelAlias(eb))
 }
 
 // tdShapeEval is tdShapeEq with evaluated array lengths: `[len(x)]*T`
