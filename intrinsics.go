@@ -710,7 +710,7 @@ func (e *Engine) installStdlib() {
 		"SliceIsSorted": &runtime.BuiltinFunc{Name: "sort.SliceIsSorted", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, ok := sliceOf(args[0])
 			if !ok {
-				if _, isNil := runtime.Unwrap(args[0]).(*runtime.TypedNil); isNil {
+				if nilSliceArg(args[0]) {
 					return true, nil // a nil slice is sorted
 				}
 				return nil, fmt.Errorf("sort.SliceIsSorted: first arg must be a slice")
@@ -742,7 +742,7 @@ func (e *Engine) installStdlib() {
 		"SliceStable": &runtime.BuiltinFunc{Name: "sort.SliceStable", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, ok := sliceOf(args[0])
 			if !ok {
-				if _, isNil := runtime.Unwrap(args[0]).(*runtime.TypedNil); isNil {
+				if nilSliceArg(args[0]) {
 					return runtime.NIL, nil // sorting a nil slice is a no-op in Go
 				}
 				return nil, fmt.Errorf("sort.SliceStable: first arg must be a slice")
@@ -2675,7 +2675,11 @@ func (h *hostHelpers) sortInPlace(name string) *runtime.BuiltinFunc {
 		case *runtime.Slice:
 			sortScript(s.Elems)
 		case *runtime.TypedNil:
-			// sorting a nil slice is a no-op in Go
+			// sorting a nil slice is a no-op in Go; nil pointers and
+			// other typed nils still fail the reflect type check.
+			if !nilSliceArg(s) {
+				return nil, fmt.Errorf("%s: arg must be a slice, got %T", name, args[0])
+			}
 		default:
 			return nil, fmt.Errorf("%s: arg must be a slice, got %T", name, args[0])
 		}
@@ -2855,7 +2859,7 @@ func (s *scriptSortable) Swap(i, j int) {
 func (h *hostHelpers) sortSlice(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 	s, ok := sliceOf(args[0])
 	if !ok {
-		if _, isNil := runtime.Unwrap(args[0]).(*runtime.TypedNil); isNil {
+		if nilSliceArg(args[0]) {
 			return runtime.NIL, nil // sorting a nil slice is a no-op in Go
 		}
 		return nil, fmt.Errorf("sort.Slice: first arg must be a slice")
@@ -3305,6 +3309,14 @@ func strSlice(v any) []string {
 		return out
 	}
 	return nil
+}
+
+// nilSliceArg reports whether v is a typed nil whose type is a slice —
+// sort's slice functions accept a nil slice (a no-op / sorted) but
+// still reject nil pointers, maps, chans like Go's reflect-based check.
+func nilSliceArg(v runtime.Value) bool {
+	tn, ok := runtime.Unwrap(v).(*runtime.TypedNil)
+	return ok && tn.Typ != nil && tn.Typ.Kind == runtime.KindSlice && !isArrayTyp(tn.Typ)
 }
 
 // sliceOf unwraps a script slice (cell/pointer derefed, Named-peeled,
