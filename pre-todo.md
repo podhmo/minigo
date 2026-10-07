@@ -32,9 +32,11 @@ TODO.md に切り出す前の検討置き場。
   - const の initializer が見えない(`inspect.Value` が `init()` を走らせる問題の代替経路にも)
 - 参考実装
   - go-scan `PackageInfo.AstFiles`/`FunctionInfo.AstDecl` が AST をそのまま保持(調査 §1)
-- 未定
-  - node ビューの形(`TypeExpr` 式の wrapper? `{Pos, Text, Children}` の最小形?)
-  - 露出の粒度(decl 直下だけか、再帰的な node 木か)
+- 未定 → 方向は見えた
+  - node ビューの形: 初版はラップなし素通し — `inspect.ASTOf(decl)` 相当で生の ast ノードを返す
+    - script 側は host 値の reflect facade 経由で `.Name`/`.Body`/`.Pos()` 等に触れられる(遅いが十分)
+    - `{Kind,Pos,Text,Children}` ビューは「うるさすぎたら」or「重たかったら」後で考える(consumer-first)
+  - 露出の粒度(decl 直下だけか、再帰的な node 木か)は素通しなら問い自体が消える — 生 AST なら木全体がそのまま触れる
 
 ### TypeExpr の解決経路を記録する
 
