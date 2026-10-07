@@ -6728,7 +6728,11 @@ func scalarConst(u *runtime.UConst, b runtime.Value) (runtime.Value, bool) {
 			if !ok {
 				return nil, false
 			}
-			return &runtime.GoValue{V: complex64(cv)}, true
+			c64 := complex64(cv)
+			if math.IsInf(real(complex128(c64)), 0) || math.IsInf(imag(complex128(c64)), 0) {
+				return nil, false // overflows to +Inf — gc rejects
+			}
+			return &runtime.GoValue{V: c64}, true
 		case complex128:
 			cv, ok := constComplex(u.V)
 			if !ok {
@@ -6774,8 +6778,43 @@ func (v *VM) adaptConst(f *frame, u *runtime.UConst, other runtime.Value) runtim
 		}
 	} else if s, ok := scalarConst(u, other); ok {
 		return s
+	} else if td := scalarOperandTypedef(other); td != nil && numericConstKind(u.V.Kind()) {
+		// the same reject against bare/GoValue numeric operands —
+		// `1.5 + intvar` truncates, `(1+2i) + v` can't convert, so gc
+		// fails the program rather than promote the const's domain.
+		if _, err := v.materializeConstErr(u, td); err != nil {
+			f.trap("%s", err)
+		}
 	}
 	return v.materialize(f, u)
+}
+
+// scalarOperandTypedef maps a bare scalar or GoValue operand to the
+// basic typedef an unconvertible numeric constant is checked against —
+// the operand-type adoption rule applies there too (`1.5 + intvar`
+// converts to int and is rejected, not promoted to float).
+func scalarOperandTypedef(x runtime.Value) *runtime.TypeDef {
+	switch x.(type) {
+	case int64:
+		return runtime.BasicTypedef("int")
+	case float64:
+		return runtime.BasicTypedef("float64")
+	}
+	if g, ok := x.(*runtime.GoValue); ok {
+		switch g.V.(type) {
+		case int, int64:
+			return runtime.BasicTypedef("int64")
+		case uint64:
+			return runtime.BasicTypedef("uint64")
+		case float64:
+			return runtime.BasicTypedef("float64")
+		case complex64:
+			return runtime.BasicTypedef("complex64")
+		case complex128:
+			return runtime.BasicTypedef("complex128")
+		}
+	}
+	return nil
 }
 
 // constToBasic converts a constant to a builtin numeric value by name —
