@@ -25,7 +25,9 @@ TODO.md に切り出す前の検討置き場。
   - `index.Decl` は `Func *ast.FuncDecl`/`Gen`/`Spec` を保持済み
   - body や初期化式は既にメモリ上にあるが、script 側からは見えない
 - これがあると載せられる既存の TODO 項目
-  - `inspect.Decls` が method を拾わない
+  - `inspect.Decls` が method を拾わない → **欲しい(verdict)**
+    - method の `Decl` は既に `TypeDecl.Methods` に存在するので公開は accessor で足りる
+    - 形の候補: `inspect.MethodsOf(pkg)`(pkg 単位のフラット列挙、本命)か `Decls` 混入+`IsMethod` フラグ
   - free comment が見えない
   - const の initializer が見えない(`inspect.Value` が `init()` を走らせる問題の代替経路にも)
 - 参考実装
