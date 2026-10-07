@@ -1669,26 +1669,21 @@ func (v *VM) loop(f *frame) {
 			f.push(v.instantiate(f, base, targs, ins.Pos))
 		case bytecode.OpLocalType:
 			// A function-local type decl runs per call; inside an
-			// instantiated generic function the enclosing type args
-			// belong to the declared type's identity (`type X int` in
-			// F[T] differs per instantiation). specializeType computes
-			// the same outer args for a local generic's T[args].
+			// instantiated generic function — including a literal that
+			// closes over one — the enclosing type args belong to the
+			// declared type's identity (`type X int` in F[T] differs per
+			// instantiation). specializeType computes the same outer
+			// args for a local generic's T[args].
 			top := f.pop()
-			if td, ok := top.(*runtime.TypeDef); ok && td.Local && f.fn != nil && len(f.fn.TParams) > 0 {
-				var outer []runtime.Value
-				binds := map[string]runtime.Value{}
-				for k, bv := range td.Binds {
-					binds[k] = bv
-				}
-				for _, tp := range f.fn.TParams {
-					bv, ok := f.fn.Binds[tp]
-					if !ok {
-						continue
+			if td, ok := top.(*runtime.TypeDef); ok && td.Local {
+				if names, outer := v.outerTypeArgs(f); len(outer) > 0 {
+					binds := map[string]runtime.Value{}
+					for k, bv := range td.Binds {
+						binds[k] = bv
 					}
-					binds[tp] = bv // the resolved arg beats a compile placeholder
-					outer = append(outer, bv)
-				}
-				if len(outer) > 0 {
+					for i, n := range names {
+						binds[n] = outer[i] // resolved args beat compile placeholders
+					}
 					clone := *td
 					clone.OuterArgs = outer
 					clone.Binds = binds
@@ -1888,6 +1883,10 @@ func (v *VM) loop(f *frame) {
 					binds[k] = bv
 				}
 				proto = proto.WithBinds(binds)
+				// The literal's own TParams stay empty (or its own), so
+				// record which enclosing params the merged binds belong
+				// to — OpLocalType/specializeType order outer args by it.
+				proto.OuterTParams = f.fn.OuterParamNames()
 			}
 			if len(proto.Chunk.Upvals) == 0 {
 				// a capture-free literal evaluates to the proto itself —
@@ -10405,7 +10404,7 @@ func (v *VM) instantiateFunc(f *frame, g *runtime.Function, targs []runtime.Valu
 		Pkg: g.Pkg, File: g.File, Decl: g.Decl, Name: g.Name,
 		Recv: g.Recv, PtrRecv: g.PtrRecv,
 		TParams: g.TParams, TConstraints: g.TConstraints,
-		Binds: binds, Compile: g.Compile,
+		Binds: binds, Compile: g.Compile, OuterTParams: g.OuterTParams,
 	}
 }
 
@@ -10418,6 +10417,25 @@ func (v *VM) indexFallback(f *frame, base runtime.Value, targs []runtime.Value) 
 	return v.index(f, base, targs[0])
 }
 
+// outerTypeArgs collects the type arguments of the generic instantiation
+// enclosing f's frame, in declaration order — covering literals that
+// close over a generic function via their OuterTParams. Local type decls
+// and local-generic instantiations fold these into the type's identity.
+func (v *VM) outerTypeArgs(f *frame) (names []string, args []runtime.Value) {
+	if f == nil || f.fn == nil {
+		return nil, nil
+	}
+	for _, tp := range f.fn.OuterParamNames() {
+		bv, ok := f.fn.Binds[tp]
+		if !ok {
+			continue
+		}
+		names = append(names, tp)
+		args = append(args, bv)
+	}
+	return names, args
+}
+
 // specializeType clones a generic typedef with its methods re-bound to the
 // concrete type arguments. A function-local generic instantiating inside
 // a generic function captures the enclosing type arguments too — they are
@@ -10426,15 +10444,12 @@ func (v *VM) indexFallback(f *frame, base runtime.Value, targs []runtime.Value) 
 func (v *VM) specializeType(f *frame, g *runtime.TypeDef, targs []runtime.Value) *runtime.TypeDef {
 	binds := map[string]runtime.Value{}
 	var outer []runtime.Value
-	if g.Local && f != nil && f.fn != nil {
-		for _, tp := range f.fn.TParams {
-			bv, ok := f.fn.Binds[tp]
-			if !ok {
-				continue
-			}
-			binds[tp] = bv
-			outer = append(outer, bv)
+	if g.Local {
+		names, args := v.outerTypeArgs(f)
+		for i, n := range names {
+			binds[n] = args[i]
 		}
+		outer = args
 	}
 	for i, tp := range g.TParams {
 		if i < len(targs) {

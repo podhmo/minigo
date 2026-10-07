@@ -1080,7 +1080,7 @@ func importClauseName(pkg *Package, file *syntax.File, alias string) string {
 // declaration order — and reports "" for unbound typedefs or binds that
 // cannot spell every declared parameter.
 func instArgsSpelling(td *TypeDef) string {
-	if len(td.TParams) == 0 || len(td.Binds) == 0 {
+	if len(td.Binds) == 0 || (len(td.TParams) == 0 && len(td.OuterArgs) == 0) {
 		return ""
 	}
 	var b strings.Builder
@@ -1096,7 +1096,9 @@ func instArgsSpelling(td *TypeDef) string {
 			}
 			b.WriteString(DisplayName(otd))
 		}
-		b.WriteByte(';')
+		if len(td.TParams) > 0 {
+			b.WriteByte(';')
+		}
 	}
 	for i, p := range td.TParams {
 		bv, ok := td.Binds[p]
