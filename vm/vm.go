@@ -6595,16 +6595,16 @@ func (v *VM) ifaceEql(f *frame, a, b runtime.Value) bool {
 	}
 	switch a.(type) {
 	case runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
-		return eqlValue(a, b)
+		return v.eqlValue(a, b)
 	}
 	switch b.(type) {
 	case runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
-		return eqlValue(a, b)
+		return v.eqlValue(a, b)
 	}
 	if reflect.TypeOf(a) != reflect.TypeOf(b) {
 		return false
 	}
-	return eqlValue(a, b)
+	return v.eqlValue(a, b)
 }
 
 func (v *VM) binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
@@ -6783,9 +6783,9 @@ func (v *VM) binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.V
 	// where Go reports false.
 	switch op {
 	case bytecode.BinEql:
-		return eqlValue(a, b)
+		return v.eqlValue(a, b)
 	case bytecode.BinNeq:
-		return !eqlValue(a, b)
+		return !v.eqlValue(a, b)
 	}
 	// bound time.* constants and reflect-produced durations arrive as
 	// raw time.Duration values — they behave as their int64 underlying
@@ -7357,7 +7357,7 @@ func (v *VM) unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value 
 	return nil
 }
 
-func eqlValue(a, b runtime.Value) bool {
+func (v *VM) eqlValue(a, b runtime.Value) bool {
 	if n, ok := a.(*runtime.Named); ok {
 		a = n.V
 	}
@@ -7497,7 +7497,7 @@ func eqlValue(a, b runtime.Value) bool {
 			if uncomparableValue(av.Fields[i]) {
 				panic(runtime.ComparingUncomparablePanic(spelledTyp(av.Def)))
 			}
-			if !eqlValue(av.Fields[i], bs.Fields[i]) {
+			if !v.eqlValue(av.Fields[i], bs.Fields[i]) {
 				return false
 			}
 		}
@@ -7506,7 +7506,11 @@ func eqlValue(a, b runtime.Value) bool {
 		if bs, ok := b.(*runtime.Slice); ok {
 			// different element types make different dynamic types —
 			// any([]int{...}) == any([]string{...}) is false, not a panic.
-			if !runtime.TypIdentical(av.Typ, bs.Typ) {
+			// Arrays relax to the underlying shape: `OutputID == [32]any`
+			// compares element-wise (issue23545) — the named tag already
+			// peels above for scalars, so the same lax rule applies here.
+			if !runtime.TypIdentical(av.Typ, bs.Typ) &&
+				!(av.Typ != nil && bs.Typ != nil && isArrayTyp(av.Typ) && isArrayTyp(bs.Typ) && v.tdShapeEq(av.Typ, bs.Typ)) {
 				return false
 			}
 			// array-typed values compare element-wise; plain slices are
@@ -7516,7 +7520,7 @@ func eqlValue(a, b runtime.Value) bool {
 					return false
 				}
 				for i := range av.Elems {
-					if !eqlValue(av.Elems[i], bs.Elems[i]) {
+					if !v.eqlValue(av.Elems[i], bs.Elems[i]) {
 						return false
 					}
 				}
@@ -7596,7 +7600,7 @@ func eqlValue(a, b runtime.Value) bool {
 				}
 				return &as.Elems[ai] == &bs.Elems[bi]
 			}
-			return refBase(av.Base) == refBase(br.Base) && eqlValue(av.Key, br.Key)
+			return refBase(av.Base) == refBase(br.Base) && v.eqlValue(av.Key, br.Key)
 		}
 		return false
 	}
