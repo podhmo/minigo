@@ -1599,7 +1599,9 @@ func (v *VM) loop(f *frame) {
 				// target, where the ref is legal (m[k] = v stores).
 				f.trap("cannot take the address of map element")
 			}
-			f.push(&runtime.IndexRef{Base: base, Key: key})
+			// a typed index (`&a[k]` with k int32) or const key hashes and
+			// bounds-checks as its plain value, like index's reads
+			f.push(&runtime.IndexRef{Base: base, Key: runtime.Unwrap(v.materialize(f, key))})
 		case bytecode.OpDerefRef:
 			f.push(&runtime.DerefRef{Ptr: f.pop()})
 		case bytecode.OpNilPtrCheck:
