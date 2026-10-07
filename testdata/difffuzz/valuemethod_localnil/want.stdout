@@ -1,0 +1,12 @@
+local conv: runtime error: invalid memory address or nil pointer dereference
+local via ptr: runtime error: invalid memory address or nil pointer dereference
+pkg iface: value method main.T.M called using nil *T pointer
+pkg ptr: runtime error: invalid memory address or nil pointer dereference
+method value: value method main.T.M called using nil *T pointer
+defer iface: runtime error: invalid memory address or nil pointer dereference
+chained: runtime error: invalid memory address or nil pointer dereference
+map elem: value method main.T.M called using nil *T pointer
+slice elem: value method main.T.M called using nil *T pointer
+field: value method main.T.M called using nil *T pointer
+captured: runtime error: invalid memory address or nil pointer dereference
+paren: runtime error: invalid memory address or nil pointer dereference

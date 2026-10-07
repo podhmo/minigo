@@ -1336,6 +1336,12 @@ type Struct struct {
 type BoundMethod struct {
 	Recv Value // *Cell for pointer receivers, plain Value otherwise
 	Fn   *Function
+	// Direct marks a method value bound in callee position (`i.M()` and
+	// the `defer`/`go` variants): gc dispatches the promoted *T→T
+	// wrapper directly, so a nil *T receiver panics as a plain nil
+	// dereference — a lazily bound value (`f := i.M`) instead reports
+	// "value method ... called using nil" when the call runs.
+	Direct bool
 }
 
 // BuiltinFunc is a host-native function (len, println, host intrinsics).

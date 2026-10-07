@@ -127,6 +127,13 @@ const (
 	// types / interfaces / generics (cont.)
 	OpFoldArrayLen // pop len value, pop typedef -> fold len into the typedef's array AST -> push typedef
 	OpLocalType    // pop typedef -> push typedef re-parameterized by the enclosing generic function's resolved type args
+
+	// OpSelectCall is OpSelect in callee position (`i.M()`, and the
+	// `defer`/`go` variants): the bound method is flagged Direct so a nil
+	// *T receiver under a value method panics like Go's devirtualized
+	// call — a plain nil dereference — where a lazily bound method value
+	// reports the "value method ... called using nil" wrapper text.
+	OpSelectCall // A: const idx of field/method name; pop base -> push base.name
 )
 
 // BinOp is an OpBinary sub-op.

@@ -2524,23 +2524,7 @@ func (c *compiler) expr(e ast.Expr) {
 			c.getRef(x.Name, x.Pos())
 		}
 	case *ast.SelectorExpr:
-		// `s[i].M()` is `(&s[i]).M()` — Go's selector lowering hands the
-		// element's storage to a pointer receiver. Emit the element's ref
-		// (a tolerated map element resolves to its copy at select time) so
-		// the write lands; a type-form operand (F[T].M) stays an
-		// instantiation.
-		if ix, ok := indexOperand(x.X); ok && !c.isTypeForm(ix.Index) && c.refableIndexBase(ix.X) {
-			c.refTargetBase(ix.X, false)
-			c.expr(ix.Index)
-			c.emit(bytecode.OpIndexRef, 0, 1, ix.Lbrack)
-		} else if c.selectorBaseIsVar(x.X) {
-			// `x.M()` lowers to `(&x).M()` when M needs a pointer — a
-			// scalar named value is a detached copy otherwise, so the
-			// receiver binds the var's storage ref for the write to land.
-			c.refTargetBase(x.X, false)
-		} else {
-			c.expr(x.X)
-		}
+		c.selectorBase(x.X)
 		// the member's own position — Go reports a select failure at the
 		// .Sel token, which matters when the callee wraps to the next
 		// line (`v.\n\t\tA()` reports A's line, not v's).
@@ -3715,12 +3699,49 @@ func (c *compiler) trySpecial(x *ast.CallExpr, sel *ast.SelectorExpr) bool {
 	return true
 }
 
+// selectorBase emits the operand of a `.Sel` select — shared by OpSelect
+// and the callee-position OpSelectCall.
+func (c *compiler) selectorBase(x ast.Expr) {
+	// `s[i].M()` is `(&s[i]).M()` — Go's selector lowering hands the
+	// element's storage to a pointer receiver. Emit the element's ref
+	// (a tolerated map element resolves to its copy at select time) so
+	// the write lands; a type-form operand (F[T].M) stays an
+	// instantiation.
+	if ix, ok := indexOperand(x); ok && !c.isTypeForm(ix.Index) && c.refableIndexBase(ix.X) {
+		c.refTargetBase(ix.X, false)
+		c.expr(ix.Index)
+		c.emit(bytecode.OpIndexRef, 0, 1, ix.Lbrack)
+	} else if c.selectorBaseIsVar(x) {
+		// `x.M()` lowers to `(&x).M()` when M needs a pointer — a
+		// scalar named value is a detached copy otherwise, so the
+		// receiver binds the var's storage ref for the write to land.
+		c.refTargetBase(x, false)
+	} else {
+		c.expr(x)
+	}
+}
+
 // calleeExpr compiles the called expression; a syntactic type form means a
 // conversion call T(x).
 func (c *compiler) calleeExpr(fun ast.Expr) {
 	if c.isTypeForm(fun) {
 		c.typeExpr(fun)
 		return
+	}
+	if t, ok := fun.(*ast.SelectorExpr); ok {
+		// a callee-position select on a function-local name binds for
+		// the direct call: a value method on a nil *T in an interface
+		// panics as a nil dereference (gc devirtualizes the call it can
+		// see — local vars, params, upvalues), while any other receiver
+		// shape — a package var, container element, or a lazily bound
+		// method value — keeps the "value method" wrapper text.
+		if id, isId := ast.Unparen(t.X).(*ast.Ident); isId {
+			if _, _, found := c.fs.find(id.Name); found {
+				c.selectorBase(t.X)
+				c.emit(bytecode.OpSelectCall, c.nameIdx(t.Sel.Name), 0, t.Sel.Pos())
+				return
+			}
+		}
 	}
 	c.expr(fun)
 }
