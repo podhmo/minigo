@@ -708,8 +708,11 @@ func (e *Engine) installStdlib() {
 		"Sort":  &runtime.BuiltinFunc{Name: "sort.Sort", Fn: h.sortInterface},
 		"Slice": &runtime.BuiltinFunc{Name: "sort.Slice", Fn: h.sortSlice},
 		"SliceIsSorted": &runtime.BuiltinFunc{Name: "sort.SliceIsSorted", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			s, ok := args[0].(*runtime.Slice)
+			s, ok := sliceOf(args[0])
 			if !ok {
+				if _, isNil := runtime.Unwrap(args[0]).(*runtime.TypedNil); isNil {
+					return true, nil // a nil slice is sorted
+				}
 				return nil, fmt.Errorf("sort.SliceIsSorted: first arg must be a slice")
 			}
 			less := args[1]
@@ -737,8 +740,11 @@ func (e *Engine) installStdlib() {
 			return i, nil
 		}},
 		"SliceStable": &runtime.BuiltinFunc{Name: "sort.SliceStable", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			s, ok := args[0].(*runtime.Slice)
+			s, ok := sliceOf(args[0])
 			if !ok {
+				if _, isNil := runtime.Unwrap(args[0]).(*runtime.TypedNil); isNil {
+					return runtime.NIL, nil // sorting a nil slice is a no-op in Go
+				}
 				return nil, fmt.Errorf("sort.SliceStable: first arg must be a slice")
 			}
 			less := args[1]
@@ -2847,8 +2853,11 @@ func (s *scriptSortable) Swap(i, j int) {
 }
 
 func (h *hostHelpers) sortSlice(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-	s, ok := args[0].(*runtime.Slice)
+	s, ok := sliceOf(args[0])
 	if !ok {
+		if _, isNil := runtime.Unwrap(args[0]).(*runtime.TypedNil); isNil {
+			return runtime.NIL, nil // sorting a nil slice is a no-op in Go
+		}
 		return nil, fmt.Errorf("sort.Slice: first arg must be a slice")
 	}
 	less := args[1]
