@@ -574,6 +574,17 @@ func TestInitFailureSurfaces(t *testing.T) {
 	}
 }
 
+func TestInitFailEmbedAssert(t *testing.T) {
+	// resolving an embedded type from a package whose init failed must
+	// surface that failure, not make the method set "unsure" (which
+	// lets every interface assertion succeed).
+	e := newEngine(t)
+	if got, err := e.Run(context.Background(), "./testdata/initembed", "Assert"); err == nil ||
+		!strings.Contains(err.Error(), "inner init went wrong") {
+		t.Fatalf("assertion over a failed embed must surface the init error, got %v, %v", got, err)
+	}
+}
+
 func TestOsHostSurface(t *testing.T) {
 	// Restricted engines (AllowedRoots set) do not get os.Getenv/os.Args.
 	td, err := filepath.Abs("./testdata")
