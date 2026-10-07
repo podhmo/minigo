@@ -1396,6 +1396,73 @@ func (c *compiler) noteIfaceBinds(st *ast.AssignStmt) {
 			c.fs.markIface(id.Name)
 		}
 	}
+	c.stampInferredTyps(st.Lhs, st.Rhs)
+}
+
+// stampInferredTyps gives each `:=` cell its declared type when the RHS
+// spells one statically — a conversion, type assert, or composite
+// literal — so a later store coerces like `var x T` (x = 300 keeps the
+// int8 tag, x = otherNamed traps) and an interface-typed RHS keeps the
+// cell's type loose instead of adopting the stored dynamic tag.
+func (c *compiler) stampInferredTyps(lhs, rhs []ast.Expr) {
+	for i, l := range lhs {
+		id, ok := l.(*ast.Ident)
+		if !ok || id.Name == "_" {
+			continue
+		}
+		var r ast.Expr
+		switch {
+		case len(rhs) == len(lhs):
+			r = rhs[i]
+		case len(rhs) == 1 && i == 0:
+			// a multi-value RHS types only its first result — `x, ok :=
+			// v.(T)` binds x to T.
+			if _, isAssert := rhs[0].(*ast.TypeAssertExpr); !isAssert {
+				continue
+			}
+			r = rhs[0]
+		default:
+			continue
+		}
+		t := c.inferredTypExpr(r)
+		if t == nil && c.isIfaceExpr(r) {
+			// an interface-typed RHS (any(v), an iface var, a .(I)
+			// assert) declares an interface type with no literal.
+			t = &ast.InterfaceType{Interface: r.Pos(), Methods: &ast.FieldList{}}
+		}
+		if t == nil {
+			continue
+		}
+		b := c.fs.lookupBinding(id.Name)
+		if b == nil || b.slot < 0 {
+			continue
+		}
+		c.typeExpr(t)
+		c.emit(bytecode.OpCoerce, b.slot, 0, id.Pos())
+	}
+}
+
+// inferredTypExpr returns the type expression an RHS spells when its
+// static type is syntactically obvious — T(v) conversions, v.(T)
+// asserts, T{...} composites and &T{...} — else nil.
+func (c *compiler) inferredTypExpr(e ast.Expr) ast.Expr {
+	switch x := ast.Unparen(e).(type) {
+	case *ast.CallExpr:
+		if c.conversionCall(x) {
+			return x.Fun
+		}
+	case *ast.TypeAssertExpr:
+		return x.Type // nil for the type-switch form — the caller skips
+	case *ast.CompositeLit:
+		return x.Type
+	case *ast.UnaryExpr:
+		if x.Op == token.AND {
+			if lit, ok := ast.Unparen(x.X).(*ast.CompositeLit); ok && lit.Type != nil {
+				return &ast.StarExpr{Star: x.OpPos, X: lit.Type}
+			}
+		}
+	}
+	return nil
 }
 
 // refTarget emits code pushing the assignment target's storage reference
