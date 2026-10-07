@@ -2741,30 +2741,21 @@ func (c *compiler) binary(x *ast.BinaryExpr) {
 }
 
 // binaryOperands emits the operands of a plain binary op in Go's
-// two-phase order, like callArgs does for call arguments: the eager
-// operations inside the operands (calls, channel receives, slice
-// bounds, type assertions, map literals — hoistedArgCalls) materialize
-// to scratch locals first in lexical order across both operands, then
-// each operand's deferred reads run left-to-right at the operation.
+// two-phase order — the same assembly hoistEagerOps runs for call
+// arguments: the eager operations inside the operands (calls, channel
+// receives, slice bounds, type assertions, map literals —
+// hoistedArgCalls) materialize to scratch locals first in lexical
+// order across both operands, then each operand's deferred reads run
+// left-to-right at the operation.
 // `int(s[i]) + f(r[j])` therefore reports r[j]'s panic — a pure left
 // read defers past the right's call — and `Itoa(v)[i] + f(r[j])` calls
 // Itoa first but still checks the index after r[j]. When a conditional
 // (&&/||) inside an operand makes hoisting unsafe, the left read
 // instead defers wholesale, the model's earlier approximation.
 func (c *compiler) binaryOperands(x, y ast.Expr) {
-	xcalls, xok := c.hoistedArgCalls(x)
-	ycalls, yok := c.hoistedArgCalls(y)
-	if xok && yok && len(xcalls)+len(ycalls) > 0 {
-		names := map[ast.Expr]string{}
-		for _, call := range append(xcalls, ycalls...) {
-			c.expr(call)
-			name := c.fresh("$bin")
-			slot := c.fs.declare(name, call.Pos())
-			c.emit(bytecode.OpNewLocal, slot, 0, call.Pos())
-			names[call] = name
-		}
-		c.expr(substCallArg(x, names))
-		c.expr(substCallArg(y, names))
+	if subs, ok := c.hoistEagerOps([]ast.Expr{x, y}, "$bin"); ok {
+		c.expr(subs[0])
+		c.expr(subs[1])
 		return
 	}
 	if c.pureOperand(x) && !c.pureOperand(y) {
@@ -3272,6 +3263,44 @@ func (c *compiler) hoistedArgCalls(e ast.Expr) (calls []ast.Expr, ok bool) {
 	return calls, ok
 }
 
+// hoistEagerOps runs Go's two-phase evaluation over an expression
+// list (call arguments, binary operands): the eager operations inside
+// each expr (hoistedArgCalls) materialize into scratch locals first in
+// lexical order across the whole list, and the returned exprs rewrite
+// each hoisted node as its scratch-slot load via substCallArg. prefix
+// names the scratch locals. ok is false when a conditional call site
+// makes hoisting unsafe or when there is nothing to hoist — the
+// caller then picks its own fallback order (callArgs runs plain
+// sequential, binaryOperands tries the pure-operand defer).
+func (c *compiler) hoistEagerOps(es []ast.Expr, prefix string) (subs []ast.Expr, ok bool) {
+	var calls []ast.Expr
+	for _, e := range es {
+		ec, eok := c.hoistedArgCalls(e)
+		if !eok {
+			return nil, false
+		}
+		calls = append(calls, ec...)
+	}
+	if len(calls) == 0 {
+		return nil, false
+	}
+	// Phase 1: evaluate each hoisted op into a scratch local, in order.
+	names := map[ast.Expr]string{}
+	for _, call := range calls {
+		c.expr(call)
+		name := c.fresh(prefix)
+		slot := c.fs.declare(name, call.Pos())
+		c.emit(bytecode.OpNewLocal, slot, 0, call.Pos())
+		names[call] = name
+	}
+	// Phase 2: swap each hoisted node for its scratch-slot load.
+	subs = make([]ast.Expr, len(es))
+	for i, e := range es {
+		subs[i] = substCallArg(e, names)
+	}
+	return subs, true
+}
+
 // substCallArg rewrites the nodes of e listed in subs (hoisted calls)
 // as references to their scratch slots. Nodes without hoisted
 // descendants are shared, not copied.
@@ -3401,45 +3430,14 @@ func substCallArg(e ast.Expr, subs map[ast.Expr]string) ast.Expr {
 // panic — but a slice's bounds check happens eagerly:
 // fmt.Sprintf("%d", s[10:0], f()) reports the slice's panic.
 func (c *compiler) callArgs(args []ast.Expr) {
-	var perArg [][]ast.Expr
-	unsafe := false
-	for _, a := range args {
-		calls, ok := c.hoistedArgCalls(a)
-		if !ok {
-			unsafe = true
-			break
-		}
-		perArg = append(perArg, calls)
-	}
-	hoist := 0
-	for _, calls := range perArg {
-		hoist += len(calls)
-	}
-	if unsafe || hoist == 0 {
-		for _, a := range args {
+	if subs, ok := c.hoistEagerOps(args, "$arg"); ok {
+		for _, a := range subs {
 			c.expr(a)
 		}
 		return
 	}
-	// Phase 1: evaluate each call into a scratch local, in order.
-	names := map[ast.Expr]string{}
-	for _, calls := range perArg {
-		for _, call := range calls {
-			c.expr(call)
-			name := c.fresh("$arg")
-			slot := c.fs.declare(name, call.Pos())
-			c.emit(bytecode.OpNewLocal, slot, 0, call.Pos())
-			names[call] = name
-		}
-	}
-	// Phase 2: materialize each argument with the hoisted calls swapped
-	// for their scratch-slot loads.
-	for i, a := range args {
-		if len(perArg[i]) == 0 {
-			c.expr(a)
-			continue
-		}
-		c.expr(substCallArg(a, names))
+	for _, a := range args {
+		c.expr(a)
 	}
 }
 
