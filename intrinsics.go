@@ -320,6 +320,12 @@ func (e *Engine) installStdlib() {
 			out := strings.IndexFunc(str(args[0]), runePred(v, args[1]))
 			return int64(out), nil
 		}},
+		"ContainsFunc": &runtime.BuiltinFunc{Name: "strings.ContainsFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("strings.ContainsFunc needs 2 args")
+			}
+			return strings.ContainsFunc(str(args[0]), runePred(v, args[1])), nil
+		}},
 		"LastIndexFunc": &runtime.BuiltinFunc{Name: "strings.LastIndexFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("strings.LastIndexFunc needs 2 args")
