@@ -306,6 +306,15 @@ func typeishIndex(e ast.Expr) bool {
 	return false
 }
 
+// pkgQualifier reports whether sel's operand can name an imported package:
+// a bare identifier no package-level or function-level decl rebinds.
+// Field or method selections (p.anchors[k], node.Content[i+1]) are plain
+// indexing, never instantiation.
+func (c *langChecker) pkgQualifier(sel *ast.SelectorExpr) bool {
+	id, ok := sel.X.(*ast.Ident)
+	return ok && !c.shadowedAt(id.Name, id.Pos())
+}
+
 func (c *langChecker) fail(pos token.Pos, minv, feat string) {
 	if c.err != nil || version.Compare(minv, c.lang) <= 0 {
 		return
@@ -395,7 +404,7 @@ func (c *langChecker) node(n ast.Node) bool {
 			// (pkg.V[k]) — flag only an unmistakable type index. The
 			// member kind is unknowable here; call sites are usually
 			// functions, so the wording prefers "function".
-			if typeishIndex(n.Index) {
+			if typeishIndex(n.Index) && c.pkgQualifier(x) {
 				c.fail(n.Pos(), "go1.18", "function instantiation")
 			}
 		}
