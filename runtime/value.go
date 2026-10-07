@@ -1719,6 +1719,10 @@ type RuntimeError struct{ Msg string }
 
 func (e *RuntimeError) Error() string { return "runtime error: " + e.Msg }
 
+// RuntimeError marks the payload as a runtime.Error (Go's interface
+// requires both Error and RuntimeError).
+func (*RuntimeError) RuntimeError() {}
+
 // PanicNilError is the payload recover() sees for panic(nil), matching
 // the *runtime.PanicNilError Go produces since 1.21.
 type PanicNilError struct{}

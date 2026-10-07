@@ -8870,7 +8870,7 @@ func (v *VM) typeAssert(f *frame, x, tdv, static runtime.Value, pos token.Pos) r
 	// "main.T is not io.Writer: missing method Write".
 	if td.Kind == runtime.KindInterface {
 		if miss := v.missingIfaceMethod(td, x); miss != "" {
-			panic(&runtime.Panic{Value: &runtime.GoValue{V: fmt.Errorf("interface conversion: %s is not %s: missing method %s", typeNameOf(x), spelledTyp(td), miss)}})
+			panic(&runtime.Panic{Value: &runtime.GoValue{V: &runtime.TypeAssertionError{Msg: fmt.Sprintf("interface conversion: %s is not %s: missing method %s", typeNameOf(x), spelledTyp(td), miss)}}})
 		}
 	}
 	staticName := "interface {}"
@@ -8898,7 +8898,7 @@ func (v *VM) typeAssert(f *frame, x, tdv, static runtime.Value, pos token.Pos) r
 			suffix = " (types from different packages)"
 		}
 	}
-	panic(&runtime.Panic{Value: &runtime.GoValue{V: fmt.Errorf("interface conversion: %s is %s, not %s%s", staticName, got, want, suffix)}})
+	panic(&runtime.Panic{Value: &runtime.GoValue{V: &runtime.TypeAssertionError{Msg: fmt.Sprintf("interface conversion: %s is %s, not %s%s", staticName, got, want, suffix)}}})
 }
 
 // missingIfaceMethod names the first required method x lacks — Go's
