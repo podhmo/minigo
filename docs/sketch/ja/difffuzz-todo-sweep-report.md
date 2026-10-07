@@ -478,3 +478,36 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 - **OpIter の B&2 ビットは一度書いて捨てた**: `range p` の2変数形を作りすぎた最初の設計は nil `*[0]int` で誤爆（gc は要素読み取り時にのみ panic、len-0 は無読みで ok）。プローブが「operand 数だけでなく要素到達時」の二分岐を示したので、ビット自体を消して NilArr の遅延 panic に委ねた — gc の lazy/eager 境界は AST 形 × operand 数 × 要素読み取り有無の3軸で、どれか一軸で決めた設計は必ず別ケースを壊す。
 - **zerobase は「全て同じアドレス」ではなくオブジェクト種別で分岐**: `&x[i]==&x[j]` は同一配列でも別 array オブジェクト同士では false、slice 要素はコンテナを跨いで true、`new(zerosize)` は独立オブジェクト — 6本のプローブで境界を引き、IndexRef↔IndexRef にのみ絞った。直感（ゼロサイズは全部同一）で書くと過剰折り畳みになる。
 - **alias は identity だけでなく spelling 側も peel が要る**: `T[GlobalInt]` の identity は既に正しかったのに `main.GlobalInt` と表示された — canonicalization が keyOf 側にだけ入っていると表示が漏れる。targ を binds に書く入口（`instantiate`）で peel するのが両系に効く一点。
+
+## 6.16 実施ラウンド（round-14）: リファクタリングの子セッション委譲・レポート構造の正規化
+
+Stack #549 が CAP=20 で打ち切られた後のリファクタリングフェーズ。外部レビューで受け取った純リファクタ提案7件を、ユーザー指示どおり子セッション1件に委譲し（[session](https://app.devin.ai/sessions/f2ce53918c174e8da6626e4c0255a69f)）、自分は差分検証と stack 化に集中した。成果: PR #570–#575（6件採用・1件既済判定）、本 PR（レポート構造の正規化）。
+
+### 実施内容
+
+| 対象 | 内容 | PR |
+|------|------|-----|
+| compile 二相評価 | `hoistEagerOps` で binaryOperands/callArgs の eager-op 抽出を共有化 | [#570](https://github.com/podhmo/minigo/pull/570) |
+| name/arg→binds | `bindArgs` に fold（5箇所）| [#571](https://github.com/podhmo/minigo/pull/571) |
+| literal 型解決 | `resolveLitType` で peel+resolveName+tspec walk を共有化 | [#572](https://github.com/podhmo/minigo/pull/572) |
+| AST 形判定 | `storageShape(e, indexList)` + `ast.Unparen` で peel ループ11箇所を整理 | [#573](https://github.com/podhmo/minigo/pull/573) |
+| map snapshot | `Map.SnapshotKeys`/`LookupCanonical` に NaN-key 規約を集約（VM + reflect 両側） | [#574](https://github.com/podhmo/minigo/pull/574) |
+| 型引数列挙 | `TypeDef.InstArgs`/`InstArg.Bound` で outer→own 列挙を共有化 | [#575](https://github.com/podhmo/minigo/pull/575) |
+| 既済判定 | sort nil-slice 判別ヘルパーは #562 の `nilSliceArg` で実質済み | — |
+| 本レポート | `### 6.N` → `## 6.N`（1ラウンド1章化）+ 本章 | 本 PR |
+
+### 計画外の記録と判断
+
+- **委譲の切り分けは「判定つき丸投げ」が効いた**: 子セッションには7提案のコード位置と制約（PENDING pin・ゲート・stacked 化は親側でやる旨）だけを渡し、採否の判定と実装を委ねた。差分検証は親側で全件実施 — 「生成者≠検証者」の分業で、自分が履歴を引きずらない fresh な diff 評価ができた。sort 既済の判定も子側の独立確認に委ねた結果、二重実装を防げた。
+- **検証で見えた挙動保存の細部**: `lenOperandCalls` は `ast.Inspect` 経由で parens 透過のため、呼出側が剥がし済み/未剥がしのどちらを渡しても同値（`storageShape` 化で引数形が変わっても安全）。`bindsKeyOf` が own TParams 全未束縛時に末尾 `;` を出す癖（`[o1,o2;]`）と `instArgsSpelling` が `len(own)>0` のときだけ `;` を区切る癖は、表示名・identity key の契約としてそのまま保持 — リファクタで「綺麗に直す」と spelling 互換が崩れる。
+- **`bindArgs` の unguarded→guarded 統一は到達不能の差分**: 5箇所のうち2箇所は arity チェックなしで args 長を信頼していたが、全呼出経路では arity trap が先に発火するため実質到達不能。crash→trap の改善側への変更として採用したが、「挙動保持」の判定には到達可能性の確認が要る。
+- **`resolveLitType` の fuel は共通化しなかった**: mapLitType(8) と isKeyedLitShape(4) で上限が違うのは意図的な探索深さの違い（map 限定 vs map+array 許容）なので、walk 本体だけ共有して fuel は呼出側に残した。「似たコード」を機械的に畳むとこの種の意図差が消える。
+- **レポート構造の正規化を同時にやった**: `### 6.N` が round-1 由来の `## 6.` 見出しの子に全て入り子になっていた（§6.15 = round-13 と番号ずれ、命名も「レビュー第Nラウンド」「実施ラウンド（round-N）」混在）のを、`## 6.N` 昇格で1ラウンド1章に。見出しテキストは `§6.N` 相互参照と GitHub アンカーを守るため変更せず、運用規約を `## 6.` 直下のメモに残した。
+- **親子セッションの ~/memory 同時書き込みは衝突する**: 子セッションが検証待ちの間に memory を書き、親側の編集と conflict。同時稼働させるなら memory 担当を親に限定するか、子側に「memory は書かない」と明示するのが良い（今回は手動で両ソースを統合した）。
+- **stacked ブランチへの docs 混入を再発させない**: round-13 の帳簿コミットを fix ブランチに誤って積んで force-push で分離した。`git log -1` でブランチ先端を確認してから push する習慣づけに。
+
+### 残りの状況
+
+- 純リファクタ7提案は消化済み（6採用・1既済）。`ast.Unparen` は #573 で peel ループを整理済みだが、残存する生の parens 剥がし箇所は追っておらず機会対応の範囲。
+- 変わらず残件: `·N` スコープマーカー（機構特定済み・実装後送り）、corpus timeout 仕分け約19件、panic-message/traceback/identity 系差分ファミリ、issue66575/35576/59411。境界クラスは対象外。
+- Stack #549 は全26本マージ済み。次ラウンドは TODO の `[ ]` 項目から再開。
