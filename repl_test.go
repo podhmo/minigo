@@ -117,6 +117,54 @@ func TestREPLRedefinition(t *testing.T) {
 	}
 }
 
+// TestREPLGlobalSiteCache pins that the VM's per-site OpGlobal caches
+// never outlive a change to what a name resolves to. Plain REPL lines
+// re-materialize their functions on reload, so the case that keeps a
+// compiled caller alive is pin mode: a decl published into the entered
+// package is patched in place by Globals.Set, and a caller that already
+// ran (caching its callee read) must see the patch.
+func TestREPLGlobalSiteCache(t *testing.T) {
+	ctx := context.Background()
+	r := NewEngine(".").NewREPL()
+	mustEval := func(line string) {
+		t.Helper()
+		if _, err := r.EvalLine(ctx, line); err != nil {
+			t.Fatalf("EvalLine(%q): %v", line, err)
+		}
+	}
+	p, err := r.Enter(ctx, "github.com/podhmo/minigo/testdata/inspectpkg")
+	if err != nil {
+		t.Fatalf("Enter: %v", err)
+	}
+	if err := r.Pin(); err != nil {
+		t.Fatalf("Pin: %v", err)
+	}
+	call := func(name string) any {
+		t.Helper()
+		v, err := r.engine.Call(ctx, p, name, "x")
+		if err != nil {
+			t.Fatalf("Call %s: %v", name, err)
+		}
+		return v
+	}
+
+	mustEval(`import "strconv"`)
+	mustEval(`func Callee(s string) string { return "v1 " + s }`)
+	mustEval(`func Caller(s string) string { return Callee(s) }`)
+	mustEval(`var Count = 1`)
+	mustEval(`func ReadCount(s string) string { return s + strconv.Itoa(Count) }`)
+	got := []any{call("Caller"), call("ReadCount")}
+
+	mustEval(`func Callee(s string) string { return "v2 " + s }`)
+	mustEval(`Count = 2`)
+	got = append(got, call("Caller"), call("ReadCount"))
+
+	want := []any{"v1 x", "x1", "v2 x", "x2"}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Fatalf("results (-want +got):\n%s", diff)
+	}
+}
+
 func TestREPLFailedHoistRollsBack(t *testing.T) {
 	ctx := context.Background()
 	r := NewEngine("testdata").NewREPL()

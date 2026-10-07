@@ -1767,6 +1767,20 @@ func (v *VM) loop(f *frame) {
 		case bytecode.OpUpvalRef:
 			f.push(f.upvals[ins.A])
 		case bytecode.OpGlobal:
+			if ins.C >= 0 && int(ins.C) < len(f.ch.Sites) {
+				site := f.ch.Sites[ins.C]
+				if s, _ := site.Cache.Load().(*globalSlot); s != nil &&
+					s.env == f.fn.Pkg.Globals && s.gen == s.env.Gen() {
+					if s.cell != nil {
+						f.push(s.cell.Elem)
+					} else {
+						f.push(s.val)
+					}
+					break
+				}
+				f.push(v.resolveGlobalSite(f, consts[ins.A].(string), site))
+				break
+			}
 			f.push(v.resolveGlobal(f, consts[ins.A].(string)))
 		case bytecode.OpGlobalTyp:
 			if old, ok := f.fn.Pkg.Globals.Get(consts[ins.A].(string)); ok {
@@ -2379,32 +2393,71 @@ func (v *VM) resolveGlobal(f *frame, name string) runtime.Value {
 	return mv
 }
 
+// globalSlot is a cached OpGlobal resolution, valid while the
+// package's Globals generation is unchanged. A package var caches its
+// cell (read live); everything else caches the resolved value.
+type globalSlot struct {
+	env  *runtime.Env
+	gen  uint64
+	cell *runtime.Cell
+	val  runtime.Value
+}
+
+// resolveGlobalSite resolves name like resolveGlobal and, when the
+// resolution only depends on state that bumps the package's Globals
+// generation, records it in site.
+func (v *VM) resolveGlobalSite(f *frame, name string, site *bytecode.GlobalSite) runtime.Value {
+	env := f.fn.Pkg.Globals
+	// read the generation first: a change during resolution (a lazy
+	// materialization, another goroutine's Set) leaves the slot stale
+	// on arrival, so the next read resolves again.
+	gen := env.Gen()
+	val, cell, cacheable, err := v.resolveGlobalKind(f, name)
+	if err != nil {
+		f.trap("%s", err)
+	}
+	if cacheable {
+		site.Cache.Store(&globalSlot{env: env, gen: gen, cell: cell, val: val})
+	}
+	return val
+}
+
 // resolveGlobalE is resolveGlobal without the trap: failures return as
 // errors so callers (e.g. SpecialContext.Resolve) can report them.
 func (v *VM) resolveGlobalE(f *frame, name string) (runtime.Value, error) {
+	val, _, _, err := v.resolveGlobalKind(f, name)
+	return val, err
+}
+
+// resolveGlobalKind is resolveGlobalE that also reports whether the
+// result may be cached per site (see globalSlot) and, for a package
+// var, the cell it was read from. File scopes, imports and the package
+// index are covered by Env.Touch at their edit sites; dot-imported
+// names read another package's env, so they are never cached.
+func (v *VM) resolveGlobalKind(f *frame, name string) (val runtime.Value, cell *runtime.Cell, cacheable bool, err error) {
 	pkg := f.fn.Pkg
 	file := fileOf(f, pkg)
 	// 1. file imports
 	if file != nil {
 		if ref, ok := pkg.Scopes[file][name]; ok {
-			return ref, nil
+			return ref, nil, true, nil
 		}
 	}
 	// 2. package globals / lazy members
 	if gv, ok := pkg.Globals.Get(name); ok {
 		if c, isCell := gv.(*runtime.Cell); isCell {
-			return c.Elem, nil
+			return c.Elem, c, true, nil
 		}
-		return gv, nil
+		return gv, nil, true, nil
 	}
 	if pkg.Index != nil {
 		if d, ok := lookupDecl(pkg, name); ok {
 			mv, err := v.H.Materialize(pkg, d)
 			if err != nil {
-				return nil, fmt.Errorf("materialize %s: %s", name, err)
+				return nil, nil, false, fmt.Errorf("materialize %s: %s", name, err)
 			}
 			pkg.Globals.Set(name, mv)
-			return mv, nil
+			return mv, nil, false, nil
 		}
 	}
 	// 2.5 unnamed imports whose package name differs from the path's
@@ -2428,11 +2481,11 @@ func (v *VM) resolveGlobalE(f *frame, name string) (runtime.Value, error) {
 				continue
 			}
 			if p != nil && p.Name == name {
-				return ref, nil
+				return ref, nil, true, nil
 			}
 		}
 		if loadErr != nil {
-			return nil, fmt.Errorf("import %s: %w", loadPath, loadErr)
+			return nil, nil, false, fmt.Errorf("import %s: %w", loadPath, loadErr)
 		}
 	}
 	// 3. dot imports: index without initializing, then initialize the package
@@ -2448,7 +2501,7 @@ func (v *VM) resolveGlobalE(f *frame, name string) (runtime.Value, error) {
 			}
 			p, err := ref.Materialize()
 			if err != nil {
-				return nil, fmt.Errorf("dot import %s: %s", ref.Path, err)
+				return nil, nil, false, fmt.Errorf("dot import %s: %s", ref.Path, err)
 			}
 			_, inGlobals := p.Globals.Get(name)
 			inIndex := false
@@ -2459,27 +2512,40 @@ func (v *VM) resolveGlobalE(f *frame, name string) (runtime.Value, error) {
 				continue
 			}
 			if imported != nil {
-				return nil, fmt.Errorf("ambiguous dot-imported name: %s", name)
+				return nil, nil, false, fmt.Errorf("ambiguous dot-imported name: %s", name)
 			}
 			imported = p
 		}
 		if imported != nil {
 			mv, err := v.memberOf(imported, name)
 			if err != nil {
-				return nil, fmt.Errorf("dot import %s: %s", imported.Path, err)
+				return nil, nil, false, fmt.Errorf("dot import %s: %s", imported.Path, err)
 			}
 			if c, isCell := mv.(*runtime.Cell); isCell {
-				return c.Elem, nil
+				return c.Elem, nil, false, nil
 			}
-			imported.Globals.Set(name, mv)
-			return mv, nil
+			if _, cached := imported.Globals.Get(name); !cached {
+				imported.Globals.Set(name, mv) // see selectMember's ImportRef case
+			}
+			return mv, nil, false, nil
 		}
 	}
 	// 4. builtins
 	if bv, ok := v.H.Builtin(name); ok {
-		return bv, nil
+		// a dot import could still gain the name later (another
+		// package's env, invisible to this package's generation).
+		cacheable = true
+		if file != nil {
+			for _, ref := range pkg.Imports[file] {
+				if ref.Alias == "." {
+					cacheable = false
+					break
+				}
+			}
+		}
+		return bv, nil, cacheable, nil
 	}
-	return nil, fmt.Errorf("undefined: %s", name)
+	return nil, nil, false, fmt.Errorf("undefined: %s", name)
 }
 
 func lookupDecl(pkg *runtime.Package, name string) (*index.Decl, bool) {
@@ -2535,7 +2601,10 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		}
 		if c, isCell := mv.(*runtime.Cell); isCell {
 			mv = c.Elem
-		} else {
+		} else if _, cached := p.Globals.Get(name); !cached {
+			// cache a fresh materialization only: rebinding the value
+			// MemberV just read from Globals would bump the env's
+			// generation and drop every cached OpGlobal site of p.
 			p.Globals.Set(name, mv)
 		}
 		return mv
