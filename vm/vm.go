@@ -474,6 +474,10 @@ func (v *VM) assignCell(f *frame, c *runtime.Cell, val runtime.Value) {
 			} else {
 				val = v.materialize(f, val)
 			}
+		} else if sameBareScalar(c.Elem, val) {
+			// a bare scalar into a cell holding the same bare kind: ct is
+			// that kind's builtin type, so re-typing is the identity —
+			// skip the UConst round trip on the hot `x = x + 1` path.
 		} else if u2, isScalar := bareScalarConst(val); isScalar && ct != nil {
 			// `x = 300` re-types into the cell's tag — an out-of-range
 			// literal traps like gc's compile-time overflow error.
@@ -491,6 +495,26 @@ func (v *VM) assignCell(f *frame, c *runtime.Cell, val runtime.Value) {
 		}
 	}
 	c.Elem = valueCopy(val)
+}
+
+// sameBareScalar reports whether x and y are bare Go scalars of the
+// same kind (int64, float64, string or bool).
+func sameBareScalar(x, y runtime.Value) bool {
+	switch x.(type) {
+	case int64:
+		_, ok := y.(int64)
+		return ok
+	case float64:
+		_, ok := y.(float64)
+		return ok
+	case string:
+		_, ok := y.(string)
+		return ok
+	case bool:
+		_, ok := y.(bool)
+		return ok
+	}
+	return false
 }
 
 // bareScalarConst reads a bare Go scalar as a UConst so a store into a
