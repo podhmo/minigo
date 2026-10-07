@@ -441,7 +441,7 @@ func (f *frame) trap(format string, args ...any) {
 }
 
 // assignCell stores into a cell, coercing to the cell's declared type
-// first when one was stamped by a `var x T` / typed-param / named-result
+// first when one was stamped by a `var x T` / `x := T(v)` / typed-param
 // coerce. `x = v` then enforces the same assignability as `var x T = v`,
 // and a named basic type keeps its tag across plain assignment.
 func (v *VM) assignCell(f *frame, c *runtime.Cell, val runtime.Value) {
@@ -450,28 +450,64 @@ func (v *VM) assignCell(f *frame, c *runtime.Cell, val runtime.Value) {
 	}
 	if c.Typ != nil {
 		val = v.coerce(f, val, c.Typ)
-	} else if u, isConst := constPayload(val); isConst {
-		// a constant bound into a variable takes the variable's type —
-		// the tag an earlier `:=` stamped on the cell (`d := Second;
-		// d = 5` stays a Duration) — else the constant's default type
-		// (`x = -float64(0)` stores +0, matching `x := +0`).
+	} else {
+		// an unstamped cell's declared type is the tag its initial value
+		// carried — `x := int8(1)` leaves Named{int8} in the cell, and a
+		// later `x = v` enforces the same assignability. Bare values
+		// answer through their dynamic type.
+		var ct *runtime.TypeDef
 		if en, ok := c.Elem.(*runtime.Named); ok && en.Typ != nil {
-			val = v.materializeConst(f, u, en.Typ)
+			ct = en.Typ
 		} else {
-			val = v.materialize(f, val)
+			ct = v.typeOfValue(c.Elem)
 		}
-	} else if _, isNil := val.(runtime.Nil); isNil {
-		// `p = nil` keeps the variable's inferred type — a *T var
-		// holds a nil *T, not an untyped nil (Go's zero is typed).
-		// The nil keeps the tag so member selects and comparisons
-		// still resolve on it.
-		if pt := v.pointeeTag(c.Elem); pt != nil {
-			val = &runtime.TypedNil{Typ: &runtime.TypeDef{Kind: runtime.KindPointer, Elem: pt}}
-		} else if tag := containerTyp(c.Elem); tag != nil && v.nilableTypedef(tag) {
-			val = &runtime.TypedNil{Typ: tag}
+		if vn, ok := val.(*runtime.Named); ok && vn.Typ != nil && ct != nil &&
+			vn.Typ.Name != "" && ct.Name != "" && ct.Kind != runtime.KindInterface &&
+			!sameTypeDef(vn.Typ, ct) {
+			f.trap("cannot use value (type %s) as %s in assignment", spelledTyp(vn.Typ), spelledTyp(ct))
+		}
+		if u, isConst := constPayload(val); isConst {
+			// a constant bound into a variable takes the variable's
+			// type — `d := Second; d = 5` stays a Duration.
+			if ct != nil {
+				val = v.materializeConst(f, u, ct)
+			} else {
+				val = v.materialize(f, val)
+			}
+		} else if u2, isScalar := bareScalarConst(val); isScalar && ct != nil {
+			// `x = 300` re-types into the cell's tag — an out-of-range
+			// literal traps like gc's compile-time overflow error.
+			val = v.materializeConst(f, u2, ct)
+		} else if _, isNil := val.(runtime.Nil); isNil {
+			// `p = nil` keeps the variable's inferred type — a *T var
+			// holds a nil *T, not an untyped nil (Go's zero is typed).
+			// The nil keeps the tag so member selects and comparisons
+			// still resolve on it.
+			if pt := v.pointeeTag(c.Elem); pt != nil {
+				val = &runtime.TypedNil{Typ: &runtime.TypeDef{Kind: runtime.KindPointer, Elem: pt}}
+			} else if tag := containerTyp(c.Elem); tag != nil && v.nilableTypedef(tag) {
+				val = &runtime.TypedNil{Typ: tag}
+			}
 		}
 	}
 	c.Elem = valueCopy(val)
+}
+
+// bareScalarConst reads a bare Go scalar as a UConst so a store into a
+// typed cell materializes it under the cell's type — `x = 300` on an
+// int8 var range-checks like a constant.
+func bareScalarConst(x runtime.Value) (*runtime.UConst, bool) {
+	switch t := x.(type) {
+	case int64:
+		return &runtime.UConst{V: constant.MakeInt64(t)}, true
+	case float64:
+		return &runtime.UConst{V: constant.MakeFloat64(t)}, true
+	case string:
+		return &runtime.UConst{V: constant.MakeString(t)}, true
+	case bool:
+		return &runtime.UConst{V: constant.MakeBool(t)}, true
+	}
+	return nil, false
 }
 
 // checkAddrBase panics like Go when the address-of target's base is a
