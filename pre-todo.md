@@ -64,8 +64,12 @@ TODO.md に切り出す前の検討置き場。
   - scope 外の参照は「見つからない」と「スキャン対象外」を区別できない
 - 参考実装
   - go-scan `NewUnresolvedTypeInfo`/`TypeInfo.Unresolved` フラグ(調査 §2)
-- 未定
-  - `TypeExpr` に載せるか `Decl` に載せるか、両方か
+  - 実体は symgo の **load policy 境界マーカー**: `Resolver.ResolveType` が `ScanPolicy(importPath)` NO で placeholder を返す + 解決失敗時にも逃げる
+- 未定 → 条件付き
+  - 層: interpreter 層ではない(VM は実値が要るので placeholder では進められない)。inspect/tooling 層の型解決が作用面
+  - 価値は「読み込み範囲を制限する policy」が存在して初めて立つ — policy 導入の前提部品
+    - policy を入れるなら必須パーツ、入れないなら見送り
+  - `TypeExpr` に載せるか `Decl` に載せるか、両方か — policy 採用時に改めて
 
 ### ファイルパースの並列化
 
@@ -108,10 +112,10 @@ TODO.md に切り出す前の検討置き場。
   - bind path(`inspect` の増補か `minigo.dev/astwalk` 新設か)
   - 最小形だけか、pattern-hook まで入れるか
 
-### modulewalk パッケージ(仮称 — ModuleWalker 相当)
+### modulewalk パッケージ(採用方向で確定)
 
 - 動機
-  - 「root 以下の全パッケージを nested go.mod 越しに列挙」が既存の TODO 項目
+  - 「root 以下の全パッケージを nested go.mod 越しに列挙」が既存の TODO 項目 → **採用 verdict**
   - go-scan `modulewalker.go` がほぼそのままの仕様(調査 §3)
   - moon ide 的な表層走査ツールのキットとして使いたい意向あり
     - 3点セット: symbol index(場所を引く) + modulewalk(範囲を与える) + astwalk(中身を見る)
