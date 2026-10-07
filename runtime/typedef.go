@@ -279,7 +279,7 @@ func typSpelling(e ast.Expr, ctx *TypeDef, under bool) string {
 		return typSpelling(t.X, ctx, under)
 	case *ast.SelectorExpr:
 		if id, ok := t.X.(*ast.Ident); ok {
-			if p := typImportPath(file, id.Name); p != "" {
+			if p := typImportPath(pkg, file, id.Name); p != "" {
 				return p + "." + t.Sel.Name
 			}
 			// an unresolved selector qualifier is a package reference,
@@ -514,7 +514,7 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 		return TypGoSpelling(t.X, ctx)
 	case *ast.SelectorExpr:
 		if id, ok := t.X.(*ast.Ident); ok {
-			if p := typImportPath(file, id.Name); p != "" {
+			if p := typImportPath(pkg, file, id.Name); p != "" {
 				// Go qualifies by the imported package's clause name —
 				// `net/http.Client` spells `http.Client`, and an
 				// `import o "x/odd"` whose package declares `package
@@ -1182,6 +1182,15 @@ func importClauseName(pkg *Package, file *syntax.File, alias string) string {
 	}
 	im := scopes[file][alias]
 	if im == nil {
+		// matched by its package clause (typImportPath's fallback): the
+		// qualifier already is the clause name.
+		for _, ref := range pkg.Imports[file] {
+			if ref.Alias == "" {
+				if p, err := ref.Materialize(); err == nil && p != nil && p.Name == alias {
+					return alias
+				}
+			}
+		}
 		return ""
 	}
 	p, err := im.Materialize()
@@ -1614,14 +1623,27 @@ func predeclaredTypeName(name string) bool {
 }
 
 // typImportPath resolves a file-local import alias (explicit or the
-// basename-derived default) to its import path.
-func typImportPath(file *syntax.File, alias string) string {
+// basename-derived default) to its import path. An unaliased import
+// whose package clause differs from the path's last element
+// (gopkg.in/yaml.v3 declares yaml) is found by materializing it, like
+// the VM's global resolution does.
+func typImportPath(pkg *Package, file *syntax.File, alias string) string {
 	if file == nil {
 		return ""
 	}
 	for _, im := range file.Imports {
 		if im.LocalName() == alias {
 			return im.Path
+		}
+	}
+	if pkg != nil {
+		for _, ref := range pkg.Imports[file] {
+			if ref.Alias != "" {
+				continue
+			}
+			if p, err := ref.Materialize(); err == nil && p != nil && p.Name == alias {
+				return ref.Path
+			}
 		}
 	}
 	return ""
