@@ -16,8 +16,10 @@ TODO.md に切り出す前の検討置き場。
   - import 一覧を取るだけのためにもフルパースのコストを払っている
 - 参考実装
   - go-scan `scanner.ScanPackageFromFilePathImports` が `parser.ImportsOnly` を使う(調査 §3)
-- 未定
-  - `parser.ImportsOnly`/`PackageClauseOnly` を `syntax`/`resolve` のどこに置くか
+- 未定 → 方向は見えた
+  - `ParseFile` にモードオプションは足さない — truncated `*ast.File` が同じ型で下流に流れ、フル AST 前提の処理が静かに壊れるため
+  - 別関数・別戻り値型にする: `syntax.FileImports(path)`/`syntax.PackageClause(path)` 的に imports 一覧や pkg 名だけを返す細い関数(go-scan `ScanPackageFromFilePathImports` と同じ切り分け)
+    - truncated AST はその関数内で消費・破棄されるので half-AST がパイプラインに存在しない
 
 ### inspect に decl-anchored AST ハンドルを露出する
 
