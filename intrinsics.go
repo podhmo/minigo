@@ -2992,7 +2992,9 @@ func scriptVal(v any) runtime.Value {
 		return int64(x)
 	case int8, int16, int32:
 		return namedSized(x, reflect.ValueOf(x).Int())
-	case uint, uint8, uint16, uint32, uintptr:
+	case uint, uint8, uint16, uint32, uint64, uintptr:
+		// int64(x) keeps the full bit pattern — a >=2^63 uint64 like
+		// math.Float64bits(-0.0) reinterprets losslessly.
 		return namedSized(x, int64(reflect.ValueOf(x).Uint()))
 	case float32:
 		// keep the declared width like a float32(x) conversion does —
