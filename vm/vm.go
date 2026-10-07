@@ -10035,6 +10035,15 @@ func (v *VM) CallerPCs() []uintptr {
 			continue
 		}
 		seen[pn] = true
+		// a deferred call's caller is the unwinder itself — Go's stack
+		// lists `runtime.gopanic` between the deferred chain and the
+		// panicking frames, so runtime.Caller(2) inside a deferred
+		// call resolves to the panicking frame (issue5856).
+		sites = append(sites, runtime.CallSite{
+			Name: "runtime.gopanic",
+			File: "runtime/panic.go",
+			Line: 859,
+		})
 		for _, e := range v.unwinding {
 			if e.pn == pn {
 				sites = append(sites, v.callSite(e.f))
