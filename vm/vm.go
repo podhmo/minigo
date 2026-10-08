@@ -3287,7 +3287,7 @@ func (v *VM) initHostLiteral(f *frame, td *runtime.TypeDef, hv any, raw []runtim
 		if !fv.CanSet() {
 			f.trap("cannot set unexported field %s of host type %s", name, td.Name)
 		}
-		val, err := toReflectValue(raw[i+1], fv.Type(), v)
+		val, err := hostFieldValue(raw[i+1], rv.Type(), name, fv.Type(), v)
 		if err != nil {
 			f.trap("%s.%s: %s", td.Name, name, err)
 		}
@@ -3889,6 +3889,28 @@ func structShaped(v runtime.Value) bool {
 	return false
 }
 
+var (
+	poolType = reflect.TypeFor[sync.Pool]()
+	anyType  = reflect.TypeFor[any]()
+)
+
+// hostFieldValue converts x for a host struct field: toReflectValue,
+// except that a script sync.Pool.New keeps a struct result opaque — the
+// pool hands it back through Get, which returns a script value verbatim
+// (goValueOf), so it must not marshal to scriptData, which would invoke
+// its niladic methods on every miss (the same rule as Pool.Put).
+func hostFieldValue(x runtime.Value, owner reflect.Type, name string, ft reflect.Type, vc runtime.VMCaller) (reflect.Value, error) {
+	if owner == poolType && name == "New" && ft.Kind() == reflect.Func {
+		switch x.(type) {
+		case *runtime.Function, *runtime.Closure, *runtime.BoundMethod:
+			if vc != nil {
+				return adaptFuncOut(x, ft, vc, true)
+			}
+		}
+	}
+	return toReflectValue(x, ft, vc)
+}
+
 // scriptData is the host-facing projection of a script struct for an
 // `any` parameter: a named map field/method walkers — text/template's
 // evalField above all — can navigate. The empty key, unreachable
@@ -4290,6 +4312,12 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 // (sync.WaitGroup.Go, time.AfterFunc) lands on vc.Call from a foreign
 // goroutine, which reroutes to a spawned child VM — see Call.
 func adaptFunc(x runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.Value, error) {
+	return adaptFuncOut(x, t, vc, false)
+}
+
+// adaptFuncOut is adaptFunc; opaque hands a struct-shaped result to an
+// `any` result slot as is rather than marshaling it (see hostFieldValue).
+func adaptFuncOut(x runtime.Value, t reflect.Type, vc runtime.VMCaller, opaque bool) (reflect.Value, error) {
 	if vc == nil {
 		return reflect.Value{}, fmt.Errorf("cannot adapt %T to %s off-VM", x, t)
 	}
@@ -4318,7 +4346,9 @@ func adaptFunc(x runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.Va
 		for i := range out {
 			var rv reflect.Value
 			var err error
-			if i < len(rs) {
+			if opaque && i < len(rs) && t.Out(i) == anyType && structShaped(rs[i]) {
+				rv = reflect.ValueOf(any(rs[i]))
+			} else if i < len(rs) {
 				rv, err = toReflectValue(rs[i], t.Out(i), vc)
 			} else {
 				rv, err = toReflectValue(runtime.NIL, t.Out(i), vc)
@@ -4643,7 +4673,7 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 		if !fv.IsValid() || !fv.CanSet() {
 			f.trap("host value %T has no settable field %s", b.V, name)
 		}
-		nv, err := toReflectValue(val, fv.Type(), v)
+		nv, err := hostFieldValue(val, rv.Type(), name, fv.Type(), v)
 		if err != nil {
 			f.trap("set field %s: %s", name, err)
 		}
