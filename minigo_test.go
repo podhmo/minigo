@@ -817,6 +817,46 @@ func TestConstMemberVarFallback(t *testing.T) {
 	}
 }
 
+func TestConstMemberThenVMReadInits(t *testing.T) {
+	// A host-side const read binds the constant without init, but a
+	// cell in Globals must not masquerade as an initialized package:
+	// a later in-VM access (memberOf passes a non-nil run) still
+	// completes the initializer before serving the value.
+	e := newEngine(t)
+	pkg, err := e.Package(context.Background(), "./testdata/consttheninit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := func(p *runtime.Package, d *index.Decl) (runtime.Value, error) {
+		return runtime.NIL, nil
+	}
+	v, err := pkg.Member("C", stub)
+	if err != nil {
+		t.Fatalf("Member(C): %v", err)
+	}
+	if got := constScalar(v); got != int64(7) {
+		t.Fatalf("Member(C) = %#v, want 7", got)
+	}
+	if pkg.State() == runtime.Ready {
+		t.Fatal("host const read must not initialize the package")
+	}
+	// in-VM member access passes the calling VM's runner — the
+	// non-nil run is what distinguishes it from a host lookup.
+	v, err = pkg.MemberV("C", stub, pkg.RunInit)
+	if err != nil {
+		t.Fatalf("MemberV(C): %v", err)
+	}
+	if got := constScalar(v); got != int64(7) {
+		t.Fatalf("MemberV(C) = %#v, want 7", got)
+	}
+	if pkg.State() != runtime.Ready {
+		t.Fatal("in-VM const access must complete the package initializer")
+	}
+	if iv, ok := pkg.Globals.Get("Inited"); !ok || iv.(*runtime.Cell).Elem != true {
+		t.Error("init() side effect did not run")
+	}
+}
+
 func TestInitFailureSurfaces(t *testing.T) {
 	// An initializer that panics after registering some globals must not
 	// leave partial state answerable: Member returns the init error.

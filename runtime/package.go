@@ -342,6 +342,26 @@ func (p *Package) MemberV(name string, materialize func(*Package, *index.Decl) (
 		return nil, fmt.Errorf("package %s failed to load", p.Name)
 	}
 	if v, ok := p.Globals.Get(name); ok {
+		// A cell bound by the const-only pass reads like an initialized
+		// global, but the package never ran its initializers — serving it
+		// to running VM code would break Go's guarantee that an imported
+		// package is fully initialized before its values serve. In-VM
+		// access to a value member completes the init first; host-side
+		// callers (run == nil) keep the lazy view they asked for. State
+		// must be strictly before Initializing: a package currently
+		// initializing (possibly on this very goroutine, via an init
+		// cycle) keeps serving the in-progress cell rather than
+		// deadlocking on initOnce re-entry.
+		if run != nil && p.Index != nil && p.State() < Initializing {
+			if d, ok := memberDecl(p.Index, name); ok && (d.Kind == index.ConstDecl || d.Kind == index.VarDecl) {
+				if err := p.EnsureReadyRun(run); err != nil {
+					return nil, err
+				}
+				if fresh, ok := p.Globals.Get(name); ok {
+					return fresh, nil
+				}
+			}
+		}
 		return v, nil
 	}
 	if p.Index != nil && p.LazyInit {
