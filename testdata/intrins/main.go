@@ -300,6 +300,26 @@ func JsonUnmarshalTypeErr() string {
 	var i int
 	err = json.Unmarshal([]byte(`"x"`), &i)
 	out += "|" + fmt.Sprint(err)
+
+	// gc reports the FIRST type error in input order — B's number
+	// arrives before A's bad bool even though A decodes first by
+	// field order.
+	var es struct {
+		A int
+		B bool
+	}
+	err = json.Unmarshal([]byte(`{"B":123,"A":false}`), &es)
+	out += "|" + fmt.Sprint(err)
+
+	// json.Number keeps the literal — the number grammar is the only
+	// check, so out-of-float64-range text stays and bad literals fail
+	// without field context.
+	var big json.Number
+	err = json.Unmarshal([]byte(`"1e1000"`), &big)
+	out += "|" + fmt.Sprint(big, err)
+	var badn json.Number
+	err = json.Unmarshal([]byte(`"abc"`), &badn)
+	out += "|" + fmt.Sprint(err)
 	return out
 }
 
@@ -358,7 +378,39 @@ func JsonUnmarshalStringOpt() string {
 	out += "|" + fmt.Sprint(err, s2.T)
 
 	b, _ := json.Marshal(S{N: 42, F: 1.5, B: true, T: "x", A: 7, L: []int{1}})
-	return out + "|" + string(b)
+	out += "|" + string(b)
+
+	// Composite fields ignore the option entirely: a non-string
+	// literal decodes normally, not as an error.
+	var cs struct {
+		L []int          `json:"l,string"`
+		M map[string]int `json:"m,string"`
+	}
+	err = json.Unmarshal([]byte(`{"l":[1],"m":{"k":2}}`), &cs)
+	out += "|" + fmt.Sprint(err, cs.L, cs.M)
+
+	// Named interface fields ignore the option both directions.
+	type I interface{}
+	var iv struct {
+		V I `json:"v,string"`
+	}
+	err = json.Unmarshal([]byte(`{"v":7}`), &iv)
+	out += "|" + fmt.Sprint(err, iv.V)
+	ib, _ := json.Marshal(struct {
+		V I `json:"v,string"`
+	}{V: 7})
+	out += "|" + string(ib)
+
+	// A quoted "null" is the null literal: scalars keep their value
+	// and pointer fields nil out.
+	var nv struct {
+		N int  `json:"n,string"`
+		P *int `json:"p,string"`
+	}
+	seven := 7
+	nv.N, nv.P = 7, &seven
+	err = json.Unmarshal([]byte(`{"n":"null","p":"null"}`), &nv)
+	return out + "|" + fmt.Sprint(err, nv.N, nv.P == nil)
 }
 
 // JsonUnmarshalMapKeys exercises non-string map keys: int/uint/float/
@@ -387,6 +439,87 @@ func JsonUnmarshalMapKeys() string {
 	var sk map[string]int
 	err = json.Unmarshal([]byte(`{"a":1}`), &sk)
 	return out + "|" + fmt.Sprint(err, sk)
+}
+
+// JsonUnmarshalEmbed exercises anonymous-embed field flattening:
+// promoted fields match their JSON keys through the embed chain
+// (exact key before case-folded, shallowest depth first, tagged
+// before untagged — a tie on all three drops the key silently, on
+// marshal too), a `json:"name"` tag on the embed demotes it to a
+// named member, and pointer embeds allocate on decode.
+func JsonUnmarshalEmbed() string {
+	type A struct{ X int }
+	type B struct{ Y int }
+	type Mid struct {
+		A
+		M int
+	}
+	type Outer struct {
+		B
+		Mid
+		Z int
+	}
+	var o Outer
+	err := json.Unmarshal([]byte(`{"x":1,"y":2,"m":3,"z":4}`), &o)
+	out := fmt.Sprint(err, o.A.X, o.B.Y, o.Mid.M, o.Z)
+
+	type A1 struct{ X int }
+	type A2 struct{ X int }
+	type Both struct {
+		A1
+		A2
+	}
+	var b Both
+	err = json.Unmarshal([]byte(`{"x":1}`), &b)
+	out += "|" + fmt.Sprint(err, b.A1.X, b.A2.X)
+	m2, _ := json.Marshal(Both{A1: A1{X: 1}, A2: A2{X: 2}})
+	out += "|" + string(m2)
+
+	type Ptr struct {
+		*A
+		P int
+	}
+	var p Ptr
+	err = json.Unmarshal([]byte(`{"x":7,"p":8}`), &p)
+	out += "|" + fmt.Sprint(err, p.A != nil, p.A.X, p.P)
+
+	type Tagd struct {
+		A `json:"in"`
+		B
+	}
+	var t Tagd
+	err = json.Unmarshal([]byte(`{"in":{"x":1},"y":2}`), &t)
+	out += "|" + fmt.Sprint(err, t.A.X, t.B.Y)
+	m3, _ := json.Marshal(Tagd{A: A{X: 1}, B: B{Y: 2}})
+	out += "|" + string(m3)
+
+	m1, _ := json.Marshal(Outer{B: B{Y: 2}, Mid: Mid{A: A{X: 1}, M: 3}, Z: 4})
+	out += "|" + string(m1)
+
+	// A live pointer embed promotes its fields on marshal, and a
+	// self-referential embed expands one level then stops.
+	type Node struct {
+		*Node
+		X int
+	}
+	var nd Node
+	err = json.Unmarshal([]byte(`{"x":7}`), &nd)
+	out += "|" + fmt.Sprint(err, nd.X, nd.Node == nil)
+	pb, _ := json.Marshal(Ptr{A: &A{X: 7}, P: 8})
+	out += "|" + string(pb)
+	nnb, _ := json.Marshal(Node{X: 9})
+	out += "|" + string(nnb)
+
+	// Folded-name lookup takes the FIRST live field in declaration
+	// order — a same-name tie dies, but distinct names folding alike
+	// do not.
+	type Case struct {
+		Foo int
+		FOO int
+	}
+	var cf Case
+	err = json.Unmarshal([]byte(`{"foo":7}`), &cf)
+	return out + "|" + fmt.Sprint(err, cf.Foo, cf.FOO)
 }
 
 // StrconvAppendInt exercises the Append family — writeStatusLine in
