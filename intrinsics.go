@@ -1761,7 +1761,7 @@ func (e *Engine) installStdlib() {
 		}},
 		"Now":      h.fn("time.Now", func(a []any) (any, error) { return time.Now(), nil }, time.Now),
 		"Time":     hostType("time.Time", func() any { return time.Time{} }),
-		"Duration": &runtime.TypeDef{Name: "time.Duration", Kind: runtime.KindNamedBasic, Anon: ast.NewIdent("int64")},
+		"Duration": &runtime.TypeDef{Name: "time.Duration", Kind: runtime.KindNamedBasic, Anon: ast.NewIdent("int64"), HostScalar: time.Duration(0)},
 		"Location": hostType("time.Location", func() any { return time.Local }),
 		"UTC":      &runtime.GoValue{V: time.UTC},
 		"Local":    &runtime.GoValue{V: time.Local},
