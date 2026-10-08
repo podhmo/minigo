@@ -12102,15 +12102,18 @@ func (v *VM) inferBinds(fn *runtime.Function, args []runtime.Value, statics []*r
 		}
 	}
 	// Deferred untyped-constant contributors now bind their tparam to
-	// the common default type — the arg's own default that every other
-	// constant still fits into ('a' + 2.3 → float64). A tparam already
-	// bound by a real-typed argument keeps that bind; its constants
-	// convert at the call.
+	// the widest kind's default type ('a' + 2.3 → float64, 3 + 'a' →
+	// rune). A tparam already bound by a real-typed argument keeps that
+	// bind; its constants convert at the call.
 	for name, cs := range constArgs {
 		if _, ok := binds[name]; ok {
 			continue
 		}
-		if td := v.commonConstTypedef(cs); td != nil {
+		td, ok := v.commonConstTypedef(cs)
+		if !ok {
+			return nil, fmt.Errorf("cannot infer %s: untyped constant arguments do not join", name)
+		}
+		if td != nil {
 			binds[name] = td
 		}
 	}
@@ -12319,36 +12322,70 @@ func (v *VM) constFits(u *runtime.UConst, td *runtime.TypeDef) bool {
 	return false
 }
 
+// constJoinRank ranks a constant kind for the common-default join:
+// Int < Rune < Float < Complex, mirroring go/constant.BinaryOp. Bool
+// and String stand alone — they only join with their own kind.
+func constJoinRank(u *runtime.UConst) int {
+	switch u.V.Kind() {
+	case constant.Int:
+		if u.Rune {
+			return 1
+		}
+		return 0
+	case constant.Float:
+		return 2
+	case constant.Complex:
+		return 3
+	case constant.Bool:
+		return 4
+	case constant.String:
+		return 5
+	}
+	return -1
+}
+
 // commonConstTypedef joins the deferred untyped-constant contributors of
-// one type parameter into the type all of them can be represented as —
-// the first contributor's own default that still fits the rest. Mixed
-// kinds escalate to the wider default (rune + float → float64).
-func (v *VM) commonConstTypedef(args []runtime.Value) *runtime.TypeDef {
+// one type parameter into the widest kind's default type — 'a' + 2.3 →
+// float64, 3 + 'a' → rune — then checks every contributor still fits
+// the winner. It returns ok=false when the constants cannot join at
+// all (bool + int), which the caller reports as an inference failure;
+// (nil, true) means no usable contributors and leaves the tparam
+// unbound.
+func (v *VM) commonConstTypedef(args []runtime.Value) (cand *runtime.TypeDef, ok bool) {
+	var us []*runtime.UConst
+	var winU *runtime.UConst
+	top := -1
 	for _, a := range args {
 		u, ok := constPayload(a)
 		if !ok {
 			continue
 		}
-		cand := v.defaultConstTypedef(u)
-		if cand == nil {
-			continue
-		}
-		fits := true
-		for _, b := range args {
-			ub, ok := constPayload(b)
-			if !ok {
-				continue
+		if r := constJoinRank(u); r >= 0 {
+			us = append(us, u)
+			if r > top {
+				top = r
+				winU = u
 			}
-			if !v.constFits(ub, cand) {
-				fits = false
-				break
-			}
-		}
-		if fits {
-			return cand
 		}
 	}
-	return nil
+	if winU == nil {
+		return nil, true
+	}
+	for _, u := range us {
+		r := constJoinRank(u)
+		// a lower-ranked numeric joins upward, but a solo family
+		// (bool/string) only joins with itself.
+		if r != top && (r >= 4 || top >= 4) {
+			return nil, false
+		}
+	}
+	cand = v.defaultConstTypedef(winU)
+	for _, u := range us {
+		if !v.constFits(u, cand) {
+			return nil, false
+		}
+	}
+	return cand, true
 }
 
 func (v *VM) unifyTypeDef(ctx *runtime.TypeDef, tset map[string]bool, binds map[string]runtime.Value, pat ast.Expr, conc *runtime.TypeDef) {
