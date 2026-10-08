@@ -12060,6 +12060,12 @@ func (v *VM) inferBinds(fn *runtime.Function, args []runtime.Value, statics []*r
 	// ctx resolves named type expressions in the callee's own scope — its
 	// package, file imports and binds so far.
 	ctx := &runtime.TypeDef{Pkg: fn.Pkg, File: fn.File, Binds: binds}
+	// Untyped-constant args never pin a type parameter: a constant
+	// converts to whatever the bind ends up as, so it only joins the
+	// bind through the common default afterward (`bar(0, f[T])` binds
+	// T via f[T], and `g('a', 2.3)` joins at float64 rather than
+	// letting 'a' pin P=rune).
+	constArgs := map[string][]runtime.Value{}
 	pos := 0
 	if fn.Decl.Recv != nil {
 		pos = 1 // args[0] is the receiver; declared params exclude it
@@ -12079,13 +12085,13 @@ func (v *VM) inferBinds(fn *runtime.Function, args []runtime.Value, statics []*r
 			if pos >= len(args) {
 				break
 			}
-			v.unifyType(ctx, tset, binds, et, args[pos], staticAt(statics, pos))
+			v.unifyType(ctx, tset, binds, constArgs, et, args[pos], staticAt(statics, pos))
 			pos++
 		}
 		// ...T consumes all remaining args; the first arg that yields a
 		// typedef wins the binding.
 		for variadic && pos < len(args) {
-			v.unifyType(ctx, tset, binds, et, args[pos], staticAt(statics, pos))
+			v.unifyType(ctx, tset, binds, constArgs, et, args[pos], staticAt(statics, pos))
 			pos++
 		}
 		if variadic && spreadTd != nil {
@@ -12093,6 +12099,19 @@ func (v *VM) inferBinds(fn *runtime.Function, args []runtime.Value, statics []*r
 			// declared element type still teaches the bind — a nil or
 			// empty []int expands to zero args yet infers T=int.
 			v.unifyTypeDef(ctx, tset, binds, et, spreadTd)
+		}
+	}
+	// Deferred untyped-constant contributors now bind their tparam to
+	// the common default type — the arg's own default that every other
+	// constant still fits into ('a' + 2.3 → float64). A tparam already
+	// bound by a real-typed argument keeps that bind; its constants
+	// convert at the call.
+	for name, cs := range constArgs {
+		if _, ok := binds[name]; ok {
+			continue
+		}
+		if td := v.commonConstTypedef(cs); td != nil {
+			binds[name] = td
 		}
 	}
 	v.inferCoreTypes(ctx, tset, binds, fn.TParams, fn.TConstraints)
@@ -12173,7 +12192,14 @@ func coreTypeExpr(c ast.Expr) ast.Expr {
 // inferred binds land in binds. Everything is best-effort: mismatched or
 // unsupported shapes simply teach nothing, and already-bound tparams are
 // not re-bound (no consistency check — approximation).
-func (v *VM) unifyType(ctx *runtime.TypeDef, tset map[string]bool, binds map[string]runtime.Value, pat ast.Expr, arg runtime.Value, static *runtime.TypeDef) {
+func (v *VM) unifyType(ctx *runtime.TypeDef, tset map[string]bool, binds map[string]runtime.Value, constArgs map[string][]runtime.Value, pat ast.Expr, arg runtime.Value, static *runtime.TypeDef) {
+	// An untyped-constant argument defers its bind: the constant
+	// converts to whatever the type parameter becomes, so it must not
+	// win the first-come binding over real-typed arguments.
+	if id, ok := pat.(*ast.Ident); ok && tset[id.Name] && untypedConstArg(arg) {
+		constArgs[id.Name] = append(constArgs[id.Name], arg)
+		return
+	}
 	// Go infers T from the argument's static type, so a declared typedef
 	// from the call site wins over the value's dynamic one — `id(e)`
 	// with `var e error` binds T=error even when e holds *errorString.
@@ -12190,6 +12216,105 @@ func (v *VM) unifyType(ctx *runtime.TypeDef, tset map[string]bool, binds map[str
 func staticAt(statics []*runtime.TypeDef, i int) *runtime.TypeDef {
 	if i >= 0 && i < len(statics) {
 		return statics[i]
+	}
+	return nil
+}
+
+// untypedConstArg reports whether a call argument still rides an
+// untyped-constant box: a bare UConst, or one tagged only with a builtin
+// kind. A const carrying a declared type (`const k T = ...`) binds like
+// a value of T instead.
+func untypedConstArg(x runtime.Value) bool {
+	if _, ok := constPayload(x); !ok {
+		return false
+	}
+	if n, ok := x.(*runtime.Named); ok && n.Typ != nil {
+		if n.Typ.Spec != nil {
+			return false
+		}
+		if tagIsNamed(n.Typ) && basicNameOf(n.Typ) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// defaultConstTypedef is a UConst's default type as a typedef: rune,
+// int, float64, complex128, string, or bool.
+func (v *VM) defaultConstTypedef(u *runtime.UConst) *runtime.TypeDef {
+	switch u.V.Kind() {
+	case constant.Bool:
+		return v.builtinTypedef("bool")
+	case constant.String:
+		return v.builtinTypedef("string")
+	case constant.Int:
+		if u.Rune {
+			return v.builtinTypedef("rune")
+		}
+		return v.builtinTypedef("int")
+	case constant.Float:
+		return v.builtinTypedef("float64")
+	case constant.Complex:
+		return v.builtinTypedef("complex128")
+	}
+	return nil
+}
+
+// constFits is the constant representability check across a bind
+// candidate: 'a' fits float64 but 2.3 does not fit rune. An integral
+// float literal (2.0) still fits an int slot.
+func (v *VM) constFits(u *runtime.UConst, td *runtime.TypeDef) bool {
+	name := basicNameOf(v.peelNamed(td))
+	switch name {
+	case "float32", "float64":
+		k := u.V.Kind()
+		return k == constant.Int || k == constant.Float
+	case "complex64", "complex128":
+		k := u.V.Kind()
+		return k == constant.Int || k == constant.Float || k == constant.Complex
+	case "string":
+		return u.V.Kind() == constant.String
+	case "bool":
+		return u.V.Kind() == constant.Bool
+	case "int", "int8", "int16", "int32", "rune", "int64",
+		"uint", "uint8", "byte", "uint16", "uint32", "uint64", "uintptr":
+		if u.V.Kind() == constant.Float {
+			f, ok := constant.Float64Val(u.V)
+			return ok && f == math.Trunc(f) && !math.IsInf(f, 0)
+		}
+		return u.V.Kind() == constant.Int
+	}
+	return false
+}
+
+// commonConstTypedef joins the deferred untyped-constant contributors of
+// one type parameter into the type all of them can be represented as —
+// the first contributor's own default that still fits the rest. Mixed
+// kinds escalate to the wider default (rune + float → float64).
+func (v *VM) commonConstTypedef(args []runtime.Value) *runtime.TypeDef {
+	for _, a := range args {
+		u, ok := constPayload(a)
+		if !ok {
+			continue
+		}
+		cand := v.defaultConstTypedef(u)
+		if cand == nil {
+			continue
+		}
+		fits := true
+		for _, b := range args {
+			ub, ok := constPayload(b)
+			if !ok {
+				continue
+			}
+			if !v.constFits(ub, cand) {
+				fits = false
+				break
+			}
+		}
+		if fits {
+			return cand
+		}
 	}
 	return nil
 }
