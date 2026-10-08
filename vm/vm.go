@@ -3127,7 +3127,7 @@ func goValueOf(rv reflect.Value) runtime.Value {
 				for i := range el {
 					el[i] = goValueOf(rv.Index(i))
 				}
-				return &runtime.Slice{Elems: el, Typ: anonSliceTyp(elemTypeName(rv.Type().Elem()))}
+				return &runtime.Slice{Elems: el, Typ: hostSliceTyp(rv.Type().Elem())}
 			}
 		case reflect.Array:
 			if rv.Type().Name() == "" {
@@ -3197,6 +3197,17 @@ var hostRValueType = reflect.TypeOf((*minireflect.RValue)(nil))
 
 // elemTypeName names a reflect type for typedef spelling — Name() when
 // it has one, the reflect spelling otherwise (struct{...}, []string).
+// hostSliceTyp tags a slice unboxed from a host []T. A T declared in a
+// host package ([]parse.Node) has no unqualified spelling a script
+// typedef could resolve, so the slice stays untagged and adopts the
+// type of the slot it is stored into.
+func hostSliceTyp(elem reflect.Type) *runtime.TypeDef {
+	if elem != hostRValueType && elem.Name() != "" && elem.PkgPath() != "" {
+		return nil
+	}
+	return anonSliceTyp(elemTypeName(elem))
+}
+
 func elemTypeName(t reflect.Type) string {
 	if t == hostRValueType {
 		return "reflect.Value"

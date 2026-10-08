@@ -61,6 +61,7 @@ var (
 // table; Bound packages win over source resolution (loadPath checks pkgs).
 func (e *Engine) installStdlib() {
 	h := &hostHelpers{e: e}
+	e.bindTemplateParse()
 	e.Bind("fmt", map[string]runtime.Value{
 		// fmt's interfaces are needed as types by interpreted sources that
 		// reflect on them or assert (e.g. template's fmt.Stringer probes,
