@@ -654,6 +654,22 @@ func (v *VM) setIndirect(f *frame, ref, val runtime.Value) {
 		}
 		if ptrTd != nil {
 			val = runtime.Unwrap(val)
+			// A converted pointer only re-views the storage — the cell
+			// keeps its own declared tag, so `*(*uint)(&w) = 7` leaves
+			// `var w W` a W (its method set still resolves) instead of
+			// a bare uint. Cells holding an untagged element (the bare
+			// `s := "a"` of PtrConvShared) keep the bare store, and
+			// interface/typed-nil elements are left as the coerce wrote
+			// them — Tag would wrap a nil where a plain `x = nil`
+			// stores a TypedNil.
+			if en, ok := c.Elem.(*runtime.Named); ok && tagIsNamed(en.Typ) &&
+				en.Typ.Kind != runtime.KindInterface {
+				if _, isNil := val.(*runtime.TypedNil); isNil {
+					val = &runtime.TypedNil{Typ: en.Typ}
+				} else {
+					val = runtime.Tag(en.Typ, val)
+				}
+			}
 		}
 	}
 	// `*p = T{...}` overwrites the pointee in place: a pointer
