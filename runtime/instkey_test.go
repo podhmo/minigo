@@ -24,7 +24,12 @@ func TestInstKey(t *testing.T) {
 	spelled.OuterSpell = []Value{named}
 
 	same := func(a, b map[string]Value) bool { return key(a) == key(b) }
+	copyOf := func(td *TypeDef) *TypeDef { c := *td; return &c }
+	respelled := copyOf(named)
+	respelled.OuterSpell = []Value{fresh()}
 	got := map[string]bool{
+		"copies of one type share":   same(map[string]Value{"T": named}, map[string]Value{"T": copyOf(named)}),
+		"display context separates":  same(map[string]Value{"T": named}, map[string]Value{"T": respelled}),
 		"fresh basics share":         same(map[string]Value{"T": fresh()}, map[string]Value{"T": fresh()}),
 		"outer spelling ignored":     same(map[string]Value{"T": spelled}, map[string]Value{"T": BasicTypedef("string")}),
 		"basic names differ":         same(map[string]Value{"T": fresh()}, map[string]Value{"T": BasicTypedef("int")}),
@@ -34,6 +39,8 @@ func TestInstKey(t *testing.T) {
 		"local basic is not a basic": key(map[string]Value{"T": &TypeDef{Name: "string", Kind: KindNamedBasic, Local: true}}) == key(map[string]Value{"T": fresh()}),
 	}
 	want := map[string]bool{
+		"copies of one type share":   true,
+		"display context separates":  false,
 		"fresh basics share":         true,
 		"outer spelling ignored":     true,
 		"basic names differ":         false,

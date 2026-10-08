@@ -446,39 +446,124 @@ type instChunk struct {
 const maxInstPerDecl = 64
 
 // InstKey spells the identity of a generic instantiation for
-// InstChunk: the decl, the function name, and each bind's type value.
-// A bind is identified by its pointer, except a plain predeclared
-// basic typedef, which is identified by its name — call-site inference
-// mints fresh `string` typedefs that are otherwise indistinguishable.
-// ok is false when a bind cannot be keyed.
+// InstChunk: the decl, the function name, and each bind's type (see
+// writeTypeKey). ok is false when a bind cannot be keyed.
 func InstKey(decl *ast.FuncDecl, file *syntax.File, name string, binds map[string]Value) (string, bool) {
+	var b strings.Builder
+	writePtr(&b, decl)
+	b.WriteByte('|')
+	writePtr(&b, file)
+	b.WriteByte('|')
+	b.WriteString(name)
+	if !writeBindsKey(&b, binds, instKeyDepth) {
+		return "", false
+	}
+	return b.String(), true
+}
+
+// instKeyDepth bounds how deep writeTypeKey follows nested typedefs
+// (Elem, Binds, OuterArgs) before it falls back to the pointer — a
+// recursive type would otherwise never end.
+const instKeyDepth = 4
+
+func writeBindsKey(b *strings.Builder, binds map[string]Value, depth int) bool {
 	names := make([]string, 0, len(binds))
 	for k := range binds {
 		names = append(names, k)
 	}
 	slices.Sort(names)
-	var b strings.Builder
-	b.WriteString(strconv.FormatUint(uint64(reflect.ValueOf(decl).Pointer()), 16))
-	b.WriteByte('|')
-	b.WriteString(strconv.FormatUint(uint64(reflect.ValueOf(file).Pointer()), 16))
-	b.WriteByte('|')
-	b.WriteString(name)
 	for _, n := range names {
 		b.WriteByte('|')
 		b.WriteString(n)
 		b.WriteByte('=')
 		td, ok := binds[n].(*TypeDef)
 		if !ok || td == nil {
-			return "", false
+			return false
 		}
-		if plainBasic(td) {
-			b.WriteString(td.Name)
-			continue
-		}
-		b.WriteByte('@')
-		b.WriteString(strconv.FormatUint(uint64(reflect.ValueOf(td).Pointer()), 16))
+		writeTypeKey(b, td, depth)
 	}
-	return b.String(), true
+	return true
+}
+
+// writeTypeKey spells a typedef by what determines it rather than by its
+// pointer: call-site inference and re-specialization mint fresh copies
+// of one type (a `stringSlice` with the same Spec and Anon, an `[]int`
+// from the same type expression), and pointer keys would compile each
+// copy again. The spelled parts are the syntax nodes and package/file
+// the type resolves in, its name and kind, its local-type scope and
+// identity counters, and — recursively — its binds, element and
+// display context. Everything else (fields, methods, embeds, caches) is
+// derived from those. A bare predeclared basic typedef spells its name
+// alone; a host-backed typedef, whose constructor cannot be compared,
+// spells its pointer.
+func writeTypeKey(b *strings.Builder, td *TypeDef, depth int) {
+	if plainBasic(td) {
+		b.WriteString(td.Name)
+		return
+	}
+	if depth == 0 || td.HostNew != nil || td.HostScalar != nil {
+		b.WriteByte('@')
+		writePtr(b, td)
+		return
+	}
+	b.WriteByte('{')
+	writePtr(b, td.Pkg)
+	b.WriteByte(',')
+	writePtr(b, td.File)
+	b.WriteByte(',')
+	writePtr(b, td.Spec)
+	b.WriteByte(',')
+	if td.Anon != nil {
+		writePtr(b, td.Anon)
+	}
+	b.WriteByte(',')
+	b.WriteString(td.Name)
+	b.WriteByte(',')
+	b.WriteString(strconv.Itoa(int(td.Kind)))
+	b.WriteByte(',')
+	writePtr(b, td.LocalTypes)
+	b.WriteByte(',')
+	b.WriteString(strconv.Itoa(td.Gen))
+	if td.Local {
+		b.WriteString(",local")
+	}
+	if td.inInstArgs {
+		b.WriteString(",instargs")
+	}
+	if td.Elem != nil {
+		b.WriteString(",elem:")
+		writeTypeKey(b, td.Elem, depth-1)
+	}
+	if len(td.Binds) > 0 && !writeBindsKey(b, td.Binds, depth-1) {
+		// a non-typedef bind: fall back to this typedef's identity
+		b.WriteString(",@")
+		writePtr(b, td)
+	}
+	for _, list := range [][]Value{td.OuterArgs, td.OuterSpell} {
+		b.WriteString(",[")
+		for _, v := range list {
+			if a, ok := v.(*TypeDef); ok && a != nil {
+				writeTypeKey(b, a, depth-1)
+			} else {
+				fmt.Fprintf(b, "%T:%v", v, v)
+			}
+			b.WriteByte(';')
+		}
+		b.WriteByte(']')
+	}
+	b.WriteByte('}')
+}
+
+// writePtr spells a pointer-shaped value's address (0 for nil).
+func writePtr(b *strings.Builder, x any) {
+	var p uintptr
+	if rv := reflect.ValueOf(x); rv.IsValid() {
+		switch rv.Kind() {
+		case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.UnsafePointer:
+			p = rv.Pointer()
+		}
+	}
+	b.WriteString(strconv.FormatUint(uint64(p), 16))
 }
 
 // plainBasic reports whether td is a bare predeclared basic typedef
