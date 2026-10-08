@@ -1430,6 +1430,12 @@ type BuiltinFunc struct {
 	// (F[T]) produces a plain BuiltinFunc that calls GenFn with the
 	// bound type arguments (e.g. reflect.TypeFor[T]).
 	GenFn func(vm VMCaller, targs []Value, args []Value) (Value, error)
+	// SyncCallbacks declares that Fn calls back into the VM only
+	// synchronously — on the calling goroutine, before Fn returns —
+	// and never retains the VMCaller (no stored callbacks, iterators or
+	// goroutines). The VM then hands Fn a caller that skips the
+	// cross-goroutine check every Call otherwise pays for.
+	SyncCallbacks bool
 }
 
 // SmallIntOf reads a host numeric that fits the int64 domain — named

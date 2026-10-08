@@ -792,6 +792,9 @@ func (v *VM) Call(callee runtime.Value, args []runtime.Value) (result runtime.Va
 // callBounded is Call carrying the call site's spread element typedef
 // into generic inference; nil spreadTd is an ordinary call.
 func (v *VM) callBounded(callee runtime.Value, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (result runtime.Value, err error) {
+	// goroutineID parses runtime.Stack, whose traceback walks the
+	// interpreter's deep Go stack — tens of µs per call. Callbacks from
+	// a SyncCallbacks builtin skip it through ownerCaller.
 	gid := goroutineID()
 	v.callMu.Lock()
 	if v.callDepth > 0 && v.callGid != gid {
@@ -820,6 +823,31 @@ func (v *VM) callBounded(callee runtime.Value, args []runtime.Value, statics []*
 
 	v.callGid = gid
 	v.callMu.Unlock()
+	return v.callEntered(callee, args, statics, spreadTd)
+}
+
+// ownerCaller is the VMCaller a SyncCallbacks builtin receives: the
+// builtin runs on the goroutine that owns the VM's in-flight Call and
+// calls back before it returns, so a Call through it is a same-goroutine
+// re-entry by construction and needs no goroutine id.
+type ownerCaller struct{ *VM }
+
+func (o ownerCaller) Call(callee runtime.Value, args []runtime.Value) (runtime.Value, error) {
+	v := o.VM
+	v.callMu.Lock()
+	if v.callDepth == 0 {
+		// no Call in flight to re-enter — take the general path.
+		v.callMu.Unlock()
+		return v.Call(callee, args)
+	}
+	v.callDepth++
+	v.callMu.Unlock()
+	return v.callEntered(callee, args, nil, nil)
+}
+
+// callEntered runs a Call whose callDepth increment is already done —
+// callBounded's same-goroutine path — and undoes it on return.
+func (v *VM) callEntered(callee runtime.Value, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (result runtime.Value, err error) {
 	defer func() {
 		v.callMu.Lock()
 		v.callDepth--
@@ -899,6 +927,9 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 				}
 				panic(r)
 			}()
+			if c.SyncCallbacks {
+				return c.Fn(ownerCaller{v}, args)
+			}
 			return c.Fn(v, args)
 		case *runtime.TypeDef:
 			if len(args) != 1 {
@@ -4042,7 +4073,10 @@ func procDoneOf(vc runtime.VMCaller) <-chan struct{} {
 // can nil v.proc concurrently, so check-then-use pairs must capture the
 // pointer first or they race a nil receiver/field panic.
 func procOf(vc runtime.VMCaller) *proc {
-	if v, ok := vc.(*VM); ok {
+	switch v := vc.(type) {
+	case *VM:
+		return v.proc
+	case ownerCaller:
 		return v.proc
 	}
 	return nil
