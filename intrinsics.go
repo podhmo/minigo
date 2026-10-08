@@ -4378,6 +4378,10 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 	if dec == nil {
 		switch td.Kind {
 		case runtime.KindPointer, runtime.KindSlice, runtime.KindMap, runtime.KindInterface:
+			if td.Kind == runtime.KindSlice && isArrayTyp(td) {
+				// gc ignores null for fixed arrays: the value stays.
+				return priorOr(prior, c, td)
+			}
 			return c.Zero(td)
 		}
 		return priorOr(prior, c, td)
@@ -4411,7 +4415,10 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 		}
 		return z
 	case runtime.KindSlice:
-		if s, ok := dec.(string); ok && byteSliceTyp(td) {
+		// A string decodes as base64 only for a byte SLICE — a [N]byte
+		// array is a number list like any other array (gc has no
+		// base64 special case for arrays).
+		if s, ok := dec.(string); ok && byteSliceTyp(td) && !isArrayTyp(td) {
 			b, err := base64.StdEncoding.DecodeString(s)
 			if err != nil {
 				ectx.fail("string", td, err)
@@ -4429,6 +4436,39 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 			return priorOr(prior, c, td)
 		}
 		et := c.TypeOf(c.ElemZero(td))
+		if isArrayTyp(td) {
+			// gc's fixed-array semantics: JSON positions decode into
+			// the element in place (a failed position keeps the prior
+			// value), positions past the JSON array reset to zero, and
+			// extra JSON elements are skipped without error.
+			n, ok := c.ArrayLenOf(td)
+			if !ok {
+				var pe []runtime.Value
+				if ps, ok := prior.(*runtime.Slice); ok {
+					pe = ps.Elems
+				}
+				if len(pe) > len(arr) {
+					n = int64(len(pe))
+				} else {
+					n = int64(len(arr))
+				}
+			}
+			el := make([]runtime.Value, n)
+			var pe []runtime.Value
+			if ps, ok := prior.(*runtime.Slice); ok {
+				pe = ps.Elems
+			}
+			for i := range el {
+				if i < len(arr) {
+					ectx.path = append(ectx.path, strconv.Itoa(i))
+					el[i] = jsonShape(c, arr[i], et, elemAt(pe, i), ectx)
+					ectx.path = ectx.path[:len(ectx.path)-1]
+				} else {
+					el[i] = c.ElemZero(td)
+				}
+			}
+			return &runtime.Slice{Elems: el, Typ: td}
+		}
 		el := make([]runtime.Value, len(arr))
 		var pe []runtime.Value
 		if ps, ok := prior.(*runtime.Slice); ok {

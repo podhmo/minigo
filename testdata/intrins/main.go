@@ -303,6 +303,30 @@ func JsonUnmarshalTypeErr() string {
 	return out
 }
 
+// JsonUnmarshalArray exercises fixed-array unmarshal: JSON positions
+// decode into the element in place (a failed position keeps the prior
+// value), positions past the JSON array reset to zero, extra elements
+// are skipped without error, and null is a no-op — gc's [N]T rules.
+func JsonUnmarshalArray() string {
+	var a [2]int
+	err := json.Unmarshal([]byte(`[1,2,3]`), &a)
+	out := fmt.Sprint(err, a)
+
+	b := [4]int{5, 6, 7, 8}
+	err = json.Unmarshal([]byte(`[1]`), &b)
+	out += "|" + fmt.Sprint(err, b)
+
+	c := [2]int{5, 6}
+	err = json.Unmarshal([]byte(`[1,"x","y"]`), &c)
+	out += "|" + fmt.Sprint(err, c)
+
+	err = json.Unmarshal([]byte(`null`), &c)
+	out += "|" + fmt.Sprint(err, c)
+
+	err = json.Unmarshal([]byte(`"str"`), &c)
+	return out + "|" + fmt.Sprint(err, c)
+}
+
 // StrconvAppendInt exercises the Append family — writeStatusLine in
 // net/http formats the status code through it.
 func StrconvAppendInt() string {
