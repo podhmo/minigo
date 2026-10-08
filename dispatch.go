@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go/ast"
 	"reflect"
+	"time"
 
 	"github.com/podhmo/minigo/runtime"
 )
@@ -92,6 +93,10 @@ func (e *Engine) methodInfoOfValue(v runtime.Value) (map[string]bool, map[string
 		return e.typeMethodInfoU(x.Typ, ptr)
 	case *runtime.Chan:
 		return e.typeMethodInfoU(x.Typ, ptr)
+	case time.Duration:
+		// a raw duration exposes the host method set the same way the
+		// GoValue box below does — selectMember special-cases it too.
+		return hostMethodSet(x), nil, false, nil
 	case *runtime.GoValue:
 		// host values satisfy requirements by name alone — reflect
 		// methods carry no declared signature for the func view.
