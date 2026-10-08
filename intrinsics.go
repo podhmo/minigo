@@ -1466,7 +1466,7 @@ func (e *Engine) installStdlib() {
 			Name: "runtime.MemProfileRecord", Kind: runtime.KindStruct,
 			Fields: []string{"AllocBytes", "FreeBytes", "AllocObjects", "FreeObjects"},
 		},
-		"Error":    &runtime.TypeDef{Name: "runtime.Error", Kind: runtime.KindInterface, MReqs: []string{"Error"}},
+		"Error":    &runtime.TypeDef{Name: "runtime.Error", Kind: runtime.KindInterface, MReqs: []string{"Error", "RuntimeError"}},
 		"MemStats": hostType("runtime.MemStats", func() any { return &goruntime.MemStats{} }),
 		"ReadMemStats": h.fn("runtime.ReadMemStats", func(a []any) (any, error) {
 			m, ok := a[0].(*goruntime.MemStats)
