@@ -192,7 +192,9 @@ func SameType(a, b *TypeExpr) bool { panic("minigo intrinsic") }
 // decl as a TypeExpr view, or nil when the spec declares no value.
 func Initializer(s *Decl) *TypeExpr { panic("minigo intrinsic") }
 
-// Value materializes a package member's runtime value (may run init).
+// Value materializes a package member's runtime value. Var members and
+// in-VM lookups may run the package initializer; constants bind without
+// it (a constant needs no init).
 func Value(p *runtime.Package, name string) any { panic("minigo intrinsic") }
 
 // TypeOf materializes a type symbol's *runtime.TypeDef.
