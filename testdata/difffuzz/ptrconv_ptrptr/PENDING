@@ -1,4 +1,8 @@
-gc: compile reject (cannot convert **uval to **uval2). minigo accepts:
-ElemOf(**uval2) returns uval2 — it collapses a pointer level, and
-pointeeTag cannot read the anonymous *uval cell type, so the conversion
-check never sees the named-pointee mismatch.
+gc: compile reject (cannot convert **uval to **uval2 — the pointer
+elements uval/uval2 are named and distinct, so the base types are not
+identical). minigo now traps `cannot convert **uval to **uval2`: the
+two broken layers were elemOf collapsing `*uval2` to `uval2` (it used
+resolveTypeRef where the other container arms use elemTypeRef) and
+pointeeTag skipping a cell's anonymous `*uval` type stamp behind a
+tagIsNamed gate. This record stays PENDING because want.stdout cannot
+express an expected trap.

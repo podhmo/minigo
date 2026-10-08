@@ -750,8 +750,11 @@ func (e *Engine) elemOf(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 			x = t.Elt
 			continue
 		case *ast.StarExpr:
-			// pointer typedef: element is the pointee typedef
-			return e.resolveTypeRef(td, t.X)
+			// pointer typedef: element is the pointee typedef — kept as
+			// a pointer when the pointee is itself a star (`**T`'s
+			// element is `*T`, not T: resolveTypeRef would collapse the
+			// inner star and lose the pointer level).
+			return e.elemTypeRef(td, t.X)
 		case *ast.ArrayType:
 			return e.elemTypeRef(td, t.Elt)
 		case *ast.MapType:
