@@ -688,20 +688,39 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 
 ## 6.19 実施ラウンド（round-17）: Stack #671 — difffuzz PENDING 残件掃討・修正4 PR・全体差分レビュー
 
-発端は round-16 までと同じ、TODO.md の difffuzz 系残件を「1 root cause = 1 PR」で直列掃討する指示（CAP=10、基本ソロ・子セッションはレビュー委譲のみ）。成果: **Stack #671 に修正 4 PR（[#669](https://github.com/podhmo/minigo/pull/669)・[#670](https://github.com/podhmo/minigo/pull/670)・[#675](https://github.com/podhmo/minigo/pull/675)・[#676](https://github.com/podhmo/minigo/pull/676)・[#678](https://github.com/podhmo/minigo/pull/678) — 修正 4 PR + 本レポート）**。前ラウンド末に残っていた PENDING pin 6件全てに着手し、4件は昇格（PENDING 除去）、2件は gc のコンパイル拒否＝runtime trap 形で根因修正の上 PENDING 残置とした。
+発端は round-16 までと同じ、TODO.md の difffuzz 系残件を「1 root cause = 1 PR」で直列掃討する指示（CAP=10、基本ソロ・子セッションはレビュー委譲のみ）。成果: **Stack #671 に計10 PR（PENDING 修正5・レビュー対応4・本レポート）**。前ラウンド末に残っていた PENDING pin 6件全てに着手し、4件は昇格（PENDING 除去）、2件は gc のコンパイル拒否＝runtime trap 形で根因修正の上 PENDING 残置とした。その後の全差分レビュー（子セッション委譲）でバグ3件を修正・リファクタ1件を適用し、レビュー対応の pin も3件追加した（`dur_iface_methodset`・`geninfer_typedconst`・`geninfer_const_join`）。
 
 ### 実施内容
 
 | フェーズ | 内容 | PR |
 |------|------|-----|
 | PENDING 修正 | `dur_methods`（host scalar typedef が生値を保持 → `d.String()` 等の Duration メソッドセット解決）、`panic_typednil`（typed nil を `IfaceNil` に box → `recover(); r != nil` が true）、`mapkey_namedstruct`（map index/literal のキーを declared key type に coerce — リテラル側 `map[float64]V{1: x}` が `int64(1)` を格納する対称バグも同時修復）、`ptrconv_ptrptr`（`elemOf` のポインタ段潰れ＋`pointeeTag` の匿名セル型読み取り不能、両層修正で trap 化）、`geninfer_*`（untyped const 引数の defer 機構 — 1 root cause で2 pin） | #669, #670, #675, #676, #678 |
-| 全体差分レビュー | 子セッションに main→先端の全差分を委譲（バグ→リファクタの順で判定） | （レビューのみ） |
+| 全体差分レビュー | 子セッションに main→先端の全差分を委譲 → バグ3・リファクタ5 を報告 | （レビューのみ） |
+| レビュー対応 | バグ3件は全て再現・修正（各1 PR）。リファクタは要3（`hostScalarInts`/`hostInt64`/`stringFromInt`/`checkMapKey` 抽出）・不要2 | #685, #687, #688, #689 |
 | 帳簿 | TODO.md の6項目を `[x]` に更新 | 本 PR |
 | 本レポート | 本章 | 本 PR |
 
 ### レビュー指摘の判定結果
 
-TBD — 子セッション回答待ち。
+子セッションの全差分レビュー（[session](https://app.devin.ai/sessions/2a218030caac480799037342d44826ea)）はバグ3件・リファクタ5件を報告。全件を実機再現してから判定した。
+
+**バグ（3件全て要 → 各1 PR）**
+
+| # | 指摘 | 判定・対応 |
+|---|------|-----------|
+| B-1 | 生の `time.Duration` が空の method set — `x.(fmt.Stringer)` が false、`map[fmt.Stringer]int` への書き込みが trap（#675 の declared-key check が引き出したリグレッション） | 要 → `methodInfoOfValue` に `case time.Duration:` → `hostMethodSet`（[#685](https://github.com/podhmo/minigo/pull/685)、pin `dur_iface_methodset`） |
+| B-2 | `untypedConstArg` が builtin 型付き定数（`int8(3)`）まで defer → `p(int8(3),'a')` が int（gc: int8） | 要 → builtin タグ名が UConst 自身のデフォルト型名と一致する時のみ untyped（[#687](https://github.com/podhmo/minigo/pull/687)、pin `geninfer_typedconst`） |
+| B-3 | `commonConstTypedef` が先頭 arg のデフォルトを採用 → `p(5,'a')` が int（gc: int32/rune）、`p(1<<40,'a')` を受理 | 要 → kind 順位 Int<Rune<Float<Complex で最広のデフォルトを選択＋全 contributor を `constFits` で検証（[#688](https://github.com/podhmo/minigo/pull/688)、pin `geninfer_const_join`） |
+
+**リファクタ（要3・不要2）**
+
+| # | 指摘 | 判定 |
+|---|------|------|
+| R-4 | int 系 convert の GoValue arm と default arm が同一の reflect.Kind 3-way switch を重複 | 要 → `hostScalarInts` に抽出して2 arm を統合（[#689](https://github.com/podhmo/minigo/pull/689)） |
+| R-5 | string convert の int64/raw-scalar arm が int/uint switch + MaxRune チェックを重複 | 要 → `hostInt64` + `stringFromInt` に抽出（同上） |
+| R-6 | `u.Anon`/`u.Spec.Type` イディオムが最大4箇所に複製 | 不要 — 実態は5237/5292の2箇所・3行のみ（~9300 は Spec fallback なし、~12112 は typedef 再構築で形が違う）。helper 化の間接層より現状が平易 |
+| R-7 | 戻り値を捨てる `mapKeyOperand` 呼出が3箇所 | 要 → `checkMapKey` wrapper で「チェック目的」を明示（同上） |
+| R-8 | `mapKeyTypedef` がアクセス毎に key typedef を resolve（perf） | 不要 — 未計測の最適化。typedef への cache 追加は状態を増やし、hot path としての観測も無い |
 
 ### 計画外の記録と判断
 
@@ -713,10 +732,13 @@ TBD — 子セッション回答待ち。
 - **`ptrconv_ptrptr` は2層の欠落が同じ pin に重なっていた**: `ElemOf(**uval2)` が `uval2` を返す（`resolveTypeRef` が star を剥がす — 他の container arm は `elemTypeRef` で段を保持しているのに StarExpr だけ違った）＋ `pointeeTag` が `tagIsNamed` ゲートで匿名 `*uval` セル型を読めない。片方だけでは観測される trap が出ないことを確認してから両方直した — round-16 の B-1（OpIndexRef + overwriteArrayElems）と同じ「見た目1件・機構2件」パターン。
 - **`constant.Int64Val` は Float 種で panic する**: 表現可能性チェックに `Int64Val(2.3)` を素朴に書いたら `panic: 2.3 not an Int`（go/constant の panic）。`Float64Val` + 整数性判定に差し替え — コード内にも既に "Int64Val would panic on them" の注意コメントがあった（6746行目付近）。初回実装時に見落としていた。
 - **`make format` の testdata 4ピン余分差分は継続発生**: 既知の癖どおりコミット前に `git checkout` で戻す手順を踏んだ。
+- **untyped const の家族差は値表現が違う**: B-3 の solo-family join を書く過程で判明 — bool/string のリテラルは `*runtime.UConst` ではなく concrete 値として bind されるため、`p(true, 1)` は推論の join 失敗ではなく bool に bind 後の const→bool 変換で trap する。join 失敗パスは数値以外が deferred される将来ケースへの防衛として残した。
+- **生 host scalar の扱いは dispatch で非対称だった**: B-1 は「`selectMember` が `case time.Duration:` で生値を hostMember へ流す一方、`methodInfoOfValue`（type assert・map キー判定の背後の method-set walk）だけが対応していなかった」という片側実装の穴。#675 のチェックがその穴を露出させた — 「呼べるのに代入できない」状態は前から存在した。
+- **レビュー対応 PR はレポートの上に積まざるを得なかった**: `git_stack add` は「base = 現在の stack top」を強制し、base は stack 加入後にロックされる。対応: レポートを除いた並びで unstack→再 create し、レポートを最上位に再配置する操作を最後に入れる。
 
 ### 残りの状況
 
-- Stack #671 は修正4 PR + 本レポート（レビュー対応があれば追加）。全 open、マージはユーザー側。
+- Stack #671 は修正5 PR + レビュー対応4 PR + 本レポート = 計10 PR（CAP=10 到達）。全 open、マージはユーザー側。
 - TODO 残件 `[ ]`（difffuzz 系）: deadlock 検出（機能項目）のみ。`mapkey_namedstruct`・`ptrconv_ptrptr` の PENDING pin は trap 形の記録として残置（want.stdout が trap を表現できないため昇格不可）。
 - corpus sweep / gen hunt の深掘りは本ラウンドでは未着手 — 6 pin 全件の根因潰し＋レビュー＋帳簿でこのラウンドの枠を使い切った判断。次ラウンドの先頭案件として残置。
 
