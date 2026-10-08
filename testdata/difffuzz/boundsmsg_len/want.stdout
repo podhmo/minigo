@@ -1,0 +1,7 @@
+runtime error: slice bounds out of range [:4] with length 3
+runtime error: slice bounds out of range [:4] with length 3
+runtime error: slice bounds out of range [:4] with capacity 3
+runtime error: slice bounds out of range [-1:]
+runtime error: slice bounds out of range [::4] with length 3
+runtime error: slice bounds out of range [::4] with capacity 3
+runtime error: slice bounds out of range [:4] with length 3
