@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/podhmo/minigo/compile"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -385,6 +386,9 @@ func builtins(e *Engine) *runtime.Env {
 		default:
 			return nil, fmt.Errorf("make of kind %d", td.Kind)
 		}
+	})
+	bf(compile.EmbedBuiltin, func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		return embedBuiltin(e, v, args)
 	})
 	bf("new", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) != 1 {

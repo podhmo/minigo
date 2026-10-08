@@ -33,6 +33,10 @@ import (
 // Engine is a long-lived interpreter instance: resolver, package cache,
 // builtins, and host bindings.
 type Engine struct {
+	// mainPkg is the package Run entered first — runtime/debug's build
+	// info names it.
+	mainPkg *runtime.Package
+
 	resolver resolve.Resolver
 	cfg      resolve.BuildConfig
 	fset     *token.FileSet
@@ -526,7 +530,42 @@ func (e *Engine) Run(ctx context.Context, ref, fnName string, args ...runtime.Va
 	if err != nil {
 		return nil, err
 	}
+	if e.mainPkg == nil {
+		e.mainPkg = pkg
+	}
 	return e.Call(ctx, pkg, fnName, args...)
+}
+
+// modinfo answers runtime/debug's linker-provided build info the way a
+// `go run` binary carries it: the main package path and its module at
+// version (devel), framed by the 16-byte sentinels ReadBuildInfo strips.
+// Dependencies are not listed. Outside Run (no main package) it reports
+// "" — ReadBuildInfo then answers ok=false, like a test binary.
+func (e *Engine) modinfo() string {
+	if e.mainPkg == nil {
+		return ""
+	}
+	var b strings.Builder
+	if strings.HasPrefix(e.mainPkg.Path, "<file>") {
+		// `go run file.go` builds command-line-arguments with no main
+		// module
+		b.WriteString("path\tcommand-line-arguments\n")
+	} else {
+		b.WriteString("path\t" + e.mainPkg.Path + "\n")
+	}
+	if mod := resolve.ModulePath(e.mainPkg.Dir); mod != "" && !strings.HasPrefix(e.mainPkg.Path, "<file>") {
+		// a main package outside the cwd's module (`go run dep/cmd/x`)
+		// is stamped with the version the cwd module requires
+		version := "(devel)"
+		if resolve.ModulePath(e.cwd) != mod {
+			if v, ok := resolve.RequiredVersion(e.cwd, mod); ok {
+				version = v
+			}
+		}
+		b.WriteString("mod\t" + mod + "\t" + version + "\t\n")
+	}
+	const sentinel = "0123456789abcdef" // any 16 bytes: only the length matters
+	return sentinel + b.String() + sentinel
 }
 
 // Bind registers a host package: import path -> symbols. The package is
@@ -981,6 +1020,11 @@ func (e *Engine) materializeOne(pkg *runtime.Package, d *index.Decl) (runtime.Va
 		if d.Func.Body == nil {
 			if v, ok := asmImpl(pkg, d.Name); ok {
 				return v, nil
+			}
+			if pkg.Path == "runtime/debug" && d.Name == "modinfo" {
+				return &runtime.BuiltinFunc{Name: "runtime/debug.modinfo", Fn: func(runtime.VMCaller, []runtime.Value) (runtime.Value, error) {
+					return e.modinfo(), nil
+				}}, nil
 			}
 		}
 		return &runtime.Function{Pkg: pkg, File: d.File, Decl: d.Func, Name: d.Name,
