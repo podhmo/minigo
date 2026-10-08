@@ -429,15 +429,26 @@ func builtins(e *Engine) *runtime.Env {
 	})
 	bf("panic", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		// panic(nil) carries a *PanicNilError since Go 1.21 — recover()
-		// reports a non-nil value. A typed nil stays a typed nil (the
-		// interface argument is non-nil).
-		switch args[0].(type) {
-		case runtime.Nil, *runtime.IfaceNil:
+		// reports a non-nil value.
+		arg := args[0]
+		switch a := runtime.Unwrap(arg).(type) {
+		case runtime.Nil:
 			panic(&runtime.Panic{Value: &runtime.PanicNilError{}})
+		case *runtime.IfaceNil:
+			// the nil interface itself panics as nil; a typed nil
+			// already boxed in an interface stays a non-nil payload.
+			if runtime.IsNilIface(a) {
+				panic(&runtime.Panic{Value: &runtime.PanicNilError{}})
+			}
+		case *runtime.TypedNil:
+			// a typed nil crosses panic's any parameter boxed into an
+			// interface — recover() hands back a non-nil value carrying
+			// the nil pointer's dynamic type.
+			arg = &runtime.IfaceNil{Typ: a.Typ}
 		}
 		// VC lets Error() render a script payload's Error()/String()
 		// text — `panic(err)` prints like gc's, not a value dump.
-		panic(&runtime.Panic{Value: args[0], VC: v})
+		panic(&runtime.Panic{Value: arg, VC: v})
 	})
 	bf("recover", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		return v.Recover(), nil
