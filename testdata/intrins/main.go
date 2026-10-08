@@ -361,6 +361,34 @@ func JsonUnmarshalStringOpt() string {
 	return out + "|" + string(b)
 }
 
+// JsonUnmarshalMapKeys exercises non-string map keys: int/uint/float/
+// named/pointer spellings parse from the key text (a bad key drops the
+// pair and reports `number <key>` — or `string` for unsupported kinds
+// like bool), and a bad element still inserts its zero value.
+func JsonUnmarshalMapKeys() string {
+	var m map[int]int
+	err := json.Unmarshal([]byte(`{"3":1,"x":2,"5":3}`), &m)
+	out := fmt.Sprint(err, m)
+	err = json.Unmarshal([]byte(`{"3":"y","7":1}`), &m)
+	out += "|" + fmt.Sprint(err, m)
+	var u map[uint]int
+	err = json.Unmarshal([]byte(`{"-1":1,"8":2}`), &u)
+	out += "|" + fmt.Sprint(err, u)
+	var f map[float64]int
+	err = json.Unmarshal([]byte(`{"1.5":1,"x":2}`), &f)
+	out += "|" + fmt.Sprint(err, f)
+	var b map[bool]int
+	err = json.Unmarshal([]byte(`{"true":1}`), &b)
+	out += "|" + fmt.Sprint(err, b)
+	type NK int
+	var nk map[NK]int
+	err = json.Unmarshal([]byte(`{"9":1}`), &nk)
+	out += "|" + fmt.Sprint(err, len(nk))
+	var sk map[string]int
+	err = json.Unmarshal([]byte(`{"a":1}`), &sk)
+	return out + "|" + fmt.Sprint(err, sk)
+}
+
 // StrconvAppendInt exercises the Append family — writeStatusLine in
 // net/http formats the status code through it.
 func StrconvAppendInt() string {
