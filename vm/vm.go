@@ -10799,9 +10799,13 @@ func (v *VM) tdShapeEq(a, b *runtime.TypeDef) bool {
 		return nil
 	}
 	sa, sb := src(pa), src(pb)
-	// both spellable means the underlying spellings differed — face
-	// spelling cannot add equality (identical AST implies identical
-	// underlying), so only the both-shapeless case can still match.
+	if sa != nil && sb != nil {
+		// not implied by convShapeEq: the spelling resolves type
+		// params through each side's binds, so `[]E` with E bound to
+		// KeyValue matches `type SortedMap []KeyValue` (a generic
+		// `S ~[]E` argument passed on as a `[]E` parameter).
+		return runtime.TypSpelling(sa, pa) == runtime.TypSpelling(sb, pb)
+	}
 	return sa == nil && sb == nil
 }
 
