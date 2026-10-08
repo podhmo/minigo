@@ -626,3 +626,62 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 - B-2 のコミットを B-3 と同じブランチに一度混ぜて push し、reset+force-push で剥がした — stack 運用では「今どのブランチにいるか」の確認を commit 前に毎回入れるルールが書かれていたのに漏れた。
 - 子セッションのレビュー応答は2回に渡り転送が末尾切れした — 長い構造化回答を取るときは分割取得を最初から前提にする。
 - `/tmp` のプローブは毎回単発で書き、stash/rebase 後の working tree に残らないようにした（今回は問題化しなかったが fuzzfix 書き換え判明が遅れた原因はテストスイート実行タイミング）。
+
+## 6.18 実施ラウンド（round-16）: Stack #667 — difffuzz 残件掃討・修正7 PR・全体差分レビュー（バグ0件）+クリーンアップ
+
+発端は round-15 同様、TODO.md の difffuzz 系残件を「1 root cause = 1 PR」で直列掃討する指示（CAP=10、基本ソロ・子セッションはレビュー委譲のみ）。成果: **Stack #667 に修正 7 PR（#652–#661、うち #657 はユーザー側挿入の panic-error-print）＋ レビュー由来クリーンアップ 1 PR ＋ 本レポート**。残キューが全て機能級・境界クラスに達したため CAP 未満（修正7件）で掃討を打ち切り、全体差分レビューを子セッション1件に委譲 → 返答をバグ優先→リファクタの順で判定・対応した。
+
+### 実施内容
+
+| フェーズ | 内容 | PR |
+|------|------|-----|
+| corpus sweep 補充 | `$GOROOT/test` 未走査サブディレクトリを difffuzz corpus モードで掃き、根因単位で pin | 各 PR の pin 付随 |
+| difffuzz 修正 | blank label `_:` の重複宣言トラップ（#652）、`const s[0:i]` の UConst slice トラップ（#654）、`string(int)` 範囲外の U+FFFD（#656）、無名 literal/変換→名前付きスロットの declared tag 喪失（#658）、配列 slice bounds panic の "with length"（#659）、`recover()` の生 UConst payload（#660、corpus issue48898）、名前付き pointee 間ポインタ変換の read トラップ（#661、corpus issue56990） | [#652](https://github.com/podhmo/minigo/pull/652)–[#661](https://github.com/podhmo/minigo/pull/661) |
+| 残件棚卸し | `dur_methods`・`geninfer_variadic_unify`・`geninfer_callee_t` は機能級 divergence として PENDING pin + TODO `[ ]` 記録に留め、issue8606b(unsafe)/issue13160(GC)/issue75764(tail-call スループット) は境界クラス、deadlock 検出は機能項目として据置 | 本 PR（pin + 帳簿） |
+| 全体差分レビュー | 子セッション（swe-2-max、約35分）が main→先端の全差分を精査 — 差分内バグ **0件**、再実装疑義 0件、隣接の**既存** divergence 3件とリファクタ案5件を指摘 | （レビューのみ） |
+| レビュー由来クリーンアップ | `tdShapeEq` の死んでいた face-spelling アーム除去、`sameTypeDef` の identity fast path、`runtime.Tag` への冗長 `Unwrap` 除去、`v.slice` の `int64(len(b.Elems))` ホイスト | クリーンアップ PR |
+| レビュー由来バグ記録 | 指摘された3件の既存 divergence を再現確認した上で PENDING pin + TODO `[ ]`（実装に踏み込むと別根因級だったため。計画外の記録と判断を参照） | 本 PR（pin + 帳簿） |
+| 本レポート | 本章 | 本 PR |
+
+### レビュー指摘の判定結果
+
+| 指摘 | 判定 | PR |
+|------|------|-----|
+| 差分内バグ | 該当なし（子レビュー verdict: 差分内バグ 0件） | — |
+| B-adj-1 `(**uval2)(&pw)` が受理されて後でトラップ | **採用（記録のみ）** — 実機再現で `ElemOf(**uval2)` が `uval2` を返す（ポインタ一段潰れ）＋ `pointeeTag` が匿名 `*uval` セルの型を読めない、の二重機構と判明。pin `ptrconv_ptrptr` で記録 | 本 PR |
+| B-adj-2 `panic((*int)(nil)); recover()` が `r != nil` false | **採用（記録のみ）** — Recover で `runtime.Tag` による Named 包囲を試したが `r != nil` の比較経路が Named を剥がして nil を見るため効かない。非 nil interface の boxing は現行の値形状では表現不能。pin `panic_typednil` で記録 | 本 PR |
+| B-adj-3 `map[S]` キーが形状同じ別 named struct と衝突 | **採用（記録のみ）** — `map[A]int` への `B{1}` 書き込みを minigo が受理する compile-divergence として確認。pin `mapkey_namedstruct` で記録 | 本 PR |
+| R-1 `tdShapeEq` の face-spelling アームは到達不能＋`Anon ?? Spec.Type` の12箇所オープンコード | **部分採用** — 死アームの除去のみ実施（`sa==nil && sb==nil` に畳み込み）。共通 helper `typeExprOf` の9サイト適用は churn 対効果で見送り（既存に `sigAnonOf`/`specTypeOf`/`arrayASTOf` の準 helper が散在しており命名統合が別論点になるため） | クリーンアップ PR |
+| R-2 `runtime.Tag(et, runtime.Unwrap(dv))` の冗長 Unwrap、`sameTypeDef` の early-return 欠落 | **採用** — 両方適用 | クリーンアップ PR |
+| R-3 `panicValue` の Named-composite アームが default と重複 | **不採用（今回）** — 指摘は妥当だが対象は stack 中の #657（ユーザー側 PR）のコードで、中間ブランチへの編集は restack 対象を広げる。別機会に送るのが適切 | — |
+| R-4 `v.slice` の `v.arrayLen(f, b.Typ)`・`int64(len(b.Elems))` 重複計算 | **採用** — `n` ホイスト（arrayLen は別腕経路として維持、実際に二度評価していたのは len のみ） | クリーンアップ PR |
+| R-5 `word` 文字列パラメータ → enum 化 | **不採用** — `sliceBoundsReason` の文言引数はエラーメッセージの局所表現で、enum 化は可読性を上げない | — |
+
+### 計画外の記録と判断
+
+計画時の仮説と実施後の理解のずれ、および計画に無かった事象への判断。
+
+- **issue48898 の最小トリガは `type _ int` ではなかった**: TODO 記述では「blank 名 typedef」由来と読めたが、実際に最小化すると `panic(4); recover().(int)` 単独で再現した — 原因は recover が `*runtime.UConst` を生のまま返すことで、blank 名は引っかかったコーパスの表面に過ぎなかった。→ pin は最小トリガで作り直し、TODO の `[x]` 記述も「blank 名」ではなく「still-constant payload」側に書いた。コーパスソースの「付近にあった別の要素」に引っ張られて根因を誤読するパターンの再発（以前の round でも同型あり）。
+- **`panic` の `any` 引数が materialize 境界という設計を明示的に採用**: `panic(4)` が定数ドメインのまま panic に届くのは、引数型 `any` への代入相当で gc では `int` に物質化される地点を通過したことを意味する。修正位置は「panic 内で物質化」か「recover で物質化」かの2択だったが、defer チェーンや未捕捉 panic の print 経路（`panic: 4`）が payload を直接読むのを考えると recover 側での物質化は最小爆破半径になる — panic 値本体は定数ドメインのまま保持し、recover() の interface 戻りだけ物質化する形に置いた。
+- **ptrconv_named は1つの divergence に2つの機構が重なっていた**: `(*uval)(&u)` の read トラップは OpDeref の Named-pointer coerce が代入可能性チェックに落ちる件だが、`(*uint)(&w)` は別経路 — `convertPointer` が pointee が unnamed の時タグを付けず raw cell を返していたため、代入先で `*uval` として読まれていた。同じ pin の見た目の半分が別関数に起因していたため、re-tag 側と tag-stamp 側を分けて直した。
+- **8件/CAP10 での打ち切り判断**: CAP 未消化のまま残キューを見たところ、`dur_methods`（`d.String()` すら無い — host facade の Duration メソッドセット実装が要件）・`geninfer_*`（共通 default 型 unification は inference 設計レベルの作業）は新規機能級、issue8606b/13160/75764 は unsafe・GC・スループットの境界クラスで、「1 root cause = 1 PR で潰す」対象の残りが尽きた。補充系（corpus sweep 実行済み・残りの corpus ソースは境界クラスに収斂）として次の divergence 採掘を続けても pin しか生えない判断を明示的に行った。
+- **レビューの「隣接バグ」が全て記録側に落ちた判断の記録**: 指摘3件を精査したところ、全て差分ではなく**既存挙動**で、かつ修正が別根因級の深さだった（`ElemOf` のポインタ段潰れ＋`pointeeTag` の匿名ptr読み取り不能、`r != nil` の Named-unwrap 経路、map キーの shape 比較）。ユーザーの「バグフィックス全体が先」の意図はレビュー対象差分への直しなので、隣接の既存 divergence は TODO 運用ルール（タスクと無関係に見つけたバグは記録）に従い PENDING pin + `[ ]` 記録で留めた — この判定を採用するかはマージ前に確認されたい。
+- **子レビューの「再実装チェック」は clean だった**: `callStringer` の `runtime.IfaceCallString` への移動は既存 helper の正しい共有、`panicComposite` は新しい軸で再実装ではないと verdict。自分が新設した `constPayload`/`materializeConstErr` 経路も重複疑義なし — §6.17 の numericTypeName 型の自己再実装は起きなかった。
+- **`make format` の testdata 4ピン余分差分は継続発生**: rangearr_snapshot 等の 4 PENDING pin が goimports で触られる既知の癖で、コミット前に `git checkout` で戻す手順を継続した（round 間の持越し事項 — PENDING pin の gofmt 化か除外が別途候補）。
+
+### 残りの状況
+
+- Stack #667 は 12 本（修正7 + ユーザー #657 + クリーンアップ + レビュー後追修正2 + 本レポート）。全 open、マージはユーザー側。
+- TODO 残件 `[ ]`: deadlock 検出（機能）、`dur_methods`・`geninfer_variadic_unify`・`geninfer_callee_t`（機能級）、`ptrconv_ptrptr`・`panic_typednil`・`mapkey_namedstruct`（本ラウンド新規記録、別根因級）、境界クラス記録群。
+- corpus sweep の残り未走査・gen hunt の深掘り（バッチ・depth 増の飽和確認）は次ラウンド以降の案件として残置。
+
+### 追記: レポート後の外部レビュー対応
+
+本レポート作成後、別エージェントの全体差分レビュー（比較: main `b87ebf81` vs 先端 `c6931d6f`）で差分内回帰 2 件が指摘された。いずれも実機で再現確認し、回帰として修正 PR を積んだ（レビュー対応は CAP 外、pin は昇格済み＝PENDING なし）。
+
+- **`ptrconv_store_tag`（[#665](https://github.com/podhmo/minigo/pull/665)）**: `*(*uint)(&w) = 7` が `var w W` の W タグを消し `w.M()` が `select M on cell of int64` で失敗。ptrconv_named(#661) で変換ポインタを `Named{*uint}` で包んだことで、setIndirect 内の古い `Unwrap` 経路（`PtrConvShared` の裸セル前提）を踏むようになっていた。ポインタの要素 typedef は値の検査にのみ使い、セルが既に持っている declared tag で格納し直す形に修正 — これは「read 側で re-tag する設計」（#661）と書き込み側の整合であり、旧コードが Unwrap を選んだ当時は read が coerce だったため tagged 格納が読めなかった事情があった。
+- **`errret_alias`（[#666](https://github.com/podhmo/minigo/pull/666)）**: `func (E) Error() Text`（`type Text = string`）が `error` を満たさず `fmt.Println(E{})` が `{}` を出力。`isStringerFuncType` が結果 ident の綴りを `"string"` と文字列比較していたため。gc の signature identity に従い、package scope の `type X = Y` spec を辿って解決する実装に変更（defined type・`string` シャドーイング・alias 循環は正しく false 側に倒す）。
+
+計画外の記録として: 子レビュー（差分内バグ 0件 verdict）では検出されなかった回帰が別レビューで見つかった — レビューは1回でなく複数観点で走ると抜けが減ることが今回示された形。また2件目の混入元はユーザー側 PR #657 の `isStringerFuncType` で、スタックへの混入レビュー対象を「自分の差分」だけに限定しない方が良いという知見になった。
+
+### 不備の振り返り（メモ）

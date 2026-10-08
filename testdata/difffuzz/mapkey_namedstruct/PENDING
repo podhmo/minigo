@@ -1,0 +1,3 @@
+gc: compile reject (B{1} not assignable to key type A). minigo accepts:
+map-key write and lookup compare struct values by shape, ignoring the
+declared key type.

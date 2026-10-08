@@ -1,0 +1,4 @@
+gc: compile reject (cannot convert **uval to **uval2). minigo accepts:
+ElemOf(**uval2) returns uval2 — it collapses a pointer level, and
+pointeeTag cannot read the anonymous *uval cell type, so the conversion
+check never sees the named-pointee mismatch.
