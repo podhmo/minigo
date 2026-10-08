@@ -3123,12 +3123,26 @@ func goValueOf(rv reflect.Value) runtime.Value {
 	}
 }
 
-// ScriptValueOf adapts a host Go value to a runtime value — the same
-// conversion reflect-call results already get: script-native values
-// pass through, unnamed containers unbox element-wise, and everything
-// else stays boxed as a host GoValue. Engine.Call runs its arguments
-// through it.
-func ScriptValueOf(x any) runtime.Value {
+// SnapshotOf adapts a host Go value to a runtime value for Call
+// arguments: the arg crosses as a SNAPSHOT — a copy shaped for the
+// script world — so script writes to it never reach the host value.
+// The shape is goValueOf's plus one wider unbox: an unnamed host map
+// becomes a *runtime.Map, so a map-typed param can index, range, and
+// write it (host call results still box maps — an arg has a declared
+// param shape to satisfy, a result does not). Script-native values
+// pass through; a named map or struct keeps its box for member
+// dispatch, the same rule goValueOf applies to named slices.
+func SnapshotOf(x any) runtime.Value {
+	return snapshotValue(x, map[uintptr]struct{}{})
+}
+
+// snapshotValue is SnapshotOf's worker: it threads the set of maps
+// currently being unboxed so a map that contains itself (reachable
+// only through an `any` slot, since a Go map type can't name itself
+// anonymously) boxes at the repeat instead of recursing forever.
+// Shared submaps still unbox — the set forgets a map once its pairs
+// are built.
+func snapshotValue(x any, visiting map[uintptr]struct{}) runtime.Value {
 	// the script's int domain is int64: a host int64 stands for a script
 	// int, so it enters bare — tagging it (like goValueOf does for a
 	// reflect result) would make `int`-typed params reject the ints
@@ -3136,7 +3150,26 @@ func ScriptValueOf(x any) runtime.Value {
 	if v, ok := x.(int64); ok {
 		return v
 	}
-	return goValueOf(reflect.ValueOf(x))
+	rv := reflect.ValueOf(x)
+	if rv.Kind() == reflect.Map && rv.Type().Name() == "" {
+		// recursing through snapshotValue unboxes nested maps too —
+		// m["a"]["b"] keeps working at any depth.
+		td := anonMapTyp(elemTypeName(rv.Type().Key()), elemTypeName(rv.Type().Elem()))
+		if rv.IsNil() {
+			return &runtime.TypedNil{Typ: td}
+		}
+		if _, dup := visiting[rv.Pointer()]; dup {
+			return &runtime.GoValue{V: x}
+		}
+		visiting[rv.Pointer()] = struct{}{}
+		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}, Typ: td}
+		for _, k := range rv.MapKeys() {
+			m.Insert(snapshotValue(k.Interface(), visiting), snapshotValue(rv.MapIndex(k).Interface(), visiting))
+		}
+		delete(visiting, rv.Pointer())
+		return m
+	}
+	return goValueOf(rv)
 }
 
 // hostRValueType is the facade's host type: a host []*RValue (MapKeys,
@@ -3151,6 +3184,9 @@ func elemTypeName(t reflect.Type) string {
 	}
 	if n := t.Name(); n != "" {
 		return n
+	}
+	if t.Kind() == reflect.Interface && t.NumMethod() == 0 {
+		return "any" // the empty interface spells `any` in script typedefs
 	}
 	return t.String()
 }
@@ -9089,6 +9125,15 @@ func namedBasicElem(name string, x runtime.Value) runtime.Value {
 // unboxed from host values (no package context — the name is a builtin).
 func anonSliceTyp(name string) *runtime.TypeDef {
 	return &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: ast.NewIdent(name)}}
+}
+
+// anonMapTyp builds the anonymous map[k]v typedef used to tag maps
+// unboxed from host values.
+func anonMapTyp(key, elem string) *runtime.TypeDef {
+	return &runtime.TypeDef{Kind: runtime.KindMap, Anon: &ast.MapType{
+		Key:   ast.NewIdent(key),
+		Value: ast.NewIdent(elem),
+	}}
 }
 
 // anonArrayTyp builds the anonymous [n]name typedef used to tag arrays
