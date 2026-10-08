@@ -717,7 +717,7 @@ func (t *RType) Field(i int) *StructField {
 	sf := &StructField{
 		Name:      name,
 		Type:      ft,
-		Offset:    fieldOffset(t, i),
+		Offset:    fieldOffset(t, fts, i),
 		Index:     []int{i},
 		Anonymous: embedded,
 	}
@@ -1508,9 +1508,10 @@ func (t *RType) FieldAlign() int {
 }
 
 // fieldOffset lays out the struct's fields on amd64 up to field i:
-// each field sits at the next offset aligned to its own alignment.
-func fieldOffset(t *RType, i int) uintptr {
-	fts := t.e.fieldTypes(t.td)
+// each field sits at the next offset aligned to its own alignment. fts
+// is the field-type list of the typedef carrying the field list — a
+// type defined over another struct resolves it through the base struct.
+func fieldOffset(t *RType, fts []*runtime.TypeDef, i int) uintptr {
 	var off uintptr
 	for j := 0; j < i && j < len(fts); j++ {
 		if fts[j] == nil {
