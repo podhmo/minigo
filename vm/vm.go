@@ -9934,9 +9934,14 @@ func (v *VM) satisfiesIface(f *frame, td *runtime.TypeDef, x runtime.Value) bool
 // set a value offers depends only on its typedef and whether it was
 // reached through a pointer (methodInfoOfValue), so the answer can be
 // memoized per (interface, dynamic typedef, pointer) like Go's itabs.
+// A host box's set is its reflect type's (host), and a nil interface
+// value's is its tag's (nilIface keeps it apart from a value of the
+// same typedef, which methodInfoOfValue resolves differently).
 type ifaceKey struct {
 	iface, dyn *runtime.TypeDef
+	host       reflect.Type
 	ptr        bool
+	nilIface   bool
 }
 
 // maxIfaceCache bounds the per-VM memo: scripts that mint typedefs per
@@ -9944,23 +9949,31 @@ type ifaceKey struct {
 // it without limit. Reaching it starts over.
 const maxIfaceCache = 4096
 
-// ifaceDynKey reports x's memo key — struct and named values, directly
-// or through one pointer cell; anything else is checked uncached.
-func ifaceDynKey(x runtime.Value) (dyn *runtime.TypeDef, ptr, ok bool) {
+// ifaceDynKey reports x's memo key (iface left unset) — struct and named
+// values, directly or through one pointer cell, host boxes and tagged nil
+// interface values; anything else is checked uncached.
+func ifaceDynKey(x runtime.Value) (key ifaceKey, ok bool) {
 	switch t := x.(type) {
 	case *runtime.Struct:
-		return t.Def, false, t.Def != nil
+		return ifaceKey{dyn: t.Def}, t.Def != nil
 	case *runtime.Named:
-		return t.Typ, false, namedKeyable(t)
+		return ifaceKey{dyn: t.Typ}, namedKeyable(t)
+	case *runtime.GoValue:
+		// hostMethodSet reads only the reflect type, and host methods
+		// carry no signatures for the second pass.
+		rt := reflect.TypeOf(t.V)
+		return ifaceKey{host: rt}, rt != nil
+	case *runtime.IfaceNil:
+		return ifaceKey{dyn: t.Typ, nilIface: true}, t.Typ != nil
 	case *runtime.Cell:
 		switch e := t.Elem.(type) {
 		case *runtime.Struct:
-			return e.Def, true, e.Def != nil
+			return ifaceKey{dyn: e.Def, ptr: true}, e.Def != nil
 		case *runtime.Named:
-			return e.Typ, true, namedKeyable(e)
+			return ifaceKey{dyn: e.Typ, ptr: true}, namedKeyable(e)
 		}
 	}
-	return nil, false, false
+	return ifaceKey{}, false
 }
 
 // namedKeyable reports whether a Named value's method set follows from
@@ -9981,7 +9994,7 @@ func namedKeyable(n *runtime.Named) bool {
 // per VM (see ifaceKey) until a method set is edited in place
 // (runtime.MethodSetsChanged).
 func (v *VM) ifaceSatisfied(td *runtime.TypeDef, x runtime.Value) (bool, error) {
-	dyn, ptr, keyed := ifaceDynKey(x)
+	key, keyed := ifaceDynKey(x)
 	if !keyed {
 		return v.ifaceSatisfiedUncached(td, x)
 	}
@@ -9989,7 +10002,7 @@ func (v *VM) ifaceSatisfied(td *runtime.TypeDef, x runtime.Value) (bool, error) 
 		v.ifaceMemo = map[ifaceKey]bool{}
 		v.ifaceEpoch = epoch
 	}
-	key := ifaceKey{iface: td, dyn: dyn, ptr: ptr}
+	key.iface = td
 	if ok, hit := v.ifaceMemo[key]; hit {
 		return ok, nil
 	}
