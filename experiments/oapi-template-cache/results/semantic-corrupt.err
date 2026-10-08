@@ -1,0 +1,16 @@
+TREE_CACHE status=hit name="functions" total=0.000508 read=0.000020 decode=0.000380 parse=0.000000 encode=0.000000 write=0.000000 bytes=213
+TREE_CACHE status=hit name="functions" total=0.000249 read=0.000016 decode=0.000176 parse=0.000000 encode=0.000000 write=0.000000 bytes=213
+TREE_CACHE status=corrupt name="independent" total=0.000667 read=0.000014 decode=0.000002 parse=0.000064 encode=0.000275 write=0.000258 bytes=16
+TREE_CACHE status=hit name="independent" total=0.000185 read=0.000022 decode=0.000116 parse=0.000000 encode=0.000000 write=0.000000 bytes=184
+TREE_CACHE status=hit name="independent" total=0.000159 read=0.000016 decode=0.000100 parse=0.000000 encode=0.000000 write=0.000000 bytes=184
+TREE_CACHE status=hit name="definitions" total=0.000247 read=0.000021 decode=0.000175 parse=0.000000 encode=0.000000 write=0.000000 bytes=353
+TREE_CACHE status=hit name="definitions" total=0.000245 read=0.000017 decode=0.000154 parse=0.000000 encode=0.000000 write=0.000000 bytes=294
+TREE_CACHE status=hit name="definitions" total=0.000237 read=0.000019 decode=0.000158 parse=0.000000 encode=0.000000 write=0.000000 bytes=312
+TREE_CACHE status=hit name="definitions" total=0.000288 read=0.000021 decode=0.000186 parse=0.000000 encode=0.000000 write=0.000000 bytes=291
+TREE_CACHE status=hit name="delimiters" total=0.000785 read=0.000028 decode=0.000598 parse=0.000000 encode=0.000000 write=0.000000 bytes=291
+TREE_CACHE status=hit name="numeric" total=0.000462 read=0.000024 decode=0.000373 parse=0.000000 encode=0.000000 write=0.000000 bytes=513
+TREE_CACHE status=hit name="numeric-valid" total=0.000418 read=0.000018 decode=0.000349 parse=0.000000 encode=0.000000 write=0.000000 bytes=489
+TREE_CACHE status=hit name="capacity" total=0.000257 read=0.000015 decode=0.000196 parse=0.000000 encode=0.000000 write=0.000000 bytes=227
+TREE_CACHE status=hit name="slices" total=0.000235 read=0.000015 decode=0.000173 parse=0.000000 encode=0.000000 write=0.000000 bytes=221
+TREE_CACHE status=hit name="slices" total=0.000218 read=0.000013 decode=0.000164 parse=0.000000 encode=0.000000 write=0.000000 bytes=221
+TREE_CACHE status=hit name="positions" total=0.000723 read=0.000032 decode=0.000525 parse=0.000000 encode=0.000000 write=0.000000 bytes=508

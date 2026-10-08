@@ -1,0 +1,12 @@
+only-models off 0.7971
+only-models cache-wire 0.896
+client off 0.6661
+client cache-wire 0.9122
+petstore-expanded/chi/api off 1.1248
+petstore-expanded/chi/api cache-wire 1.3459
+petstore-expanded/strict/api off 1.1686
+petstore-expanded/strict/api cache-wire 1.497
+overlay/api off 0.9763
+overlay/api cache-wire 1.2083
+anyof-allof-oneof off 0.6634
+anyof-allof-oneof cache-wire 0.9238

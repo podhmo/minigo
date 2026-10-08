@@ -1,0 +1,6 @@
+only-models -config cfg.yaml api.yaml
+client -config cfg.yaml api.yaml
+petstore-expanded/chi/api --config=server.cfg.yaml ../../petstore-expanded.yaml
+petstore-expanded/strict/api --config=server.cfg.yaml ../../petstore-expanded.yaml
+overlay/api -config cfg.yaml api.yaml
+anyof-allof-oneof -config cfg.yaml api.yaml

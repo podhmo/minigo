@@ -1,0 +1,4 @@
+elapsed=0.021s err=runtime trap: undefined: strconv.IntSize
+Traceback (most recent call first):
+File "/private/tmp/oapi-template-cache-experiment/bugs/intsize/main.go", line 8, in main()
+		func main() { fmt.Println(strconv.IntSize) }

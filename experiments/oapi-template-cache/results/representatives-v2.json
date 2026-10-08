@@ -1,0 +1,262 @@
+[
+  {
+    "case": [
+      "only-models",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "mode": "off",
+    "wall": 0.6449546659714542,
+    "files": 0,
+    "stages": {
+      "total": 0,
+      "read": 0,
+      "decode": 0,
+      "parse": 0,
+      "encode": 0,
+      "write": 0,
+      "bytes": 0
+    }
+  },
+  {
+    "case": [
+      "only-models",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "mode": "cache-wire",
+    "wall": 0.8457177500240505,
+    "files": 40,
+    "stages": {
+      "total": 0.393127,
+      "read": 0.018766,
+      "decode": 0.358663,
+      "parse": 0.0,
+      "encode": 0.0,
+      "write": 0.0,
+      "bytes": 775035.0
+    }
+  },
+  {
+    "case": [
+      "client",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "mode": "off",
+    "wall": 0.6553661249927245,
+    "files": 0,
+    "stages": {
+      "total": 0,
+      "read": 0,
+      "decode": 0,
+      "parse": 0,
+      "encode": 0,
+      "write": 0,
+      "bytes": 0
+    }
+  },
+  {
+    "case": [
+      "client",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "mode": "cache-wire",
+    "wall": 0.8562991669750772,
+    "files": 40,
+    "stages": {
+      "total": 0.390722,
+      "read": 0.012539,
+      "decode": 0.363037,
+      "parse": 0.0,
+      "encode": 0.0,
+      "write": 0.0,
+      "bytes": 775035.0
+    }
+  },
+  {
+    "case": [
+      "petstore-expanded/chi/api",
+      [
+        "--config=server.cfg.yaml",
+        "../../petstore-expanded.yaml"
+      ]
+    ],
+    "mode": "off",
+    "wall": 1.0838096250081435,
+    "files": 0,
+    "stages": {
+      "total": 0,
+      "read": 0,
+      "decode": 0,
+      "parse": 0,
+      "encode": 0,
+      "write": 0,
+      "bytes": 0
+    }
+  },
+  {
+    "case": [
+      "petstore-expanded/chi/api",
+      [
+        "--config=server.cfg.yaml",
+        "../../petstore-expanded.yaml"
+      ]
+    ],
+    "mode": "cache-wire",
+    "wall": 1.3187400000169873,
+    "files": 40,
+    "stages": {
+      "total": 0.399094,
+      "read": 0.012293,
+      "decode": 0.37147600000000003,
+      "parse": 0.0,
+      "encode": 0.0,
+      "write": 0.0,
+      "bytes": 775035.0
+    }
+  },
+  {
+    "case": [
+      "petstore-expanded/strict/api",
+      [
+        "--config=server.cfg.yaml",
+        "../../petstore-expanded.yaml"
+      ]
+    ],
+    "mode": "off",
+    "wall": 1.1078600829932839,
+    "files": 0,
+    "stages": {
+      "total": 0,
+      "read": 0,
+      "decode": 0,
+      "parse": 0,
+      "encode": 0,
+      "write": 0,
+      "bytes": 0
+    }
+  },
+  {
+    "case": [
+      "petstore-expanded/strict/api",
+      [
+        "--config=server.cfg.yaml",
+        "../../petstore-expanded.yaml"
+      ]
+    ],
+    "mode": "cache-wire",
+    "wall": 1.360012832970824,
+    "files": 40,
+    "stages": {
+      "total": 0.401344,
+      "read": 0.012944,
+      "decode": 0.372139,
+      "parse": 0.0,
+      "encode": 0.0,
+      "write": 0.0,
+      "bytes": 775035.0
+    }
+  },
+  {
+    "case": [
+      "overlay/api",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "mode": "off",
+    "wall": 0.9751146669732407,
+    "files": 0,
+    "stages": {
+      "total": 0,
+      "read": 0,
+      "decode": 0,
+      "parse": 0,
+      "encode": 0,
+      "write": 0,
+      "bytes": 0
+    }
+  },
+  {
+    "case": [
+      "overlay/api",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "mode": "cache-wire",
+    "wall": 1.1716369579662569,
+    "files": 40,
+    "stages": {
+      "total": 0.3961,
+      "read": 0.012221,
+      "decode": 0.368546,
+      "parse": 0.0,
+      "encode": 0.0,
+      "write": 0.0,
+      "bytes": 775035.0
+    }
+  },
+  {
+    "case": [
+      "anyof-allof-oneof",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "mode": "off",
+    "wall": 0.6433495829696767,
+    "files": 0,
+    "stages": {
+      "total": 0,
+      "read": 0,
+      "decode": 0,
+      "parse": 0,
+      "encode": 0,
+      "write": 0,
+      "bytes": 0
+    }
+  },
+  {
+    "case": [
+      "anyof-allof-oneof",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "mode": "cache-wire",
+    "wall": 0.8569644159870222,
+    "files": 40,
+    "stages": {
+      "total": 0.387063,
+      "read": 0.014994,
+      "decode": 0.354829,
+      "parse": 0.0,
+      "encode": 0.0,
+      "write": 0.0,
+      "bytes": 775035.0
+    }
+  }
+]

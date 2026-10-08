@@ -1,0 +1,53 @@
+anyof-allof-oneof/generate.go:3://-config cfg.yaml api.yaml
+authenticated-api/echo/api/doc.go:3://--config=config.yaml ../../api.yaml
+authenticated-api/stdhttp/api/doc.go:3://--config=config.yaml ../../api.yaml
+callback/doc.go:1://--config=config.yaml tree-farm.yaml
+client/generate.go:3://-config cfg.yaml api.yaml
+clienttypenameclash/generate.go:3://-config cfg.yaml api.yaml
+custom-client-type/doc.go:6://-config cfg.yaml api.yaml
+extensions/xdeprecatedreason/generate.go:3://-config cfg.yaml api.yaml
+extensions/xenumnames/generate.go:3://-config cfg.yaml api.yaml
+extensions/xgojsonignore/generate.go:3://-config cfg.yaml api.yaml
+extensions/xgoname/generate.go:3://-config cfg.yaml api.yaml
+extensions/xgotype/generate.go:3://-config cfg.yaml api.yaml
+extensions/xgotypename/generate.go:3://-config cfg.yaml api.yaml
+extensions/xgotypeskipoptionalpointer/generate.go:3://-config cfg.yaml api.yaml
+extensions/xoapicodegenextratags/generate.go:3://-config cfg.yaml api.yaml
+extensions/xoapicodegenonlyhonourgoname/generate.go:3://-config cfg.yaml api.yaml
+extensions/xomitempty/generate.go:3://-config cfg.yaml api.yaml
+extensions/xomitzero/generate.go:3://-config cfg.yaml api.yaml
+extensions/xorder/generate.go:3://-config cfg.yaml api.yaml
+generate/serverurls/generate.go:3://-config cfg.yaml api.yaml
+import-mapping/multiplepackages/admin/generate.go:3://-config cfg.yaml ../../admin/api.yaml
+import-mapping/multiplepackages/common/generate.go:3://-config cfg.yaml ../../common/api.yaml
+import-mapping/samepackage/generate.go:3://-config cfg-api.yaml ../admin/api.yaml
+import-mapping/samepackage/generate.go:4://-config cfg-user.yaml ../common/api.yaml
+minimal-server/chi/api/generate.go:3://-config cfg.yaml ../../api.yaml
+minimal-server/echo/api/generate.go:3://-config cfg.yaml ../../api.yaml
+minimal-server/fiber/api/generate.go:3://-config cfg.yaml ../../api.yaml
+minimal-server/fiberv3/api/generate.go:3://-config cfg.yaml ../../api.yaml
+minimal-server/gin/api/generate.go:3://-config cfg.yaml ../../api.yaml
+minimal-server/gorillamux/api/generate.go:3://-config cfg.yaml ../../api.yaml
+minimal-server/iris/api/generate.go:3://-config cfg.yaml ../../api.yaml
+minimal-server/stdhttp/api/generate.go:3://-config cfg.yaml ../../api.yaml
+only-models/generate.go:3://-config cfg.yaml api.yaml
+output-options/additionalinitialisms/generate.go:3://-config cfg.yaml api.yaml
+output-options/preferskipoptionalpointer/generate.go:3://-config cfg.yaml api.yaml
+output-options/preferskipoptionalpointerwithomitzero/generate.go:3://-config cfg.yaml api.yaml
+output-options/type-mapping/generate.go:6://--config=config.yaml spec.yaml
+overlay/api/generate.go:3://-config cfg.yaml api.yaml
+petstore-expanded/chi/api/generate.go:3://--config=server.cfg.yaml ../../petstore-expanded.yaml
+petstore-expanded/common/client/openapi/generate.go:3://--config=client.cfg.yaml ../../../petstore-expanded.yaml
+petstore-expanded/echo-v5/api/generate.go:5://--config=server.cfg.yaml ../../petstore-expanded.yaml
+petstore-expanded/echo/api/generate.go:3://--config=server.cfg.yaml ../../petstore-expanded.yaml
+petstore-expanded/fiber/api/generate.go:3://--config=server.cfg.yaml ../../petstore-expanded.yaml
+petstore-expanded/fiberv3/api/petstore.go:1://--config=types.cfg.yaml ../../petstore-expanded.yaml
+petstore-expanded/fiberv3/api/petstore.go:2://--config=server.cfg.yaml ../../petstore-expanded.yaml
+petstore-expanded/gin/api/generate.go:3://--config=server.cfg.yaml ../../petstore-expanded.yaml
+petstore-expanded/gorilla/api/generate.go:3://--config=server.cfg.yaml ../../petstore-expanded.yaml
+petstore-expanded/iris/api/generate.go:3://--config=server.cfg.yaml ../../petstore-expanded.yaml
+petstore-expanded/stdhttp/api/generate.go:3://--config=server.cfg.yaml ../../petstore-expanded.yaml
+petstore-expanded/strict/api/generate.go:3://--config=server.cfg.yaml ../../petstore-expanded.yaml
+streaming/client/sse/generate.go:3://-config cfg.yaml ../../sse.yaml
+streaming/stdhttp/sse/generate.go:3://-config cfg.yaml ../../sse.yaml
+webhook/doc.go:1://--config=config.yaml door-badge-reader.yaml

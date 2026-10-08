@@ -1,0 +1,16 @@
+TREE_CACHE status=uncached name="functions" total=0.000853 read=0.000004 decode=0.000000 parse=0.000341 encode=0.000401 write=0.000009 bytes=0
+TREE_CACHE status=uncached name="functions" total=0.000702 read=0.000002 decode=0.000000 parse=0.000086 encode=0.000498 write=0.000009 bytes=0
+TREE_CACHE status=uncached name="independent" total=0.000248 read=0.000003 decode=0.000000 parse=0.000048 encode=0.000143 write=0.000004 bytes=0
+TREE_CACHE status=uncached name="independent" total=0.000208 read=0.000002 decode=0.000000 parse=0.000040 encode=0.000117 write=0.000003 bytes=0
+TREE_CACHE status=uncached name="independent" total=0.000204 read=0.000002 decode=0.000000 parse=0.000031 encode=0.000123 write=0.000003 bytes=0
+TREE_CACHE status=uncached name="definitions" total=0.000464 read=0.000002 decode=0.000000 parse=0.000160 encode=0.000237 write=0.000003 bytes=0
+TREE_CACHE status=uncached name="definitions" total=0.000321 read=0.000002 decode=0.000000 parse=0.000075 encode=0.000162 write=0.000003 bytes=0
+TREE_CACHE status=uncached name="definitions" total=0.000325 read=0.000002 decode=0.000000 parse=0.000079 encode=0.000184 write=0.000003 bytes=0
+TREE_CACHE status=uncached name="definitions" total=0.000714 read=0.000002 decode=0.000000 parse=0.000074 encode=0.000549 write=0.000005 bytes=0
+TREE_CACHE status=uncached name="delimiters" total=0.000614 read=0.000004 decode=0.000000 parse=0.000229 encode=0.000311 write=0.000005 bytes=0
+TREE_CACHE status=uncached name="numeric" total=0.000759 read=0.000003 decode=0.000000 parse=0.000202 encode=0.000491 write=0.000004 bytes=0
+TREE_CACHE status=uncached name="numeric-valid" total=0.000745 read=0.000003 decode=0.000000 parse=0.000164 encode=0.000500 write=0.000009 bytes=0
+TREE_CACHE status=uncached name="capacity" total=0.000534 read=0.000003 decode=0.000000 parse=0.000198 encode=0.000236 write=0.000004 bytes=0
+TREE_CACHE status=uncached name="slices" total=0.000342 read=0.000002 decode=0.000000 parse=0.000075 encode=0.000218 write=0.000003 bytes=0
+TREE_CACHE status=uncached name="slices" total=0.000335 read=0.000002 decode=0.000000 parse=0.000075 encode=0.000212 write=0.000003 bytes=0
+TREE_CACHE status=uncached name="positions" total=0.000691 read=0.000002 decode=0.000000 parse=0.000185 encode=0.000449 write=0.000003 bytes=0
