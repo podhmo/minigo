@@ -277,6 +277,7 @@ func TestStdlibIntrinsics(t *testing.T) {
 		{"JsonMarshal", `{"x":1,"ys":["a","b"]}`},
 		{"JsonMarshalStruct", `{"X":1,"Y":"a"}`},
 		{"JsonUnmarshal", "ok"},
+		{"JsonUnmarshalTypeErr", "json: cannot unmarshal bool into Go struct field Schema.ap of type main.BoolSchemaok<nil>|json: cannot unmarshal string into Go struct field .b of type main.MBool true 0|json: cannot unmarshal string into .s.1 of type int [1 0 3]|json: cannot unmarshal string into Go value of type int"},
 		{"StrconvAppendInt", "ff"},
 		{"BytesCut", "a|b"},
 		{"IoReadAllScript", "proxy-ok"},
