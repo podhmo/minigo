@@ -190,6 +190,10 @@ type Package struct {
 	instMu    sync.Mutex
 	instM     map[string]instChunk // compiled generic instantiations (InstChunk)
 	instCount map[*ast.FuncDecl]int
+
+	inferMu    sync.Mutex
+	inferM     map[string]inferEntry // inferred generic instances (Inferred)
+	inferCount map[*ast.FuncDecl]int
 }
 
 // State reports the package lifecycle stage.
@@ -552,6 +556,48 @@ func writeTypeKey(b *strings.Builder, td *TypeDef, depth int) {
 		b.WriteByte(']')
 	}
 	b.WriteByte('}')
+}
+
+// AppendTypeKey writes td's identity as InstKey spells a bind (see
+// writeTypeKey) — for callers keying their own caches on types.
+func AppendTypeKey(b *strings.Builder, td *TypeDef) {
+	writeTypeKey(b, td, instKeyDepth)
+}
+
+// inferEntry is one cached inference result. keep holds what the key's
+// addresses point into (the argument typedefs), so they stay unique.
+type inferEntry struct {
+	keep []any
+	fn   *Function
+}
+
+// maxInferPerDecl bounds the cached inference results per generic decl.
+const maxInferPerDecl = 256
+
+// Inferred returns the instance an earlier call inferred under key: a
+// generic callee plus the argument types inference read.
+func (p *Package) Inferred(key string) (*Function, bool) {
+	p.inferMu.Lock()
+	defer p.inferMu.Unlock()
+	e, ok := p.inferM[key]
+	return e.fn, ok
+}
+
+// SetInferred records an inferred instance under key, up to
+// maxInferPerDecl per decl. keep must hold everything the key's
+// addresses point into.
+func (p *Package) SetInferred(key string, decl *ast.FuncDecl, keep []any, fn *Function) {
+	p.inferMu.Lock()
+	defer p.inferMu.Unlock()
+	if p.inferM == nil {
+		p.inferM = map[string]inferEntry{}
+		p.inferCount = map[*ast.FuncDecl]int{}
+	}
+	if _, ok := p.inferM[key]; ok || p.inferCount[decl] >= maxInferPerDecl {
+		return
+	}
+	p.inferCount[decl]++
+	p.inferM[key] = inferEntry{keep: keep, fn: fn}
 }
 
 // writePtr spells a pointer-shaped value's address (0 for nil).

@@ -1,0 +1,18 @@
+int int
+string string
+float64 float64
+main.Celsius main.Celsius
+main.IDs main.IDs
+[]string []string
+<nil> <nil>
+int float64 int32 string main.Celsius int8
+int 1 2 float64 1 2.5 int32 97 2 float64 97 2.5 main.Celsius 1 2
+int float64 int32 string main.Celsius int8
+int 1 2 float64 1 2.5 int32 97 2 float64 97 2.5 main.Celsius 1 2
+[1 2] [0.5 1]
+[1]
+4 main.IDs
+5 []int
+0 []main.Celsius
+3 3.5 0 3 3
+{2} {b}

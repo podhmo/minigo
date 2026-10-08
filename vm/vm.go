@@ -1121,7 +1121,7 @@ func (v *VM) prepFrame(callee runtime.Value, args []runtime.Value, statics []*ru
 	// an instantiated generic type arrives partly bound — the receiver's
 	// own type binds stay, only the method's own type params infer.
 	if fn != nil && len(fn.TParams) > 0 && hasUnbound(fn.TParams, fn.Binds) {
-		inferred, err := v.inferBinds(fn, args, statics, spreadTd)
+		inferred, err := v.inferCached(fn, args, statics, spreadTd)
 		if err != nil {
 			return nil, err
 		}
@@ -12358,6 +12358,75 @@ func hasUnbound(tparams []string, binds map[string]runtime.Value) bool {
 		}
 	}
 	return false
+}
+
+// inferCached is inferBinds behind a per-package cache. Inference reads
+// only the callee and, per argument, either the untyped constant it
+// carries or the typedef it unifies against (the static type, else the
+// value's), so a call with the same callee and argument types reuses
+// the instance — every inferred call minted a fresh Function and binds
+// map before.
+func (v *VM) inferCached(fn *runtime.Function, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (*runtime.Function, error) {
+	if fn.Pkg == nil || fn.Decl == nil {
+		return v.inferBinds(fn, args, statics, spreadTd)
+	}
+	key, keep, ok := v.inferKey(fn, args, statics, spreadTd)
+	if !ok {
+		return v.inferBinds(fn, args, statics, spreadTd)
+	}
+	if r, hit := fn.Pkg.Inferred(key); hit {
+		return r, nil
+	}
+	r, err := v.inferBinds(fn, args, statics, spreadTd)
+	if err == nil {
+		fn.Pkg.SetInferred(key, fn.Decl, keep, r)
+	}
+	return r, err
+}
+
+// inferKey spells what inferBinds reads. keep lists the typedefs the
+// key's addresses point into; the cache holds them so an address in a
+// live key is never reused.
+func (v *VM) inferKey(fn *runtime.Function, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (string, []any, bool) {
+	fk, ok := runtime.InstKey(fn.Decl, fn.File, fn.Name, fn.Binds)
+	if !ok {
+		return "", nil, false
+	}
+	var b strings.Builder
+	b.WriteString(fk)
+	keep := make([]any, 0, len(args)+2)
+	keep = append(keep, fn)
+	for i, a := range args {
+		b.WriteString("|a")
+		if v.untypedConstArg(a) {
+			// a constant joins the bind by kind and representability,
+			// so its exact value is part of the key
+			u, _ := constPayload(a)
+			fmt.Fprintf(&b, "c%d:%t:%s", u.V.Kind(), u.Rune, u.V.ExactString())
+			if n, isN := a.(*runtime.Named); isN && n.Typ != nil {
+				b.WriteByte(':')
+				runtime.AppendTypeKey(&b, n.Typ)
+				keep = append(keep, n.Typ)
+			}
+			continue
+		}
+		conc := staticAt(statics, i)
+		if conc == nil {
+			conc = v.argTypedef(a)
+		}
+		if conc == nil {
+			b.WriteByte('_')
+			continue
+		}
+		runtime.AppendTypeKey(&b, conc)
+		keep = append(keep, conc)
+	}
+	if spreadTd != nil {
+		b.WriteString("|spread:")
+		runtime.AppendTypeKey(&b, spreadTd)
+		keep = append(keep, spreadTd)
+	}
+	return b.String(), keep, true
 }
 
 // inferBinds binds a generic function's unbound type parameters from the
