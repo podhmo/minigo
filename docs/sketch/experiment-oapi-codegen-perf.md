@@ -1059,6 +1059,48 @@ In rough order of expected gain:
   it is the cheapest way to remove the fixed cost for the realworld
   task runner.
 
+### The question this experiment did not ask
+
+Everything above asks how fast the interpreter can do the *same* work
+as native. Pushed further, that axis ends in a JIT or in native
+bindings: correct for speed, but not the point of an interpreter. An
+interpreter that does as much work as native loses by construction.
+The question that matters is which of native's work can be skipped.
+This experiment measured the interpreter's tuning headroom and showed
+the workload runs, but it barely touched that question.
+
+**Step 12 gave up on laziness too early.** It rejected lazy template
+parsing for three reasons:
+
+- `Parse` must report syntax errors at the call.
+- `{{define}}` names are known only after a full parse.
+- The interpreter cannot prove that a tree is never read.
+
+All three assume that every run has to discover the answer again. But
+oapi-codegen's templates are embedded constants, and the inputs are
+the same on every run. A memo keyed by template text, delimiters and
+func-map names can record "no error; defines these names" across runs.
+A later run registers the names at once and parses each body on first
+lookup. Errors and define order are then observed exactly as in Go.
+`srcImpl` (step 17) already swaps a source method for host code. The
+same hook could swap in patched Go source, so this fits inside the
+interpreter. A more general form would defer calls to functions known
+to be pure (by annotation at first, since proving purity is hard) until
+their result is observed.
+
+**The missing measurement is unobserved work.** Instructions were split
+by package, never by whether their result was later observed:
+
+- parse trees built vs trees executed (64 parsed; a handful executed)
+- clones made vs clones used (8 frameworks, one used)
+- JSON and YAML values decoded vs fields read
+
+Template parsing alone was ~0.55s, a third of wall time at step 12,
+and most of its trees are never executed. How much of the rest is
+equally skippable was not measured. That fraction, not instructions ×
+ns per instruction, is the real ceiling for an interpreter. It is the
+first thing the next experiment should measure.
+
 ### What to set up first next time
 
 - **Pin the environment before measuring.** Steps 1–5 partly measured
