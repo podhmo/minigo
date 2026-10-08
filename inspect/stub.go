@@ -188,6 +188,10 @@ func UsedSymbols(f *File) []runtime.SymbolID { panic("minigo intrinsic") }
 // SameType reports strict structural equality over type expressions.
 func SameType(a, b *TypeExpr) bool { panic("minigo intrinsic") }
 
+// Initializer returns the initializer expression of a var or const
+// decl as a TypeExpr view, or nil when the spec declares no value.
+func Initializer(s *Decl) *TypeExpr { panic("minigo intrinsic") }
+
 // Value materializes a package member's runtime value (may run init).
 func Value(p *runtime.Package, name string) any { panic("minigo intrinsic") }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/constant"
 	"go/parser"
 	"go/token"
 	"math"
@@ -23,6 +24,32 @@ import (
 	"github.com/podhmo/minigo/resolve"
 	"github.com/podhmo/minigo/runtime"
 )
+
+// constScalar unwraps a global cell / UConst / Named wrap down to a
+// comparable scalar for const-value assertions.
+func constScalar(v any) any {
+	switch x := v.(type) {
+	case *runtime.Cell:
+		return constScalar(x.Elem)
+	case *runtime.UConst:
+		return constScalar(x.V)
+	case *runtime.Named:
+		return constScalar(x.V)
+	case constant.Value:
+		switch x.Kind() {
+		case constant.String:
+			return constant.StringVal(x)
+		case constant.Int, constant.Float:
+			if iv, ok := constant.Int64Val(x); ok {
+				return iv
+			}
+			fv, _ := constant.Float64Val(x)
+			return fv
+		}
+		return x.String()
+	}
+	return v
+}
 
 func newEngine(t *testing.T) *minigo.Engine {
 	t.Helper()
@@ -733,6 +760,60 @@ func TestLazyInitMode(t *testing.T) {
 	}
 	if _, err := pkg2.Member("Get", stub); err == nil || !strings.Contains(err.Error(), "BOOM") {
 		t.Fatalf("eager mode should surface init panic, got %v", err)
+	}
+}
+
+func TestConstMemberSkipsInit(t *testing.T) {
+	// A const member binds without running the package initializer —
+	// constinit's Touched panics on init, so reading its consts must
+	// leave the package un-initialized.
+	e := newEngine(t)
+	pkg, err := e.Package(context.Background(), "./testdata/constinit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := func(p *runtime.Package, d *index.Decl) (runtime.Value, error) {
+		return runtime.NIL, nil
+	}
+	for name, want := range map[string]any{
+		"Lit":     "cloudwatch",
+		"Derived": int64(2),
+		"Iota1":   int64(1),
+		"Typed":   int64(7),
+	} {
+		v, err := pkg.Member(name, stub)
+		if err != nil {
+			t.Fatalf("Member(%s): %v", name, err)
+		}
+		if got := constScalar(v); got != want {
+			t.Errorf("Member(%s) = %#v, want %#v", name, got, want)
+		}
+	}
+	if pkg.State() == runtime.Ready {
+		t.Error("const member access must not initialize the package")
+	}
+}
+
+func TestConstMemberVarFallback(t *testing.T) {
+	// A const initializer referencing a package var needs the full
+	// initializer — len(Arr) evaluates the var, so init runs.
+	e := newEngine(t)
+	pkg, err := e.Package(context.Background(), "./testdata/constinitvar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := func(p *runtime.Package, d *index.Decl) (runtime.Value, error) {
+		return runtime.NIL, nil
+	}
+	v, err := pkg.Member("N", stub)
+	if err != nil {
+		t.Fatalf("Member(N): %v", err)
+	}
+	if got := constScalar(v); got != int64(4) {
+		t.Errorf("Member(N) = %#v, want 4", got)
+	}
+	if pkg.State() != runtime.Ready {
+		t.Error("var-dependent const must run the full initializer")
 	}
 }
 

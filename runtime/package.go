@@ -157,6 +157,14 @@ type Package struct {
 	// caller so a spawned goroutine's init runs on ITS VM.
 	Bootstrap func(p *Package, run func(*Function) error) error
 
+	constOnce sync.Once
+	constErr  error
+	// ConstBootstrap builds and runs the const-only initializer (const
+	// decls, no var specs, no init() funcs) — injected by the engine.
+	// A constant binds without the package's side effects; a failure or
+	// a nil hook only means callers fall back to the full Bootstrap.
+	ConstBootstrap func(p *Package, run func(*Function) error) error
+
 	// RunInit is the default runner used when EnsureReady fires with no
 	// explicit VM (host-side callers): the engine installs a fresh-VM
 	// runner so init never shares the caller's interpreter state.
@@ -288,6 +296,38 @@ func (p *Package) Member(name string, materialize func(*Package, *index.Decl) (V
 	return p.MemberV(name, materialize, nil)
 }
 
+// EnsureConstsRun binds the package's constants through ConstBootstrap —
+// the const-only initializer that runs none of the var initializers or
+// init() funcs. It runs at most once: a skipped or failed const init
+// (recorded in constErr) leaves the package for the full initializer.
+// Unlike runBootstrap the error is not re-panicked; the caller decides
+// between the bound value and a full-init retry.
+func (p *Package) EnsureConstsRun(run func(*Function) error) error {
+	p.constOnce.Do(func() {
+		if p.State() == Ready || p.ConstBootstrap == nil {
+			return
+		}
+		defer func() {
+			if r := recover(); r != nil {
+				if e, ok := r.(error); ok {
+					p.constErr = e
+				} else {
+					p.constErr = fmt.Errorf("panic: %v", r)
+				}
+			}
+		}()
+		if run == nil {
+			run = p.RunInit
+		}
+		if run == nil {
+			p.constErr = fmt.Errorf("package %s: no init runner", p.Name)
+			return
+		}
+		p.constErr = p.ConstBootstrap(p, run)
+	})
+	return p.constErr
+}
+
 // MemberV is Member with an explicit init runner (see EnsureReadyRun).
 func (p *Package) MemberV(name string, materialize func(*Package, *index.Decl) (Value, error), run func(*Function) error) (Value, error) {
 	if p.indexed != nil {
@@ -312,6 +352,18 @@ func (p *Package) MemberV(name string, materialize func(*Package, *index.Decl) (
 				return nil, fmt.Errorf("no materializer for %s.%s", p.Name, name)
 			}
 			return materialize(p, d)
+		}
+	}
+	// constants need no init: a const member binds through the const-only
+	// initializer first. When that can't serve the name (var references,
+	// a skipped or failed run), the full initializer below covers it.
+	if p.Index != nil {
+		if d, ok := memberDecl(p.Index, name); ok && d.Kind == index.ConstDecl {
+			if err := p.EnsureConstsRun(run); err == nil {
+				if v, ok := p.Globals.Get(name); ok {
+					return v, nil
+				}
+			}
 		}
 	}
 	if err := p.EnsureReadyRun(run); err != nil {
