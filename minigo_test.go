@@ -279,6 +279,7 @@ func TestStdlibIntrinsics(t *testing.T) {
 		{"JsonUnmarshal", "ok"},
 		{"JsonUnmarshalTypeErr", "json: cannot unmarshal bool into Go struct field Schema.ap of type main.BoolSchemaok<nil>|json: cannot unmarshal string into Go struct field .b of type main.MBool true 0|json: cannot unmarshal string into .s.1 of type int [1 0 3]|json: cannot unmarshal string into Go value of type int"},
 		{"JsonUnmarshalArray", "<nil> [1 2]|<nil> [1 0 0 0]|json: cannot unmarshal string into .1 of type int [1 6]|<nil> [1 6]|json: cannot unmarshal string into Go value of type [2]int [1 6]"},
+		{"JsonUnmarshalStringOpt", `json: cannot unmarshal string into Go struct field S.l of type []int 42 1.5 truex5[]|json: cannot unmarshal number x into Go struct field S.n of type int 0|json: cannot unmarshal number into Go struct field S.n of type int 0|json: cannot unmarshal string "no" into Go struct field S.b of type bool: invalid syntax false|json: cannot unmarshal string into Go struct field S.t of type string: invalid character '4' looking for beginning of object key string|{"n":"42","f":"1.5","b":"true","t":"\"x\"","p":null,"a":7,"l":[1]}`},
 		{"StrconvAppendInt", "ff"},
 		{"BytesCut", "a|b"},
 		{"IoReadAllScript", "proxy-ok"},
