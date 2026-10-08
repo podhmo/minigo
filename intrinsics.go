@@ -41,6 +41,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"text/template"
 	"time"
 	"unicode"
@@ -739,6 +740,24 @@ func (e *Engine) installStdlib() {
 		}),
 		"Setting": hostType("internal/godebug.Setting", func() any { return &godebugSetting{} }),
 	})
+	// syscall's sources need unsafe layout (route_bsd's Offsetof) in
+	// init. Bind the portable surface tools reach for — signals and
+	// common errnos — as host values.
+	e.Bind("syscall", map[string]runtime.Value{
+		"SIGINT":  &runtime.GoValue{V: syscall.SIGINT},
+		"SIGQUIT": &runtime.GoValue{V: syscall.SIGQUIT},
+		"SIGTERM": &runtime.GoValue{V: syscall.SIGTERM},
+		"SIGKILL": &runtime.GoValue{V: syscall.SIGKILL},
+		"SIGHUP":  &runtime.GoValue{V: syscall.SIGHUP},
+		"ENOENT":  &runtime.GoValue{V: syscall.ENOENT},
+		"EEXIST":  &runtime.GoValue{V: syscall.EEXIST},
+		"EINTR":   &runtime.GoValue{V: syscall.EINTR},
+		"EPIPE":   &runtime.GoValue{V: syscall.EPIPE},
+		"EACCES":  &runtime.GoValue{V: syscall.EACCES},
+		"ENOTDIR": &runtime.GoValue{V: syscall.ENOTDIR},
+		"EISDIR":  &runtime.GoValue{V: syscall.EISDIR},
+		"Getpid":  h.fn("syscall.Getpid", func(a []any) (any, error) { return int64(syscall.Getpid()), nil }),
+	})
 	// internal/bytealg and internal/stringslite back strings/bytes in
 	// GOROOT, and their sources lean on unsafe (bytealg's init reads
 	// unsafe.Offsetof of cpu flags). Stub the pure entry points stdlib
@@ -1280,12 +1299,17 @@ func (e *Engine) installStdlib() {
 		"IsPermission": h.fn1("os.IsPermission", func(a []any) (any, error) { return os.IsPermission(asErr(a[0])), nil }, os.IsPermission),
 		"IsTimeout":    h.fn1("os.IsTimeout", func(a []any) (any, error) { return os.IsTimeout(asErr(a[0])), nil }, os.IsTimeout),
 		// error sentinels for errors.Is on the script side
-		"ErrNotExist":   &runtime.GoValue{V: fs.ErrNotExist},
-		"ErrExist":      &runtime.GoValue{V: fs.ErrExist},
-		"ErrPermission": &runtime.GoValue{V: fs.ErrPermission},
-		"ErrClosed":     &runtime.GoValue{V: fs.ErrClosed},
-		"ErrInvalid":    &runtime.GoValue{V: fs.ErrInvalid},
-		"ErrNoDeadline": &runtime.GoValue{V: os.ErrNoDeadline},
+		"ErrNotExist": &runtime.GoValue{V: fs.ErrNotExist},
+		// *os.File asserts (x/tools' gocommand checks cmd.Stdout's type)
+		"File":           hostType("os.File", func() any { return &os.File{} }),
+		"Interrupt":      &runtime.GoValue{V: os.Interrupt},
+		"Kill":           &runtime.GoValue{V: os.Kill},
+		"ErrProcessDone": &runtime.GoValue{V: os.ErrProcessDone},
+		"ErrExist":       &runtime.GoValue{V: fs.ErrExist},
+		"ErrPermission":  &runtime.GoValue{V: fs.ErrPermission},
+		"ErrClosed":      &runtime.GoValue{V: fs.ErrClosed},
+		"ErrInvalid":     &runtime.GoValue{V: fs.ErrInvalid},
+		"ErrNoDeadline":  &runtime.GoValue{V: os.ErrNoDeadline},
 		// consts
 		"PathSeparator":     int64(os.PathSeparator),
 		"PathListSeparator": int64(os.PathListSeparator),
@@ -1346,6 +1370,10 @@ func (e *Engine) installStdlib() {
 		ospkg["Stdin"] = &runtime.GoValue{V: os.Stdin}
 		ospkg["Stdout"] = &runtime.GoValue{V: &engineStdout{File: os.Stdout, h: h}}
 		ospkg["Stderr"] = &runtime.GoValue{V: os.Stderr}
+		ospkg["Pipe"] = h.fn("os.Pipe", func(a []any) (any, error) {
+			r, w, err := os.Pipe()
+			return &runtime.Tuple{Elems: []runtime.Value{&runtime.GoValue{V: r}, &runtime.GoValue{V: w}, errVal(err)}}, nil
+		})
 		ospkg["TempDir"] = h.fn("os.TempDir", func(a []any) (any, error) { return os.TempDir(), nil })
 		ospkg["UserHomeDir"] = h.fn("os.UserHomeDir", func(a []any) (any, error) { return retErr2(os.UserHomeDir()) })
 		ospkg["UserCacheDir"] = h.fn("os.UserCacheDir", func(a []any) (any, error) { return retErr2(os.UserCacheDir()) })
@@ -1505,6 +1533,11 @@ func (e *Engine) installStdlib() {
 	// (plan §11). Sizes are 64-bit host approximations over the boxed
 	// representation; NumGoroutine is pinned to 1 — the VM is
 	// single-threaded by design.
+	// unsafe.StringData interns each string's byte backing so the same
+	// string value resolves to the same element pointer — pointer
+	// identity for a shared backing is the only guarantee unsafe offers
+	// here, and it is what callers like x/tools' stringptr rely on.
+	strDataBacks := map[string]*runtime.Slice{}
 	e.Bind("unsafe", map[string]runtime.Value{
 		"Sizeof": &runtime.BuiltinFunc{Name: "unsafe.Sizeof", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			return unsafeSizeOf(args[0]), nil
@@ -1515,6 +1548,59 @@ func (e *Engine) installStdlib() {
 		"Offsetof": h.fn("unsafe.Offsetof", func(a []any) (any, error) {
 			return nil, errors.New("unsafe.Offsetof is not supported: selector results are not values")
 		}),
+		// Element pointers are &s[i] refs over a script slice, so the
+		// StringData/String and SliceData/Slice round trips used for
+		// zero-copy string packing (x/tools' event labels) hold.
+		"StringData": &runtime.BuiltinFunc{Name: "unsafe.StringData", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			str, _ := runtime.Unwrap(args[0]).(string)
+			if str == "" {
+				// "" still yields a (zero-length) element ref: Go leaves its
+				// result unspecified, and a nil would not convert to a
+				// pointer type over unsafe.Pointer (label's stringptr).
+				str = "\x00"
+			}
+			if strDataBacks[str] == nil {
+				strDataBacks[str] = unsafeBytes(str)
+			}
+			return &runtime.IndexRef{Base: strDataBacks[str], Key: int64(0)}, nil
+		}},
+		"SliceData": &runtime.BuiltinFunc{Name: "unsafe.SliceData", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			sl, ok := runtime.Unwrap(args[0]).(*runtime.Slice)
+			if !ok || sl.Len() == 0 && cap(sl.Elems) == 0 {
+				return runtime.NIL, nil
+			}
+			return &runtime.IndexRef{Base: sl, Key: int64(0)}, nil
+		}},
+		"String": &runtime.BuiltinFunc{Name: "unsafe.String", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			elems, err := unsafeElems(args[0], args[1])
+			if err != nil {
+				return nil, err
+			}
+			return string(byteSlice(&runtime.Slice{Elems: elems})), nil
+		}},
+		"Slice": &runtime.BuiltinFunc{Name: "unsafe.Slice", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			n := int(int64Of(goNative(args[1])))
+			// a nil pointer with len 0 is legal and reports the nil slice
+			// (Go panics only when len != 0) — typed nils keep their
+			// element type so the result is still a []T nil.
+			if tn, ok := runtime.Unwrap(args[0]).(*runtime.TypedNil); ok && tn.Typ != nil && tn.Typ.Kind == runtime.KindPointer {
+				if n == 0 {
+					return &runtime.TypedNil{Typ: sliceTypFromPtr(tn.Typ)}, nil
+				}
+				return nil, errors.New("unsafe: ptr is nil and len is not zero")
+			}
+			elems, err := unsafeElems(args[0], args[1])
+			if err != nil {
+				return nil, err
+			}
+			var typ *runtime.TypeDef
+			if ref, ok := runtime.Unwrap(args[0]).(*runtime.IndexRef); ok {
+				if sl := ref.Slice(); sl != nil {
+					typ = sliceTypFromPtr(sl.Typ)
+				}
+			}
+			return &runtime.Slice{Elems: elems, Typ: typ}, nil
+		}},
 	})
 	e.Bind("runtime", map[string]runtime.Value{
 		"GOOS":   goruntime.GOOS,
@@ -3409,6 +3495,64 @@ func borrowBytes(v runtime.Value) ([]byte, func()) {
 		}
 	}
 	return byteSlice(v), func() {}
+}
+
+// unsafeBytes copies str into a script []byte backing for StringData.
+func unsafeBytes(str string) *runtime.Slice {
+	el := make([]runtime.Value, len(str))
+	for i := 0; i < len(str); i++ {
+		el[i] = runtime.Tag(runtime.BasicTypedef("byte"), int64(str[i]))
+	}
+	return &runtime.Slice{Elems: el, Typ: &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: ast.NewIdent("byte")}}}
+}
+
+// unsafeElems resolves unsafe.String/Slice's (ptr, len) to the n
+// elements starting at an &s[i] ref, sharing the slice's backing.
+// sliceTypFromPtr maps a pointer/array/slice typedef to the unnamed
+// []E typedef unsafe.Slice's result carries — never the named slice or
+// the [N]E array the pointer was taken from.
+func sliceTypFromPtr(td *runtime.TypeDef) *runtime.TypeDef {
+	if td == nil {
+		return nil
+	}
+	switch x := typedefAst(td).(type) {
+	case *ast.StarExpr:
+		return &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: x.X}, Elem: td.Elem, Pkg: td.Pkg, File: td.File}
+	case *ast.ArrayType:
+		return &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: x.Elt}, Elem: td.Elem, Pkg: td.Pkg, File: td.File}
+	}
+	return td
+}
+
+func unsafeElems(p, nv runtime.Value) ([]runtime.Value, error) {
+	n := int(int64Of(goNative(nv)))
+	if p == nil || p == runtime.NIL {
+		if n == 0 {
+			return nil, nil
+		}
+		return nil, errors.New("unsafe: ptr is nil and len is not zero")
+	}
+	if tn, ok := runtime.Unwrap(p).(*runtime.TypedNil); ok {
+		// a typed nil pointer follows the same nil rule — len 0 is a
+		// legal no-op, anything else panics like an untyped nil.
+		if tn.Typ != nil && tn.Typ.Kind == runtime.KindPointer {
+			if n == 0 {
+				return nil, nil
+			}
+			return nil, errors.New("unsafe: ptr is nil and len is not zero")
+		}
+		return nil, fmt.Errorf("unsafe: unsupported pointer %T (only element pointers)", p)
+	}
+	ref, ok := runtime.Unwrap(p).(*runtime.IndexRef)
+	if !ok {
+		return nil, fmt.Errorf("unsafe: unsupported pointer %T (only element pointers)", p)
+	}
+	sl := ref.Slice()
+	i, _ := ref.Key.(int64)
+	if sl == nil || int(i)+n > cap(sl.Elems) {
+		return nil, errors.New("unsafe: pointer range out of bounds")
+	}
+	return sl.Elems[i : int(i)+n : int(i)+n], nil
 }
 
 // byteSlice unmarshals a script value to []byte for os.WriteFile & co:
