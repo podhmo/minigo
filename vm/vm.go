@@ -4596,16 +4596,20 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 	if dv, ok := runtime.Deref(base); ok {
 		return v.index(f, dv, idx)
 	}
+	rawIdx := idx                               // the declared key check needs the operand's named tag
 	idx = runtime.Unwrap(v.materialize(f, idx)) // named key/index types hash as their value
 	base = v.materialize(f, base)               // `const s = "x"; s[0]` indexes a UConst
 	switch b := base.(type) {
 	case *runtime.Named:
-		return v.index(f, b.V, idx)
+		return v.index(f, b.V, rawIdx)
 	case *runtime.IfaceNil:
-		return v.index(f, &runtime.TypedNil{Typ: b.Typ}, idx)
+		return v.index(f, &runtime.TypedNil{Typ: b.Typ}, rawIdx)
 	case *runtime.TypedNil:
 		switch b.Typ.Kind {
 		case runtime.KindMap:
+			// the key's declared-type check is static — a nil-map read
+			// still rejects `B{1}` against map[A]V like gc.
+			v.mapKeyOperand(f, b.Typ, rawIdx)
 			return v.mapZero(f, b.Typ) // reading a nil map yields the zero value
 		case runtime.KindSlice:
 			panic(runtime.BoundsPanic(runtime.Unwrap(idx), 0))
@@ -4629,7 +4633,7 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 		}
 		return v.elemRead(f, b.Typ, b.Elems[i])
 	case *runtime.Map:
-		val, found := b.Get(idx)
+		val, found := b.Get(v.mapKeyOperand(f, b.Typ, rawIdx))
 		if !found {
 			val = v.mapZero(f, b.Typ)
 		}
@@ -5317,6 +5321,51 @@ func (v *VM) localTypedefOf(f *frame, name string) *runtime.TypeDef {
 	return nil
 }
 
+// mapKeyTypedef returns the declared key typedef of a map typedef —
+// `map[K]V` yields K — nil when the key type cannot be resolved (the
+// operand then passes through unchecked, like a missing element type).
+func (v *VM) mapKeyTypedef(f *frame, td *runtime.TypeDef) *runtime.TypeDef {
+	if td == nil || v.H.ResolveType == nil {
+		return nil
+	}
+	u := v.peelNamed(td)
+	if u == nil || u.Kind != runtime.KindMap {
+		return nil
+	}
+	x := u.Anon
+	if x == nil && u.Spec != nil {
+		x = u.Spec.Type
+	}
+	mt, ok := x.(*ast.MapType)
+	if !ok {
+		return nil
+	}
+	if kt, err := v.resolveOperandType(u, mt.Key); err == nil && kt != nil {
+		return kt
+	}
+	// a key named by a function-local `type` decl — the package index
+	// cannot see those, but the typedef sits in this frame's locals.
+	if f != nil {
+		if id, ok := mt.Key.(*ast.Ident); ok {
+			return v.localTypedefOf(f, id.Name)
+		}
+	}
+	return nil
+}
+
+// mapKeyOperand coerces a map index operand to the map's declared key
+// type. `m[k]` type-checks k against K statically — `B{1}` against
+// map[A]int is gc's compile reject even though the structs share a
+// shape — so the check runs before the map's value/nil paths see the
+// operand. The caller passes the un-materialized operand: a named key
+// type's tag is what the check needs.
+func (v *VM) mapKeyOperand(f *frame, td *runtime.TypeDef, idx runtime.Value) runtime.Value {
+	if kt := v.mapKeyTypedef(f, td); kt != nil {
+		return runtime.Unwrap(v.coerce(f, idx, kt))
+	}
+	return runtime.Unwrap(v.materialize(f, idx))
+}
+
 // elemRead coerces a container element read to its declared element
 // typedef — b[i] on []byte is uint8-typed, not a bare int64, so %T and
 // cross-type assignment see the element's real type.
@@ -5360,29 +5409,31 @@ func (v *VM) indexOK(f *frame, base, idx runtime.Value) runtime.Value {
 	if dv, ok := runtime.Deref(base); ok {
 		return v.indexOK(f, dv, idx)
 	}
+	rawIdx := idx // the declared key check needs the operand's named tag
 	// an untyped-const key (`const k = "x"; v, ok := m[k]`) hashes as
 	// its materialized value, like index's plain read
 	idx = runtime.Unwrap(v.materialize(f, idx))
 	if n, ok := base.(*runtime.Named); ok {
-		return v.indexOK(f, n.V, idx)
+		return v.indexOK(f, n.V, rawIdx)
 	}
 	if in, ok := base.(*runtime.IfaceNil); ok {
-		return v.indexOK(f, &runtime.TypedNil{Typ: in.Typ}, idx)
+		return v.indexOK(f, &runtime.TypedNil{Typ: in.Typ}, rawIdx)
 	}
 	if tn, ok := base.(*runtime.TypedNil); ok {
 		if tn.Typ.Kind == runtime.KindMap {
+			v.mapKeyOperand(f, tn.Typ, rawIdx)
 			return &runtime.Tuple{Elems: []runtime.Value{v.mapZero(f, tn.Typ), false}}
 		}
 		return &runtime.Tuple{Elems: []runtime.Value{v.index(f, base, idx), true}}
 	}
 	if m, ok := base.(*runtime.Map); ok {
-		val, found := m.Get(idx)
+		val, found := m.Get(v.mapKeyOperand(f, m.Typ, rawIdx))
 		if !found {
 			val = v.mapZero(f, m.Typ)
 		}
 		return &runtime.Tuple{Elems: []runtime.Value{val, found}}
 	}
-	return &runtime.Tuple{Elems: []runtime.Value{v.index(f, base, idx), true}}
+	return &runtime.Tuple{Elems: []runtime.Value{v.index(f, base, rawIdx), true}}
 }
 
 func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
@@ -5394,13 +5445,17 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 		v.setIndex(f, n.V, idx, val)
 		return
 	}
+	rawIdx := idx // the declared key check needs the operand's named tag
 	idx = runtime.Unwrap(v.materialize(f, idx))
 	switch b := base.(type) {
 	case *runtime.IfaceNil:
-		v.setIndex(f, &runtime.TypedNil{Typ: b.Typ}, idx, val)
+		v.setIndex(f, &runtime.TypedNil{Typ: b.Typ}, rawIdx, val)
 	case *runtime.TypedNil:
 		switch b.Typ.Kind {
 		case runtime.KindMap:
+			// a mismatched key rejects statically — before the nil-map
+			// assign panic fires like gc's nil-map write would.
+			v.mapKeyOperand(f, b.Typ, rawIdx)
 			panic(runtime.NilMapAssignPanic())
 		case runtime.KindSlice:
 			panic(runtime.BoundsPanic(runtime.Unwrap(idx), 0))
@@ -5428,6 +5483,7 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 		}
 		b.Elems[i] = val
 	case *runtime.Map:
+		idx = v.mapKeyOperand(f, b.Typ, rawIdx)
 		if idx != nil && !reflect.TypeOf(idx).Comparable() {
 			f.trap("map key %T is not comparable", idx)
 		}
@@ -5455,7 +5511,7 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 			// instead of mutating the stored value.
 			f.trap("index assign on %T", base)
 		}
-		v.setIndex(f, x, idx, val)
+		v.setIndex(f, x, rawIdx, val)
 	case *runtime.FieldRef:
 		// interior write through a field select crossing a map element
 		// (m[k].f[i] = v on a struct element): the field read lands on
@@ -5467,7 +5523,7 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 		if x == nil || !shared {
 			f.trap("index assign on %T", base)
 		}
-		v.setIndex(f, x, idx, val)
+		v.setIndex(f, x, rawIdx, val)
 	default:
 		f.trap("index assign on %T", base)
 	}
@@ -5884,8 +5940,10 @@ func (v *VM) compositeOf(f *frame, td *runtime.TypeDef, n int, kv bool, raw []ru
 			if _, isImp := raw[i*2].(*runtime.ImplicitIndex); isImp {
 				f.trap("positional element in keyed map literal")
 			}
-			k := runtime.Unwrap(v.materialize(f, raw[i*2]))
-			m.Insert(k, v.coerce(f, raw[i*2+1], et))
+			// literal keys bind the declared key type like index
+			// operands — `map[float64]V{1: x}` stores float64(1), and
+			// `map[A]V{B{1}: x}` rejects the mismatched named key.
+			m.Insert(v.mapKeyOperand(f, td, raw[i*2]), v.coerce(f, raw[i*2+1], et))
 		}
 		return m
 	case runtime.KindPointer:
