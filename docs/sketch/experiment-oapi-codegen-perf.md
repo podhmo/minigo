@@ -1,6 +1,6 @@
 # Experiment: where does oapi-codegen's wall time go?
 
-Status: in progress. Branch `fix/oapi-codegen-regressions` carries the
+Status: closed (see "Retrospective" at the end). Branch `fix/oapi-codegen-regressions` carries the
 two regression fixes found on the way (step 0).
 `perf/sync-builtin-callbacks` is stacked on it and carries steps 4–17.
 
@@ -946,6 +946,128 @@ unchanged (it does not parse templates).
 `template_parse_hostapi` and `template_src_hostparse` still pass, now
 over script trees. `TestTemplateHostLexer` checks that the hook
 actually fires.
+
+## Retrospective
+
+### Where it ended
+
+On the native-goimports baseline, `petstore-expanded/strict` went from
+~1.95s to 1.13s (−42%). Native oapi-codegen runs the same line in
+~0.14s, so minigo is still about 8x slower. Every step kept the output
+byte-identical across all 53 examples. Two regressions and two
+SILENT bugs (steps 5 and 8) were fixed on the way. The bugs left open are in TODO.md.
+
+By kind of change:
+
+| kind | steps | effect on strict |
+|---|---|---|
+| removing work around the interpreter (goimports index, `runtime.Stack`, eager marshaling) | 4, 5, 9 | −13.5% (as shipped), −5.7% |
+| load and compile (`CheckLang`, `orderSpecs`, parallel parse, instantiation caches) | 6, 11, 15, 16 | −2% to −4% each, −7% for the chunk cache |
+| per-instruction memos (interface checks, constants) | 8, 10 | ~−2% each |
+| running a stdlib component natively | 13 → 17 | −33% bound parse, −22% host lexer |
+
+Running work natively was the only lever worth more than ~7%. The
+rest was diffuse.
+
+### How far could this go?
+
+These are estimates from the measurements above, not new measurements.
+
+- **Execution is near its floor for this VM design.** Step 6 measured
+  ~35 ns per instruction, ~390 ns per call and ~690 ns per method call.
+  The run makes ~2.8M calls, so calls alone are about 1s at those
+  rates. Later steps lowered them, but not by an order of magnitude.
+  The last profiles show no hot spot above ~12%. Per-instruction
+  tuning has perhaps another 10–15% in it.
+- **GC is not the ceiling.** `GOGC=off` or `400` moves wall time by at
+  most ~8% (step 14). Marking runs on spare cores.
+- **Load and compile are a fixed cost per process.** It was ~0.47s at
+  step 6 and is lower now (steps 11, 15). Each of the 53 `go:generate`
+  lines pays it again for the same 78 packages.
+- **The workload decides the rest.** In the program as shipped, half of
+  the instructions are goimports' go/printer path, plus the
+  machine-dependent index (steps 2 and 6). No interpreter change
+  reaches them; only native code does.
+
+So with this design the realistic floor for strict is perhaps
+0.8–0.9s, about 6x native. Below that, a different approach is needed.
+
+### What could change it
+
+In rough order of expected gain:
+
+1. **More host components behind data-only boundaries.** Step 17's
+   `srcImpl` replaces one source method with host code. It is safe
+   when values cross as plain data (strings, bytes, ints, fresh
+   structs) and the host keeps no script-visible state. That is
+   unlike step 13, whose trees were shared mutable objects.
+   Candidates:
+   - `compress/flate` (5.5% of instructions in step 6; bytes in,
+     bytes out)
+   - json's `jsonwire`/`jsontext` tokenizer
+   - yaml3's scanner
+   - in the shipped program, `go/scanner` and `go/printer`
+2. **Amortize load across lines.** Either cache compiled chunks on disk
+   (keyed by file hash and minigo version), or run many `go:generate`
+   lines in one engine. Both remove the per-line fixed cost; the
+   first is general.
+3. **Cheaper values in the VM.** Today each local gets its own `Cell`,
+   each typed value a `runtime.Tag`, and each frame allocates its
+   locals. Step 6 measured `runtime.Tag` at 17% of objects and
+   `prepFrame` at 16% of allocated bytes. A compiler that knows which
+   locals are captured, and which values never need a tag, could skip
+   most of these. Two earlier attempts at frame reuse gained little
+   (step 9); both worked at run time, not from compile-time facts.
+4. **Static types at compile time.** `coerce` and interface checks were
+   12% of mutator samples (step 7). They run because the compiler does
+   not know types (`go/types` is off the table by design). A small
+   local inference pass covering literals, declared params and
+   results, and struct fields would let the compiler drop most of
+   them. This is the largest structural change, and the one that
+   moves per-instruction cost.
+
+### Bolder options not taken
+
+- **Bind the whole of text/template, exec included, early on.** It was
+  rejected in step 12: exec is 3% of instructions, and walking script
+  data through reflect projections risks the hazards of steps 5 and 8.
+  In hindsight the rejection held. The bound parse alone needed two
+  review rounds (nine findings), all about aliasing between host and
+  script values.
+- **Automatic native fallback per package.** Generate bindings for
+  every stdlib package a program imports, and interpret only
+  user-module code. This is the largest speed-up available (the whole
+  go/printer, json and flate share). But step 13 showed the cost: any
+  package whose values script code copies, reslices or mutates needs
+  copy-in/copy-out or boxing at the boundary to keep Go's semantics.
+  Without that, the bindings are SILENTly wrong. That boundary layer
+  is the real project, and it was too large for this experiment.
+- **Snapshotting the loaded engine (load once, fork per line).** A
+  whole-workload lever outside the interpreter. Out of scope here, but
+  it is the cheapest way to remove the fixed cost for the realworld
+  task runner.
+
+### What to set up first next time
+
+- **Pin the environment before measuring.** Steps 1–5 partly measured
+  the machine: the goimports index (~50% of a line) and macOS SIGPROF
+  misattribution (step 7). Start with a native-goimports harness, an
+  empty `HOME` and a Linux container.
+- **Estimate the ceiling first.** Instructions × ns per instruction,
+  load cost, and a GOGC sweep would have shown on day one that
+  execution work is diffuse and that native components are the main
+  lever. Step 14 and the structural-key follow-up to step 15 then
+  would not have been tried for wall time.
+- **Make the counting build real tooling.** It was rebuilt as a
+  temporary patch several times. A build tag behind a flag would
+  have saved that.
+- **An aliasing checklist before binding anything.** For each value
+  that crosses a native binding: struct copy, two slice aliases,
+  reslice, `append` within capacity, field rebind, typed nil, and
+  constants as named ints. As difffuzz cases, written before the
+  binding. Both review rounds of step 13 would have been caught by it.
+- **Run the 53-line gate on a schedule.** Two regressions sat on main
+  unnoticed until step 0.
 
 ## How to re-run
 
