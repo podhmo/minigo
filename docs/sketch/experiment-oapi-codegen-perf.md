@@ -736,6 +736,39 @@ element stores through to it. `template_parse_hostapi` pins all five.
 Strict stays at 1.06s (9 rounds, 1.069s before); all 53 examples remain
 identical.
 
+## Step 14: compile.Func (investigation, nothing landed)
+
+A Linux profile after the review follow-up (6 in-process rounds of
+strict, 12.03s CPU): GC background marking 44%, `VM.loop` 38%,
+`compile.Func` 5.7% (0.69s, ~115ms per run), `go/parser.ParseFile`
+5.1%, `orderSpecs` 2.0%, `InitFunc` 2.2%, `indexFiles` 1%, `CheckLang`
+and `Locate` 0.6% each. `text/template/parse` is gone (0.08%).
+
+Inside `compile.Func` the cost is flat: statement and expression
+compilation, map lookups for names, and slice growth for code and
+constants, with no node above 0.13s cumulative. One suspicious shape
+was each operator of a left-deep binary chain re-scanning its whole
+subtree (`hoistedArgCalls`, `pureOperand`, `constValue`), which is
+O(depth²). Memoizing the three per node did not move strict (1.051s
+→ 1.051s, 9 rounds). Real chains are short; only a synthetic
+1600-operand concatenation gained (0.32s → 0.25s), so the patch was
+not landed.
+
+GC sets the ceiling for allocation work. GOGC changes the strict wall
+time (7 rounds) as follows:
+
+| GOGC | median |
+|---|---|
+| 100 | 1.070s |
+| 200 | 1.000s |
+| 400 | 0.979s |
+| off | 1.024s |
+
+At most ~8% of wall time is GC; marking runs on spare cores. The wall
+time is mostly the mutator, and the interpreter loop is the largest
+part. The next candidates are therefore in execution, not in load or
+compile.
+
 ## How to re-run
 
 Scripts used (kept outside the repo; reconstructable from this
