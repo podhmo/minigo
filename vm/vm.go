@@ -6468,10 +6468,18 @@ func (v *VM) materializeConstErr(u *runtime.UConst, td *runtime.TypeDef) (runtim
 		case constant.String:
 			x = constant.StringVal(u.V)
 		case constant.Int:
-			// int-to-string produces the rune (Go vet would flag it, the
-			// conversion itself is legal).
-			i, _ := constant.Int64Val(u.V)
-			x = string(rune(i))
+			// int-to-string produces the rune for a valid code point
+			// and U+FFFD for an out-of-range one (Go vet would flag
+			// it, the conversion itself is legal). Int64Val would
+			// silently fail on a wider-than-64-bit constant like
+			// string(1<<100), so range-check first.
+			if constant.Compare(u.V, token.LSS, constant.MakeInt64(0)) ||
+				constant.Compare(u.V, token.GTR, constant.MakeInt64(utf8.MaxRune)) {
+				x = "\uFFFD"
+			} else {
+				i, _ := constant.Int64Val(u.V)
+				x = string(rune(i))
+			}
 		default:
 			return nil, fmt.Errorf("cannot use constant %s as %s", u.V, name)
 		}
@@ -8664,6 +8672,11 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 			}
 			return nil, fmt.Errorf("cannot convert %s to string", typeNameOf(x))
 		case int64:
+			// rune(sx) would truncate before string() could see the
+			// out-of-range value — range-check first (issue15039).
+			if sx < 0 || sx > utf8.MaxRune {
+				return "\uFFFD", nil
+			}
 			return string(rune(sx)), nil
 		case *runtime.Slice:
 			// []byte or []rune -> string: the element family decides.
