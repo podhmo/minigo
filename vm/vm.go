@@ -12222,7 +12222,7 @@ func (v *VM) unifyType(ctx *runtime.TypeDef, tset map[string]bool, binds map[str
 	// An untyped-constant argument defers its bind: the constant
 	// converts to whatever the type parameter becomes, so it must not
 	// win the first-come binding over real-typed arguments.
-	if id, ok := pat.(*ast.Ident); ok && tset[id.Name] && untypedConstArg(arg) {
+	if id, ok := pat.(*ast.Ident); ok && tset[id.Name] && v.untypedConstArg(arg) {
 		constArgs[id.Name] = append(constArgs[id.Name], arg)
 		return
 	}
@@ -12251,7 +12251,7 @@ func staticAt(statics []*runtime.TypeDef, i int) *runtime.TypeDef {
 // default builtin type (`'a'` under rune). A const carrying any other
 // declared or converted type — `const k T = ...`, `int8(3)` — binds
 // like a value of that type instead.
-func untypedConstArg(x runtime.Value) bool {
+func (v *VM) untypedConstArg(x runtime.Value) bool {
 	u, ok := constPayload(x)
 	if !ok {
 		return false
@@ -12268,54 +12268,13 @@ func untypedConstArg(x runtime.Value) bool {
 			// a builtin-tagged const is typed: only a tag equal to the
 			// constant's own default keeps it untyped — `int8(3)`
 			// binds int8, never int.
-			if name != uconstDefaultName(u) {
+			dtd := v.typeOfValue(u)
+			if dtd == nil || name != basicNameOf(dtd) {
 				return false
 			}
 		}
 	}
 	return true
-}
-
-// uconstDefaultName is a UConst's default type name: bool, string,
-// rune, int, float64, or complex128.
-func uconstDefaultName(u *runtime.UConst) string {
-	switch u.V.Kind() {
-	case constant.Bool:
-		return "bool"
-	case constant.String:
-		return "string"
-	case constant.Int:
-		if u.Rune {
-			return "rune"
-		}
-		return "int"
-	case constant.Float:
-		return "float64"
-	case constant.Complex:
-		return "complex128"
-	}
-	return ""
-}
-
-// defaultConstTypedef is a UConst's default type as a typedef: rune,
-// int, float64, complex128, string, or bool.
-func (v *VM) defaultConstTypedef(u *runtime.UConst) *runtime.TypeDef {
-	switch u.V.Kind() {
-	case constant.Bool:
-		return v.builtinTypedef("bool")
-	case constant.String:
-		return v.builtinTypedef("string")
-	case constant.Int:
-		if u.Rune {
-			return v.builtinTypedef("rune")
-		}
-		return v.builtinTypedef("int")
-	case constant.Float:
-		return v.builtinTypedef("float64")
-	case constant.Complex:
-		return v.builtinTypedef("complex128")
-	}
-	return nil
 }
 
 // constFits is the constant representability check across a bind
@@ -12325,8 +12284,10 @@ func (v *VM) constFits(u *runtime.UConst, td *runtime.TypeDef) bool {
 	name := basicNameOf(v.peelNamed(td))
 	switch name {
 	case "float32", "float64":
-		k := u.V.Kind()
-		return k == constant.Int || k == constant.Float
+		// constToBasic reuses the operand-adoption conversion: Int and
+		// Float kinds fit, Inf results do not.
+		_, ok := constToBasic(u, name)
+		return ok
 	case "complex64", "complex128":
 		k := u.V.Kind()
 		return k == constant.Int || k == constant.Float || k == constant.Complex
@@ -12336,11 +12297,10 @@ func (v *VM) constFits(u *runtime.UConst, td *runtime.TypeDef) bool {
 		return u.V.Kind() == constant.Bool
 	case "int", "int8", "int16", "int32", "rune", "int64",
 		"uint", "uint8", "byte", "uint16", "uint32", "uint64", "uintptr":
-		if u.V.Kind() == constant.Float {
-			f, ok := constant.Float64Val(u.V)
-			return ok && f == math.Trunc(f) && !math.IsInf(f, 0)
-		}
-		return u.V.Kind() == constant.Int
+		// fitsIntConst reuses the declared-width range check — 200
+		// does not fit int8, and an integral float (2.0) still does.
+		_, ok := fitsIntConst(u.V, name)
+		return ok
 	}
 	return false
 }
@@ -12402,7 +12362,7 @@ func (v *VM) commonConstTypedef(args []runtime.Value) (cand *runtime.TypeDef, ok
 			return nil, false
 		}
 	}
-	cand = v.defaultConstTypedef(winU)
+	cand = v.typeOfValue(winU)
 	for _, u := range us {
 		if !v.constFits(u, cand) {
 			return nil, false
