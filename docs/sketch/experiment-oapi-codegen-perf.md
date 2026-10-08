@@ -721,6 +721,21 @@ memos) also run under realworld's `grafana-openapi` (grafana at
 The `text/template/parse` binding plays no part here; the gain is the
 smaller, general set.
 
+## Review follow-up (`9f5efbc9`)
+
+A review of #699 found five divergences in the bound
+`text/template/parse` that main (parsing from source) did not have:
+constants that did not compare or compute as named ints, element
+stores into tree slices that never reached the host tree, `parse.New`
+rejecting its func maps, `IsEmptyTree(nil)` trapping, and a typed-nil
+func-map entry read as undefined. The constants now follow
+`reflect.Kind`'s boxed-host pattern; the constant-comparison fix also
+corrects `reflect.Kind` comparisons such as `k == 2`, which were false
+on main. A slice read from a host field keeps the host slice and writes
+element stores through to it. `template_parse_hostapi` pins all five.
+Strict stays at 1.06s (9 rounds, 1.069s before); all 53 examples remain
+identical.
+
 ## How to re-run
 
 Scripts used (kept outside the repo; reconstructable from this
