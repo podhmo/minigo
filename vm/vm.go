@@ -2908,6 +2908,20 @@ func (v *VM) hostMember(hv any, name string) (runtime.Value, bool) {
 	call := func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		return callReflectFunc(name, m, vc, args)
 	}
+	if _, isPool := hv.(*sync.Pool); isPool && name == "Put" {
+		call = func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			// a pool only holds the value for a later Get, which hands
+			// a script value back verbatim (goValueOf) — so a struct
+			// crosses opaque instead of marshaling to scriptData, which
+			// would invoke its niladic methods (a json Decoder's
+			// ReadToken/SkipValue) on every Put.
+			if len(args) == 1 && structShaped(args[0]) {
+				m.Call([]reflect.Value{reflect.ValueOf(any(args[0]))})
+				return runtime.NIL, nil
+			}
+			return callReflectFunc(name, m, vc, args)
+		}
+	}
 	if try := uncontendedLock(hv, name); try != nil {
 		// Lock/RLock park on a helper goroutine watched against
 		// proc.done (see blockingHostMethods) — a goroutine spawn per
@@ -3853,6 +3867,26 @@ func deepHost(v runtime.Value, vc runtime.VMCaller, h *hostMarshal) runtime.Valu
 		return v
 	}
 	return v
+}
+
+// structShaped reports whether deepHost would marshal v through
+// structDataHost: a script struct, possibly named, or a pointer to one.
+func structShaped(v runtime.Value) bool {
+	if n, ok := v.(*runtime.Named); ok {
+		v = n.V
+	}
+	switch x := v.(type) {
+	case *runtime.Struct:
+		return true
+	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
+		dv, ok := runtime.Deref(x)
+		if !ok {
+			return false
+		}
+		_, isStruct := dv.(*runtime.Struct)
+		return isStruct
+	}
+	return false
 }
 
 // scriptData is the host-facing projection of a script struct for an
