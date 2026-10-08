@@ -320,6 +320,12 @@ func (e *Engine) installStdlib() {
 			out := strings.IndexFunc(str(args[0]), runePred(v, args[1]))
 			return int64(out), nil
 		}},
+		"ContainsFunc": &runtime.BuiltinFunc{Name: "strings.ContainsFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("strings.ContainsFunc needs 2 args")
+			}
+			return strings.ContainsFunc(str(args[0]), runePred(v, args[1])), nil
+		}},
 		"LastIndexFunc": &runtime.BuiltinFunc{Name: "strings.LastIndexFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("strings.LastIndexFunc needs 2 args")
@@ -533,6 +539,51 @@ func (e *Engine) installStdlib() {
 			n := utf8.EncodeRune(buf[:], runeOf(a[0]))
 			return string(buf[:n]), nil
 		}),
+		"AppendRune": &runtime.BuiltinFunc{Name: "utf8.AppendRune", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("utf8.AppendRune needs 2 args, got %d", len(args))
+			}
+			// the append runs on the script slice's own backing — going
+			// through goNative would copy it, losing the spare-capacity
+			// sharing Go's append preserves (b[:2] sees the rune and the
+			// writes through the result).
+			var elems []runtime.Value
+			var styp *runtime.TypeDef
+			switch x := runtime.Unwrap(args[0]).(type) {
+			case runtime.Nil:
+				// an untyped nil appends like an empty []byte
+			case *runtime.TypedNil:
+				if x.Typ == nil || x.Typ.Kind != runtime.KindSlice {
+					return nil, fmt.Errorf("utf8.AppendRune on %T", args[0])
+				}
+				styp = x.Typ
+			default:
+				s, ok := sliceOf(args[0])
+				if !ok {
+					return nil, fmt.Errorf("utf8.AppendRune on %T", args[0])
+				}
+				elems, styp = s.Elems, s.Typ
+			}
+			var buf [utf8.UTFMax]byte
+			n := utf8.EncodeRune(buf[:], rune(int64Of(goNative(args[1]))))
+			var et *runtime.TypeDef
+			if styp != nil {
+				et = vc.TypeOf(vc.ElemZero(styp))
+			}
+			add := make([]runtime.Value, n)
+			for i, b := range buf[:n] {
+				a := runtime.Value(int64(b))
+				if et != nil {
+					// elements tag like the declared element type, the
+					// same conversion the append builtin applies.
+					if cv, err := vc.Convert(et, a); err == nil {
+						a = cv
+					}
+				}
+				add[i] = a
+			}
+			return &runtime.Slice{Elems: append(elems, add...), Typ: anonSliceTyp("byte")}, nil
+		}, Target: utf8.AppendRune},
 		"UTFMax":    int64(utf8.UTFMax),
 		"RuneError": int64(utf8.RuneError),
 		"RuneSelf":  int64(utf8.RuneSelf),
@@ -573,39 +624,47 @@ func (e *Engine) installStdlib() {
 		"Exp2":                   h.fn("math.Exp2", func(a []any) (any, error) { return math.Exp2(floatOf(a[0])), nil }, math.Exp2),
 		"Expm1":                  h.fn("math.Expm1", func(a []any) (any, error) { return math.Expm1(floatOf(a[0])), nil }, math.Expm1),
 		"Log":                    h.fn("math.Log", func(a []any) (any, error) { return math.Log(floatOf(a[0])), nil }, math.Log),
-		"Log2":                   h.fn("math.Log2", func(a []any) (any, error) { return math.Log2(floatOf(a[0])), nil }, math.Log2),
-		"Log10":                  h.fn("math.Log10", func(a []any) (any, error) { return math.Log10(floatOf(a[0])), nil }, math.Log10),
-		"Log1p":                  h.fn("math.Log1p", func(a []any) (any, error) { return math.Log1p(floatOf(a[0])), nil }, math.Log1p),
-		"Mod":                    h.fn2("math.Mod", func(a []any) (any, error) { return math.Mod(floatOf(a[0]), floatOf(a[1])), nil }, math.Mod),
-		"Remainder":              h.fn2("math.Remainder", func(a []any) (any, error) { return math.Remainder(floatOf(a[0]), floatOf(a[1])), nil }, math.Remainder),
-		"Max":                    h.fn2("math.Max", func(a []any) (any, error) { return math.Max(floatOf(a[0]), floatOf(a[1])), nil }, math.Max),
-		"Min":                    h.fn2("math.Min", func(a []any) (any, error) { return math.Min(floatOf(a[0]), floatOf(a[1])), nil }, math.Min),
-		"Dim":                    h.fn2("math.Dim", func(a []any) (any, error) { return math.Dim(floatOf(a[0]), floatOf(a[1])), nil }, math.Dim),
-		"Sin":                    h.fn("math.Sin", func(a []any) (any, error) { return math.Sin(floatOf(a[0])), nil }, math.Sin),
-		"Cos":                    h.fn("math.Cos", func(a []any) (any, error) { return math.Cos(floatOf(a[0])), nil }, math.Cos),
-		"Tan":                    h.fn("math.Tan", func(a []any) (any, error) { return math.Tan(floatOf(a[0])), nil }, math.Tan),
-		"Asin":                   h.fn("math.Asin", func(a []any) (any, error) { return math.Asin(floatOf(a[0])), nil }, math.Asin),
-		"Acos":                   h.fn("math.Acos", func(a []any) (any, error) { return math.Acos(floatOf(a[0])), nil }, math.Acos),
-		"Atan":                   h.fn("math.Atan", func(a []any) (any, error) { return math.Atan(floatOf(a[0])), nil }, math.Atan),
-		"Atan2":                  h.fn2("math.Atan2", func(a []any) (any, error) { return math.Atan2(floatOf(a[0]), floatOf(a[1])), nil }, math.Atan2),
-		"Sinh":                   h.fn("math.Sinh", func(a []any) (any, error) { return math.Sinh(floatOf(a[0])), nil }, math.Sinh),
-		"Cosh":                   h.fn("math.Cosh", func(a []any) (any, error) { return math.Cosh(floatOf(a[0])), nil }, math.Cosh),
-		"Tanh":                   h.fn("math.Tanh", func(a []any) (any, error) { return math.Tanh(floatOf(a[0])), nil }, math.Tanh),
-		"Erf":                    h.fn("math.Erf", func(a []any) (any, error) { return math.Erf(floatOf(a[0])), nil }, math.Erf),
-		"Erfc":                   h.fn("math.Erfc", func(a []any) (any, error) { return math.Erfc(floatOf(a[0])), nil }, math.Erfc),
-		"Gamma":                  h.fn("math.Gamma", func(a []any) (any, error) { return math.Gamma(floatOf(a[0])), nil }, math.Gamma),
-		"Ldexp":                  h.fn2("math.Ldexp", func(a []any) (any, error) { return math.Ldexp(floatOf(a[0]), intOf(a[1])), nil }, math.Ldexp),
-		"Nextafter":              h.fn2("math.Nextafter", func(a []any) (any, error) { return math.Nextafter(floatOf(a[0]), floatOf(a[1])), nil }, math.Nextafter),
-		"Copysign":               h.fn2("math.Copysign", func(a []any) (any, error) { return math.Copysign(floatOf(a[0]), floatOf(a[1])), nil }, math.Copysign),
-		"Signbit":                h.fn("math.Signbit", func(a []any) (any, error) { return math.Signbit(floatOf(a[0])), nil }, math.Signbit),
-		"Float32bits":            h.fn("math.Float32bits", func(a []any) (any, error) { return math.Float32bits(float32(floatOf(a[0]))), nil }, math.Float32bits),
-		"Float64bits":            h.fn("math.Float64bits", func(a []any) (any, error) { return math.Float64bits(floatOf(a[0])), nil }, math.Float64bits),
-		"Float32frombits":        h.fn("math.Float32frombits", func(a []any) (any, error) { return math.Float32frombits(uint32(intOf(a[0]))), nil }, math.Float32frombits),
-		"Float64frombits":        h.fn("math.Float64frombits", func(a []any) (any, error) { return math.Float64frombits(uint64(intOf(a[0]))), nil }, math.Float64frombits),
-		"IsNaN":                  h.fn("math.IsNaN", func(a []any) (any, error) { return math.IsNaN(floatOf(a[0])), nil }, math.IsNaN),
-		"IsInf":                  h.fn2("math.IsInf", func(a []any) (any, error) { return math.IsInf(floatOf(a[0]), intOf(a[1])), nil }, math.IsInf),
-		"NaN":                    h.fn("math.NaN", func(a []any) (any, error) { return math.NaN(), nil }, math.NaN),
-		"Inf":                    h.fn("math.Inf", func(a []any) (any, error) { return math.Inf(intOf(a[0])), nil }, math.Inf),
+		"Frexp": h.fn("math.Frexp", func(a []any) (any, error) {
+			frac, exp := math.Frexp(floatOf(a[0]))
+			return &runtime.Tuple{Elems: []runtime.Value{frac, int64(exp)}}, nil
+		}),
+		"Modf": h.fn("math.Modf", func(a []any) (any, error) {
+			i, frac := math.Modf(floatOf(a[0]))
+			return &runtime.Tuple{Elems: []runtime.Value{i, frac}}, nil
+		}),
+		"Log2":            h.fn("math.Log2", func(a []any) (any, error) { return math.Log2(floatOf(a[0])), nil }, math.Log2),
+		"Log10":           h.fn("math.Log10", func(a []any) (any, error) { return math.Log10(floatOf(a[0])), nil }, math.Log10),
+		"Log1p":           h.fn("math.Log1p", func(a []any) (any, error) { return math.Log1p(floatOf(a[0])), nil }, math.Log1p),
+		"Mod":             h.fn2("math.Mod", func(a []any) (any, error) { return math.Mod(floatOf(a[0]), floatOf(a[1])), nil }, math.Mod),
+		"Remainder":       h.fn2("math.Remainder", func(a []any) (any, error) { return math.Remainder(floatOf(a[0]), floatOf(a[1])), nil }, math.Remainder),
+		"Max":             h.fn2("math.Max", func(a []any) (any, error) { return math.Max(floatOf(a[0]), floatOf(a[1])), nil }, math.Max),
+		"Min":             h.fn2("math.Min", func(a []any) (any, error) { return math.Min(floatOf(a[0]), floatOf(a[1])), nil }, math.Min),
+		"Dim":             h.fn2("math.Dim", func(a []any) (any, error) { return math.Dim(floatOf(a[0]), floatOf(a[1])), nil }, math.Dim),
+		"Sin":             h.fn("math.Sin", func(a []any) (any, error) { return math.Sin(floatOf(a[0])), nil }, math.Sin),
+		"Cos":             h.fn("math.Cos", func(a []any) (any, error) { return math.Cos(floatOf(a[0])), nil }, math.Cos),
+		"Tan":             h.fn("math.Tan", func(a []any) (any, error) { return math.Tan(floatOf(a[0])), nil }, math.Tan),
+		"Asin":            h.fn("math.Asin", func(a []any) (any, error) { return math.Asin(floatOf(a[0])), nil }, math.Asin),
+		"Acos":            h.fn("math.Acos", func(a []any) (any, error) { return math.Acos(floatOf(a[0])), nil }, math.Acos),
+		"Atan":            h.fn("math.Atan", func(a []any) (any, error) { return math.Atan(floatOf(a[0])), nil }, math.Atan),
+		"Atan2":           h.fn2("math.Atan2", func(a []any) (any, error) { return math.Atan2(floatOf(a[0]), floatOf(a[1])), nil }, math.Atan2),
+		"Sinh":            h.fn("math.Sinh", func(a []any) (any, error) { return math.Sinh(floatOf(a[0])), nil }, math.Sinh),
+		"Cosh":            h.fn("math.Cosh", func(a []any) (any, error) { return math.Cosh(floatOf(a[0])), nil }, math.Cosh),
+		"Tanh":            h.fn("math.Tanh", func(a []any) (any, error) { return math.Tanh(floatOf(a[0])), nil }, math.Tanh),
+		"Erf":             h.fn("math.Erf", func(a []any) (any, error) { return math.Erf(floatOf(a[0])), nil }, math.Erf),
+		"Erfc":            h.fn("math.Erfc", func(a []any) (any, error) { return math.Erfc(floatOf(a[0])), nil }, math.Erfc),
+		"Gamma":           h.fn("math.Gamma", func(a []any) (any, error) { return math.Gamma(floatOf(a[0])), nil }, math.Gamma),
+		"Ldexp":           h.fn2("math.Ldexp", func(a []any) (any, error) { return math.Ldexp(floatOf(a[0]), intOf(a[1])), nil }, math.Ldexp),
+		"Nextafter":       h.fn2("math.Nextafter", func(a []any) (any, error) { return math.Nextafter(floatOf(a[0]), floatOf(a[1])), nil }, math.Nextafter),
+		"Copysign":        h.fn2("math.Copysign", func(a []any) (any, error) { return math.Copysign(floatOf(a[0]), floatOf(a[1])), nil }, math.Copysign),
+		"Signbit":         h.fn("math.Signbit", func(a []any) (any, error) { return math.Signbit(floatOf(a[0])), nil }, math.Signbit),
+		"Float32bits":     h.fn("math.Float32bits", func(a []any) (any, error) { return math.Float32bits(float32(floatOf(a[0]))), nil }, math.Float32bits),
+		"Float64bits":     h.fn("math.Float64bits", func(a []any) (any, error) { return math.Float64bits(floatOf(a[0])), nil }, math.Float64bits),
+		"Float32frombits": h.fn("math.Float32frombits", func(a []any) (any, error) { return math.Float32frombits(uint32(intOf(a[0]))), nil }, math.Float32frombits),
+		"Float64frombits": h.fn("math.Float64frombits", func(a []any) (any, error) { return math.Float64frombits(uint64(intOf(a[0]))), nil }, math.Float64frombits),
+		"IsNaN":           h.fn("math.IsNaN", func(a []any) (any, error) { return math.IsNaN(floatOf(a[0])), nil }, math.IsNaN),
+		"IsInf":           h.fn2("math.IsInf", func(a []any) (any, error) { return math.IsInf(floatOf(a[0]), intOf(a[1])), nil }, math.IsInf),
+		"NaN":             h.fn("math.NaN", func(a []any) (any, error) { return math.NaN(), nil }, math.NaN),
+		"Inf":             h.fn("math.Inf", func(a []any) (any, error) { return math.Inf(intOf(a[0])), nil }, math.Inf),
 	})
 	e.Bind("regexp", map[string]runtime.Value{
 		"Compile":     h.fn("regexp.Compile", func(a []any) (any, error) { return retErr2(regexp.Compile(str(a[0]))) }),
@@ -679,6 +738,51 @@ func (e *Engine) installStdlib() {
 			return &runtime.GoValue{V: &godebugSetting{}}, nil
 		}),
 		"Setting": hostType("internal/godebug.Setting", func() any { return &godebugSetting{} }),
+	})
+	// internal/bytealg and internal/stringslite back strings/bytes in
+	// GOROOT, and their sources lean on unsafe (bytealg's init reads
+	// unsafe.Offsetof of cpu flags). Stub the pure entry points stdlib
+	// sources call — embed.FS's lookup, for one — over strings/bytes.
+	e.Bind("internal/bytealg", map[string]runtime.Value{
+		"MaxLen":  int64(64),
+		"Compare": h.fn2("bytealg.Compare", func(a []any) (any, error) { return int64(bytes.Compare(byteSlice(a[0]), byteSlice(a[1]))), nil }),
+		"Count": h.fn2("bytealg.Count", func(a []any) (any, error) {
+			return int64(bytes.Count(byteSlice(a[0]), []byte{byte(int64Of(a[1]))})), nil
+		}),
+		"CountString": h.fn2("bytealg.CountString", func(a []any) (any, error) {
+			return int64(strings.Count(str(a[0]), string([]byte{byte(int64Of(a[1]))}))), nil
+		}),
+		"Equal":           h.fn2("bytealg.Equal", func(a []any) (any, error) { return bytes.Equal(byteSlice(a[0]), byteSlice(a[1])), nil }),
+		"Index":           h.fn2("bytealg.Index", func(a []any) (any, error) { return int64(bytes.Index(byteSlice(a[0]), byteSlice(a[1]))), nil }),
+		"IndexString":     h.fn2("bytealg.IndexString", func(a []any) (any, error) { return int64(strings.Index(str(a[0]), str(a[1]))), nil }),
+		"IndexByte":       h.fn2("bytealg.IndexByte", func(a []any) (any, error) { return int64(bytes.IndexByte(byteSlice(a[0]), byte(int64Of(a[1])))), nil }),
+		"IndexByteString": h.fn2("bytealg.IndexByteString", func(a []any) (any, error) { return int64(strings.IndexByte(str(a[0]), byte(int64Of(a[1])))), nil }),
+		"LastIndexByte": h.fn2("bytealg.LastIndexByte", func(a []any) (any, error) {
+			return int64(bytes.LastIndexByte(byteSlice(a[0]), byte(int64Of(a[1])))), nil
+		}),
+		"LastIndexByteString": h.fn2("bytealg.LastIndexByteString", func(a []any) (any, error) { return int64(strings.LastIndexByte(str(a[0]), byte(int64Of(a[1])))), nil }),
+	})
+	e.Bind("internal/stringslite", map[string]runtime.Value{
+		"HasPrefix": h.fn2("stringslite.HasPrefix", func(a []any) (any, error) { return strings.HasPrefix(str(a[0]), str(a[1])), nil }),
+		"HasSuffix": h.fn2("stringslite.HasSuffix", func(a []any) (any, error) { return strings.HasSuffix(str(a[0]), str(a[1])), nil }),
+		"IndexByte": h.fn2("stringslite.IndexByte", func(a []any) (any, error) { return int64(strings.IndexByte(str(a[0]), byte(int64Of(a[1])))), nil }),
+		"Index":     h.fn2("stringslite.Index", func(a []any) (any, error) { return int64(strings.Index(str(a[0]), str(a[1]))), nil }),
+		"Cut": h.fn2("stringslite.Cut", func(a []any) (any, error) {
+			b, f, ok := strings.Cut(str(a[0]), str(a[1]))
+			return &runtime.Tuple{Elems: []runtime.Value{b, f, ok}}, nil
+		}),
+		"CutPrefix": h.fn2("stringslite.CutPrefix", func(a []any) (any, error) {
+			r, ok := strings.CutPrefix(str(a[0]), str(a[1]))
+			return &runtime.Tuple{Elems: []runtime.Value{r, ok}}, nil
+		}),
+		"CutSuffix": h.fn2("stringslite.CutSuffix", func(a []any) (any, error) {
+			r, ok := strings.CutSuffix(str(a[0]), str(a[1]))
+			return &runtime.Tuple{Elems: []runtime.Value{r, ok}}, nil
+		}),
+		"TrimPrefix":      h.fn2("stringslite.TrimPrefix", func(a []any) (any, error) { return strings.TrimPrefix(str(a[0]), str(a[1])), nil }),
+		"TrimSuffix":      h.fn2("stringslite.TrimSuffix", func(a []any) (any, error) { return strings.TrimSuffix(str(a[0]), str(a[1])), nil }),
+		"Clone":           h.fn1("stringslite.Clone", func(a []any) (any, error) { return strings.Clone(str(a[0])), nil }),
+		"IndexByteString": h.fn2("stringslite.IndexByteString", func(a []any) (any, error) { return int64(strings.IndexByte(str(a[0]), byte(int64Of(a[1])))), nil }),
 	})
 	e.Bind("html", map[string]runtime.Value{
 		"EscapeString":   h.fn("html.EscapeString", func(a []any) (any, error) { return html.EscapeString(str(a[0])), nil }, html.EscapeString),
@@ -1583,6 +1687,17 @@ func (e *Engine) installStdlib() {
 		}),
 		"Parse": h.fn2("time.Parse", func(a []any) (any, error) {
 			t, err := time.Parse(str(a[0]), str(a[1]))
+			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(t), errVal(err)}}, nil
+		}),
+		"ParseInLocation": h.fn("time.ParseInLocation", func(a []any) (any, error) {
+			if len(a) != 3 {
+				return nil, errors.New("time.ParseInLocation needs 3 args")
+			}
+			loc, ok := a[2].(*time.Location)
+			if !ok {
+				return nil, fmt.Errorf("time.ParseInLocation: %T is not a *time.Location", a[2])
+			}
+			t, err := time.ParseInLocation(str(a[0]), str(a[1]), loc)
 			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(t), errVal(err)}}, nil
 		}),
 		"ParseDuration": h.fn1("time.ParseDuration", func(a []any) (any, error) {
