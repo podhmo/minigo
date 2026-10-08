@@ -684,6 +684,14 @@ func orderedLess(a, b runtime.Value) bool {
 	// winning (still-UConst) argument is what gets returned.
 	a = constNative(a)
 	b = constNative(b)
+	// a raw host integer scalar (time.Duration) compares by its int64
+	// nanoseconds — the same reading the VM's equality path uses.
+	if iv, ok := runtime.SmallIntOf(a); ok {
+		a = iv
+	}
+	if iv, ok := runtime.SmallIntOf(b); ok {
+		b = iv
+	}
 	switch x := a.(type) {
 	case int64:
 		switch y := b.(type) {
