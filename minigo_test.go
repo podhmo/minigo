@@ -103,6 +103,7 @@ func TestDotImports(t *testing.T) {
 	}{
 		{name: "Greeting", want: "hi x"},
 		{name: "Number", want: int64(11)},
+		{name: "CountDelta", want: int64(1)},
 	} {
 		got := run(t, e, "./testdata/dotimports", tc.name)
 		if diff := cmp.Diff(tc.want, got); diff != "" {

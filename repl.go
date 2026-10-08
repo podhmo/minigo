@@ -417,6 +417,7 @@ func (r *REPL) commitWrites() {
 				td.Decl = d
 			}
 			p.Index.Decls = spliceDecl(p.Index.Decls, d)
+			p.Globals.Touch()
 		}
 		if r.pinnedDecls == nil {
 			r.pinnedDecls = map[string]bool{}
@@ -486,6 +487,7 @@ func (r *REPL) graftScope(p *runtime.Package, f *syntax.File) {
 	if f == nil {
 		return
 	}
+	defer p.Globals.Touch() // scopes/imports feed the VM's global caches
 	if p.Scopes == nil {
 		p.Scopes = map[*syntax.File]map[string]*runtime.ImportRef{}
 	}
@@ -899,6 +901,7 @@ func (r *REPL) reload() error {
 			},
 		})
 	}
+	p.Globals.Touch() // the new scopes/index invalidate cached globals
 	return p.EnsureReady()
 }
 

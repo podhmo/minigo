@@ -28,6 +28,9 @@ const (
 type Env struct {
 	mu sync.RWMutex
 	m  map[string]Value
+	// gen bumps on every binding change (and on Touch): the VM's
+	// per-site global caches stay valid only while it is unchanged.
+	gen atomic.Uint64
 }
 
 // NewEnv creates an empty Env.
@@ -46,6 +49,7 @@ func (e *Env) Set(name string, v Value) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.m[name] = v
+	e.gen.Add(1)
 }
 
 // Delete removes the binding for name, if present.
@@ -53,7 +57,17 @@ func (e *Env) Delete(name string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	delete(e.m, name)
+	e.gen.Add(1)
 }
+
+// Gen reports the binding generation: it changes whenever a binding is
+// set or deleted, or Touch is called.
+func (e *Env) Gen() uint64 { return e.gen.Load() }
+
+// Touch invalidates caches keyed on Gen without changing a binding —
+// for edits to the name-resolution context around the env (a package's
+// file scopes, imports or index).
+func (e *Env) Touch() { e.gen.Add(1) }
 
 // Names lists bound names.
 func (e *Env) Names() []string {

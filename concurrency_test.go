@@ -37,6 +37,7 @@ func TestConcurrencyBlocking(t *testing.T) {
 			{"SelectDefaultOnSend", int64(8)},
 			{"WaitGroupFanout", int64(4)},
 			{"MutexCounter", int64(8)},
+			{"GlobalSiteShared", int64(800)},
 			{"TimeAfterSelect", int64(5)},
 			{"SleepSelect", int64(3)},
 			{"GoroutineCountRises", int64(1)},

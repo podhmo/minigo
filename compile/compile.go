@@ -324,7 +324,13 @@ func (c *compiler) fresh(base string) string {
 }
 
 func (c *compiler) emit(op bytecode.Op, a, b int, pos token.Pos) int {
-	c.ch.Code = append(c.ch.Code, bytecode.Instruction{Op: op, A: int32(a), B: int32(b), C: -1, Pos: pos})
+	ins := bytecode.Instruction{Op: op, A: int32(a), B: int32(b), C: -1, Pos: pos}
+	if op == bytecode.OpGlobal {
+		// C names the site's resolution cache (bytecode.GlobalSite).
+		ins.C = int32(len(c.ch.Sites))
+		c.ch.Sites = append(c.ch.Sites, &bytecode.GlobalSite{})
+	}
+	c.ch.Code = append(c.ch.Code, ins)
 	return len(c.ch.Code) - 1
 }
 

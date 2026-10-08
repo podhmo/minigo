@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"sync/atomic"
 
 	"github.com/podhmo/minigo/syntax"
 )
@@ -35,7 +36,7 @@ const (
 	OpUpvalRef // push the upval cell at index A itself (multi-assign target)
 
 	// global / package scope
-	OpGlobal    // push resolve(name Consts[A]): file imports -> pkg env -> builtins
+	OpGlobal    // push resolve(name Consts[A]): file imports -> pkg env -> builtins; C indexes Chunk.Sites
 	OpGlobalTyp // push the declared typedef stamped on the package cell for name Consts[A] (NIL when untyped)
 	OpNewGlobal // pop -> pkg.Globals[name] = &Cell{v}; B=1 binds a ReadOnly cell (const decl)
 	OpSetGlobal // pop -> pkg.Globals[name] (cell-aware store)
@@ -238,4 +239,14 @@ type Chunk struct {
 	NamedSlots []int // local slots of named results, for bare `return`; nil when none
 	Upvals     []UpvalDesc
 	IsVararg   bool
+	// Sites are the per-instruction caches of OpGlobal (indexed by the
+	// instruction's C operand).
+	Sites []*GlobalSite
+}
+
+// GlobalSite is one OpGlobal instruction's resolution cache. The VM owns
+// the stored value's type; Cache is shared by every VM (goroutine)
+// running the chunk.
+type GlobalSite struct {
+	Cache atomic.Value
 }
