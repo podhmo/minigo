@@ -1,7 +1,8 @@
 # Experiment: where does grafana-openapi's wall time go?
 
 Status: step 3 is proposed in #624 (`perf/global-site-cache`), and
-step 4a is stacked on it (`perf/iface-sat-cache`). The other steps live
+step 4a is stacked on it (`perf/iface-sat-cache`), and step 7 on that
+(`perf/fieldref-direct-scan`). The other steps live
 on local experiment branches and are not necessarily for merge:
 `experiment/frame-alloc-batch` (step 1) and `experiment/iface-cache-bound`
 (the step 4a upper-bound code). Commit hashes in the step 1 and step 4
@@ -29,6 +30,9 @@ Two of them paid off:
 - Memoizing interface satisfaction (step 4, upper bound) cut a further
   7–11%. This is the same cost the profile showed as `coerce` and
   `methodWalkU`.
+
+A third came from removing an allocation, not adding a cache: a
+direct-field fast path in `FieldRef.find` (step 7) cut a further ~9%.
 
 Cumulative on grafana-openapi, main → step 4: 3.279s → 2.365s
 (−27.9%); with `GOMAXPROCS=1`, 4.498s → 3.391s (−24.6%). After step 4
@@ -291,8 +295,9 @@ order:
 4. GC tuning: GOGC=400 saves ~6% wall (23% at `GOMAXPROCS=1`). If
    anything, change it only in `cmd/minigo`; a library should not
    change process-wide GC settings. Decided: not pursued.
-5. Field-index inline cache per site: the largest remaining ceiling
-   (~8–9%, optimistic; see step 6).
+5. Field lookups: step 7, `perf/fieldref-direct-scan`. A 9-line
+   direct-field fast path in `FieldRef.find`, −8.7%. The per-site
+   field-index cache measured the same and is not needed.
 6. A runtime fast path in `coerce` that returns early when the value
    already has the target type (~4–6% ceiling, see step 6). Small
    change, but it must first be confirmed that `coerce` has no other
@@ -311,7 +316,7 @@ are:
 |---|---|---|---|
 | GC tuning | raise GOGC | ~6% (23% at `GOMAXPROCS=1`) | not pursued |
 | static binding / quickening: globals | resolve names to slots at compile time, or rewrite the instruction into a specialized form on first execution | <1% (the step 3 cache hit path is ~0.02s/run) | nothing left |
-| static binding / quickening: fields | resolve a field name to its index once per site (an inline cache keyed by the struct typedef), with no type checker needed | ~8–9% | best remaining candidate |
+| static binding / quickening: fields | resolve a field name to its index once per site (an inline cache keyed by the struct typedef), with no type checker needed | ~8–9% | the whole gain came from `FieldRef.find`'s allocations; step 7 gets it without a cache |
 | fewer `coerce` calls | skip conversions that return their input unchanged | ~4–6% | needs a runtime type-match fast path; no compile-time sub-case |
 | value representation and instruction set | unboxed scalars; superinstructions (instruction fusion) | ~13% combined, mostly allocation; fusion alone ~1% | not committed to |
 
@@ -394,11 +399,85 @@ Reading the ceilings:
   representation cost that does show is `runtime.Tag`'s `Named`
   wrapper, 18% of allocated objects.
 
+## Step 7: field lookups (`perf/fieldref-direct-scan`)
+
+Method: an upper-bound build added a per-site field-index cache
+(`bytecode.FieldSite`, keyed by the struct typedef, depth 0 fields only)
+to all three by-name lookups: `OpSelect`, `OpSetField` and `OpFieldRef`
+(`FieldRef.find`). Then one build per lookup kept only that cache.
+Interleaved rounds on grafana-openapi, on top of step 4a. Outputs were
+identical on every side.
+
+| build | median vs step 4a |
+|---|---|
+| all three caches (2 × 11 rounds) | −8.8%, −8.8% |
+| `OpSelect` only (9 rounds) | +1.8% (noise) |
+| `OpSetField` only (9 rounds) | +1.9% (noise) |
+| `OpFieldRef` only (9 rounds) | −8.2% |
+| no cache: depth 0 scan in `FieldRef.find` before the BFS (11 rounds) | −8.7% |
+| same, micro probe (7 rounds) | −0.1% |
+
+The gain is all in `FieldRef.find`, and it is not the name scan. `find`
+built a `level` slice and a `hits` slice on every read and write
+through a field ref (9.05M per run). A direct field is the common case
+and needs neither: depth 0 has one struct, and its field names are
+unique. Scanning `s.Def.Fields` first and falling back to the BFS only
+for promoted fields keeps the semantics and drops the allocations.
+
+The name scan in `structMember` and `setField` is cheap at these field
+counts, which is consistent with step 4b. So the per-site cache was
+dropped. It would have added a second site mechanism and a REPL
+invalidation question for no measured gain.
+
+Lesson: step 6's "~8–9%" figure was right in size but wrong in cause.
+The by-name lookup count pointed at a cache. The real cost was the
+allocations in one of the three paths, and splitting the bound per path
+found it.
+
+## Cumulative: the whole stack (#624 → #625 → #629)
+
+One interleaved run of all four builds: main (`9f81e6cb`, the stack's
+base), #624 (step 3), #625 (step 4a) and #629 (step 7). Outputs were
+identical on every side.
+
+| build | grafana-openapi (11 rounds) | vs previous | micro (7 rounds) | vs previous |
+|---|---|---|---|---|
+| main | 3.304s | | 0.830s | |
+| #624 | 2.796s (−15.4%) | −15.4% | 0.579s (−30.2%) | −30.2% |
+| #625 | 2.603s (−21.2%) | −6.9% | 0.604s (−27.2%) | +4.4% (noise) |
+| #629 | 2.408s (−27.1%) | −7.5% | 0.577s (−30.5%) | −4.6% (noise) |
+
+The micro probe has one interface conversion and few field refs, so
+only step 3 moves it. The ±4% between its last three rows is noise.
+
+## Re-measured after rebasing onto `ab53a3b2`
+
+main moved under the stack: the oapi-codegen compatibility stack
+(#638–#649) landed, touching VM stores, return coercions, reflect and
+dispatch. The three layers rebased without conflicts (`gh stack rebase`), and
+lint and `go test ./...` pass on each layer. This was re-measured with the
+same setup as above: one interleaved run of all four builds, outputs
+identical on every side.
+
+| build | grafana-openapi (11 rounds) | vs previous | micro (7 rounds) | vs previous |
+|---|---|---|---|---|
+| main (`ab53a3b2`) | 3.394s | | 0.792s | |
+| #624 | 2.815s (−17.1%) | −17.1% | 0.574s (−27.5%) | −27.5% |
+| #625 | 2.532s (−25.4%) | −10.1% | 0.570s (−28.0%) | −0.7% |
+| #629 | 2.357s (−30.6%) | −6.9% | 0.569s (−28.2%) | −0.2% |
+
+Every step still pays on the new base. The cumulative gain on
+grafana-openapi grew from −27.1% to −30.6% while main itself stayed at
+~3.3–3.4s. The pairwise `compare.sh --full` (5 rounds, main vs each layer)
+agrees: −17.0%, −25.1% and −31.1% on grafana-openapi, no regression, and
+clickhouse-settings unchanged (0.022s on every side).
+
 ## How to re-run
 
-The realworld `compare.sh` (podhmo/minigo-usecasefuzz) needs bash 4
-(`declare -A`), which macOS's bash 3.2 lacks. These experiments
-replicate its steps by hand:
+The realworld `compare.sh` (podhmo/minigo-usecasefuzz) needed bash 4
+(`declare -A`), which macOS's bash 3.2 lacks; podhmo/minigo-usecasefuzz#10
+makes it bash-3.2 compatible. The experiments above replicate its steps by
+hand:
 
 1. Fetch the pinned grafana checkout at the `targets.tsv` SHA
    (`fa8d6e65`) with `git fetch --depth 1`.
