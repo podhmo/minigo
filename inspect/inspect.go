@@ -1051,6 +1051,40 @@ func DeclTypeOf(s *Decl) (*TypeExpr, error) {
 	return NewTypeExpr(t, s.file, s.Package), nil
 }
 
+// InitializerOf returns the initializer expression of a var or const
+// decl — the value aligned with the decl's name position, so
+// `var a, b = e1, e2` reports e1 for a and e2 for b. When one
+// expression serves every name (`a, b = f()`) it is that expression.
+// An empty const spec reports the value it inherits; a spec without
+// initializers (`var x int`) reports nil. Func, type, and host
+// symbols report an error.
+func InitializerOf(s *Decl) (*TypeExpr, error) {
+	if s.decl == nil {
+		return nil, fmt.Errorf("inspect.Initializer: host symbol %s has no declaration", s.Name)
+	}
+	switch s.decl.Kind {
+	case index.VarDecl, index.ConstDecl:
+	default:
+		return nil, fmt.Errorf("inspect.Initializer: %s is a %s, not a var/const", s.Name, s.Kind)
+	}
+	vs, ok := s.decl.Spec.(*ast.ValueSpec)
+	if !ok {
+		return nil, nil
+	}
+	vals := vs.Values
+	if len(vals) == 0 {
+		vals = s.decl.Inherited
+	}
+	if len(vals) == 0 {
+		return nil, nil
+	}
+	i := s.decl.NameIdx
+	if i >= len(vals) {
+		i = 0
+	}
+	return NewTypeExpr(vals[i], s.file, s.Package), nil
+}
+
 // IsAliasOf reports whether a type decl spells an alias declaration
 // (`type X = int`) rather than a defined type (`type X int`) — the `=`
 // in the spec is the only difference, so the two forms partition type

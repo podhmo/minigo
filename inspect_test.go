@@ -53,7 +53,8 @@ func TestInspect(t *testing.T) {
 		"EnumWalk",
 		"AliasWalk",
 		"VarValueRead", // flips the package State to "ready"
-		"PkgMetaView",  // metadata via accessors; member shadow wins (#26)
+		"InitializerView",
+		"PkgMetaView", // metadata via accessors; member shadow wins (#26)
 		"BuiltinPathConst",
 	} {
 		if got := run(t, e, "./testdata/inspectuse", fn); got != "ok" {
@@ -76,6 +77,8 @@ func TestInspect(t *testing.T) {
 		"ImplementersConstraintTrap", // constraint interfaces have no implementers
 		"IsAliasFuncTrap",            // IsAlias is a type view — funcs trap
 		"IsAliasBoundTrap",           // bound types carry no declaration
+		"InitializerFuncTrap",        // Initializer is a value-spec view
+		"InitializerTypeTrap",        // a type decl has no initializer
 		"TypeFieldsIdentTrap",        // a named leaf is not a composite
 		"MethodSetFuncTrap",          // the method set is a type view
 		"ResolveBoundTrap",           // the resolver cannot descend into a bound pkg

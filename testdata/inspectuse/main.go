@@ -1007,6 +1007,59 @@ func PkgMetaView() string {
 	return "ok"
 }
 
+// InitializerView: a var/const decl reports its initializer as a
+// TypeExpr — positional in a multi-name spec, inherited under an
+// empty const spec, nil on a value-less var — and Value serves a
+// const without initializing the package.
+func InitializerView() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+
+	cases := []struct {
+		name string
+		text string
+		kind string
+	}{
+		{"Label", `"lbl"`, "BasicLit"},
+		{"Count", "3", "BasicLit"},
+		{"PB", `"pb"`, "BasicLit"},      // second name of PA, PB = "pa", "pb"
+		{"StatusTodo", "iota", "Ident"}, // empty spec inherits the run's expr
+		{"ForDur", "time.Second", "SelectorExpr"},
+	}
+	for _, c := range cases {
+		te := inspect.Initializer(inspect.Symbol(p, c.name))
+		if te == nil || te.Text != c.text || te.Kind != c.kind {
+			got := "<nil>"
+			if te != nil {
+				got = te.Text + ":" + te.Kind
+			}
+			return "bad initializer for " + c.name + ": " + got
+		}
+	}
+	if te := inspect.Initializer(inspect.Symbol(p, "Bare")); te != nil {
+		return "Bare has no initializer"
+	}
+	// a const reads without the package initializer — the same lookup
+	// grafana's coreplugin needs on `const CloudWatch = "cloudwatch"`.
+	if v := inspect.Value(p, "Label"); *v != "lbl" {
+		return "bad const value"
+	}
+	return "ok"
+}
+
+// InitializerFuncTrap: Initializer is a value-spec view — funcs trap.
+func InitializerFuncTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	inspect.Initializer(inspect.Symbol(p, "Hello"))
+	return "swallowed"
+}
+
+// InitializerTypeTrap: a type decl has no value initializer.
+func InitializerTypeTrap() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	inspect.Initializer(inspect.Symbol(p, "Status"))
+	return "swallowed"
+}
+
 // EnumWalk: enum members collect through EnumMembers, and DeclType
 // reads a value spec's annotation — explicit or iota-inherited.
 func EnumWalk() string {

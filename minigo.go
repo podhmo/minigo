@@ -882,6 +882,7 @@ func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File) error {
 	}
 
 	p.Bootstrap = e.bootstrap
+	p.ConstBootstrap = e.bootstrapConsts
 	return nil
 }
 
@@ -971,6 +972,24 @@ func (e *Engine) bootstrap(p *runtime.Package, run func(*runtime.Function) error
 	}
 	bindCompiles(p, ch)
 	fn := &runtime.Function{Pkg: p, Name: p.Name + ".__init__", Chunk: ch}
+	return run(fn)
+}
+
+// bootstrapConsts runs the const-only initializer of a package via run —
+// constants bind without the var initializers or init() funcs (a constant
+// needs no init). A package whose const specs reference vars or funcs has
+// no const-only path: ConstInitFunc reports nil and the caller falls back
+// to the full initializer.
+func (e *Engine) bootstrapConsts(p *runtime.Package, run func(*runtime.Function) error) error {
+	ch, err := compile.ConstInitFunc(p)
+	if err != nil {
+		return err
+	}
+	if ch == nil {
+		return fmt.Errorf("package %s: const specs need the full initializer", p.Name)
+	}
+	bindCompiles(p, ch)
+	fn := &runtime.Function{Pkg: p, Name: p.Name + ".__consts__", Chunk: ch}
 	return run(fn)
 }
 

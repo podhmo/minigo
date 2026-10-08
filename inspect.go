@@ -407,6 +407,20 @@ func (e *Engine) installInspect() {
 			}
 			return &runtime.GoValue{V: te}, nil
 		}),
+		"Initializer": bf("Initializer", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			s, err := declViewOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			te, err := xinspect.InitializerOf(s)
+			if err != nil {
+				return nil, err
+			}
+			if te == nil {
+				return runtime.NIL, nil
+			}
+			return &runtime.GoValue{V: te}, nil
+		}),
 		"IsAlias": bf("IsAlias", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {

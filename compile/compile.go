@@ -862,6 +862,104 @@ func InitFunc(pkg *runtime.Package) (*bytecode.Chunk, error) {
 	return c.ch, nil
 }
 
+// ConstInitFunc compiles the const-only initializer: const declarations
+// in dependency order, without var specs or init() calls — a constant
+// binds without the package's initialization side effects. It returns
+// (nil, nil) when any const initializer references a package-level var
+// or function name: such a program needs the full initializer (either
+// the code is not really constant, or a builtin operand like len/Sizeof
+// still evaluates the var).
+func ConstInitFunc(pkg *runtime.Package) (*bytecode.Chunk, error) {
+	var specReps []*index.Decl
+	seen := map[*ast.ValueSpec]bool{}
+	for _, d := range pkg.Index.Decls {
+		if d.Kind != index.ConstDecl {
+			continue
+		}
+		vs := d.Spec.(*ast.ValueSpec)
+		if seen[vs] {
+			continue
+		}
+		seen[vs] = true
+		specReps = append(specReps, d)
+	}
+	if constRefsVarOrFunc(pkg.Index, specReps) {
+		return nil, nil
+	}
+
+	c := &compiler{pkg: pkg, fs: newFScope(nil), ch: &bytecode.Chunk{Name: pkg.Name + ".__consts__"}, iotaVal: -1}
+	c.fs.pushBlock()
+
+	// same iota plumbing as InitFunc: a hidden local backs the `iota`
+	// builtin inside const specs.
+	iotaSlot := c.fs.declare("iota", token.NoPos)
+	c.fs.iota = iotaSlot
+	c.emit(bytecode.OpConst, c.constIdx(int64(0)), 0, 0)
+	c.emit(bytecode.OpNewLocal, iotaSlot, 0, 0)
+
+	for _, d := range orderSpecs(pkg.Index, specReps) {
+		c.file = d.File
+		c.emit(bytecode.OpConst, c.constIdx(int64(d.Idx)), 0, d.Pos)
+		c.emit(bytecode.OpSetLocal, iotaSlot, 0, d.Pos)
+		c.iotaVal = d.Idx
+		c.valueSpec(d.Spec.(*ast.ValueSpec), d)
+		c.iotaVal = -1
+	}
+	c.emit(bytecode.OpReturn, 0, 0, 0)
+	c.ch.NLocals = c.fs.nlocals
+	c.ch.Upvals = c.fs.upvals
+	return c.ch, nil
+}
+
+// constRefsVarOrFunc reports whether any const spec's effective value or
+// type expression names a package-level var or function — references a
+// const-only init cannot serve (var cells stay unbound, and calling a
+// function would be a side effect a constant never has). Type and
+// method names are fine: typedef materialization and member selection
+// run no initializers.
+func constRefsVarOrFunc(ix *index.Index, reps []*index.Decl) bool {
+	bad := false
+	scan := func(e ast.Expr) {
+		if e == nil || bad {
+			return
+		}
+		ast.Inspect(e, func(n ast.Node) bool {
+			if bad {
+				return false
+			}
+			id, ok := n.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			if _, ok := ix.Vars[id.Name]; ok {
+				bad = true
+				return false
+			}
+			if _, ok := ix.Funcs[id.Name]; ok {
+				bad = true
+				return false
+			}
+			return true
+		})
+	}
+	for _, d := range reps {
+		vs := d.Spec.(*ast.ValueSpec)
+		vals := vs.Values
+		if len(vals) == 0 {
+			vals = d.Inherited
+		}
+		for _, e := range vals {
+			scan(e)
+		}
+		t := vs.Type
+		if t == nil {
+			t = d.InheritedType
+		}
+		scan(t)
+	}
+	return bad
+}
+
 // isIfaceTypeExpr reports whether e syntactically names an interface
 // type: `interface{...}`, `any`, `error`, a local `type I interface{}`
 // decl, or a package typedef whose spec is an interface. Used to pick

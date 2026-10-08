@@ -133,6 +133,9 @@ const ForDur time.Duration = time.Second
 // CurrentStatus is a var of the enum type — not an enum member.
 var CurrentStatus Status = StatusTodo
 
+// Bare declares no initializer.
+var Bare int
+
 // Talker embeds Speaker and adds a named method spec.
 type Talker interface {
 	Speaker
