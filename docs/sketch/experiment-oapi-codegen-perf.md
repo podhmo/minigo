@@ -996,17 +996,29 @@ So with this design the realistic floor for strict is perhaps
 
 In rough order of expected gain:
 
-1. **More host components behind data-only boundaries.** Step 17's
-   `srcImpl` replaces one source method with host code. It is safe
-   when values cross as plain data (strings, bytes, ints, fresh
-   structs) and the host keeps no script-visible state. That is
-   unlike step 13, whose trees were shared mutable objects.
-   Candidates:
-   - `compress/flate` (5.5% of instructions in step 6; bytes in,
-     bytes out)
-   - json's `jsonwire`/`jsontext` tokenizer
-   - yaml3's scanner
-   - in the shipped program, `go/scanner` and `go/printer`
+1. **More host components, at data-only boundaries.** This does not
+   mean binding whole packages. A plain package binding is correct
+   only when all four of these hold:
+   - (a) the callers' public API is the boundary;
+   - (b) values cross as data (bytes, strings, numbers) or as opaque
+     handles that script code never copies, reslices or writes into;
+   - (c) the host never calls back into script funcs or methods;
+   - (d) the bound code's version is the one its callers expect.
+
+   `imports.Process` (step 6) meets all four: bytes in, bytes out.
+   Step 13's parse binding broke (b), because its trees were shared
+   mutable objects. Where no public boundary qualifies, step 17's
+   `srcImpl` can still replace one internal method whose inputs and
+   outputs are plain data. The candidates, judged by these four:
+
+   | candidate | plain binding? | why |
+   |---|---|---|
+   | `compress/flate` (5.5% of instructions, step 6) | likely yes | bytes in, bytes out, opaque state. The only callback is a synchronous `io.Writer`/`io.Reader` call, which minigo already handles. |
+   | `go/scanner` (shipped program) | `srcImpl` at most | `Scan` returns plain `(pos, tok, lit)`. But go/parser embeds `scanner.Scanner` by value and passes it a script error handler and a `token.File`. Copying an embedded host value aliases it (TODO: host-backed value copies). |
+   | json's `jsontext` tokenizer | `srcImpl` at most | Fails (a): json/v2 reaches jsontext's unexported state through internal packages. Binding all of json fails (c): it must call script `UnmarshalJSON`. |
+   | `go/printer` (shipped program) | no | Fails (b): it takes the script AST, which goimports rewrites first. Binding go/ast too would make the AST host values, with step 13's aliasing. |
+   | yaml3's scanner | no | It is unexported internals of a third-party module (d). The scanner and parser interleave over one mutable parser struct and token queue, so there is no data-only seam. |
+
 2. **Amortize load across lines.** Either cache compiled chunks on disk
    (keyed by file hash and minigo version), or run many `go:generate`
    lines in one engine. Both remove the per-line fixed cost; the
