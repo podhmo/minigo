@@ -78,3 +78,56 @@ func RepanicPlain() {
 	defer func() { panic("chain-new") }()
 	panic("chain-old")
 }
+
+// --- panic payload shapes (gc's printpanics contract) ---
+
+// panicError implements error on the pointer receiver.
+type panicError struct{ msg string }
+
+func (e *panicError) Error() string { return e.msg }
+
+// panicStringer implements fmt.Stringer.
+type panicStringer struct{}
+
+func (s panicStringer) String() string { return "stringer text" }
+
+// panicScalar is a package-declared named scalar — gc prints its panic
+// payload as `main.panicScalar(v)`.
+type panicScalar int
+
+// panicPoint is a plain struct: its panic payload has no method text,
+// so gc renders `(type) 0xADDR`.
+type panicPoint struct{ x, y int }
+
+// PanicErrorValue panics with a script error pointer — the fatal render
+// calls its Error() instead of dumping the value.
+func PanicErrorValue() { panic(&panicError{msg: "script error text"}) }
+
+// PanicErrorValueRecv panics with a bare struct whose Error() is on the
+// pointer receiver — a value does not implement error, so gc renders
+// `(main.panicError) 0xADDR`.
+func PanicErrorValueRecv() { panic(panicError{msg: "x"}) }
+
+// PanicStringer panics with a fmt.Stringer payload — the fatal render
+// calls String().
+func PanicStringer() { panic(panicStringer{}) }
+
+// PanicNamedScalar panics with a package-declared named scalar — gc
+// prints `main.panicScalar(3)`.
+func PanicNamedScalar() { panic(panicScalar(3)) }
+
+// PanicStruct and PanicStructPtr panic with method-less composites —
+// gc renders `(type) 0xADDR`.
+func PanicStruct()    { panic(panicPoint{x: 1, y: 2}) }
+func PanicStructPtr() { panic(&panicPoint{x: 1, y: 2}) }
+func PanicSlice()     { panic([]int{1, 2}) }
+
+// PanicErrorChain repanics over a script-error payload: the chain keeps
+// the [recovered] marker on the Error() text.
+func PanicErrorChain() {
+	defer func() {
+		recover()
+		panic("chain-head")
+	}()
+	panic(&panicError{msg: "chain-tail"})
+}

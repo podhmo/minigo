@@ -402,6 +402,40 @@ func TestPanicTraceback(t *testing.T) {
 		}
 	}
 
+	// --- payload rendering (gc's printpanics contract) ---
+	// a script error payload prints its Error() text, not a value dump.
+	for _, c := range []struct {
+		fn   string
+		want string
+	}{
+		{"PanicErrorValue", "panic: script error text"},
+		// a value whose Error() sits on the pointer receiver does not
+		// implement error: gc renders `(type) 0xADDR` instead.
+		{"PanicErrorValueRecv", "panic: (main.panicError) 0x"},
+		{"PanicStringer", "panic: stringer text"},
+		{"PanicNamedScalar", "panic: main.panicScalar(3)"},
+		{"PanicStruct", "panic: (main.panicPoint) 0x"},
+		{"PanicStructPtr", "panic: (*main.panicPoint) 0x"},
+		{"PanicSlice", "panic: ([]int) 0x"},
+	} {
+		got = runErr(c.fn)
+		if !strings.HasPrefix(got, c.want) {
+			t.Errorf("%s: want prefix %q, got:\n%s", c.fn, c.want, got)
+		}
+		if strings.Contains(got, "&{") {
+			t.Errorf("%s: payload still renders as a value dump:\n%s", c.fn, got)
+		}
+	}
+
+	// a recovered-then-repanicked script-error payload renders gc's
+	// chain: `panic: <Error() text> [recovered]` / `\tpanic: new`.
+	got = runErr("PanicErrorChain")
+	for _, want := range []string{"panic: chain-tail [recovered]", "\n\tpanic: chain-head"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("PanicErrorChain missing %q:\n%s", want, got)
+		}
+	}
+
 	// a generic frame renders its instantiation
 	_, err := e.Run(context.Background(), "./testdata/traceback", "Id", int64(1))
 	if err == nil {

@@ -435,7 +435,9 @@ func builtins(e *Engine) *runtime.Env {
 		case runtime.Nil, *runtime.IfaceNil:
 			panic(&runtime.Panic{Value: &runtime.PanicNilError{}})
 		}
-		panic(&runtime.Panic{Value: args[0]})
+		// VC lets Error() render a script payload's Error()/String()
+		// text — `panic(err)` prints like gc's, not a value dump.
+		panic(&runtime.Panic{Value: args[0], VC: v})
 	})
 	bf("recover", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		return v.Recover(), nil

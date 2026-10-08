@@ -4404,7 +4404,7 @@ type scriptError struct {
 }
 
 func (e *scriptError) Error() string {
-	s, ok := callStringer(e.c, e.v, "Error")
+	s, ok := runtime.IfaceCallString(e.c, e.v, "Error")
 	if !ok {
 		return fmt.Sprintf("%v", goNative(e.v))
 	}
@@ -4750,38 +4750,38 @@ func (s *fmtValue) render(verb rune, f fmt.State) string {
 		case 'v':
 			if f.Flag('#') {
 				// %#v consults GoString, not String/Error.
-				if str, ok := callStringer(s.c, s.x, "GoString"); ok {
+				if str, ok := runtime.IfaceCallString(s.c, s.x, "GoString"); ok {
 					return str
 				}
 				break
 			}
 			// Go's fmt consults error before Stringer — a value
 			// implementing both prints its Error().
-			if str, ok := callStringer(s.c, s.x, "Error"); ok {
+			if str, ok := runtime.IfaceCallString(s.c, s.x, "Error"); ok {
 				return withWidth(f, str)
 			}
-			if str, ok := callStringer(s.c, s.x, "String"); ok {
+			if str, ok := runtime.IfaceCallString(s.c, s.x, "String"); ok {
 				return withWidth(f, str)
 			}
 		case 's':
-			if str, ok := callStringer(s.c, s.x, "Error"); ok {
+			if str, ok := runtime.IfaceCallString(s.c, s.x, "Error"); ok {
 				return withWidth(f, str)
 			}
-			if str, ok := callStringer(s.c, s.x, "String"); ok {
+			if str, ok := runtime.IfaceCallString(s.c, s.x, "String"); ok {
 				return withWidth(f, str)
 			}
 		case 'q':
-			if str, ok := callStringer(s.c, s.x, "Error"); ok {
+			if str, ok := runtime.IfaceCallString(s.c, s.x, "Error"); ok {
 				return strconv.Quote(str)
 			}
-			if str, ok := callStringer(s.c, s.x, "String"); ok {
+			if str, ok := runtime.IfaceCallString(s.c, s.x, "String"); ok {
 				return strconv.Quote(str)
 			}
 		case 'x', 'X':
-			if str, ok := callStringer(s.c, s.x, "Error"); ok {
+			if str, ok := runtime.IfaceCallString(s.c, s.x, "Error"); ok {
 				return fmt.Sprintf("%"+string(verb), str)
 			}
-			if str, ok := callStringer(s.c, s.x, "String"); ok {
+			if str, ok := runtime.IfaceCallString(s.c, s.x, "String"); ok {
 				return fmt.Sprintf("%"+string(verb), str)
 			}
 		}
@@ -5714,7 +5714,7 @@ func withWidth(f fmt.State, s string) string {
 // callFormat invokes a script fmt.Formatter — Format(fmt.State, rune) —
 // handing the live printer through as a host value so the method's
 // writes land on the real output (math/big's %d). An absent or
-// panicking method reports false, like callStringer.
+// panicking method reports false, like IfaceCallString.
 func callFormat(c runtime.VMCaller, x runtime.Value, f fmt.State, verb rune) bool {
 	m, ok := runtime.IfaceMember(c, x, "Format")
 	if !ok {
@@ -5725,23 +5725,6 @@ func callFormat(c runtime.VMCaller, x runtime.Value, f fmt.State, verb rune) boo
 		&runtime.UConst{V: constant.MakeInt64(int64(verb)), Rune: true},
 	})
 	return err == nil
-}
-
-// callStringer invokes a declared String()/Error() method through the VM
-// when the value's method set offers one (a pointer receiver on a bare
-// value does not count — Go prints the struct instead); a panicking or
-// absent method reports false.
-func callStringer(c runtime.VMCaller, x runtime.Value, name string) (string, bool) {
-	m, ok := runtime.IfaceMember(c, x, name)
-	if !ok {
-		return "", false
-	}
-	r, err := c.Call(m, nil)
-	if err != nil {
-		return "", false
-	}
-	s, ok := r.(string)
-	return s, ok
 }
 
 // fmtArgs maps script call args to host fmt args: a multi-value call
