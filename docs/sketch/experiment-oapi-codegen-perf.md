@@ -2,12 +2,12 @@
 
 Status: in progress. Branch `fix/oapi-codegen-regressions` carries the
 two regression fixes found on the way (step 0).
-`perf/sync-builtin-callbacks` is stacked on it and carries steps 4–9.
+`perf/sync-builtin-callbacks` is stacked on it and carries steps 4–10.
 
 Steps 0–5 measured the program as shipped, goimports included. From
 step 6 on, the baseline binds goimports natively. The index and an
 interpreted goimports are workload facts, not interpreter tuning. Steps
-6–9 ask what the interpreter itself can lose from there.
+6–10 ask what the interpreter itself can lose from there.
 
 Question: oapi-codegen under minigo takes ~6s per `go:generate` line
 (~50x native). The workload executes nearly the whole program
@@ -21,8 +21,8 @@ so it can be re-run, the numbers, and the verdict.
 
 ## Verdict so far
 
-**From the native-goimports baseline (steps 6–9):**
-`petstore-expanded/strict` goes from ~1.95s to 1.70s (−13%) with four
+**From the native-goimports baseline (steps 6–10):**
+`petstore-expanded/strict` goes from ~1.95s to 1.68s (−14%) with five
 small commits, and the output stays byte-identical. Three findings:
 
 - The remaining cost is diffuse. No mutator function holds more than
@@ -505,16 +505,36 @@ in TODO.md.
 
 ### Next candidates
 
-- **Untyped constants are converted on every execution.**
-  `adaptConst` → `constToBasic` → `runtime.Tag` runs for `r == ' '`
-  each time and allocates a `Named`. In the call micro benchmark it is
-  16% of samples. A per-constant single-entry cache of
-  (typedef → value) would remove both the conversion and the
-  allocation. It needs care: `Named` values must be immutable, and
-  cache writes need atomics.
 - **`prepFrame` allocates a `Cell` per local** on every call, plus the
   frame and its locals slice.
 - **Load and compile (~0.47s, ~25% of wall)** is untouched.
+
+## Step 10: untyped constants memoize their conversion (`5211ff88`)
+
+A chunk constant is one shared `*UConst`. `OpConst` pushes the pointer
+itself. Every `r == ' '` re-ran the conversion
+`adaptConst` → `constToBasic` → `fitsIntConst` (go/constant), and
+against a named operand it also allocated a fresh `Named` through
+`runtime.Tag`.
+
+`UConst` now carries a single-entry `atomic.Pointer` memo. It is keyed
+by what decides the conversion: the operand's typedef for named
+operands, or the scalar kind for bare `int64`/`float64`/`string`/`bool`
+operands. Only immutable results are stored. A miss (a constant used
+against alternating types) re-converts as before.
+`testdata/difffuzz/uconst_memo_types` alternates one site over seven
+operand types, including across goroutines, and passes under `-race`.
+
+| | before | after |
+|---|---|---|
+| call micro benchmark | 540 ns/iter | 480 ns/iter (−11%) |
+| strict (9 rounds) | 1.712s | 1.684s (−1.6%) |
+
+The micro benchmark compares a rune against four constants per call,
+so it gains far more than oapi-codegen. On `strict`'s Linux profile the
+conversion functions disappear; only `constPayload` is left, at 0.3%.
+Constants were a hot spot of the lexer-shaped micro benchmark, not of
+the workload.
 
 ## How to re-run
 
