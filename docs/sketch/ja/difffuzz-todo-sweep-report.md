@@ -688,7 +688,7 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 
 ## 6.19 実施ラウンド（round-17）: Stack #671 — difffuzz PENDING 残件掃討・修正4 PR・全体差分レビュー
 
-発端は round-16 までと同じ、TODO.md の difffuzz 系残件を「1 root cause = 1 PR」で直列掃討する指示（CAP=10、基本ソロ・子セッションはレビュー委譲のみ）。成果: **Stack #671 に計10 PR（PENDING 修正5・レビュー対応4・本レポート）**。前ラウンド末に残っていた PENDING pin 6件全てに着手し、4件は昇格（PENDING 除去）、2件は gc のコンパイル拒否＝runtime trap 形で根因修正の上 PENDING 残置とした。その後の全差分レビュー（子セッション委譲）でバグ3件を修正・リファクタ1件を適用し、レビュー対応の pin も3件追加した（`dur_iface_methodset`・`geninfer_typedconst`・`geninfer_const_join`）。
+発端は round-16 までと同じ、TODO.md の difffuzz 系残件を「1 root cause = 1 PR」で直列掃討する指示（CAP=10、基本ソロ・子セッションはレビュー委譲のみ）。成果: **計13 PR（PENDING 修正5・レビュー対応7・本レポート、Stack #671 → #692 → 再 stack）**。前ラウンド末に残っていた PENDING pin 6件全てに着手し、4件は昇格（PENDING 除去）、2件は gc のコンパイル拒否＝runtime trap 形で根因修正の上 PENDING 残置とした。その後の全差分レビュー（子セッション委譲）でバグ3件を修正・リファクタ1件を適用し、レビュー対応の pin も3件追加した（`dur_iface_methodset`・`geninfer_typedconst`・`geninfer_const_join`）。
 
 ### 実施内容
 
@@ -738,9 +738,38 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 
 ### 残りの状況
 
-- Stack #671 は修正5 PR + レビュー対応4 PR + 本レポート = 計10 PR（CAP=10 到達）。全 open、マージはユーザー側。
+- Stack #671 → #692 → 第2レビュー対応後の再 stack で計13 PR（修正5・レビュー対応7・本レポート。レビュー対応は CAP 外）。全 open、マージはユーザー側。
 - TODO 残件 `[ ]`（difffuzz 系）: deadlock 検出（機能項目）のみ。`mapkey_namedstruct`・`ptrconv_ptrptr` の PENDING pin は trap 形の記録として残置（want.stdout が trap を表現できないため昇格不可）。
 - corpus sweep / gen hunt の深掘りは本ラウンドでは未着手 — 6 pin 全件の根因潰し＋レビュー＋帳簿でこのラウンドの枠を使い切った判断。次ラウンドの先頭案件として残置。
+
+### 追記: 第2エージェントレビュー対応（round-17 続き）
+
+レポート後に別エージェントのレビューが届いた。対象はレビュー修正系（#685–#689）を含まない先端 `3f003759` で、バグ8件・リファクタ提案複数を報告。全件を先端で実機再現してから判定した。
+
+**バグ8件 — 重複2・新規6（全て要 → 2 PR）**
+
+| # | 指摘 | 判定 |
+|---|------|------|
+| 1 | `untypedConstArg` が `int8(3)` を defer | 重複 — B-2（#687）で修正済み |
+| 2 | 生 Duration の空 method set | 重複 — B-1（#685）で修正済み |
+| 3 | `delete` が宣言キー型への変換をしない — `map[float64]int{1:7}; delete(m,1)` で要素残留（SILENT） | 要 → builtin が `VMCaller.MapKeyOperand`（新設）経由で index と同じキー検査・変換を実行（[#693](https://github.com/podhmo/minigo/pull/693)、pin `mapkey_delete`）。`delete(m, B{1})` の trap 化で mapkey_namedstruct の残存も解消 |
+| 4–8 | 生 Duration を int64 として読まない全サイト — `a[d]` trap、`a[d:]` 暗黙デフォルト（SILENT）、`min/max` 誤順（SILENT）、`1<<d` trap、`^d` trap | 要 → 同一機構（#669 の raw payload 変更が int64-only リーダーを全て直撃）として1 PR。`smallIntOf` を `runtime.SmallIntOf` に昇格し index/bounds/litKeyIndex/shiftCount/UnXor/orderedLess の6サイトで共有（[#694](https://github.com/podhmo/minigo/pull/694)、pin `dur_scalar_reads`） |
+
+**リファクタ — 要2・残りは不要/既対応**
+
+| # | 指摘 | 判定 |
+|---|------|------|
+| R-1 | `defaultConstTypedef` が `typeOfValue` の UConst 分岐と完全一致 | 要 → `v.typeOfValue(u)` に委譲して削除（`untypedConstArg` はメソッド化。`uconstDefaultName` も fold）（[#695](https://github.com/podhmo/minigo/pull/695)） |
+| R-2 | `constFits` が既存の `fitsIntConst`/`constToBasic` を再実装＋範囲チェック欠落 | 要 → int 系は `fitsIntConst`（幅チェック付き — `200` が int8 に「fit」する latent 穴も塞がる）、float 系は `constToBasic`（Inf 拒否）に委譲（同上） |
+| convert 重複2件 | #689 で対応済み | — |
+| `smallIntOf` 共有 / `mapKeyOperand` の delete 共有 | #694 / #693 の修正実装として採用 | — |
+| `mapKeyTypedef`↔`elemTypedef` 統合、`hostScalarValue`、`elemOf`、cache | 不要 — 目的の異なる別処理・未計測（前回 R-6/R-8 と同じ理由） | — |
+
+**計画外の記録と判断（追記分）**
+
+- **#669 の payload 変更は「読み取りサイト網羅」が別機構だった**: 生 host scalar 化は `selectMember`・`binOp`（`smallIntOf` 経由）・`eqlValue`（`case time.Duration`）は既対応だったが、index/bounds/shift/unary/orderedLess の「int64 にしか見えない」読み取りが6箇所残っていた。片方ずつ対応するたび次が露出する形 — 今回で主要経路は `SmallIntOf` に統一した。
+- **`delete` のキー検査は「存在しない値の検査」だった**: index 経路は「読み取る値」の検査だが delete は map の中身を見ずに宣言型だけを見る — nil map でも gc は静的に拒否するので TypedNil/IfaceNil でも検査を走らせた（`check` 経路）。
+- **レビューの再現バイナリは先端ではなく旧先端**: 指摘1,2 は既修正だった（前回レビューと同じ構造 — レビュー提出時点で新しい修正が乗り始めていた）。「先端で再現してから直す」運用がそのまま効いた。
 
 ### 不備の振り返り（メモ）
 
