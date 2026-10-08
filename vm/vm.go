@@ -10118,7 +10118,7 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		}
 	}
 	if tn, ok := x.(*runtime.TypedNil); ok {
-		if sameTypeDef(tn.Typ, td) || v.tdShapeEq(tn.Typ, td) {
+		if sameTypeDef(tn.Typ, td) || v.tdShapeEq(tn.Typ, td) || v.samePointeeAlias(tn.Typ, td) {
 			return &runtime.TypedNil{Typ: td} // re-tag to the declared type
 		}
 		f.trap("cannot use nil %s as %s", tdName(tn.Typ), tdName(td))
@@ -10149,8 +10149,14 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		// pointer's element type (a named pointer binds only its own
 		// pointee type); untyped pointees defer to the shape check.
 		if ptag := v.pointeeTag(x); ptag != nil {
+			// an alias pointee (`type cache = [256]string`, new(cache))
+			// IS its target: peel it, and an unnamed target compares by
+			// shape like any other anonymous type.
+			pt := v.peelAlias(ptag)
 			if et, err := v.H.ElemOf(utd); err == nil && et != nil &&
-				!sameTypeDef(ptag, et) && !sameTypeDef(ptag, v.peelAlias(et)) {
+				!sameTypeDef(ptag, et) && !sameTypeDef(ptag, v.peelAlias(et)) &&
+				!sameTypeDef(pt, v.peelAlias(et)) &&
+				(tagIsNamed(pt) || !v.tdShapeEq(pt, et)) {
 				f.trap("cannot use %s as %s", "&"+tdName(ptag), tdName(td))
 			}
 		}
@@ -10332,6 +10338,25 @@ func (v *VM) tdShapeEq(a, b *runtime.TypeDef) bool {
 		return runtime.TypSpelling(pa.Anon, pa) == runtime.TypSpelling(pb.Anon, pb)
 	}
 	return pa.Anon == nil && pb.Anon == nil
+}
+
+// samePointeeAlias reports whether two anonymous pointer typedefs point
+// at the same type once aliases peel — a nil *inner.Tree binds *tree for
+// `type tree = inner.Tree` (kin-openapi's originTree).
+func (v *VM) samePointeeAlias(a, b *runtime.TypeDef) bool {
+	if a == nil || b == nil || a.Kind != runtime.KindPointer || b.Kind != runtime.KindPointer ||
+		a.Spec != nil || b.Spec != nil || v.H.ElemOf == nil {
+		return false
+	}
+	ea, err := v.H.ElemOf(a)
+	if err != nil || ea == nil {
+		return false
+	}
+	eb, err := v.H.ElemOf(b)
+	if err != nil || eb == nil {
+		return false
+	}
+	return sameTypeDef(v.peelAlias(ea), v.peelAlias(eb))
 }
 
 // tdShapeEval is tdShapeEq with evaluated array lengths: `[len(x)]*T`
@@ -11109,7 +11134,9 @@ func (v *VM) instantiate(f *frame, base runtime.Value, targs []runtime.Value, po
 		if len(g.TParams) == 0 {
 			return v.indexFallback(f, base, targs)
 		}
-		if len(targs) != len(g.TParams) {
+		// a partial list (slices.Grow[S]) leaves the trailing params to
+		// constraint/argument inference.
+		if len(targs) > len(g.TParams) {
 			f.trap("cannot instantiate %s: needs %d type arguments, got %d", g.Name, len(g.TParams), len(targs))
 		}
 		return v.instantiateFunc(f, g, targs)
@@ -11164,8 +11191,26 @@ func (v *VM) instantiateFunc(f *frame, g *runtime.Function, targs []runtime.Valu
 	}
 	bindArgs(binds, g.TParams, targs)
 	ctx := &runtime.TypeDef{Pkg: g.Pkg, File: g.File, Binds: binds}
-	if err := v.checkTArgs(ctx, g.TParams, g.TConstraints, binds); err != nil {
-		f.trap("%s", err)
+	if len(targs) < len(g.TParams) {
+		tset := map[string]bool{}
+		for _, t := range g.TParams[len(targs):] {
+			if _, ok := binds[t]; !ok {
+				tset[t] = true
+			}
+		}
+		v.inferCoreTypes(ctx, tset, binds, g.TParams, g.TConstraints)
+	}
+	complete := true
+	for _, t := range g.TParams {
+		if _, ok := binds[t]; !ok {
+			complete = false
+		}
+	}
+	// still-unbound params are inferred (and checked) at the call
+	if complete {
+		if err := v.checkTArgs(ctx, g.TParams, g.TConstraints, binds); err != nil {
+			f.trap("%s", err)
+		}
 	}
 	return &runtime.Function{
 		Pkg: g.Pkg, File: g.File, Decl: g.Decl, Name: g.Name,
@@ -11655,6 +11700,7 @@ func (v *VM) inferBinds(fn *runtime.Function, args []runtime.Value, statics []*r
 			v.unifyTypeDef(ctx, tset, binds, et, spreadTd)
 		}
 	}
+	v.inferCoreTypes(ctx, tset, binds, fn.TParams, fn.TConstraints)
 	if len(binds) == len(fn.Binds) {
 		return fn, nil // nothing inferred
 	}
@@ -11667,6 +11713,63 @@ func (v *VM) inferBinds(fn *runtime.Function, args []runtime.Value, statics []*r
 		TParams: fn.TParams, TConstraints: fn.TConstraints,
 		Binds: binds, Compile: fn.Compile,
 	}, nil
+}
+
+// inferCoreTypes is Go's constraint type inference: a bound parameter
+// whose constraint has a core type (`Map ~map[K]V`, `S ~[]E`) teaches the
+// parameters that core type mentions — maps.Values(m) learns K and V from
+// Map. It repeats while a round binds something new.
+func (v *VM) inferCoreTypes(ctx *runtime.TypeDef, tset map[string]bool, binds map[string]runtime.Value, tparams []string, cons []ast.Expr) {
+	for changed := true; changed; {
+		changed = false
+		for i, tp := range tparams {
+			if i >= len(cons) {
+				break
+			}
+			core := coreTypeExpr(cons[i])
+			if core == nil {
+				continue
+			}
+			td := typedefOf(binds[tp])
+			if td == nil {
+				continue
+			}
+			u := v.peelNamed(td)
+			if u == nil {
+				continue
+			}
+			if u.Anon == nil && u.Spec != nil {
+				// a declared container (`type M map[string]int`): unify
+				// against its underlying type expression.
+				u = &runtime.TypeDef{Kind: u.Kind, Anon: u.Spec.Type, Pkg: u.Pkg, File: u.File, Binds: u.Binds}
+			}
+			before := len(binds)
+			v.unifyTypeDef(ctx, tset, binds, core, u)
+			changed = changed || len(binds) > before
+		}
+	}
+}
+
+// coreTypeExpr extracts the single composite type element of a
+// constraint — `~[]E`, `[]E`, `interface{ ~map[K]V }` — or nil.
+func coreTypeExpr(c ast.Expr) ast.Expr {
+	switch t := c.(type) {
+	case *ast.ParenExpr:
+		return coreTypeExpr(t.X)
+	case *ast.UnaryExpr:
+		if t.Op == token.TILDE && isCompositeTypeExpr(t.X) {
+			return t.X
+		}
+	case *ast.InterfaceType:
+		if t.Methods != nil && len(t.Methods.List) == 1 && len(t.Methods.List[0].Names) == 0 {
+			return coreTypeExpr(t.Methods.List[0].Type)
+		}
+	default:
+		if isCompositeTypeExpr(c) {
+			return c
+		}
+	}
+	return nil
 }
 
 // unifyType learns type-argument binds by walking a parameter's declared
@@ -11738,10 +11841,10 @@ func (v *VM) unifyTypeDef(ctx *runtime.TypeDef, tset map[string]bool, binds map[
 		}
 	case *ast.MapType:
 		if mt, ok := conc.Anon.(*ast.MapType); ok && v.H.ResolveType != nil {
-			if kt, err := v.H.ResolveType(conc, mt.Key); err == nil {
+			if kt, err := v.resolveOperandType(conc, mt.Key); err == nil {
 				v.unifyTypeDef(ctx, tset, binds, p.Key, kt)
 			}
-			if vt, err := v.H.ResolveType(conc, mt.Value); err == nil {
+			if vt, err := v.resolveOperandType(conc, mt.Value); err == nil {
 				v.unifyTypeDef(ctx, tset, binds, p.Value, vt)
 			}
 		}
@@ -11763,6 +11866,21 @@ func (v *VM) unifyTypeDef(ctx *runtime.TypeDef, tset map[string]bool, binds map[
 	case *ast.IndexListExpr:
 		v.unifyIndices(ctx, tset, binds, p.X, p.Indices, conc)
 	}
+}
+
+// resolveOperandType resolves a type expression inside conc's own type
+// (a map key or value) to the typedef it denotes. ResolveType peels *T to
+// T — right for method sets, wrong here: map[string]E over
+// map[string]*Item must bind E=*Item — so a pointer expr becomes an
+// anonymous pointer typedef in conc's context.
+func (v *VM) resolveOperandType(conc *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, error) {
+	if px, ok := x.(*ast.ParenExpr); ok {
+		return v.resolveOperandType(conc, px.X)
+	}
+	if _, ok := x.(*ast.StarExpr); ok {
+		return &runtime.TypeDef{Kind: runtime.KindPointer, Anon: x, Pkg: conc.Pkg, File: conc.File, Binds: conc.Binds}, nil
+	}
+	return v.H.ResolveType(conc, x)
 }
 
 // unifyFieldTypes zips two flattened field lists (params or results):
@@ -11788,7 +11906,7 @@ func (v *VM) unifyFieldTypes(ctx *runtime.TypeDef, tset map[string]bool, binds m
 			// approximate by unifying the element against the param as-is.
 			pv = peEl.Elt
 		}
-		ct, err := v.H.ResolveType(concCtx, cvv)
+		ct, err := v.resolveOperandType(concCtx, cvv)
 		if err != nil || ct == nil {
 			continue
 		}
@@ -12147,6 +12265,20 @@ func (v *VM) builtinTypedef(name string) *runtime.TypeDef {
 // self-referential ones like `A Adder[A]` (Go 1.26), which check the
 // constraint's required methods against the argument's method set.
 func (v *VM) checkTArgs(ctx *runtime.TypeDef, tparams []string, cons []ast.Expr, binds map[string]runtime.Value) error {
+	if ctx != nil && len(binds) > 0 {
+		// constraint elements may mention the other type parameters
+		// (`S ~[]E`): spell them with this instantiation's binds.
+		c := *ctx
+		c.TParams = tparams
+		c.Binds = make(map[string]runtime.Value, len(ctx.Binds)+len(binds))
+		for k, b := range ctx.Binds {
+			c.Binds[k] = b
+		}
+		for k, b := range binds {
+			c.Binds[k] = b
+		}
+		ctx = &c
+	}
 	for i, tp := range tparams {
 		if i >= len(cons) {
 			break
@@ -12231,7 +12363,26 @@ func (v *VM) satisfiesTypeElem(ctx *runtime.TypeDef, e ast.Expr, td *runtime.Typ
 		if t.Op == token.TILDE {
 			// `~int` matches any type whose UNDERLYING type is int —
 			// a named `type MyInt int` satisfies it; peel the argument.
-			return underlyingNameOf(v.peelNamed(td)) == typeExprName(t.X)
+			u := v.peelNamed(td)
+			if underlyingNameOf(u) == typeExprName(t.X) {
+				return true
+			}
+			// a composite element usually mentions the other type
+			// parameters (`S ~[]E` in slices.Sort): spell it with the
+			// instantiation's binds (checkTArgs puts them on ctx).
+			// A parameter not inferred yet (E, bound later from S's core
+			// type) leaves only the composite's kind to check.
+			if ctx != nil && isCompositeTypeExpr(t.X) {
+				if mentionsUnbound(t.X, ctx) {
+					return compositeKindMatches(t.X, u)
+				}
+				// only the argument's outer layer peels: E keeps its
+				// declared identity inside `[]E` (TypSpelling, not the
+				// underlying view, which would expand a named E).
+				el := &runtime.TypeDef{Pkg: ctx.Pkg, File: ctx.File, Binds: ctx.Binds}
+				return runtime.TypSpelling(t.X, el) == v.underlyingShape(td)
+			}
+			return false
 		}
 		return v.satisfiesTypeElem(ctx, t.X, td)
 	case *ast.ParenExpr:
@@ -12272,6 +12423,57 @@ func (v *VM) satisfiesTypeElem(ctx *runtime.TypeDef, e ast.Expr, td *runtime.Typ
 	default:
 		return typeExprName(e) == tdNameOrAnon(td)
 	}
+}
+
+// mentionsUnbound reports whether e names one of ctx's type parameters
+// that has no bind yet.
+func mentionsUnbound(e ast.Expr, ctx *runtime.TypeDef) bool {
+	found := false
+	ast.Inspect(e, func(n ast.Node) bool {
+		id, ok := n.(*ast.Ident)
+		if !ok || found {
+			return !found
+		}
+		for _, tp := range ctx.TParams {
+			if tp == id.Name {
+				if _, bound := ctx.Binds[tp]; !bound {
+					found = true
+				}
+			}
+		}
+		return true
+	})
+	return found
+}
+
+// compositeKindMatches reports whether td has the kind a composite type
+// expression spells (`[]E`, `map[K]V`, `*T`, `chan T`, `func(...)`).
+func compositeKindMatches(e ast.Expr, td *runtime.TypeDef) bool {
+	if td == nil {
+		return false
+	}
+	switch e.(type) {
+	case *ast.ArrayType:
+		return td.Kind == runtime.KindSlice
+	case *ast.MapType:
+		return td.Kind == runtime.KindMap
+	case *ast.StarExpr:
+		return td.Kind == runtime.KindPointer
+	case *ast.ChanType:
+		return td.Kind == runtime.KindChan
+	case *ast.FuncType:
+		return td.Kind == runtime.KindFunc
+	}
+	return false
+}
+
+// isCompositeTypeExpr reports whether e spells a composite type literal.
+func isCompositeTypeExpr(e ast.Expr) bool {
+	switch e.(type) {
+	case *ast.ArrayType, *ast.MapType, *ast.StarExpr, *ast.ChanType, *ast.FuncType:
+		return true
+	}
+	return false
 }
 
 // satisfiesNamed resolves a named or instantiated constraint element
