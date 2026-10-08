@@ -769,6 +769,51 @@ time is mostly the mutator, and the interpreter loop is the largest
 part. The next candidates are therefore in execution, not in load or
 compile.
 
+## Step 15: generic instantiations compiled per call (`96502314`)
+
+In the allocation profile, `compile.(*compiler).emit` accounted for 10%
+of all bytes (about 85MB per run). At 24 bytes per instruction, that is
+over a million instructions per run. Counting `compile.Func` calls in
+one strict run:
+
+| | calls | decls | instructions |
+|---|---|---|---|
+| before | 17,558 | 1,174 | 1,128,808 |
+| after | 2,923 | | 211,227 |
+
+Before, almost all duplicates were generics. Every call of an inferred
+generic mints a fresh `*runtime.Function` (`inferBinds`,
+`instantiateFunc`), and `EnsureCompiled` compiled each one again:
+`compress/flate.loadLE64` 2,696 times, `cmp.isNaN` 3,387, `cmp.Compare`
+1,515, `slices.pdqsortOrdered` 702.
+
+The chunk depends on the decl, file, name and binds. Bind typedefs are
+embedded as constants, and their kinds steer the compile. The package
+now caches the chunk under a key built from those parts, the same
+sharing `WithBinds` copies already do. A bind is keyed by its pointer,
+with one exception. Call-site inference mints a fresh `string`
+typedef for `isNaN`'s T on every call, so a bare predeclared basic
+typedef is keyed by its name. Its `OuterSpell` is ignored, because that
+only spells function-local names inside a typedef's AST. Each entry
+keeps its binds alive, so the addresses in a key cannot be reused. At
+most 64 instantiations are kept per decl.
+
+The remaining compiles come from binds rebuilt per call: an anonymous
+`[]string` or a re-specialized named slice for `slices.Sort` (702), and
+fresh pointer typedefs for `componentNames` (423). Identity-equal
+keying of those needs a structural key, which risks sharing a chunk
+whose embedded typedef spells differently.
+
+Measurements:
+
+- Strict: 1.080s to 1.001s (9 rounds, −7.3%; an earlier pair gave
+  1.034s to 0.955s).
+- All 53 examples: identical to native, 44.6s (46.2s before).
+- grafana-openapi: identical output.
+
+`generic_inst_chunk_share` checks that shared chunks keep each
+instantiation's types, and `TestInstKey` covers the key.
+
 ## How to re-run
 
 Scripts used (kept outside the repo; reconstructable from this
