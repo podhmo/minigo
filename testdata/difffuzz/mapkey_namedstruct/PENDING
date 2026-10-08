@@ -1,3 +1,7 @@
-gc: compile reject (B{1} not assignable to key type A). minigo accepts:
-map-key write and lookup compare struct values by shape, ignoring the
-declared key type.
+gc: compile reject (B{1} not assignable to key type A). minigo now
+traps `cannot use B as A` — the declared-key check runs on the
+operand's named tag in index/indexOK/setIndex (TRAP is the
+interpreter's form of gc's compile reject; this record stays PENDING
+because want.stdout cannot express an expected trap).
+Residual: delete(m, B{1}) goes through the delete builtin, which has
+no assign-check path, and still accepts the mismatched key.
