@@ -149,6 +149,15 @@ func PanicErrorBadSig()    { panic(sigError{}) }
 func PanicErrorBadParams() { panic(sigErrorParams{}) }
 func PanicStringerBadSig() { panic(sigStringer{}) }
 
+// PanicErrorGoroutine panics a script error payload inside a spawned
+// goroutine: the panic kills the process before the text renders, so
+// the Error() probe runs on a caller detached from the dead proc —
+// gc still prints the Error() text.
+func PanicErrorGoroutine() {
+	go func() { panic(&panicError{msg: "goroutine error text"}) }()
+	select {}
+}
+
 // PanicErrorChain repanics over a script-error payload: the chain keeps
 // the [recovered] marker on the Error() text.
 func PanicErrorChain() {
