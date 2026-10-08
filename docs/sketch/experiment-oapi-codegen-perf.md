@@ -814,6 +814,35 @@ Measurements:
 `generic_inst_chunk_share` checks that shared chunks keep each
 instantiation's types, and `TestInstKey` covers the key.
 
+### Follow-up: structural keys (`b656e5b6`)
+
+Most remaining misses were fresh copies of one type. A `stringSlice`
+had the same Pkg, File, Spec, Anon and Elem on every call, and
+`Compare`'s `[]int` came from the same type expression. Those copies
+come from call-site inference and re-specialization. `componentNames`
+is different: its binds are genuinely different types from different
+call sites.
+
+The key now spells a typedef by what determines it:
+
+- its package, file, spec and type-expression nodes
+- its name and kind
+- its local-type scope and identity counters
+- recursively, its binds, element and display context (`OuterSpell`)
+
+Fields, methods and embeds derive from those. Host-backed typedefs
+still key by pointer.
+
+| | compiles | instructions | strict (9 rounds) |
+|---|---|---|---|
+| pointer keys | 2,923 | 211,227 | 0.965s |
+| structural keys | 1,316 | 150,662 | 0.962s |
+
+That is close to the 1,174 decls, but the wall-time change is within
+noise. The remaining copies were small functions (`Sort`, `Copy`,
+`Compare`). All 53 examples stay identical, at 44.3s; grafana-openapi
+does too.
+
 ## How to re-run
 
 Scripts used (kept outside the repo; reconstructable from this
