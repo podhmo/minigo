@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 
+	"sync/atomic"
+
 	"github.com/podhmo/minigo/syntax"
 )
 
@@ -761,6 +763,18 @@ func (noResolver) ResolveType(*TypeDef, ast.Expr) (*TypeDef, error) { return nil
 func (noResolver) ElemOf(*TypeDef) (*TypeDef, error)                { return nil, nil }
 
 var errNoResolver = fmt.Errorf("no type resolver")
+
+// methodSetEpoch counts in-place edits of a built typedef's method set
+// (a REPL graft onto a live typedef). Caches of interface satisfaction
+// keyed by typedef identity stay valid only within one epoch.
+var methodSetEpoch atomic.Uint64
+
+// MethodSetEpoch reports the current method-set epoch.
+func MethodSetEpoch() uint64 { return methodSetEpoch.Load() }
+
+// MethodSetsChanged must be called after mutating the Methods of a
+// typedef that may already have been checked against an interface.
+func MethodSetsChanged() { methodSetEpoch.Add(1) }
 
 func orResolver(res TypeResolver) TypeResolver {
 	if res == nil {

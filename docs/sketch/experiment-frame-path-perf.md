@@ -1,10 +1,11 @@
 # Experiment: where does grafana-openapi's wall time go?
 
-Status: step 3 is proposed in #624 (`perf/global-site-cache`). The
-other steps live on local experiment branches and are not necessarily
-for merge: `experiment/frame-alloc-batch` (step 1) and
-`experiment/iface-cache-bound` (step 4, upper-bound code, not mergeable
-as is). Commit hashes below refer to those experiment branches.
+Status: step 3 is proposed in #624 (`perf/global-site-cache`), and
+step 4a is stacked on it (`perf/iface-sat-cache`). The other steps live
+on local experiment branches and are not necessarily for merge:
+`experiment/frame-alloc-batch` (step 1) and `experiment/iface-cache-bound`
+(the step 4a upper-bound code). Commit hashes in the step 1 and step 4
+sections refer to those experiment branches.
 
 Question: the realworld profile keeps flagging `prepFrame` as the top
 allocator. Is reducing frame-path allocation the right lever for wall
@@ -247,20 +248,151 @@ and `pkg.Name` resolution via `memberOf` (0.05s).
 Step 1 shows no gain at `GOMAXPROCS=1` either, within noise at 3
 rounds.
 
+## Step 5: step 4a made mergeable (`perf/iface-sat-cache`)
+
+Analysis before implementing:
+
+- What the answer depends on. `methodInfoOfValue` derives the method
+  set from the typedef alone: `Struct.Def` or `Named.Typ`, plus whether
+  the value was reached through a pointer. The one exception is a Named
+  host box whose tag declares no methods. That exposes the boxed
+  value's reflect methods, so it is left uncached. An "unsure"
+  embedded-type result is static too, so it can be cached.
+- Where a method set changes after construction. Only the REPL's
+  pin-mode graft onto a live typedef (`commitWrites`). The index-side
+  graft evicts the typedef from `Globals`, so the next lookup builds a
+  new identity.
+- Where the cache lives. A per-VM map is enough, because each
+  goroutine has its own VM. A size cap (4096, restart when full) guards
+  scripts that mint typedefs per call.
+
+Invalidation: `runtime.MethodSetsChanged` bumps a global epoch. The
+REPL graft calls it, and a VM drops its memo when the epoch has moved.
+Every `Engine.Call` (and every REPL line) runs on a fresh VM, so the
+epoch only matters for a VM that stays alive across a graft, e.g. a
+long-running goroutine. `TestIfaceMemoMethodSetEpoch` therefore reuses
+one VM across a direct graft. It fails without the epoch bump. A first
+REPL-level test did not: it passed the negative control, because each
+line got a fresh VM.
+
+| | grafana-openapi (11 rounds) | micro (5 rounds) |
+|---|---|---|
+| step 3 | 2.818s | 0.568s |
+| step 3 + 4a | 2.515s (−10.8%) | 0.579s (one interface conversion: no change) |
+
 ## Next
 
 The investigation is done for now. Implementation candidates, in
 order:
 
-1. Step 3: ready as is. It does not depend on step 1. Before a PR, add
-   a goroutine test that shares one site, and a test that dot-imported
-   names are never cached.
-2. Step 4a: needs method-set invalidation (REPL grafting) and a
-   decision on where the cache lives.
+1. Step 3: #624.
+2. Step 4a: `perf/iface-sat-cache`, stacked on #624.
 3. Step 1: optional. Fewer allocations, but no wall gain.
 4. GC tuning: GOGC=400 saves ~6% wall (23% at `GOMAXPROCS=1`). If
    anything, change it only in `cmd/minigo`; a library should not
-   change process-wide GC settings.
+   change process-wide GC settings. Decided: not pursued.
+5. Field-index inline cache per site: the largest remaining ceiling
+   (~8–9%, optimistic; see step 6).
+6. A runtime fast path in `coerce` that returns early when the value
+   already has the target type (~4–6% ceiling, see step 6). Small
+   change, but it must first be confirmed that `coerce` has no other
+   effect in that case. Not compile-time foldable: the 1.6M
+   `OpConst` → `OpCoerce` pairs at frame entry are parameter coercions.
+
+## Beyond per-site caches
+
+With steps 3 and 4a in, ~2.4–2.5s on grafana-openapi is roughly the
+ceiling of the "find a hot spot, cache it" approach. No node outside
+the loop body exceeds ~5% of CPU, and single-site wins now fall below
+noise. The options beyond that, and their measured ceilings (step 6),
+are:
+
+| option | what it is | measured ceiling | status |
+|---|---|---|---|
+| GC tuning | raise GOGC | ~6% (23% at `GOMAXPROCS=1`) | not pursued |
+| static binding / quickening: globals | resolve names to slots at compile time, or rewrite the instruction into a specialized form on first execution | <1% (the step 3 cache hit path is ~0.02s/run) | nothing left |
+| static binding / quickening: fields | resolve a field name to its index once per site (an inline cache keyed by the struct typedef), with no type checker needed | ~8–9% | best remaining candidate |
+| fewer `coerce` calls | skip conversions that return their input unchanged | ~4–6% | needs a runtime type-match fast path; no compile-time sub-case |
+| value representation and instruction set | unboxed scalars; superinstructions (instruction fusion) | ~13% combined, mostly allocation; fusion alone ~1% | not committed to |
+
+Terms: instruction fusion (superinstructions) merges frequent
+instruction sequences into one opcode, e.g. `OpLocal` → `OpConst` →
+`OpBinary` becomes `OpAddLocalConst`. It cuts dispatch count, not name
+resolution. Quickening is CPython 3.11's specializing adaptive
+interpreter approach: rewrite an instruction in place into a
+specialized form after it first runs. The per-site caches of steps 3
+and 4a are the inline-cache step before quickening.
+
+## Step 6: measuring the ceilings of the remaining options
+
+Method, on top of step 4a (`perf/iface-sat-cache`):
+
+- 3 CPU and alloc profiles from the `prof` harness, merged (~2.35s per
+  run). The harness's own alloc-profile bookkeeping (`profilealloc`,
+  `stkbucket`) costs ~0.22s per run and is excluded below.
+- One run of a temporary counting build (not committed). It counted
+  opcode frequencies, 2- and 3-opcode sequences, `coerce` calls by
+  call site (and how many returned their input unchanged), and by-name
+  field lookups.
+
+Per-run figures for grafana-openapi:
+
+| quantity | value |
+|---|---|
+| VM loop (main-thread CPU, cum) | ~1.33s |
+| instructions executed | 98.5M (~20 ns each, all work included) |
+| `loop` flat time, i.e. dispatch | ~0.15s (~6% of a run, ~1.5 ns per instruction) |
+| file I/O (the script's `os.ReadFile`) | ~0.11s, irreducible |
+| main-thread `mallocgc` | ~0.17s (~7%) |
+| `runtime.convT*` (scalar boxing) | ~0.02s (<1%) |
+| `coerce` (cum) | ~0.23s (~10%) |
+| by-name field lookups: CPU | ~0.2s (`FieldRef.find` 0.13s, `structMember` 0.06s, plus `setField`'s name compare) |
+| by-name field lookups: count | 18.5M (`FieldRef.find` 9.05M, `structMember` 7.07M, `setField` 2.34M) |
+| cached `OpGlobal` reads | 8.28M, ~0.02s |
+
+Opcode mix (top): `OpLocalRef` 10.0%, `OpSelect` 10.0%, `OpLocal`
+8.8%, `OpGlobal` 8.4%, `OpBinary` 8.2%, `OpConst` 7.8%. Top sequences:
+`OpLocalRef OpSelect` 6.8%, `OpConst OpBinary` 3.7%, `OpGlobal
+OpSelect` 2.6%, `OpLocalRef OpFieldRef` 2.6%, `OpBinary OpJumpFalse`
+2.4%. The top five pairs cover ~18% of instructions.
+
+`coerce`: 8.6M calls, 61% returning their input unchanged. By site:
+`OpCoerce` 4.05M (57% unchanged), `setField` 2.34M (66%), `OpCoerceTop`
+1.33M (66%), `assignCell` 0.53M (56%). 1.6M `OpConst` → `OpCoerce`
+pairs run as the first two instructions of a frame. These are the
+function prologue's parameter coercions (`emitParamCoerces` →
+`emitTypeCoerce` in `compile/compile.go`): the `OpConst` pushes the
+parameter's TypeDef, and `OpCoerce` converts the bound argument to it.
+The coerced value is a runtime argument, not a constant, so compile-time
+folding does not apply. (An earlier draft of this report read the pair
+as a constant coerced on entry; that was wrong.)
+
+Allocation objects (3 runs): `prepFrame` 24%, `runtime.Tag` 18% (the
+`Named` wrapper for typed values), `loop` 16%, `frame.push` 12% (stack
+regrowth, see step 1), `popArgs` 9%.
+
+Reading the ceilings:
+
+- Static binding for fields is the largest remaining single lever,
+  ~0.2s (~8–9%). A per-site inline cache from struct typedef to field
+  index works like steps 3 and 4a and needs no type checker.
+  `FieldRef.find` also allocates its BFS slices on every read. Treat
+  the figure as optimistic: step 4b's fast path removed those
+  allocations (not the name scan) and gained nothing measurable.
+- Skipping `coerce` calls that change nothing is worth ~4–6% (61% of
+  ~0.23s, minus the value copy those calls still need). Proving it at
+  compile time needs a type checker. The realistic form is a runtime
+  fast path at the top of `coerce` (e.g. the struct's typedef already
+  equals the target), which covers every call site, the prologue
+  included. Its cost is reading `coerce` to confirm the early return
+  is equivalent (no cell typing or other side effect is skipped).
+- Option 4 is ~13% combined: dispatch ~6% plus main-thread allocation
+  ~7%. That is below the ~15% guideline, and scalar boxing is
+  negligible (<1%). Fusion by itself saves at most ~18% of dispatches,
+  so ~1% of wall, unless a fused opcode also skips intermediate work
+  (e.g. `OpLocalRef OpSelect` not materializing a ref). The value-
+  representation cost that does show is `runtime.Tag`'s `Named`
+  wrapper, 18% of allocated objects.
 
 ## How to re-run
 
