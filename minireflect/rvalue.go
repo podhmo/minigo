@@ -27,6 +27,10 @@ type RValue struct {
 	ref runtime.Value    // settable location (ref-view), or nil
 	td  *runtime.TypeDef // static type of val
 	ro  bool             // obtained through an unexported field
+	// embedRO marks ro as coming only from an unexported EMBEDDED field
+	// (Go's flagEmbedRO): selecting an exported field below it clears
+	// the restriction, as reflect does for `type T struct{ inner }`.
+	embedRO bool
 }
 
 // host reports whether this value delegates to a real reflect.Value.
@@ -50,7 +54,17 @@ func (v *RValue) get() runtime.Value {
 // the location it was read from.
 func (v *RValue) ifaceVal() any {
 	if v.host() {
-		return v.rv.Interface()
+		x := v.rv.Interface()
+		// ValueOf(a reflect.Value) holds a host reflect.Value over the
+		// facade; its payload is the facade value itself, so a callee
+		// taking reflect.Value (text/template's builtins) sees the
+		// original view, not a pointer to the facade struct.
+		if hv, ok := x.(reflect.Value); ok && hv.IsValid() && hv.CanInterface() {
+			if rv, ok := hv.Interface().(*RValue); ok {
+				return rv
+			}
+		}
+		return x
 	}
 	x := v.get()
 	var tag *runtime.TypeDef
@@ -696,7 +710,18 @@ func (v *RValue) Field(i int) *RValue {
 	if def != nil && i < len(def.Fields) {
 		name = def.Fields[i]
 	}
-	ro := v.ro || (name != "" && !isExported(name))
+	unexported := name != "" && !isExported(name)
+	embedded := false
+	if def != nil {
+		for _, ei := range def.EmbedIdx {
+			if ei == i {
+				embedded = true
+				break
+			}
+		}
+	}
+	sticky := (v.ro && !v.embedRO) || (unexported && !embedded)
+	ro := sticky || (unexported && embedded)
 	var ref runtime.Value
 	if v.ref != nil {
 		// the field's location is the parent's, not this struct object:
@@ -709,10 +734,11 @@ func (v *RValue) Field(i int) *RValue {
 	}
 	return &RValue{
 		e: v.e, vc: v.vc,
-		val: s.Fields[i],
-		ref: ref,
-		td:  ftd,
-		ro:  ro,
+		val:     s.Fields[i],
+		ref:     ref,
+		td:      ftd,
+		ro:      ro,
+		embedRO: ro && !sticky,
 	}
 }
 
@@ -1360,6 +1386,14 @@ func (v *RValue) Grow(n int) {
 		}
 		grown := make([]runtime.Value, len(sl.Elems), newcap)
 		copy(grown, sl.Elems)
+		// the spare capacity holds element zeros, as Go's growslice
+		// zero-initializes it: a later SetLen exposes these slots and
+		// Index must read a valid zero, not an absent value.
+		et := v.e.elemOf(sl.Typ)
+		spare := grown[len(grown):newcap]
+		for i := range spare {
+			spare[i] = v.e.zeroOf(v.vc, et)
+		}
 		v.set(&runtime.Slice{Elems: grown, Typ: sl.Typ})
 	}
 }
@@ -2563,11 +2597,48 @@ func (v *RValue) callOut(r runtime.Value) []*RValue {
 	if tup, ok := r.(*runtime.Tuple); ok {
 		res := make([]*RValue, len(tup.Elems))
 		for i, el := range tup.Elems {
-			res[i] = v.e.wrap(v.vc, el, nil, typeOfValue(v.e, el))
+			res[i] = v.outVal(i, el)
 		}
 		return res
 	}
-	return []*RValue{v.e.wrap(v.vc, r, nil, typeOfValue(v.e, r))}
+	return []*RValue{v.outVal(0, r)}
+}
+
+// outVal wraps the i'th result. A bare nil carries no dynamic type, so it
+// takes the declared result type — Go's Call hands back a valid nil
+// error/pointer Value (text/template's safeCall reads ret[1].IsNil()),
+// never the zero Value.
+func (v *RValue) outVal(i int, el runtime.Value) *RValue {
+	bare := el == nil || el == runtime.NIL
+	if in, ok := el.(*runtime.IfaceNil); ok && runtime.BoxedNilTyp(in) == nil {
+		bare = true
+	}
+	if bare {
+		if t := v.outType(i); t != nil {
+			if t.rt != nil {
+				return &RValue{e: v.e, vc: v.vc, rv: reflect.Zero(t.rt)}
+			}
+			if t.td != nil {
+				return v.e.wrap(v.vc, v.e.zeroOf(v.vc, t.td), nil, t.td)
+			}
+		}
+	}
+	return v.e.wrap(v.vc, el, nil, typeOfValue(v.e, el))
+}
+
+// outType resolves the declared i'th result type, or nil when the
+// signature cannot be resolved.
+func (v *RValue) outType(i int) (t *RType) {
+	defer func() {
+		if recover() != nil {
+			t = nil
+		}
+	}()
+	ft := v.Type()
+	if ft == nil || i >= ft.NumOut() {
+		return nil
+	}
+	return ft.Out(i)
 }
 
 // checkCallArgs replays Go's arity and per-argument assignability

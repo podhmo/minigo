@@ -1,0 +1,9 @@
+true interface true error
+true interface true interface {}
+true ptr true *int
+true slice true []int
+true interface true error
+0 <nil>
+0 <nil>
+0 <nil>
+0 <nil>
