@@ -2797,17 +2797,6 @@ func (v *RValue) MethodByName(name string) *RValue {
 	if v.vc == nil {
 		trap("minireflect: reflect.Value.MethodByName needs a caller context")
 	}
-	// a field shadows any method of the same name, and the generic
-	// selector would hand the field back — reflect's method set never
-	// does (text/template probes MethodByName before FieldByName).
-	if base := v; base.Kind() == reflect.Pointer || base.Kind() == reflect.Struct {
-		if base.Kind() == reflect.Pointer && !base.IsNil() {
-			base = base.Elem()
-		}
-		if base.Kind() == reflect.Struct && base.FieldByName(name).IsValid() {
-			return &RValue{e: v.e, vc: v.vc}
-		}
-	}
 	m, ok := v.vc.Member(v.get(), name)
 	if !ok && v.td != nil && v.td.Spec != nil {
 		// a detached storage cell (e.g. Slice of an addressable
@@ -2817,6 +2806,25 @@ func (v *RValue) MethodByName(name string) *RValue {
 		m, ok = v.vc.Member(runtime.Tag(v.td, v.get()), name)
 	}
 	if !ok {
+		return &RValue{e: v.e, vc: v.vc}
+	}
+	// Member is the generic selector — it also returns FIELDS, which the
+	// method set never contains (text/template probes MethodByName
+	// before FieldByName, so a plain field must not bind). Check the
+	// winning member's kind rather than the field list: the selector
+	// already applies Go's shallowest-depth rule, so a declared method
+	// beats a promoted field of the same name while a field that wins
+	// resolution still masks a promoted method.
+	switch m := m.(type) {
+	case *runtime.BoundMethod:
+		// a script method — always a member of the method set
+	case *runtime.BuiltinFunc:
+		// a host member binding carries Method only when it adapts a
+		// real method (a plain builtin or a func-valued field does not)
+		if m.Method == nil {
+			return &RValue{e: v.e, vc: v.vc}
+		}
+	default:
 		return &RValue{e: v.e, vc: v.vc}
 	}
 	// Type() of a bound method value reports the signature with the
