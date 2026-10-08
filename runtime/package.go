@@ -354,10 +354,14 @@ func (p *Package) MemberV(name string, materialize func(*Package, *index.Decl) (
 			return materialize(p, d)
 		}
 	}
-	// constants need no init: a const member binds through the const-only
-	// initializer first. When that can't serve the name (var references,
-	// a skipped or failed run), the full initializer below covers it.
-	if p.Index != nil {
+	// constants need no init — a const member binds through the const-only
+	// initializer first. That only holds for host-side lookups (run ==
+	// nil, e.g. inspect.Value): inside running VM code a const member is
+	// also a signal the caller treats the package as live — crypto/tls's
+	// init reads crypto.SHA256 and then calls its .Size(), which touches
+	// crypto's vars — so in-VM member access keeps Go's guarantee that an
+	// imported package is fully initialized.
+	if run == nil && p.Index != nil {
 		if d, ok := memberDecl(p.Index, name); ok && d.Kind == index.ConstDecl {
 			if err := p.EnsureConstsRun(run); err == nil {
 				if v, ok := p.Globals.Get(name); ok {
