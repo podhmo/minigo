@@ -1026,9 +1026,9 @@ func (c *compiler) valueSpec(vs *ast.ValueSpec, d *index.Decl) {
 }
 
 // EmbedBuiltin names the hidden builtin a `//go:embed` var initializes
-// through: EmbedBuiltin(T, patterns...). The name cannot collide with a
-// Go identifier a program would write.
-const EmbedBuiltin = "__minigo_embed__"
+// through: EmbedBuiltin(T, patterns...). The trailing '#' makes the name
+// unwritable in Go source, so a user declaration can never shadow it.
+const EmbedBuiltin = "__minigo_embed__#"
 
 // embedPatterns collects the `//go:embed` patterns on a var spec — from
 // its own doc, or the GenDecl's for an unparenthesized `var x T`. Quoted

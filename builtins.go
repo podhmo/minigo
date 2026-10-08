@@ -387,7 +387,9 @@ func builtins(e *Engine) *runtime.Env {
 			return nil, fmt.Errorf("make of kind %d", td.Kind)
 		}
 	})
-	bf(compile.EmbedBuiltin, embedBuiltin)
+	bf(compile.EmbedBuiltin, func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		return embedBuiltin(e, v, args)
+	})
 	bf("new", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) != 1 {
 			return nil, fmt.Errorf("new expects exactly one argument")

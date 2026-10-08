@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
 	"slices"
@@ -543,6 +544,87 @@ func TestAllowedRoots(t *testing.T) {
 	if _, err := e.Run(context.Background(), outside, "main"); err == nil ||
 		!strings.Contains(err.Error(), "outside the allowed roots") {
 		t.Fatalf("expected outside-root rejection, got %v", err)
+	}
+}
+
+func TestEmbedAllowedRoots(t *testing.T) {
+	// //go:embed must not escape the package directory — a symlinked
+	// file is an irregular file (like cmd/go reports) and a glob match
+	// through a symlinked dir resolves outside the package. These hold
+	// even before AllowedRoots, which stays as a second gate on the
+	// read path.
+	root := t.TempDir()
+	write := func(path, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := func(oldname, newname string) {
+		t.Helper()
+		if err := os.Symlink(oldname, newname); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mainGo := func(pat string) string {
+		return "package main\n\nimport _ \"embed\"\n\n//go:embed " + pat + "\nvar s string\n\nfunc main() {}\n"
+	}
+
+	// out/ lives inside the allowed root but outside the package dir.
+	write(filepath.Join(root, "out", "x.txt"), "out\n")
+	write(filepath.Join(root, "secret.txt"), "secret\n")
+
+	pkg := func(name, pat string) string {
+		dir := filepath.Join(root, name)
+		write(filepath.Join(dir, "main.go"), mainGo(pat))
+		return dir
+	}
+	good := pkg("good", "hello.txt")
+	write(filepath.Join(good, "hello.txt"), "hi\n")
+
+	symfile := pkg("symfile", "link.txt")
+	write(filepath.Join(symfile, "real.txt"), "real\n")
+	link("real.txt", filepath.Join(symfile, "link.txt"))
+
+	symdir := pkg("symdir", "extlink/x.txt")
+	link(filepath.Join("..", "out"), filepath.Join(symdir, "extlink"))
+
+	symesc := pkg("symesc", "esc.txt")
+	link(filepath.Join("..", "secret.txt"), filepath.Join(symesc, "esc.txt"))
+
+	for _, tc := range []struct {
+		name    string
+		dir     string
+		wantErr string // empty = must succeed
+	}{
+		{"regular file embeds", good, ""},
+		{"symlink file is irregular", symfile, "irregular file"},
+		{"glob through symlinked dir stays in package", symdir, "outside the package directory"},
+		{"symlink escaping package is irregular", symesc, "irregular file"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// the embed package import resolves GOROOT — allow it too,
+			// so the package dir is the only escape the embed path
+			// itself must police.
+			goroot, err := exec.Command("go", "env", "GOROOT").Output()
+			if err != nil {
+				t.Fatalf("go env GOROOT: %v", err)
+			}
+			e := minigo.NewEngine(root, minigo.WithAllowedRoots(root, filepath.Join(strings.TrimSpace(string(goroot)), "src")))
+			_, err = e.Run(context.Background(), tc.dir, "main")
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("embed inside the package dir must run: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected %q rejection, got %v", tc.wantErr, err)
+			}
+		})
 	}
 }
 

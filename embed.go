@@ -17,7 +17,7 @@ import (
 // the calling package's directory like cmd/go's resolveEmbed. A string or
 // []byte var takes the single matched file; an embed.FS gets every file
 // plus the directories leading to them, in embed's (dir, elem) order.
-func embedBuiltin(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+func embedBuiltin(e *Engine, v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 	if len(args) < 2 {
 		return nil, fmt.Errorf("%s: no patterns", compile.EmbedBuiltin)
 	}
@@ -41,23 +41,31 @@ func embedBuiltin(v runtime.VMCaller, args []runtime.Value) (runtime.Value, erro
 	if err != nil {
 		return nil, err
 	}
-	if fsTd := embedFSType(td); fsTd != nil {
-		return embedFS(v, fsTd, pkg.Dir, files)
+	if fsTd := embedFSType(e, td); fsTd != nil {
+		return embedFS(e, v, fsTd, pkg.Dir, files)
 	}
 	// string / []byte (or a named type over them): one file, converted
 	// through the declared type.
 	if len(files) != 1 {
 		return nil, fmt.Errorf("go:embed: invalid pattern syntax: multiple files for type %s", td.Name)
 	}
-	data, err := os.ReadFile(filepath.Join(pkg.Dir, filepath.FromSlash(files[0])))
+	abs := filepath.Join(pkg.Dir, filepath.FromSlash(files[0]))
+	if err := e.cfg.CheckPath(abs); err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(abs)
 	if err != nil {
 		return nil, fmt.Errorf("go:embed: %w", err)
 	}
 	return v.Convert(td, string(data))
 }
 
-// embedFSType reports td when it is embed.FS (by its declaring package).
-func embedFSType(td *runtime.TypeDef) *runtime.TypeDef {
+// embedFSType reports td when it is embed.FS (by its declaring package) —
+// `type FS = embed.FS` aliases resolve to the same typedef first.
+func embedFSType(e *Engine, td *runtime.TypeDef) *runtime.TypeDef {
+	if e != nil {
+		td = e.peelAliasTd(td)
+	}
 	if td != nil && td.Name == "FS" && td.Pkg != nil && td.Pkg.Path == "embed" {
 		return td
 	}
@@ -82,22 +90,43 @@ func embedFiles(dir string, pats []string) ([]string, error) {
 		if p, ok := strings.CutPrefix(pat, "all:"); ok {
 			pat, all = p, true
 		}
-		if _, err := path.Match(pat, ""); err != nil || pat == "" || path.IsAbs(pat) || strings.Contains(pat, "..") {
+		if _, err := path.Match(pat, ""); err != nil || pat == "" || path.IsAbs(pat) {
 			return nil, fmt.Errorf("go:embed: invalid pattern syntax: %s", pat)
+		}
+		// "." and ".." are invalid as path ELEMENTS — names that merely
+		// contain the dots (a..b) are legal.
+		for _, el := range strings.Split(pat, "/") {
+			if el == "" || el == "." || el == ".." {
+				return nil, fmt.Errorf("go:embed: invalid pattern syntax: %s", pat)
+			}
 		}
 		matches, err := filepath.Glob(filepath.Join(dir, filepath.FromSlash(pat)))
 		if err != nil {
 			return nil, fmt.Errorf("go:embed: %w", err)
 		}
+		// embed may never reach outside the package directory: a glob
+		// match travels through symlinked dirs, so verify the resolved
+		// real path stays inside the (real) package dir — and a symlink
+		// matched directly is an irregular file, like cmd/go reports.
+		root, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			return nil, fmt.Errorf("go:embed: %w", err)
+		}
 		n := 0
 		for _, m := range matches {
-			info, err := os.Stat(m)
+			info, err := os.Lstat(m)
 			if err != nil {
 				return nil, fmt.Errorf("go:embed: %w", err)
 			}
 			rel, err := filepath.Rel(dir, m)
 			if err != nil {
 				return nil, err
+			}
+			if !info.IsDir() && !info.Mode().IsRegular() {
+				return nil, fmt.Errorf("go:embed: pattern %s: cannot embed irregular file %s", pat, filepath.ToSlash(rel))
+			}
+			if real, err := filepath.EvalSymlinks(m); err != nil || (real != root && !strings.HasPrefix(real, root+string(filepath.Separator))) {
+				return nil, fmt.Errorf("go:embed: pattern %s: cannot embed file %s: outside the package directory", pat, filepath.ToSlash(rel))
 			}
 			if !info.IsDir() {
 				add(filepath.ToSlash(rel))
@@ -158,7 +187,7 @@ func embedSplit(name string) (dir, elem string) {
 // embedFS builds the embed.FS value the compiler would emit: the struct's
 // `files *[]file` holds every file and every directory leading to one
 // (named "dir/"), sorted by (dir, elem) so embed's binary search works.
-func embedFS(v runtime.VMCaller, td *runtime.TypeDef, dir string, files []string) (runtime.Value, error) {
+func embedFS(e *Engine, v runtime.VMCaller, td *runtime.TypeDef, dir string, files []string) (runtime.Value, error) {
 	names := map[string]bool{}
 	for _, f := range files {
 		names[f] = true
@@ -206,7 +235,11 @@ func embedFS(v runtime.VMCaller, td *runtime.TypeDef, dir string, files []string
 		}
 		data := ""
 		if !strings.HasSuffix(n, "/") {
-			b, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(n)))
+			abs := filepath.Join(dir, filepath.FromSlash(n))
+			if err := e.cfg.CheckPath(abs); err != nil {
+				return nil, err
+			}
+			b, err := os.ReadFile(abs)
 			if err != nil {
 				return nil, fmt.Errorf("go:embed: %w", err)
 			}
