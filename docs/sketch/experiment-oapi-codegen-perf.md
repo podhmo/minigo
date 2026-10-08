@@ -2,12 +2,12 @@
 
 Status: in progress. Branch `fix/oapi-codegen-regressions` carries the
 two regression fixes found on the way (step 0).
-`perf/sync-builtin-callbacks` is stacked on it and carries steps 4–10.
+`perf/sync-builtin-callbacks` is stacked on it and carries steps 4–11.
 
 Steps 0–5 measured the program as shipped, goimports included. From
 step 6 on, the baseline binds goimports natively. The index and an
 interpreted goimports are workload facts, not interpreter tuning. Steps
-6–10 ask what the interpreter itself can lose from there.
+6–11 ask what the interpreter itself can lose from there.
 
 Question: oapi-codegen under minigo takes ~6s per `go:generate` line
 (~50x native). The workload executes nearly the whole program
@@ -21,8 +21,8 @@ so it can be re-run, the numbers, and the verdict.
 
 ## Verdict so far
 
-**From the native-goimports baseline (steps 6–10):**
-`petstore-expanded/strict` goes from ~1.95s to 1.68s (−14%) with five
+**From the native-goimports baseline (steps 6–11):**
+`petstore-expanded/strict` goes from ~1.95s to 1.57s (−20%) with eight
 small commits, and the output stays byte-identical. Three findings:
 
 - The remaining cost is diffuse. No mutator function holds more than
@@ -506,8 +506,9 @@ in TODO.md.
 ### Next candidates
 
 - **`prepFrame` allocates a `Cell` per local** on every call, plus the
-  frame and its locals slice.
-- **Load and compile (~0.47s, ~25% of wall)** is untouched.
+  frame and its locals slice. Tried twice already (frame-path step 1 and
+  step 6 here), with weak results both times.
+- Load and compile: see step 11.
 
 ## Step 10: untyped constants memoize their conversion (`5211ff88`)
 
@@ -535,6 +536,52 @@ so it gains far more than oapi-codegen. On `strict`'s Linux profile the
 conversion functions disappear; only `constPayload` is left, at 0.3%.
 Constants were a hot spot of the lexer-shaped micro benchmark, not of
 the workload.
+
+## Step 11: load and compile (`804faabf`, `93a60de6`, `bbc11fc9`)
+
+The Linux profile split the per-round load cost (6 rounds, CPU
+seconds):
+
+- `go/parser` ~0.58s
+- `syntax.CheckLang` ~0.49s
+- `compile.orderSpecs` ~0.45s
+- `compile.Func` ~0.46s
+
+The other items were smaller.
+
+- **`CheckLang`** (`804faabf`): 3/4 of the checker's time went into
+  `seen[n] = true` for every node. `ast.Inspect` never revisits a node,
+  so only the subtrees the type-grammar walk gated need the mark.
+  `localDecls`, a second full walk, is now built on the first
+  shadowing query. A file whose lang is at or past the newest gate
+  (`latestGate`, kept current by `TestLatestGate`) is skipped outright.
+  Result: 1.690s → 1.626s (−3.8%).
+- **`orderSpecs`** (`93a60de6`): `funcRefs` unions each function's
+  referenced names transitively into its callers'. Those sets held every
+  identifier, including locals, fields and builtins, which all fell out
+  at the end anyway. `refs` now keeps only package vars/consts, funcs
+  and method names, and method names resolve through a map built once.
+  Result: 1.626s → 1.593s (−2.0%).
+- **Concurrent parsing** (`bbc11fc9`): a package's files are read
+  first, then their `Pos` range is reserved in the shared `FileSet`
+  with a placeholder. Each file parses into a private `FileSet` whose
+  next base a filler file moves to the reserved slot. The `token.File`s
+  join the shared set in order via `AddExistingFiles` (Go 1.25+).
+  Bases, line tables and positions equal the sequential parse's
+  (`TestParsePackageFilesBases`). Result: 1.600s → 1.569s (−2.0%).
+
+CPU on the same 6-round Linux profile, before → after:
+
+| | before | after |
+|---|---|---|
+| `syntax.CheckLang` | 0.49s | 0.08s |
+| `compile.orderSpecs` | 0.45s | 0.19s |
+| `indexFiles` (includes `CheckLang`) | 0.56s | 0.13s |
+| `go/parser` | 0.58s | 0.62s, now off the critical path |
+
+What remains is `compile.Func` (~0.5–0.6s per 6 rounds; ~17k
+functions at ~5µs each). Its cost is spread thin over name-lookup maps
+and emit, with no single hot spot. The resolver's `Locate` is ~0.12s.
 
 ## How to re-run
 
