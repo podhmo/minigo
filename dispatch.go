@@ -60,6 +60,11 @@ func (e *Engine) methodInfoOfValue(v runtime.Value) (map[string]bool, map[string
 				}
 				return hostMethodSet(gv.V), nil, false, nil
 			}
+			if n.Typ != nil && n.Typ.HostScalar != nil && len(n.Typ.Methods) == 0 {
+				// a bound host scalar (time.Duration) exposes the raw
+				// host value's reflect method set.
+				return hostMethodSet(runtime.Unwrap(n.V)), nil, false, nil
+			}
 			return e.typeMethodInfoU(n.Typ, ptr)
 		}
 		dv, ok := runtime.Deref(v)

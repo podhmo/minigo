@@ -103,7 +103,31 @@ type Named struct {
 // that needed peeling downstream. This is the one place Named values
 // get constructed.
 func Tag(td *TypeDef, v Value) *Named {
-	return &Named{Typ: td, V: Unwrap(v)}
+	sv := Unwrap(v)
+	if td != nil && td.HostScalar != nil {
+		sv = hostScalarValue(td, sv)
+	}
+	return &Named{Typ: td, V: sv}
+}
+
+// hostScalarValue canonicalizes a host-scalar typedef's payload — a bound
+// stdlib named basic (time.Duration) keeps the raw host scalar so
+// arithmetic and formatting behave like the host value. A bind that
+// produced the plain-kind equivalent (a literal int64 zero or init)
+// converts to the host type so method dispatch and %v see the real type.
+func hostScalarValue(td *TypeDef, v Value) Value {
+	if gv, ok := v.(*GoValue); ok {
+		v = gv.V
+	}
+	rt := reflect.TypeOf(td.HostScalar)
+	rv := reflect.ValueOf(v)
+	if !rv.IsValid() || rv.Type() == rt {
+		return v
+	}
+	if rv.Kind() == rt.Kind() && rv.Type().ConvertibleTo(rt) {
+		return rv.Convert(rt).Interface()
+	}
+	return v
 }
 
 // TagOf reads the outermost declared-type tag of v, or nil when v is
@@ -1262,6 +1286,12 @@ type TypeDef struct {
 	// instead of a *Struct so member access dispatches through the host
 	// method set. Set only on bound intrinsics' typedefs.
 	HostNew func() any
+
+	// HostScalar, when set, marks a bound named basic whose payload is a
+	// stdlib scalar (time.Duration): the raw host value is stored, not a
+	// GoValue box — Tag converts same-kind plain values to its reflect
+	// type, and member access dispatches through the host method set.
+	HostScalar any
 
 	// Local marks a typedef declared inside a function body: Go gives
 	// every such declaration its own identity, so same-named local types

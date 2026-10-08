@@ -2744,7 +2744,10 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 			// — Go's nil itab deref is a recoverable panic, not a trap.
 			panic(runtime.NilDerefPanic())
 		default:
-			f.trap("select %s on cell of %T", name, b.Elem)
+			// a raw scalar (a bare time.Duration var) or any other
+			// value with no cell-specific dispatch selects on the
+			// element itself.
+			return v.selectMember(f, b.Elem, name)
 		}
 	case *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
 		dv, ok := runtime.Deref(base)
@@ -4433,6 +4436,15 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 			return mv
 		}
 		f.trap("no member %s on host value %T", name, gv.V)
+	}
+	if td != nil && td.HostScalar != nil {
+		// a bound host scalar (time.Duration) stores the raw host
+		// value — its methods live on the host type, dispatched
+		// through reflection like the bare value's own case in
+		// selectMember.
+		if mv, ok := v.hostMember(sv, name); ok {
+			return mv
+		}
 	}
 	if s, isStruct := sv.(*runtime.Struct); isStruct {
 		for i, fn := range s.Def.Fields {
@@ -8695,7 +8707,20 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 				return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), td.Name)
 			}
 		default:
-			return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), td.Name)
+			// a raw host scalar (time.Duration) carries an
+			// integer/float-kind payload — convert by its host kind
+			// like the boxed case.
+			rv := reflect.ValueOf(x)
+			switch rv.Kind() {
+			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+				iv, uv = rv.Int(), uint64(rv.Int())
+			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+				uv, iv = rv.Uint(), int64(rv.Uint())
+			case reflect.Float32, reflect.Float64:
+				iv, uv = int64(rv.Float()), uint64(rv.Float())
+			default:
+				return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), td.Name)
+			}
 		}
 		// an unsigned conversion past MaxInt64 keeps its bits boxed —
 		// `uint64(1.6717361816799281e+19)` is 16717361816799281152, and a
@@ -8817,6 +8842,24 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 			if rv := reflect.ValueOf(sx.V); rv.Kind() == reflect.String {
 				return rv.String(), nil
 			}
+		default:
+			// a raw host scalar of integer kind (time.Duration)
+			// converts like int64: string(time.Duration(65)) is "A".
+			if rv := reflect.ValueOf(x); rv.IsValid() {
+				var sx int64
+				switch rv.Kind() {
+				case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+					sx = rv.Int()
+				case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+					sx = int64(rv.Uint())
+				default:
+					return nil, fmt.Errorf("cannot convert %s to string", typeNameOf(x))
+				}
+				if sx < 0 || sx > utf8.MaxRune {
+					return "�", nil
+				}
+				return string(rune(sx)), nil
+			}
 		}
 		return nil, fmt.Errorf("cannot convert %s to string", typeNameOf(x))
 	case "bool":
@@ -8911,11 +8954,10 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 // own kind (uint64 reads unsigned — a wide literal keeps 2^63, not
 // the int64 reinterpretation).
 func hostFloat(x runtime.Value) (float64, bool) {
-	gv, ok := x.(*runtime.GoValue)
-	if !ok {
-		return 0, false
+	if gv, ok := x.(*runtime.GoValue); ok {
+		x = gv.V
 	}
-	rv := reflect.ValueOf(gv.V)
+	rv := reflect.ValueOf(x)
 	switch rv.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		return float64(rv.Int()), true
