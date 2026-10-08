@@ -4410,6 +4410,9 @@ func orderSpecs(ix *index.Index, reps []*index.Decl) []*index.Decl {
 			}
 		}
 		if d == nil {
+			// most referenced idents are locals, fields and builtins:
+			// remember the miss so the type scan runs once per name.
+			funcRefsCache[name] = nil
 			return nil
 		}
 		r := map[string]bool{}
