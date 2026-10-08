@@ -147,6 +147,18 @@ func Symbols(h Hooks) map[string]runtime.Value {
 			Kind:    runtime.KindNamedBasic,
 			HostNew: func() any { return reflect.StructTag("") },
 		},
+		// Kind and ChanDir name the real host enums, so a script
+		// signature like `func f(k reflect.Kind)` binds Kind() results.
+		"Kind": &runtime.TypeDef{
+			Name:    "reflect.Kind",
+			Kind:    runtime.KindNamedBasic,
+			HostNew: func() any { return reflect.Invalid },
+		},
+		"ChanDir": &runtime.TypeDef{
+			Name:    "reflect.ChanDir",
+			Kind:    runtime.KindNamedBasic,
+			HostNew: func() any { return reflect.ChanDir(0) },
+		},
 		"StructField": &runtime.TypeDef{
 			Name:    "reflect.StructField",
 			Kind:    runtime.KindStruct,

@@ -62,7 +62,23 @@ type Method struct {
 
 // rtypeOf interns a script typedef.
 func (e *Env) rtypeOf(td *runtime.TypeDef) *RType {
+	// an alias IS its target: the Type carries the target typedef so
+	// Name, methods and Implements see the aliased declaration
+	// (kin-openapi's `type AdditionalProperties = BoolSchema`).
+	td = e.peelAlias(td)
 	return e.intern(e.keyOf(td), td, nil)
+}
+
+// peelAlias follows `type A = T` chains to the target typedef.
+func (e *Env) peelAlias(td *runtime.TypeDef) *runtime.TypeDef {
+	for i := 0; td != nil && td.Kind == runtime.KindAlias && e.h.AliasOf != nil && i < 100; i++ {
+		t, err := e.h.AliasOf(td)
+		if err != nil || t == nil || t == td {
+			break
+		}
+		td = t
+	}
+	return td
 }
 
 // hostTypeOf interns a host reflect.Type.
@@ -358,6 +374,17 @@ func (e *Env) fieldTypes(td *runtime.TypeDef) []*runtime.TypeDef {
 	if err != nil {
 		return nil
 	}
+	// alias-typed fields view their target: Addr() of a field declared
+	// `AP AdditionalProperties` is a *BoolSchema with its methods.
+	for _, ft := range fts {
+		if ft != nil && ft.Kind == runtime.KindAlias {
+			out := make([]*runtime.TypeDef, len(fts))
+			for j, t := range fts {
+				out[j] = e.peelAlias(t)
+			}
+			return out
+		}
+	}
 	return fts
 }
 
@@ -508,6 +535,19 @@ func (e *Env) kindOfAnon(td *runtime.TypeDef) reflect.Kind {
 	return reflect.Invalid
 }
 
+// structTd resolves the typedef carrying a struct's field list: a type
+// defined over another struct (`type TBis T`) has no Fields of its own,
+// so its underlying typedef supplies them.
+func (e *Env) structTd(td *runtime.TypeDef) *runtime.TypeDef {
+	if td == nil || td.Kind == runtime.KindStruct || e.h.Underlying == nil {
+		return td
+	}
+	if u, err := e.h.Underlying(td); err == nil && u != nil && u != td && u.Kind == runtime.KindStruct {
+		return u
+	}
+	return td
+}
+
 // ---- reflect.Type methods ----
 
 // Kind reports the type's kind.
@@ -637,7 +677,7 @@ func (t *RType) NumField() int {
 	if t.Kind() != reflect.Struct {
 		trap("NumField of non-struct type %s", t.String())
 	}
-	return len(t.td.Fields)
+	return len(t.e.structTd(t.td).Fields)
 }
 
 // Field reports a struct's i'th field.
@@ -657,26 +697,27 @@ func (t *RType) Field(i int) *StructField {
 	if t.Kind() != reflect.Struct {
 		trap("Field of non-struct type %s", t.String())
 	}
-	if i < 0 || i >= len(t.td.Fields) {
+	st := t.e.structTd(t.td)
+	if i < 0 || i >= len(st.Fields) {
 		panic(&runtime.Panic{Value: "reflect: Field index out of bounds"})
 	}
-	fts := t.e.fieldTypes(t.td)
+	fts := t.e.fieldTypes(st)
 	var ft *RType
 	if i < len(fts) {
 		ft = t.e.rtypeOf(fts[i])
 	}
 	embedded := false
-	for _, ei := range t.td.EmbedIdx {
+	for _, ei := range st.EmbedIdx {
 		if ei == i {
 			embedded = true
 			break
 		}
 	}
-	name := t.td.Fields[i]
+	name := st.Fields[i]
 	sf := &StructField{
 		Name:      name,
 		Type:      ft,
-		Offset:    fieldOffset(t, i),
+		Offset:    fieldOffset(t, fts, i),
 		Index:     []int{i},
 		Anonymous: embedded,
 	}
@@ -685,8 +726,8 @@ func (t *RType) Field(i int) *StructField {
 		// package path, like Go's reflect.
 		sf.PkgPath = t.PkgPath()
 	}
-	if t.td.FTags != nil {
-		sf.Tag = reflect.StructTag(t.td.FTags[name])
+	if st.FTags != nil {
+		sf.Tag = reflect.StructTag(st.FTags[name])
 	}
 	return sf
 }
@@ -742,13 +783,14 @@ func (t *RType) FieldByName(name string) (*StructField, bool) {
 	if t.Kind() != reflect.Struct {
 		trap("FieldByName of non-struct type %s", t.String())
 	}
-	for i, fn := range t.td.Fields {
+	st := t.e.structTd(t.td)
+	for i, fn := range st.Fields {
 		if fn == name {
 			return t.Field(i), true
 		}
 	}
-	fts := t.e.fieldTypes(t.td)
-	for _, ei := range t.td.EmbedIdx {
+	fts := t.e.fieldTypes(st)
+	for _, ei := range st.EmbedIdx {
 		if ei < len(fts) && fts[ei] != nil {
 			etd := fts[ei]
 			if etd.Kind == runtime.KindPointer {
@@ -801,7 +843,7 @@ func (t *RType) FieldByNameFunc(match func(string) bool) (*StructField, bool) {
 		}
 		return false
 	}
-	next := []scan{{td: t.td}}
+	next := []scan{{td: t.e.structTd(t.td)}}
 	var nextCount map[*runtime.TypeDef]int
 	visited := map[*runtime.TypeDef]bool{}
 	var result *StructField
@@ -812,7 +854,7 @@ func (t *RType) FieldByNameFunc(match func(string) bool) (*StructField, bool) {
 		count := nextCount
 		nextCount = nil
 		for _, sc := range current {
-			st := sc.td
+			st := t.e.structTd(sc.td)
 			if visited[st] {
 				continue
 			}
@@ -1466,9 +1508,10 @@ func (t *RType) FieldAlign() int {
 }
 
 // fieldOffset lays out the struct's fields on amd64 up to field i:
-// each field sits at the next offset aligned to its own alignment.
-func fieldOffset(t *RType, i int) uintptr {
-	fts := t.e.fieldTypes(t.td)
+// each field sits at the next offset aligned to its own alignment. fts
+// is the field-type list of the typedef carrying the field list — a
+// type defined over another struct resolves it through the base struct.
+func fieldOffset(t *RType, fts []*runtime.TypeDef, i int) uintptr {
 	var off uintptr
 	for j := 0; j < i && j < len(fts); j++ {
 		if fts[j] == nil {

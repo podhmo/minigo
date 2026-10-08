@@ -447,6 +447,14 @@ func (v *RValue) Type() *RType {
 		return v.e.hostTypeOf(v.rv.Type())
 	}
 	td := v.td
+	if td == nil || (td.Kind == runtime.KindFunc && td.Anon == nil) {
+		// an intrinsic adapting a real Go func (strings.ToLower) has
+		// no script signature: report the target's — text/template's
+		// goodFunc reads NumIn/NumOut off FuncMap entries.
+		if bf, ok := v.get().(*runtime.BuiltinFunc); ok && bf.Target != nil {
+			return v.e.hostTypeOf(reflect.TypeOf(bf.Target))
+		}
+	}
 	if td == nil {
 		td = typeOfValue(v.e, v.get())
 	}
@@ -2798,6 +2806,25 @@ func (v *RValue) MethodByName(name string) *RValue {
 		m, ok = v.vc.Member(runtime.Tag(v.td, v.get()), name)
 	}
 	if !ok {
+		return &RValue{e: v.e, vc: v.vc}
+	}
+	// Member is the generic selector — it also returns FIELDS, which the
+	// method set never contains (text/template probes MethodByName
+	// before FieldByName, so a plain field must not bind). Check the
+	// winning member's kind rather than the field list: the selector
+	// already applies Go's shallowest-depth rule, so a declared method
+	// beats a promoted field of the same name while a field that wins
+	// resolution still masks a promoted method.
+	switch m := m.(type) {
+	case *runtime.BoundMethod:
+		// a script method — always a member of the method set
+	case *runtime.BuiltinFunc:
+		// a host member binding carries Method only when it adapts a
+		// real method (a plain builtin or a func-valued field does not)
+		if m.Method == nil {
+			return &RValue{e: v.e, vc: v.vc}
+		}
+	default:
 		return &RValue{e: v.e, vc: v.vc}
 	}
 	// Type() of a bound method value reports the signature with the
