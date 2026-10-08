@@ -5510,7 +5510,7 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 		// s[0:0] / s[:] on a nil slice is a valid empty result
 		l, h := v.bounds(f, lo, hi, 0)
 		m := v.maxBound(f, max, 0)
-		if r := sliceBoundsReason(l, h, m, 0, three); r != "" {
+		if r := sliceBoundsReason(l, h, m, 0, three, "capacity"); r != "" {
 			panic(runtime.RuntimePanic(r))
 		}
 		return b
@@ -5520,20 +5520,36 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 			// logical length and capacity like a real one — the
 			// two-index high may pass len up to cap — and the
 			// sub-slice stays virtual: s[:0] keeps the capacity.
+			word := "capacity"
+			if _, isArr := v.arrayLen(f, b.Typ); isArr {
+				word = "length" // array-typed values report "with length"
+			}
 			l, h := v.bounds(f, lo, hi, b.Len())
 			if three {
 				m := v.maxBound(f, max, b.Cap())
-				if r := sliceBoundsReason(l, h, m, b.Cap(), true); r != "" {
+				if r := sliceBoundsReason(l, h, m, b.Cap(), true, word); r != "" {
 					panic(runtime.RuntimePanic(r))
 				}
 				return &runtime.Slice{N: h - l, CapN: m - l, Zero: b.Zero, Typ: sliceTypOf(b.Typ)}
 			}
-			if r := sliceBoundsReason(l, h, 0, b.Cap(), false); r != "" {
+			if r := sliceBoundsReason(l, h, 0, b.Cap(), false, word); r != "" {
 				panic(runtime.RuntimePanic(r))
 			}
 			return &runtime.Slice{N: h - l, CapN: b.Cap() - l, Zero: b.Zero, Typ: sliceTypOf(b.Typ)}
 		}
 		l, h := v.bounds(f, lo, hi, int64(len(b.Elems)))
+		if _, isArr := v.arrayLen(f, b.Typ); isArr {
+			// an array-typed value reports "with length" like gc — the
+			// native b.Elems[...] panic says "capacity" regardless.
+			if three {
+				m := v.maxBound(f, max, int64(len(b.Elems)))
+				if r := sliceBoundsReason(l, h, m, int64(len(b.Elems)), true, "length"); r != "" {
+					panic(runtime.RuntimePanic(r))
+				}
+			} else if r := sliceBoundsReason(l, h, 0, int64(len(b.Elems)), false, "length"); r != "" {
+				panic(runtime.RuntimePanic(r))
+			}
+		}
 		if three {
 			m := v.maxBound(f, max, int64(cap(b.Elems)))
 			return &runtime.Slice{Elems: b.Elems[l:h:m], Typ: sliceTypOf(b.Typ)}
@@ -5562,14 +5578,14 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 // against; a negative violating index reports its bare form without
 // the capacity/length suffix, like Go's boundsNegErrorFmts. Returns
 // "" when every index is in bounds.
-func sliceBoundsReason(l, h, m, cap int64, three bool) string {
+func sliceBoundsReason(l, h, m, cap int64, three bool, word string) string {
 	const p = "slice bounds out of range"
 	if three {
 		switch {
 		case m < 0:
 			return fmt.Sprintf("%s [::%d]", p, m)
 		case m > cap:
-			return fmt.Sprintf("%s [::%d] with capacity %d", p, m, cap)
+			return fmt.Sprintf("%s [::%d] with %s %d", p, m, word, cap)
 		case h < 0:
 			return fmt.Sprintf("%s [:%d:]", p, h)
 		case h > m:
@@ -5585,7 +5601,7 @@ func sliceBoundsReason(l, h, m, cap int64, three bool) string {
 	case h < 0:
 		return fmt.Sprintf("%s [:%d]", p, h)
 	case h > cap:
-		return fmt.Sprintf("%s [:%d] with capacity %d", p, h, cap)
+		return fmt.Sprintf("%s [:%d] with %s %d", p, h, word, cap)
 	case l < 0:
 		return fmt.Sprintf("%s [%d:]", p, l)
 	case l > h:
