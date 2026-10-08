@@ -1738,6 +1738,12 @@ type Panic struct {
 	Value   Value
 	Frames  []string // "func at file:line" entries collected while unwinding
 	GoStack string   // host goroutine stack at panic time (host panics only)
+	// VC is the caller a script payload's Error()/String() runs through
+	// when Error() renders `panic: <v>` — set by the panic builtin so
+	// `panic(err)` prints the method's text instead of a value dump,
+	// and consulted for every element of a superseded chain. Nil for
+	// host-payload panics, which render natively.
+	VC VMCaller
 	// Prev is the panic this one superseded — a panic raised while
 	// another unwinds links back to it; Go prints the chain
 	// oldest-first (`panic: old` / `\tpanic: new`), rendering only the
@@ -1758,7 +1764,7 @@ func (p *Panic) Error() string {
 		if i < len(chain)-1 {
 			sb.WriteString("\n\t")
 		}
-		fmt.Fprintf(&sb, "panic: %v", panicValue(chain[i].Value))
+		fmt.Fprintf(&sb, "panic: %v", panicValue(chain[i].Value, chain[i].VC))
 		if chain[i].Recovered {
 			sb.WriteString(" [recovered]")
 		}
@@ -1792,12 +1798,101 @@ func (*PanicNilError) Error() string {
 	return "runtime error: panic called with nil argument"
 }
 
-// panicValue renders the panic payload for messages: a boxed host value
-// (error, stringer) is unwrapped so `panic(err)` reads like Go's output
-// rather than a struct dump.
-func panicValue(v Value) any {
-	if gv, ok := v.(*GoValue); ok {
-		return gv.V
+// panicValue renders the panic payload the way gc's printpanics does:
+// a boxed host value unwraps so fmt sees the native; a script payload
+// offering Error/String prints the method's text (error first, like
+// gc's probe order); any other composite prints `(type) 0xADDR`; a
+// named scalar prints `pkg.T(v)` — except a predeclared name, whose
+// payload prints bare. c may be nil — without an engine the method
+// probes and type spelling are skipped and the value renders as %v.
+func panicValue(v Value, c VMCaller) any {
+	switch t := v.(type) {
+	case *GoValue:
+		return t.V
+	case *Named:
+		// a host-boxed payload renders natively regardless of the
+		// interface tag it carries (e.g. `var e error = errors.New`).
+		if gv, ok := t.V.(*GoValue); ok {
+			return gv.V
+		}
+	}
+	if c == nil {
+		return v
+	}
+	if s, ok := IfaceCallString(c, v, "Error"); ok {
+		return s
+	}
+	if s, ok := IfaceCallString(c, v, "String"); ok {
+		return s
+	}
+	if _, isErr := v.(error); isErr {
+		// host error payloads (RuntimeError, PanicNilError, ...)
+		// keep fmt's %v -> Error() path.
+		return v
+	}
+	switch t := v.(type) {
+	case *Named:
+		if panicComposite(t.V) {
+			return fmt.Sprintf("(%s) %p", DisplayName(t.Typ), v)
+		}
+		if t.Typ != nil && (t.Typ.Pkg != nil || t.Typ.Spec != nil) {
+			return fmt.Sprintf("%s(%v)", DisplayName(t.Typ), panicScalar(t.V))
+		}
+		// a predeclared tag (int, byte, ...) prints the payload bare.
+		return panicScalar(t.V)
+	case *UConst:
+		if nv, err := UConstNative(t); err == nil {
+			return nv
+		}
+	case *TypedNil:
+		if t.Typ != nil {
+			switch t.Typ.Kind {
+			// gc prints the pointer's own value for nilable pointer
+			// kinds (nil -> 0x0) but the arg's address for a nil
+			// slice, which is never zero.
+			case KindPointer, KindChan, KindMap, KindFunc:
+				return fmt.Sprintf("(%s) 0x0", DisplayName(t.Typ))
+			default:
+				return fmt.Sprintf("(%s) %p", DisplayName(t.Typ), v)
+			}
+		}
+	default:
+		if panicComposite(v) {
+			if td := c.TypeOf(v); td != nil {
+				return fmt.Sprintf("(%s) %p", DisplayName(td), v)
+			}
+		}
+	}
+	return v
+}
+
+// panicComposite reports whether a panic payload renders as
+// `(type) 0xADDR` — gc's printany gives every non-scalar, non-method
+// payload that form instead of dumping fields.
+func panicComposite(v Value) bool {
+	switch t := v.(type) {
+	case *Named:
+		return panicComposite(t.V)
+	case *Struct, *Slice, *Map, *Chan,
+		*Cell, *FieldRef, *IndexRef, *DerefRef,
+		*Function, *Closure, *BoundMethod, *BuiltinFunc,
+		*Tuple, *Iterator, *Task, *ImportRef, *Package, *TypeDef,
+		*SymbolID, *CallSite, *Spread, *SelArm:
+		return true
+	}
+	return false
+}
+
+// panicScalar renders a named scalar's payload inside `pkg.T(...)` the
+// way gc's printany does: strings quote, other scalars print %v.
+func panicScalar(v Value) any {
+	if u, ok := v.(*UConst); ok {
+		if nv, err := UConstNative(u); err == nil {
+			v = nv
+		}
+	}
+	if s, ok := v.(string); ok {
+		return fmt.Sprintf("%q", s)
 	}
 	return v
 }
@@ -1866,4 +1961,76 @@ func IfaceMember(c VMCaller, v Value, name string) (Value, bool) {
 		return nil, false
 	}
 	return c.Member(v, name)
+}
+
+// IfaceCallString invokes a declared String()/Error()/GoString()-style
+// method through the engine when the value's method set offers one (a
+// pointer receiver on a bare value does not count — Go prints the
+// struct instead) and the member is a method with the `func() string`
+// shape gc's interface probes require — a same-named method with a
+// different signature (`Error() any`) does not satisfy the interface,
+// so it must not be invoked at all. An absent method, a signature
+// mismatch, a call that fails, a panic crossing the engine boundary
+// (procExit while the process unwinds), or a non-string result all
+// report false.
+func IfaceCallString(c VMCaller, v Value, name string) (s string, ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			s, ok = "", false
+		}
+	}()
+	m, ok := IfaceMember(c, v, name)
+	if !ok || !isStringerMember(m) {
+		return "", false
+	}
+	r, err := c.Call(m, nil)
+	if err != nil {
+		return "", false
+	}
+	s, ok = r.(string)
+	return s, ok
+}
+
+// isStringerMember reports whether the member m is a real method
+// callable as `func() string` — gc's requirement for error.Error,
+// fmt.Stringer, and fmt.GoStringer. Field funcs and members whose
+// signature cannot be verified report false: neither satisfies the
+// interface, so invoking them would mis-render the value (and a
+// same-named method may run unexpected side effects).
+func isStringerMember(m Value) bool {
+	switch fn := m.(type) {
+	case *BoundMethod:
+		if fn.Fn == nil || fn.Fn.Decl == nil {
+			return false
+		}
+		return isStringerFuncType(fn.Fn.Decl.Type)
+	case *BuiltinFunc:
+		// the reflected method's signature carries its receiver as
+		// In(0); the bound call must take nothing and return exactly
+		// `string` (a named string result does not satisfy the
+		// interface, per gc's signature identity).
+		if fn.Method == nil {
+			return false
+		}
+		mt := fn.Method.Type
+		return mt.NumIn() == 1 && mt.NumOut() == 1 && mt.Out(0) == reflect.TypeOf("")
+	}
+	return false
+}
+
+// isStringerFuncType reports whether a declared method type spells
+// `func() string`: no parameters and exactly one result naming the
+// predeclared string type.
+func isStringerFuncType(ft *ast.FuncType) bool {
+	if ft == nil {
+		return false
+	}
+	if ft.Params != nil && len(ft.Params.List) > 0 {
+		return false
+	}
+	if ft.Results == nil || len(ft.Results.List) != 1 {
+		return false
+	}
+	id, ok := ft.Results.List[0].Type.(*ast.Ident)
+	return ok && id.Name == "string"
 }

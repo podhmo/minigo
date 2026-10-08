@@ -2347,7 +2347,7 @@ func (v *VM) loop(f *frame) {
 				f.ip = table + chosen
 			}
 		case bytecode.OpPanic:
-			panic(&runtime.Panic{Value: f.pop()})
+			panic(&runtime.Panic{Value: f.pop(), VC: v})
 		case bytecode.OpTrap:
 			panic(&runtime.Trap{Pos: ins.Pos, Reason: fmt.Sprint(consts[ins.A])})
 		case bytecode.OpReturn:
