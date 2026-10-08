@@ -13,6 +13,9 @@ migration; history above that point lives in the source repository.
 
 ## To Be Implemented
 
+- [ ] **Bound `strconv.IntSize` is missing** ([template-cache experiment](./docs/sketch/experiment-oapi-template-cache.md#minimum-reproductions)): `fmt.Println(strconv.IntSize)` traps `undefined: strconv.IntSize`; native prints `64` on arm64. Source base64 decoding also reaches it through JSON byte-slice decoding. Bind the architecture-appropriate constant without replacing the rest of the bound package.
+- [ ] **JSON-decoded byte slices lose assignment type information** ([template-cache experiment](./docs/sketch/experiment-oapi-template-cache.md#minimum-reproductions)): with `encoding/json` and its supporting packages interpreted, `json.Unmarshal` into a `Text []byte` field succeeds after a harness-only IntSize workaround, but `state{Text: decoded.Text}` traps `cannot use slice as []byte`; native prints `a` for `{"Text":"YQ=="}`. Preserve the decoded slice's element/type metadata at the reflection-to-script boundary; the reproduction does not require the experimental GOROOT.
+
 ### `minigo`: Stack-VM Interpreter (redesign of go-scan's tree-walking `minigo`) ([docs/sketch/plan-minigo-vm.md](./docs/sketch/plan-minigo-vm.md))
 
 - [x] **pointer method on a nil slice-typed field traps** (`nilslice_ptrmethod`, found via `go/parser.ParseExpr("a +")` while checking CLI tracebacks): `p.errors.Add(x)` with `errors scanner.ErrorList` still nil and `func (p *ErrorList) Add` traps `cannot use nil ErrorList as *ErrorList` instead of taking `&p.errors`. Any `go/parser` input with a syntax error hits it.
