@@ -1818,7 +1818,7 @@ func (t *Trap) Error() string {
 func StructFieldTags(st *ast.StructType) map[string]string {
 	var out map[string]string
 	for _, f := range st.Fields.List {
-		if f.Tag == nil || len(f.Names) == 0 {
+		if f.Tag == nil {
 			continue
 		}
 		tag, err := strconv.Unquote(f.Tag.Value)
@@ -1827,6 +1827,12 @@ func StructFieldTags(st *ast.StructType) map[string]string {
 		}
 		if out == nil {
 			out = map[string]string{}
+		}
+		if len(f.Names) == 0 {
+			// an embedded field is keyed by its type name: reflect
+			// reports `inner.Conf `yaml:",inline"“ as field Conf.
+			out[AnonFieldName(f.Type)] = tag
+			continue
 		}
 		for _, n := range f.Names {
 			out[n.Name] = tag

@@ -1,0 +1,5 @@
+Inner anon=true yaml=",inline" json="inner"
+Ptr anon=true yaml="" json="-"
+Out anon=false yaml="" json="out"
+Inner anon=true yaml=",inline" json=""
+{"inner":{"name":"n"},"out":"o"} <nil>
