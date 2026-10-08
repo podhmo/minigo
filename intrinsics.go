@@ -4100,18 +4100,30 @@ func goJSON(v any) any {
 		return goJSON(x.V)
 	case *runtime.Cell:
 		return goJSON(x.Elem)
+	case *runtime.TypedNil, *runtime.IfaceNil:
+		// a nil pointer/interface field marshals as null — passing the
+		// wrapper through would reflect on its bookkeeping fields.
+		return nil
 	case *runtime.Struct:
 		// structs marshal in DECLARATION order (encoding/json never
 		// sorts struct fields) — an ordered map keeps that visible.
 		var o orderedObject
 		for i, name := range x.Def.Fields {
 			if i < len(x.Fields) {
-				key, omit, skip := jsonFieldKey(x.Def, name)
+				key, omit, asStr, skip := jsonFieldKey(x.Def, name)
 				if skip || (omit && jsonIsEmpty(x.Fields[i])) {
 					continue
 				}
+				fv := goJSON(x.Fields[i])
+				// `,string` applies to the DECLARED kind: interface
+				// fields marshal normally even when the tag asks.
+				if asStr && !jsonFieldIsIface(x.Def, i) {
+					if lit, ok := jsonStringLit(x.Fields[i]); ok {
+						fv = lit
+					}
+				}
 				o.keys = append(o.keys, key)
-				o.vals = append(o.vals, goJSON(x.Fields[i]))
+				o.vals = append(o.vals, fv)
 			}
 		}
 		return o
@@ -4148,30 +4160,69 @@ func goJSON(v any) any {
 
 // jsonFieldKey maps a struct field to its JSON object key: the `json`
 // tag's name wins, a "-" tag skips the field, `omitempty` drops empty
-// values on marshal, and an absent tag falls back to the field name
-// (matching encoding/json's defaulting).
-func jsonFieldKey(def *runtime.TypeDef, name string) (key string, omitEmpty, skip bool) {
+// values on marshal, `,string` wraps scalar fields in quoted literals,
+// and an absent tag falls back to the field name (matching
+// encoding/json's defaulting).
+func jsonFieldKey(def *runtime.TypeDef, name string) (key string, omitEmpty, asString, skip bool) {
 	if def != nil && def.FTags != nil {
 		if tag, ok := def.FTags[name]; ok {
 			j := reflect.StructTag(tag).Get("json")
 			if j == "-" {
-				return "", false, true
+				return "", false, false, true
 			}
 			omit := false
+			asStr := false
 			if i := strings.IndexByte(j, ','); i >= 0 {
 				for _, opt := range strings.Split(j[i+1:], ",") {
-					if opt == "omitempty" {
+					switch opt {
+					case "omitempty":
 						omit = true
+					case "string":
+						asStr = true
 					}
 				}
 				j = j[:i]
 			}
 			if j != "" {
-				return j, omit, false
+				return j, omit, asStr, false
 			}
 		}
 	}
-	return name, false, false
+	return name, false, false, false
+}
+
+// jsonFieldIsIface reports whether struct field i is declared with an
+// interface type — `,string` on an interface field is ignored on
+// marshal (the option keys off the declared kind, not the value's).
+// Read from the declared field type AST: `any`/`error` spellings and
+// interface literals; named interface types are not resolved.
+func jsonFieldIsIface(def *runtime.TypeDef, i int) bool {
+	st, ok := typedefAst(def).(*ast.StructType)
+	if !ok {
+		return false
+	}
+	n := 0
+	for _, f := range st.Fields.List {
+		cnt := len(f.Names)
+		if cnt == 0 {
+			cnt = 1 // an embedded field still takes one slot in Def.Fields
+		}
+		if n+cnt <= i {
+			n += cnt
+			continue
+		}
+		switch t := f.Type.(type) {
+		case *ast.Ident:
+			return t.Name == "any" || t.Name == "error"
+		case *ast.InterfaceType:
+			return true
+		case *ast.ParenExpr:
+			_, ok := t.X.(*ast.InterfaceType)
+			return ok
+		}
+		return false
+	}
+	return false
 }
 
 // jsonIsEmpty mirrors encoding/json's isEmptyValue for `omitempty`:
@@ -4284,6 +4335,15 @@ func (x *jsonErrCtx) fail(value string, td *runtime.TypeDef, cause error) {
 		field: strings.Join(x.path, "."),
 		typ:   runtime.DisplayName(td),
 		cause: cause,
+	}
+}
+
+// failErr records a ready-made error verbatim — for failures whose
+// text is not an UnmarshalTypeError (e.g. the inner-literal syntax
+// error of a `,string` decode into an interface field).
+func (x *jsonErrCtx) failErr(err error) {
+	if x.err == nil {
+		x.err = err
 	}
 }
 
@@ -4403,13 +4463,17 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 			pf = ps.Fields
 		}
 		for i, name := range z.Def.Fields {
-			key, _, skip := jsonFieldKey(z.Def, name)
+			key, _, asStr, skip := jsonFieldKey(z.Def, name)
 			if skip {
 				continue
 			}
 			if fv, ok := jsonLookup(m, key); ok {
 				ectx.path = append(ectx.path, key)
-				z.Fields[i] = jsonShape(c, fv, c.TypeOf(z.Fields[i]), elemAt(pf, i), ectx)
+				if asStr {
+					z.Fields[i] = jsonStringOpt(c, fv, c.TypeOf(z.Fields[i]), elemAt(pf, i), ectx)
+				} else {
+					z.Fields[i] = jsonShape(c, fv, c.TypeOf(z.Fields[i]), elemAt(pf, i), ectx)
+				}
 				ectx.path = ectx.path[:len(ectx.path)-1]
 			}
 		}
@@ -4622,6 +4686,164 @@ func jsonScalar(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.
 		return conv(i)
 	}
 	return fail()
+}
+
+// jsonStringOpt decodes a `,string`-tagged field: the JSON value must
+// be a string whose inner text is the literal for the field's kind —
+// `"42"` for ints, `"\"x\""` for strings, `"true"` for bools. A
+// non-string value is a type error even when it would otherwise fit
+// (gc reports the value's JSON kind) and null keeps normal semantics.
+// Composite and interface kinds ignore the option entirely — the
+// string then decodes as it normally would (into an interface the
+// string itself lands, into a struct it fails like any string).
+// Pointers apply the option to the pointee.
+func jsonStringOpt(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.Value, ectx *jsonErrCtx) runtime.Value {
+	s, ok := dec.(string)
+	if !ok {
+		if dec == nil {
+			return jsonShape(c, nil, td, prior, ectx)
+		}
+		ectx.fail(jsonValueName(dec), td, nil)
+		return priorOr(prior, c, td)
+	}
+	inner := s
+	if td == nil {
+		return scriptVal(inner)
+	}
+	if td.Kind == runtime.KindPointer {
+		var ep runtime.Value
+		if pc, ok := prior.(*runtime.Cell); ok {
+			ep = pc.Elem
+		}
+		return &runtime.Cell{Elem: jsonStringOpt(c, dec, c.TypeOf(c.ElemZero(td)), ep, ectx)}
+	}
+	conv := func(x any) runtime.Value {
+		v, err := c.Convert(td, scriptVal(x))
+		if err != nil {
+			ectx.fail("string", td, nil)
+			return priorOr(prior, c, td)
+		}
+		return v
+	}
+	numFail := func() runtime.Value {
+		ectx.fail("number "+inner, td, nil)
+		return priorOr(prior, c, td)
+	}
+	if td.Name == "encoding/json.Number" {
+		if _, err := strconv.ParseFloat(inner, 64); err != nil {
+			// gc reports this one without field context.
+			ectx.failErr(fmt.Errorf("json: cannot unmarshal string %s into Go value of type json.Number: invalid syntax", strconv.Quote(inner)))
+			return priorOr(prior, c, td)
+		}
+		return conv(inner)
+	}
+	kind, bits, signed := "", 64, true
+	switch u := jsonUnderlyingName(td); {
+	case u == "string":
+		kind = "string"
+	case u == "bool":
+		kind = "bool"
+	case u == "float64", u == "float32":
+		kind = "float"
+		bits = 64
+		if u == "float32" {
+			bits = 32
+		}
+	case jsonIntName(u):
+		bits, signed = jsonIntWidth(u)
+		if signed {
+			kind = "int"
+		} else {
+			kind = "uint"
+		}
+	}
+	switch kind {
+	case "string":
+		var sv string
+		if err := json.Unmarshal([]byte(inner), &sv); err != nil {
+			// The inner text is re-parsed expecting a quoted string
+			// token: a leading non-quote char reports jsontext's
+			// object-key error, a bare empty text reports EOF.
+			var cause error
+			if inner == "" {
+				cause = errors.New("unexpected end of JSON input")
+			} else if inner[0] != '"' {
+				cause = fmt.Errorf("invalid character %q looking for beginning of object key string", rune(inner[0]))
+			} else {
+				cause = err
+			}
+			ectx.fail("string", td, cause)
+			return priorOr(prior, c, td)
+		}
+		return conv(sv)
+	case "bool":
+		switch inner {
+		case "true":
+			return conv(true)
+		case "false":
+			return conv(false)
+		}
+		ectx.fail("string "+strconv.Quote(inner), td, strconv.ErrSyntax)
+		return priorOr(prior, c, td)
+	case "int":
+		n, err := strconv.ParseInt(inner, 10, bits)
+		if err != nil {
+			return numFail()
+		}
+		return conv(n)
+	case "uint":
+		u64, err := strconv.ParseUint(inner, 10, bits)
+		if err != nil {
+			return numFail()
+		}
+		return conv(int64(u64))
+	case "float":
+		f, err := strconv.ParseFloat(inner, bits)
+		if err != nil {
+			return numFail()
+		}
+		return conv(f)
+	}
+	// Composite and other kinds ignore `,string`: the string decodes
+	// through the normal path and fails as "string into <td>".
+	return jsonShape(c, dec, td, prior, ectx)
+}
+
+// jsonStringLit renders a scalar field's `,string` marshal literal —
+// the JSON encoding of the value as it should appear inside the
+// outer quotes: ints become "42", strings are re-quoted ("\"x\""),
+// json.Number keeps its raw literal text. ok=false for kinds gc
+// leaves alone (composites, interfaces, nil).
+func jsonStringLit(v runtime.Value) (string, bool) {
+	switch x := runtime.Unwrap(v).(type) {
+	case *runtime.Named:
+		if x.Typ != nil && x.Typ.Name == "encoding/json.Number" {
+			if s, ok := runtime.Unwrap(x.V).(string); ok {
+				return s, true
+			}
+			return "", false
+		}
+		return jsonStringLit(x.V)
+	case *runtime.Cell:
+		return jsonStringLit(x.Elem)
+	case bool:
+		return strconv.FormatBool(x), true
+	case int64:
+		return strconv.FormatInt(x, 10), true
+	case float64:
+		b, err := json.Marshal(x)
+		if err != nil {
+			return "", false
+		}
+		return string(b), true
+	case string:
+		b, err := json.Marshal(x)
+		if err != nil {
+			return "", false
+		}
+		return string(b), true
+	}
+	return "", false
 }
 
 // jsonIntName reports whether name is a builtin integer spelling.

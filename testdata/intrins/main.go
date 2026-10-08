@@ -327,6 +327,40 @@ func JsonUnmarshalArray() string {
 	return out + "|" + fmt.Sprint(err, c)
 }
 
+// JsonUnmarshalStringOpt exercises the `,string` tag option: the field
+// value must be a quoted literal of the field's kind — "42" for ints,
+// "\"x\"" for strings, "true" for bools — parsed from the inner text
+// (pointers apply it to the pointee, interfaces re-parse the inner as
+// JSON, composites ignore it), and marshal emits the same quoted
+// literal back.
+func JsonUnmarshalStringOpt() string {
+	type S struct {
+		N int     `json:"n,string"`
+		F float64 `json:"f,string"`
+		B bool    `json:"b,string"`
+		T string  `json:"t,string"`
+		P *int    `json:"p,string"`
+		A any     `json:"a,string"`
+		L []int   `json:"l,string"`
+	}
+	var s S
+	err := json.Unmarshal([]byte(`{"n":"42","f":"1.5","b":"true","t":"\"x\"","p":"3","a":"5","l":"[1]"}`), &s)
+	out := fmt.Sprint(err, s.N, s.F, s.B, s.T, s.A, s.L)
+
+	var s2 S
+	err = json.Unmarshal([]byte(`{"n":"x"}`), &s2)
+	out += "|" + fmt.Sprint(err, s2.N)
+	err = json.Unmarshal([]byte(`{"n":42}`), &s2)
+	out += "|" + fmt.Sprint(err, s2.N)
+	err = json.Unmarshal([]byte(`{"b":"no"}`), &s2)
+	out += "|" + fmt.Sprint(err, s2.B)
+	err = json.Unmarshal([]byte(`{"t":"4"}`), &s2)
+	out += "|" + fmt.Sprint(err, s2.T)
+
+	b, _ := json.Marshal(S{N: 42, F: 1.5, B: true, T: "x", A: 7, L: []int{1}})
+	return out + "|" + string(b)
+}
+
 // StrconvAppendInt exercises the Append family — writeStatusLine in
 // net/http formats the status code through it.
 func StrconvAppendInt() string {
