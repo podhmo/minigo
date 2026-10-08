@@ -38,5 +38,10 @@ func MapSum(m map[string]int) int {
 	return n
 }
 func Nested(m map[string]map[string]int) int { return m["a"]["b"] }
+func NestedAny(m map[string]any) int         { return m["m"].(map[string]int)["k"] }
+func MapSelf(m map[string]any) string        { return fmt.Sprintf("%T", m["self"]) }
+func Shared(m map[string]any) int {
+	return m["a"].(map[string]int)["k"] + m["b"].(map[string]int)["k"]
+}
 
 func main() {}

@@ -108,11 +108,24 @@ func TestCallArgs(t *testing.T) {
 		{"MapSet", []runtime.Value{map[string]int{"k": 7}}, int64(9)},
 		{"IsNilM", []runtime.Value{map[string]int(nil)}, true},
 		{"Nested", []runtime.Value{map[string]map[string]int{"a": {"b": 3}}}, int64(3)},
+		{"NestedAny", []runtime.Value{map[string]any{"m": map[string]int{"k": 5}}}, int64(5)},
 	} {
 		got := run(t, e, "./testdata/callargs", c.fn, c.args...)
 		if got != c.want {
 			t.Errorf("%s: got %v (%T), want %v", c.fn, got, got, c.want)
 		}
+	}
+	// a map that contains itself through an `any` slot stops recursing:
+	// the repeat lands as a boxed host map instead of hanging.
+	cyc := map[string]any{}
+	cyc["self"] = cyc
+	if got := run(t, e, "./testdata/callargs", "MapSelf", cyc); got != "map[string]interface {}" {
+		t.Errorf("MapSelf: got %v (%T)", got, got)
+	}
+	// a shared (non-cyclic) submap still unboxes at every reference.
+	same := map[string]int{"k": 1}
+	if got := run(t, e, "./testdata/callargs", "Shared", map[string]any{"a": same, "b": same}); got != int64(2) {
+		t.Errorf("Shared: got %v (%T)", got, got)
 	}
 	// a named map keeps its box — member dispatch lives there, the same
 	// rule named host slices follow — so indexing it still traps at the

@@ -3101,6 +3101,16 @@ func goValueOf(rv reflect.Value) runtime.Value {
 // values pass through; a named map or struct keeps its box for member
 // dispatch, the same rule goValueOf applies to named slices.
 func ScriptValueOf(x any) runtime.Value {
+	return scriptValueOf(x, map[uintptr]struct{}{})
+}
+
+// scriptValueOf is ScriptValueOf's worker: it threads the set of maps
+// currently being unboxed so a map that contains itself (reachable
+// only through an `any` slot, since a Go map type can't name itself
+// anonymously) boxes at the repeat instead of recursing forever.
+// Shared submaps still unbox — the set forgets a map once its pairs
+// are built.
+func scriptValueOf(x any, visiting map[uintptr]struct{}) runtime.Value {
 	// the script's int domain is int64: a host int64 stands for a script
 	// int, so it enters bare — tagging it (like goValueOf does for a
 	// reflect result) would make `int`-typed params reject the ints
@@ -3110,16 +3120,21 @@ func ScriptValueOf(x any) runtime.Value {
 	}
 	rv := reflect.ValueOf(x)
 	if rv.Kind() == reflect.Map && rv.Type().Name() == "" {
-		// recursing through ScriptValueOf unboxes nested maps too —
+		// recursing through scriptValueOf unboxes nested maps too —
 		// m["a"]["b"] keeps working at any depth.
 		td := anonMapTyp(elemTypeName(rv.Type().Key()), elemTypeName(rv.Type().Elem()))
 		if rv.IsNil() {
 			return &runtime.TypedNil{Typ: td}
 		}
+		if _, dup := visiting[rv.Pointer()]; dup {
+			return &runtime.GoValue{V: x}
+		}
+		visiting[rv.Pointer()] = struct{}{}
 		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}, Typ: td}
 		for _, k := range rv.MapKeys() {
-			m.Insert(ScriptValueOf(k.Interface()), ScriptValueOf(rv.MapIndex(k).Interface()))
+			m.Insert(scriptValueOf(k.Interface(), visiting), scriptValueOf(rv.MapIndex(k).Interface(), visiting))
 		}
+		delete(visiting, rv.Pointer())
 		return m
 	}
 	return goValueOf(rv)
@@ -3137,6 +3152,9 @@ func elemTypeName(t reflect.Type) string {
 	}
 	if n := t.Name(); n != "" {
 		return n
+	}
+	if t.Kind() == reflect.Interface && t.NumMethod() == 0 {
+		return "any" // the empty interface spells `any` in script typedefs
 	}
 	return t.String()
 }
