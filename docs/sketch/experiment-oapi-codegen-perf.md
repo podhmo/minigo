@@ -1088,6 +1088,18 @@ interpreter. A more general form would defer calls to functions known
 to be pure (by annotation at first, since proving purity is hard) until
 their result is observed.
 
+A follow-up tested the first half only:
+`docs/sketch/experiment-oapi-template-cache.md`, on branch
+`codex/sync-builtin-callbacks`. It saved whole trees in a compact format
+and eagerly restored all 64 on every run. Output stayed byte-identical,
+but the warm cache made strict 21% slower. Restoring took ~0.48s, while
+parsing with the host lexer takes ~0.2s. Once the lexer runs on the
+host, parsing is mostly building script nodes, and a restore must build
+the same nodes. On top of that, its codec ran interpreted. So any scheme
+that materializes every tree, cached or not, cannot beat the parser.
+Only not building trees can help. The lazy half, persisting just "no
+error; these names" and parsing bodies on lookup, remains untested.
+
 **The missing measurement is unobserved work.** Instructions were split
 by package, never by whether their result was later observed:
 
@@ -1095,9 +1107,13 @@ by package, never by whether their result was later observed:
 - clones made vs clones used (8 frameworks, one used)
 - JSON and YAML values decoded vs fields read
 
-Template parsing alone was ~0.55s, a third of wall time at step 12,
-and most of its trees are never executed. How much of the rest is
-equally skippable was not measured. That fraction, not instructions ×
+Template parsing was ~0.55s, a third of wall time, at step 12. With the
+host lexer (step 17) it is ~0.2s, about 17% of strict's ~1.16s. Most of
+its trees are never executed, but the trees that are executed must
+still be parsed. So even perfect laziness saves less than 17%, and it
+needs text/template changes: `Templates()` enumerates every tree, and
+`Clone` copies them. How much of the remaining ~0.95s is skippable was
+not measured; the cache follow-up skipped this measurement too. That fraction, not instructions ×
 ns per instruction, is the real ceiling for an interpreter. It is the
 first thing the next experiment should measure.
 
@@ -1117,8 +1133,9 @@ first thing the next experiment should measure.
   have saved that.
 - **An aliasing checklist before binding anything.** For each value
   that crosses a native binding: struct copy, two slice aliases,
-  reslice, `append` within capacity, field rebind, typed nil, and
-  constants as named ints. As difffuzz cases, written before the
+  reslice, `append` within capacity, `append` at the original length
+  (capacity is observable), field rebind, typed nil, and constants as
+  named ints. As difffuzz cases, written before the
   binding. Both review rounds of step 13 would have been caught by it.
 - **Run the 53-line gate on a schedule.** Two regressions sat on main
   unnoticed until step 0.
