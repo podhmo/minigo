@@ -539,9 +539,51 @@ func (e *Engine) installStdlib() {
 			n := utf8.EncodeRune(buf[:], runeOf(a[0]))
 			return string(buf[:n]), nil
 		}),
-		"AppendRune": h.fn2("utf8.AppendRune", func(a []any) (any, error) {
-			return utf8.AppendRune(byteSlice(a[0]), runeOf(a[1])), nil
-		}),
+		"AppendRune": &runtime.BuiltinFunc{Name: "utf8.AppendRune", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("utf8.AppendRune needs 2 args, got %d", len(args))
+			}
+			// the append runs on the script slice's own backing — going
+			// through goNative would copy it, losing the spare-capacity
+			// sharing Go's append preserves (b[:2] sees the rune and the
+			// writes through the result).
+			var elems []runtime.Value
+			var styp *runtime.TypeDef
+			switch x := runtime.Unwrap(args[0]).(type) {
+			case runtime.Nil:
+				// an untyped nil appends like an empty []byte
+			case *runtime.TypedNil:
+				if x.Typ == nil || x.Typ.Kind != runtime.KindSlice {
+					return nil, fmt.Errorf("utf8.AppendRune on %T", args[0])
+				}
+				styp = x.Typ
+			default:
+				s, ok := sliceOf(args[0])
+				if !ok {
+					return nil, fmt.Errorf("utf8.AppendRune on %T", args[0])
+				}
+				elems, styp = s.Elems, s.Typ
+			}
+			var buf [utf8.UTFMax]byte
+			n := utf8.EncodeRune(buf[:], rune(int64Of(goNative(args[1]))))
+			var et *runtime.TypeDef
+			if styp != nil {
+				et = vc.TypeOf(vc.ElemZero(styp))
+			}
+			add := make([]runtime.Value, n)
+			for i, b := range buf[:n] {
+				a := runtime.Value(int64(b))
+				if et != nil {
+					// elements tag like the declared element type, the
+					// same conversion the append builtin applies.
+					if cv, err := vc.Convert(et, a); err == nil {
+						a = cv
+					}
+				}
+				add[i] = a
+			}
+			return &runtime.Slice{Elems: append(elems, add...), Typ: anonSliceTyp("byte")}, nil
+		}, Target: utf8.AppendRune},
 		"UTFMax":    int64(utf8.UTFMax),
 		"RuneError": int64(utf8.RuneError),
 		"RuneSelf":  int64(utf8.RuneSelf),
