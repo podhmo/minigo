@@ -1891,7 +1891,16 @@ func (v *VM) loop(f *frame) {
 				// so method calls and `:=`-inferred vars keep the tag.
 				if n, isN := x.(*runtime.Named); isN && n.Typ != nil && n.Typ.Kind == runtime.KindPointer {
 					if et := v.elemTypedef(f, n.Typ); et != nil {
-						dv = v.coerce(f, dv, et)
+						// A converted pointer re-types the storage on
+						// read: `(*uval)(&u)` reads the uint as uval.
+						// The conversion already proved the pointee
+						// shapes identical, so re-tag rather than coerce
+						// — assignability would reject two named types.
+						if dtd := v.typeOfValue(dv); dtd != nil && tagIsNamed(et) && v.tdShapeEq(dtd, et) {
+							dv = runtime.Tag(et, runtime.Unwrap(dv))
+						} else {
+							dv = v.coerce(f, dv, et)
+						}
 					}
 				}
 				f.push(dv)
@@ -9083,13 +9092,15 @@ func (v *VM) convertPointer(td *runtime.TypeDef, x runtime.Value) (runtime.Value
 	if _, ok := runtime.Deref(x); !ok {
 		return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
 	}
-	if ptag := v.pointeeTag(x); ptag != nil && v.H.ElemOf != nil {
-		if et, err := v.H.ElemOf(v.peelNamed(td)); err == nil && et != nil && !sameTypeDef(ptag, et) && !sameTypeDef(ptag, v.peelAlias(et)) {
-			pe, pp := v.peelNamed(et), v.peelNamed(ptag)
+	var ptag *runtime.TypeDef
+	if pt := v.pointeeTag(x); pt != nil && v.H.ElemOf != nil {
+		ptag = pt
+		if et, err := v.H.ElemOf(v.peelNamed(td)); err == nil && et != nil && !sameTypeDef(pt, et) && !sameTypeDef(pt, v.peelAlias(et)) {
+			pe, pp := v.peelNamed(et), v.peelNamed(pt)
 			if pe == nil || pp == nil || pe.Kind != pp.Kind ||
 				(pe.Kind == runtime.KindStruct && !structFieldsEq(pe, pp)) ||
 				(pe.Kind != runtime.KindStruct && !v.convShapeEq(pe, pp)) {
-				return nil, fmt.Errorf("cannot convert *%s to %s", tdName(ptag), tdName(td))
+				return nil, fmt.Errorf("cannot convert *%s to %s", tdName(pt), tdName(td))
 			}
 		}
 	}
@@ -9098,12 +9109,16 @@ func (v *VM) convertPointer(td *runtime.TypeDef, x runtime.Value) (runtime.Value
 	// dynamic type stays the anonymous *Elem. An anonymous *Declared
 	// (`(*T)(p)` on a declared T) wraps too: the pointer type is unnamed,
 	// but the value must keep T's declared identity so interface checks
-	// and method dispatch see the pointee's method set.
+	// and method dispatch see the pointee's method set. So does an
+	// anonymous pointer whose pointee type the conversion actually
+	// changes (`(*uint)(&w)` on `var w uval`): without the tag the
+	// result still reads as *uval and the assign site rejects it.
 	if td.Spec != nil {
 		return runtime.Tag(td, x), nil
 	}
 	if v.H.ElemOf != nil {
-		if et, err := v.H.ElemOf(td); err == nil && et != nil && declaredType(et) {
+		if et, err := v.H.ElemOf(td); err == nil && et != nil &&
+			(declaredType(et) || (ptag != nil && !sameTypeDef(ptag, et) && !sameTypeDef(ptag, v.peelAlias(et)))) {
 			return runtime.Tag(td, x), nil
 		}
 	}
