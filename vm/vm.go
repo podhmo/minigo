@@ -1750,10 +1750,12 @@ func (v *VM) loop(f *frame) {
 		case bytecode.OpIndexRef:
 			key := f.pop()
 			base := f.pop()
-			// the ref stores the resolved key: lookups hash it raw, so
-			// a still-untyped constant must materialize like v.index's
-			// operand does (`mss["a"][0]` keys a UConst 0 otherwise).
-			key = runtime.Unwrap(v.materialize(f, key))
+			// the ref stores the resolved key: a still-untyped constant
+			// must materialize like v.index's operand does (`mss["a"][0]`
+			// keys a UConst 0 otherwise). A named key keeps its tag —
+			// `type T pkg.S` unwraps to a struct whose typedef is pkg.S,
+			// which the store's declared key check would reject.
+			key = v.materialize(f, key)
 			if ins.B == 2 {
 				// a[i][:] — a ref keeps the slice bound to element
 				// storage; a base with no slice elements (map
@@ -5645,7 +5647,7 @@ func (v *VM) refThrough(f *frame, base runtime.Value) (runtime.Value, bool) {
 			// Get is gated for copies; the raw element read lands on
 			// the map element itself (writable only when it is
 			// reference-shaped) or the map zero for a missing key.
-			x, found := m.Get(b.Key)
+			x, found := m.Get(runtime.Unwrap(b.Key))
 			if !found {
 				x = v.index(f, b.Base, b.Key)
 			}
@@ -5657,7 +5659,7 @@ func (v *VM) refThrough(f *frame, base runtime.Value) (runtime.Value, bool) {
 		}
 		switch cb := runtime.Unwrap(bv).(type) {
 		case *runtime.Map:
-			x, found := cb.Get(b.Key)
+			x, found := cb.Get(runtime.Unwrap(b.Key))
 			if !found {
 				x = v.index(f, bv, b.Key)
 			}
@@ -8364,8 +8366,8 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 			// node — (*[N]T)(s) re-views s's backing array, so
 			// &s5[0] == &ss[0] even through distinct slice headers.
 			as, bs := av.Slice(), br.Slice()
-			ai, aok := av.Key.(int64)
-			bi, bok := br.Key.(int64)
+			ai, aok := runtime.Unwrap(av.Key).(int64)
+			bi, bok := runtime.Unwrap(br.Key).(int64)
 			if as != nil && bs != nil && aok && bok &&
 				ai >= 0 && ai < int64(len(as.Elems)) &&
 				bi >= 0 && bi < int64(len(bs.Elems)) {

@@ -441,7 +441,10 @@ func SharedElem(v Value) bool {
 // only resolves reference-shaped elements; see SharedElem.)
 type IndexRef struct {
 	Base Value
-	Key  Value
+	// Key is the index operand as evaluated: a named key keeps its
+	// Named tag, so a map store through the ref still type-checks it
+	// against the declared key type. Hash or index with Unwrap(Key).
+	Key Value
 }
 
 // container resolves the base to the referenced slice or map — one
@@ -493,7 +496,7 @@ func (r *IndexRef) Get() (Value, bool) {
 	if m := r.mapOf(); m != nil {
 		// a missing key reports no value — callers needing the zero
 		// go through the VM's index path, which knows the elem typedef.
-		v, ok := m.Get(r.Key)
+		v, ok := m.Get(Unwrap(r.Key))
 		if !ok || !SharedElem(v) {
 			// interior access on a non-reference element must not
 			// resolve: `m[k]` reads a copy in Go, so writes like
@@ -505,7 +508,7 @@ func (r *IndexRef) Get() (Value, bool) {
 		return v, true
 	}
 	s := r.sliceOf()
-	i, ok := r.Key.(int64)
+	i, ok := Unwrap(r.Key).(int64)
 	if s == nil || !ok || i < 0 || i >= int64(len(s.Elems)) {
 		return nil, false
 	}
@@ -515,11 +518,11 @@ func (r *IndexRef) Get() (Value, bool) {
 // Set writes the element value.
 func (r *IndexRef) Set(v Value) bool {
 	if m := r.mapOf(); m != nil {
-		m.Insert(r.Key, v)
+		m.Insert(Unwrap(r.Key), v)
 		return true
 	}
 	s := r.sliceOf()
-	i, ok := r.Key.(int64)
+	i, ok := Unwrap(r.Key).(int64)
 	if s == nil || !ok || i < 0 || i >= int64(len(s.Elems)) {
 		return false
 	}
