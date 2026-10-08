@@ -588,6 +588,28 @@ func (c *compiler) refRef(name string, pos token.Pos) {
 
 // Func compiles fn.Decl into fn.Chunk.
 func Func(fn *runtime.Function) error {
+	if len(fn.Binds) == 0 || fn.Pkg == nil {
+		return compileFunc(fn)
+	}
+	// a generic instantiation compiles once per distinct binds: every
+	// call of an inferred generic mints a fresh Function
+	key, ok := runtime.InstKey(fn.Decl, fn.File, fn.Name, fn.Binds)
+	if ok {
+		if ch, hit := fn.Pkg.InstChunk(key); hit {
+			fn.Chunk = ch
+			return nil
+		}
+	}
+	if err := compileFunc(fn); err != nil {
+		return err
+	}
+	if ok {
+		fn.Pkg.SetInstChunk(key, fn.Decl, fn.Binds, fn.Chunk)
+	}
+	return nil
+}
+
+func compileFunc(fn *runtime.Function) error {
 	c := &compiler{pkg: fn.Pkg, file: fn.File, fs: newFScope(nil), ch: &bytecode.Chunk{Name: fn.Name}, labels: map[string]*labelInfo{}, binds: fn.Binds, symName: fn.Name, iotaVal: -1}
 	if fn.Pkg != nil {
 		c.symName = fn.Pkg.Name + "." + fn.Name
