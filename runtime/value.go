@@ -1429,6 +1429,24 @@ type BuiltinFunc struct {
 	GenFn func(vm VMCaller, targs []Value, args []Value) (Value, error)
 }
 
+// SmallIntOf reads a host numeric that fits the int64 domain — named
+// integer kinds like reflect.Kind travel as GoValue and need unwrapping
+// before arithmetic/comparison (full-width uint64 stays boxed instead).
+// Host scalars whose payload is a named int kind (time.Duration) read
+// through reflect so a raw Duration behaves as its int64 nanoseconds.
+func SmallIntOf(x any) (int64, bool) {
+	rv := reflect.ValueOf(x)
+	switch rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return rv.Int(), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uintptr:
+		if u := rv.Uint(); u <= math.MaxInt64 {
+			return int64(u), true
+		}
+	}
+	return 0, false
+}
+
 // VMCaller is the piece of the VM builtins need (kept narrow to avoid a
 // runtime->vm dependency).
 type VMCaller interface {

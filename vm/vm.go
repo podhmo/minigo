@@ -4620,7 +4620,7 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 			f.trap("index on nil %s", tdName(b.Typ))
 		}
 	case *runtime.Slice:
-		i, ok := idx.(int64)
+		i, ok := runtime.SmallIntOf(idx)
 		if !ok {
 			f.trap("slice index is %T", idx)
 		}
@@ -5479,7 +5479,7 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 			f.trap("index assign on nil %s", tdName(b.Typ))
 		}
 	case *runtime.Slice:
-		i, ok := idx.(int64)
+		i, ok := runtime.SmallIntOf(idx)
 		if !ok {
 			f.trap("slice index is %T", idx)
 		}
@@ -5777,10 +5777,12 @@ func sliceBoundsReason(l, h, m, cap int64, three bool, word string) string {
 func (v *VM) bounds(f *frame, lo, hi runtime.Value, n int64) (int64, int64) {
 	l := int64(0)
 	h := n
-	if lv, ok := runtime.Unwrap(v.materialize(f, lo)).(int64); ok {
+	// a host integer scalar (time.Duration) reads as its int64 value —
+	// `a[d:]` on a Duration d bounds by its nanoseconds, like gc.
+	if lv, ok := runtime.SmallIntOf(runtime.Unwrap(v.materialize(f, lo))); ok {
 		l = lv
 	}
-	if hv, ok := runtime.Unwrap(v.materialize(f, hi)).(int64); ok {
+	if hv, ok := runtime.SmallIntOf(runtime.Unwrap(v.materialize(f, hi))); ok {
 		h = hv
 	}
 	return l, h
@@ -5790,7 +5792,7 @@ func (v *VM) bounds(f *frame, lo, hi runtime.Value, n int64) (int64, int64) {
 // `a[low:high:]` uses the container's capacity. The slice operator itself
 // (`elems[l:h:m]`) enforces low <= high <= max <= cap with Go's panic.
 func (v *VM) maxBound(f *frame, max runtime.Value, capN int64) int64 {
-	if mv, ok := runtime.Unwrap(v.materialize(f, max)).(int64); ok {
+	if mv, ok := runtime.SmallIntOf(runtime.Unwrap(v.materialize(f, max))); ok {
 		return mv
 	}
 	return capN
@@ -5807,7 +5809,7 @@ func (v *VM) litKeyIndex(f *frame, k runtime.Value, last int64) (int64, bool) {
 	if nk, ok := k.(*runtime.Named); ok {
 		k = nk.V
 	}
-	iv, ok := k.(int64)
+	iv, ok := runtime.SmallIntOf(k)
 	return iv, ok
 }
 
@@ -7532,7 +7534,7 @@ func (v *VM) binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.V
 		if u, isU := g.V.(uint64); isU {
 			a = int64(u)
 			ubox = true
-		} else if iv, ok := smallIntOf(g.V); ok {
+		} else if iv, ok := runtime.SmallIntOf(g.V); ok {
 			// a GoValue carrying an ordered numeric (reflect.Kind and
 			// other named host ints) unwraps for arithmetic and
 			// comparisons like an ordinary named int.
@@ -7544,7 +7546,7 @@ func (v *VM) binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.V
 		if u, isU := g.V.(uint64); isU {
 			b = int64(u)
 			ubox = true
-		} else if iv, ok := smallIntOf(g.V); ok {
+		} else if iv, ok := runtime.SmallIntOf(g.V); ok {
 			b = iv
 			if bt := reflect.TypeOf(g.V); numTag != nil && bt != numTag {
 				// Go rejects arithmetic on differently-named ints
@@ -7620,22 +7622,6 @@ func uintOperand(v runtime.Value) (uint64, bool) {
 	case *runtime.GoValue:
 		if u, ok := x.V.(uint64); ok {
 			return u, true
-		}
-	}
-	return 0, false
-}
-
-// smallIntOf reads a host numeric that fits the int64 domain — named
-// integer kinds like reflect.Kind travel as GoValue and need unwrapping
-// before arithmetic/comparison (full-width uint64 stays boxed instead).
-func smallIntOf(x any) (int64, bool) {
-	rv := reflect.ValueOf(x)
-	switch rv.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return rv.Int(), true
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uintptr:
-		if u := rv.Uint(); u <= math.MaxInt64 {
-			return int64(u), true
 		}
 	}
 	return 0, false
@@ -7813,7 +7799,8 @@ func shiftCount(b runtime.Value) (uint64, bool) {
 			}
 		}
 	}
-	switch x := runtime.Unwrap(b).(type) {
+	ux := runtime.Unwrap(b)
+	switch x := ux.(type) {
 	case int64:
 		if x < 0 {
 			panic(runtime.NegativeShiftPanic())
@@ -7846,6 +7833,14 @@ func shiftCount(b runtime.Value) (uint64, bool) {
 		case complex128:
 			return complexShiftCount(u)
 		}
+	}
+	// a raw host integer scalar (time.Duration) counts by its int64
+	// value — `1 << d` on a Duration is legal like any named int.
+	if iv, ok := runtime.SmallIntOf(ux); ok {
+		if iv < 0 {
+			panic(runtime.NegativeShiftPanic())
+		}
+		return uint64(iv), true
 	}
 	return 0, false
 }
@@ -8080,6 +8075,11 @@ func (v *VM) unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value 
 			if u, ok := g.V.(uint64); ok {
 				return retag(&runtime.GoValue{V: ^u})
 			}
+		}
+		// raw host integer scalars (^time.Duration) complement in the
+		// int64 domain and retag to the operand's declared type.
+		if iv, ok := runtime.SmallIntOf(a); ok {
+			return retag(^iv)
 		}
 		f.trap("unary ^ on %T", a)
 	}
