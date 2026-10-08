@@ -829,6 +829,9 @@ func PtrArrayType(td *TypeDef) *ast.ArrayType {
 
 // arrayTypedef reports whether a typedef is a fixed-size array — its
 // underlying AST is an ArrayType carrying a length (slices have none).
+// ArrayTypedef reports whether td is a fixed-length array type.
+func ArrayTypedef(td *TypeDef) bool { return arrayTypedef(td) }
+
 func arrayTypedef(td *TypeDef) bool {
 	if td == nil {
 		return false

@@ -25,6 +25,7 @@ import (
 
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/minireflect"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
 )
@@ -572,6 +573,9 @@ func (v *VM) assignRef(f *frame, ref, val runtime.Value) {
 		v.setField(f, r.Base, r.Name, val)
 		return
 	case *runtime.Cell:
+		if !r.ReadOnly && overwriteArray(r, val) {
+			return
+		}
 		v.assignCell(f, r, val)
 		return
 	case *runtime.DerefRef:
@@ -674,6 +678,9 @@ func overwriteStruct(ref, val runtime.Value) bool {
 	if !ok {
 		return false
 	}
+	if overwriteArray(c, val) {
+		return true
+	}
 	dst, ok := c.Elem.(*runtime.Struct)
 	if !ok {
 		return false
@@ -705,15 +712,23 @@ func overwriteArray(ref, val runtime.Value) bool {
 	if !ok {
 		return false
 	}
-	dst, ok := runtime.Unwrap(c.Elem).(*runtime.Slice)
-	if !ok || !isArrayTyp(dst.Typ) {
+	return overwriteArrayIn(c.Elem, val)
+}
+
+// overwriteArrayIn copies val's elements into old when both are arrays
+// of the same length — the in-place store behind overwriteArray, also
+// used for struct fields (`s.a = b` with `p := s.a[:]` live). Virtual
+// slices carry no backing Elems, so there is nothing to overwrite.
+func overwriteArrayIn(old, val runtime.Value) bool {
+	da, ok := runtime.Unwrap(old).(*runtime.Slice)
+	if !ok || !runtime.ArrayTypedef(da.Typ) || da.Virtual() {
 		return false
 	}
-	src, ok := runtime.Unwrap(runtime.Copy(val)).(*runtime.Slice)
-	if !ok || !isArrayTyp(src.Typ) || len(src.Elems) != len(dst.Elems) {
+	sa, ok := runtime.Unwrap(runtime.Copy(val)).(*runtime.Slice)
+	if !ok || sa.Virtual() || !runtime.ArrayTypedef(sa.Typ) || len(sa.Elems) != len(da.Elems) {
 		return false
 	}
-	overwriteArrayElems(dst, src)
+	overwriteArrayElems(da, sa)
 	return true
 }
 
@@ -1633,6 +1648,14 @@ func (v *VM) loop(f *frame) {
 			f.push(b)
 		case bytecode.OpFieldRef:
 			base := f.pop()
+			if ir, isImport := base.(*runtime.ImportRef); isImport && ins.B == 0 {
+				// &pkg.V is the imported global's own storage cell,
+				// like &v for a same-package global (OpGlobalRef).
+				if c := v.importGlobalCell(f, ir, consts[ins.A].(string)); c != nil {
+					f.push(c)
+					break
+				}
+			}
 			if ins.B == 0 || ins.B&2 != 0 {
 				// Pinned operand (address-of target B=0, or a
 				// multi-assign store B&2): a ref holding a struct is
@@ -2475,6 +2498,25 @@ func lookupDecl(pkg *runtime.Package, name string) (*index.Decl, bool) {
 	return nil, false
 }
 
+// importGlobalCell resolves &pkg.name to the package global's storage
+// cell, or nil when the member is not a cell-backed variable (a host
+// binding), leaving the caller's generic ref path in charge.
+func (v *VM) importGlobalCell(f *frame, b *runtime.ImportRef, name string) *runtime.Cell {
+	if !token.IsExported(name) && !b.AllNames {
+		f.trap("cannot refer to unexported name %s.%s", b.Path, name)
+	}
+	p, err := b.Materialize()
+	if err != nil {
+		f.trap("import %s: %s", b.Path, err)
+	}
+	mv, err := v.memberOf(p, name)
+	if err != nil {
+		f.trap("%s", err)
+	}
+	c, _ := mv.(*runtime.Cell)
+	return c
+}
+
 // selectMember implements base.name for import refs, packages, structs,
 // typedefs, and cells.
 func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Value {
@@ -2906,7 +2948,7 @@ func goValueOf(rv reflect.Value) runtime.Value {
 		*runtime.BoundMethod, *runtime.BuiltinFunc, *runtime.GoValue,
 		*runtime.Chan, *runtime.TypeDef, *runtime.Iterator, *runtime.Package,
 		*runtime.ImportRef, *runtime.TypedNil, *runtime.IfaceNil,
-		*runtime.Named:
+		*runtime.Named, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
 		return v
 	default:
 		// an unnamed host slice/array ([N]T, []T) unboxes element-wise so
@@ -2938,9 +2980,16 @@ func goValueOf(rv reflect.Value) runtime.Value {
 	}
 }
 
+// hostRValueType is the facade's host type: a host []*RValue (MapKeys,
+// Call results) spells its elements reflect.Value like Go.
+var hostRValueType = reflect.TypeOf((*minireflect.RValue)(nil))
+
 // elemTypeName names a reflect type for typedef spelling — Name() when
 // it has one, the reflect spelling otherwise (struct{...}, []string).
 func elemTypeName(t reflect.Type) string {
+	if t == hostRValueType {
+		return "reflect.Value"
+	}
 	if n := t.Name(); n != "" {
 		return n
 	}
@@ -4207,6 +4256,19 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 	if dv, ok := runtime.Deref(n.V); ok {
 		sv = dv
 	}
+	// a pointer conversion across declared types — `(*inner.Tag)(t)` on
+	// a *Tag for `type Tag inner.Tag` — keeps the pointee's own Named
+	// tag; fields still live on the struct underneath.
+	for {
+		nn, isNamed := sv.(*runtime.Named)
+		if !isNamed {
+			break
+		}
+		sv = nn.V
+		if dv, ok := runtime.Deref(sv); ok {
+			sv = dv
+		}
+	}
 	if gv, isGo := sv.(*runtime.GoValue); isGo {
 		// a host-boxed payload (a tagged host composite literal — its
 		// Named tag only names the declared type) resolves fields and
@@ -4262,7 +4324,10 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 				if fts := v.fieldTypedefs(b.Def); i < len(fts) {
 					ft = fts[i]
 				}
-				b.Fields[i] = v.coerce(f, val, ft)
+				nv := v.coerce(f, val, ft)
+				if !overwriteArrayIn(b.Fields[i], nv) {
+					b.Fields[i] = nv
+				}
 				return
 			}
 		}
@@ -4280,7 +4345,10 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 			if fts := v.fieldTypedefs(pr.st.Def); pr.idx < len(fts) {
 				ft = fts[pr.idx]
 			}
-			pr.st.Fields[pr.idx] = v.coerce(f, val, ft)
+			nv := v.coerce(f, val, ft)
+			if !overwriteArrayIn(pr.st.Fields[pr.idx], nv) {
+				pr.st.Fields[pr.idx] = nv
+			}
 			return
 		}
 		f.trap("%s has no field %s", b.Def.Name, name)
@@ -5124,7 +5192,9 @@ func (v *VM) indexOK(f *frame, base, idx runtime.Value) runtime.Value {
 	if dv, ok := runtime.Deref(base); ok {
 		return v.indexOK(f, dv, idx)
 	}
-	idx = runtime.Unwrap(idx)
+	// an untyped-const key (`const k = "x"; v, ok := m[k]`) hashes as
+	// its materialized value, like index's plain read
+	idx = runtime.Unwrap(v.materialize(f, idx))
 	if n, ok := base.(*runtime.Named); ok {
 		return v.indexOK(f, n.V, idx)
 	}
@@ -8089,9 +8159,12 @@ func sliceTypOf(td *runtime.TypeDef) *runtime.TypeDef {
 		return td
 	}
 	return &runtime.TypeDef{
-		Kind: runtime.KindSlice,
-		Elem: td.Elem,
-		Anon: &ast.ArrayType{Elt: at.Elt},
+		Kind:  runtime.KindSlice,
+		Elem:  td.Elem,
+		Anon:  &ast.ArrayType{Elt: at.Elt},
+		Pkg:   td.Pkg,
+		File:  td.File,
+		Binds: td.Binds,
 	}
 }
 
@@ -8548,6 +8621,12 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 				return string(rs), nil
 			}
 			return nil, fmt.Errorf("cannot convert %s to string", tdName(sx.Typ))
+		case *runtime.GoValue:
+			// a host value of string kind — reflect.StructTag from
+			// StructField.Tag — converts by its underlying string.
+			if rv := reflect.ValueOf(sx.V); rv.Kind() == reflect.String {
+				return rv.String(), nil
+			}
 		}
 		return nil, fmt.Errorf("cannot convert %s to string", typeNameOf(x))
 	case "bool":
@@ -9336,6 +9415,11 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 		rt := reflect.TypeOf(xv.V)
 		if rt == nil {
 			return false
+		}
+		// reflect.Value is the minireflect facade, boxed as its pointer
+		// (the typedef's HostNew) though it spells reflect.Value.
+		if td.Name == "reflect.Value" && td.HostNew != nil {
+			return rt == reflect.TypeOf(td.HostNew())
 		}
 		// a boxed host func compares signatures like a script func
 		// value — func(int) int never asserts to func(string).
