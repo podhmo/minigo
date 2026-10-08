@@ -116,13 +116,7 @@ func execute(ctx context.Context, e *minigo.Engine, d directive) error {
 		"GOPACKAGE":  d.pkg,
 	})
 	defer restore()
-	// the []string arg crosses the boundary as a script slice: raw host
-	// slices are not auto-converted for Call (scalars are), so box it.
-	elems := make([]runtime.Value, len(d.args))
-	for i, a := range d.args {
-		elems[i] = a
-	}
-	res, err := e.Run(ctx, refDir, "Main", &runtime.Slice{Elems: elems})
+	res, err := e.Run(ctx, refDir, "Main", d.args)
 	if err != nil {
 		return err
 	}
