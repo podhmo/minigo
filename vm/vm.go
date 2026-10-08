@@ -4609,7 +4609,7 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 		case runtime.KindMap:
 			// the key's declared-type check is static — a nil-map read
 			// still rejects `B{1}` against map[A]V like gc.
-			v.mapKeyOperand(f, b.Typ, rawIdx)
+			v.checkMapKey(f, b.Typ, rawIdx)
 			return v.mapZero(f, b.Typ) // reading a nil map yields the zero value
 		case runtime.KindSlice:
 			panic(runtime.BoundsPanic(runtime.Unwrap(idx), 0))
@@ -5366,6 +5366,13 @@ func (v *VM) mapKeyOperand(f *frame, td *runtime.TypeDef, idx runtime.Value) run
 	return runtime.Unwrap(v.materialize(f, idx))
 }
 
+// checkMapKey runs the declared-key-type check and drops the operand —
+// a nil-map read or write still rejects a mismatched key statically,
+// before the nil-map panic or zero value fires.
+func (v *VM) checkMapKey(f *frame, td *runtime.TypeDef, idx runtime.Value) {
+	v.mapKeyOperand(f, td, idx)
+}
+
 // elemRead coerces a container element read to its declared element
 // typedef — b[i] on []byte is uint8-typed, not a bare int64, so %T and
 // cross-type assignment see the element's real type.
@@ -5421,7 +5428,7 @@ func (v *VM) indexOK(f *frame, base, idx runtime.Value) runtime.Value {
 	}
 	if tn, ok := base.(*runtime.TypedNil); ok {
 		if tn.Typ.Kind == runtime.KindMap {
-			v.mapKeyOperand(f, tn.Typ, rawIdx)
+			v.checkMapKey(f, tn.Typ, rawIdx)
 			return &runtime.Tuple{Elems: []runtime.Value{v.mapZero(f, tn.Typ), false}}
 		}
 		return &runtime.Tuple{Elems: []runtime.Value{v.index(f, base, idx), true}}
@@ -5455,7 +5462,7 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 		case runtime.KindMap:
 			// a mismatched key rejects statically — before the nil-map
 			// assign panic fires like gc's nil-map write would.
-			v.mapKeyOperand(f, b.Typ, rawIdx)
+			v.checkMapKey(f, b.Typ, rawIdx)
 			panic(runtime.NilMapAssignPanic())
 		case runtime.KindSlice:
 			panic(runtime.BoundsPanic(runtime.Unwrap(idx), 0))
@@ -8750,33 +8757,13 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 		case string:
 			iv = int64([]rune(n)[0]) // int("x") is the first rune's code point
 			uv = uint64(iv)
-		case *runtime.GoValue:
-			// a boxed host integer (a wide uint64 literal, a reflect
-			// result) converts by its host kind.
-			rv := reflect.ValueOf(n.V)
-			switch rv.Kind() {
-			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-				iv, uv = rv.Int(), uint64(rv.Int())
-			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-				uv, iv = rv.Uint(), int64(rv.Uint())
-			case reflect.Float32, reflect.Float64:
-				iv, uv = int64(rv.Float()), uint64(rv.Float())
-			default:
-				return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), td.Name)
-			}
 		default:
-			// a raw host scalar (time.Duration) carries an
-			// integer/float-kind payload — convert by its host kind
-			// like the boxed case.
-			rv := reflect.ValueOf(x)
-			switch rv.Kind() {
-			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-				iv, uv = rv.Int(), uint64(rv.Int())
-			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-				uv, iv = rv.Uint(), int64(rv.Uint())
-			case reflect.Float32, reflect.Float64:
-				iv, uv = int64(rv.Float()), uint64(rv.Float())
-			default:
+			// a host scalar — boxed (a wide uint64 literal, a reflect
+			// result) or raw (time.Duration) — converts by its host
+			// kind.
+			var ok bool
+			iv, uv, ok = hostScalarInts(x)
+			if !ok {
 				return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), td.Name)
 			}
 		}
@@ -8856,12 +8843,7 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 			}
 			return nil, fmt.Errorf("cannot convert %s to string", typeNameOf(x))
 		case int64:
-			// rune(sx) would truncate before string() could see the
-			// out-of-range value — range-check first (issue15039).
-			if sx < 0 || sx > utf8.MaxRune {
-				return "\uFFFD", nil
-			}
-			return string(rune(sx)), nil
+			return stringFromInt(sx), nil
 		case *runtime.Slice:
 			// []byte or []rune -> string: the element family decides.
 			// An untyped slice (host-produced) reads as bytes.
@@ -8903,20 +8885,8 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 		default:
 			// a raw host scalar of integer kind (time.Duration)
 			// converts like int64: string(time.Duration(65)) is "A".
-			if rv := reflect.ValueOf(x); rv.IsValid() {
-				var sx int64
-				switch rv.Kind() {
-				case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-					sx = rv.Int()
-				case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-					sx = int64(rv.Uint())
-				default:
-					return nil, fmt.Errorf("cannot convert %s to string", typeNameOf(x))
-				}
-				if sx < 0 || sx > utf8.MaxRune {
-					return "�", nil
-				}
-				return string(rune(sx)), nil
+			if sx, ok := hostInt64(x); ok {
+				return stringFromInt(sx), nil
 			}
 		}
 		return nil, fmt.Errorf("cannot convert %s to string", typeNameOf(x))
@@ -9025,6 +8995,52 @@ func hostFloat(x runtime.Value) (float64, bool) {
 		return rv.Float(), true
 	}
 	return 0, false
+}
+
+// hostScalarInts reads a host scalar of integer or float kind into the
+// (int64, uint64) pair a numeric conversion needs — a boxed GoValue
+// (a wide uint64 literal, a reflect result) and a raw host scalar
+// (time.Duration) alike convert by their host kind.
+func hostScalarInts(x runtime.Value) (iv int64, uv uint64, ok bool) {
+	if gv, is := x.(*runtime.GoValue); is {
+		x = gv.V
+	}
+	rv := reflect.ValueOf(x)
+	switch rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return rv.Int(), uint64(rv.Int()), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return int64(rv.Uint()), rv.Uint(), true
+	case reflect.Float32, reflect.Float64:
+		return int64(rv.Float()), uint64(rv.Float()), true
+	}
+	return 0, 0, false
+}
+
+// hostInt64 reads a host value of integer kind, signed or unsigned —
+// the integer source a string(i) conversion accepts (floats do not).
+func hostInt64(x runtime.Value) (int64, bool) {
+	if gv, ok := x.(*runtime.GoValue); ok {
+		x = gv.V
+	}
+	rv := reflect.ValueOf(x)
+	switch rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return rv.Int(), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return int64(rv.Uint()), true
+	}
+	return 0, false
+}
+
+// stringFromInt converts an integer code point to a one-rune string,
+// range-checked like string(int64) — rune(sx) would truncate before
+// string() could see the out-of-range value (issue15039).
+func stringFromInt(sx int64) string {
+	if sx < 0 || sx > utf8.MaxRune {
+		return "�"
+	}
+	return string(rune(sx))
 }
 
 // unboxGoValue gives a boxed host value the script value of the same
