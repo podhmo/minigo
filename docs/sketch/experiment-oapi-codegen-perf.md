@@ -843,6 +843,37 @@ noise. The remaining copies were small functions (`Sort`, `Copy`,
 `Compare`). All 53 examples stay identical, at 44.3s; grafana-openapi
 does too.
 
+## Step 16: cache inferred generic instances (`6462d503`)
+
+Even with shared chunks, each inferred generic call still ran
+`inferBinds`, which allocated a fresh `*runtime.Function` and binds map
+(179MB across 6 strict rounds). The fresh Function then had to build
+an instantiation key to find its chunk.
+
+Inference reads only two things. One is the callee. The other is, per
+argument, either an untyped constant or the typedef it unifies
+against: the static type if there is one, else the value's. A
+constant's exact value is part of the key, because constants join a
+bind by representability (`'a'` fits float64, 2.3 does not fit rune).
+`inferCached` keys a per-package cache on exactly those parts, spelling
+typedefs structurally as in step 15. Each entry keeps the argument
+typedefs alive, and each decl keeps at most 256 entries.
+
+| | strict (9 rounds) |
+|---|---|
+| session 1 | 0.970s → 0.938s (−3.2%) |
+| session 2 | 0.999s → 0.977s (−2.2%) |
+| grafana-openapi | 2.255s → 2.266s (within noise) |
+
+All 53 examples are identical to native, and grafana-openapi's output
+is unchanged. `generic_infer_cache` pins inference across argument
+types and constants at shared call sites.
+
+Writing that case surfaced a pre-existing bug, now in TODO.md:
+inferring T from a host error value (`var err error = errors.New(..)`,
+or an error inside a `[]any`) traps `undefined: T` where gc binds
+T=error or T=any.
+
 ## How to re-run
 
 Scripts used (kept outside the repo; reconstructable from this
