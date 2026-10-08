@@ -1,0 +1,10 @@
+semantic-native-off matches native
+semantic-native-cold matches native
+semantic-native-warm matches native
+semantic-minigo-off matches native
+semantic-minigo-cold matches native
+semantic-minigo-warm matches native
+semantic-cross-engine matches native
+semantic-corrupt matches native
+semantic-unavailable matches native
+all semantic, corruption and unavailable-cache checks passed

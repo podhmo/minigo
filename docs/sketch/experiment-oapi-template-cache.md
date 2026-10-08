@@ -335,39 +335,33 @@ but is not evidence that a process-sharing design is already safe or fast.
 
 ## How to re-run
 
-Working artifact directory: `/private/tmp/oapi-template-cache-experiment`.
-It contains the isolated GOROOT, scratch target, complete prototype,
-generators, test programs, build metadata, all timings and file manifests.
+The complete reproducible sources and recorded results are checked in at
+[`experiments/oapi-template-cache`](../../experiments/oapi-template-cache/README.md).
+The original scratch directory was `/private/tmp/oapi-template-cache-experiment`;
+rerunning no longer depends on that directory. See the experiment README for
+pinned toolchain/target requirements and optional input paths.
+
+From `experiments/oapi-template-cache`:
 
 ```sh
-python3 /private/tmp/oapi-template-cache-experiment/run.py bench
-python3 /private/tmp/oapi-template-cache-experiment/check_semantics.py
-python3 /private/tmp/oapi-template-cache-experiment/run.py representatives
-python3 /private/tmp/oapi-template-cache-experiment/run.py gate
+python3 make_wire.py --work /tmp/oapi-template-cache-repro
+python3 build.py --work /tmp/oapi-template-cache-repro --validate
+python3 check_semantics.py --work /tmp/oapi-template-cache-repro
+python3 run.py representatives --work /tmp/oapi-template-cache-repro
+python3 run.py bench --work /tmp/oapi-template-cache-repro
+python3 run.py gate --work /tmp/oapi-template-cache-repro
+python3 probes.py templates --work /tmp/oapi-template-cache-repro
+python3 probes.py bugs --work /tmp/oapi-template-cache-repro
 ```
 
 Run performance measurements sequentially. `bench` rotates condition
 order and recreates each cold cache before using it. The runner rejects
-both nonzero exit status and interpreter errors. `gate` uses the preceding
-experiment's 53-line inventory and written-file manifest, but computes
-fresh complete SHA-256 hashes from current generated output.
-
-Files to inspect:
-
-- `README.md`: full rebuild commands, including the native version pin.
-- `setup.py` and `make_wire.py`: generate isolated sources and the codec.
-- `goroot/src/text/template/experiment_cache.go`: cache wrapper.
-- `goroot/src/text/template/parse/experiment_snapshot.go`: snapshot,
-  restoration and wire codec; all interpreted by minigo.
-- `semantic/main.go` and `check_semantics.py`: differential probes.
-- `harness/main.go`: performance harness; no IntSize workaround.
-- `bug-harness/main.go` and `bugs/`: independent minimum reproductions.
-- `bench.json`: final 54 strict process timings.
-- `gate.json`: final 53-line arguments, times and complete file digests.
-- `representatives.json`: per-example observations and cache-stage sums.
-- `source-metadata.json`: source revisions and template digests.
-- `report.md`: the pre-implementation plan and chronological decisions.
-- `*-v2.*`: superseded measurements, retained for audit.
+both nonzero exit status and interpreter errors. `gate` uses the checked-in
+53-line inventory and output paths, computing fresh complete SHA-256 hashes.
+New outputs stay in the specified workspace. `results/` preserves the actual
+experiment timings, manifests, traces and failures; `archive/` preserves the
+original drivers, generated helper sources and chronological plan/report.
+Copied dependencies, binaries and cache directories are not checked in.
 
 `OAPI_TREE_CACHE` opts into the scratch wrapper. An unset value selects
 ordinary Parse. `OAPI_TREE_TRACE=1` emits per-template stage timings to

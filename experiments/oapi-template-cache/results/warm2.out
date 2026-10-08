@@ -1,0 +1,20 @@
+elapsed=0.716s err=runtime trap: cannot use slice as []byte
+Traceback (most recent call first):
+File "/private/tmp/oapi-template-cache-experiment/goroot/src/text/template/parse/experiment_snapshot.go", line 313, in ExperimentRestore()
+		nodes[i] = &TextNode{NodeType: r.Kind, Pos: r.Pos, tr: tr, Text: r.Text}
+File "/private/tmp/oapi-template-cache-experiment/goroot/src/text/template/experiment_cache.go", line 52, in Template.ExperimentParseCached()
+		trees, readErr = parse.ExperimentRestore([]byte(body))
+File "/private/tmp/oapi-template-cache-experiment/src/pkg/codegen/codegen.go", line 1944, in codegen.LoadTemplates.func1()
+		_, err = tmpl.ExperimentParseCached(string(buf))
+File "/private/tmp/oapi-template-cache-experiment/goroot/src/io/fs/walk.go", line 73, in walkDir()
+		if err := walkDirFn(name, d, nil); err != nil || !d.IsDir() {
+File "/private/tmp/oapi-template-cache-experiment/goroot/src/io/fs/walk.go", line 95, in walkDir()
+		if err := walkDir(fsys, name1, d1, walkDirFn); err != nil {
+File "/private/tmp/oapi-template-cache-experiment/goroot/src/io/fs/walk.go", line 122, in WalkDir()
+		err = walkDir(fsys, root, FileInfoToDirEntry(info), fn)
+File "/private/tmp/oapi-template-cache-experiment/src/pkg/codegen/codegen.go", line 1920, in LoadTemplates()
+		return fs.WalkDir(src, "templates", func(path string, d fs.DirEntry, err error) error {
+File "/private/tmp/oapi-template-cache-experiment/src/pkg/codegen/codegen.go", line 289, in Generate()
+		err = LoadTemplates(templates, t)
+File "/private/tmp/oapi-template-cache-experiment/src/cmd/oapi-codegen/oapi-codegen.go", line 330, in main()
+		code, genErr := codegen.Generate(swagger, opts.Configuration)

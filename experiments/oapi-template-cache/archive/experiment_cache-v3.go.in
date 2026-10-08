@@ -1,0 +1,115 @@
+// Experimental, installed only into the isolated GOROOT.
+package template
+
+import (
+	"crypto/sha256"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"text/template/parse"
+	"time"
+)
+
+const experimentCacheVersion = "3aeaa9a1b2e3e819b89dec3fa9ee5a9f1e7c89edc116b7567bef615a87fc820e"
+
+// ExperimentParseCached is restricted to the embedded base-template experiment.
+// The ordinary Parse API and user-template/hook parsing remain unchanged.
+func (t *Template) ExperimentParseCached(text string) (*Template, error) {
+	dir := os.Getenv("OAPI_TREE_CACHE")
+	if dir == "" {
+		return t.Parse(text)
+	}
+	started := time.Now()
+	t.init()
+	t.muFuncs.RLock()
+	names := make([]string, 0, len(t.parseFuncs)+len(builtins()))
+	present := map[string]bool{}
+	for name := range builtins() {
+		present[name] = true
+	}
+	for name := range t.parseFuncs {
+		present[name] = true
+	}
+	for name := range present {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	key := fmt.Sprintf("%q|%q|%q|%q|%q|%q", experimentCacheVersion, t.name, text, t.leftDelim, t.rightDelim, strings.Join(names, "\x00"))
+	digest := sha256.Sum256([]byte(key))
+	path := filepath.Join(dir, fmt.Sprintf("%x.tree", digest))
+	var trees map[string]*parse.Tree
+	var parseTime, decodeTime, encodeTime, readTime, writeTime time.Duration
+	status := "miss"
+	phase := time.Now()
+	data, readErr := os.ReadFile(path)
+	readTime = time.Since(phase)
+	if readErr == nil {
+		phase = time.Now()
+		header, body, ok := strings.Cut(string(data), "\n")
+		if ok && header == fmt.Sprintf("%x", sha256.Sum256([]byte(body))) {
+			trees, readErr = parse.ExperimentRestore([]byte(body))
+		} else {
+			readErr = fmt.Errorf("snapshot checksum mismatch")
+		}
+		decodeTime = time.Since(phase)
+		if readErr == nil {
+			status = "hit"
+		} else {
+			status = "corrupt"
+		}
+	}
+	if trees == nil {
+		phase = time.Now()
+		var err error
+		trees, err = parse.Parse(t.name, text, t.leftDelim, t.rightDelim, t.parseFuncs, builtins())
+		parseTime = time.Since(phase)
+		if err != nil {
+			t.muFuncs.RUnlock()
+			return nil, err
+		}
+		phase = time.Now()
+		encoded, err := parse.ExperimentSnapshot(trees)
+		encodeTime = time.Since(phase)
+		if err == nil {
+			phase = time.Now()
+			err = os.MkdirAll(dir, 0700)
+			if err == nil {
+				var f *os.File
+				f, err = os.CreateTemp(dir, "tree-*.tmp")
+				if err == nil {
+					temp := f.Name()
+					_, err = f.Write([]byte(fmt.Sprintf("%x\n", sha256.Sum256(encoded))))
+					if err == nil {
+						_, err = f.Write(encoded)
+					}
+					closeErr := f.Close()
+					if err == nil {
+						err = closeErr
+					}
+					if err == nil {
+						err = os.Rename(temp, path)
+					}
+					if err != nil {
+						os.Remove(temp)
+					}
+				}
+			}
+			writeTime = time.Since(phase)
+		}
+		if err != nil {
+			status = "uncached"
+		}
+	}
+	t.muFuncs.RUnlock()
+	for name, tree := range trees {
+		if _, err := t.AddParseTree(name, tree); err != nil {
+			return nil, err
+		}
+	}
+	if os.Getenv("OAPI_TREE_TRACE") != "" {
+		fmt.Fprintf(os.Stderr, "TREE_CACHE status=%s name=%q total=%.6f read=%.6f decode=%.6f parse=%.6f encode=%.6f write=%.6f bytes=%d\n", status, t.name, time.Since(started).Seconds(), readTime.Seconds(), decodeTime.Seconds(), parseTime.Seconds(), encodeTime.Seconds(), writeTime.Seconds(), len(data))
+	}
+	return t, nil
+}

@@ -1,0 +1,55 @@
+package parse
+
+import (
+	"bytes"
+	"testing"
+)
+
+func TestExperimentSnapshotRoundTrip(t *testing.T) {
+	cases := []string{
+		"text {{.Field}} {{nil}} {{true}} {{false}} {{printf \"%v\" 42 3.5 2i '界'}}",
+		"{{$x := .}}{{if $x}}{{$x.Field}}{{else if .Other}}{{.Other}}{{else}}none{{end}}",
+		"{{range $k,$v := .}}{{if $v}}{{continue}}{{else}}{{break}}{{end}}{{else}}empty{{end}}",
+		"{{with .}}{{template \"child\" .}}{{else}}none{{end}}{{define \"child\"}}{{(.).Field}}{{end}}",
+		"{{/* retained comment */}}" + string([]byte{255, 0, 128}),
+	}
+	for _, text := range cases {
+		tree := New("roundtrip")
+		tree.Mode = ParseComments
+		trees := map[string]*Tree{}
+		if _, err := tree.Parse(text, "{{", "}}", trees, map[string]any{"printf": true}); err != nil {
+			t.Fatal(err)
+		}
+		before, err := ExperimentSnapshot(trees)
+		if err != nil {
+			t.Fatal(err)
+		}
+		restored, err := ExperimentRestore(before)
+		if err != nil {
+			t.Fatal(err)
+		}
+		after, err := ExperimentSnapshot(restored)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(before, after) {
+			t.Fatalf("snapshot changed on restore for %q", text)
+		}
+		for name, original := range trees {
+			got := restored[name]
+			if got.Root.String() != original.Root.String() {
+				t.Fatalf("tree changed for %q", name)
+			}
+			if got == original || got.Root == original.Root {
+				t.Fatal("restored tree aliases original")
+			}
+			for i, n := range original.Root.Nodes {
+				loc, context := original.ErrorContext(n)
+				gotLoc, gotContext := got.ErrorContext(got.Root.Nodes[i])
+				if loc != gotLoc || context != gotContext {
+					t.Fatalf("error context changed: %s %s / %s %s", loc, context, gotLoc, gotContext)
+				}
+			}
+		}
+	}
+}

@@ -1,0 +1,4 @@
+elapsed=0.045s err=runtime trap: cannot use slice as []byte
+Traceback (most recent call first):
+File "/private/tmp/oapi-template-cache-experiment/bugs/base64/main.go", line 15, in main()
+		assigned := state{Text: decoded.Text}

@@ -1,0 +1,568 @@
+[
+  {
+    "directory": "anyof-allof-oneof",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ],
+    "outputs": [
+      "anyofallofoneof.gen.go"
+    ]
+  },
+  {
+    "directory": "authenticated-api/echo/api",
+    "args": [
+      "--config=config.yaml",
+      "../../api.yaml"
+    ],
+    "outputs": [
+      "api.gen.go"
+    ]
+  },
+  {
+    "directory": "authenticated-api/stdhttp/api",
+    "args": [
+      "--config=config.yaml",
+      "../../api.yaml"
+    ],
+    "outputs": [
+      "api.gen.go"
+    ]
+  },
+  {
+    "directory": "callback",
+    "args": [
+      "--config=config.yaml",
+      "tree-farm.yaml"
+    ],
+    "outputs": [
+      "treefarm.gen.go"
+    ]
+  },
+  {
+    "directory": "client",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ],
+    "outputs": [
+      "client.gen.go"
+    ]
+  },
+  {
+    "directory": "clienttypenameclash",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ],
+    "outputs": [
+      "client.gen.go"
+    ]
+  },
+  {
+    "directory": "custom-client-type",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ],
+    "outputs": [
+      "custom-client-type.gen.go"
+    ]
+  },
+  {
+    "directory": "extensions/xdeprecatedreason",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ],
+    "outputs": [
+      "gen.go"
+    ]
+  },
+  {
+    "directory": "extensions/xenumnames",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ],
+    "outputs": [
+      "gen.go"
+    ]
+  },
+  {
+    "directory": "extensions/xgojsonignore",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ],
+    "outputs": [
+      "gen.go"
+    ]
+  },
+  {
+    "directory": "extensions/xgoname",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ],
+    "outputs": [
+      "gen.go"
+    ]
+  },
+  {
+    "directory": "extensions/xgotype",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ],
+    "outputs": [
+      "gen.go"
+    ]
+  },
+  {
+    "directory": "extensions/xgotypename",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ],
+    "outputs": [
+      "gen.go"
+    ]
+  },
+  {
+    "directory": "extensions/xgotypeskipoptionalpointer",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ],
+    "outputs": [
+      "gen.go"
+    ]
+  },
+  {
+    "directory": "extensions/xoapicodegenextratags",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ],
+    "outputs": [
+      "gen.go"
+    ]
+  },
+  {
+    "directory": "extensions/xoapicodegenonlyhonourgoname",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ],
+    "outputs": [
+      "gen.go"
+    ]
+  },
+  {
+    "directory": "extensions/xomitempty",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ],
+    "outputs": [
+      "gen.go"
+    ]
+  },
+  {
+    "directory": "extensions/xomitzero",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ],
+    "outputs": [
+      "types.gen.go"
+    ]
+  },
+  {
+    "directory": "extensions/xorder",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ],
+    "outputs": [
+      "gen.go"
+    ]
+  },
+  {
+    "directory": "generate/serverurls",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ],
+    "outputs": [
+      "gen.go"
+    ]
+  },
+  {
+    "directory": "import-mapping/multiplepackages/admin",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "../../admin/api.yaml"
+    ],
+    "outputs": [
+      "server.gen.go"
+    ]
+  },
+  {
+    "directory": "import-mapping/multiplepackages/common",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "../../common/api.yaml"
+    ],
+    "outputs": [
+      "types.gen.go"
+    ]
+  },
+  {
+    "directory": "import-mapping/samepackage",
+    "args": [
+      "-config",
+      "cfg-api.yaml",
+      "../admin/api.yaml"
+    ],
+    "outputs": [
+      "server.gen.go"
+    ]
+  },
+  {
+    "directory": "import-mapping/samepackage",
+    "args": [
+      "-config",
+      "cfg-user.yaml",
+      "../common/api.yaml"
+    ],
+    "outputs": [
+      "user.gen.go"
+    ]
+  },
+  {
+    "directory": "minimal-server/chi/api",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "../../api.yaml"
+    ],
+    "outputs": [
+      "ping.gen.go"
+    ]
+  },
+  {
+    "directory": "minimal-server/echo/api",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "../../api.yaml"
+    ],
+    "outputs": [
+      "ping.gen.go"
+    ]
+  },
+  {
+    "directory": "minimal-server/fiber/api",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "../../api.yaml"
+    ],
+    "outputs": [
+      "ping.gen.go"
+    ]
+  },
+  {
+    "directory": "minimal-server/fiberv3/api",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "../../api.yaml"
+    ],
+    "outputs": [
+      "ping.gen.go"
+    ]
+  },
+  {
+    "directory": "minimal-server/gin/api",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "../../api.yaml"
+    ],
+    "outputs": [
+      "ping.gen.go"
+    ]
+  },
+  {
+    "directory": "minimal-server/gorillamux/api",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "../../api.yaml"
+    ],
+    "outputs": [
+      "ping.gen.go"
+    ]
+  },
+  {
+    "directory": "minimal-server/iris/api",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "../../api.yaml"
+    ],
+    "outputs": [
+      "ping.gen.go"
+    ]
+  },
+  {
+    "directory": "minimal-server/stdhttp/api",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "../../api.yaml"
+    ],
+    "outputs": [
+      "ping.gen.go"
+    ]
+  },
+  {
+    "directory": "only-models",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ],
+    "outputs": [
+      "only-models.gen.go"
+    ]
+  },
+  {
+    "directory": "output-options/additionalinitialisms",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ],
+    "outputs": [
+      "gen.go"
+    ]
+  },
+  {
+    "directory": "output-options/preferskipoptionalpointer",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ],
+    "outputs": [
+      "gen.go"
+    ]
+  },
+  {
+    "directory": "output-options/preferskipoptionalpointerwithomitzero",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ],
+    "outputs": [
+      "gen.go"
+    ]
+  },
+  {
+    "directory": "output-options/type-mapping",
+    "args": [
+      "--config=config.yaml",
+      "spec.yaml"
+    ],
+    "outputs": [
+      "typemapping.gen.go"
+    ]
+  },
+  {
+    "directory": "overlay/api",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ],
+    "outputs": [
+      "ping.gen.go"
+    ]
+  },
+  {
+    "directory": "petstore-expanded/chi/api",
+    "args": [
+      "--config=server.cfg.yaml",
+      "../../petstore-expanded.yaml"
+    ],
+    "outputs": [
+      "petstore-server.gen.go"
+    ]
+  },
+  {
+    "directory": "petstore-expanded/common/client/openapi",
+    "args": [
+      "--config=client.cfg.yaml",
+      "../../../petstore-expanded.yaml"
+    ],
+    "outputs": [
+      "client.gen.go"
+    ]
+  },
+  {
+    "directory": "petstore-expanded/echo-v5/api",
+    "args": [
+      "--config=server.cfg.yaml",
+      "../../petstore-expanded.yaml"
+    ],
+    "outputs": [
+      "petstore-server.gen.go"
+    ]
+  },
+  {
+    "directory": "petstore-expanded/echo/api",
+    "args": [
+      "--config=server.cfg.yaml",
+      "../../petstore-expanded.yaml"
+    ],
+    "outputs": [
+      "petstore-server.gen.go"
+    ]
+  },
+  {
+    "directory": "petstore-expanded/fiber/api",
+    "args": [
+      "--config=server.cfg.yaml",
+      "../../petstore-expanded.yaml"
+    ],
+    "outputs": [
+      "petstore-server.gen.go"
+    ]
+  },
+  {
+    "directory": "petstore-expanded/fiberv3/api",
+    "args": [
+      "--config=types.cfg.yaml",
+      "../../petstore-expanded.yaml"
+    ],
+    "outputs": [
+      "petstore-types.gen.go"
+    ]
+  },
+  {
+    "directory": "petstore-expanded/fiberv3/api",
+    "args": [
+      "--config=server.cfg.yaml",
+      "../../petstore-expanded.yaml"
+    ],
+    "outputs": [
+      "petstore-server.gen.go"
+    ]
+  },
+  {
+    "directory": "petstore-expanded/gin/api",
+    "args": [
+      "--config=server.cfg.yaml",
+      "../../petstore-expanded.yaml"
+    ],
+    "outputs": [
+      "petstore-server.gen.go"
+    ]
+  },
+  {
+    "directory": "petstore-expanded/gorilla/api",
+    "args": [
+      "--config=server.cfg.yaml",
+      "../../petstore-expanded.yaml"
+    ],
+    "outputs": [
+      "petstore-server.gen.go"
+    ]
+  },
+  {
+    "directory": "petstore-expanded/iris/api",
+    "args": [
+      "--config=server.cfg.yaml",
+      "../../petstore-expanded.yaml"
+    ],
+    "outputs": [
+      "petstore-server.gen.go"
+    ]
+  },
+  {
+    "directory": "petstore-expanded/stdhttp/api",
+    "args": [
+      "--config=server.cfg.yaml",
+      "../../petstore-expanded.yaml"
+    ],
+    "outputs": [
+      "petstore-server.gen.go"
+    ]
+  },
+  {
+    "directory": "petstore-expanded/strict/api",
+    "args": [
+      "--config=server.cfg.yaml",
+      "../../petstore-expanded.yaml"
+    ],
+    "outputs": [
+      "petstore-server.gen.go"
+    ]
+  },
+  {
+    "directory": "streaming/client/sse",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "../../sse.yaml"
+    ],
+    "outputs": [
+      "streaming.gen.go"
+    ]
+  },
+  {
+    "directory": "streaming/stdhttp/sse",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "../../sse.yaml"
+    ],
+    "outputs": [
+      "streaming.gen.go"
+    ]
+  },
+  {
+    "directory": "webhook",
+    "args": [
+      "--config=config.yaml",
+      "door-badge-reader.yaml"
+    ],
+    "outputs": [
+      "doorbadge.gen.go"
+    ]
+  }
+]

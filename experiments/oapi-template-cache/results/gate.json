@@ -1,0 +1,992 @@
+[
+  {
+    "index": 0,
+    "case": [
+      "anyof-allof-oneof",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.24495125003159046,
+      "off": 0.7730010410305113,
+      "warm": 0.9738925409619696
+    },
+    "sha256": {
+      "anyofallofoneof.gen.go": "028b4c4e7d195384feba66a287695ffcd385bbb244c7ab163cecd708df422273"
+    }
+  },
+  {
+    "index": 1,
+    "case": [
+      "authenticated-api/echo/api",
+      [
+        "--config=config.yaml",
+        "../../api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.11385779100237414,
+      "off": 0.8518873340217397,
+      "warm": 1.079908332962077
+    },
+    "sha256": {
+      "api.gen.go": "f6ad798a54d121adbdb97a55991c6574ef0a2482de33c91a5968a50fad8e817b"
+    }
+  },
+  {
+    "index": 2,
+    "case": [
+      "authenticated-api/stdhttp/api",
+      [
+        "--config=config.yaml",
+        "../../api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.11035375000210479,
+      "off": 1.5259251660318114,
+      "warm": 1.7653962910408154
+    },
+    "sha256": {
+      "api.gen.go": "39515700024b68cc0e5d096b4d2e352b6e35a2bebdc11cd556ff0c1e52608e8f"
+    }
+  },
+  {
+    "index": 3,
+    "case": [
+      "callback",
+      [
+        "--config=config.yaml",
+        "tree-farm.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.11337637505494058,
+      "off": 1.6222458750125952,
+      "warm": 1.8488948330050334
+    },
+    "sha256": {
+      "treefarm.gen.go": "ef325025bdebfac5747e4ea13be8bcc71cada430bcc5208ab2ead068af81f126"
+    }
+  },
+  {
+    "index": 4,
+    "case": [
+      "client",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10816733300453052,
+      "off": 0.6852990830084309,
+      "warm": 0.9202437920030206
+    },
+    "sha256": {
+      "client.gen.go": "16ed7e9e000a8b5887ab3d3c4828898085384b43ccafef10b15a6f878c5ecdbc"
+    }
+  },
+  {
+    "index": 5,
+    "case": [
+      "clienttypenameclash",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10668274998897687,
+      "off": 0.6443332909839228,
+      "warm": 0.8818078329786658
+    },
+    "sha256": {
+      "client.gen.go": "381fe3f8e90f246fb3ca225707fc39e8f34145fc01fab39a4cf17497947a65f1"
+    }
+  },
+  {
+    "index": 6,
+    "case": [
+      "custom-client-type",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10963283298769966,
+      "off": 0.6547683330136351,
+      "warm": 0.8586822079960257
+    },
+    "sha256": {
+      "custom-client-type.gen.go": "2fa1df0300d50225163cc0490b3b0b8b3af40ec967a012b29ce478e37df05f9f"
+    }
+  },
+  {
+    "index": 7,
+    "case": [
+      "extensions/xdeprecatedreason",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10839170898543671,
+      "off": 0.5958195420098491,
+      "warm": 0.9531600420014001
+    },
+    "sha256": {
+      "gen.go": "341a38bc8641b923dd114f7d72b6a60810aaac190c8e34235ca71c7c9cc36459"
+    }
+  },
+  {
+    "index": 8,
+    "case": [
+      "extensions/xenumnames",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10848983301548287,
+      "off": 0.5752694170223549,
+      "warm": 0.8263829580391757
+    },
+    "sha256": {
+      "gen.go": "acd8c7d253ce47433e9826e760441ccb359906b9dc1d3970156e873f4946d4ca"
+    }
+  },
+  {
+    "index": 9,
+    "case": [
+      "extensions/xgojsonignore",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10552695899968967,
+      "off": 0.6187143750139512,
+      "warm": 0.8676745000411756
+    },
+    "sha256": {
+      "gen.go": "02a38e8ba68cb56f463cfaeb80c686154fece4c45086c40d2e46e44732dd2acd"
+    }
+  },
+  {
+    "index": 10,
+    "case": [
+      "extensions/xgoname",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10687062499346212,
+      "off": 0.62107495800592,
+      "warm": 0.8554452499956824
+    },
+    "sha256": {
+      "gen.go": "57107266a04e8586f22cecef4735e6d77751f916c67fd333b90a5d12c0831629"
+    }
+  },
+  {
+    "index": 11,
+    "case": [
+      "extensions/xgotype",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10936454101465642,
+      "off": 0.6276348340325058,
+      "warm": 0.8340544169768691
+    },
+    "sha256": {
+      "gen.go": "0320de1579f5417b21e17d1d3e6ea9777a6e89082ed3df4f34ebd20413024610"
+    }
+  },
+  {
+    "index": 12,
+    "case": [
+      "extensions/xgotypename",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10791162500390783,
+      "off": 0.6503638330032118,
+      "warm": 0.9091004999936558
+    },
+    "sha256": {
+      "gen.go": "7baa2021781901df60f55deffbdadfc5b1cd9cbacade93e706b281b63444f9b5"
+    }
+  },
+  {
+    "index": 13,
+    "case": [
+      "extensions/xgotypeskipoptionalpointer",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10580308397766203,
+      "off": 0.6018151249736547,
+      "warm": 0.8865310839610174
+    },
+    "sha256": {
+      "gen.go": "60909c598b65e5c75c93f5963c3d8607a0ac72e0b1c56a58356b78ef6f21cf2f"
+    }
+  },
+  {
+    "index": 14,
+    "case": [
+      "extensions/xoapicodegenextratags",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.11307204200420529,
+      "off": 0.610550332989078,
+      "warm": 0.876910708961077
+    },
+    "sha256": {
+      "gen.go": "201cfee16118f408b0b66ce9e9d81a3d52390ccbc2ec5229d2667833571d8e5a"
+    }
+  },
+  {
+    "index": 15,
+    "case": [
+      "extensions/xoapicodegenonlyhonourgoname",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.1040435410104692,
+      "off": 0.5857302909716964,
+      "warm": 0.8300692499615252
+    },
+    "sha256": {
+      "gen.go": "4edd6490a13258b690898c185f6fdc618572ecb6912acae4bc2ee93d96247d28"
+    }
+  },
+  {
+    "index": 16,
+    "case": [
+      "extensions/xomitempty",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.1071233749971725,
+      "off": 0.5836863750009798,
+      "warm": 0.8403782499954104
+    },
+    "sha256": {
+      "gen.go": "33901d2e701e2ec3bf6895a3ffa9b7ba0d499eab340e4a35578d89ca43d67446"
+    }
+  },
+  {
+    "index": 17,
+    "case": [
+      "extensions/xomitzero",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10542170802364126,
+      "off": 0.6527982910047285,
+      "warm": 0.9012755419826135
+    },
+    "sha256": {
+      "types.gen.go": "9d4a0873f1fbbf429cbbec7d9dc5f01ab08b199f71eb6c943f00583f44803497"
+    }
+  },
+  {
+    "index": 18,
+    "case": [
+      "extensions/xorder",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10793304099934176,
+      "off": 0.584300542017445,
+      "warm": 0.8768642500508577
+    },
+    "sha256": {
+      "gen.go": "9f9a48c2e80c7fc91494c8a5d1854428a633650325ab5106e5594cfbcde847cd"
+    }
+  },
+  {
+    "index": 19,
+    "case": [
+      "generate/serverurls",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.11185758304782212,
+      "off": 0.654772125009913,
+      "warm": 0.8812189160380512
+    },
+    "sha256": {
+      "gen.go": "ac3d3dc12f03c60a14ac3d38e4dea63c1727cc13c3d17bfec75eca62516b1101"
+    }
+  },
+  {
+    "index": 20,
+    "case": [
+      "import-mapping/multiplepackages/admin",
+      [
+        "-config",
+        "cfg.yaml",
+        "../../admin/api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10656233300687745,
+      "off": 0.7579878750257194,
+      "warm": 0.9018227090127766
+    },
+    "sha256": {
+      "server.gen.go": "a2e5e6ea1c668373f21a5611bcf64aede2c49022351b90bc30e7a041b65a5bc0"
+    }
+  },
+  {
+    "index": 21,
+    "case": [
+      "import-mapping/multiplepackages/common",
+      [
+        "-config",
+        "cfg.yaml",
+        "../../common/api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10973891604226083,
+      "off": 0.5591124170459807,
+      "warm": 0.8098736249958165
+    },
+    "sha256": {
+      "types.gen.go": "d35f1cc9d182efb1401219b860d83b9f15f17bb40fa2110a85b62146704175c7"
+    }
+  },
+  {
+    "index": 22,
+    "case": [
+      "import-mapping/samepackage",
+      [
+        "-config",
+        "cfg-api.yaml",
+        "../admin/api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10994470800505951,
+      "off": 0.6608780830283649,
+      "warm": 0.9481122919823974
+    },
+    "sha256": {
+      "server.gen.go": "e050775b0c4c6e5319d6db949ae9dba02a236a0f86263a261928a9e68b7f14d4"
+    }
+  },
+  {
+    "index": 23,
+    "case": [
+      "import-mapping/samepackage",
+      [
+        "-config",
+        "cfg-user.yaml",
+        "../common/api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.11530125001445413,
+      "off": 0.5667265829979442,
+      "warm": 0.7982602500123903
+    },
+    "sha256": {
+      "user.gen.go": "638212a300db65e72165eb3861e1e886133e626512252a2385518e4b3ae76d2d"
+    }
+  },
+  {
+    "index": 24,
+    "case": [
+      "minimal-server/chi/api",
+      [
+        "-config",
+        "cfg.yaml",
+        "../../api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10887400002684444,
+      "off": 0.6024258749675937,
+      "warm": 0.8876384999603033
+    },
+    "sha256": {
+      "ping.gen.go": "97bd3018dc68bc86de2deb80f5848c2b13af0f1be4c2d4ee483b7f70c0e15211"
+    }
+  },
+  {
+    "index": 25,
+    "case": [
+      "minimal-server/echo/api",
+      [
+        "-config",
+        "cfg.yaml",
+        "../../api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10755191702628508,
+      "off": 0.616466749983374,
+      "warm": 0.8551938339951448
+    },
+    "sha256": {
+      "ping.gen.go": "f60d99f55ad77b1b179188546bd99400670545b6cc658020a0c6d76694d02ec4"
+    }
+  },
+  {
+    "index": 26,
+    "case": [
+      "minimal-server/fiber/api",
+      [
+        "-config",
+        "cfg.yaml",
+        "../../api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10926774999825284,
+      "off": 0.6323482089792378,
+      "warm": 0.8569852910004556
+    },
+    "sha256": {
+      "ping.gen.go": "069a79b1f0b0f34c52099582c6421162c6be97456ea2849c0f3d1786ff6e160d"
+    }
+  },
+  {
+    "index": 27,
+    "case": [
+      "minimal-server/fiberv3/api",
+      [
+        "-config",
+        "cfg.yaml",
+        "../../api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.11804975004633889,
+      "off": 0.6334945830167271,
+      "warm": 0.870463082974311
+    },
+    "sha256": {
+      "ping.gen.go": "8e14b628198a81d34fff6bc638ae88fa873f323b5d9d759576c07569cd620347"
+    }
+  },
+  {
+    "index": 28,
+    "case": [
+      "minimal-server/gin/api",
+      [
+        "-config",
+        "cfg.yaml",
+        "../../api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.11328858399065211,
+      "off": 0.6104897909681313,
+      "warm": 0.8596863340353593
+    },
+    "sha256": {
+      "ping.gen.go": "353d589d3d471cbcde6af7264dcbd547b31fb730e7ea81beba4e490fc67ed9dd"
+    }
+  },
+  {
+    "index": 29,
+    "case": [
+      "minimal-server/gorillamux/api",
+      [
+        "-config",
+        "cfg.yaml",
+        "../../api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.1121264590183273,
+      "off": 0.6013186670024879,
+      "warm": 0.8572265839902684
+    },
+    "sha256": {
+      "ping.gen.go": "6df01e64c175a507578603969d7710691073da1d32cdcc55c12a36b439f66b5b"
+    }
+  },
+  {
+    "index": 30,
+    "case": [
+      "minimal-server/iris/api",
+      [
+        "-config",
+        "cfg.yaml",
+        "../../api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10765145800542086,
+      "off": 0.6021936250035651,
+      "warm": 0.8538425000151619
+    },
+    "sha256": {
+      "ping.gen.go": "062aabcc748ce888ec51dcb6ce19ea6fd0d235bf9f6bf947de645385da8712b5"
+    }
+  },
+  {
+    "index": 31,
+    "case": [
+      "minimal-server/stdhttp/api",
+      [
+        "-config",
+        "cfg.yaml",
+        "../../api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10716504196170717,
+      "off": 1.297635541006457,
+      "warm": 1.5369996250374243
+    },
+    "sha256": {
+      "ping.gen.go": "5eda2de0994af2b0ea1de84de87fa3aa528c66326378a69d3d690fd81c1c8957"
+    }
+  },
+  {
+    "index": 32,
+    "case": [
+      "only-models",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10889212501933798,
+      "off": 0.6686406249646097,
+      "warm": 0.8949862089939415
+    },
+    "sha256": {
+      "only-models.gen.go": "49ba34bf86fe30531b9bf4a699c17270b200ff2daa8782c79df2061b27681d7c"
+    }
+  },
+  {
+    "index": 33,
+    "case": [
+      "output-options/additionalinitialisms",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.11111141601577401,
+      "off": 0.5759554170072079,
+      "warm": 0.8108457499765791
+    },
+    "sha256": {
+      "gen.go": "28f280a6f00c95b1c6bf25188f79267806a409cc20fa840303020946aa4764a2"
+    }
+  },
+  {
+    "index": 34,
+    "case": [
+      "output-options/preferskipoptionalpointer",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10744812502525747,
+      "off": 0.7245582090108655,
+      "warm": 0.9779960419982672
+    },
+    "sha256": {
+      "gen.go": "9d0fbdb500268ca8d62be8913cd74f8f5cf20af73bc9f9a3a53cfa3054d142a0"
+    }
+  },
+  {
+    "index": 35,
+    "case": [
+      "output-options/preferskipoptionalpointerwithomitzero",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10707412497140467,
+      "off": 0.6532244579866529,
+      "warm": 0.8924635410076007
+    },
+    "sha256": {
+      "gen.go": "67ebf08e8ddcb80bbf4e63e3d8aae0f11906dd5f282decfb2e1a3b7cc785a523"
+    }
+  },
+  {
+    "index": 36,
+    "case": [
+      "output-options/type-mapping",
+      [
+        "--config=config.yaml",
+        "spec.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10937558399746194,
+      "off": 0.5785156660131179,
+      "warm": 0.835875041957479
+    },
+    "sha256": {
+      "typemapping.gen.go": "270be3992f1eb70e4c15f952fd8c70a1ca6d795dd592946a3e4ce0832df35377"
+    }
+  },
+  {
+    "index": 37,
+    "case": [
+      "overlay/api",
+      [
+        "-config",
+        "cfg.yaml",
+        "api.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.11176241596695036,
+      "off": 1.0050593750202097,
+      "warm": 1.2519274590304121
+    },
+    "sha256": {
+      "ping.gen.go": "085971489a5f8f74984d202154ff76d3db46d0a57ca505948571e8d048c08cda"
+    }
+  },
+  {
+    "index": 38,
+    "case": [
+      "petstore-expanded/chi/api",
+      [
+        "--config=server.cfg.yaml",
+        "../../petstore-expanded.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.121163040981628,
+      "off": 1.1347930839983746,
+      "warm": 1.3639791250461712
+    },
+    "sha256": {
+      "petstore-server.gen.go": "91675aeabdcf513eb78262bb70cab2498f32cec73b51fa9e50c7ec2ce71dfeba"
+    }
+  },
+  {
+    "index": 39,
+    "case": [
+      "petstore-expanded/common/client/openapi",
+      [
+        "--config=client.cfg.yaml",
+        "../../../petstore-expanded.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.11335212498670444,
+      "off": 1.0526097500114702,
+      "warm": 1.2866884999675676
+    },
+    "sha256": {
+      "client.gen.go": "151faa1395676576951ee0100c514228480e84e573e2edf42918ece62f699c17"
+    }
+  },
+  {
+    "index": 40,
+    "case": [
+      "petstore-expanded/echo-v5/api",
+      [
+        "--config=server.cfg.yaml",
+        "../../petstore-expanded.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.11172416701447219,
+      "off": 1.1077662079478614,
+      "warm": 1.3838508749613538
+    },
+    "sha256": {
+      "petstore-server.gen.go": "41a6ed0b23f955b8f37f259d48440d92d4980a168f67b3475db9fdc83bbdf3de"
+    }
+  },
+  {
+    "index": 41,
+    "case": [
+      "petstore-expanded/echo/api",
+      [
+        "--config=server.cfg.yaml",
+        "../../petstore-expanded.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.1126152920187451,
+      "off": 1.1030101670185104,
+      "warm": 1.3741035839775577
+    },
+    "sha256": {
+      "petstore-server.gen.go": "b200eaeaed43c71af060540ea351267a6942a429792f9453d3bb00ffe658bb76"
+    }
+  },
+  {
+    "index": 42,
+    "case": [
+      "petstore-expanded/fiber/api",
+      [
+        "--config=server.cfg.yaml",
+        "../../petstore-expanded.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.11108787497505546,
+      "off": 1.1051954579888843,
+      "warm": 1.3572223749943078
+    },
+    "sha256": {
+      "petstore-server.gen.go": "78736e0bf18ac140fccbd113e1786604387571c3a563502857f876c90de1c274"
+    }
+  },
+  {
+    "index": 43,
+    "case": [
+      "petstore-expanded/fiberv3/api",
+      [
+        "--config=types.cfg.yaml",
+        "../../petstore-expanded.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.11184037500061095,
+      "off": 1.0065464589861222,
+      "warm": 1.2181079169968143
+    },
+    "sha256": {
+      "petstore-types.gen.go": "dfe73f7737b5a35c4f234a3d4530daae65edb4a49026911843044d040f159cc7"
+    }
+  },
+  {
+    "index": 44,
+    "case": [
+      "petstore-expanded/fiberv3/api",
+      [
+        "--config=server.cfg.yaml",
+        "../../petstore-expanded.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.11032712500309572,
+      "off": 1.0995124999899417,
+      "warm": 1.3409894579672255
+    },
+    "sha256": {
+      "petstore-server.gen.go": "73b920a0c371af10b7469255f7b3513053b1208960cb5901b9339cb728be2a81"
+    }
+  },
+  {
+    "index": 45,
+    "case": [
+      "petstore-expanded/gin/api",
+      [
+        "--config=server.cfg.yaml",
+        "../../petstore-expanded.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.11189395800465718,
+      "off": 1.1035099999862723,
+      "warm": 1.4044898329884745
+    },
+    "sha256": {
+      "petstore-server.gen.go": "f789fa58690a3e3ee839866843d8a2de1e5135270721342b940e0012a66428db"
+    }
+  },
+  {
+    "index": 46,
+    "case": [
+      "petstore-expanded/gorilla/api",
+      [
+        "--config=server.cfg.yaml",
+        "../../petstore-expanded.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10856395796872675,
+      "off": 1.1120401250082068,
+      "warm": 1.3694202089682221
+    },
+    "sha256": {
+      "petstore-server.gen.go": "8f4307ddef5c07f3830d0ff16216d02f033365b27d3df2403279f2b3f2b1aa0e"
+    }
+  },
+  {
+    "index": 47,
+    "case": [
+      "petstore-expanded/iris/api",
+      [
+        "--config=server.cfg.yaml",
+        "../../petstore-expanded.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10978187498403713,
+      "off": 1.1100671659805812,
+      "warm": 1.3534169580088928
+    },
+    "sha256": {
+      "petstore-server.gen.go": "26575bb1e46c07321483bca0534b42efa9467100db043cd2138b372395861220"
+    }
+  },
+  {
+    "index": 48,
+    "case": [
+      "petstore-expanded/stdhttp/api",
+      [
+        "--config=server.cfg.yaml",
+        "../../petstore-expanded.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10949412494665012,
+      "off": 1.8046257499954663,
+      "warm": 2.06394999998156
+    },
+    "sha256": {
+      "petstore-server.gen.go": "875e3472cd6b7e3c2ce20dc4693c5c083dadeaa0b93882dbdd3bc5abdd7c3a8c"
+    }
+  },
+  {
+    "index": 49,
+    "case": [
+      "petstore-expanded/strict/api",
+      [
+        "--config=server.cfg.yaml",
+        "../../petstore-expanded.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.11252362502273172,
+      "off": 1.168969249993097,
+      "warm": 1.402688542031683
+    },
+    "sha256": {
+      "petstore-server.gen.go": "df0f5b7a94486634ced0a45f564958569f7a85e0210365d31cb2fdfdf95390af"
+    }
+  },
+  {
+    "index": 50,
+    "case": [
+      "streaming/client/sse",
+      [
+        "-config",
+        "cfg.yaml",
+        "../../sse.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.11209124996094033,
+      "off": 0.6387307919794694,
+      "warm": 0.9074969589710236
+    },
+    "sha256": {
+      "streaming.gen.go": "d246db61dbedb72a88965810179f0b8bbd3fe059a69fa248093de7b00e2f6dbb"
+    }
+  },
+  {
+    "index": 51,
+    "case": [
+      "streaming/stdhttp/sse",
+      [
+        "-config",
+        "cfg.yaml",
+        "../../sse.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.10959079203894362,
+      "off": 1.3214010830270126,
+      "warm": 1.5660433329758234
+    },
+    "sha256": {
+      "streaming.gen.go": "70440b4ff3d4bf3899d0f610f54744f10949d018315f117ae58dac17daf3d34e"
+    }
+  },
+  {
+    "index": 52,
+    "case": [
+      "webhook",
+      [
+        "--config=config.yaml",
+        "door-badge-reader.yaml"
+      ]
+    ],
+    "times": {
+      "native": 0.11205816699657589,
+      "off": 1.5934687500121072,
+      "warm": 1.9439010000205599
+    },
+    "sha256": {
+      "doorbadge.gen.go": "28a7474b41f9643ea71763eca3cc04edc8cecbd583ddcb43f60e09110f9f211d"
+    }
+  }
+]
