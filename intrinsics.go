@@ -1533,6 +1533,11 @@ func (e *Engine) installStdlib() {
 	// (plan §11). Sizes are 64-bit host approximations over the boxed
 	// representation; NumGoroutine is pinned to 1 — the VM is
 	// single-threaded by design.
+	// unsafe.StringData interns each string's byte backing so the same
+	// string value resolves to the same element pointer — pointer
+	// identity for a shared backing is the only guarantee unsafe offers
+	// here, and it is what callers like x/tools' stringptr rely on.
+	strDataBacks := map[string]*runtime.Slice{}
 	e.Bind("unsafe", map[string]runtime.Value{
 		"Sizeof": &runtime.BuiltinFunc{Name: "unsafe.Sizeof", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			return unsafeSizeOf(args[0]), nil
@@ -1547,19 +1552,21 @@ func (e *Engine) installStdlib() {
 		// StringData/String and SliceData/Slice round trips used for
 		// zero-copy string packing (x/tools' event labels) hold.
 		"StringData": &runtime.BuiltinFunc{Name: "unsafe.StringData", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			// "" still yields a (zero-length) element ref: Go leaves its
-			// result unspecified, and a nil would not convert to a
-			// pointer type over unsafe.Pointer (label's stringptr).
 			str, _ := runtime.Unwrap(args[0]).(string)
 			if str == "" {
-				// point at a lone NUL so the ref dereferences
-				return &runtime.IndexRef{Base: unsafeBytes("\x00"), Key: int64(0)}, nil
+				// "" still yields a (zero-length) element ref: Go leaves its
+				// result unspecified, and a nil would not convert to a
+				// pointer type over unsafe.Pointer (label's stringptr).
+				str = "\x00"
 			}
-			return &runtime.IndexRef{Base: unsafeBytes(str), Key: int64(0)}, nil
+			if strDataBacks[str] == nil {
+				strDataBacks[str] = unsafeBytes(str)
+			}
+			return &runtime.IndexRef{Base: strDataBacks[str], Key: int64(0)}, nil
 		}},
 		"SliceData": &runtime.BuiltinFunc{Name: "unsafe.SliceData", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			sl, ok := runtime.Unwrap(args[0]).(*runtime.Slice)
-			if !ok || len(sl.Elems) == 0 {
+			if !ok || sl.Len() == 0 && cap(sl.Elems) == 0 {
 				return runtime.NIL, nil
 			}
 			return &runtime.IndexRef{Base: sl, Key: int64(0)}, nil
@@ -1572,6 +1579,16 @@ func (e *Engine) installStdlib() {
 			return string(byteSlice(&runtime.Slice{Elems: elems})), nil
 		}},
 		"Slice": &runtime.BuiltinFunc{Name: "unsafe.Slice", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			n := int(int64Of(goNative(args[1])))
+			// a nil pointer with len 0 is legal and reports the nil slice
+			// (Go panics only when len != 0) — typed nils keep their
+			// element type so the result is still a []T nil.
+			if tn, ok := runtime.Unwrap(args[0]).(*runtime.TypedNil); ok && tn.Typ != nil && tn.Typ.Kind == runtime.KindPointer {
+				if n == 0 {
+					return &runtime.TypedNil{Typ: sliceTypFromPtr(tn.Typ)}, nil
+				}
+				return nil, errors.New("unsafe: ptr is nil and len is not zero")
+			}
 			elems, err := unsafeElems(args[0], args[1])
 			if err != nil {
 				return nil, err
@@ -1579,7 +1596,7 @@ func (e *Engine) installStdlib() {
 			var typ *runtime.TypeDef
 			if ref, ok := runtime.Unwrap(args[0]).(*runtime.IndexRef); ok {
 				if sl := ref.Slice(); sl != nil {
-					typ = sl.Typ
+					typ = sliceTypFromPtr(sl.Typ)
 				}
 			}
 			return &runtime.Slice{Elems: elems, Typ: typ}, nil
@@ -3491,6 +3508,22 @@ func unsafeBytes(str string) *runtime.Slice {
 
 // unsafeElems resolves unsafe.String/Slice's (ptr, len) to the n
 // elements starting at an &s[i] ref, sharing the slice's backing.
+// sliceTypFromPtr maps a pointer/array/slice typedef to the unnamed
+// []E typedef unsafe.Slice's result carries — never the named slice or
+// the [N]E array the pointer was taken from.
+func sliceTypFromPtr(td *runtime.TypeDef) *runtime.TypeDef {
+	if td == nil {
+		return nil
+	}
+	switch x := typedefAst(td).(type) {
+	case *ast.StarExpr:
+		return &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: x.X}, Elem: td.Elem, Pkg: td.Pkg, File: td.File}
+	case *ast.ArrayType:
+		return &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: x.Elt}, Elem: td.Elem, Pkg: td.Pkg, File: td.File}
+	}
+	return td
+}
+
 func unsafeElems(p, nv runtime.Value) ([]runtime.Value, error) {
 	n := int(int64Of(goNative(nv)))
 	if p == nil || p == runtime.NIL {
@@ -3498,6 +3531,17 @@ func unsafeElems(p, nv runtime.Value) ([]runtime.Value, error) {
 			return nil, nil
 		}
 		return nil, errors.New("unsafe: ptr is nil and len is not zero")
+	}
+	if tn, ok := runtime.Unwrap(p).(*runtime.TypedNil); ok {
+		// a typed nil pointer follows the same nil rule — len 0 is a
+		// legal no-op, anything else panics like an untyped nil.
+		if tn.Typ != nil && tn.Typ.Kind == runtime.KindPointer {
+			if n == 0 {
+				return nil, nil
+			}
+			return nil, errors.New("unsafe: ptr is nil and len is not zero")
+		}
+		return nil, fmt.Errorf("unsafe: unsupported pointer %T (only element pointers)", p)
 	}
 	ref, ok := runtime.Unwrap(p).(*runtime.IndexRef)
 	if !ok {
