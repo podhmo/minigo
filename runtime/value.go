@@ -1027,6 +1027,11 @@ type Slice struct {
 	// a `var s S` bind): element stores re-coerce and named slice types
 	// keep their identity on rebinds.
 	Typ *TypeDef
+	// Host, when valid, is the host slice this one was read from (a
+	// field of a host struct, e.g. a parse tree's ListNode.Nodes):
+	// element stores write through to it so host-side readers see
+	// them, like Go's shared backing array. Elems mirrors it 1:1.
+	Host reflect.Value
 }
 
 // Virtual reports whether the slice's backing is implicit — a

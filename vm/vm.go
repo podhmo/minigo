@@ -2871,7 +2871,13 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 // (nil, false) reports that neither exists.
 func (v *VM) hostMember(hv any, name string) (runtime.Value, bool) {
 	if fv, ok := hostField(hv, name); ok {
-		return goValueOf(fv), true
+		r := goValueOf(fv)
+		if s, ok := r.(*runtime.Slice); ok && fv.Kind() == reflect.Slice {
+			// the elements are a snapshot; Host keeps the field's
+			// backing so `n.Nodes[i] = x` reaches the host tree.
+			s.Host = fv
+		}
+		return r, true
 	}
 	m := reflect.ValueOf(hv).MethodByName(name)
 	if !m.IsValid() {
@@ -5615,6 +5621,13 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 			return
 		}
 		b.Elems[i] = val
+		if b.Host.IsValid() && b.Host.Len() == len(b.Elems) {
+			hv, err := toReflectValue(val, b.Host.Type().Elem(), v)
+			if err != nil {
+				f.trap("index assign on host %s: %s", b.Host.Type(), err)
+			}
+			b.Host.Index(int(i)).Set(hv)
+		}
 	case *runtime.Map:
 		idx = v.mapKeyOperand(f, b.Typ, rawIdx)
 		if idx != nil && !reflect.TypeOf(idx).Comparable() {
@@ -7288,6 +7301,13 @@ func (v *VM) adaptConst(f *frame, u *runtime.UConst, other runtime.Value) runtim
 				}
 			}
 		}
+	} else if g, ok := other.(*runtime.GoValue); ok && hostNamedInt(g.V) {
+		// a named host int (reflect.Kind, parse.NodeType) adopts the
+		// constant into its own type — `k == 2` compares two boxed
+		// host values like Go converting 2 to the operand's type.
+		if r, ok := constToHostInt(u, reflect.TypeOf(g.V)); ok {
+			return r
+		}
 	} else if s, ok := scalarConst(u, other); ok {
 		return s
 	} else if td := scalarOperandTypedef(other); td != nil && numericConstKind(u.V.Kind()) {
@@ -7299,6 +7319,46 @@ func (v *VM) adaptConst(f *frame, u *runtime.UConst, other runtime.Value) runtim
 		}
 	}
 	return v.materialize(f, u)
+}
+
+// hostNamedInt reports whether x is a host value of a defined integer
+// type — a reflect.Kind or parse.NodeType, not a bare int or int64.
+func hostNamedInt(x any) bool {
+	t := reflect.TypeOf(x)
+	if t == nil || t.PkgPath() == "" {
+		return false
+	}
+	switch t.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return true
+	}
+	return false
+}
+
+// constToHostInt converts an integer constant to the host type t, boxed;
+// false when the constant is not an integer t can represent.
+func constToHostInt(u *runtime.UConst, t reflect.Type) (runtime.Value, bool) {
+	c := constant.ToInt(u.V)
+	if c.Kind() != constant.Int {
+		return nil, false
+	}
+	rv := reflect.New(t).Elem()
+	switch t.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		i, exact := constant.Int64Val(c)
+		if !exact || rv.OverflowInt(i) {
+			return nil, false
+		}
+		rv.SetInt(i)
+	default:
+		n, exact := constant.Uint64Val(c)
+		if !exact || rv.OverflowUint(n) {
+			return nil, false
+		}
+		rv.SetUint(n)
+	}
+	return &runtime.GoValue{V: rv.Interface()}, true
 }
 
 // scalarOperandTypedef maps a bare scalar or GoValue operand to the
@@ -8863,6 +8923,9 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 			return &runtime.IfaceNil{Typ: tn.Typ}, nil
 		}
 	}
+	if r, ok := hostEnumConv(td, x); ok {
+		return r, nil
+	}
 	// an untyped constant converts by Go's representability rules —
 	// int64('a'), float64(1e500)'s overflow, string('a'), complex128(3)
 	// all land here.
@@ -9162,6 +9225,52 @@ func hostFloat(x runtime.Value) (float64, bool) {
 		return rv.Float(), true
 	}
 	return 0, false
+}
+
+// hostEnumConv converts an integer to a bound host enum (reflect.Kind,
+// parse.NodeType) as the boxed host value its constants carry, so
+// `parse.NodeType(1) == parse.NodeAction`. A constant must be
+// representable; a variable wraps like Go's conversion.
+func hostEnumConv(td *runtime.TypeDef, x runtime.Value) (runtime.Value, bool) {
+	if td.HostNew == nil || td.Kind != runtime.KindNamedBasic {
+		return nil, false
+	}
+	hv := td.HostNew()
+	if !hostNamedInt(hv) {
+		return nil, false
+	}
+	rt := reflect.TypeOf(hv)
+	for {
+		n, ok := x.(*runtime.Named)
+		if !ok {
+			break
+		}
+		x = n.V
+	}
+	if u, ok := x.(*runtime.UConst); ok {
+		return constToHostInt(u, rt)
+	}
+	var iv int64
+	var uv uint64
+	switch n := x.(type) {
+	case int64:
+		iv, uv = n, uint64(n)
+	case *runtime.GoValue:
+		var ok bool
+		if iv, uv, ok = hostScalarInts(n); !ok {
+			return nil, false
+		}
+	default:
+		return nil, false
+	}
+	rv := reflect.New(rt).Elem()
+	switch rt.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		rv.SetInt(iv)
+	default:
+		rv.SetUint(uv)
+	}
+	return &runtime.GoValue{V: rv.Interface()}, true
 }
 
 // hostScalarInts reads a host scalar of integer or float kind into the
@@ -10617,6 +10726,16 @@ func convComplex(x runtime.Value) (complex128, bool) {
 }
 
 func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runtime.Value {
+	if u, ok := x.(*runtime.UConst); ok && td.HostNew != nil && td.Kind == runtime.KindNamedBasic {
+		// a bound host enum (reflect.Kind, parse.NodeType) holds the
+		// boxed host value its constants and host results carry, so
+		// `var k reflect.Kind = 2` compares equal to reflect.Int.
+		if hv := td.HostNew(); hostNamedInt(hv) {
+			if r, ok := constToHostInt(u, reflect.TypeOf(hv)); ok {
+				return r
+			}
+		}
+	}
 	if u, ok := x.(*runtime.UConst); ok {
 		if utd := v.peelNamed(td); utd != nil && basicNameOf(utd) != "" {
 			// a constant converts straight to the declared basic type:

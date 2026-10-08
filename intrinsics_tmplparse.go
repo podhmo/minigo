@@ -2,7 +2,6 @@ package minigo
 
 import (
 	"fmt"
-	"go/ast"
 	"text/template/parse"
 
 	"github.com/podhmo/minigo/runtime"
@@ -20,14 +19,18 @@ func (e *Engine) bindTemplateParse() {
 	syms := map[string]runtime.Value{
 		"Node": &runtime.TypeDef{Name: "parse.Node", Kind: runtime.KindInterface,
 			MReqs: []string{"Type", "String", "Copy", "Position"}},
+		// NodeType, Pos and Mode name the real host enums like
+		// reflect.Kind does: constants are boxed host values, which
+		// compare and compute like named ints and equal the Type(),
+		// Pos and Mode values host nodes hand back.
 		"NodeType": &runtime.TypeDef{Name: "parse.NodeType", Kind: runtime.KindNamedBasic,
-			Anon: ast.NewIdent("int"), HostScalar: parse.NodeType(0)},
+			HostNew: func() any { return parse.NodeType(0) }},
 		"Pos": &runtime.TypeDef{Name: "parse.Pos", Kind: runtime.KindNamedBasic,
-			Anon: ast.NewIdent("int"), HostScalar: parse.Pos(0)},
+			HostNew: func() any { return parse.Pos(0) }},
 		"Mode": &runtime.TypeDef{Name: "parse.Mode", Kind: runtime.KindNamedBasic,
-			Anon: ast.NewIdent("uint"), HostScalar: parse.Mode(0)},
-		"ParseComments": parse.ParseComments,
-		"SkipFuncCheck": parse.SkipFuncCheck,
+			HostNew: func() any { return parse.Mode(0) }},
+		"ParseComments": &runtime.GoValue{V: parse.ParseComments},
+		"SkipFuncCheck": &runtime.GoValue{V: parse.SkipFuncCheck},
 
 		"Tree":           node("Tree", func() any { return new(parse.Tree) }),
 		"ActionNode":     node("ActionNode", func() any { return new(parse.ActionNode) }),
@@ -54,10 +57,14 @@ func (e *Engine) bindTemplateParse() {
 		"WithNode":       node("WithNode", func() any { return new(parse.WithNode) }),
 
 		"New": &runtime.BuiltinFunc{Name: "parse.New", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			if len(args) != 1 {
-				return nil, fmt.Errorf("parse.New: want 1 argument, got %d", len(args))
+			if len(args) < 1 {
+				return nil, fmt.Errorf("parse.New: want at least 1 argument, got %d", len(args))
 			}
-			return &runtime.GoValue{V: parse.New(str(goNative(args[0])))}, nil
+			funcs, err := funcNameSets(args[1:])
+			if err != nil {
+				return nil, err
+			}
+			return &runtime.GoValue{V: parse.New(str(goNative(args[0])), funcs...)}, nil
 		}},
 		"NewIdentifier": &runtime.BuiltinFunc{Name: "parse.NewIdentifier", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
@@ -68,6 +75,9 @@ func (e *Engine) bindTemplateParse() {
 		"IsEmptyTree": &runtime.BuiltinFunc{Name: "parse.IsEmptyTree", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("parse.IsEmptyTree: want 1 argument, got %d", len(args))
+			}
+			if isNilIface(args[0]) {
+				return true, nil // parse.IsEmptyTree(nil) is true
 			}
 			n, ok := goNative(args[0]).(parse.Node)
 			if !ok {
@@ -100,7 +110,7 @@ func (e *Engine) bindTemplateParse() {
 		parse.NodeVariable, parse.NodeWith, parse.NodeComment, parse.NodeBreak,
 		parse.NodeContinue,
 	} {
-		syms[nodeTypeName(nt)] = nt
+		syms[nodeTypeName(nt)] = &runtime.GoValue{V: nt}
 	}
 	e.Bind("text/template/parse", syms)
 }
@@ -125,7 +135,7 @@ func funcNameSets(args []runtime.Value) ([]map[string]any, error) {
 		case *runtime.Map:
 			for i := range m.Len() {
 				k, v := m.At(i)
-				if s, ok := runtime.Unwrap(k).(string); ok && !isNilValue(v) {
+				if s, ok := runtime.Unwrap(k).(string); ok && !isNilIface(v) {
 					set[s] = struct{}{}
 				}
 			}
@@ -138,12 +148,15 @@ func funcNameSets(args []runtime.Value) ([]map[string]any, error) {
 	return out, nil
 }
 
-func isNilValue(v runtime.Value) bool {
+// isNilIface reports whether v is a nil interface value. A typed nil
+// (a nil func stored in an `any` map slot) is a non-nil interface, so
+// the parser accepts its name like Go does.
+func isNilIface(v runtime.Value) bool {
 	switch v.(type) {
-	case nil, runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
+	case nil, runtime.Nil:
 		return true
 	}
-	return false
+	return runtime.IsNilIface(v)
 }
 
 // nodeTypeName spells a NodeType constant's identifier.
