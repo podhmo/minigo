@@ -11,7 +11,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
-// writeModuleFiles is writeFiles inside this module (under testdata/),
+// writeModuleFiles is gentest.WriteFiles inside this module (under testdata/),
 // so `go build` in -check resolves the generated code's model import
 // without a network fetch. It returns the dir and its import path.
 func writeModuleFiles(t *testing.T, files map[string]string) (string, string) {

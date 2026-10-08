@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/podhmo/minigo/pkg/gentest"
 )
 
 // TestFormatCodeReportsProvenance pins the agent-facing failure report:
@@ -161,7 +162,7 @@ func TestBuildConstraintHeader(t *testing.T) {
 // file that does not parse is reported as the user's to fix, with every
 // error and a numbered excerpt, and nothing is written.
 func TestRunReportsDefineSyntaxError(t *testing.T) {
-	dir := writeFiles(t, map[string]string{
+	dir := gentest.WriteFiles(t, map[string]string{
 		"go.mod": "module example.com/bad\ngo 1.22\n",
 		"define.go": `//go:build codegen
 
@@ -285,7 +286,7 @@ reached via (most recent call first):
 			for k, v := range types {
 				files[k] = v
 			}
-			dir := writeFiles(t, files)
+			dir := gentest.WriteFiles(t, files)
 			outputFile := filepath.Join(dir, "generated.go")
 			err := run(context.Background(), filepath.Join(dir, "define.go"), outputFile, false, "", false, false)
 			var de *dslError

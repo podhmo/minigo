@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/podhmo/minigo/pkg/gentest"
 )
 
 // TestIntegration_LeafMismatchWarnings covers the fuzz-round residual:
@@ -55,7 +56,7 @@ type Dst struct {
 `,
 	}
 
-	dir := writeFiles(t, files)
+	dir := gentest.WriteFiles(t, files)
 
 	ctx := context.Background()
 	defineFile := filepath.Join(dir, "define.go")
@@ -100,7 +101,7 @@ type Dst struct {
 // mismatches that only warn by default fail the run, listing each
 // converter/field and the input-side fix, and nothing is written.
 func TestRunStrictRejectsLeafMismatch(t *testing.T) {
-	dir := writeFiles(t, map[string]string{
+	dir := gentest.WriteFiles(t, map[string]string{
 		"go.mod": "module example.com/strict\ngo 1.22\n",
 		"define.go": `
 package main
@@ -149,7 +150,7 @@ func main() {
 // element-wise shape is reachable and the leafCast optimism would emit
 // a cast that cannot compile. The pair warns (and -strict fails).
 func TestRunStrictRejectsGenericInstantiation(t *testing.T) {
-	dir := writeFiles(t, map[string]string{
+	dir := gentest.WriteFiles(t, map[string]string{
 		"go.mod": "module example.com/geninst\ngo 1.22\n",
 		"define.go": `
 package main
@@ -205,7 +206,7 @@ func TestRunStrictChecksComputeTypes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := writeFiles(t, map[string]string{
+			dir := gentest.WriteFiles(t, map[string]string{
 				"go.mod": "module example.com/compute\ngo 1.22\n",
 				"define.go": `
 package main
