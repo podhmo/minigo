@@ -7138,7 +7138,43 @@ func isCompareOp(op bytecode.BinOp) bool {
 // scalarConst converts an untyped constant to the runtime type of a
 // scalar operand — comparisons first convert, then compare values
 // (`f float64 == hugeconst` rounds the constant, not the operand).
+// scalarKey memo-keys scalarConst's bare-scalar conversions by the
+// operand's kind (UConst.Memo).
+type scalarKey uint8
+
+const (
+	scalarInt scalarKey = iota + 1
+	scalarFloat
+	scalarString
+	scalarBool
+)
+
 func scalarConst(u *runtime.UConst, b runtime.Value) (runtime.Value, bool) {
+	var key scalarKey
+	switch b.(type) {
+	case int64:
+		key = scalarInt
+	case float64:
+		key = scalarFloat
+	case string:
+		key = scalarString
+	case bool:
+		key = scalarBool
+	}
+	if key == 0 {
+		return scalarConstSlow(u, b)
+	}
+	if r, hit := u.Memo(key); hit {
+		return r, true
+	}
+	r, ok := scalarConstSlow(u, b)
+	if ok {
+		u.SetMemo(key, r)
+	}
+	return r, ok
+}
+
+func scalarConstSlow(u *runtime.UConst, b runtime.Value) (runtime.Value, bool) {
 	switch b.(type) {
 	case int64:
 		i, ok := fitsIntConst(u.V, "int")
@@ -7217,8 +7253,13 @@ func scalarConst(u *runtime.UConst, b runtime.Value) (runtime.Value, bool) {
 // mismatch trap reports like Go's compile error.
 func (v *VM) adaptConst(f *frame, u *runtime.UConst, other runtime.Value) runtime.Value {
 	if nb, ok := other.(*runtime.Named); ok {
+		if r, hit := u.Memo(nb.Typ); hit {
+			return r
+		}
 		if r, ok2 := constToBasic(u, basicNameOf(nb.Typ)); ok2 {
-			return runtime.Tag(nb.Typ, r)
+			t := runtime.Tag(nb.Typ, r)
+			u.SetMemo(nb.Typ, t)
+			return t
 		}
 		switch u.V.Kind() {
 		case constant.Int, constant.Float, constant.Complex:
