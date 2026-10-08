@@ -3093,11 +3093,13 @@ func goValueOf(rv reflect.Value) runtime.Value {
 	}
 }
 
-// ScriptValueOf adapts a host Go value to a runtime value — the same
-// conversion reflect-call results already get: script-native values
-// pass through, unnamed containers unbox element-wise, and everything
-// else stays boxed as a host GoValue. Engine.Call runs its arguments
-// through it.
+// ScriptValueOf adapts a host Go value to a runtime value for Call
+// arguments — goValueOf's conversion plus one wider unbox: an unnamed
+// host map becomes a *runtime.Map, so a map-typed param can index,
+// range, and write it (host call results still box maps — an arg has
+// a declared param shape to satisfy, a result does not). Script-native
+// values pass through; a named map or struct keeps its box for member
+// dispatch, the same rule goValueOf applies to named slices.
 func ScriptValueOf(x any) runtime.Value {
 	// the script's int domain is int64: a host int64 stands for a script
 	// int, so it enters bare — tagging it (like goValueOf does for a
@@ -3106,7 +3108,21 @@ func ScriptValueOf(x any) runtime.Value {
 	if v, ok := x.(int64); ok {
 		return v
 	}
-	return goValueOf(reflect.ValueOf(x))
+	rv := reflect.ValueOf(x)
+	if rv.Kind() == reflect.Map && rv.Type().Name() == "" {
+		// recursing through ScriptValueOf unboxes nested maps too —
+		// m["a"]["b"] keeps working at any depth.
+		td := anonMapTyp(elemTypeName(rv.Type().Key()), elemTypeName(rv.Type().Elem()))
+		if rv.IsNil() {
+			return &runtime.TypedNil{Typ: td}
+		}
+		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}, Typ: td}
+		for _, k := range rv.MapKeys() {
+			m.Insert(ScriptValueOf(k.Interface()), ScriptValueOf(rv.MapIndex(k).Interface()))
+		}
+		return m
+	}
+	return goValueOf(rv)
 }
 
 // hostRValueType is the facade's host type: a host []*RValue (MapKeys,
@@ -8939,6 +8955,15 @@ func namedBasicElem(name string, x runtime.Value) runtime.Value {
 // unboxed from host values (no package context — the name is a builtin).
 func anonSliceTyp(name string) *runtime.TypeDef {
 	return &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: ast.NewIdent(name)}}
+}
+
+// anonMapTyp builds the anonymous map[k]v typedef used to tag maps
+// unboxed from host values.
+func anonMapTyp(key, elem string) *runtime.TypeDef {
+	return &runtime.TypeDef{Kind: runtime.KindMap, Anon: &ast.MapType{
+		Key:   ast.NewIdent(key),
+		Value: ast.NewIdent(elem),
+	}}
 }
 
 // anonArrayTyp builds the anonymous [n]name typedef used to tag arrays

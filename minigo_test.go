@@ -100,16 +100,26 @@ func TestCallArgs(t *testing.T) {
 		// callers that boxed slices by hand keep working — script
 		// values pass the boundary unchanged.
 		{"Len", []runtime.Value{&runtime.Slice{Elems: []runtime.Value{"a", "b"}}}, int64(2)},
+		// an unnamed host map unboxes to a *runtime.Map: index, len,
+		// range, and index-assign all work, nested maps too.
+		{"MapGet", []runtime.Value{map[string]int{"k": 7}}, int64(7)},
+		{"MapLen", []runtime.Value{map[string]int{"a": 1, "bb": 2}}, int64(2)},
+		{"MapSum", []runtime.Value{map[string]int{"a": 1, "bb": 2}}, int64(6)},
+		{"MapSet", []runtime.Value{map[string]int{"k": 7}}, int64(9)},
+		{"IsNilM", []runtime.Value{map[string]int(nil)}, true},
+		{"Nested", []runtime.Value{map[string]map[string]int{"a": {"b": 3}}}, int64(3)},
 	} {
 		got := run(t, e, "./testdata/callargs", c.fn, c.args...)
 		if got != c.want {
 			t.Errorf("%s: got %v (%T), want %v", c.fn, got, got, c.want)
 		}
 	}
-	// a named map stays a boxed host value — the same shape a host call
-	// result takes — so indexing it traps at the use site.
-	if _, err := e.Run(context.Background(), "./testdata/callargs", "MapGet", map[string]int{"k": 7}); err == nil {
-		t.Errorf("MapGet: want error, got nil")
+	// a named map keeps its box — member dispatch lives there, the same
+	// rule named host slices follow — so indexing it still traps at the
+	// use site.
+	type hostNamedMap map[string]int
+	if _, err := e.Run(context.Background(), "./testdata/callargs", "MapGet", hostNamedMap{"k": 7}); err == nil {
+		t.Errorf("MapGet(named): want error, got nil")
 	}
 }
 
