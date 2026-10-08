@@ -671,8 +671,17 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 
 ### 残りの状況
 
-- Stack #664 は 10 本（修正7 + ユーザー #657 + クリーンアップ + 本レポート）。全 open、マージはユーザー側。
+- Stack #664 は 12 本（修正7 + ユーザー #657 + クリーンアップ + レビュー後追修正2 + 本レポート）。全 open、マージはユーザー側。
 - TODO 残件 `[ ]`: deadlock 検出（機能）、`dur_methods`・`geninfer_variadic_unify`・`geninfer_callee_t`（機能級）、`ptrconv_ptrptr`・`panic_typednil`・`mapkey_namedstruct`（本ラウンド新規記録、別根因級）、境界クラス記録群。
 - corpus sweep の残り未走査・gen hunt の深掘り（バッチ・depth 増の飽和確認）は次ラウンド以降の案件として残置。
+
+### 追記: レポート後の外部レビュー対応
+
+本レポート作成後、別エージェントの全体差分レビュー（比較: main `b87ebf81` vs 先端 `c6931d6f`）で差分内回帰 2 件が指摘された。いずれも実機で再現確認し、回帰として修正 PR を積んだ（レビュー対応は CAP 外、pin は昇格済み＝PENDING なし）。
+
+- **`ptrconv_store_tag`（[#665](https://github.com/podhmo/minigo/pull/665)）**: `*(*uint)(&w) = 7` が `var w W` の W タグを消し `w.M()` が `select M on cell of int64` で失敗。ptrconv_named(#661) で変換ポインタを `Named{*uint}` で包んだことで、setIndirect 内の古い `Unwrap` 経路（`PtrConvShared` の裸セル前提）を踏むようになっていた。ポインタの要素 typedef は値の検査にのみ使い、セルが既に持っている declared tag で格納し直す形に修正 — これは「read 側で re-tag する設計」（#661）と書き込み側の整合であり、旧コードが Unwrap を選んだ当時は read が coerce だったため tagged 格納が読めなかった事情があった。
+- **`errret_alias`（[#666](https://github.com/podhmo/minigo/pull/666)）**: `func (E) Error() Text`（`type Text = string`）が `error` を満たさず `fmt.Println(E{})` が `{}` を出力。`isStringerFuncType` が結果 ident の綴りを `"string"` と文字列比較していたため。gc の signature identity に従い、package scope の `type X = Y` spec を辿って解決する実装に変更（defined type・`string` シャドーイング・alias 循環は正しく false 側に倒す）。
+
+計画外の記録として: 子レビュー（差分内バグ 0件 verdict）では検出されなかった回帰が別レビューで見つかった — レビューは1回でなく複数観点で走ると抜けが減ることが今回示された形。また2件目の混入元はユーザー側 PR #657 の `isStringerFuncType` で、スタックへの混入レビュー対象を「自分の差分」だけに限定しない方が良いという知見になった。
 
 ### 不備の振り返り（メモ）
