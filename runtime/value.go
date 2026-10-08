@@ -1448,6 +1448,11 @@ type VMCaller interface {
 	// types failed to resolve and the set may be incomplete; nil set
 	// means the engine offers no method-set hook.
 	MethodSetOf(v Value) (set map[string]bool, unsure bool)
+	// MapKeyOperand applies the declared-key-type check `m[k]` runs and
+	// returns the unwrapped operand — builtin delete uses it so deleting
+	// coerces the key the same way indexing does (map[float64]int{1:7}
+	// deletes by float64(1), not int64(1)).
+	MapKeyOperand(mapTd *TypeDef, key Value) Value
 	// Zero returns the Go zero value of a typedef (struct fields get
 	// typed zeros, nilable kinds get TypedNil) — used by new().
 	Zero(td *TypeDef) Value

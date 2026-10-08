@@ -293,36 +293,58 @@ func builtins(e *Engine) *runtime.Env {
 		return int64(n), nil
 	})
 	bf("delete", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-		kv := runtime.Unwrap(args[1])
-		if u, ok := kv.(*runtime.UConst); ok {
-			nv, err := uconstNative(u)
+		// The key operand takes the same declared-key-type coercion an
+		// index expression does — map[float64]int{1:7} deletes by
+		// float64(1), and a mismatched key traps like gc's compile
+		// reject rather than silently keeping the element.
+		kvFor := func(mapTd *runtime.TypeDef) (runtime.Value, error) {
+			kv := v.MapKeyOperand(mapTd, args[1])
+			if u, ok := kv.(*runtime.UConst); ok {
+				// no declared key type to materialize against — keep the
+				// raw native shape (complex keys box into GoValue).
+				nv, err := uconstNative(u)
+				if err != nil {
+					return nil, err
+				}
+				if cv, isC := nv.(complex128); isC {
+					nv = &runtime.GoValue{V: cv}
+				}
+				kv = nv
+			}
+			return kv, nil
+		}
+		check := func(mapTd *runtime.TypeDef) (runtime.Value, error) {
+			_, err := kvFor(mapTd)
+			return runtime.NIL, err
+		}
+		drop := func(m *runtime.Map) (runtime.Value, error) {
+			kv, err := kvFor(m.Typ)
 			if err != nil {
 				return nil, err
 			}
-			if cv, isC := nv.(complex128); isC {
-				nv = &runtime.GoValue{V: cv}
-			}
-			kv = nv
-		}
-		drop := func(m *runtime.Map) {
 			m.Delete(kv)
+			return runtime.NIL, nil
 		}
 		switch m := args[0].(type) {
 		case *runtime.Named:
 			if mm, ok := m.V.(*runtime.Map); ok {
-				drop(mm)
-				return runtime.NIL, nil
+				return drop(mm)
 			}
 			return nil, fmt.Errorf("delete on named %s", m.Typ.Name)
 		case *runtime.Map:
-			drop(m)
+			return drop(m)
 		case *runtime.Cell:
 			if mm, ok := m.Elem.(*runtime.Map); ok {
-				drop(mm)
-				return runtime.NIL, nil
+				return drop(mm)
 			}
 			return nil, fmt.Errorf("delete on %T", args[0])
-		case *runtime.TypedNil, *runtime.IfaceNil, runtime.Nil:
+		case *runtime.TypedNil:
+			// delete on a nil map is a no-op — the key still runs the
+			// static declared-key-type check.
+			return check(m.Typ)
+		case *runtime.IfaceNil:
+			return check(m.Typ)
+		case runtime.Nil:
 			// delete on a nil map is a no-op
 		default:
 			return nil, fmt.Errorf("delete on %T", args[0])
