@@ -10226,11 +10226,18 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 			}
 			return x
 		}
-		// an unnamed target assigns any value whose underlying type is
-		// identical — `type Number *Number`'s `*x` (Number) binds a
-		// *Number parameter; a named target still needs the conversion.
-		if !tagIsNamed(td) && v.tdShapeEq(n.Typ, td) {
-			return x
+		// identical underlying types assign when at least one side is
+		// unnamed — `type Number *Number`'s `*x` (Number) binds a
+		// *Number parameter, and `map[string]int(m)`'s anonymous
+		// conversion result rebinds a named slot, taking its declared
+		// tag. Named-to-named still needs a conversion.
+		if v.tdShapeEq(n.Typ, td) {
+			if !tagIsNamed(td) {
+				return x
+			}
+			if !tagIsNamed(n.Typ) {
+				return runtime.Tag(td, n.V)
+			}
 		}
 		f.trap("cannot use %s as %s", tdName(n.Typ), tdName(td))
 	}
@@ -10377,6 +10384,15 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		}
 	}
 	switch utd.Kind {
+	case runtime.KindStruct:
+		// an anonymous struct literal assigned to a named struct type
+		// takes the declared tag: `var s S = struct{x int}{...}` binds
+		// S's method set, not the literal's anonymous typedef. The
+		// struct keeps its own Def (fields live there); the Named wrap
+		// carries the declared identity.
+		if _, ok := x.(*runtime.Struct); ok && tagIsNamed(td) {
+			x = runtime.Tag(td, x)
+		}
 	case runtime.KindMap, runtime.KindSlice, runtime.KindChan:
 		if ct := containerTyp(x); ct == nil {
 			// a declared container type stamps the value so element
@@ -10491,10 +10507,23 @@ func (v *VM) tdShapeEq(a, b *runtime.TypeDef) bool {
 	if v.convShapeEq(pa, pb) {
 		return true
 	}
-	if pa.Anon != nil && pb.Anon != nil {
-		return runtime.TypSpelling(pa.Anon, pa) == runtime.TypSpelling(pb.Anon, pb)
+	// the shape spelling comes from the anonymous type AST, or the
+	// declaring spec's for a named type — `map[string]int` spelled
+	// anonymously and as `type M map[string]int` is one shape.
+	src := func(t *runtime.TypeDef) ast.Expr {
+		if t.Anon != nil {
+			return t.Anon
+		}
+		if t.Spec != nil {
+			return t.Spec.Type
+		}
+		return nil
 	}
-	return pa.Anon == nil && pb.Anon == nil
+	sa, sb := src(pa), src(pb)
+	if sa != nil && sb != nil {
+		return runtime.TypSpelling(sa, pa) == runtime.TypSpelling(sb, pb)
+	}
+	return sa == nil && sb == nil
 }
 
 // samePointeeAlias reports whether two anonymous pointer typedefs point
