@@ -2003,7 +2003,7 @@ func isStringerMember(m Value) bool {
 		if fn.Fn == nil || fn.Fn.Decl == nil {
 			return false
 		}
-		return isStringerFuncType(fn.Fn.Decl.Type)
+		return isStringerFuncType(fn.Fn)
 	case *BuiltinFunc:
 		// the reflected method's signature carries its receiver as
 		// In(0); the bound call must take nothing and return exactly
@@ -2020,8 +2020,12 @@ func isStringerMember(m Value) bool {
 
 // isStringerFuncType reports whether a declared method type spells
 // `func() string`: no parameters and exactly one result naming the
-// predeclared string type.
-func isStringerFuncType(ft *ast.FuncType) bool {
+// predeclared string type, following package-scope alias chains —
+// `func (E) Error() Text` with `type Text = string` is identical to
+// `func() string` under gc's signature identity, while a defined
+// `type Text string` is not.
+func isStringerFuncType(fn *Function) bool {
+	ft := fn.Decl.Type
 	if ft == nil {
 		return false
 	}
@@ -2031,6 +2035,58 @@ func isStringerFuncType(ft *ast.FuncType) bool {
 	if ft.Results == nil || len(ft.Results.List) != 1 {
 		return false
 	}
-	id, ok := ft.Results.List[0].Type.(*ast.Ident)
-	return ok && id.Name == "string"
+	return isStringTypeExpr(ft.Results.List[0].Type, fn, nil)
+}
+
+// isStringTypeExpr reports whether a result-type expression resolves —
+// through package-scope `type X = Y` specs only — to the predeclared
+// string type. An unresolved ident is the predeclared name itself; a
+// package-scope spec shadowing it must alias or the type is a defined
+// type, which is never identical to string. `seen` guards alias cycles
+// the parser would still have accepted (`type A = B` / `type B = A`).
+func isStringTypeExpr(e ast.Expr, fn *Function, seen map[string]bool) bool {
+	id, ok := e.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	if seen[id.Name] {
+		return false
+	}
+	if spec := packageTypeSpec(fn, id.Name); spec != nil {
+		if !spec.Assign.IsValid() {
+			return false
+		}
+		if seen == nil {
+			seen = map[string]bool{}
+		}
+		seen[id.Name] = true
+		return isStringTypeExpr(spec.Type, fn, seen)
+	}
+	return id.Name == "string"
+}
+
+// packageTypeSpec finds the TypeSpec declaring name in the function's
+// package files, or nil when the name is not declared at package scope.
+func packageTypeSpec(fn *Function, name string) *ast.TypeSpec {
+	if fn == nil || fn.Pkg == nil {
+		return nil
+	}
+	for _, file := range fn.Pkg.Files {
+		if file == nil || file.AST == nil {
+			continue
+		}
+		for _, decl := range file.AST.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if ok && ts.Name.Name == name {
+					return ts
+				}
+			}
+		}
+	}
+	return nil
 }
