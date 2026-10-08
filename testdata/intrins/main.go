@@ -266,6 +266,43 @@ func JsonUnmarshal() string {
 	return "bad"
 }
 
+// JsonUnmarshalTypeErr exercises the bound decoder's unmarshal-type
+// errors: a kind mismatch reports json's UnmarshalTypeError text (with
+// the root struct name and dotted field path) instead of storing a
+// wrongly-typed value, and gc's partial-write rule keeps prior values at
+// the failing node while successful siblings still land.
+func JsonUnmarshalTypeErr() string {
+	type BoolSchema struct{ Has *bool }
+	type Schema struct {
+		AP  BoolSchema `json:"ap"`
+		Tag string     `json:"tag"`
+	}
+	type MBool bool
+
+	var s Schema
+	err := json.Unmarshal([]byte(`{"ap":true,"tag":"ok"}`), &s)
+	out := fmt.Sprint(err, s.Tag, s.AP.Has)
+
+	var m struct {
+		B MBool `json:"b"`
+		I int   `json:"i"`
+	}
+	m.B = MBool(true)
+	err = json.Unmarshal([]byte(`{"b":"nope","i":1.5}`), &m)
+	out += "|" + fmt.Sprint(err, bool(m.B), m.I)
+
+	var deep struct {
+		S []int `json:"s"`
+	}
+	err = json.Unmarshal([]byte(`{"s":[1,"x",3]}`), &deep)
+	out += "|" + fmt.Sprint(err, deep.S)
+
+	var i int
+	err = json.Unmarshal([]byte(`"x"`), &i)
+	out += "|" + fmt.Sprint(err)
+	return out
+}
+
 // StrconvAppendInt exercises the Append family — writeStatusLine in
 // net/http formats the status code through it.
 func StrconvAppendInt() string {
