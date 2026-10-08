@@ -518,7 +518,18 @@ func (e *Engine) installInspect() {
 			if err != nil {
 				return nil, err
 			}
-			return p.Member(str(runtime.Unwrap(args[1])), e.materialize)
+			m, err := p.Member(str(runtime.Unwrap(args[1])), e.materialize)
+			if err != nil {
+				return nil, err
+			}
+			// a const's read-only cell is an internal handle — hand the
+			// constant across the boundary, not a *string-lookalike.
+			// Writable cells (vars) stay cells: `*v` must keep
+			// dereferencing the storage.
+			if c, ok := m.(*runtime.Cell); ok && c.ReadOnly {
+				return c.Elem, nil
+			}
+			return m, nil
 		}),
 		"TypeOf": bf("TypeOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
