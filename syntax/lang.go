@@ -122,7 +122,8 @@ func langMax(a, b string) string {
 // shadow table from DeclaredKinds.
 func CheckLang(fset *token.FileSet, f *File, declared map[string]DeclKind) error {
 	lang := f.Lang()
-	if lang == "" {
+	if lang == "" || version.Compare(lang, latestGate) >= 0 {
+		// nothing to reject: every gate is at or below the file's lang
 		return nil
 	}
 	c := &langChecker{
@@ -130,7 +131,7 @@ func CheckLang(fset *token.FileSet, f *File, declared map[string]DeclKind) error
 		lang:     lang,
 		suffix:   f.langSuffix(),
 		declared: declared,
-		locals:   localDecls(f.AST),
+		file:     f.AST,
 		seen:     map[ast.Node]bool{},
 	}
 	ast.Inspect(f.AST, c.node)
@@ -146,7 +147,9 @@ type langChecker struct {
 	// shadowedAt can answer "is this ident a local, not the builtin" —
 	// `min := func(...)` in one function does not make another function's
 	// builtin `min(...)` call legal, so a flat name set is not enough.
+	// It is built on the first query (most files never ask).
 	locals map[string][]declSpan
+	file   *ast.File
 	// seen marks nodes already gated by the type-grammar walk so the
 	// expression pass does not re-flag (or mis-word) them.
 	seen map[ast.Node]bool
@@ -283,6 +286,9 @@ func (c *langChecker) shadowedAt(name string, pos token.Pos) bool {
 // scope at pos — for the implicit-instantiation check, where the
 // package-level generic decl is the target, not a shadow.
 func (c *langChecker) localAt(name string, pos token.Pos) bool {
+	if c.locals == nil {
+		c.locals = localDecls(c.file)
+	}
 	for _, s := range c.locals[name] {
 		if s.lo <= pos && pos < s.hi {
 			return true
@@ -315,6 +321,10 @@ func (c *langChecker) pkgQualifier(sel *ast.SelectorExpr) bool {
 	return ok && !c.shadowedAt(id.Name, id.Pos())
 }
 
+// latestGate is the newest version any fail call gates on: a file whose
+// lang is at least this needs no walk (TestLatestGate keeps it current).
+const latestGate = "go1.27"
+
 func (c *langChecker) fail(pos token.Pos, minv, feat string) {
 	if c.err != nil || version.Compare(minv, c.lang) <= 0 {
 		return
@@ -337,10 +347,11 @@ func (c *langChecker) node(n ast.Node) bool {
 	if n == nil {
 		return true
 	}
+	// Inspect visits each node once; seen only holds the subtrees the
+	// type-grammar walk already gated.
 	if c.err != nil || c.seen[n] {
 		return false
 	}
-	c.seen[n] = true
 	switch n := n.(type) {
 	case *ast.GenDecl:
 		for _, sp := range n.Specs {
