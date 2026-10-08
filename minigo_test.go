@@ -417,6 +417,12 @@ func TestPanicTraceback(t *testing.T) {
 		{"PanicStruct", "panic: (main.panicPoint) 0x"},
 		{"PanicStructPtr", "panic: (*main.panicPoint) 0x"},
 		{"PanicSlice", "panic: ([]int) 0x"},
+		// a same-named Error/String with a non-`func() string`
+		// signature does not implement the interface: gc renders
+		// `(type) 0xADDR` without invoking the method.
+		{"PanicErrorBadSig", "panic: (main.sigError) 0x"},
+		{"PanicErrorBadParams", "panic: (main.sigErrorParams) 0x"},
+		{"PanicStringerBadSig", "panic: (main.sigStringer) 0x"},
 	} {
 		got = runErr(c.fn)
 		if !strings.HasPrefix(got, c.want) {

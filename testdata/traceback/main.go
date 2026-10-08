@@ -99,6 +99,25 @@ type panicScalar int
 // so gc renders `(type) 0xADDR`.
 type panicPoint struct{ x, y int }
 
+// sigError shares error's method NAME without its signature — an
+// `Error() any` method does not implement error in gc, so the payload
+// renders `(main.sigError) 0xADDR` and the method is never invoked.
+type sigError struct{}
+
+func (sigError) Error() any { return "not an error" }
+
+// sigErrorParams declares Error with a parameter — likewise not the
+// interface method.
+type sigErrorParams struct{}
+
+func (sigErrorParams) Error(n int) string { return "not an error" }
+
+// sigStringer shares fmt.Stringer's method name without its
+// signature.
+type sigStringer struct{}
+
+func (sigStringer) String() any { return "not a stringer" }
+
 // PanicErrorValue panics with a script error pointer — the fatal render
 // calls its Error() instead of dumping the value.
 func PanicErrorValue() { panic(&panicError{msg: "script error text"}) }
@@ -121,6 +140,14 @@ func PanicNamedScalar() { panic(panicScalar(3)) }
 func PanicStruct()    { panic(panicPoint{x: 1, y: 2}) }
 func PanicStructPtr() { panic(&panicPoint{x: 1, y: 2}) }
 func PanicSlice()     { panic([]int{1, 2}) }
+
+// PanicErrorBadSig / PanicErrorBadParams / PanicStringerBadSig panic
+// with payloads whose Error/String method does not match the
+// `func() string` signature gc requires — the interface is not
+// satisfied, so gc renders `(type) 0xADDR` without calling it.
+func PanicErrorBadSig()    { panic(sigError{}) }
+func PanicErrorBadParams() { panic(sigErrorParams{}) }
+func PanicStringerBadSig() { panic(sigStringer{}) }
 
 // PanicErrorChain repanics over a script-error payload: the chain keeps
 // the [recovered] marker on the Error() text.

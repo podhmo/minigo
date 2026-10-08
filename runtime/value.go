@@ -1963,12 +1963,16 @@ func IfaceMember(c VMCaller, v Value, name string) (Value, bool) {
 	return c.Member(v, name)
 }
 
-// IfaceCallString invokes a declared String()/Error()-style method
-// through the engine when the value's method set offers one (a pointer
-// receiver on a bare value does not count — Go prints the struct
-// instead). An absent method, a call that fails, a panic crossing the
-// engine boundary (procExit while the process unwinds), or a
-// non-string result all report false.
+// IfaceCallString invokes a declared String()/Error()/GoString()-style
+// method through the engine when the value's method set offers one (a
+// pointer receiver on a bare value does not count — Go prints the
+// struct instead) and the member is a method with the `func() string`
+// shape gc's interface probes require — a same-named method with a
+// different signature (`Error() any`) does not satisfy the interface,
+// so it must not be invoked at all. An absent method, a signature
+// mismatch, a call that fails, a panic crossing the engine boundary
+// (procExit while the process unwinds), or a non-string result all
+// report false.
 func IfaceCallString(c VMCaller, v Value, name string) (s string, ok bool) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -1976,7 +1980,7 @@ func IfaceCallString(c VMCaller, v Value, name string) (s string, ok bool) {
 		}
 	}()
 	m, ok := IfaceMember(c, v, name)
-	if !ok {
+	if !ok || !isStringerMember(m) {
 		return "", false
 	}
 	r, err := c.Call(m, nil)
@@ -1985,4 +1989,48 @@ func IfaceCallString(c VMCaller, v Value, name string) (s string, ok bool) {
 	}
 	s, ok = r.(string)
 	return s, ok
+}
+
+// isStringerMember reports whether the member m is a real method
+// callable as `func() string` — gc's requirement for error.Error,
+// fmt.Stringer, and fmt.GoStringer. Field funcs and members whose
+// signature cannot be verified report false: neither satisfies the
+// interface, so invoking them would mis-render the value (and a
+// same-named method may run unexpected side effects).
+func isStringerMember(m Value) bool {
+	switch fn := m.(type) {
+	case *BoundMethod:
+		if fn.Fn == nil || fn.Fn.Decl == nil {
+			return false
+		}
+		return isStringerFuncType(fn.Fn.Decl.Type)
+	case *BuiltinFunc:
+		// the reflected method's signature carries its receiver as
+		// In(0); the bound call must take nothing and return exactly
+		// `string` (a named string result does not satisfy the
+		// interface, per gc's signature identity).
+		if fn.Method == nil {
+			return false
+		}
+		mt := fn.Method.Type
+		return mt.NumIn() == 1 && mt.NumOut() == 1 && mt.Out(0) == reflect.TypeOf("")
+	}
+	return false
+}
+
+// isStringerFuncType reports whether a declared method type spells
+// `func() string`: no parameters and exactly one result naming the
+// predeclared string type.
+func isStringerFuncType(ft *ast.FuncType) bool {
+	if ft == nil {
+		return false
+	}
+	if ft.Params != nil && len(ft.Params.List) > 0 {
+		return false
+	}
+	if ft.Results == nil || len(ft.Results.List) != 1 {
+		return false
+	}
+	id, ok := ft.Results.List[0].Type.(*ast.Ident)
+	return ok && id.Name == "string"
 }
