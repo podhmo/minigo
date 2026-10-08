@@ -4107,24 +4107,32 @@ func goJSON(v any) any {
 	case *runtime.Struct:
 		// structs marshal in DECLARATION order (encoding/json never
 		// sorts struct fields) — an ordered map keeps that visible.
+		// Anonymous embeds flatten: promoted fields emit in place, a
+		// name tag on the embed demotes it to a named member, and a
+		// depth/tag tie for one key drops every candidate (gc emits
+		// nothing — not even a null — for an ambiguous key).
 		var o orderedObject
-		for i, name := range x.Def.Fields {
-			if i < len(x.Fields) {
-				key, omit, asStr, skip := jsonFieldKey(x.Def, name)
-				if skip || (omit && jsonIsEmpty(x.Fields[i])) {
-					continue
-				}
-				fv := goJSON(x.Fields[i])
-				// `,string` applies to the DECLARED kind: interface
-				// fields marshal normally even when the tag asks.
-				if asStr && !jsonFieldIsIface(x.Def, i) {
-					if lit, ok := jsonStringLit(x.Fields[i]); ok {
-						fv = lit
-					}
-				}
-				o.keys = append(o.keys, key)
-				o.vals = append(o.vals, fv)
+		ents := jsonMarshalLive(jsonStructFields(x.Def))
+		for _, e := range ents {
+			f, ok := jsonReadPath(x, e.path)
+			if !ok {
+				// a nil pointer embed's promoted fields are
+				// unreachable — gc omits them entirely
+				continue
 			}
+			if e.omit && jsonIsEmpty(f) {
+				continue
+			}
+			fv := goJSON(f)
+			// `,string` applies to the DECLARED kind: interface
+			// fields marshal normally even when the tag asks.
+			if e.asStr && !jsonPathIsIface(x.Def, e.path) {
+				if lit, ok := jsonStringLit(f); ok {
+					fv = lit
+				}
+			}
+			o.keys = append(o.keys, e.key)
+			o.vals = append(o.vals, fv)
 		}
 		return o
 	case *runtime.Slice:
@@ -4282,20 +4290,6 @@ func (o orderedObject) MarshalJSON() ([]byte, error) {
 	return []byte(sb.String()), nil
 }
 
-// jsonLookup finds key in a decoded object; encoding/json also accepts a
-// case-insensitive match as a fallback.
-func jsonLookup(m map[string]any, key string) (any, bool) {
-	if v, ok := m[key]; ok {
-		return v, true
-	}
-	for k, v := range m {
-		if strings.EqualFold(k, key) {
-			return v, true
-		}
-	}
-	return nil, false
-}
-
 // derefTyp peels the pointer level off a value's typedef — json.Unmarshal
 // decodes into the pointee, so `&cfg` (*Config) shapes as Config.
 func derefTyp(td *runtime.TypeDef) *runtime.TypeDef {
@@ -4423,6 +4417,284 @@ func priorOr(prior runtime.Value, c runtime.VMCaller, td *runtime.TypeDef) runti
 	return c.Zero(td)
 }
 
+// jsonFieldEntry is one JSON-visible struct field: a declared field or
+// a field promoted through anonymous embeds, plus the index path that
+// reaches it through the struct's nested Fields slices
+// (Fields[path[0]].Fields[path[1]]...).
+type jsonFieldEntry struct {
+	key    string // effective JSON key (tag name or field name)
+	path   []int  // index chain into nested Fields
+	tagged bool   // the key came from an explicit `json:"name"`
+	depth  int    // embed hops — 0 for declared fields
+	omit   bool   // `,omitempty`
+	asStr  bool   // `,string`
+}
+
+// jsonStructFields flattens a struct typedef into its JSON-visible
+// field entries — declared fields plus fields promoted through
+// anonymous embeds, in declaration order with each embed expanded in
+// place. A `json:"name"`-tagged embed is a NAMED member rather than
+// promoted, and `,omitempty`/`,string` options on an anonymous embed
+// are ignored (the promoted fields' own tags govern). A non-struct
+// embed (e.g. a named int) behaves like a named field.
+func jsonStructFields(td *runtime.TypeDef) []jsonFieldEntry {
+	var out []jsonFieldEntry
+	seen := map[*runtime.TypeDef]bool{}
+	var walk func(st *runtime.TypeDef, prefix []int, depth int)
+	walk = func(st *runtime.TypeDef, prefix []int, depth int) {
+		if st == nil || seen[st] {
+			return
+		}
+		seen[st] = true
+		defer delete(seen, st)
+		for i, name := range st.Fields {
+			key, omit, asStr, skip := jsonFieldKey(st, name)
+			if skip {
+				continue
+			}
+			p := append(append(make([]int, 0, len(prefix)+1), prefix...), i)
+			if jsonEmbedded(st, i) && !jsonTagNamed(st, name) {
+				if _, ok := typedefAst(jsonPeelPtr(jsonEmbedTyp(st, i))).(*ast.StructType); ok {
+					walk(jsonPeelPtr(jsonEmbedTyp(st, i)), p, depth+1)
+					continue
+				}
+			}
+			out = append(out, jsonFieldEntry{
+				key: key, path: p, tagged: jsonTagNamed(st, name),
+				depth: depth, omit: omit, asStr: asStr,
+			})
+		}
+	}
+	walk(td, nil, 0)
+	return out
+}
+
+// jsonEmbedded reports whether Fields[i] is an embedded (anonymous)
+// field — embedded specs are indexed through EmbedIdx.
+func jsonEmbedded(st *runtime.TypeDef, i int) bool {
+	for _, x := range st.EmbedIdx {
+		if x == i {
+			return true
+		}
+	}
+	return false
+}
+
+// jsonTagNamed reports whether a field's `json` tag carries an explicit
+// name — the distinction between a promoted anonymous embed
+// (`json:",omitempty"` stays anonymous) and a named member.
+func jsonTagNamed(def *runtime.TypeDef, name string) bool {
+	if def == nil || def.FTags == nil {
+		return false
+	}
+	tag, ok := def.FTags[name]
+	if !ok {
+		return false
+	}
+	j := reflect.StructTag(tag).Get("json")
+	if i := strings.IndexByte(j, ','); i >= 0 {
+		j = j[:i]
+	}
+	return j != "" && j != "-"
+}
+
+// jsonEmbedTyp resolves the typedef of the i'th embedded field — the
+// lazily-populated Embeds table first, then the spec's type AST
+// through LocalTypes, the package index's declared TypeSpec, and the
+// package-level elemTyp approximation. Spec pointer stars are
+// stripped: the result is the type a pointer embed points at.
+func jsonEmbedTyp(st *runtime.TypeDef, i int) *runtime.TypeDef {
+	for k, ei := range st.EmbedIdx {
+		if ei != i {
+			continue
+		}
+		if k < len(st.Embeds) && st.Embeds[k] != nil {
+			return st.Embeds[k]
+		}
+		if k < len(st.EmbedSpecs) {
+			return jsonResolveTypName(st, jsonStripStars(st.EmbedSpecs[k]))
+		}
+	}
+	return nil
+}
+
+// jsonStripStars removes *ast.StarExpr wrappers from a type expr.
+func jsonStripStars(e ast.Expr) ast.Expr {
+	for {
+		if sx, ok := e.(*ast.StarExpr); ok {
+			e = sx.X
+			continue
+		}
+		return e
+	}
+}
+
+// jsonResolveTypName resolves a type expression to a typedef detailed
+// enough to walk fields over: function-local decls via LocalTypes,
+// package-level decls via the index's TypeSpec (Fields/FTags rebuilt
+// from the struct AST), and everything else via elemTyp.
+func jsonResolveTypName(st *runtime.TypeDef, e ast.Expr) *runtime.TypeDef {
+	if id, ok := e.(*ast.Ident); ok && st != nil {
+		if st.LocalTypes != nil {
+			if lt := st.LocalTypes[id.Name]; lt != nil {
+				return lt
+			}
+		}
+		if st.Pkg != nil && st.Pkg.Index != nil {
+			if ti, ok := st.Pkg.Index.Types[id.Name]; ok && ti.Decl != nil {
+				if ts, ok := ti.Decl.Spec.(*ast.TypeSpec); ok {
+					return jsonTypFromSpec(id.Name, ts, st.Pkg)
+				}
+			}
+		}
+	}
+	return elemTyp(e, st.Pkg)
+}
+
+// jsonTypFromSpec wraps a decl's TypeSpec as a typedef detailed enough
+// for field walking — Fields/FTags/EmbedSpecs rebuilt from the struct
+// AST the same way the engine builds anonymous struct typedefs.
+func jsonTypFromSpec(name string, ts *ast.TypeSpec, pkg *runtime.Package) *runtime.TypeDef {
+	td := &runtime.TypeDef{Name: name, Pkg: pkg, Spec: ts}
+	if st, ok := ts.Type.(*ast.StructType); ok {
+		td.Kind = runtime.KindStruct
+		td.FTags = runtime.StructFieldTags(st)
+		for _, fld := range st.Fields.List {
+			if len(fld.Names) == 0 {
+				td.EmbedSpecs = append(td.EmbedSpecs, fld.Type)
+				td.EmbedIdx = append(td.EmbedIdx, len(td.Fields))
+				td.Fields = append(td.Fields, runtime.AnonFieldName(fld.Type))
+				continue
+			}
+			for _, n := range fld.Names {
+				td.Fields = append(td.Fields, n.Name)
+			}
+		}
+	}
+	return td
+}
+
+// jsonPeelPtr removes pointer levels from a typedef — the runtime Elem
+// link first, then the declared *T AST.
+func jsonPeelPtr(td *runtime.TypeDef) *runtime.TypeDef {
+	for td != nil {
+		if td.Kind == runtime.KindPointer && td.Elem != nil {
+			td = td.Elem
+			continue
+		}
+		if st, ok := typedefAst(td).(*ast.StarExpr); ok {
+			td = elemTyp(st.X, td.Pkg)
+			continue
+		}
+		return td
+	}
+	return nil
+}
+
+// jsonEmbedStruct steps into the embedded field at index idx of s —
+// following a live embedded struct, or allocating a nil pointer
+// embed's pointee the way gc allocates on decode. ok=false when the
+// field holds no struct value.
+func jsonEmbedStruct(c runtime.VMCaller, s *runtime.Struct, idx int, ftd *runtime.TypeDef) (*runtime.Struct, bool) {
+	f := s.Fields[idx]
+	if st, ok := runtime.Unwrap(f).(*runtime.Struct); ok {
+		return st, true
+	}
+	et := jsonPeelPtr(ftd)
+	if et == nil {
+		return nil, false
+	}
+	nv, ok := c.Zero(et).(*runtime.Struct)
+	if !ok {
+		return nil, false
+	}
+	if pc, ok := f.(*runtime.Cell); ok {
+		if st, ok2 := runtime.Unwrap(pc.Elem).(*runtime.Struct); ok2 {
+			return st, true
+		}
+		pc.Elem = nv
+		return nv, true
+	}
+	s.Fields[idx] = &runtime.Cell{Elem: nv}
+	return nv, true
+}
+
+// jsonReadPath follows an entry's index path for marshal — a nil
+// pointer embed (or any non-struct hop) makes the promoted fields
+// unreachable, and gc omits them from the output entirely.
+func jsonReadPath(s *runtime.Struct, path []int) (runtime.Value, bool) {
+	cur := s
+	for h := 0; h < len(path)-1; h++ {
+		st, ok := runtime.Unwrap(cur.Fields[path[h]]).(*runtime.Struct)
+		if !ok {
+			return nil, false
+		}
+		cur = st
+	}
+	return cur.Fields[path[len(path)-1]], true
+}
+
+// jsonPathIsIface reports whether the leaf field reached by path is
+// declared as an interface type — needed for `,string` marshal, which
+// gc applies by declared kind.
+func jsonPathIsIface(td *runtime.TypeDef, path []int) bool {
+	cur := td
+	for h := 0; h < len(path)-1; h++ {
+		cur = jsonPeelPtr(fieldTypOf(cur, path[h]))
+	}
+	return jsonFieldIsIface(cur, path[len(path)-1])
+}
+
+// jsonMarshalLive drops the entries gc's index drops: for each JSON
+// key, the shallower candidates win, tagged beats untagged at the same
+// depth, and a tie on both cancels every candidate for that name —
+// nothing for the key is emitted, conflicting fields or not.
+func jsonMarshalLive(ents []jsonFieldEntry) []jsonFieldEntry {
+	byKey := map[string][]int{}
+	for i := range ents {
+		byKey[ents[i].key] = append(byKey[ents[i].key], i)
+	}
+	dead := map[int]bool{}
+	for _, cand := range byKey {
+		if len(cand) < 2 {
+			continue
+		}
+		minD := ents[cand[0]].depth
+		for _, i := range cand[1:] {
+			if ents[i].depth < minD {
+				minD = ents[i].depth
+			}
+		}
+		var keep []int
+		for _, i := range cand {
+			if ents[i].depth == minD {
+				keep = append(keep, i)
+			}
+		}
+		var tg []int
+		for _, i := range keep {
+			if ents[i].tagged {
+				tg = append(tg, i)
+			}
+		}
+		if len(tg) > 0 {
+			keep = tg
+		}
+		for _, i := range cand {
+			if len(keep) != 1 || i != keep[0] {
+				dead[i] = true
+			}
+		}
+	}
+	out := make([]jsonFieldEntry, 0, len(ents))
+	for i := range ents {
+		if !dead[i] {
+			out = append(out, ents[i])
+		}
+	}
+	return out
+}
+
 // jsonShape converts a decoded JSON tree (map[string]any / []any /
 // scalars from encoding/json) into the runtime shape a declared typedef
 // expects: structs get their declared fields by json tag, numeric fields
@@ -4462,20 +4734,123 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 		if ps, ok := prior.(*runtime.Struct); ok && ps.Def == td {
 			pf = ps.Fields
 		}
-		for i, name := range z.Def.Fields {
-			key, _, asStr, skip := jsonFieldKey(z.Def, name)
-			if skip {
+		ents := jsonStructFields(td)
+		// For each JSON key decide which entry decodes it, gc-style:
+		// an exact key match beats a case-folded one, a shallower entry
+		// beats a deeper one, a tagged field beats an untagged one at
+		// the same depth, and a tie on all three drops the key (the
+		// pair is still consumed — silently, no error).
+		win := map[string]int{}
+		for k := range m {
+			var cand []int
+			for i := range ents {
+				if ents[i].key == k {
+					cand = append(cand, i)
+				}
+			}
+			if len(cand) == 0 {
+				for i := range ents {
+					if strings.EqualFold(ents[i].key, k) {
+						cand = append(cand, i)
+					}
+				}
+			}
+			if len(cand) == 0 {
 				continue
 			}
-			if fv, ok := jsonLookup(m, key); ok {
-				ectx.path = append(ectx.path, key)
-				if asStr {
-					z.Fields[i] = jsonStringOpt(c, fv, c.TypeOf(z.Fields[i]), elemAt(pf, i), ectx)
-				} else {
-					z.Fields[i] = jsonShape(c, fv, c.TypeOf(z.Fields[i]), elemAt(pf, i), ectx)
+			minD := ents[cand[0]].depth
+			for _, i := range cand[1:] {
+				if ents[i].depth < minD {
+					minD = ents[i].depth
 				}
-				ectx.path = ectx.path[:len(ectx.path)-1]
 			}
+			var keep []int
+			for _, i := range cand {
+				if ents[i].depth == minD {
+					keep = append(keep, i)
+				}
+			}
+			var tg []int
+			for _, i := range keep {
+				if ents[i].tagged {
+					tg = append(tg, i)
+				}
+			}
+			if len(tg) > 0 {
+				keep = tg
+			}
+			if len(keep) == 1 {
+				win[k] = keep[0]
+			}
+		}
+		for i := range ents {
+			e := &ents[i]
+			// the JSON key this entry wins: usually its own, or a
+			// case-folded one when no exact candidate exists
+			fv, kok := m[e.key]
+			if kok {
+				if w, won := win[e.key]; !won || w != i {
+					kok = false
+				}
+			}
+			if !kok {
+				for k, w := range win {
+					if w == i {
+						fv, kok = m[k], true
+						break
+					}
+				}
+			}
+			if !kok {
+				continue
+			}
+			ectx.path = append(ectx.path, e.key)
+			cur, curTd, curPf := z, td, pf
+			reach := true
+			for h := 0; h < len(e.path)-1 && reach; h++ {
+				// walk into the embedded field at path[h], allocating a
+				// nil pointer embed the way gc allocates on decode.
+				idx := e.path[h]
+				etd := jsonEmbedTyp(curTd, idx)
+				if etd == nil {
+					etd = fieldTypOf(curTd, idx)
+				}
+				var pf2 runtime.Value
+				if curPf != nil && idx < len(curPf) {
+					pf2 = curPf[idx]
+				}
+				next, ok := jsonEmbedStruct(c, cur, idx, etd)
+				if !ok {
+					reach = false
+					break
+				}
+				cur, curTd = next, jsonPeelPtr(etd)
+				if ps2, ok := runtime.Unwrap(pf2).(*runtime.Struct); ok {
+					curPf = ps2.Fields
+				} else if pc, ok := runtime.Unwrap(pf2).(*runtime.Cell); ok {
+					if ps3, ok3 := runtime.Unwrap(pc.Elem).(*runtime.Struct); ok3 {
+						curPf = ps3.Fields
+					} else {
+						curPf = nil
+					}
+				} else {
+					curPf = nil
+				}
+			}
+			if reach {
+				leaf := e.path[len(e.path)-1]
+				var lpf runtime.Value
+				if curPf != nil && leaf < len(curPf) {
+					lpf = curPf[leaf]
+				}
+				ltd := c.TypeOf(cur.Fields[leaf])
+				if e.asStr {
+					cur.Fields[leaf] = jsonStringOpt(c, fv, ltd, lpf, ectx)
+				} else {
+					cur.Fields[leaf] = jsonShape(c, fv, ltd, lpf, ectx)
+				}
+			}
+			ectx.path = ectx.path[:len(ectx.path)-1]
 		}
 		return z
 	case runtime.KindSlice:

@@ -389,6 +389,62 @@ func JsonUnmarshalMapKeys() string {
 	return out + "|" + fmt.Sprint(err, sk)
 }
 
+// JsonUnmarshalEmbed exercises anonymous-embed field flattening:
+// promoted fields match their JSON keys through the embed chain
+// (exact key before case-folded, shallowest depth first, tagged
+// before untagged — a tie on all three drops the key silently, on
+// marshal too), a `json:"name"` tag on the embed demotes it to a
+// named member, and pointer embeds allocate on decode.
+func JsonUnmarshalEmbed() string {
+	type A struct{ X int }
+	type B struct{ Y int }
+	type Mid struct {
+		A
+		M int
+	}
+	type Outer struct {
+		B
+		Mid
+		Z int
+	}
+	var o Outer
+	err := json.Unmarshal([]byte(`{"x":1,"y":2,"m":3,"z":4}`), &o)
+	out := fmt.Sprint(err, o.A.X, o.B.Y, o.Mid.M, o.Z)
+
+	type A1 struct{ X int }
+	type A2 struct{ X int }
+	type Both struct {
+		A1
+		A2
+	}
+	var b Both
+	err = json.Unmarshal([]byte(`{"x":1}`), &b)
+	out += "|" + fmt.Sprint(err, b.A1.X, b.A2.X)
+	m2, _ := json.Marshal(Both{A1: A1{X: 1}, A2: A2{X: 2}})
+	out += "|" + string(m2)
+
+	type Ptr struct {
+		*A
+		P int
+	}
+	var p Ptr
+	err = json.Unmarshal([]byte(`{"x":7,"p":8}`), &p)
+	out += "|" + fmt.Sprint(err, p.A != nil, p.A.X, p.P)
+
+	type Tagd struct {
+		A `json:"in"`
+		B
+	}
+	var t Tagd
+	err = json.Unmarshal([]byte(`{"in":{"x":1},"y":2}`), &t)
+	out += "|" + fmt.Sprint(err, t.A.X, t.B.Y)
+	m3, _ := json.Marshal(Tagd{A: A{X: 1}, B: B{Y: 2}})
+	out += "|" + string(m3)
+
+	m1, _ := json.Marshal(Outer{B: B{Y: 2}, Mid: Mid{A: A{X: 1}, M: 3}, Z: 4})
+	return out + "|" + string(m1)
+}
+
 // StrconvAppendInt exercises the Append family — writeStatusLine in
 // net/http formats the status code through it.
 func StrconvAppendInt() string {
