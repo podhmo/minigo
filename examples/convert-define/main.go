@@ -12,6 +12,7 @@ import (
 
 	"github.com/podhmo/minigo/examples/convert-define/generator"
 	"github.com/podhmo/minigo/examples/convert-define/internal"
+	"github.com/podhmo/minigo/pkg/gentest"
 )
 
 func main() {
@@ -123,7 +124,7 @@ func run(ctx context.Context, defineFile, output string, dryRun bool, buildTags 
 		fmt.Fprintf(os.Stdout, "---\n// file: %s\n---\n", output)
 		os.Stdout.Write(formatted)
 	} else {
-		if err := os.WriteFile(output, formatted, 0644); err != nil {
+		if err := gentest.WriteFile(ctx, output, formatted, 0644); err != nil {
 			return fmt.Errorf("failed to write formatted code to %s: %w", output, err)
 		}
 	}

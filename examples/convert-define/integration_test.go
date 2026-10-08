@@ -5,26 +5,12 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/podhmo/minigo/pkg/gentest"
 )
-
-// writeFiles creates a temporary directory populated with the given files.
-func writeFiles(t *testing.T, files map[string]string) string {
-	t.Helper()
-	dir := t.TempDir()
-	for name, content := range files {
-		path := filepath.Join(dir, name)
-		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-			t.Fatalf("MkdirAll(%q): %v", filepath.Dir(path), err)
-		}
-		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-			t.Fatalf("WriteFile(%q): %v", path, err)
-		}
-	}
-	return dir
-}
 
 var update = flag.Bool("update", false, "update golden files")
 
@@ -85,7 +71,7 @@ func main() {
 		"sampledata/funcs/funcs.go":             string(funcs),
 	}
 
-	dir := writeFiles(t, files)
+	dir := gentest.WriteFiles(t, files)
 
 	ctx := context.Background()
 	defineFile := filepath.Join(dir, "define.go")
@@ -185,7 +171,7 @@ type Dst struct {
 `,
 	}
 
-	dir := writeFiles(t, files)
+	dir := gentest.WriteFiles(t, files)
 
 	ctx := context.Background()
 	defineFile := filepath.Join(dir, "define.go")
@@ -223,5 +209,79 @@ type Dst struct {
 
 	if diff := cmp.Diff(string(want), string(got)); diff != "" {
 		t.Errorf("generated code mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestFileWriterCapture exercises the FileWriter seam: the output write
+// in run() goes through gentest.WriteFile, so a MemoryFileWriter on the
+// context captures generated.go in memory and nothing reaches disk. It
+// is the go-scan scantest pattern — host-side generator writes are
+// interceptable where interpreted writes (gen-sync's script) are not.
+func TestFileWriterCapture(t *testing.T) {
+	dir := gentest.WriteFiles(t, map[string]string{
+		"go.mod": `
+module example.com/mw
+go 1.22
+`,
+		"define.go": `
+package main
+
+import (
+	"example.com/mw/destination"
+	"example.com/mw/source"
+	"github.com/podhmo/minigo/examples/convert-define/define"
+)
+
+func main() {
+	define.Convert(func(c *define.Config, dst *destination.Dst, src *source.Src) {
+		c.Map(dst.UserID, src.ID)
+	})
+}
+`,
+		"source/source.go": `
+package source
+
+type Src struct {
+	ID int64
+}
+`,
+		"destination/destination.go": `
+package destination
+
+type Dst struct {
+	UserID int64
+}
+`,
+	})
+
+	ctx := context.Background()
+	defineFile := filepath.Join(dir, "define.go")
+	outputFile := filepath.Join(dir, "generated.go")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("could not get cwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("could not chdir to temp dir: %v", err)
+	}
+	defer os.Chdir(cwd)
+
+	mem := &gentest.MemoryFileWriter{BaseDir: dir}
+	ctx = gentest.WithFileWriter(ctx, mem)
+	if err := run(ctx, defineFile, outputFile, false /* dryRun */, "", false /* strict */, false /* check */); err != nil {
+		t.Fatalf("run failed: %+v", err)
+	}
+
+	// the write was captured, not written to disk.
+	if _, err := os.Stat(outputFile); !os.IsNotExist(err) {
+		t.Fatalf("a captured write must not reach disk: %v", err)
+	}
+	got, ok := mem.Outputs["generated.go"]
+	if !ok {
+		t.Fatalf("nothing captured for generated.go")
+	}
+	if !strings.Contains(string(got), "src.ID") {
+		t.Fatalf("captured output does not contain the mapped assignment:\n%s", got)
 	}
 }
