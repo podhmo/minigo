@@ -10339,10 +10339,12 @@ func declaredTag(x runtime.Value) *runtime.TypeDef {
 }
 
 // pointeeTag returns the declared type of a pointer value's pointee: the
-// cell's stamped type first, else the stored value's own tag. Nil when
-// the pointee is untyped (basic vars, anonymous literals).
+// cell's stamped type first, else the stored value's own tag. The cell
+// type may be anonymous (`var pw *uval` stamps a `*uval` typedef) — a
+// pointer conversion still needs it to compare pointee identities. Nil
+// only when the pointee carries no declared type.
 func (v *VM) pointeeTag(x runtime.Value) *runtime.TypeDef {
-	if c, ok := x.(*runtime.Cell); ok && tagIsNamed(c.Typ) {
+	if c, ok := x.(*runtime.Cell); ok && c.Typ != nil {
 		return c.Typ
 	}
 	dv, ok := runtime.Deref(x)
