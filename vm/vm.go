@@ -985,6 +985,34 @@ func (v *VM) TypeOf(x runtime.Value) *runtime.TypeDef {
 	return v.typeOfValue(x)
 }
 
+// ResolveType implements the VMCaller hook via Hooks.ResolveType: the
+// engine's declared-type resolution for an AST type expression in a
+// typedef's context (package scope, file imports, generic binds).
+func (v *VM) ResolveType(td *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, error) {
+	if v.H.ResolveType == nil {
+		return nil, fmt.Errorf("cannot resolve type %T", x)
+	}
+	return v.H.ResolveType(td, x)
+}
+
+// FieldTypes implements the VMCaller hook via Hooks.FieldTypes: the
+// declared typedef of each struct field, parallel to td.Fields.
+func (v *VM) FieldTypes(td *runtime.TypeDef) ([]*runtime.TypeDef, error) {
+	if v.H.FieldTypes == nil {
+		return nil, fmt.Errorf("cannot resolve field types")
+	}
+	return v.H.FieldTypes(td)
+}
+
+// ElemOf implements the VMCaller hook via Hooks.ElemOf: the element or
+// pointee typedef of a container/pointer typedef.
+func (v *VM) ElemOf(td *runtime.TypeDef) (*runtime.TypeDef, error) {
+	if v.H.ElemOf == nil {
+		return nil, fmt.Errorf("cannot resolve element type")
+	}
+	return v.H.ElemOf(td)
+}
+
 // Copy implements the VMCaller.Copy hook: Go assignment semantics —
 // structs copy by value, slices/maps/pointers share. A riding constant
 // (T(c), which stays a constant inside expressions) materializes at this
