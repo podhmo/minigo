@@ -2,10 +2,16 @@ package runtime
 
 import (
 	"fmt"
+	"go/ast"
 	"go/token"
+	"reflect"
+	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 
+	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/index"
 	"github.com/podhmo/minigo/syntax"
 )
@@ -180,6 +186,10 @@ type Package struct {
 
 	matMu sync.Mutex
 	matM  map[*index.Decl]Value // materialization dedup: one TypeDef/Function identity per decl
+
+	instMu    sync.Mutex
+	instM     map[string]instChunk // compiled generic instantiations (InstChunk)
+	instCount map[*ast.FuncDecl]int
 }
 
 // State reports the package lifecycle stage.
@@ -421,4 +431,96 @@ func memberDecl(ix *index.Index, name string) (*index.Decl, bool) {
 		return d, true
 	}
 	return nil, false
+}
+
+// instChunk is one cached instantiation. It keeps the binds alive, so
+// the addresses its key spells cannot be reused by other type values.
+type instChunk struct {
+	binds map[string]Value
+	ch    *bytecode.Chunk
+}
+
+// maxInstPerDecl bounds the instantiations cached per generic decl:
+// binds rebuilt per call (an anonymous []T inferred from an argument)
+// would otherwise retain a chunk per call.
+const maxInstPerDecl = 64
+
+// InstKey spells the identity of a generic instantiation for
+// InstChunk: the decl, the function name, and each bind's type value.
+// A bind is identified by its pointer, except a plain predeclared
+// basic typedef, which is identified by its name — call-site inference
+// mints fresh `string` typedefs that are otherwise indistinguishable.
+// ok is false when a bind cannot be keyed.
+func InstKey(decl *ast.FuncDecl, file *syntax.File, name string, binds map[string]Value) (string, bool) {
+	names := make([]string, 0, len(binds))
+	for k := range binds {
+		names = append(names, k)
+	}
+	slices.Sort(names)
+	var b strings.Builder
+	b.WriteString(strconv.FormatUint(uint64(reflect.ValueOf(decl).Pointer()), 16))
+	b.WriteByte('|')
+	b.WriteString(strconv.FormatUint(uint64(reflect.ValueOf(file).Pointer()), 16))
+	b.WriteByte('|')
+	b.WriteString(name)
+	for _, n := range names {
+		b.WriteByte('|')
+		b.WriteString(n)
+		b.WriteByte('=')
+		td, ok := binds[n].(*TypeDef)
+		if !ok || td == nil {
+			return "", false
+		}
+		if plainBasic(td) {
+			b.WriteString(td.Name)
+			continue
+		}
+		b.WriteByte('@')
+		b.WriteString(strconv.FormatUint(uint64(reflect.ValueOf(td).Pointer()), 16))
+	}
+	return b.String(), true
+}
+
+// plainBasic reports whether td is a bare predeclared basic typedef
+// (`string`, `int`) carrying nothing but its name and kind. OuterSpell
+// is ignored: it only spells function-local type names a typedef's AST
+// embeds, and a basic typedef has no AST.
+func plainBasic(td *TypeDef) bool {
+	canon := BasicTypedef(td.Name)
+	if canon == nil || td.Kind != canon.Kind {
+		return false
+	}
+	return td.Pkg == nil && td.File == nil && td.Spec == nil && td.Anon == nil &&
+		td.Fields == nil && td.FTags == nil && td.Methods == nil &&
+		td.TParams == nil && td.Binds == nil && td.OuterArgs == nil &&
+		td.MReqs == nil && td.IEmbeds == nil && td.EmbedSpecs == nil &&
+		td.Embeds == nil && td.LocalTypes == nil && td.Elem == nil &&
+		td.HostNew == nil && td.HostScalar == nil && !td.Local && td.Gen == 0
+}
+
+// InstChunk returns the chunk compiled earlier for the instantiation
+// key spells (see InstKey). The compiled code depends only on the
+// decl, file, name and binds, so instances with the same key share it
+// — like WithBinds copies share their original's chunk.
+func (p *Package) InstChunk(key string) (*bytecode.Chunk, bool) {
+	p.instMu.Lock()
+	defer p.instMu.Unlock()
+	e, ok := p.instM[key]
+	return e.ch, ok
+}
+
+// SetInstChunk records a compiled instantiation under key, up to
+// maxInstPerDecl per decl.
+func (p *Package) SetInstChunk(key string, decl *ast.FuncDecl, binds map[string]Value, ch *bytecode.Chunk) {
+	p.instMu.Lock()
+	defer p.instMu.Unlock()
+	if p.instM == nil {
+		p.instM = map[string]instChunk{}
+		p.instCount = map[*ast.FuncDecl]int{}
+	}
+	if _, ok := p.instM[key]; ok || p.instCount[decl] >= maxInstPerDecl {
+		return
+	}
+	p.instCount[decl]++
+	p.instM[key] = instChunk{binds: binds, ch: ch}
 }
