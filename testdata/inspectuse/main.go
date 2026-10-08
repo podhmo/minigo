@@ -1040,8 +1040,13 @@ func InitializerView() string {
 	}
 	// a const reads without the package initializer — the same lookup
 	// grafana's coreplugin needs on `const CloudWatch = "cloudwatch"`.
-	if v := inspect.Value(p, "Label"); *v != "lbl" {
+	// The value itself crosses the boundary: no cell pointer to deref.
+	if v := inspect.Value(p, "Label"); v != "lbl" || ""+v != "lbl" {
 		return "bad const value"
+	}
+	// var members stay cells — storage is the point.
+	if v := inspect.Value(p, "Count"); *v != 3 {
+		return "var lost its cell"
 	}
 	return "ok"
 }
