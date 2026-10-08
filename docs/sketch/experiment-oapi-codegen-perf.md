@@ -2,12 +2,12 @@
 
 Status: in progress. Branch `fix/oapi-codegen-regressions` carries the
 two regression fixes found on the way (step 0).
-`perf/sync-builtin-callbacks` is stacked on it and carries steps 4–11; step 12 is an investigation only.
+`perf/sync-builtin-callbacks` is stacked on it and carries steps 4–13.
 
 Steps 0–5 measured the program as shipped, goimports included. From
 step 6 on, the baseline binds goimports natively. The index and an
 interpreted goimports are workload facts, not interpreter tuning. Steps
-6–11 ask what the interpreter itself can lose from there.
+6–13 ask what the interpreter itself can lose from there.
 
 Question: oapi-codegen under minigo takes ~6s per `go:generate` line
 (~50x native). The workload executes nearly the whole program
@@ -21,9 +21,11 @@ so it can be re-run, the numbers, and the verdict.
 
 ## Verdict so far
 
-**From the native-goimports baseline (steps 6–11):**
-`petstore-expanded/strict` goes from ~1.95s to 1.57s (−20%) with eight
-small commits, and the output stays byte-identical. Three findings:
+**From the native-goimports baseline (steps 6–13):**
+`petstore-expanded/strict` goes from ~1.95s to 1.04s (−47%), and the
+output stays byte-identical. The single largest step is binding
+`text/template/parse` (step 13, −33% on its own); the other eight
+commits are small interpreter-level fixes. Three findings:
 
 - The remaining cost is diffuse. No mutator function holds more than
   ~12% of samples. Loading and compiling take ~25% of wall, and Linux
@@ -583,7 +585,7 @@ What remains is `compile.Func` (~0.5–0.6s per 6 rounds; ~17k
 functions at ~5µs each). Its cost is spread thin over name-lookup maps
 and emit, with no single hot spot. The resolver's `Locate` is ~0.12s.
 
-## Step 12: text/template (investigation, no code yet)
+## Step 12: text/template (investigation)
 
 On the current baseline, `text/template/parse` is 46.4% of executed
 instructions (19.8M). `text/template` itself (exec) is 3.1%. Within
@@ -658,6 +660,51 @@ pointers inside trees (`t.Tree == nil`, `Root == nil`), and ranging
 over host slices of interface elements (`[]parse.Node`). A spike
 binding just enough of `parse` for the stand-alone script would settle
 both.
+
+## Step 13: bound `text/template/parse` (`604ce3bd`)
+
+Option 3 from step 12. The binding covers:
+
+- 21 node types plus `Tree`, as `hostType`s whose `HostNew` returns
+  `new(T)`
+- `Node`, as a `KindInterface` typedef
+- `NodeType`, `Pos` and `Mode`, as `HostScalar` named basics
+- the 21 `NodeXxx` constants and `ParseComments`/`SkipFuncCheck`
+- `New`, `NewIdentifier`, `IsEmptyTree` and `Parse`
+
+`Parse` gets the script's `FuncMap`s but the host parser only checks
+names, so `funcNameSets` hands it name sets. Script func values never
+cross.
+
+The spike hit exactly one gap. `cmd.Args` (`[]parse.Node`) unboxed to a
+slice tagged `[]Node`. `goValueOf` spells a named element type without
+its package, so the slice failed to bind `evalFieldNode`'s
+`args []parse.Node`. A host slice whose element type belongs to a host
+package now unboxes untagged and adopts the slot's type. The two
+unknowns from step 12 did not bite: nil host pointers already read as
+`nil`, and host slices of interface elements unbox element-wise.
+
+| | before | after |
+|---|---|---|
+| stand-alone template parse (64 templates) | 0.534s | 0.021s |
+| strict (9 rounds) | 1.552s | 1.038s (−33%) |
+| all 53 lines vs native (`noidx.sh`, CLI) | identical | identical (46.6s total) |
+
+`testdata/difffuzz/template_src_hostparse` (`SRC=text/template`)
+compares an interpreted text/template against native. It covers
+define/template/block, range with else/break/continue, with, variables,
+builtins, methods with args, number and char literals, trim markers,
+Clone with a block override, and four error messages.
+
+Writing it surfaced three pre-existing gaps, now in TODO.md:
+
+- `{{(index .Items 1).Name}}` panics in exec (`MethodByName` on a zero
+  value), with or without the binding.
+- `strconv.UnquoteChar` is unbound. The parse-from-source path trapped
+  on `{{'a'}}`.
+- html/template from source does not get past `bytes.IndexAny` and
+  `bytealg`. Its escaper is the one place that builds and mutates parse
+  trees, so tree mutation on host nodes remains untested.
 
 ## How to re-run
 
