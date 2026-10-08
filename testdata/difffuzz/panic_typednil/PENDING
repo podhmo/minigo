@@ -1,3 +1,0 @@
-gc: prints true — recover() boxes the typed nil into a non-nil
-interface. minigo prints false: the TypedNil payload returns unboxed and
-`r != nil` sees through the Named wrap to the nil.

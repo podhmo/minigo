@@ -1029,6 +1029,12 @@ func (v *VM) Recover() runtime.Value {
 			val = mv
 		}
 	}
+	// a typed-nil payload recovers as the non-nil interface value gc's
+	// `recover() any` returns — the dynamic type rides along, so
+	// `r != nil` reports true and `r.(*T)` still asserts the typed nil.
+	if tn, ok := val.(*runtime.TypedNil); ok {
+		return &runtime.IfaceNil{Typ: tn.Typ}
+	}
 	// a runtime-error payload surfaces as the boxed host error Go's
 	// recover() returns — `err.(error)` asserts and `.Error()` calls
 	// resolve through the reflection path. The same goes for the
