@@ -2,6 +2,7 @@ package minigo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"go/ast"
 	"reflect"
@@ -268,6 +269,17 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 	}
 	for _, spec := range td.EmbedSpecs {
 		emb, err := e.resolveTypeRef(td, spec)
+		// the embed's package failed its init (a trap or a panic): the
+		// program is already broken there, and treating the set as
+		// unsure would make every interface assertion succeed silently.
+		var tr *runtime.Trap
+		if errors.As(err, &tr) {
+			panic(tr)
+		}
+		var pn *runtime.Panic
+		if errors.As(err, &pn) {
+			panic(pn)
+		}
 		if err != nil || emb == nil {
 			unsure = true
 			continue
@@ -664,6 +676,21 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 			scope = from.Pkg.Scopes[from.File]
 		}
 		ref, ok := scope[id.Name]
+		if !ok && from.File != nil {
+			// an unaliased import whose package clause differs from the
+			// path's last element (gopkg.in/yaml.v3 declares yaml):
+			// Scopes keys on the basename, so learn the real name by
+			// materializing like the VM's resolveGlobal does.
+			for _, r := range from.Pkg.Imports[from.File] {
+				if r.Alias != "" {
+					continue
+				}
+				if p, err := r.Materialize(); err == nil && p != nil && p.Name == id.Name {
+					ref, ok = r, true
+					break
+				}
+			}
+		}
 		if !ok {
 			// minireflect's exprOf qualifies a named typedef by package
 			// PATH (e.g. <dir>/prog/x.T, reflect.Value) — the selector's

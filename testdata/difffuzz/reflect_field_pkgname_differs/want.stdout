@@ -1,0 +1,3 @@
+true struct github.com/podhmo/minigo/testdata/difffuzz/reflect_field_pkgname_differs/inner.v2 Node 2
+true true
+4 true
