@@ -1136,7 +1136,7 @@ func (e *Engine) typeDefOf(pkg *runtime.Package, d *index.Decl) (runtime.Value, 
 // typeDefOf (index materialization) and the REPL's :pin method grafts.
 func (e *Engine) methodFunc(pkg *runtime.Package, recv string, md *index.Decl) *runtime.Function {
 	_, ptrRecv := md.Func.Recv.List[0].Type.(*ast.StarExpr)
-	return &runtime.Function{
+	fn := &runtime.Function{
 		Pkg: pkg, File: md.File, Decl: md.Func, Name: recv + "." + md.Name,
 		Recv: recv, PtrRecv: ptrRecv, Compile: compile.Func,
 		// Go 1.27 generic methods: `func (l List[E]) Map[R any](...)`
@@ -1144,4 +1144,8 @@ func (e *Engine) methodFunc(pkg *runtime.Package, recv string, md *index.Decl) *
 		TParams:      typeParamNames(md.Func.Type.TypeParams),
 		TConstraints: typeParamConstraints(md.Func.Type.TypeParams),
 	}
+	if ch := e.srcImpl(pkg, recv, md); ch != nil {
+		fn.Chunk, fn.Compile = ch, nil
+	}
+	return fn
 }

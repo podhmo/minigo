@@ -2871,13 +2871,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 // (nil, false) reports that neither exists.
 func (v *VM) hostMember(hv any, name string) (runtime.Value, bool) {
 	if fv, ok := hostField(hv, name); ok {
-		r := goValueOf(fv)
-		if s, ok := r.(*runtime.Slice); ok && fv.Kind() == reflect.Slice {
-			// the elements are a snapshot; Host keeps the field's
-			// backing so `n.Nodes[i] = x` reaches the host tree.
-			s.Host = fv
-		}
-		return r, true
+		return goValueOf(fv), true
 	}
 	m := reflect.ValueOf(hv).MethodByName(name)
 	if !m.IsValid() {
@@ -5621,13 +5615,6 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 			return
 		}
 		b.Elems[i] = val
-		if b.Host.IsValid() && b.Host.Len() == len(b.Elems) {
-			hv, err := toReflectValue(val, b.Host.Type().Elem(), v)
-			if err != nil {
-				f.trap("index assign on host %s: %s", b.Host.Type(), err)
-			}
-			b.Host.Index(int(i)).Set(hv)
-		}
 	case *runtime.Map:
 		idx = v.mapKeyOperand(f, b.Typ, rawIdx)
 		if idx != nil && !reflect.TypeOf(idx).Comparable() {
