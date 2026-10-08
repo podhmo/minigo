@@ -706,6 +706,21 @@ Writing it surfaced three pre-existing gaps, now in TODO.md:
   `bytealg`. Its escaper is the one place that builds and mutates parse
   trees, so tree mutation on host nodes remains untested.
 
+## Side check: grafana-openapi
+
+The branch's general changes (load, goroutine id, interface and constant
+memos) also run under realworld's `grafana-openapi` (grafana at
+`fa8d6e65`, `minigo run .`, CLI). main `18411142` against `1faea9e7`,
+9 interleaved rounds on macOS. Output is identical to `go run` on both.
+
+| | main | branch |
+|---|---|---|
+| median | 2.322s | 2.224s (−4.2%) |
+| range | 2.269–2.337s | 2.186–2.314s |
+
+The `text/template/parse` binding plays no part here; the gain is the
+smaller, general set.
+
 ## How to re-run
 
 Scripts used (kept outside the repo; reconstructable from this
