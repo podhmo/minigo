@@ -1000,6 +1000,19 @@ func (v *VM) Recover() runtime.Value {
 	v.consumedPanic = v.inflight
 	v.consumedPanic.Recovered = true
 	v.inflight = nil
+	// a still-constant payload materializes — panic's `any` parameter is
+	// where `panic(4)` becomes an int, so recover() never hands back
+	// the constant domain's operand (recover().(int) asserted "int, not
+	// int").
+	if u, ok := constPayload(val); ok {
+		var ctd *runtime.TypeDef
+		if n, isNamed := val.(*runtime.Named); isNamed {
+			ctd = n.Typ
+		}
+		if mv, err := v.materializeConstErr(u, ctd); err == nil {
+			val = mv
+		}
+	}
 	// a runtime-error payload surfaces as the boxed host error Go's
 	// recover() returns — `err.(error)` asserts and `.Error()` calls
 	// resolve through the reflection path. The same goes for the
