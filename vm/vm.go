@@ -5495,6 +5495,7 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 	if dv, ok := runtime.Deref(base); ok {
 		return v.slice(f, dv, lo, hi, max)
 	}
+	base = v.materialize(f, base) // `const s = "x"; s[i:j]` slices a UConst
 	if n, ok := base.(*runtime.Named); ok {
 		return v.slice(f, n.V, lo, hi, max)
 	}
