@@ -685,3 +685,41 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 計画外の記録として: 子レビュー（差分内バグ 0件 verdict）では検出されなかった回帰が別レビューで見つかった — レビューは1回でなく複数観点で走ると抜けが減ることが今回示された形。また2件目の混入元はユーザー側 PR #657 の `isStringerFuncType` で、スタックへの混入レビュー対象を「自分の差分」だけに限定しない方が良いという知見になった。
 
 ### 不備の振り返り（メモ）
+
+## 6.19 実施ラウンド（round-17）: Stack #671 — difffuzz PENDING 残件掃討・修正4 PR・全体差分レビュー
+
+発端は round-16 までと同じ、TODO.md の difffuzz 系残件を「1 root cause = 1 PR」で直列掃討する指示（CAP=10、基本ソロ・子セッションはレビュー委譲のみ）。成果: **Stack #671 に修正 4 PR（[#669](https://github.com/podhmo/minigo/pull/669)・[#670](https://github.com/podhmo/minigo/pull/670)・[#675](https://github.com/podhmo/minigo/pull/675)・[#676](https://github.com/podhmo/minigo/pull/676)・[#678](https://github.com/podhmo/minigo/pull/678) — 修正 4 PR + 本レポート）**。前ラウンド末に残っていた PENDING pin 6件全てに着手し、4件は昇格（PENDING 除去）、2件は gc のコンパイル拒否＝runtime trap 形で根因修正の上 PENDING 残置とした。
+
+### 実施内容
+
+| フェーズ | 内容 | PR |
+|------|------|-----|
+| PENDING 修正 | `dur_methods`（host scalar typedef が生値を保持 → `d.String()` 等の Duration メソッドセット解決）、`panic_typednil`（typed nil を `IfaceNil` に box → `recover(); r != nil` が true）、`mapkey_namedstruct`（map index/literal のキーを declared key type に coerce — リテラル側 `map[float64]V{1: x}` が `int64(1)` を格納する対称バグも同時修復）、`ptrconv_ptrptr`（`elemOf` のポインタ段潰れ＋`pointeeTag` の匿名セル型読み取り不能、両層修正で trap 化）、`geninfer_*`（untyped const 引数の defer 機構 — 1 root cause で2 pin） | #669, #670, #675, #676, #678 |
+| 全体差分レビュー | 子セッションに main→先端の全差分を委譲（バグ→リファクタの順で判定） | （レビューのみ） |
+| 帳簿 | TODO.md の6項目を `[x]` に更新 | 本 PR |
+| 本レポート | 本章 | 本 PR |
+
+### レビュー指摘の判定結果
+
+TBD — 子セッション回答待ち。
+
+### 計画外の記録と判断
+
+計画時の仮説・設計と実施後の理解がずれた点、および計画に無かった事象への判断。
+
+- **`geninfer_variadic_unify` と `geninfer_callee_t` は別 pin だが同じ根因だった**: TODO では2項目（`cannot use rune as float64` と `type argument int does not satisfy constraint Foo`、症状も発火位置も別）。実機で追うと両方とも「untyped const 引数が first-come で tparam を pin する」一点に収斂した — Go の推論では untyped const は「何にでも変換できる」ので pin せず、実型つき引数が bind を教えてから const が従う。→ defer 機構（`unifyType` で const 引数を `constArgs` に記録して早期 return → 全引数処理後に `commonConstTypedef` で結合）として1 PR に統合。pin = 2、PR = 1（「1 root cause = 1 PR」のこちら側の解釈）。
+- **`panic_typednil` の TODO 記述は仮説として外れていた**: 「非 nil interface の boxing は現行の値形状では表現不能」と記録されていたが、実態は `*runtime.IfaceNil{Typ: concrete}` が既に non-nil 意味論を持っており、必要だったのは panic 境界での box のみだった。分類は `runtime.Unwrap(arg)` で判定し、payload は外側の包みを保持する（`panic(x)` で x が typed nil を持つ `any` の場合の payload 保全という副次的修正にもなった）。
+- **`mapkey_namedstruct` は書き込み側だけでなくリテラル構築側も同じ穴を持っていた**: pin の表面は `m[B{1}] = 2` の受理だが、調査中に `map[float64]V{1: x}` がキーを `int64(1)` のまま格納する（lookup 側と非対称）のを確認。キーの coerce は「静的チェック」なので nil map や存在しないキーでも発火させる必要があり、`index`/`indexOK`/`setIndex`/literal の4経路で `mapKeyOperand` に統一した。残存として `delete(m, B{1})` は delete builtin に代入チェック経路が無く未対応 — PENDING に明記。
+- **`ptrconv_ptrptr` は2層の欠落が同じ pin に重なっていた**: `ElemOf(**uval2)` が `uval2` を返す（`resolveTypeRef` が star を剥がす — 他の container arm は `elemTypeRef` で段を保持しているのに StarExpr だけ違った）＋ `pointeeTag` が `tagIsNamed` ゲートで匿名 `*uval` セル型を読めない。片方だけでは観測される trap が出ないことを確認してから両方直した — round-16 の B-1（OpIndexRef + overwriteArrayElems）と同じ「見た目1件・機構2件」パターン。
+- **`constant.Int64Val` は Float 種で panic する**: 表現可能性チェックに `Int64Val(2.3)` を素朴に書いたら `panic: 2.3 not an Int`（go/constant の panic）。`Float64Val` + 整数性判定に差し替え — コード内にも既に "Int64Val would panic on them" の注意コメントがあった（6746行目付近）。初回実装時に見落としていた。
+- **`make format` の testdata 4ピン余分差分は継続発生**: 既知の癖どおりコミット前に `git checkout` で戻す手順を踏んだ。
+
+### 残りの状況
+
+- Stack #671 は修正4 PR + 本レポート（レビュー対応があれば追加）。全 open、マージはユーザー側。
+- TODO 残件 `[ ]`（difffuzz 系）: deadlock 検出（機能項目）のみ。`mapkey_namedstruct`・`ptrconv_ptrptr` の PENDING pin は trap 形の記録として残置（want.stdout が trap を表現できないため昇格不可）。
+- corpus sweep / gen hunt の深掘りは本ラウンドでは未着手 — 6 pin 全件の根因潰し＋レビュー＋帳簿でこのラウンドの枠を使い切った判断。次ラウンドの先頭案件として残置。
+
+### 不備の振り返り（メモ）
+
+- 見た目の symptom から根因を推測する TODO 記述は2度連続で外れた（`panic_typednil` の「表現不能」仮説、geninfer の2項目分割）。pin に「観測できる事実」と「推測」を分けて書くと次ラウンドの誤誘導が減らせるかもしれない。
