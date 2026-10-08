@@ -2,8 +2,12 @@
 
 Status: in progress. Branch `fix/oapi-codegen-regressions` carries the
 two regression fixes found on the way (step 0).
-`perf/sync-builtin-callbacks` is stacked on it and carries steps 4 and
-5.
+`perf/sync-builtin-callbacks` is stacked on it and carries steps 4–9.
+
+Steps 0–5 measured the program as shipped, goimports included. From
+step 6 on, the baseline binds goimports natively. The index and an
+interpreted goimports are workload facts, not interpreter tuning. Steps
+6–9 ask what the interpreter itself can lose from there.
 
 Question: oapi-codegen under minigo takes ~6s per `go:generate` line
 (~50x native). The workload executes nearly the whole program
@@ -16,6 +20,20 @@ This report is updated after every step. Each step records the method
 so it can be re-run, the numbers, and the verdict.
 
 ## Verdict so far
+
+**From the native-goimports baseline (steps 6–9):**
+`petstore-expanded/strict` goes from ~1.95s to 1.70s (−13%) with four
+small commits, and the output stays byte-identical. Three findings:
+
+- The remaining cost is diffuse. No mutator function holds more than
+  ~12% of samples. Loading and compiling take ~25% of wall, and Linux
+  GC marking takes 44% of CPU samples, but on spare cores.
+- A per-call `runtime.Stack` was still the largest single item (−5.7%
+  once replaced by a g-pointer read).
+- macOS CPU profiles of this workload are not trustworthy (step 7).
+  Profile in a Linux container.
+
+**For the program as shipped (steps 0–5):**
 
 The levers differ from grafana-openapi's. There, the main-thread hot
 paths were per-instruction work (global resolution, interface checks,
@@ -347,6 +365,157 @@ text/template's. `sync.Map.Store`, `atomic.Value.Store` and
 ("containers keep script values opaque") would be better than a
 per-method list.
 
+## Step 6: a native-goimports baseline
+
+goimports runs inside oapi-codegen, but its cost is a workload fact.
+The index is a 58 MB cache file x/tools parses on every call, and
+goimports' go/printer path is ~50% of instructions. Neither tells us
+anything about the interpreter's own overhead. So the harness now binds
+`golang.org/x/tools/imports.Process` natively, which also makes the
+index irrelevant:
+
+```go
+e.Bind("golang.org/x/tools/imports", map[string]runtime.Value{
+	"Process": &runtime.GoValue{V: imports.Process},
+})
+```
+
+`petstore-expanded/strict` on that baseline, before any change below:
+
+- ~1.95s wall, output identical to native.
+- 42.6M instructions, ~35 ns per instruction over the execution part.
+- Shares: text/template/parse 46%, json/v2 ~30%, yaml.v3 10%,
+  compress/flate 5.5%.
+- Load and compile take ~0.47s:
+  - `loadPathFrom` 0.24s (78 packages, 518 files; parsing is 0.09s
+    of that).
+  - `compile.Func` 0.10s (17,674 functions).
+  - `compile.InitFunc` 0.13s (52 packages).
+
+What did not help, or helped little:
+
+- **`orderSpecs` cache (`162242bb`)**: names that are neither funcs
+  nor methods were re-resolved per spec. Caching the negative answer
+  gives −4.0% (1.952s → 1.873s). Landed.
+- **Frame batching** (cherry-pick of `052a37ef`): −1.9%. Not landed;
+  too small for its complexity.
+- **GC knobs**: `GOGC=200` −3%, `GOGC=400` −6%, `GOGC=off` ±0, and
+  `GOMAXPROCS=1` +50%. Allocation is 1.7 GB per run. `prepFrame` is 16%
+  of `alloc_space` and `runtime.Tag` 17% of objects. GC runs on the
+  other cores, so it is not on the critical path.
+- **Opcodes**:
+  - `OpLocalType` follows every type expression and is a no-op outside
+    generic functions (~2.6M executions, small).
+  - `OpInstantiate` doubles as indexing and allocates a type-args slice
+    per `a[i]` (0.72M executions, ~1%).
+
+A micro benchmark puts interpreter call overhead in perspective
+(minigo vs native, per iteration):
+
+| | ns/iter |
+|---|---|
+| empty loop iteration | 151 |
+| + one function call | +~390 |
+| + one method call | +~690 |
+
+oapi-codegen makes ~2.8M calls per run, so calls are the bulk of the
+execution part.
+
+## Step 7: macOS profiles lie; profile in a Linux container
+
+The micro benchmark's CPU profile on macOS showed `runtime.kevent` at
+54% and `VM.loop` at only 14%. With `GOMAXPROCS=1`, kevent rose to 80%.
+Yet `/usr/bin/time` showed user ≈ real, and `GOGC=off` did not change
+the speed. The kevent samples sit under `netpoll` ←
+`startTheWorldWithSema` (GC start/stop), so SIGPROF is being
+misattributed. macOS `sample` does no better: it does not unwind most
+Go frames.
+
+The fix is to cross-compile the harness and run it in Linux. The
+harness is `CGO_ENABLED=0 GOOS=linux GOARCH=arm64`, the container is
+`golang:1.27-alpine`, and the host module cache is mounted read-only at
+the same path with `GOPROXY=off GOFLAGS=-mod=mod`. There, `VM.loop`
+covers 92% of the micro profile.
+
+`strict`, 6 rounds in-process (Linux, wall 1.86s per round):
+
+| bucket | share of CPU samples |
+|---|---|
+| GC background marking (other cores) | 44% |
+| load, parse, compile, bootstrap | ≥10% (≥19% of mutator) |
+| `coerce` (iface checks, `coerceConcrete`, `zeroValue`) | 12% |
+| `selectMember` (half is lazy `Package.MemberV` loading) | 9.6% |
+| `prepFrame` | 5.8% |
+| `goroutineID` | 3.3% |
+
+`resolveFieldTypes` and `resolveTypeRef` look hot, but they are mostly
+first-touch package loading reached through `Package.Member`. They are
+cached per typedef: 879 calls for 259 distinct names.
+
+## Step 8: interface memo misses; `sync.Pool.New` (`04a5468e`, `33831c70`)
+
+`ifaceSatisfied` memoizes per (interface, dynamic typedef, pointer),
+but only struct and named values had a key. A counting build showed
+the misses per run:
+
+| value | uncached checks |
+|---|---|
+| `*runtime.IfaceNil` | 27,229 |
+| `GoValue(*minireflect.RType)` | 7,689 |
+| `Cell{IfaceNil}` | 3,781 |
+| `GoValue(*errors.errorString)` | 1,656 |
+
+A host box's method set follows from its reflect type, and a nil
+interface value's from its tag. The key gains both. Result: 1.883s →
+1.842s (−2.2%).
+
+The remaining goroutine-id Calls came almost entirely from
+`sync.Pool.Get` → script `New` → `adaptFunc` → `deepHost` →
+`structDataHost`. This is the `Put` bug of step 5, mirrored: each pool
+miss marshaled the fresh value and ran its niladic methods. That is
+SILENT; `testdata/difffuzz/syncpool_new_methods` printed `1 1 / 2 2`
+instead of `1 0 / 1 1`. A script `New` set on a host `sync.Pool` (as a
+literal field or by assignment) now returns struct-shaped results
+opaque. On macOS this measured −0.7%, within noise.
+
+## Step 9: goroutine identity without `runtime.Stack` (`ca15014c`)
+
+What remained of the goroutine-id Calls were genuine synchronous
+callbacks:
+
+- text/template calling script methods through `minireflect.RValue.Call`
+- `fmt.Fprint` writing into a script `io.Writer`
+
+Marking each one proves nothing general. But `Call` only *compares*
+ids, and every id it holds belongs to a live goroutine (the Call owner,
+or a helper inside a blocking host call). So the runtime g address is a
+sound identity. A four-line assembly `getg` reads it on arm64 and
+amd64. Other architectures keep the `runtime.Stack` parser.
+`TestGoroutineID` checks stability and distinctness, and it passes on
+arm64 and on amd64 under Rosetta. CI runs amd64.
+
+| | strict (7 rounds) |
+|---|---|
+| before | 1.806s |
+| g pointer | 1.702s (−5.7%) |
+
+Checking the fallback with `GOARCH=arm` turned up a pre-existing
+failure: `minireflect` does not build on 32-bit targets. It is recorded
+in TODO.md.
+
+### Next candidates
+
+- **Untyped constants are converted on every execution.**
+  `adaptConst` → `constToBasic` → `runtime.Tag` runs for `r == ' '`
+  each time and allocates a `Named`. In the call micro benchmark it is
+  16% of samples. A per-constant single-entry cache of
+  (typedef → value) would remove both the conversion and the
+  allocation. It needs care: `Named` values must be immutable, and
+  cache writes need atomics.
+- **`prepFrame` allocates a `Cell` per local** on every call, plus the
+  frame and its locals slice.
+- **Load and compile (~0.47s, ~25% of wall)** is untouched.
+
 ## How to re-run
 
 Scripts used (kept outside the repo; reconstructable from this
@@ -367,6 +536,14 @@ description):
   `go.mod` `replace`. The counting build adds an `atomic.Int64` to
   `bytecode.Chunk`, incremented in `VM.loop`, plus a callee/caller
   histogram in `callBounded`.
+- Native-goimports harness (steps 6–9): the profiling harness with
+  the `imports.Process` bind above. `hbench.sh ROUNDS DIR "ARGS"
+  label=bin…` runs whole-process rounds interleaved, takes the median,
+  and checks `err=<nil>`. Compare the generated file with the native
+  output by `cmp`.
+- Linux profiles (step 7): `dk.sh WORKDIR CMD…` wraps `docker run
+  golang:1.27-alpine` with the scratch dir and the read-only module
+  cache mounted.
 - Correctness gate: realworld's `task.sh native` and `task.sh minigo
   BIN` with `TARGET_DIR` set, then `diff` (rc plus sha256 per written
   file).
