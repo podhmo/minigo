@@ -5373,6 +5373,13 @@ func (v *VM) checkMapKey(f *frame, td *runtime.TypeDef, idx runtime.Value) {
 	v.mapKeyOperand(f, td, idx)
 }
 
+// MapKeyOperand implements runtime.VMCaller for builtin delete — the
+// caller's frame resolves function-local key typedefs, so the builtin
+// sees the same key normalization an index expression produces.
+func (v *VM) MapKeyOperand(mapTd *runtime.TypeDef, key runtime.Value) runtime.Value {
+	return v.mapKeyOperand(v.topFrame(), mapTd, key)
+}
+
 // elemRead coerces a container element read to its declared element
 // typedef — b[i] on []byte is uint8-typed, not a bare int64, so %T and
 // cross-type assignment see the element's real type.
