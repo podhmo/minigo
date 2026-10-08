@@ -499,6 +499,11 @@ func isGoFile(ref string) bool {
 // callable. The package is Initialized first if needed. The whole call is
 // one process scope: goroutines spawned by init or by the member itself
 // share it and are torn down when it returns.
+//
+// Arguments cross the host boundary the way reflect-call results do:
+// script values pass through and plain Go values adapt — an int becomes
+// a script int, a []string a *runtime.Slice, a named map or struct a
+// boxed *runtime.GoValue.
 func (e *Engine) Call(ctx context.Context, pkg *runtime.Package, name string, args ...runtime.Value) (runtime.Value, error) {
 	// one Call = one process = one root VM: concurrent Calls never share
 	// interpreter state, and lazy inits triggered inside the run join this
@@ -513,9 +518,16 @@ func (e *Engine) Call(ctx context.Context, pkg *runtime.Package, name string, ar
 	if err != nil {
 		return nil, err
 	}
+	// host arguments adapt like reflect-call results do: a []string
+	// arrives as a *runtime.Slice instead of trapping "cannot use
+	// []string as []string" in the callee's param coerce.
+	sargs := make([]runtime.Value, len(args))
+	for i, a := range args {
+		sargs[i] = vm.ScriptValueOf(a)
+	}
 	// the host boundary reports the payload: a Named int64 leaves the
 	// interpreter as a plain int64, like fmt's %v inside the script.
-	r, err := vmm.Call(member, args)
+	r, err := vmm.Call(member, sargs)
 	return runtime.Unwrap(r), err
 }
 

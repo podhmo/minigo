@@ -3093,6 +3093,22 @@ func goValueOf(rv reflect.Value) runtime.Value {
 	}
 }
 
+// ScriptValueOf adapts a host Go value to a runtime value — the same
+// conversion reflect-call results already get: script-native values
+// pass through, unnamed containers unbox element-wise, and everything
+// else stays boxed as a host GoValue. Engine.Call runs its arguments
+// through it.
+func ScriptValueOf(x any) runtime.Value {
+	// the script's int domain is int64: a host int64 stands for a script
+	// int, so it enters bare — tagging it (like goValueOf does for a
+	// reflect result) would make `int`-typed params reject the ints
+	// callers already pass.
+	if v, ok := x.(int64); ok {
+		return v
+	}
+	return goValueOf(reflect.ValueOf(x))
+}
+
 // hostRValueType is the facade's host type: a host []*RValue (MapKeys,
 // Call results) spells its elements reflect.Value like Go.
 var hostRValueType = reflect.TypeOf((*minireflect.RValue)(nil))

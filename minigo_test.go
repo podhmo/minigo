@@ -74,6 +74,45 @@ func TestSwitchy(t *testing.T) {
 	}
 }
 
+func TestCallArgs(t *testing.T) {
+	e := newEngine(t)
+	// host arguments adapt at the Call boundary like reflect-call
+	// results already do: a []string arrives as a *runtime.Slice, an
+	// int or int64 as a script int, a sized int keeping its width.
+	for _, c := range []struct {
+		fn   string
+		args []runtime.Value
+		want runtime.Value
+	}{
+		{"Len", []runtime.Value{[]string{"a", "b"}}, int64(2)},
+		{"Sum", []runtime.Value{[]int{1, 2, 3}}, int64(6)},
+		{"Sum64", []runtime.Value{[]int64{1, 2, 3}}, int64(6)},
+		{"Pair", []runtime.Value{[2]int{3, 4}}, int64(7)},
+		{"Bytes", []runtime.Value{[]byte("abc")}, int64(3)},
+		{"Anys", []runtime.Value{[]any{1, "x"}}, int64(2)},
+		{"IsNil", []runtime.Value{nil}, true},
+		{"IsNil", []runtime.Value{[]string(nil)}, true},
+		{"Num", []runtime.Value{5}, int64(6)},
+		{"Num", []runtime.Value{int64(5)}, int64(6)},
+		{"Small", []runtime.Value{int8(5)}, int64(6)},
+		{"Any", []runtime.Value{int64(5)}, "int"},
+		{"Any", []runtime.Value{int8(5)}, "int8"},
+		// callers that boxed slices by hand keep working — script
+		// values pass the boundary unchanged.
+		{"Len", []runtime.Value{&runtime.Slice{Elems: []runtime.Value{"a", "b"}}}, int64(2)},
+	} {
+		got := run(t, e, "./testdata/callargs", c.fn, c.args...)
+		if got != c.want {
+			t.Errorf("%s: got %v (%T), want %v", c.fn, got, got, c.want)
+		}
+	}
+	// a named map stays a boxed host value — the same shape a host call
+	// result takes — so indexing it traps at the use site.
+	if _, err := e.Run(context.Background(), "./testdata/callargs", "MapGet", map[string]int{"k": 7}); err == nil {
+		t.Errorf("MapGet: want error, got nil")
+	}
+}
+
 func TestLazyImport(t *testing.T) {
 	e := newEngine(t)
 	// OK never references lazyboom -> its panicking init must not run
