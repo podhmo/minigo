@@ -2407,6 +2407,13 @@ func (c *compiler) branchStmt(st *ast.BranchStmt) {
 // directly wrapping a control construct (for/range/switch/select/type
 // switch) is claimed by that construct so `break L`/`continue L` work.
 func (c *compiler) labeledStmt(st *ast.LabeledStmt) {
+	if st.Label.Name == "_" {
+		// A blank label is not a declaration: it never redeclares and
+		// cannot be a goto/break/continue target — compile the
+		// statement without registering the name.
+		c.stmt(st.Stmt)
+		return
+	}
 	lb, lv := c.fs.scopeSnapshot()
 	li := &labelInfo{name: st.Label.Name, ip: len(c.ch.Code), blocks: lb, vars: lv}
 	if _, dup := c.labels[st.Label.Name]; dup {
