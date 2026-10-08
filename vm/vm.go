@@ -12221,22 +12221,54 @@ func staticAt(statics []*runtime.TypeDef, i int) *runtime.TypeDef {
 }
 
 // untypedConstArg reports whether a call argument still rides an
-// untyped-constant box: a bare UConst, or one tagged only with a builtin
-// kind. A const carrying a declared type (`const k T = ...`) binds like
-// a value of T instead.
+// untyped-constant box: a bare UConst, or one tagged only with its own
+// default builtin type (`'a'` under rune). A const carrying any other
+// declared or converted type — `const k T = ...`, `int8(3)` — binds
+// like a value of that type instead.
 func untypedConstArg(x runtime.Value) bool {
-	if _, ok := constPayload(x); !ok {
+	u, ok := constPayload(x)
+	if !ok {
 		return false
 	}
 	if n, ok := x.(*runtime.Named); ok && n.Typ != nil {
 		if n.Typ.Spec != nil {
 			return false
 		}
-		if tagIsNamed(n.Typ) && basicNameOf(n.Typ) == "" {
-			return false
+		if tagIsNamed(n.Typ) {
+			name := basicNameOf(n.Typ)
+			if name == "" {
+				return false
+			}
+			// a builtin-tagged const is typed: only a tag equal to the
+			// constant's own default keeps it untyped — `int8(3)`
+			// binds int8, never int.
+			if name != uconstDefaultName(u) {
+				return false
+			}
 		}
 	}
 	return true
+}
+
+// uconstDefaultName is a UConst's default type name: bool, string,
+// rune, int, float64, or complex128.
+func uconstDefaultName(u *runtime.UConst) string {
+	switch u.V.Kind() {
+	case constant.Bool:
+		return "bool"
+	case constant.String:
+		return "string"
+	case constant.Int:
+		if u.Rune {
+			return "rune"
+		}
+		return "int"
+	case constant.Float:
+		return "float64"
+	case constant.Complex:
+		return "complex128"
+	}
+	return ""
 }
 
 // defaultConstTypedef is a UConst's default type as a typedef: rune,
