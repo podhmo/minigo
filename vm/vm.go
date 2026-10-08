@@ -363,6 +363,15 @@ func (v *VM) spawn(fn runtime.Value, args []runtime.Value, statics []*runtime.Ty
 	return t
 }
 
+// probeCaller returns a caller for a fatal panic's render probe: a VM
+// sharing this one's engine hooks but bound to no process. A Call on
+// it lazily opens a fresh process — the way a Call on a VM that never
+// ran one does — so Panic.Error()'s Error()/String() probes keep
+// working after the panic's own process is dead.
+func (v *VM) probeCaller() runtime.VMCaller {
+	return &VM{H: v.H}
+}
+
 // goroutineID reports the calling goroutine's id, parsed out of
 // runtime.Stack — the stdlib exposes no accessor and Call needs one to
 // tell a same-goroutine re-entry from a foreign one (a host-retained
@@ -1372,8 +1381,20 @@ func (v *VM) failProc(r any) {
 	if len(v.frames) != 0 || v.draining != 0 || v.proc == nil || v.syncCall {
 		return
 	}
-	switch r.(type) {
-	case *runtime.Panic, *runtime.Trap:
+	switch r := r.(type) {
+	case *runtime.Panic:
+		// the panic renders after the process dies — an Error()/String()
+		// probe must not Call through this VM: its proc is the one being
+		// killed, so the call would die procExit before the method runs.
+		// Repoint every panic in the chain to a caller bound to no
+		// process. (A panic on a live or recovered path keeps the caller
+		// it was raised with.)
+		caller := v.probeCaller()
+		for pp := r; pp != nil; pp = pp.Prev {
+			pp.VC = caller
+		}
+		v.proc.fail(r)
+	case *runtime.Trap:
 		v.proc.fail(asError(r))
 	}
 }

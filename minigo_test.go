@@ -423,6 +423,11 @@ func TestPanicTraceback(t *testing.T) {
 		{"PanicErrorBadSig", "panic: (main.sigError) 0x"},
 		{"PanicErrorBadParams", "panic: (main.sigErrorParams) 0x"},
 		{"PanicStringerBadSig", "panic: (main.sigStringer) 0x"},
+		// a script error payload panicking on another goroutine still
+		// renders its Error() text: the panic kills the proc before the
+		// error is formatted, so the probe must not depend on the
+		// panicking VM's dead proc.
+		{"PanicErrorGoroutine", "panic: goroutine error text"},
 	} {
 		got = runErr(c.fn)
 		if !strings.HasPrefix(got, c.want) {
