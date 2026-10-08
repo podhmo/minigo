@@ -2,7 +2,7 @@
 
 Status: in progress. Branch `fix/oapi-codegen-regressions` carries the
 two regression fixes found on the way (step 0).
-`perf/sync-builtin-callbacks` is stacked on it and carries steps 4–13.
+`perf/sync-builtin-callbacks` is stacked on it and carries steps 4–17.
 
 Steps 0–5 measured the program as shipped, goimports included. From
 step 6 on, the baseline binds goimports natively. The index and an
@@ -21,11 +21,14 @@ so it can be re-run, the numbers, and the verdict.
 
 ## Verdict so far
 
-**From the native-goimports baseline (steps 6–13):**
-`petstore-expanded/strict` goes from ~1.95s to 1.04s (−47%), and the
-output stays byte-identical. The single largest step is binding
-`text/template/parse` (step 13, −33% on its own); the other eight
-commits are small interpreter-level fixes. Three findings:
+**From the native-goimports baseline (steps 6–17):**
+`petstore-expanded/strict` goes from ~1.95s to 1.13s (−42%), and the
+output stays byte-identical. Binding `text/template/parse` (step 13)
+gave −33% alone, but host parse trees aliased differently from Go's.
+Step 17 replaced it with a host lexer under the interpreted parser,
+which keeps about 60% of that gain. Generic instantiation caches
+(steps 15–16) and small interpreter-level fixes make up the rest.
+Three findings:
 
 - The remaining cost is diffuse. No mutator function holds more than
   ~12% of samples. Loading and compiling take ~25% of wall, and Linux
@@ -663,6 +666,9 @@ both.
 
 ## Step 13: bound `text/template/parse` (`604ce3bd`)
 
+Superseded by step 17: the binding was removed in favor of a host
+lexer under the interpreted parser.
+
 Option 3 from step 12. The binding covers:
 
 - 21 node types plus `Tree`, as `hostType`s whose `HostNew` returns
@@ -873,6 +879,73 @@ Writing that case surfaced a pre-existing bug, now in TODO.md:
 inferring T from a host error value (`var err error = errors.New(..)`,
 or an error inside a `[]any`) traps `undefined: T` where gc binds
 T=error or T=any.
+
+## Step 17: host lexer instead of a bound parse
+
+A second review of #699 found four more divergences, all from one
+root: parse trees were host values, and script code saw them through
+snapshots.
+
+- `b := a` on a node value copied the host pointer, so `b.Pos = 9`
+  also changed `a`.
+- Two script slices read from the same tree field did not see each
+  other's element stores.
+- A reslice (`t.Root.Nodes[1:][0] = x`) or an `append` within
+  capacity lost the write-through.
+- The write-through itself targeted the struct field, not the slice
+  header. After the field was rebound, a stale alias wrote into the
+  new slice.
+
+Each could be patched, but every patch narrows the same gap: a host
+value would have to behave like a script value under copy, reslice and
+`append`. The binding was removed instead, together with
+`runtime.Slice.Host`. The general constant fixes from the review
+follow-up stay.
+
+To keep most of the gain, only the lexer runs on the host. In step 12
+the lexer was about two thirds of parse instructions, and it shares no
+values with script code except the items it returns.
+
+- `internal/tmpllex` is a verbatim copy of GOROOT's
+  `text/template/parse/lex.go`; only the package clause differs. It
+  adds a small exported surface: `New`, `SetOptions` and `NextItem`.
+  `TestLexMatchesGOROOT` fails when the toolchain's lexer drifts.
+- `Engine.srcImpl` replaces one method of a source-interpreted
+  package. Today that is only `(*lexer).nextItem`. It gives the method
+  a hand-built chunk, `return impl(recv)`. The `lexer` struct is still
+  created by the script `lex`. The host lexer starts from its fields on
+  the first call, and `options` is re-read on every call because
+  `startParse` sets it. Each item becomes a script `item` with the
+  package's `itemType` and `Pos` tags.
+- Host lexers live in a map keyed by a weak pointer to the script
+  struct. An entry is dropped at EOF or on an error item, or by a
+  cleanup when a parse error abandons the lexer.
+- Guard: the hook installs only when the `lex.go` being interpreted is
+  byte-identical to the copy (`tmpllex.SameSource`). Any other
+  toolchain keeps the interpreted lexer, so item values cannot skew.
+- Parsing from source needed `strconv.UnquoteChar`, which is now bound
+  (it was in TODO.md since step 13).
+
+| | strict (9 rounds) |
+|---|---|
+| bound parse (step 16 head) | 0.938s |
+| parse from source, no hook | 1.459s |
+| parse from source, host lexer | 1.131s (−22% vs no hook) |
+
+| | all 53 examples (CLI) | grafana-openapi |
+|---|---|---|
+| bound parse | 45.1s | 2.272s |
+| host lexer | 55.0s | 2.241s |
+
+The host lexer recovers about 60% of what dropping the binding cost.
+Most of the remaining gap is GC: the trees are script structs now. All
+53 examples stay identical to native, and grafana-openapi's output is
+unchanged (it does not parse templates).
+
+`template_parse_alias` pins the four review cases against Go.
+`template_parse_hostapi` and `template_src_hostparse` still pass, now
+over script trees. `TestTemplateHostLexer` checks that the hook
+actually fires.
 
 ## How to re-run
 
