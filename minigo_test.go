@@ -100,8 +100,8 @@ func TestCallArgs(t *testing.T) {
 		// callers that boxed slices by hand keep working — script
 		// values pass the boundary unchanged.
 		{"Len", []runtime.Value{&runtime.Slice{Elems: []runtime.Value{"a", "b"}}}, int64(2)},
-		// an unnamed host map unboxes to a *runtime.Map: index, len,
-		// range, and index-assign all work, nested maps too.
+		// an unnamed host map arrives as a *runtime.Map snapshot:
+		// index, len, range, and index-assign all work, nested maps too.
 		{"MapGet", []runtime.Value{map[string]int{"k": 7}}, int64(7)},
 		{"MapLen", []runtime.Value{map[string]int{"a": 1, "bb": 2}}, int64(2)},
 		{"MapSum", []runtime.Value{map[string]int{"a": 1, "bb": 2}}, int64(6)},

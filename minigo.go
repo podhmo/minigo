@@ -500,11 +500,11 @@ func isGoFile(ref string) bool {
 // one process scope: goroutines spawned by init or by the member itself
 // share it and are torn down when it returns.
 //
-// Arguments cross the host boundary the way reflect-call results do,
-// plus one wider unbox: script values pass through and plain Go values
-// adapt — an int becomes a script int, a []string a *runtime.Slice, an
-// unnamed map a *runtime.Map. A named map or struct keeps its box for
-// member dispatch.
+// Arguments cross the host boundary as snapshots: each lands as a copy
+// shaped for the script world — an int becomes a script int, a []string
+// a *runtime.Slice, an unnamed map a *runtime.Map — and script writes
+// to it don't reach the host value. A named map or struct keeps its box
+// for member dispatch.
 func (e *Engine) Call(ctx context.Context, pkg *runtime.Package, name string, args ...runtime.Value) (runtime.Value, error) {
 	// one Call = one process = one root VM: concurrent Calls never share
 	// interpreter state, and lazy inits triggered inside the run join this
@@ -519,12 +519,12 @@ func (e *Engine) Call(ctx context.Context, pkg *runtime.Package, name string, ar
 	if err != nil {
 		return nil, err
 	}
-	// host arguments adapt like reflect-call results do: a []string
-	// arrives as a *runtime.Slice instead of trapping "cannot use
-	// []string as []string" in the callee's param coerce.
+	// host arguments cross as snapshots: a []string arrives as a
+	// *runtime.Slice instead of trapping "cannot use []string as
+	// []string" in the callee's param coerce.
 	sargs := make([]runtime.Value, len(args))
 	for i, a := range args {
-		sargs[i] = vm.ScriptValueOf(a)
+		sargs[i] = vm.SnapshotOf(a)
 	}
 	// the host boundary reports the payload: a Named int64 leaves the
 	// interpreter as a plain int64, like fmt's %v inside the script.

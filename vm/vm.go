@@ -3093,24 +3093,26 @@ func goValueOf(rv reflect.Value) runtime.Value {
 	}
 }
 
-// ScriptValueOf adapts a host Go value to a runtime value for Call
-// arguments — goValueOf's conversion plus one wider unbox: an unnamed
-// host map becomes a *runtime.Map, so a map-typed param can index,
-// range, and write it (host call results still box maps — an arg has
-// a declared param shape to satisfy, a result does not). Script-native
-// values pass through; a named map or struct keeps its box for member
+// SnapshotOf adapts a host Go value to a runtime value for Call
+// arguments: the arg crosses as a SNAPSHOT — a copy shaped for the
+// script world — so script writes to it never reach the host value.
+// The shape is goValueOf's plus one wider unbox: an unnamed host map
+// becomes a *runtime.Map, so a map-typed param can index, range, and
+// write it (host call results still box maps — an arg has a declared
+// param shape to satisfy, a result does not). Script-native values
+// pass through; a named map or struct keeps its box for member
 // dispatch, the same rule goValueOf applies to named slices.
-func ScriptValueOf(x any) runtime.Value {
-	return scriptValueOf(x, map[uintptr]struct{}{})
+func SnapshotOf(x any) runtime.Value {
+	return snapshotValue(x, map[uintptr]struct{}{})
 }
 
-// scriptValueOf is ScriptValueOf's worker: it threads the set of maps
+// snapshotValue is SnapshotOf's worker: it threads the set of maps
 // currently being unboxed so a map that contains itself (reachable
 // only through an `any` slot, since a Go map type can't name itself
 // anonymously) boxes at the repeat instead of recursing forever.
 // Shared submaps still unbox — the set forgets a map once its pairs
 // are built.
-func scriptValueOf(x any, visiting map[uintptr]struct{}) runtime.Value {
+func snapshotValue(x any, visiting map[uintptr]struct{}) runtime.Value {
 	// the script's int domain is int64: a host int64 stands for a script
 	// int, so it enters bare — tagging it (like goValueOf does for a
 	// reflect result) would make `int`-typed params reject the ints
@@ -3120,7 +3122,7 @@ func scriptValueOf(x any, visiting map[uintptr]struct{}) runtime.Value {
 	}
 	rv := reflect.ValueOf(x)
 	if rv.Kind() == reflect.Map && rv.Type().Name() == "" {
-		// recursing through scriptValueOf unboxes nested maps too —
+		// recursing through snapshotValue unboxes nested maps too —
 		// m["a"]["b"] keeps working at any depth.
 		td := anonMapTyp(elemTypeName(rv.Type().Key()), elemTypeName(rv.Type().Elem()))
 		if rv.IsNil() {
@@ -3132,7 +3134,7 @@ func scriptValueOf(x any, visiting map[uintptr]struct{}) runtime.Value {
 		visiting[rv.Pointer()] = struct{}{}
 		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}, Typ: td}
 		for _, k := range rv.MapKeys() {
-			m.Insert(scriptValueOf(k.Interface(), visiting), scriptValueOf(rv.MapIndex(k).Interface(), visiting))
+			m.Insert(snapshotValue(k.Interface(), visiting), snapshotValue(rv.MapIndex(k).Interface(), visiting))
 		}
 		delete(visiting, rv.Pointer())
 		return m
