@@ -450,11 +450,34 @@ identical on every side.
 The micro probe has one interface conversion and few field refs, so
 only step 3 moves it. The ±4% between its last three rows is noise.
 
+## Re-measured after rebasing onto `ab53a3b2`
+
+main moved under the stack: the oapi-codegen compatibility stack
+(#638–#649) landed, touching VM stores, return coercions, reflect and
+dispatch. The three layers rebased without conflicts (`gh stack rebase`), and
+lint and `go test ./...` pass on each layer. This was re-measured with the
+same setup as above: one interleaved run of all four builds, outputs
+identical on every side.
+
+| build | grafana-openapi (11 rounds) | vs previous | micro (7 rounds) | vs previous |
+|---|---|---|---|---|
+| main (`ab53a3b2`) | 3.394s | | 0.792s | |
+| #624 | 2.815s (−17.1%) | −17.1% | 0.574s (−27.5%) | −27.5% |
+| #625 | 2.532s (−25.4%) | −10.1% | 0.570s (−28.0%) | −0.7% |
+| #629 | 2.357s (−30.6%) | −6.9% | 0.569s (−28.2%) | −0.2% |
+
+Every step still pays on the new base. The cumulative gain on
+grafana-openapi grew from −27.1% to −30.6% while main itself stayed at
+~3.3–3.4s. The pairwise `compare.sh --full` (5 rounds, main vs each layer)
+agrees: −17.0%, −25.1% and −31.1% on grafana-openapi, no regression, and
+clickhouse-settings unchanged (0.022s on every side).
+
 ## How to re-run
 
-The realworld `compare.sh` (podhmo/minigo-usecasefuzz) needs bash 4
-(`declare -A`), which macOS's bash 3.2 lacks. These experiments
-replicate its steps by hand:
+The realworld `compare.sh` (podhmo/minigo-usecasefuzz) needed bash 4
+(`declare -A`), which macOS's bash 3.2 lacks; podhmo/minigo-usecasefuzz#10
+makes it bash-3.2 compatible. The experiments above replicate its steps by
+hand:
 
 1. Fetch the pinned grafana checkout at the `targets.tsv` SHA
    (`fa8d6e65`) with `git fetch --depth 1`.
