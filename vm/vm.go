@@ -4,7 +4,6 @@
 package vm
 
 import (
-	"bytes"
 	"fmt"
 	"go/ast"
 	"go/constant"
@@ -14,7 +13,6 @@ import (
 	"math"
 	"os"
 	"reflect"
-	goruntime "runtime"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -370,32 +368,6 @@ func (v *VM) spawn(fn runtime.Value, args []runtime.Value, statics []*runtime.Ty
 // working after the panic's own process is dead.
 func (v *VM) probeCaller() runtime.VMCaller {
 	return &VM{H: v.H}
-}
-
-// goroutineID reports the calling goroutine's id, parsed out of
-// runtime.Stack — the stdlib exposes no accessor and Call needs one to
-// tell a same-goroutine re-entry from a foreign one (a host-retained
-// callback firing on another goroutine). 0 means unparseable, which
-// Call treats as foreign when the VM is busy — the safe direction.
-func goroutineID() int64 {
-	var buf [48]byte
-	n := goruntime.Stack(buf[:], false)
-	s := buf[:n]
-	// "goroutine 123 [running]:" — the id sits between the first two
-	// spaces of the header line.
-	i := bytes.IndexByte(s, ' ')
-	if i < 0 {
-		return 0
-	}
-	j := bytes.IndexByte(s[i+1:], ' ')
-	if j < 0 {
-		return 0
-	}
-	id, err := strconv.ParseInt(string(s[i+1:i+1+j]), 10, 64)
-	if err != nil {
-		return 0
-	}
-	return id
 }
 
 // Task implements VMCaller.Task — nil on the root goroutine.
