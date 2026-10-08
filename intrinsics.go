@@ -4561,11 +4561,16 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 				}
 			}
 		}
+		kt := jsonMapKeyTyp(td)
 		for k, e := range m {
-			// Elements decode into a fresh zero each time (gc's mapElem),
-			// so a failed element lands as zero rather than prior garbage.
+			// gc parses the key first: a bad key drops the whole pair and
+			// wins the error slot, while a bad element still inserts the
+			// fresh zero it decoded into (gc's mapElem), so the element
+			// shape runs only after the key is known to fit.
 			ectx.path = append(ectx.path, k)
-			rm.Insert(runtime.Value(k), jsonShape(c, e, et, nil, ectx))
+			if kv, kok := jsonMapKey(c, k, kt, ectx); kok {
+				rm.Insert(kv, jsonShape(c, e, et, nil, ectx))
+			}
 			ectx.path = ectx.path[:len(ectx.path)-1]
 		}
 		return rm
@@ -4579,6 +4584,88 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 		return scriptVal(jsonDeep(dec))
 	}
 	return jsonScalar(c, dec, td, prior, ectx)
+}
+
+// jsonMapKeyTyp resolves a map typedef's key typedef — LocalTypes
+// first so a function-local `type NK int` key peels to int, then the
+// package-level approximation in mapElemTyps.
+func jsonMapKeyTyp(td *runtime.TypeDef) *runtime.TypeDef {
+	mt, ok := typedefAst(td).(*ast.MapType)
+	if !ok {
+		return nil
+	}
+	if id, ok := mt.Key.(*ast.Ident); ok && td.LocalTypes != nil {
+		if lt := td.LocalTypes[id.Name]; lt != nil {
+			return lt
+		}
+	}
+	kt, _ := mapElemTyps(td)
+	return kt
+}
+
+// jsonMapKey parses one JSON object key text into the map's key type.
+// gc accepts string/int/uint/float spellings plus named and pointer
+// variants (a `*K` key lands in a fresh cell holding the parsed K);
+// every other kind reports `cannot unmarshal string` for the key type,
+// and a bad literal reports `number <key>`. Interface keys keep the
+// string itself. ok=false drops the pair entirely.
+func jsonMapKey(c runtime.VMCaller, k string, kt *runtime.TypeDef, ectx *jsonErrCtx) (runtime.Value, bool) {
+	if kt == nil {
+		return runtime.Value(k), true
+	}
+	// a pointer key decodes as the pointee, then addresses
+	if pt, ok := typedefAst(kt).(*ast.StarExpr); ok {
+		v, ok := jsonMapKey(c, k, bindTyp(kt, elemTyp(pt.X, kt.Pkg)), ectx)
+		if !ok {
+			return nil, false
+		}
+		return &runtime.Cell{Elem: v}, true
+	}
+	u := jsonUnderlyingName(kt)
+	if kt.Kind == runtime.KindInterface || u == "any" || u == "interface{}" {
+		return runtime.Value(k), true
+	}
+	conv := func(x any) (runtime.Value, bool) {
+		v, err := c.Convert(kt, scriptVal(x))
+		if err != nil {
+			ectx.fail("string", kt, nil)
+			return nil, false
+		}
+		return v, true
+	}
+	switch {
+	case u == "string":
+		return conv(k)
+	case jsonIntName(u):
+		bits, signed := jsonIntWidth(u)
+		var err error
+		var n int64
+		var u64 uint64
+		if signed {
+			n, err = strconv.ParseInt(k, 10, bits)
+		} else {
+			u64, err = strconv.ParseUint(k, 10, bits)
+		}
+		if err != nil {
+			ectx.fail("number "+k, kt, nil)
+			return nil, false
+		}
+		if signed {
+			return conv(n)
+		}
+		return conv(int64(u64))
+	case u == "float64" || u == "float32":
+		f, err := strconv.ParseFloat(k, 64)
+		if err != nil {
+			ectx.fail("number "+k, kt, nil)
+			return nil, false
+		}
+		return conv(f)
+	}
+	// bool, struct, and other unsupported key kinds: gc reports the
+	// raw string failing for the key type.
+	ectx.fail("string", kt, nil)
+	return nil, false
 }
 
 // elemAt indexes a prior container's stored values without failing — a
@@ -4900,7 +4987,7 @@ func jsonIntWidth(name string) (bits int, signed bool) {
 	case "int32", "rune", "uint32":
 		return 32, name == "int32" || name == "rune"
 	}
-	return 64, name != "uint64" && name != "uintptr"
+	return 64, name == "int" || name == "int64"
 }
 
 // jsonDeep rewrites the tree encoding/json produces — map[string]any keys —
