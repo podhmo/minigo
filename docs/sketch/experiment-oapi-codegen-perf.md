@@ -2,7 +2,7 @@
 
 Status: in progress. Branch `fix/oapi-codegen-regressions` carries the
 two regression fixes found on the way (step 0).
-`perf/sync-builtin-callbacks` is stacked on it and carries steps 4–11.
+`perf/sync-builtin-callbacks` is stacked on it and carries steps 4–11; step 12 is an investigation only.
 
 Steps 0–5 measured the program as shipped, goimports included. From
 step 6 on, the baseline binds goimports natively. The index and an
@@ -582,6 +582,82 @@ CPU on the same 6-round Linux profile, before → after:
 What remains is `compile.Func` (~0.5–0.6s per 6 rounds; ~17k
 functions at ~5µs each). Its cost is spread thin over name-lookup maps
 and emit, with no single hot spot. The resolver's `Locate` is ~0.12s.
+
+## Step 12: text/template (investigation, no code yet)
+
+On the current baseline, `text/template/parse` is 46.4% of executed
+instructions (19.8M). `text/template` itself (exec) is 3.1%. Within
+parse, the lexer (`lexer.*`, `lex*`, `isSpace`, …) accounts for at
+least 12.4M and `Tree.*` for at least 2.9M.
+
+What oapi-codegen does on every line:
+
+- `LoadTemplates` parses all embedded templates, 48 files and ~200 KB.
+- `buildServerTemplates` clones the tree once per framework (8) and
+  parses each framework's `hooks.tmpl` into its clone.
+- Only the handful of templates the config asks for are executed.
+
+A stand-alone script repeating exactly that (64 templates after
+`define`s, 8 clone+hooks):
+
+| | parse | clone + hooks |
+|---|---|---|
+| native | 0.010s | 0.000s |
+| minigo, `--src text/template` | 0.534s | 0.017s |
+
+So template parsing is ~0.55s of `strict`'s 1.57s, about a third of
+the wall time. Exec is small.
+
+**Can the interpreter parse lazily?** Not without changing behavior:
+
+- `Parse` returns syntax errors at the call, and oapi-codegen fails on
+  them there.
+- `{{define}}` registers names that only a full parse reveals, and the
+  hooks override them by parse order.
+- Nothing lets the interpreter prove a tree is never read; trees sit
+  in `t.common`'s map until exec looks them up by name.
+
+A "scan defines now, parse bodies later" scheme is a change to
+text/template, not to the interpreter. It also moves error reporting
+for broken user templates. The lever is to make parsing run natively.
+
+Options:
+
+1. **Bound text/template, parse and exec native.**
+   - Today the bound package has no `FuncMap` (`template.FuncMap` is
+     undefined), so script funcs cannot be registered.
+   - Exec would walk script data through the `scriptData` projection,
+     which runs every niladic method eagerly (the SILENT hazard of
+     steps 5 and 8) and deep-copies the data on each `Execute`.
+   - Exec is only 3% of instructions, so this option adds the most
+     semantic risk for almost no extra speed.
+2. **Source text/template, native lexer.**
+   - Override `lex` and `(*lexer).nextItem` with a vendored copy of the
+     host lexer that returns the source package's `item` structs.
+   - This needs a new "native override for a source function"
+     facility, which does not exist. It also needs a version check
+     that the GOROOT `lex.go` matches the vendored copy, since
+     `itemType` numbering is positional.
+   - It removes at most the lexer's ~2/3 of parse.
+3. **Source text/template over a bound `text/template/parse`.**
+   - Trees become host values. Exec reaches parse through ~29 names:
+     - about 20 `*XxxNode` types
+     - `Node`, `Tree`, `Parse`, `IsEmptyTree`
+     - `NodeType` and two of its constants
+   - Type switches on host pointers already work: `typeMatches`
+     compares the box's reflect type with the typedef's `HostNew`.
+     Field reads go through `hostField` (reflection), and interfaces
+     are hand-written `KindInterface` typedefs, as for `io.Writer`.
+   - `parse.Parse` receives script func maps, but it only checks
+     names, so a wrapper can pass name sets.
+   - Removes nearly all of the ~0.55s. Exec pays reflection per field
+     read, but exec is small.
+
+Option 3 has the best gain-to-risk ratio. Its unknowns are host nil
+pointers inside trees (`t.Tree == nil`, `Root == nil`), and ranging
+over host slices of interface elements (`[]parse.Node`). A spike
+binding just enough of `parse` for the stand-alone script would settle
+both.
 
 ## How to re-run
 
