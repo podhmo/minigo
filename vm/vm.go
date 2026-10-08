@@ -1897,7 +1897,7 @@ func (v *VM) loop(f *frame) {
 						// shapes identical, so re-tag rather than coerce
 						// — assignability would reject two named types.
 						if dtd := v.typeOfValue(dv); dtd != nil && tagIsNamed(et) && v.tdShapeEq(dtd, et) {
-							dv = runtime.Tag(et, runtime.Unwrap(dv))
+							dv = runtime.Tag(et, dv) // Tag unwraps internally
 						} else {
 							dv = v.coerce(f, dv, et)
 						}
@@ -5559,16 +5559,17 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 			}
 			return &runtime.Slice{N: h - l, CapN: b.Cap() - l, Zero: b.Zero, Typ: sliceTypOf(b.Typ)}
 		}
-		l, h := v.bounds(f, lo, hi, int64(len(b.Elems)))
+		n := int64(len(b.Elems))
+		l, h := v.bounds(f, lo, hi, n)
 		if _, isArr := v.arrayLen(f, b.Typ); isArr {
 			// an array-typed value reports "with length" like gc — the
 			// native b.Elems[...] panic says "capacity" regardless.
 			if three {
-				m := v.maxBound(f, max, int64(len(b.Elems)))
-				if r := sliceBoundsReason(l, h, m, int64(len(b.Elems)), true, "length"); r != "" {
+				m := v.maxBound(f, max, n)
+				if r := sliceBoundsReason(l, h, m, n, true, "length"); r != "" {
 					panic(runtime.RuntimePanic(r))
 				}
-			} else if r := sliceBoundsReason(l, h, 0, int64(len(b.Elems)), false, "length"); r != "" {
+			} else if r := sliceBoundsReason(l, h, 0, n, false, "length"); r != "" {
 				panic(runtime.RuntimePanic(r))
 			}
 		}
@@ -8377,6 +8378,9 @@ func typeExprFor(td *runtime.TypeDef) ast.Expr {
 // shared runtime.TypIdentical judgment (decl object, or name+package+
 // binds for named types, or equal shape spellings for anonymous ones).
 func sameTypeDef(a, b *runtime.TypeDef) bool {
+	if a == b {
+		return true
+	}
 	return runtime.TypIdentical(a, b)
 }
 
@@ -10564,9 +10568,9 @@ func (v *VM) tdShapeEq(a, b *runtime.TypeDef) bool {
 		return nil
 	}
 	sa, sb := src(pa), src(pb)
-	if sa != nil && sb != nil {
-		return runtime.TypSpelling(sa, pa) == runtime.TypSpelling(sb, pb)
-	}
+	// both spellable means the underlying spellings differed — face
+	// spelling cannot add equality (identical AST implies identical
+	// underlying), so only the both-shapeless case can still match.
 	return sa == nil && sb == nil
 }
 
