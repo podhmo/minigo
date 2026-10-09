@@ -1,0 +1,4 @@
+interface error false
+myError
+interface true
+struct {3}
