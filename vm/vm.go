@@ -1321,6 +1321,13 @@ func asError(r any) error {
 
 // prepFrame builds the frame for callee.
 func (v *VM) prepFrame(callee runtime.Value, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (*frame, error) {
+	return v.prepFrameSeen(callee, args, statics, spreadTd, nil)
+}
+
+// prepFrameSeen is prepFrame carrying the linkname resolutions already
+// followed for this call — a pull decl whose pushed symbol resolves to
+// itself (or a longer cycle) would otherwise re-dispatch forever.
+func (v *VM) prepFrameSeen(callee runtime.Value, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef, seen map[*runtime.Function]bool) (*frame, error) {
 	var fn *runtime.Function
 	var upvals []*runtime.Cell
 	switch c := callee.(type) {
@@ -1361,8 +1368,12 @@ func (v *VM) prepFrame(callee runtime.Value, args []runtime.Value, statics []*ru
 		if err != nil {
 			return nil, err
 		}
-		if ok {
-			return v.prepFrame(tv, args, statics, spreadTd)
+		if ok && !seen[fn] {
+			if seen == nil {
+				seen = map[*runtime.Function]bool{}
+			}
+			seen[fn] = true
+			return v.prepFrameSeen(tv, args, statics, spreadTd, seen)
 		}
 	}
 	// generic function called without instantiation (Id(40)): infer the
