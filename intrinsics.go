@@ -7690,6 +7690,18 @@ func fmtArg(v runtime.VMCaller, x runtime.Value) any {
 		if gv, ok := x.V.(*runtime.GoValue); ok {
 			return fmtArg(v, gv)
 		}
+		// a still-constant payload materializes at the declared width
+		// first: `fmt.Println(uint64(1<<64 - 1))` is max-uint where the
+		// untyped default reading overflows int inside fmtValue.
+		if u, ok := x.V.(*runtime.UConst); ok {
+			if mc, ok2 := v.(interface {
+				MaterializeConstErr(*runtime.UConst, *runtime.TypeDef) (runtime.Value, error)
+			}); ok2 {
+				if mv, err := mc.MaterializeConstErr(u, x.Typ); err == nil {
+					return fmtArg(v, runtime.Tag(x.Typ, mv))
+				}
+			}
+		}
 		return &fmtValue{c: v, x: x}
 	case int64:
 		// script ints store int64 but spell int — bad-verb markers
