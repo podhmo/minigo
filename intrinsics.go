@@ -3475,6 +3475,16 @@ func uconstNative(u *runtime.UConst) (any, error) {
 	return runtime.UConstNative(u)
 }
 
+// mustNativeConst is uconstNative for a builtin argument position that
+// cannot report the error: it panics with Go's compile-error wording.
+func mustNativeConst(u *runtime.UConst) any {
+	nv, err := uconstNative(u)
+	if err != nil {
+		panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: err.Error()}})
+	}
+	return nv
+}
+
 func goNative(v runtime.Value) any {
 	switch x := v.(type) {
 	case runtime.Nil:
@@ -3484,11 +3494,7 @@ func goNative(v runtime.Value) any {
 		// nil stays a TypedNil — the host has no box for it).
 		return nil
 	case *runtime.UConst:
-		nv, err := uconstNative(x)
-		if err != nil {
-			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: err.Error()}})
-		}
-		return nv
+		return mustNativeConst(x)
 	case *runtime.Named:
 		// a float32-tagged value crosses to fmt as a real float32 so
 		// %v applies float32 formatting (0.1, not 0.10000000149011612);
@@ -3559,6 +3565,11 @@ func str(v any) string {
 	if n, ok := v.(*runtime.Named); ok {
 		return str(n.V)
 	}
+	if u, ok := v.(*runtime.UConst); ok {
+		// a builtin argument position materializes an untyped
+		// constant at its default type — the same fold intOf does.
+		return str(mustNativeConst(u))
+	}
 	if s, ok := v.(string); ok {
 		return s
 	}
@@ -3573,11 +3584,7 @@ func intOf(v any) int {
 		// a named constant stays a UConst through declaration storage;
 		// a builtin argument position materializes it at its default
 		// type — Go folds these calls at compile time.
-		nv, err := uconstNative(x)
-		if err != nil {
-			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: err.Error()}})
-		}
-		return intOf(nv)
+		return intOf(mustNativeConst(x))
 	case int64:
 		return int(x)
 	case int:
@@ -6583,11 +6590,7 @@ func (s *fmtValue) renderList(v *runtime.Slice, verb rune, f fmt.State) string {
 // spelled with the declared element type when the leaf has one.
 func (s *fmtValue) leaf(x runtime.Value, verb rune, f fmt.State) string {
 	if u, ok := x.(*runtime.UConst); ok {
-		nv, err := uconstNative(u)
-		if err != nil {
-			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: err.Error()}})
-		}
-		x = nv
+		x = mustNativeConst(u)
 	}
 	if leafBadVerb(x, verb) {
 		name := ""
@@ -7313,10 +7316,7 @@ func fmtArg(v runtime.VMCaller, x runtime.Value) any {
 	case float64, string, bool:
 		return x
 	case *runtime.UConst:
-		nv, err := uconstNative(x)
-		if err != nil {
-			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: err.Error()}})
-		}
+		nv := mustNativeConst(x)
 		if i, ok := nv.(int64); ok {
 			return int(i)
 		}
