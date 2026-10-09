@@ -1138,18 +1138,43 @@ func (r *REPL) dirImportCandidates(prefix string) []Candidate {
 }
 
 // CompleteCommandArg completes the argument of a meta-command line,
-// with the cursor at end of line: `:load <path>` offers .go files and
-// directories (a directory ends in "/" so the next completion descends),
-// and `:unload <ref>` offers the current loads. start is the byte offset
-// every candidate splices over; other commands yield no candidates.
+// with the cursor at end of line:
+//
+//   - `:load <path>` offers .go files and directories (a directory ends
+//     in "/" so the next completion descends); `:unload <ref>` offers the
+//     current loads.
+//   - `:cd <ref>` and `:ls <ref>` offer package refs: session import
+//     names, import paths, and `./`, `../` or `/abs` directories.
+//   - `:doc <ref>` offers the same, and `name.Sym` after a session
+//     import name completes the package's members.
+//   - `:comp <code>` completes its argument as code, like the prompt.
+//
+// start is the byte offset every candidate splices over; other commands
+// yield no candidates.
 func (r *REPL) CompleteCommandArg(line string) (start int, cands []Candidate) {
 	cmd, arg, ok := strings.Cut(line, " ")
-	if !ok || (cmd != ":load" && cmd != ":unload") {
+	if !ok {
 		return len(line), nil
 	}
 	arg = strings.TrimLeft(arg, " \t")
 	start = len(line) - len(arg)
-	if rest, quoted := strings.CutPrefix(arg, `"`); quoted {
+	switch cmd {
+	case ":comp":
+		s, cands := r.complete(arg)
+		return start + s, cands
+	case ":doc":
+		if head, _, ok := strings.Cut(arg, "."); ok && head != "" {
+			if _, isImport := r.ImportPathOf(head); isImport {
+				s, cands := r.complete(arg)
+				return start + s, cands
+			}
+		}
+	case ":load", ":unload", ":cd", ":ls":
+	default:
+		return len(line), nil
+	}
+	rest, quoted := strings.CutPrefix(arg, `"`)
+	if quoted {
 		if strings.Contains(rest, `"`) {
 			return len(line), nil // past a closed literal
 		}
@@ -1160,9 +1185,36 @@ func (r *REPL) CompleteCommandArg(line string) (start int, cands []Candidate) {
 		cands = r.loadPathCandidates(arg)
 	case ":unload":
 		cands = r.loadedCandidates(arg)
+	default:
+		cands = r.pkgRefCandidates(arg, quoted)
 	}
 	sort.Slice(cands, func(i, j int) bool { return cands[i].Name < cands[j].Name })
 	return start, cands
+}
+
+// pkgRefCandidates lists the package refs :cd, :ls and :doc accept for
+// a typed prefix: directories for a `.`- or `/`-led prefix, otherwise
+// import paths plus — unquoted — the names session imports bind.
+func (r *REPL) pkgRefCandidates(prefix string, quoted bool) []Candidate {
+	if strings.HasPrefix(prefix, ".") || strings.HasPrefix(prefix, "/") {
+		return r.dirImportCandidates(prefix)
+	}
+	out := r.importCandidates(prefix)
+	if quoted {
+		return out
+	}
+	seen := map[string]bool{}
+	for _, c := range out {
+		seen[c.Name] = true
+	}
+	if f := r.file(); f != nil {
+		for name, ref := range r.pkg.Scopes[f] {
+			if strings.HasPrefix(name, prefix) && !seen[name] {
+				out = append(out, Candidate{Name: name, Kind: CandPackage, Detail: ref.Path})
+			}
+		}
+	}
+	return out
 }
 
 // loadPathCandidates lists the .go files and directories matching a

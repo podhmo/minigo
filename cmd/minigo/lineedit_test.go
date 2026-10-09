@@ -181,3 +181,15 @@ func TestCompleteSpliceLoadArg(t *testing.T) {
 		t.Fatalf(":load dir -> %q ok=%v", newLine, ok)
 	}
 }
+
+func TestCompleteSpliceCdArg(t *testing.T) {
+	r := testREPL(t)
+	newLine, _, _, ok := completeSplice(r, ":cd inspectp", 12)
+	if !ok || newLine != ":cd inspectpkg" {
+		t.Fatalf(":cd import name -> %q ok=%v", newLine, ok)
+	}
+	newLine, _, _, ok = completeSplice(r, ":comp u.Gre", 11)
+	if !ok || newLine != ":comp u.Greet" {
+		t.Fatalf(":comp code -> %q ok=%v", newLine, ok)
+	}
+}
