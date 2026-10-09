@@ -2405,12 +2405,50 @@ func (c *compiler) nilableTypExpr(te ast.Expr) bool {
 	case *ast.Ident:
 		return t.Name == "error" || t.Name == "any"
 	case *ast.SelectorExpr:
-		// a qualified name's kind is opaque to the static walk — it may
-		// be an interface (`fmt.Stringer`) or a struct. Maybe-nilable
-		// keeps the gate from inventing an error gc wouldn't issue.
+		// a qualified name resolves when the member is knowable —
+		// `time.Duration` proves non-nilable so `d == nil` traps like
+		// gc's reject, while an interface (`io.Reader`) keeps the
+		// lawful dynamic compare. An unresolved name stays
+		// maybe-nilable: silence over inventing an error.
+		if ref, name, ok := c.selTypRef(t); ok {
+			if n, ok := c.selNilable(ref, name); ok {
+				return n
+			}
+		}
 		return true
 	}
 	return false
+}
+
+// selNilable reports whether the type a qualified name picks out of an
+// imported package can be nil: interfaces, pointers, slices, maps,
+// chans and funcs can; structs and basic types cannot. ok=false when
+// the member can't be resolved at all.
+func (c *compiler) selNilable(ref *runtime.ImportRef, name string) (bool, bool) {
+	p, err := ref.Materialize()
+	if err != nil || p == nil {
+		return false, false
+	}
+	if p.Index != nil {
+		if td := p.Index.Types[name]; td != nil && td.Decl != nil {
+			if ts, ok := td.Decl.Spec.(*ast.TypeSpec); ok {
+				return c.nilableTypExpr(ts.Type), true
+			}
+		}
+	}
+	if p.Globals != nil {
+		if v, ok := p.Globals.Get(name); ok {
+			if td, ok := v.(*runtime.TypeDef); ok && td != nil {
+				switch td.Kind {
+				case runtime.KindInterface, runtime.KindPointer, runtime.KindSlice,
+					runtime.KindMap, runtime.KindChan, runtime.KindFunc:
+					return true, true
+				}
+				return false, true
+			}
+		}
+	}
+	return false, false
 }
 
 // noteDeclTyp records a value spec's type on the name's binding for the
