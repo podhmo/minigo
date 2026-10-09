@@ -1454,6 +1454,17 @@ func (e *Engine) installStdlib() {
 			}
 			return retErr2(os.CreateTemp(dir, str(a[1])))
 		}),
+		// DirFS resolves the dir through the same cwd+roots check as the
+		// file ops; the returned host fs.DirFS keeps its Open rooted
+		// there (os.DirFS itself never escapes — reads go through the
+		// rooted handle, like Open).
+		"DirFS": h.fn1("os.DirFS", func(a []any) (any, error) {
+			p, err := e.fsPath(str(a[0]))
+			if err != nil {
+				return nil, err
+			}
+			return &runtime.GoValue{V: os.DirFS(p)}, nil
+		}),
 		"IsNotExist":   h.fn1("os.IsNotExist", func(a []any) (any, error) { return os.IsNotExist(asErr(a[0])), nil }, os.IsNotExist),
 		"IsExist":      h.fn1("os.IsExist", func(a []any) (any, error) { return os.IsExist(asErr(a[0])), nil }, os.IsExist),
 		"IsPermission": h.fn1("os.IsPermission", func(a []any) (any, error) { return os.IsPermission(asErr(a[0])), nil }, os.IsPermission),
