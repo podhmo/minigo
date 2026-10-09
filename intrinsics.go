@@ -2155,9 +2155,7 @@ func (e *Engine) installStdlib() {
 			// deadlock detection, like a pending gc timer.
 			release := vm.NoteExternalWait(vc)
 			stop := context.AfterFunc(c, func() {
-				if release != nil {
-					release()
-				}
+				release()
 				if _, err := vc.Call(f, nil); err != nil {
 					// a dead process refuses the spawn — the callback
 					// dies with the run like a Go timer's pending call.
@@ -2168,7 +2166,7 @@ func (e *Engine) installStdlib() {
 			})
 			return &runtime.BuiltinFunc{Name: "context.AfterFunc.stop", Fn: func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
 				stopped := stop()
-				if stopped && release != nil {
+				if stopped {
 					release()
 				}
 				return stopped, nil
@@ -2645,9 +2643,7 @@ func (t *afterFuncTimer) hold() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.release == nil {
-		if r := t.note(); r != nil {
-			t.release = r
-		}
+		t.release = t.note()
 	}
 }
 
