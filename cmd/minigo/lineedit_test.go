@@ -169,3 +169,15 @@ func TestFormatCandidates(t *testing.T) {
 		}
 	}
 }
+
+func TestCompleteSpliceLoadArg(t *testing.T) {
+	r := testREPL(t)
+	newLine, _, cands, ok := completeSplice(r, ":load ./insp", 12)
+	if !ok || newLine != ":load ./inspect" || len(cands) != 2 {
+		t.Fatalf(":load path -> %q ok=%v cands=%v", newLine, ok, candidateNames(cands))
+	}
+	newLine, _, _, ok = completeSplice(r, ":load ./inspectp", 16)
+	if !ok || newLine != ":load ./inspectpkg/" {
+		t.Fatalf(":load dir -> %q ok=%v", newLine, ok)
+	}
+}
