@@ -1875,14 +1875,22 @@ func (e *Engine) installStdlib() {
 	})
 	e.Bind("time", map[string]runtime.Value{
 		"Sleep": h.fn("time.Sleep", func(a []any) (any, error) { time.Sleep(durOf(a[0])); return nil, nil }),
-		"After": h.fn("time.After", func(a []any) (any, error) {
-			return &runtime.GoValue{V: time.After(durOf(a[0]))}, nil
+		"After": h.fnvc("time.After", func(vc runtime.VMCaller, a []any) (any, error) {
+			// a proxy feed like NewTimer's: once the fire is delivered the
+			// channel is dead, and a second receive must count as asleep
+			// for deadlock detection instead of hanging forever.
+			f := newChanFeed(vc, time.After(durOf(a[0])), true)
+			return f.C, nil
 		}),
-		"NewTimer": h.fn("time.NewTimer", func(a []any) (any, error) {
-			return &runtime.GoValue{V: time.NewTimer(durOf(a[0]))}, nil
+		"NewTimer": h.fnvc("time.NewTimer", func(vc runtime.VMCaller, a []any) (any, error) {
+			t := time.NewTimer(durOf(a[0]))
+			f := newChanFeed(vc, t.C, true)
+			return &timerChanBox{t: t, C: f.C, feed: f}, nil
 		}),
-		"NewTicker": h.fn("time.NewTicker", func(a []any) (any, error) {
-			return &runtime.GoValue{V: time.NewTicker(durOf(a[0]))}, nil
+		"NewTicker": h.fnvc("time.NewTicker", func(vc runtime.VMCaller, a []any) (any, error) {
+			t := time.NewTicker(durOf(a[0]))
+			f := newChanFeed(vc, t.C, false)
+			return &tickerChanBox{t: t, C: f.C, feed: f}, nil
 		}),
 		"AfterFunc": &runtime.BuiltinFunc{Name: "time.AfterFunc", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) < 2 {
@@ -2658,6 +2666,142 @@ func (e *Engine) installStdlib() {
 	})
 }
 
+// chanFeed proxies a timer/ticker channel so a parked receiver's wake
+// state can follow the channel's liveness: armed while a future send
+// exists (the timer pending, the ticker ticking), dead once none can
+// arrive (Stop won, or a one-shot fire was already delivered). The
+// proxy registers its hchan as managed — chanOf then counts a receiver
+// parked on a dead feed as asleep, the way gc treats a channel no timer
+// can feed, instead of leaving the park wakeable forever.
+type chanFeed struct {
+	vc    runtime.VMCaller
+	C     chan time.Time   // the script-visible channel (proxied)
+	src   <-chan time.Time // the real timer channel the pump forwards
+	ptr   uintptr          // managed-channel id (0 = unmanaged, no proc)
+	done  chan struct{}    // closed to retire the pump
+	once  bool             // one-shot feed: die after the first value
+	mu    sync.Mutex
+	armed bool // the pump is expected to deliver (more) values
+}
+
+// newChanFeed starts a pump forwarding src into a buffered proxy channel
+// and registers the proxy's liveness with the caller's process.
+func newChanFeed(vc runtime.VMCaller, src <-chan time.Time, once bool) *chanFeed {
+	f := &chanFeed{
+		vc:    vc,
+		C:     make(chan time.Time, 1),
+		src:   src,
+		once:  once,
+		done:  make(chan struct{}),
+		armed: true,
+	}
+	f.ptr = vm.RegisterWakeChan(vc, reflect.ValueOf(f.C))
+	go f.pump()
+	return f
+}
+
+// pump forwards each src value into the proxy until done closes; a
+// one-shot feed dies after its single delivery.
+func (f *chanFeed) pump() {
+	for {
+		select {
+		case v := <-f.src:
+			select {
+			case f.C <- v:
+			case <-f.done:
+				return
+			}
+			if f.once {
+				f.die()
+				return
+			}
+		case <-f.done:
+			return
+		}
+	}
+}
+
+// die marks the feed unable to deliver again: the pump retires and the
+// managed channel goes dead, so parked receivers join the asleep count.
+func (f *chanFeed) die() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.armed {
+		return
+	}
+	f.armed = false
+	close(f.done)
+	if f.ptr != 0 {
+		vm.SetWakeChanDead(f.vc, f.ptr, true)
+	}
+}
+
+// arm (re)starts the feed after a Reset: the managed channel reports
+// alive again and a fresh pump forwards the rescheduled sends.
+func (f *chanFeed) arm() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ptr != 0 {
+		vm.SetWakeChanDead(f.vc, f.ptr, false)
+	}
+	if f.armed {
+		return
+	}
+	f.armed = true
+	f.done = make(chan struct{})
+	go f.pump()
+}
+
+// timerChanBox is the time.Timer NewTimer hands to the script: only the
+// Timer surface (C/Stop/Reset) while the feed tracks liveness. The
+// underlying timer stays unexported so the real channel cannot leak past
+// the proxy.
+type timerChanBox struct {
+	t    *time.Timer
+	C    chan time.Time
+	feed *chanFeed
+}
+
+// Stop cancels the timer like time.Timer.Stop: a true return means no
+// fire can arrive, so the feed dies and parked receivers count asleep.
+func (b *timerChanBox) Stop() bool {
+	if !b.t.Stop() {
+		return false
+	}
+	b.feed.die()
+	return true
+}
+
+// Reset reschedules the timer like time.Timer.Reset: a dead feed
+// re-arms, a live one keeps its pump.
+func (b *timerChanBox) Reset(d time.Duration) bool {
+	active := b.t.Reset(d)
+	b.feed.arm()
+	return active
+}
+
+// tickerChanBox is the time.Ticker NewTicker hands to the script; the
+// feed stays armed until Stop, since a ticker can always send again.
+type tickerChanBox struct {
+	t    *time.Ticker
+	C    chan time.Time
+	feed *chanFeed
+}
+
+// Stop halts the ticker like time.Ticker.Stop: no more ticks can arrive,
+// so the feed dies and parked receivers count asleep.
+func (b *tickerChanBox) Stop() {
+	b.t.Stop()
+	b.feed.die()
+}
+
+// Reset restarts the ticker like time.Ticker.Reset: a stopped feed
+// re-arms so parked receivers wake again.
+func (b *tickerChanBox) Reset(d time.Duration) {
+	b.t.Reset(d)
+	b.feed.arm()
+}
+
 // afterFuncTimer is the time.Timer AfterFunc hands to the script: a
 // *time.Timer wrapper that owns the pending-callback note registered
 // for deadlock detection. The note releases when the callback fires or
@@ -3030,6 +3174,26 @@ func (h *hostHelpers) fn(name string, f func([]any) (any, error), target ...any)
 			a[i] = goNative(v)
 		}
 		r, err := f(a)
+		if err != nil {
+			return nil, err
+		}
+		return scriptVal(r), nil
+	}}
+	if len(target) > 0 {
+		bf.Target = target[0]
+	}
+	return bf
+}
+
+// fnvc is fn for bindings that need the caller (e.g. deadlock-wait
+// bookkeeping through the channel a host call hands to the script).
+func (h *hostHelpers) fnvc(name string, f func(runtime.VMCaller, []any) (any, error), target ...any) *runtime.BuiltinFunc {
+	bf := &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		a := make([]any, len(args))
+		for i, v := range args {
+			a[i] = goNative(v)
+		}
+		r, err := f(vc, a)
 		if err != nil {
 			return nil, err
 		}
