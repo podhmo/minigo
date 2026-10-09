@@ -581,6 +581,38 @@ func TestForeignPackageSkipped(t *testing.T) {
 	}
 }
 
+func TestMixedPackageMajorityWins(t *testing.T) {
+	dir := setupModule(t)
+	app := filepath.Join(dir, "app")
+	// A minority clause that sorts first must not become the dir's
+	// canonical package name: the index used to take it from the
+	// alphabetically-first file, which would make every real app file
+	// "foreign" and shrink the whole scan to the squatter. A majority
+	// vote keeps app canonical; the otherpkg file warns and skips.
+	content := "package otherpkg\n\ntype Squatter int\n"
+	target := filepath.Join(app, "a_other.go") // sorts before every app file
+	if err := os.WriteFile(target, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var buf strings.Builder
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, &buf); err != nil {
+		t.Fatalf("a minority-package file must not fail the run: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "a_other.go") || !strings.Contains(out, "declares package otherpkg") {
+		t.Fatalf("no foreign-package warning for the minority file:\n%s", out)
+	}
+	// the majority package still scanned: its drift plan names app
+	// files, not just the squatter's.
+	if !strings.Contains(out, "app/job.go") {
+		t.Fatalf("the majority package lost the scan to the first-sorted file:\n%s", out)
+	}
+	got, _ := os.ReadFile(target)
+	if string(got) != content {
+		t.Fatal("the minority-package file was modified")
+	}
+}
+
 func TestForeignPackageMethodFeedsNothing(t *testing.T) {
 	dir := setupModule(t)
 	app := filepath.Join(dir, "app")
