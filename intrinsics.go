@@ -2133,20 +2133,22 @@ func (e *Engine) installStdlib() {
 		"DeadlineExceeded": &runtime.GoValue{V: context.DeadlineExceeded},
 		"Background":       h.fn("context.Background", func(a []any) (any, error) { return context.Background(), nil }, context.Background),
 		"TODO":             h.fn("context.TODO", func(a []any) (any, error) { return context.TODO(), nil }, context.TODO),
-		"WithCancel": h.fn("context.WithCancel", func(a []any) (any, error) {
+		"WithCancel": h.fnvc("context.WithCancel", func(vc runtime.VMCaller, a []any) (any, error) {
 			c, err := asCtx(a[0])
 			if err != nil {
 				return nil, err
 			}
 			nc, cancel := context.WithCancel(c)
+			watchCtxDone(vc, c, nc)
 			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(nc), scriptVal(cancel)}}, nil
 		}),
-		"WithCancelCause": h.fn("context.WithCancelCause", func(a []any) (any, error) {
+		"WithCancelCause": h.fnvc("context.WithCancelCause", func(vc runtime.VMCaller, a []any) (any, error) {
 			c, err := asCtx(a[0])
 			if err != nil {
 				return nil, err
 			}
 			nc, cancel := context.WithCancelCause(c)
+			watchCtxDone(vc, c, nc)
 			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(nc), scriptVal(cancel)}}, nil
 		}),
 		"WithDeadline": h.fn("context.WithDeadline", func(a []any) (any, error) {
@@ -3061,6 +3063,34 @@ func asCtx(v any) (context.Context, error) {
 		return c, nil
 	}
 	return nil, fmt.Errorf("not a context.Context: %T", v)
+}
+
+// watchCtxDone registers a cancel-family context's done channel in the
+// parked-receive liveness registry: the channel closes only when a
+// CancelFunc runs — a goroutine action, never an autonomous send — so a
+// receive parked on it counts asleep, like gc's deadlock detection of
+// `ctx, _ := context.WithCancel(bg); <-ctx.Done()`.
+//
+// A parent whose done channel can fire on its own propagates that
+// liveness instead: a deadline parent's timer closes the child's done
+// host-side without any script goroutine acting. When the parent's
+// done is unmanaged or still live the child stays unmanaged (a
+// conservative wake source); a nil or dead-managed parent passes the
+// cancel-only property down, and the child registers as dead from
+// birth.
+func watchCtxDone(vc runtime.VMCaller, parent, child context.Context) {
+	done := child.Done()
+	if done == nil {
+		return
+	}
+	if pdone := parent.Done(); pdone != nil {
+		if managed, alive := vm.WakeChanState(vc, reflect.ValueOf(pdone).Pointer()); !managed || alive {
+			return
+		}
+	}
+	if ptr := vm.RegisterWakeChan(vc, reflect.ValueOf(done)); ptr != 0 {
+		vm.SetWakeChanDead(vc, ptr, true)
+	}
 }
 
 // net pointer/addr unwrappers: a script &net.TCPAddr{...} arrives at a
