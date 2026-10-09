@@ -180,6 +180,16 @@ func (e *Engine) installInspect() {
 			}
 			return &runtime.Slice{Elems: xs}, nil
 		}),
+		"Comments": bf("Comments", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, argerr("Comments", "a file view")
+			}
+			f, err := fileViewOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			return boxedSlice(xinspect.CommentsOf(f)), nil
+		}),
 		// ---- metadata ----
 		"Kind": bf("Kind", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])

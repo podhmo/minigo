@@ -57,7 +57,7 @@ it reports declarations as declared.
 | Layer | Entry points | Cost | Side effects |
 |---|---|---|---|
 | index | `PackageOf`, `DirOf`, `FileOf`, `Current`, `Decls`, `Files`, `Imports`, `OwnerOf`, `PathOf`, `SymbolIDOf`, `Standard` | locate + parse + index | none |
-| syntax | `Doc`, `Pos`, `Fields`, `Methods`, `Signature`, `TypeExpr` views, `Children`, `UnWrap`, `UnRef`, `Origin`, `SymbolID`, `Resolve`, `SameType`, `UsedSymbols` | AST reads + import-table lookup | none |
+| syntax | `Doc`, `Pos`, `Fields`, `Methods`, `Signature`, `TypeExpr` views, `Children`, `UnWrap`, `UnRef`, `Origin`, `SymbolID`, `Resolve`, `SameType`, `UsedSymbols`, `Comments` | AST reads + import-table lookup | none |
 | value | `Value`, `TypeOf`, `Kind` | materialize | `Value` on var/const runs `EnsureReady` (package init) |
 
 The value layer is deliberately a small, explicit annex — reaching a
@@ -94,6 +94,10 @@ inspect.Methods(p)                  // []Symbol — every method decl, flat,
 inspect.Symbol(p, "Contains")       // one decl
 inspect.Files(p)                    // []File{Name, Imports[{Path, Name, Pos}], Doc}
 inspect.Imports(f)                  // the file's own import table
+inspect.Comments(f)                 // []Comment — every // or /* */ comment in
+                                    // source order; Free marks the comments no
+                                    // decl claims (inside bodies, floating
+                                    // between decls) — the ones Doc cannot reach
 inspect.SymbolID(s)                 // {PackagePath, Name}
 
 // syntax layer — s is a Symbol (decl view)

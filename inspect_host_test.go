@@ -7,6 +7,7 @@ package minigo_test
 
 import (
 	"context"
+	"fmt"
 	"go/ast"
 	"reflect"
 	"strings"
@@ -208,6 +209,43 @@ func TestCanonicalName(t *testing.T) {
 		if got := c.te.CanonicalName(); got != c.want {
 			t.Errorf("%s: CanonicalName() = %q, want %q", name, got, c.want)
 		}
+	}
+}
+
+// TestCommentsOf: a file's comments enumerate flat in source order —
+// Free marks the groups no declaration claims.
+func TestCommentsOf(t *testing.T) {
+	e := newEngine(t)
+	p, err := e.Package(context.Background(), "./testdata/comments")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Files) != 1 {
+		t.Fatalf("want 1 file, got %d", len(p.Files))
+	}
+	cs := xinspect.CommentsOf(xinspect.NewFile(p, p.Files[0]))
+	var got []string
+	for _, c := range cs {
+		line := 0
+		if c.Pos != nil {
+			line = c.Pos.Line
+		}
+		got = append(got, fmt.Sprintf("%d:%t:%s", line, c.Free, c.Text))
+	}
+	want := []string{
+		"1:false:// Package comments is the introspection subject for the",
+		"2:false:// comment-enumeration tests: doc comments, free comments,",
+		"3:false:// directive-shaped comments, and block comments.",
+		"6:false:// Documented is a documented function — its doc comment is attached.",
+		"8:true:// swagger:route GET /x — a free comment a doc scan cannot reach",
+		"9:true:// a trailing comment inside a body is free too",
+		"11:true://go:generate echo directive — directive-shaped text stays visible",
+		"15:true:// a floating comment between decls — no declaration claims it",
+		"17:false:// Bye is a second documented function.",
+		"20:true:/* an inline block comment */",
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("comments (-want +got):\n%s", diff)
 	}
 }
 
