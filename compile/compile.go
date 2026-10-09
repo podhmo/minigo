@@ -1347,28 +1347,18 @@ func (c *compiler) stmt(s ast.Stmt) {
 			one()
 			c.emit(bytecode.OpBinary, int(op), 0, st.Pos())
 			c.setRef(t.Name, t.Pos())
-		case *ast.SelectorExpr:
-			c.expr(t.X)
-			c.emit(bytecode.OpDup, 0, 0, t.Pos())
-			c.emit(bytecode.OpSelect, c.nameIdx(t.Sel.Name), 0, t.Pos())
+		case *ast.SelectorExpr, *ast.IndexExpr, *ast.StarExpr:
+			// Keep the storage ref through the update: `s[i].f++`
+			// writes the live element — a plain index read yields
+			// a copy (struct elements copy in Go), so the value
+			// path silently dropped the store. Same ref/deref/add/
+			// store shape as `x op= y`.
+			c.refTarget(xe, false)
+			c.emit(bytecode.OpDup, 0, 0, xe.Pos())
+			c.emit(bytecode.OpDeref, 0, 0, xe.Pos())
 			one()
 			c.emit(bytecode.OpBinary, int(op), 0, st.Pos())
-			c.emit(bytecode.OpSetField, c.nameIdx(t.Sel.Name), 0, t.Pos())
-		case *ast.IndexExpr:
-			c.expr(t.X)
-			c.expr(t.Index)
-			c.emit(bytecode.OpDup2, 0, 0, t.Pos())
-			c.emit(bytecode.OpIndex, 0, 0, t.Lbrack)
-			one()
-			c.emit(bytecode.OpBinary, int(op), 0, st.Pos())
-			c.emit(bytecode.OpSetIndex, 0, 0, t.Lbrack)
-		case *ast.StarExpr:
-			c.expr(t.X)
-			c.emit(bytecode.OpDup, 0, 0, t.Pos())
-			c.emit(bytecode.OpDeref, 0, 0, t.Pos())
-			one()
-			c.emit(bytecode.OpBinary, int(op), 0, st.Pos())
-			c.emit(bytecode.OpSetInd, 0, 0, st.Pos())
+			c.emit(bytecode.OpSetRefs, 1, 0, st.Pos())
 		default:
 			c.trap(st.Pos(), "++/-- on %T is not supported", st.X)
 		}

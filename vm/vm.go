@@ -2196,6 +2196,12 @@ func (v *VM) loop(f *frame) {
 				// map bases, nil-map zero values, and live cell bases all
 				// resolve there (IndexRef.Get only knows slices).
 				f.push(v.index(f, ir.Base, ir.Key))
+			} else if fr, isFR := x.(*runtime.FieldRef); isFR {
+				// reading a field ref is the member select on its base —
+				// a nil pointer still panics and host/promoted fields
+				// resolve like a plain `x.f` read (FieldRef.Get only
+				// knows plain struct storage).
+				f.push(v.selectMember(f, fr.Base, fr.Name))
 			} else if td, ok := x.(*runtime.TypeDef); ok {
 				// `(*T)` in a method-expression position evaluates to the
 				// pointer typedef so selectMember can bind pointer methods.
@@ -2223,6 +2229,15 @@ func (v *VM) loop(f *frame) {
 				// *p on a nil pointer panics; on other nilables it's invalid
 				if tn.Typ.Kind == runtime.KindPointer {
 					panic(runtime.NilDerefPanic())
+				}
+				f.trap("deref of non-pointer %T", x)
+			} else if dr, isDR := x.(*runtime.DerefRef); isDR {
+				// `*p` through a ref on a nil pointer panics like the
+				// plain operand read — Get just reports failure.
+				if pv, ok := runtime.Deref(dr.Ptr); ok {
+					if tn, isTN := asTypedNil(pv); isTN && tn.Typ.Kind == runtime.KindPointer {
+						panic(runtime.NilDerefPanic())
+					}
 				}
 				f.trap("deref of non-pointer %T", x)
 			} else {
