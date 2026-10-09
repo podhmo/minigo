@@ -4,7 +4,6 @@
 package vm
 
 import (
-	"bytes"
 	"fmt"
 	"go/ast"
 	"go/constant"
@@ -14,7 +13,6 @@ import (
 	"math"
 	"os"
 	"reflect"
-	goruntime "runtime"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -370,32 +368,6 @@ func (v *VM) spawn(fn runtime.Value, args []runtime.Value, statics []*runtime.Ty
 // working after the panic's own process is dead.
 func (v *VM) probeCaller() runtime.VMCaller {
 	return &VM{H: v.H}
-}
-
-// goroutineID reports the calling goroutine's id, parsed out of
-// runtime.Stack — the stdlib exposes no accessor and Call needs one to
-// tell a same-goroutine re-entry from a foreign one (a host-retained
-// callback firing on another goroutine). 0 means unparseable, which
-// Call treats as foreign when the VM is busy — the safe direction.
-func goroutineID() int64 {
-	var buf [48]byte
-	n := goruntime.Stack(buf[:], false)
-	s := buf[:n]
-	// "goroutine 123 [running]:" — the id sits between the first two
-	// spaces of the header line.
-	i := bytes.IndexByte(s, ' ')
-	if i < 0 {
-		return 0
-	}
-	j := bytes.IndexByte(s[i+1:], ' ')
-	if j < 0 {
-		return 0
-	}
-	id, err := strconv.ParseInt(string(s[i+1:i+1+j]), 10, 64)
-	if err != nil {
-		return 0
-	}
-	return id
 }
 
 // Task implements VMCaller.Task — nil on the root goroutine.
@@ -792,6 +764,9 @@ func (v *VM) Call(callee runtime.Value, args []runtime.Value) (result runtime.Va
 // callBounded is Call carrying the call site's spread element typedef
 // into generic inference; nil spreadTd is an ordinary call.
 func (v *VM) callBounded(callee runtime.Value, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (result runtime.Value, err error) {
+	// goroutineID parses runtime.Stack, whose traceback walks the
+	// interpreter's deep Go stack — tens of µs per call. Callbacks from
+	// a SyncCallbacks builtin skip it through ownerCaller.
 	gid := goroutineID()
 	v.callMu.Lock()
 	if v.callDepth > 0 && v.callGid != gid {
@@ -820,6 +795,31 @@ func (v *VM) callBounded(callee runtime.Value, args []runtime.Value, statics []*
 
 	v.callGid = gid
 	v.callMu.Unlock()
+	return v.callEntered(callee, args, statics, spreadTd)
+}
+
+// ownerCaller is the VMCaller a SyncCallbacks builtin receives: the
+// builtin runs on the goroutine that owns the VM's in-flight Call and
+// calls back before it returns, so a Call through it is a same-goroutine
+// re-entry by construction and needs no goroutine id.
+type ownerCaller struct{ *VM }
+
+func (o ownerCaller) Call(callee runtime.Value, args []runtime.Value) (runtime.Value, error) {
+	v := o.VM
+	v.callMu.Lock()
+	if v.callDepth == 0 {
+		// no Call in flight to re-enter — take the general path.
+		v.callMu.Unlock()
+		return v.Call(callee, args)
+	}
+	v.callDepth++
+	v.callMu.Unlock()
+	return v.callEntered(callee, args, nil, nil)
+}
+
+// callEntered runs a Call whose callDepth increment is already done —
+// callBounded's same-goroutine path — and undoes it on return.
+func (v *VM) callEntered(callee runtime.Value, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (result runtime.Value, err error) {
 	defer func() {
 		v.callMu.Lock()
 		v.callDepth--
@@ -899,6 +899,9 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 				}
 				panic(r)
 			}()
+			if c.SyncCallbacks {
+				return c.Fn(ownerCaller{v}, args)
+			}
 			return c.Fn(v, args)
 		case *runtime.TypeDef:
 			if len(args) != 1 {
@@ -1118,7 +1121,7 @@ func (v *VM) prepFrame(callee runtime.Value, args []runtime.Value, statics []*ru
 	// an instantiated generic type arrives partly bound — the receiver's
 	// own type binds stay, only the method's own type params infer.
 	if fn != nil && len(fn.TParams) > 0 && hasUnbound(fn.TParams, fn.Binds) {
-		inferred, err := v.inferBinds(fn, args, statics, spreadTd)
+		inferred, err := v.inferCached(fn, args, statics, spreadTd)
 		if err != nil {
 			return nil, err
 		}
@@ -2877,6 +2880,20 @@ func (v *VM) hostMember(hv any, name string) (runtime.Value, bool) {
 	call := func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		return callReflectFunc(name, m, vc, args)
 	}
+	if _, isPool := hv.(*sync.Pool); isPool && name == "Put" {
+		call = func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			// a pool only holds the value for a later Get, which hands
+			// a script value back verbatim (goValueOf) — so a struct
+			// crosses opaque instead of marshaling to scriptData, which
+			// would invoke its niladic methods (a json Decoder's
+			// ReadToken/SkipValue) on every Put.
+			if len(args) == 1 && structShaped(args[0]) {
+				m.Call([]reflect.Value{reflect.ValueOf(any(args[0]))})
+				return runtime.NIL, nil
+			}
+			return callReflectFunc(name, m, vc, args)
+		}
+	}
 	if try := uncontendedLock(hv, name); try != nil {
 		// Lock/RLock park on a helper goroutine watched against
 		// proc.done (see blockingHostMethods) — a goroutine spawn per
@@ -3110,7 +3127,7 @@ func goValueOf(rv reflect.Value) runtime.Value {
 				for i := range el {
 					el[i] = goValueOf(rv.Index(i))
 				}
-				return &runtime.Slice{Elems: el, Typ: anonSliceTyp(elemTypeName(rv.Type().Elem()))}
+				return &runtime.Slice{Elems: el, Typ: hostSliceTyp(rv.Type().Elem())}
 			}
 		case reflect.Array:
 			if rv.Type().Name() == "" {
@@ -3180,6 +3197,17 @@ var hostRValueType = reflect.TypeOf((*minireflect.RValue)(nil))
 
 // elemTypeName names a reflect type for typedef spelling — Name() when
 // it has one, the reflect spelling otherwise (struct{...}, []string).
+// hostSliceTyp tags a slice unboxed from a host []T. A T declared in a
+// host package ([]parse.Node) has no unqualified spelling a script
+// typedef could resolve, so the slice stays untagged and adopts the
+// type of the slot it is stored into.
+func hostSliceTyp(elem reflect.Type) *runtime.TypeDef {
+	if elem != hostRValueType && elem.Name() != "" && elem.PkgPath() != "" {
+		return nil
+	}
+	return anonSliceTyp(elemTypeName(elem))
+}
+
 func elemTypeName(t reflect.Type) string {
 	if t == hostRValueType {
 		return "reflect.Value"
@@ -3242,7 +3270,7 @@ func (v *VM) initHostLiteral(f *frame, td *runtime.TypeDef, hv any, raw []runtim
 		if !fv.CanSet() {
 			f.trap("cannot set unexported field %s of host type %s", name, td.Name)
 		}
-		val, err := toReflectValue(raw[i+1], fv.Type(), v)
+		val, err := hostFieldValue(raw[i+1], rv.Type(), name, fv.Type(), v)
 		if err != nil {
 			f.trap("%s.%s: %s", td.Name, name, err)
 		}
@@ -3824,6 +3852,48 @@ func deepHost(v runtime.Value, vc runtime.VMCaller, h *hostMarshal) runtime.Valu
 	return v
 }
 
+// structShaped reports whether deepHost would marshal v through
+// structDataHost: a script struct, possibly named, or a pointer to one.
+func structShaped(v runtime.Value) bool {
+	if n, ok := v.(*runtime.Named); ok {
+		v = n.V
+	}
+	switch x := v.(type) {
+	case *runtime.Struct:
+		return true
+	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
+		dv, ok := runtime.Deref(x)
+		if !ok {
+			return false
+		}
+		_, isStruct := dv.(*runtime.Struct)
+		return isStruct
+	}
+	return false
+}
+
+var (
+	poolType = reflect.TypeFor[sync.Pool]()
+	anyType  = reflect.TypeFor[any]()
+)
+
+// hostFieldValue converts x for a host struct field: toReflectValue,
+// except that a script sync.Pool.New keeps a struct result opaque — the
+// pool hands it back through Get, which returns a script value verbatim
+// (goValueOf), so it must not marshal to scriptData, which would invoke
+// its niladic methods on every miss (the same rule as Pool.Put).
+func hostFieldValue(x runtime.Value, owner reflect.Type, name string, ft reflect.Type, vc runtime.VMCaller) (reflect.Value, error) {
+	if owner == poolType && name == "New" && ft.Kind() == reflect.Func {
+		switch x.(type) {
+		case *runtime.Function, *runtime.Closure, *runtime.BoundMethod:
+			if vc != nil {
+				return adaptFuncOut(x, ft, vc, true)
+			}
+		}
+	}
+	return toReflectValue(x, ft, vc)
+}
+
 // scriptData is the host-facing projection of a script struct for an
 // `any` parameter: a named map field/method walkers — text/template's
 // evalField above all — can navigate. The empty key, unreachable
@@ -4042,7 +4112,10 @@ func procDoneOf(vc runtime.VMCaller) <-chan struct{} {
 // can nil v.proc concurrently, so check-then-use pairs must capture the
 // pointer first or they race a nil receiver/field panic.
 func procOf(vc runtime.VMCaller) *proc {
-	if v, ok := vc.(*VM); ok {
+	switch v := vc.(type) {
+	case *VM:
+		return v.proc
+	case ownerCaller:
 		return v.proc
 	}
 	return nil
@@ -4222,6 +4295,12 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 // (sync.WaitGroup.Go, time.AfterFunc) lands on vc.Call from a foreign
 // goroutine, which reroutes to a spawned child VM — see Call.
 func adaptFunc(x runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.Value, error) {
+	return adaptFuncOut(x, t, vc, false)
+}
+
+// adaptFuncOut is adaptFunc; opaque hands a struct-shaped result to an
+// `any` result slot as is rather than marshaling it (see hostFieldValue).
+func adaptFuncOut(x runtime.Value, t reflect.Type, vc runtime.VMCaller, opaque bool) (reflect.Value, error) {
 	if vc == nil {
 		return reflect.Value{}, fmt.Errorf("cannot adapt %T to %s off-VM", x, t)
 	}
@@ -4250,7 +4329,9 @@ func adaptFunc(x runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.Va
 		for i := range out {
 			var rv reflect.Value
 			var err error
-			if i < len(rs) {
+			if opaque && i < len(rs) && t.Out(i) == anyType && structShaped(rs[i]) {
+				rv = reflect.ValueOf(any(rs[i]))
+			} else if i < len(rs) {
 				rv, err = toReflectValue(rs[i], t.Out(i), vc)
 			} else {
 				rv, err = toReflectValue(runtime.NIL, t.Out(i), vc)
@@ -4575,7 +4656,7 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 		if !fv.IsValid() || !fv.CanSet() {
 			f.trap("host value %T has no settable field %s", b.V, name)
 		}
-		nv, err := toReflectValue(val, fv.Type(), v)
+		nv, err := hostFieldValue(val, rv.Type(), name, fv.Type(), v)
 		if err != nil {
 			f.trap("set field %s: %s", name, err)
 		}
@@ -7068,7 +7149,43 @@ func isCompareOp(op bytecode.BinOp) bool {
 // scalarConst converts an untyped constant to the runtime type of a
 // scalar operand — comparisons first convert, then compare values
 // (`f float64 == hugeconst` rounds the constant, not the operand).
+// scalarKey memo-keys scalarConst's bare-scalar conversions by the
+// operand's kind (UConst.Memo).
+type scalarKey uint8
+
+const (
+	scalarInt scalarKey = iota + 1
+	scalarFloat
+	scalarString
+	scalarBool
+)
+
 func scalarConst(u *runtime.UConst, b runtime.Value) (runtime.Value, bool) {
+	var key scalarKey
+	switch b.(type) {
+	case int64:
+		key = scalarInt
+	case float64:
+		key = scalarFloat
+	case string:
+		key = scalarString
+	case bool:
+		key = scalarBool
+	}
+	if key == 0 {
+		return scalarConstSlow(u, b)
+	}
+	if r, hit := u.Memo(key); hit {
+		return r, true
+	}
+	r, ok := scalarConstSlow(u, b)
+	if ok {
+		u.SetMemo(key, r)
+	}
+	return r, ok
+}
+
+func scalarConstSlow(u *runtime.UConst, b runtime.Value) (runtime.Value, bool) {
 	switch b.(type) {
 	case int64:
 		i, ok := fitsIntConst(u.V, "int")
@@ -7147,8 +7264,13 @@ func scalarConst(u *runtime.UConst, b runtime.Value) (runtime.Value, bool) {
 // mismatch trap reports like Go's compile error.
 func (v *VM) adaptConst(f *frame, u *runtime.UConst, other runtime.Value) runtime.Value {
 	if nb, ok := other.(*runtime.Named); ok {
+		if r, hit := u.Memo(nb.Typ); hit {
+			return r
+		}
 		if r, ok2 := constToBasic(u, basicNameOf(nb.Typ)); ok2 {
-			return runtime.Tag(nb.Typ, r)
+			t := runtime.Tag(nb.Typ, r)
+			u.SetMemo(nb.Typ, t)
+			return t
 		}
 		switch u.V.Kind() {
 		case constant.Int, constant.Float, constant.Complex:
@@ -7166,6 +7288,13 @@ func (v *VM) adaptConst(f *frame, u *runtime.UConst, other runtime.Value) runtim
 				}
 			}
 		}
+	} else if g, ok := other.(*runtime.GoValue); ok && hostNamedInt(g.V) {
+		// a named host int (reflect.Kind, parse.NodeType) adopts the
+		// constant into its own type — `k == 2` compares two boxed
+		// host values like Go converting 2 to the operand's type.
+		if r, ok := constToHostInt(u, reflect.TypeOf(g.V)); ok {
+			return r
+		}
 	} else if s, ok := scalarConst(u, other); ok {
 		return s
 	} else if td := scalarOperandTypedef(other); td != nil && numericConstKind(u.V.Kind()) {
@@ -7177,6 +7306,46 @@ func (v *VM) adaptConst(f *frame, u *runtime.UConst, other runtime.Value) runtim
 		}
 	}
 	return v.materialize(f, u)
+}
+
+// hostNamedInt reports whether x is a host value of a defined integer
+// type — a reflect.Kind or parse.NodeType, not a bare int or int64.
+func hostNamedInt(x any) bool {
+	t := reflect.TypeOf(x)
+	if t == nil || t.PkgPath() == "" {
+		return false
+	}
+	switch t.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return true
+	}
+	return false
+}
+
+// constToHostInt converts an integer constant to the host type t, boxed;
+// false when the constant is not an integer t can represent.
+func constToHostInt(u *runtime.UConst, t reflect.Type) (runtime.Value, bool) {
+	c := constant.ToInt(u.V)
+	if c.Kind() != constant.Int {
+		return nil, false
+	}
+	rv := reflect.New(t).Elem()
+	switch t.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		i, exact := constant.Int64Val(c)
+		if !exact || rv.OverflowInt(i) {
+			return nil, false
+		}
+		rv.SetInt(i)
+	default:
+		n, exact := constant.Uint64Val(c)
+		if !exact || rv.OverflowUint(n) {
+			return nil, false
+		}
+		rv.SetUint(n)
+	}
+	return &runtime.GoValue{V: rv.Interface()}, true
 }
 
 // scalarOperandTypedef maps a bare scalar or GoValue operand to the
@@ -8741,6 +8910,9 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 			return &runtime.IfaceNil{Typ: tn.Typ}, nil
 		}
 	}
+	if r, ok := hostEnumConv(td, x); ok {
+		return r, nil
+	}
 	// an untyped constant converts by Go's representability rules —
 	// int64('a'), float64(1e500)'s overflow, string('a'), complex128(3)
 	// all land here.
@@ -9040,6 +9212,52 @@ func hostFloat(x runtime.Value) (float64, bool) {
 		return rv.Float(), true
 	}
 	return 0, false
+}
+
+// hostEnumConv converts an integer to a bound host enum (reflect.Kind,
+// parse.NodeType) as the boxed host value its constants carry, so
+// `parse.NodeType(1) == parse.NodeAction`. A constant must be
+// representable; a variable wraps like Go's conversion.
+func hostEnumConv(td *runtime.TypeDef, x runtime.Value) (runtime.Value, bool) {
+	if td.HostNew == nil || td.Kind != runtime.KindNamedBasic {
+		return nil, false
+	}
+	hv := td.HostNew()
+	if !hostNamedInt(hv) {
+		return nil, false
+	}
+	rt := reflect.TypeOf(hv)
+	for {
+		n, ok := x.(*runtime.Named)
+		if !ok {
+			break
+		}
+		x = n.V
+	}
+	if u, ok := x.(*runtime.UConst); ok {
+		return constToHostInt(u, rt)
+	}
+	var iv int64
+	var uv uint64
+	switch n := x.(type) {
+	case int64:
+		iv, uv = n, uint64(n)
+	case *runtime.GoValue:
+		var ok bool
+		if iv, uv, ok = hostScalarInts(n); !ok {
+			return nil, false
+		}
+	default:
+		return nil, false
+	}
+	rv := reflect.New(rt).Elem()
+	switch rt.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		rv.SetInt(iv)
+	default:
+		rv.SetUint(uv)
+	}
+	return &runtime.GoValue{V: rv.Interface()}, true
 }
 
 // hostScalarInts reads a host scalar of integer or float kind into the
@@ -9866,9 +10084,14 @@ func (v *VM) satisfiesIface(f *frame, td *runtime.TypeDef, x runtime.Value) bool
 // set a value offers depends only on its typedef and whether it was
 // reached through a pointer (methodInfoOfValue), so the answer can be
 // memoized per (interface, dynamic typedef, pointer) like Go's itabs.
+// A host box's set is its reflect type's (host), and a nil interface
+// value's is its tag's (nilIface keeps it apart from a value of the
+// same typedef, which methodInfoOfValue resolves differently).
 type ifaceKey struct {
 	iface, dyn *runtime.TypeDef
+	host       reflect.Type
 	ptr        bool
+	nilIface   bool
 }
 
 // maxIfaceCache bounds the per-VM memo: scripts that mint typedefs per
@@ -9876,23 +10099,31 @@ type ifaceKey struct {
 // it without limit. Reaching it starts over.
 const maxIfaceCache = 4096
 
-// ifaceDynKey reports x's memo key — struct and named values, directly
-// or through one pointer cell; anything else is checked uncached.
-func ifaceDynKey(x runtime.Value) (dyn *runtime.TypeDef, ptr, ok bool) {
+// ifaceDynKey reports x's memo key (iface left unset) — struct and named
+// values, directly or through one pointer cell, host boxes and tagged nil
+// interface values; anything else is checked uncached.
+func ifaceDynKey(x runtime.Value) (key ifaceKey, ok bool) {
 	switch t := x.(type) {
 	case *runtime.Struct:
-		return t.Def, false, t.Def != nil
+		return ifaceKey{dyn: t.Def}, t.Def != nil
 	case *runtime.Named:
-		return t.Typ, false, namedKeyable(t)
+		return ifaceKey{dyn: t.Typ}, namedKeyable(t)
+	case *runtime.GoValue:
+		// hostMethodSet reads only the reflect type, and host methods
+		// carry no signatures for the second pass.
+		rt := reflect.TypeOf(t.V)
+		return ifaceKey{host: rt}, rt != nil
+	case *runtime.IfaceNil:
+		return ifaceKey{dyn: t.Typ, nilIface: true}, t.Typ != nil
 	case *runtime.Cell:
 		switch e := t.Elem.(type) {
 		case *runtime.Struct:
-			return e.Def, true, e.Def != nil
+			return ifaceKey{dyn: e.Def, ptr: true}, e.Def != nil
 		case *runtime.Named:
-			return e.Typ, true, namedKeyable(e)
+			return ifaceKey{dyn: e.Typ, ptr: true}, namedKeyable(e)
 		}
 	}
-	return nil, false, false
+	return ifaceKey{}, false
 }
 
 // namedKeyable reports whether a Named value's method set follows from
@@ -9913,7 +10144,7 @@ func namedKeyable(n *runtime.Named) bool {
 // per VM (see ifaceKey) until a method set is edited in place
 // (runtime.MethodSetsChanged).
 func (v *VM) ifaceSatisfied(td *runtime.TypeDef, x runtime.Value) (bool, error) {
-	dyn, ptr, keyed := ifaceDynKey(x)
+	key, keyed := ifaceDynKey(x)
 	if !keyed {
 		return v.ifaceSatisfiedUncached(td, x)
 	}
@@ -9921,7 +10152,7 @@ func (v *VM) ifaceSatisfied(td *runtime.TypeDef, x runtime.Value) (bool, error) 
 		v.ifaceMemo = map[ifaceKey]bool{}
 		v.ifaceEpoch = epoch
 	}
-	key := ifaceKey{iface: td, dyn: dyn, ptr: ptr}
+	key.iface = td
 	if ok, hit := v.ifaceMemo[key]; hit {
 		return ok, nil
 	}
@@ -10482,6 +10713,16 @@ func convComplex(x runtime.Value) (complex128, bool) {
 }
 
 func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runtime.Value {
+	if u, ok := x.(*runtime.UConst); ok && td.HostNew != nil && td.Kind == runtime.KindNamedBasic {
+		// a bound host enum (reflect.Kind, parse.NodeType) holds the
+		// boxed host value its constants and host results carry, so
+		// `var k reflect.Kind = 2` compares equal to reflect.Int.
+		if hv := td.HostNew(); hostNamedInt(hv) {
+			if r, ok := constToHostInt(u, reflect.TypeOf(hv)); ok {
+				return r
+			}
+		}
+	}
 	if u, ok := x.(*runtime.UConst); ok {
 		if utd := v.peelNamed(td); utd != nil && basicNameOf(utd) != "" {
 			// a constant converts straight to the declared basic type:
@@ -12104,6 +12345,75 @@ func hasUnbound(tparams []string, binds map[string]runtime.Value) bool {
 		}
 	}
 	return false
+}
+
+// inferCached is inferBinds behind a per-package cache. Inference reads
+// only the callee and, per argument, either the untyped constant it
+// carries or the typedef it unifies against (the static type, else the
+// value's), so a call with the same callee and argument types reuses
+// the instance — every inferred call minted a fresh Function and binds
+// map before.
+func (v *VM) inferCached(fn *runtime.Function, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (*runtime.Function, error) {
+	if fn.Pkg == nil || fn.Decl == nil {
+		return v.inferBinds(fn, args, statics, spreadTd)
+	}
+	key, keep, ok := v.inferKey(fn, args, statics, spreadTd)
+	if !ok {
+		return v.inferBinds(fn, args, statics, spreadTd)
+	}
+	if r, hit := fn.Pkg.Inferred(key); hit {
+		return r, nil
+	}
+	r, err := v.inferBinds(fn, args, statics, spreadTd)
+	if err == nil {
+		fn.Pkg.SetInferred(key, fn.Decl, keep, r)
+	}
+	return r, err
+}
+
+// inferKey spells what inferBinds reads. keep lists the typedefs the
+// key's addresses point into; the cache holds them so an address in a
+// live key is never reused.
+func (v *VM) inferKey(fn *runtime.Function, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (string, []any, bool) {
+	fk, ok := runtime.InstKey(fn.Decl, fn.File, fn.Name, fn.Binds)
+	if !ok {
+		return "", nil, false
+	}
+	var b strings.Builder
+	b.WriteString(fk)
+	keep := make([]any, 0, len(args)+2)
+	keep = append(keep, fn)
+	for i, a := range args {
+		b.WriteString("|a")
+		if v.untypedConstArg(a) {
+			// a constant joins the bind by kind and representability,
+			// so its exact value is part of the key
+			u, _ := constPayload(a)
+			fmt.Fprintf(&b, "c%d:%t:%s", u.V.Kind(), u.Rune, u.V.ExactString())
+			if n, isN := a.(*runtime.Named); isN && n.Typ != nil {
+				b.WriteByte(':')
+				runtime.AppendTypeKey(&b, n.Typ)
+				keep = append(keep, n.Typ)
+			}
+			continue
+		}
+		conc := staticAt(statics, i)
+		if conc == nil {
+			conc = v.argTypedef(a)
+		}
+		if conc == nil {
+			b.WriteByte('_')
+			continue
+		}
+		runtime.AppendTypeKey(&b, conc)
+		keep = append(keep, conc)
+	}
+	if spreadTd != nil {
+		b.WriteString("|spread:")
+		runtime.AppendTypeKey(&b, spreadTd)
+		keep = append(keep, spreadTd)
+	}
+	return b.String(), keep, true
 }
 
 // inferBinds binds a generic function's unbound type parameters from the

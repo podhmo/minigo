@@ -2,10 +2,16 @@ package runtime
 
 import (
 	"fmt"
+	"go/ast"
 	"go/token"
+	"reflect"
+	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 
+	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/index"
 	"github.com/podhmo/minigo/syntax"
 )
@@ -180,6 +186,14 @@ type Package struct {
 
 	matMu sync.Mutex
 	matM  map[*index.Decl]Value // materialization dedup: one TypeDef/Function identity per decl
+
+	instMu    sync.Mutex
+	instM     map[string]instChunk // compiled generic instantiations (InstChunk)
+	instCount map[*ast.FuncDecl]int
+
+	inferMu    sync.Mutex
+	inferM     map[string]inferEntry // inferred generic instances (Inferred)
+	inferCount map[*ast.FuncDecl]int
 }
 
 // State reports the package lifecycle stage.
@@ -421,4 +435,223 @@ func memberDecl(ix *index.Index, name string) (*index.Decl, bool) {
 		return d, true
 	}
 	return nil, false
+}
+
+// instChunk is one cached instantiation. It keeps the binds alive, so
+// the addresses its key spells cannot be reused by other type values.
+type instChunk struct {
+	binds map[string]Value
+	ch    *bytecode.Chunk
+}
+
+// maxInstPerDecl bounds the instantiations cached per generic decl:
+// binds rebuilt per call (an anonymous []T inferred from an argument)
+// would otherwise retain a chunk per call.
+const maxInstPerDecl = 64
+
+// InstKey spells the identity of a generic instantiation for
+// InstChunk: the decl, the function name, and each bind's type (see
+// writeTypeKey). ok is false when a bind cannot be keyed.
+func InstKey(decl *ast.FuncDecl, file *syntax.File, name string, binds map[string]Value) (string, bool) {
+	var b strings.Builder
+	writePtr(&b, decl)
+	b.WriteByte('|')
+	writePtr(&b, file)
+	b.WriteByte('|')
+	b.WriteString(name)
+	if !writeBindsKey(&b, binds, instKeyDepth) {
+		return "", false
+	}
+	return b.String(), true
+}
+
+// instKeyDepth bounds how deep writeTypeKey follows nested typedefs
+// (Elem, Binds, OuterArgs) before it falls back to the pointer — a
+// recursive type would otherwise never end.
+const instKeyDepth = 4
+
+func writeBindsKey(b *strings.Builder, binds map[string]Value, depth int) bool {
+	names := make([]string, 0, len(binds))
+	for k := range binds {
+		names = append(names, k)
+	}
+	slices.Sort(names)
+	for _, n := range names {
+		b.WriteByte('|')
+		b.WriteString(n)
+		b.WriteByte('=')
+		td, ok := binds[n].(*TypeDef)
+		if !ok || td == nil {
+			return false
+		}
+		writeTypeKey(b, td, depth)
+	}
+	return true
+}
+
+// writeTypeKey spells a typedef by what determines it rather than by its
+// pointer: call-site inference and re-specialization mint fresh copies
+// of one type (a `stringSlice` with the same Spec and Anon, an `[]int`
+// from the same type expression), and pointer keys would compile each
+// copy again. The spelled parts are the syntax nodes and package/file
+// the type resolves in, its name and kind, its local-type scope and
+// identity counters, and — recursively — its binds, element and
+// display context. Everything else (fields, methods, embeds, caches) is
+// derived from those. A bare predeclared basic typedef spells its name
+// alone; a host-backed typedef, whose constructor cannot be compared,
+// spells its pointer.
+func writeTypeKey(b *strings.Builder, td *TypeDef, depth int) {
+	if plainBasic(td) {
+		b.WriteString(td.Name)
+		return
+	}
+	if depth == 0 || td.HostNew != nil || td.HostScalar != nil {
+		b.WriteByte('@')
+		writePtr(b, td)
+		return
+	}
+	b.WriteByte('{')
+	writePtr(b, td.Pkg)
+	b.WriteByte(',')
+	writePtr(b, td.File)
+	b.WriteByte(',')
+	writePtr(b, td.Spec)
+	b.WriteByte(',')
+	if td.Anon != nil {
+		writePtr(b, td.Anon)
+	}
+	b.WriteByte(',')
+	b.WriteString(td.Name)
+	b.WriteByte(',')
+	b.WriteString(strconv.Itoa(int(td.Kind)))
+	b.WriteByte(',')
+	writePtr(b, td.LocalTypes)
+	b.WriteByte(',')
+	b.WriteString(strconv.Itoa(td.Gen))
+	if td.Local {
+		b.WriteString(",local")
+	}
+	if td.inInstArgs {
+		b.WriteString(",instargs")
+	}
+	if td.Elem != nil {
+		b.WriteString(",elem:")
+		writeTypeKey(b, td.Elem, depth-1)
+	}
+	if len(td.Binds) > 0 && !writeBindsKey(b, td.Binds, depth-1) {
+		// a non-typedef bind: fall back to this typedef's identity
+		b.WriteString(",@")
+		writePtr(b, td)
+	}
+	for _, list := range [][]Value{td.OuterArgs, td.OuterSpell} {
+		b.WriteString(",[")
+		for _, v := range list {
+			if a, ok := v.(*TypeDef); ok && a != nil {
+				writeTypeKey(b, a, depth-1)
+			} else {
+				fmt.Fprintf(b, "%T:%v", v, v)
+			}
+			b.WriteByte(';')
+		}
+		b.WriteByte(']')
+	}
+	b.WriteByte('}')
+}
+
+// AppendTypeKey writes td's identity as InstKey spells a bind (see
+// writeTypeKey) — for callers keying their own caches on types.
+func AppendTypeKey(b *strings.Builder, td *TypeDef) {
+	writeTypeKey(b, td, instKeyDepth)
+}
+
+// inferEntry is one cached inference result. keep holds what the key's
+// addresses point into (the argument typedefs), so they stay unique.
+type inferEntry struct {
+	keep []any
+	fn   *Function
+}
+
+// maxInferPerDecl bounds the cached inference results per generic decl.
+const maxInferPerDecl = 256
+
+// Inferred returns the instance an earlier call inferred under key: a
+// generic callee plus the argument types inference read.
+func (p *Package) Inferred(key string) (*Function, bool) {
+	p.inferMu.Lock()
+	defer p.inferMu.Unlock()
+	e, ok := p.inferM[key]
+	return e.fn, ok
+}
+
+// SetInferred records an inferred instance under key, up to
+// maxInferPerDecl per decl. keep must hold everything the key's
+// addresses point into.
+func (p *Package) SetInferred(key string, decl *ast.FuncDecl, keep []any, fn *Function) {
+	p.inferMu.Lock()
+	defer p.inferMu.Unlock()
+	if p.inferM == nil {
+		p.inferM = map[string]inferEntry{}
+		p.inferCount = map[*ast.FuncDecl]int{}
+	}
+	if _, ok := p.inferM[key]; ok || p.inferCount[decl] >= maxInferPerDecl {
+		return
+	}
+	p.inferCount[decl]++
+	p.inferM[key] = inferEntry{keep: keep, fn: fn}
+}
+
+// writePtr spells a pointer-shaped value's address (0 for nil).
+func writePtr(b *strings.Builder, x any) {
+	var p uintptr
+	if rv := reflect.ValueOf(x); rv.IsValid() {
+		switch rv.Kind() {
+		case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.UnsafePointer:
+			p = rv.Pointer()
+		}
+	}
+	b.WriteString(strconv.FormatUint(uint64(p), 16))
+}
+
+// plainBasic reports whether td is a bare predeclared basic typedef
+// (`string`, `int`) carrying nothing but its name and kind. OuterSpell
+// is ignored: it only spells function-local type names a typedef's AST
+// embeds, and a basic typedef has no AST.
+func plainBasic(td *TypeDef) bool {
+	canon := BasicTypedef(td.Name)
+	if canon == nil || td.Kind != canon.Kind {
+		return false
+	}
+	return td.Pkg == nil && td.File == nil && td.Spec == nil && td.Anon == nil &&
+		td.Fields == nil && td.FTags == nil && td.Methods == nil &&
+		td.TParams == nil && td.Binds == nil && td.OuterArgs == nil &&
+		td.MReqs == nil && td.IEmbeds == nil && td.EmbedSpecs == nil &&
+		td.Embeds == nil && td.LocalTypes == nil && td.Elem == nil &&
+		td.HostNew == nil && td.HostScalar == nil && !td.Local && td.Gen == 0
+}
+
+// InstChunk returns the chunk compiled earlier for the instantiation
+// key spells (see InstKey). The compiled code depends only on the
+// decl, file, name and binds, so instances with the same key share it
+// — like WithBinds copies share their original's chunk.
+func (p *Package) InstChunk(key string) (*bytecode.Chunk, bool) {
+	p.instMu.Lock()
+	defer p.instMu.Unlock()
+	e, ok := p.instM[key]
+	return e.ch, ok
+}
+
+// SetInstChunk records a compiled instantiation under key, up to
+// maxInstPerDecl per decl.
+func (p *Package) SetInstChunk(key string, decl *ast.FuncDecl, binds map[string]Value, ch *bytecode.Chunk) {
+	p.instMu.Lock()
+	defer p.instMu.Unlock()
+	if p.instM == nil {
+		p.instM = map[string]instChunk{}
+		p.instCount = map[*ast.FuncDecl]int{}
+	}
+	if _, ok := p.instM[key]; ok || p.instCount[decl] >= maxInstPerDecl {
+		return
+	}
+	p.instCount[decl]++
+	p.instM[key] = instChunk{binds: binds, ch: ch}
 }

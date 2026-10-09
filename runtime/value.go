@@ -1430,6 +1430,12 @@ type BuiltinFunc struct {
 	// (F[T]) produces a plain BuiltinFunc that calls GenFn with the
 	// bound type arguments (e.g. reflect.TypeFor[T]).
 	GenFn func(vm VMCaller, targs []Value, args []Value) (Value, error)
+	// SyncCallbacks declares that Fn calls back into the VM only
+	// synchronously — on the calling goroutine, before Fn returns —
+	// and never retains the VMCaller (no stored callbacks, iterators or
+	// goroutines). The VM then hands Fn a caller that skips the
+	// cross-goroutine check every Call otherwise pays for.
+	SyncCallbacks bool
 }
 
 // SmallIntOf reads a host numeric that fits the int64 domain — named
@@ -1651,7 +1657,31 @@ type GoValue struct{ V any }
 type UConst struct {
 	V    constant.Value
 	Rune bool // Kind()==Int but the literal/expression is rune-flavored
+
+	// memo caches the last operand-typed conversion (see Memo): a chunk
+	// constant is one shared *UConst, re-adapted on every execution of
+	// `r == ' '`.
+	memo atomic.Pointer[constMemo]
 }
+
+type constMemo struct {
+	key any
+	v   Value
+}
+
+// Memo returns the value SetMemo stored under key. Callers key by what
+// determines the conversion (the operand's typedef, or its scalar
+// kind) and must only store immutable values: hits share one value.
+func (u *UConst) Memo(key any) (Value, bool) {
+	if m := u.memo.Load(); m != nil && m.key == key {
+		return m.v, true
+	}
+	return nil, false
+}
+
+// SetMemo replaces the single memo entry; constants used against
+// several operand types just re-convert on a miss.
+func (u *UConst) SetMemo(key any, v Value) { u.memo.Store(&constMemo{key: key, v: v}) }
 
 // DefaultName spells the Go type an untyped constant defaults to.
 func (u *UConst) DefaultName() string {

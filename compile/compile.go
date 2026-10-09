@@ -588,6 +588,28 @@ func (c *compiler) refRef(name string, pos token.Pos) {
 
 // Func compiles fn.Decl into fn.Chunk.
 func Func(fn *runtime.Function) error {
+	if len(fn.Binds) == 0 || fn.Pkg == nil {
+		return compileFunc(fn)
+	}
+	// a generic instantiation compiles once per distinct binds: every
+	// call of an inferred generic mints a fresh Function
+	key, ok := runtime.InstKey(fn.Decl, fn.File, fn.Name, fn.Binds)
+	if ok {
+		if ch, hit := fn.Pkg.InstChunk(key); hit {
+			fn.Chunk = ch
+			return nil
+		}
+	}
+	if err := compileFunc(fn); err != nil {
+		return err
+	}
+	if ok {
+		fn.Pkg.SetInstChunk(key, fn.Decl, fn.Binds, fn.Chunk)
+	}
+	return nil
+}
+
+func compileFunc(fn *runtime.Function) error {
 	c := &compiler{pkg: fn.Pkg, file: fn.File, fs: newFScope(nil), ch: &bytecode.Chunk{Name: fn.Name}, labels: map[string]*labelInfo{}, binds: fn.Binds, symName: fn.Name, iotaVal: -1}
 	if fn.Pkg != nil {
 		c.symName = fn.Pkg.Name + "." + fn.Name
@@ -4379,11 +4401,26 @@ func orderSpecs(ix *index.Index, reps []*index.Decl) []*index.Decl {
 		declared[n] = true
 	}
 
-	// idents referenced by an AST (also covers nested func literals)
+	// a method name stands for one declaring type's method (the first
+	// the type map yields, as the per-name scan did)
+	methods := map[string]*index.Decl{}
+	for _, td := range ix.Types {
+		for name, m := range td.Methods {
+			if m != nil && methods[name] == nil {
+				methods[name] = m
+			}
+		}
+	}
+
+	// package-level names referenced by an AST (also covers nested func
+	// literals). Locals, fields and builtins never feed a dependency, so
+	// they stay out of the sets funcRefs merges transitively.
 	refs := func(n ast.Node, out map[string]bool) {
 		ast.Inspect(n, func(x ast.Node) bool {
 			if id, ok := x.(*ast.Ident); ok {
-				out[id.Name] = true
+				if declared[id.Name] || ix.Funcs[id.Name] != nil || methods[id.Name] != nil {
+					out[id.Name] = true
+				}
 			}
 			return true
 		})
@@ -4402,14 +4439,10 @@ func orderSpecs(ix *index.Index, reps []*index.Decl) []*index.Decl {
 		}
 		d := ix.Funcs[name]
 		if d == nil {
-			for _, td := range ix.Types {
-				if m := td.Methods[name]; m != nil {
-					d = m
-					break
-				}
-			}
+			d = methods[name]
 		}
 		if d == nil {
+			funcRefsCache[name] = nil
 			return nil
 		}
 		r := map[string]bool{}

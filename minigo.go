@@ -735,15 +735,13 @@ func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, e
 	defer e.buildMu.Unlock()
 	p := e.newPackage(meta.ImportPath, meta.Name, meta.Dir)
 	p.Standard = meta.Standard
-	var files []*syntax.File
-	for _, f := range meta.GoFiles {
-		sf, err := syntax.ParseFile(e.fset, f, nil)
-		if err != nil {
-			p.SetState(runtime.Failed)
-			return nil, fmt.Errorf("parse %s: %w", f, err)
-		}
+	files, failed, err := parsePackageFiles(e.fset, meta.GoFiles)
+	if err != nil {
+		p.SetState(runtime.Failed)
+		return nil, fmt.Errorf("parse %s: %w", failed, err)
+	}
+	for _, sf := range files {
 		sf.LangMod = meta.Lang
-		files = append(files, sf)
 	}
 	if err := e.indexFiles(p, files); err != nil {
 		p.SetState(runtime.Failed)
@@ -788,16 +786,14 @@ func (e *Engine) buildPackage(meta *resolve.PackageMeta) (*runtime.Package, erro
 	}
 	e.mu.Unlock()
 
-	var files []*syntax.File
-	for _, f := range meta.GoFiles {
-		sf, err := syntax.ParseFile(e.fset, f, nil)
-		if err != nil {
-			p.SetState(runtime.Failed)
-			p.FinishIndexing()
-			return nil, fmt.Errorf("parse %s: %w", f, err)
-		}
+	files, failed, err := parsePackageFiles(e.fset, meta.GoFiles)
+	if err != nil {
+		p.SetState(runtime.Failed)
+		p.FinishIndexing()
+		return nil, fmt.Errorf("parse %s: %w", failed, err)
+	}
+	for _, sf := range files {
 		sf.LangMod = meta.Lang
-		files = append(files, sf)
 	}
 	if err := e.indexFiles(p, files); err != nil {
 		p.SetState(runtime.Failed)
@@ -1140,7 +1136,7 @@ func (e *Engine) typeDefOf(pkg *runtime.Package, d *index.Decl) (runtime.Value, 
 // typeDefOf (index materialization) and the REPL's :pin method grafts.
 func (e *Engine) methodFunc(pkg *runtime.Package, recv string, md *index.Decl) *runtime.Function {
 	_, ptrRecv := md.Func.Recv.List[0].Type.(*ast.StarExpr)
-	return &runtime.Function{
+	fn := &runtime.Function{
 		Pkg: pkg, File: md.File, Decl: md.Func, Name: recv + "." + md.Name,
 		Recv: recv, PtrRecv: ptrRecv, Compile: compile.Func,
 		// Go 1.27 generic methods: `func (l List[E]) Map[R any](...)`
@@ -1148,4 +1144,8 @@ func (e *Engine) methodFunc(pkg *runtime.Package, recv string, md *index.Decl) *
 		TParams:      typeParamNames(md.Func.Type.TypeParams),
 		TConstraints: typeParamConstraints(md.Func.Type.TypeParams),
 	}
+	if ch := e.srcImpl(pkg, recv, md); ch != nil {
+		fn.Chunk, fn.Compile = ch, nil
+	}
+	return fn
 }
