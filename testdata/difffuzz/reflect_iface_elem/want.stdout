@@ -1,0 +1,6 @@
+iface nil: false
+elem kind: ptr
+elem nil: true
+elem type: *bytes.Buffer
+nil iface nil: true
+nil elem valid: false

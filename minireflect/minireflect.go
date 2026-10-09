@@ -293,7 +293,14 @@ func (e *Env) typeAssert() *runtime.BuiltinFunc {
 					vt = v.Type()
 				}
 			case v.Kind() == reflect.Interface:
-				if dt := typeOfValue(e, v.get()); dt != nil {
+				x := v.get()
+				if in, isIN := x.(*runtime.IfaceNil); isIN && runtime.IsNilIface(in) {
+					// a nil interface has no dynamic type — the
+					// assert fails regardless of the static tag
+					// (typeOfValue now reports the tag itself).
+					break
+				}
+				if dt := typeOfValue(e, x); dt != nil {
 					vt = e.rtypeOf(dt)
 				}
 			default:
