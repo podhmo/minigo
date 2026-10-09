@@ -5087,6 +5087,16 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 	if dv, ok := runtime.Deref(base); ok {
 		return v.index(f, dv, idx)
 	}
+	switch base.(type) {
+	case *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
+		// A ref the plain deref cannot resolve may still reach a
+		// readable value — a chain crossing a map element (m[k].a[i],
+		// where m[k] is a copy but the slice field shares backing)
+		// resolves the same hops refThrough walks for the store side.
+		if dv, ok := v.refThrough(f, base); ok {
+			return v.index(f, dv, idx)
+		}
+	}
 	rawIdx := idx                               // the declared key check needs the operand's named tag
 	idx = runtime.Unwrap(v.materialize(f, idx)) // named key/index types hash as their value
 	base = v.materialize(f, base)               // `const s = "x"; s[0]` indexes a UConst

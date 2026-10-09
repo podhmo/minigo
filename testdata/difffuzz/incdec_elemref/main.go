@@ -27,6 +27,17 @@ func main() {
 	m[i][0]++
 	fmt.Println(m[0][0])
 
+	// a slice field inside a map element shares backing — the
+	// interior write resolves through the element copy
+	type MS struct {
+		A  []S
+		Sn []int
+	}
+	ms := map[int]MS{0: {A: []S{{N: 1}}, Sn: []int{1}}}
+	ms[0].A[0].N++
+	ms[0].Sn[0]++
+	fmt.Println(ms[0].A[0].N, ms[0].Sn[0])
+
 	// pointer elements write through the pointer, like `m[k].f = v`
 	mp := map[int]*S{0: {N: 5}}
 	mp[0].N++
