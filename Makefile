@@ -1,4 +1,4 @@
-.PHONY: all test format clean lint go-mod-tidy-all difffuzz difffuzz-corpus
+.PHONY: all test format clean lint go-mod-tidy-all difffuzz difffuzz-corpus tmpltests
 
 all:
 	go build ./...
@@ -29,6 +29,12 @@ difffuzz:
 
 difffuzz-corpus:
 	go -C ./tools/difffuzz run ./ corpus -goroot-tests $(DIFFFUZZ_CORPUS_ARGS)
+
+# verbatim upstream tests under --src (see tools/tmpltests/README.md).
+# override e.g. `make tmpltests TMPLTESTS_ARGS="-only TestExec"`
+TMPLTESTS_ARGS ?=
+tmpltests:
+	go -C ./tools/tmpltests run ./ $(TMPLTESTS_ARGS)
 
 clean:
 	go clean -cache -testcache # General Go clean
