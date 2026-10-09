@@ -352,8 +352,8 @@ func CommentsWalk() string {
 		return "want 1 file"
 	}
 	cs := inspect.Comments(fs[0])
-	if len(cs) != 11 {
-		return "want 11 comments, got " + fmt.Sprint(len(cs))
+	if len(cs) != 18 {
+		return "want 18 comments, got " + fmt.Sprint(len(cs))
 	}
 	free, attached := 0, 0
 	var sw, directive *inspect.Comment
@@ -370,7 +370,7 @@ func CommentsWalk() string {
 			directive = c
 		}
 	}
-	if free != 6 || attached != 5 {
+	if free != 11 || attached != 7 {
 		return fmt.Sprintf("free=%d attached=%d", free, attached)
 	}
 	if sw == nil {

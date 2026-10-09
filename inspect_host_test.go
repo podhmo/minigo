@@ -244,6 +244,13 @@ func TestCommentsOf(t *testing.T) {
 		"15:true:// a floating comment between decls — no declaration claims it",
 		"17:false:// Bye is a second documented function.",
 		"20:true:/* an inline block comment */",
+		"22:false:// WithParams exercises comments inside a signature's param and",
+		"23:false:// result lists — the parser leaves them unclaimed.",
+		"25:true:// x is value of x",
+		"26:true:/* y is */",
+		"27:true:/* result comment */",
+		"31:true:/* x is */",
+		"31:true:/* y is ... */",
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("comments (-want +got):\n%s", diff)

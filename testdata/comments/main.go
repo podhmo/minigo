@@ -18,3 +18,14 @@ func Documented() int { // a trailing comment on the signature line
 func Bye() string { return "bye" }
 
 var V = /* an inline block comment */ 1
+
+// WithParams exercises comments inside a signature's param and
+// result lists — the parser leaves them unclaimed.
+func WithParams(
+	x int, // x is value of x
+	y string, /* y is */
+) (r int /* result comment */, err error) {
+	return
+}
+
+func InlineParams(x int /* x is */, y /* y is ... */ string) {}
