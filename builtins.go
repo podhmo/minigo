@@ -567,14 +567,14 @@ func builtins(e *Engine) *runtime.Env {
 	// writes "12"), while println always spaces them.
 	bf("print", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		for _, a := range args {
-			fmt.Fprint(os.Stderr, display(a))
+			fmt.Fprint(os.Stderr, display(v, a))
 		}
 		return runtime.NIL, nil
 	})
 	bf("println", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		parts := make([]any, len(args))
 		for i, a := range args {
-			parts[i] = display(a)
+			parts[i] = display(v, a)
 		}
 		fmt.Fprintln(os.Stderr, parts...)
 		return runtime.NIL, nil
@@ -786,7 +786,7 @@ func namedFloat32(x runtime.Value) bool {
 	return ok && float32Tag(n.Typ)
 }
 
-func display(v runtime.Value) any {
+func display(vc runtime.VMCaller, v runtime.Value) any {
 	switch x := v.(type) {
 	case runtime.Nil, *runtime.IfaceNil:
 		// print/println spell a nil interface like the runtime's
@@ -809,15 +809,36 @@ func display(v runtime.Value) any {
 		if err != nil {
 			return err.Error()
 		}
-		return display(nv)
+		return display(vc, nv)
 	case *runtime.Named:
-		return display(x.V)
+		// a typed constant materializes through its declared type, not
+		// the default one: `uint64(1<<64 - 1)` is max-uint where the
+		// untyped reading would overflow int.
+		if u, ok := x.V.(*runtime.UConst); ok {
+			if mc, ok2 := vc.(interface {
+				MaterializeConstErr(*runtime.UConst, *runtime.TypeDef) (runtime.Value, error)
+			}); ok2 {
+				if mv, err := mc.MaterializeConstErr(u, x.Typ); err == nil {
+					x = runtime.Tag(x.Typ, mv)
+				}
+			}
+		}
+		// a declared unsigned-int tag means the int64 payload holds
+		// two's-complement bits: `var u uint = 18446744073709551615` and
+		// `^uint64(0)` store -1 but print the unsigned reading.
+		if iv, ok := x.V.(int64); ok {
+			switch runtime.BasicNameOf(x.Typ) {
+			case "uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "byte":
+				return uint64(iv)
+			}
+		}
+		return display(vc, x.V)
 	case *runtime.Cell:
-		return display(x.Elem)
+		return display(vc, x.Elem)
 	case *runtime.Slice:
 		parts := make([]any, len(x.Elems))
 		for i, e := range x.Elems {
-			parts[i] = display(e)
+			parts[i] = display(vc, e)
 		}
 		return parts
 	case *runtime.Tuple:
@@ -828,14 +849,14 @@ func display(v runtime.Value) any {
 			case runtime.Nil, *runtime.IfaceNil:
 				parts[i] = "<nil>"
 			default:
-				parts[i] = fmt.Sprint(display(e))
+				parts[i] = fmt.Sprint(display(vc, e))
 			}
 		}
 		return "(" + strings.Join(parts, ", ") + ")"
 	case *runtime.Struct:
 		parts := make([]any, len(x.Fields))
 		for i, e := range x.Fields {
-			parts[i] = display(e)
+			parts[i] = display(vc, e)
 		}
 		return fmt.Sprintf("{%v}", joinDisplay(parts))
 	case *runtime.Map:
@@ -846,7 +867,7 @@ func display(v runtime.Value) any {
 			if i > 0 {
 				sb.WriteByte(' ')
 			}
-			sb.WriteString(fmt.Sprintf("%v:%v", display(k), display(e)))
+			sb.WriteString(fmt.Sprintf("%v:%v", display(vc, k), display(vc, e)))
 		}
 		sb.WriteByte(']')
 		return sb.String()
@@ -862,7 +883,7 @@ func display(v runtime.Value) any {
 // Format renders a runtime value for host-side output — the CLI's run
 // result and embedding tools print it like Go's %v would.
 func Format(v runtime.Value) any {
-	return display(v)
+	return display(nil, v)
 }
 
 func joinDisplay(parts []any) string {
