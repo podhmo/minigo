@@ -774,3 +774,60 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 ### 不備の振り返り（メモ）
 
 - 見た目の symptom から根因を推測する TODO 記述は2度連続で外れた（`panic_typednil` の「表現不能」仮説、geninfer の2項目分割）。pin に「観測できる事実」と「推測」を分けて書くと次ラウンドの誤誘導が減らせるかもしれない。
+
+## 6.20 実施ラウンド（round-18）: Stack #717 — deadlock 検出・corpus/gen 掃討で修正6 PR・全体差分レビュー
+
+発端は同じく TODO.md の difffuzz 系残件の直列掃討（CAP=10、子セッションは全体差分レビュー1本のみ）。成果: **計7 PR（修正6・本レポート、Stack #717）**。TODO の difffuzz 系未完了項目（deadlock 検出）は1件のみ残っておりそれを実装した後、補充手順どおり corpus sweep（全11 subdir）→ gen hunt（4 ドメイン、バッチ・depth 倍加の再掃含む）まで回して枯渇を確認した。
+
+### 実施内容
+
+| フェーズ | 内容 | PR |
+|------|------|-----|
+| TODO 残件 | **deadlock 検出**（proc が parked/wakeable goroutine を数え、全員睡眠＋外部待ち無しで gc テキストの fatal） | [#711](https://github.com/podhmo/minigo/pull/711) |
+| corpus sweep | `$GOROOT/test` 全 subdir を走査。SILENT/CRASH の根因潰し: 数値 index/slice-bound が符号付き int64 で読まれ full-width uint64 が -1 に化ける（`idxuint_oob`）、束縛型引数の typedef に外側 instantiation args が折り畳まれる（`typeparambound_localtype`: `x.(T)` と `reflect.DeepEqual` の両症状 = 1根因）、`crypto/md5.block` が未実装 asm で IV をそのまま吐く、`str()` が `*runtime.UConst` を `fmt.Sprint` に流す、`//go:linkname` の pull decl が自分自身に解決され prepFrame が無限再帰 | [#716](https://github.com/podhmo/minigo/pull/716), [#719](https://github.com/podhmo/minigo/pull/719), [#720](https://github.com/podhmo/minigo/pull/720), [#721](https://github.com/podhmo/minigo/pull/721), [#722](https://github.com/podhmo/minigo/pull/722) |
+| gen hunt | text/num/reflect/lang を通常＋バッチ16・depth5 で再走査。SILENT/CRASH 0（reflect のみ panic-message SILENT 1件 = `reflect.ValueOf` 境界クラスで記録のみ） | — |
+| 全体差分レビュー | 子セッションに main→`devin/1791528000-linkname-cycle` の全差分を委譲 | （結果は次節） |
+| 帳簿 | TODO.md の deadlock 項目を `[x]` に | 本 PR |
+| 本レポート | 本章 | 本 PR |
+
+### レビュー指摘の判定結果
+
+全体差分レビュー（子セッション）から バグ4件・再実装懸念4件・リファクタ提案6件＋構造指摘1件。順序ルールどおりバグを先に判定・修正してからリファクタ系を判定した。
+
+**バグ — 全4件とも「要」・修正済み**
+
+1. **`leaveG` が deadlock watch を再評価しない**: goroutine 終了で残り全員が parked になる遷移を見逃し、gc は fatal・minigo は HANG。`leaveG` 末尾で `checkDeadLocked` を呼ぶ形に修正（`deadlock_parked_exit` pin、PENDING＝fatal 形は want.stdout に書けない制約）。
+2. **`time.AfterFunc` の `Stop`/`Reset` が外部待ちを管理しない**: pending callback は wake source なのに Stop で消しても note が残らず（＝park 側が wakeable でないまま watch が arm しない）gc は fatal・minigo は HANG。`afterFuncTimer` ラッパーを導入し生成/Stop/Reset で note を hold/drop（`deadlock_afterfunc_stop` pin、PENDING）。
+3. **`unparkG` が wakeable をスタック上の値から再構築できない**: 登録なし parked（parkedOnly マーカー）で `g.wakeable` を読む設計に改め、削除時に parkedOnly を掃除。
+4. **index/slice-bound の符号付き読みが `*runtime.GoValue` の非 int64 unsigned を落とす**: `atomic.Uint32`/`Uintptr` の Load 結果で index すると silent 誤値。`hostUint`（全幅の unsigned 読み）と `indexSmallInt`（GoValue の内側を SmallIntOf）を追加（`hostuint_index` pin は昇格）。
+
+**再実装懸念 — 3件採用・1件不採用**
+
+- `str`/`intOf`/`goNative` 等の UConst 物質化パニック定型（計5サイト）→ **要**: `mustNativeConst` に集約。
+- `chanParkWakeable` と `chanOf` の二重 unwrap 走査 → **要**: `chanOf` が wakeable フラグを返す形に統合し前者を削除。
+- `minireflect/rtype.go` の手書き負 index メッセージ → **要**: `runtime.BoundsPanic` を int も扱うよう拡張して委譲。
+- `md5Block` vs `crypto/internal/...` の blockGeneric → **不要**: crypto/md5 は host bind で blockGeneric はスクリプト側にコンパイルされず再利用不能。asmImpls が正規経路（実装は md5 の7テストベクトルで検証済み）。
+
+**リファクタ提案 — 4件採用・2件不採用・1件は記録へ**
+
+- `blockingHostMethods` の命名（値は wakeable フラグで blocking ではない）→ **要**: `parkingHostMethods` に改名。
+- `OpLocalType` の bound 走査が全 binds を舐める → **要**: `outerTypeArgs` が返す outer param binds のみに絞る（非 param bind の偶然一致で fold を誤抑制し得た）。
+- `NoteExternalWait` の nil 返し → **要**: no-op func を返して呼び出し側の nil チェックを除去。
+- `sliceBoundsReason` の unused-`m` sentinel → **不要**: 内部シグネチャの整理に留まり churn のみ。
+- `gid==0` 早期 return の一元化 → **不要**: 各ガードが「spawn 前 / frame 不在」の意図を明示しており、集約すると返り値の意味が読み取りにくい。
+- Timer/Ticker の構造指摘 → **修正せず記録**: host chan の wakeable は park 毎に静的に決まるため `Stop()` 後の `<-t.C` が「自ら起きられる」扱いのまま HANG する（gc は fatal）。動的 wakeability が要る設計変更のため TODO.md に項目化。pin は harness の `Run` に timeout がなく HANG を pin できないため置かなかった。
+
+### 計画外の記録と判断
+
+- **corpus 残件はほぼ境界クラスに張り付いていた**: fixedbugs の SILENT 33件の内訳 — unsafe 系 6件（Sizeof/Offsetof/SliceData/StringData/ptrconv）、GC/finalizer 系 6件、cgo 5件、スループット HANG 6件、*.dir 2件、torn-value 競合 1件（issue13160）、map 反復順序の非決定差 1件（issue72090 — gc 自身がラン毎に順序を変える、minigo 側は決定的だがいずれも conforming）で、実修正対象は bug257 のみだった。境界クラスは「観測しても pin しない」方針どおりスキップ。
+- **bug257 は1ファイルに2根因**: md5 の asm stub（IV 素通り）と `str()` の UConst 未物質化（const 文字列だけ `io.WriteString` で壊れる）。pin 規約上は同じ観測でも PR は分離した — 「1 root cause = 1 PR」。
+- **sha512 の stack overflow は偶然の発見**: md5 検証中に `crypto/sha512.Sum512` がホストスタックを使い切るのを観測。根因は `crypto/internal/fips140` の bodiless `fatal` が `//go:linkname fatal crypto/internal/fips140.fatal` で自分自身へ解決（push 側は別パッケージ runtime の `fips_fatal` に住む）し、`prepFrame` が `tv == fn` で無限再 dispatch していた点。visited set で抜ける最小修正 — 自己解決は本来「push 側 index の不在」だが、index を持たない現構造では「解決先が自分＝ shim 扱い」が最も単純な打ち切り。sha512 本体はその後素通しで動いた（block は amd64 上でも generic 経路が選ばれる）。
+- **typeparam-boundarg の根因判明までの経路は「bound 値への stamp」**: OpSpellOuter/typeExpr 後の wrap は `td.Local` に無条件で OuterArgs を折り畳んでいた。`x.(T)` のオペランドは `f.fn.Binds["T"]` の値そのものなので、binds に含まれる typedef には stamp しない、という除外で `main.large[main.large·1]` 誤認を解消。double.go の DeepEqual も同じ stamp が slice `Typ` 経由で効いていた。
+- **`deadlock_detect` pin は PENDING 残置**: fatal error は exit!=0 で、want.stdout では stdout のみ pin できるため昇格不可（trap 系と同じ制約）。残りの PENDING pin は `mapkey_namedstruct`・`ptrconv_ptrptr`（両方ともコンパイル時型厳密性のギャップで、gc は reject・minigo は受理 — 以前ラウンドの記録どおり trap 形の表現不能が残る）と `deadlock_parked_exit`・`deadlock_afterfunc_stop`（レビュー由来、同じく fatal 形）を含む計5件。
+- **レビュー由来の修正は新 PR を立てず各 feature ブランチに積んだ**: 指摘は各 PR の新規コード上の穴なので「1 root cause = 1 PR」の単位はその PR 自身。バグ修正コミットを #711（deadlock 系3件）・#716（host uint 系1件）に、採用したリファクタを #711/#716/#719/#721 の各担当ブランチに追加コミットとして載せた。
+- **deadlock 機能自身が新しい divergence 面を持っていた**: レビューの構造指摘で `<-t.C`（Stop 済み timer）が「静的に wakeable」のまま HANG する件は、park 毎の wakeable 判定だけでは表せず外部待ち note と channel wakeability を結ぶ設計変更が要る — 機能追加の次段階として TODO 化した（pin 不可: harness の `Run` に timeout がなく HANG を固定化できない）。同形の `<-ctx.Done()` も記録した。
+
+### 残りの状況
+
+- Stack #717 は修正6 + 本レポートの7本。CAP 未到達だが TODO + corpus + gen の全てが枯渇したためここで停止。
+- corpus sweep は全 subdir 走査済み。gen は全ドメイン 2x 深掘りで 0 divergence — 次ラウンドの採掘余地は「gen のジェネレータ拡張（新ドメイン・新構文の生成）」が残るのみ。
