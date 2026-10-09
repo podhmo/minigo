@@ -86,6 +86,46 @@ func (e *Env) hostTypeOf(rt reflect.Type) *RType {
 	return e.intern(hostTypeKey(rt), nil, rt)
 }
 
+// hostRTOf derives the host reflect.Type a typedef stands for, when
+// the typedef backs a bound host type. Pointer typedefs wrap their
+// element's bound type — a bound struct's rep already mints a pointer
+// (*bytes.Buffer), so the rep is unwrapped to the named type first and
+// the typedef's own pointer depth re-applied.
+func (e *Env) hostRTOf(td *runtime.TypeDef) reflect.Type {
+	depth := 0
+	for td != nil && td.Kind == runtime.KindPointer {
+		et := td.Elem
+		if et == nil {
+			et = e.elemOf(td)
+		}
+		if et == nil {
+			return nil
+		}
+		td = et
+		depth++
+	}
+	if td == nil {
+		return nil
+	}
+	var rt reflect.Type
+	switch {
+	case td.HostNew != nil:
+		rt = reflect.TypeOf(td.HostNew())
+	case td.HostScalar != nil:
+		rt = reflect.TypeOf(td.HostScalar)
+	}
+	if rt == nil {
+		return nil
+	}
+	for rt.Kind() == reflect.Pointer {
+		rt = rt.Elem()
+	}
+	for ; depth > 0; depth-- {
+		rt = reflect.PointerTo(rt)
+	}
+	return rt
+}
+
 func (e *Env) intern(key string, td *runtime.TypeDef, rt reflect.Type) *RType {
 	return e.internT(key, &RType{td: td, rt: rt})
 }
@@ -1013,6 +1053,14 @@ func (t *RType) Implements(u *RType) bool {
 	}
 	if u.td == nil {
 		return false
+	}
+	if rt := t.e.hostRTOf(t.td); rt != nil {
+		// a typedef-backed host type's methods live on the host
+		// type, not in the script method set — check its real
+		// method set directly (no intern: the td and its host
+		// spelling share a key, so hostTypeOf could hand back
+		// this same td-based RType and loop).
+		return u.scriptImplements(&RType{e: t.e, rt: rt})
 	}
 	if len(u.td.MReqs) == 0 && len(u.td.IEmbeds) == 0 {
 		return true
