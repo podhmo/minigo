@@ -1772,9 +1772,6 @@ func funcParam(t *RType, i int, results bool) ast.Expr {
 			n += cnt
 		}
 	}
-	if i < 0 {
-		panic(runtime.RuntimePanic(fmt.Sprintf("index out of range [%d]", i)))
-	}
 	panic(runtime.BoundsPanic(i, n))
 }
 
