@@ -234,6 +234,18 @@ func ConstraintBad() int {
 	return 0
 }
 
+// ConstraintTildeBad: N fails a bare ~T constraint — the trap must spell
+// the tilde term (~[]int), not the AST node type.
+func TakesSlice[T ~[]int](v T) T { return v }
+
+type constraintN int
+
+func ConstraintTildeBad() int {
+	var n constraintN
+	_ = TakesSlice[constraintN](n)
+	return 0
+}
+
 // --- review fixes ---
 
 // SliceElemBox: literal elements coerce to the element type — []any

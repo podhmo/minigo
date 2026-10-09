@@ -1526,6 +1526,12 @@ func TestConstraintRejects(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "constraint") {
 		t.Fatalf("ConstraintBad: expected constraint trap, got %v", err)
 	}
+	// A bare `~T` constraint term spells itself (~[]int), not *ast.UnaryExpr.
+	_, err = e.Run(context.Background(), "./testdata/decltypes", "ConstraintTildeBad")
+	if err == nil || !strings.Contains(err.Error(), "~[]int") ||
+		strings.Contains(err.Error(), "UnaryExpr") {
+		t.Fatalf("ConstraintTildeBad: expected ~[]int in trap, got %v", err)
+	}
 }
 
 func TestGo1267(t *testing.T) {
