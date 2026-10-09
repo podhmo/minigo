@@ -913,3 +913,33 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 
 - Stack #761 は harness1 + 修正3 + レビュー由来積み増し + 本レポートの計6本。CAP 未到達だが TODO + corpus + gen の全てが枯渇したためここで停止。
 - 未解決の open 項目は `<-ctx.Done()` liveness 拡張（新規 TODO 項目）と、difffuzz 系ではない通常 TODO（`--src strings`・`any` パラメータの niladic 副作用・perf candidates 等）のみ。
+
+## 6.22 実施ラウンド（round-20）: Stack #761 — ctx.Done liveness・const materialize・qualified conversion・proxy 型スペル
+
+round-19 の全体差分レビューで新規記録した difffuzz 系項目（ctx.Done liveness・UConst host-boundary・%T box 露出）＋ review 副産物（qualified conversion）を同じ流儀で潰す指示。成果: **計4 PR（修正4）＋本レポート、Stack #761 は CAP=10 に到達**。
+
+### 実施内容
+
+| フェーズ | 内容 | PR |
+|------|------|-----|
+| TODO 残件 | **`<-ctx.Done()` liveness**（`watchCtxDone` が done chan を managed registry に登録し即 dead 扱い — cancel-only の channel なので「goroutine 経由でしか close されない」timer と同型。WithDeadline/Timeout は auto-fire 側なので unmanaged のまま。WithCancel/WithCancelCause は `h.fn`→`h.fnvc` 化）（TODO L20） | [#765](https://github.com/podhmo/minigo/pull/765) |
+| TODO 残件 | **`Named{td,UConst}` の fmt 境界 materialize**（`fmtArg` が UConst payload を `MaterializeConstErr` で declared width に通してから `fmtValue` に渡す — `fmt.Println(uint64(1<<64-1))` が overflow panic 文字ではなく値を出す）（TODO L21） | [#767](https://github.com/podhmo/minigo/pull/767) |
+| review 副産物 | **qualified selector conversion の静的型**（`conversionCall` に `selTypRef`+`selIsType` を追加 — `time.Duration(5) == s` が `mismatched types` trap に。`pkg.fn(x)` は引き続き real call） | [#768](https://github.com/podhmo/minigo/pull/768) |
+| TODO 残件 | **proxy box の型スペル**（`proxyHostTypes` alias 表を `%T`（scriptTypeString）と `Hooks.TypeAlias`→`hostTypeOf` の2ファネルに適用 — `*minigo.tickerChanBox` ではなく `*time.Ticker` を返す）（TODO L22） | [#769](https://github.com/podhmo/minigo/pull/769) |
+| 帳簿 | TODO.md の difffuzz 3項目を `[x]` に＋selconv を完了項目として追記 | 本 PR |
+| 本レポート | 本章 | 本 PR |
+
+### 計画外の記録と判断
+
+- **UConst materialize は「全 host boundary」ではなく fmt 経路に絞った**: item の方針は「`goNative`/`namedSized` に下ろす」だったが、`goNative` は `vc` を持たず `materializeConstErr` の `peelNamed` が VM hook（`v.H.Underlying`）依存と判明。全境界共通にするには const-math（`fitsIntConst`/`constFloat`/`peelNamed`）の runtime 層移設を要する大きめ refactor になる。実測した乖離（`fmt.Println(uint64(max))`）は `fmtArg`→`fmtValue` 経路のみだったので、display で既に使っている `MaterializeConstErr` パターンを同じ形で差し込んだ（1 root cause の範囲を「報告された症状」に限定）。`IsUnsignedName` 共通化の関連付記は未実施のまま残る。
+- **selconv は round-19 で「別 issue 級の gap、今回は追わない」と記録していたが修正した**: 補充指示の優先順位で review 副産物を拾った。検証すると値生成は当初から正しかった（`fmt.Println(time.Duration(0))`→`0s`）— `conversionCall` は emit 経路ではなく opgate/hoisting/静的型推論の入力だけだった。影響は「静的に確定する operand が不明扱いで trap しない」＋ hoisting 透明性の2点のみ。修正後は `io.Reader(x)` 系の iface 変換も `selIsType` で conversion と認識され、`namedTypID` の `selIsIface` arm 経由で引き続き動的比較になることを確認済み。
+- **%T box は「安価な修復なし」と記録していたが、ファネルを調べると `Hooks.TypeAlias` 一箇所で reflect 面が完全解決できると判明**: `hostTypeOf` が RType の唯一の入口で、alias した `rt` で intern すれば `String`/`Name`/`PkgPath`/`Elem`/`Kind`/`NumMethod` および `TypeOf(tk) == TypeFor[*time.Ticker]` の同一性まで全て API 型になる — 記録時に想定した typedef identity より小さい機構だった。`%v`/`%#v` の box フィールド露出（`&{t,C,feed}` vs gc の `time.Ticker` internals）は別 mechanism 級の fidelity gap として残存（記録のみ、pin なし）。
+- **uconst と selconv を誤って同一ブランチに commit し、1 root cause = 1 PR 違反に気付いて分割し直した**: `git branch -f devin/1791600000-uconst-declwidth HEAD~1` で #767 を uconst commit のみに戻し、selconv は `devin/1791610000-selconv-typarg` に分離。stack 順はそのまま（#767→#768）。
+- **ledger の積み替え時、旧 ledger コミットが patch-id 一致で drop された**: #765 が ledger（#764）の上に積まれた構成だったため、`rebase --onto` で ledger コミットの内容が既に upstream 扱い。本章は drop 後のブランチ（=stack tip）への新規コミットとして積み、PR の base を stack tip に張り替えた。
+- **`watchCtxDone` の伝播条件は実測4ケースで決めた**: cancel-only の done chan は「goroutine の動作だけが close する」timer 系と同型だが、WithDeadline/Timeout の auto-fire は propagate する。`WakeChanState` で「managed && dead」のみ dead 登録し、親が unmanaged か alive-managed のときは子も auto-fire 側に倒す — WithValue が親 done を共有するケースもこれで正しく propagate される。
+
+### 残りの状況
+
+- Stack #761 は CAP=10 到達（harness1＋修正7＋レビュー由来積み増し＋本レポート）。difffuzz 系 TODO 項目は L20/L21/L22 を解消し、review 副産物（selconv）も完了 — open の difffuzz 関連項目は残っていない。
+- 残存の既知乖離: `%v`/`%#v` の proxy box フィールド露出（fidelity 差・記録のみ）、`minigo.Format` 以外の非 fmt host boundary での `Named{td,UConst}` materialize（同根因・対象ケース未観測）。
+- 次の採掘余地は round-19 と同じ2系統（gen ジェネレータ拡張・review 由来の設計変更系）。
