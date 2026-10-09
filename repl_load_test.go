@@ -233,7 +233,16 @@ func TestREPLLoadErrors(t *testing.T) {
 		"notes.txt":    "hi",
 		"undef/u.go":   "package u\nvar U = missing()\n",
 		"emptydir/x.c": "",
+		// an unreadable .go file must not vanish from the index
+		// silently: the package would read as complete while missing
+		// decls. Loading fails and names it.
+		"dropped/ok.go":     "package dropped\nfunc Ok() int { return 1 }\n",
+		"dropped/hidden.go": "package dropped\nfunc Hidden() int { return 2 }\n",
 	})
+	if err := os.Chmod(filepath.Join(dir, "dropped", "hidden.go"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(filepath.Join(dir, "dropped", "hidden.go"), 0o644)
 	r := NewEngine(dir).NewREPL()
 	if _, err := r.Load(ctx, "m.go"); err != nil {
 		t.Fatal(err)
@@ -248,6 +257,7 @@ func TestREPLLoadErrors(t *testing.T) {
 		"nosuch.go": "no such file",
 		"undef":     "missing",
 		"emptydir":  "no buildable Go source files",
+		"dropped":   "hidden.go",
 	} {
 		_, err := r.Load(ctx, ref)
 		if err == nil || !strings.Contains(err.Error(), want) {
