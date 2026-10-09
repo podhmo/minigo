@@ -1865,7 +1865,15 @@ func (e *Engine) installStdlib() {
 			default:
 				return nil, fmt.Errorf("time.AfterFunc: cannot use %T as func()", f)
 			}
-			t := time.AfterFunc(durOf(goNative(args[0])), func() {
+			// the pending timer keeps the process alive for deadlock
+			// detection (a gc timer does the same); the wrapper releases
+			// the note when the callback starts — after which the
+			// spawned goroutine counts itself — or when Stop prevents
+			// the callback from ever running.
+			t := &afterFuncTimer{note: func() func() { return vm.NoteExternalWait(vc) }}
+			t.hold()
+			t.Timer = time.AfterFunc(durOf(goNative(args[0])), func() {
+				t.drop()
 				// the timer fires on a host goroutine — run the
 				// callback like `go f()`: a panic inside fails the
 				// process through the same path as a goroutine's.
@@ -2143,7 +2151,11 @@ func (e *Engine) installStdlib() {
 				return nil, err
 			}
 			f := args[1]
+			// a pending AfterFunc callback is a wake source for
+			// deadlock detection, like a pending gc timer.
+			release := vm.NoteExternalWait(vc)
 			stop := context.AfterFunc(c, func() {
+				release()
 				if _, err := vc.Call(f, nil); err != nil {
 					// a dead process refuses the spawn — the callback
 					// dies with the run like a Go timer's pending call.
@@ -2153,7 +2165,11 @@ func (e *Engine) installStdlib() {
 				}
 			})
 			return &runtime.BuiltinFunc{Name: "context.AfterFunc.stop", Fn: func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
-				return stop(), nil
+				stopped := stop()
+				if stopped {
+					release()
+				}
+				return stopped, nil
 			}}, nil
 		}},
 		"Cause": h.fn("context.Cause", func(a []any) (any, error) {
@@ -2608,6 +2624,58 @@ func (e *Engine) installStdlib() {
 			return template.URLQueryEscaper(ss...), nil
 		}, template.URLQueryEscaper),
 	})
+}
+
+// afterFuncTimer is the time.Timer AfterFunc hands to the script: a
+// *time.Timer wrapper that owns the pending-callback note registered
+// for deadlock detection. The note releases when the callback fires or
+// when Stop wins; Reset re-arms it, like gc rescheduling the callback.
+// hold/drop keep exactly one note per pending fire.
+type afterFuncTimer struct {
+	*time.Timer
+	mu      sync.Mutex
+	note    func() func() // registers a fresh external-wait note
+	release func()        // releases the held note (nil when none)
+}
+
+// hold takes a new note if none is held. Call with no lock held.
+func (t *afterFuncTimer) hold() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.release == nil {
+		t.release = t.note()
+	}
+}
+
+// drop releases the held note, if any. The release funcs are
+// once-guarded, but clearing the field also stops a later Stop from
+// double-counting a callback that already fired.
+func (t *afterFuncTimer) drop() {
+	t.mu.Lock()
+	r := t.release
+	t.release = nil
+	t.mu.Unlock()
+	if r != nil {
+		r()
+	}
+}
+
+// Stop cancels the timer like time.Timer.Stop: a true return means the
+// callback will never run, so its wait note is released.
+func (t *afterFuncTimer) Stop() bool {
+	if !t.Timer.Stop() {
+		return false
+	}
+	t.drop()
+	return true
+}
+
+// Reset reschedules the timer like time.Timer.Reset: a callback the
+// timer may now fire must hold a wait note again.
+func (t *afterFuncTimer) Reset(d time.Duration) bool {
+	active := t.Timer.Reset(d)
+	t.hold()
+	return active
 }
 
 // hostType is a TypeDef whose zero is a host value: `var m T` and `T{}`

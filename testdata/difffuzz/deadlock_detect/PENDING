@@ -1,0 +1,8 @@
+gc exits `fatal error: all goroutines are asleep - deadlock!` once
+every goroutine is parked with no possible wake (here: main's second
+recv, the sender already gone). minigo previously parked forever;
+it now fails the same way — the proc deadlock watch declares the
+fatal and the CLI reports `minigo: fatal error: ...`. This record
+stays PENDING because want.stdout cannot express an expected fatal:
+to the harness the outcome is a runErr either way (same class as the
+trap records in mapkey_namedstruct / ptrconv_ptrptr).

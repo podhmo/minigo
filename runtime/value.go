@@ -1216,6 +1216,10 @@ type SelArm struct {
 	Send  bool
 	NRecv int
 	ETyp  *TypeDef
+	// Wakeable marks an arm whose channel is host-carried (a timer's C,
+	// a retained callback feed): a select blocked on it can end without
+	// a script goroutine, so it never counts toward deadlock.
+	Wakeable bool
 }
 
 // Task is the handle of one spawned goroutine: Done closes when its call
@@ -1654,8 +1658,12 @@ type Iterator struct {
 	Zero Value
 	// ChRV is the reflect channel a channel range receives from; ETyp is
 	// its element typedef for closed-receive zero values.
-	ChRV reflect.Value
-	ETyp *TypeDef
+	// HostChan marks a host-carried channel (a timer's C): blocking on it
+	// can end without a script goroutine, so it never counts toward
+	// deadlock.
+	ChRV     reflect.Value
+	ETyp     *TypeDef
+	HostChan bool
 
 	// Fn is the producer for 'f' (range-over-func) iterators. Started marks
 	// that the producer was invoked once; Exited marks that the loop body
