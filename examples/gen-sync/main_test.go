@@ -223,18 +223,20 @@ func TestUnreadableTargetFails(t *testing.T) {
 }
 
 func TestWriteFailurePropagates(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("chmod-444 is writable for root")
-	}
 	dir := setupModule(t)
 	app := filepath.Join(dir, "app")
 	// status.go is already in sync (no write needed); level.go needs a
-	// rewrite — make it read-only so WriteFile fails.
+	// rewrite. Writes go through a sibling temp + rename — a *file's*
+	// mode no longer blocks them (rename only needs dir write
+	// permission), so the deterministic single-file failure is a
+	// collision with its temp path: a directory named
+	// level.go.gen-sync.tmp makes the temp write fail for level.go
+	// alone. That is also what a crashed run's leftover temp must do —
+	// fail loudly, never corrupt the target.
 	target := filepath.Join(app, "level.go")
-	if err := os.Chmod(target, 0444); err != nil {
+	if err := os.Mkdir(target+".gen-sync.tmp", 0755); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(target, 0644)
 
 	n, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, io.Discard)
 	if err == nil {
@@ -970,13 +972,12 @@ func TestPartialWriteSummary(t *testing.T) {
 	if err := os.WriteFile(target, []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if os.Geteuid() == 0 {
-		t.Skip("chmod-444 is writable for root")
-	}
-	if err := os.Chmod(target, 0444); err != nil {
+	// a temp-path collision fails this one file's write while the rest
+	// of the package syncs (see TestWriteFailurePropagates for why a
+	// colliding directory is the deterministic trigger now).
+	if err := os.Mkdir(target+".gen-sync.tmp", 0755); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(target, 0644)
 	var buf strings.Builder
 	_, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, &buf)
 	if err == nil {

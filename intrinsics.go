@@ -3628,6 +3628,15 @@ func intOf(v any) int {
 	case *runtime.GoValue:
 		return intOf(x.V)
 	}
+	// a defined numeric type the switch above missed (e.g. fs.FileMode
+	// from a host call's result) still carries its integer value — Go
+	// would fold passing it to an int-typed parameter at compile time.
+	switch rv := reflect.ValueOf(v); rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return int(rv.Int())
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return int(rv.Uint())
+	}
 	return 0
 }
 
