@@ -25,4 +25,11 @@ func main() {
 	c := clone(n)
 	fmt.Println(c.Kind, len(c.Content), c.Content[0].Kind, c.Content[1].Kind, c.Content[0] != n.Content[0])
 	fmt.Printf("%T %T %v\n", c.Content, c.Index, any(c.Content).([]*inner.Node) != nil)
+
+	// assigning through a package qualifier writes the package global —
+	// the clause name (inner) is the qualifier, not the path tail
+	// (inner.v2), so the compile side must resolve it like the VM does.
+	inner.Count = 41
+	inner.Shared = &inner.Node{Kind: 9}
+	fmt.Println(inner.Count, inner.Shared.Kind)
 }

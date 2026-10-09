@@ -1887,11 +1887,36 @@ func (c *compiler) isImportName(name string) bool {
 	if _, _, found := c.fs.find(name); found {
 		return false
 	}
-	if c.pkg == nil || c.file == nil {
-		return false
-	}
-	_, ok := c.pkg.Scopes[c.file][name]
+	_, ok := c.importRef(name)
 	return ok
+}
+
+// importRef resolves an identifier to this file's import ref: first by
+// the recorded local name, then by the package clause when it differs
+// from the path's last element — Scopes keys on the basename, so
+// `foo.V` misses when the clause says `package realname`; learn the
+// real name by materializing each unnamed import, like the VM's global
+// resolution does (vm.go's step 2.5).
+func (c *compiler) importRef(name string) (*runtime.ImportRef, bool) {
+	if c.pkg == nil || c.file == nil {
+		return nil, false
+	}
+	if ref, ok := c.pkg.Scopes[c.file][name]; ok {
+		return ref, true
+	}
+	for _, ref := range c.pkg.Imports[c.file] {
+		if ref.Alias != "" {
+			continue
+		}
+		p, err := ref.Materialize()
+		if err != nil || p == nil {
+			continue
+		}
+		if p.Name == name {
+			return ref, true
+		}
+	}
+	return nil, false
 }
 
 // storeTarget emits the store for one LHS expression; the value is on stack.
@@ -3927,11 +3952,7 @@ func (c *compiler) trySpecial(x *ast.CallExpr, sel *ast.SelectorExpr) bool {
 	if !ok {
 		return false
 	}
-	scope := c.pkg.Scopes[c.file]
-	if scope == nil {
-		return false
-	}
-	ref, ok := scope[id.Name]
+	ref, ok := c.importRef(id.Name)
 	if !ok {
 		return false
 	}
