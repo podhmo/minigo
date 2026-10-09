@@ -40,6 +40,12 @@ type loadUnit struct {
 	// load — reload drops them from the file's AST so the newer prompt
 	// definition wins. A fresh :load clears it.
 	shadowed map[string]bool
+	// prevDecls and prevCells keep the prompt definitions the load took
+	// over — decl sources (a grouped decl trimmed to the specs it lost)
+	// and hoisted cells — so a reload that stops declaring a name, or
+	// :unload, brings the prompt definition back.
+	prevDecls []string
+	prevCells map[string]runtime.Value
 }
 
 func (u *loadUnit) declares(key string) bool { return slices.Contains(u.keys, key) }
@@ -119,7 +125,7 @@ func (r *REPL) Load(ctx context.Context, ref string) ([]string, error) {
 		}
 	}
 
-	unit := &loadUnit{origin: origin, dir: st.IsDir(), shadowed: map[string]bool{}}
+	unit := &loadUnit{origin: origin, dir: st.IsDir(), shadowed: map[string]bool{}, prevCells: map[string]runtime.Value{}}
 	owner := map[string]string{}          // decl key -> defining file
 	declAt := map[string]token.Position{} // decl key -> where, for duplicate reports
 	for _, path := range paths {
@@ -176,74 +182,52 @@ func (r *REPL) Load(ctx context.Context, ref string) ([]string, error) {
 	for _, u := range superseded {
 		touched = append(touched, u.keys...)
 	}
-	saved := map[string]runtime.Value{}
-	for _, k := range touched {
-		if gv, ok := r.pkg.Globals.Get(k); ok {
-			saved[k] = gv
-		}
-	}
-	prevLoads := slices.Clone(r.loads)
-	prevDecls := slices.Clone(r.decls)
-	prevPinned := maps.Clone(r.pinnedDecls)
-	rollback := func() {
-		r.loads = prevLoads
-		r.decls = prevDecls
-		r.pinnedDecls = prevPinned
-		for _, k := range touched {
-			if gv, ok := saved[k]; ok {
-				r.pkg.Globals.Set(k, gv)
-			} else {
-				r.pkg.Globals.Delete(k)
-			}
-		}
-		_ = r.reload() // best effort; the original error is the one that matters
-	}
+	rollback := r.snapshot(touched)
 
 	// a const the prompt (or another file) holds is replaced like any
 	// redefinition — but say so, since `C = v` alone traps
-	prevCells := map[string]*runtime.Cell{}
+	supersededCells := map[string]*runtime.Cell{}
 	for _, u := range superseded {
-		maps.Copy(prevCells, u.cells)
+		maps.Copy(supersededCells, u.cells)
 	}
 	var redecl []string
 	for _, k := range unit.keys {
 		if gv, ok := r.pkg.Globals.Get(k); ok {
-			if c, isCell := gv.(*runtime.Cell); isCell && c.ReadOnly && prevCells[k] != c {
+			if c, isCell := gv.(*runtime.Cell); isCell && c.ReadOnly && supersededCells[k] != c {
 				redecl = append(redecl, fmt.Sprintf("const %s redeclared by %s (was %v)", k, filepath.Base(owner[k]), r.Display(c.Elem)))
 			}
 		}
 	}
 
 	// The load is the newest definition of each name it declares: prompt
-	// decls go, and so do prompt-hoisted cells (they would hide a loaded
+	// decls go (only the specs it declares — the rest of a grouped decl
+	// stays), and so do prompt-hoisted cells (they would hide a loaded
 	// func/type, since globals resolve before the index) and :pin
-	// publications (their repl binding is never evicted otherwise).
-	r.decls = slices.DeleteFunc(r.decls, func(d string) bool {
-		for _, k := range promptDeclKeys(d) {
-			if _, ok := owner[k]; ok {
-				return true
-			}
+	// publications (their repl binding is never evicted otherwise). The
+	// unit keeps the prompt decls and cells so release can restore them.
+	var kept []string
+	for _, d := range r.decls {
+		if rest := splitDecl(d, unit.declares, &unit.prevDecls); rest != "" {
+			kept = append(kept, rest)
 		}
-		return false
-	})
+	}
+	r.decls = kept
 	for _, k := range unit.keys {
 		if r.pinnedDecls[k] {
 			delete(r.pinnedDecls, k)
 			r.pkg.Globals.Delete(k)
 		}
 		if gv, ok := r.pkg.Globals.Get(k); ok {
-			if _, isCell := gv.(*runtime.Cell); isCell {
+			if c, isCell := gv.(*runtime.Cell); isCell {
+				if supersededCells[k] != c {
+					unit.prevCells[k] = gv
+				}
 				r.pkg.Globals.Delete(k)
 			}
 		}
 	}
-	// a superseded unit's cells for names this load no longer declares go
 	for _, u := range superseded {
-		for k, c := range u.cells {
-			if gv, ok := r.pkg.Globals.Get(k); ok && gv == runtime.Value(c) && !unit.declares(k) {
-				r.pkg.Globals.Delete(k)
-			}
-		}
+		r.release(u, unit)
 	}
 	if i := slices.IndexFunc(r.loads, replaces); i >= 0 {
 		// take the first superseded unit's place, drop the rest
@@ -270,6 +254,108 @@ func (r *REPL) Load(ctx context.Context, ref string) ([]string, error) {
 	}
 	r.warnings = redecl
 	return paths, nil
+}
+
+// Unload drops what :load ref loaded: its decls go, so do the globals its
+// initializers bound, and the prompt definitions the load took over come
+// back. ref names a load as :load took it (Loaded lists them); a file of
+// a loaded directory cannot be unloaded on its own. It returns the
+// unloaded ref's absolute path.
+func (r *REPL) Unload(ctx context.Context, ref string) (string, error) {
+	r.warnings = nil
+	ref = unquoteRef(ref)
+	if ref == "" {
+		return "", fmt.Errorf("unload: missing path")
+	}
+	origin, err := filepath.Abs(r.anchor(ref))
+	if err != nil {
+		return "", fmt.Errorf("unload: %w", err)
+	}
+	i := slices.IndexFunc(r.loads, func(u *loadUnit) bool { return u.origin == origin })
+	if i < 0 {
+		return "", fmt.Errorf("unload: %s is not loaded (:load with no argument lists the loads)", ref)
+	}
+	u := r.loads[i]
+	rollback := r.snapshot(u.keys)
+	r.loads = slices.Delete(slices.Clone(r.loads), i, i+1)
+	r.release(u, &loadUnit{})
+	if err := r.reload(); err != nil {
+		rollback()
+		return "", err
+	}
+	return origin, nil
+}
+
+// snapshot saves what a load or unload may touch — units, prompt decls,
+// :pin bookkeeping, and the globals of keys — and returns the restore.
+// Initializers bind fresh cells, so restoring the bindings restores the
+// values.
+func (r *REPL) snapshot(keys []string) (rollback func()) {
+	saved := map[string]runtime.Value{}
+	for _, k := range keys {
+		if gv, ok := r.pkg.Globals.Get(k); ok {
+			saved[k] = gv
+		}
+	}
+	prevLoads := slices.Clone(r.loads)
+	prevDecls := slices.Clone(r.decls)
+	prevPinned := maps.Clone(r.pinnedDecls)
+	return func() {
+		r.loads = prevLoads
+		r.decls = prevDecls
+		r.pinnedDecls = prevPinned
+		for _, k := range keys {
+			if gv, ok := saved[k]; ok {
+				r.pkg.Globals.Set(k, gv)
+			} else {
+				r.pkg.Globals.Delete(k)
+			}
+		}
+		_ = r.reload() // best effort; the original error is the one that matters
+	}
+}
+
+// release retires unit u, superseded by next (an empty unit for
+// :unload): u's cells for names next does not declare are unbound, and
+// the prompt definitions u took over come back — unless next declares
+// them too (they pass on to next) or the prompt has redefined the name
+// since. Neither u nor the restored values are mutated, so a snapshot
+// rollback undoes it.
+func (r *REPL) release(u, next *loadUnit) {
+	for k, c := range u.cells {
+		if gv, ok := r.pkg.Globals.Get(k); ok && gv == runtime.Value(c) && !next.declares(k) {
+			r.pkg.Globals.Delete(k)
+		}
+	}
+	defined := map[string]bool{}
+	for _, d := range r.decls {
+		for _, k := range promptDeclKeys(d) {
+			defined[k] = true
+		}
+	}
+	redefined := func(k string) bool {
+		if defined[k] {
+			return true
+		}
+		gv, ok := r.pkg.Globals.Get(k)
+		_, isCell := gv.(*runtime.Cell)
+		return ok && isCell
+	}
+	for k, v := range u.prevCells {
+		switch {
+		case next.declares(k):
+			next.prevCells[k] = v
+		case !redefined(k):
+			r.pkg.Globals.Set(k, v)
+		}
+	}
+	for _, d := range u.prevDecls {
+		if rest := splitDecl(d, next.declares, &next.prevDecls); rest != "" {
+			if rest := splitDecl(rest, redefined, nil); rest != "" {
+				r.decls = append(r.decls, rest)
+			}
+		}
+	}
 }
 
 // Loaded returns the refs (absolute paths) loaded by :load, in load order.
@@ -330,7 +416,7 @@ func (r *REPL) initUnit(unit *loadUnit) error {
 
 // loadedFiles returns every loaded file for a reload. A unit with
 // shadowed names gets a copy of its files whose AST drops those decls (a
-// var/const spec goes whole if any of its names is shadowed); the parsed
+// var/const name is blanked instead, see dropShadowed); the parsed
 // originals stay untouched.
 func (r *REPL) loadedFiles() []*syntax.File {
 	var out []*syntax.File
@@ -351,7 +437,9 @@ func (r *REPL) loadedFiles() []*syntax.File {
 }
 
 // dropShadowed filters decls (copying any GenDecl it trims) so no
-// shadowed key survives.
+// shadowed key survives. A shadowed var/const name is blanked rather
+// than its spec dropped: the spec's other names stay declared, and a
+// const group keeps its iota numbering and implicit repetition.
 func dropShadowed(decls []ast.Decl, shadowed map[string]bool) []ast.Decl {
 	hit := func(keys []string) bool {
 		return slices.ContainsFunc(keys, func(k string) bool { return shadowed[k] })
@@ -366,13 +454,29 @@ func dropShadowed(decls []ast.Decl, shadowed map[string]bool) []ast.Decl {
 			continue
 		}
 		var specs []ast.Spec
+		changed := false
 		for _, spec := range gd.Specs {
-			if !hit(declKeys(&ast.GenDecl{Tok: gd.Tok, Specs: []ast.Spec{spec}}, true)) {
-				specs = append(specs, spec)
+			if vs, ok := spec.(*ast.ValueSpec); ok && hit(declKeys(&ast.GenDecl{Tok: gd.Tok, Specs: []ast.Spec{spec}}, true)) {
+				cp := *vs
+				cp.Names = make([]*ast.Ident, len(vs.Names))
+				for i, n := range vs.Names {
+					cp.Names[i] = n
+					if shadowed[n.Name] {
+						cp.Names[i] = &ast.Ident{NamePos: n.NamePos, Name: "_"}
+					}
+				}
+				specs = append(specs, &cp)
+				changed = true
+				continue
 			}
+			if hit(declKeys(&ast.GenDecl{Tok: gd.Tok, Specs: []ast.Spec{spec}}, true)) {
+				changed = true
+				continue
+			}
+			specs = append(specs, spec)
 		}
 		switch {
-		case len(specs) == len(gd.Specs):
+		case !changed:
 			out = append(out, gd)
 		case len(specs) > 0:
 			cp := *gd
@@ -381,6 +485,52 @@ func dropShadowed(decls []ast.Decl, shadowed map[string]bool) []ast.Decl {
 		}
 	}
 	return out
+}
+
+// splitDecl splits one prompt decl source by key: the specs of a grouped
+// decl whose keys take reports move to *taken (when taken is non-nil) as
+// a decl of their own, and the rest come back as source — "" when
+// nothing is left. A func decl moves whole.
+func splitDecl(src string, take func(string) bool, taken *[]string) string {
+	fset := token.NewFileSet()
+	f, err := syntax.ParseFile(fset, "repl-decl.go", []byte("package repl\n"+src))
+	if err != nil || len(f.AST.Decls) != 1 {
+		return src
+	}
+	move := func(s string) {
+		if taken != nil {
+			*taken = append(*taken, s)
+		}
+	}
+	gd, ok := f.AST.Decls[0].(*ast.GenDecl)
+	if !ok {
+		if slices.ContainsFunc(declKeys(f.AST.Decls[0], false), take) {
+			move(src)
+			return ""
+		}
+		return src
+	}
+	var keep, moved []ast.Spec
+	for _, spec := range gd.Specs {
+		if slices.ContainsFunc(declKeys(&ast.GenDecl{Tok: gd.Tok, Specs: []ast.Spec{spec}}, false), take) {
+			moved = append(moved, spec)
+		} else {
+			keep = append(keep, spec)
+		}
+	}
+	if len(moved) == 0 {
+		return src
+	}
+	part := func(specs []ast.Spec) string {
+		cp := *gd
+		cp.Specs = specs
+		return formatNode(fset, &cp)
+	}
+	move(part(moved))
+	if len(keep) == 0 {
+		return ""
+	}
+	return part(keep)
 }
 
 // shadowLoaded marks loaded decls the current prompt decl redefines —
