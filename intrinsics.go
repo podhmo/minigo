@@ -3566,7 +3566,7 @@ func unsafeElems(p, nv runtime.Value) ([]runtime.Value, error) {
 		return nil, fmt.Errorf("unsafe: unsupported pointer %T (only element pointers)", p)
 	}
 	sl := ref.Slice()
-	i, _ := ref.Key.(int64)
+	i, _ := runtime.Unwrap(ref.Key).(int64)
 	if sl == nil || int(i)+n > cap(sl.Elems) {
 		return nil, errors.New("unsafe: pointer range out of bounds")
 	}
