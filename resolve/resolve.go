@@ -160,6 +160,14 @@ func ReadPackageFiles(dir, importPath string, cfg BuildConfig) (*PackageMeta, er
 			}
 		}
 	}
+	if len(rejected) > 0 {
+		// A file MatchFile cannot even read or parse would vanish from
+		// the index with no other error channel — the package then
+		// reads as complete while missing decls and import edges.
+		// `go build` fails on the same files, so fail here and name
+		// them rather than building a partial package.
+		return nil, fmt.Errorf("reading package dir %s: %s", dir, strings.Join(rejected, "; "))
+	}
 	if len(files) == 0 {
 		// "no buildable Go source files" alone cannot tell a permission
 		// problem from a //go:build exclusion — name the package and why.
@@ -167,14 +175,10 @@ func ReadPackageFiles(dir, importPath string, cfg BuildConfig) (*PackageMeta, er
 		if importPath != "" && !strings.HasPrefix(importPath, "<") {
 			what = fmt.Sprintf("package %s (%s)", importPath, dir)
 		}
-		switch {
-		case len(rejected) > 0:
-			return nil, fmt.Errorf("no buildable Go source files in %s: %s", what, strings.Join(rejected, "; "))
-		case excluded > 0:
+		if excluded > 0 {
 			return nil, fmt.Errorf("no buildable Go source files in %s: all %d .go file(s) excluded by build constraints", what, excluded)
-		default:
-			return nil, fmt.Errorf("no buildable Go source files in %s", what)
 		}
+		return nil, fmt.Errorf("no buildable Go source files in %s", what)
 	}
 	sort.Strings(files)
 	return &PackageMeta{

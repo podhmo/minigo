@@ -512,12 +512,12 @@ func TestMixedEOLKeepsUntouchedLines(t *testing.T) {
 func TestExcludedFileWarns(t *testing.T) {
 	dir := setupModule(t)
 	app := filepath.Join(dir, "app")
-	// go/build drops a file when its //go:build line excludes it (or
-	// fails to parse) — the same silent exclusion path in both cases.
-	// The file is surfaced as a warning and the run continues; the
-	// decl loss is visible in the output even though go/build itself
-	// reports nothing.
-	content := "//go:build ((broken\n\npackage app\n\ntype Broken struct{}\n"
+	// go/build drops a file whose //go:build line excludes it — a
+	// silent exclusion the index reports nothing about. The file is
+	// surfaced as a warning and the run continues; the decl loss is
+	// visible in the output even though go/build itself reports
+	// nothing.
+	content := "//go:build neverbuild\n\npackage app\n\ntype Broken struct{}\n"
 	target := filepath.Join(app, "broken.go")
 	if err := os.WriteFile(target, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -528,6 +528,24 @@ func TestExcludedFileWarns(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "broken.go") || !strings.Contains(buf.String(), "not in the package index") {
 		t.Fatalf("no exclusion warning for the dropped file:\n%s", buf.String())
+	}
+}
+
+func TestMalformedBuildTagFails(t *testing.T) {
+	dir := setupModule(t)
+	app := filepath.Join(dir, "app")
+	// A //go:build line that does not parse is NOT an exclusion —
+	// `go build` reports it as an error, and the resolver must not let
+	// the file vanish silently either. The run fails naming the file.
+	content := "//go:build ((broken\n\npackage app\n\ntype Broken struct{}\n"
+	target := filepath.Join(app, "broken.go")
+	if err := os.WriteFile(target, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(context.Background(), dir, scriptDir(t), app, false, false, false, io.Discard); err == nil {
+		t.Fatal("expected a failure for the malformed constraint, got nil error")
+	} else if !strings.Contains(err.Error(), "broken.go") {
+		t.Fatalf("error does not name the malformed file: %v", err)
 	}
 }
 
