@@ -1,0 +1,82 @@
+// Command prof runs cmd/oapi-codegen under the minigo engine with
+// runtime/pprof enabled: prof -C dir -out prefix [-n rounds] -- ARGS
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"runtime/pprof"
+	"strings"
+	"time"
+
+	"github.com/podhmo/minigo"
+	"github.com/podhmo/minigo/runtime"
+	"github.com/podhmo/minigo/compile"
+	"sort"
+	"golang.org/x/tools/imports"
+)
+
+const pkg = "github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen"
+
+func main() {
+	dir := flag.String("C", ".", "example dir")
+	out := flag.String("out", "", "profile prefix (empty: no profile)")
+	n := flag.Int("n", 1, "rounds (in-process)")
+	nativeImports := flag.Bool("native-imports", true, "bind golang.org/x/tools/imports.Process natively")
+	flag.Parse()
+	if err := os.Chdir(*dir); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	cwd, _ := os.Getwd()
+	modes := map[string]minigo.PackageMode{}
+	for _, p := range strings.Split("text/template,encoding/json,encoding/hex,encoding/base64,encoding/base32,slices,maps", ",") {
+		modes[p] = minigo.ModeSource
+	}
+	if *out != "" {
+		f, _ := os.Create(*out + ".cpu.pprof")
+		defer f.Close()
+		pprof.StartCPUProfile(f)
+	}
+	for i := 0; i < *n; i++ {
+		t0 := time.Now()
+		e := minigo.NewEngine(cwd, minigo.WithOutput(io.Discard), minigo.WithArgs(append([]string{pkg}, flag.Args()...)), minigo.WithPackageModes(modes))
+		if *nativeImports {
+			e.Bind("golang.org/x/tools/imports", map[string]runtime.Value{
+				"Process": &runtime.GoValue{V: imports.Process},
+			})
+		}
+		_, err := e.Run(context.Background(), pkg, "")
+		fmt.Printf("elapsed=%.3fs err=%v\n", time.Since(t0).Seconds(), err)
+	}
+	{
+		compile.StatMu.Lock()
+		dup := 0
+		for _, k := range compile.StatDecls {
+			if k > 1 {
+				dup += k - 1
+			}
+		}
+		fmt.Printf("keys=%d ", len(compile.StatKeys)); { per := map[string]int{}; for k := range compile.StatKeys { i := strings.Index(k, "|"); j := strings.Index(k[i+1:], "|"); per[k[i+1:i+1+j]]++ }; type e struct{k string; n int}; var es []e; for k, n := range per { es = append(es, e{k, n}) }; sort.Slice(es, func(a, b int) bool { return es[a].n > es[b].n }); for _, x := range es[:12] { fmt.Printf("  keys %5d %s\n", x.n, x.k) } }; fmt.Printf("calls=%d decls=%d dupcalls=%d instr=%d cap=%d\n", compile.StatCalls, len(compile.StatDecls), dup, compile.StatInstr, compile.StatCap)
+		type kv struct{ k string; n, ins int }
+		var xs []kv
+		for k, n := range compile.StatByName {
+			xs = append(xs, kv{k, n, compile.StatInstrByName[k]})
+		}
+		sort.Slice(xs, func(i, j int) bool { return xs[i].ins > xs[j].ins })
+		for _, x := range xs[:30] {
+			fmt.Printf("%8d instr %5d calls  %s\n", x.ins, x.n, x.k)
+		}
+		compile.StatMu.Unlock()
+	}
+	if *out != "" {
+		pprof.StopCPUProfile()
+		if f, err := os.Create(*out + ".allocs.pprof"); err == nil {
+			pprof.Lookup("allocs").WriteTo(f, 0)
+			f.Close()
+		}
+	}
+}
