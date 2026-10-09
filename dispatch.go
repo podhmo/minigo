@@ -66,6 +66,15 @@ func (e *Engine) methodInfoOfValue(v runtime.Value) (map[string]bool, map[string
 				// host value's reflect method set.
 				return hostMethodSet(runtime.Unwrap(n.V)), nil, false, nil
 			}
+			if n.Typ != nil && n.Typ.HostNew != nil && n.Typ.Kind == runtime.KindNamedBasic && len(n.Typ.Methods) == 0 {
+				// a bound host named basic keeps a script payload
+				// (reflect.StructTag's string) — materialize it as
+				// the host type to see its reflect method set.
+				rt := reflect.TypeOf(n.Typ.HostNew())
+				if rv := reflect.ValueOf(runtime.Unwrap(n.V)); rv.IsValid() && rv.Type().ConvertibleTo(rt) {
+					return hostMethodSet(rv.Convert(rt).Interface()), nil, false, nil
+				}
+			}
 			return e.typeMethodInfoU(n.Typ, ptr)
 		}
 		dv, ok := runtime.Deref(v)

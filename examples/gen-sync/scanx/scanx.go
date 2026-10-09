@@ -1,8 +1,8 @@
 // Package scanx is the helper library gen-sync's script scans with:
-// struct-tag lookups and sentinel-guided rewriting of //go:generate
-// regions. It is ordinary Go; minigo interprets it too when the
-// gen-sync script imports it, so it doubles as a demo of a tool
-// growing its own module-local library.
+// sentinel-guided rewriting of //go:generate regions. It is ordinary
+// Go; minigo interprets it too when the gen-sync script imports it,
+// so it doubles as a demo of a tool growing its own module-local
+// library.
 package scanx
 
 import (
@@ -12,77 +12,6 @@ import (
 // Sentinel is the comment line that opens a file's managed region:
 // every real //go:generate line below it belongs to the tool.
 const Sentinel = "// Code generated directives below are managed by gen-sync. DO NOT EDIT."
-
-// TagField is one `key:"value"` entry of a struct tag.
-type TagField struct {
-	Key   string
-	Value string
-}
-
-// ParseTag splits a raw struct tag (the text between backquotes) into
-// its `key:"value"` fields. Values keep their escapes; a malformed tail
-// is ignored, matching reflect.StructTag's tolerant behavior.
-func ParseTag(tag string) []TagField {
-	out := []TagField{}
-	for tag != "" {
-		i := 0
-		for i < len(tag) && tag[i] == ' ' {
-			i++
-		}
-		tag = tag[i:]
-		if tag == "" {
-			break
-		}
-		i = 0
-		for i < len(tag) && tag[i] != ':' && tag[i] != '"' && tag[i] != ' ' {
-			i++
-		}
-		if i == len(tag) || tag[i] != ':' || i+1 == len(tag) || tag[i+1] != '"' {
-			break
-		}
-		key := tag[:i]
-		tag = tag[i+1:]
-		i = 1
-		for i < len(tag) && tag[i] != '"' {
-			if tag[i] == '\\' {
-				i++
-			}
-			i++
-		}
-		if i >= len(tag) {
-			break
-		}
-		out = append(out, TagField{Key: key, Value: tag[1:i]})
-		tag = tag[i+1:]
-	}
-	return out
-}
-
-// LookupTag returns the value stored under key in a raw struct tag.
-func LookupTag(tag, key string) (string, bool) {
-	for _, f := range ParseTag(tag) {
-		if f.Key == key {
-			return f.Value, true
-		}
-	}
-	return "", false
-}
-
-// TagHasElement reports whether the comma-separated value stored under
-// key contains elem as a whole element: `validate:"required"` matches
-// "required" while `binding:"notrequired"` does not.
-func TagHasElement(tag, key, elem string) bool {
-	v, ok := LookupTag(tag, key)
-	if !ok {
-		return false
-	}
-	for _, e := range strings.Split(v, ",") {
-		if strings.TrimSpace(e) == elem {
-			return true
-		}
-	}
-	return false
-}
 
 // InsertAnchor locates the line after the package clause and import
 // decls — where a fresh managed block goes. Package doc comments and

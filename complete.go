@@ -902,7 +902,20 @@ func (c *completer) typedefMethodsOpt(td *runtime.TypeDef, out *[]Candidate, ptr
 		}
 	}
 	if td.HostNew != nil {
-		c.hostMembers(td.HostNew(), out)
+		hv := td.HostNew()
+		if !ptrRecv {
+			// `T.M` is a method expression — bound struct reps mint
+			// pointers (*bytes.Buffer) whose method set would leak
+			// pointer receivers; enumerate the modeled type's set.
+			rv := reflect.ValueOf(hv)
+			for rv.IsValid() && rv.Kind() == reflect.Pointer {
+				rv = rv.Elem()
+			}
+			if rv.IsValid() {
+				hv = rv.Interface()
+			}
+		}
+		c.hostMembers(hv, out)
 	}
 }
 

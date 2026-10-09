@@ -3096,6 +3096,19 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 					}
 					return v.methodExprDeref(b, m)
 				}
+				// a bound host basic's methods live on the host type —
+				// the expression re-dispatches on the (pointer) receiver.
+				// (*T).M sees the pointer method set, so probe *base where
+				// base is the modeled type: bound struct reps mint pointers
+				// (bytes.Buffer's rep is *bytes.Buffer).
+				if rt := hostTypOf(et); rt != nil {
+					for rt.Kind() == reflect.Pointer {
+						rt = rt.Elem()
+					}
+					if _, ok := reflect.PointerTo(rt).MethodByName(name); ok {
+						return v.methodExprThunk(b, name)
+					}
+				}
 				// promoted through an embedded field — re-select on the
 				// actual receiver argument (`(*U).Sum` reaches I's value).
 				if len(et.EmbedSpecs) > 0 || et.Kind == runtime.KindInterface {
@@ -3109,6 +3122,25 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 				f.trap("invalid method expression %s.%s (needs pointer receiver)", tdName(b), name)
 			}
 			return m // method expression: T.M(recv, ...)
+		}
+		// a bound host basic's methods live on the host type
+		// (reflect.StructTag.Get, time.Duration.String): the method
+		// expression re-dispatches on its receiver argument like Go's
+		// selector lowering — value methods only, matching T's set.
+		if rt := hostTypOf(b); rt != nil {
+			// bound struct reps mint pointers (*bytes.Buffer): T's
+			// method-expression set is the named type's — value
+			// receivers only; a pointer-only name traps like the
+			// declared PtrRecv arm above.
+			for rt.Kind() == reflect.Pointer {
+				rt = rt.Elem()
+			}
+			if _, ok := rt.MethodByName(name); ok {
+				return v.methodExprThunk(b, name)
+			}
+			if _, ok := reflect.PointerTo(rt).MethodByName(name); ok {
+				f.trap("invalid method expression %s.%s (needs pointer receiver)", tdName(b), name)
+			}
 		}
 		// `U.Sum` — a promoted method through an embedded field — or
 		// `I.m` — an interface requirement — dispatches on the concrete
@@ -3151,6 +3183,23 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		f.trap("no member %s on host value %T", name, b.V)
 	default:
 		f.trap("select %s on %T", name, base)
+	}
+	return nil
+}
+
+// hostTypOf returns the host reflect type a bound typedef stands in
+// for — the fresh value HostNew mints, or the raw scalar HostScalar
+// marks — so its method set can be probed where the typedef's own
+// declared Methods stay empty. nil when the typedef binds no host type.
+func hostTypOf(td *runtime.TypeDef) reflect.Type {
+	if td == nil {
+		return nil
+	}
+	if td.HostScalar != nil {
+		return reflect.TypeOf(td.HostScalar)
+	}
+	if td.HostNew != nil {
+		return reflect.TypeOf(td.HostNew())
 	}
 	return nil
 }
@@ -4852,6 +4901,18 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 		// selectMember.
 		if mv, ok := v.hostMember(sv, name); ok {
 			return mv
+		}
+	}
+	if td != nil && td.HostNew != nil && td.Kind == runtime.KindNamedBasic {
+		// a bound host named basic keeps a script payload (a
+		// reflect.StructTag's string): its declared method set is
+		// empty, but the host type's methods apply once the payload
+		// is materialized as the host type — tag.Get("json").
+		rt := reflect.TypeOf(td.HostNew())
+		if rv := reflect.ValueOf(sv); rv.IsValid() && rv.Type().ConvertibleTo(rt) {
+			if mv, ok := v.hostMember(rv.Convert(rt).Interface(), name); ok {
+				return mv
+			}
 		}
 	}
 	if s, isStruct := sv.(*runtime.Struct); isStruct {
@@ -8739,6 +8800,19 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 	if d, ok := b.(time.Duration); ok {
 		b = int64(d)
 	}
+	// a host-boxed string (the facade's StructField.Tag) compares by
+	// its string contents — a converted StructTag and a field's Tag
+	// compare equal, and field.Tag == "json:..." holds like Go's.
+	if gv, ok := a.(*runtime.GoValue); ok {
+		if rv := reflect.ValueOf(gv.V); rv.IsValid() && rv.Kind() == reflect.String {
+			a = rv.String()
+		}
+	}
+	if gv, ok := b.(*runtime.GoValue); ok {
+		if rv := reflect.ValueOf(gv.V); rv.IsValid() && rv.Kind() == reflect.String {
+			b = rv.String()
+		}
+	}
 	// boxed complex values compare by value across widths — Go rejects
 	// complex64 == complex128 (mismatched types), but here both operands
 	// already passed the tag check so compare numerically like int/float.
@@ -9539,6 +9613,11 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 			// converts like int64: string(time.Duration(65)) is "A".
 			if sx, ok := hostInt64(x); ok {
 				return stringFromInt(sx), nil
+			}
+			// a raw host scalar of string kind (reflect.StructTag)
+			// converts by its underlying string.
+			if rv := reflect.ValueOf(x); rv.IsValid() && rv.Kind() == reflect.String {
+				return rv.String(), nil
 			}
 		}
 		return nil, fmt.Errorf("cannot convert %s to string", typeNameOf(x))
