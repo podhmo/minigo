@@ -64,6 +64,9 @@ func TestDiffRegressions(t *testing.T) {
 				runErr error
 			}
 			resCh := make(chan outcome, 1)
+			// stderrOld is set before the os.Stderr swap so the timeout
+			// path can restore it when the run goroutine is abandoned.
+			var stderrOld *os.File
 			go func() {
 				var buf bytes.Buffer
 				opts := []minigo.Option{minigo.WithOutput(&buf)}
@@ -88,6 +91,7 @@ func TestDiffRegressions(t *testing.T) {
 						return
 					}
 					old := os.Stderr
+					stderrOld = old
 					os.Stderr = w
 					done := make(chan string)
 					go func() {
@@ -109,6 +113,9 @@ func TestDiffRegressions(t *testing.T) {
 			select {
 			case res = <-resCh:
 			case <-time.After(runCaseTimeout):
+				if stderrOld != nil {
+					os.Stderr = stderrOld
+				}
 				t.Fatalf("run did not finish within %s (HANG regression?)", runCaseTimeout)
 			}
 
