@@ -252,7 +252,13 @@ type FieldRef struct {
 
 // structOf resolves the base to the struct being referenced.
 func (r *FieldRef) structOf() *Struct {
-	v := r.Base
+	return StructOf(r.Base)
+}
+
+// StructOf resolves v to the struct it reaches — through Named tags,
+// cells and pointer-shaped references — or nil. Field promotion and
+// host intrinsics that step through embedded fields share this walk.
+func StructOf(v Value) *Struct {
 	for {
 		if s, ok := v.(*Struct); ok {
 			return s
@@ -279,7 +285,7 @@ func promotedStructs(level []*Struct) (next []*Struct) {
 		}
 		for _, i := range st.Def.EmbedIdx {
 			if i < len(st.Fields) {
-				if emb := (&FieldRef{Base: st.Fields[i]}).structOf(); emb != nil {
+				if emb := StructOf(st.Fields[i]); emb != nil {
 					next = append(next, emb)
 				}
 			}
@@ -1514,6 +1520,21 @@ type VMCaller interface {
 	// ok=false for non-array shapes. Lets len()/cap() on a nil *[N]T
 	// constant-fold like Go without a live frame.
 	ArrayLenOf(td *TypeDef) (n int64, ok bool)
+	// ResolveType resolves a type expression in the context of typedef
+	// `from` (its package scope, file imports and generic binds) — the
+	// engine's declared-type resolution, exposed so host intrinsics can
+	// walk declared shapes (embedded fields, promoted members) instead
+	// of re-implementing name resolution.
+	ResolveType(from *TypeDef, x ast.Expr) (*TypeDef, error)
+	// FieldTypes returns the declared typedef of each struct field,
+	// parallel to td.Fields (unresolvable declarations leave hole
+	// entries). Lets host intrinsics consult field types the way field
+	// stores do.
+	FieldTypes(td *TypeDef) ([]*TypeDef, error)
+	// ElemOf returns the element typedef of a container typedef
+	// ([]T->T, map[K]V->V, chan T->T) or the pointee typedef of a
+	// pointer typedef — named pointer types included.
+	ElemOf(td *TypeDef) (*TypeDef, error)
 	// CallerPCs returns opaque uintptr handles for the call stack —
 	// live frames plus frames already unwound by the in-flight panic,
 	// top-first like runtime.Callers.

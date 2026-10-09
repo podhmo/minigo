@@ -344,20 +344,7 @@ func (v *RValue) staticTd() *runtime.TypeDef {
 
 // structOf unwraps a script value to its *runtime.Struct.
 func structOf(v runtime.Value) *runtime.Struct {
-	for {
-		switch x := v.(type) {
-		case *runtime.Struct:
-			return x
-		case *runtime.Named:
-			v = x.V
-		default:
-			if d, ok := runtime.Deref(v); ok {
-				v = d
-				continue
-			}
-			return nil
-		}
-	}
+	return runtime.StructOf(v)
 }
 
 // ---- reflect.Value methods ----
