@@ -420,6 +420,27 @@ func MethodsOf(s *Decl) ([]*Decl, error) {
 	return out, nil
 }
 
+// MethodsIn returns every method declared in the package — the flat
+// counterpart of the per-type MethodsOf, covering the receiver-attached
+// decls Decls does not reach — in file order. It reads the index's
+// method list, so declarations the per-type name maps drop (a second
+// same-name method on one receiver, or a method on a receiver with no
+// type decl) still enumerate. file filters to the methods declared in
+// that one file. A bound package carries no index to walk.
+func MethodsIn(p *runtime.Package, file *syntax.File) ([]*Decl, error) {
+	if p == nil || p.Index == nil {
+		return nil, fmt.Errorf("inspect.Methods: package has no method index")
+	}
+	var out []*Decl
+	for _, md := range p.Index.Methods {
+		if file != nil && md.File != file {
+			continue
+		}
+		out = append(out, NewDecl(p, md))
+	}
+	return out, nil
+}
+
 // Method is a member of a type's method set: a method declared on the
 // type (Decl set, Via nil) or one promoted through an embedded field
 // (Via names the decl the member was promoted from). Members promoted

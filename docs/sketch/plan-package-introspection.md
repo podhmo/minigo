@@ -86,7 +86,11 @@ s := inspect.SymbolOf(dst.DstUser)         // value -> decl view (see below)
 inspect.Name(p) / Path(p) / Dir(p) / State(p)
 inspect.Standard(p)                 // bool — inside GOROOT (PackageMeta.Standard)
 inspect.Decls(p)                    // []Symbol — top-level decls, index-level,
-                                    // no init; Decls(f) filters to one file
+                                    // no init; Decls(f) filters to one file;
+                                    // methods are NOT included (see Methods)
+inspect.Methods(p)                  // []Symbol — every method decl, flat,
+                                    // source order; Methods(f) one file,
+                                    // Methods(typeDecl) per type
 inspect.Symbol(p, "Contains")       // one decl
 inspect.Files(p)                    // []File{Name, Imports[{Path, Name, Pos}], Doc}
 inspect.Imports(f)                  // the file's own import table

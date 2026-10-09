@@ -17,6 +17,9 @@ func TestInspect(t *testing.T) {
 		"SymbolView",
 		"FieldsWalk",
 		"MethodsWalk",
+		"MethodsPkg",
+		"MethodsFile",
+		"MethodsDup",
 		"SignatureWalk",
 		"TypeExprNav",
 		"OriginNav",
@@ -105,5 +108,12 @@ func TestInspect(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: expected trap mentioning %q, got %v", fn, want, err)
 		}
+	}
+	// a lazy import that fails to load must surface the load error —
+	// never the "expects a type decl" argument-shape error
+	if _, err := e.Run(context.Background(), "./testdata/badimport", "LoadErr"); err == nil {
+		t.Error("LoadErr: expected the import's load error")
+	} else if strings.Contains(err.Error(), "expects") {
+		t.Errorf("LoadErr: load error masked as argument error: %v", err)
 	}
 }

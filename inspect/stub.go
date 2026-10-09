@@ -46,10 +46,16 @@ func SymbolIDOf(v any) runtime.SymbolID { panic("minigo intrinsic") }
 // SymbolOf returns the declaration view of a value's symbol.
 func SymbolOf(v any) *Decl { panic("minigo intrinsic") }
 
-// Decls lists a package's (or one file's) top-level declarations.
+// Decls lists a package's (or one file's) top-level declarations —
+// funcs, types, vars, and consts. Method declarations are NOT
+// included: they attach to their receiver type, not the package
+// namespace, so a scan walking Decls alone silently misses every
+// method (including its doc comment). Methods(typeDecl) reaches them
+// per type; Methods(pkg) or Methods(file) enumerates them flat.
 func Decls(x any) []*Decl { panic("minigo intrinsic") }
 
-// Symbol looks up one declaration by name.
+// Symbol looks up one top-level declaration by name. Methods are not
+// named here — reach them through Methods.
 func Symbol(p *runtime.Package, name string) *Decl { panic("minigo intrinsic") }
 
 // Implementers returns the type decls of p whose method set covers
@@ -88,8 +94,11 @@ func Pos(s *Decl) *Position { panic("minigo intrinsic") }
 // embedded/constraint elements).
 func Fields(s *Decl) []*Field { panic("minigo intrinsic") }
 
-// Methods returns the method decls of a type symbol.
-func Methods(s *Decl) []*Decl { panic("minigo intrinsic") }
+// Methods lists method declarations: on a type decl, the type's own
+// methods; on a package or file view, every method declared there, in
+// source position order — the receiver-attached decls Decls does not
+// cover. MethodSet adds promoted members to the picture.
+func Methods(x any) []*Decl { panic("minigo intrinsic") }
 
 // MethodSet returns the flattened method set of a type symbol — the
 // members "usable through *T": the type's declared methods with either
