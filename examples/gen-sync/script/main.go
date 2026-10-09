@@ -428,7 +428,26 @@ func syncFile(p filePlan, check bool, explain bool, wd, rootAbs string) (bool, e
 		fmt.Println("gen-sync:", shown, "drift:", len(expected), "directive(s) out of sync"+delta)
 		return true, nil
 	}
-	if err := os.WriteFile(path, []byte(newsrc), 0644); err != nil {
+	// Write through a sibling temp + rename: os.WriteFile opens with
+	// O_TRUNC, so a mid-write failure (ENOSPC, an I/O error, a kill)
+	// would leave the target truncated — possibly empty. Renaming a
+	// same-dir temp can never leave a half-written destination; the
+	// worst case is a stray .gen-sync.tmp, which the scan ignores
+	// (not a .go file). The temp takes the file's existing mode —
+	// rename-replace would otherwise widen it to 0644. (The file is
+	// always readable at this point — ReadFile above succeeded — so
+	// Stat cannot fail; treat it as fatal anyway rather than guess
+	// a mode.)
+	fi, err := os.Stat(path)
+	if err != nil {
+		return false, fmt.Errorf("gen-sync: %s: %w", shown, err)
+	}
+	tmp := path + ".gen-sync.tmp"
+	if err := os.WriteFile(tmp, []byte(newsrc), fi.Mode().Perm()); err != nil {
+		return false, fmt.Errorf("gen-sync: %s: %w", shown, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp) // best effort: a stray temp must not shadow the next run's write
 		return false, fmt.Errorf("gen-sync: %s: %w", shown, err)
 	}
 	if inserted {
