@@ -501,9 +501,11 @@ func (v *RValue) Elem() *RValue {
 			return &RValue{e: v.e, vc: v.vc}
 		}
 		// the pointee is addressable: writes go back through the ptr;
-		// read-only provenance survives the deref like Go's flagRO
+		// read-only provenance survives the deref like Go's flagRO —
+		// verbatim, so an embed-only restriction stays embed-only and
+		// an exported field below still clears it.
 		return &RValue{e: v.e, vc: v.vc, val: dv, ref: ptr,
-			td: v.e.elemOf(v.td), ro: v.ro}
+			td: v.e.elemOf(v.td), ro: v.ro, embedRO: v.embedRO}
 	case reflect.Interface:
 		d := v.get()
 		if d == nil || d == runtime.NIL {
@@ -1186,9 +1188,10 @@ func (v *RValue) Index(i int) *RValue {
 		}
 		// the element is a byte — tag it so %T reads uint8 and
 		// Interface() surfaces a typed byte, like a []uint8 element.
+		// Index upgrades any read-only parent to sticky (v.flag.ro()).
 		btd := runtime.BasicTypedef("uint8")
 		return &RValue{e: v.e, vc: v.vc,
-			val: runtime.Tag(btd, int64(x[i])), td: btd}
+			val: runtime.Tag(btd, int64(x[i])), td: btd, ro: v.ro}
 	case *runtime.Named:
 		return v.unwrap().Index(i)
 	case *runtime.TypedNil:
