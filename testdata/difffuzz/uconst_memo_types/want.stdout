@@ -1,0 +1,25 @@
+main.Small true 101
+main.Wide true 101
+int32 true 101
+int true 101
+float64 true 101
+time.Duration true 101ns
+main.Small false 8
+main.Wide false 0
+main.Small true 101
+main.Wide true 101
+int32 true 101
+int true 101
+float64 true 101
+time.Duration true 101ns
+main.Small false 8
+main.Wide false 0
+true false
+main.Small true 101
+main.Wide true 101
+int32 true 101
+int true 101
+float64 true 101
+time.Duration true 101ns
+main.Small false 8
+main.Wide false 0

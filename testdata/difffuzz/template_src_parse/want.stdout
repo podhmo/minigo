@@ -1,0 +1,18 @@
+Items: [nut 1.25 m3,steel], [bolt 0.50]
+no missing
+a=1;b=2;
+1 2 4 5 
+empty range
+x=42 2 3 bc
+0 z false true true true
+NUT bolt true 5
+31 1000 97 -7 3.5 p-q default footer DONE!
+val <no value>
+clone: custom footer
+templates: [footer item list page]
+lookup: true true
+parse error: template: bad:1: missing value for if
+func error: template: nofunc:1: function "nosuch" not defined
+missing template: template: x:1:11: executing "x" at <{{template "zzz"}}>: template "zzz" not defined
+bad field: template: y:1:2: executing "y" at <.Nope>: can't evaluate field Nope in type main.Item
+missingkey: template: z:1:2: executing "z" at <.k>: map has no entry for key "k"

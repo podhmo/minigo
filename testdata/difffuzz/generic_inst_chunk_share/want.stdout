@@ -1,0 +1,7 @@
+string [s ] []string {s } main.Pair[string] int [0 0] []int {0 0} main.Pair[int] main.Name [n ] []main.Name {n } main.Pair[main.Name] []uint8 [[98] []] [][]uint8 {[98] []} main.Pair[[]uint8]
+string [s ] []string {s } main.Pair[string] int [1 0] []int {1 0} main.Pair[int] main.Name [n ] []main.Name {n } main.Pair[main.Name] []uint8 [[98] []] [][]uint8 {[98] []} main.Pair[[]uint8]
+string [s ] []string {s } main.Pair[string] int [2 0] []int {2 0} main.Pair[int] main.Name [n ] []main.Name {n } main.Pair[main.Name] []uint8 [[98] []] [][]uint8 {[98] []} main.Pair[[]uint8]
+float64 [1.5 0] []float64 {1.5 0} main.Pair[float64] int8 [3 0] []int8 {3 0} main.Pair[int8] <nil> [<nil> <nil>] []interface {} {<nil> <nil>} main.Pair[interface {}] main.Pair[int] [{1 2} {0 0}] []main.Pair[int] {{1 2} {0 0}} main.Pair[main.Pair[int]]
+main.local[int] {1} main.local[string] {x} main.local[int] {1}
+2 b y 1.5
+[a b c] [y z] [1 2 3] -1 1 0

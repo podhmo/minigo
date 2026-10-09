@@ -293,55 +293,55 @@ func (e *Engine) installStdlib() {
 		"Title":     h.fn("strings.Title", func(a []any) (any, error) { return strings.Title(str(a[0])), nil }, strings.Title),
 		"NewReader": h.fn("strings.NewReader", func(a []any) (any, error) { return strings.NewReader(str(a[0])), nil }, strings.NewReader),
 		// func-taking variants call the script callback back through the VM.
-		"TrimFunc": &runtime.BuiltinFunc{Name: "strings.TrimFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"TrimFunc": &runtime.BuiltinFunc{Name: "strings.TrimFunc", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("strings.TrimFunc needs 2 args")
 			}
 			out := strings.TrimFunc(str(args[0]), runePred(v, args[1]))
 			return out, nil
 		}},
-		"TrimLeftFunc": &runtime.BuiltinFunc{Name: "strings.TrimLeftFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"TrimLeftFunc": &runtime.BuiltinFunc{Name: "strings.TrimLeftFunc", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("strings.TrimLeftFunc needs 2 args")
 			}
 			out := strings.TrimLeftFunc(str(args[0]), runePred(v, args[1]))
 			return out, nil
 		}},
-		"TrimRightFunc": &runtime.BuiltinFunc{Name: "strings.TrimRightFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"TrimRightFunc": &runtime.BuiltinFunc{Name: "strings.TrimRightFunc", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("strings.TrimRightFunc needs 2 args")
 			}
 			out := strings.TrimRightFunc(str(args[0]), runePred(v, args[1]))
 			return out, nil
 		}},
-		"IndexFunc": &runtime.BuiltinFunc{Name: "strings.IndexFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"IndexFunc": &runtime.BuiltinFunc{Name: "strings.IndexFunc", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("strings.IndexFunc needs 2 args")
 			}
 			out := strings.IndexFunc(str(args[0]), runePred(v, args[1]))
 			return int64(out), nil
 		}},
-		"ContainsFunc": &runtime.BuiltinFunc{Name: "strings.ContainsFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"ContainsFunc": &runtime.BuiltinFunc{Name: "strings.ContainsFunc", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("strings.ContainsFunc needs 2 args")
 			}
 			return strings.ContainsFunc(str(args[0]), runePred(v, args[1])), nil
 		}},
-		"LastIndexFunc": &runtime.BuiltinFunc{Name: "strings.LastIndexFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"LastIndexFunc": &runtime.BuiltinFunc{Name: "strings.LastIndexFunc", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("strings.LastIndexFunc needs 2 args")
 			}
 			out := strings.LastIndexFunc(str(args[0]), runePred(v, args[1]))
 			return int64(out), nil
 		}},
-		"FieldsFunc": &runtime.BuiltinFunc{Name: "strings.FieldsFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"FieldsFunc": &runtime.BuiltinFunc{Name: "strings.FieldsFunc", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("strings.FieldsFunc needs 2 args")
 			}
 			out := strings.FieldsFunc(str(args[0]), runePred(v, args[1]))
 			return strsSlice(out), nil
 		}},
-		"Map": &runtime.BuiltinFunc{Name: "strings.Map", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Map": &runtime.BuiltinFunc{Name: "strings.Map", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("strings.Map needs 2 args")
 			}
@@ -359,6 +359,10 @@ func (e *Engine) installStdlib() {
 		"Itoa":    h.fn("strconv.Itoa", func(a []any) (any, error) { return strconv.Itoa(intOf(a[0])), nil }, strconv.Itoa),
 		"Quote":   h.fn("strconv.Quote", func(a []any) (any, error) { return strconv.Quote(str(a[0])), nil }, strconv.Quote),
 		"Unquote": h.fn("strconv.Unquote", func(a []any) (any, error) { return retErr2(strconv.Unquote(str(a[0]))) }),
+		"UnquoteChar": h.fn2("strconv.UnquoteChar", func(a []any) (any, error) {
+			r, multibyte, tail, err := strconv.UnquoteChar(str(a[0]), byte(int64Of(a[1])))
+			return &runtime.Tuple{Elems: []runtime.Value{namedSized(r, int64(r)), multibyte, tail, errVal(err)}}, nil
+		}),
 		"ParseUint": h.fn3("strconv.ParseUint", func(a []any) (any, error) {
 			return retErr2(strconv.ParseUint(str(a[0]), intOf(a[1]), intOf(a[2])))
 		}),
@@ -848,7 +852,7 @@ func (e *Engine) installStdlib() {
 		// a host sort.Interface (a GoValue sort.Interface passes through).
 		"Sort":  &runtime.BuiltinFunc{Name: "sort.Sort", Fn: h.sortInterface},
 		"Slice": &runtime.BuiltinFunc{Name: "sort.Slice", Fn: h.sortSlice},
-		"SliceIsSorted": &runtime.BuiltinFunc{Name: "sort.SliceIsSorted", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"SliceIsSorted": &runtime.BuiltinFunc{Name: "sort.SliceIsSorted", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, ok := sliceOf(args[0])
 			if !ok {
 				if nilSliceArg(args[0]) {
@@ -865,7 +869,7 @@ func (e *Engine) installStdlib() {
 			}
 			return true, nil
 		}},
-		"Search": &runtime.BuiltinFunc{Name: "sort.Search", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Search": &runtime.BuiltinFunc{Name: "sort.Search", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			n := int64Of(goNative(args[0]))
 			f := args[1]
 			i, j := int64(0), n
@@ -880,7 +884,7 @@ func (e *Engine) installStdlib() {
 			}
 			return i, nil
 		}},
-		"SliceStable": &runtime.BuiltinFunc{Name: "sort.SliceStable", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"SliceStable": &runtime.BuiltinFunc{Name: "sort.SliceStable", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, ok := sliceOf(args[0])
 			if !ok {
 				if nilSliceArg(args[0]) {
@@ -953,7 +957,7 @@ func (e *Engine) installStdlib() {
 			sort.Slice(el, func(i, j int) bool { return lessScript(el[i], el[j]) })
 			return &runtime.Slice{Elems: el, Typ: sliceTypOf(args[0])}, nil
 		}},
-		"DeleteFunc": &runtime.BuiltinFunc{Name: "slices.DeleteFunc", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"DeleteFunc": &runtime.BuiltinFunc{Name: "slices.DeleteFunc", SyncCallbacks: true, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("slices.DeleteFunc needs 2 args")
 			}
@@ -1026,7 +1030,7 @@ func (e *Engine) installStdlib() {
 			found := i < len(s.Elems) && equalScript(s.Elems[i], target)
 			return &runtime.Tuple{Elems: []runtime.Value{int64(i), found}}, nil
 		}},
-		"BinarySearchFunc": &runtime.BuiltinFunc{Name: "slices.BinarySearchFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"BinarySearchFunc": &runtime.BuiltinFunc{Name: "slices.BinarySearchFunc", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, ok := args[0].(*runtime.Slice)
 			if !ok {
 				return nil, fmt.Errorf("slices.BinarySearchFunc: first arg must be a slice")
@@ -1053,7 +1057,7 @@ func (e *Engine) installStdlib() {
 			}
 			return &runtime.Tuple{Elems: []runtime.Value{int64(i), found}}, nil
 		}},
-		"EqualFunc": &runtime.BuiltinFunc{Name: "slices.EqualFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"EqualFunc": &runtime.BuiltinFunc{Name: "slices.EqualFunc", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			a, _ := args[0].(*runtime.Slice)
 			b, _ := args[1].(*runtime.Slice)
 			eq := args[2]
@@ -1071,7 +1075,7 @@ func (e *Engine) installStdlib() {
 			}
 			return true, nil
 		}},
-		"IndexFunc": &runtime.BuiltinFunc{Name: "slices.IndexFunc", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"IndexFunc": &runtime.BuiltinFunc{Name: "slices.IndexFunc", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, ok := args[0].(*runtime.Slice)
 			if !ok {
 				return nil, fmt.Errorf("slices.IndexFunc: first arg must be a slice")
@@ -1462,7 +1466,7 @@ func (e *Engine) installStdlib() {
 			}
 			return retErr2(m, nil)
 		}),
-		"WalkDir": &runtime.BuiltinFunc{Name: "filepath.WalkDir", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"WalkDir": &runtime.BuiltinFunc{Name: "filepath.WalkDir", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("filepath.WalkDir needs 2 args, got %d", len(args))
 			}
