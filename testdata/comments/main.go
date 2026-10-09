@@ -4,7 +4,7 @@
 package comments
 
 // Documented is a documented function — its doc comment is attached.
-func Documented() int {
+func Documented() int { // a trailing comment on the signature line
 	// swagger:route GET /x — a free comment a doc scan cannot reach
 	x := 1 // a trailing comment inside a body is free too
 

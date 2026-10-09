@@ -237,6 +237,7 @@ func TestCommentsOf(t *testing.T) {
 		"2:false:// comment-enumeration tests: doc comments, free comments,",
 		"3:false:// directive-shaped comments, and block comments.",
 		"6:false:// Documented is a documented function — its doc comment is attached.",
+		"7:true:// a trailing comment on the signature line",
 		"8:true:// swagger:route GET /x — a free comment a doc scan cannot reach",
 		"9:true:// a trailing comment inside a body is free too",
 		"11:true://go:generate echo directive — directive-shaped text stays visible",
