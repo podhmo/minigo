@@ -40,4 +40,7 @@ func main() {
 	fmt.Println(float32(math.Pi), math.Pi/2, math.Log2E)
 	fmt.Println(math.MaxFloat64*1e-308, real(1.5+2.5i))
 	fmt.Println(append([]byte{1}, 'x'))
+	// the float limit consts are their float64 value exactly — these
+	// identities hold only in the exact constant domain.
+	fmt.Println(math.MaxFloat64 == 0x1p1024-0x1p971, math.SmallestNonzeroFloat64 == 0x1p-1074)
 }

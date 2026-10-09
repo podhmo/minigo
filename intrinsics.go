@@ -685,13 +685,17 @@ func (e *Engine) installStdlib() {
 		// the 64-bit ceiling constants don't fit int64 — they stay
 		// untyped constants so `x << (math.MaxUint + 0.)` still
 		// evaluates in the constant domain like Go's declaration.
-		"MaxUint64":              &runtime.UConst{V: constant.MakeUint64(math.MaxUint64)},
-		"MaxUint":                &runtime.UConst{V: constant.MakeUint64(math.MaxUint)},
-		"MaxUintptr":             &runtime.UConst{V: constant.MakeUint64(math.MaxUint64)},
-		"MaxFloat32":             mathFloat("3.40282346638528859811704183484516925440e+38"),
-		"MaxFloat64":             mathFloat("1.79769313486231570814527423731704356798070e+308"),
-		"SmallestNonzeroFloat32": mathFloat("1.401298464324817070923729583289916131280e-45"),
-		"SmallestNonzeroFloat64": mathFloat("4.9406564584124654417656879286822137236505980e-324"),
+		"MaxUint64":  &runtime.UConst{V: constant.MakeUint64(math.MaxUint64)},
+		"MaxUint":    &runtime.UConst{V: constant.MakeUint64(math.MaxUint)},
+		"MaxUintptr": &runtime.UConst{V: constant.MakeUint64(math.MaxUint64)},
+		// the float limit consts ARE their float64 value exactly
+		// (0x1p127*(1+(1-0x1p-23)) etc. are representable), so
+		// MakeFloat64 reproduces the stdlib constant bit-for-bit — a
+		// decimal literal would parse to a different constant.
+		"MaxFloat32":             &runtime.UConst{V: constant.MakeFloat64(math.MaxFloat32)},
+		"MaxFloat64":             &runtime.UConst{V: constant.MakeFloat64(math.MaxFloat64)},
+		"SmallestNonzeroFloat32": &runtime.UConst{V: constant.MakeFloat64(math.SmallestNonzeroFloat32)},
+		"SmallestNonzeroFloat64": &runtime.UConst{V: constant.MakeFloat64(math.SmallestNonzeroFloat64)},
 		"Abs":                    h.fn("math.Abs", func(a []any) (any, error) { return math.Abs(floatOf(a[0])), nil }, math.Abs),
 		"Ceil":                   h.fn("math.Ceil", func(a []any) (any, error) { return math.Ceil(floatOf(a[0])), nil }, math.Ceil),
 		"Floor":                  h.fn("math.Floor", func(a []any) (any, error) { return math.Floor(floatOf(a[0])), nil }, math.Floor),
