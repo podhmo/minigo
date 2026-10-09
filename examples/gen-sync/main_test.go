@@ -253,30 +253,41 @@ func TestWriteFailurePropagates(t *testing.T) {
 
 func TestWritesStayInsideScannedDir(t *testing.T) {
 	dir := setupModule(t)
-	// An absolute-path replace makes the locator prefer the repo's
-	// tree: the script's own `.../scanx` import lands on
-	// /repo/.../scanx.go, and ./scanx's index lookup (same import
-	// path) answers with those files — writes would escape the dir the
-	// caller named.
-	repoRoot, err := filepath.Abs("../..")
-	if err != nil {
+	// A local replace whose old path is LONGER than the module path
+	// claims an in-subtree dep's import: -deps then indexes files from
+	// the replacement tree, and writes would escape the dir the caller
+	// named. (Not a go.mod `go mod` would accept — the resolver
+	// tolerates it — but the guard is the safety net for any
+	// resolution that lands outside the scanned dir.)
+	shadow := filepath.Join(dir, "shadow", "mood")
+	if err := os.MkdirAll(shadow, 0755); err != nil {
+		t.Fatal(err)
+	}
+	shadowFile := filepath.Join(shadow, "size.go")
+	if err := os.WriteFile(shadowFile, []byte("package mood\n\ntype Size int\n\nconst (\n\tSizeSmall Size = iota\n\tSizeLarge\n)\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	gomod, err := os.ReadFile(filepath.Join(dir, "go.mod"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	gomod = []byte(strings.Replace(string(gomod), "=> ../../", "=> "+repoRoot, 1))
+	gomod = append(gomod, []byte("\nreplace github.com/podhmo/minigo/examples/gen-sync/app/internal/mood => ./shadow/mood\n")...)
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), gomod, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := run(context.Background(), dir, scriptDir(t), filepath.Join(dir, "scanx"), false, false, false, io.Discard); err == nil {
+	if _, err := run(context.Background(), dir, scriptDir(t), filepath.Join(dir, "app"), false, true, false, io.Discard); err == nil {
 		t.Fatal("expected an outside-directory refusal, got nil error")
 	} else if !strings.Contains(err.Error(), "outside the scanned directory") {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// the repo's own helper is untouched.
-	gentest.AssertSameFile(t, "scanx/scanx.go", "scanx/scanx.go")
+	// the shadowed file was never written to.
+	got, err := os.ReadFile(shadowFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "//go:generate") {
+		t.Fatalf("write escaped into the replacement tree:\n%s", got)
+	}
 }
 
 func TestOutsideModuleFails(t *testing.T) {

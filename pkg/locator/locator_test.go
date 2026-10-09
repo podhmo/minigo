@@ -321,6 +321,56 @@ replace example.com/prefixmod => ./local/prefixmod
 			expectedFoundPath: filepath.Join("local", "prefixmod"),
 			expectErr:         false,
 		},
+		{
+			// A module nested under a replaced parent (the
+			// examples/gen-sync fixture's `module .../examples/gen-sync`
+			// + `replace github.com/podhmo/minigo => ../../` shape):
+			// the main module claims its own subtree even though a
+			// shorter-prefix replace points at a tree that also
+			// contains it.
+			name: "self_replace_on_parent_module_does_not_shadow_main_subtree",
+			goModContent: `module example.com/parent/inner
+go 1.16
+require example.com/parent v0.0.0
+replace example.com/parent => ./replaced-parent
+`,
+			subDirsToCreate: []string{
+				"pkg", // real package inside the inner module
+				filepath.Join("replaced-parent", "inner", "pkg"), // shadow in the replaced tree
+			},
+			importPath:        "example.com/parent/inner/pkg",
+			expectedFoundPath: "pkg", // Relative to module root
+			expectErr:         false,
+		},
+		{
+			// The same self-replace still owns imports outside the
+			// inner module's own prefix.
+			name: "self_replace_on_parent_module_still_claims_outside_main_prefix",
+			goModContent: `module example.com/parent/inner
+go 1.16
+require example.com/parent v0.0.0
+replace example.com/parent => ./replaced-parent
+`,
+			subDirsToCreate:   []string{filepath.Join("replaced-parent", "other")},
+			importPath:        "example.com/parent/other",
+			expectedFoundPath: filepath.Join("replaced-parent", "other"), // Relative to module root
+			expectErr:         false,
+		},
+		{
+			// Once the main module claims an import, a missing
+			// directory is an error — resolution never silently reads
+			// the replaced tree's copy of the same path.
+			name: "self_replace_missing_dir_in_main_is_error_not_shadow_read",
+			goModContent: `module example.com/parent/inner
+go 1.16
+require example.com/parent v0.0.0
+replace example.com/parent => ./replaced-parent
+`,
+			subDirsToCreate:   []string{filepath.Join("replaced-parent", "inner", "gone")},
+			importPath:        "example.com/parent/inner/gone",
+			expectedFoundPath: "",
+			expectErr:         true,
+		},
 	}
 
 	for _, tt := range testCases {
