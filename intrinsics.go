@@ -792,6 +792,12 @@ func (e *Engine) installStdlib() {
 				return errVal(fmt.Errorf("json: Unmarshal(non-pointer %s)", runtime.DisplayName(atd))), nil
 			}
 			data := byteSlice(goNative(args[0]))
+			// gc validates the input up front (checkValid): a syntax
+			// error reports before any UnmarshalJSON dispatch.
+			var dec any
+			if err := json.Unmarshal(data, &dec); err != nil {
+				return errVal(err), nil
+			}
 			// a target whose method set offers UnmarshalJSON decodes
 			// itself — gc's indirect() hands it the raw literal instead
 			// of walking by shape. The pointer's method set is checked,
@@ -814,10 +820,6 @@ func (e *Engine) installStdlib() {
 				}
 				return jsonErrResult(r), nil
 			}
-			var dec any
-			if err := json.Unmarshal(data, &dec); err != nil {
-				return errVal(err), nil
-			}
 			prior, _ := runtime.Deref(args[1])
 			ectx := &jsonErrCtx{}
 			if std := derefTyp(v.TypeOf(args[1])); std != nil && std.Kind == runtime.KindStruct && std.Name != "" {
@@ -830,6 +832,9 @@ func (e *Engine) installStdlib() {
 			// Like gc, the shaped value is written even on type errors —
 			// successfully-decoded fields land and the reported error is
 			// the FIRST in input order, not decode order.
+			if ectx.fatal != nil {
+				return nil, ectx.fatal
+			}
 			if ectx.callErr != nil {
 				return ectx.callErr, nil
 			}
@@ -4429,6 +4434,10 @@ type jsonErrCtx struct {
 	// over the by-shape type errors the way gc reports the call's
 	// error for the value it decoded.
 	callErr runtime.Value
+	// fatal records a failed METHOD CALL itself (a script panic
+	// surfacing as a call error) — gc lets it propagate, so it must
+	// not be swallowed into by-shape decoding.
+	fatal error
 }
 
 // jsonScriptErr ferries a script MarshalJSON's error return through
@@ -5033,15 +5042,20 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 		}
 		if m, ok := runtime.IfaceMember(c, recv, "UnmarshalJSON"); ok && jsonUnmarshalShape(m) {
 			if lit, lerr := json.Marshal(dec); lerr == nil {
-				if r, cerr := c.Call(m, []runtime.Value{scriptVal(lit)}); cerr == nil {
-					if ev := jsonErrResult(r); ev != runtime.NIL {
-						ectx.callErr = ev
-					}
-					if cell != nil {
-						return cell.Elem
+				r, cerr := c.Call(m, []runtime.Value{scriptVal(lit)})
+				if cerr != nil {
+					if ectx.fatal == nil {
+						ectx.fatal = cerr
 					}
 					return prior
 				}
+				if ev := jsonErrResult(r); ev != runtime.NIL {
+					ectx.callErr = ev
+				}
+				if cell != nil {
+					return cell.Elem
+				}
+				return prior
 			}
 		}
 	}
@@ -5262,12 +5276,17 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 		}
 		if m, ok := runtime.IfaceMember(c, pc, "UnmarshalJSON"); ok && jsonUnmarshalShape(m) {
 			if lit, lerr := json.Marshal(dec); lerr == nil {
-				if r, cerr := c.Call(m, []runtime.Value{scriptVal(lit)}); cerr == nil {
-					if ev := jsonErrResult(r); ev != runtime.NIL {
-						ectx.callErr = ev
+				r, cerr := c.Call(m, []runtime.Value{scriptVal(lit)})
+				if cerr != nil {
+					if ectx.fatal == nil {
+						ectx.fatal = cerr
 					}
 					return pc
 				}
+				if ev := jsonErrResult(r); ev != runtime.NIL {
+					ectx.callErr = ev
+				}
+				return pc
 			}
 		}
 		return &runtime.Cell{Elem: jsonShape(c, dec, c.TypeOf(c.ElemZero(td)), ep, ectx)}
