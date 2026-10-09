@@ -35,7 +35,7 @@ Items: {{template "list" .Items}}
 {{$x := 1}}{{$x = add $x 41}}x={{$x}} {{len .Items}} {{index .Nums 2}} {{slice "abcdef" 1 3}}
 {{and 1 0 2}} {{or 0 "" "z"}} {{not true}} {{lt 1 2}} {{ne "a" "b"}} {{le 2.5 2.5}}
 {{.First.Upper}} {{.First.Next.Name}} {{.First.HasNext}} {{.First.Pair 2 3}}
-{{0x1F}} {{1e3}} {{'a'}} {{-7}} {{3.5}} {{"q" | printf "%s-%s" "p"}}
+{{0x1F}} {{1e3}} {{'a'}} {{-7}} {{3.5}} {{1e2i}} {{"q" | printf "%s-%s" "p"}}
 {{- /* trim */ -}}
 {{block "footer" .}} default footer {{.Title | shout}}{{end}}
 {{.Map.key}} {{.Map.missing}}

@@ -138,6 +138,19 @@ func (e *Engine) installStdlib() {
 		"Sprintf": h.ffn("fmt.Sprintf", 0, 1, func(a []any) (any, error) {
 			return fmt.Sprintf(str(a[0]), a[1:]...), nil
 		}, fmt.Sprintf),
+		// The Scan family's out-params arrive as script refs; scanFn
+		// mirrors each into a host var of the pointee's type, scans, and
+		// writes results back through the ref (parse/node.go's
+		// complex-literal path needs Sscan).
+		"Sscan":   h.scanFn("fmt.Sscan", 1, nil, func(head, ptrs []any) (int, error) { return fmt.Sscan(str(head[0]), ptrs...) }),
+		"Sscanf":  h.scanFn("fmt.Sscanf", 2, nil, func(head, ptrs []any) (int, error) { return fmt.Sscanf(str(head[0]), str(head[1]), ptrs...) }),
+		"Sscanln": h.scanFn("fmt.Sscanln", 1, nil, func(head, ptrs []any) (int, error) { return fmt.Sscanln(str(head[0]), ptrs...) }),
+		"Scan":    h.scanFn("fmt.Scan", 0, nil, func(_, ptrs []any) (int, error) { return fmt.Scan(ptrs...) }),
+		"Scanf":   h.scanFn("fmt.Scanf", 1, nil, func(head, ptrs []any) (int, error) { return fmt.Scanf(str(head[0]), ptrs...) }),
+		"Scanln":  h.scanFn("fmt.Scanln", 0, nil, func(_, ptrs []any) (int, error) { return fmt.Scanln(ptrs...) }),
+		"Fscan":   h.scanFn("fmt.Fscan", 1, h.scanReader, func(head, ptrs []any) (int, error) { return fmt.Fscan(head[0].(io.Reader), ptrs...) }),
+		"Fscanf":  h.scanFn("fmt.Fscanf", 2, h.scanReader, func(head, ptrs []any) (int, error) { return fmt.Fscanf(head[0].(io.Reader), str(head[1]), ptrs...) }),
+		"Fscanln": h.scanFn("fmt.Fscanln", 1, h.scanReader, func(head, ptrs []any) (int, error) { return fmt.Fscanln(head[0].(io.Reader), ptrs...) }),
 		// Errorf is hand-bound: %w verbs wrap the cause like Go's
 		// fmt.wrapError so errors.Unwrap/Is/As see the chain.
 		"Errorf": &runtime.BuiltinFunc{Name: "fmt.Errorf", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -3073,6 +3086,65 @@ func (h *hostHelpers) arity(name string, n int, f func([]any) (any, error), targ
 		bf.Target = target[0]
 	}
 	return bf
+}
+
+// scanFn adapts fmt's Scan family: the out-params arrive as script refs,
+// which host fmt cannot store through, so each is mirrored into a host
+// variable of the pointee's type, the real fmt call scans into those, and
+// each result is written back through the ref. heads counts the leading
+// non-pointer args (a format string or reader); headFn converts them
+// (nil: goNative each).
+func (h *hostHelpers) scanFn(name string, heads int, headFn func(runtime.VMCaller, []runtime.Value) ([]any, error), call func(head, ptrs []any) (int, error)) *runtime.BuiltinFunc {
+	return &runtime.BuiltinFunc{Name: name, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) < heads+1 {
+			return nil, fmt.Errorf("%s needs at least %d args, got %d", name, heads+1, len(args))
+		}
+		var head []any
+		if headFn != nil {
+			var err error
+			if head, err = headFn(v, args[:heads]); err != nil {
+				return nil, err
+			}
+		} else {
+			head = make([]any, heads)
+			for i, hv := range args[:heads] {
+				head[i] = goNative(hv)
+			}
+		}
+		ptrs := make([]any, len(args)-heads)
+		for i, ref := range args[heads:] {
+			cur, ok := runtime.Deref(ref)
+			if !ok {
+				return retErr(0, fmt.Errorf("%s: argument %d is not a pointer", name, i+heads+1))
+			}
+			t := reflect.TypeOf(goNative(cur))
+			if t == nil {
+				return retErr(0, fmt.Errorf("%s: cannot infer scan target type: argument %d", name, i+heads+1))
+			}
+			rv := reflect.New(t)
+			// Seed with the current pointee: gc leaves args the scan
+			// never reached (or failed to store) untouched.
+			rv.Elem().Set(reflect.ValueOf(goNative(cur)))
+			ptrs[i] = rv.Interface()
+		}
+		n, err := call(head, ptrs)
+		// gc stores whatever it managed to scan even on error, so the
+		// write-back runs unconditionally.
+		for i, ref := range args[heads:] {
+			runtime.SetRef(ref, scriptVal(reflect.ValueOf(ptrs[i]).Elem().Interface()))
+		}
+		return retErr(n, err)
+	}}
+}
+
+// scanReader converts an Fscan family's leading reader arg, accepting
+// both host io.Reader values and script-defined readers.
+func (h *hostHelpers) scanReader(v runtime.VMCaller, args []runtime.Value) ([]any, error) {
+	r, err := h.asReaderVM(v, args[0])
+	if err != nil {
+		return nil, err
+	}
+	return []any{r}, nil
 }
 
 // sortInPlace sorts a *runtime.Slice's elements directly — going through
