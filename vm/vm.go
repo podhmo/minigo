@@ -8797,6 +8797,10 @@ func typeExprName(e ast.Expr) string {
 		return s + "]"
 	case *ast.ParenExpr:
 		return typeExprName(t.X)
+	case *ast.UnaryExpr:
+		if t.Op == token.TILDE {
+			return "~" + typeExprName(t.X)
+		}
 	case *ast.Ellipsis:
 		return "..." + typeExprName(t.Elt)
 	case *ast.InterfaceType:
