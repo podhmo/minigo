@@ -11405,9 +11405,8 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		// spellings agree: its elements are already script values
 		// (each a GoValue box dispatching by reflection).
 		if s, ok := runtime.Unwrap(n.V).(*runtime.Slice); ok && tdName(n.Typ) == tdName(td) {
-			return &runtime.Slice{Elems: s.Elems, Typ: td}
+			return stampContainerTyp(s, td)
 		}
-		println("DBG named-trap n.Typ=%q td=%q nV=%T", tdName(n.Typ), tdName(td), n.V)
 		f.trap("cannot use %s as %s", tdName(n.Typ), tdName(td))
 	}
 	if gv, ok := x.(*runtime.GoValue); ok {
@@ -11482,7 +11481,7 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		// (each a GoValue box dispatching by reflection).
 		if s, ok := runtime.Unwrap(x).(*runtime.Slice); ok &&
 			utd != nil && utd.Kind == runtime.KindSlice && tdName(tag) == tdName(td) {
-			return &runtime.Slice{Elems: s.Elems, Typ: td}
+			return stampContainerTyp(s, td)
 		}
 		// a named target whose underlying is an interface (`type Token
 		// any`) assigns by interface satisfaction below, not by tag —
@@ -11524,7 +11523,6 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		if td.Name != "" && typeNameOf(x) == td.Name {
 			return runtime.Tag(td, x)
 		}
-		println("DBG shapeOK-trap x=%T td=%q utd=%v", x, tdName(td), utd)
 		f.trap("cannot use %s as %s", typeNameOf(x), tdName(td))
 	}
 	// array-typed slots copy on assignment: `var b = a` owns its own
