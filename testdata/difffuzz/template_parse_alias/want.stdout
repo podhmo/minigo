@@ -1,0 +1,6 @@
+0 9
+parse.TextNode
+alias: new anewb
+reslice: aresliceb
+rebind: onetwothree old
+aappendb append
