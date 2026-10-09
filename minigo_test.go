@@ -532,6 +532,14 @@ func TestPanicTraceback(t *testing.T) {
 		}
 	}
 
+	// a panic inside the payload's own Error() probe is fatal in gc
+	// (panic inside printpanics): no `panic:` line prints — the fatal
+	// message names the inner panic's runtime type.
+	got = runErr("PanicErrorNilDeref")
+	if !strings.HasPrefix(got, "fatal error: panic while printing panic value: type runtime.errorString") {
+		t.Errorf("PanicErrorNilDeref: want fatal printpanics line, got:\n%s", got)
+	}
+
 	// a recovered-then-repanicked script-error payload renders gc's
 	// chain: `panic: <Error() text> [recovered]` / `\tpanic: new`.
 	got = runErr("PanicErrorChain")
