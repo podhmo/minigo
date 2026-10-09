@@ -2277,19 +2277,34 @@ func (v *VM) loop(f *frame) {
 			top := f.pop()
 			if td, ok := top.(*runtime.TypeDef); ok {
 				if names, outer := v.outerTypeArgs(f); len(outer) > 0 {
-					clone := *td
-					clone.OuterSpell = outer
-					if td.Local {
-						binds := map[string]runtime.Value{}
-						for k, bv := range td.Binds {
-							binds[k] = bv
+					// a typedef that IS a bound type argument — T
+					// resolved to a concrete type like the
+					// function-local `large` bound by f[large] — is
+					// the final type already: folding this
+					// instantiation's args onto it invents
+					// `large[large·1]` where gc asserts to `large`.
+					bound := false
+					for _, bv := range f.fn.Binds {
+						if typedefOf(bv) == td {
+							bound = true
+							break
 						}
-						// resolved args beat compile placeholders
-						bindArgs(binds, names, outer)
-						clone.OuterArgs = outer
-						clone.Binds = binds
 					}
-					top = &clone
+					if !bound {
+						clone := *td
+						clone.OuterSpell = outer
+						if td.Local {
+							binds := map[string]runtime.Value{}
+							for k, bv := range td.Binds {
+								binds[k] = bv
+							}
+							// resolved args beat compile placeholders
+							bindArgs(binds, names, outer)
+							clone.OuterArgs = outer
+							clone.Binds = binds
+						}
+						top = &clone
+					}
 				}
 			}
 			f.push(top)
