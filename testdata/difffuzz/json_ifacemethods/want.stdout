@@ -5,3 +5,7 @@ y 4200 42 <nil>
 null
  json: error calling MarshalJSON for type *main.Bad: bad marshal
 0 json: cannot unmarshal string into Go value of type int64
+y 3! <nil>
+["a"! "b"!] <nil>
+map[k:"z"!] <nil>
+"q"! <nil>

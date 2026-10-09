@@ -63,4 +63,35 @@ func main() {
 	var m3 Money
 	err = json.Unmarshal([]byte(`"oops"`), &m3)
 	fmt.Println(m3.Cents, err)
+	nested()
+}
+
+type Upper string
+
+func (u *Upper) UnmarshalJSON(b []byte) error {
+	*u = Upper(string(b) + "!")
+	return nil
+}
+
+type Holder struct {
+	V string `json:"v"`
+	N Upper  `json:"n"`
+}
+
+func nested() {
+	var w Holder
+	err := json.Unmarshal([]byte(`{"v":"y","n":3}`), &w)
+	fmt.Printf("%s %s %v\n", w.V, w.N, err)
+
+	var s []Upper
+	err = json.Unmarshal([]byte(`["a","b"]`), &s)
+	fmt.Println(s, err)
+
+	var m map[string]Upper
+	err = json.Unmarshal([]byte(`{"k":"z"}`), &m)
+	fmt.Println(m, err)
+
+	var p *Upper
+	err = json.Unmarshal([]byte(`"q"`), &p)
+	fmt.Println(*p, err)
 }

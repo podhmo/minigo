@@ -796,6 +796,17 @@ func (e *Engine) installStdlib() {
 			// itself — gc's indirect() hands it the raw literal instead
 			// of walking by shape. The pointer's method set is checked,
 			// so both value- and pointer-receiver methods qualify.
+			// gc's indirect() allocates a nil pointer before the
+			// call — without it the method derefs nil. The member
+			// probe runs after the realloc so the bound receiver
+			// sees the fresh pointee.
+			if prior0, _ := runtime.Deref(args[1]); jsonNilish(prior0) {
+				if ptd := derefTyp(v.TypeOf(args[1])); ptd != nil && ptd.Kind == runtime.KindPointer {
+					if z := v.ElemZero(ptd); z != nil {
+						runtime.SetRef(args[1], &runtime.Cell{Elem: z})
+					}
+				}
+			}
 			if m, ok := runtime.IfaceMember(v, args[1], "UnmarshalJSON"); ok && jsonUnmarshalShape(m) {
 				r, cerr := v.Call(m, []runtime.Value{scriptVal(data)})
 				if cerr != nil {
@@ -4495,6 +4506,15 @@ func jsonUnmarshalShape(m runtime.Value) bool {
 	return n == 1 && ft.Results != nil && len(ft.Results.List) == 1
 }
 
+// jsonNilish reports a nil pointer/interface payload.
+func jsonNilish(v runtime.Value) bool {
+	switch v.(type) {
+	case *runtime.TypedNil, *runtime.IfaceNil:
+		return true
+	}
+	return false
+}
+
 // jsonErrResult unwraps the single `error` a script UnmarshalJSON
 // returns: a nil-ish payload becomes NIL, anything else is the script
 // error value itself.
@@ -4987,23 +5007,38 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 		}
 		return priorOr(prior, c, td)
 	}
-	// a target whose ADDRESSABLE method set offers UnmarshalJSON
-	// decodes itself — a non-nil *T decodes through its own pointer,
-	// and a named value T decodes through &v the way gc calls the
-	// method on the field's address. The literal handed over is the
-	// re-encoded subtree — the original byte span is gone by the time
-	// decode reaches here. Anything else falls through to by-shape.
-	if prior != nil {
-		recv := prior
+	// gc calls UnmarshalJSON on the addressable decode target: a
+	// non-nil *T through its own pointer, a named value through &v,
+	// and a fresh slot — new field, slice element, map value — through
+	// the addressable value it decodes into before storing. The
+	// receiver's cell is returned rather than the prior so a
+	// whole-value `*u = ...` assignment in the method reaches the
+	// field. The literal handed over is the re-encoded subtree — the
+	// original byte span is gone by the time decode reaches here. The
+	// probe is gated to NAMED types: methods attach to named types
+	// only, so an unnamed container's member walk must not borrow the
+	// element type's methods.
+	if td.Name != "" {
+		var recv runtime.Value
+		var cell *runtime.Cell
 		switch prior.(type) {
 		case *runtime.Named:
-			recv = &runtime.Cell{Elem: prior}
+			cell = &runtime.Cell{Elem: prior}
+			recv = cell
+		case nil:
+			cell = &runtime.Cell{Elem: c.Zero(td)}
+			recv = cell
+		default:
+			recv = prior
 		}
 		if m, ok := runtime.IfaceMember(c, recv, "UnmarshalJSON"); ok && jsonUnmarshalShape(m) {
 			if lit, lerr := json.Marshal(dec); lerr == nil {
 				if r, cerr := c.Call(m, []runtime.Value{scriptVal(lit)}); cerr == nil {
 					if ev := jsonErrResult(r); ev != runtime.NIL {
 						ectx.callErr = ev
+					}
+					if cell != nil {
+						return cell.Elem
 					}
 					return prior
 				}
