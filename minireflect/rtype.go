@@ -83,6 +83,9 @@ func (e *Env) peelAlias(td *runtime.TypeDef) *runtime.TypeDef {
 
 // hostTypeOf interns a host reflect.Type.
 func (e *Env) hostTypeOf(rt reflect.Type) *RType {
+	if e.h.TypeAlias != nil && rt != nil {
+		rt = e.h.TypeAlias(rt)
+	}
 	return e.intern(hostTypeKey(rt), nil, rt)
 }
 
