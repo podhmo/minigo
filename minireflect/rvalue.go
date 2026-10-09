@@ -2633,6 +2633,14 @@ func (v *RValue) outVal(i int, el runtime.Value) *RValue {
 			}
 		}
 	}
+	// Go's Call hands back Values whose Type is the DECLARED result
+	// type: a func declared to return `error` yields an Interface-kind
+	// Value even when the payload is a struct, so IsNil answers and
+	// Elem reaches the dynamic value. typeOfValue(el) alone would
+	// report the payload's concrete type (struct) instead.
+	if t := v.outType(i); t != nil && t.td != nil {
+		return v.e.wrap(v.vc, el, nil, t.td)
+	}
 	return v.e.wrap(v.vc, el, nil, typeOfValue(v.e, el))
 }
 
