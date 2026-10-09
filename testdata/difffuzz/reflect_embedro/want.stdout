@@ -3,3 +3,8 @@ embed.Name: true true
 embed.low: false
 hidden.Name: false false
 set
+ptr-embed Elem: false false
+ptr-embed Elem.Name: true true
+set via elem
+slice-embed Index: false false
+slice-embed Index.Name: false false
