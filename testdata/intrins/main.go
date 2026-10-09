@@ -183,7 +183,13 @@ func BytesFields() string { return string(bytes.Fields([]byte(" a b "))[0]) } //
 
 func Utf8Count() int { return utf8.RuneCountInString("héllo") } // 5
 
-func Utf8Encode() string { return utf8.EncodeRune('☺') } // "☺" — script-shaped: returns a string
+// Utf8Encode: gc signature — writes into the caller's []byte and
+// returns the byte count (the encoded rune is read back from p).
+func Utf8Encode() string {
+	var buf [utf8.UTFMax]byte
+	n := utf8.EncodeRune(buf[:], '☺')
+	return fmt.Sprintf("%d %s %v", n, buf[:n], buf) // "3 ☺ [226 152 186 0]"
+}
 
 func UnicodeDigit() bool {
 	return unicode.IsDigit('3') && unicode.IsUpper('A') && !unicode.IsSpace('x')

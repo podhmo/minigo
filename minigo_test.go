@@ -350,7 +350,7 @@ func TestStdlibIntrinsics(t *testing.T) {
 		{"BytesBuffer", "xyz"},
 		{"BytesFields", "a"},
 		{"Utf8Count", int64(5)},
-		{"Utf8Encode", "☺"},
+		{"Utf8Encode", "3 ☺ [226 152 186 0]"},
 		{"UnicodeDigit", true},
 		{"MathRound", true},
 		{"RegexpReplace", "bXc"},
