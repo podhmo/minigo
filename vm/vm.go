@@ -2835,6 +2835,13 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 					}
 					return v.methodExprDeref(b, m)
 				}
+				// a bound host basic's methods live on the host type —
+				// the expression re-dispatches on the (pointer) receiver.
+				if rt := hostTypOf(et); rt != nil {
+					if _, ok := rt.MethodByName(name); ok {
+						return v.methodExprThunk(b, name)
+					}
+				}
 				// promoted through an embedded field — re-select on the
 				// actual receiver argument (`(*U).Sum` reaches I's value).
 				if len(et.EmbedSpecs) > 0 || et.Kind == runtime.KindInterface {
@@ -2848,6 +2855,15 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 				f.trap("invalid method expression %s.%s (needs pointer receiver)", tdName(b), name)
 			}
 			return m // method expression: T.M(recv, ...)
+		}
+		// a bound host basic's methods live on the host type
+		// (reflect.StructTag.Get, time.Duration.String): the method
+		// expression re-dispatches on its receiver argument like Go's
+		// selector lowering — value methods only, matching T's set.
+		if rt := hostTypOf(b); rt != nil {
+			if _, ok := rt.MethodByName(name); ok {
+				return v.methodExprThunk(b, name)
+			}
 		}
 		// `U.Sum` — a promoted method through an embedded field — or
 		// `I.m` — an interface requirement — dispatches on the concrete
@@ -2890,6 +2906,23 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		f.trap("no member %s on host value %T", name, b.V)
 	default:
 		f.trap("select %s on %T", name, base)
+	}
+	return nil
+}
+
+// hostTypOf returns the host reflect type a bound typedef stands in
+// for — the fresh value HostNew mints, or the raw scalar HostScalar
+// marks — so its method set can be probed where the typedef's own
+// declared Methods stay empty. nil when the typedef binds no host type.
+func hostTypOf(td *runtime.TypeDef) reflect.Type {
+	if td == nil {
+		return nil
+	}
+	if td.HostScalar != nil {
+		return reflect.TypeOf(td.HostScalar)
+	}
+	if td.HostNew != nil {
+		return reflect.TypeOf(td.HostNew())
 	}
 	return nil
 }
