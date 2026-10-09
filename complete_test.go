@@ -591,3 +591,43 @@ func TestCompleteImportPaths(t *testing.T) {
 		t.Fatalf("strings missing under dot import: %v", candNames(r.Complete(`import . "str`)))
 	}
 }
+
+func TestCompleteCommandArgPackageRefs(t *testing.T) {
+	ctx := context.Background()
+	r := NewEngine("testdata").NewREPL()
+	for _, line := range []string{`import ip "./inspectpkg"`, `import "strings"`, `var u ip.User`} {
+		if _, err := r.EvalLine(ctx, line); err != nil {
+			t.Fatalf("EvalLine(%q): %v", line, err)
+		}
+	}
+	for _, c := range []struct {
+		line      string
+		wantStart int
+		want      []string // must all be present
+		absent    []string
+	}{
+		{":ls i", 4, []string{"ip", "io"}, nil},
+		{":cd ./insp", 4, []string{"./inspectpkg", "./inspectuse"}, nil},
+		{`:cd "strin`, 5, []string{"strings"}, nil},
+		{`:ls "i`, 5, []string{"io"}, []string{"ip"}},
+		{":doc strings.Repe", 13, []string{"Repeat"}, nil},
+		{":doc ip.He", 8, []string{"Hello"}, nil},
+		{":doc encoding/js", 5, []string{"encoding/json"}, nil},
+		{":comp u.Gr", 8, []string{"Greet"}, nil},
+	} {
+		start, cands := r.CompleteCommandArg(c.line)
+		if start != c.wantStart {
+			t.Errorf("%q: start = %d, want %d", c.line, start, c.wantStart)
+		}
+		for _, w := range c.want {
+			if !hasCand(cands, w) {
+				t.Errorf("%q: %q missing from %v", c.line, w, candNames(cands))
+			}
+		}
+		for _, a := range c.absent {
+			if hasCand(cands, a) {
+				t.Errorf("%q: %q must not be offered", c.line, a)
+			}
+		}
+	}
+}

@@ -689,7 +689,7 @@ func TestREPLCompleteCommandArg(t *testing.T) {
 		{":load " + dir + "/fib", 6, []string{dir + "/fib.go"}},
 		{`:load "fib.go" `, len(`:load "fib.go" `), nil},
 		{":load nosuch/", 6, nil},
-		{":ls fi", len(":ls fi"), nil},
+		{":reset x", len(":reset x"), nil},
 		{":unload ", 8, nil},
 	} {
 		start, cands := r.CompleteCommandArg(c.line)
