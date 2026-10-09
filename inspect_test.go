@@ -17,6 +17,8 @@ func TestInspect(t *testing.T) {
 		"SymbolView",
 		"FieldsWalk",
 		"MethodsWalk",
+		"MethodsPkg",
+		"MethodsFile",
 		"SignatureWalk",
 		"TypeExprNav",
 		"OriginNav",

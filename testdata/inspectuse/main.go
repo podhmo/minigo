@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/podhmo/minigo/inspect"
@@ -112,6 +113,52 @@ func MethodsWalk() string {
 	}
 	if n != 2 {
 		return "want 2 methods, got " + names
+	}
+	return "ok"
+}
+
+// MethodsPkg: package-wide flat method enumeration — the decls Decls
+// cannot see, doc comments included.
+func MethodsPkg() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	ms := inspect.Methods(p)
+	if len(ms) != 24 {
+		return "want 24 methods, got " + fmt.Sprint(len(ms))
+	}
+	// source position order: the first method is User.Greet.
+	if ms[0].Name != "Greet" || ms[0].Pos == nil || ms[0].Pos.Line != 24 {
+		return "bad first method: " + ms[0].Name + " " + ms[0].Pos.String()
+	}
+	// Decls never carries them — the blind spot this enumeration closes.
+	for _, d := range inspect.Decls(p) {
+		if d.Kind == "method" {
+			return "Decls leaked a method: " + d.Name
+		}
+	}
+	// the failing scan's shape: docs live on the method decls.
+	doc := ""
+	for _, m := range ms {
+		if m.Name == "Greet" {
+			doc = m.Doc
+			break
+		}
+	}
+	if !strings.Contains(doc, "says hello") {
+		return "method doc missing: " + doc
+	}
+	return "ok"
+}
+
+// MethodsFile: the file view narrows the flat enumeration.
+func MethodsFile() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	fs := inspect.Files(p)
+	if len(fs) != 1 {
+		return "want 1 file"
+	}
+	ms := inspect.Methods(fs[0])
+	if len(ms) != 24 || ms[0].Name != "Greet" {
+		return "want 24 methods in file"
 	}
 	return "ok"
 }

@@ -288,11 +288,28 @@ func (e *Engine) installInspect() {
 			return boxedSlice(fs), nil
 		}),
 		"Methods": bf("Methods", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			s, err := declViewOf(args[0])
-			if err != nil {
-				return nil, err
+			if len(args) != 1 {
+				return nil, argerr("Methods", "a type decl, a package, or a file view")
 			}
-			ms, err := xinspect.MethodsOf(s)
+			if s, err := declViewOf(args[0]); err == nil {
+				ms, err := xinspect.MethodsOf(s)
+				if err != nil {
+					return nil, err
+				}
+				return boxedSlice(ms), nil
+			}
+			if f, err := fileViewOf(args[0]); err == nil {
+				ms, err := xinspect.MethodsIn(f.Pkg(), f.SyntaxFile())
+				if err != nil {
+					return nil, err
+				}
+				return boxedSlice(ms), nil
+			}
+			p, err := e.pkgOf(runtime.Unwrap(args[0]))
+			if err != nil {
+				return nil, argerr("Methods", "a type decl, a package, or a file view")
+			}
+			ms, err := xinspect.MethodsIn(p, nil)
 			if err != nil {
 				return nil, err
 			}
