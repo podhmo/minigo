@@ -208,6 +208,11 @@ func typeOfValue(e *Env, v runtime.Value) *runtime.TypeDef {
 		return typeOfValue(e, x.V)
 	case *runtime.TypedNil:
 		return x.Typ
+	case *runtime.IfaceNil:
+		// the tag IS the type: an interface-kind Typ is the nil
+		// interface, a concrete Typ (*T) is an interface holding a
+		// typed nil — reporting Typ keeps Kind() readable.
+		return x.Typ
 	case *runtime.Struct:
 		return x.Def
 	case *runtime.Slice:
