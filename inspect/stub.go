@@ -136,6 +136,13 @@ func MReqs(s *Decl) []*Field { panic("minigo intrinsic") }
 // Non-interface type decls return nil; non-type decls trap.
 func IEmbeds(s *Decl) []*TypeExpr { panic("minigo intrinsic") }
 
+// AST returns the raw AST node anchoring a decl: *ast.FuncDecl for
+// funcs and methods, *ast.TypeSpec for type decls, *ast.ValueSpec for
+// var and const decls — plainly, so fields like .Body and methods
+// like .Pos() resolve through the host reflect facade. Host symbols
+// trap.
+func AST(s *Decl) any { panic("minigo intrinsic") }
+
 // Signature returns a func/method's {Recv, Params, Results}.
 func Signature(s *Decl) *Sig { panic("minigo intrinsic") }
 

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/podhmo/minigo/index"
 	xinspect "github.com/podhmo/minigo/inspect"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -208,6 +209,52 @@ func TestCanonicalName(t *testing.T) {
 		if got := c.te.CanonicalName(); got != c.want {
 			t.Errorf("%s: CanonicalName() = %q, want %q", name, got, c.want)
 		}
+	}
+}
+
+// TestASTOf: the raw AST anchor behind a decl — the retained
+// *ast.FuncDecl for funcs and methods, the decl's own spec for type,
+// var, and const decls. Host symbols report an error.
+func TestASTOf(t *testing.T) {
+	e := newEngine(t)
+	ctx := context.Background()
+	p, err := e.Package(ctx, "./testdata/inspectpkg")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		decl *index.Decl
+		want string // the anchor node's Go type
+	}{
+		{"Hello", p.Index.Funcs["Hello"], "*ast.FuncDecl"},
+		{"Greet", p.Index.Types["User"].Methods["Greet"], "*ast.FuncDecl"},
+		{"User", p.Index.Types["User"].Decl, "*ast.TypeSpec"},
+		{"Count", p.Index.Vars["Count"], "*ast.ValueSpec"},
+		{"Label", p.Index.Consts["Label"], "*ast.ValueSpec"},
+	}
+	for _, c := range cases {
+		if c.decl == nil {
+			t.Fatalf("no decl for %s", c.name)
+		}
+		node, err := xinspect.ASTOf(xinspect.NewDecl(p, c.decl))
+		if err != nil {
+			t.Fatalf("ASTOf(%s): %v", c.name, err)
+		}
+		if got := reflect.TypeOf(node).String(); got != c.want {
+			t.Errorf("ASTOf(%s) = %s, want %s", c.name, got, c.want)
+		}
+	}
+	// the func anchor keeps the body; the spec anchor keeps the name
+	if fd, _ := xinspect.ASTOf(xinspect.NewDecl(p, p.Index.Funcs["Hello"])); fd.(*ast.FuncDecl).Body == nil {
+		t.Error("Hello anchor lost its body")
+	}
+	if vs, _ := xinspect.ASTOf(xinspect.NewDecl(p, p.Index.Consts["Label"])); vs.(*ast.ValueSpec).Names[0].Name != "Label" {
+		t.Error("Label anchor lost its spec")
+	}
+	if _, err := xinspect.ASTOf(xinspect.NewDecl(p, nil)); err == nil {
+		t.Error("want error for a host symbol")
 	}
 }
 

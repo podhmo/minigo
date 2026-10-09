@@ -382,6 +382,17 @@ func (e *Engine) installInspect() {
 			}
 			return boxedSlice(es), nil
 		}),
+		"AST": bf("AST", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			s, err := declViewOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			node, err := xinspect.ASTOf(s)
+			if err != nil {
+				return nil, err
+			}
+			return &runtime.GoValue{V: node}, nil
+		}),
 		"Signature": bf("Signature", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {

@@ -59,6 +59,7 @@ func TestInspect(t *testing.T) {
 		"InitializerView",
 		"PkgMetaView", // metadata via accessors; member shadow wins (#26)
 		"BuiltinPathConst",
+		"ASTWalk",
 	} {
 		if got := run(t, e, "./testdata/inspectuse", fn); got != "ok" {
 			t.Errorf("%s: %v", fn, got)
@@ -94,6 +95,7 @@ func TestInspect(t *testing.T) {
 		"PkgUnexportedTrap",          // unexported names trap
 		"PkgDirTrap",                 // metadata field names trap with an inspect.* hint
 		"CurPkgPathTrap",             // the reported d.Package.Path shape stays loud
+		"ASTBoundTrap",               // bound symbols carry no AST node
 	} {
 		if _, err := e.Run(context.Background(), "./testdata/inspectuse", fn); err == nil {
 			t.Errorf("%s: expected trap, got nil", fn)
