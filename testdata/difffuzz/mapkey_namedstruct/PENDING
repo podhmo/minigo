@@ -1,7 +1,0 @@
-gc: compile reject (B{1} not assignable to key type A). minigo now
-traps `cannot use B as A` — the declared-key check runs on the
-operand's named tag in index/indexOK/setIndex (TRAP is the
-interpreter's form of gc's compile reject; this record stays PENDING
-because want.stdout cannot express an expected trap).
-Builtin delete(m, B{1}) traps the same way since mapkey_delete: the
-builtin runs the same declared-key check via MapKeyOperand.

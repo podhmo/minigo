@@ -1,8 +1,0 @@
-gc exits `fatal error: all goroutines are asleep - deadlock!` after a
-stopped time.AfterFunc timer — its callback can no longer fire, so no
-wake remains. minigo previously hung: the timer's external-wait note
-was only released on callback fire, so a successful Stop leaked it and
-the deadlock watch stayed disarmed forever. The returned timer is now a
-wrapper whose Stop/Reset release and re-arm the note. This record stays
-PENDING because want.stdout cannot express an expected fatal — the run
-ends in runErr either way (same class as deadlock_detect).
