@@ -359,6 +359,10 @@ func (e *Engine) installStdlib() {
 		"Itoa":    h.fn("strconv.Itoa", func(a []any) (any, error) { return strconv.Itoa(intOf(a[0])), nil }, strconv.Itoa),
 		"Quote":   h.fn("strconv.Quote", func(a []any) (any, error) { return strconv.Quote(str(a[0])), nil }, strconv.Quote),
 		"Unquote": h.fn("strconv.Unquote", func(a []any) (any, error) { return retErr2(strconv.Unquote(str(a[0]))) }),
+		"UnquoteChar": h.fn2("strconv.UnquoteChar", func(a []any) (any, error) {
+			r, multibyte, tail, err := strconv.UnquoteChar(str(a[0]), byte(int64Of(a[1])))
+			return &runtime.Tuple{Elems: []runtime.Value{namedSized(r, int64(r)), multibyte, tail, errVal(err)}}, nil
+		}),
 		"ParseUint": h.fn3("strconv.ParseUint", func(a []any) (any, error) {
 			return retErr2(strconv.ParseUint(str(a[0]), intOf(a[1]), intOf(a[2])))
 		}),

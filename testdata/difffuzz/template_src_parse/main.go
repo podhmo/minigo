@@ -8,9 +8,9 @@ import (
 	"text/template"
 )
 
-// An interpreted text/template over an interpreted text/template/parse
-// whose lexer runs on the host (internal/tmpllex): the parser consumes
-// host-lexed items and exec walks script parse trees.
+// An interpreted text/template over an interpreted text/template/parse:
+// define/template/block, range/with, builtins, literals, trim markers,
+// Clone, and error messages.
 
 type Item struct {
 	Name  string
