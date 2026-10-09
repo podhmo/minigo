@@ -613,6 +613,58 @@ func TestMixedPackageMajorityWins(t *testing.T) {
 	}
 }
 
+func TestPTestPackageInvisible(t *testing.T) {
+	dir := setupModule(t)
+	// `p` + `p_test` merging: an external test package's decls can
+	// never earn directives `go generate` could resolve. `_test.go`
+	// files are filtered by name before indexing (as `go build`'s
+	// non-test list does), and a `_test` clause in a plain .go file
+	// is foreign — it warns and skips like any other package mix.
+	ext := filepath.Join(dir, "extpkg")
+	if err := os.MkdirAll(ext, 0755); err != nil {
+		t.Fatal(err)
+	}
+	xSrc := "package extpkg\n\ntype E int\n\nconst (\n\tEA E = iota\n\tEB\n)\n"
+	if err := os.WriteFile(filepath.Join(ext, "x.go"), []byte(xSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ySrc := "package extpkg_test\n\ntype T int\n\nconst (\n\tTA T = iota\n\tTB\n)\n\nfunc (T) Discriminator() string { return \"x\" }\n"
+	yFile := filepath.Join(ext, "y_test.go")
+	if err := os.WriteFile(yFile, []byte(ySrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+	zSrc := "package extpkg_test\n\ntype U int\n\nconst (\n\tUA U = iota\n\tUB\n)\n"
+	zFile := filepath.Join(ext, "z.go")
+	if err := os.WriteFile(zFile, []byte(zSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var buf strings.Builder
+	if _, err := run(context.Background(), dir, scriptDir(t), ext, false, false, false, &buf); err != nil {
+		t.Fatalf("a test-package mix must not fail the run: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "z.go") || !strings.Contains(out, "declares package extpkg_test") {
+		t.Fatalf("no foreign-package warning for the _test clause:\n%s", out)
+	}
+	// no directive may name the test package's decls — written or not,
+	// `go generate` could not resolve them.
+	if strings.Contains(out, "-type=T") || strings.Contains(out, "-type=U") {
+		t.Fatalf("a test-package decl earned a directive:\n%s", out)
+	}
+	// the real package's enum still synced.
+	got, _ := os.ReadFile(filepath.Join(ext, "x.go"))
+	if !strings.Contains(string(got), "//go:generate stringer -type=E") {
+		t.Fatalf("x.go did not get its directive:\n%s", got)
+	}
+	// the test files are untouched.
+	for _, f := range []string{yFile, zFile} {
+		got, _ := os.ReadFile(f)
+		if strings.Contains(string(got), "//go:generate") {
+			t.Fatalf("%s was modified:\n%s", f, got)
+		}
+	}
+}
+
 func TestForeignPackageMethodFeedsNothing(t *testing.T) {
 	dir := setupModule(t)
 	app := filepath.Join(dir, "app")
