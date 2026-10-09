@@ -467,6 +467,21 @@ func (v *RValue) Type() *RType {
 	if v.host() {
 		return v.e.hostTypeOf(v.rv.Type())
 	}
+	// A boxed host object reports its real reflect.Type when the stamped
+	// td only echoes the payload's type name — a bare td carries no
+	// method set, so e.g. *bytes.Buffer would fail Implements checks
+	// against fmt.Stringer. A td naming something else wins (a tagged
+	// host box `var b bytes.Buffer` is GoValue{*bytes.Buffer} but types
+	// as bytes.Buffer). A GoValue{*RValue} is not a host object — it is
+	// the script repr of reflect.Value itself.
+	if gv, ok := unwrapRef(v.get()).(*runtime.GoValue); ok && gv.V != nil {
+		if _, isFacade := gv.V.(*RValue); !isFacade {
+			rt := reflect.TypeOf(gv.V)
+			if v.td == nil || v.td.Name == rt.String() {
+				return v.e.hostTypeOf(rt)
+			}
+		}
+	}
 	td := v.td
 	if td == nil || (td.Kind == runtime.KindFunc && td.Anon == nil) {
 		// an intrinsic adapting a real Go func (strings.ToLower) has

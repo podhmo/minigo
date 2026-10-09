@@ -1,0 +1,6 @@
+type: *bytes.Buffer
+assignable: true
+implements: true
+value type implements: false
+int assignable: false
+num methods: true
