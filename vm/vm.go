@@ -1120,10 +1120,17 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 				}
 				panic(r)
 			}()
-			if c.SyncCallbacks {
-				return c.Fn(ownerCaller{v}, matBuiltinArgs(args))
+			if c.Pkg != nil {
+				// a package-bound host call sees materialized constants —
+				// interpreter builtins (Pkg nil) get UConst so their own
+				// constant arms keep working (append's element-type
+				// conversion, real/imag's constant domain).
+				args = matBuiltinArgs(args)
 			}
-			return c.Fn(v, matBuiltinArgs(args))
+			if c.SyncCallbacks {
+				return c.Fn(ownerCaller{v}, args)
+			}
+			return c.Fn(v, args)
 		case *runtime.TypeDef:
 			if len(args) != 1 {
 				return nil, fmt.Errorf("conversion to %s needs exactly one argument", c.Name)
@@ -7159,12 +7166,13 @@ func constPayload(x runtime.Value) (*runtime.UConst, bool) {
 	return nil, false
 }
 
-// materializeDefault converts an untyped constant to its Go default
-// type: bool, string, rune->int32, int, float64, or complex128.
 // matBuiltinArgs materializes untyped constants before they cross into a
-// host builtin — a bound call sees the values a Go call would pass
-// (`f("x")` hands a string, not the constant token). Script-to-script
-// calls keep UConst so adaptConst still sees const-ness.
+// bound host function — a bound call sees the values a Go call would
+// pass (`f("x")` hands a string, not the constant token). The
+// interpreter's own builtins keep UConst: append converts a constant
+// element through the declared element type, real/imag keep the
+// constant domain, and adaptConst still sees const-ness on script-to-
+// script calls.
 func matBuiltinArgs(args []runtime.Value) []runtime.Value {
 	var out []runtime.Value
 	for i, a := range args {
@@ -7187,6 +7195,9 @@ func matBuiltinArgs(args []runtime.Value) []runtime.Value {
 	}
 	return out
 }
+
+// materializeDefault converts an untyped constant to its Go default
+// type: bool, string, rune->int32, int, float64, or complex128.
 
 func materializeDefault(u *runtime.UConst) (runtime.Value, error) {
 	if u.V.Kind() == constant.Int && u.Rune {

@@ -607,18 +607,19 @@ func TestMismatchedOpTraps(t *testing.T) {
 		fn   string
 		want string
 	}{
-		{"NamedNamedAdd", "mismatched types duration and int64"},
-		{"NamedNamedOrder", "mismatched types duration and int64"},
-		{"NamedNamedStr", "mismatched types mystr and yourstr"},
-		{"NamedBareCrossDomain", "mismatched types mystr and int"},
-		{"NamedBareBool", "mismatched types string and bool"},
-		{"ConstStringIntoNum", "mismatched types duration and string"},
-		{"ConstRuneIntoStr", "mismatched types mystr and rune"},
+		{"NamedNamedAdd", "invalid operation: mismatched types duration and int64"},
+		{"NamedNamedOrder", "invalid operation: mismatched types duration and int64"},
+		{"NamedNamedStr", "invalid operation: mismatched types mystr and yourstr"},
+		{"NamedBareCrossDomain", "invalid operation: mismatched types mystr and int"},
+		{"NamedBareBool", "invalid operation: mismatched types string and bool"},
+		{"ConstStringIntoNum", "invalid operation: mismatched types duration and string"},
+		{"ConstRuneIntoStr", "invalid operation: mismatched types mystr and rune"},
+		{"AppendConstOverflow", "constant 300 overflows byte"},
 	}
 	for _, c := range traps {
 		if _, err := e.Run(context.Background(), "./testdata/mismatchedops", c.fn); err == nil {
-			t.Errorf("%s: expected a mismatched-types trap", c.fn)
-		} else if !strings.Contains(err.Error(), "invalid operation: "+c.want) {
+			t.Errorf("%s: expected a trap", c.fn)
+		} else if !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: expected %q, got %v", c.fn, c.want, err)
 		}
 	}
@@ -634,6 +635,7 @@ func TestMismatchedOpTraps(t *testing.T) {
 		{"SameTypedefAdd", int64(7)},
 		{"PkgConstAdopt", false},
 		{"IfaceCarriedEql", true},
+		{"ConstAwareBuiltins", "1.5 [1 120]"},
 	}
 	for _, c := range evals {
 		if got := run(t, e, "./testdata/mismatchedops", c.fn); got != c.want {

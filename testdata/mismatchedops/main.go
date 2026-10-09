@@ -91,7 +91,21 @@ func OrderBareNumEval() bool {
 	return d < len("ab") // gc rejects; minigo's residual divergence
 }
 
+// append's constant element converts through the declared element type —
+// `append(b, 300)` on []byte rejects like gc's `constant 300 overflows
+// byte`, not wrapped to int64(44).
+func AppendConstOverflow() []byte {
+	return append([]byte{}, 300)
+}
+
 // ---- gc-legal behavior that must keep working ----
+
+// interpreter builtins see the raw constant: real(1.5+2.5i) stays a
+// constant (materialized downstream) and append adopts a rune constant
+// into the byte element type.
+func ConstAwareBuiltins() string {
+	return fmt.Sprintf("%v %v", real(1.5+2.5i), append([]byte{1}, 'x'))
+}
 
 // the escape hatch: an explicit conversion makes the operand's type
 // match, exactly like in Go.

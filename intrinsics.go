@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/constant"
+	"go/token"
 	"html"
 	"io"
 	"io/fs"
@@ -651,13 +652,29 @@ func (e *Engine) installStdlib() {
 		"RuneError": &runtime.UConst{V: constant.MakeInt64(utf8.RuneError), Rune: true},
 		"RuneSelf":  &runtime.UConst{V: constant.MakeInt64(utf8.RuneSelf)},
 	})
+	// math's float consts are untyped literals with more precision than
+	// float64 — re-parse the stdlib's source literal so constant-domain
+	// math (and float32 conversions) see the same value gc does.
+	mathFloat := func(lit string) runtime.Value {
+		return &runtime.UConst{V: constant.MakeFromLiteral(lit, token.FLOAT, 0)}
+	}
+	mathLn2 := constant.MakeFromLiteral("0.693147180559945309417232121458176568075500134360255254120680009", token.FLOAT, 0)
+	mathLn10 := constant.MakeFromLiteral("2.30258509299404568401799145468436420760110148862877297603332790", token.FLOAT, 0)
 	e.Bind("math", map[string]runtime.Value{
 		// math's consts are all untyped — they keep constant-domain
 		// precision and adapt to an operand's declared type.
-		"Pi": &runtime.UConst{V: constant.MakeFloat64(math.Pi)}, "E": &runtime.UConst{V: constant.MakeFloat64(math.E)}, "Phi": &runtime.UConst{V: constant.MakeFloat64(math.Phi)},
-		"Sqrt2": &runtime.UConst{V: constant.MakeFloat64(math.Sqrt2)}, "SqrtE": &runtime.UConst{V: constant.MakeFloat64(math.SqrtE)}, "SqrtPi": &runtime.UConst{V: constant.MakeFloat64(math.SqrtPi)}, "SqrtPhi": &runtime.UConst{V: constant.MakeFloat64(math.SqrtPhi)},
-		"Ln2": &runtime.UConst{V: constant.MakeFloat64(math.Ln2)}, "Log2E": &runtime.UConst{V: constant.MakeFloat64(math.Log2E)}, "Ln10": &runtime.UConst{V: constant.MakeFloat64(math.Ln10)}, "Log10E": &runtime.UConst{V: constant.MakeFloat64(math.Log10E)},
-		"MaxInt": &runtime.UConst{V: constant.MakeInt64(math.MaxInt)}, "MinInt": &runtime.UConst{V: constant.MakeInt64(math.MinInt)},
+		"Pi":      mathFloat("3.14159265358979323846264338327950288419716939937510582097494459"),
+		"E":       mathFloat("2.71828182845904523536028747135266249775724709369995957496696763"),
+		"Phi":     mathFloat("1.61803398874989484820458683436563811772030917980576286213544862"),
+		"Sqrt2":   mathFloat("1.41421356237309504880168872420969807856967187537694807317667974"),
+		"SqrtE":   mathFloat("1.64872127070012814684865078781416357165377610071014801157507931"),
+		"SqrtPi":  mathFloat("1.77245385090551602729816748334114518279754945612238712821380779"),
+		"SqrtPhi": mathFloat("1.27201964951406896425242246173749149171560804184009624861664038"),
+		"Ln2":     &runtime.UConst{V: mathLn2},
+		"Log2E":   &runtime.UConst{V: constant.BinaryOp(constant.MakeInt64(1), token.QUO, mathLn2)}, // 1 / Ln2
+		"Ln10":    &runtime.UConst{V: mathLn10},
+		"Log10E":  &runtime.UConst{V: constant.BinaryOp(constant.MakeInt64(1), token.QUO, mathLn10)}, // 1 / Ln10
+		"MaxInt":  &runtime.UConst{V: constant.MakeInt64(math.MaxInt)}, "MinInt": &runtime.UConst{V: constant.MakeInt64(math.MinInt)},
 		"MaxInt8": &runtime.UConst{V: constant.MakeInt64(math.MaxInt8)}, "MinInt8": &runtime.UConst{V: constant.MakeInt64(math.MinInt8)},
 		"MaxInt16": &runtime.UConst{V: constant.MakeInt64(math.MaxInt16)}, "MinInt16": &runtime.UConst{V: constant.MakeInt64(math.MinInt16)},
 		"MaxInt32": &runtime.UConst{V: constant.MakeInt64(math.MaxInt32)}, "MinInt32": &runtime.UConst{V: constant.MakeInt64(math.MinInt32)},
@@ -668,12 +685,13 @@ func (e *Engine) installStdlib() {
 		// the 64-bit ceiling constants don't fit int64 — they stay
 		// untyped constants so `x << (math.MaxUint + 0.)` still
 		// evaluates in the constant domain like Go's declaration.
-		"MaxUint64":  &runtime.UConst{V: constant.MakeUint64(math.MaxUint64)},
-		"MaxUint":    &runtime.UConst{V: constant.MakeUint64(math.MaxUint)},
-		"MaxUintptr": &runtime.UConst{V: constant.MakeUint64(math.MaxUint64)},
-		"MaxFloat32": &runtime.UConst{V: constant.MakeFloat64(math.MaxFloat32)}, "MaxFloat64": &runtime.UConst{V: constant.MakeFloat64(math.MaxFloat64)},
-		"SmallestNonzeroFloat32": &runtime.UConst{V: constant.MakeFloat64(math.SmallestNonzeroFloat32)},
-		"SmallestNonzeroFloat64": &runtime.UConst{V: constant.MakeFloat64(math.SmallestNonzeroFloat64)},
+		"MaxUint64":              &runtime.UConst{V: constant.MakeUint64(math.MaxUint64)},
+		"MaxUint":                &runtime.UConst{V: constant.MakeUint64(math.MaxUint)},
+		"MaxUintptr":             &runtime.UConst{V: constant.MakeUint64(math.MaxUint64)},
+		"MaxFloat32":             mathFloat("3.40282346638528859811704183484516925440e+38"),
+		"MaxFloat64":             mathFloat("1.79769313486231570814527423731704356798070e+308"),
+		"SmallestNonzeroFloat32": mathFloat("1.401298464324817070923729583289916131280e-45"),
+		"SmallestNonzeroFloat64": mathFloat("4.9406564584124654417656879286822137236505980e-324"),
 		"Abs":                    h.fn("math.Abs", func(a []any) (any, error) { return math.Abs(floatOf(a[0])), nil }, math.Abs),
 		"Ceil":                   h.fn("math.Ceil", func(a []any) (any, error) { return math.Ceil(floatOf(a[0])), nil }, math.Ceil),
 		"Floor":                  h.fn("math.Floor", func(a []any) (any, error) { return math.Floor(floatOf(a[0])), nil }, math.Floor),

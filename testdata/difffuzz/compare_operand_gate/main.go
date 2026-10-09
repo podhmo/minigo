@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"unicode/utf8"
 )
 
@@ -34,4 +35,9 @@ func main() {
 	fmt.Println(one() == two(), one() == three()) // iface dynamic: true false
 	var x any = ms
 	fmt.Println(x == any(ms), x == any("x")) // true false
+	// package consts keep stdlib-literal precision; real() folds a
+	// complex constant; append adopts a constant through the elem type.
+	fmt.Println(float32(math.Pi), math.Pi/2, math.Log2E)
+	fmt.Println(math.MaxFloat64*1e-308, real(1.5+2.5i))
+	fmt.Println(append([]byte{1}, 'x'))
 }
