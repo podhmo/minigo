@@ -5004,7 +5004,15 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 	case *runtime.Slice:
 		i, ok := runtime.SmallIntOf(idx)
 		if !ok {
+			if u, isU := uintOperand(idx); isU {
+				panic(runtime.BoundsPanic(u, int(b.Len())))
+			}
 			f.trap("slice index is %T", idx)
+		}
+		if i < 0 && v.boundUnsigned(rawIdx) {
+			// a wide unsigned index wrapped below zero — report its
+			// uint64 magnitude like gc.
+			panic(runtime.BoundsPanic(uint64(i), int(b.Len())))
 		}
 		if b.Virtual() {
 			// a virtual zero-size slice vends its shared element value.
@@ -5023,7 +5031,13 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 	case string:
 		i, ok := idx.(int64)
 		if !ok {
+			if u, isU := uintOperand(idx); isU {
+				panic(runtime.BoundsPanic(u, len(b)))
+			}
 			f.trap("string index is %T", idx)
+		}
+		if i < 0 && v.boundUnsigned(rawIdx) {
+			panic(runtime.BoundsPanic(uint64(i), len(b)))
 		}
 		return runtime.Tag(v.builtinTypedef("uint8"), int64(b[i]))
 	default:
@@ -5863,7 +5877,13 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 	case *runtime.Slice:
 		i, ok := runtime.SmallIntOf(idx)
 		if !ok {
+			if u, isU := uintOperand(idx); isU {
+				panic(runtime.BoundsPanic(u, int(b.Len())))
+			}
 			f.trap("slice index is %T", idx)
+		}
+		if i < 0 && v.boundUnsigned(rawIdx) {
+			panic(runtime.BoundsPanic(uint64(i), int(b.Len())))
 		}
 		// the slice's declared element type constrains the write.
 		if et := v.elemTypedef(f, b.Typ); et != nil {
@@ -6075,32 +6095,39 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 				if r := sliceBoundsReason(l, h, m, b.Cap(), true, word); r != "" {
 					panic(runtime.RuntimePanic(r))
 				}
-				return &runtime.Slice{N: h - l, CapN: m - l, Zero: b.Zero, Typ: sliceTypOf(b.Typ)}
+				return &runtime.Slice{N: h.i - l.i, CapN: m.i - l.i, Zero: b.Zero, Typ: sliceTypOf(b.Typ)}
 			}
-			if r := sliceBoundsReason(l, h, 0, b.Cap(), false, word); r != "" {
+			if r := sliceBoundsReason(l, h, boundOperand{}, b.Cap(), false, word); r != "" {
 				panic(runtime.RuntimePanic(r))
 			}
-			return &runtime.Slice{N: h - l, CapN: b.Cap() - l, Zero: b.Zero, Typ: sliceTypOf(b.Typ)}
+			return &runtime.Slice{N: h.i - l.i, CapN: b.Cap() - l.i, Zero: b.Zero, Typ: sliceTypOf(b.Typ)}
 		}
 		n := int64(len(b.Elems))
 		l, h := v.bounds(f, lo, hi, n)
-		if _, isArr := v.arrayLen(f, b.Typ); isArr {
+		_, isArr := v.arrayLen(f, b.Typ)
+		word, cp := "capacity", int64(cap(b.Elems))
+		if isArr {
 			// an array-typed value reports "with length" like gc — the
 			// native b.Elems[...] panic says "capacity" regardless.
-			if three {
-				m := v.maxBound(f, max, n)
-				if r := sliceBoundsReason(l, h, m, n, true, "length"); r != "" {
+			word, cp = "length", n
+		}
+		if three {
+			m := v.maxBound(f, max, cp)
+			// unsigned operands evaluate in the uint64 domain — the
+			// host Elems[...] panic would print their int64 wrap.
+			if isArr || l.unsigned || h.unsigned || m.unsigned {
+				if r := sliceBoundsReason(l, h, m, cp, true, word); r != "" {
 					panic(runtime.RuntimePanic(r))
 				}
-			} else if r := sliceBoundsReason(l, h, 0, n, false, "length"); r != "" {
+			}
+			return &runtime.Slice{Elems: b.Elems[l.i:h.i:m.i], Typ: sliceTypOf(b.Typ)}
+		}
+		if isArr || l.unsigned || h.unsigned {
+			if r := sliceBoundsReason(l, h, boundOperand{}, cp, false, word); r != "" {
 				panic(runtime.RuntimePanic(r))
 			}
 		}
-		if three {
-			m := v.maxBound(f, max, int64(cap(b.Elems)))
-			return &runtime.Slice{Elems: b.Elems[l:h:m], Typ: sliceTypOf(b.Typ)}
-		}
-		return &runtime.Slice{Elems: b.Elems[l:h], Typ: sliceTypOf(b.Typ)}
+		return &runtime.Slice{Elems: b.Elems[l.i:h.i], Typ: sliceTypOf(b.Typ)}
 	case string:
 		if three {
 			// a 3-index slice on a string is a compile reject in Go —
@@ -6108,76 +6135,132 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 			f.trap("cannot slice a string with 3 indices")
 		}
 		l, h := v.bounds(f, lo, hi, int64(len(b)))
-		return b[l:h]
+		if l.unsigned || h.unsigned {
+			if r := sliceBoundsReason(l, h, boundOperand{}, int64(len(b)), false, "length"); r != "" {
+				panic(runtime.RuntimePanic(r))
+			}
+		}
+		return b[l.i:h.i]
 	default:
 		f.trap("slice on %T", base)
 		return nil
 	}
 }
 
+// boundOperand is one index/slice-bound operand: its int64 position,
+// its uint64 reading, and whether its domain is unsigned. Bounds
+// checks and error text evaluate in the operand's own domain so a
+// wide unsigned index reports 18446744073709551615, not the int64
+// wrap -1.
+type boundOperand struct {
+	i        int64
+	u        uint64
+	unsigned bool
+}
+
+func (b boundOperand) neg() bool { return !b.unsigned && b.i < 0 }
+func (b boundOperand) gt(x boundOperand) bool {
+	if b.unsigned || x.unsigned {
+		return b.u > x.u
+	}
+	return b.i > x.i
+}
+func (b boundOperand) gtc(cap int64) bool {
+	if b.unsigned {
+		return b.u > uint64(cap)
+	}
+	return b.i > cap
+}
+func (b boundOperand) disp() any {
+	if b.unsigned {
+		return b.u
+	}
+	return b.i
+}
+
+// boundUnsigned reports whether the operand's declared domain is an
+// unsigned integer width — a Named tag's sized name or a boxed
+// full-width uint64.
+func (v *VM) boundUnsigned(x runtime.Value) bool {
+	switch t := x.(type) {
+	case *runtime.Named:
+		return unsignedName(sizedNameOf(t.Typ))
+	case *runtime.GoValue:
+		_, isU := t.V.(uint64)
+		return isU
+	}
+	return false
+}
+
+// boundOperand extracts one index/slice-bound operand: its int64
+// position (wrapped bits for a boxed wide uint64 — such an index is
+// always out of bounds) and its domain flag for the error text.
+func (v *VM) boundOperand(f *frame, x runtime.Value, def int64) boundOperand {
+	b := boundOperand{i: def, u: uint64(def)}
+	ux := runtime.Unwrap(v.materialize(f, x))
+	if iv, ok := runtime.SmallIntOf(ux); ok {
+		b.i = iv
+		b.u = uint64(iv)
+		b.unsigned = v.boundUnsigned(x)
+	} else if g, isG := ux.(*runtime.GoValue); isG {
+		if u, isU := g.V.(uint64); isU {
+			b.i = int64(u)
+			b.u = u
+			b.unsigned = true
+		}
+	}
+	return b
+}
+
 // sliceBoundsReason renders Go's boundsError text for a failed slice
 // operation — mirroring the check order and message shapes of the
-// runtime's goPanicSlice* family (a live *runtime.Slice panics inside
-// Go's own indexing, which already spells the full message, so only
-// paths without a real backing — nil and virtual slices — reproduce
-// the formats here). cap is the capacity the high indices check
-// against; a negative violating index reports its bare form without
-// the capacity/length suffix, like Go's boundsNegErrorFmts. Returns
-// "" when every index is in bounds.
-func sliceBoundsReason(l, h, m, cap int64, three bool, word string) string {
+// runtime's goPanicSlice* family. Every operand evaluates in its own
+// domain: a negative signed index reports its bare form without the
+// capacity/length suffix (Go's boundsNegErrorFmts), an unsigned one
+// its uint64 magnitude. Returns "" when every index is in bounds.
+func sliceBoundsReason(l, h, m boundOperand, cap int64, three bool, word string) string {
 	const p = "slice bounds out of range"
 	if three {
 		switch {
-		case m < 0:
-			return fmt.Sprintf("%s [::%d]", p, m)
-		case m > cap:
-			return fmt.Sprintf("%s [::%d] with %s %d", p, m, word, cap)
-		case h < 0:
-			return fmt.Sprintf("%s [:%d:]", p, h)
-		case h > m:
-			return fmt.Sprintf("%s [:%d:%d]", p, h, m)
-		case l < 0:
-			return fmt.Sprintf("%s [%d::]", p, l)
-		case l > h:
-			return fmt.Sprintf("%s [%d:%d:]", p, l, h)
+		case m.neg():
+			return fmt.Sprintf("%s [::%v]", p, m.disp())
+		case m.gtc(cap):
+			return fmt.Sprintf("%s [::%v] with %s %d", p, m.disp(), word, cap)
+		case h.neg():
+			return fmt.Sprintf("%s [:%v:]", p, h.disp())
+		case h.gt(m):
+			return fmt.Sprintf("%s [:%v:%v]", p, h.disp(), m.disp())
+		case l.neg():
+			return fmt.Sprintf("%s [%v::]", p, l.disp())
+		case l.gt(h):
+			return fmt.Sprintf("%s [%v:%v:]", p, l.disp(), h.disp())
 		}
 		return ""
 	}
 	switch {
-	case h < 0:
-		return fmt.Sprintf("%s [:%d]", p, h)
-	case h > cap:
-		return fmt.Sprintf("%s [:%d] with %s %d", p, h, word, cap)
-	case l < 0:
-		return fmt.Sprintf("%s [%d:]", p, l)
-	case l > h:
-		return fmt.Sprintf("%s [%d:%d]", p, l, h)
+	case h.neg():
+		return fmt.Sprintf("%s [:%v]", p, h.disp())
+	case h.gtc(cap):
+		return fmt.Sprintf("%s [:%v] with %s %d", p, h.disp(), word, cap)
+	case l.neg():
+		return fmt.Sprintf("%s [%v:]", p, l.disp())
+	case l.gt(h):
+		return fmt.Sprintf("%s [%v:%v]", p, l.disp(), h.disp())
 	}
 	return ""
 }
 
-func (v *VM) bounds(f *frame, lo, hi runtime.Value, n int64) (int64, int64) {
-	l := int64(0)
-	h := n
+func (v *VM) bounds(f *frame, lo, hi runtime.Value, n int64) (boundOperand, boundOperand) {
 	// a host integer scalar (time.Duration) reads as its int64 value —
 	// `a[d:]` on a Duration d bounds by its nanoseconds, like gc.
-	if lv, ok := runtime.SmallIntOf(runtime.Unwrap(v.materialize(f, lo))); ok {
-		l = lv
-	}
-	if hv, ok := runtime.SmallIntOf(runtime.Unwrap(v.materialize(f, hi))); ok {
-		h = hv
-	}
-	return l, h
+	return v.boundOperand(f, lo, 0), v.boundOperand(f, hi, n)
 }
 
 // maxBound reads a 3-index slice's max operand; the full-expression form
 // `a[low:high:]` uses the container's capacity. The slice operator itself
 // (`elems[l:h:m]`) enforces low <= high <= max <= cap with Go's panic.
-func (v *VM) maxBound(f *frame, max runtime.Value, capN int64) int64 {
-	if mv, ok := runtime.SmallIntOf(runtime.Unwrap(v.materialize(f, max))); ok {
-		return mv
-	}
-	return capN
+func (v *VM) maxBound(f *frame, max runtime.Value, capN int64) boundOperand {
+	return v.boundOperand(f, max, capN)
 }
 
 // litKeyIndex resolves a composite-literal key to its int index: a
