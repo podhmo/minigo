@@ -112,6 +112,26 @@ func (e *Env) wrap(vc runtime.VMCaller, val, ref runtime.Value, td *runtime.Type
 	if vc == nil {
 		vc = e.caller()
 	}
+	// A GoValue boxing an *RValue is the script-side repr of a
+	// reflect.Value this facade already views (e.g. a script func
+	// returning reflect.Value). Adopt the inner view instead of
+	// wrapping the box a second time — otherwise Kind() reads the
+	// facade's struct shape while get() still yields the GoValue, and
+	// Field/FieldByIndexErr trap "call of reflect.Value.Field on
+	// struct Value" on a value that is a struct.
+	if ref == nil {
+		if gv, ok := val.(*runtime.GoValue); ok {
+			if inner, ok := gv.V.(*RValue); ok && inner != nil {
+				if inner.e == nil {
+					inner.e = e
+				}
+				if inner.vc == nil {
+					inner.vc = vc
+				}
+				return inner
+			}
+		}
+	}
 	return &RValue{e: e, vc: vc, val: val, ref: ref, td: td}
 }
 
