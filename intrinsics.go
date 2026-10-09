@@ -519,7 +519,11 @@ func (e *Engine) installStdlib() {
 			return unicode.In(runeOf(a[0]), tabs...), nil
 		}),
 		"UpperCase": int64(unicode.UpperCase), "LowerCase": int64(unicode.LowerCase), "TitleCase": int64(unicode.TitleCase),
-		"MaxRune": int64(unicode.MaxRune), "MaxASCII": int64(unicode.MaxASCII), "ReplacementChar": int64(unicode.ReplacementChar),
+		// these consts are untyped in Go — they adapt to an operand's
+		// declared type like a literal, so they ride as UConst.
+		"MaxRune":         &runtime.UConst{V: constant.MakeInt64(unicode.MaxRune), Rune: true},
+		"MaxASCII":        &runtime.UConst{V: constant.MakeInt64(unicode.MaxASCII), Rune: true},
+		"ReplacementChar": &runtime.UConst{V: constant.MakeInt64(unicode.ReplacementChar), Rune: true},
 		// stdlib code (encoding/xml's init) builds RangeTables as composite
 		// literals — bind the range structs as host types.
 		"RangeTable": hostType("unicode.RangeTable", func() any { return &unicode.RangeTable{} }),
@@ -643,31 +647,33 @@ func (e *Engine) installStdlib() {
 			}
 			return &runtime.Slice{Elems: append(elems, add...), Typ: anonSliceTyp("byte")}, nil
 		}, Target: utf8.AppendRune},
-		"UTFMax":    int64(utf8.UTFMax),
-		"RuneError": int64(utf8.RuneError),
-		"RuneSelf":  int64(utf8.RuneSelf),
+		"UTFMax":    &runtime.UConst{V: constant.MakeInt64(utf8.UTFMax)},
+		"RuneError": &runtime.UConst{V: constant.MakeInt64(utf8.RuneError), Rune: true},
+		"RuneSelf":  &runtime.UConst{V: constant.MakeInt64(utf8.RuneSelf)},
 	})
 	e.Bind("math", map[string]runtime.Value{
-		"Pi": math.Pi, "E": math.E, "Phi": math.Phi,
-		"Sqrt2": math.Sqrt2, "SqrtE": math.SqrtE, "SqrtPi": math.SqrtPi, "SqrtPhi": math.SqrtPhi,
-		"Ln2": math.Ln2, "Log2E": math.Log2E, "Ln10": math.Ln10, "Log10E": math.Log10E,
-		"MaxInt": int64(math.MaxInt), "MinInt": int64(math.MinInt),
-		"MaxInt8": int64(math.MaxInt8), "MinInt8": int64(math.MinInt8),
-		"MaxInt16": int64(math.MaxInt16), "MinInt16": int64(math.MinInt16),
-		"MaxInt32": int64(math.MaxInt32), "MinInt32": int64(math.MinInt32),
-		"MaxInt64": int64(math.MaxInt64), "MinInt64": int64(math.MinInt64),
-		"MaxUint8":  int64(math.MaxUint8),
-		"MaxUint16": int64(math.MaxUint16),
-		"MaxUint32": int64(math.MaxUint32),
+		// math's consts are all untyped — they keep constant-domain
+		// precision and adapt to an operand's declared type.
+		"Pi": &runtime.UConst{V: constant.MakeFloat64(math.Pi)}, "E": &runtime.UConst{V: constant.MakeFloat64(math.E)}, "Phi": &runtime.UConst{V: constant.MakeFloat64(math.Phi)},
+		"Sqrt2": &runtime.UConst{V: constant.MakeFloat64(math.Sqrt2)}, "SqrtE": &runtime.UConst{V: constant.MakeFloat64(math.SqrtE)}, "SqrtPi": &runtime.UConst{V: constant.MakeFloat64(math.SqrtPi)}, "SqrtPhi": &runtime.UConst{V: constant.MakeFloat64(math.SqrtPhi)},
+		"Ln2": &runtime.UConst{V: constant.MakeFloat64(math.Ln2)}, "Log2E": &runtime.UConst{V: constant.MakeFloat64(math.Log2E)}, "Ln10": &runtime.UConst{V: constant.MakeFloat64(math.Ln10)}, "Log10E": &runtime.UConst{V: constant.MakeFloat64(math.Log10E)},
+		"MaxInt": &runtime.UConst{V: constant.MakeInt64(math.MaxInt)}, "MinInt": &runtime.UConst{V: constant.MakeInt64(math.MinInt)},
+		"MaxInt8": &runtime.UConst{V: constant.MakeInt64(math.MaxInt8)}, "MinInt8": &runtime.UConst{V: constant.MakeInt64(math.MinInt8)},
+		"MaxInt16": &runtime.UConst{V: constant.MakeInt64(math.MaxInt16)}, "MinInt16": &runtime.UConst{V: constant.MakeInt64(math.MinInt16)},
+		"MaxInt32": &runtime.UConst{V: constant.MakeInt64(math.MaxInt32)}, "MinInt32": &runtime.UConst{V: constant.MakeInt64(math.MinInt32)},
+		"MaxInt64": &runtime.UConst{V: constant.MakeInt64(math.MaxInt64)}, "MinInt64": &runtime.UConst{V: constant.MakeInt64(math.MinInt64)},
+		"MaxUint8":  &runtime.UConst{V: constant.MakeInt64(math.MaxUint8)},
+		"MaxUint16": &runtime.UConst{V: constant.MakeInt64(math.MaxUint16)},
+		"MaxUint32": &runtime.UConst{V: constant.MakeInt64(math.MaxUint32)},
 		// the 64-bit ceiling constants don't fit int64 — they stay
 		// untyped constants so `x << (math.MaxUint + 0.)` still
 		// evaluates in the constant domain like Go's declaration.
 		"MaxUint64":  &runtime.UConst{V: constant.MakeUint64(math.MaxUint64)},
 		"MaxUint":    &runtime.UConst{V: constant.MakeUint64(math.MaxUint)},
 		"MaxUintptr": &runtime.UConst{V: constant.MakeUint64(math.MaxUint64)},
-		"MaxFloat32": float64(math.MaxFloat32), "MaxFloat64": math.MaxFloat64,
-		"SmallestNonzeroFloat32": float64(math.SmallestNonzeroFloat32),
-		"SmallestNonzeroFloat64": math.SmallestNonzeroFloat64,
+		"MaxFloat32": &runtime.UConst{V: constant.MakeFloat64(math.MaxFloat32)}, "MaxFloat64": &runtime.UConst{V: constant.MakeFloat64(math.MaxFloat64)},
+		"SmallestNonzeroFloat32": &runtime.UConst{V: constant.MakeFloat64(math.SmallestNonzeroFloat32)},
+		"SmallestNonzeroFloat64": &runtime.UConst{V: constant.MakeFloat64(math.SmallestNonzeroFloat64)},
 		"Abs":                    h.fn("math.Abs", func(a []any) (any, error) { return math.Abs(floatOf(a[0])), nil }, math.Abs),
 		"Ceil":                   h.fn("math.Ceil", func(a []any) (any, error) { return math.Ceil(floatOf(a[0])), nil }, math.Ceil),
 		"Floor":                  h.fn("math.Floor", func(a []any) (any, error) { return math.Floor(floatOf(a[0])), nil }, math.Floor),
@@ -1425,8 +1431,8 @@ func (e *Engine) installStdlib() {
 		"ErrInvalid":     &runtime.GoValue{V: fs.ErrInvalid},
 		"ErrNoDeadline":  &runtime.GoValue{V: os.ErrNoDeadline},
 		// consts
-		"PathSeparator":     int64(os.PathSeparator),
-		"PathListSeparator": int64(os.PathListSeparator),
+		"PathSeparator":     &runtime.UConst{V: constant.MakeInt64(os.PathSeparator), Rune: true},
+		"PathListSeparator": &runtime.UConst{V: constant.MakeInt64(os.PathListSeparator), Rune: true},
 		"DevNull":           os.DevNull,
 		"O_RDONLY":          int64(os.O_RDONLY),
 		"O_WRONLY":          int64(os.O_WRONLY),
@@ -1450,9 +1456,9 @@ func (e *Engine) installStdlib() {
 		"ModeIrregular":     &runtime.GoValue{V: fs.ModeIrregular},
 		"ModePerm":          &runtime.GoValue{V: fs.ModePerm},
 		"ModeType":          &runtime.GoValue{V: fs.ModeType},
-		"SeekStart":         int64(io.SeekStart),
-		"SeekCurrent":       int64(io.SeekCurrent),
-		"SeekEnd":           int64(io.SeekEnd),
+		"SeekStart":         &runtime.UConst{V: constant.MakeInt64(io.SeekStart)},
+		"SeekCurrent":       &runtime.UConst{V: constant.MakeInt64(io.SeekCurrent)},
+		"SeekEnd":           &runtime.UConst{V: constant.MakeInt64(io.SeekEnd)},
 		// marker interface typedefs so `os.DirEntry`/`os.FileInfo` resolve
 		// in callback signatures (filepath.WalkDir's funclit); member
 		// access on the host values behind them dispatches by reflection.
@@ -1509,8 +1515,8 @@ func (e *Engine) installStdlib() {
 		"FromSlash":     h.fn1("filepath.FromSlash", func(a []any) (any, error) { return filepath.FromSlash(str(a[0])), nil }, filepath.FromSlash),
 		"SplitList":     h.fn1("filepath.SplitList", func(a []any) (any, error) { return filepath.SplitList(str(a[0])), nil }, filepath.SplitList),
 		"Match":         h.fn2("filepath.Match", func(a []any) (any, error) { return retErr2(filepath.Match(str(a[0]), str(a[1]))) }),
-		"Separator":     int64(os.PathSeparator),
-		"ListSeparator": int64(os.PathListSeparator),
+		"Separator":     &runtime.UConst{V: constant.MakeInt64(os.PathSeparator), Rune: true},
+		"ListSeparator": &runtime.UConst{V: constant.MakeInt64(os.PathListSeparator), Rune: true},
 		"Split": h.fn1("filepath.Split", func(a []any) (any, error) {
 			d, f := filepath.Split(str(a[0]))
 			return &runtime.Tuple{Elems: []runtime.Value{d, f}}, nil
@@ -2413,9 +2419,9 @@ func (e *Engine) installStdlib() {
 		// `lr.N == 0` for early-EOF) need the typedef; field reads like
 		// `lr.N` dispatch on the host struct through reflection.
 		"LimitedReader": hostType("io.LimitedReader", func() any { return &io.LimitedReader{} }),
-		"SeekStart":     int64(io.SeekStart),
-		"SeekCurrent":   int64(io.SeekCurrent),
-		"SeekEnd":       int64(io.SeekEnd),
+		"SeekStart":     &runtime.UConst{V: constant.MakeInt64(io.SeekStart)},
+		"SeekCurrent":   &runtime.UConst{V: constant.MakeInt64(io.SeekCurrent)},
+		"SeekEnd":       &runtime.UConst{V: constant.MakeInt64(io.SeekEnd)},
 		"ReadAll": ioCall("io.ReadAll", "r", func(a []any) (any, error) {
 			b, rerr := io.ReadAll(a[0].(io.Reader))
 			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(b), errVal(rerr)}}, nil
@@ -2503,9 +2509,9 @@ func (e *Engine) installStdlib() {
 			sum := sha256.Sum224(byteSlice(a[0]))
 			return scriptVal(sum[:]), nil
 		}, sha256.Sum224),
-		"Size":      int64(sha256.Size),
-		"Size224":   int64(sha256.Size224),
-		"BlockSize": int64(sha256.BlockSize),
+		"Size":      &runtime.UConst{V: constant.MakeInt64(sha256.Size)},
+		"Size224":   &runtime.UConst{V: constant.MakeInt64(sha256.Size224)},
+		"BlockSize": &runtime.UConst{V: constant.MakeInt64(sha256.BlockSize)},
 	})
 	// encoding/csv: NewReader binds the real *csv.Reader so Read/ReadAll and
 	// field tuning (Comma/FieldsPerRecord via host field writes) work.
