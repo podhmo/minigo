@@ -330,6 +330,10 @@ type compiler struct {
 	symName  string
 	litCount int
 
+	// opTypDepth bounds staticOpTyp's recursion through package-level
+	// var/const initializers (a named cycle would not terminate).
+	opTypDepth int
+
 	// iotaVal is the const spec index while compiling a const spec's
 	// values; -1 elsewhere. `iota` reads emit the constant — the hidden
 	// local backing it materializes to int64 in storage, which would
@@ -1630,7 +1634,7 @@ func (c *compiler) assign(st *ast.AssignStmt) {
 // then emits as a plain value (a nil .Type reports the usual
 // ".(type) outside type switch" trap there).
 func (c *compiler) commaOkRhs(e ast.Expr) bool {
-	switch x := e.(type) {
+	switch x := ast.Unparen(e).(type) {
 	case *ast.UnaryExpr:
 		if x.Op != token.ARROW {
 			return false
@@ -1790,9 +1794,10 @@ func (c *compiler) inferredTypExpr(e ast.Expr) ast.Expr {
 // answer). A zero opTyp means "unknown": the gate leaves the op
 // evaluating.
 type opTyp struct {
-	te      ast.Expr
-	untyped bool
-	iface   bool
+	te         ast.Expr
+	untyped    bool
+	iface      bool
+	nilOperand bool // the literal `nil` — untyped, but only nilable types adopt it
 }
 
 // staticOpTyp resolves the statically-known type of an operand
@@ -1802,9 +1807,13 @@ type opTyp struct {
 // fixed result types — everything else is "unknown" and the gate stays
 // silent, matching the pre-gate evaluation.
 func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
-	if e == nil {
+	if e == nil || c.opTypDepth >= 8 {
 		return opTyp{}
 	}
+	// package-level var/const initializers feed back through identOpTyp
+	// (`const a = b`) — the depth cap bounds a named cycle.
+	c.opTypDepth++
+	defer func() { c.opTypDepth-- }()
 	if c.isIfaceExpr(e) {
 		return opTyp{iface: true}
 	}
@@ -1875,15 +1884,24 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 		return opTyp{} // a bound type parameter — its value is opaque here
 	}
 	switch id.Name {
-	case "true", "false", "nil", "iota":
+	case "true", "false", "iota":
 		return opTyp{untyped: true}
+	case "nil":
+		return opTyp{nilOperand: true}
 	}
 	if c.pkg != nil && c.pkg.Index != nil {
 		if vd := c.pkg.Index.Vars[id.Name]; vd != nil {
-			if vs, ok := vd.Spec.(*ast.ValueSpec); ok && vs.Type != nil {
-				return opTyp{te: vs.Type}
+			if vs, ok := vd.Spec.(*ast.ValueSpec); ok {
+				if vs.Type != nil {
+					return opTyp{te: vs.Type}
+				}
+				// `var x = e` — the initializer at the name's own slot
+				// types it (a multi-result single RHS stays unknown).
+				if len(vs.Values) == len(vs.Names) && vd.NameIdx < len(vs.Values) {
+					return c.staticOpTyp(vs.Values[vd.NameIdx])
+				}
 			}
-			return opTyp{} // `var x = e` — the initializer's type isn't chased
+			return opTyp{}
 		}
 		if cd := c.pkg.Index.Consts[id.Name]; cd != nil {
 			if vs, ok := cd.Spec.(*ast.ValueSpec); ok {
@@ -1893,6 +1911,13 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 				}
 				if t != nil {
 					return opTyp{te: t}
+				}
+				// `const c = Duration(0)` — a typed initializer still
+				// types the const; only a genuinely untyped one adopts.
+				if len(vs.Values) == len(vs.Names) && cd.NameIdx < len(vs.Values) {
+					if t := c.staticOpTyp(vs.Values[cd.NameIdx]); t.te != nil {
+						return t
+					}
 				}
 			}
 			return opTyp{untyped: true}
@@ -1933,11 +1958,19 @@ func (c *compiler) callOpTyp(x *ast.CallExpr) opTyp {
 	if c.conversionCall(x) {
 		return opTyp{te: x.Fun}
 	}
-	if len(x.Args) == 0 {
-		return opTyp{}
-	}
 	switch f := x.Fun.(type) {
 	case *ast.Ident:
+		// a declared function resolves its result type regardless of
+		// arity — the args gate below exists for builtins like len()
+		// whose zero-arg form has no meaningful static result.
+		if c.pkg != nil && c.pkg.Index != nil {
+			if fd := c.pkg.Index.Funcs[f.Name]; fd != nil {
+				return c.funcResultOpTyp(fd.Func)
+			}
+		}
+		if len(x.Args) == 0 {
+			return opTyp{}
+		}
 		// builtin result types apply only when no nearer decl shadows
 		// the name (a local `len` variable, a package func `len`).
 		if _, found := c.resolveName(f.Name); !found {
@@ -1952,11 +1985,6 @@ func (c *compiler) callOpTyp(x *ast.CallExpr) opTyp {
 				return c.staticOpTyp(x.Args[0])
 			case "recover":
 				return opTyp{iface: true}
-			}
-		}
-		if c.pkg != nil && c.pkg.Index != nil {
-			if fd := c.pkg.Index.Funcs[f.Name]; fd != nil {
-				return c.funcResultOpTyp(fd.Func)
 			}
 		}
 		return opTyp{}
@@ -2114,21 +2142,40 @@ func (c *compiler) fieldTypExpr(te ast.Expr, sel string, depth int) ast.Expr {
 	if !ok {
 		return nil
 	}
+	// direct fields win over promoted ones regardless of declaration
+	// order — Go's shallower-depth rule. A first pass over named
+	// fields, then the embeds; the other order lets a promoted field
+	// shadow a direct one, which gc rejects in the opposite direction.
 	for _, f := range st.Fields.List {
-		if len(f.Names) == 0 {
-			// an embedded field promotes its own fields
-			if t := c.fieldTypExpr(f.Type, sel, depth-1); t != nil {
-				return t
-			}
-			continue
-		}
 		for _, n := range f.Names {
 			if n.Name == sel {
 				return f.Type
 			}
 		}
 	}
-	return nil
+	var promoted ast.Expr
+	for _, f := range st.Fields.List {
+		if len(f.Names) != 0 {
+			continue
+		}
+		// an embedded field promotes its own fields; `*T` embeds
+		// promote like `T` (a parens/star wrapper is not a selector).
+		emb := ast.Unparen(f.Type)
+		if s, ok := emb.(*ast.StarExpr); ok {
+			emb = ast.Unparen(s.X)
+		}
+		t := c.fieldTypExpr(emb, sel, depth-1)
+		if t == nil {
+			continue
+		}
+		if promoted != nil {
+			// two same-depth promotions — gc rejects the selector
+			// itself as ambiguous, so the operand is opaque.
+			return nil
+		}
+		promoted = t
+	}
+	return promoted
 }
 
 // namedTypID is a named type's compile-time identity: two operand types
@@ -2170,7 +2217,7 @@ func (c *compiler) namedIdentOf(te ast.Expr) (namedTypID, bool) {
 		case "rune":
 			name = "int32"
 		}
-		return namedTypID{id: "predecl:" + name, name: t.Name}, true
+		return namedTypID{id: "predecl:" + runtime.CanonicalBasicName(name), name: t.Name}, true
 	case *ast.SelectorExpr:
 		id, ok := t.X.(*ast.Ident)
 		if !ok {
@@ -2199,6 +2246,28 @@ func (c *compiler) namedIdentOf(te ast.Expr) (namedTypID, bool) {
 // integer-typed, not mutually assignable (`i << d` is legal Go).
 func (c *compiler) opCmpGate(x, y ast.Expr, pos token.Pos) bool {
 	xt, yt := c.staticOpTyp(x), c.staticOpTyp(y)
+	// `nil` compares only against nilable types: `d == nil` is a gc
+	// compile error (mismatched types Duration and untyped nil), while
+	// a pointer/slice/map/chan/func/interface operand legitimately
+	// answers it. A side that did not resolve stays silent.
+	if xt.nilOperand || yt.nilOperand {
+		other := yt
+		if yt.nilOperand {
+			other = xt
+		}
+		if other.nilOperand || other.te == nil || other.untyped || other.iface {
+			return false
+		}
+		if c.nilableTypExpr(other.te) {
+			return false
+		}
+		oi, ok := c.namedIdentOf(other.te)
+		if !ok {
+			return false // unnamed non-nilable — rare; stays silent
+		}
+		c.trap(pos, "invalid operation: mismatched types %s and untyped nil", oi.name)
+		return true
+	}
 	if xt.te == nil || yt.te == nil || xt.untyped || yt.untyped || xt.iface || yt.iface {
 		return false
 	}
@@ -2214,6 +2283,26 @@ func (c *compiler) opCmpGate(x, y ast.Expr, pos token.Pos) bool {
 	return true
 }
 
+// nilableTypExpr reports whether a resolved type expression denotes a
+// type a `nil` comparison can lawfully answer — pointer, slice, map,
+// channel, func, or interface — through named-type specs.
+func (c *compiler) nilableTypExpr(te ast.Expr) bool {
+	switch t := c.unfoldTypExpr(te, 4).(type) {
+	case *ast.StarExpr, *ast.MapType, *ast.ChanType, *ast.FuncType, *ast.InterfaceType:
+		return true
+	case *ast.ArrayType:
+		return t.Len == nil // a slice
+	case *ast.Ident:
+		return t.Name == "error" || t.Name == "any"
+	case *ast.SelectorExpr:
+		// a qualified name's kind is opaque to the static walk — it may
+		// be an interface (`fmt.Stringer`) or a struct. Maybe-nilable
+		// keeps the gate from inventing an error gc wouldn't issue.
+		return true
+	}
+	return false
+}
+
 // noteDeclTyp records a value spec's type on the name's binding for the
 // operand-assignability gate: the written type wins (`var x T`), an
 // inferred decl (`var x = e`, `x := e`) takes the initializer's static
@@ -2224,6 +2313,11 @@ func (c *compiler) noteDeclTyp(name string, effType ast.Expr, isConst bool, rhs 
 	if te == nil && rhs != nil {
 		te = c.staticOpTyp(rhs).te
 		if te == nil && !isConst {
+			if id, ok := ast.Unparen(rhs).(*ast.Ident); ok && (id.Name == "true" || id.Name == "false") {
+				// bool literals are idents, not BasicLit — they still
+				// default to bool at bind, like gc.
+				te = &ast.Ident{Name: "bool"}
+			}
 			if lit, ok := rhs.(*ast.BasicLit); ok {
 				// an untyped literal defaults at bind, like gc: 'a' is
 				// rune, 1.5 is float64.
@@ -3556,6 +3650,9 @@ func (c *compiler) unary(x *ast.UnaryExpr) {
 func (c *compiler) binary(x *ast.BinaryExpr) {
 	switch x.Op {
 	case token.LAND:
+		if c.opCmpGate(x.X, x.Y, x.Pos()) {
+			return
+		}
 		c.expr(x.X)
 		c.emit(bytecode.OpDup, 0, 0, x.Pos())
 		j := c.emit(bytecode.OpJumpFalse, 0, 0, x.Pos())
@@ -3563,6 +3660,9 @@ func (c *compiler) binary(x *ast.BinaryExpr) {
 		c.expr(x.Y)
 		c.patchA(j, len(c.ch.Code))
 	case token.LOR:
+		if c.opCmpGate(x.X, x.Y, x.Pos()) {
+			return
+		}
 		c.expr(x.X)
 		c.emit(bytecode.OpDup, 0, 0, x.Pos())
 		j := c.emit(bytecode.OpJumpTrue, 0, 0, x.Pos())
@@ -3706,30 +3806,13 @@ func (c *compiler) pureOperand(x ast.Expr) bool {
 // resolveLitType resolves a composite literal's declared type to its
 // underlying syntactic form — peeling parens and following named types
 // through local `type` decls and the package index (`type M map[K]V`
-// resolves M to the MapType). fuel bounds the named-type hops; a name
-// that does not resolve, or fuel running out mid-chain, returns the
-// expr reached so far. Callers apply their own shape predicate and
-// pick their own bound — mapLitType and isKeyedLitShape differ.
+// resolves M to the MapType). fuel bounds the named-type hops. It is
+// unfoldTypExpr under the callers' own bound: the only semantic
+// difference is exhaustion returning nil instead of the partial expr,
+// and every caller applies a shape predicate that a partial expr fails
+// anyway. mapLitType and isKeyedLitShape differ in their predicates.
 func (c *compiler) resolveLitType(t ast.Expr, fuel int) ast.Expr {
-	for t != nil {
-		switch tt := t.(type) {
-		case *ast.ParenExpr:
-			t = tt.X
-		case *ast.Ident:
-			if fuel <= 0 {
-				return t
-			}
-			info, found := c.resolveName(tt.Name)
-			if !found || !info.isType || info.tspec == nil {
-				return t
-			}
-			t = info.tspec.Type
-			fuel--
-		default:
-			return t
-		}
-	}
-	return nil
+	return c.unfoldTypExpr(t, fuel)
 }
 
 // mapLitType reports whether a composite literal's declared type is a
