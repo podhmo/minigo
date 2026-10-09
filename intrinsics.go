@@ -3096,8 +3096,8 @@ func (h *hostHelpers) arity(name string, n int, f func([]any) (any, error), targ
 // (nil: goNative each).
 func (h *hostHelpers) scanFn(name string, heads int, headFn func(runtime.VMCaller, []runtime.Value) ([]any, error), call func(head, ptrs []any) (int, error)) *runtime.BuiltinFunc {
 	return &runtime.BuiltinFunc{Name: name, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-		if len(args) < heads+1 {
-			return nil, fmt.Errorf("%s needs at least %d args, got %d", name, heads+1, len(args))
+		if len(args) < heads {
+			return nil, fmt.Errorf("%s needs at least %d args, got %d", name, heads, len(args))
 		}
 		var head []any
 		if headFn != nil {
@@ -3112,11 +3112,16 @@ func (h *hostHelpers) scanFn(name string, heads int, headFn func(runtime.VMCalle
 			}
 		}
 		ptrs := make([]any, len(args)-heads)
+		tds := make([]*runtime.TypeDef, len(args)-heads)
 		for i, ref := range args[heads:] {
 			cur, ok := runtime.Deref(ref)
 			if !ok {
 				return retErr(0, fmt.Errorf("%s: argument %d is not a pointer", name, i+heads+1))
 			}
+			// the host mirror erases the pointee's declared tag —
+			// `var m MyInt; Sscan("5", &m)` — so capture it for the
+			// write-back below.
+			tds[i] = runtime.TagOf(cur)
 			t := reflect.TypeOf(goNative(cur))
 			if t == nil {
 				return retErr(0, fmt.Errorf("%s: cannot infer scan target type: argument %d", name, i+heads+1))
@@ -3131,7 +3136,11 @@ func (h *hostHelpers) scanFn(name string, heads int, headFn func(runtime.VMCalle
 		// gc stores whatever it managed to scan even on error, so the
 		// write-back runs unconditionally.
 		for i, ref := range args[heads:] {
-			runtime.SetRef(ref, scriptVal(reflect.ValueOf(ptrs[i]).Elem().Interface()))
+			out := scriptVal(reflect.ValueOf(ptrs[i]).Elem().Interface())
+			if tds[i] != nil {
+				out = runtime.Tag(tds[i], out)
+			}
+			runtime.SetRef(ref, out)
 		}
 		return retErr(n, err)
 	}}

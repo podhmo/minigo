@@ -5,6 +5,8 @@ import (
 	"fmt"
 )
 
+type MyInt int
+
 func main() {
 	var c complex128
 	var i int
@@ -21,4 +23,11 @@ func main() {
 	var b bytes.Buffer
 	n, err = fmt.Fscan(&b, &i)
 	fmt.Println(n, err != nil, i)
+	var m MyInt
+	n, err = fmt.Sscan("5", &m)
+	fmt.Println(n, err, m)
+	var m2 MyInt = m
+	fmt.Println(m2)
+	n, err = fmt.Sscan("x")
+	fmt.Println(n, err)
 }
