@@ -3559,6 +3559,15 @@ func str(v any) string {
 	if n, ok := v.(*runtime.Named); ok {
 		return str(n.V)
 	}
+	if u, ok := v.(*runtime.UConst); ok {
+		// a builtin argument position materializes an untyped
+		// constant at its default type — the same fold intOf does.
+		nv, err := uconstNative(u)
+		if err != nil {
+			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: err.Error()}})
+		}
+		return str(nv)
+	}
 	if s, ok := v.(string); ok {
 		return s
 	}
