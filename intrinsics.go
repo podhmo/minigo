@@ -2861,6 +2861,36 @@ func (b *tickerChanBox) Stop() {
 	b.feed.die()
 }
 
+// proxyHostTypes maps each liveness-tracking proxy box to the API type
+// it stands in for: the script must see *time.Timer/*time.Ticker (in %T
+// and reflect), never the box's own name.
+var proxyHostTypes = map[reflect.Type]reflect.Type{
+	reflect.TypeOf((*timerChanBox)(nil)):   reflect.TypeOf((*time.Timer)(nil)),
+	reflect.TypeOf((*tickerChanBox)(nil)):  reflect.TypeOf((*time.Ticker)(nil)),
+	reflect.TypeOf((*afterFuncTimer)(nil)): reflect.TypeOf((*time.Timer)(nil)),
+}
+
+// proxyHostType resolves the public spelling of a host type — the
+// TypeAlias hook for the reflect facade.
+func proxyHostType(rt reflect.Type) reflect.Type {
+	if rt == nil {
+		return nil
+	}
+	if a, ok := proxyHostTypes[rt]; ok {
+		return a
+	}
+	return rt
+}
+
+// proxyHostTypeOf is proxyHostType over a value — the fmt path's %T
+// lookup.
+func proxyHostTypeOf(v any) reflect.Type {
+	if v == nil {
+		return nil
+	}
+	return proxyHostTypes[reflect.TypeOf(v)]
+}
+
 // Reset restarts the ticker like time.Ticker.Reset: a stopped feed
 // re-arms so parked receivers wake again.
 func (b *tickerChanBox) Reset(d time.Duration) {
@@ -6940,6 +6970,12 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		}
 		return badVerb(verb, funcSigSpelling(v), fmt.Sprintf("%p", v))
 	case *runtime.GoValue:
+		if verb == 'T' {
+			// a proxy box spells its API type, not the box's name.
+			if rt := proxyHostTypeOf(v.V); rt != nil {
+				return rt.String()
+			}
+		}
 		return fmt.Sprintf(formatOf(f, verb), v.V)
 	case *runtime.TypeDef:
 		if verb == 'T' {
@@ -7412,6 +7448,10 @@ func scriptTypeString(x runtime.Value) string {
 			return "reflect.StructField"
 		case *minireflect.Method:
 			return "reflect.Method"
+		}
+		if rt := proxyHostTypeOf(t.V); rt != nil {
+			// a proxy box spells its API type, not the box's name.
+			return rt.String()
 		}
 		return fmt.Sprintf("%T", t.V)
 	case int64:

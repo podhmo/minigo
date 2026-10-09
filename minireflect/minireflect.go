@@ -60,6 +60,11 @@ type Hooks struct {
 	// unexported members included; callers filter visibility. Interface
 	// typedefs yield members carrying each required method's signature.
 	MethodSet func(td *runtime.TypeDef) (map[string]*runtime.Function, error)
+	// TypeAlias maps an internal host type to the public type it
+	// proxies (a liveness-tracking box stands in for *time.Ticker), so
+	// the facade spells and shapes it as the API type. Nil keeps every
+	// host type as-is.
+	TypeAlias func(rt reflect.Type) reflect.Type
 }
 
 // Env is the facade's shared state: the type interner plus the engine
