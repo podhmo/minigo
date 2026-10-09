@@ -1516,6 +1516,57 @@ func IsAliasBoundTrap() string {
 
 func main() {}
 
+// ASTWalk: a decl's raw AST node — fields and methods of the retained
+// *ast.FuncDecl/*ast.TypeSpec/*ast.ValueSpec resolve through the host
+// reflect facade, no wrapper view.
+func ASTWalk() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+
+	fn := inspect.AST(inspect.Symbol(p, "Hello"))
+	if fn == nil || fn.Name.Name != "Hello" {
+		return "bad func node"
+	}
+	if fn.Body == nil || len(fn.Body.List) != 1 {
+		return "bad func body"
+	}
+	if fn.Pos() <= 0 {
+		return "bad func pos"
+	}
+
+	mn := inspect.AST(inspect.Methods(inspect.Symbol(p, "User"))[0])
+	if mn == nil || mn.Name.Name != "Bye" {
+		return "bad method node"
+	}
+	if mn.Recv == nil || len(mn.Recv.List) != 1 {
+		return "bad method recv"
+	}
+
+	tn := inspect.AST(inspect.Symbol(p, "User"))
+	if tn == nil || tn.Name.Name != "User" {
+		return "bad type node"
+	}
+	if len(tn.Type.Fields.List) != 4 {
+		return "bad type fields"
+	}
+
+	vn := inspect.AST(inspect.Symbol(p, "Count"))
+	if vn == nil || vn.Names[0].Name != "Count" || len(vn.Values) != 1 {
+		return "bad var node"
+	}
+
+	cn := inspect.AST(inspect.Symbol(p, "Label"))
+	if cn == nil || cn.Names[0].Name != "Label" || cn.Values[0].Value != `"lbl"` {
+		return "bad const node"
+	}
+	return "ok"
+}
+
+// ASTBoundTrap: a bound (host) symbol carries no AST node.
+func ASTBoundTrap() string {
+	inspect.AST(inspect.Symbol(inspect.PackageOf("strings"), "Builder"))
+	return "swallowed"
+}
+
 // BuiltinPathConst: the package exposes the builtin sentinel as a
 // script-visible value — :builtin: — so a SymbolID's PackagePath can
 // be compared without a shape heuristic.

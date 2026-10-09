@@ -1669,6 +1669,27 @@ func ImportsOf(f *File) []*Import {
 	return out
 }
 
+// ASTOf returns the raw AST node anchoring a decl: the retained
+// *ast.FuncDecl for funcs and methods, or the decl's own spec
+// (*ast.TypeSpec, *ast.ValueSpec) for type, var, and const decls —
+// plainly, so scripts reach .Body, .Pos(), and every field the node
+// keeps through the host reflect facade. The spec (not the enclosing
+// GenDecl) is the anchor: it is the node owning exactly this decl's
+// doc, names, and values — a GenDecl spans every spec in its group.
+// Host symbols report an error.
+func ASTOf(s *Decl) (any, error) {
+	if s.decl == nil {
+		return nil, fmt.Errorf("inspect.AST: host symbol %s has no declaration", s.Name)
+	}
+	if s.decl.Func != nil {
+		return s.decl.Func, nil
+	}
+	if s.decl.Spec != nil {
+		return s.decl.Spec, nil
+	}
+	return nil, fmt.Errorf("inspect.AST: %s carries no AST node", s.Name)
+}
+
 // SyntaxFile exposes the underlying file — engine-only.
 func (f *File) SyntaxFile() *syntax.File { return f.sf }
 

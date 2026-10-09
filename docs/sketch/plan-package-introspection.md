@@ -57,7 +57,7 @@ it reports declarations as declared.
 | Layer | Entry points | Cost | Side effects |
 |---|---|---|---|
 | index | `PackageOf`, `DirOf`, `FileOf`, `Current`, `Decls`, `Files`, `Imports`, `OwnerOf`, `PathOf`, `SymbolIDOf`, `Standard` | locate + parse + index | none |
-| syntax | `Doc`, `Pos`, `Fields`, `Methods`, `Signature`, `TypeExpr` views, `Children`, `UnWrap`, `UnRef`, `Origin`, `SymbolID`, `Resolve`, `SameType`, `UsedSymbols`, `Comments` | AST reads + import-table lookup | none |
+| syntax | `Doc`, `Pos`, `Fields`, `Methods`, `Signature`, `TypeExpr` views, `Children`, `UnWrap`, `UnRef`, `Origin`, `SymbolID`, `Resolve`, `SameType`, `UsedSymbols`, `Comments`, `AST` | AST reads + import-table lookup | none |
 | value | `Value`, `TypeOf`, `Kind` | materialize | `Value` on var/const runs `EnsureReady` (package init) |
 
 The value layer is deliberately a small, explicit annex — reaching a
@@ -108,6 +108,12 @@ inspect.Methods(s)                  // type decl -> []Symbol (method decls)
 inspect.Signature(s)                // func/method -> {Recv, Params, Results}
 inspect.TypeParams(s)               // generic decl's type parameter fields
 inspect.Def(s)                      // type decl -> its declared TypeExpr
+inspect.AST(s)                      // the raw AST anchor, plainly — *ast.FuncDecl
+                                    // for funcs/methods, the decl's own spec
+                                    // (*ast.TypeSpec, *ast.ValueSpec) for
+                                    // type/var/const; fields and methods
+                                    // resolve through the host reflect facade;
+                                    // host symbols trap
 ```
 
 `Field` is a view over `*ast.Field` + the declaring file:
