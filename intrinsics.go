@@ -753,6 +753,10 @@ func (e *Engine) installStdlib() {
 				return nil, fmt.Errorf("json.Marshal needs 1 arg, got %d", len(args))
 			}
 			b, err := json.Marshal(goJSON(v, args[0]))
+			var se *jsonScriptErr
+			if errors.As(err, &se) {
+				return &runtime.Tuple{Elems: []runtime.Value{scriptVal([]byte{}), errVal(jsonMarshalerErr(v, args[0], se.sv))}}, nil
+			}
 			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(b), errVal(err)}}, nil
 		}},
 		"MarshalIndent": &runtime.BuiltinFunc{Name: "json.MarshalIndent", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -760,6 +764,10 @@ func (e *Engine) installStdlib() {
 				return nil, fmt.Errorf("json.MarshalIndent needs 3 args, got %d", len(args))
 			}
 			b, err := json.MarshalIndent(goJSON(v, args[0]), str(goNative(args[1])), str(goNative(args[2])))
+			var se *jsonScriptErr
+			if errors.As(err, &se) {
+				return &runtime.Tuple{Elems: []runtime.Value{scriptVal([]byte{}), errVal(jsonMarshalerErr(v, args[0], se.sv))}}, nil
+			}
 			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(b), errVal(err)}}, nil
 		}},
 		// Two shapes: Unmarshal(data) decodes into the runtime value tree
@@ -784,6 +792,17 @@ func (e *Engine) installStdlib() {
 				return errVal(fmt.Errorf("json: Unmarshal(non-pointer %s)", runtime.DisplayName(atd))), nil
 			}
 			data := byteSlice(goNative(args[0]))
+			// a target whose method set offers UnmarshalJSON decodes
+			// itself — gc's indirect() hands it the raw literal instead
+			// of walking by shape. The pointer's method set is checked,
+			// so both value- and pointer-receiver methods qualify.
+			if m, ok := runtime.IfaceMember(v, args[1], "UnmarshalJSON"); ok && jsonUnmarshalShape(m) {
+				r, cerr := v.Call(m, []runtime.Value{scriptVal(data)})
+				if cerr != nil {
+					return nil, cerr
+				}
+				return jsonErrResult(r), nil
+			}
 			var dec any
 			if err := json.Unmarshal(data, &dec); err != nil {
 				return errVal(err), nil
@@ -800,6 +819,9 @@ func (e *Engine) installStdlib() {
 			// Like gc, the shaped value is written even on type errors —
 			// successfully-decoded fields land and the reported error is
 			// the FIRST in input order, not decode order.
+			if ectx.callErr != nil {
+				return ectx.callErr, nil
+			}
 			return errVal(jsonInputErr(data, ectx.errs)), nil
 		}},
 		"Valid": h.fn("json.Valid", func(a []any) (any, error) { return json.Valid(byteSlice(a[0])), nil }, json.Valid),
@@ -4156,6 +4178,25 @@ func asReader(v any) (io.Reader, error) {
 // unwraps. c carries the engine's type-resolution hooks — embedded
 // fields promote through them.
 func goJSON(c runtime.VMCaller, v any) any {
+	// a value whose method set offers MarshalJSON encodes itself —
+	// gc's marshalerEncoder calls it instead of walking the value by
+	// shape. A nil pointer/interface answers null below without a call
+	// (gc's nil-pointer exception).
+	switch v.(type) {
+	case *runtime.TypedNil, *runtime.IfaceNil:
+	case nil:
+	default:
+		if m, ok := runtime.IfaceMember(c, v, "MarshalJSON"); ok {
+			if r, err := c.Call(m, nil); err == nil {
+				if b, e, ok := jsonMarshalResult(r); ok {
+					if e != nil {
+						return &jsonScriptErr{sv: e}
+					}
+					return json.RawMessage(b)
+				}
+			}
+		}
+	}
 	switch x := v.(type) {
 	case *runtime.Named:
 		return goJSON(c, x.V)
@@ -4372,6 +4413,102 @@ type jsonErrCtx struct {
 	path  []string
 	err   error
 	errs  []jsonErrAt
+	// callErr records a non-nil error a script UnmarshalJSON returned
+	// — it is a script Value (not a *jsonUnmarshalTypeError) and wins
+	// over the by-shape type errors the way gc reports the call's
+	// error for the value it decoded.
+	callErr runtime.Value
+}
+
+// jsonScriptErr ferries a script MarshalJSON's error return through
+// encoding/json's own error channel: the runtime value is not an
+// error, so the wrapper presents it as one and the Marshal intrinsic
+// unwraps it back out.
+type jsonScriptErr struct{ sv runtime.Value }
+
+func (e *jsonScriptErr) Error() string { return "json: script Marshaler error" }
+func (e *jsonScriptErr) MarshalJSON() ([]byte, error) {
+	return nil, e
+}
+
+// jsonMarshalerErr renders gc's MarshalerError text for a script
+// MarshalJSON failure — `json: error calling MarshalJSON for type *T:
+// <err>` (gc's encoder always invokes through an address, so the named
+// type spells *T even for a value receiver).
+func jsonMarshalerErr(c runtime.VMCaller, operand runtime.Value, sv runtime.Value) error {
+	name := "unknown"
+	if vt := c.TypeOf(operand); vt != nil {
+		name = runtime.DisplayName(derefTyp(vt))
+		if vt.Kind != runtime.KindPointer {
+			name = "*" + name
+		}
+	}
+	text := "script error"
+	if s, ok := runtime.IfaceCallString(c, sv, "Error"); ok && s != "" {
+		text = s
+	}
+	return fmt.Errorf("json: error calling MarshalJSON for type %s: %s", name, text)
+}
+
+// jsonMarshalResult extracts the ([]byte, error) a script MarshalJSON
+// returns: ok=false when the call result is not the Marshaler shape
+// (a same-named method with a different signature does not implement
+// the interface, so the value falls back to by-shape encoding).
+func jsonMarshalResult(r runtime.Value) (b []byte, e runtime.Value, ok bool) {
+	t, isTuple := r.(*runtime.Tuple)
+	if !isTuple || len(t.Elems) != 2 {
+		return nil, nil, false
+	}
+	switch t.Elems[1].(type) {
+	case runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
+	default:
+		e = t.Elems[1]
+	}
+	b, ok = byteSlice(goNative(t.Elems[0])), true
+	return b, e, ok
+}
+
+// jsonUnmarshalShape reports whether m spells func([]byte) error —
+// the loose arity check applied before calling a script UnmarshalJSON:
+// a same-named method with a different signature does not implement
+// json.Unmarshaler, so its value decodes by shape. Host-callable
+// methods carry no Decl and are assumed conforming.
+func jsonUnmarshalShape(m runtime.Value) bool {
+	b, ok := m.(*runtime.BoundMethod)
+	if !ok {
+		return true
+	}
+	if b.Fn == nil || b.Fn.Decl == nil || b.Fn.Decl.Type == nil {
+		return false
+	}
+	ft := b.Fn.Decl.Type
+	n := 0
+	if ft.Params != nil {
+		for _, f := range ft.Params.List {
+			if len(f.Names) == 0 {
+				n++
+			} else {
+				n += len(f.Names)
+			}
+		}
+	}
+	return n == 1 && ft.Results != nil && len(ft.Results.List) == 1
+}
+
+// jsonErrResult unwraps the single `error` a script UnmarshalJSON
+// returns: a nil-ish payload becomes NIL, anything else is the script
+// error value itself.
+func jsonErrResult(r runtime.Value) runtime.Value {
+	if t, ok := r.(*runtime.Tuple); ok {
+		if len(t.Elems) == 1 {
+			r = t.Elems[0]
+		}
+	}
+	switch r.(type) {
+	case runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
+		return runtime.NIL
+	}
+	return r
 }
 
 // fail records the first type-mismatch error the way saveError does:
@@ -4850,6 +4987,29 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 		}
 		return priorOr(prior, c, td)
 	}
+	// a target whose ADDRESSABLE method set offers UnmarshalJSON
+	// decodes itself — a non-nil *T decodes through its own pointer,
+	// and a named value T decodes through &v the way gc calls the
+	// method on the field's address. The literal handed over is the
+	// re-encoded subtree — the original byte span is gone by the time
+	// decode reaches here. Anything else falls through to by-shape.
+	if prior != nil {
+		recv := prior
+		switch prior.(type) {
+		case *runtime.Named:
+			recv = &runtime.Cell{Elem: prior}
+		}
+		if m, ok := runtime.IfaceMember(c, recv, "UnmarshalJSON"); ok && jsonUnmarshalShape(m) {
+			if lit, lerr := json.Marshal(dec); lerr == nil {
+				if r, cerr := c.Call(m, []runtime.Value{scriptVal(lit)}); cerr == nil {
+					if ev := jsonErrResult(r); ev != runtime.NIL {
+						ectx.callErr = ev
+					}
+					return prior
+				}
+			}
+		}
+	}
 	switch td.Kind {
 	case runtime.KindStruct:
 		m, ok := dec.(map[string]any)
@@ -5056,8 +5216,24 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 		return rm
 	case runtime.KindPointer:
 		var ep runtime.Value
-		if pc, ok := prior.(*runtime.Cell); ok {
-			ep = pc.Elem
+		var pc *runtime.Cell
+		if c2, ok := prior.(*runtime.Cell); ok {
+			pc, ep = c2, c2.Elem
+		}
+		// *T implementing json.Unmarshaler decodes itself — gc
+		// allocates a nil pointer first, then calls the method on it.
+		if pc == nil {
+			pc = &runtime.Cell{Elem: c.ElemZero(td)}
+		}
+		if m, ok := runtime.IfaceMember(c, pc, "UnmarshalJSON"); ok && jsonUnmarshalShape(m) {
+			if lit, lerr := json.Marshal(dec); lerr == nil {
+				if r, cerr := c.Call(m, []runtime.Value{scriptVal(lit)}); cerr == nil {
+					if ev := jsonErrResult(r); ev != runtime.NIL {
+						ectx.callErr = ev
+					}
+					return pc
+				}
+			}
 		}
 		return &runtime.Cell{Elem: jsonShape(c, dec, c.TypeOf(c.ElemZero(td)), ep, ectx)}
 	case runtime.KindInterface:
