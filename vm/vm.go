@@ -5002,7 +5002,7 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 			f.trap("index on nil %s", tdName(b.Typ))
 		}
 	case *runtime.Slice:
-		i, ok := runtime.SmallIntOf(idx)
+		i, ok := indexSmallInt(idx)
 		if !ok {
 			if u, isU := uintOperand(idx); isU {
 				panic(runtime.BoundsPanic(u, int(b.Len())))
@@ -5029,7 +5029,7 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 		}
 		return v.elemRead(f, b.Typ, val)
 	case string:
-		i, ok := idx.(int64)
+		i, ok := indexSmallInt(idx)
 		if !ok {
 			if u, isU := uintOperand(idx); isU {
 				panic(runtime.BoundsPanic(u, len(b)))
@@ -5875,7 +5875,7 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 			f.trap("index assign on nil %s", tdName(b.Typ))
 		}
 	case *runtime.Slice:
-		i, ok := runtime.SmallIntOf(idx)
+		i, ok := indexSmallInt(idx)
 		if !ok {
 			if u, isU := uintOperand(idx); isU {
 				panic(runtime.BoundsPanic(u, int(b.Len())))
@@ -6178,15 +6178,41 @@ func (b boundOperand) disp() any {
 	return b.i
 }
 
+// indexSmallInt reads an index operand as int64, looking inside a
+// host GoValue's box — a host uint32(3) indexes like the constant 3,
+// while unsigned widths that cannot fit int64 keep the boxed-wide
+// out-of-bounds panic path.
+func indexSmallInt(v runtime.Value) (int64, bool) {
+	if g, ok := v.(*runtime.GoValue); ok {
+		return runtime.SmallIntOf(g.V)
+	}
+	return runtime.SmallIntOf(v)
+}
+
+// hostUint reads a host-boxed unsigned integer of any width as
+// uint64. Host values arrive carrying their concrete type — uint,
+// uint8..32, uintptr, uint64 — where script integers ride int64.
+func hostUint(v any) (uint64, bool) {
+	switch u := v.(type) {
+	case uint64:
+		return u, true
+	case uint:
+		return uint64(u), true
+	case uint8, uint16, uint32, uintptr:
+		return reflect.ValueOf(u).Uint(), true
+	}
+	return 0, false
+}
+
 // boundUnsigned reports whether the operand's declared domain is an
-// unsigned integer width — a Named tag's sized name or a boxed
-// full-width uint64.
+// unsigned integer width — a Named tag's sized name or a boxed host
+// unsigned.
 func (v *VM) boundUnsigned(x runtime.Value) bool {
 	switch t := x.(type) {
 	case *runtime.Named:
 		return unsignedName(sizedNameOf(t.Typ))
 	case *runtime.GoValue:
-		_, isU := t.V.(uint64)
+		_, isU := hostUint(t.V)
 		return isU
 	}
 	return false
@@ -6203,7 +6229,7 @@ func (v *VM) boundOperand(f *frame, x runtime.Value, def int64) boundOperand {
 		b.u = uint64(iv)
 		b.unsigned = v.boundUnsigned(x)
 	} else if g, isG := ux.(*runtime.GoValue); isG {
-		if u, isU := g.V.(uint64); isU {
+		if u, isU := hostUint(g.V); isU {
 			b.i = int64(u)
 			b.u = u
 			b.unsigned = true
@@ -8204,15 +8230,14 @@ func (v *VM) binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.V
 }
 
 // uintOperand reads an int-domain runtime value as uint64: int64s carry
-// two's-complement bits already and GoValue{uint64} holds the wide form.
+// two's-complement bits already and a GoValue holds its boxed unsigned
+// width verbatim.
 func uintOperand(v runtime.Value) (uint64, bool) {
 	switch x := v.(type) {
 	case int64:
 		return uint64(x), true
 	case *runtime.GoValue:
-		if u, ok := x.V.(uint64); ok {
-			return u, true
-		}
+		return hostUint(x.V)
 	}
 	return 0, false
 }
@@ -8411,13 +8436,10 @@ func shiftCount(b runtime.Value) (uint64, bool) {
 		}
 		return uint64(x), true
 	case *runtime.GoValue:
-		switch u := x.V.(type) {
-		case uint64:
+		if u, ok := hostUint(x.V); ok {
 			return u, true
-		case uint:
-			return uint64(u), true
-		case uint8, uint16, uint32, uintptr:
-			return reflect.ValueOf(u).Uint(), true
+		}
+		switch u := x.V.(type) {
 		case complex64:
 			return complexShiftCount(complex128(u))
 		case complex128:
