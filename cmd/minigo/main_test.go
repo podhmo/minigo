@@ -86,13 +86,13 @@ func TestRunREPLLoad(t *testing.T) {
 	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	in := strings.NewReader(":load " + strconv.Quote(path) + "\nFib(10)\n:load\n:exit\n")
+	in := strings.NewReader(":load " + strconv.Quote(path) + "\nFib(10)\n:load\n:unload " + strconv.Quote(path) + "\nFib(10)\n:unload " + strconv.Quote(path) + "\n:exit\n")
 	var out bytes.Buffer
 	if err := runREPL(context.Background(), in, &out); err != nil {
 		t.Fatal(err)
 	}
 	got := out.String()
-	for _, want := range []string{"loaded " + path, "55", path + "\n"} {
+	for _, want := range []string{"loaded " + path, "55", path + "\n", "unloaded " + path, "undefined: Fib", "is not loaded"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output missing %q\n---\n%s", want, got)
 		}

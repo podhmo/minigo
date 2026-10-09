@@ -92,7 +92,7 @@ func (w writeWithCRLF) Write(p []byte) (int, error) {
 // processor-side completer stays out of this namespace.
 var metaCommands = []string{
 	":bindings", ":cd", ":comp", ":doc", ":dump", ":exit", ":help", ":load", ":ls", ":p",
-	":pin", ":q", ":quit", ":reset", ":unpin",
+	":pin", ":q", ":quit", ":reset", ":unload", ":unpin",
 }
 
 // completerFor builds the AutoCompleteCallback: tab splices the common

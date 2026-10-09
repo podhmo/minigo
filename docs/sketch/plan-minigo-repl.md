@@ -100,7 +100,7 @@ prompt `:=`/`var`/`const`, `:load`, and `:pin` publications.
 | Earlier | Later | Result |
 |---|---|---|
 | prompt `func F` | prompt `func F` | the new body |
-| prompt `func F` / `F := 1` | `:load` declaring `F` | the file's `F` (prompt decl/cell removed) |
+| prompt `func F` / `F := 1` | `:load` declaring `F` | the file's `F` (prompt decl/cell set aside; back once a re-load stops declaring `F`, or on `:unload`) |
 | loaded `F` (func, type, var, const) | prompt `func F` / `type F` | the prompt's (file decl shadowed until the next `:load`) |
 | loaded `var x` | prompt `x := v` | an assignment to the loaded var (same cell) |
 | `const C` | `const C` / `var C` / `C :=` | a new binding, **with a warning** |
@@ -108,6 +108,10 @@ prompt `:=`/`var`/`const`, `:load`, and `:pin` publications.
 
 Only the names a later definition actually declares are affected.
 `y := 20; :load g.go` leaves `y` alone if `g.go` does not declare `y`.
+A grouped prompt `type ( A ...; B ... )` loses only the `A` spec to a
+load declaring `A`. A prompt decl taking over one name of a loaded
+`var a, b = ...` or of a const group blanks just that name (`_`), so
+the other names stay declared and `iota` numbering does not shift.
 
 **Warnings.** A redefinition that is easy to miss is reported through
 `REPL.Warnings()`, and the CLI prints it as `warning: ...`. Today this
@@ -174,16 +178,25 @@ Semantics:
   `./f.go`, absolute) replaces what it loaded before, so decls dropped
   from the file become undefined. A directory load supersedes single-file
   loads of its own files. Loading one file of an already-loaded directory
-  is refused with a hint to reload the directory.
+  is refused with a hint to reload the directory. Prompt definitions the
+  load took over come back for names the re-load no longer declares,
+  unless the prompt redefined them since.
+- **`:unload <ref>` undoes a load.** Its decls and the values its
+  initializers bound go; the prompt definitions it took over come back.
+  A file of a loaded directory cannot be unloaded on its own.
 - **Paths only.** `:load strings` is an error that points at `import` and
   `:cd`. Copying a library package into the session would blur the line
   with `:cd`.
-- `:load` with no argument lists the loaded refs.
+- `:load` with no argument lists the loaded refs; `:ls` tags each loaded
+  decl with its file (`func Fib (fib.go)`).
 
 Implementation: `repl_load.go`. A `loadUnit` holds the parsed files
 (parsed once into the engine FileSet), the decl keys, the cells its
 initializers bound (ownership), and the keys shadowed by later prompt
-decls. Shadowed decls are dropped from a copy of the file AST at reload.
+decls, plus the prompt decls and cells it took over (restored by
+`release` when a re-load or `:unload` retires the unit). Shadowed decls
+are dropped from a copy of the file AST at reload; shadowed var/const
+names are blanked instead.
 
 ## `:pin`: monkey-patching an entered package
 
@@ -205,6 +218,7 @@ keeps the published patch.
 | `:pin` / `:unpin` | write mode for the entered package |
 | `:ls [ref]` | top-level decls (`func`/`type`/`var`/`const`/`method`, bound symbols as `host`); ref = path, `./dir`, quoted path, or a session import name |
 | `:load [<file\|dir>]` | read files into the session / list loads |
+| `:unload <file\|dir>` | drop a load, restoring what it replaced |
 | `:doc <pkg>[.<sym>]` | run the Go toolchain's `go doc` |
 | `:dump <expr>` / `:p <expr>` | print a result in Go syntax (`%#v`) |
 | `:comp <text>` | print completion candidates (what TAB offers) |

@@ -515,3 +515,148 @@ func TestREPLImportBoundVersionedPath(t *testing.T) {
 		t.Errorf("foo.X (-want +got):\n%s", diff)
 	}
 }
+
+func TestREPLLoadTakeOver(t *testing.T) {
+	ctx := context.Background()
+	load := func(t *testing.T, r *REPL, ref string) {
+		t.Helper()
+		if _, err := r.Load(ctx, ref); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("reload without a name brings the prompt definition back", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFiles(t, dir, map[string]string{"m.go": "package m\nvar V = 10\nfunc F() int { return 1 }\n"})
+		r := NewEngine(dir).NewREPL()
+		replEval(t, r, "V := 7")
+		replEval(t, r, "func F() int { return 0 }")
+		load(t, r, "m.go")
+		if diff := cmp.Diff("11", replEval(t, r, "V + F()")); diff != "" {
+			t.Errorf("loaded (-want +got):\n%s", diff)
+		}
+		writeFiles(t, dir, map[string]string{"m.go": "package m\nfunc G() int { return 2 }\n"})
+		load(t, r, "m.go")
+		if diff := cmp.Diff("9", replEval(t, r, "V + F() + G()")); diff != "" {
+			t.Errorf("reloaded (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("a still-declared name keeps the prompt definition for later", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFiles(t, dir, map[string]string{"m.go": "package m\nvar V = 10\n"})
+		r := NewEngine(dir).NewREPL()
+		replEval(t, r, "V := 7")
+		load(t, r, "m.go")
+		writeFiles(t, dir, map[string]string{"m.go": "package m\nvar V = 20\n"})
+		load(t, r, "m.go")
+		if diff := cmp.Diff("20", replEval(t, r, "V")); diff != "" {
+			t.Errorf("V after reload (-want +got):\n%s", diff)
+		}
+		writeFiles(t, dir, map[string]string{"m.go": "package m\n"})
+		load(t, r, "m.go")
+		if diff := cmp.Diff("7", replEval(t, r, "V")); diff != "" {
+			t.Errorf("V after removal (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("a newer prompt definition is not clobbered", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFiles(t, dir, map[string]string{"m.go": "package m\nfunc F() int { return 1 }\n"})
+		r := NewEngine(dir).NewREPL()
+		replEval(t, r, "func F() int { return 0 }")
+		load(t, r, "m.go")
+		replEval(t, r, "func F() int { return 2 }")
+		writeFiles(t, dir, map[string]string{"m.go": "package m\n"})
+		load(t, r, "m.go")
+		if diff := cmp.Diff("2", replEval(t, r, "F()")); diff != "" {
+			t.Errorf("F (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("a grouped prompt type loses only the loaded spec", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFiles(t, dir, map[string]string{"m.go": "package m\ntype A struct{ N int }\n"})
+		r := NewEngine(dir).NewREPL()
+		replEval(t, r, "type (\n\tA int\n\tB string\n)")
+		load(t, r, "m.go")
+		if diff := cmp.Diff("4", replEval(t, r, `A{N: 3}.N + len(B("b"))`)); diff != "" {
+			t.Errorf("after load (-want +got):\n%s", diff)
+		}
+		writeFiles(t, dir, map[string]string{"m.go": "package m\n"})
+		load(t, r, "m.go")
+		if diff := cmp.Diff("4", replEval(t, r, `int(A(3)) + len(B("b"))`)); diff != "" {
+			t.Errorf("after removal (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("a prompt takeover blanks one name and keeps the group's iota", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFiles(t, dir, map[string]string{"m.go": "package m\nconst (\n\tA = iota\n\tB\n\tC\n)\nvar a, b = 1, 2\n"})
+		r := NewEngine(dir).NewREPL()
+		load(t, r, "m.go")
+		replEval(t, r, "type A struct{}")
+		replEval(t, r, "func a() int { return 5 }")
+		if diff := cmp.Diff("10", replEval(t, r, "B + C + b + a()")); diff != "" {
+			t.Errorf("values (-want +got):\n%s", diff)
+		}
+		ix := r.pkg.Index
+		if c, ok := ix.Consts["C"]; !ok || c.Idx != 2 {
+			t.Errorf("C must keep spec index 2: %+v", c)
+		}
+		if _, ok := ix.Vars["b"]; !ok {
+			t.Errorf("b must stay declared")
+		}
+	})
+
+	t.Run("unload drops the load and restores the prompt", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFiles(t, dir, map[string]string{
+			"m.go":   "package m\nvar V = 10\nfunc F() int { return V }\n",
+			"d/a.go": "package d\nfunc D() int { return 4 }\n",
+		})
+		r := NewEngine(dir).NewREPL()
+		replEval(t, r, "V := 7")
+		load(t, r, "m.go")
+		load(t, r, "d")
+		if _, err := r.Unload(ctx, "nosuch.go"); err == nil || !strings.Contains(err.Error(), "not loaded") {
+			t.Errorf("want not loaded, got %v", err)
+		}
+		if _, err := r.Unload(ctx, "d/a.go"); err == nil {
+			t.Error("a file of a loaded dir must not unload alone")
+		}
+		path, err := r.Unload(ctx, `"./m.go"`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if diff := cmp.Diff(filepath.Join(dir, "m.go"), path); diff != "" {
+			t.Errorf("path (-want +got):\n%s", diff)
+		}
+		if diff := cmp.Diff("11", replEval(t, r, "V + D()")); diff != "" {
+			t.Errorf("after unload (-want +got):\n%s", diff)
+		}
+		replFails(t, r, "F()", "undefined: F")
+		if diff := cmp.Diff([]string{filepath.Join(dir, "d")}, r.Loaded()); diff != "" {
+			t.Errorf("Loaded (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("ls names the file a loaded decl came from", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFiles(t, dir, map[string]string{
+			"d/a.go": "package d\ntype T struct{}\nfunc (T) M() {}\n",
+			"d/b.go": "package d\nvar V = 1\n",
+		})
+		r := NewEngine(dir).NewREPL()
+		replEval(t, r, "func P() {}")
+		load(t, r, "d")
+		lines, err := r.List(ctx, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"func P", "method T.M (d/a.go)", "type T (d/a.go)", "var V (d/b.go)"}
+		if diff := cmp.Diff(want, lines); diff != "" {
+			t.Errorf("List (-want +got):\n%s", diff)
+		}
+	})
+}
