@@ -1865,7 +1865,15 @@ func (e *Engine) installStdlib() {
 			default:
 				return nil, fmt.Errorf("time.AfterFunc: cannot use %T as func()", f)
 			}
+			// the pending timer keeps the process alive for deadlock
+			// detection (a gc timer does the same); it releases when
+			// the callback starts, after which the spawned goroutine
+			// counts itself.
+			release := vm.NoteExternalWait(vc)
 			t := time.AfterFunc(durOf(goNative(args[0])), func() {
+				if release != nil {
+					release()
+				}
 				// the timer fires on a host goroutine — run the
 				// callback like `go f()`: a panic inside fails the
 				// process through the same path as a goroutine's.
@@ -2143,7 +2151,13 @@ func (e *Engine) installStdlib() {
 				return nil, err
 			}
 			f := args[1]
+			// a pending AfterFunc callback is a wake source for
+			// deadlock detection, like a pending gc timer.
+			release := vm.NoteExternalWait(vc)
 			stop := context.AfterFunc(c, func() {
+				if release != nil {
+					release()
+				}
 				if _, err := vc.Call(f, nil); err != nil {
 					// a dead process refuses the spawn — the callback
 					// dies with the run like a Go timer's pending call.
@@ -2153,7 +2167,11 @@ func (e *Engine) installStdlib() {
 				}
 			})
 			return &runtime.BuiltinFunc{Name: "context.AfterFunc.stop", Fn: func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
-				return stop(), nil
+				stopped := stop()
+				if stopped && release != nil {
+					release()
+				}
+				return stopped, nil
 			}}, nil
 		}},
 		"Cause": h.fn("context.Cause", func(a []any) (any, error) {
