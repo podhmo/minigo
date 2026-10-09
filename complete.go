@@ -58,6 +58,8 @@ const (
 	CandConst   = "const"
 	CandType    = "type"
 	CandPackage = "package"
+	CandFile    = "file" // a path argument naming a file
+	CandDir     = "dir"  // a path argument naming a directory
 )
 
 // goKeywords for bare-name completion.
@@ -1131,6 +1133,98 @@ func (r *REPL) dirImportCandidates(prefix string) []Candidate {
 		if hasGoFiles(filepath.Join(dir, name)) {
 			out = append(out, Candidate{Name: full, Kind: CandPackage, Detail: "dir"})
 		}
+	}
+	return out
+}
+
+// CompleteCommandArg completes the argument of a meta-command line,
+// with the cursor at end of line: `:load <path>` offers .go files and
+// directories (a directory ends in "/" so the next completion descends),
+// and `:unload <ref>` offers the current loads. start is the byte offset
+// every candidate splices over; other commands yield no candidates.
+func (r *REPL) CompleteCommandArg(line string) (start int, cands []Candidate) {
+	cmd, arg, ok := strings.Cut(line, " ")
+	if !ok || (cmd != ":load" && cmd != ":unload") {
+		return len(line), nil
+	}
+	arg = strings.TrimLeft(arg, " \t")
+	start = len(line) - len(arg)
+	if rest, quoted := strings.CutPrefix(arg, `"`); quoted {
+		if strings.Contains(rest, `"`) {
+			return len(line), nil // past a closed literal
+		}
+		arg, start = rest, start+1
+	}
+	switch cmd {
+	case ":load":
+		cands = r.loadPathCandidates(arg)
+	case ":unload":
+		cands = r.loadedCandidates(arg)
+	}
+	sort.Slice(cands, func(i, j int) bool { return cands[i].Name < cands[j].Name })
+	return start, cands
+}
+
+// loadPathCandidates lists the .go files and directories matching a
+// typed :load path, which anchors like :load itself — at the engine's
+// start directory unless absolute. Dot entries show only once the typed
+// name starts with a dot.
+func (r *REPL) loadPathCandidates(prefix string) []Candidate {
+	dirPart := prefix[:strings.LastIndex(prefix, "/")+1] // "", "./", "../x/", "/abs/"
+	dir := r.anchor(dirPart)
+	if dir == "" {
+		dir = "."
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	hidden := strings.HasPrefix(prefix[len(dirPart):], ".")
+	var out []Candidate
+	for _, e := range ents {
+		name := e.Name()
+		full := dirPart + name
+		if !strings.HasPrefix(full, prefix) || (strings.HasPrefix(name, ".") && !hidden) {
+			continue
+		}
+		isDir := e.IsDir()
+		if e.Type()&fs.ModeSymlink != 0 {
+			if st, err := os.Stat(filepath.Join(dir, name)); err == nil {
+				isDir = st.IsDir()
+			}
+		}
+		switch {
+		case isDir:
+			out = append(out, Candidate{Name: full + "/", Kind: CandDir})
+		case strings.HasSuffix(name, ".go"):
+			out = append(out, Candidate{Name: full, Kind: CandFile})
+		}
+	}
+	return out
+}
+
+// loadedCandidates lists the current loads matching a typed :unload
+// ref, spelled the way the prefix is: absolute for a "/" prefix,
+// otherwise relative to the engine's start directory ("./"-led when the
+// prefix is). A load outside the start directory is always absolute.
+func (r *REPL) loadedCandidates(prefix string) []Candidate {
+	var out []Candidate
+	for _, u := range r.loads {
+		name := u.origin
+		if rel, err := filepath.Rel(r.engine.cwd, name); err == nil && r.engine.cwd != "" && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(prefix) {
+			name = rel
+			if strings.HasPrefix(prefix, "./") {
+				name = "./" + rel
+			}
+		}
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		kind := CandFile
+		if u.dir {
+			kind = CandDir
+		}
+		out = append(out, Candidate{Name: name, Kind: kind, Detail: "loaded"})
 	}
 	return out
 }

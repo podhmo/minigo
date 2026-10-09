@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -659,4 +660,64 @@ func TestREPLLoadTakeOver(t *testing.T) {
 			t.Errorf("List (-want +got):\n%s", diff)
 		}
 	})
+}
+
+func TestREPLCompleteCommandArg(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{
+		"fib.go":         "package main\nfunc Fib() {}\n",
+		"fizz.go":        "package main\nfunc Fizz() {}\n",
+		"notes.txt":      "",
+		"fixtures/a.go":  "package fixtures\n",
+		".hidden/b.go":   "package hidden\n",
+		"pkg/sub/c.go":   "package sub\n",
+		"pkg/sub/c2.txt": "",
+	})
+	r := NewEngine(dir).NewREPL()
+	for _, c := range []struct {
+		line      string
+		wantStart int
+		want      []string
+	}{
+		{":load ", 6, []string{"fib.go", "fixtures/", "fizz.go", "pkg/"}},
+		{":load fi", 6, []string{"fib.go", "fixtures/", "fizz.go"}},
+		{":load ./fiz", 6, []string{"./fizz.go"}},
+		{`:load "./fiz`, 7, []string{"./fizz.go"}},
+		{":load pkg/sub/", 6, []string{"pkg/sub/c.go"}},
+		{":load .", 6, []string{".hidden/"}},
+		{":load " + dir + "/fib", 6, []string{dir + "/fib.go"}},
+		{`:load "fib.go" `, len(`:load "fib.go" `), nil},
+		{":load nosuch/", 6, nil},
+		{":ls fi", len(":ls fi"), nil},
+		{":unload ", 8, nil},
+	} {
+		start, cands := r.CompleteCommandArg(c.line)
+		if diff := cmp.Diff(c.want, candNames(cands), cmpopts.EquateEmpty()); diff != "" {
+			t.Errorf("%q (-want +got):\n%s", c.line, diff)
+		}
+		if start != c.wantStart {
+			t.Errorf("%q: start = %d, want %d", c.line, start, c.wantStart)
+		}
+	}
+
+	for _, ref := range []string{"fib.go", "pkg/sub"} {
+		if _, err := r.Load(ctx, ref); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		line string
+		want []string
+	}{
+		{":unload ", []string{"fib.go", "pkg/sub"}},
+		{":unload p", []string{"pkg/sub"}},
+		{":unload ./", []string{"./fib.go", "./pkg/sub"}},
+		{":unload /", []string{filepath.Join(dir, "fib.go"), filepath.Join(dir, "pkg/sub")}},
+	} {
+		_, cands := r.CompleteCommandArg(c.line)
+		if diff := cmp.Diff(c.want, candNames(cands)); diff != "" {
+			t.Errorf("%q (-want +got):\n%s", c.line, diff)
+		}
+	}
 }
