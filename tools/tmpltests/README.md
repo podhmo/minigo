@@ -16,6 +16,11 @@ make tmpltests TMPLTESTS_ARGS="-only TestExec"
 go -C ./tools/tmpltests run ./ -h            # all flags
 ```
 
+`-only <re>` filters at copy + driver time, so an uncompilable test file
+can be routed around — but helper functions shared between test files
+still follow the copied set, so widen the regex if a needed helper file
+was filtered out.
+
 ## How it works
 
 1. Build `cmd/minigo` (or use `-minigo <bin>`).

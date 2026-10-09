@@ -8,7 +8,10 @@ package main
 var shims = map[string]string{
 	"testing": `package testing
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // failNow aborts the current test via panic (t.Fatal/FailNow); skipNow is
 // the t.Skip equivalent. IsSkip/IsFailNow let the generated driver tell
@@ -60,10 +63,19 @@ func (t *T) SkipNow()                       { panic(skipNow{}) }
 func (t *T) Parallel()                      {}
 func (t *T) Cleanup(f func())               { t.cleanups = append(t.cleanups, f) }
 func (t *T) TempDir() string                { return "/tmp" }
-func (t *T) Deadline() (deadline int64, ok bool) { return 0, false }
+func (t *T) Deadline() (time.Time, bool) { return time.Time{}, false }
+
+// RunCleanups runs Cleanup callbacks LIFO, like testing.T does after the
+// test function returns (the generated driver calls it).
+func (t *T) RunCleanups() {
+	for i := len(t.cleanups) - 1; i >= 0; i-- {
+		t.cleanups[i]()
+	}
+}
 
 func (t *T) Run(name string, f func(*T)) bool {
 	sub := &T{name: t.name + "/" + name, root: t}
+	defer sub.RunCleanups()
 	func() {
 		defer func() {
 			r := recover()

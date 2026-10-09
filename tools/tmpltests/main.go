@@ -14,6 +14,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"go/build"
@@ -110,29 +111,24 @@ func run() error {
 	}
 
 	gr := filepath.Join(workDir, "goroot")
-	pkgDir, err := buildGOROOT(gr, root, *pkg, strings.Split(*tests, ","))
-	if err != nil {
-		return err
-	}
-	names, err := genDriver(pkgDir, *pkg)
-	if err != nil {
-		return err
-	}
-	if len(names) == 0 {
-		return fmt.Errorf("no func TestXxx(*testing.T) found in %s", pkgDir)
-	}
+	var onlyRe *regexp.Regexp
 	if *only != "" {
 		re, err := regexp.Compile(*only)
 		if err != nil {
 			return err
 		}
-		var sel []string
-		for _, n := range names {
-			if re.MatchString(n) {
-				sel = append(sel, n)
-			}
-		}
-		names = sel
+		onlyRe = re
+	}
+	pkgDir, err := buildGOROOT(gr, root, *pkg, strings.Split(*tests, ","), onlyRe)
+	if err != nil {
+		return err
+	}
+	names, err := genDriver(pkgDir, *pkg, onlyRe)
+	if err != nil {
+		return err
+	}
+	if len(names) == 0 {
+		return fmt.Errorf("no func TestXxx(*testing.T) found in %s", pkgDir)
 	}
 	sort.Strings(names)
 
@@ -174,7 +170,7 @@ func run() error {
 
 // buildGOROOT assembles the scratch GOROOT and returns the directory of the
 // copied target package (used as the run cwd so testdata/ resolves).
-func buildGOROOT(gr, realRoot, pkg string, testFiles []string) (string, error) {
+func buildGOROOT(gr, realRoot, pkg string, testFiles []string, only *regexp.Regexp) (string, error) {
 	shimmed := map[string]bool{"testing": true, "flag": true, "iter": true}
 
 	src := filepath.Join(gr, "src")
@@ -186,8 +182,8 @@ func buildGOROOT(gr, realRoot, pkg string, testFiles []string) (string, error) {
 		return "", err
 	}
 	for _, e := range ents {
-		if shimmed[e.Name()] || strings.HasPrefix(pkg, e.Name()+"/") {
-			continue // replaced below, or a parent dir of the target package
+		if shimmed[e.Name()] || e.Name() == pkg || strings.HasPrefix(pkg, e.Name()+"/") {
+			continue // replaced below, the package itself, or a parent dir of it
 		}
 		if err := os.Symlink(filepath.Join(realRoot, "src", e.Name()), filepath.Join(src, e.Name())); err != nil {
 			return "", err
@@ -256,6 +252,24 @@ func buildGOROOT(gr, realRoot, pkg string, testFiles []string) (string, error) {
 			if !testSet[name] {
 				continue
 			}
+			if only != nil {
+				// route around files contributing no selected tests —
+				// an uncompilable one must not block --only subsets.
+				b, err := os.ReadFile(filepath.Join(real, name))
+				if err != nil {
+					return "", err
+				}
+				matched := false
+				for _, m := range testFuncRe.FindAllSubmatch(b, -1) {
+					if only.MatchString(string(m[1])) {
+						matched = true
+						break
+					}
+				}
+				if !matched {
+					continue
+				}
+			}
 			if err := copyTestFile(filepath.Join(real, name), filepath.Join(pkgDir, renamedTest(name)), fileRewrites[name]); err != nil {
 				return "", err
 			}
@@ -304,7 +318,7 @@ func copyTree(srcDir, dst string) error {
 var testFuncRe = regexp.MustCompile(`(?m)^func (Test\w+)\(t \*testing\.T\)`)
 
 // genDriver writes zzz_driver.go into pkgDir and returns the test names.
-func genDriver(pkgDir, pkg string) ([]string, error) {
+func genDriver(pkgDir, pkg string, only *regexp.Regexp) ([]string, error) {
 	var names []string
 	ents, err := os.ReadDir(pkgDir)
 	if err != nil {
@@ -319,6 +333,9 @@ func genDriver(pkgDir, pkg string) ([]string, error) {
 			return nil, err
 		}
 		for _, m := range testFuncRe.FindAllSubmatch(b, -1) {
+			if only != nil && !only.MatchString(string(m[1])) {
+				continue
+			}
 			names = append(names, string(m[1]))
 		}
 	}
@@ -353,6 +370,7 @@ func Run1(name string) {
 	func() {
 		defer func() { r = recover() }()
 		f(t)
+		t.RunCleanups()
 	}()
 	if msg, ok := testing.IsSkip(r); ok {
 		fmt.Printf("RESULT %s SKIP %s\n", name, msg)
@@ -373,25 +391,18 @@ func Run1(name string) {
 // runOne runs a single test in a fresh minigo process and returns its
 // verdict line. A minigo trap kills the process, so traps are per-test.
 func runOne(minigo, mainDir, cwd, goroot, srcList, name string, timeout time.Duration) string {
-	ctx := func() (string, string, error) {
-		cmd := exec.Command(minigo, "run", mainDir, "--src", srcList, "--", name)
-		cmd.Dir = cwd
-		cmd.Env = append(os.Environ(), "GOROOT="+goroot)
-		var sb, eb strings.Builder
-		cmd.Stdout, cmd.Stderr = &sb, &eb
-		type res struct{ err error }
-		ch := make(chan res, 1)
-		go func() { ch <- res{cmd.Run()} }()
-		select {
-		case <-time.After(timeout):
-			cmd.Process.Kill()
-			<-ch
-			return sb.String(), eb.String(), errTimeout
-		case r := <-ch:
-			return sb.String(), eb.String(), r.err
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, minigo, "run", mainDir, "--src", srcList, "--", name)
+	cmd.Dir = cwd
+	cmd.Env = append(os.Environ(), "GOROOT="+goroot)
+	var sb, eb strings.Builder
+	cmd.Stdout, cmd.Stderr = &sb, &eb
+	err := cmd.Run()
+	if ctx.Err() != nil {
+		err = errTimeout
 	}
-	stdout, stderr, err := ctx()
+	stdout, stderr := sb.String(), eb.String()
 	for _, line := range strings.Split(stdout, "\n") {
 		if strings.HasPrefix(line, "RESULT ") {
 			return line
