@@ -2594,6 +2594,15 @@ func (v *RValue) Call(in []*RValue) []*RValue {
 	}
 	r, err := v.vc.Call(v.get(), args)
 	if err != nil {
+		// A panic the callee raised crosses as an error wrapping
+		// *Panic — Go's reflect.Value.Call propagates the original
+		// panic value unchanged, so re-panic it instead of wrapping
+		// ("reflect: bad type in Call" wording is for the arg gates
+		// above, which panic before the call runs).
+		var p *runtime.Panic
+		if errors.As(err, &p) {
+			panic(p)
+		}
 		panic(&runtime.Panic{Value: fmt.Sprintf("reflect.Value.Call: %s", err)})
 	}
 	return v.callOut(r)
