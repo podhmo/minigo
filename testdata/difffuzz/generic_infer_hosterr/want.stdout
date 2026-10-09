@@ -1,0 +1,10 @@
+*errors.errorString
+*errors.errorString
+*errors.errorString
+*errors.errorString
+int
+*errors.errorString
+string
+boom
+x
+int|*errors.errorString

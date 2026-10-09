@@ -13664,6 +13664,17 @@ func (v *VM) argTypedef(x runtime.Value) *runtime.TypeDef {
 			return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: v.argTypedef(dv)}
 		}
 		return &runtime.TypeDef{Kind: runtime.KindPointer}
+	case *runtime.GoValue:
+		// a host error yields no typedef of its own, but every
+		// statically-typed way it reaches a generic call declares the
+		// param `error` — `errors.New`'s result type, `var e error`,
+		// an `any` element's only usable bind. gc infers T=error at
+		// those sites; binding error here keeps `kind(errors.New("e"))`
+		// and range-var calls from leaving T unbound.
+		if _, isErr := xv.V.(error); isErr {
+			return v.builtinTypedef("error")
+		}
+		return v.typeOfValue(x)
 	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
 		return v.funcTypedefOf(x)
 	}
