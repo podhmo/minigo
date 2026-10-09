@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -731,11 +732,24 @@ func typeHasRequiredField(te *inspect.TypeExpr) bool {
 }
 
 func wantsRequired(tag string) bool {
-	if v, ok := scanx.LookupTag(tag, "required"); ok && v == "true" {
+	t := reflect.StructTag(tag)
+	if v, ok := t.Lookup("required"); ok && v == "true" {
 		return true
 	}
-	return scanx.TagHasElement(tag, "validate", "required") ||
-		scanx.TagHasElement(tag, "binding", "required")
+	return tagHasElement(t, "validate", "required") ||
+		tagHasElement(t, "binding", "required")
+}
+
+// tagHasElement reports whether the comma-separated value stored under
+// key contains elem as a whole element: `validate:"required"` matches
+// "required" while `binding:"notrequired"` does not.
+func tagHasElement(t reflect.StructTag, key, elem string) bool {
+	for _, e := range strings.Split(t.Get(key), ",") {
+		if strings.TrimSpace(e) == elem {
+			return true
+		}
+	}
+	return false
 }
 
 // isMockable reports whether an interface name looks like a service

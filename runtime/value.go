@@ -107,6 +107,8 @@ func Tag(td *TypeDef, v Value) *Named {
 	sv := Unwrap(v)
 	if td != nil && td.HostScalar != nil {
 		sv = hostScalarValue(td, sv)
+	} else if td != nil && td.HostNew != nil {
+		sv = hostStringValue(td, sv)
 	}
 	return &Named{Typ: td, V: sv}
 }
@@ -127,6 +129,33 @@ func hostScalarValue(td *TypeDef, v Value) Value {
 	}
 	if rv.Kind() == rt.Kind() && rv.Type().ConvertibleTo(rt) {
 		return rv.Convert(rt).Interface()
+	}
+	return v
+}
+
+// hostStringValue canonicalizes a string-kind host basic's payload to the
+// script string — the mirror of hostScalarValue in the other direction. A
+// bound typedef like reflect.StructTag is a stdlib scalar but every
+// operation Go defines on it besides Get/Lookup is a string op
+// (len, indexing, range, comparisons, concat, conversions); keeping the
+// payload a script string keeps all of those working while member access
+// materializes the host type to reach its method set. Non-string payloads
+// (int into a string type) and non-string host types pass through.
+func hostStringValue(td *TypeDef, v Value) Value {
+	rt := reflect.TypeOf(td.HostNew())
+	if rt == nil || rt.Kind() != reflect.String {
+		return v
+	}
+	if gv, ok := v.(*GoValue); ok {
+		v = gv.V
+	}
+	if _, ok := v.(string); ok {
+		return v
+	}
+	if rv := reflect.ValueOf(v); rv.IsValid() && rv.Type().ConvertibleTo(rt) {
+		// same-kind host strings unwrap to the script string; an int
+		// payload converts by Go's numeric-to-string rule — StructTag(65).
+		return rv.Convert(rt).String()
 	}
 	return v
 }

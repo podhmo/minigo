@@ -4582,6 +4582,18 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 			return mv
 		}
 	}
+	if td != nil && td.HostNew != nil && td.Kind == runtime.KindNamedBasic {
+		// a bound host named basic keeps a script payload (a
+		// reflect.StructTag's string): its declared method set is
+		// empty, but the host type's methods apply once the payload
+		// is materialized as the host type — tag.Get("json").
+		rt := reflect.TypeOf(td.HostNew())
+		if rv := reflect.ValueOf(sv); rv.IsValid() && rv.Type().ConvertibleTo(rt) {
+			if mv, ok := v.hostMember(rv.Convert(rt).Interface(), name); ok {
+				return mv
+			}
+		}
+	}
 	if s, isStruct := sv.(*runtime.Struct); isStruct {
 		for i, fn := range s.Def.Fields {
 			if fn == name {
@@ -8325,6 +8337,19 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 	if d, ok := b.(time.Duration); ok {
 		b = int64(d)
 	}
+	// a host-boxed string (the facade's StructField.Tag) compares by
+	// its string contents — a converted StructTag and a field's Tag
+	// compare equal, and field.Tag == "json:..." holds like Go's.
+	if gv, ok := a.(*runtime.GoValue); ok {
+		if rv := reflect.ValueOf(gv.V); rv.IsValid() && rv.Kind() == reflect.String {
+			a = rv.String()
+		}
+	}
+	if gv, ok := b.(*runtime.GoValue); ok {
+		if rv := reflect.ValueOf(gv.V); rv.IsValid() && rv.Kind() == reflect.String {
+			b = rv.String()
+		}
+	}
 	// boxed complex values compare by value across widths — Go rejects
 	// complex64 == complex128 (mismatched types), but here both operands
 	// already passed the tag check so compare numerically like int/float.
@@ -9125,6 +9150,11 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 			// converts like int64: string(time.Duration(65)) is "A".
 			if sx, ok := hostInt64(x); ok {
 				return stringFromInt(sx), nil
+			}
+			// a raw host scalar of string kind (reflect.StructTag)
+			// converts by its underlying string.
+			if rv := reflect.ValueOf(x); rv.IsValid() && rv.Kind() == reflect.String {
+				return rv.String(), nil
 			}
 		}
 		return nil, fmt.Errorf("cannot convert %s to string", typeNameOf(x))

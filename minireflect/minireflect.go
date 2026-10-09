@@ -141,15 +141,13 @@ func Symbols(h Hooks) map[string]runtime.Value {
 				"NumMethod", "NumOut", "Out", "PkgPath", "String",
 			},
 		},
-		// StructTag and StructField delegate to real host types.
-		// HostScalar keeps the payload as a real reflect.StructTag so a
-		// converted value (`reflect.StructTag(f.Tag)`) resolves Get and
-		// Lookup through the host method set like Field.Tag does.
+		// StructTag and StructField delegate to real host types. Its
+		// payload stays a script string (Go's StructTag ops are string
+		// ops); member access materializes the host type for Get/Lookup.
 		"StructTag": &runtime.TypeDef{
-			Name:       "reflect.StructTag",
-			Kind:       runtime.KindNamedBasic,
-			HostNew:    func() any { return reflect.StructTag("") },
-			HostScalar: reflect.StructTag(""),
+			Name:    "reflect.StructTag",
+			Kind:    runtime.KindNamedBasic,
+			HostNew: func() any { return reflect.StructTag("") },
 		},
 		// Kind and ChanDir name the real host enums, so a script
 		// signature like `func f(k reflect.Kind)` binds Kind() results.
