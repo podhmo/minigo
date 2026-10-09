@@ -1176,3 +1176,57 @@ description):
 - Correctness gate: realworld's `task.sh native` and `task.sh minigo
   BIN` with `TARGET_DIR` set, then `diff` (rc plus sha256 per written
   file).
+
+## Decision: what was adopted (2026-10-09)
+
+How the experiment ended, in order:
+
+1. Steps 0–17 ran on `perf/sync-builtin-callbacks` (#699), stacked on
+   the two regression fixes (#698). The largest gain, binding
+   `text/template/parse` natively (step 13), drew two review rounds
+   about aliasing between host and script values. Step 17 replaced it
+   with a host lexer under the interpreted parser.
+2. The retrospective reframed the goal. An interpreter that does as
+   much work as native loses by construction. Chasing equal-work speed
+   leads to a JIT or native bindings, which is not what minigo is for.
+   The lever that matters is skipping work native does. A native
+   replacement is acceptable only through a reusable helper that
+   clearly pays off.
+3. A follow-up (#701,
+   [experiment-oapi-template-cache.md](./experiment-oapi-template-cache.md))
+   tried caching parse trees across runs. Output stayed identical, but
+   strict got 21% slower, so it was not adopted.
+4. The adopted subset was cherry-picked into a new PR, #702, stacked
+   on #698. It contains:
+   - correctness fixes: `sync.Pool` Put/New keep script structs opaque;
+     untyped constants adopt a bound host enum's type; `strconv.UnquoteChar`
+     is bound
+   - VM caches and memos: SyncCallbacks, the g-pointer goroutine id,
+     interface-check and constant-conversion memos, generic chunk
+     sharing with structural keys, and the inferred-instance cache
+   - load and compile: `orderSpecs`, `CheckLang`, concurrent parsing
+   - every regression test from those commits, plus Go-compared
+     template cases (`template_parse_api`, `template_src_parse`,
+     `template_parse_alias`) and `hostenum_const_ops`
+   - TODO.md entries for the pre-existing gaps found on the way
+5. Not adopted: the `text/template/parse` binding and
+   `runtime.Slice.Host` (step 13), the host lexer with `srcImpl` and
+   `internal/tmpllex` (step 17), and the template cache. #699 and #701
+   stay as draft PRs to keep the record. This report and the cache
+   report moved to the main line in #704, stacked on #702.
+
+#702 against #698, measured the same day on the same machine:
+
+| | #698 | #702 |
+|---|---|---|
+| strict (native-goimports harness, 7 rounds, median) | 2.375s | 1.486s (−37%) |
+| all 53 lines (CLI, no index, serial total) | 108.0s | 73.3s (−32%) |
+
+All 53 lines stay byte-identical to native, and grafana-openapi's
+output is unchanged. The absolute times are higher than in the steps
+above (the step 6 baseline was ~1.95s), because the machine state
+differed that day. Compare only numbers measured together.
+
+Next, if this continues: measure how much of the remaining work is
+never observed (see "The question this experiment did not ask")
+before any further tuning.
