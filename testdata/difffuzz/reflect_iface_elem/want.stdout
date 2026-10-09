@@ -4,3 +4,7 @@ elem nil: true
 elem type: *bytes.Buffer
 nil iface nil: true
 nil elem valid: false
+assert ptr: true true true
+assert on nil iface: false
+slice len: 0
+map len: 0
