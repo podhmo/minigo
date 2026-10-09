@@ -1,0 +1,9 @@
+n=3 buf=[228 184 150 0]
+panic: runtime error: index out of range [2] with length 2
+panic: runtime error: index out of range [0] with length 0
+n=3 buf=[239 191 189 0]
+n=3 buf=[239 191 189 0]
+n=3 buf=[239 191 189 0]
+panic: runtime error: index out of range [0] with length 0
+n=1 buf=[97 191 189 0] [97 191 189 0]
+n=2 buf=[195 169] [9 195 169 9]
