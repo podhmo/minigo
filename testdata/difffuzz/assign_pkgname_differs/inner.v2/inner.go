@@ -6,3 +6,6 @@ type Node struct {
 	Alias   *Node
 	Index   map[string]*Node
 }
+
+var Count int
+var Shared = &Node{Kind: 0}
