@@ -171,6 +171,23 @@ func posOf(fset *token.FileSet, pos token.Pos) *Position {
 	return &Position{File: tp.Filename, Line: tp.Line, Column: tp.Column}
 }
 
+// Comment is a view over one *ast.Comment — a single // or /* */
+// comment in a file. Text keeps the markers, exactly as the source
+// wrote them: per-comment text is what annotation scanners
+// (// convert:rule, // swagger:route) match on, and it keeps
+// directive-shaped comments (//go:generate) visible, where
+// CommentGroup.Text() would drop them.
+type Comment struct {
+	Text string    // raw comment text, markers included
+	Pos  *Position // position of the comment
+	// Free reports that no declaration claims the comment's group —
+	// the comments Doc() cannot reach: inside function bodies,
+	// floating between decls, trailing the file. Attached comments
+	// (file/decl/spec docs, field docs and line comments) report
+	// Free=false.
+	Free bool
+}
+
 // Import is one entry of a file's import table.
 type Import struct {
 	Path string
@@ -1594,6 +1611,39 @@ func UsedSymbolsOf(f *File) []runtime.SymbolID {
 		}
 		return true
 	})
+	return out
+}
+
+// CommentsOf enumerates a file's comments in source order — every
+// // or /* */ comment, one Comment per *ast.Comment. It closes the
+// gap Doc leaves: groups attached to the file, a decl, a spec, or a
+// field report Free=false, and everything else — comments inside
+// function bodies, floating between decls, trailing the file —
+// reports Free=true. go/parser collects free comments into
+// ast.File.Comments without attaching them to nodes, so "attached"
+// is computed by walking the AST once for the CommentGroups it
+// reaches — the same cost class as UsedSymbolsOf's file walk.
+func CommentsOf(f *File) []*Comment {
+	if f.sf == nil || f.sf.AST == nil {
+		return nil
+	}
+	attached := map[*ast.CommentGroup]bool{}
+	ast.Inspect(f.sf.AST, func(n ast.Node) bool {
+		if g, ok := n.(*ast.CommentGroup); ok {
+			attached[g] = true
+		}
+		return true
+	})
+	var out []*Comment
+	for _, g := range f.sf.AST.Comments {
+		for _, c := range g.List {
+			cv := &Comment{Text: c.Text, Free: !attached[g]}
+			if f.fset != nil {
+				cv.Pos = posOf(f.fset, c.Pos())
+			}
+			out = append(out, cv)
+		}
+	}
 	return out
 }
 

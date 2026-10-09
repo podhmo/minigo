@@ -27,6 +27,7 @@ func TestInspect(t *testing.T) {
 		"HostSignature",
 		"CurrentPkg",
 		"ImportsList",
+		"CommentsWalk",
 		"ValueLayer",
 		"BoundDecls",
 		"RecursiveOrigin",

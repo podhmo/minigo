@@ -78,6 +78,14 @@ func Files(p *runtime.Package) []*File { panic("minigo intrinsic") }
 // Imports lists a file's own import table.
 func Imports(f *File) []*Import { panic("minigo intrinsic") }
 
+// Comments enumerates a file's comments in source order — every //
+// or /* */ comment, one Comment per written comment. Free marks the
+// comments no declaration claims: inside function bodies, floating
+// between decls, trailing the file — the ones Doc cannot reach.
+// Text keeps the // or /* */ markers as written, so directive-shaped
+// comments (//go:generate) stay visible.
+func Comments(f *File) []*Comment { panic("minigo intrinsic") }
+
 // Kind reports a symbol's kind: func|method|var|const|type|host.
 func Kind(s *Decl) string { panic("minigo intrinsic") }
 

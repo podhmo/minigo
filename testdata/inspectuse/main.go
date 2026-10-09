@@ -343,6 +343,48 @@ func ImportsList() string {
 	return "ok"
 }
 
+// CommentsWalk: a file's comments enumerate in source order — doc,
+// free, directive-shaped, and block comments alike.
+func CommentsWalk() string {
+	p := inspect.DirOf("./testdata/comments")
+	fs := inspect.Files(p)
+	if len(fs) != 1 {
+		return "want 1 file"
+	}
+	cs := inspect.Comments(fs[0])
+	if len(cs) != 18 {
+		return "want 18 comments, got " + fmt.Sprint(len(cs))
+	}
+	free, attached := 0, 0
+	var sw, directive *inspect.Comment
+	for _, c := range cs {
+		if c.Free {
+			free++
+		} else {
+			attached++
+		}
+		if strings.Contains(c.Text, "swagger:route") {
+			sw = c
+		}
+		if strings.Contains(c.Text, "go:generate") {
+			directive = c
+		}
+	}
+	if free != 11 || attached != 7 {
+		return fmt.Sprintf("free=%d attached=%d", free, attached)
+	}
+	if sw == nil {
+		return "free swagger annotation not enumerated"
+	}
+	if !strings.HasPrefix(sw.Text, "// swagger:route") || sw.Pos == nil || sw.Pos.Line != 8 {
+		return "bad comment view: " + sw.Pos.String()
+	}
+	if directive == nil {
+		return "directive-shaped comment dropped"
+	}
+	return "ok"
+}
+
 // ValueLayer: Value/TypeOf materialize.
 func ValueLayer() string {
 	p := inspect.DirOf("./testdata/inspectpkg")
