@@ -831,3 +831,85 @@ TODO.md の reflect 系未完了項目を 1 root cause = 1 PR のスタックで
 
 - Stack #717 は修正6 + 本レポートの7本。CAP 未到達だが TODO + corpus + gen の全てが枯渇したためここで停止。
 - corpus sweep は全 subdir 走査済み。gen は全ドメイン 2x 深掘りで 0 divergence — 次ラウンドの採掘余地は「gen のジェネレータ拡張（新ドメイン・新構文の生成）」が残るのみ。
+
+## 6.21 実施ラウンド（round-19）: Stack #761 — difffuzz 掃討・operand 型判定・println uint・全体差分レビュー
+
+発端は同じく TODO.md の difffuzz 系残件の直列掃討（CAP=10、子セッションは全体差分レビュー1本のみ）。成果: **計6 PR（harness1・修正3・レビュー由来の積み増し・本レポート、Stack #761）**。TODO の difffuzz 系未完了項目（operand assignability・timer liveness・want.err harness gap）は全て解消し、補充手順どおり corpus sweep（未走査 subdir 全て）→ gen hunt（4 ドメイン、バッチ・depth 引き上げ再掃含む）まで回して枯渇を確認した。
+
+### 実施内容
+
+| フェーズ | 内容 | PR |
+|------|------|-----|
+| harness | **want.err oracle**（run error テキストの substring 照合）＋ per-case 30s timeout＋PENDING 5件昇格（TODO L87） | [#758](https://github.com/podhmo/minigo/pull/758) |
+| TODO 残件 | **timer/ticker channel liveness**（proc 管理の hchan レジストリ＋`chanFeed` proxy pump: `t.Stop()` で waiters が asleep 側に、`Reset` で re-arm。`SelArm.WakeChan` 保持で Reset 後の再parkも追跡）（TODO L19） | [#760](https://github.com/podhmo/minigo/pull/760) |
+| TODO 残件 | **operand assignability の compile-time gate**（`binding.declTyp`/`untypedConst` 記録＋静的オペランド型解決＋`opCmpGate` で OpTrap。両側が証明可能に別名 named 型のときのみ発火し、untyped const 採用・iface 動的比較・generic/未知側は従来どおり評価）（TODO L18） | [#762](https://github.com/podhmo/minigo/pull/762) |
+| corpus sweep | `$GOROOT/test` 未走査 subdir 全て（fixedbugs 1906 + codegen/simd/dwarf/arenas/internal 94）。SILENT/CRASH の修正対象は `println(^uint(0))`→`-1` のみ — display() が Named タグを読まず int64 payload をそのまま出していた（`println_uint` pin は `want.stderr` で固定） | [#763](https://github.com/podhmo/minigo/pull/763) |
+| gen hunt | text/num/reflect/lang を通常→バッチ32・depth6 で再走査。全ドメイン 0 divergence | — |
+| 全体差分レビュー | 子セッションに `main...devin/1791578602-println-uint-tag` の全差分を委譲 | （結果は次節） |
+| 帳簿 | TODO.md の difffuzz 3項目を `[x]` に＋`<-ctx.Done()` 残余を新規項目化 | 本 PR |
+| 本レポート | 本章 | 本 PR |
+
+### レビュー指摘の判定結果
+
+子セッションの全差分レビュー（[session](https://app.devin.ai/sessions/70c0c03e735e48b19ee36cee83b56ecd)）はバグ10件・軽微1件・既存helper重複5件・リファクタ機会6件を報告。バグは全件を実機再現してから判定した（要否の判断は「gc が出す error を minigo が出さない/出す」に照準）。
+
+**バグ（要9・不要1・設計変更としてTODO化2）**
+
+| # | 指摘 | 判定・対応 |
+|---|------|-----------|
+| A1 | `fieldTypExpr` が embed を先に走査 → 直接フィールドが promoted field に shadow され、合法な Go に false-positive trap | 要 → 直接フィールド優先の two-pass 化（同名2 promoted → unknown）。`S{*A}` の `*T` unwrap も同時に解消（[#762](https://github.com/podhmo/minigo/pull/762)） |
+| A2 | `chanFeed.pump`/`arm` が `f.done` を read → Stop→Reset の race で pump が死亡 or zombie 化 | 要 → `pump(done chan struct{})` の param-bound 化（呼出側が `f.done` を渡す、timeout 分岐で `os.Stderr` を復帰する [#758](https://github.com/podhmo/minigo/pull/758) の minor 指摘も同時対応） |
+| A3 | `Named{td,UConst}` の declared-type materialize が `display` のみ — host boundary 全域が overflow する（`fmt.Println(uint64(2^64-1))` が panic 文字、`minigo.Format` も同じ） | 記録のみ → pre-existing divergence を新規 TODO 項目化（`goNative`/`namedSized` 側に下げる設計変更。`IsUnsignedName` 共通化はその時に） |
+| A4 | timer/ticker proxy `f.C` が双方向 → `t.C <- t` が gc では reject されるのに送信できる | 要 → `C <-chan time.Time` 化＋`time.After` が `(<-chan time.Time)(f.C)` を返す（[#760](https://github.com/podhmo/minigo/pull/760)） |
+| A5 | `%T`/`reflect.TypeOf` が box 型を露出（`*minigo.timerChanBox`） | 記録のみ → #760 導入の fidelity リグレッションだが安価な修復なし → 新規 TODO 項目化 |
+| A6 | `callOpTyp` が0引数 call を declared-func 探索前に unknown 返却 → `func d() Duration; d() == i` が評価されてしまう | 要 → Funcs/FuncDecl/型名 lookup を args チェックより前に hoist（[#762](https://github.com/podhmo/minigo/pull/762)） |
+| A7 | pkg-level `const c = Duration(0)`/`var x = Duration(0)` が untyped/unknown — 関数内スペルと不整合 | 要 → `Index.Consts`/`Index.Vars` が `vs.Values` を `NameIdx` で辿る（`len(Values)==len(Names)` のときのみ。多値 single-RHS は unknown のまま）（[#762](https://github.com/podhmo/minigo/pull/762)） |
+| A8 | `x := true`/`x := false` が `*ast.Ident` なので `declTyp` 未記録 → `x == d` が評価 | 要 → `noteDeclTyp` の ident arm で bool に倒す（[#762](https://github.com/podhmo/minigo/pull/762)） |
+| A9 | `d == nil` がゲート外（nil は untyped 扱い） | 要 → `nilOperand` kind を追加＋`nilableTypExpr`（named が解決できて non-nilable のときのみ trap。qualified 名は iface/struct 区別がつかないので maybe-nilable = 沈黙）（[#762](https://github.com/podhmo/minigo/pull/762)） |
+| A10 | `proc.chans` が縮まない（dead feed が hchan を pin、stop しない ticker が pump+entry を残す） | 不要 → dead エントリの残存は「後続の park を asleep に数える」ために必須。refcount 削除は wakeChans 参照走査の新設計になるので registerChan コメントで理由を明記（[#760](https://github.com/podhmo/minigo/pull/760)） |
+| minor | timeout 分岐で `os.Stderr` が swap されたまま | 要 → `stderrOld` 変数化＋timeout 分岐で復帰（[#758](https://github.com/podhmo/minigo/pull/758)） |
+
+**既存 helper の再実装（要4・不要1）**
+
+| # | 指摘 | 判定 |
+|---|------|------|
+| B-1 | `resolveLitType` が `unfoldTypExpr` と同一の depth-capped walk | 要 → `resolveLitType` を `unfoldTypExpr` に delegate（尽き時 nil で統一。呼出側は shape predicate で弾くので非互換なし）（[#762](https://github.com/podhmo/minigo/pull/762)） |
+| B-2 | `namedIdentOf` の byte→uint8/rune→int32 正規化が `runtime.canonBasicName` と重複 | 要 → `runtime.CanonicalBasicName` を export して共有（[#762](https://github.com/podhmo/minigo/pull/762)） |
+| B-3 | `commaOkRhs` が `commaOkStatic` と同じ shape 判定を持ち、Unparen していない → `v, ok := (<-ch)` が one-value receive に誤コンパイル | 要 → `commaOkRhs` を Unparen 化（重複 predicate は残すが latent bug を修正）（[#762](https://github.com/podhmo/minigo/pull/762)） |
+| B-4 | `h.fn`/`h.fnvc` の arg marshaling が同一 | 要 → `fn` を `fnvc` に delegate（[#760](https://github.com/podhmo/minigo/pull/760)） |
+| B-5 | `inferredTypExpr`（vm 側）が `staticOpTyp` の conversion/assert/composite-`&T{}` arm の strict subset | 不要 — stamp 意味が狭いので merge には注意が要る。ドリフトの危険は計画外の記録に留める |
+
+**リファクタ（要2・不要4）**
+
+| # | 指摘 | 判定 |
+|---|------|------|
+| C-1 | `timerChanBox`/`tickerChanBox` の構造がほぼ同一 → parameterized box | 不要 — `{t, C, feed}` + Stop/Reset の2箱。統合の間接層がもたらす利益より現状が平易 |
+| C-2 | `callOpTyp` の ordering | 要 — A6 の修正として実施済み |
+| C-3 | range/select/expr-switch/`var v, ok =` bind が各所で `noteDeclTyp` skip → `noteBinds` 共通化 | 不要 — binds の保守的沈黙は設計意図（coverage boundary）。共通 helper は「全部直す」ことを暗に要求し境界を曖昧にする |
+| C-4 | `display` Named arm が `x = Tag(...)` して fallthrough → `return display(vc, tagged)` に | 不要 — A3 の方針（`IsUnsignedName` 共通化）と一体の話なので A3 TODO に集約 |
+| C-5 | `chanOf` の4-tuple が呼出側ですぐ `parkWake` に再結合 | 要 → `chanOf` が `(reflect.Value, *TypeDef, parkWake)` を返し、`parkWake.chanPtr()` accessor 追加（[#760](https://github.com/podhmo/minigo/pull/760)） |
+| C-6 | difffuzz stderr restore | 要 — minor item と同じ（[#758](https://github.com/podhmo/minigo/pull/758)） |
+
+### 計画外の記録と判断
+
+- **レビューで挙がった coverage boundary のうち2件を「境界のまま」ではなく修正に格上げした**: `*T`/`Paren` wrapped embed（A1 の two-pass が自然に解決）と `&&`/`||` のゲート未達（`binary()` が LAND/LOR で early return — `d && b` は gc で reject されるので gate に通した）。レビューは conservative boundary として列挙していたが、実装を見ると両方とも「同じ仕組みの延長」だったため。
+- **qualified selector の conversion（`time.Duration(0)`）は `conversionCall` が解決しない**（A7 検証中に発覚）: `const c = time.Duration(0)` は Ident/Index/IndexList のみを解くため `staticOpTyp` が untyped を返す。結果として A7 の対象は「スクリプト宣言の named 型」に限定される。qualified 版は別 issue 級の gap なので今回は追わない。
+- **A9 の nilability は qualified 名で情報不足 → maybe-nilable 側に倒した**: `var s fmt.Stringer; s == nil` を `var d time.Duration; d == nil` と静的に区別できない（host 型の kind が静的 walk から見えない）。`s == nil` は iface の動的 nil 比較で合法なので、qualified 名は常に maybe-nilable → `var d time.Duration; d == nil` は沈黙する conservative gap として残る（pin はローカル `type Duration int64` で担保）。
+- **A3/A5 はレビューで発覚したが修正せず TODO 化**: A3（host boundary 全域の UConst materialize）は `goNative`/`namedSized` を通す設計変更なので今回の stack から外す。A5（box 型の露出）は typedef identity or special-case が必要で安価な修正なし。両方新規 TODO 項目として記録。
+- **A10 は意図的に非対応**: dead feed の registry entry を消すと「後からの park が wakeable に戻る」ので liveness 判定が壊れる。真の修正は refcount/GC 機構で、労力とリターンが見合わない → registerChan のコメントで「縮めないのは仕様」と明記した。
+- **`proc.chans` 非縮小の「grow-bound」は difffuzz 利用形態では顕在化しにくい**: difffuzz は case 毎に proc を張るので、per-proc ではなく per-case の上限に効く（reviewer は proc-lifetime bound と読んだが実効はケース数依存）。
+
+### 残りの状況
+
+- **TODO の difffuzz 系3項目は「記述どおり」ではなく相互に依存していた**: L87（want.err harness gap）は独立項目に見えて、L19（timer liveness）の pin が `fatal error: ... deadlock!` を `want.err` に書けることを前提にしていた。先に L87 を潰しておかないと L19 の pin が置けない — 実施順は TODO の記載順ではなく harness → 修正の順になった。
+- **timer liveness の実装は item の予想より一段大きかった**: item は「note registry consulted from `chanOf`」と読んでいたが、実際は proc 管理の hchan レジストリ（`proc.chans`）＋`chanFeed` proxy pump ＋`timerChanBox`/`tickerChanBox` の wrapper 化が必要だった。`Reset` の re-arm のために dead になっても `SelArm.WakeChan` を保持する設計（wakeable の再評価は registry 側）に至ったのは実装中の発見。
+- **operand assignability は「option 2 全量」ではなく「証明できる場合のみ trap」の設計に落ちた**: `d == i`/`f.Tag == s`/`switch tag { case s: }`/`d < len(x)` は確かに静的に確定するが、untyped const・iface オペランド・generic・host 型・不明側は静的部分情報だけでは gc が出さない error を捏造しうるため、ゲートは両側が証明可能に異なる named 型のときのみ発火する。`i << d` は gc で合法（shift は代入可能性を要求しない）なので exempt にしたのも実装中の発見。`d < len(x)` は `hoistEagerOps` の scratch local 化で型が消え、hoist 先にも `declTyp` を記録する必要があった。
+- **fixedbugs の SILENT 25件・HANG 7件のほぼ全てが境界クラスだった**: unsafe（Sizeof/SliceData/StringData/checkptr）6件、GC/finalizer/MemStats fidelity 8件、cgo 5件、`*.dir` 2件、heavy-loop/GOMAXPROCS/stack-growth throughput HANG 7件、`// compile` の run 不可 artifact 1件、map 反復順序差 1件、concurrent-map-write 検出欠如 1件（実 divergence だが非決定的で pin 不能 → 記録のみ）。実修正は `println_uint` 1件のみ。境界クラスは方針どおり pin せず記録。
+- **`println_uint` は1観測で2症状だが1根因**: `Named{unsigned td, int64}` payload の符号付き表示（`println(^uint(0))`→`-1`）と `Named{td, UConst}` の default-int materialize（`uint64(2^64-1)`→"overflows int"）はどちらも display() が tag を見ない同じ穴。`fmt.Println` は正しかった（host 境界が declared type を見る）ので display 層だけの問題。
+- **ctx.Done() 残余は実測で確認してから記録**: `ctx, _ := context.WithCancel(bg); <-ctx.Done()` は gc fatal・minigo hang（context pkg の done chan は unmanaged で pessimistically wakeable）。L19 item の "Same shape" 尾行を、そのまま残すか新規項目化するか — 本体（timer/ticker）は完結したので `[x]`、残余は分離して新規 `- [ ]` 項目にした。
+- **corpus/gen の採掘余地が見えなくなった**: corpus は全 subdir 走査済み、gen は 4 ドメインをバッチ32・depth6 で 0 divergence。今後の採掘余地は「gen ジェネレータ拡張（新ドメイン・新構文生成）」と「review 由来の設計変更系（`<-ctx.Done()` の liveness 拡張）」の2系統だけ。
+
+### 残りの状況
+
+- Stack #761 は harness1 + 修正3 + レビュー由来積み増し + 本レポートの計6本。CAP 未到達だが TODO + corpus + gen の全てが枯渇したためここで停止。
+- 未解決の open 項目は `<-ctx.Done()` liveness 拡張（新規 TODO 項目）と、difffuzz 系ではない通常 TODO（`--src strings`・`any` パラメータの niladic 副作用・perf candidates 等）のみ。
