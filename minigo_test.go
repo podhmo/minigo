@@ -596,6 +596,54 @@ func TestConstAssignTraps(t *testing.T) {
 	}
 }
 
+func TestMismatchedOpTraps(t *testing.T) {
+	// the operand-assignability check gc runs at compile time — the
+	// interpreter is a Go subset here: programs `go build` rejects trap
+	// at the operation instead of evaluating under divergent semantics.
+	// `==`/`!=` and bare-numeric operands keep evaluating (an any- or
+	// under-typed operand is indistinguishable at run time).
+	e := newEngine(t)
+	traps := []struct {
+		fn   string
+		want string
+	}{
+		{"NamedNamedAdd", "invalid operation: mismatched types duration and int64"},
+		{"NamedNamedOrder", "invalid operation: mismatched types duration and int64"},
+		{"NamedNamedStr", "invalid operation: mismatched types mystr and yourstr"},
+		{"NamedBareCrossDomain", "invalid operation: mismatched types mystr and int"},
+		{"NamedBareBool", "invalid operation: mismatched types string and bool"},
+		{"ConstStringIntoNum", "invalid operation: mismatched types duration and string"},
+		{"ConstRuneIntoStr", "invalid operation: mismatched types mystr and rune"},
+		{"AppendConstOverflow", "constant 300 overflows byte"},
+	}
+	for _, c := range traps {
+		if _, err := e.Run(context.Background(), "./testdata/mismatchedops", c.fn); err == nil {
+			t.Errorf("%s: expected a trap", c.fn)
+		} else if !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: expected %q, got %v", c.fn, c.want, err)
+		}
+	}
+	evals := []struct {
+		fn   string
+		want runtime.Value
+	}{
+		{"EqlMismatchEval", false}, // gc rejects; == evaluates dynamic-false
+		{"EqlMismatchStrEval", true},
+		{"OrderBareNumEval", false}, // explicit conversion still works
+		{"ConvertEscape", true},
+		{"NamedConstAdopt", int64(6)},
+		{"SameTypedefAdd", int64(7)},
+		{"PkgConstAdopt", false},
+		{"IfaceCarriedEql", true},
+		{"ConstAwareBuiltins", "1.5 [1 120]"},
+	}
+	for _, c := range evals {
+		if got := run(t, e, "./testdata/mismatchedops", c.fn); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.fn, got, c.want)
+		}
+	}
+}
+
 func TestMapElemLvalueTraps(t *testing.T) {
 	// Writing through m[k] when the element reads as a copy (array,
 	// struct, scalar) is invalid Go and must trap — only

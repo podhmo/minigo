@@ -1007,7 +1007,28 @@ func (c *compiler) isIfaceExpr(e ast.Expr) bool {
 	case *ast.ParenExpr:
 		return c.isIfaceExpr(x.X)
 	case *ast.CallExpr:
-		return len(x.Args) == 1 && c.isIfaceTypeExpr(x.Fun)
+		if len(x.Args) == 1 && c.isIfaceTypeExpr(x.Fun) {
+			return true // a conversion to an interface type — any(x)
+		}
+		// a call whose declared result is interface-typed: `f() == x`
+		// compares dynamically like `a == x` on `var a any`; reading it
+		// as a plain binary op would reject differently-typed operands
+		// where Go's interface equality answers.
+		switch fn := x.Fun.(type) {
+		case *ast.FuncLit:
+			if rs := fn.Type.Results; rs != nil && len(rs.List) == 1 {
+				return c.isIfaceTypeExpr(rs.List[0].Type)
+			}
+		case *ast.Ident:
+			if c.fs.lookupBinding(fn.Name) == nil && c.pkg != nil && c.pkg.Index != nil {
+				if fd := c.pkg.Index.Funcs[fn.Name]; fd != nil && fd.Func != nil {
+					if rs := fd.Func.Type.Results; rs != nil && len(rs.List) == 1 {
+						return c.isIfaceTypeExpr(rs.List[0].Type)
+					}
+				}
+			}
+		}
+		return false
 	case *ast.TypeAssertExpr:
 		return x.Type != nil && c.isIfaceTypeExpr(x.Type)
 	case *ast.Ident:
@@ -1313,7 +1334,12 @@ func (c *compiler) stmt(s ast.Stmt) {
 		if st.Tok == token.DEC {
 			op = bytecode.BinSub
 		}
-		one := func() { c.emit(bytecode.OpConst, c.constIdx(int64(1)), 0, st.Pos()) }
+		one := func() {
+			// the untyped constant 1 — `mu++` on a named int type adds
+			// in the declared type's domain like `mu + 1` would.
+			u := &runtime.UConst{V: constant.MakeInt64(1)}
+			c.emit(bytecode.OpConst, c.constIdx(u), 0, st.Pos())
+		}
 		xe := ast.Unparen(st.X)
 		switch t := xe.(type) {
 		case *ast.Ident:
@@ -2783,9 +2809,9 @@ func (c *compiler) expr(e ast.Expr) {
 			case "nil":
 				c.emit(bytecode.OpNil, 0, 0, x.Pos())
 			case "true":
-				c.emit(bytecode.OpConst, c.constIdx(true), 0, x.Pos())
+				c.emit(bytecode.OpConst, c.constIdx(&runtime.UConst{V: constant.MakeBool(true)}), 0, x.Pos())
 			case "false":
-				c.emit(bytecode.OpConst, c.constIdx(false), 0, x.Pos())
+				c.emit(bytecode.OpConst, c.constIdx(&runtime.UConst{V: constant.MakeBool(false)}), 0, x.Pos())
 			}
 		default:
 			c.getRef(x.Name, x.Pos())
@@ -3227,9 +3253,16 @@ func (c *compiler) foldConst(x *ast.BinaryExpr) bool {
 func constOperand(cv constant.Value, rune bool) (v any, ok bool) {
 	switch cv.Kind() {
 	case constant.Bool:
-		return constant.BoolVal(cv), true
+		// Bools stay boxed like ints: an unboxed bool is
+		// indistinguishable from a `var b bool`, which would let a
+		// named-type comparison (`flag == verbose`) answer instead of
+		// trapping — Go rejects it as mismatched types.
+		return &runtime.UConst{V: cv}, true
 	case constant.String:
-		return constant.StringVal(cv), true
+		// Same for strings: `tag == "json"` must reach the runtime as
+		// an untyped const so it can adopt the operand's declared
+		// string type, while `tag == s` (typed var) stays a reject.
+		return &runtime.UConst{V: cv}, true
 	case constant.Float:
 		// Float constants stay boxed like wide ints: materializing to
 		// float64 eagerly loses the constness later conversions need —
@@ -4398,7 +4431,16 @@ func literalValue(l *ast.BasicLit) (any, error) {
 		// materialized into a complex64/128 value.
 		return &runtime.UConst{V: constant.MakeFromLiteral(l.Value, token.IMAG, 0)}, nil
 	case token.STRING:
-		return strconv.Unquote(l.Value)
+		// string literals stay untyped constants like the numeric
+		// kinds: a bare string is indistinguishable from a `var s
+		// string`, which would let `tag == "json"` (const, lawful
+		// adoption) and `tag == s` (typed var, gc's reject) reach
+		// the runtime as the same value.
+		v, err := strconv.Unquote(l.Value)
+		if err != nil {
+			return nil, err
+		}
+		return &runtime.UConst{V: constant.MakeString(v)}, nil
 	case token.CHAR:
 		// rune literals stay untyped so a bare 'a' defaults to rune
 		// (int32) while still converting into any numeric target.

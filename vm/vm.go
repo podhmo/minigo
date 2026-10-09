@@ -1120,6 +1120,13 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 				}
 				panic(r)
 			}()
+			if c.Pkg != nil {
+				// a package-bound host call sees materialized constants —
+				// interpreter builtins (Pkg nil) get UConst so their own
+				// constant arms keep working (append's element-type
+				// conversion, real/imag's constant domain).
+				args = matBuiltinArgs(args)
+			}
 			if c.SyncCallbacks {
 				return c.Fn(ownerCaller{v}, args)
 			}
@@ -1138,7 +1145,7 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 			continue
 		case *runtime.GoValue:
 			if fv := reflect.ValueOf(c.V); fv.IsValid() && fv.Kind() == reflect.Func {
-				return callReflectFunc(fmt.Sprintf("%v", fv.Type()), fv, v, args)
+				return callReflectFunc(fmt.Sprintf("%v", fv.Type()), fv, v, matBuiltinArgs(args))
 			}
 			return nil, fmt.Errorf("value of type %T is not callable", callee)
 		default:
@@ -7159,8 +7166,39 @@ func constPayload(x runtime.Value) (*runtime.UConst, bool) {
 	return nil, false
 }
 
+// matBuiltinArgs materializes untyped constants before they cross into a
+// bound host function — a bound call sees the values a Go call would
+// pass (`f("x")` hands a string, not the constant token). The
+// interpreter's own builtins keep UConst: append converts a constant
+// element through the declared element type, real/imag keep the
+// constant domain, and adaptConst still sees const-ness on script-to-
+// script calls.
+func matBuiltinArgs(args []runtime.Value) []runtime.Value {
+	var out []runtime.Value
+	for i, a := range args {
+		u, ok := a.(*runtime.UConst)
+		if !ok {
+			continue
+		}
+		mv, err := materializeDefault(u)
+		if err != nil {
+			continue // let the builtin itself report on the raw token
+		}
+		if out == nil {
+			out = make([]runtime.Value, len(args))
+			copy(out, args)
+		}
+		out[i] = mv
+	}
+	if out == nil {
+		return args
+	}
+	return out
+}
+
 // materializeDefault converts an untyped constant to its Go default
 // type: bool, string, rune->int32, int, float64, or complex128.
+
 func materializeDefault(u *runtime.UConst) (runtime.Value, error) {
 	if u.V.Kind() == constant.Int && u.Rune {
 		if i, ok := constant.Int64Val(u.V); ok {
@@ -7763,10 +7801,24 @@ func (v *VM) adaptConst(f *frame, u *runtime.UConst, other runtime.Value) runtim
 		if r, hit := u.Memo(nb.Typ); hit {
 			return r
 		}
-		if r, ok2 := constToBasic(u, basicNameOf(nb.Typ)); ok2 {
-			t := runtime.Tag(nb.Typ, r)
-			u.SetMemo(nb.Typ, t)
-			return t
+		// an untyped int/rune constant is not assignable to a string
+		// type — gc rejects `ms + 'x'`; only an explicit string(x)
+		// conversion produces the rune encoding. Materialize so the
+		// op's own mismatch trap reports it.
+		if u.V.Kind() == constant.Int && basicNameOf(v.peelNamed(nb.Typ)) == "string" {
+			return v.materialize(f, u)
+		}
+		// adopt into the operand's declared domain — `s + 100` on
+		// `type Small int8` yields a Small operand, and a constant
+		// that won't fit is gc's "constant ... overflows" /
+		// "cannot use" reject, the same trap a declared conversion
+		// takes. Kind-mismatched consts (`v8 + "x"`) stay on the
+		// materialize path so the op's own trap reports the type
+		// error; non-basic underlyings (a struct type) fall through
+		// to materializeDefault the same way.
+		if r, err := v.materializeConstErr(u, nb.Typ); err == nil {
+			u.SetMemo(nb.Typ, r)
+			return r
 		}
 		switch u.V.Kind() {
 		case constant.Int, constant.Float, constant.Complex:
@@ -7774,10 +7826,8 @@ func (v *VM) adaptConst(f *frame, u *runtime.UConst, other runtime.Value) runtim
 			// operand's type is gc's compile reject — `300 - v8`,
 			// `1.5 + v8`, `(1+2i) - v8` — not a value silently
 			// truncated or wrapped through the default domain.
-			// Kind-mismatched consts (`v8 + "x"`) stay on the
-			// materialize path so the op's own trap reports the
-			// type error. The underlying chain peels through
-			// named hops (`type A B; type B int8` rejects too).
+			// The underlying chain peels through named hops
+			// (`type A B; type B int8` rejects too).
 			if numericBasicName(basicNameOf(v.peelNamed(nb.Typ))) {
 				if _, err := v.materializeConstErr(u, nb.Typ); err != nil {
 					f.trap("%s", err)
@@ -8083,22 +8133,62 @@ func (v *VM) binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.V
 	// stays bare. The unwrap happens before the complex branch so a
 	// declared complex type is checked too.
 	var tag *runtime.TypeDef
+	var aTd, bTd *runtime.TypeDef
 	if n, ok := a.(*runtime.Named); ok {
 		tag = n.Typ
+		aTd = n.Typ
 		a = n.V
 	}
 	if n, ok := b.(*runtime.Named); ok {
-		if tag != nil && !sameTypeDef(tag, n.Typ) {
+		if aTd != nil && !sameTypeDef(aTd, n.Typ) {
 			// equality is lawful between differently-typed dynamic
 			// values — `any(u64) != any(u32)` is true in Go; the
 			// ordered ops and arithmetic stay a type error.
 			if isCompareOp(op) && (op == bytecode.BinEql || op == bytecode.BinNeq) {
 				return op == bytecode.BinNeq
 			}
-			f.trap("invalid operation: mismatched types %s and %s", tdName(tag), tdName(n.Typ))
+			f.trap("invalid operation: mismatched types %s and %s", tdName(aTd), tdName(n.Typ))
 		}
 		tag = n.Typ
+		bTd = n.Typ
 		b = n.V
+	}
+	// a named operand against a bare scalar — a bound call's return or a
+	// package constant that arrived materialized — mismatches the same
+	// way two differently-typed operands do (`Duration < len(x)` fails
+	// like `Duration < int`); the escape is the same as in Go — convert.
+	// `==`/`!=` stay dynamic here too: an `any`-carried scalar reaches
+	// this path and interface equality is lawful.
+	if (aTd != nil) != (bTd != nil) && op != bytecode.BinEql && op != bytecode.BinNeq {
+		var nt *runtime.TypeDef
+		var bare runtime.Value
+		bareFirst := false
+		if aTd != nil {
+			nt, bare = aTd, b
+		} else {
+			nt, bare, bareFirst = bTd, a, true
+		}
+		if utd := v.peelNamed(nt); utd == nil || utd.Kind != runtime.KindInterface {
+			if name, ok := bareScalarName(bare); ok && !v.bareScalarShared(bare, nt) {
+				if bareFirst {
+					f.trap("invalid operation: mismatched types %s and %s", name, tdName(nt))
+				}
+				f.trap("invalid operation: mismatched types %s and %s", tdName(nt), name)
+			}
+		}
+	}
+	// two bare scalars — both sides host-carried or materialized — check
+	// like two named operands, on domains (`len(x) + "s"` fails like
+	// `int + string`). Equality stays dynamic for the same any-carried
+	// reason as above.
+	if aTd == nil && bTd == nil && op != bytecode.BinEql && op != bytecode.BinNeq {
+		if an, aok := bareScalarDomain(a); aok {
+			if bn, bok := bareScalarDomain(b); bok && bn != an {
+				an2, _ := bareScalarName(a)
+				bn2, _ := bareScalarName(b)
+				f.trap("invalid operation: mismatched types %s and %s", an2, bn2)
+			}
+		}
 	}
 	if tag != nil && aIsConst && bIsConst && numericBasicName(basicNameOf(v.peelNamed(tag))) {
 		// a constant expression evaluates in the tag's exact domain and
@@ -12183,6 +12273,78 @@ func builtinTypeName(name string) bool {
 // none of the numeric callers can name).
 func basicNameOf(td *runtime.TypeDef) string {
 	return runtime.BasicNameOf(td)
+}
+
+// bareScalarName names a bare scalar for the mismatched-types message —
+// bound-package constants and host-call results arrive as plain
+// int64/float64/... values.
+func bareScalarName(x runtime.Value) (string, bool) {
+	switch x.(type) {
+	case int64:
+		return "int", true
+	case float64:
+		return "float64", true
+	case complex128:
+		return "complex128", true
+	case string:
+		return "string", true
+	case bool:
+		return "bool", true
+	}
+	return "", false
+}
+
+// bareScalarDomain groups a bare scalar for the mismatch check. Numeric
+// scalars share one domain: an under-typed value (a generic T-argument,
+// a materialized const) can't be told from a declared int64, so only a
+// cross-domain mismatch is statically sure.
+func bareScalarDomain(x runtime.Value) (string, bool) {
+	switch x.(type) {
+	case int64, float64:
+		return "num", true
+	case complex128:
+		return "cplx", true
+	case string:
+		return "str", true
+	case bool:
+		return "bool", true
+	}
+	return "", false
+}
+
+// tdScalarDomain resolves the named operand's underlying basic to the
+// same domain — `type Small int8` and `Duration` are numeric, StructTag
+// is string. A non-basic underlying ("", false) is never scalar-shaped.
+func (v *VM) tdScalarDomain(td *runtime.TypeDef) (string, bool) {
+	utd := v.peelNamed(td)
+	if utd == nil {
+		return "", false
+	}
+	switch basicNameOf(utd) {
+	case "int", "int8", "int16", "int32", "int64", "rune",
+		"uint", "uint8", "byte", "uint16", "uint32", "uint64", "uintptr",
+		"float32", "float64":
+		return "num", true
+	case "complex64", "complex128":
+		return "cplx", true
+	case "string":
+		return "str", true
+	case "bool":
+		return "bool", true
+	}
+	return "", false
+}
+
+// bareScalarShared reports whether bare scalar x and the named operand's
+// underlying basic share a domain — `x + len(s)` on `var x int` and
+// `tag + hostStr` are in-domain while `s + 1` crosses.
+func (v *VM) bareScalarShared(x runtime.Value, td *runtime.TypeDef) bool {
+	name, ok := bareScalarDomain(x)
+	if !ok {
+		return false
+	}
+	tdName, ok := v.tdScalarDomain(td)
+	return ok && tdName == name
 }
 
 // unsignedName reports whether a sized-int typedef name is an unsigned
