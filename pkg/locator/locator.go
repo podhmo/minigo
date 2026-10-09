@@ -183,95 +183,120 @@ func (l *Locator) FindPackageDirFrom(fromDir, importPath string) (string, error)
 		return dir, nil
 	}
 
-	// 1. Check replace directives
-	for _, r := range l.replaces {
-		if strings.HasPrefix(importPath, r.OldPath) {
-			remainingPath := strings.TrimPrefix(importPath, r.OldPath)
-			if remainingPath != "" && !strings.HasPrefix(remainingPath, "/") {
-				continue
-			}
-			remainingPath = strings.TrimPrefix(remainingPath, "/")
+	return l.resolveImport(importPath, 0)
+}
 
-			if r.IsLocal {
-				var localCandidatePath string
-				if filepath.IsAbs(r.NewPath) {
-					localCandidatePath = filepath.Join(r.NewPath, remainingPath)
-				} else {
-					localCandidatePath = filepath.Join(l.rootDir, r.NewPath, remainingPath)
-				}
-				absLocalCandidatePath, err := filepath.Abs(localCandidatePath)
-				if err != nil {
-					continue
-				}
-				if stat, statErr := os.Stat(absLocalCandidatePath); statErr == nil && stat.IsDir() {
-					return absLocalCandidatePath, nil
-				}
+// claimKind ranks which module claims an import path when several module
+// paths match it at the same length.
+type claimKind int
+
+const (
+	claimNone claimKind = iota
+	claimRequire
+	claimReplace
+	claimMain // a replace cannot shadow the main module
+)
+
+// matchModulePath reports whether importPath is mod or lives under it.
+func matchModulePath(mod, importPath string) bool {
+	return mod != "" && (importPath == mod || strings.HasPrefix(importPath, mod+"/"))
+}
+
+// resolveImport maps importPath to a directory through the module that
+// claims it. Module paths claim imports by longest match — the rule the
+// toolchain itself uses to pick an owning module. The claimants are the
+// main module, each replace's old path, and each required module; ties
+// break main > replace > require. Once claimed, resolution goes through
+// that module alone: a missing directory is an error, never a silent
+// read of another tree. (Before this, a replace on a path longer than —
+// or unrelated to — the main module's own prefix could win resolution
+// for imports the main module also matches, e.g. a self-replace of the
+// parent module shadowing a nested module's own packages.)
+func (l *Locator) resolveImport(importPath string, depth int) (string, error) {
+	if depth > 8 {
+		return "", fmt.Errorf("import path %q could not be resolved: replace directives form a cycle", importPath)
+	}
+
+	best := ""
+	bestClaim := claimNone
+	bestReplace := -1
+	consider := func(mod string, kind claimKind, repIdx int) {
+		if !matchModulePath(mod, importPath) {
+			return
+		}
+		if len(mod) > len(best) || (len(mod) == len(best) && kind > bestClaim) {
+			best, bestClaim, bestReplace = mod, kind, repIdx
+		}
+	}
+	consider(l.modulePath, claimMain, -1)
+	for i := range l.replaces {
+		consider(l.replaces[i].OldPath, claimReplace, i)
+	}
+	for mod := range l.requires {
+		consider(mod, claimRequire, -1)
+	}
+
+	switch bestClaim {
+	case claimMain:
+		relPath := strings.TrimPrefix(importPath, best)
+		candidatePath := filepath.Join(l.rootDir, relPath)
+		if stat, err := os.Stat(candidatePath); err == nil && stat.IsDir() {
+			return candidatePath, nil
+		}
+		return "", fmt.Errorf("import path %q resolved inside module %q but the directory %s does not exist", importPath, best, candidatePath)
+
+	case claimReplace:
+		r := l.replaces[bestReplace]
+		remainingPath := strings.TrimPrefix(strings.TrimPrefix(importPath, best), "/")
+		if r.IsLocal {
+			var localCandidatePath string
+			if filepath.IsAbs(r.NewPath) {
+				localCandidatePath = filepath.Join(r.NewPath, remainingPath)
 			} else {
-				newImportPath := r.NewPath
-				if remainingPath != "" {
-					newImportPath = r.NewPath + "/" + remainingPath
+				localCandidatePath = filepath.Join(l.rootDir, r.NewPath, remainingPath)
+			}
+			absLocalCandidatePath, err := filepath.Abs(localCandidatePath)
+			if err != nil {
+				return "", fmt.Errorf("import path %q resolved through a broken replace directive: %w", importPath, err)
+			}
+			if stat, statErr := os.Stat(absLocalCandidatePath); statErr == nil && stat.IsDir() {
+				return absLocalCandidatePath, nil
+			}
+			return "", fmt.Errorf("import path %q resolved through replace %q => %q but the directory %s does not exist", importPath, r.OldPath, r.NewPath, absLocalCandidatePath)
+		}
+		// Module-to-module replace: re-resolve the mapped path through
+		// the same claim logic (the new path may land in this module, in
+		// a required module's cache entry, or nowhere).
+		newImportPath := r.NewPath
+		if remainingPath != "" {
+			newImportPath = r.NewPath + "/" + remainingPath
+		}
+		return l.resolveImport(newImportPath, depth+1)
+
+	case claimRequire:
+		if l.goModCache != "" {
+			// Path in cache is ${GOMODCACHE}/${module}@${version}/${subpath}
+			// Module paths with uppercase letters are encoded.
+			if escapedMod, err := module.EscapePath(best); err == nil {
+				baseDir := filepath.Join(l.goModCache, escapedMod+"@"+l.requires[best])
+				remainingPath := strings.TrimPrefix(importPath, best)
+				candidatePath := filepath.Join(baseDir, remainingPath)
+				if stat, err := os.Stat(candidatePath); err == nil && stat.IsDir() {
+					return candidatePath, nil
 				}
-				// If the replaced path points to a different module, this simple locator cannot find it
-				// unless that different module's path is passed to a *new* Locator instance for that module.
-				// For the current request, we can't resolve it if it's truly external.
-				// We will let it fall through, and it will likely fail unless another rule matches,
-				// or the original importPath itself matches the current module (which it wouldn't if a replace rule was hit).
-				// This implies that module-to-module replaces that point to *other* modules are not fully supported by this iteration.
-				// Let's try to resolve it within the current module context.
-				if l.modulePath != "" && strings.HasPrefix(newImportPath, l.modulePath) {
-					relPath := strings.TrimPrefix(newImportPath, l.modulePath)
-					candidatePath := filepath.Join(l.rootDir, relPath)
-					if stat, err := os.Stat(candidatePath); err == nil && stat.IsDir() {
-						return candidatePath, nil
-					}
-				}
+				return "", fmt.Errorf("import path %q resolved inside module %q but the directory %s does not exist", importPath, best+"@"+l.requires[best], candidatePath)
 			}
 		}
 	}
 
-	// 2. Try with the current module context
-	if l.modulePath != "" && strings.HasPrefix(importPath, l.modulePath) {
-		relPath := strings.TrimPrefix(importPath, l.modulePath)
-		candidatePath := filepath.Join(l.rootDir, relPath)
+	// No module claimed the import — it may be standard library.
+	if l.UseGoModuleResolver && l.goRoot != "" {
+		candidatePath := filepath.Join(l.goRoot, "src", importPath)
 		if stat, err := os.Stat(candidatePath); err == nil && stat.IsDir() {
 			return candidatePath, nil
 		}
 	}
 
-	// 3. If resolver is enabled, try GOROOT and GOMODCACHE
-	if l.UseGoModuleResolver {
-		// Try standard library in GOROOT
-		if l.goRoot != "" {
-			candidatePath := filepath.Join(l.goRoot, "src", importPath)
-			if stat, err := os.Stat(candidatePath); err == nil && stat.IsDir() {
-				return candidatePath, nil
-			}
-		}
-
-		// Try external modules in GOMODCACHE
-		if l.goModCache != "" {
-			for mod, ver := range l.requires {
-				if strings.HasPrefix(importPath, mod) {
-					// Path in cache is ${GOMODCACHE}/${module}@${version}/${subpath}
-					// Module paths with uppercase letters are encoded.
-					escapedMod, err := module.EscapePath(mod)
-					if err != nil {
-						// Should not happen for valid module paths
-						continue
-					}
-					baseDir := filepath.Join(l.goModCache, escapedMod+"@"+ver)
-					remainingPath := strings.TrimPrefix(importPath, mod)
-					candidatePath := filepath.Join(baseDir, remainingPath)
-
-					if stat, err := os.Stat(candidatePath); err == nil && stat.IsDir() {
-						return candidatePath, nil
-					}
-				}
-			}
-		}
-	}
-
-	// If no resolution method succeeded, return an error.
 	if l.modulePath != "" {
 		return "", fmt.Errorf("import path %q could not be resolved. Current module is %q (root: %s)", importPath, l.modulePath, l.rootDir)
 	}
