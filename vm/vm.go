@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -209,13 +210,31 @@ type proc struct {
 	armed    bool          // a quiescence watch is in flight
 	disarmCh chan struct{} // closed to retire the armed watch early
 	epoch    uint64        // bumped on every wait-state change; the watch fires only if untouched
+	// Managed host channels (timer/ticker proxy feeds) register their
+	// hchan ptr here so a parked receiver's wakeable flag can follow the
+	// channel's liveness: an armed feed wakes the park on its own, a dead
+	// one (stopped, or a one-shot fire already delivered) does not.
+	// managedN is the fast-path check for chanOf — most scripts never
+	// register a channel.
+	chans    map[uintptr]*chanLive
+	managedN atomic.Int32
+}
+
+// chanLive is one managed host channel's liveness record. rv pins the
+// hchan so its pointer stays unique while registered (a freed hchan's
+// address could otherwise be recycled under a new, live channel).
+type chanLive struct {
+	rv   reflect.Value
+	dead bool // no further sends can arrive (stopped, or a one-shot fire)
 }
 
 // gwait is one live goroutine's wait state for deadlock detection.
 type gwait struct {
 	refs       int  // nested Calls on the same goroutine share the state
 	parked     bool // currently blocked on a watched op
-	wakeable   bool // the current park can end without a script goroutine
+	wakeable   bool // the current park can end without a script goroutine (computed from wakeMisc + wakeChans)
+	wakeMisc   bool // wake sources other than managed channels (host joins, unmanaged host channels)
+	wakeChans  map[uintptr]struct{}
 	parkedOnly bool // registered by a bare park outside any Call — no leaveG will come, so the entry dies with its unpark
 }
 
@@ -329,11 +348,46 @@ func (p *proc) leaveG(gid int64) {
 	p.mu.Unlock()
 }
 
-// parkG marks a goroutine blocked on a watched op. wakeable reports
-// whether the op can end without another script goroutine acting — a
-// host channel (timers, retained callback feeds) or a host call's join
-// — in which case the park never counts toward deadlock.
-func (p *proc) parkG(gid int64, wakeable bool) {
+// parkWake describes how a parked op can still wake without a script
+// goroutine acting: misc covers host-call joins and unmanaged host
+// channels, chans the managed host channels whose liveness is tracked
+// (see proc.chans — a parked receiver on a stopped timer's channel must
+// count as asleep once the channel dies).
+type parkWake struct {
+	misc  bool
+	chans []uintptr
+}
+
+// parkWakeOf folds one channel op's chanOf result into a parkWake: a
+// managed channel id is always kept (a dead one can still be re-armed,
+// e.g. Timer.Reset), while an unmanaged host channel is misc wake.
+func parkWakeOf(wakeable bool, wakeChan uintptr) parkWake {
+	if wakeChan != 0 {
+		return parkWake{chans: []uintptr{wakeChan}}
+	}
+	return parkWake{misc: wakeable}
+}
+
+// gWakeable computes whether the parked op can end without a script
+// goroutine acting: a misc source, or a managed channel still alive.
+// Callers hold p.mu.
+func (p *proc) gWakeable(g *gwait) bool {
+	if g.wakeMisc {
+		return true
+	}
+	for ptr := range g.wakeChans {
+		if l := p.chans[ptr]; l != nil && !l.dead {
+			return true
+		}
+	}
+	return false
+}
+
+// parkG marks a goroutine blocked on a watched op. w reports whether the
+// op can end without another script goroutine acting — a host channel
+// (timers, retained callback feeds) or a host call's join — in which
+// case the park never counts toward deadlock.
+func (p *proc) parkG(gid int64, w parkWake) {
 	if gid == 0 {
 		return
 	}
@@ -349,9 +403,16 @@ func (p *proc) parkG(gid int64, wakeable bool) {
 	}
 	if !g.parked {
 		g.parked = true
-		g.wakeable = wakeable
+		g.wakeMisc = w.misc
+		if len(w.chans) > 0 {
+			g.wakeChans = make(map[uintptr]struct{}, len(w.chans))
+			for _, ptr := range w.chans {
+				g.wakeChans[ptr] = struct{}{}
+			}
+		}
+		g.wakeable = p.gWakeable(g)
 		p.parked++
-		if wakeable {
+		if g.wakeable {
 			p.wakeable++
 		}
 	}
@@ -369,6 +430,8 @@ func (p *proc) unparkG(gid int64) {
 		wakeable := g.wakeable
 		g.parked = false
 		g.wakeable = false
+		g.wakeMisc = false
+		g.wakeChans = nil
 		p.parked--
 		if wakeable {
 			p.wakeable--
@@ -457,6 +520,94 @@ func NoteExternalWait(vc runtime.VMCaller) (release func()) {
 		return p.noteExternalWait()
 	}
 	return func() {}
+}
+
+// registerChan starts tracking a host channel's liveness: the channel's
+// hchan ptr is the managed id for chanState and setChanDead. A managed
+// channel counts as a wake source only while alive — once dead (a
+// stopped timer, a delivered one-shot fire) a receiver parked on it
+// counts as asleep, like gc's treatment of a channel no sender can
+// reach.
+func (p *proc) registerChan(rv reflect.Value) uintptr {
+	ptr := rv.Pointer()
+	p.mu.Lock()
+	if p.chans == nil {
+		p.chans = map[uintptr]*chanLive{}
+	}
+	p.chans[ptr] = &chanLive{rv: rv}
+	p.managedN.Add(1)
+	p.mu.Unlock()
+	return ptr
+}
+
+// RegisterWakeChan is proc.registerChan for callers holding only a
+// runtime.VMCaller (intrinsic bindings); 0 means there is no process to
+// register with and the channel stays unmanaged.
+func RegisterWakeChan(vc runtime.VMCaller, rv reflect.Value) uintptr {
+	if p := procOf(vc); p != nil {
+		return p.registerChan(rv)
+	}
+	return 0
+}
+
+// chanState reports a channel's managed-liveness for a park decision:
+// managed+alive feeds a tracked wake, managed+dead feeds none. The
+// managedN fast path keeps unmanaged channels (the common case) out of
+// the mutex.
+func (p *proc) chanState(ptr uintptr) (managed, alive bool) {
+	if p.managedN.Load() == 0 {
+		return false, false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	l := p.chans[ptr]
+	if l == nil {
+		return false, false
+	}
+	return true, !l.dead
+}
+
+// setChanDead flips a managed channel's liveness and re-evaluates the
+// parked goroutines waiting on it: a park whose last wake source died
+// joins the asleep count (and can now fatal), while a re-armed channel
+// (Timer.Reset) lifts its waiters back out.
+func (p *proc) setChanDead(ptr uintptr, dead bool) {
+	p.mu.Lock()
+	l := p.chans[ptr]
+	if l == nil || l.dead == dead {
+		p.mu.Unlock()
+		return
+	}
+	l.dead = dead
+	for _, g := range p.gs {
+		if !g.parked {
+			continue
+		}
+		if _, ok := g.wakeChans[ptr]; !ok {
+			continue
+		}
+		if w := p.gWakeable(g); w != g.wakeable {
+			g.wakeable = w
+			if w {
+				p.wakeable++
+			} else {
+				p.wakeable--
+			}
+		}
+	}
+	p.touch()
+	// the flip itself can complete the deadlock state: a receiver
+	// parked on the now-dead channel may have been the last wake.
+	p.checkDeadLocked()
+	p.mu.Unlock()
+}
+
+// SetWakeChanDead is proc.setChanDead for callers holding only a
+// runtime.VMCaller (intrinsic bindings).
+func SetWakeChanDead(vc runtime.VMCaller, ptr uintptr, dead bool) {
+	if p := procOf(vc); p != nil {
+		p.setChanDead(ptr, dead)
+	}
 }
 
 // procExit is the unwind raised in a parked goroutine when its process
@@ -2633,7 +2784,7 @@ func (v *VM) loop(f *frame) {
 		case bytecode.OpSend:
 			val := f.pop()
 			chv := f.pop()
-			chRV, et, wk := v.chanOf(f, chv)
+			chRV, et, wk, wc := v.chanOf(f, chv)
 			if et != nil {
 				val = v.coerce(f, val, et)
 			} else {
@@ -2643,7 +2794,7 @@ func (v *VM) loop(f *frame) {
 			if err != nil {
 				f.trap("cannot send on %s: %s", chRV.Type(), err)
 			}
-			v.chanSend(chRV, sv, wk)
+			v.chanSend(chRV, sv, parkWakeOf(wk, wc))
 		case bytecode.OpRecv:
 			val, _ := v.chanRecv(f, f.pop())
 			f.push(val)
@@ -2654,7 +2805,7 @@ func (v *VM) loop(f *frame) {
 			if ins.B == 1 {
 				val := f.pop()
 				chv := f.pop()
-				chRV, et, wk := v.chanOf(f, chv)
+				chRV, et, wk, wc := v.chanOf(f, chv)
 				if et != nil {
 					val = v.coerce(f, val, et)
 				} else {
@@ -2664,11 +2815,11 @@ func (v *VM) loop(f *frame) {
 				if err != nil {
 					f.trap("cannot send on %s: %s", chRV.Type(), err)
 				}
-				f.push(&runtime.SelArm{Send: true, Wakeable: wk, Case: reflect.SelectCase{Dir: reflect.SelectSend, Chan: chRV, Send: sv}})
+				f.push(&runtime.SelArm{Send: true, Wakeable: wk, WakeChan: wc, Case: reflect.SelectCase{Dir: reflect.SelectSend, Chan: chRV, Send: sv}})
 			} else {
 				chv := f.pop()
-				chRV, et, wk := v.chanOf(f, chv)
-				f.push(&runtime.SelArm{NRecv: int(ins.A), ETyp: et, Wakeable: wk, Case: reflect.SelectCase{Dir: reflect.SelectRecv, Chan: chRV}})
+				chRV, et, wk, wc := v.chanOf(f, chv)
+				f.push(&runtime.SelArm{NRecv: int(ins.A), ETyp: et, Wakeable: wk, WakeChan: wc, Case: reflect.SelectCase{Dir: reflect.SelectRecv, Chan: chRV}})
 			}
 		case bytecode.OpSelWait:
 			// arms were pushed in source order; the jump table follows this
@@ -2695,16 +2846,21 @@ func (v *VM) loop(f *frame) {
 				cases = append(cases, reflect.SelectCase{Dir: reflect.SelectDefault})
 			}
 			// a select without a default can park: it counts toward
-			// deadlock unless some arm watches a host channel.
-			wakeable := false
+			// deadlock unless some arm watches a wake-capable channel.
+			wake := parkWake{}
 			for _, a := range arms {
-				wakeable = wakeable || a.Wakeable
+				if a.Wakeable && a.WakeChan == 0 {
+					wake.misc = true
+				}
+				if a.WakeChan != 0 {
+					wake.chans = append(wake.chans, a.WakeChan)
+				}
 			}
 			chosen, rv, open := func() (int, reflect.Value, bool) {
 				if defIdx >= 0 {
 					return reflect.Select(cases)
 				}
-				unpark := v.park(wakeable)
+				unpark := v.park(wake)
 				defer unpark()
 				return reflect.Select(cases)
 			}()
@@ -4554,7 +4710,7 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 			}()
 			// the join can park indefinitely — wakeable only when the
 			// call itself can time out (see blockingHostMethods).
-			unpark := vcPark(vc, wakeable)
+			unpark := vcPark(vc, parkWake{misc: wakeable})
 			defer unpark()
 			select {
 			case <-done:
@@ -6732,15 +6888,18 @@ func (v *VM) runInit(fn *runtime.Function) error {
 	return err
 }
 
-// chanOf resolves a channel value to its reflect channel, the declared
-// element typedef (send coercion / closed-receive zeros), and whether a
-// park on it can end without a script goroutine acting — true only for
-// host-carried channels boxed as *GoValue (a `time.After` channel fires
-// on its own; a script or nil channel waits on another goroutine).
-func (v *VM) chanOf(f *frame, x runtime.Value) (reflect.Value, *runtime.TypeDef, bool) {
+// chanOf resolves a script value to the channel it denotes, plus the
+// element typedef for closed-receive zero values and the op's wake
+// picture for deadlock detection: wakeable reports whether the park can
+// end without a script goroutine acting (any host channel, the historic
+// default — a parked host op may be fed by machinery the wait state
+// cannot see), while wakeChan carries the managed-channel id when the
+// channel is liveness-tracked (a stopped timer's feed counts as no wake
+// source, and records its id even then so a later Reset re-arms it).
+func (v *VM) chanOf(f *frame, x runtime.Value) (reflect.Value, *runtime.TypeDef, bool, uintptr) {
 	switch c := x.(type) {
 	case *runtime.Chan:
-		return reflect.ValueOf(c.C), v.elemTypedef(f, c.Typ), false
+		return reflect.ValueOf(c.C), v.elemTypedef(f, c.Typ), false, 0
 	case *runtime.Cell:
 		return v.chanOf(f, c.Elem)
 	case *runtime.Named:
@@ -6751,23 +6910,44 @@ func (v *VM) chanOf(f *frame, x runtime.Value) (reflect.Value, *runtime.TypeDef,
 		if c.Typ != nil && c.Typ.Kind == runtime.KindChan {
 			// a nil channel never becomes ready — it parks the op
 			// (blocking forever at the root, as Go's deadlock does)
-			return nilChanRV, v.elemTypedef(f, c.Typ), false
+			return nilChanRV, v.elemTypedef(f, c.Typ), false, 0
 		}
 		f.trap("channel operation on %T", x)
 	case runtime.Nil:
 		// host-returned nil channels arrive untyped (goValueOf folds nil
 		// chans/pointers to Nil for `v == nil` reads); the only nil that
 		// reaches a channel op is a nil channel — park it like a typed one.
-		return nilChanRV, nil, false
+		return nilChanRV, nil, false, 0
 	case *runtime.GoValue:
 		if rv := reflect.ValueOf(c.V); rv.IsValid() && rv.Kind() == reflect.Chan {
-			return rv, nil, true
+			if p := v.proc; p != nil {
+				if managed, alive := p.chanState(rv.Pointer()); managed {
+					return rv, nil, alive, rv.Pointer()
+				}
+			}
+			return rv, nil, true, 0
 		}
 		f.trap("channel operation on non-channel host value %T", c.V)
 	default:
 		f.trap("channel operation on %T", x)
 	}
-	return reflect.Value{}, nil, false
+	return reflect.Value{}, nil, false, 0
+}
+
+// chanParkWake recomputes a host channel's wake picture at park time:
+// managed channels feed a tracked wake (a dead one can still be
+// re-armed), unmanaged host channels are misc wake. Non-channel values
+// and a nil proc report no wake source.
+func (v *VM) chanParkWake(rv reflect.Value) parkWake {
+	if rv.IsValid() && rv.Kind() == reflect.Chan {
+		if p := v.proc; p != nil {
+			if managed, _ := p.chanState(rv.Pointer()); managed {
+				return parkWake{chans: []uintptr{rv.Pointer()}}
+			}
+		}
+		return parkWake{misc: true}
+	}
+	return parkWake{}
 }
 
 // chanSendValue marshals a value sent on a channel: `chan any` carries
@@ -6789,26 +6969,26 @@ func (v *VM) chanSendValue(val runtime.Value, elemT reflect.Type) (reflect.Value
 // select and returns its release: call it when the op completes. The
 // deferred form also covers panic unwinds (a send on a closed channel
 // panics inside reflect.Select), and it is idempotent — an early call
-// plus the defer both landing is harmless. wakeable reports whether the
-// op can end without a script goroutine acting.
-func (v *VM) park(wakeable bool) func() {
+// plus the defer both landing is harmless. w reports whether the op can
+// end without a script goroutine acting.
+func (v *VM) park(w parkWake) func() {
 	p := v.proc
 	if p == nil {
 		return func() {}
 	}
 	gid := v.callGid
-	p.parkG(gid, wakeable)
+	p.parkG(gid, w)
 	return func() { p.unparkG(gid) }
 }
 
 // vcPark is park for code holding only a runtime.VMCaller (e.g.
 // callReflectFunc's blocking-host join).
-func vcPark(vc runtime.VMCaller, wakeable bool) func() {
+func vcPark(vc runtime.VMCaller, w parkWake) func() {
 	switch v := vc.(type) {
 	case *VM:
-		return v.park(wakeable)
+		return v.park(w)
 	case ownerCaller:
-		return v.VM.park(wakeable)
+		return v.VM.park(w)
 	default:
 		return func() {}
 	}
@@ -6816,8 +6996,8 @@ func vcPark(vc runtime.VMCaller, wakeable bool) func() {
 
 // chanSend sends sv on chRV, blocking as in Go — including panicking on a
 // closed channel (the host panic surfaces as a script panic).
-func (v *VM) chanSend(chRV, sv reflect.Value, wakeable bool) {
-	unpark := v.park(wakeable)
+func (v *VM) chanSend(chRV, sv reflect.Value, w parkWake) {
+	unpark := v.park(w)
 	defer unpark()
 	chosen, _, _ := reflect.Select([]reflect.SelectCase{
 		{Dir: reflect.SelectSend, Chan: chRV, Send: sv},
@@ -6832,14 +7012,14 @@ func (v *VM) chanSend(chRV, sv reflect.Value, wakeable bool) {
 // chanRecv receives one value from the channel denoted by chv, blocking
 // as in Go: closed-and-empty reports (zero, false).
 func (v *VM) chanRecv(f *frame, chv runtime.Value) (runtime.Value, bool) {
-	chRV, et, wk := v.chanOf(f, chv)
-	return v.chanRecvRV(f, chRV, et, wk)
+	chRV, et, wk, wc := v.chanOf(f, chv)
+	return v.chanRecvRV(f, chRV, et, parkWakeOf(wk, wc))
 }
 
 // chanRecvRV is chanRecv on an already-resolved reflect channel — shared
 // by OpRecv/OpRecvOK and channel-range iterators.
-func (v *VM) chanRecvRV(f *frame, chRV reflect.Value, et *runtime.TypeDef, wakeable bool) (runtime.Value, bool) {
-	unpark := v.park(wakeable)
+func (v *VM) chanRecvRV(f *frame, chRV reflect.Value, et *runtime.TypeDef, w parkWake) (runtime.Value, bool) {
+	unpark := v.park(w)
 	defer unpark()
 	chosen, rv, open := reflect.Select([]reflect.SelectCase{
 		{Dir: reflect.SelectRecv, Chan: chRV},
@@ -7025,7 +7205,13 @@ func (v *VM) iterNext(f *frame, it *runtime.Iterator, nvars int, elemRead bool) 
 		if nvars == 2 {
 			f.trap("range over channel allows at most one iteration variable")
 		}
-		val, ok := v.chanRecvRV(f, it.ChRV, it.ETyp, it.HostChan)
+		w := parkWake{}
+		if it.HostChan {
+			// a host channel is evaluated per receive: a feed that died
+			// between iterations (a stopped timer) no longer wakes.
+			w = v.chanParkWake(it.ChRV)
+		}
+		val, ok := v.chanRecvRV(f, it.ChRV, it.ETyp, w)
 		if !ok {
 			return false
 		}

@@ -1249,6 +1249,11 @@ type SelArm struct {
 	// a retained callback feed): a select blocked on it can end without
 	// a script goroutine, so it never counts toward deadlock.
 	Wakeable bool
+	// WakeChan is the arm's managed-channel id (the hchan pointer a
+	// timer/ticker proxy feed registered), 0 for unmanaged channels. It
+	// is recorded even on a dead managed channel — a later re-arm
+	// (Timer.Reset) must lift the park back out of the asleep count.
+	WakeChan uintptr
 }
 
 // Task is the handle of one spawned goroutine: Done closes when its call
