@@ -66,29 +66,31 @@ func ConstRuneIntoStr() string {
 	return string(ms + 'x')
 }
 
-// ---- residuals that keep evaluating (documented divergences) ----
+// ---- operand-typing traps (static named-type mismatch) ----
 
-// `==`/`!=` evaluate: an `any`-carried value reaches the same compare
-// and interface equality is lawful, so statically-mismatched pairs get
-// dynamic-`false` instead of gc's reject.
+// statically distinct named operands are a compile error in gc — the
+// compiler traps before a value can reach `==`. An `any`-carried value
+// keeps the compare lawful (IfaceCarriedEql), which is why this check
+// lives in the compiler and not the runtime operand gate.
 func EqlMismatchEval() bool {
 	var d duration
 	var i64 int64 = 5
-	return d == i64 // gc: invalid operation — minigo: false
+	return d == i64 // gc: invalid operation — minigo traps to match
 }
 
+// same-domain spellings are still distinct named types: mystr and
+// string share the `string` underlying but never assign.
 func EqlMismatchStrEval() bool {
 	var ms mystr = "x"
 	var s string = "x"
-	return ms == s // gc: invalid operation — minigo: true (same underlying)
+	return ms == s // gc: invalid operation — minigo traps to match
 }
 
-// a bare numeric side is domain-ambiguous: `len`'s int and an
-// under-typed generic argument look alike — `d < len` keeps evaluating
-// where gc rejects `duration < int`.
+// a builtin's fixed result type is statically known: `d < len("ab")`
+// compares duration to int — gc rejects it like `d < i64`.
 func OrderBareNumEval() bool {
 	var d duration = 3
-	return d < len("ab") // gc rejects; minigo's residual divergence
+	return d < len("ab") // gc: invalid operation — minigo traps to match
 }
 
 // append's constant element converts through the declared element type —

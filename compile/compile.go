@@ -38,6 +38,14 @@ type binding struct {
 	tdef     *runtime.TypeDef // the `type` decl's typedef (local embed resolution)
 	ifaceT   bool             // the `type` decl's spec is an interface
 	ifaceVar bool             // a var declared interface-typed
+	// declTyp is the var/param's statically-known type expression when
+	// one is written or syntactically inferred (`var x T`, `x := T(v)`)
+	// — the compile-time operand-assignability gate reads it; nil means
+	// the name's type is unknown statically.
+	declTyp ast.Expr
+	// untypedConst marks a `const` bound without a declared type: the
+	// operand adopts the other side's type, like a literal does.
+	untypedConst bool
 }
 
 // fscope is the static scope model of one function while compiling.
@@ -71,7 +79,7 @@ func (s *fscope) iotaSlot() int {
 		if len(s.blocks) == 0 {
 			s.pushBlock()
 		}
-		s.blocks[len(s.blocks)-1]["iota"] = &binding{slot: s.iota}
+		s.blocks[len(s.blocks)-1]["iota"] = &binding{slot: s.iota, untypedConst: true}
 	}
 	return s.iota
 }
@@ -109,6 +117,30 @@ func (s *fscope) markIface(name string) {
 	}
 	if b := s.blocks[len(s.blocks)-1][name]; b != nil {
 		b.ifaceVar = true
+	}
+}
+
+// noteDeclTyp records the statically-known type expression a var/param
+// name was declared with (or inferrably bound to by `:=`), so the
+// operand-assignability gate can compare named types at compile time.
+func (s *fscope) noteDeclTyp(name string, te ast.Expr) {
+	if len(s.blocks) == 0 || te == nil {
+		return
+	}
+	if b := s.blocks[len(s.blocks)-1][name]; b != nil {
+		b.declTyp = te
+	}
+}
+
+// noteUntypedConst marks a just-declared `const` name as untyped (no
+// declared type and no typed initializer): it adopts the other
+// operand's type in a comparison.
+func (s *fscope) noteUntypedConst(name string) {
+	if len(s.blocks) == 0 {
+		return
+	}
+	if b := s.blocks[len(s.blocks)-1][name]; b != nil {
+		b.untypedConst = true
 	}
 }
 
@@ -639,6 +671,7 @@ func compileFunc(fn *runtime.Function) error {
 		nparams++
 		if recvType != nil {
 			coerces = append(coerces, paramCoerce{slot: slot, typ: recvType})
+			c.fs.noteDeclTyp(recv, recvType)
 		}
 	}
 	if fn.Decl.Type.Params != nil {
@@ -653,6 +686,7 @@ func compileFunc(fn *runtime.Function) error {
 					c.fs.markIface(n.Name)
 				}
 				coerces = append(coerces, paramCoerce{slot: slot, typ: field.Type})
+				c.fs.noteDeclTyp(n.Name, field.Type)
 				nparams++
 			}
 			if _, ok := field.Type.(*ast.Ellipsis); ok {
@@ -677,6 +711,7 @@ func compileFunc(fn *runtime.Function) error {
 				if c.isIfaceTypeExpr(field.Type) {
 					c.fs.markIface(n.Name)
 				}
+				c.fs.noteDeclTyp(n.Name, field.Type)
 				c.ch.NamedSlots = append(c.ch.NamedSlots, slot)
 				c.emit(bytecode.OpNil, 0, 0, n.Pos())
 				c.emit(bytecode.OpNewLocal, slot, 0, n.Pos())
@@ -1294,6 +1329,7 @@ func (c *compiler) stmt(s ast.Stmt) {
 						coerceTop()
 						coerce(vs.Names[i], c.bindLocal(vs.Names[i].Name, vs.Names[i].Pos(), isConst))
 						markIface(vs.Names[i], vals[0])
+						c.noteDeclTyp(vs.Names[i].Name, effType, isConst, nil)
 					}
 					c.iotaVal = -1
 					continue
@@ -1315,6 +1351,7 @@ func (c *compiler) stmt(s ast.Stmt) {
 						rhs = vals[i]
 					}
 					markIface(name, rhs)
+					c.noteDeclTyp(name.Name, effType, isConst, rhs)
 				}
 				c.iotaVal = -1
 			}
@@ -1650,8 +1687,31 @@ func (c *compiler) noteIfaceBinds(st *ast.AssignStmt) {
 		if c.isIfaceExpr(rhs) {
 			c.fs.markIface(id.Name)
 		}
+		// the assignability gate learns a `:=` name's type from its RHS:
+		// `x := Duration(0)` compares like a declared Duration. The
+		// second name of a comma-ok bind is always bool.
+		if len(st.Rhs) == len(st.Lhs) {
+			c.noteDeclTyp(id.Name, nil, false, st.Rhs[i])
+		} else if i == 0 {
+			c.noteDeclTyp(id.Name, nil, false, st.Rhs[0])
+		} else if i == 1 && commaOkStatic(st.Rhs[0]) {
+			c.fs.noteDeclTyp(id.Name, &ast.Ident{Name: "bool"})
+		}
 	}
 	c.stampInferredTyps(st.Lhs, st.Rhs)
+}
+
+// commaOkStatic reports whether e is a comma-ok-producing expression
+// (map index, type assert, channel receive): `v, ok := e` binds the
+// second name to bool.
+func commaOkStatic(e ast.Expr) bool {
+	switch ast.Unparen(e).(type) {
+	case *ast.IndexExpr, *ast.TypeAssertExpr:
+		return true
+	case *ast.UnaryExpr:
+		return ast.Unparen(e).(*ast.UnaryExpr).Op == token.ARROW
+	}
+	return false
 }
 
 // stampInferredTyps gives each `:=` cell its declared type when the RHS
@@ -1718,6 +1778,477 @@ func (c *compiler) inferredTypExpr(e ast.Expr) ast.Expr {
 		}
 	}
 	return nil
+}
+
+// ---- compile-time operand typing (the assignability gate) ----
+
+// opTyp is an operand's statically-known type picture for the
+// assignability gate (opCmpGate): te is the declared type expression
+// when one is statically known, untyped marks an untyped constant (it
+// adopts the other operand's type), and iface marks an interface-typed
+// operand (equality compares dynamic pairs — any two types may
+// answer). A zero opTyp means "unknown": the gate leaves the op
+// evaluating.
+type opTyp struct {
+	te      ast.Expr
+	untyped bool
+	iface   bool
+}
+
+// staticOpTyp resolves the statically-known type of an operand
+// expression. Only shapes whose type is written or directly inferrable
+// resolve — declared vars/params/consts, fields of known named structs,
+// conversions, single-result calls of declared functions, builtins with
+// fixed result types — everything else is "unknown" and the gate stays
+// silent, matching the pre-gate evaluation.
+func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
+	if e == nil {
+		return opTyp{}
+	}
+	if c.isIfaceExpr(e) {
+		return opTyp{iface: true}
+	}
+	switch x := ast.Unparen(e).(type) {
+	case *ast.BasicLit:
+		return opTyp{untyped: true}
+	case *ast.Ident:
+		return c.identOpTyp(x)
+	case *ast.SelectorExpr:
+		return c.selOpTyp(x)
+	case *ast.CallExpr:
+		return c.callOpTyp(x)
+	case *ast.IndexExpr:
+		return opTyp{te: c.elemTypExpr(c.staticOpTyp(x.X).te, 4)}
+	case *ast.SliceExpr:
+		return c.staticOpTyp(x.X) // a subslice keeps its type (so does a substring)
+	case *ast.StarExpr:
+		// *p dereferences a pointer-typed operand
+		return opTyp{te: c.starBaseTypExpr(c.staticOpTyp(x.X).te, 4)}
+	case *ast.TypeAssertExpr:
+		if x.Type == nil {
+			return opTyp{} // a type switch's guard, not an operand
+		}
+		return opTyp{te: x.Type}
+	case *ast.UnaryExpr:
+		switch x.Op {
+		case token.NOT:
+			return opTyp{te: &ast.Ident{Name: "bool"}}
+		case token.SUB, token.ADD, token.XOR:
+			return c.staticOpTyp(x.X) // -x/+x/^x keeps the operand's type
+		case token.ARROW:
+			return opTyp{te: c.chanElemTypExpr(c.staticOpTyp(x.X).te, 4)}
+		}
+		return opTyp{}
+	case *ast.BinaryExpr:
+		switch x.Op {
+		case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ:
+			return opTyp{te: &ast.Ident{Name: "bool"}}
+		case token.LAND, token.LOR:
+			return opTyp{te: &ast.Ident{Name: "bool"}}
+		}
+		// arithmetic adopts the operand type: a named side wins; an
+		// untyped side gives way (`d + 1` is Duration, `1 + i` is int).
+		if t := c.staticOpTyp(x.X); t.te != nil {
+			return t
+		}
+		return c.staticOpTyp(x.Y)
+	case *ast.CompositeLit:
+		return opTyp{te: x.Type}
+	case *ast.FuncLit:
+		return opTyp{te: x.Type}
+	}
+	return opTyp{}
+}
+
+// identOpTyp resolves an identifier operand's static type: the declared
+// or inferrably-recorded type of a local binding, then package-level
+// var/const specs. Untyped consts and untyped predeclareds report
+// untyped; a type parameter or an inferred shape reports unknown.
+func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
+	if b := c.fs.lookupBinding(id.Name); b != nil {
+		if b.untypedConst {
+			return opTyp{untyped: true}
+		}
+		return opTyp{te: b.declTyp}
+	}
+	if _, bound := c.binds[id.Name]; bound {
+		return opTyp{} // a bound type parameter — its value is opaque here
+	}
+	switch id.Name {
+	case "true", "false", "nil", "iota":
+		return opTyp{untyped: true}
+	}
+	if c.pkg != nil && c.pkg.Index != nil {
+		if vd := c.pkg.Index.Vars[id.Name]; vd != nil {
+			if vs, ok := vd.Spec.(*ast.ValueSpec); ok && vs.Type != nil {
+				return opTyp{te: vs.Type}
+			}
+			return opTyp{} // `var x = e` — the initializer's type isn't chased
+		}
+		if cd := c.pkg.Index.Consts[id.Name]; cd != nil {
+			if vs, ok := cd.Spec.(*ast.ValueSpec); ok {
+				t := vs.Type
+				if t == nil {
+					t = cd.InheritedType
+				}
+				if t != nil {
+					return opTyp{te: t}
+				}
+			}
+			return opTyp{untyped: true}
+		}
+	}
+	return opTyp{}
+}
+
+// selOpTyp resolves a selector operand's static type: a field of a
+// known named struct type. A package-qualified member (`time.Sunday`),
+// a method value, or an unknown base reports unknown.
+func (c *compiler) selOpTyp(x *ast.SelectorExpr) opTyp {
+	if id, ok := x.X.(*ast.Ident); ok {
+		if _, isPkg := c.importRef(id.Name); isPkg {
+			return opTyp{} // host-package member — no static picture
+		}
+	}
+	base := c.staticOpTyp(x.X)
+	if base.te == nil || base.untyped || base.iface {
+		return opTyp{}
+	}
+	te := c.fieldTypExpr(base.te, x.Sel.Name, 4)
+	if te == nil {
+		return opTyp{}
+	}
+	if c.isIfaceTypeExpr(te) {
+		return opTyp{iface: true}
+	}
+	return opTyp{te: te}
+}
+
+// callOpTyp resolves a call operand's static type: conversions spell
+// their target type, selected builtins have fixed result types, and a
+// declared function or method contributes its single result type.
+// Generic instantiations, multi-result calls, and host functions report
+// unknown.
+func (c *compiler) callOpTyp(x *ast.CallExpr) opTyp {
+	if c.conversionCall(x) {
+		return opTyp{te: x.Fun}
+	}
+	if len(x.Args) == 0 {
+		return opTyp{}
+	}
+	switch f := x.Fun.(type) {
+	case *ast.Ident:
+		// builtin result types apply only when no nearer decl shadows
+		// the name (a local `len` variable, a package func `len`).
+		if _, found := c.resolveName(f.Name); !found {
+			switch f.Name {
+			case "len", "cap", "copy":
+				return opTyp{te: &ast.Ident{Name: "int"}}
+			case "new":
+				return opTyp{te: &ast.StarExpr{Star: f.Pos(), X: x.Args[0]}}
+			case "make":
+				return opTyp{te: x.Args[0]} // make's first arg is a type expr
+			case "min", "max", "append":
+				return c.staticOpTyp(x.Args[0])
+			case "recover":
+				return opTyp{iface: true}
+			}
+		}
+		if c.pkg != nil && c.pkg.Index != nil {
+			if fd := c.pkg.Index.Funcs[f.Name]; fd != nil {
+				return c.funcResultOpTyp(fd.Func)
+			}
+		}
+		return opTyp{}
+	case *ast.SelectorExpr:
+		if id, ok := f.X.(*ast.Ident); ok {
+			if _, isPkg := c.importRef(id.Name); isPkg {
+				return opTyp{} // a host-package function's result is opaque
+			}
+		}
+		// a method call on a known named type resolves to its decl.
+		base := c.staticOpTyp(f.X)
+		if base.te == nil {
+			return opTyp{}
+		}
+		if tdi := c.typeDeclOf(base.te); tdi != nil {
+			if md := tdi.Methods[f.Sel.Name]; md != nil {
+				return c.funcResultOpTyp(md.Func)
+			}
+		}
+		return opTyp{}
+	case *ast.IndexExpr, *ast.IndexListExpr:
+		// generic instantiation: the result type mentions type params.
+		return opTyp{}
+	}
+	return opTyp{}
+}
+
+// funcResultOpTyp resolves a declared function's static result type —
+// only a single-result signature can type an operand; a result spelling
+// a declared type parameter is opaque (each instantiation binds it, the
+// static name doesn't).
+func (c *compiler) funcResultOpTyp(fd *ast.FuncDecl) opTyp {
+	if fd == nil || fd.Type == nil || fd.Type.Results == nil || len(fd.Type.Results.List) != 1 {
+		return opTyp{}
+	}
+	res := fd.Type.Results.List[0]
+	if len(res.Names) > 1 {
+		return opTyp{} // `(a, b T)` is a multi-result signature
+	}
+	te := res.Type
+	if fd.Type.TypeParams != nil {
+		if id, ok := ast.Unparen(te).(*ast.Ident); ok {
+			for _, tp := range fd.Type.TypeParams.List {
+				for _, n := range tp.Names {
+					if n.Name == id.Name {
+						return opTyp{}
+					}
+				}
+			}
+		}
+	}
+	if c.isIfaceTypeExpr(te) {
+		return opTyp{iface: true}
+	}
+	return opTyp{te: te}
+}
+
+// typeSpecOf resolves a type expression to its declaring TypeSpec — a
+// local or package-level named type. Predeclared types, qualified host
+// types, type parameters, and unnamed forms have no spec.
+func (c *compiler) typeSpecOf(te ast.Expr) *ast.TypeSpec {
+	id, ok := ast.Unparen(te).(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	info, found := c.resolveName(id.Name)
+	if !found || !info.isType {
+		return nil
+	}
+	return info.tspec
+}
+
+// typeDeclOf resolves a type expression to its index TypeDeclInfo — the
+// named type plus the methods declared on it (leading * stripped, since
+// method sets include pointer receivers). Only package-level named
+// types index methods; a shadowing local `type` has none.
+func (c *compiler) typeDeclOf(te ast.Expr) *index.TypeDeclInfo {
+	if c.pkg == nil || c.pkg.Index == nil {
+		return nil
+	}
+	t := ast.Unparen(te)
+	if s, ok := t.(*ast.StarExpr); ok {
+		t = ast.Unparen(s.X)
+	}
+	id, ok := t.(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	if b := c.fs.lookupBinding(id.Name); b != nil && b.typeDecl {
+		return nil
+	}
+	return c.pkg.Index.Types[id.Name]
+}
+
+// unfoldTypExpr reduces a type expression to its underlying form: a
+// named type unfolds through its spec (aliases pass straight through),
+// parens unwrap; unnamed and unresolvable forms return as-is. The depth
+// cap bounds named cycles (`type A []A`).
+func (c *compiler) unfoldTypExpr(te ast.Expr, depth int) ast.Expr {
+	if depth <= 0 || te == nil {
+		return nil
+	}
+	t := ast.Unparen(te)
+	if _, ok := t.(*ast.Ident); ok {
+		if ts := c.typeSpecOf(t); ts != nil {
+			return c.unfoldTypExpr(ts.Type, depth-1)
+		}
+	}
+	return t
+}
+
+// elemTypExpr resolves the element type of an indexing operand — an
+// array/slice's Elt or a map's Value, through a named type's spec.
+func (c *compiler) elemTypExpr(te ast.Expr, depth int) ast.Expr {
+	switch t := c.unfoldTypExpr(te, depth).(type) {
+	case *ast.ArrayType:
+		return t.Elt
+	case *ast.MapType:
+		return t.Value
+	}
+	return nil
+}
+
+// chanElemTypExpr resolves the element type of a receive operand's
+// channel type, through a named type's spec.
+func (c *compiler) chanElemTypExpr(te ast.Expr, depth int) ast.Expr {
+	if t, ok := c.unfoldTypExpr(te, depth).(*ast.ChanType); ok {
+		return t.Value
+	}
+	return nil
+}
+
+// starBaseTypExpr resolves the base type of a deref operand's pointer
+// type, through a named type's spec.
+func (c *compiler) starBaseTypExpr(te ast.Expr, depth int) ast.Expr {
+	if t, ok := c.unfoldTypExpr(te, depth).(*ast.StarExpr); ok {
+		return t.X
+	}
+	return nil
+}
+
+// fieldTypExpr resolves a selector's field inside a known named struct
+// type: te names the struct (or aliases to one), sel the field. Embedded
+// fields are searched like selector promotion; the depth cap keeps a
+// cyclic type graph finite. nil means the field isn't statically known.
+func (c *compiler) fieldTypExpr(te ast.Expr, sel string, depth int) ast.Expr {
+	if depth <= 0 {
+		return nil
+	}
+	ts := c.typeSpecOf(te)
+	if ts == nil {
+		return nil
+	}
+	st, ok := ast.Unparen(ts.Type).(*ast.StructType)
+	if !ok {
+		return nil
+	}
+	for _, f := range st.Fields.List {
+		if len(f.Names) == 0 {
+			// an embedded field promotes its own fields
+			if t := c.fieldTypExpr(f.Type, sel, depth-1); t != nil {
+				return t
+			}
+			continue
+		}
+		for _, n := range f.Names {
+			if n.Name == sel {
+				return f.Type
+			}
+		}
+	}
+	return nil
+}
+
+// namedTypID is a named type's compile-time identity: two operand types
+// with different ids are different named types, which gc never assigns
+// to each other (both named — the comparison is a compile error).
+type namedTypID struct {
+	id   any    // comparable identity: *ast.TypeSpec or a string
+	name string // source spelling for the trap message
+}
+
+// namedIdentOf resolves a type expression to a named type's identity:
+// a local or package-level declared type (the spec pointer — two
+// distinct `type Tag string` decls never alias), an alias resolves to
+// its target, a qualified `pkg.T` to "path.T", and a predeclared type to
+// its canonical name (byte→uint8, rune→int32 — the same type in gc).
+// Type parameters, interface types, and unnamed forms report none.
+func (c *compiler) namedIdentOf(te ast.Expr) (namedTypID, bool) {
+	switch t := ast.Unparen(te).(type) {
+	case *ast.Ident:
+		info, found := c.resolveName(t.Name)
+		if !found || !info.isType || info.iface {
+			return namedTypID{}, false
+		}
+		if info.td != nil {
+			return namedTypID{}, false // a bound type parameter — opaque
+		}
+		if info.tspec != nil {
+			if info.tspec.Assign.IsValid() {
+				return c.namedIdentOf(info.tspec.Type) // alias — the target's identity
+			}
+			return namedTypID{id: info.tspec, name: t.Name}, true
+		}
+		// predeclared named types: byte and rune canonicalize to their
+		// underlying types — they are the same type for assignability.
+		name := t.Name
+		switch name {
+		case "byte":
+			name = "uint8"
+		case "rune":
+			name = "int32"
+		}
+		return namedTypID{id: "predecl:" + name, name: t.Name}, true
+	case *ast.SelectorExpr:
+		id, ok := t.X.(*ast.Ident)
+		if !ok {
+			return namedTypID{}, false
+		}
+		ref, isPkg := c.importRef(id.Name)
+		if !isPkg {
+			return namedTypID{}, false
+		}
+		return namedTypID{id: ref.Path + "." + t.Sel.Name, name: id.Name + "." + t.Sel.Name}, true
+	}
+	return namedTypID{}, false
+}
+
+// opCmpGate emits an OpTrap in place of a binary op or switch-case
+// compare whose operands statically resolve to distinct named types:
+// gc rejects `d == i` / `f.Tag == s` / `d < len(x)` at compile time,
+// and a run-time check cannot recover it — an any-carried operand
+// reaches the same instruction and interface equality is lawful, which
+// is why '=='/'!=' stayed dynamic under the runtime operand gate.
+// The gate only speaks when statically certain — an untyped constant
+// (it adopts), an interface operand (dynamic pairs compare lawfully),
+// or any unknown side keeps the op evaluating, so a partial static
+// picture never invents an error gc wouldn't issue. Returns true when
+// it trapped. Shifts are exempt: their operands are only required to be
+// integer-typed, not mutually assignable (`i << d` is legal Go).
+func (c *compiler) opCmpGate(x, y ast.Expr, pos token.Pos) bool {
+	xt, yt := c.staticOpTyp(x), c.staticOpTyp(y)
+	if xt.te == nil || yt.te == nil || xt.untyped || yt.untyped || xt.iface || yt.iface {
+		return false
+	}
+	xi, ok := c.namedIdentOf(xt.te)
+	if !ok {
+		return false
+	}
+	yi, ok := c.namedIdentOf(yt.te)
+	if !ok || yi.id == xi.id {
+		return false
+	}
+	c.trap(pos, "invalid operation: mismatched types %s and %s", xi.name, yi.name)
+	return true
+}
+
+// noteDeclTyp records a value spec's type on the name's binding for the
+// operand-assignability gate: the written type wins (`var x T`), an
+// inferred decl (`var x = e`, `x := e`) takes the initializer's static
+// type when the expression spells one (`x := 5` is int like gc), and an
+// untyped const keeps no type — it adopts like a literal.
+func (c *compiler) noteDeclTyp(name string, effType ast.Expr, isConst bool, rhs ast.Expr) {
+	te := effType
+	if te == nil && rhs != nil {
+		te = c.staticOpTyp(rhs).te
+		if te == nil && !isConst {
+			if lit, ok := rhs.(*ast.BasicLit); ok {
+				// an untyped literal defaults at bind, like gc: 'a' is
+				// rune, 1.5 is float64.
+				switch lit.Kind {
+				case token.INT:
+					te = &ast.Ident{Name: "int"}
+				case token.FLOAT:
+					te = &ast.Ident{Name: "float64"}
+				case token.IMAG:
+					te = &ast.Ident{Name: "complex128"}
+				case token.CHAR:
+					te = &ast.Ident{Name: "rune"}
+				case token.STRING:
+					te = &ast.Ident{Name: "string"}
+				}
+			}
+		}
+	}
+	if te != nil {
+		c.fs.noteDeclTyp(name, te)
+		return
+	}
+	if isConst {
+		c.fs.noteUntypedConst(name)
+	}
 }
 
 // refTarget emits code pushing the assignment target's storage reference
@@ -2203,6 +2734,13 @@ func (c *compiler) switchStmt(st *ast.SwitchStmt) {
 		bodyJumps := []int{}
 		for _, e := range clause.List {
 			if tagSlot >= 0 {
+				// a case expr of a statically distinct named type fails
+				// gc's operand check — `switch tag { case s: }`. The case
+				// side is the left operand, matching gc's message order
+				// "(mismatched types string and Tag)".
+				if c.opCmpGate(e, st.Tag, e.Pos()) {
+					continue
+				}
 				c.emit(bytecode.OpLocal, tagSlot, 0, e.Pos())
 				// A constant case expr stays a constant: emitting the
 				// materialized value (`float64(1e19)`) would lose the
@@ -3040,6 +3578,11 @@ func (c *compiler) binary(x *ast.BinaryExpr) {
 			c.trap(x.Pos(), "unsupported binary %s", x.Op)
 			return
 		}
+		// statically distinct named operands are a compile error in gc —
+		// a run-time check can't see it once a value carries `any`.
+		if op != bytecode.BinShl && op != bytecode.BinShr && c.opCmpGate(x.X, x.Y, x.Pos()) {
+			return
+		}
 		c.binaryOperands(x.X, x.Y)
 		if (op == bytecode.BinEql || op == bytecode.BinNeq) && (c.isIfaceExpr(x.X) || c.isIfaceExpr(x.Y)) {
 			// an interface-typed operand compares (dynamic type, value)
@@ -3641,6 +4184,11 @@ func (c *compiler) hoistEagerOps(es []ast.Expr, prefix string) (subs []ast.Expr,
 		slot := c.fs.declare(name, call.Pos())
 		if c.isIfaceExpr(call) {
 			c.fs.markIface(name)
+		}
+		// the assignability gate keeps the hoisted call's static type:
+		// `d < len(x)` compares Duration to int through the scratch name.
+		if t := c.staticOpTyp(call).te; t != nil {
+			c.fs.noteDeclTyp(name, t)
 		}
 		c.emit(bytecode.OpNewLocal, slot, 0, call.Pos())
 		names[call] = name
@@ -4355,6 +4903,7 @@ func (c *compiler) funcLit(x *ast.FuncLit) {
 			for _, n := range names {
 				slot := ic.fs.declare(n.Name, n.Pos())
 				coerces = append(coerces, paramCoerce{slot: slot, typ: field.Type})
+				ic.fs.noteDeclTyp(n.Name, field.Type)
 				nparams++
 			}
 			if _, ok := field.Type.(*ast.Ellipsis); ok {
@@ -4368,6 +4917,7 @@ func (c *compiler) funcLit(x *ast.FuncLit) {
 		for _, field := range x.Type.Results.List {
 			for _, n := range field.Names {
 				slot := ic.fs.declare(n.Name, n.Pos())
+				ic.fs.noteDeclTyp(n.Name, field.Type)
 				ic.ch.NamedSlots = append(ic.ch.NamedSlots, slot)
 				ic.emit(bytecode.OpNil, 0, 0, n.Pos())
 				ic.emit(bytecode.OpNewLocal, slot, 0, n.Pos())
