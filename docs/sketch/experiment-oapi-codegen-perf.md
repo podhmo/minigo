@@ -1147,8 +1147,8 @@ first thing the next experiment should measure.
 
 ## How to re-run
 
-Scripts used (kept outside the repo; reconstructable from this
-description):
+Scripts used (preserved in `experiments/oapi-codegen-perf` on branch
+`perf/sync-builtin-callbacks`, draft #699; they are not on main):
 
 - `run1.sh BIN DIR ARGS…`: one `go:generate` line in a scratch copy
   of `examples/`, wall time via `perl Time::HiRes`.
