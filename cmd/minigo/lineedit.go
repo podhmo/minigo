@@ -132,7 +132,11 @@ func completeSplice(r *minigo.REPL, line string, pos int) (newLine string, newPo
 		ext := commonPrefix(names)
 		return ext + tail, len(ext), commandCandidates(names), true
 	}
-	start, cc := r.CompleteToken(head)
+	complete := r.CompleteToken
+	if strings.HasPrefix(head, ":") {
+		complete = r.CompleteCommandArg // `:load ./fi` and the like
+	}
+	start, cc := complete(head)
 	if len(cc) == 0 {
 		return "", 0, nil, false
 	}
