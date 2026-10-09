@@ -49,8 +49,15 @@ func NilDerefPanic() *Panic {
 // range [i] with length n" — a negative index drops the length suffix,
 // like Go's bare boundsNegErrorFmts report.
 func BoundsPanic(i any, n int) *Panic {
-	if iv, isInt := i.(int64); isInt && iv < 0 {
-		return RuntimePanic(fmt.Sprintf("index out of range [%v]", i))
+	switch iv := i.(type) {
+	case int64:
+		if iv < 0 {
+			return RuntimePanic(fmt.Sprintf("index out of range [%v]", i))
+		}
+	case int:
+		if iv < 0 {
+			return RuntimePanic(fmt.Sprintf("index out of range [%v]", i))
+		}
 	}
 	return RuntimePanic(fmt.Sprintf("index out of range [%v] with length %d", i, n))
 }
