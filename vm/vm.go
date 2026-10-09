@@ -2284,7 +2284,7 @@ func (v *VM) loop(f *frame) {
 					// instantiation's args onto it invents
 					// `large[large·1]` where gc asserts to `large`.
 					bound := false
-					for _, bv := range f.fn.Binds {
+					for _, bv := range outer {
 						if typedefOf(bv) == td {
 							bound = true
 							break
