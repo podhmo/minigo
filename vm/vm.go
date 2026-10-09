@@ -2837,8 +2837,14 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 				}
 				// a bound host basic's methods live on the host type —
 				// the expression re-dispatches on the (pointer) receiver.
+				// (*T).M sees the pointer method set, so probe *base where
+				// base is the modeled type: bound struct reps mint pointers
+				// (bytes.Buffer's rep is *bytes.Buffer).
 				if rt := hostTypOf(et); rt != nil {
-					if _, ok := rt.MethodByName(name); ok {
+					for rt.Kind() == reflect.Pointer {
+						rt = rt.Elem()
+					}
+					if _, ok := reflect.PointerTo(rt).MethodByName(name); ok {
 						return v.methodExprThunk(b, name)
 					}
 				}
@@ -2861,8 +2867,18 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		// expression re-dispatches on its receiver argument like Go's
 		// selector lowering — value methods only, matching T's set.
 		if rt := hostTypOf(b); rt != nil {
+			// bound struct reps mint pointers (*bytes.Buffer): T's
+			// method-expression set is the named type's — value
+			// receivers only; a pointer-only name traps like the
+			// declared PtrRecv arm above.
+			for rt.Kind() == reflect.Pointer {
+				rt = rt.Elem()
+			}
 			if _, ok := rt.MethodByName(name); ok {
 				return v.methodExprThunk(b, name)
+			}
+			if _, ok := reflect.PointerTo(rt).MethodByName(name); ok {
+				f.trap("invalid method expression %s.%s (needs pointer receiver)", tdName(b), name)
 			}
 		}
 		// `U.Sum` — a promoted method through an embedded field — or

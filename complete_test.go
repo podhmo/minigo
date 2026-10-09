@@ -270,6 +270,28 @@ func TestCompleteMethodExprValueSet(t *testing.T) {
 	if hasCand(cands, "SetB") {
 		t.Fatalf("ptr-receiver SetB leaked into Pair. -> %v", candNames(cands))
 	}
+
+	// host-bound types follow the same rule even though the rep mints a
+	// pointer: `bytes.Buffer.` keeps none of *bytes.Buffer's methods,
+	// while `reflect.StructTag.` keeps its value receivers.
+	for _, line := range []string{
+		`import "bytes"`,
+		`import "reflect"`,
+	} {
+		if _, err := r.EvalLine(ctx, line); err != nil {
+			t.Fatalf("EvalLine(%q): %v", line, err)
+		}
+	}
+	cands = r.Complete("bytes.Buffer.")
+	if hasCand(cands, "WriteString") {
+		t.Fatalf("ptr-receiver WriteString leaked into bytes.Buffer. -> %v", candNames(cands))
+	}
+	cands = r.Complete("reflect.StructTag.")
+	for _, want := range []string{"Get", "Lookup"} {
+		if !hasCand(cands, want) {
+			t.Fatalf("%s missing in reflect.StructTag. -> %v", want, candNames(cands))
+		}
+	}
 }
 
 func TestCompleteTokenStart(t *testing.T) {
@@ -409,9 +431,11 @@ func TestCompleteHostType(t *testing.T) {
 			t.Fatalf("%s missing in b.Write -> %v", want, candNames(cands))
 		}
 	}
-	// the type name also selects host methods
-	if !hasCand(r.Complete("strings.Builder."), "WriteString") {
-		t.Fatalf("WriteString missing in strings.Builder. -> %v", candNames(r.Complete("strings.Builder.")))
+	// `strings.Builder.` is a method expression: all of Builder's methods
+	// take pointer receivers, so none of them is selectable on the type —
+	// the rep's minted *strings.Builder set does not leak in.
+	if hasCand(r.Complete("strings.Builder."), "WriteString") {
+		t.Fatalf("ptr-receiver WriteString leaked into strings.Builder. -> %v", candNames(r.Complete("strings.Builder.")))
 	}
 }
 
