@@ -122,6 +122,15 @@ func (sigStringer) String() any { return "not a stringer" }
 // calls its Error() instead of dumping the value.
 func PanicErrorValue() { panic(&panicError{msg: "script error text"}) }
 
+// PanicErrorNilDeref panics with a nil *panicError — its Error() probe
+// derefs the nil receiver and panics, which gc's printpanics reports as
+// `fatal error: panic while printing panic value` instead of any
+// `panic:` line.
+func PanicErrorNilDeref() {
+	var e *panicError
+	panic(e)
+}
+
 // PanicErrorValueRecv panics with a bare struct whose Error() is on the
 // pointer receiver — a value does not implement error, so gc renders
 // `(main.panicError) 0xADDR`.

@@ -4,6 +4,7 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/constant"
@@ -1871,7 +1872,19 @@ func (p *Panic) Error() string {
 		if i < len(chain)-1 {
 			sb.WriteString("\n\t")
 		}
-		fmt.Fprintf(&sb, "panic: %v", panicValue(chain[i].Value, chain[i].VC))
+		pv := panicValue(chain[i].Value, chain[i].VC)
+		if pf, fatal := pv.(*panicPrintFatal); fatal {
+			// a panic inside the payload's own Error()/String() probe is
+			// itself fatal in gc (panic inside printpanics): nothing of
+			// the `panic: ...` line prints — only the fatal message and
+			// the dying method's frames.
+			s := fmt.Sprintf("fatal error: panic while printing panic value: type %s", pf.typeName(chain[i].VC))
+			if len(pf.inner.Frames) > 0 {
+				s += "\nTraceback (most recent call first):\n" + renderFrames(pf.inner.Frames)
+			}
+			return s
+		}
+		fmt.Fprintf(&sb, "panic: %v", pv)
 		if chain[i].Recovered {
 			sb.WriteString(" [recovered]")
 		}
@@ -1884,6 +1897,41 @@ func (p *Panic) Error() string {
 		s += "\n" + p.GoStack
 	}
 	return s
+}
+
+// panicPrintFatal marks a panic payload whose Error/String probe
+// panicked — gc's printpanics dies `fatal error: panic while printing
+// panic value` on exactly this. inner is the panic the probe call
+// raised; its frames point inside the method.
+type panicPrintFatal struct {
+	inner *Panic
+	name  string
+}
+
+// typeName spells the inner panic's type the way gc's fatal line does
+// (`type runtime.errorString`): the payload's static type — host error
+// payloads name their Go runtime counterparts, script values their
+// declared type.
+func (pf *panicPrintFatal) typeName(c VMCaller) string {
+	switch pf.inner.Value.(type) {
+	case *RuntimeError:
+		return "runtime.errorString"
+	case PlainError:
+		return "runtime.plainError"
+	case *TypeAssertionError:
+		return "*runtime.TypeAssertionError"
+	case *PanicNilError:
+		return "*runtime.PanicNilError"
+	}
+	if c != nil {
+		if td := c.TypeOf(pf.inner.Value); td != nil {
+			return DisplayName(td)
+		}
+	}
+	if gv, ok := pf.inner.Value.(*GoValue); ok {
+		return fmt.Sprintf("%T", gv.V)
+	}
+	return fmt.Sprintf("%T", pf.inner.Value)
 }
 
 // RuntimeError is the payload of a runtime panic (bounds, nil deref,
@@ -1926,10 +1974,14 @@ func panicValue(v Value, c VMCaller) any {
 	if c == nil {
 		return v
 	}
-	if s, ok := IfaceCallString(c, v, "Error"); ok {
+	if s, ok, inner := ifaceCallStringFatal(c, v, "Error"); inner != nil {
+		return &panicPrintFatal{inner: inner, name: "Error"}
+	} else if ok {
 		return s
 	}
-	if s, ok := IfaceCallString(c, v, "String"); ok {
+	if s, ok, inner := ifaceCallStringFatal(c, v, "String"); inner != nil {
+		return &panicPrintFatal{inner: inner, name: "String"}
+	} else if ok {
 		return s
 	}
 	if _, isErr := v.(error); isErr {
@@ -2068,6 +2120,39 @@ func IfaceMember(c VMCaller, v Value, name string) (Value, bool) {
 		return nil, false
 	}
 	return c.Member(v, name)
+}
+
+// ifaceCallStringFatal is IfaceCallString for the panic-value probes: a
+// script panic raised inside the method call surfaces as inner (gc's
+// printpanics treats a panic during the Error/String probe as fatal),
+// while every other failure reports (s, ok) the lenient way.
+func ifaceCallStringFatal(c VMCaller, v Value, name string) (s string, ok bool, inner *Panic) {
+	defer func() {
+		if r := recover(); r != nil {
+			if p, isPanic := r.(*Panic); isPanic {
+				inner = p
+			}
+			s, ok = "", false
+		}
+	}()
+	m, ok := IfaceMember(c, v, name)
+	if !ok || !isStringerMember(m) {
+		return "", false, nil
+	}
+	r, err := c.Call(m, nil)
+	if err != nil {
+		// a script panic the method raised crosses the Call boundary as
+		// an error wrapping *Panic — distinguish it from an ordinary call
+		// failure (trap, missing arg) so the probe can report it as the
+		// method panicking, not as the method being absent.
+		var p *Panic
+		if errors.As(err, &p) {
+			return "", false, p
+		}
+		return "", false, nil
+	}
+	s, ok = r.(string)
+	return s, ok, nil
 }
 
 // IfaceCallString invokes a declared String()/Error()/GoString()-style
