@@ -623,7 +623,21 @@ func (v *RValue) IsNil() bool {
 		reflect.Map, reflect.Ptr, reflect.Slice, reflect.UnsafePointer)
 	// in the cell model a ref-view IS a pointer and is never nil; a nil
 	// pointer value arrives as the TypedNil it stores.
-	switch x := unwrapRef(v.get()).(type) {
+	x := unwrapRef(v.get())
+	if v.Kind() == reflect.Interface {
+		// IsNil on an interface asks about the interface itself: a
+		// boxed typed nil (IfaceNil{*T}) is a NON-nil interface —
+		// only a nil dynamic (untagged or interface-tagged) reports
+		// true. text/template's indirect() reads exactly this.
+		switch x := x.(type) {
+		case nil, runtime.Nil:
+			return true
+		case *runtime.IfaceNil:
+			return runtime.IsNilIface(x)
+		}
+		return false
+	}
+	switch x := x.(type) {
 	case nil, runtime.Nil:
 		return true
 	case *runtime.TypedNil, *runtime.IfaceNil:
