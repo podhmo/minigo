@@ -1026,8 +1026,8 @@ func (r *REPL) List(ctx context.Context, ref string) ([]string, error) {
 	seen := map[string]bool{}
 	if p.Index != nil {
 		for _, d := range p.Index.Decls {
-			if strings.HasPrefix(d.Name, "__") || (d.Kind == index.FuncDecl && d.Name == "init") {
-				continue // repl internals (__stepN, __init__); init is unnamable
+			if strings.HasPrefix(d.Name, "__") || d.Name == "_" || (d.Kind == index.FuncDecl && d.Name == "init") {
+				continue // repl internals (__stepN, __init__), blanked shadows; init is unnamable
 			}
 			var kind string
 			switch d.Kind {
@@ -1043,13 +1043,13 @@ func (r *REPL) List(ctx context.Context, ref string) ([]string, error) {
 			if r.pinnedDecls[d.Name] {
 				out = append(out, fmt.Sprintf("patch %s", d.Name)) // decl published by :pin
 			} else {
-				out = append(out, fmt.Sprintf("%s %s", kind, d.Name))
+				out = append(out, fmt.Sprintf("%s %s%s", kind, d.Name, r.loadedFrom(p, d)))
 			}
 			seen[d.Name] = true
 		}
 		for name, t := range p.Index.Types {
-			for m := range t.Methods {
-				out = append(out, fmt.Sprintf("method %s.%s", name, m))
+			for m, d := range t.Methods {
+				out = append(out, fmt.Sprintf("method %s.%s%s", name, m, r.loadedFrom(p, d)))
 			}
 		}
 	}
@@ -1073,6 +1073,20 @@ func (r *REPL) List(ctx context.Context, ref string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// loadedFrom annotates a scratch-package decl that came from :load with
+// its file — relative to the engine's start directory when inside it —
+// as " (file)"; prompt decls and other packages' decls get "".
+func (r *REPL) loadedFrom(p *runtime.Package, d *index.Decl) string {
+	if p != r.pkg || d.File == nil || !slices.ContainsFunc(r.loads, func(u *loadUnit) bool { return u.hasFile(d.File.Name) }) {
+		return ""
+	}
+	name := d.File.Name
+	if rel, err := filepath.Rel(r.engine.cwd, name); err == nil && r.engine.cwd != "" && !strings.HasPrefix(rel, "..") {
+		name = rel
+	}
+	return " (" + name + ")"
 }
 
 // BoundPackages lists the session engine's host-bound import paths —
