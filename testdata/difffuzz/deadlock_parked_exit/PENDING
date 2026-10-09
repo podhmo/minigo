@@ -1,0 +1,8 @@
+gc exits `fatal error: all goroutines are asleep - deadlock!` when the
+last non-parked goroutine finishes while the rest stay blocked (here:
+main parked on recv, the only other goroutine sleeping then exiting).
+minigo previously parked forever: the deadlock watch only armed on
+park/external-wait transitions, not on a goroutine leaving. leaveG now
+re-arms the watch. This record stays PENDING because want.stdout cannot
+express an expected fatal — the run ends in runErr either way (same
+class as deadlock_detect).

@@ -213,9 +213,10 @@ type proc struct {
 
 // gwait is one live goroutine's wait state for deadlock detection.
 type gwait struct {
-	refs     int  // nested Calls on the same goroutine share the state
-	parked   bool // currently blocked on a watched op
-	wakeable bool // the current park can end without a script goroutine
+	refs       int  // nested Calls on the same goroutine share the state
+	parked     bool // currently blocked on a watched op
+	wakeable   bool // the current park can end without a script goroutine
+	parkedOnly bool // registered by a bare park outside any Call — no leaveG will come, so the entry dies with its unpark
 }
 
 // deadlockError is the process fatal raised when every live goroutine is
@@ -322,6 +323,9 @@ func (p *proc) leaveG(gid int64) {
 		}
 	}
 	p.touch()
+	// the last running goroutine leaving can itself complete the
+	// deadlock state: whoever is left is all parked.
+	p.checkDeadLocked()
 	p.mu.Unlock()
 }
 
@@ -337,7 +341,9 @@ func (p *proc) parkG(gid int64, wakeable bool) {
 	g := p.gs[gid]
 	if g == nil {
 		// an unregistered parker still counts — it is a real goroutine.
-		g = &gwait{refs: 1}
+		// Its registration lives as long as the park: no Call frame
+		// exists to leave it later, so unparkG deletes the entry.
+		g = &gwait{refs: 1, parkedOnly: true}
 		p.gs[gid] = g
 		p.live++
 	}
@@ -354,17 +360,25 @@ func (p *proc) parkG(gid int64, wakeable bool) {
 }
 
 // unparkG clears a goroutine's parked mark when its op completes.
-func (p *proc) unparkG(gid int64, wakeable bool) {
+func (p *proc) unparkG(gid int64) {
 	if gid == 0 {
 		return
 	}
 	p.mu.Lock()
 	if g := p.gs[gid]; g != nil && g.parked {
+		wakeable := g.wakeable
 		g.parked = false
 		g.wakeable = false
 		p.parked--
 		if wakeable {
 			p.wakeable--
+		}
+		if g.parkedOnly {
+			// a park-registered goroutine has no Call to leave — its
+			// entry ends with the park instead of lingering as a live
+			// ghost that never parks again.
+			delete(p.gs, gid)
+			p.live--
 		}
 	}
 	p.touch()
@@ -6554,7 +6568,7 @@ func (v *VM) park(wakeable bool) func() {
 	}
 	gid := v.callGid
 	p.parkG(gid, wakeable)
-	return func() { p.unparkG(gid, wakeable) }
+	return func() { p.unparkG(gid) }
 }
 
 // vcPark is park for code holding only a runtime.VMCaller (e.g.
