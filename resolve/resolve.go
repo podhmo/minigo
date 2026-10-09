@@ -130,9 +130,10 @@ func ReadPackageFiles(dir, importPath string, cfg BuildConfig) (*PackageMeta, er
 	ctx.BuildTags = append(ctx.BuildTags, cfg.Tags...)
 
 	var files []string
-	var name string
 	var rejected []string // files MatchFile could not even read/parse
 	excluded := 0         // files build constraints filtered out
+	clauses := map[string]int{}
+	clauseOrder := []string{} // first-seen; os.ReadDir is sorted by name
 	fset := token.NewFileSet()
 	for _, e := range entries {
 		fname := e.Name()
@@ -153,11 +154,11 @@ func ReadPackageFiles(dir, importPath string, cfg BuildConfig) (*PackageMeta, er
 			continue
 		}
 		files = append(files, filepath.Join(dir, fname))
-		if name == "" {
-			f, err := parser.ParseFile(fset, filepath.Join(dir, fname), nil, parser.PackageClauseOnly)
-			if err == nil && f != nil {
-				name = f.Name.Name
+		if f, err := parser.ParseFile(fset, filepath.Join(dir, fname), nil, parser.PackageClauseOnly); err == nil && f != nil {
+			if clauses[f.Name.Name] == 0 {
+				clauseOrder = append(clauseOrder, f.Name.Name)
 			}
+			clauses[f.Name.Name]++
 		}
 	}
 	if len(rejected) > 0 {
@@ -179,6 +180,17 @@ func ReadPackageFiles(dir, importPath string, cfg BuildConfig) (*PackageMeta, er
 			return nil, fmt.Errorf("no buildable Go source files in %s: all %d .go file(s) excluded by build constraints", what, excluded)
 		}
 		return nil, fmt.Errorf("no buildable Go source files in %s", what)
+	}
+	// The package clause is a majority vote over every matched file —
+	// a mixed directory (already a `go build` failure) must not take
+	// its canonical name from whichever file sorts first, which can be
+	// the minority clause. Ties keep the alphabetically-first clause.
+	name := ""
+	best := 0
+	for _, c := range clauseOrder {
+		if clauses[c] > best {
+			best, name = clauses[c], c
+		}
 	}
 	sort.Strings(files)
 	return &PackageMeta{
