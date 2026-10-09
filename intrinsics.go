@@ -431,6 +431,10 @@ func (e *Engine) installStdlib() {
 		"AppendQuoteRuneToASCII": h.fn2("strconv.AppendQuoteRuneToASCII", func(a []any) (any, error) {
 			return strconv.AppendQuoteRuneToASCII(byteSlice(a[0]), runeOf(a[1])), nil
 		}),
+		// the host's value is the architecture-appropriate one (64-bit
+		// only build); interpreted stdlib code reaches it, e.g.
+		// encoding/base64's decoder.
+		"IntSize": &runtime.UConst{V: constant.MakeInt64(strconv.IntSize)},
 	})
 	e.Bind("bytes", map[string]runtime.Value{
 		// `var buf bytes.Buffer` / `new(bytes.Buffer)` box a real
