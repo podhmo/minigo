@@ -915,36 +915,37 @@ func (e *Engine) installStdlib() {
 		"EACCES":  &runtime.GoValue{V: syscall.EACCES},
 		"ENOTDIR": &runtime.GoValue{V: syscall.ENOTDIR},
 		"EISDIR":  &runtime.GoValue{V: syscall.EISDIR},
-		"Getpid":  h.fn("syscall.Getpid", func(a []any) (any, error) { return int64(syscall.Getpid()), nil }),
+		"Getpid":  h.fn("syscall.Getpid", func(a []any) (any, error) { return int(syscall.Getpid()), nil }),
 	})
 	// internal/bytealg and internal/stringslite back strings/bytes in
 	// GOROOT, and their sources lean on unsafe (bytealg's init reads
 	// unsafe.Offsetof of cpu flags). Stub the pure entry points stdlib
 	// sources call — embed.FS's lookup, for one — over strings/bytes.
 	e.Bind("internal/bytealg", map[string]runtime.Value{
-		"MaxLen":  int64(64),
-		"Compare": h.fn2("bytealg.Compare", func(a []any) (any, error) { return int64(bytes.Compare(byteSlice(a[0]), byteSlice(a[1]))), nil }),
+		"MaxLen":        int64(64),
+		"MaxBruteForce": int64(bytealgMaxBruteForce()),
+		"Compare":       h.fn2("bytealg.Compare", func(a []any) (any, error) { return int(bytes.Compare(byteSlice(a[0]), byteSlice(a[1]))), nil }),
 		"Count": h.fn2("bytealg.Count", func(a []any) (any, error) {
-			return int64(bytes.Count(byteSlice(a[0]), []byte{byte(int64Of(a[1]))})), nil
+			return int(bytes.Count(byteSlice(a[0]), []byte{byte(int64Of(a[1]))})), nil
 		}),
 		"CountString": h.fn2("bytealg.CountString", func(a []any) (any, error) {
-			return int64(strings.Count(str(a[0]), string([]byte{byte(int64Of(a[1]))}))), nil
+			return int(strings.Count(str(a[0]), string([]byte{byte(int64Of(a[1]))}))), nil
 		}),
 		"Equal":           h.fn2("bytealg.Equal", func(a []any) (any, error) { return bytes.Equal(byteSlice(a[0]), byteSlice(a[1])), nil }),
-		"Index":           h.fn2("bytealg.Index", func(a []any) (any, error) { return int64(bytes.Index(byteSlice(a[0]), byteSlice(a[1]))), nil }),
-		"IndexString":     h.fn2("bytealg.IndexString", func(a []any) (any, error) { return int64(strings.Index(str(a[0]), str(a[1]))), nil }),
-		"IndexByte":       h.fn2("bytealg.IndexByte", func(a []any) (any, error) { return int64(bytes.IndexByte(byteSlice(a[0]), byte(int64Of(a[1])))), nil }),
-		"IndexByteString": h.fn2("bytealg.IndexByteString", func(a []any) (any, error) { return int64(strings.IndexByte(str(a[0]), byte(int64Of(a[1])))), nil }),
+		"Index":           h.fn2("bytealg.Index", func(a []any) (any, error) { return int(bytes.Index(byteSlice(a[0]), byteSlice(a[1]))), nil }),
+		"IndexString":     h.fn2("bytealg.IndexString", func(a []any) (any, error) { return int(strings.Index(str(a[0]), str(a[1]))), nil }),
+		"IndexByte":       h.fn2("bytealg.IndexByte", func(a []any) (any, error) { return int(bytes.IndexByte(byteSlice(a[0]), byte(int64Of(a[1])))), nil }),
+		"IndexByteString": h.fn2("bytealg.IndexByteString", func(a []any) (any, error) { return int(strings.IndexByte(str(a[0]), byte(int64Of(a[1])))), nil }),
 		"LastIndexByte": h.fn2("bytealg.LastIndexByte", func(a []any) (any, error) {
-			return int64(bytes.LastIndexByte(byteSlice(a[0]), byte(int64Of(a[1])))), nil
+			return int(bytes.LastIndexByte(byteSlice(a[0]), byte(int64Of(a[1])))), nil
 		}),
-		"LastIndexByteString": h.fn2("bytealg.LastIndexByteString", func(a []any) (any, error) { return int64(strings.LastIndexByte(str(a[0]), byte(int64Of(a[1])))), nil }),
+		"LastIndexByteString": h.fn2("bytealg.LastIndexByteString", func(a []any) (any, error) { return int(strings.LastIndexByte(str(a[0]), byte(int64Of(a[1])))), nil }),
 	})
 	e.Bind("internal/stringslite", map[string]runtime.Value{
 		"HasPrefix": h.fn2("stringslite.HasPrefix", func(a []any) (any, error) { return strings.HasPrefix(str(a[0]), str(a[1])), nil }),
 		"HasSuffix": h.fn2("stringslite.HasSuffix", func(a []any) (any, error) { return strings.HasSuffix(str(a[0]), str(a[1])), nil }),
-		"IndexByte": h.fn2("stringslite.IndexByte", func(a []any) (any, error) { return int64(strings.IndexByte(str(a[0]), byte(int64Of(a[1])))), nil }),
-		"Index":     h.fn2("stringslite.Index", func(a []any) (any, error) { return int64(strings.Index(str(a[0]), str(a[1]))), nil }),
+		"IndexByte": h.fn2("stringslite.IndexByte", func(a []any) (any, error) { return int(strings.IndexByte(str(a[0]), byte(int64Of(a[1])))), nil }),
+		"Index":     h.fn2("stringslite.Index", func(a []any) (any, error) { return int(strings.Index(str(a[0]), str(a[1]))), nil }),
 		"Cut": h.fn2("stringslite.Cut", func(a []any) (any, error) {
 			b, f, ok := strings.Cut(str(a[0]), str(a[1]))
 			return &runtime.Tuple{Elems: []runtime.Value{b, f, ok}}, nil
@@ -960,7 +961,7 @@ func (e *Engine) installStdlib() {
 		"TrimPrefix":      h.fn2("stringslite.TrimPrefix", func(a []any) (any, error) { return strings.TrimPrefix(str(a[0]), str(a[1])), nil }),
 		"TrimSuffix":      h.fn2("stringslite.TrimSuffix", func(a []any) (any, error) { return strings.TrimSuffix(str(a[0]), str(a[1])), nil }),
 		"Clone":           h.fn1("stringslite.Clone", func(a []any) (any, error) { return strings.Clone(str(a[0])), nil }),
-		"IndexByteString": h.fn2("stringslite.IndexByteString", func(a []any) (any, error) { return int64(strings.IndexByte(str(a[0]), byte(int64Of(a[1])))), nil }),
+		"IndexByteString": h.fn2("stringslite.IndexByteString", func(a []any) (any, error) { return int(strings.IndexByte(str(a[0]), byte(int64Of(a[1])))), nil }),
 	})
 	e.Bind("html", map[string]runtime.Value{
 		"EscapeString":   h.fn("html.EscapeString", func(a []any) (any, error) { return html.EscapeString(str(a[0])), nil }, html.EscapeString),
@@ -3153,6 +3154,19 @@ func (h *hostHelpers) scanReader(v runtime.VMCaller, args []runtime.Value) ([]an
 		return nil, err
 	}
 	return []any{r}, nil
+}
+
+// bytealgMaxBruteForce mirrors the host build's arch-tuned constant
+// (internal/bytealg/index_<arch>.go): amd64 and s390x brute-force up to
+// 64, arm64/ppc64x/loong64 up to 16, generic 0.
+func bytealgMaxBruteForce() int {
+	switch goruntime.GOARCH {
+	case "amd64", "s390x":
+		return 64
+	case "arm64", "ppc64", "ppc64le", "loong64":
+		return 16
+	}
+	return 0
 }
 
 // sortInPlace sorts a *runtime.Slice's elements directly — going through
