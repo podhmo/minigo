@@ -358,16 +358,6 @@ type parkWake struct {
 	chans []uintptr
 }
 
-// parkWakeOf folds one channel op's chanOf result into a parkWake: a
-// managed channel id is always kept (a dead one can still be re-armed,
-// e.g. Timer.Reset), while an unmanaged host channel is misc wake.
-func parkWakeOf(wakeable bool, wakeChan uintptr) parkWake {
-	if wakeChan != 0 {
-		return parkWake{chans: []uintptr{wakeChan}}
-	}
-	return parkWake{misc: wakeable}
-}
-
 // chanPtr is the single managed-channel id a channel op resolved to —
 // chanOf produces at most one tracked channel per op.
 func (w parkWake) chanPtr() uintptr {
