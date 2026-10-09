@@ -139,7 +139,11 @@ func BasicNameOf(td *TypeDef) string {
 // canonBasicName folds predeclared aliases: byte is uint8 and rune is
 // int32 — an alias spelled at a call site and its canonical name are the
 // same type.
-func canonBasicName(n string) string {
+func canonBasicName(n string) string { return CanonicalBasicName(n) }
+
+// CanonicalBasicName is canonBasicName for the compile-time operand
+// typing in the compile package.
+func CanonicalBasicName(n string) string {
 	switch n {
 	case "byte":
 		return "uint8"
