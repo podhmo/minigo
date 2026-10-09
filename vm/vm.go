@@ -1125,7 +1125,7 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 				// interpreter builtins (Pkg nil) get UConst so their own
 				// constant arms keep working (append's element-type
 				// conversion, real/imag's constant domain).
-				args = matBuiltinArgs(args)
+				args = v.matBuiltinArgs(args)
 			}
 			if c.SyncCallbacks {
 				return c.Fn(ownerCaller{v}, args)
@@ -1145,7 +1145,7 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 			continue
 		case *runtime.GoValue:
 			if fv := reflect.ValueOf(c.V); fv.IsValid() && fv.Kind() == reflect.Func {
-				return callReflectFunc(fmt.Sprintf("%v", fv.Type()), fv, v, matBuiltinArgs(args))
+				return callReflectFunc(fmt.Sprintf("%v", fv.Type()), fv, v, v.matBuiltinArgs(args))
 			}
 			return nil, fmt.Errorf("value of type %T is not callable", callee)
 		default:
@@ -7198,14 +7198,25 @@ func constPayload(x runtime.Value) (*runtime.UConst, bool) {
 // element through the declared element type, real/imag keep the
 // constant domain, and adaptConst still sees const-ness on script-to-
 // script calls.
-func matBuiltinArgs(args []runtime.Value) []runtime.Value {
+func (v *VM) matBuiltinArgs(args []runtime.Value) []runtime.Value {
 	var out []runtime.Value
 	for i, a := range args {
-		u, ok := a.(*runtime.UConst)
-		if !ok {
+		var mv runtime.Value
+		var err error
+		if n, ok := a.(*runtime.Named); ok {
+			// a converted constant T(c) materializes at T, not the
+			// default type — uint64(1<<63) crosses a bound call as a
+			// uint64 where the int64 default would overflow.
+			u, ok2 := n.V.(*runtime.UConst)
+			if !ok2 {
+				continue
+			}
+			mv, err = v.materializeConstErr(u, n.Typ)
+		} else if u, ok := a.(*runtime.UConst); ok {
+			mv, err = materializeDefault(u)
+		} else {
 			continue
 		}
-		mv, err := materializeDefault(u)
 		if err != nil {
 			continue // let the builtin itself report on the raw token
 		}
