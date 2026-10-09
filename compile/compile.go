@@ -2227,9 +2227,41 @@ func (c *compiler) namedIdentOf(te ast.Expr) (namedTypID, bool) {
 		if !isPkg {
 			return namedTypID{}, false
 		}
+		if c.selIsIface(ref, t.Sel.Name) {
+			// an interface operand compares dynamically — `rc ==
+			// NoBody` is legal gc regardless of the other side.
+			return namedTypID{}, false
+		}
 		return namedTypID{id: ref.Path + "." + t.Sel.Name, name: id.Name + "." + t.Sel.Name}, true
 	}
 	return namedTypID{}, false
+}
+
+// selIsIface reports whether the name a qualified type expression picks
+// out of an imported package names an interface: a bound typedef's
+// KindInterface flag, or an InterfaceType spec in a source-indexed
+// package. Unknown references and unresolved names report false.
+func (c *compiler) selIsIface(ref *runtime.ImportRef, name string) bool {
+	p, err := ref.Materialize()
+	if err != nil || p == nil {
+		return false
+	}
+	if p.Index != nil {
+		if td := p.Index.Types[name]; td != nil && td.Decl != nil {
+			if ts, ok := td.Decl.Spec.(*ast.TypeSpec); ok {
+				_, isIface := ast.Unparen(ts.Type).(*ast.InterfaceType)
+				return isIface
+			}
+		}
+	}
+	if p.Globals != nil {
+		if v, ok := p.Globals.Get(name); ok {
+			if td, ok := v.(*runtime.TypeDef); ok && td != nil {
+				return td.Kind == runtime.KindInterface
+			}
+		}
+	}
+	return false
 }
 
 // opCmpGate emits an OpTrap in place of a binary op or switch-case
