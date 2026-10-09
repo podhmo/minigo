@@ -422,23 +422,22 @@ func MethodsOf(s *Decl) ([]*Decl, error) {
 
 // MethodsIn returns every method declared in the package — the flat
 // counterpart of the per-type MethodsOf, covering the receiver-attached
-// decls Decls does not reach — in source position order. file filters
-// to the methods declared in that one file. A bound package carries no
-// index to walk.
+// decls Decls does not reach — in file order. It reads the index's
+// method list, so declarations the per-type name maps drop (a second
+// same-name method on one receiver, or a method on a receiver with no
+// type decl) still enumerate. file filters to the methods declared in
+// that one file. A bound package carries no index to walk.
 func MethodsIn(p *runtime.Package, file *syntax.File) ([]*Decl, error) {
 	if p == nil || p.Index == nil {
 		return nil, fmt.Errorf("inspect.Methods: package has no method index")
 	}
 	var out []*Decl
-	for _, td := range p.Index.Types {
-		for _, md := range td.Methods {
-			if file != nil && md.File != file {
-				continue
-			}
-			out = append(out, NewDecl(p, md))
+	for _, md := range p.Index.Methods {
+		if file != nil && md.File != file {
+			continue
 		}
+		out = append(out, NewDecl(p, md))
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].decl.Pos < out[j].decl.Pos })
 	return out, nil
 }
 

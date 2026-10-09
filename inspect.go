@@ -305,15 +305,20 @@ func (e *Engine) installInspect() {
 				}
 				return boxedSlice(ms), nil
 			}
-			p, err := e.pkgOf(runtime.Unwrap(args[0]))
-			if err != nil {
+			switch u := runtime.Unwrap(args[0]).(type) {
+			case *runtime.Package, *runtime.ImportRef:
+				p, err := e.pkgOf(u)
+				if err != nil {
+					return nil, err
+				}
+				ms, err := xinspect.MethodsIn(p, nil)
+				if err != nil {
+					return nil, err
+				}
+				return boxedSlice(ms), nil
+			default:
 				return nil, argerr("Methods", "a type decl, a package, or a file view")
 			}
-			ms, err := xinspect.MethodsIn(p, nil)
-			if err != nil {
-				return nil, err
-			}
-			return boxedSlice(ms), nil
 		}),
 		"MethodSet": bf("MethodSet", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])

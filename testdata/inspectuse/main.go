@@ -163,6 +163,24 @@ func MethodsFile() string {
 	return "ok"
 }
 
+// MethodsDup: same-name method declarations stay enumerable — the flat
+// list keeps every written decl, doc comments included, where the
+// per-type name map keeps only the last.
+func MethodsDup() string {
+	p := inspect.DirOf("./testdata/dupmethods")
+	ms := inspect.Methods(p)
+	if len(ms) != 3 {
+		return "want 3 method decls, got " + fmt.Sprint(len(ms))
+	}
+	if ms[0].Name != "Dup" || !strings.Contains(ms[0].Doc, "first declaration") {
+		return "first Dup doc missing: " + ms[0].Doc
+	}
+	if ms[1].Name != "Dup" || ms[2].Name != "Other" {
+		return "bad order: " + ms[1].Name + "," + ms[2].Name
+	}
+	return "ok"
+}
+
 // SignatureWalk: signature views on func and method.
 func SignatureWalk() string {
 	p := inspect.DirOf("./testdata/inspectpkg")

@@ -48,12 +48,13 @@ type TypeDeclInfo struct {
 
 // Index is the per-package declaration table.
 type Index struct {
-	Decls  []*Decl          // all decls in file order (init order)
-	Funcs  map[string]*Decl // non-method functions, incl. init
-	Types  map[string]*TypeDeclInfo
-	Vars   map[string]*Decl
-	Consts map[string]*Decl
-	Inits  []*Decl // init() functions in order
+	Decls   []*Decl          // all decls in file order (init order)
+	Methods []*Decl          // method decls in file order — every declaration, including same-name duplicates the per-type Methods maps drop
+	Funcs   map[string]*Decl // non-method functions, incl. init
+	Types   map[string]*TypeDeclInfo
+	Vars    map[string]*Decl
+	Consts  map[string]*Decl
+	Inits   []*Decl // init() functions in order
 
 	// LocalGens assigns each non-alias function-local type decl its
 	// `·gen` index — gc's noder numbers them in package source order
@@ -163,6 +164,7 @@ func Build(files []*syntax.File) (*Index, error) {
 		}
 		td.Methods[md.Name] = md
 	}
+	ix.Methods = methodDecls
 	return ix, nil
 }
 
