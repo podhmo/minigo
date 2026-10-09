@@ -92,19 +92,25 @@ func (e *Engine) installStdlib() {
 		"Formatter": &runtime.TypeDef{Name: "fmt.Formatter", Kind: runtime.KindInterface, MReqs: []string{"Format"}},
 		"Scanner":   &runtime.TypeDef{Name: "fmt.Scanner", Kind: runtime.KindInterface, MReqs: []string{"Scan"}},
 		"State":     &runtime.TypeDef{Name: "fmt.State", Kind: runtime.KindInterface, MReqs: []string{"Write", "Width", "Precision", "Flag"}},
-		"Print":     h.ffn("fmt.Print", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprint(h.out(), a...)) }, fmt.Print),
-		"Println":   h.ffn("fmt.Println", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprintln(h.out(), a...)) }, fmt.Println),
+		// Print/Fprint/Sprint need the flat script args: gc's operand
+		// spacing reads the reflect Kind, so a named type over string
+		// (json.Number) suppresses the space — the host-shaped args hide
+		// that inside fmtValue.
+		"Print": h.pffn("fmt.Print", 0, func(v runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
+			return retErr(fprintOperands(h.out(), a, flat))
+		}, fmt.Print),
+		"Println": h.ffn("fmt.Println", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprintln(h.out(), a...)) }, fmt.Println),
 		"Printf": h.ffn("fmt.Printf", 0, 1, func(a []any) (any, error) {
 			return retErr(fmt.Fprintf(h.out(), str(a[0]), a[1:]...))
 		}),
 		// Fprint* take an explicit writer — os.Stdout/os.Stderr arrive as
 		// GoValue (unwrapped by fmtArg to the native *os.File).
-		"Fprint": h.vffn("fmt.Fprint", -1, 1, func(v runtime.VMCaller, a []any) (any, error) {
+		"Fprint": h.pffn("fmt.Fprint", 1, func(v runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
 			w, err := asWriterVM(v, a[0])
 			if err != nil {
 				return nil, err
 			}
-			return retErr(fmt.Fprint(w, a[1:]...))
+			return retErr(fprintOperands(w, a[1:], flat[1:]))
 		}),
 		"Fprintf": h.vffn("fmt.Fprintf", 1, 2, func(v runtime.VMCaller, a []any) (any, error) {
 			w, err := asWriterVM(v, a[0])
@@ -120,7 +126,13 @@ func (e *Engine) installStdlib() {
 			}
 			return retErr(fmt.Fprintln(w, a[1:]...))
 		}),
-		"Sprint":   h.ffn("fmt.Sprint", -1, 0, func(a []any) (any, error) { return fmt.Sprint(a...), nil }, fmt.Sprint),
+		"Sprint": h.pffn("fmt.Sprint", 0, func(v runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
+			var buf bytes.Buffer
+			if _, err := fprintOperands(&buf, a, flat); err != nil {
+				return nil, err
+			}
+			return buf.String(), nil
+		}, fmt.Sprint),
 		"Sprintln": h.ffn("fmt.Sprintln", -1, 0, func(a []any) (any, error) { return fmt.Sprintln(a...), nil }, fmt.Sprintln),
 		"Sprintf": h.ffn("fmt.Sprintf", 0, 1, func(a []any) (any, error) {
 			return fmt.Sprintf(str(a[0]), a[1:]...), nil
@@ -5737,10 +5749,25 @@ func (h *hostHelpers) ffn(name string, formatAt, minArgs int, f func([]any) (any
 	}, target...)
 }
 
+// pffn is vffn without a format string whose inner fn also receives the
+// flat script args — the Print family's operand spacing keys on the
+// script-level string kind, which fmtArgs hides inside fmtValue.
+func (h *hostHelpers) pffn(name string, minArgs int, f func(runtime.VMCaller, []any, []runtime.Value) (any, error), target ...any) *runtime.BuiltinFunc {
+	return h.wffn(name, -1, minArgs, f, target...)
+}
+
 // vffn is ffn whose inner fn also receives the VM caller — needed when
 // an argument must call back into the script (a script-defined
 // io.Writer for fmt.Fprintf, say).
 func (h *hostHelpers) vffn(name string, formatAt, minArgs int, f func(runtime.VMCaller, []any) (any, error), target ...any) *runtime.BuiltinFunc {
+	return h.wffn(name, formatAt, minArgs, func(v runtime.VMCaller, a []any, _ []runtime.Value) (any, error) {
+		return f(v, a)
+	}, target...)
+}
+
+// wffn is the shared fmt-call wrapper: the inner fn receives both the
+// host-shaped args and the flat script args (before fmtArg unboxing).
+func (h *hostHelpers) wffn(name string, formatAt, minArgs int, f func(runtime.VMCaller, []any, []runtime.Value) (any, error), target ...any) *runtime.BuiltinFunc {
 	bf := &runtime.BuiltinFunc{Name: name, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) < minArgs {
 			return nil, fmt.Errorf("%s needs %d args, got %d", name, minArgs, len(args))
@@ -5753,7 +5780,7 @@ func (h *hostHelpers) vffn(name string, formatAt, minArgs int, f func(runtime.VM
 				a = append(a[:formatAt+1], tail...)
 			}
 		}
-		r, err := f(v, a)
+		r, err := f(v, a, flat)
 		if err != nil {
 			return nil, err
 		}
@@ -6866,6 +6893,42 @@ func callFormat(c runtime.VMCaller, x runtime.Value, f fmt.State, verb rune) boo
 		&runtime.UConst{V: constant.MakeInt64(int64(verb)), Rune: true},
 	})
 	return err == nil
+}
+
+// fprintOperands renders the fmt.Print family's operands with gc's
+// doPrint spacing: a space between operands only when neither is a
+// string — where "string" is the reflect Kind, so a named type over
+// string (json.Number) also suppresses it. The host-shaped args are
+// *fmtValue wrappers (reflect sees Ptr), so the named-string check
+// reads the flat script values.
+func fprintOperands(w io.Writer, a []any, flat []runtime.Value) (int, error) {
+	var buf bytes.Buffer
+	prevStr := false
+	for i, arg := range a {
+		isStr := arg != nil && reflect.TypeOf(arg).Kind() == reflect.String
+		if !isStr && i < len(flat) {
+			isStr = isNamedString(flat[i])
+		}
+		if i > 0 && !isStr && !prevStr {
+			buf.WriteByte(' ')
+		}
+		fmt.Fprint(&buf, arg) // bytes.Buffer writes never fail
+		prevStr = isStr
+	}
+	return w.Write(buf.Bytes())
+}
+
+// isNamedString reports whether a script value is a named type whose
+// underlying kind is string: Named layers unwrap to the stored scalar.
+func isNamedString(x runtime.Value) bool {
+	for {
+		n, ok := x.(*runtime.Named)
+		if !ok {
+			_, isStr := x.(string)
+			return isStr
+		}
+		x = n.V
+	}
 }
 
 // fmtArgs maps script call args to host fmt args: a multi-value call
