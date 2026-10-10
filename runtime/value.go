@@ -816,7 +816,10 @@ var opaqueKeyOrigs sync.Map // mapKey -> Value
 func OpaqueKey(v Value) Value {
 	ck := opaqueKeyOf(v)
 	if _, ok := ck.(mapKey); ok {
-		opaqueKeyOrigs.Store(ck, v)
+		// the orig restores what OpaqueKeyOrig hands back — gc's
+		// boxing snapshots the value, so the stored orig is a copy:
+		// mutating the source var after the store must not leak.
+		opaqueKeyOrigs.Store(ck, Copy(v))
 	}
 	return ck
 }
