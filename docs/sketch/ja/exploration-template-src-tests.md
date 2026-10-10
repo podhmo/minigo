@@ -122,6 +122,31 @@ TODO.md の次の2項目をどう進めるかの検討。
 
 `TestExecute` "range int8" (%T fmtValue 化), `TestIssue48215` (関数ローカル型の埋め込み ptr 昇格), `errors.AsType` (generic bind 機構), `TestMaxExecDepth` (frame limit ポリシー)。次の拡大は `text/template/parse` → `html/template` → `example*_test.go` の順。
 
+## round-2: 非 SKIP 行の全滅と html/template suite
+
+### 実施内容
+
+- 起点 (round-1 残り): `text/template` 42/46 → 本ラウンドで **46/46 PASS**。新規に `text/template/parse` **17/17 PASS**、`html/template` **103/105 PASS** (非 SKIP 行は全滅。残る2件は upstream 側に broken 注記のある正当 SKIP: `TestIssue31810`, `TestTemplateLookUp`)。
+- stack #776: #774〜#796 の 22 PR (main 起点は先頭 #774 のみ、以降すべて前ブランチ先端への実コミット連鎖)。make 配線は `make tmpltests` / `tmpltests-parse` / `tmpltests-html` / `tmpltests-all` (#787)。
+- 実行は直列の fix worker セッション4本 (text/template 残行 → html 有効化 → marshal 周辺+配線 → html 残行掃討) + 最終検証で見つかった harness バグ1件を coordinator 側で修正。
+
+### 計画外の記録と判断
+
+- **`errors.AsType` は新機構不要だった。** 計画では「generic instantiation の bind 機構が無い」と読んでいたが `runtime.BuiltinFunc.GenFn` が既存で、instantiation 経路も vm にあった。→ 判断: As-walk を GenFn で実装するだけの素直な bind 追加 (#774)。TODO エントリの「機構が不明」という前提が老朽化していた例。
+- **`TestMaxExecDepth` は documented divergence にせず harness で正直に通した。** upstream の `maxExecDepth = 100000` は interpreter frame limit (10000) に先に負けるため、到達不能な guard だった。→ 判断: `srcRewrites` で upstream `exec.go` を copy+patch (`maxExecDepth = 250`) し、実コード経路のエラーを frame limit 以下で踏む (#778)。後続で dep パッケージにも rewrite を届ける key 化拡張 (#794 — html suite では text/template が `-src` 側の dep になるため)。「テストを通す」のではなく「テストが検査する本物の guard に届く」形を選んだ。
+- **`"range int8"` の `%T` は2段で解いた。** 第1 worker は原因特定まで (`*fmtValue` 箱が accumulator cell の `Named.V` に入り `a[formatAt].(string)` を外して `%T`→`%s` 置換が不発) で deferred — 広い `Cell` deref は `&V{7777}.String()` の描画を壊した。→ 第2 worker は spec スロット復元 (`a[formatAt]` が `*fmtValue`/`Named{string}` のとき `formatString` で flat 側から spec を復元) + `fmtArg` の narrow unwrap で着地 (#782)。値側は非接触で回帰なし。「原因は分かっていたので再挑戦させた」が機能した例。
+- **`Funcs("")` / `TestEscapeSet` の犯人はどちらもテンプレートではなかった。** standalone では再現せず suite 内のみ発生した2件は、bisect すると (a) `unfoldTypExpr` が `pkg.T` セレクタを解決せず `FuncMap{"": f}` の map キーをフィールド名定数と誤分類していた (#788)、(b) 関数ローカル型 `[]*dataItem` のフィールドが package index に無く `td=nil` 穴を `Addr()` が無条件 deref していた (#789) — いずれも interpreter 側の型解決バグ。(b) は round-1 残りの `TestIssue48215` (関数ローカル埋め込み ptr 昇格、#777) と同じ「関数ローカル typedef の可視性」の壁の別面だった。
+- **`TestParseZipFS` は4層の壁だった。** TODO に「bound archive/zip が Deflate 非対応」と書かれていた表層の下に、別の根本原因が直列に4つ: (a) `opaqueStoreArg` が `*runtime.Named` をポインタ越境し `sync.Map` の decompressors 登録が消失 (#790)、(b) `1<<uint(max)` の untyped 左オペランドが count 側の型を拾う shift typing (#791)、(c) フィールド typedef が `[maxNumLit+maxNumDist]int` の生式を保持し `new()` の fold 済みと綴り不一致 → pointee 同一性 (#792)、(d) `unsafe.Offsetof` が stub で `hash/crc32` init に到達 (#793 — コンパイラがセレクタを (base, "field") に書き換え intrinsic がフィールド順で計測)。→ 判断: 各層を 1 PR ずつ潰し、zip deflate 読み取りが end-to-end で動くところまで潜った。`unsafe.Offsetof` は「`unsafe.Pointer` 型は対象外」の範囲に踏み込まない形 (フィールド名 + オフセット計算のみ) で実装。
+- **eval-order `{{.Hello}} {{.N}}` は構造的に不可能と判明して正直 defer。** bound 経路は marshal 時に fields → niladic methods の順で eager 評価するため `hi 1` (gc: `hi 2`)。marshal 順序の入替は diverge を移すだけで、host 呼出しに渡せる遅延 shape が存在しない (`reflect.StructOf` はメソッド合成不可、`map[string]any` は値を eager 化)。`--src` 経路は解釈 `evalField` が script Struct を遅延走査して gc と一致済み。→ 判断: bound 経路の構造的ギャップとして TODO に境界条件つきで記録 (#795)、修正はしない。
+- **検証フェーズで harness 自身のバグを踏んだ。** `materializeDep` は dep パスが対象パッケージの parent dirs と重なる場合 (`-pkg text/template/parse` で dep `text/template`) に、parent-dir loop が先に作った symlink 越しに `copyTestFile` → 実 GOROOT の root 所有ファイルへの WriteFile で EACCES (書けていたら実 GOROOT を汚すところだった)。→ 判断: 既存 dst を消してから patch copy (#796)。#794 単体の検証が html suite のみだったため parse suite でのみ発火する経路が残っていた — 「直前 PR の変更範囲以外の suite も回す」を検証手順に含めるべき教訓。
+- **bind の追加は「不足分対応」のみ。** 新たに足した bind は `utf8.DecodeLastRune(+InString)`、`bytealg.MakeNoZero/Cutover/CompareString`、`time.Date`+`time.Month`+const 群、`internal/testenv.SetGODEBUG`/`godebug.New`、`bytes.IndexAny/EqualFold/ContainsAny`、`strconv.ErrSyntax/ErrRange/NumError`、`unsafe.Offsetof` — いずれも「ソース解釈が参照するが未バインドで trap する」メンバで、性能目的の差し替えは無し。`bytealg`/`bytes` の追加は upstream ソースを解釈させるより bind した方が正確性が上がる部類 (asm stub 相当)。
+
+### 残りの状況
+
+- **template suite 側**: 非 SKIP 行は全てクリア。残る `[ ]` は `%T` on `&` of interface var (concrete pointee を印字、TODO 新規)、`example*_test.go` (外部 `package template_test` 用の第2パッケージ dir + `// Output:` チェック + `log`/`os` 系未 bind 依存、TODO 記録済み)、range-over-func `iter` 行 (interpreter 側の機能待ち)。
+- **周辺の `[ ]`**: bound 経路の eval-order (構造的 defer)、`sync.Pool.Put` の値 alias、host-backed 値のコピー alias — marshal 境界の残件。
+- **対象外としたもの**: `unsafe.Pointer` 型 (境界クラス、issue #40)、`--src` template hot-path 計測 (性能動機の作業は今回の指示の対象外)、oapi-codegen `--src` 実走 (下流の実用 epic — 今回の壁除去で到達度は上がっているが「通す」自体は別タスク)。
+
 ## Future work: テンプレート登録の遅延（質問への回答メモ・最終）
 
 前提: text/template は verbatim ソース解釈のまま。登録側だけを intrinsic に差し替える最小構成で「Parse を遅延できるか」という意味論の遊びの探索。パフォーマンスではなく「解釈の差異でどこまで進むか」の話。
