@@ -922,7 +922,7 @@ func (e *Engine) installStdlib() {
 	// unsafe.Offsetof of cpu flags). Stub the pure entry points stdlib
 	// sources call — embed.FS's lookup, for one — over strings/bytes.
 	e.Bind("internal/bytealg", map[string]runtime.Value{
-		"MaxLen":        int64(64),
+		"MaxLen":        int64(bytealgMaxLen()),
 		"MaxBruteForce": int64(bytealgMaxBruteForce()),
 		"Compare":       h.fn2("bytealg.Compare", func(a []any) (any, error) { return int(bytes.Compare(byteSlice(a[0]), byteSlice(a[1]))), nil }),
 		"Count": h.fn2("bytealg.Count", func(a []any) (any, error) {
@@ -3154,6 +3154,23 @@ func (h *hostHelpers) scanReader(v runtime.VMCaller, args []runtime.Value) ([]an
 		return nil, err
 	}
 	return []any{r}, nil
+}
+
+// bytealgMaxLen mirrors the host build's arch-tuned init (internal/bytealg
+// index_<arch>.go). amd64 is 63 with AVX2 else 31; without reading CPUID we
+// take the conservative 31 — the bound only gates when IndexString may be
+// used, and a smaller bound just sends longer needles to the generic path.
+// arm64/ppc64x 32, s390x/loong64 64.
+func bytealgMaxLen() int {
+	switch goruntime.GOARCH {
+	case "amd64":
+		return 31
+	case "arm64", "ppc64", "ppc64le":
+		return 32
+	case "s390x", "loong64":
+		return 64
+	}
+	return 0
 }
 
 // bytealgMaxBruteForce mirrors the host build's arch-tuned constant
