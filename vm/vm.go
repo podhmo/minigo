@@ -11332,6 +11332,17 @@ func stampContainerTyp(x runtime.Value, td *runtime.TypeDef) runtime.Value {
 	return x
 }
 
+// sameSpelledTwin reports whether tag is a host-minted twin of the
+// declared type td: bound host code stamps name-only typedefs
+// (Spec == nil) on containers it hands to source-interpreted stdlib —
+// a host []fs.DirEntry feeding io/fs's `[]DirEntry` slot — and those
+// re-tag when the spellings agree. Script declarations carry a Spec,
+// so same-named script types from different scopes never qualify
+// (named-to-named needs a conversion in Go).
+func sameSpelledTwin(tag, td *runtime.TypeDef) bool {
+	return tag != nil && tag.Spec == nil && td != nil && tdName(tag) == tdName(td)
+}
+
 // coerceConcrete applies td to a non-nil x under a non-interface target.
 // A Named value keeps its identity only for the identical declared type
 // (Go: named-to-named needs a conversion); GoValues pass unchecked at the
@@ -11403,8 +11414,12 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		// a host []fs.DirEntry feeding a source-interpreted io/fs's
 		// `[]DirEntry` slot — re-tags to the declared type when the
 		// spellings agree: its elements are already script values
-		// (each a GoValue box dispatching by reflection).
-		if s, ok := runtime.Unwrap(n.V).(*runtime.Slice); ok && tdName(n.Typ) == tdName(td) {
+		// (each a GoValue box dispatching by reflection). The tag must
+		// be host-minted and the target a slice type: a script-declared
+		// same-named type is a different type, and stamping a
+		// slice-named payload with a struct target is nonsense.
+		if s, ok := runtime.Unwrap(n.V).(*runtime.Slice); ok &&
+			sameSpelledTwin(n.Typ, td) && v.peelNamed(td).Kind == runtime.KindSlice {
 			return stampContainerTyp(s, td)
 		}
 		f.trap("cannot use %s as %s", tdName(n.Typ), tdName(td))
@@ -11450,12 +11465,16 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		}
 	}
 	if tn, ok := x.(*runtime.TypedNil); ok {
+		utd0 := v.peelNamed(td)
 		if sameTypeDef(tn.Typ, td) || v.tdShapeEq(tn.Typ, td) || v.samePointeeAlias(tn.Typ, td) ||
 			// A nil carries no payload, so a value tagged with the host
 			// twin of the target type — a source-interpreted io/fs's
 			// `[]DirEntry` result fed by a host []fs.DirEntry nil —
 			// re-tags to the declared type when the spellings agree.
-			tdName(tn.Typ) == tdName(td) {
+			// Restricted to host-minted twin tags of container targets:
+			// a script-declared same-named type stays distinct.
+			(sameSpelledTwin(tn.Typ, td) && utd0 != nil &&
+				(utd0.Kind == runtime.KindSlice || utd0.Kind == runtime.KindMap || utd0.Kind == runtime.KindChan)) {
 			return &runtime.TypedNil{Typ: td} // re-tag to the declared type
 		}
 		f.trap("cannot use nil %s as %s", tdName(tn.Typ), tdName(td))
@@ -11480,7 +11499,7 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		// spellings agree: its elements are already script values
 		// (each a GoValue box dispatching by reflection).
 		if s, ok := runtime.Unwrap(x).(*runtime.Slice); ok &&
-			utd != nil && utd.Kind == runtime.KindSlice && tdName(tag) == tdName(td) {
+			utd != nil && utd.Kind == runtime.KindSlice && sameSpelledTwin(tag, td) {
 			return stampContainerTyp(s, td)
 		}
 		// a named target whose underlying is an interface (`type Token
@@ -11582,7 +11601,7 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 			// declared element zero instead of NIL.
 			x = stampContainerTyp(x, td)
 		} else if !sameTypeDef(ct, td) {
-			if tdName(ct) == tdName(td) {
+			if sameSpelledTwin(ct, td) {
 				// a host-produced container tagged with the target
 				// type's twin — a host []fs.DirEntry feeding a
 				// source-interpreted io/fs's `[]DirEntry` slot —
