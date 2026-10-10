@@ -73,6 +73,7 @@ TODO.md の次の2項目をどう進めるかの検討。
 
 - **`fmt` Scan 系 (`Sscan`/`Sscanf`/`Sscanln`/`Scan`/`Scanf`/`Scanln`/`Fscan`/`Fscanf`/`Fscanln`)** (#747)。`--src text/template` が `parse/node.go` の `fmt.Sscan` で全滅していたため。script ref → host var の mirror + `SetRef` write-back で実装し、第2パスレビューで「write-back が宣言タグを消す」「out-param 0個で arity trap」の2バグを追加修正。
 - **`bytealg.MaxBruteForce`** (#749)。`--src strings`/`--src bytes` が `bytealg.IndexByte` 経由で参照する定数。`int` を返すのが正 (int64 タグ事故の主戦場だった箇所)。
+- **`bytealg.MaxLen`** (同上)。arch 依存定数のため `bytealgMaxLen()` で GOARCH 追随に変更。amd64 は CPUID 無しの保守値 31 (IndexString 適用可否の閾値なので小さい側は常に安全)。レビュー子の指摘で発覚。
 - **`os.DirFS`** (#756)。`TestParseFS` が `os.DirFS(dir) fs.FS` を要求。ただし後述の通り `io/fs` 本体は bind しないまま。
 
 ### 足さなかった (または撤回した) bind
