@@ -64,3 +64,54 @@ TODO.md の次の2項目をどう進めるかの検討。
 
 - harness を `tools/` に置くか、usecasefuzz 側のタスクにするか。
 - FAIL が想定外に大量に出た場合の triage 運用 (difffuzz 同様 1 root cause = 1 PR を想定)。
+
+## バインディング判断の変遷と TODO
+
+このラウンドで「bound (ネイティブバインド) ↔ ソース解釈」の境界をどう動かしたかの記録。bind するとそのパッケージは host 実行になる (速いが script 側の型を見えなくする) ので、判断は性能ではなく正確性が先。
+
+### 足した bind
+
+- **`fmt` Scan 系 (`Sscan`/`Sscanf`/`Sscanln`/`Scan`/`Scanf`/`Scanln`/`Fscan`/`Fscanf`/`Fscanln`)** (#747)。`--src text/template` が `parse/node.go` の `fmt.Sscan` で全滅していたため。script ref → host var の mirror + `SetRef` write-back で実装し、第2パスレビューで「write-back が宣言タグを消す」「out-param 0個で arity trap」の2バグを追加修正。
+- **`bytealg.MaxBruteForce`** (#749)。`--src strings`/`--src bytes` が `bytealg.IndexByte` 経由で参照する定数。`int` を返すのが正 (int64 タグ事故の主戦場だった箇所)。
+- **`os.DirFS`** (#756)。`TestParseFS` が `os.DirFS(dir) fs.FS` を要求。ただし後述の通り `io/fs` 本体は bind しないまま。
+
+### 足さなかった (または撤回した) bind
+
+- **`bytes.IndexAny`**: 計画時は html/template の第一の止まり点として bind 候補だったが、int-tag 修正で bound `bytealg.IndexByte` 経由でソース側 `bytes.IndexAny` がそのまま動くことが分かり bind せず。
+- **`io/fs`**: `os.DirFS` と同じ流れで bind を検討したが、bound `io/fs` は `embed.FS` (script struct) の script メソッドを原理的に呼べないと判明 → 撤回。`io/fs` はソース解釈維持で、衝突したのは「host 生成の同綴り container が宣言型を失う」問題として marshal/retag 側で解決 (`stampContainerTyp` 系)。
+- **`errors.AsType`**: `TestExecError_CustomError` が必要とするが、generic host func の instantiation bind 機構がない。TODO `[ ]` エントリとして残した (未実装)。
+- **`unsafe.Pointer` 型**: `--src sort`/`internal/reflectlite` の壁。型+変換の実装が要るので TODO `[ ]` として残した。
+
+### この経緯で追加した TODO
+
+- **`--src` template hot-path 計測**: 「bind を止めた分遅くなるのでは」という疑問への回答として、支配コスト (ノード毎の minireflect 往復 + embed.FS 解釈走査) を計測してから fast-path を決める、という調査タスク。盲 fast-path 禁止の注記つき。
+- **nil retag の綴り一致による型混同**: 第2パスレビュー指摘。same-spelled twin retag は設計上の機構だが、非修飾名一致は別パッケージ同名型と衝突しうる。repro なし・直すなら shape 証明が要るので TODO に留めた。
+- その他、harness 初回スキャン由来の TODO (FieldByName 昇格、`%T` fmtValue、TestMaxExecDepth、Uint on uint8、`&` on package-level interface var) は各回で随時 `[ ]` 登録済み。
+
+## round-1: harness 構築と FAIL 潰し
+
+### 実施内容（おまけ）
+
+- `tools/tmpltests` (scratch GOROOT + `testing`/`flag`/`iter` shim + driver 生成) を #745 で導入し、upstream `text/template` テスト 46 件を verbatim 実行可能にした。
+- FAIL を 1 root cause = 1 PR で潰し、34 → **42 PASS** (stack #766: #747, #749, #750〜#755 系, #753, #756, #757, #759, #770)。TODO 起点の2件 (evalField panic・html/template 系) は FAIL 集合の一部として処理された。
+- 残 FAIL/TRAP 4件は全部再現手順つきで TODO.md に記録済み (後述)。
+
+### 計画外の記録と判断
+
+計画時の理解と実施後の理解がずれた点と、その時点で下した判断の記録。
+
+- **evalField panic の本質は「括弧」ではなかった。** 計画では `{{(index .Items 1).Name}}` の括弧つきパイプラインを疑っていたが、実態は `reflect.Value` を返す builtin 結果全般が `*runtime.GoValue{V: *RValue}` の二重箱で minireflect 正規化をすり抜け、`evalField` に壊れた値として届くことだった。→ 判断: `wrap` で内側 view を採用する修正 (#750)。テンプレート側ではなく minireflect 側のバグ。
+- **`bytes.IndexAny` の bind は不要になった。** 計画では html/template の第一の止まり点として bind 候補に挙げたが、`int` API が `int64` タグで返る問題 (#749) を直すと bound `bytealg.IndexByte` 経由でソース側 `bytes.IndexAny` がそのまま動いた。→ 判断: bind せず、実測で足りることを確認した上で bind 案を捨てた。
+- **`os.DirFS`/`io/fs` の bind 案は途中で撤回した。** bind すると `io/fs` 経由で embed.FS (script struct) の script メソッドを呼べなくなることが判明 — bound io/fs は原理的にこの形を満たせない。→ 判断: `io/fs` はソース解釈維持を前提に、問題を marshal 側の same-spelled container retag として解き直した (#756)。「bind すれば済む」という初期想定が崩れた典型例。
+- **`illegal number syntax: "0x"` の正体は lexing ではなかった。** 最初はリテラル字句解析起因と推測したが、実態は bound call に渡った `uint64(1<<63)` が `int64` デフォルトで materialize されて overflow panic → fmt.Format の `%!x(PANIC=...)` 出力が後続 lex を壊す連鎖だった。→ 判断: converted const は代入境界と同じく target 型で materialize (#753)。
+- **AssignableTo/Implements の欠損は1層ではなく3層だった。** 計画では「host-td ↔ script-iface の経路が無い」1件と読んでいたが、実態は `Type()` が host box の実 `reflect.Type` を返さない (#757) + `typeOfValue` が `IfaceNil` を処理しない (#759) + typedef-backed host 型の `Implements` が host メソッドセットを見ない (#770) の積層。→ 判断: 各層を別 PR に分けて潰した (1 root cause = 1 PR の維持)。
+- **自分の修正が新しい shape を露出させた (レビュー子セッションの検証で発覚)。** `typeOfValue` が IfaceNil のタグを返すようになった結果、成功経路が生の `IfaceNil` を返し始め、`TypeAssert` の `p == nil`・`Elem()` のアクセサ (Len 等) が gc と不一致に。→ 判断: 境界で `TypedNil` に正規化する規則 (vm の `unboxAsserted` と同型) を `Elem()`/TypeAssert に適用し、pin も両パターンを網羅するよう拡張。バグ系の指摘は全て採用、リファクタ系は「dead code の normVal 重複」「kindOfValue の IfaceNil arm」は採用、「中間コミット squash」は不採用 (force-push リスク > bisect hygiene、merge 時 squash で代替可能)。
+- **`%T` が `*minigo.fmtValueN` を印字する行だけ残った。** standalone (同一テンプレート+同一データ+`New().Funcs().Parse()`+struct field 経由) では一切再現しない — 実テストファイル環境にのみ発生する別 divergence。→ 判断: 深追いを切り上げて再現条件つきで TODO.md に記録し、次の FAIL に進む。
+- **レビュー依頼の「main..tip 全差分」は字義通りには tip PR のみを意味した。** stack のブランチは sibling (各 PR が main 起点) で、main..tip = #759 の差分だけだった。→ 判断: 字義解釈のレビューを採用し、union 全体のレビューが必要なら別途実行することを報告に添えた。
+
+- **レビュー第2パス (union 差分) の要否判断。** stacked PRs の全体差分 (`main..ledger`) を再レビューさせた結果の採否: 採用 = DBG println 残骸の削除、scanFn の write-back が宣言タグを消す件 (named スキャンターゲット)、同一綴り slice retag が N/CapN を落とす件 (`stampContainerTyp` 化)、`-pkg` トップレベル・`-only` 事前フィルタ・shim Cleanup/Deadline・CommandContext 化 (いずれも harness 側)。不採用 = nil retag の「綴り一致」型混同 (repro なし・機構は設計上の twin — TODO 記録に留めた)、host method-set 列挙の共通ヘルパ抽出・scanReader の receiver 除去 (対称性の薄い cosmetic、churn > gain)。
+- **初回レビューの範囲誤認をユーザー指摘で修正。** 当初 `main..tip` を字義解釈して最終 PR のみをレビュー対象にしたが、stacked PRs の文脈では全体差分を意味した。sibling-cut 構成のため `git diff main..<tip branch>` では union merge の差分を取る必要があった — 第2パスは ledger ブランチで再実行した。
+
+### 残りの状況
+
+`TestExecute` "range int8" (%T fmtValue 化), `TestIssue48215` (関数ローカル型の埋め込み ptr 昇格), `errors.AsType` (generic bind 機構), `TestMaxExecDepth` (frame limit ポリシー)。次の拡大は `text/template/parse` → `html/template` → `example*_test.go` の順。
