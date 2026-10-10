@@ -1841,6 +1841,11 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 	case *ast.UnaryExpr:
 		switch x.Op {
 		case token.NOT:
+			// a negated constant stays an untyped bool — it adopts
+			// into a named operand (`f == !false`).
+			if c.staticOpTyp(x.X).untyped {
+				return opTyp{te: &ast.Ident{Name: "bool"}, untyped: true}
+			}
 			return opTyp{te: &ast.Ident{Name: "bool"}}
 		case token.SUB, token.ADD, token.XOR:
 			return c.staticOpTyp(x.X) // -x/+x/^x keeps the operand's type
@@ -1850,9 +1855,16 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 		return opTyp{}
 	case *ast.BinaryExpr:
 		switch x.Op {
-		case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ:
-			return opTyp{te: &ast.Ident{Name: "bool"}}
-		case token.LAND, token.LOR:
+		case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ,
+			token.LAND, token.LOR:
+			// a constant-only predicate is itself an untyped bool
+			// constant — it adopts into a named operand (`f && (1 ==
+			// 1)`, `f == (2 > 1)`), like any untyped literal.
+			ux := c.staticOpTyp(x.X)
+			uy := c.staticOpTyp(x.Y)
+			if (ux.untyped || ux.nilOperand) && (uy.untyped || uy.nilOperand) {
+				return opTyp{te: &ast.Ident{Name: "bool"}, untyped: true}
+			}
 			return opTyp{te: &ast.Ident{Name: "bool"}}
 		}
 		// arithmetic adopts the operand type: a named side wins; an
@@ -1896,9 +1908,15 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 					return opTyp{te: vs.Type}
 				}
 				// `var x = e` — the initializer at the name's own slot
-				// types it (a multi-result single RHS stays unknown).
+				// types it (a multi-result single RHS stays unknown). An
+				// untyped initializer binds its literal default, like
+				// noteDeclTyp's in-function path (`var x = 5` is int).
 				if len(vs.Values) == len(vs.Names) && vd.NameIdx < len(vs.Values) {
-					return c.staticOpTyp(vs.Values[vd.NameIdx])
+					rhs := vs.Values[vd.NameIdx]
+					if t := c.staticOpTyp(rhs); !t.untyped {
+						return t
+					}
+					return c.defaultOpTyp(rhs)
 				}
 			}
 			return opTyp{}
@@ -1960,6 +1978,14 @@ func (c *compiler) callOpTyp(x *ast.CallExpr) opTyp {
 	}
 	switch f := x.Fun.(type) {
 	case *ast.Ident:
+		// a local binding shadows the package function — `g := func()
+		// T() {...}` answers its own signature, not g's.
+		if b := c.fs.lookupBinding(f.Name); b != nil {
+			if ft, ok := ast.Unparen(b.declTyp).(*ast.FuncType); ok {
+				return c.funcTypeResultOpTyp(ft)
+			}
+			return opTyp{}
+		}
 		// a declared function resolves its result type regardless of
 		// arity — the args gate below exists for builtins like len()
 		// whose zero-arg form has no meaningful static result.
@@ -2040,6 +2066,59 @@ func (c *compiler) funcResultOpTyp(fd *ast.FuncDecl) opTyp {
 		return opTyp{iface: true}
 	}
 	return opTyp{te: te}
+}
+
+// funcTypeResultOpTyp resolves a literal's or binding's FuncType to its
+// single result type — the same single-result rule funcResultOpTyp
+// applies, minus the declared function's type-parameter check.
+func (c *compiler) funcTypeResultOpTyp(ft *ast.FuncType) opTyp {
+	if ft == nil || ft.Results == nil || len(ft.Results.List) != 1 {
+		return opTyp{}
+	}
+	res := ft.Results.List[0]
+	if len(res.Names) > 1 {
+		return opTyp{}
+	}
+	te := res.Type
+	if c.isIfaceTypeExpr(te) {
+		return opTyp{iface: true}
+	}
+	return opTyp{te: te}
+}
+
+// defaultOpTyp resolves an untyped initializer to the type it binds at
+// a `var x = e` / `x := e` declaration — a literal's default type, or
+// bool for the true/false idents. Anything else stays unknown (an
+// untyped const expression's default needs its kind, which the static
+// walk doesn't carry).
+func (c *compiler) defaultOpTyp(rhs ast.Expr) opTyp {
+	switch t := ast.Unparen(rhs).(type) {
+	case *ast.BasicLit:
+		return opTyp{te: defaultLitTyp(t)}
+	case *ast.Ident:
+		if t.Name == "true" || t.Name == "false" {
+			return opTyp{te: &ast.Ident{Name: "bool"}}
+		}
+	}
+	return opTyp{}
+}
+
+// defaultLitTyp names an untyped literal's bind-time default type, like
+// gc: 'a' is rune, 1.5 is float64, 1i is complex128.
+func defaultLitTyp(lit *ast.BasicLit) *ast.Ident {
+	switch lit.Kind {
+	case token.INT:
+		return &ast.Ident{Name: "int"}
+	case token.FLOAT:
+		return &ast.Ident{Name: "float64"}
+	case token.IMAG:
+		return &ast.Ident{Name: "complex128"}
+	case token.CHAR:
+		return &ast.Ident{Name: "rune"}
+	case token.STRING:
+		return &ast.Ident{Name: "string"}
+	}
+	return nil
 }
 
 // typeSpecOf resolves a type expression to its declaring TypeSpec — a
@@ -2210,14 +2289,7 @@ func (c *compiler) namedIdentOf(te ast.Expr) (namedTypID, bool) {
 		}
 		// predeclared named types: byte and rune canonicalize to their
 		// underlying types — they are the same type for assignability.
-		name := t.Name
-		switch name {
-		case "byte":
-			name = "uint8"
-		case "rune":
-			name = "int32"
-		}
-		return namedTypID{id: "predecl:" + runtime.CanonicalBasicName(name), name: t.Name}, true
+		return namedTypID{id: "predecl:" + runtime.CanonicalBasicName(t.Name), name: t.Name}, true
 	case *ast.SelectorExpr:
 		id, ok := t.X.(*ast.Ident)
 		if !ok {
@@ -2297,6 +2369,12 @@ func (c *compiler) opCmpGate(x, y ast.Expr, pos token.Pos) bool {
 		if !ok {
 			return false // unnamed non-nilable — rare; stays silent
 		}
+		// gc orders the operands as written: `nil == i` reports
+		// "untyped nil and int", `i == nil` the reverse.
+		if xt.nilOperand {
+			c.trap(pos, "invalid operation: mismatched types untyped nil and %s", oi.name)
+			return true
+		}
 		c.trap(pos, "invalid operation: mismatched types %s and untyped nil", oi.name)
 		return true
 	}
@@ -2345,27 +2423,10 @@ func (c *compiler) noteDeclTyp(name string, effType ast.Expr, isConst bool, rhs 
 	if te == nil && rhs != nil {
 		te = c.staticOpTyp(rhs).te
 		if te == nil && !isConst {
-			if id, ok := ast.Unparen(rhs).(*ast.Ident); ok && (id.Name == "true" || id.Name == "false") {
-				// bool literals are idents, not BasicLit — they still
-				// default to bool at bind, like gc.
-				te = &ast.Ident{Name: "bool"}
-			}
-			if lit, ok := rhs.(*ast.BasicLit); ok {
-				// an untyped literal defaults at bind, like gc: 'a' is
-				// rune, 1.5 is float64.
-				switch lit.Kind {
-				case token.INT:
-					te = &ast.Ident{Name: "int"}
-				case token.FLOAT:
-					te = &ast.Ident{Name: "float64"}
-				case token.IMAG:
-					te = &ast.Ident{Name: "complex128"}
-				case token.CHAR:
-					te = &ast.Ident{Name: "rune"}
-				case token.STRING:
-					te = &ast.Ident{Name: "string"}
-				}
-			}
+			// an untyped initializer defaults at bind, like gc —
+			// shared with identOpTyp's package-level `var x = e` arm
+			// through defaultOpTyp/defaultLitTyp.
+			te = c.defaultOpTyp(rhs).te
 		}
 	}
 	if te != nil {
