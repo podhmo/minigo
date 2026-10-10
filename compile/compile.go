@@ -2260,12 +2260,140 @@ func (c *compiler) unfoldTypExpr(te ast.Expr, depth int) ast.Expr {
 		return nil
 	}
 	t := ast.Unparen(te)
-	if _, ok := t.(*ast.Ident); ok {
-		if ts := c.typeSpecOf(t); ts != nil {
-			return c.unfoldTypExpr(ts.Type, depth-1)
+	switch tt := t.(type) {
+	case *ast.Ident:
+		if b := c.fs.lookupBinding(tt.Name); b != nil {
+			if b.typeDecl && b.tspec != nil {
+				// a function-local `type` decl — its spec names
+				// things in this file's scope like the caller's.
+				return c.unfoldTypExpr(b.tspec.Type, depth-1)
+			}
+			break // a var/const binding shadows the name — opaque
+		}
+		if _, isUp := c.fs.upmap[tt.Name]; isUp {
+			break // a captured var — opaque
+		}
+		if _, bound := c.binds[tt.Name]; bound {
+			break // a bound type parameter — opaque
+		}
+		// A package-level spec's names resolve in its own package's
+		// file scope, not the caller's.
+		if ts := pkgTypeSpec(c.pkg, tt.Name); ts != nil {
+			return c.unfoldSpecType(c.pkg, ts, depth-1)
+		}
+	case *ast.SelectorExpr:
+		// pkg.T resolves through the imported package's source index —
+		// `type FuncMap map[string]any` must expose its MapType shape so
+		// a composite literal's keys evaluate as expressions.
+		if ref, name, ok := c.selTypRef(tt); ok {
+			if p, ts := selTypeSpec(ref, name); ts != nil {
+				return c.unfoldSpecType(p, ts, depth-1)
+			}
 		}
 	}
 	return t
+}
+
+// unfoldSpecType continues unfoldTypExpr inside the package a type spec
+// was declared in: an ident resolves through that package's index, a
+// selector's qualifier through the imports of the spec's own file —
+// never the caller's file, where the same qualifier may point at a
+// different package.
+func (c *compiler) unfoldSpecType(p *runtime.Package, ts *ast.TypeSpec, depth int) ast.Expr {
+	if depth <= 0 || ts == nil {
+		return nil
+	}
+	t := ast.Unparen(ts.Type)
+	switch tt := t.(type) {
+	case *ast.Ident:
+		if ts2 := pkgTypeSpec(p, tt.Name); ts2 != nil {
+			return c.unfoldSpecType(p, ts2, depth-1)
+		}
+	case *ast.SelectorExpr:
+		if p2, ts2 := selTypeSpecIn(p, ts, tt); ts2 != nil {
+			return c.unfoldSpecType(p2, ts2, depth-1)
+		}
+	}
+	return t
+}
+
+// selTypeSpecIn resolves a pkg.T selector written inside a type spec of
+// package p — the qualifier names an import of the spec's own file.
+func selTypeSpecIn(p *runtime.Package, ts *ast.TypeSpec, se *ast.SelectorExpr) (*runtime.Package, *ast.TypeSpec) {
+	id, ok := se.X.(*ast.Ident)
+	if !ok {
+		return nil, nil
+	}
+	sf := specFileOf(p, ts.Pos())
+	if sf == nil {
+		return nil, nil
+	}
+	ref, ok := pkgImportRef(p, sf, id.Name)
+	if !ok {
+		return nil, nil
+	}
+	return selTypeSpec(ref, se.Sel.Name)
+}
+
+// specFileOf returns the source file holding a declaration position,
+// or nil when the package cannot map it back.
+func specFileOf(p *runtime.Package, pos token.Pos) *syntax.File {
+	if p == nil || p.Fset == nil || p.FileByName == nil || !pos.IsValid() {
+		return nil
+	}
+	return p.FileByName[p.Fset.PositionFor(pos, false).Filename]
+}
+
+// pkgTypeSpec returns the spec a package-level type name declares —
+// nil when the package is not source-indexed or the name declares no
+// type.
+func pkgTypeSpec(p *runtime.Package, name string) *ast.TypeSpec {
+	if p == nil || p.Index == nil {
+		return nil
+	}
+	tdi := p.Index.Types[name]
+	if tdi == nil || tdi.Decl == nil {
+		return nil
+	}
+	ts, _ := tdi.Decl.Spec.(*ast.TypeSpec)
+	return ts
+}
+
+// selTypeSpec resolves an imported package's member name to the
+// package and the type spec declaring it — nil when the name is not a
+// source-indexed type there.
+func selTypeSpec(ref *runtime.ImportRef, name string) (*runtime.Package, *ast.TypeSpec) {
+	p, err := ref.Materialize()
+	if err != nil || p == nil {
+		return nil, nil
+	}
+	if ts := pkgTypeSpec(p, name); ts != nil {
+		return p, ts
+	}
+	return nil, nil
+}
+
+// pkgImportRef resolves name to an import ref inside file sf of
+// package p: first by the recorded local name, then by the package
+// clause when it differs from the path's last element — the same
+// real-name fallback importRef applies for the caller's file.
+func pkgImportRef(p *runtime.Package, sf *syntax.File, name string) (*runtime.ImportRef, bool) {
+	if ref, ok := p.Scopes[sf][name]; ok {
+		return ref, true
+	}
+	for _, ref := range p.Imports[sf] {
+		if ref.Alias != "" {
+			continue
+		}
+		q, err := ref.Materialize()
+		if err != nil || q == nil {
+			continue
+		}
+		if q.Name == name {
+			return ref, true
+		}
+	}
+	return nil, false
 }
 
 // elemTypExpr resolves the element type of an indexing operand — an
@@ -2734,22 +2862,7 @@ func (c *compiler) importRef(name string) (*runtime.ImportRef, bool) {
 	if c.pkg == nil || c.file == nil {
 		return nil, false
 	}
-	if ref, ok := c.pkg.Scopes[c.file][name]; ok {
-		return ref, true
-	}
-	for _, ref := range c.pkg.Imports[c.file] {
-		if ref.Alias != "" {
-			continue
-		}
-		p, err := ref.Materialize()
-		if err != nil || p == nil {
-			continue
-		}
-		if p.Name == name {
-			return ref, true
-		}
-	}
-	return nil, false
+	return pkgImportRef(c.pkg, c.file, name)
 }
 
 // storeTarget emits the store for one LHS expression; the value is on stack.
