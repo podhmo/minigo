@@ -385,7 +385,7 @@ func (e *Env) resolveExpr(from *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, 
 			return nil, err
 		}
 		return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: etd,
-			Anon: st, Pkg: from.Pkg, File: from.File, Binds: from.Binds}, nil
+			Anon: st, Pkg: from.Pkg, File: from.File, Binds: from.Binds, LocalTypes: from.LocalTypes}, nil
 	}
 	if e.h.ResolveType == nil {
 		return nil, fmt.Errorf("minireflect: type resolution needs ResolveType hook")
