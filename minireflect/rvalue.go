@@ -622,7 +622,18 @@ func (v *RValue) Addr() *RValue {
 	if v.ref == nil {
 		plain("reflect.Value.Addr of unaddressable value")
 	}
-	ptd := &runtime.TypeDef{Kind: runtime.KindPointer, Elem: v.td, Pkg: v.td.Pkg, File: v.td.File}
+	td := v.td
+	if td == nil {
+		// A view whose stamped type was lost upstream (e.g. a field
+		// declared with a function-local type the package index cannot
+		// see) is still addressable — recover the type from the value
+		// like Type() does so MethodByName on the result sees methods.
+		td = typeOfValue(v.e, v.get())
+	}
+	ptd := &runtime.TypeDef{Kind: runtime.KindPointer, Elem: td}
+	if td != nil {
+		ptd.Pkg, ptd.File = td.Pkg, td.File
+	}
 	// the ref-view object itself IS the pointer value
 	return v.e.wrap(v.vc, v.ref, nil, ptd)
 }
