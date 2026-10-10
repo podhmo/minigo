@@ -1781,9 +1781,23 @@ func (e *Engine) installStdlib() {
 		"Alignof": &runtime.BuiltinFunc{Name: "unsafe.Alignof", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			return unsafeAlignOf(args[0]), nil
 		}},
-		"Offsetof": h.fn("unsafe.Offsetof", func(a []any) (any, error) {
-			return nil, errors.New("unsafe.Offsetof is not supported: selector results are not values")
-		}),
+		"Offsetof": &runtime.BuiltinFunc{Name: "unsafe.Offsetof", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			// The compiler rewrites unsafe.Offsetof(s.f) to pass the
+			// base and the field name — the selector's value alone
+			// cannot name its field.
+			if len(args) != 2 {
+				return nil, errors.New("unsafe.Offsetof requires a field selector operand")
+			}
+			name, ok := unsafeStringArg(args[1])
+			if !ok {
+				return nil, errors.New("unsafe.Offsetof requires a field selector operand")
+			}
+			off, err := unsafeFieldOffset(args[0], name)
+			if err != nil {
+				return nil, err
+			}
+			return int64(off), nil
+		}},
 		// Element pointers are &s[i] refs over a script slice, so the
 		// StringData/String and SliceData/Slice round trips used for
 		// zero-copy string packing (x/tools' event labels) hold.
@@ -3829,6 +3843,72 @@ func unsafeAlignOf(v runtime.Value) int64 {
 		return n
 	}
 	return 8
+}
+
+// unsafeStringArg reads a string-valued builtin argument — the field
+// name the compiler emits for unsafe.Offsetof(s.f). Named and
+// cell-boxed strings unwrap like they do everywhere else.
+func unsafeStringArg(v runtime.Value) (string, bool) {
+	switch x := v.(type) {
+	case string:
+		return x, true
+	case *runtime.UConst:
+		if x.V != nil && x.V.Kind() == constant.String {
+			return constant.StringVal(x.V), true
+		}
+	case *runtime.Named:
+		return unsafeStringArg(x.V)
+	case *runtime.Cell:
+		return unsafeStringArg(x.Elem)
+	}
+	return "", false
+}
+
+// unsafeFieldOffset reports the byte offset of a named field in a
+// struct base — the same documented approximation unsafeSizeOf uses:
+// the sum of each preceding field's size, each aligned to its own
+// alignment. A host-boxed struct answers through reflect's real field
+// offset instead.
+func unsafeFieldOffset(base runtime.Value, name string) (int64, error) {
+	switch x := base.(type) {
+	case *runtime.Cell:
+		return unsafeFieldOffset(x.Elem, name)
+	case *runtime.Named:
+		return unsafeFieldOffset(x.V, name)
+	case *runtime.Struct:
+		var off int64
+		for i, f := range x.Def.Fields {
+			if i >= len(x.Fields) {
+				break
+			}
+			fv := x.Fields[i]
+			if c, ok := fv.(*runtime.Cell); ok {
+				fv = c.Elem
+			}
+			if al := unsafeAlignOf(fv); al > 0 {
+				if rem := off % al; rem != 0 {
+					off += al - rem
+				}
+			}
+			if f == name {
+				return off, nil
+			}
+			off += unsafeSizeOf(fv)
+		}
+		return 0, fmt.Errorf("unsafe.Offsetof: %s has no field %s", x.Def.Name, name)
+	case *runtime.GoValue:
+		rv := reflect.ValueOf(x.V)
+		for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
+			rv = rv.Elem()
+		}
+		if rv.IsValid() && rv.Kind() == reflect.Struct {
+			if sf, ok := rv.Type().FieldByName(name); ok {
+				return int64(sf.Offset), nil
+			}
+			return 0, fmt.Errorf("unsafe.Offsetof: %s has no field %s", rv.Type(), name)
+		}
+	}
+	return 0, fmt.Errorf("unsafe.Offsetof is not supported for %T", base)
 }
 
 // retErr wraps a (n int, err error) or single-value+error result into the
