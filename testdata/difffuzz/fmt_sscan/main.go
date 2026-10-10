@@ -23,6 +23,12 @@ func main() {
 	var b bytes.Buffer
 	n, err = fmt.Fscan(&b, &i)
 	fmt.Println(n, err != nil, i)
+	b.WriteString("8")
+	n, err = fmt.Fscanf(&b, "%d", &i)
+	fmt.Println(n, err, i)
+	b.WriteString("9")
+	n, err = fmt.Fscanln(&b, &i)
+	fmt.Println(n, err, i)
 	var m MyInt
 	n, err = fmt.Sscan("5", &m)
 	fmt.Println(n, err, m)

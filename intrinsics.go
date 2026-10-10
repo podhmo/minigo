@@ -142,15 +142,15 @@ func (e *Engine) installStdlib() {
 		// mirrors each into a host var of the pointee's type, scans, and
 		// writes results back through the ref (parse/node.go's
 		// complex-literal path needs Sscan).
-		"Sscan":   h.scanFn("fmt.Sscan", 1, nil, func(head, ptrs []any) (int, error) { return fmt.Sscan(str(head[0]), ptrs...) }),
-		"Sscanf":  h.scanFn("fmt.Sscanf", 2, nil, func(head, ptrs []any) (int, error) { return fmt.Sscanf(str(head[0]), str(head[1]), ptrs...) }),
-		"Sscanln": h.scanFn("fmt.Sscanln", 1, nil, func(head, ptrs []any) (int, error) { return fmt.Sscanln(str(head[0]), ptrs...) }),
-		"Scan":    h.scanFn("fmt.Scan", 0, nil, func(_, ptrs []any) (int, error) { return fmt.Scan(ptrs...) }),
-		"Scanf":   h.scanFn("fmt.Scanf", 1, nil, func(head, ptrs []any) (int, error) { return fmt.Scanf(str(head[0]), ptrs...) }),
-		"Scanln":  h.scanFn("fmt.Scanln", 0, nil, func(_, ptrs []any) (int, error) { return fmt.Scanln(ptrs...) }),
-		"Fscan":   h.scanFn("fmt.Fscan", 1, h.scanReader, func(head, ptrs []any) (int, error) { return fmt.Fscan(head[0].(io.Reader), ptrs...) }),
-		"Fscanf":  h.scanFn("fmt.Fscanf", 2, h.scanReader, func(head, ptrs []any) (int, error) { return fmt.Fscanf(head[0].(io.Reader), str(head[1]), ptrs...) }),
-		"Fscanln": h.scanFn("fmt.Fscanln", 1, h.scanReader, func(head, ptrs []any) (int, error) { return fmt.Fscanln(head[0].(io.Reader), ptrs...) }),
+		"Sscan":   h.scanFn("fmt.Sscan", 1, nil, fmt.Sscan, func(head, ptrs []any) (int, error) { return fmt.Sscan(str(head[0]), ptrs...) }),
+		"Sscanf":  h.scanFn("fmt.Sscanf", 2, nil, fmt.Sscanf, func(head, ptrs []any) (int, error) { return fmt.Sscanf(str(head[0]), str(head[1]), ptrs...) }),
+		"Sscanln": h.scanFn("fmt.Sscanln", 1, nil, fmt.Sscanln, func(head, ptrs []any) (int, error) { return fmt.Sscanln(str(head[0]), ptrs...) }),
+		"Scan":    h.scanFn("fmt.Scan", 0, nil, fmt.Scan, func(_, ptrs []any) (int, error) { return fmt.Scan(ptrs...) }),
+		"Scanf":   h.scanFn("fmt.Scanf", 1, nil, fmt.Scanf, func(head, ptrs []any) (int, error) { return fmt.Scanf(str(head[0]), ptrs...) }),
+		"Scanln":  h.scanFn("fmt.Scanln", 0, nil, fmt.Scanln, func(_, ptrs []any) (int, error) { return fmt.Scanln(ptrs...) }),
+		"Fscan":   h.scanFn("fmt.Fscan", 1, h.scanReader, fmt.Fscan, func(head, ptrs []any) (int, error) { return fmt.Fscan(head[0].(io.Reader), ptrs...) }),
+		"Fscanf":  h.scanFn("fmt.Fscanf", 2, h.scanReader, fmt.Fscanf, func(head, ptrs []any) (int, error) { return fmt.Fscanf(head[0].(io.Reader), str(head[1]), ptrs...) }),
+		"Fscanln": h.scanFn("fmt.Fscanln", 1, h.scanReader, fmt.Fscanln, func(head, ptrs []any) (int, error) { return fmt.Fscanln(head[0].(io.Reader), ptrs...) }),
 		// Errorf is hand-bound: %w verbs wrap the cause like Go's
 		// fmt.wrapError so errors.Unwrap/Is/As see the chain.
 		"Errorf": &runtime.BuiltinFunc{Name: "fmt.Errorf", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -3092,10 +3092,11 @@ func (h *hostHelpers) arity(name string, n int, f func([]any) (any, error), targ
 // which host fmt cannot store through, so each is mirrored into a host
 // variable of the pointee's type, the real fmt call scans into those, and
 // each result is written back through the ref. heads counts the leading
-// non-pointer args (a format string or reader); headFn converts them
-// (nil: goNative each).
-func (h *hostHelpers) scanFn(name string, heads int, headFn func(runtime.VMCaller, []runtime.Value) ([]any, error), call func(head, ptrs []any) (int, error)) *runtime.BuiltinFunc {
-	return &runtime.BuiltinFunc{Name: name, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+// non-pointer args (a format string or reader); headFn converts any
+// prefix of them it needs to (nil: none) and scanFn goNatives the rest,
+// so a converter like scanReader never has to know the arg count.
+func (h *hostHelpers) scanFn(name string, heads int, headFn func(runtime.VMCaller, []runtime.Value) ([]any, error), target any, call func(head, ptrs []any) (int, error)) *runtime.BuiltinFunc {
+	return &runtime.BuiltinFunc{Name: name, Target: target, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) < heads {
 			return nil, fmt.Errorf("%s needs at least %d args, got %d", name, heads, len(args))
 		}
@@ -3105,11 +3106,9 @@ func (h *hostHelpers) scanFn(name string, heads int, headFn func(runtime.VMCalle
 			if head, err = headFn(v, args[:heads]); err != nil {
 				return nil, err
 			}
-		} else {
-			head = make([]any, heads)
-			for i, hv := range args[:heads] {
-				head[i] = goNative(hv)
-			}
+		}
+		for i := len(head); i < heads; i++ {
+			head = append(head, goNative(args[i]))
 		}
 		ptrs := make([]any, len(args)-heads)
 		tds := make([]*runtime.TypeDef, len(args)-heads)
