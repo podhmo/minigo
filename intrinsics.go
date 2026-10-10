@@ -8405,12 +8405,16 @@ func deepNilish(v runtime.Value) bool {
 type godebugSetting struct{ name string }
 
 func (s *godebugSetting) Value() string {
+	// a name may repeat in GODEBUG — gc's runtime parse keeps the LAST
+	// entry, which is also what makes testenv.SetGODEBUG's appended
+	// override win over an earlier setting.
+	var val string
 	for _, kv := range strings.Split(os.Getenv("GODEBUG"), ",") {
 		if n, v, ok := strings.Cut(kv, "="); ok && n == s.Name() {
-			return v
+			val = v
 		}
 	}
-	return ""
+	return val
 }
 func (s *godebugSetting) Name() string {
 	if s.name != "" && s.name[0] == '#' {
