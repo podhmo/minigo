@@ -111,6 +111,11 @@ TODO.md の次の2項目をどう進めるかの検討。
 
 - **レビュー第2パス (union 差分) の要否判断。** stacked PRs の全体差分 (`main..ledger`) を再レビューさせた結果の採否: 採用 = DBG println 残骸の削除、scanFn の write-back が宣言タグを消す件 (named スキャンターゲット)、同一綴り slice retag が N/CapN を落とす件 (`stampContainerTyp` 化)、`-pkg` トップレベル・`-only` 事前フィルタ・shim Cleanup/Deadline・CommandContext 化 (いずれも harness 側)。不採用 = nil retag の「綴り一致」型混同 (repro なし・機構は設計上の twin — TODO 記録に留めた)、host method-set 列挙の共通ヘルパ抽出・scanReader の receiver 除去 (対称性の薄い cosmetic、churn > gain)。
 - **初回レビューの範囲誤認をユーザー指摘で修正。** 当初 `main..tip` を字義解釈して最終 PR のみをレビュー対象にしたが、stacked PRs の文脈では全体差分を意味した。sibling-cut 構成のため `git diff main..<tip branch>` では union merge の差分を取る必要があった — 第2パスは ledger ブランチで再実行した。
+- **「stacked PRs」は base 指定ではなくブランチ内容の連鎖を意味した (第2の範囲誤認、ユーザー指摘で修正)。** stack 管理は各 PR の `base:` を連鎖させるだけで、ブランチの中身は全て main 起点の sibling-cut のままだったため `main..tip` が全体差分にならなかった。→ 判断: 各ブランチの自コミットのみを下位ブランチの先端へ cherry-pick で積み直し (計20コミット) して force-push。再構築後の先端ツリーはレビュー済み union とコード差分ゼロ (+doc 章のみ) を検証済み。
+- **「repro なし」で不採用にした綴り一致 retag は、フレッシュな第3レビューで repro 済み実バグに変わった。** 第2パスでは「形状証明が要るはず (tdShapeEval)」と読み、採用しなかった。第3パスの指摘は別の切り口 — 値側タグが host-minted (`Spec == nil`) かで弁別する方法で、形状証明は不要だった。→ 判断: `sameSpelledTwin` 述語に4箇所を集約して採用 (リファクタ指摘と同一箇所のため同時に解消)、Named arm の kind ガード欠落も修正。前回判断の覆しを明示しておく。
+- **`fmt.Fscanf` は bind 後も実は panic していた (head arity)。** scanReader が `heads=2` に対し 1要素しか返さず `head[1]` で落ちる — bind した家族の中で Fscanf だけが2 head を要する非対称があった。→ 判断: 変換器が返さなかった head を scanFn 側で goNative 補完する契約に変更 + 全9 binding に `Target` 設定。
+- **harness 自体に false-PASS バグが3件あった (テストを採点する側のバグ)。** `FailNow` が failed を立てない・driver が panic/Skip 時に RunCleanups を飛ばす・`fail()` の祖先伝播が1段のみ。→ 判断: shim を go test のセマンティクス (FailNow = Fail + Goexit 相当・cleanup は unwind でも実行・失敗は全祖先へ) に寄せた。harness を先に作った価値はここにもあった — 審判自身をレビュー対象に含めてよかった。
+- **GoValue{*RType} 経由で `*minireflect.RType` が漏れていた。** `reflect.ValueOf(t).Type()` が gc の `*reflect.rtype` ではなく内部構造体名を返していた。`*RValue` 用の既存ガードと同型のリークで、`*RType` 側は valueOfValue が facade struct ごと host reflect.Value に映していたのが根因。→ 判断: host descriptor を view する形に揃え、Interface() も型を返せるようになった (副次修正)。
 
 ### 残りの状況
 
