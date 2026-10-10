@@ -625,6 +625,9 @@ func (t *RType) Name() string {
 			return "uint8"
 		case "rune":
 			return "int32"
+		case "any":
+			// `any` is the empty interface — an unnamed type.
+			return ""
 		}
 	}
 	return name

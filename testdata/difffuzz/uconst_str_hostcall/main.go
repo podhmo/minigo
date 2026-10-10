@@ -7,6 +7,7 @@ import (
 )
 
 const greeting = "héllo\n"
+
 var suffix = "!"
 
 func main() {

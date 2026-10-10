@@ -12,15 +12,15 @@ var x2 [10][0]byte
 
 func main() {
 	y := make([]struct{}, 10)
-	fmt.Println(&x[1] == &x[2])   // same array
-	fmt.Println(&y[1] == &y[2])   // same slice
-	fmt.Println(&x[1] == &x2[1])  // distinct arrays
+	fmt.Println(&x[1] == &x[2])  // same array
+	fmt.Println(&y[1] == &y[2])  // same slice
+	fmt.Println(&x[1] == &x2[1]) // distinct arrays
 	y2 := make([]struct{}, 10)
-	fmt.Println(&y[1] == &y2[1])  // slices share zerobase
+	fmt.Println(&y[1] == &y2[1]) // slices share zerobase
 	a := make([][0]byte, 10)
-	fmt.Println(&a[0] == &x[0])   // slice elem vs array elem
+	fmt.Println(&a[0] == &x[0]) // slice elem vs array elem
 	var z [10]int
-	fmt.Println(&z[1] == &z[2])   // nonzero: distinct
+	fmt.Println(&z[1] == &z[2]) // nonzero: distinct
 	s2 := make([]int, 10)
 	fmt.Println(&s2[1] == &s2[2]) // nonzero: distinct
 }
