@@ -84,6 +84,17 @@ func (v *RValue) ifaceVal() any {
 		}
 		return x
 	}
+	if tn, ok := x.(*runtime.TypedNil); ok {
+		// .Interface() answers an `any`: a typed nil inside keeps its
+		// dynamic type, so the interface value is NOT nil — `x == nil`
+		// reports false like gc — which IfaceNil records; a bare
+		// TypedNil compares equal to nil like a real nil pointer.
+		td := tn.Typ
+		if tag != nil {
+			td = tag
+		}
+		return &runtime.IfaceNil{Typ: td}
+	}
 	return runtime.Copy(v.get())
 }
 
