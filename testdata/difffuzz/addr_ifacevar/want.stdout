@@ -1,0 +1,8 @@
+{a b}
+ab
+{a b}
+{x y}
+{x y}
+*main.S {c d}
+{e f}
+{g h}

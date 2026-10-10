@@ -63,18 +63,11 @@ var fileRewrites = map[string][]rewrite{
 		// minigo has no unsafe.Pointer type yet; `any` fields keep the same
 		// truth values for the rows that use them ({ptr, true},{nil, false}).
 		{"unsafe.Pointer", "any"},
-		// & on a package-level interface variable yields *dynamicType, not
-		// *I (minigo bug); a helper taking the interface by parameter works.
-		{"NonEmptyInterfacePtS:      &siVal,", "NonEmptyInterfacePtS:      ptrI(siVal),"},
 	},
 }
 
 // driverExtra is appended to the generated driver per package.
-var driverExtra = map[string]string{
-	"text/template": `
-func ptrI(i I) *I { return &i }
-`,
-}
+var driverExtra = map[string]string{}
 
 func run() error {
 	flag.Parse()
