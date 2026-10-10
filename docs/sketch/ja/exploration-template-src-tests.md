@@ -121,3 +121,15 @@ TODO.md の次の2項目をどう進めるかの検討。
 ### 残りの状況
 
 `TestExecute` "range int8" (%T fmtValue 化), `TestIssue48215` (関数ローカル型の埋め込み ptr 昇格), `errors.AsType` (generic bind 機構), `TestMaxExecDepth` (frame limit ポリシー)。次の拡大は `text/template/parse` → `html/template` → `example*_test.go` の順。
+
+## Future work: テンプレート登録の遅延（質問への回答メモ）
+
+oapi-codegen は「登録するテンプレートのうち実際に Execute されるのは一部だけ」という形なので、`Parse`/`Funcs` の登録処理自体を初回使用まで遅延できないか、という話。現状と分解:
+
+- **VM のバイトコードコンパイルは既に遅延済み。** 関数本体は AST のまま保持され、初回呼出で `compile.Func` が chunk を作る。テンプレート登録時にテンプレート本文がバイトコード化されるわけではない — template の「コンパイル」は parse tree (実行時データ) 構築なので、遅延すべき対象はこちらの実行コスト (`experiment-oapi-codegen-perf.md` で `compile.Func` ≈0.69s は初回呼出時に1回だけ発生するもの)。
+- **`Parse` の遅延は可能だが意味論の壁が3つある** (perf doc の retrospective と同じ結論): `Parse` は呼出時点で syntax error を返す義務、`{{define}}` の名前は full parse しないと分からない、`Templates()`/`Clone` は全 tree を列挙する。そのまま thunk 化するとエラー時機が変わる。
+- **oapi-codegen の形なら突破できる。** テンプレートは埋め込み定数なので `(text, delims, funcmap names)` をキーに「error 無し・定義名集合」を memo すれば、名前だけ即登録 + 本体は初回 lookup で parse、という形で Go と同じ観測順序を保てる。「tree を作らない」が唯一 parse に勝てる手 (eager restore cache は21%遅かった実績)。
+- **差し替え機構は既存。** `srcImpl` (step 17、`codex/sync-builtin-callbacks` 系ブランチ、main 未マージ) が `(*lexer).nextItem` を host 実装に差し替えているのと同じ hook で、`(*Template).Parse` を「text を保持して名前だけ登録、初回 lookup で parse」する lazy 版に差し替えられる。または patched Go ソースを注入する形でも収まる。
+- **ただし効果は測ってから。** host lexer 後の parse は strict 全体の ~17% (≈0.2s) で、その中でも「実行される tree」は parse が必要。完全な遅延で得られるのは 17% 未満 — unobserved work の計測 (parse trees built vs executed、clone made vs used) が先。
+
+結論: thunk 化は `srcImpl` or patched ソース + memo で組める。エラー時機を変えない条件は「memo が no-error を保証できる定数テンプレート」に限られる。
