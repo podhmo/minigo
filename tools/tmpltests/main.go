@@ -369,8 +369,9 @@ func Run1(name string) {
 	var r any
 	func() {
 		defer func() { r = recover() }()
+		// cleanups run even when f panics / calls Fatal or Skip, as in go test.
+		defer t.RunCleanups()
 		f(t)
-		t.RunCleanups()
 	}()
 	if msg, ok := testing.IsSkip(r); ok {
 		fmt.Printf("RESULT %s SKIP %s\n", name, msg)
@@ -395,7 +396,14 @@ func runOne(minigo, mainDir, cwd, goroot, srcList, name string, timeout time.Dur
 	defer cancel()
 	cmd := exec.CommandContext(ctx, minigo, "run", mainDir, "--src", srcList, "--", name)
 	cmd.Dir = cwd
-	cmd.Env = append(os.Environ(), "GOROOT="+goroot)
+	// a pre-set GOROOT must not shadow the scratch root: drop it first.
+	var env []string
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "GOROOT=") {
+			env = append(env, e)
+		}
+	}
+	cmd.Env = append(env, "GOROOT="+goroot)
 	var sb, eb strings.Builder
 	cmd.Stdout, cmd.Stderr = &sb, &eb
 	err := cmd.Run()

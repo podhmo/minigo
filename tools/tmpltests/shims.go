@@ -30,12 +30,19 @@ type T struct {
 // NewT is the driver's entry point (go test makes T itself).
 func NewT(name string) *T { return &T{name: name} }
 
+// markFailed flags t and every ancestor, like testing.T's propagation
+// (a failing grandchild subtest still fails the root test).
+func (t *T) markFailed() {
+	for r := t; r != nil; r = r.root {
+		r.failed = true
+	}
+}
+
 func (t *T) fail(msg string) {
-	t.failed = true
+	t.markFailed()
 	t.logs = append(t.logs, msg)
-	if t.root != nil {
-		t.root.failed = true
-		t.root.logs = append(t.root.logs, t.name+": "+msg)
+	for r := t.root; r != nil; r = r.root {
+		r.logs = append(r.logs, t.name+": "+msg)
 	}
 }
 
@@ -54,7 +61,7 @@ func (t *T) Error(args ...any)              { t.fail(fmt.Sprint(args...)) }
 func (t *T) Errorf(f string, a ...any)      { t.fail(fmt.Sprintf(f, a...)) }
 func (t *T) Fatal(args ...any)              { t.fail(fmt.Sprint(args...)); panic(failNow{}) }
 func (t *T) Fatalf(f string, a ...any)      { t.fail(fmt.Sprintf(f, a...)); panic(failNow{}) }
-func (t *T) FailNow()                       { panic(failNow{}) }
+func (t *T) FailNow()                       { t.markFailed(); panic(failNow{}) }
 func (t *T) Log(args ...any)                {}
 func (t *T) Logf(f string, a ...any)        {}
 func (t *T) Skip(args ...any)               { panic(skipNow{fmt.Sprint(args...)}) }
