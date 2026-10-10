@@ -1,0 +1,21 @@
+struct-load: k1true
+array-load: arrtrue
+named-key: mitrue
+tag-sep: false
+ptr: ptrtrue
+ptr-other: false
+slice-key: panic: runtime error: hash of unhashable type []int
+map-key: panic: runtime error: hash of unhashable type map[string]int
+func-key: panic: runtime error: hash of unhashable type func()
+nilslice-key: panic: runtime error: hash of unhashable type []int
+slice-value: [1] true
+cas-eq: true
+cas-after: main.Inner {7 8}
+cas-neq: false
+range key: 1
+deleted: false
+ctx-hit: cv
+ctx-miss: <nil>
+ctx-unhashable: panic: key is not comparable
+atomic-cas: true
+atomic-after: {3 4}

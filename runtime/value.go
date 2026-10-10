@@ -742,6 +742,97 @@ func CanonicalKey(v Value) Value {
 	}
 }
 
+// opaqueKeyOrigs remembers the script value each OpaqueKey canonical
+// form was rendered from, so a container handing the key back (sync.Map
+// Range callbacks, a loaded CAS comparand) restores the original instead
+// of surfacing the rendered key. Canonical forms are content-equal, so
+// two equal script values share one entry — the same key in gc too.
+// Entries live for the process: host containers offer no eviction
+// callback worth tracking.
+var opaqueKeyOrigs sync.Map // mapKey -> Value
+
+// OpaqueKey renders v for an `any` parameter position that a host
+// container hashes or compares as a key — sync.Map keys, context keys,
+// CompareAndSwap's comparand. A named payload keeps its typedef tag so
+// any(uint16(8)) stays distinct from any(int(8)) the way gc's interface
+// boxing keeps (type, payload); composite payloads fold to the content
+// key CanonicalKey renders; unhashable payloads panic with a hash-type
+// error like gc's map-key check. The canonical form is what crosses;
+// OpaqueKeyOrig hands the script value back when the container returns
+// the key.
+func OpaqueKey(v Value) Value {
+	ck := opaqueKeyOf(v)
+	if _, ok := ck.(mapKey); ok {
+		opaqueKeyOrigs.Store(ck, v)
+	}
+	return ck
+}
+
+// TryOpaqueKey is OpaqueKey without the panic: ok is false on
+// unhashable payloads. A free `any` value position (a sync.Map value, a
+// Pool entry, CompareAndSwap's new) canonicalizes hashable args so a
+// later comparand still hits equal content, and crosses unhashable ones
+// verbatim — gc stores them happily and only the key side runs the
+// hash check.
+func TryOpaqueKey(v Value) (ck Value, ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			if _, isPanic := r.(*Panic); !isPanic {
+				panic(r)
+			}
+			ck, ok = nil, false
+		}
+	}()
+	return OpaqueKey(v), true
+}
+
+// OpaqueKeyOrig reports the script value an OpaqueKey canonical form
+// was rendered from, false when v is not a remembered canonical key.
+func OpaqueKeyOrig(v Value) (Value, bool) {
+	if _, ok := v.(mapKey); !ok {
+		return nil, false
+	}
+	orig, ok := opaqueKeyOrigs.Load(v)
+	if !ok {
+		return nil, false
+	}
+	return orig, true
+}
+
+// opaqueKeyOf folds v to its key form: a Named keeps its tag (interface
+// equality is (type, payload), so the tag belongs in the key while the
+// payload still renders by content); everything else takes
+// CanonicalKey's walk.
+func opaqueKeyOf(v Value) Value {
+	if u, ok := v.(*UConst); ok {
+		// a typed constant still rides the const domain: materialize or
+		// each key renders a fresh UConst and never hits.
+		mv, err := UConstNative(u)
+		if err != nil {
+			panic(&Panic{Value: &RuntimeError{Msg: err.Error()}})
+		}
+		v = mv
+	}
+	if n, ok := v.(*Named); ok {
+		nv := n.V
+		if u, ok := nv.(*UConst); ok {
+			mv, err := UConstNative(u)
+			if err != nil {
+				panic(&Panic{Value: &RuntimeError{Msg: err.Error()}})
+			}
+			nv = mv
+		}
+		if unhashableKey(nv) {
+			panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type " + msgTypeName(n.Typ)}})
+		}
+		var sb strings.Builder
+		sb.WriteString(typeTagOf(n.Typ))
+		writeKeyRepr(&sb, []Value{nv})
+		return mapKey{typ: typeTagOf(n.Typ), repr: sb.String()}
+	}
+	return CanonicalKey(v)
+}
+
 // UConstNative materializes an untyped constant to its default-type
 // value — the conversion every host crossing and VM slot shares:
 // bool/string/int64/float64/complex128 with Go's int/float overflow
