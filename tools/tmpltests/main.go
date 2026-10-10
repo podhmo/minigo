@@ -351,6 +351,14 @@ func materializeDep(gr, realRoot, dep string, files map[string][]rewrite) error 
 			dst := filepath.Join(cur, e.Name())
 			if leaf {
 				if rws, ok := files[e.Name()]; ok {
+					// dst may already exist as a symlink created by the
+					// target package's parent-dir loop (e.g. -pkg
+					// text/template/parse vs dep text/template): writing
+					// through it would patch the real GOROOT, so remove
+					// it first.
+					if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+						return err
+					}
 					if err := copyTestFile(filepath.Join(sub, e.Name()), dst, rws); err != nil {
 						return err
 					}
