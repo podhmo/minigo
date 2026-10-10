@@ -2583,8 +2583,16 @@ func (v *RValue) SetBytes(x []byte) {
 	for i, b := range x {
 		elems[i] = int64(b)
 	}
-	v.set(&runtime.Slice{Elems: elems, Typ: &runtime.TypeDef{
-		Kind: runtime.KindSlice, Elem: runtime.BasicTypedef("byte")}})
+	// the written slice takes the slot's declared type — like Go, where
+	// SetBytes stores a value of the field's type. A synthesised
+	// anonymous typedef reads back as "slice" and rejects every []byte
+	// target (struct literal, var), so only a missing static type falls
+	// back to it.
+	td := v.td
+	if td == nil {
+		td = &runtime.TypeDef{Kind: runtime.KindSlice, Elem: runtime.BasicTypedef("byte")}
+	}
+	v.set(&runtime.Slice{Elems: elems, Typ: td})
 }
 
 // SetLen is not part of reflect.Value — kept absent.
