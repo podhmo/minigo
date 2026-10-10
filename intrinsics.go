@@ -1791,7 +1791,7 @@ func (e *Engine) installStdlib() {
 			if !ok {
 				return nil, errors.New("unsafe.Offsetof requires a field selector operand")
 			}
-			off, err := unsafeFieldOffset(args[0], name)
+			off, err := e.unsafeFieldOffset(args[0], name)
 			if err != nil {
 				return nil, err
 			}
@@ -3892,37 +3892,27 @@ func unsafeStringArg(v runtime.Value) (string, bool) {
 }
 
 // unsafeFieldOffset reports the byte offset of a named field in a
-// struct base — the same documented approximation unsafeSizeOf uses:
-// the sum of each preceding field's size, each aligned to its own
-// alignment. A host-boxed struct answers through reflect's real field
-// offset instead.
-func unsafeFieldOffset(base runtime.Value, name string) (int64, error) {
+// struct base, laid out by the fields' DECLARED types — minireflect's
+// fieldOffset machinery, shared with reflect's StructField.Offset.
+// (Computing offsets from the runtime values fields happen to hold
+// misplaces every later field: an `any` holding an int64 read as 8
+// where the declared interface pair is 16.) A host-boxed struct answers
+// through reflect's real field offset instead.
+func (e *Engine) unsafeFieldOffset(base runtime.Value, name string) (int64, error) {
 	switch x := base.(type) {
 	case *runtime.Cell:
-		return unsafeFieldOffset(x.Elem, name)
+		return e.unsafeFieldOffset(x.Elem, name)
 	case *runtime.Named:
-		return unsafeFieldOffset(x.V, name)
+		return e.unsafeFieldOffset(x.V, name)
 	case *runtime.Struct:
-		var off int64
-		for i, f := range x.Def.Fields {
-			if i >= len(x.Fields) {
-				break
-			}
-			fv := x.Fields[i]
-			if c, ok := fv.(*runtime.Cell); ok {
-				fv = c.Elem
-			}
-			if al := unsafeAlignOf(fv); al > 0 {
-				if rem := off % al; rem != 0 {
-					off += al - rem
-				}
-			}
-			if f == name {
-				return off, nil
-			}
-			off += unsafeSizeOf(fv)
+		if x.Def == nil {
+			break
 		}
-		return 0, fmt.Errorf("unsafe.Offsetof: %s has no field %s", x.Def.Name, name)
+		off, err := minireflect.OffsetOf(e.reflectHooks(), x.Def, name)
+		if err != nil {
+			return 0, err
+		}
+		return int64(off), nil
 	case *runtime.GoValue:
 		rv := reflect.ValueOf(x.V)
 		for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
