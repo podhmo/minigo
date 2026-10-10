@@ -3639,6 +3639,11 @@ func goValueOf(rv reflect.Value) runtime.Value {
 		*runtime.ImportRef, *runtime.TypedNil, *runtime.IfaceNil,
 		*runtime.Named, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
 		return v
+	case runtime.Named:
+		// opaqueStoreArg stored a Named by value so `any` storage keys
+		// compare by content — a loaded value re-wraps to the pointer
+		// form, keeping its tag for script type asserts.
+		return namedLoadValue(v)
 	default:
 		// an unnamed host slice/array ([N]T, []T) unboxes element-wise so
 		// indexing and range work; a named slice type keeps its box to
@@ -4904,7 +4909,48 @@ func opaqueStoreArg(a runtime.Value) (reflect.Value, error) {
 	if a == nil {
 		return reflect.Zero(anyType), nil
 	}
+	if n, ok := a.(*runtime.Named); ok {
+		// Named values cross as the struct VALUE, not the pointer:
+		// a storage `any` arg is usually a map key (sync.Map's
+		// decompressor registry, context keys) and Go's interface
+		// equality compares (type, payload) — *runtime.Named compares
+		// by pointer, so two equal `uint16(8)` conversions would never
+		// hit. The value form reproduces gc's boxing: equal keys hit,
+		// unequal or unhashable payloads behave like gc. goValueOf
+		// re-wraps the loaded value back to *runtime.Named.
+		return reflect.ValueOf(namedStoreValue(n)), nil
+	}
 	return reflect.ValueOf(a), nil
+}
+
+// namedStoreValue copies n to its comparable value form, converting a
+// nested Named payload (Named{MyT, Named{byte, v}}) the same way so
+// layered named keys compare by content too.
+func namedStoreValue(n *runtime.Named) runtime.Named {
+	v := *n
+	if inner, ok := v.V.(*runtime.Named); ok {
+		v.V = namedStoreValue(inner)
+	}
+	if u, ok := v.V.(*runtime.UConst); ok {
+		// a typed constant still rides the const domain (Named{T,
+		// UConst}): the UConst pointer is unique per evaluation, so
+		// the key would never hit — materialize it at its default
+		// type first.
+		if mv, err := materializeDefault(u); err == nil {
+			v.V = mv
+		}
+	}
+	return v
+}
+
+// namedLoadValue is the goValueOf inverse of namedStoreValue: a
+// runtime.Named arriving back through an `any` result re-wraps to the
+// pointer form scripts use, restoring nested payloads as pointers too.
+func namedLoadValue(n runtime.Named) *runtime.Named {
+	if inner, ok := n.V.(runtime.Named); ok {
+		n.V = namedLoadValue(inner)
+	}
+	return &n
 }
 
 // adaptFunc wraps a script callable as a host-typed func so methods taking

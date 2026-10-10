@@ -1,0 +1,5 @@
+u16 key: u16 true
+var key: viaVar
+int key: intExpr
+tag kept: uint16
+named func assert: 2
