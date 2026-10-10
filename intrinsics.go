@@ -2133,20 +2133,22 @@ func (e *Engine) installStdlib() {
 		"DeadlineExceeded": &runtime.GoValue{V: context.DeadlineExceeded},
 		"Background":       h.fn("context.Background", func(a []any) (any, error) { return context.Background(), nil }, context.Background),
 		"TODO":             h.fn("context.TODO", func(a []any) (any, error) { return context.TODO(), nil }, context.TODO),
-		"WithCancel": h.fn("context.WithCancel", func(a []any) (any, error) {
+		"WithCancel": h.fnvc("context.WithCancel", func(vc runtime.VMCaller, a []any) (any, error) {
 			c, err := asCtx(a[0])
 			if err != nil {
 				return nil, err
 			}
 			nc, cancel := context.WithCancel(c)
+			watchCtxDone(vc, c, nc)
 			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(nc), scriptVal(cancel)}}, nil
 		}),
-		"WithCancelCause": h.fn("context.WithCancelCause", func(a []any) (any, error) {
+		"WithCancelCause": h.fnvc("context.WithCancelCause", func(vc runtime.VMCaller, a []any) (any, error) {
 			c, err := asCtx(a[0])
 			if err != nil {
 				return nil, err
 			}
 			nc, cancel := context.WithCancelCause(c)
+			watchCtxDone(vc, c, nc)
 			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(nc), scriptVal(cancel)}}, nil
 		}),
 		"WithDeadline": h.fn("context.WithDeadline", func(a []any) (any, error) {
@@ -2859,6 +2861,36 @@ func (b *tickerChanBox) Stop() {
 	b.feed.die()
 }
 
+// proxyHostTypes maps each liveness-tracking proxy box to the API type
+// it stands in for: the script must see *time.Timer/*time.Ticker (in %T
+// and reflect), never the box's own name.
+var proxyHostTypes = map[reflect.Type]reflect.Type{
+	reflect.TypeOf((*timerChanBox)(nil)):   reflect.TypeOf((*time.Timer)(nil)),
+	reflect.TypeOf((*tickerChanBox)(nil)):  reflect.TypeOf((*time.Ticker)(nil)),
+	reflect.TypeOf((*afterFuncTimer)(nil)): reflect.TypeOf((*time.Timer)(nil)),
+}
+
+// proxyHostType resolves the public spelling of a host type — the
+// TypeAlias hook for the reflect facade.
+func proxyHostType(rt reflect.Type) reflect.Type {
+	if rt == nil {
+		return nil
+	}
+	if a, ok := proxyHostTypes[rt]; ok {
+		return a
+	}
+	return rt
+}
+
+// proxyHostTypeOf is proxyHostType over a value — the fmt path's %T
+// lookup.
+func proxyHostTypeOf(v any) reflect.Type {
+	if v == nil {
+		return nil
+	}
+	return proxyHostTypes[reflect.TypeOf(v)]
+}
+
 // Reset restarts the ticker like time.Ticker.Reset: a stopped feed
 // re-arms so parked receivers wake again.
 func (b *tickerChanBox) Reset(d time.Duration) {
@@ -3061,6 +3093,34 @@ func asCtx(v any) (context.Context, error) {
 		return c, nil
 	}
 	return nil, fmt.Errorf("not a context.Context: %T", v)
+}
+
+// watchCtxDone registers a cancel-family context's done channel in the
+// parked-receive liveness registry: the channel closes only when a
+// CancelFunc runs — a goroutine action, never an autonomous send — so a
+// receive parked on it counts asleep, like gc's deadlock detection of
+// `ctx, _ := context.WithCancel(bg); <-ctx.Done()`.
+//
+// A parent whose done channel can fire on its own propagates that
+// liveness instead: a deadline parent's timer closes the child's done
+// host-side without any script goroutine acting. When the parent's
+// done is unmanaged or still live the child stays unmanaged (a
+// conservative wake source); a nil or dead-managed parent passes the
+// cancel-only property down, and the child registers as dead from
+// birth.
+func watchCtxDone(vc runtime.VMCaller, parent, child context.Context) {
+	done := child.Done()
+	if done == nil {
+		return
+	}
+	if pdone := parent.Done(); pdone != nil {
+		if managed, alive := vm.WakeChanState(vc, reflect.ValueOf(pdone).Pointer()); !managed || alive {
+			return
+		}
+	}
+	if ptr := vm.RegisterWakeChan(vc, reflect.ValueOf(done)); ptr != 0 {
+		vm.SetWakeChanDead(vc, ptr, true)
+	}
 }
 
 // net pointer/addr unwrappers: a script &net.TCPAddr{...} arrives at a
@@ -6910,6 +6970,12 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		}
 		return badVerb(verb, funcSigSpelling(v), fmt.Sprintf("%p", v))
 	case *runtime.GoValue:
+		if verb == 'T' {
+			// a proxy box spells its API type, not the box's name.
+			if rt := proxyHostTypeOf(v.V); rt != nil {
+				return rt.String()
+			}
+		}
 		return fmt.Sprintf(formatOf(f, verb), v.V)
 	case *runtime.TypeDef:
 		if verb == 'T' {
@@ -7383,6 +7449,10 @@ func scriptTypeString(x runtime.Value) string {
 		case *minireflect.Method:
 			return "reflect.Method"
 		}
+		if rt := proxyHostTypeOf(t.V); rt != nil {
+			// a proxy box spells its API type, not the box's name.
+			return rt.String()
+		}
 		return fmt.Sprintf("%T", t.V)
 	case int64:
 		return "int"
@@ -7659,6 +7729,18 @@ func fmtArg(v runtime.VMCaller, x runtime.Value) any {
 		// fmtValue's tag-aware rendering (float32 tags, named scalars).
 		if gv, ok := x.V.(*runtime.GoValue); ok {
 			return fmtArg(v, gv)
+		}
+		// a still-constant payload materializes at the declared width
+		// first: `fmt.Println(uint64(1<<64 - 1))` is max-uint where the
+		// untyped default reading overflows int inside fmtValue.
+		if u, ok := x.V.(*runtime.UConst); ok {
+			if mc, ok2 := v.(interface {
+				MaterializeConstErr(*runtime.UConst, *runtime.TypeDef) (runtime.Value, error)
+			}); ok2 {
+				if mv, err := mc.MaterializeConstErr(u, x.Typ); err == nil {
+					return fmtArg(v, runtime.Tag(x.Typ, mv))
+				}
+			}
 		}
 		return &fmtValue{c: v, x: x}
 	case int64:

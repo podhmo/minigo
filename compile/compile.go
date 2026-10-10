@@ -4237,15 +4237,69 @@ func (c *compiler) conversionCall(x *ast.CallExpr) bool {
 	switch f := x.Fun.(type) {
 	case *ast.Ident:
 		return c.isTypeName(f.Name)
+	case *ast.SelectorExpr:
+		// pkg.T(x) is a conversion when pkg is an import and T names a
+		// type in it; pkg.fn(x) stays a real call.
+		if ref, name, ok := c.selTypRef(f); ok {
+			return c.selIsType(ref, name)
+		}
 	case *ast.IndexExpr:
 		// T[Args](x) is a conversion only when T names a generic type;
 		// a generic function f[T](x) is a real call.
 		if id, ok := f.X.(*ast.Ident); ok {
 			return c.isTypeName(id.Name)
 		}
+		if ref, name, ok := c.selTypRef(f.X); ok {
+			return c.selIsType(ref, name)
+		}
 	case *ast.IndexListExpr:
 		if id, ok := f.X.(*ast.Ident); ok {
 			return c.isTypeName(id.Name)
+		}
+		if ref, name, ok := c.selTypRef(f.X); ok {
+			return c.selIsType(ref, name)
+		}
+	}
+	return false
+}
+
+// selTypRef resolves a `pkg.Name` expression to its import reference
+// and member name — ok=false when e isn't a package-qualified
+// selector (a nested selector or a non-package qualifier can't name a
+// package member).
+func (c *compiler) selTypRef(e ast.Expr) (*runtime.ImportRef, string, bool) {
+	sel, ok := e.(*ast.SelectorExpr)
+	if !ok {
+		return nil, "", false
+	}
+	id, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return nil, "", false
+	}
+	ref, isPkg := c.importRef(id.Name)
+	if !isPkg {
+		return nil, "", false
+	}
+	return ref, sel.Sel.Name, true
+}
+
+// selIsType reports whether the name a qualified expression picks out
+// of an imported package names a type: a bound typedef in the
+// package's globals, or a type declaration in its source index.
+// Functions, variables, constants and unresolved references report
+// false — `pkg.fn(x)` then keeps its meaning as a real call.
+func (c *compiler) selIsType(ref *runtime.ImportRef, name string) bool {
+	p, err := ref.Materialize()
+	if err != nil || p == nil {
+		return false
+	}
+	if p.Index != nil && p.Index.Types[name] != nil {
+		return true
+	}
+	if p.Globals != nil {
+		if v, ok := p.Globals.Get(name); ok {
+			_, isTd := v.(*runtime.TypeDef)
+			return isTd
 		}
 	}
 	return false

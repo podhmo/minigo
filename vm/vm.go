@@ -618,6 +618,16 @@ func SetWakeChanDead(vc runtime.VMCaller, ptr uintptr, dead bool) {
 	}
 }
 
+// WakeChanState is proc.chanState for callers holding only a
+// runtime.VMCaller (intrinsic bindings); (false, false) means the
+// channel is unmanaged — or there is no process to ask.
+func WakeChanState(vc runtime.VMCaller, ptr uintptr) (managed, alive bool) {
+	if p := procOf(vc); p != nil {
+		return p.chanState(ptr)
+	}
+	return false, false
+}
+
 // procExit is the unwind raised in a parked goroutine when its process
 // ends (root Call returned, or a sibling goroutine's panic failed the
 // process). It is deliberately not a *runtime.Panic: defers still run
