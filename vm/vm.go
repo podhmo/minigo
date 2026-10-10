@@ -7464,6 +7464,13 @@ func (v *VM) materializeOperandConst(f *frame, x runtime.Value, td *runtime.Type
 	return x
 }
 
+// MaterializeConstErr exposes the declared-type constant conversion to
+// value-only callers (builtin print/println's display) that have a
+// VMCaller but no frame — the same rules materializeConst applies.
+func (v *VM) MaterializeConstErr(u *runtime.UConst, td *runtime.TypeDef) (runtime.Value, error) {
+	return v.materializeConstErr(u, td)
+}
+
 func (v *VM) materializeConstErr(u *runtime.UConst, td *runtime.TypeDef) (runtime.Value, error) {
 	utd := v.peelNamed(td)
 	if utd == nil || utd.Kind == runtime.KindInterface {
