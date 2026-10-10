@@ -23,6 +23,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	goruntime "runtime"
 	"sort"
 	"strings"
 	"time"
@@ -776,35 +777,28 @@ func exoutBetween(stdout, name string) string {
 }
 
 // exampleOutputEqual compares captured stdout with the // Output: text
-// like go test does: both sides trimmed, per-line trailing space dropped,
-// lines sorted when the comment says `// Unordered output:`.
+// exactly like go test's processRunResult (testing/example.go): trim
+// whitespace on the whole string only (a per-line trailing space
+// difference still fails), normalize \r\n to \n on windows, and for a
+// `// Unordered output:` comment compare the sorted line orderings.
 func exampleOutputEqual(got, want string, unordered bool) bool {
-	gl, wl := outputLines(got), outputLines(want)
+	got, want = strings.TrimSpace(got), strings.TrimSpace(want)
+	if goruntime.GOOS == "windows" {
+		got = strings.ReplaceAll(got, "\r\n", "\n")
+		want = strings.ReplaceAll(want, "\r\n", "\n")
+	}
 	if unordered {
-		sort.Strings(gl)
-		sort.Strings(wl)
+		return sortLines(got) == sortLines(want)
 	}
-	if len(gl) != len(wl) {
-		return false
-	}
-	for i := range gl {
-		if gl[i] != wl[i] {
-			return false
-		}
-	}
-	return true
+	return got == want
 }
 
-func outputLines(s string) []string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil
-	}
+// sortLines is testing/example.go's sortLines: the output's lines
+// sorted and rejoined, so an unordered comparison is one string equal.
+func sortLines(s string) string {
 	lines := strings.Split(s, "\n")
-	for i := range lines {
-		lines[i] = strings.TrimRight(lines[i], " \t")
-	}
-	return lines
+	sort.Strings(lines)
+	return strings.Join(lines, "\n")
 }
 
 func indentBlock(s, prefix string) string {
