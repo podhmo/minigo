@@ -4825,6 +4825,27 @@ func (c *compiler) call(x *ast.CallExpr) {
 		}
 	}
 unwrapped:
+	// unsafe.Offsetof(s.f): the selector operand only yields the
+	// field's value — the field's identity, which is what the offset
+	// needs, is lost. Emit the base and the field name instead so the
+	// intrinsic can measure the offset against the base's declared
+	// field order. Only a simple selector rewrites: nested
+	// `unsafe.Offsetof(s.f.g)` keeps the one-argument form and the
+	// intrinsic reports its unsupported shape.
+	if sel, ok := fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Offsetof" && len(x.Args) == 1 {
+		if id, ok2 := sel.X.(*ast.Ident); ok2 {
+			if ref, ok3 := c.importRef(id.Name); ok3 && ref.Path == "unsafe" {
+				if fs, ok4 := x.Args[0].(*ast.SelectorExpr); ok4 {
+					args := []ast.Expr{fs.X, &ast.BasicLit{Kind: token.STRING, Value: strconv.Quote(fs.Sel.Name), ValuePos: fs.Sel.Pos()}}
+					c.calleeExpr(x.Fun)
+					c.callArgs(args)
+					c.argStatics(args)
+					c.emit(bytecode.OpCall, 2, 0, x.Pos())
+					return
+				}
+			}
+		}
+	}
 	if sel, ok := fun.(*ast.SelectorExpr); ok && c.trySpecial(x, sel) {
 		return
 	}
