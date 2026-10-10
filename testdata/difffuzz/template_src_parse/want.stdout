@@ -6,7 +6,7 @@ empty range
 x=42 2 3 bc
 0 z false true true true
 NUT bolt true 5
-31 1000 97 -7 3.5 p-q default footer DONE!
+31 1000 97 -7 3.5 (0+100i) p-q default footer DONE!
 val <no value>
 clone: custom footer
 templates: [footer item list page]
