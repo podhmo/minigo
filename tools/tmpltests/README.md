@@ -14,7 +14,9 @@ Design notes: [docs/sketch/ja/exploration-template-src-tests.md](../../docs/sket
 make tmpltests                               # text/template exec+multi, all tests
 make tmpltests-parse                         # text/template/parse (17 tests)
 make tmpltests-html                          # html/template (105 tests)
-make tmpltests-all                           # all three suites
+make tmpltests-examples                      # text/template examples (8)
+make tmpltests-html-examples                 # html/template examples (9)
+make tmpltests-all                           # all five suites
 make tmpltests TMPLTESTS_ARGS="-only TestExec"
 go -C ./tools/tmpltests run ./ -h            # all flags
 ```
@@ -26,11 +28,13 @@ go -C ./tools/tmpltests run ./ -h            # all flags
 | `tmpltests` | `text/template` | same | `exec_test.go, multi_test.go` |
 | `tmpltests-parse` | `text/template/parse` | same | `parse_test.go, lex_test.go` |
 | `tmpltests-html` | `html/template` | `html/template,text/template,text/template/parse,encoding/json,encoding/hex,slices` | `clone,content,css,escape,exec,html,js,multi,template,transition,url_test.go` |
+| `tmpltests-examples` | `text/template` | same | `example_test.go, examplefiles_test.go, examplefunc_test.go` |
+| `tmpltests-html-examples` | `html/template` | `html/template,text/template,text/template/parse,encoding/json,encoding/hex,slices` | `example_test.go, examplefiles_test.go` |
 
 `html/template` runs source-interpreted, so its dependencies must be in
 `--src` too: `text/template` (+ `text/template/parse`) for
 `template.FuncMap`, `encoding/json` (+ `hex`, `slices`) for
-`json.Marshaler`. `make tmpltests-all` runs all three back to back;
+`json.Marshaler`. `make tmpltests-all` runs all five back to back;
 each suite's own `TMPLTESTS_*` variable is overridable from the
 Makefile. Current standings are recorded in TODO.md entries named by
 test — last run: parse 17/17 PASS, html 99 PASS / 2 FAIL / 1 PANIC / 1
@@ -99,16 +103,32 @@ symlinks with the listed files copied — so rewrites reach deps too:
   Value`, `<template.V Value>` for an indexed struct) — the minireflect
   boxing issue from TODO.md.
 
+## Example mode (`-examples`)
+
+Upstream `example*_test.go` files declare `package template_test` — the
+external test package — so `-examples` changes two things:
+
+- The listed `-tests` files are copied into a second generated package
+  dir, `<work>/goroot/src/<pkg>_test/` (e.g. `text/template_test`), and
+  get a driver whose table maps example names to `func()` values. The
+  generated `main` imports `<pkg>_test`, which source-resolves like any
+  other unbound package; its `text/template` import reaches the
+  `--src`-interpreted one, exactly as `go test` wires it.
+- Each `ExampleXxx` func runs between `EXOUT <name> BEGIN/END` markers;
+  the tool extracts that slice of process stdout and compares it
+  host-side against the func's trailing `// Output:` (or
+  `// Unordered output:`) comment with go test semantics — both sides
+  trimmed, per-line trailing space dropped, lines sorted when
+  unordered. Examples without an `// Output:` comment are compile-only
+  under `go test` and are skipped. The verdicts are `PASS` /
+  `FAIL <mismatch>` / `PANIC` / `TRAP` / `HANG`; a run killed mid-example
+  (e.g. `os.Exit` under `log.Fatal`) reports `FAIL` with the first
+  stderr line rather than `TRAP`.
+
+The example suites need `log`, which source-resolves and formats via
+`fmt.Append*` — those binds came in with the rest of `fmt`.
+
 ## Excluded
 
 - `link_test.go` — drives the Go toolchain itself (`internal/testenv`,
   `os/exec`); meaningless here.
-- `example*_test.go` — `package template_test` external tests. Wiring
-  them needs (a) a second generated package dir — `text/template_test`
-  — because they cannot live in the same package dir as the driver,
-  (b) `// Output:` comment parsing + stdout capture and comparison
-  (go-test example semantics), and (c) more bind surface: `log`
-  currently source-resolves but traps on `fmt.Appendln`, and
-  `examplefiles_test.go` needs `os.MkdirTemp`/`os.Create`/`filepath`/
-  `io.WriteString`/`os.RemoveAll` plus `template.ParseGlob`/`ParseFiles`/
-  `Must`. Tracked in TODO.md.
