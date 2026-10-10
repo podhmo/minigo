@@ -6615,7 +6615,15 @@ func (h *hostHelpers) wffn(name string, formatAt, minArgs int, f func(runtime.VM
 		}
 		a, flat := fmtArgs(v, args)
 		if formatAt >= 0 && formatAt < len(a) {
-			if spec, ok := a[formatAt].(string); ok {
+			spec, ok := a[formatAt].(string)
+			if !ok && formatAt < len(flat) {
+				// the spec may reach the call as a script value — a
+				// named string, a cell holding one — that fmtArg boxed
+				// for tag-aware rendering. The spec itself must be a
+				// plain string for host fmt and for %T/%p rewriting.
+				spec, ok = formatString(flat[formatAt])
+			}
+			if ok {
 				ns, tail := rewriteTypeVerbs(spec, a, flat, formatAt, v)
 				a[formatAt] = ns
 				a = append(a[:formatAt+1], tail...)
@@ -7551,6 +7559,29 @@ func scriptTypeString(x runtime.Value) string {
 	}
 }
 
+// formatString recovers a plain string from a script value that reached
+// a fmt call's format slot as a named string or a cell holding one.
+func formatString(x runtime.Value) (string, bool) {
+	for {
+		switch v := x.(type) {
+		case string:
+			return v, true
+		case *runtime.Named:
+			x = v.V
+		case *fmtValue:
+			// a bound-fmt result boxed for rendering can land in a
+			// named string slot — the spec is the boxed string.
+			x = v.x
+		default:
+			if dv, ok := runtime.Deref(x); ok {
+				x = dv
+				continue
+			}
+			return "", false
+		}
+	}
+}
+
 // rewriteTypeVerbs substitutes args for the verbs host fmt handles
 // without calling Formatter — %T (type spelling) and %p (address) —
 // rewriting each spec verb to %s over a pre-rendered string. Positional
@@ -7806,6 +7837,14 @@ func fmtArgs(v runtime.VMCaller, args []runtime.Value) ([]any, []runtime.Value) 
 func fmtArg(v runtime.VMCaller, x runtime.Value) any {
 	switch x := x.(type) {
 	case *runtime.Named:
+		// a fmtValue box inside the payload is already the argument
+		// box — re-wrapping hides the inner value from %T rewriting
+		// and %v alike (a Sprintf-accumulated named string slot can
+		// carry one). Recurse on the boxed value so it renders and
+		// types as itself.
+		if fv, ok := x.V.(*fmtValue); ok {
+			return fmtArg(v, fv.x)
+		}
 		// the tag only names the declared type — a host-boxed payload
 		// still unwraps to fmtRValue, while other payloads keep
 		// fmtValue's tag-aware rendering (float32 tags, named scalars).
