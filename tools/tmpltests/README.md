@@ -11,10 +11,30 @@ unimplemented surface that became backlog.
 Design notes: [docs/sketch/ja/exploration-template-src-tests.md](../../docs/sketch/ja/exploration-template-src-tests.md).
 
 ```
-make tmpltests                               # text/template, all tests
+make tmpltests                               # text/template exec+multi, all tests
+make tmpltests-parse                         # text/template/parse (17 tests)
+make tmpltests-html                          # html/template (105 tests)
+make tmpltests-all                           # all three suites
 make tmpltests TMPLTESTS_ARGS="-only TestExec"
 go -C ./tools/tmpltests run ./ -h            # all flags
 ```
+
+## Suites
+
+| target | package | `--src` | upstream files |
+|---|---|---|---|
+| `tmpltests` | `text/template` | same | `exec_test.go, multi_test.go` |
+| `tmpltests-parse` | `text/template/parse` | same | `parse_test.go, lex_test.go` |
+| `tmpltests-html` | `html/template` | `html/template,text/template,text/template/parse,encoding/json,encoding/hex,slices` | `clone,content,css,escape,exec,html,js,multi,template,transition,url_test.go` |
+
+`html/template` runs source-interpreted, so its dependencies must be in
+`--src` too: `text/template` (+ `text/template/parse`) for
+`template.FuncMap`, `encoding/json` (+ `hex`, `slices`) for
+`json.Marshaler`. `make tmpltests-all` runs all three back to back;
+each suite's own `TMPLTESTS_*` variable is overridable from the
+Makefile. Current standings are recorded in TODO.md entries named by
+test — last run: parse 17/17 PASS, html 99 PASS / 2 FAIL / 1 PANIC / 1
+TRAP / 2 upstream SKIP of 105.
 
 `-only <re>` filters at copy + driver time, so an uncompilable test file
 can be routed around — but helper functions shared between test files
@@ -80,5 +100,12 @@ source files (files not listed are symlinked verbatim):
 
 - `link_test.go` — drives the Go toolchain itself (`internal/testenv`,
   `os/exec`); meaningless here.
-- `example*_test.go` — `package template_test` external tests need a second
-  package dir; later.
+- `example*_test.go` — `package template_test` external tests. Wiring
+  them needs (a) a second generated package dir — `text/template_test`
+  — because they cannot live in the same package dir as the driver,
+  (b) `// Output:` comment parsing + stdout capture and comparison
+  (go-test example semantics), and (c) more bind surface: `log`
+  currently source-resolves but traps on `fmt.Appendln`, and
+  `examplefiles_test.go` needs `os.MkdirTemp`/`os.Create`/`filepath`/
+  `io.WriteString`/`os.RemoveAll` plus `template.ParseGlob`/`ParseFiles`/
+  `Must`. Tracked in TODO.md.

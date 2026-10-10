@@ -1,4 +1,4 @@
-.PHONY: all test format clean lint go-mod-tidy-all difffuzz difffuzz-corpus tmpltests
+.PHONY: all test format clean lint go-mod-tidy-all difffuzz difffuzz-corpus tmpltests tmpltests-parse tmpltests-html tmpltests-all
 
 all:
 	go build ./...
@@ -33,8 +33,22 @@ difffuzz-corpus:
 # verbatim upstream tests under --src (see tools/tmpltests/README.md).
 # override e.g. `make tmpltests TMPLTESTS_ARGS="-only TestExec"`
 TMPLTESTS_ARGS ?=
+TMPLTESTS_PARSE_TESTS ?= parse_test.go,lex_test.go
+TMPLTESTS_HTML_TESTS ?= clone_test.go,content_test.go,css_test.go,escape_test.go,exec_test.go,html_test.go,js_test.go,multi_test.go,template_test.go,transition_test.go,url_test.go
+# html/template runs source-interpreted: its dependencies need src mode
+# too — text/template(+parse) for template.FuncMap, encoding/json(+hex,slices)
+# for json.Marshaler.
+TMPLTESTS_HTML_SRC ?= html/template,text/template,text/template/parse,encoding/json,encoding/hex,slices
 tmpltests:
 	go -C ./tools/tmpltests run ./ $(TMPLTESTS_ARGS)
+
+tmpltests-parse:
+	go -C ./tools/tmpltests run ./ -pkg text/template/parse -tests $(TMPLTESTS_PARSE_TESTS) $(TMPLTESTS_ARGS)
+
+tmpltests-html:
+	go -C ./tools/tmpltests run ./ -pkg html/template -tests $(TMPLTESTS_HTML_TESTS) -src $(TMPLTESTS_HTML_SRC) $(TMPLTESTS_ARGS)
+
+tmpltests-all: tmpltests tmpltests-parse tmpltests-html
 
 clean:
 	go clean -cache -testcache # General Go clean
