@@ -7791,6 +7791,14 @@ func scriptTypeString(x runtime.Value) string {
 		return "*runtime.PanicNilError"
 	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
 		if dv, ok := runtime.Deref(t); ok {
+			// the pointee slot's stamped declared type names the
+			// pointee's static type — `&i` on an interface-typed var
+			// spells *main.I, not *main.S of its stored value.
+			for _, c := range []*runtime.Cell{cellOf(t), cellOf(dv)} {
+				if c != nil && c.Typ != nil {
+					return "*" + typedefSpelling(c.Typ)
+				}
+			}
 			// *interface{} / *error keeps the pointee's declared name —
 			// the pointer itself is the dynamic type, not <nil>.
 			if td := nilIfaceTyp(dv); td != nil {
@@ -7854,6 +7862,21 @@ func formatString(x runtime.Value) (string, bool) {
 				continue
 			}
 			return "", false
+		}
+	}
+}
+
+// cellOf peels Named tags to reach the addressable cell underneath —
+// the pointee slot whose Typ is the declared (static) type.
+func cellOf(v runtime.Value) *runtime.Cell {
+	for {
+		switch x := v.(type) {
+		case *runtime.Cell:
+			return x
+		case *runtime.Named:
+			v = x.V
+		default:
+			return nil
 		}
 	}
 }
