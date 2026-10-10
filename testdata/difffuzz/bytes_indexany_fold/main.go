@@ -11,4 +11,6 @@ func main() {
 	fmt.Println(bytes.IndexAny([]byte("none"), "xyz"))
 	fmt.Println(bytes.EqualFold([]byte("AbC"), []byte("aBc")))
 	fmt.Println(bytes.EqualFold([]byte("AbC"), []byte("ab")))
+	fmt.Println(bytes.ContainsAny([]byte("<div x='y'>"), "'`"))
+	fmt.Println(bytes.ContainsAny([]byte("plain"), "'`"))
 }

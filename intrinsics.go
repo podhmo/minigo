@@ -530,9 +530,10 @@ func (e *Engine) installStdlib() {
 		"IndexByte":  h.fn2("bytes.IndexByte", func(a []any) (any, error) { return bytes.IndexByte(byteSlice(a[0]), byte(intOf(a[1]))), nil }),
 		"IndexRune":  h.fn2("bytes.IndexRune", func(a []any) (any, error) { return bytes.IndexRune(byteSlice(a[0]), runeOf(a[1])), nil }),
 		"IndexAny":   h.fn2("bytes.IndexAny", func(a []any) (any, error) { return bytes.IndexAny(byteSlice(a[0]), str(a[1])), nil }),
-		// html/template's escaper folds attribute names and indexes
-		// delimiter ends through these two.
-		"EqualFold": h.fn2("bytes.EqualFold", func(a []any) (any, error) { return bytes.EqualFold(byteSlice(a[0]), byteSlice(a[1])), nil }, bytes.EqualFold),
+		// html/template's escaper folds attribute names, indexes
+		// delimiter ends, and scans for comments through these three.
+		"EqualFold":   h.fn2("bytes.EqualFold", func(a []any) (any, error) { return bytes.EqualFold(byteSlice(a[0]), byteSlice(a[1])), nil }, bytes.EqualFold),
+		"ContainsAny": h.fn2("bytes.ContainsAny", func(a []any) (any, error) { return bytes.ContainsAny(byteSlice(a[0]), str(a[1])), nil }, bytes.ContainsAny),
 		"Replace": h.arity("bytes.Replace", 4, func(a []any) (any, error) {
 			return bytes.Replace(byteSlice(a[0]), byteSlice(a[1]), byteSlice(a[2]), intOf(a[3])), nil
 		}),
