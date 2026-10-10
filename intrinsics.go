@@ -1976,6 +1976,15 @@ func (e *Engine) installStdlib() {
 			return &runtime.GoValue{V: &callerFrames{sites: sites}}, nil
 		}},
 	})
+	// monthTD backs both the time.Month conversion and the January..
+	// December consts: bound consts carry the conversion's shape
+	// (Named{time.Month, int64}) so time.January == time.Month(1) like
+	// gc — a raw time.Month bind never adopted the typedef, so `m ==
+	// time.Month(1)` and `m == 1` both diverged.
+	monthTD := &runtime.TypeDef{Name: "time.Month", Kind: runtime.KindNamedBasic, Anon: ast.NewIdent("int"), HostScalar: time.Month(0)}
+	monthConst := func(m time.Month) runtime.Value {
+		return &runtime.Named{Typ: monthTD, V: int64(m)}
+	}
 	e.Bind("time", map[string]runtime.Value{
 		"Sleep": h.fn("time.Sleep", func(a []any) (any, error) { time.Sleep(durOf(a[0])); return nil, nil }),
 		"After": h.fnvc("time.After", func(vc runtime.VMCaller, a []any) (any, error) {
@@ -2029,19 +2038,19 @@ func (e *Engine) installStdlib() {
 		"Now":       h.fn("time.Now", func(a []any) (any, error) { return time.Now(), nil }, time.Now),
 		"Time":      hostType("time.Time", func() any { return time.Time{} }),
 		"Duration":  &runtime.TypeDef{Name: "time.Duration", Kind: runtime.KindNamedBasic, Anon: ast.NewIdent("int64"), HostScalar: time.Duration(0)},
-		"Month":     &runtime.TypeDef{Name: "time.Month", Kind: runtime.KindNamedBasic, Anon: ast.NewIdent("int"), HostScalar: time.Month(0)},
-		"January":   time.January,
-		"February":  time.February,
-		"March":     time.March,
-		"April":     time.April,
-		"May":       time.May,
-		"June":      time.June,
-		"July":      time.July,
-		"August":    time.August,
-		"September": time.September,
-		"October":   time.October,
-		"November":  time.November,
-		"December":  time.December,
+		"Month":     monthTD,
+		"January":   monthConst(time.January),
+		"February":  monthConst(time.February),
+		"March":     monthConst(time.March),
+		"April":     monthConst(time.April),
+		"May":       monthConst(time.May),
+		"June":      monthConst(time.June),
+		"July":      monthConst(time.July),
+		"August":    monthConst(time.August),
+		"September": monthConst(time.September),
+		"October":   monthConst(time.October),
+		"November":  monthConst(time.November),
+		"December":  monthConst(time.December),
 		"Location":  hostType("time.Location", func() any { return time.Local }),
 		"UTC":       &runtime.GoValue{V: time.UTC},
 		"Local":     &runtime.GoValue{V: time.Local},
