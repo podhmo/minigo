@@ -207,20 +207,18 @@ func (e *Engine) installStdlib() {
 			}
 			return errVal(errors.Unwrap(hostErrOf(v, args[0]))), nil
 		}},
-		// As walks the Unwrap chain and assigns the first cause whose type
-		// name matches the target cell's declared type.
+		// As walks the error tree the way gc's errors.As does — each
+		// node's dynamic type, its own As(any) bool, then Unwrap() error
+		// and Unwrap() []error children depth-first — and assigns the
+		// first cause satisfying the target cell's declared element type.
 		"As": &runtime.BuiltinFunc{Name: "errors.As", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("errors.As needs 2 args")
 			}
 			want := cellElemTyp(args[1])
-			for err := hostErrOf(v, args[0]); err != nil; err = errors.Unwrap(err) {
-				sv := scriptErrUnbox(err)
-				if matchAsTarget(v, sv, want) {
-					if runtime.SetRef(args[1], sv) {
-						return true, nil
-					}
-				}
+			sv, ok := findAsTarget(v, hostErrOf(v, args[0]), want, e.ifaceReqSet(want), args[1])
+			if ok && runtime.SetRef(args[1], sv) {
+				return true, nil
 			}
 			return false, nil
 		}},
@@ -237,17 +235,18 @@ func (e *Engine) installStdlib() {
 				return nil, fmt.Errorf("errors.AsType needs 1 arg")
 			}
 			want, _ := targs[0].(*runtime.TypeDef)
-			for err := hostErrOf(v, args[0]); err != nil; err = errors.Unwrap(err) {
-				sv := scriptErrUnbox(err)
-				if matchAsTarget(v, sv, want) {
-					return &runtime.Tuple{Elems: []runtime.Value{sv, true}}, nil
-				}
-			}
 			// gc returns E's zero on a miss — a typed nil so a
 			// pointer-receiver Error() on the result still runs.
 			var zero runtime.Value = runtime.NIL
 			if want != nil {
 				zero = v.Zero(want)
+			}
+			// target stands in for errors.As's user cell: a node's own
+			// As method writes its answer through this pointer.
+			target := &runtime.Cell{Elem: zero}
+			sv, ok := findAsTarget(v, hostErrOf(v, args[0]), want, e.ifaceReqSet(want), target)
+			if ok {
+				return &runtime.Tuple{Elems: []runtime.Value{sv, true}}, nil
 			}
 			return &runtime.Tuple{Elems: []runtime.Value{zero, false}}, nil
 		}},
@@ -6493,8 +6492,22 @@ func (e *scriptError) Error() string {
 }
 
 // Unwrap lets a script-declared `Unwrap() error` method join the host
-// errors chain — errors.Unwrap/Is/As walk through it like Go's.
+// errors chain — errors.Unwrap/Is/As walk through it like Go's. A
+// script `Unwrap() []error` reports no single cause — like
+// errors.Join, the type has no Unwrap() error.
 func (e *scriptError) Unwrap() error {
+	kids := e.errKids()
+	if len(kids) != 1 {
+		return nil
+	}
+	return kids[0]
+}
+
+// errKids returns the error node's children: a script `Unwrap()
+// []error` fans out like errors.Join's elements (a shape Unwrap()
+// error cannot express alongside it on one Go type), a plain
+// `Unwrap() error` is the single cause.
+func (e *scriptError) errKids() []error {
 	m, ok := runtime.IfaceMember(e.c, e.v, "Unwrap")
 	if !ok {
 		return nil
@@ -6503,10 +6516,41 @@ func (e *scriptError) Unwrap() error {
 	if err != nil {
 		return nil
 	}
-	if _, isNil := r.(runtime.Nil); isNil {
-		return nil
+	switch x := runtime.Unwrap(r).(type) {
+	case *runtime.Slice:
+		kids := make([]error, 0, len(x.Elems))
+		for _, elem := range x.Elems {
+			if ke := hostErrOf(e.c, elem); ke != nil {
+				kids = append(kids, ke)
+			}
+		}
+		return kids
+	case *runtime.TypedNil:
+		if x.Typ != nil && x.Typ.Kind == runtime.KindSlice {
+			return nil // `Unwrap() []error` returned a nil slice
+		}
 	}
-	return hostErrOf(e.c, r)
+	if ke := hostErrOf(e.c, r); ke != nil {
+		return []error{ke}
+	}
+	return nil
+}
+
+// As lets a script-declared `As(any) bool` method join host
+// errors.As/AsType — the error's own As assigns the target like Go's
+// custom-As rule. A non-pointer target has nothing to write to and
+// simply fails the script side's assert.
+func (e *scriptError) As(target any) bool {
+	m, ok := runtime.IfaceMember(e.c, e.v, "As")
+	if !ok {
+		return false
+	}
+	r, err := e.c.Call(m, []runtime.Value{target})
+	if err != nil {
+		return false
+	}
+	b, _ := r.(bool)
+	return b
 }
 
 // wrapError is fmt.Errorf's %w product: message plus one cause.
@@ -6531,9 +6575,12 @@ func hostErrOf(c runtime.VMCaller, v runtime.Value) error {
 	case *runtime.Named:
 		return hostErrOf(c, x.V)
 	case runtime.Nil, *runtime.IfaceNil:
-		// an untyped nil error unwraps to nothing — a typed nil
-		// (TypedNil) still carries its declared error type and must
-		// stay wrapped so As/Is can match on it.
+		// an untyped nil error unwraps to nothing — but a boxed typed
+		// nil (`var err error = (*E)(nil)`) is a real error value: its
+		// concrete tag unwraps to the TypedNil As/Is match on.
+		if td := runtime.BoxedNilTyp(v); td != nil {
+			return &scriptError{c: c, v: &runtime.TypedNil{Typ: td}}
+		}
 		return nil
 	default:
 		return &scriptError{c: c, v: v}
@@ -6579,15 +6626,84 @@ func cellElemTyp(v runtime.Value) *runtime.TypeDef {
 	return nil
 }
 
+// findAsTarget walks an error's tree the way errors.As/AsType do —
+// the node itself, its own As(any) bool, then Unwrap() error and
+// Unwrap() []error children depth-first — and reports the first
+// element satisfying the target. want is the target's element typedef
+// (nil accepts anything); reqs is want's required method set for an
+// interface target; target is the destination pointer a node's As
+// method writes through (errors.As's user cell, AsType's result cell).
+func findAsTarget(v runtime.VMCaller, err error, want *runtime.TypeDef, reqs map[string]bool, target runtime.Value) (runtime.Value, bool) {
+	for err != nil {
+		sv := scriptErrUnbox(err)
+		if matchAsTarget(v, sv, want, reqs) {
+			return sv, true
+		}
+		if xa, ok := err.(interface{ As(any) bool }); ok && xa.As(target) {
+			// the node's own As wrote the answer through the target
+			// pointer — read the cell back for the result value.
+			if c, ok := target.(*runtime.Cell); ok {
+				return c.Elem, true
+			}
+			return sv, true
+		}
+		switch kids := errKids(err); {
+		case len(kids) == 0:
+			return nil, false
+		case len(kids) == 1:
+			err = kids[0]
+		default:
+			for _, kid := range kids {
+				if rv, ok := findAsTarget(v, kid, want, reqs, target); ok {
+					return rv, true
+				}
+			}
+			return nil, false
+		}
+	}
+	return nil, false
+}
+
+// errKids returns an error node's children — Unwrap() error's single
+// cause or Unwrap() []error's several, checked in Go's order.
+// scriptError answers through the script Unwrap member itself so a
+// script `Unwrap() []error` still fans out.
+func errKids(err error) []error {
+	if se, ok := err.(*scriptError); ok {
+		return se.errKids()
+	}
+	if u, ok := err.(interface{ Unwrap() error }); ok {
+		if e := u.Unwrap(); e != nil {
+			return []error{e}
+		}
+		return nil
+	}
+	if u, ok := err.(interface{ Unwrap() []error }); ok {
+		return u.Unwrap()
+	}
+	return nil
+}
+
 // matchAsTarget reports whether a chain element satisfies an errors.As
 // target's element typedef: an interface target (`var e error; &e`)
-// accepts any error value, a concrete target matches the element's
-// declared type exactly — name + package, the way
-// reflect.TypeOf(err) == elem(target) works — and a GoValue-boxed host
-// error, which carries no typedef of its own, matches on its reflect
-// type (*strconv.NumError).
-func matchAsTarget(v runtime.VMCaller, sv runtime.Value, want *runtime.TypeDef) bool {
-	if want == nil || want.Kind == runtime.KindInterface {
+// accepts an element implementing its full required method set, a
+// concrete target matches the element's declared type exactly — name +
+// package, the way reflect.TypeOf(err) == elem(target) works — and a
+// GoValue-boxed host error, which carries no typedef of its own,
+// matches on its reflect type (*strconv.NumError).
+func matchAsTarget(v runtime.VMCaller, sv runtime.Value, want *runtime.TypeDef, reqs map[string]bool) bool {
+	if want == nil {
+		return true
+	}
+	if want.Kind == runtime.KindInterface {
+		// interface targets check the element's method set —
+		// AsType[Extra](E{}) where E offers only Error() misses, the
+		// way gc's AssignableTo rejects it.
+		for m := range reqs {
+			if _, ok := runtime.IfaceMember(v, sv, m); !ok {
+				return false
+			}
+		}
 		return true
 	}
 	if sameErrTyp(v, v.TypeOf(sv), want) {
