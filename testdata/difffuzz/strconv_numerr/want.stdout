@@ -1,0 +1,12 @@
+Is syntax: true
+Is range: false
+eq syntax: false
+Is range: true
+Is syntax (range err): false
+As: true
+fields: Atoi x true
+Unwrap: true
+As iface: true true
+As Error(): true
+Is wrapped: true
+As wrapped: true x

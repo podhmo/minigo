@@ -216,12 +216,7 @@ func (e *Engine) installStdlib() {
 			want := cellElemTyp(args[1])
 			for err := hostErrOf(v, args[0]); err != nil; err = errors.Unwrap(err) {
 				sv := scriptErrUnbox(err)
-				st := v.TypeOf(sv)
-				// an interface target (`var e error; &e`) accepts any
-				// error value; a concrete target matches the chain
-				// element's declared type exactly — name + package, the
-				// way reflect.TypeOf(err) == elem(target) works.
-				if want == nil || want.Kind == runtime.KindInterface || sameErrTyp(v, st, want) {
+				if matchAsTarget(v, sv, want) {
 					if runtime.SetRef(args[1], sv) {
 						return true, nil
 					}
@@ -244,8 +239,7 @@ func (e *Engine) installStdlib() {
 			want, _ := targs[0].(*runtime.TypeDef)
 			for err := hostErrOf(v, args[0]); err != nil; err = errors.Unwrap(err) {
 				sv := scriptErrUnbox(err)
-				st := v.TypeOf(sv)
-				if want == nil || want.Kind == runtime.KindInterface || sameErrTyp(v, st, want) {
+				if matchAsTarget(v, sv, want) {
 					return &runtime.Tuple{Elems: []runtime.Value{sv, true}}, nil
 				}
 			}
@@ -476,6 +470,14 @@ func (e *Engine) installStdlib() {
 		// only build); interpreted stdlib code reaches it, e.g.
 		// encoding/base64's decoder.
 		"IntSize": &runtime.UConst{V: constant.MakeInt64(strconv.IntSize)},
+		// sentinels ride GoValue boxes so `err == strconv.ErrSyntax` and
+		// errors.Is against the chain see the real objects; *NumError
+		// already arrives boxed from the parse functions and unwraps to
+		// them natively. The NumError typedef makes `var e *strconv.NumError`
+		// (an errors.As target) resolvable.
+		"ErrSyntax": &runtime.GoValue{V: strconv.ErrSyntax},
+		"ErrRange":  &runtime.GoValue{V: strconv.ErrRange},
+		"NumError":  hostType("strconv.NumError", func() any { return &strconv.NumError{} }),
 	})
 	e.Bind("bytes", map[string]runtime.Value{
 		// `var buf bytes.Buffer` / `new(bytes.Buffer)` box a real
@@ -6490,6 +6492,61 @@ func cellElemTyp(v runtime.Value) *runtime.TypeDef {
 		return nil
 	}
 	return nil
+}
+
+// matchAsTarget reports whether a chain element satisfies an errors.As
+// target's element typedef: an interface target (`var e error; &e`)
+// accepts any error value, a concrete target matches the element's
+// declared type exactly — name + package, the way
+// reflect.TypeOf(err) == elem(target) works — and a GoValue-boxed host
+// error, which carries no typedef of its own, matches on its reflect
+// type (*strconv.NumError).
+func matchAsTarget(v runtime.VMCaller, sv runtime.Value, want *runtime.TypeDef) bool {
+	if want == nil || want.Kind == runtime.KindInterface {
+		return true
+	}
+	if sameErrTyp(v, v.TypeOf(sv), want) {
+		return true
+	}
+	if gv, ok := sv.(*runtime.GoValue); ok {
+		return sameErrTypHost(v, reflect.TypeOf(gv.V), want)
+	}
+	return false
+}
+
+// sameErrTypHost is the GoValue side of sameErrTyp: it compares a chain
+// element's concrete host type with the As target's element typedef.
+// Pointer depth must match first; the leaf compares a bound typedef's
+// "pkg/path.Name" spelling with reflect's PkgPath+Name, which cannot
+// collide with a script-declared type's short name.
+func sameErrTypHost(v runtime.VMCaller, rt reflect.Type, want *runtime.TypeDef) bool {
+	if rt == nil || want == nil {
+		return false
+	}
+	wt := want
+	for rt.Kind() == reflect.Pointer {
+		if wt == nil || wt.Kind != runtime.KindPointer {
+			return false
+		}
+		pt := wt
+		wt = wt.Elem
+		if wt == nil {
+			// a typedef may carry the pointee only in Anon — let the VM
+			// resolve the element zero instead of walking the AST here.
+			wt = v.TypeOf(v.ElemZero(pt))
+			if wt == nil {
+				return false
+			}
+		}
+		rt = rt.Elem()
+	}
+	if wt == nil || wt.Kind == runtime.KindPointer {
+		return false
+	}
+	if wt.Name == "" || rt.Name() == "" {
+		return false
+	}
+	return wt.Name == rt.PkgPath()+"."+rt.Name()
 }
 
 // sameErrTyp compares a chain element's dynamic typedef with the As
