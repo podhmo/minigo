@@ -122,15 +122,14 @@ TODO.md の次の2項目をどう進めるかの検討。
 
 `TestExecute` "range int8" (%T fmtValue 化), `TestIssue48215` (関数ローカル型の埋め込み ptr 昇格), `errors.AsType` (generic bind 機構), `TestMaxExecDepth` (frame limit ポリシー)。次の拡大は `text/template/parse` → `html/template` → `example*_test.go` の順。
 
-## Future work: テンプレート登録の遅延（質問への回答メモ・改訂）
+## Future work: テンプレート登録の遅延（質問への回答メモ・最終）
 
-前提は srcImpl/patched ソースを使わない「text/template を verbatim ソース解釈する」枠組みで、インタプリタ側の意味論の遊びだけで登録実行を遅延できる余地はどこか、という探索。パフォーマンスではなく意味論の自由度の話。
+前提: text/template は verbatim ソース解釈のまま。登録側だけを intrinsic に差し替える最小構成で「Parse を遅延できるか」という意味論の遊びの探索。パフォーマンスではなく「解釈の差異でどこまで進むか」の話。
 
-- **既に遅延しているもの。** バイトコード翻訳は関数単位で初回呼出 (`EnsureCompiled`) まで遅延済み。値領域にも「未評価を保持して観測点で force」する機構がある: UConst の materialize 境界、compiler の deferred operand（pure read は後段の call の後まで遅れる two-phase 評価）。thunk 値型を足すならこれら観測点に乗る設計になる。
-- **正直な lazy は oapi-codegen 形では得がほぼない。** `_, err := t.Parse(text)` の直後に `err != nil` / `Must` で即観測されるため、err を観測すれば Parse 全体が force される。Parse は `t.common` への副作用を持つ (define 名の登録) ので、副作用も thunk に畳み込む契約が必要。
-- **残る道は推測実行。** `Parse` が `(lazy T, lazy err≈nil)` を返し、force 点を `Execute`/name lookup のみにする。err 観測を force 点から外すのが「syntax error 意味論を実行時に変換」するということ — 壊れた template は exec 時に (未使用なら永遠に) エラーになる。評価器に「テンプレート破損検知のため eager に評価する」オプションが欲しいのはこのため。
-- **粒度は幸い粗い。** oapi-codegen は 48 ファイルを個別 `Parse` するので force 単位がファイルごと — 未使用ファイルは丸ごと skip できる。ただし `Clone` は全 tree を写すので、lazy を引き継ぐ copy-on-write でないと全 force される。
-- **define 名登録も eager 義務。** 推測モードでは common map が空のままなので name lookup 自体を force 契機にする (parse-on-lookup)。`Templates()` 列挙も全 force する。
-- **一般形 (ロマン)。** 「pure と注記された関数の呼出しを結果観測まで遅延」— deferred operand の延長線。Parse は pure でない (common map 破壊的代入) ので、副作用を thunk 内に遅らせる契約が要る。oapi-codegen の実コストは host lexer 適用後で strict の ~17% — 天井はここ。
+- **最小構成はこれで成立する。** `(*Template).Parse` を intrinsic 化し「`(t, text, delims)` を pending に記録して nil error を返す」だけにする。実 parse はソース解釈のまま、最初の `Execute`/`Lookup` で遅れて走る。評価器が持つのは eager/lazy の bool 1個だけ (eager = 従来どおり即座に parse して壊れたテンプレートを登録時に検知するモード)。
+- **環境捕捉は実害がない。** 遅延 parse が必要とするのは呼出し側フレームではなく `(t, text, delims)` の値と `text/template` パッケージ env で、どちらも呼出側の変数束縛に依存しない。「関数内で Parse して変数束縛の外れた環境で Execute される」ケースでも thunk は値キャプチャで足り、追加の動的環境は要らない。
+- **force 点は lookup/execute 側。** pending を記録するだけだと解釈実行される `ExecuteTemplate`/`Lookup` が `t.common` の map を読んでもエントリが無いので、Execute/Lookup も intrinsic にして先に pending を drain する (全 drain でなく、define 名の軽量スキャンで name→text 索引を建てれば per-name force も可能)。define 登録の副作用は遅延 parse の中で起きるので Go の観測順序は壊れない。
+- **意味論的に崩れる場所 (許容する差異)。** 壊れたテンプレートは Parse 時に error にならず最初の Execute で (未使用なら永遠に) エラーになる — Go が暗に要求する eager error 契約との不一致で、ここを「実行時に変換」するのがこの設計の本体。`Templates()`/`Clone` は pending を drain するか列挙から漏れるかの分岐。`Funcs`/`Option` を Parse 後 Execute 前に呼ぶと、lazy 側では遅れて追加された func が使えてしまう (Go では Parse 時点の名集合で縛る) — Parse 時に func 名集合をスナップショットするか、許容差異にするか。
+- **粒度は有利。** oapi-codegen は 48 ファイルを個別 `Parse` するので force 単位がファイルごと、未使用ファイルは丸ごと skip できる。host lexer 適用後の parse は strict の ~17% — 意味論を曲げて取れる上限はここ。
 
-結論: 意味論の遊びで可能なのは「err 観測を force 点から外す推測 lazy」で、Go の eager error 契約との不一致を明示的に飲む設計。実装するなら評価器オプション (lazy/eager) 付き。
+結論: intrinsic `Parse` (記録+dummy成功) + Execute/Lookup の drain (または per-name force) + 評価器の eager bool、という形で Go の eager error 契約だけを明示的に曲げて遅延できる。thunk が要るのは値キャプチャまでで、動的環境の保持は不要。
