@@ -615,6 +615,9 @@ func TestMismatchedOpTraps(t *testing.T) {
 		{"ConstStringIntoNum", "invalid operation: mismatched types duration and string"},
 		{"ConstRuneIntoStr", "invalid operation: mismatched types mystr and rune"},
 		{"AppendConstOverflow", "constant 300 overflows byte"},
+		{"EqlMismatchEval", "invalid operation: mismatched types duration and int64"},
+		{"EqlMismatchStrEval", "invalid operation: mismatched types mystr and string"},
+		{"OrderBareNumEval", "invalid operation: mismatched types duration and int"},
 	}
 	for _, c := range traps {
 		if _, err := e.Run(context.Background(), "./testdata/mismatchedops", c.fn); err == nil {
@@ -627,9 +630,6 @@ func TestMismatchedOpTraps(t *testing.T) {
 		fn   string
 		want runtime.Value
 	}{
-		{"EqlMismatchEval", false}, // gc rejects; == evaluates dynamic-false
-		{"EqlMismatchStrEval", true},
-		{"OrderBareNumEval", false}, // explicit conversion still works
 		{"ConvertEscape", true},
 		{"NamedConstAdopt", int64(6)},
 		{"SameTypedefAdd", int64(7)},
