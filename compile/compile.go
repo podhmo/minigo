@@ -2381,7 +2381,9 @@ func (c *compiler) unfoldTypExpr(te ast.Expr, depth int) ast.Expr {
 // was declared in: an ident resolves through that package's index, a
 // selector's qualifier through the imports of the spec's own file —
 // never the caller's file, where the same qualifier may point at a
-// different package.
+// different package. The leaf type keeps names of its declaring package,
+// which the caller's scope could mis-resolve — scopeSpecType re-scopes
+// them before the expr escapes.
 func (c *compiler) unfoldSpecType(p *runtime.Package, ts *ast.TypeSpec, depth int) ast.Expr {
 	if depth <= 0 || ts == nil {
 		return nil
@@ -2397,7 +2399,138 @@ func (c *compiler) unfoldSpecType(p *runtime.Package, ts *ast.TypeSpec, depth in
 			return c.unfoldSpecType(p2, ts2, depth-1)
 		}
 	}
-	return t
+	return c.scopeSpecType(p, specFileOf(p, ts.Pos()), t)
+}
+
+// scopeSpecType rewrites a spec's leaf type so its names resolve with
+// the scope they were declared in, not the caller's. A bare ident
+// naming a package-level type of p becomes pkg.T through the caller's
+// import name for p — inside the caller's own package the ident
+// already resolves there, so it stays bare. A selector's qualifier is
+// re-keyed through the spec file's own imports, since the same
+// qualifier in the caller may name a different package — or none.
+// Composite forms recurse; anything else returns as-is.
+func (c *compiler) scopeSpecType(p *runtime.Package, sf *syntax.File, e ast.Expr) ast.Expr {
+	switch t := ast.Unparen(e).(type) {
+	case *ast.Ident:
+		if p != c.pkg && pkgTypeSpec(p, t.Name) != nil {
+			return &ast.SelectorExpr{X: &ast.Ident{Name: c.callerImportName(p.Path)}, Sel: &ast.Ident{Name: t.Name}}
+		}
+		return t
+	case *ast.SelectorExpr:
+		if id, ok := t.X.(*ast.Ident); ok {
+			if ref, ok := pkgImportRef(p, sf, id.Name); ok {
+				return &ast.SelectorExpr{X: &ast.Ident{Name: c.callerImportName(ref.Path)}, Sel: t.Sel}
+			}
+		}
+		return t
+	case *ast.ArrayType:
+		if e := c.scopeSpecType(p, sf, t.Elt); e != t.Elt {
+			return &ast.ArrayType{Lbrack: t.Lbrack, Len: t.Len, Elt: e}
+		}
+		return t
+	case *ast.MapType:
+		k, v := c.scopeSpecType(p, sf, t.Key), c.scopeSpecType(p, sf, t.Value)
+		if k != t.Key || v != t.Value {
+			return &ast.MapType{Map: t.Map, Key: k, Value: v}
+		}
+		return t
+	case *ast.StarExpr:
+		if x := c.scopeSpecType(p, sf, t.X); x != t.X {
+			return &ast.StarExpr{Star: t.Star, X: x}
+		}
+		return t
+	case *ast.ChanType:
+		if v := c.scopeSpecType(p, sf, t.Value); v != t.Value {
+			return &ast.ChanType{Begin: t.Begin, Arrow: t.Arrow, Dir: t.Dir, Value: v}
+		}
+		return t
+	case *ast.Ellipsis:
+		if e := c.scopeSpecType(p, sf, t.Elt); e != t.Elt {
+			return &ast.Ellipsis{Ellipsis: t.Ellipsis, Elt: e}
+		}
+		return t
+	case *ast.ParenExpr:
+		if x := c.scopeSpecType(p, sf, t.X); x != t.X {
+			return &ast.ParenExpr{Lparen: t.Lparen, X: x, Rparen: t.Rparen}
+		}
+		return t
+	case *ast.StructType:
+		if fs := c.scopeFieldList(p, sf, t.Fields); fs != t.Fields {
+			return &ast.StructType{Struct: t.Struct, Fields: fs, Incomplete: t.Incomplete}
+		}
+		return t
+	case *ast.InterfaceType:
+		if ms := c.scopeFieldList(p, sf, t.Methods); ms != t.Methods {
+			return &ast.InterfaceType{Interface: t.Interface, Methods: ms, Incomplete: t.Incomplete}
+		}
+		return t
+	case *ast.FuncType:
+		var dirty bool
+		params, results := t.Params, t.Results
+		if fs := c.scopeFieldList(p, sf, t.Params); fs != t.Params {
+			params, dirty = fs, true
+		}
+		if fs := c.scopeFieldList(p, sf, t.Results); fs != t.Results {
+			results, dirty = fs, true
+		}
+		if dirty {
+			return &ast.FuncType{Func: t.Func, TypeParams: t.TypeParams, Params: params, Results: results}
+		}
+		return t
+	case *ast.IndexExpr:
+		if x := c.scopeSpecType(p, sf, t.X); x != t.X {
+			return &ast.IndexExpr{X: x, Lbrack: t.Lbrack, Index: t.Index, Rbrack: t.Rbrack}
+		}
+		return t
+	case *ast.IndexListExpr:
+		if x := c.scopeSpecType(p, sf, t.X); x != t.X {
+			return &ast.IndexListExpr{X: x, Lbrack: t.Lbrack, Indices: t.Indices, Rbrack: t.Rbrack}
+		}
+		return t
+	}
+	return e
+}
+
+// scopeFieldList re-scopes the types of one field list (struct fields,
+// interface methods, func params/results), returning it unchanged when
+// no field's type needed rewriting.
+func (c *compiler) scopeFieldList(p *runtime.Package, sf *syntax.File, fl *ast.FieldList) *ast.FieldList {
+	if fl == nil {
+		return nil
+	}
+	var dirty bool
+	list := make([]*ast.Field, len(fl.List))
+	for i, f := range fl.List {
+		nt := c.scopeSpecType(p, sf, f.Type)
+		if nt != f.Type {
+			dirty = true
+			nf := *f
+			nf.Type = nt
+			list[i] = &nf
+		} else {
+			list[i] = f
+		}
+	}
+	if !dirty {
+		return fl
+	}
+	return &ast.FieldList{Opening: fl.Opening, List: list, Closing: fl.Closing}
+}
+
+// callerImportName returns the qualifier under which the caller's file
+// reaches pkgPath — the import's local name. The path itself stands in
+// when the caller does not import the package: it never resolves, so a
+// synthesized selector reports unknown rather than a wrong scope's name.
+func (c *compiler) callerImportName(pkgPath string) string {
+	if c.pkg != nil && c.file != nil {
+		for name, ref := range c.pkg.Scopes[c.file] {
+			if ref != nil && ref.Path == pkgPath && token.IsIdentifier(name) {
+				return name
+			}
+		}
+	}
+	return pkgPath
 }
 
 // selTypeSpecIn resolves a pkg.T selector written inside a type spec of
