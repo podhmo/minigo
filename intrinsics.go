@@ -214,16 +214,13 @@ func (e *Engine) installStdlib() {
 			if e0 == nil || e1 == nil {
 				return e0 == e1, nil
 			}
-			if s0, ok := e0.(*scriptError); ok {
-				// Go's `err == target` fast path: two scriptError boxes
-				// around the same script value are one error.
-				if s1, ok := e1.(*scriptError); ok && s0.v == s1.v {
-					return true, nil
-				}
-			}
 			// script-side walk — host errors.Is's `==` compares error
 			// pointers and only walks Unwrap() error, so it misses a
 			// scriptError's canonical equality and its []error kids.
+			// No `err == target` fast path here: gc only compares when
+			// the target is comparable, which is errIs's own gate — a
+			// pointer-identity shortcut would answer true on a same-box
+			// uncomparable target where gc skips `==` entirely.
 			return errIs(e0, e1), nil
 		}},
 		"Unwrap": &runtime.BuiltinFunc{Name: "errors.Unwrap", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
