@@ -66,16 +66,21 @@ var fileRewrites = map[string][]rewrite{
 	},
 }
 
-// srcRewrites maps an upstream non-test source file name to rewrites applied
-// while copying it into the scratch GOROOT (same mechanism as test files;
-// files not listed are symlinked verbatim).
-var srcRewrites = map[string][]rewrite{
-	"exec.go": {
-		// minigo's interpreter frame limit (10000) fires long before the
-		// upstream exec depth cap (100000), so TestMaxExecDepth could only
-		// ever observe `stack exhausted`. Lower the cap so the real guard
-		// is exercised well under the frame limit.
-		{"var maxExecDepth = initMaxExecDepth()", "var maxExecDepth = 250"},
+// srcRewrites maps a package path to per-file rewrites applied while
+// copying that file into the scratch GOROOT (same mechanism as test
+// files; files not listed are symlinked verbatim). The target package's
+// own sources rewrite in place; a -src dependency package's directory
+// is materialized — real dirs with symlinked siblings — so its listed
+// files can rewrite too, since a wholesale symlinked dep is verbatim.
+var srcRewrites = map[string]map[string][]rewrite{
+	"text/template": {
+		"exec.go": {
+			// minigo's interpreter frame limit (10000) fires long before the
+			// upstream exec depth cap (100000), so TestMaxExecDepth could only
+			// ever observe `stack exhausted`. Lower the cap so the real guard
+			// is exercised well under the frame limit.
+			{"var maxExecDepth = initMaxExecDepth()", "var maxExecDepth = 250"},
+		},
 	},
 }
 
@@ -187,8 +192,16 @@ func buildGOROOT(gr, realRoot, pkg string, testFiles []string, only *regexp.Rege
 	if err != nil {
 		return "", err
 	}
+	// Top-level dirs a rewritten -src dependency lives under must
+	// materialize instead of linking wholesale.
+	depParents := map[string]bool{}
+	for dep := range srcRewrites {
+		if dep != pkg {
+			depParents[strings.SplitN(dep, "/", 2)[0]] = true
+		}
+	}
 	for _, e := range ents {
-		if shimmed[e.Name()] || e.Name() == pkg || strings.HasPrefix(pkg, e.Name()+"/") {
+		if shimmed[e.Name()] || e.Name() == pkg || strings.HasPrefix(pkg, e.Name()+"/") || depParents[e.Name()] {
 			continue // replaced below, the package itself, or a parent dir of it
 		}
 		if err := os.Symlink(filepath.Join(realRoot, "src", e.Name()), filepath.Join(src, e.Name())); err != nil {
@@ -280,7 +293,7 @@ func buildGOROOT(gr, realRoot, pkg string, testFiles []string, only *regexp.Rege
 				return "", err
 			}
 		case strings.HasSuffix(name, ".go"):
-			if rws, ok := srcRewrites[name]; ok {
+			if rws, ok := srcRewrites[pkg][name]; ok {
 				if err := copyTestFile(filepath.Join(real, name), dst, rws); err != nil {
 					return "", err
 				}
@@ -291,7 +304,68 @@ func buildGOROOT(gr, realRoot, pkg string, testFiles []string, only *regexp.Rege
 			}
 		}
 	}
+
+	// -src dependency packages with rewrites materialize so their listed
+	// files can patch: real dirs along the path, symlinks for siblings,
+	// rewritten copies for the listed files.
+	for dep, files := range srcRewrites {
+		if dep == pkg {
+			continue // rewritten above with the package's own sources
+		}
+		if err := materializeDep(gr, realRoot, dep, files); err != nil {
+			return "", err
+		}
+	}
 	return pkgDir, nil
+}
+
+// materializeDep turns a wholesale-symlinked dependency directory into a
+// real one: each path segment becomes a real dir of symlinks, and files
+// listed in the rewrite table copy in patched.
+func materializeDep(gr, realRoot, dep string, files map[string][]rewrite) error {
+	src := filepath.Join(gr, "src")
+	parts := strings.Split(dep, "/")
+	cur := src
+	for i, p := range parts {
+		cur = filepath.Join(cur, p)
+		if fi, err := os.Lstat(cur); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			if err := os.Remove(cur); err != nil {
+				return err
+			}
+		} else if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		leaf := i+1 == len(parts)
+		if err := os.MkdirAll(cur, 0o755); err != nil {
+			return err
+		}
+		sub := filepath.Join(realRoot, "src", strings.Join(parts[:i+1], "/"))
+		sents, err := os.ReadDir(sub)
+		if err != nil {
+			return err
+		}
+		for _, e := range sents {
+			if !leaf && e.Name() == parts[i+1] {
+				continue // the next materialized segment
+			}
+			dst := filepath.Join(cur, e.Name())
+			if leaf {
+				if rws, ok := files[e.Name()]; ok {
+					if err := copyTestFile(filepath.Join(sub, e.Name()), dst, rws); err != nil {
+						return err
+					}
+					continue
+				}
+			}
+			if _, err := os.Lstat(dst); err == nil {
+				continue // already linked by the target package's parent dirs
+			}
+			if err := os.Symlink(filepath.Join(sub, e.Name()), dst); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func renamedTest(name string) string {
