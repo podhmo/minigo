@@ -664,10 +664,36 @@ func Copy(v Value) Value {
 		}
 		return v
 	case *Named:
+		// a HostNew struct's payload is a `*T` box — assignment copies
+		// the struct like gc (`var b bytes.Buffer = a` must not alias
+		// a's storage). The tag is the only reliable signal: a bare
+		// *T GoValue may be a host-returned pointer that must share.
+		if x.Typ != nil && x.Typ.Kind == KindStruct && x.Typ.HostNew != nil {
+			if cp, ok := HostStructCopy(x.V); ok {
+				return Tag(x.Typ, cp)
+			}
+		}
 		// assignment copies the underlying value but keeps the declared tag
 		return Tag(x.Typ, Copy(x.V))
 	}
 	return v
+}
+
+// HostStructCopy duplicates a `*struct` GoValue box for an assignment
+// boundary; anything else reports false so non-struct host payloads
+// (handles, maps, interfaces) keep passing through.
+func HostStructCopy(v Value) (Value, bool) {
+	gv, ok := v.(*GoValue)
+	if !ok {
+		return nil, false
+	}
+	rv := reflect.ValueOf(gv.V)
+	if rv.Kind() != reflect.Ptr || rv.IsNil() || rv.Elem().Kind() != reflect.Struct {
+		return nil, false
+	}
+	cp := reflect.New(rv.Elem().Type())
+	cp.Elem().Set(rv.Elem())
+	return &GoValue{V: cp.Interface()}, true
 }
 
 // SetRef stores through any pointer-like value: Cell, FieldRef or IndexRef.
