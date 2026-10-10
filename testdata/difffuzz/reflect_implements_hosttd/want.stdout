@@ -1,0 +1,7 @@
+ptr implements: true
+value implements: false
+assignable: true
+vtype assignable: true
+typeassert: true false
+duration stringer: true
+int stringer: false

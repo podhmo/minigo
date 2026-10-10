@@ -324,8 +324,19 @@ func (e *Env) typeAssert() *runtime.BuiltinFunc {
 			// binding to *T both behave. Interface-typed targets
 			// keep the box (re-tagged on the iface-slot boundary).
 			out := normVal(v.ifaceVal())
-			if bt := runtime.BoxedNilTyp(out); bt != nil && td.Kind != runtime.KindInterface {
-				out = &runtime.TypedNil{Typ: bt}
+			switch {
+			case td.Kind == runtime.KindInterface:
+				// x.(I) keeps the interface box — a typed nil
+				// asserted to an interface type stays a boxed nil
+				// (IfaceNil{*T}), not a bare TypedNil: `p == nil`
+				// must read false like a direct `var s I = (*T)(nil)`.
+				if tn, isTN := out.(*runtime.TypedNil); isTN {
+					out = &runtime.IfaceNil{Typ: tn.Typ}
+				}
+			default:
+				if bt := runtime.BoxedNilTyp(out); bt != nil {
+					out = &runtime.TypedNil{Typ: bt}
+				}
 			}
 			return &runtime.Tuple{Elems: []runtime.Value{out, true}}, nil
 		},
