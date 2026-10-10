@@ -926,8 +926,34 @@ round-19 の全体差分レビューで新規記録した difffuzz 系項目（c
 | TODO 残件 | **`Named{td,UConst}` の fmt 境界 materialize**（`fmtArg` が UConst payload を `MaterializeConstErr` で declared width に通してから `fmtValue` に渡す — `fmt.Println(uint64(1<<64-1))` が overflow panic 文字ではなく値を出す）（TODO L21） | [#767](https://github.com/podhmo/minigo/pull/767) |
 | review 副産物 | **qualified selector conversion の静的型**（`conversionCall` に `selTypRef`+`selIsType` を追加 — `time.Duration(5) == s` が `mismatched types` trap に。`pkg.fn(x)` は引き続き real call） | [#768](https://github.com/podhmo/minigo/pull/768) |
 | TODO 残件 | **proxy box の型スペル**（`proxyHostTypes` alias 表を `%T`（scriptTypeString）と `Hooks.TypeAlias`→`hostTypeOf` の2ファネルに適用 — `*minigo.tickerChanBox` ではなく `*time.Ticker` を返す）（TODO L22） | [#769](https://github.com/podhmo/minigo/pull/769) |
-| 帳簿 | TODO.md の difffuzz 3項目を `[x]` に＋selconv を完了項目として追記 | 本 PR |
+| CAP 補充 | **resolvable qualified 名の nilability**（`nilableTypExpr` が `selTypRef`+`selNilable` で `pkg.T` の kind を答える — `d == nil` が `untyped nil` trap、iface 名は動的比較のまま、未解決名は沈黙）（TODO L24） | [#771](https://github.com/podhmo/minigo/pull/771) |
+| 帳簿 | TODO.md の difffuzz 4項目を `[x]` に＋selconv/selnilable を完了項目・レビュー残件を open 項目として追記 | 本 PR |
 | 本レポート | 本章 | 本 PR |
+
+### 全体差分レビュー（CAP 到達後、子セッションによる `main...`tip 全差分の再レビュー）
+
+判定: バグ候補8件（B1-B8）を全件検証し、**要=6件**を所有ブランチに fix コミットして push（**不要=2件**は実測で棄却）。リファクタ提案は **採用2件・棄却3件**。レビュー対応は CAP 外。
+
+| # | 指摘 | 判定 |
+|---|------|------|
+| B1 | `#762` の `lookupBinding` が先にヒットするため `sameFileDecls`（同ファイル decls）優先ルールに違反 — local `fn` が包変数を shadow しても束縛型が残る | **要** → shadowing 優先を検証しつつ `#762` で修正（pin: `callshadow_funclit`） |
+| B2 | `opCmpGate` は LAND/LOR にも走り、`b := 1 == 1` のような untyped 定数述語を `var b = e` の init で named 型扱いしうる — `foldConst` 前の emit ゲートで untyped が失われる | **要** → `#762` で比較/論理演算の両辺が untyped-or-nil のとき結果を `opTyp{te: bool, untyped: true}` として型付け（`!` も同様）。pin: `untypedbool_named` |
+| B3 | 包レベル `var x = 5`（型明示なし）の operand が untyped のまま gate に届き、`x == d` が沈黙評価される不整合 | **要（不整合部分のみ）** → `identOpTyp`/`noteDeclTyp` が `defaultOpTyp(rhs)` の bind-time default を適用（pin: `pkgvar_untyped`）。**残り coverage 系（range 変数・`&`・多値・select bind・qualified const・untyped const 式）は別 mechanism として新規 TODO 項目に分離**（TODO L25） |
+| B4 | `chanFeed` の `die()`/`arm()` が pump との race で新 pump を早期 retire/起動しない可能性 | **要** → generation カウンタで解決（`dieIf(gen)` は gen 一致時のみ retire、`arm()` は常に旧 done を close→gen++→新 pump 起動。Stop の `die()` は無条件のまま — Stop が勝つのが正しい）（`#760`） |
+| B5 | repeating feed の pump が受信者なしで tick を送り続けうる | **要** → gc ticker の coalesce 相当の非ブロッキング send に（one-shot は唯一の配送なのでブロックのまま）（`#760`） |
+| B6 | `identOpTyp` Ident arm の検証で qualified fallback がなく `selIsIface` 未接線だった件 | **不要** — `#768` の `selTypRef`+`selIsType` が同 walk を担っている（B6 は `#768` 前提のコードを pre-#768 と混同した読み違い） |
+| B7 | nil 左辺のメッセージ語順（gc は `untyped nil and X`）/ switch-case の `invalid case` 語彙 | 語順は**要** → `#762` で `untyped nil and %s` に修正。switch 語彙は**不要**（want.err は部分一致・語彙差は cosmetic）→ 新規 TODO 項目として記録のみ（TODO L26） |
+| B8 | `Hooks.TypeAlias` で `*timerChanBox`→`*time.Timer` と偽るため `reflect.TypeOf(t).Method(i).Func` が box に非代入可能な `*time.Timer` メソッドを返し呼出 panic しうる | **不要（今回）** — latent edge、pin 未観測。alias 導入自体は `%T`/`TypeOf` の spelling を直す意図的設計 → 新規 TODO 項目に記録（TODO L27） |
+
+リファクタ判定:
+
+| # | 提案 | 判定 |
+|---|------|------|
+| R1 | `selIsType`/`selIsIface`/`selNilable` が同一 `Materialize`+Index+Globals walk を3回書いている → `selMember(ref, name)` に一本化 | **採用**（#771） — 3関数が one-liner 化。1 walk 内で decl spec と typedef Kind の両方を見る nilability 判定も自然に収まった |
+| R2 | `MaterializeConstErr` 呼出が `display`/`fmtArg` で形が同じ → `constAtWidth` helper | **採用**（#771） |
+| R3 | `namedIdentOf` の byte/rune inline switch | **採用**（#762） — `runtime.CanonicalBasicName` が byte→uint8/rune→int32 を fold 済みなので dead duplicate だった |
+| R4 | `fieldTypExpr` の peel と `namedTypID` の Named walk の統合 | **棄却** — 統合すると field walk が「peel 前の named 情報」を失う設計変更になる |
+| R5 | `funcResultOpTyp` の FuncDecl 版と FuncType 版を統合 | **棄却** — 片方は decl の receiver/result、片方は FuncType 直接。signature が異なり共通化の利益が薄い |
 
 ### 計画外の記録と判断
 
@@ -937,9 +963,12 @@ round-19 の全体差分レビューで新規記録した difffuzz 系項目（c
 - **uconst と selconv を誤って同一ブランチに commit し、1 root cause = 1 PR 違反に気付いて分割し直した**: `git branch -f devin/1791600000-uconst-declwidth HEAD~1` で #767 を uconst commit のみに戻し、selconv は `devin/1791610000-selconv-typarg` に分離。stack 順はそのまま（#767→#768）。
 - **ledger の積み替え時、旧 ledger コミットが patch-id 一致で drop された**: #765 が ledger（#764）の上に積まれた構成だったため、`rebase --onto` で ledger コミットの内容が既に upstream 扱い。本章は drop 後のブランチ（=stack tip）への新規コミットとして積み、PR の base を stack tip に張り替えた。
 - **`watchCtxDone` の伝播条件は実測4ケースで決めた**: cancel-only の done chan は「goroutine の動作だけが close する」timer 系と同型だが、WithDeadline/Timeout の auto-fire は propagate する。`WakeChanState` で「managed && dead」のみ dead 登録し、親が unmanaged か alive-managed のときは子も auto-fire 側に倒す — WithValue が親 done を共有するケースもこれで正しく propagate される。
+- **`git_stack add` が merge 済み top の head ブランチ削除で「must form a stack」を返す**: stack 中部の PR が merge されて remote head が消えると、新規 PR の base が stale ref になる。解決は merge sha で remote ref を再作成し（`git push origin <merge-sha>:refs/heads/<head>`）、`git_update_pr_base` で新 PR の base を張り替えてから `git_stack add`（本 round で2回発生、同一手順で解消）。
+- **レビュー修正は「所有ブランチへの追加コミット」で収まったが、検証は tip だけでは不完全だった**: B3（包 var default）と #768（selconv）は別ブランチのため、個別ブランチではどちらか片方しか効かないケース（`var x = 5` × `time.Duration(1)` 包 var）は tip でも検証不能 → `scratch/combined` で「merge 後の main 相当」ツリーを合成してゲート＋結合 repro を通した。stack の性質上これは最終確認手段として有効（CI は各 PR を独立に評価するため）。
+- **B3 の範囲を「不整合の修正」に限定し coverage 拡張を TODO に送った**: gc の bind-time default を包 var に適用するのは「evaluates → traps」の不整合解消だが、range 変数・`&`・多値・select bind は「gate が届かない箇所を増やす」拡張であり、§6.21 で「保守的沈黙は設計意図」と判断した coverage boundary の線を超える。1 round で線を越えると boundary の意味自体が揺らぐため、不整合のみ修正して残りは項目化した。
 
 ### 残りの状況
 
-- Stack #761 は CAP=10 到達（harness1＋修正7＋レビュー由来積み増し＋本レポート）。difffuzz 系 TODO 項目は L20/L21/L22 を解消し、review 副産物（selconv）も完了 — open の difffuzz 関連項目は残っていない。
-- 残存の既知乖離: `%v`/`%#v` の proxy box フィールド露出（fidelity 差・記録のみ）、`minigo.Format` 以外の非 fmt host boundary での `Named{td,UConst}` materialize（同根因・対象ケース未観測）。
+- Stack #761 は CAP=10 到達（harness1＋修正8＋レビュー由来積み増し＋帳簿）。difffuzz 系 TODO 項目は L20/L21/L22/L24 を解消し、review 副産物（selconv）も完了。
+- 残存の open 項目（全て今 round のレビュー由来）: operand gate の coverage gaps（TODO L25）、switch-case メッセージ語彙（TODO L26）、proxy box の reflect method 呼出（TODO L27）、`%v`/`%#v` の proxy box フィールド露出（fidelity 差・記録のみ）、`minigo.Format` 以外の非 fmt host boundary での `Named{td,UConst}` materialize（同根因・対象ケース未観測）。
 - 次の採掘余地は round-19 と同じ2系統（gen ジェネレータ拡張・review 由来の設計変更系）。
