@@ -3416,9 +3416,9 @@ func (v *VM) hostMember(hv any, name string) (runtime.Value, bool) {
 	call := func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		return callReflectFunc(name, m, vc, args)
 	}
-	if opaqueContainers[reflect.TypeOf(hv).String()] {
+	if rt := reflect.TypeOf(hv).String(); opaqueContainers[rt] {
 		call = func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			return callOpaqueStore(name, m, vc, args)
+			return callOpaqueStore(rt, name, m, vc, args)
 		}
 	}
 	if try := uncontendedLock(hv, name); try != nil {
@@ -3527,6 +3527,13 @@ func goValueOf(rv reflect.Value) runtime.Value {
 		}
 	}
 	x := rv.Interface()
+	// a canonical opaque-store key coming back from a container
+	// (sync.Map Range callback, a loaded CAS comparand) restores the
+	// script value it was rendered from; everything else is not a
+	// canonical form and falls through to marshal as usual.
+	if orig, ok := runtime.OpaqueKeyOrig(x); ok {
+		return orig
+	}
 	switch v := x.(type) {
 	case nil:
 		return runtime.NIL
@@ -4855,12 +4862,16 @@ func goResults(out []reflect.Value) (runtime.Value, error) {
 }
 
 // callOpaqueStore calls a container method (opaqueContainers) whose
-// `any` parameters are pure storage: each `any` arg crosses verbatim
-// inside the interface box — what gc's boxing stores — so the
-// scriptData projection, and the niladic method calls it runs at
-// marshal time, never happen. Other params marshal as usual, and no
-// arg joins the write-back pass: a store shares nothing addressable.
-func callOpaqueStore(name string, m reflect.Value, vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+// `any` parameters are pure storage: each `any` arg crosses inside the
+// interface box — what gc's boxing stores — so the scriptData
+// projection, and the niladic method calls it runs at marshal time,
+// never happen. A position gc hashes or compares as a key (a sync.Map
+// key, a context key, CompareAndSwap's comparand) crosses in its
+// canonical key form: equal script content hits and unhashable payloads
+// panic with a hash-type error, exactly where gc runs the check. Other
+// params marshal as usual, and no arg joins the write-back pass: a
+// store shares nothing addressable.
+func callOpaqueStore(recv, name string, m reflect.Value, vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 	mt := m.Type()
 	nin := mt.NumIn()
 	if !mt.IsVariadic() && len(args) != nin {
@@ -4876,7 +4887,7 @@ func callOpaqueStore(name string, m reflect.Value, vc runtime.VMCaller, args []r
 			pt = pt.Elem()
 		}
 		if pt == anyType {
-			rv, err := opaqueStoreArg(a)
+			rv, err := opaqueStoreArg(recv, name, i, a)
 			if err != nil {
 				return nil, fmt.Errorf("%s arg %d: %w", name, i, err)
 			}
@@ -4892,10 +4903,65 @@ func callOpaqueStore(name string, m reflect.Value, vc runtime.VMCaller, args []r
 	return goResults(m.Call(in))
 }
 
+// opaqueKeyPosition reports whether `any` parameter i of opaque
+// container method recv.Name hashes or ==-compares its argument — a
+// key or CAS comparand, where gc runs the unhashable-type check.
+func opaqueKeyPosition(recv, name string, i int) bool {
+	switch recv {
+	case "*sync.Map":
+		// every method's first `any` arg is the key; the CAS pair
+		// compares `old` against the stored value with ==.
+		if i == 0 {
+			return true
+		}
+		return i == 1 && (name == "CompareAndSwap" || name == "CompareAndDelete")
+	case "*context.valueCtx":
+		return name == "Value" && i == 0
+	case "*minigo.atomicBox":
+		return name == "CompareAndSwap" && i == 0
+	}
+	return false
+}
+
 // opaqueStoreArg packs a script value for a storage `any` parameter:
-// the value itself crosses, with untyped constants materialized and a
-// GoValue box unwrapped to the host object it holds.
-func opaqueStoreArg(a runtime.Value) (reflect.Value, error) {
+// key positions take the canonical form (OpaqueKey panics on
+// unhashable payloads like gc's hash check); free value positions
+// canonicalize only hashable args — so a later comparand still hits
+// equal content — and cross unhashable ones verbatim, which gc stores
+// without complaint.
+func opaqueStoreArg(recv, name string, i int, a runtime.Value) (reflect.Value, error) {
+	if opaqueKeyPosition(recv, name, i) {
+		rv, err := opaqueStoreKey(a)
+		if err != nil {
+			return reflect.Value{}, err
+		}
+		return rv, nil
+	}
+	if ck, ok := runtime.TryOpaqueKey(a); ok {
+		return reflect.ValueOf(ck), nil
+	}
+	return opaqueStoreValue(a)
+}
+
+// opaqueStoreKey packs a key-position arg in its canonical form.
+func opaqueStoreKey(a runtime.Value) (reflect.Value, error) {
+	if u, ok := a.(*runtime.UConst); ok {
+		mv, err := materializeDefault(u)
+		if err != nil {
+			return reflect.Value{}, err
+		}
+		a = mv
+	}
+	if a == nil {
+		return reflect.Zero(anyType), nil
+	}
+	return reflect.ValueOf(runtime.OpaqueKey(a)), nil
+}
+
+// opaqueStoreValue packs a script value for a free storage `any`
+// parameter: the value itself crosses, with untyped constants
+// materialized and a GoValue box unwrapped to the host object it holds.
+func opaqueStoreValue(a runtime.Value) (reflect.Value, error) {
 	if u, ok := a.(*runtime.UConst); ok {
 		mv, err := materializeDefault(u)
 		if err != nil {

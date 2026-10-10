@@ -2300,9 +2300,11 @@ func (e *Engine) installStdlib() {
 			}
 			return context.WithoutCancel(c), nil
 		}, context.WithoutCancel),
-		// WithValue keeps raw script args: the key must stay the same
-		// object (identity keying, e.g. http.LocalAddrContextKey), not a
-		// flattened host copy.
+		// WithValue stores the key in its canonical form: the valueCtx
+		// lookup (opaqueStore's key position) canonicalizes the same
+		// way, so equal script keys hit by content and an unhashable key
+		// panics like gc's "key is not comparable" — pointer keys keep
+		// identity (e.g. http.LocalAddrContextKey).
 		"WithValue": &runtime.BuiltinFunc{Name: "context.WithValue", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 3 {
 				return nil, fmt.Errorf("context.WithValue needs 3 args, got %d", len(args))
@@ -2311,7 +2313,7 @@ func (e *Engine) installStdlib() {
 			if err != nil {
 				return nil, err
 			}
-			return &runtime.GoValue{V: context.WithValue(c, args[1], args[2])}, nil
+			return &runtime.GoValue{V: context.WithValue(c, contextKey(args[1]), args[2])}, nil
 		}},
 		"AfterFunc": &runtime.BuiltinFunc{Name: "context.AfterFunc", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
@@ -3182,6 +3184,23 @@ func atomicCellEq(a, b any) bool {
 		return false
 	}
 	return ua == ub
+}
+
+// contextKey canonicalizes a context.WithValue key: the stored key must
+// take the same canonical form the valueCtx lookup produces (the opaque
+// store's key position) or equal script keys never hit. An unhashable
+// key panics with gc's "key is not comparable" message rather than the
+// hash-type error OpaqueKey reports.
+func contextKey(k runtime.Value) (key any) {
+	defer func() {
+		if r := recover(); r != nil {
+			if _, ok := r.(*runtime.Panic); ok {
+				panic(&runtime.Panic{Value: "key is not comparable"})
+			}
+			panic(r)
+		}
+	}()
+	return runtime.OpaqueKey(k)
 }
 
 // asCtx resolves a script value to a host context.Context — bound
