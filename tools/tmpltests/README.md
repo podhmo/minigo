@@ -57,13 +57,21 @@ rewrite must preserve the test's intent and is tracked as a bug:
 - `exec_test.go`: `unsafe.Pointer` → `any` — no `unsafe.Pointer` type yet;
   the rows that use it keep their truth values ({ptr, true}, {nil, false}).
 
+`main.go:srcRewrites` applies the same copy+patch mechanism to non-test
+source files (files not listed are symlinked verbatim):
+
+- `exec.go`: `var maxExecDepth = initMaxExecDepth()` → `var maxExecDepth = 250`
+  — upstream caps at 100000 but minigo's interpreter frame limit (10000)
+  always fires first, so `TestMaxExecDepth` could never observe template's
+  own `exceeded maximum template depth` error. 250 exercises the real
+  guard well under the frame limit.
+
 ## Current gaps (surfaced by the first run)
 
 - `fmt.Sscan` unbound — `parse/node.go` needs it for complex literals;
   blocks `TestExecute` and `TestComparison` wholesale.
 - `errors.AsType`, `os.DirFS` unbound.
-- `TestMaxExecDepth`: minigo's own frame limit (10000) fires before
-  template's `maxExecDepth`.
+- `errors.AsType` was bound via generic builtins (#774).
 - Value-family FAILs (`reflect.Value.IsNil on struct Value`, `.Int on int
   Value`, `<template.V Value>` for an indexed struct) — the minireflect
   boxing issue from TODO.md.

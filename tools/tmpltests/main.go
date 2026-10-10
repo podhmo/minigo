@@ -66,6 +66,19 @@ var fileRewrites = map[string][]rewrite{
 	},
 }
 
+// srcRewrites maps an upstream non-test source file name to rewrites applied
+// while copying it into the scratch GOROOT (same mechanism as test files;
+// files not listed are symlinked verbatim).
+var srcRewrites = map[string][]rewrite{
+	"exec.go": {
+		// minigo's interpreter frame limit (10000) fires long before the
+		// upstream exec depth cap (100000), so TestMaxExecDepth could only
+		// ever observe `stack exhausted`. Lower the cap so the real guard
+		// is exercised well under the frame limit.
+		{"var maxExecDepth = initMaxExecDepth()", "var maxExecDepth = 250"},
+	},
+}
+
 // driverExtra is appended to the generated driver per package.
 var driverExtra = map[string]string{}
 
@@ -267,6 +280,12 @@ func buildGOROOT(gr, realRoot, pkg string, testFiles []string, only *regexp.Rege
 				return "", err
 			}
 		case strings.HasSuffix(name, ".go"):
+			if rws, ok := srcRewrites[name]; ok {
+				if err := copyTestFile(filepath.Join(real, name), dst, rws); err != nil {
+					return "", err
+				}
+				continue
+			}
 			if err := os.Symlink(filepath.Join(real, name), dst); err != nil {
 				return "", err
 			}
