@@ -828,7 +828,7 @@ func (e *Engine) installStdlib() {
 		"DecodedLen":     h.fn("hex.DecodedLen", func(a []any) (any, error) { return hex.DecodedLen(intOf(a[0])), nil }),
 	})
 	e.Bind("encoding/json", map[string]runtime.Value{
-		"Number": &runtime.TypeDef{Name: "encoding/json.Number", Kind: runtime.KindNamedBasic, Anon: ast.NewIdent("string")},
+		"Number": &runtime.TypeDef{Name: "encoding/json.Number", Kind: runtime.KindNamedBasic, Anon: ast.NewIdent("string"), HostNew: func() any { return json.Number("") }},
 		// Marshal/MarshalIndent take raw runtime args — h.fn's goNative
 		// would stringify *runtime.Struct before goJSON can field-map it.
 		"Marshal": &runtime.BuiltinFunc{Name: "json.Marshal", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -4140,6 +4140,14 @@ func goNative(v runtime.Value) any {
 				return cv
 			}
 		}
+		// a bound host scalar crossing to a host `any` parameter
+		// materializes to the host type — a host call sees a real
+		// time.Month, not the int64 or UConst the script shape keeps.
+		if x.Typ != nil && x.Typ.HostScalar != nil {
+			if hv, ok := runtime.HostScalarOf(x.Typ, x.V); ok {
+				return hv
+			}
+		}
 		return goNative(x.V)
 	case *runtime.Cell:
 		return goNative(x.Elem)
@@ -7123,6 +7131,15 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 				return "<nil>" // a nil interface has no dynamic type
 			}
 			return typedefSpelling(v.Typ)
+		}
+		// a bound host scalar (time.Month/time.Duration) whose payload is
+		// still script-shaped — a stored int64 or a const-domain UConst —
+		// renders through the host scalar so String() and every verb
+		// apply like gc (%v → "January", %d → 1).
+		if td := v.Typ; td != nil && td.HostScalar != nil {
+			if hv, ok := runtime.HostScalarOf(td, v.V); ok {
+				return fmt.Sprintf(formatOf(f, verb), hv)
+			}
 		}
 		// an int64 carrying a uint64/uintptr tag must format its bits as
 		// unsigned — host fmt would read the int64 as signed otherwise.
