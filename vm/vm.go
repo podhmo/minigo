@@ -2857,7 +2857,9 @@ func (v *VM) loop(f *frame) {
 			// deadlock unless some arm watches a wake-capable channel.
 			wake := parkWake{}
 			for _, a := range arms {
-				if a.Wakeable && a.WakeChan == 0 {
+				// Wakeable is only ever set for unmanaged/misc arms — a
+				// managed arm carries its channel in WakeChan instead.
+				if a.Wakeable {
 					wake.misc = true
 				}
 				if a.WakeChan != 0 {
@@ -6926,12 +6928,7 @@ func (v *VM) chanOf(f *frame, x runtime.Value) (reflect.Value, *runtime.TypeDef,
 		return nilChanRV, nil, parkWake{}
 	case *runtime.GoValue:
 		if rv := reflect.ValueOf(c.V); rv.IsValid() && rv.Kind() == reflect.Chan {
-			if p := v.proc; p != nil {
-				if managed, _ := p.chanState(rv.Pointer()); managed {
-					return rv, nil, parkWake{chans: []uintptr{rv.Pointer()}}
-				}
-			}
-			return rv, nil, parkWake{misc: true}
+			return rv, nil, v.chanParkWake(rv)
 		}
 		f.trap("channel operation on non-channel host value %T", c.V)
 	default:

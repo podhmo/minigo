@@ -2709,6 +2709,7 @@ type chanFeed struct {
 	once  bool             // one-shot feed: die after the first value
 	mu    sync.Mutex
 	armed bool // the pump is expected to deliver (more) values
+	gen   int  // lifecycle generation — arm() bumps it so a superseded pump can't die on the new arm's behalf
 }
 
 // newChanFeed starts a pump forwarding src into a buffered proxy channel
@@ -2723,36 +2724,65 @@ func newChanFeed(vc runtime.VMCaller, src <-chan time.Time, once bool) *chanFeed
 		armed: true,
 	}
 	f.ptr = vm.RegisterWakeChan(vc, reflect.ValueOf(f.C))
-	go f.pump(f.done)
+	go f.pump(f.done, f.gen)
 	return f
 }
 
 // pump forwards each src value into the proxy until done closes; a
-// one-shot feed dies after its single delivery. The done channel is a
-// parameter so a pump is bound to exactly one lifecycle — after a
-// die→arm cycle the retired pump must exit on the channel it was
-// started with, not observe the new one arm() swapped into f.done.
-func (f *chanFeed) pump(done chan struct{}) {
+// one-shot feed dies after its single delivery. The done channel and
+// the generation pin the pump to exactly one lifecycle — after a
+// die→arm or supersede→arm cycle the retired pump must exit on the
+// channel it was started with and must not retire the newer arm, so
+// neither observes f.done/f.gen swapped under it.
+func (f *chanFeed) pump(done chan struct{}, gen int) {
 	for {
 		select {
 		case v := <-f.src:
+			if !f.once {
+				// a repeating feed drops a tick nobody has collected
+				// yet, like gc's ticker — the 1-buffer keeps only the
+				// latest.
+				select {
+				case f.C <- v:
+				case <-done:
+					return
+				default:
+				}
+				continue
+			}
 			select {
 			case f.C <- v:
 			case <-done:
 				return
 			}
-			if f.once {
-				f.die()
-				return
-			}
+			f.dieIf(gen)
+			return
 		case <-done:
 			return
 		}
 	}
 }
 
+// dieIf retires the feed on a pump's behalf — but only while that
+// pump's generation is still the live one. A Reset that already
+// re-armed the feed owns its lifecycle; a superseded pump's death must
+// not kill it.
+func (f *chanFeed) dieIf(gen int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if gen != f.gen || !f.armed {
+		return
+	}
+	f.armed = false
+	close(f.done)
+	if f.ptr != 0 {
+		vm.SetWakeChanDead(f.vc, f.ptr, true)
+	}
+}
+
 // die marks the feed unable to deliver again: the pump retires and the
 // managed channel goes dead, so parked receivers join the asleep count.
+// It is unconditional — a Stop wins whatever generation is live.
 func (f *chanFeed) die() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -2767,7 +2797,10 @@ func (f *chanFeed) die() {
 }
 
 // arm (re)starts the feed after a Reset: the managed channel reports
-// alive again and a fresh pump forwards the rescheduled sends.
+// alive again and a fresh pump forwards the rescheduled sends. An
+// already-armed feed is superseded, not skipped — its pump retires on
+// the old done channel so a mid-flight one-shot death cannot mark the
+// re-armed channel dead.
 func (f *chanFeed) arm() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -2775,11 +2808,12 @@ func (f *chanFeed) arm() {
 		vm.SetWakeChanDead(f.vc, f.ptr, false)
 	}
 	if f.armed {
-		return
+		close(f.done)
 	}
+	f.gen++
 	f.armed = true
 	f.done = make(chan struct{})
-	go f.pump(f.done)
+	go f.pump(f.done, f.gen)
 }
 
 // timerChanBox is the time.Timer NewTimer hands to the script: only the
