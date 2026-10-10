@@ -11866,11 +11866,17 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 			// IS its target: peel it, and an unnamed target compares by
 			// shape like any other anonymous type.
 			pt := v.peelAlias(ptag)
-			if et, err := v.H.ElemOf(utd); err == nil && et != nil &&
-				!sameTypeDef(ptag, et) && !sameTypeDef(ptag, v.peelAlias(et)) &&
-				!sameTypeDef(pt, v.peelAlias(et)) &&
-				(tagIsNamed(pt) || !v.tdShapeEq(pt, et)) {
-				f.trap("cannot use %s as %s", "&"+tdName(ptag), tdName(td))
+			// array lengths fold to their constant value before identity
+			// compares — `[maxNumLit + maxNumDist]int` and `[316]int`
+			// are one type (arrayLen is a no-op on non-array typedefs).
+			v.arrayLen(f, pt)
+			if et, err := v.H.ElemOf(utd); err == nil && et != nil {
+				v.arrayLen(f, et)
+				if !sameTypeDef(ptag, et) && !sameTypeDef(ptag, v.peelAlias(et)) &&
+					!sameTypeDef(pt, v.peelAlias(et)) &&
+					(tagIsNamed(pt) || !v.tdShapeEq(pt, et)) {
+					f.trap("cannot use %s as %s", "&"+tdName(ptag), tdName(td))
+				}
 			}
 		}
 	}
