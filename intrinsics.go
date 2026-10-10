@@ -7719,7 +7719,12 @@ func elemTyp(e ast.Expr, pkg *runtime.Package) *runtime.TypeDef {
 	if id, ok := e.(*ast.Ident); ok {
 		td := &runtime.TypeDef{Name: id.Name, Kind: runtime.KindNamedBasic}
 		if pkg != nil && pkg.Index != nil {
-			if _, ok := pkg.Index.Types[id.Name]; ok {
+			if itd, ok := pkg.Index.Types[id.Name]; ok && itd.Decl != nil {
+				// an alias name never spells — the declared slot's
+				// type is the target's (`type A = B` IS B).
+				if ts, ok := itd.Decl.Spec.(*ast.TypeSpec); ok && ts.Assign.IsValid() {
+					return elemTyp(ts.Type, pkg)
+				}
 				td.Pkg = pkg
 			}
 		}
@@ -7942,7 +7947,12 @@ func scriptTypeString(x runtime.Value) string {
 		if dv, ok := runtime.Deref(t); ok {
 			// the pointee slot's stamped declared type names the
 			// pointee's static type — `&i` on an interface-typed var
-			// spells *main.I, not *main.S of its stored value.
+			// spells *main.I, not *main.S of its stored value. A ref
+			// operand reads it through the ref itself: a FieldRef's
+			// declared field type, an IndexRef's element type.
+			if td := refDeclTyp(t); td != nil {
+				return "*" + typedefSpelling(td)
+			}
 			for _, c := range []*runtime.Cell{cellOf(t), cellOf(dv)} {
 				if c != nil && c.Typ != nil {
 					return "*" + typedefSpelling(c.Typ)
@@ -8013,6 +8023,30 @@ func formatString(x runtime.Value) (string, bool) {
 			return "", false
 		}
 	}
+}
+
+// refDeclTyp recovers the declared type an &-operand points at when it
+// arrives as a tracked ref: a FieldRef reads its field's declared
+// typedef (an interface field spells *main.I of its stored concrete),
+// an IndexRef its container's declared element typedef. A plain &var
+// cell already stamps the same type on itself (cell.Typ), so refs
+// share that answer. Nil when the ref kind or declared type is unknown.
+func refDeclTyp(v runtime.Value) *runtime.TypeDef {
+	switch r := v.(type) {
+	case *runtime.FieldRef:
+		if st, idx, ok := r.Find(); ok && st != nil && st.Def != nil {
+			return fieldTypOf(st.Def, idx)
+		}
+	case *runtime.IndexRef:
+		if s := r.Slice(); s != nil {
+			return sliceElemTyp(s.Typ)
+		}
+		if m := r.Map(); m != nil {
+			_, et := mapElemTyps(m.Typ)
+			return et
+		}
+	}
+	return nil
 }
 
 // cellOf peels Named tags to reach the addressable cell underneath —
