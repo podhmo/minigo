@@ -1960,6 +1960,30 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 			}
 			return opTyp{te: &ast.Ident{Name: "bool"}}
 		}
+		// a shift types its result by the left operand alone — the
+		// count's type never participates. An untyped left operand of
+		// a non-constant shift takes its default type, like the same
+		// operand standing alone (`1 << uint(max)` is int, not uint).
+		// a shift types its result by the left operand alone — the
+		// count's type never participates. An untyped left operand of a
+		// non-constant shift takes its default type, like the same
+		// operand standing alone (`1 << uint(max)` is int, not uint);
+		// with an untyped constant count the whole shift is an untyped
+		// constant (`1 << _W` in math/big).
+		if x.Op == token.SHL || x.Op == token.SHR {
+			lt := c.staticOpTyp(x.X)
+			if lt.te != nil {
+				return lt
+			}
+			rt := c.staticOpTyp(x.Y)
+			if rt.untyped || rt.nilOperand {
+				return opTyp{untyped: true}
+			}
+			if lt.untyped {
+				return c.defaultOpTyp(x.X)
+			}
+			return rt
+		}
 		// arithmetic adopts the operand type: a named side wins; an
 		// untyped side gives way (`d + 1` is Duration, `1 + i` is int).
 		if t := c.staticOpTyp(x.X); t.te != nil {
