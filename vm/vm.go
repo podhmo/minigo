@@ -7116,6 +7116,16 @@ func hostStructCopy(x runtime.Value) runtime.Value {
 	return x
 }
 
+// hostNewStructTagged reports whether v carries a HostNew struct tag of
+// its own — the same mark runtime.Copy's Named branch checks before
+// snapshotting the box, so a value reporting true here already came
+// back copied (or came back unchanged for the same reason
+// HostStructCopy would report false).
+func hostNewStructTagged(v runtime.Value) bool {
+	n, ok := v.(*runtime.Named)
+	return ok && n.Typ != nil && n.Typ.Kind == runtime.KindStruct && n.Typ.HostNew != nil
+}
+
 // channels — real blocking semantics. Channels are host `chan Value`s:
 // sends and receives block exactly as in Go, buffer capacity is honored,
 // and close wakes parked receivers. Every blocking op also selects on the
@@ -11563,7 +11573,12 @@ func (v *VM) coerce(f *frame, x runtime.Value, td *runtime.TypeDef) runtime.Valu
 	// type is the struct itself — assignment copies the struct like gc:
 	// `var b bytes.Buffer = a` must not alias a's box. Pointer-typed
 	// targets keep sharing (`var p *bytes.Buffer` binds a cell).
-	if td.Kind == runtime.KindStruct && td.HostNew != nil {
+	// A value already carrying a HostNew struct tag was just snapshotted
+	// by valueCopy (runtime.Copy's Named branch) — cloning again would
+	// only snapshot the snapshot; the call still matters for a box with
+	// no tag of its own (a host function's return bound to a declared
+	// slot).
+	if td.Kind == runtime.KindStruct && td.HostNew != nil && !hostNewStructTagged(x) {
 		x = hostStructCopy(x)
 	}
 	if td.Kind == runtime.KindAlias {
