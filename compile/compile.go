@@ -5041,6 +5041,44 @@ unwrapped:
 			}
 		}
 	}
+	// unsafe.Sizeof(x)/unsafe.Alignof(x): the answer comes from the
+	// operand's DECLARED type — `var x any = int64(1)` measures the
+	// interface pair (16), not the stored int64; `p` measures the
+	// pointer (8). The stored value cannot always recover it
+	// (interface slots arrive unboxed), so the operand's declared
+	// typedef rides along as a second argument — nil when the
+	// operand has no static type. An indexed operand `c[i]` passes
+	// its container's declared typedef as a third argument so the
+	// intrinsic sizes the element type.
+	if sel, ok := fun.(*ast.SelectorExpr); ok &&
+		(sel.Sel.Name == "Sizeof" || sel.Sel.Name == "Alignof") &&
+		len(x.Args) == 1 {
+		if id, ok2 := sel.X.(*ast.Ident); ok2 {
+			if ref, ok3 := c.importRef(id.Name); ok3 && ref.Path == "unsafe" {
+				operand := x.Args[0]
+				for {
+					if p, ok4 := operand.(*ast.ParenExpr); ok4 {
+						operand = p.X
+						continue
+					}
+					break
+				}
+				c.calleeExpr(x.Fun)
+				c.expr(x.Args[0])
+				c.staticTyp(operand)
+				if ix, ok4 := operand.(*ast.IndexExpr); ok4 {
+					c.staticTyp(ix.X)
+				} else {
+					c.emit(bytecode.OpNil, 0, 0, x.Pos())
+				}
+				c.staticTyp(operand)
+				c.emit(bytecode.OpNil, 0, 0, x.Pos())
+				c.emit(bytecode.OpNil, 0, 0, x.Pos())
+				c.emit(bytecode.OpCall, 3, 0, x.Pos())
+				return
+			}
+		}
+	}
 	if sel, ok := fun.(*ast.SelectorExpr); ok && c.trySpecial(x, sel) {
 		return
 	}
