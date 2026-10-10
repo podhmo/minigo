@@ -158,3 +158,23 @@ TODO.md の次の2項目をどう進めるかの検討。
 - **粒度は有利。** oapi-codegen は 48 ファイルを個別 `Parse` するので force 単位がファイルごと、未使用ファイルは丸ごと skip できる。host lexer 適用後の parse は strict の ~17% — 意味論を曲げて取れる上限はここ。
 
 結論: intrinsic `Parse` (記録+dummy成功) + Execute/Lookup の drain (または per-name force) + 評価器の eager bool、という形で Go の eager error 契約だけを明示的に曲げて遅延できる。thunk が要るのは値キャプチャまでで、動的環境の保持は不要。
+
+## round-3: 外部レビュー対応
+
+- 経緯: stack #776 の diff 全体に対する外部エージェントのレビューを受領。バグ10件 (全 P2、再現コードつき) + 重複実装7件の指摘。ユーザーの順序指示 (バグ → 再実装) に従い、2人の fix worker に直列で渡した。
+- 検証: 全件を stack 先端で実測確認してから着手し、着地後にも同じ repro を先端で再実行。10/10 修正済み (`const n uint` の shift、`lib.Items` の宣言側スコープ、`errors.AsType` の4面 (interface method-set / `Unwrap() []error` 木 / custom `As` / boxed typed-nil)、sync.Map の unhashable key panic + struct key 値比較、`time.Month` const/conversion 統一、GODEBUG 末尾優先、`unsafe.Offsetof` 宣言型 layout) → #798-#804 の7連鎖。
+
+### 計画外の記録と判断
+
+- **#791 の shift typing 修正がこのバグを生んでいた。** 「untyped 左オペランドが count の型を拾う」は直ったが、`const` 宣言に来た shift が untyped を失い `int` 化していた。→ 判断: shift の「定数か」を operand の「型があるか」と分離して扱う (#798)。レビューが自分の修正を撃つ例。
+- **`unfoldSpecType` のスコープは宣言側だった。** caller の同名型 `type N string` があると `lib.Items` の要素 `N` が caller 側に解決されていた — selector 解決を加えた #788 の副作用。葉の型式を宣言側パッケージの SelectorExpr に書き換え (#799)。
+- **AsType/As の walk は1本に共通化。** 4面の修正が全て同じ walk に乗るため、host `errors.As` の Go 意味論 (method-set assignability、multi-child unwrap、custom `As` 呼出し、typed-nil の扱い) を再実装した `findAsTarget` に統一 — 再実装指摘の「AsType loop と As loop の共通化」「`sameErrTypHost` vs `hostRTOf`/`AssignableTo`」をこの修正経路で吸収 (#800)。
+- **sync.Map 境界は key の正準化で解いた。** opaque `any` が verbatim で host sync.Map に渡るため unhashable が素通り・struct key が pointer identity 比較になっていた。`runtime.OpaqueKey`/`TryOpaqueKey`/`OpaqueKeyOrig` を新設し、hashable 値は型+表現の正準 `mapKey`、unhashable key は `hash of unhashable type` panic、値は verbatim 通過 (gc は key 側のみ検査)。Range key は `goValueOf` で元 script 値へ復元 — 再実装指摘の「CanonicalKey 再利用」を吸収 (#801)。
+- **`time.Month` は表現を conversion 側に合わせた。** conversion `time.Month(x)` の生成値は `Named{Typ: monthTD, V: int64}` と実測で確定し、const 側を同じ形状に統一 (#802)。`runtime.Tag` で包むと hostScalarValue が host Month に canonicalize して形がずれる罠を踏んで作り直した。**残課題**: `fmt.Println(time.January)` が "1" ("January" でない) — named-basic 値が host `String()` に届かない既存 divergence で、TODO 新規。
+- **GODEBUG の want.stdout は手書き oracle。** pin が `internal/godebug` + `internal/testenv` を使い gc ではコンパイル不能なため、last-wins 意味論を手書きした初のケース。pin 先頭コメントに明記 (#803)。
+- **`unsafe.Offsetof` は shared layout helper 経由に。** 宣言型の size/align で計算する `minireflect.OffsetOf` を新設して `fieldOffset`/`sizeOf`/`alignOf` を共有利用 — 再実装指摘の筆頭項目を修正経路で吸収 (#804)。同族の `unsafe.Sizeof` (構造体積算が runtime value ベース) は残件として TODO 新規。
+- **見送った重複指摘**: `callOpaqueStore` vs `callReflectFunc` (arg 検査の小規模重複、挙動差なし・churn 不釣合い)、`materializeDep` vs parent-dir loop (dir materialization が近いだけで責務別)、`stampVarTyps` vs `stampInferredTyps` (型選択は既に `inferredBindTyp` に抽出済み)。`unsafeStringArg`→`str` 置換は型検査を失う誤指摘として不採用 (レビューア自身も注記)。
+
+### 残りの状況
+
+- round-2 の残件は継続。今回新たに `[ ]` 化したのは named-basic 値の host `String()` 不到達 (Month "1" 化)、`unsafe.Sizeof` の runtime-value 積算、script `Unwrap() []error` が host `errors.Is` に見えない制限の3件 (TODO 末尾)。
