@@ -3416,18 +3416,9 @@ func (v *VM) hostMember(hv any, name string) (runtime.Value, bool) {
 	call := func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		return callReflectFunc(name, m, vc, args)
 	}
-	if _, isPool := hv.(*sync.Pool); isPool && name == "Put" {
+	if opaqueContainers[reflect.TypeOf(hv).String()] {
 		call = func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			// a pool only holds the value for a later Get, which hands
-			// a script value back verbatim (goValueOf) — so a struct
-			// crosses opaque instead of marshaling to scriptData, which
-			// would invoke its niladic methods (a json Decoder's
-			// ReadToken/SkipValue) on every Put.
-			if len(args) == 1 && structShaped(args[0]) {
-				m.Call([]reflect.Value{reflect.ValueOf(any(args[0]))})
-				return runtime.NIL, nil
-			}
-			return callReflectFunc(name, m, vc, args)
+			return callOpaqueStore(name, m, vc, args)
 		}
 	}
 	if try := uncontendedLock(hv, name); try != nil {
@@ -4412,6 +4403,25 @@ var (
 	anyType  = reflect.TypeFor[any]()
 )
 
+// opaqueContainers are host container types whose `any` method args are
+// pure storage: the callee never reflects over the value, it hands it
+// back on a later load (Pool.Get, Map.Load, atomicBox.Load,
+// context.Value) or compares it against another boxed arg
+// (Map.CompareAndSwap). A script value
+// crosses these boundaries verbatim inside the `any` box, exactly as
+// gc's interface boxing keeps it — marshaling to scriptData would
+// invoke the value's niladic methods on every Store (a json Decoder's
+// ReadToken/SkipValue on every Put), calls gc never makes. Keyed by
+// reflect.Type's string so *minigo.atomicBox — the bound
+// sync/atomic.Value/Pointer cell in package minigo — can join; vm
+// cannot name it without an import cycle.
+var opaqueContainers = map[string]bool{
+	"*sync.Pool":        true,
+	"*sync.Map":         true,
+	"*context.valueCtx": true,
+	"*minigo.atomicBox": true,
+}
+
 // hostFieldValue converts x for a host struct field: toReflectValue,
 // except that a script sync.Pool.New keeps a struct result opaque — the
 // pool hands it back through Get, which returns a script value verbatim
@@ -4819,6 +4829,12 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 		}
 		runtime.SetRef(ref, val)
 	}
+	return goResults(out)
+}
+
+// goResults converts a host call's results to script values: no result
+// is NIL, one unboxes via goValueOf, several become a Tuple.
+func goResults(out []reflect.Value) (runtime.Value, error) {
 	switch len(out) {
 	case 0:
 		return runtime.NIL, nil
@@ -4831,6 +4847,64 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 		}
 		return &runtime.Tuple{Elems: el}, nil
 	}
+}
+
+// callOpaqueStore calls a container method (opaqueContainers) whose
+// `any` parameters are pure storage: each `any` arg crosses verbatim
+// inside the interface box — what gc's boxing stores — so the
+// scriptData projection, and the niladic method calls it runs at
+// marshal time, never happen. Other params marshal as usual, and no
+// arg joins the write-back pass: a store shares nothing addressable.
+func callOpaqueStore(name string, m reflect.Value, vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	mt := m.Type()
+	nin := mt.NumIn()
+	if !mt.IsVariadic() && len(args) != nin {
+		return nil, fmt.Errorf("%s needs %d args, got %d", name, nin, len(args))
+	}
+	if mt.IsVariadic() && len(args) < nin-1 {
+		return nil, fmt.Errorf("%s needs at least %d args, got %d", name, nin-1, len(args))
+	}
+	in := make([]reflect.Value, len(args))
+	for i, a := range args {
+		pt := mt.In(min(i, nin-1))
+		if mt.IsVariadic() && i >= nin-1 {
+			pt = pt.Elem()
+		}
+		if pt == anyType {
+			rv, err := opaqueStoreArg(a)
+			if err != nil {
+				return nil, fmt.Errorf("%s arg %d: %w", name, i, err)
+			}
+			in[i] = rv
+			continue
+		}
+		rv, err := toReflectValue(a, pt, vc)
+		if err != nil {
+			return nil, fmt.Errorf("%s arg %d: %w", name, i, err)
+		}
+		in[i] = rv
+	}
+	return goResults(m.Call(in))
+}
+
+// opaqueStoreArg packs a script value for a storage `any` parameter:
+// the value itself crosses, with untyped constants materialized and a
+// GoValue box unwrapped to the host object it holds.
+func opaqueStoreArg(a runtime.Value) (reflect.Value, error) {
+	if u, ok := a.(*runtime.UConst); ok {
+		mv, err := materializeDefault(u)
+		if err != nil {
+			return reflect.Value{}, err
+		}
+		a = mv
+	}
+	if gv, ok := a.(*runtime.GoValue); ok {
+		a = gv.V
+	}
+	if a == nil {
+		return reflect.Zero(anyType), nil
+	}
+	return reflect.ValueOf(a), nil
 }
 
 // adaptFunc wraps a script callable as a host-typed func so methods taking
