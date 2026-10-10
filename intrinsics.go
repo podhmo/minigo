@@ -599,6 +599,10 @@ func (e *Engine) installStdlib() {
 			r, n := utf8.DecodeLastRuneInString(str(a[0]))
 			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(r), int64(n)}}, nil
 		}),
+		"DecodeLastRune": h.fn("utf8.DecodeLastRune", func(a []any) (any, error) {
+			r, n := utf8.DecodeLastRune(byteSlice(a[0]))
+			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(r), int64(n)}}, nil
+		}),
 		// gc signature: writes into the caller's []byte (through the
 		// script slice's own backing so sibling views see the bytes) and
 		// returns the width. A too-small p panics index-out-of-range at
@@ -919,13 +923,27 @@ func (e *Engine) installStdlib() {
 	// the internal/godebug stub answers the knob lookups below.
 	// internal/godebug cannot be imported outside GOROOT, so a stub
 	// Setting answers the knobs stdlib sources consult: Value() reports
-	// "" — every gate defaults to its enabled behavior (e.g. url's
-	// query-param limit check in ParseQuery).
+	// the setting's GODEBUG entry, or "" when unset — every gate
+	// defaults to its enabled behavior (e.g. url's query-param limit
+	// check in ParseQuery), and a t.Setenv-style GODEBUG write made
+	// through internal/testenv.SetGODEBUG below is honored.
 	e.Bind("internal/godebug", map[string]runtime.Value{
 		"New": h.fn1("godebug.New", func(a []any) (any, error) {
-			return &runtime.GoValue{V: &godebugSetting{}}, nil
+			return &runtime.GoValue{V: &godebugSetting{name: str(a[0])}}, nil
 		}),
 		"Setting": hostType("internal/godebug.Setting", func() any { return &godebugSetting{} }),
+	})
+	// internal/testenv exists only for GOROOT's own tests; the one entry
+	// the upstream suites reach for is SetGODEBUG. Upstream calls
+	// t.Helper() + t.Setenv (which registers a cleanup restoring the
+	// env) — writing the host env directly gives the same observable
+	// result for a test process, and the bound godebug Setting reads
+	// that same host env, so the knob actually flips. There is no
+	// testing.TB to satisfy: the t argument is ignored.
+	e.Bind("internal/testenv", map[string]runtime.Value{
+		"SetGODEBUG": h.fn2("testenv.SetGODEBUG", func(a []any) (any, error) {
+			return nil, os.Setenv("GODEBUG", os.Getenv("GODEBUG")+","+str(a[1]))
+		}),
 	})
 	// syscall's sources need unsafe layout (route_bsd's Offsetof) in
 	// init. Bind the portable surface tools reach for — signals and
@@ -968,6 +986,18 @@ func (e *Engine) installStdlib() {
 			return int(bytes.LastIndexByte(byteSlice(a[0]), byte(int64Of(a[1])))), nil
 		}),
 		"LastIndexByteString": h.fn2("bytealg.LastIndexByteString", func(a []any) (any, error) { return int(strings.LastIndexByte(str(a[0]), byte(int64Of(a[1])))), nil }),
+		"CompareString":       h.fn2("bytealg.CompareString", func(a []any) (any, error) { return strings.Compare(str(a[0]), str(a[1])), nil }),
+		// gc's Cutover is an arch-tuned threshold: IndexByte calls it to
+		// decide when too many false-positive hits warrant switching to
+		// Index. Either search path returns the same offset, so a small
+		// constant preserves observable behavior.
+		"Cutover": h.fn1("bytealg.Cutover", func(a []any) (any, error) { return int(2), nil }),
+		// gc hands the runtime a zeroed []byte of len n to fill; a script
+		// []byte of zeroed elements does the same for the callers (bytes's
+		// Join/Repeat/ToUpper, strings.Builder's grow).
+		"MakeNoZero": h.fn1("bytealg.MakeNoZero", func(a []any) (any, error) {
+			return make([]byte, int(int64Of(a[0]))), nil
+		}),
 	})
 	e.Bind("internal/stringslite", map[string]runtime.Value{
 		"HasPrefix": h.fn2("stringslite.HasPrefix", func(a []any) (any, error) { return strings.HasPrefix(str(a[0]), str(a[1])), nil }),
@@ -1976,12 +2006,25 @@ func (e *Engine) installStdlib() {
 			})
 			return &runtime.GoValue{V: t}, nil
 		}},
-		"Now":      h.fn("time.Now", func(a []any) (any, error) { return time.Now(), nil }, time.Now),
-		"Time":     hostType("time.Time", func() any { return time.Time{} }),
-		"Duration": &runtime.TypeDef{Name: "time.Duration", Kind: runtime.KindNamedBasic, Anon: ast.NewIdent("int64"), HostScalar: time.Duration(0)},
-		"Location": hostType("time.Location", func() any { return time.Local }),
-		"UTC":      &runtime.GoValue{V: time.UTC},
-		"Local":    &runtime.GoValue{V: time.Local},
+		"Now":       h.fn("time.Now", func(a []any) (any, error) { return time.Now(), nil }, time.Now),
+		"Time":      hostType("time.Time", func() any { return time.Time{} }),
+		"Duration":  &runtime.TypeDef{Name: "time.Duration", Kind: runtime.KindNamedBasic, Anon: ast.NewIdent("int64"), HostScalar: time.Duration(0)},
+		"Month":     &runtime.TypeDef{Name: "time.Month", Kind: runtime.KindNamedBasic, Anon: ast.NewIdent("int"), HostScalar: time.Month(0)},
+		"January":   time.January,
+		"February":  time.February,
+		"March":     time.March,
+		"April":     time.April,
+		"May":       time.May,
+		"June":      time.June,
+		"July":      time.July,
+		"August":    time.August,
+		"September": time.September,
+		"October":   time.October,
+		"November":  time.November,
+		"December":  time.December,
+		"Location":  hostType("time.Location", func() any { return time.Local }),
+		"UTC":       &runtime.GoValue{V: time.UTC},
+		"Local":     &runtime.GoValue{V: time.Local},
 		"Since": h.fn("time.Since", func(a []any) (any, error) {
 			if t, ok := a[0].(time.Time); ok {
 				return time.Since(t), nil
@@ -2006,6 +2049,17 @@ func (e *Engine) installStdlib() {
 		"ParseDuration": h.fn1("time.ParseDuration", func(a []any) (any, error) {
 			d, err := time.ParseDuration(str(a[0]))
 			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(d), errVal(err)}}, nil
+		}),
+		"Date": h.fn("time.Date", func(a []any) (any, error) {
+			if len(a) != 8 {
+				return nil, fmt.Errorf("time.Date needs 8 args, got %d", len(a))
+			}
+			loc, ok := a[7].(*time.Location)
+			if !ok {
+				return nil, fmt.Errorf("time.Date: %T is not a *time.Location", a[7])
+			}
+			return &runtime.GoValue{V: time.Date(int(int64Of(a[0])), time.Month(int64Of(a[1])),
+				int(int64Of(a[2])), int(int64Of(a[3])), int(int64Of(a[4])), int(int64Of(a[5])), int(int64Of(a[6])), loc)}, nil
 		}),
 		"Unix": h.fn2("time.Unix", func(a []any) (any, error) {
 			return &runtime.GoValue{V: time.Unix(int64Of(a[0]), int64Of(a[1]))}, nil
@@ -8019,11 +8073,26 @@ func deepNilish(v runtime.Value) bool {
 
 // godebugSetting stands in for internal/godebug.Setting (which cannot be
 // imported outside GOROOT): it answers the methods stdlib sources call
-// on their godebug knobs with the defaults — Value() reports "".
-type godebugSetting struct{}
+// on their godebug knobs. The real implementation syncs a cache through
+// a runtime hook on env changes; reading $GODEBUG on each Value() call
+// reports the same current value — "" when the knob is unset, which is
+// the enabled-by-default answer every consumer relies on.
+type godebugSetting struct{ name string }
 
-func (s *godebugSetting) Value() string      { return "" }
-func (s *godebugSetting) Name() string       { return "" }
-func (s *godebugSetting) Undocumented() bool { return false }
-func (s *godebugSetting) String() string     { return "" }
+func (s *godebugSetting) Value() string {
+	for _, kv := range strings.Split(os.Getenv("GODEBUG"), ",") {
+		if n, v, ok := strings.Cut(kv, "="); ok && n == s.Name() {
+			return v
+		}
+	}
+	return ""
+}
+func (s *godebugSetting) Name() string {
+	if s.name != "" && s.name[0] == '#' {
+		return s.name[1:]
+	}
+	return s.name
+}
+func (s *godebugSetting) Undocumented() bool { return s.name != "" && s.name[0] == '#' }
+func (s *godebugSetting) String() string     { return s.Name() + "=" + s.Value() }
 func (s *godebugSetting) IncNonDefault()     {}
