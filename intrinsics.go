@@ -229,6 +229,34 @@ func (e *Engine) installStdlib() {
 			}
 			return false, nil
 		}},
+		// AsType is the generic form of As: GenFn makes the bind
+		// instantiable (`errors.AsType[*E](err)` → a plain builtin that
+		// returns the first matching chain element with its bool). The
+		// walk shares As's matching rule: an interface E accepts any
+		// error, a concrete E matches the element's declared typedef.
+		"AsType": &runtime.BuiltinFunc{Name: "errors.AsType", GenFn: func(v runtime.VMCaller, targs []runtime.Value, args []runtime.Value) (runtime.Value, error) {
+			if len(targs) != 1 {
+				return nil, fmt.Errorf("errors.AsType needs 1 type argument")
+			}
+			if len(args) != 1 {
+				return nil, fmt.Errorf("errors.AsType needs 1 arg")
+			}
+			want, _ := targs[0].(*runtime.TypeDef)
+			for err := hostErrOf(v, args[0]); err != nil; err = errors.Unwrap(err) {
+				sv := scriptErrUnbox(err)
+				st := v.TypeOf(sv)
+				if want == nil || want.Kind == runtime.KindInterface || sameErrTyp(v, st, want) {
+					return &runtime.Tuple{Elems: []runtime.Value{sv, true}}, nil
+				}
+			}
+			// gc returns E's zero on a miss — a typed nil so a
+			// pointer-receiver Error() on the result still runs.
+			var zero runtime.Value = runtime.NIL
+			if want != nil {
+				zero = v.Zero(want)
+			}
+			return &runtime.Tuple{Elems: []runtime.Value{zero, false}}, nil
+		}},
 	})
 	e.Bind("strings", map[string]runtime.Value{
 		"Contains":    h.fn2("strings.Contains", func(a []any) (any, error) { return strings.Contains(str(a[0]), str(a[1])), nil }, strings.Contains),
