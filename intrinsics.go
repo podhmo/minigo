@@ -7719,6 +7719,29 @@ func fmtArgs(v runtime.VMCaller, args []runtime.Value) ([]any, []runtime.Value) 
 	return a, flat
 }
 
+// constAtWidth materializes a Named value's still-constant payload at
+// its declared type, when the caller can run the VM-side conversion —
+// display and fmtArg share it so a UConst never spills its untyped
+// reading into output. ok is false when x holds no UConst, the caller
+// can't materialize, or the conversion fails.
+func constAtWidth(v runtime.VMCaller, x *runtime.Named) (runtime.Value, bool) {
+	u, ok := x.V.(*runtime.UConst)
+	if !ok {
+		return nil, false
+	}
+	mc, ok := v.(interface {
+		MaterializeConstErr(*runtime.UConst, *runtime.TypeDef) (runtime.Value, error)
+	})
+	if !ok {
+		return nil, false
+	}
+	mv, err := mc.MaterializeConstErr(u, x.Typ)
+	if err != nil {
+		return nil, false
+	}
+	return mv, true
+}
+
 // fmtArg routes a script value into a host fmt call: scalars unbox to
 // Go natives; composites keep their script shape inside a fmtValue.
 func fmtArg(v runtime.VMCaller, x runtime.Value) any {
@@ -7733,14 +7756,8 @@ func fmtArg(v runtime.VMCaller, x runtime.Value) any {
 		// a still-constant payload materializes at the declared width
 		// first: `fmt.Println(uint64(1<<64 - 1))` is max-uint where the
 		// untyped default reading overflows int inside fmtValue.
-		if u, ok := x.V.(*runtime.UConst); ok {
-			if mc, ok2 := v.(interface {
-				MaterializeConstErr(*runtime.UConst, *runtime.TypeDef) (runtime.Value, error)
-			}); ok2 {
-				if mv, err := mc.MaterializeConstErr(u, x.Typ); err == nil {
-					return fmtArg(v, runtime.Tag(x.Typ, mv))
-				}
-			}
+		if mv, ok := constAtWidth(v, x); ok {
+			return fmtArg(v, runtime.Tag(x.Typ, mv))
 		}
 		return &fmtValue{c: v, x: x}
 	case int64:
