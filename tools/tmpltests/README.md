@@ -78,13 +78,16 @@ rewrite must preserve the test's intent and is tracked as a bug:
   the rows that use it keep their truth values ({ptr, true}, {nil, false}).
 
 `main.go:srcRewrites` applies the same copy+patch mechanism to non-test
-source files (files not listed are symlinked verbatim):
+source files, keyed by package path (files not listed are symlinked
+verbatim). A `-src` dependency's directory materializes — real dirs of
+symlinks with the listed files copied — so rewrites reach deps too:
 
-- `exec.go`: `var maxExecDepth = initMaxExecDepth()` → `var maxExecDepth = 250`
-  — upstream caps at 100000 but minigo's interpreter frame limit (10000)
-  always fires first, so `TestMaxExecDepth` could never observe template's
-  own `exceeded maximum template depth` error. 250 exercises the real
-  guard well under the frame limit.
+- `text/template` `exec.go`: `var maxExecDepth = initMaxExecDepth()` →
+  `var maxExecDepth = 250` — upstream caps at 100000 but minigo's
+  interpreter frame limit (10000) always fires first, so
+  `TestMaxExecDepth` could never observe template's own `exceeded
+  maximum template depth` error. 250 exercises the real guard well
+  under the frame limit.
 
 ## Current gaps (surfaced by the first run)
 
