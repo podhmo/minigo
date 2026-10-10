@@ -1582,6 +1582,24 @@ func OffsetOf(h Hooks, td *runtime.TypeDef, name string) (uintptr, error) {
 	return 0, fmt.Errorf("unsafe.Offsetof: %s has no field %s", st.Name, name)
 }
 
+// SizeOf reports the amd64 size of td laid out by declared type — the
+// same structural layout unsafe.Offsetof uses: scalars by width,
+// 16-byte string/interface headers, 24-byte slices, padded structs.
+// h supplies the engine's type resolution (the same hooks the reflect
+// bind is built with).
+func SizeOf(h Hooks, td *runtime.TypeDef) uintptr {
+	e := &Env{h: h}
+	return e.rtypeOf(td).sizeOf()
+}
+
+// AlignOf reports td's amd64 alignment — the widest alignment among a
+// struct's fields (empty struct → 1), an array's element, 8 for
+// word-sized values and pointers.
+func AlignOf(h Hooks, td *runtime.TypeDef) uintptr {
+	e := &Env{h: h}
+	return uintptr(e.rtypeOf(td).alignOf())
+}
+
 // fieldOffset lays out the struct's fields on amd64 up to field i:
 // each field sits at the next offset aligned to its own alignment. fts
 // is the field-type list of the typedef carrying the field list — a
@@ -1618,11 +1636,13 @@ func (t *RType) sizeOf() uintptr {
 		return 1
 	case reflect.Int16, reflect.Uint16:
 		return 2
-	case reflect.Int32, reflect.Uint32, reflect.Float32, reflect.Complex64:
+	case reflect.Int32, reflect.Uint32, reflect.Float32:
 		return 4
 	case reflect.Int, reflect.Uint, reflect.Int64, reflect.Uint64,
-		reflect.Uintptr, reflect.Float64, reflect.Complex128:
+		reflect.Uintptr, reflect.Float64, reflect.Complex64:
 		return 8
+	case reflect.Complex128:
+		return 16
 	case reflect.String, reflect.Interface:
 		return 16
 	case reflect.Slice:
