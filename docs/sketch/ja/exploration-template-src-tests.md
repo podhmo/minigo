@@ -209,3 +209,16 @@ TODO.md の次の2項目をどう進めるかの検討。
 - **bound 経路の eval-order** (`{{.Hello}} {{.N}}` → `hi 0`、gc は `hi 1`): marshal が fields→niladic methods を eager に捌く構造的ギャップで、host 呼出しに渡せる遅延 shape が無い限り修正不能。`--src` 経路は gc 一致済みなので回避策はある。`[ ]` エントリとして継続。
 - **対象外 (前回宣言のまま)**: `unsafe.Pointer` 型 (issue #40)、`--src` template hot-path 計測、oapi-codegen `--src` 実走 + 定期実行。
 - template 由来でない残件 (host 値の型引数推論、32bit ビルド、json TextMarshaler 等) は TODO.md の各エントリを参照。
+
+### 全差分レビューへの対応 (追補)
+
+- 経緯: stack #808 の全体差分 (`origin/main..tip`) をレビュー子セッションに渡し、実機再現つきでバグ5件 (must-fix 2 + nice-to-have 3)・再実装指摘0件・リファクタ候補4件の報告を受領。ユーザーの順序指示 (バグ全体 → リファクタ) に従い、fix worker → refactor worker の直列2段で対応した (#817〜#825)。
+- **バグ5件は全採用・全修正:**
+  - `unsafe.Sizeof`/`Alignof` が `&x`/ポインタ変数で指し先レイアウトを返す回帰 (#809 で導入) → オペランドの declared typedef はポインタ自身と修正 (#817)。
+  - `errors.Is(u,u)` が uncomparable 同一 box で `true` を返す不整合 → #811 の `errIs` が立てた `targetComparable` ゲートを素通りする事前 fast path が原因。`errEqual`/`TryOpaqueKey` が同値ケースを既にカバーするため fast path 自体を撤去 (#818)。
+  - `%T` on `&t.F`/`&arr[0]` が declared type を綴らない → `refDeclTyp` を新設 (FieldRef→`Find`+`fieldTypOf`、IndexRef→elem typedef) (#819)。検証中に `type AP = BoolSchema` の alias 綴り不整合も発見し併修。
+  - iface 変数の `Sizeof`/`Alignof` が格納値を読む → 「真の boundary かも」というレビュー側の留保は杞憂で、compiler が operand の static typedef を hidden arg で渡す改修で解決 (#820)。`staticTyp` が型付けできない operand (selector、call、deref) の value-path fallback は残存として TODO 記録。
+  - `exampleOutputEqual` が go test より寛容 → upstream `processRunResult` と完全一致させ、harness bug のため difffuzz pin の代わりに self-check テストを追加 (#821)。
+- **リファクタ4件は全採用 (R1 は reshape):** declared-typedef walk の実重複を `valueDeclTyp` に集約 (#822、`sizeDeclTyp` の KindPointer Elem と `cellElemTyp` の nil 戻しは observable 差分になるため境界を残置)、`coerce` の host-struct 二重コピーを `runtime.Copy` 済み分岐で skip (#823)、`errComparable` の param 名を `target` に (#824)、`cellOf` → `asCell` rename (#825)。採否の根拠は各 PR 本文。
+- **再実装の指摘は問題なし:** `errIs` は `errKids` を `findAsTarget` と共有、`HostScalarOf`/`HostStructCopy`/`EXOUT` は責務別の境界として妥当と確認。
+- **バグ修正がリファクタ前提を動いた例:** R1 の「2つの並列 walk」はバグ修正で3系統 (`sizeDeclTyp`/`refDeclTyp`/`unsafeStaticTyp`) に再編済みだったため、現 tip 上で重複を再同定してから適用。レビュー→修正→リファクタの順序を守った意義がここに出た。
