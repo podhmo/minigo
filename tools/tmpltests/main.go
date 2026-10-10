@@ -39,6 +39,7 @@ var (
 	pkg      = flag.String("pkg", "text/template", "stdlib package under test")
 	src      = flag.String("src", "", "value for minigo --src (default: -pkg)")
 	tests    = flag.String("tests", "exec_test.go,multi_test.go", "upstream test files to include, comma-separated")
+	examples = flag.Bool("examples", false, "treat -tests as external <pkg>_test example files and run their Example funcs with // Output: checking")
 	only     = flag.String("only", "", "run only tests whose name matches this regexp")
 	work     = flag.String("work", "", "scratch work directory (default: mkdtemp)")
 	keep     = flag.Bool("keep", false, "keep the work directory")
@@ -130,16 +131,26 @@ func run() error {
 		}
 		onlyRe = re
 	}
-	pkgDir, err := buildGOROOT(gr, root, *pkg, strings.Split(*tests, ","), onlyRe)
+	pkgDir, err := buildGOROOT(gr, root, *pkg, strings.Split(*tests, ","), onlyRe, *examples)
 	if err != nil {
 		return err
 	}
-	names, err := genDriver(pkgDir, *pkg, onlyRe)
+	var names []string
+	var specs map[string]exampleSpec
+	if *examples {
+		names, specs, err = genExampleDriver(filepath.Join(gr, "src", *pkg+"_test"), *pkg, onlyRe)
+	} else {
+		names, err = genDriver(pkgDir, *pkg, onlyRe)
+	}
 	if err != nil {
 		return err
 	}
 	if len(names) == 0 {
-		return fmt.Errorf("no func TestXxx(*testing.T) found in %s", pkgDir)
+		kind := "func TestXxx(*testing.T)"
+		if *examples {
+			kind = "func ExampleXxx() with a // Output: comment"
+		}
+		return fmt.Errorf("no %s found under %s", kind, pkgDir)
 	}
 	sort.Strings(names)
 
@@ -147,8 +158,14 @@ func run() error {
 	if err := os.MkdirAll(mainDir, 0o755); err != nil {
 		return err
 	}
-	base := filepath.Base(*pkg)
-	mainSrc := fmt.Sprintf("package main\n\nimport (\n\t\"os\"\n\t%q\n)\n\nfunc main() {\n\t%s.RunAll(os.Args[1:])\n}\n", *pkg, base)
+	importPath, driverPkg := *pkg, filepath.Base(*pkg)
+	if *examples {
+		// the driver lives in the external test package — same shape as
+		// `go test`, which compiles package template_test files as an
+		// importable text/template_test package.
+		importPath, driverPkg = importPath+"_test", driverPkg+"_test"
+	}
+	mainSrc := fmt.Sprintf("package main\n\nimport (\n\t\"os\"\n\t%q\n)\n\nfunc main() {\n\t%s.RunAll(os.Args[1:])\n}\n", importPath, driverPkg)
 	if err := os.WriteFile(filepath.Join(mainDir, "main.go"), []byte(mainSrc), 0o644); err != nil {
 		return err
 	}
@@ -156,7 +173,12 @@ func run() error {
 	var out strings.Builder
 	pass, fail, other := 0, 0, 0
 	for _, name := range names {
-		line := runOne(minigo, mainDir, pkgDir, gr, srcList, name, *timeout)
+		var spec *exampleSpec
+		if *examples {
+			s := specs[name]
+			spec = &s
+		}
+		line := runOne(minigo, mainDir, pkgDir, gr, srcList, name, *timeout, spec)
 		fmt.Println(line)
 		out.WriteString(line + "\n")
 		switch {
@@ -180,8 +202,10 @@ func run() error {
 }
 
 // buildGOROOT assembles the scratch GOROOT and returns the directory of the
-// copied target package (used as the run cwd so testdata/ resolves).
-func buildGOROOT(gr, realRoot, pkg string, testFiles []string, only *regexp.Regexp) (string, error) {
+// copied target package (used as the run cwd so testdata/ resolves). With
+// external set, the listed test files go into <src>/<pkg>_test — the
+// external test package, where upstream keeps `package <base>_test` files.
+func buildGOROOT(gr, realRoot, pkg string, testFiles []string, only *regexp.Regexp, external bool) (string, error) {
 	shimmed := map[string]bool{"testing": true, "flag": true, "iter": true}
 
 	src := filepath.Join(gr, "src")
@@ -246,6 +270,19 @@ func buildGOROOT(gr, realRoot, pkg string, testFiles []string, only *regexp.Rege
 	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
 		return "", err
 	}
+	// External test files cannot live next to the package's own sources
+	// (their `package <base>_test` clause belongs to a different package):
+	// they go into <src>/<pkg>_test, matching how `go test` exposes them
+	// as an importable package.
+	testDst := pkgDir
+	funcRe := testFuncRe
+	if external {
+		testDst = filepath.Join(src, pkg+"_test")
+		funcRe = exampleFuncRe
+		if err := os.MkdirAll(testDst, 0o755); err != nil {
+			return "", err
+		}
+	}
 
 	// Copy the package's own files: symlinks for subdirectories (e.g.
 	// parse/), file copies for sources and testdata/, renamed copies for
@@ -279,7 +316,7 @@ func buildGOROOT(gr, realRoot, pkg string, testFiles []string, only *regexp.Rege
 					return "", err
 				}
 				matched := false
-				for _, m := range testFuncRe.FindAllSubmatch(b, -1) {
+				for _, m := range funcRe.FindAllSubmatch(b, -1) {
 					if only.MatchString(string(m[1])) {
 						matched = true
 						break
@@ -289,7 +326,7 @@ func buildGOROOT(gr, realRoot, pkg string, testFiles []string, only *regexp.Rege
 					continue
 				}
 			}
-			if err := copyTestFile(filepath.Join(real, name), filepath.Join(pkgDir, renamedTest(name)), fileRewrites[name]); err != nil {
+			if err := copyTestFile(filepath.Join(real, name), filepath.Join(testDst, renamedTest(name)), fileRewrites[name]); err != nil {
 				return "", err
 			}
 		case strings.HasSuffix(name, ".go"):
@@ -411,6 +448,88 @@ func copyTree(srcDir, dst string) error {
 
 var testFuncRe = regexp.MustCompile(`(?m)^func (Test\w+)\(t \*testing\.T\)`)
 
+// exampleFuncRe finds `func ExampleXxx()` — examples take no arguments,
+// unlike TestXxx which receives *testing.T.
+var exampleFuncRe = regexp.MustCompile(`(?m)^func (Example\w*)\(\s*\)\s*{`)
+
+// exampleSpec is one example's expected output, parsed from its trailing
+// `// Output:` or `// Unordered output:` comment — the pieces go test
+// compares against the example's stdout.
+type exampleSpec struct {
+	want      string
+	unordered bool
+}
+
+// scanExamples extracts each Example func's output spec from a copied test
+// file. go test only executes examples carrying an Output comment, so a
+// func without one never lands in the returned map.
+func scanExamples(b []byte) map[string]exampleSpec {
+	out := map[string]exampleSpec{}
+	var cur string
+	var collecting bool
+	var unordered bool
+	var want []string
+	finish := func() {
+		if cur != "" && collecting {
+			out[cur] = exampleSpec{want: strings.Join(want, "\n"), unordered: unordered}
+		}
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if m := exampleFuncRe.FindStringSubmatch(line); m != nil {
+			finish()
+			cur, collecting, unordered = m[1], false, false
+			want = want[:0]
+			continue
+		}
+		if strings.HasPrefix(line, "func ") {
+			finish()
+			cur = ""
+			continue
+		}
+		if cur == "" {
+			continue
+		}
+		trim := strings.TrimSpace(line)
+		if line == "}" {
+			// only the column-0 brace ends the func — indented } lines
+			// close inner blocks and must not cut tracking short.
+			finish()
+			cur = ""
+			continue
+		}
+		if strings.HasPrefix(trim, "//") {
+			body := strings.TrimPrefix(trim, "//")
+			mark := strings.TrimSpace(body)
+			if strings.HasPrefix(mark, "Output:") {
+				collecting, unordered = true, false
+				want = want[:0]
+				if rest := strings.TrimSpace(strings.TrimPrefix(mark, "Output:")); rest != "" {
+					want = append(want, rest)
+				}
+				continue
+			}
+			if strings.HasPrefix(mark, "Unordered output:") {
+				collecting, unordered = true, true
+				want = want[:0]
+				continue
+			}
+			if collecting {
+				// one space after // is comment syntax; further indent is
+				// meaningful output and kept.
+				want = append(want, strings.TrimPrefix(body, " "))
+			}
+			continue
+		}
+		// the output block must be the func's trailing comment group —
+		// any other source line ends it.
+		if trim != "" {
+			collecting = false
+		}
+	}
+	finish()
+	return out
+}
+
 // genDriver writes zzz_driver.go into pkgDir and returns the test names.
 func genDriver(pkgDir, pkg string, only *regexp.Regexp) ([]string, error) {
 	var names []string
@@ -445,6 +564,83 @@ func genDriver(pkgDir, pkg string, only *regexp.Regexp) ([]string, error) {
 	}
 	return names, nil
 }
+
+// genExampleDriver writes zzz_driver.go into extDir (the <pkg>_test dir)
+// and returns the runnable example names with their parsed output specs.
+// Examples without an Output comment are compile-only under go test and
+// are not listed.
+func genExampleDriver(extDir, pkg string, only *regexp.Regexp) ([]string, map[string]exampleSpec, error) {
+	var names []string
+	specs := map[string]exampleSpec{}
+	ents, err := os.ReadDir(extDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, e := range ents {
+		if !strings.HasSuffix(e.Name(), "_srctest.go") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(extDir, e.Name()))
+		if err != nil {
+			return nil, nil, err
+		}
+		found := scanExamples(b)
+		for _, m := range exampleFuncRe.FindAllSubmatch(b, -1) {
+			name := string(m[1])
+			spec, ok := found[name]
+			if !ok {
+				continue
+			}
+			if only != nil && !only.MatchString(name) {
+				continue
+			}
+			names = append(names, name)
+			specs[name] = spec
+		}
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "package %s_test\n\nimport \"fmt\"\n\nvar srcExamples = map[string]func(){\n", filepath.Base(pkg))
+	for _, n := range names {
+		fmt.Fprintf(&b, "\t%q: %s,\n", n, n)
+	}
+	b.WriteString("}\n\n" + exampleDriverSrc)
+	if err := os.WriteFile(filepath.Join(extDir, "zzz_driver.go"), []byte(b.String()), 0o644); err != nil {
+		return nil, nil, err
+	}
+	return names, specs, nil
+}
+
+const exampleDriverSrc = `
+func RunAll(names []string) {
+	for _, name := range names {
+		RunExample(name)
+	}
+}
+
+// RunExample runs one example between EXOUT markers. The host tool
+// extracts the process stdout between BEGIN and END and compares it with
+// the // Output: comment itself — an interpreted program cannot capture
+// its own os.Stdout the way go test does, so the check lives outside.
+func RunExample(name string) {
+	f, ok := srcExamples[name]
+	if !ok {
+		fmt.Printf("RESULT %s NOTEST\n", name)
+		return
+	}
+	fmt.Printf("EXOUT %s BEGIN\n", name)
+	var r any
+	func() {
+		defer func() { r = recover() }()
+		f()
+	}()
+	fmt.Printf("EXOUT %s END\n", name)
+	if r != nil {
+		fmt.Printf("RESULT %s PANIC %v\n", name, r)
+		return
+	}
+	fmt.Printf("RESULT %s DONE\n", name)
+}
+`
 
 const driverSrc = `
 func RunAll(names []string) {
@@ -485,7 +681,9 @@ func Run1(name string) {
 
 // runOne runs a single test in a fresh minigo process and returns its
 // verdict line. A minigo trap kills the process, so traps are per-test.
-func runOne(minigo, mainDir, cwd, goroot, srcList, name string, timeout time.Duration) string {
+// spec is non-nil for example runs: the RESULT line then only reports
+// that the example finished, and the // Output: comparison happens here.
+func runOne(minigo, mainDir, cwd, goroot, srcList, name string, timeout time.Duration, spec *exampleSpec) string {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, minigo, "run", mainDir, "--src", srcList, "--", name)
@@ -505,6 +703,9 @@ func runOne(minigo, mainDir, cwd, goroot, srcList, name string, timeout time.Dur
 		err = errTimeout
 	}
 	stdout, stderr := sb.String(), eb.String()
+	if spec != nil {
+		return scoreExample(name, spec, stdout, stderr, err)
+	}
 	for _, line := range strings.Split(stdout, "\n") {
 		if strings.HasPrefix(line, "RESULT ") {
 			return line
@@ -518,6 +719,99 @@ func runOne(minigo, mainDir, cwd, goroot, srcList, name string, timeout time.Dur
 		detail = firstLine(stdout)
 	}
 	return fmt.Sprintf("RESULT %s TRAP %s", name, detail)
+}
+
+// scoreExample turns an example run into a verdict line: DONE means the
+// example returned and its captured stdout is compared with the //
+// Output: spec (go test semantics). A missing RESULT line means the
+// process died first — a runtime trap reports TRAP, anything else (e.g.
+// os.Exit under log.Fatal) failed the run.
+func scoreExample(name string, spec *exampleSpec, stdout, stderr string, err error) string {
+	var result string
+	for _, line := range strings.Split(stdout, "\n") {
+		if strings.HasPrefix(line, "RESULT ") {
+			result = line
+			break
+		}
+	}
+	switch {
+	case result == "RESULT "+name+" DONE":
+		// fall through to the output comparison
+	case result != "":
+		return result // NOTEST, PANIC
+	case err == errTimeout:
+		return fmt.Sprintf("RESULT %s HANG", name)
+	default:
+		detail := firstLine(stderr)
+		if detail == "" {
+			detail = firstLine(stdout)
+		}
+		if strings.Contains(stderr, "runtime trap:") {
+			return fmt.Sprintf("RESULT %s TRAP %s", name, detail)
+		}
+		return fmt.Sprintf("RESULT %s FAIL %s", name, detail)
+	}
+	got := exoutBetween(stdout, name)
+	if exampleOutputEqual(got, spec.want, spec.unordered) {
+		return fmt.Sprintf("RESULT %s PASS", name)
+	}
+	return fmt.Sprintf("RESULT %s FAIL output mismatch\n  got: %s\n want: %s",
+		name, indentBlock(got, "    "), indentBlock(spec.want, "    "))
+}
+
+// exoutBetween extracts the stdout between the driver's EXOUT markers.
+// The END marker can be glued to a last output line without a newline;
+// whatever precedes it on that line still belongs to the output.
+func exoutBetween(stdout, name string) string {
+	begin := "EXOUT " + name + " BEGIN\n"
+	i := strings.Index(stdout, begin)
+	if i < 0 {
+		return ""
+	}
+	rest := stdout[i+len(begin):]
+	if j := strings.Index(rest, "EXOUT "+name+" END"); j >= 0 {
+		return rest[:j]
+	}
+	return rest
+}
+
+// exampleOutputEqual compares captured stdout with the // Output: text
+// like go test does: both sides trimmed, per-line trailing space dropped,
+// lines sorted when the comment says `// Unordered output:`.
+func exampleOutputEqual(got, want string, unordered bool) bool {
+	gl, wl := outputLines(got), outputLines(want)
+	if unordered {
+		sort.Strings(gl)
+		sort.Strings(wl)
+	}
+	if len(gl) != len(wl) {
+		return false
+	}
+	for i := range gl {
+		if gl[i] != wl[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func outputLines(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	lines := strings.Split(s, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " \t")
+	}
+	return lines
+}
+
+func indentBlock(s, prefix string) string {
+	if s == "" {
+		return "(empty)"
+	}
+	return prefix + strings.ReplaceAll(strings.TrimRight(s, "\n"), "\n", "\n"+prefix)
 }
 
 var errTimeout = fmt.Errorf("timeout")
