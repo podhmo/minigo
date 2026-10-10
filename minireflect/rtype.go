@@ -1558,6 +1558,27 @@ func (t *RType) FieldAlign() int {
 	return t.alignOf()
 }
 
+// OffsetOf reports the amd64 byte offset of the named field in the
+// struct typedef td — the declared-type layout shared by reflect's
+// StructField.Offset and unsafe.Offsetof. Field positions come from the
+// typedefs' declared size and alignment, never the runtime values a
+// field happens to hold. h supplies the engine's type resolution (the
+// same hooks the reflect bind is built with).
+func OffsetOf(h Hooks, td *runtime.TypeDef, name string) (uintptr, error) {
+	e := &Env{h: h}
+	st := e.structTd(td)
+	if st == nil || len(st.Fields) == 0 {
+		return 0, fmt.Errorf("unsafe.Offsetof: %s is not a struct type", td.Name)
+	}
+	fts := e.fieldTypes(st)
+	for i, f := range st.Fields {
+		if f == name {
+			return fieldOffset(e.rtypeOf(st), fts, i), nil
+		}
+	}
+	return 0, fmt.Errorf("unsafe.Offsetof: %s has no field %s", st.Name, name)
+}
+
 // fieldOffset lays out the struct's fields on amd64 up to field i:
 // each field sits at the next offset aligned to its own alignment. fts
 // is the field-type list of the typedef carrying the field list — a
