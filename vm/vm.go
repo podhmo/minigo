@@ -11686,6 +11686,17 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		}
 		f.trap("cannot use nil %s as %s", tdName(tn.Typ), tdName(td))
 	}
+	if bn := runtime.BoxedNilTyp(x); bn != nil {
+		// an interface holding a typed nil unboxes back to that typed
+		// nil on a matching concrete slot — reflect.Call marshals a
+		// Zero(*T).Interface() arg into the callee's *T parameter.
+		utd0 := v.peelNamed(td)
+		if sameTypeDef(bn, td) || v.tdShapeEq(bn, td) || v.samePointeeAlias(bn, td) ||
+			(sameSpelledTwin(bn, td) && utd0 != nil &&
+				(utd0.Kind == runtime.KindSlice || utd0.Kind == runtime.KindMap || utd0.Kind == runtime.KindChan)) {
+			return &runtime.TypedNil{Typ: td}
+		}
+	}
 	if _, ok := x.(*runtime.IfaceNil); ok {
 		f.trap("cannot use interface value as %s", tdName(td))
 	}
