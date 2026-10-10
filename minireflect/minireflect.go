@@ -418,6 +418,17 @@ func (e *Env) valueOfValue(vc runtime.VMCaller, v runtime.Value) *RValue {
 			// and not the script value it views
 			return &RValue{e: e, vc: vc, rv: reflect.ValueOf(reflect.ValueOf(rv))}
 		}
+		if rt, ok := x.V.(*RType); ok {
+			// a boxed facade reflect.Type reflects like gc's *rtype:
+			// a host-backed type views its real descriptor (Type() =
+			// *reflect.rtype and Interface() hands the type back);
+			// a script-typed one has no host descriptor — keep it a
+			// script value stamped with the impl type's spelling.
+			if rt.rt != nil {
+				return &RValue{e: e, vc: vc, rv: reflect.ValueOf(rt.rt)}
+			}
+			return &RValue{e: e, vc: vc, val: rt, td: rtypeImplTd}
+		}
 		if x.V == nil {
 			return &RValue{e: e, vc: vc}
 		}

@@ -1,0 +1,6 @@
+*reflect.rtype
+ptr
+int
+*reflect.rtype
+main.myInt
+*reflect.rtype

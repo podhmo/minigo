@@ -282,6 +282,9 @@ func typeOfValue(e *Env, v runtime.Value) *runtime.TypeDef {
 		if rv, ok := x.V.(*RValue); ok {
 			return rv.staticTd()
 		}
+		if _, ok := x.V.(*RType); ok {
+			return rtypeImplTd
+		}
 		name := reflect.TypeOf(x.V).String()
 		if btd := runtime.BasicTypedef(name); btd != nil {
 			return btd
@@ -353,6 +356,13 @@ func (e *Env) funcTd(v runtime.Value) *runtime.TypeDef {
 	}
 	return td
 }
+
+// rtypeImpl is the reflect descriptor of the facade's concrete type —
+// the analog of gc's unexported *rtype: Type() on a boxed reflect.Type
+// reports it, so %T spells "*reflect.rtype" like gc. rtypeImplTd is the
+// typedef spelling the same static type for script-typed boxes.
+var rtypeImpl = reflect.TypeOf(reflect.TypeOf(0))
+var rtypeImplTd = &runtime.TypeDef{Name: "*reflect.rtype", Kind: runtime.KindPointer}
 
 // staticTd reports the static type of a value (for nested ValueOf).
 func (v *RValue) staticTd() *runtime.TypeDef {
@@ -466,6 +476,30 @@ func (v *RValue) Type() *RType {
 	v.mustValid("Type")
 	if v.host() {
 		return v.e.hostTypeOf(v.rv.Type())
+	}
+	// A boxed host object reports its real reflect.Type when the stamped
+	// td only echoes the payload's type name — a bare td carries no
+	// method set, so e.g. *bytes.Buffer would fail Implements checks
+	// against fmt.Stringer. A td naming something else wins (a tagged
+	// host box `var b bytes.Buffer` is GoValue{*bytes.Buffer} but types
+	// as bytes.Buffer). A GoValue{*RValue} is not a host object — it is
+	// the script repr of reflect.Value itself.
+	if gv, ok := unwrapRef(v.get()).(*runtime.GoValue); ok && gv.V != nil {
+		switch gv.V.(type) {
+		case *RValue:
+			// script repr of reflect.Value itself — the td path
+			// below reports the script type.
+		case *RType:
+			// a boxed facade reflect.Type answers the descriptor of
+			// the facade's concrete type — gc's *reflect.rtype —
+			// not the internal struct name.
+			return v.e.hostTypeOf(rtypeImpl)
+		default:
+			rt := reflect.TypeOf(gv.V)
+			if v.td == nil || v.td.Name == rt.String() {
+				return v.e.hostTypeOf(rt)
+			}
+		}
 	}
 	td := v.td
 	if td == nil || (td.Kind == runtime.KindFunc && td.Anon == nil) {
