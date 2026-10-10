@@ -46,6 +46,10 @@ type binding struct {
 	// untypedConst marks a `const` bound without a declared type: the
 	// operand adopts the other side's type, like a literal does.
 	untypedConst bool
+	// constDecl marks a `const`-bound name — typed or not — so the
+	// constant-expression walk can tell it from a var. An untyped const
+	// carries untypedConst instead of a declTyp.
+	constDecl bool
 }
 
 // fscope is the static scope model of one function while compiling.
@@ -129,6 +133,17 @@ func (s *fscope) noteDeclTyp(name string, te ast.Expr) {
 	}
 	if b := s.blocks[len(s.blocks)-1][name]; b != nil {
 		b.declTyp = te
+	}
+}
+
+// noteConstDecl marks a just-declared `const` name — typed or untyped
+// — so constant-expression checks can distinguish it from a var.
+func (s *fscope) noteConstDecl(name string) {
+	if len(s.blocks) == 0 {
+		return
+	}
+	if b := s.blocks[len(s.blocks)-1][name]; b != nil {
+		b.constDecl = true
 	}
 }
 
@@ -1980,6 +1995,14 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 				return opTyp{untyped: true}
 			}
 			if lt.untyped {
+				// a constant shift keeps its untypedness —
+				// `const a = 1 << n` is an untyped constant even
+				// when n is a TYPED constant, so it adopts the
+				// compared operand's type. Only a non-constant
+				// count defaults the left operand.
+				if c.isConstOperand(x.Y) {
+					return opTyp{untyped: true}
+				}
 				return c.defaultOpTyp(x.X)
 			}
 			return rt
@@ -2236,6 +2259,42 @@ func defaultLitTyp(lit *ast.BasicLit) *ast.Ident {
 		return &ast.Ident{Name: "string"}
 	}
 	return nil
+}
+
+// isConstOperand reports whether e statically resolves to a compile-time
+// constant expression — a literal, a const-bound name, or operators and
+// conversions applied to constants. It deliberately under-approximates
+// (a qualified or host-package constant reports non-constant): the
+// shift-typing walk only needs enough to keep a `const a = 1 << n`
+// untyped instead of defaulting the left operand.
+func (c *compiler) isConstOperand(e ast.Expr) bool {
+	switch x := ast.Unparen(e).(type) {
+	case *ast.BasicLit:
+		return true
+	case *ast.Ident:
+		switch x.Name {
+		case "true", "false", "iota":
+			return true
+		}
+		if b := c.fs.lookupBinding(x.Name); b != nil {
+			return b.untypedConst || b.constDecl
+		}
+		if c.pkg != nil && c.pkg.Index != nil {
+			return c.pkg.Index.Consts[x.Name] != nil
+		}
+		return false
+	case *ast.UnaryExpr:
+		switch x.Op {
+		case token.SUB, token.ADD, token.XOR, token.NOT:
+			return c.isConstOperand(x.X)
+		}
+		return false
+	case *ast.BinaryExpr:
+		return c.isConstOperand(x.X) && c.isConstOperand(x.Y)
+	case *ast.CallExpr:
+		return c.conversionCall(x) && len(x.Args) == 1 && c.isConstOperand(x.Args[0])
+	}
+	return false
 }
 
 // typeSpecOf resolves a type expression to its declaring TypeSpec — a
@@ -2664,6 +2723,9 @@ func (c *compiler) nilableTypExpr(te ast.Expr) bool {
 // type when the expression spells one (`x := 5` is int like gc), and an
 // untyped const keeps no type — it adopts like a literal.
 func (c *compiler) noteDeclTyp(name string, effType ast.Expr, isConst bool, rhs ast.Expr) {
+	if isConst {
+		c.fs.noteConstDecl(name)
+	}
 	te := effType
 	if te == nil && rhs != nil {
 		te = c.staticOpTyp(rhs).te
