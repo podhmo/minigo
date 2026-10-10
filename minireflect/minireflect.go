@@ -293,7 +293,14 @@ func (e *Env) typeAssert() *runtime.BuiltinFunc {
 					vt = v.Type()
 				}
 			case v.Kind() == reflect.Interface:
-				if dt := typeOfValue(e, v.get()); dt != nil {
+				x := v.get()
+				if in, isIN := x.(*runtime.IfaceNil); isIN && runtime.IsNilIface(in) {
+					// a nil interface has no dynamic type — the
+					// assert fails regardless of the static tag
+					// (typeOfValue now reports the tag itself).
+					break
+				}
+				if dt := typeOfValue(e, x); dt != nil {
 					vt = e.rtypeOf(dt)
 				}
 			default:
@@ -310,12 +317,15 @@ func (e *Env) typeAssert() *runtime.BuiltinFunc {
 			if !ok {
 				return &runtime.Tuple{Elems: []runtime.Value{e.zeroOf(vc, td), false}}, nil
 			}
-			var out runtime.Value
-			switch x := v.ifaceVal().(type) {
-			case runtime.Value:
-				out = x
-			default:
-				out = &runtime.GoValue{V: x}
+			// a successful concrete x.(T) pulls the bare payload out
+			// of the interface box — a typed nil boxed in one must
+			// come back as a TypedNil, not the raw IfaceNil (same
+			// rule vm's unboxAsserted applies), so `p == nil` and
+			// binding to *T both behave. Interface-typed targets
+			// keep the box (re-tagged on the iface-slot boundary).
+			out := normVal(v.ifaceVal())
+			if bt := runtime.BoxedNilTyp(out); bt != nil && td.Kind != runtime.KindInterface {
+				out = &runtime.TypedNil{Typ: bt}
 			}
 			return &runtime.Tuple{Elems: []runtime.Value{out, true}}, nil
 		},

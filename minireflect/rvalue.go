@@ -208,6 +208,11 @@ func typeOfValue(e *Env, v runtime.Value) *runtime.TypeDef {
 		return typeOfValue(e, x.V)
 	case *runtime.TypedNil:
 		return x.Typ
+	case *runtime.IfaceNil:
+		// the tag IS the type: an interface-kind Typ is the nil
+		// interface, a concrete Typ (*T) is an interface holding a
+		// typed nil — reporting Typ keeps Kind() readable.
+		return x.Typ
 	case *runtime.Struct:
 		return x.Def
 	case *runtime.Slice:
@@ -467,6 +472,11 @@ func kindOfValue(x runtime.Value) reflect.Kind {
 			}
 		}
 		return reflect.Invalid
+	case *runtime.IfaceNil:
+		// the tag reads as its kind, like a TypedNil's: a
+		// concrete tag is the boxed typed nil's kind, an
+		// interface tag reads Interface.
+		return kindOfValue(&runtime.TypedNil{Typ: v.Typ})
 	}
 	return reflect.Invalid
 }
@@ -569,6 +579,13 @@ func (v *RValue) Elem() *RValue {
 			// a nil interface has no dynamic type — Elem() on it is
 			// the zero Value, and Interface()/Set() panic on use.
 			return &RValue{e: v.e, vc: v.vc}
+		}
+		if bt := runtime.BoxedNilTyp(d); bt != nil {
+			// an interface holding a typed nil: surface the
+			// TypedNil shape — the accessor surface (Len, Index,
+			// MapIndex, ...) dispatches on *runtime.TypedNil, the
+			// same canonicalization valueOfValue performs.
+			d = &runtime.TypedNil{Typ: bt}
 		}
 		if tn, isNil := d.(*runtime.TypedNil); isNil {
 			// an interface holding a typed nil: Elem exposes the typed
