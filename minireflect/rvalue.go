@@ -3545,6 +3545,18 @@ func toHost(v any, t reflect.Type) (reflect.Value, error) {
 			return rv, nil
 		}
 	case *runtime.Named:
+		// a named func value crossing an `any` slot keeps its tag —
+		// containers storing `any` (sync.Map, sort.Interface-ish paths)
+		// must hand back the same interface value: `Decompressor(f)`
+		// stored and loaded still asserts to zip.Decompressor, not to
+		// the unnamed signature's func type.
+		if t.Kind() == reflect.Interface && t.NumMethod() == 0 {
+			switch x.V.(type) {
+			case *runtime.Function, *runtime.Closure,
+				*runtime.BoundMethod, *runtime.BuiltinFunc:
+				return reflect.ValueOf(x), nil
+			}
+		}
 		return toHost(x.V, t)
 	}
 	if rv := reflect.ValueOf(v); rv.IsValid() && rv.Type().AssignableTo(t) {

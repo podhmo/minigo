@@ -4336,6 +4336,16 @@ func deepHost(v runtime.Value, vc runtime.VMCaller, h *hostMarshal) runtime.Valu
 		}
 		return deepHost(mv, vc, h)
 	case *runtime.Named:
+		// a named func value keeps its tag across the boundary: `any`
+		// storage (sync.Map and friends) must hand back the same
+		// interface value, so `Decompressor(f)` stored and loaded
+		// still asserts to zip.Decompressor — an unnamed func value
+		// would not. Other payloads marshal through like before.
+		switch x.V.(type) {
+		case *runtime.Function, *runtime.Closure,
+			*runtime.BoundMethod, *runtime.BuiltinFunc:
+			return v
+		}
 		return deepHost(x.V, vc, h)
 	case *runtime.GoValue:
 		return x.V
