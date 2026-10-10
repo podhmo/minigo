@@ -64,9 +64,27 @@ func TestDiffRegressions(t *testing.T) {
 				runErr error
 			}
 			resCh := make(chan outcome, 1)
-			// stderrOld is set before the os.Stderr swap so the timeout
-			// path can restore it when the run goroutine is abandoned.
-			var stderrOld *os.File
+			// The os.Stderr swap happens before the run goroutine starts
+			// so it is never racy, and the pipe lives long enough for the
+			// timeout path to close it: an abandoned run then writes to
+			// the restored stderr and the reader drains and exits instead
+			// of leaking on ReadAll.
+			var stderrOld, pipeR, pipeW *os.File
+			var done chan string
+			if captureErr {
+				r, w, err := os.Pipe()
+				if err != nil {
+					t.Fatalf("os.Pipe: %v", err)
+				}
+				pipeR, pipeW = r, w
+				stderrOld = os.Stderr
+				os.Stderr = w
+				done = make(chan string, 1)
+				go func() {
+					b, _ := io.ReadAll(r)
+					done <- string(b)
+				}()
+			}
 			go func() {
 				var buf bytes.Buffer
 				opts := []minigo.Option{minigo.WithOutput(&buf)}
@@ -84,27 +102,12 @@ func TestDiffRegressions(t *testing.T) {
 
 				var runErr error
 				var gotErr string
+				_, runErr = e.Run(context.Background(), "./"+filepath.ToSlash(dir), "")
 				if captureErr {
-					r, w, err := os.Pipe()
-					if err != nil {
-						resCh <- outcome{runErr: err}
-						return
-					}
-					old := os.Stderr
-					stderrOld = old
-					os.Stderr = w
-					done := make(chan string)
-					go func() {
-						b, _ := io.ReadAll(r)
-						done <- string(b)
-					}()
-					_, runErr = e.Run(context.Background(), "./"+filepath.ToSlash(dir), "")
-					w.Close()
+					pipeW.Close()
 					gotErr = <-done
-					os.Stderr = old
-					r.Close()
-				} else {
-					_, runErr = e.Run(context.Background(), "./"+filepath.ToSlash(dir), "")
+					os.Stderr = stderrOld
+					pipeR.Close()
 				}
 				resCh <- outcome{stdout: buf.String(), stderr: gotErr, runErr: runErr}
 			}()
@@ -115,6 +118,8 @@ func TestDiffRegressions(t *testing.T) {
 			case <-time.After(runCaseTimeout):
 				if stderrOld != nil {
 					os.Stderr = stderrOld
+					pipeW.Close()
+					pipeR.Close()
 				}
 				t.Fatalf("run did not finish within %s (HANG regression?)", runCaseTimeout)
 			}
