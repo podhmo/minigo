@@ -1209,6 +1209,15 @@ func (c *compiler) valueSpec(vs *ast.ValueSpec, d *index.Decl) {
 			coerceVar(name)
 		}
 	}
+	// An inferred `var x = e` carries its RHS's declared type like
+	// `x := e` does: `var i = I(s)` binds an I-typed cell so `&i` is *I.
+	if !isConst && vs.Type == nil {
+		lhs := make([]ast.Expr, len(vs.Names))
+		for i, name := range vs.Names {
+			lhs[i] = name
+		}
+		c.stampVarTyps(lhs, vals)
+	}
 }
 
 // EmbedBuiltin names the hidden builtin a `//go:embed` var initializes
@@ -1324,6 +1333,19 @@ func (c *compiler) stmt(s ast.Stmt) {
 						c.fs.markIface(name.Name)
 					}
 				}
+				// An inferred `var x = e` carries its RHS's declared
+				// type like `x := e` does (stampInferredTyps): `var i =
+				// I(s)` binds an I-typed cell so `&i` is *I.
+				stampVars := func() {
+					if isConst || effType != nil {
+						return
+					}
+					lhs := make([]ast.Expr, len(vs.Names))
+					for i, name := range vs.Names {
+						lhs[i] = name
+					}
+					c.stampInferredTyps(lhs, vals)
+				}
 				if len(vals) == 1 && len(vs.Names) > 1 {
 					if isConst || len(vs.Names) != 2 || !c.commaOkRhs(vals[0]) {
 						c.expr(vals[0])
@@ -1335,6 +1357,7 @@ func (c *compiler) stmt(s ast.Stmt) {
 						markIface(vs.Names[i], vals[0])
 						c.noteDeclTyp(vs.Names[i].Name, effType, isConst, nil)
 					}
+					stampVars()
 					c.iotaVal = -1
 					continue
 				}
@@ -1357,6 +1380,7 @@ func (c *compiler) stmt(s ast.Stmt) {
 					markIface(name, rhs)
 					c.noteDeclTyp(name.Name, effType, isConst, rhs)
 				}
+				stampVars()
 				c.iotaVal = -1
 			}
 		case token.TYPE:
@@ -1729,26 +1753,7 @@ func (c *compiler) stampInferredTyps(lhs, rhs []ast.Expr) {
 		if !ok || id.Name == "_" {
 			continue
 		}
-		var r ast.Expr
-		switch {
-		case len(rhs) == len(lhs):
-			r = rhs[i]
-		case len(rhs) == 1 && i == 0:
-			// a multi-value RHS types only its first result — `x, ok :=
-			// v.(T)` binds x to T.
-			if _, isAssert := rhs[0].(*ast.TypeAssertExpr); !isAssert {
-				continue
-			}
-			r = rhs[0]
-		default:
-			continue
-		}
-		t := c.inferredTypExpr(r)
-		if t == nil && c.isIfaceExpr(r) {
-			// an interface-typed RHS (any(v), an iface var, a .(I)
-			// assert) declares an interface type with no literal.
-			t = &ast.InterfaceType{Interface: r.Pos(), Methods: &ast.FieldList{}}
-		}
+		t := c.inferredBindTyp(len(lhs), rhs, i)
 		if t == nil {
 			continue
 		}
@@ -1759,6 +1764,94 @@ func (c *compiler) stampInferredTyps(lhs, rhs []ast.Expr) {
 		c.typeExpr(t)
 		c.emit(bytecode.OpCoerce, b.slot, 0, id.Pos())
 	}
+}
+
+// stampVarTyps is stampInferredTyps for package-level `var x = e`
+// specs: an inferred var carries its RHS's declared type like `x := e`
+// does, so `var i = I(s)` binds an I-typed cell — `&i` builds *I and a
+// field of type *I accepts it, where an untagged cell would hand back
+// the contained concrete type.
+func (c *compiler) stampVarTyps(lhs, rhs []ast.Expr) {
+	for i, l := range lhs {
+		id, ok := l.(*ast.Ident)
+		if !ok || id.Name == "_" {
+			continue
+		}
+		t := c.inferredBindTyp(len(lhs), rhs, i)
+		if t == nil {
+			continue
+		}
+		c.typeExpr(t)
+		c.emit(bytecode.OpCoerceGlobal, c.nameIdx(id.Name), 0, id.Pos())
+	}
+}
+
+// inferredBindTyp returns the declared type expression the i-th LHS
+// name's RHS spells: the conversion/assert/literal type, or an empty
+// interface when the RHS is interface-typed (any(v), an iface var, a
+// .(I) assert). nil means the bind carries no static type.
+func (c *compiler) inferredBindTyp(nlhs int, rhs []ast.Expr, i int) ast.Expr {
+	var r ast.Expr
+	switch {
+	case len(rhs) == nlhs:
+		r = rhs[i]
+	case len(rhs) == 1 && i == 0:
+		// a multi-value RHS types only its first result — `x, ok :=
+		// v.(T)` binds x to T.
+		if _, isAssert := rhs[0].(*ast.TypeAssertExpr); !isAssert {
+			return nil
+		}
+		r = rhs[0]
+	default:
+		return nil
+	}
+	t := c.inferredTypExpr(r)
+	if t == nil && c.isIfaceExpr(r) {
+		// an interface-typed RHS (any(v), an iface var, a .(I)
+		// assert) declares an interface type with no literal. An ident
+		// keeps its statically-known declared type — `var j = i` binds
+		// i's I, not interface{} — so `&j` still builds *I.
+		if id, ok := ast.Unparen(r).(*ast.Ident); ok {
+			t = c.ifaceIdentTypExpr(id, 4)
+		}
+		if t == nil {
+			t = &ast.InterfaceType{Interface: r.Pos(), Methods: &ast.FieldList{}}
+		}
+	}
+	return t
+}
+
+// ifaceIdentTypExpr resolves an interface-typed identifier's declared
+// type expression for inferred stamping: a local's recorded declTyp, a
+// package var's written type, or an inferred global's own spelled type
+// (`var j = i` follows i's `var i = I(s)` to I). nil when unknown.
+// fuel bounds the global-initializer recursion.
+func (c *compiler) ifaceIdentTypExpr(id *ast.Ident, fuel int) ast.Expr {
+	if fuel <= 0 {
+		return nil
+	}
+	if b := c.fs.lookupBinding(id.Name); b != nil {
+		return b.declTyp
+	}
+	if c.pkg != nil && c.pkg.Index != nil {
+		if vd := c.pkg.Index.Vars[id.Name]; vd != nil {
+			if vs, ok := vd.Spec.(*ast.ValueSpec); ok {
+				if vs.Type != nil {
+					return vs.Type
+				}
+				if len(vs.Values) == len(vs.Names) && vd.NameIdx < len(vs.Values) {
+					rhs := vs.Values[vd.NameIdx]
+					if t := c.inferredTypExpr(rhs); t != nil {
+						return t
+					}
+					if rid, ok := ast.Unparen(rhs).(*ast.Ident); ok {
+						return c.ifaceIdentTypExpr(rid, fuel-1)
+					}
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // inferredTypExpr returns the type expression an RHS spells when its
@@ -2427,6 +2520,12 @@ func (c *compiler) noteDeclTyp(name string, effType ast.Expr, isConst bool, rhs 
 			// shared with identOpTyp's package-level `var x = e` arm
 			// through defaultOpTyp/defaultLitTyp.
 			te = c.defaultOpTyp(rhs).te
+		}
+		if te == nil && !isConst {
+			// an interface-typed initializer spells no operand type for
+			// the gate but still declares one — `var i = I(v)` binds i
+			// as I, so `var j = i` inherits I instead of interface{}.
+			te = c.inferredBindTyp(1, []ast.Expr{rhs}, 0)
 		}
 	}
 	if te != nil {

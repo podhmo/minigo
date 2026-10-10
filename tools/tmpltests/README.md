@@ -56,8 +56,6 @@ rewrite must preserve the test's intent and is tracked as a bug:
 
 - `exec_test.go`: `unsafe.Pointer` → `any` — no `unsafe.Pointer` type yet;
   the rows that use it keep their truth values ({ptr, true}, {nil, false}).
-- `exec_test.go`: `&siVal` → `ptrI(siVal)` — `&` on a package-level
-  interface variable wrongly yields `*dynamicType` instead of `*I`.
 
 ## Current gaps (surfaced by the first run)
 
