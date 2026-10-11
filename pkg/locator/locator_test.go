@@ -2,6 +2,7 @@ package locator
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -418,6 +419,37 @@ replace example.com/parent => ./replaced-parent
 				t.Errorf("Test %q: For import %q, expected error, but got path: %s", tt.name, tt.importPath, dir)
 			}
 		})
+	}
+}
+
+// A cyclic replace graph fails as a broken configuration, not a
+// resolution miss: errors.Is matches ErrBrokenConfig so callers that
+// mark misses can keep it loud.
+func TestFindPackageDirReplaceCycle(t *testing.T) {
+	goMod := `module example.com/cycmod
+go 1.24
+require example.com/a v0.0.0
+require example.com/b v0.0.0
+replace example.com/a => example.com/b v0.0.0
+replace example.com/b => example.com/a v0.0.0
+`
+	_, startLookupPath, cleanup := setupTestModuleWithContent(t, goMod, nil)
+	defer cleanup()
+
+	l, err := New(startLookupPath)
+	if err != nil {
+		t.Fatalf("New() returned an error: %v", err)
+	}
+	_, err = l.FindPackageDir("example.com/a")
+	if err == nil {
+		t.Fatal("FindPackageDir: want error for the cyclic replace graph, got nil")
+	}
+	if !errors.Is(err, ErrBrokenConfig) {
+		t.Errorf("want ErrBrokenConfig, got %v", err)
+	}
+	// a plain miss is not a broken configuration.
+	if _, err := l.FindPackageDir("example.com/neverhere"); errors.Is(err, ErrBrokenConfig) {
+		t.Errorf("plain miss must not carry ErrBrokenConfig: %v", err)
 	}
 }
 

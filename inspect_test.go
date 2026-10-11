@@ -2,8 +2,12 @@ package minigo_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/podhmo/minigo"
 )
 
 // TestInspect exercises the minigo.dev/inspect intrinsics through a real
@@ -142,5 +146,45 @@ func TestInspect(t *testing.T) {
 		t.Error("LoadErr: expected the import's load error")
 	} else if strings.Contains(err.Error(), "expects") {
 		t.Errorf("LoadErr: load error masked as argument error: %v", err)
+	}
+}
+
+// A resolved-but-broken module graph is "found but broken", not a miss:
+// cyclic replaces surface the config error instead of LookupPackageOf
+// answering nil.
+func TestLookupPackageOfBrokenGraph(t *testing.T) {
+	dir := t.TempDir()
+	gomod := `module cycmod
+
+go 1.24
+
+require example.com/a v0.0.0
+require example.com/b v0.0.0
+
+replace example.com/a => example.com/b v0.0.0
+replace example.com/b => example.com/a v0.0.0
+`
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(gomod), 0644); err != nil {
+		t.Fatal(err)
+	}
+	script := `package main
+
+import "github.com/podhmo/minigo/inspect"
+
+func LookupCyclic() string {
+	inspect.LookupPackageOf("example.com/a")
+	return "ok"
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(script), 0644); err != nil {
+		t.Fatal(err)
+	}
+	e := minigo.NewEngine(dir)
+	_, err := e.Run(context.Background(), dir, "LookupCyclic")
+	if err == nil {
+		t.Fatal("LookupCyclic: want the broken-graph error, got nil")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("LookupCyclic: want the replace-cycle error, got %v", err)
 	}
 }
