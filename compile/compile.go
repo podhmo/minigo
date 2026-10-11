@@ -2751,26 +2751,41 @@ func (c *compiler) namedIdentOf(te ast.Expr) (namedTypID, bool) {
 // KindInterface flag, or an InterfaceType spec in a source-indexed
 // package. Unknown references and unresolved names report false.
 func (c *compiler) selIsIface(ref *runtime.ImportRef, name string) bool {
+	ts, td, ok := c.selMember(ref, name)
+	if !ok {
+		return false
+	}
+	if ts != nil {
+		_, isIface := ast.Unparen(ts.Type).(*ast.InterfaceType)
+		return isIface
+	}
+	return td.Kind == runtime.KindInterface
+}
+
+// selMember resolves a package member name to what the compiler can
+// know about it: the declaring TypeSpec for a source-indexed type decl,
+// or the bound runtime typedef for a host-bound member. selIsType,
+// selIsIface, and selNilable all read the same walk.
+func (c *compiler) selMember(ref *runtime.ImportRef, name string) (*ast.TypeSpec, *runtime.TypeDef, bool) {
 	p, err := ref.Materialize()
 	if err != nil || p == nil {
-		return false
+		return nil, nil, false
 	}
 	if p.Index != nil {
 		if td := p.Index.Types[name]; td != nil && td.Decl != nil {
 			if ts, ok := td.Decl.Spec.(*ast.TypeSpec); ok {
-				_, isIface := ast.Unparen(ts.Type).(*ast.InterfaceType)
-				return isIface
+				return ts, nil, true
 			}
 		}
 	}
 	if p.Globals != nil {
 		if v, ok := p.Globals.Get(name); ok {
 			if td, ok := v.(*runtime.TypeDef); ok && td != nil {
-				return td.Kind == runtime.KindInterface
+				return nil, td, true
 			}
 		}
 	}
-	return false
+	return nil, nil, false
 }
 
 // opCmpGate emits an OpTrap in place of a binary op or switch-case
@@ -2842,12 +2857,39 @@ func (c *compiler) nilableTypExpr(te ast.Expr) bool {
 	case *ast.Ident:
 		return t.Name == "error" || t.Name == "any"
 	case *ast.SelectorExpr:
-		// a qualified name's kind is opaque to the static walk — it may
-		// be an interface (`fmt.Stringer`) or a struct. Maybe-nilable
-		// keeps the gate from inventing an error gc wouldn't issue.
+		// a qualified name resolves when the member is knowable —
+		// `time.Duration` proves non-nilable so `d == nil` traps like
+		// gc's reject, while an interface (`io.Reader`) keeps the
+		// lawful dynamic compare. An unresolved name stays
+		// maybe-nilable: silence over inventing an error.
+		if ref, name, ok := c.selTypRef(t); ok {
+			if n, ok := c.selNilable(ref, name); ok {
+				return n
+			}
+		}
 		return true
 	}
 	return false
+}
+
+// selNilable reports whether the type a qualified name picks out of an
+// imported package can be nil: interfaces, pointers, slices, maps,
+// chans and funcs can; structs and basic types cannot. ok=false when
+// the member can't be resolved at all.
+func (c *compiler) selNilable(ref *runtime.ImportRef, name string) (bool, bool) {
+	ts, td, ok := c.selMember(ref, name)
+	if !ok {
+		return false, false
+	}
+	if ts != nil {
+		return c.nilableTypExpr(ts.Type), true
+	}
+	switch td.Kind {
+	case runtime.KindInterface, runtime.KindPointer, runtime.KindSlice,
+		runtime.KindMap, runtime.KindChan, runtime.KindFunc:
+		return true, true
+	}
+	return false, true
 }
 
 // noteDeclTyp records a value spec's type on the name's binding for the
@@ -4720,20 +4762,8 @@ func (c *compiler) selTypRef(e ast.Expr) (*runtime.ImportRef, string, bool) {
 // Functions, variables, constants and unresolved references report
 // false — `pkg.fn(x)` then keeps its meaning as a real call.
 func (c *compiler) selIsType(ref *runtime.ImportRef, name string) bool {
-	p, err := ref.Materialize()
-	if err != nil || p == nil {
-		return false
-	}
-	if p.Index != nil && p.Index.Types[name] != nil {
-		return true
-	}
-	if p.Globals != nil {
-		if v, ok := p.Globals.Get(name); ok {
-			_, isTd := v.(*runtime.TypeDef)
-			return isTd
-		}
-	}
-	return false
+	_, _, ok := c.selMember(ref, name)
+	return ok
 }
 
 // isTypeName reports whether name resolves to a type: a type parameter, a

@@ -814,14 +814,8 @@ func display(vc runtime.VMCaller, v runtime.Value) any {
 		// a typed constant materializes through its declared type, not
 		// the default one: `uint64(1<<64 - 1)` is max-uint where the
 		// untyped reading would overflow int.
-		if u, ok := x.V.(*runtime.UConst); ok {
-			if mc, ok2 := vc.(interface {
-				MaterializeConstErr(*runtime.UConst, *runtime.TypeDef) (runtime.Value, error)
-			}); ok2 {
-				if mv, err := mc.MaterializeConstErr(u, x.Typ); err == nil {
-					x = runtime.Tag(x.Typ, mv)
-				}
-			}
+		if mv, ok := constAtWidth(vc, x); ok {
+			x = runtime.Tag(x.Typ, mv)
 		}
 		// a declared unsigned-int tag means the int64 payload holds
 		// two's-complement bits: `var u uint = 18446744073709551615` and
