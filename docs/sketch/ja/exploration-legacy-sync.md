@@ -198,7 +198,8 @@ B' では、Go側にしかないキーが7件、TypeScript側にしかないキ�
 | ジェネリクス推論が要素の動的型で束縛 | 修正済み（`generic_sliceelem_static`、TODO-archive） |
 | `filepath.Split` がない | 修正済み |
 | 「grafana の2タスクは TRAP」 | 両タスクとも現行 main で動く。grafana-openapi は上記の通り inspect 化して PASS、grafana-coreplugin も `go=6 json=8 issues=1`（`TestDataAlias` のみ、意図通り）で出力一致 |
-| `inspect.Value` の `init()` 連鎖、`reflect.StructTag.Get`、診断系 | 未着手（StructTag 自体は host 型として delegate されるが本件では未検証） |
+| `reflect.StructTag.Get` がない | 修正済み（#709）: minireflect が script-string payload の `StructTag` に `Get`/`Lookup` を dispatch する。inspect 側は `Field.Tag` がタグ文字列を返すので、`reflect.StructTag(f.Tag).Get("json")` で同期タスクに使える。同 PR で scanx（`examples/gen-sync`）の自前タグ解析（`ParseTag`/`LookupTag`/`TagHasElement`）が削除され、スクリプト側も `reflect.StructTag` に置き換わった |
+| `inspect.Value` の `init()` 連鎖、診断系 | 未着手 |
 
 ### 路線と残り（6節・7節・9節）
 
