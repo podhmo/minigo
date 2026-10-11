@@ -519,14 +519,14 @@ func putProp(props map[string]any, required map[string]bool, depths, ambig map[s
 // once the flatten path crossed a *pointer* embed: a nil embedded
 // pointer omits every promoted field, so none are required.
 func (g *generator) addFields(fs []*inspect.Field, props map[string]any, required map[string]bool, depths, ambig map[string]int, embedding map[string]bool, depth int, reqOK bool) error {
-	var embeds []*inspect.Field
+	var embeds []taggedField
 	for _, f := range fs {
-		name, opts, named, skip := fieldJSONName(f)
-		if skip {
+		ft := parseFieldTag(f)
+		if ft.skip {
 			continue
 		}
 		if f.Embedded {
-			embeds = append(embeds, f)
+			embeds = append(embeds, taggedField{f, ft})
 			continue
 		}
 		// A, B string: every declared name is its own property.
@@ -535,26 +535,25 @@ func (g *generator) addFields(fs []*inspect.Field, props map[string]any, require
 				continue
 			}
 			propName := goName
-			if named {
-				propName = name
+			if ft.named {
+				propName = ft.name
 			}
 			fd, err := g.schemaFor(f.Type)
 			if err != nil {
 				return fmt.Errorf("field %s: %w", goName, err)
 			}
 			g.applyFieldDoc(fd, f, goName)
-			applyStringOption(fd, opts)
-			if err := g.applyOverrideTag(fd, f); err != nil {
+			applyStringOption(fd, ft.opts)
+			if err := g.applyOverrideTag(fd, ft, f); err != nil {
 				return err
 			}
-			if putProp(props, required, depths, ambig, propName, fd, depth) && reqOK && wantsRequired(f) {
+			if putProp(props, required, depths, ambig, propName, fd, depth) && reqOK && ft.required {
 				required[propName] = true
 			}
 		}
 	}
-	for _, f := range embeds {
-		name, _, named, _ := fieldJSONName(f)
-		if err := g.addEmbedded(f, name, named, props, required, depths, ambig, embedding, depth, reqOK); err != nil {
+	for _, tf := range embeds {
+		if err := g.addEmbedded(tf.f, tf.tag, props, required, depths, ambig, embedding, depth, reqOK); err != nil {
 			return err
 		}
 	}
@@ -565,7 +564,7 @@ func (g *generator) addFields(fs []*inspect.Field, props map[string]any, require
 // resolves to a struct decl — JSON's promoted-field rule. A tagged
 // embed keeps its own name; a recursive embed (seen mid-flatten)
 // drops the subtree whole, matching encoding/json's cycle cut.
-func (g *generator) addEmbedded(f *inspect.Field, name string, named bool, props map[string]any, required map[string]bool, depths, ambig map[string]int, embedding map[string]bool, depth int, reqOK bool) error {
+func (g *generator) addEmbedded(f *inspect.Field, ft fieldTag, props map[string]any, required map[string]bool, depths, ambig map[string]int, embedding map[string]bool, depth int, reqOK bool) error {
 	te := f.Type
 	ptr := false
 	for te.Kind == "StarExpr" {
@@ -578,14 +577,14 @@ func (g *generator) addEmbedded(f *inspect.Field, name string, named bool, props
 	put := func(k string, v map[string]any) {
 		putProp(props, required, depths, ambig, k, v, depth)
 	}
-	if named {
+	if ft.named {
 		fd, err := g.schemaFor(f.Type)
 		if err != nil {
-			return fmt.Errorf("embedded field %s: %w", name, err)
+			return fmt.Errorf("embedded field %s: %w", ft.name, err)
 		}
-		put(name, fd)
-		if reqOK && wantsRequired(f) {
-			required[name] = true
+		put(ft.name, fd)
+		if reqOK && ft.required {
+			required[ft.name] = true
 		}
 		return nil
 	}
@@ -648,9 +647,8 @@ func (g *generator) applyFieldDoc(fd map[string]any, f *inspect.Field, name stri
 
 // applyOverrideTag merges the jsonschema-override struct tag: literal
 // keys land on the field doc, "required" feeds the required set.
-func (g *generator) applyOverrideTag(fd map[string]any, f *inspect.Field) error {
-	tag := reflect.StructTag(f.Tag)
-	raw, ok := tag.Lookup("jsonschema-override")
+func (g *generator) applyOverrideTag(fd map[string]any, ft fieldTag, f *inspect.Field) error {
+	raw, ok := ft.tag.Lookup("jsonschema-override")
 	if !ok || raw == "" {
 		return nil
 	}
@@ -661,33 +659,83 @@ func (g *generator) applyOverrideTag(fd map[string]any, f *inspect.Field) error 
 		}
 		k, v := strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1])
 		if k == "required" {
-			continue // required is computed by wantsRequired below
+			continue // required is folded into fieldTag.required
 		}
 		fd[k] = coerceScalar(v)
 	}
 	return nil
 }
 
-// fieldJSONName resolves a field's property name from its struct tag:
-// json wins, then yaml, then toml. skip reports `json:"-"`; named
-// reports the tag carried an explicit name ("" name keeps the Go
-// name); opts carries the tag's comma options (`,omitempty`,
-// `,string`) so callers can apply the ones encoding/json honours.
-func fieldJSONName(f *inspect.Field) (name string, opts []string, named bool, skip bool) {
-	tag := reflect.StructTag(f.Tag)
+// fieldTag is one field's struct tag parsed once and shared by the
+// name/required/override readers. Tag precedence layers: naming takes
+// the first present key of json > yaml > toml — its name and comma
+// options win together; skip is that key spelling "-"; required
+// layers a pointer check under the winning key's omitempty, then a
+// `required:"bool"` tag overrides both, and a `required=` pair inside
+// jsonschema-override is the outermost patch; the remaining
+// jsonschema-override pairs merge wholesale in applyOverrideTag.
+type fieldTag struct {
+	tag      reflect.StructTag
+	name     string   // the winning key's name ("" keeps the Go name)
+	opts     []string // the winning key's comma options (`,omitempty`, `,string`)
+	named    bool     // the winning key spelled an explicit name
+	skip     bool     // the winning key spelled "-"
+	required bool     // non-pointer && !omitempty, unless required:"bool" says otherwise
+}
+
+// taggedField pairs a field with its parsed tag so an embed deferred
+// to the flatten pass keeps the tag its first read computed.
+type taggedField struct {
+	f   *inspect.Field
+	tag fieldTag
+}
+
+// parseFieldTag reads a field's struct tag once: the first present of
+// json/yaml/toml decides name + opts + skip, and required folds in the
+// pointer rule, omitempty and the `required:"bool"` override.
+func parseFieldTag(f *inspect.Field) fieldTag {
+	var ft fieldTag
+	ft.tag = reflect.StructTag(f.Tag)
 	for _, key := range []string{"json", "yaml", "toml"} {
-		if tv, ok := tag.Lookup(key); ok {
-			parts := strings.Split(tv, ",")
-			if parts[0] == "-" {
-				return "", nil, false, true
-			}
-			if parts[0] != "" {
-				return parts[0], parts[1:], true, false
-			}
-			return "", parts[1:], false, false
+		tv, ok := ft.tag.Lookup(key)
+		if !ok {
+			continue
+		}
+		parts := strings.Split(tv, ",")
+		if parts[0] == "-" {
+			ft.skip = true
+		} else {
+			ft.name = parts[0]
+			ft.named = parts[0] != ""
+		}
+		ft.opts = parts[1:]
+		break
+	}
+	ft.required = f.Type.Kind != "StarExpr"
+	for _, opt := range ft.opts {
+		if strings.TrimSpace(opt) == "omitempty" {
+			ft.required = false
 		}
 	}
-	return "", nil, false, false
+	if v, ok := ft.tag.Lookup("required"); ok {
+		if b, err := strconv.ParseBool(v); err == nil {
+			ft.required = b
+		}
+	}
+	// the override tag is the outermost patch layer: required= in it
+	// beats both the shape default and a required:"" tag.
+	if raw, ok := ft.tag.Lookup("jsonschema-override"); ok {
+		for _, pair := range strings.Split(raw, ";") {
+			kv := strings.SplitN(pair, "=", 2)
+			if len(kv) != 2 || strings.TrimSpace(kv[0]) != "required" {
+				continue
+			}
+			if b, err := strconv.ParseBool(strings.TrimSpace(kv[1])); err == nil {
+				ft.required = b
+			}
+		}
+	}
+	return ft
 }
 
 // applyStringOption honours encoding/json's ,string tag option: scalar
@@ -706,42 +754,6 @@ func applyStringOption(fd map[string]any, opts []string) {
 		}
 		return
 	}
-}
-
-// wantsRequired applies the required rules: pointer and omitempty mark
-// optional, a `required:"bool"` tag overrides both.
-func wantsRequired(f *inspect.Field) bool {
-	required := f.Type.Kind != "StarExpr"
-	tag := reflect.StructTag(f.Tag)
-	for _, key := range []string{"json", "yaml", "toml"} {
-		if tv, ok := tag.Lookup(key); ok {
-			for _, opt := range strings.Split(tv, ",")[1:] {
-				if strings.TrimSpace(opt) == "omitempty" {
-					required = false
-				}
-			}
-			break
-		}
-	}
-	if v, ok := tag.Lookup("required"); ok {
-		if b, err := strconv.ParseBool(v); err == nil {
-			required = b
-		}
-	}
-	// the override tag is the outermost patch layer: required= in it
-	// beats both the shape default and a required:"" tag.
-	if raw, ok := tag.Lookup("jsonschema-override"); ok {
-		for _, pair := range strings.Split(raw, ";") {
-			kv := strings.SplitN(pair, "=", 2)
-			if len(kv) != 2 || strings.TrimSpace(kv[0]) != "required" {
-				continue
-			}
-			if b, err := strconv.ParseBool(strings.TrimSpace(kv[1])); err == nil {
-				required = b
-			}
-		}
-	}
-	return required
 }
 
 // coerceScalar turns a jsonschema-override value into its JSON scalar
