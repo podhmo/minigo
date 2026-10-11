@@ -173,6 +173,39 @@ B' では、Go側にしかないキーが7件、TypeScript側にしかないキ�
 - `go/parser` の解釈を速くする（6-2）のと、`inspect` を広げる（6-1）の、どちらを主路線にするか。
 - キャッシュが温まると、goも数秒に落ちる。キャッシュなしの状態（CI、clone 直後、依存の更新直後）をどこまで主戦場とみなすか。
 
+## 10. 補記: 当時できなかったことの検証（2026-10-11、PR #861）
+
+当時「できない」「機能が不足している」と記した項目を、現在の minigo で検証し直した。
+
+### inspect の網羅性（3節・5.3-3 の3つの空白）
+
+- **関数本体: 見えるようになった。** `inspect.Body(s *Decl)` が関数宣言の本体を `Node{Kind,Text,Detail,Role,Pos}` ビューとして返し、`inspect.Nodes` が `ast.Inspect` と同一の preorder で子を列挙する（`Role` は親で埋めるフィールド名、`Detail` は `":="`/`"STRING"`/`"+"` などの演算子・リテラル種別）。`inspect.Expr` は式ノードを宣言アンカー付きの `TypeExpr` にするので、本体の中で見つけた式にも `SymbolID`/`Resolve`/`Children` がそのまま使える。`AST` は `Node` も受け取る。
+- **浮いたコメント: 見えるようになった。** `inspect.Comments` の `Free` が、どの宣言にも doc として紐付かなかったコメント群を報告する。grafana `pkg/api` で検証: `// swagger:route` 121件のうち、doc として見えるのが117件、decl と空白行で切り離された free な4件（quota.go、dataproxy.go×2、org_users.go）が `Free` で拾えた。
+- **定数の初期化式: 半分。** `AST` で const 宣言の生ノード（`GenDecl`/`ValueSpec`）は取れ、reflect ファサード経由で `.Values` までは読めるが、型付きの `Node` ビューの根は `Body` のみなので同じ手触りでは辿れない。今回の同期タスクには不要だったので未対応のまま残す。
+
+### A（grafana-openapi）の速度と優位（5.2・5.3-2）
+
+タスクを inspect のみで書き直した（`registerRoutes` 本体 → `Body`/`Nodes`、117件のメソッド doc → `Doc`、4件の free comment → `Comments`）。結果:
+
+- 出力は `go/parser` 版 oracle と完全一致（`routes=264 api=162 documented=98 undocumented=64 swagger-only=23`、annotations は `doc=117 free=4` の全121件に到達）。
+- minigo 版の実行時間は **0.08秒**（当時の 5.4秒 → 約1/67）。比較対象だったビルド済みバイナリの 0.21秒、`go run` キャッシュあり 0.27秒よりも速い。5.3-2 の「A では minigo の優位が消える」はこのタスクでは覆った — source 解釈の `go/parser` を捨て、遅延な表層解析だけで完結したため。
+
+### 5.4 の問題表のその後
+
+| 当時の記述 | 現在 |
+|---|---|
+| 暗黙の `&v` レシーバで `*s = T{...}` が消える | 修正済み（`ptrrecv_derefassign`、TODO-archive） |
+| ジェネリクス推論が要素の動的型で束縛 | 修正済み（`generic_sliceelem_static`、TODO-archive） |
+| `filepath.Split` がない | 修正済み |
+| 「grafana の2タスクは TRAP」 | 両タスクとも現行 main で動く。grafana-openapi は上記の通り inspect 化して PASS、grafana-coreplugin も `go=6 json=8 issues=1`（`TestDataAlias` のみ、意図通り）で出力一致 |
+| `inspect.Value` の `init()` 連鎖、`reflect.StructTag.Get`、診断系 | 未着手（StructTag 自体は host 型として delegate されるが本件では未検証） |
+
+### 路線と残り（6節・7節・9節）
+
+- **6-1 は実装済み。** 6-2（`go/ast`・`go/parser`・`go/token` をホストにバインド）を経なくても、`AST` が生の `ast.Node` を返す設計と `Node` ビューで A が inspect だけで書けた。
+- **9節「どちらを主路線にするか」への材料が1件増えた。** 少なくとも「宣言・文・式の構造を読む」クラスの同期タスクでは、inspect を広げる路線で、`go run`（キャッシュあり）より速い実時間まで届いた。
+- **7節「評価せずに `Text` だけを返す式ビュー」も `Node.Text`（および `TypeExpr.Text`）で実現済み。**
+
 ## 付録: 初回の作業場所（リポジトリ外）
 
 - スクリプト: minigo-usecasefuzz の `realworld/tasks/{grafana-openapi,grafana-coreplugin,clickhouse-settings}` に移した
