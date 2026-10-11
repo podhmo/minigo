@@ -1,0 +1,9 @@
+m1: "M:x" <nil>
+u1: U:{"Money":"10"} <nil>
+u2: U:{"a":1} <nil>
+u3:  U:{"Name":"n","tag":3,"z":true} 0 <nil>
+m3: "M:m" <nil>
+p2: U:{"Money":"10"} <nil>
+t1: U:"10"  <nil>
+w1: U:{"Money":"10","Other":"o"}  <nil>
+wm: "M:m" <nil>

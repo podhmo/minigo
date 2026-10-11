@@ -5181,7 +5181,14 @@ func (v *VM) structMember(f *frame, s *runtime.Struct, name string, recv runtime
 		}
 		r := pr.recv
 		if m.PtrRecv {
-			r = v.ptrReceiver(r)
+			// bind the field's live slot: a FieldRef over the struct
+			// that holds it — `*p = x` inside the method writes the
+			// stored field, not a copy of the value.
+			if pr.mst != nil && pr.midx < len(pr.mst.Def.Fields) {
+				r = v.ptrReceiver(&runtime.FieldRef{Base: pr.mst, Name: pr.mst.Def.Fields[pr.midx]})
+			} else {
+				r = v.ptrReceiver(r)
+			}
 		} else {
 			if dv, ok := runtime.Deref(r); ok {
 				r = dv
@@ -5572,7 +5579,10 @@ func (v *VM) fieldTypedefs(td *runtime.TypeDef) []*runtime.TypeDef {
 // search in promotedMember — exactly one shape is set:
 //
 //   - st+idx: a field — st.Fields[idx] is the value
-//   - m+recv: a method — recv is the embedded field value it binds to
+//   - m+recv+mst+midx: a method — recv is the embedded field value it
+//     binds to for a value receiver; a pointer receiver binds a
+//     FieldRef over mst's midx field instead, so `*p = x` writes reach
+//     the stored field rather than a copy of it
 //   - recv only (m == nil): an interface-typed embedded field — the
 //     member dispatches dynamically on the stored value
 //   - host: a value reached through a host-embedded field — the member
@@ -5583,14 +5593,17 @@ type promoted struct {
 	idx  int
 	m    *runtime.Function
 	recv runtime.Value
+	mst  *runtime.Struct
+	midx int
 	host runtime.Value
 }
 
 // methCand is a promoted method found at one BFS level: the declared
-// function plus the embedded field value it binds to.
+// function plus the embedded field slot it binds to.
 type methCand struct {
-	m    *runtime.Function
-	recv runtime.Value
+	m   *runtime.Function
+	st  *runtime.Struct
+	idx int
 }
 
 // promotedMember locates `name` among s's promoted (embedded) members —
@@ -5712,7 +5725,7 @@ func (v *VM) promotedMember(f *frame, s *runtime.Struct, name string, allowPtr b
 					mtd = embTd
 				}
 				if m, ok := mtd.Methods[name]; ok && idx < len(st.Fields) {
-					methCands = append(methCands, methCand{m, st.Fields[idx]})
+					methCands = append(methCands, methCand{m, st, idx})
 				}
 				if len(embTd.Fields) == 0 {
 					// non-struct embeds (interfaces, basics) promote
@@ -5795,7 +5808,8 @@ func (v *VM) promotedMember(f *frame, s *runtime.Struct, name string, allowPtr b
 			case len(thisHost) == 1:
 				return &promoted{host: thisHost[0]}, true
 			case len(methCands) == 1:
-				return &promoted{m: methCands[0].m, recv: methCands[0].recv}, true
+				mc := methCands[0]
+				return &promoted{m: mc.m, recv: mc.st.Fields[mc.idx], mst: mc.st, midx: mc.idx}, true
 			case len(ifaceCands) == 1:
 				return &promoted{recv: ifaceCands[0]}, true
 			default:
