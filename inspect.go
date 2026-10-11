@@ -778,7 +778,9 @@ func goView[T any](v runtime.Value, what string) (*T, error) {
 // like 1<<100, keeps its lazy form), a named-basic value unwraps to
 // its underlying scalar (a source `Duration` const reads as int64
 // nanoseconds, a host-scalar typedef keeps the host scalar), every
-// other shape passes through unchanged.
+// other shape passes through unchanged. Scalars cross bare by
+// convention — a complex const reads as a plain complex128, not the
+// *runtime.GoValue box the VM gives host values.
 func constScalar(v runtime.Value) runtime.Value {
 	switch t := v.(type) {
 	case *runtime.UConst:
