@@ -77,6 +77,9 @@ type RedeclError struct {
 	Name    string
 	Pos     token.Pos
 	PrevPos token.Pos
+	// Method marks a duplicate METHOD declaration (T.M): gc words it
+	// differently from a package-block redeclare.
+	Method bool
 }
 
 func (e *RedeclError) Error() string {
@@ -216,7 +219,7 @@ func build(files []*syntax.File, lenient bool) (*Index, error) {
 		if !lenient {
 			key := tname + "." + md.Name
 			if prev, dup := declared[key]; dup {
-				return nil, &RedeclError{Name: key, Pos: md.Func.Name.Pos(), PrevPos: prev}
+				return nil, &RedeclError{Name: key, Pos: md.Func.Name.Pos(), PrevPos: prev, Method: true}
 			}
 			declared[key] = md.Func.Name.Pos()
 		}
