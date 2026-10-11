@@ -3647,11 +3647,11 @@ func (c *compiler) rangeStmt(st *ast.RangeStmt) {
 		keyTyp, valTyp := c.rangeVarTyps(st.X)
 		if st.Value != nil {
 			c.bindRangeVar(st.Value, st.Tok == token.DEFINE)
-			c.noteRangeVar(st.Value, valTyp, st.Tok == token.DEFINE)
+			c.noteBindVar(st.Value, valTyp, st.Tok == token.DEFINE)
 		}
 		if st.Key != nil {
 			c.bindRangeVar(st.Key, st.Tok == token.DEFINE)
-			c.noteRangeVar(st.Key, keyTyp, st.Tok == token.DEFINE)
+			c.noteBindVar(st.Key, keyTyp, st.Tok == token.DEFINE)
 		}
 	}
 	c.stmt(st.Body)
@@ -3684,11 +3684,11 @@ func (c *compiler) bindRangeVar(e ast.Expr, define bool) {
 	c.storeTarget(e, define)
 }
 
-// noteRangeVar records the static type a `for k, v := range` name binds
-// so the operand gate sees it — `for i := range arr` binds int, and
-// comparing it against a named type traps like gc. Only `:=` binds
-// declare a new name.
-func (c *compiler) noteRangeVar(e ast.Expr, te ast.Expr, define bool) {
+// noteBindVar records the static type a `:=` bind introduces — a range
+// variable, a select case's receive — so the operand gate sees it:
+// `for i := range arr` binds int and comparing it against a named type
+// traps like gc. Only `:=` binds declare a new name.
+func (c *compiler) noteBindVar(e ast.Expr, te ast.Expr, define bool) {
 	if !define || te == nil {
 		return
 	}
@@ -4022,20 +4022,12 @@ func (c *compiler) bindRecv(lhs []ast.Expr, define bool, chExpr ast.Expr) {
 			elem = c.chanElemTypExpr(t.te, 4)
 		}
 	}
-	note := func(l ast.Expr, te ast.Expr) {
-		if !define || te == nil {
-			return
-		}
-		if id, ok := l.(*ast.Ident); ok && id.Name != "_" {
-			c.fs.noteDeclTyp(id.Name, te)
-		}
-	}
 	switch len(lhs) {
 	case 0:
 		c.emit(bytecode.OpPop, 0, 0, 0)
 	case 1:
 		c.storeTarget(lhs[0], define)
-		note(lhs[0], elem)
+		c.noteBindVar(lhs[0], elem, define)
 	default:
 		c.emit3(bytecode.OpUnpack, len(lhs), 0, 0, 0)
 		for i := len(lhs) - 1; i >= 0; i-- {
@@ -4043,9 +4035,9 @@ func (c *compiler) bindRecv(lhs []ast.Expr, define bool, chExpr ast.Expr) {
 		}
 		for i, l := range lhs {
 			if i == 0 {
-				note(l, elem)
+				c.noteBindVar(l, elem, define)
 			} else {
-				note(l, &ast.Ident{Name: "bool"})
+				c.noteBindVar(l, &ast.Ident{Name: "bool"}, define)
 			}
 		}
 	}
