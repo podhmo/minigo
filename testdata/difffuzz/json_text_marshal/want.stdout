@@ -1,0 +1,18 @@
+{"K:1":2}
+{"st:a":1}
+"v3"
+"JSON"
+{"f":"v5","m":{"K:2":3}}
+map[30:9] <nil>
+{4} <nil>
+{U:hi} <nil>
+map[{U:zz}:4] <nil>
+{{2} map[30:4]} <nil>
+{J:"zz"} <nil>
+map[{T:zz}:1] <nil>
+{5} <nil>
+{"n":"n3"}
+ json: error calling MarshalText for type *main.MErr: mt-err
+ json: error calling MarshalText for type *main.MErr: mt-err
+{4} json: cannot unmarshal number into Go value of type main.V: JSON value must be string type
+&{4} <nil>
