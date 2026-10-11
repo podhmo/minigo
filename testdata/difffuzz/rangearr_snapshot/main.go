@@ -49,10 +49,22 @@ func main() {
 	}
 	fmt.Println("named", out)
 	var n0 *[0]int
-	try("star0-elem", func() { for _, v := range *n0 { _ = v } })
-	try("star0-blank", func() { for i, _ := range *n0 { _ = i } })
+	try("star0-elem", func() {
+		for _, v := range *n0 {
+			_ = v
+		}
+	})
+	try("star0-blank", func() {
+		for i, _ := range *n0 {
+			_ = i
+		}
+	})
 	var n3 *[3]int
-	try("ptr-elem", func() { for i, v := range n3 { _, _ = i, v } })
+	try("ptr-elem", func() {
+		for i, v := range n3 {
+			_, _ = i, v
+		}
+	})
 	try("ptr0-elem", func() {
 		for i, v := range n0 { // zero elements: never reads — no panic
 			_, _ = i, v

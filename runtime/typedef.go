@@ -35,6 +35,24 @@ func TypIdentical(a, b *TypeDef) bool {
 		return false
 	}
 	if a.Name != "" || b.Name != "" {
+		if a.Kind == KindInterface {
+			// the predeclared `any` IS the empty interface: `any` and
+			// `interface{}` are one type, so `*any` assigns to
+			// `*interface{}` like gc. A declared `type any ...` keeps
+			// its own identity — sigNamedIface treats it as named.
+			ea := a.Name == "any" && !sigNamedIface(a)
+			eb := b.Name == "any" && !sigNamedIface(b)
+			if ea && eb {
+				return true
+			}
+			if ea || eb {
+				other := b
+				if eb {
+					other = a
+				}
+				return anonEmptyIface(other)
+			}
+		}
 		if a.Local || b.Local {
 			// Every func-local `type` declaration has its own
 			// identity: same-named locals in different scopes are
@@ -53,6 +71,21 @@ func TypIdentical(a, b *TypeDef) bool {
 		return TypIdentical(a.Elem, b.Elem)
 	}
 	return false
+}
+
+// anonEmptyIface reports whether td is an anonymous empty interface:
+// no declared name, no requirements and an InterfaceType spelling (or
+// none) with no members — the type `any` expands to.
+func anonEmptyIface(td *TypeDef) bool {
+	if td.Kind != KindInterface || td.Name != "" ||
+		len(td.MReqs) != 0 || len(td.IEmbeds) != 0 {
+		return false
+	}
+	if td.Anon == nil {
+		return true
+	}
+	it, ok := td.Anon.(*ast.InterfaceType)
+	return ok && (it.Methods == nil || len(it.Methods.List) == 0)
 }
 
 // TypIdenticalStrict is the DeepEqual-grade identity: named typedefs

@@ -20,17 +20,29 @@ func try(name string, f func()) {
 }
 
 func main() {
-	try("callsel", func() { for i := range *get().P { _ = i } })
+	try("callsel", func() {
+		for i := range *get().P {
+			_ = i
+		}
+	})
 	ch := make(chan *[3]int, 1)
 	ch <- nil
-	try("recv", func() { for i := range *(<-ch) { _ = i } })
+	try("recv", func() {
+		for i := range *(<-ch) {
+			_ = i
+		}
+	})
 	m := map[int]*[3]int{}
 	out := []int{}
 	for i := range *m[0] { // map-index stays lazy — nil yields indices
 		out = append(out, i)
 	}
 	fmt.Println("mapidx", out)
-	try("mapidx-elem", func() { for i, v := range *m[0] { _, _ = i, v } })
+	try("mapidx-elem", func() {
+		for i, v := range *m[0] {
+			_, _ = i, v
+		}
+	})
 	a := [3]*[3]int{}
 	out = out[:0]
 	for i := range *a[0] {

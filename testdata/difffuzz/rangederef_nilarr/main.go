@@ -14,7 +14,7 @@ func main() {
 	for i := range *p {
 		fmt.Println("var", i)
 	}
-	for i := range (*p) {
+	for i := range *p {
 		fmt.Println("paren", i)
 	}
 	s := struct{ q *[4]int }{}
