@@ -11,9 +11,11 @@
 package compile
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
 	"go/constant"
+	"go/printer"
 	"go/token"
 	"strconv"
 	"strings"
@@ -3090,6 +3092,17 @@ func (c *compiler) selMember(ref *runtime.ImportRef, name string) (*ast.TypeSpec
 // it trapped. Shifts are exempt: their operands are only required to be
 // integer-typed, not mutually assignable (`i << d` is legal Go).
 func (c *compiler) opCmpGate(x, y ast.Expr, pos token.Pos) bool {
+	return c.opGate(x, y, pos, false)
+}
+
+// opCaseGate is opCmpGate for a switch case clause — the same operand
+// check with gc's case-clause wording: `invalid case s in switch on d
+// (mismatched types string and D)`.
+func (c *compiler) opCaseGate(e, tag ast.Expr, pos token.Pos) bool {
+	return c.opGate(e, tag, pos, true)
+}
+
+func (c *compiler) opGate(x, y ast.Expr, pos token.Pos, inSwitch bool) bool {
 	xt, yt := c.staticOpTyp(x), c.staticOpTyp(y)
 	// `nil` compares only against nilable types: `d == nil` is a gc
 	// compile error (mismatched types Duration and untyped nil), while
@@ -3112,11 +3125,11 @@ func (c *compiler) opCmpGate(x, y ast.Expr, pos token.Pos) bool {
 		}
 		// gc orders the operands as written: `nil == i` reports
 		// "untyped nil and int", `i == nil` the reverse.
+		xName, yName := oi.name, "untyped nil"
 		if xt.nilOperand {
-			c.trap(pos, "invalid operation: mismatched types untyped nil and %s", oi.name)
-			return true
+			xName, yName = "untyped nil", oi.name
 		}
-		c.trap(pos, "invalid operation: mismatched types %s and untyped nil", oi.name)
+		c.trapOpGate(x, y, pos, inSwitch, xName, yName)
 		return true
 	}
 	if xt.te == nil || yt.te == nil || xt.untyped || yt.untyped || xt.iface || yt.iface {
@@ -3130,8 +3143,30 @@ func (c *compiler) opCmpGate(x, y ast.Expr, pos token.Pos) bool {
 	if !ok || yi.id == xi.id {
 		return false
 	}
-	c.trap(pos, "invalid operation: mismatched types %s and %s", xi.name, yi.name)
+	c.trapOpGate(x, y, pos, inSwitch, xi.name, yi.name)
 	return true
+}
+
+// trapOpGate emits the operand-gate trap in gc's wording for the
+// context: `invalid case s in switch on d` inside a switch clause,
+// `invalid operation` everywhere else.
+func (c *compiler) trapOpGate(x, y ast.Expr, pos token.Pos, inSwitch bool, xName, yName string) {
+	if inSwitch {
+		c.trap(pos, "invalid case %s in switch on %s (mismatched types %s and %s)", c.exprSpell(x), c.exprSpell(y), xName, yName)
+		return
+	}
+	c.trap(pos, "invalid operation: mismatched types %s and %s", xName, yName)
+}
+
+// exprSpell renders an operand's source spelling for gc-style case
+// messages (`invalid case s in switch on d`). It falls back to the
+// node's Go type when the package fileset is unavailable.
+func (c *compiler) exprSpell(e ast.Expr) string {
+	var buf bytes.Buffer
+	if c.pkg == nil || c.pkg.Fset == nil || printer.Fprint(&buf, c.pkg.Fset, e) != nil {
+		return fmt.Sprintf("%T", e)
+	}
+	return buf.String()
 }
 
 // nilableTypExpr reports whether a resolved type expression denotes a
@@ -3756,7 +3791,7 @@ func (c *compiler) switchStmt(st *ast.SwitchStmt) {
 				// gc's operand check — `switch tag { case s: }`. The case
 				// side is the left operand, matching gc's message order
 				// "(mismatched types string and Tag)".
-				if c.opCmpGate(e, st.Tag, e.Pos()) {
+				if c.opCaseGate(e, st.Tag, e.Pos()) {
 					continue
 				}
 				c.emit(bytecode.OpLocal, tagSlot, 0, e.Pos())
