@@ -21,6 +21,7 @@ func (e *Engine) reflectHooks() minireflect.Hooks {
 		AliasOf:     e.aliasOf,
 		MethodSet:   e.methodSet,
 		TypeAlias:   proxyHostType,
+		UnwrapHost:  proxyUnwrapHost,
 	}
 }
 
