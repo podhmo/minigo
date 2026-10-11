@@ -1775,10 +1775,10 @@ func (e *Engine) installStdlib() {
 	strDataBacks := map[string]*runtime.Slice{}
 	e.Bind("unsafe", map[string]runtime.Value{
 		"Sizeof": &runtime.BuiltinFunc{Name: "unsafe.Sizeof", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			return unsafeSizeOf(args[0]), nil
+			return e.unsafeSizeOf(args[0]), nil
 		}},
 		"Alignof": &runtime.BuiltinFunc{Name: "unsafe.Alignof", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			return unsafeAlignOf(args[0]), nil
+			return e.unsafeAlignOf(args[0]), nil
 		}},
 		"Offsetof": &runtime.BuiltinFunc{Name: "unsafe.Offsetof", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			// The compiler rewrites unsafe.Offsetof(s.f) to pass the
@@ -3815,44 +3815,38 @@ func (h *hostHelpers) sortByCmpFunc(name string) *runtime.BuiltinFunc {
 	}}
 }
 
-// unsafeSizeOf approximates unsafe.Sizeof on a 64-bit host: script values
-// carry erased types, so the answer reflects the boxed representation.
-func unsafeSizeOf(v runtime.Value) int64 {
+// unsafeSizeOf reports unsafe.Sizeof on amd64: the answer comes from the
+// operand's DECLARED type — a struct's fields pad per their declared
+// widths, an array's element type sizes it — never the runtime values
+// slots happen to hold. Operands without a recoverable typedef (untyped
+// literals, host boxes) fall back to the boxed representation's width.
+func (e *Engine) unsafeSizeOf(v runtime.Value) int64 {
+	if td := sizeDeclTyp(v); td != nil {
+		return int64(minireflect.SizeOf(e.reflectHooks(), td))
+	}
 	switch x := v.(type) {
 	case bool:
 		return 1
 	case int64, float64:
 		return 8
+	case complex128:
+		return 16
 	case string:
 		return 16
 	case *runtime.Slice:
 		return 24
 	case *runtime.Map, *runtime.Chan, *runtime.Cell:
 		return 8
-	case *runtime.Struct:
-		// field sizes without padding — a documented approximation
-		var n int64
-		for _, f := range x.Fields {
-			n += unsafeSizeOf(f)
+	case *runtime.GoValue:
+		// a host box knows its real size — complex128 materializes
+		// to a GoValue, pointer-shaped boxes report 8.
+		if t := reflect.TypeOf(x.V); t != nil {
+			return int64(t.Size())
 		}
-		return n
-	case *runtime.TypedNil:
-		// a typed nil knows its declared type: a pointer nil is
-		// pointer-sized, not the interface pair an untyped nil would be.
-		if x.Typ != nil && x.Typ.Kind == runtime.KindPointer {
-			return 8
-		}
-		return 16 // interface pair
-	case *runtime.Named:
-		if x.Typ != nil {
-			switch x.Typ.Name {
-			case "int8", "uint8", "byte":
-				return 1
-			case "int16", "uint16":
-				return 2
-			case "int32", "uint32", "float32", "rune":
-				return 4
-			}
+		return 8
+	case *runtime.UConst:
+		if mv, err := runtime.UConstNative(x); err == nil && mv != x {
+			return e.unsafeSizeOf(mv)
 		}
 		return 8
 	case runtime.Nil, *runtime.IfaceNil:
@@ -3862,8 +3856,43 @@ func unsafeSizeOf(v runtime.Value) int64 {
 	}
 }
 
-func unsafeAlignOf(v runtime.Value) int64 {
-	if n := unsafeSizeOf(v); n < 8 {
+// sizeDeclTyp recovers the operand's declared typedef for
+// unsafe.Sizeof/Alignof — the layout unsafe.Offsetof already computes
+// from declared field types. A value without a stamped typedef (an
+// untyped literal, a host box) reports nil and the caller falls back
+// to runtime-value widths.
+func sizeDeclTyp(v runtime.Value) *runtime.TypeDef {
+	switch x := v.(type) {
+	case *runtime.Struct:
+		return x.Def
+	case *runtime.Named:
+		if x.Typ != nil {
+			return x.Typ
+		}
+	case *runtime.Slice:
+		return x.Typ
+	case *runtime.Map:
+		return x.Typ
+	case *runtime.Chan:
+		return x.Typ
+	case *runtime.Cell:
+		if x.Typ != nil {
+			return x.Typ
+		}
+		return sizeDeclTyp(x.Elem)
+	case *runtime.TypedNil:
+		return x.Typ
+	case *runtime.IfaceNil:
+		return x.Typ
+	}
+	return nil
+}
+
+func (e *Engine) unsafeAlignOf(v runtime.Value) int64 {
+	if td := sizeDeclTyp(v); td != nil {
+		return int64(minireflect.AlignOf(e.reflectHooks(), td))
+	}
+	if n := e.unsafeSizeOf(v); n < 8 {
 		if n < 1 {
 			return 1 // alignment is always at least 1
 		}
