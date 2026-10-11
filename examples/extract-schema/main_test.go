@@ -50,6 +50,13 @@ func TestExtractSchema(t *testing.T) {
 			stdlib: "walk",
 			golden: "testdata/stdlib-walk.golden",
 		},
+		{
+			name:    "desc-rules plugin",
+			plugins: []string{"./plugins/desc"},
+			type_:   "Commented",
+			stdlib:  "leaf",
+			golden:  "testdata/desc-rules.golden",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := run(ctx, ".", "./script", tc.plugins, "./app", false, tc.type_, tc.stdlib, true, "", "")

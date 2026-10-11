@@ -79,3 +79,15 @@ type Shadow struct {
 	Base
 	Note string `json:"base_id"`
 }
+
+// Commented covers the comment positions a description can come from:
+// a doc comment above the field and a line comment at its end.
+type Commented struct {
+	// Lead is described by the comment above it.
+	Lead int `json:"lead"`
+	// Both is described twice — the doc comment wins in inspect's
+	// fieldDoc order.
+	Both  int `json:"both"`  // trailing comment, second to the doc
+	Trail int `json:"trail"` // Trail is described by the trailing comment only.
+	Bare  int `json:"bare"`
+}

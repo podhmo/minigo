@@ -2,7 +2,7 @@
 	"$defs": {
 		"Base": {
 			"additionalProperties": true,
-			"description": "Wrapper embeds a same-package struct — its fields flatten.\n",
+			"description": "Wrapper embeds a same-package struct — its fields flatten.",
 			"properties": {
 				"base_id": {
 					"type": "string"
@@ -13,9 +13,37 @@
 			],
 			"type": "object"
 		},
+		"Commented": {
+			"additionalProperties": true,
+			"description": "Commented covers the comment positions a description can come from:\na doc comment above the field and a line comment at its end.",
+			"properties": {
+				"bare": {
+					"type": "integer"
+				},
+				"both": {
+					"description": "Both is described twice — the doc comment wins in inspect's\nfieldDoc order.",
+					"type": "integer"
+				},
+				"lead": {
+					"description": "Lead is described by the comment above it.",
+					"type": "integer"
+				},
+				"trail": {
+					"description": "Trail is described by the trailing comment only.",
+					"type": "integer"
+				}
+			},
+			"required": [
+				"bare",
+				"both",
+				"lead",
+				"trail"
+			],
+			"type": "object"
+		},
 		"Custom": {
 			"additionalProperties": true,
-			"description": "Custom is a type the jsonschema-override tag can decorate.\n",
+			"description": "Custom is a type the jsonschema-override tag can decorate.",
 			"properties": {
 				"level": {
 					"maximum": 5,
@@ -29,12 +57,12 @@
 			"type": "object"
 		},
 		"ID": {
-			"description": "ID aliases string — an alias def renders as a $ref-shaped alias.\n",
+			"description": "ID aliases string — an alias def renders as a $ref-shaped alias.",
 			"type": "string"
 		},
 		"Interval": {
 			"additionalProperties": true,
-			"description": "Interval is a half-open time range — its fields are standard-library\ntypes, the stdlib-leaf boundary the walk is expected to stop at.\n",
+			"description": "Interval is a half-open time range — its fields are standard-library\ntypes, the stdlib-leaf boundary the walk is expected to stop at.",
 			"properties": {
 				"end": {
 					"description": "stdlib type time.Time (walk stopped)"
@@ -51,14 +79,14 @@
 		},
 		"Money": {
 			"additionalProperties": true,
-			"description": "Money is an amount in minor units with its currency.\n",
+			"description": "Money is an amount in minor units with its currency.",
 			"properties": {
 				"amount": {
-					"description": "Amount in the smallest currency unit.\n",
+					"description": "Amount in the smallest currency unit.",
 					"type": "integer"
 				},
 				"currency": {
-					"description": "Currency code, e.g. \"JPY\".\n",
+					"description": "Currency code, e.g. \"JPY\".",
 					"type": "string"
 				}
 			},
@@ -70,7 +98,7 @@
 		},
 		"Pair": {
 			"additionalProperties": true,
-			"description": "Pair declares two names in one field spec — both become properties.\n",
+			"description": "Pair declares two names in one field spec — both become properties.",
 			"properties": {
 				"A": {
 					"type": "string"
@@ -93,7 +121,7 @@
 		},
 		"Shadow": {
 			"additionalProperties": true,
-			"description": "Shadow exercises the shallower-wins rule: its explicit base_id field\nmust shadow the one promoted from Base, not be overwritten by it.\n",
+			"description": "Shadow exercises the shallower-wins rule: its explicit base_id field\nmust shadow the one promoted from Base, not be overwritten by it.",
 			"properties": {
 				"base_id": {
 					"type": "string"
@@ -105,7 +133,7 @@
 			"type": "object"
 		},
 		"Status": {
-			"description": "Status is the account status.\n",
+			"description": "Status is the account status.",
 			"enum": [
 				"active",
 				"paused",
@@ -115,7 +143,7 @@
 		},
 		"Tree": {
 			"additionalProperties": true,
-			"description": "Tree is a recursive type in the entry package.\n",
+			"description": "Tree is a recursive type in the entry package.",
 			"properties": {
 				"label": {
 					"type": "string"
@@ -134,7 +162,7 @@
 		},
 		"User": {
 			"additionalProperties": true,
-			"description": "User is the root fixture type.\n",
+			"description": "User is the root fixture type.",
 			"properties": {
 				"active": {
 					"$ref": "#/$defs/Interval"
@@ -162,7 +190,7 @@
 					"type": "integer"
 				},
 				"amount": {
-					"description": "Amount in the smallest currency unit.\n",
+					"description": "Amount in the smallest currency unit.",
 					"type": "integer"
 				},
 				"balance": {
@@ -172,7 +200,7 @@
 					"description": "stdlib type time.Time (walk stopped)"
 				},
 				"currency": {
-					"description": "Currency code, e.g. \"JPY\".\n",
+					"description": "Currency code, e.g. \"JPY\".",
 					"type": "string"
 				},
 				"email": {

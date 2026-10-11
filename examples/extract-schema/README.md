@@ -39,8 +39,11 @@ go run ./ -stdlib walk ./app        # walk into time.Time's source
 - `script/` — the interpreted walk: decl -> schema generator.
 - `app/` — fixture package (nested/anonymous/recursive/cross-package
   `internal/dep`, enum, alias, tags, embedding).
-- `plugins/time/` — example plugin: `time.Time` -> `{type: string,
-  format: date-time}`.
+- `plugins/time/` — `Overrides()` example: `time.Time` -> `{type:
+  string, format: date-time}`.
+- `plugins/desc/` — `DescRules()` example: `"strip-symbol-prefix"`
+  drops the Go doc convention's leading symbol name from every
+  description. Plugins may expose either entry point (or both).
 - `testdata/*.golden` — golden outputs; regenerate with
   `go test ./ -update`.
 

@@ -1,12 +1,12 @@
 {
 	"$defs": {
 		"ID": {
-			"description": "ID aliases string — an alias def renders as a $ref-shaped alias.\n",
+			"description": "ID aliases string — an alias def renders as a $ref-shaped alias.",
 			"type": "string"
 		},
 		"Interval": {
 			"additionalProperties": true,
-			"description": "Interval is a half-open time range — its fields are standard-library\ntypes, the stdlib-leaf boundary the walk is expected to stop at.\n",
+			"description": "Interval is a half-open time range — its fields are standard-library\ntypes, the stdlib-leaf boundary the walk is expected to stop at.",
 			"properties": {
 				"end": {
 					"description": "RFC 3339 timestamp (time.Time)",
@@ -27,14 +27,14 @@
 		},
 		"Money": {
 			"additionalProperties": true,
-			"description": "Money is an amount in minor units with its currency.\n",
+			"description": "Money is an amount in minor units with its currency.",
 			"properties": {
 				"amount": {
-					"description": "Amount in the smallest currency unit.\n",
+					"description": "Amount in the smallest currency unit.",
 					"type": "integer"
 				},
 				"currency": {
-					"description": "Currency code, e.g. \"JPY\".\n",
+					"description": "Currency code, e.g. \"JPY\".",
 					"type": "string"
 				}
 			},
@@ -45,7 +45,7 @@
 			"type": "object"
 		},
 		"Status": {
-			"description": "Status is the account status.\n",
+			"description": "Status is the account status.",
 			"enum": [
 				"active",
 				"paused",
@@ -55,7 +55,7 @@
 		},
 		"User": {
 			"additionalProperties": true,
-			"description": "User is the root fixture type.\n",
+			"description": "User is the root fixture type.",
 			"properties": {
 				"active": {
 					"$ref": "#/$defs/Interval"
@@ -83,7 +83,7 @@
 					"type": "integer"
 				},
 				"amount": {
-					"description": "Amount in the smallest currency unit.\n",
+					"description": "Amount in the smallest currency unit.",
 					"type": "integer"
 				},
 				"balance": {
@@ -95,7 +95,7 @@
 					"type": "string"
 				},
 				"currency": {
-					"description": "Currency code, e.g. \"JPY\".\n",
+					"description": "Currency code, e.g. \"JPY\".",
 					"type": "string"
 				},
 				"email": {

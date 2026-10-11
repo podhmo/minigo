@@ -25,7 +25,7 @@ import (
 // OpenAPI components.schemas style. overrides maps "pkgpath.Name" to
 // a schema fragment consulted before the default named-type walk —
 // the extension point plugin scripts feed.
-func Main(target string, pkgMode bool, typeName string, stdlibMode string, loose bool, overrides map[string]any, title string, description string) (string, error) {
+func Main(target string, pkgMode bool, typeName string, stdlibMode string, loose bool, overrides map[string]any, descRules []string, title string, description string) (string, error) {
 	pkg := inspect.DirOf(target)
 	if pkgMode {
 		pkg = inspect.PackageOf(target)
@@ -38,6 +38,7 @@ func Main(target string, pkgMode bool, typeName string, stdlibMode string, loose
 		loose:     loose,
 		stdlib:    stdlibMode,
 		overrides: overrides,
+		descRules: descRules,
 		defs:      map[string]any{},
 		seen:      map[string]string{},
 		used:      map[string]int{},
@@ -119,6 +120,7 @@ type generator struct {
 	loose     bool
 	stdlib    string
 	overrides map[string]any
+	descRules []string
 	defs      map[string]any
 	seen      map[string]string // "pkgpath.Name" -> def name
 	used      map[string]int
@@ -166,7 +168,7 @@ func (g *generator) defName(key string, d *inspect.Decl) string {
 func (g *generator) docForDecl(d *inspect.Decl) (map[string]any, error) {
 	doc := map[string]any{}
 	if d.Doc != "" {
-		doc["description"] = d.Doc
+		doc["description"] = g.cleanDesc(d.Name, d.Doc)
 	}
 	def := inspect.Def(d)
 	if inspect.IsAlias(d) && def != nil {
@@ -309,6 +311,36 @@ func (g *generator) follow(pkgPath, name string) (map[string]any, error) {
 	return map[string]any{"$ref": "#/$defs/" + defName}, nil
 }
 
+// cleanDesc trims a doc comment and runs the plugins' DescRules:
+// data-driven description filters. Ops: "strip-symbol-prefix" (drop a
+// leading `<SymbolName>`/`SymbolName:` — the Go doc convention that
+// would restate the name), "strip-prefix" (literal text), "replace"
+// (old -> new, applied globally). Unknown ops are ignored.
+func (g *generator) cleanDesc(sym, raw string) string {
+	s := strings.TrimSpace(raw)
+	for _, spec := range g.descRules {
+		op, arg, _ := strings.Cut(spec, ":")
+		switch op {
+		case "strip-symbol-prefix":
+			if sym != "" && strings.HasPrefix(s, sym) {
+				rest := strings.TrimSpace(s[len(sym):])
+				rest = strings.TrimPrefix(rest, ":")
+				s = strings.TrimSpace(rest)
+			}
+		case "strip-prefix":
+			if arg != "" && strings.HasPrefix(s, arg) {
+				s = strings.TrimSpace(s[len(arg):])
+			}
+		case "replace":
+			old, new, _ := strings.Cut(arg, "->")
+			if old != "" {
+				s = strings.ReplaceAll(s, old, new)
+			}
+		}
+	}
+	return s
+}
+
 func leafDoc(why string) map[string]any {
 	return map[string]any{"description": why}
 }
@@ -397,7 +429,7 @@ func (g *generator) addFields(fs []*inspect.Field, props map[string]any, require
 			if err != nil {
 				return fmt.Errorf("field %s: %w", goName, err)
 			}
-			applyFieldDoc(fd, f)
+			g.applyFieldDoc(fd, f, goName)
 			if err := g.applyOverrideTag(fd, f); err != nil {
 				return err
 			}
@@ -503,9 +535,9 @@ func (g *generator) addEmbedded(f *inspect.Field, name string, named bool, props
 	return g.addFields(efs, props, required, embedding, depth+1, reqOK && !ptr)
 }
 
-func applyFieldDoc(fd map[string]any, f *inspect.Field) {
+func (g *generator) applyFieldDoc(fd map[string]any, f *inspect.Field, name string) {
 	if f.Doc != "" {
-		fd["description"] = f.Doc
+		fd["description"] = g.cleanDesc(name, f.Doc)
 	}
 }
 

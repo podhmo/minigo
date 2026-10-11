@@ -155,6 +155,24 @@ walk a `SymbolID` lookup consults the merged table before the default
 named-type handling — including before the stdlib leaf policy, which
 is how `time.Time` becomes `date-time` instead of a stopped leaf.
 
+A plugin package may also expose `DescRules() []string` — ordered,
+string-spelled filters the walk applies to every description it emits
+(type docs and field docs alike):
+
+- `"strip-symbol-prefix"` — drop a leading `<SymbolName>`/`SymbolName:`
+  (the Go doc convention that restates the name).
+- `"strip-prefix:<text>"` — drop a literal prefix.
+- `"replace:<old>-><new>"` — `strings.ReplaceAll`.
+
+Rules travel as plain strings on purpose: they cross the
+host→script boundary unboxed, keep their order, and stay
+self-describing — structured rule values (`[]map[string]any`) were
+tried and rejected: elements arrive `*runtime.GoValue`-boxed
+(unindexable), and `[]map[string]any` as a signature trips a
+spelling-based boundary check (`interface {}` vs `any`). See
+`plugins/desc` for the example. Either entry point alone makes a valid
+plugin; a dir with neither is an error.
+
 ### Interface shape — under consideration
 
 The built contract is the data-only `Overrides() map[string]any` above.
@@ -267,7 +285,20 @@ Built and passing locally (`go run ./ ./app User` and friends):
   one `Of` while the intrinsic is bare is consistent with
   `Fields`/`FieldsOf`, but reads subtly different in script code.
 - **Doc comments carry their trailing newline** — `d.Doc` /
-  `f.Doc` end with `\n`; emitters may want to trim.
+  `f.Doc` end with `\n`; emitters may want to trim (the script now
+  `TrimSpace`s every description).
+- **Comment-position coverage verified**: `inspect.Field.Doc` already
+  merges both positions — a doc comment above the field wins, and the
+  trailing same-line comment is used when there is no doc group
+  (`fieldDoc`: `fd.Doc` preferred, `fd.Comment` fallback). Fixture
+  `Commented` pins all three shapes.
+- **The `[]map[string]any` signature trap**: a script param spelled
+  `[]map[string]any` rejects the arriving `[]map[string]interface {}`
+  (and `interface{}` spelling flips the space: `interface {}` vs
+  `interface{}` — the boundary check is spelling-based). Only
+  `[]string`/`[]byte`-shaped element types auto-unbox reliably;
+  `[]any` elements arrive `*runtime.GoValue`-boxed and unindexable.
+  String-spelled plugin data sidesteps all three.
 
 ## Asks of minigo
 
