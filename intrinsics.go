@@ -3900,11 +3900,16 @@ func sizeDeclTyp(v runtime.Value) *runtime.TypeDef {
 		return x.Typ
 	case *runtime.Chan:
 		return x.Typ
-	case *runtime.Cell:
-		if x.Typ != nil {
-			return x.Typ
+	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
+		// a pointer value: the operand's declared type is *T where T
+		// is the pointee's declared type — the tag stamped on the box
+		// belongs under the star (OpBox/OpLocalRef stamp the POINTEE's
+		// typedef), it never answers the pointee's layout itself.
+		var elem *runtime.TypeDef
+		if c, ok := v.(*runtime.Cell); ok {
+			elem = c.Typ
 		}
-		return sizeDeclTyp(x.Elem)
+		return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: elem}
 	case *runtime.TypedNil:
 		return x.Typ
 	case *runtime.IfaceNil:
