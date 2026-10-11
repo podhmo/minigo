@@ -2278,10 +2278,8 @@ func (c *compiler) callOpTyp(x *ast.CallExpr) opTyp {
 		// a declared function resolves its result type regardless of
 		// arity — the args gate below exists for builtins like len()
 		// whose zero-arg form has no meaningful static result.
-		if c.pkg != nil && c.pkg.Index != nil {
-			if fd := c.pkg.Index.Funcs[f.Name]; fd != nil {
-				return c.funcResultOpTyp(fd.Func)
-			}
+		if ft := c.calleeFuncTyp(x); ft != nil {
+			return c.funcTypeResultOpTyp(ft)
 		}
 		if len(x.Args) == 0 {
 			return opTyp{}
@@ -2310,14 +2308,8 @@ func (c *compiler) callOpTyp(x *ast.CallExpr) opTyp {
 			}
 		}
 		// a method call on a known named type resolves to its decl.
-		base := c.staticOpTyp(f.X)
-		if base.te == nil {
-			return opTyp{}
-		}
-		if tdi := c.typeDeclOf(base.te); tdi != nil {
-			if md := tdi.Methods[f.Sel.Name]; md != nil {
-				return c.funcResultOpTyp(md.Func)
-			}
+		if ft := c.calleeFuncTyp(x); ft != nil {
+			return c.funcTypeResultOpTyp(ft)
 		}
 		return opTyp{}
 	case *ast.IndexExpr, *ast.IndexListExpr:
@@ -2327,59 +2319,34 @@ func (c *compiler) callOpTyp(x *ast.CallExpr) opTyp {
 	return opTyp{}
 }
 
-// funcResultOpTyp resolves a declared function's static result type —
+// funcTypeResultOpTyp resolves a signature to its single result type —
 // only a single-result signature can type an operand; a result spelling
 // a declared type parameter is opaque (each instantiation binds it, the
 // static name doesn't).
-func (c *compiler) funcResultOpTyp(fd *ast.FuncDecl) opTyp {
-	if fd == nil || fd.Type == nil || fd.Type.Results == nil || len(fd.Type.Results.List) != 1 {
-		return opTyp{}
-	}
-	res := fd.Type.Results.List[0]
-	if len(res.Names) > 1 {
-		return opTyp{} // `(a, b T)` is a multi-result signature
-	}
-	te := res.Type
-	if fd.Type.TypeParams != nil {
-		if id, ok := ast.Unparen(te).(*ast.Ident); ok {
-			for _, tp := range fd.Type.TypeParams.List {
-				for _, n := range tp.Names {
-					if n.Name == id.Name {
-						return opTyp{}
-					}
-				}
-			}
-		}
-	}
-	if c.isIfaceTypeExpr(te) {
-		return opTyp{iface: true}
-	}
-	return opTyp{te: te}
-}
-
-// funcTypeResultOpTyp resolves a literal's or binding's FuncType to its
-// single result type — the same single-result rule funcResultOpTyp
-// applies, minus the declared function's type-parameter check.
 func (c *compiler) funcTypeResultOpTyp(ft *ast.FuncType) opTyp {
 	if ft == nil || ft.Results == nil || len(ft.Results.List) != 1 {
 		return opTyp{}
 	}
 	res := ft.Results.List[0]
 	if len(res.Names) > 1 {
-		return opTyp{}
+		return opTyp{} // `(a, b T)` is a multi-result signature
 	}
 	te := res.Type
+	if id, ok := ast.Unparen(te).(*ast.Ident); ok && funcTypeHasParam(ft, id.Name) {
+		return opTyp{}
+	}
 	if c.isIfaceTypeExpr(te) {
 		return opTyp{iface: true}
 	}
 	return opTyp{te: te}
 }
 
-// callFuncTyp resolves a call's callee to its signature: a declared
+// calleeFuncTyp resolves a call's callee to its signature: a declared
 // function or method, or a local binding whose recorded type is a
 // FuncType. Builtins, host-package functions, and opaque callees report
-// nil.
-func (c *compiler) callFuncTyp(x *ast.CallExpr) *ast.FuncType {
+// nil. Shared by callOpTyp (result typing) and nthResultOpTyp
+// (multi-result binding) so the callee walk lives in one place.
+func (c *compiler) calleeFuncTyp(x *ast.CallExpr) *ast.FuncType {
 	switch f := x.Fun.(type) {
 	case *ast.Ident:
 		if b := c.fs.lookupBinding(f.Name); b != nil {
@@ -2421,9 +2388,13 @@ func (c *compiler) nthResultOpTyp(e ast.Expr, i int) opTyp {
 	if !ok || c.conversionCall(x) {
 		return opTyp{}
 	}
-	ft := c.callFuncTyp(x)
+	ft := c.calleeFuncTyp(x)
 	if ft == nil || ft.Results == nil {
 		return opTyp{}
+	}
+	if i == 0 && len(ft.Results.List) == 1 {
+		// the single-result walk is the i=0 case.
+		return c.funcTypeResultOpTyp(ft)
 	}
 	pos := 0
 	for _, res := range ft.Results.List {
