@@ -1,0 +1,13 @@
+%!v(PANIC=Error method: boom)
+{0}
+%!v(PANIC=Error method: ptr-boom)
+%!v(PANIC=Error method: boom)
+%!v(PANIC=Error method: boom) %!s(PANIC=Error method: boom) %!q(PANIC=Error method: boom) %!x(PANIC=Error method: boom)
+%!v(PANIC=GoString method: gs-boom)
+%!v(PANIC=Format method: fmt-boom)
+%!v(PANIC=Error method: 42)
+[%!v(PANIC=Error method: boom)]
+<nil>
+ptr-safe
+<nil>
+<nil>
