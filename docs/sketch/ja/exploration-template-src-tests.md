@@ -222,3 +222,20 @@ TODO.md の次の2項目をどう進めるかの検討。
 - **リファクタ4件は全採用 (R1 は reshape):** declared-typedef walk の実重複を `valueDeclTyp` に集約 (#822、`sizeDeclTyp` の KindPointer Elem と `cellElemTyp` の nil 戻しは observable 差分になるため境界を残置)、`coerce` の host-struct 二重コピーを `runtime.Copy` 済み分岐で skip (#823)、`errComparable` の param 名を `target` に (#824)、`cellOf` → `asCell` rename (#825)。採否の根拠は各 PR 本文。
 - **再実装の指摘は問題なし:** `errIs` は `errKids` を `findAsTarget` と共有、`HostScalarOf`/`HostStructCopy`/`EXOUT` は責務別の境界として妥当と確認。
 - **バグ修正がリファクタ前提を動いた例:** R1 の「2つの並列 walk」はバグ修正で3系統 (`sizeDeclTyp`/`refDeclTyp`/`unsafeStaticTyp`) に再編済みだったため、現 tip 上で重複を再同定してから適用。レビュー→修正→リファクタの順序を守った意義がここに出た。
+
+### realworld 完走確認 (追補)
+
+- `podhmo/minigo-usecasefuzz` の realworld ハーネスを stack tip で実行し、実プログラムが完走するか (デグレ確認) を見た。対象は native (`go run` 相当) との出力 diff を採る task 群。
+
+  | task | verdict | oracle | minigo |
+  |---|---|---|---|
+  | oapi-codegen-examples | PASS | 3.11s | 133.43s |
+  | grafana-openapi | PASS | 0.03s | 6.02s |
+  | grafana-coreplugin | PASS | 0.01s | 0.11s |
+  | grafana-swagger-spec | PASS | (want.txt) | 0.12s |
+  | clickhouse-settings | PASS | (want.txt) | 0.02s |
+
+- **oapi-codegen-examples は素直なソース解釈と bound 経路の混在。** task.sh が `--src text/template,encoding/json,encoding/hex,encoding/base64,encoding/base32,slices,maps` で `minigo run` するので、template 系は GOROOT から読んで素直にインタプリタで解釈する (bound text/template 等が oapi-codegen に不足だったためこの経路が前からある)。kin-openapi や regexp、reflect、os など残りの stdlib は bound intrinsic 経路。grafana 系タスクは `--src` 無しの `minigo run .` なので bound go/parser + コアインタプリタを見ている。
+- **本ラウンドの修正が塞いだ穴は「examples では見つけられない穴」。** `unsafe.Sizeof`/`%T`/`errors.Is` 系は tmpltests が upstream のテストファイルを --src で verbatim に流すからこそ露出したエッジケースで、53本の go:generate 行はそれらの枝に入らなかった。ただし opaque-store snapshot コピー (#812/#813) は VM/host 境界の一般セマンティクスなので、ソース解釈コードがコンテナに書く全経路の裏付けにはなっている。
+- **初回の DIFF は harness 誤判定だった。** 53本すべて rc=0 で完走し生成ファイル53個の sha256 が native と全件一致。差分は native 側の `go: downloading github.com/go-openapi/jsonpointer v1.0.0` 1行のみ (oracle 実行時のモジュール取得メッセージ)。run.sh の diff に Go ツールチェーン行のフィルタを入れて usecasefuzz main に push (de9f2c3)、再実行で PASS。
+- **意図的に残しているタスク (再掲):** bound 経路の eval-order (`{{.Hello}} {{.N}}` → `hi 0`、構造的境界・`--src` 経路は gc 一致)、`unsafe.Sizeof`/`Alignof` の staticTyp で型付けできない operand (selector/call/deref) の value-path fallback、`unsafe.Pointer` 型・`--src` hot-path 計測 (対象外宣言)。realworld 完走により、これらの残件が実プログラムの完走を妨げるデグレではないことを確認した。
