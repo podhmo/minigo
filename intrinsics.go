@@ -3930,19 +3930,7 @@ func (e *Engine) unsafeSizeOf(v runtime.Value, declared *runtime.TypeDef) int64 
 // untyped literal, a host box) reports nil and the caller falls back
 // to runtime-value widths.
 func sizeDeclTyp(v runtime.Value) *runtime.TypeDef {
-	switch x := v.(type) {
-	case *runtime.Struct:
-		return x.Def
-	case *runtime.Named:
-		if x.Typ != nil {
-			return x.Typ
-		}
-	case *runtime.Slice:
-		return x.Typ
-	case *runtime.Map:
-		return x.Typ
-	case *runtime.Chan:
-		return x.Typ
+	switch v.(type) {
 	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
 		// a pointer value: the operand's declared type is *T where T
 		// is the pointee's declared type — the tag stamped on the box
@@ -3953,12 +3941,8 @@ func sizeDeclTyp(v runtime.Value) *runtime.TypeDef {
 			elem = c.Typ
 		}
 		return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: elem}
-	case *runtime.TypedNil:
-		return x.Typ
-	case *runtime.IfaceNil:
-		return x.Typ
 	}
-	return nil
+	return valueDeclTyp(v)
 }
 
 func (e *Engine) unsafeAlignOf(v runtime.Value, declared *runtime.TypeDef) int64 {
@@ -6752,14 +6736,6 @@ func cellElemTyp(v runtime.Value) *runtime.TypeDef {
 		return nil
 	}
 	switch e := c.Elem.(type) {
-	case *runtime.TypedNil:
-		return e.Typ
-	case *runtime.IfaceNil:
-		return e.Typ
-	case *runtime.Struct:
-		return e.Def
-	case *runtime.Named:
-		return e.Typ
 	case *runtime.Cell:
 		// the variable's VALUE is itself a pointer (a cell): `&p` where
 		// p is declared `*T` — the assignable target type is T.
@@ -6770,8 +6746,13 @@ func cellElemTyp(v runtime.Value) *runtime.TypeDef {
 			return s.Def
 		}
 		return nil
+	case *runtime.Slice, *runtime.Map, *runtime.Chan:
+		// a container-typed target carries no usable element typedef for
+		// As — nil keeps the matcher permissive (a nil want accepts
+		// anything).
+		return nil
 	}
-	return nil
+	return valueDeclTyp(c.Elem)
 }
 
 // findAsTarget walks an error's tree the way errors.As/AsType do —
@@ -7999,13 +7980,11 @@ func scriptTypeString(x runtime.Value) string {
 			// spells *main.I, not *main.S of its stored value. A ref
 			// operand reads it through the ref itself: a FieldRef's
 			// declared field type, an IndexRef's element type.
-			if td := refDeclTyp(t); td != nil {
+			if td := pointeeDeclTyp(t); td != nil {
 				return "*" + typedefSpelling(td)
 			}
-			for _, c := range []*runtime.Cell{cellOf(t), cellOf(dv)} {
-				if c != nil && c.Typ != nil {
-					return "*" + typedefSpelling(c.Typ)
-				}
+			if c := cellOf(dv); c != nil && c.Typ != nil {
+				return "*" + typedefSpelling(c.Typ)
 			}
 			// *interface{} / *error keeps the pointee's declared name —
 			// the pointer itself is the dynamic type, not <nil>.
@@ -8098,6 +8077,31 @@ func refDeclTyp(v runtime.Value) *runtime.TypeDef {
 	return nil
 }
 
+// valueDeclTyp recovers the declared typedef stamped on a runtime
+// value — a struct's Def, a named value's tag, a container's Typ, a
+// nil's declared type. Refs and cells carry no typedef of their own (a
+// cell's Typ stamps its ELEMENT — see pointeeDeclTyp), and untyped
+// literals or host boxes report nil.
+func valueDeclTyp(v runtime.Value) *runtime.TypeDef {
+	switch x := v.(type) {
+	case *runtime.Struct:
+		return x.Def
+	case *runtime.Named:
+		return x.Typ
+	case *runtime.Slice:
+		return x.Typ
+	case *runtime.Map:
+		return x.Typ
+	case *runtime.Chan:
+		return x.Typ
+	case *runtime.TypedNil:
+		return x.Typ
+	case *runtime.IfaceNil:
+		return x.Typ
+	}
+	return nil
+}
+
 // cellOf peels Named tags to reach the addressable cell underneath —
 // the pointee slot whose Typ is the declared (static) type.
 func cellOf(v runtime.Value) *runtime.Cell {
@@ -8111,6 +8115,20 @@ func cellOf(v runtime.Value) *runtime.Cell {
 			return nil
 		}
 	}
+}
+
+// pointeeDeclTyp is the declared type an &-operand points at: a tracked
+// ref answers through its declared field/element typedef (refDeclTyp),
+// a plain &var cell through its own stamped Typ. Nil when the pointee's
+// declared type is unknown.
+func pointeeDeclTyp(v runtime.Value) *runtime.TypeDef {
+	if td := refDeclTyp(v); td != nil {
+		return td
+	}
+	if c := cellOf(v); c != nil {
+		return c.Typ
+	}
+	return nil
 }
 
 // rewriteTypeVerbs substitutes args for the verbs host fmt handles
