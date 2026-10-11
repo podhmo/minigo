@@ -178,3 +178,34 @@ TODO.md の次の2項目をどう進めるかの検討。
 ### 残りの状況
 
 - round-2 の残件は継続。今回新たに `[ ]` 化したのは named-basic 値の host `String()` 不到達 (Month "1" 化)、`unsafe.Sizeof` の runtime-value 積算、script `Unwrap() []error` が host `errors.Is` に見えない制限の3件 (TODO 末尾)。
+
+## round-4: 残り TODO の掃討と example テスト有効化
+
+### 実施内容
+
+- 前3ラウンドで `[ ]` 残りになったエントリを棚卸し、宣言済みの対象外 (`unsafe.Pointer` 型、`--src` hot-path 計測、oapi-codegen 実走/定期実行) 以外を潰した。方針は素直なインタプリタ解釈で、bind は不足分のみ。
+- 実機で再現を確認した発散6件を stack #808 (#806〜#813、各 difffuzz pin + TODO.md `[x]` 同梱) で修正:
+  - `*any` ↔ `*interface{}` の typedef 同一視 (`T{A *interface{}: &a}` を受理) — #806
+  - `%T` on `&` が pointee cell の declared Typ を綴る (`*main.I`) — #807
+  - `unsafe.Sizeof`/`Alignof` を declared typedef ベースに — #809
+  - named-basic 値 (time.Month 等) が host `String()`/host メソッドに届く `runtime.HostScalarOf` — #810
+  - `errors.Is` を gc 準拠 walk に (`Unwrap() []error` 対応) — #811
+  - `sync.Pool.Put` ・host-backed 値のコピーを gc 準拠の snapshot に — #812, #813
+- `example*_test.go` を harness に実装: `<pkg>_test` 外部パッケージ dir 生成 + `// Output:` コメント照合 (#815) と `fmt.Append`/`Appendf`/`Appendln` の bind (#814)。`make tmpltests-examples` 8/8、`tmpltests-html-examples` 9/9 で **17/17 PASS**。`tmpltests-all` にも組込み済み。
+- 既存スイートは全グリーン維持: text/template 46/46、parse 17/17、html/template 103/105。
+
+### 計画外の記録と判断
+
+- **`iter` range-over-func 行はすでに通っていた。** round-1 計画では「iter を使う execTest 12件は型 shim でコンパイルだけ通して実行失敗を許容」の読みだったが、exec_test.go は verbatim のまま TestExecute 内の Seq/Seq2 行 (fVal1/fVal2) を実行しており、interpreter の range-over-func (driveFuncIter) と iter shim の型宣言で素通し PASS だった。「除外」はファイル単位の話で、行単位は最初から網に入っていた。
+- **`unsafe.Sizeof` の修正が `sizeOf` の事前バグを掘った。** `reflect.Complex64` を 4 (正: 8) と返しており、`fieldOffset` 経由で `unsafe.Offsetof` も狂っていた → #809 で併修。
+- **named-basic の同族は Month だけではなかった。** `json.Number` も named string 型で host `String()` に届かない同族と判明し、`HostNew` で StructTag machinery 経路に乗せて併修 (#810)。
+- **host-backed 値のコピーは「修正」側を採用。** TODO は「copy on assign or document reference-like」の二択だったが、`runtime.Copy` の `*Named` case で `KindStruct`+`HostNew` tag 付き `*struct` box のみ snapshot する形で安全に実装できた (tag が `var a T` と host返り `*T` を識別する) → #813。`sync.Pool` 側は key/value とも store 時点で snapshot (#812、source key の事後変更でエントリが動かないことも gc 検証済み)。
+- **`log` は shim 無し・パッケージ丸ごとソース解釈で動いた。** round-1 計画では「`log` shim も要る」と読んでいたが、実際の止まり点は `Logger.output` が呼ぶ `fmt.Appendln` のみで、fmt.Append 系3関数の bind で解消 (#814)。不足分対応の bind だけで済んだ例。
+- **example からの新規 divergence はゼロ。** 17件全て素直に PASS — この探索源は枯れたと見て良い。`log.Fatal`→`os.Exit` で途中死する例は TRAP ではなく FAIL (期待出力不整合) として分類する規則を harness 側に置いた。
+
+### 残りの状況
+
+- **template suite 側**: upstream の非 SKIP 範囲は全滅 (exec+multi 46、parse 17、html 103、examples 17)。残るのは upstream 側の正当 SKIP 2件 (`TestIssue31810`, `TestTemplateLookUp`) と `link_test.go` (Go ツールチェーン自体を駆動、upstream でも対象外) のみ。
+- **bound 経路の eval-order** (`{{.Hello}} {{.N}}` → `hi 0`、gc は `hi 1`): marshal が fields→niladic methods を eager に捌く構造的ギャップで、host 呼出しに渡せる遅延 shape が無い限り修正不能。`--src` 経路は gc 一致済みなので回避策はある。`[ ]` エントリとして継続。
+- **対象外 (前回宣言のまま)**: `unsafe.Pointer` 型 (issue #40)、`--src` template hot-path 計測、oapi-codegen `--src` 実走 + 定期実行。
+- template 由来でない残件 (host 値の型引数推論、32bit ビルド、json TextMarshaler 等) は TODO.md の各エントリを参照。
