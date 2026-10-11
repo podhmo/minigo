@@ -2370,6 +2370,30 @@ func ifaceCallStringFatal(c VMCaller, v Value, name string) (s string, ok bool, 
 	return s, ok, nil
 }
 
+// IfaceCallStringPanic is ifaceCallStringFatal exported for fmt's
+// catchPanic markers: the third return carries the script panic the
+// method raised — nil for an absent method, a shape mismatch, or an
+// ordinary call failure.
+func IfaceCallStringPanic(c VMCaller, v Value, name string) (string, bool, *Panic) {
+	return ifaceCallStringFatal(c, v, name)
+}
+
+// PanicPrintString renders a panic payload the way gc's catchPanic
+// marker does — `%v` of printpanics' result (a script payload's
+// Error/String text wins like the probe order); when the payload's own
+// probe panicked, the fixed "panic while printing panic value" text
+// stands in for the fatal line.
+func PanicPrintString(p *Panic) string {
+	if p == nil {
+		return "<nil>"
+	}
+	pv := panicValue(p.Value, p.VC)
+	if _, fatal := pv.(*panicPrintFatal); fatal {
+		return "panic while printing panic value"
+	}
+	return fmt.Sprintf("%v", pv)
+}
+
 // IfaceCallString invokes a declared String()/Error()/GoString()-style
 // method through the engine when the value's method set offers one (a
 // pointer receiver on a bare value does not count — Go prints the

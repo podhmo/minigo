@@ -7453,11 +7453,21 @@ func (s *fmtValue) render(verb rune, f fmt.State) string {
 	// where Go invokes no Formatter; nothing real writes to it.
 	if s.c != nil && verb != 'T' && verb != 'p' {
 		if cs, isCap := f.(*captureState); isCap {
-			if callFormat(s.c, s.x, cs, verb) {
+			wrote, pan := callFormatReport(s.c, s.x, cs, verb)
+			if pan != nil {
+				return fmtPanicMarker(verb, "Format", pan)
+			}
+			if wrote {
 				return cs.buf.String()
 			}
-		} else if _, isZero := f.(zeroState); !isZero && callFormat(s.c, s.x, f, verb) {
-			return ""
+		} else if _, isZero := f.(zeroState); !isZero {
+			wrote, pan := callFormatReport(s.c, s.x, f, verb)
+			if pan != nil {
+				return fmtPanicMarker(verb, "Format", pan)
+			}
+			if wrote {
+				return ""
+			}
 		}
 	}
 	// Stringer family first, like fmt does.
@@ -7466,43 +7476,108 @@ func (s *fmtValue) render(verb rune, f fmt.State) string {
 		case 'v':
 			if f.Flag('#') {
 				// %#v consults GoString, not String/Error.
-				if str, ok := runtime.IfaceCallString(s.c, s.x, "GoString"); ok {
+				if str, ok, pan := ifaceCallStringPanic(s.c, s.x, "GoString"); pan != nil {
+					return fmtPanicMarker(verb, "GoString", pan)
+				} else if ok {
 					return str
 				}
 				break
 			}
 			// Go's fmt consults error before Stringer — a value
 			// implementing both prints its Error().
-			if str, ok := runtime.IfaceCallString(s.c, s.x, "Error"); ok {
+			if str, ok, pan := ifaceCallStringPanic(s.c, s.x, "Error"); pan != nil {
+				return fmtPanicMarker(verb, "Error", pan)
+			} else if ok {
 				return withWidth(f, str)
 			}
-			if str, ok := runtime.IfaceCallString(s.c, s.x, "String"); ok {
+			if str, ok, pan := ifaceCallStringPanic(s.c, s.x, "String"); pan != nil {
+				return fmtPanicMarker(verb, "String", pan)
+			} else if ok {
 				return withWidth(f, str)
 			}
 		case 's':
-			if str, ok := runtime.IfaceCallString(s.c, s.x, "Error"); ok {
+			if str, ok, pan := ifaceCallStringPanic(s.c, s.x, "Error"); pan != nil {
+				return fmtPanicMarker(verb, "Error", pan)
+			} else if ok {
 				return withWidth(f, str)
 			}
-			if str, ok := runtime.IfaceCallString(s.c, s.x, "String"); ok {
+			if str, ok, pan := ifaceCallStringPanic(s.c, s.x, "String"); pan != nil {
+				return fmtPanicMarker(verb, "String", pan)
+			} else if ok {
 				return withWidth(f, str)
 			}
 		case 'q':
-			if str, ok := runtime.IfaceCallString(s.c, s.x, "Error"); ok {
+			if str, ok, pan := ifaceCallStringPanic(s.c, s.x, "Error"); pan != nil {
+				return fmtPanicMarker(verb, "Error", pan)
+			} else if ok {
 				return strconv.Quote(str)
 			}
-			if str, ok := runtime.IfaceCallString(s.c, s.x, "String"); ok {
+			if str, ok, pan := ifaceCallStringPanic(s.c, s.x, "String"); pan != nil {
+				return fmtPanicMarker(verb, "String", pan)
+			} else if ok {
 				return strconv.Quote(str)
 			}
 		case 'x', 'X':
-			if str, ok := runtime.IfaceCallString(s.c, s.x, "Error"); ok {
+			if str, ok, pan := ifaceCallStringPanic(s.c, s.x, "Error"); pan != nil {
+				return fmtPanicMarker(verb, "Error", pan)
+			} else if ok {
 				return fmt.Sprintf("%"+string(verb), str)
 			}
-			if str, ok := runtime.IfaceCallString(s.c, s.x, "String"); ok {
+			if str, ok, pan := ifaceCallStringPanic(s.c, s.x, "String"); pan != nil {
+				return fmtPanicMarker(verb, "String", pan)
+			} else if ok {
 				return fmt.Sprintf("%"+string(verb), str)
 			}
 		}
 	}
 	return s.renderValue(s.x, verb, f)
+}
+
+// ifaceCallStringPanic is runtime's panic-reporting Stringer probe — a
+// script panic raised inside the method surfaces as the third return
+// like gc's catchPanic — absent methods and ordinary call failures
+// still report ok=false only. The method DOES run on a nil pointer
+// arg (a nil-receiver-friendly Error still prints), but a panic from
+// one renders <nil> rather than the PANIC marker — gc's catchPanic
+// swaps the marker for <nil> when the arg is a nil pointer.
+func ifaceCallStringPanic(c runtime.VMCaller, x runtime.Value, name string) (string, bool, *runtime.Panic) {
+	s, ok, pan := runtime.IfaceCallStringPanic(c, x, name)
+	if pan != nil && fmtNilPointer(x) {
+		return "", false, nil
+	}
+	return s, ok, pan
+}
+
+// fmtNilPointer reports whether x is a nil pointer for fmt's probe
+// skip — Named and ref layers peel to the pointer-shaped TypedNil
+// underneath.
+func fmtNilPointer(x runtime.Value) bool {
+	v := x
+	for {
+		if n, ok := v.(*runtime.Named); ok {
+			v = n.V
+			continue
+		}
+		if dv, ok := runtime.Deref(v); ok {
+			v = dv
+			continue
+		}
+		var td *runtime.TypeDef
+		switch n := v.(type) {
+		case *runtime.TypedNil:
+			td = n.Typ
+		case *runtime.IfaceNil:
+			td = n.Typ // a TypedNil boxed by an interface slot keeps its tag
+		}
+		return td != nil && td.Kind == runtime.KindPointer
+	}
+}
+
+// fmtPanicMarker spells gc's catchPanic marker for a Stringer-family
+// method that panicked: %!v(PANIC=Error method: boom) — the verb as
+// used (no width), the method name, and the panic payload rendered %v.
+func fmtPanicMarker(verb rune, method string, p *runtime.Panic) string {
+	return fmt.Sprintf("%%!%c(PANIC=%s method: %s)", verb, method, runtime.PanicPrintString(p))
 }
 
 func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
@@ -8564,16 +8639,32 @@ func withWidth(f fmt.State, s string) string {
 // handing the live printer through as a host value so the method's
 // writes land on the real output (math/big's %d). An absent or
 // panicking method reports false, like IfaceCallString.
-func callFormat(c runtime.VMCaller, x runtime.Value, f fmt.State, verb rune) bool {
+// callFormatReport invokes a script Formatter like callFormat, and
+// also reports a panic the call raised — fmt's catchPanic turns it into
+// the %!v(PANIC=Format method: ...) marker rather than a silent miss.
+func callFormatReport(c runtime.VMCaller, x runtime.Value, f fmt.State, verb rune) (bool, *runtime.Panic) {
 	m, ok := runtime.IfaceMember(c, x, "Format")
 	if !ok {
-		return false
+		return false, nil
 	}
 	_, err := c.Call(m, []runtime.Value{
 		&runtime.GoValue{V: f},
 		&runtime.UConst{V: constant.MakeInt64(int64(verb)), Rune: true},
 	})
-	return err == nil
+	if err != nil {
+		var p *runtime.Panic
+		if errors.As(err, &p) {
+			// gc's catchPanic swaps the marker for <nil> on a nil
+			// pointer arg — suppressing it here lets the value fall
+			// through to its own <nil> render.
+			if fmtNilPointer(x) {
+				return false, nil
+			}
+			return false, p
+		}
+		return false, nil
+	}
+	return true, nil
 }
 
 // fprintOperands renders the fmt.Print family's operands with gc's
