@@ -3197,12 +3197,20 @@ func (c *compiler) nilableTypExpr(te ast.Expr) bool {
 // chans and funcs can; structs and basic types cannot. ok=false when
 // the member can't be resolved at all.
 func (c *compiler) selNilable(ref *runtime.ImportRef, name string) (bool, bool) {
+	p, err := ref.Materialize()
+	if err != nil || p == nil {
+		return false, false
+	}
 	ts, td, ok := c.selMember(ref, name)
 	if !ok {
 		return false, false
 	}
 	if ts != nil {
-		return c.nilableTypExpr(ts.Type), true
+		// the spec's inner names resolve in ITS package's file scope —
+		// `type T = otherpkg.Nilable` must read otherpkg through the
+		// spec's own imports, never the caller's, or a same-named
+		// import there would flip the verdict.
+		return c.nilableTypExpr(c.unfoldSpecType(p, ts, 4)), true
 	}
 	switch td.Kind {
 	case runtime.KindInterface, runtime.KindPointer, runtime.KindSlice,
