@@ -6560,6 +6560,14 @@ func (v *VM) refThrough(f *frame, base runtime.Value) (runtime.Value, bool) {
 	case *runtime.DerefRef:
 		return v.refThrough(f, b.Ptr)
 	default:
+		// A ref chain crossing a package member (pkg.F.G = v,
+		// pkg.A[i] = v): the package operand is the shared base —
+		// selectMember reads the global cell's live value, so the
+		// store lands like the one-level `pkg.V = x` store does.
+		switch base.(type) {
+		case *runtime.Package, *runtime.ImportRef:
+			return base, true
+		}
 		return runtime.Deref(base)
 	}
 }
