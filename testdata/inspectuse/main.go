@@ -1289,6 +1289,34 @@ func MissingSymTrap() string {
 	return "swallowed"
 }
 
+// LookupSymbolMiss: LookupSymbol answers nil on an unknown name — the
+// probe Symbol cannot make — and still finds real decls, including a
+// bound package's host pseudo-decls.
+func LookupSymbolMiss() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	if d := inspect.LookupSymbol(p, "Nope"); d != nil {
+		return "miss did not report nil"
+	}
+	if d := inspect.LookupSymbol(p, "Hello"); d == nil || d.Kind != "func" {
+		return "hit not found"
+	}
+	b := inspect.PackageOf("strings")
+	if d := inspect.LookupSymbol(b, "Contains"); d == nil || d.Kind != "host" {
+		return "bound hit not found"
+	}
+	if d := inspect.LookupSymbol(b, "Nope"); d != nil {
+		return "bound miss did not report nil"
+	}
+	return "ok"
+}
+
+// LookupSymbolArgTrap: LookupSymbol keeps the argument contract — a
+// non-package value still errors.
+func LookupSymbolArgTrap() string {
+	inspect.LookupSymbol(42, "Nope")
+	return "swallowed"
+}
+
 // BoundFieldTrap: Fields on a bound type has no decl to read.
 func BoundFieldTrap() string {
 	inspect.Fields(inspect.Symbol(inspect.PackageOf("strings"), "Builder"))

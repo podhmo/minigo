@@ -68,6 +68,7 @@ func TestInspect(t *testing.T) {
 		// that cannot compile still enumerates its decls.
 		"FileOfDup",
 		"PackageOfDup",
+		"LookupSymbolMiss",
 	} {
 		if got := run(t, e, "./testdata/inspectuse", fn); got != "ok" {
 			t.Errorf("%s: %v", fn, got)
@@ -95,6 +96,7 @@ func TestInspect(t *testing.T) {
 		"MethodSetFuncTrap",          // the method set is a type view
 		"ResolveBoundTrap",           // the resolver cannot descend into a bound pkg
 		"MissingSymTrap",             // unknown symbol name
+		"LookupSymbolArgTrap",        // LookupSymbol keeps the arg contract
 		"BoundFieldTrap",             // bound type has no decl for Fields
 		"BoundMethodTrap",            // bound type has no index for Methods
 		"HostSigTrap",                // intrinsic without Target has no signature
