@@ -174,8 +174,13 @@ func configurers(ds []*inspect.Decl) []*inspect.Decl {
 		if sig == nil || sig.Recv != nil {
 			continue
 		}
+		// arity, not field groups: `func(a, b *extschema.Config)` is one
+		// field carrying two names — NumParams counts the names.
+		if sig.NumParams() != 1 || sig.NumResults() != 0 {
+			continue
+		}
 		ps := sig.ParamFields()
-		if len(ps) != 1 || len(sig.ResultFields()) != 0 {
+		if len(ps) != 1 {
 			continue
 		}
 		// The param spells *extschema.Config: unwrap the pointer,

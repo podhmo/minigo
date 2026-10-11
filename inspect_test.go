@@ -21,6 +21,7 @@ func TestInspect(t *testing.T) {
 		"MethodsFile",
 		"MethodsDup",
 		"SignatureWalk",
+		"SigArity",
 		"TypeExprNav",
 		"OriginNav",
 		"OwnerChain",

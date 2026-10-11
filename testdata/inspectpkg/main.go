@@ -29,6 +29,16 @@ func (u User) Bye() string { return "bye " + u.Name }
 // Hello is a plain function.
 func Hello(s string) string { return "hello " + s }
 
+// TwoArgs groups two names in one field and ends variadic — the arity
+// a field-group count cannot see.
+func TwoArgs(a, b int, c ...string) {}
+
+// PosArgs takes unnamed params only.
+func PosArgs(int, string) {}
+
+// Divmod groups two names in one result field.
+func Divmod(a, b int) (q, r int) { return 0, 0 }
+
 // Count is a package var.
 var Count int = 3
 

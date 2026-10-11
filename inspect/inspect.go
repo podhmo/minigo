@@ -236,6 +236,23 @@ func (s *Sig) ParamFields() []*Field { return unboxFields(s.Params) }
 // ResultFields returns the results as Field views.
 func (s *Sig) ResultFields() []*Field { return unboxFields(s.Results) }
 
+// NumParams reports how many parameters the function takes — the
+// names-flattened arity: `a, b int` in one field group counts as two,
+// an unnamed param as one, a variadic as one. ParamFields counts the
+// written *ast.Field groups instead, so it under-reports arity; an
+// arity check needs NumParams.
+func (s *Sig) NumParams() int {
+	ts, _ := expandFieldTypes(s.ParamFields())
+	return len(ts)
+}
+
+// NumResults is NumParams for the result list — `(q, r int)` in one
+// field group counts as two.
+func (s *Sig) NumResults() int {
+	ts, _ := expandFieldTypes(s.ResultFields())
+	return len(ts)
+}
+
 // TypeExpr is a handle over one type expression: the declared spelling
 // plus the context needed to resolve the names it mentions.
 type TypeExpr struct {

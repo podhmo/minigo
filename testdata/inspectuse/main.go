@@ -208,6 +208,40 @@ func SignatureWalk() string {
 	return "ok"
 }
 
+// SigArity: NumParams/NumResults flatten field-group names into arity —
+// Params/Results count written field groups, so `a, b int` reports 1
+// element where the function takes 2 args; a variadic counts once.
+func SigArity() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	sig := inspect.Signature(inspect.Symbol(p, "TwoArgs"))
+	if len(sig.Params) != 2 || sig.NumParams() != 3 {
+		return "TwoArgs arity"
+	}
+	b := inspect.Signature(inspect.Symbol(p, "PosArgs"))
+	if len(b.Params) != 2 || b.NumParams() != 2 {
+		return "PosArgs arity"
+	}
+	d := inspect.Signature(inspect.Symbol(p, "Divmod"))
+	if len(d.Results) != 1 || d.NumResults() != 2 {
+		return "Divmod results"
+	}
+	// a method's variadic param is one position; its receiver stays on Recv
+	var sum *inspect.Decl
+	for _, m := range inspect.Methods(inspect.Symbol(p, "SumImpl")) {
+		if m.Name == "Sum" {
+			sum = m
+		}
+	}
+	if inspect.Signature(sum).NumParams() != 1 {
+		return "Sum arity"
+	}
+	h := inspect.Signature(inspect.Symbol(p, "Hello"))
+	if h.NumParams() != 1 || h.NumResults() != 1 {
+		return "Hello arity"
+	}
+	return "ok"
+}
+
 // TypeExprNav: Children/UnRef/SymbolID/Resolve/SameType.
 func TypeExprNav() string {
 	p := inspect.DirOf("./testdata/inspectpkg")

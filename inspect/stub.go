@@ -193,7 +193,11 @@ func Nodes(n *Node) []*Node { panic("minigo intrinsic") }
 // resolves to {strings, TrimSpace}). Non-expression nodes report nil.
 func Expr(n *Node) *TypeExpr { panic("minigo intrinsic") }
 
-// Signature returns a func/method's {Recv, Params, Results}.
+// Signature returns a func/method's {Recv, Params, Results}. Params
+// and Results keep one element per written field group — `a, b int`
+// is one element carrying two Names — so an arity check ("how many
+// params does the function take") goes through the Sig's
+// NumParams()/NumResults(), not len(Params).
 func Signature(s *Decl) *Sig { panic("minigo intrinsic") }
 
 // TypeParams returns a generic decl's type parameter fields.
