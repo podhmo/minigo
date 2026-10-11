@@ -393,6 +393,11 @@ Built and passing locally (`go run ./ ./app User` and friends):
   so plugin hook signatures can name them directly instead of
   `any`+reflect. Same goes for a non-trapping `inspect.Lookup` —
   optional entry points currently require a Decls scan.
+- A caller-visible way to pick a package's loading path (bound stub
+  vs source index) — a load option or two split load functions —
+  because today the path is chosen invisibly and the behavioral
+  differences (interning, `Standard()`, bound-shadow misses)
+  leak through it.
 - Whatever the usecasefuzz corpus hits next: generic instantiations
   (`IndexExpr` walks the base; type arguments are not substituted —
   the same boundary convert-define documents), `FuncType`/`ChanType`
