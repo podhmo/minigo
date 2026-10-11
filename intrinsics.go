@@ -919,8 +919,8 @@ func (e *Engine) installStdlib() {
 			// sees the fresh pointee.
 			if prior0, _ := runtime.Deref(args[1]); jsonNilish(prior0) {
 				if ptd := derefTyp(v.TypeOf(args[1])); ptd != nil && ptd.Kind == runtime.KindPointer {
-					if z := v.ElemZero(ptd); z != nil {
-						runtime.SetRef(args[1], &runtime.Cell{Elem: z})
+					if z := jsonAllocPointee(v, ptd); z != nil {
+						runtime.SetRef(args[1], z)
 					}
 				}
 			}
@@ -5315,6 +5315,28 @@ func jsonUnmarshalShape(m runtime.Value) bool {
 		}
 	}
 	return n == 1 && ft.Results != nil && len(ft.Results.List) == 1
+}
+
+// jsonAllocPointee builds the pointee gc's indirect() allocates for a
+// nil pointer of type ptd: a cell holding the element's zero —
+// recursively a fresh cell when the element is itself a pointer, so
+// **T allocates a *T pointing at a fresh T.
+func jsonAllocPointee(c runtime.VMCaller, ptd *runtime.TypeDef) runtime.Value {
+	if ptd == nil || ptd.Kind != runtime.KindPointer {
+		return nil
+	}
+	z := c.ElemZero(ptd)
+	if z == nil {
+		return nil
+	}
+	if et := c.TypeOf(z); et != nil && et.Kind == runtime.KindPointer {
+		inner := jsonAllocPointee(c, et)
+		if inner == nil {
+			return nil
+		}
+		return &runtime.Cell{Elem: inner}
+	}
+	return &runtime.Cell{Elem: z}
 }
 
 // jsonNilish reports a nil pointer/interface payload.
