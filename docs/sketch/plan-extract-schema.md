@@ -138,42 +138,44 @@ $ extract-schema -plugin ./plugins/time -plugin ./plugins/uuid ./app User
 ```
 
 Each plugin package exposes a single entry point the *script* calls
-inside the same VM — one loop, no per-shape plumbing:
+inside the same VM — `Configure(c *extschema.Config)` — where
+`extschema` is a small shared package (the counterpart of gen-sync's
+`scanx/`) holding the registrar type:
 
 ```go
 // plugins/time/schema.go — package timeschema
-func Config() map[string]any {
-    return map[string]any{
-        "overrides": map[string]any{
-            "time.Time": map[string]any{"type": "string", "format": "date-time"},
-        },
-    }
+func Configure(c *extschema.Config) {
+    c.Override("time.Time", map[string]any{"type": "string", "format": "date-time"})
 }
 ```
 
-Recognized keys today:
+The walk loops the plugin dirs, pulls `Configure` out with
+`inspect.Value`, asserts `func(*extschema.Config)`, and calls it — a
+normal in-VM call, no respawn, no host-side merge. The registrar is a
+*named* API surface: no untyped map, no magic keys, and room for the
+higher grades (naming/predicate hooks) as more methods.
 
-- `"overrides"` → `map[string]any`: symbolID (`"pkgpath.Name"`) ->
-  schema fragment, consulted before the default named-type handling —
+Current methods:
+
+- `c.Override(symbolID, fragment)` — `symbolID` (`"pkgpath.Name"`) ->
+  schema fragment consulted before the default named-type handling —
   including before the stdlib leaf policy, which is how `time.Time`
   becomes `date-time` instead of a stopped leaf.
-- `"descField"` → `func(any, string) string`: runs on every field
-  description; the field *reference* is passed, so a filter can read
-  Names, Tag, or Pos instead of re-deriving the symbol from the text.
-- `"descDecl"` → `func(any, string) string`: same for type
-  descriptions.
+- `c.DescField(fn)` / `c.DescDecl(fn)` — `func(any, string) string`
+  filters run on every field/type description. The field/decl
+  *reference* is passed, so a filter can read Names, Tag, or Pos
+  instead of re-deriving the symbol from the text.
 
-Why `any` on the hook boundary: a func type naming `*inspect.Field`
-asserts *nominally*, and each separately-loaded package instance
-interns its own inspect types — the cross-package identity compare
-traps with "types from different packages". `func(any, string)`
-matches structurally, and a hook narrows the view with `reflect`
-(`reflect.ValueOf(f).Elem().FieldByName("Names")`), which never
-consults type identity. (`x.(*inspect.Field)` also traps —
-`inspect.Decl`/`Field` are not registered type symbols.) The call
-itself is a normal in-VM call — no respawn.
+Why `func(*extschema.Config)` asserts cleanly while
+`func(*inspect.Field)` does not: source packages are interned — the
+plugin's `import ".../extschema"` resolves to the same package
+instance as the script's, so the named type is identical. The
+`inspect` stub types are not interned (nor registered as type
+symbols), so view types can only cross as `any` + `reflect`
+(`reflect.ValueOf(f).Elem().FieldByName("Names")` — see
+`plugins/desc`).
 
-Function-valued keys are why "filters" is a function-shaped contract
+Function-valued hooks are why "filters" is a function-shaped contract
 and not data: a first cut carried rules as strings
 (`"strip-symbol-prefix"`, `"replace:o->n"`) because structured values
 (`[]map[string]any`) hit the arg-boundary boxing/spelling traps — but
@@ -182,7 +184,18 @@ stripping being just the example in `plugins/desc`) need real code
 anyway. See `plugins/time` (overrides) and `plugins/desc` (desc
 filters).
 
-### Interface shape — under consideration
+### Interface shape — decided
+
+The registrar won: untyped `Config() map[string]any` (and magic keys)
+proved unfriendly — the plugin contract is `Configure(c
+*extschema.Config)` with `extschema/` as the shared stub package (the
+same answer `scanx/` gives gen-sync). It works because source-package
+imports are interned across `inspect.DirOf`-loaded plugin roots; the
+remaining rough edge is only that `*inspect.Field`/`Decl` can't be
+named in signatures (they're not interned/registered — hooks take
+`any` and narrow via reflect).
+
+## Interface shape — under consideration
 
 The built contract is the map `Config() map[string]any` above. An
 alternative being weighed: the tool's script package exposes a *stub

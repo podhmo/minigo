@@ -18,8 +18,8 @@ extract-schema [flags] <dir|pkg> [Type]
   `$defs` (OpenAPI `components.schemas` style), no root.
 
 Flags: `-pkg` (target is an import path), `-plugin <dir>` (repeatable;
-a script package exposing `Config() map[string]any` — see Plugins
-below), `-stdlib leaf|walk` (default `leaf`: standard-library types
+a script package exposing `Configure(c *extschema.Config)` — see
+Plugins below), `-stdlib leaf|walk` (default `leaf`: standard-library types
 become leaf stubs instead of being walked), `-loose`
 (`additionalProperties`), `-title`, `-desc`.
 
@@ -29,23 +29,36 @@ become leaf stubs instead of being walked), `-loose`
 go run ./ ./app User
 go run ./ ./app                     # whole package -> $defs
 go run ./ -plugin ./plugins/time ./app User   # time.Time -> RFC 3339 string
+go run ./ -plugin ./plugins/desc ./app Commented   # desc filters
 go run ./ -stdlib walk ./app        # walk into time.Time's source
 ```
 
+## Plugins
+
+`-plugin <dir>` (repeatable) names a script package exposing
+`Configure(c *extschema.Config)` — the shared registrar lives in
+`extschema/` (the same role gen-sync's `scanx/` plays). The walk
+calls each plugin's `Configure` inside the same VM:
+
+- `c.Override(symbolID, fragment)` — `symbolID -> schema fragment`
+  consulted before the default named-type walk (`time.Time` -> RFC
+  3339 in `plugins/time`).
+- `c.DescField(fn)` / `c.DescDecl(fn)` — `func(any, string) string`
+  filters on every emitted description; the field/decl reference is
+  passed (narrowed via reflect — a `*inspect.Field` type assertion
+  traps on cross-package type identity; see `plugins/desc`).
+
 ## Layout
 
-- `main.go` — flag parsing, plugin merge, engine drive, doc print.
+- `main.go` — flag parsing, engine drive, doc print.
 - `script/` — the interpreted walk: decl -> schema generator.
+- `extschema/` — shared plugin contract (`Config` registrar).
 - `app/` — fixture package (nested/anonymous/recursive/cross-package
   `internal/dep`, enum, alias, tags, embedding).
-- `plugins/time/` — `Config()` overrides example: `time.Time` ->
-  `{type: string, format: date-time}`.
-- `plugins/desc/` — `Config()` desc-filter example: drops the Go doc
-  convention's leading symbol name from every description. Filters are
-  `func(any, string) string` values under `"descField"`/`"descDecl"`;
-  the field/decl reference is passed to the hook (narrowed via reflect —
-  a `*inspect.Field` type assertion traps on cross-package type
-  identity).
+- `plugins/time/` — overrides example: `time.Time` -> `{type: string,
+  format: date-time}`.
+- `plugins/desc/` — desc-filter example: drops the Go doc
+  convention's leading symbol name from every description.
 - `testdata/*.golden` — golden outputs; regenerate with
   `go test ./ -update`.
 

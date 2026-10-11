@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/podhmo/minigo/examples/extract-schema/extschema"
 	"github.com/podhmo/minigo/inspect"
 )
 
@@ -37,7 +38,7 @@ func Main(target string, pkgMode bool, typeName string, stdlibMode string, loose
 	g := &generator{
 		loose:     loose,
 		stdlib:    stdlibMode,
-		overrides: map[string]any{},
+		cfg:       &extschema.Config{},
 		defs:      map[string]any{},
 		seen:      map[string]string{},
 		used:      map[string]int{},
@@ -119,31 +120,21 @@ func warn(format string, args ...any) {
 }
 
 type generator struct {
-	loose     bool
-	stdlib    string
-	overrides map[string]any
-	// Description filters installed by plugins — plain script
-	// functions pulled out of the plugin package with inspect.Value
-	// and called in this VM: no respawn per call.
-	// Hooks are func(any, string) string and receive the field/decl
-	// reference itself (not just its doc): a plugin narrows the view
-	// with reflect, since a static assertion naming *inspect.Field
-	// would compare the func type nominally across package instances
-	// and trap. `any` matches structurally.
-	descFields []func(any, string) string
-	descDecls  []func(any, string) string
-	defs       map[string]any
-	seen       map[string]string // "pkgpath.Name" -> def name
-	used       map[string]int
-	nameOwner  map[string]string // def name -> symbol key (collision check)
+	loose  bool
+	stdlib string
+	// cfg is the shared registrar plugins' Configure(c) fills — a
+	// named API surface (extschema) instead of untyped map keys.
+	cfg       *extschema.Config
+	defs      map[string]any
+	seen      map[string]string // "pkgpath.Name" -> def name
+	used      map[string]int
+	nameOwner map[string]string // def name -> symbol key (collision check)
 }
 
-// loadPlugins loops the plugin dirs and merges each package's
-// Config() — the single plugin entry point: "overrides" maps
-// symbolID -> schema fragment, "descField"/"descDecl" install
-// func(any, string) string description filters. All of it happens
-// inside this VM via inspect.Value; a dir without Config() is a
-// warning, not a failure.
+// loadPlugins loops the plugin dirs and calls each package's
+// Configure(c *extschema.Config) — the single plugin entry point.
+// Plugins configure the shared registrar in this same VM via
+// inspect.Value; a dir without Configure is a warning, not a failure.
 func (g *generator) loadPlugins(dirs []string) error {
 	for _, dir := range dirs {
 		pp := inspect.DirOf(dir)
@@ -151,25 +142,11 @@ func (g *generator) loadPlugins(dirs []string) error {
 			return fmt.Errorf("extract-schema: could not load plugin %q", dir)
 		}
 		// inspect.Symbol traps on a miss, so scan Decls instead.
-		if findFunc(inspect.Decls(pp), "Config") == nil {
-			warn("plugin %s exposes no Config()", dir)
+		if findFunc(inspect.Decls(pp), "Configure") == nil {
+			warn("plugin %s exposes no Configure()", dir)
 			continue
 		}
-		cfg := inspect.Value(pp, "Config").(func() map[string]any)()
-		for k, v := range cfg {
-			switch k {
-			case "overrides":
-				for sym, frag := range v.(map[string]any) {
-					g.overrides[sym] = frag
-				}
-			case "descField":
-				g.descFields = append(g.descFields, v.(func(any, string) string))
-			case "descDecl":
-				g.descDecls = append(g.descDecls, v.(func(any, string) string))
-			default:
-				warn("plugin %s: unknown config key %q", dir, k)
-			}
-		}
+		inspect.Value(pp, "Configure").(func(*extschema.Config))(g.cfg)
 	}
 	return nil
 }
@@ -318,7 +295,7 @@ func (g *generator) schemaFor(te *inspect.TypeExpr) (map[string]any, error) {
 // cutoff, then the decl walk itself.
 func (g *generator) follow(pkgPath, name string) (map[string]any, error) {
 	key := pkgPath + "." + name
-	if frag, ok := g.overrides[key]; ok {
+	if frag, ok := g.cfg.Overrides[key]; ok {
 		doc, ok := frag.(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("override for %s is %T, want a schema object", key, frag)
@@ -373,7 +350,7 @@ func (g *generator) follow(pkgPath, name string) (map[string]any, error) {
 // than re-deriving the symbol from the text.
 func (g *generator) fieldDoc(f *inspect.Field, raw string) string {
 	s := strings.TrimSpace(raw)
-	for _, fn := range g.descFields {
+	for _, fn := range g.cfg.DescFields {
 		s = fn(f, s)
 	}
 	return s
@@ -381,7 +358,7 @@ func (g *generator) fieldDoc(f *inspect.Field, raw string) string {
 
 func (g *generator) declDoc(d *inspect.Decl, raw string) string {
 	s := strings.TrimSpace(raw)
-	for _, fn := range g.descDecls {
+	for _, fn := range g.cfg.DescDecls {
 		s = fn(d, s)
 	}
 	return s

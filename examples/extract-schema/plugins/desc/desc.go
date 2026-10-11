@@ -12,15 +12,15 @@ package desc
 import (
 	"reflect"
 	"strings"
+
+	"github.com/podhmo/minigo/examples/extract-schema/extschema"
 )
 
-// Config is the plugin's single entry point: the walk calls it per
-// plugin dir and merges the settings it returns.
-func Config() map[string]any {
-	return map[string]any{
-		"descField": DescField,
-		"descDecl":  DescDecl,
-	}
+// Configure is the plugin's single entry point: the walk calls it per
+// plugin dir with the shared registrar.
+func Configure(c *extschema.Config) {
+	c.DescField(DescField)
+	c.DescDecl(DescDecl)
 }
 
 // fieldNames reads (*inspect.Field).Names off the field reference.
