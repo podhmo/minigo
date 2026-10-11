@@ -1367,7 +1367,10 @@ func (c *compiler) stmt(s ast.Stmt) {
 					c.stampInferredTyps(lhs, vals)
 				}
 				if len(vals) == 1 && len(vs.Names) > 1 {
-					if isConst || len(vs.Names) != 2 || !c.commaOkRhs(vals[0]) {
+					// commaOkRhs emits the ok-form operand, so it runs at
+					// most once — its shape doubles as the typing decision.
+					isCommaOk := !isConst && len(vs.Names) == 2 && c.commaOkRhs(vals[0])
+					if !isCommaOk {
 						c.expr(vals[0])
 					}
 					c.emit3(bytecode.OpUnpack, len(vs.Names), 0, 0, vs.Pos())
@@ -1375,7 +1378,17 @@ func (c *compiler) stmt(s ast.Stmt) {
 						coerceTop()
 						coerce(vs.Names[i], c.bindLocal(vs.Names[i].Name, vs.Names[i].Pos(), isConst))
 						markIface(vs.Names[i], vals[0])
-						c.noteDeclTyp(vs.Names[i].Name, effType, isConst, nil)
+						switch {
+						case isCommaOk && i == 1:
+							// `var v, ok = m[k]` — the second name is bool.
+							c.fs.noteDeclTyp(vs.Names[i].Name, &ast.Ident{Name: "bool"})
+						default:
+							if t := c.nthResultOpTyp(vals[0], i); t.te != nil {
+								c.fs.noteDeclTyp(vs.Names[i].Name, t.te)
+							} else {
+								c.noteDeclTyp(vs.Names[i].Name, effType, isConst, nil)
+							}
+						}
 					}
 					stampVars()
 					c.iotaVal = -1
@@ -1737,13 +1750,25 @@ func (c *compiler) noteIfaceBinds(st *ast.AssignStmt) {
 		}
 		// the assignability gate learns a `:=` name's type from its RHS:
 		// `x := Duration(0)` compares like a declared Duration. The
-		// second name of a comma-ok bind is always bool.
+		// second name of a comma-ok bind is always bool; a multi-result
+		// call types each name from the callee's signature.
 		if len(st.Rhs) == len(st.Lhs) {
 			c.noteDeclTyp(id.Name, nil, false, st.Rhs[i])
-		} else if i == 0 {
-			c.noteDeclTyp(id.Name, nil, false, st.Rhs[0])
-		} else if i == 1 && commaOkStatic(st.Rhs[0]) {
-			c.fs.noteDeclTyp(id.Name, &ast.Ident{Name: "bool"})
+		} else if len(st.Rhs) == 1 && commaOkStatic(st.Rhs[0]) {
+			if i == 0 {
+				c.noteDeclTyp(id.Name, nil, false, st.Rhs[0])
+			} else {
+				c.fs.noteDeclTyp(id.Name, &ast.Ident{Name: "bool"})
+			}
+		} else if len(st.Rhs) == 1 {
+			if t := c.nthResultOpTyp(st.Rhs[0], i); t.te != nil || t.iface {
+				if t.iface {
+					c.fs.markIface(id.Name)
+				}
+				c.fs.noteDeclTyp(id.Name, t.te)
+			} else if i == 0 {
+				c.noteDeclTyp(id.Name, nil, false, st.Rhs[0])
+			}
 		}
 	}
 	c.stampInferredTyps(st.Lhs, st.Rhs)
@@ -2081,9 +2106,9 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 					return opTyp{te: vs.Type}
 				}
 				// `var x = e` — the initializer at the name's own slot
-				// types it (a multi-result single RHS stays unknown). An
-				// untyped initializer binds its literal default, like
-				// noteDeclTyp's in-function path (`var x = 5` is int).
+				// types it. An untyped initializer binds its literal
+				// default, like noteDeclTyp's in-function path
+				// (`var x = 5` is int).
 				if len(vs.Values) == len(vs.Names) && vd.NameIdx < len(vs.Values) {
 					rhs := vs.Values[vd.NameIdx]
 					t := c.staticOpTyp(rhs)
@@ -2093,6 +2118,22 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 					// an untyped initializer binds its constant's
 					// default type (`var x = 1 + 2` is int like gc).
 					return opTyp{te: t.dte}
+				}
+				// `var a, b = f()` / `var v, ok = m[k]` — name i types
+				// by the call's i-th result; a comma-ok second name is
+				// bool, the first carries the operand's static type.
+				if len(vs.Values) == 1 && len(vs.Names) > 1 {
+					if t := c.nthResultOpTyp(vs.Values[0], vd.NameIdx); t.te != nil {
+						return t
+					}
+					if vd.NameIdx == 1 && commaOkStatic(vs.Values[0]) {
+						return opTyp{te: &ast.Ident{Name: "bool"}}
+					}
+					if vd.NameIdx == 0 {
+						if t := c.staticOpTyp(vs.Values[0]); t.te != nil {
+							return t
+						}
+					}
 				}
 			}
 			return opTyp{}
@@ -2274,6 +2315,94 @@ func (c *compiler) funcTypeResultOpTyp(ft *ast.FuncType) opTyp {
 		return opTyp{iface: true}
 	}
 	return opTyp{te: te}
+}
+
+// callFuncTyp resolves a call's callee to its signature: a declared
+// function or method, or a local binding whose recorded type is a
+// FuncType. Builtins, host-package functions, and opaque callees report
+// nil.
+func (c *compiler) callFuncTyp(x *ast.CallExpr) *ast.FuncType {
+	switch f := x.Fun.(type) {
+	case *ast.Ident:
+		if b := c.fs.lookupBinding(f.Name); b != nil {
+			if ft, ok := ast.Unparen(b.declTyp).(*ast.FuncType); ok {
+				return ft
+			}
+			return nil
+		}
+		if c.pkg != nil && c.pkg.Index != nil {
+			if fd := c.pkg.Index.Funcs[f.Name]; fd != nil {
+				return fd.Func.Type
+			}
+		}
+	case *ast.SelectorExpr:
+		if id, ok := f.X.(*ast.Ident); ok {
+			if _, isPkg := c.importRef(id.Name); isPkg {
+				return nil
+			}
+		}
+		base := c.staticOpTyp(f.X)
+		if base.te == nil {
+			return nil
+		}
+		if tdi := c.typeDeclOf(base.te); tdi != nil {
+			if md := tdi.Methods[f.Sel.Name]; md != nil {
+				return md.Func.Type
+			}
+		}
+	}
+	return nil
+}
+
+// nthResultOpTyp resolves the static type a multi-result call binds at
+// position i — `a, b := f()` types a by result 0, b by result 1, like
+// gc's signature-based typing. A non-call RHS, an opaque callee, or a
+// result that spells a declared type parameter reports unknown.
+func (c *compiler) nthResultOpTyp(e ast.Expr, i int) opTyp {
+	x, ok := ast.Unparen(e).(*ast.CallExpr)
+	if !ok || c.conversionCall(x) {
+		return opTyp{}
+	}
+	ft := c.callFuncTyp(x)
+	if ft == nil || ft.Results == nil {
+		return opTyp{}
+	}
+	pos := 0
+	for _, res := range ft.Results.List {
+		arity := len(res.Names)
+		if arity == 0 {
+			arity = 1
+		}
+		if i < pos+arity {
+			te := res.Type
+			if id, ok := ast.Unparen(te).(*ast.Ident); ok && funcTypeHasParam(ft, id.Name) {
+				return opTyp{}
+			}
+			if c.isIfaceTypeExpr(te) {
+				return opTyp{iface: true}
+			}
+			return opTyp{te: te}
+		}
+		pos += arity
+	}
+	return opTyp{}
+}
+
+// funcTypeHasParam reports whether name is one of ft's declared type
+// parameters — a result spelling it is opaque to the gate (each
+// instantiation binds it differently).
+func funcTypeHasParam(ft *ast.FuncType, name string) bool {
+	if ft.TypeParams == nil {
+		return false
+	}
+	for _, tp := range ft.TypeParams.List {
+		for _, n := range tp.Names {
+			if n.Name == name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // mergeUntypedDte resolves the default type of an untyped constant
@@ -3425,11 +3554,14 @@ func (c *compiler) rangeStmt(st *ast.RangeStmt) {
 		c.emit3(bytecode.OpSetRefs, nvars, 1, 0, st.Pos())
 	} else {
 		// OpRangeNext pushes nvars values (key, val); bind in reverse.
+		keyTyp, valTyp := c.rangeVarTyps(st.X)
 		if st.Value != nil {
 			c.bindRangeVar(st.Value, st.Tok == token.DEFINE)
+			c.noteRangeVar(st.Value, valTyp, st.Tok == token.DEFINE)
 		}
 		if st.Key != nil {
 			c.bindRangeVar(st.Key, st.Tok == token.DEFINE)
+			c.noteRangeVar(st.Key, keyTyp, st.Tok == token.DEFINE)
 		}
 	}
 	c.stmt(st.Body)
@@ -3460,6 +3592,64 @@ func (c *compiler) bindRangeVar(e ast.Expr, define bool) {
 		return
 	}
 	c.storeTarget(e, define)
+}
+
+// noteRangeVar records the static type a `for k, v := range` name binds
+// so the operand gate sees it — `for i := range arr` binds int, and
+// comparing it against a named type traps like gc. Only `:=` binds
+// declare a new name.
+func (c *compiler) noteRangeVar(e ast.Expr, te ast.Expr, define bool) {
+	if !define || te == nil {
+		return
+	}
+	id, ok := e.(*ast.Ident)
+	if !ok || id.Name == "_" {
+		return
+	}
+	c.fs.noteDeclTyp(id.Name, te)
+}
+
+// rangeVarTyps resolves the (key, value) types a `for k, v := range e`
+// binds: int indices for arrays, slices, and strings; the operand's own
+// type for an integer range; a map's key and value types; a channel's
+// element on the single-variable form. An opaque range expression
+// reports none.
+func (c *compiler) rangeVarTyps(e ast.Expr) (key, val ast.Expr) {
+	t := c.staticOpTyp(e)
+	te := t.te
+	if te == nil {
+		te = t.dte // `for i := range 10` iterates ints
+	}
+	if te == nil {
+		return nil, nil
+	}
+	u := c.unfoldTypExpr(te, 4)
+	if s, ok := u.(*ast.StarExpr); ok {
+		// ranging a pointer to array iterates the array
+		u = c.unfoldTypExpr(s.X, 3)
+	}
+	intIdent := &ast.Ident{Name: "int"}
+	switch tt := u.(type) {
+	case *ast.ArrayType:
+		return intIdent, tt.Elt
+	case *ast.MapType:
+		return tt.Key, tt.Value
+	case *ast.ChanType:
+		// `for v := range ch` binds the element to the single var;
+		// a second variable is a compile error elsewhere anyway.
+		return tt.Value, nil
+	case *ast.Ident:
+		if tt.Name == "string" {
+			// `for i, r := range s` — int index, rune element
+			return intIdent, &ast.Ident{Name: "rune"}
+		}
+		if intTypeNames[runtime.CanonicalBasicName(tt.Name)] {
+			// `for i := range n` binds n's own type — a named
+			// integer keeps its name (gc: i is N, not int).
+			return te, nil
+		}
+	}
+	return nil, nil
 }
 
 // isBlankIdent reports whether e is the blank identifier — possibly
@@ -3610,6 +3800,7 @@ func (c *compiler) selectStmt(st *ast.SelectStmt) {
 		lhs      []ast.Expr
 		define   bool
 		send     bool
+		recv     ast.Expr // receive case's channel operand
 	}
 	var cases []selCase
 	var defaultBody []ast.Stmt
@@ -3645,6 +3836,7 @@ func (c *compiler) selectStmt(st *ast.SelectStmt) {
 			sc.nrecv = len(lhs)
 			sc.lhs = lhs
 			sc.define = define
+			sc.recv = recv.X
 		}
 		cases = append(cases, sc)
 	}
@@ -3680,7 +3872,7 @@ func (c *compiler) selectStmt(st *ast.SelectStmt) {
 		c.patchA(jmps[i], len(c.ch.Code))
 		c.fs.pushBlock()
 		if !sc.send {
-			c.bindRecv(sc.lhs, sc.define)
+			c.bindRecv(sc.lhs, sc.define, sc.recv)
 		}
 		for _, bs := range sc.body {
 			c.stmt(bs)
@@ -3731,16 +3923,40 @@ func selectRecv(comm ast.Stmt) (recv *ast.UnaryExpr, lhs []ast.Expr, define bool
 
 // bindRecv binds a select receive payload (already on the stack) to the
 // case's LHS: a Tuple for two binds, a plain value for one, discarded else.
-func (c *compiler) bindRecv(lhs []ast.Expr, define bool) {
+// A `:=` name also learns its static type for the operand gate — the
+// channel's element for v, bool for ok.
+func (c *compiler) bindRecv(lhs []ast.Expr, define bool, chExpr ast.Expr) {
+	var elem ast.Expr
+	if define && len(lhs) > 0 && chExpr != nil {
+		if t := c.staticOpTyp(chExpr); t.te != nil {
+			elem = c.chanElemTypExpr(t.te, 4)
+		}
+	}
+	note := func(l ast.Expr, te ast.Expr) {
+		if !define || te == nil {
+			return
+		}
+		if id, ok := l.(*ast.Ident); ok && id.Name != "_" {
+			c.fs.noteDeclTyp(id.Name, te)
+		}
+	}
 	switch len(lhs) {
 	case 0:
 		c.emit(bytecode.OpPop, 0, 0, 0)
 	case 1:
 		c.storeTarget(lhs[0], define)
+		note(lhs[0], elem)
 	default:
 		c.emit3(bytecode.OpUnpack, len(lhs), 0, 0, 0)
 		for i := len(lhs) - 1; i >= 0; i-- {
 			c.storeTarget(lhs[i], define)
+		}
+		for i, l := range lhs {
+			if i == 0 {
+				note(l, elem)
+			} else {
+				note(l, &ast.Ident{Name: "bool"})
+			}
 		}
 	}
 }
@@ -4787,6 +5003,14 @@ func binOpOf(tok token.Token) (bytecode.BinOp, bool) {
 		return bytecode.BinAndNot, true
 	}
 	return 0, false
+}
+
+// intTypeNames is the predeclared integer spellings (canonical form —
+// byte and rune resolve through CanonicalBasicName).
+var intTypeNames = map[string]bool{
+	"int": true, "int8": true, "int16": true, "int32": true, "int64": true,
+	"uint": true, "uint8": true, "uint16": true, "uint32": true,
+	"uint64": true, "uintptr": true,
 }
 
 var predeclaredTypeNames = map[string]bool{
