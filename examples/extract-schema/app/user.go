@@ -124,14 +124,34 @@ type Byte byte
 // Byte2 adds one hop to the named-byte chase.
 type Byte2 Byte
 
+// ByteM is a named byte whose pointer marshals itself: gc escapes the
+// []byte base64 shortcut when the element (or its pointer) implements
+// json.Marshaler — []ByteM is an array of marshaled elements.
+type ByteM byte
+
+func (b *ByteM) MarshalJSON() ([]byte, error) { return []byte(`"m"`), nil }
+
+// ByteT marshals elements through encoding.TextMarshaler — the same
+// base64 escape as MarshalJSON.
+type ByteT byte
+
+func (b ByteT) MarshalText() ([]byte, error) { return []byte("t"), nil }
+
+// Byte2M chains to a marshaling type — `type Byte2M ByteM` has no
+// methods of its own, so []Byte2M keeps the base64 shape.
+type Byte2M ByteM
+
 // Blobbed covers the byte-slice spellings: builtin and named byte
 // elements marshal as base64, a named slice-of-bytes element stays an
 // array of base64 strings, and a fixed array keeps the array shape.
 type Blobbed struct {
-	Data   []Byte      `json:"data"`
-	Data2  []Byte2     `json:"data2"`
-	Raw    []byte      `json:"raw"`
-	Fixed  [4]byte     `json:"fixed"`
-	Subs   []dep.Bin   `json:"subs"`
-	Moneys []dep.Money `json:"moneys"`
+	Data      []Byte      `json:"data"`
+	Data2     []Byte2     `json:"data2"`
+	Raw       []byte      `json:"raw"`
+	Fixed     [4]byte     `json:"fixed"`
+	Subs      []dep.Bin   `json:"subs"`
+	Moneys    []dep.Money `json:"moneys"`
+	Marshaled []ByteM     `json:"marshaled"`
+	Texted    []ByteT     `json:"texted"`
+	Chained   []Byte2M    `json:"chained"`
 }
