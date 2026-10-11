@@ -871,6 +871,10 @@ func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File, lenient bo
 	if err != nil {
 		var re *index.RedeclError
 		if errors.As(err, &re) {
+			if re.Method {
+				// gc: `method T.M already declared at <file>:<line>:<col>`
+				return fmt.Errorf("%s: method %s already declared at %s", p.Fset.Position(re.Pos), re.Name, p.Fset.Position(re.PrevPos))
+			}
 			return fmt.Errorf("%s: %s\n\t%s: other declaration of %s", p.Fset.Position(re.Pos), re, p.Fset.Position(re.PrevPos), re.Name)
 		}
 		return fmt.Errorf("index %s: %w", p.Path, err)
