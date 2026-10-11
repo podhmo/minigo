@@ -5,7 +5,7 @@
 // module path — the engine binds both to the same intrinsics, so the
 // panic bodies in stub.go never execute inside minigo.
 //
-// The view types (Decl, File, Import, Field, Sig, TypeExpr) are real:
+// The view types (Decl, File, Import, Field, Sig, TypeExpr, Node) are real:
 // intrinsics return them boxed as host values, so field access works
 // through reflective member dispatch. Unexported fields keep the AST
 // context (declaring file, expr) that functions like SymbolID and
@@ -1689,6 +1689,183 @@ func ASTOf(s *Decl) (any, error) {
 	}
 	return nil, fmt.Errorf("inspect.AST: %s carries no AST node", s.Name)
 }
+
+// Node is a view over one statement or expression inside a function
+// body — the body-level counterpart of TypeExpr for expressions: it
+// keeps the AST node plus the declaring file's context, so Expr can
+// anchor an expression for the SymbolID/Resolve machinery.
+type Node struct {
+	Kind   string    // ast node name: "BlockStmt", "CallExpr", "Ident", ...
+	Text   string    // printer spelling of the node
+	Detail string    // the operator or literal kind where the node has one: "+", "STRING", ":="
+	Role   string    // the field name it fills in its parent ("List", "Fun", "Cond"); "" on the Body root
+	Pos    *Position // position of the node
+
+	node ast.Node
+	file *syntax.File
+	pkg  *runtime.Package
+}
+
+// NewNode builds a body-node view. role names the field the node
+// fills in its parent; pass "" for a Body root.
+func NewNode(n ast.Node, role string, f *syntax.File, p *runtime.Package) *Node {
+	v := &Node{Role: role, node: n, file: f, pkg: p}
+	if n == nil {
+		return v
+	}
+	v.Kind = nodeKind(n)
+	v.Detail = nodeDetail(n)
+	if p != nil && p.Fset != nil {
+		v.Pos = posOf(p.Fset, n.Pos())
+	}
+	var buf bytes.Buffer
+	fset := token.NewFileSet()
+	if p != nil && p.Fset != nil {
+		fset = p.Fset
+	}
+	if err := printer.Fprint(&buf, fset, n); err == nil {
+		v.Text = buf.String()
+	}
+	return v
+}
+
+// nodeKind reports the concrete ast node name without the package
+// ("*ast.CallExpr" -> "CallExpr"), the same convention TypeExpr.Kind
+// follows.
+func nodeKind(n ast.Node) string {
+	t := reflect.TypeOf(n)
+	if t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil {
+		return ""
+	}
+	return t.Name()
+}
+
+// nodeDetail reports the single token that carries the node's
+// semantics beyond its Kind — a literal kind (BasicLit) or an
+// operator/keyword (binary, unary, assign, inc-dec, branch, range,
+// gen-decl). "" everywhere else.
+func nodeDetail(n ast.Node) string {
+	switch x := n.(type) {
+	case *ast.BasicLit:
+		return x.Kind.String()
+	case *ast.UnaryExpr:
+		return x.Op.String()
+	case *ast.BinaryExpr:
+		return x.Op.String()
+	case *ast.AssignStmt:
+		return x.Tok.String()
+	case *ast.IncDecStmt:
+		return x.Tok.String()
+	case *ast.BranchStmt:
+		return x.Tok.String()
+	case *ast.RangeStmt:
+		return x.Tok.String()
+	case *ast.GenDecl:
+		return x.Tok.String()
+	}
+	return ""
+}
+
+// BodyOf returns a func or method decl's body as a Node — the root
+// block (Kind "BlockStmt") whose children are the body's statements,
+// so scripts can walk statements and expressions a signature stops
+// short of. A func decl without a body reports nil; host symbols and
+// non-func decls report an error.
+func BodyOf(s *Decl) (*Node, error) {
+	if s.decl == nil {
+		return nil, fmt.Errorf("inspect.Body: host symbol %s has no declaration", s.Name)
+	}
+	if s.decl.Func == nil {
+		return nil, fmt.Errorf("inspect.Body: %s is a %s, not a func", s.Name, s.Kind)
+	}
+	if s.decl.Func.Body == nil {
+		return nil, nil
+	}
+	return NewNode(s.decl.Func.Body, "", s.file, s.Package), nil
+}
+
+// NodesOf returns a node's children in source order — every
+// statement, expression, and decl node the AST links from its struct
+// fields (a CallExpr's children are Fun then Args; an IfStmt's are
+// Init?, Cond, Body, Else?). Each child carries the field name it
+// fills as its Role, so optional parts stay distinguishable without
+// positional guessing. It is a role-keeping generalization of
+// ast.Walk's own enumeration, computed reflectively so every node
+// type is covered.
+func NodesOf(n *Node) []*Node {
+	if n == nil || n.node == nil {
+		return nil
+	}
+	rv := reflect.ValueOf(n.node)
+	for rv.Kind() == reflect.Interface || rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return nil
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Struct {
+		return nil
+	}
+	nodeT := reflect.TypeOf((*ast.Node)(nil)).Elem()
+	rt := rv.Type()
+	var out []*Node
+	for i := 0; i < rt.NumField(); i++ {
+		fd := rt.Field(i)
+		if fd.PkgPath != "" { // unexported — unreachable through Interface()
+			continue
+		}
+		fv := rv.Field(i)
+		if fv.Type().Implements(nodeT) {
+			if cn, ok := fv.Interface().(ast.Node); ok && !isNilNode(cn) {
+				out = append(out, NewNode(cn, fd.Name, n.file, n.pkg))
+			}
+			continue
+		}
+		if fv.Kind() == reflect.Slice {
+			for j := 0; j < fv.Len(); j++ {
+				if cn, ok := fv.Index(j).Interface().(ast.Node); ok && !isNilNode(cn) {
+					out = append(out, NewNode(cn, fd.Name, n.file, n.pkg))
+				}
+			}
+		}
+	}
+	return out
+}
+
+// isNilNode reports whether a node-typed value is absent — a nil
+// interface element or a typed nil pointer, both of which appear in
+// optional AST fields (Else, Type of a type switch's guard).
+func isNilNode(n ast.Node) bool {
+	if n == nil {
+		return true
+	}
+	rv := reflect.ValueOf(n)
+	return rv.Kind() == reflect.Pointer && rv.IsNil()
+}
+
+// ExprOf wraps an expression node as a decl-anchored TypeExpr — the
+// expression keeps its declaring file's context, so the TypeExpr
+// machinery applies to the names it mentions: SymbolID resolves
+// `pkg.Name` through the file's import table (and a package-local
+// name to the package), and Children/UnWrap navigate the spelling.
+// Non-expression nodes report nil.
+func ExprOf(n *Node) *TypeExpr {
+	if n == nil || n.node == nil {
+		return nil
+	}
+	e, ok := n.node.(ast.Expr)
+	if !ok {
+		return nil
+	}
+	return NewTypeExpr(e, n.file, n.pkg)
+}
+
+// ASTNode exposes the underlying AST node — engine-only, the same
+// escape hatch AST() gives a decl, one level down.
+func (n *Node) ASTNode() ast.Node { return n.node }
 
 // SyntaxFile exposes the underlying file — engine-only.
 func (f *File) SyntaxFile() *syntax.File { return f.sf }

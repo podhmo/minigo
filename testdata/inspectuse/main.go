@@ -1609,3 +1609,115 @@ func PackageOfDup() string {
 	}
 	return "ok"
 }
+
+// BodyWalk: a func decl's body is walkable through Body/Nodes —
+// Kind/Role/Detail/Text per node, children in source order, and Expr
+// anchors expressions for SymbolID.
+func BodyWalk() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	b := inspect.Body(inspect.Symbol(p, "WalkMe"))
+	if b == nil || b.Kind != "BlockStmt" || b.Role != "" {
+		return "bad root"
+	}
+	stmts := inspect.Nodes(b)
+	if len(stmts) != 4 {
+		return "want 4 stmts, got " + fmt.Sprint(len(stmts))
+	}
+	// stmt0: m.WriteString("a")
+	s0 := stmts[0]
+	if s0.Kind != "ExprStmt" || s0.Role != "List" {
+		return "bad stmt0: " + s0.Kind + "/" + s0.Role
+	}
+	call := inspect.Nodes(s0)[0]
+	if call.Kind != "CallExpr" || call.Role != "X" {
+		return "bad call: " + call.Kind + "/" + call.Role
+	}
+	cs := inspect.Nodes(call)
+	if len(cs) != 2 || cs[0].Role != "Fun" || cs[1].Role != "Args" {
+		return "bad call children"
+	}
+	sel := cs[0]
+	ss := inspect.Nodes(sel)
+	if sel.Kind != "SelectorExpr" || len(ss) != 2 ||
+		ss[0].Kind != "Ident" || ss[0].Text != "m" || ss[0].Role != "X" ||
+		ss[1].Text != "WriteString" || ss[1].Role != "Sel" {
+		return "bad sel"
+	}
+	lit := cs[1]
+	if lit.Kind != "BasicLit" || lit.Detail != "STRING" || lit.Text != `"a"` {
+		return "bad lit: " + lit.Kind + "/" + lit.Detail + "/" + lit.Text
+	}
+	if lit.Pos == nil || lit.Pos.Line <= 0 || lit.Pos.File == "" {
+		return "bad pos"
+	}
+	// stmt1: helper := func(x string) { ... }
+	s1 := stmts[1]
+	if s1.Kind != "AssignStmt" || s1.Detail != ":=" {
+		return "bad assign: " + s1.Kind + "/" + s1.Detail
+	}
+	as := inspect.Nodes(s1)
+	if len(as) != 2 || as[0].Role != "Lhs" || as[1].Role != "Rhs" || as[1].Kind != "FuncLit" {
+		return "bad assign children"
+	}
+	fs := inspect.Nodes(as[1])
+	if len(fs) != 2 || fs[0].Role != "Type" || fs[1].Role != "Body" || fs[1].Kind != "BlockStmt" {
+		return "bad funclit"
+	}
+	if n := len(inspect.Nodes(fs[1])); n != 1 {
+		return "bad nested body: " + fmt.Sprint(n)
+	}
+	// stmt2: helper(strings.TrimSpace("c")) — the argument call's Fun
+	// resolves through Expr's decl anchor.
+	inner := inspect.Nodes(inspect.Nodes(stmts[2])[0])
+	fun := inspect.Expr(inspect.Nodes(inner[1])[0])
+	if fun == nil || fun.Kind != "SelectorExpr" {
+		return "bad expr wrap"
+	}
+	sid := inspect.SymbolID(fun)
+	if sid == nil || sid.PackagePath != "strings" || sid.Name != "TrimSpace" {
+		return "bad sid"
+	}
+	// stmt3: if m != nil { ... } — optional parts keep roles
+	s3 := stmts[3]
+	if s3.Kind != "IfStmt" {
+		return "bad if"
+	}
+	is := inspect.Nodes(s3)
+	if len(is) != 2 || is[0].Role != "Cond" || is[1].Role != "Body" {
+		return "bad if children"
+	}
+	if is[0].Kind != "BinaryExpr" || is[0].Detail != "!=" {
+		return "bad cond: " + is[0].Kind + "/" + is[0].Detail
+	}
+	// Expr on a non-expression node reports nil.
+	if inspect.Expr(b) != nil || inspect.Expr(s0) != nil {
+		return "non-expr wrapped"
+	}
+	// AST on a node hands back its raw ast.Node.
+	raw := inspect.AST(lit)
+	if fmt.Sprintf("%T", raw) != "*ast.BasicLit" || raw.Value != `"a"` {
+		return "bad raw node"
+	}
+	return "ok"
+}
+
+// BodyNil: a func decl without a body reports nil, not an empty walk.
+func BodyNil() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	if inspect.Body(inspect.Symbol(p, "NoBody")) != nil {
+		return "want nil body"
+	}
+	return "ok"
+}
+
+// BodyTypeTrap: a type decl has no body — traps.
+func BodyTypeTrap() string {
+	inspect.Body(inspect.Symbol(inspect.DirOf("./testdata/inspectpkg"), "User"))
+	return "swallowed"
+}
+
+// BodyBoundTrap: a bound symbol carries no body — traps.
+func BodyBoundTrap() string {
+	inspect.Body(inspect.Symbol(inspect.PackageOf("strings"), "Builder"))
+	return "swallowed"
+}

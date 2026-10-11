@@ -493,3 +493,21 @@ type AliasTotal struct{}
 
 // Total is spelled with the aliased element type.
 func (AliasTotal) Total(xs []AInt) int { return 0 }
+
+// WalkMe is a body-traversal fixture: a call with a literal arg, a
+// func literal holding a nested call, and an import-anchored call, so
+// Body/Nodes/Expr coverage has registerRoutes-shaped nesting.
+func WalkMe(m *strings.Builder) {
+	m.WriteString("a")
+	helper := func(x string) {
+		m.WriteString("b" + x)
+	}
+	helper(strings.TrimSpace("c"))
+	if m != nil {
+		m.WriteString("d")
+	}
+}
+
+// NoBody is a bodyless func decl — parseable but uncompilable; Body
+// reports nil for it.
+func NoBody()

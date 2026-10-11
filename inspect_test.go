@@ -61,6 +61,8 @@ func TestInspect(t *testing.T) {
 		"PkgMetaView", // metadata via accessors; member shadow wins (#26)
 		"BuiltinPathConst",
 		"ASTWalk",
+		"BodyWalk",
+		"BodyNil",
 		// lenient locators: FileOf/PackageOf build like DirOf — a target
 		// that cannot compile still enumerates its decls.
 		"FileOfDup",
@@ -101,6 +103,8 @@ func TestInspect(t *testing.T) {
 		"PkgDirTrap",                 // metadata field names trap with an inspect.* hint
 		"CurPkgPathTrap",             // the reported d.Package.Path shape stays loud
 		"ASTBoundTrap",               // bound symbols carry no AST node
+		"BodyTypeTrap",               // a type decl has no body
+		"BodyBoundTrap",              // bound symbols carry no body
 	} {
 		if _, err := e.Run(context.Background(), "./testdata/inspectuse", fn); err == nil {
 			t.Errorf("%s: expected trap, got nil", fn)

@@ -395,6 +395,9 @@ func (e *Engine) installInspect() {
 			return boxedSlice(es), nil
 		}),
 		"AST": bf("AST", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if n, err := nodeViewOf(args[0]); err == nil {
+				return &runtime.GoValue{V: n.ASTNode()}, nil
+			}
 			s, err := declViewOf(args[0])
 			if err != nil {
 				return nil, err
@@ -404,6 +407,39 @@ func (e *Engine) installInspect() {
 				return nil, err
 			}
 			return &runtime.GoValue{V: node}, nil
+		}),
+		// ---- body layer ----
+		"Body": bf("Body", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			s, err := declViewOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			n, err := xinspect.BodyOf(s)
+			if err != nil {
+				return nil, err
+			}
+			if n == nil {
+				return runtime.NIL, nil
+			}
+			return &runtime.GoValue{V: n}, nil
+		}),
+		"Nodes": bf("Nodes", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			n, err := nodeViewOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			return boxedSlice(xinspect.NodesOf(n)), nil
+		}),
+		"Expr": bf("Expr", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			n, err := nodeViewOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			te := xinspect.ExprOf(n)
+			if te == nil {
+				return runtime.NIL, nil
+			}
+			return &runtime.GoValue{V: te}, nil
 		}),
 		"Signature": bf("Signature", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
@@ -637,6 +673,7 @@ func goView[T any](v runtime.Value, what string) (*T, error) {
 }
 
 func declViewOf(v runtime.Value) (*xinspect.Decl, error) { return goView[xinspect.Decl](v, "decl") }
+func nodeViewOf(v runtime.Value) (*xinspect.Node, error) { return goView[xinspect.Node](v, "node") }
 func fileViewOf(v runtime.Value) (*xinspect.File, error) { return goView[xinspect.File](v, "file") }
 func typeExprOf(v runtime.Value) (*xinspect.TypeExpr, error) {
 	return goView[xinspect.TypeExpr](v, "type expression")

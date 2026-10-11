@@ -326,3 +326,97 @@ func TestTypeExprSub(t *testing.T) {
 		t.Error("Sub(nil) should return nil")
 	}
 }
+
+// TestBodyNodes: BodyOf roots a Node walk whose NodesOf enumeration
+// visits exactly ast.Inspect's preorder — every child node, in the
+// same order — so script-side body traversal loses nothing to the
+// view layer. Kind/Role/Detail/Text carry the discrimination data.
+func TestBodyNodes(t *testing.T) {
+	e := newEngine(t)
+	ctx := context.Background()
+	p, err := e.Package(ctx, "./testdata/inspectpkg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := p.Index.Funcs["WalkMe"]
+	if d == nil {
+		t.Fatal("no WalkMe decl")
+	}
+	root, err := xinspect.BodyOf(xinspect.NewDecl(p, d))
+	if err != nil {
+		t.Fatalf("BodyOf: %v", err)
+	}
+	if root.Kind != "BlockStmt" || root.Role != "" {
+		t.Fatalf("root = %s/%q", root.Kind, root.Role)
+	}
+
+	var want []ast.Node
+	ast.Inspect(d.Func.Body, func(n ast.Node) bool {
+		if n != nil {
+			want = append(want, n)
+		}
+		return true
+	})
+	var got []ast.Node
+	var walk func(n *xinspect.Node)
+	walk = func(n *xinspect.Node) {
+		got = append(got, n.ASTNode())
+		for _, c := range xinspect.NodesOf(n) {
+			walk(c)
+		}
+	}
+	walk(root)
+	if len(got) != len(want) {
+		t.Fatalf("walked %d nodes, want %d (ast.Inspect)", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("node %d: got %T %v, want %T %v", i, got[i], got[i], want[i], want[i])
+		}
+	}
+
+	// the roles a registerRoutes-shaped walk navigates by
+	stmts := xinspect.NodesOf(root)
+	call := xinspect.NodesOf(stmts[0])[0] // ExprStmt -> CallExpr
+	if call.Kind != "CallExpr" || call.Role != "X" {
+		t.Fatalf("call = %s/%q", call.Kind, call.Role)
+	}
+	cs := xinspect.NodesOf(call)
+	if len(cs) != 2 || cs[0].Role != "Fun" || cs[1].Role != "Args" {
+		t.Fatalf("call children roles: %v", rolesOf(cs))
+	}
+	lit := cs[1]
+	if lit.Kind != "BasicLit" || lit.Detail != "STRING" || lit.Text != `"a"` {
+		t.Errorf("lit = %s/%s %q", lit.Kind, lit.Detail, lit.Text)
+	}
+	if lit.Pos == nil || lit.Pos.Line <= 0 {
+		t.Errorf("lit.Pos = %v", lit.Pos)
+	}
+	// Expr anchors a body expression for the SymbolID machinery.
+	fun := xinspect.ExprOf(cs[0])
+	if fun == nil || fun.Kind != "SelectorExpr" {
+		t.Fatalf("ExprOf(sel) = %v", fun)
+	}
+	if xinspect.ExprOf(root) != nil {
+		t.Error("ExprOf on a statement should be nil")
+	}
+
+	// nil and non-func cases
+	if b, err := xinspect.BodyOf(xinspect.NewDecl(p, p.Index.Funcs["NoBody"])); err != nil || b != nil {
+		t.Errorf("NoBody: got %v, %v — want nil, nil", b, err)
+	}
+	if _, err := xinspect.BodyOf(xinspect.NewDecl(p, nil)); err == nil {
+		t.Error("want error for a host symbol")
+	}
+	if _, err := xinspect.BodyOf(xinspect.NewDecl(p, p.Index.Vars["Count"])); err == nil {
+		t.Error("want error for a var decl")
+	}
+}
+
+func rolesOf(ns []*xinspect.Node) []string {
+	var out []string
+	for _, n := range ns {
+		out = append(out, n.Kind+":"+n.Role)
+	}
+	return out
+}

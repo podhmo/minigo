@@ -147,9 +147,31 @@ func IEmbeds(s *Decl) []*TypeExpr { panic("minigo intrinsic") }
 // AST returns the raw AST node anchoring a decl: *ast.FuncDecl for
 // funcs and methods, *ast.TypeSpec for type decls, *ast.ValueSpec for
 // var and const decls — plainly, so fields like .Body and methods
-// like .Pos() resolve through the host reflect facade. Host symbols
-// trap.
-func AST(s *Decl) any { panic("minigo intrinsic") }
+// like .Pos() resolve through the host reflect facade. On a body
+// Node it returns that node's own raw ast.Node. Host symbols trap.
+func AST(x any) any { panic("minigo intrinsic") }
+
+// Body returns a func or method decl's body as a Node — the root
+// block (Kind "BlockStmt") whose children are the body's statements,
+// so scripts can walk the statements and expressions a signature
+// stops short of (the route registrations inside a registerRoutes
+// body, the calls inside a task). A func decl without a body reports
+// nil; host symbols and non-func decls trap.
+func Body(s *Decl) *Node { panic("minigo intrinsic") }
+
+// Nodes returns a node's children in source order — every statement,
+// expression, and decl node the AST links from its fields, each
+// tagged with the field name it fills as its Role: a CallExpr's
+// children are Fun then Args, an IfStmt's are Init?, Cond, Body,
+// Else?, and a BlockStmt's are its List. Optional parts keep their
+// roles, so they stay distinguishable without positional guessing.
+func Nodes(n *Node) []*Node { panic("minigo intrinsic") }
+
+// Expr wraps an expression node as a decl-anchored TypeExpr — the
+// names it mentions resolve against the declaring file, so
+// SymbolID/Resolve/Children apply (`strings.TrimSpace` inside a body
+// resolves to {strings, TrimSpace}). Non-expression nodes report nil.
+func Expr(n *Node) *TypeExpr { panic("minigo intrinsic") }
 
 // Signature returns a func/method's {Recv, Params, Results}.
 func Signature(s *Decl) *Sig { panic("minigo intrinsic") }
