@@ -203,6 +203,28 @@ func TestCallArgs(t *testing.T) {
 	}
 }
 
+func TestCallArgsArrayKeyMap(t *testing.T) {
+	e := newEngine(t)
+	got := run(t, e, "./testdata/callargs", "ArrKey", map[[1]int]string{{1}: "x"})
+	// DeepUnwrap on a map with array keys panicked "hash of unhashable
+	// type []interface {}": the key must stay a comparable box.
+	m, ok := runtime.DeepUnwrap(got).(map[any]any)
+	if !ok {
+		t.Fatalf("got %T, want map[any]any", got)
+	}
+	if len(m) != 1 {
+		t.Fatalf("got %d entries, want 1", len(m))
+	}
+	for k, v := range m {
+		if _, ok := k.(*runtime.Slice); !ok {
+			t.Errorf("key is %T, want the boxed script array (*runtime.Slice)", k)
+		}
+		if v != "x" {
+			t.Errorf("value = %v, want x", v)
+		}
+	}
+}
+
 func TestLazyImport(t *testing.T) {
 	e := newEngine(t)
 	// OK never references lazyboom -> its panicking init must not run

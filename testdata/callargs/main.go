@@ -61,3 +61,8 @@ func AnyElemGet(rs []any) int                      { return rs[0].(map[string]an
 func AnyIfaceElem(v interface{}) int               { return v.(map[string]any)["k"].(int) }
 func DeepNest(m map[string]any) int                { return m["m"].([]map[string]any)[0]["k"].(int) }
 func MapSliceSet(rs []map[string]any) int          { rs[0]["k"] = 9; return rs[0]["k"].(int) }
+
+// ArrKey echoes a map with array keys back to the host — the snapshot
+// unboxes it, and the result's keys are *runtime.Slice boxes that must
+// not expand to unhashable []any on the way out (DeepUnwrap).
+func ArrKey(m map[[1]int]string) map[[1]int]string { return m }
