@@ -498,3 +498,39 @@ func TestBodyScope(t *testing.T) {
 		t.Errorf("unshadowed select = %v, %v", sid, ok)
 	}
 }
+
+// TestTypeFieldsError pins the contract the script-visible TypeFields
+// intrinsic shares: a non-composite TypeExpr reports an error (a trap
+// in scripts), so a walk gates on Kind first instead of reading an
+// empty field list as "no members". Doc strings arrive trimmed of the
+// trailing newline CommentGroup.Text appends.
+func TestTypeFieldsError(t *testing.T) {
+	e := newEngine(t)
+	ctx := context.Background()
+	p, err := e.Package(ctx, "./testdata/inspectpkg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := lookupType(t, p, "User")
+	if strings.HasSuffix(d.Doc, "\n") || d.Doc == "" {
+		t.Errorf("decl doc not trimmed: %q", d.Doc)
+	}
+	fs, err := xinspect.FieldsOf(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasSuffix(fs[0].Doc, "\n") || fs[0].Doc == "" {
+		t.Errorf("field doc not trimmed: %q", fs[0].Doc)
+	}
+	if _, err := xinspect.TypeFieldsOf(fs[0].Type); err == nil {
+		t.Error("TypeFieldsOf on a named leaf: want error")
+	}
+	te, err := xinspect.DefOf(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sfs, err := xinspect.TypeFieldsOf(te)
+	if err != nil || len(sfs) != len(fs) {
+		t.Errorf("TypeFieldsOf on the struct spelling: %v %d", err, len(sfs))
+	}
+}

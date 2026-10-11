@@ -109,7 +109,9 @@ func Comments(f *File) []*Comment { panic("minigo intrinsic") }
 // Kind reports a symbol's kind: func|method|var|const|type|host.
 func Kind(s *Decl) string { panic("minigo intrinsic") }
 
-// Doc returns a symbol's doc comment text.
+// Doc returns a symbol's doc comment text with the trailing newline
+// removed — emitters can place it directly (Field.Doc and File.Doc
+// follow the same contract).
 func Doc(s *Decl) string { panic("minigo intrinsic") }
 
 // Pos returns a decl's declaring position — nil for host symbols.
@@ -230,7 +232,9 @@ func IsAlias(s *Decl) bool { panic("minigo intrinsic") }
 // expression — a struct spelling's fields (names, type, tag) or an
 // interface spelling's elements — so tags inside anonymous struct
 // types are readable where no decl names the composite. Other shapes
-// trap.
+// trap: the same error host TypeFieldsOf reports, kept loud on
+// purpose — a walk that only wants composites gates on Kind
+// (StructType/InterfaceType) instead of silently losing fields.
 func TypeFields(te *TypeExpr) []*Field { panic("minigo intrinsic") }
 
 // Children drills into a composite type expression: []T -> T,

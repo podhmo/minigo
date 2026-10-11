@@ -45,7 +45,7 @@ type Decl struct {
 	Name    string
 	File    string    // declaring file name ("" for host symbols)
 	Pos     *Position // declaring position (nil for host symbols)
-	Doc     string    // doc comment text ("" for host symbols)
+	Doc     string    // doc comment text, trailing newline trimmed ("" for host symbols)
 
 	decl  *index.Decl
 	file  *syntax.File
@@ -81,7 +81,7 @@ func NewDecl(pkg *runtime.Package, d *index.Decl) *Decl {
 	case index.TypeDecl:
 		s.Kind = "type"
 		if ts, ok := d.Spec.(*ast.TypeSpec); ok && ts.Doc != nil {
-			s.Doc = ts.Doc.Text()
+			s.Doc = docText(ts.Doc)
 		} else {
 			s.Doc = docText(d.Gen.Doc)
 		}
@@ -92,7 +92,7 @@ func NewDecl(pkg *runtime.Package, d *index.Decl) *Decl {
 			s.Kind = "const"
 		}
 		if vs, ok := d.Spec.(*ast.ValueSpec); ok && vs.Doc != nil {
-			s.Doc = vs.Doc.Text()
+			s.Doc = docText(vs.Doc)
 		} else {
 			s.Doc = docText(d.Gen.Doc)
 		}
@@ -132,7 +132,7 @@ func NewFile(pkg *runtime.Package, sf *syntax.File) *File {
 			f.PkgName = sf.AST.Name.Name
 		}
 		if sf.AST.Doc != nil {
-			f.Doc = sf.AST.Doc.Text()
+			f.Doc = docText(sf.AST.Doc)
 		}
 	}
 	return f
@@ -215,7 +215,7 @@ type Field struct {
 	Names    []string // empty for embedded fields and unnamed params
 	Type     *TypeExpr
 	Tag      string // struct tag, unquoted
-	Doc      string
+	Doc      string // doc comment text, trailing newline trimmed
 	Embedded bool
 	Pos      *Position
 }
@@ -297,11 +297,14 @@ func NewHostType(t reflect.Type) *TypeExpr {
 // supplies the implementation.
 type Resolver func(sid runtime.SymbolID) (*Decl, error)
 
+// docText flattens a comment group and drops the trailing newline
+// CommentGroup.Text always appends, so emitters can place the text
+// directly instead of trimming.
 func docText(g *ast.CommentGroup) string {
 	if g == nil {
 		return ""
 	}
-	return g.Text()
+	return strings.TrimRight(g.Text(), "\n")
 }
 
 func fieldList(fl *ast.FieldList, f *syntax.File, p *runtime.Package) []*Field {
@@ -328,10 +331,10 @@ func fieldList(fl *ast.FieldList, f *syntax.File, p *runtime.Package) []*Field {
 
 func fieldDoc(fd *ast.Field) string {
 	if fd.Doc != nil {
-		return fd.Doc.Text()
+		return docText(fd.Doc)
 	}
 	if fd.Comment != nil {
-		return fd.Comment.Text()
+		return docText(fd.Comment)
 	}
 	return ""
 }
@@ -1347,7 +1350,9 @@ func (te *TypeExpr) hostChildren() []*TypeExpr {
 // FuncType TypeExpr; embedded and constraint elements Embedded). This
 // is the TypeExpr-level counterpart of FieldsOf — anonymous composite
 // types inside a decl's fields become readable without naming the
-// decl. Other shapes report an error.
+// decl. Other shapes report an error — the same condition the
+// script-visible TypeFields intrinsic surfaces as a trap, so a walk
+// that only wants composites gates on Kind first on either side.
 func TypeFieldsOf(te *TypeExpr) ([]*Field, error) {
 	if te.ht != nil {
 		return hostTypeFields(te.ht)

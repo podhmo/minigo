@@ -69,6 +69,24 @@ func SymbolView() string {
 	return "ok"
 }
 
+// DocTrim: Doc text arrives without the trailing newline
+// CommentGroup.Text appends — decl, field, and file docs alike.
+func DocTrim() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	if doc := inspect.Symbol(p, "Hello").Doc; doc != "Hello is a plain function." {
+		return "bad decl doc: " + doc
+	}
+	fs := inspect.Fields(inspect.Symbol(p, "User"))
+	if len(fs) == 0 || fs[0].Doc != "Name is the user name." {
+		return "bad field doc"
+	}
+	files := inspect.Files(p)
+	if len(files) == 0 || files[0].Doc != "Package inspectpkg is the introspection subject for inspect tests." {
+		return "bad file doc"
+	}
+	return "ok"
+}
+
 // FieldsWalk: struct field iteration.
 func FieldsWalk() string {
 	p := inspect.DirOf("./testdata/inspectpkg")
