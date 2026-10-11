@@ -1797,10 +1797,10 @@ func (e *Engine) installStdlib() {
 	strDataBacks := map[string]*runtime.Slice{}
 	e.Bind("unsafe", map[string]runtime.Value{
 		"Sizeof": &runtime.BuiltinFunc{Name: "unsafe.Sizeof", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			return e.unsafeSizeOf(args[0]), nil
+			return e.unsafeSizeOf(args[0], e.unsafeStaticTyp(args)), nil
 		}},
 		"Alignof": &runtime.BuiltinFunc{Name: "unsafe.Alignof", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			return e.unsafeAlignOf(args[0]), nil
+			return e.unsafeAlignOf(args[0], e.unsafeStaticTyp(args)), nil
 		}},
 		"Offsetof": &runtime.BuiltinFunc{Name: "unsafe.Offsetof", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			// The compiler rewrites unsafe.Offsetof(s.f) to pass the
@@ -3842,7 +3842,53 @@ func (h *hostHelpers) sortByCmpFunc(name string) *runtime.BuiltinFunc {
 // widths, an array's element type sizes it — never the runtime values
 // slots happen to hold. Operands without a recoverable typedef (untyped
 // literals, host boxes) fall back to the boxed representation's width.
-func (e *Engine) unsafeSizeOf(v runtime.Value) int64 {
+// unsafeStaticTyp reads the declared typedefs the compiler attaches
+// to an unsafe.Sizeof/Alignof call: args[1] is the operand's own
+// static typedef (nil when the operand has no static type), args[2]
+// the indexed container's for a `c[i]` operand — the operand's
+// declared type is the container's element type.
+func (e *Engine) unsafeStaticTyp(args []runtime.Value) *runtime.TypeDef {
+	if len(args) > 2 {
+		if ctd, ok := args[2].(*runtime.TypeDef); ok && ctd != nil {
+			// parr[i] auto-derefs a pointer container: peel the stars
+			// so the element typedef comes from the indexed base.
+			for ctd.Kind == runtime.KindPointer {
+				next, err := e.elemOf(ctd)
+				if err != nil || next == nil || next == ctd {
+					break
+				}
+				ctd = next
+			}
+			// Only a real container yields an element type — a
+			// string's is not byte in this typedef model, and a
+			// non-container's own typedef is not an answer.
+			container := ctd.Kind == runtime.KindSlice ||
+				ctd.Kind == runtime.KindMap || ctd.Kind == runtime.KindChan
+			if !container {
+				switch typedefAst(ctd).(type) {
+				case *ast.ArrayType, *ast.MapType, *ast.ChanType:
+					container = true
+				}
+			}
+			if container {
+				if etd, err := e.elemOf(ctd); err == nil && etd != nil {
+					return etd
+				}
+			}
+		}
+	}
+	if len(args) > 1 {
+		if td, ok := args[1].(*runtime.TypeDef); ok {
+			return td
+		}
+	}
+	return nil
+}
+
+func (e *Engine) unsafeSizeOf(v runtime.Value, declared *runtime.TypeDef) int64 {
+	if declared != nil {
+		return int64(minireflect.SizeOf(e.reflectHooks(), declared))
+	}
 	if td := sizeDeclTyp(v); td != nil {
 		return int64(minireflect.SizeOf(e.reflectHooks(), td))
 	}
@@ -3868,7 +3914,7 @@ func (e *Engine) unsafeSizeOf(v runtime.Value) int64 {
 		return 8
 	case *runtime.UConst:
 		if mv, err := runtime.UConstNative(x); err == nil && mv != x {
-			return e.unsafeSizeOf(mv)
+			return e.unsafeSizeOf(mv, nil)
 		}
 		return 8
 	case runtime.Nil, *runtime.IfaceNil:
@@ -3915,11 +3961,14 @@ func sizeDeclTyp(v runtime.Value) *runtime.TypeDef {
 	return nil
 }
 
-func (e *Engine) unsafeAlignOf(v runtime.Value) int64 {
+func (e *Engine) unsafeAlignOf(v runtime.Value, declared *runtime.TypeDef) int64 {
+	if declared != nil {
+		return int64(minireflect.AlignOf(e.reflectHooks(), declared))
+	}
 	if td := sizeDeclTyp(v); td != nil {
 		return int64(minireflect.AlignOf(e.reflectHooks(), td))
 	}
-	if n := e.unsafeSizeOf(v); n < 8 {
+	if n := e.unsafeSizeOf(v, nil); n < 8 {
 		if n < 1 {
 			return 1 // alignment is always at least 1
 		}
