@@ -740,7 +740,11 @@ func parseFieldTag(f *inspect.Field) fieldTag {
 
 // applyStringOption honours encoding/json's ,string tag option: scalar
 // values marshal as quoted JSON strings, so the schema type degrades
-// to "string" and the numeric bounds stop applying.
+// to "string". Numeric-only bounds drop — a bound that checked a
+// number cannot check its quoted form (minLength would be a different
+// rule than minimum: "10" is longer than "9" yet still fails
+// minimum=10) — and enum/const members rewrite to the quoted scalars
+// the wire carries, so a "1" wire value still validates.
 func applyStringOption(fd map[string]any, opts []string) {
 	for _, o := range opts {
 		if strings.TrimSpace(o) != "string" {
@@ -749,11 +753,57 @@ func applyStringOption(fd map[string]any, opts []string) {
 		switch fd["type"] {
 		case "string", "integer", "number", "boolean":
 			fd["type"] = "string"
-			delete(fd, "minimum")
-			delete(fd, "maximum")
+			for _, k := range []string{
+				"minimum", "maximum",
+				"exclusiveMinimum", "exclusiveMaximum",
+				"multipleOf",
+			} {
+				delete(fd, k)
+			}
+			if v, ok := fd["enum"]; ok {
+				fd["enum"] = quoteEnum(v)
+			}
+			if v, ok := fd["const"]; ok {
+				fd["const"] = quoteScalar(v)
+			}
 		}
 		return
 	}
+}
+
+// quoteEnum rewrites a schema enum list member-wise for ,string —
+// each member keeps constraining, spelled the way the wire spells it.
+func quoteEnum(v any) any {
+	xs, ok := v.([]any)
+	if !ok {
+		return v
+	}
+	out := make([]any, len(xs))
+	for i, x := range xs {
+		out[i] = quoteScalar(x)
+	}
+	return out
+}
+
+// quoteScalar renders one scalar in its ,string wire form: encoding/json
+// quotes ints, bools, and floats inside the string ("1", "true",
+// "1.5" — the shortest float repr), a string member double-encodes
+// ("a" becomes the JSON text "a"), and null stays literal null —
+// ,string does not quote nil.
+func quoteScalar(v any) any {
+	switch x := v.(type) {
+	case string:
+		return strconv.Quote(x)
+	case bool:
+		return strconv.FormatBool(x)
+	case int:
+		return strconv.Itoa(x)
+	case int64:
+		return strconv.FormatInt(x, 10)
+	case float64:
+		return strconv.FormatFloat(x, 'g', -1, 64)
+	}
+	return v
 }
 
 // coerceScalar turns a jsonschema-override value into its JSON scalar

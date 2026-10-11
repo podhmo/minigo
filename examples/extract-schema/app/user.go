@@ -155,3 +155,24 @@ type Blobbed struct {
 	Texted    []ByteT     `json:"texted"`
 	Chained   []Byte2M    `json:"chained"`
 }
+
+// Code is an int code; the enumcode plugin overrides it with an
+// integer fragment carrying enum + numeric bounds.
+type Code int
+
+// Ratio is a float; the enumcode plugin overrides it with a number
+// fragment carrying a const.
+type Ratio float64
+
+// Label is a string; the enumcode plugin overrides it with a string
+// enum fragment.
+type Label string
+
+// Stringified exercises the ,string tag option against plugin-override
+// fragments: enum/const members stringify to their wire form ("1",
+// "1.5", a double-encoded ""a"") and numeric-only bounds drop.
+type Stringified struct {
+	Code  Code  `json:"c,string"`
+	Ratio Ratio `json:"r,string"`
+	Label Label `json:"l,string"`
+}

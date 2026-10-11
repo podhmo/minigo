@@ -112,6 +112,10 @@
 			"minimum": 0,
 			"type": "integer"
 		},
+		"Code": {
+			"description": "Code is an int code; the enumcode plugin overrides it with an\ninteger fragment carrying enum + numeric bounds.",
+			"type": "integer"
+		},
 		"Commented": {
 			"additionalProperties": true,
 			"description": "Commented covers the comment positions a description can come from:\na doc comment above the field and a line comment at its end.",
@@ -207,6 +211,10 @@
 			],
 			"type": "object"
 		},
+		"Label": {
+			"description": "Label is a string; the enumcode plugin overrides it with a string\nenum fragment.",
+			"type": "string"
+		},
 		"LeftY": {
 			"additionalProperties": true,
 			"properties": {
@@ -261,6 +269,10 @@
 			],
 			"type": "object"
 		},
+		"Ratio": {
+			"description": "Ratio is a float; the enumcode plugin overrides it with a number\nfragment carrying a const.",
+			"type": "number"
+		},
 		"RightY": {
 			"additionalProperties": true,
 			"properties": {
@@ -306,6 +318,27 @@
 				"deleted"
 			],
 			"type": "string"
+		},
+		"Stringified": {
+			"additionalProperties": true,
+			"description": "Stringified exercises the ,string tag option against plugin-override\nfragments: enum/const members stringify to their wire form (\"1\",\n\"1.5\", a double-encoded \"\"a\"\") and numeric-only bounds drop.",
+			"properties": {
+				"c": {
+					"$ref": "#/$defs/Code"
+				},
+				"l": {
+					"$ref": "#/$defs/Label"
+				},
+				"r": {
+					"$ref": "#/$defs/Ratio"
+				}
+			},
+			"required": [
+				"c",
+				"l",
+				"r"
+			],
+			"type": "object"
 		},
 		"Tree": {
 			"additionalProperties": true,

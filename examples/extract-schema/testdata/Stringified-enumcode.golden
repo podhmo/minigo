@@ -1,0 +1,31 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"additionalProperties": true,
+	"description": "Stringified exercises the ,string tag option against plugin-override\nfragments: enum/const members stringify to their wire form (\"1\",\n\"1.5\", a double-encoded \"\"a\"\") and numeric-only bounds drop.",
+	"properties": {
+		"c": {
+			"enum": [
+				"1",
+				"2"
+			],
+			"type": "string"
+		},
+		"l": {
+			"enum": [
+				"\"a\"",
+				"\"b\""
+			],
+			"type": "string"
+		},
+		"r": {
+			"const": "1.5",
+			"type": "string"
+		}
+	},
+	"required": [
+		"c",
+		"l",
+		"r"
+	],
+	"type": "object"
+}
