@@ -851,6 +851,12 @@ func (e *Engine) installStdlib() {
 	})
 	e.Bind("encoding/json", map[string]runtime.Value{
 		"Number": &runtime.TypeDef{Name: "encoding/json.Number", Kind: runtime.KindNamedBasic, Anon: ast.NewIdent("string"), HostNew: func() any { return json.Number("") }},
+		// the Marshaler/Unmarshaler interface types — gc dispatches
+		// through an interface-holding target (`var i json.Unmarshaler
+		// = new(U); json.Unmarshal(data, &i)`), which reaches the same
+		// UnmarshalJSON member probe as a concrete pointer.
+		"Marshaler":   &runtime.TypeDef{Name: "encoding/json.Marshaler", Kind: runtime.KindInterface, MReqs: []string{"MarshalJSON"}},
+		"Unmarshaler": &runtime.TypeDef{Name: "encoding/json.Unmarshaler", Kind: runtime.KindInterface, MReqs: []string{"UnmarshalJSON"}},
 		// Marshal/MarshalIndent take raw runtime args — h.fn's goNative
 		// would stringify *runtime.Struct before goJSON can field-map it.
 		"Marshal": &runtime.BuiltinFunc{Name: "json.Marshal", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {

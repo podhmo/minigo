@@ -767,7 +767,7 @@ func TestREPLImportNameRefs(t *testing.T) {
 	}
 
 	// :ls takes an import-bound name or a quoted path like an import spec
-	want := []string{"host Marshal", "host MarshalIndent", "host Number", "host Unmarshal", "host Valid"}
+	want := []string{"host Marshal", "host MarshalIndent", "host Marshaler", "host Number", "host Unmarshal", "host Unmarshaler", "host Valid"}
 	for _, ref := range []string{"foo", `"encoding/json"`} {
 		lines, err := r.List(ctx, ref)
 		if err != nil {
