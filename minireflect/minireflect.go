@@ -65,6 +65,11 @@ type Hooks struct {
 	// the facade spells and shapes it as the API type. Nil keeps every
 	// host type as-is.
 	TypeAlias func(rt reflect.Type) reflect.Type
+	// UnwrapHost resolves a value to a host reflect.Value for a call
+	// site that demands a specific type — the inverse of TypeAlias: a
+	// proxy box the facade spells as *time.Timer unwraps to the real
+	// timer it stands in for. Nil skips the unwrapping pass.
+	UnwrapHost func(v any, t reflect.Type) (reflect.Value, bool)
 }
 
 // Env is the facade's shared state: the type interner plus the engine
@@ -825,7 +830,7 @@ func (e *Env) append_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value,
 		}
 		in := make([]reflect.Value, len(elems))
 		for i, el := range elems {
-			rv, err := toHost(el, s.rv.Type().Elem())
+			rv, err := toHost(el, s.rv.Type().Elem(), e)
 			if err != nil {
 				return nil, fmt.Errorf("reflect.Append: %w", err)
 			}

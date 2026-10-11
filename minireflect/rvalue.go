@@ -1580,7 +1580,7 @@ func (v *RValue) MapIndex(k *RValue) *RValue {
 		if v.rv.Kind() != reflect.Map {
 			v.rv.MapIndex(v.rv)
 		}
-		kr, err := toHost(k.ifaceVal(), v.rv.Type().Key())
+		kr, err := toHost(k.ifaceVal(), v.rv.Type().Key(), v.e)
 		if err != nil {
 			trap("reflect.Value.MapIndex: %s", err)
 		}
@@ -1659,7 +1659,7 @@ func (v *RValue) SetMapIndex(k, x *RValue) {
 		if v.rv.Kind() != reflect.Map {
 			v.rv.SetMapIndex(v.rv, v.rv)
 		}
-		kr, err := toHost(k.ifaceVal(), v.rv.Type().Key())
+		kr, err := toHost(k.ifaceVal(), v.rv.Type().Key(), v.e)
 		if err != nil {
 			trap("reflect.Value.SetMapIndex: %s", err)
 		}
@@ -1667,7 +1667,7 @@ func (v *RValue) SetMapIndex(k, x *RValue) {
 			v.rv.SetMapIndex(kr, reflect.Value{})
 			return
 		}
-		xr, err := toHost(x.ifaceVal(), v.rv.Type().Elem())
+		xr, err := toHost(x.ifaceVal(), v.rv.Type().Elem(), v.e)
 		if err != nil {
 			trap("reflect.Value.SetMapIndex: %s", err)
 		}
@@ -2335,7 +2335,7 @@ func (v *RValue) Set(x *RValue) {
 		if x.ro {
 			trap("reflect.Value.Set using value obtained using unexported field")
 		}
-		rv, err := toHost(x.ifaceVal(), v.rv.Type())
+		rv, err := toHost(x.ifaceVal(), v.rv.Type(), v.e)
 		if err != nil {
 			trap("reflect.Value.Set: %s", err)
 		}
@@ -2377,7 +2377,7 @@ func (v *RValue) Set(x *RValue) {
 						payload = pv.Elem().Interface()
 					}
 				}
-				xv, err := toHost(payload, hv.Type().Elem())
+				xv, err := toHost(payload, hv.Type().Elem(), v.e)
 				if err != nil {
 					trap("reflect.Value.Set: %s", err)
 				}
@@ -2641,7 +2641,7 @@ func (v *RValue) Call(in []*RValue) []*RValue {
 			} else {
 				pt = mt.In(i)
 			}
-			rv, err := toHost(a.ifaceVal(), pt)
+			rv, err := toHost(a.ifaceVal(), pt, v.e)
 			if err != nil {
 				trap("reflect.Value.Call: %s", err)
 			}
@@ -2881,7 +2881,7 @@ func (v *RValue) CallSlice(in []*RValue) []*RValue {
 		args := make([]reflect.Value, len(in))
 		for i, a := range in {
 			pt := mt.In(min(i, mt.NumIn()-1))
-			rv, err := toHost(a.ifaceVal(), pt)
+			rv, err := toHost(a.ifaceVal(), pt, v.e)
 			if err != nil {
 				trap("reflect.Value.CallSlice: %s", err)
 			}
@@ -3041,7 +3041,7 @@ func (v *RValue) Convert(t *RType) *RValue {
 		trap("reflect.Value.Convert to nil type")
 	}
 	if t.rt != nil {
-		rv, err := toHost(v.ifaceVal(), t.rt)
+		rv, err := toHost(v.ifaceVal(), t.rt, v.e)
 		if err != nil {
 			trap("reflect.Value.Convert: %s", err)
 		}
@@ -3371,7 +3371,7 @@ func (v *RValue) Send(x *RValue) {
 		if v.rv.Kind() != reflect.Chan {
 			v.rv.Send(v.rv)
 		}
-		xr, err := toHost(x.ifaceVal(), v.rv.Type().Elem())
+		xr, err := toHost(x.ifaceVal(), v.rv.Type().Elem(), v.e)
 		if err != nil {
 			trap("reflect.Value.Send: %s", err)
 		}
@@ -3413,7 +3413,7 @@ func (v *RValue) TrySend(x *RValue) bool {
 		if v.rv.Kind() != reflect.Chan {
 			v.rv.TrySend(v.rv)
 		}
-		xr, err := toHost(x.ifaceVal(), v.rv.Type().Elem())
+		xr, err := toHost(x.ifaceVal(), v.rv.Type().Elem(), v.e)
 		if err != nil {
 			trap("reflect.Value.TrySend: %s", err)
 		}
@@ -3515,7 +3515,7 @@ func strToBytes(s string) *runtime.Slice {
 // toHost marshals a script-side value into a host reflect.Value for
 // the target type — the narrow bridge used when a host-domain value
 // absorbs a script one.
-func toHost(v any, t reflect.Type) (reflect.Value, error) {
+func toHost(v any, t reflect.Type, e *Env) (reflect.Value, error) {
 	switch x := v.(type) {
 	case nil, runtime.Nil:
 		return reflect.Zero(t), nil
@@ -3526,6 +3526,11 @@ func toHost(v any, t reflect.Type) (reflect.Value, error) {
 		}
 		if rv.IsValid() && rv.Type().ConvertibleTo(t) {
 			return rv.Convert(t), nil
+		}
+		if e != nil && e.h.UnwrapHost != nil {
+			if rv, ok := e.h.UnwrapHost(x.V, t); ok {
+				return rv, nil
+			}
 		}
 		return reflect.Value{}, fmt.Errorf("cannot use %T as %s", x.V, t)
 	case int64:
@@ -3576,7 +3581,7 @@ func toHost(v any, t reflect.Type) (reflect.Value, error) {
 				return reflect.ValueOf(x), nil
 			}
 		}
-		return toHost(x.V, t)
+		return toHost(x.V, t, e)
 	}
 	if rv := reflect.ValueOf(v); rv.IsValid() && rv.Type().AssignableTo(t) {
 		return rv, nil
@@ -3585,6 +3590,13 @@ func toHost(v any, t reflect.Type) (reflect.Value, error) {
 		rv := reflect.New(t).Elem()
 		rv.Set(reflect.ValueOf(v))
 		return rv, nil
+	}
+	// A proxy box stands in for its public type — a reflect call site
+	// demanding *time.Timer unwraps the box to the real timer.
+	if e != nil && e.h.UnwrapHost != nil {
+		if rv, ok := e.h.UnwrapHost(v, t); ok {
+			return rv, nil
+		}
 	}
 	return reflect.Value{}, fmt.Errorf("cannot marshal %T to %s", v, t)
 }

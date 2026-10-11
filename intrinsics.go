@@ -3017,6 +3017,32 @@ func proxyHostType(rt reflect.Type) reflect.Type {
 	return rt
 }
 
+// proxyUnwrapHost is the facade's UnwrapHost hook — the inverse of
+// proxyHostType: a reflect call site demanding the public type a box
+// stands in for (Method(i).Func.Call's receiver, Set's target) gets the
+// wrapped real timer/ticker. The call then runs the real timer's
+// method, bypassing the box's feed bookkeeping — script-side calls
+// through the box stay feed-aware; the reflect path trades the
+// bookkeeping for gc-faithful observable behavior.
+func proxyUnwrapHost(v any, t reflect.Type) (reflect.Value, bool) {
+	var inner any
+	switch b := v.(type) {
+	case *timerChanBox:
+		inner = b.t
+	case *tickerChanBox:
+		inner = b.t
+	case *afterFuncTimer:
+		inner = b.Timer
+	default:
+		return reflect.Value{}, false
+	}
+	rv := reflect.ValueOf(inner)
+	if !rv.IsValid() || !rv.Type().AssignableTo(t) {
+		return reflect.Value{}, false
+	}
+	return rv, true
+}
+
 // proxyHostTypeOf is proxyHostType over a value — the fmt path's %T
 // lookup.
 func proxyHostTypeOf(v any) reflect.Type {
