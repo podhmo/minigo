@@ -1969,6 +1969,14 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 			return c.staticOpTyp(x.X) // -x/+x/^x keeps the operand's type
 		case token.ARROW:
 			return opTyp{te: c.chanElemTypExpr(c.staticOpTyp(x.X).te, 4)}
+		case token.AND:
+			// &x answers a pointer to x's static type — `i == &d`
+			// mismatches int and *D. An operand without a static
+			// type keeps the address opaque.
+			if t := c.staticOpTyp(x.X); t.te != nil {
+				return opTyp{te: &ast.StarExpr{X: t.te}}
+			}
+			return opTyp{}
 		}
 		return opTyp{}
 	case *ast.BinaryExpr:
@@ -2683,6 +2691,19 @@ func (c *compiler) elemTypExpr(te ast.Expr, depth int) ast.Expr {
 		return t.Elt
 	case *ast.MapType:
 		return t.Value
+	case *ast.StarExpr:
+		// indexing a pointer to array dereferences it once — `pa[i]`
+		// is `(*pa)[i]`; a second star stays unindexed.
+		if a, ok := c.unfoldTypExpr(t.X, depth-1).(*ast.ArrayType); ok {
+			return a.Elt
+		}
+	case *ast.Ident:
+		// s[i] on a string operand yields a byte. A shadowed
+		// `string` never reaches here — unfoldTypExpr already
+		// reduced the name through its spec.
+		if t.Name == "string" {
+			return &ast.Ident{Name: "byte"}
+		}
 	}
 	return nil
 }
@@ -2805,8 +2826,24 @@ func (c *compiler) namedIdentOf(te ast.Expr) (namedTypID, bool) {
 			return namedTypID{}, false
 		}
 		return namedTypID{id: ref.Path + "." + t.Sel.Name, name: id.Name + "." + t.Sel.Name}, true
+	case *ast.StarExpr:
+		// a pointer's identity wraps its base's — `i == &d` reads
+		// as int vs *D, `&d == &e` as *D vs *E. Other composite
+		// forms stay unnamed, keeping the gate conservative.
+		inner, ok := c.namedIdentOf(t.X)
+		if !ok {
+			return namedTypID{}, false
+		}
+		return namedTypID{id: ptrTypID{elem: inner.id}, name: "*" + inner.name}, true
 	}
 	return namedTypID{}, false
+}
+
+// ptrTypID is the compile-time identity of a pointer to a named type:
+// *D and *E are distinct types to gc even when D and E share an
+// underlying, so the element's identity is part of the pointer's.
+type ptrTypID struct {
+	elem any
 }
 
 // selIsIface reports whether the name a qualified type expression picks
