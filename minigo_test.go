@@ -540,6 +540,19 @@ func TestPanicTraceback(t *testing.T) {
 		t.Errorf("PanicErrorNilDeref: want fatal printpanics line, got:\n%s", got)
 	}
 
+	// a bounds panic inside the probe names the concrete gc type
+	// (runtime.boundsError, not the generic errorString).
+	got = runErr("PanicErrorBounds")
+	if !strings.HasPrefix(got, "fatal error: panic while printing panic value: type runtime.boundsError") {
+		t.Errorf("PanicErrorBounds: want boundsError fatal line, got:\n%s", got)
+	}
+
+	// a bare-string inner panic prints the string itself — no `type`.
+	got = runErr("PanicErrorString")
+	if !strings.HasPrefix(got, "fatal error: panic while printing panic value: inner-str") {
+		t.Errorf("PanicErrorString: want raw-string fatal line, got:\n%s", got)
+	}
+
 	// a recovered-then-repanicked script-error payload renders gc's
 	// chain: `panic: <Error() text> [recovered]` / `\tpanic: new`.
 	got = runErr("PanicErrorChain")

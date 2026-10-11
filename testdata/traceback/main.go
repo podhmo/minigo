@@ -86,6 +86,20 @@ type panicError struct{ msg string }
 
 func (e *panicError) Error() string { return e.msg }
 
+// panicErrorBounds's Error() panics a bounds runtime error inside the
+// printpanics probe.
+type panicErrorBounds struct{}
+
+func (panicErrorBounds) Error() string {
+	xs := []int{1}
+	return strings.Repeat("", xs[5])
+}
+
+// panicErrorString's Error() panics a bare string inside the probe.
+type panicErrorString struct{}
+
+func (panicErrorString) Error() string { panic("inner-str") }
+
 // panicStringer implements fmt.Stringer.
 type panicStringer struct{}
 
@@ -130,6 +144,14 @@ func PanicErrorNilDeref() {
 	var e *panicError
 	panic(e)
 }
+
+// PanicErrorBounds panics with a payload whose Error() probe triggers a
+// bounds panic — the fatal line names runtime.boundsError like gc.
+func PanicErrorBounds() { panic(panicErrorBounds{}) }
+
+// PanicErrorString panics with a payload whose Error() probe panics a
+// bare string — the fatal line prints the string itself, not `type`.
+func PanicErrorString() { panic(panicErrorString{}) }
 
 // PanicErrorValueRecv panics with a bare struct whose Error() is on the
 // pointer receiver — a value does not implement error, so gc renders

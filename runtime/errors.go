@@ -14,6 +14,14 @@ func RuntimePanic(msg string) *Panic {
 	return &Panic{Value: &RuntimeError{Msg: msg}}
 }
 
+// RuntimePanicKind is RuntimePanic carrying the gc runtime type name —
+// bounds failures name runtime.boundsError on the fatal
+// panic-while-printing line while the ordinary families stay
+// runtime.errorString.
+func RuntimePanicKind(msg, kind string) *Panic {
+	return &Panic{Value: &RuntimeError{Msg: msg, Kind: kind}}
+}
+
 // PlainError is Go's runtime.plainError: an error whose Error() text is
 // the bare message with no "runtime error:" prefix.
 type PlainError string
@@ -52,14 +60,22 @@ func BoundsPanic(i any, n int) *Panic {
 	switch iv := i.(type) {
 	case int64:
 		if iv < 0 {
-			return RuntimePanic(fmt.Sprintf("index out of range [%v]", i))
+			return RuntimePanicKind(fmt.Sprintf("index out of range [%v]", i), "boundsError")
 		}
 	case int:
 		if iv < 0 {
-			return RuntimePanic(fmt.Sprintf("index out of range [%v]", i))
+			return RuntimePanicKind(fmt.Sprintf("index out of range [%v]", i), "boundsError")
 		}
 	}
-	return RuntimePanic(fmt.Sprintf("index out of range [%v] with length %d", i, n))
+	return RuntimePanicKind(fmt.Sprintf("index out of range [%v] with length %d", i, n), "boundsError")
+}
+
+// SliceBoundsPanic wraps an already-rendered slice-bounds message
+// (sliceBoundsReason's "slice bounds out of range ...") — gc names the
+// payload runtime.boundsError on the fatal printpanics line like a
+// linear index failure.
+func SliceBoundsPanic(msg string) *Panic {
+	return RuntimePanicKind(msg, "boundsError")
 }
 
 // ComparingUncomparablePanic is Go's "comparing uncomparable type T".
