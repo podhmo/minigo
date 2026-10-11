@@ -17,7 +17,6 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
-	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -999,30 +998,16 @@ func (e *Engine) LoadDirScope(ctx context.Context, filename string) (*runtime.Pa
 	defer e.buildMu.Unlock()
 
 	// the named file's package clause defines the scope: siblings keep
-	// only files declaring the same package name (same-file and _test
-	// filtering follow go/build's invisibility rules).
-	pkgName, err := packageName(e.fset, abs)
-	if err != nil {
-		return nil, fmt.Errorf("parse %s: %w", filename, err)
-	}
-	entries, err := os.ReadDir(dir)
+	// only files declaring the same package name. Filename invisibility
+	// (_GOOS/_GOARCH suffixes, _test.go, _/.-prefixed) applies like a
+	// real package load; //go:build constraints do not.
+	gofiles, err := resolve.FileScopeFiles(dir, abs, e.cfg)
 	if err != nil {
 		return nil, fmt.Errorf("reading package dir %s: %w", dir, err)
 	}
-	var gofiles []string
-	for _, en := range entries {
-		fname := en.Name()
-		if en.IsDir() || !strings.HasSuffix(fname, ".go") || strings.HasSuffix(fname, "_test.go") ||
-			strings.HasPrefix(fname, "_") || strings.HasPrefix(fname, ".") {
-			continue
-		}
-		name, err := packageName(e.fset, filepath.Join(dir, fname))
-		if err != nil {
-			continue // a file whose package clause cannot be read contributes nothing
-		}
-		if name == pkgName {
-			gofiles = append(gofiles, filepath.Join(dir, fname))
-		}
+	pkgName, err := packageName(e.fset, abs)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", filename, err)
 	}
 	files, failed, err := parsePackageFiles(e.fset, gofiles)
 	if err != nil {
