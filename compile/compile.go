@@ -3046,7 +3046,7 @@ func (c *compiler) selIsIface(ref *runtime.ImportRef, name string) bool {
 		_, isIface := ast.Unparen(ts.Type).(*ast.InterfaceType)
 		return isIface
 	}
-	return td.Kind == runtime.KindInterface
+	return td != nil && td.Kind == runtime.KindInterface
 }
 
 // selMember resolves a package member name to what the compiler can
@@ -3059,10 +3059,25 @@ func (c *compiler) selMember(ref *runtime.ImportRef, name string) (*ast.TypeSpec
 		return nil, nil, false
 	}
 	if p.Index != nil {
-		if td := p.Index.Types[name]; td != nil && td.Decl != nil {
-			if ts, ok := td.Decl.Spec.(*ast.TypeSpec); ok {
-				return ts, nil, true
+		if tdi := p.Index.Types[name]; tdi != nil {
+			if tdi.Decl != nil {
+				if ts, ok := tdi.Decl.Spec.(*ast.TypeSpec); ok {
+					return ts, nil, true
+				}
 			}
+			// a synthetic entry (a method receiver whose declaration
+			// lives outside this index) still names a type — keep the
+			// old ix.Types[name] != nil verdict even with no spec to
+			// hand back; the globals lookup may still find its
+			// materialized typedef.
+			if p.Globals != nil {
+				if v, ok := p.Globals.Get(name); ok {
+					if td, ok := v.(*runtime.TypeDef); ok && td != nil {
+						return nil, td, true
+					}
+				}
+			}
+			return nil, nil, true
 		}
 	}
 	if p.Globals != nil {
@@ -3211,6 +3226,11 @@ func (c *compiler) selNilable(ref *runtime.ImportRef, name string) (bool, bool) 
 		// spec's own imports, never the caller's, or a same-named
 		// import there would flip the verdict.
 		return c.nilableTypExpr(c.unfoldSpecType(p, ts, 4)), true
+	}
+	if td == nil {
+		// a type name with no spec or typedef in view (synthetic
+		// index entry): unknown shape, so conservatively non-nilable.
+		return false, true
 	}
 	switch td.Kind {
 	case runtime.KindInterface, runtime.KindPointer, runtime.KindSlice,
