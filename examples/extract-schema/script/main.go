@@ -766,13 +766,36 @@ func coerceScalar(v string) any {
 	return v
 }
 
-// isByteSlice reports whether te spells []byte (or the identical
-// []uint8) — a slice whose element is the builtin byte. Fixed arrays
+// isByteSlice reports whether te spells a slice whose element kind is
+// uint8 — []byte, []uint8, or a named byte type (`type Byte byte`):
+// encoding/json marshals all of them as base64 strings. The chase
+// follows each named element to its declared TypeExpr until a builtin
+// sid answers, an unresolvable or non-type decl stops it, a composite
+// def (type Bytes []byte — element kind is slice, not uint8) drops
+// out, or the depth bound cuts a pathological chain. Fixed arrays
 // keep the array shape; only the slice form marshals as base64.
 func isByteSlice(te, elem *inspect.TypeExpr) bool {
 	if !strings.HasPrefix(te.Text, "[]") {
 		return false
 	}
 	sid := inspect.SymbolID(elem)
-	return sid != nil && sid.PackagePath == ":builtin:" && (sid.Name == "byte" || sid.Name == "uint8")
+	for depth := 0; sid != nil && depth < 8; depth++ {
+		if sid.PackagePath == inspect.BuiltinPackagePath {
+			return sid.Name == "byte" || sid.Name == "uint8"
+		}
+		pkg := inspect.LookupPackageOf(sid.PackagePath)
+		if pkg == nil {
+			return false
+		}
+		d := inspect.LookupSymbol(pkg, sid.Name)
+		if d == nil || inspect.Kind(d) != "type" {
+			return false
+		}
+		def := inspect.Def(d)
+		if def == nil {
+			return false
+		}
+		sid = inspect.SymbolID(def)
+	}
+	return false
 }
