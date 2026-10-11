@@ -2093,7 +2093,7 @@ func (p *Panic) Error() string {
 			// itself fatal in gc (panic inside printpanics): nothing of
 			// the `panic: ...` line prints — only the fatal message and
 			// the dying method's frames.
-			s := fmt.Sprintf("fatal error: panic while printing panic value: type %s", pf.typeName(chain[i].VC))
+			s := fmt.Sprintf("fatal error: panic while printing panic value: %s", pf.describe(chain[i].VC))
 			if len(pf.inner.Frames) > 0 {
 				s += "\nTraceback (most recent call first):\n" + renderFrames(pf.inner.Frames)
 			}
@@ -2123,13 +2123,32 @@ type panicPrintFatal struct {
 	name  string
 }
 
+// describe spells the inner panic on gc's fatal line — `type <T>` for
+// every payload but a bare string, which prints its own text
+// (`panic while printing panic value: inner-str`).
+func (pf *panicPrintFatal) describe(c VMCaller) string {
+	v := pf.inner.Value
+	if uc, ok := v.(*UConst); ok {
+		if nv, err := UConstNative(uc); err == nil {
+			v = nv
+		}
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return "type " + pf.typeName(c)
+}
+
 // typeName spells the inner panic's type the way gc's fatal line does
 // (`type runtime.errorString`): the payload's static type — host error
 // payloads name their Go runtime counterparts, script values their
 // declared type.
 func (pf *panicPrintFatal) typeName(c VMCaller) string {
-	switch pf.inner.Value.(type) {
+	switch re := pf.inner.Value.(type) {
 	case *RuntimeError:
+		if re.Kind != "" {
+			return "runtime." + re.Kind
+		}
 		return "runtime.errorString"
 	case PlainError:
 		return "runtime.plainError"
@@ -2152,7 +2171,12 @@ func (pf *panicPrintFatal) typeName(c VMCaller) string {
 // RuntimeError is the payload of a runtime panic (bounds, nil deref,
 // makeslice, ...): recover() yields it as an error value the way Go's
 // *runtime.Error does — `err.(error)` and `.Error()` work on it.
-type RuntimeError struct{ Msg string }
+// Kind carries the gc runtime type name for the panic-while-printing
+// fatal line ("boundsError"); empty names the default errorString.
+type RuntimeError struct {
+	Msg  string
+	Kind string
+}
 
 func (e *RuntimeError) Error() string { return "runtime error: " + e.Msg }
 

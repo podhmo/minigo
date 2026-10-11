@@ -6606,7 +6606,7 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 		l, h := v.bounds(f, lo, hi, 0)
 		m := v.maxBound(f, max, 0)
 		if r := sliceBoundsReason(l, h, m, 0, three, "capacity"); r != "" {
-			panic(runtime.RuntimePanic(r))
+			panic(runtime.SliceBoundsPanic(r))
 		}
 		return b
 	case *runtime.Slice:
@@ -6623,12 +6623,12 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 			if three {
 				m := v.maxBound(f, max, b.Cap())
 				if r := sliceBoundsReason(l, h, m, b.Cap(), true, word); r != "" {
-					panic(runtime.RuntimePanic(r))
+					panic(runtime.SliceBoundsPanic(r))
 				}
 				return &runtime.Slice{N: h.i - l.i, CapN: m.i - l.i, Zero: b.Zero, Typ: sliceTypOf(b.Typ)}
 			}
 			if r := sliceBoundsReason(l, h, boundOperand{}, b.Cap(), false, word); r != "" {
-				panic(runtime.RuntimePanic(r))
+				panic(runtime.SliceBoundsPanic(r))
 			}
 			return &runtime.Slice{N: h.i - l.i, CapN: b.Cap() - l.i, Zero: b.Zero, Typ: sliceTypOf(b.Typ)}
 		}
@@ -6647,14 +6647,14 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 			// host Elems[...] panic would print their int64 wrap.
 			if isArr || l.unsigned || h.unsigned || m.unsigned {
 				if r := sliceBoundsReason(l, h, m, cp, true, word); r != "" {
-					panic(runtime.RuntimePanic(r))
+					panic(runtime.SliceBoundsPanic(r))
 				}
 			}
 			return &runtime.Slice{Elems: b.Elems[l.i:h.i:m.i], Typ: sliceTypOf(b.Typ)}
 		}
 		if isArr || l.unsigned || h.unsigned {
 			if r := sliceBoundsReason(l, h, boundOperand{}, cp, false, word); r != "" {
-				panic(runtime.RuntimePanic(r))
+				panic(runtime.SliceBoundsPanic(r))
 			}
 		}
 		return &runtime.Slice{Elems: b.Elems[l.i:h.i], Typ: sliceTypOf(b.Typ)}
@@ -6667,7 +6667,7 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 		l, h := v.bounds(f, lo, hi, int64(len(b)))
 		if l.unsigned || h.unsigned {
 			if r := sliceBoundsReason(l, h, boundOperand{}, int64(len(b)), false, "length"); r != "" {
-				panic(runtime.RuntimePanic(r))
+				panic(runtime.SliceBoundsPanic(r))
 			}
 		}
 		return b[l.i:h.i]
