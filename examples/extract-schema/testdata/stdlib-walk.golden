@@ -1,0 +1,361 @@
+{
+	"$defs": {
+		"Ambig": {
+			"additionalProperties": true,
+			"description": "Ambig promotes Y from both embeds at the same depth: encoding/json\ndrops *both*, so the schema must not pick a winner.",
+			"properties": {},
+			"type": "object"
+		},
+		"Base": {
+			"additionalProperties": true,
+			"description": "Wrapper embeds a same-package struct — its fields flatten.",
+			"properties": {
+				"base_id": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"base_id"
+			],
+			"type": "object"
+		},
+		"Commented": {
+			"additionalProperties": true,
+			"description": "Commented covers the comment positions a description can come from:\na doc comment above the field and a line comment at its end.",
+			"properties": {
+				"bare": {
+					"type": "integer"
+				},
+				"both": {
+					"description": "Both is described twice — the doc comment wins in inspect's\nfieldDoc order.",
+					"type": "integer"
+				},
+				"lead": {
+					"description": "Lead is described by the comment above it.",
+					"type": "integer"
+				},
+				"lid": {
+					"description": "Lids keeps a word that merely shares the field name's prefix —\na naive strip would leave \"s keeps...\".",
+					"type": "integer"
+				},
+				"trail": {
+					"description": "Trail is described by the trailing comment only.",
+					"type": "integer"
+				}
+			},
+			"required": [
+				"bare",
+				"both",
+				"lead",
+				"lid",
+				"trail"
+			],
+			"type": "object"
+		},
+		"Custom": {
+			"additionalProperties": true,
+			"description": "Custom is a type the jsonschema-override tag can decorate.",
+			"properties": {
+				"level": {
+					"maximum": 5,
+					"minimum": 1,
+					"type": "integer"
+				}
+			},
+			"required": [
+				"level"
+			],
+			"type": "object"
+		},
+		"DeepX": {
+			"additionalProperties": true,
+			"description": "DeepX promotes X one level further inside an embed chain.",
+			"properties": {
+				"X": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"X"
+			],
+			"type": "object"
+		},
+		"DepthClash": {
+			"additionalProperties": true,
+			"description": "DepthClash gets X from both ViaDeepX (depth 2) and ShallowX\n(depth 1): the strictly shallower promotion wins — an int.",
+			"properties": {
+				"X": {
+					"type": "integer"
+				}
+			},
+			"required": [
+				"X"
+			],
+			"type": "object"
+		},
+		"ID": {
+			"description": "ID aliases string — an alias def renders as a $ref-shaped alias.",
+			"type": "string"
+		},
+		"Interval": {
+			"additionalProperties": true,
+			"description": "Interval is a half-open time range — its fields are standard-library\ntypes, the stdlib-leaf boundary the walk is expected to stop at.",
+			"properties": {
+				"end": {
+					"$ref": "#/$defs/Time"
+				},
+				"start": {
+					"$ref": "#/$defs/Time"
+				}
+			},
+			"required": [
+				"end",
+				"start"
+			],
+			"type": "object"
+		},
+		"LeftY": {
+			"additionalProperties": true,
+			"properties": {
+				"Y": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"Y"
+			],
+			"type": "object"
+		},
+		"Money": {
+			"additionalProperties": true,
+			"description": "Money is an amount in minor units with its currency.",
+			"properties": {
+				"amount": {
+					"description": "Amount in the smallest currency unit.",
+					"type": "integer"
+				},
+				"currency": {
+					"description": "Currency code, e.g. \"JPY\".",
+					"type": "string"
+				}
+			},
+			"required": [
+				"amount",
+				"currency"
+			],
+			"type": "object"
+		},
+		"Pair": {
+			"additionalProperties": true,
+			"description": "Pair declares two names in one field spec — both become properties.",
+			"properties": {
+				"A": {
+					"type": "string"
+				},
+				"B": {
+					"type": "string"
+				},
+				"C": {
+					"type": "integer"
+				},
+				"D": {
+					"type": "integer"
+				}
+			},
+			"required": [
+				"A",
+				"B"
+			],
+			"type": "object"
+		},
+		"RightY": {
+			"additionalProperties": true,
+			"properties": {
+				"Y": {
+					"type": "integer"
+				}
+			},
+			"required": [
+				"Y"
+			],
+			"type": "object"
+		},
+		"Shadow": {
+			"additionalProperties": true,
+			"description": "Shadow exercises the shallower-wins rule: its explicit base_id field\nmust shadow the one promoted from Base, not be overwritten by it.",
+			"properties": {
+				"base_id": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"base_id"
+			],
+			"type": "object"
+		},
+		"ShallowX": {
+			"additionalProperties": true,
+			"properties": {
+				"X": {
+					"type": "integer"
+				}
+			},
+			"required": [
+				"X"
+			],
+			"type": "object"
+		},
+		"Status": {
+			"description": "Status is the account status.",
+			"enum": [
+				"active",
+				"paused",
+				"deleted"
+			],
+			"type": "string"
+		},
+		"Time": {
+			"additionalProperties": true,
+			"description": "A Time represents an instant in time with nanosecond precision.\n\nPrograms using times should typically store and pass them as values,\nnot pointers. That is, time variables and struct fields should be of\ntype [time.Time], not *time.Time.\n\nA Time value can be used by multiple goroutines simultaneously except\nthat the methods [Time.GobDecode], [Time.UnmarshalBinary], [Time.UnmarshalJSON] and\n[Time.UnmarshalText] are not concurrency-safe.\n\nTime instants can be compared using the [Time.Before], [Time.After], and [Time.Equal] methods.\nThe [Time.Sub] method subtracts two instants, producing a [Duration].\nThe [Time.Add] method adds a Time and a Duration, producing a Time.\n\nThe zero value of type Time is January 1, year 1, 00:00:00.000000000 UTC.\nAs this time is unlikely to come up in practice, the [Time.IsZero] method gives\na simple way of detecting a time that has not been initialized explicitly.\n\nEach time has an associated [Location]. The methods [Time.Local], [Time.UTC], and Time.In return a\nTime with a specific Location. Changing the Location of a Time value with\nthese methods does not change the actual instant it represents, only the time\nzone in which to interpret it.\n\nRepresentations of a Time value saved by the [Time.GobEncode], [Time.MarshalBinary], [Time.AppendBinary],\n[Time.MarshalJSON], [Time.MarshalText] and [Time.AppendText] methods store the [Time.Location]'s offset,\nbut not the location name. They therefore lose information about Daylight Saving Time.\n\nIn addition to the required “wall clock” reading, a Time may contain an optional\nreading of the current process's monotonic clock, to provide additional precision\nfor comparison or subtraction.\nSee the “Monotonic Clocks” section in the package documentation for details.\n\nNote that the Go == operator compares not just the time instant but also the\nLocation and the monotonic clock reading. Therefore, Time values should not\nbe used as map or database keys without first guaranteeing that the\nidentical Location has been set for all values, which can be achieved\nthrough use of the UTC or Local method, and that the monotonic clock reading\nhas been stripped by setting t = t.Round(0). In general, prefer t.Equal(u)\nto t == u, since t.Equal uses the most accurate comparison available and\ncorrectly handles the case when only one of its arguments has a monotonic\nclock reading.",
+			"properties": {},
+			"type": "object"
+		},
+		"Tree": {
+			"additionalProperties": true,
+			"description": "Tree is a recursive type in the entry package.",
+			"properties": {
+				"label": {
+					"type": "string"
+				},
+				"left": {
+					"$ref": "#/$defs/Tree"
+				},
+				"right": {
+					"$ref": "#/$defs/Tree"
+				}
+			},
+			"required": [
+				"label"
+			],
+			"type": "object"
+		},
+		"User": {
+			"additionalProperties": true,
+			"description": "User is the root fixture type.",
+			"properties": {
+				"active": {
+					"$ref": "#/$defs/Interval"
+				},
+				"address": {
+					"additionalProperties": true,
+					"properties": {
+						"city": {
+							"type": "string"
+						},
+						"zip": {
+							"type": "string"
+						}
+					},
+					"required": [
+						"city",
+						"zip"
+					],
+					"type": "object"
+				},
+				"admin": {
+					"type": "boolean"
+				},
+				"age": {
+					"type": "integer"
+				},
+				"amount": {
+					"description": "Amount in the smallest currency unit.",
+					"type": "integer"
+				},
+				"balance": {
+					"$ref": "#/$defs/Money"
+				},
+				"created_at": {
+					"$ref": "#/$defs/Time"
+				},
+				"currency": {
+					"description": "Currency code, e.g. \"JPY\".",
+					"type": "string"
+				},
+				"email": {
+					"type": "string"
+				},
+				"friends": {
+					"items": {
+						"$ref": "#/$defs/User"
+					},
+					"type": "array"
+				},
+				"id": {
+					"$ref": "#/$defs/ID"
+				},
+				"metadata": {
+					"additionalProperties": {
+						"type": "string"
+					},
+					"type": "object"
+				},
+				"name": {
+					"type": "string"
+				},
+				"scores": {
+					"items": {
+						"type": "number"
+					},
+					"type": "array"
+				},
+				"status": {
+					"$ref": "#/$defs/Status"
+				}
+			},
+			"required": [
+				"active",
+				"address",
+				"admin",
+				"age",
+				"balance",
+				"created_at",
+				"id",
+				"metadata",
+				"name",
+				"scores",
+				"status"
+			],
+			"type": "object"
+		},
+		"ViaDeepX": {
+			"additionalProperties": true,
+			"properties": {
+				"X": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"X"
+			],
+			"type": "object"
+		},
+		"Wrapper": {
+			"additionalProperties": true,
+			"properties": {
+				"base_id": {
+					"type": "string"
+				},
+				"note": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"base_id",
+				"note"
+			],
+			"type": "object"
+		}
+	},
+	"$schema": "http://json-schema.org/draft-07/schema#"
+}

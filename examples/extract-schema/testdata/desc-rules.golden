@@ -1,0 +1,34 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"additionalProperties": true,
+	"description": "covers the comment positions a description can come from:\na doc comment above the field and a line comment at its end.",
+	"properties": {
+		"bare": {
+			"type": "integer"
+		},
+		"both": {
+			"description": "is described twice — the doc comment wins in inspect's\nfieldDoc order.",
+			"type": "integer"
+		},
+		"lead": {
+			"description": "is described by the comment above it.",
+			"type": "integer"
+		},
+		"lid": {
+			"description": "Lids keeps a word that merely shares the field name's prefix —\na naive strip would leave \"s keeps...\".",
+			"type": "integer"
+		},
+		"trail": {
+			"description": "is described by the trailing comment only.",
+			"type": "integer"
+		}
+	},
+	"required": [
+		"bare",
+		"both",
+		"lead",
+		"lid",
+		"trail"
+	],
+	"type": "object"
+}
