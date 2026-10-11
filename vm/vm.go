@@ -4986,7 +4986,9 @@ func opaqueStoreValue(a runtime.Value) (reflect.Value, error) {
 		// re-wraps the loaded value back to *runtime.Named.
 		return reflect.ValueOf(namedStoreValue(n)), nil
 	}
-	return reflect.ValueOf(a), nil
+	// gc's boxing snapshots the value — the stored copy owns no alias
+	// a later store-or-mutate on the source could observe.
+	return reflect.ValueOf(runtime.Copy(a)), nil
 }
 
 // namedStoreValue copies n to its comparable value form, converting a
@@ -5005,6 +5007,14 @@ func namedStoreValue(n *runtime.Named) runtime.Named {
 		if mv, err := materializeDefault(u); err == nil {
 			v.V = mv
 		}
+	}
+	// gc's boxing snapshots the payload — the stored box must not
+	// alias the script struct the caller can still mutate.
+	if nn, ok := v.V.(runtime.Named); ok {
+		cp := nn
+		v.V = runtime.Copy(&cp)
+	} else {
+		v.V = runtime.Copy(v.V)
 	}
 	return v
 }
