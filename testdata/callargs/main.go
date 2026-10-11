@@ -66,3 +66,7 @@ func MapSliceSet(rs []map[string]any) int          { rs[0]["k"] = 9; return rs[0
 // unboxes it, and the result's keys are *runtime.Slice boxes that must
 // not expand to unhashable []any on the way out (DeepUnwrap).
 func ArrKey(m map[[1]int]string) map[[1]int]string { return m }
+
+// Empty reads a nested empty slice: s[0] = s[:0] shares the parent's
+// base pointer but cannot recurse — it must arrive as a real slice.
+func Empty(xs []any) int { return len(xs[0].([]any)) }

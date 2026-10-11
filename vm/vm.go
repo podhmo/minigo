@@ -3755,11 +3755,16 @@ func snapshotValue(x any, visiting map[uintptr]struct{}) runtime.Value {
 				// the same repeat guard the map branch keeps: a slice
 				// that holds itself through an `any` slot (s[0] = s)
 				// boxes at the repeat instead of overflowing the stack.
-				if _, dup := visiting[rv.Pointer()]; dup {
-					return &runtime.GoValue{V: x}
+				// A len-0 slice can neither recurse nor be a real
+				// repeat — s[:0] shares s's base pointer, so it must
+				// skip the guard instead of boxing as a false cycle.
+				if rv.Len() > 0 {
+					if _, dup := visiting[rv.Pointer()]; dup {
+						return &runtime.GoValue{V: x}
+					}
+					visiting[rv.Pointer()] = struct{}{}
+					defer delete(visiting, rv.Pointer())
 				}
-				visiting[rv.Pointer()] = struct{}{}
-				defer delete(visiting, rv.Pointer())
 			} else {
 				td = anonArrayTypX(rv.Len(), anonExprOf(rv.Type().Elem()))
 			}
