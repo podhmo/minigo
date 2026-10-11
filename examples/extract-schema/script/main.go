@@ -28,10 +28,16 @@ import (
 // a schema fragment consulted before the default named-type walk —
 // the extension point plugin scripts feed.
 func Main(target string, pkgMode bool, typeName string, stdlibMode string, loose bool, pluginDirs []string, title string, description string) (string, error) {
-	pkg := inspect.DirOf(target)
+	// The modes resolve different namespaces — a directory vs an import
+	// path — so pick the matching loader before loading; probing the
+	// wrong one first trapped on the -pkg target string. The Lookup*
+	// twins answer nil on a miss, making the "could not load" check
+	// below live instead of dead.
+	load := inspect.LookupDirOf
 	if pkgMode {
-		pkg = inspect.PackageOf(target)
+		load = inspect.LookupPackageOf
 	}
+	pkg := load(target)
 	if pkg == nil {
 		return "", fmt.Errorf("extract-schema: could not load package %q", target)
 	}
@@ -51,7 +57,7 @@ func Main(target string, pkgMode bool, typeName string, stdlibMode string, loose
 
 	final := map[string]any{}
 	if typeName != "" {
-		d := inspect.Symbol(pkg, typeName)
+		d := inspect.LookupSymbol(pkg, typeName)
 		if d == nil || inspect.Kind(d) != "type" {
 			return "", fmt.Errorf("extract-schema: type %q not found in %s", typeName, inspect.Path(pkg))
 		}
@@ -139,7 +145,7 @@ type generator struct {
 // with no matching func is a warning, not a failure.
 func (g *generator) loadPlugins(dirs []string) error {
 	for _, dir := range dirs {
-		pp := inspect.DirOf(dir)
+		pp := inspect.LookupDirOf(dir)
 		if pp == nil {
 			return fmt.Errorf("extract-schema: could not load plugin %q", dir)
 		}
