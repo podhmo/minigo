@@ -58,11 +58,13 @@ type Engine struct {
 	files map[string]*runtime.Package // single-file packages by abs path
 	binds map[string]*runtime.Package // host-bound packages (sessions inherit)
 	srcs  map[string]*runtime.Package // source packages behind bound paths (inspect.SourceOf)
-	// lenient builds (inspect.DirOf) are privately cached — a lenient
-	// package in e.pkgs would hide a redeclare error from a later strict
-	// load, and a strict package in e.byDir would break the lenient view.
+	// lenient builds (inspect.DirOf/FileOf/PackageOf) are privately
+	// cached — a lenient package in e.pkgs would hide a redeclare error
+	// from a later strict load, and a strict package in e.byDir would
+	// break the lenient view.
 	pkgsLenient  map[string]*runtime.Package
 	byDirLenient map[string]*runtime.Package
+	filesLenient map[string]*runtime.Package
 	links        map[*runtime.Function]linkEntry // //go:linkname resolutions, cached per decl
 
 	// buildMu serializes package construction (locate/parse/index): two
@@ -195,6 +197,7 @@ func NewEngine(startDir string, opts ...Option) *Engine {
 		pkgs:         map[string]*runtime.Package{},
 		byDir:        map[string]*runtime.Package{},
 		files:        map[string]*runtime.Package{},
+		filesLenient: map[string]*runtime.Package{},
 		binds:        map[string]*runtime.Package{},
 		srcs:         map[string]*runtime.Package{},
 		pkgsLenient:  map[string]*runtime.Package{},
@@ -333,6 +336,7 @@ func (e *Engine) NewSession() *Engine {
 		srcs:         map[string]*runtime.Package{},
 		pkgsLenient:  map[string]*runtime.Package{},
 		byDirLenient: map[string]*runtime.Package{},
+		filesLenient: map[string]*runtime.Package{},
 	}
 	s.builtins = builtins(s)
 	s.installStdlib()
@@ -673,13 +677,25 @@ func lastElem(path string) string {
 // ---- loading ----
 
 func (e *Engine) loadPath(ctx context.Context, path string) (*runtime.Package, error) {
-	return e.loadPathFrom(ctx, "", path)
+	return e.loadPathMode(ctx, "", path, false)
+}
+
+// loadPathLenient is inspect.PackageOf's view: like loadDirLenient it
+// must read source that would not compile (redeclared decls stay
+// visible), so misses build into the lenient caches — a canonical
+// package already in e.pkgs still answers, as the object scripts see.
+func (e *Engine) loadPathLenient(ctx context.Context, path string) (*runtime.Package, error) {
+	return e.loadPathMode(ctx, "", path, true)
 }
 
 // loadPathFrom resolves path as imported from the package in fromDir —
 // resolver vendoring (e.g. GOROOT's src/vendor) keys off the importer's
 // location, so interpreted packages pass their own Dir through.
 func (e *Engine) loadPathFrom(ctx context.Context, fromDir, path string) (*runtime.Package, error) {
+	return e.loadPathMode(ctx, fromDir, path, false)
+}
+
+func (e *Engine) loadPathMode(ctx context.Context, fromDir, path string, lenient bool) (*runtime.Package, error) {
 	mode := e.pkgModes[path]
 	if mode == ModeDeny {
 		return nil, fmt.Errorf("minigo: import of %q denied by package policy", path)
@@ -700,7 +716,7 @@ func (e *Engine) loadPathFrom(ctx context.Context, fromDir, path string) (*runti
 	if err != nil {
 		return nil, fmt.Errorf("resolve %q: %w", path, err)
 	}
-	return e.buildPackage(meta, false)
+	return e.buildPackage(meta, lenient)
 }
 
 func (e *Engine) loadDir(ctx context.Context, dir string) (*runtime.Package, error) {
@@ -939,12 +955,27 @@ func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File, lenient bo
 // import it back. AllowedRoots applies to the file's directory, like any
 // other entry point.
 func (e *Engine) LoadFile(ctx context.Context, filename string) (*runtime.Package, error) {
+	return e.loadFileMode(ctx, filename, false)
+}
+
+// loadFileLenient is inspect.FileOf's view: like DirOf it must show a
+// file whose decls would not compile, so it builds leniently into its
+// own cache — a strict `minigo run file.go` still rejects redeclares.
+func (e *Engine) loadFileLenient(ctx context.Context, filename string) (*runtime.Package, error) {
+	return e.loadFileMode(ctx, filename, true)
+}
+
+func (e *Engine) loadFileMode(ctx context.Context, filename string, lenient bool) (*runtime.Package, error) {
 	abs, err := filepath.Abs(filename)
 	if err != nil {
 		return nil, err
 	}
 	e.mu.Lock()
-	if p, ok := e.files[abs]; ok {
+	files := e.files
+	if lenient {
+		files = e.filesLenient
+	}
+	if p, ok := files[abs]; ok {
 		e.mu.Unlock()
 		return p, nil
 	}
@@ -962,7 +993,7 @@ func (e *Engine) LoadFile(ctx context.Context, filename string) (*runtime.Packag
 	sf.LangMod = resolve.ModuleLang(filepath.Dir(abs))
 
 	p := e.newPackage("<file>"+filepath.ToSlash(abs), sf.AST.Name.Name, filepath.Dir(abs))
-	if err := e.indexFiles(p, []*syntax.File{sf}, false); err != nil {
+	if err := e.indexFiles(p, []*syntax.File{sf}, lenient); err != nil {
 		return nil, err
 	}
 
@@ -970,11 +1001,11 @@ func (e *Engine) LoadFile(ctx context.Context, filename string) (*runtime.Packag
 	// be imported back, so nothing needs the early visibility that
 	// buildPackage's import cycles do.
 	e.mu.Lock()
-	if q, ok := e.files[abs]; ok {
+	if q, ok := files[abs]; ok {
 		e.mu.Unlock()
 		return q, nil
 	}
-	e.files[abs] = p
+	files[abs] = p
 	e.mu.Unlock()
 	return p, nil
 }

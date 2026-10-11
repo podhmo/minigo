@@ -41,7 +41,9 @@ func (e *Engine) installInspect() {
 			if len(args) != 1 {
 				return nil, argerr("PackageOf", "one path string")
 			}
-			return e.loadPath(context.Background(), str(runtime.Unwrap(args[0])))
+			// like DirOf's lenient view: PackageOf must answer for a path
+			// whose source would not compile, so misses build leniently.
+			return e.loadPathLenient(context.Background(), str(runtime.Unwrap(args[0])))
 		}),
 		"SourceOf": bf("SourceOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
@@ -60,7 +62,7 @@ func (e *Engine) installInspect() {
 				return nil, argerr("FileOf", "one file string")
 			}
 			name := str(runtime.Unwrap(args[0]))
-			p, err := e.LoadFile(context.Background(), name)
+			p, err := e.loadFileLenient(context.Background(), name)
 			if err != nil {
 				return nil, err
 			}

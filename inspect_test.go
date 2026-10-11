@@ -61,6 +61,10 @@ func TestInspect(t *testing.T) {
 		"PkgMetaView", // metadata via accessors; member shadow wins (#26)
 		"BuiltinPathConst",
 		"ASTWalk",
+		// lenient locators: FileOf/PackageOf build like DirOf — a target
+		// that cannot compile still enumerates its decls.
+		"FileOfDup",
+		"PackageOfDup",
 	} {
 		if got := run(t, e, "./testdata/inspectuse", fn); got != "ok" {
 			t.Errorf("%s: %v", fn, got)
