@@ -2408,3 +2408,30 @@ func TestLenientIndexIsolation(t *testing.T) {
 		t.Fatalf("DirOf after failed strict load: %v", got)
 	}
 }
+
+func TestDirScopeFilenameVisibility(t *testing.T) {
+	// LoadDirScope keeps go/build's FILENAME invisibility: a _GOOS/_GOARCH
+	// suffixed sibling is never read, while //go:build-excluded files still
+	// contribute (task-runner conventions).
+	dir := t.TempDir()
+	write := func(name, src string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("main.go", "//go:build task\n\npackage main\n\nfunc main() {}\n")
+	write("helpers.go", "//go:build task\n\npackage main\n\nfunc helper() string { return \"posix\" }\n")
+	write("win_windows.go", "//go:build task\n\npackage main\n\nfunc helper() string { return \"windows\" }\n")
+	e := newEngine(t)
+	p, err := e.LoadDirScope(context.Background(), filepath.Join(dir, "main.go"))
+	if err != nil {
+		t.Fatalf("LoadDirScope: %v", err)
+	}
+	v, err := e.Call(context.Background(), p, "helper")
+	if err != nil {
+		t.Fatalf("call helper: %v", err)
+	}
+	if v != "posix" {
+		t.Fatalf("helper: got %v, want posix (a _windows.go sibling must be invisible)", v)
+	}
+}
