@@ -192,6 +192,9 @@ func (e *Engine) installStdlib() {
 				return nil, fmt.Errorf("errors.Is needs 2 args")
 			}
 			e0, e1 := hostErrOf(v, args[0]), hostErrOf(v, args[1])
+			if e0 == nil || e1 == nil {
+				return e0 == e1, nil
+			}
 			if s0, ok := e0.(*scriptError); ok {
 				// Go's `err == target` fast path: two scriptError boxes
 				// around the same script value are one error.
@@ -199,7 +202,10 @@ func (e *Engine) installStdlib() {
 					return true, nil
 				}
 			}
-			return errors.Is(e0, e1), nil
+			// script-side walk — host errors.Is's `==` compares error
+			// pointers and only walks Unwrap() error, so it misses a
+			// scriptError's canonical equality and its []error kids.
+			return errIs(e0, e1), nil
 		}},
 		"Unwrap": &runtime.BuiltinFunc{Name: "errors.Unwrap", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
@@ -6591,6 +6597,23 @@ func (e *scriptError) errKids() []error {
 	return nil
 }
 
+// Is lets a script-declared `Is(error) bool` method join host
+// errors.Is — the error's own equality override like Go's custom-Is
+// rule. The host error target maps back to its script value the way
+// hostErrOf boxed it, so the script side compares what it sees.
+func (e *scriptError) Is(target error) bool {
+	m, ok := runtime.IfaceMember(e.c, e.v, "Is")
+	if !ok {
+		return false
+	}
+	r, err := e.c.Call(m, []runtime.Value{scriptErrUnbox(target)})
+	if err != nil {
+		return false
+	}
+	b, _ := r.(bool)
+	return b
+}
+
 // As lets a script-declared `As(any) bool` method join host
 // errors.As/AsType — the error's own As assigns the target like Go's
 // custom-As rule. A non-pointer target has nothing to write to and
@@ -6717,6 +6740,65 @@ func findAsTarget(v runtime.VMCaller, err error, want *runtime.TypeDef, reqs map
 		}
 	}
 	return nil, false
+}
+
+// errIs walks an error tree the way gc's errors.Is does — each node's
+// `err == target` equality on a comparable target, its own Is(error)
+// bool, then Unwrap() error / Unwrap() []error children depth-first —
+// sharing As's errKids so a script `Unwrap() []error` fans out like
+// errors.Join's elements.
+func errIs(err, target error) bool {
+	targetComparable := errComparable(target)
+	for {
+		if targetComparable && errEqual(err, target) {
+			return true
+		}
+		if x, ok := err.(interface{ Is(error) bool }); ok && x.Is(target) {
+			return true
+		}
+		switch kids := errKids(err); {
+		case len(kids) == 0:
+			return false
+		case len(kids) == 1:
+			err = kids[0]
+		default:
+			for _, kid := range kids {
+				if errIs(kid, target) {
+					return true
+				}
+			}
+			return false
+		}
+	}
+}
+
+// errComparable is gc's targetComparable: the target's dynamic type is
+// comparable — a script value asks TryOpaqueKey (a struct containing a
+// slice field is not), a host error its reflect type.
+func errComparable(err error) bool {
+	if se, ok := err.(*scriptError); ok {
+		_, ok := runtime.TryOpaqueKey(se.v)
+		return ok
+	}
+	return reflect.TypeOf(err).Comparable()
+}
+
+// errEqual is gc's `err == target` for a chain that may hold script
+// errors: two scriptError boxes compare their script values canonically
+// (OpaqueKey — the same mapKey equality host containers use), a script
+// error never equals a native one, and two natives compare as errors.
+func errEqual(err, target error) bool {
+	s0, ok0 := err.(*scriptError)
+	s1, ok1 := target.(*scriptError)
+	if ok0 || ok1 {
+		if !ok0 || !ok1 {
+			return false
+		}
+		k0, g0 := runtime.TryOpaqueKey(s0.v)
+		k1, g1 := runtime.TryOpaqueKey(s1.v)
+		return g0 && g1 && k0 == k1
+	}
+	return err == target
 }
 
 // errKids returns an error node's children — Unwrap() error's single
