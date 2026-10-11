@@ -41,9 +41,12 @@ go run ./ -stdlib walk ./app        # walk into time.Time's source
   `internal/dep`, enum, alias, tags, embedding).
 - `plugins/time/` — `Overrides()` example: `time.Time` -> `{type:
   string, format: date-time}`.
-- `plugins/desc/` — `DescRules()` example: `"strip-symbol-prefix"`
-  drops the Go doc convention's leading symbol name from every
-  description. Plugins may expose either entry point (or both).
+- `plugins/desc/` — `DescField`/`DescDecl` example: drops the Go doc
+  convention's leading symbol name from every description. Filters are
+  `func(any, string) string` script functions the walk pulls via
+  `inspect.Value` and calls in the same VM; the field/decl reference is
+  passed to the hook (read it via reflect — a `*inspect.Field` type
+  assertion traps on cross-package type identity).
 - `testdata/*.golden` — golden outputs; regenerate with
   `go test ./ -update`.
 

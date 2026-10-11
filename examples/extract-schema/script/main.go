@@ -25,7 +25,7 @@ import (
 // OpenAPI components.schemas style. overrides maps "pkgpath.Name" to
 // a schema fragment consulted before the default named-type walk —
 // the extension point plugin scripts feed.
-func Main(target string, pkgMode bool, typeName string, stdlibMode string, loose bool, overrides map[string]any, descRules []string, title string, description string) (string, error) {
+func Main(target string, pkgMode bool, typeName string, stdlibMode string, loose bool, overrides map[string]any, pluginDirs []string, title string, description string) (string, error) {
 	pkg := inspect.DirOf(target)
 	if pkgMode {
 		pkg = inspect.PackageOf(target)
@@ -38,11 +38,13 @@ func Main(target string, pkgMode bool, typeName string, stdlibMode string, loose
 		loose:     loose,
 		stdlib:    stdlibMode,
 		overrides: overrides,
-		descRules: descRules,
 		defs:      map[string]any{},
 		seen:      map[string]string{},
 		used:      map[string]int{},
 		nameOwner: map[string]string{},
+	}
+	if err := g.loadDescHooks(pluginDirs); err != nil {
+		return "", err
 	}
 
 	final := map[string]any{}
@@ -120,11 +122,55 @@ type generator struct {
 	loose     bool
 	stdlib    string
 	overrides map[string]any
-	descRules []string
-	defs      map[string]any
-	seen      map[string]string // "pkgpath.Name" -> def name
-	used      map[string]int
-	nameOwner map[string]string // def name -> symbol key (collision check)
+	// Description filters installed by plugins — plain script
+	// functions pulled out of the plugin package with inspect.Value
+	// and called in this VM: no respawn per call.
+	// Hooks are func(any, string) string and receive the field/decl
+	// reference itself (not just its doc): a plugin narrows the view
+	// with reflect, since a static assertion naming *inspect.Field
+	// would compare the func type nominally across package instances
+	// and trap. `any` matches structurally.
+	descFields []func(any, string) string
+	descDecls  []func(any, string) string
+	defs       map[string]any
+	seen       map[string]string // "pkgpath.Name" -> def name
+	used       map[string]int
+	nameOwner  map[string]string // def name -> symbol key (collision check)
+}
+
+// loadDescHooks pulls the optional DescField/DescDecl functions out of
+// each plugin package. A plugin that exports neither still contributes
+// via Overrides(); one with neither hook is noted but not an error.
+func (g *generator) loadDescHooks(dirs []string) error {
+	for _, dir := range dirs {
+		pp := inspect.DirOf(dir)
+		if pp == nil {
+			return fmt.Errorf("extract-schema: could not load plugin %q", dir)
+		}
+		hooked := false
+		// inspect.Symbol traps on a miss, so scan Decls instead.
+		if findFunc(inspect.Decls(pp), "DescField") != nil {
+			g.descFields = append(g.descFields, inspect.Value(pp, "DescField").(func(any, string) string))
+			hooked = true
+		}
+		if findFunc(inspect.Decls(pp), "DescDecl") != nil {
+			g.descDecls = append(g.descDecls, inspect.Value(pp, "DescDecl").(func(any, string) string))
+			hooked = true
+		}
+		if !hooked {
+			warn("plugin %s exposes no DescField/DescDecl hook", dir)
+		}
+	}
+	return nil
+}
+
+func findFunc(ds []*inspect.Decl, name string) *inspect.Decl {
+	for _, d := range ds {
+		if d.Name == name && inspect.Kind(d) == "func" {
+			return d
+		}
+	}
+	return nil
 }
 
 // defOf registers d as a $defs entry and returns its def name.
@@ -168,7 +214,7 @@ func (g *generator) defName(key string, d *inspect.Decl) string {
 func (g *generator) docForDecl(d *inspect.Decl) (map[string]any, error) {
 	doc := map[string]any{}
 	if d.Doc != "" {
-		doc["description"] = g.cleanDesc(d.Name, d.Doc)
+		doc["description"] = g.declDoc(d, d.Doc)
 	}
 	def := inspect.Def(d)
 	if inspect.IsAlias(d) && def != nil {
@@ -311,32 +357,22 @@ func (g *generator) follow(pkgPath, name string) (map[string]any, error) {
 	return map[string]any{"$ref": "#/$defs/" + defName}, nil
 }
 
-// cleanDesc trims a doc comment and runs the plugins' DescRules:
-// data-driven description filters. Ops: "strip-symbol-prefix" (drop a
-// leading `<SymbolName>`/`SymbolName:` — the Go doc convention that
-// would restate the name), "strip-prefix" (literal text), "replace"
-// (old -> new, applied globally). Unknown ops are ignored.
-func (g *generator) cleanDesc(sym, raw string) string {
+// fieldDoc/declDoc trim a doc comment and run the plugins'
+// description-filter functions. The hook receives the field/decl
+// reference itself, so a filter can read Names, Tag, or Pos rather
+// than re-deriving the symbol from the text.
+func (g *generator) fieldDoc(f *inspect.Field, raw string) string {
 	s := strings.TrimSpace(raw)
-	for _, spec := range g.descRules {
-		op, arg, _ := strings.Cut(spec, ":")
-		switch op {
-		case "strip-symbol-prefix":
-			if sym != "" && strings.HasPrefix(s, sym) {
-				rest := strings.TrimSpace(s[len(sym):])
-				rest = strings.TrimPrefix(rest, ":")
-				s = strings.TrimSpace(rest)
-			}
-		case "strip-prefix":
-			if arg != "" && strings.HasPrefix(s, arg) {
-				s = strings.TrimSpace(s[len(arg):])
-			}
-		case "replace":
-			old, new, _ := strings.Cut(arg, "->")
-			if old != "" {
-				s = strings.ReplaceAll(s, old, new)
-			}
-		}
+	for _, fn := range g.descFields {
+		s = fn(f, s)
+	}
+	return s
+}
+
+func (g *generator) declDoc(d *inspect.Decl, raw string) string {
+	s := strings.TrimSpace(raw)
+	for _, fn := range g.descDecls {
+		s = fn(d, s)
 	}
 	return s
 }
@@ -537,7 +573,7 @@ func (g *generator) addEmbedded(f *inspect.Field, name string, named bool, props
 
 func (g *generator) applyFieldDoc(fd map[string]any, f *inspect.Field, name string) {
 	if f.Doc != "" {
-		fd["description"] = g.cleanDesc(name, f.Doc)
+		fd["description"] = g.fieldDoc(f, f.Doc)
 	}
 }
 

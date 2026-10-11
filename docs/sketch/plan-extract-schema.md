@@ -155,23 +155,33 @@ walk a `SymbolID` lookup consults the merged table before the default
 named-type handling — including before the stdlib leaf policy, which
 is how `time.Time` becomes `date-time` instead of a stopped leaf.
 
-A plugin package may also expose `DescRules() []string` — ordered,
-string-spelled filters the walk applies to every description it emits
-(type docs and field docs alike):
+A plugin package may also expose **description filters as plain
+script functions**, pulled out of the package with `inspect.Value`
+and called by the walk *inside the same VM* — no respawn per call:
 
-- `"strip-symbol-prefix"` — drop a leading `<SymbolName>`/`SymbolName:`
-  (the Go doc convention that restates the name).
-- `"strip-prefix:<text>"` — drop a literal prefix.
-- `"replace:<old>-><new>"` — `strings.ReplaceAll`.
+- `DescField(f any, doc string) string` — runs on every field
+  description; the field *reference* is passed, so a filter can read
+  Names, Tag, or Pos instead of re-deriving the symbol from the text.
+- `DescDecl(v any, doc string) string` — same for type descriptions.
 
-Rules travel as plain strings on purpose: they cross the
-host→script boundary unboxed, keep their order, and stay
-self-describing — structured rule values (`[]map[string]any`) were
-tried and rejected: elements arrive `*runtime.GoValue`-boxed
-(unindexable), and `[]map[string]any` as a signature trips a
-spelling-based boundary check (`interface {}` vs `any`). See
-`plugins/desc` for the example. Either entry point alone makes a valid
-plugin; a dir with neither is an error.
+Why `any` on the boundary: a func type naming `*inspect.Field`
+asserts *nominally*, and each separately-loaded package instance
+interns its own inspect types — the cross-package identity compare
+traps with "types from different packages". `func(any, string)`
+matches structurally, and the hook reads the view's fields through
+`reflect` (`reflect.ValueOf(f).Elem().FieldByName("Names")`), which
+never consults type identity. (`x.(*inspect.Field)` also traps —
+`inspect.Decl`/`Field` are not registered type symbols.) The call
+itself (`fn(f, s)`) is a normal in-VM call — no respawn.
+
+The plugin hooks are why "filters" is a function-shaped contract and
+not data: a first cut carried rules as strings
+(`"strip-symbol-prefix"`, `"replace:o->n"`) because structured values
+(`[]map[string]any`) hit the arg-boundary boxing/spelling traps — but
+functions sidestep all of it, and arbitrary filters (symbol-prefix
+stripping being just the example in `plugins/desc`) need real code
+anyway. Either entry point (Overrides or the Desc* hooks) makes a
+valid plugin.
 
 ### Interface shape — under consideration
 
@@ -298,7 +308,21 @@ Built and passing locally (`go run ./ ./app User` and friends):
   `interface{}` — the boundary check is spelling-based). Only
   `[]string`/`[]byte`-shaped element types auto-unbox reliably;
   `[]any` elements arrive `*runtime.GoValue`-boxed and unindexable.
-  String-spelled plugin data sidesteps all three.
+  Function hooks sidestep all three (below).
+- **`inspect.Value(pkg, name)` returns a live function value** for a
+  func decl, callable in the same VM — but only with an
+  `any`-shaped signature. Asserting `.(func(*inspect.Field, string)
+  string)` nominally compares the func types, and separately-loaded
+  package instances carry distinct inspect type objects:
+  "interface conversion: ... types from different packages" (the same
+  family as the `*runtime.Package` identity trap). Likewise
+  `x.(*inspect.Field)` inside a plugin traps `undefined:
+  inspect.Field` — the view types are not registered type symbols.
+  reflect-based field reads (`FieldByName`) are unaffected.
+- **`inspect.Symbol(pkg, name)` traps on a miss** — there is no
+  non-trapping name lookup, so optional plugin entry points are
+  probed by scanning `inspect.Decls` (`findFunc`). A `Lookup`-
+  style soft variant would read better.
 
 ## Asks of minigo
 

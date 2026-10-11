@@ -74,23 +74,21 @@ func runMain(ctx context.Context, argv []string) int {
 
 // run executes script.Main through a minigo engine rooted at engineDir.
 // Plugin dirs are run first — each is itself a script package exposing
-// Overrides() (symbolID -> schema-fragment table) and/or DescRules()
-// (description-filter rules); both are optional but at least one must
-// exist. The merged table and rules cross back into the engine as
-// arguments to the script. The script returns the schema document as
-// a string.
+// Overrides() (symbolID -> schema-fragment table). The merged table
+// crosses back into the engine as an argument to the script; the
+// plugin dirs are passed along too so the script can pull description
+// filters (DescField/DescDecl) out of them with inspect.Value and call
+// them inside the same VM — no respawn per call. The script returns
+// the schema document as a string.
 func run(ctx context.Context, engineDir, scriptDir string, plugins []string, target string, pkgMode bool, typeName, stdlib string, loose bool, title, description string) (string, error) {
 	e := minigo.NewEngine(engineDir, minigo.WithOutput(io.Discard))
 	overrides := map[string]any{}
-	var descRules []string
 	for _, dir := range plugins {
-		anyEntry := false
 		res, err := e.Run(ctx, dir, "Overrides")
 		if err != nil && !missingEntry(err, "Overrides") {
 			return "", fmt.Errorf("extract-schema: plugin %s: %w", dir, err)
 		}
 		if err == nil {
-			anyEntry = true
 			m, ok := unwrapDeep(res).(map[string]any)
 			if !ok {
 				return "", fmt.Errorf("extract-schema: plugin %s: Overrides() returned %T, want map[string]any", dir, res)
@@ -99,29 +97,8 @@ func run(ctx context.Context, engineDir, scriptDir string, plugins []string, tar
 				overrides[k] = v
 			}
 		}
-		res, err = e.Run(ctx, dir, "DescRules")
-		if err != nil && !missingEntry(err, "DescRules") {
-			return "", fmt.Errorf("extract-schema: plugin %s: %w", dir, err)
-		}
-		if err == nil {
-			anyEntry = true
-			rules, ok := unwrapDeep(res).([]any)
-			if !ok {
-				return "", fmt.Errorf("extract-schema: plugin %s: DescRules() returned %T, want []string", dir, res)
-			}
-			for _, r := range rules {
-				rs, ok := r.(string)
-				if !ok {
-					return "", fmt.Errorf("extract-schema: plugin %s: DescRules() element %T, want string", dir, r)
-				}
-				descRules = append(descRules, rs)
-			}
-		}
-		if !anyEntry {
-			return "", fmt.Errorf("extract-schema: plugin %s exposes neither Overrides() nor DescRules()", dir)
-		}
 	}
-	res, err := e.Run(ctx, scriptDir, "Main", target, pkgMode, typeName, stdlib, loose, overrides, descRules, title, description)
+	res, err := e.Run(ctx, scriptDir, "Main", target, pkgMode, typeName, stdlib, loose, overrides, plugins, title, description)
 	if err != nil {
 		return "", err
 	}
