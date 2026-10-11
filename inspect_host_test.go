@@ -326,3 +326,147 @@ func TestTypeExprSub(t *testing.T) {
 		t.Error("Sub(nil) should return nil")
 	}
 }
+
+// TestBodyNodes: BodyOf roots a Node walk whose NodesOf enumeration
+// visits exactly ast.Inspect's preorder — every child node, in the
+// same order — so script-side body traversal loses nothing to the
+// view layer. Kind/Role/Detail/Text carry the discrimination data.
+func TestBodyNodes(t *testing.T) {
+	e := newEngine(t)
+	ctx := context.Background()
+	p, err := e.Package(ctx, "./testdata/inspectpkg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := p.Index.Funcs["WalkMe"]
+	if d == nil {
+		t.Fatal("no WalkMe decl")
+	}
+	root, err := xinspect.BodyOf(xinspect.NewDecl(p, d))
+	if err != nil {
+		t.Fatalf("BodyOf: %v", err)
+	}
+	if root.Kind != "BlockStmt" || root.Role != "" {
+		t.Fatalf("root = %s/%q", root.Kind, root.Role)
+	}
+
+	var want []ast.Node
+	ast.Inspect(d.Func.Body, func(n ast.Node) bool {
+		if n != nil {
+			want = append(want, n)
+		}
+		return true
+	})
+	var got []ast.Node
+	var walk func(n *xinspect.Node)
+	walk = func(n *xinspect.Node) {
+		got = append(got, n.ASTNode())
+		for _, c := range xinspect.NodesOf(n) {
+			walk(c)
+		}
+	}
+	walk(root)
+	if len(got) != len(want) {
+		t.Fatalf("walked %d nodes, want %d (ast.Inspect)", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("node %d: got %T %v, want %T %v", i, got[i], got[i], want[i], want[i])
+		}
+	}
+
+	// the roles a registerRoutes-shaped walk navigates by
+	stmts := xinspect.NodesOf(root)
+	call := xinspect.NodesOf(stmts[0])[0] // ExprStmt -> CallExpr
+	if call.Kind != "CallExpr" || call.Role != "X" {
+		t.Fatalf("call = %s/%q", call.Kind, call.Role)
+	}
+	cs := xinspect.NodesOf(call)
+	if len(cs) != 2 || cs[0].Role != "Fun" || cs[1].Role != "Args" {
+		t.Fatalf("call children roles: %v", rolesOf(cs))
+	}
+	lit := cs[1]
+	if lit.Kind != "BasicLit" || lit.Detail != "STRING" || lit.Text != `"a"` {
+		t.Errorf("lit = %s/%s %q", lit.Kind, lit.Detail, lit.Text)
+	}
+	if lit.Pos == nil || lit.Pos.Line <= 0 {
+		t.Errorf("lit.Pos = %v", lit.Pos)
+	}
+	// Expr anchors a body expression for the SymbolID machinery.
+	fun := xinspect.ExprOf(cs[0])
+	if fun == nil || fun.Kind != "SelectorExpr" {
+		t.Fatalf("ExprOf(sel) = %v", fun)
+	}
+	if xinspect.ExprOf(root) != nil {
+		t.Error("ExprOf on a statement should be nil")
+	}
+
+	// nil and non-func cases
+	if b, err := xinspect.BodyOf(xinspect.NewDecl(p, p.Index.Funcs["NoBody"])); err != nil || b != nil {
+		t.Errorf("NoBody: got %v, %v — want nil, nil", b, err)
+	}
+	if _, err := xinspect.BodyOf(xinspect.NewDecl(p, nil)); err == nil {
+		t.Error("want error for a host symbol")
+	}
+	if _, err := xinspect.BodyOf(xinspect.NewDecl(p, p.Index.Vars["Count"])); err == nil {
+		t.Error("want error for a var decl")
+	}
+}
+
+func rolesOf(ns []*xinspect.Node) []string {
+	var out []string
+	for _, n := range ns {
+		out = append(out, n.Kind+":"+n.Role)
+	}
+	return out
+}
+
+// A name the func binds itself (param, :=, ...) is "possibly local",
+// so Expr-fed SymbolID refuses to attribute `strings.TrimSpace` to
+// the imported package when `strings` is a param — under-resolution,
+// never misattribution.
+func TestBodyScope(t *testing.T) {
+	e := newEngine(t)
+	ctx := context.Background()
+	p, err := e.Package(ctx, "./testdata/inspectpkg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := p.Index.Funcs["ShadowMe"]
+	if d == nil {
+		t.Fatal("no ShadowMe decl")
+	}
+	root, err := xinspect.BodyOf(xinspect.NewDecl(p, d))
+	if err != nil {
+		t.Fatalf("BodyOf: %v", err)
+	}
+	ret := xinspect.NodesOf(root)[0] // ReturnStmt
+	call := xinspect.NodesOf(ret)[0] // Results -> CallExpr
+	fun := xinspect.NodesOf(call)[0] // Fun -> SelectorExpr
+	te := xinspect.ExprOf(fun)
+	if te == nil {
+		t.Fatal("ExprOf(sel) = nil")
+	}
+	if sid, ok := te.SymbolID(); ok {
+		t.Errorf("shadowed select resolved to %v", sid)
+	}
+	x := xinspect.ExprOf(xinspect.NodesOf(fun)[0]) // X -> Ident strings
+	if sid, ok := x.SymbolID(); ok {
+		t.Errorf("shadowed ident resolved to %v", sid)
+	}
+
+	// control: WalkMe's unshadowed strings.TrimSpace still resolves —
+	// it is the arg of helper(strings.TrimSpace("c")) at stmt 2.
+	wd := p.Index.Funcs["WalkMe"]
+	wroot, err := xinspect.BodyOf(xinspect.NewDecl(p, wd))
+	if err != nil {
+		t.Fatalf("BodyOf WalkMe: %v", err)
+	}
+	wcall := xinspect.NodesOf(xinspect.NodesOf(wroot)[2])[0] // helper(...)
+	inner := xinspect.NodesOf(wcall)[1]                     // Args -> CallExpr
+	wfun := xinspect.ExprOf(xinspect.NodesOf(inner)[0])     // Fun -> SelectorExpr
+	sid, ok := wfun.SymbolID()
+	if !ok || sid.PackagePath != "strings" || sid.Name != "TrimSpace" {
+		t.Errorf("unshadowed select = %v, %v", sid, ok)
+	}
+}
