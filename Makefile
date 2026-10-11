@@ -1,4 +1,4 @@
-.PHONY: all test format clean lint go-mod-tidy-all difffuzz difffuzz-corpus tmpltests tmpltests-parse tmpltests-html tmpltests-all
+.PHONY: all test format clean lint go-mod-tidy-all difffuzz difffuzz-corpus tmpltests tmpltests-parse tmpltests-html tmpltests-examples tmpltests-html-examples tmpltests-all
 
 all:
 	go build ./...
@@ -48,7 +48,17 @@ tmpltests-parse:
 tmpltests-html:
 	go -C ./tools/tmpltests run ./ -pkg html/template -tests $(TMPLTESTS_HTML_TESTS) -src $(TMPLTESTS_HTML_SRC) $(TMPLTESTS_ARGS)
 
-tmpltests-all: tmpltests tmpltests-parse tmpltests-html
+# external example suites (package <base>_test) run under -examples:
+# their Example funcs execute and stdout is checked against // Output:.
+TMPLTESTS_TEXT_EXAMPLES ?= example_test.go,examplefiles_test.go,examplefunc_test.go
+TMPLTESTS_HTML_EXAMPLES ?= example_test.go,examplefiles_test.go
+tmpltests-examples:
+	go -C ./tools/tmpltests run ./ -pkg text/template -tests $(TMPLTESTS_TEXT_EXAMPLES) -examples $(TMPLTESTS_ARGS)
+
+tmpltests-html-examples:
+	go -C ./tools/tmpltests run ./ -pkg html/template -tests $(TMPLTESTS_HTML_EXAMPLES) -src $(TMPLTESTS_HTML_SRC) -examples $(TMPLTESTS_ARGS)
+
+tmpltests-all: tmpltests tmpltests-parse tmpltests-html tmpltests-examples tmpltests-html-examples
 
 clean:
 	go clean -cache -testcache # General Go clean
