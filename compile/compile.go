@@ -50,6 +50,9 @@ type binding struct {
 	// constant-expression walk can tell it from a var. An untyped const
 	// carries untypedConst instead of a declTyp.
 	constDecl bool
+	// dte is an untyped const's default type expression — the type it
+	// binds at `y := c` (`const c = 5` makes y an int like gc).
+	dte ast.Expr
 }
 
 // fscope is the static scope model of one function while compiling.
@@ -149,13 +152,15 @@ func (s *fscope) noteConstDecl(name string) {
 
 // noteUntypedConst marks a just-declared `const` name as untyped (no
 // declared type and no typed initializer): it adopts the other
-// operand's type in a comparison.
-func (s *fscope) noteUntypedConst(name string) {
+// operand's type in a comparison. dte is the const's default type —
+// what a `y := c` bind gets.
+func (s *fscope) noteUntypedConst(name string, dte ast.Expr) {
 	if len(s.blocks) == 0 {
 		return
 	}
 	if b := s.blocks[len(s.blocks)-1][name]; b != nil {
 		b.untypedConst = true
+		b.dte = dte
 	}
 }
 
@@ -1906,6 +1911,11 @@ type opTyp struct {
 	untyped    bool
 	iface      bool
 	nilOperand bool // the literal `nil` — untyped, but only nilable types adopt it
+	// dte is an untyped operand's default type expression — the type it
+	// binds at `x := e` — so a later comparison gates on the bound
+	// type (`x := 1 + 2` is int, `x := 'a'` is rune) rather than
+	// staying adoption-shaped forever.
+	dte ast.Expr
 }
 
 // staticOpTyp resolves the statically-known type of an operand
@@ -1927,7 +1937,7 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 	}
 	switch x := ast.Unparen(e).(type) {
 	case *ast.BasicLit:
-		return opTyp{untyped: true}
+		return opTyp{untyped: true, dte: defaultLitTyp(x)}
 	case *ast.Ident:
 		return c.identOpTyp(x)
 	case *ast.SelectorExpr:
@@ -1952,7 +1962,7 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 			// a negated constant stays an untyped bool — it adopts
 			// into a named operand (`f == !false`).
 			if c.staticOpTyp(x.X).untyped {
-				return opTyp{te: &ast.Ident{Name: "bool"}, untyped: true}
+				return opTyp{te: &ast.Ident{Name: "bool"}, untyped: true, dte: &ast.Ident{Name: "bool"}}
 			}
 			return opTyp{te: &ast.Ident{Name: "bool"}}
 		case token.SUB, token.ADD, token.XOR:
@@ -1971,7 +1981,7 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 			ux := c.staticOpTyp(x.X)
 			uy := c.staticOpTyp(x.Y)
 			if (ux.untyped || ux.nilOperand) && (uy.untyped || uy.nilOperand) {
-				return opTyp{te: &ast.Ident{Name: "bool"}, untyped: true}
+				return opTyp{te: &ast.Ident{Name: "bool"}, untyped: true, dte: &ast.Ident{Name: "bool"}}
 			}
 			return opTyp{te: &ast.Ident{Name: "bool"}}
 		}
@@ -1992,7 +2002,7 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 			}
 			rt := c.staticOpTyp(x.Y)
 			if rt.untyped || rt.nilOperand {
-				return opTyp{untyped: true}
+				return opTyp{untyped: true, dte: lt.dte}
 			}
 			if lt.untyped {
 				// a constant shift keeps its untypedness —
@@ -2001,18 +2011,31 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 				// compared operand's type. Only a non-constant
 				// count defaults the left operand.
 				if c.isConstOperand(x.Y) {
-					return opTyp{untyped: true}
+					return opTyp{untyped: true, dte: lt.dte}
 				}
-				return c.defaultOpTyp(x.X)
+				return opTyp{te: lt.dte}
 			}
 			return rt
 		}
 		// arithmetic adopts the operand type: a named side wins; an
 		// untyped side gives way (`d + 1` is Duration, `1 + i` is int).
-		if t := c.staticOpTyp(x.X); t.te != nil {
-			return t
+		ux := c.staticOpTyp(x.X)
+		if ux.te != nil {
+			return ux
 		}
-		return c.staticOpTyp(x.Y)
+		uy := c.staticOpTyp(x.Y)
+		if uy.te != nil {
+			return uy
+		}
+		if ux.untyped && uy.untyped {
+			// both sides constant: the result stays untyped with the
+			// higher-rank kind (`1 + 'a'` is a rune constant, `1 +
+			// 1.5` a float) — the bind-time default follows it.
+			return opTyp{untyped: true, dte: mergeUntypedDte(ux.dte, uy.dte)}
+		}
+		// an unknown side keeps the whole expression unknown — `f()
+		// + 1` types by f's result, which the static walk can't see.
+		return opTyp{}
 	case *ast.CompositeLit:
 		return opTyp{te: x.Type}
 	case *ast.FuncLit:
@@ -2028,7 +2051,7 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 	if b := c.fs.lookupBinding(id.Name); b != nil {
 		if b.untypedConst {
-			return opTyp{untyped: true}
+			return opTyp{untyped: true, dte: b.dte}
 		}
 		return opTyp{te: b.declTyp}
 	}
@@ -2036,8 +2059,10 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 		return opTyp{} // a bound type parameter — its value is opaque here
 	}
 	switch id.Name {
-	case "true", "false", "iota":
-		return opTyp{untyped: true}
+	case "true", "false":
+		return opTyp{untyped: true, dte: &ast.Ident{Name: "bool"}}
+	case "iota":
+		return opTyp{untyped: true, dte: &ast.Ident{Name: "int"}}
 	case "nil":
 		return opTyp{nilOperand: true}
 	}
@@ -2053,10 +2078,13 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 				// noteDeclTyp's in-function path (`var x = 5` is int).
 				if len(vs.Values) == len(vs.Names) && vd.NameIdx < len(vs.Values) {
 					rhs := vs.Values[vd.NameIdx]
-					if t := c.staticOpTyp(rhs); !t.untyped {
+					t := c.staticOpTyp(rhs)
+					if !t.untyped {
 						return t
 					}
-					return c.defaultOpTyp(rhs)
+					// an untyped initializer binds its constant's
+					// default type (`var x = 1 + 2` is int like gc).
+					return opTyp{te: t.dte}
 				}
 			}
 			return opTyp{}
@@ -2070,11 +2098,25 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 				if t != nil {
 					return opTyp{te: t}
 				}
-				// `const c = Duration(0)` — a typed initializer still
-				// types the const; only a genuinely untyped one adopts.
-				if len(vs.Values) == len(vs.Names) && cd.NameIdx < len(vs.Values) {
-					if t := c.staticOpTyp(vs.Values[cd.NameIdx]); t.te != nil {
+				// the const's own value — a carried spec (`const (a =
+				// 1; b)`) reads the inherited list at the name's slot.
+				var v ast.Expr
+				switch {
+				case len(vs.Values) == len(vs.Names) && cd.NameIdx < len(vs.Values):
+					v = vs.Values[cd.NameIdx]
+				case cd.NameIdx < len(cd.Inherited):
+					v = cd.Inherited[cd.NameIdx]
+				}
+				if v != nil {
+					// `const c = Duration(0)` — a typed initializer
+					// still types the const; a genuinely untyped one
+					// adopts but keeps its kind's default type.
+					t := c.staticOpTyp(v)
+					if t.te != nil {
 						return t
+					}
+					if t.untyped {
+						return opTyp{untyped: true, dte: t.dte}
 					}
 				}
 			}
@@ -2226,21 +2268,42 @@ func (c *compiler) funcTypeResultOpTyp(ft *ast.FuncType) opTyp {
 	return opTyp{te: te}
 }
 
-// defaultOpTyp resolves an untyped initializer to the type it binds at
-// a `var x = e` / `x := e` declaration — a literal's default type, or
-// bool for the true/false idents. Anything else stays unknown (an
-// untyped const expression's default needs its kind, which the static
-// walk doesn't carry).
-func (c *compiler) defaultOpTyp(rhs ast.Expr) opTyp {
-	switch t := ast.Unparen(rhs).(type) {
-	case *ast.BasicLit:
-		return opTyp{te: defaultLitTyp(t)}
-	case *ast.Ident:
-		if t.Name == "true" || t.Name == "false" {
-			return opTyp{te: &ast.Ident{Name: "bool"}}
-		}
+// mergeUntypedDte resolves the default type of an untyped constant
+// binary expression: gc keeps the kind with the highest rank — int <
+// rune < float64 < complex128 — so `1 + 'a'` binds rune and `1 + 1.5`
+// float64. Same-kind operands merge to that kind (string + string);
+// anything else can't form a valid untyped constant anyway, so the
+// expression reports no default.
+func mergeUntypedDte(a, b ast.Expr) ast.Expr {
+	an, _ := a.(*ast.Ident)
+	bn, _ := b.(*ast.Ident)
+	if an == nil || bn == nil {
+		return nil
 	}
-	return opTyp{}
+	if an.Name == bn.Name {
+		return a
+	}
+	rank := func(name string) int {
+		switch name {
+		case "int":
+			return 1
+		case "rune":
+			return 2
+		case "float64":
+			return 3
+		case "complex128":
+			return 4
+		}
+		return 0
+	}
+	ra, rb := rank(an.Name), rank(bn.Name)
+	if ra == 0 || rb == 0 {
+		return nil
+	}
+	if ra > rb {
+		return a
+	}
+	return b
 }
 
 // defaultLitTyp names an untyped literal's bind-time default type, like
@@ -2903,18 +2966,26 @@ func (c *compiler) noteDeclTyp(name string, effType ast.Expr, isConst bool, rhs 
 	}
 	te := effType
 	if te == nil && rhs != nil {
-		te = c.staticOpTyp(rhs).te
+		t := c.staticOpTyp(rhs)
+		te = t.te
 		if te == nil && !isConst {
-			// an untyped initializer defaults at bind, like gc —
-			// shared with identOpTyp's package-level `var x = e` arm
-			// through defaultOpTyp/defaultLitTyp.
-			te = c.defaultOpTyp(rhs).te
+			if t.untyped {
+				// an untyped constant binds its default type at
+				// the decl, like gc — `x := 1 + 2` is int, `y :=
+				// c` follows c's kind (opTyp.dte).
+				te = t.dte
+			}
+			if te == nil {
+				// an interface-typed initializer spells no operand
+				// type for the gate but still declares one — `var
+				// i = I(v)` binds i as I, so `var j = i` inherits
+				// I instead of interface{}.
+				te = c.inferredBindTyp(1, []ast.Expr{rhs}, 0)
+			}
 		}
-		if te == nil && !isConst {
-			// an interface-typed initializer spells no operand type for
-			// the gate but still declares one — `var i = I(v)` binds i
-			// as I, so `var j = i` inherits I instead of interface{}.
-			te = c.inferredBindTyp(1, []ast.Expr{rhs}, 0)
+		if te == nil && isConst && t.untyped {
+			c.fs.noteUntypedConst(name, t.dte)
+			return
 		}
 	}
 	if te != nil {
@@ -2922,7 +2993,7 @@ func (c *compiler) noteDeclTyp(name string, effType ast.Expr, isConst bool, rhs 
 		return
 	}
 	if isConst {
-		c.fs.noteUntypedConst(name)
+		c.fs.noteUntypedConst(name, nil)
 	}
 }
 
