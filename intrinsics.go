@@ -946,24 +946,34 @@ func (e *Engine) installStdlib() {
 			if ectx.fatal != nil {
 				return nil, ectx.fatal
 			}
-			if ectx.callErr != nil {
-				// The script error competes with by-shape type errors in
-				// input order: gc reports whichever member the input
-				// reached first, not the method's error unconditionally.
-				if len(ectx.errs) > 0 {
-					pos := jsonErrOrder(data)
-					cp, cok := jsonErrPos(pos, ectx.callErrPath)
-					best, pick := -1, error(nil)
-					for _, e := range ectx.errs {
-						if pp, ok := jsonErrPos(pos, e.path); ok && (best == -1 || pp < best) {
-							best, pick = pp, e.err
-						}
-					}
-					if best != -1 && (!cok || best < cp) {
-						return errVal(pick), nil
+			if len(ectx.callErrs) > 0 {
+				// Every candidate — by-shape type errors and script call
+				// errors alike — competes by input position; gc reports
+				// whichever member the input reached first, not the
+				// method's error unconditionally.
+				pos := jsonErrOrder(data)
+				best := -1
+				var pickErr error
+				var pickCall runtime.Value
+				for _, e := range ectx.errs {
+					if pp, ok := jsonErrPos(pos, e.path); ok && (best == -1 || pp < best) {
+						best, pickErr, pickCall = pp, e.err, nil
 					}
 				}
-				return ectx.callErr, nil
+				for _, ce := range ectx.callErrs {
+					if pp, ok := jsonErrPos(pos, ce.path); ok && (best == -1 || pp < best) {
+						best, pickErr, pickCall = pp, nil, ce.ev
+					}
+				}
+				if pickCall != nil {
+					return pickCall, nil
+				}
+				if pickErr != nil {
+					return errVal(pickErr), nil
+				}
+				// no path resolved — the first-recorded call error
+				// stands, matching decode order.
+				return ectx.callErrs[0].ev, nil
 			}
 			return errVal(jsonInputErr(data, ectx.errs)), nil
 		}},
@@ -5302,13 +5312,13 @@ type jsonErrCtx struct {
 	path  []string
 	err   error
 	errs  []jsonErrAt
-	// callErr records a non-nil error a script UnmarshalJSON returned
-	// — it is a script Value (not a *jsonUnmarshalTypeError). gc
-	// reports the first error in INPUT order, so the call error
-	// competes with by-shape errors at its own member position
-	// (callErrPath) instead of winning unconditionally.
-	callErr     runtime.Value
-	callErrPath []string
+	// callErrs records every non-nil error a script UnmarshalJSON /
+	// UnmarshalText returned — script Values (not
+	// *jsonUnmarshalTypeError), each tagged with its member path. gc
+	// reports the first error in INPUT order across all error kinds,
+	// so each call error competes against the by-shape candidates by
+	// position — a second failing member must not replace the first.
+	callErrs []jsonCallErr
 	// fatal records a failed METHOD CALL itself (a script panic
 	// surfacing as a call error) — gc lets it propagate, so it must
 	// not be swallowed into by-shape decoding.
@@ -5383,10 +5393,17 @@ func jsonCallMethod(c runtime.VMCaller, m runtime.Value, lit []byte, ectx *jsonE
 		return false
 	}
 	if ev := jsonErrResult(r); ev != runtime.NIL {
-		ectx.callErr = ev
-		ectx.callErrPath = append([]string{}, ectx.path...)
+		ectx.callErrs = append(ectx.callErrs, jsonCallErr{ev: ev, path: append([]string{}, ectx.path...)})
 	}
 	return true
+}
+
+// jsonCallErr is one script unmarshaler's error return plus the path
+// of the member it fired for — the input-order competition resolves
+// it against the by-shape candidates in errs.
+type jsonCallErr struct {
+	ev   runtime.Value
+	path []string
 }
 
 // jsonUnmarshalShape reports whether m spells func([]byte) error —
