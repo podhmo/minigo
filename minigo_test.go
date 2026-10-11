@@ -164,6 +164,26 @@ func TestCallArgs(t *testing.T) {
 	if got := run(t, e, "./testdata/callargs", "MapSelf", cyc); got != "map[string]interface {}" {
 		t.Errorf("MapSelf: got %v (%T)", got, got)
 	}
+	// a slice that contains itself through an `any` slot stops the same
+	// way — the repeat lands as a boxed host slice instead of
+	// overflowing the stack.
+	cycs := make([]any, 1)
+	cycs[0] = cycs
+	if got := run(t, e, "./testdata/callargs", "SliceSelf", cycs); got != "[]interface {}" {
+		t.Errorf("SliceSelf: got %v (%T)", got, got)
+	}
+	// a map<->slice cycle stops through the same guard: the outer slice
+	// and its map element unbox, the repeated slice boxes at its repeat.
+	cycm := map[string]any{}
+	cycm["s"] = []any{cycm}
+	if got := run(t, e, "./testdata/callargs", "SliceMapSelf", cycm["s"].([]any)); got != "[]interface {}" {
+		t.Errorf("SliceMapSelf: got %v (%T)", got, got)
+	}
+	// a shared (non-cyclic) sub-slice still unboxes at every reference.
+	shs := []int{1}
+	if got := run(t, e, "./testdata/callargs", "SliceShared", []any{shs, shs}); got != int64(2) {
+		t.Errorf("SliceShared: got %v (%T)", got, got)
+	}
 	// a shared (non-cyclic) submap still unboxes at every reference.
 	same := map[string]int{"k": 1}
 	if got := run(t, e, "./testdata/callargs", "Shared", map[string]any{"a": same, "b": same}); got != int64(2) {
