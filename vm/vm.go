@@ -14262,15 +14262,21 @@ func (v *VM) hostTypedefOf(rt reflect.Type) *runtime.TypeDef {
 		return nil
 	}
 	if rt.Name() != "" {
-		if td := v.builtinTypedef(rt.Name()); td != nil {
-			return td
+		// only a predeclared name (PkgPath=="") is the builtin typedef —
+		// a host `type error struct{...}` in a real package is not `error`.
+		if rt.PkgPath() == "" {
+			if td := v.builtinTypedef(rt.Name()); td != nil {
+				return td
+			}
 		}
-		kind := runtime.KindStruct
-		var newFn func() any
+		// mirror the source classifier's kind table (arrays lump with
+		// slices, `type P *T` is KindPointer): named composites are not
+		// structs.
+		var kind runtime.TypeKind
 		switch rt.Kind() {
 		case reflect.Interface:
 			kind = runtime.KindInterface
-		case reflect.Slice:
+		case reflect.Slice, reflect.Array:
 			kind = runtime.KindSlice
 		case reflect.Map:
 			kind = runtime.KindMap
@@ -14278,28 +14284,45 @@ func (v *VM) hostTypedefOf(rt reflect.Type) *runtime.TypeDef {
 			kind = runtime.KindChan
 		case reflect.Func:
 			kind = runtime.KindFunc
-		case reflect.String, reflect.Bool,
-			reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
-			reflect.Uintptr, reflect.Float32, reflect.Float64,
-			reflect.Complex64, reflect.Complex128:
+		case reflect.Pointer:
+			kind = runtime.KindPointer
+		case reflect.Struct:
+			kind = runtime.KindStruct
+		default:
+			// basic kinds, unsafe.Pointer
 			kind = runtime.KindNamedBasic
-		case reflect.Struct, reflect.Pointer, reflect.Array, reflect.UnsafePointer:
-			// a HostNew box like the bound typedefs' — reflect.New hands
-			// the pointer-shaped host value the method-set walk reads.
-			newFn = func() any { return reflect.New(rt).Interface() }
 		}
-		return &runtime.TypeDef{Name: rt.String(), Kind: kind, HostNew: newFn}
+		td := &runtime.TypeDef{Name: rt.String(), Kind: kind}
+		switch rt.Kind() {
+		case reflect.Func:
+			// carry the declared signature, like the unnamed walk —
+			// generic inference reads the FuncType to bind tparams.
+			if ft := v.reflectFuncTypedef(rt); ft != nil {
+				td.Anon = ft.Anon
+			}
+		case reflect.Slice, reflect.Array, reflect.Chan, reflect.Map, reflect.Pointer:
+			td.Elem = v.hostTypedefOf(rt.Elem())
+		}
+		// a HostNew box like the bound typedefs' — reflect.New hands
+		// the pointer-shaped host value the method-set walk reads.
+		td.HostNew = func() any { return reflect.New(rt).Interface() }
+		return td
 	}
 	switch rt.Kind() {
 	case reflect.Pointer:
 		return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: v.hostTypedefOf(rt.Elem())}
-	case reflect.Slice:
+	case reflect.Slice, reflect.Array:
 		return &runtime.TypeDef{Kind: runtime.KindSlice, Elem: v.hostTypedefOf(rt.Elem())}
 	case reflect.Map:
-		return &runtime.TypeDef{Kind: runtime.KindMap}
+		return &runtime.TypeDef{Kind: runtime.KindMap, Elem: v.hostTypedefOf(rt.Elem())}
 	case reflect.Chan:
 		return &runtime.TypeDef{Kind: runtime.KindChan, Elem: v.hostTypedefOf(rt.Elem())}
+	case reflect.Func:
+		// the same signature walk host builtins use — an unnamed
+		// func argument still teaches inference its declared shape.
+		if td := v.reflectFuncTypedef(rt); td != nil {
+			return td
+		}
 	}
 	return &runtime.TypeDef{Name: rt.String()}
 }
