@@ -2180,8 +2180,8 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 // a method value, or an unknown base reports unknown.
 func (c *compiler) selOpTyp(x *ast.SelectorExpr) opTyp {
 	if id, ok := x.X.(*ast.Ident); ok {
-		if _, isPkg := c.importRef(id.Name); isPkg {
-			return opTyp{} // host-package member — no static picture
+		if ref, isPkg := c.importRef(id.Name); isPkg {
+			return c.selPkgMemberOpTyp(x, ref)
 		}
 	}
 	base := c.staticOpTyp(x.X)
@@ -2196,6 +2196,66 @@ func (c *compiler) selOpTyp(x *ast.SelectorExpr) opTyp {
 		return opTyp{iface: true}
 	}
 	return opTyp{te: te}
+}
+
+// selPkgMemberOpTyp resolves a package-qualified operand `pkg.Name`:
+// a bound const/var tagged with a typedef contributes that type —
+// `time.January` is time.Month, so `d == time.January` mismatches like
+// gc. An untyped bound const stays untyped with its kind's default;
+// functions, types used as values, and unknown members report unknown.
+// Only bound-package members resolve — a source-indexed package's
+// consts would read the caller's scope, not their own.
+func (c *compiler) selPkgMemberOpTyp(x *ast.SelectorExpr, ref *runtime.ImportRef) opTyp {
+	p, err := ref.Materialize()
+	if err != nil || p == nil || p.Globals == nil {
+		return opTyp{}
+	}
+	v, ok := p.Globals.Get(x.Sel.Name)
+	if !ok {
+		return opTyp{}
+	}
+	if n, ok := v.(*runtime.Named); ok && n.Typ != nil {
+		if sel := qualTypSel(p, n.Typ); sel != "" {
+			return opTyp{te: &ast.SelectorExpr{X: x.X, Sel: ast.NewIdent(sel)}}
+		}
+		return opTyp{}
+	}
+	if uc, ok := v.(*runtime.UConst); ok && uc.V != nil {
+		return opTyp{untyped: true, dte: constKindDte(uc.V.Kind())}
+	}
+	return opTyp{}
+}
+
+// qualTypSel reports the member name a tagged bound value's typedef
+// spells inside its own package — "time.Month" yields "Month" when the
+// tag belongs to the package at hand. A foreign or unqualified tag
+// keeps the operand opaque rather than risk a wrong spelling.
+func qualTypSel(p *runtime.Package, td *runtime.TypeDef) string {
+	if td == nil || p == nil {
+		return ""
+	}
+	if sel, ok := strings.CutPrefix(td.Name, p.Name+"."); ok {
+		return sel
+	}
+	return ""
+}
+
+// constKindDte maps a constant's kind to the default type it binds —
+// the same defaultLitTyp table a literal operand uses.
+func constKindDte(k constant.Kind) ast.Expr {
+	switch k {
+	case constant.Int:
+		return &ast.Ident{Name: "int"}
+	case constant.Float:
+		return &ast.Ident{Name: "float64"}
+	case constant.Complex:
+		return &ast.Ident{Name: "complex128"}
+	case constant.Bool:
+		return &ast.Ident{Name: "bool"}
+	case constant.String:
+		return &ast.Ident{Name: "string"}
+	}
+	return nil
 }
 
 // callOpTyp resolves a call operand's static type: conversions spell
