@@ -87,6 +87,23 @@ func (i *Import) LocalName() string {
 	return name
 }
 
+// TypeParamNames collects the names a *ast.FieldList of type parameters
+// binds, in declaration order — `T any`, `K comparable, V any`. Order
+// matters to callers instantiating a signature; membership-only callers
+// fold the slice into a set.
+func TypeParamNames(fl *ast.FieldList) []string {
+	if fl == nil {
+		return nil
+	}
+	var out []string
+	for _, fd := range fl.List {
+		for _, n := range fd.Names {
+			out = append(out, n.Name)
+		}
+	}
+	return out
+}
+
 func isDigits(s string) bool {
 	if s == "" {
 		return false
