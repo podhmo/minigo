@@ -25,7 +25,7 @@ import (
 // OpenAPI components.schemas style. overrides maps "pkgpath.Name" to
 // a schema fragment consulted before the default named-type walk —
 // the extension point plugin scripts feed.
-func Main(target string, pkgMode bool, typeName string, stdlibMode string, loose bool, overrides map[string]any, pluginDirs []string, title string, description string) (string, error) {
+func Main(target string, pkgMode bool, typeName string, stdlibMode string, loose bool, pluginDirs []string, title string, description string) (string, error) {
 	pkg := inspect.DirOf(target)
 	if pkgMode {
 		pkg = inspect.PackageOf(target)
@@ -37,13 +37,13 @@ func Main(target string, pkgMode bool, typeName string, stdlibMode string, loose
 	g := &generator{
 		loose:     loose,
 		stdlib:    stdlibMode,
-		overrides: overrides,
+		overrides: map[string]any{},
 		defs:      map[string]any{},
 		seen:      map[string]string{},
 		used:      map[string]int{},
 		nameOwner: map[string]string{},
 	}
-	if err := g.loadDescHooks(pluginDirs); err != nil {
+	if err := g.loadPlugins(pluginDirs); err != nil {
 		return "", err
 	}
 
@@ -138,27 +138,37 @@ type generator struct {
 	nameOwner  map[string]string // def name -> symbol key (collision check)
 }
 
-// loadDescHooks pulls the optional DescField/DescDecl functions out of
-// each plugin package. A plugin that exports neither still contributes
-// via Overrides(); one with neither hook is noted but not an error.
-func (g *generator) loadDescHooks(dirs []string) error {
+// loadPlugins loops the plugin dirs and merges each package's
+// Config() — the single plugin entry point: "overrides" maps
+// symbolID -> schema fragment, "descField"/"descDecl" install
+// func(any, string) string description filters. All of it happens
+// inside this VM via inspect.Value; a dir without Config() is a
+// warning, not a failure.
+func (g *generator) loadPlugins(dirs []string) error {
 	for _, dir := range dirs {
 		pp := inspect.DirOf(dir)
 		if pp == nil {
 			return fmt.Errorf("extract-schema: could not load plugin %q", dir)
 		}
-		hooked := false
 		// inspect.Symbol traps on a miss, so scan Decls instead.
-		if findFunc(inspect.Decls(pp), "DescField") != nil {
-			g.descFields = append(g.descFields, inspect.Value(pp, "DescField").(func(any, string) string))
-			hooked = true
+		if findFunc(inspect.Decls(pp), "Config") == nil {
+			warn("plugin %s exposes no Config()", dir)
+			continue
 		}
-		if findFunc(inspect.Decls(pp), "DescDecl") != nil {
-			g.descDecls = append(g.descDecls, inspect.Value(pp, "DescDecl").(func(any, string) string))
-			hooked = true
-		}
-		if !hooked {
-			warn("plugin %s exposes no DescField/DescDecl hook", dir)
+		cfg := inspect.Value(pp, "Config").(func() map[string]any)()
+		for k, v := range cfg {
+			switch k {
+			case "overrides":
+				for sym, frag := range v.(map[string]any) {
+					g.overrides[sym] = frag
+				}
+			case "descField":
+				g.descFields = append(g.descFields, v.(func(any, string) string))
+			case "descDecl":
+				g.descDecls = append(g.descDecls, v.(func(any, string) string))
+			default:
+				warn("plugin %s: unknown config key %q", dir, k)
+			}
 		}
 	}
 	return nil

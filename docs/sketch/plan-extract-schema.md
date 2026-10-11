@@ -137,65 +137,64 @@ a directory, not compiling anything:
 $ extract-schema -plugin ./plugins/time -plugin ./plugins/uuid ./app User
 ```
 
-Each plugin package exposes one entry point the host calls before the
-main run:
+Each plugin package exposes a single entry point the *script* calls
+inside the same VM — one loop, no per-shape plumbing:
 
 ```go
 // plugins/time/schema.go — package timeschema
-func Overrides() map[string]any {
+func Config() map[string]any {
     return map[string]any{
-        "time.Time": map[string]any{"type": "string", "format": "date-time"},
+        "overrides": map[string]any{
+            "time.Time": map[string]any{"type": "string", "format": "date-time"},
+        },
     }
 }
 ```
 
-The host merges every `Overrides()` result into one
-`map[symbolID]schema-fragment` and passes it to the script; during the
-walk a `SymbolID` lookup consults the merged table before the default
-named-type handling — including before the stdlib leaf policy, which
-is how `time.Time` becomes `date-time` instead of a stopped leaf.
+Recognized keys today:
 
-A plugin package may also expose **description filters as plain
-script functions**, pulled out of the package with `inspect.Value`
-and called by the walk *inside the same VM* — no respawn per call:
-
-- `DescField(f any, doc string) string` — runs on every field
+- `"overrides"` → `map[string]any`: symbolID (`"pkgpath.Name"`) ->
+  schema fragment, consulted before the default named-type handling —
+  including before the stdlib leaf policy, which is how `time.Time`
+  becomes `date-time` instead of a stopped leaf.
+- `"descField"` → `func(any, string) string`: runs on every field
   description; the field *reference* is passed, so a filter can read
   Names, Tag, or Pos instead of re-deriving the symbol from the text.
-- `DescDecl(v any, doc string) string` — same for type descriptions.
+- `"descDecl"` → `func(any, string) string`: same for type
+  descriptions.
 
-Why `any` on the boundary: a func type naming `*inspect.Field`
+Why `any` on the hook boundary: a func type naming `*inspect.Field`
 asserts *nominally*, and each separately-loaded package instance
 interns its own inspect types — the cross-package identity compare
 traps with "types from different packages". `func(any, string)`
-matches structurally, and the hook reads the view's fields through
-`reflect` (`reflect.ValueOf(f).Elem().FieldByName("Names")`), which
-never consults type identity. (`x.(*inspect.Field)` also traps —
+matches structurally, and a hook narrows the view with `reflect`
+(`reflect.ValueOf(f).Elem().FieldByName("Names")`), which never
+consults type identity. (`x.(*inspect.Field)` also traps —
 `inspect.Decl`/`Field` are not registered type symbols.) The call
-itself (`fn(f, s)`) is a normal in-VM call — no respawn.
+itself is a normal in-VM call — no respawn.
 
-The plugin hooks are why "filters" is a function-shaped contract and
-not data: a first cut carried rules as strings
+Function-valued keys are why "filters" is a function-shaped contract
+and not data: a first cut carried rules as strings
 (`"strip-symbol-prefix"`, `"replace:o->n"`) because structured values
 (`[]map[string]any`) hit the arg-boundary boxing/spelling traps — but
 functions sidestep all of it, and arbitrary filters (symbol-prefix
 stripping being just the example in `plugins/desc`) need real code
-anyway. Either entry point (Overrides or the Desc* hooks) makes a
-valid plugin.
+anyway. See `plugins/time` (overrides) and `plugins/desc` (desc
+filters).
 
 ### Interface shape — under consideration
 
-The built contract is the data-only `Overrides() map[string]any` above.
-An alternative being weighed: the tool's script package exposes a *stub
-type* (a registrar, e.g. `*Overrides` with `Register(symbolID string,
+The built contract is the map `Config() map[string]any` above. An
+alternative being weighed: the tool's script package exposes a *stub
+type* (a registrar, e.g. `*Config` with `Register(symbolID string,
 fragment map[string]any)` and room for the grade-B/C hooks as methods),
 the host passes an instance to a plugin entry point
-(`func Configure(r *Overrides)`), and the plugin *configures* rather
+(`func Configure(c *Config)`), and the plugin *configures* rather
 than *returns*. That makes the contract a named API surface instead of
 an untyped map literal — self-documenting in `go doc`, and the natural
 seat for predicate/naming hooks later. The cost: plugin and tool must
 share the stub type's package (the same shipping-unit question
-`scanx/` already answers for gen-sync). Undecided; the map table stays
+`scanx/` already answers for gen-sync). Undecided; the map stays
 until one of the higher grades lands and forces the shape.
 
 Extension grades, in order; the spike builds the first:
@@ -287,8 +286,9 @@ Built and passing locally (`go run ./ ./app User` and friends):
   destructured pair — the host must index `Elems` (gen-sync documents
   the same shape; worth a shared host helper).
 - **`map[string]any` crosses the boundary as `*runtime.Map`** — and
-  nested values stay boxed. A host-side `unwrapDeep` is needed to hand
-  plugin `Overrides()` back to the engine as one argument.
+  nested values stay boxed. The current design sidesteps the host-side
+  `unwrapDeep` entirely: plugin `Config()` is consumed *inside* the
+  script's VM, so the map never crosses the boundary.
 - **`inspect.TypeFields` (intrinsic) is errorless**, unlike its
   `TypeFieldsOf` host twin — non-struct kinds return empty rather than
   an error, so the walk checks `Kind` first. Naming the error-returning

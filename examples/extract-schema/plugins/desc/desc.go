@@ -1,17 +1,27 @@
-// Package desc is a function-hook plugin: it exposes DescField and
-// DescDecl, which the walk calls — inside the same VM, via
-// inspect.Value — for every description it emits. No Overrides.
+// Package desc is a function-hook plugin: its Config() installs
+// DescField and DescDecl under the "descField"/"descDecl" keys, which
+// the walk calls — inside the same VM — for every description it
+// emits. No overrides.
 //
-// The parameters stay `any` on the boundary (a static assertion naming
-// *inspect.Field would compare the func type nominally across package
-// instances and trap); the hook reads the field reference through
-// reflect instead — names, not type identity.
+// The hook parameters stay `any` on the boundary (a static assertion
+// naming *inspect.Field would compare the func type nominally across
+// package instances and trap); the hook reads the field reference
+// through reflect instead — names, not type identity.
 package desc
 
 import (
 	"reflect"
 	"strings"
 )
+
+// Config is the plugin's single entry point: the walk calls it per
+// plugin dir and merges the settings it returns.
+func Config() map[string]any {
+	return map[string]any{
+		"descField": DescField,
+		"descDecl":  DescDecl,
+	}
+}
 
 // fieldNames reads (*inspect.Field).Names off the field reference.
 func fieldNames(f any) []string {

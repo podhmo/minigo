@@ -73,32 +73,13 @@ func runMain(ctx context.Context, argv []string) int {
 }
 
 // run executes script.Main through a minigo engine rooted at engineDir.
-// Plugin dirs are run first — each is itself a script package exposing
-// Overrides() (symbolID -> schema-fragment table). The merged table
-// crosses back into the engine as an argument to the script; the
-// plugin dirs are passed along too so the script can pull description
-// filters (DescField/DescDecl) out of them with inspect.Value and call
-// them inside the same VM — no respawn per call. The script returns
-// the schema document as a string.
+// Plugin dirs are simply handed to the script — each is itself a
+// script package exposing Config() (overrides + description filters
+// under one entry point), which the walk loops over and merges inside
+// the same VM. The script returns the schema document as a string.
 func run(ctx context.Context, engineDir, scriptDir string, plugins []string, target string, pkgMode bool, typeName, stdlib string, loose bool, title, description string) (string, error) {
 	e := minigo.NewEngine(engineDir, minigo.WithOutput(io.Discard))
-	overrides := map[string]any{}
-	for _, dir := range plugins {
-		res, err := e.Run(ctx, dir, "Overrides")
-		if err != nil && !missingEntry(err, "Overrides") {
-			return "", fmt.Errorf("extract-schema: plugin %s: %w", dir, err)
-		}
-		if err == nil {
-			m, ok := unwrapDeep(res).(map[string]any)
-			if !ok {
-				return "", fmt.Errorf("extract-schema: plugin %s: Overrides() returned %T, want map[string]any", dir, res)
-			}
-			for k, v := range m {
-				overrides[k] = v
-			}
-		}
-	}
-	res, err := e.Run(ctx, scriptDir, "Main", target, pkgMode, typeName, stdlib, loose, overrides, plugins, title, description)
+	res, err := e.Run(ctx, scriptDir, "Main", target, pkgMode, typeName, stdlib, loose, plugins, title, description)
 	if err != nil {
 		return "", err
 	}
@@ -111,36 +92,6 @@ func run(ctx context.Context, engineDir, scriptDir string, plugins []string, tar
 		return "", fmt.Errorf("extract-schema: unexpected result type %T (want string)", tup.Elems[0])
 	}
 	return doc, errorResult(tup.Elems[1])
-}
-
-// missingEntry reports whether err is the engine's "no such function"
-// for an optional plugin entry point — `undefined: <pkg>.<name>`.
-func missingEntry(err error, name string) bool {
-	return err != nil && strings.Contains(err.Error(), "undefined: ") && strings.Contains(err.Error(), name)
-}
-
-// unwrapDeep turns interpreter containers into plain Go values so the
-// merged overrides table can cross back into the engine as one
-// argument: *runtime.Map becomes map[string]any keyed by each key's
-// unwrapped string, *runtime.Slice becomes []any, everything else
-// passes through runtime.Unwrap.
-func unwrapDeep(v runtime.Value) any {
-	switch x := v.(type) {
-	case *runtime.Map:
-		m := make(map[string]any, len(x.Pairs))
-		for k, e := range x.Pairs {
-			ks, _ := runtime.Unwrap(k).(string)
-			m[ks] = unwrapDeep(e)
-		}
-		return m
-	case *runtime.Slice:
-		xs := make([]any, len(x.Elems))
-		for i, e := range x.Elems {
-			xs[i] = unwrapDeep(e)
-		}
-		return xs
-	}
-	return runtime.Unwrap(v)
 }
 
 // errorResult unwraps the script's error slot: nil stays nil, a boxed
