@@ -7983,7 +7983,7 @@ func scriptTypeString(x runtime.Value) string {
 			if td := pointeeDeclTyp(t); td != nil {
 				return "*" + typedefSpelling(td)
 			}
-			if c := cellOf(dv); c != nil && c.Typ != nil {
+			if c := asCell(dv); c != nil && c.Typ != nil {
 				return "*" + typedefSpelling(c.Typ)
 			}
 			// *interface{} / *error keeps the pointee's declared name —
@@ -8102,9 +8102,10 @@ func valueDeclTyp(v runtime.Value) *runtime.TypeDef {
 	return nil
 }
 
-// cellOf peels Named tags to reach the addressable cell underneath —
-// the pointee slot whose Typ is the declared (static) type.
-func cellOf(v runtime.Value) *runtime.Cell {
+// asCell peels Named tags to reach the addressable cell underneath —
+// the pointee slot whose Typ is the declared (static) type. Ref kinds
+// (FieldRef/IndexRef) are not cells and report nil.
+func asCell(v runtime.Value) *runtime.Cell {
 	for {
 		switch x := v.(type) {
 		case *runtime.Cell:
@@ -8125,7 +8126,7 @@ func pointeeDeclTyp(v runtime.Value) *runtime.TypeDef {
 	if td := refDeclTyp(v); td != nil {
 		return td
 	}
-	if c := cellOf(v); c != nil {
+	if c := asCell(v); c != nil {
 		return c.Typ
 	}
 	return nil
