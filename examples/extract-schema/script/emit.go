@@ -32,7 +32,7 @@ func writeJSON(b *strings.Builder, v any, indent string, depth int) {
 		}
 		writeList(b, xs, indent, depth)
 	case string:
-		b.WriteString(strconv.Quote(x))
+		b.WriteString(quoteJSON(x))
 	case bool:
 		if x {
 			b.WriteString("true")
@@ -48,7 +48,7 @@ func writeJSON(b *strings.Builder, v any, indent string, depth int) {
 	case float32:
 		b.WriteString(strconv.FormatFloat(float64(x), 'g', -1, 32))
 	default:
-		b.WriteString(strconv.Quote(fmt.Sprintf("%v", x)))
+		b.WriteString(quoteJSON(fmt.Sprintf("%v", x)))
 	}
 }
 
@@ -69,13 +69,42 @@ func writeMap(b *strings.Builder, m map[string]any, indent string, depth int) {
 		}
 		b.WriteString("\n")
 		b.WriteString(strings.Repeat(indent, depth+1))
-		b.WriteString(strconv.Quote(k))
+		b.WriteString(quoteJSON(k))
 		b.WriteString(": ")
 		writeJSON(b, m[k], indent, depth+1)
 	}
 	b.WriteString("\n")
 	b.WriteString(strings.Repeat(indent, depth))
 	b.WriteString("}")
+}
+
+// quoteJSON renders a Go string as a JSON string literal — unlike
+// strconv.Quote it emits JSON-legal escapes only: control characters
+// become \uXXXX and none of Go's \xNN forms leak into the document.
+func quoteJSON(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '"', '\\':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if r < 0x20 {
+				fmt.Fprintf(&b, `\u%04x`, r)
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 func writeList(b *strings.Builder, xs []any, indent string, depth int) {

@@ -261,10 +261,18 @@ func (g *generator) schemaFor(te *inspect.TypeExpr) (map[string]any, error) {
 func (g *generator) follow(pkgPath, name string) (map[string]any, error) {
 	key := pkgPath + "." + name
 	if frag, ok := g.overrides[key]; ok {
-		if doc, ok := frag.(map[string]any); ok {
-			return doc, nil
+		doc, ok := frag.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("override for %s is %T, want a schema object", key, frag)
 		}
-		return nil, fmt.Errorf("override for %s is %T, want a schema object", key, frag)
+		// copy: callers may write field docs/override keys into the
+		// fragment — mutating the shared table would leak those keys
+		// into every other use of the same override.
+		out := make(map[string]any, len(doc))
+		for k, v := range doc {
+			out[k] = v
+		}
+		return out, nil
 	}
 	if name0, ok := g.seen[key]; ok {
 		g.used[name0]++
@@ -311,7 +319,9 @@ func builtinDoc(name string) (map[string]any, error) {
 		return map[string]any{"type": "boolean"}, nil
 	case "int", "int8", "int16", "int32", "int64":
 		return map[string]any{"type": "integer"}, nil
-	case "uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "rune", "byte":
+	case "rune":
+		return map[string]any{"type": "integer"}, nil
+	case "uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "byte":
 		return map[string]any{"type": "integer", "minimum": int64(0)}, nil
 	case "float32", "float64", "complex64", "complex128":
 		return map[string]any{"type": "number"}, nil
@@ -332,7 +342,7 @@ func builtinDoc(name string) (map[string]any, error) {
 func (g *generator) structDoc(fs []*inspect.Field) (map[string]any, error) {
 	props := map[string]any{}
 	required := map[string]bool{}
-	if err := g.addFields(fs, props, required, map[string]bool{}); err != nil {
+	if err := g.addFields(fs, props, required, map[string]bool{}, 0, true); err != nil {
 		return nil, err
 	}
 	doc := map[string]any{
@@ -351,38 +361,56 @@ func (g *generator) structDoc(fs []*inspect.Field) (map[string]any, error) {
 	return doc, nil
 }
 
-func (g *generator) addFields(fs []*inspect.Field, props map[string]any, required map[string]bool, embedding map[string]bool) error {
+// addFields merges one field list into props/required. Named fields
+// register first so a promoted field can never shadow an explicit one
+// (encoding/json's shallower-wins rule); depth>0 marks promoted fields
+// — they only write names not already taken, matching first-wins at
+// the same depth (Go drops both on ambiguity; approximation noted).
+// reqOK is false once the flatten path crossed a *pointer* embed: a nil
+// embedded pointer omits every promoted field, so none are required.
+func (g *generator) addFields(fs []*inspect.Field, props map[string]any, required map[string]bool, embedding map[string]bool, depth int, reqOK bool) error {
+	var embeds []*inspect.Field
 	for _, f := range fs {
 		name, named, skip := fieldJSONName(f)
 		if skip {
 			continue
 		}
-		if len(f.Names) == 0 && !f.Embedded {
-			continue
-		}
-		if !f.Embedded && !exported(f.Names[0]) {
-			continue
-		}
 		if f.Embedded {
-			if err := g.addEmbedded(f, name, named, props, required, embedding); err != nil {
+			embeds = append(embeds, f)
+			continue
+		}
+		// A, B string: every declared name is its own property.
+		for _, goName := range f.Names {
+			if !exported(goName) {
+				continue
+			}
+			propName := goName
+			if named {
+				propName = name
+			}
+			if depth > 0 {
+				if _, taken := props[propName]; taken {
+					continue
+				}
+			}
+			fd, err := g.schemaFor(f.Type)
+			if err != nil {
+				return fmt.Errorf("field %s: %w", goName, err)
+			}
+			applyFieldDoc(fd, f)
+			if err := g.applyOverrideTag(fd, f); err != nil {
 				return err
 			}
-			continue
+			props[propName] = fd
+			if reqOK && wantsRequired(f) {
+				required[propName] = true
+			}
 		}
-		if !named {
-			name = f.Names[0]
-		}
-		fd, err := g.schemaFor(f.Type)
-		if err != nil {
-			return fmt.Errorf("field %s: %w", name, err)
-		}
-		applyFieldDoc(fd, f)
-		if err := g.applyOverrideTag(fd, f); err != nil {
+	}
+	for _, f := range embeds {
+		name, named, _ := fieldJSONName(f)
+		if err := g.addEmbedded(f, name, named, props, required, embedding, depth, reqOK); err != nil {
 			return err
-		}
-		props[name] = fd
-		if wantsRequired(f) {
-			required[name] = true
 		}
 	}
 	return nil
@@ -392,19 +420,31 @@ func (g *generator) addFields(fs []*inspect.Field, props map[string]any, require
 // resolves to a struct decl — JSON's promoted-field rule. A tagged
 // embed keeps its own name; a recursive embed (seen mid-flatten)
 // degrades to a named $ref so cycles terminate.
-func (g *generator) addEmbedded(f *inspect.Field, name string, named bool, props map[string]any, required map[string]bool, embedding map[string]bool) error {
+func (g *generator) addEmbedded(f *inspect.Field, name string, named bool, props map[string]any, required map[string]bool, embedding map[string]bool, depth int, reqOK bool) error {
 	te := f.Type
+	ptr := false
 	for te.Kind == "StarExpr" {
+		ptr = true
 		te = inspect.UnRef(te)
 	}
 	sid := inspect.SymbolID(te)
+	// put keeps promoted writes from shadowing a shallower property —
+	// at depth>0 an existing key always wins (encoding/json's rule).
+	put := func(k string, v map[string]any) {
+		if depth > 0 {
+			if _, taken := props[k]; taken {
+				return
+			}
+		}
+		props[k] = v
+	}
 	if named {
 		fd, err := g.schemaFor(f.Type)
 		if err != nil {
 			return fmt.Errorf("embedded field %s: %w", name, err)
 		}
-		props[name] = fd
-		if wantsRequired(f) {
+		put(name, fd)
+		if reqOK && wantsRequired(f) {
 			required[name] = true
 		}
 		return nil
@@ -415,7 +455,7 @@ func (g *generator) addEmbedded(f *inspect.Field, name string, named bool, props
 		if err != nil {
 			return err
 		}
-		props[te.Text] = fd
+		put(te.Text, fd)
 		return nil
 	}
 	key := sid.PackagePath + "." + sid.Name
@@ -425,18 +465,18 @@ func (g *generator) addEmbedded(f *inspect.Field, name string, named bool, props
 		if err != nil {
 			return err
 		}
-		props[sid.Name] = fd
+		put(sid.Name, fd)
 		return nil
 	}
 	// follow the same leaf policy as named fields
 	pkg := inspect.PackageOf(sid.PackagePath)
 	if pkg == nil {
 		warn("could not resolve package %q — embedded %s left as named leaf", sid.PackagePath, key)
-		props[sid.Name] = leafDoc("unresolvable type " + key)
+		put(sid.Name, leafDoc("unresolvable type "+key))
 		return nil
 	}
 	if g.stdlib == "leaf" && inspect.Standard(pkg) {
-		props[sid.Name] = leafDoc("stdlib type " + key + " (walk stopped)")
+		put(sid.Name, leafDoc("stdlib type "+key+" (walk stopped)"))
 		return nil
 	}
 	d := inspect.Symbol(pkg, sid.Name)
@@ -445,7 +485,7 @@ func (g *generator) addEmbedded(f *inspect.Field, name string, named bool, props
 		if err != nil {
 			return err
 		}
-		props[sid.Name] = fd
+		put(sid.Name, fd)
 		return nil
 	}
 	def := inspect.Def(d)
@@ -454,13 +494,13 @@ func (g *generator) addEmbedded(f *inspect.Field, name string, named bool, props
 		if err != nil {
 			return err
 		}
-		props[sid.Name] = fd
+		put(sid.Name, fd)
 		return nil
 	}
 	efs := inspect.TypeFields(def)
 	embedding[key] = true
 	defer delete(embedding, key)
-	return g.addFields(efs, props, required, embedding)
+	return g.addFields(efs, props, required, embedding, depth+1, reqOK && !ptr)
 }
 
 func applyFieldDoc(fd map[string]any, f *inspect.Field) {
@@ -486,7 +526,7 @@ func (g *generator) applyOverrideTag(fd map[string]any, f *inspect.Field) error 
 		if k == "required" {
 			continue // required is computed by wantsRequired below
 		}
-		fd[k] = v
+		fd[k] = coerceScalar(v)
 	}
 	return nil
 }
@@ -532,6 +572,24 @@ func wantsRequired(f *inspect.Field) bool {
 		}
 	}
 	return required
+}
+
+// coerceScalar turns a jsonschema-override value into its JSON scalar
+// when it is one — "1" stays "1" only when it is meant as a string.
+func coerceScalar(v string) any {
+	if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+		return n
+	}
+	if n, err := strconv.ParseFloat(v, 64); err == nil {
+		return n
+	}
+	if b, err := strconv.ParseBool(v); err == nil {
+		return b
+	}
+	if v == "null" {
+		return nil
+	}
+	return v
 }
 
 func exported(name string) bool {

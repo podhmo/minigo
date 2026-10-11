@@ -66,3 +66,16 @@ type Wrapper struct {
 type Custom struct {
 	Level int `json:"level" jsonschema-override:"minimum=1;maximum=5"`
 }
+
+// Pair declares two names in one field spec — both become properties.
+type Pair struct {
+	A, B string
+	C, D int `json:",omitempty"`
+}
+
+// Shadow exercises the shallower-wins rule: its explicit base_id field
+// must shadow the one promoted from Base, not be overwritten by it.
+type Shadow struct {
+	Base
+	Note string `json:"base_id"`
+}

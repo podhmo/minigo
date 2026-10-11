@@ -18,8 +18,8 @@
 			"description": "Custom is a type the jsonschema-override tag can decorate.\n",
 			"properties": {
 				"level": {
-					"maximum": "5",
-					"minimum": "1",
+					"maximum": 5,
+					"minimum": 1,
 					"type": "integer"
 				}
 			},
@@ -65,6 +65,42 @@
 			"required": [
 				"amount",
 				"currency"
+			],
+			"type": "object"
+		},
+		"Pair": {
+			"additionalProperties": true,
+			"description": "Pair declares two names in one field spec — both become properties.\n",
+			"properties": {
+				"A": {
+					"type": "string"
+				},
+				"B": {
+					"type": "string"
+				},
+				"C": {
+					"type": "integer"
+				},
+				"D": {
+					"type": "integer"
+				}
+			},
+			"required": [
+				"A",
+				"B"
+			],
+			"type": "object"
+		},
+		"Shadow": {
+			"additionalProperties": true,
+			"description": "Shadow exercises the shallower-wins rule: its explicit base_id field\nmust shadow the one promoted from Base, not be overwritten by it.\n",
+			"properties": {
+				"base_id": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"base_id"
 			],
 			"type": "object"
 		},
@@ -181,10 +217,8 @@
 				"address",
 				"admin",
 				"age",
-				"amount",
 				"balance",
 				"created_at",
-				"currency",
 				"id",
 				"metadata",
 				"name",
