@@ -330,6 +330,11 @@ func (g *generator) schemaFor(te *inspect.TypeExpr) (map[string]any, error) {
 		if sid.PackagePath == ":builtin:" {
 			return builtinDoc(sid.Name)
 		}
+		if sid.PackagePath == inspect.TypeParamPackagePath {
+			// bound by the enclosing generic decl — no substitution
+			// surface, so the parameter degrades to a leaf.
+			return leafDoc("type parameter " + sid.Name), nil
+		}
 		return g.follow(sid.PackagePath, sid.Name)
 	case "FuncType", "ChanType", "Ellipsis", "UnaryExpr", "BinaryExpr":
 		return nil, fmt.Errorf("unsupported type shape %q (%s)", te.Text, te.Kind)
@@ -571,7 +576,7 @@ func (g *generator) addEmbedded(f *inspect.Field, name string, named bool, props
 		}
 		return nil
 	}
-	if sid == nil || sid.PackagePath == ":builtin:" {
+	if sid == nil || sid.PackagePath == ":builtin:" || sid.PackagePath == inspect.TypeParamPackagePath {
 		// non-struct embeds marshal under the type name (encoding/json).
 		fd, err := g.schemaFor(f.Type)
 		if err != nil {

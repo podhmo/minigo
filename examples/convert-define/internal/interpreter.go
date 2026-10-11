@@ -81,7 +81,7 @@ func (r *Runner) TypeResolver() xinspect.Resolver {
 // convertTimeToTime call, and introspect internals generated code could
 // never assign anyway.
 func (r *Runner) lookupDecl(gctx context.Context, sid runtime.SymbolID) (*xinspect.Decl, error) {
-	if sid.PackagePath == "" || sid.PackagePath == xinspect.BuiltinPackagePath {
+	if sid.PackagePath == "" || xinspect.NoDeclPath(sid.PackagePath) {
 		return nil, nil
 	}
 	p, err := r.engine.Package(gctx, sid.PackagePath)

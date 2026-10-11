@@ -32,6 +32,22 @@ import (
 // resolve to.
 const BuiltinPackagePath = ":builtin:"
 
+// TypeParamPackagePath is the pseudo import path type parameters
+// resolve to: a SymbolID carrying it says "the name is bound by the
+// enclosing generic declaration", which is a different answer than an
+// unresolved package symbol. Nothing declared behind the path exists —
+// Resolve/Unwrap stop there like they do on builtins — so scripts can
+// ask "is this T a type parameter?" instead of trapping on a lookup.
+const TypeParamPackagePath = ":typeparam:"
+
+// NoDeclPath reports that a SymbolID's package path names no
+// resolvable package: builtins and type parameters both live outside
+// the package namespace, so walks and resolvers stop there rather than
+// feeding a pseudo path to the loaders.
+func NoDeclPath(path string) bool {
+	return path == BuiltinPackagePath || path == TypeParamPackagePath
+}
+
 // Decl is a declaration-level view of one package member (the "Symbol"
 // the script API speaks of; renamed here to avoid colliding with the
 // Symbol stub function).
@@ -259,11 +275,12 @@ type TypeExpr struct {
 	Text string // printer spelling of the declaration
 	Kind string // ast node name: "Ident", "SelectorExpr", "StarExpr", ...
 
-	expr   ast.Expr
-	file   *syntax.File
-	pkg    *runtime.Package
-	locals map[string]bool // names bound inside the enclosing func, when the expr was anchored via Expr — a hit means "possibly local", so SymbolID refuses package attribution rather than misattributing a method call to an import
-	ht     reflect.Type    // host-backed alternative (BuiltinFunc.Target sigs)
+	expr    ast.Expr
+	file    *syntax.File
+	pkg     *runtime.Package
+	locals  map[string]bool // names bound inside the enclosing func, when the expr was anchored via Expr — a hit means "possibly local", so SymbolID refuses package attribution rather than misattributing a method call to an import
+	tparams map[string]bool // names the enclosing generic decl binds as type parameters — a hit reports the TypeParamPackagePath SymbolID instead of attributing the name to the package
+	ht      reflect.Type    // host-backed alternative (BuiltinFunc.Target sigs)
 }
 
 // NewTypeExpr builds a syntax-backed type expression.
@@ -307,13 +324,13 @@ func docText(g *ast.CommentGroup) string {
 	return strings.TrimRight(g.Text(), "\n")
 }
 
-func fieldList(fl *ast.FieldList, f *syntax.File, p *runtime.Package) []*Field {
+func fieldList(fl *ast.FieldList, f *syntax.File, p *runtime.Package, tps map[string]bool) []*Field {
 	if fl == nil {
 		return nil
 	}
 	var out []*Field
 	for _, fd := range fl.List {
-		fv := &Field{Type: NewTypeExpr(fd.Type, f, p), Doc: fieldDoc(fd)}
+		fv := &Field{Type: NewTypeExpr(fd.Type, f, p).withTypeParams(tps), Doc: fieldDoc(fd)}
 		for _, n := range fd.Names {
 			fv.Names = append(fv.Names, n.Name)
 		}
@@ -376,11 +393,12 @@ func FieldsOf(s *Decl) ([]*Field, error) {
 	if !ok {
 		return nil, fmt.Errorf("inspect.Fields: %s is not a type", s.Name)
 	}
+	tps := typeParamNames(ts.TypeParams)
 	switch t := ts.Type.(type) {
 	case *ast.StructType:
-		return fieldList(t.Fields, s.file, s.Package), nil
+		return fieldList(t.Fields, s.file, s.Package, tps), nil
 	case *ast.InterfaceType:
-		return fieldList(t.Methods, s.file, s.Package), nil
+		return fieldList(t.Methods, s.file, s.Package, tps), nil
 	}
 	return nil, fmt.Errorf("inspect.Fields: %s is not a struct or interface type", s.Name)
 }
@@ -395,8 +413,9 @@ func MReqsOf(s *Decl) ([]*Field, error) {
 	if err != nil || it == nil {
 		return nil, err
 	}
+	tps := declTypeParams(s)
 	var out []*Field
-	for _, fv := range fieldList(it.Methods, s.file, s.Package) {
+	for _, fv := range fieldList(it.Methods, s.file, s.Package, tps) {
 		if !fv.Embedded {
 			out = append(out, fv)
 		}
@@ -413,8 +432,9 @@ func IEmbedsOf(s *Decl) ([]*TypeExpr, error) {
 	if err != nil || it == nil {
 		return nil, err
 	}
+	tps := declTypeParams(s)
 	var out []*TypeExpr
-	for _, fv := range fieldList(it.Methods, s.file, s.Package) {
+	for _, fv := range fieldList(it.Methods, s.file, s.Package, tps) {
 		if fv.Embedded {
 			out = append(out, fv.Type)
 		}
@@ -556,7 +576,7 @@ func MethodSetOf(s *Decl, res Resolver) ([]*Method, error) {
 	// GreetBase's methods identically, pointer receivers included, so
 	// the target walks with a nil via (the alias IS the type).
 	if ts, ok := s.decl.Spec.(*ast.TypeSpec); ok && ts.Assign.IsValid() {
-		if ed := chaseType(NewTypeExpr(ts.Type, s.file, s.Package), visited, res); ed != nil {
+		if ed := chaseType(NewTypeExpr(ts.Type, s.file, s.Package).withTypeParams(typeParamNames(ts.TypeParams)), visited, res); ed != nil {
 			if ntd, ok := ed.Package.Index.Types[ed.Name]; ok {
 				queue = append(queue, embedDecl{ntd, ed, nil, false, 0})
 			}
@@ -657,7 +677,7 @@ func chaseType(sub *TypeExpr, visited map[runtime.SymbolID]bool, res Resolver) *
 			}
 			return nil
 		}
-		if sid.PackagePath == BuiltinPackagePath || visited[sid] {
+		if NoDeclPath(sid.PackagePath) || visited[sid] {
 			return nil
 		}
 		visited[sid] = true
@@ -671,7 +691,7 @@ func chaseType(sub *TypeExpr, visited map[runtime.SymbolID]bool, res Resolver) *
 		}
 		switch ts.Type.(type) {
 		case *ast.Ident, *ast.SelectorExpr:
-			sub = NewTypeExpr(ts.Type, d.file, d.Package)
+			sub = NewTypeExpr(ts.Type, d.file, d.Package).withTypeParams(typeParamNames(ts.TypeParams))
 			continue // another named layer — keep chasing
 		}
 		return d
@@ -696,11 +716,12 @@ func promoteIfaceSpecs(it *ast.InterfaceType, owner *Decl, depth int, res Resolv
 		if !record(name, depth, declKey(src)) {
 			return
 		}
+		tps := declTypeParams(src)
 		*out = append(*out, &Method{
 			Name: name,
 			Sig: &Sig{
-				Params:  boxFields(fieldList(ft.Params, src.file, src.Package)),
-				Results: boxFields(fieldList(ft.Results, src.file, src.Package)),
+				Params:  boxFields(fieldList(ft.Params, src.file, src.Package, tps)),
+				Results: boxFields(fieldList(ft.Results, src.file, src.Package, tps)),
 			},
 			Via: src,
 		})
@@ -765,7 +786,7 @@ func ImplementersOf(p *runtime.Package, iface *Decl, res Resolver) ([]*Decl, err
 // Unresolvable package paths contribute nothing.
 func requiredSpecs(it *ast.InterfaceType, owner *Decl, res Resolver, visited map[runtime.SymbolID]bool, specs *[]ifaceSpec) error {
 	return walkIfaceSpecs(it, owner, res, visited, func(name string, ft *ast.FuncType, src *Decl) {
-		*specs = append(*specs, ifaceSpec{name: name, ft: ft, file: src.file, pkg: src.Package})
+		*specs = append(*specs, ifaceSpec{name: name, ft: ft, file: src.file, pkg: src.Package, tps: declTypeParams(src)})
 	})
 }
 
@@ -791,7 +812,7 @@ func walkIfaceSpecs(it *ast.InterfaceType, owner *Decl, res Resolver, visited ma
 	}
 	var walk func(it *ast.InterfaceType, owner *Decl)
 	walk = func(it *ast.InterfaceType, owner *Decl) {
-		for _, fd := range fieldList(it.Methods, owner.file, owner.Package) {
+		for _, fd := range fieldList(it.Methods, owner.file, owner.Package, declTypeParams(owner)) {
 			if !fd.Embedded {
 				if ft, ok := fd.Type.Expr().(*ast.FuncType); ok {
 					yield(fd.Names[0], ft, owner)
@@ -810,6 +831,10 @@ func walkIfaceSpecs(it *ast.InterfaceType, owner *Decl, res Resolver, visited ma
 			sid, ok := fd.Type.SymbolID()
 			if !ok {
 				continue // unspellable embedded element — nothing follows
+			}
+			if sid.PackagePath == TypeParamPackagePath {
+				constraint() // an embedded type parameter is a type-set term
+				continue
 			}
 			if sid.PackagePath == BuiltinPackagePath {
 				switch sid.Name {
@@ -851,6 +876,7 @@ type ifaceSpec struct {
 	ft   *ast.FuncType
 	file *syntax.File
 	pkg  *runtime.Package
+	tps  map[string]bool // type parameters the owning decl binds
 }
 
 // covers reports whether the method set ms satisfies every spec:
@@ -879,8 +905,8 @@ func sigMatch(m *Method, spec ifaceSpec, res Resolver) bool {
 	if m.Sig == nil {
 		return false
 	}
-	sp, sv := paramTypes(spec.ft.Params, spec.file, spec.pkg)
-	sr, _ := paramTypes(spec.ft.Results, spec.file, spec.pkg)
+	sp, sv := paramTypes(spec.ft.Params, spec.file, spec.pkg, spec.tps)
+	sr, _ := paramTypes(spec.ft.Results, spec.file, spec.pkg, spec.tps)
 	mp, mv := expandFieldTypes(m.Sig.ParamFields())
 	mr, _ := expandFieldTypes(m.Sig.ResultFields())
 	if sv != mv || len(sp) != len(mp) || len(sr) != len(mr) {
@@ -937,7 +963,7 @@ func specSame(a, b *TypeExpr, res Resolver) bool {
 func collapseAlias(te *TypeExpr, res Resolver) *TypeExpr {
 	for i := 0; i < 8; i++ {
 		sid, ok := te.SymbolID()
-		if !ok || sid.PackagePath == BuiltinPackagePath {
+		if !ok || NoDeclPath(sid.PackagePath) {
 			return te
 		}
 		d, err := res(sid)
@@ -948,7 +974,7 @@ func collapseAlias(te *TypeExpr, res Resolver) *TypeExpr {
 		if !ok || !ts.Assign.IsValid() {
 			return te // a defined type does not collapse
 		}
-		te = NewTypeExpr(ts.Type, d.file, d.Package)
+		te = NewTypeExpr(ts.Type, d.file, d.Package).withTypeParams(typeParamNames(ts.TypeParams))
 	}
 	return te
 }
@@ -957,11 +983,11 @@ func collapseAlias(te *TypeExpr, res Resolver) *TypeExpr {
 // declared parameter — a, b int yields two — in declaration order,
 // flagging a trailing ellipsis as variadic. The Field view is the
 // shared shape: it delegates to expandFieldTypes.
-func paramTypes(fl *ast.FieldList, file *syntax.File, pkg *runtime.Package) ([]*TypeExpr, bool) {
+func paramTypes(fl *ast.FieldList, file *syntax.File, pkg *runtime.Package, tps map[string]bool) ([]*TypeExpr, bool) {
 	if fl == nil {
 		return nil, false
 	}
-	return expandFieldTypes(fieldList(fl, file, pkg))
+	return expandFieldTypes(fieldList(fl, file, pkg, tps))
 }
 
 // expandFieldTypes flattens view Fields the same way — sig fields keep
@@ -1127,13 +1153,14 @@ func SignatureOf(s *Decl) (*Sig, error) {
 		return nil, fmt.Errorf("inspect.Signature: %s has no signature", s.Name)
 	}
 	ft := s.decl.Func.Type
+	tps := declTypeParams(s)
 	sig := &Sig{
-		Params:  boxFields(fieldList(ft.Params, s.file, s.Package)),
-		Results: boxFields(fieldList(ft.Results, s.file, s.Package)),
+		Params:  boxFields(fieldList(ft.Params, s.file, s.Package, tps)),
+		Results: boxFields(fieldList(ft.Results, s.file, s.Package, tps)),
 	}
 	if s.decl.Func.Recv != nil && len(s.decl.Func.Recv.List) > 0 {
 		recv := s.decl.Func.Recv.List[0]
-		fv := &Field{Type: NewTypeExpr(recv.Type, s.file, s.Package)}
+		fv := &Field{Type: NewTypeExpr(recv.Type, s.file, s.Package).withTypeParams(tps)}
 		for _, n := range recv.Names {
 			fv.Names = append(fv.Names, n.Name)
 		}
@@ -1159,7 +1186,9 @@ func TypeParamsOf(s *Decl) ([]*Field, error) {
 			fl = ts.TypeParams
 		}
 	}
-	return fieldList(fl, s.file, s.Package), nil
+	// a constraint may name a sibling parameter (S ~[]E, E any), so the
+	// fields read their own list's names as bound.
+	return fieldList(fl, s.file, s.Package, typeParamNames(fl)), nil
 }
 
 // DefOf returns the declared type expression of a type symbol.
@@ -1174,7 +1203,7 @@ func DefOf(s *Decl) (*TypeExpr, error) {
 	if !ok {
 		return nil, fmt.Errorf("inspect.Def: %s is not a type", s.Name)
 	}
-	return NewTypeExpr(ts.Type, s.file, s.Package), nil
+	return NewTypeExpr(ts.Type, s.file, s.Package).withTypeParams(typeParamNames(ts.TypeParams)), nil
 }
 
 // DeclTypeOf returns the type expression declared on a var or const
@@ -1257,12 +1286,106 @@ func IsAliasOf(s *Decl) (bool, error) {
 func (te *TypeExpr) Expr() ast.Expr { return te.expr }
 
 // wrap builds a TypeExpr for a sub-expression in the same context —
-// file, package, and the enclosing func's local-name set when the
-// expr was anchored inside a body.
+// file, package, the enclosing decl's type parameters, and the
+// enclosing func's local-name set when the expr was anchored inside a
+// body.
 func (te *TypeExpr) wrap(e ast.Expr) *TypeExpr {
 	nt := NewTypeExpr(e, te.file, te.pkg)
 	nt.locals = te.locals
+	nt.tparams = te.tparams
 	return nt
+}
+
+// withTypeParams records the type parameter names the enclosing decl
+// binds, so SymbolID can mark the identifiers they name. It is the
+// decl-level counterpart of the locals anchor Expr sets for bodies.
+func (te *TypeExpr) withTypeParams(tps map[string]bool) *TypeExpr {
+	te.tparams = tps
+	return te
+}
+
+// typeParamNames collects the names a *ast.FieldList of type
+// parameters binds — `T any`, `K comparable, V any`.
+func typeParamNames(fl *ast.FieldList) map[string]bool {
+	if fl == nil {
+		return nil
+	}
+	var names map[string]bool
+	for _, fd := range fl.List {
+		for _, n := range fd.Names {
+			if names == nil {
+				names = map[string]bool{}
+			}
+			names[n.Name] = true
+		}
+	}
+	return names
+}
+
+// declTypeParams collects the type parameter names bound by s's decl:
+// a generic type or alias decl's TypeSpec.TypeParams; a generic func's
+// FuncType.TypeParams plus — for a method — the names its receiver
+// instantiation declares ((b Box[T]) binds T; Go has no method-local
+// type parameter list).
+func declTypeParams(s *Decl) map[string]bool {
+	if s == nil || s.decl == nil {
+		return nil
+	}
+	if fn := s.decl.Func; fn != nil {
+		names := recvTypeParamNames(fn.Recv)
+		if fn.Type != nil {
+			for n := range typeParamNames(fn.Type.TypeParams) {
+				if names == nil {
+					names = map[string]bool{}
+				}
+				names[n] = true
+			}
+		}
+		return names
+	}
+	if ts, ok := s.decl.Spec.(*ast.TypeSpec); ok {
+		return typeParamNames(ts.TypeParams)
+	}
+	return nil
+}
+
+// recvTypeParamNames collects the type parameter names a method
+// receiver's instantiation declares — `(p Pair[A, B])` binds A and B
+// for the whole method body.
+func recvTypeParamNames(recv *ast.FieldList) map[string]bool {
+	if recv == nil || len(recv.List) == 0 {
+		return nil
+	}
+	e := recv.List[0].Type
+	for {
+		switch x := e.(type) {
+		case *ast.StarExpr:
+			e = x.X
+		case *ast.ParenExpr:
+			e = x.X
+		default:
+			goto done
+		}
+	}
+done:
+	var names map[string]bool
+	add := func(x ast.Expr) {
+		if id, ok := x.(*ast.Ident); ok {
+			if names == nil {
+				names = map[string]bool{}
+			}
+			names[id.Name] = true
+		}
+	}
+	switch x := e.(type) {
+	case *ast.IndexExpr:
+		add(x.Index)
+	case *ast.IndexListExpr:
+		for _, ix := range x.Indices {
+			add(ix)
+		}
+	}
+	return names
 }
 
 // Children drills into a composite type expression: []T -> T,
@@ -1299,18 +1422,18 @@ func (te *TypeExpr) Children() []*TypeExpr {
 	case *ast.BinaryExpr:
 		out = append(out, wrap(e.X), wrap(e.Y)) // A | B unions
 	case *ast.FuncType:
-		for _, fd := range fieldList(e.Params, te.file, te.pkg) {
+		for _, fd := range fieldList(e.Params, te.file, te.pkg, te.tparams) {
 			out = append(out, fd.Type)
 		}
-		for _, fd := range fieldList(e.Results, te.file, te.pkg) {
+		for _, fd := range fieldList(e.Results, te.file, te.pkg, te.tparams) {
 			out = append(out, fd.Type)
 		}
 	case *ast.StructType:
-		for _, fd := range fieldList(e.Fields, te.file, te.pkg) {
+		for _, fd := range fieldList(e.Fields, te.file, te.pkg, te.tparams) {
 			out = append(out, fd.Type)
 		}
 	case *ast.InterfaceType:
-		for _, fd := range fieldList(e.Methods, te.file, te.pkg) {
+		for _, fd := range fieldList(e.Methods, te.file, te.pkg, te.tparams) {
 			out = append(out, fd.Type)
 		}
 	}
@@ -1359,9 +1482,9 @@ func TypeFieldsOf(te *TypeExpr) ([]*Field, error) {
 	}
 	switch e := te.expr.(type) {
 	case *ast.StructType:
-		return fieldList(e.Fields, te.file, te.pkg), nil
+		return fieldList(e.Fields, te.file, te.pkg, te.tparams), nil
 	case *ast.InterfaceType:
-		return fieldList(e.Methods, te.file, te.pkg), nil
+		return fieldList(e.Methods, te.file, te.pkg, te.tparams), nil
 	}
 	return nil, fmt.Errorf("inspect.TypeFields: %s is not a struct or interface type expression", te.Kind)
 }
@@ -1412,7 +1535,7 @@ func (te *TypeExpr) Unref() *TypeExpr {
 // through. A newtype and an alias both count as one layer.
 func (te *TypeExpr) Unwrap(res Resolver) *TypeExpr {
 	sid, ok := te.SymbolID()
-	if !ok || sid.PackagePath == BuiltinPackagePath {
+	if !ok || NoDeclPath(sid.PackagePath) {
 		return te
 	}
 	sym, err := res(sid)
@@ -1423,7 +1546,7 @@ func (te *TypeExpr) Unwrap(res Resolver) *TypeExpr {
 	if !ok {
 		return te
 	}
-	return NewTypeExpr(ts.Type, sym.file, sym.Package)
+	return NewTypeExpr(ts.Type, sym.file, sym.Package).withTypeParams(typeParamNames(ts.TypeParams))
 }
 
 // Origin chases the whole declared chain: pointers AND type transitions
@@ -1476,6 +1599,12 @@ func (te *TypeExpr) SymbolID() (runtime.SymbolID, bool) {
 		if te.locals[e.Name] {
 			return runtime.SymbolID{}, false
 		}
+		if te.tparams[e.Name] {
+			// bound by the enclosing generic decl — marked, never
+			// attributed to the package (a type parameter shadows any
+			// same-named package type).
+			return runtime.SymbolID{PackagePath: TypeParamPackagePath, Name: e.Name}, true
+		}
 		if te.pkg != nil && te.pkg.Index != nil {
 			if _, ok := te.pkg.Index.Types[e.Name]; ok {
 				return runtime.SymbolID{PackagePath: te.pkg.Path, Name: e.Name}, true
@@ -1490,7 +1619,7 @@ func (te *TypeExpr) SymbolID() (runtime.SymbolID, bool) {
 		return runtime.SymbolID{PackagePath: BuiltinPackagePath, Name: e.Name}, true
 	case *ast.SelectorExpr:
 		x, ok := e.X.(*ast.Ident)
-		if !ok || te.file == nil || te.locals[x.Name] {
+		if !ok || te.file == nil || te.locals[x.Name] || te.tparams[x.Name] {
 			return runtime.SymbolID{}, false
 		}
 		for _, imp := range te.file.Imports {
@@ -1529,7 +1658,9 @@ func (te *TypeExpr) CanonicalName() string {
 		if !ok {
 			return ""
 		}
-		if sid.PackagePath == BuiltinPackagePath {
+		if NoDeclPath(sid.PackagePath) {
+			// builtins and type parameters render as the bare name — a
+			// type parameter's identity is per-name only.
 			return sid.Name
 		}
 		return sid.PackagePath + "." + sid.Name
@@ -1629,7 +1760,7 @@ func lenConst(te *TypeExpr, res Resolver) (int64, bool) {
 		return v, true
 	}
 	sid, ok := te.SymbolID()
-	if !ok || sid.PackagePath == BuiltinPackagePath {
+	if !ok || NoDeclPath(sid.PackagePath) {
 		return 0, false
 	}
 	sym, err := res(sid)
@@ -1824,10 +1955,11 @@ type Node struct {
 	Role   string    // the field name it fills in its parent ("List", "Fun", "Cond"); "" on the Body root
 	Pos    *Position // position of the node
 
-	node   ast.Node
-	file   *syntax.File
-	pkg    *runtime.Package
-	locals map[string]bool // names the enclosing func binds — shared by every node under the same Body root
+	node    ast.Node
+	file    *syntax.File
+	pkg     *runtime.Package
+	locals  map[string]bool // names the enclosing func binds — shared by every node under the same Body root
+	tparams map[string]bool // type parameter names the enclosing generic func binds — same Body-root sharing
 }
 
 // NewNode builds a body-node view. role names the field the node
@@ -1913,6 +2045,7 @@ func BodyOf(s *Decl) (*Node, error) {
 	}
 	n := NewNode(s.decl.Func.Body, "", s.file, s.Package)
 	n.locals = localNames(s.decl.Func)
+	n.tparams = declTypeParams(s)
 	return n, nil
 }
 
@@ -2027,6 +2160,7 @@ func NodesOf(n *Node) []*Node {
 func (n *Node) child(cn ast.Node, role string) *Node {
 	c := NewNode(cn, role, n.file, n.pkg)
 	c.locals = n.locals
+	c.tparams = n.tparams
 	return c
 }
 
@@ -2060,6 +2194,7 @@ func ExprOf(n *Node) *TypeExpr {
 	}
 	te := NewTypeExpr(e, n.file, n.pkg)
 	te.locals = n.locals
+	te.tparams = n.tparams
 	return te
 }
 

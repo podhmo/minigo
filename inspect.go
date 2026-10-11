@@ -39,6 +39,20 @@ func (e *Engine) installInspect() {
 		// bound as a plain string so interpreted code can compare a
 		// SymbolID's PackagePath against it directly.
 		"BuiltinPackagePath": xinspect.BuiltinPackagePath,
+		// the pseudo import path type parameters resolve to — a
+		// SymbolID carrying it means "bound by the enclosing generic
+		// decl", so scripts can stop the walk instead of probing the
+		// package for a symbol that is not there.
+		"TypeParamPackagePath": xinspect.TypeParamPackagePath,
+		// the pseudo-path predicate the two constants above feed —
+		// bound so script walks can stop on either without listing
+		// the spellings themselves.
+		"NoDeclPath": bf("NoDeclPath", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, argerr("NoDeclPath", "one path string")
+			}
+			return xinspect.NoDeclPath(str(runtime.Unwrap(args[0]))), nil
+		}),
 		// ---- locators ----
 		"PackageOf": bf("PackageOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
@@ -600,7 +614,7 @@ func (e *Engine) installInspect() {
 				return nil, err
 			}
 			sid, ok := te.SymbolID()
-			if !ok || sid.PackagePath == xinspect.BuiltinPackagePath {
+			if !ok || xinspect.NoDeclPath(sid.PackagePath) {
 				return runtime.NIL, nil
 			}
 			d, err := e.resolverForInspect()(sid)

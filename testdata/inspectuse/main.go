@@ -140,8 +140,8 @@ func MethodsWalk() string {
 func MethodsPkg() string {
 	p := inspect.DirOf("./testdata/inspectpkg")
 	ms := inspect.Methods(p)
-	if len(ms) != 24 {
-		return "want 24 methods, got " + fmt.Sprint(len(ms))
+	if len(ms) != 25 {
+		return "want 25 methods, got " + fmt.Sprint(len(ms))
 	}
 	// source position order: the first method is User.Greet.
 	if ms[0].Name != "Greet" || ms[0].Pos == nil || ms[0].Pos.Line != 24 {
@@ -175,8 +175,8 @@ func MethodsFile() string {
 		return "want 1 file"
 	}
 	ms := inspect.Methods(fs[0])
-	if len(ms) != 24 || ms[0].Name != "Greet" {
-		return "want 24 methods in file"
+	if len(ms) != 25 || ms[0].Name != "Greet" {
+		return "want 25 methods in file"
 	}
 	return "ok"
 }
@@ -1917,6 +1917,75 @@ func BodyScope() string {
 	x := inspect.Nodes(fun)[0] // X = Ident strings
 	if sid := inspect.SymbolID(inspect.Expr(x)); sid != nil {
 		return "shadowed ident resolved to " + sid.PackagePath + "." + sid.Name
+	}
+	return "ok"
+}
+
+// TypeParamMark: identifiers bound as a decl's type parameters report a
+// marked SymbolID — the :typeparam: pseudo path — instead of being
+// attributed to the declaring package, so a walk can stop instead of
+// trapping on inspect.Symbol.
+func TypeParamMark() string {
+	if inspect.TypeParamPackagePath != ":typeparam:" {
+		return "unexpected: " + inspect.TypeParamPackagePath
+	}
+	p := inspect.DirOf("./testdata/inspectpkg")
+
+	// a generic struct's field spelled T is a type parameter.
+	fs := inspect.Fields(inspect.Symbol(p, "Pair"))
+	sid := inspect.SymbolID(fs[0].Type)
+	if sid == nil || sid.PackagePath != inspect.TypeParamPackagePath || sid.Name != "T" {
+		return "Pair.A not a type param"
+	}
+	// marked sids resolve to nothing — they name no decl.
+	if inspect.Resolve(fs[0].Type) != nil {
+		return "type param resolved to a decl"
+	}
+	// a two-parameter decl marks each name.
+	fs2 := inspect.Fields(inspect.Symbol(p, "Two"))
+	if inspect.SymbolID(fs2[0].Type).Name != "K" || inspect.SymbolID(fs2[1].Type).Name != "V" {
+		return "Two's params unmarked"
+	}
+	// a generic alias's argument position marks the parameter.
+	def := inspect.Def(inspect.Symbol(p, "APair"))
+	if def.Kind != "IndexExpr" {
+		return "bad APair def: " + def.Kind
+	}
+	arg := inspect.Children(def)[1]
+	if inspect.SymbolID(arg).PackagePath != inspect.TypeParamPackagePath {
+		return "APair arg not a type param"
+	}
+	// a composite underlying passes the marker through Children.
+	ldef := inspect.Def(inspect.Symbol(p, "List"))
+	elt := inspect.Children(ldef)[0]
+	if inspect.SymbolID(elt).PackagePath != inspect.TypeParamPackagePath {
+		return "List elt not a type param"
+	}
+	// a generic func's params and results mark T.
+	sig := inspect.Signature(inspect.Symbol(p, "Reduce"))
+	if inspect.SymbolID(sig.ParamFields()[1].Type).PackagePath != inspect.TypeParamPackagePath {
+		return "Reduce param not a type param"
+	}
+	if inspect.SymbolID(sig.ResultFields()[0].Type).PackagePath != inspect.TypeParamPackagePath {
+		return "Reduce result not a type param"
+	}
+	// a method on a generic type binds the param through its receiver.
+	var head *inspect.Decl
+	for _, m := range inspect.Methods(inspect.Symbol(p, "Pair")) {
+		if m.Name == "Head" {
+			head = m
+		}
+	}
+	if head == nil {
+		return "no Head method"
+	}
+	msig := inspect.Signature(head)
+	if inspect.SymbolID(msig.ResultFields()[0].Type).PackagePath != inspect.TypeParamPackagePath {
+		return "method result not a type param"
+	}
+	// an ordinary package type still resolves normally.
+	if inspect.SymbolID(inspect.Symbol(p, "MyInt")).PackagePath == inspect.TypeParamPackagePath {
+		return "MyInt marked as a type param"
 	}
 	return "ok"
 }

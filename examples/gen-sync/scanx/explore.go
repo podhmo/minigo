@@ -26,8 +26,8 @@ func TypeRefName(te *inspect.TypeExpr) string {
 	if sid == nil {
 		return "" // names nothing — a composite or unqualified selector
 	}
-	if sid.PackagePath == inspect.BuiltinPackagePath {
-		return "" // a builtin names no declaration
+	if inspect.NoDeclPath(sid.PackagePath) {
+		return "" // a builtin or a type parameter names no declaration
 	}
 	return sid.PackagePath + "." + sid.Name
 }

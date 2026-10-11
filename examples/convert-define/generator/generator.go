@@ -671,7 +671,7 @@ func registerImports(im *ImportManager, te *xinspect.TypeExpr) {
 		return
 	}
 	if sid, ok := te.SymbolID(); ok {
-		if sid.PackagePath != xinspect.BuiltinPackagePath {
+		if !xinspect.NoDeclPath(sid.PackagePath) {
 			im.Qualify(sid.PackagePath, sid.Name)
 		}
 		return
@@ -1437,7 +1437,9 @@ func getTypeName(im *ImportManager, te *xinspect.TypeExpr) string {
 }
 
 func qualifiedName(im *ImportManager, sid runtime.SymbolID) string {
-	if sid.PackagePath == xinspect.BuiltinPackagePath {
+	if xinspect.NoDeclPath(sid.PackagePath) {
+		// builtins and type parameters spell bare — a type
+		// parameter names no importable package.
 		return sid.Name
 	}
 	return im.Qualify(sid.PackagePath, sid.Name)
