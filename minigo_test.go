@@ -2383,3 +2383,28 @@ func TestRunFile(t *testing.T) {
 		t.Errorf("missing file: got %v, want a not-found error", err)
 	}
 }
+
+func TestLenientIndexIsolation(t *testing.T) {
+	// inspect.DirOf builds leniently (it must enumerate decls that would
+	// not compile, like duplicate methods). The lenient package must not
+	// leak into the canonical caches: a strict load of the same dir still
+	// reports the redeclare, and DirOf still works after a strict load
+	// has failed.
+	e := newEngine(t)
+	if got := run(t, e, "./testdata/inspectuse", "MethodsDup"); got != "ok" {
+		t.Fatalf("DirOf lenient build: %v", got)
+	}
+	if _, err := e.Package(context.Background(), "./testdata/dupmethods"); err == nil {
+		t.Fatalf("strict load after lenient build must reject the redeclare")
+	} else if !strings.Contains(err.Error(), "already declared") {
+		t.Fatalf("want a method redeclared error, got %v", err)
+	}
+
+	e2 := newEngine(t)
+	if _, err := e2.Package(context.Background(), "./testdata/dupmethods"); err == nil {
+		t.Fatalf("strict load must reject the redeclare")
+	}
+	if got := run(t, e2, "./testdata/inspectuse", "MethodsDup"); got != "ok" {
+		t.Fatalf("DirOf after failed strict load: %v", got)
+	}
+}

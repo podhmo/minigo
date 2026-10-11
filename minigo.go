@@ -54,12 +54,17 @@ type Engine struct {
 	args       []string                             // script-visible os.Args; nil = host process argv
 
 	mu    sync.Mutex
-	pkgs  map[string]*runtime.Package     // by import path
-	byDir map[string]*runtime.Package     // synthetic packages by dir
-	files map[string]*runtime.Package     // single-file packages by abs path
-	binds map[string]*runtime.Package     // host-bound packages (sessions inherit)
-	srcs  map[string]*runtime.Package     // source packages behind bound paths (inspect.SourceOf)
-	links map[*runtime.Function]linkEntry // //go:linkname resolutions, cached per decl
+	pkgs  map[string]*runtime.Package // by import path
+	byDir map[string]*runtime.Package // synthetic packages by dir
+	files map[string]*runtime.Package // single-file packages by abs path
+	binds map[string]*runtime.Package // host-bound packages (sessions inherit)
+	srcs  map[string]*runtime.Package // source packages behind bound paths (inspect.SourceOf)
+	// lenient builds (inspect.DirOf) are privately cached — a lenient
+	// package in e.pkgs would hide a redeclare error from a later strict
+	// load, and a strict package in e.byDir would break the lenient view.
+	pkgsLenient  map[string]*runtime.Package
+	byDirLenient map[string]*runtime.Package
+	links        map[*runtime.Function]linkEntry // //go:linkname resolutions, cached per decl
 
 	// buildMu serializes package construction (locate/parse/index): two
 	// goroutines cold-loading the same package converge on one build.
@@ -187,13 +192,15 @@ func (e *Engine) fsPath(p string) (string, error) {
 // go.work anchor for import-path resolution.
 func NewEngine(startDir string, opts ...Option) *Engine {
 	e := &Engine{
-		fset:     token.NewFileSet(),
-		pkgs:     map[string]*runtime.Package{},
-		byDir:    map[string]*runtime.Package{},
-		files:    map[string]*runtime.Package{},
-		binds:    map[string]*runtime.Package{},
-		srcs:     map[string]*runtime.Package{},
-		specials: map[runtime.SymbolID]runtime.SpecialFunc{},
+		fset:         token.NewFileSet(),
+		pkgs:         map[string]*runtime.Package{},
+		byDir:        map[string]*runtime.Package{},
+		files:        map[string]*runtime.Package{},
+		binds:        map[string]*runtime.Package{},
+		srcs:         map[string]*runtime.Package{},
+		pkgsLenient:  map[string]*runtime.Package{},
+		byDirLenient: map[string]*runtime.Package{},
+		specials:     map[runtime.SymbolID]runtime.SpecialFunc{},
 	}
 	for _, o := range opts {
 		o(e)
@@ -310,21 +317,23 @@ func (e *Engine) linknameTarget(vc runtime.VMCaller, fn *runtime.Function) (runt
 // setup.
 func (e *Engine) NewSession() *Engine {
 	s := &Engine{
-		resolver:   e.resolver,
-		cfg:        e.cfg,
-		fset:       token.NewFileSet(),
-		initMode:   e.initMode,
-		specials:   e.specials,
-		hostPolicy: e.hostPolicy,
-		pkgModes:   e.pkgModes,
-		out:        e.out,
-		cwd:        e.cwd,
-		args:       e.args,
-		pkgs:       map[string]*runtime.Package{},
-		byDir:      map[string]*runtime.Package{},
-		files:      map[string]*runtime.Package{},
-		binds:      map[string]*runtime.Package{},
-		srcs:       map[string]*runtime.Package{},
+		resolver:     e.resolver,
+		cfg:          e.cfg,
+		fset:         token.NewFileSet(),
+		initMode:     e.initMode,
+		specials:     e.specials,
+		hostPolicy:   e.hostPolicy,
+		pkgModes:     e.pkgModes,
+		out:          e.out,
+		cwd:          e.cwd,
+		args:         e.args,
+		pkgs:         map[string]*runtime.Package{},
+		byDir:        map[string]*runtime.Package{},
+		files:        map[string]*runtime.Package{},
+		binds:        map[string]*runtime.Package{},
+		srcs:         map[string]*runtime.Package{},
+		pkgsLenient:  map[string]*runtime.Package{},
+		byDirLenient: map[string]*runtime.Package{},
 	}
 	s.builtins = builtins(s)
 	s.installStdlib()
@@ -708,7 +717,11 @@ func (e *Engine) loadDirLenient(ctx context.Context, dir string) (*runtime.Packa
 
 func (e *Engine) loadDirMode(ctx context.Context, dir string, lenient bool) (*runtime.Package, error) {
 	e.mu.Lock()
-	if p, ok := e.byDir[dir]; ok {
+	byDir := e.byDir
+	if lenient {
+		byDir = e.byDirLenient
+	}
+	if p, ok := byDir[dir]; ok {
 		e.mu.Unlock()
 		return p, nil
 	}
@@ -780,8 +793,17 @@ func (e *Engine) buildPackage(meta *resolve.PackageMeta, lenient bool) (*runtime
 	e.buildMu.Lock()
 	defer e.buildMu.Unlock()
 
+	// lenient builds live in their own caches: publishing a lenient
+	// package into e.pkgs would hide a redeclare error from a later
+	// strict load, and a strict package under e.byDir would make
+	// inspect.DirOf's lenient view answer the wrong object.
+	pkgs, byDir := e.pkgs, e.byDir
+	if lenient {
+		pkgs, byDir = e.pkgsLenient, e.byDirLenient
+	}
+
 	e.mu.Lock()
-	if p, ok := e.pkgs[meta.ImportPath]; ok && (e.pkgModes[meta.ImportPath] != ModeSource || p.Index != nil) {
+	if p, ok := pkgs[meta.ImportPath]; ok && (e.pkgModes[meta.ImportPath] != ModeSource || p.Index != nil) {
 		e.mu.Unlock()
 		return p, nil
 	}
@@ -795,9 +817,9 @@ func (e *Engine) buildPackage(meta *resolve.PackageMeta, lenient bool) (*runtime
 	p.Standard = meta.Standard
 	// publish before parsing to make import cycles convergent
 	e.mu.Lock()
-	e.pkgs[meta.ImportPath] = p
+	pkgs[meta.ImportPath] = p
 	if meta.Dir != "" && !strings.HasPrefix(meta.ImportPath, resolve.FileImportPrefix) {
-		e.byDir[meta.Dir] = p
+		byDir[meta.Dir] = p
 	}
 	e.mu.Unlock()
 
