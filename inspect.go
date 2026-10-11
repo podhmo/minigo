@@ -84,6 +84,16 @@ func (e *Engine) installInspect() {
 			}
 			return e.SourceOf(context.Background(), str(runtime.Unwrap(args[0])))
 		}),
+		"BoundOf": bf("BoundOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, argerr("BoundOf", "one path string")
+			}
+			p := e.BoundOf(str(runtime.Unwrap(args[0])))
+			if p == nil {
+				return runtime.NIL, nil
+			}
+			return p, nil
+		}),
 		"DirOf": bf("DirOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("DirOf", "one dir string")

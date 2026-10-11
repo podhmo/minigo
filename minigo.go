@@ -646,6 +646,17 @@ func (e *Engine) BoundPackages() []string {
 	return paths
 }
 
+// BoundOf returns the host-bound package registered for path — the
+// object a script import answers when a bound shadow exists — or nil
+// when the path is not bound. It never falls through to source:
+// an unbound path is simply not bound. Package modes gate imports,
+// not this lookup — a ModeDeny path still reports its registration.
+func (e *Engine) BoundOf(path string) *runtime.Package {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.binds[path]
+}
+
 // BoundSymbols returns the sorted symbol names a bound package exposes to
 // scripts (host-policy denials already removed); ok is false when
 // importPath is not bound.

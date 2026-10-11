@@ -78,6 +78,8 @@ func TestInspect(t *testing.T) {
 		// soft loaders: nil on "names nothing", error on "found but broken"
 		"LookupDirOfMiss",
 		"LookupPackageOfMiss",
+		"BoundOfHit",
+		"BoundOfMiss",
 	} {
 		if got := run(t, e, "./testdata/inspectuse", fn); got != "ok" {
 			t.Errorf("%s: %v", fn, got)

@@ -95,6 +95,34 @@ func TestEngineSourceOf(t *testing.T) {
 	}
 }
 
+// TestEngineBoundOf: the bound-only loader answers the registered
+// shadow or nil — the complement of SourceOf's source-only direction.
+func TestEngineBoundOf(t *testing.T) {
+	e := newEngine(t)
+
+	if p := e.BoundOf("strings"); p == nil {
+		t.Fatal("bound strings missing")
+	} else {
+		if p.Path != "strings" || !p.Standard {
+			t.Errorf("bad bound meta: %s standard=%t", p.Path, p.Standard)
+		}
+		if p.Index != nil {
+			t.Error("bound package should carry no index")
+		}
+		// the bound object is the one imports answer
+		if canon, err := e.Package(context.Background(), "strings"); err != nil || canon != p {
+			t.Error("BoundOf is not the canonical bound object")
+		}
+	}
+	// unbound paths report nil — never the source Package would load
+	if p := e.BoundOf("container/list"); p != nil {
+		t.Error("unbound path answered")
+	}
+	if p := e.BoundOf("./testdata/inspectpkg"); p != nil {
+		t.Error("dir string answered")
+	}
+}
+
 // TestSigFields: ParamFields/ResultFields unbox the FFI slices into
 // []*Field — the host-side counterpart of FieldsOf.
 func TestSigFields(t *testing.T) {

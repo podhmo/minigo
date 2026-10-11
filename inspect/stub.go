@@ -7,6 +7,33 @@ import "github.com/podhmo/minigo/runtime"
 // inside minigo; they exist so scripts stay gopls/gofmt friendly.
 // Views are returned boxed, so their fields (s.Name, f.Type.Text, ...)
 // work in scripts without further declarations.
+//
+// Loading paths — which loader answers which object:
+//
+//	PackageOf   the canonical object: a bound registration wins;
+//	            misses build lenient source into a private cache.
+//	BoundOf     bound only: the registered host package, or nil when
+//	            the path is not bound — never falls through to source.
+//	SourceOf    source only: parses and indexes the source behind a
+//	            bound path into its own cache, so the bound package
+//	            keeps answering real imports; for an unbound path it
+//	            answers the canonical package itself.
+//	DirOf       source only, lenient: a directory never names a bound
+//	            package — the parsed view always answers. LookupDirOf
+//	            is its nil-on-miss twin, LookupPackageOf PackageOf's.
+//	FileOf      a single file as a one-file package, lenient.
+//
+// What the object offers differs by path: a bound package carries no
+// index — Decls/Symbol synthesize Kind "host" pseudo-decls from its
+// symbols, AST/Body/Pos trap, and Standard() is the registration's
+// say-so (Bind marks dot-less first path elements standard). A
+// source-built package indexes real declarations — Decls, Fields,
+// AST, Body all work — and Standard() reports whether its resolved
+// directory lives under GOROOT. Lenient builds (every dir/file
+// locator, PackageOf's source miss, SourceOf's bound-path source)
+// index source that would not compile, keeping duplicate decls; the
+// canonical loaders (imports, Engine.Package, SourceOf on an unbound
+// path) are strict.
 
 // PackageOf loads a package by import path (bound or source).
 //
@@ -24,6 +51,15 @@ func PackageOf(path string) *runtime.Package { panic("minigo intrinsic") }
 // the interpreter does not cover; the index and syntax layers are the
 // intended use.
 func SourceOf(path string) *runtime.Package { panic("minigo intrinsic") }
+
+// BoundOf returns the host-bound package registered for path — the
+// object a script import answers when a bound shadow exists — or nil
+// when the path is not bound. It never falls through to source: an
+// unbound path is simply not bound, so "does the bound loader answer
+// this path?" is a one-liner instead of a Standard()/Decls probe.
+// Package modes gate imports, not this lookup — a path denied by
+// WithPackageModes still reports its registration.
+func BoundOf(path string) *runtime.Package { panic("minigo intrinsic") }
 
 // DirOf loads a package by directory.
 func DirOf(dir string) *runtime.Package { panic("minigo intrinsic") }
