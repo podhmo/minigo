@@ -3397,7 +3397,7 @@ func hostTypOf(td *runtime.TypeDef) reflect.Type {
 		return reflect.TypeOf(td.HostScalar)
 	}
 	if td.HostNew != nil {
-		return reflect.TypeOf(td.HostNew())
+		return td.HostType()
 	}
 	return nil
 }
