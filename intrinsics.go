@@ -6826,12 +6826,12 @@ func errIs(err, target error) bool {
 // errComparable is gc's targetComparable: the target's dynamic type is
 // comparable — a script value asks TryOpaqueKey (a struct containing a
 // slice field is not), a host error its reflect type.
-func errComparable(err error) bool {
-	if se, ok := err.(*scriptError); ok {
+func errComparable(target error) bool {
+	if se, ok := target.(*scriptError); ok {
 		_, ok := runtime.TryOpaqueKey(se.v)
 		return ok
 	}
-	return reflect.TypeOf(err).Comparable()
+	return reflect.TypeOf(target).Comparable()
 }
 
 // errEqual is gc's `err == target` for a chain that may hold script
