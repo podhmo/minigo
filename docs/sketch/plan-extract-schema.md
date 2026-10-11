@@ -155,6 +155,21 @@ walk a `SymbolID` lookup consults the merged table before the default
 named-type handling — including before the stdlib leaf policy, which
 is how `time.Time` becomes `date-time` instead of a stopped leaf.
 
+### Interface shape — under consideration
+
+The built contract is the data-only `Overrides() map[string]any` above.
+An alternative being weighed: the tool's script package exposes a *stub
+type* (a registrar, e.g. `*Overrides` with `Register(symbolID string,
+fragment map[string]any)` and room for the grade-B/C hooks as methods),
+the host passes an instance to a plugin entry point
+(`func Configure(r *Overrides)`), and the plugin *configures* rather
+than *returns*. That makes the contract a named API surface instead of
+an untyped map literal — self-documenting in `go doc`, and the natural
+seat for predicate/naming hooks later. The cost: plugin and tool must
+share the stub type's package (the same shipping-unit question
+`scanx/` already answers for gen-sync). Undecided; the map table stays
+until one of the higher grades lands and forces the shape.
+
 Extension grades, in order; the spike builds the first:
 
 - **A. Static table** (above) — data-only plugins, no callbacks. Built.
