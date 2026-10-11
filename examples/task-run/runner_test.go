@@ -82,6 +82,48 @@ func TestRunTask(t *testing.T) {
 	}
 }
 
+func TestRunTaskSiblingHelpers(t *testing.T) {
+	dir, file := writeTaskfile(t, `package main
+
+import "task"
+
+func Default() { task.Log(helper()) }
+`)
+	// a sibling same-package file contributes decls to the -f scope,
+	// like `go run ./dir` — helper() resolves and Sibling lists in -l.
+	if err := os.WriteFile(filepath.Join(dir, "helpers.go"), []byte(`package main
+
+import "task"
+
+func Sibling() { task.Log("sibling task") }
+
+func helper() string { return "from-sibling" }
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	r := NewRunner(dir, &out, &errb)
+	ctx := context.Background()
+	if err := r.RunTask(ctx, file, "Default", nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(errb.String(), "from-sibling") {
+		t.Errorf("sibling helper did not resolve, stderr: %q", errb.String())
+	}
+	tasks, err := r.Tasks(ctx, file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, ti := range tasks {
+		names = append(names, ti.Name)
+	}
+	if diff := cmp.Diff([]string{"Default", "Sibling"}, names); diff != "" {
+		t.Errorf("-l tasks (-want +got):\n%s", diff)
+	}
+}
+
 func TestDepsDedup(t *testing.T) {
 	_, file := writeTaskfile(t, `package main
 

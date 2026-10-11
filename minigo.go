@@ -14,8 +14,10 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/parser"
 	"go/token"
 	"io"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -950,6 +952,73 @@ func (e *Engine) LoadFile(ctx context.Context, filename string) (*runtime.Packag
 	e.files[abs] = p
 	e.mu.Unlock()
 	return p, nil
+}
+
+// LoadDirScope loads the package scope of a .go file: the file plus every
+// same-package sibling .go file in its directory — `go run ./dir` scoping
+// but without build-constraint filtering, so a file excluded by
+// `//go:build` tags (task-runner conventions like `//go:build task`)
+// still sees its package. LoadFile stays the single-file scope. The
+// returned package is not cached: each call re-indexes the directory.
+func (e *Engine) LoadDirScope(ctx context.Context, filename string) (*runtime.Package, error) {
+	abs, err := filepath.Abs(filename)
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Dir(abs)
+	if err := e.cfg.CheckDir(dir); err != nil {
+		return nil, err
+	}
+	e.buildMu.Lock()
+	defer e.buildMu.Unlock()
+
+	// the named file's package clause defines the scope: siblings keep
+	// only files declaring the same package name (same-file and _test
+	// filtering follow go/build's invisibility rules).
+	pkgName, err := packageName(e.fset, abs)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", filename, err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("reading package dir %s: %w", dir, err)
+	}
+	var gofiles []string
+	for _, en := range entries {
+		fname := en.Name()
+		if en.IsDir() || !strings.HasSuffix(fname, ".go") || strings.HasSuffix(fname, "_test.go") ||
+			strings.HasPrefix(fname, "_") || strings.HasPrefix(fname, ".") {
+			continue
+		}
+		name, err := packageName(e.fset, filepath.Join(dir, fname))
+		if err != nil {
+			continue // a file whose package clause cannot be read contributes nothing
+		}
+		if name == pkgName {
+			gofiles = append(gofiles, filepath.Join(dir, fname))
+		}
+	}
+	files, failed, err := parsePackageFiles(e.fset, gofiles)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", failed, err)
+	}
+	for _, sf := range files {
+		sf.LangMod = resolve.ModuleLang(dir)
+	}
+	p := e.newPackage("<dir>"+filepath.ToSlash(dir), pkgName, dir)
+	if err := e.indexFiles(p, files, false); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// packageName reads just a file's package clause.
+func packageName(fset *token.FileSet, abs string) (string, error) {
+	f, err := parser.ParseFile(fset, abs, nil, parser.PackageClauseOnly)
+	if err != nil {
+		return "", err
+	}
+	return f.Name.Name, nil
 }
 
 // RunFile is Run for a single file: LoadFile + Call. A bare "" fnName calls

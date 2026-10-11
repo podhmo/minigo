@@ -295,9 +295,9 @@ func (r *Runner) echo(line string) {
 // Tasks loads a Taskfile and lists its tasks: exported top-level functions
 // whose params are all `string` and whose result is empty or `error`.
 func (r *Runner) Tasks(ctx context.Context, file string) ([]TaskInfo, error) {
-	pkg, err := r.engine.LoadFile(ctx, file)
+	pkg, err := r.loadTaskfile(ctx, file)
 	if err != nil {
-		return nil, taskfileErr(file, err, r.explicitFile)
+		return nil, err
 	}
 	var tasks []TaskInfo
 	for name, d := range pkg.Index.Funcs {
@@ -323,9 +323,9 @@ func (r *Runner) Tasks(ctx context.Context, file string) ([]TaskInfo, error) {
 // RunTask invokes one task by name. Positional args feed the task's string
 // parameters; a task `func Deploy(env string)` runs as `task-run Deploy dev`.
 func (r *Runner) RunTask(ctx context.Context, file, name string, args []string) error {
-	pkg, err := r.engine.LoadFile(ctx, file)
+	pkg, err := r.loadTaskfile(ctx, file)
 	if err != nil {
-		return taskfileErr(file, err, r.explicitFile)
+		return err
 	}
 	d, ok := pkg.Index.Funcs[name]
 	if !ok || !ast.IsExported(name) {
@@ -818,6 +818,23 @@ func kindOf(v runtime.Value) string {
 	default:
 		return fmt.Sprintf("%T", v)
 	}
+}
+
+// loadTaskfile loads the package containing the taskfile — the named
+// file plus its same-package sibling .go files, like `go run ./dir`,
+// so a task's helpers can live in any file of the directory (before,
+// -f indexed only the named file and sibling decls trapped undefined).
+// The file's own stat still happens here so a missing -f blames the
+// argument, not the directory.
+func (r *Runner) loadTaskfile(ctx context.Context, file string) (*runtime.Package, error) {
+	if _, statErr := os.Stat(file); statErr != nil {
+		return nil, taskfileErr(file, statErr, r.explicitFile)
+	}
+	pkg, err := r.engine.LoadDirScope(ctx, file)
+	if err != nil {
+		return nil, taskfileErr(file, err, r.explicitFile)
+	}
+	return pkg, nil
 }
 
 // loadError wraps a LoadFile failure so the CLI can attribute it to the
