@@ -5292,8 +5292,15 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 		// a bound host scalar (time.Duration) stores the raw host
 		// value — its methods live on the host type, dispatched
 		// through reflection like the bare value's own case in
-		// selectMember.
-		if mv, ok := v.hostMember(sv, name); ok {
+		// selectMember. A payload still in script shape — the int64
+		// or const-domain UConst a Named{monthTD, ...} keeps —
+		// materializes to the host scalar first so its declared
+		// methods (time.Month.String) resolve.
+		hv := sv
+		if cv, ok := runtime.HostScalarOf(td, sv); ok {
+			hv = cv
+		}
+		if mv, ok := v.hostMember(hv, name); ok {
 			return mv
 		}
 	}

@@ -133,6 +133,59 @@ func hostScalarValue(td *TypeDef, v Value) Value {
 	return v
 }
 
+// HostScalarOf materializes a host-scalar typedef's payload to the bound
+// Go scalar at a read site: a stored int64 (the materialized script
+// shape) or a still-constant UConst both convert to the host type, so
+// member dispatch, fmt rendering and host calls see the real
+// time.Month / time.Duration rather than the raw int64 — the same
+// canonicalization hostScalarValue applies at Tag time, deferred to the
+// read because a Named{td, UConst} keeps the constant domain. The second
+// result reports whether a host scalar was produced.
+func HostScalarOf(td *TypeDef, v Value) (any, bool) {
+	rt := reflect.TypeOf(td.HostScalar)
+	if rt == nil {
+		return nil, false
+	}
+	if u, ok := v.(*UConst); ok {
+		mv, err := UConstNative(u)
+		if err != nil {
+			return nil, false
+		}
+		v = mv
+	}
+	if gv, ok := v.(*GoValue); ok {
+		v = gv.V
+	}
+	rv := reflect.ValueOf(v)
+	if !rv.IsValid() {
+		return nil, false
+	}
+	if rv.Type() == rt {
+		return v, true
+	}
+	// same kind converts directly; a numeric payload also converts
+	// across widths — the script repr stores every integer as int64
+	// while time.Month's underlying is int (kind Int vs Int64).
+	if rv.Type().ConvertibleTo(rt) &&
+		(rv.Kind() == rt.Kind() || (numericScalarKind(rv.Kind()) && numericScalarKind(rt.Kind()))) {
+		return rv.Convert(rt).Interface(), true
+	}
+	return nil, false
+}
+
+// numericScalarKind reports the arithmetic families a scalar payload may
+// cross-width-convert within — int*, uint*, float*, complex* — keeping
+// string/bool payloads from converting into a numeric host type.
+func numericScalarKind(k reflect.Kind) bool {
+	switch k {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128:
+		return true
+	}
+	return false
+}
+
 // hostStringValue canonicalizes a string-kind host basic's payload to the
 // script string — the mirror of hostScalarValue in the other direction. A
 // bound typedef like reflect.StructTag is a stdlib scalar but every
