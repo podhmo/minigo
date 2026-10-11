@@ -5455,19 +5455,32 @@ func jsonAllocPointee(c runtime.VMCaller, ptd *runtime.TypeDef) runtime.Value {
 	return &runtime.Cell{Elem: z}
 }
 
+// peelNil unwraps cells, refs and named wrappers down to a nil
+// payload and reports its tagged typedef — the one peel-to-nil walk
+// json's nil probe (any nilish payload) and fmt's pointer skip
+// (pointer-tagged nil only) share.
+func peelNil(v runtime.Value) (*runtime.TypeDef, bool) {
+	for {
+		if dv, ok := runtime.Deref(v); ok {
+			v = dv
+			continue
+		}
+		switch n := v.(type) {
+		case *runtime.TypedNil:
+			return n.Typ, true
+		case *runtime.IfaceNil:
+			return n.Typ, true // a TypedNil boxed by an interface slot keeps its tag
+		}
+		return nil, false
+	}
+}
+
 // jsonNilish reports a nil pointer/interface payload — a cell or a
 // named wrapper keeps the verdict of the value it carries so a nil
 // *T inside one still reads as nil.
 func jsonNilish(v runtime.Value) bool {
-	switch x := v.(type) {
-	case *runtime.TypedNil, *runtime.IfaceNil:
-		return true
-	case *runtime.Cell:
-		return jsonNilish(x.Elem)
-	case *runtime.Named:
-		return jsonNilish(x.V)
-	}
-	return false
+	_, ok := peelNil(v)
+	return ok
 }
 
 // jsonErrResult unwraps the single `error` a script UnmarshalJSON
@@ -5563,21 +5576,14 @@ func jsonErrOrder(data []byte) map[string]int {
 
 // jsonErrPos looks up a member path's position in the raw input,
 // walking up to the nearest recorded ancestor (a nested failure
-// inherits its member's slot). Struct fields record their Go field
-// name while the position map keys on the input's member spelling —
-// the codec folds case the same way when matching, so each level
-// retries case-insensitively.
+// inherits its member's slot). Paths carry the input's member
+// spelling already (the codec records inKey — the exact key, or the
+// case-folded key it matched — not the Go field name), so the lookup
+// is exact.
 func jsonErrPos(pos map[string]int, path []string) (int, bool) {
 	for p := path; ; p = p[:len(p)-1] {
 		key := strings.Join(p, "\x00")
 		if pp, ok := pos[key]; ok {
-			return pp, true
-		}
-		folded := make([]string, len(p))
-		for i, s := range p {
-			folded[i] = strings.ToLower(s)
-		}
-		if pp, ok := pos[strings.Join(folded, "\x00")]; ok {
 			return pp, true
 		}
 		if len(p) == 0 {
@@ -5678,6 +5684,28 @@ func jsonBareName(td *runtime.TypeDef) string {
 // priorOr keeps the previous value on a decode failure, like gc leaving
 // the destination untouched at a type mismatch; without a prior the
 // typedef's zero is the fallback.
+//
+// unmarshalRecv picks the receiver cell for a script unmarshaler
+// method: a Cell prior is already the addressable decode target, a nil
+// prior decodes into a fresh zero slot, and a bare value decodes through
+// a cell around it — a whole-value `*u = ...` assignment in the method
+// reaches the field through the returned cell.
+func unmarshalRecv(prior runtime.Value, c runtime.VMCaller, td *runtime.TypeDef) (runtime.Value, *runtime.Cell) {
+	switch p := prior.(type) {
+	case *runtime.Cell:
+		return p, nil
+	case nil:
+		cell := &runtime.Cell{Elem: c.Zero(td)}
+		return cell, cell
+	default:
+		// the decode slot is always addressable — a bare struct prior
+		// still sees the pointer method set, like gc handing the method
+		// the field's own address.
+		cell := &runtime.Cell{Elem: prior}
+		return cell, cell
+	}
+}
+
 func priorOr(prior runtime.Value, c runtime.VMCaller, td *runtime.TypeDef) runtime.Value {
 	if prior != nil {
 		return prior
@@ -5996,21 +6024,7 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 	// only, so an unnamed container's member walk must not borrow the
 	// element type's methods.
 	if td.Name != "" {
-		var recv runtime.Value
-		var cell *runtime.Cell
-		switch prior.(type) {
-		case *runtime.Cell:
-			recv = prior
-		case nil:
-			cell = &runtime.Cell{Elem: c.Zero(td)}
-			recv = cell
-		default:
-			// the decode slot is always addressable — a bare struct
-			// prior still sees the pointer method set, like gc
-			// handing the method the field's own address.
-			cell = &runtime.Cell{Elem: prior}
-			recv = cell
-		}
+		recv, cell := unmarshalRecv(prior, c, td)
 		if m, ok := runtime.IfaceMember(c, recv, "UnmarshalJSON"); ok && jsonUnmarshalShape(m) {
 			if lit, lerr := json.Marshal(dec); lerr == nil {
 				if !jsonCallMethod(c, m, lit, ectx) {
@@ -6583,18 +6597,7 @@ func jsonStringOpt(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runti
 	// text verbatim — ,string hands the method the literal bytes
 	// without re-parsing them as JSON.
 	if !isNumber && td.Name != "" {
-		var recv runtime.Value
-		var cell *runtime.Cell
-		switch prior.(type) {
-		case *runtime.Cell:
-			recv = prior
-		case nil:
-			cell = &runtime.Cell{Elem: c.Zero(td)}
-			recv = cell
-		default:
-			cell = &runtime.Cell{Elem: prior}
-			recv = cell
-		}
+		recv, cell := unmarshalRecv(prior, c, td)
 		if m, ok := runtime.IfaceMember(c, recv, "UnmarshalText"); ok && jsonUnmarshalShape(m) {
 			if !jsonCallMethod(c, m, []byte(s), ectx) {
 				return prior
@@ -7569,25 +7572,8 @@ func ifaceCallStringPanic(c runtime.VMCaller, x runtime.Value, name string) (str
 // skip — Named and ref layers peel to the pointer-shaped TypedNil
 // underneath.
 func fmtNilPointer(x runtime.Value) bool {
-	v := x
-	for {
-		if n, ok := v.(*runtime.Named); ok {
-			v = n.V
-			continue
-		}
-		if dv, ok := runtime.Deref(v); ok {
-			v = dv
-			continue
-		}
-		var td *runtime.TypeDef
-		switch n := v.(type) {
-		case *runtime.TypedNil:
-			td = n.Typ
-		case *runtime.IfaceNil:
-			td = n.Typ // a TypedNil boxed by an interface slot keeps its tag
-		}
-		return td != nil && td.Kind == runtime.KindPointer
-	}
+	td, ok := peelNil(x)
+	return ok && td != nil && td.Kind == runtime.KindPointer
 }
 
 // fmtPanicMarker spells gc's catchPanic marker for a Stringer-family
