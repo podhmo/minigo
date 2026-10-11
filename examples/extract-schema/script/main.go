@@ -333,7 +333,7 @@ func (g *generator) schemaFor(te *inspect.TypeExpr) (map[string]any, error) {
 		if sid == nil {
 			return nil, fmt.Errorf("unresolvable type expression %q", te.Text)
 		}
-		if sid.PackagePath == ":builtin:" {
+		if sid.PackagePath == inspect.BuiltinPackagePath {
 			return builtinDoc(sid.Name)
 		}
 		if sid.PackagePath == inspect.TypeParamPackagePath {
@@ -589,7 +589,7 @@ func (g *generator) addEmbedded(f *inspect.Field, name string, named bool, props
 		}
 		return nil
 	}
-	if sid == nil || sid.PackagePath == ":builtin:" || sid.PackagePath == inspect.TypeParamPackagePath {
+	if sid == nil || inspect.NoDeclPath(sid.PackagePath) {
 		// non-struct embeds marshal under the type name (encoding/json).
 		fd, err := g.schemaFor(f.Type)
 		if err != nil {
