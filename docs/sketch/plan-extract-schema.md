@@ -323,15 +323,24 @@ Built and passing locally (`go run ./ ./app User` and friends):
   `[]any` elements arrive `*runtime.GoValue`-boxed and unindexable.
   Function hooks sidestep all three (below).
 - **`inspect.Value(pkg, name)` returns a live function value** for a
-  func decl, callable in the same VM — but only with an
-  `any`-shaped signature. Asserting `.(func(*inspect.Field, string)
-  string)` nominally compares the func types, and separately-loaded
-  package instances carry distinct inspect type objects:
-  "interface conversion: ... types from different packages" (the same
-  family as the `*runtime.Package` identity trap). Likewise
-  `x.(*inspect.Field)` inside a plugin traps `undefined:
-  inspect.Field` — the view types are not registered type symbols.
-  reflect-based field reads (`FieldByName`) are unaffected.
+  func decl, callable in the same VM — the plugin hook mechanism.
+- **Source-package imports ARE interned; the `inspect` stub types are
+  NOT** — the finding behind the registrar design. A plugin's
+  `import ".../extschema"` resolves to the same package instance as
+  the script's, so `.(func(*extschema.Config))` asserts cleanly and a
+  typed plugin contract works end to end. But `.(func(*inspect.Field,
+  string) string)` traps "interface conversion: ... types from
+  different packages" — each separately-loaded package instance
+  carries distinct inspect type objects (the same family as the
+  `*runtime.Package` identity trap), and `x.(*inspect.Field)` inside
+  a plugin traps `undefined: inspect.Field` — the view types are not
+  registered type symbols at all. Result: hooks take `any` and
+  narrow via `reflect` (`FieldByName`), while plugin *contracts* can
+  name shared source-package types directly.
+- **`inspect.Symbol(pkg, name)` traps on a miss** — there is no
+  non-trapping name lookup, so optional plugin entry points are
+  probed by scanning `inspect.Decls` (`findFunc`). A `Lookup`-
+  style soft variant would read better.
 - **`inspect.Symbol(pkg, name)` traps on a miss** — there is no
   non-trapping name lookup, so optional plugin entry points are
   probed by scanning `inspect.Decls` (`findFunc`). A `Lookup`-
@@ -344,6 +353,11 @@ Built and passing locally (`go run ./ ./app User` and friends):
   mode.
 - The `*runtime.Package` type-identity trap above — either unify the
   identities or make the error message name the mismatch.
+- Register the inspect view types (`*inspect.Field`, `*inspect.Decl`,
+  ...) as real type symbols and intern them across package instances,
+  so plugin hook signatures can name them directly instead of
+  `any`+reflect. Same goes for a non-trapping `inspect.Lookup` —
+  optional entry points currently require a Decls scan.
 - Whatever the usecasefuzz corpus hits next: generic instantiations
   (`IndexExpr` walks the base; type arguments are not substituted —
   the same boundary convert-define documents), `FuncType`/`ChanType`
