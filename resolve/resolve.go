@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -94,7 +95,7 @@ type PackageMeta struct {
 	ImportPath string
 	Name       string // the package clause name (may differ from path basename)
 	Dir        string
-	GoFiles    []string // absolute paths, filtered by build constraints
+	GoFiles    []string // absolute paths, filtered by build constraints and cgo
 	Standard   bool     // inside GOROOT
 	ModulePath string   // owning module path, "" if unknown
 	// Lang is the `go` directive of the module enclosing Dir (raw text like
@@ -139,6 +140,10 @@ type Resolver interface {
 // ReadPackageFiles reads a directory into a PackageMeta: it filters files
 // with go/build's match rules (//go:build constraints, _GOOS/_GOARCH
 // suffixes, _test.go) and reads the package clause of the first match.
+// Files importing "C" are cgo files — go/build only lists them under
+// CgoEnabled, and the interpreter cannot link native code, so a directory
+// walk skips them like ignored files (an explicitly named file still
+// fails at index time).
 func ReadPackageFiles(dir, importPath string, cfg BuildConfig) (*PackageMeta, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -156,6 +161,7 @@ func ReadPackageFiles(dir, importPath string, cfg BuildConfig) (*PackageMeta, er
 	var files []string
 	var rejected []string // files MatchFile could not even read/parse
 	excluded := 0         // files build constraints filtered out
+	cgo := 0              // matched files skipped for importing "C"
 	clauses := map[string]int{}
 	clauseOrder := []string{} // first-seen; os.ReadDir is sorted by name
 	fset := token.NewFileSet()
@@ -177,13 +183,18 @@ func ReadPackageFiles(dir, importPath string, cfg BuildConfig) (*PackageMeta, er
 			excluded++
 			continue
 		}
-		files = append(files, filepath.Join(dir, fname))
-		if f, err := parser.ParseFile(fset, filepath.Join(dir, fname), nil, parser.PackageClauseOnly); err == nil && f != nil {
+		abs := filepath.Join(dir, fname)
+		if f, err := parser.ParseFile(fset, abs, nil, parser.ImportsOnly); err == nil && f != nil {
+			if importsC(f) {
+				cgo++
+				continue
+			}
 			if clauses[f.Name.Name] == 0 {
 				clauseOrder = append(clauseOrder, f.Name.Name)
 			}
 			clauses[f.Name.Name]++
 		}
+		files = append(files, abs)
 	}
 	if len(rejected) > 0 {
 		// A file MatchFile cannot even read or parse would vanish from
@@ -200,8 +211,15 @@ func ReadPackageFiles(dir, importPath string, cfg BuildConfig) (*PackageMeta, er
 		if importPath != "" && !strings.HasPrefix(importPath, "<") {
 			what = fmt.Sprintf("package %s (%s)", importPath, dir)
 		}
+		var reasons []string
 		if excluded > 0 {
-			return nil, fmt.Errorf("no buildable Go source files in %s: all %d .go file(s) excluded by build constraints", what, excluded)
+			reasons = append(reasons, fmt.Sprintf("%d excluded by build constraints", excluded))
+		}
+		if cgo > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d skipped (cgo is not supported)", cgo))
+		}
+		if len(reasons) > 0 {
+			return nil, fmt.Errorf("no buildable Go source files in %s: %s", what, strings.Join(reasons, ", "))
 		}
 		return nil, fmt.Errorf("no buildable Go source files in %s", what)
 	}
@@ -227,9 +245,19 @@ func ReadPackageFiles(dir, importPath string, cfg BuildConfig) (*PackageMeta, er
 	}, nil
 }
 
+// importsC reports whether the parsed file imports "C", the cgo
+// pseudo-package (any import spelling — import "C", import C "C",
+// import _ "C").
+func importsC(f *ast.File) bool {
+	for _, is := range f.Imports {
+		if path, err := strconv.Unquote(is.Path.Value); err == nil && path == "C" {
+			return true
+		}
+	}
+	return false
+}
+
 // CheckImportPath sanity-checks a path that claims to be an import path.
 func LooksLikeDir(path string) bool {
 	return strings.HasPrefix(path, ".") || filepath.IsAbs(path)
 }
-
-var _ = ast.IsExported // keep go/ast imported for future TypeRef work

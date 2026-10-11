@@ -16,11 +16,13 @@ import (
 // excluded by build tags still sees its package (task-runner
 // conventions like `//go:build task`) — while go/build's FILENAME
 // invisibility stays: _GOOS/_GOARCH suffixes, _test.go, and
-// _/.-prefixed names are never read. The named file itself is always
-// included — it was asked for explicitly.
+// _/.-prefixed names are never read. Sibling files importing "C" are
+// skipped like in ReadPackageFiles — the interpreter cannot link
+// native code. The named file itself is always included — it was
+// asked for explicitly.
 func FileScopeFiles(dir, named string, cfg BuildConfig) ([]string, error) {
 	fset := token.NewFileSet()
-	pkgName, err := packageClause(fset, named)
+	pkgName, _, err := packageClause(fset, named)
 	if err != nil {
 		return nil, err
 	}
@@ -46,9 +48,11 @@ func FileScopeFiles(dir, named string, cfg BuildConfig) ([]string, error) {
 		if abs == named || !goodOSArchFile(fname, goos, goarch) {
 			continue
 		}
-		name, err := packageClause(fset, abs)
-		if err != nil {
-			continue // a file whose package clause cannot be read contributes nothing
+		name, cgo, err := packageClause(fset, abs)
+		if err != nil || cgo {
+			// a file whose package clause cannot be read — or that uses
+			// cgo — contributes nothing
+			continue
 		}
 		if name == pkgName {
 			gofiles = append(gofiles, abs)
@@ -57,13 +61,14 @@ func FileScopeFiles(dir, named string, cfg BuildConfig) ([]string, error) {
 	return gofiles, nil
 }
 
-// packageClause reads just a file's package clause.
-func packageClause(fset *token.FileSet, abs string) (string, error) {
-	f, err := parser.ParseFile(fset, abs, nil, parser.PackageClauseOnly)
+// packageClause reads a file's package clause and import block, reporting
+// the clause name and whether the file uses cgo (imports "C").
+func packageClause(fset *token.FileSet, abs string) (name string, cgo bool, err error) {
+	f, err := parser.ParseFile(fset, abs, nil, parser.ImportsOnly)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	return f.Name.Name, nil
+	return f.Name.Name, importsC(f), nil
 }
 
 // goodOSArchFile replicates the filename half of go/build's
