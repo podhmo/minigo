@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unsafe"
 
 	"github.com/podhmo/minigo/runtime"
 )
@@ -1513,8 +1514,16 @@ func nextSliceCap(need, oldCap int) int {
 }
 
 // maxAlloc is the runtime's addressable-allocation bound on amd64 —
-// growslice panics when the requested bytes can't span it.
-const maxAlloc = uintptr(1) << 48
+// growslice panics when the requested bytes can't span it. The shift
+// is sized per uintptr's width: 1<<48 on 64-bit, 1<<28 on 32-bit,
+// whose uintptr can't spell the 64-bit bound.
+const maxAlloc = uintptr(1) << (5*unsafe.Sizeof(uintptr(0)) + 8)
+
+// fakeAddr is the nonzero "address" Pointer-family calls report for a
+// live script value — never a real address. The literal keeps the
+// "minigo" bit pattern on 64-bit and truncates to its high word on a
+// 32-bit uintptr.
+const fakeAddr = uintptr(0x6d696e69676f >> ((8 - unsafe.Sizeof(uintptr(0))) * 8))
 
 // sizeClassToSize is the runtime's malloc size-class table on amd64:
 // the byte size mallocgc actually allocates for a small request.
@@ -3218,13 +3227,13 @@ func (v *RValue) Pointer() uintptr {
 		if s, ok := runtime.Unwrap(unwrapRef(v.get())).(string); ok && s == "" {
 			return 0
 		}
-		return 0x6d696e69676f
+		return fakeAddr
 	case reflect.Chan, reflect.Func, reflect.Map, reflect.Ptr,
 		reflect.Slice, reflect.UnsafePointer:
 		if v.IsNil() {
 			return 0
 		}
-		return 0x6d696e69676f
+		return fakeAddr
 	}
 	trap("call of reflect.Value.Pointer on %s Value", v.kindStr())
 	return 0
@@ -3265,7 +3274,7 @@ func (v *RValue) UnsafeAddr() uintptr {
 	if v.ref == nil {
 		plain("reflect.Value.UnsafeAddr of unaddressable value")
 	}
-	return 0x6d696e69676f
+	return fakeAddr
 }
 
 // CanComplex / Overflow* follow.
