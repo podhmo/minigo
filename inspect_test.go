@@ -69,6 +69,9 @@ func TestInspect(t *testing.T) {
 		"FileOfDup",
 		"PackageOfDup",
 		"LookupSymbolMiss",
+		// soft loaders: nil on "names nothing", error on "found but broken"
+		"LookupDirOfMiss",
+		"LookupPackageOfMiss",
 	} {
 		if got := run(t, e, "./testdata/inspectuse", fn); got != "ok" {
 			t.Errorf("%s: %v", fn, got)
@@ -97,6 +100,8 @@ func TestInspect(t *testing.T) {
 		"ResolveBoundTrap",           // the resolver cannot descend into a bound pkg
 		"MissingSymTrap",             // unknown symbol name
 		"LookupSymbolArgTrap",        // LookupSymbol keeps the arg contract
+		"LookupDirOfEmptyTrap",       // dir exists but holds no Go files -> error
+		"LookupPackageOfEmptyTrap",   // path resolves to an unbuildable dir -> error
 		"BoundFieldTrap",             // bound type has no decl for Fields
 		"BoundMethodTrap",            // bound type has no index for Methods
 		"HostSigTrap",                // intrinsic without Target has no signature

@@ -12,7 +12,9 @@ package minigo
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"reflect"
 	goruntime "runtime"
@@ -20,6 +22,7 @@ import (
 
 	"github.com/podhmo/minigo/index"
 	xinspect "github.com/podhmo/minigo/inspect"
+	"github.com/podhmo/minigo/resolve"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -56,6 +59,32 @@ func (e *Engine) installInspect() {
 				return nil, argerr("DirOf", "one dir string")
 			}
 			return e.loadDirLenient(context.Background(), str(runtime.Unwrap(args[0])))
+		}),
+		"LookupDirOf": bf("LookupDirOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, argerr("LookupDirOf", "one dir string")
+			}
+			p, err := e.loadDirLenient(context.Background(), str(runtime.Unwrap(args[0])))
+			if err != nil {
+				if lookupMiss(err) {
+					return runtime.NIL, nil
+				}
+				return nil, err
+			}
+			return p, nil
+		}),
+		"LookupPackageOf": bf("LookupPackageOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, argerr("LookupPackageOf", "one path string")
+			}
+			p, err := e.loadPathLenient(context.Background(), str(runtime.Unwrap(args[0])))
+			if err != nil {
+				if lookupMiss(err) {
+					return runtime.NIL, nil
+				}
+				return nil, err
+			}
+			return p, nil
 		}),
 		"FileOf": bf("FileOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
@@ -667,6 +696,17 @@ func stateName(s runtime.State) string {
 		return "failed"
 	}
 	return "unknown"
+}
+
+// lookupMiss classifies a locator failure for the Lookup* soft
+// loaders: a miss names nothing — a filesystem path that does not
+// exist (fs.ErrNotExist) or an import path that resolves to no
+// directory (resolve.ErrUnresolved). A target found but unusable — a
+// dir with no buildable Go files, a parse failure, a policy denial —
+// still surfaces as an error, so "missing" stays distinguishable from
+// "found but broken".
+func lookupMiss(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, resolve.ErrUnresolved)
 }
 
 func boxedSlice[T any](xs []T) *runtime.Slice {

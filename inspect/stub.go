@@ -28,6 +28,20 @@ func SourceOf(path string) *runtime.Package { panic("minigo intrinsic") }
 // DirOf loads a package by directory.
 func DirOf(dir string) *runtime.Package { panic("minigo intrinsic") }
 
+// LookupDirOf is DirOf's non-trapping twin: it answers nil when the
+// path names nothing on disk — no such directory — while a path that
+// exists but yields no package (a non-.go file, a dir with no
+// buildable Go files) or one denied by policy still errors, so
+// "missing" stays distinguishable from "found but unusable".
+func LookupDirOf(dir string) *runtime.Package { panic("minigo intrinsic") }
+
+// LookupPackageOf is PackageOf's non-trapping twin: it answers nil
+// when the import path resolves to no directory — unclaimed by every
+// module — while a located directory that fails to read (no buildable
+// Go files) or a denied path still errors, the same missing-vs-broken
+// split LookupDirOf keeps.
+func LookupPackageOf(path string) *runtime.Package { panic("minigo intrinsic") }
+
 // FileOf loads a single file as a one-file package.
 func FileOf(file string) *runtime.Package { panic("minigo intrinsic") }
 

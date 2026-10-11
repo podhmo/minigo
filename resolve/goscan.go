@@ -42,7 +42,7 @@ func (r *GoScanResolver) Requires() map[string]string { return r.loc.Requires() 
 func (r *GoScanResolver) Locate(ctx context.Context, fromDir, importPath string) (*PackageMeta, error) {
 	dir, err := r.loc.FindPackageDirFrom(fromDir, importPath)
 	if err != nil {
-		return nil, fmt.Errorf("resolving import %q: %w", importPath, err)
+		return nil, fmt.Errorf("resolving import %q: %w", importPath, markUnresolved(err))
 	}
 	if err := r.cfg.CheckDir(dir); err != nil {
 		return nil, err

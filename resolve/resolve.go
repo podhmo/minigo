@@ -5,6 +5,7 @@ package resolve
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/build"
@@ -101,6 +102,29 @@ type PackageMeta struct {
 	// effective -lang still honors its own //go:build version constraint.
 	Lang string
 }
+
+// ErrUnresolved tags a locate miss for errors.Is: the name or path
+// claims nothing — an import path no module resolves, or a directory
+// that does not exist. A target that exists but fails to read (a dir
+// with no buildable Go files, an unreadable file) is NOT a miss and
+// never carries this mark, so soft lookups can tell "nothing there"
+// from "there but broken". The wrapped error keeps the original
+// message.
+var ErrUnresolved = errors.New("resolve: no such package")
+
+// unresolved marks a locate miss for errors.Is without changing the
+// reported message.
+type unresolved struct{ err error }
+
+func (e unresolved) Error() string { return e.err.Error() }
+func (e unresolved) Unwrap() error { return e.err }
+func (e unresolved) Is(target error) bool {
+	return target == ErrUnresolved
+}
+
+// markUnresolved wraps a locate failure as ErrUnresolved; the message
+// is unchanged.
+func markUnresolved(err error) error { return unresolved{err} }
 
 // Resolver locates a package. It must NOT recursively resolve the package's
 // own imports — that is the point of the lazy design.
