@@ -14235,11 +14235,73 @@ func (v *VM) argTypedef(x runtime.Value) *runtime.TypeDef {
 		if _, isErr := xv.V.(error); isErr {
 			return v.builtinTypedef("error")
 		}
-		return v.typeOfValue(x)
+		if td := v.typeOfValue(x); td != nil {
+			return td
+		}
+		// other host values — *strings.Reader, *csv.Reader — carry no
+		// typedef either, so synthesize one from the reflect type: gc
+		// binds T=*strings.Reader at this call site, and the typedef
+		// only has to pin T (spell through DisplayName, satisfy the
+		// constraint check), not type-check members.
+		return v.hostTypedefOf(reflect.TypeOf(xv.V))
 	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
 		return v.funcTypedefOf(x)
 	}
 	return v.typeOfValue(x)
+}
+
+// hostTypedefOf synthesizes a typedef from a host value's reflect type
+// for generic inference. Named types spell `pkg.Name` (predeclared
+// names resolve to the builtin typedef) and carry a HostNew like the
+// bound host typedefs — the method-set walk reads the boxed type's
+// reflect set, so `kind[T io.Reader]` sees *strings.Reader's methods
+// and the constraint check passes. Composites wrap the element so a
+// `*T`/`[]T` host value binds the same-shaped T.
+func (v *VM) hostTypedefOf(rt reflect.Type) *runtime.TypeDef {
+	if rt == nil {
+		return nil
+	}
+	if rt.Name() != "" {
+		if td := v.builtinTypedef(rt.Name()); td != nil {
+			return td
+		}
+		kind := runtime.KindStruct
+		var newFn func() any
+		switch rt.Kind() {
+		case reflect.Interface:
+			kind = runtime.KindInterface
+		case reflect.Slice:
+			kind = runtime.KindSlice
+		case reflect.Map:
+			kind = runtime.KindMap
+		case reflect.Chan:
+			kind = runtime.KindChan
+		case reflect.Func:
+			kind = runtime.KindFunc
+		case reflect.String, reflect.Bool,
+			reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+			reflect.Uintptr, reflect.Float32, reflect.Float64,
+			reflect.Complex64, reflect.Complex128:
+			kind = runtime.KindNamedBasic
+		case reflect.Struct, reflect.Pointer, reflect.Array, reflect.UnsafePointer:
+			// a HostNew box like the bound typedefs' — reflect.New hands
+			// the pointer-shaped host value the method-set walk reads.
+			newFn = func() any { return reflect.New(rt).Interface() }
+		}
+		return &runtime.TypeDef{Name: rt.String(), Kind: kind, HostNew: newFn}
+	}
+	switch rt.Kind() {
+	case reflect.Pointer:
+		return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: v.hostTypedefOf(rt.Elem())}
+	case reflect.Slice:
+		return &runtime.TypeDef{Kind: runtime.KindSlice, Elem: v.hostTypedefOf(rt.Elem())}
+	case reflect.Map:
+		return &runtime.TypeDef{Kind: runtime.KindMap}
+	case reflect.Chan:
+		return &runtime.TypeDef{Kind: runtime.KindChan, Elem: v.hostTypedefOf(rt.Elem())}
+	}
+	return &runtime.TypeDef{Name: rt.String()}
 }
 
 // funcTypedefOf is the func-value typedef shared by argTypedef and
