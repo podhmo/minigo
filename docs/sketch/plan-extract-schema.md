@@ -137,23 +137,26 @@ a directory, not compiling anything:
 $ extract-schema -plugin ./plugins/time -plugin ./plugins/uuid ./app User
 ```
 
-Each plugin package exposes a single entry point the *script* calls
-inside the same VM — `Configure(c *extschema.Config)` — where
-`extschema` is a small shared package (the counterpart of gen-sync's
-`scanx/`) holding the registrar type:
+A plugin's entry point is **any exported func whose signature is
+`func(c *extschema.Config)`** — detected by *shape*, not name
+(`plugins/time` calls it `Install`, `plugins/desc` calls it
+`Configure`; both work). `extschema` is a small shared package (the
+counterpart of gen-sync's `scanx/`) holding the registrar type:
 
 ```go
 // plugins/time/schema.go — package timeschema
-func Configure(c *extschema.Config) {
+func Install(c *extschema.Config) {
     c.Override("time.Time", map[string]any{"type": "string", "format": "date-time"})
 }
 ```
 
-The walk loops the plugin dirs, pulls `Configure` out with
-`inspect.Value`, asserts `func(*extschema.Config)`, and calls it — a
-normal in-VM call, no respawn, no host-side merge. The registrar is a
-*named* API surface: no untyped map, no magic keys, and room for the
-higher grades (naming/predicate hooks) as more methods.
+The walk loops the plugin dirs, scans `inspect.Decls` for funcs with
+no receiver and one param resolving (via `UnRef` + `Resolve`) to
+`extschema.Config`, pulls each out with `inspect.Value`, asserts
+`func(*extschema.Config)`, and calls it — a normal in-VM call, no
+respawn, no host-side merge. The registrar is a *named* API surface:
+no untyped map, no magic keys, and room for the higher grades
+(naming/predicate hooks) as more methods.
 
 Current methods:
 
@@ -187,9 +190,11 @@ filters).
 ### Interface shape — decided
 
 The registrar won: untyped `Config() map[string]any` (and magic keys)
-proved unfriendly — the plugin contract is `Configure(c
-*extschema.Config)` with `extschema/` as the shared stub package (the
-same answer `scanx/` gives gen-sync). It works because source-package
+proved unfriendly — the plugin contract is *shape*-based: any exported
+`func(c *extschema.Config)`, `extschema/` being the shared stub
+package (the same answer `scanx/` gives gen-sync). Signature
+detection uses `inspect.Signature(d)` + `UnRef` + `Resolve` —
+no blessed name at all. It works because source-package
 imports are interned across `inspect.DirOf`-loaded plugin roots; the
 remaining rough edge is only that `*inspect.Field`/`Decl` can't be
 named in signatures (they're not interned/registered — hooks take

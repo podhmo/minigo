@@ -131,33 +131,65 @@ type generator struct {
 	nameOwner map[string]string // def name -> symbol key (collision check)
 }
 
-// loadPlugins loops the plugin dirs and calls each package's
-// Configure(c *extschema.Config) — the single plugin entry point.
-// Plugins configure the shared registrar in this same VM via
-// inspect.Value; a dir without Configure is a warning, not a failure.
+// loadPlugins loops the plugin dirs and invokes every exported func
+// whose shape is `func(c *extschema.Config)` — detection is by
+// signature, not name, so a plugin's entry point is whatever it calls
+// itself. All calls happen in this same VM via inspect.Value; a dir
+// with no matching func is a warning, not a failure.
 func (g *generator) loadPlugins(dirs []string) error {
 	for _, dir := range dirs {
 		pp := inspect.DirOf(dir)
 		if pp == nil {
 			return fmt.Errorf("extract-schema: could not load plugin %q", dir)
 		}
-		// inspect.Symbol traps on a miss, so scan Decls instead.
-		if findFunc(inspect.Decls(pp), "Configure") == nil {
-			warn("plugin %s exposes no Configure()", dir)
-			continue
+		hooked := false
+		for _, d := range configurers(inspect.Decls(pp)) {
+			inspect.Value(pp, d.Name).(func(*extschema.Config))(g.cfg)
+			hooked = true
 		}
-		inspect.Value(pp, "Configure").(func(*extschema.Config))(g.cfg)
+		if !hooked {
+			warn("plugin %s exposes no func(*extschema.Config)", dir)
+		}
 	}
 	return nil
 }
 
-func findFunc(ds []*inspect.Decl, name string) *inspect.Decl {
+// configurers lists the exported funcs shaped like plugin entry
+// points: plain functions (no receiver) taking exactly one parameter
+// of type *extschema.Config.
+func configurers(ds []*inspect.Decl) []*inspect.Decl {
+	var out []*inspect.Decl
 	for _, d := range ds {
-		if d.Name == name && inspect.Kind(d) == "func" {
-			return d
+		if inspect.Kind(d) != "func" || !isExported(d.Name) {
+			continue
+		}
+		sig := inspect.Signature(d)
+		if sig == nil || sig.Recv != nil {
+			continue
+		}
+		ps := sig.ParamFields()
+		if len(ps) != 1 {
+			continue
+		}
+		// The param spells *extschema.Config: unwrap the pointer,
+		// resolve to the decl, and compare package path + name rather
+		// than the spelling — a renamed import or a `Config` spelled
+		// differently still counts.
+		pt := ps[0].Type
+		if pt != nil && pt.Kind == "StarExpr" {
+			rd := inspect.Resolve(inspect.UnRef(pt))
+			if rd != nil && rd.Name == "Config" && inspect.Path(rd.Package) == "github.com/podhmo/minigo/examples/extract-schema/extschema" {
+				out = append(out, d)
+			}
 		}
 	}
-	return nil
+	return out
+}
+
+// isExported reports whether a name is exported (ASCII-cheap — symbol
+// names in plugin entry points are).
+func isExported(name string) bool {
+	return name != "" && name[0] >= 'A' && name[0] <= 'Z'
 }
 
 // defOf registers d as a $defs entry and returns its def name.

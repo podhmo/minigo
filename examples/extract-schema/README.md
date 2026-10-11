@@ -18,7 +18,7 @@ extract-schema [flags] <dir|pkg> [Type]
   `$defs` (OpenAPI `components.schemas` style), no root.
 
 Flags: `-pkg` (target is an import path), `-plugin <dir>` (repeatable;
-a script package exposing `Configure(c *extschema.Config)` — see
+a script package whose exported `func(*extschema.Config)` shapes are the entry points — see
 Plugins below), `-stdlib leaf|walk` (default `leaf`: standard-library types
 become leaf stubs instead of being walked), `-loose`
 (`additionalProperties`), `-title`, `-desc`.
@@ -35,10 +35,11 @@ go run ./ -stdlib walk ./app        # walk into time.Time's source
 
 ## Plugins
 
-`-plugin <dir>` (repeatable) names a script package exposing
-`Configure(c *extschema.Config)` — the shared registrar lives in
-`extschema/` (the same role gen-sync's `scanx/` plays). The walk
-calls each plugin's `Configure` inside the same VM:
+`-plugin <dir>` (repeatable) names a script package; its entry point
+is any exported `func(c *extschema.Config)` — detected by signature
+shape, not name. The shared registrar lives in `extschema/` (the same
+role gen-sync's `scanx/` plays). The walk calls each matching func
+inside the same VM:
 
 - `c.Override(symbolID, fragment)` — `symbolID -> schema fragment`
   consulted before the default named-type walk (`time.Time` -> RFC

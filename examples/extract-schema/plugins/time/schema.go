@@ -6,10 +6,10 @@ package timeschema
 
 import "github.com/podhmo/minigo/examples/extract-schema/extschema"
 
-// Configure registers this plugin's overrides on the shared config —
+// Install registers this plugin's overrides on the shared config —
 // symbolID -> schema-fragment consulted before the default named-type
 // walk. A plugin may also install desc filters (see plugins/desc).
-func Configure(c *extschema.Config) {
+func Install(c *extschema.Config) {
 	c.Override("time.Time", map[string]any{
 		"type":        "string",
 		"format":      "date-time",
