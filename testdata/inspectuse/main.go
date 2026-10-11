@@ -1989,3 +1989,67 @@ func TypeParamMark() string {
 	}
 	return "ok"
 }
+
+// ViewTypeAsserts: the inspect view types are named in the bound map,
+// so x.(*inspect.Field) and func(*inspect.Field, ...) asserts match
+// the *xinspect.* boxes the intrinsics return — plugin hooks can name
+// them instead of working through any + reflect.
+func ViewTypeAsserts() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	var x any = inspect.Fields(inspect.Symbol(p, "User"))[0]
+	f, ok := x.(*inspect.Field)
+	if !ok {
+		return "field assert failed"
+	}
+	if f.Names[0] != "Name" {
+		return "bad field name: " + f.Names[0]
+	}
+	// assignment conversion to a declared *inspect.Field slot.
+	var g *inspect.Field = inspect.Fields(inspect.Symbol(p, "User"))[1]
+	if g.Names[0] != "Age" {
+		return "bad second field: " + g.Names[0]
+	}
+	// member access and calls dispatch on the asserted view value.
+	if f.Type.CanonicalName() != "string" {
+		return "bad canonical: " + f.Type.CanonicalName()
+	}
+	// a func-typed assert on a script closure naming *inspect.Field.
+	var h any = func(fl *inspect.Field, s string) string { return fl.Names[0] + ":" + s }
+	gf, ok := h.(func(*inspect.Field, string) string)
+	if !ok {
+		return "func assert failed"
+	}
+	if gf(f, "x") != "Name:x" {
+		return "func assert bound wrong"
+	}
+	// the rest of the view types spell in asserts too.
+	if _, ok := inspect.Symbol(p, "User").(*inspect.Decl); !ok {
+		return "decl assert failed"
+	}
+	if _, ok := any(f.Type).(*inspect.TypeExpr); !ok {
+		return "typeexpr assert failed"
+	}
+	if _, ok := any(inspect.Signature(inspect.Symbol(p, "Reduce"))).(*inspect.Sig); !ok {
+		return "sig assert failed"
+	}
+	if _, ok := any(f.Pos).(*inspect.Position); !ok {
+		return "position assert failed"
+	}
+	if _, ok := any(inspect.Body(inspect.Symbol(p, "Reduce"))).(*inspect.Node); !ok {
+		return "node assert failed"
+	}
+	if _, ok := any(inspect.MethodSet(inspect.Symbol(p, "User"))[0]).(*inspect.Method); !ok {
+		return "method assert failed"
+	}
+	fv := inspect.Files(p)[0]
+	if _, ok := fv.(*inspect.File); !ok {
+		return "file assert failed"
+	}
+	if _, ok := any(inspect.Imports(fv)[0]).(*inspect.Import); !ok {
+		return "import assert failed"
+	}
+	if _, ok := any(inspect.Comments(fv)[0]).(*inspect.Comment); !ok {
+		return "comment assert failed"
+	}
+	return "ok"
+}
