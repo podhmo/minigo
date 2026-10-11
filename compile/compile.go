@@ -2223,7 +2223,7 @@ func (c *compiler) selPkgMemberOpTyp(x *ast.SelectorExpr, ref *runtime.ImportRef
 		return opTyp{}
 	}
 	if uc, ok := v.(*runtime.UConst); ok && uc.V != nil {
-		return opTyp{untyped: true, dte: constKindDte(uc.V.Kind())}
+		return opTyp{untyped: true, dte: constKindDte(uc)}
 	}
 	return opTyp{}
 }
@@ -2242,22 +2242,18 @@ func qualTypSel(p *runtime.Package, td *runtime.TypeDef) string {
 	return ""
 }
 
-// constKindDte maps a constant's kind to the default type it binds —
-// the same defaultLitTyp table a literal operand uses.
-func constKindDte(k constant.Kind) ast.Expr {
-	switch k {
-	case constant.Int:
-		return &ast.Ident{Name: "int"}
-	case constant.Float:
-		return &ast.Ident{Name: "float64"}
-	case constant.Complex:
-		return &ast.Ident{Name: "complex128"}
-	case constant.Bool:
-		return &ast.Ident{Name: "bool"}
-	case constant.String:
-		return &ast.Ident{Name: "string"}
+// constKindDte maps a constant's default type to the ident it binds —
+// reusing UConst.DefaultName's mapping (the same table defaultLitTyp
+// applies to literals) so a rune-kind const binds rune, not int.
+func constKindDte(uc *runtime.UConst) ast.Expr {
+	switch name := uc.DefaultName(); name {
+	case "int32": // an untyped rune's default spells rune, like a CHAR literal
+		return &ast.Ident{Name: "rune"}
+	case "unknown":
+		return nil
+	default:
+		return &ast.Ident{Name: name}
 	}
-	return nil
 }
 
 // callOpTyp resolves a call operand's static type: conversions spell
