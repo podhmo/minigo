@@ -45,3 +45,16 @@ func Shared(m map[string]any) int {
 }
 
 func main() {}
+
+// Composite-element arg shapes: a host []map[string]any adapts to the
+// same-structured param whichever way the element interface spells
+// (any / interface{} / interface {}), and each element arrives as a
+// real map — `rs[0]["k"]` indexes without a detour.
+func MapSliceGet(rs []map[string]any) int          { return rs[0]["k"].(int) }
+func MapSliceGetI(rs []map[string]interface{}) int { return rs[0]["k"].(int) }
+func MapSliceGetS(rs []map[string]interface{}) int { return rs[0]["k"].(int) }
+func MapSliceSum(rs []map[string]any) int          { return rs[0]["a"].(int) + rs[1]["b"].(int) }
+func AnyElemGet(rs []any) int                      { return rs[0].(map[string]any)["k"].(int) }
+func AnyIfaceElem(v interface{}) int               { return v.(map[string]any)["k"].(int) }
+func DeepNest(m map[string]any) int                { return m["m"].([]map[string]any)[0]["k"].(int) }
+func MapSliceSet(rs []map[string]any) int          { rs[0]["k"] = 9; return rs[0]["k"].(int) }
