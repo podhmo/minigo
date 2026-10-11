@@ -189,31 +189,61 @@ filters).
 
 ### Interface shape — decided
 
-The registrar won: untyped `Config() map[string]any` (and magic keys)
-proved unfriendly — the plugin contract is *shape*-based: any exported
-`func(c *extschema.Config)`, `extschema/` being the shared stub
-package (the same answer `scanx/` gives gen-sync). Signature
-detection uses `inspect.Signature(d)` + `UnRef` + `Resolve` —
-no blessed name at all. It works because source-package
-imports are interned across `inspect.DirOf`-loaded plugin roots; the
-remaining rough edge is only that `*inspect.Field`/`Decl` can't be
-named in signatures (they're not interned/registered — hooks take
-`any` and narrow via reflect).
+The contract is *shape*-based: any exported `func(c *extschema.Config)`
+is an entry point, detected via `inspect.Signature(d)` +
+`UnRef` + `Resolve` — no blessed name at all. `extschema/` is the
+shared stub package (the same answer `scanx/` gives gen-sync). It
+works because source-package imports are interned across
+`inspect.DirOf`-loaded plugin roots; the remaining rough edge is only
+that `*inspect.Field`/`Decl` can't be named in signatures (they're not
+interned/registered — hooks take `any` and narrow via reflect).
 
-## Interface shape — under consideration
+### Rejected alternatives — the contract's history
 
-The built contract is the map `Config() map[string]any` above. An
-alternative being weighed: the tool's script package exposes a *stub
-type* (a registrar, e.g. `*Config` with `Register(symbolID string,
-fragment map[string]any)` and room for the grade-B/C hooks as methods),
-the host passes an instance to a plugin entry point
-(`func Configure(c *Config)`), and the plugin *configures* rather
-than *returns*. That makes the contract a named API surface instead of
-an untyped map literal — self-documenting in `go doc`, and the natural
-seat for predicate/naming hooks later. The cost: plugin and tool must
-share the stub type's package (the same shipping-unit question
-`scanx/` already answers for gen-sync). Undecided; the map stays
-until one of the higher grades lands and forces the shape.
+Each earlier shape was rejected (or absorbed); the reasons are the
+design record.
+
+- **Data-return `Overrides() map[string]any`** — the first cut: the
+  plugin *returns* a static table and the host merges it. Rejected in
+  favour of *configuring*: returning data gave the caller nothing to
+  hang hooks on (grade B/C need callbacks, not fragments), and each
+  return needed host-side deep-unwrapping. It survives *inside* the
+  registrar as `c.Override(symbolID, fragment)` — the static-table
+  grade A is still all most plugins need.
+- **String-spelled rules `DescRules() []string`** — kept filters as
+  data (`"strip-symbol-prefix"`, `"replace:o->n"`) after structured
+  tables (`[]map[string]any`) hit the arg-boundary boxing/spelling
+  traps. Rejected: an interpreter can call *functions* — string
+  incantations were a workaround-shaped API, and filters genuinely
+  need code plus the field/decl *reference* (Names, Tag, Pos), which
+  text rules could never carry. The premise that drove it — "you can't
+  pass structured/higher-order values across the boundary" — was
+  half-wrong: values fail, *functions* pass and call fine in-VM.
+- **Unified `Config() map[string]any`** — folded overrides and hooks
+  into one returned map so the walk became a plain loop. Rejected:
+  an untyped map with required magic keys is user-hostile — no
+  signature to discover, nothing to document, typos silently ignored.
+  It also rested on the premise that *typed* cross-package contracts
+  would trap the way `func(*inspect.Field)` did; interning of source
+  packages disproved that for non-stub types, removing the only
+  reason to stay untyped.
+- **Blessed name `Configure(c *extschema.Config)`** — the registrar
+  itself stayed, but name-detection was dropped for shape-detection:
+  a fixed name is an arbitrary coupling (why `Configure` and not
+  `Install`? — `plugins/time` now uses the latter to prove it), while
+  the signature already says everything the loader needs. Rejected
+  in favour of scanning `Decls` for the `func(*extschema.Config)`
+  shape — several entry funcs may coexist, and none needs a
+  conventional name.
+
+One premise worth recording on its own: early on, a typed contract was
+assumed impossible *by analogy* — `func(*inspect.Field)` asserts fail
+across plugin roots, so it was inferred that all named param types
+would. That analogy held for `inspect` stub views only; source
+packages are interned, so `*extschema.Config` — precisely the type
+plugins need — asserts cleanly. The untyped-map detours existed
+because of this wrong premise; correcting it is what let the contract
+become typed and nameless.
 
 Extension grades, in order; the spike builds the first:
 
