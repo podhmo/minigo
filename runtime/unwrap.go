@@ -32,28 +32,19 @@ import "fmt"
 // intact instead of recursing until the host process overflows — the
 // same answer the deepHost marshal gives.
 func DeepUnwrap(v Value) any {
-	return deepUnwrap(v, newUnwalk())
+	return deepUnwrap(v, NewWalk())
 }
 
-// unwalk carries the guards one DeepUnwrap walk shares: seen folds a
-// container back to the output already being built for it, and peeled
-// stops a reference chain that loops back on itself (a cell handed its
-// own referrer).
-type unwalk struct {
-	seen   map[Value]any
-	peeled map[Value]struct{}
-}
-
-func newUnwalk() *unwalk {
-	return &unwalk{seen: map[Value]any{}, peeled: map[Value]struct{}{}}
-}
-
-// deepUnwrap is DeepUnwrap's worker. Containers register their output
-// in seen before their elements are walked, so a repeat visit returns
-// the partially built container — which completes by the time the
-// top-level caller finishes, and which shared (non-cyclic) subtrees
-// fold to as well, preserving the input's aliasing.
-func deepUnwrap(v Value, w *unwalk) any {
+// deepUnwrap is DeepUnwrap's worker. The Slice/Map arms run through
+// the shared Walk: a container registers its output in seen before
+// its elements are walked, so a repeat visit returns the partially
+// built container — which completes by the time the top-level caller
+// finishes, and which shared (non-cyclic) subtrees fold to as well,
+// preserving the input's aliasing.
+func deepUnwrap(v Value, w *Walk) any {
+	if out, ok := w.Container(v, func(e Value) any { return deepUnwrap(e, w) }, UnwrapKey); ok {
+		return out
+	}
 	switch x := v.(type) {
 	case nil, Nil:
 		return nil
@@ -66,54 +57,24 @@ func deepUnwrap(v Value, w *unwalk) any {
 	case *Named:
 		return deepUnwrap(x.V, w)
 	case *Cell, *FieldRef, *IndexRef, *DerefRef:
-		if _, dup := w.peeled[v]; dup {
+		if !w.Peel(v) {
 			return v
 		}
-		w.peeled[v] = struct{}{}
 		d, ok := Deref(v)
 		if !ok {
 			return v
 		}
 		return deepUnwrap(d, w)
 	case *Tuple:
-		if old, ok := w.seen[x]; ok {
+		if old, ok := w.Seen(x); ok {
 			return old
 		}
 		xs := make([]any, len(x.Elems))
-		w.seen[x] = xs
+		w.Register(x, xs)
 		for i, e := range x.Elems {
 			xs[i] = deepUnwrap(e, w)
 		}
 		return xs
-	case *Slice:
-		if old, ok := w.seen[x]; ok {
-			return old
-		}
-		n := int(x.Len())
-		xs := make([]any, n)
-		w.seen[x] = xs
-		if x.Virtual() {
-			zero := deepUnwrap(x.Zero, w)
-			for i := range xs {
-				xs[i] = zero
-			}
-			return xs
-		}
-		for i, e := range x.Elems {
-			xs[i] = deepUnwrap(e, w)
-		}
-		return xs
-	case *Map:
-		if old, ok := w.seen[x]; ok {
-			return old
-		}
-		m := make(map[any]any, x.Len())
-		w.seen[x] = m
-		for i := 0; i < x.Len(); i++ {
-			k, e := x.At(i)
-			m[deepUnwrapKey(k)] = deepUnwrap(e, w)
-		}
-		return m
 	case *Spread:
 		return deepUnwrap(x.S, w)
 	case *GoValue:
@@ -123,47 +84,6 @@ func deepUnwrap(v Value, w *unwalk) any {
 			return deepUnwrap(nv, w)
 		}
 		return x
-	}
-	return v
-}
-
-// deepUnwrapKey unwraps a map key through only the layers that keep
-// the result comparable — Named/ref peels, GoValue's host value,
-// UConst's native scalar — and leaves script containers boxed. A
-// script array key ([1]int{1}) survives as its *Slice box:
-// pointer-comparable, where expanding it to []any panics on "hash of
-// unhashable type" — the host answer stays a Go map that mirrors the
-// script one's cardinality.
-func deepUnwrapKey(v Value) any {
-	peeled := map[Value]struct{}{}
-	for {
-		switch x := v.(type) {
-		case *Named:
-			v = x.V
-			continue
-		case *Cell, *FieldRef, *IndexRef, *DerefRef:
-			if _, dup := peeled[v]; dup {
-				return v
-			}
-			peeled[v] = struct{}{}
-			d, ok := Deref(v)
-			if !ok {
-				return v
-			}
-			v = d
-		case *GoValue:
-			return x.V
-		case *UConst:
-			if nv, err := UConstNative(x); err == nil {
-				return nv
-			}
-			return x
-		}
-		break
-	}
-	switch v.(type) {
-	case nil, Nil, *IfaceNil, *TypedNil:
-		return nil
 	}
 	return v
 }

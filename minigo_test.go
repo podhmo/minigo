@@ -392,8 +392,10 @@ func TestStdlibIntrinsics(t *testing.T) {
 		fn   string
 		want runtime.Value
 	}{
-		{"Sprintf", "hi 7"},        // real fmt.Sprintf without GOROOT parse
-		{"StrconvAtoi", int64(42)}, // (val, err) tuple
+		{"Sprintf", "hi 7"},                         // real fmt.Sprintf without GOROOT parse
+		{"SprintfCycle", "map[string]interface {}"}, // cycle folds, no overflow
+		{"SprintfArrKey", "map[[1]int]string"},      // array key stays boxed
+		{"StrconvAtoi", int64(42)},                  // (val, err) tuple
 		{"StringsJoin", "a,b,c"},
 		{"ErrorsNew", "oops"},
 		{"SortIntsInPlace", int64(123)}, // sort mutates the slice
