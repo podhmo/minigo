@@ -1721,3 +1721,34 @@ func BodyBoundTrap() string {
 	inspect.Body(inspect.Symbol(inspect.PackageOf("strings"), "Builder"))
 	return "swallowed"
 }
+
+// BodyScope: Expr inside a body counts the func's own bindings — a
+// param named after the imported package makes `strings.TrimSpace` a
+// member select on the local, so SymbolID reports nil rather than the
+// package member. WalkMe's unshadowed `strings.TrimSpace` still
+// resolves as a control.
+func BodyScope() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	b := inspect.Body(inspect.Symbol(p, "ShadowMe"))
+	ret := inspect.Nodes(b)[0]
+	if ret.Kind != "ReturnStmt" {
+		return "bad ret: " + ret.Kind
+	}
+	call := inspect.Nodes(ret)[0] // Results[0] = CallExpr
+	fun := inspect.Nodes(call)[0] // Fun = SelectorExpr strings.TrimSpace
+	if fun.Kind != "SelectorExpr" {
+		return "bad sel: " + fun.Kind
+	}
+	te := inspect.Expr(fun)
+	if te == nil {
+		return "no expr"
+	}
+	if sid := inspect.SymbolID(te); sid != nil {
+		return "shadowed select resolved to " + sid.PackagePath + "." + sid.Name
+	}
+	x := inspect.Nodes(fun)[0] // X = Ident strings
+	if sid := inspect.SymbolID(inspect.Expr(x)); sid != nil {
+		return "shadowed ident resolved to " + sid.PackagePath + "." + sid.Name
+	}
+	return "ok"
+}

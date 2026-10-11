@@ -420,3 +420,53 @@ func rolesOf(ns []*xinspect.Node) []string {
 	}
 	return out
 }
+
+// A name the func binds itself (param, :=, ...) is "possibly local",
+// so Expr-fed SymbolID refuses to attribute `strings.TrimSpace` to
+// the imported package when `strings` is a param — under-resolution,
+// never misattribution.
+func TestBodyScope(t *testing.T) {
+	e := newEngine(t)
+	ctx := context.Background()
+	p, err := e.Package(ctx, "./testdata/inspectpkg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := p.Index.Funcs["ShadowMe"]
+	if d == nil {
+		t.Fatal("no ShadowMe decl")
+	}
+	root, err := xinspect.BodyOf(xinspect.NewDecl(p, d))
+	if err != nil {
+		t.Fatalf("BodyOf: %v", err)
+	}
+	ret := xinspect.NodesOf(root)[0] // ReturnStmt
+	call := xinspect.NodesOf(ret)[0] // Results -> CallExpr
+	fun := xinspect.NodesOf(call)[0] // Fun -> SelectorExpr
+	te := xinspect.ExprOf(fun)
+	if te == nil {
+		t.Fatal("ExprOf(sel) = nil")
+	}
+	if sid, ok := te.SymbolID(); ok {
+		t.Errorf("shadowed select resolved to %v", sid)
+	}
+	x := xinspect.ExprOf(xinspect.NodesOf(fun)[0]) // X -> Ident strings
+	if sid, ok := x.SymbolID(); ok {
+		t.Errorf("shadowed ident resolved to %v", sid)
+	}
+
+	// control: WalkMe's unshadowed strings.TrimSpace still resolves —
+	// it is the arg of helper(strings.TrimSpace("c")) at stmt 2.
+	wd := p.Index.Funcs["WalkMe"]
+	wroot, err := xinspect.BodyOf(xinspect.NewDecl(p, wd))
+	if err != nil {
+		t.Fatalf("BodyOf WalkMe: %v", err)
+	}
+	wcall := xinspect.NodesOf(xinspect.NodesOf(wroot)[2])[0] // helper(...)
+	inner := xinspect.NodesOf(wcall)[1]                     // Args -> CallExpr
+	wfun := xinspect.ExprOf(xinspect.NodesOf(inner)[0])     // Fun -> SelectorExpr
+	sid, ok := wfun.SymbolID()
+	if !ok || sid.PackagePath != "strings" || sid.Name != "TrimSpace" {
+		t.Errorf("unshadowed select = %v, %v", sid, ok)
+	}
+}

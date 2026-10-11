@@ -511,3 +511,10 @@ func WalkMe(m *strings.Builder) {
 // NoBody is a bodyless func decl — parseable but uncompilable; Body
 // reports nil for it.
 func NoBody()
+
+// ShadowMe binds a param named after the imported package, so the
+// body's `strings.TrimSpace` is a method call on the local, not the
+// package member — Expr-fed SymbolID must report not-ok for it.
+func ShadowMe(strings string) string {
+	return strings.TrimSpace(" x ")
+}

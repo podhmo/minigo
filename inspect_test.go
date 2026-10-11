@@ -63,6 +63,7 @@ func TestInspect(t *testing.T) {
 		"ASTWalk",
 		"BodyWalk",
 		"BodyNil",
+		"BodyScope",
 		// lenient locators: FileOf/PackageOf build like DirOf — a target
 		// that cannot compile still enumerates its decls.
 		"FileOfDup",

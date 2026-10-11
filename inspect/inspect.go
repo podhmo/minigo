@@ -242,10 +242,11 @@ type TypeExpr struct {
 	Text string // printer spelling of the declaration
 	Kind string // ast node name: "Ident", "SelectorExpr", "StarExpr", ...
 
-	expr ast.Expr
-	file *syntax.File
-	pkg  *runtime.Package
-	ht   reflect.Type // host-backed alternative (BuiltinFunc.Target sigs)
+	expr   ast.Expr
+	file   *syntax.File
+	pkg    *runtime.Package
+	locals map[string]bool // names bound inside the enclosing func, when the expr was anchored via Expr — a hit means "possibly local", so SymbolID refuses package attribution rather than misattributing a method call to an import
+	ht     reflect.Type    // host-backed alternative (BuiltinFunc.Target sigs)
 }
 
 // NewTypeExpr builds a syntax-backed type expression.
@@ -1147,6 +1148,15 @@ func IsAliasOf(s *Decl) (bool, error) {
 // (member dispatch sees only exported fields).
 func (te *TypeExpr) Expr() ast.Expr { return te.expr }
 
+// wrap builds a TypeExpr for a sub-expression in the same context —
+// file, package, and the enclosing func's local-name set when the
+// expr was anchored inside a body.
+func (te *TypeExpr) wrap(e ast.Expr) *TypeExpr {
+	nt := NewTypeExpr(e, te.file, te.pkg)
+	nt.locals = te.locals
+	return nt
+}
+
 // Children drills into a composite type expression: []T -> T,
 // map[K]V -> K then V, *T -> T, func(A) B -> A then B,
 // F[A] -> F then A (the generic's base leads the arguments).
@@ -1154,7 +1164,7 @@ func (te *TypeExpr) Children() []*TypeExpr {
 	if te.ht != nil {
 		return te.hostChildren()
 	}
-	wrap := func(e ast.Expr) *TypeExpr { return NewTypeExpr(e, te.file, te.pkg) }
+	wrap := te.wrap
 	var out []*TypeExpr
 	switch e := te.expr.(type) {
 	case *ast.StarExpr:
@@ -1282,7 +1292,7 @@ func (te *TypeExpr) Unref() *TypeExpr {
 		return te
 	}
 	if e, ok := te.expr.(*ast.StarExpr); ok {
-		return NewTypeExpr(e.X, te.file, te.pkg)
+		return te.wrap(e.X)
 	}
 	return te
 }
@@ -1353,6 +1363,9 @@ func (te *TypeExpr) SymbolID() (runtime.SymbolID, bool) {
 	}
 	switch e := te.expr.(type) {
 	case *ast.Ident:
+		if te.locals[e.Name] {
+			return runtime.SymbolID{}, false
+		}
 		if te.pkg != nil && te.pkg.Index != nil {
 			if _, ok := te.pkg.Index.Types[e.Name]; ok {
 				return runtime.SymbolID{PackagePath: te.pkg.Path, Name: e.Name}, true
@@ -1367,7 +1380,7 @@ func (te *TypeExpr) SymbolID() (runtime.SymbolID, bool) {
 		return runtime.SymbolID{PackagePath: BuiltinPackagePath, Name: e.Name}, true
 	case *ast.SelectorExpr:
 		x, ok := e.X.(*ast.Ident)
-		if !ok || te.file == nil {
+		if !ok || te.file == nil || te.locals[x.Name] {
 			return runtime.SymbolID{}, false
 		}
 		for _, imp := range te.file.Imports {
@@ -1469,7 +1482,7 @@ func (te *TypeExpr) Sub(e ast.Expr) *TypeExpr {
 	if e == nil {
 		return nil
 	}
-	return NewTypeExpr(e, te.file, te.pkg)
+	return te.wrap(e)
 }
 
 // sameArrayLen compares two array-length expressions: both nil is a
@@ -1701,9 +1714,10 @@ type Node struct {
 	Role   string    // the field name it fills in its parent ("List", "Fun", "Cond"); "" on the Body root
 	Pos    *Position // position of the node
 
-	node ast.Node
-	file *syntax.File
-	pkg  *runtime.Package
+	node   ast.Node
+	file   *syntax.File
+	pkg    *runtime.Package
+	locals map[string]bool // names the enclosing func binds — shared by every node under the same Body root
 }
 
 // NewNode builds a body-node view. role names the field the node
@@ -1772,8 +1786,11 @@ func nodeDetail(n ast.Node) string {
 // BodyOf returns a func or method decl's body as a Node — the root
 // block (Kind "BlockStmt") whose children are the body's statements,
 // so scripts can walk statements and expressions a signature stops
-// short of. A func decl without a body reports nil; host symbols and
-// non-func decls report an error.
+// short of. The root also records the names the func binds (see
+// localNames), which Expr hands to TypeExpr so a local shadowing an
+// import cannot be misattributed to the package. A func decl without
+// a body reports nil; host symbols and non-func decls report an
+// error.
 func BodyOf(s *Decl) (*Node, error) {
 	if s.decl == nil {
 		return nil, fmt.Errorf("inspect.Body: host symbol %s has no declaration", s.Name)
@@ -1784,7 +1801,67 @@ func BodyOf(s *Decl) (*Node, error) {
 	if s.decl.Func.Body == nil {
 		return nil, nil
 	}
-	return NewNode(s.decl.Func.Body, "", s.file, s.Package), nil
+	n := NewNode(s.decl.Func.Body, "", s.file, s.Package)
+	n.locals = localNames(s.decl.Func)
+	return n, nil
+}
+
+// localNames collects every identifier a func decl binds in its own
+// scopes — receiver, params, named results, := names, range and
+// type-switch bindings, and funclit params — anywhere in the body.
+// The model is deliberately shallow: a name from a sibling or outer
+// scope counts too, so membership means "possibly local", never the
+// other way. Expr-fed SymbolID refuses package attribution on those
+// names, trading under-resolution for never mistaking a method call
+// for an import member.
+func localNames(fn *ast.FuncDecl) map[string]bool {
+	if fn == nil {
+		return nil
+	}
+	names := map[string]bool{}
+	add := func(fl *ast.FieldList) {
+		if fl == nil {
+			return
+		}
+		for _, f := range fl.List {
+			for _, n := range f.Names {
+				names[n.Name] = true
+			}
+		}
+	}
+	add(fn.Recv)
+	if fn.Type != nil {
+		add(fn.Type.Params)
+		add(fn.Type.Results)
+	}
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.AssignStmt:
+			if x.Tok == token.DEFINE {
+				for _, lhs := range x.Lhs {
+					if id, ok := lhs.(*ast.Ident); ok {
+						names[id.Name] = true
+					}
+				}
+			}
+		case *ast.RangeStmt:
+			if x.Tok == token.DEFINE {
+				if id, ok := x.Key.(*ast.Ident); ok {
+					names[id.Name] = true
+				}
+				if id, ok := x.Value.(*ast.Ident); ok {
+					names[id.Name] = true
+				}
+			}
+		case *ast.FuncLit:
+			if x.Type != nil {
+				add(x.Type.Params)
+				add(x.Type.Results)
+			}
+		}
+		return true
+	})
+	return names
 }
 
 // NodesOf returns a node's children in source order — every
@@ -1820,19 +1897,27 @@ func NodesOf(n *Node) []*Node {
 		fv := rv.Field(i)
 		if fv.Type().Implements(nodeT) {
 			if cn, ok := fv.Interface().(ast.Node); ok && !isNilNode(cn) {
-				out = append(out, NewNode(cn, fd.Name, n.file, n.pkg))
+				out = append(out, n.child(cn, fd.Name))
 			}
 			continue
 		}
 		if fv.Kind() == reflect.Slice {
 			for j := 0; j < fv.Len(); j++ {
 				if cn, ok := fv.Index(j).Interface().(ast.Node); ok && !isNilNode(cn) {
-					out = append(out, NewNode(cn, fd.Name, n.file, n.pkg))
+					out = append(out, n.child(cn, fd.Name))
 				}
 			}
 		}
 	}
 	return out
+}
+
+// child builds one descendant view in the same context — file,
+// package, and the enclosing func's local-name set.
+func (n *Node) child(cn ast.Node, role string) *Node {
+	c := NewNode(cn, role, n.file, n.pkg)
+	c.locals = n.locals
+	return c
 }
 
 // isNilNode reports whether a node-typed value is absent — a nil
@@ -1851,7 +1936,10 @@ func isNilNode(n ast.Node) bool {
 // machinery applies to the names it mentions: SymbolID resolves
 // `pkg.Name` through the file's import table (and a package-local
 // name to the package), and Children/UnWrap navigate the spelling.
-// Non-expression nodes report nil.
+// The anchor also carries the enclosing func's bound names, so a
+// local shadowing an import or package name reports not-ok rather
+// than being misattributed to the package. Non-expression nodes
+// report nil.
 func ExprOf(n *Node) *TypeExpr {
 	if n == nil || n.node == nil {
 		return nil
@@ -1860,7 +1948,9 @@ func ExprOf(n *Node) *TypeExpr {
 	if !ok {
 		return nil
 	}
-	return NewTypeExpr(e, n.file, n.pkg)
+	te := NewTypeExpr(e, n.file, n.pkg)
+	te.locals = n.locals
+	return te
 }
 
 // ASTNode exposes the underlying AST node — engine-only, the same
