@@ -90,4 +90,29 @@ type Commented struct {
 	Both  int `json:"both"`  // trailing comment, second to the doc
 	Trail int `json:"trail"` // Trail is described by the trailing comment only.
 	Bare  int `json:"bare"`
+	// Lids keeps a word that merely shares the field name's prefix —
+	// a naive strip would leave "s keeps...".
+	Lid int `json:"lid"`
+}
+
+// DeepX promotes X one level further inside an embed chain.
+type DeepX struct{ X string }
+type ViaDeepX struct{ DeepX }
+type ShallowX struct{ X int }
+
+// DepthClash gets X from both ViaDeepX (depth 2) and ShallowX
+// (depth 1): the strictly shallower promotion wins — an int.
+type DepthClash struct {
+	ViaDeepX
+	ShallowX
+}
+
+type LeftY struct{ Y string }
+type RightY struct{ Y int }
+
+// Ambig promotes Y from both embeds at the same depth: encoding/json
+// drops *both*, so the schema must not pick a winner.
+type Ambig struct {
+	LeftY
+	RightY
 }

@@ -20,3 +20,10 @@ func Install(c *extschema.Config) {
 		"description": "nanoseconds (time.Duration)",
 	})
 }
+
+// Validate shares the entry signature except it returns an error — the
+// walk must not treat it as an entry point (asserting func(*Config)
+// on it would trap), so it exists as the regression pin.
+func Validate(c *extschema.Config) error {
+	return nil
+}

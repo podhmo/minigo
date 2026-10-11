@@ -1,5 +1,11 @@
 {
 	"$defs": {
+		"Ambig": {
+			"additionalProperties": true,
+			"description": "Ambig promotes Y from both embeds at the same depth: encoding/json\ndrops *both*, so the schema must not pick a winner.",
+			"properties": {},
+			"type": "object"
+		},
 		"Base": {
 			"additionalProperties": true,
 			"description": "Wrapper embeds a same-package struct — its fields flatten.",
@@ -28,6 +34,10 @@
 					"description": "Lead is described by the comment above it.",
 					"type": "integer"
 				},
+				"lid": {
+					"description": "Lids keeps a word that merely shares the field name's prefix —\na naive strip would leave \"s keeps...\".",
+					"type": "integer"
+				},
 				"trail": {
 					"description": "Trail is described by the trailing comment only.",
 					"type": "integer"
@@ -37,6 +47,7 @@
 				"bare",
 				"both",
 				"lead",
+				"lid",
 				"trail"
 			],
 			"type": "object"
@@ -53,6 +64,32 @@
 			},
 			"required": [
 				"level"
+			],
+			"type": "object"
+		},
+		"DeepX": {
+			"additionalProperties": true,
+			"description": "DeepX promotes X one level further inside an embed chain.",
+			"properties": {
+				"X": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"X"
+			],
+			"type": "object"
+		},
+		"DepthClash": {
+			"additionalProperties": true,
+			"description": "DepthClash gets X from both ViaDeepX (depth 2) and ShallowX\n(depth 1): the strictly shallower promotion wins — an int.",
+			"properties": {
+				"X": {
+					"type": "integer"
+				}
+			},
+			"required": [
+				"X"
 			],
 			"type": "object"
 		},
@@ -74,6 +111,18 @@
 			"required": [
 				"end",
 				"start"
+			],
+			"type": "object"
+		},
+		"LeftY": {
+			"additionalProperties": true,
+			"properties": {
+				"Y": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"Y"
 			],
 			"type": "object"
 		},
@@ -119,6 +168,18 @@
 			],
 			"type": "object"
 		},
+		"RightY": {
+			"additionalProperties": true,
+			"properties": {
+				"Y": {
+					"type": "integer"
+				}
+			},
+			"required": [
+				"Y"
+			],
+			"type": "object"
+		},
 		"Shadow": {
 			"additionalProperties": true,
 			"description": "Shadow exercises the shallower-wins rule: its explicit base_id field\nmust shadow the one promoted from Base, not be overwritten by it.",
@@ -129,6 +190,18 @@
 			},
 			"required": [
 				"base_id"
+			],
+			"type": "object"
+		},
+		"ShallowX": {
+			"additionalProperties": true,
+			"properties": {
+				"X": {
+					"type": "integer"
+				}
+			},
+			"required": [
+				"X"
 			],
 			"type": "object"
 		},
@@ -252,6 +325,18 @@
 				"name",
 				"scores",
 				"status"
+			],
+			"type": "object"
+		},
+		"ViaDeepX": {
+			"additionalProperties": true,
+			"properties": {
+				"X": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"X"
 			],
 			"type": "object"
 		},

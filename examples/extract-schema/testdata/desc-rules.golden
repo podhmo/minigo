@@ -14,6 +14,10 @@
 			"description": "is described by the comment above it.",
 			"type": "integer"
 		},
+		"lid": {
+			"description": "Lids keeps a word that merely shares the field name's prefix —\na naive strip would leave \"s keeps...\".",
+			"type": "integer"
+		},
 		"trail": {
 			"description": "is described by the trailing comment only.",
 			"type": "integer"
@@ -23,6 +27,7 @@
 		"bare",
 		"both",
 		"lead",
+		"lid",
 		"trail"
 	],
 	"type": "object"

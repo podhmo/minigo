@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/podhmo/minigo/examples/extract-schema/extschema"
 	"github.com/podhmo/minigo/inspect"
@@ -168,7 +169,7 @@ func configurers(ds []*inspect.Decl) []*inspect.Decl {
 			continue
 		}
 		ps := sig.ParamFields()
-		if len(ps) != 1 {
+		if len(ps) != 1 || len(sig.ResultFields()) != 0 {
 			continue
 		}
 		// The param spells *extschema.Config: unwrap the pointer,
@@ -186,10 +187,13 @@ func configurers(ds []*inspect.Decl) []*inspect.Decl {
 	return out
 }
 
-// isExported reports whether a name is exported (ASCII-cheap — symbol
-// names in plugin entry points are).
+// isExported reports whether a name is exported — Go's rule is
+// unicode.IsUpper on the first rune, so `Ändern` counts too.
 func isExported(name string) bool {
-	return name != "" && name[0] >= 'A' && name[0] <= 'Z'
+	for _, r := range name {
+		return unicode.IsUpper(r)
+	}
+	return false
 }
 
 // defOf registers d as a $defs entry and returns its def name.
@@ -429,7 +433,9 @@ func builtinDoc(name string) (map[string]any, error) {
 func (g *generator) structDoc(fs []*inspect.Field) (map[string]any, error) {
 	props := map[string]any{}
 	required := map[string]bool{}
-	if err := g.addFields(fs, props, required, map[string]bool{}, 0, true); err != nil {
+	depths := map[string]int{}
+	ambig := map[string]int{}
+	if err := g.addFields(fs, props, required, depths, ambig, map[string]bool{}, 0, true); err != nil {
 		return nil, err
 	}
 	doc := map[string]any{
@@ -448,14 +454,43 @@ func (g *generator) structDoc(fs []*inspect.Field) (map[string]any, error) {
 	return doc, nil
 }
 
+// putProp writes one property honouring encoding/json's depth rules:
+// strictly shallower replaces deeper, deeper yields, and an equal
+// depth marks the name ambiguous — the prop is dropped and deeper or
+// equal-depth candidates stay rejected (ambig records the poisoned
+// depth). required entries follow the surviving write. Returns
+// whether the property was written.
+func putProp(props map[string]any, required map[string]bool, depths, ambig map[string]int, k string, v map[string]any, atDepth int) bool {
+	if ad, ok := ambig[k]; ok && atDepth >= ad {
+		return false
+	}
+	if cur, ok := depths[k]; ok {
+		if atDepth > cur {
+			return false
+		}
+		if atDepth == cur {
+			delete(props, k)
+			delete(required, k)
+			ambig[k] = atDepth
+			return false
+		}
+		delete(required, k) // shallower replaces: drop the deeper write
+	}
+	depths[k] = atDepth
+	props[k] = v
+	return true
+}
+
 // addFields merges one field list into props/required. Named fields
-// register first so a promoted field can never shadow an explicit one
-// (encoding/json's shallower-wins rule); depth>0 marks promoted fields
-// — they only write names not already taken, matching first-wins at
-// the same depth (Go drops both on ambiguity; approximation noted).
-// reqOK is false once the flatten path crossed a *pointer* embed: a nil
-// embedded pointer omits every promoted field, so none are required.
-func (g *generator) addFields(fs []*inspect.Field, props map[string]any, required map[string]bool, embedding map[string]bool, depth int, reqOK bool) error {
+// register first so a promoted field can never shadow an explicit one;
+// every write then goes through putProp, which applies encoding/json's
+// promotion rules: a strictly shallower property replaces a deeper one
+// (deep embeds lose to later, shallower siblings), and an equal-depth
+// collision marks the name ambiguous — Go drops *both*. depths/ambig
+// carry the bookkeeping across the recursive calls. reqOK is false
+// once the flatten path crossed a *pointer* embed: a nil embedded
+// pointer omits every promoted field, so none are required.
+func (g *generator) addFields(fs []*inspect.Field, props map[string]any, required map[string]bool, depths, ambig map[string]int, embedding map[string]bool, depth int, reqOK bool) error {
 	var embeds []*inspect.Field
 	for _, f := range fs {
 		name, named, skip := fieldJSONName(f)
@@ -475,11 +510,6 @@ func (g *generator) addFields(fs []*inspect.Field, props map[string]any, require
 			if named {
 				propName = name
 			}
-			if depth > 0 {
-				if _, taken := props[propName]; taken {
-					continue
-				}
-			}
 			fd, err := g.schemaFor(f.Type)
 			if err != nil {
 				return fmt.Errorf("field %s: %w", goName, err)
@@ -488,15 +518,14 @@ func (g *generator) addFields(fs []*inspect.Field, props map[string]any, require
 			if err := g.applyOverrideTag(fd, f); err != nil {
 				return err
 			}
-			props[propName] = fd
-			if reqOK && wantsRequired(f) {
+			if putProp(props, required, depths, ambig, propName, fd, depth) && reqOK && wantsRequired(f) {
 				required[propName] = true
 			}
 		}
 	}
 	for _, f := range embeds {
 		name, named, _ := fieldJSONName(f)
-		if err := g.addEmbedded(f, name, named, props, required, embedding, depth, reqOK); err != nil {
+		if err := g.addEmbedded(f, name, named, props, required, depths, ambig, embedding, depth, reqOK); err != nil {
 			return err
 		}
 	}
@@ -507,7 +536,7 @@ func (g *generator) addFields(fs []*inspect.Field, props map[string]any, require
 // resolves to a struct decl — JSON's promoted-field rule. A tagged
 // embed keeps its own name; a recursive embed (seen mid-flatten)
 // degrades to a named $ref so cycles terminate.
-func (g *generator) addEmbedded(f *inspect.Field, name string, named bool, props map[string]any, required map[string]bool, embedding map[string]bool, depth int, reqOK bool) error {
+func (g *generator) addEmbedded(f *inspect.Field, name string, named bool, props map[string]any, required map[string]bool, depths, ambig map[string]int, embedding map[string]bool, depth int, reqOK bool) error {
 	te := f.Type
 	ptr := false
 	for te.Kind == "StarExpr" {
@@ -515,15 +544,10 @@ func (g *generator) addEmbedded(f *inspect.Field, name string, named bool, props
 		te = inspect.UnRef(te)
 	}
 	sid := inspect.SymbolID(te)
-	// put keeps promoted writes from shadowing a shallower property —
-	// at depth>0 an existing key always wins (encoding/json's rule).
+	// put writes a named/tag embed's own property at this level —
+	// putProp keeps it from shadowing a shallower winner.
 	put := func(k string, v map[string]any) {
-		if depth > 0 {
-			if _, taken := props[k]; taken {
-				return
-			}
-		}
-		props[k] = v
+		putProp(props, required, depths, ambig, k, v, depth)
 	}
 	if named {
 		fd, err := g.schemaFor(f.Type)
@@ -587,7 +611,7 @@ func (g *generator) addEmbedded(f *inspect.Field, name string, named bool, props
 	efs := inspect.TypeFields(def)
 	embedding[key] = true
 	defer delete(embedding, key)
-	return g.addFields(efs, props, required, embedding, depth+1, reqOK && !ptr)
+	return g.addFields(efs, props, required, depths, ambig, embedding, depth+1, reqOK && !ptr)
 }
 
 func (g *generator) applyFieldDoc(fd map[string]any, f *inspect.Field, name string) {
@@ -668,6 +692,10 @@ func coerceScalar(v string) any {
 		return n
 	}
 	if n, err := strconv.ParseFloat(v, 64); err == nil {
+		// NaN/Inf parse fine but are not JSON — keep the literal.
+		if n != n || n > 1.7976931348623157e308 || n < -1.7976931348623157e308 {
+			return v
+		}
 		return n
 	}
 	if b, err := strconv.ParseBool(v); err == nil {

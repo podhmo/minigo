@@ -43,13 +43,27 @@ func fieldNames(f any) []string {
 // position instead of guessing at the text.
 func DescField(f any, doc string) string {
 	for _, n := range fieldNames(f) {
-		if strings.HasPrefix(doc, n) {
+		if strings.HasPrefix(doc, n) && nameBoundary(doc, len(n)) {
 			s := strings.TrimSpace(doc[len(n):])
 			s = strings.TrimPrefix(s, ":")
 			return strings.TrimSpace(s)
 		}
 	}
 	return doc
+}
+
+// nameBoundary reports whether the byte at i ends the symbol name —
+// the doc convention strips "Name ...", not a mere prefix: `Lead`
+// must not cut "Leader" down to "er".
+func nameBoundary(doc string, i int) bool {
+	if i == len(doc) {
+		return true
+	}
+	switch doc[i] {
+	case ' ', '\t', '\n', ':', '.', ',', '(':
+		return true
+	}
+	return false
 }
 
 // DescDecl drops the leading "<TypeName>" from a type description:
@@ -61,7 +75,7 @@ func DescDecl(v any, doc string) string {
 		rv = rv.Elem()
 	}
 	name := rv.FieldByName("Name").String()
-	if strings.HasPrefix(doc, name) {
+	if strings.HasPrefix(doc, name) && nameBoundary(doc, len(name)) {
 		s := strings.TrimSpace(doc[len(name):])
 		s = strings.TrimPrefix(s, ":")
 		return strings.TrimSpace(s)
