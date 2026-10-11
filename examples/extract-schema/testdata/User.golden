@@ -1,0 +1,146 @@
+{
+	"$defs": {
+		"ID": {
+			"description": "ID aliases string — an alias def renders as a $ref-shaped alias.\n",
+			"type": "string"
+		},
+		"Interval": {
+			"additionalProperties": true,
+			"description": "Interval is a half-open time range — its fields are standard-library\ntypes, the stdlib-leaf boundary the walk is expected to stop at.\n",
+			"properties": {
+				"end": {
+					"description": "stdlib type time.Time (walk stopped)"
+				},
+				"start": {
+					"description": "stdlib type time.Time (walk stopped)"
+				}
+			},
+			"required": [
+				"end",
+				"start"
+			],
+			"type": "object"
+		},
+		"Money": {
+			"additionalProperties": true,
+			"description": "Money is an amount in minor units with its currency.\n",
+			"properties": {
+				"amount": {
+					"description": "Amount in the smallest currency unit.\n",
+					"type": "integer"
+				},
+				"currency": {
+					"description": "Currency code, e.g. \"JPY\".\n",
+					"type": "string"
+				}
+			},
+			"required": [
+				"amount",
+				"currency"
+			],
+			"type": "object"
+		},
+		"Status": {
+			"description": "Status is the account status.\n",
+			"enum": [
+				"active",
+				"paused",
+				"deleted"
+			],
+			"type": "string"
+		},
+		"User": {
+			"additionalProperties": true,
+			"description": "User is the root fixture type.\n",
+			"properties": {
+				"active": {
+					"$ref": "#/$defs/Interval"
+				},
+				"address": {
+					"additionalProperties": true,
+					"properties": {
+						"city": {
+							"type": "string"
+						},
+						"zip": {
+							"type": "string"
+						}
+					},
+					"required": [
+						"city",
+						"zip"
+					],
+					"type": "object"
+				},
+				"admin": {
+					"type": "boolean"
+				},
+				"age": {
+					"type": "integer"
+				},
+				"amount": {
+					"description": "Amount in the smallest currency unit.\n",
+					"type": "integer"
+				},
+				"balance": {
+					"$ref": "#/$defs/Money"
+				},
+				"created_at": {
+					"description": "stdlib type time.Time (walk stopped)"
+				},
+				"currency": {
+					"description": "Currency code, e.g. \"JPY\".\n",
+					"type": "string"
+				},
+				"email": {
+					"type": "string"
+				},
+				"friends": {
+					"items": {
+						"$ref": "#/$defs/User"
+					},
+					"type": "array"
+				},
+				"id": {
+					"$ref": "#/$defs/ID"
+				},
+				"metadata": {
+					"additionalProperties": {
+						"type": "string"
+					},
+					"type": "object"
+				},
+				"name": {
+					"type": "string"
+				},
+				"scores": {
+					"items": {
+						"type": "number"
+					},
+					"type": "array"
+				},
+				"status": {
+					"$ref": "#/$defs/Status"
+				}
+			},
+			"required": [
+				"active",
+				"address",
+				"admin",
+				"age",
+				"amount",
+				"balance",
+				"created_at",
+				"currency",
+				"id",
+				"metadata",
+				"name",
+				"scores",
+				"status"
+			],
+			"type": "object"
+		}
+	},
+	"$ref": "#/$defs/User",
+	"$schema": "http://json-schema.org/draft-07/schema#"
+}
