@@ -147,11 +147,17 @@ func Methods(x any) []*Decl { panic("minigo intrinsic") }
 func MethodSet(s *Decl) []*Method { panic("minigo intrinsic") }
 
 // EnumMembers returns a type symbol's enum members: the package's
-// const declarations that are explicitly typed with it, in source
-// order — `const X Status = ...` specs, including empty specs that
-// inherit the type (`B` under `A Status = e`). Untyped constants and
-// foreign-typed ones never list, so an empty result means the type is
-// not an enum. Non-type symbols trap.
+// const declarations typed with it — `const X Status = ...` specs,
+// empty specs that inherit the type (`B` under `A Status = e`), and
+// specs whose type is only inferred from an untyped initializer
+// (`Microsecond = 1000 * Nanosecond`, whose Duration type lives on
+// the materialized value). Exported members come first in declaration
+// order, then unexported sentinels such as minDuration. A member only
+// counts when its value materializes as a constant scalar — a
+// composite "const" (`const P Point = Point{...}`, tolerated by the
+// interpreter but not a Go constant expression) is not an enum value.
+// Untyped constants and foreign-typed ones never list, so an empty
+// result means the type is not an enum. Non-type symbols trap.
 func EnumMembers(s *Decl) []*Decl { panic("minigo intrinsic") }
 
 // MReqs returns the named member requirements of an interface type
@@ -265,6 +271,14 @@ func Initializer(s *Decl) *TypeExpr { panic("minigo intrinsic") }
 // Value materializes a package member's runtime value. Var members and
 // in-VM lookups may run the package initializer; constants bind without
 // it (a constant needs no init).
+//
+// A const member arrives as its materialized scalar: an untyped const
+// as its Go-native value (int64, float64, string, bool), a named-basic
+// const as its underlying scalar (a `Duration` const as int64
+// nanoseconds, a host-scalar typedef as the host scalar). A constant
+// with no scalar representation — a composite literal — keeps its
+// runtime value. Var members arrive as writable cells: read them
+// through `*v`.
 func Value(p *runtime.Package, name string) any { panic("minigo intrinsic") }
 
 // TypeOf materializes a type symbol's *runtime.TypeDef.

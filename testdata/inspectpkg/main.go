@@ -134,6 +134,22 @@ const (
 	PA, PB Priority = "pa", "pb"
 )
 
+// Span exercises enum members whose type is only inferred from the
+// initializer, plus an unexported member.
+type Span int64
+
+const (
+	SpanMs     Span = 1
+	SpanSecond      = 1000 * SpanMs // inferred-type member
+	spanMin    Span = -1            // unexported sentinel
+)
+
+// Widget exercises a composite "const" — tolerated by the interpreter
+// but not a Go constant expression, so never an enum member.
+type Widget struct{ X int }
+
+const DefaultWidget Widget = Widget{X: 1}
+
 // Loose is an untyped constant — never an enum member.
 const Loose = 42
 

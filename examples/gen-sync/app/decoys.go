@@ -6,8 +6,10 @@ package app
 type Code int
 
 const (
-	DefaultCode  = Code(200) // Code after '=', not a typed spec
-	FallbackCode = 500       // untyped
+	// the inferred type is int — `Code(...)` after '=' types the
+	// constant Code, so the outer conversion keeps this a non-member.
+	DefaultCode  = int(Code(200))
+	FallbackCode = 500 // untyped
 )
 
 // Rhythm is a defined type whose const block types its specs as Level:

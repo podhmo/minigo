@@ -982,10 +982,21 @@ func expandFieldTypes(fs []*Field) ([]*TypeExpr, bool) {
 }
 
 // EnumMembersOf returns a type symbol's enum members: the package's
-// const declarations that are explicitly typed with it, in source
-// order. Untyped constants and foreign-typed ones never match, so an
-// empty slice means the type is not an enum. Non-type symbols report
-// an error.
+// const declarations typed with it — explicitly, by iota inheritance,
+// or inferred from an untyped initializer (`Microsecond = 1000 *
+// Nanosecond`, whose Duration type lives only on the materialized
+// value). Exported members come first in declaration order — the
+// public surface a consumer switches on — then unexported sentinels
+// such as minDuration. A member only counts when its value
+// materializes as a constant scalar: a composite "const" (`const
+// Origin Point = Point{...}` — tolerated by the interpreter but not a
+// Go constant expression) is not an enum value. An explicit-type
+// member whose value cannot be read still counts — its membership is
+// syntactic fact and the caller reports the unreadable value — but a
+// type-inferred candidate with no readable value is not a member.
+// Untyped constants and foreign-typed ones never match, so an empty
+// slice means the type is not an enum. Non-type symbols report an
+// error.
 func EnumMembersOf(s *Decl) ([]*Decl, error) {
 	if s.decl == nil || s.Package == nil || s.Package.Index == nil {
 		return nil, fmt.Errorf("inspect.EnumMembers: %s has no index", s.Name)
@@ -993,22 +1004,99 @@ func EnumMembersOf(s *Decl) ([]*Decl, error) {
 	if s.decl.Kind != index.TypeDecl {
 		return nil, fmt.Errorf("inspect.EnumMembers: %s is a %s, not a type", s.Name, s.Kind)
 	}
-	var out []*Decl
+	var exported, unexported []*Decl
 	for _, cd := range s.Package.Index.Decls {
 		if cd.Kind != index.ConstDecl {
 			continue
 		}
-		t := valueSpecType(cd)
-		if t == nil {
+		member := false
+		evaluated := false
+		var elem runtime.Value
+		if t := valueSpecType(cd); t != nil {
+			if sid, ok := NewTypeExpr(t, cd.File, s.Package).SymbolID(); ok &&
+				sid.PackagePath == s.Package.Path && sid.Name == s.Name {
+				member = true
+			}
+		} else if vs, ok := cd.Spec.(*ast.ValueSpec); ok && len(vs.Values) > 0 {
+			// a spec without a type but with values — `Microsecond =
+			// 1000 * Nanosecond` — carries its type only on the value,
+			// so membership asks the materialized constant.
+			elem, evaluated = constElemOf(s.Package, cd)
+			if n, ok := elem.(*runtime.Named); ok && typedefMatches(n.Typ, s) {
+				member = true
+			}
+		}
+		if !member {
 			continue
 		}
-		sid, ok := NewTypeExpr(t, cd.File, s.Package).SymbolID()
-		if !ok || sid.PackagePath != s.Package.Path || sid.Name != s.Name {
+		if !evaluated {
+			elem, evaluated = constElemOf(s.Package, cd)
+		}
+		if evaluated && !isConstScalar(elem) {
 			continue
 		}
-		out = append(out, NewDecl(s.Package, cd))
+		if ast.IsExported(cd.Name) {
+			exported = append(exported, NewDecl(s.Package, cd))
+		} else {
+			unexported = append(unexported, NewDecl(s.Package, cd))
+		}
 	}
-	return out, nil
+	return append(exported, unexported...), nil
+}
+
+// constElemOf reads a const member's bound value: the const-only
+// initializer binds every const spec before member reads, so a miss
+// means the constant never materialized (broken init). An unreadable
+// value is inconclusive, never proof of exclusion — the caller
+// decides.
+func constElemOf(p *runtime.Package, cd *index.Decl) (runtime.Value, bool) {
+	m, err := p.Member(cd.Name, nil)
+	if err != nil {
+		return nil, false
+	}
+	if c, ok := m.(*runtime.Cell); ok {
+		return c.Elem, true
+	}
+	return m, m != nil
+}
+
+// typedefMatches reports whether the typedef a materialized value
+// carries is the enum type: by TypeSpec identity for a source typedef,
+// by package path and name for a bound one.
+func typedefMatches(td *runtime.TypeDef, s *Decl) bool {
+	if td == nil {
+		return false
+	}
+	if td.Spec != nil {
+		return td.Spec == s.decl.Spec
+	}
+	return td.Pkg != nil && td.Pkg.Path == s.Package.Path && td.Name == s.Name
+}
+
+// isConstScalar reports whether a materialized const value is a
+// constant scalar — the only thing a Go enum member can be: an
+// untyped constant, a named-basic value (its payload is the scalar),
+// a host-scalar box, or a native scalar. Composites, references and
+// host non-scalars are not enum values.
+func isConstScalar(v runtime.Value) bool {
+	switch t := v.(type) {
+	case *runtime.UConst, *runtime.Named:
+		return true
+	case *runtime.GoValue:
+		return t.V != nil && scalarKind(reflect.TypeOf(t.V).Kind())
+	}
+	return v != nil && scalarKind(reflect.TypeOf(v).Kind())
+}
+
+func scalarKind(k reflect.Kind) bool {
+	switch k {
+	case reflect.Bool, reflect.String,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128:
+		return true
+	}
+	return false
 }
 
 // valueSpecType returns the type expression declared on a var or

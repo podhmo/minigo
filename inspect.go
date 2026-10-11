@@ -650,11 +650,13 @@ func (e *Engine) installInspect() {
 				return nil, err
 			}
 			// a const's read-only cell is an internal handle — hand the
-			// constant across the boundary, not a *string-lookalike.
-			// Writable cells (vars) stay cells: `*v` must keep
-			// dereferencing the storage.
+			// constant's materialized scalar across the boundary, not a
+			// *string-lookalike or a wrapper a JSON emitter cannot
+			// encode (a UConst would emit its literal text, a Named
+			// its display string). Writable cells (vars) stay cells:
+			// `*v` must keep dereferencing the storage.
 			if c, ok := m.(*runtime.Cell); ok && c.ReadOnly {
-				return c.Elem, nil
+				return constScalar(c.Elem), nil
 			}
 			return m, nil
 		}),
@@ -727,6 +729,26 @@ func goView[T any](v runtime.Value, what string) (*T, error) {
 		return nil, fmt.Errorf("inspect: expected a %s view, got %T", what, gv.V)
 	}
 	return x, nil
+}
+
+// constScalar materializes a read-only cell's payload to the scalar a
+// script expects: an untyped constant becomes its Go-native value
+// (int64, float64, string, bool — UConstNative applies the constant -0
+// fold and int/float overflow errors; a constant it cannot represent,
+// like 1<<100, keeps its lazy form), a named-basic value unwraps to
+// its underlying scalar (a source `Duration` const reads as int64
+// nanoseconds, a host-scalar typedef keeps the host scalar), every
+// other shape passes through unchanged.
+func constScalar(v runtime.Value) runtime.Value {
+	switch t := v.(type) {
+	case *runtime.UConst:
+		if mv, err := runtime.UConstNative(t); err == nil {
+			return mv
+		}
+	case *runtime.Named:
+		return constScalar(t.V)
+	}
+	return v
 }
 
 func declViewOf(v runtime.Value) (*xinspect.Decl, error) { return goView[xinspect.Decl](v, "decl") }
