@@ -7099,6 +7099,23 @@ func valueCopy(v runtime.Value) runtime.Value {
 	return runtime.Copy(v)
 }
 
+// hostStructCopy snapshots a HostNew-backed host value for assignment:
+// the box is a `*T` so `var b bytes.Buffer = a` would otherwise alias
+// a's storage where gc copies the struct. The Named tag, when present,
+// wraps the snapshot unchanged.
+func hostStructCopy(x runtime.Value) runtime.Value {
+	if n, ok := x.(*runtime.Named); ok {
+		if nv, ok := runtime.HostStructCopy(n.V); ok {
+			return &runtime.Named{Typ: n.Typ, V: nv}
+		}
+		return x
+	}
+	if nv, ok := runtime.HostStructCopy(x); ok {
+		return nv
+	}
+	return x
+}
+
 // channels — real blocking semantics. Channels are host `chan Value`s:
 // sends and receives block exactly as in Go, buffer capacity is honored,
 // and close wakes parked receivers. Every blocking op also selects on the
@@ -11541,6 +11558,13 @@ func (v *VM) coerce(f *frame, x runtime.Value, td *runtime.TypeDef) runtime.Valu
 	x = valueCopy(x)
 	if td == nil {
 		return x
+	}
+	// a HostNew slot stores a pointer-shaped host box whose DECLARED
+	// type is the struct itself — assignment copies the struct like gc:
+	// `var b bytes.Buffer = a` must not alias a's box. Pointer-typed
+	// targets keep sharing (`var p *bytes.Buffer` binds a cell).
+	if td.Kind == runtime.KindStruct && td.HostNew != nil {
+		x = hostStructCopy(x)
 	}
 	if td.Kind == runtime.KindAlias {
 		// aliases peel one hop at a time so each intermediate named type
