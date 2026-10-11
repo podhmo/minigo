@@ -11,6 +11,7 @@ package minigo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/token"
@@ -689,10 +690,21 @@ func (e *Engine) loadPathFrom(ctx context.Context, fromDir, path string) (*runti
 	if err != nil {
 		return nil, fmt.Errorf("resolve %q: %w", path, err)
 	}
-	return e.buildPackage(meta)
+	return e.buildPackage(meta, false)
 }
 
 func (e *Engine) loadDir(ctx context.Context, dir string) (*runtime.Package, error) {
+	return e.loadDirMode(ctx, dir, false)
+}
+
+// loadDirLenient is inspect.DirOf's view: it must enumerate decls that
+// would not compile, like duplicate methods, so its package indexes
+// without the redeclaration check.
+func (e *Engine) loadDirLenient(ctx context.Context, dir string) (*runtime.Package, error) {
+	return e.loadDirMode(ctx, dir, true)
+}
+
+func (e *Engine) loadDirMode(ctx context.Context, dir string, lenient bool) (*runtime.Package, error) {
 	e.mu.Lock()
 	if p, ok := e.byDir[dir]; ok {
 		e.mu.Unlock()
@@ -704,7 +716,7 @@ func (e *Engine) loadDir(ctx context.Context, dir string) (*runtime.Package, err
 	if err != nil {
 		return nil, fmt.Errorf("resolve dir %q: %w", dir, err)
 	}
-	return e.buildPackage(meta)
+	return e.buildPackage(meta, lenient)
 }
 
 // SourceOf loads the source behind an import path, bypassing a bound
@@ -743,7 +755,7 @@ func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, e
 	for _, sf := range files {
 		sf.LangMod = meta.Lang
 	}
-	if err := e.indexFiles(p, files); err != nil {
+	if err := e.indexFiles(p, files, true); err != nil {
 		p.SetState(runtime.Failed)
 		return nil, err
 	}
@@ -757,8 +769,9 @@ func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, e
 }
 
 // buildPackage runs the pipeline Locate->Parse->Index for one package.
-// Initialize stays lazy (Bootstrap hook).
-func (e *Engine) buildPackage(meta *resolve.PackageMeta) (*runtime.Package, error) {
+// Initialize stays lazy (Bootstrap hook). lenient relaxes the index's
+// redeclaration check for inspect callers that must see duplicates.
+func (e *Engine) buildPackage(meta *resolve.PackageMeta, lenient bool) (*runtime.Package, error) {
 	// serialize whole builds so two goroutines cold-loading the same
 	// package converge on one object (the indexed gate closes in
 	// indexFiles for concurrent member access)
@@ -795,7 +808,7 @@ func (e *Engine) buildPackage(meta *resolve.PackageMeta) (*runtime.Package, erro
 	for _, sf := range files {
 		sf.LangMod = meta.Lang
 	}
-	if err := e.indexFiles(p, files); err != nil {
+	if err := e.indexFiles(p, files, lenient); err != nil {
 		p.SetState(runtime.Failed)
 		return nil, err
 	}
@@ -829,7 +842,7 @@ func (e *Engine) newPackage(path, name, dir string) *runtime.Package {
 // indexFiles finishes a package over already-selected files: declaration
 // index, file-by-name map, per-file import scopes, and the lazy initializer
 // hook. Directory discovery and build-constraint filtering happen upstream.
-func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File) error {
+func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File, lenient bool) error {
 	// the indexed gate closes however this returns: a failed package is
 	// finished too (its State reports Failed) rather than hanging waiters
 	defer p.FinishIndexing()
@@ -848,8 +861,16 @@ func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File) error {
 		}
 	}
 
-	ix, err := index.Build(files)
+	buildIx := index.Build
+	if lenient {
+		buildIx = index.BuildLenient
+	}
+	ix, err := buildIx(files)
 	if err != nil {
+		var re *index.RedeclError
+		if errors.As(err, &re) {
+			return fmt.Errorf("%s: %s\n\t%s: other declaration of %s", p.Fset.Position(re.Pos), re, p.Fset.Position(re.PrevPos), re.Name)
+		}
 		return fmt.Errorf("index %s: %w", p.Path, err)
 	}
 	p.Index = ix
@@ -914,7 +935,7 @@ func (e *Engine) LoadFile(ctx context.Context, filename string) (*runtime.Packag
 	sf.LangMod = resolve.ModuleLang(filepath.Dir(abs))
 
 	p := e.newPackage("<file>"+filepath.ToSlash(abs), sf.AST.Name.Name, filepath.Dir(abs))
-	if err := e.indexFiles(p, []*syntax.File{sf}); err != nil {
+	if err := e.indexFiles(p, []*syntax.File{sf}, false); err != nil {
 		return nil, err
 	}
 

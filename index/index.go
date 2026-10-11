@@ -69,8 +69,35 @@ func (ix *Index) LocalGen(ts *ast.TypeSpec) int {
 	return ix.LocalGens[ts]
 }
 
-// Build indexes all files of one package. Nothing is executed.
+// RedeclError reports a duplicate package-block name — Go's
+// `X redeclared in this block` compile error. Pos points at the second
+// declaration, PrevPos at the first; callers render them through their
+// FileSet.
+type RedeclError struct {
+	Name    string
+	Pos     token.Pos
+	PrevPos token.Pos
+}
+
+func (e *RedeclError) Error() string {
+	return e.Name + " redeclared in this block"
+}
+
+// Build indexes all files of one package, rejecting redeclared names
+// like gc does. Nothing is executed.
 func Build(files []*syntax.File) (*Index, error) {
+	return build(files, false)
+}
+
+// BuildLenient indexes like Build but keeps last-wins on duplicate
+// names — the REPL's accumulated prompt source legitimately redeclares
+// (a re-entered decl replaces the old one), while :load units enforce
+// redeclaration at their own boundary.
+func BuildLenient(files []*syntax.File) (*Index, error) {
+	return build(files, true)
+}
+
+func build(files []*syntax.File, lenient bool) (*Index, error) {
 	ix := &Index{
 		Funcs:  map[string]*Decl{},
 		Types:  map[string]*TypeDeclInfo{},
@@ -78,6 +105,9 @@ func Build(files []*syntax.File) (*Index, error) {
 		Consts: map[string]*Decl{},
 	}
 	var methodDecls []*Decl
+	// package-block names share one namespace across funcs, vars, consts
+	// and types; init and the blank identifier are exempt.
+	declared := map[string]token.Pos{}
 	gen := 0
 	for _, f := range files {
 		for _, gd := range f.AST.Decls {
@@ -108,6 +138,15 @@ func Build(files []*syntax.File) (*Index, error) {
 					ix.Inits = append(ix.Inits, dl)
 					continue
 				}
+				if !lenient && dl.Name != "_" {
+					// `func _` (stringer-style compile stubs) declares
+					// no name; gc never reports it redeclared. The name's
+					// position is what gc reports, not the `func` keyword's.
+					if prev, dup := declared[dl.Name]; dup {
+						return nil, &RedeclError{Name: dl.Name, Pos: d.Name.Pos(), PrevPos: prev}
+					}
+					declared[dl.Name] = d.Name.Pos()
+				}
 				ix.Funcs[dl.Name] = dl
 			case *ast.GenDecl:
 				switch d.Tok {
@@ -126,6 +165,12 @@ func Build(files []*syntax.File) (*Index, error) {
 							}
 							dl := &Decl{Kind: kind, Name: name.Name, File: f, Gen: d, Spec: vs, Idx: i, NameIdx: j, Inherited: inherited, InheritedType: inheritedType, Pos: name.Pos()}
 							ix.Decls = append(ix.Decls, dl)
+							if name.Name != "_" && !lenient {
+								if prev, dup := declared[name.Name]; dup {
+									return nil, &RedeclError{Name: name.Name, Pos: name.Pos(), PrevPos: prev}
+								}
+								declared[name.Name] = name.Pos()
+							}
 							if kind == VarDecl {
 								ix.Vars[name.Name] = dl
 							} else {
@@ -138,6 +183,12 @@ func Build(files []*syntax.File) (*Index, error) {
 						ts := spec.(*ast.TypeSpec)
 						dl := &Decl{Kind: TypeDecl, Name: ts.Name.Name, File: f, Gen: d, Spec: ts, Idx: i, Pos: ts.Pos()}
 						ix.Decls = append(ix.Decls, dl)
+						if ts.Name.Name != "_" && !lenient {
+							if prev, dup := declared[ts.Name.Name]; dup {
+								return nil, &RedeclError{Name: ts.Name.Name, Pos: ts.Name.Pos(), PrevPos: prev}
+							}
+							declared[ts.Name.Name] = ts.Name.Pos()
+						}
 						ix.Types[ts.Name.Name] = &TypeDeclInfo{Decl: dl, Methods: map[string]*Decl{}}
 					}
 				case token.IMPORT:
@@ -161,6 +212,13 @@ func Build(files []*syntax.File) (*Index, error) {
 			// this is a foreign receiver): record under a synthetic entry.
 			td = &TypeDeclInfo{Methods: map[string]*Decl{}}
 			ix.Types[tname] = td
+		}
+		if !lenient {
+			key := tname + "." + md.Name
+			if prev, dup := declared[key]; dup {
+				return nil, &RedeclError{Name: key, Pos: md.Func.Name.Pos(), PrevPos: prev}
+			}
+			declared[key] = md.Func.Name.Pos()
 		}
 		td.Methods[md.Name] = md
 	}
