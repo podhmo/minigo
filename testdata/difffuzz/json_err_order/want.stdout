@@ -1,0 +1,2 @@
+json: cannot unmarshal string into Go struct field .a of type int
+custom fail

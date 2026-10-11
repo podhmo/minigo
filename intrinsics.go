@@ -947,6 +947,22 @@ func (e *Engine) installStdlib() {
 				return nil, ectx.fatal
 			}
 			if ectx.callErr != nil {
+				// The script error competes with by-shape type errors in
+				// input order: gc reports whichever member the input
+				// reached first, not the method's error unconditionally.
+				if len(ectx.errs) > 0 {
+					pos := jsonErrOrder(data)
+					cp, cok := jsonErrPos(pos, ectx.callErrPath)
+					best, pick := -1, error(nil)
+					for _, e := range ectx.errs {
+						if pp, ok := jsonErrPos(pos, e.path); ok && (best == -1 || pp < best) {
+							best, pick = pp, e.err
+						}
+					}
+					if best != -1 && (!cok || best < cp) {
+						return errVal(pick), nil
+					}
+				}
 				return ectx.callErr, nil
 			}
 			return errVal(jsonInputErr(data, ectx.errs)), nil
@@ -5232,10 +5248,12 @@ type jsonErrCtx struct {
 	err   error
 	errs  []jsonErrAt
 	// callErr records a non-nil error a script UnmarshalJSON returned
-	// — it is a script Value (not a *jsonUnmarshalTypeError) and wins
-	// over the by-shape type errors the way gc reports the call's
-	// error for the value it decoded.
-	callErr runtime.Value
+	// — it is a script Value (not a *jsonUnmarshalTypeError). gc
+	// reports the first error in INPUT order, so the call error
+	// competes with by-shape errors at its own member position
+	// (callErrPath) instead of winning unconditionally.
+	callErr     runtime.Value
+	callErrPath []string
 	// fatal records a failed METHOD CALL itself (a script panic
 	// surfacing as a call error) — gc lets it propagate, so it must
 	// not be swallowed into by-shape decoding.
@@ -5439,6 +5457,31 @@ func jsonErrOrder(data []byte) map[string]int {
 	return pos
 }
 
+// jsonErrPos looks up a member path's position in the raw input,
+// walking up to the nearest recorded ancestor (a nested failure
+// inherits its member's slot). Struct fields record their Go field
+// name while the position map keys on the input's member spelling —
+// the codec folds case the same way when matching, so each level
+// retries case-insensitively.
+func jsonErrPos(pos map[string]int, path []string) (int, bool) {
+	for p := path; ; p = p[:len(p)-1] {
+		key := strings.Join(p, "\x00")
+		if pp, ok := pos[key]; ok {
+			return pp, true
+		}
+		folded := make([]string, len(p))
+		for i, s := range p {
+			folded[i] = strings.ToLower(s)
+		}
+		if pp, ok := pos[strings.Join(folded, "\x00")]; ok {
+			return pp, true
+		}
+		if len(p) == 0 {
+			return 0, false
+		}
+	}
+}
+
 // jsonInputErr picks the error whose path is earliest in the raw
 // input, falling back to the first recorded when a path never matched
 // a member position (e.g. a root-level failure).
@@ -5452,13 +5495,7 @@ func jsonInputErr(data []byte, errs []jsonErrAt) error {
 	pos := jsonErrOrder(data)
 	best, pick := -1, errs[0]
 	for _, e := range errs {
-		p := e.path
-		pp, ok := pos[strings.Join(p, "\x00")]
-		for !ok && len(p) > 0 {
-			p = p[:len(p)-1]
-			pp, ok = pos[strings.Join(p, "\x00")]
-		}
-		if ok && (best == -1 || pp < best) {
+		if pp, ok := jsonErrPos(pos, e.path); ok && (best == -1 || pp < best) {
 			best, pick = pp, e
 		}
 	}
@@ -5875,6 +5912,7 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 				}
 				if ev := jsonErrResult(r); ev != runtime.NIL {
 					ectx.callErr = ev
+					ectx.callErrPath = append([]string{}, ectx.path...)
 				}
 				if cell != nil {
 					return cell.Elem
@@ -5930,11 +5968,12 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 			}
 			// the JSON key this entry decodes: its exact key when the
 			// object carries it, else the folded key it won first
+			inKey := e.key
 			fv, kok := m[e.key]
 			if !kok {
 				for k, w := range foldWin {
 					if w == i {
-						fv, kok = m[k], true
+						inKey, fv, kok = k, m[k], true
 						break
 					}
 				}
@@ -5942,7 +5981,9 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 			if !kok {
 				continue
 			}
-			ectx.path = append(ectx.path, e.key)
+			// errors path on the input's member spelling like gc's
+			// UnmarshalTypeError (.a, not the Go field name A).
+			ectx.path = append(ectx.path, inKey)
 			cur, curTd, curPf := z, td, pf
 			reach := true
 			for h := 0; h < len(e.path)-1 && reach; h++ {
@@ -6109,6 +6150,7 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 				}
 				if ev := jsonErrResult(r); ev != runtime.NIL {
 					ectx.callErr = ev
+					ectx.callErrPath = append([]string{}, ectx.path...)
 				}
 				return pc
 			}
