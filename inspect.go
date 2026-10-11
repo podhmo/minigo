@@ -53,7 +53,7 @@ func (e *Engine) installInspect() {
 			if len(args) != 1 {
 				return nil, argerr("DirOf", "one dir string")
 			}
-			return e.loadDir(context.Background(), str(runtime.Unwrap(args[0])))
+			return e.loadDirLenient(context.Background(), str(runtime.Unwrap(args[0])))
 		}),
 		"FileOf": bf("FileOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {

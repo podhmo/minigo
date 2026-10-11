@@ -846,7 +846,10 @@ func (r *REPL) reload() error {
 	}
 	loaded := r.loadedFiles()
 	files := append([]*syntax.File{sf}, loaded...)
-	idx, err := index.Build(files)
+	// the accumulated prompt source may legitimately redeclare — a
+	// re-entered decl replaces the old one; :load units check
+	// redeclaration at their own boundary.
+	idx, err := index.BuildLenient(files)
 	if err != nil {
 		return fmt.Errorf("repl: internal error: %w", err)
 	}

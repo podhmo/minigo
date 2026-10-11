@@ -605,25 +605,3 @@ Top:
 	}
 	return sum
 }
-
-// goto back to the for statement re-runs OpIter: a fresh iterator, same as
-// Go re-entering the range clause (producer called again).
-func SeqGotoLoop() int {
-	sum := 0
-	n := 0
-Top:
-	for v := range seqFunc(func(yield func(int) bool) {
-		for i := 1; i <= 3; i++ {
-			if !yield(i) {
-				return
-			}
-		}
-	}) {
-		sum += v
-		n++
-		if n == 2 {
-			goto Top
-		}
-	}
-	return sum // 1+2 + 1+2+3 = 9
-}
