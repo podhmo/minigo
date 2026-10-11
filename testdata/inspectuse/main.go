@@ -1581,3 +1581,31 @@ func BuiltinPathConst() string {
 	}
 	return "ok"
 }
+
+// FileOfDup: a file that cannot compile still answers for inspection —
+// FileOf builds leniently like DirOf instead of failing on the redeclare.
+func FileOfDup() string {
+	f := inspect.FileOf("./testdata/dupfile/main.go")
+	ds := inspect.Decls(f)
+	if len(ds) != 3 {
+		return "want 3 decls, got " + fmt.Sprint(len(ds))
+	}
+	var names []string
+	for _, d := range ds {
+		names = append(names, inspect.Name(d))
+	}
+	if strings.Join(names, ",") != "Same,Same,Other" {
+		return "bad decls: " + strings.Join(names, ",")
+	}
+	return "ok"
+}
+
+// PackageOfDup: a package path that cannot compile still answers for
+// inspection — PackageOf builds leniently like DirOf.
+func PackageOfDup() string {
+	p := inspect.PackageOf("github.com/podhmo/minigo/testdata/dupmethods")
+	if n := len(inspect.Methods(p)); n != 3 {
+		return "want 3 method decls, got " + fmt.Sprint(n)
+	}
+	return "ok"
+}
