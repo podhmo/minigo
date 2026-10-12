@@ -46,6 +46,24 @@ imports transitively; `-check` reports drift for CI.
 See [gen-sync/README.md](./gen-sync/README.md) and the design notes in
 [docs/sketch/plan-gen-sync.md](../docs/sketch/plan-gen-sync.md).
 
+## extract-schema — JSON Schema extraction driven by an interpreted script
+
+A port of [go-scan](https://github.com/podhmo/go-scan)'s `tools/genschema`:
+emit a JSON Schema for one named type (`./app User`) or a whole package
+(`./app` → `$defs`). Unlike the other examples, **the package walker
+itself is a minigo script** (`./script` calls `inspect.PackageOf` /
+`Decls` / `TypeFields` / …), so the scan logic is improved without
+rebuilding the host — the example doubles as the `inspect` API's main
+consumer and its behavior corpus lives in
+[minigo-usecasefuzz/extract-schema](https://github.com/podhmo/minigo-usecasefuzz/tree/main/extract-schema).
+`-plugin <dir>` loads shape-altering config functions from more scripts;
+`-stdlib walk` walks into standard-library source instead of stubbing
+stdlib types as leaves.
+
+See [extract-schema/README.md](./extract-schema/README.md) and the
+design notes in
+[docs/sketch/plan-extract-schema.md](../docs/sketch/plan-extract-schema.md).
+
 ## test-detect — affected test package detection
 
 Given the changed `.go` files of a commit (e.g. `git diff --name-only`),
