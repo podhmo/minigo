@@ -1305,19 +1305,15 @@ func (te *TypeExpr) withTypeParams(tps map[string]bool) *TypeExpr {
 }
 
 // typeParamNames collects the names a *ast.FieldList of type
-// parameters binds — `T any`, `K comparable, V any`.
+// parameters binds — `T any`, `K comparable, V any` — as a set; the
+// shared ordered walk lives in syntax.TypeParamNames.
 func typeParamNames(fl *ast.FieldList) map[string]bool {
-	if fl == nil {
-		return nil
-	}
 	var names map[string]bool
-	for _, fd := range fl.List {
-		for _, n := range fd.Names {
-			if names == nil {
-				names = map[string]bool{}
-			}
-			names[n.Name] = true
+	for _, n := range syntax.TypeParamNames(fl) {
+		if names == nil {
+			names = map[string]bool{}
 		}
+		names[n] = true
 	}
 	return names
 }

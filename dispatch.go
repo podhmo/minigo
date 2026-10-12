@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/podhmo/minigo/runtime"
+	"github.com/podhmo/minigo/syntax"
 )
 
 // ---- interface satisfaction, method sets, embedded dispatch ----
@@ -881,18 +882,10 @@ func (e *Engine) elemTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.TypeDe
 
 // ---- shared helpers ----
 
-// typeParamNames extracts parameter names from a type parameter list.
+// typeParamNames extracts parameter names from a type parameter list,
+// in declaration order — the shared walk lives in syntax.
 func typeParamNames(fl *ast.FieldList) []string {
-	if fl == nil {
-		return nil
-	}
-	var out []string
-	for _, f := range fl.List {
-		for _, n := range f.Names {
-			out = append(out, n.Name)
-		}
-	}
-	return out
+	return syntax.TypeParamNames(fl)
 }
 
 // typeParamConstraints extracts the constraint expression per type
