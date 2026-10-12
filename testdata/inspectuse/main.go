@@ -649,6 +649,40 @@ func SourceOfSrc() string {
 	return "ok"
 }
 
+// BoundOfHit: the bound loader answers the registered shadow directly —
+// nil where the path is not bound, never falling through to source.
+func BoundOfHit() string {
+	p := inspect.BoundOf("strings")
+	if p == nil {
+		return "bound strings missing"
+	}
+	if inspect.Path(p) != "strings" || !inspect.Standard(p) {
+		return "bad bound meta"
+	}
+	// the bound object is the same one PackageOf answers — Decls are
+	// host pseudo-decls, not source decls.
+	if p != inspect.PackageOf("strings") {
+		return "BoundOf is not the canonical bound object"
+	}
+	if inspect.Symbol(p, "Contains").Kind != "host" {
+		return "bound decls not pseudo-decls"
+	}
+	return "ok"
+}
+
+// BoundOfMiss: an unbound path reports nil — BoundOf never falls
+// through to source, even for a path PackageOf loads fine, and a
+// dir-shaped string is not an import path.
+func BoundOfMiss() string {
+	if p := inspect.BoundOf("github.com/podhmo/minigo/testdata/inspectpkg"); p != nil {
+		return "unbound path answered"
+	}
+	if p := inspect.BoundOf("./testdata/inspectpkg"); p != nil {
+		return "dir string answered"
+	}
+	return "ok"
+}
+
 // BoundDecls: a bound package enumerates as host pseudo-symbols.
 func BoundDecls() string {
 	p := inspect.PackageOf("strings")
