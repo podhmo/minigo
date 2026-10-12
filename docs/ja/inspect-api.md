@@ -7,7 +7,7 @@
 ## まず押さえる概念
 
 - **ロード経路が2系統ある**: 「バインド済み（bound）」のホストパッケージと「ソースから index した」パッケージは**別物**。bound パッケージは index を持たないので `Decls` は Kind=`host` の擬似 decl を合成し、`AST`/`Body`/`Pos` は trap する。`Standard()` は bound なら登録時の宣言、ソースなら GOROOT 配下かどうか。
-- **trap 系と Lookup 系の対**: `Symbol`/`DirOf`/`PackageOf` は見つからないと trap（ホストプロセスを巻き込まない範囲でスクリプト実行が死ぬ）。`LookupSymbol`/`LookupDirOf`/`LookupPackageOf` は nil を返す。「見つからない」以外の失敗（見つかったが壊れている、ポリシー拒否）は Lookup 系でも error を返すのが設計上の境目。
+- **trap 系と Lookup 系の対**: `Symbol`/`DirOf`/`PackageOf`/`SourceOf`/`FileOf` は見つからないと trap（ホストプロセスを巻き込まない範囲でスクリプト実行が死ぬ）。`LookupSymbol`/`LookupDirOf`/`LookupPackageOf`/`LookupSourceOf`/`LookupFileOf` は nil を返す。「見つからない」以外の失敗（見つかったが壊れている、ポリシー拒否）は Lookup 系でも error を返すのが設計上の境目。
 - **Decl と TypeExpr は別物**: `Decl` は宣言そのもの（名前・種類・doc・位置）、`TypeExpr` は型のスペリング（`[]map[string]T` や `*T` という式）。`Decl` から `TypeExpr` へは `Def`/`DeclType`/`Signature`/`Initializer` で降りる。`TypeExpr` から `Decl` へは `SymbolID`/`Resolve` で上がる。
 
 ## ロード系（パッケージを得る）
@@ -18,14 +18,16 @@
 | `LookupPackageOf(path)` | 同上 | **nil**（path がどのモジュールにも解決しないとき）| `Main` の入口解決、graceful な失敗を返したいとき |
 | `BoundOf(path)` | bound 登録されたホストパッケージだけ。ソースには落ちない | **nil**（bound でないだけ）| 「この path は bound か？」の一発判定。bound 由来の制限（index なし等）を調べるとき |
 | `SourceOf(path)` | **ソースだけ**。bound シャドウを迂回して実ソースを index | trap（path 不存在） | bound パッケージが index を持たなくて詰まったとき。`-stdlib walk` の実体 |
+| `LookupSourceOf(path)` | 同上 | **nil**（path 不存在・bound だが背後にソースのない合成 path） | bound かどうか不確かな path から graceful にソースを試す入口（extract-schema `-pkg` の retry で使用） |
 | `DirOf(dir)` | ディレクトリのソースパッケージ（lenient） | trap | `./target` のようなローカル dir 指定 |
 | `LookupDirOf(dir)` | 同上 | **nil**（dir 不存在） | 存在確認付きの入口 |
 | `FileOf(file)` | 単一ファイルを1ファイルパッケージとして | trap | ファイル単位のプローブ |
+| `LookupFileOf(file)` | 同上 | **nil**（file 不存在） | 存在確認付きの単ファイルプローブ |
 | `Current()` | 呼び出し側スクリプト自身のパッケージ | — | 自分の decl を introspect するとき |
 
 ### よくある誤配線
 
-- **`PackageOf("time")` で stdlib のソース decl が取れない** — bound 登録があると index なしの bound オブジェクトが返る（`Decls` は `Kind "host"` の擬似 decl）。`SourceOf("time")` で実ソースが取れる。`-pkg` でスキーマ生成したいのに `type "X" not found` になる典型例（corpus m05、TODO 項目あり）。
+- **`PackageOf("time")` で stdlib のソース decl が取れない** — bound 登録があると index なしの bound オブジェクトが返る（`Decls` は `Kind "host"` の擬似 decl）。`SourceOf("time")` で実ソースが取れる。`-pkg` でスキーマ生成したいのに `type "X" not found` になる典型例（corpus m05）—— extract-schema は `BoundOf(target) != nil` のとき `LookupSourceOf(target)` に retry する形で解消済み（PR #900）。
 - **`DirOf` に import path を渡す** — `-pkg` 引数はディレクトリではないので trap。`PackageOf`/`LookupPackageOf` を使う。
 - **`DirOf` したモジュール外パッケージの `sid.PackagePath` が `<dir>/<abs>` という疑似パスになる** — `PackageOf` でそれを追跡すると `resolve` error で trap。`LookupPackageOf`→nil→leaf に落とすのが extract-schema の取った逃げ道（PR #881）。
 - **bound かどうかを `Standard()` で判定しようとする** — `Standard()` は GOROOT 判定であって bound 判定ではない。bound 判定は `BoundOf(path) != nil`。
@@ -95,7 +97,7 @@
 ## 名前が似ている関数のまとめ
 
 - **`Symbol`/`LookupSymbol`/`SymbolOf`/`SymbolID`/`SymbolIDOf`** — `Symbol` は「パッケージ内を名前で検索（trap）」、`LookupSymbol` はその nil 版。`SymbolOf(v)` は「値の持ち主の decl」、`SymbolIDOf(v)` はその `{path,name}` 版（`SymbolID(te)` は TypeExpr 用で別物）。
-- **`DirOf`/`LookupDirOf`/`FileOf`/`PackageOf`/`LookupPackageOf`/`BoundOf`/`SourceOf`** — ロード経路の表（上）を参照。`*Lookup*` = nil 版、`Bound`/`Source` = 片側限定版。
+- **`DirOf`/`LookupDirOf`/`FileOf`/`LookupFileOf`/`PackageOf`/`LookupPackageOf`/`BoundOf`/`SourceOf`/`LookupSourceOf`** — ロード経路の表（上）を参照。`*Lookup*` = nil 版、`Bound`/`Source` = 片側限定版。
 - **`Fields`/`TypeFields`/`MReqs`/`IEmbeds`** — `Fields(decl)` は「**decl が指す型**の member」（struct の field、interface の member）。`TypeFields(te)` は「**この TypeExpr** が composite なら member」。`MReqs` は interface の named method spec だけ、`IEmbeds` は embedded element だけ。
 - **`Methods`/`MethodSet`** — `Methods` は宣言ベース（source position 順、receiver-attached decl）、`MethodSet` は意味論ベース（`*T` 経由で使えるもの、promoted 含む、name ソート、昇格元 `Via` つき）。
 - **`Def`/`DeclType`/`Initializer`** — `Def` は type decl の右辺、`DeclType` は var/const の注釈型、`Initializer` は初期化式。
@@ -106,7 +108,8 @@
 - **optional なシンボル存在確認**: `LookupSymbol(pkg, name) == nil` で graceful 分岐（`Symbol` は trap するので判定には使わない）。
 - **bound か source かを呼び出し側が制御**: `BoundOf`/`SourceOf`/`PackageOf`/`DirOf` の4 loader で経路をスペルできる（#876 の loader matrix が stub.go ヘッダに図示あり）。
 - **walk の葉判定**: `SymbolID` → nil なら composite → `Children` 再帰。`NoDeclPath(path)` なら builtin/typeparam で打ち切り。それ以外は `LookupPackageOf`+`LookupSymbol` で decl 追跡（`extract-schema` の `follow` がこの形）。
-- **graceful な CLI**: `LookupPackageOf`/`LookupDirOf`/`LookupSymbol` で nil→エラー exit に落とす。`PackageOf`/`DirOf`/`Symbol` は trap なので「成功しなければ死ぬ」ことが確定している箇所にだけ。
+- **bound shadow の迂回**: `BoundOf(path) != nil` なら `LookupSourceOf(path)` — 背後にソースがあればそちら、合成 bound path（`minigo.dev/inspect` 等）は nil が返るので graceful に落とせる（extract-schema `-pkg` の retry 形、PR #900）。
+- **graceful な CLI**: `LookupPackageOf`/`LookupDirOf`/`LookupFileOf`/`LookupSourceOf`/`LookupSymbol` で nil→エラー exit に落とす。`PackageOf`/`DirOf`/`FileOf`/`SourceOf`/`Symbol` は trap なので「成功しなければ死ぬ」ことが確定している箇所にだけ。
 
 ## 関連
 
