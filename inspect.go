@@ -53,6 +53,22 @@ func (e *Engine) installInspect() {
 			}
 			return xinspect.NoDeclPath(str(runtime.Unwrap(args[0]))), nil
 		}),
+		// ---- view types: the typedef entries let scripts spell
+		// *inspect.Field in signatures and type asserts. HostNew boxes
+		// the same pointer the intrinsics return, so x.(*inspect.Field)
+		// matches the *xinspect.Field a GoValue carries — no host
+		// construction surface is intended, the typedef only names the
+		// identity.
+		"Decl":     hostType("inspect.Decl", func() any { return &xinspect.Decl{} }),
+		"Field":    hostType("inspect.Field", func() any { return &xinspect.Field{} }),
+		"File":     hostType("inspect.File", func() any { return &xinspect.File{} }),
+		"TypeExpr": hostType("inspect.TypeExpr", func() any { return &xinspect.TypeExpr{} }),
+		"Node":     hostType("inspect.Node", func() any { return &xinspect.Node{} }),
+		"Sig":      hostType("inspect.Sig", func() any { return &xinspect.Sig{} }),
+		"Position": hostType("inspect.Position", func() any { return &xinspect.Position{} }),
+		"Method":   hostType("inspect.Method", func() any { return &xinspect.Method{} }),
+		"Import":   hostType("inspect.Import", func() any { return &xinspect.Import{} }),
+		"Comment":  hostType("inspect.Comment", func() any { return &xinspect.Comment{} }),
 		// ---- locators ----
 		"PackageOf": bf("PackageOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
