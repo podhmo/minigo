@@ -371,11 +371,17 @@ func (g *generator) follow(pkgPath, name string) (map[string]any, error) {
 		g.used[name0]++
 		return map[string]any{"$ref": "#/$defs/" + name0}, nil
 	}
-	pkg := inspect.PackageOf(pkgPath)
-	if g.stdlib == "walk" && (pkg == nil || inspect.Standard(pkg)) {
+	// the soft twin: a hard PackageOf traps on paths the module graph
+	// cannot name — notably the "<dir>" pseudo-path a dir-loaded
+	// package outside the engine's module spells — while the Lookup
+	// form answers nil there and the check below degrades to a leaf.
+	pkg := inspect.LookupPackageOf(pkgPath)
+	if g.stdlib == "walk" && pkg != nil && inspect.Standard(pkg) {
 		// a bound path answers PackageOf with the host package whose
 		// index is empty — SourceOf builds the source index behind the
 		// bound shadow (and falls back to PackageOf when unbound).
+		// A nil lookup stays on the leaf path: SourceOf would only
+		// re-fail the same resolve the Lookup already missed.
 		pkg = inspect.SourceOf(pkgPath)
 	}
 	if pkg == nil {
@@ -598,8 +604,9 @@ func (g *generator) addEmbedded(f *inspect.Field, name string, named bool, props
 		// subtree rather than inventing a type-named property.
 		return nil
 	}
-	// follow the same leaf policy as named fields
-	pkg := inspect.PackageOf(sid.PackagePath)
+	// follow the same leaf policy as named fields — the soft Lookup
+	// twin so a "<dir>" pseudo-path sid degrades instead of trapping.
+	pkg := inspect.LookupPackageOf(sid.PackagePath)
 	if pkg == nil {
 		warn("could not resolve package %q — embedded %s left as named leaf", sid.PackagePath, key)
 		put(sid.Name, leafDoc("unresolvable type "+key))
