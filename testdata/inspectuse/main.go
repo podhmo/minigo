@@ -2148,6 +2148,10 @@ func loadPkg() *runtime.Package {
 	return inspect.DirOf("./testdata/inspectpkg")
 }
 
+// idAny is a generic identity — its T binds from the argument's tag,
+// which is how call-site inference sees a package handle now.
+func idAny[T any](v T) T { return v }
+
 // RuntimePackageIdentity: a script-declared *runtime.Package unifies
 // with the package values inspect intrinsics return — return-type
 // slots, declared slots, and type asserts all name one identity.
@@ -2163,6 +2167,27 @@ func RuntimePackageIdentity() string {
 	}
 	if inspect.Path(q) != "github.com/podhmo/minigo/testdata/inspectpkg" {
 		return "bad package view"
+	}
+	return "ok"
+}
+
+// RuntimePackageTag: an engine-internal handle carries a tag now —
+// generic call-site inference binds T=*runtime.Package through it, and
+// an interface value carrying a package compares type identity by tag
+// before values.
+func RuntimePackageTag() string {
+	p := loadPkg()
+	// T used to stay unbound for a package handle — the tag funnels had
+	// no case for it.
+	q := idAny(p)
+	if inspect.Name(q) != "inspectpkg" {
+		return "generic round-trip lost the package"
+	}
+	if _, ok := any(q).(*runtime.Package); !ok {
+		return "assert on generic result failed"
+	}
+	if any(p) != any(p) {
+		return "tagged identity compare failed"
 	}
 	return "ok"
 }

@@ -59,6 +59,7 @@ func TestInspect(t *testing.T) {
 		"TypeParamMark",
 		"ViewTypeAsserts",
 		"RuntimePackageIdentity",
+		"RuntimePackageTag",
 		"TypeOfNamed",
 		"BoundTypeSym",
 		"HostMethodSym",
