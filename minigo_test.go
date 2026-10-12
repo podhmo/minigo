@@ -189,6 +189,14 @@ func TestCallArgs(t *testing.T) {
 	if got := run(t, e, "./testdata/callargs", "Shared", map[string]any{"a": same, "b": same}); got != int64(2) {
 		t.Errorf("Shared: got %v (%T)", got, got)
 	}
+	// an empty subslice shares the parent's base pointer but cannot
+	// recurse — it unboxes to a real (empty) slice, not a boxed host
+	// slice. s[0] = s[:0] would otherwise trip the cycle guard.
+	es := make([]any, 1)
+	es[0] = es[:0]
+	if got := run(t, e, "./testdata/callargs", "Empty", es); got != int64(0) {
+		t.Errorf("Empty: got %v (%T)", got, got)
+	}
 	// a named map keeps its box — member dispatch lives there, the same
 	// rule named host slices follow — so indexing it still traps at the
 	// use site.
