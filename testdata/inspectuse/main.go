@@ -2191,3 +2191,59 @@ func RuntimePackageTag() string {
 	}
 	return "ok"
 }
+
+// PackagesWalk: the repo-enumeration surface — every package dir
+// under a root, claimed by its nearest enclosing go.mod, with
+// test-file presence kept at package level — and the loaders it
+// composes with: DirOf for decls, FileOf on a test file for its
+// import edges, all on the shared caches.
+func PackagesWalk(root string) string {
+	pkgs := inspect.Packages(root)
+	if len(pkgs) != 4 {
+		return "want 4 packages, got " + fmt.Sprint(len(pkgs))
+	}
+	var core, sub, nested, testonly *inspect.RepoPackage
+	for _, p := range pkgs {
+		switch p.ImportPath {
+		case "example.com/root":
+			core = p
+		case "example.com/root/sub":
+			sub = p
+		case "example.com/root/onlytest":
+			testonly = p
+		case "example.com/nested":
+			nested = p
+		}
+	}
+	if core == nil || sub == nil || nested == nil || testonly == nil {
+		return "missing entries"
+	}
+	if core.ModulePath != "example.com/root" || sub.ModulePath != "example.com/root" ||
+		nested.ModulePath != "example.com/nested" {
+		return "bad module claim"
+	}
+	if !core.HasTests || sub.HasTests || !testonly.HasTests || nested.HasTests {
+		return "bad HasTests"
+	}
+	if len(testonly.GoFiles) != 0 || len(testonly.TestFiles) != 1 {
+		return "bad test-only inventory"
+	}
+	// the loaders still answer on enumerated dirs — the shared parse
+	// the surface exists to feed.
+	if len(inspect.Decls(inspect.DirOf(sub.Dir))) == 0 {
+		return "DirOf on enumerated dir found no decls"
+	}
+	// test-file import edges come through FileOf on the inventory.
+	imps := inspect.Imports(inspect.FileOf(testonly.TestFiles[0]))
+	if len(imps) != 1 || imps[0].Path != "strings" {
+		return "test-file imports missing"
+	}
+	return "ok"
+}
+
+// PackagesMissTrap: a root that does not exist is an error, not an
+// empty answer — the enumeration has no Lookup twin.
+func PackagesMissTrap() string {
+	inspect.Packages("./testdata/no-such-dir")
+	return "swallowed"
+}

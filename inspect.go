@@ -69,6 +69,9 @@ func (e *Engine) installInspect() {
 		"Method":   hostType("inspect.Method", func() any { return &xinspect.Method{} }),
 		"Import":   hostType("inspect.Import", func() any { return &xinspect.Import{} }),
 		"Comment":  hostType("inspect.Comment", func() any { return &xinspect.Comment{} }),
+		// Packages' element view — a resolve.RepoPackage descriptor, not
+		// a parsed package: loaders (DirOf/FileOf) do the loading.
+		"RepoPackage": hostType("inspect.RepoPackage", func() any { return &xinspect.RepoPackage{} }),
 		// ---- locators ----
 		"PackageOf": bf("PackageOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
@@ -157,6 +160,23 @@ func (e *Engine) installInspect() {
 				return nil, err
 			}
 			return fv, nil
+		}),
+		// Packages is the repo-wide counterpart of the one-dir loaders:
+		// it finds the files; DirOf/FileOf on the reported inventory
+		// does the parsing on the shared caches.
+		"Packages": bf("Packages", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, argerr("Packages", "one root dir string")
+			}
+			root, err := e.fsPath(str(runtime.Unwrap(args[0])))
+			if err != nil {
+				return nil, err
+			}
+			pkgs, err := resolve.ScanRepo(root)
+			if err != nil {
+				return nil, err
+			}
+			return boxedSlice(pkgs), nil
 		}),
 		"Current": bf("Current", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			p := v.Package()

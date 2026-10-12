@@ -100,6 +100,21 @@ func FileOf(file string) *File { panic("minigo intrinsic") }
 // same missing-vs-broken split LookupDirOf keeps.
 func LookupFileOf(file string) *File { panic("minigo intrinsic") }
 
+// Packages enumerates every Go package directory under root — each
+// directory holding .go files, claimed by its nearest enclosing
+// go.mod — across nested modules: the repo-wide view the
+// one-package-at-a-time loaders cannot give. Each RepoPackage carries
+// the directory's own identity (ImportPath as the enclosing module
+// spells it, ModuleDir/ModulePath, "" for a module-less directory) and
+// its file inventory: GoFiles and TestFiles split at the *_test.go
+// boundary, HasTests marking test presence. Nothing is parsed:
+// declarations and imports arrive through the loaders on the shared
+// caches — DirOf on Dir, FileOf on an inventory entry for test-file
+// import edges. A missing root or a go.mod that does not parse errors;
+// there is no Lookup twin — an empty repo answers an empty slice, not
+// a miss.
+func Packages(root string) []*RepoPackage { panic("minigo intrinsic") }
+
 // Current returns the caller's package.
 func Current() *runtime.Package { panic("minigo intrinsic") }
 

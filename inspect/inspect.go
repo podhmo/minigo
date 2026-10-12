@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/resolve"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
 )
@@ -224,6 +225,14 @@ func NewImport(fset *token.FileSet, imp *syntax.Import, ref *runtime.ImportRef) 
 
 // Ref exposes the backing ImportRef — engine-only.
 func (i *Import) Ref() *runtime.ImportRef { return i.ref }
+
+// RepoPackage is one package directory reported by Packages — a
+// resolve.RepoPackage descriptor: which module claims the directory,
+// the import path that module spells for it, and the file inventory
+// split at the *_test.go boundary. Declarations and imports arrive
+// through the loaders (DirOf on Dir, FileOf on an inventory entry),
+// not through this view.
+type RepoPackage = resolve.RepoPackage
 
 // Field is a view over one *ast.Field: a struct field, a signature
 // parameter, or a method's receiver.

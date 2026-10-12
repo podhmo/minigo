@@ -23,6 +23,7 @@
 | `LookupDirOf(dir)` | 同上 | **nil**（dir 不存在） | 存在確認付きの入口 |
 | `FileOf(file)` | 単一ファイルを1ファイルパッケージとして | trap | ファイル単位のプローブ |
 | `LookupFileOf(file)` | 同上 | **nil**（file 不存在） | 存在確認付きの単ファイルプローブ |
+| `Packages(root)` | root 配下の全パッケージ dir（入れ子 go.mod 越しに最寄りのモジュールが claim）を `*RepoPackage` の列として | error（root 不存在・壊れた go.mod）。Lookup 系なし | affected-package 検出など「リポジトリ内の全パッケージ」が要るとき。列挙だけで parse はしない——decl/import は各 `Dir`/`TestFiles` に `DirOf`/`FileOf` を当てる |
 | `Current()` | 呼び出し側スクリプト自身のパッケージ | — | 自分の decl を introspect するとき |
 
 ### よくある誤配線
