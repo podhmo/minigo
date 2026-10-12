@@ -28,6 +28,10 @@
 			"additionalProperties": true,
 			"description": "Blobbed covers the byte-slice spellings: builtin and named byte\nelements marshal as base64, a named slice-of-bytes element stays an\narray of base64 strings, and a fixed array keeps the array shape.",
 			"properties": {
+				"chained": {
+					"contentEncoding": "base64",
+					"type": "string"
+				},
 				"data": {
 					"contentEncoding": "base64",
 					"type": "string"
@@ -40,6 +44,12 @@
 					"items": {
 						"minimum": 0,
 						"type": "integer"
+					},
+					"type": "array"
+				},
+				"marshaled": {
+					"items": {
+						"$ref": "#/$defs/ByteM"
 					},
 					"type": "array"
 				},
@@ -58,15 +68,24 @@
 						"$ref": "#/$defs/Bin"
 					},
 					"type": "array"
+				},
+				"texted": {
+					"items": {
+						"$ref": "#/$defs/ByteT"
+					},
+					"type": "array"
 				}
 			},
 			"required": [
+				"chained",
 				"data",
 				"data2",
 				"fixed",
+				"marshaled",
 				"moneys",
 				"raw",
-				"subs"
+				"subs",
+				"texted"
 			],
 			"type": "object"
 		},
@@ -78,6 +97,20 @@
 		"Byte2": {
 			"$ref": "#/$defs/Byte",
 			"description": "Byte2 adds one hop to the named-byte chase."
+		},
+		"Byte2M": {
+			"$ref": "#/$defs/ByteM",
+			"description": "Byte2M chains to a marshaling type — `type Byte2M ByteM` has no\nmethods of its own, so []Byte2M keeps the base64 shape."
+		},
+		"ByteM": {
+			"description": "ByteM is a named byte whose pointer marshals itself: gc escapes the\n[]byte base64 shortcut when the element (or its pointer) implements\njson.Marshaler — []ByteM is an array of marshaled elements.",
+			"minimum": 0,
+			"type": "integer"
+		},
+		"ByteT": {
+			"description": "ByteT marshals elements through encoding.TextMarshaler — the same\nbase64 escape as MarshalJSON.",
+			"minimum": 0,
+			"type": "integer"
 		},
 		"Commented": {
 			"additionalProperties": true,

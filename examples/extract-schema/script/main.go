@@ -786,6 +786,13 @@ func coerceScalar(v string) any {
 // def (type Bytes []byte — element kind is slice, not uint8) drops
 // out, or the depth bound cuts a pathological chain. Fixed arrays
 // keep the array shape; only the slice form marshals as base64.
+//
+// The element type's own method set escapes the shortcut: gc's
+// byteSliceEncoder fires only when neither the elem type nor its
+// pointer implements json.Marshaler or encoding.TextMarshaler —
+// exactly the names *T's flattened method set carries. The check
+// applies at the first hop only: a `type B A` chain does not carry
+// methods (gc marshals []B as base64 even when A marshals itself).
 func isByteSlice(te, elem *inspect.TypeExpr) bool {
 	if !strings.HasPrefix(te.Text, "[]") {
 		return false
@@ -802,6 +809,13 @@ func isByteSlice(te, elem *inspect.TypeExpr) bool {
 		d := inspect.LookupSymbol(pkg, sid.Name)
 		if d == nil || inspect.Kind(d) != "type" {
 			return false
+		}
+		if depth == 0 {
+			for _, m := range inspect.MethodSet(d) {
+				if m.Name == "MarshalJSON" || m.Name == "MarshalText" {
+					return false
+				}
+			}
 		}
 		def := inspect.Def(d)
 		if def == nil {
