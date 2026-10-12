@@ -534,3 +534,82 @@ func TestTypeFieldsError(t *testing.T) {
 		t.Errorf("TypeFieldsOf on the struct spelling: %v %d", err, len(sfs))
 	}
 }
+
+// TestTypeParamSymbolID pins the marker SymbolID carries when an
+// identifier is bound by the enclosing generic decl — the :typeparam:
+// pseudo path answers "is this a type parameter?" directly, where the
+// pre-marker walk attributed T to the declaring package and a resolver
+// probing it trapped "inspect.Symbol: no T".
+func TestTypeParamSymbolID(t *testing.T) {
+	e := newEngine(t)
+	ctx := context.Background()
+	p, err := e.Package(ctx, "./testdata/inspectpkg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// a generic struct's field spelled T is marked.
+	fs := fieldTypes(t, lookupType(t, p, "Pair"))
+	ta := fs["T"]
+	if sid, ok := ta.SymbolID(); !ok || sid.PackagePath != xinspect.TypeParamPackagePath || sid.Name != "T" {
+		t.Errorf("Pair.A SymbolID = %v, %v — want {:typeparam:, T}", sid, ok)
+	}
+	// the marked identifier never merges into the package namespace:
+	// Unwrap stops on it like it does on builtins.
+	if sid, _ := ta.Unwrap(nil).SymbolID(); sid.PackagePath != xinspect.TypeParamPackagePath {
+		t.Errorf("Unwrap on a type parameter changed the mark: %v", sid)
+	}
+	// a two-parameter decl marks each name.
+	fs2 := fieldTypes(t, lookupType(t, p, "Two"))
+	if sid, _ := fs2["K"].SymbolID(); sid.PackagePath != xinspect.TypeParamPackagePath {
+		t.Errorf("Two.K = %v", sid)
+	}
+	if sid, _ := fs2["V"].SymbolID(); sid.PackagePath != xinspect.TypeParamPackagePath {
+		t.Errorf("Two.V = %v", sid)
+	}
+	// a generic alias's argument position marks the parameter.
+	d := lookupType(t, p, "APair")
+	def, err := xinspect.DefOf(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sid, _ := def.Children()[1].SymbolID(); sid.PackagePath != xinspect.TypeParamPackagePath {
+		t.Errorf("APair arg SymbolID = %v", sid)
+	}
+	// a non-generic alias to an instantiation is untouched: the base
+	// resolves to the package's Pair decl.
+	d = lookupType(t, p, "IPair")
+	def, err = xinspect.DefOf(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sid, _ := def.Children()[0].SymbolID(); sid.PackagePath != p.Path || sid.Name != "Pair" {
+		t.Errorf("IPair def base SymbolID = %v", sid)
+	}
+	// a method binds its receiver's parameter names.
+	ms, err := xinspect.MethodsOf(lookupType(t, p, "Pair"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var head *xinspect.Decl
+	for _, m := range ms {
+		if m.Name == "Head" {
+			head = m
+		}
+	}
+	if head == nil {
+		t.Fatal("no Head method")
+	}
+	sig, err := xinspect.SignatureOf(head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sid, _ := sig.ResultFields()[0].Type.SymbolID(); sid.PackagePath != xinspect.TypeParamPackagePath {
+		t.Errorf("Head result SymbolID = %v", sid)
+	}
+	// ordinary package types keep resolving to their package — the
+	// instantiation base is unaffected by the marker.
+	fsi := fieldTypes(t, lookupType(t, p, "Inst"))
+	if sid, ok := fsi["Pair[int]"].Children()[0].SymbolID(); !ok || sid.PackagePath != p.Path || sid.Name != "Pair" {
+		t.Errorf("Inst.P base SymbolID = %v, %v", sid, ok)
+	}
+}

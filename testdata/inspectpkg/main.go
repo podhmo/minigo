@@ -193,6 +193,17 @@ type Pair[T any] struct {
 // Reduce is a generic function for TypeParams coverage.
 func Reduce[T Number](xs []T, init T) T { return init }
 
+// Head is a generic method — its T binds through the receiver's
+// instantiation, not a method-local type parameter list.
+func (p Pair[T]) Head() T { return p.A }
+
+// List is a generic over a composite underlying — its element type
+// mentions the parameter.
+type List[T any] []T
+
+// IPair is a non-generic alias to a generic instantiation.
+type IPair = Pair[int]
+
 // Cage is a second generic — SameType must not collapse distinct
 // instantiations that share arguments.
 type Cage[T any] struct {

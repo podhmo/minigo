@@ -52,6 +52,7 @@ func TestInspect(t *testing.T) {
 		"PromotedWalk",
 		"ImplementersWalk",
 		"TypeParamsList",
+		"TypeParamMark",
 		"TypeOfNamed",
 		"BoundTypeSym",
 		"HostMethodSym",
