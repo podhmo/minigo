@@ -51,6 +51,12 @@ func ScanRepo(root string) ([]*RepoPackage, error) {
 	if !st.IsDir() {
 		return nil, fmt.Errorf("entry %q is not a directory", root)
 	}
+	// WalkDir does not follow a symlinked root — resolve it so the
+	// enumerated paths spell the real location, the same spelling the
+	// loaders hand back.
+	if abs, err = filepath.EvalSymlinks(abs); err != nil {
+		return nil, err
+	}
 
 	var modules []repoModule
 	byDir := map[string]*RepoPackage{}
@@ -99,19 +105,34 @@ func ScanRepo(root string) ([]*RepoPackage, error) {
 
 	pkgs := make([]*RepoPackage, 0, len(byDir))
 	for _, p := range byDir {
+		var claim repoModule
 		for _, m := range modules {
 			if p.Dir == m.dir || strings.HasPrefix(p.Dir, m.dir+string(filepath.Separator)) {
-				p.ModuleDir = m.dir
-				p.ModulePath = m.path
-				if rel, err := filepath.Rel(m.dir, p.Dir); err == nil && rel != "." {
-					p.ImportPath = m.path + "/" + filepath.ToSlash(rel)
-				} else {
-					p.ImportPath = m.path
-				}
+				claim = m
 				break
 			}
 		}
-		if p.ModuleDir == "" {
+		if claim.dir == "" {
+			// no module under the scan root claims it — the governing
+			// go.mod may sit above the root (scanning a subdirectory
+			// of a module); the nearest ancestor wins there too.
+			m, ok, err := ancestorModuleOf(p.Dir)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				claim = m
+			}
+		}
+		if claim.dir != "" {
+			p.ModuleDir = claim.dir
+			p.ModulePath = claim.path
+			if rel, err := filepath.Rel(claim.dir, p.Dir); err == nil && rel != "." {
+				p.ImportPath = claim.path + "/" + filepath.ToSlash(rel)
+			} else {
+				p.ImportPath = claim.path
+			}
+		} else {
 			p.ImportPath = "<dir>" + filepath.ToSlash(p.Dir)
 		}
 		sort.Strings(p.GoFiles)
@@ -128,6 +149,27 @@ func ScanRepo(root string) ([]*RepoPackage, error) {
 type repoModule struct {
 	dir  string
 	path string
+}
+
+// ancestorModuleOf climbs dir's ancestors for the nearest go.mod —
+// used when no module discovered under the scan root claims the dir:
+// a subdirectory scan can still belong to a module rooted above it.
+// dir itself is never checked: a go.mod there would have registered
+// during the walk and claimed it already.
+func ancestorModuleOf(dir string) (repoModule, bool, error) {
+	for d := filepath.Dir(dir); ; d = filepath.Dir(d) {
+		name := filepath.Join(d, "go.mod")
+		if st, err := os.Stat(name); err == nil && !st.IsDir() {
+			m, err := repoModuleOf(name)
+			if err != nil {
+				return repoModule{}, false, err
+			}
+			return m, true, nil
+		}
+		if filepath.Dir(d) == d {
+			return repoModule{}, false, nil
+		}
+	}
 }
 
 // repoModuleOf parses a go.mod for its module directive. A file that

@@ -92,7 +92,14 @@ func TestScanRepoNoModule(t *testing.T) {
 		t.Fatalf("want 1 package, got %d", len(pkgs))
 	}
 	p := pkgs[0]
-	wantPath := "<dir>" + filepath.ToSlash(filepath.Join(root, "p"))
+	// ScanRepo resolves symlinks on the root before walking, so the
+	// reported Dir spelling is the canonical path (relevant wherever
+	// t.TempDir() itself is a symlink target, e.g. macOS /tmp).
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPath := "<dir>" + filepath.ToSlash(filepath.Join(resolved, "p"))
 	if p.ImportPath != wantPath {
 		t.Errorf("ImportPath = %q, want %q", p.ImportPath, wantPath)
 	}
@@ -101,6 +108,54 @@ func TestScanRepoNoModule(t *testing.T) {
 	}
 	if !p.HasTests {
 		t.Error("HasTests = false, want true")
+	}
+}
+
+// Scanning a subdirectory of a module still reports the module's
+// spelling: the governing go.mod may live above the scan root, and the
+// nearest ancestor claims the dir — packages must not degrade to
+// <dir> paths that break import-path matching.
+func TestScanRepoSubdirOfModule(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "go.mod", "module example.com/root\n\ngo 1.24\n")
+	writeFile(t, root, "sub/p/p.go", "package p\n")
+	writeFile(t, root, "sub/q/q.go", "package q\n")
+
+	pkgs, err := resolve.ScanRepo(filepath.Join(root, "sub"))
+	if err != nil {
+		t.Fatalf("ScanRepo: %v", err)
+	}
+	got := map[string]string{}
+	for _, p := range pkgs {
+		got[p.ImportPath] = p.ModulePath
+	}
+	exp := map[string]string{
+		"example.com/root/sub/p": "example.com/root",
+		"example.com/root/sub/q": "example.com/root",
+	}
+	if diff := cmp.Diff(exp, got); diff != "" {
+		t.Errorf("packages mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// A symlinked root is resolved before walking: WalkDir does not
+// follow the link itself, so without the resolution the whole repo
+// would scan empty.
+func TestScanRepoSymlinkedRoot(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "go.mod", "module example.com/root\n\ngo 1.24\n")
+	writeFile(t, root, "p/p.go", "package p\n")
+
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(root, link); err != nil {
+		t.Fatal(err)
+	}
+	pkgs, err := resolve.ScanRepo(link)
+	if err != nil {
+		t.Fatalf("ScanRepo: %v", err)
+	}
+	if len(pkgs) != 1 || pkgs[0].ImportPath != "example.com/root/p" {
+		t.Fatalf("want example.com/root/p, got %+v", pkgs)
 	}
 }
 
