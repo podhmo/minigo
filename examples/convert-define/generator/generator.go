@@ -761,6 +761,7 @@ type emitter struct {
 	fn     funcNamer
 	diag   *genDiags
 	taken  map[string]bool
+	busy   map[string]bool // type pairs conv is already expanding
 	ctxVar string
 	ecVar  string
 }
@@ -781,7 +782,7 @@ func newEmitter(im *ImportManager, res xinspect.Resolver, info *model.ParsedInfo
 	for _, f := range pair.Fields {
 		taken[f.Converter] = true
 	}
-	return &emitter{im: im, res: res, info: info, fn: fn, diag: diag, taken: taken, ctxVar: "ctx", ecVar: "ec"}
+	return &emitter{im: im, res: res, info: info, fn: fn, diag: diag, taken: taken, busy: map[string]bool{}, ctxVar: "ctx", ecVar: "ec"}
 }
 
 // fresh returns prefix, prefix2, prefix3, ... — the first spelling not
@@ -852,6 +853,19 @@ func (e *emitter) conv(src string, srcT, dstT *xinspect.TypeExpr) frag {
 		e.diag.warn(fmt.Sprintf("unresolved field type for %s", src))
 		return pure(src)
 	}
+
+	// A pair nested into itself — the instantiated element type
+	// repeating the enclosing pair (type Node[T] []Node[T]), or a
+	// plain recursive composite (type A []A) — cannot inline-expand
+	// forever. Keep the honest raw assignment and warn: the resulting
+	// build failure names the pair instead of hanging generation.
+	key := srcT.Text + "\x00" + dstT.Text
+	if e.busy[key] {
+		e.diag.warn(fmt.Sprintf("no conversion covers %s -> %s (recursive type)", getTypeName(e.im, srcT), getTypeName(e.im, dstT)))
+		return pure(src)
+	}
+	e.busy[key] = true
+	defer delete(e.busy, key)
 
 	// Identical value types assign directly — same-name structs, same
 	// scalars, etc. Pointers, slices and maps are excluded: they fall

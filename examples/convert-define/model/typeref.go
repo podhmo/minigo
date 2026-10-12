@@ -56,7 +56,16 @@ func IsStructDecl(d *xinspect.Decl) bool {
 // is unwrapped one declared layer at a time so the inner element decl is
 // still discovered; a decl over a non-struct (type Celsius int) ends nil.
 func StructElemOf(res xinspect.Resolver, te *xinspect.TypeExpr) *xinspect.Decl {
+	// Recursive types — type Foo []Foo, or type Node[T] []Node[T]
+	// through instantiation — revisit the same expr; bail out instead
+	// of looping forever.
+	seen := map[string]bool{}
 	for te != nil {
+		key := teKey(te)
+		if seen[key] {
+			return nil
+		}
+		seen[key] = true
 		switch te.Kind {
 		case "StarExpr", "ArrayType", "Ellipsis":
 			cs := te.Children()
@@ -92,6 +101,20 @@ func StructElemOf(res xinspect.Resolver, te *xinspect.TypeExpr) *xinspect.Decl {
 		}
 	}
 	return nil
+}
+
+// teKey identifies a TypeExpr along the StructElemOf walk — the
+// resolved identity when it names a decl (same-spelled types in
+// different packages must not collide), else the spelled shape:
+// instantiations and composites have no SymbolID to compare.
+func teKey(te *xinspect.TypeExpr) string {
+	// No Unref: a pointer layer must keep its own key — *SrcSub
+	// resolves to SrcSub next, and an identity shared between the two
+	// would end the walk on a legit step.
+	if sid, ok := te.SymbolID(); ok {
+		return sid.PackagePath + "/" + sid.Name
+	}
+	return te.Kind + "|" + te.Text
 }
 
 // StructInfoFromDecl materializes a StructInfo for a struct decl,

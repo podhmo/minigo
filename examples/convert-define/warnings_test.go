@@ -248,6 +248,52 @@ func main() {
 	}
 }
 
+// TestRunStrictRejectsRecursiveGeneric pins the bail on recursive
+// generics: type Node[T] []Node[T] — the instantiated spec contains
+// the instantiation itself, so element-wise expansion can never
+// terminate. Generation must not loop: the pair keeps the honest raw
+// assignment and warns (and -strict fails).
+func TestRunStrictRejectsRecursiveGeneric(t *testing.T) {
+	dir := gentest.WriteFiles(t, map[string]string{
+		"go.mod": "module example.com/recgen\ngo 1.22\n",
+		"define.go": `
+package main
+
+import (
+	"example.com/recgen/destination"
+	"example.com/recgen/source"
+	"github.com/podhmo/minigo/examples/convert-define/define"
+)
+
+func main() {
+	define.Convert(func(c *define.Config, dst *destination.B, src *source.A) {
+	})
+}
+`,
+		"source/source.go":           "package source\n\ntype Node[T any] []Node[T]\n\ntype A struct {\n\tV Node[int]\n}\n",
+		"destination/destination.go": "package destination\n\ntype Node[T any] []Node[T]\n\ntype B struct {\n\tV Node[int64]\n}\n",
+	})
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(cwd)
+
+	outputFile := filepath.Join(dir, "generated.go")
+	err = run(context.Background(), filepath.Join(dir, "define.go"), outputFile, false, "", true /* strict */, false /* check */)
+	want := "-strict: 1 field pair(s) would not compile; no output was written. Fix the define file or the types: add a define.Rule for the type pair, or c.Convert the field with a converter function.\n" +
+		"  - convertAToB: dst.V: no conversion covers source.Node[int] -> destination.Node[int64] (recursive type)\n"
+	if err == nil {
+		t.Fatal("want an error in strict mode")
+	}
+	if diff := cmp.Diff(want, err.Error()); diff != "" {
+		t.Errorf("mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestRunStrictChecksComputeTypes(t *testing.T) {
 	const prefix = "-strict: 1 field pair(s) would not compile; no output was written. Fix the define file or the types: add a define.Rule for the type pair, or c.Convert the field with a converter function.\n"
 	cases := []struct {
