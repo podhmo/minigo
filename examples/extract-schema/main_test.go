@@ -46,6 +46,13 @@ func TestExtractSchema(t *testing.T) {
 			golden:  "testdata/User-plugin.golden",
 		},
 		{
+			name:    "plugin enumcode override under ,string",
+			plugins: []string{"./plugins/enumcode"},
+			type_:   "Stringified",
+			stdlib:  "leaf",
+			golden:  "testdata/Stringified-enumcode.golden",
+		},
+		{
 			name:   "stdlib walk",
 			type_:  "",
 			stdlib: "walk",
