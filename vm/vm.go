@@ -11177,10 +11177,11 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 			return reflect.TypeOf(gv.V).String() == tdName(td)
 		}
 		if pt := v.pointeeTag(x); pt != nil && sameTypeDef(pt, et) {
-			// an engine-internal handle (*runtime.Package) is neither a
-			// GoValue box nor a Deref-able ref — its tag answers through
-			// pointeeTag instead, so the assert is a tag compare like
-			// any other pointer.
+			// any ref's stamped pointee type settles the assert as a
+			// tag compare — the same "stamped type first" contract as
+			// coerce/convert. Engine-internal handles (*runtime.Package)
+			// reach this arm too: they ride no GoValue/Cell tag, so
+			// pointeeTag synthesizes the pointee's typedef for them.
 			return true
 		}
 		if et.HostNew != nil && reflect.TypeOf(x) == et.HostType() {
