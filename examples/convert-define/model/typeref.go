@@ -74,6 +74,16 @@ func StructElemOf(res xinspect.Resolver, te *xinspect.TypeExpr) *xinspect.Decl {
 			if d, err := ResolveNamed(res, te); err == nil && IsStructDecl(d) {
 				return d
 			}
+			// A generic instantiation (List[SrcInner]) stands between
+			// the name and the spec; substitute the type arguments to
+			// reach the element type the walk is looking for.
+			if IsInstantiation(te) {
+				if nt, ok := Instantiate(res, te); ok {
+					te = nt
+					continue
+				}
+				return nil
+			}
 			u := te.Unwrap(res)
 			if u == te {
 				return nil

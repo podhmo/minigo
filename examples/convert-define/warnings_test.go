@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -144,11 +145,67 @@ func main() {
 	}
 }
 
-// TestRunStrictRejectsGenericInstantiation pins the named-composite
-// cul-de-sac: `type SrcList List[int]` unwraps to the instantiation
-// `List[int]` — the spec beyond is parametric ([]T), so no
-// element-wise shape is reachable and the leafCast optimism would emit
-// a cast that cannot compile. The pair warns (and -strict fails).
+// TestRunGenericInstantiationConversion covers the decl-over-
+// instantiation pair (`type SrcList List[int]` -> `type DstList
+// List[int64]`): the type arguments are substituted into each generic
+// spec so the element-wise conversion is reachable — []T instantiated
+// as []int / []int64 — and the result is re-tagged with the written
+// dst name. -strict accepts because no warnings remain.
+func TestRunGenericInstantiationConversion(t *testing.T) {
+	dir := gentest.WriteFiles(t, map[string]string{
+		"go.mod": "module example.com/geninst\ngo 1.22\n",
+		"define.go": `
+package main
+
+import (
+	"example.com/geninst/destination"
+	"example.com/geninst/source"
+	"github.com/podhmo/minigo/examples/convert-define/define"
+)
+
+func main() {
+	define.Convert(func(c *define.Config, dst *destination.Dst, src *source.Src) {
+	})
+}
+`,
+		"source/source.go":           "package source\n\ntype List[T any] []T\n\ntype SrcList List[int]\n\ntype Src struct {\n\tV SrcList\n\tW List[int]\n}\n",
+		"destination/destination.go": "package destination\n\ntype List[T any] []T\n\ntype DstList List[int64]\n\ntype Dst struct {\n\tV DstList\n\tW List[int64]\n}\n",
+	})
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(cwd)
+
+	outputFile := filepath.Join(dir, "generated.go")
+	if err := run(context.Background(), filepath.Join(dir, "define.go"), outputFile, false, "", true /* strict */, false /* check */); err != nil {
+		t.Fatalf("strict generation should succeed: %v", err)
+	}
+	got, err := os.ReadFile(outputFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"s := make([]int64, len(src.V))",
+		"s[i] = int64(item)",
+		"dst.V = destination.DstList(s)",
+		"dst.W = (destination.List[int64])(s)",
+	} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("generated code must contain %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestRunStrictRejectsGenericInstantiation keeps the honest warning
+// for the pair substitution cannot support: the argument names a type
+// of the instantiation's own package (Item), which resolves to a
+// different symbol inside the foreign generic decl's file — splicing
+// it into the spec could silently misresolve, so the pair warns (and
+// -strict fails) rather than emit an element-wise conversion.
 func TestRunStrictRejectsGenericInstantiation(t *testing.T) {
 	dir := gentest.WriteFiles(t, map[string]string{
 		"go.mod": "module example.com/geninst\ngo 1.22\n",
@@ -166,8 +223,9 @@ func main() {
 	})
 }
 `,
-		"source/source.go":           "package source\n\ntype List[T any] []T\n\ntype SrcList List[int]\n\ntype Src struct {\n\tV SrcList\n}\n",
-		"destination/destination.go": "package destination\n\ntype List[T any] []T\n\ntype DstList List[int64]\n\ntype Dst struct {\n\tV DstList\n}\n",
+		"gendef/gendef.go":           "package gendef\n\ntype Box[T any] []T\n",
+		"source/source.go":           "package source\n\nimport \"example.com/geninst/gendef\"\n\ntype Item struct{ X int }\n\ntype SrcBox gendef.Box[Item]\n\ntype Src struct {\n\tV SrcBox\n}\n",
+		"destination/destination.go": "package destination\n\nimport \"example.com/geninst/gendef\"\n\ntype Item struct{ X int64 }\n\ntype DstBox gendef.Box[Item]\n\ntype Dst struct {\n\tV DstBox\n}\n",
 	})
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -181,7 +239,7 @@ func main() {
 	outputFile := filepath.Join(dir, "generated.go")
 	err = run(context.Background(), filepath.Join(dir, "define.go"), outputFile, false, "", true /* strict */, false /* check */)
 	want := "-strict: 1 field pair(s) would not compile; no output was written. Fix the define file or the types: add a define.Rule for the type pair, or c.Convert the field with a converter function.\n" +
-		"  - convertSrcToDst: dst.V: no conversion covers source.SrcList -> destination.DstList (generic instantiation)\n"
+		"  - convertSrcToDst: dst.V: no conversion covers source.SrcBox -> destination.DstBox (generic instantiation)\n"
 	if err == nil {
 		t.Fatal("want an error in strict mode")
 	}

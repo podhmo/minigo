@@ -919,6 +919,53 @@ func (e *emitter) conv(src string, srcT, dstT *xinspect.TypeExpr) frag {
 // chan/func — leafCast owns those too).
 func (e *emitter) namedComposite(src string, srcT, dstT *xinspect.TypeExpr) (frag, bool) {
 	srcU, dstU := underlyingOf(e.res, srcT), underlyingOf(e.res, dstT)
+	// Generic instantiations — reached by peeling declared names
+	// (`type SrcList List[int]` unwraps to List[int]) or written
+	// directly as the field types. Unwrap stops at the instantiation
+	// itself, so substitute the type arguments into the generic spec —
+	// []T seen through List[int] is []int — then run the ordinary
+	// element-wise shapes on the result. When substitution cannot run
+	// (the generic decl does not resolve, or an argument name would
+	// misresolve inside the spec's file context) or the instantiated
+	// spec has no element-wise shape, keep the honest raw assignment
+	// plus a warning — leafCast's optimistic cast would not compile.
+	if instExpr(srcU) || instExpr(dstU) {
+		srcI, dstI := srcU, dstU
+		okS, okD := true, true
+		if instExpr(srcI) {
+			srcI, okS = instDeep(e.res, srcI)
+		}
+		if instExpr(dstI) {
+			dstI, okD = instDeep(e.res, dstI)
+		}
+		if okS && okD {
+			var f frag
+			switch {
+			case srcI.SameType(dstI, e.res):
+				f = pure(src)
+			case isPtr(srcI) && isPtr(dstI):
+				f = e.ptrToPtr(src, srcI, dstI)
+			case isPtr(srcI):
+				f = e.ptrToValue(src, srcI, dstI)
+			case isPtr(dstI):
+				f = e.valueToPtr(src, srcI, dstI)
+			case isSlice(srcI) && isSlice(dstI):
+				f = e.slice(src, srcI, dstI)
+			case isArray(srcI) && isArray(dstI):
+				f = e.array(src, srcI, dstI)
+			case isMap(srcI) && isMap(dstI):
+				f = e.mapOf(src, srcI, dstI)
+			default:
+				okS = false // a spec with no element-wise shape
+			}
+			if okS {
+				f.expr = castExpr(e.im, dstT, f.expr)
+				return f, true
+			}
+		}
+		e.diag.warn(fmt.Sprintf("no conversion covers %s -> %s (generic instantiation)", getTypeName(e.im, srcT), getTypeName(e.im, dstT)))
+		return pure(src), true
+	}
 	if srcU == srcT && dstU == dstT {
 		return frag{}, false
 	}
@@ -926,15 +973,6 @@ func (e *emitter) namedComposite(src string, srcT, dstT *xinspect.TypeExpr) (fra
 	// convert by a single cast (Names([]string{...}), Celsius(x)).
 	if srcU.SameType(dstU, e.res) {
 		return pure(castExpr(e.im, dstT, src)), true
-	}
-	// Both written types are decls over generic instantiations
-	// (type A List[int] vs type B List[int64]): Unwrap stops at the
-	// instantiation — the spec beyond is parametric ([]T), so the
-	// element types are invisible. leafCast would emit an optimistic
-	// cast that cannot compile; warn and keep the honest raw assignment.
-	if instExpr(srcU) && instExpr(dstU) {
-		e.diag.warn(fmt.Sprintf("no conversion covers %s -> %s (generic instantiation)", getTypeName(e.im, srcT), getTypeName(e.im, dstT)))
-		return pure(src), true
 	}
 	var f frag
 	switch {
@@ -982,11 +1020,31 @@ func underlyingOf(res xinspect.Resolver, te *xinspect.TypeExpr) *xinspect.TypeEx
 // the instantiation itself, so the parametric spec behind it stays
 // invisible.
 func instExpr(te *xinspect.TypeExpr) bool {
-	switch te.Expr().(type) {
-	case *ast.IndexExpr, *ast.IndexListExpr:
-		return true
+	return model.IsInstantiation(te)
+}
+
+// instDeep peels instantiation steps — and any declared names that
+// stand between them (`type A[T] Pair[T]` behind `A[int]` reaches
+// Pair[int], then []int) — until the concrete spec shows. The second
+// result is false when the walk stalls on an instantiation that cannot
+// be substituted; the returned expr is where it stopped.
+func instDeep(res xinspect.Resolver, te *xinspect.TypeExpr) (*xinspect.TypeExpr, bool) {
+	for i := 0; i < 32; i++ {
+		if instExpr(te) {
+			nt, ok := model.Instantiate(res, te)
+			if !ok {
+				return te, false
+			}
+			te = nt
+			continue
+		}
+		u := te.Unwrap(res)
+		if u == te {
+			return te, true
+		}
+		te = u
 	}
-	return false
+	return te, false
 }
 
 // castExpr renders `T(x)`; a composite spelling needs parens —
