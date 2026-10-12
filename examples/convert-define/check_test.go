@@ -84,6 +84,16 @@ func main() {
 			dest:    "package destination\n\ntype B struct {\n\tV int\n\tW int\n}\n",
 		},
 		{
+			// Element-wise conversion through generic instantiations:
+			// type SrcList List[int] vs type DstList List[int64]
+			// substitutes the type arguments into the specs and emits
+			// a compiling conversion.
+			name:    "generic instantiation",
+			compute: ``,
+			source:  "package source\n\ntype List[T any] []T\n\ntype SrcList List[int]\n\ntype A struct{ V SrcList }\n",
+			dest:    "package destination\n\ntype List[T any] []T\n\ntype DstList List[int64]\n\ntype B struct{ V DstList }\n",
+		},
+		{
 			name:    "type error traced to the field",
 			compute: `c.Compute(dst.V, src.V + "!")`,
 			source:  "package source\n\ntype A struct{ V string }\n",
