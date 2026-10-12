@@ -15,6 +15,7 @@ func TestInspect(t *testing.T) {
 		"PkgAccess",
 		"DeclsList",
 		"SymbolView",
+		"DocTrim",
 		"FieldsWalk",
 		"MethodsWalk",
 		"MethodsPkg",
