@@ -1493,6 +1493,57 @@ func LookupPackageOfEmptyTrap() string {
 	return "swallowed"
 }
 
+// LookupSourceOfMiss: an import path that resolves to no source
+// answers nil — both a path unclaimed by every module and a bound path
+// with no source behind its shadow (the minigo.dev/inspect pseudo
+// path). A bound stdlib path still answers the source package: real
+// decls, not the bound object's host pseudo-decls.
+func LookupSourceOfMiss() string {
+	if p := inspect.LookupSourceOf("example.com/gone"); p != nil {
+		return "miss did not report nil"
+	}
+	if p := inspect.LookupSourceOf("minigo.dev/inspect"); p != nil {
+		return "bound shadow with no source did not report nil"
+	}
+	p := inspect.LookupSourceOf("strings")
+	if p == nil {
+		return "bound stdlib source not found"
+	}
+	if d := inspect.LookupSymbol(p, "Builder"); d == nil || d.Kind != "type" {
+		return "source decl expected behind the bound shadow"
+	}
+	return "ok"
+}
+
+// LookupSourceOfEmptyTrap: a path that resolves but builds nothing is
+// found-but-broken, not a miss — the same split the other soft
+// loaders keep loud.
+func LookupSourceOfEmptyTrap() string {
+	inspect.LookupSourceOf("github.com/podhmo/minigo/testdata")
+	return "swallowed"
+}
+
+// LookupFileOfMiss: a file path that names nothing on disk answers
+// nil — the file loader's miss twin — while a real file still yields
+// its file view.
+func LookupFileOfMiss() string {
+	if f := inspect.LookupFileOf("./testdata/no-such-file.go"); f != nil {
+		return "miss did not report nil"
+	}
+	f := inspect.LookupFileOf("./testdata/inspectpkg/main.go")
+	if f == nil || len(inspect.Decls(f)) == 0 {
+		return "hit not found"
+	}
+	return "ok"
+}
+
+// LookupFileOfBrokenTrap: a path that exists but is no Go file — a
+// directory — is found-but-broken, not a miss; the error stays loud.
+func LookupFileOfBrokenTrap() string {
+	inspect.LookupFileOf("./testdata")
+	return "swallowed"
+}
+
 // BoundFieldTrap: Fields on a bound type has no decl to read.
 func BoundFieldTrap() string {
 	inspect.Fields(inspect.Symbol(inspect.PackageOf("strings"), "Builder"))

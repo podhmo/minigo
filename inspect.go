@@ -84,6 +84,19 @@ func (e *Engine) installInspect() {
 			}
 			return e.SourceOf(context.Background(), str(runtime.Unwrap(args[0])))
 		}),
+		"LookupSourceOf": bf("LookupSourceOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, argerr("LookupSourceOf", "one path string")
+			}
+			p, err := e.SourceOf(context.Background(), str(runtime.Unwrap(args[0])))
+			if err != nil {
+				if lookupMiss(err) {
+					return runtime.NIL, nil
+				}
+				return nil, err
+			}
+			return p, nil
+		}),
 		"BoundOf": bf("BoundOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("BoundOf", "one path string")
@@ -130,23 +143,20 @@ func (e *Engine) installInspect() {
 			if len(args) != 1 {
 				return nil, argerr("FileOf", "one file string")
 			}
-			name := str(runtime.Unwrap(args[0]))
-			p, err := e.loadFileLenient(context.Background(), name)
+			return e.fileView(str(runtime.Unwrap(args[0])))
+		}),
+		"LookupFileOf": bf("LookupFileOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, argerr("LookupFileOf", "one file string")
+			}
+			fv, err := e.fileView(str(runtime.Unwrap(args[0])))
 			if err != nil {
+				if lookupMiss(err) {
+					return runtime.NIL, nil
+				}
 				return nil, err
 			}
-			abs, _ := filepath.Abs(name)
-			sf := p.FileByName[abs]
-			if sf == nil {
-				for _, f := range p.Files {
-					sf = f // single-file package: fall back to its only file
-					break
-				}
-			}
-			if sf == nil {
-				return nil, fmt.Errorf("inspect.FileOf: no file view for %s", name)
-			}
-			return &runtime.GoValue{V: xinspect.NewFile(p, sf)}, nil
+			return fv, nil
 		}),
 		"Current": bf("Current", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			p := v.Package()
@@ -749,6 +759,27 @@ func stateName(s runtime.State) string {
 // "found but broken".
 func lookupMiss(err error) bool {
 	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, resolve.ErrUnresolved)
+}
+
+// fileView loads a single file as a one-file package and answers its
+// file view — FileOf's and LookupFileOf's shared body.
+func (e *Engine) fileView(name string) (runtime.Value, error) {
+	p, err := e.loadFileLenient(context.Background(), name)
+	if err != nil {
+		return nil, err
+	}
+	abs, _ := filepath.Abs(name)
+	sf := p.FileByName[abs]
+	if sf == nil {
+		for _, f := range p.Files {
+			sf = f // single-file package: fall back to its only file
+			break
+		}
+	}
+	if sf == nil {
+		return nil, fmt.Errorf("inspect.FileOf: no file view for %s", name)
+	}
+	return &runtime.GoValue{V: xinspect.NewFile(p, sf)}, nil
 }
 
 func boxedSlice[T any](xs []T) *runtime.Slice {
