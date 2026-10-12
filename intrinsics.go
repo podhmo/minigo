@@ -4226,6 +4226,19 @@ func mustNativeConst(u *runtime.UConst) any {
 }
 
 func goNative(v runtime.Value) any {
+	return goNativeWalk(v, runtime.NewWalk())
+}
+
+// goNativeWalk is goNative's worker. The Slice/Map arms run through
+// the shared runtime.Walk — which, besides the dedupe, gives the walk
+// cycle folding (a container holding itself through an any slot used
+// to recurse until the stack overflowed), the virtual-slice length
+// (a make([]struct{}, n) used to arrive empty), and comparable keys
+// (a script array key used to panic "hash of unhashable type").
+func goNativeWalk(v runtime.Value, w *runtime.Walk) any {
+	if out, ok := w.Container(v, func(e runtime.Value) any { return goNativeWalk(e, w) }, runtime.UnwrapKey); ok {
+		return out
+	}
 	switch x := v.(type) {
 	case runtime.Nil:
 		return nil
@@ -4270,22 +4283,9 @@ func goNative(v runtime.Value) any {
 				return hv
 			}
 		}
-		return goNative(x.V)
+		return goNativeWalk(x.V, w)
 	case *runtime.Cell:
-		return goNative(x.Elem)
-	case *runtime.Slice:
-		out := make([]any, len(x.Elems))
-		for i, e := range x.Elems {
-			out[i] = goNative(e)
-		}
-		return out
-	case *runtime.Map:
-		out := make(map[any]any, x.Len())
-		for i := 0; i < x.Len(); i++ {
-			k, e := x.At(i)
-			out[goNative(k)] = goNative(e)
-		}
-		return out
+		return goNativeWalk(x.Elem, w)
 	case *runtime.Struct:
 		return fmt.Sprintf("%s%+v", x.Def.Name, x.Fields)
 	case *runtime.GoValue:

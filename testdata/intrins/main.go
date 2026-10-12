@@ -29,6 +29,25 @@ import (
 // Sprintf runs the real fmt.Sprintf via intrinsics — no GOROOT parse.
 func Sprintf() string { return fmt.Sprintf("hi %d", 7) }
 
+// SprintfCycle pins the shared walk's cycle fold on the fmt path: a
+// map holding itself through an any slot used to recurse until the
+// host stack overflowed inside goNative; now the repeat folds to the
+// partially built map and %T only reads its type.
+func SprintfCycle() string {
+	m := map[string]any{}
+	m["self"] = m
+	return fmt.Sprintf("%T", m)
+}
+
+// SprintfArrKey pins the shared walk's comparable keys on the fmt
+// path: a script array key expands to []any under a full walk, which
+// panics hashing into the host map; boxed, the walk completes.
+func SprintfArrKey() string {
+	m := map[[1]int]string{}
+	m[[1]int{1}] = "x"
+	return fmt.Sprintf("%T", m)
+}
+
 // StrconvAtoi exercises the (value, err) tuple convention.
 func StrconvAtoi() int {
 	n, err := strconv.Atoi("42")

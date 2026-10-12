@@ -3909,7 +3909,7 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 		// verbatim: their address-ness is the point. callReflectFunc
 		// copies a converted slice's elements back after the call.
 		v = deepHost(v, vc, &hostMarshal{
-			seen:   map[runtime.Value]runtime.Value{},
+			walk:   runtime.NewWalk(),
 			budget: hostEvalBudget,
 		})
 		if v == nil || v == runtime.NIL {
@@ -4361,12 +4361,12 @@ func (s *scriptIface) readFrom(r io.Reader) (int64, error) {
 // attempt hung on interpreted net/http structs.
 const hostEvalBudget = 64
 
-// hostMarshal carries the state one deepHost walk shares: seen folds
+// hostMarshal carries the state one deepHost walk shares: walk folds
 // cyclic values back to the projection already built for them — a host
 // map or slice may legally contain itself — and budget caps the eager
 // template-method calls described above.
 type hostMarshal struct {
-	seen   map[runtime.Value]runtime.Value
+	walk   *runtime.Walk
 	budget int
 }
 
@@ -4403,26 +4403,10 @@ func deepHost(v runtime.Value, vc runtime.VMCaller, h *hostMarshal) runtime.Valu
 		return x.V
 	case *runtime.Struct:
 		return structDataHost(x, x, vc, h)
-	case *runtime.Slice:
-		if old, ok := h.seen[x]; ok {
-			return old
-		}
-		out := make([]any, len(x.Elems))
-		h.seen[x] = out
-		for i, e := range x.Elems {
-			out[i] = deepHost(e, vc, h)
-		}
-		return out
-	case *runtime.Map:
-		if old, ok := h.seen[x]; ok {
-			return old
-		}
-		out := make(map[any]any, x.Len())
-		h.seen[x] = out
-		for i := 0; i < x.Len(); i++ {
-			k, e := x.At(i)
-			out[deepHost(k, vc, h)] = deepHost(e, vc, h)
-		}
+	case *runtime.Slice, *runtime.Map:
+		out, _ := h.walk.Container(v, func(e runtime.Value) any {
+			return deepHost(e, vc, h)
+		}, runtime.UnwrapKey)
 		return out
 	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
 		// a script pointer to a struct can't offer the host its
@@ -4532,12 +4516,12 @@ func scriptDataOrig(m scriptData) runtime.Value {
 // and unexported members are absent, matching Go's can't-evaluate and
 // unexported-field errors as a missing key.
 func structDataHost(recv runtime.Value, s *runtime.Struct, vc runtime.VMCaller, h *hostMarshal) any {
-	if old, ok := h.seen[s]; ok {
+	if old, ok := h.walk.Seen(s); ok {
 		return old
 	}
 	td := s.Def
 	out := make(scriptData, len(s.Fields)+1)
-	h.seen[s] = out
+	h.walk.Register(s, out)
 	out[scriptDataOrigKey] = recv
 	if td == nil {
 		return out
