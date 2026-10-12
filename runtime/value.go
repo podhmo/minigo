@@ -1553,6 +1553,11 @@ type TypeDef struct {
 	// interface-heavy scripts (go/parser's ast.Expr/ast.Stmt values).
 	ifaceReqs atomic.Value
 	ifaceSigs atomic.Value
+	// hostType caches reflect.TypeOf(HostNew()) (a reflect.Type): the
+	// constructor's native type is fixed at bind time, while assert and
+	// conversion paths recompute it — and its zero-value allocation —
+	// once per comparison otherwise.
+	hostType atomic.Value
 }
 
 // CachedFieldTypes returns the field typedefs stored by SetFieldTypes.
@@ -1587,12 +1592,27 @@ func (td *TypeDef) CachedIfaceSigs() (map[string]*Function, bool) {
 // signature comparisons; callers must treat the map as read-only.
 func (td *TypeDef) SetIfaceSigs(sigs map[string]*Function) { td.ifaceSigs.Store(sigs) }
 
+// HostType returns reflect.TypeOf(td.HostNew()), cached per typedef —
+// the constructor's native type never changes, while reaching it
+// through HostNew allocates a fresh zero value on every comparison.
+func (td *TypeDef) HostType() reflect.Type {
+	if rt, ok := td.hostType.Load().(reflect.Type); ok {
+		return rt
+	}
+	rt := reflect.TypeOf(td.HostNew())
+	if rt != nil {
+		td.hostType.Store(rt)
+	}
+	return rt
+}
+
 // ResetCaches drops the lazily computed caches — for a shallow copy
 // whose resolution context differs from the original's.
 func (td *TypeDef) ResetCaches() {
 	td.fieldTypes = atomic.Value{}
 	td.ifaceReqs = atomic.Value{}
 	td.ifaceSigs = atomic.Value{}
+	td.hostType = atomic.Value{}
 }
 
 // TypeKind classifies a named type's underlying shape.

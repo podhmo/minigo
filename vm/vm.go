@@ -11180,11 +11180,11 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 			// native type equals the typedef's own box; other *T fall
 			// back to comparing the printed type spelling.
 			if et.HostNew != nil {
-				return reflect.TypeOf(gv.V) == reflect.TypeOf(et.HostNew())
+				return reflect.TypeOf(gv.V) == et.HostType()
 			}
 			return reflect.TypeOf(gv.V).String() == tdName(td)
 		}
-		if et.HostNew != nil && reflect.TypeOf(x) == reflect.TypeOf(et.HostNew()) {
+		if et.HostNew != nil && reflect.TypeOf(x) == et.HostType() {
 			// a runtime-internal host pointer (the package handle
 			// *runtime.Package) is neither a GoValue box nor a
 			// Deref-able ref — compare the native type the way the
@@ -11248,7 +11248,7 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 		// reflect.Value is the minireflect facade, boxed as its pointer
 		// (the typedef's HostNew) though it spells reflect.Value.
 		if td.Name == "reflect.Value" && td.HostNew != nil {
-			return rt == reflect.TypeOf(td.HostNew())
+			return rt == td.HostType()
 		}
 		// a boxed host func compares signatures like a script func
 		// value — func(int) int never asserts to func(string).
@@ -12159,7 +12159,7 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 				}
 			}
 		} else if et, err := v.H.ElemOf(utd); err == nil && et != nil &&
-			et.HostNew != nil && x != nil && reflect.TypeOf(x) == reflect.TypeOf(et.HostNew()) {
+			et.HostNew != nil && x != nil && reflect.TypeOf(x) == et.HostType() {
 			// a bound typedef's pointer slot takes the raw native value
 			// the intrinsics return — *runtime.Package rides no Cell or
 			// GoValue tag for pointeeTag to read, so identity compares on
