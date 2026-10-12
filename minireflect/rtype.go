@@ -113,7 +113,7 @@ func (e *Env) hostRTOf(td *runtime.TypeDef) reflect.Type {
 	var rt reflect.Type
 	switch {
 	case td.HostNew != nil:
-		rt = reflect.TypeOf(td.HostNew())
+		rt = td.HostType()
 	case td.HostScalar != nil:
 		rt = reflect.TypeOf(td.HostScalar)
 	}
