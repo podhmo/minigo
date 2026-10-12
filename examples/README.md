@@ -64,6 +64,22 @@ See [extract-schema/README.md](./extract-schema/README.md) and the
 design notes in
 [docs/sketch/plan-extract-schema.md](../docs/sketch/plan-extract-schema.md).
 
+## minigo-generate — interpreted //minigo:generate directives
+
+A `go generate`-shaped runner that never builds or execs a tool.
+A `//minigo:generate <ref> [args...]` comment names a package directory
+holding `func Main(args []string) int`; the runner invokes it inside
+one shared minigo engine — no process spawn, no build cost, and the
+engine's package caches stay warm across directives. The marker is its
+own word on purpose: `//go:generate` lines still go to `go generate`,
+so a file opts individual tools into interpreted execution. It is the
+dual of `gen-sync`: that example *writes* directives it never runs;
+this one *reads and runs* directives it never writes.
+
+See [minigo-generate/README.md](./minigo-generate/README.md) and the
+design notes in
+[docs/sketch/plan-minigo-generate.md](../docs/sketch/plan-minigo-generate.md).
+
 ## test-detect — affected test package detection
 
 Given the changed `.go` files of a commit (e.g. `git diff --name-only`),
