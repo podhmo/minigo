@@ -10534,6 +10534,9 @@ func anonArrayTypX(n int, elt ast.Expr) *runtime.TypeDef {
 // spells it, so `map[string]any`, `[]any`, `chan int` and friends mint
 // typedefs whose spelling matches the script-side equivalent instead
 // of one unparseable identifier ("map[string]interface {}").
+// reflectTypeExpr walks the same reflect.Type→ast.Expr shape with the
+// deliberately different contract host-func signatures need — nil for
+// named types rather than a fabricated identifier.
 func anonExprOf(t reflect.Type) ast.Expr {
 	if t == hostRValueType {
 		return ast.NewIdent("reflect.Value")

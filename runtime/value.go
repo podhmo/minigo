@@ -918,9 +918,11 @@ func opaqueKeyOf(v Value) Value {
 // UConstNative materializes an untyped constant to its default-type
 // value — the conversion every host crossing and VM slot shares:
 // bool/string/int64/float64/complex128 with Go's int/float overflow
-// errors and the constant -0 fold. The VM-side dressings stay with
-// the caller: the rune tag for a Rune constant and the GoValue wrap a
-// complex result needs inside the VM.
+// errors and the constant -0 fold. Every result crosses bare: a
+// complex128 is a plain complex128, never a boxed host value — this
+// path applies no VM dressing, so the caller keeps the wrap-up: the
+// rune tag for a Rune constant and the *GoValue box a complex result
+// needs inside the VM (scripts have no complex type).
 func UConstNative(u *UConst) (Value, error) {
 	switch u.V.Kind() {
 	case constant.Bool:
