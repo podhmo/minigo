@@ -87,27 +87,9 @@ func run(ctx context.Context, engineDir, scriptDir string, plugins []string, tar
 	if !ok || len(tup.Elems) != 2 {
 		return "", fmt.Errorf("extract-schema: unexpected result %T (want (string, error))", res)
 	}
-	doc, ok := runtime.Unwrap(tup.Elems[0]).(string)
+	doc, ok := runtime.DeepUnwrap(tup.Elems[0]).(string)
 	if !ok {
 		return "", fmt.Errorf("extract-schema: unexpected result type %T (want string)", tup.Elems[0])
 	}
-	return doc, errorResult(tup.Elems[1])
-}
-
-// errorResult unwraps the script's error slot: nil stays nil, a boxed
-// Go error surfaces as the run's error.
-func errorResult(v runtime.Value) error {
-	e := runtime.Unwrap(v)
-	if e == nil || e == runtime.NIL {
-		return nil
-	}
-	if runtime.IfaceTaggedNil(e) != nil {
-		return nil
-	}
-	if gv, ok := e.(*runtime.GoValue); ok {
-		if err, ok := gv.V.(error); ok {
-			return err
-		}
-	}
-	return fmt.Errorf("extract-schema: unexpected error result %T", v)
+	return doc, runtime.ErrorOf(tup.Elems[1])
 }

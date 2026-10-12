@@ -350,15 +350,15 @@ func (r *Runner) RunTask(ctx context.Context, file, name string, args []string) 
 }
 
 // resultErr unwraps a task's error result (a `func() error` task returns
-// its error as a boxed host value).
+// its error as a boxed host value). A task returning multiple values
+// carries the error in the last element; anything that is not an error
+// slot at all is tolerated as no error — the signature check already
+// rejected non-error results, so a strict decode would double-report.
 func resultErr(v runtime.Value) error {
 	switch x := v.(type) {
 	case *runtime.GoValue:
-		if err, ok := x.V.(error); ok {
-			return err
-		}
+		return runtime.ErrorOf(x)
 	case *runtime.Tuple:
-		// a task returning multiple values: last element is the error
 		if len(x.Elems) > 0 {
 			return resultErr(x.Elems[len(x.Elems)-1])
 		}

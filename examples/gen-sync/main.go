@@ -93,36 +93,17 @@ func run(ctx context.Context, engineDir, scriptDir, dir string, check, deps, exp
 	if err != nil {
 		return 0, err
 	}
-	return n, errorResult(tup.Elems[1])
+	return n, runtime.ErrorOf(tup.Elems[1])
 }
 
 func intResult(v runtime.Value) (int, error) {
-	switch n := runtime.Unwrap(v).(type) {
+	switch n := runtime.DeepUnwrap(v).(type) {
 	case int:
 		return n, nil
 	case int64:
 		return int(n), nil
 	}
 	return 0, fmt.Errorf("gen-sync: unexpected result type %T (want int)", v)
-}
-
-func errorResult(v runtime.Value) error {
-	e := runtime.Unwrap(v)
-	if e == nil || e == runtime.NIL {
-		return nil
-	}
-	if runtime.IfaceTaggedNil(e) != nil {
-		// a nil interface value returned in the error slot is a nil
-		// error (IfaceNil{error} is what `return nil` now binds); a
-		// boxed typed nil stays a non-nil error.
-		return nil
-	}
-	if gv, ok := e.(*runtime.GoValue); ok {
-		if err, ok := gv.V.(error); ok {
-			return err
-		}
-	}
-	return fmt.Errorf("gen-sync: unexpected error result %T", v)
 }
 
 // describeFailure renders a run failure with a first line naming who
