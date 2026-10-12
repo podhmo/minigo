@@ -16,6 +16,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/podhmo/minigo/pkg/locator"
 )
 
 // BuildConfig selects which files belong to a package build.
@@ -124,8 +126,16 @@ func (e unresolved) Is(target error) bool {
 }
 
 // markUnresolved wraps a locate failure as ErrUnresolved; the message
-// is unchanged.
-func markUnresolved(err error) error { return unresolved{err} }
+// is unchanged. Only a miss is marked — a resolved-but-broken module
+// graph (locator.ErrBrokenConfig: a replace cycle, an unspellable
+// replace target) passes through unmarked so the Lookup* soft loaders
+// keep "found but broken" loud instead of answering nil.
+func markUnresolved(err error) error {
+	if errors.Is(err, locator.ErrBrokenConfig) {
+		return err
+	}
+	return unresolved{err}
+}
 
 // Resolver locates a package. It must NOT recursively resolve the package's
 // own imports — that is the point of the lazy design.

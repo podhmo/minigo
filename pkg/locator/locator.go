@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -186,6 +187,23 @@ func (l *Locator) FindPackageDirFrom(fromDir, importPath string) (string, error)
 	return l.resolveImport(importPath, 0)
 }
 
+// ErrBrokenConfig tags a module-graph failure that is a configuration
+// problem rather than a resolution miss — a replace cycle, or a
+// replace whose target cannot be spelled at all. Callers that mark
+// misses for soft lookups (resolve.ErrUnresolved) must keep these
+// loud: a "found but broken" graph is not a "names nothing" answer.
+var ErrBrokenConfig = errors.New("locator: broken module configuration")
+
+// brokenConfig marks a module-graph failure for errors.Is without
+// changing the reported message.
+type brokenConfig struct{ err error }
+
+func (e brokenConfig) Error() string { return e.err.Error() }
+func (e brokenConfig) Unwrap() error { return e.err }
+func (e brokenConfig) Is(target error) bool {
+	return target == ErrBrokenConfig
+}
+
 // claimKind ranks which module claims an import path when several module
 // paths match it at the same length.
 type claimKind int
@@ -214,7 +232,7 @@ func matchModulePath(mod, importPath string) bool {
 // parent module shadowing a nested module's own packages.)
 func (l *Locator) resolveImport(importPath string, depth int) (string, error) {
 	if depth > 8 {
-		return "", fmt.Errorf("import path %q could not be resolved: replace directives form a cycle", importPath)
+		return "", brokenConfig{fmt.Errorf("import path %q could not be resolved: replace directives form a cycle", importPath)}
 	}
 
 	best := ""
@@ -257,7 +275,7 @@ func (l *Locator) resolveImport(importPath string, depth int) (string, error) {
 			}
 			absLocalCandidatePath, err := filepath.Abs(localCandidatePath)
 			if err != nil {
-				return "", fmt.Errorf("import path %q resolved through a broken replace directive: %w", importPath, err)
+				return "", brokenConfig{fmt.Errorf("import path %q resolved through a broken replace directive: %w", importPath, err)}
 			}
 			if stat, statErr := os.Stat(absLocalCandidatePath); statErr == nil && stat.IsDir() {
 				return absLocalCandidatePath, nil
