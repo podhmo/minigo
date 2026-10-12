@@ -127,10 +127,38 @@ func TestSigFields(t *testing.T) {
 		t.Errorf("results: %+v", results)
 	}
 
+	// NumParams/NumResults flatten field-group names into arity: `a, b
+	// int` is two params in one written field, `(q, r int)` two results
+	// in one; a variadic counts once.
+	two, err := xinspect.SignatureOf(xinspect.NewDecl(p, p.Index.Funcs["TwoArgs"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(two.ParamFields()) != 2 || two.NumParams() != 3 {
+		t.Errorf("TwoArgs: %d fields, NumParams %d", len(two.ParamFields()), two.NumParams())
+	}
+	bare, err := xinspect.SignatureOf(xinspect.NewDecl(p, p.Index.Funcs["PosArgs"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bare.ParamFields()) != 2 || bare.NumParams() != 2 {
+		t.Errorf("PosArgs: %d fields, NumParams %d", len(bare.ParamFields()), bare.NumParams())
+	}
+	dv, err := xinspect.SignatureOf(xinspect.NewDecl(p, p.Index.Funcs["Divmod"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dv.ResultFields()) != 1 || dv.NumResults() != 2 {
+		t.Errorf("Divmod: %d fields, NumResults %d", len(dv.ResultFields()), dv.NumResults())
+	}
+
 	// A method sig keeps the receiver on Recv; a nil slice unboxes to nil.
 	var empty xinspect.Sig
 	if empty.ParamFields() != nil || empty.ResultFields() != nil {
 		t.Error("nil slices should unbox to nil")
+	}
+	if empty.NumParams() != 0 || empty.NumResults() != 0 {
+		t.Error("empty sig should report zero arity")
 	}
 	md := lookupType(t, p, "User")
 	ms, err := xinspect.MethodsOf(md)
@@ -463,8 +491,8 @@ func TestBodyScope(t *testing.T) {
 		t.Fatalf("BodyOf WalkMe: %v", err)
 	}
 	wcall := xinspect.NodesOf(xinspect.NodesOf(wroot)[2])[0] // helper(...)
-	inner := xinspect.NodesOf(wcall)[1]                     // Args -> CallExpr
-	wfun := xinspect.ExprOf(xinspect.NodesOf(inner)[0])     // Fun -> SelectorExpr
+	inner := xinspect.NodesOf(wcall)[1]                      // Args -> CallExpr
+	wfun := xinspect.ExprOf(xinspect.NodesOf(inner)[0])      // Fun -> SelectorExpr
 	sid, ok := wfun.SymbolID()
 	if !ok || sid.PackagePath != "strings" || sid.Name != "TrimSpace" {
 		t.Errorf("unshadowed select = %v, %v", sid, ok)
