@@ -104,6 +104,43 @@ func TypeParamNames(fl *ast.FieldList) []string {
 	return out
 }
 
+// RecvTypeParamNames collects the type parameter names a method
+// receiver's instantiation declares, in order — `(p Pair[A, B])` binds
+// A and B for the whole method body. Pointer and paren wrappers on the
+// receiver type are peeled first; non-generic receivers yield nil.
+func RecvTypeParamNames(recv *ast.FieldList) []string {
+	if recv == nil || len(recv.List) == 0 {
+		return nil
+	}
+	e := recv.List[0].Type
+peel:
+	for {
+		switch x := e.(type) {
+		case *ast.StarExpr:
+			e = x.X
+		case *ast.ParenExpr:
+			e = x.X
+		default:
+			break peel
+		}
+	}
+	var out []string
+	add := func(x ast.Expr) {
+		if id, ok := x.(*ast.Ident); ok {
+			out = append(out, id.Name)
+		}
+	}
+	switch x := e.(type) {
+	case *ast.IndexExpr:
+		add(x.Index)
+	case *ast.IndexListExpr:
+		for _, ix := range x.Indices {
+			add(ix)
+		}
+	}
+	return out
+}
+
 func isDigits(s string) bool {
 	if s == "" {
 		return false

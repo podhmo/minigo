@@ -13421,26 +13421,15 @@ func (v *VM) specializeType(f *frame, g *runtime.TypeDef, targs []runtime.Value)
 }
 
 // recvTypeParamNames extracts the type parameter names a method receiver
-// declares — `func (l List[E, F])` yields [E, F]. Non-generic receivers
-// yield nil.
+// declares — `func (l List[E, F])` yields [E, F]. The ordered walk lives
+// in syntax.RecvTypeParamNames, which also peels pointer/paren wrappers
+// so `(p *Pair[A])` binds A like the inspect package already did.
+// Non-generic receivers yield nil.
 func recvTypeParamNames(d *ast.FuncDecl) []string {
-	if d == nil || d.Recv == nil || len(d.Recv.List) == 0 {
+	if d == nil || d.Recv == nil {
 		return nil
 	}
-	var idxs []ast.Expr
-	switch t := d.Recv.List[0].Type.(type) {
-	case *ast.IndexExpr:
-		idxs = []ast.Expr{t.Index}
-	case *ast.IndexListExpr:
-		idxs = t.Indices
-	}
-	var out []string
-	for _, x := range idxs {
-		if id, ok := x.(*ast.Ident); ok {
-			out = append(out, id.Name)
-		}
-	}
-	return out
+	return syntax.RecvTypeParamNames(d.Recv)
 }
 
 // ---- special forms ----

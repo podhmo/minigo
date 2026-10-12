@@ -1347,39 +1347,15 @@ func declTypeParams(s *Decl) map[string]bool {
 
 // recvTypeParamNames collects the type parameter names a method
 // receiver's instantiation declares — `(p Pair[A, B])` binds A and B
-// for the whole method body.
+// for the whole method body — as a set; the ordered walk (pointer/
+// paren peel included) lives in syntax.RecvTypeParamNames.
 func recvTypeParamNames(recv *ast.FieldList) map[string]bool {
-	if recv == nil || len(recv.List) == 0 {
-		return nil
-	}
-	e := recv.List[0].Type
-	for {
-		switch x := e.(type) {
-		case *ast.StarExpr:
-			e = x.X
-		case *ast.ParenExpr:
-			e = x.X
-		default:
-			goto done
-		}
-	}
-done:
 	var names map[string]bool
-	add := func(x ast.Expr) {
-		if id, ok := x.(*ast.Ident); ok {
-			if names == nil {
-				names = map[string]bool{}
-			}
-			names[id.Name] = true
+	for _, n := range syntax.RecvTypeParamNames(recv) {
+		if names == nil {
+			names = map[string]bool{}
 		}
-	}
-	switch x := e.(type) {
-	case *ast.IndexExpr:
-		add(x.Index)
-	case *ast.IndexListExpr:
-		for _, ix := range x.Indices {
-			add(ix)
-		}
+		names[n] = true
 	}
 	return names
 }
