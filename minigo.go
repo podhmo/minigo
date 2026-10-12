@@ -926,7 +926,10 @@ func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File, lenient bo
 			if imp.Path == "C" {
 				// the cgo pseudo-package: the interpreter cannot link
 				// native code, so fail the load up front instead of
-				// trapping later on an unresolvable `C.foo` reference
+				// trapping later on an unresolvable `C.foo` reference.
+				// Directory walks never reach here — the resolver drops
+				// cgo files from GoFiles like _test.go files; this fires
+				// only for a file named explicitly (LoadFile, :load, run).
 				return fmt.Errorf("%s: cgo is not supported: import %q", p.Fset.Position(imp.Pos), imp.Path)
 			}
 			ref := &runtime.ImportRef{

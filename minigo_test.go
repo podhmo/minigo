@@ -2435,3 +2435,52 @@ func TestDirScopeFilenameVisibility(t *testing.T) {
 		t.Fatalf("helper: got %v, want posix (a _windows.go sibling must be invisible)", v)
 	}
 }
+
+func TestDirWalkSkipsCgo(t *testing.T) {
+	// cgo files are invisible to directory walks like _test.go files:
+	// the resolver drops them from GoFiles, so a package that carries
+	// `import "C"` files still loads. Only an explicitly named file
+	// reports "cgo is not supported" at index time.
+	dir := t.TempDir()
+	write := func(name, src string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("ok.go", "package foo\n\nfunc OK() int { return 1 }\n")
+	write("cgo.go", "package foo\n\nimport \"C\"\n\nfunc FromC() int { return 2 }\n")
+
+	e := newEngine(t)
+	ctx := context.Background()
+	p, err := e.Package(ctx, dir)
+	if err != nil {
+		t.Fatalf("Package(%s): %v", dir, err)
+	}
+	if len(p.Files) != 1 {
+		t.Fatalf("the cgo file must be skipped: got %d files", len(p.Files))
+	}
+	if p.Index.Funcs["FromC"] != nil {
+		t.Error("FromC must not index — its file imports \"C\"")
+	}
+	v, err := e.Call(ctx, p, "OK")
+	if err != nil || v != int64(1) {
+		t.Fatalf("call OK: %v, %v", v, err)
+	}
+
+	// an explicitly named cgo file still fails, loudly
+	if _, err := e.LoadFile(ctx, filepath.Join(dir, "cgo.go")); err == nil ||
+		!strings.Contains(err.Error(), "cgo is not supported") {
+		t.Fatalf("LoadFile on a cgo file must fail: got %v", err)
+	}
+
+	// a directory holding only cgo files has no buildable Go files —
+	// the error must name why
+	only := t.TempDir()
+	if err := os.WriteFile(filepath.Join(only, "cgo.go"), []byte("package bar\n\nimport \"C\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Package(ctx, only); err == nil ||
+		!strings.Contains(err.Error(), "cgo") {
+		t.Fatalf("all-cgo dir must fail naming cgo: got %v", err)
+	}
+}
