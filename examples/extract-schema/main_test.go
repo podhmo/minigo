@@ -89,8 +89,9 @@ func TestExtractSchema(t *testing.T) {
 
 // TestPkgMode exercises -pkg resolution: an import path names the same
 // package as its directory, so both spellings render the identical
-// document — and a bound stdlib path renders an empty-defs doc instead
-// of trapping inside DirOf on the non-directory target string.
+// document — and a bound stdlib path retries through the source layer,
+// so its decls render instead of an empty-defs doc or a trap inside
+// DirOf on the non-directory target string.
 func TestPkgMode(t *testing.T) {
 	ctx := context.Background()
 	dirDoc, err := run(ctx, ".", "./script", nil, "./app", false, "", "leaf", true, "", "")
@@ -104,12 +105,20 @@ func TestPkgMode(t *testing.T) {
 	if diff := cmp.Diff(dirDoc, pkgDoc); diff != "" {
 		t.Errorf("-pkg doc differs from dir doc (-dir +pkg):\n%s", diff)
 	}
-	timeDoc, err := run(ctx, ".", "./script", nil, "time", true, "", "leaf", true, "", "")
-	if err != nil {
-		t.Fatalf("-pkg time: %v", err)
+	// a bound path retries through source, so whole-package listing now
+	// walks real decls — and fails honestly on the first unrenderable
+	// one (Timer's chan field) rather than emitting an empty $defs doc.
+	if _, err := run(ctx, ".", "./script", nil, "time", true, "", "leaf", true, "", ""); err == nil {
+		t.Error("-pkg time: expected an unsupported-shape error, got nil")
 	}
-	if !strings.Contains(timeDoc, "$schema") {
-		t.Errorf("-pkg time produced no schema doc: %q", timeDoc)
+	// a bound path resolved from source answers single-type lookups too
+	// (corpus m05: `-pkg time Time` used to fail "type not found").
+	timeTypeDoc, err := run(ctx, ".", "./script", nil, "time", true, "Time", "leaf", true, "", "")
+	if err != nil {
+		t.Fatalf("-pkg time Time: %v", err)
+	}
+	if !strings.Contains(timeTypeDoc, `"type": "object"`) {
+		t.Errorf("-pkg time Time produced no object schema: %q", timeTypeDoc)
 	}
 	// a target string that names no package is a clean error, not a
 	// runtime trap
