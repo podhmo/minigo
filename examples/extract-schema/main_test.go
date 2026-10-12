@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -76,6 +77,37 @@ func TestExtractSchema(t *testing.T) {
 				t.Errorf("%s mismatch (-want +got):\n%s", tc.golden, diff)
 			}
 		})
+	}
+}
+
+// TestPkgMode exercises -pkg resolution: an import path names the same
+// package as its directory, so both spellings render the identical
+// document — and a bound stdlib path renders an empty-defs doc instead
+// of trapping inside DirOf on the non-directory target string.
+func TestPkgMode(t *testing.T) {
+	ctx := context.Background()
+	dirDoc, err := run(ctx, ".", "./script", nil, "./app", false, "", "leaf", true, "", "")
+	if err != nil {
+		t.Fatalf("dir mode: %v", err)
+	}
+	pkgDoc, err := run(ctx, ".", "./script", nil, "github.com/podhmo/minigo/examples/extract-schema/app", true, "", "leaf", true, "", "")
+	if err != nil {
+		t.Fatalf("pkg mode: %v", err)
+	}
+	if diff := cmp.Diff(dirDoc, pkgDoc); diff != "" {
+		t.Errorf("-pkg doc differs from dir doc (-dir +pkg):\n%s", diff)
+	}
+	timeDoc, err := run(ctx, ".", "./script", nil, "time", true, "", "leaf", true, "", "")
+	if err != nil {
+		t.Fatalf("-pkg time: %v", err)
+	}
+	if !strings.Contains(timeDoc, "$schema") {
+		t.Errorf("-pkg time produced no schema doc: %q", timeDoc)
+	}
+	// a target string that names no package is a clean error, not a
+	// runtime trap
+	if _, err := run(ctx, ".", "./script", nil, "example.com/gone", true, "", "leaf", true, "", ""); err == nil {
+		t.Error("-pkg on an unresolvable path: expected an error, got nil")
 	}
 }
 
