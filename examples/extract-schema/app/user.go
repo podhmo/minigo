@@ -116,3 +116,22 @@ type Ambig struct {
 	LeftY
 	RightY
 }
+
+// Byte is a named uint8: encoding/json marshals []Byte as base64, the
+// same wire shape as []byte.
+type Byte byte
+
+// Byte2 adds one hop to the named-byte chase.
+type Byte2 Byte
+
+// Blobbed covers the byte-slice spellings: builtin and named byte
+// elements marshal as base64, a named slice-of-bytes element stays an
+// array of base64 strings, and a fixed array keeps the array shape.
+type Blobbed struct {
+	Data   []Byte      `json:"data"`
+	Data2  []Byte2     `json:"data2"`
+	Raw    []byte      `json:"raw"`
+	Fixed  [4]byte     `json:"fixed"`
+	Subs   []dep.Bin   `json:"subs"`
+	Moneys []dep.Money `json:"moneys"`
+}

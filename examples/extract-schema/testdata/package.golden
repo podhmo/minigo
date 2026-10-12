@@ -19,6 +19,66 @@
 			],
 			"type": "object"
 		},
+		"Bin": {
+			"contentEncoding": "base64",
+			"description": "Bin is a named slice of bytes: elements of []Bin are themselves\nbase64 strings on the wire, while the outer slice stays an array.",
+			"type": "string"
+		},
+		"Blobbed": {
+			"additionalProperties": true,
+			"description": "Blobbed covers the byte-slice spellings: builtin and named byte\nelements marshal as base64, a named slice-of-bytes element stays an\narray of base64 strings, and a fixed array keeps the array shape.",
+			"properties": {
+				"data": {
+					"contentEncoding": "base64",
+					"type": "string"
+				},
+				"data2": {
+					"contentEncoding": "base64",
+					"type": "string"
+				},
+				"fixed": {
+					"items": {
+						"minimum": 0,
+						"type": "integer"
+					},
+					"type": "array"
+				},
+				"moneys": {
+					"items": {
+						"$ref": "#/$defs/Money"
+					},
+					"type": "array"
+				},
+				"raw": {
+					"contentEncoding": "base64",
+					"type": "string"
+				},
+				"subs": {
+					"items": {
+						"$ref": "#/$defs/Bin"
+					},
+					"type": "array"
+				}
+			},
+			"required": [
+				"data",
+				"data2",
+				"fixed",
+				"moneys",
+				"raw",
+				"subs"
+			],
+			"type": "object"
+		},
+		"Byte": {
+			"description": "Byte is a named uint8: encoding/json marshals []Byte as base64, the\nsame wire shape as []byte.",
+			"minimum": 0,
+			"type": "integer"
+		},
+		"Byte2": {
+			"$ref": "#/$defs/Byte",
+			"description": "Byte2 adds one hop to the named-byte chase."
+		},
 		"Commented": {
 			"additionalProperties": true,
 			"description": "Commented covers the comment positions a description can come from:\na doc comment above the field and a line comment at its end.",

@@ -32,3 +32,7 @@ const (
 	TagA Tag = "a"
 	TagB Tag = "b"
 )
+
+// Bin is a named slice of bytes: elements of []Bin are themselves
+// base64 strings on the wire, while the outer slice stays an array.
+type Bin []byte
