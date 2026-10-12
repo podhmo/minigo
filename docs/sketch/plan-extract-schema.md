@@ -329,22 +329,37 @@ Built and passing locally (`go run ./ ./app User` and friends):
   imported by a script is a *different type identity* than the engine's
   intrinsic `runtime.Package`. Workaround: keep package values in
   `:=`-inferred slots, never declare the type. gen-sync never needed
-  the annotation, which is why it did not hit this.
+  the annotation, which is why it did not hit this. *Resolved in
+  #875:* the `runtime` bind carries a `Package` host type and the
+  pointer-type checks compare HostNew-native types, so declared
+  `*runtime.Package` slots accept the intrinsic's value — the
+  workaround is no longer needed.
 - **Multi-return scripts arrive as `*runtime.Tuple`**, not a
   destructured pair — the host must index `Elems` (gen-sync documents
-  the same shape; worth a shared host helper).
+  the same shape; worth a shared host helper). *Resolved in #877:*
+  `runtime.DeepUnwrap` unwraps Tuple/Map/GoValue/UConst recursively
+  and `runtime.ErrorOf` decodes the `(T, error)` slot; both
+  `unwrapDeep` copies and task-run's `resultErr` were deleted. Cycle-
+  and key-safety followed in #888/#889.
 - **`map[string]any` crosses the boundary as `*runtime.Map`** — and
   nested values stay boxed. The current design sidesteps the host-side
   `unwrapDeep` entirely: plugin `Config()` is consumed *inside* the
-  script's VM, so the map never crosses the boundary.
+  script's VM, so the map never crosses the boundary. *Resolved in
+  #877:* `runtime.DeepUnwrap` expands maps to `map[any]any` (they
+  re-box through `SnapshotOf`, so values round-trip); array-keyed
+  maps keep comparable keys since #889.
 - **`inspect.TypeFields` (intrinsic) is errorless**, unlike its
   `TypeFieldsOf` host twin — non-struct kinds return empty rather than
   an error, so the walk checks `Kind` first. Naming the error-returning
   one `Of` while the intrinsic is bare is consistent with
   `Fields`/`FieldsOf`, but reads subtly different in script code.
+  *Resolved in #872:* the asymmetry had already been fixed before the
+  stack — both sides error on non-composite kinds today, and the
+  contract is pinned by the `TypeFieldsError` tests.
 - **Doc comments carry their trailing newline** — `d.Doc` /
   `f.Doc` end with `\n`; emitters may want to trim (the script now
-  `TrimSpace`s every description).
+  `TrimSpace`s every description). *Resolved in #872:* `Decl.Doc` and
+  `Field.Doc` return the text without the trailing newline.
 - **Comment-position coverage verified**: `inspect.Field.Doc` already
   merges both positions — a doc comment above the field wins, and the
   trailing same-line comment is used when there is no doc group
@@ -356,7 +371,12 @@ Built and passing locally (`go run ./ ./app User` and friends):
   `interface{}` — the boundary check is spelling-based). Only
   `[]string`/`[]byte`-shaped element types auto-unbox reliably;
   `[]any` elements arrive `*runtime.GoValue`-boxed and unindexable.
-  Function hooks sidestep all three (below).
+  Function hooks sidestep all three (below). *Resolved in #878:* the
+  param check mints composite element types structurally
+  (`anonExprOf`), so `any`/`interface{}`/`interface {}` spellings
+  converge to one, and anonymous slice/array arguments deep-unbox
+  element-wise — `rs[0]["k"]` works. The len-0 subslice aliasing
+  regression in that guard was fixed in #890.
 - **`inspect.Value(pkg, name)` returns a live function value** for a
   func decl, callable in the same VM — the plugin hook mechanism.
 - **Source-package imports ARE interned; the `inspect` stub types are
@@ -371,34 +391,48 @@ Built and passing locally (`go run ./ ./app User` and friends):
   a plugin traps `undefined: inspect.Field` — the view types are not
   registered type symbols at all. Result: hooks take `any` and
   narrow via `reflect` (`FieldByName`), while plugin *contracts* can
-  name shared source-package types directly.
+  name shared source-package types directly. *Resolved in #874:* the
+  ten view types register via `hostType`, so `x.(*inspect.Field)` and
+  `func(*inspect.Field, string) string` hooks name a real identity.
+  Residual: `inspect.Resolver` stays unregistered and constructing a
+  view struct in script still mints the host zero value — documented
+  in the PR body.
 - **`inspect.Symbol(pkg, name)` traps on a miss** — there is no
   non-trapping name lookup, so optional plugin entry points are
   probed by scanning `inspect.Decls` (`findFunc`). A `Lookup`-
-  style soft variant would read better.
-- **`inspect.Symbol(pkg, name)` traps on a miss** — there is no
-  non-trapping name lookup, so optional plugin entry points are
-  probed by scanning `inspect.Decls` (`findFunc`). A `Lookup`-
-  style soft variant would read better.
+  style soft variant would read better. *Resolved in #865/#866:*
+  `inspect.LookupSymbol` answers nil on a miss, and `LookupDirOf` /
+  `LookupPackageOf` do the same for the loaders (a broken graph still
+  surfaces as an error — `locator.ErrBrokenConfig`, #882). The
+  findFunc scan is gone.
 
 ## Asks of minigo
 
 - A repo-enumeration surface for "walk every package under a root" —
   the `modulewalk` TODO item this tool would consume for a whole-repo
   mode.
-- The `*runtime.Package` type-identity trap above — either unify the
-  identities or make the error message name the mismatch.
-- Register the inspect view types (`*inspect.Field`, `*inspect.Decl`,
+- ~~The `*runtime.Package` type-identity trap above — either unify the
+  identities or make the error message name the mismatch.~~ *Resolved
+  in #875* (see the finding above).
+- ~~Register the inspect view types (`*inspect.Field`, `*inspect.Decl`,
   ...) as real type symbols and intern them across package instances,
   so plugin hook signatures can name them directly instead of
   `any`+reflect. Same goes for a non-trapping `inspect.Lookup` —
-  optional entry points currently require a Decls scan.
-- A caller-visible way to pick a package's loading path (bound stub
+  optional entry points currently require a Decls scan.~~ *Resolved
+  in #874 / #865–#866* (see the findings above).
+- ~~A caller-visible way to pick a package's loading path (bound stub
   vs source index) — a load option or two split load functions —
   because today the path is chosen invisibly and the behavioral
   differences (interning, `Standard()`, bound-shadow misses)
-  leak through it.
+  leak through it.~~ *Resolved in #876:* `inspect.BoundOf` answers the
+  bound-only direction and the stub comments spell which loader
+  answers which object (`DirOf`/`LookupDirOf` are already
+  source-only).
 - Whatever the usecasefuzz corpus hits next: generic instantiations
   (`IndexExpr` walks the base; type arguments are not substituted —
   the same boundary convert-define documents), `FuncType`/`ChanType`
-  fields currently error loudly.
+  fields currently error loudly. *Partly resolved:* `SymbolID` marks
+  type parameters with the `:typeparam:` pseudo path (#873) so the
+  walk no longer traps on generic decls (corpus c06/c07/c11 green);
+  `func`/`chan`-typed fields still error loudly by design — the
+  corpus pins them as FAIL.
