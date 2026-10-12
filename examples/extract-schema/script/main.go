@@ -295,7 +295,13 @@ func (g *generator) schemaFor(te *inspect.TypeExpr) (map[string]any, error) {
 	case "ParenExpr":
 		return g.schemaFor(inspect.Children(te)[0])
 	case "ArrayType":
-		items, err := g.schemaFor(inspect.Children(te)[0])
+		elem := inspect.Children(te)[0]
+		if isByteSlice(te, elem) {
+			// encoding/json marshals []byte as a base64 string —
+			// the one slice whose wire shape is not an array.
+			return map[string]any{"type": "string", "contentEncoding": "base64"}, nil
+		}
+		items, err := g.schemaFor(elem)
 		if err != nil {
 			return nil, err
 		}
@@ -379,7 +385,7 @@ func (g *generator) follow(pkgPath, name string) (map[string]any, error) {
 	if g.stdlib == "leaf" && inspect.Standard(pkg) {
 		return leafDoc("stdlib type " + key + " (walk stopped)"), nil
 	}
-	d := inspect.Symbol(pkg, name)
+	d := inspect.LookupSymbol(pkg, name)
 	if d == nil {
 		// a bound package answers host pseudo-decls for TypeDef-valued
 		// members; a miss here means the name is not a type at all.
@@ -509,7 +515,7 @@ func putProp(props map[string]any, required map[string]bool, depths, ambig map[s
 func (g *generator) addFields(fs []*inspect.Field, props map[string]any, required map[string]bool, depths, ambig map[string]int, embedding map[string]bool, depth int, reqOK bool) error {
 	var embeds []*inspect.Field
 	for _, f := range fs {
-		name, named, skip := fieldJSONName(f)
+		name, opts, named, skip := fieldJSONName(f)
 		if skip {
 			continue
 		}
@@ -519,7 +525,7 @@ func (g *generator) addFields(fs []*inspect.Field, props map[string]any, require
 		}
 		// A, B string: every declared name is its own property.
 		for _, goName := range f.Names {
-			if !exported(goName) {
+			if !isExported(goName) {
 				continue
 			}
 			propName := goName
@@ -531,6 +537,7 @@ func (g *generator) addFields(fs []*inspect.Field, props map[string]any, require
 				return fmt.Errorf("field %s: %w", goName, err)
 			}
 			g.applyFieldDoc(fd, f, goName)
+			applyStringOption(fd, opts)
 			if err := g.applyOverrideTag(fd, f); err != nil {
 				return err
 			}
@@ -540,7 +547,7 @@ func (g *generator) addFields(fs []*inspect.Field, props map[string]any, require
 		}
 	}
 	for _, f := range embeds {
-		name, named, _ := fieldJSONName(f)
+		name, _, named, _ := fieldJSONName(f)
 		if err := g.addEmbedded(f, name, named, props, required, depths, ambig, embedding, depth, reqOK); err != nil {
 			return err
 		}
@@ -551,7 +558,7 @@ func (g *generator) addFields(fs []*inspect.Field, props map[string]any, require
 // addEmbedded flattens an embedded field's properties inline when it
 // resolves to a struct decl — JSON's promoted-field rule. A tagged
 // embed keeps its own name; a recursive embed (seen mid-flatten)
-// degrades to a named $ref so cycles terminate.
+// drops the subtree whole, matching encoding/json's cycle cut.
 func (g *generator) addEmbedded(f *inspect.Field, name string, named bool, props map[string]any, required map[string]bool, depths, ambig map[string]int, embedding map[string]bool, depth int, reqOK bool) error {
 	te := f.Type
 	ptr := false
@@ -587,12 +594,8 @@ func (g *generator) addEmbedded(f *inspect.Field, name string, named bool, props
 	}
 	key := sid.PackagePath + "." + sid.Name
 	if embedding[key] {
-		// A{*B}, B{*A}: an unbounded flatten — degrade to a named ref.
-		fd, err := g.schemaFor(f.Type)
-		if err != nil {
-			return err
-		}
-		put(sid.Name, fd)
+		// A{*B}, B{*A}: an unbounded flatten — encoding/json drops the
+		// subtree rather than inventing a type-named property.
 		return nil
 	}
 	// follow the same leaf policy as named fields
@@ -606,7 +609,7 @@ func (g *generator) addEmbedded(f *inspect.Field, name string, named bool, props
 		put(sid.Name, leafDoc("stdlib type "+key+" (walk stopped)"))
 		return nil
 	}
-	d := inspect.Symbol(pkg, sid.Name)
+	d := inspect.LookupSymbol(pkg, sid.Name)
 	if d == nil || inspect.Kind(d) != "type" || inspect.Kind(d) == "host" {
 		fd, err := g.schemaFor(f.Type)
 		if err != nil {
@@ -660,22 +663,42 @@ func (g *generator) applyOverrideTag(fd map[string]any, f *inspect.Field) error 
 
 // fieldJSONName resolves a field's property name from its struct tag:
 // json wins, then yaml, then toml. skip reports `json:"-"`; named
-// reports the tag carried an explicit name ("" name keeps the Go name).
-func fieldJSONName(f *inspect.Field) (name string, named bool, skip bool) {
+// reports the tag carried an explicit name ("" name keeps the Go
+// name); opts carries the tag's comma options (`,omitempty`,
+// `,string`) so callers can apply the ones encoding/json honours.
+func fieldJSONName(f *inspect.Field) (name string, opts []string, named bool, skip bool) {
 	tag := reflect.StructTag(f.Tag)
 	for _, key := range []string{"json", "yaml", "toml"} {
 		if tv, ok := tag.Lookup(key); ok {
 			parts := strings.Split(tv, ",")
 			if parts[0] == "-" {
-				return "", false, true
+				return "", nil, false, true
 			}
 			if parts[0] != "" {
-				return parts[0], true, false
+				return parts[0], parts[1:], true, false
 			}
-			return "", false, false
+			return "", parts[1:], false, false
 		}
 	}
-	return "", false, false
+	return "", nil, false, false
+}
+
+// applyStringOption honours encoding/json's ,string tag option: scalar
+// values marshal as quoted JSON strings, so the schema type degrades
+// to "string" and the numeric bounds stop applying.
+func applyStringOption(fd map[string]any, opts []string) {
+	for _, o := range opts {
+		if strings.TrimSpace(o) != "string" {
+			continue
+		}
+		switch fd["type"] {
+		case "string", "integer", "number", "boolean":
+			fd["type"] = "string"
+			delete(fd, "minimum")
+			delete(fd, "maximum")
+		}
+		return
+	}
 }
 
 // wantsRequired applies the required rules: pointer and omitempty mark
@@ -696,6 +719,19 @@ func wantsRequired(f *inspect.Field) bool {
 	if v, ok := tag.Lookup("required"); ok {
 		if b, err := strconv.ParseBool(v); err == nil {
 			required = b
+		}
+	}
+	// the override tag is the outermost patch layer: required= in it
+	// beats both the shape default and a required:"" tag.
+	if raw, ok := tag.Lookup("jsonschema-override"); ok {
+		for _, pair := range strings.Split(raw, ";") {
+			kv := strings.SplitN(pair, "=", 2)
+			if len(kv) != 2 || strings.TrimSpace(kv[0]) != "required" {
+				continue
+			}
+			if b, err := strconv.ParseBool(strings.TrimSpace(kv[1])); err == nil {
+				required = b
+			}
 		}
 	}
 	return required
@@ -723,10 +759,13 @@ func coerceScalar(v string) any {
 	return v
 }
 
-func exported(name string) bool {
-	if name == "" {
+// isByteSlice reports whether te spells []byte (or the identical
+// []uint8) — a slice whose element is the builtin byte. Fixed arrays
+// keep the array shape; only the slice form marshals as base64.
+func isByteSlice(te, elem *inspect.TypeExpr) bool {
+	if !strings.HasPrefix(te.Text, "[]") {
 		return false
 	}
-	c := name[0]
-	return 'A' <= c && c <= 'Z'
+	sid := inspect.SymbolID(elem)
+	return sid != nil && sid.PackagePath == ":builtin:" && (sid.Name == "byte" || sid.Name == "uint8")
 }
