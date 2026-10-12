@@ -41,6 +41,16 @@ func Main(target string, pkgMode bool, typeName string, stdlibMode string, loose
 	if pkg == nil {
 		return "", fmt.Errorf("extract-schema: could not load package %q", target)
 	}
+	// A bound path's canonical answer is the bound object — globals
+	// only, no source index — so `-pkg time` can never see `type Time`.
+	// When a bound shadow exists, retry through the source layer:
+	// LookupSourceOf stays nil for a bound path with no source behind
+	// it (synthetic bound paths keep the graceful failure above).
+	if pkgMode && inspect.BoundOf(target) != nil {
+		if sp := inspect.LookupSourceOf(target); sp != nil {
+			pkg = sp
+		}
+	}
 
 	g := &generator{
 		loose:     loose,
