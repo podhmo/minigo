@@ -130,6 +130,7 @@ func TestInspect(t *testing.T) {
 		"ASTBoundTrap",               // bound symbols carry no AST node
 		"BodyTypeTrap",               // a type decl has no body
 		"BodyBoundTrap",              // bound symbols carry no body
+		"PackagesMissTrap",           // a missing root is an error — no Lookup twin
 	} {
 		if _, err := e.Run(context.Background(), "./testdata/inspectuse", fn); err == nil {
 			t.Errorf("%s: expected trap, got nil", fn)
@@ -151,6 +152,35 @@ func TestInspect(t *testing.T) {
 		t.Error("LoadErr: expected the import's load error")
 	} else if strings.Contains(err.Error(), "expects") {
 		t.Errorf("LoadErr: load error masked as argument error: %v", err)
+	}
+}
+
+// TestInspectPackages exercises inspect.Packages over a tempdir repo
+// whose nested module must claim its own subtree — the enumeration
+// shape the test-detect plan asks for.
+func TestInspectPackages(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"go.mod":             "module example.com/root\n\ngo 1.24\n",
+		"root.go":            "package root\n\nfunc Root() {}\n",
+		"root_test.go":       "package root\n",
+		"sub/sub.go":         "package sub\n\nfunc Sub() {}\n",
+		"onlytest/x_test.go": "package onlytest\n\nimport \"strings\"\n\nvar _ = strings.NewReader\n",
+		"nested/go.mod":      "module example.com/nested\n\ngo 1.24\n",
+		"nested/n.go":        "package nested\n\nfunc N() {}\n",
+	}
+	for rel, body := range files {
+		path := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := newEngine(t)
+	if got := run(t, e, "./testdata/inspectuse", "PackagesWalk", dir); got != "ok" {
+		t.Errorf("PackagesWalk: %v", got)
 	}
 }
 
