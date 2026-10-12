@@ -22,18 +22,35 @@ import "fmt"
 //
 // Everything else — functions, structs, channels, packages — passes
 // through as its runtime object.
+//
+// Cyclic values are legal (a script map can store itself through an
+// any slot): a container reachable through itself folds back to the
+// host container already being built for it, so the cycle arrives
+// intact instead of recursing until the host process overflows — the
+// same answer the deepHost marshal gives.
 func DeepUnwrap(v Value) any {
-	for {
-		if n, ok := v.(*Named); ok {
-			v = n.V
-			continue
-		}
-		if d, ok := Deref(v); ok {
-			v = d
-			continue
-		}
-		break
-	}
+	return deepUnwrap(v, newUnwalk())
+}
+
+// unwalk carries the guards one DeepUnwrap walk shares: seen folds a
+// container back to the output already being built for it, and peeled
+// stops a reference chain that loops back on itself (a cell handed its
+// own referrer).
+type unwalk struct {
+	seen   map[Value]any
+	peeled map[Value]struct{}
+}
+
+func newUnwalk() *unwalk {
+	return &unwalk{seen: map[Value]any{}, peeled: map[Value]struct{}{}}
+}
+
+// deepUnwrap is DeepUnwrap's worker. Containers register their output
+// in seen before their elements are walked, so a repeat visit returns
+// the partially built container — which completes by the time the
+// top-level caller finishes, and which shared (non-cyclic) subtrees
+// fold to as well, preserving the input's aliasing.
+func deepUnwrap(v Value, w *unwalk) any {
 	switch x := v.(type) {
 	case nil, Nil:
 		return nil
@@ -43,40 +60,64 @@ func DeepUnwrap(v Value) any {
 		return nil
 	case *TypedNil:
 		return nil
+	case *Named:
+		return deepUnwrap(x.V, w)
+	case *Cell, *FieldRef, *IndexRef, *DerefRef:
+		if _, dup := w.peeled[v]; dup {
+			return v
+		}
+		w.peeled[v] = struct{}{}
+		d, ok := Deref(v)
+		if !ok {
+			return v
+		}
+		return deepUnwrap(d, w)
 	case *Tuple:
+		if old, ok := w.seen[x]; ok {
+			return old
+		}
 		xs := make([]any, len(x.Elems))
+		w.seen[x] = xs
 		for i, e := range x.Elems {
-			xs[i] = DeepUnwrap(e)
+			xs[i] = deepUnwrap(e, w)
 		}
 		return xs
 	case *Slice:
+		if old, ok := w.seen[x]; ok {
+			return old
+		}
 		n := int(x.Len())
 		xs := make([]any, n)
+		w.seen[x] = xs
 		if x.Virtual() {
-			zero := DeepUnwrap(x.Zero)
+			zero := deepUnwrap(x.Zero, w)
 			for i := range xs {
 				xs[i] = zero
 			}
 			return xs
 		}
 		for i, e := range x.Elems {
-			xs[i] = DeepUnwrap(e)
+			xs[i] = deepUnwrap(e, w)
 		}
 		return xs
 	case *Map:
+		if old, ok := w.seen[x]; ok {
+			return old
+		}
 		m := make(map[any]any, x.Len())
+		w.seen[x] = m
 		for i := 0; i < x.Len(); i++ {
 			k, e := x.At(i)
-			m[DeepUnwrap(k)] = DeepUnwrap(e)
+			m[deepUnwrap(k, w)] = deepUnwrap(e, w)
 		}
 		return m
 	case *Spread:
-		return DeepUnwrap(x.S)
+		return deepUnwrap(x.S, w)
 	case *GoValue:
 		return x.V
 	case *UConst:
 		if nv, err := UConstNative(x); err == nil {
-			return DeepUnwrap(nv)
+			return deepUnwrap(nv, w)
 		}
 		return x
 	}

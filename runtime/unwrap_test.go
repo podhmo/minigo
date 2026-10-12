@@ -88,6 +88,77 @@ func TestDeepUnwrap(t *testing.T) {
 	}
 }
 
+func TestDeepUnwrapCycles(t *testing.T) {
+	t.Run("self map", func(t *testing.T) {
+		m := &Map{}
+		m.Insert("self", m)
+		got, ok := DeepUnwrap(m).(map[any]any)
+		if !ok {
+			t.Fatalf("got %T, want map[any]any", DeepUnwrap(m))
+		}
+		inner, ok := got["self"].(map[any]any)
+		if !ok {
+			t.Fatalf("got[\"self\"] = %T, want map[any]any", got["self"])
+		}
+		// the cycle folds back to the partially built container —
+		// mutating the inner map must show on the outer one.
+		inner["marker"] = true
+		if _, ok := got["marker"]; !ok {
+			t.Errorf("got[\"self\"] is not the same map as the result")
+		}
+	})
+
+	t.Run("map-slice mutual cycle", func(t *testing.T) {
+		s := &Slice{}
+		m := &Map{}
+		s.Elems = append(s.Elems, m)
+		m.Insert("s", s)
+		got, ok := DeepUnwrap(m).(map[any]any)
+		if !ok {
+			t.Fatalf("got %T, want map[any]any", DeepUnwrap(m))
+		}
+		xs, ok := got["s"].([]any)
+		if !ok {
+			t.Fatalf("got[\"s\"] = %T, want []any", got["s"])
+		}
+		inner, ok := xs[0].(map[any]any)
+		if !ok {
+			t.Fatalf("got[\"s\"][0] = %T, want map[any]any", xs[0])
+		}
+		inner["marker"] = true
+		if _, ok := got["marker"]; !ok {
+			t.Errorf("got[\"s\"][0] is not the same map as the result")
+		}
+	})
+
+	t.Run("shared subtree is not a cycle", func(t *testing.T) {
+		shared := &Slice{Elems: []Value{int64(1)}}
+		got, ok := DeepUnwrap(&Slice{Elems: []Value{shared, shared}}).([]any)
+		if !ok {
+			t.Fatalf("got %T, want []any", got)
+		}
+		want := []any{[]any{int64(1)}, []any{int64(1)}}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("(-want +got):\n%s", diff)
+		}
+		// a shared subtree folds to the one result object — the
+		// input's aliasing carries over, like deepHost.
+		if &got[0].([]any)[0] != &got[1].([]any)[0] {
+			t.Errorf("shared subtree did not fold to one result object")
+		}
+	})
+
+	t.Run("ref cycle", func(t *testing.T) {
+		c := &Cell{}
+		c.Elem = c
+		// a cell handed its own referrer stops at the repeat — the
+		// honest answer for a reference that never bottoms out.
+		if got := DeepUnwrap(c); got != Value(c) {
+			t.Errorf("got %v, want the cell itself", got)
+		}
+	})
+}
+
 func TestErrorOf(t *testing.T) {
 	errBoom := errors.New("boom")
 	ifaceTD := &TypeDef{Kind: KindInterface, Name: "error"}
