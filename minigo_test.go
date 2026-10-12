@@ -136,6 +136,21 @@ func TestCallArgs(t *testing.T) {
 		{"IsNilM", []runtime.Value{map[string]int(nil)}, true},
 		{"Nested", []runtime.Value{map[string]map[string]int{"a": {"b": 3}}}, int64(3)},
 		{"NestedAny", []runtime.Value{map[string]any{"m": map[string]int{"k": 5}}}, int64(5)},
+		// composite element types mint real typedef structure — a
+		// []map[string]any arg adapts whichever way the param spells
+		// the element interface (any / interface{} / interface {}),
+		// and each element arrives a *runtime.Map: index, range, and
+		// index-assign all work on it.
+		{"MapSliceGet", []runtime.Value{[]map[string]any{{"k": 7}}}, int64(7)},
+		{"MapSliceGetI", []runtime.Value{[]map[string]any{{"k": 7}}}, int64(7)},
+		{"MapSliceGetS", []runtime.Value{[]map[string]any{{"k": 7}}}, int64(7)},
+		{"MapSliceSum", []runtime.Value{[]map[string]any{{"a": 1}, {"b": 2}}}, int64(3)},
+		{"MapSliceSet", []runtime.Value{[]map[string]any{{"k": 1}}}, int64(9)},
+		// an `any`-typed element holding an anonymous map deep-unboxes
+		// the same way — the .(map[string]any) assert spells it back.
+		{"AnyElemGet", []runtime.Value{[]any{map[string]any{"k": 7}}}, int64(7)},
+		{"AnyIfaceElem", []runtime.Value{map[string]any{"k": 7}}, int64(7)},
+		{"DeepNest", []runtime.Value{map[string]any{"m": []map[string]any{{"k": 5}}}}, int64(5)},
 	} {
 		got := run(t, e, "./testdata/callargs", c.fn, c.args...)
 		if got != c.want {
@@ -160,6 +175,11 @@ func TestCallArgs(t *testing.T) {
 	type hostNamedMap map[string]int
 	if _, err := e.Run(context.Background(), "./testdata/callargs", "MapGet", hostNamedMap{"k": 7}); err == nil {
 		t.Errorf("MapGet(named): want error, got nil")
+	}
+	// the same boundary holds inside composite args: a named host map
+	// in an `any` slot keeps its box — only anonymous shapes unbox.
+	if _, err := e.Run(context.Background(), "./testdata/callargs", "AnyElemGet", []any{hostNamedMap{"k": 7}}); err == nil {
+		t.Errorf("AnyElemGet(named elem): want error, got nil")
 	}
 }
 

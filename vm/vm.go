@@ -3659,14 +3659,15 @@ func goValueOf(rv reflect.Value) runtime.Value {
 		switch rv.Kind() {
 		case reflect.Slice:
 			if rv.Type().Name() == "" {
+				td := anonSliceTypX(anonExprOf(rv.Type().Elem()))
 				if rv.IsNil() {
-					return &runtime.TypedNil{Typ: anonSliceTyp(elemTypeName(rv.Type().Elem()))}
+					return &runtime.TypedNil{Typ: td}
 				}
 				el := make([]runtime.Value, rv.Len())
 				for i := range el {
 					el[i] = goValueOf(rv.Index(i))
 				}
-				return &runtime.Slice{Elems: el, Typ: anonSliceTyp(elemTypeName(rv.Type().Elem()))}
+				return &runtime.Slice{Elems: el, Typ: td}
 			}
 		case reflect.Array:
 			if rv.Type().Name() == "" {
@@ -3674,7 +3675,7 @@ func goValueOf(rv reflect.Value) runtime.Value {
 				for i := range el {
 					el[i] = goValueOf(rv.Index(i))
 				}
-				return &runtime.Slice{Elems: el, Typ: anonArrayTyp(rv.Len(), elemTypeName(rv.Type().Elem()))}
+				return &runtime.Slice{Elems: el, Typ: anonArrayTypX(rv.Len(), anonExprOf(rv.Type().Elem()))}
 			}
 		}
 		return &runtime.GoValue{V: x}
@@ -3712,7 +3713,7 @@ func snapshotValue(x any, visiting map[uintptr]struct{}) runtime.Value {
 	if rv.Kind() == reflect.Map && rv.Type().Name() == "" {
 		// recursing through snapshotValue unboxes nested maps too —
 		// m["a"]["b"] keeps working at any depth.
-		td := anonMapTyp(elemTypeName(rv.Type().Key()), elemTypeName(rv.Type().Elem()))
+		td := anonMapTypX(anonExprOf(rv.Type().Key()), anonExprOf(rv.Type().Elem()))
 		if rv.IsNil() {
 			return &runtime.TypedNil{Typ: td}
 		}
@@ -3727,27 +3728,59 @@ func snapshotValue(x any, visiting map[uintptr]struct{}) runtime.Value {
 		delete(visiting, rv.Pointer())
 		return m
 	}
+	if (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) && rv.Type().Name() == "" {
+		switch rv.Type() {
+		case reflect.TypeOf([]byte(nil)), reflect.TypeOf([]string(nil)):
+			// the []byte/[]string shapes keep their element-tagged unbox —
+			// byte elements arrive tagged uint8, not bare int64s.
+		default:
+			// every other anonymous slice/array unboxes element-wise.
+			// Elements that can carry a nested anonymous container —
+			// a map-typed slot, or an `any` slot holding one — route
+			// through snapshotValue so `rs[0]["k"]` and `m[k]` index on
+			// arrival; primitives keep goValueOf's tagged shape (an
+			// int64 in an `any` slot stays `int64`, not bare `int`).
+			// The typedef spells the composite element correctly
+			// (`[]map[string]interface{}` — an unparseable one-identifier
+			// element name never reaches the param check).
+			var td *runtime.TypeDef
+			if rv.Kind() == reflect.Slice {
+				td = anonSliceTypX(anonExprOf(rv.Type().Elem()))
+				if rv.IsNil() {
+					return &runtime.TypedNil{Typ: td}
+				}
+			} else {
+				td = anonArrayTypX(rv.Len(), anonExprOf(rv.Type().Elem()))
+			}
+			et := rv.Type().Elem()
+			el := make([]runtime.Value, rv.Len())
+			for i := range el {
+				ev := rv.Index(i)
+				if et.Kind() == reflect.Interface {
+					pv := reflect.ValueOf(ev.Interface())
+					switch {
+					case !pv.IsValid():
+						el[i] = runtime.NIL
+					case pv.Kind() == reflect.Map || pv.Kind() == reflect.Slice || pv.Kind() == reflect.Array:
+						el[i] = snapshotValue(pv.Interface(), visiting)
+					default:
+						el[i] = goValueOf(pv)
+					}
+				} else if et.Kind() == reflect.Map || et.Kind() == reflect.Slice || et.Kind() == reflect.Array {
+					el[i] = snapshotValue(ev.Interface(), visiting)
+				} else {
+					el[i] = goValueOf(ev)
+				}
+			}
+			return &runtime.Slice{Elems: el, Typ: td}
+		}
+	}
 	return goValueOf(rv)
 }
 
 // hostRValueType is the facade's host type: a host []*RValue (MapKeys,
 // Call results) spells its elements reflect.Value like Go.
 var hostRValueType = reflect.TypeOf((*minireflect.RValue)(nil))
-
-// elemTypeName names a reflect type for typedef spelling — Name() when
-// it has one, the reflect spelling otherwise (struct{...}, []string).
-func elemTypeName(t reflect.Type) string {
-	if t == hostRValueType {
-		return "reflect.Value"
-	}
-	if n := t.Name(); n != "" {
-		return n
-	}
-	if t.Kind() == reflect.Interface && t.NumMethod() == 0 {
-		return "any" // the empty interface spells `any` in script typedefs
-	}
-	return t.String()
-}
 
 // hostField finds an exported field by name on a host value: pointer and
 // interface chains are dereferenced to the struct underneath. nil or
@@ -10453,25 +10486,110 @@ func namedBasicElem(name string, x runtime.Value) runtime.Value {
 // anonSliceTyp builds the anonymous []name typedef used to tag slices
 // unboxed from host values (no package context — the name is a builtin).
 func anonSliceTyp(name string) *runtime.TypeDef {
-	return &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: ast.NewIdent(name)}}
+	return anonSliceTypX(ast.NewIdent(name))
 }
 
-// anonMapTyp builds the anonymous map[k]v typedef used to tag maps
-// unboxed from host values.
-func anonMapTyp(key, elem string) *runtime.TypeDef {
+// anonSliceTypX builds the anonymous []T typedef from a real element
+// expression — composite element types (maps, nested slices) need the
+// structure a bare identifier cannot carry, or the typedef's spelling
+// stops matching the script-side equivalent.
+func anonSliceTypX(elt ast.Expr) *runtime.TypeDef {
+	return &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: elt}}
+}
+
+// anonMapTypX builds the anonymous map[K]V typedef from real key and
+// element expressions — see anonSliceTypX for why a bare identifier is
+// not enough.
+func anonMapTypX(key, elem ast.Expr) *runtime.TypeDef {
 	return &runtime.TypeDef{Kind: runtime.KindMap, Anon: &ast.MapType{
-		Key:   ast.NewIdent(key),
-		Value: ast.NewIdent(elem),
+		Key:   key,
+		Value: elem,
 	}}
 }
 
-// anonArrayTyp builds the anonymous [n]name typedef used to tag arrays
-// unboxed from host values.
-func anonArrayTyp(n int, name string) *runtime.TypeDef {
+// anonArrayTypX builds the anonymous [n]T typedef from a real element
+// expression — see anonSliceTypX.
+func anonArrayTypX(n int, elt ast.Expr) *runtime.TypeDef {
 	return &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{
 		Len: &ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(n)},
-		Elt: ast.NewIdent(name),
+		Elt: elt,
 	}}
+}
+
+// anonExprOf renders a reflect type as the anonymous type expression a
+// typedef carries: named types answer their bare identifier (the same
+// spelling elemTypeName produced), anonymous composites answer their
+// structure — an empty interface is `interface{}` like typeExprName
+// spells it, so `map[string]any`, `[]any`, `chan int` and friends mint
+// typedefs whose spelling matches the script-side equivalent instead
+// of one unparseable identifier ("map[string]interface {}").
+func anonExprOf(t reflect.Type) ast.Expr {
+	if t == hostRValueType {
+		return ast.NewIdent("reflect.Value")
+	}
+	if n := t.Name(); n != "" {
+		return ast.NewIdent(n)
+	}
+	switch t.Kind() {
+	case reflect.Interface:
+		if t.NumMethod() == 0 {
+			return &ast.InterfaceType{Methods: &ast.FieldList{}}
+		}
+	case reflect.Map:
+		return &ast.MapType{Key: anonExprOf(t.Key()), Value: anonExprOf(t.Elem())}
+	case reflect.Slice:
+		return &ast.ArrayType{Elt: anonExprOf(t.Elem())}
+	case reflect.Array:
+		return &ast.ArrayType{
+			Len: &ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(t.Len())},
+			Elt: anonExprOf(t.Elem()),
+		}
+	case reflect.Pointer:
+		return &ast.StarExpr{X: anonExprOf(t.Elem())}
+	case reflect.Chan:
+		var dir ast.ChanDir
+		switch t.ChanDir() {
+		case reflect.RecvDir:
+			dir = ast.RECV
+		case reflect.SendDir:
+			dir = ast.SEND
+		default:
+			dir = ast.RECV | ast.SEND
+		}
+		return &ast.ChanType{Dir: dir, Value: anonExprOf(t.Elem())}
+	case reflect.Struct:
+		fl := &ast.FieldList{}
+		for i := 0; i < t.NumField(); i++ {
+			f := t.Field(i)
+			fd := &ast.Field{Type: anonExprOf(f.Type)}
+			if !f.Anonymous {
+				fd.Names = []*ast.Ident{ast.NewIdent(f.Name)}
+			}
+			if f.Tag != "" {
+				fd.Tag = &ast.BasicLit{Kind: token.STRING, Value: "`" + string(f.Tag) + "`"}
+			}
+			fl.List = append(fl.List, fd)
+		}
+		return &ast.StructType{Fields: fl}
+	case reflect.Func:
+		fields := func(n int, at func(i int) reflect.Type) *ast.FieldList {
+			fl := &ast.FieldList{}
+			for i := 0; i < n; i++ {
+				fl.List = append(fl.List, &ast.Field{Type: anonExprOf(at(i))})
+			}
+			return fl
+		}
+		ft := &ast.FuncType{Params: fields(t.NumIn(), t.In)}
+		if t.IsVariadic() {
+			last := ft.Params.List[len(ft.Params.List)-1]
+			last.Type = &ast.Ellipsis{Elt: last.Type.(*ast.ArrayType).Elt}
+		}
+		if t.NumOut() > 0 {
+			ft.Results = fields(t.NumOut(), t.Out)
+		}
+		return ft
+	}
+	return ast.NewIdent(t.String())
 }
 
 // convertArray implements `[N]T(s)` on array typedefs (Go 1.20): the
