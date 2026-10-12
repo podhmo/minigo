@@ -56,6 +56,7 @@ func TestInspect(t *testing.T) {
 		"HostMethodSym",
 		"SourceOfStruct",
 		"EnumWalk",
+		"EnumScalars",
 		"AliasWalk",
 		"VarValueRead", // flips the package State to "ready"
 		"InitializerView",

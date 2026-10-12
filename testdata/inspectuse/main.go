@@ -1265,6 +1265,42 @@ func EnumWalk() string {
 	return "ok"
 }
 
+// EnumScalars: enum members include inferred-type and unexported
+// specs — exported first — and Value serves materialized scalars
+// rather than the const cell's raw payload.
+func EnumScalars() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+
+	var names string
+	for _, m := range inspect.EnumMembers(inspect.Symbol(p, "Span")) {
+		if m.Kind != "const" {
+			return "non-const member: " + m.Name
+		}
+		v := inspect.Value(m.Package, m.Name)
+		names += m.Name + "=" + fmt.Sprint(v) + ","
+	}
+	if names != "SpanMs=1,SpanSecond=1000,spanMin=-1," {
+		return "bad Span members: " + names
+	}
+	// a composite "const" is not a constant expression — never an enum
+	// member even though the interpreter tolerates the declaration.
+	if len(inspect.EnumMembers(inspect.Symbol(p, "Widget"))) != 0 {
+		return "Widget should not be an enum"
+	}
+	// const cells materialize: an inferred-type member reads as its
+	// underlying scalar, a named-basic member alike.
+	if v := inspect.Value(p, "SpanSecond"); v != 1000 {
+		return "bad inferred const: " + fmt.Sprint(v)
+	}
+	if v := inspect.Value(p, "StatusTodo"); v != 1 {
+		return "bad iota const: " + fmt.Sprint(v)
+	}
+	if v := inspect.Value(p, "Label"); v != "lbl" {
+		return "bad untyped const: " + fmt.Sprint(v)
+	}
+	return "ok"
+}
+
 // AliasWalk: IsAlias partitions type decls into alias vs defined —
 // the one axis Kind:"type" hides. Enum-ness is orthogonal.
 func AliasWalk() string {
