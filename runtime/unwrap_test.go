@@ -2,7 +2,9 @@ package runtime
 
 import (
 	"errors"
+	"go/ast"
 	"go/constant"
+	"go/token"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -155,6 +157,63 @@ func TestDeepUnwrapCycles(t *testing.T) {
 		// honest answer for a reference that never bottoms out.
 		if got := DeepUnwrap(c); got != Value(c) {
 			t.Errorf("got %v, want the cell itself", got)
+		}
+	})
+}
+
+func TestDeepUnwrapMapKeys(t *testing.T) {
+	arrayTD := &TypeDef{
+		Kind: KindSlice,
+		Anon: &ast.ArrayType{
+			Len: &ast.BasicLit{Kind: token.INT, Value: "1"},
+			Elt: ast.NewIdent("int"),
+		},
+	}
+
+	t.Run("script array key stays boxed", func(t *testing.T) {
+		arrKey := &Slice{Elems: []Value{int64(1)}, Typ: arrayTD}
+		m := &Map{}
+		m.Insert(arrKey, "x")
+		got, ok := DeepUnwrap(m).(map[any]any)
+		if !ok {
+			t.Fatalf("got %T, want map[any]any", DeepUnwrap(m))
+		}
+		// before the fix this panicked "hash of unhashable type
+		// []interface {}" — the key survives as its *Slice box.
+		if got[arrKey] != "x" {
+			t.Errorf("got[arrKey] = %v, want x", got[arrKey])
+		}
+	})
+
+	t.Run("host array key surfaces as Go array", func(t *testing.T) {
+		k := &GoValue{V: [2]int{1, 2}}
+		m := &Map{}
+		m.Insert(k, "y")
+		got, ok := DeepUnwrap(m).(map[any]any)
+		if !ok {
+			t.Fatalf("got %T, want map[any]any", DeepUnwrap(m))
+		}
+		if got[[2]int{1, 2}] != "y" {
+			t.Errorf("got[[2]int{1,2}] = %v, want y", got[[2]int{1, 2}])
+		}
+	})
+
+	t.Run("nested map value", func(t *testing.T) {
+		arrKey := &Slice{Elems: []Value{int64(7)}, Typ: arrayTD}
+		inner := &Map{}
+		inner.Insert(arrKey, "v")
+		outer := &Map{}
+		outer.Insert("inner", inner)
+		got, ok := DeepUnwrap(outer).(map[any]any)
+		if !ok {
+			t.Fatalf("got %T, want map[any]any", DeepUnwrap(outer))
+		}
+		im, ok := got["inner"].(map[any]any)
+		if !ok {
+			t.Fatalf("got[\"inner\"] = %T, want map[any]any", got["inner"])
+		}
+		if im[arrKey] != "v" {
+			t.Errorf("inner[arrKey] = %v, want v", im[arrKey])
 		}
 	})
 }

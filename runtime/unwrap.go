@@ -12,7 +12,10 @@ import "fmt"
 //	Tuple      → []any of unwrapped elements
 //	Slice      → []any of unwrapped elements (a virtual slice expands
 //	             its zero fill to the logical length)
-//	Map        → map[any]any of unwrapped key/value pairs
+//	Map        → map[any]any of unwrapped key/value pairs — keys unwrap
+//	             only through the layers that keep comparability (a
+//	             script array key stays its comparable box, never an
+//	             unhashable []any)
 //	GoValue    → the wrapped host value
 //	UConst     → its materialized native value — a constant it cannot
 //	             represent (like 1<<100) stays a *UConst
@@ -108,7 +111,7 @@ func deepUnwrap(v Value, w *unwalk) any {
 		w.seen[x] = m
 		for i := 0; i < x.Len(); i++ {
 			k, e := x.At(i)
-			m[deepUnwrap(k, w)] = deepUnwrap(e, w)
+			m[deepUnwrapKey(k)] = deepUnwrap(e, w)
 		}
 		return m
 	case *Spread:
@@ -120,6 +123,47 @@ func deepUnwrap(v Value, w *unwalk) any {
 			return deepUnwrap(nv, w)
 		}
 		return x
+	}
+	return v
+}
+
+// deepUnwrapKey unwraps a map key through only the layers that keep
+// the result comparable — Named/ref peels, GoValue's host value,
+// UConst's native scalar — and leaves script containers boxed. A
+// script array key ([1]int{1}) survives as its *Slice box:
+// pointer-comparable, where expanding it to []any panics on "hash of
+// unhashable type" — the host answer stays a Go map that mirrors the
+// script one's cardinality.
+func deepUnwrapKey(v Value) any {
+	peeled := map[Value]struct{}{}
+	for {
+		switch x := v.(type) {
+		case *Named:
+			v = x.V
+			continue
+		case *Cell, *FieldRef, *IndexRef, *DerefRef:
+			if _, dup := peeled[v]; dup {
+				return v
+			}
+			peeled[v] = struct{}{}
+			d, ok := Deref(v)
+			if !ok {
+				return v
+			}
+			v = d
+		case *GoValue:
+			return x.V
+		case *UConst:
+			if nv, err := UConstNative(x); err == nil {
+				return nv
+			}
+			return x
+		}
+		break
+	}
+	switch v.(type) {
+	case nil, Nil, *IfaceNil, *TypedNil:
+		return nil
 	}
 	return v
 }
