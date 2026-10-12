@@ -60,6 +60,14 @@ func TypIdentical(a, b *TypeDef) bool {
 			// (Spec) plus instantiation binds — never name+package.
 			return a.Spec != nil && a.Spec == b.Spec && bindsEq(a.Binds, b.Binds)
 		}
+		if a.HostNew != nil || b.HostNew != nil {
+			// a host typedef's identity is its native type: the bound
+			// registration carries a Pkg while a typedef synthesized
+			// from reflect.TypeOf (engine-internal handles, generic
+			// inference on unregistered host values) does not — they
+			// name the same Go type when their boxes' natives match.
+			return a.HostNew != nil && b.HostNew != nil && a.HostType() == b.HostType()
+		}
 		return a.Name != "" && canonBasicName(a.Name) == canonBasicName(b.Name) && a.Pkg == b.Pkg && bindsEq(a.Binds, b.Binds)
 	}
 	if a.Anon != nil && b.Anon != nil {

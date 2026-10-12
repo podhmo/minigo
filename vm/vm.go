@@ -11176,11 +11176,17 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 			}
 			return reflect.TypeOf(gv.V).String() == tdName(td)
 		}
+		if pt := v.pointeeTag(x); pt != nil && sameTypeDef(pt, et) {
+			// any ref's stamped pointee type settles the assert as a
+			// tag compare — the same "stamped type first" contract as
+			// coerce/convert. Engine-internal handles (*runtime.Package)
+			// reach this arm too: they ride no GoValue/Cell tag, so
+			// pointeeTag synthesizes the pointee's typedef for them.
+			return true
+		}
 		if et.HostNew != nil && reflect.TypeOf(x) == et.HostType() {
-			// a runtime-internal host pointer (the package handle
-			// *runtime.Package) is neither a GoValue box nor a
-			// Deref-able ref — compare the native type the way the
-			// GoValue branch does.
+			// an unboxed host native still matches its typedef's box —
+			// the backstop for handles pointeeTag does not tag.
 			return true
 		}
 		dv, ok := runtime.Deref(x)
@@ -11899,9 +11905,31 @@ func (v *VM) pointeeTag(x runtime.Value) *runtime.TypeDef {
 	}
 	dv, ok := runtime.Deref(x)
 	if !ok {
+		// an engine-internal handle is the pointer itself — its pointee
+		// type synthesizes from the native element.
+		if td := v.internalTypedef(x); td != nil && td.Kind == runtime.KindPointer {
+			return td.Elem
+		}
 		return nil
 	}
 	return declaredTag(dv)
+}
+
+// internalTypedef synthesizes the typedef an engine-internal handle
+// carries: *runtime.Package, *runtime.TypeDef, *runtime.Iterator and
+// *runtime.ImportRef are opaque host objects the intrinsics hand
+// scripts directly — they ride no Cell, Named or GoValue tag, so the
+// tag funnels used to answer nil for them and asserts/coerces fell
+// back to a raw reflect-type compare. Naming the class once here lets
+// every funnel give the same answer the hostTypedefOf path gives
+// unregistered host values: the synthesized named typedef is identical
+// to the registered one under TypIdentical (same name, same kind).
+func (v *VM) internalTypedef(x runtime.Value) *runtime.TypeDef {
+	switch x.(type) {
+	case *runtime.Package, *runtime.TypeDef, *runtime.Iterator, *runtime.ImportRef:
+		return v.hostTypedefOf(reflect.TypeOf(x))
+	}
+	return nil
 }
 
 // containerTyp reads the declared-type tag stamped on a container value.
@@ -12512,8 +12540,13 @@ func (v *VM) shapeOK(f *frame, x runtime.Value, td *runtime.TypeDef) bool {
 		}
 		return false
 	case runtime.KindPointer:
-		_, ok := runtime.Deref(x)
-		return ok
+		if _, ok := runtime.Deref(x); ok {
+			return true
+		}
+		// an engine-internal handle IS the pointer — not a Deref-able
+		// ref — so pointer-shaped membership in the handle class is
+		// enough; identity was checked through the tag funnels.
+		return v.internalTypedef(x) != nil
 	}
 	return true
 }
@@ -14657,6 +14690,11 @@ func (v *VM) typeOfValue(x runtime.Value) *runtime.TypeDef {
 		}
 	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
 		return v.funcTypedefOf(x)
+	}
+	// an engine-internal handle carries no case above — synthesize its
+	// tag so call-site inference binds T instead of leaving it unbound.
+	if td := v.internalTypedef(x); td != nil {
+		return td
 	}
 	return nil
 }
