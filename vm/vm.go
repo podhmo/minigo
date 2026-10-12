@@ -11055,6 +11055,13 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 			}
 			return reflect.TypeOf(gv.V).String() == tdName(td)
 		}
+		if et.HostNew != nil && reflect.TypeOf(x) == reflect.TypeOf(et.HostNew()) {
+			// a runtime-internal host pointer (the package handle
+			// *runtime.Package) is neither a GoValue box nor a
+			// Deref-able ref — compare the native type the way the
+			// GoValue branch does.
+			return true
+		}
 		dv, ok := runtime.Deref(x)
 		if !ok {
 			return false
@@ -12022,6 +12029,13 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 					f.trap("cannot use %s as %s", "&"+tdName(ptag), tdName(td))
 				}
 			}
+		} else if et, err := v.H.ElemOf(utd); err == nil && et != nil &&
+			et.HostNew != nil && x != nil && reflect.TypeOf(x) == reflect.TypeOf(et.HostNew()) {
+			// a bound typedef's pointer slot takes the raw native value
+			// the intrinsics return — *runtime.Package rides no Cell or
+			// GoValue tag for pointeeTag to read, so identity compares on
+			// the Go type like the typeAssert path does.
+			return x
 		}
 	}
 	if utd.Kind == runtime.KindInterface {

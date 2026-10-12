@@ -1961,6 +1961,10 @@ func (e *Engine) installStdlib() {
 		},
 		"Error":    &runtime.TypeDef{Name: "runtime.Error", Kind: runtime.KindInterface, MReqs: []string{"Error", "RuntimeError"}},
 		"MemStats": hostType("runtime.MemStats", func() any { return &goruntime.MemStats{} }),
+		// the engine's own package handle — scripts get *runtime.Package
+		// values from inspect.DirOf/Current; the typedef lets them spell
+		// that type in signatures and asserts with one identity.
+		"Package": hostType("runtime.Package", func() any { return &runtime.Package{} }),
 		"ReadMemStats": h.fn("runtime.ReadMemStats", func(a []any) (any, error) {
 			m, ok := a[0].(*goruntime.MemStats)
 			if !ok {

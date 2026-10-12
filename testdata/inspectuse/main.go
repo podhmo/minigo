@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"runtime"
+
 	"github.com/podhmo/minigo/inspect"
 	subj "github.com/podhmo/minigo/testdata/inspectpkg"
 )
@@ -2050,6 +2052,32 @@ func ViewTypeAsserts() string {
 	}
 	if _, ok := any(inspect.Comments(fv)[0]).(*inspect.Comment); !ok {
 		return "comment assert failed"
+	}
+	return "ok"
+}
+
+// loadPkg declares *runtime.Package — the bound typedef the intrinsic's
+// package handle unifies with, so the return-type conversion accepts it
+// (previously: cannot use *runtime.Package as *runtime.Package).
+func loadPkg() *runtime.Package {
+	return inspect.DirOf("./testdata/inspectpkg")
+}
+
+// RuntimePackageIdentity: a script-declared *runtime.Package unifies
+// with the package values inspect intrinsics return — return-type
+// slots, declared slots, and type asserts all name one identity.
+func RuntimePackageIdentity() string {
+	p := loadPkg()
+	var x any = p
+	if _, ok := x.(*runtime.Package); !ok {
+		return "package assert failed"
+	}
+	var q *runtime.Package = p
+	if q != p {
+		return "declared slot rebound a different package"
+	}
+	if inspect.Path(q) != "github.com/podhmo/minigo/testdata/inspectpkg" {
+		return "bad package view"
 	}
 	return "ok"
 }
