@@ -1317,6 +1317,58 @@ func LookupSymbolArgTrap() string {
 	return "swallowed"
 }
 
+// LookupDirOfMiss: a path that names nothing on disk answers nil — the
+// degradation DirOf cannot express — while a real dir still loads, and
+// an import-path-shaped string is a miss too (the "-pkg" mixup case).
+func LookupDirOfMiss() string {
+	if p := inspect.LookupDirOf("./testdata/no-such-dir"); p != nil {
+		return "miss did not report nil"
+	}
+	if p := inspect.LookupDirOf("time"); p != nil {
+		return "import path as dir did not report nil"
+	}
+	p := inspect.LookupDirOf("./testdata/inspectpkg")
+	if p == nil || inspect.Name(p) != "inspectpkg" {
+		return "hit not found"
+	}
+	return "ok"
+}
+
+// LookupPackageOfMiss: an import path that resolves to no directory
+// answers nil; a module-claimed path whose dir is absent is a miss
+// too, while real source and bound paths still load.
+func LookupPackageOfMiss() string {
+	if p := inspect.LookupPackageOf("example.com/gone"); p != nil {
+		return "miss did not report nil"
+	}
+	if p := inspect.LookupPackageOf("github.com/podhmo/minigo/no/such/dir"); p != nil {
+		return "claimed missing dir did not report nil"
+	}
+	p := inspect.LookupPackageOf("github.com/podhmo/minigo/testdata/inspectpkg")
+	if p == nil || inspect.Name(p) != "inspectpkg" {
+		return "hit not found"
+	}
+	if b := inspect.LookupPackageOf("strings"); b == nil {
+		return "bound hit not found"
+	}
+	return "ok"
+}
+
+// LookupDirOfEmptyTrap: a dir that exists but holds no Go files is a
+// found-but-unusable error, not a miss — the distinction the soft
+// loaders keep loud.
+func LookupDirOfEmptyTrap() string {
+	inspect.LookupDirOf("./testdata")
+	return "swallowed"
+}
+
+// LookupPackageOfEmptyTrap: the same split for an import path — it
+// resolves to a directory that exists but builds nothing.
+func LookupPackageOfEmptyTrap() string {
+	inspect.LookupPackageOf("github.com/podhmo/minigo/testdata")
+	return "swallowed"
+}
+
 // BoundFieldTrap: Fields on a bound type has no decl to read.
 func BoundFieldTrap() string {
 	inspect.Fields(inspect.Symbol(inspect.PackageOf("strings"), "Builder"))
