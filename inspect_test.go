@@ -82,6 +82,8 @@ func TestInspect(t *testing.T) {
 		// soft loaders: nil on "names nothing", error on "found but broken"
 		"LookupDirOfMiss",
 		"LookupPackageOfMiss",
+		"LookupSourceOfMiss",
+		"LookupFileOfMiss",
 		"BoundOfHit",
 		"BoundOfMiss",
 	} {
@@ -114,6 +116,8 @@ func TestInspect(t *testing.T) {
 		"LookupSymbolArgTrap",        // LookupSymbol keeps the arg contract
 		"LookupDirOfEmptyTrap",       // dir exists but holds no Go files -> error
 		"LookupPackageOfEmptyTrap",   // path resolves to an unbuildable dir -> error
+		"LookupSourceOfEmptyTrap",    // source resolves to an unbuildable dir -> error
+		"LookupFileOfBrokenTrap",     // existing path that is no Go file -> error
 		"BoundFieldTrap",             // bound type has no decl for Fields
 		"BoundMethodTrap",            // bound type has no index for Methods
 		"HostSigTrap",                // intrinsic without Target has no signature

@@ -19,9 +19,13 @@ import "github.com/podhmo/minigo/runtime"
 //	            keeps answering real imports; for an unbound path it
 //	            answers the canonical package itself.
 //	DirOf       source only, lenient: a directory never names a bound
-//	            package — the parsed view always answers. LookupDirOf
-//	            is its nil-on-miss twin, LookupPackageOf PackageOf's.
+//	            package — the parsed view always answers.
 //	FileOf      a single file as a one-file package, lenient.
+//
+// Every loader has a Lookup* twin answering nil on a miss — a path
+// that names nothing — while a found-but-broken target still errors:
+// LookupPackageOf PackageOf's, LookupDirOf DirOf's, LookupSourceOf
+// SourceOf's, LookupFileOf FileOf's.
 //
 // What the object offers differs by path: a bound package carries no
 // index — Decls/Symbol synthesize Kind "host" pseudo-decls from its
@@ -52,6 +56,14 @@ func PackageOf(path string) *runtime.Package { panic("minigo intrinsic") }
 // intended use.
 func SourceOf(path string) *runtime.Package { panic("minigo intrinsic") }
 
+// LookupSourceOf is SourceOf's non-trapping twin: it answers nil when
+// the path resolves to no source — unclaimed by every module — while a
+// located source that fails to build or a denied path still errors,
+// the same missing-vs-broken split LookupPackageOf keeps. A bound path
+// with no source behind its shadow (a synthetic bound path) reports
+// nil too, so probing "is this path's source reachable?" never traps.
+func LookupSourceOf(path string) *runtime.Package { panic("minigo intrinsic") }
+
 // BoundOf returns the host-bound package registered for path — the
 // object a script import answers when a bound shadow exists — or nil
 // when the path is not bound. It never falls through to source: an
@@ -78,8 +90,15 @@ func LookupDirOf(dir string) *runtime.Package { panic("minigo intrinsic") }
 // split LookupDirOf keeps.
 func LookupPackageOf(path string) *runtime.Package { panic("minigo intrinsic") }
 
-// FileOf loads a single file as a one-file package.
-func FileOf(file string) *runtime.Package { panic("minigo intrinsic") }
+// FileOf loads a single file as a one-file package, answering its
+// file view.
+func FileOf(file string) *File { panic("minigo intrinsic") }
+
+// LookupFileOf is FileOf's non-trapping twin: it answers nil when the
+// path names no file on disk — no such file — while a file that exists
+// but fails to parse, or a path denied by policy, still errors, the
+// same missing-vs-broken split LookupDirOf keeps.
+func LookupFileOf(file string) *File { panic("minigo intrinsic") }
 
 // Current returns the caller's package.
 func Current() *runtime.Package { panic("minigo intrinsic") }
