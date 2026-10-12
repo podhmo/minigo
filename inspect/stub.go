@@ -58,6 +58,12 @@ func Decls(x any) []*Decl { panic("minigo intrinsic") }
 // named here — reach them through Methods.
 func Symbol(p *runtime.Package, name string) *Decl { panic("minigo intrinsic") }
 
+// LookupSymbol is Symbol's non-trapping twin: it answers nil when the
+// package has no such top-level name instead of trapping, so probing
+// for an optional symbol is a one-liner. The argument contract is
+// unchanged — a non-package value still errors.
+func LookupSymbol(p *runtime.Package, name string) *Decl { panic("minigo intrinsic") }
+
 // Implementers returns the type decls of p whose method set covers
 // iface's requirements — its named specs plus everything embedded
 // interfaces pull in transitively — the index-level subtype question

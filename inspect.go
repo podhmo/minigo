@@ -153,6 +153,23 @@ func (e *Engine) installInspect() {
 			}
 			return e.lookupSymbol(p, str(runtime.Unwrap(args[1])))
 		}),
+		"LookupSymbol": bf("LookupSymbol", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, argerr("LookupSymbol", "a package and a name")
+			}
+			p, err := e.pkgOf(runtime.Unwrap(args[0]))
+			if err != nil {
+				return nil, err
+			}
+			s, err := e.findSymbol(p, str(runtime.Unwrap(args[1])))
+			if err != nil {
+				return nil, err
+			}
+			if s == nil {
+				return runtime.NIL, nil
+			}
+			return s, nil
+		}),
 		"Files": bf("Files", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("Files", "a package")
@@ -730,9 +747,22 @@ func (e *Engine) lookupDeclIn(p *runtime.Package, name string) (*index.Decl, err
 	return nil, nil
 }
 
-// lookupSymbol implements inspect.Symbol(pkg, name): an index hit, else
-// a bound-package global as a host pseudo-decl.
+// lookupSymbol implements inspect.Symbol(pkg, name): the findSymbol
+// search, with a miss reported as an error.
 func (e *Engine) lookupSymbol(p *runtime.Package, name string) (runtime.Value, error) {
+	v, err := e.findSymbol(p, name)
+	if err != nil {
+		return nil, err
+	}
+	if v == nil {
+		return nil, fmt.Errorf("inspect.Symbol: no %s in %s", name, p.Path)
+	}
+	return v, nil
+}
+
+// findSymbol is the search Symbol and LookupSymbol share: an index hit,
+// else a bound-package global as a host pseudo-decl, else nil.
+func (e *Engine) findSymbol(p *runtime.Package, name string) (runtime.Value, error) {
 	if p == nil {
 		return nil, fmt.Errorf("inspect.Symbol: nil package")
 	}
@@ -749,7 +779,7 @@ func (e *Engine) lookupSymbol(p *runtime.Package, name string) (runtime.Value, e
 		}
 		return &runtime.GoValue{V: xinspect.NewHostDecl(p, name, nil, reflect.TypeOf(v))}, nil
 	}
-	return nil, fmt.Errorf("inspect.Symbol: no %s in %s", name, p.Path)
+	return nil, nil
 }
 
 // hostDecl synthesizes a Kind:"host" pseudo-decl for a bound intrinsic,
