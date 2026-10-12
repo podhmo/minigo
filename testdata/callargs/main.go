@@ -43,6 +43,9 @@ func MapSelf(m map[string]any) string        { return fmt.Sprintf("%T", m["self"
 func Shared(m map[string]any) int {
 	return m["a"].(map[string]int)["k"] + m["b"].(map[string]int)["k"]
 }
+func SliceSelf(xs []any) string    { return fmt.Sprintf("%T", xs[0]) }
+func SliceMapSelf(xs []any) string { return fmt.Sprintf("%T", xs[0].(map[string]any)["s"]) }
+func SliceShared(xs []any) int     { return xs[0].([]int)[0] + xs[1].([]int)[0] }
 
 func main() {}
 

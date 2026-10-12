@@ -3695,12 +3695,15 @@ func SnapshotOf(x any) runtime.Value {
 	return snapshotValue(x, map[uintptr]struct{}{})
 }
 
-// snapshotValue is SnapshotOf's worker: it threads the set of maps
-// currently being unboxed so a map that contains itself (reachable
-// only through an `any` slot, since a Go map type can't name itself
-// anonymously) boxes at the repeat instead of recursing forever.
-// Shared submaps still unbox — the set forgets a map once its pairs
-// are built.
+// snapshotValue is SnapshotOf's worker: it threads the set of
+// containers currently being unboxed so one that contains itself
+// (reachable only through an `any` slot, since a Go map or slice
+// type can't name itself anonymously) boxes at the repeat instead of
+// recursing forever. Shared subcontainers still unbox — the set
+// forgets each container once its elements are built. Arrays skip
+// the check: an `any` slot stores an array by copy, so one can never
+// reach itself, and a cycle that passes through an array always
+// crosses a guarded slice or map on the way back.
 func snapshotValue(x any, visiting map[uintptr]struct{}) runtime.Value {
 	// the script's int domain is int64: a host int64 stands for a script
 	// int, so it enters bare — tagging it (like goValueOf does for a
@@ -3749,6 +3752,14 @@ func snapshotValue(x any, visiting map[uintptr]struct{}) runtime.Value {
 				if rv.IsNil() {
 					return &runtime.TypedNil{Typ: td}
 				}
+				// the same repeat guard the map branch keeps: a slice
+				// that holds itself through an `any` slot (s[0] = s)
+				// boxes at the repeat instead of overflowing the stack.
+				if _, dup := visiting[rv.Pointer()]; dup {
+					return &runtime.GoValue{V: x}
+				}
+				visiting[rv.Pointer()] = struct{}{}
+				defer delete(visiting, rv.Pointer())
 			} else {
 				td = anonArrayTypX(rv.Len(), anonExprOf(rv.Type().Elem()))
 			}
