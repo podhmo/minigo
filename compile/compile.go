@@ -2093,14 +2093,8 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 	if _, bound := c.binds[id.Name]; bound {
 		return opTyp{} // a bound type parameter — its value is opaque here
 	}
-	switch id.Name {
-	case "true", "false":
-		return opTyp{untyped: true, dte: &ast.Ident{Name: "bool"}}
-	case "iota":
-		return opTyp{untyped: true, dte: &ast.Ident{Name: "int"}}
-	case "nil":
-		return opTyp{nilOperand: true}
-	}
+	// A package-level decl shadows the universe block — `const true =
+	// 'a'` binds `true` as a rune here, so index before the literals.
 	if c.pkg != nil && c.pkg.Index != nil {
 		if vd := c.pkg.Index.Vars[id.Name]; vd != nil {
 			if vs, ok := vd.Spec.(*ast.ValueSpec); ok {
@@ -2174,6 +2168,14 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 			return opTyp{untyped: true}
 		}
 	}
+	switch id.Name {
+	case "true", "false":
+		return opTyp{untyped: true, dte: &ast.Ident{Name: "bool"}}
+	case "iota":
+		return opTyp{untyped: true, dte: &ast.Ident{Name: "int"}}
+	case "nil":
+		return opTyp{nilOperand: true}
+	}
 	return opTyp{}
 }
 
@@ -2182,8 +2184,12 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 // a method value, or an unknown base reports unknown.
 func (c *compiler) selOpTyp(x *ast.SelectorExpr) opTyp {
 	if id, ok := x.X.(*ast.Ident); ok {
-		if ref, isPkg := c.importRef(id.Name); isPkg {
-			return c.selPkgMemberOpTyp(x, ref)
+		// a closer declaration shadows the import name — `v.F` then
+		// reads the local's field, never a package member.
+		if c.fs.lookupBinding(id.Name) == nil {
+			if ref, isPkg := c.importRef(id.Name); isPkg {
+				return c.selPkgMemberOpTyp(x, ref)
+			}
 		}
 	}
 	base := c.staticOpTyp(x.X)
@@ -2203,29 +2209,283 @@ func (c *compiler) selOpTyp(x *ast.SelectorExpr) opTyp {
 // selPkgMemberOpTyp resolves a package-qualified operand `pkg.Name`:
 // a bound const/var tagged with a typedef contributes that type —
 // `time.January` is time.Month, so `d == time.January` mismatches like
-// gc. An untyped bound const stays untyped with its kind's default;
-// functions, types used as values, and unknown members report unknown.
-// Only bound-package members resolve — a source-indexed package's
-// consts would read the caller's scope, not their own.
+// gc. An untyped bound const stays untyped with its kind's default.
+// A source-indexed package's Globals stay empty at compile time, so the
+// member's static type comes from its declaration spec instead — read
+// in the declaring package's own scope, never the caller's. Types used
+// as values and unknown members report unknown.
 func (c *compiler) selPkgMemberOpTyp(x *ast.SelectorExpr, ref *runtime.ImportRef) opTyp {
 	p, err := ref.Materialize()
-	if err != nil || p == nil || p.Globals == nil {
+	if err != nil || p == nil {
 		return opTyp{}
 	}
-	v, ok := p.Globals.Get(x.Sel.Name)
+	if p.Globals != nil {
+		if v, ok := p.Globals.Get(x.Sel.Name); ok {
+			// an initialized source package binds members into
+			// Cells; bound packages keep the value directly.
+			if cell, isCell := v.(*runtime.Cell); isCell && cell != nil {
+				v = cell.Elem
+			}
+			if n, ok := v.(*runtime.Named); ok && n.Typ != nil {
+				if sel := qualTypSel(p, n.Typ); sel != "" {
+					return opTyp{te: &ast.SelectorExpr{X: x.X, Sel: ast.NewIdent(sel)}}
+				}
+			}
+			if uc, ok := v.(*runtime.UConst); ok && uc.V != nil {
+				return opTyp{untyped: true, dte: constKindDte(uc)}
+			}
+		}
+	}
+	if p.Index != nil {
+		return c.srcMemberOpTyp(p, x.Sel.Name)
+	}
+	return opTyp{}
+}
+
+// srcMemberOpTyp resolves a source-indexed package member's static type
+// from its declaration — the package never ran, so Globals has nothing.
+// A declared type (`const C T`, `var V T`) scopes into the caller's
+// view like scopeSpecType does for type specs; an inferred one takes
+// the value expression's static shape once its names are re-scoped.
+// Functions answer their signature, types used as values stay opaque.
+func (c *compiler) srcMemberOpTyp(p *runtime.Package, name string) opTyp {
+	if d := p.Index.Consts[name]; d != nil {
+		return c.valueSpecMemberOpTyp(p, d, true)
+	}
+	if d := p.Index.Vars[name]; d != nil {
+		return c.valueSpecMemberOpTyp(p, d, false)
+	}
+	if d := p.Index.Funcs[name]; d != nil && d.Func != nil && d.Func.Type != nil {
+		if te := c.scopeSpecType(p, d.File, d.Func.Type); te != nil {
+			return opTyp{te: te}
+		}
+	}
+	return opTyp{}
+}
+
+// valueSpecMemberOpTyp types one name of a foreign package's var/const
+// spec: the written type when present (carried specs reuse the
+// inherited type like valueSpec), else the value expression at the
+// name's slot. Both read through scopeOperandExpr/scopeSpecType so the
+// names inside resolve with the declaring file's scope.
+func (c *compiler) valueSpecMemberOpTyp(p *runtime.Package, d *index.Decl, isConst bool) opTyp {
+	vs, ok := d.Spec.(*ast.ValueSpec)
 	if !ok {
 		return opTyp{}
 	}
-	if n, ok := v.(*runtime.Named); ok && n.Typ != nil {
-		if sel := qualTypSel(p, n.Typ); sel != "" {
-			return opTyp{te: &ast.SelectorExpr{X: x.X, Sel: ast.NewIdent(sel)}}
+	effType := vs.Type
+	var val ast.Expr
+	if isConst && len(vs.Values) == 0 {
+		effType = d.InheritedType
+		if d.NameIdx < len(d.Inherited) {
+			val = d.Inherited[d.NameIdx]
 		}
+	} else if d.NameIdx < len(vs.Values) {
+		val = vs.Values[d.NameIdx]
+	}
+	if effType != nil {
+		te := c.scopeSpecType(p, d.File, effType)
+		if te == nil {
+			return opTyp{}
+		}
+		if c.isIfaceTypeExpr(te) {
+			return opTyp{iface: true}
+		}
+		return opTyp{te: te}
+	}
+	if val == nil {
 		return opTyp{}
 	}
-	if uc, ok := v.(*runtime.UConst); ok && uc.V != nil {
-		return opTyp{untyped: true, dte: constKindDte(uc)}
+	scoped := c.scopeOperandExpr(p, d.File, val)
+	if scoped == nil {
+		return opTyp{}
 	}
-	return opTyp{}
+	t := c.staticOpTyp(scoped)
+	if !isConst && t.untyped {
+		// a var binds an untyped initializer's default type like gc —
+		// `var V = 'q'` declares a rune, so `V == i` mismatches.
+		return opTyp{te: t.dte}
+	}
+	return t
+}
+
+// scopeOperandExpr is scopeSpecType for a package-level VALUE
+// expression (a var/const spec's initializer): an ident naming the
+// declaring package's own top-level decl qualifies through the caller's
+// import name for that package, and a selector's qualifier re-keys
+// through the declaring file's imports — the same qualifier in the
+// caller may name a different package. nil means a name cannot be
+// resolved without the declaring scope (a dot import, a foreign
+// constant chain the depth cap cut off): the operand stays opaque
+// rather than risk reading a caller-side name. A FuncLit scopes its
+// signature only — its body's names belong to the function's own
+// scope, which static typing never inspects.
+func (c *compiler) scopeOperandExpr(p *runtime.Package, sf *syntax.File, e ast.Expr) ast.Expr {
+	if e == nil {
+		return nil
+	}
+	switch t := ast.Unparen(e).(type) {
+	case *ast.BasicLit:
+		return t
+	case *ast.Ident:
+		if p == c.pkg {
+			return t
+		}
+		// a declaring-package decl shadows the universe block — `const
+		// true = 'a'` binds `true` there, so the index wins.
+		if p.Index.Consts[t.Name] != nil || p.Index.Vars[t.Name] != nil ||
+			p.Index.Funcs[t.Name] != nil || p.Index.Types[t.Name] != nil {
+			return &ast.SelectorExpr{X: &ast.Ident{Name: c.callerImportName(p.Path)}, Sel: ast.NewIdent(t.Name)}
+		}
+		if universeIdent(t.Name) {
+			// the bare ident reads the CALLER's scope back — keep it
+			// only when the caller cannot rebind it to a closer or
+			// package-level decl that differs from the universe one.
+			if !c.callerShadows(t.Name) {
+				return t
+			}
+		}
+		return nil
+	case *ast.SelectorExpr:
+		if id, ok := t.X.(*ast.Ident); ok {
+			if ref, ok := pkgImportRef(p, sf, id.Name); ok {
+				return &ast.SelectorExpr{X: &ast.Ident{Name: c.callerImportName(ref.Path)}, Sel: t.Sel}
+			}
+		}
+		// `v.F` on the package's own value: scope the base, keep Sel.
+		if x := c.scopeOperandExpr(p, sf, t.X); x != nil {
+			return &ast.SelectorExpr{X: x, Sel: t.Sel}
+		}
+		return nil
+	case *ast.UnaryExpr:
+		if x := c.scopeOperandExpr(p, sf, t.X); x != nil {
+			return &ast.UnaryExpr{OpPos: t.OpPos, Op: t.Op, X: x}
+		}
+		return nil
+	case *ast.BinaryExpr:
+		x := c.scopeOperandExpr(p, sf, t.X)
+		y := c.scopeOperandExpr(p, sf, t.Y)
+		if x != nil && y != nil {
+			return &ast.BinaryExpr{X: x, OpPos: t.OpPos, Op: t.Op, Y: y}
+		}
+		return nil
+	case *ast.CallExpr:
+		fun := c.scopeOperandExpr(p, sf, t.Fun)
+		if fun == nil {
+			return nil
+		}
+		args := make([]ast.Expr, len(t.Args))
+		for i, a := range t.Args {
+			args[i] = c.scopeOperandExpr(p, sf, a)
+			if args[i] == nil {
+				return nil
+			}
+		}
+		return &ast.CallExpr{Fun: fun, Lparen: t.Lparen, Args: args, Ellipsis: t.Ellipsis, Rparen: t.Rparen}
+	case *ast.IndexExpr:
+		x := c.scopeOperandExpr(p, sf, t.X)
+		i := c.scopeOperandExpr(p, sf, t.Index)
+		if x != nil && i != nil {
+			return &ast.IndexExpr{X: x, Lbrack: t.Lbrack, Index: i, Rbrack: t.Rbrack}
+		}
+		return nil
+	case *ast.IndexListExpr:
+		x := c.scopeOperandExpr(p, sf, t.X)
+		if x == nil {
+			return nil
+		}
+		indices := make([]ast.Expr, len(t.Indices))
+		for i, ix := range t.Indices {
+			indices[i] = c.scopeOperandExpr(p, sf, ix)
+			if indices[i] == nil {
+				return nil
+			}
+		}
+		return &ast.IndexListExpr{X: x, Lbrack: t.Lbrack, Indices: indices, Rbrack: t.Rbrack}
+	case *ast.SliceExpr:
+		x := c.scopeOperandExpr(p, sf, t.X)
+		l := c.scopeOperandExpr(p, sf, t.Low)
+		h := c.scopeOperandExpr(p, sf, t.High)
+		m := c.scopeOperandExpr(p, sf, t.Max)
+		if x != nil {
+			return &ast.SliceExpr{X: x, Lbrack: t.Lbrack, Low: l, High: h, Max: m, Slice3: t.Slice3, Rbrack: t.Rbrack}
+		}
+		return nil
+	case *ast.StarExpr:
+		if x := c.scopeOperandExpr(p, sf, t.X); x != nil {
+			return &ast.StarExpr{Star: t.Star, X: x}
+		}
+		return nil
+	case *ast.KeyValueExpr:
+		k := c.scopeOperandExpr(p, sf, t.Key)
+		v := c.scopeOperandExpr(p, sf, t.Value)
+		if k != nil && v != nil {
+			return &ast.KeyValueExpr{Key: k, Colon: t.Colon, Value: v}
+		}
+		return nil
+	case *ast.CompositeLit:
+		te := c.scopeSpecType(p, sf, t.Type)
+		elts := make([]ast.Expr, len(t.Elts))
+		for i, el := range t.Elts {
+			elts[i] = c.scopeOperandExpr(p, sf, el)
+			if elts[i] == nil {
+				return nil
+			}
+		}
+		return &ast.CompositeLit{Type: te, Lbrace: t.Lbrace, Elts: elts, Rbrace: t.Rbrace, Incomplete: t.Incomplete}
+	case *ast.TypeAssertExpr:
+		x := c.scopeOperandExpr(p, sf, t.X)
+		if x == nil {
+			return nil
+		}
+		return &ast.TypeAssertExpr{X: x, Lparen: t.Lparen, Type: c.scopeSpecType(p, sf, t.Type), Rparen: t.Rparen}
+	case *ast.FuncLit:
+		te, _ := c.scopeSpecType(p, sf, t.Type).(*ast.FuncType)
+		if te == nil {
+			return nil
+		}
+		return &ast.FuncLit{Type: te, Body: t.Body}
+	case *ast.Ellipsis:
+		if x := c.scopeOperandExpr(p, sf, t.Elt); x != nil {
+			return &ast.Ellipsis{Ellipsis: t.Ellipsis, Elt: x}
+		}
+		return nil
+	}
+	return nil
+}
+
+// universeIdent reports whether a bare identifier in a foreign
+// package's value expression resolves identically in every scope —
+// the universe block's values and builtins, plus predeclared types a
+// conversion can name. Anything else must resolve through the
+// declaring package's own decls or imports.
+func universeIdent(name string) bool {
+	switch name {
+	case "true", "false", "iota", "nil",
+		"append", "cap", "clear", "close", "complex", "copy", "delete",
+		"imag", "len", "make", "min", "max", "new", "panic", "print",
+		"println", "real", "recover":
+		return true
+	}
+	return predeclaredTypeNames[name]
+}
+
+// callerShadows reports whether a name read bare in a foreign
+// package's value expression would pick up a NON-universe meaning in
+// the caller's scope — a local binding, a bound type parameter, or a
+// package-level decl. Such names cannot be carried through as idents.
+func (c *compiler) callerShadows(name string) bool {
+	if c.fs.lookupBinding(name) != nil {
+		return true
+	}
+	if _, bound := c.binds[name]; bound {
+		return true
+	}
+	if c.pkg != nil && c.pkg.Index != nil {
+		return c.pkg.Index.Consts[name] != nil || c.pkg.Index.Vars[name] != nil ||
+			c.pkg.Index.Funcs[name] != nil || c.pkg.Index.Types[name] != nil
+	}
+	return false
 }
 
 // qualTypSel reports the member name a tagged bound value's typedef
@@ -2748,9 +3008,10 @@ func (c *compiler) scopeFieldList(p *runtime.Package, sf *syntax.File, fl *ast.F
 }
 
 // callerImportName returns the qualifier under which the caller's file
-// reaches pkgPath — the import's local name. The path itself stands in
-// when the caller does not import the package: it never resolves, so a
-// synthesized selector reports unknown rather than a wrong scope's name.
+// reaches pkgPath — the import's local name. When the caller does not
+// import the package the result is deliberately unresolvable: a bare
+// path element like `time` could otherwise pick up a same-named caller
+// decl, which belongs to a different scope entirely.
 func (c *compiler) callerImportName(pkgPath string) string {
 	if c.pkg != nil && c.file != nil {
 		for name, ref := range c.pkg.Scopes[c.file] {
@@ -2759,7 +3020,7 @@ func (c *compiler) callerImportName(pkgPath string) string {
 			}
 		}
 	}
-	return pkgPath
+	return "." + pkgPath
 }
 
 // selTypeSpecIn resolves a pkg.T selector written inside a type spec of
