@@ -341,8 +341,20 @@ func (r *REPL) release(u, next *loadUnit) {
 		_, isCell := gv.(*runtime.Cell)
 		return ok && isCell
 	}
+	// what next took over from the prompt is newer than what u took over
+	held := map[string]bool{}
+	for k := range next.prevCells {
+		held[k] = true
+	}
+	for _, d := range next.prevDecls {
+		for _, k := range promptDeclKeys(d) {
+			held[k] = true
+		}
+	}
+	passOn := func(k string) bool { return next.declares(k) && !held[k] }
 	for k, v := range u.prevCells {
 		switch {
+		case held[k]:
 		case next.declares(k):
 			next.prevCells[k] = v
 		case !redefined(k):
@@ -350,8 +362,8 @@ func (r *REPL) release(u, next *loadUnit) {
 		}
 	}
 	for _, d := range u.prevDecls {
-		if rest := splitDecl(d, next.declares, &next.prevDecls); rest != "" {
-			if rest := splitDecl(rest, redefined, nil); rest != "" {
+		if rest := splitDecl(d, passOn, &next.prevDecls); rest != "" {
+			if rest := splitDecl(rest, func(k string) bool { return held[k] || redefined(k) }, nil); rest != "" {
 				r.decls = append(r.decls, rest)
 			}
 		}

@@ -584,6 +584,26 @@ func TestREPLLoadTakeOver(t *testing.T) {
 		}
 	})
 
+	t.Run("a reload keeps the prompt definition it took over, not an older one", func(t *testing.T) {
+		dir := t.TempDir()
+		// a const cell is replaced, not written through, so the prompt's
+		// C := 20 is a takeover of its own
+		writeFiles(t, dir, map[string]string{"m.go": "package m\nconst C = 10\nfunc F() int { return 1 }\n"})
+		r := NewEngine(dir).NewREPL()
+		replEval(t, r, "C := 7")
+		replEval(t, r, "func F() int { return 0 }")
+		load(t, r, "m.go")
+		replEval(t, r, "C := 20")
+		replEval(t, r, "func F() int { return 2 }")
+		load(t, r, "m.go")
+		if _, err := r.Unload(ctx, "m.go"); err != nil {
+			t.Fatal(err)
+		}
+		if diff := cmp.Diff("22", replEval(t, r, "C + F()")); diff != "" {
+			t.Errorf("after unload (-want +got):\n%s", diff)
+		}
+	})
+
 	t.Run("a grouped prompt type loses only the loaded spec", func(t *testing.T) {
 		dir := t.TempDir()
 		writeFiles(t, dir, map[string]string{"m.go": "package m\ntype A struct{ N int }\n"})
