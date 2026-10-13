@@ -2093,14 +2093,8 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 	if _, bound := c.binds[id.Name]; bound {
 		return opTyp{} // a bound type parameter — its value is opaque here
 	}
-	switch id.Name {
-	case "true", "false":
-		return opTyp{untyped: true, dte: &ast.Ident{Name: "bool"}}
-	case "iota":
-		return opTyp{untyped: true, dte: &ast.Ident{Name: "int"}}
-	case "nil":
-		return opTyp{nilOperand: true}
-	}
+	// A package-level decl shadows the universe block — `const true =
+	// 'a'` binds `true` as a rune here, so index before the literals.
 	if c.pkg != nil && c.pkg.Index != nil {
 		if vd := c.pkg.Index.Vars[id.Name]; vd != nil {
 			if vs, ok := vd.Spec.(*ast.ValueSpec); ok {
@@ -2174,6 +2168,14 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 			return opTyp{untyped: true}
 		}
 	}
+	switch id.Name {
+	case "true", "false":
+		return opTyp{untyped: true, dte: &ast.Ident{Name: "bool"}}
+	case "iota":
+		return opTyp{untyped: true, dte: &ast.Ident{Name: "int"}}
+	case "nil":
+		return opTyp{nilOperand: true}
+	}
 	return opTyp{}
 }
 
@@ -2182,8 +2184,12 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 // a method value, or an unknown base reports unknown.
 func (c *compiler) selOpTyp(x *ast.SelectorExpr) opTyp {
 	if id, ok := x.X.(*ast.Ident); ok {
-		if ref, isPkg := c.importRef(id.Name); isPkg {
-			return c.selPkgMemberOpTyp(x, ref)
+		// a closer declaration shadows the import name — `v.F` then
+		// reads the local's field, never a package member.
+		if c.fs.lookupBinding(id.Name) == nil {
+			if ref, isPkg := c.importRef(id.Name); isPkg {
+				return c.selPkgMemberOpTyp(x, ref)
+			}
 		}
 	}
 	base := c.staticOpTyp(x.X)
@@ -2325,12 +2331,19 @@ func (c *compiler) scopeOperandExpr(p *runtime.Package, sf *syntax.File, e ast.E
 		if p == c.pkg {
 			return t
 		}
-		if universeIdent(t.Name) {
-			return t
-		}
+		// a declaring-package decl shadows the universe block — `const
+		// true = 'a'` binds `true` there, so the index wins.
 		if p.Index.Consts[t.Name] != nil || p.Index.Vars[t.Name] != nil ||
 			p.Index.Funcs[t.Name] != nil || p.Index.Types[t.Name] != nil {
 			return &ast.SelectorExpr{X: &ast.Ident{Name: c.callerImportName(p.Path)}, Sel: ast.NewIdent(t.Name)}
+		}
+		if universeIdent(t.Name) {
+			// the bare ident reads the CALLER's scope back — keep it
+			// only when the caller cannot rebind it to a closer or
+			// package-level decl that differs from the universe one.
+			if !c.callerShadows(t.Name) {
+				return t
+			}
 		}
 		return nil
 	case *ast.SelectorExpr:
@@ -2455,6 +2468,24 @@ func universeIdent(name string) bool {
 		return true
 	}
 	return predeclaredTypeNames[name]
+}
+
+// callerShadows reports whether a name read bare in a foreign
+// package's value expression would pick up a NON-universe meaning in
+// the caller's scope — a local binding, a bound type parameter, or a
+// package-level decl. Such names cannot be carried through as idents.
+func (c *compiler) callerShadows(name string) bool {
+	if c.fs.lookupBinding(name) != nil {
+		return true
+	}
+	if _, bound := c.binds[name]; bound {
+		return true
+	}
+	if c.pkg != nil && c.pkg.Index != nil {
+		return c.pkg.Index.Consts[name] != nil || c.pkg.Index.Vars[name] != nil ||
+			c.pkg.Index.Funcs[name] != nil || c.pkg.Index.Types[name] != nil
+	}
+	return false
 }
 
 // qualTypSel reports the member name a tagged bound value's typedef
@@ -2977,9 +3008,10 @@ func (c *compiler) scopeFieldList(p *runtime.Package, sf *syntax.File, fl *ast.F
 }
 
 // callerImportName returns the qualifier under which the caller's file
-// reaches pkgPath — the import's local name. The path itself stands in
-// when the caller does not import the package: it never resolves, so a
-// synthesized selector reports unknown rather than a wrong scope's name.
+// reaches pkgPath — the import's local name. When the caller does not
+// import the package the result is deliberately unresolvable: a bare
+// path element like `time` could otherwise pick up a same-named caller
+// decl, which belongs to a different scope entirely.
 func (c *compiler) callerImportName(pkgPath string) string {
 	if c.pkg != nil && c.file != nil {
 		for name, ref := range c.pkg.Scopes[c.file] {
@@ -2988,7 +3020,7 @@ func (c *compiler) callerImportName(pkgPath string) string {
 			}
 		}
 	}
-	return pkgPath
+	return "." + pkgPath
 }
 
 // selTypeSpecIn resolves a pkg.T selector written inside a type spec of
