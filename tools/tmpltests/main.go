@@ -60,13 +60,7 @@ type rewrite struct {
 }
 
 // fileRewrites maps an upstream test file name to its rewrites.
-var fileRewrites = map[string][]rewrite{
-	"exec_test.go": {
-		// minigo has no unsafe.Pointer type yet; `any` fields keep the same
-		// truth values for the rows that use them ({ptr, true},{nil, false}).
-		{"unsafe.Pointer", "any"},
-	},
-}
+var fileRewrites = map[string][]rewrite{}
 
 // srcRewrites maps a package path to per-file rewrites applied while
 // copying that file into the scratch GOROOT (same mechanism as test

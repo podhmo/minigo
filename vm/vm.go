@@ -2380,6 +2380,11 @@ func (v *VM) loop(f *frame) {
 				// declared pointee type — `*s` on `(*T)(p)` reads as T,
 				// so method calls and `:=`-inferred vars keep the tag.
 				if n, isN := x.(*runtime.Named); isN && n.Typ != nil && n.Typ.Kind == runtime.KindPointer {
+					if v.unsafePtrTd(n.Typ) {
+						// gc rejects `*u` ("cannot indirect u") —
+						// converting back to *T is the only dereference.
+						f.trap("cannot indirect %s", tdName(n.Typ))
+					}
 					if et := v.elemTypedef(f, n.Typ); et != nil {
 						// A converted pointer re-types the storage on
 						// read: `(*uval)(&u)` reads the uint as uval.
@@ -10019,8 +10024,15 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 		case runtime.KindPointer:
 			// (*[N]T)(nilSlice) is a slice conversion, not a re-tag —
 			// convertPointer decides by the target's array length.
-			if ut := v.peelNamed(tn.Typ); ut != nil && ut.Kind == runtime.KindSlice {
+			ut := v.peelNamed(tn.Typ)
+			if ut != nil && ut.Kind == runtime.KindSlice {
 				break
+			}
+			// a nil unsafe.Pointer converts to any pointer type, and
+			// unsafe.Pointer accepts the nil of any pointer type — both
+			// directions skip the identical-underlying rule.
+			if v.unsafePtrTd(tn.Typ) || v.unsafePtrTd(td) && ut != nil && ut.Kind == runtime.KindPointer {
+				return &runtime.TypedNil{Typ: td}, nil
 			}
 			if tn.Typ != nil && !v.convShapeEq(tn.Typ, td) {
 				return nil, fmt.Errorf("cannot convert %s to %s", tdName(tn.Typ), tdName(td))
@@ -10077,6 +10089,7 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 	// unsigned source read the bits as uint64 (float64(uint64(1<<63))
 	// is 2^63, not -2^63).
 	srcUnsigned := false
+	srcUnsafe := false
 	for {
 		n, ok := x.(*runtime.Named)
 		if !ok {
@@ -10087,6 +10100,9 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 		}
 		if unsignedName(sizedNameOf(n.Typ)) {
 			srcUnsigned = true
+		}
+		if v.unsafePtrTd(n.Typ) {
+			srcUnsafe = true
 		}
 		x = n.V
 	}
@@ -10112,6 +10128,16 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 			iv = int64([]rune(n)[0]) // int("x") is the first rune's code point
 			uv = uint64(iv)
 		default:
+			// uintptr(unsafePtr) mints the address %p would print —
+			// the ref object's own Go address for script refs, the
+			// host pointer for a host box. srcUnsafe gates it because
+			// gc only allows *T -> uintptr via unsafe.Pointer.
+			if srcUnsafe && td.Name == "uintptr" {
+				if addr, ok := v.unsafePtrAddr(x); ok {
+					iv, uv = int64(addr), addr
+					break
+				}
+			}
 			// a host scalar — boxed (a wide uint64 literal, a reflect
 			// result) or raw (time.Duration) — converts by its host
 			// kind.
@@ -10287,7 +10313,7 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 	case runtime.KindChan:
 		return v.convertChan(td, x)
 	case runtime.KindPointer:
-		return v.convertPointer(td, x)
+		return v.convertPointer(td, x, srcUnsafe)
 	case runtime.KindStruct:
 		return v.convertStruct(td, x)
 	case runtime.KindFunc:
@@ -10733,7 +10759,7 @@ func (v *VM) convertChan(td *runtime.TypeDef, x runtime.Value) (runtime.Value, e
 // pointer in this model is a cell — it carries no swappable type tag, so
 // the conversion checks the pointee's declared shape when one is known
 // and passes the pointer itself through.
-func (v *VM) convertPointer(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error) {
+func (v *VM) convertPointer(td *runtime.TypeDef, x runtime.Value, srcUnsafe bool) (runtime.Value, error) {
 	if tn, isNil := asTypedNil(x); isNil {
 		// (*[N]T)(nilSlice) — a nil slice converts to a nil array
 		// pointer only when N == 0; a larger array conversion panics
@@ -10770,11 +10796,25 @@ func (v *VM) convertPointer(td *runtime.TypeDef, x runtime.Value) (runtime.Value
 			}
 		}
 	}
-	if _, ok := runtime.Deref(x); !ok {
+	if v.unsafePtrTd(td) {
+		// unsafe.Pointer(x) converts from any pointer: a script ref
+		// dereferences, a host pointer arrives as a GoValue box, and an
+		// engine-internal handle IS a pointer. The Named tag carries the
+		// unsafe.Pointer identity while the payload keeps write-through.
+		// uintptr -> unsafe.Pointer cannot mint a ref from an integer
+		// and stays a convert error.
+		if !v.unsafePtrLike(x) {
+			return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
+		}
+		return runtime.Tag(td, x), nil
+	}
+	if _, ok := runtime.Deref(x); !ok && !(srcUnsafe && hostPtrBox(x)) {
 		return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
 	}
 	var ptag *runtime.TypeDef
-	if pt := v.pointeeTag(x); pt != nil && v.H.ElemOf != nil {
+	// an unsafe.Pointer source converts to any *T — Go exempts it from
+	// the identical-pointee rule, so the gate below is skipped.
+	if pt := v.pointeeTag(x); pt != nil && v.H.ElemOf != nil && !srcUnsafe {
 		ptag = pt
 		if et, err := v.H.ElemOf(v.peelNamed(td)); err == nil && et != nil && !sameTypeDef(pt, et) && !sameTypeDef(pt, v.peelAlias(et)) {
 			pe, pp := v.peelNamed(et), v.peelNamed(pt)
@@ -12549,6 +12589,62 @@ func (v *VM) shapeOK(f *frame, x runtime.Value, td *runtime.TypeDef) bool {
 		return v.internalTypedef(x) != nil
 	}
 	return true
+}
+
+// unsafePtrTd reports whether td resolves to unsafe.Pointer — the one
+// type Go converts to and from every pointer type. A declared type
+// spelled over it (`type P unsafe.Pointer`) resolves through the
+// named-underlying chain to the same bound typedef.
+func (v *VM) unsafePtrTd(td *runtime.TypeDef) bool {
+	if td == nil {
+		return false
+	}
+	if td.Name == "unsafe.Pointer" && td.Kind == runtime.KindPointer {
+		return true
+	}
+	if u := v.peelNamed(td); u != nil && u != td {
+		return v.unsafePtrTd(u)
+	}
+	return false
+}
+
+// unsafePtrLike reports whether x can serve as an unsafe.Pointer
+// payload — anything a pointer can point at or be: a script ref, a
+// boxed host pointer, or an engine-internal handle (which IS a
+// pointer). Everything else (ints, strings, funcs, slices) cannot
+// convert to unsafe.Pointer, like gc's conversion rule.
+func (v *VM) unsafePtrLike(x runtime.Value) bool {
+	if _, ok := runtime.Deref(x); ok {
+		return true
+	}
+	return hostPtrBox(x) || v.internalTypedef(x) != nil
+}
+
+// hostPtrBox reports whether x is a GoValue wrapping a host pointer —
+// bound functions hand host *T values to scripts boxed like this.
+func hostPtrBox(x runtime.Value) bool {
+	gv, ok := x.(*runtime.GoValue)
+	if !ok {
+		return false
+	}
+	rv := reflect.ValueOf(gv.V)
+	return rv.IsValid() && (rv.Kind() == reflect.Ptr || rv.Kind() == reflect.UnsafePointer)
+}
+
+// unsafePtrAddr mints a uintptr for an unsafe.Pointer payload — the
+// same address %p would print: the ref object's own Go address for a
+// script ref, the host pointer itself for a host box.
+func (v *VM) unsafePtrAddr(x runtime.Value) (uint64, bool) {
+	if gv, ok := x.(*runtime.GoValue); ok {
+		if rv := reflect.ValueOf(gv.V); rv.IsValid() && rv.Kind() == reflect.Ptr {
+			return uint64(rv.Pointer()), true
+		}
+		return 0, false
+	}
+	if _, ok := runtime.Deref(x); ok {
+		return uint64(reflect.ValueOf(x).Pointer()), true
+	}
+	return 0, false
 }
 
 // zeroValue returns the Go zero value of a typedef: runtime.Zero plus a

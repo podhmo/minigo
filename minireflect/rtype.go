@@ -503,6 +503,7 @@ var namedBasicKinds = map[string]reflect.Kind{
 	"reflect.StructTag": reflect.String,
 	"reflect.Kind":      reflect.Uint,
 	"reflect.ChanDir":   reflect.Int,
+	"unsafe.Pointer":    reflect.UnsafePointer,
 }
 
 // kindOfTd maps a typedef to its reflect.Kind.

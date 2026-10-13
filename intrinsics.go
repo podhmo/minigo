@@ -1828,6 +1828,18 @@ func (e *Engine) installStdlib() {
 	// here, and it is what callers like x/tools' stringptr rely on.
 	strDataBacks := map[string]*runtime.Slice{}
 	e.Bind("unsafe", map[string]runtime.Value{
+		// unsafe.Pointer: a named pointer to the opaque ArbitraryType.
+		// Values carry it as a Named tag over the real ref, so *T <->
+		// unsafe.Pointer conversions keep write-through and identity.
+		// The Elem marker is unresolvable on purpose: the coercion
+		// funnels reject a direct `*p`/`u = &x` like gc does, and the
+		// conversion paths special-case the name before any pointee
+		// check runs.
+		"Pointer": &runtime.TypeDef{
+			Name: "unsafe.Pointer",
+			Kind: runtime.KindPointer,
+			Elem: &runtime.TypeDef{Name: "unsafe.ArbitraryType", Kind: runtime.KindNamedBasic},
+		},
 		"Sizeof": &runtime.BuiltinFunc{Name: "unsafe.Sizeof", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			return e.unsafeSizeOf(args[0], e.unsafeStaticTyp(args)), nil
 		}},
