@@ -318,6 +318,8 @@ const replHelp = `commands:
                     keeps its own imports; again reloads, :load alone lists.
                     takes filesystem paths only — for a package by import
                     path, use import or :cd
+  :unload <file|dir>  drop a :load: its decls and values go, and the
+                      prompt definitions it replaced come back
   :doc <pkg>[.<sym>]  run go doc (pkg: imported name, "path", or path).
                       note: this is the Go toolchain's documentation, not
                       minigo's — a bound package may expose fewer symbols
@@ -488,6 +490,16 @@ func runREPL(ctx context.Context, in io.Reader, out io.Writer) error {
 						}
 						fmt.Fprintf(out, "loaded %s\n", path)
 					}
+				case ":unload":
+					path, err := r.Unload(ctx, strings.TrimSpace(arg))
+					if err != nil {
+						fmt.Fprintf(out, "error: %s\n", err)
+						break
+					}
+					if rel, err := filepath.Rel(cwd, path); err == nil && !strings.HasPrefix(rel, "..") {
+						path = rel
+					}
+					fmt.Fprintf(out, "unloaded %s\n", path)
 				case ":doc":
 					runDoc(ctx, out, r, cwd, arg)
 				case ":dump", ":p":
