@@ -1,0 +1,11 @@
+missing-function: template: functions:1: function "value" not defined
+elapsed=0.056s err=runtime trap: cannot use slice as []byte
+Traceback (most recent call first):
+File "/private/tmp/oapi-template-cache-experiment/goroot/src/text/template/parse/experiment_snapshot.go", line 313, in ExperimentRestore()
+		nodes[i] = &TextNode{NodeType: r.Kind, Pos: r.Pos, tr: tr, Text: r.Text}
+File "/private/tmp/oapi-template-cache-experiment/goroot/src/text/template/experiment_cache.go", line 52, in Template.ExperimentParseCached()
+		trees, readErr = parse.ExperimentRestore([]byte(body))
+File "/private/tmp/oapi-template-cache-experiment/semantic/main.go", line 18, in cached()
+		return must(template.New(name).Funcs(funcs).ExperimentParseCached(text))
+File "/private/tmp/oapi-template-cache-experiment/semantic/main.go", line 47, in main()
+		a = cached("independent", "original", nil)

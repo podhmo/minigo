@@ -1,0 +1,28 @@
+minigo: runtime trap: undefined: strconv.IntSize
+Traceback (most recent call first):
+File "/private/tmp/oapi-template-cache-experiment/goroot/src/encoding/base64/base64.go", line 524, in Encoding.Decode()
+		for strconv.IntSize >= 64 && len(src)-si >= 8 && len(dst)-n >= 8 {
+File "/private/tmp/oapi-template-cache-experiment/goroot/src/encoding/base64/base64.go", line 417, in Encoding.AppendDecode()
+		n, err := enc.Decode(dst[len(dst):][:n], src)
+File "/private/tmp/oapi-template-cache-experiment/goroot/src/encoding/json/v2/arshal_default.go", line 433, in json.makeBytesArshaler.func2()
+		b, err := appendDecode(va.Bytes()[:0], val)
+File "/private/tmp/oapi-template-cache-experiment/goroot/src/encoding/json/v2/arshal_default.go", line 1401, in json.makeStructArshaler.func3()
+		err = unmarshal(dec, v, uo)
+File "/private/tmp/oapi-template-cache-experiment/goroot/src/encoding/json/v2/arshal_default.go", line 1586, in json.makeSliceArshaler.func3()
+		if err := unmarshal(dec, v, uo); err != nil {
+File "/private/tmp/oapi-template-cache-experiment/goroot/src/encoding/json/v2/arshal_default.go", line 1401, in json.makeStructArshaler.func3()
+		err = unmarshal(dec, v, uo)
+File "/private/tmp/oapi-template-cache-experiment/goroot/src/encoding/json/v2/arshal.go", line 471, in unmarshalDecode()
+		if err := unmarshal(in, va, uo); err != nil {
+File "/private/tmp/oapi-template-cache-experiment/goroot/src/encoding/json/v2/arshal.go", line 390, in Unmarshal()
+		err = unmarshalDecode(dec, out, &xd.Struct, true)
+File "/private/tmp/oapi-template-cache-experiment/goroot/src/encoding/json/v2_decode.go", line 111, in Unmarshal()
+		return jsonv2.Unmarshal(data, v, DefaultOptionsV1())
+File "/private/tmp/oapi-template-cache-experiment/goroot/src/text/template/parse/experiment_snapshot.go", line 294, in ExperimentRestore()
+		if err = json.Unmarshal(data, &s); err != nil {
+File "/private/tmp/oapi-template-cache-experiment/goroot/src/text/template/experiment_cache.go", line 52, in Template.ExperimentParseCached()
+		trees, readErr = parse.ExperimentRestore([]byte(body))
+File "/private/tmp/oapi-template-cache-experiment/semantic/main.go", line 18, in cached()
+		return must(template.New(name).Funcs(funcs).ExperimentParseCached(text))
+File "/private/tmp/oapi-template-cache-experiment/semantic/main.go", line 34, in main()
+		a := cached("functions", "{{value}}", funcs)

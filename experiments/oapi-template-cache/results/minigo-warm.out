@@ -1,0 +1,8 @@
+missing-function: template: functions:1: function "value" not defined
+numeric: "" err=template: numeric:1:23: executing "numeric" at <0xffffffffffffffff>: 0xffffffffffffffff overflows int
+numeric-valid: "42/3.5/(0+2i)/30028/true"
+execution-error: template: positions:2:20: executing "child" at <.Missing>: can't evaluate field Missing in type struct {}
+syntax-error: template: broken:1: unexpected EOF
+duplicate-error: template: duplicate:1: template: multiple definition of template "x"
+semantic probes passed
+elapsed=0.026s err=<nil>

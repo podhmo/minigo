@@ -1,0 +1,6 @@
+.work/
+__pycache__/
+*.pyc
+
+# Recorded program stdout is experimental evidence.
+!results/*.out

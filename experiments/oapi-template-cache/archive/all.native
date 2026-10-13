@@ -1,0 +1,106 @@
+== anyof-allof-oneof: -config cfg.yaml api.yaml rc=0
+  wrote anyofallofoneof.gen.go 028b4c4e7d195384
+== authenticated-api/echo/api: --config=config.yaml ../../api.yaml rc=0
+  wrote api.gen.go f6ad798a54d121ad
+== authenticated-api/stdhttp/api: --config=config.yaml ../../api.yaml rc=0
+  wrote api.gen.go 39515700024b68cc
+== callback: --config=config.yaml tree-farm.yaml rc=0
+  wrote treefarm.gen.go ef325025bdebfac5
+== client: -config cfg.yaml api.yaml rc=0
+  wrote client.gen.go 16ed7e9e000a8b58
+== clienttypenameclash: -config cfg.yaml api.yaml rc=0
+  wrote client.gen.go 381fe3f8e90f246f
+== custom-client-type: -config cfg.yaml api.yaml rc=0
+  wrote custom-client-type.gen.go 2fa1df0300d50225
+== extensions/xdeprecatedreason: -config cfg.yaml api.yaml rc=0
+  wrote gen.go 341a38bc8641b923
+== extensions/xenumnames: -config cfg.yaml api.yaml rc=0
+  wrote gen.go acd8c7d253ce4743
+== extensions/xgojsonignore: -config cfg.yaml api.yaml rc=0
+  wrote gen.go 02a38e8ba68cb56f
+== extensions/xgoname: -config cfg.yaml api.yaml rc=0
+  wrote gen.go 57107266a04e8586
+== extensions/xgotype: -config cfg.yaml api.yaml rc=0
+  wrote gen.go 0320de1579f5417b
+== extensions/xgotypename: -config cfg.yaml api.yaml rc=0
+  wrote gen.go 7baa2021781901df
+== extensions/xgotypeskipoptionalpointer: -config cfg.yaml api.yaml rc=0
+  wrote gen.go 60909c598b65e5c7
+== extensions/xoapicodegenextratags: -config cfg.yaml api.yaml rc=0
+  wrote gen.go 201cfee16118f408
+== extensions/xoapicodegenonlyhonourgoname: -config cfg.yaml api.yaml rc=0
+  wrote gen.go 4edd6490a13258b6
+== extensions/xomitempty: -config cfg.yaml api.yaml rc=0
+  wrote gen.go 33901d2e701e2ec3
+== extensions/xomitzero: -config cfg.yaml api.yaml rc=0
+  wrote types.gen.go 9d4a0873f1fbbf42
+== extensions/xorder: -config cfg.yaml api.yaml rc=0
+  wrote gen.go 9f9a48c2e80c7fc9
+== generate/serverurls: -config cfg.yaml api.yaml rc=0
+  wrote gen.go ac3d3dc12f03c60a
+== import-mapping/multiplepackages/admin: -config cfg.yaml ../../admin/api.yaml rc=0
+  wrote server.gen.go a2e5e6ea1c668373
+== import-mapping/multiplepackages/common: -config cfg.yaml ../../common/api.yaml rc=0
+  wrote types.gen.go d35f1cc9d182efb1
+== import-mapping/samepackage: -config cfg-api.yaml ../admin/api.yaml rc=0
+  wrote server.gen.go e050775b0c4c6e53
+== import-mapping/samepackage: -config cfg-user.yaml ../common/api.yaml rc=0
+  wrote user.gen.go 638212a300db65e7
+== minimal-server/chi/api: -config cfg.yaml ../../api.yaml rc=0
+  wrote ping.gen.go 97bd3018dc68bc86
+== minimal-server/echo/api: -config cfg.yaml ../../api.yaml rc=0
+  wrote ping.gen.go f60d99f55ad77b1b
+== minimal-server/fiber/api: -config cfg.yaml ../../api.yaml rc=0
+  wrote ping.gen.go 069a79b1f0b0f34c
+== minimal-server/fiberv3/api: -config cfg.yaml ../../api.yaml rc=0
+  wrote ping.gen.go 8e14b628198a81d3
+== minimal-server/gin/api: -config cfg.yaml ../../api.yaml rc=0
+  wrote ping.gen.go 353d589d3d471cbc
+== minimal-server/gorillamux/api: -config cfg.yaml ../../api.yaml rc=0
+  wrote ping.gen.go 6df01e64c175a507
+== minimal-server/iris/api: -config cfg.yaml ../../api.yaml rc=0
+  wrote ping.gen.go 062aabcc748ce888
+== minimal-server/stdhttp/api: -config cfg.yaml ../../api.yaml rc=0
+  wrote ping.gen.go 5eda2de0994af2b0
+== only-models: -config cfg.yaml api.yaml rc=0
+  wrote only-models.gen.go 49ba34bf86fe3053
+== output-options/additionalinitialisms: -config cfg.yaml api.yaml rc=0
+  wrote gen.go 28f280a6f00c95b1
+== output-options/preferskipoptionalpointer: -config cfg.yaml api.yaml rc=0
+  wrote gen.go 9d0fbdb500268ca8
+== output-options/preferskipoptionalpointerwithomitzero: -config cfg.yaml api.yaml rc=0
+  wrote gen.go 67ebf08e8ddcb80b
+== output-options/type-mapping: --config=config.yaml spec.yaml rc=0
+  wrote typemapping.gen.go 270be3992f1eb70e
+== overlay/api: -config cfg.yaml api.yaml rc=0
+  wrote ping.gen.go 085971489a5f8f74
+== petstore-expanded/chi/api: --config=server.cfg.yaml ../../petstore-expanded.yaml rc=0
+  wrote petstore-server.gen.go 91675aeabdcf513e
+== petstore-expanded/common/client/openapi: --config=client.cfg.yaml ../../../petstore-expanded.yaml rc=0
+  wrote client.gen.go 151faa1395676576
+== petstore-expanded/echo-v5/api: --config=server.cfg.yaml ../../petstore-expanded.yaml rc=0
+  wrote petstore-server.gen.go 41a6ed0b23f955b8
+== petstore-expanded/echo/api: --config=server.cfg.yaml ../../petstore-expanded.yaml rc=0
+  wrote petstore-server.gen.go b200eaeaed43c71a
+== petstore-expanded/fiber/api: --config=server.cfg.yaml ../../petstore-expanded.yaml rc=0
+  wrote petstore-server.gen.go 78736e0bf18ac140
+== petstore-expanded/fiberv3/api: --config=types.cfg.yaml ../../petstore-expanded.yaml rc=0
+  wrote petstore-types.gen.go dfe73f7737b5a35c
+== petstore-expanded/fiberv3/api: --config=server.cfg.yaml ../../petstore-expanded.yaml rc=0
+  wrote petstore-server.gen.go 73b920a0c371af10
+== petstore-expanded/gin/api: --config=server.cfg.yaml ../../petstore-expanded.yaml rc=0
+  wrote petstore-server.gen.go f789fa58690a3e3e
+== petstore-expanded/gorilla/api: --config=server.cfg.yaml ../../petstore-expanded.yaml rc=0
+  wrote petstore-server.gen.go 8f4307ddef5c07f3
+== petstore-expanded/iris/api: --config=server.cfg.yaml ../../petstore-expanded.yaml rc=0
+  wrote petstore-server.gen.go 26575bb1e46c0732
+== petstore-expanded/stdhttp/api: --config=server.cfg.yaml ../../petstore-expanded.yaml rc=0
+  wrote petstore-server.gen.go 875e3472cd6b7e3c
+== petstore-expanded/strict/api: --config=server.cfg.yaml ../../petstore-expanded.yaml rc=0
+  wrote petstore-server.gen.go df0f5b7a94486634
+== streaming/client/sse: -config cfg.yaml ../../sse.yaml rc=0
+  wrote streaming.gen.go d246db61dbedb72a
+== streaming/stdhttp/sse: -config cfg.yaml ../../sse.yaml rc=0
+  wrote streaming.gen.go 70440b4ff3d4bf38
+== webhook: --config=config.yaml door-badge-reader.yaml rc=0
+  wrote doorbadge.gen.go 28a7474b41f9643e

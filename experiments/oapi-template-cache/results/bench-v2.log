@@ -1,0 +1,24 @@
+bench ordinary=False round=1/9
+bench ordinary=False round=2/9
+bench ordinary=False round=3/9
+bench ordinary=False round=4/9
+bench ordinary=False round=5/9
+bench ordinary=False round=6/9
+bench ordinary=False round=7/9
+bench ordinary=False round=8/9
+bench ordinary=False round=9/9
+bench ordinary=True round=1/9
+bench ordinary=True round=2/9
+bench ordinary=True round=3/9
+bench ordinary=True round=4/9
+bench ordinary=True round=5/9
+bench ordinary=True round=6/9
+bench ordinary=True round=7/9
+bench ordinary=True round=8/9
+bench ordinary=True round=9/9
+median False off 1.1589 range 1.138 1.2015
+median False cold 1.6816 range 1.6508 1.7446
+median False warm 1.3753 range 1.3348 1.4325
+median True off 2.1096 range 2.0827 2.1746
+median True cold 2.6314 range 2.6034 2.7938
+median True warm 2.3006 range 2.2877 2.3249

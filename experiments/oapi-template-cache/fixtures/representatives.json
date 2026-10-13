@@ -1,0 +1,48 @@
+[
+  {
+    "directory": "only-models",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ]
+  },
+  {
+    "directory": "client",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ]
+  },
+  {
+    "directory": "petstore-expanded/chi/api",
+    "args": [
+      "--config=server.cfg.yaml",
+      "../../petstore-expanded.yaml"
+    ]
+  },
+  {
+    "directory": "petstore-expanded/strict/api",
+    "args": [
+      "--config=server.cfg.yaml",
+      "../../petstore-expanded.yaml"
+    ]
+  },
+  {
+    "directory": "overlay/api",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ]
+  },
+  {
+    "directory": "anyof-allof-oneof",
+    "args": [
+      "-config",
+      "cfg.yaml",
+      "api.yaml"
+    ]
+  }
+]

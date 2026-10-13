@@ -1,0 +1,326 @@
+[
+  {
+    "ordinary": false,
+    "round": 0,
+    "mode": "off",
+    "wall": 1.1661912910058163
+  },
+  {
+    "ordinary": false,
+    "round": 0,
+    "mode": "warm",
+    "wall": 1.3347745410283096
+  },
+  {
+    "ordinary": false,
+    "round": 0,
+    "mode": "cold",
+    "wall": 1.6580525420140475
+  },
+  {
+    "ordinary": false,
+    "round": 1,
+    "mode": "warm",
+    "wall": 1.3765481670270674
+  },
+  {
+    "ordinary": false,
+    "round": 1,
+    "mode": "cold",
+    "wall": 1.7220927079906687
+  },
+  {
+    "ordinary": false,
+    "round": 1,
+    "mode": "off",
+    "wall": 1.143868040991947
+  },
+  {
+    "ordinary": false,
+    "round": 2,
+    "mode": "cold",
+    "wall": 1.6508206250146031
+  },
+  {
+    "ordinary": false,
+    "round": 2,
+    "mode": "off",
+    "wall": 1.137959084007889
+  },
+  {
+    "ordinary": false,
+    "round": 2,
+    "mode": "warm",
+    "wall": 1.3421338750049472
+  },
+  {
+    "ordinary": false,
+    "round": 3,
+    "mode": "off",
+    "wall": 1.1655172500177287
+  },
+  {
+    "ordinary": false,
+    "round": 3,
+    "mode": "warm",
+    "wall": 1.4299232079647481
+  },
+  {
+    "ordinary": false,
+    "round": 3,
+    "mode": "cold",
+    "wall": 1.6963008340098895
+  },
+  {
+    "ordinary": false,
+    "round": 4,
+    "mode": "warm",
+    "wall": 1.3642962090088986
+  },
+  {
+    "ordinary": false,
+    "round": 4,
+    "mode": "cold",
+    "wall": 1.6815896249609068
+  },
+  {
+    "ordinary": false,
+    "round": 4,
+    "mode": "off",
+    "wall": 1.1774757080129348
+  },
+  {
+    "ordinary": false,
+    "round": 5,
+    "mode": "cold",
+    "wall": 1.6682969580288045
+  },
+  {
+    "ordinary": false,
+    "round": 5,
+    "mode": "off",
+    "wall": 1.1589203330222517
+  },
+  {
+    "ordinary": false,
+    "round": 5,
+    "mode": "warm",
+    "wall": 1.3756881660083309
+  },
+  {
+    "ordinary": false,
+    "round": 6,
+    "mode": "off",
+    "wall": 1.1444985829875804
+  },
+  {
+    "ordinary": false,
+    "round": 6,
+    "mode": "warm",
+    "wall": 1.432464249955956
+  },
+  {
+    "ordinary": false,
+    "round": 6,
+    "mode": "cold",
+    "wall": 1.7229115419904701
+  },
+  {
+    "ordinary": false,
+    "round": 7,
+    "mode": "warm",
+    "wall": 1.3587347909924574
+  },
+  {
+    "ordinary": false,
+    "round": 7,
+    "mode": "cold",
+    "wall": 1.6679862500168383
+  },
+  {
+    "ordinary": false,
+    "round": 7,
+    "mode": "off",
+    "wall": 1.1565579159650952
+  },
+  {
+    "ordinary": false,
+    "round": 8,
+    "mode": "cold",
+    "wall": 1.744590042042546
+  },
+  {
+    "ordinary": false,
+    "round": 8,
+    "mode": "off",
+    "wall": 1.2015106659964658
+  },
+  {
+    "ordinary": false,
+    "round": 8,
+    "mode": "warm",
+    "wall": 1.3752597499988042
+  },
+  {
+    "ordinary": true,
+    "round": 0,
+    "mode": "off",
+    "wall": 2.094202749955002
+  },
+  {
+    "ordinary": true,
+    "round": 0,
+    "mode": "warm",
+    "wall": 2.307635333039798
+  },
+  {
+    "ordinary": true,
+    "round": 0,
+    "mode": "cold",
+    "wall": 2.639858541020658
+  },
+  {
+    "ordinary": true,
+    "round": 1,
+    "mode": "warm",
+    "wall": 2.3212571660405956
+  },
+  {
+    "ordinary": true,
+    "round": 1,
+    "mode": "cold",
+    "wall": 2.6204690409940667
+  },
+  {
+    "ordinary": true,
+    "round": 1,
+    "mode": "off",
+    "wall": 2.113499958999455
+  },
+  {
+    "ordinary": true,
+    "round": 2,
+    "mode": "cold",
+    "wall": 2.6112777090165764
+  },
+  {
+    "ordinary": true,
+    "round": 2,
+    "mode": "off",
+    "wall": 2.0826827909913845
+  },
+  {
+    "ordinary": true,
+    "round": 2,
+    "mode": "warm",
+    "wall": 2.3242002909537405
+  },
+  {
+    "ordinary": true,
+    "round": 3,
+    "mode": "off",
+    "wall": 2.083877334021963
+  },
+  {
+    "ordinary": true,
+    "round": 3,
+    "mode": "warm",
+    "wall": 2.3249342080089264
+  },
+  {
+    "ordinary": true,
+    "round": 3,
+    "mode": "cold",
+    "wall": 2.6681200419552624
+  },
+  {
+    "ordinary": true,
+    "round": 4,
+    "mode": "warm",
+    "wall": 2.297144041978754
+  },
+  {
+    "ordinary": true,
+    "round": 4,
+    "mode": "cold",
+    "wall": 2.603374416998122
+  },
+  {
+    "ordinary": true,
+    "round": 4,
+    "mode": "off",
+    "wall": 2.1745886669959873
+  },
+  {
+    "ordinary": true,
+    "round": 5,
+    "mode": "cold",
+    "wall": 2.6313557919929735
+  },
+  {
+    "ordinary": true,
+    "round": 5,
+    "mode": "off",
+    "wall": 2.1095674589741975
+  },
+  {
+    "ordinary": true,
+    "round": 5,
+    "mode": "warm",
+    "wall": 2.29758579202462
+  },
+  {
+    "ordinary": true,
+    "round": 6,
+    "mode": "off",
+    "wall": 2.0949551669764332
+  },
+  {
+    "ordinary": true,
+    "round": 6,
+    "mode": "warm",
+    "wall": 2.2877027909853496
+  },
+  {
+    "ordinary": true,
+    "round": 6,
+    "mode": "cold",
+    "wall": 2.69816745800199
+  },
+  {
+    "ordinary": true,
+    "round": 7,
+    "mode": "warm",
+    "wall": 2.300564375007525
+  },
+  {
+    "ordinary": true,
+    "round": 7,
+    "mode": "cold",
+    "wall": 2.7937780410284176
+  },
+  {
+    "ordinary": true,
+    "round": 7,
+    "mode": "off",
+    "wall": 2.118192249967251
+  },
+  {
+    "ordinary": true,
+    "round": 8,
+    "mode": "cold",
+    "wall": 2.6131748339976184
+  },
+  {
+    "ordinary": true,
+    "round": 8,
+    "mode": "off",
+    "wall": 2.1110089999856427
+  },
+  {
+    "ordinary": true,
+    "round": 8,
+    "mode": "warm",
+    "wall": 2.29639762500301
+  }
+]
