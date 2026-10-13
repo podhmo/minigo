@@ -211,6 +211,51 @@ func AddrStable() int {
 	return 0
 }
 
+func ElemAddrStable() int {
+	s := []int{10, 20}
+	// each `&s[i]` is a fresh ref, but the minted address is the
+	// backing-array slot's — stable, and distinct between elements.
+	if uintptr(unsafe.Pointer(&s[0])) != uintptr(unsafe.Pointer(&s[0])) {
+		return 0
+	}
+	if uintptr(unsafe.Pointer(&s[0])) == uintptr(unsafe.Pointer(&s[1])) {
+		return 0
+	}
+	return 1
+}
+
+func FieldAddrStable() int {
+	d := Data{UPI: unsafe.Pointer(nil)}
+	if uintptr(unsafe.Pointer(&d.UPI)) != uintptr(unsafe.Pointer(&d.UPI)) {
+		return 0
+	}
+	if uintptr(unsafe.Pointer(&d.UPI)) == uintptr(unsafe.Pointer(&d.EmptyUPI)) {
+		return 0
+	}
+	return 1
+}
+
+func DerefAddrSame() int {
+	var n int
+	p := &n
+	// &*p is p — the minted addresses agree.
+	if uintptr(unsafe.Pointer(&*p)) != uintptr(unsafe.Pointer(p)) {
+		return 0
+	}
+	return 1
+}
+
+func NilUintptr() int {
+	var u unsafe.Pointer
+	if uintptr(u) != 0 {
+		return 0
+	}
+	if uintptr(unsafe.Pointer(nil)) != 0 {
+		return 0
+	}
+	return 1
+}
+
 // ---- traps: shapes gc rejects outright ----
 
 func DerefUnsafe() int {
@@ -248,6 +293,12 @@ func FuncConv() int {
 func NilDerefBack() int {
 	p := unsafe.Pointer(nil)
 	return *(*int)(p) // nil pointer dereference
+}
+
+func NilDerefUnsafe() int {
+	var u unsafe.Pointer
+	_ = *u // gc: cannot indirect u — before the nil check
+	return 0
 }
 
 func UintptrToPtr() int {

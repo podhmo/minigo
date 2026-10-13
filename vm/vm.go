@@ -2400,6 +2400,12 @@ func (v *VM) loop(f *frame) {
 				}
 				f.push(dv)
 			} else if tn, ok := asTypedNil(x); ok {
+				// `*u` on a nil unsafe.Pointer is still "cannot
+				// indirect" — gc rejects the indirection before any
+				// nil check.
+				if v.unsafePtrTd(tn.Typ) {
+					f.trap("cannot indirect %s", tdName(tn.Typ))
+				}
 				// *p on a nil pointer panics; on other nilables it's invalid
 				if tn.Typ.Kind == runtime.KindPointer {
 					panic(runtime.NilDerefPanic())
@@ -2409,8 +2415,13 @@ func (v *VM) loop(f *frame) {
 				// `*p` through a ref on a nil pointer panics like the
 				// plain operand read — Get just reports failure.
 				if pv, ok := runtime.Deref(dr.Ptr); ok {
-					if tn, isTN := asTypedNil(pv); isTN && tn.Typ.Kind == runtime.KindPointer {
-						panic(runtime.NilDerefPanic())
+					if tn, isTN := asTypedNil(pv); isTN {
+						if v.unsafePtrTd(tn.Typ) {
+							f.trap("cannot indirect %s", tdName(tn.Typ))
+						}
+						if tn.Typ.Kind == runtime.KindPointer {
+							panic(runtime.NilDerefPanic())
+						}
 					}
 				}
 				f.trap("deref of non-pointer %T", x)
@@ -10106,6 +10117,11 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 		}
 		x = n.V
 	}
+	// a nil unsafe.Pointer still counts as an unsafe source for the
+	// uintptr mint — uintptr(u) is 0.
+	if tn, isTN := asTypedNil(x); isTN && v.unsafePtrTd(tn.Typ) {
+		srcUnsafe = true
+	}
 	// a host value unboxes so its concrete value converts like a script
 	// value of the same shape (a []byte arriving boxed becomes a slice).
 	x = unboxGoValue(x)
@@ -12632,12 +12648,44 @@ func hostPtrBox(x runtime.Value) bool {
 }
 
 // unsafePtrAddr mints a uintptr for an unsafe.Pointer payload — the
-// same address %p would print: the ref object's own Go address for a
-// script ref, the host pointer itself for a host box.
+// same address %p would print. A ref mints its storage slot's address
+// (the cell, the backing-array element, the struct field) so the same
+// location mints the same value across evaluations, and a realloc moves
+// it like gc's; a host box mints the host pointer itself.
 func (v *VM) unsafePtrAddr(x runtime.Value) (uint64, bool) {
+	x = runtime.Unwrap(x)
 	if gv, ok := x.(*runtime.GoValue); ok {
-		if rv := reflect.ValueOf(gv.V); rv.IsValid() && rv.Kind() == reflect.Ptr {
+		if rv := reflect.ValueOf(gv.V); rv.IsValid() && (rv.Kind() == reflect.Ptr || rv.Kind() == reflect.UnsafePointer) {
 			return uint64(rv.Pointer()), true
+		}
+		return 0, false
+	}
+	// a nil unsafe.Pointer mints 0, like %p on a nil pointer.
+	if tn, ok := asTypedNil(x); ok && v.unsafePtrTd(tn.Typ) {
+		return 0, true
+	}
+	switch r := x.(type) {
+	case *runtime.IndexRef:
+		// &s[i]'s address is the backing-array slot's, not the ref
+		// wrapper's — each `&s[i]` builds a fresh wrapper, so its own
+		// Go address would mint a different value every evaluation.
+		if sl := r.Slice(); sl != nil {
+			if i, ok := runtime.Unwrap(r.Key).(int64); ok && i >= 0 && i < int64(len(sl.Elems)) {
+				return uint64(reflect.ValueOf(sl.Elems).Index(int(i)).Addr().Pointer()), true
+			}
+		}
+		return 0, false
+	case *runtime.FieldRef:
+		// &s.f's address is the field's slot in the struct — stable for
+		// the storage no matter how the ref was spelled or promoted.
+		if st, idx, ok := r.Find(); ok {
+			return uint64(reflect.ValueOf(st.Fields).Index(idx).Addr().Pointer()), true
+		}
+		return 0, false
+	case *runtime.DerefRef:
+		// &*p is p — mint the pointer value stored at its location.
+		if pv, ok := runtime.Deref(r.Ptr); ok {
+			return v.unsafePtrAddr(pv)
 		}
 		return 0, false
 	}

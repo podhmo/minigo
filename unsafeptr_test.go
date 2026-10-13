@@ -54,9 +54,14 @@ func TestUnsafePointer(t *testing.T) {
 			{"AliasConvert", int64(3)},
 			{"NamedConvert", int64(6)},
 
-			// unsafe.Pointer -> uintptr mints the ref's address
+			// unsafe.Pointer -> uintptr mints the ref's address —
+			// stable per storage slot, 0 for a nil pointer
 			{"AddrNonZero", int64(1)},
 			{"AddrStable", int64(1)},
+			{"ElemAddrStable", int64(1)},
+			{"FieldAddrStable", int64(1)},
+			{"DerefAddrSame", int64(1)},
+			{"NilUintptr", int64(1)},
 		}
 		for _, c := range cases {
 			got := run(t, e, "./testdata/unsafeptr", c.fn)
@@ -74,6 +79,7 @@ func TestUnsafePointer(t *testing.T) {
 			msg string
 		}{
 			{"DerefUnsafe", "cannot indirect unsafe.Pointer"},
+			{"NilDerefUnsafe", "cannot indirect unsafe.Pointer"},
 			{"AssignRawPtr", "cannot use"},
 			{"FieldRawPtr", "cannot use"},
 			{"SliceConv", "cannot convert []int to unsafe.Pointer"},
