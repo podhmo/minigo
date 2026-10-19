@@ -1,13 +1,19 @@
-// Package compile lowers per-function Go AST to stack-VM bytecode.
+// Package compile lowers Go functions, package initializers and
+// expressions to [bytecode.Chunk] values for the minigo stack VM.
 //
-// The compiler is a total function: every Go program compiles. Any construct
-// outside the supported subset emits OpTrap at its position instead of an
-// error, so a single unsupported node never blocks the rest of the package.
+// [Func] compiles a [runtime.Function] body; [InitFunc] and [ConstInitFunc]
+// compile a [runtime.Package] initializer; [Expr] and [ExprScoped] compile a
+// single expression. Source comes from
+// [github.com/podhmo/minigo/syntax]; the chunks run on
+// [github.com/podhmo/minigo/vm].
 //
-// Scoping: only locals and upvalues are resolved statically. Anything that
-// is not a local compiles to OpGlobal/OpSetGlobal and is resolved dynamically
-// at run time (package globals, then file imports, then builtins) — this is
-// what keeps imports lazy.
+// Every Go program compiles. A construct outside the supported subset
+// compiles to a [bytecode.OpTrap] that fails at run time, with its
+// position, only if execution reaches it.
+//
+// Only locals and upvalues are resolved at compile time. Any other name is
+// looked up at run time (file imports, then package globals, then
+// builtins), which keeps imports lazy.
 package compile
 
 import (
@@ -773,12 +779,10 @@ func compileFunc(fn *runtime.Function) error {
 	return nil
 }
 
-// Expr compiles a bare AST expression into a chunk that pushes the
-// expression's value and returns. It backs the OpEvalAST migration bridge:
-// interpreter-visible fragments (e.g. future special-form bodies) are kept
-// as AST and compiled on first execution. The expression resolves names
-// like a function body does — locals don't exist, so free identifiers fall
-// through to package globals, imports, and builtins at run time.
+// Expr compiles e into a chunk that returns the expression's value. There
+// are no locals: free identifiers resolve at run time to imports, package
+// globals and builtins. Use [ExprScoped] to resolve names against a running
+// function's frame instead.
 func Expr(pkg *runtime.Package, file *syntax.File, e ast.Expr) (*bytecode.Chunk, error) {
 	c := &compiler{pkg: pkg, file: file, fs: newFScope(nil), ch: &bytecode.Chunk{Name: "<eval>"}, iotaVal: -1}
 	c.fs.pushBlock()
@@ -788,10 +792,10 @@ func Expr(pkg *runtime.Package, file *syntax.File, e ast.Expr) (*bytecode.Chunk,
 	return c.ch, nil
 }
 
-// ExprScoped compiles expr so free identifiers resolve against a caller
-// frame: locals/upvals are name->index maps into the caller's locals and
-// upvalue tables. It backs special-form Eval — the produced chunk reads
-// and writes the caller's live cells.
+// ExprScoped is [Expr] with free identifiers resolved against a caller's
+// frame, as special forms need: locals and upvals map names to indexes in
+// that frame's locals and upvalue tables. The chunk reads and writes the
+// caller's live cells.
 func ExprScoped(pkg *runtime.Package, file *syntax.File, e ast.Expr, locals, upvals map[string]int) (*bytecode.Chunk, error) {
 	c := &compiler{pkg: pkg, file: file, fs: newFScope(nil), ch: &bytecode.Chunk{Name: "<special-eval>"}, labels: map[string]*labelInfo{}, iotaVal: -1}
 	c.fs.pushBlock()
@@ -894,8 +898,8 @@ func countResults(fl *ast.FieldList) int {
 	return n
 }
 
-// InitFunc compiles the synthetic package initializer: const/var declarations
-// in file order, then init() calls.
+// InitFunc compiles the package initializer: const and var declarations in
+// dependency order, as Go initializes them, then the init functions.
 func InitFunc(pkg *runtime.Package) (*bytecode.Chunk, error) {
 	c := &compiler{pkg: pkg, fs: newFScope(nil), ch: &bytecode.Chunk{Name: pkg.Name + ".__init__"}, iotaVal: -1}
 	c.fs.pushBlock()
@@ -945,13 +949,11 @@ func InitFunc(pkg *runtime.Package) (*bytecode.Chunk, error) {
 	return c.ch, nil
 }
 
-// ConstInitFunc compiles the const-only initializer: const declarations
-// in dependency order, without var specs or init() calls — a constant
-// binds without the package's initialization side effects. It returns
-// (nil, nil) when any const initializer references a package-level var
-// or function name: such a program needs the full initializer (either
-// the code is not really constant, or a builtin operand like len/Sizeof
-// still evaluates the var).
+// ConstInitFunc compiles an initializer for the package's constants only,
+// in dependency order, without var declarations or init functions, so
+// constants bind without the package's initialization side effects. It
+// returns a nil chunk and nil error when a const initializer references a
+// package-level var or function; use [InitFunc] then.
 func ConstInitFunc(pkg *runtime.Package) (*bytecode.Chunk, error) {
 	var specReps []*index.Decl
 	seen := map[*ast.ValueSpec]bool{}
@@ -967,6 +969,9 @@ func ConstInitFunc(pkg *runtime.Package) (*bytecode.Chunk, error) {
 		specReps = append(specReps, d)
 	}
 	if constRefsVarOrFunc(pkg.Index, specReps) {
+		// such a program needs the full initializer: either the code is
+		// not really constant, or a builtin operand like len/Sizeof still
+		// evaluates the var.
 		return nil, nil
 	}
 
@@ -1242,9 +1247,10 @@ func (c *compiler) valueSpec(vs *ast.ValueSpec, d *index.Decl) {
 	}
 }
 
-// EmbedBuiltin names the hidden builtin a `//go:embed` var initializes
-// through: EmbedBuiltin(T, patterns...). The trailing '#' makes the name
-// unwritable in Go source, so a user declaration can never shadow it.
+// EmbedBuiltin is the name of the builtin that compiled code calls to
+// initialize a `//go:embed` var, as EmbedBuiltin(T, patterns...); the host
+// must provide it. The trailing '#' makes the name unwritable in Go source,
+// so a user declaration can never shadow it.
 const EmbedBuiltin = "__minigo_embed__#"
 
 // embedPatterns collects the `//go:embed` patterns on a var spec — from
