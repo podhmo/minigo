@@ -3,9 +3,8 @@
 // the run created, changed, or deleted, so tests assert on the complete
 // write set.
 //
-// [WriteFiles] creates the module, [CopyFile] and [CopyTree] add fixtures,
-// and [Run] executes the generator as an action — any func(ctx) error,
-// such as a [github.com/podhmo/minigo.Engine.Run] call — and returns a
+// [Run] executes the generator as an action — any func(ctx) error, such
+// as a [github.com/podhmo/minigo.Engine.Run] call — and returns a
 // [Result] diffed from the directory before and after:
 //
 //	dir := gentest.WriteFiles(t, map[string]string{"go.mod": "module example.com/m\n"})
