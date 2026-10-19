@@ -1,35 +1,47 @@
-// Package host is the minigo host-extension stub package (plan
-// docs/sketch/plan-minigo-vm.md §11): a real, importable Go package whose
-// members name the interpreter's host-capability surface. Scripts keep
-// working with gopls/gofmt/goimports because the stubs are ordinary Go
-// declarations; the minigo engine intercepts calls and never executes
-// these bodies — an intrinsic does the work instead.
+// Package host gives minigo scripts access to the real host process
+// environment, as opposed to the engine's view of it.
 //
-// Scripts may import this package by its module path
-// ("github.com/podhmo/minigo/host") or by the canonical
-// "minigo.dev/host" — the engine binds both paths to the same intrinsics.
+// Import it as "minigo.dev/host" or by its module path
+// "github.com/podhmo/minigo/host"; both name the same functions. The
+// declarations are stubs so that gopls, gofmt and goimports work on
+// scripts: inside minigo the engine handles each call and the bodies never
+// run. Do not call them from compiled Go.
 //
-// Under a restricted engine (WithAllowedRoots), the
-// environment/filesystem/argv surface is unbound; Exit is always a trap
-// in every mode since an interpreted program must never terminate the
-// host process.
+//	import "minigo.dev/host"
+//
+//	func Main() string {
+//		return host.Getenv("HOME")
+//	}
+//
+// [Getenv], [Environ], [Args], [Hostname] and [Getwd] read the host
+// process state. Unlike os.Args and os.Getwd in a script, [Args] and
+// [Getwd] ignore [github.com/podhmo/minigo.WithArgs] and
+// [github.com/podhmo/minigo.WithWorkingDir].
+//
+// When the engine is restricted with
+// [github.com/podhmo/minigo.WithAllowedRoots], only [Exit] is bound, so a
+// script using any other member fails. [Exit] always fails: a script
+// cannot terminate the host process.
 package host
 
-// Getenv returns the value of the named environment variable.
+// Getenv returns the value of the named environment variable of the host
+// process.
 func Getenv(key string) string { panic("minigo intrinsic") }
 
-// Environ returns all environment variables as "key=value" strings.
+// Environ returns the host process environment as "key=value" strings.
 func Environ() []string { panic("minigo intrinsic") }
 
-// Args returns the host command-line arguments, like os.Args.
+// Args returns the host process's command-line arguments. Unlike os.Args
+// in a script, it ignores [github.com/podhmo/minigo.WithArgs].
 func Args() []string { panic("minigo intrinsic") }
 
 // Hostname returns the host name reported by the kernel.
 func Hostname() (string, error) { panic("minigo intrinsic") }
 
-// Getwd returns the current working directory.
+// Getwd returns the host process's working directory. Unlike os.Getwd in
+// a script, it ignores [github.com/podhmo/minigo.WithWorkingDir].
 func Getwd() (string, error) { panic("minigo intrinsic") }
 
-// Exit requests process termination. Under minigo it always traps: an
-// interpreted program must never terminate the host process.
+// Exit always fails with a runtime error: a script cannot terminate the
+// host process. Return from the entry function instead.
 func Exit(code int) { panic("minigo intrinsic") }
