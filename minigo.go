@@ -777,7 +777,9 @@ func (e *Engine) loadDirMode(ctx context.Context, dir string, lenient bool) (*ru
 
 // SourceOf differs from [Engine.Package] only for a host-bound path: it
 // loads the Go source instead of returning the bound package. Script
-// imports keep getting the bound package.
+// imports keep getting the bound package. It is meant for reading code,
+// so a [ModeDeny] package mode, which stops imports, does not stop
+// SourceOf from loading a bound path's source.
 func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, error) {
 	// Bound packages answer lookups through e.pkgs (with a nil index), so
 	// the source package is built into a private cache — never e.pkgs or
