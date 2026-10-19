@@ -1,132 +1,90 @@
 # Doc comment policy
 
-This policy decides what belongs in a Go doc comment — the text `go doc`
-and pkg.go.dev show — in this repository. Apply it when writing new
-exported API and when reviewing existing comments.
+Go doc comments serve callers. Keep enough to find an entry point, use it
+correctly and understand its results. Implementation rationale and history
+belong in source comments or `docs/`.
 
-The goal: a reader who only runs `go doc` can find the entry point, learn
-how to use it, and follow links to the next thing they need. Everything
-else (how it works inside, why it was built this way, history) lives
-outside doc comments.
+## Package documentation
 
-## 1. Audience
+Keep one package doc comment, conventionally in `doc.go` or the package's
+main source file. Start with `Package <name>` for a library or
+`Command <name>` for a command. Detach other file headers from the package
+clause with a blank line so `go doc` does not concatenate them.
 
-A doc comment is written for a **caller** of the identifier, not for a
-maintainer of its implementation. Ask: "would someone calling this need
-to know this to use it correctly?" If not, it does not belong in the doc
-comment.
+Make the overview a short map:
 
-## 2. Package documentation
+- State the purpose and link the entry point, such as [NewEngine] or
+  [Engine.Run]. Add a snippet only when it clarifies how to start.
+- Connect the main types and operations. Link the next useful API or
+  related package, not every exported name: `go doc` already lists them.
+- Explain package-wide usage restrictions once. Put detailed contracts
+  on the relevant identifiers rather than repeating them in the map.
 
-- Exactly **one** file per package carries the package doc comment —
-  `doc.go` if the package has one, else the file named after the
-  package. It starts with `Package <name>`.
-- Every other file's header comment must be **detached** from the
-  `package` clause (separate it with a blank line), otherwise `go doc`
-  concatenates it into the package doc. Detaching keeps maintainer notes
-  in the source without showing them to callers.
-- The package doc is a **map**, in this order:
-  1. One sentence: what the package is for.
-  2. Where to start: the entry-point identifiers, as doc links
-     (`[NewEngine]`, `[Engine.Run]`), ideally with a short usage snippet.
-  3. The main concepts / types and how they relate, each as a doc link.
-  4. Pointers to related packages (`[github.com/podhmo/minigo/runtime]`)
-     and to design docs, if a reader needs them to use the package.
-- Keep it short. Design rationale goes to `docs/`, not the package doc.
+Use existing comment locations when practical; filenames and a fixed
+number of paragraphs are not quality goals.
 
-## 3. Identifier documentation
+## Identifier documentation
 
-### Keep (this is what callers need)
+Keep information the name and signature cannot express:
 
-- **Contract**: what it does to its arguments and to shared state, what
-  errors it reports, and constraints on results the types cannot show —
-  sorted order, absolute paths, when a result is nil or `ok` is false,
-  what multiple results arrive as.
-- **When to use it vs. its siblings**: `RunFile is Run for a single
-  file` is valuable — it places the identifier on the map.
-- **Observable semantics that differ from Go or from the obvious
-  guess**: e.g. a REPL `:=` reusing an existing global, or arguments
-  crossing the host boundary by copy.
-- **Navigation**: doc links (`[Engine.Call]`, `[WithHostPolicy]`,
-  `[runtime.Value]`) to the identifiers a caller needs next.
-- **Small examples** of input syntax when the input is a mini-language
-  (meta commands, ref strings, DSL call shapes).
+- Effects on arguments and shared state, copying and aliasing, ordering,
+  initialization, concurrency restrictions and required cleanup.
+- Errors, panics, nil and `ok == false` cases, defaults, argument syntax
+  and result representations that callers must understand.
+- Differences from Go or a likely expectation, such as REPL `:=` reusing
+  a global, or host arguments crossing the interpreter boundary by copy.
+- A useful comparison or onward link, such as `RunFile` versus `Run`.
+  Avoid repeating the same navigation on every member.
+- Short examples for mini-languages, ref strings and DSL call shapes.
 
-### Remove
+Remove name/signature restatements, duplicated contracts and filler added
+only to make comment coverage uniform. An obvious identifier may have no
+comment. Do not copy familiar standard-library docs onto wrapper methods;
+document the shared API once and explain differences where they occur.
 
-- **Restating the name.** `WithResolver swaps the resolver` adds
-  nothing to `func WithResolver(r resolve.Resolver)`. If the signature
-  and name say it all, delete the comment entirely rather than keep a
-  tautology. (A tautological one-liner is acceptable only if the type
-  would otherwise look undocumented in a list where every sibling has
-  real docs — prefer improving it over keeping it.)
-- **Parameter and result descriptions the types already give.**
-  `Format converts a runtime value into a Go value` restates
-  `func Format(v runtime.Value) any`; `(import path + member name)`
-  restates the fields of `runtime.SymbolID`. Describe a parameter only
-  for what its type does not say: its format (`ref is an import path or
-  a directory`), its meaning, or a requirement (`dst must be a
-  pointer`).
-- **Implementation details**: which internal function, field, cache, or
-  opcode is used (`e.pkgs`, `goNative`, `OpSpecialCall`, `OP_EVAL_AST`),
-  how the algorithm works, which file does what.
-- **History and migration notes**: "for now", "a later phase", "bridge
-  for the X migration", "previously ...".
-- **Internal references**: plan section numbers (`plan §16`), TODO
-  pointers, issue numbers. Link a design doc only if a caller needs it.
-- **Justifications of code-level choices** (`Value is an any alias, so
-  the case must be explicit`). These are code comments — move them next
-  to the code they explain.
+Move useful maintainer information to a detached header, a comment inside
+the function or beside the relevant code. This includes internal call
+paths, algorithms, file organization, design justifications, TODOs, issue
+numbers and migration history. Delete it only when redundant with code or
+other retained documentation.
 
-### Move, don't lose
+Judge details by the caller of that package. Bytecode operands, hook
+requirements, representation invariants and cache invalidation are public
+contracts for low-level consumers; technical vocabulary alone is not a
+reason to remove them. Exported field and interface-method comments follow
+the same rules as top-level declarations.
 
-If removed text is still useful to maintainers, move it to a plain
-comment inside the function body or next to the relevant code, or to a
-detached file header. Delete it only when it is redundant with the code.
+## Style
 
-## 4. Style
+- When a comment is needed, start with the identifier name and make the
+  first sentence useful on its own.
+- Prefer one short paragraph; use a list for distinct cases. Retain a
+  longer explanation when shortening it would hide a contract.
+- Use Go doc links (`[Name]`, `[pkg.Name]`, `[Type.Method]`) for useful
+  navigation. Code fragments and literal syntax are not doc links.
+- For constants, explain the group and only add member comments where
+  names leave behavior unclear.
 
-- Start with the identifier name, as gofmt/`go vet` conventions expect.
-- First sentence stands alone: it is what `go doc -short` and
-  pkg.go.dev listings show.
-- Use Go doc links (`[Name]`, `[pkg.Name]`, `[Type.Method]`) instead of
-  backticks when referring to identifiers, so readers can follow them.
-- Use backticks only for code fragments and literal syntax.
-- Prefer one short paragraph. Use a list when enumerating cases.
-- Grouped constants: one comment on the group, plus a trailing comment
-  per constant only where the name is not self-explanatory.
-- Unexported identifiers are out of scope of this policy.
+Unexported identifiers are outside this policy. Example fixtures,
+generated code and source used as inspection input are not caller
+libraries: do not add navigation boilerplate or rewrite comments consumed
+by generators merely to satisfy this format.
 
-## 5. Decision checklist
+## Verify with go doc
 
-For each sentence in an exported doc comment:
+Read both `go doc ./pkg` and `go doc -all ./pkg`, including exported fields
+and interface methods. For nested modules, run inside the owning module.
 
-1. Does it restate the name, the signature, or what the parameter and
-   result types already say? → delete.
-2. Does it describe *how* rather than *what*? → move to a code comment.
-3. Does it mention an unexported identifier, internal file, opcode,
-   plan section, or migration state? → rewrite for callers or move.
-4. Does it change how a caller would call this, or what they should
-   expect back? → keep.
-5. Does it point to a related identifier? → keep, as a doc link.
+Check that there is one package overview and that a representative caller
+can move from its entry point to the relevant type and operation. Use the
+generated API listing too. Explain where a type comes from or goes next
+only when the signature, constructor listing or map leaves it unclear.
 
-For each package:
+Resolved links lose their brackets in `go doc`. Inspect remaining bracket
+matches for broken links, including links followed by letters (`[Value]s`).
+Generic arguments, map types, indexing and optional command arguments also
+use brackets and are not broken links. Fix invalid names rather than
+adding links solely for coverage.
 
-1. Does `go doc ./pkg` print exactly one package doc, starting with
-   `Package <name>`? If not, detach the stray file headers.
-2. Can a reader find the entry point from the package doc alone?
-
-## 6. Verify with `go doc`
-
-Judge navigation on the rendered output, not on the source:
-
-- Read `go doc ./pkg` (the map) and `go doc -all ./pkg` (every entry).
-  Starting from the package doc, every exported identifier a caller
-  needs should be reachable by following names mentioned in the text.
-- For each type, check that its doc says where values come from
-  (constructor, method returning it) and where they go next.
-- `go doc` strips the brackets of doc links it resolves. A `[Name]` that
-  still shows brackets is a broken link — fix the name, or drop the
-  brackets. `go doc -all ./pkg | grep -n '\[[A-Za-z*][A-Za-z0-9_./*]*\]'`
-  lists candidates (ignore `map[K]V` and similar type syntax). A link
-  followed directly by letters (`[Value]s`) does not resolve.
+Review each sentence for caller value; word counts and comment coverage
+alone do not establish quality.
