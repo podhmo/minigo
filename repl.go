@@ -20,13 +20,24 @@ import (
 	"github.com/podhmo/minigo/syntax"
 )
 
-// REPL is a persistent Read-Eval-Print-Loop session over a scratch package.
-// Each input line is classified as a top-level declaration (accumulated for
-// later lines) or as statements, which run as a generated step function.
-// Names introduced by `x := e`, `var` and `const` inputs are promoted to
-// package globals so they persist across lines. `x := e` inside a REPL line
-// therefore re-uses an existing global instead of shadowing it — a deliberate
-// divergence from Go's scoping rules, matching Python-style REPL semantics.
+// REPL is a persistent read-eval-print session over a scratch package,
+// created by [Engine.NewREPL].
+//
+// Feed each input to [REPL.EvalLine], print the result with [REPL.Display]
+// and any [REPL.Warnings]. [IncompleteInput] decides when to show a
+// continuation prompt, and [REPL.CompleteToken] and
+// [REPL.CompleteCommandArg] drive TAB completion.
+//
+// An input is a top-level declaration, kept for later lines, or a list of
+// statements. Names introduced by `x := e`, `var` and `const` become
+// package globals so they persist across lines; unlike Go, `x := e`
+// reuses an existing global instead of shadowing it.
+//
+// The `minigo repl` meta commands map to methods: :cd to [REPL.Enter] and
+// [REPL.Leave], :pin and :unpin to [REPL.Pin] and [REPL.Unpin], :ls to
+// [REPL.List], :load and :unload to [REPL.Load] and [REPL.Unload],
+// :bindings to [REPL.BoundPackages], :dump to [REPL.Dump], and :reset to
+// [REPL.Reset].
 type REPL struct {
 	engine  *Engine // session engine (created fresh by NewREPL)
 	pkg     *runtime.Package
@@ -104,8 +115,8 @@ type methodPatch struct {
 	name string
 }
 
-// NewREPL creates a persistent REPL session on a fresh engine derived from
-// the receiver's configuration.
+// NewREPL starts a [REPL] session on a new engine with e's configuration
+// (see [Engine.NewSession]).
 func (e *Engine) NewREPL() *REPL {
 	sess := e.NewSession()
 	p := &runtime.Package{
@@ -126,18 +137,16 @@ func (e *Engine) NewREPL() *REPL {
 	return &REPL{engine: sess, pkg: p}
 }
 
-// Reset clears all accumulated state: values, declarations and imports.
+// Reset clears all session state: values, declarations and imports.
 func (r *REPL) Reset() {
 	fresh := r.engine.NewREPL()
 	*r = *fresh
 }
 
-// EvalLine evaluates one REPL input and returns its value — nil when the
-// input produced none. Declaration input (imports, func and type
-// declarations) and statements not ending in an expression update the
-// persistent package for effect only; a trailing expression statement
-// becomes the return value. Lines beginning with `:` are meta commands
-// handled by the caller, not EvalLine.
+// EvalLine evaluates one input and returns the value of its trailing
+// expression statement, or nil when it has none (declarations, imports,
+// other statements). Meta commands (lines starting with `:`) are not
+// accepted; the caller dispatches them to the matching methods.
 func (r *REPL) EvalLine(ctx context.Context, input string) (runtime.Value, error) {
 	input = strings.TrimSpace(input)
 	if input == "" {
@@ -790,8 +799,8 @@ func (r *REPL) dropPending() {
 	r.warnings = nil
 }
 
-// Warnings returns the notes the last EvalLine produced (e.g. a const
-// redeclared) — the front-end prints them; they are not errors.
+// Warnings returns the non-fatal notes the last [REPL.EvalLine] produced,
+// such as a redeclared const.
 func (r *REPL) Warnings() []string {
 	return r.warnings
 }
@@ -909,10 +918,10 @@ func (r *REPL) reload() error {
 	return p.EnsureReady()
 }
 
-// Enter changes the REPL's resolution scope to the given package — the
-// target's members (exported and unexported) resolve unqualified while
-// inside, matching the inspect :cd story. ref is an import path
+// Enter moves the session into a package (:cd): its members, exported and
+// unexported, resolve unqualified until [REPL.Leave]. ref is an import path
 // ("strings", "example.com/mod/pkg") or a directory ("./dir", "/abs/dir").
+// Declarations still go to the scratch package unless [REPL.Pin] is on.
 func (r *REPL) Enter(ctx context.Context, ref string) (*runtime.Package, error) {
 	r.Unpin() // write mode is bound to the package it entered
 	p, err := r.loadRef(ctx, ref)
@@ -927,7 +936,7 @@ func (r *REPL) Enter(ctx context.Context, ref string) (*runtime.Package, error) 
 	return p, nil
 }
 
-// Leave drops the :cd scope override, returning to plain <repl> lookup.
+// Leave undoes [REPL.Enter], returning to the scratch package's scope.
 func (r *REPL) Leave() error {
 	if r.entered == nil {
 		return nil
@@ -937,13 +946,10 @@ func (r *REPL) Leave() error {
 	return r.reload()
 }
 
-// Pin turns on write mode for the entered package (:cd first): every
-// subsequent declaration lands in the package's globals instead of only
-// the scratch package — monkey-patching experiments per
-// docs/sketch/plan-package-introspection.md. The package is initialized
-// at Pin so its var cells exist to alias into the repl scope: `x = v` on
-// a package var then writes through. The package object is shared —
-// every importer in this engine's session sees the patch.
+// Pin turns on write mode for the package entered with [REPL.Enter]:
+// later declarations and assignments to package vars write into that
+// package, so every importer in the session sees the patch. Pin
+// initializes the package. [REPL.Unpin] turns it off.
 func (r *REPL) Pin() error {
 	if r.entered == nil {
 		return fmt.Errorf("pin: not inside a package (:cd first)")
@@ -978,9 +984,8 @@ func (r *REPL) Pin() error {
 func (r *REPL) Pinned() bool { return r.writeMode }
 
 // Unpin turns write mode off. What was written stays in the entered
-// package; the repl scope decouples — names it owned before the alias
-// get their saved bindings back, names borrowed from the package are
-// dropped (bare lookup falls back to the :cd dot-import).
+// package; session names that were shadowed by the package get their
+// previous values back.
 func (r *REPL) Unpin() {
 	if !r.writeMode {
 		return
@@ -1005,14 +1010,14 @@ func (r *REPL) Unpin() {
 	r.pendingMethods = nil
 }
 
-// Current returns the :cd target package, or nil for plain <repl> scope.
+// Current returns the package entered with [REPL.Enter], or nil.
 func (r *REPL) Current() *runtime.Package {
 	return r.entered
 }
 
-// List returns one "kind name" line per top-level decl of the given ref
-// (or of the entered / scratch package when ref is empty) — :ls output.
-// Bound packages enumerate their globals as "host" entries.
+// List returns one "kind name" line per top-level declaration of ref, or
+// of the current package when ref is empty (:ls). Members of a host-bound
+// package are listed with kind "host".
 func (r *REPL) List(ctx context.Context, ref string) ([]string, error) {
 	p := r.entered
 	if ref != "" {
@@ -1092,15 +1097,15 @@ func (r *REPL) loadedFrom(p *runtime.Package, d *index.Decl) string {
 	return " (" + name + ")"
 }
 
-// BoundPackages lists the session engine's host-bound import paths —
-// :bindings output.
+// BoundPackages is [Engine.BoundPackages] for the session's engine
+// (:bindings).
 func (r *REPL) BoundPackages() []string {
 	return r.engine.BoundPackages()
 }
 
-// ImportPathOf maps a name bound by a session import (`json` after
-// `import "encoding/json"`, `foo` after `import foo "encoding/json"`) to
-// the imported path; directory imports come back anchored at the engine's
+// ImportPathOf returns the path a session import binds to name (`json`
+// after `import "encoding/json"`, `foo` after `import foo "encoding/json"`).
+// Directory imports return the directory resolved against the engine's
 // start directory. ok is false when no session import binds name.
 func (r *REPL) ImportPathOf(name string) (path string, ok bool) {
 	file := r.file()
@@ -1149,18 +1154,16 @@ func (r *REPL) loadRef(ctx context.Context, ref string) (*runtime.Package, error
 	return r.engine.loadPath(ctx, ref)
 }
 
-// Display renders a runtime value for REPL output the way fmt's %v
-// does — String/Error methods, &{...} for a pointer to a composite,
-// <nil> for nil pointers and interfaces — except that a nil slice or
-// map keeps %#v's T(nil) spelling so it reads apart from an empty one.
-// A multi-value result renders as (a, b). nil means nothing to print.
+// Display converts a value for printing the way fmt's %v does, except that
+// a nil slice or map prints as T(nil) to tell it from an empty one, and a
+// multi-value result prints as (a, b). It returns nil when there is nothing
+// to print. [REPL.Dump] prints Go syntax instead.
 func (r *REPL) Display(v runtime.Value) any {
 	return r.render(v, "%v")
 }
 
-// Dump renders a runtime value in Go syntax like fmt's %#v — type names,
-// field names, quoted strings, T(nil) — for :dump. String/Error are not
-// consulted (GoString is).
+// Dump converts a value for printing in Go syntax, like fmt's %#v (:dump).
+// GoString methods are used; String and Error are not.
 func (r *REPL) Dump(v runtime.Value) any {
 	return r.render(v, "%#v")
 }
@@ -1185,21 +1188,16 @@ func (r *REPL) render(v runtime.Value, spec string) any {
 	return format(v)
 }
 
-// IncompleteInput reports whether a REPL fragment needs more input: either
-// a (), [] or {} group is still open, or the fragment ends on a token where
-// Go would not insert a semicolon (a trailing operator, comma, or dot). It
-// is a tokenization heuristic for driving a continuation prompt, not a
-// parser — a "complete" fragment can still fail to parse or evaluate.
+// IncompleteInput reports whether a REPL input needs more lines before
+// it is passed to [REPL.EvalLine]: a (), [] or {} group is still open, the
+// input ends on a token after which Go inserts no semicolon (an operator,
+// comma or dot), or a raw string or /* */ comment is unterminated. It is a
+// token-level heuristic, not a parser: complete input can still fail.
 //
-// Consequences for an interactive loop: `func f() {`, `x := []int{` and
-// `x := 1 +` all read as incomplete; `} else {` keeps `else` attached to
-// its `if` only when both arrive inside the same unclosed buffer (as in Go
-// source, `else` must share a line with the closing `}`). Unterminated
-// raw strings and /* */ comments read as incomplete — they are the two
-// constructs Go legitimately continues across lines. Every other
-// degenerate fragment (comment-only input, unterminated '"' or rune
-// literals, illegal characters, negative depth) reads as complete so its
-// error surfaces through EvalLine instead of waiting forever.
+// `func f() {`, `x := []int{` and `x := 1 +` are incomplete. As in Go
+// source, `else` must share a line with the closing `}` of its `if`.
+// Other malformed input, such as an unterminated "..." literal, counts as
+// complete so that EvalLine reports the error.
 func IncompleteInput(src string) bool {
 	var s scanner.Scanner
 	fset := token.NewFileSet()

@@ -66,15 +66,16 @@ type shadowMark struct {
 	key  string
 }
 
-// Load reads a .go file or a directory's buildable files (go/build match
-// rules; _test.go excluded) into the session: decls become repl globals,
-// each file resolves imports in its own scope, and var/const initializers
-// and init() run once per load. Loading the same ref again replaces what
-// it loaded before (a directory also supersedes single-file loads of its
-// files); a newer prompt definition of a loaded name wins until the next
-// load. A failing load leaves the session as it was. ref is a path,
-// optionally quoted, relative to the engine's start directory. It returns
-// the loaded file paths.
+// Load reads a .go file, or a directory's buildable non-test files, into
+// the session (:load) and returns the loaded file paths. Declarations
+// become session globals, each file keeps its own imports, and var/const
+// initializers and init run once per load. ref is a path, optionally
+// quoted, relative to the engine's start directory.
+//
+// Loading the same ref again replaces what it loaded before; a directory
+// also replaces earlier loads of its files. A name redefined at the prompt
+// wins until the next load. A failed load leaves the session unchanged.
+// [REPL.Unload] reverses a load.
 func (r *REPL) Load(ctx context.Context, ref string) ([]string, error) {
 	r.warnings = nil
 	ref = unquoteRef(ref)
@@ -256,11 +257,11 @@ func (r *REPL) Load(ctx context.Context, ref string) ([]string, error) {
 	return paths, nil
 }
 
-// Unload drops what :load ref loaded: its decls go, so do the globals its
-// initializers bound, and the prompt definitions the load took over come
-// back. ref names a load as :load took it (Loaded lists them); a file of
-// a loaded directory cannot be unloaded on its own. It returns the
-// unloaded ref's absolute path.
+// Unload removes what [REPL.Load] loaded for ref (:unload): its
+// declarations and the globals its initializers set, restoring prompt
+// definitions the load replaced. ref must name a load as listed by
+// [REPL.Loaded]; a single file of a loaded directory cannot be unloaded.
+// It returns the unloaded ref's absolute path.
 func (r *REPL) Unload(ctx context.Context, ref string) (string, error) {
 	r.warnings = nil
 	ref = unquoteRef(ref)
@@ -370,7 +371,7 @@ func (r *REPL) release(u, next *loadUnit) {
 	}
 }
 
-// Loaded returns the refs (absolute paths) loaded by :load, in load order.
+// Loaded returns the absolute paths loaded by [REPL.Load], in load order.
 func (r *REPL) Loaded() []string {
 	out := make([]string, len(r.loads))
 	for i, u := range r.loads {

@@ -5,6 +5,7 @@
 // marshal back through ValueOf. Marshaling is by copy — a wrapped function
 // cannot mutate script structures, and a script func passed into a wrapped
 // Go func arrives boxed as *GoValue.
+
 package minigo
 
 import (
@@ -17,12 +18,12 @@ import (
 
 var errorType = reflect.TypeOf((*error)(nil)).Elem()
 
-// WrapFunc adapts a real Go function into a callable runtime value.
-// Parameters are filled by marshal-by-copy: an argument converts to the
-// declared parameter type when its native form is assignable or convertible
-// to it, else the call fails. A trailing error result becomes the call's
-// error return; other results marshal through ValueOf, and multiple
-// results arrive as a *runtime.Tuple.
+// WrapFunc adapts a Go function fn into a script-callable value, typically
+// a symbol for [Engine.Bind]. Arguments are copied: each converts to the
+// declared parameter type when assignable or convertible, else the call
+// fails, and fn cannot mutate script values. A trailing error result
+// becomes the call's error; other results convert with [ValueOf], and
+// multiple results arrive as a [*runtime.Tuple].
 func WrapFunc(name string, fn any) *runtime.BuiltinFunc {
 	rv := reflect.ValueOf(fn)
 	if rv.Kind() != reflect.Func {
@@ -176,12 +177,12 @@ func nativeElem(av reflect.Value, pt reflect.Type) (reflect.Value, error) {
 	return reflect.Value{}, fmt.Errorf("cannot use %s as %s", av.Type(), pt)
 }
 
-// ValueOf marshals a host Go value to its runtime counterpart: script-native
-// types and runtime values pass through, numeric kinds widen to int64 /
-// float64, and everything else stays boxed as a host GoValue. (Value is an
-// `any` alias, so the runtime types must be named explicitly — a
-// `case runtime.Value` would swallow every input.)
+// ValueOf converts a Go value into a script value: runtime values pass
+// through, numeric kinds widen to int64 or float64, and everything else is
+// boxed as a [*runtime.GoValue] whose methods scripts can call.
 func ValueOf(x any) runtime.Value {
+	// runtime.Value is an `any` alias, so the runtime types must be named
+	// explicitly — a `case runtime.Value` would swallow every input.
 	switch v := x.(type) {
 	case nil:
 		return runtime.NIL

@@ -1,12 +1,35 @@
-// Package minigo is a redesigned Go interpreter on a stack VM.
+// Package minigo embeds an interpreter for a large subset of Go.
 //
-// Three pillars: Lazy Go (packages parse/index on demand, initialize on
-// first member touch), Executable Go (functions compile to bytecode on first
-// call), Quoted Go (special forms — wired in a later phase).
+// Create an [Engine] and run a function from a directory, import path or
+// file:
 //
-// The central invariant: every syntactically valid Go source parses and
-// compiles; unsupported constructs become OpTrap instructions that fail at
-// run time with position info instead of at parse/compile time.
+//	e := minigo.NewEngine(".", minigo.WithOutput(os.Stdout))
+//	v, err := e.Run(ctx, "./script", "Main")
+//
+// [Engine.Run] and [Engine.RunFile] are the one-shot entry points;
+// [Engine.Package], [Engine.LoadFile] or [Engine.LoadDirScope] followed by
+// [Engine.Call] split loading from calling. [Format] prepares a result for
+// printing; [Engine.RunResult] and [Result.As] decode it into a Go value.
+// Engine behavior is set by [Option] values such as [WithOutput],
+// [WithAllowedRoots] and [WithInitMode].
+//
+// Packages are loaded lazily: imports are located and indexed on demand,
+// initialized when a member is first touched, and functions are compiled
+// when first called. Any syntactically valid Go source loads; a construct
+// the interpreter does not support fails at run time, with its position,
+// only if execution reaches it.
+//
+// Host integration:
+//   - [Engine.Bind] exposes Go values as an importable package; [WrapFunc]
+//     and [ValueOf] convert Go functions and values for it.
+//   - [Engine.RegisterSpecial] installs a special form: a handler that
+//     receives a call's syntax instead of its evaluated arguments.
+//   - [Engine.Vet] reports calls into stub packages that have no handler.
+//
+// [Engine.NewREPL] starts an interactive [REPL] session.
+//
+// Script values have type [runtime.Value]; see
+// [github.com/podhmo/minigo/runtime] for the value model.
 package minigo
 
 import (
@@ -32,8 +55,9 @@ import (
 	"github.com/podhmo/minigo/vm"
 )
 
-// Engine is a long-lived interpreter instance: resolver, package cache,
-// builtins, and host bindings.
+// Engine is a long-lived interpreter instance. It caches loaded packages,
+// so values and package state persist across calls on the same Engine;
+// use [Engine.NewSession] for isolated state. Create one with [NewEngine].
 type Engine struct {
 	// mainPkg is the package Run entered first — runtime/debug's build
 	// info names it.
@@ -76,10 +100,11 @@ type Engine struct {
 	sigMemo runtime.SigMemo
 }
 
-// Option configures an Engine.
+// Option configures an Engine; pass it to [NewEngine].
 type Option func(*Engine)
 
-// InitMode selects how eagerly packages run their initializers.
+// InitMode selects how eagerly packages run their initializers; set it
+// with [WithInitMode].
 type InitMode int
 
 const (
@@ -98,12 +123,13 @@ func WithBuildConfig(cfg resolve.BuildConfig) Option {
 	return func(e *Engine) { e.cfg = cfg }
 }
 
-// WithInitMode sets how eagerly package initializers run (see InitMode).
+// WithInitMode sets the [InitMode]. The default is [GoCompatibleInit].
 func WithInitMode(m InitMode) Option {
 	return func(e *Engine) { e.initMode = m }
 }
 
-// PackageMode selects how an import path is satisfied.
+// PackageMode selects how an import path is satisfied; set it per path
+// with [WithPackageModes].
 type PackageMode int
 
 const (
@@ -118,48 +144,47 @@ const (
 	ModeDeny
 )
 
-// WithPackageModes sets the package mode for specific import paths:
-// ModeSource forces source interpretation where a bound host package
-// would otherwise answer (useful to test interpretation coverage), and
-// ModeDeny makes the import fail cleanly for unsupported packages.
-// Paths not listed use ModeAuto.
+// WithPackageModes sets the [PackageMode] for specific import paths.
+// Paths not listed use [ModeAuto].
 func WithPackageModes(modes map[string]PackageMode) Option {
 	return func(e *Engine) { e.pkgModes = modes }
 }
 
-// WithAllowedRoots restricts the directories the resolver may hand out:
-// entry points and located packages must live inside one of the roots
-// (see resolve.BuildConfig.AllowedRoots).
+// WithAllowedRoots restricts scripts to the given directories: entry points
+// and imported source packages must live inside one of the roots (see
+// [resolve.BuildConfig.AllowedRoots]). Script file access is confined to
+// the roots, and host capabilities that escape them (environment, argv,
+// os/exec) are not bound.
 func WithAllowedRoots(roots ...string) Option {
 	return func(e *Engine) { e.cfg.AllowedRoots = roots }
 }
 
-// WithHostPolicy gates which bound host symbols are visible to scripts:
-// deny (returns false) removes the symbol from the package's environment,
-// so a script referencing it gets "undefined". Applied at Bind time for
-// every bound package (std intrinsics and user binds alike).
+// WithHostPolicy gates which bound host symbols are visible to scripts.
+// When allow returns false the symbol is left out, so a script referencing
+// it gets "undefined". It applies to every bound package, both std
+// intrinsics and packages registered with [Engine.Bind].
 func WithHostPolicy(allow func(importPath, symbol string) bool) Option {
 	return func(e *Engine) { e.hostPolicy = allow }
 }
 
-// WithOutput sets the writer print/println and fmt.Print/Printf/Println
-// write to. The default io.Discard keeps script output silent; a session
-// or REPL passes os.Stdout or a buffer to observe it.
+// WithOutput sets the writer that print/println and fmt.Print/Printf/Println
+// write to. The default is [io.Discard], so script output is silent unless
+// an output is set.
 func WithOutput(w io.Writer) Option {
 	return func(e *Engine) { e.out = w }
 }
 
-// WithArgs sets the script-visible os.Args: `minigo run dir -- -x v`
-// reports [dir, -x, v] so flag.Parse inside a script sees only its own
-// flags. Nil keeps the host process argv (the default).
+// WithArgs sets the script-visible os.Args, so flag.Parse inside a script
+// sees only its own flags. Nil (the default) keeps the host process argv.
 func WithArgs(argv []string) Option {
 	return func(e *Engine) { e.args = argv }
 }
 
 // WithWorkingDir sets the engine's virtual working directory: relative
-// paths in the os.* / path/filepath intrinsics resolve against it, and
-// os.Getwd reports it. It deliberately does NOT chdir the host process —
-// the real cwd stays observable through host.Getwd. Defaults to startDir.
+// paths in a script's os and path/filepath calls resolve against it, and
+// os.Getwd reports it. The host process does not chdir; scripts still see
+// the real directory through host.Getwd. The default is the startDir given
+// to [NewEngine].
 func WithWorkingDir(dir string) Option {
 	return func(e *Engine) {
 		if abs, err := filepath.Abs(dir); err == nil {
@@ -168,9 +193,8 @@ func WithWorkingDir(dir string) Option {
 	}
 }
 
-// WorkingDir reports the engine's virtual working directory — the anchor
-// relative paths in os.* / path/filepath intrinsics resolve against (see
-// WithWorkingDir). Host integrations use it to default subprocess cwd.
+// WorkingDir reports the virtual working directory set by [WithWorkingDir].
+// Host integrations use it as the default directory for subprocesses.
 func (e *Engine) WorkingDir() string { return e.cwd }
 
 // fsPath maps a script-visible path to a host path: relative paths anchor
@@ -188,9 +212,8 @@ func (e *Engine) fsPath(p string) (string, error) {
 	return p, nil
 }
 
-// NewEngine creates an engine whose default resolver is go-scan
-// (locator.WithGoModuleResolver). startDir is used to locate the go.mod /
-// go.work anchor for import-path resolution.
+// NewEngine creates an engine. Import paths resolve against the go.mod or
+// go.work found from startDir; [Engine.WithResolver] replaces the resolver.
 func NewEngine(startDir string, opts ...Option) *Engine {
 	e := &Engine{
 		fset:         token.NewFileSet(),
@@ -312,11 +335,9 @@ func (e *Engine) linknameTarget(vc runtime.VMCaller, fn *runtime.Function) (runt
 	return v, ok, lerr
 }
 
-// NewSession returns a fresh engine sharing this engine's resolver, build
-// config, specials, host policy, package modes and output writer — but
-// with an empty package cache and its own VM. Repeated script runs in a
-// REPL each get isolated state while keeping one resolution/indexing
-// setup.
+// NewSession returns an engine with the same configuration (resolver,
+// options, bindings and special forms) but an empty package cache, so
+// repeated runs get isolated package state.
 func (e *Engine) NewSession() *Engine {
 	s := &Engine{
 		resolver:     e.resolver,
@@ -358,12 +379,13 @@ func (e *Engine) NewSession() *Engine {
 	return s
 }
 
-// Result wraps a Run return value with a typed accessor.
+// Result is a return value of [Engine.RunResult]; decode it with
+// [Result.As].
 type Result struct {
 	V runtime.Value
 }
 
-// RunResult is Run plus a Result so callers can unmarshal directly.
+// RunResult is [Engine.Run] returning a [Result].
 func (e *Engine) RunResult(ctx context.Context, ref, fnName string, args ...runtime.Value) (*Result, error) {
 	v, err := e.Run(ctx, ref, fnName, args...)
 	if err != nil {
@@ -372,9 +394,9 @@ func (e *Engine) RunResult(ctx context.Context, ref, fnName string, args ...runt
 	return &Result{V: v}, nil
 }
 
-// As unmarshals the result into dst (a pointer). Scalars assign directly
-// when the types agree; composite minigo values (structs, slices, maps)
-// are re-decoded via reflection, mapping field names and indices.
+// As stores the result into dst, which must be a pointer. Scalars assign
+// when the types agree; script structs, slices and maps are decoded by
+// field name and index.
 func (r *Result) As(dst any) error {
 	rv := reflect.ValueOf(dst)
 	if rv.Kind() != reflect.Ptr || rv.IsNil() {
@@ -479,23 +501,24 @@ func assignReflect(dst reflect.Value, v runtime.Value) error {
 	}
 }
 
-// RegisterSpecial installs a special-form handler for a canonical symbol
-// (import path + member name). Calls shaped `pkgAlias.Name(args...)` whose
-// alias resolves to that package compile to OpSpecialCall: the handler
-// fires at run time with the call's AST quoted.
+// RegisterSpecial installs a special-form handler for a symbol (import
+// path + member name). A call `pkgAlias.Name(args...)` whose alias resolves
+// to that package does not evaluate its arguments; h runs instead, at run
+// time, with the call's syntax. Register before running scripts that call it.
 func (e *Engine) RegisterSpecial(id runtime.SymbolID, h runtime.SpecialFunc) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.specials[id] = h
 }
 
-// WithResolver swaps the resolver (e.g. a testing stub).
+// WithResolver replaces the resolver and returns e.
 func (e *Engine) WithResolver(r resolve.Resolver) *Engine {
 	e.resolver = r
 	return e
 }
 
-// Package returns a loaded (Indexed) package by import path or directory.
+// Package loads a package by import path or directory without
+// initializing it. Pass it to [Engine.Call] to run a member.
 func (e *Engine) Package(ctx context.Context, ref string) (*runtime.Package, error) {
 	if resolve.LooksLikeDir(ref) || isGoFile(ref) {
 		return e.loadDir(ctx, ref)
@@ -510,16 +533,14 @@ func isGoFile(ref string) bool {
 	return strings.HasSuffix(ref, ".go")
 }
 
-// Call invokes a named member of a package: fn may be a function or anything
-// callable. The package is Initialized first if needed. The whole call is
-// one process scope: goroutines spawned by init or by the member itself
-// share it and are torn down when it returns.
+// Call calls the member name of pkg, initializing the package first if
+// needed. Goroutines started by package init or by the call are torn down
+// when Call returns.
 //
-// Arguments cross the host boundary as snapshots: each lands as a copy
-// shaped for the script world — an int becomes a script int, a []string
-// a *runtime.Slice, an unnamed map a *runtime.Map — and script writes
-// to it don't reach the host value. A named map or struct keeps its box
-// for member dispatch.
+// Arguments are copied into script values — an int becomes a script int,
+// a []string a *runtime.Slice, an unnamed map a *runtime.Map — so script
+// writes do not reach the host value. A named map or struct stays boxed so
+// its methods remain callable.
 func (e *Engine) Call(ctx context.Context, pkg *runtime.Package, name string, args ...runtime.Value) (runtime.Value, error) {
 	// one Call = one process = one root VM: concurrent Calls never share
 	// interpreter state, and lazy inits triggered inside the run join this
@@ -547,9 +568,9 @@ func (e *Engine) Call(ctx context.Context, pkg *runtime.Package, name string, ar
 	return runtime.Unwrap(r), err
 }
 
-// Run is the high-level entry point: locate ref (dir or import path), ensure
-// the package is ready, then call fnName(args...). A bare "" fnName calls
-// main.main.
+// Run loads ref (a directory or import path), initializes it, and calls
+// fnName(args...). An empty fnName calls main. For a single file use
+// [Engine.RunFile].
 func (e *Engine) Run(ctx context.Context, ref, fnName string, args ...runtime.Value) (runtime.Value, error) {
 	if fnName == "" {
 		fnName = "main"
@@ -596,9 +617,9 @@ func (e *Engine) modinfo() string {
 	return sentinel + b.String() + sentinel
 }
 
-// Bind registers a host package: import path -> symbols. The package is
-// marked Ready (no source needed). This is the host-extension point.
-// WithHostPolicy filters symbols: denied names stay undefined in scripts.
+// Bind registers a host package: scripts importing importPath get symbols
+// as its members, without any source. Use [WrapFunc] and [ValueOf] to build
+// symbols from Go values. [WithHostPolicy] can hide individual symbols.
 func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value) {
 	p := &runtime.Package{
 		Path:     importPath,
@@ -633,8 +654,7 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value) {
 }
 
 // BoundPackages returns the sorted import paths of every host-bound
-// package (std intrinsics and user Binds alike) — the paths a script can
-// import without interpreting source.
+// package: std intrinsics and packages registered with [Engine.Bind].
 func (e *Engine) BoundPackages() []string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -646,11 +666,9 @@ func (e *Engine) BoundPackages() []string {
 	return paths
 }
 
-// BoundOf returns the host-bound package registered for path — the
-// object a script import answers when a bound shadow exists — or nil
-// when the path is not bound. It never falls through to source:
-// an unbound path is simply not bound. Package modes gate imports,
-// not this lookup — a ModeDeny path still reports its registration.
+// BoundOf returns the host-bound package registered for path, or nil when
+// path is not bound. It never loads source, and ignores [PackageMode]: a
+// [ModeDeny] path still reports its registration.
 func (e *Engine) BoundOf(path string) *runtime.Package {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -658,8 +676,8 @@ func (e *Engine) BoundOf(path string) *runtime.Package {
 }
 
 // BoundSymbols returns the sorted symbol names a bound package exposes to
-// scripts (host-policy denials already removed); ok is false when
-// importPath is not bound.
+// scripts, after [WithHostPolicy] filtering; ok is false when importPath
+// is not bound.
 func (e *Engine) BoundSymbols(importPath string) (names []string, ok bool) {
 	e.mu.Lock()
 	p, ok := e.binds[importPath]
@@ -760,14 +778,13 @@ func (e *Engine) loadDirMode(ctx context.Context, dir string, lenient bool) (*ru
 	return e.buildPackage(meta, lenient)
 }
 
-// SourceOf loads the source behind an import path, bypassing a bound
-// shadow (inspect.SourceOf): Bind-registered packages answer member
-// lookups through e.pkgs, so PackageOf("strings") yields the bound
-// object whose index is nil. The source package is built into a private
-// cache — never e.pkgs or e.byDir — so the bound package keeps answering
-// real imports. For an unbound path there is nothing to bypass: the
-// canonical package is returned.
+// SourceOf loads the Go source of an import path even when a host-bound
+// package shadows it (see [Engine.BoundOf]); script imports keep getting the
+// bound package. For an unbound path it is the same as [Engine.Package].
 func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, error) {
+	// Bound packages answer lookups through e.pkgs (with a nil index), so
+	// the source package is built into a private cache — never e.pkgs or
+	// e.byDir — to keep the bound package answering real imports.
 	if _, bound := e.binds[path]; !bound {
 		return e.loadPath(ctx, path)
 	}
@@ -961,13 +978,11 @@ func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File, lenient bo
 	return nil
 }
 
-// LoadFile builds a package out of one named file, bypassing directory
-// discovery and build-constraint filtering: a DSL file guarded by
-// `//go:build codegen` — or a script outside any package — is a first-class
-// entry point. The file's own imports still resolve through the resolver.
-// The package's import path is synthetic ("<file>" + abs path); nothing can
-// import it back. AllowedRoots applies to the file's directory, like any
-// other entry point.
+// LoadFile loads a single file as a package, ignoring its siblings and
+// build constraints, so a file guarded by `//go:build codegen` or a script
+// outside any package can be an entry point. Its imports resolve normally,
+// but nothing can import the file's package. [WithAllowedRoots] applies to
+// the file's directory. See also [Engine.LoadDirScope] and [Engine.RunFile].
 func (e *Engine) LoadFile(ctx context.Context, filename string) (*runtime.Package, error) {
 	return e.loadFileMode(ctx, filename, false)
 }
@@ -1024,12 +1039,11 @@ func (e *Engine) loadFileMode(ctx context.Context, filename string, lenient bool
 	return p, nil
 }
 
-// LoadDirScope loads the package scope of a .go file: the file plus every
-// same-package sibling .go file in its directory — `go run ./dir` scoping
-// but without build-constraint filtering, so a file excluded by
-// `//go:build` tags (task-runner conventions like `//go:build task`)
-// still sees its package. LoadFile stays the single-file scope. The
-// returned package is not cached: each call re-indexes the directory.
+// LoadDirScope loads a .go file together with every sibling .go file of the
+// same package, ignoring build constraints, so a file guarded by
+// `//go:build task` still sees the rest of its package. Unlike
+// [Engine.Package] the result is not cached; each call reloads the
+// directory. [Engine.LoadFile] loads the file alone.
 func (e *Engine) LoadDirScope(ctx context.Context, filename string) (*runtime.Package, error) {
 	abs, err := filepath.Abs(filename)
 	if err != nil {
@@ -1077,8 +1091,8 @@ func packageName(fset *token.FileSet, abs string) (string, error) {
 	return f.Name.Name, nil
 }
 
-// RunFile is Run for a single file: LoadFile + Call. A bare "" fnName calls
-// the file's main function.
+// RunFile is [Engine.Run] for a single file: [Engine.LoadFile] followed by
+// [Engine.Call]. An empty fnName calls main.
 func (e *Engine) RunFile(ctx context.Context, filename, fnName string, args ...runtime.Value) (runtime.Value, error) {
 	if fnName == "" {
 		fnName = "main"
@@ -1151,13 +1165,12 @@ func bindCompiles(p *runtime.Package, ch *bytecode.Chunk) {
 	}
 }
 
-// EvalExpr evaluates a single parsed expression in a package's scope — the
-// OP_EVAL_AST migration bridge: the fragment travels as AST inside a chunk
-// and compiles (compile.Expr) on first execution, so callers that hold
-// interpreter-visible AST fragments can run them under the VM without
-// committing to bytecode at build time. Names resolve exactly like inside
-// a function body of file: package globals, that file's imports, builtins.
+// EvalExpr evaluates a parsed expression in pkg's scope. Names resolve as
+// inside a function body of file: package globals, then file's imports,
+// then builtins.
 func (e *Engine) EvalExpr(ctx context.Context, pkg *runtime.Package, file *syntax.File, expr ast.Expr) (runtime.Value, error) {
+	// The fragment travels as AST inside a chunk (OP_EVAL_AST) and compiles
+	// via compile.Expr on first execution.
 	vmm := e.newVM()
 	vmm.EnsureProc()
 	defer vmm.ReleaseProc()

@@ -18,6 +18,7 @@
 // keeps TAB free of user-code side effects. Declared types stand in
 // where runtime values are absent: `var s pkg.T` in an uninitialized
 // package still completes through the decl's type expression.
+
 package minigo
 
 import (
@@ -40,14 +41,15 @@ import (
 	"github.com/podhmo/minigo/syntax"
 )
 
-// Candidate is one completion suggestion.
+// Candidate is one completion suggestion returned by [REPL.Complete] and
+// its variants.
 type Candidate struct {
 	Name   string // the completion text
 	Kind   string // CandKeyword, CandBuiltin, CandFunc, ...
 	Detail string // signature or declared-type rendering, when cheaply known
 }
 
-// Candidate kinds — loose buckets a UI can group or icon by.
+// Values of [Candidate.Kind], for a UI to group or decorate candidates.
 const (
 	CandKeyword = "keyword"
 	CandBuiltin = "builtin"
@@ -74,23 +76,19 @@ var goKeywords = []string{
 // env (nil/true/false are compiler literals, iota is const-scope only).
 var predeclared = []string{"nil", "true", "false", "iota"}
 
-// Complete returns the candidates for a REPL input fragment with the
-// cursor at end of line. A `x.` or `x.pa` tail completes selector
-// members of the base expression; an identifier tail completes bare
-// names in scope; anything else completes all bare names (e.g. after
-// `x := `). An `import "...` tail completes import paths (bound
-// intrinsics, GOROOT stdlib, go.mod requires and the module's own
-// packages, or `./`/`../`/`/abs` directory imports). Meta-command
-// lines (`:`-prefixed) are not completed here — they belong to the
-// front-end's own completer.
+// Complete returns completion candidates for a REPL input with the cursor
+// at end of line: members after `x.` or `x.pa`, names in scope after an
+// identifier or elsewhere, and import paths after `import "`. Completion
+// never runs user code, so `f().` yields nothing. Meta-command lines are
+// completed by [REPL.CompleteCommandArg]; use [REPL.CompleteToken] to
+// know where to insert a candidate.
 func (r *REPL) Complete(line string) []Candidate {
 	_, cands := r.complete(line)
 	return cands
 }
 
-// CompleteToken is Complete plus the byte offset where the replaceable
-// token begins — every candidate splices over line[start:]. A line
-// editor needs it to insert a candidate without re-lexing the tail.
+// CompleteToken is [REPL.Complete] plus the byte offset where the token
+// being completed begins: a candidate replaces line[start:].
 func (r *REPL) CompleteToken(line string) (start int, cands []Candidate) {
 	return r.complete(line)
 }
