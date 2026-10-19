@@ -1,8 +1,11 @@
-// Package scanx is the helper library gen-sync's script scans with:
-// sentinel-guided rewriting of //go:generate regions. It is ordinary
-// Go; minigo interprets it too when the gen-sync script imports it,
-// so it doubles as a demo of a tool growing its own module-local
-// library.
+// Package scanx supports gen-sync's declaration scans and managed directive regions.
+//
+// [NewExplorer] creates an [Explorer] for types under one package subtree;
+// [Explorer.Reach] visits referenced types. [HasMethod] and [RequiresMethod]
+// match method contracts.
+//
+// [FindSentinel], [GenerateRunEnd] and [InsertAnchor] locate the managed
+// //go:generate region identified by [Sentinel].
 package scanx
 
 import (
