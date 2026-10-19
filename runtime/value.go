@@ -2,45 +2,28 @@
 // optimization.
 
 // Package runtime defines the values minigo scripts compute with, and the
-// types host code uses to exchange them with the interpreter.
+// types the interpreter ([github.com/podhmo/minigo/vm]) and host code use
+// to exchange them. Embedders meet these values through
+// [github.com/podhmo/minigo.Engine.Call].
 //
-// Embedders meet this package through [github.com/podhmo/minigo]:
-// [github.com/podhmo/minigo.Engine.Call] takes and returns script values
-// of type [Value], [github.com/podhmo/minigo.Engine.Bind] registers
-// values as the members of a host package, and
-// [github.com/podhmo/minigo.Engine.RegisterSpecial] installs a
-// [SpecialFunc].
+// [Value] lists the Go representation of each script value. Conventions
+// that apply everywhere:
+//   - A value of a declared type is a [Named] around the underlying value.
+//     [Unwrap] removes only that tag; [DeepUnwrap] converts a whole
+//     result, containers and pointers included, to plain Go values.
+//   - A pointer is the [Cell] it points to, or a [FieldRef], [IndexRef] or
+//     [DerefRef] for an address inside another value; read and write
+//     through any of them with [Deref] and [SetRef].
+//   - Structs and arrays are copied on assignment: store values through
+//     [SetRef] or [Copy], or the target aliases the source.
 //
-// Values:
-//   - [Value] lists the representation of each kind of script value:
-//     int64, float64, string and bool for basic values, [Slice], [Map],
-//     [Struct] and [Chan] for composites, [Cell] (or [FieldRef],
-//     [IndexRef]) for pointers, and [GoValue] for host values.
-//   - [Unwrap] removes a [Named] type tag, [DeepUnwrap] converts a result
-//     to plain Go values, and [ErrorOf] converts an error result.
-//   - [Zero] and [Tag] build values of a given [TypeDef]; [Copy] and
-//     [SetRef] give them Go's assignment semantics.
+// A [BuiltinFunc] receives evaluated arguments; a [SpecialFunc] receives
+// its call unevaluated and evaluates parts of it on demand.
 //
-// Functions are [Function] (declared in source), [Closure], [BoundMethod]
-// and [BuiltinFunc] (implemented in Go). A BuiltinFunc reaches back into
-// the interpreter through a [VMCaller].
-//
-// Types are described by [TypeDef], classified by [TypeKind]; compare
-// them with [TypIdentical] and print them with [DisplayName].
-//
-// A [Package] is loaded lazily, through an [ImportRef], and moves through
-// the [State] stages; its globals live in an [Env].
-//
-// Failures: a [Panic] is a script panic, which script code can recover;
-// its value may be a [RuntimeError] or [PlainError] as in Go. A [Trap]
-// is a failure scripts cannot recover, including errors returned by
-// builtins.
-//
-// Special forms: a [SpecialFunc] registered under a [SymbolID] receives
-// calls unevaluated as a [QuotedCall], and evaluates what it needs
-// through a [SpecialContext].
-//
-// The interpreter itself is [github.com/podhmo/minigo/vm].
+// Failures come in two kinds. A [Panic] is a script panic that script
+// code can recover(); Go code raises one by calling panic with a *Panic.
+// A [Trap] cannot be recovered and stops the script; an error returned by
+// a builtin or special form becomes a Trap.
 package runtime
 
 import (
@@ -138,16 +121,17 @@ type ImplicitIndex struct{}
 // Named is a value of a declared type (`type MyInt int`, `type A B`):
 // the underlying value plus the typedef it was declared under. Its
 // declared identity survives reads — method dispatch, type asserts and
-// generic inference see MyInt, not the bare int64 it stores. Build one
-// with [Tag]; read the tag with [TagOf] and the underlying value with
-// [Unwrap].
+// generic inference see MyInt, not the bare int64 it stores. Everywhere
+// else treats it as V: consumers (indexing, arithmetic, marshaling)
+// [Unwrap] first. Construct Named values only with [Tag].
 type Named struct {
 	Typ *TypeDef // the declared typedef (a defined type, never a builtin)
 	V   Value    // the underlying value
 }
 
-// Tag attaches the declared-type tag td to v. An existing [Named] tag is
-// replaced rather than nested: `Tag(T, Named{U, x})` yields
+// Tag attaches the declared-type tag td to v. It is the one constructor
+// of [Named] values: an existing tag is replaced rather than nested, so a
+// Named never wraps another Named: `Tag(T, Named{U, x})` yields
 // `Named{T, x}`. For a bound host type ([TypeDef.HostScalar] or
 // [TypeDef.HostNew]) the payload is converted to the host's
 // representation.
@@ -629,7 +613,8 @@ func (r *IndexRef) mapOf() *Map {
 func (r *IndexRef) Slice() *Slice { return r.sliceOf() }
 
 // Map resolves the base to the referenced map, or nil when it is not
-// one.
+// one. A non-nil result means the ref names a map element m[k], which Go
+// reads as a copy rather than an addressable slot.
 func (r *IndexRef) Map() *Map { return r.mapOf() }
 
 // Get reads the element value; ok is false for an out-of-range index, a
@@ -734,8 +719,11 @@ func Copy(v Value) Value {
 }
 
 // HostStructCopy copies the struct behind a [GoValue] holding a non-nil
-// pointer to a struct, returning a new box. ok is false for any other
-// value, which the caller should store unchanged.
+// pointer to a struct, returning a new box. Unlike [Copy], which copies a
+// host struct only when it is tagged with a [TypeDef.HostNew] struct type
+// (a bare *T box may be a host pointer that must stay shared), it copies
+// unconditionally; the caller decides that v is a struct value. ok is
+// false for any other value, which the caller should store unchanged.
 func HostStructCopy(v Value) (Value, bool) {
 	gv, ok := v.(*GoValue)
 	if !ok {
@@ -1450,7 +1438,9 @@ func (m *Map) Clear() {
 
 // Chan is a channel value backed by a Go channel of [Value]: sends and
 // receives block as in Go, capacity is honored, and close wakes every
-// blocked receiver.
+// blocked receiver. The interpreter's blocking operations also watch the
+// script process's done channel, so an exiting process releases them;
+// Go code blocking on C directly does not get that.
 type Chan struct {
 	C chan Value
 	// Typ is the declared channel type when one is known (make or a
@@ -1458,7 +1448,8 @@ type Chan struct {
 	Typ *TypeDef
 }
 
-// SelArm is one case of a select statement being executed: the
+// SelArm is one case of a select statement being executed, pushed by
+// OpSelArm on entry to the select: the
 // reflect.SelectCase to poll, whether it sends, how many values a receive
 // binds (NRecv), and the channel's element typedef for the zero value a
 // closed channel yields.
@@ -1478,8 +1469,7 @@ type SelArm struct {
 	WakeChan uintptr
 }
 
-// Task is the handle of one script goroutine, returned by
-// [VMCaller.Spawn] and [VMCaller.Task]. Done closes when its call ends —
+// Task is the handle of one script goroutine. Done closes when its call ends —
 // normally, by panic (Err), or by process exit (Aborted) — and
 // [Task.Wait] reports how it finished. Parent links follow the spawn
 // tree so callers can detect that waiting would deadlock.
@@ -1508,12 +1498,10 @@ func (t *Task) Wait() error {
 
 // TypeDef describes a type at run time: a declared type, a predeclared
 // basic type ([BasicTypedef]), or an anonymous composite such as []int
-// (Name empty, shape in Anon). Typedefs of package-level types come from
-// [Package.Member]; [VMCaller.TypeOf] and [SpecialContext.ResolveType]
-// produce them as well. Typedefs are values themselves, used as type
-// arguments and as the callee of a conversion. Compare them with
-// [TypIdentical], build values with [Zero] and [Tag], and print them
-// with [DisplayName].
+// (Name empty, shape in Anon). Typedefs are values themselves, used as
+// type arguments and as the callee of a conversion. Compare them with
+// [TypIdentical] rather than ==: distinct *TypeDef values can denote the
+// same type.
 type TypeDef struct {
 	Pkg     *Package
 	Name    string
@@ -1713,10 +1701,8 @@ type BoundMethod struct {
 	Direct bool
 }
 
-// BuiltinFunc is a function implemented in Go: a predeclared function
-// such as len, a member of a bound host package, or a function wrapped by
-// [github.com/podhmo/minigo.WrapFunc]. Fn receives the arguments as
-// script values and returns one [Value], a [*Tuple] for several results.
+// BuiltinFunc is a function implemented in Go, such as len or a member of
+// a bound host package. Fn receives the arguments as script values and returns one [Value], a [*Tuple] for several results.
 // An error returned from Fn stops the script with a [Trap] that script
 // code cannot recover; to raise a recoverable script panic, panic with a
 // [*Panic] such as [RuntimePanic]. Use the [VMCaller] to call back into
@@ -1811,6 +1797,8 @@ type VMCaller interface {
 	Convert(td *TypeDef, x Value) (Value, error)
 	// Copy returns a copy of v following Go assignment semantics
 	// (structs copy, slices/maps/pointers share) — used by new(expr).
+	// Unlike the package-level Copy it also materializes an untyped
+	// constant to a concrete value.
 	Copy(x Value) Value
 	// Spawn runs fn(args) on a new script goroutine, as the `go`
 	// statement does. A panic in it fails the whole script, unless the
@@ -1844,8 +1832,7 @@ type VMCaller interface {
 	CallerFrame(pc uintptr) (site CallSite, ok bool)
 }
 
-// CallSite is one script call-stack entry, from [VMCaller.CallerFrame]:
-// the function's Go-style symbol name (as runtime.Func.Name reports it)
+// CallSite is one script call-stack entry: the function's Go-style symbol name (as runtime.Func.Name reports it)
 // and the source position it is executing.
 type CallSite struct {
 	Name string
@@ -1853,12 +1840,13 @@ type CallSite struct {
 	Line int
 }
 
-// Function is a script function or method declared in source; it is
-// compiled on first call ([Function.EnsureCompiled]). A function literal
-// that captures variables is a [Closure] over a Function, and a method
-// value is a [BoundMethod].
-// A generic function is instantiated with [Function.WithBinds]. Obtain
-// one from [Package.Member] or [TypeDef.Methods].
+// Function is a script function, method or function literal, compiled
+// on first call through Compile ([Function.EnsureCompiled]). As a value,
+// a function literal that captures variables is a [Closure] over its
+// Function (a capture-free literal is the *Function itself), a method
+// value `x.M` is a [BoundMethod], and a function implemented in Go is a
+// [BuiltinFunc]. A generic function is instantiated with
+// [Function.WithBinds].
 type Function struct {
 	Pkg     *Package
 	File    *syntax.File
@@ -1872,8 +1860,9 @@ type Function struct {
 	Binds        map[string]Value // compile-time bindings: type params -> TypeDef args
 
 	// OuterTParams names the enclosing generic instantiation's type
-	// parameters a function literal closes over, so a local type
-	// declared in the body still differs per instantiation.
+	// parameters a function literal closes over — set by OpMakeClosure
+	// when the enclosing function's binds merge into the literal, so a
+	// local type declared in the body still differs per instantiation.
 	OuterTParams []string
 
 	Compile func(*Function) error // injected by the engine
@@ -1980,8 +1969,6 @@ type Iterator struct {
 // GoValue boxes a Go value V that has no script representation of its
 // own, such as a host object or a complex number. Scripts can call V's
 // methods.
-// [github.com/podhmo/minigo.ValueOf] creates one from a Go value;
-// [DeepUnwrap] returns V.
 type GoValue struct{ V any }
 
 // UConst is an untyped constant kept at arbitrary precision: a rune
@@ -2162,12 +2149,14 @@ func foldRepeatedFrames(frames []string) []string {
 	return out
 }
 
-// Panic is a script panic in flight, which script code can recover().
-// Value is the argument to panic, or a payload such as [*RuntimeError]
-// for a run-time error. An unrecovered panic reaches the host as the
-// error of [github.com/podhmo/minigo.Engine.Call] (find it with
-// errors.As); its Error method prints it as Go would, with a traceback. A [BuiltinFunc] raises one
-// by calling panic with it (see [RuntimePanic] and [PlainPanic]).
+// Panic is a script panic in flight. Unlike a [Trap], script code can
+// recover() it. Go code such as a [BuiltinFunc]
+// raises one by calling panic with it (see [RuntimePanic] and
+// [PlainPanic]). Value is the argument to panic, or a payload such as
+// [*RuntimeError] for a run-time error. An unrecovered panic reaches the
+// host as the error of [github.com/podhmo/minigo.Engine.Call] (find it
+// with errors.As); its Error method prints it as Go would, with a
+// traceback.
 type Panic struct {
 	Value   Value
 	Frames  []string // "func at file:line" entries collected while unwinding
@@ -2283,7 +2272,8 @@ func (pf *panicPrintFatal) typeName(c VMCaller) string {
 // range, nil dereference, ...): a script's recover() sees it as an error
 // value implementing Go's runtime.Error. Kind is the name of the Go
 // runtime type it stands for, such as "boundsError"; empty means
-// "errorString". Create one with [RuntimePanic].
+// "errorString". Its Error text has the "runtime error: " prefix;
+// [PlainError] is the payload for run-time errors Go reports without it.
 type RuntimeError struct {
 	Msg  string
 	Kind string
@@ -2406,8 +2396,8 @@ func panicScalar(v Value) any {
 	return v
 }
 
-// Trap is a failure the script cannot recover(): an unsupported
-// construct, an invalid operation, or an error returned by a
+// Trap is a failure the script cannot recover(), unlike a [Panic]: an
+// unsupported construct, an invalid operation, or an error returned by a
 // [BuiltinFunc] or [SpecialFunc]. It unwinds to the host as the error of
 // [github.com/podhmo/minigo.Engine.Call]; Err, reachable with errors.As,
 // is the host error it was raised from.

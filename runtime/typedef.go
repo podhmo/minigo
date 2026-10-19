@@ -23,13 +23,15 @@ import (
 // work.
 
 // TypIdentical reports whether two typedefs denote the same type, as
-// type assertions and interface comparisons require: declared types are
-// equal by name, package and type arguments (a function-local type by
-// its declaration), and anonymous types by structure (`[]int` never
-// equals `[]string`, and `struct{X int}` never equals `struct{X any}`).
-// byte equals uint8, rune int32, and the predeclared any equals
-// interface{}. See [TypIdenticalStrict] and [SigTypEq] for other
-// strengths.
+// type assertions and interface comparisons require. For reflect.DeepEqual
+// use [TypIdenticalStrict], which also requires a declared type to be the
+// same *TypeDef; for types in signatures use [SigTypEq], which also
+// resolves aliases and compares interfaces as method sets. Here declared
+// types are equal by name, package and type arguments (a function-local
+// type by its declaration), and anonymous types by structure (`[]int`
+// never equals `[]string`, and `struct{X int}` never equals
+// `struct{X any}`). byte equals uint8, rune int32, and the predeclared
+// any equals interface{}.
 func TypIdentical(a, b *TypeDef) bool {
 	if a == b {
 		return true
@@ -753,16 +755,15 @@ func SigIdentical(req, dyn *Function, res TypeResolver) bool {
 }
 
 // SigMemo caches [SigIdentical] results per pair of *Function values.
-// Share one memo only among callers whose TypeResolver gives the same
-// answers, such as the interpreters of one engine. The zero value is
-// ready to use and safe for concurrent use.
+// A result depends only on the two Functions (their decl, package, file
+// and binds) and the resolver, so share one memo only among callers whose
+// TypeResolver gives the same answers, such as the interpreters of one
+// engine. A Function copied with new binds is a new key. The zero value is ready to use and safe for concurrent use.
 type SigMemo struct {
 	// Interface satisfaction compares the same pairs over and over —
 	// every conversion of a *ast.Ident to ast.Expr re-checks End(),
 	// Pos() and exprNode() — and each fresh compare allocates typedef
-	// shells and walks both signatures. The verdict is a function of the
-	// two Functions alone (their decl, package, file and binds), so a
-	// Function copied with new binds is a new key.
+	// shells and walks both signatures.
 	m sync.Map
 }
 
@@ -1312,8 +1313,7 @@ func instArgName(td *TypeDef) string {
 	return DisplayName(withInstArgs(td))
 }
 
-// InstArg is one type argument of a generic typedef, returned by
-// [TypeDef.InstArgs]. Bound is false for a type parameter that has no
+// InstArg is one type argument of a generic typedef. Bound is false for a type parameter that has no
 // argument yet; Value is then nil.
 type InstArg struct {
 	Value Value
@@ -1706,11 +1706,11 @@ func typImportPath(pkg *Package, file *syntax.File, alias string) string {
 // ArrayLenNodes lists the array types inside the type expression e whose
 // length is an expression rather than a literal, in depth-first order;
 // `[]T`, `[3]T` and `[...]T` yield nothing. Replacing a node's Len with a
-// literal removes it from the next call's result, so the compiler and the
-// interpreter agree on which length comes next.
+// literal removes it from the next call's result. This order is the
+// contract between the compiler, which emits each node's length
+// evaluation followed by OpFoldArrayLen, and the interpreter, which folds each value
+// into the first node still unfolded.
 func ArrayLenNodes(e ast.Expr) []*ast.ArrayType {
-	// This one walk defines the order the compiler emits length evals
-	// (OpFoldArrayLen) and the VM applies them.
 	var out []*ast.ArrayType
 	var walk func(e ast.Expr)
 	var walkList func(fl *ast.FieldList)

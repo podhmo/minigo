@@ -90,9 +90,8 @@ func (e *Env) Names() []string {
 	return out
 }
 
-// ImportRef is one import declaration of a source file, found in
-// [Package.Scopes] and [Package.Imports]. The imported package is loaded
-// lazily: [ImportRef.Materialize] loads it up to [Indexed] without
+// ImportRef is one import declaration of a source file. The imported
+// package is loaded lazily: [ImportRef.Materialize] loads it up to [Indexed] without
 // initializing it, and it is initialized when a script first uses one of
 // its members.
 type ImportRef struct {
@@ -136,9 +135,7 @@ func (r *ImportRef) Materialize() (*Package, error) {
 // Package is a script package, loaded lazily: it is located and indexed
 // when first imported, and initialized ([Package.EnsureReady]) when a
 // member is first used. A bound host package is created already [Ready]
-// with its members in Globals. Packages come from
-// [github.com/podhmo/minigo.Engine.Package] and related loaders, and from
-// [ImportRef.Materialize]; look up members with [Package.Member].
+// with its members in Globals.
 type Package struct {
 	Path     string
 	Name     string
@@ -194,7 +191,8 @@ type Package struct {
 	LazyInit bool
 
 	// Specials is the engine's special-form registry (canonical symbol ->
-	// handler); calls to these symbols compile as special-form calls.
+	// handler); the compiler emits OpSpecialCall for calls to these
+	// symbols.
 	Specials map[SymbolID]SpecialFunc
 
 	matMu sync.Mutex

@@ -4,8 +4,8 @@ package runtime
 // values, such as [DeepUnwrap]: it remembers the output already built for
 // each container, so cyclic and shared containers convert to the same Go
 // value, and the references already followed, so a pointer cycle ends.
-// Create one with [NewWalk] per conversion; [Walk.Container] converts
-// slices and maps, and the caller handles every other value.
+// Use a new Walk for each conversion. [Walk.Container] converts slices
+// and maps; the caller handles every other value.
 type Walk struct {
 	// The maps allocate lazily: a scalar-only walk never pays for them.
 	// DeepUnwrap, the vm package's host marshal, and the root package's
