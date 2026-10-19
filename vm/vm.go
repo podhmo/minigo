@@ -713,7 +713,6 @@ func (v *VM) doneRV() reflect.Value {
 
 var nilChanValue = reflect.ValueOf((chan struct{})(nil))
 
-// Spawn implements [runtime.VMCaller].
 func (v *VM) Spawn(fn runtime.Value, args []runtime.Value) *runtime.Task {
 	return v.spawn(fn, args, nil, nil, true)
 }
@@ -1360,7 +1359,6 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 	return fr.stack[len(fr.stack)-1], nil
 }
 
-// Member implements [runtime.VMCaller].
 func (v *VM) Member(base runtime.Value, name string) (m runtime.Value, ok bool) {
 	// selectMember over a dummy frame, reporting failure instead of
 	// trapping so host intrinsics can probe for optional members.
@@ -1402,7 +1400,6 @@ func (v *VM) Package() *runtime.Package {
 	return nil
 }
 
-// TypeOf implements [runtime.VMCaller].
 func (v *VM) TypeOf(x runtime.Value) *runtime.TypeDef {
 	return v.typeOfValue(x)
 }
@@ -6365,7 +6362,6 @@ func (v *VM) checkMapKey(f *frame, td *runtime.TypeDef, idx runtime.Value) {
 	v.mapKeyOperand(f, td, idx)
 }
 
-// MapKeyOperand implements [runtime.VMCaller].
 func (v *VM) MapKeyOperand(mapTd *runtime.TypeDef, key runtime.Value) runtime.Value {
 	// the caller's frame resolves function-local key typedefs, so the
 	// builtin sees the same key normalization an index expression produces.
@@ -10017,6 +10013,7 @@ func toFloat(v runtime.Value) float64 {
 // Convert implements [runtime.VMCaller], for host intrinsics running on
 // this VM's goroutine.
 func (v *VM) Convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error) {
+	// Direct conversions need no engine re-entry check or panic capture.
 	// Going through Call instead costs a goroutineID (runtime.Stack parse)
 	// per conversion — measurable for append on numeric slices.
 	return v.convert(td, x)
@@ -12797,7 +12794,6 @@ func (v *VM) wrapZero(td *runtime.TypeDef, z runtime.Value) runtime.Value {
 	return runtime.Tag(td, z)
 }
 
-// Zero implements [runtime.VMCaller].
 func (v *VM) Zero(td *runtime.TypeDef) runtime.Value {
 	return v.zeroSeen(nil, td, map[*runtime.TypeDef]bool{})
 }
@@ -12821,7 +12817,6 @@ func (v *VM) ElemZero(td *runtime.TypeDef) runtime.Value {
 	return v.zeroSeen(nil, et, map[*runtime.TypeDef]bool{})
 }
 
-// ArrayLenOf implements [runtime.VMCaller].
 func (v *VM) ArrayLenOf(td *runtime.TypeDef) (int64, bool) {
 	return v.arrayLen(v.topFrame(), td)
 }
@@ -12883,7 +12878,6 @@ func (v *VM) CallerPCs() []uintptr {
 	return pcs
 }
 
-// CallerFrame implements [runtime.VMCaller].
 func (v *VM) CallerFrame(pc uintptr) (runtime.CallSite, bool) {
 	if pc == 0 || int(pc) > len(v.pcSites) {
 		return runtime.CallSite{}, false
