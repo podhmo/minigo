@@ -1,35 +1,21 @@
 // Package minigo embeds an interpreter for a large subset of Go.
 //
-// Create an [Engine] and run a function from a directory, import path or
-// file:
+// Start with [NewEngine], then call [Engine.Run] or [Engine.RunFile]:
 //
 //	e := minigo.NewEngine(".", minigo.WithOutput(os.Stdout))
 //	v, err := e.Run(ctx, "./script", "Main")
 //
-// [Engine.Run] and [Engine.RunFile] are the one-shot entry points;
-// [Engine.Package], [Engine.LoadFile] or [Engine.LoadDirScope] followed by
-// [Engine.Call] split loading from calling. [Format] prepares a result for
-// printing; [Engine.RunResult] and [Result.As] decode it into a Go value.
-// Engine behavior is set by [Option] values such as [WithOutput],
-// [WithAllowedRoots] and [WithInitMode].
+// [Format] prepares results for printing; [Engine.RunResult] and [Result.As]
+// decode them into Go values. [Option] values configure the engine.
 //
-// Packages are loaded lazily: imports are located and indexed on demand,
-// initialized when a member is first touched, and functions are compiled
-// when first called. Any syntactically valid Go source loads; a construct
-// the interpreter does not support fails at run time, with its position,
-// only if execution reaches it.
+// [Engine.Package] and [Engine.Call] separate loading from execution.
+// Packages initialize on first member access; unsupported constructs fail
+// at run time only when reached.
 //
-// Host integration:
-//   - [Engine.Bind] exposes Go values as an importable package; [WrapFunc]
-//     and [ValueOf] convert Go functions and values for it.
-//   - [Engine.RegisterSpecial] installs a special form: a handler that
-//     receives a call's syntax instead of its evaluated arguments.
-//   - [Engine.Vet] reports calls into stub packages that have no handler.
-//
-// [Engine.NewREPL] starts an interactive [REPL] session.
-//
-// Script values have type [runtime.Value]; see
-// [github.com/podhmo/minigo/runtime] for the value model.
+// Use [Engine.Bind] with [WrapFunc] and [ValueOf] to expose host values,
+// [Engine.RegisterSpecial] for calls with unevaluated arguments, and
+// [Engine.NewREPL] for interactive sessions. Script values are described in
+// [github.com/podhmo/minigo/runtime].
 package minigo
 
 import (
