@@ -1,6 +1,46 @@
-// Package runtime holds the minigo value model, environments, and the lazy
-// package machinery. Values are boxed `any` for now; a tagged
-// representation is a later optimization.
+// Values are boxed `any`; a tagged representation is a possible later
+// optimization.
+
+// Package runtime defines the values minigo scripts compute with, and the
+// types host code uses to exchange them with the interpreter.
+//
+// Embedders meet this package through [github.com/podhmo/minigo]:
+// [github.com/podhmo/minigo.Engine.Call] takes and returns script values
+// of type [Value], [github.com/podhmo/minigo.Engine.Bind] registers
+// values as the members of a host package, and
+// [github.com/podhmo/minigo.Engine.RegisterSpecial] installs a
+// [SpecialFunc].
+//
+// Values:
+//   - [Value] lists the representation of each kind of script value:
+//     int64, float64, string and bool for basic values, [Slice], [Map],
+//     [Struct] and [Chan] for composites, [Cell] (or [FieldRef],
+//     [IndexRef]) for pointers, and [GoValue] for host values.
+//   - [Unwrap] removes a [Named] type tag, [DeepUnwrap] converts a result
+//     to plain Go values, and [ErrorOf] converts an error result.
+//   - [Zero] and [Tag] build values of a given [TypeDef]; [Copy] and
+//     [SetRef] give them Go's assignment semantics.
+//
+// Functions are [Function] (declared in source), [Closure], [BoundMethod]
+// and [BuiltinFunc] (implemented in Go). A BuiltinFunc reaches back into
+// the interpreter through a [VMCaller].
+//
+// Types are described by [TypeDef], classified by [TypeKind]; compare
+// them with [TypIdentical] and print them with [DisplayName].
+//
+// A [Package] is loaded lazily, through an [ImportRef], and moves through
+// the [State] stages; its globals live in an [Env].
+//
+// Failures: a [Panic] is a script panic, which script code can recover;
+// its value may be a [RuntimeError] or [PlainError] as in Go. A [Trap]
+// is a failure scripts cannot recover, including errors returned by
+// builtins.
+//
+// Special forms: a [SpecialFunc] registered under a [SymbolID] receives
+// calls unevaluated as a [QuotedCall], and evaluates what it needs
+// through a [SpecialContext].
+//
+// The interpreter itself is [github.com/podhmo/minigo/vm].
 package runtime
 
 import (
@@ -20,38 +60,46 @@ import (
 	"github.com/podhmo/minigo/syntax"
 )
 
-// Value is a boxed interpreter value. Concrete types:
+// Value is a script value. Its dynamic type is one of:
 //
 //	int64, float64, string, bool, Nil,
-//	*Cell, *Slice, *Map, *Struct, *TypeDef,
+//	*Cell, *Slice, *Map, *Struct, *Chan, *TypeDef,
 //	*Function, *Closure, *BoundMethod, *BuiltinFunc, *Tuple,
-//	*Package, *Iterator, *GoValue, *TypedNil, *IfaceNil, *Named
+//	*Package, *Iterator, *GoValue, *TypedNil, *IfaceNil, *Named, *UConst
+//
+// Integers are normally held as int64 and floats as float64; a declared
+// type keeps its identity through a [Named] wrapper ([Unwrap] removes it).
+// Values without a script representation, such as complex numbers and
+// host objects, are boxed in a [GoValue]. Nil is [NIL], or a [TypedNil] /
+// [IfaceNil] when its type matters.
 type Value = any
 
-// Nil is the nil value.
+// Nil is the type of untyped nil; [NIL] is its only value.
 type Nil struct{}
 
-// NIL is the singleton nil.
+// NIL is the untyped nil value, and the zero value of interface types.
 var NIL Value = Nil{}
 
 // TypedNil is a nil value that knows its (non-interface) type: the zero of
 // `var p *int`, `var s []int`, `(*int)(nil)`, `return nil` under a *T
 // result. It still compares equal to nil — a nil pointer IS nil in Go —
 // but carries enough type information to distinguish `x == nil` once it
-// is stored into an interface-typed slot (see IfaceNil), to report the
+// is stored into an interface-typed slot (see [IfaceNil]), to report the
 // right zero through comma-ok asserts, and to panic on deref like a real
 // nil pointer.
 type TypedNil struct{ Typ *TypeDef }
 
-// IfaceNil is a TypedNil that crossed an interface-typed boundary
-// (`var x any = (*int)(nil)`, an `any` parameter, an `any` result). The
+// IfaceNil is a nil stored in an interface-typed slot. With a concrete
+// Typ it is a [TypedNil] that crossed an interface boundary
+// (`var x any = (*int)(nil)`, an `any` parameter, an `any` result): the
 // interface records a dynamic type, so unlike a bare TypedNil it is NOT
-// nil: `x == nil` is false, `if x` is true, and `x.(T)` sees the
-// recorded dynamic type.
+// nil — `x == nil` is false and `x.(T)` sees the recorded dynamic type.
+// With a nil or interface Typ it is the nil interface itself. Tell the
+// cases apart with [IsNilIface], [BoxedNilTyp] and [IfaceTaggedNil].
 type IfaceNil struct{ Typ *TypeDef }
 
 // IfaceTaggedNil returns the interface typedef carried by a nil
-// interface value — an IfaceNil whose static tag is an interface kind
+// interface value — an [IfaceNil] whose static tag is an interface kind
 // — else nil. An untagged IfaceNil (Typ == nil) has no tag to report,
 // and a concrete tag means a boxed typed nil, not the nil interface.
 func IfaceTaggedNil(v Value) *TypeDef {
@@ -62,7 +110,7 @@ func IfaceTaggedNil(v Value) *TypeDef {
 }
 
 // BoxedNilTyp returns the dynamic typedef of a typed nil boxed in an
-// interface — an IfaceNil whose tag is a concrete type — else nil.
+// interface — an [IfaceNil] whose tag is a concrete type — else nil.
 // The distinction is observable: the boxed nil is NOT nil (it has a
 // dynamic type), `x == nil` fails and `x.(T)` sees the tag.
 func BoxedNilTyp(v Value) *TypeDef {
@@ -73,7 +121,7 @@ func BoxedNilTyp(v Value) *TypeDef {
 }
 
 // IsNilIface reports whether v is the nil interface itself — an
-// IfaceNil with no dynamic type: untagged (Typ == nil) or carrying
+// [IfaceNil] with no dynamic type: untagged (Typ == nil) or carrying
 // only an interface tag. A boxed typed nil reports false.
 func IsNilIface(v Value) bool {
 	if in, ok := v.(*IfaceNil); ok {
@@ -87,22 +135,22 @@ func IsNilIface(v Value) bool {
 // assigns it the running index (one past the previous element's).
 type ImplicitIndex struct{}
 
-// Named is a value of a declared named basic type (`type MyInt int`,
-// `type A B`): the underlying value plus the typedef it was declared
-// under. Zeros, coercion sites and conversions tag the value so its
+// Named is a value of a declared type (`type MyInt int`, `type A B`):
+// the underlying value plus the typedef it was declared under. Its
 // declared identity survives reads — method dispatch, type asserts and
-// generic inference see MyInt, not the bare int64 it stores. Everywhere
-// else treats it as V (use Unwrap).
+// generic inference see MyInt, not the bare int64 it stores. Build one
+// with [Tag]; read the tag with [TagOf] and the underlying value with
+// [Unwrap].
 type Named struct {
 	Typ *TypeDef // the declared typedef (a defined type, never a builtin)
 	V   Value    // the underlying value
 }
 
-// Tag attaches the declared-type tag td to v. An existing Named tag is
-// peeled first — values are never tagged twice, so `Tag(T, Named{U})`
-// yields `Named{T, inner}` rather than the `Named{Named{...}}` shape
-// that needed peeling downstream. This is the one place Named values
-// get constructed.
+// Tag attaches the declared-type tag td to v. An existing [Named] tag is
+// replaced rather than nested: `Tag(T, Named{U, x})` yields
+// `Named{T, x}`. For a bound host type ([TypeDef.HostScalar] or
+// [TypeDef.HostNew]) the payload is converted to the host's
+// representation.
 func Tag(td *TypeDef, v Value) *Named {
 	sv := Unwrap(v)
 	if td != nil && td.HostScalar != nil {
@@ -133,15 +181,15 @@ func hostScalarValue(td *TypeDef, v Value) Value {
 	return v
 }
 
-// HostScalarOf materializes a host-scalar typedef's payload to the bound
-// Go scalar at a read site: a stored int64 (the materialized script
-// shape) or a still-constant UConst both convert to the host type, so
-// member dispatch, fmt rendering and host calls see the real
-// time.Month / time.Duration rather than the raw int64 — the same
-// canonicalization hostScalarValue applies at Tag time, deferred to the
-// read because a Named{td, UConst} keeps the constant domain. The second
-// result reports whether a host scalar was produced.
+// HostScalarOf converts v, the payload of a value of type td, to the
+// host Go type in [TypeDef.HostScalar]: a stored int64 or an untyped
+// [UConst] becomes a real time.Month or time.Duration, so host methods
+// and formatting see the host type. ok is false when td has no
+// HostScalar or v does not convert.
 func HostScalarOf(td *TypeDef, v Value) (any, bool) {
+	// The same canonicalization hostScalarValue applies at Tag time,
+	// deferred to the read because a Named{td, UConst} keeps the constant
+	// domain.
 	rt := reflect.TypeOf(td.HostScalar)
 	if rt == nil {
 		return nil, false
@@ -213,9 +261,9 @@ func hostStringValue(td *TypeDef, v Value) Value {
 	return v
 }
 
-// TagOf reads the outermost declared-type tag of v, or nil when v is
+// TagOf reads the declared-type tag of a [Named] v, or nil when v is
 // untagged. Use it where the tag itself matters — method dispatch, type
-// assertions, formatting — and Unwrap where the underlying value does.
+// assertions, formatting — and [Unwrap] where the underlying value does.
 func TagOf(v Value) *TypeDef {
 	if n, ok := v.(*Named); ok {
 		return n.Typ
@@ -223,9 +271,9 @@ func TagOf(v Value) *TypeDef {
 	return nil
 }
 
-// Unwrap peels every Named tag from v; any other value passes through
-// unchanged. Consumption sites (index, arithmetic, marshaling) unwrap
-// so a named value behaves like its underlying value.
+// Unwrap removes every [Named] tag from v; any other value passes through
+// unchanged. It does not look inside containers or references; use
+// [DeepUnwrap] for a host-side Go value.
 func Unwrap(v Value) Value {
 	for {
 		if n, ok := v.(*Named); ok {
@@ -236,11 +284,13 @@ func Unwrap(v Value) Value {
 	}
 }
 
-// Zero returns the zero value of a typedef: a Struct with nil fields,
-// a TypedNil for nilable kinds (pointer, slice, map, chan, func), NIL for
-// interface types, and the matching literal zero for basic types. Named
-// basics whose underlying type fails to resolve yield a TypedNil hole
-// rather than a fake scalar.
+// Zero returns the zero value of a typedef: a [Struct] whose fields are
+// [NIL], a [TypedNil] for nilable kinds (pointer, slice, map, chan, func),
+// NIL for interface types and a nil td, the literal zero for basic types,
+// and a tagged [GoValue] for host types with [TypeDef.HostNew]. Named
+// basics whose underlying type fails to resolve yield a TypedNil rather
+// than a fake scalar. Struct fields are not zeroed by their declared
+// types; [VMCaller.Zero] does that.
 func Zero(td *TypeDef) Value {
 	if td == nil {
 		return NIL
@@ -313,8 +363,10 @@ func basicZero(name string) (Value, bool) {
 	return nil, false
 }
 
-// Cell is a mutable slot. Every declared variable is a cell, which makes
-// closures, pointers and addressable receivers uniform: a pointer IS a cell.
+// Cell is a mutable slot. Every declared variable is a cell, and a
+// pointer value is the *Cell it points to (or a [FieldRef], [IndexRef] or
+// [DerefRef] for addresses inside other values). Read and write any of
+// them with [Deref] and [SetRef].
 type Cell struct {
 	Elem Value
 	// Typ is the declared type of the slot when one is known (`var x T`,
@@ -326,8 +378,9 @@ type Cell struct {
 	ReadOnly bool
 }
 
-// FieldRef is the address-of a struct field (`&s.f`) — a cell-view over
-// base.name. The base resolves at access time (struct value or pointer).
+// FieldRef is the pointer `&s.f` to a struct field. Base is resolved at
+// each access (a struct value or a pointer to one), and Name may select a
+// promoted field of an embedded struct.
 type FieldRef struct {
 	Base Value
 	Name string
@@ -338,9 +391,8 @@ func (r *FieldRef) structOf() *Struct {
 	return StructOf(r.Base)
 }
 
-// StructOf resolves v to the struct it reaches — through Named tags,
-// cells and pointer-shaped references — or nil. Field promotion and
-// host intrinsics that step through embedded fields share this walk.
+// StructOf resolves v to the [Struct] it reaches through [Named] tags and
+// pointers, or nil.
 func StructOf(v Value) *Struct {
 	for {
 		if s, ok := v.(*Struct); ok {
@@ -429,12 +481,13 @@ func (r *FieldRef) find() (st *Struct, idx int, ok bool) {
 	return nil, 0, false
 }
 
-// Find resolves the field slot the ref points at — the owning struct
-// and field index after embedded promotion, so equality and address
-// identity can compare storage rather than selector spellings.
+// Find resolves the field slot the ref points at: the owning struct and
+// field index after embedded promotion. Two refs to the same storage
+// yield the same pair. It panics on an ambiguous promoted selector.
 func (r *FieldRef) Find() (*Struct, int, bool) { return r.find() }
 
-// Get reads the field value.
+// Get reads the field value; ok is false when the field cannot be
+// resolved.
 func (r *FieldRef) Get() (Value, bool) {
 	if st, idx, ok := r.find(); ok {
 		return st.Fields[idx], true
@@ -442,7 +495,8 @@ func (r *FieldRef) Get() (Value, bool) {
 	return nil, false
 }
 
-// Set writes the field value.
+// Set writes the field value as is (no copy; see [SetRef]) and reports
+// whether the field was resolved.
 func (r *FieldRef) Set(v Value) bool {
 	if st, idx, ok := r.find(); ok {
 		st.Fields[idx] = v
@@ -451,9 +505,9 @@ func (r *FieldRef) Set(v Value) bool {
 	return false
 }
 
-// DerefRef is the location `*p` names when the pointer itself has a
-// tracked storage ref: `*p = v` resolves what the pointer refers to at
-// store time, so a RHS that reseats p still writes the live pointee.
+// DerefRef is the location `*p` names when p itself is stored in a
+// tracked location: the pointee is resolved at each access, so in
+// `*p = v` a right-hand side that reseats p still writes the new pointee.
 type DerefRef struct {
 	Ptr Value // the storage ref whose value is the pointer
 }
@@ -479,12 +533,10 @@ func (r *DerefRef) Set(v Value) bool {
 	return SetRef(loc, v)
 }
 
-// SharedElem reports whether an interior write through v reaches shared
-// storage — Go allows `m[k][i] = v` and `m[k].f = v` on a map element
-// only when the element is a reference (slice, map, chan, func) or a
-// pointer, because the element read is a copy. Arrays, structs, scalars
-// and strings are copies: their interiors cannot be assigned through
-// `m[k]` at all.
+// SharedElem reports whether v, read as a map element, refers to shared
+// storage: a slice, map, chan, func or pointer. Only then can a write
+// like `m[k][i] = v` reach it; arrays, structs, scalars and strings read
+// out of a map are copies.
 func SharedElem(v Value) bool {
 	for {
 		switch x := v.(type) {
@@ -525,9 +577,10 @@ func SharedElem(v Value) bool {
 	}
 }
 
-// IndexRef is the address-of a slice element (`&s[i]`) — a cell-view over
-// base[key]. (Map values are unaddressable in Go, so a ref over a map
-// only resolves reference-shaped elements; see SharedElem.)
+// IndexRef is the pointer `&s[i]` to a slice or array element. Over a
+// map it names m[k] for interior writes and only resolves when the
+// element is reference-shaped (see [SharedElem]), since map elements are
+// not addressable in Go.
 type IndexRef struct {
 	Base Value
 	// Key is the index operand as evaluated: a named key keeps its
@@ -571,16 +624,16 @@ func (r *IndexRef) mapOf() *Map {
 	return m
 }
 
-// Slice resolves the base to the referenced slice — exported so the VM
-// can compare two refs by backing-array identity.
+// Slice resolves the base to the referenced slice, or nil when it is not
+// one.
 func (r *IndexRef) Slice() *Slice { return r.sliceOf() }
 
-// Map resolves the base to the referenced map, or nil — exported so the
-// VM can tell a map-element lvalue (m[k], a copy in Go) apart from a
-// slice-element one.
+// Map resolves the base to the referenced map, or nil when it is not
+// one.
 func (r *IndexRef) Map() *Map { return r.mapOf() }
 
-// Get reads the element value.
+// Get reads the element value; ok is false for an out-of-range index, a
+// missing map key or a non-reference map element.
 func (r *IndexRef) Get() (Value, bool) {
 	if m := r.mapOf(); m != nil {
 		// a missing key reports no value — callers needing the zero
@@ -604,7 +657,9 @@ func (r *IndexRef) Get() (Value, bool) {
 	return s.Elems[i], true
 }
 
-// Set writes the element value.
+// Set writes the element value as is (no copy; see [SetRef]). A map key
+// is inserted if missing; ok is false when the base is neither a slice
+// nor a map, or the index is out of range.
 func (r *IndexRef) Set(v Value) bool {
 	if m := r.mapOf(); m != nil {
 		m.Insert(Unwrap(r.Key), v)
@@ -619,10 +674,10 @@ func (r *IndexRef) Set(v Value) bool {
 	return true
 }
 
-// Deref unwraps any pointer-like value one level: Cell, FieldRef or
-// IndexRef. It reports false for non-references. A Named value is
-// transparent: its underlying value decides (a named pointer type
-// dereferences through its cell, a named scalar does not).
+// Deref reads through a pointer value one level: a [Cell], [FieldRef],
+// [IndexRef] or [DerefRef]. ok is false for non-pointers and for
+// references that do not resolve. A [Named] value is transparent: a
+// named pointer type dereferences, a named scalar does not.
 func Deref(v Value) (Value, bool) {
 	switch r := v.(type) {
 	case *Cell:
@@ -639,11 +694,10 @@ func Deref(v Value) (Value, bool) {
 	return nil, false
 }
 
-// Copy implements Go assignment semantics: structs copy by value —
-// recursively, since a struct field is itself a copied value — while
-// slices, maps, pointers, channels and funcs share. Storing without it
-// leaves the target aliasing the source's fields (`var k = p.key;
-// p.key.mark.c++` would leak into k).
+// Copy returns v as a Go assignment would store it: structs and arrays
+// are copied recursively, while slices, maps, pointers, channels and
+// funcs are shared. A [Named] value keeps its tag. Apply it whenever a
+// value is stored, or the target aliases the source's fields.
 func Copy(v Value) Value {
 	switch x := v.(type) {
 	case *Struct:
@@ -679,9 +733,9 @@ func Copy(v Value) Value {
 	return v
 }
 
-// HostStructCopy duplicates a `*struct` GoValue box for an assignment
-// boundary; anything else reports false so non-struct host payloads
-// (handles, maps, interfaces) keep passing through.
+// HostStructCopy copies the struct behind a [GoValue] holding a non-nil
+// pointer to a struct, returning a new box. ok is false for any other
+// value, which the caller should store unchanged.
 func HostStructCopy(v Value) (Value, bool) {
 	gv, ok := v.(*GoValue)
 	if !ok {
@@ -696,9 +750,9 @@ func HostStructCopy(v Value) (Value, bool) {
 	return &GoValue{V: cp.Interface()}, true
 }
 
-// SetRef stores through any pointer-like value: Cell, FieldRef or IndexRef.
-// The stored value is copied like any Go assignment — otherwise a struct
-// RHS would alias the slot.
+// SetRef stores val through a pointer value ([Cell], [FieldRef],
+// [IndexRef] or [DerefRef], possibly [Named]) and reports whether it did.
+// val is stored as a [Copy], like a Go assignment.
 func SetRef(v, val Value) bool {
 	val = Copy(val)
 	switch r := v.(type) {
@@ -725,13 +779,13 @@ type mapKey struct {
 	repr string
 }
 
-// CanonicalKey renders a map key to a Go-comparable value so composite
-// keys compare by content. Scalars pass through — a float64 NaN keeps
-// Go's never-equal map semantics for free. Pointers and channels keep
-// identity (they ARE their identity); structs and fixed-size arrays
-// fold to a mapKey of the type name plus a recursive field rendering
-// where any NaN inside forces a never-equal nonce, like Go.
-// Unhashable keys (slices, maps, funcs) panic like Go's runtime does.
+// CanonicalKey converts a script map key to the Go-comparable form that
+// keys [Map.Pairs], so composite keys compare by content. Scalars pass
+// through; pointers and channels compare by identity; structs and arrays
+// compare by type and contents. A key containing NaN never equals any
+// other key, itself included, so calling CanonicalKey twice on it yields
+// different results. Unhashable keys (slices, maps, funcs) panic with a
+// [*Panic] like Go's runtime.
 func CanonicalKey(v Value) Value {
 	switch x := Unwrap(v).(type) {
 	case *Struct:
@@ -830,15 +884,14 @@ func CanonicalKey(v Value) Value {
 // callback worth tracking.
 var opaqueKeyOrigs sync.Map // mapKey -> Value
 
-// OpaqueKey renders v for an `any` parameter position that a host
-// container hashes or compares as a key — sync.Map keys, context keys,
-// CompareAndSwap's comparand. A named payload keeps its typedef tag so
-// any(uint16(8)) stays distinct from any(int(8)) the way gc's interface
-// boxing keeps (type, payload); composite payloads fold to the content
-// key CanonicalKey renders; unhashable payloads panic with a hash-type
-// error like gc's map-key check. The canonical form is what crosses;
-// OpaqueKeyOrig hands the script value back when the container returns
-// the key.
+// OpaqueKey converts v for an `any` argument that a host container
+// hashes or compares — sync.Map keys, context keys, CompareAndSwap's
+// comparand. Equal script values yield equal keys: a [Named] value keeps
+// its type, so any(uint16(8)) and any(int(8)) stay distinct, and
+// composite values compare by content as in [CanonicalKey]. Unhashable
+// values panic like Go's map-key check. When the container hands a key
+// back, [OpaqueKeyOrig] recovers the script value; [TryOpaqueKey] does
+// not panic.
 func OpaqueKey(v Value) Value {
 	ck := opaqueKeyOf(v)
 	if _, ok := ck.(mapKey); ok {
@@ -850,12 +903,10 @@ func OpaqueKey(v Value) Value {
 	return ck
 }
 
-// TryOpaqueKey is OpaqueKey without the panic: ok is false on
-// unhashable payloads. A free `any` value position (a sync.Map value, a
-// Pool entry, CompareAndSwap's new) canonicalizes hashable args so a
-// later comparand still hits equal content, and crosses unhashable ones
-// verbatim — gc stores them happily and only the key side runs the
-// hash check.
+// TryOpaqueKey is [OpaqueKey] without the panic: ok is false for
+// unhashable values. Use it for `any` arguments that are stored but not
+// necessarily hashed (a sync.Map value, CompareAndSwap's new value),
+// passing an unhashable value through unchanged.
 func TryOpaqueKey(v Value) (ck Value, ok bool) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -868,8 +919,9 @@ func TryOpaqueKey(v Value) (ck Value, ok bool) {
 	return OpaqueKey(v), true
 }
 
-// OpaqueKeyOrig reports the script value an OpaqueKey canonical form
-// was rendered from, false when v is not a remembered canonical key.
+// OpaqueKeyOrig returns the script value a key from [OpaqueKey] was made
+// from. ok is false when v is not such a key; that includes scalars,
+// which OpaqueKey passes through unchanged.
 func OpaqueKeyOrig(v Value) (Value, bool) {
 	if _, ok := v.(mapKey); !ok {
 		return nil, false
@@ -915,14 +967,12 @@ func opaqueKeyOf(v Value) Value {
 	return CanonicalKey(v)
 }
 
-// UConstNative materializes an untyped constant to its default-type
-// value — the conversion every host crossing and VM slot shares:
-// bool/string/int64/float64/complex128 with Go's int/float overflow
-// errors and the constant -0 fold. Every result crosses bare: a
-// complex128 is a plain complex128, never a boxed host value — this
-// path applies no VM dressing, so the caller keeps the wrap-up: the
-// rune tag for a Rune constant and the *GoValue box a complex result
-// needs inside the VM (scripts have no complex type).
+// UConstNative converts an untyped constant to a Go value of its default
+// type: bool, string, int64, float64 or complex128. It reports Go's
+// overflow error when the constant does not fit, and folds -0 to +0 (see
+// [CanonConstZero]). The result is a plain Go value: the caller adds the
+// rune tag for a [UConst.Rune] constant, and the [GoValue] box a
+// complex128 needs to be a [Value].
 func UConstNative(u *UConst) (Value, error) {
 	switch u.V.Kind() {
 	case constant.Bool:
@@ -951,12 +1001,10 @@ func UConstNative(u *UConst) (Value, error) {
 	return nil, fmt.Errorf("cannot materialize constant %s", u.V)
 }
 
-// CanonConstZero folds a materialized constant -0 to +0: untyped
-// constants have no negative zero — literal -0.0 and underflowing
-// magnitudes like -1e-10000 both read +0 in Go
-// ($GOROOT/test/fixedbugs/issue12577.go). Apply it wherever a constant
-// becomes a float64; runtime-computed -0 (from -x on a nonzero var)
-// never passes through here.
+// CanonConstZero folds -0 to +0. Go constants have no negative zero —
+// literal -0.0 and underflowing magnitudes like -1e-10000 both read +0 —
+// so apply it wherever a constant becomes a float64, but not to values
+// computed at run time.
 func CanonConstZero(f float64) float64 {
 	if f == 0 {
 		return 0
@@ -1054,8 +1102,8 @@ func nextKeyNonce() int64 {
 	return keyNonce.Add(1)
 }
 
-// PtrArrayType returns the fixed-size ArrayType behind a *[N]T
-// typedef, or nil — `var p *[3]int` peels the StarExpr to its array.
+// PtrArrayType returns the array type AST of a *[N]T typedef, or nil when
+// td is not a pointer to an array.
 func PtrArrayType(td *TypeDef) *ast.ArrayType {
 	if td == nil {
 		return nil
@@ -1074,11 +1122,12 @@ func PtrArrayType(td *TypeDef) *ast.ArrayType {
 	return nil
 }
 
-// arrayTypedef reports whether a typedef is a fixed-size array — its
-// underlying AST is an ArrayType carrying a length (slices have none).
-// ArrayTypedef reports whether td is a fixed-length array type.
+// ArrayTypedef reports whether td is a fixed-length array type. Arrays
+// are represented as a [Slice] whose Typ is such a typedef.
 func ArrayTypedef(td *TypeDef) bool { return arrayTypedef(td) }
 
+// arrayTypedef reports whether a typedef is a fixed-size array — its
+// underlying AST is an ArrayType carrying a length (slices have none).
 func arrayTypedef(td *TypeDef) bool {
 	if td == nil {
 		return false
@@ -1218,16 +1267,19 @@ func anonTag(e ast.Expr) string {
 	return fmt.Sprintf("%T", e)
 }
 
-// Tuple packs multiple values (multi return / multi assign).
+// Tuple holds the results of a call returning more than one value, in
+// order.
 type Tuple struct{ Elems []Value }
 
-// Slice is a Go slice value.
+// Slice is a slice or array value; it is an array when [ArrayTypedef]
+// reports true for Typ. Use [Slice.Len] and [Slice.Cap] rather than
+// len(Elems): a slice of zero-size elements may be [Slice.Virtual].
 type Slice struct {
 	Elems []Value
-	// N is the logical length of a slice whose zero-size elements were
-	// never materialized — make([]struct{}, n) allocates 0 bytes for any
-	// n, like Go's zerobase ($GOROOT/test/fixedbugs/issue29190.go).
-	// Index reads vend Zero and element writes are unobservable (a
+	// N is the logical length of a virtual slice, whose zero-size
+	// elements are not stored: make([]struct{}, n) allocates nothing for
+	// any n, like Go's zerobase ($GOROOT/test/fixedbugs/issue29190.go).
+	// Index reads yield Zero and element writes are unobservable (a
 	// zero-size type has a single value). CapN is the logical capacity
 	// and can exceed N — a cap-preserving reslice (s[:0]) or a
 	// within-capacity append keeps it — so virtual-ness is a property
@@ -1240,15 +1292,14 @@ type Slice struct {
 	Typ *TypeDef
 }
 
-// Virtual reports whether the slice's backing is implicit — a
-// zero-size-element slice that never materialized its elements. N and
-// CapN carry the logical length and capacity while Elems stays empty;
-// a virtual slice degraded to len/cap 0 (s[:0:0]) reports false, which
-// is honest — it IS an ordinary empty slice at that point.
+// Virtual reports whether the slice holds zero-size elements that are not
+// stored: Elems is empty while N and CapN carry the logical length and
+// capacity. A virtual slice resliced to length and capacity 0 reports
+// false; it is then an ordinary empty slice.
 func (s *Slice) Virtual() bool { return s.N > 0 || s.CapN > 0 }
 
-// Len reports the slice's logical length — N for a virtual slice whose
-// elements were never materialized, len(Elems) otherwise.
+// Len reports the slice's length: N for a [Slice.Virtual] slice,
+// len(Elems) otherwise.
 func (s *Slice) Len() int64 {
 	if s.Virtual() {
 		return s.N
@@ -1256,7 +1307,7 @@ func (s *Slice) Len() int64 {
 	return int64(len(s.Elems))
 }
 
-// Cap reports the slice's logical capacity — CapN for a virtual slice,
+// Cap reports the slice's capacity: CapN for a [Slice.Virtual] slice,
 // cap(Elems) otherwise.
 func (s *Slice) Cap() int64 {
 	if s.Virtual() {
@@ -1265,18 +1316,16 @@ func (s *Slice) Cap() int64 {
 	return int64(cap(s.Elems))
 }
 
-// Spread wraps the operand of a trailing `xs...` call argument when the
-// slice is virtual: it cannot expand into one argument per element
-// (the count is astronomical), so it rides to the callee as a single
-// lazy value. append and variadic-parameter binding expand the logical
-// length; every other callee traps on the marker rather than answering
+// Spread is the single argument passed for a trailing `xs...` when xs is
+// a [Slice.Virtual] slice, which cannot expand into one argument per
+// element. append and variadic-parameter binding expand it to the
+// logical length; every other callee fails on it rather than answering
 // wrong.
 type Spread struct{ S *Slice }
 
 // IsZeroSizeValue reports whether a value's type occupies no bytes — an
-// empty struct, a [0]T array, or a composite of only zero-size fields.
-// Go stores all such values at the same address (runtime.zerobase), and
-// make([]T, n) on a zero-size element allocates 0 bytes for any n.
+// empty struct, a [0]T array, or a struct of only zero-size fields. Go
+// stores all such values at the same address.
 func IsZeroSizeValue(v Value) bool {
 	switch x := v.(type) {
 	case *Named:
@@ -1308,7 +1357,11 @@ func IsZeroSizeValue(v Value) bool {
 	return false
 }
 
-// Map is a Go map value (keys must be comparable basics for now).
+// Map is a map value. Pairs is keyed by the [CanonicalKey] of each script
+// key; Order and Keys hold the script key and canonical key of each entry
+// in insertion order. Modify it through [Map.Insert], [Map.Delete] and
+// [Map.Clear] to keep the three in sync, and iterate with [Map.Len] and
+// [Map.At].
 type Map struct {
 	Pairs map[Value]Value
 	Order []Value // insertion order for stable-ish range
@@ -1323,44 +1376,40 @@ func (m *Map) Len() int {
 	return len(m.Order)
 }
 
-// At returns the i-th pair in insertion order — the key as written at
-// insert plus its current value.
+// At returns the i-th entry in insertion order: the script key and its
+// current value.
 func (m *Map) At(i int) (Value, Value) {
 	return m.Order[i], m.Pairs[m.Keys[i]]
 }
 
-// Get reports the value stored under k's canonical key. Raw-key lookup
-// only: callers already holding a canonical key (iterating Pairs) read
-// the table directly — re-canonicalizing a canonical key (a NaN nonce)
-// never reconstructs it.
+// Get looks up the script key k. A NaN key is never found. To look up a
+// key that is already canonical (from Pairs or [Map.SnapshotKeys]), use
+// [Map.LookupCanonical].
 func (m *Map) Get(k Value) (Value, bool) {
 	v, ok := m.Pairs[CanonicalKey(k)]
 	return v, ok
 }
 
-// SnapshotKeys copies the map's iteration state — the display keys as
-// written at insert plus the canonical key each hashes under — for a
-// new iterator. The canonical copy matters: a NaN key's canonical form
-// is a fresh nonce on every CanonicalKey call, so probing Pairs by the
-// stored key (LookupCanonical) reports live presence where Get on the
-// display key would report every NaN entry as deleted.
+// SnapshotKeys copies the script keys and their canonical keys, in
+// insertion order, for iterating while the map changes. Check whether an
+// entry is still present with [Map.LookupCanonical] on the canonical
+// key; [Map.Get] on a NaN script key would never find it.
 func (m *Map) SnapshotKeys() (display, canonical []Value) {
 	return append([]Value(nil), m.Order...), append([]Value(nil), m.Keys...)
 }
 
-// LookupCanonical reads the pair stored under a canonical key — one
-// from SnapshotKeys or iterating Pairs directly. Raw keys must go
-// through Get: re-canonicalizing a canonical key never reconstructs it.
+// LookupCanonical looks up a canonical key taken from Pairs or
+// [Map.SnapshotKeys]. Look up script keys with [Map.Get].
 func (m *Map) LookupCanonical(ck Value) (Value, bool) {
 	v, ok := m.Pairs[ck]
 	return v, ok
 }
 
-// Insert stores v under k's canonical key, appending k to the insertion
-// order only when the key is new. Keeping canonicalization and the
-// order/keys append in one place is what makes the NaN-nonce key policy
-// hold at every write site.
+// Insert stores v under the script key k; a new key is appended to the
+// insertion order. A NaN key always adds a new entry.
 func (m *Map) Insert(k, v Value) {
+	// Keeping canonicalization and the order/keys append in one place is
+	// what makes the NaN-nonce key policy hold at every write site.
 	ck := CanonicalKey(k)
 	if m.Pairs == nil {
 		m.Pairs = map[Value]Value{}
@@ -1372,12 +1421,11 @@ func (m *Map) Insert(k, v Value) {
 	m.Pairs[ck] = v
 }
 
-// Delete drops k's canonical key and its insertion-order slot — a stale
-// order entry would render and range as `k:<nil>`. The canonical key
-// stored per slot tells which one to drop; a NaN slot's stored nonce can
-// never be recomputed, matching Go's unreachable-NaN-key semantics.
-// Reports whether the key was present.
+// Delete removes the script key k and reports whether it was present. A
+// NaN key is never present, as in Go.
 func (m *Map) Delete(k Value) bool {
+	// The canonical key stored per slot tells which order slot to drop —
+	// a stale order entry would render and range as `k:<nil>`.
 	ck := CanonicalKey(k)
 	if _, ok := m.Pairs[ck]; !ok {
 		return false
@@ -1393,17 +1441,16 @@ func (m *Map) Delete(k Value) bool {
 	return true
 }
 
-// Clear drops every pair and order slot.
+// Clear removes every entry.
 func (m *Map) Clear() {
 	m.Pairs = map[Value]Value{}
 	m.Order = nil
 	m.Keys = nil
 }
 
-// Chan is a channel value backed by a real host channel: sends and
-// receives block exactly as in Go, capacity is honored, and close wakes
-// every parked receiver. Blocking operations also watch the owning
-// process's done channel so a dead process releases parked goroutines.
+// Chan is a channel value backed by a Go channel of [Value]: sends and
+// receives block as in Go, capacity is honored, and close wakes every
+// blocked receiver.
 type Chan struct {
 	C chan Value
 	// Typ is the declared channel type when one is known (make or a
@@ -1411,10 +1458,10 @@ type Chan struct {
 	Typ *TypeDef
 }
 
-// SelArm is one prepared select case, built by OpSelArm on entry to a
-// select: the reflect.SelectCase to poll plus the receive-bind shape
-// (NRecv) or send marker, and the channel's element typedef for
-// closed-receive zero values.
+// SelArm is one case of a select statement being executed: the
+// reflect.SelectCase to poll, whether it sends, how many values a receive
+// binds (NRecv), and the channel's element typedef for the zero value a
+// closed channel yields.
 type SelArm struct {
 	Case  reflect.SelectCase
 	Send  bool
@@ -1431,10 +1478,11 @@ type SelArm struct {
 	WakeChan uintptr
 }
 
-// Task is the handle of one spawned goroutine: Done closes when its call
-// ends — normally, by panic (Err), or by proc exit — and Wait reports
-// how it finished. Parent chains mirror the spawn tree so callers can
-// recognize when waiting would deadlock (dependency cycles).
+// Task is the handle of one script goroutine, returned by
+// [VMCaller.Spawn] and [VMCaller.Task]. Done closes when its call ends —
+// normally, by panic (Err), or by process exit (Aborted) — and
+// [Task.Wait] reports how it finished. Parent links follow the spawn
+// tree so callers can detect that waiting would deadlock.
 type Task struct {
 	Done    chan struct{}
 	Err     error
@@ -1445,21 +1493,27 @@ type Task struct {
 	Result Value
 }
 
-// Finish records the task's outcome and releases waiters. Called once.
+// Finish records the task's outcome and releases waiters. Call it once.
 func (t *Task) Finish(err error, aborted bool) {
 	t.Err = err
 	t.Aborted = aborted
 	close(t.Done)
 }
 
-// Wait blocks until the task ends and reports its call's error (the
-// process-exit sentinel for aborted tasks).
+// Wait blocks until the task ends and returns its Err.
 func (t *Task) Wait() error {
 	<-t.Done
 	return t.Err
 }
 
-// TypeDef is a runtime type descriptor for a named type.
+// TypeDef describes a type at run time: a declared type, a predeclared
+// basic type ([BasicTypedef]), or an anonymous composite such as []int
+// (Name empty, shape in Anon). Typedefs of package-level types come from
+// [Package.Member]; [VMCaller.TypeOf] and [SpecialContext.ResolveType]
+// produce them as well. Typedefs are values themselves, used as type
+// arguments and as the callee of a conversion. Compare them with
+// [TypIdentical], build values with [Zero] and [Tag], and print them
+// with [DisplayName].
 type TypeDef struct {
 	Pkg     *Package
 	Name    string
@@ -1507,7 +1561,7 @@ type TypeDef struct {
 	// HostNew, when set, constructs the zero of this type as a host Go
 	// value (sync.Mutex, sync.WaitGroup, ...): Zero returns a *GoValue
 	// instead of a *Struct so member access dispatches through the host
-	// method set. Set only on bound intrinsics' typedefs.
+	// method set. Set only on typedefs of bound host packages.
 	HostNew func() any
 
 	// HostScalar, when set, marks a bound named basic whose payload is a
@@ -1562,17 +1616,20 @@ type TypeDef struct {
 	hostType atomic.Value
 }
 
-// CachedFieldTypes returns the field typedefs stored by SetFieldTypes.
+// CachedFieldTypes returns the field typedefs stored by
+// [TypeDef.SetFieldTypes]; ok is false when none were stored.
 func (td *TypeDef) CachedFieldTypes() ([]*TypeDef, bool) {
 	fts, ok := td.fieldTypes.Load().([]*TypeDef)
 	return fts, ok
 }
 
 // SetFieldTypes caches td's resolved field typedefs. They depend only on
-// td's own declaration context, so every reader of td can share them.
+// td's own declaration context, so every reader of td can share them. A
+// copy of td whose context differs must call [TypeDef.ResetCaches].
 func (td *TypeDef) SetFieldTypes(fts []*TypeDef) { td.fieldTypes.Store(fts) }
 
-// CachedIfaceReqs returns the requirement names stored by SetIfaceReqs.
+// CachedIfaceReqs returns the requirement names stored by
+// [TypeDef.SetIfaceReqs]; ok is false when none were stored.
 func (td *TypeDef) CachedIfaceReqs() (map[string]bool, bool) {
 	reqs, ok := td.ifaceReqs.Load().(map[string]bool)
 	return reqs, ok
@@ -1583,20 +1640,21 @@ func (td *TypeDef) CachedIfaceReqs() (map[string]bool, bool) {
 // context; callers must treat the shared map as read-only.
 func (td *TypeDef) SetIfaceReqs(reqs map[string]bool) { td.ifaceReqs.Store(reqs) }
 
-// CachedIfaceSigs returns the signature shells stored by SetIfaceSigs.
+// CachedIfaceSigs returns the signature shells stored by
+// [TypeDef.SetIfaceSigs]; ok is false when none were stored.
 func (td *TypeDef) CachedIfaceSigs() (map[string]*Function, bool) {
 	sigs, ok := td.ifaceSigs.Load().(map[string]*Function)
 	return sigs, ok
 }
 
-// SetIfaceSigs caches an interface typedef's signature shells (nil
-// when it declares none). Stable shell pointers also let SigMemo key
-// signature comparisons; callers must treat the map as read-only.
+// SetIfaceSigs caches an interface typedef's method signatures, as
+// [Function] values without bodies (nil when it declares none). Callers
+// must treat the map as read-only. Returning the same Functions each time
+// lets [SigMemo] remember comparisons against them.
 func (td *TypeDef) SetIfaceSigs(sigs map[string]*Function) { td.ifaceSigs.Store(sigs) }
 
-// HostType returns reflect.TypeOf(td.HostNew()), cached per typedef —
-// the constructor's native type never changes, while reaching it
-// through HostNew allocates a fresh zero value on every comparison.
+// HostType returns reflect.TypeOf(td.HostNew()) without allocating a new
+// zero value on every call. td.HostNew must be set.
 func (td *TypeDef) HostType() reflect.Type {
 	if rt, ok := td.hostType.Load().(reflect.Type); ok {
 		return rt
@@ -1608,8 +1666,9 @@ func (td *TypeDef) HostType() reflect.Type {
 	return rt
 }
 
-// ResetCaches drops the lazily computed caches — for a shallow copy
-// whose resolution context differs from the original's.
+// ResetCaches drops the cached field types, interface requirements and
+// host type. Call it on a shallow copy whose Binds, Pkg, File or
+// LocalTypes differ from the original's.
 func (td *TypeDef) ResetCaches() {
 	td.fieldTypes = atomic.Value{}
 	td.ifaceReqs = atomic.Value{}
@@ -1617,7 +1676,9 @@ func (td *TypeDef) ResetCaches() {
 	td.hostType = atomic.Value{}
 }
 
-// TypeKind classifies a named type's underlying shape.
+// TypeKind classifies a [TypeDef] by its underlying type. Predeclared
+// basic types and types defined over them are [KindNamedBasic]; arrays
+// are [KindSlice] (see [ArrayTypedef]).
 type TypeKind uint8
 
 const (
@@ -1632,13 +1693,15 @@ const (
 	KindPointer // *T — a named or anonymous pointer type
 )
 
-// Struct is an instance of a KindStruct TypeDef.
+// Struct is a struct value; Fields holds one value per name in
+// Def.Fields, in the same order. Fields of a [Zero] struct are [NIL].
 type Struct struct {
 	Def    *TypeDef
 	Fields []Value
 }
 
-// BoundMethod binds a receiver to a function.
+// BoundMethod is a method value `x.M`: the method Fn bound to the
+// receiver Recv.
 type BoundMethod struct {
 	Recv Value // *Cell for pointer receivers, plain Value otherwise
 	Fn   *Function
@@ -1650,7 +1713,14 @@ type BoundMethod struct {
 	Direct bool
 }
 
-// BuiltinFunc is a host-native function (len, println, host intrinsics).
+// BuiltinFunc is a function implemented in Go: a predeclared function
+// such as len, a member of a bound host package, or a function wrapped by
+// [github.com/podhmo/minigo.WrapFunc]. Fn receives the arguments as
+// script values and returns one [Value], a [*Tuple] for several results.
+// An error returned from Fn stops the script with a [Trap] that script
+// code cannot recover; to raise a recoverable script panic, panic with a
+// [*Panic] such as [RuntimePanic]. Use the [VMCaller] to call back into
+// script code.
 type BuiltinFunc struct {
 	Name string
 	Fn   func(vm VMCaller, args []Value) (Value, error)
@@ -1673,16 +1743,14 @@ type BuiltinFunc struct {
 	// SyncCallbacks declares that Fn calls back into the VM only
 	// synchronously — on the calling goroutine, before Fn returns —
 	// and never retains the VMCaller (no stored callbacks, iterators or
-	// goroutines). The VM then hands Fn a caller that skips the
-	// cross-goroutine check every Call otherwise pays for.
+	// goroutines). The VM can then skip its cross-goroutine check.
 	SyncCallbacks bool
 }
 
-// SmallIntOf reads a host numeric that fits the int64 domain — named
-// integer kinds like reflect.Kind travel as GoValue and need unwrapping
-// before arithmetic/comparison (full-width uint64 stays boxed instead).
-// Host scalars whose payload is a named int kind (time.Duration) read
-// through reflect so a raw Duration behaves as its int64 nanoseconds.
+// SmallIntOf converts a host value of any integer kind, including named
+// ones like time.Duration or reflect.Kind, to int64. ok is false for
+// non-integers and for unsigned values above math.MaxInt64; uint64 is
+// never converted.
 func SmallIntOf(x any) (int64, bool) {
 	rv := reflect.ValueOf(x)
 	switch rv.Kind() {
@@ -1696,9 +1764,12 @@ func SmallIntOf(x any) (int64, bool) {
 	return 0, false
 }
 
-// VMCaller is the piece of the VM builtins need (kept narrow to avoid a
-// runtime->vm dependency).
+// VMCaller is the interpreter as seen by a [BuiltinFunc]: it calls script
+// functions and answers questions about types that only the running
+// engine can resolve.
 type VMCaller interface {
+	// Call calls a callable script value — a function, closure, method
+	// value, builtin, or a typedef (a conversion).
 	Call(fn Value, args []Value) (Value, error)
 	// Recover implements the recover() builtin: it returns the in-flight
 	// panic value when called directly by a deferred function, else nil.
@@ -1741,52 +1812,53 @@ type VMCaller interface {
 	// Copy returns a copy of v following Go assignment semantics
 	// (structs copy, slices/maps/pointers share) — used by new(expr).
 	Copy(x Value) Value
-	// Spawn runs fn(args) on a new goroutine sharing the caller's
-	// process — the machinery of the `go` statement, exposed so host
-	// code (task runners) can fan out work the same way. A non-procExit
-	// failure fails the whole process.
+	// Spawn runs fn(args) on a new script goroutine, as the `go`
+	// statement does. A panic in it fails the whole script, unless the
+	// script is already exiting.
 	Spawn(fn Value, args []Value) *Task
 	// Task returns the handle of the calling goroutine — nil on the
-	// root goroutine — for ancestry-aware cycle checks.
+	// root goroutine.
 	Task() *Task
-	// ArrayLenOf reports the element count of an array typedef — an
-	// *ast.ArrayType that kept its length ([3]int, [N]int, [N*2]int);
-	// ok=false for non-array shapes. Lets len()/cap() on a nil *[N]T
-	// constant-fold like Go without a live frame.
+	// ArrayLenOf reports the length of an array typedef, evaluating a
+	// constant length expression ([3]int, [N]int, [N*2]int); ok=false
+	// for non-array types.
 	ArrayLenOf(td *TypeDef) (n int64, ok bool)
 	// ResolveType resolves a type expression in the context of typedef
-	// `from` (its package scope, file imports and generic binds) — the
-	// engine's declared-type resolution, exposed so host intrinsics can
-	// walk declared shapes (embedded fields, promoted members) instead
-	// of re-implementing name resolution.
+	// `from` (its package scope, file imports and generic binds), for
+	// example an embedded field's type.
 	ResolveType(from *TypeDef, x ast.Expr) (*TypeDef, error)
 	// FieldTypes returns the declared typedef of each struct field,
-	// parallel to td.Fields (unresolvable declarations leave hole
-	// entries). Lets host intrinsics consult field types the way field
-	// stores do.
+	// parallel to td.Fields; an entry is nil when its declaration does
+	// not resolve.
 	FieldTypes(td *TypeDef) ([]*TypeDef, error)
 	// ElemOf returns the element typedef of a container typedef
 	// ([]T->T, map[K]V->V, chan T->T) or the pointee typedef of a
 	// pointer typedef — named pointer types included.
 	ElemOf(td *TypeDef) (*TypeDef, error)
-	// CallerPCs returns opaque uintptr handles for the call stack —
+	// CallerPCs returns opaque handles for the script call stack —
 	// live frames plus frames already unwound by the in-flight panic,
-	// top-first like runtime.Callers.
+	// innermost first like runtime.Callers. Resolve them with
+	// CallerFrame.
 	CallerPCs() []uintptr
 	// CallerFrame resolves a handle from CallerPCs to its call site.
 	CallerFrame(pc uintptr) (site CallSite, ok bool)
 }
 
-// CallSite is one call-stack entry for runtime.Callers: the function's
-// Go-style symbol name and the source position it is executing.
+// CallSite is one script call-stack entry, from [VMCaller.CallerFrame]:
+// the function's Go-style symbol name (as runtime.Func.Name reports it)
+// and the source position it is executing.
 type CallSite struct {
 	Name string
 	File string
 	Line int
 }
 
-// Function is a compiled-or-compilable function. Chunk is produced lazily
-// on first call via Compile.
+// Function is a script function or method declared in source; it is
+// compiled on first call ([Function.EnsureCompiled]). A function literal
+// that captures variables is a [Closure] over a Function, and a method
+// value is a [BoundMethod].
+// A generic function is instantiated with [Function.WithBinds]. Obtain
+// one from [Package.Member] or [TypeDef.Methods].
 type Function struct {
 	Pkg     *Package
 	File    *syntax.File
@@ -1800,9 +1872,8 @@ type Function struct {
 	Binds        map[string]Value // compile-time bindings: type params -> TypeDef args
 
 	// OuterTParams names the enclosing generic instantiation's type
-	// parameters a function literal closes over — set at OpMakeClosure
-	// when the enclosing function's binds merge into the proto, so a
-	// local type declared in the body still differs per instantiation.
+	// parameters a function literal closes over, so a local type
+	// declared in the body still differs per instantiation.
 	OuterTParams []string
 
 	Compile func(*Function) error // injected by the engine
@@ -1811,7 +1882,9 @@ type Function struct {
 	Chunk   *bytecode.Chunk
 }
 
-// EnsureCompiled compiles the function on first use.
+// EnsureCompiled compiles the function once, through Compile, and
+// returns the compile error; later calls return the same error. A nil
+// Compile leaves Chunk as it is.
 func (f *Function) EnsureCompiled() error {
 	f.once.Do(func() {
 		if f.Compile != nil {
@@ -1821,10 +1894,11 @@ func (f *Function) EnsureCompiled() error {
 	return f.cerr
 }
 
-// WithBinds returns a copy of f carrying binds. The copy shares f's
-// compiled chunk (compiling f first if needed) and never recompiles —
-// a field-wise copy instead of `*f` keeps the sync.Once uncopied.
+// WithBinds returns a copy of f with the type-parameter bindings binds
+// (type parameter name to [*TypeDef]). The copy shares f's compiled code,
+// compiling f first if needed, and never recompiles.
 func (f *Function) WithBinds(binds map[string]Value) *Function {
+	// A field-wise copy instead of `*f` keeps the sync.Once uncopied.
 	f.EnsureCompiled()
 	cp := &Function{
 		Pkg:          f.Pkg,
@@ -1845,9 +1919,8 @@ func (f *Function) WithBinds(binds map[string]Value) *Function {
 	return cp
 }
 
-// OuterParamNames lists the type-parameter names visible from this
-// function's frame in declaration order — the enclosing instantiation's
-// params first (closed over by literals), then the function's own.
+// OuterParamNames lists the type-parameter names visible inside f: those
+// of the enclosing generic function (OuterTParams) first, then f's own.
 func (f *Function) OuterParamNames() []string {
 	if len(f.OuterTParams) == 0 {
 		return f.TParams
@@ -1858,13 +1931,14 @@ func (f *Function) OuterParamNames() []string {
 	return names
 }
 
-// Closure is a function value with captured upvalue cells.
+// Closure is a function literal value: Fn plus the [Cell] of each
+// variable it captures.
 type Closure struct {
 	Fn     *Function
 	Upvals []*Cell
 }
 
-// Iterator is the state of an in-progress range loop.
+// Iterator is the state of a range loop in progress.
 type Iterator struct {
 	Kind   byte // 's' slice, 'm' map, 'i' int, 'x' string, 'c' chan, 'f' func
 	Elems  []Value
@@ -1903,16 +1977,19 @@ type Iterator struct {
 	Exited  bool
 }
 
-// GoValue wraps a host reflect value at the FFI boundary (implemented in
-// ffi.go; declared here as the box used by Globals/Register).
+// GoValue boxes a Go value V that has no script representation of its
+// own, such as a host object or a complex number. Scripts can call V's
+// methods.
+// [github.com/podhmo/minigo.ValueOf] creates one from a Go value;
+// [DeepUnwrap] returns V.
 type GoValue struct{ V any }
 
-// UConst is a lazily materialized untyped constant: a rune literal
-// (default rune, not int), an integer that does not fit int64, a float
-// literal overflowing float64, or a complex constant. Const cells hold
-// it lazily; conversion, assignment, arithmetic and call boundaries
-// materialize it to the constant's default type — matching Go, where
-// `const B = 1<<100` compiles while `var x = 1<<100` is rejected.
+// UConst is an untyped constant kept at arbitrary precision: a rune
+// literal (default type rune, not int), an integer that does not fit
+// int64, a float literal overflowing float64, or a complex constant.
+// Conversion, assignment, arithmetic and calls convert it to a concrete
+// value as Go would, so `const B = 1<<100` works while `var x = 1<<100`
+// fails. [UConstNative] converts it to its default type.
 type UConst struct {
 	V    constant.Value
 	Rune bool // Kind()==Int but the literal/expression is rune-flavored
@@ -1928,8 +2005,8 @@ type constMemo struct {
 	v   Value
 }
 
-// Memo returns the value SetMemo stored under key. Callers key by what
-// determines the conversion (the operand's typedef, or its scalar
+// Memo returns the value [UConst.SetMemo] stored under key. Callers key
+// by what determines the conversion (the operand's typedef, or its scalar
 // kind) and must only store immutable values: hits share one value.
 func (u *UConst) Memo(key any) (Value, bool) {
 	if m := u.memo.Load(); m != nil && m.key == key {
@@ -1938,11 +2015,12 @@ func (u *UConst) Memo(key any) (Value, bool) {
 	return nil, false
 }
 
-// SetMemo replaces the single memo entry; constants used against
-// several operand types just re-convert on a miss.
+// SetMemo caches v under key, replacing any previous entry: only the
+// most recent key is remembered.
 func (u *UConst) SetMemo(key any, v Value) { u.memo.Store(&constMemo{key: key, v: v}) }
 
-// DefaultName spells the Go type an untyped constant defaults to.
+// DefaultName returns the name of the constant's default type: "bool",
+// "string", "int", "int32" (for a rune), "float64" or "complex128".
 func (u *UConst) DefaultName() string {
 	switch u.V.Kind() {
 	case constant.Bool:
@@ -1962,16 +2040,19 @@ func (u *UConst) DefaultName() string {
 	return "unknown"
 }
 
-// SymbolID is a canonical symbol address used for special-form dispatch:
-// the defining package's import path plus the member name.
+// SymbolID names a package-level declaration by the import path of the
+// package that declares it, whatever alias the calling file imports it
+// under. It is the key of a special form: see [SpecialFunc] and
+// [SpecialContext.ResolveSymbol].
 type SymbolID struct {
 	PackagePath string
 	Name        string
 }
 
-// QuotedCall is a special-form call site: the call and its arguments are
-// kept as AST together with the caller's scope (name -> slot maps), so a
-// handler can evaluate or inspect them on demand — partial evaluation.
+// QuotedCall is the call a [SpecialFunc] handles: Call is the call
+// expression with its unevaluated arguments, in File. Evaluate parts of it
+// on demand with [SpecialContext.Eval] and related methods; Locals and
+// Upvals record the caller's variables they can see.
 type QuotedCall struct {
 	Call   *ast.CallExpr
 	File   *syntax.File
@@ -1979,13 +2060,16 @@ type QuotedCall struct {
 	Upvals map[string]int // visible upvalue name -> caller upvalue index
 }
 
-// SpecialFunc is a special-form handler. It fires only when the VM reaches
-// the SPECIAL_CALL site; arguments arrive quoted, not evaluated.
+// SpecialFunc handles calls to a special form, registered with
+// [github.com/podhmo/minigo.Engine.RegisterSpecial]. It runs each time
+// execution reaches such a call, receiving the call unevaluated as a
+// [QuotedCall]; its result is the call's value. A returned error stops
+// the script with a [Trap] that wraps it.
 type SpecialFunc func(ctx SpecialContext, call *QuotedCall) (Value, error)
 
-// SpecialContext is the narrow interpreter surface handed to special-form
-// handlers: position/scope access plus on-demand evaluation of quoted
-// expressions inside the caller's frame.
+// SpecialContext is the interpreter as seen by a [SpecialFunc]: source
+// positions and on-demand evaluation of the quoted expressions in the
+// caller's scope.
 type SpecialContext interface {
 	// Position resolves an AST node's source position in the caller's file set.
 	Position(n ast.Node) token.Position
@@ -2078,7 +2162,12 @@ func foldRepeatedFrames(frames []string) []string {
 	return out
 }
 
-// Panic is a script-level panic value; catchable by recover().
+// Panic is a script panic in flight, which script code can recover().
+// Value is the argument to panic, or a payload such as [*RuntimeError]
+// for a run-time error. An unrecovered panic reaches the host as the
+// error of [github.com/podhmo/minigo.Engine.Call] (find it with
+// errors.As); its Error method prints it as Go would, with a traceback. A [BuiltinFunc] raises one
+// by calling panic with it (see [RuntimePanic] and [PlainPanic]).
 type Panic struct {
 	Value   Value
 	Frames  []string // "func at file:line" entries collected while unwinding
@@ -2190,11 +2279,11 @@ func (pf *panicPrintFatal) typeName(c VMCaller) string {
 	return fmt.Sprintf("%T", pf.inner.Value)
 }
 
-// RuntimeError is the payload of a runtime panic (bounds, nil deref,
-// makeslice, ...): recover() yields it as an error value the way Go's
-// *runtime.Error does — `err.(error)` and `.Error()` work on it.
-// Kind carries the gc runtime type name for the panic-while-printing
-// fatal line ("boundsError"); empty names the default errorString.
+// RuntimeError is the [Panic] payload of a run-time error (index out of
+// range, nil dereference, ...): a script's recover() sees it as an error
+// value implementing Go's runtime.Error. Kind is the name of the Go
+// runtime type it stands for, such as "boundsError"; empty means
+// "errorString". Create one with [RuntimePanic].
 type RuntimeError struct {
 	Msg  string
 	Kind string
@@ -2206,8 +2295,8 @@ func (e *RuntimeError) Error() string { return "runtime error: " + e.Msg }
 // requires both Error and RuntimeError).
 func (*RuntimeError) RuntimeError() {}
 
-// PanicNilError is the payload recover() sees for panic(nil), matching
-// the *runtime.PanicNilError Go produces since 1.21.
+// PanicNilError is the [Panic] payload recover() sees for panic(nil),
+// matching Go's *runtime.PanicNilError.
 type PanicNilError struct{}
 
 func (*PanicNilError) Error() string {
@@ -2317,8 +2406,11 @@ func panicScalar(v Value) any {
 	return v
 }
 
-// Trap is a VM-level failure (unsupported construct, invalid operation).
-// It bypasses script recover() and unwinds to the engine boundary.
+// Trap is a failure the script cannot recover(): an unsupported
+// construct, an invalid operation, or an error returned by a
+// [BuiltinFunc] or [SpecialFunc]. It unwinds to the host as the error of
+// [github.com/podhmo/minigo.Engine.Call]; Err, reachable with errors.As,
+// is the host error it was raised from.
 type Trap struct {
 	Pos    token.Pos
 	Reason string
@@ -2340,9 +2432,9 @@ func (t *Trap) Error() string {
 	return fmt.Sprintf("runtime trap: %s\nTraceback (most recent call first):\n%s", t.Reason, renderFrames(t.Frames))
 }
 
-// StructFieldTags reads the raw tag literals of a struct type (`name
-// string `json:"name"“) into a field-name → tag map. Callers store it
-// on TypeDef.FTags so tag-aware hosts (encoding/json) can look keys up.
+// StructFieldTags returns the unquoted tag of each field of st that has
+// one, keyed by field name (an embedded field by its type name), or nil
+// when no field has a tag. It is the form [TypeDef.FTags] holds.
 func StructFieldTags(st *ast.StructType) map[string]string {
 	var out map[string]string
 	for _, f := range st.Fields.List {
@@ -2369,13 +2461,12 @@ func StructFieldTags(st *ast.StructType) map[string]string {
 	return out
 }
 
-// IfaceMember selects a member through the interface lens Go's implicit
-// assertions apply: pointer-receiver methods are absent from a value's
-// method set, so satisfaction probes (fmt's Stringer check, host-iface
-// adapters like Locker, sort.Interface, io.Reader/Writer, error Unwrap)
-// skip a method a bare value cannot offer. When the engine offers no
-// method set — or reports it unsure — selection falls back to Member's
-// existence check.
+// IfaceMember selects the member name of v only if v's method set
+// contains it, as an interface check would: a pointer-receiver method is
+// absent from a non-pointer value's set. Use it to ask whether v
+// implements an interface (a Stringer, an io.Reader) before calling the
+// method. When the method set is unknown or incomplete
+// ([VMCaller.MethodSetOf]), it falls back to [VMCaller.Member].
 func IfaceMember(c VMCaller, v Value, name string) (Value, bool) {
 	if set, unsure := c.MethodSetOf(v); set != nil && !set[name] && !unsure {
 		return nil, false
@@ -2416,19 +2507,18 @@ func ifaceCallStringFatal(c VMCaller, v Value, name string) (s string, ok bool, 
 	return s, ok, nil
 }
 
-// IfaceCallStringPanic is ifaceCallStringFatal exported for fmt's
-// catchPanic markers: the third return carries the script panic the
-// method raised — nil for an absent method, a shape mismatch, or an
-// ordinary call failure.
+// IfaceCallStringPanic is [IfaceCallString] that also returns the script
+// panic the method raised, so the caller can report it as fmt does
+// (`%!v(PANIC=String method: ...)`). The panic is nil for an absent
+// method, a signature mismatch, or an ordinary call failure.
 func IfaceCallStringPanic(c VMCaller, v Value, name string) (string, bool, *Panic) {
 	return ifaceCallStringFatal(c, v, name)
 }
 
-// PanicPrintString renders a panic payload the way gc's catchPanic
-// marker does — `%v` of printpanics' result (a script payload's
-// Error/String text wins like the probe order); when the payload's own
-// probe panicked, the fixed "panic while printing panic value" text
-// stands in for the fatal line.
+// PanicPrintString returns the text Go prints for p's value after
+// "panic: ", using the value's Error or String method when it has one.
+// If that method itself panics, the result is "panic while printing panic
+// value".
 func PanicPrintString(p *Panic) string {
 	if p == nil {
 		return "<nil>"
@@ -2440,16 +2530,12 @@ func PanicPrintString(p *Panic) string {
 	return fmt.Sprintf("%v", pv)
 }
 
-// IfaceCallString invokes a declared String()/Error()/GoString()-style
-// method through the engine when the value's method set offers one (a
-// pointer receiver on a bare value does not count — Go prints the
-// struct instead) and the member is a method with the `func() string`
-// shape gc's interface probes require — a same-named method with a
-// different signature (`Error() any`) does not satisfy the interface,
-// so it must not be invoked at all. An absent method, a signature
-// mismatch, a call that fails, a panic crossing the engine boundary
-// (procExit while the process unwinds), or a non-string result all
-// report false.
+// IfaceCallString calls v's method name (String, Error, GoString, ...)
+// when v implements it as `func() string`, the way fmt detects a
+// Stringer: the method must be in v's method set (see [IfaceMember]) and
+// have exactly that signature. ok is false when the method is absent or
+// has another signature, when the call fails or panics, or when it
+// returns a non-string.
 func IfaceCallString(c VMCaller, v Value, name string) (s string, ok bool) {
 	defer func() {
 		if r := recover(); r != nil {

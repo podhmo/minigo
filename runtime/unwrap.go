@@ -2,12 +2,10 @@ package runtime
 
 import "fmt"
 
-// DeepUnwrap converts a script value to its host-side Go shape — the
-// recursive answer to "what did the script hand me?" for Engine.Call
-// results. Where Unwrap peels one Named tag, DeepUnwrap walks every
-// wrapper layer so nested values arrive unboxed too, and the result can
-// be fed back as a Call argument (host maps and slices re-box as the
-// anonymous script shapes on the way in).
+// DeepUnwrap converts a script value, such as a result of
+// [github.com/podhmo/minigo.Engine.Call], to plain Go values. Unlike
+// [Unwrap] it descends into containers and through pointers, and the
+// result can be passed back as a Call argument.
 //
 //	Tuple      → []any of unwrapped elements
 //	Slice      → []any of unwrapped elements (a virtual slice expands
@@ -20,17 +18,15 @@ import "fmt"
 //	UConst     → its materialized native value — a constant it cannot
 //	             represent (like 1<<100) stays a *UConst
 //	Spread     → the wrapped slice, unwrapped
-//	Cell/refs and Named → the underlying value first
+//	Cell/refs and Named → the value they point to or wrap, unwrapped
 //	nil and the nil-tag values (NIL, IfaceNil, TypedNil) → nil
 //
 // Everything else — functions, structs, channels, packages — passes
 // through as its runtime object.
 //
-// Cyclic values are legal (a script map can store itself through an
-// any slot): a container reachable through itself folds back to the
-// host container already being built for it, so the cycle arrives
-// intact instead of recursing until the host process overflows — the
-// same answer the deepHost marshal gives.
+// Cyclic and shared containers are preserved: a container reachable
+// twice converts to the same Go slice or map, so a script map that
+// stores itself yields a Go map that contains itself.
 func DeepUnwrap(v Value) any {
 	return deepUnwrap(v, NewWalk())
 }
@@ -88,12 +84,10 @@ func deepUnwrap(v Value, w *Walk) any {
 	return v
 }
 
-// ErrorOf unwraps a script-returned error slot — the `(T, error)`
-// result contract Engine.Call surfaces — where nil stays nil, a
-// nil-tagged interface result is a nil error, and a boxed host error
-// surfaces as the call's error. Anything else is a contract violation:
-// the slot's shape only carries nil or a host error, so an unexpected
-// shape reports the bug rather than silently degrading.
+// ErrorOf converts the error result of a script function to a Go error:
+// a nil interface gives nil and a [GoValue] holding an error gives that
+// error. Any other value gives an error describing the unexpected
+// result.
 func ErrorOf(v Value) error {
 	e := Unwrap(v)
 	if e == nil || e == NIL {
