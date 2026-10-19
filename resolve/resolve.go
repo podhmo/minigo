@@ -1,22 +1,13 @@
-// Package resolve maps import paths and directories to a package's
-// directory and build file list, without resolving the package's own
-// imports.
+// Package resolve locates Go source packages without following their imports.
 //
-// Start with [NewGoScanResolver]: its [GoScanResolver.Locate] and
-// [GoScanResolver.LocateDir] implement [Resolver] and return a
-// [PackageMeta]. [BuildConfig] picks the target platform and build tags,
-// and its AllowedRoots field limits which directories may be handed out
-// ([BuildConfig.CheckDir]). An import path that resolves to nothing
-// reports [ErrUnresolved].
+// [NewGoScanResolver] returns a [Resolver]: [GoScanResolver.Locate] and
+// [GoScanResolver.LocateDir] return a [PackageMeta] with the build file list.
+// [BuildConfig] selects files and restricts directories. Missing import paths
+// report [ErrUnresolved]. Install a resolver with
+// [github.com/podhmo/minigo.Engine.WithResolver].
 //
-// Lower-level helpers work without a resolver: [ReadPackageFiles] and
-// [FileScopeFiles] list the files of one directory, [ScanRepo] enumerates
-// every package under a root as [RepoPackage] values, and [ModuleLang],
-// [ModulePath] and [RequiredVersion] read the enclosing go.mod.
-//
-// [github.com/podhmo/minigo.Engine.WithResolver] installs a custom
-// [Resolver]; the engine indexes the located files with
-// [github.com/podhmo/minigo/index].
+// [ReadPackageFiles] and [FileScopeFiles] list one directory's source files;
+// [ScanRepo] enumerates packages across a tree.
 package resolve
 
 import (
