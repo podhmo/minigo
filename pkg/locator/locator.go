@@ -1,4 +1,13 @@
+// Package locator resolves import paths against a module's go.mod.
+//
+// Create a [Locator] with [New], then use [Locator.FindPackageDirFrom]
+// to locate an import or [Locator.PathToImport] for the reverse mapping.
+// [WithGoModuleResolver] adds GOROOT and module-cache lookup; [WithOverlay]
+// supplies in-memory go.mod contents. [ErrBrokenConfig] distinguishes an
+// invalid module graph from a missing package.
 package locator
+
+// Adapted from github.com/podhmo/go-scan/scanner; see pkg/SOURCE.md.
 
 import (
 	"bufio"
@@ -14,9 +23,8 @@ import (
 	"golang.org/x/mod/module"
 )
 
-// Overlay provides a way to replace the contents of a file with alternative
-// content. Vendored from github.com/podhmo/go-scan/scanner (Overlay is
-// map[string][]byte there; see pkg/SOURCE.md).
+// Overlay supplies replacement go.mod contents under the key "go.mod".
+// Pass it to [WithOverlay].
 type Overlay map[string][]byte
 
 // ReplaceDirective represents a single replace directive in a go.mod file.
@@ -187,11 +195,9 @@ func (l *Locator) FindPackageDirFrom(fromDir, importPath string) (string, error)
 	return l.resolveImport(importPath, 0)
 }
 
-// ErrBrokenConfig tags a module-graph failure that is a configuration
-// problem rather than a resolution miss — a replace cycle, or a
-// replace whose target cannot be spelled at all. Callers that mark
-// misses for soft lookups (resolve.ErrUnresolved) must keep these
-// loud: a "found but broken" graph is not a "names nothing" answer.
+// ErrBrokenConfig identifies invalid module graphs, including replace
+// cycles and invalid replacement targets. Such errors must not be treated
+// as missing packages.
 var ErrBrokenConfig = errors.New("locator: broken module configuration")
 
 // brokenConfig marks a module-graph failure for errors.Is without
