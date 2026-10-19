@@ -2,21 +2,11 @@
 // directory and build file list, without resolving the package's own
 // imports.
 //
-// Start with [NewGoScanResolver]: its [GoScanResolver.Locate] and
-// [GoScanResolver.LocateDir] implement [Resolver] and return a
-// [PackageMeta]. [BuildConfig] picks the target platform and build tags,
-// and its AllowedRoots field limits which directories may be handed out
-// ([BuildConfig.CheckDir]). An import path that resolves to nothing
-// reports [ErrUnresolved].
-//
-// Lower-level helpers work without a resolver: [ReadPackageFiles] and
-// [FileScopeFiles] list the files of one directory, [ScanRepo] enumerates
-// every package under a root as [RepoPackage] values, and [ModuleLang],
-// [ModulePath] and [RequiredVersion] read the enclosing go.mod.
-//
-// [github.com/podhmo/minigo.Engine.WithResolver] installs a custom
-// [Resolver]; the engine indexes the located files with
-// [github.com/podhmo/minigo/index].
+// Start with [NewGoScanResolver]. A [Resolver] locates a package either
+// by import path (Locate) or by directory (LocateDir), the latter for an
+// entry package that need not have an import path. [BuildConfig] picks
+// the target platform and build tags, and its AllowedRoots field limits
+// which directories may be handed out.
 package resolve
 
 import (
@@ -109,12 +99,12 @@ func resolveSymlinkNearest(path string) (string, error) {
 }
 
 // PackageMeta is a package's name and file list, read before any file is
-// fully parsed. A [Resolver] or [ReadPackageFiles] returns it.
+// fully parsed.
 type PackageMeta struct {
 	ImportPath string
 	Name       string // the package clause name (may differ from path basename)
 	Dir        string
-	GoFiles    []string // sorted, filtered by build constraints, cgo files skipped
+	GoFiles    []string // sorted paths (absolute when Dir is), filtered by build constraints, cgo files skipped
 	Standard   bool     // inside GOROOT
 	ModulePath string   // module path when known, "" otherwise
 	// Lang is the `go` directive of the module enclosing Dir (raw text like
@@ -126,7 +116,8 @@ type PackageMeta struct {
 // ErrUnresolved matches, under errors.Is, an error from
 // [GoScanResolver.Locate] when no directory is found for the import path;
 // the error message is not changed. A package that is found but cannot be
-// read (no buildable Go files, a broken replace directive) does not match, so callers can tell "nothing there" from "there but broken".
+// read (no buildable Go files, a broken replace directive) does not
+// match, so callers can tell "nothing there" from "there but broken".
 // A missing directory passed to [GoScanResolver.LocateDir] matches
 // fs.ErrNotExist instead.
 var ErrUnresolved = errors.New("resolve: no such package")
@@ -155,7 +146,6 @@ func markUnresolved(err error) error {
 
 // Resolver locates a package. Implementations must not resolve the
 // package's own imports; the caller locates each import when it needs it.
-// [NewGoScanResolver] returns the default implementation.
 type Resolver interface {
 	// Locate resolves an import path (e.g. "fmt", "github.com/x/y").
 	// fromDir is the importing package's directory, or "" when there is
@@ -169,7 +159,8 @@ type Resolver interface {
 // ReadPackageFiles lists the files of the package in dir as
 // importPath, without a [Resolver]. Files are filtered with go/build's
 // match rules for cfg (//go:build constraints, _GOOS/_GOARCH suffixes,
-// _test.go); files importing "C" are skipped, as cgo is not supported.
+// _test.go); use [FileScopeFiles] instead to keep files excluded by build
+// constraints. Files importing "C" are skipped, as cgo is not supported.
 // Name is the package clause most of the files declare. It reports an
 // error when go/build cannot read a candidate file, or when no buildable
 // file remains. ModulePath is left empty. cfg.AllowedRoots is not checked.
