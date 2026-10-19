@@ -1,4 +1,8 @@
-// Package internal contains the core logic for the convert-define tool.
+// Package internal executes convert-define definition scripts.
+//
+// Create a [Runner] with [NewRunner], then call [Runner.Run]. Read the
+// collected rules from [Runner.Info] and pass [Runner.TypeResolver] to the
+// generator. DSL errors are reported as [DefineError].
 package internal
 
 import (
@@ -23,13 +27,10 @@ import (
 const definePkgPath = "github.com/podhmo/minigo/examples/convert-define/define"
 const modelPkgPath = "github.com/podhmo/minigo/examples/convert-define/model"
 
-// Runner manages the execution of a minigo script for conversion definitions.
-// The engine is a minigo stack-VM interpreter; the define calls arrive as
-// quoted special-form calls, so the DSL file's body is inspected as AST,
-// never evaluated. Type information comes from the engine's own lazy
-// package loading (engine.Package) viewed through the inspect layer —
-// no separate scanner.
+// Runner executes definition scripts and collects rules in Info.
+// Create one with [NewRunner] and load a script with [Runner.Run].
 type Runner struct {
+	// Special forms inspect define calls as AST; the engine resolves types lazily.
 	engine *minigo.Engine
 	pkg    *runtime.Package // the loaded define file's package
 
