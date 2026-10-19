@@ -1,12 +1,8 @@
-// Package desc is a function-hook plugin: its Config() installs
-// DescField and DescDecl under the "descField"/"descDecl" keys, which
-// the walk calls — inside the same VM — for every description it
-// emits. No overrides.
+// Package desc filters extract-schema descriptions to remove leading Go names.
 //
-// The hook parameters stay `any` on the boundary (a static assertion
-// naming *inspect.Field would compare the func type nominally across
-// package instances and trap); the hook reads the field reference
-// through reflect instead — names, not type identity.
+// [Configure] registers [DescField] and [DescDecl] with the shared
+// [extschema.Config]. Filters accept inspect views as any; read their fields
+// through reflect rather than asserting concrete view types.
 package desc
 
 import (
