@@ -6,10 +6,10 @@
 // [OffsetOf] expose the same declared-type layout for unsafe.Sizeof,
 // unsafe.Alignof and unsafe.Offsetof.
 //
-// Scripts see reflect.Value as [RValue] and reflect.Type as [RType], along
-// with [StructField], [Method] and [MapIter]. Host code receives them boxed
-// in a [runtime.GoValue]; [RValue.Payload] gives what fmt should print for
-// a Value. An RValue belongs to one of two domains:
+// Scripts see reflect.Value as [RValue] and reflect.Type as [RType]. Host
+// code receives them boxed in a [runtime.GoValue]; [RValue.Payload] gives
+// what fmt should print for a Value. An RValue belongs to one of two
+// domains:
 //
 //   - script domain: it views a [runtime.Value] together with its settable
 //     location, so Set writes through to the script variable, field or
@@ -21,7 +21,7 @@
 // Types are interned: two RTypes for the same type are the same pointer,
 // so `v.Type() == t` works across both domains.
 //
-// NewAt, FuncOf, StructOf, MakeChan, Select, Swapper and VisibleFields
+// A few reflect functions, such as FuncOf and StructOf, are bound but
 // report an error when called.
 package minireflect
 
@@ -37,8 +37,13 @@ import (
 	"github.com/podhmo/minigo/runtime"
 )
 
-// Hooks carries the engine's type resolution into this package; pass it
-// to [Symbols], [SizeOf], [AlignOf] and [OffsetOf].
+// Hooks carries the engine's type resolution into this package.
+//
+// Any hook may be nil. A nil hook, or one that returns an error, counts as
+// no answer: the query that needed it degrades (kind Invalid, no element
+// type, no fields or methods) instead of failing. The exception is
+// ResolveType: [RType.In] and [RType.Out] on a script func type panic when
+// it is nil or fails.
 type Hooks struct {
 	// ElemOf resolves the element type of a pointer, slice, map, or
 	// chan typedef.
@@ -46,11 +51,14 @@ type Hooks struct {
 	// ResolveType resolves a type expression in a declaring type's
 	// context (used for map keys and anon element types).
 	ResolveType func(from *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, error)
-	// FieldTypes returns the declared field types of a struct typedef.
+	// FieldTypes returns the declared field types of a struct typedef,
+	// one per field in declaration order.
 	FieldTypes func(td *runtime.TypeDef) ([]*runtime.TypeDef, error)
 	// TypeMethods returns the method names of a typedef's method set.
+	// This package does not consult it.
 	TypeMethods func(td *runtime.TypeDef) (map[string]bool, error)
-	// IfaceReqs returns the required methods of an interface typedef.
+	// IfaceReqs returns the required methods of an interface typedef;
+	// RType.Implements uses it when comparing method signatures.
 	IfaceReqs func(td *runtime.TypeDef) (map[string]bool, error)
 	// Underlying resolves a typedef's underlying type.
 	Underlying func(td *runtime.TypeDef) (*runtime.TypeDef, error)
@@ -69,13 +77,20 @@ type Hooks struct {
 	TypeAlias func(rt reflect.Type) reflect.Type
 	// UnwrapHost converts a value to a host reflect.Value of type t
 	// where a call needs that exact type: the inverse of TypeAlias,
-	// turning a proxy back into the real value. Nil skips the conversion.
+	// turning a proxy back into the real value. It is consulted only
+	// after the ordinary conversions fail; returning false (or a nil
+	// hook) leaves that failure in place.
 	UnwrapHost func(v any, t reflect.Type) (reflect.Value, bool)
 }
 
 // Env is the state shared by the members one [Symbols] call returns:
 // the [Hooks] and the table that interns [RType] values. Symbols creates
 // it; callers do not use it directly.
+//
+// Named types intern by package-qualified name, for script and host types
+// alike, which is what makes RTypes compare equal across domains;
+// anonymous types intern by structure. Entries are never evicted, so a
+// type redeclared under the same name keeps its first RType.
 type Env struct {
 	h     Hooks
 	types sync.Map     // canonical key -> *RType

@@ -14,13 +14,11 @@ import (
 )
 
 // RType is minigo's reflect.Type, for either a script type or a host
-// type. Scripts get one from reflect.TypeOf, [RValue.Type] and the
-// methods below. RTypes are interned per engine, so two RTypes for the
-// same type are the same pointer and compare equal with ==.
+// type. RTypes are interned per engine, so two RTypes for the same type
+// are the same pointer and compare equal with ==.
 //
 // Unlike reflect.Type, the methods return pointers (*[StructField],
-// *[Method]), and the Go 1.26 iterators return a script function value
-// instead of an iter.Seq.
+// *[Method]).
 type RType struct {
 	e   *Env
 	key string
@@ -35,8 +33,8 @@ type RType struct {
 	alen    int
 }
 
-// StructField is minigo's reflect.StructField, returned by
-// [RType.Field] and its siblings. Tag is a real reflect.StructTag.
+// StructField is minigo's reflect.StructField. Tag is a real
+// reflect.StructTag.
 type StructField struct {
 	Name      string
 	PkgPath   string
@@ -49,9 +47,8 @@ type StructField struct {
 
 func (f *StructField) IsExported() bool { return f.PkgPath == "" }
 
-// Method is minigo's reflect.Method, returned by [RType.Method] and
-// [RType.MethodByName]. Func is the method expression, the value
-// `T.M` or `(*T).M` evaluates to, taking the receiver as its first
+// Method is minigo's reflect.Method. Func is the method expression, the
+// value `T.M` or `(*T).M` evaluates to, taking the receiver as its first
 // argument.
 type Method struct {
 	Name    string
