@@ -1,14 +1,12 @@
-// Package task is the script-side API for task-run Taskfiles.
+// Package task provides commands and dependencies for task-run Taskfiles.
 //
-// Taskfiles import this package and call its functions; every body panics
-// so real Go tooling (gopls, go vet, go build) sees valid Go, while the
-// task-run engine binds the import path to intrinsics at run time — the
-// same trick minigo.dev/host uses for the minigo interpreter.
+// Taskfiles import this package and call [Run], [Sh] or [Deps]; [F] supplies
+// arguments to dependencies. These functions require task-run's interpreter;
+// do not call them from compiled Go.
 //
-// A Taskfile is a Go source file (usually with a `//go:build task` tag so
-// `go build ./...` skips it). Any exported function of the shape
-// `func()`, `func() error`, or `func(<string params>...) (error)` is a
-// task; the doc comment becomes its `-l` description.
+// Tasks are exported functions with string parameters and either no result
+// or an error result. Their doc comments supply the task-run -l descriptions.
+// A //go:build task constraint can exclude a Taskfile from normal builds.
 package task
 
 // Deps runs each dependency task once, in parallel. Arguments are task
