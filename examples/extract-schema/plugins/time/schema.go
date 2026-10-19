@@ -1,7 +1,7 @@
-// Package timeschema is the example extract-schema plugin: a script
-// package providing Configure — the single entry point the walk calls
-// per plugin dir. Here it reads time.Time and time.Duration as the
-// strings their JSON marshaling produces.
+// Package timeschema supplies JSON string schemas for time.Time and time.Duration.
+//
+// [Install] registers the overrides with [extschema.Config]. The
+// extract-schema command discovers this hook by its signature.
 package timeschema
 
 import "github.com/podhmo/minigo/examples/extract-schema/extschema"

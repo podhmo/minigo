@@ -13,6 +13,8 @@ migration; history above that point lives in the source repository.
 
 ## To Be Implemented
 
+- [ ] **Correct extract-schema plugin flag help**: the `-plugin` help string still advertises `Overrides()`, but hooks are selected by the exported `func(*extschema.Config)` signature. Align the CLI help with the corrected Go docs; see [the Go doc review](docs/godoc-review.md).
+
 ### `minigo`: Stack-VM Interpreter (redesign of go-scan's tree-walking `minigo`) ([docs/sketch/plan-minigo-vm.md](./docs/sketch/plan-minigo-vm.md))
 
 - [ ] **Interpreter hot paths found by profiling realworld `grafana-openapi`** ([docs/sketch/ja/exploration-legacy-sync.md](./docs/sketch/ja/exploration-legacy-sync.md) §5.5; `go/parser` over grafana `pkg/api`, ~5.5s, 4.7 GB allocated):

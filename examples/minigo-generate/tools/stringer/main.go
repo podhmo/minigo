@@ -1,12 +1,8 @@
-// Command stringer is a minigo-native String() generator — the kind of
-// tool //minigo:generate exists for (issue #390): no go/types, no
-// go/packages, just the inspect API over the scanned package's index.
+// Command stringer generates String methods for enum types.
 //
-// It runs two ways from one source: as an ordinary command
-// (go run ./tools/stringer -type=X, main wraps Main in os.Args) and
-// interpreted under minigo-generate, which calls Main(args) directly
-// with the directive's arguments and delivers the file context through
-// GOFILEPATH/GOPACKAGE env exactly like go generate.
+// Run it with go run ./tools/stringer -type=X or through a
+// //minigo:generate directive. [Main] accepts directive arguments directly;
+// minigo-generate supplies GOFILEPATH and GOPACKAGE for the source context.
 package main
 
 import (

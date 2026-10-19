@@ -1,3 +1,10 @@
+// Command convert-define generates Go converters from definition scripts.
+//
+//	convert-define -file definitions.go [-output generated.go]
+//
+// Use -dry-run to print without writing, -strict to reject generation
+// warnings, and -check to build-check the generated output before writing.
+// Write rules with [github.com/podhmo/minigo/examples/convert-define/define].
 package main
 
 import (

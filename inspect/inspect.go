@@ -1,49 +1,31 @@
-// Package inspect lets minigo scripts examine Go packages: their
-// declarations, types, function bodies and values.
+// Package inspect lets minigo scripts examine Go declarations, syntax and values.
 //
-// Scripts import it as "minigo.dev/inspect" or by its module path
-// "github.com/podhmo/minigo/inspect"; both name the same functions. The
-// script-facing functions are stubs so that gopls, gofmt and goimports
-// work on scripts: inside minigo the engine handles each call and the
-// bodies never run. Errors surface as traps (runtime errors) in the
-// script. The functions return views whose exported fields scripts read
-// directly (d.Name, f.Type.Text).
+// In scripts, import "minigo.dev/inspect" or this module path and start with
+// [PackageOf] and [Decls]:
 //
-//	import "minigo.dev/inspect"
-//
-//	func Main() []string {
-//		var names []string
-//		p := inspect.PackageOf("example.com/app/model")
-//		for _, d := range inspect.Decls(p) {
-//			if d.Kind == "type" {
-//				names = append(names, d.Name)
-//			}
-//		}
-//		return names
+//	p := inspect.PackageOf("example.com/app/model")
+//	for _, d := range inspect.Decls(p) {
+//		println(d.Name)
 //	}
 //
-// Bound and source packages. A package the host binds (standard library
-// intrinsics, [github.com/podhmo/minigo.Engine.Bind]) has no source index:
-// [Decls] and [Symbol] report Kind "host" pseudo-declarations, and
-// functions that read syntax trap on them. [PackageOf] prefers the bound
-// package, as an import does; [SourceOf] reads the Go source behind a
-// bound path; [BoundOf] only reports the binding.
+// These script functions trap on errors and must not be called from compiled
+// Go. Host code uses the view methods, constructors and XxxOf variants such
+// as [FieldsOf], which return errors instead. Cross-package lookups take a
+// [Resolver].
 //
-// Lenient loading. [PackageOf], [DirOf] and [FileOf] load source that would
-// not compile, keeping duplicate declarations visible; imports themselves
-// stay strict.
+// [PackageOf] prefers a bound package; [SourceOf] reads the source behind
+// that binding, while [BoundOf] only reports the binding without loading
+// source. Bound packages have no source syntax: [Decls] returns Kind "host"
+// views, and syntax operations trap. A package mode that denies an import
+// does not stop [SourceOf] from reading a bound path's source. Lookup
+// variants such as [LookupPackageOf] return nil for missing targets; load
+// failures and denied imports still trap. Source loading tolerates
+// duplicate declarations.
 //
-// Missing targets. The Lookup variants return nil for a target that does
-// not exist where their counterparts trap; other failures still trap.
-//
-// Package metadata. Selecting from a package value (p.Foo) reaches only
-// the package's members, so p.Path traps unless the package declares Path.
-// Read metadata through [Path], [Name], [Dir], [State] and [Standard].
-//
-// Go code in the host. Functions that return an error, such as [FieldsOf]
-// for [Fields], the view methods and the New* constructors serve Go code
-// that receives views from the engine: errors replace script traps. Operations that follow
-// names across packages take a [Resolver].
+// [Methods] lists declared methods; [MethodSet] includes promoted methods.
+// [Fields] reads a type declaration; [TypeFields] reads a type expression,
+// including anonymous structs and interfaces. Read package metadata through
+// accessors such as [Path] and [Name]; a package's own members shadow it.
 package inspect
 
 import (

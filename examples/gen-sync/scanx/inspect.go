@@ -1,18 +1,15 @@
 // inspect.go holds the helpers that speak inspect view types —
 // method-set queries the script's inference rules phrase directly.
 // The pure-text counterparts live in scanx.go.
+
 package scanx
 
 import (
 	"github.com/podhmo/minigo/inspect"
 )
 
-// MethodSet returns d's flattened method set with members sourced from
-// foreign-package files removed. The package index merges files whose
-// package clause differs from the package's own, so a method declared
-// in a skipped file — or promoted out of a decl living in one — still
-// lands in inspect.MethodSet. It is not part of this package's set (go
-// build rejects the directory outright), so it must not count.
+// MethodSet returns d's flattened method set, excluding methods declared
+// in files marked foreign, including promoted methods from those files.
 func MethodSet(d *inspect.Decl, foreign map[string]bool) []*inspect.Method {
 	if inspect.Kind(d) != "type" {
 		return nil
@@ -75,13 +72,10 @@ func MethodNamed(d *inspect.Decl, foreign map[string]bool, name string, results 
 	return nil
 }
 
-// RequiresMethod reports whether an interface type lists a method spec
-// with the given name and signature spelling — scanx.RequiresMethod(d,
-// "Discriminator", "func() string") matches `Discriminator() string`
-// among the type's members. No foreign filter is needed: inspect.MReqs
-// reads only the decl's own spec list (embedded elements go to
-// IEmbeds), and a decl queried here always comes from a canonical
-// file, so its specs cannot be foreign-sourced.
+// RequiresMethod reports whether an interface directly declares name with
+// signature sig; embedded interface methods are excluded. For example,
+// RequiresMethod(d, "Discriminator", "func() string") matches a nullary
+// method returning string.
 func RequiresMethod(d *inspect.Decl, name, sig string) bool {
 	if inspect.Kind(d) != "type" {
 		return false

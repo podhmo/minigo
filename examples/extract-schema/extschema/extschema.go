@@ -1,13 +1,12 @@
-// Package extschema is the shared contract between the extract-schema
-// walk and its plugins — the counterpart of gen-sync's scanx/: plugins
-// receive a *Config and register settings on it, instead of spelling
-// untyped map keys.
+// Package extschema defines the configuration shared by extract-schema plugins.
+//
+// Plugins receive a [Config] in an exported func(*Config) hook. Use
+// [Config.Override], [Config.DescField] and [Config.DescDecl] to register
+// schema fragments and description filters.
 package extschema
 
-// Config is the registrar a plugin's Configure receives. The walk
-// reads Overrides/DescFields/DescDecls afterward; plugins should
-// prefer the methods over writing the fields directly so future
-// validation lands in one place.
+// Config holds a plugin's schema overrides and description filters.
+// The extract-schema walk reads it after invoking the plugin hooks.
 type Config struct {
 	// Overrides maps "pkgpath.Name" to a schema fragment consulted
 	// before the default named-type handling.

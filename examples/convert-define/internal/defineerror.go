@@ -8,14 +8,8 @@ import (
 	"github.com/podhmo/minigo/runtime"
 )
 
-// DefineError is a misuse of the define DSL (an unknown field in c.Map,
-// a bad define.Rule signature, ...), attributed to the define-file
-// position of the offending call. The user has to fix it, and Pos says
-// where.
-//
-// Special-form handlers return it; the VM raises it as a runtime trap
-// that keeps the value (Trap.Err), so Run unwraps it and returns it —
-// with the trap's DSL call frames — instead of the trap.
+// DefineError reports a misuse of the define DSL at Pos.
+// [Runner.Run] returns it with the DSL call frames in Frames.
 type DefineError struct {
 	Pos    token.Position
 	Msg    string
