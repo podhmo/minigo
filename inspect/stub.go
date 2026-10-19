@@ -19,9 +19,8 @@ import "github.com/podhmo/minigo/runtime"
 // path does not resolve or fails to load; see [LookupPackageOf].
 func PackageOf(path string) *runtime.Package { panic("minigo intrinsic") }
 
-// SourceOf returns the package built from the Go source of an import path
-// even when a host-bound package shadows it, as it does for much of the
-// standard library; imports keep getting the bound package. For an unbound
+// SourceOf reads source even when [PackageOf] returns a bound host package;
+// imports keep getting the bound package. For an unbound
 // path it returns the same package an import gets. Reading values ([Value])
 // of such source may trap on constructs the interpreter does not support;
 // declarations and syntax are the intended use.
@@ -156,7 +155,7 @@ func Fields(s *Decl) []*Field { panic("minigo intrinsic") }
 // traps for host-bound packages and types.
 func Methods(x any) []*Decl { panic("minigo intrinsic") }
 
-// MethodSet returns the method set of a type declaration, sorted by name.
+// MethodSet includes promoted methods, unlike [Methods], and sorts by name.
 // It holds the members usable through a *T: the type's own methods with
 // either receiver (unlike Go's method set of T), plus members promoted
 // through embedded fields, transitively.

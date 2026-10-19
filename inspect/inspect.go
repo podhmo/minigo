@@ -13,18 +13,17 @@
 // as [FieldsOf], which return errors instead. Cross-package lookups take a
 // [Resolver].
 //
-// [Decl] leads to [Signature], [Fields], [Def] and [Body]. Navigate type
-// expressions with [TypeExpr] and function bodies with [Node]. [Files]
-// provides imports and comments. Read package metadata through [Path],
-// [Name], [Dir], [State] and [Standard]; a package's own members shadow it.
+// [PackageOf] prefers a bound package; [SourceOf] reads the source behind
+// that binding, while [BoundOf] only reports the binding without loading
+// source. Bound packages have no source syntax: [Decls] returns Kind "host"
+// views, and syntax operations trap. Lookup variants such as [LookupPackageOf]
+// return nil for missing targets; load failures and denied paths still trap.
+// Source loading tolerates duplicate declarations.
 //
-// [DirOf] and [FileOf] load directories and single files; [Packages] lists
-// packages under a root. The Lookup variants, such as [LookupPackageOf],
-// return nil for missing targets. Source loading tolerates duplicate declarations.
-//
-// Bound packages have no source syntax: [Decls] returns Kind "host" views,
-// and syntax operations trap. Use [SourceOf] to inspect the source behind a
-// bound package.
+// [Methods] lists declared methods; [MethodSet] includes promoted methods.
+// [Fields] reads a type declaration; [TypeFields] reads a type expression,
+// including anonymous structs and interfaces. Read package metadata through
+// accessors such as [Path] and [Name]; a package's own members shadow it.
 package inspect
 
 import (
