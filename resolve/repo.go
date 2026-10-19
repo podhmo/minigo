@@ -17,28 +17,29 @@ import (
 	"golang.org/x/mod/modfile"
 )
 
-// RepoPackage is one package directory found by ScanRepo: the
-// descriptor-level identity of a package — which module claims it, the
-// import path that module spells for it, and its file inventory split
-// at the *_test.go boundary. Nothing is parsed; declarations and
-// imports belong to the loaders that consume this inventory.
+// RepoPackage is one package directory found by [ScanRepo]: which module
+// claims it, the import path that module spells for it, and its files
+// split at the *_test.go boundary. Nothing is parsed, so the files are
+// not filtered by build constraints or package clause; pass Dir to
+// [Resolver.LocateDir] for the build file list.
 type RepoPackage struct {
 	ImportPath string   // module path + relative subdir; "<dir><abs>" when module-less (same spelling as LocateDir)
 	Dir        string   // absolute package directory
 	ModuleDir  string   // directory of the enclosing go.mod; "" when no module claims Dir
 	ModulePath string   // declared path of the enclosing module; "" when module-less
-	GoFiles    []string // absolute paths of non-test .go sources
-	TestFiles  []string // absolute paths of *_test.go sources
-	HasTests   bool     // len(TestFiles) > 0 — test presence kept explicit since loaders drop test files
+	GoFiles    []string // sorted absolute paths of non-test .go sources
+	TestFiles  []string // sorted absolute paths of *_test.go sources
+	HasTests   bool     // len(TestFiles) > 0
 }
 
 // ScanRepo walks root and reports every directory holding .go files as a
-// RepoPackage — claimed by the nearest enclosing go.mod, so nested
-// modules (examples/*-style subtrees) report their own module identity.
-// Directories the go tool ignores are skipped: vendor, testdata, and
-// .- or _-prefixed directories; ._-prefixed files likewise. The result
-// is sorted by Dir. A missing root or a go.mod that does not parse is
-// an error, not a partial result.
+// [RepoPackage] — claimed by the nearest enclosing go.mod, which may lie
+// above root, so nested modules report their own module identity.
+// Directories the go tool ignores are skipped below root: vendor,
+// testdata, and names starting with "." or "_"; files starting with "."
+// or "_" are skipped too. Paths spell root with its symlinks resolved.
+// The result is sorted by Dir. A missing root or a go.mod that does not
+// parse is an error, not a partial result.
 func ScanRepo(root string) ([]*RepoPackage, error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {

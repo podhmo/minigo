@@ -1,6 +1,22 @@
-// Package resolve maps import paths to package directories and file lists,
-// without expanding the import graph. The default backend adapts go-scan's
-// lazy locator; a `go list -find` backend may be added as an opt-in.
+// Package resolve maps import paths and directories to a package's
+// directory and build file list, without resolving the package's own
+// imports.
+//
+// Start with [NewGoScanResolver]: its [GoScanResolver.Locate] and
+// [GoScanResolver.LocateDir] implement [Resolver] and return a
+// [PackageMeta]. [BuildConfig] picks the target platform and build tags,
+// and its AllowedRoots field limits which directories may be handed out
+// ([BuildConfig.CheckDir]). An import path that resolves to nothing
+// reports [ErrUnresolved].
+//
+// Lower-level helpers work without a resolver: [ReadPackageFiles] and
+// [FileScopeFiles] list the files of one directory, [ScanRepo] enumerates
+// every package under a root as [RepoPackage] values, and [ModuleLang],
+// [ModulePath] and [RequiredVersion] read the enclosing go.mod.
+//
+// [github.com/podhmo/minigo.Engine.WithResolver] installs a custom
+// [Resolver]; the engine indexes the located files with
+// [github.com/podhmo/minigo/index].
 package resolve
 
 import (
@@ -20,7 +36,9 @@ import (
 	"github.com/podhmo/minigo/pkg/locator"
 )
 
-// BuildConfig selects which files belong to a package build.
+// BuildConfig selects which files belong to a package build and which
+// directories a [Resolver] may enter. The zero value targets the host
+// platform with no extra tags and no directory restriction.
 type BuildConfig struct {
 	GOOS   string
 	GOARCH string
@@ -28,14 +46,15 @@ type BuildConfig struct {
 
 	// AllowedRoots, when non-empty, restricts which directories a Resolver
 	// may hand out: a located package directory must live inside one of the
-	// roots (or be the root itself). This is the "which directories may the
-	// interpreter enter" knob — e.g. a REPL's AllowedRoots is its CWD.
+	// roots (or be the root itself).
 	AllowedRoots []string
 }
 
-// CheckDir verifies dir against AllowedRoots (no-op when unrestricted).
-// Both sides are resolved through EvalSymlinks so a symlink inside a root
-// pointing outside it cannot bypass the check.
+// CheckDir reports an error when dir lies outside every AllowedRoots
+// entry; it always succeeds when AllowedRoots is empty. Symlinks on both
+// sides are resolved first, so a symlink inside a root pointing outside it
+// fails the check. dir need not exist: its nearest existing ancestor is
+// resolved instead.
 func (cfg BuildConfig) CheckDir(dir string) error {
 	if len(cfg.AllowedRoots) == 0 {
 		return nil
@@ -56,10 +75,8 @@ func (cfg BuildConfig) CheckDir(dir string) error {
 	return fmt.Errorf("directory %s is outside the allowed roots", abs)
 }
 
-// CheckPath verifies an arbitrary filesystem path against AllowedRoots
-// (no-op when unrestricted). Unlike CheckDir the path need not exist:
-// symlinks are resolved through the nearest existing ancestor so a write
-// target under a symlinked directory cannot escape the roots either.
+// CheckPath is [BuildConfig.CheckDir] for a path that may name a file,
+// such as a write target.
 func (cfg BuildConfig) CheckPath(path string) error {
 	return cfg.CheckDir(path)
 }
@@ -91,28 +108,27 @@ func resolveSymlinkNearest(path string) (string, error) {
 	}
 }
 
-// PackageMeta is the cheap metadata level of a package — enough to know its
-// real name and which files belong to it, before any AST is built.
+// PackageMeta is a package's name and file list, read before any file is
+// fully parsed. A [Resolver] or [ReadPackageFiles] returns it.
 type PackageMeta struct {
 	ImportPath string
 	Name       string // the package clause name (may differ from path basename)
 	Dir        string
-	GoFiles    []string // absolute paths, filtered by build constraints and cgo
+	GoFiles    []string // sorted, filtered by build constraints, cgo files skipped
 	Standard   bool     // inside GOROOT
-	ModulePath string   // owning module path, "" if unknown
+	ModulePath string   // module path when known, "" otherwise
 	// Lang is the `go` directive of the module enclosing Dir (raw text like
 	// "1.26.0"); "" when the directory is outside any module. Each file's
 	// effective -lang still honors its own //go:build version constraint.
 	Lang string
 }
 
-// ErrUnresolved tags a locate miss for errors.Is: the name or path
-// claims nothing — an import path no module resolves, or a directory
-// that does not exist. A target that exists but fails to read (a dir
-// with no buildable Go files, an unreadable file) is NOT a miss and
-// never carries this mark, so soft lookups can tell "nothing there"
-// from "there but broken". The wrapped error keeps the original
-// message.
+// ErrUnresolved matches, under errors.Is, an error from
+// [GoScanResolver.Locate] when no directory is found for the import path;
+// the error message is not changed. A package that is found but cannot be
+// read (no buildable Go files, a broken replace directive) does not match, so callers can tell "nothing there" from "there but broken".
+// A missing directory passed to [GoScanResolver.LocateDir] matches
+// fs.ErrNotExist instead.
 var ErrUnresolved = errors.New("resolve: no such package")
 
 // unresolved marks a locate miss for errors.Is without changing the
@@ -137,23 +153,26 @@ func markUnresolved(err error) error {
 	return unresolved{err}
 }
 
-// Resolver locates a package. It must NOT recursively resolve the package's
-// own imports — that is the point of the lazy design.
+// Resolver locates a package. Implementations must not resolve the
+// package's own imports; the caller locates each import when it needs it.
+// [NewGoScanResolver] returns the default implementation.
 type Resolver interface {
 	// Locate resolves an import path (e.g. "fmt", "github.com/x/y").
+	// fromDir is the importing package's directory, or "" when there is
+	// none.
 	Locate(ctx context.Context, fromDir, importPath string) (*PackageMeta, error)
 	// LocateDir resolves a filesystem directory (e.g. "./app") — used for
 	// the entry package, which need not have an import path.
 	LocateDir(ctx context.Context, dir string) (*PackageMeta, error)
 }
 
-// ReadPackageFiles reads a directory into a PackageMeta: it filters files
-// with go/build's match rules (//go:build constraints, _GOOS/_GOARCH
-// suffixes, _test.go) and reads the package clause of the first match.
-// Files importing "C" are cgo files — go/build only lists them under
-// CgoEnabled, and the interpreter cannot link native code, so a directory
-// walk skips them like ignored files (an explicitly named file still
-// fails at index time).
+// ReadPackageFiles lists the files of the package in dir as
+// importPath, without a [Resolver]. Files are filtered with go/build's
+// match rules for cfg (//go:build constraints, _GOOS/_GOARCH suffixes,
+// _test.go); files importing "C" are skipped, as cgo is not supported.
+// Name is the package clause most of the files declare. It reports an
+// error when go/build cannot read a candidate file, or when no buildable
+// file remains. ModulePath is left empty. cfg.AllowedRoots is not checked.
 func ReadPackageFiles(dir, importPath string, cfg BuildConfig) (*PackageMeta, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -195,6 +214,10 @@ func ReadPackageFiles(dir, importPath string, cfg BuildConfig) (*PackageMeta, er
 		}
 		abs := filepath.Join(dir, fname)
 		if f, err := parser.ParseFile(fset, abs, nil, parser.ImportsOnly); err == nil && f != nil {
+			// go/build only lists cgo files under CgoEnabled, and the
+			// interpreter cannot link native code, so a directory walk
+			// skips them like ignored files (an explicitly named file
+			// still fails at index time).
 			if importsC(f) {
 				cgo++
 				continue
@@ -267,7 +290,8 @@ func importsC(f *ast.File) bool {
 	return false
 }
 
-// CheckImportPath sanity-checks a path that claims to be an import path.
+// LooksLikeDir reports whether path names a filesystem location rather
+// than an import path: it starts with "." or is absolute.
 func LooksLikeDir(path string) bool {
 	return strings.HasPrefix(path, ".") || filepath.IsAbs(path)
 }
