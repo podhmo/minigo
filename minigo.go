@@ -6,27 +6,19 @@
 //	e := minigo.NewEngine(".", minigo.WithOutput(os.Stdout))
 //	v, err := e.Run(ctx, "./script", "Main")
 //
-// [Engine.Run] and [Engine.RunFile] are the one-shot entry points;
-// [Engine.Package], [Engine.LoadFile] or [Engine.LoadDirScope] followed by
-// [Engine.Call] split loading from calling. [Format] prepares a result for
-// printing; [Engine.RunResult] and [Result.As] decode it into a Go value.
-// Engine behavior is set by [Option] values such as [WithOutput],
-// [WithAllowedRoots] and [WithInitMode].
-//
 // Packages are loaded lazily: imports are located and indexed on demand,
 // initialized when a member is first touched, and functions are compiled
 // when first called. Any syntactically valid Go source loads; a construct
 // the interpreter does not support fails at run time, with its position,
 // only if execution reaches it.
 //
-// Host integration:
-//   - [Engine.Bind] exposes Go values as an importable package; [WrapFunc]
-//     and [ValueOf] convert Go functions and values for it.
-//   - [Engine.RegisterSpecial] installs a special form: a handler that
-//     receives a call's syntax instead of its evaluated arguments.
-//   - [Engine.Vet] reports calls into stub packages that have no handler.
-//
-// [Engine.NewREPL] starts an interactive [REPL] session.
+// An import is answered either by interpreting Go source or by a
+// host-bound package: Go values registered with [Engine.Bind], or one of
+// the built-in std intrinsics. A bound package shadows the source of the
+// same path;
+// [PackageMode] changes that per path. A special form, installed with
+// [Engine.RegisterSpecial], is a host handler that receives a call's
+// syntax instead of its evaluated arguments.
 //
 // Script values have type [runtime.Value]; see
 // [github.com/podhmo/minigo/runtime] for the value model.
@@ -100,11 +92,10 @@ type Engine struct {
 	sigMemo runtime.SigMemo
 }
 
-// Option configures an Engine; pass it to [NewEngine].
+// Option configures an Engine.
 type Option func(*Engine)
 
-// InitMode selects how eagerly packages run their initializers; set it
-// with [WithInitMode].
+// InitMode selects how eagerly packages run their initializers.
 type InitMode int
 
 const (
@@ -128,8 +119,7 @@ func WithInitMode(m InitMode) Option {
 	return func(e *Engine) { e.initMode = m }
 }
 
-// PackageMode selects how an import path is satisfied; set it per path
-// with [WithPackageModes].
+// PackageMode selects how an import path is satisfied.
 type PackageMode int
 
 const (
@@ -175,7 +165,8 @@ func WithOutput(w io.Writer) Option {
 }
 
 // WithArgs sets the script-visible os.Args, so flag.Parse inside a script
-// sees only its own flags. Nil (the default) keeps the host process argv.
+// sees only its own flags. argv[0] is the program name, as in Go. Nil (the
+// default) keeps the host process argv.
 func WithArgs(argv []string) Option {
 	return func(e *Engine) { e.args = argv }
 }
@@ -337,7 +328,9 @@ func (e *Engine) linknameTarget(vc runtime.VMCaller, fn *runtime.Function) (runt
 
 // NewSession returns an engine with the same configuration (resolver,
 // options, bindings and special forms) but an empty package cache, so
-// repeated runs get isolated package state.
+// repeated runs get isolated package state. Bindings are copied: a later
+// [Engine.Bind] on e does not reach the session. Special forms are
+// shared: a later [Engine.RegisterSpecial] on either engine affects both.
 func (e *Engine) NewSession() *Engine {
 	s := &Engine{
 		resolver:     e.resolver,
@@ -379,12 +372,13 @@ func (e *Engine) NewSession() *Engine {
 	return s
 }
 
-// Result is returned by [Engine.RunResult]; decode it with [Result.As].
+// Result holds a script value that [Result.As] decodes into a Go value.
 type Result struct {
 	V runtime.Value
 }
 
-// RunResult is [Engine.Run] with a decodable result.
+// RunResult differs from [Engine.Run] only in wrapping the value in a
+// [Result], for decoding into a Go value with [Result.As].
 func (e *Engine) RunResult(ctx context.Context, ref, fnName string, args ...runtime.Value) (*Result, error) {
 	v, err := e.Run(ctx, ref, fnName, args...)
 	if err != nil {
@@ -516,8 +510,11 @@ func (e *Engine) WithResolver(r resolve.Resolver) *Engine {
 	return e
 }
 
-// Package loads ref, an import path or directory, without initializing
-// it. Pass the package to [Engine.Call] to run a member.
+// Package loads ref, an import path, directory or .go file, without
+// initializing it, and caches it on e. ref resolves as a script import
+// would: a host-bound path yields the bound package, while
+// [Engine.SourceOf] loads its source. Pass the package to [Engine.Call]
+// to run a member.
 func (e *Engine) Package(ctx context.Context, ref string) (*runtime.Package, error) {
 	if resolve.LooksLikeDir(ref) || isGoFile(ref) {
 		return e.loadDir(ctx, ref)
@@ -567,9 +564,9 @@ func (e *Engine) Call(ctx context.Context, pkg *runtime.Package, name string, ar
 	return runtime.Unwrap(r), err
 }
 
-// Run loads ref (a directory or import path), initializes it, and calls
-// fnName(args...). An empty fnName calls main. For a single file use
-// [Engine.RunFile].
+// Run loads ref with [Engine.Package] and calls fnName(args...) with
+// [Engine.Call]. An empty fnName calls main. The first package Run
+// loads becomes the main package that runtime/debug.ReadBuildInfo reports.
 func (e *Engine) Run(ctx context.Context, ref, fnName string, args ...runtime.Value) (runtime.Value, error) {
 	if fnName == "" {
 		fnName = "main"
@@ -666,8 +663,9 @@ func (e *Engine) BoundPackages() []string {
 }
 
 // BoundOf returns the host-bound package registered for path, or nil when
-// path is not bound. It never loads source, and ignores [PackageMode]: a
-// [ModeDeny] path still reports its registration.
+// path is not bound. Unlike [Engine.Package] and [Engine.SourceOf] it
+// never loads source, and it ignores [PackageMode]: a [ModeDeny] path
+// still reports its registration.
 func (e *Engine) BoundOf(path string) *runtime.Package {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -777,9 +775,9 @@ func (e *Engine) loadDirMode(ctx context.Context, dir string, lenient bool) (*ru
 	return e.buildPackage(meta, lenient)
 }
 
-// SourceOf loads the Go source of an import path even when a host-bound
-// package shadows it (see [Engine.BoundOf]); script imports keep getting the
-// bound package. For an unbound path it is the same as [Engine.Package].
+// SourceOf differs from [Engine.Package] only for a host-bound path: it
+// loads the Go source instead of returning the bound package. Script
+// imports keep getting the bound package.
 func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, error) {
 	// Bound packages answer lookups through e.pkgs (with a nil index), so
 	// the source package is built into a private cache — never e.pkgs or
@@ -979,9 +977,10 @@ func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File, lenient bo
 
 // LoadFile loads a single file as a package, ignoring its siblings and
 // build constraints, so a file guarded by `//go:build codegen` or a script
-// outside any package can be an entry point. Its imports resolve normally,
-// but nothing can import the file's package. [WithAllowedRoots] applies to
-// the file's directory. See also [Engine.LoadDirScope] and [Engine.RunFile].
+// outside any package can be an entry point; [Engine.LoadDirScope] also
+// loads the siblings. Its imports resolve normally, but nothing can
+// import the file's package. [WithAllowedRoots] applies to the file's
+// directory.
 func (e *Engine) LoadFile(ctx context.Context, filename string) (*runtime.Package, error) {
 	return e.loadFileMode(ctx, filename, false)
 }
@@ -1038,11 +1037,11 @@ func (e *Engine) loadFileMode(ctx context.Context, filename string, lenient bool
 	return p, nil
 }
 
-// LoadDirScope loads a .go file together with every sibling .go file of the
-// same package, ignoring build constraints, so a file guarded by
-// `//go:build task` still sees the rest of its package. Unlike
-// [Engine.Package] the result is not cached; each call reloads the
-// directory. [Engine.LoadFile] loads the file alone.
+// LoadDirScope differs from [Engine.LoadFile] in also loading the file's
+// non-test sibling .go files of the same package, ignoring build
+// constraints, so a file guarded by `//go:build task` still sees the rest
+// of its package. Unlike LoadFile and [Engine.Package] the result is not
+// cached; each call reloads the directory.
 func (e *Engine) LoadDirScope(ctx context.Context, filename string) (*runtime.Package, error) {
 	abs, err := filepath.Abs(filename)
 	if err != nil {
@@ -1090,8 +1089,9 @@ func packageName(fset *token.FileSet, abs string) (string, error) {
 	return f.Name.Name, nil
 }
 
-// RunFile is [Engine.Run] for a single file: [Engine.LoadFile] followed by
-// [Engine.Call]. An empty fnName calls main.
+// RunFile is [Engine.LoadFile] followed by [Engine.Call]. An empty fnName
+// calls main. Unlike [Engine.Run], which also accepts a .go file, it does
+// not set the main package that runtime/debug.ReadBuildInfo reports.
 func (e *Engine) RunFile(ctx context.Context, filename, fnName string, args ...runtime.Value) (runtime.Value, error) {
 	if fnName == "" {
 		fnName = "main"

@@ -23,21 +23,10 @@ import (
 // REPL is a persistent read-eval-print session over a scratch package,
 // created by [Engine.NewREPL].
 //
-// Feed each input to [REPL.EvalLine], print the result with [REPL.Display]
-// and any [REPL.Warnings]. [IncompleteInput] decides when to show a
-// continuation prompt, and [REPL.CompleteToken] and
-// [REPL.CompleteCommandArg] drive TAB completion.
-//
 // An input is a top-level declaration, kept for later lines, or a list of
 // statements. Names introduced by `x := e`, `var` and `const` become
 // package globals so they persist across lines; unlike Go, `x := e`
 // reuses an existing global instead of shadowing it.
-//
-// The `minigo repl` meta commands map to methods: :cd to [REPL.Enter] and
-// [REPL.Leave], :pin and :unpin to [REPL.Pin] and [REPL.Unpin], :ls to
-// [REPL.List], :load and :unload to [REPL.Load] and [REPL.Unload],
-// :bindings to [REPL.BoundPackages], :dump to [REPL.Dump], and :reset to
-// [REPL.Reset].
 type REPL struct {
 	engine  *Engine // session engine (created fresh by NewREPL)
 	pkg     *runtime.Package
@@ -949,7 +938,8 @@ func (r *REPL) Leave() error {
 // Pin turns on write mode for the package entered with [REPL.Enter]:
 // later declarations and assignments to package vars write into that
 // package, so every importer in the session sees the patch. Pin
-// initializes the package. [REPL.Unpin] turns it off.
+// initializes the package and fails when no package is entered.
+// [REPL.Unpin] turns it off, as do [REPL.Enter] and [REPL.Leave].
 func (r *REPL) Pin() error {
 	if r.entered == nil {
 		return fmt.Errorf("pin: not inside a package (:cd first)")
@@ -1097,8 +1087,10 @@ func (r *REPL) loadedFrom(p *runtime.Package, d *index.Decl) string {
 	return " (" + name + ")"
 }
 
-// BoundPackages is [Engine.BoundPackages] for the session's engine
-// (:bindings).
+// BoundPackages is [Engine.BoundPackages] for the session's own engine
+// (:bindings). It differs from the result on the engine that created the
+// REPL in leaving out packages bound to that engine after
+// [Engine.NewREPL].
 func (r *REPL) BoundPackages() []string {
 	return r.engine.BoundPackages()
 }
@@ -1154,10 +1146,10 @@ func (r *REPL) loadRef(ctx context.Context, ref string) (*runtime.Package, error
 	return r.engine.loadPath(ctx, ref)
 }
 
-// Display returns a form of v that prints with %v like fmt does, except that
-// a nil slice or map prints as T(nil) to tell it from an empty one, and a
-// multi-value result prints as (a, b). It returns nil when there is nothing
-// to print. [REPL.Dump] prints Go syntax instead.
+// Display returns a form of v that prints with %v like fmt does;
+// [REPL.Dump] gives fmt's %#v Go syntax instead. Unlike fmt, a nil slice
+// or map prints as T(nil) to tell it from an empty one, and a multi-value
+// result prints as (a, b). It returns nil when there is nothing to print.
 func (r *REPL) Display(v runtime.Value) any {
 	return r.render(v, "%v")
 }
