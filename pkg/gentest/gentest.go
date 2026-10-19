@@ -1,20 +1,35 @@
-// Package gentest is the test harness for the generator examples
-// (gen-sync, convert-define): it builds a temporary module, runs the
-// tool's action against it, and reports every file the run created,
-// changed, or deleted so tests assert on outputs rather than plumbing.
+// Package gentest is a test harness for code generators: it builds a
+// temporary module, runs the generator against it, and reports every file
+// the run created, changed, or deleted, so tests assert on the complete
+// write set.
 //
-// The design is adapted from go-scan's scantest package (see
-// pkg/SOURCE.md). Two differences matter:
+// [WriteFiles] creates the module, [CopyFile] and [CopyTree] add fixtures,
+// and [Run] executes the generator as an action — any func(ctx) error,
+// such as a [github.com/podhmo/minigo.Engine.Run] call — and returns a
+// [Result] diffed from the directory before and after:
 //
-//   - The action is engine-agnostic — a func(ctx) error that drives the
-//     tool under test (a minigo Engine.Run, a host-side run(), ...).
-//     gentest never sees the engine.
-//   - Outputs come from a filesystem diff of the target directory taken
-//     before and after the action. That is the primary source of truth
-//     because generator writes usually cross the interpreter boundary,
-//     where a FileWriter cannot intercept them. For host-side write
-//     paths, see the FileWriter seam in writer.go.
+//	dir := gentest.WriteFiles(t, map[string]string{"go.mod": "module example.com/m\n"})
+//	res, err := gentest.Run(t, ctx, dir, func(ctx context.Context) error {
+//		return generate(ctx, dir)
+//	})
+//	if err != nil {
+//		t.Fatal(err)
+//	}
+//	if diff := cmp.Diff([]string{"gen.go"}, res.ChangedPaths()); diff != "" {
+//		t.Errorf("write set mismatch (-want +got):\n%s", diff)
+//	}
+//	gentest.AssertSameFile(t, filepath.Join(dir, "gen.go"), "testdata/gen.golden")
+//
+// Host-side generator code can write through [WriteFile] instead of
+// os.WriteFile; a test then installs a [FileWriter] such as
+// [MemoryFileWriter] with [WithFileWriter] to capture the writes in memory.
+// Captured writes never reach disk, so they do not appear in a [Result].
 package gentest
+
+// The design is adapted from go-scan's scantest package (see
+// pkg/SOURCE.md): the action is engine-agnostic, and outputs come from a
+// filesystem diff because generator writes usually cross the interpreter
+// boundary, where a FileWriter cannot intercept them.
 
 import (
 	"bytes"
@@ -29,20 +44,19 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
-// Result is the filesystem diff a Run observed: everything the action
-// produced, keyed by path relative to the run directory.
+// Result is the filesystem diff a [Run] observed, keyed by path relative
+// to the run directory. Only regular files are compared.
 type Result struct {
 	// Outputs holds files the action created (did not exist before).
 	Outputs map[string][]byte
 	// Modified holds files that existed before with different content now.
 	Modified map[string][]byte
-	// Deleted lists files the action removed.
+	// Deleted lists files the action removed, sorted.
 	Deleted []string
 }
 
-// ChangedPaths returns the sorted set of relative paths the action
-// touched — created, modified, or deleted — so a test can assert the
-// complete write set rather than sampling files one by one.
+// ChangedPaths returns the sorted relative paths the action created,
+// modified, or deleted, so a test can assert the complete write set.
 func (r *Result) ChangedPaths() []string {
 	paths := make([]string, 0, len(r.Outputs)+len(r.Modified)+len(r.Deleted))
 	for p := range r.Outputs {
@@ -57,10 +71,9 @@ func (r *Result) ChangedPaths() []string {
 }
 
 // Run snapshots dir, executes action, snapshots again, and returns the
-// diff. The action's error is returned as is; the run produced no diff
-// in that case and the Result is nil. A successful run with no changes
-// returns an empty (non-nil) Result — callers check
-// len(res.ChangedPaths()) == 0 instead of a nil sentinel.
+// diff. The action's error is returned as is, with a nil Result. A
+// successful run with no changes returns an empty, non-nil Result: check
+// len(res.ChangedPaths()) == 0. A nil ctx means context.Background.
 func Run(t *testing.T, ctx context.Context, dir string, action func(ctx context.Context) error) (*Result, error) {
 	t.Helper()
 	if ctx == nil {
@@ -102,9 +115,9 @@ func Run(t *testing.T, ctx context.Context, dir string, action func(ctx context.
 	return res, nil
 }
 
-// WriteFiles creates a temporary directory populated with files
-// (paths relative to the directory root). The directory is removed by
-// t.TempDir's cleanup.
+// WriteFiles creates a t.TempDir populated with files, keyed by path
+// relative to the directory, and returns the directory. Parent
+// directories are created as needed; a write failure fails the test.
 func WriteFiles(t *testing.T, files map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -120,8 +133,8 @@ func WriteFiles(t *testing.T, files map[string]string) string {
 	return dir
 }
 
-// CopyFile copies a single file into the test module, creating parent
-// directories as needed.
+// CopyFile copies the file src to dst, creating parent directories as
+// needed. A failure fails the test.
 func CopyFile(t *testing.T, src, dst string) {
 	t.Helper()
 	data, err := os.ReadFile(src)
@@ -136,9 +149,9 @@ func CopyFile(t *testing.T, src, dst string) {
 	}
 }
 
-// CopyTree copies a directory tree into the test module — the way a
-// fixture package (gen-sync's app/, scanx/) becomes part of a temp
-// module the tool may write into without touching the repo.
+// CopyTree copies the directory tree src to dst, so a fixture package
+// becomes part of a temporary module the generator may write into without
+// touching the repository. A failure fails the test.
 func CopyTree(t *testing.T, src, dst string) {
 	t.Helper()
 	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
@@ -163,8 +176,10 @@ func CopyTree(t *testing.T, src, dst string) {
 	}
 }
 
-// AssertSameFile fails the test when the file at gotPath differs in
-// content from the file at wantPath (typically a testdata golden).
+// AssertSameFile reports a test error with a diff when the file at
+// gotPath differs in content from the file at wantPath (typically a
+// testdata golden). A file that cannot be read fails the test
+// immediately.
 func AssertSameFile(t *testing.T, gotPath, wantPath string) {
 	t.Helper()
 	got, err := os.ReadFile(gotPath)
