@@ -1,64 +1,30 @@
-// Package inspect lets minigo scripts examine Go packages: their
-// declarations, types, function bodies and values.
+// Package inspect lets minigo scripts examine Go declarations, syntax and values.
 //
-// Scripts import it as "minigo.dev/inspect" or by its module path
-// "github.com/podhmo/minigo/inspect"; both name the same functions. The
-// script-facing functions ([PackageOf], [Decls], [Fields], ...) are stubs
-// so that gopls, gofmt and goimports work on scripts: inside minigo the
-// engine handles each call and the bodies never run. Errors surface as
-// traps (runtime errors) in the script.
+// In scripts, import "minigo.dev/inspect" or this module path and start with
+// [PackageOf] and [Decls]:
 //
-//	import "minigo.dev/inspect"
-//
-//	func Main() []string {
-//		var names []string
-//		p := inspect.PackageOf("example.com/app/model")
-//		for _, d := range inspect.Decls(p) {
-//			if d.Kind == "type" {
-//				names = append(names, d.Name)
-//			}
-//		}
-//		return names
+//	p := inspect.PackageOf("example.com/app/model")
+//	for _, d := range inspect.Decls(p) {
+//		println(d.Name)
 //	}
 //
-// Loading. Package values ([runtime.Package]) come from [PackageOf] (by
-// import path, the package an import gets), [DirOf] (by directory),
-// [SourceOf] (the source behind a host-bound path), [BoundOf] (the
-// host-bound package only) and [Current]. [FileOf] loads a single file as
-// a [File]; [Packages] lists the package directories under a root. The
-// Lookup variants ([LookupPackageOf], [LookupDirOf], [LookupSourceOf],
-// [LookupFileOf]) return nil when the target does not exist instead of
-// trapping. A package value's own members shadow its metadata, so read
-// that through [Path], [Name], [Dir], [State] and [Standard].
+// These script functions trap on errors and must not be called from compiled
+// Go. Host code uses the view methods, constructors and XxxOf variants such
+// as [FieldsOf], which return errors instead. Cross-package lookups take a
+// [Resolver].
 //
-// Views. The functions return views whose exported fields scripts read
-// directly (d.Name, f.Type.Text):
-//   - [Decl]: one declaration, from [Decls], [Symbol], [Methods] or
-//     [SymbolOf]; inspected with [Signature], [Fields], [Def],
-//     [MethodSet], [EnumMembers] and others taking a *Decl.
-//   - [TypeExpr]: a type expression as written, from [Def], [Field] and
-//     [Sig]; navigated with [Children], [UnRef], [UnWrap] and [Origin],
-//     resolved with [SymbolID] and [Resolve].
-//   - [Node]: a statement or expression in a function body, from [Body];
-//     walked with [Nodes], resolved through [Expr].
-//   - [File], [Import], [Comment]: a source file and its imports and
-//     comments.
+// [Decl] leads to [Signature], [Fields], [Def] and [Body]. Navigate type
+// expressions with [TypeExpr] and function bodies with [Node]. [Files]
+// provides imports and comments. Read package metadata through [Path],
+// [Name], [Dir], [State] and [Standard]; a package's own members shadow it.
 //
-// [Value] and [TypeOf] reach a member's runtime value and type.
+// [DirOf] and [FileOf] load directories and single files; [Packages] lists
+// packages under a root. The Lookup variants, such as [LookupPackageOf],
+// return nil for missing targets. Source loading tolerates duplicate declarations.
 //
-// Bound packages. A package the host binds (standard library intrinsics,
-// [github.com/podhmo/minigo.Engine.Bind]) has no source index: [Decls]
-// and [Symbol] report Kind "host" pseudo-declarations, and functions that
-// read syntax ([Fields], [AST], [Body], ...) trap on them. Use [SourceOf]
-// to read the Go source behind a bound path. [PackageOf], [DirOf] and
-// [FileOf] also load source that would not compile, keeping duplicate
-// declarations visible.
-//
-// Go code in the host. The XxxOf functions ([FieldsOf], [MethodSetOf],
-// ...), the view methods and the New* constructors perform the same
-// operations for Go code that receives views from the engine, returning
-// errors where the script functions trap. Operations that follow names
-// across packages take a [Resolver].
+// Bound packages have no source syntax: [Decls] returns Kind "host" views,
+// and syntax operations trap. Use [SourceOf] to inspect the source behind a
+// bound package.
 package inspect
 
 import (
