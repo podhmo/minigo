@@ -242,9 +242,8 @@ func (im *ImportManager) Qualify(packagePath string, typeName string) string {
 	return alias + "." + typeName
 }
 
-// Imports returns a copy of the map of import paths to aliases for use in GoFile.
-// It excludes entries where the alias is empty, as those typically don't need an explicit import line
-// (e.g., the current package itself if it were ever added with an empty alias, though Add prevents this for currentPackagePath).
+// Imports returns a copy of the registered import-path-to-alias map.
+// Entries with empty aliases are excluded.
 func (im *ImportManager) Imports() map[string]string {
 	im.mu.Lock()
 	defer im.mu.Unlock()
