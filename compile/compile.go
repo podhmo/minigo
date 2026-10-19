@@ -18,6 +18,7 @@ import (
 	"go/constant"
 	"go/printer"
 	"go/token"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -356,6 +357,15 @@ type compiler struct {
 	// opTypDepth bounds staticOpTyp's recursion through package-level
 	// var/const initializers (a named cycle would not terminate).
 	opTypDepth int
+
+	// synthImports binds qualifier identifiers minted by
+	// synthImportName to their import refs: an operand or type
+	// expression re-scoped through a foreign package's file refers to
+	// that package's own imports, which the caller may not import at
+	// all — caller-import rewriting cannot express that, so the minted
+	// qualifier carries the ref itself. ".imp:" can never collide
+	// with a declared identifier.
+	synthImports map[string]*runtime.ImportRef
 
 	// iotaVal is the const spec index while compiling a const spec's
 	// values; -1 elsewhere. `iota` reads emit the constant — the hidden
@@ -2234,6 +2244,15 @@ func (c *compiler) selPkgMemberOpTyp(x *ast.SelectorExpr, ref *runtime.ImportRef
 					return opTyp{te: &ast.SelectorExpr{X: x.X, Sel: ast.NewIdent(sel)}}
 				}
 			}
+			// a bound typed const may hold the raw host scalar rather
+			// than a Named — `time.Second` binds a bare time.Duration.
+			// Its tag comes from matching the host type back to the
+			// package's own typedefs.
+			if td := hostScalarTypeDefOf(p, v); td != nil {
+				if sel := qualTypSel(p, td); sel != "" {
+					return opTyp{te: &ast.SelectorExpr{X: x.X, Sel: ast.NewIdent(sel)}}
+				}
+			}
 			if uc, ok := v.(*runtime.UConst); ok && uc.V != nil {
 				return opTyp{untyped: true, dte: constKindDte(uc)}
 			}
@@ -2315,9 +2334,10 @@ func (c *compiler) valueSpecMemberOpTyp(p *runtime.Package, d *index.Decl, isCon
 // scopeOperandExpr is scopeSpecType for a package-level VALUE
 // expression (a var/const spec's initializer): an ident naming the
 // declaring package's own top-level decl qualifies through the caller's
-// import name for that package, and a selector's qualifier re-keys
-// through the declaring file's imports — the same qualifier in the
-// caller may name a different package. nil means a name cannot be
+// import name for that package, and a selector's qualifier binds the
+// declaring file's own import ref via synthImportName — the same
+// qualifier in the caller may name a different package, or none.
+// nil means a name cannot be
 // resolved without the declaring scope (a dot import, a foreign
 // constant chain the depth cap cut off): the operand stays opaque
 // rather than risk reading a caller-side name. A FuncLit scopes its
@@ -2352,7 +2372,7 @@ func (c *compiler) scopeOperandExpr(p *runtime.Package, sf *syntax.File, e ast.E
 	case *ast.SelectorExpr:
 		if id, ok := t.X.(*ast.Ident); ok {
 			if ref, ok := pkgImportRef(p, sf, id.Name); ok {
-				return &ast.SelectorExpr{X: &ast.Ident{Name: c.callerImportName(ref.Path)}, Sel: t.Sel}
+				return &ast.SelectorExpr{X: &ast.Ident{Name: c.synthImportName(ref)}, Sel: t.Sel}
 			}
 		}
 		// `v.F` on the package's own value: scope the base, keep Sel.
@@ -2503,6 +2523,34 @@ func qualTypSel(p *runtime.Package, td *runtime.TypeDef) string {
 		return sel
 	}
 	return ""
+}
+
+// hostScalarTypeDefOf finds the package typedef whose HostScalar Go
+// type a raw bound value carries — `time.Second` binds a bare
+// time.Duration, not a Named, so its declared-type tag comes from
+// matching the host type back to the package's typedef table.
+func hostScalarTypeDefOf(p *runtime.Package, v runtime.Value) *runtime.TypeDef {
+	if gv, ok := v.(*runtime.GoValue); ok {
+		v = gv.V
+	}
+	rt := reflect.TypeOf(v)
+	if rt == nil {
+		return nil
+	}
+	for _, name := range p.Globals.Names() {
+		m, ok := p.Globals.Get(name)
+		if !ok {
+			continue
+		}
+		td, ok := m.(*runtime.TypeDef)
+		if !ok || td.HostScalar == nil {
+			continue
+		}
+		if reflect.TypeOf(td.HostScalar) == rt {
+			return td
+		}
+	}
+	return nil
 }
 
 // constKindDte maps a constant's default type to the ident it binds —
@@ -2898,9 +2946,9 @@ func (c *compiler) unfoldSpecType(p *runtime.Package, ts *ast.TypeSpec, depth in
 // the scope they were declared in, not the caller's. A bare ident
 // naming a package-level type of p becomes pkg.T through the caller's
 // import name for p — inside the caller's own package the ident
-// already resolves there, so it stays bare. A selector's qualifier is
-// re-keyed through the spec file's own imports, since the same
-// qualifier in the caller may name a different package — or none.
+// already resolves there, so it stays bare. A selector's qualifier
+// binds the spec file's own import ref via synthImportName — the same
+// qualifier in the caller may name a different package, or none.
 // Composite forms recurse; anything else returns as-is.
 func (c *compiler) scopeSpecType(p *runtime.Package, sf *syntax.File, e ast.Expr) ast.Expr {
 	switch t := ast.Unparen(e).(type) {
@@ -2912,7 +2960,7 @@ func (c *compiler) scopeSpecType(p *runtime.Package, sf *syntax.File, e ast.Expr
 	case *ast.SelectorExpr:
 		if id, ok := t.X.(*ast.Ident); ok {
 			if ref, ok := pkgImportRef(p, sf, id.Name); ok {
-				return &ast.SelectorExpr{X: &ast.Ident{Name: c.callerImportName(ref.Path)}, Sel: t.Sel}
+				return &ast.SelectorExpr{X: &ast.Ident{Name: c.synthImportName(ref)}, Sel: t.Sel}
 			}
 		}
 		return t
@@ -3024,6 +3072,34 @@ func (c *compiler) callerImportName(pkgPath string) string {
 		}
 	}
 	return "." + pkgPath
+}
+
+// synthImportName mints the qualifier a re-scoped expression uses for a
+// foreign package's own import — the caller need not import that
+// package at all, so the name binds the ref directly in synthImports
+// (importRef resolves it) rather than re-spelling it through the
+// caller's import list. The ".imp:" prefix can never collide with a
+// declared identifier.
+func (c *compiler) synthImportName(ref *runtime.ImportRef) string {
+	name := ".imp:" + ref.Path
+	if c.synthImports == nil {
+		c.synthImports = map[string]*runtime.ImportRef{}
+	}
+	c.synthImports[name] = ref
+	return name
+}
+
+// pkgDispName spells a package for gate diagnostics the way gc does —
+// the package clause's name, not an import alias or a synthesized
+// qualifier's minted text.
+func pkgDispName(ref *runtime.ImportRef) string {
+	if q, err := ref.Materialize(); err == nil && q != nil && q.Name != "" {
+		return q.Name
+	}
+	if i := strings.LastIndexByte(ref.Path, '/'); i >= 0 {
+		return ref.Path[i+1:]
+	}
+	return ref.Path
 }
 
 // selTypeSpecIn resolves a pkg.T selector written inside a type spec of
@@ -3247,7 +3323,13 @@ func (c *compiler) namedIdentOf(te ast.Expr) (namedTypID, bool) {
 			// NoBody` is legal gc regardless of the other side.
 			return namedTypID{}, false
 		}
-		return namedTypID{id: ref.Path + "." + t.Sel.Name, name: id.Name + "." + t.Sel.Name}, true
+		name := id.Name
+		if _, synth := c.synthImports[id.Name]; synth {
+			// a minted qualifier has no source spelling — the
+			// package clause's name is what gc prints.
+			name = pkgDispName(ref)
+		}
+		return namedTypID{id: ref.Path + "." + t.Sel.Name, name: name + "." + t.Sel.Name}, true
 	case *ast.StarExpr:
 		// a pointer's identity wraps its base's — `i == &d` reads
 		// as int vs *D, `&d == &e` as *D vs *E. Other composite
@@ -3711,6 +3793,9 @@ func (c *compiler) isImportName(name string) bool {
 // real name by materializing each unnamed import, like the VM's global
 // resolution does (vm.go's step 2.5).
 func (c *compiler) importRef(name string) (*runtime.ImportRef, bool) {
+	if ref, ok := c.synthImports[name]; ok {
+		return ref, true
+	}
 	if c.pkg == nil || c.file == nil {
 		return nil, false
 	}
