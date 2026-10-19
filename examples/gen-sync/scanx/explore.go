@@ -5,6 +5,7 @@
 // scope-gated (the scanned package's subtree only), lazily loaded, and
 // cached, so a shared dependency is read exactly once no matter how many
 // fields point at it, and cyclic structures terminate on a visited set.
+
 package scanx
 
 import (
@@ -69,11 +70,10 @@ func SplitTypeRef(cn string) (pkgPath, name string) {
 	return cn[:i], cn[i+1:]
 }
 
-// Explorer is a scope-gated, lazy, cached view of the declarations under
-// one package subtree: a name resolves only when its package path is the
-// scope root or beneath it, each package's decl table is built at most
-// once however many references point at it, and misses — type
-// parameters, names that don't exist — are cached as such.
+// Explorer resolves declarations under one package subtree. Create one
+// with [NewExplorer], look up canonical names with [Explorer.Lookup], and
+// walk referenced types with [Explorer.Reach]. Out-of-scope names and misses
+// return nil; lookups are cached for the Explorer's lifetime.
 type Explorer struct {
 	scope string
 	decls map[string]map[string]*inspect.Decl
@@ -130,12 +130,9 @@ func (e *Explorer) Lookup(cn string) *inspect.Decl {
 	return m[name]
 }
 
-// Reach breadth-first walks the named types reachable from root's
-// definition — a struct's field types, an interface's method types, an
-// alias's target — visiting each in-scope type decl at most once. The
-// root itself is never visited. Cyclic graphs terminate because decls
-// are keyed by canonical name before enqueueing. visit returning false
-// stops the walk early.
+// Reach visits the named types reachable from root's definition in breadth-first
+// order. Each in-scope declaration is visited at most once; root is excluded.
+// Returning false from visit stops the walk.
 func (e *Explorer) Reach(root *inspect.Decl, visit func(d *inspect.Decl) bool) {
 	seen := map[string]bool{}
 	queue := []*inspect.Decl{root}
