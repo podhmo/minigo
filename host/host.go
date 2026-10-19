@@ -1,27 +1,11 @@
-// Package host gives minigo scripts access to the real host process
-// environment, as opposed to the engine's view of it.
+// Package host gives minigo scripts access to the real host process environment.
 //
-// Import it as "minigo.dev/host" or by its module path
-// "github.com/podhmo/minigo/host"; both name the same functions. The
-// declarations are stubs so that gopls, gofmt and goimports work on
-// scripts: inside minigo the engine handles each call and the bodies never
-// run. Do not call them from compiled Go.
+// Scripts import "minigo.dev/host" or this module path and call [Getenv],
+// [Environ], [Args], [Hostname] or [Getwd]. Do not call these functions from
+// compiled Go. [Args] and [Getwd] bypass the engine's virtual argv and directory.
 //
-//	import "minigo.dev/host"
-//
-//	func Main() string {
-//		return host.Getenv("HOME")
-//	}
-//
-// [Getenv], [Environ], [Args], [Hostname] and [Getwd] read the host
-// process state. Unlike os.Args and os.Getwd in a script, [Args] and
-// [Getwd] ignore [github.com/podhmo/minigo.WithArgs] and
-// [github.com/podhmo/minigo.WithWorkingDir].
-//
-// When the engine is restricted with
-// [github.com/podhmo/minigo.WithAllowedRoots], only [Exit] is bound, so a
-// script using any other member fails. [Exit] always fails: a script
-// cannot terminate the host process.
+// With [github.com/podhmo/minigo.WithAllowedRoots], only [Exit] is bound.
+// [Exit] always fails: scripts cannot terminate the host process.
 package host
 
 // Getenv returns the value of the named environment variable of the host
