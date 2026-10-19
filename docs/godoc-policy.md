@@ -38,8 +38,10 @@ comment.
 
 ### Keep (this is what callers need)
 
-- **Contract**: what it returns, what it does to its arguments and to
-  shared state, what errors it reports, nil/zero-value behavior.
+- **Contract**: what it does to its arguments and to shared state, what
+  errors it reports, and constraints on results the types cannot show —
+  sorted order, absolute paths, when a result is nil or `ok` is false,
+  what multiple results arrive as.
 - **When to use it vs. its siblings**: `RunFile is Run for a single
   file` is valuable — it places the identifier on the map.
 - **Observable semantics that differ from Go or from the obvious
@@ -58,6 +60,13 @@ comment.
   tautology. (A tautological one-liner is acceptable only if the type
   would otherwise look undocumented in a list where every sibling has
   real docs — prefer improving it over keeping it.)
+- **Parameter and result descriptions the types already give.**
+  `Format converts a runtime value into a Go value` restates
+  `func Format(v runtime.Value) any`; `(import path + member name)`
+  restates the fields of `runtime.SymbolID`. Describe a parameter only
+  for what its type does not say: its format (`ref is an import path or
+  a directory`), its meaning, or a requirement (`dst must be a
+  pointer`).
 - **Implementation details**: which internal function, field, cache, or
   opcode is used (`e.pkgs`, `goNative`, `OpSpecialCall`, `OP_EVAL_AST`),
   how the algorithm works, which file does what.
@@ -92,7 +101,8 @@ detached file header. Delete it only when it is redundant with the code.
 
 For each sentence in an exported doc comment:
 
-1. Does it restate the name/signature? → delete.
+1. Does it restate the name, the signature, or what the parameter and
+   result types already say? → delete.
 2. Does it describe *how* rather than *what*? → move to a code comment.
 3. Does it mention an unexported identifier, internal file, opcode,
    plan section, or migration state? → rewrite for callers or move.
