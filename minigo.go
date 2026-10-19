@@ -1164,9 +1164,8 @@ func bindCompiles(p *runtime.Package, ch *bytecode.Chunk) {
 	}
 }
 
-// EvalExpr evaluates expr in pkg's scope. Names resolve as inside a
-// function body of file: package globals, then file's imports, then
-// builtins.
+// EvalExpr evaluates expr in pkg's scope, resolving names as a function
+// body in file would: file's imports, package globals and builtins.
 func (e *Engine) EvalExpr(ctx context.Context, pkg *runtime.Package, file *syntax.File, expr ast.Expr) (runtime.Value, error) {
 	// The fragment travels as AST inside a chunk (OP_EVAL_AST) and compiles
 	// via compile.Expr on first execution.
