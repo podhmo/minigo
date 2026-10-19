@@ -1,19 +1,14 @@
 // Package compile lowers Go functions, package initializers and
 // expressions to [bytecode.Chunk] values for the minigo stack VM.
 //
-// [Func] compiles a [runtime.Function] body; [InitFunc] and [ConstInitFunc]
-// compile a [runtime.Package] initializer; [Expr] and [ExprScoped] compile a
-// single expression. Source comes from
-// [github.com/podhmo/minigo/syntax]; the chunks run on
-// [github.com/podhmo/minigo/vm].
-//
 // Every Go program compiles. A construct outside the supported subset
 // compiles to a [bytecode.OpTrap] that fails at run time, with its
 // position, only if execution reaches it.
 //
-// Only locals and upvalues are resolved at compile time. Any other name is
-// looked up at run time (file imports, then package globals, then
-// builtins), which keeps imports lazy.
+// Only locals and upvalues are resolved at compile time. Any other name
+// compiles to [bytecode.OpGlobal] or [bytecode.OpSetGlobal] and is looked
+// up at run time (file imports, then package globals, then builtins),
+// which keeps imports lazy.
 package compile
 
 import (
@@ -899,7 +894,9 @@ func countResults(fl *ast.FieldList) int {
 }
 
 // InitFunc compiles the package initializer: const and var declarations in
-// dependency order, as Go initializes them, then the init functions.
+// dependency order, as Go initializes them, then the init functions. Use
+// [ConstInitFunc] to bind only the constants, without running var
+// initializers or init functions.
 func InitFunc(pkg *runtime.Package) (*bytecode.Chunk, error) {
 	c := &compiler{pkg: pkg, fs: newFScope(nil), ch: &bytecode.Chunk{Name: pkg.Name + ".__init__"}, iotaVal: -1}
 	c.fs.pushBlock()
