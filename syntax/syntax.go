@@ -1,15 +1,9 @@
 // Package syntax parses Go source files for the minigo interpreter.
 //
-// [ParseFile] wraps go/parser and returns a [File]: the *ast.File plus the
-// file's [Import] table. Nothing here resolves or executes code; the
-// [github.com/podhmo/minigo/compile] package turns the AST into bytecode.
-//
-// [CheckLang] applies the -lang gate, rejecting language features newer
-// than a file's effective version ([File.Lang]); it takes the package-wide
-// name table built by [DeclaredKinds].
-//
-// [TypeParamNames] and [RecvTypeParamNames] list the type parameter names
-// a declaration binds.
+// [ParseFile] returns a [File] containing the AST and file-scoped [Import]
+// table. [CheckLang] checks the file's language version ([File.Lang]) using
+// the package-wide name table from [DeclaredKinds]. Parsing does not resolve
+// imports or execute code.
 package syntax
 
 import (
