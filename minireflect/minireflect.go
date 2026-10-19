@@ -1,25 +1,11 @@
-// Package minireflect implements the standard "reflect" package for minigo
-// scripts, natively over script values.
+// Package minireflect implements the "reflect" package for minigo scripts.
 //
-// [Symbols] returns the members to bind under the "reflect" import path,
-// given the engine's type machinery as [Hooks]. [SizeOf], [AlignOf] and
-// [OffsetOf] expose the same declared-type layout for unsafe.Sizeof,
-// unsafe.Alignof and unsafe.Offsetof.
+// Pass engine [Hooks] to [Symbols] and bind the result under "reflect".
+// [SizeOf], [AlignOf] and [OffsetOf] provide layout for unsafe operations.
 //
-// Scripts see reflect.Value as [RValue] and reflect.Type as [RType], along
-// with [StructField], [Method] and [MapIter]. Host code receives them boxed
-// in a [runtime.GoValue]; [RValue.Payload] gives what fmt should print for
-// a Value. An RValue belongs to one of two domains:
-//
-//   - script domain: it views a [runtime.Value] together with its settable
-//     location, so Set writes through to the script variable, field or
-//     element.
-//   - host domain: a value obtained from a [runtime.GoValue] delegates to a
-//     real reflect.Value, so host objects keep their methods and
-//     unexported state.
-//
-// Types are interned: two RTypes for the same type are the same pointer,
-// so `v.Type() == t` works across both domains.
+// Scripts see reflect.Value as [RValue] and reflect.Type as [RType]; their
+// docs describe differences from Go's reflect API. [RValue.Payload] supplies
+// the value to print.
 //
 // NewAt, FuncOf, StructOf, MakeChan, Select, Swapper and VisibleFields
 // report an error when called.
