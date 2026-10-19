@@ -379,13 +379,12 @@ func (e *Engine) NewSession() *Engine {
 	return s
 }
 
-// Result is a return value of [Engine.RunResult]; decode it with
-// [Result.As].
+// Result is returned by [Engine.RunResult]; decode it with [Result.As].
 type Result struct {
 	V runtime.Value
 }
 
-// RunResult is [Engine.Run] returning a [Result].
+// RunResult is [Engine.Run] with a decodable result.
 func (e *Engine) RunResult(ctx context.Context, ref, fnName string, args ...runtime.Value) (*Result, error) {
 	v, err := e.Run(ctx, ref, fnName, args...)
 	if err != nil {
@@ -501,24 +500,24 @@ func assignReflect(dst reflect.Value, v runtime.Value) error {
 	}
 }
 
-// RegisterSpecial installs a special-form handler for a symbol (import
-// path + member name). A call `pkgAlias.Name(args...)` whose alias resolves
-// to that package does not evaluate its arguments; h runs instead, at run
-// time, with the call's syntax. Register before running scripts that call it.
+// RegisterSpecial makes id a special form: a call `pkgAlias.Name(args...)`
+// that resolves to id does not evaluate its arguments; h runs instead, at
+// run time, with the call's syntax. Register before running scripts that
+// call it.
 func (e *Engine) RegisterSpecial(id runtime.SymbolID, h runtime.SpecialFunc) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.specials[id] = h
 }
 
-// WithResolver replaces the resolver and returns e.
+// WithResolver replaces the resolver in place and returns e.
 func (e *Engine) WithResolver(r resolve.Resolver) *Engine {
 	e.resolver = r
 	return e
 }
 
-// Package loads a package by import path or directory without
-// initializing it. Pass it to [Engine.Call] to run a member.
+// Package loads ref, an import path or directory, without initializing
+// it. Pass the package to [Engine.Call] to run a member.
 func (e *Engine) Package(ctx context.Context, ref string) (*runtime.Package, error) {
 	if resolve.LooksLikeDir(ref) || isGoFile(ref) {
 		return e.loadDir(ctx, ref)
@@ -1165,9 +1164,9 @@ func bindCompiles(p *runtime.Package, ch *bytecode.Chunk) {
 	}
 }
 
-// EvalExpr evaluates a parsed expression in pkg's scope. Names resolve as
-// inside a function body of file: package globals, then file's imports,
-// then builtins.
+// EvalExpr evaluates expr in pkg's scope. Names resolve as inside a
+// function body of file: package globals, then file's imports, then
+// builtins.
 func (e *Engine) EvalExpr(ctx context.Context, pkg *runtime.Package, file *syntax.File, expr ast.Expr) (runtime.Value, error) {
 	// The fragment travels as AST inside a chunk (OP_EVAL_AST) and compiles
 	// via compile.Expr on first execution.

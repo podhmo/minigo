@@ -67,7 +67,7 @@ type shadowMark struct {
 }
 
 // Load reads a .go file, or a directory's buildable non-test files, into
-// the session (:load) and returns the loaded file paths. Declarations
+// the session (:load) and returns the files it read. Declarations
 // become session globals, each file keeps its own imports, and var/const
 // initializers and init run once per load. ref is a path, optionally
 // quoted, relative to the engine's start directory.

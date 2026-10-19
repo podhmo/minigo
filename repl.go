@@ -1154,7 +1154,7 @@ func (r *REPL) loadRef(ctx context.Context, ref string) (*runtime.Package, error
 	return r.engine.loadPath(ctx, ref)
 }
 
-// Display converts a value for printing the way fmt's %v does, except that
+// Display returns a form of v that prints with %v like fmt does, except that
 // a nil slice or map prints as T(nil) to tell it from an empty one, and a
 // multi-value result prints as (a, b). It returns nil when there is nothing
 // to print. [REPL.Dump] prints Go syntax instead.
@@ -1162,7 +1162,7 @@ func (r *REPL) Display(v runtime.Value) any {
 	return r.render(v, "%v")
 }
 
-// Dump converts a value for printing in Go syntax, like fmt's %#v (:dump).
+// Dump returns a form of v that prints in Go syntax, like fmt's %#v (:dump).
 // GoString methods are used; String and Error are not.
 func (r *REPL) Dump(v runtime.Value) any {
 	return r.render(v, "%#v")
@@ -1188,7 +1188,7 @@ func (r *REPL) render(v runtime.Value, spec string) any {
 	return format(v)
 }
 
-// IncompleteInput reports whether a REPL input needs more lines before
+// IncompleteInput reports whether src needs more lines before
 // it is passed to [REPL.EvalLine]: a (), [] or {} group is still open, the
 // input ends on a token after which Go inserts no semicolon (an operator,
 // comma or dot), or a raw string or /* */ comment is unterminated. It is a

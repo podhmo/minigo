@@ -18,8 +18,8 @@ import (
 
 var errorType = reflect.TypeOf((*error)(nil)).Elem()
 
-// WrapFunc adapts a Go function fn into a script-callable value, typically
-// a symbol for [Engine.Bind]. Arguments are copied: each converts to the
+// WrapFunc makes a Go function callable from scripts, typically as a
+// symbol for [Engine.Bind]. Arguments are copied: each converts to the
 // declared parameter type when assignable or convertible, else the call
 // fails, and fn cannot mutate script values. A trailing error result
 // becomes the call's error; other results convert with [ValueOf], and
@@ -177,9 +177,9 @@ func nativeElem(av reflect.Value, pt reflect.Type) (reflect.Value, error) {
 	return reflect.Value{}, fmt.Errorf("cannot use %s as %s", av.Type(), pt)
 }
 
-// ValueOf converts a Go value into a script value: runtime values pass
-// through, numeric kinds widen to int64 or float64, and everything else is
-// boxed as a [*runtime.GoValue] whose methods scripts can call.
+// ValueOf converts x for use in scripts: runtime values pass through,
+// numeric kinds widen to int64 or float64, and everything else is boxed as
+// a [*runtime.GoValue] whose methods scripts can call.
 func ValueOf(x any) runtime.Value {
 	// runtime.Value is an `any` alias, so the runtime types must be named
 	// explicitly — a `case runtime.Value` would swallow every input.
