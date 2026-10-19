@@ -73,7 +73,7 @@ type Engine struct {
 	byDir map[string]*runtime.Package // synthetic packages by dir
 	files map[string]*runtime.Package // single-file packages by abs path
 	binds map[string]*runtime.Package // host-bound packages (sessions inherit)
-	srcs  map[string]*runtime.Package // source packages behind bound paths (inspect.SourceOf)
+	srcs  map[string]*runtime.Package // source packages SourceOf builds past a bound shadow or a deny mode
 	// lenient builds (inspect.DirOf/FileOf/PackageOf) are privately
 	// cached — a lenient package in e.pkgs would hide a redeclare error
 	// from a later strict load, and a strict package in e.byDir would
@@ -779,12 +779,15 @@ func (e *Engine) loadDirMode(ctx context.Context, dir string, lenient bool) (*ru
 // loads the Go source instead of returning the bound package. Script
 // imports keep getting the bound package. It is meant for reading code,
 // so a [ModeDeny] package mode, which stops imports, does not stop
-// SourceOf from loading a bound path's source.
+// SourceOf from loading a path's source.
 func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, error) {
 	// Bound packages answer lookups through e.pkgs (with a nil index), so
 	// the source package is built into a private cache — never e.pkgs or
-	// e.byDir — to keep the bound package answering real imports.
-	if _, bound := e.binds[path]; !bound {
+	// e.byDir — to keep the bound package answering real imports. A denied
+	// path takes the same private build: deny gates imports, not reading,
+	// and the private cache keeps the denied package out of the stores
+	// [Engine.Package] and DirOf answer from.
+	if _, bound := e.binds[path]; !bound && e.pkgModes[path] != ModeDeny {
 		return e.loadPath(ctx, path)
 	}
 	e.mu.Lock()
