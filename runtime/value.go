@@ -1,47 +1,20 @@
-// Values are boxed `any`; a tagged representation is a possible later
-// optimization.
-
-// Package runtime defines the values minigo scripts compute with, and the
-// types host code uses to exchange them with the interpreter.
+// Package runtime defines script values and their contracts at the host boundary.
 //
-// Embedders meet this package through [github.com/podhmo/minigo]:
-// [github.com/podhmo/minigo.Engine.Call] takes and returns script values
-// of type [Value], [github.com/podhmo/minigo.Engine.Bind] registers
-// values as the members of a host package, and
-// [github.com/podhmo/minigo.Engine.RegisterSpecial] installs a
-// [SpecialFunc].
+// Start with [Value] for representations and [DeepUnwrap] to convert results
+// from [github.com/podhmo/minigo.Engine.Call] to Go values. [Unwrap] removes
+// only declared-type tags; [ErrorOf] handles error results.
 //
-// Values:
-//   - [Value] lists the representation of each kind of script value:
-//     int64, float64, string and bool for basic values, [Slice], [Map],
-//     [Struct] and [Chan] for composites, [Cell] (or [FieldRef],
-//     [IndexRef]) for pointers, and [GoValue] for host values.
-//   - [Unwrap] removes a [Named] type tag, [DeepUnwrap] converts a result
-//     to plain Go values, and [ErrorOf] converts an error result.
-//   - [Zero] and [Tag] build values of a given [TypeDef]; [Copy] and
-//     [SetRef] give them Go's assignment semantics.
+// [TypeDef] describes types; [Zero], [Tag], [Copy] and [SetRef] construct
+// and assign values. [Package] supplies members, including script [Function]
+// values and host [BuiltinFunc] values. A builtin calls back through [VMCaller].
 //
-// Functions are [Function] (declared in source), [Closure], [BoundMethod]
-// and [BuiltinFunc] (implemented in Go). A BuiltinFunc reaches back into
-// the interpreter through a [VMCaller].
-//
-// Types are described by [TypeDef], classified by [TypeKind]; compare
-// them with [TypIdentical] and print them with [DisplayName].
-//
-// A [Package] is loaded lazily, through an [ImportRef], and moves through
-// the [State] stages; its globals live in an [Env].
-//
-// Failures: a [Panic] is a script panic, which script code can recover;
-// its value may be a [RuntimeError] or [PlainError] as in Go. A [Trap]
-// is a failure scripts cannot recover, including errors returned by
-// builtins.
-//
-// Special forms: a [SpecialFunc] registered under a [SymbolID] receives
-// calls unevaluated as a [QuotedCall], and evaluates what it needs
-// through a [SpecialContext].
-//
-// The interpreter itself is [github.com/podhmo/minigo/vm].
+// [Panic] is recoverable by scripts; [Trap] is not. [SpecialFunc] receives
+// unevaluated calls through [QuotedCall] and [SpecialContext]. See
+// [github.com/podhmo/minigo] for embedding and
+// [github.com/podhmo/minigo/vm] for execution.
 package runtime
+
+// Values are boxed any; a tagged representation is a possible optimization.
 
 import (
 	"errors"
@@ -1276,14 +1249,9 @@ type Tuple struct{ Elems []Value }
 // len(Elems): a slice of zero-size elements may be [Slice.Virtual].
 type Slice struct {
 	Elems []Value
-	// N is the logical length of a virtual slice, whose zero-size
-	// elements are not stored: make([]struct{}, n) allocates nothing for
-	// any n, like Go's zerobase ($GOROOT/test/fixedbugs/issue29190.go).
-	// Index reads yield Zero and element writes are unobservable (a
-	// zero-size type has a single value). CapN is the logical capacity
-	// and can exceed N — a cap-preserving reslice (s[:0]) or a
-	// within-capacity append keeps it — so virtual-ness is a property
-	// of the representation, not of N: N > 0 || CapN > 0.
+	// N and CapN are the logical length and capacity for zero-size elements
+	// that are not stored in Elems. Reads yield Zero; writes are unobservable.
+	// Use Len, Cap and Virtual to access this representation.
 	N, CapN int64
 	Zero    Value
 	// Typ is the declared slice type when one is known (a named literal or
@@ -1805,9 +1773,8 @@ type VMCaller interface {
 	// TypeOf returns the typedef describing a runtime value — used by
 	// new(expr) to type the allocated cell.
 	TypeOf(x Value) *TypeDef
-	// Convert implements the conversion T(x) on the calling goroutine —
-	// what Call(td, x) does, without the engine-boundary bookkeeping
-	// (re-entry check, panic capture) a conversion never needs.
+	// Convert evaluates T(x) on the calling goroutine. Unlike Call, it does
+	// not capture panics; use it only from a builtin already running on the VM.
 	Convert(td *TypeDef, x Value) (Value, error)
 	// Copy returns a copy of v following Go assignment semantics
 	// (structs copy, slices/maps/pointers share) — used by new(expr).
