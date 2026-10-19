@@ -1,12 +1,10 @@
-// Command test-detect lists the packages affected by a set of changed
-// .go files, so CI can run only the tests a change can break.
-//
-// It builds the repository's internal import graph by parsing every .go
-// file with parser.ImportsOnly — no go list, no module resolution, no
-// network — then walks reverse dependencies from the changed files.
+// Command test-detect lists packages affected by changed .go files for CI.
 //
 //	test-detect [flags] [changed.go ...]
 //	git diff --name-only | test-detect -stdin
+//
+// It follows reverse dependencies within the repository without resolving
+// external modules or using the network.
 package main
 
 import (
