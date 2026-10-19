@@ -3078,11 +3078,19 @@ func (v *RValue) Convert(t *RType) *RValue {
 		out = v.Bool()
 	case reflect.Slice:
 		if v.Kind() == reflect.String {
+			var s *runtime.Slice
 			if et := t.Elem(); et != nil && et.Kind() == reflect.Int32 {
-				out = strToRunes(v.String())
+				s = strToRunes(v.String())
 			} else {
-				out = strToBytes(v.String())
+				s = strToBytes(v.String())
 			}
+			// the result keeps the target's declared type so a named
+			// slice type (`type RS []rune`, `[]R` with `type R rune`)
+			// survives Interface()/type assertions
+			if t.td != nil {
+				s.Typ = t.td
+			}
+			out = s
 		} else {
 			out = v.get()
 		}
