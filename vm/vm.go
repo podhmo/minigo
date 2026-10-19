@@ -1,6 +1,22 @@
-// Package vm is the minigo stack-machine interpreter. One VM call executes
-// one frame; nested calls recurse through VM.Call. Script panics and traps
-// both unwind via Go panic and are converted to errors at the call boundary.
+// Package vm is the minigo stack-machine interpreter: it runs the
+// [bytecode.Chunk] code produced by [github.com/podhmo/minigo/compile].
+//
+// The host creates a [VM] with its [Hooks] filled in — the engine services
+// the VM needs, such as builtins and lazy materialization of package
+// members. [VM.Call] invokes a function-like value and is the error
+// boundary: script panics and traps come back as errors. A *VM implements
+// [runtime.VMCaller], through which host builtins call back into the script.
+//
+// Each Call runs inside a script process that the `go` statement's
+// goroutines share; the process ends when the outermost Call returns, or
+// when the scope opened by [VM.EnsureProc] is closed by [VM.ReleaseProc].
+// [ExitRequest] reports os.Exit, and [IsProcExit] identifies errors of
+// goroutines that ended with their process.
+//
+// Host intrinsics that wait on host channels or callbacks cooperate with
+// deadlock detection through [NoteExternalWait], [RegisterWakeChan],
+// [SetWakeChanDead] and [WakeChanState]. [SnapshotOf] converts host Go
+// values into [VM.Call] arguments.
 package vm
 
 import (
@@ -29,19 +45,20 @@ import (
 	"github.com/podhmo/minigo/syntax"
 )
 
-// Hooks are the engine-provided services the VM needs.
+// Hooks are the engine-provided services a [VM] needs, set in [VM].H.
 type Hooks struct {
 	// Builtin resolves a predeclared name (len, append, int, ...).
 	Builtin func(name string) (runtime.Value, bool)
 	// Materialize builds the runtime value for a package-level decl
 	// (function, type, var, const) on first access.
 	Materialize func(pkg *runtime.Package, d *index.Decl) (runtime.Value, error)
-	// CompileExpr compiles a single expression into a chunk — used by
-	// OpEvalAST (the migration bridge; expressions see globals, file
-	// imports and builtins but not the caller's locals).
+	// CompileExpr compiles a single expression into a chunk for
+	// OpEvalAST; the expression sees globals, file imports and builtins
+	// but not the caller's locals (see compile.Expr).
 	CompileExpr func(pkg *runtime.Package, file *syntax.File, e ast.Expr) (*bytecode.Chunk, error)
 	// CompileScopedExpr compiles an expression with a caller-scope overlay
-	// (name -> caller slot/upval index) — used by special-form Eval.
+	// (name -> caller slot/upval index) for special forms (see
+	// compile.ExprScoped).
 	CompileScopedExpr func(pkg *runtime.Package, file *syntax.File, e ast.Expr, locals, upvals map[string]int) (*bytecode.Chunk, error)
 	// Special resolves a canonical symbol to its special-form handler.
 	Special func(id runtime.SymbolID) (runtime.SpecialFunc, bool)
@@ -86,8 +103,8 @@ type Hooks struct {
 	// (one hop — `type A = B` gives B itself, not B's underlying shape).
 	AliasOf func(td *runtime.TypeDef) (*runtime.TypeDef, error)
 	// FieldTypes returns the declared type of each struct field, parallel
-	// to td.Fields (nil entries leave the field zero NIL) — used by
-	// zeroValue so `var s T` materializes typed field zeros like Go.
+	// to td.Fields (nil entries leave the field zero NIL), so `var s T`
+	// materializes typed field zeros like Go.
 	FieldTypes func(td *runtime.TypeDef) ([]*runtime.TypeDef, error)
 	// ResolveType resolves a type expression in the context of typedef td
 	// (its package scope, file imports and generic binds): named types
@@ -105,15 +122,15 @@ type Hooks struct {
 	Linkname func(vc runtime.VMCaller, fn *runtime.Function) (runtime.Value, bool, error)
 }
 
-// VM is a stack machine. Each VM is confined to one goroutine; the `go`
-// statement forks a fresh VM sharing the same process so goroutines
-// genuinely interleave on host goroutines. Only package state (globals,
-// the materialization cache, channels) is shared between them.
+// VM is a stack machine. Create one as a struct literal with [Hooks] set
+// in H, then run code with [VM.Call].
 //
-// A Call from a foreign goroutine — a host-retained callback firing
-// off-VM (WaitGroup.Go, time.AfterFunc) — does not run here: Call
-// detects it by goroutine id and reroutes to a spawned child VM of the
-// same process, keeping the frames stack single-owner.
+// Each VM is confined to one goroutine; the `go` statement forks a fresh
+// VM sharing the same process so goroutines genuinely interleave on host
+// goroutines. Only package state (globals, the materialization cache,
+// channels) is shared between them. A Call from another goroutine — a
+// host-retained callback firing off-VM (WaitGroup.Go, time.AfterFunc) — is
+// safe: it runs on a child VM of the same process.
 type VM struct {
 	H Hooks
 
@@ -511,9 +528,10 @@ func (p *proc) noteExternalWait() (release func()) {
 	}
 }
 
-// NoteExternalWait is proc.noteExternalWait for callers holding only a
-// runtime.VMCaller (intrinsic bindings); it returns a no-op release
-// when the caller has no process to watch.
+// NoteExternalWait records a pending external callback on vc's process —
+// a timer or retained host hook that will run script code later. While one
+// is pending, deadlock detection stays disarmed. Call release when the
+// callback fires or is cancelled; it is a no-op when vc has no process.
 func NoteExternalWait(vc runtime.VMCaller) (release func()) {
 	if p := procOf(vc); p != nil {
 		return p.noteExternalWait()
@@ -548,9 +566,12 @@ func (p *proc) registerChan(rv reflect.Value) uintptr {
 	return ptr
 }
 
-// RegisterWakeChan is proc.registerChan for callers holding only a
-// runtime.VMCaller (intrinsic bindings); 0 means there is no process to
-// register with and the channel stays unmanaged.
+// RegisterWakeChan starts tracking the liveness of host channel rv for
+// deadlock detection: a goroutine parked on a registered channel counts as
+// wakeable only while the channel is alive (see [SetWakeChanDead]). The
+// registration lasts as long as vc's process. It returns the id to pass to
+// [SetWakeChanDead] and [WakeChanState], or 0 when vc has no process, in
+// which case the channel stays unmanaged.
 func RegisterWakeChan(vc runtime.VMCaller, rv reflect.Value) uintptr {
 	if p := procOf(vc); p != nil {
 		return p.registerChan(rv)
@@ -610,17 +631,18 @@ func (p *proc) setChanDead(ptr uintptr, dead bool) {
 	p.mu.Unlock()
 }
 
-// SetWakeChanDead is proc.setChanDead for callers holding only a
-// runtime.VMCaller (intrinsic bindings).
+// SetWakeChanDead marks a channel registered with [RegisterWakeChan] as
+// dead (no sender can reach it, e.g. a stopped timer) or alive again (e.g.
+// a reset timer). An unknown id is ignored.
 func SetWakeChanDead(vc runtime.VMCaller, ptr uintptr, dead bool) {
 	if p := procOf(vc); p != nil {
 		p.setChanDead(ptr, dead)
 	}
 }
 
-// WakeChanState is proc.chanState for callers holding only a
-// runtime.VMCaller (intrinsic bindings); (false, false) means the
-// channel is unmanaged — or there is no process to ask.
+// WakeChanState reports whether the channel id is registered with
+// [RegisterWakeChan] and, if so, whether it is alive. (false, false) means
+// the channel is unmanaged or vc has no process.
 func WakeChanState(vc runtime.VMCaller, ptr uintptr) (managed, alive bool) {
 	if p := procOf(vc); p != nil {
 		return p.chanState(ptr)
@@ -638,22 +660,23 @@ type procExit struct{}
 
 func (procExit) Error() string { return "minigo: process exited" }
 
-// ExitRequest unwinds out of os.Exit(code): like a real process exit it
-// skips every pending defer, cannot be recovered by the script, and
-// stops the process's other goroutines. At the outermost Call it either
-// ends cleanly (code 0) or reports `exit status N`.
+// ExitRequest is the error for a script's os.Exit(code): like a real
+// process exit it skips every pending defer, cannot be recovered by the
+// script, and stops the process's other goroutines. [VM.Call] returns it
+// for a nonzero code and a nil error for code 0.
 type ExitRequest struct{ Code int }
 
 func (e *ExitRequest) Error() string { return fmt.Sprintf("exit status %d", e.Code) }
 
-// IsProcExit reports whether err is the process-exit sentinel — for host
-// code collecting Task errors that wants the real failure, not the noise
-// of siblings killed alongside it.
+// IsProcExit reports whether err is the error a goroutine gets when its
+// process ends under it (the root Call returned, or a sibling goroutine
+// failed the process). Host code collecting [runtime.Task] errors can skip
+// these to find the real failure.
 func IsProcExit(err error) bool { _, ok := err.(procExit); return ok }
 
-// EnsureProc opens a process scope on this VM when none is open: the
-// `go` spawns that occur before the Call boundary joins the scope so
-// they die with it. ReleaseProc ends a scope opened by EnsureProc.
+// EnsureProc opens a process scope on this VM, or holds the open one, so
+// that goroutines spawned across several Calls share one process. Pair
+// each call with [VM.ReleaseProc].
 func (v *VM) EnsureProc() {
 	v.callMu.Lock()
 	defer v.callMu.Unlock()
@@ -663,8 +686,8 @@ func (v *VM) EnsureProc() {
 	v.procHolds++
 }
 
-// ReleaseProc ends a scope opened by EnsureProc: the process is killed
-// (parked goroutines abort) when the last hold releases.
+// ReleaseProc ends a scope opened by [VM.EnsureProc]: the process is
+// killed (parked goroutines abort) when the last hold releases.
 func (v *VM) ReleaseProc() {
 	v.callMu.Lock()
 	defer v.callMu.Unlock()
@@ -690,7 +713,7 @@ func (v *VM) doneRV() reflect.Value {
 
 var nilChanValue = reflect.ValueOf((chan struct{})(nil))
 
-// Spawn implements VMCaller.Spawn — the `go` statement's machinery.
+// Spawn implements [runtime.VMCaller].
 func (v *VM) Spawn(fn runtime.Value, args []runtime.Value) *runtime.Task {
 	return v.spawn(fn, args, nil, nil, true)
 }
@@ -755,7 +778,7 @@ func (v *VM) probeCaller() runtime.VMCaller {
 	return &VM{H: v.H}
 }
 
-// Task implements VMCaller.Task — nil on the root goroutine.
+// Task implements [runtime.VMCaller]; it is nil on the root goroutine.
 func (v *VM) Task() *runtime.Task { return v.task }
 
 // maxFrames bounds the call stack; exceeding it traps instead of letting
@@ -1137,11 +1160,12 @@ func overwriteArrayElems(dst, src *runtime.Slice) {
 	}
 }
 
-// Call invokes a function-like value: Function, Closure, BoundMethod,
-// BuiltinFunc, TypeDef (conversion), or Cell wrapping any of those.
-// It is the engine boundary: script panics and traps unwind as Go panics
-// and are converted to errors here. The outermost Call on a VM is its
-// process's root: the proc is created lazily and killed on return.
+// Call invokes a function-like value: [runtime.Function],
+// [runtime.Closure], [runtime.BoundMethod], [runtime.BuiltinFunc],
+// [runtime.TypeDef] (a conversion), or a [runtime.Cell] wrapping any of
+// those. Script panics and traps are returned as errors. Unless a scope
+// is held with [VM.EnsureProc], the outermost Call on a VM opens the
+// script process and ends it on return.
 func (v *VM) Call(callee runtime.Value, args []runtime.Value) (result runtime.Value, err error) {
 	return v.callBounded(callee, args, nil, nil)
 }
@@ -1336,10 +1360,10 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 	return fr.stack[len(fr.stack)-1], nil
 }
 
-// Member implements the VMCaller.Member hook: selectMember over a dummy
-// frame, reporting failure instead of trapping so host intrinsics can
-// probe for optional members (e.g. a script-defined Unwrap).
+// Member implements [runtime.VMCaller].
 func (v *VM) Member(base runtime.Value, name string) (m runtime.Value, ok bool) {
+	// selectMember over a dummy frame, reporting failure instead of
+	// trapping so host intrinsics can probe for optional members.
 	defer func() {
 		if r := recover(); r != nil {
 			m, ok = nil, false
@@ -1349,9 +1373,8 @@ func (v *VM) Member(base runtime.Value, name string) (m runtime.Value, ok bool) 
 	return v.selectMember(fr, base, name), true
 }
 
-// MethodSetOf implements VMCaller.MethodSetOf: the names a dynamic value
-// offers interface checks. A nil set reports "no engine hook" — callers
-// then fall back to Member's existence check.
+// MethodSetOf implements [runtime.VMCaller]. The set is nil when [Hooks]
+// provide no method-set lookup or the lookup fails.
 func (v *VM) MethodSetOf(x runtime.Value) (map[string]bool, bool) {
 	if v.H.MethodSetOf != nil {
 		if set, unsure, err := v.H.MethodSetOf(x); err == nil {
@@ -1368,7 +1391,7 @@ func (v *VM) MethodSetOf(x runtime.Value) (map[string]bool, bool) {
 	return set, false
 }
 
-// Package implements VMCaller.Package: the package of the innermost
+// Package implements [runtime.VMCaller]: the package of the innermost
 // running frame, i.e. the builtin's caller.
 func (v *VM) Package() *runtime.Package {
 	if n := len(v.frames); n > 0 {
@@ -1379,15 +1402,13 @@ func (v *VM) Package() *runtime.Package {
 	return nil
 }
 
-// TypeOf implements the VMCaller.TypeOf hook: the typedef describing a
-// runtime value, for new(expr)'s allocated cell type.
+// TypeOf implements [runtime.VMCaller].
 func (v *VM) TypeOf(x runtime.Value) *runtime.TypeDef {
 	return v.typeOfValue(x)
 }
 
-// ResolveType implements the VMCaller hook via Hooks.ResolveType: the
-// engine's declared-type resolution for an AST type expression in a
-// typedef's context (package scope, file imports, generic binds).
+// ResolveType implements [runtime.VMCaller] by delegating to
+// [Hooks].ResolveType; it fails when that hook is nil.
 func (v *VM) ResolveType(td *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, error) {
 	if v.H.ResolveType == nil {
 		return nil, fmt.Errorf("cannot resolve type %T", x)
@@ -1395,8 +1416,8 @@ func (v *VM) ResolveType(td *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, err
 	return v.H.ResolveType(td, x)
 }
 
-// FieldTypes implements the VMCaller hook via Hooks.FieldTypes: the
-// declared typedef of each struct field, parallel to td.Fields.
+// FieldTypes implements [runtime.VMCaller] by delegating to
+// [Hooks].FieldTypes; it fails when that hook is nil.
 func (v *VM) FieldTypes(td *runtime.TypeDef) ([]*runtime.TypeDef, error) {
 	if v.H.FieldTypes == nil {
 		return nil, fmt.Errorf("cannot resolve field types")
@@ -1404,8 +1425,8 @@ func (v *VM) FieldTypes(td *runtime.TypeDef) ([]*runtime.TypeDef, error) {
 	return v.H.FieldTypes(td)
 }
 
-// ElemOf implements the VMCaller hook via Hooks.ElemOf: the element or
-// pointee typedef of a container/pointer typedef.
+// ElemOf implements [runtime.VMCaller] by delegating to [Hooks].ElemOf;
+// it fails when that hook is nil.
 func (v *VM) ElemOf(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 	if v.H.ElemOf == nil {
 		return nil, fmt.Errorf("cannot resolve element type")
@@ -1413,11 +1434,12 @@ func (v *VM) ElemOf(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 	return v.H.ElemOf(td)
 }
 
-// Copy implements the VMCaller.Copy hook: Go assignment semantics —
-// structs copy by value, slices/maps/pointers share. A riding constant
-// (T(c), which stays a constant inside expressions) materializes at this
-// assignment boundary so stored elements carry concrete values.
+// Copy implements [runtime.VMCaller]. A constant operand is materialized
+// to a concrete value.
 func (v *VM) Copy(x runtime.Value) runtime.Value {
+	// A riding constant (T(c), which stays a constant inside expressions)
+	// materializes at this assignment boundary so stored elements carry
+	// concrete values.
 	if u, ok := constPayload(x); ok {
 		f := v.topFrame()
 		if n, isN := x.(*runtime.Named); isN {
@@ -1428,7 +1450,8 @@ func (v *VM) Copy(x runtime.Value) runtime.Value {
 	return valueCopy(x)
 }
 
-// Recover implements the recover() builtin for VMCaller: it returns the
+// Recover implements [runtime.VMCaller]: it returns the in-flight panic
+// value when called directly by a deferred function, else nil.
 func (v *VM) Recover() runtime.Value {
 	if v.inflight == nil {
 		return runtime.NIL
@@ -3698,16 +3721,18 @@ func goValueOf(rv reflect.Value) runtime.Value {
 	}
 }
 
-// SnapshotOf adapts a host Go value to a runtime value for Call
-// arguments: the arg crosses as a SNAPSHOT — a copy shaped for the
-// script world — so script writes to it never reach the host value.
-// The shape is goValueOf's plus one wider unbox: an unnamed host map
-// becomes a *runtime.Map, so a map-typed param can index, range, and
-// write it (host call results still box maps — an arg has a declared
-// param shape to satisfy, a result does not). Script-native values
-// pass through; a named map or struct keeps its box for member
-// dispatch, the same rule goValueOf applies to named slices.
+// SnapshotOf converts a host Go value into a [VM.Call] argument. The value
+// crosses as a snapshot — a copy shaped for the script world — so script
+// writes to it never reach the host value. An unnamed host map becomes a
+// [runtime.Map] that a map-typed parameter can index, range and write; a
+// named map or struct keeps its host box so its methods stay callable.
+// Script-native values pass through unchanged.
 func SnapshotOf(x any) runtime.Value {
+	// The shape is goValueOf's plus one wider unbox: unnamed maps unbox
+	// here while host call results still box them — an arg has a declared
+	// param shape to satisfy, a result does not. Named maps and structs
+	// keep their box for member dispatch, the rule goValueOf applies to
+	// named slices.
 	return snapshotValue(x, map[uintptr]struct{}{})
 }
 
@@ -6340,10 +6365,10 @@ func (v *VM) checkMapKey(f *frame, td *runtime.TypeDef, idx runtime.Value) {
 	v.mapKeyOperand(f, td, idx)
 }
 
-// MapKeyOperand implements runtime.VMCaller for builtin delete — the
-// caller's frame resolves function-local key typedefs, so the builtin
-// sees the same key normalization an index expression produces.
+// MapKeyOperand implements [runtime.VMCaller].
 func (v *VM) MapKeyOperand(mapTd *runtime.TypeDef, key runtime.Value) runtime.Value {
+	// the caller's frame resolves function-local key typedefs, so the
+	// builtin sees the same key normalization an index expression produces.
 	return v.mapKeyOperand(v.topFrame(), mapTd, key)
 }
 
@@ -7785,9 +7810,10 @@ func (v *VM) materializeOperandConst(f *frame, x runtime.Value, td *runtime.Type
 	return x
 }
 
-// MaterializeConstErr exposes the declared-type constant conversion to
-// value-only callers (builtin print/println's display) that have a
-// VMCaller but no frame — the same rules materializeConst applies.
+// MaterializeConstErr converts an untyped constant to a value of type td
+// by the rules a typed declaration applies; a constant that overflows td or
+// is not representable in it is reported as an error. It serves callers that hold a [runtime.VMCaller]
+// but no frame, such as the print/println builtins.
 func (v *VM) MaterializeConstErr(u *runtime.UConst, td *runtime.TypeDef) (runtime.Value, error) {
 	return v.materializeConstErr(u, td)
 }
@@ -9988,11 +10014,11 @@ func toFloat(v runtime.Value) float64 {
 	return 0
 }
 
-// Convert implements runtime.VMCaller.Convert: T(x) for host intrinsics
-// running on this VM's goroutine. Going through Call instead costs a
-// goroutineID (runtime.Stack parse) per conversion — measurable for
-// append on numeric slices.
+// Convert implements [runtime.VMCaller], for host intrinsics running on
+// this VM's goroutine.
 func (v *VM) Convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error) {
+	// Going through Call instead costs a goroutineID (runtime.Stack parse)
+	// per conversion — measurable for append on numeric slices.
 	return v.convert(td, x)
 }
 
@@ -12771,13 +12797,11 @@ func (v *VM) wrapZero(td *runtime.TypeDef, z runtime.Value) runtime.Value {
 	return runtime.Tag(td, z)
 }
 
-// Zero implements the VMCaller hook for the new() builtin.
+// Zero implements [runtime.VMCaller].
 func (v *VM) Zero(td *runtime.TypeDef) runtime.Value {
 	return v.zeroSeen(nil, td, map[*runtime.TypeDef]bool{})
 }
 
-// ElemZero returns the element-type zero of a container typedef — the
-// value make() fills a new slice with.
 // topFrame returns the innermost running frame — the caller whose locals
 // may hold a function-local typedef — or nil outside a call.
 func (v *VM) topFrame() *frame {
@@ -12787,6 +12811,8 @@ func (v *VM) topFrame() *frame {
 	return nil
 }
 
+// ElemZero implements [runtime.VMCaller]: the zero value make() fills a
+// new slice with.
 func (v *VM) ElemZero(td *runtime.TypeDef) runtime.Value {
 	et := v.elemTypedef(v.topFrame(), td)
 	if et == nil {
@@ -12795,8 +12821,7 @@ func (v *VM) ElemZero(td *runtime.TypeDef) runtime.Value {
 	return v.zeroSeen(nil, et, map[*runtime.TypeDef]bool{})
 }
 
-// ArrayLenOf exposes arrayLen to builtins through VMCaller — len()/cap()
-// on a nil *[N]T needs the constant length without a live frame.
+// ArrayLenOf implements [runtime.VMCaller].
 func (v *VM) ArrayLenOf(td *runtime.TypeDef) (int64, bool) {
 	return v.arrayLen(v.topFrame(), td)
 }
@@ -12810,10 +12835,9 @@ var gopanicCallSite = runtime.CallSite{
 	Line: 859,
 }
 
-// CallerPCs implements VMCaller: it snapshots the call stack — live
-// frames (top first) with the frames the in-flight panic already unwound
-// spliced in at the unwind boundary, where Go's traceback lists them:
-// between the deferred-call chain and the still-live frames below.
+// CallerPCs implements [runtime.VMCaller]. Frames the in-flight panic
+// already unwound appear where Go's traceback lists them: between the
+// deferred-call chain and the still-live frames below.
 func (v *VM) CallerPCs() []uintptr {
 	sites := make([]runtime.CallSite, 0, len(v.frames)+len(v.unwinding))
 	depth := len(v.frames)
@@ -12859,7 +12883,7 @@ func (v *VM) CallerPCs() []uintptr {
 	return pcs
 }
 
-// CallerFrame implements VMCaller: resolve a handle from CallerPCs.
+// CallerFrame implements [runtime.VMCaller].
 func (v *VM) CallerFrame(pc uintptr) (runtime.CallSite, bool) {
 	if pc == 0 || int(pc) > len(v.pcSites) {
 		return runtime.CallSite{}, false
