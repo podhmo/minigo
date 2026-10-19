@@ -12,8 +12,7 @@ import (
 // see pkg/SOURCE.md).
 
 // FileWriter receives the writes [WriteFile] makes with a context from
-// [WithFileWriter], instead of the filesystem. [MemoryFileWriter] and
-// [FileWriterFunc] implement it.
+// [WithFileWriter], instead of the filesystem.
 type FileWriter interface {
 	WriteFile(ctx context.Context, path string, data []byte, perm fs.FileMode) error
 }
@@ -23,7 +22,6 @@ type FileWriter interface {
 // declaring a writer type.
 type FileWriterFunc func(ctx context.Context, path string, data []byte, perm fs.FileMode) error
 
-// WriteFile implements FileWriter.
 func (f FileWriterFunc) WriteFile(ctx context.Context, path string, data []byte, perm fs.FileMode) error {
 	return f(ctx, path, data, perm)
 }
@@ -56,7 +54,6 @@ type MemoryFileWriter struct {
 	mu      sync.Mutex
 }
 
-// WriteFile implements FileWriter.
 func (w *MemoryFileWriter) WriteFile(ctx context.Context, path string, data []byte, perm fs.FileMode) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()

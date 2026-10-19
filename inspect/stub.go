@@ -15,8 +15,11 @@ import "github.com/podhmo/minigo/runtime"
 
 // PackageOf returns the package with the given import path: the
 // host-bound package when one is registered, else the package built from
-// source. Source is loaded even if it would not compile. It traps when the
-// path does not resolve or fails to load; see [LookupPackageOf].
+// source. [SourceOf] reads the source behind a bound path instead, and
+// [BoundOf] only reports the binding. Source is loaded even if it would
+// not compile. It traps when the path does not resolve or fails to load;
+// [LookupPackageOf] returns nil instead for a path that resolves to
+// nothing.
 func PackageOf(path string) *runtime.Package { panic("minigo intrinsic") }
 
 // SourceOf returns the package built from the Go source of an import path
@@ -24,12 +27,16 @@ func PackageOf(path string) *runtime.Package { panic("minigo intrinsic") }
 // standard library; imports keep getting the bound package. For an unbound
 // path it returns the same package an import gets. Reading values ([Value])
 // of such source may trap on constructs the interpreter does not support;
-// declarations and syntax are the intended use.
+// declarations and syntax are the intended use. A package mode that
+// denies the import of a bound path does not stop SourceOf from reading
+// its source. It traps when path resolves to no source; [LookupSourceOf]
+// returns nil instead.
 func SourceOf(path string) *runtime.Package { panic("minigo intrinsic") }
 
 // LookupSourceOf is [SourceOf] returning nil when the path resolves to no
 // source, including a bound path with no source behind it. Source that
-// fails to load, or a denied path, still traps.
+// fails to load, or a path outside the allowed roots
+// ([github.com/podhmo/minigo.WithAllowedRoots]), still traps.
 func LookupSourceOf(path string) *runtime.Package { panic("minigo intrinsic") }
 
 // BoundOf returns the host-bound package registered for path, or nil when
@@ -38,9 +45,11 @@ func LookupSourceOf(path string) *runtime.Package { panic("minigo intrinsic") }
 // still reports its registration.
 func BoundOf(path string) *runtime.Package { panic("minigo intrinsic") }
 
-// DirOf returns the package in directory dir. Source is loaded even if it
-// would not compile, so duplicate declarations stay visible. See
-// [LookupDirOf].
+// DirOf returns the package in directory dir. Unlike [PackageOf] it always
+// builds from source: a directory never names a host-bound package. Source
+// is loaded even if it would not compile, so duplicate declarations stay
+// visible. It traps when dir does not exist; [LookupDirOf] returns nil
+// instead.
 func DirOf(dir string) *runtime.Package { panic("minigo intrinsic") }
 
 // LookupDirOf is [DirOf] returning nil when dir does not exist. A path
@@ -54,8 +63,8 @@ func LookupDirOf(dir string) *runtime.Package { panic("minigo intrinsic") }
 func LookupPackageOf(path string) *runtime.Package { panic("minigo intrinsic") }
 
 // FileOf loads a single Go file as a one-file package and returns its
-// [File]. Source is loaded even if it would not compile. See
-// [LookupFileOf].
+// [File]. Source is loaded even if it would not compile. It traps when
+// file does not exist; [LookupFileOf] returns nil instead.
 func FileOf(file string) *File { panic("minigo intrinsic") }
 
 // LookupFileOf is [FileOf] returning nil when file does not exist. A file
@@ -101,10 +110,12 @@ func Decls(x any) []*Decl { panic("minigo intrinsic") }
 
 // Symbol returns the top-level declaration called name in p, or a Kind
 // "host" decl for a member of a host-bound package. Methods are not found here;
-// use [Methods]. It traps when p has no such name; see [LookupSymbol].
+// use [Methods]. It traps when p has no such name; [LookupSymbol] returns
+// nil instead.
 func Symbol(p *runtime.Package, name string) *Decl { panic("minigo intrinsic") }
 
-// LookupSymbol is [Symbol] returning nil when p has no such name.
+// LookupSymbol is [Symbol] returning nil when p has no such name. An
+// argument that is not a package still traps.
 func LookupSymbol(p *runtime.Package, name string) *Decl { panic("minigo intrinsic") }
 
 // Implementers returns the type declarations of p whose method set (see
@@ -149,17 +160,18 @@ func Pos(s *Decl) *Position { panic("minigo intrinsic") }
 // shapes through [Def].
 func Fields(s *Decl) []*Field { panic("minigo intrinsic") }
 
-// Methods lists method declarations. For a type declaration it returns the
-// type's own methods, sorted by name. For a package or [File] it returns
-// every method declared there in source order, including methods whose
-// receiver type is not declared. [MethodSet] adds promoted methods. It
-// traps for host-bound packages and types.
+// Methods lists method declarations; unlike [MethodSet] it omits promoted
+// methods. For a type declaration it returns the type's own methods,
+// sorted by name. For a package or [File] it returns every method declared
+// there in source order, including methods whose receiver type is not
+// declared. It traps for host-bound packages and types.
 func Methods(x any) []*Decl { panic("minigo intrinsic") }
 
-// MethodSet returns the method set of a type declaration, sorted by name.
+// MethodSet returns the method set of a type declaration, sorted by name;
+// unlike [Methods] it includes methods promoted through embedded fields.
 // It holds the members usable through a *T: the type's own methods with
-// either receiver (unlike Go's method set of T), plus members promoted
-// through embedded fields, transitively.
+// either receiver (unlike Go's method set of T), plus promoted members,
+// transitively.
 //
 // Promotion follows Go: an embedded T contributes its value-receiver
 // methods, an embedded *T or interface contributes all, and an embedded

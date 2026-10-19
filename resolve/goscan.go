@@ -14,8 +14,7 @@ import (
 
 // GoScanResolver is the default [Resolver]. It finds import paths through
 // the main module's go.mod (including replace directives), GOROOT and the
-// module cache, without running the go command. Create one with
-// [NewGoScanResolver].
+// module cache, without running the go command.
 type GoScanResolver struct {
 	// Backed by go-scan's locator (pkg/locator).
 	loc *locator.Locator
@@ -45,9 +44,10 @@ func (r *GoScanResolver) ModulePath() string { return r.loc.ModulePath() }
 // module path.
 func (r *GoScanResolver) Requires() map[string]string { return r.loc.Requires() }
 
-// Locate implements [Resolver]. When no directory is found the error
-// matches [ErrUnresolved]; a directory outside cfg.AllowedRoots is an
-// error too.
+// Locate implements [Resolver] for an import path, searched from fromDir;
+// use [GoScanResolver.LocateDir] for a directory or a .go file. When no
+// directory is found the error matches [ErrUnresolved]; a directory
+// outside cfg.AllowedRoots is an error too.
 func (r *GoScanResolver) Locate(ctx context.Context, fromDir, importPath string) (*PackageMeta, error) {
 	dir, err := r.loc.FindPackageDirFrom(fromDir, importPath)
 	if err != nil {
@@ -59,13 +59,13 @@ func (r *GoScanResolver) Locate(ctx context.Context, fromDir, importPath string)
 	return ReadPackageFiles(dir, importPath, r.cfg)
 }
 
-// LocateDir implements [Resolver]. The import path is derived from the
-// anchoring module; a directory it cannot name gets the synthetic path
-// "<dir>" followed by the absolute directory. dir may also name a .go
-// file: like `go run file.go`, that file alone forms the package, build
-// constraints are ignored, and the import path starts with
-// [FileImportPrefix]. A directory or file outside cfg.AllowedRoots is an
-// error.
+// LocateDir implements [Resolver] for a directory rather than an import
+// path. The import path is derived from the anchoring module; a directory
+// it cannot name gets the synthetic path "<dir>" followed by the absolute
+// directory. dir may also name a .go file: like `go run file.go`, that
+// file alone forms the package, build constraints are ignored, and the
+// import path starts with [FileImportPrefix]. A directory or file outside
+// cfg.AllowedRoots is an error.
 func (r *GoScanResolver) LocateDir(ctx context.Context, dir string) (*PackageMeta, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {

@@ -14,14 +14,9 @@ import (
 	"github.com/podhmo/minigo/runtime"
 )
 
-// RValue is minigo's reflect.Value. Scripts get one from reflect.ValueOf
-// and the methods below; its type is an [RType]. A script-domain RValue
-// views a script value and, when settable, its location; a host-domain
-// RValue wraps a real reflect.Value of a host object.
-//
-// Iterator methods ([RValue.Seq], [RValue.Seq2], [RValue.Fields],
-// [RValue.Methods]) return a script function value instead of an
-// iter.Seq. Script values have no real addresses: see [RValue.Pointer].
+// RValue is minigo's reflect.Value. A script-domain RValue views a script
+// value and, when settable, its location; a host-domain RValue wraps a
+// real reflect.Value of a host object.
 type RValue struct {
 	e  *Env
 	vc runtime.VMCaller // the VM that produced this value, for Call/Member
@@ -1719,7 +1714,7 @@ func (v *RValue) MapRange() *MapIter {
 	return &MapIter{e: v.e, vc: v.vc, m: m, keys: keys, ckeys: ckeys, ktd: ktd, etd: etd}
 }
 
-// MapIter is minigo's reflect.MapIter, returned by [RValue.MapRange].
+// MapIter is minigo's reflect.MapIter.
 type MapIter struct {
 	e     *Env
 	vc    runtime.VMCaller

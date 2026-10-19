@@ -874,8 +874,10 @@ func display(vc runtime.VMCaller, v runtime.Value) any {
 	}
 }
 
-// Format returns a form of v that prints with %v the way Go would print
-// the script value. Use it to show [Engine.Run] results.
+// Format returns a form of v to print with %v, such as an [Engine.Run]
+// result, without running script code. Unlike [REPL.Display] it does not
+// call String or Error methods, and nil values take the print builtin's
+// spelling: (0x0,0x0) for a nil interface, [0/0]0x0 for a nil slice.
 func Format(v runtime.Value) any {
 	return display(nil, v)
 }

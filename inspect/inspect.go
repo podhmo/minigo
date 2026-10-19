@@ -3,10 +3,11 @@
 //
 // Scripts import it as "minigo.dev/inspect" or by its module path
 // "github.com/podhmo/minigo/inspect"; both name the same functions. The
-// script-facing functions ([PackageOf], [Decls], [Fields], ...) are stubs
-// so that gopls, gofmt and goimports work on scripts: inside minigo the
-// engine handles each call and the bodies never run. Errors surface as
-// traps (runtime errors) in the script.
+// script-facing functions are stubs so that gopls, gofmt and goimports
+// work on scripts: inside minigo the engine handles each call and the
+// bodies never run. Errors surface as traps (runtime errors) in the
+// script. The functions return views whose exported fields scripts read
+// directly (d.Name, f.Type.Text).
 //
 //	import "minigo.dev/inspect"
 //
@@ -21,44 +22,28 @@
 //		return names
 //	}
 //
-// Loading. Package values ([runtime.Package]) come from [PackageOf] (by
-// import path, the package an import gets), [DirOf] (by directory),
-// [SourceOf] (the source behind a host-bound path), [BoundOf] (the
-// host-bound package only) and [Current]. [FileOf] loads a single file as
-// a [File]; [Packages] lists the package directories under a root. The
-// Lookup variants ([LookupPackageOf], [LookupDirOf], [LookupSourceOf],
-// [LookupFileOf]) return nil when the target does not exist instead of
-// trapping. A package value's own members shadow its metadata, so read
-// that through [Path], [Name], [Dir], [State] and [Standard].
+// Bound and source packages. A package the host binds (standard library
+// intrinsics, [github.com/podhmo/minigo.Engine.Bind]) has no source index:
+// [Decls] and [Symbol] report Kind "host" pseudo-declarations, and
+// functions that read syntax trap on them. [PackageOf] prefers the bound
+// package, as an import does; [SourceOf] reads the Go source behind a
+// bound path; [BoundOf] only reports the binding.
 //
-// Views. The functions return views whose exported fields scripts read
-// directly (d.Name, f.Type.Text):
-//   - [Decl]: one declaration, from [Decls], [Symbol], [Methods] or
-//     [SymbolOf]; inspected with [Signature], [Fields], [Def],
-//     [MethodSet], [EnumMembers] and others taking a *Decl.
-//   - [TypeExpr]: a type expression as written, from [Def], [Field] and
-//     [Sig]; navigated with [Children], [UnRef], [UnWrap] and [Origin],
-//     resolved with [SymbolID] and [Resolve].
-//   - [Node]: a statement or expression in a function body, from [Body];
-//     walked with [Nodes], resolved through [Expr].
-//   - [File], [Import], [Comment]: a source file and its imports and
-//     comments.
+// Lenient loading. [PackageOf], [DirOf] and [FileOf] load source that would
+// not compile, keeping duplicate declarations visible; imports themselves
+// stay strict.
 //
-// [Value] and [TypeOf] reach a member's runtime value and type.
+// Missing targets. The Lookup variants return nil for a target that does
+// not exist where their counterparts trap; other failures still trap.
 //
-// Bound packages. A package the host binds (standard library intrinsics,
-// [github.com/podhmo/minigo.Engine.Bind]) has no source index: [Decls]
-// and [Symbol] report Kind "host" pseudo-declarations, and functions that
-// read syntax ([Fields], [AST], [Body], ...) trap on them. Use [SourceOf]
-// to read the Go source behind a bound path. [PackageOf], [DirOf] and
-// [FileOf] also load source that would not compile, keeping duplicate
-// declarations visible.
+// Package metadata. Selecting from a package value (p.Foo) reaches only
+// the package's members, so p.Path traps unless the package declares Path.
+// Read metadata through [Path], [Name], [Dir], [State] and [Standard].
 //
-// Go code in the host. The XxxOf functions ([FieldsOf], [MethodSetOf],
-// ...), the view methods and the New* constructors perform the same
-// operations for Go code that receives views from the engine, returning
-// errors where the script functions trap. Operations that follow names
-// across packages take a [Resolver].
+// Go code in the host. Functions that return an error, such as [FieldsOf]
+// for [Fields], the view methods and the New* constructors serve Go code
+// that receives views from the engine: errors replace script traps. Operations that follow
+// names across packages take a [Resolver].
 package inspect
 
 import (
@@ -103,10 +88,9 @@ func NoDeclPath(path string) bool {
 }
 
 // Decl describes one declaration: a top-level func, type, var or const, a
-// method, or a member of a host-bound package (Kind "host"). Get one from
-// [Decls], [Symbol], [LookupSymbol], [Methods], [SymbolOf] or [Resolve].
-// Host decls have no source, so functions that read syntax trap on them;
-// [Signature] still works when the host signature is known.
+// method, or a member of a host-bound package (Kind "host"). Host decls
+// have no source, so functions that read syntax trap on them; [Signature]
+// still works when the host signature is known.
 type Decl struct {
 	// Package is the declaring package; read its metadata with
 	// inspect.Path, inspect.Name and the other package accessors.
@@ -182,8 +166,7 @@ func NewHostDecl(pkg *runtime.Package, name string, sig *Sig, target reflect.Typ
 	return &Decl{Package: pkg, Kind: "host", Name: name, hsig: sig, htype: target}
 }
 
-// File is one source file of a package, from [Files] or [FileOf]. Pass it
-// to [Decls], [Methods], [Imports], [Comments] or [UsedSymbols].
+// File is one source file of a package.
 type File struct {
 	Name string
 	Doc  string // the package clause's doc comment, trailing newline trimmed
@@ -244,7 +227,7 @@ func posOf(fset *token.FileSet, pos token.Pos) *Position {
 	return &Position{File: tp.Filename, Line: tp.Line, Column: tp.Column}
 }
 
-// Comment is one // or /* */ comment of a file, from [Comments].
+// Comment is one // or /* */ comment of a file.
 type Comment struct {
 	// Text is the comment exactly as written, markers included, so
 	// annotations (// swagger:route) and directives (//go:generate)
@@ -258,7 +241,7 @@ type Comment struct {
 	Free bool
 }
 
-// Import is one entry of a file's import table, from [Imports].
+// Import is one entry of a file's import table.
 type Import struct {
 	Path string
 	// Name is the name the import binds in the file: the alias if any,
@@ -285,14 +268,12 @@ func (i *Import) Ref() *runtime.ImportRef { return i.ref }
 
 // RepoPackage is one package directory reported by [Packages]: the
 // module that claims it, the import path that module gives it, and its
-// files split into GoFiles and TestFiles. Nothing is parsed; load the
-// package with [DirOf] on Dir, or a single file with [FileOf].
+// files split into GoFiles and TestFiles.
 type RepoPackage = resolve.RepoPackage
 
 // Field is one written field group: a struct field, an interface
-// element, a parameter, result or receiver, or a type parameter. It comes
-// from [Fields], [TypeFields], [MReqs], [TypeParams] and the Params,
-// Results and Recv of a [Sig]. `a, b int` is one Field with two Names.
+// element, a parameter, result or receiver, or a type parameter.
+// `a, b int` is one Field with two Names.
 type Field struct {
 	Names    []string // empty for embedded fields and unnamed params
 	Type     *TypeExpr
@@ -306,10 +287,10 @@ type Field struct {
 // the Signature stub function. Params and Results stay boxed for script
 // member dispatch.
 
-// Sig is the signature of a func or method, from [Signature]. Params and
-// Results hold one *[Field] per written field group, so use
-// [Sig.NumParams] and [Sig.NumResults] for arity. Signatures of host
-// symbols have unnamed fields.
+// Sig is the signature of a func or method. Params and Results hold one
+// *[Field] per written field group, so use [Sig.NumParams] and
+// [Sig.NumResults] for arity. Signatures of host symbols have unnamed
+// fields.
 type Sig struct {
 	Recv    *Field // nil for plain funcs
 	Params  *runtime.Slice
@@ -338,12 +319,9 @@ func (s *Sig) NumResults() int {
 }
 
 // TypeExpr is an expression as written in source, usually a type, with
-// the file context needed to resolve the names it mentions. It comes from
-// [Def], [DeclType], [Initializer], [IEmbeds], [Expr], a [Field]'s Type,
-// and [Children]. Navigate it with [Children], [UnRef], [UnWrap] and
-// [Origin]; identify what it names with [SymbolID], [Resolve] and
-// [SameType]. A TypeExpr for a host symbol is backed by its Go type: Kind
-// is "reflect:" plus the reflect kind and Text is the Go type string.
+// the file context needed to resolve the names it mentions. A TypeExpr for
+// a host symbol is backed by its Go type: Kind is "reflect:" plus the
+// reflect kind and Text is the Go type string.
 type TypeExpr struct {
 	Text string // source spelling of the expression
 	Kind string // go/ast node name: "Ident", "SelectorExpr", "StarExpr", ...
@@ -565,7 +543,7 @@ func MethodsIn(p *runtime.Package, file *syntax.File) ([]*Decl, error) {
 	return out, nil
 }
 
-// Method is a member of a type's method set, from [MethodSet].
+// Method is a member of a type's method set.
 type Method struct {
 	Name string
 	Sig  *Sig
@@ -1906,9 +1884,7 @@ func ASTOf(s *Decl) (any, error) {
 }
 
 // Node is one statement, expression or declaration inside a function
-// body. It comes from [Body] and [Nodes]; [Expr] turns an expression Node
-// into a [TypeExpr] to resolve the names it mentions, and [AST] returns
-// the underlying go/ast node.
+// body.
 type Node struct {
 	Kind   string    // go/ast node name: "BlockStmt", "CallExpr", "Ident", ...
 	Text   string    // printer spelling of the node

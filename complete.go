@@ -41,8 +41,7 @@ import (
 	"github.com/podhmo/minigo/syntax"
 )
 
-// Candidate is one completion suggestion returned by [REPL.Complete] and
-// its variants.
+// Candidate is one completion suggestion.
 type Candidate struct {
 	Name   string // the completion text
 	Kind   string // CandKeyword, CandBuiltin, CandFunc, ...
@@ -76,19 +75,21 @@ var goKeywords = []string{
 // env (nil/true/false are compiler literals, iota is const-scope only).
 var predeclared = []string{"nil", "true", "false", "iota"}
 
-// Complete returns completion candidates for a REPL input with the cursor
-// at end of line: members after `x.` or `x.pa`, names in scope after an
+// Complete returns completion candidates, sorted by name, for a REPL
+// input with the cursor at end of line. [REPL.CompleteToken] also
+// returns where to insert them; meta-command lines (starting with `:`)
+// yield nothing here and are completed by [REPL.CompleteCommandArg].
+// Complete offers members after `x.` or `x.pa`, names in scope after an
 // identifier or elsewhere, and import paths after `import "`. Completion
-// never runs user code, so `f().` yields nothing. Meta-command lines are
-// completed by [REPL.CompleteCommandArg]; use [REPL.CompleteToken] to
-// know where to insert a candidate.
+// never runs user code, so `f().` yields nothing.
 func (r *REPL) Complete(line string) []Candidate {
 	_, cands := r.complete(line)
 	return cands
 }
 
-// CompleteToken is [REPL.Complete] plus the byte offset where the token
-// being completed begins: a candidate replaces line[start:].
+// CompleteToken differs from [REPL.Complete] only in also returning the
+// byte offset where the token being completed begins: a candidate
+// replaces line[start:].
 func (r *REPL) CompleteToken(line string) (start int, cands []Candidate) {
 	return r.complete(line)
 }
@@ -1135,9 +1136,10 @@ func (r *REPL) dirImportCandidates(prefix string) []Candidate {
 	return out
 }
 
-// CompleteCommandArg completes the argument of a meta-command line,
-// with the cursor at end of line:
-//
+// CompleteCommandArg is [REPL.CompleteToken] for meta-command lines,
+// which Complete and CompleteToken leave uncompleted. It completes the
+// command's argument with the cursor at end of line:
+
 //   - `:load <path>` offers .go files and directories (a directory ends
 //     in "/" so the next completion descends); `:unload <ref>` offers the
 //     current loads.

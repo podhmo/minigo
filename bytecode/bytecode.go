@@ -5,10 +5,6 @@
 // expression: a sequence of [Instruction] values plus constants, slot counts
 // and [UpvalDesc] entries. [github.com/podhmo/minigo/compile] produces
 // chunks and [github.com/podhmo/minigo/vm] runs them.
-//
-// [Op] enumerates the instructions; the comment on each constant gives its
-// operands and stack effect. [OpBinary] and [OpUnary] carry a [BinOp] or
-// [UnOp] in operand A.
 package bytecode
 
 import (
@@ -215,8 +211,8 @@ func (u UnOp) String() string {
 	return fmt.Sprintf("UnOp(%d)", int(u))
 }
 
-// Instruction is one fixed-width bytecode instruction; a [Chunk] holds them
-// in Code. The operands' meaning depends on [Op].
+// Instruction is one fixed-width bytecode instruction. The operands'
+// meaning depends on [Op].
 type Instruction struct {
 	Op   Op
 	A, B int32
@@ -232,16 +228,17 @@ type UpvalDesc struct {
 	Index           int
 }
 
-// ASTFragment is an AST expression kept uncompiled as a chunk constant;
-// [OpEvalAST] compiles and runs it at run time.
+// ASTFragment is an AST expression kept uncompiled as a chunk constant.
+// [OpEvalAST] compiles it each time it executes and pushes its value; the
+// expression sees package globals, File's imports and builtins, but not
+// the enclosing function's locals.
 type ASTFragment struct {
 	Expr ast.Expr
 	File *syntax.File
 }
 
 // Chunk is compiled code for one function, package initializer or
-// expression, produced by [github.com/podhmo/minigo/compile] and run by
-// [github.com/podhmo/minigo/vm].
+// expression.
 type Chunk struct {
 	Name       string
 	Code       []Instruction
@@ -259,7 +256,10 @@ type Chunk struct {
 
 // GlobalSite is one OpGlobal instruction's resolution cache. The VM owns
 // the stored value's type; Cache is shared by every VM (goroutine)
-// running the chunk.
+// running the chunk. An entry stays valid while the package's Globals
+// generation is unchanged: code that changes name resolution without
+// setting a global must call
+// [github.com/podhmo/minigo/runtime.Env.Touch].
 type GlobalSite struct {
 	Cache atomic.Value
 }
