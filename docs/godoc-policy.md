@@ -105,3 +105,18 @@ For each package:
 1. Does `go doc ./pkg` print exactly one package doc, starting with
    `Package <name>`? If not, detach the stray file headers.
 2. Can a reader find the entry point from the package doc alone?
+
+## 6. Verify with `go doc`
+
+Judge navigation on the rendered output, not on the source:
+
+- Read `go doc ./pkg` (the map) and `go doc -all ./pkg` (every entry).
+  Starting from the package doc, every exported identifier a caller
+  needs should be reachable by following names mentioned in the text.
+- For each type, check that its doc says where values come from
+  (constructor, method returning it) and where they go next.
+- `go doc` strips the brackets of doc links it resolves. A `[Name]` that
+  still shows brackets is a broken link — fix the name, or drop the
+  brackets. `go doc -all ./pkg | grep -n '\[[A-Za-z*][A-Za-z0-9_./*]*\]'`
+  lists candidates (ignore `map[K]V` and similar type syntax). A link
+  followed directly by letters (`[Value]s`) does not resolve.
