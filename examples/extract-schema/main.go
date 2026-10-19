@@ -7,7 +7,7 @@
 //	extract-schema [flags] <target> [Type]
 //
 //	-pkg       target is an import path instead of a directory
-//	-plugin    a script package dir providing Overrides() (repeatable)
+//	-plugin    a script package dir with func(*extschema.Config) hooks (repeatable)
 //	-stdlib    leaf|walk — stop at standard-library types or walk them (default leaf)
 //	-loose     emit additionalProperties:true on object schemas (default true)
 //	-title     title attribute of the schema document
