@@ -1,6 +1,7 @@
 // Persistent REPL history: a term.History backed by a file
 // (~/.minigo_history). Entries load at startup so Up/Down recall
 // crosses sessions; each accepted line appends to the file.
+
 package main
 
 import (

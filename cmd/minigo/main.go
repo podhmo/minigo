@@ -1,12 +1,3 @@
-// Command minigo runs a function in a package directory, or an
-// interactive session.
-//
-//	minigo run ./path/to/pkg [--entry FuncName]
-//	minigo ./path/to/pkg [FuncName]   # shorthand for run
-//	minigo repl                       # interactive session
-//	minigo vet <ref> [--special import/path.Sym]...  # list unregistered stub calls
-//	minigo gen-intrinsics -output <dir> <pkg>...     # emit a Bind table
-//	minigo help [command]                            # usage (also -h)
 package main
 
 import (

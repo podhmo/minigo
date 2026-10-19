@@ -2,6 +2,7 @@
 // upgrades to a raw-mode line editor (golang.org/x/term) so cursor keys,
 // in-session history and tab completion work. Pipes and tests keep the
 // plain bufio.Scanner path — no prompt escape sequences are emitted.
+
 package main
 
 import (
