@@ -7,13 +7,8 @@
 // [github.com/podhmo/minigo/syntax]; the chunks run on
 // [github.com/podhmo/minigo/vm].
 //
-// Every Go program compiles. A construct outside the supported subset
-// compiles to a [bytecode.OpTrap] that fails at run time, with its
-// position, only if execution reaches it.
-//
-// Only locals and upvalues are resolved at compile time. Any other name is
-// looked up at run time (file imports, then package globals, then
-// builtins), which keeps imports lazy.
+// Unsupported constructs fail at run time, with their source position,
+// only if execution reaches them. Imports are resolved on demand.
 package compile
 
 import (
