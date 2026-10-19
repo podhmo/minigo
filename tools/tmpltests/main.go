@@ -1,16 +1,11 @@
-// Command tmpltests runs Go's own test files for a stdlib package verbatim
-// under minigo: the package source is copied into a scratch GOROOT next to
-// its (renamed) *_test.go files, a generated driver calls each func TestXxx
-// in its own minigo process, and per-test verdicts are printed.
+// Command tmpltests runs upstream Go tests for a standard-library package under minigo.
 //
-//	go -C ./tools/tmpltests run ./                     # text/template, all tests
-//	go -C ./tools/tmpltests run ./ -only 'TestExec'    # a subset
-//	go -C ./tools/tmpltests run ./ -keep -work /tmp/t  # keep the scratch tree
+//	go -C ./tools/tmpltests run ./                  # text/template, all tests
+//	go -C ./tools/tmpltests run ./ -only TestExec   # a subset
+//	go -C ./tools/tmpltests run ./ -keep -work /tmp/t
 //
-// The scratch GOROOT is a symlink farm over the real one with selected
-// packages replaced by shims (testing, flag, iter) and the target package
-// replaced by a real directory holding the upstream sources plus the test
-// files. See README.md for the rewrite table applied to the test sources.
+// Use -keep to retain the scratch tree. See README.md for supported test
+// rewrites and package selection.
 package main
 
 import (
