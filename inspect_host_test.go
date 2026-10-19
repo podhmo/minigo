@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/index"
 	xinspect "github.com/podhmo/minigo/inspect"
 	"github.com/podhmo/minigo/runtime"
@@ -92,6 +93,30 @@ func TestEngineSourceOf(t *testing.T) {
 	}
 	if via != canon {
 		t.Error("unbound SourceOf should return the canonical package")
+	}
+}
+
+// TestEngineSourceOfDenied: ModeDeny gates imports, not SourceOf — a
+// denied path's source loads whether the path is bound or not, while
+// Package keeps refusing it.
+func TestEngineSourceOfDenied(t *testing.T) {
+	e := minigo.NewEngine(".", minigo.WithPackageModes(map[string]minigo.PackageMode{
+		"strings":        minigo.ModeDeny, // bound and denied
+		"container/list": minigo.ModeDeny, // unbound and denied
+	}))
+	ctx := context.Background()
+
+	for _, path := range []string{"strings", "container/list"} {
+		src, err := e.SourceOf(ctx, path)
+		if err != nil {
+			t.Fatalf("SourceOf(%q): %v", path, err)
+		}
+		if src.Index == nil {
+			t.Errorf("SourceOf(%q) has no index", path)
+		}
+		if _, err := e.Package(ctx, path); err == nil {
+			t.Errorf("Package(%q) should keep refusing the denied path", path)
+		}
 	}
 }
 
