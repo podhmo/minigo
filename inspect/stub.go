@@ -27,8 +27,10 @@ func PackageOf(path string) *runtime.Package { panic("minigo intrinsic") }
 // standard library; imports keep getting the bound package. For an unbound
 // path it returns the same package an import gets. Reading values ([Value])
 // of such source may trap on constructs the interpreter does not support;
-// declarations and syntax are the intended use. It traps when path
-// resolves to no source; [LookupSourceOf] returns nil instead.
+// declarations and syntax are the intended use. A package mode that
+// denies the import of a bound path does not stop SourceOf from reading
+// its source. It traps when path resolves to no source; [LookupSourceOf]
+// returns nil instead.
 func SourceOf(path string) *runtime.Package { panic("minigo intrinsic") }
 
 // LookupSourceOf is [SourceOf] returning nil when the path resolves to no
