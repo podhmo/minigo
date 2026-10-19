@@ -8,15 +8,14 @@
 // [runtime.VMCaller], through which host builtins call back into the script.
 //
 // Each Call runs inside a script process that the `go` statement's
-// goroutines share; the process ends when the outermost Call returns, or
-// when the scope opened by [VM.EnsureProc] is closed by [VM.ReleaseProc].
-// [ExitRequest] reports os.Exit, and [IsProcExit] identifies errors of
-// goroutines that ended with their process.
+// goroutines share. By default the outermost Call opens the process and
+// ends it on return, stopping goroutines still running; to keep one
+// process across several Calls, hold it with [VM.EnsureProc] instead.
 //
-// Host intrinsics that wait on host channels or callbacks cooperate with
-// deadlock detection through [NoteExternalWait], [RegisterWakeChan],
-// [SetWakeChanDead] and [WakeChanState]. [SnapshotOf] converts host Go
-// values into [VM.Call] arguments.
+// The process reports a deadlock when all its goroutines are parked with
+// nothing left to wake them. Host intrinsics that will call into the
+// script later, such as timers, must report the pending callback, or the
+// waiting process may be reported as deadlocked.
 package vm
 
 import (
@@ -46,6 +45,8 @@ import (
 )
 
 // Hooks are the engine-provided services a [VM] needs, set in [VM].H.
+// Builtin and Materialize are required to resolve global names; a hook
+// whose comment describes nil behavior is optional.
 type Hooks struct {
 	// Builtin resolves a predeclared name (len, append, int, ...).
 	Builtin func(name string) (runtime.Value, bool)
@@ -53,14 +54,16 @@ type Hooks struct {
 	// (function, type, var, const) on first access.
 	Materialize func(pkg *runtime.Package, d *index.Decl) (runtime.Value, error)
 	// CompileExpr compiles a single expression into a chunk for
-	// OpEvalAST; the expression sees globals, file imports and builtins
-	// but not the caller's locals (see compile.Expr).
+	// OpEvalAST and for constant array lengths such as [N*2]int; the
+	// expression sees globals, file imports and builtins but not the
+	// caller's locals (see compile.Expr). Nil makes OpEvalAST trap.
 	CompileExpr func(pkg *runtime.Package, file *syntax.File, e ast.Expr) (*bytecode.Chunk, error)
 	// CompileScopedExpr compiles an expression with a caller-scope overlay
 	// (name -> caller slot/upval index) for special forms (see
-	// compile.ExprScoped).
+	// compile.ExprScoped). Nil makes a special form's Eval fail.
 	CompileScopedExpr func(pkg *runtime.Package, file *syntax.File, e ast.Expr, locals, upvals map[string]int) (*bytecode.Chunk, error)
 	// Special resolves a canonical symbol to its special-form handler.
+	// Nil makes every special-form call trap.
 	Special func(id runtime.SymbolID) (runtime.SpecialFunc, bool)
 	// MethodsOf returns the method names callable on a dynamic value
 	// (structs: declared + promoted; host values: reflect method set).
@@ -675,8 +678,9 @@ func (e *ExitRequest) Error() string { return fmt.Sprintf("exit status %d", e.Co
 func IsProcExit(err error) bool { _, ok := err.(procExit); return ok }
 
 // EnsureProc opens a process scope on this VM, or holds the open one, so
-// that goroutines spawned across several Calls share one process. Pair
-// each call with [VM.ReleaseProc].
+// that goroutines spawned across several Calls share one process; without
+// it, each outermost [VM.Call] ends its process on return. Pair each call
+// with [VM.ReleaseProc].
 func (v *VM) EnsureProc() {
 	v.callMu.Lock()
 	defer v.callMu.Unlock()
