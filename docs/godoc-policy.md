@@ -15,8 +15,9 @@ Make the overview a short map:
 
 - State the purpose and link the entry point, such as [NewEngine] or
   [Engine.Run]. Add a snippet only when it clarifies how to start.
-- Connect the main types and operations. Link the next useful API or
-  related package, not every exported name: `go doc` already lists them.
+- Explain the main concepts and distinctions needed to choose an API.
+  Do not require identifiers to be reachable through prose links;
+  `go doc` already lists the exported API.
 - Explain package-wide usage restrictions once. Put detailed contracts
   on the relevant identifiers rather than repeating them in the map.
 
@@ -33,14 +34,28 @@ Keep information the name and signature cannot express:
   and result representations that callers must understand.
 - Differences from Go or a likely expectation, such as REPL `:=` reusing
   a global, or host arguments crossing the interpreter boundary by copy.
-- A useful comparison or onward link, such as `RunFile` versus `Run`.
-  Avoid repeating the same navigation on every member.
+- Differences between sibling APIs that affect which one to call.
+  Name the alternative and state the difference; a link alone is not
+  an explanation. Share common behavior rather than repeating it.
 - Short examples for mini-languages, ref strings and DSL call shapes.
 
 Remove name/signature restatements, duplicated contracts and filler added
 only to make comment coverage uniform. An obvious identifier may have no
 comment. Do not copy familiar standard-library docs onto wrapper methods;
 document the shared API once and explain differences where they occur.
+
+Use inspect as a model for sibling comparisons:
+
+- `PackageOf` prefers a bound package; `SourceOf` reads its source;
+  `BoundOf` only reports a binding and never loads source.
+- `LookupPackageOf` differs from `PackageOf` on a missing target: nil
+  instead of a trap. Load failures and denied paths still trap.
+- `Methods` lists declared methods; `MethodSet` includes promoted methods.
+- `FieldsOf` is the host-Go form of `Fields`: errors replace script traps.
+
+Put the choosing difference early in the comment. Preserve constraints on
+that difference, such as which failures a Lookup variant still traps on.
+Do not turn sibling comparisons into an exhaustive family inventory.
 
 Move useful maintainer information to a detached header, a comment inside
 the function or beside the relevant code. This includes internal call
@@ -75,10 +90,10 @@ by generators merely to satisfy this format.
 Read both `go doc ./pkg` and `go doc -all ./pkg`, including exported fields
 and interface methods. For nested modules, run inside the owning module.
 
-Check that there is one package overview and that a representative caller
-can move from its entry point to the relevant type and operation. Use the
-generated API listing too. Explain where a type comes from or goes next
-only when the signature, constructor listing or map leaves it unclear.
+Check that there is one package overview and that contracts and important
+sibling differences are clear in the rendered output. There is no prose-link
+reachability requirement, including for a representative caller journey.
+Explain a type's origin only when it is needed to use the type correctly.
 
 Resolved links lose their brackets in `go doc`. Inspect remaining bracket
 matches for broken links, including links followed by letters (`[Value]s`).

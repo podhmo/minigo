@@ -1,6 +1,6 @@
 # Go doc policy and package review
 
-The documentation is easier to navigate after removing repeated API inventories
+The documentation is shorter after removing repeated API inventories
 and implementation explanations, while preserving calling contracts. Changes
 cover 31 packages, each in its own commit. The policy now explicitly favors
 short maps and meaningful contracts over exhaustive cross-links and uniform
@@ -120,7 +120,17 @@ under the clarified scope. Paths are repository-relative.
 | `tools/tmpltests` | Replace scratch-GOROOT architecture with invocation, selection and retained-scratch guidance. | `ce285ea5` |
 | `vm` | Remove bare interface-implementation one-liners; retain lifecycle, callback, nil-hook and error contracts. | `9468b83e` |
 
+## Policy follow up
+
+Following review feedback, prose-link reachability is no longer a requirement,
+including for representative journeys. Sibling comparisons now explain the
+choice-changing difference, using inspect's bound/source loading, Lookup misses,
+declared/promoted methods and script/host error behavior as examples. The inspect
+overview replaces a navigation inventory with these distinctions.
+
 ## Size and preserved contracts
+
+The counts below describe the initial 31-package review before this follow-up.
 
 Whitespace-separated word counts in complete `go doc -all` output, including
 signatures and fields, changed from 37,515 to 35,739 across the 48 rendered
@@ -173,6 +183,6 @@ failures were not interpreted as code defects.
 
 Policy clarification is commit `a5b5dde5`. The package table identifies
 all 31 package commits. Follow-up tracking is commit `aaa3e053`; the
-report is saved in a final documentation commit on the same branch. Packages
-without changes have no artificial empty commits. The branch is local; no
-GitHub PR or publication was created.
+report is saved on the same branch. Packages without changes have no artificial
+empty commits. The branch is published in [PR 912](https://github.com/podhmo/minigo/pull/912);
+the policy follow-up and inspect comparison changes are additional commits.
