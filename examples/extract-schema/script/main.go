@@ -1,10 +1,8 @@
-// Package script is the body of the extract-schema tool, executed by
-// the minigo interpreter (see ../main.go). It walks a package's type
-// declarations through the inspect API and renders a JSON Schema
-// document: struct graphs become $defs entries joined by $ref, fields
-// become properties, and the walk stops — by policy — at boundaries
-// where more analysis buys nothing (stdlib, bound host types) or
-// where a plugin registered its own reading.
+// Package script generates JSON Schema through minigo's inspect API.
+//
+// The extract-schema command invokes [Main] in the interpreter. Plugins
+// register overrides and description filters through
+// [github.com/podhmo/minigo/examples/extract-schema/extschema.Config].
 package script
 
 import (
@@ -21,12 +19,11 @@ import (
 	"github.com/podhmo/minigo/inspect"
 )
 
-// Main extracts a JSON Schema for target (a package directory, or an
-// import path with pkgMode). With typeName it emits the single-type
-// form; with "" every type decl in the package lands in $defs,
-// OpenAPI components.schemas style. overrides maps "pkgpath.Name" to
-// a schema fragment consulted before the default named-type walk —
-// the extension point plugin scripts feed.
+// Main extracts JSON Schema for target, a directory or an import path when
+// pkgMode is true. An empty typeName includes all type declarations in $defs.
+// stdlibMode is "leaf" or "walk"; loose permits additional object properties.
+// Each plugin directory may expose exported func(*extschema.Config) hooks,
+// regardless of their names. title and description set document metadata.
 func Main(target string, pkgMode bool, typeName string, stdlibMode string, loose bool, pluginDirs []string, title string, description string) (string, error) {
 	// The modes resolve different namespaces — a directory vs an import
 	// path — so pick the matching loader before loading; probing the
