@@ -13,10 +13,14 @@ import (
 	"github.com/podhmo/minigo/runtime"
 )
 
-// RType is the facade's reflect.Type: an interned view over either a
-// script *runtime.TypeDef or a host reflect.Type. Two RTypes covering
-// the same canonical type are pointer-equal so `a == b` works through
-// the GoValue identity the VM compares.
+// RType is minigo's reflect.Type, for either a script type or a host
+// type. Scripts get one from reflect.TypeOf, [RValue.Type] and the
+// methods below. RTypes are interned per engine, so two RTypes for the
+// same type are the same pointer and compare equal with ==.
+//
+// Unlike reflect.Type, the methods return pointers (*[StructField],
+// *[Method]), and the Go 1.26 iterators return a script function value
+// instead of an iter.Seq.
 type RType struct {
 	e   *Env
 	key string
@@ -31,8 +35,8 @@ type RType struct {
 	alen    int
 }
 
-// StructField mirrors reflect.StructField for script-facing field
-// metadata. Tag is the real reflect.StructTag so Tag.Get works.
+// StructField is minigo's reflect.StructField, returned by
+// [RType.Field] and its siblings. Tag is a real reflect.StructTag.
 type StructField struct {
 	Name      string
 	PkgPath   string
@@ -43,15 +47,12 @@ type StructField struct {
 	Anonymous bool
 }
 
-// IsExported mirrors reflect.StructField.IsExported: a field is
-// exported iff it carries no package path.
 func (f *StructField) IsExported() bool { return f.PkgPath == "" }
 
-// Method mirrors reflect.Method for the subset the facade reports.
-// Func is the method-expression value: on a pointer receiver type a
-// value-receiver member derefs its *T argument, and a promoted or
-// interface member re-selects on the receiver argument — the same
-// values `(*T).M`/`T.M` compile to.
+// Method is minigo's reflect.Method, returned by [RType.Method] and
+// [RType.MethodByName]. Func is the method expression, the value
+// `T.M` or `(*T).M` evaluates to, taking the receiver as its first
+// argument.
 type Method struct {
 	Name    string
 	PkgPath string
@@ -594,7 +595,6 @@ func (e *Env) structTd(td *runtime.TypeDef) *runtime.TypeDef {
 
 // ---- reflect.Type methods ----
 
-// Kind reports the type's kind.
 func (t *RType) Kind() reflect.Kind {
 	if t.rt != nil {
 		return t.rt.Kind()
@@ -605,7 +605,6 @@ func (t *RType) Kind() reflect.Kind {
 	return t.e.kindOfTd(t.td)
 }
 
-// Name reports the type's unqualified name.
 func (t *RType) Name() string {
 	if t.rt != nil {
 		return t.rt.Name()
@@ -634,7 +633,6 @@ func (t *RType) Name() string {
 	return name
 }
 
-// PkgPath reports the import path of the type's package.
 func (t *RType) PkgPath() string {
 	if t.rt != nil {
 		return t.rt.PkgPath()
@@ -662,7 +660,6 @@ func (t *RType) PkgPath() string {
 	return ""
 }
 
-// String renders the type the way reflect.Type.String does.
 func (t *RType) String() string {
 	if t.rt != nil {
 		return t.rt.String()
@@ -670,7 +667,6 @@ func (t *RType) String() string {
 	return runtime.DisplayName(t.td)
 }
 
-// Elem resolves the element type.
 func (t *RType) Elem() *RType {
 	if t.rt != nil {
 		return t.e.hostTypeOf(t.rt.Elem())
@@ -683,7 +679,6 @@ func (t *RType) Elem() *RType {
 	return nil
 }
 
-// Key resolves a map type's key type.
 func (t *RType) Key() *RType {
 	if t.rt != nil {
 		return t.e.hostTypeOf(t.rt.Key())
@@ -697,7 +692,6 @@ func (t *RType) Key() *RType {
 	return t.e.rtypeOf(t.e.keyTdOf(t.td))
 }
 
-// Len reports an array's length.
 func (t *RType) Len() int {
 	if t.rt != nil {
 		return t.rt.Len()
@@ -716,7 +710,6 @@ func (t *RType) Len() int {
 	return 0
 }
 
-// NumField reports a struct's field count.
 func (t *RType) NumField() int {
 	if t.rt != nil {
 		return t.rt.NumField()
@@ -727,7 +720,6 @@ func (t *RType) NumField() int {
 	return len(t.e.structTd(t.td).Fields)
 }
 
-// Field reports a struct's i'th field.
 func (t *RType) Field(i int) *StructField {
 	if t.rt != nil {
 		f := t.rt.Field(i)
@@ -779,7 +771,6 @@ func (t *RType) Field(i int) *StructField {
 	return sf
 }
 
-// FieldByIndex resolves a nested field path.
 func (t *RType) FieldByIndex(idx []int) *StructField {
 	if t.rt != nil {
 		f := t.rt.FieldByIndex(idx)
@@ -815,8 +806,6 @@ func (t *RType) FieldByIndex(idx []int) *StructField {
 	return f
 }
 
-// FieldByName looks up a field by name, including promotion through
-// embedded fields.
 func (t *RType) FieldByName(name string) (*StructField, bool) {
 	if t.rt != nil {
 		f, ok := t.rt.FieldByName(name)
@@ -860,12 +849,11 @@ func (t *RType) FieldByName(name string) (*StructField, bool) {
 	return nil, false
 }
 
-// FieldByNameFunc finds the field whose name satisfies match, including
-// promotion through embedded fields. The traversal is Go's own: breadth
-// first search, one depth level at a time, where two matches at the same
-// depth annihilate each other and a struct type reachable through
-// multiple embedded paths annihilates its own matches.
 func (t *RType) FieldByNameFunc(match func(string) bool) (*StructField, bool) {
+	// The traversal is Go's own: breadth first search, one depth level
+	// at a time, where two matches at the same depth annihilate each
+	// other and a struct type reachable through multiple embedded paths
+	// annihilates its own matches.
 	if t.rt != nil {
 		f, ok := t.rt.FieldByNameFunc(match)
 		if !ok {
@@ -955,8 +943,6 @@ func (t *RType) FieldByNameFunc(match func(string) bool) (*StructField, bool) {
 	return result, ok
 }
 
-// NumMethod reports the exported method count — pointer-receiver
-// members count only under a pointer type, like Go's method sets.
 func (t *RType) NumMethod() int {
 	if t.rt != nil {
 		return t.rt.NumMethod()
@@ -964,8 +950,6 @@ func (t *RType) NumMethod() int {
 	return len(exportedMethodNames(t.e.methodSet(t.td)))
 }
 
-// Method reports the i'th exported method in sorted order, carrying its
-// signature (the receiver is the first parameter, as Go reports it).
 func (t *RType) Method(i int) *Method {
 	if t.rt != nil {
 		m := t.rt.Method(i)
@@ -997,8 +981,6 @@ func (t *RType) Method(i int) *Method {
 		Func: t.e.wrap(nil, t.methodFunc(fn, names[i]), nil, mt.td)}
 }
 
-// MethodByName looks up an exported method by name — like Go's reflect,
-// unexported members are not reachable through the facade.
 func (t *RType) MethodByName(name string) (*Method, bool) {
 	if t.rt != nil {
 		m, ok := t.rt.MethodByName(name)
@@ -1042,10 +1024,9 @@ func (t *RType) methodFunc(fn *runtime.Function, name string) runtime.Value {
 	return fn
 }
 
-// Implements reports whether the type implements interface u. The check
-// compares names AND signatures, so F(int) no longer satisfies a
-// required F(string). A non-interface argument panics like Go.
 func (t *RType) Implements(u *RType) bool {
+	// The check compares names and signatures: F(int) does not satisfy
+	// a required F(string).
 	if u != nil && u.Kind() != reflect.Interface {
 		panic(&runtime.Panic{Value: "reflect: non-interface type passed to Type.Implements"})
 	}
@@ -1259,10 +1240,10 @@ func (e *Env) canonType(t *RType) string {
 	return sb.String()
 }
 
-// AssignableTo reports Go's assignment rule: identical types, an
-// interface the type implements, or identical underlying types where
-// at least one side is unnamed (a named S -> []int, never S -> T).
 func (t *RType) AssignableTo(u *RType) bool {
+	// Go's assignment rule: identical types, an interface the type
+	// implements, or identical underlying types where at least one side
+	// is unnamed (a named S -> []int, never S -> T).
 	if u == nil {
 		return false
 	}
@@ -1282,13 +1263,12 @@ func (t *RType) AssignableTo(u *RType) bool {
 	return false
 }
 
-// ConvertibleTo reports reflect's conversion rules — narrower than the
-// language's: identical underlying types, non-complex numerics between
-// themselves, complex only to complex, integer<->string (rune), and
-// []byte/[]rune<->string. A slice also converts to an array of the same
-// element. Anything else is false (string -> []int, []int -> string,
-// int -> complex all report false like Go).
 func (t *RType) ConvertibleTo(u *RType) bool {
+	// Go's conversion rules: identical underlying types, non-complex
+	// numerics between themselves, complex only to complex,
+	// integer<->string (rune), []byte/[]rune<->string, and a slice to an
+	// array or array pointer of the same element. Anything else is false
+	// (string -> []int, []int -> string, int -> complex).
 	if u == nil {
 		return false
 	}
@@ -1355,9 +1335,6 @@ func (t *RType) ConvertibleTo(u *RType) bool {
 	return false
 }
 
-// Comparable reports whether values of the type can be compared — the
-// check recurses: a struct is comparable only when every field is, an
-// array only when its element is, like Go's own rule.
 func (t *RType) Comparable() bool {
 	if t.rt != nil {
 		return t.rt.Comparable()
@@ -1365,9 +1342,6 @@ func (t *RType) Comparable() bool {
 	return t.e.comparableTd(t.td, map[*runtime.TypeDef]bool{})
 }
 
-// CanSeq reports whether a value of this type produces an
-// iter.Seq[Value]: ints and uints, array, slice, chan, string, map,
-// ptr-to-array, and func(yield-1) producers.
 func (t *RType) CanSeq() bool {
 	if t.rt != nil {
 		return t.rt.CanSeq()
@@ -1385,8 +1359,6 @@ func (t *RType) CanSeq() bool {
 	return false
 }
 
-// CanSeq2 reports the same for iter.Seq2[Value, Value]: array, slice,
-// string, map, ptr-to-array, and func(yield-2) producers.
 func (t *RType) CanSeq2() bool {
 	if t.rt != nil {
 		return t.rt.CanSeq2()
@@ -1417,9 +1389,8 @@ func (t *RType) canRange(seq int) bool {
 	return o.Kind() == reflect.Bool && o.PkgPath() == ""
 }
 
-// Fields is Go 1.26's iter.Seq[StructField] over a struct type's
-// fields — a script-callable yield producer like Value.Seq, so both
-// for-range and direct calls enumerate Field(i) in order.
+// Fields returns reflect.Type.Fields' iterator as a script function
+// value: a script can range over it or call it with a yield function.
 func (t *RType) Fields() runtime.Value {
 	if t.Kind() != reflect.Struct {
 		plain("reflect: Fields of non-struct type %s", t)
@@ -1432,8 +1403,8 @@ func (t *RType) Fields() runtime.Value {
 	})
 }
 
-// Methods enumerates the type's method set — no kind gate; a type
-// with no methods simply yields nothing.
+// Methods returns reflect.Type.Methods' iterator as a script function
+// value, like [RType.Fields].
 func (t *RType) Methods() runtime.Value {
 	return t.iterValues("reflect.Type.Methods", t.NumMethod(), func(i int) any {
 		if t.rt != nil {
@@ -1443,7 +1414,8 @@ func (t *RType) Methods() runtime.Value {
 	})
 }
 
-// Ins enumerates a func type's parameter types.
+// Ins returns reflect.Type.Ins' iterator as a script function value,
+// like [RType.Fields].
 func (t *RType) Ins() runtime.Value {
 	if t.Kind() != reflect.Func {
 		plain("reflect: Ins of non-func type %s", t)
@@ -1456,7 +1428,8 @@ func (t *RType) Ins() runtime.Value {
 	})
 }
 
-// Outs enumerates a func type's result types.
+// Outs returns reflect.Type.Outs' iterator as a script function value,
+// like [RType.Fields].
 func (t *RType) Outs() runtime.Value {
 	if t.Kind() != reflect.Func {
 		plain("reflect: Outs of non-func type %s", t)
@@ -1520,7 +1493,6 @@ func (e *Env) comparableTd(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool) 
 	return true
 }
 
-// Bits reports the type's size in bits for sized numerics.
 func (t *RType) Bits() int {
 	if t.rt != nil {
 		return t.rt.Bits()
@@ -1543,18 +1515,19 @@ func (t *RType) Bits() int {
 	return 0
 }
 
-// Align reports the type's alignment for a 64-bit target: scalars by
-// size, aggregates by their widest member (slice/map/chan/func/ptr/
-// iface are all word-sized).
+// Align reports a script type's alignment as laid out on amd64; a host
+// type reports the host's.
 func (t *RType) Align() int {
+	// Scalars align by size, aggregates by their widest member
+	// (slice/map/chan/func/ptr/iface are all word-sized).
 	if t.rt != nil {
 		return t.rt.Align()
 	}
 	return t.alignOf()
 }
 
-// FieldAlign reports the field alignment — identical to Align on
-// amd64 (the platforms where they differ only affect 32-bit targets).
+// FieldAlign is [RType.Align] for a script type; the two differ only on
+// 32-bit targets.
 func (t *RType) FieldAlign() int {
 	if t.rt != nil {
 		return t.rt.FieldAlign()
@@ -1562,13 +1535,13 @@ func (t *RType) FieldAlign() int {
 	return t.alignOf()
 }
 
-// OffsetOf reports the amd64 byte offset of the named field in the
-// struct typedef td — the declared-type layout shared by reflect's
-// StructField.Offset and unsafe.Offsetof. Field positions come from the
-// typedefs' declared size and alignment, never the runtime values a
-// field happens to hold. h supplies the engine's type resolution (the
-// same hooks the reflect bind is built with).
+// OffsetOf reports the byte offset of field name in the struct type td,
+// laid out on amd64 by declared field types, as StructField.Offset
+// reports it. It reports an error if td is not a struct type or has no
+// such field.
 func OffsetOf(h Hooks, td *runtime.TypeDef, name string) (uintptr, error) {
+	// Field positions come from the typedefs' declared size and
+	// alignment, never the runtime values a field happens to hold.
 	e := &Env{h: h}
 	st := e.structTd(td)
 	if st == nil || len(st.Fields) == 0 {
@@ -1583,20 +1556,20 @@ func OffsetOf(h Hooks, td *runtime.TypeDef, name string) (uintptr, error) {
 	return 0, fmt.Errorf("unsafe.Offsetof: %s has no field %s", st.Name, name)
 }
 
-// SizeOf reports the amd64 size of td laid out by declared type — the
-// same structural layout unsafe.Offsetof uses: scalars by width,
-// 16-byte string/interface headers, 24-byte slices, padded structs.
-// h supplies the engine's type resolution (the same hooks the reflect
-// bind is built with).
+// SizeOf reports the size of td as laid out on amd64, the layout
+// [OffsetOf] uses.
 func SizeOf(h Hooks, td *runtime.TypeDef) uintptr {
+	// Scalars by width, 16-byte string/interface headers, 24-byte
+	// slices, padded structs.
 	e := &Env{h: h}
 	return e.rtypeOf(td).sizeOf()
 }
 
-// AlignOf reports td's amd64 alignment — the widest alignment among a
-// struct's fields (empty struct → 1), an array's element, 8 for
-// word-sized values and pointers.
+// AlignOf reports the alignment of td as laid out on amd64, the layout
+// [OffsetOf] uses.
 func AlignOf(h Hooks, td *runtime.TypeDef) uintptr {
+	// The widest alignment among a struct's fields (empty struct → 1),
+	// an array's element, 8 for word-sized values and pointers.
 	e := &Env{h: h}
 	return uintptr(e.rtypeOf(td).alignOf())
 }
@@ -1708,10 +1681,9 @@ func (t *RType) alignOf() int {
 	return 8
 }
 
-// ChanDir reports a chan type's direction — an Anon ChanType carries
-// the declared direction; a bare chan defaults to BothDir. Go panics
-// on non-chan types.
 func (t *RType) ChanDir() reflect.ChanDir {
+	// An Anon ChanType carries the declared direction; a bare chan
+	// defaults to BothDir. Go panics on non-chan types.
 	if t.rt != nil {
 		return t.rt.ChanDir()
 	}
@@ -1729,7 +1701,6 @@ func (t *RType) ChanDir() reflect.ChanDir {
 	return reflect.BothDir
 }
 
-// NumIn reports a func type's input count.
 func (t *RType) NumIn() int {
 	if t.rt != nil {
 		return t.rt.NumIn()
@@ -1752,7 +1723,6 @@ func (t *RType) NumIn() int {
 	return n
 }
 
-// NumOut reports a func type's result count.
 func (t *RType) NumOut() int {
 	if t.rt != nil {
 		return t.rt.NumOut()
@@ -1775,7 +1745,6 @@ func (t *RType) NumOut() int {
 	return n
 }
 
-// In resolves a func type's i'th input type.
 func (t *RType) In(i int) *RType {
 	if t.rt != nil {
 		return t.e.hostTypeOf(t.rt.In(i))
@@ -1786,7 +1755,6 @@ func (t *RType) In(i int) *RType {
 	return t.resolveIn(funcParam(t, i, false))
 }
 
-// Out resolves a func type's i'th output type.
 func (t *RType) Out(i int) *RType {
 	if t.rt != nil {
 		return t.e.hostTypeOf(t.rt.Out(i))
@@ -1797,7 +1765,6 @@ func (t *RType) Out(i int) *RType {
 	return t.resolveIn(funcParam(t, i, true))
 }
 
-// IsVariadic reports whether a func type is variadic.
 func (t *RType) IsVariadic() bool {
 	if t.rt != nil {
 		return t.rt.IsVariadic()

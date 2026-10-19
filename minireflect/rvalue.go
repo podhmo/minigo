@@ -14,11 +14,14 @@ import (
 	"github.com/podhmo/minigo/runtime"
 )
 
-// RValue is the facade's reflect.Value. In the script domain it views a
-// runtime.Value (val) and, when the location is settable, the ref-view
-// that produced it (ref: *Cell / *FieldRef / *IndexRef / *DerefRef).
-// In the host domain it delegates to a real reflect.Value — host
-// objects keep faithful semantics and never cross to script land.
+// RValue is minigo's reflect.Value. Scripts get one from reflect.ValueOf
+// and the methods below; its type is an [RType]. A script-domain RValue
+// views a script value and, when settable, its location; a host-domain
+// RValue wraps a real reflect.Value of a host object.
+//
+// Iterator methods ([RValue.Seq], [RValue.Seq2], [RValue.Fields],
+// [RValue.Methods]) return a script function value instead of an
+// iter.Seq. Script values have no real addresses: see [RValue.Pointer].
 type RValue struct {
 	e  *Env
 	vc runtime.VMCaller // the VM that produced this value, for Call/Member
@@ -147,15 +150,12 @@ func (e *Env) wrap(vc runtime.VMCaller, val, ref runtime.Value, td *runtime.Type
 	return &RValue{e: e, vc: vc, val: val, ref: ref, td: td}
 }
 
-// Payload exposes the payload a host fmt should print in place of the
-// Value itself — mirroring fmt's one-level reflect.Value unwrap, which
-// reads through the unexported-field flag. Host-domain values yield
-// their interface payload when they can; a non-interfacable host value
-// degrades to its scalar accessor or, past those, to the RValue itself
-// so at least its `<T Value>` String shows. Script-domain values yield
-// the viewed runtime.Value. The payload may itself be a Value: fmt
-// renders that one through String (Go's nested `<T Value>` form), it
-// does not unwrap twice. Callers gate IsValid themselves.
+// Payload returns what fmt should print for v, mirroring fmt's
+// one-level unwrap of a reflect.Value: the viewed [runtime.Value] in the
+// script domain; in the host domain, the held value, or for one that
+// cannot be interfaced its scalar value, or else v itself. The result may
+// itself be an *RValue; it is not unwrapped again. Payload does not check
+// [RValue.IsValid].
 func (v *RValue) Payload() any {
 	if v.host() {
 		if v.rv.CanInterface() {
@@ -396,7 +396,6 @@ func structOf(v runtime.Value) *runtime.Struct {
 
 // ---- reflect.Value methods ----
 
-// IsValid reports whether the value is non-zero.
 func (v *RValue) IsValid() bool {
 	if v == nil {
 		return false
@@ -404,7 +403,6 @@ func (v *RValue) IsValid() bool {
 	return v.rv.IsValid() || v.val != nil
 }
 
-// Kind reports the value's kind.
 func (v *RValue) Kind() reflect.Kind {
 	if v == nil || !v.IsValid() {
 		return reflect.Invalid
@@ -493,7 +491,6 @@ func kindOfValue(x runtime.Value) reflect.Kind {
 	return reflect.Invalid
 }
 
-// Type reports the value's type.
 func (v *RValue) Type() *RType {
 	v.mustValid("Type")
 	if v.host() {
@@ -541,7 +538,6 @@ func (v *RValue) Type() *RType {
 	return v.e.rtypeOf(td)
 }
 
-// Interface returns the value as any.
 func (v *RValue) Interface() any {
 	v.mustValid("Interface")
 	if v.ro {
@@ -550,14 +546,13 @@ func (v *RValue) Interface() any {
 	return v.ifaceVal()
 }
 
-// CanInterface reports whether Interface is legal. A zero Value
-// panics here like Go — unlike CanAddr/CanSet which answer false.
 func (v *RValue) CanInterface() bool {
+	// A zero Value panics here like Go, unlike CanAddr/CanSet which
+	// answer false.
 	v.mustValid("CanInterface")
 	return !v.ro
 }
 
-// Elem dereferences a pointer or interface value.
 func (v *RValue) Elem() *RValue {
 	v.mustValid("Elem")
 	if v.host() {
@@ -611,7 +606,6 @@ func (v *RValue) Elem() *RValue {
 	return nil
 }
 
-// Addr takes the address of an addressable value.
 func (v *RValue) Addr() *RValue {
 	v.mustValid("Addr")
 	if v.host() {
@@ -639,7 +633,6 @@ func (v *RValue) Addr() *RValue {
 	return v.e.wrap(v.vc, v.ref, nil, ptd)
 }
 
-// CanAddr reports addressability.
 func (v *RValue) CanAddr() bool {
 	if v.host() {
 		return v.rv.CanAddr()
@@ -647,7 +640,6 @@ func (v *RValue) CanAddr() bool {
 	return v.ref != nil
 }
 
-// CanSet reports settability.
 func (v *RValue) CanSet() bool {
 	if !v.IsValid() {
 		return false
@@ -682,7 +674,6 @@ func (v *RValue) mustBeSettable(name string) {
 	}
 }
 
-// IsNil reports nil-ness for nilable kinds.
 func (v *RValue) IsNil() bool {
 	v.mustValid("IsNil")
 	if v.host() {
@@ -722,10 +713,10 @@ func (v *RValue) IsNil() bool {
 	return false
 }
 
-// IsZero reports whether the value is its type's zero — a non-nil
-// slice or map is never zero even when empty, an array is zero only
-// when every element is, and the call panics on an invalid Value.
 func (v *RValue) IsZero() bool {
+	// A non-nil slice or map is never zero even when empty, an array is
+	// zero only when every element is, and the call panics on an invalid
+	// Value.
 	v.mustValid("IsZero")
 	if v.host() {
 		return v.rv.IsZero()
@@ -771,7 +762,6 @@ func (v *RValue) IsZero() bool {
 	return false
 }
 
-// Field reports a struct's i'th field.
 func (v *RValue) Field(i int) *RValue {
 	v.mustValid("Field")
 	if v.host() {
@@ -839,7 +829,6 @@ func (v *RValue) Field(i int) *RValue {
 	}
 }
 
-// NumField reports a struct value's field count.
 func (v *RValue) NumField() int {
 	v.mustValid("NumField")
 	if v.host() {
@@ -884,7 +873,6 @@ func (v *RValue) fieldByIndexWalk(idx []int, onNilPtr func(et *RType) (*RValue, 
 	return cur, nil
 }
 
-// FieldByIndex resolves a nested field path.
 func (v *RValue) FieldByIndex(idx []int) *RValue {
 	if v.host() {
 		f := v.rv.FieldByIndex(idx)
@@ -903,11 +891,10 @@ func (v *RValue) FieldByIndex(idx []int) *RValue {
 	return cur
 }
 
-// FieldByIndexErr resolves a nested field path like FieldByIndex, but
-// reports a nil embedded-pointer traversal as an error naming the
-// pointed-at struct type instead of panicking. A one-step index is
-// just Field — its panic names Field, like Go.
 func (v *RValue) FieldByIndexErr(idx []int) (*RValue, error) {
+	// A nil embedded-pointer traversal is an error naming the pointed-at
+	// struct type. A one-step index is just Field: its panic names Field,
+	// like Go.
 	if len(idx) == 1 {
 		return v.Field(idx[0]), nil
 	}
@@ -927,8 +914,6 @@ func (v *RValue) FieldByIndexErr(idx []int) (*RValue, error) {
 	})
 }
 
-// FieldByName looks up a struct field by name, including promotion
-// through embedded fields (value or pointer).
 func (v *RValue) FieldByName(name string) *RValue {
 	v.mustValid("FieldByName")
 	if v.host() {
@@ -975,10 +960,9 @@ func (v *RValue) FieldByName(name string) *RValue {
 	return &RValue{e: v.e, vc: v.vc}
 }
 
-// FieldByNameFunc finds the field whose name satisfies match — Go
-// routes through the receiver's type, so a non-struct dies on the
-// Type-level panic 'FieldByNameFunc of non-struct type X'.
 func (v *RValue) FieldByNameFunc(match func(string) bool) *RValue {
+	// Go routes through the receiver's type, so a non-struct dies on the
+	// Type-level panic 'FieldByNameFunc of non-struct type X'.
 	// Go's v.typ() yields a nil type on a zero Value and the
 	// FieldByNameFunc walk derefs it — the observed panic is a raw
 	// nil-pointer runtime error, not the usual 'on zero Value'.
@@ -1003,11 +987,10 @@ func (v *RValue) FieldByNameFunc(match func(string) bool) *RValue {
 	return &RValue{e: v.e, vc: v.vc}
 }
 
-// CanConvert reports whether Convert would succeed — Go's check is
-// ConvertibleTo plus the runtime-dependent slice→array and
-// slice→*array length rules. A zero Value dies on the Type panic,
-// because Go reads v.Type() before anything else.
 func (v *RValue) CanConvert(t *RType) bool {
+	// Go's check is ConvertibleTo plus the runtime-dependent slice→array
+	// and slice→*array length rules. A zero Value dies on the Type panic,
+	// because Go reads v.Type() before anything else.
 	vt := v.Type()
 	if v.host() {
 		if t != nil && t.rt != nil {
@@ -1032,12 +1015,12 @@ func (v *RValue) CanConvert(t *RType) bool {
 	return true
 }
 
-// Clear empties the value in place like Go 1.21: a slice's elements
-// all go to the element zero (the header's len stays), a map loses
-// every entry. Go's kind gate is the only check — there is no
-// settability or read-only gate, so an unaddressable slice still
-// clears its backing and nil slice/map receivers are no-ops.
 func (v *RValue) Clear() {
+	// Like Go 1.21: a slice's elements all go to the element zero (the
+	// header's len stays), a map loses every entry. Go's kind gate is the
+	// only check: there is no settability or read-only gate, so an
+	// unaddressable slice still clears its backing and nil slice/map
+	// receivers are no-ops.
 	v.mustValid("Clear")
 	if v.host() {
 		v.rv.Clear()
@@ -1066,9 +1049,9 @@ func (v *RValue) Clear() {
 	}
 }
 
-// CanInt reports whether Int can be used without panicking — the
-// zero Value reads kind Invalid and answers false like every other.
 func (v *RValue) CanInt() bool {
+	// The zero Value reads kind Invalid and answers false like every
+	// other Can* method.
 	switch v.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		return true
@@ -1076,7 +1059,6 @@ func (v *RValue) CanInt() bool {
 	return false
 }
 
-// CanUint reports whether Uint can be used without panicking.
 func (v *RValue) CanUint() bool {
 	switch v.Kind() {
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32,
@@ -1086,7 +1068,6 @@ func (v *RValue) CanUint() bool {
 	return false
 }
 
-// CanFloat reports whether Float can be used without panicking.
 func (v *RValue) CanFloat() bool {
 	switch v.Kind() {
 	case reflect.Float32, reflect.Float64:
@@ -1095,7 +1076,6 @@ func (v *RValue) CanFloat() bool {
 	return false
 }
 
-// CanComplex reports whether Complex can be used without panicking.
 func (v *RValue) CanComplex() bool {
 	switch v.Kind() {
 	case reflect.Complex64, reflect.Complex128:
@@ -1131,7 +1111,6 @@ func (v *RValue) fieldByNameRec(s *runtime.Struct, name string) *RValue {
 	return &RValue{e: v.e, vc: v.vc}
 }
 
-// Len reports len() of a slice/array/string/map/chan value.
 func (v *RValue) Len() int {
 	v.mustValid("Len")
 	if v.host() {
@@ -1159,10 +1138,9 @@ func (v *RValue) Len() int {
 	return 0
 }
 
-// SetLen reslices the target slice's header in place like
-// reflect.Value.SetLen: shrinking shares the backing, growing past
-// capacity panics. Script slices carry cap in their Go backing.
 func (v *RValue) SetLen(n int) {
+	// Shrinking shares the backing, growing past capacity panics. Script
+	// slices carry cap in their Go backing.
 	if v.host() {
 		v.rv.SetLen(n)
 		return
@@ -1194,10 +1172,9 @@ func (v *RValue) SetLen(n int) {
 	v.set(&runtime.Slice{Elems: s.Elems[:n], Typ: s.Typ})
 }
 
-// SetCap reslices the target slice's header in place like
-// reflect.Value.SetCap: only the capacity changes — the length and the
-// backing stay — so n must lie in [len, cap].
 func (v *RValue) SetCap(n int) {
+	// Only the capacity changes (the length and the backing stay), so n
+	// must lie in [len, cap].
 	if v.host() {
 		v.rv.SetCap(n)
 		return
@@ -1229,7 +1206,6 @@ func (v *RValue) SetCap(n int) {
 	v.set(&runtime.Slice{Elems: s.Elems[:len(s.Elems):n], Typ: s.Typ})
 }
 
-// Cap reports cap() of a slice/array/chan value.
 func (v *RValue) Cap() int {
 	v.mustValid("Cap")
 	if v.host() {
@@ -1252,7 +1228,6 @@ func (v *RValue) Cap() int {
 	return 0
 }
 
-// Index reports a slice/array/string's i'th element.
 func (v *RValue) Index(i int) *RValue {
 	v.mustValid("Index")
 	if v.host() {
@@ -1311,7 +1286,6 @@ func (v *RValue) Index(i int) *RValue {
 	return nil
 }
 
-// Slice produces a subslice view sharing the backing store.
 func (v *RValue) Slice(i, j int) *RValue {
 	v.mustValid("Slice")
 	if v.host() {
@@ -1387,11 +1361,10 @@ func (v *RValue) Slice(i, j int) *RValue {
 	return nil
 }
 
-// Slice3 produces a capacity-bounded subslice like Go's three-index
-// slicing: the result has len j-i and cap k-i, so i <= j <= k <= cap.
-// Strings are not sliceable this way — only slices and addressable
-// arrays, matching the ValueError kind check.
 func (v *RValue) Slice3(i, j, k int) *RValue {
+	// The result has len j-i and cap k-i, so i <= j <= k <= cap. Strings
+	// are not sliceable this way: only slices and addressable arrays,
+	// matching the ValueError kind check.
 	v.mustValid("Slice3")
 	if v.host() {
 		return v.e.wrapHost(v.vc, v.rv.Slice3(i, j, k))
@@ -1441,13 +1414,13 @@ func (v *RValue) Slice3(i, j, k int) *RValue {
 	return nil
 }
 
-// Grow expands a slice's capacity like Go 1.20 — Go checks
-// addressability before the slice kind, and only the cap side of the
-// header changes (len stays). The resulting cap follows the runtime's
-// growslice: nextslicecap picks the unrounded cap, then the backing
-// size rounds up to the malloc size class holding that many elements
-// (pointerful elements reserve an 8-byte malloc header since go1.26).
 func (v *RValue) Grow(n int) {
+	// Like Go 1.20: Go checks addressability before the slice kind, and
+	// only the cap side of the header changes (len stays). The resulting
+	// cap follows the runtime's growslice: nextslicecap picks the
+	// unrounded cap, then the backing size rounds up to the malloc size
+	// class holding that many elements (pointerful elements reserve an
+	// 8-byte malloc header since go1.26).
 	v.mustValid("Grow")
 	if v.host() {
 		v.rv.Grow(n)
@@ -1579,7 +1552,6 @@ func (e *Env) elemLayout(td *runtime.TypeDef) (size uintptr, noscan bool, ok boo
 	return rt.sizeOf(), !rt.hasPointers(), true
 }
 
-// MapIndex looks up a map value; missing keys give an invalid Value.
 func (v *RValue) MapIndex(k *RValue) *RValue {
 	v.mustValid("MapIndex")
 	if v.host() {
@@ -1628,7 +1600,6 @@ func (v *RValue) MapIndex(k *RValue) *RValue {
 	return &RValue{e: v.e, vc: v.vc}
 }
 
-// MapKeys reports the map's keys.
 func (v *RValue) MapKeys() []*RValue {
 	v.mustValid("MapKeys")
 	if v.host() {
@@ -1659,7 +1630,6 @@ func (v *RValue) MapKeys() []*RValue {
 	return out
 }
 
-// SetMapIndex assigns or deletes a map entry.
 func (v *RValue) SetMapIndex(k, x *RValue) {
 	v.mustValid("SetMapIndex")
 	if v.host() {
@@ -1721,7 +1691,6 @@ func (v *RValue) SetMapIndex(k, x *RValue) {
 	m.Insert(normVal(k.ifaceVal()), normVal(x.ifaceVal()))
 }
 
-// MapRange starts a map iteration.
 func (v *RValue) MapRange() *MapIter {
 	v.mustValid("MapRange")
 	if v.host() {
@@ -1750,7 +1719,7 @@ func (v *RValue) MapRange() *MapIter {
 	return &MapIter{e: v.e, vc: v.vc, m: m, keys: keys, ckeys: ckeys, ktd: ktd, etd: etd}
 }
 
-// MapIter iterates a map.
+// MapIter is minigo's reflect.MapIter, returned by [RValue.MapRange].
 type MapIter struct {
 	e     *Env
 	vc    runtime.VMCaller
@@ -1763,9 +1732,8 @@ type MapIter struct {
 	hit   *reflect.MapIter
 }
 
-// Next advances the iterator. A key deleted mid-iteration is skipped,
-// like Go's map iterator (keys added during iteration may not appear —
-// Go leaves that unspecified and the snapshot keeps them out).
+// Next advances the iterator. For a script map, a key added during
+// iteration is not visited.
 func (it *MapIter) Next() bool {
 	if it.hit != nil {
 		return it.hit.Next()
@@ -1780,7 +1748,6 @@ func (it *MapIter) Next() bool {
 	return false
 }
 
-// Key reports the current key.
 func (it *MapIter) Key() *RValue {
 	if it.hit != nil {
 		return it.e.wrapHost(it.vc, it.hit.Key())
@@ -1794,7 +1761,6 @@ func (it *MapIter) Key() *RValue {
 	return it.e.wrap(it.vc, it.keys[it.i-1], nil, it.ktd)
 }
 
-// Value reports the current value.
 func (it *MapIter) Value() *RValue {
 	if it.hit != nil {
 		return it.e.wrapHost(it.vc, it.hit.Value())
@@ -1809,7 +1775,6 @@ func (it *MapIter) Value() *RValue {
 	return it.e.wrap(it.vc, runtime.Copy(got), nil, it.etd)
 }
 
-// Reset restarts the iterator on v.
 func (it *MapIter) Reset(v *RValue) {
 	if it.hit != nil {
 		it.hit.Reset(v.rv)
@@ -1819,11 +1784,11 @@ func (it *MapIter) Reset(v *RValue) {
 	*it = *nv
 }
 
-// SetIterKey assigns the current iteration key. Go evaluates the
-// iterator first — before Next the panic is `reflect: Value.SetIterKey
-// called before Next`, ahead of the target's settable check — and an
-// unassignable key reports under `reflect.MapIter.SetKey:`.
 func (v *RValue) SetIterKey(it *MapIter) {
+	// Go evaluates the iterator first: before Next the panic is
+	// `reflect: Value.SetIterKey called before Next`, ahead of the
+	// target's settable check, and an unassignable key reports under
+	// `reflect.MapIter.SetKey:`.
 	if it != nil && it.hit == nil {
 		if it.i == 0 {
 			plain("reflect: Value.SetIterKey called before Next")
@@ -1841,7 +1806,6 @@ func (v *RValue) SetIterKey(it *MapIter) {
 	v.set(x.get())
 }
 
-// SetIterValue assigns the current iteration value.
 func (v *RValue) SetIterValue(it *MapIter) {
 	if it != nil && it.hit == nil {
 		if it.i == 0 {
@@ -1860,14 +1824,13 @@ func (v *RValue) SetIterValue(it *MapIter) {
 	v.set(x.get())
 }
 
-// Seq returns Go 1.23's iter.Seq[Value] producer: a script-callable
-// taking a yield function, so `for x := range v.Seq()` and
-// `v.Seq()(func(x) bool { ... })` both work — the range machinery's
-// driveFuncIter feeds the same yield a direct call would. Single-var
-// ranging yields keys and indices like Go: ints 0..n-1 (converted to
-// a named int type), slices/arrays/strings/ptr-to-arrays the index,
-// maps the key, chans each received element.
+// Seq returns reflect.Value.Seq's iterator as a script function value:
+// a script can range over it or call it with a yield function.
 func (v *RValue) Seq() runtime.Value {
+	// Single-var ranging yields keys and indices like Go: ints 0..n-1
+	// (converted to a named int type), slices/arrays/strings/ptr-to-arrays
+	// the index, maps the key, chans each received element. The range
+	// machinery's driveFuncIter feeds the same yield a direct call would.
 	if !v.Type().CanSeq() {
 		plain("reflect: %s cannot produce iter.Seq[Value]", v.Type())
 	}
@@ -1879,8 +1842,8 @@ func (v *RValue) Seq() runtime.Value {
 	}}
 }
 
-// Seq2 is the two-var counterpart: slices/arrays/ptr-to-arrays yield
-// (index, element), strings (byte offset, rune), maps (key, value).
+// Seq2 returns reflect.Value.Seq2's iterator as a script function value,
+// like [RValue.Seq].
 func (v *RValue) Seq2() runtime.Value {
 	if !v.Type().CanSeq2() {
 		plain("reflect: %s cannot produce iter.Seq2[Value, Value]", v.Type())
@@ -2060,8 +2023,8 @@ func (v *RValue) driveSeq(vc runtime.VMCaller, yield runtime.Value, n int) error
 	return fmt.Errorf("cannot produce iter.Seq%d", n)
 }
 
-// Fields is Go 1.26's iter.Seq2[StructField, Value]: each yield pairs
-// the field descriptor with that field's value on the receiver.
+// Fields returns reflect.Value.Fields' iterator as a script function
+// value, like [RValue.Seq].
 func (v *RValue) Fields() runtime.Value {
 	t := v.Type()
 	if t.Kind() != reflect.Struct {
@@ -2086,9 +2049,8 @@ func (v *RValue) Fields() runtime.Value {
 	}}
 }
 
-// Methods is the iter.Seq2[Method, Value] counterpart: each yield
-// pairs the method descriptor with the bound method value, equivalent
-// to v.Method(i) for i in 0..NumMethod()-1.
+// Methods returns reflect.Value.Methods' iterator as a script function
+// value, like [RValue.Seq].
 func (v *RValue) Methods() runtime.Value {
 	t := v.Type()
 	return &runtime.BuiltinFunc{Name: "reflect.Value.Methods", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -2112,7 +2074,6 @@ func (v *RValue) Methods() runtime.Value {
 
 // ---- scalar reads ----
 
-// Int reads an integer value.
 func (v *RValue) Int() int64 {
 	v.mustValid("Int")
 	if v.host() {
@@ -2136,7 +2097,6 @@ func (v *RValue) Int() int64 {
 	return 0
 }
 
-// Uint reads an unsigned value.
 func (v *RValue) Uint() uint64 {
 	v.mustValid("Uint")
 	if v.host() {
@@ -2158,7 +2118,6 @@ func (v *RValue) Uint() uint64 {
 	return 0
 }
 
-// Float reads a float value.
 func (v *RValue) Float() float64 {
 	v.mustValid("Float")
 	if v.host() {
@@ -2184,7 +2143,6 @@ func (v *RValue) Float() float64 {
 	return 0
 }
 
-// Bool reads a bool value.
 func (v *RValue) Bool() bool {
 	v.mustValid("Bool")
 	if v.host() {
@@ -2206,11 +2164,12 @@ func (v *RValue) Bool() bool {
 	return false
 }
 
-// Bytes reads a []byte value. A script slice shares its backing —
-// the returned value aliases the same elements like Go's Bytes, so
-// writes through it reach the original slice (an unexported field's
-// slice included: Go's Bytes ignores the read-only flag).
+// Bytes returns a []byte for a host value and a *[runtime.Slice] for a
+// script value. Like reflect, the result shares the original's elements,
+// so writes through it reach the original.
 func (v *RValue) Bytes() any {
+	// This holds even for an unexported field's slice: Go's Bytes ignores
+	// the read-only flag.
 	v.mustValid("Bytes")
 	if v.host() {
 		return v.rv.Bytes()
@@ -2247,8 +2206,6 @@ func (v *RValue) Bytes() any {
 	return &runtime.Slice{Elems: s.Elems, Typ: st}
 }
 
-// String reads a string value; on non-string kinds it reports the
-// "<T Value>" placeholder like reflect.
 func (v *RValue) String() string {
 	if v == nil || !v.IsValid() {
 		return "<invalid Value>"
@@ -2267,7 +2224,6 @@ func (v *RValue) String() string {
 	return fmt.Sprintf("<%s Value>", v.Type().String())
 }
 
-// Complex reads a complex value.
 func (v *RValue) Complex() complex128 {
 	v.mustValid("Complex")
 	if v.host() {
@@ -2321,10 +2277,9 @@ func (v *RValue) tagged(val runtime.Value) runtime.Value {
 	return val
 }
 
-// Set assigns another value's content — the source must be assignable
-// to the target's declared type, like `reflect.Set: value of type
-// string is not assignable to type int`.
 func (v *RValue) Set(x *RValue) {
+	// The source must be assignable to the target's declared type, like
+	// `reflect.Set: value of type string is not assignable to type int`.
 	v.mustValid("Set")
 	if v.host() {
 		// Go judges settability before marshalling the source — an
@@ -2402,10 +2357,9 @@ func (v *RValue) Set(x *RValue) {
 	v.set(val)
 }
 
-// SetZero resets the value to its type's zero value — Go 1.20's
-// writable zeroing. Same settability gates as Set; works on every
-// kind, so there is no type check on the way out.
 func (v *RValue) SetZero() {
+	// Same settability gates as Set; works on every kind, so there is no
+	// type check on the way out.
 	v.mustValid("SetZero")
 	if v.host() {
 		v.rv.SetZero()
@@ -2425,7 +2379,6 @@ func (v *RValue) SetZero() {
 	v.set(v.e.zeroOf(v.vc, v.td))
 }
 
-// SetBool writes a bool.
 func (v *RValue) SetBool(b bool) {
 	v.mustValid("SetBool")
 	if v.host() {
@@ -2503,8 +2456,8 @@ func truncInt(td *runtime.TypeDef, x int64) int64 {
 	return x & ((1 << w.bits) - 1)
 }
 
-// SetInt writes an int64, truncated to the declared width.
 func (v *RValue) SetInt(x int64) {
+	// Truncated to the declared width.
 	v.mustValid("SetInt")
 	if v.host() {
 		v.rv.SetInt(x)
@@ -2529,9 +2482,9 @@ func (v *RValue) sliceView() *runtime.Slice {
 	return s
 }
 
-// SetUint writes a uint64 (kept as int64 in the script domain),
-// truncated to the declared width.
 func (v *RValue) SetUint(x uint64) {
+	// Kept as int64 in the script domain, truncated to the declared
+	// width.
 	v.mustValid("SetUint")
 	if v.host() {
 		v.rv.SetUint(x)
@@ -2547,7 +2500,6 @@ func (v *RValue) SetUint(x uint64) {
 	v.set(&runtime.GoValue{V: x})
 }
 
-// SetFloat writes a float64.
 func (v *RValue) SetFloat(x float64) {
 	v.mustValid("SetFloat")
 	if v.host() {
@@ -2559,7 +2511,6 @@ func (v *RValue) SetFloat(x float64) {
 	v.set(x)
 }
 
-// SetComplex writes a complex value.
 func (v *RValue) SetComplex(x complex128) {
 	v.mustValid("SetComplex")
 	if v.host() {
@@ -2571,7 +2522,6 @@ func (v *RValue) SetComplex(x complex128) {
 	v.set(&runtime.GoValue{V: x})
 }
 
-// SetString writes a string.
 func (v *RValue) SetString(x string) {
 	v.mustValid("SetString")
 	if v.host() {
@@ -2583,7 +2533,6 @@ func (v *RValue) SetString(x string) {
 	v.set(x)
 }
 
-// SetBytes writes a []byte.
 func (v *RValue) SetBytes(x []byte) {
 	v.mustValid("SetBytes")
 	if v.host() {
@@ -2619,7 +2568,6 @@ func (v *RValue) SetBytes(x []byte) {
 
 // ---- calls ----
 
-// Call invokes a func value.
 func (v *RValue) Call(in []*RValue) []*RValue {
 	v.mustValid("Call")
 	if v.host() {
@@ -2869,10 +2817,9 @@ func (v *RValue) callSig() *ast.FuncType {
 	return nil
 }
 
-// CallSlice invokes a variadic func value with a slice as the tail —
-// Go assigns the slice to the variadic parameter, so the script side
-// spreads its elements into the trailing args, mirroring `f(xs...)`.
 func (v *RValue) CallSlice(in []*RValue) []*RValue {
+	// Go assigns the slice to the variadic parameter, so the script side
+	// spreads its elements into the trailing args, mirroring `f(xs...)`.
 	v.mustValid("CallSlice")
 	if v.host() {
 		// same order as Call: the kind check precedes the
@@ -2944,8 +2891,6 @@ func (v *RValue) CallSlice(in []*RValue) []*RValue {
 	return v.Call(spread)
 }
 
-// Method returns the value's i'th method (not supported: ordering
-// script method sets needs the typedef machinery).
 func (v *RValue) Method(i int) *RValue {
 	v.mustValid("Method")
 	if v.host() {
@@ -2958,7 +2903,6 @@ func (v *RValue) Method(i int) *RValue {
 	return v.MethodByName(names[i])
 }
 
-// NumMethod reports the exported bound method count.
 func (v *RValue) NumMethod() int {
 	v.mustValid("NumMethod")
 	if v.host() {
@@ -2967,9 +2911,9 @@ func (v *RValue) NumMethod() int {
 	return len(exportedMethodNames(v.e.methodSet(v.td)))
 }
 
-// MethodByName binds an exported method by name through the caller's
-// member dispatch — unexported members stay invisible, like Go.
 func (v *RValue) MethodByName(name string) *RValue {
+	// Binds through the caller's member dispatch; unexported members stay
+	// invisible, like Go.
 	v.mustValid("MethodByName")
 	if v.host() {
 		m := v.rv.MethodByName(name)
@@ -3037,8 +2981,6 @@ func (v *RValue) MethodByName(name string) *RValue {
 
 // ---- conversions / misc ----
 
-// Convert converts the value to type t for the subset the facade
-// supports (numeric widening, string<->[]byte).
 func (v *RValue) Convert(t *RType) *RValue {
 	if !v.IsValid() {
 		// Go's Convert dereferences the source type before any
@@ -3185,16 +3127,14 @@ func (v *RValue) convInt() int64 {
 	return v.Int()
 }
 
-// Comparable reports comparability.
 func (v *RValue) Comparable() bool {
 	return v.Type().Comparable()
 }
 
-// Equal reports Go's equality: mismatched types report false BEFORE
-// the comparability check, same-typed uncomparable values panic, and
-// two invalid Values compare equal. Same type delegates to value
-// equality.
 func (v *RValue) Equal(u *RValue) bool {
+	// Mismatched types report false before the comparability check,
+	// same-typed uncomparable values panic, and two invalid Values compare
+	// equal. Same type delegates to value equality.
 	vok := v != nil && v.IsValid()
 	uok := u != nil && u.IsValid()
 	if !vok || !uok {
@@ -3213,9 +3153,9 @@ func (v *RValue) Equal(u *RValue) bool {
 	return valueEqual(v.ifaceVal(), u.ifaceVal(), 0)
 }
 
-// Pointer reports the underlying address as a uintptr — the facade
-// cannot mint real addresses, so a live pointer reads as a fixed
-// nonzero sentinel and a nil one as 0, like Go's nil-vs-non-nil split.
+// Pointer differs from reflect for script values: no real address
+// exists, so it reports a fixed nonzero value for a non-nil pointer
+// (or non-empty string) and 0 for a nil one.
 func (v *RValue) Pointer() uintptr {
 	v.mustValid("Pointer")
 	if v.host() {
@@ -3239,8 +3179,8 @@ func (v *RValue) Pointer() uintptr {
 	return 0
 }
 
-// UnsafePointer reports the same address as an any — non-nil for a live
-// pointer, nil for a nil one (the script cannot compare addresses).
+// UnsafePointer returns, for a script value, the value itself instead of
+// an address, or nil for a nil pointer (or empty string).
 func (v *RValue) UnsafePointer() any {
 	v.mustValid("UnsafePointer")
 	if v.host() {
@@ -3263,9 +3203,8 @@ func (v *RValue) UnsafePointer() any {
 	return nil
 }
 
-// UnsafeAddr requires an addressable value — Go panics
-// 'reflect.Value.UnsafeAddr of unaddressable value' otherwise — and
-// likewise reports a nonzero sentinel, never a real address.
+// UnsafeAddr reports, for a script value, the same fixed nonzero value as
+// [RValue.Pointer] instead of a real address.
 func (v *RValue) UnsafeAddr() uintptr {
 	v.mustValid("UnsafeAddr")
 	if v.host() {
@@ -3279,7 +3218,6 @@ func (v *RValue) UnsafeAddr() uintptr {
 
 // CanComplex / Overflow* follow.
 
-// OverflowInt reports whether x fits the value's int kind.
 func (v *RValue) OverflowInt(x int64) bool {
 	v.mustValid("OverflowInt")
 	if v.host() {
@@ -3299,7 +3237,6 @@ func (v *RValue) OverflowInt(x int64) bool {
 	return false
 }
 
-// OverflowUint reports whether x fits the value's uint kind.
 func (v *RValue) OverflowUint(x uint64) bool {
 	v.mustValid("OverflowUint")
 	if v.host() {
@@ -3319,7 +3256,6 @@ func (v *RValue) OverflowUint(x uint64) bool {
 	return false
 }
 
-// OverflowFloat reports whether x fits a float32.
 func (v *RValue) OverflowFloat(x float64) bool {
 	v.mustValid("OverflowFloat")
 	if v.host() {
@@ -3335,7 +3271,6 @@ func (v *RValue) OverflowFloat(x float64) bool {
 	return false
 }
 
-// OverflowComplex reports whether x fits a complex64.
 func (v *RValue) OverflowComplex(x complex128) bool {
 	v.mustValid("OverflowComplex")
 	if v.host() {
@@ -3354,7 +3289,6 @@ func (v *RValue) OverflowComplex(x complex128) bool {
 
 // ---- channel ops ----
 
-// Recv receives from a chan value.
 func (v *RValue) Recv() (*RValue, bool) {
 	v.mustValid("Recv")
 	if v.host() {
@@ -3369,7 +3303,6 @@ func (v *RValue) Recv() (*RValue, bool) {
 	return nil, false
 }
 
-// Send sends on a chan value.
 func (v *RValue) Send(x *RValue) {
 	v.mustValid("Send")
 	if v.host() {
@@ -3394,7 +3327,6 @@ func (v *RValue) Send(x *RValue) {
 	trap("call of reflect.Value.Send on %s Value", v.kindStr())
 }
 
-// TryRecv polls a chan value.
 func (v *RValue) TryRecv() (*RValue, bool) {
 	v.mustValid("TryRecv")
 	if v.host() {
@@ -3413,7 +3345,6 @@ func (v *RValue) TryRecv() (*RValue, bool) {
 	return nil, false
 }
 
-// TrySend attempts a non-blocking send.
 func (v *RValue) TrySend(x *RValue) bool {
 	v.mustValid("TrySend")
 	if v.host() {
@@ -3440,7 +3371,6 @@ func (v *RValue) TrySend(x *RValue) bool {
 	return false
 }
 
-// Close closes a chan value.
 func (v *RValue) Close() {
 	v.mustValid("Close")
 	if v.host() {
