@@ -25,8 +25,7 @@ import (
 	"go/version"
 )
 
-// DeclKind classifies a package-level name for [CheckLang]; [DeclaredKinds]
-// produces them.
+// DeclKind classifies a package-level name for [CheckLang].
 type DeclKind byte
 
 const (

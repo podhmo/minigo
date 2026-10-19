@@ -5,11 +5,7 @@
 // [github.com/podhmo/minigo/compile] package turns the AST into bytecode.
 //
 // [CheckLang] applies the -lang gate, rejecting language features newer
-// than a file's effective version ([File.Lang]); it takes the package-wide
-// name table built by [DeclaredKinds].
-//
-// [TypeParamNames] and [RecvTypeParamNames] list the type parameter names
-// a declaration binds.
+// than a file's effective version ([File.Lang]).
 package syntax
 
 import (
@@ -23,7 +19,6 @@ import (
 )
 
 // File is a parsed Go source file plus its file-scoped import table.
-// Create one with [ParseFile].
 type File struct {
 	Name    string // filename as given to the FileSet
 	AST     *ast.File
