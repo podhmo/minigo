@@ -1,16 +1,11 @@
-// Package index records the top-level declarations of one package's
-// parsed files without evaluating them.
+// Package index records top-level Go declarations without evaluating them.
 //
-// [Build] (or [BuildLenient]) turns the files from
-// [github.com/podhmo/minigo/syntax.ParseFile] into an [Index], which
-// [github.com/podhmo/minigo/runtime.Package] keeps for evaluation at
-// package initialization or call time. An [Index] holds one [Decl] per
-// declared name, classified by [Kind], and a [TypeDeclInfo] per type with
-// its methods. Duplicate names fail with a [RedeclError].
+// Pass files from [github.com/podhmo/minigo/syntax.ParseFile] to [Build] to
+// get an [Index] of [Decl] and [TypeDeclInfo] values. Duplicate names report
+// [RedeclError]; [BuildLenient] permits replacements for REPL-style use.
 //
-// For code that walks the AST directly, [ValueSpecs] resolves the
-// implicit repetition of const specs and [ReceiverTypeName] names a
-// method's receiver type.
+// [ValueSpecs] expands implicit const specs; [ReceiverTypeName] reads method
+// receiver names.
 package index
 
 import (
