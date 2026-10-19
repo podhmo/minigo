@@ -3034,19 +3034,31 @@ func (v *RValue) Convert(t *RType) *RValue {
 	case reflect.String:
 		// Convert produces a string, it does not format: a []byte/[]rune
 		// decodes to its contents and an integer to a one-rune string.
+		asRunes := false
+		if st := v.Type(); st.Kind() == reflect.Slice {
+			if et := st.Elem(); et != nil && et.Kind() == reflect.Int32 {
+				// a rune element appends the rune (UTF-8 encoded), not a byte
+				asRunes = true
+			}
+		}
+		writeElems := func(sb *strings.Builder, elems []runtime.Value) {
+			for _, el := range elems {
+				if asRunes {
+					sb.WriteRune(rune(intOf(el)))
+				} else {
+					sb.WriteByte(byte(intOf(el)))
+				}
+			}
+		}
 		switch x := v.get().(type) {
 		case *runtime.Slice:
 			var sb strings.Builder
-			for _, el := range x.Elems {
-				sb.WriteByte(byte(intOf(el)))
-			}
+			writeElems(&sb, x.Elems)
 			out = sb.String()
 		case *runtime.Named:
 			if s, ok := x.V.(*runtime.Slice); ok {
 				var sb strings.Builder
-				for _, el := range s.Elems {
-					sb.WriteByte(byte(intOf(el)))
-				}
+				writeElems(&sb, s.Elems)
 				out = sb.String()
 			} else if s, ok := x.V.(string); ok {
 				out = s
@@ -3066,7 +3078,19 @@ func (v *RValue) Convert(t *RType) *RValue {
 		out = v.Bool()
 	case reflect.Slice:
 		if v.Kind() == reflect.String {
-			out = strToBytes(v.String())
+			var s *runtime.Slice
+			if et := t.Elem(); et != nil && et.Kind() == reflect.Int32 {
+				s = strToRunes(v.String())
+			} else {
+				s = strToBytes(v.String())
+			}
+			// the result keeps the target's declared type so a named
+			// slice type (`type RS []rune`, `[]R` with `type R rune`)
+			// survives Interface()/type assertions
+			if t.td != nil {
+				s.Typ = t.td
+			}
+			out = s
 		} else {
 			out = v.get()
 		}
@@ -3444,6 +3468,18 @@ func strToBytes(s string) *runtime.Slice {
 	}
 	return &runtime.Slice{Elems: elems, Typ: &runtime.TypeDef{
 		Kind: runtime.KindSlice, Elem: &runtime.TypeDef{Name: "byte"}}}
+}
+
+// strToRunes builds a script []rune from a string, decoding UTF-8 like
+// Go's []rune(s) conversion (each undecodable byte becomes RuneError).
+func strToRunes(s string) *runtime.Slice {
+	rs := []rune(s)
+	elems := make([]runtime.Value, len(rs))
+	for i, r := range rs {
+		elems[i] = int64(r)
+	}
+	return &runtime.Slice{Elems: elems, Typ: &runtime.TypeDef{
+		Kind: runtime.KindSlice, Elem: &runtime.TypeDef{Name: "rune"}}}
 }
 
 // toHost marshals a script-side value into a host reflect.Value for
