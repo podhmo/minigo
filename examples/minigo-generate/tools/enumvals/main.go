@@ -1,10 +1,7 @@
-// Command enumvals is a second minigo-generate plugin beside
-// tools/stringer: it emits a Values() accessor listing an enum's
-// members in declaration order. Two tools over the same package — the
-// point of //minigo:generate is that each directive picks its own.
+// Command enumvals generates an enum Values accessor in declaration order.
 //
-// Dual-mode like stringer: func main wraps Main, so the same source
-// runs as a real command and interpreted under minigo-generate.
+// Run it with go run ./tools/enumvals -type=X or a //minigo:generate
+// directive. [Main] accepts the directive's arguments.
 package main
 
 import (
