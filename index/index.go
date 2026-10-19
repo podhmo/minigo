@@ -1,6 +1,16 @@
-// Package index builds a PackageIndex from parsed files: declarations are
-// recorded but never evaluated. Evaluation happens at package Initialize or
-// function CALL time only.
+// Package index records the top-level declarations of one package's
+// parsed files without evaluating them.
+//
+// [Build] (or [BuildLenient]) turns the files from
+// [github.com/podhmo/minigo/syntax.ParseFile] into an [Index], which
+// [github.com/podhmo/minigo/runtime.Package] keeps for evaluation at
+// package initialization or call time. An [Index] holds one [Decl] per
+// declared name, classified by [Kind], and a [TypeDeclInfo] per type with
+// its methods. Duplicate names fail with a [RedeclError].
+//
+// For code that walks the AST directly, [ValueSpecs] resolves the
+// implicit repetition of const specs and [ReceiverTypeName] names a
+// method's receiver type.
 package index
 
 import (
@@ -11,7 +21,7 @@ import (
 	"github.com/podhmo/minigo/syntax"
 )
 
-// Kind classifies a top-level declaration.
+// Kind classifies a [Decl].
 type Kind int
 
 const (
@@ -21,13 +31,14 @@ const (
 	TypeDecl
 )
 
-// Decl is a single named top-level declaration (one name in a spec).
+// Decl is a single named top-level declaration: one name of a spec, or
+// one function or method. Get them from an [Index].
 type Decl struct {
 	Kind Kind
 	Name string
 	File *syntax.File
 
-	Func      *ast.FuncDecl // Kind == FuncDecl (methods go to TypeDecl.Methods)
+	Func      *ast.FuncDecl // Kind == FuncDecl (methods are listed in TypeDeclInfo.Methods)
 	Gen       *ast.GenDecl  // Kind == VarDecl/ConstDecl/TypeDecl
 	Spec      ast.Spec      // *ast.ValueSpec or *ast.TypeSpec
 	Idx       int           // spec index within Gen (iota)
@@ -40,45 +51,49 @@ type Decl struct {
 	Pos           token.Pos
 }
 
-// TypeDeclInfo is a named type plus the methods declared on it.
+// TypeDeclInfo is a named type plus the methods declared on it, found in
+// [Index].Types. Decl is nil when the files declare methods on a type
+// name they do not declare.
 type TypeDeclInfo struct {
 	Decl    *Decl
 	Methods map[string]*Decl // method name -> Func decl (receiver this type)
 }
 
-// Index is the per-package declaration table.
+// Index is the declaration table of one package, returned by [Build] or
+// [BuildLenient]. Maps are keyed by declared name; under [BuildLenient]
+// a later duplicate replaces an earlier one.
 type Index struct {
-	Decls   []*Decl          // all decls in file order (init order)
-	Methods []*Decl          // method decls in file order — every declaration, including same-name duplicates the per-type Methods maps drop
-	Funcs   map[string]*Decl // non-method functions, incl. init
+	Decls   []*Decl          // non-method decls in source order, files in the order given
+	Methods []*Decl          // method decls in source order — every declaration, including same-name duplicates the per-type Methods maps drop
+	Funcs   map[string]*Decl // non-method functions, excluding init
 	Types   map[string]*TypeDeclInfo
 	Vars    map[string]*Decl
 	Consts  map[string]*Decl
 	Inits   []*Decl // init() functions in order
 
-	// LocalGens assigns each non-alias function-local type decl its
-	// `·gen` index — gc's noder numbers them in package source order
-	// (SplitVargenSuffix) and the number spells inside an
-	// instantiation's arg list (`main.U[int;int]·3`).
+	// LocalGens numbers each non-alias type declared inside a function
+	// body, from 1 in package source order, as gc does; the number appears
+	// in gc's spelling of instantiations (`main.U[int;int]·3`). Read it
+	// with LocalGen.
 	LocalGens map[*ast.TypeSpec]int
 }
 
-// LocalGen returns ts's `·gen` index, 0 when ts is not a function-local
-// non-alias type decl of this package.
+// LocalGen returns ts's number in LocalGens, 0 when ts is not a
+// function-local non-alias type decl of this package.
 func (ix *Index) LocalGen(ts *ast.TypeSpec) int {
 	return ix.LocalGens[ts]
 }
 
-// RedeclError reports a duplicate package-block name — Go's
-// `X redeclared in this block` compile error. Pos points at the second
-// declaration, PrevPos at the first; callers render them through their
-// FileSet.
+// RedeclError is returned by [Build] for a duplicate package-block name —
+// Go's `X redeclared in this block` compile error. Pos points at the
+// second declaration, PrevPos at the first; callers render them through
+// their FileSet.
 type RedeclError struct {
 	Name    string
 	Pos     token.Pos
 	PrevPos token.Pos
-	// Method marks a duplicate METHOD declaration (T.M): gc words it
-	// differently from a package-block redeclare.
+	// Method marks a duplicate method declaration; Name is then "T.M".
+	// gc words this case differently from a package-block redeclaration.
 	Method bool
 }
 
@@ -86,17 +101,19 @@ func (e *RedeclError) Error() string {
 	return e.Name + " redeclared in this block"
 }
 
-// Build indexes all files of one package, rejecting redeclared names
-// like gc does. Nothing is executed.
+// Build indexes all files of one package. A name declared twice in the
+// package block, or a method declared twice on a type, fails with a
+// [*RedeclError]; init and the blank identifier may repeat.
 func Build(files []*syntax.File) (*Index, error) {
 	return build(files, false)
 }
 
-// BuildLenient indexes like Build but keeps last-wins on duplicate
-// names — the REPL's accumulated prompt source legitimately redeclares
-// (a re-entered decl replaces the old one), while :load units enforce
-// redeclaration at their own boundary.
+// BuildLenient is [Build] where a later declaration of a name replaces an
+// earlier one instead of failing, as in a REPL session where a re-entered
+// declaration replaces the old one.
 func BuildLenient(files []*syntax.File) (*Index, error) {
+	// The REPL's accumulated prompt source legitimately redeclares, while
+	// :load units enforce redeclaration at their own boundary.
 	return build(files, true)
 }
 
@@ -229,8 +246,8 @@ func build(files []*syntax.File, lenient bool) (*Index, error) {
 	return ix, nil
 }
 
-// ReceiverTypeName extracts the base type name from a receiver like
-// `t T`, `t *T`, `t T[P]`.
+// ReceiverTypeName returns the base type name of a receiver like `t T`,
+// `t *T` or `t T[P]`, or "" when recv has no recognizable receiver type.
 func ReceiverTypeName(recv *ast.FieldList) string {
 	if recv == nil || len(recv.List) == 0 {
 		return ""
