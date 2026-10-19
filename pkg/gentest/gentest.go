@@ -1,29 +1,12 @@
-// Package gentest is a test harness for code generators: it builds a
-// temporary module, runs the generator against it, and reports every file
-// the run created, changed, or deleted, so tests assert on the complete
-// write set.
+// Package gentest checks the files a code generator creates, changes or deletes.
 //
-// [WriteFiles] creates the module, [CopyFile] and [CopyTree] add fixtures,
-// and [Run] executes the generator as an action — any func(ctx) error,
-// such as a [github.com/podhmo/minigo.Engine.Run] call — and returns a
-// [Result] diffed from the directory before and after:
+// Build a temporary fixture with [WriteFiles], optionally add files with
+// [CopyFile] or [CopyTree], then pass the generator action to [Run]. Check
+// [Result.ChangedPaths] for the write set and [AssertSameFile] for contents.
 //
-//	dir := gentest.WriteFiles(t, map[string]string{"go.mod": "module example.com/m\n"})
-//	res, err := gentest.Run(t, ctx, dir, func(ctx context.Context) error {
-//		return generate(ctx, dir)
-//	})
-//	if err != nil {
-//		t.Fatal(err)
-//	}
-//	if diff := cmp.Diff([]string{"gen.go"}, res.ChangedPaths()); diff != "" {
-//		t.Errorf("write set mismatch (-want +got):\n%s", diff)
-//	}
-//	gentest.AssertSameFile(t, filepath.Join(dir, "gen.go"), "testdata/gen.golden")
-//
-// Host-side generator code can write through [WriteFile] instead of
-// os.WriteFile; a test then installs a [FileWriter] such as
-// [MemoryFileWriter] with [WithFileWriter] to capture the writes in memory.
-// Captured writes never reach disk, so they do not appear in a [Result].
+// For host-side writes, [WithFileWriter] and [MemoryFileWriter] can capture
+// [WriteFile] calls in memory. Those writes do not reach disk or appear in
+// a [Result].
 package gentest
 
 // The design is adapted from go-scan's scantest package (see
