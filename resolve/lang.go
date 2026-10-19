@@ -7,12 +7,11 @@ import (
 	"golang.org/x/mod/modfile"
 )
 
-// ModuleLang returns the `go` directive of the module enclosing dir as raw
-// directive text (e.g. "1.26.0"), or "" when dir is outside any module —
-// files without a governing go.mod stay unversioned and keep the
-// toolchain's newest features, matching `go run` on a module-less file.
-// The nearest ancestor go.mod wins, so packages in the module cache see
-// their own module's version and GOROOT packages see src/go.mod.
+// ModuleLang returns the `go` directive of the nearest go.mod at or above
+// dir as raw directive text (e.g. "1.26.0"), or "" when there is none or
+// it does not parse. "" means unversioned: the newest language features
+// apply, as with `go run` on a module-less file. A go.mod without a `go`
+// directive yields "1.16", as the go command assumes.
 func ModuleLang(dir string) string {
 	for d := dir; ; {
 		data, err := os.ReadFile(filepath.Join(d, "go.mod"))
@@ -39,8 +38,8 @@ func ModuleLang(dir string) string {
 	}
 }
 
-// ModulePath returns the module path of the module enclosing dir, or ""
-// when dir is outside any module.
+// ModulePath returns the module path declared by the nearest go.mod at or
+// above dir, or "" when there is none.
 func ModulePath(dir string) string {
 	if f := enclosingModFile(dir); f != nil && f.Module != nil {
 		return f.Module.Mod.Path
@@ -49,7 +48,8 @@ func ModulePath(dir string) string {
 }
 
 // RequiredVersion reports the version the module enclosing dir requires
-// of modPath — the version a `go run` build stamps for a dependency.
+// of modPath — the version a `go run` build stamps for a dependency. ok
+// is false when there is no go.mod or it has no require for modPath.
 func RequiredVersion(dir, modPath string) (string, bool) {
 	f := enclosingModFile(dir)
 	if f == nil {

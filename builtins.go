@@ -874,8 +874,8 @@ func display(vc runtime.VMCaller, v runtime.Value) any {
 	}
 }
 
-// Format renders a runtime value for host-side output — the CLI's run
-// result and embedding tools print it like Go's %v would.
+// Format returns a form of v that prints with %v the way Go would print
+// the script value. Use it to show [Engine.Run] results.
 func Format(v runtime.Value) any {
 	return display(nil, v)
 }

@@ -1,23 +1,28 @@
-// Package minireflect implements a native facade for the part of the
-// standard "reflect" package that scripts actually touch. Interpreting
-// reflect's own source is a dead end for minigo: reflect.TypeOf bottoms
-// out in internal/abi and unsafe.Pointer bit reinterpretation, which
-// the host-object value model cannot execute.
+// Package minireflect implements the standard "reflect" package for minigo
+// scripts, natively over script values.
 //
-// The facade splits values into two domains:
+// [Symbols] returns the members to bind under the "reflect" import path,
+// given the engine's type machinery as [Hooks]. [SizeOf], [AlignOf] and
+// [OffsetOf] expose the same declared-type layout for unsafe.Sizeof,
+// unsafe.Alignof and unsafe.Offsetof.
 //
-//   - script domain: an RValue views a runtime.Value together with its
-//     settable location (a *runtime.Cell, *runtime.FieldRef or
-//     *runtime.IndexRef). Field/Index/MapIndex walk the script value;
-//     Set writes through the ref-view.
-//   - host domain: a value produced from a *runtime.GoValue delegates
-//     to a real reflect.Value, so host objects keep faithful semantics
-//     (methods, unexported state) without leaving host land.
+// Scripts see reflect.Value as [RValue] and reflect.Type as [RType], along
+// with [StructField], [Method] and [MapIter]. Host code receives them boxed
+// in a [runtime.GoValue]; [RValue.Payload] gives what fmt should print for
+// a Value. An RValue belongs to one of two domains:
 //
-// Type identity is canonicalized: *RType values are interned by a key
-// computed from the typedef's name or structural spelling (and from the
-// real reflect.Type for host values), so `v.Type() == durationType`
-// works across the domains.
+//   - script domain: it views a [runtime.Value] together with its settable
+//     location, so Set writes through to the script variable, field or
+//     element.
+//   - host domain: a value obtained from a [runtime.GoValue] delegates to a
+//     real reflect.Value, so host objects keep their methods and
+//     unexported state.
+//
+// Types are interned: two RTypes for the same type are the same pointer,
+// so `v.Type() == t` works across both domains.
+//
+// NewAt, FuncOf, StructOf, MakeChan, Select, Swapper and VisibleFields
+// report an error when called.
 package minireflect
 
 import (
@@ -32,9 +37,8 @@ import (
 	"github.com/podhmo/minigo/runtime"
 )
 
-// Hooks carries the engine's type machinery into the facade. The
-// engine fills it with the same functions it installs on VMs; the
-// facade never reaches into package minigo itself.
+// Hooks carries the engine's type resolution into this package; pass it
+// to [Symbols], [SizeOf], [AlignOf] and [OffsetOf].
 type Hooks struct {
 	// ElemOf resolves the element type of a pointer, slice, map, or
 	// chan typedef.
@@ -50,30 +54,28 @@ type Hooks struct {
 	IfaceReqs func(td *runtime.TypeDef) (map[string]bool, error)
 	// Underlying resolves a typedef's underlying type.
 	Underlying func(td *runtime.TypeDef) (*runtime.TypeDef, error)
-	// AliasOf resolves a KindAlias typedef to its direct target typedef
-	// (one hop — `type A = B` gives B itself). Nil leaves alias typedefs
-	// keyed by their declared name.
+	// AliasOf resolves a KindAlias typedef one hop to its target
+	// (`type A = B` gives B). Nil treats an alias as a type of its own
+	// name.
 	AliasOf func(td *runtime.TypeDef) (*runtime.TypeDef, error)
-	// MethodSet returns the typedef's method FUNCTIONS — declared plus
-	// promoted, honoring Go's receiver rule (pointer-receiver methods
-	// join only through a pointer type or embedded pointer field) —
-	// unexported members included; callers filter visibility. Interface
-	// typedefs yield members carrying each required method's signature.
+	// MethodSet returns the typedef's method set as functions: declared
+	// plus promoted, following Go's receiver rule, unexported members
+	// included. For an interface typedef it returns each required
+	// method with its signature.
 	MethodSet func(td *runtime.TypeDef) (map[string]*runtime.Function, error)
 	// TypeAlias maps an internal host type to the public type it
-	// proxies (a liveness-tracking box stands in for *time.Ticker), so
-	// the facade spells and shapes it as the API type. Nil keeps every
-	// host type as-is.
+	// stands in for (for example a proxy for *time.Ticker), so reflect
+	// reports the public type. Nil keeps every host type as-is.
 	TypeAlias func(rt reflect.Type) reflect.Type
-	// UnwrapHost resolves a value to a host reflect.Value for a call
-	// site that demands a specific type — the inverse of TypeAlias: a
-	// proxy box the facade spells as *time.Timer unwraps to the real
-	// timer it stands in for. Nil skips the unwrapping pass.
+	// UnwrapHost converts a value to a host reflect.Value of type t
+	// where a call needs that exact type: the inverse of TypeAlias,
+	// turning a proxy back into the real value. Nil skips the conversion.
 	UnwrapHost func(v any, t reflect.Type) (reflect.Value, bool)
 }
 
-// Env is the facade's shared state: the type interner plus the engine
-// hooks. One Env backs one engine's reflect bind.
+// Env is the state shared by the members one [Symbols] call returns:
+// the [Hooks] and the table that interns [RType] values. Symbols creates
+// it; callers do not use it directly.
 type Env struct {
 	h     Hooks
 	types sync.Map     // canonical key -> *RType
@@ -98,10 +100,13 @@ func (e *Env) caller() runtime.VMCaller {
 	return nil
 }
 
-// Symbols returns the symbols bound under the "reflect" import path.
-// The caller is responsible for merging DeepEqual (which already lives
-// in the minigo package over script values).
+// Symbols returns the members of the "reflect" package for one engine,
+// keyed by name, to bind under the "reflect" import path. DeepEqual is not
+// included; the caller adds its own.
 func Symbols(h Hooks) map[string]runtime.Value {
+	// Interpreting reflect's own source is not an option: reflect.TypeOf
+	// bottoms out in internal/abi and unsafe.Pointer reinterpretation,
+	// which the host-object value model cannot execute.
 	e := &Env{h: h}
 	syms := map[string]runtime.Value{
 		"ValueOf":         e.fn("reflect.ValueOf", e.valueOf),

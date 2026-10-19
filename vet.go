@@ -2,6 +2,7 @@
 // special forms nor bound host symbols. A stub member's body is
 // `panic("minigo intrinsic")` — reaching it at run time is a loud but late
 // failure, so this checker surfaces the same mistake statically (plan §16).
+
 package minigo
 
 import (
@@ -21,7 +22,7 @@ import (
 // special form or a bound host symbol.
 const stubPanic = "minigo intrinsic"
 
-// VetResult is one vet finding: an unregistered call into a stub member.
+// VetResult is one [Engine.Vet] finding.
 type VetResult struct {
 	Pos      token.Position
 	Call     string // "pkg.Sym" as written (alias.Sym form)
@@ -32,17 +33,17 @@ func (r VetResult) String() string {
 	return fmt.Sprintf("%s: call %s resolves to unregistered stub member %s", r.Pos, r.Call, r.Resolved)
 }
 
-// Vet loads ref (without initializing it) and reports every call site
-// `pkgAlias.Sym(...)` where Sym's declaration is a stub (body is exactly
-// `panic("minigo intrinsic")`) and the symbol is neither a registered
-// special form nor a bound host symbol on this engine. Dot imports are not
-// tracked — a `Sym(...)` call into a dot-imported stub package is invisible
-// to the checker. Function-scoped shadowing is handled conservatively: a
-// name declared anywhere inside the enclosing function (even a nested
-// literal's params) hides the import binding for that whole function —
-// so a shadowed alias may miss a real finding but never reports a local
-// variable's method call as a stub call.
+// Vet loads ref without initializing it and reports calls that would
+// fail at run time because nothing handles them: calls `pkgAlias.Sym(...)`
+// where Sym is a stub (its body is exactly `panic("minigo intrinsic")`)
+// that is neither registered with [Engine.RegisterSpecial] nor bound with
+// [Engine.Bind]. Calls through dot imports are not checked, and an import
+// name shadowed anywhere in a function is not checked in that function.
 func (e *Engine) Vet(ctx context.Context, ref string) ([]VetResult, error) {
+	// Shadowing is handled conservatively: a name declared anywhere inside
+	// the enclosing function (even a nested literal's params) hides the
+	// import binding for that whole function — a shadowed alias may miss a
+	// real finding but never reports a local variable's method call.
 	p, err := e.Package(ctx, ref)
 	if err != nil {
 		return nil, err

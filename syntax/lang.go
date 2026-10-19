@@ -13,6 +13,7 @@
 // new(expr) with a non-literal operand, the 1.27 inference relaxations —
 // stay permissive; detecting them needs the type information minigo does
 // not compute.
+
 package syntax
 
 import (
@@ -24,21 +25,23 @@ import (
 	"go/version"
 )
 
-// DeclKind classifies a package-level name for the language gate.
+// DeclKind classifies a package-level name for [CheckLang]; [DeclaredKinds]
+// produces them.
 type DeclKind byte
 
 const (
 	DeclOther DeclKind = iota // var/const, or undeclared
 	DeclType
 	DeclFunc
-	// DeclGeneric marks decls carrying a type-parameter list —
-	// use sites of such names may be implicit instantiations.
+	// DeclGeneric is or-ed into DeclType or DeclFunc for declarations
+	// with a type-parameter list.
 	DeclGeneric = 4
 )
 
-// DeclaredKinds collects package-level declared names across a package's
-// files. It is the shadow table for the predeclared-name checks: a package
-// that declares `any`, `min`, or `new` keeps the old meaning, like gc.
+// DeclaredKinds collects the package-level names declared across a
+// package's files, for passing to [CheckLang]. As in gc, a package that
+// declares a predeclared name such as `any`, `min` or `new` is not gated
+// on its uses.
 func DeclaredKinds(files []*File) map[string]DeclKind {
 	m := map[string]DeclKind{}
 	for _, f := range files {
@@ -115,11 +118,13 @@ func langMax(a, b string) string {
 }
 
 // CheckLang reports the first use of a language feature newer than the
-// file's effective Lang — the load-time equivalent of gc's -lang rejections
-// (e.g. "generic method requires go1.27 or later (-lang was set to go1.26;
-// check go.mod)"). An unbounded file (LangMod == "" and no //go:build
-// version constraint) is never checked. declared is the package-wide
-// shadow table from DeclaredKinds.
+// file's effective [File.Lang] — the load-time equivalent of gc's -lang
+// rejections (e.g. "generic method requires go1.27 or later (-lang was set
+// to go1.26; check go.mod)"). An unbounded file is never checked. declared
+// is the package-wide table from [DeclaredKinds].
+//
+// The check is syntactic: features gc gates only with type information,
+// such as `for range` over an int or a func, are accepted at any version.
 func CheckLang(fset *token.FileSet, f *File, declared map[string]DeclKind) error {
 	lang := f.Lang()
 	if lang == "" || version.Compare(lang, latestGate) >= 0 {

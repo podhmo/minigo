@@ -9,17 +9,16 @@ import (
 	"strings"
 )
 
-// FileScopeFiles returns the .go files the named file shares its
-// package with: the named file's package clause defines the scope and
-// siblings keep only files declaring the same clause. Unlike
-// ReadPackageFiles no //go:build constraint filtering applies — a file
-// excluded by build tags still sees its package (task-runner
-// conventions like `//go:build task`) — while go/build's FILENAME
-// invisibility stays: _GOOS/_GOARCH suffixes, _test.go, and
-// _/.-prefixed names are never read. Sibling files importing "C" are
-// skipped like in ReadPackageFiles — the interpreter cannot link
-// native code. The named file itself is always included — it was
-// asked for explicitly.
+// FileScopeFiles returns named, a .go file in dir, followed by the
+// sibling files in dir that declare the same package clause. Unlike
+// [ReadPackageFiles] no //go:build constraint filtering applies, so a file
+// excluded by build tags (task-runner conventions like `//go:build task`)
+// still sees its package. Siblings that go/build ignores by name
+// (_GOOS/_GOARCH suffixes for another platform, _test.go, names starting
+// with "_" or "."), import "C", or whose package clause does not parse are
+// left out. named must be spelled as filepath.Join(dir, base) to be
+// recognized among the siblings; an unreadable package clause in named is
+// an error.
 func FileScopeFiles(dir, named string, cfg BuildConfig) ([]string, error) {
 	fset := token.NewFileSet()
 	pkgName, _, err := packageClause(fset, named)

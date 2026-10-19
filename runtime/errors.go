@@ -8,16 +8,15 @@ import "fmt"
 // the real toolchain — plain payloads must never carry the
 // "runtime error:" prefix that RuntimeError.Error() adds.
 
-// RuntimePanic wraps msg in a Go runtime error payload; Error() renders
-// it as "runtime error: <msg>" like Go's errorString/boundsError.
+// RuntimePanic returns a [Panic] whose value is a [RuntimeError] with
+// msg; its text is "runtime error: <msg>", as for Go's run-time errors.
 func RuntimePanic(msg string) *Panic {
 	return &Panic{Value: &RuntimeError{Msg: msg}}
 }
 
-// RuntimePanicKind is RuntimePanic carrying the gc runtime type name —
-// bounds failures name runtime.boundsError on the fatal
-// panic-while-printing line while the ordinary families stay
-// runtime.errorString.
+// RuntimePanicKind is [RuntimePanic] with [RuntimeError.Kind] set to
+// kind, the Go runtime type the error stands for (such as
+// "boundsError").
 func RuntimePanicKind(msg, kind string) *Panic {
 	return &Panic{Value: &RuntimeError{Msg: msg, Kind: kind}}
 }
@@ -41,8 +40,8 @@ func (e *TypeAssertionError) Error() string { return e.Msg }
 // RuntimeError marks a failed type assertion as a runtime.Error.
 func (*TypeAssertionError) RuntimeError() {}
 
-// PlainPanic wraps msg in a plainError payload (nil-map assignment,
-// close of a nil channel, ...).
+// PlainPanic returns a [Panic] whose value is a [PlainError] with msg,
+// for run-time errors Go reports without the "runtime error:" prefix.
 func PlainPanic(msg string) *Panic {
 	return &Panic{Value: PlainError(msg)}
 }
@@ -53,9 +52,9 @@ func NilDerefPanic() *Panic {
 	return RuntimePanic("invalid memory address or nil pointer dereference")
 }
 
-// BoundsPanic is Go's boundsError for a linear index: "index out of
-// range [i] with length n" — a negative index drops the length suffix,
-// like Go's bare boundsNegErrorFmts report.
+// BoundsPanic is Go's panic for an index i out of range of length n:
+// "index out of range [i] with length n", or "index out of range [i]"
+// for a negative int or int64 i.
 func BoundsPanic(i any, n int) *Panic {
 	switch iv := i.(type) {
 	case int64:
@@ -70,15 +69,14 @@ func BoundsPanic(i any, n int) *Panic {
 	return RuntimePanicKind(fmt.Sprintf("index out of range [%v] with length %d", i, n), "boundsError")
 }
 
-// SliceBoundsPanic wraps an already-rendered slice-bounds message
-// (sliceBoundsReason's "slice bounds out of range ...") — gc names the
-// payload runtime.boundsError on the fatal printpanics line like a
-// linear index failure.
+// SliceBoundsPanic is Go's panic for slice bounds out of range; msg is
+// the complete message ("slice bounds out of range ...").
 func SliceBoundsPanic(msg string) *Panic {
 	return RuntimePanicKind(msg, "boundsError")
 }
 
-// ComparingUncomparablePanic is Go's "comparing uncomparable type T".
+// ComparingUncomparablePanic is Go's "comparing uncomparable type T"
+// panic; typ is the type's display name.
 func ComparingUncomparablePanic(typ string) *Panic {
 	return RuntimePanic("comparing uncomparable type " + typ)
 }
@@ -95,17 +93,18 @@ func SliceToArrayPanic(have, want any) *Panic {
 		"cannot convert slice with length %d to array or pointer to array with length %d", have, want))
 }
 
-// NilMapAssignPanic is Go's plainError for writing to a nil map.
+// NilMapAssignPanic is Go's "assignment to entry in nil map" panic.
 func NilMapAssignPanic() *Panic {
 	return PlainPanic("assignment to entry in nil map")
 }
 
-// CloseNilChanPanic is Go's plainError for close(nil-channel).
+// CloseNilChanPanic is Go's "close of nil channel" panic.
 func CloseNilChanPanic() *Panic {
 	return PlainPanic("close of nil channel")
 }
 
-// MakeslicePanic is Go's "makeslice: len|cap out of range".
+// MakeslicePanic is Go's "makeslice: len out of range" panic; what is
+// "len" or "cap".
 func MakeslicePanic(what string) *Panic {
 	return RuntimePanic("makeslice: " + what + " out of range")
 }

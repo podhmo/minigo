@@ -22,11 +22,14 @@ import (
 // its semantics need and the shared spelling machinery below does the
 // work.
 
-// TypIdentical reports whether two typedefs name the same type — the
-// runtime's "same dynamic type" notion: the same decl object, named
-// typedefs equal by name + package + instantiation binds, or anonymous
-// typedefs with equal shape spellings (`[]int` never equals `[]string`,
-// and `struct{X int}` never equals `struct{X any}`).
+// TypIdentical reports whether two typedefs denote the same type, as
+// type assertions and interface comparisons require: declared types are
+// equal by name, package and type arguments (a function-local type by
+// its declaration), and anonymous types by structure (`[]int` never
+// equals `[]string`, and `struct{X int}` never equals `struct{X any}`).
+// byte equals uint8, rune int32, and the predeclared any equals
+// interface{}. See [TypIdenticalStrict] and [SigTypEq] for other
+// strengths.
 func TypIdentical(a, b *TypeDef) bool {
 	if a == b {
 		return true
@@ -96,12 +99,12 @@ func anonEmptyIface(td *TypeDef) bool {
 	return ok && (it.Methods == nil || len(it.Methods.List) == 0)
 }
 
-// TypIdenticalStrict is the DeepEqual-grade identity: named typedefs
-// must be the same declaration object (two `type T` decls are distinct
-// types even when they spell identically) and identity includes the
-// underlying type's spelling, so anonymous shapes that share a Kind but
-// differ underneath — `[]int` vs `[3]int`, `struct{X int}` vs
-// `struct{Y int}` — stay distinct.
+// TypIdenticalStrict is the identity reflect.DeepEqual uses, stricter
+// than [TypIdentical]: a declared type is identical only to the same
+// *TypeDef (predeclared basic types match by name, with byte = uint8 and
+// rune = int32), and anonymous types compare by their underlying
+// spelling, so `[]int` vs `[3]int` and `struct{X int}` vs
+// `struct{Y int}` stay distinct.
 func TypIdenticalStrict(a, b *TypeDef) bool {
 	if a == b {
 		return true
@@ -151,15 +154,15 @@ var basicTypedefs = func() map[string]*TypeDef {
 	return tds
 }()
 
-// BasicTypedef returns the shared predeclared basic typedef for name —
-// nil for non-basic names.
+// BasicTypedef returns the shared typedef of the predeclared basic type
+// name ("int", "string", "byte", ...), or nil for other names.
 func BasicTypedef(name string) *TypeDef {
 	return basicTypedefs[name]
 }
 
-// BasicNameOf resolves the underlying builtin basic-type name behind a
-// typedef: `type F32 float32` and the bare float32 typedef both read
-// "float32". Empty when the typedef isn't basic-named.
+// BasicNameOf returns the predeclared basic type td is or is defined
+// directly over: `type F32 float32` and float32 itself both give
+// "float32". It returns "" for other types.
 func BasicNameOf(td *TypeDef) string {
 	if td == nil {
 		return ""
@@ -182,8 +185,9 @@ func BasicNameOf(td *TypeDef) string {
 // same type.
 func canonBasicName(n string) string { return CanonicalBasicName(n) }
 
-// CanonicalBasicName is canonBasicName for the compile-time operand
-// typing in the compile package.
+// CanonicalBasicName maps the predeclared aliases to the types they
+// stand for — "byte" to "uint8", "rune" to "int32" — and returns any
+// other name unchanged.
 func CanonicalBasicName(n string) string {
 	switch n {
 	case "byte":
@@ -223,16 +227,14 @@ func bindArgEq(a, b Value) bool {
 }
 
 // ---- type spelling ----
-//
-// TypSpelling renders a type AST to its identity spelling in the context
-// of ctx, the typedef the expression was written under: generic binds
-// substitute bound type arguments, non-predeclared idents qualify by
-// package path, and `a.T` selectors resolve through the declaring file's
-// import table — so `[]Foo` written in two packages never collides. byte
-// and rune normalize to canonical names so []byte and []uint8 spell
-// identically. Struct, interface and func shapes spell their internals —
-// field names, types, tags, signatures — since those decide identity.
-// A nil ctx renders unqualified (a type written at top level).
+
+// TypSpelling renders a type expression to a string that identifies the
+// type: anonymous types are identical when their spellings are equal,
+// including struct field tags and signatures. ctx is the typedef the expression was written under; its
+// type arguments substitute type parameters, and names are qualified by
+// package path through its file's imports, so `[]Foo` written in two
+// packages differs. A nil ctx leaves names unqualified. For the
+// reflect-style display form, use [TypGoSpelling].
 func TypSpelling(e ast.Expr, ctx *TypeDef) string {
 	return typSpelling(e, ctx, false)
 }
@@ -449,7 +451,9 @@ func anonFieldName(x ast.Expr) string {
 	return ""
 }
 
-// AnonFieldName exposes anonFieldName to the compiler.
+// AnonFieldName returns the field name of an embedded field of type x:
+// the unqualified type name, ignoring pointers, packages and type
+// arguments.
 func AnonFieldName(x ast.Expr) string {
 	return anonFieldName(x)
 }
@@ -471,12 +475,10 @@ func structTagKey(tag *ast.BasicLit) string {
 	return strconv.Quote(s)
 }
 
-// TypGoSpelling renders e the way Go's reflect.Type.String does —
-// unlike TypSpelling (an identity key), the display form drops result
-// parentheses for single results, writes variadics as `...T`, and pads
-// interface/struct braces: `func(int) int`, `interface { M(int) string }`,
-// `struct { x int "tag" }`. Names of params/results are dropped, and
-// `a, b int` expands to `a int, b int` like the go/types printer.
+// TypGoSpelling renders the type expression e as Go's reflect.Type.String
+// does — `func(int) int`, `interface { M(int) string }`,
+// `struct { x int "tag" }` — resolving names in the context of ctx as
+// [TypSpelling] does. Use it for display; use TypSpelling for identity.
 func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 	var binds map[string]Value
 	var file *syntax.File
@@ -654,13 +656,12 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 	return fmt.Sprintf("%T", e)
 }
 
-// FuncSigOf returns the declared signature of a function value — the
-// type the value carries when stored in an interface: a method
-// expression (T.M / (*T).M surfaces as a bare *Function) signs with
-// its receiver as the first parameter, a bound method without it. The
-// package, file imports and type binds spell the signature's names.
-// Every nil on failure — builtins, nil members, non-func values — so
-// the caller picks its fallback.
+// FuncSigOf returns the declared signature of a function value, together
+// with the package, file and type arguments its names resolve in. A
+// method expression (T.M, a bare [*Function] for a method) has the
+// receiver as its first parameter; a [BoundMethod] does not. All results
+// are nil for values without a declared signature, such as builtins and
+// non-functions.
 func FuncSigOf(v Value) (*ast.FuncType, *Package, *syntax.File, map[string]Value) {
 	switch x := v.(type) {
 	case *Function:
@@ -697,12 +698,10 @@ func declFuncSig(fn *Function) *ast.FuncType {
 	return &ast.FuncType{Params: &ast.FieldList{List: params}, Results: fn.Decl.Type.Results}
 }
 
-// FuncGoSpelling renders a script function value's declared signature
-// the way Go's reflect.Type.String does — `func(int) int`, `func()
-// error` — resolving names through the function's own package, file
-// imports and type binds (an instantiated `func(T) T` spells its bound
-// argument). ok=false when the value carries no declaration to spell —
-// plain builtins, nil members — so each caller picks its own fallback.
+// FuncGoSpelling renders the type of a script function value as Go's
+// reflect.Type.String does — `func(int) int`, `func() error` — with type
+// parameters replaced by their arguments. ok is false when [FuncSigOf]
+// finds no declared signature.
 func FuncGoSpelling(v Value) (string, bool) {
 	sig, pkg, file, binds := FuncSigOf(v)
 	if sig == nil {
@@ -711,14 +710,11 @@ func FuncGoSpelling(v Value) (string, bool) {
 	return TypGoSpelling(sig, &TypeDef{Pkg: pkg, File: file, Binds: binds}), true
 }
 
-// TypeResolver feeds the semantic signature comparator the engine
-// lookups a typedef can need — alias peeling, interface requirement
-// expansion, expression resolution inside a declaring context, and
-// element typedefs for AST-less containers. Callers pass their own
-// hook adapter (the VM's engine hooks, the reflect facade's Hooks);
-// a nil resolver is legal and degrades every normalization to the
-// identity spelling, so the compare never produces a false positive
-// it would not have without one.
+// TypeResolver supplies the engine lookups [SigTypEq] and [SigIdentical]
+// need: alias targets, interface method sets, resolution of a type
+// expression where it was declared, and element types. A nil
+// TypeResolver is allowed; the comparison then falls back to comparing
+// spellings, which can only report fewer types as identical.
 type TypeResolver interface {
 	// PeelAlias follows `type A = B` chains to the aliased target;
 	// resolvers without alias support return td unchanged.
@@ -738,47 +734,41 @@ type TypeResolver interface {
 	ElemOf(td *TypeDef) (*TypeDef, error)
 }
 
-// SigTypEq reports whether two typedefs name the same type where a
-// signature spells them — TypIdentical's judgment plus the
-// normalizations a spelling cannot see: an alias resolves to its
-// target (`type A = int` IS int), anonymous interfaces compare as
-// method SETS (member order and the any/interface{} spelling never
-// decide identity, and embedded requirements flatten into the set),
-// and composite elements — slice and array elems, map keys and
-// values, chan elems, pointer pointees, struct fields, func params
-// and results, instantiation args — compare recursively so
-// normalization reaches any depth. Named declared types keep
-// TypIdentical's decl-site identity; anything unresolvable falls back
-// to the identity spelling, so the judgment never gets weaker than
-// the spelling compare it replaces.
+// SigTypEq reports whether two typedefs appearing in signatures denote
+// the same type. It extends [TypIdentical] with what spellings cannot
+// show: an alias equals its target (`type A = int` is int), anonymous
+// interfaces compare as method sets (member order, embedding, and the
+// any/interface{} spelling do not matter), and composite types compare
+// element by element. Whatever res cannot resolve is compared by
+// spelling.
 func SigTypEq(a, b *TypeDef, res TypeResolver) bool {
 	return sigComparer{res: orResolver(res)}.sigTypEq(a, b)
 }
 
-// SigIdentical compares two members' declared signatures — an interface
-// requirement and the concrete method offered against it. Either side
-// lacking a decl signature (synthesized shims) satisfies by name. The
-// single entry behind the VM's satisfaction checks and the reflect
-// facade's Implements, so alias and anonymous-interface normalization
-// reach both callers.
+// SigIdentical reports whether method dyn satisfies the interface method
+// req: their declared signatures must be identical under [SigTypEq]. A
+// method without a declared signature satisfies by name alone. [SigMemo] caches the results.
 func SigIdentical(req, dyn *Function, res TypeResolver) bool {
 	return sigComparer{res: orResolver(res)}.sigIdentical(req, dyn)
 }
 
-// SigMemo remembers SigIdentical verdicts per (requirement, offered)
-// member pair. Interface satisfaction compares the same pairs over and
-// over — every conversion of a *ast.Ident to ast.Expr re-checks End(),
-// Pos() and exprNode() — and each fresh compare allocates typedef
-// shells and walks both signatures. The verdict is a function of the two
-// Functions alone (their decl, package, file and binds) as long as the
-// resolver answers the same for one engine, so a memo shared by that
-// engine's VMs is safe; a Function copied with new binds is a new key.
-// The zero value is ready to use and safe for concurrent use.
-type SigMemo struct{ m sync.Map }
+// SigMemo caches [SigIdentical] results per pair of *Function values.
+// Share one memo only among callers whose TypeResolver gives the same
+// answers, such as the interpreters of one engine. The zero value is
+// ready to use and safe for concurrent use.
+type SigMemo struct {
+	// Interface satisfaction compares the same pairs over and over —
+	// every conversion of a *ast.Ident to ast.Expr re-checks End(),
+	// Pos() and exprNode() — and each fresh compare allocates typedef
+	// shells and walks both signatures. The verdict is a function of the
+	// two Functions alone (their decl, package, file and binds), so a
+	// Function copied with new binds is a new key.
+	m sync.Map
+}
 
 type sigMemoKey struct{ req, dyn *Function }
 
-// Identical is SigIdentical through the memo. A nil memo compares
+// Identical is [SigIdentical] through the memo. A nil memo compares
 // without remembering.
 func (s *SigMemo) Identical(req, dyn *Function, res TypeResolver) bool {
 	if s == nil || req == nil || dyn == nil {
@@ -814,11 +804,14 @@ var errNoResolver = fmt.Errorf("no type resolver")
 // keyed by typedef identity stay valid only within one epoch.
 var methodSetEpoch atomic.Uint64
 
-// MethodSetEpoch reports the current method-set epoch.
+// MethodSetEpoch reports a counter that [MethodSetsChanged] increments.
+// Caches of interface-satisfaction results are valid only while it is
+// unchanged.
 func MethodSetEpoch() uint64 { return methodSetEpoch.Load() }
 
-// MethodSetsChanged must be called after mutating the Methods of a
-// typedef that may already have been checked against an interface.
+// MethodSetsChanged must be called after mutating [TypeDef.Methods] of a
+// typedef that may already have been checked against an interface; see
+// [MethodSetEpoch].
 func MethodSetsChanged() { methodSetEpoch.Add(1) }
 
 func orResolver(res TypeResolver) TypeResolver {
@@ -1319,20 +1312,18 @@ func instArgName(td *TypeDef) string {
 	return DisplayName(withInstArgs(td))
 }
 
-// InstArg is one slot of an instantiated typedef's argument list — a
-// resolved argument, or an unbound own-parameter slot (Bound=false) a
-// caller may skip or treat as failure.
+// InstArg is one type argument of a generic typedef, returned by
+// [TypeDef.InstArgs]. Bound is false for a type parameter that has no
+// argument yet; Value is then nil.
 type InstArg struct {
 	Value Value
 	Bound bool
 }
 
-// InstArgs enumerates td's instantiation arguments in declaration order:
-// outer carries the enclosing instantiation's resolved arguments
-// (OuterArgs — always bound), own carries one slot per declared TParams
-// entry resolved through Binds. Renderers of the `[outer;own]` suffix
-// — instArgsSpelling for display, bindsKeyOf for canonical identity —
-// walk the two runs and stringification stays per-callsite.
+// InstArgs returns td's type arguments in declaration order: outer holds
+// those of the enclosing generic function, for a type declared inside
+// one (always bound), and own holds one entry per type parameter of td.
+// Go prints them as `T[outer;own]`.
 func (td *TypeDef) InstArgs() (outer, own []InstArg) {
 	for _, ov := range td.OuterArgs {
 		outer = append(outer, InstArg{Value: ov, Bound: true})
@@ -1344,6 +1335,9 @@ func (td *TypeDef) InstArgs() (outer, own []InstArg) {
 	return outer, own
 }
 
+// DisplayName returns the name Go's reflect.Type.String would print for
+// td, such as "main.T", "[]int" or "*main.T", qualifying declared names
+// by package name. A nil td gives "<nil>".
 func DisplayName(td *TypeDef) string {
 	if td == nil {
 		return "<nil>"
@@ -1566,9 +1560,10 @@ func goFieldSpellings(fl *ast.FieldList, ctx *TypeDef) string {
 	return strings.Join(parts, ", ")
 }
 
-// TypUnderlyingSpelling spells a typedef's underlying type — its Anon
-// expression for anonymous/shape typedefs, else its decl Spec.Type, else
-// the declared name.
+// TypUnderlyingSpelling spells td's underlying type expression (Anon,
+// else the declaration's type) like [TypSpelling], ignoring channel
+// direction; a typedef with neither gives its name, with byte and rune
+// spelled uint8 and int32.
 func TypUnderlyingSpelling(td *TypeDef) string {
 	if td == nil {
 		return ""
@@ -1708,13 +1703,14 @@ func typImportPath(pkg *Package, file *syntax.File, alias string) string {
 	return ""
 }
 
-// ArrayLenNodes lists the *ast.ArrayType nodes inside a type AST whose
-// length is not a literal, in DFS order — `[]T`, `[3]T` and `[...]T`
-// yield no nodes. This one walk defines the order the compiler emits
-// length evals (OpFoldArrayLen) and the VM applies them: folding a
-// node rewrites its Len to a BasicLit, so re-running the walk always
-// finds the next un-folded length first.
+// ArrayLenNodes lists the array types inside the type expression e whose
+// length is an expression rather than a literal, in depth-first order;
+// `[]T`, `[3]T` and `[...]T` yield nothing. Replacing a node's Len with a
+// literal removes it from the next call's result, so the compiler and the
+// interpreter agree on which length comes next.
 func ArrayLenNodes(e ast.Expr) []*ast.ArrayType {
+	// This one walk defines the order the compiler emits length evals
+	// (OpFoldArrayLen) and the VM applies them.
 	var out []*ast.ArrayType
 	var walk func(e ast.Expr)
 	var walkList func(fl *ast.FieldList)

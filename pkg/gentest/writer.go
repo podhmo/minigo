@@ -8,15 +8,17 @@ import (
 	"sync"
 )
 
-// FileWriter is the seam between a generator and the filesystem: host
-// code routes its output writes through WriteFile, and a test installs
-// a FileWriter on the context to capture them instead of touching disk.
-// Modeled on goscan.FileWriter (go-scan writer.go; see pkg/SOURCE.md).
+// The FileWriter seam is modeled on goscan.FileWriter (go-scan writer.go;
+// see pkg/SOURCE.md).
+
+// FileWriter receives the writes [WriteFile] makes with a context from
+// [WithFileWriter], instead of the filesystem. [MemoryFileWriter] and
+// [FileWriterFunc] implement it.
 type FileWriter interface {
 	WriteFile(ctx context.Context, path string, data []byte, perm fs.FileMode) error
 }
 
-// FileWriterFunc adapts a plain function to FileWriter — useful for
+// FileWriterFunc adapts a plain function to [FileWriter] — useful for
 // failure injection (return an error for a chosen path) without
 // declaring a writer type.
 type FileWriterFunc func(ctx context.Context, path string, data []byte, perm fs.FileMode) error
@@ -29,16 +31,14 @@ func (f FileWriterFunc) WriteFile(ctx context.Context, path string, data []byte,
 // fileWriterKey is the context key WithFileWriter installs under.
 type fileWriterKey struct{}
 
-// WithFileWriter returns a context whose WriteFile calls dispatch to w.
+// WithFileWriter returns a context under which [WriteFile] calls go to w.
 func WithFileWriter(ctx context.Context, w FileWriter) context.Context {
 	return context.WithValue(ctx, fileWriterKey{}, w)
 }
 
-// WriteFile writes data to path with perm. When the context carries a
-// FileWriter the write goes to it instead of disk — that is the point:
-// captured writes never reach the filesystem, so a Run's Result (a real
-// filesystem diff) stays empty and the capture lives in the writer.
-// With no FileWriter installed it is os.WriteFile unchanged.
+// WriteFile is os.WriteFile unless ctx carries a [FileWriter] from
+// [WithFileWriter]; then the write goes to that writer instead of disk,
+// and a [Run] over the same directory does not see it.
 func WriteFile(ctx context.Context, path string, data []byte, perm fs.FileMode) error {
 	if w, ok := ctx.Value(fileWriterKey{}).(FileWriter); ok {
 		return w.WriteFile(ctx, path, data, perm)
@@ -46,8 +46,10 @@ func WriteFile(ctx context.Context, path string, data []byte, perm fs.FileMode) 
 	return os.WriteFile(path, data, perm)
 }
 
-// MemoryFileWriter captures writes in memory, keyed by path relative to
-// BaseDir. Paths outside BaseDir keep their original form.
+// MemoryFileWriter is a [FileWriter] that captures writes in Outputs,
+// keyed by path relative to BaseDir; when BaseDir is empty or the path
+// cannot be made relative to it, the path is kept as given. It is safe
+// for concurrent use; a later write to a path replaces the earlier one.
 type MemoryFileWriter struct {
 	BaseDir string
 	Outputs map[string][]byte

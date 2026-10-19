@@ -1,15 +1,64 @@
-// Package inspect is the minigo introspection stub package
-// (docs/sketch/plan-package-introspection.md): a real, importable Go
-// package whose function declarations name the engine's inspect
-// intrinsics. Scripts import it as "minigo.dev/inspect" or by its
-// module path — the engine binds both to the same intrinsics, so the
-// panic bodies in stub.go never execute inside minigo.
+// Package inspect lets minigo scripts examine Go packages: their
+// declarations, types, function bodies and values.
 //
-// The view types (Decl, File, Import, Field, Sig, TypeExpr, Node) are real:
-// intrinsics return them boxed as host values, so field access works
-// through reflective member dispatch. Unexported fields keep the AST
-// context (declaring file, expr) that functions like SymbolID and
-// UnWrap resolve against — they are intentionally out of the FFI.
+// Scripts import it as "minigo.dev/inspect" or by its module path
+// "github.com/podhmo/minigo/inspect"; both name the same functions. The
+// script-facing functions ([PackageOf], [Decls], [Fields], ...) are stubs
+// so that gopls, gofmt and goimports work on scripts: inside minigo the
+// engine handles each call and the bodies never run. Errors surface as
+// traps (runtime errors) in the script.
+//
+//	import "minigo.dev/inspect"
+//
+//	func Main() []string {
+//		var names []string
+//		p := inspect.PackageOf("example.com/app/model")
+//		for _, d := range inspect.Decls(p) {
+//			if d.Kind == "type" {
+//				names = append(names, d.Name)
+//			}
+//		}
+//		return names
+//	}
+//
+// Loading. Package values ([runtime.Package]) come from [PackageOf] (by
+// import path, the package an import gets), [DirOf] (by directory),
+// [SourceOf] (the source behind a host-bound path), [BoundOf] (the
+// host-bound package only) and [Current]. [FileOf] loads a single file as
+// a [File]; [Packages] lists the package directories under a root. The
+// Lookup variants ([LookupPackageOf], [LookupDirOf], [LookupSourceOf],
+// [LookupFileOf]) return nil when the target does not exist instead of
+// trapping. A package value's own members shadow its metadata, so read
+// that through [Path], [Name], [Dir], [State] and [Standard].
+//
+// Views. The functions return views whose exported fields scripts read
+// directly (d.Name, f.Type.Text):
+//   - [Decl]: one declaration, from [Decls], [Symbol], [Methods] or
+//     [SymbolOf]; inspected with [Signature], [Fields], [Def],
+//     [MethodSet], [EnumMembers] and others taking a *Decl.
+//   - [TypeExpr]: a type expression as written, from [Def], [Field] and
+//     [Sig]; navigated with [Children], [UnRef], [UnWrap] and [Origin],
+//     resolved with [SymbolID] and [Resolve].
+//   - [Node]: a statement or expression in a function body, from [Body];
+//     walked with [Nodes], resolved through [Expr].
+//   - [File], [Import], [Comment]: a source file and its imports and
+//     comments.
+//
+// [Value] and [TypeOf] reach a member's runtime value and type.
+//
+// Bound packages. A package the host binds (standard library intrinsics,
+// [github.com/podhmo/minigo.Engine.Bind]) has no source index: [Decls]
+// and [Symbol] report Kind "host" pseudo-declarations, and functions that
+// read syntax ([Fields], [AST], [Body], ...) trap on them. Use [SourceOf]
+// to read the Go source behind a bound path. [PackageOf], [DirOf] and
+// [FileOf] also load source that would not compile, keeping duplicate
+// declarations visible.
+//
+// Go code in the host. The XxxOf functions ([FieldsOf], [MethodSetOf],
+// ...), the view methods and the New* constructors perform the same
+// operations for Go code that receives views from the engine, returning
+// errors where the script functions trap. Operations that follow names
+// across packages take a [Resolver].
 package inspect
 
 import (
@@ -29,48 +78,55 @@ import (
 	"github.com/podhmo/minigo/syntax"
 )
 
-// BuiltinPackagePath is the pseudo import path predeclared identifiers
-// resolve to.
+// View types are returned to scripts boxed as host values, so their
+// exported fields are read through reflective member dispatch.
+// Unexported fields keep the AST context (declaring file, expr) that
+// functions like SymbolID and UnWrap resolve against; they are
+// intentionally out of reach of scripts.
+
+// BuiltinPackagePath is the pseudo package path of the SymbolID that
+// predeclared identifiers (int, error, any, ...) resolve to.
 const BuiltinPackagePath = ":builtin:"
 
-// TypeParamPackagePath is the pseudo import path type parameters
-// resolve to: a SymbolID carrying it says "the name is bound by the
-// enclosing generic declaration", which is a different answer than an
-// unresolved package symbol. Nothing declared behind the path exists —
-// Resolve/Unwrap stop there like they do on builtins — so scripts can
-// ask "is this T a type parameter?" instead of trapping on a lookup.
+// TypeParamPackagePath is the pseudo package path of the SymbolID that a
+// type parameter resolves to, so a walk can tell "bound by the enclosing
+// generic declaration" from a package-level type. Nothing is declared
+// behind it: [Resolve] reports nil and [UnWrap] stops there, as for
+// [BuiltinPackagePath].
 const TypeParamPackagePath = ":typeparam:"
 
-// NoDeclPath reports that a SymbolID's package path names no
-// resolvable package: builtins and type parameters both live outside
-// the package namespace, so walks and resolvers stop there rather than
-// feeding a pseudo path to the loaders.
+// NoDeclPath reports whether path is one of the pseudo paths
+// ([BuiltinPackagePath], [TypeParamPackagePath]) that name no loadable
+// package, so a walk following SymbolIDs knows where to stop.
 func NoDeclPath(path string) bool {
 	return path == BuiltinPackagePath || path == TypeParamPackagePath
 }
 
-// Decl is a declaration-level view of one package member (the "Symbol"
-// the script API speaks of; renamed here to avoid colliding with the
-// Symbol stub function).
+// Decl describes one declaration: a top-level func, type, var or const, a
+// method, or a member of a host-bound package (Kind "host"). Get one from
+// [Decls], [Symbol], [LookupSymbol], [Methods], [SymbolOf] or [Resolve].
+// Host decls have no source, so functions that read syntax trap on them;
+// [Signature] still works when the host signature is known.
 type Decl struct {
-	// owning package — SymbolOf(x).Package chains. Member access on it
-	// resolves the package namespace only (pkg.Foo is the decl); read
-	// its metadata through the inspect.* accessors (Path, Name, Dir,
-	// State, Standard) instead.
+	// Package is the declaring package; read its metadata with
+	// inspect.Path, inspect.Name and the other package accessors.
 	Package *runtime.Package
-	Kind    string // "func"|"method"|"var"|"const"|"type"|"host"
-	Name    string
+	Kind    string    // "func", "method", "var", "const", "type" or "host"
+	Name    string    // the declared name; a method's name without its receiver
 	File    string    // declaring file name ("" for host symbols)
-	Pos     *Position // declaring position (nil for host symbols)
+	Pos     *Position // declaring position (nil for most host symbols)
 	Doc     string    // doc comment text, trailing newline trimmed ("" for host symbols)
 
+	// Decl is the script API's "Symbol", renamed to avoid colliding with
+	// the Symbol stub function.
 	decl  *index.Decl
 	file  *syntax.File
 	hsig  *Sig // synthesized host signature (BuiltinFunc.Target)
 	htype reflect.Type
 }
 
-// NewDecl builds a source-decl view.
+// NewDecl returns the [Decl] view of d, a declaration indexed in pkg.
+// Members of a host-bound package use [NewHostDecl] instead.
 func NewDecl(pkg *runtime.Package, d *index.Decl) *Decl {
 	s := &Decl{Package: pkg, decl: d}
 	if d == nil {
@@ -119,20 +175,21 @@ func NewDecl(pkg *runtime.Package, d *index.Decl) *Decl {
 	return s
 }
 
-// NewHostDecl builds a Kind:"host" pseudo-decl for a bound member.
-// sig may be nil.
+// NewHostDecl returns a Kind "host" [Decl] for the member name of a
+// host-bound package. sig and target may be nil when the member's
+// signature or Go type is unknown; [SignatureOf] then reports an error.
 func NewHostDecl(pkg *runtime.Package, name string, sig *Sig, target reflect.Type) *Decl {
 	return &Decl{Package: pkg, Kind: "host", Name: name, hsig: sig, htype: target}
 }
 
-// File is a view of one source file of a package.
+// File is one source file of a package, from [Files] or [FileOf]. Pass it
+// to [Decls], [Methods], [Imports], [Comments] or [UsedSymbols].
 type File struct {
 	Name string
-	Doc  string
-	// PkgName is the file's own package clause. It usually equals the
-	// package's Name, but a directory mixing clauses (`package app`
-	// next to `package other` — go build rejects that) still indexes
-	// every file, so callers checking for foreign files compare.
+	Doc  string // the package clause's doc comment, trailing newline trimmed
+	// PkgName is the name in the file's own package clause. A directory
+	// mixing package clauses still loads every file, so compare it with
+	// the package's name to find foreign files.
 	PkgName string
 
 	pkg  *runtime.Package
@@ -140,7 +197,7 @@ type File struct {
 	fset *token.FileSet
 }
 
-// NewFile builds a file view.
+// NewFile returns the [File] view of sf, a source file of pkg.
 func NewFile(pkg *runtime.Package, sf *syntax.File) *File {
 	f := &File{pkg: pkg, sf: sf, fset: pkg.Fset}
 	f.Name = sf.Name
@@ -155,17 +212,16 @@ func NewFile(pkg *runtime.Package, sf *syntax.File) *File {
 	return f
 }
 
-// Position is a structured source position — the script-facing
-// counterpart of token.Position, so scripts read File/Line/Column
-// instead of splitting "file:line:col" text.
+// Position is a source position, the script-readable form of
+// [token.Position]. Column is 0 when unknown.
 type Position struct {
 	File   string
 	Line   int
 	Column int
 }
 
-// String renders the token.Position "file:line:col" spelling (or
-// "file:line" when the column is unknown). "" on nil.
+// String formats p as "file:line:col", or "file:line" when the column is
+// unknown. A nil p formats as "".
 func (p *Position) String() string {
 	if p == nil {
 		return ""
@@ -188,33 +244,33 @@ func posOf(fset *token.FileSet, pos token.Pos) *Position {
 	return &Position{File: tp.Filename, Line: tp.Line, Column: tp.Column}
 }
 
-// Comment is a view over one *ast.Comment — a single // or /* */
-// comment in a file. Text keeps the markers, exactly as the source
-// wrote them: per-comment text is what annotation scanners
-// (// convert:rule, // swagger:route) match on, and it keeps
-// directive-shaped comments (//go:generate) visible, where
-// CommentGroup.Text() would drop them.
+// Comment is one // or /* */ comment of a file, from [Comments].
 type Comment struct {
-	Text string    // raw comment text, markers included
-	Pos  *Position // position of the comment
-	// Free reports that no declaration claims the comment's group —
-	// the comments Doc() cannot reach: inside function bodies,
-	// floating between decls, trailing the file. Attached comments
-	// (file/decl/spec docs, field docs and line comments) report
-	// Free=false.
+	// Text is the comment exactly as written, markers included, so
+	// annotations (// swagger:route) and directives (//go:generate)
+	// can be matched on it.
+	Text string
+	Pos  *Position
+	// Free reports that the comment is not attached to the file, a
+	// declaration or a field: it sits inside a function body, floats
+	// between declarations, or trails the file. Doc comments and line
+	// comments report false.
 	Free bool
 }
 
-// Import is one entry of a file's import table.
+// Import is one entry of a file's import table, from [Imports].
 type Import struct {
 	Path string
-	Name string // local name: alias or the package's declared name
+	// Name is the name the import binds in the file: the alias if any,
+	// else the last path element (without a /vN suffix), which may
+	// differ from the imported package's declared name.
+	Name string
 	Pos  *Position
 
 	ref *runtime.ImportRef // materializes on demand
 }
 
-// NewImport builds an import view for one syntax import entry.
+// NewImport returns the [Import] view of imp. ref may be nil.
 func NewImport(fset *token.FileSet, imp *syntax.Import, ref *runtime.ImportRef) *Import {
 	i := &Import{Path: imp.Path, Name: imp.LocalName(), ref: ref}
 	if fset != nil {
@@ -223,66 +279,74 @@ func NewImport(fset *token.FileSet, imp *syntax.Import, ref *runtime.ImportRef) 
 	return i
 }
 
-// Ref exposes the backing ImportRef — engine-only.
+// Ref returns the package reference the engine bound for this import,
+// or nil if there is none.
 func (i *Import) Ref() *runtime.ImportRef { return i.ref }
 
-// RepoPackage is one package directory reported by Packages — a
-// resolve.RepoPackage descriptor: which module claims the directory,
-// the import path that module spells for it, and the file inventory
-// split at the *_test.go boundary. Declarations and imports arrive
-// through the loaders (DirOf on Dir, FileOf on an inventory entry),
-// not through this view.
+// RepoPackage is one package directory reported by [Packages]: the
+// module that claims it, the import path that module gives it, and its
+// files split into GoFiles and TestFiles. Nothing is parsed; load the
+// package with [DirOf] on Dir, or a single file with [FileOf].
 type RepoPackage = resolve.RepoPackage
 
-// Field is a view over one *ast.Field: a struct field, a signature
-// parameter, or a method's receiver.
+// Field is one written field group: a struct field, an interface
+// element, a parameter, result or receiver, or a type parameter. It comes
+// from [Fields], [TypeFields], [MReqs], [TypeParams] and the Params,
+// Results and Recv of a [Sig]. `a, b int` is one Field with two Names.
 type Field struct {
 	Names    []string // empty for embedded fields and unnamed params
 	Type     *TypeExpr
-	Tag      string // struct tag, unquoted
-	Doc      string // doc comment text, trailing newline trimmed
+	Tag      string // struct tag literal without its backquotes
+	Doc      string // doc comment, else line comment; trailing newline trimmed
 	Embedded bool
 	Pos      *Position
 }
 
-// Sig is a func/method declaration's shape (the "Signature" the script
-// API speaks of; renamed to avoid colliding with the Signature stub).
+// Sig is the script API's "Signature", renamed to avoid colliding with
+// the Signature stub function. Params and Results stay boxed for script
+// member dispatch.
+
+// Sig is the signature of a func or method, from [Signature]. Params and
+// Results hold one *[Field] per written field group, so use
+// [Sig.NumParams] and [Sig.NumResults] for arity. Signatures of host
+// symbols have unnamed fields.
 type Sig struct {
 	Recv    *Field // nil for plain funcs
 	Params  *runtime.Slice
 	Results *runtime.Slice
 }
 
-// ParamFields returns the parameters as Field views — the host-side
-// counterpart of FieldsOf (Params stays boxed for script member
-// dispatch).
+// ParamFields returns Params as a Go slice.
 func (s *Sig) ParamFields() []*Field { return unboxFields(s.Params) }
 
-// ResultFields returns the results as Field views.
+// ResultFields returns Results as a Go slice.
 func (s *Sig) ResultFields() []*Field { return unboxFields(s.Results) }
 
-// NumParams reports how many parameters the function takes — the
-// names-flattened arity: `a, b int` in one field group counts as two,
-// an unnamed param as one, a variadic as one. ParamFields counts the
-// written *ast.Field groups instead, so it under-reports arity; an
-// arity check needs NumParams.
+// NumParams reports how many parameters the function takes: `a, b int`
+// counts as two, an unnamed or variadic parameter as one. len(Params)
+// counts field groups instead and under-reports.
 func (s *Sig) NumParams() int {
 	ts, _ := expandFieldTypes(s.ParamFields())
 	return len(ts)
 }
 
-// NumResults is NumParams for the result list — `(q, r int)` in one
-// field group counts as two.
+// NumResults is [Sig.NumParams] for the results: `(q, r int)` counts as
+// two.
 func (s *Sig) NumResults() int {
 	ts, _ := expandFieldTypes(s.ResultFields())
 	return len(ts)
 }
 
-// TypeExpr is a handle over one type expression: the declared spelling
-// plus the context needed to resolve the names it mentions.
+// TypeExpr is an expression as written in source, usually a type, with
+// the file context needed to resolve the names it mentions. It comes from
+// [Def], [DeclType], [Initializer], [IEmbeds], [Expr], a [Field]'s Type,
+// and [Children]. Navigate it with [Children], [UnRef], [UnWrap] and
+// [Origin]; identify what it names with [SymbolID], [Resolve] and
+// [SameType]. A TypeExpr for a host symbol is backed by its Go type: Kind
+// is "reflect:" plus the reflect kind and Text is the Go type string.
 type TypeExpr struct {
-	Text string // printer spelling of the declaration
-	Kind string // ast node name: "Ident", "SelectorExpr", "StarExpr", ...
+	Text string // source spelling of the expression
+	Kind string // go/ast node name: "Ident", "SelectorExpr", "StarExpr", ...
 
 	expr    ast.Expr
 	file    *syntax.File
@@ -292,7 +356,8 @@ type TypeExpr struct {
 	ht      reflect.Type    // host-backed alternative (BuiltinFunc.Target sigs)
 }
 
-// NewTypeExpr builds a syntax-backed type expression.
+// NewTypeExpr returns the [TypeExpr] view of e, an expression in file f
+// of package p.
 func NewTypeExpr(e ast.Expr, f *syntax.File, p *runtime.Package) *TypeExpr {
 	te := &TypeExpr{expr: e, file: f, pkg: p}
 	if e != nil {
@@ -309,7 +374,8 @@ func NewTypeExpr(e ast.Expr, f *syntax.File, p *runtime.Package) *TypeExpr {
 	return te
 }
 
-// NewHostType builds a reflect-backed type expression for host symbols.
+// NewHostType returns a [TypeExpr] backed by the Go type t, as used for
+// host symbols.
 func NewHostType(t reflect.Type) *TypeExpr {
 	te := &TypeExpr{ht: t}
 	if t != nil {
@@ -319,8 +385,9 @@ func NewHostType(t reflect.Type) *TypeExpr {
 	return te
 }
 
-// Resolver turns a SymbolID into the decl view it names — the engine
-// supplies the implementation.
+// Resolver returns the [Decl] a SymbolID names, loading its package as
+// needed. Host code supplies its own, typically by loading the package
+// and looking the name up in it.
 type Resolver func(sid runtime.SymbolID) (*Decl, error)
 
 // docText flattens a comment group and drops the trailing newline
@@ -388,12 +455,7 @@ func unboxFields(s *runtime.Slice) []*Field {
 	return out
 }
 
-// FieldsOf returns the declared fields of a struct type symbol, or the
-// member elements of an interface type symbol: method specs carry their
-// names and the signature as a FuncType TypeExpr, while embedded and
-// constraint elements (~T, unions) come back Embedded with the element
-// expression as Type. Other symbols report an error — call Def and
-// navigate the TypeExpr when the spelling matters.
+// FieldsOf is [Fields] for Go code, returning an error where Fields traps.
 func FieldsOf(s *Decl) ([]*Field, error) {
 	if s.decl == nil {
 		return nil, fmt.Errorf("inspect.Fields: host symbol %s has no declaration", s.Name)
@@ -412,11 +474,7 @@ func FieldsOf(s *Decl) ([]*Field, error) {
 	return nil, fmt.Errorf("inspect.Fields: %s is not a struct or interface type", s.Name)
 }
 
-// MReqsOf returns the named member requirements of an interface type
-// symbol — the method specs, each Field carrying its name and signature
-// (a FuncType TypeExpr). Embedded and constraint elements are skipped;
-// IEmbeds covers them. Non-interface type decls report empty; non-type
-// decls still report an error.
+// MReqsOf is [MReqs] for Go code, returning an error where MReqs traps.
 func MReqsOf(s *Decl) ([]*Field, error) {
 	it, err := ifaceOf("MReqs", s)
 	if err != nil || it == nil {
@@ -432,10 +490,8 @@ func MReqsOf(s *Decl) ([]*Field, error) {
 	return out, nil
 }
 
-// IEmbedsOf returns the embedded elements of an interface type symbol —
-// embedded interface names and constraint elements (~T, union
-// expressions) as their written TypeExprs. Non-interface type decls
-// report empty; non-type decls still report an error.
+// IEmbedsOf is [IEmbeds] for Go code, returning an error where IEmbeds
+// traps.
 func IEmbedsOf(s *Decl) ([]*TypeExpr, error) {
 	it, err := ifaceOf("IEmbeds", s)
 	if err != nil || it == nil {
@@ -470,7 +526,9 @@ func ifaceOf(op string, s *Decl) (*ast.InterfaceType, error) {
 	return it, nil
 }
 
-// MethodsOf returns the method decls of a type symbol.
+// MethodsOf is [Methods] on a type decl, for Go code: it returns the
+// type's declared methods sorted by name, or an error where Methods
+// traps. [MethodsIn] covers the package and file forms.
 func MethodsOf(s *Decl) ([]*Decl, error) {
 	if s.decl == nil || s.Package == nil || s.Package.Index == nil {
 		return nil, fmt.Errorf("inspect.Methods: %s has no method index", s.Name)
@@ -487,14 +545,13 @@ func MethodsOf(s *Decl) ([]*Decl, error) {
 	return out, nil
 }
 
-// MethodsIn returns every method declared in the package — the flat
-// counterpart of the per-type MethodsOf, covering the receiver-attached
-// decls Decls does not reach — in file order. It reads the index's
-// method list, so declarations the per-type name maps drop (a second
-// same-name method on one receiver, or a method on a receiver with no
-// type decl) still enumerate. file filters to the methods declared in
-// that one file. A bound package carries no index to walk.
+// MethodsIn is [Methods] on a package or file, for Go code: it returns
+// every method declared in p, in source order, or only those declared in
+// file when file is non-nil. A host-bound package reports an error.
 func MethodsIn(p *runtime.Package, file *syntax.File) ([]*Decl, error) {
+	// The index's flat method list is used, so declarations the per-type
+	// name maps drop (a second same-name method on one receiver, or a
+	// method on a receiver with no type decl) still enumerate.
 	if p == nil || p.Index == nil {
 		return nil, fmt.Errorf("inspect.Methods: package has no method index")
 	}
@@ -508,36 +565,19 @@ func MethodsIn(p *runtime.Package, file *syntax.File) ([]*Decl, error) {
 	return out, nil
 }
 
-// Method is a member of a type's method set: a method declared on the
-// type (Decl set, Via nil) or one promoted through an embedded field
-// (Via names the decl the member was promoted from). Members promoted
-// out of an embedded interface are method specs — they carry Name and
-// Sig but no Decl, since a spec is not a declaration.
+// Method is a member of a type's method set, from [MethodSet].
 type Method struct {
 	Name string
 	Sig  *Sig
-	Decl *Decl // nil when the member is an interface method spec
-	Via  *Decl // nil when declared on the type itself
+	Decl *Decl // the method declaration; nil for an interface method spec
+	// Via is the type declaring the member: the embedded type a method
+	// was promoted from, or the interface declaring a method spec. It
+	// is nil for a method declared on the queried type itself.
+	Via *Decl
 }
 
-// MethodSetOf returns the flattened method set of a type symbol —
-// "the members usable through *T": the type's declared methods with
-// either receiver (a pointer-receiver method declared on T is callable
-// on a *T, so it counts here even though Go's *value* method set of T
-// would not contain it), plus the members promoted through embedded
-// fields, walked transitively. Promotion follows Go's value method-set
-// rule — a by-value embed (struct{ T }) lifts T's non-pointer-receiver
-// members, a pointer embed (struct{ *T }) and interface embeds lift
-// everything, and a pointer embed anywhere on the path down keeps
-// deeper pointer receivers visible. Alias and generic-instantiation
-// embeds resolve to the underlying named decl first; type parameters
-// and unresolvable embeds contribute nothing. Members promote
-// breadth-first: a shallower spelling shadows a deeper one by name,
-// and a same-depth conflict between distinct members is an ambiguous
-// selector — Go excludes it and so does this set (two paths reaching
-// the SAME declaring decl count once, so diamond embeds stay legal).
-// Declared members always win. The result is sorted by name so script
-// consumers see a stable order.
+// MethodSetOf is [MethodSet] for Go code, returning an error where
+// MethodSet traps. res resolves embedded types.
 func MethodSetOf(s *Decl, res Resolver) ([]*Method, error) {
 	if s.decl == nil || s.Package == nil || s.Package.Index == nil {
 		return nil, fmt.Errorf("inspect.MethodSet: %s has no index", s.Name)
@@ -737,20 +777,11 @@ func promoteIfaceSpecs(it *ast.InterfaceType, owner *Decl, depth int, res Resolv
 	})
 }
 
-// ImplementersOf returns the type decls of p whose method set covers
-// iface's requirements — named specs plus everything the embedded
-// interfaces pull in transitively, flattened the same way
-// promoteIfaceSpecs flattens the candidate side. "Method set" follows
-// MethodSetOf's contract: a type whose only matching method is
-// pointer-receiver still counts (the set answers "usable through *T",
-// not "assignable as T"). Interface decls count too: an interface
-// embedding the required specs satisfies them, and iface itself is
-// included — callers wanting only concrete types filter by
-// Def(d).Kind. iface must be an interface type decl, and a constraint
-// interface — one carrying ~T terms, unions, or embedded non-interface
-// types — reports an error: no value type can implement it. Other
-// shapes report an error too, as do index-less packages.
+// ImplementersOf is [Implementers] for Go code, returning an error where
+// Implementers traps. res resolves embedded interfaces and types.
 func ImplementersOf(p *runtime.Package, iface *Decl, res Resolver) ([]*Decl, error) {
+	// The required specs are flattened the same way promoteIfaceSpecs
+	// flattens the candidate side.
 	if p == nil || p.Index == nil {
 		name := "<nil>"
 		if p != nil {
@@ -1019,23 +1050,13 @@ func expandFieldTypes(fs []*Field) ([]*TypeExpr, bool) {
 	return out, variadic
 }
 
-// EnumMembersOf returns a type symbol's enum members: the package's
-// const declarations typed with it — explicitly, by iota inheritance,
-// or inferred from an untyped initializer (`Microsecond = 1000 *
-// Nanosecond`, whose Duration type lives only on the materialized
-// value). Exported members come first in declaration order — the
-// public surface a consumer switches on — then unexported sentinels
-// such as minDuration. A member only counts when its value
-// materializes as a constant scalar: a composite "const" (`const
-// Origin Point = Point{...}` — tolerated by the interpreter but not a
-// Go constant expression) is not an enum value. An explicit-type
-// member whose value cannot be read still counts — its membership is
-// syntactic fact and the caller reports the unreadable value — but a
-// type-inferred candidate with no readable value is not a member.
-// Untyped constants and foreign-typed ones never match, so an empty
-// slice means the type is not an enum. Non-type symbols report an
-// error.
+// EnumMembersOf is [EnumMembers] for Go code, returning an error where
+// EnumMembers traps.
 func EnumMembersOf(s *Decl) ([]*Decl, error) {
+	// An explicit-type member whose value cannot be read still counts —
+	// its membership is syntactic fact and the caller reports the
+	// unreadable value — but a type-inferred candidate with no readable
+	// value is not a member.
 	if s.decl == nil || s.Package == nil || s.Package.Index == nil {
 		return nil, fmt.Errorf("inspect.EnumMembers: %s has no index", s.Name)
 	}
@@ -1152,8 +1173,8 @@ func valueSpecType(d *index.Decl) ast.Expr {
 	return d.InheritedType
 }
 
-// SignatureOf returns the func/method signature, or the synthesized
-// host signature for a bound intrinsic that carries a Target.
+// SignatureOf is [Signature] for Go code, returning an error where
+// Signature traps.
 func SignatureOf(s *Decl) (*Sig, error) {
 	if s.hsig != nil {
 		return s.hsig, nil
@@ -1181,7 +1202,8 @@ func SignatureOf(s *Decl) (*Sig, error) {
 	return sig, nil
 }
 
-// TypeParamsOf returns the type parameter fields of a generic decl.
+// TypeParamsOf is [TypeParams] for Go code, returning an error where
+// TypeParams traps.
 func TypeParamsOf(s *Decl) ([]*Field, error) {
 	if s.decl == nil {
 		return nil, fmt.Errorf("inspect.TypeParams: %s is not a decl", s.Name)
@@ -1200,7 +1222,7 @@ func TypeParamsOf(s *Decl) ([]*Field, error) {
 	return fieldList(fl, s.file, s.Package, typeParamNames(fl)), nil
 }
 
-// DefOf returns the declared type expression of a type symbol.
+// DefOf is [Def] for Go code, returning an error where Def traps.
 func DefOf(s *Decl) (*TypeExpr, error) {
 	if s.decl == nil {
 		if s.htype != nil {
@@ -1215,11 +1237,8 @@ func DefOf(s *Decl) (*TypeExpr, error) {
 	return NewTypeExpr(ts.Type, s.file, s.Package).withTypeParams(typeParamNames(ts.TypeParams)), nil
 }
 
-// DeclTypeOf returns the type expression declared on a var or const
-// decl — the explicit annotation (`const X Status = ...`, `var x
-// Status`), or the type an empty const spec inherits (`B` under `A
-// Status = e`). Untyped value specs report nil; other decl kinds and
-// host symbols report an error.
+// DeclTypeOf is [DeclType] for Go code, returning an error where
+// DeclType traps.
 func DeclTypeOf(s *Decl) (*TypeExpr, error) {
 	if s.decl == nil {
 		return nil, fmt.Errorf("inspect.DeclType: host symbol %s has no declaration", s.Name)
@@ -1236,13 +1255,8 @@ func DeclTypeOf(s *Decl) (*TypeExpr, error) {
 	return NewTypeExpr(t, s.file, s.Package), nil
 }
 
-// InitializerOf returns the initializer expression of a var or const
-// decl — the value aligned with the decl's name position, so
-// `var a, b = e1, e2` reports e1 for a and e2 for b. When one
-// expression serves every name (`a, b = f()`) it is that expression.
-// An empty const spec reports the value it inherits; a spec without
-// initializers (`var x int`) reports nil. Func, type, and host
-// symbols report an error.
+// InitializerOf is [Initializer] for Go code, returning an error where
+// Initializer traps.
 func InitializerOf(s *Decl) (*TypeExpr, error) {
 	if s.decl == nil {
 		return nil, fmt.Errorf("inspect.Initializer: host symbol %s has no declaration", s.Name)
@@ -1270,15 +1284,8 @@ func InitializerOf(s *Decl) (*TypeExpr, error) {
 	return NewTypeExpr(vals[i], s.file, s.Package), nil
 }
 
-// IsAliasOf reports whether a type decl spells an alias declaration
-// (`type X = int`) rather than a defined type (`type X int`) — the `=`
-// in the spec is the only difference, so the two forms partition type
-// decls: every source type symbol is exactly one. An alias denotes its
-// target rather than declaring a type of its own, so codegen consumers
-// skip it for directives and method generation. The distinction is
-// orthogonal to enum-ness — a const may still be typed with the alias
-// (EnumMembers lists it) — and to the underlying shape (Def reads it).
-// Non-type symbols report an error.
+// IsAliasOf is [IsAlias] for Go code, returning an error where IsAlias
+// traps.
 func IsAliasOf(s *Decl) (bool, error) {
 	if s.decl == nil {
 		return false, fmt.Errorf("inspect.IsAlias: host symbol %s has no declaration", s.Name)
@@ -1290,8 +1297,8 @@ func IsAliasOf(s *Decl) (bool, error) {
 	return ts.Assign.IsValid(), nil
 }
 
-// Expr exposes the underlying ast.Expr — engine-only, out of the FFI
-// (member dispatch sees only exported fields).
+// Expr returns the underlying syntax node, or nil for a TypeExpr backed
+// by a host type.
 func (te *TypeExpr) Expr() ast.Expr { return te.expr }
 
 // wrap builds a TypeExpr for a sub-expression in the same context —
@@ -1369,9 +1376,7 @@ func recvTypeParamNames(recv *ast.FieldList) map[string]bool {
 	return names
 }
 
-// Children drills into a composite type expression: []T -> T,
-// map[K]V -> K then V, *T -> T, func(A) B -> A then B,
-// F[A] -> F then A (the generic's base leads the arguments).
+// Children is the method form of [Children].
 func (te *TypeExpr) Children() []*TypeExpr {
 	if te.ht != nil {
 		return te.hostChildren()
@@ -1448,15 +1453,8 @@ func (te *TypeExpr) hostChildren() []*TypeExpr {
 	return out
 }
 
-// TypeFieldsOf returns the member elements of a composite type
-// expression: a struct spelling yields its fields (names, type, tag),
-// an interface spelling yields its elements (method specs named with a
-// FuncType TypeExpr; embedded and constraint elements Embedded). This
-// is the TypeExpr-level counterpart of FieldsOf — anonymous composite
-// types inside a decl's fields become readable without naming the
-// decl. Other shapes report an error — the same condition the
-// script-visible TypeFields intrinsic surfaces as a trap, so a walk
-// that only wants composites gates on Kind first on either side.
+// TypeFieldsOf is [TypeFields] for Go code, returning an error where
+// TypeFields traps.
 func TypeFieldsOf(te *TypeExpr) ([]*Field, error) {
 	if te.ht != nil {
 		return hostTypeFields(te.ht)
@@ -1496,9 +1494,9 @@ func hostTypeFields(t reflect.Type) ([]*Field, error) {
 	return nil, fmt.Errorf("inspect.TypeFields: host type %s is not a struct or interface", t)
 }
 
-// Unref strips one pointer layer: *T -> T; other shapes pass through.
-// (Named Unref — UnRef is taken by the stub declaration.)
+// Unref is the method form of [UnRef].
 func (te *TypeExpr) Unref() *TypeExpr {
+	// Named Unref: UnRef is taken by the stub declaration.
 	if te.ht != nil {
 		if te.ht.Kind() == reflect.Pointer {
 			return NewHostType(te.ht.Elem())
@@ -1511,9 +1509,7 @@ func (te *TypeExpr) Unref() *TypeExpr {
 	return te
 }
 
-// Unwrap peels one declared-type layer: an identifier or selector naming
-// a type resolves to that decl's underlying TypeExpr; other shapes pass
-// through. A newtype and an alias both count as one layer.
+// Unwrap is the method form of [UnWrap]; res resolves the named type.
 func (te *TypeExpr) Unwrap(res Resolver) *TypeExpr {
 	sid, ok := te.SymbolID()
 	if !ok || NoDeclPath(sid.PackagePath) {
@@ -1530,10 +1526,7 @@ func (te *TypeExpr) Unwrap(res Resolver) *TypeExpr {
 	return NewTypeExpr(ts.Type, sym.file, sym.Package).withTypeParams(typeParamNames(ts.TypeParams))
 }
 
-// Origin chases the whole declared chain: pointers AND type transitions
-// until the terminal base expression, where Origin(x) == x.
-// A recursive decl (type Node *Node) stops at the repeated symbol
-// rather than looping forever.
+// Origin is the method form of [Origin]; res resolves named types.
 func (te *TypeExpr) Origin(res Resolver) *TypeExpr {
 	seen := map[runtime.SymbolID]bool{}
 	for {
@@ -1564,9 +1557,8 @@ var predeclared = map[string]bool{
 	"any": true, "comparable": true,
 }
 
-// SymbolID resolves a type expression to the SymbolID it names:
-// Ident -> declaring package or ":builtin:", SelectorExpr -> the
-// declaring file's import table. Composite exprs report not-ok.
+// SymbolID is the method form of [SymbolID]: ok is false where SymbolID
+// reports nil.
 func (te *TypeExpr) SymbolID() (runtime.SymbolID, bool) {
 	if te.ht != nil {
 		t := te.ht
@@ -1613,13 +1605,10 @@ func (te *TypeExpr) SymbolID() (runtime.SymbolID, bool) {
 	return runtime.SymbolID{}, false
 }
 
-// CanonicalName renders the type's canonical identity: the fully
-// qualified "import/path.Name" for named types (the written spelling's
-// local alias is replaced by the declaring file's import path, so the
-// same type read through two files compares equal), the plain name for
-// builtins, and "*" + the element name for pointer types. Composite
-// shapes (slices, maps, func types, ...) report "" — they carry no
-// package-qualified identity a consumer could name.
+// CanonicalName returns the type's identity independent of how a file
+// spells it: "import/path.Name" for a named type, the bare name for a
+// predeclared type or type parameter, and "*" plus that for a pointer to
+// one. Other composite types (slices, maps, func types, ...) report "".
 func (te *TypeExpr) CanonicalName() string {
 	if te == nil {
 		return ""
@@ -1648,9 +1637,8 @@ func (te *TypeExpr) CanonicalName() string {
 	}
 }
 
-// SameType is strict structural equality over TypeExpr trees: named
-// references compare by SymbolID (declared-type identity — an alias and
-// its target do NOT collapse), composites compare Kind and children.
+// SameType is the method form of [SameType]; res resolves names in
+// array lengths.
 func (a *TypeExpr) SameType(b *TypeExpr, res Resolver) bool {
 	sa, oka := a.SymbolID()
 	sb, okb := b.SymbolID()
@@ -1696,10 +1684,10 @@ func (a *TypeExpr) sameShapeExtra(b *TypeExpr, res Resolver) bool {
 	return true
 }
 
-// Sub views an arbitrary sub-expression of this type in the same
-// file/package context — the parts Children() does not reach, such as
-// the base X of an IndexExpr/IndexListExpr, an ArrayType length, or
-// anything Expr() exposes. Returns nil for a nil expression.
+// Sub returns the [TypeExpr] view of e, a sub-expression of
+// [TypeExpr.Expr], resolved in the same context. Use it for parts
+// [TypeExpr.Children] does not reach, such as an array length. A nil e
+// yields nil.
 func (te *TypeExpr) Sub(e ast.Expr) *TypeExpr {
 	if e == nil {
 		return nil
@@ -1816,9 +1804,9 @@ func constInt(e ast.Expr) (int64, bool) {
 	return 0, false
 }
 
-// UsedSymbolsOf walks a file's AST for SelectorExpr on an import-local
-// name: every imported member the file actually references.
+// UsedSymbolsOf is [UsedSymbols] for Go code.
 func UsedSymbolsOf(f *File) []runtime.SymbolID {
+	// Every SelectorExpr whose X is an import's local name counts.
 	if f.sf == nil || f.sf.AST == nil {
 		return nil
 	}
@@ -1849,16 +1837,11 @@ func UsedSymbolsOf(f *File) []runtime.SymbolID {
 	return out
 }
 
-// CommentsOf enumerates a file's comments in source order — every
-// // or /* */ comment, one Comment per *ast.Comment. It closes the
-// gap Doc leaves: groups attached to the file, a decl, a spec, or a
-// field report Free=false, and everything else — comments inside
-// function bodies, floating between decls, trailing the file —
-// reports Free=true. go/parser collects free comments into
-// ast.File.Comments without attaching them to nodes, so "attached"
-// is computed by walking the AST once for the CommentGroups it
-// reaches — the same cost class as UsedSymbolsOf's file walk.
+// CommentsOf is [Comments] for Go code.
 func CommentsOf(f *File) []*Comment {
+	// go/parser collects free comments into ast.File.Comments without
+	// attaching them to nodes, so "attached" is computed by walking the
+	// AST once for the CommentGroups it reaches.
 	if f.sf == nil || f.sf.AST == nil {
 		return nil
 	}
@@ -1882,7 +1865,7 @@ func CommentsOf(f *File) []*Comment {
 	return out
 }
 
-// ImportsOf returns the file's own import table.
+// ImportsOf is [Imports] for Go code.
 func ImportsOf(f *File) []*Import {
 	if f.sf == nil {
 		return nil
@@ -1904,15 +1887,12 @@ func ImportsOf(f *File) []*Import {
 	return out
 }
 
-// ASTOf returns the raw AST node anchoring a decl: the retained
-// *ast.FuncDecl for funcs and methods, or the decl's own spec
-// (*ast.TypeSpec, *ast.ValueSpec) for type, var, and const decls —
-// plainly, so scripts reach .Body, .Pos(), and every field the node
-// keeps through the host reflect facade. The spec (not the enclosing
-// GenDecl) is the anchor: it is the node owning exactly this decl's
-// doc, names, and values — a GenDecl spans every spec in its group.
-// Host symbols report an error.
+// ASTOf is [AST] on a [Decl], for Go code, returning an error where AST
+// traps.
 func ASTOf(s *Decl) (any, error) {
+	// The spec, not the enclosing GenDecl, is the anchor for type, var
+	// and const decls: it owns exactly this decl's doc, names and
+	// values, while a GenDecl spans every spec in its group.
 	if s.decl == nil {
 		return nil, fmt.Errorf("inspect.AST: host symbol %s has no declaration", s.Name)
 	}
@@ -1925,12 +1905,12 @@ func ASTOf(s *Decl) (any, error) {
 	return nil, fmt.Errorf("inspect.AST: %s carries no AST node", s.Name)
 }
 
-// Node is a view over one statement or expression inside a function
-// body — the body-level counterpart of TypeExpr for expressions: it
-// keeps the AST node plus the declaring file's context, so Expr can
-// anchor an expression for the SymbolID/Resolve machinery.
+// Node is one statement, expression or declaration inside a function
+// body. It comes from [Body] and [Nodes]; [Expr] turns an expression Node
+// into a [TypeExpr] to resolve the names it mentions, and [AST] returns
+// the underlying go/ast node.
 type Node struct {
-	Kind   string    // ast node name: "BlockStmt", "CallExpr", "Ident", ...
+	Kind   string    // go/ast node name: "BlockStmt", "CallExpr", "Ident", ...
 	Text   string    // printer spelling of the node
 	Detail string    // the operator or literal kind where the node has one: "+", "STRING", ":="
 	Role   string    // the field name it fills in its parent ("List", "Fun", "Cond"); "" on the Body root
@@ -1943,8 +1923,11 @@ type Node struct {
 	tparams map[string]bool // type parameter names the enclosing generic func binds — same Body-root sharing
 }
 
-// NewNode builds a body-node view. role names the field the node
-// fills in its parent; pass "" for a Body root.
+// NewNode returns the [Node] view of n in file f of package p. role is
+// the go/ast field name n fills in its parent; pass "" for a body root.
+// Unlike nodes from [BodyOf], it does not know the enclosing function's
+// local names, so [ExprOf] on it may attribute a shadowed name to a
+// package.
 func NewNode(n ast.Node, role string, f *syntax.File, p *runtime.Package) *Node {
 	v := &Node{Role: role, node: n, file: f, pkg: p}
 	if n == nil {
@@ -2006,14 +1989,7 @@ func nodeDetail(n ast.Node) string {
 	return ""
 }
 
-// BodyOf returns a func or method decl's body as a Node — the root
-// block (Kind "BlockStmt") whose children are the body's statements,
-// so scripts can walk statements and expressions a signature stops
-// short of. The root also records the names the func binds (see
-// localNames), which Expr hands to TypeExpr so a local shadowing an
-// import cannot be misattributed to the package. A func decl without
-// a body reports nil; host symbols and non-func decls report an
-// error.
+// BodyOf is [Body] for Go code, returning an error where Body traps.
 func BodyOf(s *Decl) (*Node, error) {
 	if s.decl == nil {
 		return nil, fmt.Errorf("inspect.Body: host symbol %s has no declaration", s.Name)
@@ -2024,6 +2000,9 @@ func BodyOf(s *Decl) (*Node, error) {
 	if s.decl.Func.Body == nil {
 		return nil, nil
 	}
+	// The root records the names the func binds, which Expr hands to
+	// TypeExpr so a local shadowing an import cannot be misattributed
+	// to the package.
 	n := NewNode(s.decl.Func.Body, "", s.file, s.Package)
 	n.locals = localNames(s.decl.Func)
 	n.tparams = declTypeParams(s)
@@ -2088,15 +2067,10 @@ func localNames(fn *ast.FuncDecl) map[string]bool {
 	return names
 }
 
-// NodesOf returns a node's children in source order — every
-// statement, expression, and decl node the AST links from its struct
-// fields (a CallExpr's children are Fun then Args; an IfStmt's are
-// Init?, Cond, Body, Else?). Each child carries the field name it
-// fills as its Role, so optional parts stay distinguishable without
-// positional guessing. It is a role-keeping generalization of
-// ast.Walk's own enumeration, computed reflectively so every node
-// type is covered.
+// NodesOf is [Nodes] for Go code.
 func NodesOf(n *Node) []*Node {
+	// A role-keeping generalization of ast.Walk's enumeration, computed
+	// reflectively so every node type is covered.
 	if n == nil || n.node == nil {
 		return nil
 	}
@@ -2156,15 +2130,7 @@ func isNilNode(n ast.Node) bool {
 	return rv.Kind() == reflect.Pointer && rv.IsNil()
 }
 
-// ExprOf wraps an expression node as a decl-anchored TypeExpr — the
-// expression keeps its declaring file's context, so the TypeExpr
-// machinery applies to the names it mentions: SymbolID resolves
-// `pkg.Name` through the file's import table (and a package-local
-// name to the package), and Children/UnWrap navigate the spelling.
-// The anchor also carries the enclosing func's bound names, so a
-// local shadowing an import or package name reports not-ok rather
-// than being misattributed to the package. Non-expression nodes
-// report nil.
+// ExprOf is [Expr] for Go code.
 func ExprOf(n *Node) *TypeExpr {
 	if n == nil || n.node == nil {
 		return nil
@@ -2179,21 +2145,22 @@ func ExprOf(n *Node) *TypeExpr {
 	return te
 }
 
-// ASTNode exposes the underlying AST node — engine-only, the same
-// escape hatch AST() gives a decl, one level down.
+// ASTNode returns the underlying go/ast node.
 func (n *Node) ASTNode() ast.Node { return n.node }
 
-// SyntaxFile exposes the underlying file — engine-only.
+// SyntaxFile returns the parsed file behind the view.
 func (f *File) SyntaxFile() *syntax.File { return f.sf }
 
-// Pkg exposes the owning package — engine-only.
+// Pkg returns the package the file belongs to.
 func (f *File) Pkg() *runtime.Package { return f.pkg }
 
-// DeclOf exposes the underlying index decl — engine-only.
+// DeclOf returns the index entry behind the view, or nil for a host
+// decl.
 func (s *Decl) DeclOf() *index.Decl { return s.decl }
 
-// DeclFile exposes the declaring file — engine-only.
+// DeclFile returns the parsed declaring file, or nil for a host decl.
 func (s *Decl) DeclFile() *syntax.File { return s.file }
 
-// Target exposes the host reflect type — engine-only.
+// Target returns the Go type of a host decl, or nil when unknown or for
+// a source decl.
 func (s *Decl) Target() reflect.Type { return s.htype }

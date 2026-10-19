@@ -1,5 +1,14 @@
 // Package bytecode defines the instruction set of the minigo stack VM and
-// the compiled unit (Chunk) produced per function.
+// the compiled unit it runs.
+//
+// A [Chunk] holds the code for one function, package initializer or
+// expression: a sequence of [Instruction] values plus constants, slot counts
+// and [UpvalDesc] entries. [github.com/podhmo/minigo/compile] produces
+// chunks and [github.com/podhmo/minigo/vm] runs them.
+//
+// [Op] enumerates the instructions; the comment on each constant gives its
+// operands and stack effect. [OpBinary] and [OpUnary] carry a [BinOp] or
+// [UnOp] in operand A.
 package bytecode
 
 import (
@@ -11,7 +20,8 @@ import (
 	"github.com/podhmo/minigo/syntax"
 )
 
-// Op is a VM instruction kind.
+// Op is a VM instruction kind. The comment on each constant gives the
+// meaning of the instruction's A, B and C operands and its stack effect.
 type Op uint8
 
 const (
@@ -137,7 +147,7 @@ const (
 	OpSelectCall // A: const idx of field/method name; pop base -> push base.name
 )
 
-// BinOp is an OpBinary sub-op.
+// BinOp is the operator of an [OpBinary] instruction, carried in operand A.
 type BinOp uint8
 
 const (
@@ -180,7 +190,7 @@ func (b BinOp) String() string {
 	return fmt.Sprintf("BinOp(%d)", int(b))
 }
 
-// UnOp is an OpUnary sub-op.
+// UnOp is the operator of an [OpUnary] instruction, carried in operand A.
 type UnOp uint8
 
 const (
@@ -205,7 +215,8 @@ func (u UnOp) String() string {
 	return fmt.Sprintf("UnOp(%d)", int(u))
 }
 
-// Instruction is one fixed-width bytecode instruction.
+// Instruction is one fixed-width bytecode instruction; a [Chunk] holds them
+// in Code. The operands' meaning depends on [Op].
 type Instruction struct {
 	Op   Op
 	A, B int32
@@ -213,22 +224,24 @@ type Instruction struct {
 	Pos  token.Pos
 }
 
-// UpvalDesc describes how one free variable of a function is supplied:
-// either a slot index in the parent frame's locals or the parent's upvalues.
+// UpvalDesc describes how one free variable of a function is supplied when
+// [OpMakeClosure] builds its closure: Index is a slot in the parent frame's
+// locals, or in the parent's upvalues when FromParentUpval is set.
 type UpvalDesc struct {
 	FromParentUpval bool
 	Index           int
 }
 
-// ASTFragment is a not-yet-compiled AST expression kept as a chunk constant;
-// OpEvalAST compiles and runs it under the VM at run time (the OP_EVAL_AST
-// migration bridge — the basis for special-form partial evaluation).
+// ASTFragment is an AST expression kept uncompiled as a chunk constant;
+// [OpEvalAST] compiles and runs it at run time.
 type ASTFragment struct {
 	Expr ast.Expr
 	File *syntax.File
 }
 
-// Chunk is compiled code for one function.
+// Chunk is compiled code for one function, package initializer or
+// expression, produced by [github.com/podhmo/minigo/compile] and run by
+// [github.com/podhmo/minigo/vm].
 type Chunk struct {
 	Name       string
 	Code       []Instruction

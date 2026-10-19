@@ -6,6 +6,7 @@
 //
 // Deliberately small — anything absent falls through to lazy GOROOT source
 // interpretation, which stays the documented path for full fidelity.
+
 package minigo
 
 import (

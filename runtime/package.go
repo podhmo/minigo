@@ -16,7 +16,9 @@ import (
 	"github.com/podhmo/minigo/syntax"
 )
 
-// State is the package lifecycle stage.
+// State is a [Package]'s stage in loading, reported by [Package.State].
+// A package moves forward through the stages in order; [Failed] means
+// its initialization failed.
 type State int
 
 const (
@@ -29,8 +31,9 @@ const (
 	Failed
 )
 
-// Env is a name -> Value map for package globals (and builtins). It is
-// goroutine-safe: spawned goroutines read and write the same globals.
+// Env maps names to values: a package's globals ([Package.Globals]) or
+// the predeclared builtins. It is safe for concurrent use, as script
+// goroutines read and write the same globals.
 type Env struct {
 	mu sync.RWMutex
 	m  map[string]Value
@@ -42,7 +45,7 @@ type Env struct {
 // NewEnv creates an empty Env.
 func NewEnv() *Env { return &Env{m: map[string]Value{}} }
 
-// Get returns the value bound to name.
+// Get returns the value bound to name; ok is false when name is unbound.
 func (e *Env) Get(name string) (Value, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -67,15 +70,16 @@ func (e *Env) Delete(name string) {
 }
 
 // Gen reports the binding generation: it changes whenever a binding is
-// set or deleted, or Touch is called.
+// set or deleted, or [Env.Touch] is called. Caches keyed on the env stay
+// valid while it is unchanged.
 func (e *Env) Gen() uint64 { return e.gen.Load() }
 
-// Touch invalidates caches keyed on Gen without changing a binding —
-// for edits to the name-resolution context around the env (a package's
-// file scopes, imports or index).
+// Touch invalidates caches keyed on [Env.Gen] without changing a binding.
+// Call it after changing what names resolve to around the env, such as a
+// package's file scopes, imports or index.
 func (e *Env) Touch() { e.gen.Add(1) }
 
-// Names lists bound names.
+// Names lists the bound names in no particular order.
 func (e *Env) Names() []string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -86,9 +90,11 @@ func (e *Env) Names() []string {
 	return out
 }
 
-// ImportRef is the file-scope handle for one import. It materializes the
-// target package (to Indexed) on first Lookup, and fully initializes it
-// (Ready) on first member access.
+// ImportRef is one import declaration of a source file, found in
+// [Package.Scopes] and [Package.Imports]. The imported package is loaded
+// lazily: [ImportRef.Materialize] loads it up to [Indexed] without
+// initializing it, and it is initialized when a script first uses one of
+// its members.
 type ImportRef struct {
 	Path  string
 	Alias string // "", "_", ".", or an identifier
@@ -105,7 +111,9 @@ type ImportRef struct {
 	err  error
 }
 
-// Materialize loads the package to Indexed (parses + indexes, no init).
+// Materialize loads the imported package up to [Indexed] (parsed and
+// indexed, not initialized) through Load. Only the first call loads; later
+// calls return the same result.
 func (r *ImportRef) Materialize() (*Package, error) {
 	r.once.Do(func() {
 		defer func() {
@@ -125,7 +133,12 @@ func (r *ImportRef) Materialize() (*Package, error) {
 	return r.pkg, r.err
 }
 
-// Package is a lazily materialized package.
+// Package is a script package, loaded lazily: it is located and indexed
+// when first imported, and initialized ([Package.EnsureReady]) when a
+// member is first used. A bound host package is created already [Ready]
+// with its members in Globals. Packages come from
+// [github.com/podhmo/minigo.Engine.Package] and related loaders, and from
+// [ImportRef.Materialize]; look up members with [Package.Member].
 type Package struct {
 	Path     string
 	Name     string
@@ -181,7 +194,7 @@ type Package struct {
 	LazyInit bool
 
 	// Specials is the engine's special-form registry (canonical symbol ->
-	// handler); the compiler consults it to emit OpSpecialCall.
+	// handler); calls to these symbols compile as special-form calls.
 	Specials map[SymbolID]SpecialFunc
 
 	matMu sync.Mutex
@@ -196,33 +209,38 @@ type Package struct {
 	inferCount map[*ast.FuncDecl]int
 }
 
-// State reports the package lifecycle stage.
+// State reports the package's loading stage.
 func (p *Package) State() State { return State(p.state.Load()) }
 
-// SetState records the package lifecycle stage.
+// SetState records the package's loading stage. It is for loaders;
+// [Package.EnsureReady] advances the stage itself.
 func (p *Package) SetState(s State) { p.state.Store(int32(s)) }
 
-// MarkIndexed arms the indexed gate (called when the package is built).
+// MarkIndexed declares that the package is still being indexed: until
+// [Package.FinishIndexing], member lookups from other goroutines wait.
+// Loaders call it when they create the package.
 func (p *Package) MarkIndexed() {
 	if p.indexed == nil {
 		p.indexed = make(chan struct{})
 	}
 }
 
-// FinishIndexing closes the indexed gate.
+// FinishIndexing releases the lookups held since [Package.MarkIndexed],
+// whether indexing succeeded or failed.
 func (p *Package) FinishIndexing() {
 	if p.indexed != nil {
 		close(p.indexed)
 	}
 }
 
-// MatCache returns the materialized value for decl d, building it once
-// through build when missing. Two goroutines materializing the same decl
-// share one TypeDef/Function identity — type asserts depend on it. build
-// runs outside the lock (it may resolve other decls, which would
-// deadlock on a held lock); the loser of a concurrent build discards
-// its value so every caller converges on the first stored identity.
+// MatCache returns the value built for decl d, calling build when there
+// is none yet, so every caller gets the same *TypeDef or *Function for a
+// declaration (type identity depends on it). Concurrent callers may both
+// run build, but all of them get the first stored result. A failed or nil
+// build is not stored.
 func (p *Package) MatCache(d *index.Decl, build func(*Package, *index.Decl) (Value, error)) (Value, error) {
+	// build runs outside the lock: it may resolve other decls, which
+	// would deadlock on a held lock.
 	p.matMu.Lock()
 	v, ok := p.matM[d]
 	p.matMu.Unlock()
@@ -245,16 +263,19 @@ func (p *Package) MatCache(d *index.Decl, build func(*Package, *index.Decl) (Val
 	return v, nil
 }
 
-// EnsureReady advances the package through Initialize to Ready, running
-// __init__ through p.RunInit (the engine's default runner).
+// EnsureReady initializes the package — its var declarations and init
+// functions — if it is not [Ready] yet, and returns the initialization
+// error. Initialization runs at most once; a failure leaves the package
+// [Failed] and is returned again by later calls. It runs on a fresh
+// interpreter through RunInit; see [Package.EnsureReadyRun].
 func (p *Package) EnsureReady() error {
 	return p.EnsureReadyRun(nil)
 }
 
-// EnsureReadyRun is EnsureReady with an explicit runner: run executes the
-// package __init__ on the caller's VM — a spawned goroutine initializing a
-// package runs it on ITS VM, never the engine's root VM. run==nil falls
-// back to p.RunInit.
+// EnsureReadyRun is [Package.EnsureReady] with an explicit runner: run
+// executes the package initializer, so code already running on an
+// interpreter initializes the package on that same interpreter. A nil run
+// falls back to RunInit.
 func (p *Package) EnsureReadyRun(run func(*Function) error) error {
 	p.initOnce.Do(func() {
 		if p.State() == Ready {
@@ -303,19 +324,20 @@ func (p *Package) runBootstrap(run func(*Function) error) (err error) {
 	return p.Bootstrap(p, run)
 }
 
-// Member returns an exported member of the package: globals first, then the
-// index (functions/types are materialized on demand via materialize).
-// materialize is engine-provided and builds *Function / *TypeDef objects.
+// Member returns the package member name, initializing the package
+// first when the member needs it. Declared functions and types are built
+// by materialize, which the engine provides. It reports an error when the
+// package failed to initialize or has no such member. Code running on an
+// interpreter uses [Package.MemberV] instead.
 func (p *Package) Member(name string, materialize func(*Package, *index.Decl) (Value, error)) (Value, error) {
 	return p.MemberV(name, materialize, nil)
 }
 
-// EnsureConstsRun binds the package's constants through ConstBootstrap —
-// the const-only initializer that runs none of the var initializers or
-// init() funcs. It runs at most once: a skipped or failed const init
-// (recorded in constErr) leaves the package for the full initializer.
-// Unlike runBootstrap the error is not re-panicked; the caller decides
-// between the bound value and a full-init retry.
+// EnsureConstsRun binds the package's constants through ConstBootstrap,
+// without running var initializers or init functions. It runs at most
+// once and does nothing for a package already [Ready]. An error (also
+// from a panic) only means the constants are not bound; the caller can
+// fall back to [Package.EnsureReadyRun].
 func (p *Package) EnsureConstsRun(run func(*Function) error) error {
 	p.constOnce.Do(func() {
 		if p.State() == Ready || p.ConstBootstrap == nil {
@@ -342,7 +364,9 @@ func (p *Package) EnsureConstsRun(run func(*Function) error) error {
 	return p.constErr
 }
 
-// MemberV is Member with an explicit init runner (see EnsureReadyRun).
+// MemberV is [Package.Member] with an explicit init runner (see
+// [Package.EnsureReadyRun]). With a non-nil run, using a var or const
+// member initializes the package fully first, as Go guarantees.
 func (p *Package) MemberV(name string, materialize func(*Package, *index.Decl) (Value, error), run func(*Function) error) (Value, error) {
 	if p.indexed != nil {
 		<-p.indexed
@@ -449,9 +473,10 @@ type instChunk struct {
 // would otherwise retain a chunk per call.
 const maxInstPerDecl = 64
 
-// InstKey spells the identity of a generic instantiation for
-// InstChunk: the decl, the function name, and each bind's type (see
-// writeTypeKey). ok is false when a bind cannot be keyed.
+// InstKey returns the key under which [Package.SetInstChunk] caches the
+// code of a generic instantiation: it identifies the declaration, the
+// function name, and the type bound to each type parameter. ok is false
+// when a bind is not a *TypeDef.
 func InstKey(decl *ast.FuncDecl, file *syntax.File, name string, binds map[string]Value) (string, bool) {
 	var b strings.Builder
 	writePtr(&b, decl)
@@ -558,8 +583,9 @@ func writeTypeKey(b *strings.Builder, td *TypeDef, depth int) {
 	b.WriteByte('}')
 }
 
-// AppendTypeKey writes td's identity as InstKey spells a bind (see
-// writeTypeKey) — for callers keying their own caches on types.
+// AppendTypeKey writes to b a key for td, as [InstKey] does for each
+// bind, for callers keying their own caches on types. Distinct copies of
+// one typedef produce the same key, except for bound host types.
 func AppendTypeKey(b *strings.Builder, td *TypeDef) {
 	writeTypeKey(b, td, instKeyDepth)
 }
@@ -574,8 +600,8 @@ type inferEntry struct {
 // maxInferPerDecl bounds the cached inference results per generic decl.
 const maxInferPerDecl = 256
 
-// Inferred returns the instance an earlier call inferred under key: a
-// generic callee plus the argument types inference read.
+// Inferred returns the instance of a generic function that
+// [Package.SetInferred] recorded under key.
 func (p *Package) Inferred(key string) (*Function, bool) {
 	p.inferMu.Lock()
 	defer p.inferMu.Unlock()
@@ -583,9 +609,10 @@ func (p *Package) Inferred(key string) (*Function, bool) {
 	return e.fn, ok
 }
 
-// SetInferred records an inferred instance under key, up to
-// maxInferPerDecl per decl. keep must hold everything the key's
-// addresses point into.
+// SetInferred records fn, an instance of the generic function decl
+// inferred from argument types, under key. keep must hold everything the
+// key's addresses point into, so they are not reused. Only a bounded
+// number of instances is kept per decl; the rest are silently dropped.
 func (p *Package) SetInferred(key string, decl *ast.FuncDecl, keep []any, fn *Function) {
 	p.inferMu.Lock()
 	defer p.inferMu.Unlock()
@@ -629,10 +656,8 @@ func plainBasic(td *TypeDef) bool {
 		td.HostNew == nil && td.HostScalar == nil && !td.Local && td.Gen == 0
 }
 
-// InstChunk returns the chunk compiled earlier for the instantiation
-// key spells (see InstKey). The compiled code depends only on the
-// decl, file, name and binds, so instances with the same key share it
-// — like WithBinds copies share their original's chunk.
+// InstChunk returns the code compiled earlier for the instantiation key
+// from [InstKey]. Instances with the same key can share it.
 func (p *Package) InstChunk(key string) (*bytecode.Chunk, bool) {
 	p.instMu.Lock()
 	defer p.instMu.Unlock()
@@ -640,8 +665,9 @@ func (p *Package) InstChunk(key string) (*bytecode.Chunk, bool) {
 	return e.ch, ok
 }
 
-// SetInstChunk records a compiled instantiation under key, up to
-// maxInstPerDecl per decl.
+// SetInstChunk records the compiled code of an instantiation under key.
+// Only a bounded number of instantiations is kept per decl; the rest are
+// silently dropped.
 func (p *Package) SetInstChunk(key string, decl *ast.FuncDecl, binds map[string]Value, ch *bytecode.Chunk) {
 	p.instMu.Lock()
 	defer p.instMu.Unlock()

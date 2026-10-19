@@ -1,7 +1,15 @@
-// Package syntax is the front end of minigo: a thin wrapper over go/parser
-// producing *ast.File plus a per-file import table. Nothing here executes or
-// resolves anything; the compiler is deliberately a total function over the
-// AST so that every valid Go file parses.
+// Package syntax parses Go source files for the minigo interpreter.
+//
+// [ParseFile] wraps go/parser and returns a [File]: the *ast.File plus the
+// file's [Import] table. Nothing here resolves or executes code; the
+// [github.com/podhmo/minigo/compile] package turns the AST into bytecode.
+//
+// [CheckLang] applies the -lang gate, rejecting language features newer
+// than a file's effective version ([File.Lang]); it takes the package-wide
+// name table built by [DeclaredKinds].
+//
+// [TypeParamNames] and [RecvTypeParamNames] list the type parameter names
+// a declaration binds.
 package syntax
 
 import (
@@ -15,6 +23,7 @@ import (
 )
 
 // File is a parsed Go source file plus its file-scoped import table.
+// Create one with [ParseFile].
 type File struct {
 	Name    string // filename as given to the FileSet
 	AST     *ast.File
@@ -38,9 +47,11 @@ type Import struct {
 	Pos   token.Pos
 }
 
-// ParseFile parses src. It never returns a partial AST silently: syntax
-// errors are reported, but every construct the toolchain's parser accepts is
-// accepted here (unsupported constructs become runtime TRAPs downstream).
+// ParseFile parses src, or reads filename when src is nil. On a syntax
+// error it returns no [File] and an error listing all errors found. Every
+// construct the toolchain's parser accepts is accepted here; constructs the
+// interpreter does not support fail later, at run time. The filename is
+// stored in [File] with forward slashes on every OS.
 func ParseFile(fset *token.FileSet, filename string, src []byte) (*File, error) {
 	// Positions, decl File fields, and traceback frames all quote this name:
 	// normalize to "/" so script-visible paths match on every OS. Windows
@@ -73,8 +84,7 @@ func ParseFile(fset *token.FileSet, filename string, src []byte) (*File, error) 
 // LocalName returns the identifier the import binds in this file.
 // For unnamed imports it approximates the package name by the path basename;
 // a trailing "/vN" module-major-version element is stripped first.
-// (The true package name may differ; cheap metadata resolution is a known
-// follow-up — see the design doc.)
+// The true package name may differ.
 func (i *Import) LocalName() string {
 	if i.Alias != "" {
 		return i.Alias
@@ -87,10 +97,8 @@ func (i *Import) LocalName() string {
 	return name
 }
 
-// TypeParamNames collects the names a *ast.FieldList of type parameters
-// binds, in declaration order — `T any`, `K comparable, V any`. Order
-// matters to callers instantiating a signature; membership-only callers
-// fold the slice into a set.
+// TypeParamNames returns the names a type parameter list binds, in
+// declaration order: `K comparable, V any` gives K, V. A nil list yields nil.
 func TypeParamNames(fl *ast.FieldList) []string {
 	if fl == nil {
 		return nil
@@ -104,10 +112,9 @@ func TypeParamNames(fl *ast.FieldList) []string {
 	return out
 }
 
-// RecvTypeParamNames collects the type parameter names a method
-// receiver's instantiation declares, in order — `(p Pair[A, B])` binds
-// A and B for the whole method body. Pointer and paren wrappers on the
-// receiver type are peeled first; non-generic receivers yield nil.
+// RecvTypeParamNames returns the type parameter names a method receiver
+// declares, in order: `(p *Pair[A, B])` binds A and B for the whole method
+// body. A non-generic receiver yields nil.
 func RecvTypeParamNames(recv *ast.FieldList) []string {
 	if recv == nil || len(recv.List) == 0 {
 		return nil

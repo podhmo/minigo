@@ -6,9 +6,10 @@ import (
 	"iter"
 )
 
-// EffectiveValueSpec pairs the original spec with its effective type and values.
-// For an empty const spec, Type and Values come from the preceding non-empty
-// spec. The AST nodes are shared with the original declaration, not copied.
+// EffectiveValueSpec is yielded by [ValueSpecs]: the original spec with
+// its effective type and values. For an empty const spec, Type and Values
+// come from the preceding non-empty spec. The AST nodes are shared with
+// the original declaration, not copied.
 type EffectiveValueSpec struct {
 	Spec   *ast.ValueSpec
 	Type   ast.Expr

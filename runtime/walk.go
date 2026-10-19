@@ -1,30 +1,27 @@
 package runtime
 
-// Walk carries the guards one deep value-to-host walk shares: seen
-// folds a container back to the output already being built for it — a
-// cyclic or shared subcontainer resolves to the partial result — and
-// peeled stops a reference chain that loops back on itself (a cell
-// handed its own referrer). The maps allocate lazily: a scalar-only
-// walk never pays for them. DeepUnwrap, the vm package's host
-// marshal, and the root package's fmt-bound walk all run their
-// container arms through it; each keeps its own leaf contract
-// (structs, references, constants stay caller-side).
+// Walk is the state of one recursive conversion of a script value to Go
+// values, such as [DeepUnwrap]: it remembers the output already built for
+// each container, so cyclic and shared containers convert to the same Go
+// value, and the references already followed, so a pointer cycle ends.
+// Create one with [NewWalk] per conversion; [Walk.Container] converts
+// slices and maps, and the caller handles every other value.
 type Walk struct {
+	// The maps allocate lazily: a scalar-only walk never pays for them.
+	// DeepUnwrap, the vm package's host marshal, and the root package's
+	// fmt-bound walk all run their container arms through it.
 	seen   map[Value]any
 	peeled map[Value]struct{}
 }
 
-// NewWalk starts a walk's shared guards.
+// NewWalk returns an empty [Walk].
 func NewWalk() *Walk { return &Walk{} }
 
-// Container walks the container arms shared by the deep-value walks:
-// a *Slice becomes []any (a virtual slice expands its zero fill to
-// the logical length) and a *Map becomes map[any]any — each
-// registered in seen before its elements are produced by `each`, the
-// caller's own recurse, so a repeat visit folds to the partially
-// built container. Map keys go through `key` — UnwrapKey keeps them
-// comparable where a full-walk key would panic hashing an expanded
-// []any. The bool reports whether v was a container.
+// Container converts a [*Slice] to []any and a [*Map] to map[any]any,
+// converting elements with each and map keys with key (typically
+// [UnwrapKey], which keeps keys hashable). A container seen before in
+// this walk returns its earlier, possibly still incomplete, output. ok is
+// false when v is neither.
 func (w *Walk) Container(v Value, each func(Value) any, key func(Value) any) (any, bool) {
 	switch x := v.(type) {
 	case *Slice:
@@ -60,9 +57,8 @@ func (w *Walk) Container(v Value, each func(Value) any, key func(Value) any) (an
 	return nil, false
 }
 
-// Seen reports the output already registered for v by a previous
-// visit — the container fold itself, for shapes Container does not
-// cover (a caller's own projection type).
+// Seen returns the output [Walk.Register] recorded for v, for containers
+// that [Walk.Container] does not handle.
 func (w *Walk) Seen(v Value) (any, bool) {
 	if w.seen == nil {
 		return nil, false
@@ -71,8 +67,8 @@ func (w *Walk) Seen(v Value) (any, bool) {
 	return old, ok
 }
 
-// Register enters v's output in seen before its elements are walked,
-// so a repeat visit folds to it.
+// Register records out as the output for v. Call it before converting
+// v's elements, so a cycle back to v finds out through [Walk.Seen].
 func (w *Walk) Register(v Value, out any) {
 	if w.seen == nil {
 		w.seen = map[Value]any{}
@@ -80,8 +76,9 @@ func (w *Walk) Register(v Value, out any) {
 	w.seen[v] = out
 }
 
-// Peel marks a reference value as peeled once: the first call answers
-// true, a repeat answers false — the caller stops the chain there.
+// Peel records that the walk follows the reference v. It reports false
+// when v was already followed, meaning the caller has found a cycle and
+// should stop.
 func (w *Walk) Peel(v Value) bool {
 	if w.peeled == nil {
 		w.peeled = map[Value]struct{}{}
@@ -93,13 +90,11 @@ func (w *Walk) Peel(v Value) bool {
 	return true
 }
 
-// UnwrapKey unwraps a map key through only the layers that keep the
-// result comparable — Named/ref peels, GoValue's host value, UConst's
-// native scalar — and leaves script containers boxed. A script array
-// key ([1]int{1}) survives as its *Slice box: pointer-comparable,
-// where expanding it to []any panics on "hash of unhashable type" —
-// the host answer stays a Go map that mirrors the script one's
-// cardinality.
+// UnwrapKey converts a script map key to a Go map key, unwrapping only
+// what keeps it hashable: [Named] tags, pointers, a [GoValue]'s value and
+// an untyped constant's value. Script containers stay as they are — an
+// array key remains a *Slice rather than an unhashable []any — and nil
+// values give nil.
 func UnwrapKey(v Value) any {
 	peeled := map[Value]struct{}{}
 	for {
