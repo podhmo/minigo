@@ -1,16 +1,10 @@
 // Package index records the top-level declarations of one package's
-// parsed files without evaluating them.
+// parsed files without evaluating them; evaluation happens later, at
+// package initialization or call time.
 //
-// [Build] (or [BuildLenient]) turns the files from
-// [github.com/podhmo/minigo/syntax.ParseFile] into an [Index], which
-// [github.com/podhmo/minigo/runtime.Package] keeps for evaluation at
-// package initialization or call time. An [Index] holds one [Decl] per
-// declared name, classified by [Kind], and a [TypeDeclInfo] per type with
-// its methods. Duplicate names fail with a [RedeclError].
-//
-// For code that walks the AST directly, [ValueSpecs] resolves the
-// implicit repetition of const specs and [ReceiverTypeName] names a
-// method's receiver type.
+// [Build] indexes a package and rejects redeclared names as gc does;
+// [BuildLenient] lets a later declaration replace an earlier one, as a
+// REPL session needs.
 package index
 
 import (
@@ -32,7 +26,7 @@ const (
 )
 
 // Decl is a single named top-level declaration: one name of a spec, or
-// one function or method. Get them from an [Index].
+// one function or method.
 type Decl struct {
 	Kind Kind
 	Name string
@@ -51,17 +45,16 @@ type Decl struct {
 	Pos           token.Pos
 }
 
-// TypeDeclInfo is a named type plus the methods declared on it, found in
-// [Index].Types. Decl is nil when the files declare methods on a type
-// name they do not declare.
+// TypeDeclInfo is a named type plus the methods declared on it. Decl is
+// nil when the files declare methods on a type name they do not declare.
 type TypeDeclInfo struct {
 	Decl    *Decl
 	Methods map[string]*Decl // method name -> Func decl (receiver this type)
 }
 
-// Index is the declaration table of one package, returned by [Build] or
-// [BuildLenient]. Maps are keyed by declared name; under [BuildLenient]
-// a later duplicate replaces an earlier one.
+// Index is the declaration table of one package. Maps are keyed by
+// declared name; under [BuildLenient] a later duplicate replaces an
+// earlier one.
 type Index struct {
 	Decls   []*Decl          // non-method decls in source order, files in the order given
 	Methods []*Decl          // method decls in source order — every declaration, including same-name duplicates the per-type Methods maps drop
@@ -84,7 +77,7 @@ func (ix *Index) LocalGen(ts *ast.TypeSpec) int {
 	return ix.LocalGens[ts]
 }
 
-// RedeclError is returned by [Build] for a duplicate package-block name —
+// RedeclError reports a duplicate package-block name from [Build] —
 // Go's `X redeclared in this block` compile error. Pos points at the
 // second declaration, PrevPos at the first; callers render them through
 // their FileSet.
