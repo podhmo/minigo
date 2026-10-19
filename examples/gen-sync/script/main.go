@@ -1,13 +1,9 @@
-// Package script is the body of the gen-sync tool, executed by the minigo
-// interpreter (see ../main.go). It walks a package through the inspect
-// API, infers which declarations want generation tooling, and
-// rewrites each file's managed //go:generate block so it stays in sync.
+// Package script synchronizes managed go:generate directives with Go declarations.
 //
-// The //go:generate lines are the OUTPUT of this tool: targets are
-// inferred from the declarations themselves (type shapes, struct tags,
-// method sets, names), never from magic comments. Scan mechanics live in
-// the scanx package — this file keeps only the policy: which signal
-// wants which directive.
+// The gen-sync command invokes [Main] in the minigo interpreter. Rules use
+// type shapes, struct tags, method sets and names; existing directives do
+// not determine which generators are needed. Scanning helpers live in
+// [github.com/podhmo/minigo/examples/gen-sync/scanx].
 package script
 
 import (
