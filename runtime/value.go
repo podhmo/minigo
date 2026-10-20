@@ -23,7 +23,8 @@
 // Failures come in two kinds. A [Panic] is a script panic that script
 // code can recover(); Go code raises one by calling panic with a *Panic.
 // A [Trap] cannot be recovered and stops the script; an error returned by
-// a builtin or special form becomes a Trap.
+// a builtin or special form becomes a Trap. Deferred calls still run while
+// a Trap unwinds, but recover() inside them returns nil.
 package runtime
 
 import (
@@ -2398,9 +2399,10 @@ func panicScalar(v Value) any {
 
 // Trap is a failure the script cannot recover(), unlike a [Panic]: an
 // unsupported construct, an invalid operation, or an error returned by a
-// [BuiltinFunc] or [SpecialFunc]. It unwinds to the host as the error of
-// [github.com/podhmo/minigo.Engine.Call]; Err, reachable with errors.As,
-// is the host error it was raised from.
+// [BuiltinFunc] or [SpecialFunc]. Deferred calls run as it unwinds, but
+// recover() in them returns nil and the Trap continues. It unwinds to the
+// host as the error of [github.com/podhmo/minigo.Engine.Call]; Err,
+// reachable with errors.As, is the host error it was raised from.
 type Trap struct {
 	Pos    token.Pos
 	Reason string

@@ -7,7 +7,7 @@
 ## まず押さえる概念
 
 - **ロード経路が2系統ある**: 「バインド済み（bound）」のホストパッケージと「ソースから index した」パッケージは**別物**。bound パッケージは index を持たないので `Decls` は Kind=`host` の擬似 decl を合成し、`AST`/`Body`/`Pos` は trap する。`Standard()` は bound なら登録時の宣言、ソースなら GOROOT 配下かどうか。
-- **trap 系と Lookup 系の対**: `Symbol`/`DirOf`/`PackageOf`/`SourceOf`/`FileOf` は見つからないと trap（ホストプロセスを巻き込まない範囲でスクリプト実行が死ぬ）。`LookupSymbol`/`LookupDirOf`/`LookupPackageOf`/`LookupSourceOf`/`LookupFileOf` は nil を返す。「見つからない」以外の失敗（見つかったが壊れている、ポリシー拒否）は Lookup 系でも error を返すのが設計上の境目。
+- **trap 系と Lookup 系の対**: `Symbol`/`DirOf`/`PackageOf`/`SourceOf`/`FileOf` は見つからないと trap（ホストプロセスを巻き込まない範囲でスクリプト実行が死ぬ）。`LookupSymbol`/`LookupDirOf`/`LookupPackageOf`/`LookupSourceOf`/`LookupFileOf`/`LookupResolve` は nil を返す。trap 中も defer は実行されるが、その中の `recover()` は nil を返し trap は止まらない（#922）——防御したいなら Lookup 系を使う。「見つからない」以外の失敗（見つかったが壊れている、ポリシー拒否）は Lookup 系でも error を返すのが設計上の境目。
 - **Decl と TypeExpr は別物**: `Decl` は宣言そのもの（名前・種類・doc・位置）、`TypeExpr` は型のスペリング（`[]map[string]T` や `*T` という式）。`Decl` から `TypeExpr` へは `Def`/`DeclType`/`Signature`/`Initializer` で降りる。`TypeExpr` から `Decl` へは `SymbolID`/`Resolve` で上がる。
 
 ## ロード系（パッケージを得る）
@@ -75,7 +75,7 @@
 | `UnRef(te)` | pointer を1層剥がす | `*T`→`T` |
 | `Origin(te)` | pointer・型遷移を全部追い切った基底式 | 「最終的にどの型か」一発 |
 | `SymbolID(te)` | `*SymbolID`（`{PackagePath, Name}`）または nil | 名前を持たない式（composite、instantiation 全体）は nil |
-| `Resolve(te)` | `*Decl`（宣言ビュー） | TypeExpr→Decl 方向の橋。bound パッケージの型（`time.Time` 等）は `Symbol` と同じ Kind=`host` 擬似 decl を返す（#921）。存在しない名前は trap |
+| `Resolve(te)` | `*Decl`（宣言ビュー） | TypeExpr→Decl 方向の橋。bound パッケージの型（`time.Time` 等）は `Symbol` と同じ Kind=`host` 擬似 decl を返す（#921）。存在しない名前は trap。nil 版は `LookupResolve`（#922） |
 | `SameType(a, b)` | 構造的等価 | タグや名前解決込みの厳密比較 |
 
 ### SymbolID の疑似パス

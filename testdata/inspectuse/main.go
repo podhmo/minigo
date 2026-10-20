@@ -1449,6 +1449,23 @@ func ResolveBound() string {
 	return "ok"
 }
 
+// LookupResolveMiss: LookupResolve answers nil where Resolve traps — a
+// name the package lacks — and still resolves what Resolve finds (#922).
+func LookupResolveMiss() string {
+	miss := inspect.Fields(inspect.Symbol(inspect.DirOf("./testdata/boundmiss"), "T"))[0].Type
+	if d := inspect.LookupResolve(miss); d != nil {
+		return fmt.Sprintf("LookupResolve(%s) = %s %s, want nil", miss.Text, d.Kind, d.Name)
+	}
+	fs := inspect.Fields(inspect.Symbol(inspect.DirOf("./testdata/inspectpkg"), "User"))
+	if d := inspect.LookupResolve(fs[0].Type); d != nil {
+		return "LookupResolve(string) = " + d.Name + ", want nil"
+	}
+	if d := inspect.LookupResolve(fs[3].Type); d == nil || d.Kind != "host" || d.Name != "Builder" {
+		return fmt.Sprintf("LookupResolve(%s) = %+v", fs[3].Type.Text, d)
+	}
+	return "ok"
+}
+
 // ResolveBoundMissTrap: a name the bound package does not have still
 // traps, like Symbol on it.
 func ResolveBoundMissTrap() string {
