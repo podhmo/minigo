@@ -78,6 +78,7 @@ func TestInspect(t *testing.T) {
 		"ASTResolveRecipe", // go/ast dispatch + name resolution with today's API (#940)
 		"ASTHostTwin",      // host slices outside go/ast: generics, slice asserts
 		"ASTSourceIfaces",  // host nodes satisfy go/ast interfaces with unexported methods
+		"ASTHostTokens",    // token.Token fields equal go/token constants (#944)
 		"BodyWalk",
 		"BodyNil",
 		"BodyScope",
