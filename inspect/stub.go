@@ -215,7 +215,12 @@ func IEmbeds(s *Decl) []*TypeExpr { panic("minigo intrinsic") }
 // *ast.FuncDecl of a func or method, or the *ast.TypeSpec or
 // *ast.ValueSpec of a type, var or const; for a [Node] it is the node
 // itself. Scripts reach the node's fields and methods (.Body, .Pos()) as on
-// any host value. It traps for host decls.
+// any host value, and go/ast's own walkers (ast.Inspect, ast.Walk) accept
+// it. It traps for host decls.
+//
+// A go/ast node does not lead back to a [Node]. A walker that also
+// resolves names walks [Body]/[Nodes], dispatches on AST(n), and hands the
+// child Node filling the wanted field (Role "Fun" for call.Fun) to [Expr].
 func AST(x any) any { panic("minigo intrinsic") }
 
 // Body returns the body of a func or method declaration as a [Node] of
