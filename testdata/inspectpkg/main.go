@@ -555,3 +555,26 @@ func NoBody()
 func ShadowMe(strings string) string {
 	return strings.TrimSpace(" x ")
 }
+
+// LocalDecls declares types, vars and a const inside its body; Expr-fed
+// SymbolID must not attribute them to the package (#920), while the
+// package type User still resolves.
+func LocalDecls() int {
+	type local struct{ B int }
+	type other struct{}
+	var x local
+	var y local
+	var z other
+	var u User
+	const k = 1
+	_, _, _ = y, z, u
+	return x.B + k
+}
+
+// LocalDecls2 declares its own local, a different type from
+// LocalDecls's same-named one.
+func LocalDecls2() {
+	type local struct{ B int }
+	var w local
+	_ = w
+}

@@ -1598,7 +1598,9 @@ func (te *TypeExpr) CanonicalName() string {
 }
 
 // SameType is the method form of [SameType]; res resolves names in
-// array lengths.
+// array lengths. A name without a SymbolID matches only under the same
+// [BodyOf] root, so one reached from a bare [NewNode] root (which knows
+// no locals) does not even match itself.
 func (a *TypeExpr) SameType(b *TypeExpr, res Resolver) bool {
 	sa, oka := a.SymbolID()
 	sb, okb := b.SymbolID()
@@ -1610,6 +1612,18 @@ func (a *TypeExpr) SameType(b *TypeExpr, res Resolver) bool {
 	}
 	if a.Kind != b.Kind {
 		return false
+	}
+	switch ea := a.expr.(type) {
+	case *ast.Ident:
+		// a name with no SymbolID is bound inside the enclosing func
+		// (a local type): the same spelling under the same Body root
+		// is the same type, anything else is unknown and reported as
+		// different rather than matched by its empty shape.
+		eb, ok := b.expr.(*ast.Ident)
+		return ok && ea.Name == eb.Name && a.locals != nil &&
+			reflect.ValueOf(a.locals).Pointer() == reflect.ValueOf(b.locals).Pointer()
+	case *ast.SelectorExpr:
+		return false // a member of a local value, not a resolvable type
 	}
 	if !a.sameShapeExtra(b, res) {
 		return false
@@ -1969,7 +1983,8 @@ func BodyOf(s *Decl) (*Node, error) {
 
 // localNames collects every identifier a func decl binds in its own
 // scopes — receiver, params, named results, := names, range and
-// type-switch bindings, and funclit params — anywhere in the body.
+// type-switch bindings, local var/const/type declarations, and funclit
+// params — anywhere in the body.
 // The model is deliberately shallow: a name from a sibling or outer
 // scope counts too, so membership means "possibly local", never the
 // other way. Expr-fed SymbolID refuses package attribution on those
@@ -2012,6 +2027,21 @@ func localNames(fn *ast.FuncDecl) map[string]bool {
 				}
 				if id, ok := x.Value.(*ast.Ident); ok {
 					names[id.Name] = true
+				}
+			}
+		case *ast.DeclStmt:
+			gd, ok := x.Decl.(*ast.GenDecl)
+			if !ok {
+				break
+			}
+			for _, spec := range gd.Specs {
+				switch sp := spec.(type) {
+				case *ast.ValueSpec:
+					for _, id := range sp.Names {
+						names[id.Name] = true
+					}
+				case *ast.TypeSpec:
+					names[sp.Name.Name] = true
 				}
 			}
 		case *ast.FuncLit:
