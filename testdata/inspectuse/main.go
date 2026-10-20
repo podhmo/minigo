@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	goast "go/ast"
+	"go/format"
+	"go/token"
 	"reflect"
 	"sort"
 	"strings"
@@ -2085,6 +2088,56 @@ func ASTHostTwin() string {
 	}
 	if ns := []*goast.Ident(fd.Type.Results.List[0].Names); ns != nil {
 		return "nil host []*ast.Ident converted to non-nil"
+	}
+	return "ok"
+}
+
+func identName(e goast.Expr) string {
+	if id, ok := e.(*goast.Ident); ok {
+		return id.Name
+	}
+	return "?"
+}
+
+// ASTSourceIfaces: host nodes satisfy go/ast's interfaces whose method
+// sets include unexported markers (exprNode, stmtNode, declNode), which
+// reflect never lists — so assignment, assertion, indexing a host
+// []Stmt and go/printer's interface type switch all accept them.
+func ASTSourceIfaces() string {
+	fd := inspect.AST(inspect.Symbol(inspect.Current(), "astInspectSubject")).(*goast.FuncDecl)
+	var d any = fd
+	if _, ok := d.(goast.Decl); !ok {
+		return "*ast.FuncDecl is not a goast.Decl"
+	}
+	var s0 any = fd.Body.List[0]
+	if _, ok := s0.(goast.Stmt); !ok {
+		return "body stmt is not a goast.Stmt"
+	}
+	if _, ok := s0.(goast.Expr); ok {
+		return "body stmt is a goast.Expr"
+	}
+	var st goast.Stmt = fd.Body.List[0]
+	ss := []goast.Stmt(fd.Body.List)
+	if st != ss[0] {
+		return "indexed stmt differs"
+	}
+	// a parameter of a go/ast interface type (#945)
+	as := fd.Body.List[0].(*goast.AssignStmt) // total := 0
+	if got := identName(as.Lhs[0]); got != "total" {
+		return "identName(as.Lhs[0]) = " + got
+	}
+	ret := fd.Body.List[len(fd.Body.List)-1].(*goast.ReturnStmt)
+	if goast.Unparen(ret.Results[0]) != ret.Results[0] {
+		return "Unparen changed a non-paren expr"
+	}
+
+	// go/printer dispatches on go/ast's interfaces too.
+	var got bytes.Buffer
+	if err := format.Node(&got, token.NewFileSet(), fd.Body.List[0]); err != nil {
+		return "format host node: " + err.Error()
+	}
+	if got.String() != "total := 0" {
+		return fmt.Sprintf("format.Node: %q", got.String())
 	}
 	return "ok"
 }
