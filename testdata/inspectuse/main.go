@@ -1415,10 +1415,37 @@ func DefVarTrap() string {
 	return "swallowed"
 }
 
-// ResolveBoundTrap: Resolve cannot descend into a bound package.
-func ResolveBoundTrap() string {
+// ResolveBound: Resolve on a member of a bound package answers the
+// Kind:"host" pseudo-decl Symbol gives for it, and the name chasers
+// leave the bound type as-is (#921).
+func ResolveBound() string {
 	p := inspect.DirOf("./testdata/inspectpkg")
-	inspect.Resolve(inspect.Fields(inspect.Symbol(p, "User"))[3].Type)
+	te := inspect.Fields(inspect.Symbol(p, "User"))[3].Type
+	d := inspect.Resolve(te)
+	if d == nil || d.Kind != "host" || d.Name != "Builder" || inspect.Path(d.Package) != "strings" {
+		return fmt.Sprintf("Resolve(%s) = %+v", te.Text, d)
+	}
+	want := inspect.Symbol(inspect.PackageOf("strings"), "Builder")
+	if d.Kind != want.Kind || d.Name != want.Name {
+		return fmt.Sprintf("Resolve = %s %s, Symbol = %s %s", d.Kind, d.Name, want.Kind, want.Name)
+	}
+	if got := inspect.UnWrap(te).Text; got != "strings.Builder" {
+		return "UnWrap = " + got
+	}
+	if got := inspect.Origin(te).Text; got != "strings.Builder" {
+		return "Origin = " + got
+	}
+	if !inspect.SameType(te, te) {
+		return "SameType(te, te) = false"
+	}
+	return "ok"
+}
+
+// ResolveBoundMissTrap: a name the bound package does not have still
+// traps, like Symbol on it.
+func ResolveBoundMissTrap() string {
+	p := inspect.DirOf("./testdata/boundmiss")
+	inspect.Resolve(inspect.Fields(inspect.Symbol(p, "T"))[0].Type)
 	return "swallowed"
 }
 

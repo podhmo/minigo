@@ -516,11 +516,13 @@ exists — through `SourceOf`, never through the bound shadow.
 - `Def`/`Fields`/`Methods`/`MReqs` on a non-type or host decl traps
   (TypeOfFuncTrap, MReqsStructTrap, DefVarTrap, BoundFieldTrap,
   BoundMethodTrap — asserted Go-side via `e.Run` errors).
-- `Resolve`/`Origin`/`UnWrap`/`SameType` cannot descend into a bound
-  package: the resolver consults the canonical package (no index) and
-  traps — `no decl Builder in strings`. Field SymbolIDs such as
-  `strings.Builder` still form correctly; chasing them needs a
-  SourceOf-side lookup (ResolveBoundTrap).
+- `Resolve`/`Origin`/`UnWrap`/`SameType` stop at a bound package: the
+  resolver consults the canonical package (no index), so `Resolve` on
+  `strings.Builder` answers the same Kind:"host" pseudo-decl `Symbol`
+  gives, and `UnWrap`/`Origin` leave the name as-is (ResolveBound,
+  #921). Chasing into the definition needs a SourceOf-side lookup. A
+  name the bound package does not have still traps — `no decl X in
+  strings` (ResolveBoundMissTrap).
 - `SymbolID` on an instantiated type (`Pair[int]` → IndexExpr)
   returns nil — the generic origin isn't reachable; `Children` yields
   only the type arguments (Instantiation).

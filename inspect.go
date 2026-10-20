@@ -230,9 +230,6 @@ func (e *Engine) installInspect() {
 			if err != nil {
 				return nil, err
 			}
-			if d == nil {
-				return runtime.NIL, nil
-			}
 			return &runtime.GoValue{V: d}, nil
 		}),
 		// ---- index layer ----
@@ -875,10 +872,19 @@ func (e *Engine) resolverForInspect() xinspect.Resolver {
 		if err != nil {
 			return nil, err
 		}
-		if d == nil {
-			return nil, fmt.Errorf("inspect: no decl %s in %s", sid.Name, sid.PackagePath)
+		if d != nil {
+			return xinspect.NewDecl(p, d), nil
 		}
-		return xinspect.NewDecl(p, d), nil
+		if p.Index == nil {
+			// A host-bound package has no index: report its member as
+			// the Kind:"host" pseudo-decl Symbol gives.
+			if v, err := e.findSymbol(p, sid.Name); err != nil {
+				return nil, err
+			} else if v != nil {
+				return v.(*runtime.GoValue).V.(*xinspect.Decl), nil
+			}
+		}
+		return nil, fmt.Errorf("inspect: no decl %s in %s", sid.Name, sid.PackagePath)
 	}
 }
 
