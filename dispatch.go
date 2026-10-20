@@ -749,6 +749,13 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 // resolved from its underlying type AST (Anon or Spec.Type). Used by
 // elided composite literal elements and pointer member dispatch.
 func (e *Engine) elemOf(td *runtime.TypeDef) (*runtime.TypeDef, error) {
+	return e.elemOfFuel(td, 8)
+}
+
+// elemOfFuel is elemOf with a bound on the named-container hops a bare
+// underlying (`type N Ms`, `type N AS` with an alias AS) takes to reach
+// the container whose element it shares.
+func (e *Engine) elemOfFuel(td *runtime.TypeDef, fuel int) (*runtime.TypeDef, error) {
 	if td.Elem != nil {
 		return td.Elem, nil
 	}
@@ -777,8 +784,19 @@ func (e *Engine) elemOf(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 		case *ast.ChanType:
 			return e.elemTypeRef(td, t.Value)
 		}
-		// bare underlying (e.g. `type T MyStruct`): the elem is that type
-		return e.resolveTypeRef(td, x)
+		// bare underlying naming a container (`type N Ms`, `type N AS`
+		// with an alias AS = []map[K]V): N shares that container's
+		// element — the named type itself is not its element.
+		r, err := e.resolveTypeRef(td, x)
+		if err == nil && r != nil && r != td && fuel > 0 {
+			switch r.Kind {
+			case runtime.KindSlice, runtime.KindMap, runtime.KindChan, runtime.KindPointer, runtime.KindAlias:
+				return e.elemOfFuel(r, fuel-1)
+			}
+		}
+		// any other bare underlying (e.g. `type T MyStruct`): the elem
+		// is that type
+		return r, err
 	}
 }
 

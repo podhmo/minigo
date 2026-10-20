@@ -5124,14 +5124,111 @@ func (c *compiler) pureOperand(x ast.Expr) bool {
 // unfoldTypExpr under the callers' own bound: the only semantic
 // difference is exhaustion returning nil instead of the partial expr,
 // and every caller applies a shape predicate that a partial expr fails
-// anyway. mapLitType and isKeyedLitShape differ in their predicates.
+// anyway. mapLitType and litTypeAt differ in their predicates.
+//
+// A generic instantiation (`Pair[string, int]`, `pkg.G[T]`) resolves
+// to its generic decl's type with the type arguments substituted for
+// the parameters, so `type Pair[K comparable, V any] map[K]V` makes
+// `Pair[string, int]` a MapType whose element literals peel to V's
+// argument.
 func (c *compiler) resolveLitType(t ast.Expr, fuel int) ast.Expr {
-	return c.unfoldTypExpr(t, fuel)
+	for ; fuel > 0; fuel-- {
+		u := c.unfoldTypExpr(t, fuel)
+		inst := c.instantiateLitType(u)
+		if inst == nil {
+			return u
+		}
+		t = inst
+	}
+	return nil
+}
+
+// instantiateLitType returns the type a generic instantiation `G[A...]`
+// spells — G's declared type scoped to the caller with A substituted
+// for G's type parameters — or nil when e is no instantiation of a
+// source-indexed generic type.
+func (c *compiler) instantiateLitType(e ast.Expr) ast.Expr {
+	var base ast.Expr
+	var args []ast.Expr
+	switch x := e.(type) {
+	case *ast.IndexExpr:
+		base, args = x.X, []ast.Expr{x.Index}
+	case *ast.IndexListExpr:
+		base, args = x.X, x.Indices
+	default:
+		return nil
+	}
+	var p *runtime.Package
+	var ts *ast.TypeSpec
+	switch b := ast.Unparen(base).(type) {
+	case *ast.Ident:
+		// function-local types cannot be generic: a local binding of
+		// the name means the index is no instantiation.
+		if c.fs.lookupBinding(b.Name) != nil {
+			return nil
+		}
+		if _, isUp := c.fs.upmap[b.Name]; isUp {
+			return nil
+		}
+		p, ts = c.pkg, pkgTypeSpec(c.pkg, b.Name)
+	case *ast.SelectorExpr:
+		if ref, name, ok := c.selTypRef(b); ok {
+			p, ts = selTypeSpec(ref, name)
+		}
+	}
+	if ts == nil {
+		return nil
+	}
+	params := syntax.TypeParamNames(ts.TypeParams)
+	if len(params) == 0 || len(params) != len(args) {
+		return nil
+	}
+	subs := make(map[string]ast.Expr, len(params))
+	for i, name := range params {
+		subs[name] = args[i]
+	}
+	return substTypeParams(c.scopeSpecType(p, specFileOf(p, ts.Pos()), ts.Type), subs)
+}
+
+// substTypeParams replaces type parameter names with their arguments in
+// the type positions a composite literal's elements peel through
+// (element, key, value, pointee, instantiation args). Struct, interface
+// and func types return as-is: their literal keys are field names and
+// their members never take an elided literal.
+func substTypeParams(e ast.Expr, subs map[string]ast.Expr) ast.Expr {
+	switch t := e.(type) {
+	case *ast.Ident:
+		if a, ok := subs[t.Name]; ok {
+			return a
+		}
+		return t
+	case *ast.ParenExpr:
+		return &ast.ParenExpr{Lparen: t.Lparen, X: substTypeParams(t.X, subs), Rparen: t.Rparen}
+	case *ast.ArrayType:
+		return &ast.ArrayType{Lbrack: t.Lbrack, Len: t.Len, Elt: substTypeParams(t.Elt, subs)}
+	case *ast.MapType:
+		return &ast.MapType{Map: t.Map, Key: substTypeParams(t.Key, subs), Value: substTypeParams(t.Value, subs)}
+	case *ast.StarExpr:
+		return &ast.StarExpr{Star: t.Star, X: substTypeParams(t.X, subs)}
+	case *ast.Ellipsis:
+		return &ast.Ellipsis{Ellipsis: t.Ellipsis, Elt: substTypeParams(t.Elt, subs)}
+	case *ast.ChanType:
+		return &ast.ChanType{Begin: t.Begin, Arrow: t.Arrow, Dir: t.Dir, Value: substTypeParams(t.Value, subs)}
+	case *ast.IndexExpr:
+		return &ast.IndexExpr{X: t.X, Lbrack: t.Lbrack, Index: substTypeParams(t.Index, subs), Rbrack: t.Rbrack}
+	case *ast.IndexListExpr:
+		idx := make([]ast.Expr, len(t.Indices))
+		for i, x := range t.Indices {
+			idx[i] = substTypeParams(x, subs)
+		}
+		return &ast.IndexListExpr{X: t.X, Lbrack: t.Lbrack, Indices: idx, Rbrack: t.Rbrack}
+	}
+	return e
 }
 
 // mapLitType reports whether a composite literal's declared type is a
 // map — syntactically (`map[K]V{}`) or through a named type
-// (`type M map[K]V; M{}`), like isKeyedLitShape resolves.
+// (`type M map[K]V; M{}`), like litTypeAt resolves.
 func (c *compiler) mapLitType(t ast.Expr, fuel int) bool {
 	_, ok := c.resolveLitType(t, fuel).(*ast.MapType)
 	return ok
@@ -6192,17 +6289,48 @@ func (c *compiler) compileLit(x *ast.CompositeLit, baseType ast.Expr, depth int)
 			break
 		}
 	}
+	// own is the literal's resolved type with an elided `&` stripped
+	// (`[]*T{{...}}` builds a T); it is resolved lazily — only keyed
+	// elements and elided nested literals need it, and resolving an
+	// imported name materializes its package.
+	var own ast.Expr
+	var ptr, ownDone bool
+	ownType := func() ast.Expr {
+		if !ownDone {
+			ownDone = true
+			own, ptr = c.litTypeAt(baseType, depth)
+		}
+		return own
+	}
 	emitVal := func(val ast.Expr) {
 		if lit, ok := val.(*ast.CompositeLit); ok && lit.Type == nil {
-			c.compileLit(lit, baseType, depth+1)
+			// an elided `&T` literal is typed *T at run time, so its
+			// own elements sit one OpElemType below the pointee.
+			ed := depth + 1
+			if ownType(); ptr {
+				ed++
+			}
+			c.compileLit(lit, baseType, ed)
 			return
 		}
 		c.expr(val)
 	}
 	// Whether an identifier key is a field name or a real expression is
-	// decidable when the peeled element type is syntactically a map or an
-	// array — `map[int]int{K: 1}` and `[]int{K: 1}` evaluate K.
-	keysAreExprs := c.literalKeysAreExprs(baseType, depth)
+	// decidable when the literal's type resolves to a map or an array —
+	// `map[int]int{K: 1}` and `[]int{K: 1}` evaluate K, `S{K: 1}` names
+	// a field.
+	keysAreExprs := false
+	for _, el := range x.Elts {
+		if kvel, ok := el.(*ast.KeyValueExpr); ok {
+			if _, ok := kvel.Key.(*ast.Ident); ok {
+				switch ownType().(type) {
+				case *ast.MapType, *ast.ArrayType:
+					keysAreExprs = true
+				}
+				break
+			}
+		}
+	}
 	for _, el := range x.Elts {
 		if kvel, isKV := el.(*ast.KeyValueExpr); kv && !isKV {
 			// mixed keyed/positional elements — arrays allow it: the
@@ -6213,8 +6341,8 @@ func (c *compiler) compileLit(x *ast.CompositeLit, baseType ast.Expr, depth int)
 		} else if kv {
 			if lit, ok := kvel.Key.(*ast.CompositeLit); ok && lit.Type == nil {
 				// an elided key literal (map[K]V{{...}: v}) inherits
-				// the map's declared key type when it is syntactic.
-				if mt, ok := syntax.PeelLitType(baseType, depth).(*ast.MapType); ok {
+				// the map's declared key type when it resolves.
+				if mt, ok := ownType().(*ast.MapType); ok {
 					c.compileLit(lit, mt.Key, 0)
 				} else {
 					c.expr(kvel.Key)
@@ -6238,25 +6366,30 @@ func (c *compiler) compileLit(x *ast.CompositeLit, baseType ast.Expr, depth int)
 	c.emit(bytecode.OpMakeComposite, len(x.Elts), b, x.Pos())
 }
 
-// literalKeysAreExprs peels a composite literal's declared element type
-// `depth` levels (array elt / map value / pointer / ellipsis) and reports
-// whether the resulting type resolves to a map or array — where a key is
-// a real expression, not a field name.
-func (c *compiler) literalKeysAreExprs(baseType ast.Expr, depth int) bool {
-	return c.isKeyedLitShape(syntax.PeelLitType(baseType, depth), 4)
-}
-
-// isKeyedLitShape reports whether a type expression's shape makes
-// literal keys expressions rather than field names. Named types resolve
-// through local `type` decls and the package index — `type M
-// map[int]int` means `M{i: 1}` evaluates `i` — while unresolvable names
-// keep the struct-style field-name heuristic. fuel bounds alias chains.
-func (c *compiler) isKeyedLitShape(t ast.Expr, fuel int) bool {
-	switch c.resolveLitType(t, fuel).(type) {
-	case *ast.MapType, *ast.ArrayType:
-		return true
+// litTypeAt resolves the type a composite literal `depth` element peels
+// below baseType takes — the type an elided nested literal (`{...}`
+// inside `[]map[K]V{...}`) is built as. Each level resolves to its
+// underlying form before it is peeled (array elt / map value / pointee
+// / ellipsis), so a named, aliased, local, imported or instantiated
+// generic container exposes its element: `type Ms []map[string]int;
+// Ms{{k: 1}}` reaches the map. The result is resolved too; a pointer
+// result is the elided `&T` form — t is then T resolved and ptr is
+// set. A name that cannot be pinned down at compile time (a type
+// parameter, an unindexed package) comes back unresolved, and callers
+// keep the struct-style field-name reading of its keys.
+func (c *compiler) litTypeAt(baseType ast.Expr, depth int) (t ast.Expr, ptr bool) {
+	t = baseType
+	for i := 0; t != nil && i < depth; i++ {
+		t = syntax.PeelLitType(c.resolveLitType(t, 8), 1)
 	}
-	return false
+	if t == nil {
+		return nil, false
+	}
+	t = c.resolveLitType(t, 8)
+	if st, ok := t.(*ast.StarExpr); ok {
+		return c.resolveLitType(st.X, 8), true
+	}
+	return t, false
 }
 
 // emitLenFolds emits the in-scope evaluation of every non-literal array
