@@ -2167,30 +2167,25 @@ func BodyNonRefIdents() string {
 	nonRef := map[string]bool{"X": true, "Y": true, "Z": true, "L": true, "_": true, "Repeat": true}
 	seen := map[string]int{}
 	bad := ""
-	var walk func(n *inspect.Node)
-	walk = func(n *inspect.Node) {
-		for _, c := range inspect.Nodes(n) {
-			if c.Kind == "Ident" {
-				te := inspect.Expr(c)
-				seen[te.Text]++
-				if nonRef[te.Text] {
-					if sid := inspect.SymbolID(te); sid != nil && bad == "" {
-						bad = te.Text + " (" + c.Role + ") resolved to " + sid.PackagePath + "." + sid.Name
-					}
-					if inspect.Resolve(te) != nil && bad == "" {
-						bad = te.Text + " resolved to a decl"
-					}
+	walkNodes(inspect.Body(inspect.Symbol(p, "NonRefIdents")), func(c *inspect.Node) {
+		if c.Kind == "Ident" {
+			te := inspect.Expr(c)
+			seen[te.Text]++
+			if nonRef[te.Text] {
+				if sid := inspect.SymbolID(te); sid != nil && bad == "" {
+					bad = te.Text + " (" + c.Role + ") resolved to " + sid.PackagePath + "." + sid.Name
 				}
-				if te.Text == "KeyA" || te.Text == "Pt" {
-					if d := inspect.Resolve(te); (d == nil || d.Name != te.Text) && bad == "" {
-						bad = te.Text + " (" + c.Role + ") unresolved"
-					}
+				if inspect.Resolve(te) != nil && bad == "" {
+					bad = te.Text + " resolved to a decl"
 				}
 			}
-			walk(c)
+			if te.Text == "KeyA" || te.Text == "Pt" {
+				if d := inspect.Resolve(te); (d == nil || d.Name != te.Text) && bad == "" {
+					bad = te.Text + " (" + c.Role + ") unresolved"
+				}
+			}
 		}
-	}
-	walk(inspect.Body(inspect.Symbol(p, "NonRefIdents")))
+	})
 	if bad != "" {
 		return bad
 	}
