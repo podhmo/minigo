@@ -2142,6 +2142,43 @@ func ASTSourceIfaces() string {
 	return "ok"
 }
 
+// ASTHostTokens: token.Token fields of host nodes are go/token's own
+// Token values (#944) — they equal the source constants, switch on them
+// and key maps like script-built ones — so go/printer, which decides
+// `chan` by ChanType.Dir == SEND|RECV, prints the whole body like the go
+// toolchain does.
+func ASTHostTokens() string {
+	fd := inspect.AST(inspect.Symbol(inspect.Current(), "astInspectSubject")).(*goast.FuncDecl)
+	as := fd.Body.List[0].(*goast.AssignStmt) // total := 0
+	if as.Tok != token.DEFINE {
+		return "as.Tok != token.DEFINE"
+	}
+	switch as.Tok {
+	case token.DEFINE:
+	default:
+		return "switch on as.Tok missed token.DEFINE"
+	}
+	seen := map[token.Token]int{}
+	seen[as.Tok]++
+	if seen[token.DEFINE] != 1 {
+		return "as.Tok does not key like token.DEFINE"
+	}
+	if lit := as.Rhs[0].(*goast.BasicLit); lit.Kind != token.INT {
+		return "lit.Kind != token.INT"
+	}
+
+	var got bytes.Buffer
+	if err := format.Node(&got, token.NewFileSet(), fd.Body); err != nil {
+		return "format host node: " + err.Error()
+	}
+	// the go toolchain's format.Node of the same body
+	want := "{\n\ttotal := 0\n\tfor i, x := range xs {\n\t\tif x > 0 && i%2 == 0 {\n\t\t\ttotal += x * 2\n\t\t} else {\n\t\t\tswitch {\n\t\t\tcase x < -10:\n\t\t\t\ttotal--\n\t\t\tdefault:\n\t\t\t\ttotal -= x\n\t\t\t}\n\t\t}\n\t}\n\tfor k, v := range m {\n\t\ttotal += len(k) + v\n\t}\n\tf := func(a ...int) int {\n\t\treturn len(a)\n\t}\n\tch := make(chan int, 1)\n\tch <- f(1, 2)\n\tselect {\n\tcase v := <-ch:\n\t\ttotal += v\n\t}\n\ts := struct{ A []string }{A: []string{\"x\"}}\n\t_ = s.A[0:1]\n\tvar e interface{} = total\n\tif n, ok := e.(int); ok {\n\t\treturn n, nil\n\t}\n\treturn total, fmt.Errorf(\"bad %d\", total)\n}"
+	if got.String() != want {
+		return fmt.Sprintf("format.Node differs:\n%q\nwant\n%q", got.String(), want)
+	}
+	return "ok"
+}
+
 // ASTBoundTrap: a bound (host) symbol carries no AST node.
 func ASTBoundTrap() string {
 	inspect.AST(inspect.Symbol(inspect.PackageOf("strings"), "Builder"))
