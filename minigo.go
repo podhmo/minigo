@@ -265,8 +265,48 @@ func (e *Engine) newVM() *vm.VM {
 		AliasOf:     e.aliasOf,
 		FieldTypes:  e.fieldTypes,
 		ResolveType: e.resolveTypeRef,
+		HostTwin:    e.hostTwin,
 		Linkname:    e.linknameTarget,
 	}}
+}
+
+// hostTwin implements the VM's HostTwin hook: the typedef this engine
+// holds for the named host type rt. A source-built package (go/ast,
+// io/fs) answers with its own declaration of the same name; a bound one
+// with its bound typedef when that boxes rt. Packages the engine has not
+// loaded answer nil — loading one here would make a type check import.
+func (e *Engine) hostTwin(rt reflect.Type) *runtime.TypeDef {
+	if rt == nil || rt.Name() == "" || rt.PkgPath() == "" {
+		return nil
+	}
+	e.mu.Lock()
+	p := e.pkgs[rt.PkgPath()]
+	e.mu.Unlock()
+	if p == nil {
+		return nil
+	}
+	if p.Index != nil {
+		td, err := e.resolveTypeRef(&runtime.TypeDef{Pkg: p}, ast.NewIdent(rt.Name()))
+		if err != nil || !runtime.HostNamedIs(rt, td) {
+			return nil
+		}
+		return td
+	}
+	if p.Globals == nil {
+		return nil
+	}
+	v, ok := p.Globals.Get(rt.Name())
+	if !ok {
+		return nil
+	}
+	td, ok := v.(*runtime.TypeDef)
+	if !ok || td.HostNew == nil {
+		return nil
+	}
+	if ht := td.HostType(); ht == rt || (ht.Kind() == reflect.Pointer && ht.Elem() == rt) {
+		return td
+	}
+	return nil
 }
 
 type linkEntry struct {

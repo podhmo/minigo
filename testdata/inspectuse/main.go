@@ -2052,6 +2052,36 @@ func ASTResolveRecipe() string {
 	return "ok"
 }
 
+func firstOf[T goast.Node](xs []T) T { return xs[0] }
+
+func zeroOf[T any](xs []T) bool { var z T; return any(z) == nil }
+
+// ASTHostTwin: host slices inspect.AST reaches carry their element's
+// identity out of go/ast too — a generic in this package infers T from
+// host []*ast.Field as go/ast's own *Field (constraint goast.Node
+// holds), and x.([]*goast.Field) matches a host slice, nil or not.
+func ASTHostTwin() string {
+	fd := inspect.AST(inspect.Symbol(inspect.Current(), "astInspectSubject")).(*goast.FuncDecl)
+	if p := firstOf(fd.Type.Params.List); p.Names[0].Name != "xs" {
+		return "bad first param: " + p.Names[0].Name
+	}
+	if zeroOf(fd.Type.Params.List) {
+		return "zero *Field boxed into any must not be nil"
+	}
+	var x any = fd.Type.Params.List
+	if _, ok := x.([]*goast.Field); !ok {
+		return "host []*ast.Field does not assert to []*goast.Field"
+	}
+	if _, ok := x.([]*goast.Ident); ok {
+		return "host []*ast.Field asserts to []*goast.Ident"
+	}
+	var names any = fd.Type.Results.List[0].Names // unnamed result: nil
+	if _, ok := names.([]*goast.Ident); !ok {
+		return "nil host []*ast.Ident does not assert to []*goast.Ident"
+	}
+	return "ok"
+}
+
 // ASTBoundTrap: a bound (host) symbol carries no AST node.
 func ASTBoundTrap() string {
 	inspect.AST(inspect.Symbol(inspect.PackageOf("strings"), "Builder"))

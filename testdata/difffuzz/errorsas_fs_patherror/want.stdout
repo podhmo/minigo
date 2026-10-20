@@ -1,0 +1,3 @@
+true true
+open does-not-exist.txt
+true true
