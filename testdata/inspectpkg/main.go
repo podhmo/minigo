@@ -578,3 +578,22 @@ func LocalDecls2() {
 	var w local
 	_ = w
 }
+
+// max shadows the predeclared max within this package.
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// BuiltinNames spells predeclared funcs and constants in its body; they
+// report the :builtin: SymbolID, except max, which the package shadows.
+func BuiltinNames() int {
+	s := make([]int, 0)
+	s = append(s, len("ab"), cap(s))
+	var e error = nil
+	const c = iota
+	_, _ = e, true
+	return max(len(s), c)
+}

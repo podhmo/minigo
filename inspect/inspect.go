@@ -1517,6 +1517,18 @@ var predeclared = map[string]bool{
 	"any": true, "comparable": true,
 }
 
+// predeclaredValues are the universe-scope funcs, consts and nil — names
+// a body spells as values, never declared by the package unless it
+// shadows them.
+var predeclaredValues = map[string]bool{
+	"append": true, "cap": true, "clear": true, "close": true,
+	"complex": true, "copy": true, "delete": true, "imag": true,
+	"len": true, "make": true, "max": true, "min": true, "new": true,
+	"panic": true, "print": true, "println": true, "real": true,
+	"recover": true,
+	"true":    true, "false": true, "iota": true, "nil": true,
+}
+
 // SymbolID is the method form of [SymbolID]: ok is false where SymbolID
 // reports nil.
 func (te *TypeExpr) SymbolID() (runtime.SymbolID, bool) {
@@ -1539,11 +1551,17 @@ func (te *TypeExpr) SymbolID() (runtime.SymbolID, bool) {
 			return runtime.SymbolID{PackagePath: TypeParamPackagePath, Name: e.Name}, true
 		}
 		if te.pkg != nil && te.pkg.Index != nil {
-			if _, ok := te.pkg.Index.Types[e.Name]; ok {
+			ix := te.pkg.Index
+			_, isType := ix.Types[e.Name]
+			_, isFunc := ix.Funcs[e.Name]
+			_, isVar := ix.Vars[e.Name]
+			_, isConst := ix.Consts[e.Name]
+			if isType || isFunc || isVar || isConst {
+				// a package member shadows a same-named builtin.
 				return runtime.SymbolID{PackagePath: te.pkg.Path, Name: e.Name}, true
 			}
 		}
-		if predeclared[e.Name] {
+		if predeclared[e.Name] || predeclaredValues[e.Name] {
 			return runtime.SymbolID{PackagePath: BuiltinPackagePath, Name: e.Name}, true
 		}
 		if te.pkg != nil {
