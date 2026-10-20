@@ -348,6 +348,14 @@ func OwnerChain() string {
 	if inspect.PathOf(subj.User{}) != inspect.Path(subj) {
 		return "bad inst owner"
 	}
+	// no top-level decl: a func literal and a function-local type
+	if d := inspect.SymbolOf(func() {}); d != nil {
+		return "SymbolOf(func literal) = " + d.Name + ", want nil"
+	}
+	type local struct{}
+	if d := inspect.SymbolOf(local{}); d != nil {
+		return "SymbolOf(local type) = " + d.Name + ", want nil"
+	}
 	// an intrinsic bound under two paths keeps its first owner
 	if inspect.PathOf(inspect.PackageOf) != "minigo.dev/inspect" {
 		return "bad alias owner: " + inspect.PathOf(inspect.PackageOf)

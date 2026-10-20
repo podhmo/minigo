@@ -230,6 +230,9 @@ func (e *Engine) installInspect() {
 			if err != nil {
 				return nil, err
 			}
+			if d == nil {
+				return runtime.NIL, nil
+			}
 			return &runtime.GoValue{V: d}, nil
 		}),
 		// ---- index layer ----
