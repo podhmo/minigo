@@ -4841,6 +4841,7 @@ func asWriterVM(vc runtime.VMCaller, v any) (io.Writer, error) {
 	if dv, ok := runtime.Deref(orig); ok {
 		v = dv
 	}
+	v = hostBoxOf(v)
 	if g, ok := v.(*runtime.GoValue); ok {
 		v = g.V
 	}
@@ -4853,6 +4854,20 @@ func asWriterVM(vc runtime.VMCaller, v any) (io.Writer, error) {
 		}
 	}
 	return nil, fmt.Errorf("not an io.Writer: %T", v)
+}
+
+// hostBoxOf unwraps a host struct value (`var sb strings.Builder`,
+// `&strings.Builder{}`), which rides as Named{HostNew typedef, GoValue},
+// to its GoValue box, so io helpers hand the real host value to the host
+// call instead of adapting it through the script-callback proxy — the
+// proxy converts every chunk to a script []byte and back.
+func hostBoxOf(v any) any {
+	if n, ok := v.(*runtime.Named); ok && n.Typ != nil && n.Typ.HostNew != nil {
+		if g, ok := n.V.(*runtime.GoValue); ok {
+			return g
+		}
+	}
+	return v
 }
 
 // asReaderVM is asReader plus script-defined readers: when the VM is
@@ -4878,6 +4893,7 @@ func (h *hostHelpers) asReaderVM(vc runtime.VMCaller, v any) (io.Reader, error) 
 	if dv, ok := runtime.Deref(orig); ok {
 		v = dv
 	}
+	v = hostBoxOf(v)
 	if g, ok := v.(*runtime.GoValue); ok {
 		v = g.V
 	}
