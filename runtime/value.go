@@ -727,6 +727,13 @@ func Copy(v Value) Value {
 				return Tag(x.Typ, cp)
 			}
 		}
+		// an immutable scalar payload needs no new box: a Named is never
+		// mutated in place, so the copy can share x (make/copy/append
+		// copy every element of a []byte through here).
+		switch x.V.(type) {
+		case int64, float64, bool, string, complex128:
+			return x
+		}
 		// assignment copies the underlying value but keeps the declared tag
 		return Tag(x.Typ, Copy(x.V))
 	}

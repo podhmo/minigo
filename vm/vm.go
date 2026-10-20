@@ -10817,17 +10817,31 @@ func (v *VM) convertSlice(td *runtime.TypeDef, x runtime.Value) (runtime.Value, 
 		switch v.elemFamily(et) {
 		case 'b':
 			el := make([]runtime.Value, 0, len(s))
+			// each distinct byte coerces once: the coerced value is an
+			// immutable tagged scalar, so equal bytes can share it.
+			var tab [256]runtime.Value
 			for _, b := range []byte(s) {
-				// elements coerce through the declared element type —
-				// []byte("x") carries byte-tagged elements like the
-				// []byte{...} literal does.
-				el = append(el, v.coerce(v.topFrame(), int64(b), et))
+				if tab[b] == nil {
+					// elements coerce through the declared element type —
+					// []byte("x") carries byte-tagged elements like the
+					// []byte{...} literal does.
+					tab[b] = v.coerce(v.topFrame(), int64(b), et)
+				}
+				el = append(el, tab[b])
 			}
 			return &runtime.Slice{Elems: el, Typ: td}, nil
 		case 'r':
 			el := make([]runtime.Value, 0, len(s))
+			var ascii [utf8.RuneSelf]runtime.Value // shared like the byte table
 			for _, r := range s {
-				el = append(el, v.coerce(v.topFrame(), int64(r), et))
+				if r >= utf8.RuneSelf {
+					el = append(el, v.coerce(v.topFrame(), int64(r), et))
+					continue
+				}
+				if ascii[r] == nil {
+					ascii[r] = v.coerce(v.topFrame(), int64(r), et)
+				}
+				el = append(el, ascii[r])
 			}
 			return &runtime.Slice{Elems: el, Typ: td}, nil
 		}
