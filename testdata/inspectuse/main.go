@@ -2010,35 +2010,78 @@ func BodyScope() string {
 
 // BodyLocalDecls: names declared by a DeclStmt inside the body (a local
 // type, var or const) are local too — SymbolID reports nil and Resolve
-// returns nil instead of trapping "no decl local" (#920).
+// returns nil instead of trapping "no decl local" (#920). The package
+// type User still resolves, and SameType tells local types apart by
+// name and enclosing func instead of matching their empty shape.
 func BodyLocalDecls() string {
 	p := inspect.DirOf("./testdata/inspectpkg")
-	var tes []*inspect.TypeExpr
+	// varTypes maps each `var name T` in fn's body to its T.
+	varTypes := func(fn string) map[string]*inspect.TypeExpr {
+		out := map[string]*inspect.TypeExpr{}
+		var walk func(n *inspect.Node)
+		walk = func(n *inspect.Node) {
+			if n.Kind == "ValueSpec" {
+				var name string
+				for _, c := range inspect.Nodes(n) {
+					switch c.Role {
+					case "Names":
+						name = inspect.Expr(c).Text
+					case "Type":
+						out[name] = inspect.Expr(c)
+					}
+				}
+			}
+			for _, c := range inspect.Nodes(n) {
+				walk(c)
+			}
+		}
+		walk(inspect.Body(inspect.Symbol(p, fn)))
+		return out
+	}
+	vt := varTypes("LocalDecls")
+	if len(vt) != 4 {
+		return fmt.Sprint("want 4 var types, got ", len(vt))
+	}
+	locals := []*inspect.TypeExpr{vt["x"], vt["z"]}
+	// the bare local value names x and k are local as well.
 	var walk func(n *inspect.Node)
 	walk = func(n *inspect.Node) {
 		for _, c := range inspect.Nodes(n) {
-			if n.Kind == "ValueSpec" && c.Role == "Type" {
-				tes = append(tes, inspect.Expr(c))
-			}
 			if c.Kind == "Ident" {
 				if te := inspect.Expr(c); te.Text == "x" || te.Text == "k" {
-					tes = append(tes, te)
+					locals = append(locals, te)
 				}
 			}
 			walk(c)
 		}
 	}
 	walk(inspect.Body(inspect.Symbol(p, "LocalDecls")))
-	if len(tes) < 3 {
-		return fmt.Sprint("want local, x and k exprs, got ", len(tes))
+	if len(locals) < 4 {
+		return fmt.Sprint("want local, other, x and k exprs, got ", len(locals))
 	}
-	for _, te := range tes {
+	for _, te := range locals {
 		if sid := inspect.SymbolID(te); sid != nil {
 			return te.Text + " resolved to " + sid.PackagePath + "." + sid.Name
 		}
 		if d := inspect.Resolve(te); d != nil {
 			return te.Text + " resolved to decl " + d.Name
 		}
+	}
+	// control: a package type spelled in the same body still resolves.
+	if d := inspect.Resolve(vt["u"]); d == nil || d.Name != "User" {
+		return "package type User unresolved in body"
+	}
+	if !inspect.SameType(vt["x"], vt["y"]) {
+		return "x and y (both local) differ"
+	}
+	if inspect.SameType(vt["x"], vt["z"]) {
+		return "local and other are the same type"
+	}
+	if inspect.SameType(vt["x"], vt["u"]) {
+		return "local and User are the same type"
+	}
+	if inspect.SameType(vt["x"], varTypes("LocalDecls2")["w"]) {
+		return "locals of different funcs are the same type"
 	}
 	return "ok"
 }

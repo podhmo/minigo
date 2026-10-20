@@ -310,7 +310,8 @@ func UsedSymbols(f *File) []runtime.SymbolID { panic("minigo intrinsic") }
 // SameType reports whether a and b spell the same type. Names compare by
 // the declaration they resolve to, so an alias and its target differ;
 // composites compare kind, components, array length and channel
-// direction.
+// direction. A function-local name, which has no [SymbolID], matches
+// only the same name under the same [Body].
 func SameType(a, b *TypeExpr) bool { panic("minigo intrinsic") }
 
 // Initializer returns the value expression of a var or const declaration:

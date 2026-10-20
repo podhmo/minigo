@@ -1611,6 +1611,18 @@ func (a *TypeExpr) SameType(b *TypeExpr, res Resolver) bool {
 	if a.Kind != b.Kind {
 		return false
 	}
+	switch ea := a.expr.(type) {
+	case *ast.Ident:
+		// a name with no SymbolID is bound inside the enclosing func
+		// (a local type): the same spelling under the same Body root
+		// is the same type, anything else is unknown and reported as
+		// different rather than matched by its empty shape.
+		eb, ok := b.expr.(*ast.Ident)
+		return ok && ea.Name == eb.Name && a.locals != nil &&
+			reflect.ValueOf(a.locals).Pointer() == reflect.ValueOf(b.locals).Pointer()
+	case *ast.SelectorExpr:
+		return false // a member of a local value, not a resolvable type
+	}
 	if !a.sameShapeExtra(b, res) {
 		return false
 	}
