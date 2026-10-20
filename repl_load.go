@@ -644,6 +644,9 @@ func (r *REPL) importRefs(sf *syntax.File, dir string) (scope map[string]*runtim
 			ref.Load = func(path string) (*runtime.Package, error) {
 				return r.engine.loadPathFrom(context.Background(), dir, path)
 			}
+			ref.LocateName = func(path string) (string, error) {
+				return r.engine.packageNameFrom(context.Background(), dir, path)
+			}
 		}
 		refs = append(refs, ref)
 		if imp.Alias != "_" && imp.Alias != "." {

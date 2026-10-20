@@ -1535,19 +1535,18 @@ func (te *TypeExpr) SymbolID() (runtime.SymbolID, bool) {
 			// a package, not a declaration in one.
 			return runtime.SymbolID{}, false
 		}
-		if te.pkg != nil && te.pkg.Index != nil {
-			ix := te.pkg.Index
-			_, isType := ix.Types[e.Name]
-			_, isFunc := ix.Funcs[e.Name]
-			_, isVar := ix.Vars[e.Name]
-			_, isConst := ix.Consts[e.Name]
-			if isType || isFunc || isVar || isConst {
-				// a package member shadows a same-named builtin.
-				return runtime.SymbolID{PackagePath: te.pkg.Path, Name: e.Name}, true
-			}
+		if pkgDeclares(te.pkg, e.Name) {
+			// a package member shadows a same-named builtin.
+			return runtime.SymbolID{PackagePath: te.pkg.Path, Name: e.Name}, true
 		}
 		if syntax.IsPredeclaredType(e.Name) || syntax.IsPredeclaredValue(e.Name) {
 			return runtime.SymbolID{PackagePath: BuiltinPackagePath, Name: e.Name}, true
+		}
+		if _, ok := importByPackageName(te.pkg, te.file, e.Name); ok {
+			// an import whose package clause differs from its path tail
+			// (the yaml of gopkg.in/yaml.v3) — checked last, as it may
+			// have to locate the imported package.
+			return runtime.SymbolID{}, false
 		}
 		if te.pkg != nil {
 			return runtime.SymbolID{PackagePath: te.pkg.Path, Name: e.Name}, true
@@ -1561,19 +1560,64 @@ func (te *TypeExpr) SymbolID() (runtime.SymbolID, bool) {
 		if imp, ok := te.importOf(x.Name); ok {
 			return runtime.SymbolID{PackagePath: imp.Path, Name: e.Sel.Name}, true
 		}
+		if pkgDeclares(te.pkg, x.Name) {
+			return runtime.SymbolID{}, false
+		}
+		if imp, ok := importByPackageName(te.pkg, te.file, x.Name); ok {
+			return runtime.SymbolID{PackagePath: imp.Path, Name: e.Sel.Name}, true
+		}
 		return runtime.SymbolID{}, false
 	}
 	return runtime.SymbolID{}, false
 }
 
-// importOf returns the import of te's file that binds name; dot and
-// blank imports bind none.
+// importOf returns the import of te's file whose local name (alias or
+// path tail, see [syntax.Import.LocalName]) is name; dot and blank
+// imports bind none. It never locates a package: an import whose
+// package clause differs from its path tail is [importByPackageName]'s.
 func (te *TypeExpr) importOf(name string) (*syntax.Import, bool) {
 	if te.file == nil {
 		return nil, false
 	}
 	for _, imp := range te.file.Imports {
 		if imp.Alias != "." && imp.Alias != "_" && imp.LocalName() == name {
+			return imp, true
+		}
+	}
+	return nil, false
+}
+
+// pkgDeclares reports whether pkg's index declares name at package level.
+func pkgDeclares(pkg *runtime.Package, name string) bool {
+	if pkg == nil || pkg.Index == nil {
+		return false
+	}
+	ix := pkg.Index
+	_, isType := ix.Types[name]
+	_, isFunc := ix.Funcs[name]
+	_, isVar := ix.Vars[name]
+	_, isConst := ix.Consts[name]
+	return isType || isFunc || isVar || isConst
+}
+
+// importByPackageName returns the unaliased import of file sf (in pkg)
+// whose imported package declares name in its package clause while its
+// path tail says otherwise: gopkg.in/yaml.v3 binds yaml,
+// github.com/x/go-bar binds bar. Each candidate's name is located once
+// and cached on its [runtime.ImportRef] — only the package clause is
+// read, the package is not built. Callers try [TypeExpr.importOf] and
+// every cheaper reading of name first. Without import refs (a file view
+// built outside an engine) nothing matches.
+func importByPackageName(pkg *runtime.Package, sf *syntax.File, name string) (*syntax.Import, bool) {
+	if pkg == nil || sf == nil {
+		return nil, false
+	}
+	refs := pkg.Imports[sf]
+	for i, imp := range sf.Imports {
+		if imp.Alias != "" || imp.LocalName() == name || i >= len(refs) || refs[i].Path != imp.Path {
+			continue
+		}
+		if refs[i].PackageName() == name {
 			return imp, true
 		}
 	}
@@ -1815,7 +1859,17 @@ func UsedSymbolsOf(f *File) []runtime.SymbolID {
 		if !ok || locals.At(x.Name, x.Pos()) {
 			return true
 		}
-		if path, ok := local[x.Name]; ok {
+		path, ok := local[x.Name]
+		if !ok && !pkgDeclares(f.pkg, x.Name) && !syntax.IsPredeclaredValue(x.Name) && !syntax.IsPredeclaredType(x.Name) {
+			// an import whose package clause differs from its path tail
+			// (gopkg.in/yaml.v3 binds yaml); remember the answer, hit or
+			// miss, so each name locates at most once per call.
+			if imp, hit := importByPackageName(f.pkg, f.sf, x.Name); hit {
+				path = imp.Path
+			}
+			local[x.Name] = path // "" remembers a miss
+		}
+		if path != "" {
 			sid := runtime.SymbolID{PackagePath: path, Name: se.Sel.Name}
 			if !seen[sid] {
 				seen[sid] = true

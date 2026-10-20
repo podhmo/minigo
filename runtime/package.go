@@ -105,9 +105,36 @@ type ImportRef struct {
 	// Load materializes the package to Indexed state (injected by loader).
 	Load func(path string) (*Package, error)
 
+	// LocateName reports the name in the imported package's package
+	// clause without parsing or indexing the package (injected by
+	// loader). nil leaves [ImportRef.PackageName] to the path-tail guess.
+	LocateName func(path string) (string, error)
+
 	once sync.Once
 	pkg  *Package
 	err  error
+
+	nameOnce sync.Once
+	name     string
+}
+
+// PackageName returns the name the imported package declares in its
+// package clause — the name an unaliased import binds, which may differ
+// from the path's last element (gopkg.in/yaml.v3 declares yaml). It asks
+// LocateName once and caches the answer; it never materializes the
+// package. When the package cannot be located it falls back to the
+// path-tail guess of [syntax.Import.LocalName]. The alias is ignored.
+func (r *ImportRef) PackageName() string {
+	r.nameOnce.Do(func() {
+		if r.LocateName != nil {
+			if n, err := r.LocateName(r.Path); err == nil && n != "" {
+				r.name = n
+				return
+			}
+		}
+		r.name = (&syntax.Import{Path: r.Path}).LocalName()
+	})
+	return r.name
 }
 
 // Materialize loads the imported package up to [Indexed] (parsed and
