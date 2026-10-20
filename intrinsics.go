@@ -4150,7 +4150,7 @@ func scriptVal(v any) runtime.Value {
 		// elements compare like a []byte{...} literal's.
 		el := make([]runtime.Value, len(x))
 		for i, b := range x {
-			el[i] = runtime.Tag(runtime.BasicTypedef("byte"), int64(b))
+			el[i] = runtime.ByteValue(b)
 		}
 		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("byte")}
 	case []string:
@@ -4442,9 +4442,8 @@ func borrowBytes(v runtime.Value) ([]byte, func()) {
 	case *runtime.Slice:
 		bs := byteSlice(x)
 		return bs, func() {
-			td := runtime.BasicTypedef("byte")
 			for i := range bs {
-				x.Elems[i] = runtime.Tag(td, int64(bs[i]))
+				x.Elems[i] = runtime.ByteValue(bs[i])
 			}
 		}
 	case *runtime.GoValue:
@@ -4460,7 +4459,7 @@ func borrowBytes(v runtime.Value) ([]byte, func()) {
 func unsafeBytes(str string) *runtime.Slice {
 	el := make([]runtime.Value, len(str))
 	for i := 0; i < len(str); i++ {
-		el[i] = runtime.Tag(runtime.BasicTypedef("byte"), int64(str[i]))
+		el[i] = runtime.ByteValue(str[i])
 	}
 	return &runtime.Slice{Elems: el, Typ: &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: ast.NewIdent("byte")}}}
 }
@@ -6194,7 +6193,7 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 			}
 			el := make([]runtime.Value, len(b))
 			for i, by := range b {
-				el[i] = runtime.Tag(runtime.BasicTypedef("byte"), int64(by))
+				el[i] = runtime.ByteValue(by)
 			}
 			return &runtime.Slice{Elems: el, Typ: td}
 		}
