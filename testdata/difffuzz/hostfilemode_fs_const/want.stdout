@@ -5,6 +5,7 @@ true
 fs.FileMode
 d--------- d---------
 d--------- d---------
+drwxrwxrwx ---------- drwxrwxrwx ----------
 true true true
 3 1
 . d--------- true true

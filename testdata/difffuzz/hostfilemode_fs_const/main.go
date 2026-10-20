@@ -43,6 +43,8 @@ func main() {
 	t := fi.Mode().Type()
 	fmt.Println(t, t.String())
 	fmt.Printf("%s %v\n", t, t)
+	// arithmetic with a source constant keeps the host type and its String
+	fmt.Println(t|fs.ModePerm, t&^fs.ModeDir, (t | fs.ModePerm).String(), t^fs.ModeDir)
 	fmt.Println(t == os.ModeDir, fi.Mode().Perm() == fi.Mode()&os.ModePerm, any(t) == any(os.ModeDir))
 	km := map[fs.FileMode]int{os.ModeDir: 1}
 	km[t]++

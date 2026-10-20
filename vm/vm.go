@@ -3547,6 +3547,11 @@ func twinOperands(a, b runtime.Value) (runtime.Value, runtime.Value) {
 	return a, b
 }
 
+func isGoValue(x runtime.Value) bool {
+	_, ok := x.(*runtime.GoValue)
+	return ok
+}
+
 // unboxTwinScalar is the payload of x when x is a boxed host named basic
 // whose type td declares in source (runtime.HostNamedIs); x otherwise.
 func unboxTwinScalar(x runtime.Value, td *runtime.TypeDef) runtime.Value {
@@ -8624,7 +8629,9 @@ func (v *VM) ifaceEql(f *frame, a, b runtime.Value) bool {
 	// any(A) vs any(B) differ for look-alike declared arrays (the lax
 	// eqlValue paths relax across typedefs for static =='s
 	// assignability rules).
-	a, b = twinOperands(a, b)
+	if isGoValue(a) || isGoValue(b) {
+		a, b = twinOperands(a, b)
+	}
 	atd := v.typeOfValue(a)
 	if !sameTypeDef(atd, v.typeOfValue(b)) {
 		return false
@@ -8785,7 +8792,11 @@ func (v *VM) binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.V
 	// declared complex type is checked too.
 	var tag *runtime.TypeDef
 	var aTd, bTd *runtime.TypeDef
-	a, b = twinOperands(a, b)
+	if op >= bytecode.BinEql && op <= bytecode.BinEqlIface && (isGoValue(a) || isGoValue(b)) {
+		// comparisons only: an arithmetic result keeps the host value's
+		// own type, whose host String prints it (Go sees one type)
+		a, b = twinOperands(a, b)
+	}
 	if n, ok := a.(*runtime.Named); ok {
 		tag = n.Typ
 		aTd = n.Typ
