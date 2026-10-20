@@ -2008,6 +2008,14 @@ func BodyScope() string {
 	return "ok"
 }
 
+// walkNodes calls visit on every node below n, in pre-order.
+func walkNodes(n *inspect.Node, visit func(c *inspect.Node)) {
+	for _, c := range inspect.Nodes(n) {
+		visit(c)
+		walkNodes(c, visit)
+	}
+}
+
 // BodyLocalDecls: names declared by a DeclStmt inside the body (a local
 // type, var or const) are local too — SymbolID reports nil and Resolve
 // returns nil instead of trapping "no decl local" (#920). The package
@@ -2018,24 +2026,20 @@ func BodyLocalDecls() string {
 	// varTypes maps each `var name T` in fn's body to its T.
 	varTypes := func(fn string) map[string]*inspect.TypeExpr {
 		out := map[string]*inspect.TypeExpr{}
-		var walk func(n *inspect.Node)
-		walk = func(n *inspect.Node) {
-			if n.Kind == "ValueSpec" {
-				var name string
-				for _, c := range inspect.Nodes(n) {
-					switch c.Role {
-					case "Names":
-						name = inspect.Expr(c).Text
-					case "Type":
-						out[name] = inspect.Expr(c)
-					}
+		walkNodes(inspect.Body(inspect.Symbol(p, fn)), func(n *inspect.Node) {
+			if n.Kind != "ValueSpec" {
+				return
+			}
+			var name string
+			for _, c := range inspect.Nodes(n) {
+				switch c.Role {
+				case "Names":
+					name = inspect.Expr(c).Text
+				case "Type":
+					out[name] = inspect.Expr(c)
 				}
 			}
-			for _, c := range inspect.Nodes(n) {
-				walk(c)
-			}
-		}
-		walk(inspect.Body(inspect.Symbol(p, fn)))
+		})
 		return out
 	}
 	vt := varTypes("LocalDecls")
@@ -2044,18 +2048,13 @@ func BodyLocalDecls() string {
 	}
 	locals := []*inspect.TypeExpr{vt["x"], vt["z"]}
 	// the bare local value names x and k are local as well.
-	var walk func(n *inspect.Node)
-	walk = func(n *inspect.Node) {
-		for _, c := range inspect.Nodes(n) {
-			if c.Kind == "Ident" {
-				if te := inspect.Expr(c); te.Text == "x" || te.Text == "k" {
-					locals = append(locals, te)
-				}
+	walkNodes(inspect.Body(inspect.Symbol(p, "LocalDecls")), func(c *inspect.Node) {
+		if c.Kind == "Ident" {
+			if te := inspect.Expr(c); te.Text == "x" || te.Text == "k" {
+				locals = append(locals, te)
 			}
-			walk(c)
 		}
-	}
-	walk(inspect.Body(inspect.Symbol(p, "LocalDecls")))
+	})
 	if len(locals) < 4 {
 		return fmt.Sprint("want local, other, x and k exprs, got ", len(locals))
 	}
