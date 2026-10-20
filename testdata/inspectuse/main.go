@@ -1810,6 +1810,30 @@ func ImplementersStructTrap() string {
 	return "swallowed"
 }
 
+// ImplBound lists inspect.Implementers of the testdata/implbound
+// interface name, comma-joined in declaration order. The interfaces
+// there embed host-bound ones, whose requirement must never read as
+// empty.
+func ImplBound(name string) string {
+	p := inspect.DirOf("./testdata/implbound")
+	return implNames(inspect.Implementers(p, inspect.Symbol(p, name)))
+}
+
+// ImplBoundHost is ImplBound for a host-bound interface queried
+// directly, such as fmt.Stringer.
+func ImplBoundHost(path, name string) string {
+	p := inspect.DirOf("./testdata/implbound")
+	return implNames(inspect.Implementers(p, inspect.Symbol(inspect.PackageOf(path), name)))
+}
+
+func implNames(ds []*inspect.Decl) string {
+	var names []string
+	for _, d := range ds {
+		names = append(names, d.Name)
+	}
+	return strings.Join(names, ",")
+}
+
 // DeclTypeFuncTrap: DeclType is a value-spec view — funcs trap.
 func DeclTypeFuncTrap() string {
 	p := inspect.DirOf("./testdata/inspectpkg")

@@ -89,6 +89,7 @@ type Decl struct {
 	file  *syntax.File
 	hsig  *Sig // synthesized host signature (BuiltinFunc.Target)
 	htype reflect.Type
+	htd   *runtime.TypeDef // the binding behind a host type member, if any
 }
 
 // NewDecl returns the [Decl] view of d, a declaration indexed in pkg.
@@ -146,6 +147,38 @@ func NewDecl(pkg *runtime.Package, d *index.Decl) *Decl {
 // signature or Go type is unknown; [SignatureOf] then reports an error.
 func NewHostDecl(pkg *runtime.Package, name string, sig *Sig, target reflect.Type) *Decl {
 	return &Decl{Package: pkg, Kind: "host", Name: name, hsig: sig, htype: target}
+}
+
+// NewHostTypeDecl is [NewHostDecl] for a type member of a host-bound
+// package, keeping the binding td so interface walks can read the
+// requirement it carries (see [ImplementersOf]).
+func NewHostTypeDecl(pkg *runtime.Package, name string, td *runtime.TypeDef) *Decl {
+	d := NewHostDecl(pkg, name, nil, reflect.TypeOf(td))
+	d.htd = td
+	return d
+}
+
+// hostIface reports what a host decl contributes as an interface: the
+// requirement AST its binding carries (fmt.Stringer, error), or
+// known=false when the binding names an interface but only its method
+// names — io.Reader's Read signature lives nowhere minigo can read it.
+// isIface is false for a host member that is not an interface type.
+func hostIface(d *Decl) (it *ast.InterfaceType, known, isIface bool) {
+	td := d.htd
+	if td == nil || td.Kind != runtime.KindInterface {
+		return nil, false, false
+	}
+	it, ok := td.Anon.(*ast.InterfaceType)
+	return it, ok, true
+}
+
+// errUnknownHostIface reports a requirement minigo cannot read: a
+// host-bound interface whose binding carries no method specs.
+func errUnknownHostIface(owner, host *Decl) error {
+	if owner == host {
+		return fmt.Errorf("inspect.Implementers: host-bound %s.%s has no readable method set", host.Package.Path, host.Name)
+	}
+	return fmt.Errorf("inspect.Implementers: %s embeds host-bound %s.%s, whose method set is unknown", owner.Name, host.Package.Path, host.Name)
 }
 
 // File is one source file of a package.
@@ -587,7 +620,9 @@ func MethodSetOf(s *Decl, res Resolver) ([]*Method, error) {
 	// the target walks with a nil via (the alias IS the type).
 	if ts, ok := s.decl.Spec.(*ast.TypeSpec); ok && ts.Assign.IsValid() {
 		if ed := chaseType(NewTypeExpr(ts.Type, s.file, s.Package).withTypeParams(typeParamNames(ts.TypeParams)), visited, res); ed != nil {
-			if ntd, ok := ed.Package.Index.Types[ed.Name]; ok {
+			if ed.decl == nil {
+				queue = append(queue, embedDecl{nil, ed, nil, false, 0})
+			} else if ntd, ok := ed.Package.Index.Types[ed.Name]; ok {
 				queue = append(queue, embedDecl{ntd, ed, nil, false, 0})
 			}
 		}
@@ -595,6 +630,14 @@ func MethodSetOf(s *Decl, res Resolver) ([]*Method, error) {
 	for len(queue) > 0 {
 		cur := queue[0]
 		queue = queue[1:]
+		if cur.owner.decl == nil {
+			// a host-bound member: only an interface whose binding
+			// carries its requirement AST has members to read here.
+			if it, known, _ := hostIface(cur.owner); known {
+				promoteIfaceSpecs(it, cur.owner, cur.depth, res, record, visited, &out)
+			}
+			continue
+		}
 		if ts, ok := cur.owner.decl.Spec.(*ast.TypeSpec); ok {
 			if it, ok := ts.Type.(*ast.InterfaceType); ok {
 				// embedded interfaces promote their method specs — all
@@ -638,6 +681,10 @@ func MethodSetOf(s *Decl, res Resolver) ([]*Method, error) {
 			if ed == nil {
 				continue
 			}
+			if ed.decl == nil {
+				queue = append(queue, embedDecl{nil, ed, ed, cur.ptr || byPtr, cur.depth + 1})
+				continue
+			}
 			if ntd, ok := ed.Package.Index.Types[ed.Name]; ok {
 				// pointer-ness accumulates: a pointer embed anywhere on
 				// the path down keeps deeper pointer receivers visible.
@@ -668,7 +715,9 @@ func declKey(d *Decl) string { return d.Package.Path + "." + d.Name }
 // chaseType follows a type spelling to the decl that owns it: a named
 // reference resolves directly, instantiation bases (Pair[int]) and
 // further named layers (defined types and aliases) keep chasing.
-// Returns nil when the name leaves the index — builtins, foreign
+// A member of a host-bound package ends the chase at its Kind "host"
+// decl (no syntax behind it — callers check decl == nil). Returns nil
+// when the name leaves the index otherwise — builtins, unresolvable
 // packages, type parameters, or a cycle through the visited set.
 func chaseType(sub *TypeExpr, visited map[runtime.SymbolID]bool, res Resolver) *Decl {
 	for i := 0; i < 8; i++ {
@@ -692,7 +741,13 @@ func chaseType(sub *TypeExpr, visited map[runtime.SymbolID]bool, res Resolver) *
 		}
 		visited[sid] = true
 		d, err := res(sid)
-		if err != nil || d == nil || d.decl == nil {
+		if err != nil || d == nil {
+			return nil
+		}
+		if d.decl == nil {
+			if d.Kind == "host" {
+				return d
+			}
 			return nil
 		}
 		ts, ok := d.decl.Spec.(*ast.TypeSpec)
@@ -750,9 +805,23 @@ func ImplementersOf(p *runtime.Package, iface *Decl, res Resolver) ([]*Decl, err
 		}
 		return nil, fmt.Errorf("inspect.Implementers: %s has no index", name)
 	}
-	it, err := ifaceOf("Implementers", iface)
-	if err != nil {
-		return nil, err
+	var it *ast.InterfaceType
+	if iface != nil && iface.decl == nil && iface.htd != nil {
+		// a host-bound interface queried directly: its binding's
+		// requirement AST, when it carries one, is the requirement.
+		hit, known, isIface := hostIface(iface)
+		switch {
+		case !isIface:
+			return nil, fmt.Errorf("inspect.Implementers: %s is not an interface type", iface.Name)
+		case !known:
+			return nil, errUnknownHostIface(iface, iface)
+		}
+		it = hit
+	} else {
+		var err error
+		if it, err = ifaceOf("Implementers", iface); err != nil {
+			return nil, err
+		}
 	}
 	if it == nil {
 		return nil, fmt.Errorf("inspect.Implementers: %s is not an interface type", iface.Name)
@@ -784,7 +853,11 @@ func ImplementersOf(p *runtime.Package, iface *Decl, res Resolver) ([]*Decl, err
 // string spec. Elements that make the interface a constraint — ~T
 // terms, A|B unions, embedded non-interface decls, other builtins —
 // report an error instead of silently dropping the requirement.
-// Unresolvable package paths contribute nothing.
+// An embedded host-bound interface contributes the specs its binding
+// carries (fmt.Stringer's String() string); one whose binding names
+// only method names (io.Reader) is an unknown requirement and reports
+// an error rather than counting as empty. Unresolvable package paths
+// contribute nothing.
 func requiredSpecs(it *ast.InterfaceType, owner *Decl, res Resolver, visited map[runtime.SymbolID]bool, specs *[]ifaceSpec) error {
 	return walkIfaceSpecs(it, owner, res, visited, func(name string, ft *ast.FuncType, src *Decl) {
 		*specs = append(*specs, ifaceSpec{name: name, ft: ft, file: src.file, pkg: src.Package, tps: declTypeParams(src)})
@@ -803,13 +876,19 @@ func requiredSpecs(it *ast.InterfaceType, owner *Decl, res Resolver, visited map
 // skipped but recorded: the first such error returns after the walk
 // completes, and the caller decides whether it is fatal — implementer
 // checking must not silently drop requirements, method-set promotion
-// can ignore it since constraint terms promote nothing.
+// can ignore it since constraint terms promote nothing. An embedded
+// host-bound interface walks the requirement AST its binding carries;
+// one without it is likewise recorded as an error (unknown, not
+// empty), and a host-bound non-interface is a constraint term.
 func walkIfaceSpecs(it *ast.InterfaceType, owner *Decl, res Resolver, visited map[runtime.SymbolID]bool, yield func(name string, ft *ast.FuncType, owner *Decl)) error {
 	var firstErr error
-	constraint := func() {
+	fail := func(err error) {
 		if firstErr == nil {
-			firstErr = fmt.Errorf("inspect.Implementers: %s is a constraint interface — nothing can implement it", owner.Name)
+			firstErr = err
 		}
+	}
+	constraint := func() {
+		fail(fmt.Errorf("inspect.Implementers: %s is a constraint interface — nothing can implement it", owner.Name))
 	}
 	var walk func(it *ast.InterfaceType, owner *Decl)
 	walk = func(it *ast.InterfaceType, owner *Decl) {
@@ -851,6 +930,18 @@ func walkIfaceSpecs(it *ast.InterfaceType, owner *Decl, res Resolver, visited ma
 			ed := chaseType(fd.Type, visited, res)
 			if ed == nil {
 				continue // type params and foreign packages resolve to nothing
+			}
+			if ed.decl == nil { // a host-bound member: no syntax behind it
+				hit, known, isIface := hostIface(ed)
+				switch {
+				case !isIface && ed.htd != nil:
+					constraint() // a host-bound non-interface type is a type-set term
+				case !known:
+					fail(errUnknownHostIface(owner, ed))
+				default:
+					walk(hit, ed)
+				}
+				continue
 			}
 			ts, ok := ed.decl.Spec.(*ast.TypeSpec)
 			if !ok {
