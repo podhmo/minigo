@@ -2008,6 +2008,41 @@ func BodyScope() string {
 	return "ok"
 }
 
+// BodyLocalDecls: names declared by a DeclStmt inside the body (a local
+// type, var or const) are local too — SymbolID reports nil and Resolve
+// returns nil instead of trapping "no decl local" (#920).
+func BodyLocalDecls() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	var tes []*inspect.TypeExpr
+	var walk func(n *inspect.Node)
+	walk = func(n *inspect.Node) {
+		for _, c := range inspect.Nodes(n) {
+			if n.Kind == "ValueSpec" && c.Role == "Type" {
+				tes = append(tes, inspect.Expr(c))
+			}
+			if c.Kind == "Ident" {
+				if te := inspect.Expr(c); te.Text == "x" || te.Text == "k" {
+					tes = append(tes, te)
+				}
+			}
+			walk(c)
+		}
+	}
+	walk(inspect.Body(inspect.Symbol(p, "LocalDecls")))
+	if len(tes) < 3 {
+		return fmt.Sprint("want local, x and k exprs, got ", len(tes))
+	}
+	for _, te := range tes {
+		if sid := inspect.SymbolID(te); sid != nil {
+			return te.Text + " resolved to " + sid.PackagePath + "." + sid.Name
+		}
+		if d := inspect.Resolve(te); d != nil {
+			return te.Text + " resolved to decl " + d.Name
+		}
+	}
+	return "ok"
+}
+
 // TypeParamMark: identifiers bound as a decl's type parameters report a
 // marked SymbolID — the :typeparam: pseudo path — instead of being
 // attributed to the declaring package, so a walk can stop instead of

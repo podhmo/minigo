@@ -13,6 +13,7 @@ migration; history above that point lives in the source repository.
 
 ## To Be Implemented
 
+- [x] **`inspect.Expr`: function-local type/var/const names get a package `SymbolID`** ([#920](https://github.com/podhmo/minigo/issues/920)): `localNames` only collected `:=`/range/param bindings, so `type local struct{...}` or `var x T` inside a body was attributed to the package and `inspect.Resolve` trapped `no decl local in <pkg>`. Local `DeclStmt` names now count as "possibly local", so `SymbolID` is nil and `Resolve` returns nil.
 - [ ] **Correct extract-schema plugin flag help**: the `-plugin` help string still advertises `Overrides()`, but hooks are selected by the exported `func(*extschema.Config)` signature. Align the CLI help with the corrected Go docs; see [the Go doc review](docs/godoc-review.md).
 
 ### `minigo`: Stack-VM Interpreter (redesign of go-scan's tree-walking `minigo`) ([docs/sketch/plan-minigo-vm.md](./docs/sketch/plan-minigo-vm.md))

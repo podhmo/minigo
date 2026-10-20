@@ -1969,7 +1969,8 @@ func BodyOf(s *Decl) (*Node, error) {
 
 // localNames collects every identifier a func decl binds in its own
 // scopes — receiver, params, named results, := names, range and
-// type-switch bindings, and funclit params — anywhere in the body.
+// type-switch bindings, local var/const/type declarations, and funclit
+// params — anywhere in the body.
 // The model is deliberately shallow: a name from a sibling or outer
 // scope counts too, so membership means "possibly local", never the
 // other way. Expr-fed SymbolID refuses package attribution on those
@@ -2012,6 +2013,21 @@ func localNames(fn *ast.FuncDecl) map[string]bool {
 				}
 				if id, ok := x.Value.(*ast.Ident); ok {
 					names[id.Name] = true
+				}
+			}
+		case *ast.DeclStmt:
+			gd, ok := x.Decl.(*ast.GenDecl)
+			if !ok {
+				break
+			}
+			for _, spec := range gd.Specs {
+				switch sp := spec.(type) {
+				case *ast.ValueSpec:
+					for _, id := range sp.Names {
+						names[id.Name] = true
+					}
+				case *ast.TypeSpec:
+					names[sp.Name.Name] = true
 				}
 			}
 		case *ast.FuncLit:
