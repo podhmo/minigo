@@ -2079,6 +2079,13 @@ func ASTHostTwin() string {
 	if _, ok := names.([]*goast.Ident); !ok {
 		return "nil host []*ast.Ident does not assert to []*goast.Ident"
 	}
+	fs := []*goast.Field(fd.Type.Params.List)
+	if len(fs) != 2 || fs[1].Names[0].Name != "m" {
+		return "bad []*goast.Field conversion"
+	}
+	if ns := []*goast.Ident(fd.Type.Results.List[0].Names); ns != nil {
+		return "nil host []*ast.Ident converted to non-nil"
+	}
 	return "ok"
 }
 

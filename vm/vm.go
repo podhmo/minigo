@@ -10093,7 +10093,7 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 					break
 				}
 			}
-			if tn.Typ != nil && !v.convShapeEq(tn.Typ, td) {
+			if tn.Typ != nil && !v.convShapeEq(tn.Typ, td) && !v.hostElemTwin(v.topFrame(), tn.Typ, td) {
 				return nil, fmt.Errorf("cannot convert %s to %s", tdName(tn.Typ), tdName(td))
 			}
 			return &runtime.TypedNil{Typ: td}, nil
@@ -10767,7 +10767,9 @@ func (v *VM) convertSlice(td *runtime.TypeDef, x runtime.Value) (runtime.Value, 
 			}
 			return v.copyArray(v.topFrame(), &runtime.Slice{Elems: el, Typ: td}, td), nil
 		}
-		if s.Typ != nil && !v.convShapeEq(s.Typ, td) {
+		if s.Typ != nil && !v.convShapeEq(s.Typ, td) && !v.hostElemTwin(v.topFrame(), s.Typ, td) {
+			// a host-unboxed slice spells its element bare
+			// (`[]*Field`); its kept element identity decides.
 			return nil, fmt.Errorf("cannot convert %s to %s", tdName(s.Typ), tdName(td))
 		}
 		// Go shares the backing array on a conversion: re-tag, no copy.
