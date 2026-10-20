@@ -273,8 +273,9 @@ func (e *Engine) newVM() *vm.VM {
 // hostTwin implements the VM's HostTwin hook: the typedef this engine
 // holds for the named host type rt. A source-built package (go/ast,
 // io/fs) answers with its own declaration of the same name; a bound one
-// with its bound typedef when that boxes rt. Packages the engine has not
-// loaded answer nil — loading one here would make a type check import.
+// with its bound typedef when that boxes rt. Packages nothing has
+// imported yet answer nil: a value of a type from a package no script
+// imports needs no twin, and a type check must not load one.
 func (e *Engine) hostTwin(rt reflect.Type) *runtime.TypeDef {
 	if rt == nil || rt.Name() == "" || rt.PkgPath() == "" {
 		return nil
@@ -285,6 +286,9 @@ func (e *Engine) hostTwin(rt reflect.Type) *runtime.TypeDef {
 	if p == nil {
 		return nil
 	}
+	// published before it is parsed (import cycles): another goroutine
+	// may still be filling Index and the scopes
+	p.WaitIndexed()
 	if p.Index != nil {
 		td, err := e.resolveTypeRef(&runtime.TypeDef{Pkg: p}, ast.NewIdent(rt.Name()))
 		if err != nil || !runtime.HostNamedIs(rt, td) {
