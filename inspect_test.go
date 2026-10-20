@@ -63,6 +63,7 @@ func TestInspect(t *testing.T) {
 		"TypeOfNamed",
 		"BoundTypeSym",
 		"ResolveBound", // a bound member resolves to its host pseudo-decl (#921)
+		"LookupResolveMiss",
 		"HostMethodSym",
 		"SourceOfStruct",
 		"EnumWalk",

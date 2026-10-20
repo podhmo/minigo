@@ -306,8 +306,15 @@ func SymbolID(te *TypeExpr) *runtime.SymbolID { panic("minigo intrinsic") }
 // A member of a host-bound package resolves to the Kind "host" decl
 // [Symbol] reports for it. It returns nil when [SymbolID] is nil or names
 // a builtin or type parameter, and traps when the declaration cannot be
-// found.
+// found; [LookupResolve] returns nil instead.
 func Resolve(te *TypeExpr) *Decl { panic("minigo intrinsic") }
+
+// LookupResolve is [Resolve] returning nil when the declaration cannot be
+// found: the import path resolves to no directory, or the package has no
+// such name. A located package that fails to load still traps. Since a
+// trap cannot be recovered, a walk that must survive unresolvable names
+// calls this instead of Resolve.
+func LookupResolve(te *TypeExpr) *Decl { panic("minigo intrinsic") }
 
 // UsedSymbols lists the imported package members f refers to as pkg.Name,
 // each once, in order of first use. A select through a local that shadows

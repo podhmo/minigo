@@ -665,19 +665,10 @@ func (e *Engine) installInspect() {
 			return &runtime.GoValue{V: te.Origin(e.resolverForInspect())}, nil
 		}),
 		"Resolve": bf("Resolve", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			te, err := typeExprOf(args[0])
-			if err != nil {
-				return nil, err
-			}
-			sid, ok := te.SymbolID()
-			if !ok || xinspect.NoDeclPath(sid.PackagePath) {
-				return runtime.NIL, nil
-			}
-			d, err := e.resolverForInspect()(sid)
-			if err != nil {
-				return nil, err
-			}
-			return &runtime.GoValue{V: d}, nil
+			return e.resolveDecl(args, false)
+		}),
+		"LookupResolve": bf("LookupResolve", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			return e.resolveDecl(args, true)
 		}),
 		"SameType": bf("SameType", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
@@ -887,8 +878,39 @@ func (e *Engine) resolverForInspect() xinspect.Resolver {
 				return v.(*runtime.GoValue).V.(*xinspect.Decl), nil
 			}
 		}
-		return nil, fmt.Errorf("inspect: no decl %s in %s", sid.Name, sid.PackagePath)
+		return nil, &noDeclError{sid}
 	}
+}
+
+// resolveDecl is the body Resolve and LookupResolve share; lookup turns
+// a name that resolves to nothing — a package path that locates no
+// directory, or a package without the name — into nil.
+func (e *Engine) resolveDecl(args []runtime.Value, lookup bool) (runtime.Value, error) {
+	te, err := typeExprOf(args[0])
+	if err != nil {
+		return nil, err
+	}
+	sid, ok := te.SymbolID()
+	if !ok || xinspect.NoDeclPath(sid.PackagePath) {
+		return runtime.NIL, nil
+	}
+	d, err := e.resolverForInspect()(sid)
+	if err != nil {
+		var miss *noDeclError
+		if lookup && (errors.As(err, &miss) || lookupMiss(err)) {
+			return runtime.NIL, nil
+		}
+		return nil, err
+	}
+	return &runtime.GoValue{V: d}, nil
+}
+
+// noDeclError is the resolver's miss: the package loaded but declares no
+// such name. LookupResolve answers nil for it; Resolve traps.
+type noDeclError struct{ sid runtime.SymbolID }
+
+func (e *noDeclError) Error() string {
+	return fmt.Sprintf("inspect: no decl %s in %s", e.sid.Name, e.sid.PackagePath)
 }
 
 // lookupDeclIn finds a top-level decl by name in an indexed package.
