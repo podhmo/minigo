@@ -2168,6 +2168,7 @@ func TestInitOnMemberAccess(t *testing.T) {
 	for fn, want := range map[string]runtime.Value{
 		"ViaFunc":     int64(5), // func init() populated Table before Lookup ran
 		"ViaIndirect": int64(5), // same through an intermediate package
+		"ViaHook":     int64(7), // an init() writing into a not-yet-initialized import
 	} {
 		got := run(t, e, "./testdata/inituser", fn)
 		if got != want {

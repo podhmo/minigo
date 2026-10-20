@@ -5595,6 +5595,15 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 		if err != nil {
 			f.trap("import %s: %s", b.Path, err)
 		}
+		if p.Index != nil && !p.LazyInit && p.State() < runtime.Initializing {
+			// Go initializes an import before the importer's code runs:
+			// initialize p now, or its own initializer would later reset
+			// what this write stored — go/scanner's init sets
+			// scannerhooks.StringEnd, which go/parser (Go 1.26) reads.
+			if err := p.EnsureReadyRun(v.runInit); err != nil {
+				f.trap("%s", err)
+			}
+		}
 		if existing, ok := p.Globals.Get(name); ok {
 			if c, isCell := existing.(*runtime.Cell); isCell {
 				c.Elem = val
