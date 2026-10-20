@@ -2046,7 +2046,7 @@ type Node struct {
 	Kind   string    // go/ast node name: "BlockStmt", "CallExpr", "Ident", ...
 	Text   string    // printer spelling of the node
 	Detail string    // the operator or literal kind where the node has one: "+", "STRING", ":="
-	Role   string    // the field name it fills in its parent ("List", "Fun", "Cond"); "" on the Body root
+	Role   string    // the go/ast field name it fills in its parent, verbatim ("List", "Fun", "Cond"); "" on the Body root
 	Pos    *Position // position of the node
 
 	node    ast.Node

@@ -232,7 +232,10 @@ func Body(s *Decl) *Node { panic("minigo intrinsic") }
 // Nodes returns n's child nodes in source order, each with Role set to the
 // go/ast field it fills: a CallExpr's children are Fun then Args, an
 // IfStmt's are those of Init, Cond, Body and Else that are present, and a
-// BlockStmt's are its List.
+// BlockStmt's are its List. Role is the go/ast struct field name verbatim
+// (Fun, Args, X, Sel, Lhs, Rhs, Names, Values, ...), so the child Node
+// for the field `call.Fun` of `call := AST(n).(*ast.CallExpr)` is the
+// one with Role "Fun" — see [AST].
 func Nodes(n *Node) []*Node { panic("minigo intrinsic") }
 
 // Expr returns an expression [Node] as a [TypeExpr], so the names it
