@@ -3703,6 +3703,7 @@ func goValueOf(rv reflect.Value) runtime.Value {
 		case reflect.Slice:
 			if rv.Type().Name() == "" {
 				td := anonSliceTypX(anonExprOf(rv.Type().Elem()))
+				td.Elem = hostPkgElemTypedef(rv.Type().Elem())
 				if rv.IsNil() {
 					return &runtime.TypedNil{Typ: td}
 				}
@@ -11255,10 +11256,15 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 			// a host box never dereferences through Deref — compare the
 			// boxed native type instead. Host typedefs box a pointer
 			// zero (sync.Mutex -> *sync.Mutex), so *T matches when the
-			// native type equals the typedef's own box; other *T fall
-			// back to comparing the printed type spelling.
+			// native type equals the typedef's own box; a *T whose T is
+			// declared in source (go/ast interpreted from source) matches
+			// the host pointer to the same package path and name; other
+			// *T fall back to comparing the printed type spelling.
 			if et.HostNew != nil {
 				return reflect.TypeOf(gv.V) == et.HostType()
+			}
+			if rt := reflect.TypeOf(gv.V); rt.Kind() == reflect.Pointer && hostNamedIs(rt.Elem(), et) {
+				return true
 			}
 			return reflect.TypeOf(gv.V).String() == tdName(td)
 		}
@@ -11341,10 +11347,25 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 				return rt.String() == runtime.TypGoSpelling(ft, td)
 			}
 		}
+		if hostNamedIs(rt, td) {
+			return true
+		}
 		return rt.String() == tdName(td)
 	default:
 		return false
 	}
+}
+
+// hostNamedIs reports whether the host type rt is the type a source
+// typedef declares: same package path and name. The printed spelling
+// cannot decide it — inside go/ast `*BlockStmt` spells "*BlockStmt",
+// and under `import goast "go/ast"` a script spells "*goast.BlockStmt",
+// while the host value prints "*ast.BlockStmt" either way.
+func hostNamedIs(rt reflect.Type, td *runtime.TypeDef) bool {
+	if td == nil || td.Pkg == nil || td.Pkg.Path == "" || td.Name == "" || len(td.Binds) > 0 {
+		return false
+	}
+	return rt.PkgPath() == td.Pkg.Path && rt.Name() == td.Name
 }
 
 // funcAssert implements x.(T) for a function value: an anonymous func
@@ -12066,6 +12087,35 @@ func sameSpelledTwin(tag, td *runtime.TypeDef) bool {
 	return tag != nil && tag.Spec == nil && td != nil && tdName(tag) == tdName(td)
 }
 
+// hostElemTwin reports whether tag is an unnamed host slice whose
+// element ([hostPkgElemTypedef]) is the very type td's element declares
+// in source: host []ast.Stmt against go/ast's []Stmt spelled through a
+// type parameter, which the spelling compare cannot see.
+func (v *VM) hostElemTwin(f *frame, tag, td *runtime.TypeDef) bool {
+	if tag == nil || tag.Kind != runtime.KindSlice || tag.Name != "" || tag.Elem == nil {
+		return false
+	}
+	return v.hostTwinIs(f, tag.Elem, v.elemTypedef(f, td))
+}
+
+// hostTwinIs reports whether host, a [hostPkgElemTypedef] typedef, and
+// src, a source typedef, denote the same type: the same named type, or
+// pointers to it.
+func (v *VM) hostTwinIs(f *frame, host, src *runtime.TypeDef) bool {
+	if host == nil || src == nil {
+		return false
+	}
+	src = v.peelAlias(src)
+	if host.Kind == runtime.KindPointer && host.HostNew == nil {
+		if src.Kind != runtime.KindPointer || src.Name != "" {
+			return false
+		}
+		return v.hostTwinIs(f, host.Elem, v.elemTypedef(f, src))
+	}
+	rt := hostNamedRT(host)
+	return rt != nil && hostNamedIs(rt, src)
+}
+
 // coerceConcrete applies td to a non-nil x under a non-interface target.
 // A Named value keeps its identity only for the identical declared type
 // (Go: named-to-named needs a conversion); GoValues pass unchecked at the
@@ -12197,7 +12247,9 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 			// Restricted to host-minted twin tags of container targets:
 			// a script-declared same-named type stays distinct.
 			(sameSpelledTwin(tn.Typ, td) && utd0 != nil &&
-				(utd0.Kind == runtime.KindSlice || utd0.Kind == runtime.KindMap || utd0.Kind == runtime.KindChan)) {
+				(utd0.Kind == runtime.KindSlice || utd0.Kind == runtime.KindMap || utd0.Kind == runtime.KindChan)) ||
+			// a host nil []*ast.Ident into go/ast's `[]N` with N=*Ident.
+			v.hostElemTwin(f, tn.Typ, td) {
 			return &runtime.TypedNil{Typ: td} // re-tag to the declared type
 		}
 		f.trap("cannot use nil %s as %s", tdName(tn.Typ), tdName(td))
@@ -12348,10 +12400,11 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 			// declared element zero instead of NIL.
 			x = stampContainerTyp(x, td)
 		} else if !sameTypeDef(ct, td) {
-			if sameSpelledTwin(ct, td) {
+			if sameSpelledTwin(ct, td) || v.hostElemTwin(f, ct, td) {
 				// a host-produced container tagged with the target
 				// type's twin — a host []fs.DirEntry feeding a
-				// source-interpreted io/fs's `[]DirEntry` slot —
+				// source-interpreted io/fs's `[]DirEntry` slot, or a
+				// host []ast.Stmt feeding go/ast's `[]N` with N=Stmt —
 				// re-tags to the declared type: its elements are
 				// already script values (GoValue boxes dispatching
 				// by reflection).
@@ -14360,6 +14413,7 @@ func (v *VM) unifyTypeDef(ctx *runtime.TypeDef, tset map[string]bool, binds map[
 				et = conc.Elem
 			}
 			if et != nil {
+				et = v.sourceTwinOf(ctx, et)
 				v.unifyTypeDef(ctx, tset, binds, p.Elt, et)
 			}
 		}
@@ -14520,6 +14574,12 @@ func (v *VM) argTypedef(x runtime.Value) *runtime.TypeDef {
 			// not *A (Go infers from the static type).
 			if st := v.elemTypedef(nil, xv.Typ); st != nil {
 				ev = st
+			} else if xv.Typ.Elem != nil {
+				// a host slice's element type spells a bare name the
+				// typedef cannot resolve, but the host boundary kept its
+				// identity — still the static type, not the first
+				// element's dynamic one.
+				ev = xv.Typ.Elem
 			}
 			return &runtime.TypeDef{
 				Kind: xv.Typ.Kind, Name: xv.Typ.Name, Pkg: xv.Typ.Pkg,
@@ -14598,30 +14658,7 @@ func (v *VM) hostTypedefOf(rt reflect.Type) *runtime.TypeDef {
 				return td
 			}
 		}
-		// mirror the source classifier's kind table (arrays lump with
-		// slices, `type P *T` is KindPointer): named composites are not
-		// structs.
-		var kind runtime.TypeKind
-		switch rt.Kind() {
-		case reflect.Interface:
-			kind = runtime.KindInterface
-		case reflect.Slice, reflect.Array:
-			kind = runtime.KindSlice
-		case reflect.Map:
-			kind = runtime.KindMap
-		case reflect.Chan:
-			kind = runtime.KindChan
-		case reflect.Func:
-			kind = runtime.KindFunc
-		case reflect.Pointer:
-			kind = runtime.KindPointer
-		case reflect.Struct:
-			kind = runtime.KindStruct
-		default:
-			// basic kinds, unsafe.Pointer
-			kind = runtime.KindNamedBasic
-		}
-		td := &runtime.TypeDef{Name: rt.String(), Kind: kind}
+		td := &runtime.TypeDef{Name: rt.String(), Kind: hostNamedKind(rt)}
 		switch rt.Kind() {
 		case reflect.Func:
 			// carry the declared signature, like the unnamed walk —
@@ -14654,6 +14691,88 @@ func (v *VM) hostTypedefOf(rt reflect.Type) *runtime.TypeDef {
 		}
 	}
 	return &runtime.TypeDef{Name: rt.String()}
+}
+
+// hostPkgElemTypedef is the element identity a host slice keeps when
+// its element is a type declared in a package, or a pointer to one: the
+// bare name anonExprOf spells (`[]Stmt`, `[]*Comment`) resolves nowhere,
+// so generic inference reads this typedef instead (see
+// [VM.sourceTwinOf]). Other elements return nil.
+func hostPkgElemTypedef(rt reflect.Type) *runtime.TypeDef {
+	if rt.Kind() == reflect.Pointer && rt.Name() == "" {
+		if et := hostPkgElemTypedef(rt.Elem()); et != nil {
+			return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: et}
+		}
+		return nil
+	}
+	if rt.Name() == "" || rt.PkgPath() == "" {
+		return nil
+	}
+	return &runtime.TypeDef{Name: rt.String(), Kind: hostNamedKind(rt), HostNew: func() any { return reflect.New(rt).Interface() }}
+}
+
+// hostNamedRT is the named host type behind a [hostPkgElemTypedef]
+// typedef (HostNew boxes a pointer to it), or nil for other typedefs.
+func hostNamedRT(td *runtime.TypeDef) reflect.Type {
+	if td == nil || td.HostNew == nil {
+		return nil
+	}
+	rt := td.HostType()
+	if rt.Kind() == reflect.Pointer {
+		rt = rt.Elem()
+	}
+	return rt
+}
+
+// sourceTwinOf maps a host element typedef from [hostPkgElemTypedef] to
+// the typedef ctx's package declares under the same path and name — a
+// host []ast.Stmt passed to the source-interpreted go/ast's
+// walkList[N Node](v, list []N) binds N to go/ast's own Stmt, as the
+// static type would in Go. Anything else is returned unchanged.
+func (v *VM) sourceTwinOf(ctx, td *runtime.TypeDef) *runtime.TypeDef {
+	if td == nil || ctx == nil || ctx.Pkg == nil || v.H.ResolveType == nil {
+		return td
+	}
+	if td.Kind == runtime.KindPointer && td.Name == "" && td.Anon == nil && td.Elem != nil {
+		// host *Comment -> the source package's own *Comment
+		if et := v.sourceTwinOf(ctx, td.Elem); et != td.Elem {
+			return &runtime.TypeDef{Kind: runtime.KindPointer, Anon: &ast.StarExpr{X: ast.NewIdent(et.Name)}, Pkg: ctx.Pkg, File: ctx.File}
+		}
+		return td
+	}
+	rt := hostNamedRT(td)
+	if rt == nil || rt.PkgPath() != ctx.Pkg.Path {
+		return td
+	}
+	twin, err := v.H.ResolveType(ctx, ast.NewIdent(rt.Name()))
+	if err != nil || twin == nil || !hostNamedIs(rt, twin) {
+		return td
+	}
+	return twin
+}
+
+// hostNamedKind classifies a named host type with the source
+// classifier's kind table (arrays lump with slices, `type P *T` is
+// KindPointer): named composites are not structs.
+func hostNamedKind(rt reflect.Type) runtime.TypeKind {
+	switch rt.Kind() {
+	case reflect.Interface:
+		return runtime.KindInterface
+	case reflect.Slice, reflect.Array:
+		return runtime.KindSlice
+	case reflect.Map:
+		return runtime.KindMap
+	case reflect.Chan:
+		return runtime.KindChan
+	case reflect.Func:
+		return runtime.KindFunc
+	case reflect.Pointer:
+		return runtime.KindPointer
+	case reflect.Struct:
+		return runtime.KindStruct
+	}
+	// basic kinds, unsafe.Pointer
+	return runtime.KindNamedBasic
 }
 
 // funcTypedefOf is the func-value typedef shared by argTypedef and

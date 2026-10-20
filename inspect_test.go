@@ -74,6 +74,7 @@ func TestInspect(t *testing.T) {
 		"PkgMetaView", // metadata via accessors; member shadow wins (#26)
 		"BuiltinPathConst",
 		"ASTWalk",
+		"ASTInspect", // go/ast walkers over host nodes (#939)
 		"BodyWalk",
 		"BodyNil",
 		"BodyScope",
