@@ -3,8 +3,6 @@ package main
 import (
 	"fmt"
 	goast "go/ast"
-	"go/parser"
-	"go/token"
 	"reflect"
 	"sort"
 	"strings"
@@ -1988,7 +1986,7 @@ func (v *callCounter) Visit(n goast.Node) goast.Visitor {
 }
 
 // ASTInspect: ast.Inspect and ast.Walk walk the host node inspect.AST
-// returns exactly like a tree the script parsed itself (#939). The
+// returns exactly like go/ast does under the go toolchain (#939). The
 // source-interpreted go/ast matches host *ast.X values in its own type
 // switch, where `case *BlockStmt:` spells no package, and infers
 // walkList[N Node] from host slice fields. The script side asserts
@@ -2006,19 +2004,10 @@ func ASTInspect() string {
 		return "zero of a host []ast.Stmt element is not nil"
 	}
 
-	f, err := parser.ParseFile(token.NewFileSet(), "./testdata/inspectuse/main.go", nil, parser.ParseComments)
-	if err != nil {
-		return "parse: " + err.Error()
-	}
-	var want string
-	for _, d := range f.Decls {
-		if x, ok := d.(*goast.FuncDecl); ok && x.Name.Name == "astInspectSubject" {
-			want = astKindCounts(x)
-		}
-	}
-	if want == "" || !strings.Contains(want, "*ast.BlockStmt=") {
-		return "bad oracle: " + want
-	}
+	// want is what go/ast reports for astInspectSubject under the go
+	// toolchain (doc comment included). The script's own go/parser is not
+	// the oracle: interpreting it is a separate concern.
+	want := "*ast.ArrayType=3 *ast.AssignStmt=11 *ast.BasicLit=13 *ast.BinaryExpr=7 *ast.BlockStmt=9 *ast.CallExpr=5 *ast.CaseClause=2 *ast.ChanType=1 *ast.CommClause=1 *ast.Comment=4 *ast.CommentGroup=1 *ast.CompositeLit=2 *ast.DeclStmt=1 *ast.Ellipsis=1 *ast.Field=7 *ast.FieldList=6 *ast.FuncDecl=1 *ast.FuncLit=1 *ast.FuncType=2 *ast.GenDecl=1 *ast.Ident=63 *ast.IfStmt=2 *ast.IncDecStmt=1 *ast.InterfaceType=1 *ast.KeyValueExpr=1 *ast.MapType=1 *ast.RangeStmt=2 *ast.ReturnStmt=3 *ast.SelectStmt=1 *ast.SelectorExpr=2 *ast.SendStmt=1 *ast.SliceExpr=1 *ast.StructType=1 *ast.SwitchStmt=1 *ast.TypeAssertExpr=1 *ast.UnaryExpr=2 *ast.ValueSpec=1 calls=4"
 	if got != want {
 		return "got " + got + "\nwant " + want
 	}
