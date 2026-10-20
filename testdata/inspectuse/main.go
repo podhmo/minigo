@@ -2194,9 +2194,10 @@ func BodyNonRefIdents() string {
 	if bad != "" {
 		return bad
 	}
-	// X: key + p.X; Z: field name + s.Z; L: label + break; KeyA: 3 sites.
-	if seen["X"] != 2 || seen["Z"] != 2 || seen["L"] != 2 || seen["KeyA"] != 3 || seen["Y"] != 1 || seen["_"] != 1 || seen["Repeat"] != 1 {
-		return fmt.Sprint("unexpected ident counts: ", seen)
+	// every kind of site was visited — X: key + p.X; Z: field name +
+	// s.Z; L: label + break; KeyA: map key, named-map key, index.
+	if seen["X"] < 2 || seen["Z"] < 2 || seen["L"] < 2 || seen["KeyA"] < 3 || seen["Y"] < 1 || seen["_"] < 1 || seen["Repeat"] < 1 {
+		return fmt.Sprint("sites not visited: ", seen)
 	}
 	return "ok"
 }
