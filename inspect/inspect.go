@@ -2172,41 +2172,208 @@ func refersByRole(n *Node) bool {
 		if _, ok := kv.node.(*ast.KeyValueExpr); !ok {
 			return true
 		}
-		cl, ok := kv.parent.node.(*ast.CompositeLit)
-		if !ok {
+		if _, ok := kv.parent.node.(*ast.CompositeLit); !ok {
 			return true
 		}
-		return litKeysRefer(cl.Type, n)
+		return litKeysRefer(kv.parent)
 	}
 	return true
 }
 
-// litKeysRefer reports whether a composite literal of type t takes
-// value keys (map or array/slice) rather than field names. A named type
-// is looked up in the package once; anything else — elided, local,
-// imported, generic — is unknown and reports false.
-func litKeysRefer(t ast.Expr, n *Node) bool {
-	switch x := t.(type) {
+// litKeysRefer reports whether the composite literal at cl takes value
+// keys (map or array/slice) rather than field names. The literal's type
+// is resolved through local and package type decls, aliases and generic
+// instantiations; an elided type comes from the enclosing literal's
+// element or key type. Anything unknown — an imported type, a type
+// parameter, a name the scope walk cannot pin down — reports false.
+func litKeysRefer(cl *Node) bool {
+	lt, ok := cl.litTypeOf()
+	if !ok {
+		return false
+	}
+	u, ok := cl.litUnderlying(lt)
+	if !ok {
+		return false
+	}
+	switch u.t.(type) {
 	case *ast.MapType, *ast.ArrayType:
 		return true
-	case *ast.Ident:
-		if n.locals[x.Name] || n.pkg == nil || n.pkg.Index == nil {
-			return false
-		}
-		td, ok := n.pkg.Index.Types[x.Name]
-		if !ok || td.Decl == nil {
-			return false
-		}
-		ts, ok := td.Decl.Spec.(*ast.TypeSpec)
-		if !ok {
-			return false
-		}
-		switch ts.Type.(type) {
-		case *ast.MapType, *ast.ArrayType:
-			return true
-		}
 	}
 	return false
+}
+
+// litType is a type expression together with the scope its names
+// resolve in: the literal's func body at pos (local), or the package
+// scope of a package-level spec, whose own type parameters are tparams.
+type litType struct {
+	t       ast.Expr
+	local   bool
+	pos     token.Pos
+	tparams map[string]bool
+}
+
+// litTypeOf returns the type of the composite literal at n. An elided
+// type (`{...}` inside `[]map[K]V{...}`, or a map key `{...}`) is the
+// enclosing literal's element or key type; an elided `&T` makes the
+// literal a T.
+func (n *Node) litTypeOf() (litType, bool) {
+	x, ok := n.node.(*ast.CompositeLit)
+	if !ok {
+		return litType{}, false
+	}
+	if x.Type != nil {
+		return litType{t: x.Type, local: true, pos: x.Pos()}, true
+	}
+	role, outer := n.Role, n.parent
+	if outer == nil {
+		return litType{}, false
+	}
+	if _, ok := outer.node.(*ast.KeyValueExpr); ok {
+		if role != "Key" && role != "Value" {
+			return litType{}, false
+		}
+		outer = outer.parent
+	} else if role != "Elts" {
+		return litType{}, false
+	}
+	if outer == nil {
+		return litType{}, false
+	}
+	ot, ok := outer.litTypeOf()
+	if !ok {
+		return litType{}, false
+	}
+	u, ok := outer.litUnderlying(ot)
+	if !ok {
+		return litType{}, false
+	}
+	switch t := u.t.(type) {
+	case *ast.MapType:
+		if role == "Key" {
+			u.t = t.Key
+		} else {
+			u.t = syntax.PeelLitType(t, 1)
+		}
+	case *ast.ArrayType:
+		if role == "Key" {
+			return litType{}, false
+		}
+		u.t = syntax.PeelLitType(t, 1)
+	default:
+		return litType{}, false
+	}
+	if st, ok := ast.Unparen(u.t).(*ast.StarExpr); ok {
+		u.t = st.X
+	}
+	return u, true
+}
+
+// litUnderlying resolves a named literal type to the type expression
+// its declaration spells, following local `type` decls in scope at the
+// literal, package-level decls, aliases and generic instantiations
+// (whose shape is the generic decl's). ok is false where the name
+// cannot be pinned down: an imported type, a type parameter, or a
+// local name with no `type` decl in scope. A predeclared or unknown
+// name comes back as itself.
+func (n *Node) litUnderlying(lt litType) (litType, bool) {
+	for fuel := 8; fuel > 0; fuel-- {
+		t := ast.Unparen(lt.t)
+		switch x := t.(type) {
+		case *ast.IndexExpr:
+			t = ast.Unparen(x.X)
+		case *ast.IndexListExpr:
+			t = ast.Unparen(x.X)
+		}
+		var id *ast.Ident
+		switch x := t.(type) {
+		case *ast.Ident:
+			id = x
+		case *ast.SelectorExpr:
+			return litType{}, false
+		default:
+			lt.t = t
+			return lt, true
+		}
+		if lt.tparams[id.Name] {
+			return litType{}, false
+		}
+		if lt.local {
+			if n.tparams[id.Name] {
+				return litType{}, false
+			}
+			if n.locals[id.Name] {
+				ts := n.localTypeSpec(id.Name, lt.pos)
+				if ts == nil {
+					return litType{}, false
+				}
+				lt = litType{t: ts.Type, local: true, pos: ts.Name.Pos()}
+				continue
+			}
+		}
+		ts := n.pkgTypeSpec(id.Name)
+		if ts == nil {
+			lt.t = id
+			return lt, true
+		}
+		lt = litType{t: ts.Type, tparams: typeParamNames(ts.TypeParams)}
+	}
+	return litType{}, false
+}
+
+// localTypeSpec finds the `type name` decl in scope at pos, walking the
+// statement lists of n's enclosing blocks innermost first.
+func (n *Node) localTypeSpec(name string, pos token.Pos) *ast.TypeSpec {
+	for a := n; a != nil; a = a.parent {
+		var list []ast.Stmt
+		switch s := a.node.(type) {
+		case *ast.BlockStmt:
+			list = s.List
+		case *ast.CaseClause:
+			list = s.Body
+		case *ast.CommClause:
+			list = s.Body
+		}
+		var found *ast.TypeSpec
+		for _, st := range list {
+			for {
+				ls, ok := st.(*ast.LabeledStmt)
+				if !ok {
+					break
+				}
+				st = ls.Stmt
+			}
+			ds, ok := st.(*ast.DeclStmt)
+			if !ok {
+				continue
+			}
+			gd, ok := ds.Decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.TYPE {
+				continue
+			}
+			for _, sp := range gd.Specs {
+				if ts, ok := sp.(*ast.TypeSpec); ok && ts.Name.Name == name && ts.Name.Pos() < pos {
+					found = ts
+				}
+			}
+		}
+		if found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+// pkgTypeSpec returns the package-level `type name` decl of n's package.
+func (n *Node) pkgTypeSpec(name string) *ast.TypeSpec {
+	if n.pkg == nil || n.pkg.Index == nil {
+		return nil
+	}
+	td, ok := n.pkg.Index.Types[name]
+	if !ok || td.Decl == nil {
+		return nil
+	}
+	ts, _ := td.Decl.Spec.(*ast.TypeSpec)
+	return ts
 }
 
 // ASTNode returns the underlying go/ast node.

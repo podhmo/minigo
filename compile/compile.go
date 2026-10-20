@@ -6214,7 +6214,7 @@ func (c *compiler) compileLit(x *ast.CompositeLit, baseType ast.Expr, depth int)
 			if lit, ok := kvel.Key.(*ast.CompositeLit); ok && lit.Type == nil {
 				// an elided key literal (map[K]V{{...}: v}) inherits
 				// the map's declared key type when it is syntactic.
-				if mt, ok := peelLitType(baseType, depth).(*ast.MapType); ok {
+				if mt, ok := syntax.PeelLitType(baseType, depth).(*ast.MapType); ok {
 					c.compileLit(lit, mt.Key, 0)
 				} else {
 					c.expr(kvel.Key)
@@ -6243,7 +6243,7 @@ func (c *compiler) compileLit(x *ast.CompositeLit, baseType ast.Expr, depth int)
 // whether the resulting type resolves to a map or array — where a key is
 // a real expression, not a field name.
 func (c *compiler) literalKeysAreExprs(baseType ast.Expr, depth int) bool {
-	return c.isKeyedLitShape(peelLitType(baseType, depth), 4)
+	return c.isKeyedLitShape(syntax.PeelLitType(baseType, depth), 4)
 }
 
 // isKeyedLitShape reports whether a type expression's shape makes
@@ -6257,30 +6257,6 @@ func (c *compiler) isKeyedLitShape(t ast.Expr, fuel int) bool {
 		return true
 	}
 	return false
-}
-
-// peelLitType peels a composite literal's declared type `depth` levels
-// (array elt / map value / pointer / ellipsis) — the element type a
-// nested literal's shape comes from.
-func peelLitType(t ast.Expr, depth int) ast.Expr {
-	for i := 0; t != nil && i < depth; i++ {
-		switch tt := t.(type) {
-		case *ast.ArrayType:
-			t = tt.Elt
-		case *ast.MapType:
-			t = tt.Value
-		case *ast.StarExpr:
-			t = tt.X
-		case *ast.Ellipsis:
-			t = tt.Elt
-		case *ast.ParenExpr:
-			t = tt.X
-			i-- // parens don't count as a peel level
-		default:
-			t = nil
-		}
-	}
-	return t
 }
 
 // emitLenFolds emits the in-scope evaluation of every non-literal array

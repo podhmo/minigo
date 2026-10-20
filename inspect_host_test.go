@@ -666,3 +666,57 @@ func TestTypeParamSymbolID(t *testing.T) {
 		t.Errorf("Inst.P base SymbolID = %v, %v", sid, ok)
 	}
 }
+
+// TestLitKeySymbolIDs: a composite-literal key reports a SymbolID only
+// when the literal's type resolves to a map or array — through generic
+// instantiations, elided inner literals, local and package-level named
+// types and aliases. Struct keys (fields named KeyA, like the const)
+// never do: under-resolution is allowed, misattribution is not.
+func TestLitKeySymbolIDs(t *testing.T) {
+	e := newEngine(t)
+	p, err := e.Package(context.Background(), "./testdata/litkeys")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg := p.Path
+	want := map[string][]string{
+		"GenericMap":        {"KeyA=" + pkg + ".KeyA"},
+		"ElidedInner":       {"KeyA=" + pkg + ".KeyA", "KeyA=" + pkg + ".KeyA", "KeyB=" + pkg + ".KeyB", "KeyA=" + pkg + ".KeyA", "KeyA=" + pkg + ".KeyA", "Idx=" + pkg + ".Idx"},
+		"LocalNamed":        {"KeyA=" + pkg + ".KeyA", "KeyA=" + pkg + ".KeyA", "KeyA=" + pkg + ".KeyA"},
+		"Aliases":           {"KeyA=" + pkg + ".KeyA", "KeyA=" + pkg + ".KeyA"},
+		"Imported":          {"KeyA=nil"},
+		"GenericElem":       {"KeyA=" + pkg + ".KeyA", "KeyB=nil"},
+		"Structs":           {"KeyA=nil", "KeyA=nil", "KeyA=nil", "KeyB=" + pkg + ".KeyB", "KeyA=nil", "KeyA=nil", "KeyA=nil", "KeyA=nil"},
+		"LocalShadow":       {"KeyA=nil"},
+		"SiblingScopes":     {"KeyA=" + pkg + ".KeyA", "KeyA=nil"},
+		"LocalElidedStruct": {"KeyA=nil"},
+	}
+	got := map[string][]string{}
+	for name := range want {
+		d := p.Index.Funcs[name]
+		if d == nil {
+			t.Fatalf("no func %s", name)
+		}
+		root, err := xinspect.BodyOf(xinspect.NewDecl(p, d))
+		if err != nil {
+			t.Fatalf("BodyOf(%s): %v", name, err)
+		}
+		var walk func(n *xinspect.Node)
+		walk = func(n *xinspect.Node) {
+			for _, c := range xinspect.NodesOf(n) {
+				if n.Kind == "KeyValueExpr" && c.Kind == "Ident" && c.Role == "Key" {
+					s := "nil"
+					if sid, ok := xinspect.ExprOf(c).SymbolID(); ok {
+						s = sid.PackagePath + "." + sid.Name
+					}
+					got[name] = append(got[name], c.Text+"="+s)
+				}
+				walk(c)
+			}
+		}
+		walk(root)
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("key SymbolIDs mismatch (-want +got):\n%s", diff)
+	}
+}
