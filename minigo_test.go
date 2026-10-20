@@ -2337,7 +2337,13 @@ func TestLangGate(t *testing.T) {
 		{"./testdata/langgate/n125", "new(42) requires go1.26 or later (-lang was set to go1.25; check go.mod)"},
 		{"./testdata/langgate/r121", "cannot range over 10 (untyped int constant): requires go1.22 or later"},
 		{"./testdata/langgate/b117", "built-in min requires go1.21 or later"},
-		{"./testdata/langgate/ms117", "built-in min requires go1.21 or later"}, // min := min(1, 2)
+		// a local is in scope only where the spec says: the RHS of :=
+		// and var, a range expression, and a signature still see the
+		// predeclared name
+		{"./testdata/langgate/ms117", "built-in min requires go1.21 or later"},    // min := min(1, 2)
+		{"./testdata/langgate/vm120", "built-in min requires go1.21 or later"},    // var min = min(1, 2)
+		{"./testdata/langgate/rm120", "built-in min requires go1.21 or later"},    // for min := range []int{min(1, 2)}
+		{"./testdata/langgate/pa117", "predeclared any requires go1.18 or later"}, // func F(any int) any
 		{"./testdata/langgate/i117", "type instantiation requires go1.18 or later"},
 		// versioned names and instantiation inside builtin-call arguments
 		// and conversions, plus instantiation through a selector
