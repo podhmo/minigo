@@ -42,7 +42,7 @@
 | `LookupSymbol(pkg, name)` | 同上 | miss で nil。「任意の plugin 入口関数を探す」はこれ |
 | `Methods(x)` | `x` が type decl ならその型のメソッド、pkg/file ならそこに宣言されたメソッド全部 | `Decls` が拾わない部分 |
 | `MethodSet(typeDecl)` | `*T` 経由で使えるメソッド集合（promoted 含む、name ソート） | interface 実装の確認、`MarshalJSON` を持つかの判定など |
-| `Implementers(pkg, ifaceDecl)` | `pkg` 内で `iface` の要件を満たす型 decl | iface は interface 型でないと trap |
+| `Implementers(pkg, ifaceDecl)` | `pkg` 内で `iface` の要件を満たす型 decl | iface は interface 型でないと trap。`fmt.Stringer` のように要件の AST を持つ bound interface は埋め込み・直接指定ともに使える。`io.Reader` のようにメソッド名しか持たない bound interface を要件に含むと trap（空の要件扱いにはしない） |
 | `Kind(decl)` | `"func"/"method"/"var"/"const"/"type"/"host"` | 分岐の最初に使う |
 | `Doc(decl)` | doc コメント（末尾改行は除去済み） | `Field.Doc`/`File.Doc` も同じ契約 |
 | `Pos(decl)` | `*Position`（File/Line/Column の構造体） | host 擬似 decl は nil |

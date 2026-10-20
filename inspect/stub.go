@@ -127,6 +127,11 @@ func LookupSymbol(p *runtime.Package, name string) *Decl { panic("minigo intrins
 // iface must be an interface type declaration. It traps for a constraint
 // interface (one with ~T terms, unions or embedded non-interface types),
 // which no value type implements, and for any other declaration.
+//
+// A host-bound interface, embedded or passed as iface, requires what its
+// binding declares: fmt.Stringer requires String() string. One whose
+// binding names its methods without signatures, such as io.Reader, is an
+// unknown requirement and traps rather than matching every type.
 func Implementers(p *runtime.Package, iface *Decl) []*Decl { panic("minigo intrinsic") }
 
 // Files lists the source files of p; a host-bound package has none.

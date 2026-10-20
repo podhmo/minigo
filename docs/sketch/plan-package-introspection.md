@@ -790,6 +790,17 @@ needed none of it (the one exception, `Children` bases, also repaired
   constraint errors report after a complete walk, not at the first
   element — the lookup degrades quietly where the index can't see,
   loudly where the question is malformed.
+- **Host-bound embeds are read from the binding, never as empty** —
+  since #932 an embed like `fmt.Stringer` resolves to a Kind "host"
+  decl with no AST, which the walker used to skip, so
+  `interface{ fmt.Stringer }` listed every type. The host decl now
+  keeps its `runtime.TypeDef`: a binding that carries its requirement
+  AST (`fmt.Stringer`, `fmt.GoStringer`) is walked like a source
+  interface on both the requirement and the candidate side (a struct
+  embedding `fmt.Stringer` promotes `String`), and a bound interface
+  can be passed to `Implementers` directly. A binding that only names
+  its methods (`io.Reader`'s `MReqs`) is an unknown requirement and
+  traps; a bound non-interface embed is a constraint term.
 - Refactor verdicts — 要: the shared walker, error spec, ambiguity
   exclusion, alias collapse in matching, the bound constant, the
   flattener merge, the gen-sync package-name fix. 不要: anything

@@ -963,6 +963,9 @@ func (e *Engine) findSymbol(p *runtime.Package, name string) (runtime.Value, err
 		if bf, ok := v.(*runtime.BuiltinFunc); ok {
 			return &runtime.GoValue{V: e.hostDecl(p, name, bf)}, nil
 		}
+		if td, ok := v.(*runtime.TypeDef); ok {
+			return &runtime.GoValue{V: xinspect.NewHostTypeDecl(p, name, td)}, nil
+		}
 		return &runtime.GoValue{V: xinspect.NewHostDecl(p, name, nil, reflect.TypeOf(v))}, nil
 	}
 	return nil, nil
@@ -1087,6 +1090,8 @@ func (e *Engine) declsOf(v runtime.Value) (runtime.Value, error) {
 			gv, _ := p.Globals.Get(name)
 			if bf, ok := gv.(*runtime.BuiltinFunc); ok {
 				xs = append(xs, &runtime.GoValue{V: e.hostDecl(p, name, bf)})
+			} else if td, ok := gv.(*runtime.TypeDef); ok {
+				xs = append(xs, &runtime.GoValue{V: xinspect.NewHostTypeDecl(p, name, td)})
 			} else {
 				xs = append(xs, &runtime.GoValue{V: xinspect.NewHostDecl(p, name, nil, reflect.TypeOf(gv))})
 			}
