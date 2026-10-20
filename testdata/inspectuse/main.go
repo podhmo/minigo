@@ -395,11 +395,19 @@ func ImportsList() string {
 		return "missing used symbol"
 	}
 	// selects through a local var or a funclit param named strings are
-	// not import uses.
+	// not import uses; a shadow is scoped, so ScopedShadow's selects
+	// outside its funclit and block still count.
+	got := map[string]bool{}
 	for _, sid := range used {
-		if sid.PackagePath == "strings" && (sid.Name == "Fields" || sid.Name == "Cut") {
-			return "shadowed select counted: strings." + sid.Name
+		if sid.PackagePath == "strings" {
+			got[sid.Name] = true
 		}
+	}
+	if got["Fields"] || got["Cut"] {
+		return fmt.Sprint("shadowed select counted: ", got)
+	}
+	if !got["ToUpper"] || !got["HasPrefix"] {
+		return fmt.Sprint("real use outside a shadow dropped: ", got)
 	}
 	return "ok"
 }

@@ -631,3 +631,16 @@ func ShadowVar() int {
 var shadowInit = func(strings struct{ Cut int }) int { return strings.Cut }
 
 var _ = shadowInit
+
+// ScopedShadow shadows strings only inside a funclit and a block; the
+// selects outside them are real uses of the import.
+func ScopedShadow() bool {
+	up := strings.ToUpper("a")
+	g := func(strings struct{ Cut int }) int { return strings.Cut }
+	_ = g
+	{
+		var strings = struct{ Fields int }{}
+		_ = strings.Fields
+	}
+	return strings.HasPrefix(up, "A")
+}
