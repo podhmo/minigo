@@ -1598,7 +1598,9 @@ func (te *TypeExpr) CanonicalName() string {
 }
 
 // SameType is the method form of [SameType]; res resolves names in
-// array lengths.
+// array lengths. A name without a SymbolID matches only under the same
+// [BodyOf] root, so one reached from a bare [NewNode] root (which knows
+// no locals) does not even match itself.
 func (a *TypeExpr) SameType(b *TypeExpr, res Resolver) bool {
 	sa, oka := a.SymbolID()
 	sb, okb := b.SymbolID()
