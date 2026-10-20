@@ -745,6 +745,31 @@ func (e *Engine) loadPathMode(ctx context.Context, fromDir, path string, lenient
 	return e.buildPackage(meta, lenient)
 }
 
+// packageNameFrom reports the name in the package clause of path as
+// imported from fromDir, without building the package: a package already
+// built from source answers from its Name; anything else is located,
+// which reads only the files' headers. A bound package with no source to
+// locate is an error, so callers fall back to the path-tail guess.
+func (e *Engine) packageNameFrom(ctx context.Context, fromDir, path string) (string, error) {
+	if e.pkgModes[path] == ModeDeny {
+		return "", fmt.Errorf("minigo: import of %q denied by package policy", path)
+	}
+	e.mu.Lock()
+	p, ok := e.pkgs[path]
+	e.mu.Unlock()
+	if ok && p.Index != nil && p.Name != "" {
+		return p.Name, nil
+	}
+	if e.resolver == nil {
+		return "", fmt.Errorf("minigo: no resolver configured; cannot locate %q", path)
+	}
+	meta, err := e.resolver.Locate(ctx, fromDir, path)
+	if err != nil {
+		return "", fmt.Errorf("resolve %q: %w", path, err)
+	}
+	return meta.Name, nil
+}
+
 func (e *Engine) loadDir(ctx context.Context, dir string) (*runtime.Package, error) {
 	return e.loadDirMode(ctx, dir, false)
 }
@@ -966,6 +991,9 @@ func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File, lenient bo
 				Path:  imp.Path,
 				Alias: imp.Alias,
 				Load:  func(path string) (*runtime.Package, error) { return e.loadPathFrom(context.Background(), p.Dir, path) },
+				LocateName: func(path string) (string, error) {
+					return e.packageNameFrom(context.Background(), p.Dir, path)
+				},
 			}
 			p.Imports[sf] = append(p.Imports[sf], ref)
 			if imp.Alias != "_" && imp.Alias != "." {

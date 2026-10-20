@@ -720,3 +720,77 @@ func TestLitKeySymbolIDs(t *testing.T) {
 		t.Errorf("key SymbolIDs mismatch (-want +got):\n%s", diff)
 	}
 }
+
+// TestPkgClauseImportLazy: an unaliased import whose package clause
+// differs from its path tail (.../yaml.v3 declares yaml, .../go-bar
+// declares bar) is recognized by SymbolID and UsedSymbolsOf through the
+// located package clause alone — neither imported package is built.
+func TestPkgClauseImportLazy(t *testing.T) {
+	const (
+		yamlPath = "github.com/podhmo/minigo/testdata/pkgclause/yaml.v3"
+		barPath  = "github.com/podhmo/minigo/testdata/pkgclause/go-bar"
+	)
+	e := newEngine(t)
+	p, err := e.Package(context.Background(), "./testdata/pkgclause/user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sf := p.Files[0]
+	for _, ref := range p.Imports[sf] {
+		ref.Load = func(path string) (*runtime.Package, error) {
+			t.Errorf("import %s materialized", path)
+			return nil, fmt.Errorf("import %s: not allowed here", path)
+		}
+	}
+
+	type pair struct {
+		X   string // the bare import name: no SymbolID
+		Sel runtime.SymbolID
+	}
+	var got []pair
+	root, err := xinspect.BodyOf(xinspect.NewDecl(p, p.Index.Funcs["Use"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var walk func(n *xinspect.Node)
+	walk = func(n *xinspect.Node) {
+		if n.Kind == "SelectorExpr" {
+			sid, _ := xinspect.ExprOf(n).SymbolID()
+			x := xinspect.ExprOf(xinspect.NodesOf(n)[0])
+			xs := x.Text
+			if xsid, ok := x.SymbolID(); ok {
+				xs += " -> " + xsid.PackagePath + "." + xsid.Name
+			}
+			got = append(got, pair{X: xs, Sel: sid})
+		}
+		for _, c := range xinspect.NodesOf(n) {
+			walk(c)
+		}
+	}
+	walk(root)
+	want := []pair{
+		{X: "yaml", Sel: runtime.SymbolID{PackagePath: yamlPath, Name: "Marshal"}},
+		{X: "bar", Sel: runtime.SymbolID{PackagePath: barPath, Name: "Name"}},
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("Use selectors mismatch (-want +got):\n%s", diff)
+	}
+
+	doc := fieldTypes(t, lookupType(t, p, "Config"))["yaml.Node"]
+	if doc == nil {
+		t.Fatal("no yaml.Node field")
+	}
+	if sid, ok := doc.SymbolID(); !ok || sid != (runtime.SymbolID{PackagePath: yamlPath, Name: "Node"}) {
+		t.Errorf("Config.Doc SymbolID = %v, %v", sid, ok)
+	}
+
+	used := xinspect.UsedSymbolsOf(xinspect.NewFile(p, sf))
+	wantUsed := []runtime.SymbolID{
+		{PackagePath: yamlPath, Name: "Node"},
+		{PackagePath: yamlPath, Name: "Marshal"},
+		{PackagePath: barPath, Name: "Name"},
+	}
+	if diff := cmp.Diff(wantUsed, used); diff != "" {
+		t.Errorf("UsedSymbolsOf mismatch (-want +got):\n%s", diff)
+	}
+}

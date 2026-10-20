@@ -2195,6 +2195,66 @@ func BodyBuiltins() string {
 	return "ok"
 }
 
+// BodyPkgClauseImport: an unaliased import binds the name in the imported
+// package clause, not the path tail — the yaml of .../yaml.v3 and the bar
+// of .../go-bar are import names (no SymbolID, Resolve nil), their
+// selectors resolve into the imported packages, and UsedSymbols counts
+// them.
+func BodyPkgClauseImport() string {
+	const yamlPath = "github.com/podhmo/minigo/testdata/pkgclause/yaml.v3"
+	const barPath = "github.com/podhmo/minigo/testdata/pkgclause/go-bar"
+	p := inspect.DirOf("./testdata/pkgclause/user")
+	want := map[string]string{"yaml.Marshal": yamlPath, "bar.Name": barPath}
+	seen := 0
+	bad := ""
+	walkNodes(inspect.Body(inspect.Symbol(p, "Use")), func(c *inspect.Node) {
+		if c.Kind != "SelectorExpr" {
+			return
+		}
+		te := inspect.Expr(c)
+		path, ok := want[te.Text]
+		if !ok {
+			bad += " unexpected " + te.Text
+			return
+		}
+		seen++
+		if sid := inspect.SymbolID(te); sid == nil || sid.PackagePath != path {
+			bad += " " + te.Text + " unattributed"
+		}
+		_, member, _ := strings.Cut(te.Text, ".")
+		if d := inspect.Resolve(te); d == nil || d.Name != member {
+			bad += " " + te.Text + " unresolved"
+		}
+		x := inspect.Expr(inspect.Nodes(c)[0])
+		if sid := inspect.SymbolID(x); sid != nil {
+			bad += " " + x.Text + " attributed to " + sid.PackagePath
+		}
+		if inspect.Resolve(x) != nil || inspect.LookupResolve(x) != nil {
+			bad += " " + x.Text + " resolved to a decl"
+		}
+	})
+	if seen != len(want) {
+		return fmt.Sprintf("saw %d selectors, want %d", seen, len(want))
+	}
+	if bad != "" {
+		return bad
+	}
+	doc := inspect.Fields(inspect.Symbol(p, "Config"))[0].Type
+	if d := inspect.Resolve(doc); d == nil || d.Name != "Node" || d.Kind != "type" {
+		return "field type yaml.Node unresolved"
+	}
+	got := map[string]bool{}
+	for _, sid := range inspect.UsedSymbols(inspect.FileOf("./testdata/pkgclause/user/user.go")) {
+		got[sid.PackagePath+"."+sid.Name] = true
+	}
+	for _, k := range []string{yamlPath + ".Node", yamlPath + ".Marshal", barPath + ".Name"} {
+		if !got[k] {
+			return "UsedSymbols misses " + k
+		}
+	}
+	return "ok"
+}
+
 // BodyImportName: the bare import name of a qualified call
 // (the strings of strings.TrimSpace) names a package, not a decl — its
 // SymbolID is nil and Resolve returns nil instead of trapping; the
