@@ -2,6 +2,9 @@ package main
 
 import (
 	"fmt"
+	goast "go/ast"
+	"reflect"
+	"sort"
 	"strings"
 
 	"runtime"
@@ -1904,6 +1907,109 @@ func ASTWalk() string {
 	cn := inspect.AST(inspect.Symbol(p, "Label"))
 	if cn == nil || cn.Names[0].Name != "Label" || cn.Values[0].Value != `"lbl"` {
 		return "bad const node"
+	}
+	return "ok"
+}
+
+// astInspectSubject is the body ASTInspect walks: it touches most
+// statement and expression kinds, including the slice fields
+// (BlockStmt.List, CallExpr.Args, CaseClause.Body) go/ast's
+// walkList[N Node] instantiates over.
+func astInspectSubject(xs []int, m map[string]int) (int, error) {
+	total := 0
+	for i, x := range xs {
+		if x > 0 && i%2 == 0 {
+			total += x * 2
+		} else {
+			switch {
+			case x < -10:
+				total--
+			default:
+				total -= x
+			}
+		}
+	}
+	for k, v := range m {
+		total += len(k) + v
+	}
+	f := func(a ...int) int { return len(a) }
+	ch := make(chan int, 1)
+	ch <- f(1, 2)
+	select {
+	case v := <-ch:
+		total += v
+	}
+	s := struct{ A []string }{A: []string{"x"}}
+	_ = s.A[0:1]
+	var e interface{} = total
+	if n, ok := e.(int); ok {
+		return n, nil
+	}
+	return total, fmt.Errorf("bad %d", total)
+}
+
+// astKindCounts tallies the node kinds ast.Inspect visits under n, and
+// the calls ast.Walk sees outside func literals.
+func astKindCounts(n goast.Node) string {
+	kinds := map[string]int{}
+	goast.Inspect(n, func(n goast.Node) bool {
+		if n != nil {
+			kinds[fmt.Sprintf("%T", n)]++
+		}
+		return true
+	})
+	var keys []string
+	for k := range kinds {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		fmt.Fprintf(&b, "%s=%d ", k, kinds[k])
+	}
+	var v callCounter
+	goast.Walk(&v, n)
+	fmt.Fprintf(&b, "calls=%d", v.calls)
+	return b.String()
+}
+
+type callCounter struct{ calls int }
+
+func (v *callCounter) Visit(n goast.Node) goast.Visitor {
+	switch n.(type) {
+	case *goast.FuncLit:
+		return nil
+	case *goast.CallExpr:
+		v.calls++
+	}
+	return v
+}
+
+// ASTInspect: ast.Inspect and ast.Walk walk the host node inspect.AST
+// returns exactly like go/ast does under the go toolchain (#939). The
+// source-interpreted go/ast matches host *ast.X values in its own type
+// switch, where `case *BlockStmt:` spells no package, and infers
+// walkList[N Node] from host slice fields. The script side asserts
+// through the renamed goast import, whose spelling differs from the
+// host's "*ast.FuncDecl" too.
+func ASTInspect() string {
+	fd, ok := inspect.AST(inspect.Symbol(inspect.Current(), "astInspectSubject")).(*goast.FuncDecl)
+	if !ok {
+		return "inspect.AST did not assert to *goast.FuncDecl"
+	}
+	got := astKindCounts(fd)
+	// the unboxed host []ast.Stmt keeps its element's identity, not a
+	// host zero: an interface element's zero is still nil.
+	if z := reflect.Zero(reflect.TypeOf(fd.Body.List).Elem()); !z.IsNil() || !z.IsZero() {
+		return "zero of a host []ast.Stmt element is not nil"
+	}
+
+	// want is what go/ast reports for astInspectSubject under the go
+	// toolchain (doc comment included). The script's own go/parser is not
+	// the oracle: interpreting it is a separate concern.
+	want := "*ast.ArrayType=3 *ast.AssignStmt=11 *ast.BasicLit=13 *ast.BinaryExpr=7 *ast.BlockStmt=9 *ast.CallExpr=5 *ast.CaseClause=2 *ast.ChanType=1 *ast.CommClause=1 *ast.Comment=4 *ast.CommentGroup=1 *ast.CompositeLit=2 *ast.DeclStmt=1 *ast.Ellipsis=1 *ast.Field=7 *ast.FieldList=6 *ast.FuncDecl=1 *ast.FuncLit=1 *ast.FuncType=2 *ast.GenDecl=1 *ast.Ident=63 *ast.IfStmt=2 *ast.IncDecStmt=1 *ast.InterfaceType=1 *ast.KeyValueExpr=1 *ast.MapType=1 *ast.RangeStmt=2 *ast.ReturnStmt=3 *ast.SelectStmt=1 *ast.SelectorExpr=2 *ast.SendStmt=1 *ast.SliceExpr=1 *ast.StructType=1 *ast.SwitchStmt=1 *ast.TypeAssertExpr=1 *ast.UnaryExpr=2 *ast.ValueSpec=1 calls=4"
+	if got != want {
+		return "got " + got + "\nwant " + want
 	}
 	return "ok"
 }

@@ -1559,6 +1559,13 @@ type TypeDef struct {
 	// type, and member access dispatches through the host method set.
 	HostScalar any
 
+	// HostIdent, when set, is the named host type a typedef synthesized at
+	// the host boundary stands for — identity only, unlike HostNew it
+	// builds no zero. An unboxed host []ast.Stmt keeps its element's
+	// identity here so the source-interpreted go/ast's own Stmt can be
+	// recognized as the same type (see [HostNamedIs]).
+	HostIdent reflect.Type
+
 	// Local marks a typedef declared inside a function body: Go gives
 	// every such declaration its own identity, so same-named local types
 	// in two different functions are distinct types (unlike package-level
@@ -1641,6 +1648,19 @@ func (td *TypeDef) CachedIfaceSigs() (map[string]*Function, bool) {
 // must treat the map as read-only. Returning the same Functions each time
 // lets [SigMemo] remember comparisons against them.
 func (td *TypeDef) SetIfaceSigs(sigs map[string]*Function) { td.ifaceSigs.Store(sigs) }
+
+// HostNamedIs reports whether the host type rt is the type a source
+// typedef declares: same package path and name. The printed spelling
+// cannot decide it — inside go/ast `*BlockStmt` spells "*BlockStmt",
+// and under `import goast "go/ast"` a script spells "*goast.BlockStmt",
+// while the host value prints "*ast.BlockStmt" either way. Function-local
+// types and generic instances never match a host type.
+func HostNamedIs(rt reflect.Type, td *TypeDef) bool {
+	if rt == nil || td == nil || td.Pkg == nil || td.Pkg.Path == "" || td.Name == "" || td.Local || len(td.Binds) > 0 {
+		return false
+	}
+	return rt.PkgPath() == td.Pkg.Path && rt.Name() == td.Name
+}
 
 // HostType returns reflect.TypeOf(td.HostNew()) without allocating a new
 // zero value on every call. td.HostNew must be set.
