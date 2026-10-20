@@ -1,0 +1,8 @@
+MyB.Write conv
+MyB.Write fp
+MyB.Write ws
+convfpws
+MyBuf.Read 4 <nil>
+MyBuf.Read 0 EOF
+data <nil>
+host-4

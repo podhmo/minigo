@@ -4841,7 +4841,7 @@ func asWriterVM(vc runtime.VMCaller, v any) (io.Writer, error) {
 	if dv, ok := runtime.Deref(orig); ok {
 		v = dv
 	}
-	v = hostBoxOf(v)
+	v = hostBoxOf(orig, v)
 	if g, ok := v.(*runtime.GoValue); ok {
 		v = g.V
 	}
@@ -4861,7 +4861,12 @@ func asWriterVM(vc runtime.VMCaller, v any) (io.Writer, error) {
 // to its GoValue box, so io helpers hand the real host value to the host
 // call instead of adapting it through the script-callback proxy — the
 // proxy converts every chunk to a script []byte and back.
-func hostBoxOf(v any) any {
+func hostBoxOf(orig, v any) any {
+	// a pointer converted to a script-defined type, (*MyB)(&sb), keeps
+	// that type's method set: its Write must not be bypassed.
+	if t, ok := orig.(*runtime.Named); ok && (t.Typ == nil || t.Typ.HostNew == nil) {
+		return v
+	}
 	if n, ok := v.(*runtime.Named); ok && n.Typ != nil && n.Typ.HostNew != nil {
 		if g, ok := n.V.(*runtime.GoValue); ok {
 			return g
@@ -4893,7 +4898,7 @@ func (h *hostHelpers) asReaderVM(vc runtime.VMCaller, v any) (io.Reader, error) 
 	if dv, ok := runtime.Deref(orig); ok {
 		v = dv
 	}
-	v = hostBoxOf(v)
+	v = hostBoxOf(orig, v)
 	if g, ok := v.(*runtime.GoValue); ok {
 		v = g.V
 	}
