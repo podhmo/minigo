@@ -4249,6 +4249,14 @@ func goNative(v runtime.Value) any {
 // (a make([]struct{}, n) used to arrive empty), and comparable keys
 // (a script array key used to panic "hash of unhashable type").
 func goNativeWalk(v runtime.Value, w *runtime.Walk) any {
+	if n, ok := v.(*runtime.Named); ok {
+		// fast path for the common int-tagged element (every byte of a
+		// []byte argument): only a host-scalar tag changes an int64
+		// payload — the float32/complex64 narrowing never applies.
+		if iv, ok := n.V.(int64); ok && (n.Typ == nil || n.Typ.HostScalar == nil) {
+			return iv
+		}
+	}
 	if out, ok := w.Container(v, func(e runtime.Value) any { return goNativeWalk(e, w) }, runtime.UnwrapKey); ok {
 		return out
 	}
@@ -4533,6 +4541,15 @@ func byteSlice(v any) []byte {
 	case *runtime.Slice:
 		out := make([]byte, len(x.Elems))
 		for i, e := range x.Elems {
+			// byte elements are Named{byte, int64} or raw int64 — read
+			// them directly instead of a goNative walk per element.
+			if n, ok := e.(*runtime.Named); ok && (n.Typ == nil || n.Typ.HostScalar == nil) {
+				e = n.V
+			}
+			if iv, ok := e.(int64); ok {
+				out[i] = byte(iv)
+				continue
+			}
 			out[i] = byte(int64Of(goNative(e)))
 		}
 		return out
