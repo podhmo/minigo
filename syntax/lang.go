@@ -147,134 +147,17 @@ type langChecker struct {
 	lang     string
 	suffix   string
 	declared map[string]DeclKind
-	// locals records the [decl, scope-end) spans of function-level names so
-	// shadowedAt can answer "is this ident a local, not the builtin" —
-	// `min := func(...)` in one function does not make another function's
+	// locals records the scopes of function-level names so shadowedAt
+	// can answer "is this ident a local, not the builtin" — `min :=
+	// func(...)` in one function does not make another function's
 	// builtin `min(...)` call legal, so a flat name set is not enough.
 	// It is built on the first query (most files never ask).
-	locals map[string][]declSpan
+	locals *LocalScopes
 	file   *ast.File
 	// seen marks nodes already gated by the type-grammar walk so the
 	// expression pass does not re-flag (or mis-word) them.
 	seen map[ast.Node]bool
 	err  error
-}
-
-// declSpan marks where a locally declared name is in scope: from its
-// declaration position to the end of the enclosing scope.
-type declSpan struct{ lo, hi token.Pos }
-
-// localDecls collects the function-level declarations of f: signature
-// names (receivers, params, named results, type params), := assignments,
-// local type/var/const decls, and range/comm-clause variables. gc gates
-// versioned predeclared names only when they resolve to the universe —
-// a local `min`/`any`/`new` keeps its user meaning.
-func localDecls(f *ast.File) map[string][]declSpan {
-	m := map[string][]declSpan{}
-	// stack entries with a nonzero end open a scope (function bodies,
-	// blocks, statement clauses); endOf finds the innermost open scope.
-	type frame struct {
-		end token.Pos
-	}
-	var stack []frame
-	endOf := func() token.Pos {
-		for i := len(stack) - 1; i >= 0; i-- {
-			if stack[i].end != 0 {
-				return stack[i].end
-			}
-		}
-		return token.NoPos
-	}
-	add := func(name string, lo, hi token.Pos) {
-		if name == "_" || hi == token.NoPos {
-			return
-		}
-		m[name] = append(m[name], declSpan{lo, hi})
-	}
-	addFields := func(fl *ast.FieldList) {
-		if fl == nil {
-			return
-		}
-		hi := endOf()
-		for _, fd := range fl.List {
-			for _, n := range fd.Names {
-				add(n.Name, n.Pos(), hi)
-			}
-		}
-	}
-	ast.Inspect(f, func(n ast.Node) bool {
-		if n == nil {
-			stack = stack[:len(stack)-1]
-			return true
-		}
-		switch n := n.(type) {
-		case *ast.FuncDecl:
-			end := n.End()
-			if n.Body != nil {
-				end = n.Body.End()
-			}
-			stack = append(stack, frame{end})
-			addFields(n.Recv)
-			if n.Type != nil {
-				addFields(n.Type.Params)
-				addFields(n.Type.Results)
-				addFields(n.Type.TypeParams)
-			}
-			return true
-		case *ast.FuncLit:
-			stack = append(stack, frame{n.Body.End()})
-			addFields(n.Type.Params)
-			addFields(n.Type.Results)
-			addFields(n.Type.TypeParams)
-			return true
-		case *ast.RangeStmt:
-			stack = append(stack, frame{n.Body.End()})
-			if n.Tok == token.DEFINE {
-				for _, e := range []ast.Expr{n.Key, n.Value} {
-					if id, ok := e.(*ast.Ident); ok {
-						add(id.Name, id.Pos(), n.Body.End())
-					}
-				}
-			}
-			return true
-		case *ast.BlockStmt, *ast.IfStmt, *ast.ForStmt, *ast.SwitchStmt,
-			*ast.TypeSwitchStmt, *ast.SelectStmt, *ast.CaseClause, *ast.CommClause:
-			stack = append(stack, frame{n.End()})
-			return true
-		case *ast.AssignStmt:
-			stack = append(stack, frame{0})
-			if n.Tok == token.DEFINE {
-				hi := endOf()
-				for _, e := range n.Lhs {
-					if id, ok := e.(*ast.Ident); ok {
-						add(id.Name, id.Pos(), hi)
-					}
-				}
-			}
-			return true
-		case *ast.GenDecl:
-			// a decl inside any scope is local (top-level decls live in
-			// declared, collected package-wide by DeclaredKinds)
-			if hi := endOf(); hi != token.NoPos {
-				for _, sp := range n.Specs {
-					switch s := sp.(type) {
-					case *ast.TypeSpec:
-						add(s.Name.Name, s.Pos(), hi)
-					case *ast.ValueSpec:
-						for _, id := range s.Names {
-							add(id.Name, id.Pos(), hi)
-						}
-					}
-				}
-			}
-			stack = append(stack, frame{0})
-			return true
-		default:
-			stack = append(stack, frame{0})
-			return true
-		}
-	})
-	return m
 }
 
 // shadowedAt reports whether name resolves to a package-level or
@@ -291,14 +174,9 @@ func (c *langChecker) shadowedAt(name string, pos token.Pos) bool {
 // package-level generic decl is the target, not a shadow.
 func (c *langChecker) localAt(name string, pos token.Pos) bool {
 	if c.locals == nil {
-		c.locals = localDecls(c.file)
+		c.locals = NewLocalScopes(c.file)
 	}
-	for _, s := range c.locals[name] {
-		if s.lo <= pos && pos < s.hi {
-			return true
-		}
-	}
-	return false
+	return c.locals.At(name, pos)
 }
 
 // typeishIndex reports whether an index expression's argument is
