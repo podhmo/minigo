@@ -644,3 +644,12 @@ func ScopedShadow() bool {
 	}
 	return strings.HasPrefix(up, "A")
 }
+
+// Mer and GenShadow: a type parameter named strings shadows the import
+// over the whole func, so strings.M is a method expression on it.
+type Mer interface{ M() int }
+
+func GenShadow[strings Mer]() int {
+	var v strings
+	return strings.M(v)
+}

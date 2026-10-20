@@ -395,7 +395,8 @@ func ImportsList() string {
 		return "missing used symbol"
 	}
 	// selects through a local var or a funclit param named strings are
-	// not import uses; a shadow is scoped, so ScopedShadow's selects
+	// not import uses, nor is a method expression on GenShadow's type
+	// parameter named strings; a shadow is scoped, so ScopedShadow's selects
 	// outside its funclit and block still count.
 	got := map[string]bool{}
 	for _, sid := range used {
@@ -403,7 +404,7 @@ func ImportsList() string {
 			got[sid.Name] = true
 		}
 	}
-	if got["Fields"] || got["Cut"] {
+	if got["Fields"] || got["Cut"] || got["M"] {
 		return fmt.Sprint("shadowed select counted: ", got)
 	}
 	if !got["ToUpper"] || !got["HasPrefix"] {

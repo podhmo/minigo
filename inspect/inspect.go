@@ -1815,10 +1815,11 @@ func constInt(e ast.Expr) (int64, bool) {
 }
 
 // localScopes records where each name bound below package scope is in
-// scope in file — params, results and receivers over their func body,
-// := and var/const names from the end of their statement, local types
-// from their name, range bindings over the loop body — each up to the
-// end of the innermost enclosing block, if/for/switch or case clause.
+// scope in file — type parameters over their whole func or type decl,
+// params, results and receivers over their func body, := and var/const
+// names from the end of their statement, local types from their name,
+// range bindings over the loop body — each up to the end of the
+// innermost enclosing block, if/for/switch or case clause.
 // The returned func reports whether name at pos is such a binding, so a
 // local shadows an import only where Go's scoping says it does.
 func localScopes(file *ast.File) func(name string, pos token.Pos) bool {
@@ -1859,6 +1860,14 @@ func localScopes(file *ast.File) func(name string, pos token.Pos) bool {
 		}
 		switch x := n.(type) {
 		case *ast.FuncDecl:
+			// type parameters, the receiver's included, are in scope
+			// over the signature and the body.
+			for _, name := range syntax.RecvTypeParamNames(x.Recv) {
+				bind(name, x.Pos(), x.End())
+			}
+			for _, name := range syntax.TypeParamNames(x.Type.TypeParams) {
+				bind(name, x.Pos(), x.End())
+			}
 			bindFields(x.Recv, x.Body)
 			bindFields(x.Type.Params, x.Body)
 			bindFields(x.Type.Results, x.Body)
@@ -1894,6 +1903,10 @@ func localScopes(file *ast.File) func(name string, pos token.Pos) bool {
 						bind(sp.Name.Name, sp.Name.Pos(), end)
 					}
 				}
+			}
+		case *ast.TypeSpec:
+			for _, name := range syntax.TypeParamNames(x.TypeParams) {
+				bind(name, x.Pos(), x.End())
 			}
 		}
 		stack = append(stack, n)
