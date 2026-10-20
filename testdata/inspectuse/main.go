@@ -377,7 +377,7 @@ func CurrentPkg() string {
 	return "ok"
 }
 
-// ImportsList: a file's import table.
+// ImportsList: a file's import table and the import members it uses.
 func ImportsList() string {
 	f := inspect.FileOf("./testdata/inspectpkg/main.go")
 	imps := inspect.Imports(f)
@@ -393,6 +393,22 @@ func ImportsList() string {
 	}
 	if !found {
 		return "missing used symbol"
+	}
+	// selects through a local var or a funclit param named strings are
+	// not import uses, nor is a method expression on GenShadow's type
+	// parameter named strings; a shadow is scoped, so ScopedShadow's selects
+	// outside its funclit and block still count.
+	got := map[string]bool{}
+	for _, sid := range used {
+		if sid.PackagePath == "strings" {
+			got[sid.Name] = true
+		}
+	}
+	if got["Fields"] || got["Cut"] || got["M"] {
+		return fmt.Sprint("shadowed select counted: ", got)
+	}
+	if !got["ToUpper"] || !got["HasPrefix"] {
+		return fmt.Sprint("real use outside a shadow dropped: ", got)
 	}
 	return "ok"
 }

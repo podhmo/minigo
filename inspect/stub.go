@@ -308,7 +308,8 @@ func SymbolID(te *TypeExpr) *runtime.SymbolID { panic("minigo intrinsic") }
 func Resolve(te *TypeExpr) *Decl { panic("minigo intrinsic") }
 
 // UsedSymbols lists the imported package members f refers to as pkg.Name,
-// each once, in order of first use.
+// each once, in order of first use. A select through a local that shadows
+// the import, such as a param named strings, is not a use.
 func UsedSymbols(f *File) []runtime.SymbolID { panic("minigo intrinsic") }
 
 // SameType reports whether a and b spell the same type. Names compare by

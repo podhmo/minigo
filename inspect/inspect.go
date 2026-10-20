@@ -1814,6 +1814,114 @@ func constInt(e ast.Expr) (int64, bool) {
 	return 0, false
 }
 
+// localScopes records where each name bound below package scope is in
+// scope in file — type parameters over their whole func or type decl,
+// params, results and receivers over their func body, := and var/const
+// names from the end of their statement, local types from their name,
+// range bindings over the loop body — each up to the end of the
+// innermost enclosing block, if/for/switch or case clause.
+// The returned func reports whether name at pos is such a binding, so a
+// local shadows an import only where Go's scoping says it does.
+func localScopes(file *ast.File) func(name string, pos token.Pos) bool {
+	type span struct{ from, to token.Pos }
+	spans := map[string][]span{}
+	bind := func(name string, from, to token.Pos) {
+		if name != "_" {
+			spans[name] = append(spans[name], span{from, to})
+		}
+	}
+	bindFields := func(fl *ast.FieldList, body *ast.BlockStmt) {
+		if fl == nil || body == nil {
+			return
+		}
+		for _, f := range fl.List {
+			for _, n := range f.Names {
+				bind(n.Name, body.Pos(), body.End())
+			}
+		}
+	}
+	var stack []ast.Node
+	// scopeEnd is the end of the innermost node on the stack that opens
+	// a scope.
+	scopeEnd := func() token.Pos {
+		for i := len(stack) - 1; i >= 0; i-- {
+			switch n := stack[i].(type) {
+			case *ast.BlockStmt, *ast.IfStmt, *ast.ForStmt, *ast.RangeStmt,
+				*ast.SwitchStmt, *ast.TypeSwitchStmt, *ast.CaseClause, *ast.CommClause:
+				return n.End()
+			}
+		}
+		return token.NoPos
+	}
+	ast.Inspect(file, func(n ast.Node) bool {
+		if n == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		switch x := n.(type) {
+		case *ast.FuncDecl:
+			// type parameters, the receiver's included, are in scope
+			// over the signature and the body.
+			for _, name := range syntax.RecvTypeParamNames(x.Recv) {
+				bind(name, x.Pos(), x.End())
+			}
+			for _, name := range syntax.TypeParamNames(x.Type.TypeParams) {
+				bind(name, x.Pos(), x.End())
+			}
+			bindFields(x.Recv, x.Body)
+			bindFields(x.Type.Params, x.Body)
+			bindFields(x.Type.Results, x.Body)
+		case *ast.FuncLit:
+			bindFields(x.Type.Params, x.Body)
+			bindFields(x.Type.Results, x.Body)
+		case *ast.AssignStmt:
+			if x.Tok == token.DEFINE {
+				for _, lhs := range x.Lhs {
+					if id, ok := lhs.(*ast.Ident); ok {
+						bind(id.Name, x.End(), scopeEnd())
+					}
+				}
+			}
+		case *ast.RangeStmt:
+			if x.Tok == token.DEFINE {
+				for _, e := range []ast.Expr{x.Key, x.Value} {
+					if id, ok := e.(*ast.Ident); ok {
+						bind(id.Name, x.Body.Pos(), x.Body.End())
+					}
+				}
+			}
+		case *ast.DeclStmt:
+			if gd, ok := x.Decl.(*ast.GenDecl); ok {
+				end := scopeEnd()
+				for _, spec := range gd.Specs {
+					switch sp := spec.(type) {
+					case *ast.ValueSpec:
+						for _, id := range sp.Names {
+							bind(id.Name, sp.End(), end)
+						}
+					case *ast.TypeSpec:
+						bind(sp.Name.Name, sp.Name.Pos(), end)
+					}
+				}
+			}
+		case *ast.TypeSpec:
+			for _, name := range syntax.TypeParamNames(x.TypeParams) {
+				bind(name, x.Pos(), x.End())
+			}
+		}
+		stack = append(stack, n)
+		return true
+	})
+	return func(name string, pos token.Pos) bool {
+		for _, s := range spans[name] {
+			if s.from <= pos && pos < s.to {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 // UsedSymbolsOf is [UsedSymbols] for Go code.
 func UsedSymbolsOf(f *File) []runtime.SymbolID {
 	// Every SelectorExpr whose X is an import's local name counts.
@@ -1824,6 +1932,7 @@ func UsedSymbolsOf(f *File) []runtime.SymbolID {
 	for _, imp := range f.sf.Imports {
 		local[imp.LocalName()] = imp.Path
 	}
+	shadowed := localScopes(f.sf.AST)
 	seen := map[runtime.SymbolID]bool{}
 	var out []runtime.SymbolID
 	ast.Inspect(f.sf.AST, func(n ast.Node) bool {
@@ -1832,7 +1941,7 @@ func UsedSymbolsOf(f *File) []runtime.SymbolID {
 			return true
 		}
 		x, ok := se.X.(*ast.Ident)
-		if !ok {
+		if !ok || shadowed(x.Name, x.Pos()) {
 			return true
 		}
 		if path, ok := local[x.Name]; ok {
