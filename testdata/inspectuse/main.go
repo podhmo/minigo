@@ -5,6 +5,7 @@ import (
 	goast "go/ast"
 	"go/parser"
 	"go/token"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -1999,6 +2000,11 @@ func ASTInspect() string {
 		return "inspect.AST did not assert to *goast.FuncDecl"
 	}
 	got := astKindCounts(fd)
+	// the unboxed host []ast.Stmt keeps its element's identity, not a
+	// host zero: an interface element's zero is still nil.
+	if z := reflect.Zero(reflect.TypeOf(fd.Body.List).Elem()); !z.IsNil() || !z.IsZero() {
+		return "zero of a host []ast.Stmt element is not nil"
+	}
 
 	f, err := parser.ParseFile(token.NewFileSet(), "./testdata/inspectuse/main.go", nil, parser.ParseComments)
 	if err != nil {

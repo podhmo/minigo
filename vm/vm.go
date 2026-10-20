@@ -11263,7 +11263,7 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 			if et.HostNew != nil {
 				return reflect.TypeOf(gv.V) == et.HostType()
 			}
-			if rt := reflect.TypeOf(gv.V); rt.Kind() == reflect.Pointer && hostNamedIs(rt.Elem(), et) {
+			if rt := reflect.TypeOf(gv.V); rt.Kind() == reflect.Pointer && runtime.HostNamedIs(rt.Elem(), et) {
 				return true
 			}
 			return reflect.TypeOf(gv.V).String() == tdName(td)
@@ -11347,25 +11347,13 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 				return rt.String() == runtime.TypGoSpelling(ft, td)
 			}
 		}
-		if hostNamedIs(rt, td) {
+		if runtime.HostNamedIs(rt, td) {
 			return true
 		}
 		return rt.String() == tdName(td)
 	default:
 		return false
 	}
-}
-
-// hostNamedIs reports whether the host type rt is the type a source
-// typedef declares: same package path and name. The printed spelling
-// cannot decide it — inside go/ast `*BlockStmt` spells "*BlockStmt",
-// and under `import goast "go/ast"` a script spells "*goast.BlockStmt",
-// while the host value prints "*ast.BlockStmt" either way.
-func hostNamedIs(rt reflect.Type, td *runtime.TypeDef) bool {
-	if td == nil || td.Pkg == nil || td.Pkg.Path == "" || td.Name == "" || len(td.Binds) > 0 {
-		return false
-	}
-	return rt.PkgPath() == td.Pkg.Path && rt.Name() == td.Name
 }
 
 // funcAssert implements x.(T) for a function value: an anonymous func
@@ -12106,14 +12094,13 @@ func (v *VM) hostTwinIs(f *frame, host, src *runtime.TypeDef) bool {
 		return false
 	}
 	src = v.peelAlias(src)
-	if host.Kind == runtime.KindPointer && host.HostNew == nil {
+	if host.Kind == runtime.KindPointer && host.HostIdent == nil {
 		if src.Kind != runtime.KindPointer || src.Name != "" {
 			return false
 		}
 		return v.hostTwinIs(f, host.Elem, v.elemTypedef(f, src))
 	}
-	rt := hostNamedRT(host)
-	return rt != nil && hostNamedIs(rt, src)
+	return host.HostIdent != nil && runtime.HostNamedIs(host.HostIdent, src)
 }
 
 // coerceConcrete applies td to a non-nil x under a non-interface target.
@@ -14574,12 +14561,6 @@ func (v *VM) argTypedef(x runtime.Value) *runtime.TypeDef {
 			// not *A (Go infers from the static type).
 			if st := v.elemTypedef(nil, xv.Typ); st != nil {
 				ev = st
-			} else if xv.Typ.Elem != nil {
-				// a host slice's element type spells a bare name the
-				// typedef cannot resolve, but the host boundary kept its
-				// identity — still the static type, not the first
-				// element's dynamic one.
-				ev = xv.Typ.Elem
 			}
 			return &runtime.TypeDef{
 				Kind: xv.Typ.Kind, Name: xv.Typ.Name, Pkg: xv.Typ.Pkg,
@@ -14708,20 +14689,9 @@ func hostPkgElemTypedef(rt reflect.Type) *runtime.TypeDef {
 	if rt.Name() == "" || rt.PkgPath() == "" {
 		return nil
 	}
-	return &runtime.TypeDef{Name: rt.String(), Kind: hostNamedKind(rt), HostNew: func() any { return reflect.New(rt).Interface() }}
-}
-
-// hostNamedRT is the named host type behind a [hostPkgElemTypedef]
-// typedef (HostNew boxes a pointer to it), or nil for other typedefs.
-func hostNamedRT(td *runtime.TypeDef) reflect.Type {
-	if td == nil || td.HostNew == nil {
-		return nil
-	}
-	rt := td.HostType()
-	if rt.Kind() == reflect.Pointer {
-		rt = rt.Elem()
-	}
-	return rt
+	// identity only: a HostNew would make Zero build a host box where
+	// an interface element's zero is nil.
+	return &runtime.TypeDef{Name: rt.String(), Kind: hostNamedKind(rt), HostIdent: rt}
 }
 
 // sourceTwinOf maps a host element typedef from [hostPkgElemTypedef] to
@@ -14736,16 +14706,16 @@ func (v *VM) sourceTwinOf(ctx, td *runtime.TypeDef) *runtime.TypeDef {
 	if td.Kind == runtime.KindPointer && td.Name == "" && td.Anon == nil && td.Elem != nil {
 		// host *Comment -> the source package's own *Comment
 		if et := v.sourceTwinOf(ctx, td.Elem); et != td.Elem {
-			return &runtime.TypeDef{Kind: runtime.KindPointer, Anon: &ast.StarExpr{X: ast.NewIdent(et.Name)}, Pkg: ctx.Pkg, File: ctx.File}
+			return &runtime.TypeDef{Kind: runtime.KindPointer, Anon: &ast.StarExpr{X: ast.NewIdent(et.Name)}, Pkg: ctx.Pkg, File: ctx.File, Elem: et}
 		}
 		return td
 	}
-	rt := hostNamedRT(td)
+	rt := td.HostIdent
 	if rt == nil || rt.PkgPath() != ctx.Pkg.Path {
 		return td
 	}
 	twin, err := v.H.ResolveType(ctx, ast.NewIdent(rt.Name()))
-	if err != nil || twin == nil || !hostNamedIs(rt, twin) {
+	if err != nil || twin == nil || !runtime.HostNamedIs(rt, twin) {
 		return td
 	}
 	return twin
