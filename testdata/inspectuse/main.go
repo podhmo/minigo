@@ -2158,6 +2158,45 @@ func BodyImportName() string {
 	return "ok"
 }
 
+// BodyNonRefIdents: identifiers in positions that name no declaration —
+// a selector's Sel, a struct-literal key, a label, a field name, the
+// blank — report no SymbolID, so a walk resolving every Expr does not
+// trap on them; map-literal keys (KeyA) still resolve.
+func BodyNonRefIdents() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	nonRef := map[string]bool{"X": true, "Y": true, "Z": true, "L": true, "_": true, "Repeat": true}
+	seen := map[string]int{}
+	bad := ""
+	walkNodes(inspect.Body(inspect.Symbol(p, "NonRefIdents")), func(c *inspect.Node) {
+		if c.Kind == "Ident" {
+			te := inspect.Expr(c)
+			seen[te.Text]++
+			if nonRef[te.Text] {
+				if sid := inspect.SymbolID(te); sid != nil && bad == "" {
+					bad = te.Text + " (" + c.Role + ") resolved to " + sid.PackagePath + "." + sid.Name
+				}
+				if inspect.Resolve(te) != nil && bad == "" {
+					bad = te.Text + " resolved to a decl"
+				}
+			}
+			if te.Text == "KeyA" || te.Text == "Pt" {
+				if d := inspect.Resolve(te); (d == nil || d.Name != te.Text) && bad == "" {
+					bad = te.Text + " (" + c.Role + ") unresolved"
+				}
+			}
+		}
+	})
+	if bad != "" {
+		return bad
+	}
+	// every kind of site was visited — X: key + p.X; Z: field name +
+	// s.Z; L: label + break; KeyA: map key, named-map key, index.
+	if seen["X"] < 2 || seen["Z"] < 2 || seen["L"] < 2 || seen["KeyA"] < 3 || seen["Y"] < 1 || seen["_"] < 1 || seen["Repeat"] < 1 {
+		return fmt.Sprint("sites not visited: ", seen)
+	}
+	return "ok"
+}
+
 // TypeParamMark: identifiers bound as a decl's type parameters report a
 // marked SymbolID — the :typeparam: pseudo path — instead of being
 // attributed to the declaring package, so a walk can stop instead of

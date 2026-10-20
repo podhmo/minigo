@@ -229,8 +229,10 @@ func Nodes(n *Node) []*Node { panic("minigo intrinsic") }
 // mentions resolve against the declaring file with [SymbolID] and
 // [Resolve]: `strings.TrimSpace` in a body resolves to {strings,
 // TrimSpace}. A name bound locally in the enclosing function yields no
-// SymbolID rather than a package's. Expr returns nil for statements and
-// declarations.
+// SymbolID rather than a package's, as does an identifier that names no
+// declaration: a selector's member name, a label, a declared name, the
+// blank, and a struct-literal key (a map or array literal's key still
+// resolves). Expr returns nil for statements and declarations.
 func Expr(n *Node) *TypeExpr { panic("minigo intrinsic") }
 
 // Signature returns the signature of a func or method declaration, or of a

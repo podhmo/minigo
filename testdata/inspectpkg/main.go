@@ -597,3 +597,26 @@ func BuiltinNames() int {
 	_, _ = e, true
 	return max(len(s), c)
 }
+
+// Pt, Lookup and KeyA feed NonRefIdents.
+type Pt struct{ X, Y int }
+
+type Lookup map[string]int
+
+const KeyA = "a"
+
+// NonRefIdents spells identifiers that name no declaration — selector
+// Sels, struct-literal keys, labels, field names, the blank — next to
+// map-literal keys that do refer to KeyA.
+func NonRefIdents() int {
+	p := Pt{X: 1, Y: 2}
+	m := map[string]int{KeyA: 1}
+	l := Lookup{KeyA: 2}
+	_ = l
+L:
+	for i := 0; i < 1; i++ {
+		break L
+	}
+	var s struct{ Z int }
+	return p.X + m[KeyA] + s.Z + len(strings.Repeat("a", 1))
+}
