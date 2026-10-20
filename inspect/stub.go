@@ -296,7 +296,8 @@ func Origin(te *TypeExpr) *TypeExpr { panic("minigo intrinsic") }
 // report [BuiltinPackagePath] unless the package declares the same name,
 // and type parameters report [TypeParamPackagePath]. It returns nil for
 // anything but a plain or qualified name, including composites like []T
-// and instantiations like Pair[int], whose base [Children] reaches.
+// and instantiations like Pair[int], whose base [Children] reaches, and
+// for a bare import name such as the strings of strings.TrimSpace.
 func SymbolID(te *TypeExpr) *runtime.SymbolID { panic("minigo intrinsic") }
 
 // Resolve returns the [Decl] that te names, loading its package if needed.

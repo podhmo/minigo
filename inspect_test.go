@@ -77,6 +77,7 @@ func TestInspect(t *testing.T) {
 		"BodyScope",
 		"BodyLocalDecls",
 		"BodyBuiltins",
+		"BodyImportName",
 		// lenient locators: FileOf/PackageOf build like DirOf — a target
 		// that cannot compile still enumerates its decls.
 		"FileOfDup",

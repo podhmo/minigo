@@ -1550,6 +1550,11 @@ func (te *TypeExpr) SymbolID() (runtime.SymbolID, bool) {
 			// same-named package type).
 			return runtime.SymbolID{PackagePath: TypeParamPackagePath, Name: e.Name}, true
 		}
+		if te.importName(e.Name) {
+			// a file-scope import binding (the strings of strings.X) names
+			// a package, not a declaration in one.
+			return runtime.SymbolID{}, false
+		}
 		if te.pkg != nil && te.pkg.Index != nil {
 			ix := te.pkg.Index
 			_, isType := ix.Types[e.Name]
@@ -1581,6 +1586,19 @@ func (te *TypeExpr) SymbolID() (runtime.SymbolID, bool) {
 		return runtime.SymbolID{}, false
 	}
 	return runtime.SymbolID{}, false
+}
+
+// importName reports whether name is bound by an import of te's file.
+func (te *TypeExpr) importName(name string) bool {
+	if te.file == nil {
+		return false
+	}
+	for _, imp := range te.file.Imports {
+		if imp.Alias != "." && imp.Alias != "_" && imp.LocalName() == name {
+			return true
+		}
+	}
+	return false
 }
 
 // CanonicalName returns the type's identity independent of how a file
