@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/token"
 	"reflect"
 	"time"
 
@@ -110,7 +111,7 @@ func (e *Engine) methodInfoOfValue(v runtime.Value) (map[string]bool, map[string
 	case *runtime.GoValue:
 		// host values satisfy requirements by name alone — reflect
 		// methods carry no declared signature for the func view.
-		return hostMethodSet(x.V), nil, false, nil
+		return e.hostTwinMethodSet(x.V), nil, false, nil
 	default:
 		return nil, nil, false, nil
 	}
@@ -127,6 +128,38 @@ func hostMethodSet(x any) map[string]bool {
 	}
 	for i := 0; i < t.NumMethod(); i++ {
 		set[t.Method(i).Name] = true
+	}
+	return set
+}
+
+// hostTwinMethodSet is hostMethodSet plus the unexported methods the
+// source twin of x's type declares ([Engine.hostTwin]): reflect never
+// lists unexported methods, so a host *ast.BinaryExpr would miss
+// exprNode() and fail go/ast's own Expr when go/ast is interpreted from
+// source. Both sides come from the same source, so the twin's set is the
+// host type's.
+func (e *Engine) hostTwinMethodSet(x any) map[string]bool {
+	set := hostMethodSet(x)
+	rt := reflect.TypeOf(x)
+	if rt == nil {
+		return set
+	}
+	ptr := false
+	if rt.Kind() == reflect.Pointer && rt.Name() == "" {
+		rt, ptr = rt.Elem(), true
+	}
+	twin := e.hostTwin(rt)
+	if twin == nil || twin.Pkg == nil || twin.Pkg.Index == nil {
+		return set
+	}
+	names, _, err := e.typeMethodsU(twin, ptr)
+	if err != nil {
+		return set
+	}
+	for m := range names {
+		if !token.IsExported(m) {
+			set[m] = true
+		}
 	}
 	return set
 }

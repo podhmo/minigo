@@ -77,6 +77,7 @@ func TestInspect(t *testing.T) {
 		"ASTInspect",       // go/ast walkers over host nodes (#939)
 		"ASTResolveRecipe", // go/ast dispatch + name resolution with today's API (#940)
 		"ASTHostTwin",      // host slices outside go/ast: generics, slice asserts
+		"ASTSourceIfaces",  // host nodes satisfy go/ast interfaces with unexported methods
 		"BodyWalk",
 		"BodyNil",
 		"BodyScope",
