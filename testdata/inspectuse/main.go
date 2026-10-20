@@ -377,7 +377,7 @@ func CurrentPkg() string {
 	return "ok"
 }
 
-// ImportsList: a file's import table.
+// ImportsList: a file's import table and the import members it uses.
 func ImportsList() string {
 	f := inspect.FileOf("./testdata/inspectpkg/main.go")
 	imps := inspect.Imports(f)
@@ -393,6 +393,13 @@ func ImportsList() string {
 	}
 	if !found {
 		return "missing used symbol"
+	}
+	// selects through a local var or a funclit param named strings are
+	// not import uses.
+	for _, sid := range used {
+		if sid.PackagePath == "strings" && (sid.Name == "Fields" || sid.Name == "Cut") {
+			return "shadowed select counted: strings." + sid.Name
+		}
 	}
 	return "ok"
 }

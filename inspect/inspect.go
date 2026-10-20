@@ -1826,24 +1826,37 @@ func UsedSymbolsOf(f *File) []runtime.SymbolID {
 	}
 	seen := map[runtime.SymbolID]bool{}
 	var out []runtime.SymbolID
-	ast.Inspect(f.sf.AST, func(n ast.Node) bool {
-		se, ok := n.(*ast.SelectorExpr)
-		if !ok {
-			return true
+	for _, d := range f.sf.AST.Decls {
+		// a name the decl binds locally (param, :=, local var, funclit
+		// param, ...) shadows a same-named import within that decl —
+		// the same "possibly local" set Expr refuses attribution on.
+		var shadow map[string]bool
+		switch d := d.(type) {
+		case *ast.FuncDecl:
+			shadow = localNames(d)
+		case *ast.GenDecl:
+			shadow = map[string]bool{}
+			addBodyNames(shadow, d)
 		}
-		x, ok := se.X.(*ast.Ident)
-		if !ok {
-			return true
-		}
-		if path, ok := local[x.Name]; ok {
-			sid := runtime.SymbolID{PackagePath: path, Name: se.Sel.Name}
-			if !seen[sid] {
-				seen[sid] = true
-				out = append(out, sid)
+		ast.Inspect(d, func(n ast.Node) bool {
+			se, ok := n.(*ast.SelectorExpr)
+			if !ok {
+				return true
 			}
-		}
-		return true
-	})
+			x, ok := se.X.(*ast.Ident)
+			if !ok || shadow[x.Name] {
+				return true
+			}
+			if path, ok := local[x.Name]; ok {
+				sid := runtime.SymbolID{PackagePath: path, Name: se.Sel.Name}
+				if !seen[sid] {
+					seen[sid] = true
+					out = append(out, sid)
+				}
+			}
+			return true
+		})
+	}
 	return out
 }
 
@@ -2047,7 +2060,28 @@ func localNames(fn *ast.FuncDecl) map[string]bool {
 		add(fn.Type.Params)
 		add(fn.Type.Results)
 	}
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
+	if fn.Body != nil {
+		addBodyNames(names, fn.Body)
+	}
+	return names
+}
+
+// addBodyNames adds to names every identifier bound inside root:
+// := names, range bindings, local var/const/type declarations, and
+// funclit params and results. root's own top-level specs, when it is a
+// GenDecl, are package-scope and not added.
+func addBodyNames(names map[string]bool, root ast.Node) {
+	add := func(fl *ast.FieldList) {
+		if fl == nil {
+			return
+		}
+		for _, f := range fl.List {
+			for _, n := range f.Names {
+				names[n.Name] = true
+			}
+		}
+	}
+	ast.Inspect(root, func(n ast.Node) bool {
 		switch x := n.(type) {
 		case *ast.AssignStmt:
 			if x.Tok == token.DEFINE {
@@ -2089,7 +2123,6 @@ func localNames(fn *ast.FuncDecl) map[string]bool {
 		}
 		return true
 	})
-	return names
 }
 
 // NodesOf is [Nodes] for Go code.

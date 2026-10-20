@@ -620,3 +620,14 @@ L:
 	var s struct{ Z int }
 	return p.X + m[KeyA] + s.Z + len(strings.Repeat("a", 1))
 }
+
+// ShadowVar and shadowInit select through locals named strings; those
+// selects are not uses of the strings import (UsedSymbols).
+func ShadowVar() int {
+	var strings = struct{ Fields int }{Fields: 1}
+	return strings.Fields
+}
+
+var shadowInit = func(strings struct{ Cut int }) int { return strings.Cut }
+
+var _ = shadowInit
