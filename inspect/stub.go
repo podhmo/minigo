@@ -215,7 +215,12 @@ func IEmbeds(s *Decl) []*TypeExpr { panic("minigo intrinsic") }
 // *ast.FuncDecl of a func or method, or the *ast.TypeSpec or
 // *ast.ValueSpec of a type, var or const; for a [Node] it is the node
 // itself. Scripts reach the node's fields and methods (.Body, .Pos()) as on
-// any host value. It traps for host decls.
+// any host value, and go/ast's own walkers (ast.Inspect, ast.Walk) accept
+// it. It traps for host decls.
+//
+// A go/ast node does not lead back to a [Node]. A walker that also
+// resolves names walks [Body]/[Nodes], dispatches on AST(n), and hands the
+// child Node filling the wanted field (Role "Fun" for call.Fun) to [Expr].
 func AST(x any) any { panic("minigo intrinsic") }
 
 // Body returns the body of a func or method declaration as a [Node] of
@@ -227,7 +232,10 @@ func Body(s *Decl) *Node { panic("minigo intrinsic") }
 // Nodes returns n's child nodes in source order, each with Role set to the
 // go/ast field it fills: a CallExpr's children are Fun then Args, an
 // IfStmt's are those of Init, Cond, Body and Else that are present, and a
-// BlockStmt's are its List.
+// BlockStmt's are its List. Role is the go/ast struct field name verbatim
+// (Fun, Args, X, Sel, Lhs, Rhs, Names, Values, ...), so the child Node
+// for the field `call.Fun` of `call := AST(n).(*ast.CallExpr)` is the
+// one with Role "Fun" — see [AST].
 func Nodes(n *Node) []*Node { panic("minigo intrinsic") }
 
 // Expr returns an expression [Node] as a [TypeExpr], so the names it

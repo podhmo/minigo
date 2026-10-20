@@ -2014,6 +2014,44 @@ func ASTInspect() string {
 	return "ok"
 }
 
+// ASTResolveRecipe: a body walker reads go/ast and resolves names with
+// the existing API alone (#940) — walk Body/Nodes, dispatch on the
+// go/ast node AST returns, and hand the child Node filling the wanted
+// field (by Role) to Expr. Locally bound names (f) yield no SymbolID.
+func ASTResolveRecipe() string {
+	var got []string
+	var walk func(n *inspect.Node)
+	walk = func(n *inspect.Node) {
+		children := inspect.Nodes(n)
+		if call, ok := inspect.AST(n).(*goast.CallExpr); ok {
+			for _, c := range children {
+				if c.Role != "Fun" {
+					continue
+				}
+				// c is the Node for call.Fun
+				if inspect.AST(c) != call.Fun {
+					got = append(got, "Fun node mismatch")
+				}
+				sid := inspect.SymbolID(inspect.Expr(c))
+				if sid == nil {
+					got = append(got, c.Text+"=local")
+				} else {
+					got = append(got, c.Text+"="+sid.PackagePath+"."+sid.Name)
+				}
+			}
+		}
+		for _, c := range children {
+			walk(c)
+		}
+	}
+	walk(inspect.Body(inspect.Symbol(inspect.Current(), "astInspectSubject")))
+	want := "len=:builtin:.len len=:builtin:.len make=:builtin:.make f=local fmt.Errorf=fmt.Errorf"
+	if s := strings.Join(got, " "); s != want {
+		return "got  " + s + "\nwant " + want
+	}
+	return "ok"
+}
+
 // ASTBoundTrap: a bound (host) symbol carries no AST node.
 func ASTBoundTrap() string {
 	inspect.AST(inspect.Symbol(inspect.PackageOf("strings"), "Builder"))
