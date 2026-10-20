@@ -2092,6 +2092,13 @@ func ASTHostTwin() string {
 	return "ok"
 }
 
+func identName(e goast.Expr) string {
+	if id, ok := e.(*goast.Ident); ok {
+		return id.Name
+	}
+	return "?"
+}
+
 // ASTSourceIfaces: host nodes satisfy go/ast's interfaces whose method
 // sets include unexported markers (exprNode, stmtNode, declNode), which
 // reflect never lists — so assignment, assertion, indexing a host
@@ -2113,6 +2120,11 @@ func ASTSourceIfaces() string {
 	ss := []goast.Stmt(fd.Body.List)
 	if st != ss[0] {
 		return "indexed stmt differs"
+	}
+	// a parameter of a go/ast interface type (#945)
+	as := fd.Body.List[0].(*goast.AssignStmt) // total := 0
+	if got := identName(as.Lhs[0]); got != "total" {
+		return "identName(as.Lhs[0]) = " + got
 	}
 	ret := fd.Body.List[len(fd.Body.List)-1].(*goast.ReturnStmt)
 	if goast.Unparen(ret.Results[0]) != ret.Results[0] {
