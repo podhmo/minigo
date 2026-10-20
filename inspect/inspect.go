@@ -313,6 +313,7 @@ type TypeExpr struct {
 	pkg     *runtime.Package
 	locals  map[string]bool // names bound inside the enclosing func, when the expr was anchored via Expr — a hit means "possibly local", so SymbolID refuses package attribution rather than misattributing a method call to an import
 	tparams map[string]bool // names the enclosing generic decl binds as type parameters — a hit reports the TypeParamPackagePath SymbolID instead of attributing the name to the package
+	nonRef  bool            // an identifier in a position that names no declaration (selector Sel, label, declared name, struct-literal key), so SymbolID reports nil
 	ht      reflect.Type    // host-backed alternative (BuiltinFunc.Target sigs)
 }
 
@@ -1541,7 +1542,7 @@ func (te *TypeExpr) SymbolID() (runtime.SymbolID, bool) {
 	}
 	switch e := te.expr.(type) {
 	case *ast.Ident:
-		if te.locals[e.Name] {
+		if te.nonRef || e.Name == "_" || te.locals[e.Name] {
 			return runtime.SymbolID{}, false
 		}
 		if te.tparams[e.Name] {
@@ -1928,6 +1929,7 @@ type Node struct {
 	pkg     *runtime.Package
 	locals  map[string]bool // names the enclosing func binds — shared by every node under the same Body root
 	tparams map[string]bool // type parameter names the enclosing generic func binds — same Body-root sharing
+	parent  *Node           // the enclosing node, nil on a root
 }
 
 // NewNode returns the [Node] view of n in file f of package p. role is
@@ -2139,6 +2141,7 @@ func (n *Node) child(cn ast.Node, role string) *Node {
 	c := NewNode(cn, role, n.file, n.pkg)
 	c.locals = n.locals
 	c.tparams = n.tparams
+	c.parent = n
 	return c
 }
 
@@ -2165,7 +2168,65 @@ func ExprOf(n *Node) *TypeExpr {
 	te := NewTypeExpr(e, n.file, n.pkg)
 	te.locals = n.locals
 	te.tparams = n.tparams
+	if _, ok := e.(*ast.Ident); ok {
+		te.nonRef = !refersByRole(n)
+	}
 	return te
+}
+
+// refersByRole reports whether an identifier node in a body can refer
+// to a declaration, judged by the field it fills: a selector's Sel, a
+// label, and a declared name (Names, Name) never do. A composite-literal
+// key refers only in a map or array literal (map[K]V{k: v}); a struct
+// literal's key is a field name, and a key whose literal type cannot be
+// told apart is treated as one — under-resolution over misattribution.
+func refersByRole(n *Node) bool {
+	switch n.Role {
+	case "Sel", "Label", "Name", "Names":
+		return false
+	case "Key":
+		kv := n.parent
+		if kv == nil || kv.parent == nil {
+			return true
+		}
+		if _, ok := kv.node.(*ast.KeyValueExpr); !ok {
+			return true
+		}
+		cl, ok := kv.parent.node.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		return litKeysRefer(cl.Type, n)
+	}
+	return true
+}
+
+// litKeysRefer reports whether a composite literal of type t takes
+// value keys (map or array/slice) rather than field names. A named type
+// is looked up in the package once; anything else — elided, local,
+// imported, generic — is unknown and reports false.
+func litKeysRefer(t ast.Expr, n *Node) bool {
+	switch x := t.(type) {
+	case *ast.MapType, *ast.ArrayType:
+		return true
+	case *ast.Ident:
+		if n.locals[x.Name] || n.pkg == nil || n.pkg.Index == nil {
+			return false
+		}
+		td, ok := n.pkg.Index.Types[x.Name]
+		if !ok || td.Decl == nil {
+			return false
+		}
+		ts, ok := td.Decl.Spec.(*ast.TypeSpec)
+		if !ok {
+			return false
+		}
+		switch ts.Type.(type) {
+		case *ast.MapType, *ast.ArrayType:
+			return true
+		}
+	}
+	return false
 }
 
 // ASTNode returns the underlying go/ast node.
