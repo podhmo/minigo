@@ -2093,28 +2093,23 @@ func BodyBuiltins() string {
 	want := map[string]bool{"make": true, "append": true, "len": true, "cap": true, "nil": true, "iota": true, "true": true}
 	seen := map[string]bool{}
 	var maxTE *inspect.TypeExpr
-	var walk func(n *inspect.Node)
-	walk = func(n *inspect.Node) {
-		for _, c := range inspect.Nodes(n) {
-			if c.Kind == "Ident" {
-				te := inspect.Expr(c)
-				if want[te.Text] {
-					seen[te.Text] = true
-					if sid := inspect.SymbolID(te); sid == nil || sid.PackagePath != inspect.BuiltinPackagePath || sid.Name != te.Text {
-						seen[te.Text+" bad"] = true
-					}
-					if inspect.Resolve(te) != nil {
-						seen[te.Text+" resolved"] = true
-					}
+	walkNodes(inspect.Body(inspect.Symbol(p, "BuiltinNames")), func(c *inspect.Node) {
+		if c.Kind == "Ident" {
+			te := inspect.Expr(c)
+			if want[te.Text] {
+				seen[te.Text] = true
+				if sid := inspect.SymbolID(te); sid == nil || sid.PackagePath != inspect.BuiltinPackagePath || sid.Name != te.Text {
+					seen[te.Text+" bad"] = true
 				}
-				if te.Text == "max" {
-					maxTE = te
+				if inspect.Resolve(te) != nil {
+					seen[te.Text+" resolved"] = true
 				}
 			}
-			walk(c)
+			if te.Text == "max" {
+				maxTE = te
+			}
 		}
-	}
-	walk(inspect.Body(inspect.Symbol(p, "BuiltinNames")))
+	})
 	for name := range want {
 		if !seen[name] {
 			return "not seen: " + name
