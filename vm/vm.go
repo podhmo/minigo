@@ -115,6 +115,11 @@ type Hooks struct {
 	// anonymous typedefs. Used for promoted-field lookup, constraint
 	// resolution and generalized type inference.
 	ResolveType func(td *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, error)
+	// HostTwin returns the engine's own typedef for the named host type
+	// rt — the source declaration when rt's package is interpreted from
+	// source (go/ast), the bound typedef when it is host-bound — or nil
+	// when the engine has not loaded rt's package.
+	HostTwin func(rt reflect.Type) *runtime.TypeDef
 	// Linkname resolves a bodiless function carrying a two-arg
 	// `//go:linkname local importpath.symbol` doc directive to the
 	// target's callable value — stdlib internals (net/http's
@@ -10088,7 +10093,7 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 					break
 				}
 			}
-			if tn.Typ != nil && !v.convShapeEq(tn.Typ, td) {
+			if tn.Typ != nil && !v.convShapeEq(tn.Typ, td) && !v.hostElemTwin(v.topFrame(), tn.Typ, td) {
 				return nil, fmt.Errorf("cannot convert %s to %s", tdName(tn.Typ), tdName(td))
 			}
 			return &runtime.TypedNil{Typ: td}, nil
@@ -10762,7 +10767,9 @@ func (v *VM) convertSlice(td *runtime.TypeDef, x runtime.Value) (runtime.Value, 
 			}
 			return v.copyArray(v.topFrame(), &runtime.Slice{Elems: el, Typ: td}, td), nil
 		}
-		if s.Typ != nil && !v.convShapeEq(s.Typ, td) {
+		if s.Typ != nil && !v.convShapeEq(s.Typ, td) && !v.hostElemTwin(v.topFrame(), s.Typ, td) {
+			// a host-unboxed slice spells its element bare
+			// (`[]*Field`); its kept element identity decides.
 			return nil, fmt.Errorf("cannot convert %s to %s", tdName(s.Typ), tdName(td))
 		}
 		// Go shares the backing array on a conversion: re-tag, no copy.
@@ -11406,6 +11413,11 @@ func (v *VM) containerAssert(f *frame, td, tag *runtime.TypeDef, kind runtime.Ty
 	if td.Name != "" || tag.Name != "" {
 		return v.typeMatchesTD(f, td, tag)
 	}
+	if kind == runtime.KindSlice && tag.Elem != nil && v.hostElemTwin(f, tag, td) {
+		// a host-unboxed slice spells its element bare (`[]*Field`);
+		// the element identity it kept decides x.([]*goast.Field).
+		return true
+	}
 	return v.sigTypEq(td, tag)
 }
 
@@ -11670,6 +11682,11 @@ func (v *VM) typeMatchesTD(f *frame, td, dyn *runtime.TypeDef) bool {
 				return v.memberSigsMatch(reqFns, dynFns)
 			}
 		}
+		return true
+	}
+	if td.Kind == runtime.KindSlice && td.Name == "" && dyn.Name == "" && v.hostElemTwin(f, dyn, td) {
+		// a nil host slice's tag spells its element bare — see
+		// containerAssert.
 		return true
 	}
 	return v.sigTypEq(td, dyn)
@@ -12100,7 +12117,18 @@ func (v *VM) hostTwinIs(f *frame, host, src *runtime.TypeDef) bool {
 		}
 		return v.hostTwinIs(f, host.Elem, v.elemTypedef(f, src))
 	}
-	return host.HostIdent != nil && runtime.HostNamedIs(host.HostIdent, src)
+	if host.HostIdent == nil {
+		return false
+	}
+	if src.HostIdent != nil {
+		return src.HostIdent == host.HostIdent
+	}
+	if src.HostNew != nil {
+		// a bound typedef boxes a pointer zero (or the value itself)
+		ht := src.HostType()
+		return ht == host.HostIdent || (ht.Kind() == reflect.Pointer && ht.Elem() == host.HostIdent)
+	}
+	return runtime.HostNamedIs(host.HostIdent, src)
 }
 
 // coerceConcrete applies td to a non-nil x under a non-interface target.
@@ -14400,7 +14428,7 @@ func (v *VM) unifyTypeDef(ctx *runtime.TypeDef, tset map[string]bool, binds map[
 				et = conc.Elem
 			}
 			if et != nil {
-				et = v.sourceTwinOf(ctx, et)
+				et = v.sourceTwinOf(et)
 				v.unifyTypeDef(ctx, tset, binds, p.Elt, et)
 			}
 		}
@@ -14695,30 +14723,34 @@ func hostPkgElemTypedef(rt reflect.Type) *runtime.TypeDef {
 }
 
 // sourceTwinOf maps a host element typedef from [hostPkgElemTypedef] to
-// the typedef ctx's package declares under the same path and name — a
-// host []ast.Stmt passed to the source-interpreted go/ast's
-// walkList[N Node](v, list []N) binds N to go/ast's own Stmt, as the
-// static type would in Go. Anything else is returned unchanged.
-func (v *VM) sourceTwinOf(ctx, td *runtime.TypeDef) *runtime.TypeDef {
-	if td == nil || ctx == nil || ctx.Pkg == nil || v.H.ResolveType == nil {
+// the engine's own typedef for that type ([Hooks.HostTwin]) — a host
+// []ast.Stmt passed to walkList[N Node](v, list []N), in go/ast or in a
+// script, binds N to the source-interpreted go/ast's Stmt, as the static
+// type would in Go. Anything else is returned unchanged.
+func (v *VM) sourceTwinOf(td *runtime.TypeDef) *runtime.TypeDef {
+	if td == nil || v.H.HostTwin == nil {
 		return td
 	}
 	if td.Kind == runtime.KindPointer && td.Name == "" && td.Anon == nil && td.Elem != nil {
-		// host *Comment -> the source package's own *Comment
-		if et := v.sourceTwinOf(ctx, td.Elem); et != td.Elem {
-			return &runtime.TypeDef{Kind: runtime.KindPointer, Anon: &ast.StarExpr{X: ast.NewIdent(et.Name)}, Pkg: ctx.Pkg, File: ctx.File, Elem: et}
+		// host *Comment -> the engine's own *Comment
+		if et := v.sourceTwinOf(td.Elem); et != td.Elem {
+			pt := &runtime.TypeDef{Kind: runtime.KindPointer, Elem: et}
+			if et.Pkg != nil {
+				pt.Anon = &ast.StarExpr{X: ast.NewIdent(et.Name)}
+				pt.Pkg = et.Pkg
+				pt.File = et.File
+			}
+			return pt
 		}
 		return td
 	}
-	rt := td.HostIdent
-	if rt == nil || rt.PkgPath() != ctx.Pkg.Path {
+	if td.HostIdent == nil {
 		return td
 	}
-	twin, err := v.H.ResolveType(ctx, ast.NewIdent(rt.Name()))
-	if err != nil || twin == nil || !runtime.HostNamedIs(rt, twin) {
-		return td
+	if twin := v.H.HostTwin(td.HostIdent); twin != nil {
+		return twin
 	}
-	return twin
+	return td
 }
 
 // hostNamedKind classifies a named host type with the source

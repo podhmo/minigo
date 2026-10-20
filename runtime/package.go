@@ -258,6 +258,15 @@ func (p *Package) FinishIndexing() {
 	}
 }
 
+// WaitIndexed blocks until the package has finished indexing (see
+// [Package.MarkIndexed]); afterwards Index and the import scopes are
+// safe to read from any goroutine.
+func (p *Package) WaitIndexed() {
+	if p.indexed != nil {
+		<-p.indexed
+	}
+}
+
 // MatCache returns the value built for decl d, calling build when there
 // is none yet, so every caller gets the same *TypeDef or *Function for a
 // declaration (type identity depends on it). Concurrent callers may both
@@ -393,9 +402,7 @@ func (p *Package) EnsureConstsRun(run func(*Function) error) error {
 // [Package.EnsureReadyRun]). With a non-nil run, using a var or const
 // member initializes the package fully first, as Go guarantees.
 func (p *Package) MemberV(name string, materialize func(*Package, *index.Decl) (Value, error), run func(*Function) error) (Value, error) {
-	if p.indexed != nil {
-		<-p.indexed
-	}
+	p.WaitIndexed()
 	// A failed initialization must not go unnoticed: globals registered
 	// before the failure are partial state, so surface the error instead.
 	if p.State() == Failed {

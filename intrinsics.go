@@ -7225,7 +7225,9 @@ func sameErrTypHost(v runtime.VMCaller, rt reflect.Type, want *runtime.TypeDef) 
 	if wt.Name == "" || rt.Name() == "" {
 		return false
 	}
-	return wt.Name == rt.PkgPath()+"."+rt.Name()
+	// a type declared in a source-interpreted package (io/fs's
+	// PathError) is named by its package and bare name instead.
+	return wt.Name == rt.PkgPath()+"."+rt.Name() || runtime.HostNamedIs(rt, wt)
 }
 
 // sameErrTyp compares a chain element's dynamic typedef with the As
