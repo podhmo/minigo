@@ -2127,6 +2127,37 @@ func BodyBuiltins() string {
 	return "ok"
 }
 
+// BodyImportName: the bare import name of a qualified call
+// (the strings of strings.TrimSpace) names a package, not a decl — its
+// SymbolID is nil and Resolve returns nil instead of trapping; the
+// selector itself still resolves to the member.
+func BodyImportName() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	var sel *inspect.Node
+	walkNodes(inspect.Body(inspect.Symbol(p, "WalkMe")), func(c *inspect.Node) {
+		if c.Kind == "SelectorExpr" && inspect.Expr(c).Text == "strings.TrimSpace" {
+			sel = c
+		}
+	})
+	if sel == nil {
+		return "no strings.TrimSpace"
+	}
+	if sid := inspect.SymbolID(inspect.Expr(sel)); sid == nil || sid.PackagePath != "strings" || sid.Name != "TrimSpace" {
+		return "selector unresolved"
+	}
+	x := inspect.Expr(inspect.Nodes(sel)[0])
+	if x.Text != "strings" {
+		return "bad X: " + x.Text
+	}
+	if sid := inspect.SymbolID(x); sid != nil {
+		return "import name resolved to " + sid.PackagePath + "." + sid.Name
+	}
+	if inspect.Resolve(x) != nil {
+		return "import name resolved to a decl"
+	}
+	return "ok"
+}
+
 // TypeParamMark: identifiers bound as a decl's type parameters report a
 // marked SymbolID — the :typeparam: pseudo path — instead of being
 // attributed to the declaring package, so a walk can stop instead of

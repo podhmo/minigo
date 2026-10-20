@@ -1550,6 +1550,11 @@ func (te *TypeExpr) SymbolID() (runtime.SymbolID, bool) {
 			// same-named package type).
 			return runtime.SymbolID{PackagePath: TypeParamPackagePath, Name: e.Name}, true
 		}
+		if _, ok := te.importOf(e.Name); ok {
+			// a file-scope import binding (the strings of strings.X) names
+			// a package, not a declaration in one.
+			return runtime.SymbolID{}, false
+		}
 		if te.pkg != nil && te.pkg.Index != nil {
 			ix := te.pkg.Index
 			_, isType := ix.Types[e.Name]
@@ -1573,14 +1578,26 @@ func (te *TypeExpr) SymbolID() (runtime.SymbolID, bool) {
 		if !ok || te.file == nil || te.locals[x.Name] || te.tparams[x.Name] {
 			return runtime.SymbolID{}, false
 		}
-		for _, imp := range te.file.Imports {
-			if imp.LocalName() == x.Name {
-				return runtime.SymbolID{PackagePath: imp.Path, Name: e.Sel.Name}, true
-			}
+		if imp, ok := te.importOf(x.Name); ok {
+			return runtime.SymbolID{PackagePath: imp.Path, Name: e.Sel.Name}, true
 		}
 		return runtime.SymbolID{}, false
 	}
 	return runtime.SymbolID{}, false
+}
+
+// importOf returns the import of te's file that binds name; dot and
+// blank imports bind none.
+func (te *TypeExpr) importOf(name string) (*syntax.Import, bool) {
+	if te.file == nil {
+		return nil, false
+	}
+	for _, imp := range te.file.Imports {
+		if imp.Alias != "." && imp.Alias != "_" && imp.LocalName() == name {
+			return imp, true
+		}
+	}
+	return nil, false
 }
 
 // CanonicalName returns the type's identity independent of how a file
