@@ -3702,7 +3702,7 @@ func goValueOf(rv reflect.Value) runtime.Value {
 		}
 		el := make([]runtime.Value, len(v))
 		for i, b := range v {
-			el[i] = namedBasicElem("byte", int64(b))
+			el[i] = runtime.ByteValue(b)
 		}
 		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("byte")}
 	case []string:
@@ -4307,7 +4307,7 @@ func intOut(rs []runtime.Value, i int) int64 {
 func byteSliceArg(p []byte) *runtime.Slice {
 	el := make([]runtime.Value, len(p))
 	for i, b := range p {
-		el[i] = runtime.Tag(runtime.BasicTypedef("byte"), int64(b))
+		el[i] = runtime.ByteValue(b)
 	}
 	return &runtime.Slice{Elems: el, Typ: &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: ast.NewIdent("byte")}}}
 }
@@ -4374,7 +4374,7 @@ func (s *scriptIface) ReadByte() (byte, error) {
 }
 
 func (s *scriptIface) WriteByte(b byte) error {
-	rs, err := s.call("WriteByte", runtime.Tag(runtime.BasicTypedef("byte"), int64(b)))
+	rs, err := s.call("WriteByte", runtime.ByteValue(b))
 	if err != nil {
 		return err
 	}
@@ -4949,9 +4949,8 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 				// the generic element loop.
 				if rv.Type().Elem().Kind() == reflect.Uint8 && (rv.Kind() == reflect.Slice || rv.CanAddr()) {
 					bs := rv.Bytes()
-					td := sizedIntTyp(reflect.Uint8)
 					for i := 0; i < len(bs) && i < len(ss.Elems); i++ {
-						ss.Elems[i] = runtime.Tag(td, int64(bs[i]))
+						ss.Elems[i] = runtime.ByteValue(bs[i])
 					}
 					handled = true
 					continue
@@ -10623,7 +10622,7 @@ func unboxGoValue(x runtime.Value) runtime.Value {
 	case []byte:
 		el := make([]runtime.Value, len(h))
 		for i, b := range h {
-			el[i] = namedBasicElem("byte", int64(b))
+			el[i] = runtime.ByteValue(b)
 		}
 		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("byte")}
 	case []rune:

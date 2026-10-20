@@ -146,6 +146,20 @@ func Tag(td *TypeDef, v Value) *Named {
 	return &Named{Typ: td, V: sv}
 }
 
+// byteValues holds one shared byte-tagged value per byte.
+var byteValues = func() (vs [256]*Named) {
+	for i := range vs {
+		vs[i] = Tag(BasicTypedef("byte"), int64(i))
+	}
+	return vs
+}()
+
+// ByteValue returns the shared byte-tagged value for b. Bulk host []byte
+// conversions use it instead of allocating a Named per element: a Named
+// is never mutated in place (element stores replace the slot), so one
+// value per byte can back every slice.
+func ByteValue(b byte) *Named { return byteValues[b] }
+
 // hostScalarValue canonicalizes a host-scalar typedef's payload — a bound
 // stdlib named basic (time.Duration) keeps the raw host scalar so
 // arithmetic and formatting behave like the host value. A bind that
