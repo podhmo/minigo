@@ -2085,6 +2085,48 @@ func BodyLocalDecls() string {
 	return "ok"
 }
 
+// BodyBuiltins: predeclared funcs and constants spelled in a body report
+// the :builtin: SymbolID and Resolve returns nil instead of trapping
+// "no decl len"; a package member shadowing one (max) resolves to it.
+func BodyBuiltins() string {
+	p := inspect.DirOf("./testdata/inspectpkg")
+	want := map[string]bool{"make": true, "append": true, "len": true, "cap": true, "nil": true, "iota": true, "true": true}
+	seen := map[string]bool{}
+	var maxTE *inspect.TypeExpr
+	walkNodes(inspect.Body(inspect.Symbol(p, "BuiltinNames")), func(c *inspect.Node) {
+		if c.Kind == "Ident" {
+			te := inspect.Expr(c)
+			if want[te.Text] {
+				seen[te.Text] = true
+				if sid := inspect.SymbolID(te); sid == nil || sid.PackagePath != inspect.BuiltinPackagePath || sid.Name != te.Text {
+					seen[te.Text+" bad"] = true
+				}
+				if inspect.Resolve(te) != nil {
+					seen[te.Text+" resolved"] = true
+				}
+			}
+			if te.Text == "max" {
+				maxTE = te
+			}
+		}
+	})
+	for name := range want {
+		if !seen[name] {
+			return "not seen: " + name
+		}
+		if seen[name+" bad"] || seen[name+" resolved"] {
+			return "builtin attributed: " + name
+		}
+	}
+	if maxTE == nil {
+		return "max not seen"
+	}
+	if d := inspect.Resolve(maxTE); d == nil || d.Name != "max" || d.Kind != "func" {
+		return "shadowing max unresolved"
+	}
+	return "ok"
+}
+
 // TypeParamMark: identifiers bound as a decl's type parameters report a
 // marked SymbolID — the :typeparam: pseudo path — instead of being
 // attributed to the declaring package, so a walk can stop instead of

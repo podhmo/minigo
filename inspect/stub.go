@@ -292,10 +292,11 @@ func Origin(te *TypeExpr) *TypeExpr { panic("minigo intrinsic") }
 
 // SymbolID returns the identity of the declaration a type expression
 // names, resolving a qualified name through the declaring file's imports.
-// Predeclared names report [BuiltinPackagePath] and type parameters
-// [TypeParamPackagePath]. It returns nil for anything but a plain or
-// qualified name, including composites like []T and instantiations like
-// Pair[int], whose base [Children] reaches.
+// Predeclared names — types, funcs such as len, constants and nil —
+// report [BuiltinPackagePath] unless the package declares the same name,
+// and type parameters report [TypeParamPackagePath]. It returns nil for
+// anything but a plain or qualified name, including composites like []T
+// and instantiations like Pair[int], whose base [Children] reaches.
 func SymbolID(te *TypeExpr) *runtime.SymbolID { panic("minigo intrinsic") }
 
 // Resolve returns the [Decl] that te names, loading its package if needed.
