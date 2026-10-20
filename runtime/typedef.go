@@ -1665,15 +1665,7 @@ func typLenName(e ast.Expr) string {
 // identifier — basic types, aliases (byte, rune) and pseudo-types
 // (error, any, comparable) — which never carry a package qualifier.
 func predeclaredTypeName(name string) bool {
-	switch name {
-	case "bool", "string",
-		"int", "int8", "int16", "int32", "int64",
-		"uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
-		"byte", "rune", "float32", "float64", "complex64", "complex128",
-		"error", "any", "comparable":
-		return true
-	}
-	return false
+	return syntax.IsPredeclaredType(name)
 }
 
 // typImportPath resolves a file-local import alias (explicit or the

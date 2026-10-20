@@ -2483,14 +2483,7 @@ func (c *compiler) scopeOperandExpr(p *runtime.Package, sf *syntax.File, e ast.E
 // conversion can name. Anything else must resolve through the
 // declaring package's own decls or imports.
 func universeIdent(name string) bool {
-	switch name {
-	case "true", "false", "iota", "nil",
-		"append", "cap", "clear", "close", "complex", "copy", "delete",
-		"imag", "len", "make", "min", "max", "new", "panic", "print",
-		"println", "real", "recover":
-		return true
-	}
-	return predeclaredTypeNames[name]
+	return syntax.IsPredeclaredValue(name) || predeclaredTypeNames[name]
 }
 
 // callerShadows reports whether a name read bare in a foreign
