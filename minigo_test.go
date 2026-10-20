@@ -2337,6 +2337,7 @@ func TestLangGate(t *testing.T) {
 		{"./testdata/langgate/n125", "new(42) requires go1.26 or later (-lang was set to go1.25; check go.mod)"},
 		{"./testdata/langgate/r121", "cannot range over 10 (untyped int constant): requires go1.22 or later"},
 		{"./testdata/langgate/b117", "built-in min requires go1.21 or later"},
+		{"./testdata/langgate/ms117", "built-in min requires go1.21 or later"}, // min := min(1, 2)
 		{"./testdata/langgate/i117", "type instantiation requires go1.18 or later"},
 		// versioned names and instantiation inside builtin-call arguments
 		// and conversions, plus instantiation through a selector
