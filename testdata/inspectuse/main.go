@@ -2134,16 +2134,11 @@ func BodyBuiltins() string {
 func BodyImportName() string {
 	p := inspect.DirOf("./testdata/inspectpkg")
 	var sel *inspect.Node
-	var walk func(n *inspect.Node)
-	walk = func(n *inspect.Node) {
-		for _, c := range inspect.Nodes(n) {
-			if c.Kind == "SelectorExpr" && inspect.Expr(c).Text == "strings.TrimSpace" {
-				sel = c
-			}
-			walk(c)
+	walkNodes(inspect.Body(inspect.Symbol(p, "WalkMe")), func(c *inspect.Node) {
+		if c.Kind == "SelectorExpr" && inspect.Expr(c).Text == "strings.TrimSpace" {
+			sel = c
 		}
-	}
-	walk(inspect.Body(inspect.Symbol(p, "WalkMe")))
+	})
 	if sel == nil {
 		return "no strings.TrimSpace"
 	}
