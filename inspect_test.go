@@ -62,6 +62,7 @@ func TestInspect(t *testing.T) {
 		"RuntimePackageTag",
 		"TypeOfNamed",
 		"BoundTypeSym",
+		"ResolveBound", // a bound member resolves to its host pseudo-decl (#921)
 		"HostMethodSym",
 		"SourceOfStruct",
 		"EnumWalk",
@@ -116,7 +117,7 @@ func TestInspect(t *testing.T) {
 		"InitializerTypeTrap",        // a type decl has no initializer
 		"TypeFieldsIdentTrap",        // a named leaf is not a composite
 		"MethodSetFuncTrap",          // the method set is a type view
-		"ResolveBoundTrap",           // the resolver cannot descend into a bound pkg
+		"ResolveBoundMissTrap",       // a bound pkg lacks the name -> no decl
 		"MissingSymTrap",             // unknown symbol name
 		"LookupSymbolArgTrap",        // LookupSymbol keeps the arg contract
 		"LookupDirOfEmptyTrap",       // dir exists but holds no Go files -> error

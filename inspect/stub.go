@@ -303,8 +303,10 @@ func Origin(te *TypeExpr) *TypeExpr { panic("minigo intrinsic") }
 func SymbolID(te *TypeExpr) *runtime.SymbolID { panic("minigo intrinsic") }
 
 // Resolve returns the [Decl] that te names, loading its package if needed.
-// It returns nil when [SymbolID] is nil or names a builtin or type
-// parameter, and traps when the declaration cannot be found.
+// A member of a host-bound package resolves to the Kind "host" decl
+// [Symbol] reports for it. It returns nil when [SymbolID] is nil or names
+// a builtin or type parameter, and traps when the declaration cannot be
+// found.
 func Resolve(te *TypeExpr) *Decl { panic("minigo intrinsic") }
 
 // UsedSymbols lists the imported package members f refers to as pkg.Name,

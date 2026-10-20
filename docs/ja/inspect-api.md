@@ -75,7 +75,7 @@
 | `UnRef(te)` | pointer を1層剥がす | `*T`→`T` |
 | `Origin(te)` | pointer・型遷移を全部追い切った基底式 | 「最終的にどの型か」一発 |
 | `SymbolID(te)` | `*SymbolID`（`{PackagePath, Name}`）または nil | 名前を持たない式（composite、instantiation 全体）は nil |
-| `Resolve(te)` | `*Decl`（宣言ビュー） | TypeExpr→Decl 方向の橋 |
+| `Resolve(te)` | `*Decl`（宣言ビュー） | TypeExpr→Decl 方向の橋。bound パッケージの型（`time.Time` 等）は `Symbol` と同じ Kind=`host` 擬似 decl を返す（#921）。存在しない名前は trap |
 | `SameType(a, b)` | 構造的等価 | タグや名前解決込みの厳密比較 |
 
 ### SymbolID の疑似パス
