@@ -95,6 +95,31 @@ internals (e.g. `reflect`'s `internal/abi` init).
 
 Smaller gaps shift as work lands — see `TODO.md` for the live list.
 
+### Performance notes
+
+Speed is a non-goal, but one pattern is worth knowing: a script `[]byte`
+holds one boxed value per byte, so reading a large file with
+`os.ReadFile` and converting it with `string(b)` costs far more than in
+Go (a 32MB file: ~120ms and ~560MB RSS). When the file is only used as
+text, copy it into a `strings.Builder` instead — host readers and
+writers stay on the host, so this runs at Go speed:
+
+```go
+f, err := os.Open(path)
+if err != nil {
+	return err
+}
+defer f.Close()
+var sb strings.Builder
+if _, err := io.Copy(&sb, f); err != nil {
+	return err
+}
+text := sb.String()
+```
+
+The same holds for `bytes.Buffer`, `bufio`, `fmt.Fprint*` and the other
+`io` helpers when both ends are host values.
+
 ## Provenance
 
 This repository is a reboot of [`minigo2/`](https://github.com/podhmo/go-scan/tree/main/minigo2)
