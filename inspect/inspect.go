@@ -1509,27 +1509,6 @@ func (te *TypeExpr) Origin(res Resolver) *TypeExpr {
 	}
 }
 
-var predeclared = map[string]bool{
-	"bool": true, "byte": true, "complex64": true, "complex128": true,
-	"error": true, "float32": true, "float64": true, "int": true,
-	"int8": true, "int16": true, "int32": true, "int64": true,
-	"rune": true, "string": true, "uint": true, "uint8": true,
-	"uint16": true, "uint32": true, "uint64": true, "uintptr": true,
-	"any": true, "comparable": true,
-}
-
-// predeclaredValues are the universe-scope funcs, consts and nil — names
-// a body spells as values, never declared by the package unless it
-// shadows them.
-var predeclaredValues = map[string]bool{
-	"append": true, "cap": true, "clear": true, "close": true,
-	"complex": true, "copy": true, "delete": true, "imag": true,
-	"len": true, "make": true, "max": true, "min": true, "new": true,
-	"panic": true, "print": true, "println": true, "real": true,
-	"recover": true,
-	"true":    true, "false": true, "iota": true, "nil": true,
-}
-
 // SymbolID is the method form of [SymbolID]: ok is false where SymbolID
 // reports nil.
 func (te *TypeExpr) SymbolID() (runtime.SymbolID, bool) {
@@ -1567,7 +1546,7 @@ func (te *TypeExpr) SymbolID() (runtime.SymbolID, bool) {
 				return runtime.SymbolID{PackagePath: te.pkg.Path, Name: e.Name}, true
 			}
 		}
-		if predeclared[e.Name] || predeclaredValues[e.Name] {
+		if syntax.IsPredeclaredType(e.Name) || syntax.IsPredeclaredValue(e.Name) {
 			return runtime.SymbolID{PackagePath: BuiltinPackagePath, Name: e.Name}, true
 		}
 		if te.pkg != nil {
