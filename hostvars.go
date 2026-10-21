@@ -1,6 +1,7 @@
 package minigo
 
 import (
+	"io"
 	"io/fs"
 
 	"github.com/podhmo/minigo/runtime"
@@ -21,6 +22,16 @@ import (
 // internal/oserror is listed too: it is where io/fs's sentinels come from,
 // and any other source package importing it gets the host objects.
 var hostVars = map[string]map[string]runtime.Value{
+	// io under --src: host-bound readers (strings.Reader, bufio) return
+	// the host io.EOF, so the interpreted io must name the same objects.
+	"io": {
+		"EOF":              &runtime.GoValue{V: io.EOF},
+		"ErrUnexpectedEOF": &runtime.GoValue{V: io.ErrUnexpectedEOF},
+		"ErrShortWrite":    &runtime.GoValue{V: io.ErrShortWrite},
+		"ErrShortBuffer":   &runtime.GoValue{V: io.ErrShortBuffer},
+		"ErrNoProgress":    &runtime.GoValue{V: io.ErrNoProgress},
+		"ErrClosedPipe":    &runtime.GoValue{V: io.ErrClosedPipe},
+	},
 	"io/fs": {
 		"ErrInvalid":    &runtime.GoValue{V: fs.ErrInvalid},
 		"ErrPermission": &runtime.GoValue{V: fs.ErrPermission},
