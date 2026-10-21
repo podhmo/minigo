@@ -1,0 +1,8 @@
+0.5 0.5
+float64 float32
+1 2
+3 3 4
+0.33333334
+(3+0i) (-3+4i) (3+0i)
+complex128 complex128
+complex64 (1+2i) float32

@@ -481,6 +481,9 @@ func builtins(e *Engine) *runtime.Env {
 		if len(args) != 2 {
 			return nil, fmt.Errorf("complex expects two arguments")
 		}
+		if c, ok := complexConst(args[0], args[1]); ok {
+			return c, nil
+		}
 		re, ok1 := argFloat(args[0])
 		im, ok2 := argFloat(args[1])
 		if !ok1 || !ok2 {
@@ -494,10 +497,10 @@ func builtins(e *Engine) *runtime.Env {
 		return &runtime.GoValue{V: complex(re, im)}, nil
 	})
 	bf("real", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-		if u, ok := args[0].(*runtime.UConst); ok && numericConst(u) {
-			// a constant stays a constant: real(1+2i) is the untyped
-			// float 1, still materializable to any numeric target.
-			return &runtime.UConst{V: constant.Real(u.V)}, nil
+		// a constant stays a constant: real(1+2i) is the untyped
+		// float 1, still materializable to any numeric target.
+		if r, ok := constPart(args[0], false); ok {
+			return r, nil
 		}
 		cv, w, ok := argComplex(args[0])
 		if !ok {
@@ -509,8 +512,8 @@ func builtins(e *Engine) *runtime.Env {
 		return real(cv), nil
 	})
 	bf("imag", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-		if u, ok := args[0].(*runtime.UConst); ok && numericConst(u) {
-			return &runtime.UConst{V: constant.Imag(u.V)}, nil
+		if r, ok := constPart(args[0], true); ok {
+			return r, nil
 		}
 		cv, w, ok := argComplex(args[0])
 		if !ok {
@@ -899,12 +902,69 @@ func constNative(v runtime.Value) runtime.Value {
 	return v
 }
 
+// constPart implements real/imag on a constant operand: an untyped
+// complex constant gives an untyped FLOAT constant (`real(1+2i)/2` is
+// 0.5), a typed one — `complex64(c)`, Tag{complex64, UConst} — the
+// constant at the matching float type (float32 for complex64).
+func constPart(x runtime.Value, imagPart bool) (runtime.Value, bool) {
+	var tag *runtime.TypeDef
+	if n, ok := x.(*runtime.Named); ok {
+		tag, x = n.Typ, n.V
+	}
+	u, ok := x.(*runtime.UConst)
+	if !ok || !numericConst(u) || u.Wrap {
+		return nil, false
+	}
+	part := constant.Real(u.V)
+	if imagPart {
+		part = constant.Imag(u.V)
+	}
+	r := &runtime.UConst{V: constant.ToFloat(part)}
+	if tag == nil {
+		return r, true
+	}
+	switch runtime.BasicNameOf(tag) {
+	case "complex64":
+		f32, _ := constant.Float32Val(r.V)
+		return runtime.Tag(runtime.BasicTypedef("float32"), &runtime.UConst{V: constant.MakeFloat64(float64(f32))}), true
+	case "complex128":
+		return runtime.Tag(runtime.BasicTypedef("float64"), r), true
+	}
+	return nil, false
+}
+
+// complexConst folds complex(re, im) over two untyped constants into
+// the untyped complex constant Go makes of it (`const k = complex(3,
+// 0)` still converts to int).
+func complexConst(re, im runtime.Value) (runtime.Value, bool) {
+	ur, ok1 := re.(*runtime.UConst)
+	ui, ok2 := im.(*runtime.UConst)
+	if !ok1 || !ok2 || ur.Wrap || ui.Wrap {
+		return nil, false
+	}
+	rv, iv := constant.ToFloat(ur.V), constant.ToFloat(ui.V)
+	if rv.Kind() != constant.Float || iv.Kind() != constant.Float {
+		return nil, false
+	}
+	return &runtime.UConst{V: constant.BinaryOp(rv, token.ADD, constant.MakeImag(iv))}, true
+}
+
 // argFloat reads a builtin argument as float64 (ints promote).
 func argFloat(x runtime.Value) (float64, bool) {
 	switch n := runtime.Unwrap(x).(type) {
 	case *runtime.UConst:
 		// a constant under a typedef tag stays a constant:
 		// `float32(1.5)` is Tag{float32, UConst}, still numeric.
+		if n.V.Kind() == constant.Complex {
+			if constant.Sign(constant.Imag(n.V)) != 0 {
+				return 0, false
+			}
+			f, _ := constant.Float64Val(constant.ToFloat(constant.Real(n.V)))
+			return runtime.CanonConstZero(f), true
+		}
+		if n.V.Kind() != constant.Int && n.V.Kind() != constant.Float {
+			return 0, false
+		}
 		f, _ := constant.Float64Val(n.V)
 		return runtime.CanonConstZero(f), true
 	case int64:
@@ -918,10 +978,22 @@ func argFloat(x runtime.Value) (float64, bool) {
 // argComplex reads a builtin argument as complex128 with its width —
 // ints and floats promote to complex128.
 func argComplex(x runtime.Value) (complex128, int, bool) {
+	w := 128
 	if n, ok := x.(*runtime.Named); ok {
+		if runtime.BasicNameOf(n.Typ) == "complex64" {
+			w = 64
+		}
 		x = n.V
 	}
 	switch n := x.(type) {
+	case *runtime.UConst:
+		// a typed complex constant (`complex64(c)`) keeps its exact
+		// parts; read both halves.
+		if n.V.Kind() == constant.Complex {
+			re, _ := constant.Float64Val(constant.ToFloat(constant.Real(n.V)))
+			im, _ := constant.Float64Val(constant.ToFloat(constant.Imag(n.V)))
+			return complex(re, im), w, true
+		}
 	case *runtime.GoValue:
 		switch c := n.V.(type) {
 		case complex64:
