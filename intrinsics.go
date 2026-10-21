@@ -9095,6 +9095,10 @@ func deepEql(a, b runtime.Value, twin func(a, b *runtime.TypeDef) bool) bool {
 
 func deepEqlSeen(a, b runtime.Value, seen map[devisit]bool, twin func(a, b *runtime.TypeDef) bool) bool {
 	for {
+		// a boxed host named basic (a FileMode from os.Stat) meets
+		// its source twin's value (io/fs's ModeDir) as that Named;
+		// a plain uint32 stays a different type.
+		a, b = deepTwinOperands(a, b)
 		an, aNamed := a.(*runtime.Named)
 		bn, bNamed := b.(*runtime.Named)
 		if aNamed != bNamed {
@@ -9222,6 +9226,23 @@ func deepNilTyp(v runtime.Value) *runtime.TypeDef {
 	return runtime.BoxedNilTyp(v)
 }
 
+// deepTwinOperands lets a boxed host named basic meet a Named of its
+// source twin (a host FileMode against io/fs's ModeDir): the host one
+// reads as that Named. Like the VM's twinOperands, it folds only when
+// the host type is the Named's declaration ([runtime.HostNamedIs]).
+func deepTwinOperands(a, b runtime.Value) (runtime.Value, runtime.Value) {
+	if n, ok := b.(*runtime.Named); ok {
+		if p, rt, ok := runtime.HostNamedScalar(a); ok && runtime.HostNamedIs(rt, n.Typ) {
+			return runtime.Tag(n.Typ, p), b
+		}
+	}
+	if n, ok := a.(*runtime.Named); ok {
+		if p, rt, ok := runtime.HostNamedScalar(b); ok && runtime.HostNamedIs(rt, n.Typ) {
+			return a, runtime.Tag(n.Typ, p)
+		}
+	}
+	return a, b
+}
 
 // deepNilish reports whether v is any nil flavor (typed nil, iface nil,
 // or the untyped nil).
