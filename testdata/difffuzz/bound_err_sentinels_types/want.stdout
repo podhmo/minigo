@@ -1,0 +1,15 @@
+syntax error in pattern true
+syntax error in pattern true false
+a
+b
+STOP
+<nil>
+3
+true
+true
+true
+true true no-such-cmd-zz-minigo
+true 3
+true 2006 x
+true 1
+true *json.SyntaxError
