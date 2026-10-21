@@ -12400,8 +12400,9 @@ func (v *VM) hostNilTwin(a, b *runtime.TypeDef) bool {
 }
 
 // unresolvedSpells reports whether src, an anonymous *T typedef whose T
-// does not resolve, spells rt: `*pkg.Name` with rt's package name and
-// type name.
+// does not resolve, spells rt: `*pkg.Name` where pkg names rt's package
+// in src's file — through the file's import table, so a renamed import
+// (`rx "regexp"`) matches by path — and Name is rt's type name.
 func unresolvedSpells(src *runtime.TypeDef, rt reflect.Type) bool {
 	st, ok := src.Anon.(*ast.StarExpr)
 	if !ok {
@@ -12415,8 +12416,19 @@ func unresolvedSpells(src *runtime.TypeDef, rt reflect.Type) bool {
 	if !ok {
 		return false
 	}
-	// rt.String() is "pkgname.Name": its prefix is the package clause
-	// name, which an import of the package spells by default.
+	if src.Pkg != nil && src.File != nil {
+		for _, ref := range src.Pkg.Imports[src.File] {
+			name := ref.Alias
+			if name == "" {
+				name = ref.PackageName()
+			}
+			if name == pkg.Name {
+				return ref.Path == rt.PkgPath()
+			}
+		}
+	}
+	// no import table to consult: rt.String() is "pkgname.Name", its
+	// prefix the package clause name an import spells by default.
 	return rt.String() == pkg.Name+"."+rt.Name()
 }
 
