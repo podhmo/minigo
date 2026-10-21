@@ -3460,7 +3460,7 @@ func hostTypOf(td *runtime.TypeDef) reflect.Type {
 // (nil, false) reports that neither exists.
 func (v *VM) hostMember(hv any, name string) (runtime.Value, bool) {
 	if fv, ok := hostField(hv, name); ok {
-		return goValueOf(fv), true
+		return goSlotValueOf(fv), true
 	}
 	m := reflect.ValueOf(hv).MethodByName(name)
 	if !m.IsValid() {
@@ -3770,6 +3770,40 @@ func goValueOf(rv reflect.Value) runtime.Value {
 		}
 		return &runtime.GoValue{V: x}
 	}
+}
+
+// goSlotValueOf is goValueOf for a value read out of a host interface
+// slot — a host call's `any` result (sync.Map.Load, context.Value,
+// atomic.Value.Load), a callback's `any` param (sync.Map.Range), an
+// `any` field. A typed nil held there is a non-nil interface, so it
+// reads back boxed as an [runtime.IfaceNil] that keeps its dynamic type:
+// `v == nil` is false and `v.(*T)` still matches. goValueOf alone would
+// yield the bare typed nil, which equals nil. Script channels also ride
+// on `chan any` but keep their element type, so they use goValueOf.
+func goSlotValueOf(rv reflect.Value) runtime.Value {
+	if rv.Kind() == reflect.Interface && !rv.IsNil() {
+		e := rv.Elem()
+		if e.Kind() == reflect.Pointer {
+			if e.IsNil() {
+				// a nil host *T of a named type (os.Open's file on error)
+				if td := HostNilPtrTypedef(e.Type()); td != nil {
+					return &runtime.IfaceNil{Typ: td}
+				}
+			} else if tn, ok := e.Interface().(*runtime.TypedNil); ok && tn.Typ != nil {
+				// a script typed nil stored verbatim
+				return &runtime.IfaceNil{Typ: tn.Typ}
+			}
+		}
+		// a typed nil stored as a canonical opaque key (a sync.Map
+		// value, an atomic.Value) restores to its typed nil — box it
+		if orig, ok := runtime.OpaqueKeyOrig(e.Interface()); ok {
+			if tn, isTN := orig.(*runtime.TypedNil); isTN && tn.Typ != nil {
+				return &runtime.IfaceNil{Typ: tn.Typ}
+			}
+			return orig
+		}
+	}
+	return goValueOf(rv)
 }
 
 // SnapshotOf converts a host Go value into a [VM.Call] argument. The value
@@ -4975,11 +5009,11 @@ func goResults(out []reflect.Value) (runtime.Value, error) {
 	case 0:
 		return runtime.NIL, nil
 	case 1:
-		return goValueOf(out[0]), nil
+		return goSlotValueOf(out[0]), nil
 	default:
 		el := make([]runtime.Value, len(out))
 		for i, o := range out {
-			el[i] = goValueOf(o)
+			el[i] = goSlotValueOf(o)
 		}
 		return &runtime.Tuple{Elems: el}, nil
 	}
@@ -5178,7 +5212,7 @@ func adaptFuncOut(x runtime.Value, t reflect.Type, vc runtime.VMCaller, opaque b
 	fv := reflect.MakeFunc(t, func(in []reflect.Value) []reflect.Value {
 		sargs := make([]runtime.Value, len(in))
 		for i, a := range in {
-			sargs[i] = goValueOf(a)
+			sargs[i] = goSlotValueOf(a)
 		}
 		r, err := vc.Call(x, sargs)
 		if err != nil {
