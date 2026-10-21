@@ -55,7 +55,7 @@ func mapsClone(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) 
 				pairs[k] = e
 			}
 			return &runtime.Map{Pairs: pairs, Order: append([]runtime.Value(nil), m.Order...),
-				Keys: append([]runtime.Value(nil), m.Keys...), Typ: m.Typ}
+				Keys: append([]runtime.Value(nil), m.Keys...), Typ: m.Typ, IfaceKey: m.IfaceKey}
 		}
 		if d, ok := runtime.Deref(v); ok {
 			return clone(d)
