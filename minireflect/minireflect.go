@@ -821,7 +821,7 @@ func (e *Env) makeMapN(vc runtime.VMCaller, arg runtime.Value, n int) (runtime.V
 		}
 		return &runtime.GoValue{V: &RValue{e: e, vc: vc, rv: rv}}, nil
 	}
-	return &runtime.GoValue{V: &RValue{e: e, vc: vc, val: &runtime.Map{Typ: t.td}, td: t.td}}, nil
+	return &runtime.GoValue{V: &RValue{e: e, vc: vc, val: vc.NewMap(t.td), td: t.td}}, nil
 }
 
 func (e *Env) append_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {

@@ -3870,7 +3870,7 @@ func snapshotValue(x any, visiting map[uintptr]struct{}) runtime.Value {
 			return &runtime.GoValue{V: x}
 		}
 		visiting[rv.Pointer()] = struct{}{}
-		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}, Typ: td}
+		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}, Typ: td, IfaceKey: rv.Type().Key().Kind() == reflect.Interface}
 		for _, k := range rv.MapKeys() {
 			m.Insert(snapshotValue(k.Interface(), visiting), snapshotValue(rv.MapIndex(k).Interface(), visiting))
 		}
@@ -6506,16 +6506,40 @@ func (v *VM) ifaceKeyed(f *frame, td *runtime.TypeDef) bool {
 
 // Equal implements [runtime.VMCaller].
 func (v *VM) Equal(td *runtime.TypeDef, a, b runtime.Value) bool {
-	if td != nil {
+	if td == nil {
+		return v.ifaceEql(v.topFrame(), a, b)
+	}
+	return v.slotEql(td, a, b)
+}
+
+// slotEql compares two values held in a slot declared td — a struct
+// field, an array element, a slices/maps helper's element: an
+// interface-typed slot compares (dynamic type, value) pairs, so
+// S{M(1)} != S{1} for `type S struct{ A any }`; a slot of a host named
+// basic's twin type folds the host box (twinSlot). A nil td compares
+// like eqlValue.
+func (v *VM) slotEql(td *runtime.TypeDef, a, b runtime.Value) bool {
+	if td != nil && td.Kind == runtime.KindAlias {
 		td = v.peelAlias(td)
 	}
-	if td == nil || td.Kind == runtime.KindInterface {
+	if td != nil && td.Kind == runtime.KindInterface && !nilSlotValue(a) && !nilSlotValue(b) {
 		return v.ifaceEql(v.topFrame(), a, b)
 	}
 	if isGoValue(a) || isGoValue(b) {
 		a, b = twinSlot(td, a), twinSlot(td, b)
 	}
 	return v.eqlValue(a, b)
+}
+
+// nilSlotValue reports the nil shapes eqlValue already compares by
+// Go's interface rules (a nil interface of any declared interface
+// type, a boxed typed nil).
+func nilSlotValue(x runtime.Value) bool {
+	switch x.(type) {
+	case runtime.Nil, *runtime.IfaceNil, *runtime.TypedNil:
+		return true
+	}
+	return false
 }
 
 // NewMap implements [runtime.VMCaller].
@@ -10045,11 +10069,11 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 			if uncomparableValue(av.Fields[i]) || (i < len(fts) && v.uncomparableTypDeep(fts[i])) {
 				panic(runtime.ComparingUncomparablePanic(spelledTyp(av.Def)))
 			}
-			fa, fb := av.Fields[i], bs.Fields[i]
-			if i < len(fts) && (isGoValue(fa) || isGoValue(fb)) {
-				fa, fb = twinSlot(fts[i], fa), twinSlot(fts[i], fb)
+			var ft *runtime.TypeDef
+			if i < len(fts) {
+				ft = fts[i]
 			}
-			if !v.eqlValue(fa, fb) {
+			if !v.slotEql(ft, av.Fields[i], bs.Fields[i]) {
 				return false
 			}
 		}
@@ -10080,11 +10104,7 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 					panic(runtime.ComparingUncomparablePanic(spelledTyp(av.Typ)))
 				}
 				for i := range av.Elems {
-					ea, eb := av.Elems[i], bs.Elems[i]
-					if isGoValue(ea) || isGoValue(eb) {
-						ea, eb = twinSlot(et, ea), twinSlot(et, eb)
-					}
-					if !v.eqlValue(ea, eb) {
+					if !v.slotEql(et, av.Elems[i], bs.Elems[i]) {
 						return false
 					}
 				}

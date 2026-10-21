@@ -1478,8 +1478,12 @@ func (e *Engine) installStdlib() {
 			if a.Typ != nil {
 				et, _ = vc.ElemOf(a.Typ)
 			}
-			for k, av := range a.Pairs {
-				bv, ok := b.LookupCanonical(k)
+			// look each key up by its script value: the two maps may key
+			// differently (an interface-keyed map made in the script vs
+			// one built host-side), and a NaN key is never found, as in Go.
+			for i := 0; i < a.Len(); i++ {
+				k, av := a.At(i)
+				bv, ok := b.Get(k)
 				if !ok || !vc.Equal(et, av, bv) {
 					return false, nil
 				}
@@ -4260,7 +4264,7 @@ func scriptVal(v any) runtime.Value {
 			return &runtime.TypedNil{Typ: &runtime.TypeDef{Kind: runtime.KindMap,
 				Anon: &ast.MapType{Key: ast.NewIdent("any"), Value: ast.NewIdent("any")}}}
 		}
-		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}}
+		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}, IfaceKey: true}
 		for k, vv := range x {
 			m.Insert(scriptVal(k), scriptVal(vv))
 		}
