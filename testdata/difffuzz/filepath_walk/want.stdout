@@ -1,0 +1,50 @@
+== all
+. true true true false false
+a true true true false false
+a/0.txt true false false true false
+  size 1
+a/deep true true true false false
+a/deep/y.txt true false false true true
+  size 3
+a/x.txt true false false true false
+  size 2
+b true true true false false
+b/z.txt true false false true false
+  size 1
+top.txt true false false true false
+  size 1
+err: <nil>
+== SkipDir from filepath and fs
+.
+top.txt
+err: <nil>
+== SkipDir on a file skips the rest of the dir
+.
+a
+a/0.txt
+b
+b/z.txt
+top.txt
+err: <nil>
+== SkipAll
+.
+a
+a/0.txt
+a/deep
+err: <nil>
+== error stops the walk
+err: my 7 true true true
+== missing root
+nope true true true
+err: true
+== WalkDir missing root and script error
+nope true true
+err: <nil>
+err: walk a/0.txt: permission denied true true true
+== relative root
+a
+a/0.txt
+a/deep
+a/deep/y.txt
+a/x.txt
+err: <nil>
