@@ -3601,15 +3601,16 @@ func goValueOf(rv reflect.Value) runtime.Value {
 	switch rv.Kind() {
 	case reflect.Pointer, reflect.Interface, reflect.Chan, reflect.Func:
 		if rv.IsNil() {
-			// a nil *T of a named host type is a typed nil: it still
-			// compares equal to nil, but keeps its dynamic type when
-			// stored into an interface and dispatches T's pointer
+			// a nil *T of a named host type, or a nil chan/func of a
+			// predeclared spelling, is a typed nil ([HostNil]): it
+			// still compares equal to nil, but keeps its dynamic type
+			// when stored into an interface and dispatches T's pointer
 			// methods on the nil receiver, as in Go. Other nil
 			// pointer-ish host values read as plain nil — boxing them
 			// would make `v == nil` comparisons lie.
-			if rv.Kind() == reflect.Pointer {
-				if td := HostNilPtrTypedef(rv.Type()); td != nil {
-					return &runtime.TypedNil{Typ: td}
+			if rv.Kind() != reflect.Interface {
+				if tn := HostNil(rv.Type()); tn != nil {
+					return tn
 				}
 			}
 			return runtime.NIL
@@ -3783,11 +3784,19 @@ func goValueOf(rv reflect.Value) runtime.Value {
 func goSlotValueOf(rv reflect.Value) runtime.Value {
 	if rv.Kind() == reflect.Interface && !rv.IsNil() {
 		e := rv.Elem()
-		if e.Kind() == reflect.Pointer {
+		switch e.Kind() {
+		case reflect.Chan, reflect.Func:
+			// a nil host chan/func of a predeclared spelling
+			if e.IsNil() {
+				if tn := HostNil(e.Type()); tn != nil {
+					return &runtime.IfaceNil{Typ: tn.Typ}
+				}
+			}
+		case reflect.Pointer:
 			if e.IsNil() {
 				// a nil host *T of a named type (os.Open's file on error)
-				if td := HostNilPtrTypedef(e.Type()); td != nil {
-					return &runtime.IfaceNil{Typ: td}
+				if tn := HostNil(e.Type()); tn != nil {
+					return &runtime.IfaceNil{Typ: tn.Typ}
 				}
 			} else if tn, ok := e.Interface().(*runtime.TypedNil); ok && tn.Typ != nil {
 				// a script typed nil stored verbatim
@@ -15135,6 +15144,71 @@ func HostNilPtrTypedef(rt reflect.Type) *runtime.TypeDef {
 	}
 	got, _ := hostNilPtrTypes.LoadOrStore(rt, td)
 	return got.(*runtime.TypeDef)
+}
+
+// hostNils memoizes [HostNil] per reflect type — including a nil
+// *runtime.TypedNil for a type whose nils stay untyped.
+var hostNils sync.Map // reflect.Type -> *runtime.TypedNil
+
+// HostNil is the typed nil a nil host value of type rt reads as: a nil
+// *T of a named host type ([HostNilPtrTypedef]), or a nil chan, func or
+// pointer of an unnamed type spelled from predeclared types only
+// (`<-chan struct{}` from context.Background().Done(), exec.Cmd's
+// `func() error` Cancel, `*int`). It compares equal to nil but keeps
+// its dynamic type once stored in an interface. The value is shared per
+// type — a nil read allocates nothing — so callers must not mutate it.
+// Other types report nil: their nils read as untyped nil.
+func HostNil(rt reflect.Type) *runtime.TypedNil {
+	if tn, ok := hostNils.Load(rt); ok {
+		return tn.(*runtime.TypedNil)
+	}
+	var tn *runtime.TypedNil
+	if td := HostNilPtrTypedef(rt); td != nil {
+		tn = &runtime.TypedNil{Typ: td}
+	} else if rt.Name() == "" && (rt.Kind() == reflect.Chan || rt.Kind() == reflect.Func || rt.Kind() == reflect.Pointer) &&
+		universeSpelled(rt) {
+		tn = &runtime.TypedNil{Typ: &runtime.TypeDef{Kind: hostNamedKind(rt), Anon: anonExprOf(rt)}}
+	}
+	got, _ := hostNils.LoadOrStore(rt, tn)
+	return got.(*runtime.TypedNil)
+}
+
+// universeSpelled reports whether rt is spelled from predeclared types
+// only, so [anonExprOf]'s spelling resolves in any file: no named type
+// of a package, no unexported struct field, no non-empty unnamed
+// interface.
+func universeSpelled(rt reflect.Type) bool {
+	if rt.Name() != "" {
+		return rt.PkgPath() == "" && rt.Kind() != reflect.UnsafePointer
+	}
+	switch rt.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Chan:
+		return universeSpelled(rt.Elem())
+	case reflect.Map:
+		return universeSpelled(rt.Key()) && universeSpelled(rt.Elem())
+	case reflect.Func:
+		for i := 0; i < rt.NumIn(); i++ {
+			if !universeSpelled(rt.In(i)) {
+				return false
+			}
+		}
+		for i := 0; i < rt.NumOut(); i++ {
+			if !universeSpelled(rt.Out(i)) {
+				return false
+			}
+		}
+		return true
+	case reflect.Struct:
+		for i := 0; i < rt.NumField(); i++ {
+			if f := rt.Field(i); f.PkgPath != "" || !universeSpelled(f.Type) {
+				return false
+			}
+		}
+		return true
+	case reflect.Interface:
+		return rt.NumMethod() == 0
+	}
+	return false
 }
 
 // HostNilPtrType reports the host pointer type behind a typedef minted by
