@@ -7,6 +7,7 @@ import (
 	"go/format"
 	"go/token"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -2252,6 +2253,57 @@ func ASTTypedNil() string {
 	}
 	if g, w := strings.Join(got, "\n"), strings.Join(want, "\n"); g != w {
 		return "got\n" + g + "\nwant\n" + w
+	}
+	return "ok"
+}
+
+type tokRec struct{ Tok token.Token }
+
+type tokPair struct {
+	Tok token.Token
+	N   int
+}
+
+func tokEq[T comparable](a, b T) bool { return a == b }
+
+func tokID[T any](x T) T { return x }
+
+// ASTHostTokensNested: a host token.Token stays go/token's Token when it
+// is nested or generic — struct and array equality, struct/array/any map
+// keys, inferred type parameters and the slices helpers all see one
+// type, as in the go toolchain.
+func ASTHostTokensNested() string {
+	fd := inspect.AST(inspect.Symbol(inspect.Current(), "astInspectSubject")).(*goast.FuncDecl)
+	tok := fd.Body.List[0].(*goast.AssignStmt).Tok // total := 0
+	var bad []string
+	check := func(name string, ok bool) {
+		if !ok {
+			bad = append(bad, name)
+		}
+	}
+	check("struct ==", tokRec{tok} == tokRec{token.DEFINE})
+	check("struct == (swapped)", tokRec{token.DEFINE} == tokRec{tok})
+	check("struct != other", tokRec{tok} != tokRec{token.ASSIGN})
+	check("pair ==", tokPair{tok, 1} == tokPair{token.DEFINE, 1})
+	check("array ==", [2]token.Token{token.ILLEGAL, tok} == [2]token.Token{token.ILLEGAL, token.DEFINE})
+	var ai, bi any = tokRec{tok}, tokRec{token.DEFINE}
+	check("any(struct) ==", ai == bi)
+	sm := map[tokRec]int{{token.DEFINE}: 1}
+	sm[tokRec{tok}]++
+	check("struct key", sm[tokRec{tok}] == 2 && len(sm) == 1)
+	am := map[[1]token.Token]int{{token.DEFINE}: 1}
+	check("array key", am[[1]token.Token{tok}] == 1)
+	anym := map[any]int{token.DEFINE: 1}
+	anym[tok]++
+	check("any key", anym[tok] == 2 && anym[token.DEFINE] == 2 && len(anym) == 1)
+	check("generic eq", tokEq(tok, token.DEFINE) && tokEq(token.DEFINE, tok) && tokEq[token.Token](tok, token.DEFINE))
+	check("generic id", tokID(tok) == token.DEFINE && fmt.Sprintf("%T %v", tokID(tok), tokID(tok)) == "token.Token :=")
+	xs := []token.Token{token.ASSIGN, token.DEFINE}
+	check("slices.Contains", slices.Contains(xs, tok) && slices.Contains([]token.Token{tok}, token.DEFINE))
+	check("slices.Index", slices.Index(xs, tok) == 1 && slices.Index([]token.Token{tok}, token.DEFINE) == 0)
+	check("slices.Equal", slices.Equal(xs, []token.Token{token.ASSIGN, tok}))
+	if len(bad) > 0 {
+		return "host token.Token misses token.DEFINE: " + strings.Join(bad, ", ")
 	}
 	return "ok"
 }

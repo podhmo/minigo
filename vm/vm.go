@@ -3502,37 +3502,6 @@ func (v *VM) hostMember(hv any, name string) (runtime.Value, bool) {
 	return bf, true
 }
 
-// hostTwinScalar reports the payload of a boxed host value of a named
-// basic type — go/token's Token on an inspect.AST node, io/fs's FileMode
-// from the host-bound os — as the script value a source declaration of
-// that type holds, plus the host type. The value stays boxed (its host
-// methods and printing keep working); equality and map keys compare it
-// against the source twin's values through this payload.
-func hostTwinScalar(x runtime.Value) (runtime.Value, reflect.Type, bool) {
-	gv, ok := x.(*runtime.GoValue)
-	if !ok {
-		return nil, nil, false
-	}
-	rv := reflect.ValueOf(gv.V)
-	if !rv.IsValid() || rv.Type().Name() == "" || rv.Type().PkgPath() == "" {
-		return nil, nil, false
-	}
-	switch rv.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return rv.Int(), rv.Type(), true
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		if rv.Uint() > math.MaxInt64 {
-			return nil, nil, false
-		}
-		return int64(rv.Uint()), rv.Type(), true
-	case reflect.String:
-		return rv.String(), rv.Type(), true
-	case reflect.Bool:
-		return rv.Bool(), rv.Type(), true
-	}
-	return nil, nil, false
-}
-
 // twinOperands lets a boxed host named basic meet its source twin's
 // value in one operation: when the other operand is a Named of the
 // source declaration, the host one reads as that Named too — an
@@ -3540,12 +3509,12 @@ func hostTwinScalar(x runtime.Value) (runtime.Value, reflect.Type, bool) {
 // against io/fs's ModeDir. The stored values stay as they are.
 func twinOperands(a, b runtime.Value) (runtime.Value, runtime.Value) {
 	if n, ok := b.(*runtime.Named); ok {
-		if p, rt, ok := hostTwinScalar(a); ok && runtime.HostNamedIs(rt, n.Typ) {
+		if p, rt, ok := runtime.HostNamedScalar(a); ok && runtime.HostNamedIs(rt, n.Typ) {
 			return runtime.Tag(n.Typ, p), b
 		}
 	}
 	if n, ok := a.(*runtime.Named); ok {
-		if p, rt, ok := hostTwinScalar(b); ok && runtime.HostNamedIs(rt, n.Typ) {
+		if p, rt, ok := runtime.HostNamedScalar(b); ok && runtime.HostNamedIs(rt, n.Typ) {
 			return a, runtime.Tag(n.Typ, p)
 		}
 	}
@@ -3555,15 +3524,6 @@ func twinOperands(a, b runtime.Value) (runtime.Value, runtime.Value) {
 func isGoValue(x runtime.Value) bool {
 	_, ok := x.(*runtime.GoValue)
 	return ok
-}
-
-// unboxTwinScalar is the payload of x when x is a boxed host named basic
-// whose type td declares in source (runtime.HostNamedIs); x otherwise.
-func unboxTwinScalar(x runtime.Value, td *runtime.TypeDef) runtime.Value {
-	if p, rt, ok := hostTwinScalar(x); ok && runtime.HostNamedIs(rt, td) {
-		return p
-	}
-	return x
 }
 
 // uncontendedLock returns the non-blocking attempt matching a blocking
@@ -6453,8 +6413,8 @@ func (v *VM) mapKeyTypedef(f *frame, td *runtime.TypeDef) *runtime.TypeDef {
 func (v *VM) mapKeyOperand(f *frame, td *runtime.TypeDef, idx runtime.Value) runtime.Value {
 	if kt := v.mapKeyTypedef(f, td); kt != nil {
 		// a boxed host named basic keys like its source twin's value
-		// (hostTwinScalar): m[as.Tok] finds m[token.DEFINE].
-		return unboxTwinScalar(runtime.Unwrap(v.coerce(f, idx, kt)), v.peelAlias(kt))
+		// (runtime.CanonicalKey): m[as.Tok] finds m[token.DEFINE].
+		return runtime.Unwrap(v.coerce(f, idx, kt))
 	}
 	return runtime.Unwrap(v.materialize(f, idx))
 }
@@ -9705,6 +9665,23 @@ func (v *VM) unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value 
 	return nil
 }
 
+// hostScalarOperand is what eqlValue compares for a host box: the
+// contents of any host string, the payload of a host named basic
+// ([runtime.HostNamedScalar]), the box itself otherwise.
+func hostScalarOperand(gv *runtime.GoValue) runtime.Value {
+	rv := reflect.ValueOf(gv.V)
+	if !rv.IsValid() {
+		return gv
+	}
+	if rv.Kind() == reflect.String {
+		return rv.String()
+	}
+	if p, _, ok := runtime.HostNamedScalar(gv); ok {
+		return p
+	}
+	return gv
+}
+
 func (v *VM) eqlValue(a, b runtime.Value) bool {
 	if n, ok := a.(*runtime.Named); ok {
 		a = n.V
@@ -9721,16 +9698,16 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 	}
 	// a host-boxed string (the facade's StructField.Tag) compares by
 	// its string contents — a converted StructTag and a field's Tag
-	// compare equal, and field.Tag == "json:..." holds like Go's.
+	// compare equal, and field.Tag == "json:..." holds like Go's. A host
+	// named basic compares by its payload too, the form a Named of its
+	// source twin holds: rec{fi.Mode().Type()} == rec{fs.ModeDir} and
+	// [1]token.Token{as.Tok} == [1]token.Token{token.DEFINE} reach here
+	// field by field, past the operand-level twinOperands.
 	if gv, ok := a.(*runtime.GoValue); ok {
-		if rv := reflect.ValueOf(gv.V); rv.IsValid() && rv.Kind() == reflect.String {
-			a = rv.String()
-		}
+		a = hostScalarOperand(gv)
 	}
 	if gv, ok := b.(*runtime.GoValue); ok {
-		if rv := reflect.ValueOf(gv.V); rv.IsValid() && rv.Kind() == reflect.String {
-			b = rv.String()
-		}
+		b = hostScalarOperand(gv)
 	}
 	// boxed complex values compare by value across widths — Go rejects
 	// complex64 == complex128 (mismatched types), but here both operands
@@ -15000,6 +14977,15 @@ func (v *VM) argTypedef(x runtime.Value) *runtime.TypeDef {
 		// and range-var calls from leaving T unbound.
 		if _, isErr := xv.V.(error); isErr {
 			return v.builtinTypedef("error")
+		}
+		// a host named basic binds its source twin's typedef when the
+		// script imports that package ([Hooks.HostTwin]): Go sees one
+		// type, so eq(fi.Mode().Type(), fs.ModeDir) binds T=fs.FileMode
+		// and the source constant still assigns to the second param.
+		if _, rt, ok := runtime.HostNamedScalar(xv); ok && v.H.HostTwin != nil {
+			if twin := v.H.HostTwin(rt); twin != nil {
+				return twin
+			}
 		}
 		if td := v.typeOfValue(x); td != nil {
 			return td

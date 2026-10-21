@@ -1,0 +1,24 @@
+struct true true true true
+array true true
+any(struct) true
+struct key 1
+1 2
+array key 1
+any key 1
+1 2
+generic true true true true
+fs.FileMode d---------
+slices true 1 true
+true 0 -1
+struct true true true true
+array true true
+any(struct) true
+struct key 1
+1 2
+array key 1
+any key 1
+1 2
+generic true true true true
+fs.FileMode d---------
+slices true 1 true
+true 0 -1

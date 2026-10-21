@@ -1161,10 +1161,10 @@ func (e *Engine) installStdlib() {
 	e.Bind("slices", map[string]runtime.Value{
 		"Sort": h.sortInPlace("slices.Sort"),
 		"Contains": h.fn2("slices.Contains", func(a []any) (any, error) {
-			return slices.Contains(anySlice(a[0]), a[1]), nil
+			return twinIndex(anySlice(a[0]), a[1]) >= 0, nil
 		}),
 		"Index": h.fn2("slices.Index", func(a []any) (any, error) {
-			return slices.Index(anySlice(a[0]), a[1]), nil
+			return twinIndex(anySlice(a[0]), a[1]), nil
 		}),
 		"Clone": &runtime.BuiltinFunc{Name: "slices.Clone", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
@@ -1197,7 +1197,9 @@ func (e *Engine) installStdlib() {
 			return slices.Concat(parts...), nil
 		}),
 		"Equal": h.fn2("slices.Equal", func(a []any) (any, error) {
-			return slices.Equal(anySlice(a[0]), anySlice(a[1])), nil
+			return slices.EqualFunc(anySlice(a[0]), anySlice(a[1]), func(x, y any) bool {
+				return twinScalarAny(x) == twinScalarAny(y)
+			}), nil
 		}),
 		"IsSorted": h.fn("slices.IsSorted", func(a []any) (any, error) {
 			el := scriptElems(a[0])
@@ -4706,6 +4708,27 @@ func sliceTypOf(v any) *runtime.TypeDef {
 		return s.Typ
 	}
 	return nil
+}
+
+// twinScalarAny folds a host named basic to the payload its source
+// twin's Named crosses to the host as (goNative unwraps a source
+// fs.FileMode to int64, while a host FileMode stays a host FileMode),
+// so the comparing slices helpers see one value for one Go type.
+func twinScalarAny(x any) any {
+	switch x.(type) {
+	case nil, int64, int, string, bool, float64:
+		return x
+	}
+	if p, _, ok := runtime.HostNamedPayload(x); ok {
+		return p
+	}
+	return x
+}
+
+// twinIndex is slices.Index over [twinScalarAny]-folded elements.
+func twinIndex(s []any, x any) int {
+	x = twinScalarAny(x)
+	return slices.IndexFunc(s, func(e any) bool { return twinScalarAny(e) == x })
 }
 
 func anySlice(v any) []any {

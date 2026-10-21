@@ -830,6 +830,13 @@ func CanonicalKey(v Value) Value {
 	case *Function, *Closure, *BoundMethod, *BuiltinFunc:
 		panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type func()"}})
 	case *GoValue:
+		// a host named basic (io/fs's FileMode from the host os, a
+		// go/token Token off inspect.AST) keys by its payload, the form
+		// a [Named] of its source twin unwraps to: both spell one Go
+		// type, so m[t] finds m[fs.ModeDir] under any key type.
+		if p, _, ok := HostNamedScalar(x); ok {
+			return p
+		}
 		if !reflect.TypeOf(x.V).Comparable() {
 			panic(&Panic{Value: &RuntimeError{Msg: fmt.Sprintf("hash of unhashable type %T", x.V)}})
 		}
@@ -1115,6 +1122,12 @@ func writeKeyElem(sb *strings.Builder, v Value) {
 	case *Cell, *FieldRef, *IndexRef, *Chan:
 		fmt.Fprintf(sb, "%p", x)
 	case *GoValue:
+		// a host named basic renders like its source twin's payload
+		// (see CanonicalKey): FileMode's %#v is hex, the twin's decimal.
+		if p, _, ok := HostNamedScalar(x); ok {
+			writeKeyElem(sb, p)
+			return
+		}
 		writeKeyElem(sb, fmt.Sprintf("%#v", x.V))
 	case *IfaceNil:
 		// a nil interface records no dynamic type, so one that
@@ -1696,6 +1709,43 @@ func (td *TypeDef) CachedIfaceSigs() (map[string]*Function, bool) {
 // must treat the map as read-only. Returning the same Functions each time
 // lets [SigMemo] remember comparisons against them.
 func (td *TypeDef) SetIfaceSigs(sigs map[string]*Function) { td.ifaceSigs.Store(sigs) }
+
+// HostNamedScalar reports the payload of a boxed host value of a named
+// basic type — go/token's Token on an inspect.AST node, io/fs's FileMode
+// from the host-bound os — as the script value a source declaration of
+// that type holds, plus the host type. The value stays boxed (its host
+// methods and printing keep working); equality and map keys compare it
+// against the source twin's values through this payload.
+func HostNamedScalar(x Value) (Value, reflect.Type, bool) {
+	gv, ok := x.(*GoValue)
+	if !ok {
+		return nil, nil, false
+	}
+	return HostNamedPayload(gv.V)
+}
+
+// HostNamedPayload is [HostNamedScalar] on an unboxed host value — the
+// form a host helper's []any arguments carry.
+func HostNamedPayload(hv any) (Value, reflect.Type, bool) {
+	rv := reflect.ValueOf(hv)
+	if !rv.IsValid() || rv.Type().Name() == "" || rv.Type().PkgPath() == "" {
+		return nil, nil, false
+	}
+	switch rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return rv.Int(), rv.Type(), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		if rv.Uint() > math.MaxInt64 {
+			return nil, nil, false
+		}
+		return int64(rv.Uint()), rv.Type(), true
+	case reflect.String:
+		return rv.String(), rv.Type(), true
+	case reflect.Bool:
+		return rv.Bool(), rv.Type(), true
+	}
+	return nil, nil, false
+}
 
 // HostNamedIs reports whether the host type rt is the type a source
 // typedef declares: same package path and name. The printed spelling
