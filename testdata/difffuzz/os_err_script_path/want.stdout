@@ -6,6 +6,10 @@ mkdir a: file exists
 remove nope: no such file or directory
 open nope/f: no such file or directory
 rename nope other: no such file or directory
+rename a ./a/sub/x: no such file or directory
+mkdir a/f.txt: not a directory
+mkdir ./a/f.txt: not a directory
+true
 chdir nope: no such file or directory
 chdir a/f.txt: not a directory
 open nope/x: no such file or directory

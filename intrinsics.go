@@ -1576,8 +1576,13 @@ func (e *Engine) installStdlib() {
 			if err != nil {
 				return nil, err
 			}
-			err = scriptPathErr(os.Rename(old, newp), str(a[0]), old)
-			return errVal(scriptPathErr(err, str(a[1]), newp)), nil
+			err = os.Rename(old, newp)
+			if le, ok := err.(*os.LinkError); ok {
+				// each side maps through its own resolution.
+				le.Old = scriptPathOf(str(a[0]), old, le.Old)
+				le.New = scriptPathOf(str(a[1]), newp, le.New)
+			}
+			return errVal(err), nil
 		}),
 		"ReadDir": h.fn1("os.ReadDir", func(a []any) (any, error) {
 			sp := str(a[0])
@@ -4585,20 +4590,68 @@ func fsErrOp(e *Engine, name string, a []any, op func(string) error) (any, error
 // itself reads back as sp verbatim and a descendant of ap joins onto sp
 // (filepath.Join cleans, like the host's own joins from sp would).
 // Other paths pass through.
+//
+// A proper ancestor of ap (MkdirAll failing on an intermediate
+// component) is sp with as many trailing elements dropped — gc slices
+// the spelled path — provided that prefix of sp still resolves to p.
 func scriptPathOf(sp, ap, p string) string {
 	if p == ap {
 		return sp
 	}
-	rest, ok := strings.CutPrefix(p, ap)
-	if !ok {
-		return p
+	if rest, ok := cutPathPrefix(p, ap); ok {
+		return filepath.Join(sp, rest)
 	}
-	if !strings.HasSuffix(ap, string(filepath.Separator)) {
-		if rest, ok = strings.CutPrefix(rest, string(filepath.Separator)); !ok {
-			return p
+	if rest, ok := cutPathPrefix(ap, p); ok {
+		t := sp
+		for range strings.Split(rest, string(filepath.Separator)) {
+			t = strings.TrimRight(t, string(filepath.Separator))
+			i := strings.LastIndexByte(t, filepath.Separator)
+			if i < 0 {
+				return p
+			}
+			t = t[:i]
+			if t == "" {
+				t = string(filepath.Separator)
+			}
+		}
+		if t = strings.TrimRight(t, string(filepath.Separator)); t == "" {
+			t = string(filepath.Separator)
+		}
+		if resolveLike(sp, ap, t) == p {
+			return t
 		}
 	}
-	return filepath.Join(sp, rest)
+	return p
+}
+
+// cutPathPrefix reports p's remainder below the directory dir.
+func cutPathPrefix(p, dir string) (string, bool) {
+	rest, ok := strings.CutPrefix(p, dir)
+	if !ok || rest == "" {
+		return "", false
+	}
+	if strings.HasSuffix(dir, string(filepath.Separator)) {
+		return rest, true
+	}
+	return strings.CutPrefix(rest, string(filepath.Separator))
+}
+
+// resolveLike resolves the spelled path t the way fsPath resolved sp to
+// ap — against the same base directory — or "" when the base cannot be
+// recovered from the pair.
+func resolveLike(sp, ap, t string) string {
+	if filepath.IsAbs(t) {
+		return filepath.Clean(t)
+	}
+	csp := filepath.Clean(sp)
+	if csp == "." {
+		return filepath.Join(ap, t)
+	}
+	base, ok := strings.CutSuffix(ap, string(filepath.Separator)+csp)
+	if !ok || strings.HasPrefix(csp, "..") {
+		return ""
+	}
+	return filepath.Join(base, t)
 }
 
 // scriptPathErr rewrites the path an os/filepath error reports from the
