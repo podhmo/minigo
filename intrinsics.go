@@ -1755,7 +1755,7 @@ func (e *Engine) installStdlib() {
 				}
 				return walkCallback(e, v, cb, root, p, dv, werr)
 			})
-			return scriptErrUnbox(werr), nil
+			return errVal(werr), nil
 		}},
 		"Walk": &runtime.BuiltinFunc{Name: "filepath.Walk", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
@@ -1774,7 +1774,7 @@ func (e *Engine) installStdlib() {
 				}
 				return walkCallback(e, v, cb, root, p, iv, werr)
 			})
-			return scriptErrUnbox(werr), nil
+			return errVal(werr), nil
 		}},
 		"SkipDir": &runtime.GoValue{V: filepath.SkipDir},
 		"SkipAll": &runtime.GoValue{V: filepath.SkipAll},
@@ -2364,7 +2364,7 @@ func (e *Engine) installStdlib() {
 			nc, cancel := context.WithDeadline(c, d)
 			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(nc), scriptVal(cancel)}}, nil
 		}),
-		"WithDeadlineCause": h.fn("context.WithDeadlineCause", func(a []any) (any, error) {
+		"WithDeadlineCause": h.fnvcRaw("context.WithDeadlineCause", 3, func(vc runtime.VMCaller, a []any, raw []runtime.Value) (any, error) {
 			c, err := asCtx(a[0])
 			if err != nil {
 				return nil, err
@@ -2373,7 +2373,7 @@ func (e *Engine) installStdlib() {
 			if !ok {
 				return nil, fmt.Errorf("context.WithDeadlineCause needs a time.Time, got %T", a[1])
 			}
-			nc, cancel := context.WithDeadlineCause(c, d, asErr(a[2]))
+			nc, cancel := context.WithDeadlineCause(c, d, hostErrOf(vc, raw[2]))
 			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(nc), scriptVal(cancel)}}, nil
 		}),
 		"WithTimeout": h.fn("context.WithTimeout", func(a []any) (any, error) {
@@ -2384,12 +2384,12 @@ func (e *Engine) installStdlib() {
 			nc, cancel := context.WithTimeout(c, durOf(a[1]))
 			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(nc), scriptVal(cancel)}}, nil
 		}),
-		"WithTimeoutCause": h.fn("context.WithTimeoutCause", func(a []any) (any, error) {
+		"WithTimeoutCause": h.fnvcRaw("context.WithTimeoutCause", 3, func(vc runtime.VMCaller, a []any, raw []runtime.Value) (any, error) {
 			c, err := asCtx(a[0])
 			if err != nil {
 				return nil, err
 			}
-			nc, cancel := context.WithTimeoutCause(c, durOf(a[1]), asErr(a[2]))
+			nc, cancel := context.WithTimeoutCause(c, durOf(a[1]), hostErrOf(vc, raw[2]))
 			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(nc), scriptVal(cancel)}}, nil
 		}),
 		"WithoutCancel": h.fn("context.WithoutCancel", func(a []any) (any, error) {
@@ -2868,20 +2868,28 @@ func (e *Engine) installStdlib() {
 		"New": h.fn1("template.New", func(a []any) (any, error) {
 			return &runtime.GoValue{V: template.New(str(a[0]))}, nil
 		}, template.New),
-		"Must": h.fn1("template.Must", func(a []any) (any, error) {
-			// Must takes the (t, err) pair of New/Parse: a Tuple arg
-			// unpacks, a plain value passes through — the panic on a
-			// non-nil err mirrors template.Must.
-			t, err := a[0], error(nil)
-			if tup, ok := a[0].(*runtime.Tuple); ok && len(tup.Elems) == 2 {
-				t = tup.Elems[0]
-				err = asErr(goNative(tup.Elems[1]))
+		"Must": &runtime.BuiltinFunc{Name: "template.Must", Target: template.Must, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			// Must takes the (t, err) pair of New/Parse — a Tuple arg
+			// unpacks — or the two values spelled out. The panic on a
+			// non-nil err mirrors template.Must and carries the error
+			// value itself, so recover() hands back the script's error.
+			var t, ev runtime.Value
+			switch {
+			case len(args) == 1:
+				t, ev = args[0], runtime.NIL
+				if tup, ok := args[0].(*runtime.Tuple); ok && len(tup.Elems) == 2 {
+					t, ev = tup.Elems[0], tup.Elems[1]
+				}
+			case len(args) == 2:
+				t, ev = args[0], args[1]
+			default:
+				return nil, fmt.Errorf("template.Must needs 2 args, got %d", len(args))
 			}
-			if err != nil {
-				panic(err)
+			if err := hostErrOf(v, ev); err != nil {
+				panic(&runtime.Panic{Value: errVal(err), VC: v})
 			}
-			return scriptVal(t), nil
-		}, template.Must),
+			return scriptVal(goNative(t)), nil
+		}},
 		"HTMLEscapeString": h.fn1("template.HTMLEscapeString", func(a []any) (any, error) {
 			return template.HTMLEscapeString(str(a[0])), nil
 		}, template.HTMLEscapeString),
@@ -3561,6 +3569,26 @@ func (h *hostHelpers) fnvc(name string, f func(runtime.VMCaller, []any) (any, er
 	return bf
 }
 
+// fnvcRaw is an arity-checked fnvc that also hands f the raw script
+// args — an error argument must reach hostErrOf unflattened so a script
+// error keeps its identity through the host (goNative would format it).
+func (h *hostHelpers) fnvcRaw(name string, arity int, f func(runtime.VMCaller, []any, []runtime.Value) (any, error)) *runtime.BuiltinFunc {
+	return &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) != arity {
+			return nil, fmt.Errorf("%s needs %d args, got %d", name, arity, len(args))
+		}
+		a := make([]any, len(args))
+		for i, v := range args {
+			a[i] = goNative(v)
+		}
+		r, err := f(vc, a, args)
+		if err != nil {
+			return nil, err
+		}
+		return scriptVal(r), nil
+	}}
+}
+
 // fn1/fn2/fn3 are arity-checked variants.
 func (h *hostHelpers) fn1(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
 	return h.arity(name, 1, f, target...)
@@ -4125,6 +4153,11 @@ func errVal(err error) runtime.Value {
 	if err == nil {
 		return runtime.NIL
 	}
+	if sb, ok := err.(runtime.ScriptBoxed); ok {
+		// a script error that went through host code (a %w cause, a
+		// cancel cause, a callback's result) reads back as itself.
+		return sb.ScriptValue()
+	}
 	return &runtime.GoValue{V: err} // boxed: method calls (Error(), Unwrap()) dispatch via reflection
 }
 
@@ -4340,20 +4373,6 @@ func goNativeWalk(v runtime.Value, w *runtime.Walk) any {
 		return x.V
 	default:
 		return v
-	}
-}
-
-// asErr coerces a marshalled script value to error for errors.* calls:
-// GoValue-boxed errors unwrap to natives via goNative already, so v is
-// either an error, nil, or a value that formats to one.
-func asErr(v any) error {
-	switch e := v.(type) {
-	case nil:
-		return nil
-	case error:
-		return e
-	default:
-		return fmt.Errorf("%v", v)
 	}
 }
 
@@ -4861,7 +4880,7 @@ func callOrPanic(v runtime.VMCaller, fn runtime.Value, args []runtime.Value) run
 // cwd, entry is the boxed fs.DirEntry/fs.FileInfo (NIL when the host
 // passed none), and the result goes back through hostErrOf so the host
 // walker compares fs.SkipDir/SkipAll by identity and a script error
-// keeps its identity on the way out (scriptErrUnbox).
+// keeps its identity on the way out (errVal).
 func walkCallback(e *Engine, v runtime.VMCaller, cb runtime.Value, root, p string, entry runtime.Value, werr error) error {
 	sp := p
 	if !filepath.IsAbs(root) {
@@ -4999,7 +5018,7 @@ func (s *scriptReader) Read(p []byte) (int, error) {
 	}
 	pv := scriptVal(p)
 	r, err := s.v.Call(m, []runtime.Value{pv})
-	n, err2 := readResult(r)
+	n, err2 := readResult(s.v, r)
 	copyBackBytes(p, pv, n)
 	if err != nil {
 		return 0, err
@@ -5036,7 +5055,7 @@ func (s *scriptReaderWriterTo) Read(p []byte) (int, error) {
 	}
 	pv := scriptVal(p)
 	r, err := s.v.Call(m, []runtime.Value{pv})
-	n, err2 := readResult(r)
+	n, err2 := readResult(s.v, r)
 	copyBackBytes(p, pv, n)
 	if err != nil {
 		return 0, err
@@ -5053,16 +5072,16 @@ func (s *scriptReaderWriterTo) WriteTo(w io.Writer) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return readResult64(r)
+	return readResult64(s.v, r)
 }
 
 // readResult decodes a script (n int, err error) pair.
-func readResult(r runtime.Value) (int, error) {
-	n, err := readResult64(r)
+func readResult(c runtime.VMCaller, r runtime.Value) (int, error) {
+	n, err := readResult64(c, r)
 	return int(n), err
 }
 
-func readResult64(r runtime.Value) (int64, error) {
+func readResult64(c runtime.VMCaller, r runtime.Value) (int64, error) {
 	if t, ok := r.(*runtime.Tuple); ok {
 		var n int64
 		if len(t.Elems) > 0 {
@@ -5072,7 +5091,7 @@ func readResult64(r runtime.Value) (int64, error) {
 		}
 		var werr error
 		if len(t.Elems) > 1 {
-			werr = asErr(goNative(t.Elems[1]))
+			werr = hostErrOf(c, t.Elems[1])
 		}
 		return n, werr
 	}
@@ -5477,7 +5496,9 @@ func jsonMarshalerErr(c runtime.VMCaller, se *jsonScriptErr) error {
 	if s, ok := runtime.IfaceCallString(c, se.sv, "Error"); ok && s != "" {
 		text = s
 	}
-	return fmt.Errorf("json: error calling %s for type %s: %s", se.method, name, text)
+	// the script error stays the cause — errors.Is/As reach it like
+	// MarshalerError's Unwrap.
+	return &wrapError{msg: fmt.Sprintf("json: error calling %s for type %s: %s", se.method, name, text), err: hostErrOf(c, se.sv)}
 }
 
 // jsonMarshalResult extracts the ([]byte, error) a script MarshalJSON
@@ -6990,6 +7011,16 @@ type scriptError struct {
 	v runtime.Value
 }
 
+// ScriptValue is the script-visible error the box carries: a typed nil
+// (`var err error = (*E)(nil)`) reads back boxed in its interface so it
+// stays non-nil.
+func (e *scriptError) ScriptValue() runtime.Value {
+	if tn, ok := e.v.(*runtime.TypedNil); ok {
+		return &runtime.IfaceNil{Typ: tn.Typ}
+	}
+	return e.v
+}
+
 func (e *scriptError) Error() string {
 	s, ok := runtime.IfaceCallString(e.c, e.v, "Error")
 	if !ok {
@@ -7052,7 +7083,7 @@ func (e *scriptError) Is(target error) bool {
 	if !ok {
 		return false
 	}
-	r, err := e.c.Call(m, []runtime.Value{scriptErrUnbox(target)})
+	r, err := e.c.Call(m, []runtime.Value{errVal(target)})
 	if err != nil {
 		return false
 	}
@@ -7185,9 +7216,10 @@ func hostErrArg(c runtime.VMCaller, v runtime.Value) error {
 	return hostErrOf(c, v)
 }
 
-// scriptErrUnbox maps a chain element back to the script-visible error
-// value — a scriptError's inner script value, anything else boxed.
-func scriptErrUnbox(e error) runtime.Value {
+// asMatchVal maps a chain element to the value errors.As matches on — a
+// scriptError's inner script value (a typed nil stays bare so its tag
+// matches the target), anything else boxed.
+func asMatchVal(e error) runtime.Value {
 	if se, ok := e.(*scriptError); ok {
 		return se.v
 	}
@@ -7230,7 +7262,7 @@ func cellElemTyp(v runtime.Value) *runtime.TypeDef {
 // method writes through (errors.As's user cell, AsType's result cell).
 func findAsTarget(v runtime.VMCaller, err error, want *runtime.TypeDef, reqs map[string]bool, target runtime.Value) (runtime.Value, bool) {
 	for err != nil {
-		sv := scriptErrUnbox(err)
+		sv := asMatchVal(err)
 		if matchAsTarget(v, sv, want, reqs) {
 			return sv, true
 		}
