@@ -2308,6 +2308,35 @@ func ASTHostTokensNested() string {
 	return "ok"
 }
 
+type tokAny struct{ A any }
+
+// ASTHostTokensTyped: a host token.Token meets only token.Token values —
+// in an interface-typed slot, an `any` map key or a []any the dynamic
+// type decides, so the same payload under int or uint stays apart.
+func ASTHostTokensTyped() string {
+	fd := inspect.AST(inspect.Symbol(inspect.Current(), "astInspectSubject")).(*goast.FuncDecl)
+	tok := fd.Body.List[0].(*goast.AssignStmt).Tok // total := 0
+	var bad []string
+	check := func(name string, ok bool) {
+		if !ok {
+			bad = append(bad, name)
+		}
+	}
+	check("any field twin", tokAny{tok} == tokAny{token.DEFINE})
+	check("any field int", tokAny{tok} != tokAny{int(token.DEFINE)})
+	var a, b any = tok, uint(token.DEFINE)
+	check("any ==", a != b)
+	m := map[any]int{tok: 1, int(token.DEFINE): 2, uint(token.DEFINE): 3}
+	check("any key", len(m) == 3 && m[token.DEFINE] == 1 && m[int(token.DEFINE)] == 2)
+	km := map[tokAny]int{{tok}: 1, {int(token.DEFINE)}: 2}
+	check("struct{any} key", len(km) == 2 && km[tokAny{token.DEFINE}] == 1)
+	check("slices []any", !slices.Contains([]any{int(token.DEFINE)}, any(tok)) && slices.Index([]any{uint(token.DEFINE), token.DEFINE}, any(tok)) == 1)
+	if len(bad) > 0 {
+		return "host token.Token meets other types: " + strings.Join(bad, ", ")
+	}
+	return "ok"
+}
+
 // ASTBoundTrap: a bound (host) symbol carries no AST node.
 func ASTBoundTrap() string {
 	inspect.AST(inspect.Symbol(inspect.PackageOf("strings"), "Builder"))

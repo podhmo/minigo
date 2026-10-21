@@ -1160,12 +1160,14 @@ func (e *Engine) installStdlib() {
 	})
 	e.Bind("slices", map[string]runtime.Value{
 		"Sort": h.sortInPlace("slices.Sort"),
-		"Contains": h.fn2("slices.Contains", func(a []any) (any, error) {
-			return twinIndex(anySlice(a[0]), a[1]) >= 0, nil
-		}),
-		"Index": h.fn2("slices.Index", func(a []any) (any, error) {
-			return twinIndex(anySlice(a[0]), a[1]), nil
-		}),
+		"Contains": &runtime.BuiltinFunc{Name: "slices.Contains", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			i, err := sliceIndexScript(vc, "slices.Contains", args)
+			return i >= 0, err
+		}},
+		"Index": &runtime.BuiltinFunc{Name: "slices.Index", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			i, err := sliceIndexScript(vc, "slices.Index", args)
+			return int64(i), err
+		}},
 		"Clone": &runtime.BuiltinFunc{Name: "slices.Clone", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("slices.Clone needs 1 arg")
@@ -1196,11 +1198,28 @@ func (e *Engine) installStdlib() {
 			}
 			return slices.Concat(parts...), nil
 		}),
-		"Equal": h.fn2("slices.Equal", func(a []any) (any, error) {
-			return slices.EqualFunc(anySlice(a[0]), anySlice(a[1]), func(x, y any) bool {
-				return twinScalarAny(x) == twinScalarAny(y)
-			}), nil
-		}),
+		"Equal": &runtime.BuiltinFunc{Name: "slices.Equal", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("slices.Equal needs 2 args, got %d", len(args))
+			}
+			xs, xt, okx := scriptSliceArg(vc, args[0])
+			ys, yt, oky := scriptSliceArg(vc, args[1])
+			if !okx || !oky {
+				return slices.Equal(anySlice(goNative(args[0])), anySlice(goNative(args[1]))), nil
+			}
+			if xt == nil {
+				xt = yt
+			}
+			if len(xs) != len(ys) {
+				return false, nil
+			}
+			for i := range xs {
+				if !vc.Equal(xt, xs[i], ys[i]) {
+					return false, nil
+				}
+			}
+			return true, nil
+		}},
 		"IsSorted": h.fn("slices.IsSorted", func(a []any) (any, error) {
 			el := scriptElems(a[0])
 			return sort.SliceIsSorted(el, func(i, j int) bool { return lessScript(el[i], el[j]) }), nil
@@ -1415,7 +1434,7 @@ func (e *Engine) installStdlib() {
 				}
 				// keep the declared map type: without Typ a missing key
 				// reads NIL and `c[k]++` traps instead of zero-starting.
-				return &runtime.Map{Pairs: pairs, Order: append([]runtime.Value{}, m.Order...), Keys: append([]runtime.Value{}, m.Keys...), Typ: m.Typ}
+				return &runtime.Map{Pairs: pairs, Order: append([]runtime.Value{}, m.Order...), Keys: append([]runtime.Value{}, m.Keys...), Typ: m.Typ, IfaceKey: m.IfaceKey}
 			}
 			switch m := args[0].(type) {
 			case *runtime.TypedNil:
@@ -4710,25 +4729,66 @@ func sliceTypOf(v any) *runtime.TypeDef {
 	return nil
 }
 
-// twinScalarAny folds a host named basic to the payload its source
-// twin's Named crosses to the host as (goNative unwraps a source
-// fs.FileMode to int64, while a host FileMode stays a host FileMode),
-// so the comparing slices helpers see one value for one Go type.
-func twinScalarAny(x any) any {
-	switch x.(type) {
-	case nil, int64, int, string, bool, float64:
-		return x
+// scriptSliceArg reads a script slice argument of the comparing slices
+// helpers: its elements and element typedef (nil when unknown). A nil
+// slice has no elements. ok is false for anything else — a host slice
+// box — which the caller compares host-side.
+func scriptSliceArg(vc runtime.VMCaller, v runtime.Value) ([]runtime.Value, *runtime.TypeDef, bool) {
+	var typ *runtime.TypeDef
+	if n, ok := v.(*runtime.Named); ok {
+		typ, v = n.Typ, n.V
 	}
-	if p, _, ok := runtime.HostNamedPayload(x); ok {
-		return p
+	switch x := v.(type) {
+	case *runtime.Slice:
+		if typ == nil {
+			typ = x.Typ
+		}
+		var et *runtime.TypeDef
+		if typ != nil {
+			et, _ = vc.ElemOf(typ)
+		}
+		return x.Elems, et, true
+	case *runtime.TypedNil:
+		if nilSliceArg(x) {
+			return nil, nil, true
+		}
 	}
-	return x
+	return nil, nil, false
 }
 
-// twinIndex is slices.Index over [twinScalarAny]-folded elements.
-func twinIndex(s []any, x any) int {
-	x = twinScalarAny(x)
-	return slices.IndexFunc(s, func(e any) bool { return twinScalarAny(e) == x })
+// sliceIndexScript is slices.Index(s, x) over a script slice with Go's
+// element equality ([runtime.VMCaller.Equal]): an untyped x converts to
+// the element type first (`1<<n` truncates to the element width), a
+// []any compares (dynamic type, value) pairs, and a boxed host named
+// basic meets its source twin in a []fs.FileMode.
+func sliceIndexScript(vc runtime.VMCaller, name string, args []runtime.Value) (int, error) {
+	if len(args) != 2 {
+		return 0, fmt.Errorf("%s needs 2 args, got %d", name, len(args))
+	}
+	el, et, ok := scriptSliceArg(vc, args[0])
+	if !ok {
+		return slices.Index(anySlice(goNative(args[0])), goNative(args[1])), nil
+	}
+	x := args[1]
+	switch x.(type) {
+	case *runtime.UConst, int64, float64:
+		// an untyped operand (a call materializes `1<<n` to int) takes
+		// the element type, truncating like Go's context typing.
+		if et == nil || et.Kind == runtime.KindInterface {
+			break
+		}
+		cx, err := vc.Convert(et, x)
+		if err != nil {
+			return 0, fmt.Errorf("%s: %w", name, err)
+		}
+		x = cx
+	}
+	for i, e := range el {
+		if vc.Equal(et, e, x) {
+			return i, nil
+		}
+	}
+	return -1, nil
 }
 
 func anySlice(v any) []any {
