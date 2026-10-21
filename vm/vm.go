@@ -7922,6 +7922,16 @@ func (v *VM) materializeConstErr(u *runtime.UConst, td *runtime.TypeDef) (runtim
 		return materializeDefault(u)
 	}
 	name := basicNameOf(utd)
+	if u.V.Kind() == constant.Complex && constant.Sign(constant.Imag(u.V)) == 0 {
+		switch name {
+		case "complex64", "complex128", "string", "bool":
+		default:
+			// a complex constant with a zero imaginary part is
+			// representable by an integer or float type: `const k =
+			// complex(3, 0); var i int = k` binds 3.
+			u = &runtime.UConst{V: constant.Real(u.V)}
+		}
+	}
 	if u.Wrap {
 		switch name {
 		case "float32", "float64", "complex64", "complex128", "string":
