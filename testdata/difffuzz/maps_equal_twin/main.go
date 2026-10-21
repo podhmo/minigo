@@ -33,4 +33,14 @@ func main() {
 	fmt.Println(maps.Equal(map[string]any{"a": 2}, map[string]any{"a": uint32(2)}), maps.Equal(map[string]any{"a": 2}, map[string]any{"a": 2}))
 	type rec struct{ M fs.FileMode }
 	fmt.Println(maps.Equal(map[int]rec{1: {m}}, map[int]rec{1: {fs.ModeDir}}))
+
+	// a nil map holds no pairs; a NaN key never matches, itself included
+	var n map[string]int
+	fmt.Println(maps.Equal(n, map[string]int{}), maps.Equal(map[string]int{}, n), maps.Equal(n, map[string]int{"a": 1}))
+	nan := 0.0
+	nan /= nan
+	nm := map[float64]int{nan: 1}
+	fmt.Println(maps.Equal(nm, nm))
+	type MM map[string]fs.FileMode
+	fmt.Println(maps.Equal(MM{"d": m}, MM{"d": fs.ModeDir}))
 }

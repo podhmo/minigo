@@ -1472,12 +1472,17 @@ func (e *Engine) installStdlib() {
 			return runtime.NIL, nil
 		}},
 		"Equal": &runtime.BuiltinFunc{Name: "maps.Equal", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			a, _ := args[0].(*runtime.Map)
-			b, _ := args[1].(*runtime.Map)
-			if a == nil || b == nil {
-				return args[0] == args[1], nil // nil == nil
+			if len(args) != 2 {
+				return nil, fmt.Errorf("maps.Equal needs 2 args, got %d", len(args))
 			}
-			if len(a.Pairs) != len(b.Pairs) {
+			// a nil map (or anything else that is no script map) holds
+			// no pairs: maps.Equal(nilMap, map[K]V{}) is true.
+			a, _ := runtime.Unwrap(args[0]).(*runtime.Map)
+			b, _ := runtime.Unwrap(args[1]).(*runtime.Map)
+			if a == nil || b == nil {
+				return (a == nil || a.Len() == 0) && (b == nil || b.Len() == 0), nil
+			}
+			if a.Len() != b.Len() {
 				return false, nil
 			}
 			// values compare with Go's == at the declared value type: a
