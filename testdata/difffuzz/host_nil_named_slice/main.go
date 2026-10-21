@@ -46,6 +46,19 @@ func main() {
 	fmt.Println(len(ok.To4()))
 
 	zeros()
+	nested()
+}
+
+// nested: a nil net.IP inside interface-typed fields and elements still
+// prints through IP.String.
+func nested() {
+	ip := net.ParseIP("bad")
+	var a any = ip
+	fmt.Printf("%v\n", struct {
+		IP  net.IP
+		Any any
+	}{ip, ip})
+	fmt.Println([]any{ip, a}, map[string]any{"a": ip}, []net.IP{ip})
 }
 
 // zeros: a script zero net.IP / net.HardwareAddr is nil too.

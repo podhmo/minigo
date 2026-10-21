@@ -21,3 +21,5 @@ net.IP(nil) <nil> <nil>
 true true
 false true
 false 1.2.3.4
+{<nil> <nil>}
+[<nil> <nil>] map[a:<nil>] [<nil>]
