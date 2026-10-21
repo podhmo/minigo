@@ -71,7 +71,7 @@ const (
 	OpEvalAST       // A: const idx of *ASTFragment; compile fragment at run time -> push result
 
 	// arithmetic
-	OpBinary // A: BinOp
+	OpBinary // A: BinOp; B: flags (ShiftConstCount)
 	OpUnary  // A: UnOp
 
 	// control
@@ -142,6 +142,11 @@ const (
 	// reports the "value method ... called using nil" wrapper text.
 	OpSelectCall // A: const idx of field/method name; pop base -> push base.name
 )
+
+// ShiftConstCount is an [OpBinary] B flag on << and >>: the count is
+// statically a constant expression, so an untyped-constant left operand
+// folds to an untyped constant instead of taking the context's type.
+const ShiftConstCount = 1
 
 // BinOp is the operator of an [OpBinary] instruction, carried in operand A.
 type BinOp uint8
