@@ -2056,9 +2056,10 @@ type UConst struct {
 	// variable, or int by default — and shifts at that width, so the
 	// value is not a constant: materializing it into an integer type
 	// truncates to the type's width (two's complement) instead of
-	// reporting "constant overflows". V holds the exact result, which
-	// agrees with every width's truncation for the modular operations
-	// (+ - * & | ^ &^ <<) the VM keeps folding it through.
+	// reporting "constant overflows". V holds the result reduced mod
+	// 2^64 into int64 range, which agrees with every width's truncation
+	// for the modular operations (+ - * & | ^ &^ <<) the VM keeps
+	// folding it through — and stays bounded for `1 << (1<<40)`.
 	Wrap bool
 
 	// memo caches the last operand-typed conversion (see Memo): a chunk

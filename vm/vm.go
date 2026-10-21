@@ -8112,6 +8112,21 @@ func constComplexVal(cv constant.Value) complex128 {
 	return complex(runtime.CanonConstZero(re), runtime.CanonConstZero(im))
 }
 
+// wrapReduce keeps a Wrap value's payload in int64 range: reduced mod
+// 2^64 (two's complement), which commutes with every op a Wrap value
+// keeps folding through (+ - * & | ^ &^ <<, unary - ^) and with the
+// truncation to any width up to 64 bits, so the payload stays bounded
+// however long the chain or large the shift.
+func wrapReduce(cv constant.Value) constant.Value {
+	if cv.Kind() != constant.Int {
+		return cv
+	}
+	if _, ok := constant.Int64Val(cv); ok {
+		return cv
+	}
+	return constant.MakeInt64(runtime.WrapInt64(cv))
+}
+
 // wrapConstBinary settles a non-shift op where a Wrap operand (an
 // untyped constant shifted by a non-constant count) meets another
 // untyped constant: both still wait for the context's type. The
@@ -8133,6 +8148,7 @@ func (v *VM) wrapConstBinary(f *frame, op bytecode.BinOp, a, b *runtime.Value) (
 		if ua.V.Kind() == constant.Int && ub.V.Kind() == constant.Int {
 			if r, ok := constBinary(op, ua, ub); ok {
 				if ru, isConst := r.(*runtime.UConst); isConst {
+					ru.V = wrapReduce(ru.V)
 					ru.Wrap = true
 					return ru, true
 				}
@@ -9315,8 +9331,18 @@ func (v *VM) shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Va
 			lv, _ = toIntConst(lv)
 		}
 		if lv != nil {
-			if res, ok := constShift(lv, op, count); ok {
-				return &runtime.UConst{V: res, Rune: uc.Rune, Wrap: uc.Wrap || !countConst}
+			if wrap := uc.Wrap || !countConst; wrap {
+				// a Wrap value only matters mod 2^64, so it never
+				// computes the exact big result: `1 << (1<<40)`
+				// would allocate a terabit integer.
+				if op == bytecode.BinShl && count >= 64 {
+					return &runtime.UConst{V: constant.MakeInt64(0), Rune: uc.Rune, Wrap: true}
+				}
+				if res, ok := constShift(lv, op, count); ok {
+					return &runtime.UConst{V: wrapReduce(res), Rune: uc.Rune, Wrap: true}
+				}
+			} else if res, ok := constShift(lv, op, count); ok {
+				return &runtime.UConst{V: res, Rune: uc.Rune}
 			}
 		}
 	}
@@ -9580,7 +9606,11 @@ func constUnary(op bytecode.UnOp, u *runtime.UConst) (res *runtime.UConst, ok bo
 	}
 	// -x and ^x agree with every width's truncation, so a non-constant
 	// shift result (Wrap) stays one through them.
-	return &runtime.UConst{V: constant.UnaryOp(tok, u.V, 0), Rune: u.Rune, Wrap: u.Wrap}, true
+	cv := constant.UnaryOp(tok, u.V, 0)
+	if u.Wrap {
+		cv = wrapReduce(cv)
+	}
+	return &runtime.UConst{V: cv, Rune: u.Rune, Wrap: u.Wrap}, true
 }
 
 func (v *VM) unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value {

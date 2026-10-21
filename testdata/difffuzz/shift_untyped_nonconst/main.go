@@ -37,6 +37,12 @@ func main() {
 	const big = 1 << 100
 	fmt.Println(big>>98, 1<<62) // 4 4611686018427387904
 
+	// a huge count never builds the exact big integer
+	h := uint(1) << 40
+	var h8 uint8 = 3 << h
+	fmt.Println(1<<h, 1<<h == 0, (1<<h)+5, h8, 7>>h, -(1 << h), 1<<n<<h) // 0 true 5 0 0 0 0
+	fmt.Println(3<<(s+59)*3, 3<<(s+59)+3<<(s+59), ^(5 << (s + 59)))      // wraps at int
+
 	arr := []int{10, 20, 30}
 	fmt.Println(arr[1<<(s-2)], len(make([]byte, 1<<s))) // 30 8
 	for i := uint(0); i < 3; i++ {
