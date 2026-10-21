@@ -74,6 +74,13 @@ var NIL Value = Nil{}
 // nil pointer.
 type TypedNil struct{ Typ *TypeDef }
 
+// ScriptBoxed is implemented by host-side proxies that carry a script
+// value through host code — a script error boxed as a host error, a
+// script io.Writer adapted to a host interface. When the host hands such
+// a proxy back, the script sees the value it boxed, so `err == me`
+// identity survives the round trip.
+type ScriptBoxed interface{ ScriptValue() Value }
+
 // IfaceNil is a nil stored in an interface-typed slot. With a concrete
 // Typ it is a [TypedNil] that crossed an interface boundary
 // (`var x any = (*int)(nil)`, an `any` parameter, an `any` result): the
