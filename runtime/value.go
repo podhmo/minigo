@@ -34,6 +34,7 @@ import (
 	"go/constant"
 	"go/token"
 	"math"
+	"math/big"
 	"reflect"
 	"strconv"
 	"strings"
@@ -977,6 +978,29 @@ func opaqueKeyOf(v Value) Value {
 	return CanonicalKey(v)
 }
 
+// WrapInt64 truncates an Int constant to its low 64 bits read as a
+// two's-complement int64 — the value a 64-bit integer operation leaves
+// (`int(1) << 70` is 0, `int(1) << 63` is MinInt64).
+func WrapInt64(cv constant.Value) int64 {
+	if i, ok := constant.Int64Val(cv); ok {
+		return i
+	}
+	mod := new(big.Int).Lsh(big.NewInt(1), 64)
+	x := new(big.Int).Mod(constantBigInt(cv), mod) // in [0, 2^64)
+	return int64(x.Uint64())
+}
+
+// constantBigInt reads an Int constant as a *big.Int.
+func constantBigInt(cv constant.Value) *big.Int {
+	switch x := constant.Val(cv).(type) {
+	case int64:
+		return big.NewInt(x)
+	case *big.Int:
+		return x
+	}
+	return new(big.Int)
+}
+
 // UConstNative converts an untyped constant to a Go value of its default
 // type: bool, string, int64, float64 or complex128. It reports Go's
 // overflow error when the constant does not fit, and folds -0 to +0 (see
@@ -995,6 +1019,9 @@ func UConstNative(u *UConst) (Value, error) {
 		}
 		if uv, ok := constant.Uint64Val(u.V); ok && uv <= math.MaxInt64 {
 			return int64(uv), nil
+		}
+		if u.Wrap {
+			return WrapInt64(u.V), nil
 		}
 		return nil, fmt.Errorf("constant %s overflows int", u.V)
 	case constant.Float:
@@ -2022,6 +2049,18 @@ type GoValue struct{ V any }
 type UConst struct {
 	V    constant.Value
 	Rune bool // Kind()==Int but the literal/expression is rune-flavored
+
+	// Wrap marks the result of a NON-constant shift whose left operand
+	// was an untyped constant (`1 << n` with a variable n). Go types
+	// that operand from the context — the other operand, the assigned
+	// variable, or int by default — and shifts at that width, so the
+	// value is not a constant: materializing it into an integer type
+	// truncates to the type's width (two's complement) instead of
+	// reporting "constant overflows". V holds the result reduced mod
+	// 2^64 into int64 range, which agrees with every width's truncation
+	// for the modular operations (+ - * & | ^ &^ <<) the VM keeps
+	// folding it through — and stays bounded for `1 << (1<<40)`.
+	Wrap bool
 
 	// memo caches the last operand-typed conversion (see Memo): a chunk
 	// constant is one shared *UConst, re-adapted on every execution of

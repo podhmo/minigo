@@ -2037,36 +2037,25 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 			return opTyp{te: &ast.Ident{Name: "bool"}}
 		}
 		// a shift types its result by the left operand alone — the
-		// count's type never participates. An untyped left operand of
-		// a non-constant shift takes its default type, like the same
-		// operand standing alone (`1 << uint(max)` is int, not uint).
-		// a shift types its result by the left operand alone — the
-		// count's type never participates. An untyped left operand of a
-		// non-constant shift takes its default type, like the same
-		// operand standing alone (`1 << uint(max)` is int, not uint);
-		// with an untyped constant count the whole shift is an untyped
-		// constant (`1 << _W` in math/big).
+		// count's type never participates (`1 << uint(max)` is not
+		// uint). An untyped left operand stays untyped either way:
+		// with a constant count the whole shift is an untyped constant
+		// (`1 << _W` in math/big), and with a non-constant count the
+		// spec converts it to "the type it would assume if the shift
+		// expression were replaced by its left operand alone" — the
+		// other operand's type in `m & (1 << n)` (io/fs's
+		// FileMode.String), int only when nothing else types it. Both
+		// adopt into the other operand, so the gate stays silent, and
+		// a binding takes the default type.
 		if x.Op == token.SHL || x.Op == token.SHR {
 			lt := c.staticOpTyp(x.X)
 			if lt.te != nil {
 				return lt
 			}
-			rt := c.staticOpTyp(x.Y)
-			if rt.untyped || rt.nilOperand {
+			if lt.untyped {
 				return opTyp{untyped: true, dte: lt.dte}
 			}
-			if lt.untyped {
-				// a constant shift keeps its untypedness —
-				// `const a = 1 << n` is an untyped constant even
-				// when n is a TYPED constant, so it adopts the
-				// compared operand's type. Only a non-constant
-				// count defaults the left operand.
-				if c.isConstOperand(x.Y) {
-					return opTyp{untyped: true, dte: lt.dte}
-				}
-				return opTyp{te: lt.dte}
-			}
-			return rt
+			return opTyp{} // an unknown left operand types the shift unknown
 		}
 		// arithmetic adopts the operand type: a named side wins; an
 		// untyped side gives way (`d + 1` is Duration, `1 + i` is int).
@@ -2795,42 +2784,6 @@ func defaultLitTyp(lit *ast.BasicLit) *ast.Ident {
 		return &ast.Ident{Name: "string"}
 	}
 	return nil
-}
-
-// isConstOperand reports whether e statically resolves to a compile-time
-// constant expression — a literal, a const-bound name, or operators and
-// conversions applied to constants. It deliberately under-approximates
-// (a qualified or host-package constant reports non-constant): the
-// shift-typing walk only needs enough to keep a `const a = 1 << n`
-// untyped instead of defaulting the left operand.
-func (c *compiler) isConstOperand(e ast.Expr) bool {
-	switch x := ast.Unparen(e).(type) {
-	case *ast.BasicLit:
-		return true
-	case *ast.Ident:
-		switch x.Name {
-		case "true", "false", "iota":
-			return true
-		}
-		if b := c.fs.lookupBinding(x.Name); b != nil {
-			return b.untypedConst || b.constDecl
-		}
-		if c.pkg != nil && c.pkg.Index != nil {
-			return c.pkg.Index.Consts[x.Name] != nil
-		}
-		return false
-	case *ast.UnaryExpr:
-		switch x.Op {
-		case token.SUB, token.ADD, token.XOR, token.NOT:
-			return c.isConstOperand(x.X)
-		}
-		return false
-	case *ast.BinaryExpr:
-		return c.isConstOperand(x.X) && c.isConstOperand(x.Y)
-	case *ast.CallExpr:
-		return c.conversionCall(x) && len(x.Args) == 1 && c.isConstOperand(x.Args[0])
-	}
-	return false
 }
 
 // typeSpecOf resolves a type expression to its declaring TypeSpec — a

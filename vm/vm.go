@@ -7873,7 +7873,7 @@ func (v *VM) matBuiltinArgs(args []runtime.Value) []runtime.Value {
 
 func materializeDefault(u *runtime.UConst) (runtime.Value, error) {
 	if u.V.Kind() == constant.Int && u.Rune {
-		if i, ok := constant.Int64Val(u.V); ok {
+		if i, ok := fitsUConst(u, "rune"); ok {
 			return runtime.Tag(&runtime.TypeDef{Name: "rune", Kind: runtime.KindNamedBasic}, i), nil
 		}
 		return nil, fmt.Errorf("constant %s overflows rune", u.V)
@@ -7940,7 +7940,7 @@ func (v *VM) materializeConstErr(u *runtime.UConst, td *runtime.TypeDef) (runtim
 		if u.V.Kind() != constant.Int && u.V.Kind() != constant.Float {
 			return nil, fmt.Errorf("cannot use constant %s as %s", u.V, name)
 		}
-		i, ok := fitsIntConst(u.V, name)
+		i, ok := fitsUConst(u, name)
 		if !ok {
 			return nil, fmt.Errorf("constant %s overflows %s", u.V, name)
 		}
@@ -8032,7 +8032,9 @@ func (v *VM) materializeConstErr(u *runtime.UConst, td *runtime.TypeDef) (runtim
 // constants and targets (string('a'), []byte("s")) materialize now.
 func (v *VM) convertConst(td *runtime.TypeDef, u *runtime.UConst) (runtime.Value, error) {
 	name := basicNameOf(v.peelNamed(td))
-	if !numericBasicName(name) || !numericConstKind(u.V.Kind()) {
+	if !numericBasicName(name) || !numericConstKind(u.V.Kind()) || u.Wrap {
+		// a non-constant shift result (`T(1 << n)`) is no constant:
+		// it materializes at T's width like any value conversion.
 		return v.materializeConstErr(u, td)
 	}
 	if _, err := v.materializeConstErr(u, td); err != nil {
@@ -8110,6 +8112,79 @@ func constComplexVal(cv constant.Value) complex128 {
 	return complex(runtime.CanonConstZero(re), runtime.CanonConstZero(im))
 }
 
+// wrapReduce keeps a Wrap value's payload in int64 range: reduced mod
+// 2^64 (two's complement), which commutes with every op a Wrap value
+// keeps folding through (+ - * & | ^ &^ <<, unary - ^) and with the
+// truncation to any width up to 64 bits, so the payload stays bounded
+// however long the chain or large the shift.
+func wrapReduce(cv constant.Value) constant.Value {
+	if cv.Kind() != constant.Int {
+		return cv
+	}
+	if _, ok := constant.Int64Val(cv); ok {
+		return cv
+	}
+	return constant.MakeInt64(runtime.WrapInt64(cv))
+}
+
+// wrapConstBinary settles a non-shift op where a Wrap operand (an
+// untyped constant shifted by a non-constant count) meets another
+// untyped constant: both still wait for the context's type. The
+// modular ops fold exactly and stay Wrap — truncation to any width
+// commutes with them (`1<<n + 1`); every other op (division, remainder,
+// comparisons) does not, so the Wrap side settles at its default type
+// int first (`1<<n == 0` compares int(1)<<n with 0). Against a typed or
+// runtime operand nothing happens here: adaptConst truncates the Wrap
+// side to that operand's width, which is the context Go uses.
+func (v *VM) wrapConstBinary(f *frame, op bytecode.BinOp, a, b *runtime.Value) (runtime.Value, bool) {
+	ua, aOK := (*a).(*runtime.UConst)
+	ub, bOK := (*b).(*runtime.UConst)
+	if !aOK || !bOK || (!ua.Wrap && !ub.Wrap) {
+		return nil, false
+	}
+	switch op {
+	case bytecode.BinAdd, bytecode.BinSub, bytecode.BinMul,
+		bytecode.BinAnd, bytecode.BinOr, bytecode.BinXor, bytecode.BinAndNot:
+		if ua.V.Kind() == constant.Int && ub.V.Kind() == constant.Int {
+			if r, ok := constBinary(op, ua, ub); ok {
+				if ru, isConst := r.(*runtime.UConst); isConst {
+					ru.V = wrapReduce(ru.V)
+					ru.Wrap = true
+					return ru, true
+				}
+			}
+		}
+	}
+	if ua.Wrap {
+		*a = v.materialize(f, ua)
+	}
+	if ub.Wrap {
+		*b = v.materialize(f, ub)
+	}
+	return nil, false
+}
+
+// constInKind reads a constant payload in the kind of the numeric
+// basic type name: a typed constant `float64(7)` keeps the Int payload
+// it was spelled with, yet its arithmetic is float64 arithmetic. A
+// payload that does not convert (a fractional value for an int name)
+// stays as is so the caller's own check reports it.
+func constInKind(u *runtime.UConst, name string) *runtime.UConst {
+	var cv constant.Value
+	switch name {
+	case "float32", "float64":
+		cv = constant.ToFloat(u.V)
+	case "complex64", "complex128":
+		cv = constant.ToComplex(u.V)
+	default:
+		cv = constant.ToInt(u.V)
+	}
+	if cv.Kind() == constant.Unknown || cv.Kind() == u.V.Kind() {
+		return u
+	}
+	return &runtime.UConst{V: cv, Rune: u.Rune && cv.Kind() == constant.Int}
+}
+
 // toIntConst converts an integer-valued Float constant to Int kind —
 // go/constant's ToInt panics on a fractional input, so it returns ok
 // instead.
@@ -8120,6 +8195,17 @@ func toIntConst(cv constant.Value) (i constant.Value, ok bool) {
 		}
 	}()
 	return constant.ToInt(cv), true
+}
+
+// fitsUConst is fitsIntConst for a constant operand: a Wrap value — a
+// non-constant shift's result (`1 << n`) — is not a constant, so it
+// truncates to the named width like the typed shift Go runs instead of
+// failing the representability check.
+func fitsUConst(u *runtime.UConst, name string) (int64, bool) {
+	if u.Wrap && u.V.Kind() == constant.Int {
+		return maskInt(runtime.WrapInt64(u.V), name), true
+	}
+	return fitsIntConst(u.V, name)
 }
 
 // fitsIntConst reports whether a constant is representable as the
@@ -8402,7 +8488,7 @@ func scalarConst(u *runtime.UConst, b runtime.Value) (runtime.Value, bool) {
 func scalarConstSlow(u *runtime.UConst, b runtime.Value) (runtime.Value, bool) {
 	switch b.(type) {
 	case int64:
-		i, ok := fitsIntConst(u.V, "int")
+		i, ok := fitsUConst(u, "int")
 		if !ok {
 			return nil, false
 		}
@@ -8427,13 +8513,13 @@ func scalarConstSlow(u *runtime.UConst, b runtime.Value) (runtime.Value, bool) {
 	if g, ok := b.(*runtime.GoValue); ok {
 		switch g.V.(type) {
 		case int, int64:
-			i, ok := fitsIntConst(u.V, "int64")
+			i, ok := fitsUConst(u, "int64")
 			if !ok {
 				return nil, false
 			}
 			return &runtime.GoValue{V: i}, true
 		case uint64:
-			i, ok := fitsIntConst(u.V, "uint64")
+			i, ok := fitsUConst(u, "uint64")
 			if !ok {
 				return nil, false
 			}
@@ -8557,6 +8643,18 @@ func constToHostInt(u *runtime.UConst, t reflect.Type) (runtime.Value, bool) {
 		return nil, false
 	}
 	rv := reflect.New(t).Elem()
+	if u.Wrap {
+		// a non-constant shift result truncates to t's width: the
+		// reflect setters store the low bits.
+		w := runtime.WrapInt64(c)
+		switch t.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			rv.SetInt(w)
+		default:
+			rv.SetUint(uint64(w))
+		}
+		return &runtime.GoValue{V: rv.Interface()}, true
+	}
 	switch t.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		i, exact := constant.Int64Val(c)
@@ -8607,7 +8705,7 @@ func scalarOperandTypedef(x runtime.Value) *runtime.TypeDef {
 func constToBasic(u *runtime.UConst, name string) (runtime.Value, bool) {
 	switch {
 	case sizedIntName(name) || name == "int" || name == "int64":
-		i, ok := fitsIntConst(u.V, name)
+		i, ok := fitsUConst(u, name)
 		if !ok {
 			return nil, false
 		}
@@ -8721,6 +8819,14 @@ func (v *VM) binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.V
 	// a var wraps (`uint(4) - 8` errors, `v - 8` wraps).
 	ca, aIsConst := constPayload(a)
 	cb, bIsConst := constPayload(b)
+	// a non-constant shift's result (Wrap) is a value, not a constant.
+	aIsConst = aIsConst && !ca.Wrap
+	bIsConst = bIsConst && !cb.Wrap
+	if op != bytecode.BinShl && op != bytecode.BinShr {
+		if r, ok := v.wrapConstBinary(f, op, &a, &b); ok {
+			return r
+		}
+	}
 	// untyped constants fold in the arbitrary-precision constant domain
 	// while both sides read as constants — a bare int64/float64 operand
 	// came from a folded literal and can lift back (`const C = B - 1<<99`
@@ -8885,7 +8991,11 @@ func (v *VM) binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.V
 		// reject (`uint8(250) + 10`, `int8(120) + 10`, `uint8(1) << 8`,
 		// `complex64(...) + complex64(...)` past float32 range). The
 		// folded result keeps the tag so chained ops keep checking.
-		if r, ok := constBinary(op, ca, cb); ok {
+		// Both payloads read in the tag's kind first: `float64(7)`
+		// carries the Int payload 7, but `float64(7) / 2` divides as
+		// float64 — 3.5, not the integer quotient.
+		tn := basicNameOf(v.peelNamed(tag))
+		if r, ok := constBinary(op, constInKind(ca, tn), constInKind(cb, tn)); ok {
 			if ru, isConst := r.(*runtime.UConst); isConst {
 				if _, err := v.materializeConstErr(ru, tag); err != nil {
 					f.trap("%s", err)
@@ -9170,6 +9280,11 @@ func constShift(lv constant.Value, op bytecode.BinOp, count uint64) (res constan
 func (v *VM) shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
 	var count uint64
 	var countOK bool
+	// a constant count — untyped or typed — keeps a constant left
+	// operand's shift a constant expression; any other count makes it
+	// a non-constant shift (`1 << n` for a variable n).
+	cu, countConst := constPayload(b)
+	countConst = countConst && !cu.Wrap
 	if uc, isU := b.(*runtime.UConst); isU {
 		// an untyped constant count is legal whenever it is
 		// representable as an unsigned integer (`x << (M+0)` with M =
@@ -9197,17 +9312,36 @@ func (v *VM) shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Va
 	if !countOK {
 		f.trap("unsupported shift count %T", b)
 	}
-	if uc, isU := a.(*runtime.UConst); isU {
+	if uc, isU := a.(*runtime.UConst); isU && !(uc.Wrap && op == bytecode.BinShr) {
 		// both sides in the constant domain: Go folds the shift —
 		// `const c1 = chuge >> 100` (chuge = 1<<100) is the constant
 		// 1. A float/complex LHS reads as its integer value; one that
 		// is not integral falls through and materializes.
+		//
+		// With a non-constant count the untyped left operand takes
+		// its type from the context instead (`m & (1 << n)` shifts a
+		// FileMode, `fmt.Println(1 << n)` an int), which is not known
+		// here: the exact result rides as a Wrap value that truncates
+		// to whatever width it materializes at — `1 << 70` as an int
+		// is 0, not gc's "constant overflows" reject.
+		// (A Wrap left operand under >> settles at int first: a right
+		// shift does not commute with truncation.)
 		lv := uc.V
 		if lv.Kind() != constant.Int {
 			lv, _ = toIntConst(lv)
 		}
 		if lv != nil {
-			if res, ok := constShift(lv, op, count); ok {
+			if wrap := uc.Wrap || !countConst; wrap {
+				// a Wrap value only matters mod 2^64, so it never
+				// computes the exact big result: `1 << (1<<40)`
+				// would allocate a terabit integer.
+				if op == bytecode.BinShl && count >= 64 {
+					return &runtime.UConst{V: constant.MakeInt64(0), Rune: uc.Rune, Wrap: true}
+				}
+				if res, ok := constShift(lv, op, count); ok {
+					return &runtime.UConst{V: wrapReduce(res), Rune: uc.Rune, Wrap: true}
+				}
+			} else if res, ok := constShift(lv, op, count); ok {
 				return &runtime.UConst{V: res, Rune: uc.Rune}
 			}
 		}
@@ -9470,7 +9604,13 @@ func constUnary(op bytecode.UnOp, u *runtime.UConst) (res *runtime.UConst, ok bo
 	if !ok {
 		return nil, false
 	}
-	return &runtime.UConst{V: constant.UnaryOp(tok, u.V, 0), Rune: u.Rune}, true
+	// -x and ^x agree with every width's truncation, so a non-constant
+	// shift result (Wrap) stays one through them.
+	cv := constant.UnaryOp(tok, u.V, 0)
+	if u.Wrap {
+		cv = wrapReduce(cv)
+	}
+	return &runtime.UConst{V: cv, Rune: u.Rune, Wrap: u.Wrap}, true
 }
 
 func (v *VM) unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value {
@@ -14547,7 +14687,7 @@ func (v *VM) constFits(u *runtime.UConst, td *runtime.TypeDef) bool {
 		"uint", "uint8", "byte", "uint16", "uint32", "uint64", "uintptr":
 		// fitsIntConst reuses the declared-width range check — 200
 		// does not fit int8, and an integral float (2.0) still does.
-		_, ok := fitsIntConst(u.V, name)
+		_, ok := fitsUConst(u, name)
 		return ok
 	}
 	return false
