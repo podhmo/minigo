@@ -1,0 +1,21 @@
+main.A main.B int main.A
+main.A main.B int
+main.A main.B int main.A
+main.A main.B int
+[]main.A []main.A []main.B map[main.A]main.B map[main.B]main.A
+main.A=string main.B=float64 main.A=main.B string=main.A
+main.A=string main.B=float64 main.A=main.B string=main.A
+1 main.B main.A []main.B
+main.A main.B
+1 main.B main.A []main.B
+main.A main.B
+true false false true
+true true true false false true false
+main.L main.L main.L[int] main.L[main.A]
+true false false true
+true true true false false true false
+main.L main.L main.L[int] main.L[main.A]
+1 11 101
+2 12 102
+3 13 103
+6 51 7 52

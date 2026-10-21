@@ -1761,6 +1761,8 @@ func TestGo127(t *testing.T) {
 		{"GenMethodConcreteRecv", int64(22)},
 		{"GenMethodPromoted", int64(6)},
 		{"InferMethodAssign", int64(13)},
+		{"GenMethodInstCache", "main.GA/main.GB main.GB/main.GB main.GA/main.GA int/main.GB main.GB/[]main.GA;" +
+			"main.GA/main.GB main.GB/main.GB main.GA/main.GA int/main.GB main.GB/[]main.GA;"},
 	}
 	for _, c := range cases {
 		got := run(t, e, "./testdata/go127", c.fn)

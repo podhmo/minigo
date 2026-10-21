@@ -13659,8 +13659,63 @@ func (v *VM) instantiate(f *frame, base runtime.Value, targs []runtime.Value, po
 
 // instantiateFunc binds a generic function's own type parameters to the
 // explicit type arguments — merging over binds already carried by the
-// value (a generic method keeps its receiver's type binds).
+// value (a generic method keeps its receiver's type binds). The result
+// is cached per package like inferCached's: the instance depends only
+// on g's declaration and binds and on the type arguments, so `Id[int]`
+// evaluated in a loop reuses one Function (and so its compiled chunk)
+// instead of re-binding and re-checking constraints on every call.
 func (v *VM) instantiateFunc(f *frame, g *runtime.Function, targs []runtime.Value) *runtime.Function {
+	if g.Pkg == nil || g.Decl == nil {
+		return v.instantiateFuncUncached(f, g, targs)
+	}
+	key, keep, ok := instFuncKey(g, targs)
+	if !ok {
+		return v.instantiateFuncUncached(f, g, targs)
+	}
+	if r, hit := g.Pkg.Inferred(key); hit {
+		return r
+	}
+	// a failed constraint check traps out of here, so only checked
+	// instances are recorded
+	r := v.instantiateFuncUncached(f, g, targs)
+	g.Pkg.SetInferred(key, g.Decl, keep, r)
+	return r
+}
+
+// instFuncKey spells what instantiateFuncUncached reads: g's identity
+// and binds (InstKey — a generic method's receiver binds, a partial
+// instantiation's earlier args) and each explicit type argument by type
+// identity (AppendTypeKey: distinct named types differ by Spec, local
+// types by scope and generation). It shares the inference cache's map,
+// so the "inst" prefix keeps the two key spaces apart. keep holds what
+// the key's addresses point into.
+func instFuncKey(g *runtime.Function, targs []runtime.Value) (string, []any, bool) {
+	fk, ok := runtime.InstKey(g.Decl, g.File, g.Name, g.Binds)
+	if !ok {
+		return "", nil, false
+	}
+	var b strings.Builder
+	b.WriteString("inst|")
+	b.WriteString(fk)
+	keep := make([]any, 0, len(targs)+1)
+	keep = append(keep, g)
+	for _, a := range targs {
+		td, ok := a.(*runtime.TypeDef)
+		if !ok || td == nil {
+			return "", nil, false
+		}
+		b.WriteString("|t")
+		runtime.AppendTypeKey(&b, td)
+		keep = append(keep, td)
+	}
+	for _, n := range g.OuterTParams {
+		b.WriteString("|o")
+		b.WriteString(n)
+	}
+	return b.String(), keep, true
+}
+
+func (v *VM) instantiateFuncUncached(f *frame, g *runtime.Function, targs []runtime.Value) *runtime.Function {
 	binds := map[string]runtime.Value{}
 	for k, bv := range g.Binds {
 		binds[k] = bv

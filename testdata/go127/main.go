@@ -2,6 +2,8 @@
 
 package main
 
+import "fmt"
+
 // Go 1.27-only syntax: go/parser on a go1.26 toolchain rejects method
 // type parameters entirely, so this package lives in its own directory
 // and the test skips itself when the host toolchain is older. The
@@ -77,4 +79,26 @@ func InferMethodAssign() int {
 	l := List[int]{3}
 	var g func(int, func(int, int) int) int = l.Reduce
 	return g(10, func(a, b int) int { return a + b }) // 13
+}
+
+// an explicit generic-method instantiation keeps the receiver's binds:
+// the cached instance of Pair[GB] on IBox[GA] must not serve IBox[GB]
+// (want pinned from `go run`)
+type IBox[T any] struct{ v T }
+
+func (b IBox[T]) Pair[U any]() string {
+	var u U
+	return fmt.Sprintf("%T/%T", b.v, u)
+}
+
+type GA int
+type GB int
+
+func GenMethodInstCache() string {
+	s := ""
+	for i := 0; i < 2; i++ {
+		a, b := IBox[GA]{}, IBox[GB]{}
+		s += a.Pair[GB]() + " " + b.Pair[GB]() + " " + a.Pair[GA]() + " " + IBox[int]{}.Pair[GB]() + " " + b.Pair[[]GA]() + ";"
+	}
+	return s
 }
