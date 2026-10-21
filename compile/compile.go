@@ -1233,7 +1233,10 @@ func (c *compiler) valueSpec(vs *ast.ValueSpec, d *index.Decl) {
 		}
 	default:
 		for i, name := range vs.Names {
-			if isConst {
+			if hv, ok := c.pkg.HostVars[name.Name]; ok && !isConst {
+				// a host-pinned var: the declared initializer never runs
+				c.emit(bytecode.OpConst, c.constIdx(hv), 0, name.Pos())
+			} else if isConst {
 				c.constExpr(vals[i])
 			} else {
 				c.expr(vals[i])

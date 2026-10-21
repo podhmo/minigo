@@ -175,6 +175,13 @@ type Package struct {
 
 	Globals *Env // values populated at Initialize / on member access
 
+	// HostVars pins package-level vars of a source-built package to host
+	// values: the initializer binds the host value instead of evaluating
+	// the declared expression. Sentinels like io/fs's ErrNotExist and
+	// SkipDir must be the very objects host-bound packages (os,
+	// path/filepath) return and compare against. Set by the engine.
+	HostVars map[string]Value
+
 	// Scopes maps each parsed file's named import refs by local name.
 	Scopes map[*syntax.File]map[string]*ImportRef
 	// Imports retains every import in source order, including dot and blank imports.

@@ -1,0 +1,8 @@
+true true
+. a a/b a/d a/d/g.txt a/h.txt e e/i.txt <nil>
+. a a/b a/b/c a/b/c/f.txt a/d <nil>
+. a a/b a/d a/d/g.txt a/h.txt e e/i.txt <nil>
+. a a/b a/b/c a/b/c/f.txt a/d <nil>
+. a a/b a/b/c a/b/c/f.txt a/d a/d/g.txt a/h.txt e <nil>
+nope true true
+true
