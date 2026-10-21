@@ -1462,7 +1462,7 @@ func (e *Engine) installStdlib() {
 			}
 			return runtime.NIL, nil
 		}},
-		"Equal": &runtime.BuiltinFunc{Name: "maps.Equal", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Equal": &runtime.BuiltinFunc{Name: "maps.Equal", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			a, _ := args[0].(*runtime.Map)
 			b, _ := args[1].(*runtime.Map)
 			if a == nil || b == nil {
@@ -1471,9 +1471,16 @@ func (e *Engine) installStdlib() {
 			if len(a.Pairs) != len(b.Pairs) {
 				return false, nil
 			}
+			// values compare with Go's == at the declared value type: a
+			// host FileMode (os.Stat) meets fs.ModeDir, an interface
+			// value compares its dynamic type too.
+			var et *runtime.TypeDef
+			if a.Typ != nil {
+				et, _ = vc.ElemOf(a.Typ)
+			}
 			for k, av := range a.Pairs {
 				bv, ok := b.LookupCanonical(k)
-				if !ok || !equalScript(av, bv) {
+				if !ok || !vc.Equal(et, av, bv) {
 					return false, nil
 				}
 			}
@@ -3839,45 +3846,6 @@ func numOf(v runtime.Value) (float64, bool) {
 		return float64(n), true
 	}
 	return 0, false
-}
-
-// equalScript compares two script values by shape (identity-ish): used by
-// maps.Equal where a deep compare is the closest available semantics.
-func equalScript(a, b runtime.Value) bool {
-	a = runtime.Unwrap(a)
-	b = runtime.Unwrap(b)
-	if an, ok := numOf(a); ok {
-		bn, ok := numOf(b)
-		return ok && an == bn
-	}
-	switch x := a.(type) {
-	case string, bool:
-		return x == b
-	case *runtime.Slice:
-		y, ok := b.(*runtime.Slice)
-		if !ok || len(x.Elems) != len(y.Elems) {
-			return false
-		}
-		for i := range x.Elems {
-			if !equalScript(x.Elems[i], y.Elems[i]) {
-				return false
-			}
-		}
-		return true
-	case *runtime.Map:
-		y, ok := b.(*runtime.Map)
-		if !ok || len(x.Pairs) != len(y.Pairs) {
-			return false
-		}
-		for k, xv := range x.Pairs {
-			yv, ok := y.LookupCanonical(k)
-			if !ok || !equalScript(xv, yv) {
-				return false
-			}
-		}
-		return true
-	}
-	return a == b
 }
 
 // sortInterface adapts a script value's Len/Less/Swap members into a
