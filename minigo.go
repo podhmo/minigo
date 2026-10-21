@@ -304,7 +304,18 @@ func (e *Engine) hostTwin(rt reflect.Type) *runtime.TypeDef {
 		return nil
 	}
 	td, ok := v.(*runtime.TypeDef)
-	if !ok || td.HostNew == nil {
+	if !ok {
+		return nil
+	}
+	if td.HostScalar != nil {
+		// a bound named basic (time.Month, time.Duration) boxes rt
+		// as its scalar payload
+		if reflect.TypeOf(td.HostScalar) == rt {
+			return td
+		}
+		return nil
+	}
+	if td.HostNew == nil {
 		return nil
 	}
 	if ht := td.HostType(); ht == rt || (ht.Kind() == reflect.Pointer && ht.Elem() == rt) {
