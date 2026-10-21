@@ -1746,18 +1746,33 @@ func (e *Engine) installStdlib() {
 			if err != nil {
 				return nil, err
 			}
-			relIn := !filepath.IsAbs(root)
 			werr := filepath.WalkDir(ap, func(p string, d fs.DirEntry, werr error) error {
-				sp := p
-				if relIn {
-					if rel, rerr := filepath.Rel(e.cwd, p); rerr == nil {
-						sp = rel
-					}
+				var dv runtime.Value = runtime.NIL
+				if d != nil {
+					dv = &runtime.GoValue{V: d}
 				}
-				r := callOrPanic(v, cb, []runtime.Value{sp, &runtime.GoValue{V: d}, errVal(werr)})
-				return asErr(goNative(r))
+				return walkCallback(e, v, cb, root, p, dv, werr)
 			})
-			return errVal(werr), nil
+			return scriptErrUnbox(werr), nil
+		}},
+		"Walk": &runtime.BuiltinFunc{Name: "filepath.Walk", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("filepath.Walk needs 2 args, got %d", len(args))
+			}
+			root := str(goNative(args[0]))
+			cb := args[1]
+			ap, err := e.fsPath(root)
+			if err != nil {
+				return nil, err
+			}
+			werr := filepath.Walk(ap, func(p string, info fs.FileInfo, werr error) error {
+				var iv runtime.Value = runtime.NIL
+				if info != nil {
+					iv = &runtime.GoValue{V: info}
+				}
+				return walkCallback(e, v, cb, root, p, iv, werr)
+			})
+			return scriptErrUnbox(werr), nil
 		}},
 		"SkipDir": &runtime.GoValue{V: filepath.SkipDir},
 		"SkipAll": &runtime.GoValue{V: filepath.SkipAll},
@@ -4816,6 +4831,23 @@ func callOrPanic(v runtime.VMCaller, fn runtime.Value, args []runtime.Value) run
 		panic(err)
 	}
 	return r
+}
+
+// walkCallback runs a filepath.Walk/WalkDir script callback for host
+// path p: a relative root sees paths relative to the engine's virtual
+// cwd, entry is the boxed fs.DirEntry/fs.FileInfo (NIL when the host
+// passed none), and the result goes back through hostErrOf so the host
+// walker compares fs.SkipDir/SkipAll by identity and a script error
+// keeps its identity on the way out (scriptErrUnbox).
+func walkCallback(e *Engine, v runtime.VMCaller, cb runtime.Value, root, p string, entry runtime.Value, werr error) error {
+	sp := p
+	if !filepath.IsAbs(root) {
+		if rel, rerr := filepath.Rel(e.cwd, p); rerr == nil {
+			sp = rel
+		}
+	}
+	r := callOrPanic(v, cb, []runtime.Value{sp, entry, errVal(werr)})
+	return hostErrOf(v, r)
 }
 
 // runePred adapts a script `func(rune) bool` to the host signature for
