@@ -7986,6 +7986,11 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		if verb == 'T' {
 			return typedefSpelling(v.Typ)
 		}
+		if rt := vm.HostNilSliceType(v.Typ); rt != nil {
+			// a nil named host slice (net.IP) renders as the host nil
+			// would — its String method on the nil receiver
+			return fmt.Sprintf(formatOf(f, verb), reflect.Zero(rt).Interface())
+		}
 		return s.nilTyp(verb, f, v.Typ)
 	case *runtime.IfaceNil:
 		if v.Typ != nil && v.Typ.Kind == runtime.KindInterface {
@@ -8001,6 +8006,9 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		}
 		if verb == 'T' {
 			return typedefSpelling(v.Typ)
+		}
+		if rt := vm.HostNilSliceType(v.Typ); rt != nil {
+			return fmt.Sprintf(formatOf(f, verb), reflect.Zero(rt).Interface())
 		}
 		return s.nilTyp(verb, f, v.Typ)
 	case runtime.Nil:
