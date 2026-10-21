@@ -1,0 +1,15 @@
+open nope: no such file or directory
+true stat ./nope/x true
+open nope: no such file or directory
+open a/../nope: no such file or directory
+mkdir a: file exists
+remove nope: no such file or directory
+open nope/f: no such file or directory
+rename nope other: no such file or directory
+chdir nope: no such file or directory
+chdir a/f.txt: not a directory
+open nope/x: no such file or directory
+walkdir a/locked open a/locked: permission denied
+cb nope true lstat nope: no such file or directory
+ret lstat nope: no such file or directory
+walk ret lstat nope: no such file or directory
