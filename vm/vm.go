@@ -3509,13 +3509,31 @@ func (v *VM) hostMember(hv any, name string) (runtime.Value, bool) {
 // against io/fs's ModeDir. The stored values stay as they are.
 func twinOperands(a, b runtime.Value) (runtime.Value, runtime.Value) {
 	if n, ok := b.(*runtime.Named); ok {
-		if p, rt, ok := runtime.HostNamedScalar(a); ok && runtime.HostNamedIs(rt, n.Typ) {
+		if p, rt, ok := runtime.HostNamedScalar(a); ok && runtime.HostTwinOf(rt, n.Typ) {
 			return runtime.Tag(n.Typ, p), b
 		}
 	}
 	if n, ok := a.(*runtime.Named); ok {
-		if p, rt, ok := runtime.HostNamedScalar(b); ok && runtime.HostNamedIs(rt, n.Typ) {
+		if p, rt, ok := runtime.HostNamedScalar(b); ok && runtime.HostTwinOf(rt, n.Typ) {
 			return a, runtime.Tag(n.Typ, p)
+		}
+	}
+	return a, b
+}
+
+// rawHostScalarOperands is twinOperands for a raw host scalar — a bound
+// named basic's payload that crossed an interface untagged, as
+// any(2*time.Second) does: against a Named of its bound typedef it
+// reads as that Named, so the interface comparison sees one type.
+func rawHostScalarOperands(a, b runtime.Value) (runtime.Value, runtime.Value) {
+	if n, ok := b.(*runtime.Named); ok && n.Typ != nil && n.Typ.HostScalar != nil {
+		if _, isNamed := a.(*runtime.Named); !isNamed && reflect.TypeOf(a) == reflect.TypeOf(n.Typ.HostScalar) {
+			return runtime.Tag(n.Typ, a), b
+		}
+	}
+	if n, ok := a.(*runtime.Named); ok && n.Typ != nil && n.Typ.HostScalar != nil {
+		if _, isNamed := b.(*runtime.Named); !isNamed && reflect.TypeOf(b) == reflect.TypeOf(n.Typ.HostScalar) {
+			return a, runtime.Tag(n.Typ, b)
 		}
 	}
 	return a, b
@@ -8764,6 +8782,8 @@ func (v *VM) ifaceEql(f *frame, a, b runtime.Value) bool {
 	// assignability rules).
 	if isGoValue(a) || isGoValue(b) {
 		a, b = twinOperands(a, b)
+	} else {
+		a, b = rawHostScalarOperands(a, b)
 	}
 	atd, btd := v.typeOfValue(a), v.typeOfValue(b)
 	if !sameTypeDef(atd, btd) && !v.hostNilTwin(atd, btd) {
@@ -15125,7 +15145,15 @@ func (v *VM) argTypedef(x runtime.Value) *runtime.TypeDef {
 	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
 		return v.funcTypedefOf(x)
 	}
-	return v.typeOfValue(x)
+	td := v.typeOfValue(x)
+	if td == nil && v.H.HostTwin != nil {
+		// a raw host scalar (a time.Duration a host call returned)
+		// binds its bound typedef, like the boxed case above.
+		if _, rt, ok := runtime.HostNamedPayload(x); ok {
+			return v.H.HostTwin(rt)
+		}
+	}
+	return td
 }
 
 // hostTypedefOf synthesizes a typedef from a host value's reflect type
