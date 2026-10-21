@@ -1258,7 +1258,7 @@ func (e *Engine) installStdlib() {
 			}
 			return h.packSlice(s, out), nil
 		}},
-		"Compact": &runtime.BuiltinFunc{Name: "slices.Compact", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Compact": &runtime.BuiltinFunc{Name: "slices.Compact", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("slices.Compact needs 1 arg")
 			}
@@ -1269,9 +1269,10 @@ func (e *Engine) installStdlib() {
 				}
 				return nil, fmt.Errorf("slices.Compact: arg must be a slice")
 			}
+			_, et, _ := scriptSliceArg(vc, args[0])
 			var out []runtime.Value
 			for i, el := range s.Elems {
-				if i > 0 && atomicCellEq(out[len(out)-1], el) {
+				if i > 0 && vc.Equal(et, out[len(out)-1], el) {
 					continue
 				}
 				out = append(out, el)
@@ -1305,7 +1306,7 @@ func (e *Engine) installStdlib() {
 			}
 			target := args[1]
 			i := sort.Search(len(s.Elems), func(i int) bool { return !lessScript(s.Elems[i], target) })
-			found := i < len(s.Elems) && equalScript(s.Elems[i], target)
+			found := i < len(s.Elems) && !lessScript(target, s.Elems[i])
 			return &runtime.Tuple{Elems: []runtime.Value{int64(i), found}}, nil
 		}},
 		"BinarySearchFunc": &runtime.BuiltinFunc{Name: "slices.BinarySearchFunc", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -3803,8 +3804,8 @@ func (h *hostHelpers) sortInPlace(name string) *runtime.BuiltinFunc {
 // sets sort.Ints, sort.Strings, and slices.Sort support.
 func sortScript(el []runtime.Value) {
 	sort.Slice(el, func(i, j int) bool {
-		bv := runtime.Unwrap(el[j])
-		switch a := runtime.Unwrap(el[i]).(type) {
+		bv := orderScalar(el[j])
+		switch a := orderScalar(el[i]).(type) {
 		case int64:
 			if b, ok := bv.(int64); ok {
 				return a < b
@@ -3843,8 +3844,8 @@ func scriptElems(v any) []runtime.Value {
 // lessScript orders int64/float64/string (heterogeneous pairs rank by kind:
 // numbers < strings < others, comparing numerically across int64/float64).
 func lessScript(a, b runtime.Value) bool {
-	a = runtime.Unwrap(a)
-	b = runtime.Unwrap(b)
+	a = orderScalar(a)
+	b = orderScalar(b)
 	an, aok := numOf(a)
 	bn, bok := numOf(b)
 	if aok && bok {
@@ -3862,6 +3863,28 @@ func lessScript(a, b runtime.Value) bool {
 		return true
 	}
 	return false
+}
+
+// orderScalar is the scalar the ordering helpers compare for v: tags
+// peel, and a host named basic — boxed (a FileMode from os.Stat, a
+// token.Token off inspect.AST) or raw (a time.Month or reflect.Kind a
+// host call returned) — reads as its payload, so it orders among the
+// source values of its type.
+func orderScalar(v runtime.Value) runtime.Value {
+	v = runtime.Unwrap(v)
+	switch x := v.(type) {
+	case int64, float64, string, bool, time.Duration, *runtime.UConst, runtime.Nil:
+		return v
+	case *runtime.GoValue:
+		if p, _, ok := runtime.HostNamedScalar(x); ok {
+			return p
+		}
+		return v
+	}
+	if p, _, ok := runtime.HostNamedPayload(v); ok {
+		return p
+	}
+	return v
 }
 
 func numOf(v runtime.Value) (float64, bool) {

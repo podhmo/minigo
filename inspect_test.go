@@ -82,6 +82,7 @@ func TestInspect(t *testing.T) {
 		"ASTHostTokens",       // token.Token fields equal go/token constants (#944)
 		"ASTHostTokensNested", // ... nested in structs/arrays/keys and through generics
 		"ASTHostTokensTyped",  // ... but never a same-payload value of another type
+		"ASTHostTokensOrder",  // ... and order among the constants in slices helpers
 		"BodyWalk",
 		"BodyNil",
 		"BodyScope",
