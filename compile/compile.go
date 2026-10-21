@@ -2034,8 +2034,12 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 		case token.NOT:
 			// a negated constant stays an untyped bool — it adopts
 			// into a named operand (`f == !false`).
-			if c.staticOpTyp(x.X).untyped {
+			xt := c.staticOpTyp(x.X)
+			if xt.untyped {
 				return opTyp{te: &ast.Ident{Name: "bool"}, untyped: true, dte: &ast.Ident{Name: "bool"}}
+			}
+			if te := c.namedBoolTyp(xt); te != nil {
+				return opTyp{te: te} // !v keeps a named bool's type
 			}
 			return opTyp{te: &ast.Ident{Name: "bool"}}
 		case token.SUB, token.ADD, token.XOR:
@@ -2063,6 +2067,12 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 			uy := c.staticOpTyp(x.Y)
 			if (ux.untyped || ux.nilOperand) && (uy.untyped || uy.nilOperand) {
 				return opTyp{te: &ast.Ident{Name: "bool"}, untyped: true, dte: &ast.Ident{Name: "bool"}}
+			}
+			if x.Op == token.LAND || x.Op == token.LOR {
+				// `v && true` with `type B bool` is a B.
+				if te := c.logicalNamedTyp(x); te != nil {
+					return opTyp{te: te}
+				}
 			}
 			return opTyp{te: &ast.Ident{Name: "bool"}}
 		}
@@ -3623,6 +3633,33 @@ func (c *compiler) opGate(x, y ast.Expr, pos token.Pos, inSwitch bool) bool {
 	return true
 }
 
+// namedBoolTyp returns t's type expression when it is a typed operand
+// of a declared (non-predeclared) type — a named bool in a logical op —
+// and nil otherwise.
+func (c *compiler) namedBoolTyp(t opTyp) ast.Expr {
+	if t.te == nil || t.untyped || t.iface || t.nilOperand {
+		return nil
+	}
+	ni, ok := c.namedIdentOf(t.te)
+	if !ok {
+		return nil
+	}
+	if id, isStr := ni.id.(string); isStr && strings.HasPrefix(id, "predecl:") {
+		return nil
+	}
+	return t.te
+}
+
+// logicalNamedTyp returns the declared type a `&&`/`||` expression
+// takes from a named bool operand (`type B bool; v && true` is a B), or
+// nil when both operands are plain bool or untyped.
+func (c *compiler) logicalNamedTyp(x *ast.BinaryExpr) ast.Expr {
+	if te := c.namedBoolTyp(c.staticOpTyp(x.X)); te != nil {
+		return te
+	}
+	return c.namedBoolTyp(c.staticOpTyp(x.Y))
+}
+
 // nonIntBasicTyp reports whether a type expression's underlying type
 // is a float, complex or string basic type — one a non-constant
 // shift's untyped left operand cannot adopt.
@@ -5176,26 +5213,27 @@ func (c *compiler) unary(x *ast.UnaryExpr) {
 
 func (c *compiler) binary(x *ast.BinaryExpr) {
 	switch x.Op {
-	case token.LAND:
+	case token.LAND, token.LOR:
 		if c.opCmpGate(x.X, x.Y, x.Pos()) {
 			return
 		}
-		c.expr(x.X)
-		c.emit(bytecode.OpDup, 0, 0, x.Pos())
-		j := c.emit(bytecode.OpJumpFalse, 0, 0, x.Pos())
-		c.emit(bytecode.OpPop, 0, 0, x.Pos())
-		c.expr(x.Y)
-		c.patchA(j, len(c.ch.Code))
-	case token.LOR:
-		if c.opCmpGate(x.X, x.Y, x.Pos()) {
-			return
+		jump := bytecode.OpJumpFalse
+		if x.Op == token.LOR {
+			jump = bytecode.OpJumpTrue
 		}
 		c.expr(x.X)
 		c.emit(bytecode.OpDup, 0, 0, x.Pos())
-		j := c.emit(bytecode.OpJumpTrue, 0, 0, x.Pos())
+		j := c.emit(jump, 0, 0, x.Pos())
 		c.emit(bytecode.OpPop, 0, 0, x.Pos())
 		c.expr(x.Y)
 		c.patchA(j, len(c.ch.Code))
+		if te := c.logicalNamedTyp(x); te != nil {
+			// whichever operand decides the result, it is the named
+			// bool type: `v && true` with `type B bool` is a B even
+			// when the untyped true is what comes out.
+			c.typeExpr(te)
+			c.emit(bytecode.OpCoerceTop, 0, 0, x.Pos())
+		}
 	default:
 		if c.foldConst(x) {
 			return
