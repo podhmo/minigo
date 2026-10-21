@@ -3797,6 +3797,16 @@ func (c *compiler) selNilable(ref *runtime.ImportRef, name string) (bool, bool) 
 		runtime.KindMap, runtime.KindChan, runtime.KindFunc:
 		return true, true
 	}
+	if td.HostNew != nil {
+		// a bound host type (hostType) is classed a struct whatever
+		// its shape; its zero's own kind tells a named slice or map
+		// (net.IP, net.HardwareAddr) that answers `== nil`. A struct
+		// binds a pointer zero, which is no evidence of nilability.
+		switch td.HostType().Kind() {
+		case reflect.Slice, reflect.Map, reflect.Chan, reflect.Func:
+			return true, true
+		}
+	}
 	return false, true
 }
 
