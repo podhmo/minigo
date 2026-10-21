@@ -962,6 +962,7 @@ func (e *Engine) newPackage(path, name, dir string) *runtime.Package {
 		Fset:     e.fset,
 		LazyInit: e.initMode == LazyInit,
 		Globals:  runtime.NewEnv(),
+		HostVars: hostVars[path],
 		Scopes:   map[*syntax.File]map[string]*runtime.ImportRef{},
 		Imports:  map[*syntax.File][]*runtime.ImportRef{},
 		Specials: e.specials,
