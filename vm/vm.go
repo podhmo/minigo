@@ -12236,6 +12236,27 @@ func (v *VM) hostNilTwin(a, b *runtime.TypeDef) bool {
 	return false
 }
 
+// unresolvedSpells reports whether src, an anonymous *T typedef whose T
+// does not resolve, spells rt: `*pkg.Name` with rt's package name and
+// type name.
+func unresolvedSpells(src *runtime.TypeDef, rt reflect.Type) bool {
+	st, ok := src.Anon.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := st.X.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != rt.Name() {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	// rt.String() is "pkgname.Name": its prefix is the package clause
+	// name, which an import of the package spells by default.
+	return rt.String() == pkg.Name+"."+rt.Name()
+}
+
 // hostTwinIs reports whether host, a [hostPkgElemTypedef] typedef, and
 // src, a source typedef, denote the same type: the same named type, or
 // pointers to it.
@@ -12248,7 +12269,15 @@ func (v *VM) hostTwinIs(f *frame, host, src *runtime.TypeDef) bool {
 		if src.Kind != runtime.KindPointer || src.Name != "" {
 			return false
 		}
-		return v.hostTwinIs(f, host.Elem, v.elemTypedef(f, src))
+		et := v.elemTypedef(f, src)
+		if et == nil {
+			// the pointee names nothing the engine can resolve — a
+			// bound package that registers no entry for the type
+			// (regexp.Regexp) shadows its source decl. The spelling is
+			// all there is: *regexp.Regexp against the host *Regexp.
+			return host.Elem != nil && host.Elem.HostIdent != nil && unresolvedSpells(src, host.Elem.HostIdent)
+		}
+		return v.hostTwinIs(f, host.Elem, et)
 	}
 	if host.HostIdent == nil {
 		return false
@@ -12401,6 +12430,14 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 			// a host nil *ast.FieldList into go/ast's *FieldList.
 			v.hostTwinIs(f, tn.Typ, td) {
 			return &runtime.TypedNil{Typ: td} // re-tag to the declared type
+		}
+		if HostNilPtrType(tn.Typ) != nil {
+			// a nil host *T whose twin the slot's type cannot be matched
+			// to (a renamed import of a bound package that registers no
+			// entry for T): bind it as the untyped nil it read as before
+			// — the slot's zero — rather than trap on a program gc
+			// accepted.
+			return v.zeroValue(f, td)
 		}
 		f.trap("cannot use nil %s as %s", tdName(tn.Typ), tdName(td))
 	}
