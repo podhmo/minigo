@@ -8,6 +8,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/podhmo/minigo/compile"
 	"github.com/podhmo/minigo/runtime"
@@ -643,13 +644,27 @@ func lenOf(v runtime.Value) (runtime.Value, error) {
 		// a boxed host named slice or map (net.IP, http.Header) keeps
 		// its box for method dispatch; measure the host value itself.
 		switch rv := reflect.ValueOf(x.V); rv.Kind() {
-		case reflect.Slice, reflect.Array, reflect.Map, reflect.String, reflect.Chan:
+		case reflect.Chan:
+			if isTimeChan(rv) {
+				return int64(0), nil
+			}
+			return int64(rv.Len()), nil
+		case reflect.Slice, reflect.Array, reflect.Map, reflect.String:
 			return int64(rv.Len()), nil
 		}
 		return nil, fmt.Errorf("len of %T", v)
 	default:
 		return nil, fmt.Errorf("len of %T", v)
 	}
+}
+
+// isTimeChan reports whether rv, a host channel, carries time.Time: the
+// channel of a time.Timer/Ticker/After, which minigo serves through a
+// 1-buffered feed proxy (newChanFeed). Since Go 1.23 timer channels are
+// synchronous, so len and cap report 0 rather than the proxy's buffer.
+// A script chan time.Time is a runtime.Chan and never reaches here.
+func isTimeChan(rv reflect.Value) bool {
+	return rv.Type().Elem() == reflect.TypeFor[time.Time]()
 }
 
 func capOf(v runtime.Value) (runtime.Value, error) {
@@ -664,7 +679,12 @@ func capOf(v runtime.Value) (runtime.Value, error) {
 		return int64(cap(x.C)), nil
 	case *runtime.GoValue:
 		switch rv := reflect.ValueOf(x.V); rv.Kind() {
-		case reflect.Slice, reflect.Array, reflect.Chan:
+		case reflect.Chan:
+			if isTimeChan(rv) {
+				return int64(0), nil
+			}
+			return int64(rv.Cap()), nil
+		case reflect.Slice, reflect.Array:
 			return int64(rv.Cap()), nil
 		}
 		return lenOf(v)
