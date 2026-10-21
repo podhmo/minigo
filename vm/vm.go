@@ -3553,6 +3553,10 @@ func uncontendedLock(hv any, name string) func() bool {
 // reflect type is *U where U is the element typedef's boxed value type
 // — a HostNew that returns a pointer already is the *T box.
 func (v *VM) hostNilMethod(td *runtime.TypeDef, name string) (runtime.Value, bool) {
+	if rt := HostNilSliceType(td); rt != nil {
+		// a nil named host slice ([HostNil]): IP's methods on nil IP
+		return hostZeroMethod(rt, name)
+	}
 	if td == nil || td.Spec != nil || td.Kind != runtime.KindPointer {
 		return nil, false
 	}
@@ -3570,6 +3574,12 @@ func (v *VM) hostNilMethod(td *runtime.TypeDef, name string) (runtime.Value, boo
 			rt = reflect.PointerTo(rt)
 		}
 	}
+	return hostZeroMethod(rt, name)
+}
+
+// hostZeroMethod binds method name on the zero (nil) value of host type
+// rt, or reports false when rt has no such method.
+func hostZeroMethod(rt reflect.Type, name string) (runtime.Value, bool) {
 	m := reflect.Zero(rt).MethodByName(name)
 	if !m.IsValid() {
 		return nil, false
@@ -3748,6 +3758,13 @@ func goValueOf(rv reflect.Value) runtime.Value {
 		// `v == nil` reads like Go.
 		switch rv.Kind() {
 		case reflect.Slice:
+			if rv.IsNil() && rv.Type().Name() != "" {
+				// a nil named host slice (net.ParseIP's IP on bad
+				// input) is a typed nil of the host type, as a nil *T
+				if tn := HostNil(rv.Type()); tn != nil {
+					return tn
+				}
+			}
 			if rv.Type().Name() == "" {
 				td := anonSliceTypX(anonExprOf(rv.Type().Elem()))
 				td.Elem = hostPkgElemTypedef(rv.Type().Elem())
@@ -11964,9 +11981,10 @@ func (v *VM) typeMatchesTD(f *frame, td, dyn *runtime.TypeDef) bool {
 		// containerAssert.
 		return true
 	}
-	if HostNilPtrType(dyn) != nil {
-		// a nil host *T asserts to its source twin's *T (or to a
-		// bound *T) by identity, like a non-nil host box.
+	if HostNilPtrType(dyn) != nil || (dyn.Kind == runtime.KindSlice && dyn.HostIdent != nil) {
+		// a nil host *T (or named host slice, net.IP) asserts to its
+		// source twin's type (or to the bound one) by identity, like
+		// a non-nil host box.
 		return v.hostTwinIs(f, dyn, td)
 	}
 	return v.sigTypEq(td, dyn)
@@ -12095,6 +12113,13 @@ func (v *VM) memberOfType(f *frame, td *runtime.TypeDef, name string, recv runti
 			return bf
 		}
 		panic(runtime.NilDerefPanic())
+	}
+	if nt, ok := asTypedNil(rv); ok && HostNilSliceType(nt.Typ) != nil {
+		// a nil named host slice (net.IP) dispatches its value
+		// methods on the nil receiver, as in Go
+		if bf, ok := v.hostNilMethod(nt.Typ, name); ok {
+			return bf
+		}
 	}
 	if isIface {
 		f.trap("interface value has no field %s", name)
@@ -15177,6 +15202,8 @@ func HostNil(rt reflect.Type) *runtime.TypedNil {
 	var tn *runtime.TypedNil
 	if td := HostNilPtrTypedef(rt); td != nil {
 		tn = &runtime.TypedNil{Typ: td}
+	} else if rt.Kind() == reflect.Slice && rt.Name() != "" && rt.PkgPath() != "" {
+		tn = &runtime.TypedNil{Typ: hostPkgElemTypedef(rt)}
 	} else if rt.Name() == "" && (rt.Kind() == reflect.Chan || rt.Kind() == reflect.Func || rt.Kind() == reflect.Pointer) &&
 		universeSpelled(rt) {
 		tn = &runtime.TypedNil{Typ: &runtime.TypeDef{Kind: hostNamedKind(rt), Anon: anonExprOf(rt)}}
@@ -15221,6 +15248,24 @@ func universeSpelled(rt reflect.Type) bool {
 		return rt.NumMethod() == 0
 	}
 	return false
+}
+
+// HostNilSliceType reports the named host slice type a nil of type td
+// holds: the typedef [HostNil] mints for one (net.IP), or a bound host
+// type (hostType) whose zero is a slice. nil for any other typedef.
+func HostNilSliceType(td *runtime.TypeDef) reflect.Type {
+	if td == nil || td.Spec != nil {
+		return nil
+	}
+	if td.Kind == runtime.KindSlice && td.HostIdent != nil {
+		return td.HostIdent
+	}
+	if td.HostNew != nil {
+		if rt := td.HostType(); rt != nil && rt.Kind() == reflect.Slice && rt.Name() != "" {
+			return rt
+		}
+	}
+	return nil
 }
 
 // HostNilPtrType reports the host pointer type behind a typedef minted by

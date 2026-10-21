@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/constant"
 	"os"
+	"reflect"
 	"strings"
 
 	"github.com/podhmo/minigo/compile"
@@ -652,6 +653,14 @@ func lenOf(v runtime.Value) (runtime.Value, error) {
 		return int64(len(x)), nil
 	case runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
 		return int64(0), nil // len(nil slice/map/chan) == 0
+	case *runtime.GoValue:
+		// a boxed host named slice or map (net.IP, http.Header) keeps
+		// its box for method dispatch; measure the host value itself.
+		switch rv := reflect.ValueOf(x.V); rv.Kind() {
+		case reflect.Slice, reflect.Array, reflect.Map, reflect.String, reflect.Chan:
+			return int64(rv.Len()), nil
+		}
+		return nil, fmt.Errorf("len of %T", v)
 	default:
 		return nil, fmt.Errorf("len of %T", v)
 	}
@@ -667,6 +676,12 @@ func capOf(v runtime.Value) (runtime.Value, error) {
 		return x.Cap(), nil // CapN for a virtual zero-size-element slice
 	case *runtime.Chan:
 		return int64(cap(x.C)), nil
+	case *runtime.GoValue:
+		switch rv := reflect.ValueOf(x.V); rv.Kind() {
+		case reflect.Slice, reflect.Array, reflect.Chan:
+			return int64(rv.Cap()), nil
+		}
+		return lenOf(v)
 	default:
 		return lenOf(v)
 	}

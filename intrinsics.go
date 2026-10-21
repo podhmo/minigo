@@ -4211,7 +4211,7 @@ func scriptVal(v any) runtime.Value {
 		// nil chan/func of a predeclared spelling, is a typed nil, as
 		// goValueOf reads it: equal to nil, typed once stored in an
 		// interface. A box would make `f == nil` false.
-		if rv := reflect.ValueOf(x); (rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Chan || rv.Kind() == reflect.Func) && rv.IsNil() {
+		if rv := reflect.ValueOf(x); (rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Chan || rv.Kind() == reflect.Func || rv.Kind() == reflect.Slice) && rv.IsNil() {
 			if tn := vm.HostNil(rv.Type()); tn != nil {
 				return tn
 			}
@@ -8994,6 +8994,18 @@ func fmtArg(v runtime.VMCaller, x runtime.Value) any {
 			return fmtRValue(v, rv)
 		}
 		return goNative(x)
+	case *runtime.TypedNil, *runtime.IfaceNil:
+		// a nil named host slice (net.IP) crosses as the host nil so
+		// fmt runs its String method on the nil receiver ("<nil>")
+		if rt := vm.HostNilSliceType(runtime.BoxedNilTyp(x)); rt != nil {
+			return reflect.Zero(rt).Interface()
+		}
+		if tn, ok := x.(*runtime.TypedNil); ok {
+			if rt := vm.HostNilSliceType(tn.Typ); rt != nil {
+				return reflect.Zero(rt).Interface()
+			}
+		}
+		return &fmtValue{c: v, x: x}
 	default:
 		return &fmtValue{c: v, x: x}
 	}
