@@ -183,10 +183,29 @@ func (e *Engine) installStdlib() {
 			a = append(a[:1], tail...)
 			spec, wrapPos := rewriteWrapVerbs(spec)
 			msg := fmt.Sprintf(spec, a[1:]...)
-			if wrapPos >= 0 && wrapPos < len(args)-1 {
-				return errVal(&wrapError{msg: msg, err: hostErrOf(v, args[wrapPos+1])}), nil
+			// like gc: one %w makes a wrapError (Unwrap() error), several
+			// make a wrapErrors (Unwrap() []error) over the distinct
+			// operands in argument order, skipping non-error ones.
+			var seen []int
+			for _, p := range wrapPos {
+				if p < len(args)-1 && !slices.Contains(seen, p) {
+					seen = append(seen, p)
+				}
 			}
-			return errVal(errors.New(msg)), nil
+			slices.Sort(seen)
+			switch len(seen) {
+			case 0:
+				return errVal(errors.New(msg)), nil
+			case 1:
+				return errVal(&wrapError{msg: msg, err: hostErrOf(v, args[seen[0]+1])}), nil
+			}
+			var errs []error
+			for _, p := range seen {
+				if err := hostErrOf(v, args[p+1]); err != nil {
+					errs = append(errs, err)
+				}
+			}
+			return errVal(&wrapErrors{msg: msg, errs: errs}), nil
 		}},
 	})
 	e.Bind("errors", map[string]runtime.Value{
@@ -7512,6 +7531,16 @@ type wrapError struct {
 func (e *wrapError) Error() string { return e.msg }
 func (e *wrapError) Unwrap() error { return e.err }
 
+// wrapErrors is fmt.Errorf's product for several %w verbs: message plus
+// every cause, reachable through Unwrap() []error.
+type wrapErrors struct {
+	msg  string
+	errs []error
+}
+
+func (e *wrapErrors) Error() string   { return e.msg }
+func (e *wrapErrors) Unwrap() []error { return e.errs }
+
 // hostErrOf converts a script error value to a host error: boxed Go
 // errors pass through, script values get a scriptError that calls back
 // into the VM for Error().
@@ -7861,15 +7890,14 @@ func sameErrTyp(v runtime.VMCaller, st, want *runtime.TypeDef) bool {
 	return sp == wp
 }
 
-// rewriteWrapVerbs rewrites %w verbs to %v and reports the LAST %w's
-// argument position (-1 when absent); Go keeps the last %w's arg as the
-// wrapError's cause.
-func rewriteWrapVerbs(spec string) (string, int) {
+// rewriteWrapVerbs rewrites %w verbs to %v and reports every %w's
+// argument position, in verb order (nil when absent).
+func rewriteWrapVerbs(spec string) (string, []int) {
 	if !strings.Contains(spec, "%w") {
-		return spec, -1
+		return spec, nil
 	}
 	var sb strings.Builder
-	wrapPos := -1
+	var wrapPos []int
 	seq := 0
 	for i := 0; i < len(spec); {
 		j := strings.IndexByte(spec[i:], '%')
@@ -7895,7 +7923,7 @@ func rewriteWrapVerbs(spec string) (string, int) {
 			sb.WriteString("%%")
 		case 'w':
 			sb.WriteString("%v")
-			wrapPos = seq
+			wrapPos = append(wrapPos, seq)
 			seq++
 		default:
 			sb.WriteString(spec[pct:i])
