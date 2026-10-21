@@ -1,0 +1,12 @@
+uint8 200
+main.M 1
+uint8 3
+float64 1
+float64 3
+int32
+0.5
+L--------- d---------
+L--------- d---------
+---------- true
++ * EOF
+token.Token
