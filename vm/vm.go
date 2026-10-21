@@ -830,6 +830,13 @@ type frame struct {
 	// boundHi. boundHi == 0 disables bounding (normal execution).
 	boundLo int
 	boundHi int
+
+	// vpack is the slice prepFrame packed a variadic call's trailing
+	// arguments into (`f(1, 2)` for `func f(xs ...T)`): the parameter's
+	// coerce converts its elements to T — they arrive as raw call
+	// arguments, untyped constants included. A spread `f(xs...)` binds
+	// the caller's slice itself and leaves vpack nil.
+	vpack *runtime.Slice
 }
 
 func (f *frame) push(v runtime.Value) { f.stack = append(f.stack, v) }
@@ -849,6 +856,29 @@ func (f *frame) pos() token.Pos {
 
 func (f *frame) trap(format string, args ...any) {
 	panic(&runtime.Trap{Pos: f.pos(), Reason: fmt.Sprintf(format, args...)})
+}
+
+// coerceVarPack converts the packed trailing arguments of a variadic
+// call to the parameter's element type, like Go's implicit assignment
+// of each argument to T: `f(1)` for `...float64` holds 1.0, `...uint8`
+// truncates a non-constant shift `1<<n`, `...any` boxes 'a' as a rune.
+// The pack is fresh (prepFrame built it), so converting in place is
+// safe.
+func (v *VM) coerceVarPack(f *frame, pack *runtime.Slice, td *runtime.TypeDef) {
+	if v.H.ElemOf == nil {
+		return
+	}
+	utd := v.peelNamed(td)
+	if utd == nil || utd.Kind != runtime.KindSlice {
+		return
+	}
+	et, err := v.H.ElemOf(utd)
+	if err != nil || et == nil {
+		return
+	}
+	for i, e := range pack.Elems {
+		pack.Elems[i] = v.coerce(f, e, et)
+	}
 }
 
 // assignCell stores into a cell, coercing to the cell's declared type
@@ -1643,7 +1673,9 @@ func (v *VM) prepFrameSeen(callee runtime.Value, args []runtime.Value, statics [
 						rest = &runtime.Slice{N: rn, CapN: rn, Zero: sp.S.Zero, Typ: sp.S.Typ}
 					}
 				} else {
-					rest = &runtime.Slice{Elems: append([]runtime.Value{}, args[i:]...)}
+					pack := &runtime.Slice{Elems: append([]runtime.Value{}, args[i:]...)}
+					fr.vpack = pack
+					rest = pack
 				}
 			}
 			fr.locals[i] = &runtime.Cell{Elem: rest}
@@ -2612,6 +2644,10 @@ func (v *VM) loop(f *frame) {
 				f.trap("declared type is not a type")
 			}
 			c := f.locals[ins.A]
+			if f.vpack != nil && c.Elem == runtime.Value(f.vpack) {
+				v.coerceVarPack(f, f.vpack, td)
+				f.vpack = nil
+			}
 			c.Elem = v.coerce(f, c.Elem, td)
 			c.Typ = td // future stores into this cell coerce the same way
 		case bytecode.OpCoerceTop:
