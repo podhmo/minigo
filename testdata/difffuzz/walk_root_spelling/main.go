@@ -34,9 +34,14 @@ func main() {
 			return nil
 		})
 	}
+	filepath.Walk(".", func(p string, info fs.FileInfo, err error) error {
+		fmt.Printf("%T %v\n", info, info.IsDir())
+		return filepath.SkipAll
+	})
 	filepath.WalkDir(".", func(p string, d fs.DirEntry, err error) error {
 		if p == "." {
-			fmt.Println(d)
+			info, _ := d.Info()
+			fmt.Printf("%v %T %T\n", d, d, info)
 			return nil
 		}
 		return fs.SkipAll

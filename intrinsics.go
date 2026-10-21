@@ -1827,7 +1827,7 @@ func (e *Engine) installStdlib() {
 				var dv runtime.Value = runtime.NIL
 				if d != nil {
 					if p == ap {
-						d = walkRootEntry(d, root)
+						d = walkRootEntry(d, e.hostSpelling(root))
 					}
 					dv = &runtime.GoValue{V: d}
 				}
@@ -1849,7 +1849,7 @@ func (e *Engine) installStdlib() {
 				var iv runtime.Value = runtime.NIL
 				if info != nil {
 					if p == ap {
-						info = walkRootInfo(info, root)
+						info = walkRootInfo(info, e.hostSpelling(root))
 					}
 					iv = &runtime.GoValue{V: info}
 				}
@@ -5155,46 +5155,41 @@ func walkCallback(v runtime.VMCaller, cb runtime.Value, root, ap, p string, entr
 	return hostErrOf(v, r)
 }
 
-// walkRootEntry/walkRootInfo give the walk root's entry gc's name: gc
-// lstats the root as written, so its Name() is filepath.Base of the
-// script's spelling ("." for ".", ".." for "a/b/..") — the host walked
-// the resolved absolute path, whose base is the directory's own name.
-func walkRootEntry(d fs.DirEntry, root string) fs.DirEntry {
-	if name := filepath.Base(root); name != d.Name() {
-		return renamedDirEntry{DirEntry: d, name: name}
+// hostSpelling anchors a script path at the virtual cwd WITHOUT
+// cleaning it, so a host lstat names the result like gc's lstat of the
+// spelled path (basename "." for ".", ".." for "a/b/..").
+func (e *Engine) hostSpelling(p string) string {
+	if filepath.IsAbs(p) {
+		return p
+	}
+	return e.cwd + string(filepath.Separator) + p
+}
+
+// walkRootEntry/walkRootInfo give the walk root gc's entry: gc lstats
+// the root as written, so its Name() is the base of the script's
+// spelling — the host walked the resolved absolute path, whose base is
+// the directory's own name. Re-lstatting the uncleaned host spelling
+// yields the same host types gc hands over (fs.FileInfoToDirEntry's
+// entry, *os.fileStat); on failure the host's own entry stands.
+func walkRootEntry(d fs.DirEntry, hp string) fs.DirEntry {
+	if filepath.Base(hp) == d.Name() {
+		return d
+	}
+	if fi, err := os.Lstat(hp); err == nil {
+		return fs.FileInfoToDirEntry(fi)
 	}
 	return d
 }
 
-func walkRootInfo(fi fs.FileInfo, root string) fs.FileInfo {
-	if name := filepath.Base(root); name != fi.Name() {
-		return renamedFileInfo{FileInfo: fi, name: name}
+func walkRootInfo(fi fs.FileInfo, hp string) fs.FileInfo {
+	if filepath.Base(hp) == fi.Name() {
+		return fi
+	}
+	if li, err := os.Lstat(hp); err == nil {
+		return li
 	}
 	return fi
 }
-
-type renamedDirEntry struct {
-	fs.DirEntry
-	name string
-}
-
-func (d renamedDirEntry) Name() string { return d.name }
-func (d renamedDirEntry) Info() (fs.FileInfo, error) {
-	fi, err := d.DirEntry.Info()
-	if err != nil {
-		return nil, err
-	}
-	return renamedFileInfo{FileInfo: fi, name: d.name}, nil
-}
-func (d renamedDirEntry) String() string { return fs.FormatDirEntry(d) }
-
-type renamedFileInfo struct {
-	fs.FileInfo
-	name string
-}
-
-func (fi renamedFileInfo) Name() string   { return fi.name }
-func (fi renamedFileInfo) String() string { return fs.FormatFileInfo(fi) }
 
 // runePred adapts a script `func(rune) bool` to the host signature for
 // strings.*Func calls; a panic inside the callback propagates through

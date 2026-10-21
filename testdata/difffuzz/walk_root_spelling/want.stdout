@@ -28,4 +28,5 @@ D "a/./b" "b" "b" <nil>
 D "a/b/g.txt" "g.txt" "g.txt" <nil>
 W "a/./b" "b" <nil>
 W "a/b/g.txt" "g.txt" <nil>
-d ./
+*os.fileStat true
+d ./ fs.dirInfo *os.fileStat
