@@ -1591,14 +1591,16 @@ func (e *Engine) installStdlib() {
 		// error sentinels for errors.Is on the script side
 		"ErrNotExist": &runtime.GoValue{V: fs.ErrNotExist},
 		// *os.File asserts (x/tools' gocommand checks cmd.Stdout's type)
-		"File": hostType("os.File", func() any { return &os.File{} }), "Interrupt": &runtime.GoValue{V: os.Interrupt},
-		"Kill":                &runtime.GoValue{V: os.Kill},
-		"ErrProcessDone":      &runtime.GoValue{V: os.ErrProcessDone},
-		"ErrExist":            &runtime.GoValue{V: fs.ErrExist},
-		"ErrPermission":       &runtime.GoValue{V: fs.ErrPermission},
-		"ErrClosed":           &runtime.GoValue{V: fs.ErrClosed},
-		"ErrInvalid":          &runtime.GoValue{V: fs.ErrInvalid},
-		"ErrNoDeadline":       &runtime.GoValue{V: os.ErrNoDeadline},
+		"File":           hostType("os.File", func() any { return &os.File{} }),
+		"Interrupt":      &runtime.GoValue{V: os.Interrupt},
+		"Kill":           &runtime.GoValue{V: os.Kill},
+		"ErrProcessDone": &runtime.GoValue{V: os.ErrProcessDone},
+		"ErrExist":       &runtime.GoValue{V: fs.ErrExist},
+		"ErrPermission":  &runtime.GoValue{V: fs.ErrPermission},
+		"ErrClosed":      &runtime.GoValue{V: fs.ErrClosed},
+		"ErrInvalid":     &runtime.GoValue{V: fs.ErrInvalid},
+		"ErrNoDeadline":  &runtime.GoValue{V: os.ErrNoDeadline},
+		// os.IsTimeout's sentinel (a script-built *fs.PathError may wrap it)
 		"ErrDeadlineExceeded": &runtime.GoValue{V: os.ErrDeadlineExceeded},
 		// consts
 		"PathSeparator":     &runtime.UConst{V: constant.MakeInt64(os.PathSeparator), Rune: true},
