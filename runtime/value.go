@@ -296,6 +296,12 @@ func Zero(td *TypeDef) Value {
 		return NIL
 	}
 	if td.HostNew != nil {
+		if k := td.HostType().Kind(); k == reflect.Slice || k == reflect.Map {
+			// a bound named slice or map (net.IP) zeros to nil like
+			// in Go — HostNew's empty box would compare != nil. The
+			// typed nil still dispatches the host methods.
+			return &TypedNil{Typ: td}
+		}
 		// keep the declared tag so %T/TypeOf read T while the box is
 		// pointer-shaped (`var b bytes.Buffer` → bytes.Buffer, not
 		// *bytes.Buffer).
