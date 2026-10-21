@@ -1,0 +1,23 @@
+true false true
+nil file
+<nil>
+<nil>|*os.File|(*os.File)(nil)
+true
+invalid argument
+0 invalid argument
+false true
+true true
+true
+switch *os.File
+<nil> *os.File
+true true true true
+true false false
+true
+true false
+{<nil> <nil>} {F:<nil> A:<nil>}
+true true
+true
+*os.File true
+null <nil>
+0 invalid argument
+false invalid argument

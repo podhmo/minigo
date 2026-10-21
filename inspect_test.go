@@ -79,6 +79,7 @@ func TestInspect(t *testing.T) {
 		"ASTHostTwin",      // host slices outside go/ast: generics, slice asserts
 		"ASTSourceIfaces",  // host nodes satisfy go/ast interfaces with unexported methods
 		"ASTHostTokens",    // token.Token fields equal go/token constants (#944)
+		"ASTTypedNil",      // nil host pointer fields are typed nils
 		"BodyWalk",
 		"BodyNil",
 		"BodyScope",

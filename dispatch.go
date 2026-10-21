@@ -11,6 +11,7 @@ import (
 
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
+	"github.com/podhmo/minigo/vm"
 )
 
 // ---- interface satisfaction, method sets, embedded dispatch ----
@@ -194,6 +195,11 @@ func (e *Engine) typeMethodInfoU(td *runtime.TypeDef, ptr bool) (map[string]bool
 	td = e.peelAliasTd(td)
 	if td == nil {
 		return nil, nil, false, nil
+	}
+	if rt := vm.HostNilPtrType(td); rt != nil {
+		// the type of a nil host *T offers *T's reflect method set,
+		// like a non-nil box of it.
+		return e.hostTwinMethodSet(reflect.Zero(rt).Interface()), nil, false, nil
 	}
 	var unsure bool
 	// an anonymous *T typedef sees T's method set including pointer

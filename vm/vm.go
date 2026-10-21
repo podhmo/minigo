@@ -3325,7 +3325,12 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		case *runtime.TypedNil:
 			// a nil value under a ref (p.errors when errors is a nil
 			// named slice) still carries the ref so a pointer receiver
-			// binds &base.f, not a detached copy.
+			// binds &base.f, not a detached copy. A ref the runtime
+			// cannot read back (a field of a host struct) selects on
+			// the nil itself.
+			if _, ok := runtime.Deref(recv); !ok {
+				recv = t
+			}
 			return v.memberOfType(f, t.Typ, name, recv, false)
 		}
 		// pointer boxes ([]*T), nils, host values, packages — dispatch
@@ -3591,16 +3596,19 @@ func (v *VM) hostNilMethod(td *runtime.TypeDef, name string) (runtime.Value, boo
 	if td == nil || td.Spec != nil || td.Kind != runtime.KindPointer {
 		return nil, false
 	}
-	if v.H.ElemOf == nil {
-		return nil, false
-	}
-	et, err := v.H.ElemOf(td)
-	if err != nil || et == nil || et.HostNew == nil {
-		return nil, false
-	}
-	rt := reflect.TypeOf(et.HostNew())
-	if rt.Kind() != reflect.Pointer {
-		rt = reflect.PointerTo(rt)
+	rt := HostNilPtrType(td)
+	if rt == nil {
+		if v.H.ElemOf == nil {
+			return nil, false
+		}
+		et, err := v.H.ElemOf(td)
+		if err != nil || et == nil || et.HostNew == nil {
+			return nil, false
+		}
+		rt = reflect.TypeOf(et.HostNew())
+		if rt.Kind() != reflect.Pointer {
+			rt = reflect.PointerTo(rt)
+		}
 	}
 	m := reflect.Zero(rt).MethodByName(name)
 	if !m.IsValid() {
@@ -3633,8 +3641,17 @@ func goValueOf(rv reflect.Value) runtime.Value {
 	switch rv.Kind() {
 	case reflect.Pointer, reflect.Interface, reflect.Chan, reflect.Func:
 		if rv.IsNil() {
-			// a nil pointer-ish host value reads as nil to scripts —
-			// boxing it would make `v == nil` comparisons lie
+			// a nil *T of a named host type is a typed nil: it still
+			// compares equal to nil, but keeps its dynamic type when
+			// stored into an interface and dispatches T's pointer
+			// methods on the nil receiver, as in Go. Other nil
+			// pointer-ish host values read as plain nil — boxing them
+			// would make `v == nil` comparisons lie.
+			if rv.Kind() == reflect.Pointer {
+				if td := HostNilPtrTypedef(rv.Type()); td != nil {
+					return &runtime.TypedNil{Typ: td}
+				}
+			}
 			return runtime.NIL
 		}
 	}
@@ -8640,8 +8657,9 @@ func (v *VM) ifaceEql(f *frame, a, b runtime.Value) bool {
 	if isGoValue(a) || isGoValue(b) {
 		a, b = twinOperands(a, b)
 	}
-	atd := v.typeOfValue(a)
-	if !sameTypeDef(atd, v.typeOfValue(b)) {
+	atd, btd := v.typeOfValue(a), v.typeOfValue(b)
+	if !sameTypeDef(atd, btd) && !v.hostNilTwin(atd, btd) {
+		// a nil host *T is the same dynamic type as its twin's *T
 		return false
 	}
 	// The dynamic types are identical — an uncomparable one panics on
@@ -9641,11 +9659,11 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 		switch bi := b.(type) {
 		case *runtime.IfaceNil:
 			if bt := runtime.BoxedNilTyp(bi); bt != nil {
-				return sameTypeDef(in.Typ, bt)
+				return sameTypeDef(in.Typ, bt) || v.hostNilTwin(in.Typ, bt)
 			}
 			return false
 		case *runtime.TypedNil:
-			return sameTypeDef(in.Typ, bi.Typ)
+			return sameTypeDef(in.Typ, bi.Typ) || v.hostNilTwin(in.Typ, bi.Typ)
 		}
 		return false
 	}
@@ -9658,7 +9676,8 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 			// (Go's interface == compares the (type, value) pair);
 			// only the SAME type can panic for being uncomparable.
 			if !runtime.TypIdentical(tn.Typ, bi.Typ) {
-				return false
+				// a nil host *T equals a nil of its source twin's *T
+				return v.hostNilTwin(tn.Typ, bi.Typ)
 			}
 			// a typed nil of a slice/map/func type is still uncomparable —
 			// Go panics on the TYPE even when the value is nil.
@@ -9668,7 +9687,7 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 			return true
 		case *runtime.IfaceNil:
 			if bt := runtime.BoxedNilTyp(bi); bt != nil {
-				return sameTypeDef(tn.Typ, bt)
+				return sameTypeDef(tn.Typ, bt) || v.hostNilTwin(tn.Typ, bt)
 			}
 			return false
 		}
@@ -11785,6 +11804,11 @@ func (v *VM) typeMatchesTD(f *frame, td, dyn *runtime.TypeDef) bool {
 		// containerAssert.
 		return true
 	}
+	if HostNilPtrType(dyn) != nil {
+		// a nil host *T asserts to its source twin's *T (or to a
+		// bound *T) by identity, like a non-nil host box.
+		return v.hostTwinIs(f, dyn, td)
+	}
 	return v.sigTypEq(td, dyn)
 }
 
@@ -12199,6 +12223,19 @@ func (v *VM) hostElemTwin(f *frame, tag, td *runtime.TypeDef) bool {
 	return v.hostTwinIs(f, tag.Elem, v.elemTypedef(f, td))
 }
 
+// hostNilTwin reports whether a and b, the types of two nils, denote the
+// same type because one is a nil host *T ([HostNilPtrTypedef]) and the
+// other the *T of its source twin (or of the bound type).
+func (v *VM) hostNilTwin(a, b *runtime.TypeDef) bool {
+	switch {
+	case HostNilPtrType(a) != nil:
+		return v.hostTwinIs(nil, a, b)
+	case HostNilPtrType(b) != nil:
+		return v.hostTwinIs(nil, b, a)
+	}
+	return false
+}
+
 // hostTwinIs reports whether host, a [hostPkgElemTypedef] typedef, and
 // src, a source typedef, denote the same type: the same named type, or
 // pointers to it.
@@ -12360,7 +12397,9 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 			(sameSpelledTwin(tn.Typ, td) && utd0 != nil &&
 				(utd0.Kind == runtime.KindSlice || utd0.Kind == runtime.KindMap || utd0.Kind == runtime.KindChan)) ||
 			// a host nil []*ast.Ident into go/ast's `[]N` with N=*Ident.
-			v.hostElemTwin(f, tn.Typ, td) {
+			v.hostElemTwin(f, tn.Typ, td) ||
+			// a host nil *ast.FieldList into go/ast's *FieldList.
+			v.hostTwinIs(f, tn.Typ, td) {
 			return &runtime.TypedNil{Typ: td} // re-tag to the declared type
 		}
 		f.trap("cannot use nil %s as %s", tdName(tn.Typ), tdName(td))
@@ -12372,7 +12411,8 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		utd0 := v.peelNamed(td)
 		if sameTypeDef(bn, td) || v.tdShapeEq(bn, td) || v.samePointeeAlias(bn, td) ||
 			(sameSpelledTwin(bn, td) && utd0 != nil &&
-				(utd0.Kind == runtime.KindSlice || utd0.Kind == runtime.KindMap || utd0.Kind == runtime.KindChan)) {
+				(utd0.Kind == runtime.KindSlice || utd0.Kind == runtime.KindMap || utd0.Kind == runtime.KindChan)) ||
+			v.hostTwinIs(f, bn, td) {
 			return &runtime.TypedNil{Typ: td}
 		}
 	}
@@ -14816,6 +14856,41 @@ func hostPkgElemTypedef(rt reflect.Type) *runtime.TypeDef {
 	// identity only: a HostNew would make Zero build a host box where
 	// an interface element's zero is nil.
 	return &runtime.TypeDef{Name: rt.String(), Kind: hostNamedKind(rt), HostIdent: rt}
+}
+
+// hostNilPtrTypes memoizes [HostNilPtrTypedef] per reflect type: one
+// typedef per host pointer type keeps a nil *T read cheap and lets the
+// interface-satisfaction memo key on it.
+var hostNilPtrTypes sync.Map // reflect.Type -> *runtime.TypeDef
+
+// HostNilPtrTypedef is the typedef a nil host *T carries as a
+// [runtime.TypedNil] — [hostPkgElemTypedef]'s anonymous pointer to a
+// named host type — or nil when rt is not a pointer to a named host
+// type (such nils stay untyped). [HostNilPtrType] reads it back.
+func HostNilPtrTypedef(rt reflect.Type) *runtime.TypeDef {
+	if td, ok := hostNilPtrTypes.Load(rt); ok {
+		return td.(*runtime.TypeDef)
+	}
+	if rt.Kind() != reflect.Pointer || rt.Name() != "" || rt.Elem().Name() == "" || rt.Elem().PkgPath() == "" {
+		return nil
+	}
+	td := hostPkgElemTypedef(rt)
+	if td == nil {
+		return nil
+	}
+	got, _ := hostNilPtrTypes.LoadOrStore(rt, td)
+	return got.(*runtime.TypeDef)
+}
+
+// HostNilPtrType reports the host pointer type behind a typedef minted by
+// [HostNilPtrTypedef] — an anonymous pointer to a named host type — or
+// nil for any other typedef.
+func HostNilPtrType(td *runtime.TypeDef) reflect.Type {
+	if td == nil || td.Kind != runtime.KindPointer || td.Name != "" || td.Spec != nil || td.Anon != nil ||
+		td.Elem == nil || td.Elem.HostIdent == nil {
+		return nil
+	}
+	return reflect.PointerTo(td.Elem.HostIdent)
 }
 
 // sourceTwinOf maps a host element typedef from [hostPkgElemTypedef] to

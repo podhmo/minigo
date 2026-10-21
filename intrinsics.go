@@ -4185,6 +4185,14 @@ func scriptVal(v any) runtime.Value {
 		*runtime.ImportRef, *runtime.Named, *runtime.TypedNil:
 		return x
 	default:
+		// a nil *T of a named host type (os.Open's file on error) is a
+		// typed nil, as goValueOf reads it: equal to nil, typed once
+		// stored in an interface. A box would make `f == nil` false.
+		if rv := reflect.ValueOf(x); rv.Kind() == reflect.Pointer && rv.IsNil() {
+			if td := vm.HostNilPtrTypedef(rv.Type()); td != nil {
+				return &runtime.TypedNil{Typ: td}
+			}
+		}
 		return &runtime.GoValue{V: x}
 	}
 }

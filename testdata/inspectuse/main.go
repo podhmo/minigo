@@ -2179,6 +2179,83 @@ func ASTHostTokens() string {
 	return "ok"
 }
 
+// astTypedNilSubject below has neither a receiver nor a doc comment (a
+// blank line detaches this one): its FuncDecl's Recv and Doc are nil.
+
+func astTypedNilSubject() {}
+
+// ASTTypedNil: a nil pointer field of a host node (FuncDecl.Recv, Doc)
+// is a typed nil like in Go — equal to nil itself, but not nil once
+// stored in an interface; it asserts and type-switches to its type,
+// dispatches nil-receiver methods, and goes back into host nodes.
+// The expectations are what the go toolchain reports for the same
+// steps on a go/parser FuncDecl.
+func ASTTypedNil() string {
+	fd := inspect.AST(inspect.Symbol(inspect.Current(), "astTypedNilSubject")).(*goast.FuncDecl)
+	var got []string
+	add := func(format string, args ...any) { got = append(got, fmt.Sprintf(format, args...)) }
+
+	add("recv==nil:%v doc==nil:%v", fd.Recv == nil, fd.Doc == nil)
+	if fd.Recv != nil {
+		add("recv != nil")
+	}
+	r := fd.Recv
+	add("local==nil:%v", r == nil)
+	// nil-receiver methods
+	add("NumFields:%d Text:%q", fd.Recv.NumFields(), fd.Doc.Text())
+	// an interface holding the typed nil is not nil
+	var n goast.Node = fd.Recv
+	var a any = fd.Doc
+	add("node==nil:%v any==nil:%v", n == nil, a == nil)
+	x, ok := n.(*goast.FieldList)
+	add("assert:%v,%v", x == nil, ok)
+	_, ok = a.(*goast.FieldList)
+	add("assert-other:%v", ok)
+	switch v := n.(type) {
+	case nil:
+		add("switch nil")
+	case *goast.FieldList:
+		add("switch *FieldList nil:%v", v == nil)
+	default:
+		add("switch default")
+	}
+	// printing
+	add("%v|%T|%#v|%v|%T", fd.Recv, fd.Recv, fd.Recv, n, n)
+	// comparisons with a script-side nil of the same type
+	var fl *goast.FieldList
+	var fla goast.Node = fl
+	add("eq:%v ifaceeq:%v", fl == fd.Recv, fla == n)
+	// back into host nodes
+	md := inspect.AST(inspect.Methods(inspect.Symbol(inspect.DirOf("./testdata/inspectpkg"), "User"))[0]).(*goast.FuncDecl)
+	saved := md.Recv
+	md.Recv = fd.Recv
+	add("set:%v %d", md.Recv == nil, md.Recv.NumFields())
+	var buf bytes.Buffer
+	if err := format.Node(&buf, token.NewFileSet(), &goast.FuncDecl{Recv: fd.Recv, Name: md.Name, Type: md.Type}); err != nil {
+		add("format: %v", err)
+	}
+	md.Recv = saved
+	add("format:%q", buf.String())
+
+	want := []string{
+		"recv==nil:true doc==nil:true",
+		"local==nil:true",
+		`NumFields:0 Text:""`,
+		"node==nil:false any==nil:false",
+		"assert:true,true",
+		"assert-other:false",
+		"switch *FieldList nil:true",
+		"<nil>|*ast.FieldList|(*ast.FieldList)(nil)|<nil>|*ast.FieldList",
+		"eq:true ifaceeq:true",
+		"set:true 0",
+		`format:"func Bye() string"`,
+	}
+	if g, w := strings.Join(got, "\n"), strings.Join(want, "\n"); g != w {
+		return "got\n" + g + "\nwant\n" + w
+	}
+	return "ok"
+}
+
 // ASTBoundTrap: a bound (host) symbol carries no AST node.
 func ASTBoundTrap() string {
 	inspect.AST(inspect.Symbol(inspect.PackageOf("strings"), "Builder"))
