@@ -74,12 +74,13 @@ func TestInspect(t *testing.T) {
 		"PkgMetaView", // metadata via accessors; member shadow wins (#26)
 		"BuiltinPathConst",
 		"ASTWalk",
-		"ASTInspect",       // go/ast walkers over host nodes (#939)
-		"ASTResolveRecipe", // go/ast dispatch + name resolution with today's API (#940)
-		"ASTHostTwin",      // host slices outside go/ast: generics, slice asserts
-		"ASTSourceIfaces",  // host nodes satisfy go/ast interfaces with unexported methods
-		"ASTHostTokens",    // token.Token fields equal go/token constants (#944)
-		"ASTTypedNil",      // nil host pointer fields are typed nils
+		"ASTTypedNil",         // nil host pointer fields are typed nils
+		"ASTInspect",          // go/ast walkers over host nodes (#939)
+		"ASTResolveRecipe",    // go/ast dispatch + name resolution with today's API (#940)
+		"ASTHostTwin",         // host slices outside go/ast: generics, slice asserts
+		"ASTSourceIfaces",     // host nodes satisfy go/ast interfaces with unexported methods
+		"ASTHostTokens",       // token.Token fields equal go/token constants (#944)
+		"ASTHostTokensNested", // ... nested in structs/arrays/keys and through generics
 		"BodyWalk",
 		"BodyNil",
 		"BodyScope",
