@@ -81,6 +81,7 @@ func TestInspect(t *testing.T) {
 		"ASTSourceIfaces",     // host nodes satisfy go/ast interfaces with unexported methods
 		"ASTHostTokens",       // token.Token fields equal go/token constants (#944)
 		"ASTHostTokensNested", // ... nested in structs/arrays/keys and through generics
+		"ASTHostTokensTyped",  // ... but never a same-payload value of another type
 		"BodyWalk",
 		"BodyNil",
 		"BodyScope",

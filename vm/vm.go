@@ -6412,11 +6412,61 @@ func (v *VM) mapKeyTypedef(f *frame, td *runtime.TypeDef) *runtime.TypeDef {
 // type's tag is what the check needs.
 func (v *VM) mapKeyOperand(f *frame, td *runtime.TypeDef, idx runtime.Value) runtime.Value {
 	if kt := v.mapKeyTypedef(f, td); kt != nil {
-		// a boxed host named basic keys like its source twin's value
-		// (runtime.CanonicalKey): m[as.Tok] finds m[token.DEFINE].
-		return runtime.Unwrap(v.coerce(f, idx, kt))
+		k := v.coerce(f, idx, kt)
+		if kt = v.peelAlias(kt); kt.Kind == runtime.KindInterface {
+			// an interface key keeps its dynamic type: the map keys
+			// it by (type, value) (runtime.IfaceKeyOf) and ranging
+			// yields it typed.
+			return k
+		}
+		// a boxed host named basic under its twin's key type keys like
+		// the twin's values: m[as.Tok] finds m[token.DEFINE].
+		return unboxTwinScalar(runtime.Unwrap(k), kt)
 	}
 	return runtime.Unwrap(v.materialize(f, idx))
+}
+
+// unboxTwinScalar is the payload of x when x is a boxed host named basic
+// of the type td declares ([runtime.HostTwinOf]); x otherwise.
+func unboxTwinScalar(x runtime.Value, td *runtime.TypeDef) runtime.Value {
+	if !isGoValue(x) {
+		return x
+	}
+	if p, rt, ok := runtime.HostNamedScalar(x); ok && runtime.HostTwinOf(rt, td) {
+		return p
+	}
+	return x
+}
+
+// ifaceKeyed reports whether the map typedef td declares an interface
+// key type — a map made of it keys by (dynamic type, value)
+// ([runtime.Map.IfaceKey]).
+func (v *VM) ifaceKeyed(f *frame, td *runtime.TypeDef) bool {
+	kt := v.mapKeyTypedef(f, td)
+	if kt == nil {
+		return false
+	}
+	kt = v.peelAlias(kt)
+	return kt != nil && kt.Kind == runtime.KindInterface
+}
+
+// Equal implements [runtime.VMCaller].
+func (v *VM) Equal(td *runtime.TypeDef, a, b runtime.Value) bool {
+	if td != nil {
+		td = v.peelAlias(td)
+	}
+	if td == nil || td.Kind == runtime.KindInterface {
+		return v.ifaceEql(v.topFrame(), a, b)
+	}
+	if isGoValue(a) || isGoValue(b) {
+		a, b = twinSlot(td, a), twinSlot(td, b)
+	}
+	return v.eqlValue(a, b)
+}
+
+// NewMap implements [runtime.VMCaller].
+func (v *VM) NewMap(td *runtime.TypeDef) *runtime.Map {
+	return &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}, Typ: td, IfaceKey: v.ifaceKeyed(v.topFrame(), td)}
 }
 
 // checkMapKey runs the declared-key-type check and drops the operand —
@@ -7106,7 +7156,7 @@ func (v *VM) compositeOf(f *frame, td *runtime.TypeDef, n int, kv bool, raw []ru
 		}
 		return s
 	case runtime.KindMap:
-		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}, Typ: td}
+		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}, Typ: td, IfaceKey: v.ifaceKeyed(f, td)}
 		et := v.elemTypedef(f, td)
 		for i := 0; i < n; i++ {
 			if _, isImp := raw[i*2].(*runtime.ImplicitIndex); isImp {
@@ -9665,24 +9715,95 @@ func (v *VM) unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value 
 	return nil
 }
 
-// hostScalarOperand is what eqlValue compares for a host box: the
-// contents of any host string, the payload of a host named basic
-// ([runtime.HostNamedScalar]), the box itself otherwise.
-func hostScalarOperand(gv *runtime.GoValue) runtime.Value {
-	rv := reflect.ValueOf(gv.V)
-	if !rv.IsValid() {
-		return gv
-	}
-	if rv.Kind() == reflect.String {
+// hostStringOperand is what eqlValue compares for a host-boxed string:
+// its string contents. Any other box compares as itself.
+func hostStringOperand(gv *runtime.GoValue) runtime.Value {
+	if rv := reflect.ValueOf(gv.V); rv.IsValid() && rv.Kind() == reflect.String {
 		return rv.String()
-	}
-	if p, _, ok := runtime.HostNamedScalar(gv); ok {
-		return p
 	}
 	return gv
 }
 
+// hostNamedNonString is [runtime.HostNamedScalar] minus the string kind:
+// host-boxed strings keep comparing by contents (hostStringOperand).
+func hostNamedNonString(x runtime.Value) (runtime.Value, reflect.Type, bool) {
+	p, rt, ok := runtime.HostNamedScalar(x)
+	if !ok || rt.Kind() == reflect.String {
+		return nil, nil, false
+	}
+	return p, rt, true
+}
+
+// hostNamedEql decides a == b when either side is a boxed host named
+// basic (io/fs's FileMode from the host os, a go/token Token off
+// inspect.AST, reflect.Kind): Go compares (type, value), so it equals a
+// box of the same host type holding the same value, or a value tagged
+// with its source twin or bound typedef ([runtime.HostTwinOf]) holding
+// the same payload — never a look-alike of another type. ok is false
+// when neither side is such a box.
+func hostNamedEql(a, b runtime.Value) (eq, ok bool) {
+	pa, rta, okA := hostNamedNonString(a)
+	pb, rtb, okB := hostNamedNonString(b)
+	switch {
+	case okA && okB:
+		return rta == rtb && pa == pb, true
+	case okA:
+		return twinPayloadEql(pa, rta, b), true
+	case okB:
+		return twinPayloadEql(pb, rtb, a), true
+	}
+	return false, false
+}
+
+// twinPayloadEql reports whether x is a value of the host type rt whose
+// payload is p: a Named of rt's twin typedef, or a raw host scalar of rt.
+func twinPayloadEql(p runtime.Value, rt reflect.Type, x runtime.Value) bool {
+	n, ok := x.(*runtime.Named)
+	if !ok {
+		// an untagged script scalar is another type; a raw host
+		// scalar may still be one of rt.
+		q, qt, ok := runtime.HostNamedPayload(x)
+		return ok && qt == rt && p == q
+	}
+	if !runtime.HostTwinOf(rt, n.Typ) {
+		return false
+	}
+	switch q := n.V.(type) {
+	case int64, string, bool:
+		return p == q
+	case *runtime.UConst:
+		mv, err := runtime.UConstNative(q)
+		return err == nil && p == runtime.Unwrap(mv)
+	}
+	q, _, ok := runtime.HostNamedPayload(n.V)
+	return ok && p == q
+}
+
+// twinSlot folds a boxed host named basic stored in a slot declared as
+// its twin typedef td (a struct field, an array element) to the Named
+// that slot's source values hold, so eqlValue compares it with a value
+// the slot stored untagged. Any other value, or an interface-typed slot,
+// passes through: there the dynamic type decides.
+func twinSlot(td *runtime.TypeDef, x runtime.Value) runtime.Value {
+	if td == nil || td.Kind == runtime.KindInterface {
+		return x
+	}
+	if p, rt, ok := hostNamedNonString(x); ok && runtime.HostTwinOf(rt, td) {
+		return runtime.Tag(td, p)
+	}
+	return x
+}
+
 func (v *VM) eqlValue(a, b runtime.Value) bool {
+	// a boxed host named basic compares as a (type, value) pair before
+	// the tags peel: rec{fi.Mode().Type()} == rec{fs.ModeDir} meets the
+	// source twin field by field, while S{m} == S{uint32(fs.ModeDir)}
+	// with an `any` field stays false like Go.
+	if isGoValue(a) || isGoValue(b) {
+		if eq, ok := hostNamedEql(a, b); ok {
+			return eq
+		}
+	}
 	if n, ok := a.(*runtime.Named); ok {
 		a = n.V
 	}
@@ -9698,16 +9819,12 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 	}
 	// a host-boxed string (the facade's StructField.Tag) compares by
 	// its string contents — a converted StructTag and a field's Tag
-	// compare equal, and field.Tag == "json:..." holds like Go's. A host
-	// named basic compares by its payload too, the form a Named of its
-	// source twin holds: rec{fi.Mode().Type()} == rec{fs.ModeDir} and
-	// [1]token.Token{as.Tok} == [1]token.Token{token.DEFINE} reach here
-	// field by field, past the operand-level twinOperands.
+	// compare equal, and field.Tag == "json:..." holds like Go's.
 	if gv, ok := a.(*runtime.GoValue); ok {
-		a = hostScalarOperand(gv)
+		a = hostStringOperand(gv)
 	}
 	if gv, ok := b.(*runtime.GoValue); ok {
-		b = hostScalarOperand(gv)
+		b = hostStringOperand(gv)
 	}
 	// boxed complex values compare by value across widths — Go rejects
 	// complex64 == complex128 (mismatched types), but here both operands
@@ -9844,7 +9961,11 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 			if uncomparableValue(av.Fields[i]) || (i < len(fts) && v.uncomparableTypDeep(fts[i])) {
 				panic(runtime.ComparingUncomparablePanic(spelledTyp(av.Def)))
 			}
-			if !v.eqlValue(av.Fields[i], bs.Fields[i]) {
+			fa, fb := av.Fields[i], bs.Fields[i]
+			if i < len(fts) && (isGoValue(fa) || isGoValue(fb)) {
+				fa, fb = twinSlot(fts[i], fa), twinSlot(fts[i], fb)
+			}
+			if !v.eqlValue(fa, fb) {
 				return false
 			}
 		}
@@ -9870,11 +9991,16 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 				// itself — Go names the enclosing type, not the
 				// element's. Interface-typed elements stay comparable:
 				// the dynamic type decides inside (its own panic).
-				if v.uncomparableTypDeep(v.elemTypedef(nil, av.Typ)) {
+				et := v.elemTypedef(nil, av.Typ)
+				if v.uncomparableTypDeep(et) {
 					panic(runtime.ComparingUncomparablePanic(spelledTyp(av.Typ)))
 				}
 				for i := range av.Elems {
-					if !v.eqlValue(av.Elems[i], bs.Elems[i]) {
+					ea, eb := av.Elems[i], bs.Elems[i]
+					if isGoValue(ea) || isGoValue(eb) {
+						ea, eb = twinSlot(et, ea), twinSlot(et, eb)
+					}
+					if !v.eqlValue(ea, eb) {
 						return false
 					}
 				}
