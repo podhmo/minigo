@@ -3430,6 +3430,16 @@ const (
 // domain. Load* returns the cell content verbatim — a Named uint32
 // keeps its tag, LoadPointer hands the stored pointer back untyped.
 func atomicOp(name string, op atomicOpKind) *runtime.BuiltinFunc {
+	// the operand type the function's name spells (AddInt32 works on
+	// int32): untyped constant and non-constant-shift operands convert
+	// to it, and results wrap at its width. Pointer ops keep values as is.
+	var wordTd *runtime.TypeDef
+	for _, w := range []string{"Uintptr", "Uint32", "Uint64", "Int32", "Int64"} {
+		if strings.HasSuffix(name, w) {
+			wordTd = runtime.BasicTypedef(strings.ToLower(w))
+			break
+		}
+	}
 	want := 1
 	switch op {
 	case atomicOpStore, atomicOpAdd, atomicOpAnd, atomicOpOr, atomicOpSwap:
@@ -3451,6 +3461,18 @@ func atomicOp(name string, op atomicOpKind) *runtime.BuiltinFunc {
 			}
 			return nil
 		}
+		if wordTd != nil {
+			// every operand converts to the word type first: Go
+			// assigns it to the int32/uint32/... parameter.
+			args = append([]runtime.Value(nil), args...)
+			for i := 1; i < len(args); i++ {
+				w, err := atomicWord(vc, wordTd, args[i])
+				if err != nil {
+					return nil, err
+				}
+				args[i] = w
+			}
+		}
 		switch op {
 		case atomicOpLoad:
 			return cur, nil
@@ -3471,13 +3493,22 @@ func atomicOp(name string, op atomicOpKind) *runtime.BuiltinFunc {
 			return true, nil
 		}
 		n := int64Of(cur)
+		var nv runtime.Value = n
 		if op == atomicOpAdd {
 			n += int64Of(args[1])
-			if err := set(n); err != nil {
+			nv = n
+			if wordTd != nil {
+				w, err := atomicWord(vc, wordTd, n)
+				if err != nil {
+					return nil, err
+				}
+				nv = w
+			}
+			if err := set(nv); err != nil {
 				return nil, err
 			}
 			// Add returns the NEW value.
-			return n, nil
+			return nv, nil
 		}
 		switch op {
 		case atomicOpAnd:
@@ -3485,12 +3516,42 @@ func atomicOp(name string, op atomicOpKind) *runtime.BuiltinFunc {
 		case atomicOpOr:
 			n |= int64Of(args[1])
 		}
-		if err := set(n); err != nil {
+		nv = n
+		if wordTd != nil {
+			w, err := atomicWord(vc, wordTd, n)
+			if err != nil {
+				return nil, err
+			}
+			nv = w
+		}
+		if err := set(nv); err != nil {
 			return nil, err
 		}
 		// And/Or return the OLD value.
 		return cur, nil
 	}}
+}
+
+// atomicWord converts an atomic operand to the word type td (int32,
+// uint32, ...) the way the call's parameter assignment does, and
+// returns it as a concrete td value: a constant materializes at td
+// (`AddInt32(&x, 1)` stores an int32, not an int), and an int64
+// payload wraps at td's width (`1<<(n+24)+3` adds 3 to a uint32).
+func atomicWord(vc runtime.VMCaller, td *runtime.TypeDef, x runtime.Value) (runtime.Value, error) {
+	cv, err := vc.Convert(td, x)
+	if err != nil {
+		return nil, err
+	}
+	if n, ok := cv.(*runtime.Named); ok {
+		if u, ok := n.V.(*runtime.UConst); ok {
+			// a typed constant: read its bits and convert the value.
+			if u.V.Kind() != constant.Int {
+				return nil, fmt.Errorf("cannot use constant %s as %s", u.V, td.Name)
+			}
+			return vc.Convert(td, runtime.WrapInt64(u.V))
+		}
+	}
+	return cv, nil
 }
 
 // ---- value marshalling ----
