@@ -1584,10 +1584,10 @@ func (e *Engine) installStdlib() {
 			}
 			return &runtime.GoValue{V: os.DirFS(p)}, nil
 		}),
-		"IsNotExist":   h.fn1("os.IsNotExist", func(a []any) (any, error) { return os.IsNotExist(asErr(a[0])), nil }, os.IsNotExist),
-		"IsExist":      h.fn1("os.IsExist", func(a []any) (any, error) { return os.IsExist(asErr(a[0])), nil }, os.IsExist),
-		"IsPermission": h.fn1("os.IsPermission", func(a []any) (any, error) { return os.IsPermission(asErr(a[0])), nil }, os.IsPermission),
-		"IsTimeout":    h.fn1("os.IsTimeout", func(a []any) (any, error) { return os.IsTimeout(asErr(a[0])), nil }, os.IsTimeout),
+		"IsNotExist":   osErrPred("os.IsNotExist", os.IsNotExist),
+		"IsExist":      osErrPred("os.IsExist", os.IsExist),
+		"IsPermission": osErrPred("os.IsPermission", os.IsPermission),
+		"IsTimeout":    osErrPred("os.IsTimeout", os.IsTimeout),
 		// error sentinels for errors.Is on the script side
 		"ErrNotExist": &runtime.GoValue{V: fs.ErrNotExist},
 		// *os.File asserts (x/tools' gocommand checks cmd.Stdout's type)
@@ -1600,6 +1600,8 @@ func (e *Engine) installStdlib() {
 		"ErrClosed":      &runtime.GoValue{V: fs.ErrClosed},
 		"ErrInvalid":     &runtime.GoValue{V: fs.ErrInvalid},
 		"ErrNoDeadline":  &runtime.GoValue{V: os.ErrNoDeadline},
+		// os.IsTimeout's sentinel (a script-built *fs.PathError may wrap it)
+		"ErrDeadlineExceeded": &runtime.GoValue{V: os.ErrDeadlineExceeded},
 		// consts
 		"PathSeparator":     &runtime.UConst{V: constant.MakeInt64(os.PathSeparator), Rune: true},
 		"PathListSeparator": &runtime.UConst{V: constant.MakeInt64(os.PathListSeparator), Rune: true},
@@ -7020,6 +7022,21 @@ func (e *scriptError) As(target any) bool {
 	return b
 }
 
+// Timeout lets a script-declared `Timeout() bool` method answer host
+// checks like os.IsTimeout; without one the error is not a timeout.
+func (e *scriptError) Timeout() bool {
+	m, ok := runtime.IfaceMember(e.c, e.v, "Timeout")
+	if !ok {
+		return false
+	}
+	r, err := e.c.Call(m, nil)
+	if err != nil {
+		return false
+	}
+	b, _ := runtime.Unwrap(r).(bool)
+	return b
+}
+
 // wrapError is fmt.Errorf's %w product: message plus one cause.
 type wrapError struct {
 	msg string
@@ -7052,6 +7069,65 @@ func hostErrOf(c runtime.VMCaller, v runtime.Value) error {
 	default:
 		return &scriptError{c: c, v: v}
 	}
+}
+
+// osErrPred binds one of os.IsNotExist/IsExist/IsPermission/IsTimeout.
+// These look through exactly one *fs.PathError / *os.LinkError /
+// *os.SyscallError layer by host type switch, so the argument goes
+// through hostErrArg: a script-built *fs.PathError (io/fs runs from
+// source) reaches the host as a real *fs.PathError.
+func osErrPred(name string, pred func(error) bool) *runtime.BuiltinFunc {
+	return &runtime.BuiltinFunc{Name: name, Target: pred, Fn: func(c runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("%s needs 1 arg, got %d", name, len(args))
+		}
+		return pred(hostErrArg(c, args[0])), nil
+	}}
+}
+
+// hostErrTwins lists the host error structs whose source twin a script
+// can build while the host helpers that inspect them stay host-bound:
+// io/fs is interpreted from source, but os.IsNotExist & co. type-switch
+// on the host *fs.PathError. Each entry rebuilds the host value from the
+// script struct's fields (by name), the error fields via hostErrOf.
+var hostErrTwins = []struct {
+	rt    reflect.Type
+	build func(c runtime.VMCaller, s *runtime.Struct) error
+}{
+	{reflect.TypeFor[fs.PathError](), func(c runtime.VMCaller, s *runtime.Struct) error {
+		return &fs.PathError{
+			Op:   str(goNative(structField(s, "Op"))),
+			Path: str(goNative(structField(s, "Path"))),
+			Err:  hostErrOf(c, structField(s, "Err")),
+		}
+	}},
+}
+
+// structField reads a script struct's field by name (NIL when absent).
+func structField(s *runtime.Struct, name string) runtime.Value {
+	for i, f := range s.Def.Fields {
+		if f == name && i < len(s.Fields) {
+			return s.Fields[i]
+		}
+	}
+	return runtime.NIL
+}
+
+// hostErrArg is hostErrOf for host helpers that type-switch on concrete
+// host error types: a pointer to a script struct that is the source twin
+// of a hostErrTwins entry converts to the host type (a fresh value — the
+// helpers only read it); anything else boxes like hostErrOf.
+func hostErrArg(c runtime.VMCaller, v runtime.Value) error {
+	if cell, ok := runtime.Unwrap(v).(*runtime.Cell); ok {
+		if s, ok := cell.Elem.(*runtime.Struct); ok && s.Def != nil {
+			for _, t := range hostErrTwins {
+				if runtime.HostNamedIs(t.rt, s.Def) {
+					return t.build(c, s)
+				}
+			}
+		}
+	}
+	return hostErrOf(c, v)
 }
 
 // scriptErrUnbox maps a chain element back to the script-visible error

@@ -1,0 +1,14 @@
+true false true
+true
+true
+true
+true
+true true
+false false
+false
+false true
+true true
+true true
+open /nonexistent/minigo-iofs-patherror no such file or directory
+open p: permission denied
+*fs.PathError
