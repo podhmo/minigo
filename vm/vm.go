@@ -11816,12 +11816,15 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 				return rt.String() == runtime.TypGoSpelling(ft, td)
 			}
 		}
-		if runtime.HostNamedIs(rt, td) {
+		if runtime.HostTwinOf(rt, td) {
 			return true
 		}
 		return rt.String() == tdName(td)
 	default:
-		return false
+		// a raw host scalar — a time.Duration a host call returned, or
+		// `any(2*time.Second)` whose constant folded untagged — is a
+		// value of its bound typedef: x.(time.Duration) matches.
+		return td.HostScalar != nil && reflect.TypeOf(dv) == reflect.TypeOf(td.HostScalar)
 	}
 }
 
