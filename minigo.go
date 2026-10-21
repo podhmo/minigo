@@ -267,6 +267,7 @@ func (e *Engine) newVM() *vm.VM {
 		ResolveType: e.resolveTypeRef,
 		HostTwin:    e.hostTwin,
 		Linkname:    e.linknameTarget,
+		HostErr:     hostErrOf,
 	}}
 }
 
