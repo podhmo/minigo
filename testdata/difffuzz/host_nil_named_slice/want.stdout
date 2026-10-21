@@ -13,3 +13,11 @@ true true
 0
 true false
 4
+true 0 true
+true
+true
+true
+net.IP(nil) <nil> <nil>
+true true
+false true
+false 1.2.3.4

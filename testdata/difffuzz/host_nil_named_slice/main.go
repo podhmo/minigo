@@ -44,4 +44,26 @@ func main() {
 	s := []net.IP{ip, ok}
 	fmt.Println(s[0] == nil, s[1] == nil)
 	fmt.Println(len(ok.To4()))
+
+	zeros()
+}
+
+// zeros: a script zero net.IP / net.HardwareAddr is nil too.
+func zeros() {
+	var mine net.IP
+	fmt.Println(mine == nil, len(mine), isNil(mine))
+	var r struct{ IP net.IP }
+	fmt.Println(r.IP == nil)
+	ips := make([]net.IP, 2)
+	fmt.Println(ips[0] == nil)
+	var ipnil net.IP = nil
+	fmt.Println(ipnil == nil)
+	fmt.Printf("%#v %v %s\n", mine, mine, mine.String())
+	var hw net.HardwareAddr
+	fmt.Println(hw == nil, hw.String() == "")
+	var ax any = mine
+	_, ok := ax.(net.IP)
+	fmt.Println(ax == nil, ok)
+	mine = net.ParseIP("1.2.3.4")
+	fmt.Println(mine == nil, mine)
 }
