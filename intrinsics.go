@@ -875,7 +875,10 @@ func (e *Engine) installStdlib() {
 		// through an interface-holding target (`var i json.Unmarshaler
 		// = new(U); json.Unmarshal(data, &i)`), which reaches the same
 		// UnmarshalJSON member probe as a concrete pointer.
-		"Marshaler":   &runtime.TypeDef{Name: "encoding/json.Marshaler", Kind: runtime.KindInterface, MReqs: []string{"MarshalJSON"}},
+		"Marshaler": &runtime.TypeDef{Name: "encoding/json.Marshaler", Kind: runtime.KindInterface, MReqs: []string{"MarshalJSON"}},
+		// *json.SyntaxError: the bound decoder returns the host error for
+		// malformed input, so `err.(*json.SyntaxError)` asserts on it.
+		"SyntaxError": hostType("encoding/json.SyntaxError", func() any { return &json.SyntaxError{} }),
 		"Unmarshaler": &runtime.TypeDef{Name: "encoding/json.Unmarshaler", Kind: runtime.KindInterface, MReqs: []string{"UnmarshalJSON"}},
 		// Marshal/MarshalIndent take raw runtime args — h.fn's goNative
 		// would stringify *runtime.Struct before goJSON can field-map it.
@@ -1106,13 +1109,14 @@ func (e *Engine) installStdlib() {
 		"UnescapeString": h.fn("html.UnescapeString", func(a []any) (any, error) { return html.UnescapeString(str(a[0])), nil }, html.UnescapeString),
 	})
 	e.Bind("path", map[string]runtime.Value{
-		"Base":  h.fn("path.Base", func(a []any) (any, error) { return path.Base(str(a[0])), nil }, path.Base),
-		"Clean": h.fn("path.Clean", func(a []any) (any, error) { return path.Clean(str(a[0])), nil }, path.Clean),
-		"Dir":   h.fn("path.Dir", func(a []any) (any, error) { return path.Dir(str(a[0])), nil }, path.Dir),
-		"Ext":   h.fn("path.Ext", func(a []any) (any, error) { return path.Ext(str(a[0])), nil }, path.Ext),
-		"IsAbs": h.fn("path.IsAbs", func(a []any) (any, error) { return path.IsAbs(str(a[0])), nil }, path.IsAbs),
-		"Join":  h.fn("path.Join", func(a []any) (any, error) { return path.Join(strArgs(a)...), nil }, path.Join),
-		"Match": h.fn2("path.Match", func(a []any) (any, error) { return retErr2(path.Match(str(a[0]), str(a[1]))) }),
+		"Base":          h.fn("path.Base", func(a []any) (any, error) { return path.Base(str(a[0])), nil }, path.Base),
+		"Clean":         h.fn("path.Clean", func(a []any) (any, error) { return path.Clean(str(a[0])), nil }, path.Clean),
+		"Dir":           h.fn("path.Dir", func(a []any) (any, error) { return path.Dir(str(a[0])), nil }, path.Dir),
+		"Ext":           h.fn("path.Ext", func(a []any) (any, error) { return path.Ext(str(a[0])), nil }, path.Ext),
+		"IsAbs":         h.fn("path.IsAbs", func(a []any) (any, error) { return path.IsAbs(str(a[0])), nil }, path.IsAbs),
+		"Join":          h.fn("path.Join", func(a []any) (any, error) { return path.Join(strArgs(a)...), nil }, path.Join),
+		"Match":         h.fn2("path.Match", func(a []any) (any, error) { return retErr2(path.Match(str(a[0]), str(a[1]))) }),
+		"ErrBadPattern": errVal(path.ErrBadPattern),
 		"Split": h.fn("path.Split", func(a []any) (any, error) {
 			d, f := path.Split(str(a[0]))
 			return &runtime.Tuple{Elems: []runtime.Value{d, f}}, nil
@@ -1828,6 +1832,8 @@ func (e *Engine) installStdlib() {
 		}},
 		"SkipDir": &runtime.GoValue{V: filepath.SkipDir},
 		"SkipAll": &runtime.GoValue{V: filepath.SkipAll},
+		// filepath.ErrBadPattern is path.ErrBadPattern in gc.
+		"ErrBadPattern": errVal(filepath.ErrBadPattern),
 	})
 	// os/exec: spawning a subprocess escapes per-path confinement, so the
 	// package is only bound for unrestricted engines. Commands default to
@@ -1857,8 +1863,13 @@ func (e *Engine) installStdlib() {
 				}
 				return retErr2(exec.LookPath(name))
 			}),
-			"ErrNotFound": &runtime.GoValue{V: exec.ErrNotFound},
-			"ErrDot":      &runtime.GoValue{V: exec.ErrDot},
+			"ErrNotFound":  &runtime.GoValue{V: exec.ErrNotFound},
+			"ErrDot":       &runtime.GoValue{V: exec.ErrDot},
+			"ErrWaitDelay": &runtime.GoValue{V: exec.ErrWaitDelay},
+			// error types for errors.As / type asserts on LookPath's and
+			// Run's results.
+			"Error":     hostType("os/exec.Error", func() any { return &exec.Error{} }),
+			"ExitError": hostType("os/exec.ExitError", func() any { return &exec.ExitError{} }),
 		})
 	}
 	// host: the gopls-friendly stub-package surface (plan §11). Scripts may
@@ -2126,7 +2137,9 @@ func (e *Engine) installStdlib() {
 		return &runtime.Named{Typ: monthTD, V: int64(m)}
 	}
 	e.Bind("time", map[string]runtime.Value{
-		"Sleep": h.fn("time.Sleep", func(a []any) (any, error) { time.Sleep(durOf(a[0])); return nil, nil }),
+		// *time.ParseError: errors.As / type asserts on Parse's error.
+		"ParseError": hostType("time.ParseError", func() any { return &time.ParseError{} }),
+		"Sleep":      h.fn("time.Sleep", func(a []any) (any, error) { time.Sleep(durOf(a[0])); return nil, nil }),
 		"After": h.fnvc("time.After", func(vc runtime.VMCaller, a []any) (any, error) {
 			// a proxy feed like NewTimer's: once the fire is delivered the
 			// channel is dead, and a second receive must count as asleep
@@ -2852,7 +2865,24 @@ func (e *Engine) installStdlib() {
 	e.Bind("bufio", map[string]runtime.Value{
 		// the sentinel is the real host error: `err == bufio.ErrBufferFull`
 		// in csv's reader compares GoValues by identity.
-		"ErrBufferFull": errVal(bufio.ErrBufferFull),
+		"ErrBufferFull":        errVal(bufio.ErrBufferFull),
+		"ErrInvalidUnreadByte": errVal(bufio.ErrInvalidUnreadByte),
+		"ErrInvalidUnreadRune": errVal(bufio.ErrInvalidUnreadRune),
+		"ErrNegativeCount":     errVal(bufio.ErrNegativeCount),
+		"ErrTooLong":           errVal(bufio.ErrTooLong),
+		"ErrNegativeAdvance":   errVal(bufio.ErrNegativeAdvance),
+		"ErrAdvanceTooFar":     errVal(bufio.ErrAdvanceTooFar),
+		"ErrBadReadCount":      errVal(bufio.ErrBadReadCount),
+		// ErrFinalToken must be the host object: the host Scanner stops
+		// on `err == ErrFinalToken` when a script split func returns it.
+		"ErrFinalToken": errVal(bufio.ErrFinalToken),
+		// the stock split funcs are host funcs: callable from script
+		// (a custom split delegating to ScanWords) and handed to
+		// Scanner.Split as themselves.
+		"ScanBytes": hostSplitFunc("bufio.ScanBytes", bufio.ScanBytes),
+		"ScanRunes": hostSplitFunc("bufio.ScanRunes", bufio.ScanRunes),
+		"ScanLines": hostSplitFunc("bufio.ScanLines", bufio.ScanLines),
+		"ScanWords": hostSplitFunc("bufio.ScanWords", bufio.ScanWords),
 		// type assertions like `w.(*bufio.Writer)` need the typedefs;
 		// methods run on the boxed host object through reflection.
 		"Reader":     hostType("bufio.Reader", func() any { return bufio.NewReader(nil) }),
@@ -3241,6 +3271,20 @@ func (t *afterFuncTimer) Reset(d time.Duration) bool {
 // produce a boxed *newT() so selectMember sees the real method set.
 func hostType(name string, new func() any) *runtime.TypeDef {
 	return &runtime.TypeDef{Name: name, Kind: runtime.KindStruct, HostNew: new}
+}
+
+// hostSplitFunc binds one of bufio's stock split funcs: a script call
+// returns the (advance, token, err) triple, and Target hands the host
+// func itself to Scanner.Split.
+func hostSplitFunc(name string, f bufio.SplitFunc) *runtime.BuiltinFunc {
+	return &runtime.BuiltinFunc{Name: name, Target: f, Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) != 2 {
+			return nil, fmt.Errorf("%s needs 2 args, got %d", name, len(args))
+		}
+		atEOF, _ := runtime.Unwrap(args[1]).(bool)
+		adv, tok, err := f(byteSlice(goNative(args[0])), atEOF)
+		return &runtime.Tuple{Elems: []runtime.Value{int64(adv), scriptVal(tok), errVal(err)}}, nil
+	}}
 }
 
 // lockerOf resolves a script value to a sync.Locker for NewCond: host
