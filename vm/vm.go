@@ -12584,6 +12584,9 @@ func (v *VM) hostElemTwin(f *frame, tag, td *runtime.TypeDef) bool {
 	return v.hostTwinIs(f, tag.Elem, v.elemTypedef(f, td))
 }
 
+// HostNilTwin is [VM.hostNilTwin] for intrinsics (reflect.DeepEqual).
+func (v *VM) HostNilTwin(a, b *runtime.TypeDef) bool { return v.hostNilTwin(a, b) }
+
 // hostNilTwin reports whether a and b, the types of two nils, denote the
 // same type because one is a nil host *T ([HostNilPtrTypedef]) and the
 // other the *T of its source twin (or of the bound type).
