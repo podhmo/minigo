@@ -4817,6 +4817,14 @@ func strArgs(a []any) []string {
 // in Go a failure inside strings.Map's callback just propagates as a
 // panic, and a trap or process exit keeps its own kind through
 // asScriptPanic.
+func callOrPanic(v runtime.VMCaller, fn runtime.Value, args []runtime.Value) runtime.Value {
+	r, err := v.Call(fn, args)
+	if err != nil {
+		panic(err)
+	}
+	return r
+}
+
 // walkCallback runs a filepath.Walk/WalkDir script callback for host
 // path p: a relative root sees paths relative to the engine's virtual
 // cwd, entry is the boxed fs.DirEntry/fs.FileInfo (NIL when the host
@@ -4832,14 +4840,6 @@ func walkCallback(e *Engine, v runtime.VMCaller, cb runtime.Value, root, p strin
 	}
 	r := callOrPanic(v, cb, []runtime.Value{sp, entry, errVal(werr)})
 	return hostErrOf(v, r)
-}
-
-func callOrPanic(v runtime.VMCaller, fn runtime.Value, args []runtime.Value) runtime.Value {
-	r, err := v.Call(fn, args)
-	if err != nil {
-		panic(err)
-	}
-	return r
 }
 
 // runePred adapts a script `func(rune) bool` to the host signature for
