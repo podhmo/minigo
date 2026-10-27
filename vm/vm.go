@@ -3821,6 +3821,10 @@ func goValueOf(rv reflect.Value) runtime.Value {
 			m.Insert(goValueOf(reflect.ValueOf(k)), goValueOf(reflect.ValueOf(e)))
 		}
 		return m
+	case runtime.ScriptBoxed:
+		// a script value the host carried in a proxy (a script error
+		// returned by a host Unwrap) reads back as itself.
+		return v.ScriptValue()
 	case error:
 		// errors stay boxed — Error() and Unwrap() dispatch via reflection;
 		// errors.Is/As unwrap through goNative.
