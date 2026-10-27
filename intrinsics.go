@@ -1826,9 +1826,12 @@ func (e *Engine) installStdlib() {
 			werr := filepath.WalkDir(ap, func(p string, d fs.DirEntry, werr error) error {
 				var dv runtime.Value = runtime.NIL
 				if d != nil {
+					if p == ap {
+						d = walkRootEntry(d, e.hostSpelling(root))
+					}
 					dv = &runtime.GoValue{V: d}
 				}
-				return walkCallback(e, v, cb, root, ap, p, dv, werr)
+				return walkCallback(v, cb, root, ap, p, dv, werr)
 			})
 			return errVal(werr), nil
 		}},
@@ -1845,9 +1848,12 @@ func (e *Engine) installStdlib() {
 			werr := filepath.Walk(ap, func(p string, info fs.FileInfo, werr error) error {
 				var iv runtime.Value = runtime.NIL
 				if info != nil {
+					if p == ap {
+						info = walkRootInfo(info, e.hostSpelling(root))
+					}
 					iv = &runtime.GoValue{V: info}
 				}
-				return walkCallback(e, v, cb, root, ap, p, iv, werr)
+				return walkCallback(v, cb, root, ap, p, iv, werr)
 			})
 			return errVal(werr), nil
 		}},
@@ -5136,20 +5142,53 @@ func callOrPanic(v runtime.VMCaller, fn runtime.Value, args []runtime.Value) run
 }
 
 // walkCallback runs a filepath.Walk/WalkDir script callback for host
-// path p: a relative root sees paths relative to the engine's virtual
-// cwd, entry is the boxed fs.DirEntry/fs.FileInfo (NIL when the host
-// passed none), and the result goes back through hostErrOf so the host
-// walker compares fs.SkipDir/SkipAll by identity and a script error
-// keeps its identity on the way out (errVal).
-func walkCallback(e *Engine, v runtime.VMCaller, cb runtime.Value, root, ap, p string, entry runtime.Value, werr error) error {
-	sp := p
-	if !filepath.IsAbs(root) {
-		if rel, rerr := filepath.Rel(e.cwd, p); rerr == nil {
-			sp = rel
-		}
-	}
+// path p: the walk ran from ap, the engine's resolution of the script's
+// root, so p maps back onto root as written (gc hands the root over
+// verbatim — "./a", "a/" — and joins descendants onto it), entry is the
+// boxed fs.DirEntry/fs.FileInfo (NIL when the host passed none), and
+// the result goes back through hostErrOf so the host walker compares
+// fs.SkipDir/SkipAll by identity and a script error keeps its identity
+// on the way out (errVal).
+func walkCallback(v runtime.VMCaller, cb runtime.Value, root, ap, p string, entry runtime.Value, werr error) error {
+	sp := scriptPathOf(root, ap, p)
 	r := callOrPanic(v, cb, []runtime.Value{sp, entry, errVal(scriptPathErr(werr, root, ap))})
 	return hostErrOf(v, r)
+}
+
+// hostSpelling anchors a script path at the virtual cwd WITHOUT
+// cleaning it, so a host lstat names the result like gc's lstat of the
+// spelled path (basename "." for ".", ".." for "a/b/..").
+func (e *Engine) hostSpelling(p string) string {
+	if filepath.IsAbs(p) {
+		return p
+	}
+	return e.cwd + string(filepath.Separator) + p
+}
+
+// walkRootEntry/walkRootInfo give the walk root gc's entry: gc lstats
+// the root as written, so its Name() is the base of the script's
+// spelling — the host walked the resolved absolute path, whose base is
+// the directory's own name. Re-lstatting the uncleaned host spelling
+// yields the same host types gc hands over (fs.FileInfoToDirEntry's
+// entry, *os.fileStat); on failure the host's own entry stands.
+func walkRootEntry(d fs.DirEntry, hp string) fs.DirEntry {
+	if filepath.Base(hp) == d.Name() {
+		return d
+	}
+	if fi, err := os.Lstat(hp); err == nil {
+		return fs.FileInfoToDirEntry(fi)
+	}
+	return d
+}
+
+func walkRootInfo(fi fs.FileInfo, hp string) fs.FileInfo {
+	if filepath.Base(hp) == fi.Name() {
+		return fi
+	}
+	if li, err := os.Lstat(hp); err == nil {
+		return li
+	}
+	return fi
 }
 
 // runePred adapts a script `func(rune) bool` to the host signature for

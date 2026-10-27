@@ -1,0 +1,32 @@
+D "./a" "a" "a" <nil>
+D "a/b" "b" "b" <nil>
+D "a/b/g.txt" "g.txt" "g.txt" <nil>
+W "./a" "a" <nil>
+W "a/b" "b" <nil>
+W "a/b/g.txt" "g.txt" <nil>
+D "a/" "a" "a" <nil>
+D "a/b" "b" "b" <nil>
+D "a/b/g.txt" "g.txt" "g.txt" <nil>
+W "a/" "a" <nil>
+W "a/b" "b" <nil>
+W "a/b/g.txt" "g.txt" <nil>
+D "a/b/.." ".." ".." <nil>
+D "a/b" "b" "b" <nil>
+D "a/b/g.txt" "g.txt" "g.txt" <nil>
+W "a/b/.." ".." <nil>
+W "a/b" "b" <nil>
+W "a/b/g.txt" "g.txt" <nil>
+D "." "." "." <nil>
+D "a" "a" "a" <nil>
+D "a/b" "b" "b" <nil>
+D "a/b/g.txt" "g.txt" "g.txt" <nil>
+W "." "." <nil>
+W "a" "a" <nil>
+W "a/b" "b" <nil>
+W "a/b/g.txt" "g.txt" <nil>
+D "a/./b" "b" "b" <nil>
+D "a/b/g.txt" "g.txt" "g.txt" <nil>
+W "a/./b" "b" <nil>
+W "a/b/g.txt" "g.txt" <nil>
+*os.fileStat true
+d ./ fs.dirInfo *os.fileStat
