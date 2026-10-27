@@ -1,0 +1,1 @@
+constant 1e+300 overflows float32

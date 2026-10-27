@@ -477,7 +477,7 @@ func (e *Engine) installStdlib() {
 		"FormatInt": h.fn2("strconv.FormatInt", func(a []any) (any, error) { return strconv.FormatInt(int64Of(a[0]), intOf(a[1])), nil }, strconv.FormatInt),
 		"FormatUint": h.fn2("strconv.FormatUint", func(a []any) (any, error) {
 			return strconv.FormatUint(uint64(int64Of(a[0])), intOf(a[1])), nil
-		}),
+		}, strconv.FormatUint),
 		"QuoteToASCII": h.fn("strconv.QuoteToASCII", func(a []any) (any, error) { return strconv.QuoteToASCII(str(a[0])), nil }, strconv.QuoteToASCII),
 		"QuoteRune":    h.fn("strconv.QuoteRune", func(a []any) (any, error) { return strconv.QuoteRune(runeOf(a[0])), nil }, strconv.QuoteRune),
 		"IsPrint":      h.fn("strconv.IsPrint", func(a []any) (any, error) { return strconv.IsPrint(runeOf(a[0])), nil }, strconv.IsPrint),
@@ -496,7 +496,7 @@ func (e *Engine) installStdlib() {
 		}),
 		"AppendUint": h.fn3("strconv.AppendUint", func(a []any) (any, error) {
 			return strconv.AppendUint(byteSlice(a[0]), uint64(int64Of(a[1])), intOf(a[2])), nil
-		}),
+		}, strconv.AppendUint),
 		"AppendFloat": h.fn("strconv.AppendFloat", func(a []any) (any, error) {
 			f, _ := a[1].(float64)
 			return strconv.AppendFloat(byteSlice(a[0]), f, byte(intOf(a[2])), intOf(a[3]), intOf(a[4])), nil
@@ -2697,7 +2697,7 @@ func (e *Engine) installStdlib() {
 		}),
 		"AddrPortFrom": h.fn("netip.AddrPortFrom", func(a []any) (any, error) {
 			return netip.AddrPortFrom(netipAddrOf(a[0]), uint16(intOf(a[1]))), nil
-		}),
+		}, netip.AddrPortFrom),
 		"PrefixFrom": h.fn("netip.PrefixFrom", func(a []any) (any, error) {
 			return netip.PrefixFrom(netipAddrOf(a[0]), intOf(a[1])), nil
 		}),
