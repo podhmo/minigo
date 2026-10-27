@@ -1166,7 +1166,7 @@ func (c *compiler) constExpr(e ast.Expr) {
 // the VM's canonical value of those types is the bare scalar, so the
 // caller's coerce already yields the right typed value.
 func (c *compiler) typedConstExpr(te, e ast.Expr) bool {
-	if id, ok := c.unfoldTypExpr(te, 8).(*ast.Ident); ok && ast.Unparen(te) == ast.Expr(id) {
+	if id, ok := c.unfoldTypExpr(te, 8).(*ast.Ident); ok && ast.Unparen(c.unaliasTypExpr(te, 8)) == ast.Expr(id) {
 		switch id.Name {
 		case "int", "float64", "complex128", "string", "bool":
 			return false
@@ -1174,6 +1174,23 @@ func (c *compiler) typedConstExpr(te, e ast.Expr) bool {
 	}
 	c.expr(&ast.CallExpr{Fun: te, Lparen: e.Pos(), Args: []ast.Expr{e}, Rparen: e.End()})
 	return true
+}
+
+// unaliasTypExpr follows alias declarations (`type A = uint8`) to the
+// aliased type expression; any other type expression returns as is.
+func (c *compiler) unaliasTypExpr(te ast.Expr, depth int) ast.Expr {
+	for ; depth > 0; depth-- {
+		id, ok := ast.Unparen(te).(*ast.Ident)
+		if !ok {
+			return te
+		}
+		info, found := c.resolveName(id.Name)
+		if !found || info.tspec == nil || !info.tspec.Assign.IsValid() {
+			return te
+		}
+		te = info.tspec.Type
+	}
+	return te
 }
 
 // valueSpec emits a whole var/const spec: all of its names are bound.
