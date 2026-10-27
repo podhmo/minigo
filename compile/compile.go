@@ -1155,6 +1155,27 @@ func (c *compiler) constExpr(e ast.Expr) {
 	c.expr(e)
 }
 
+// typedConstExpr emits the value of a typed const decl `const c T = e`
+// as the conversion T(e): Go's typed constant is the constant
+// expression T(e), so the value keeps its constant payload under T's
+// tag (`c + c` with `const c int8 = 100` is gc's overflow error, and a
+// shift by `const k uint = 3` stays a constant count) instead of
+// materializing into a plain T value the way a var's coerce does.
+//
+// int, float64, complex128, string and bool are left out (ok=false):
+// the VM's canonical value of those types is the bare scalar, so the
+// caller's coerce already yields the right typed value.
+func (c *compiler) typedConstExpr(te, e ast.Expr) bool {
+	if id, ok := c.unfoldTypExpr(te, 8).(*ast.Ident); ok && ast.Unparen(te) == ast.Expr(id) {
+		switch id.Name {
+		case "int", "float64", "complex128", "string", "bool":
+			return false
+		}
+	}
+	c.expr(&ast.CallExpr{Fun: te, Lparen: e.Pos(), Args: []ast.Expr{e}, Rparen: e.End()})
+	return true
+}
+
 // valueSpec emits a whole var/const spec: all of its names are bound.
 // Vars become package cells (OpNewGlobal); consts read-only cells
 // (OpNewGlobal with B=1) so a later `k = v` store traps like Go.
@@ -1236,6 +1257,9 @@ func (c *compiler) valueSpec(vs *ast.ValueSpec, d *index.Decl) {
 			if hv, ok := c.pkg.HostVars[name.Name]; ok && !isConst {
 				// a host-pinned var: the declared initializer never runs
 				c.emit(bytecode.OpConst, c.constIdx(hv), 0, name.Pos())
+			} else if isConst && effType != nil && c.typedConstExpr(effType, vals[i]) {
+				bind(name)
+				continue
 			} else if isConst {
 				c.constExpr(vals[i])
 			} else {
@@ -1413,9 +1437,13 @@ func (c *compiler) stmt(s ast.Stmt) {
 					continue
 				}
 				for i, name := range vs.Names {
-					if len(vals) == 0 {
+					typedConst := false
+					switch {
+					case len(vals) == 0:
 						c.emit(bytecode.OpNil, 0, 0, name.Pos())
-					} else {
+					case isConst && effType != nil && c.typedConstExpr(effType, vals[i]):
+						typedConst = true
+					default:
 						if isConst {
 							c.constExpr(vals[i])
 						} else {
@@ -1423,7 +1451,9 @@ func (c *compiler) stmt(s ast.Stmt) {
 						}
 						coerceTop()
 					}
-					coerce(name, c.bindLocal(name.Name, name.Pos(), isConst))
+					if slot := c.bindLocal(name.Name, name.Pos(), isConst); !typedConst {
+						coerce(name, slot)
+					}
 					var rhs ast.Expr
 					if i < len(vals) {
 						rhs = vals[i]
