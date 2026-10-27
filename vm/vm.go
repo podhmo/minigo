@@ -128,6 +128,12 @@ type Hooks struct {
 	// unresolvable target reports false and the declaration keeps its
 	// zero-return shim.
 	Linkname func(vc runtime.VMCaller, fn *runtime.Function) (runtime.Value, bool, error)
+	// HostErr boxes a script error value as a host error that keeps the
+	// script value (and its Unwrap/Is/As methods) reachable: a script
+	// Write's error handed to host fmt.Fprintf, or a script error passed
+	// to a host `error` parameter, comes back to the script as itself.
+	// Nil falls back to the scriptIface proxy.
+	HostErr func(vc runtime.VMCaller, v runtime.Value) error
 }
 
 // VM is a stack machine. Create one as a struct literal with [Hooks] set
@@ -4290,6 +4296,18 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 	// interpreted chunkWriter, or io.Copy fed an interpreted body — can
 	// reach the script methods through it.
 	if t.Kind() == reflect.Interface && t.NumMethod() > 0 {
+		if t == errorType {
+			// a script error crossing into a host `error` slot (a
+			// CancelCauseFunc's cause) boxes like every other script
+			// error the host sees, so errors.Is/== agree on it.
+			if m := vmOf(vc); m != nil && m.H.HostErr != nil {
+				if _, ok := runtime.IfaceMember(vc, orig, "Error"); ok {
+					if err := m.H.HostErr(vc, orig); err != nil {
+						return reflect.ValueOf(&err).Elem(), nil
+					}
+				}
+			}
+		}
 		if pv, ok := adaptIface(orig, t, vc); ok {
 			return pv, nil
 		}
@@ -4379,6 +4397,11 @@ type scriptIface struct {
 	recv runtime.Value
 }
 
+// ScriptValue reports the script receiver the proxy forwards to: when
+// host code hands the proxy back (an io.Writer accessor, a cancel cause
+// adapted to error), the script sees its own value.
+func (s *scriptIface) ScriptValue() runtime.Value { return s.recv }
+
 func (s *scriptIface) call(name string, args ...runtime.Value) ([]runtime.Value, error) {
 	m, ok := s.vc.Member(s.recv, name)
 	if !ok || m == nil || m == runtime.NIL {
@@ -4396,24 +4419,52 @@ func (s *scriptIface) call(name string, args ...runtime.Value) ([]runtime.Value,
 
 // errOut extracts the error slot of a script (x, err) pair: host error
 // sentinels (io.EOF) arrive as GoValues and pass through verbatim so
-// identity comparisons host-side still hold.
-func errOut(rs []runtime.Value, i int) error {
+// identity comparisons host-side still hold; a script error value (a
+// boxed typed nil included — it is a non-nil error) goes through
+// hostErr so it reads back as itself once the host returns it.
+func errOut(vc runtime.VMCaller, rs []runtime.Value, i int) error {
 	if i >= len(rs) {
 		return nil
 	}
 	switch e := runtime.Unwrap(rs[i]).(type) {
-	case nil, runtime.Nil:
+	case nil, runtime.Nil, *runtime.TypedNil:
 		return nil
-	case *runtime.TypedNil, *runtime.IfaceNil:
-		return nil
+	case *runtime.IfaceNil:
+		if runtime.BoxedNilTyp(e) == nil {
+			return nil
+		}
+		return hostErr(vc, rs[i])
 	case *runtime.GoValue:
 		if err, ok := e.V.(error); ok {
 			return err
 		}
 		return fmt.Errorf("%v", e.V)
 	default:
-		return fmt.Errorf("%v", rs[i])
+		return hostErr(vc, rs[i])
 	}
+}
+
+// hostErr boxes a script error value for host code through the
+// engine's HostErr hook, falling back to the scriptIface proxy (whose
+// Error forwards to the script method).
+func hostErr(vc runtime.VMCaller, v runtime.Value) error {
+	if m := vmOf(vc); m != nil && m.H.HostErr != nil {
+		return m.H.HostErr(vc, v)
+	}
+	return &scriptIface{vc: vc, recv: v}
+}
+
+var errorType = reflect.TypeFor[error]()
+
+// vmOf reports the VM behind a caller (nil for a foreign caller).
+func vmOf(vc runtime.VMCaller) *VM {
+	switch v := vc.(type) {
+	case *VM:
+		return v
+	case ownerCaller:
+		return v.VM
+	}
+	return nil
 }
 
 func intOut(rs []runtime.Value, i int) int64 {
@@ -4462,7 +4513,7 @@ func (s *scriptIface) Write(p []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return n, errOut(rs, 1)
+	return n, errOut(s.vc, rs, 1)
 }
 
 func (s *scriptIface) Read(p []byte) (int, error) {
@@ -4473,7 +4524,7 @@ func (s *scriptIface) Read(p []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return n, errOut(rs, 1)
+	return n, errOut(s.vc, rs, 1)
 }
 
 func (s *scriptIface) Close() error {
@@ -4481,7 +4532,7 @@ func (s *scriptIface) Close() error {
 	if err != nil {
 		return err
 	}
-	return errOut(rs, 0)
+	return errOut(s.vc, rs, 0)
 }
 
 func (s *scriptIface) WriteString(str string) (int, error) {
@@ -4489,7 +4540,7 @@ func (s *scriptIface) WriteString(str string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return int(intOut(rs, 0)), errOut(rs, 1)
+	return int(intOut(rs, 0)), errOut(s.vc, rs, 1)
 }
 
 func (s *scriptIface) ReadByte() (byte, error) {
@@ -4497,7 +4548,7 @@ func (s *scriptIface) ReadByte() (byte, error) {
 	if err != nil {
 		return 0, err
 	}
-	return byte(intOut(rs, 0)), errOut(rs, 1)
+	return byte(intOut(rs, 0)), errOut(s.vc, rs, 1)
 }
 
 func (s *scriptIface) WriteByte(b byte) error {
@@ -4505,7 +4556,7 @@ func (s *scriptIface) WriteByte(b byte) error {
 	if err != nil {
 		return err
 	}
-	return errOut(rs, 0)
+	return errOut(s.vc, rs, 0)
 }
 
 func (s *scriptIface) ReadRune() (rune, int, error) {
@@ -4513,7 +4564,7 @@ func (s *scriptIface) ReadRune() (rune, int, error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	return rune(intOut(rs, 0)), int(intOut(rs, 1)), errOut(rs, 2)
+	return rune(intOut(rs, 0)), int(intOut(rs, 1)), errOut(s.vc, rs, 2)
 }
 
 func (s *scriptIface) Seek(offset int64, whence int) (int64, error) {
@@ -4521,7 +4572,7 @@ func (s *scriptIface) Seek(offset int64, whence int) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return intOut(rs, 0), errOut(rs, 1)
+	return intOut(rs, 0), errOut(s.vc, rs, 1)
 }
 
 func (s *scriptIface) Flush() error {
@@ -4529,7 +4580,7 @@ func (s *scriptIface) Flush() error {
 	if err != nil {
 		return err
 	}
-	return errOut(rs, 0)
+	return errOut(s.vc, rs, 0)
 }
 
 func (s *scriptIface) Error() string {
@@ -4584,7 +4635,7 @@ func (s *scriptIface) writeTo(w io.Writer) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return intOut(rs, 0), errOut(rs, 1)
+	return intOut(rs, 0), errOut(s.vc, rs, 1)
 }
 
 func (s *scriptIface) readFrom(r io.Reader) (int64, error) {
@@ -4592,7 +4643,7 @@ func (s *scriptIface) readFrom(r io.Reader) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return intOut(rs, 0), errOut(rs, 1)
+	return intOut(rs, 0), errOut(s.vc, rs, 1)
 }
 
 // hostEvalBudget bounds the eager method calls one marshal may run.
