@@ -9294,12 +9294,19 @@ type devisit struct{ a, b runtime.Value }
 // pointer/ref layers peel on both sides in lockstep — a depth or named
 // type mismatch is a type mismatch, so *T never equals T and a named
 // type never equals a different name for the same underlying type.
-func deepEql(a, b runtime.Value) bool {
-	return deepEqlSeen(a, b, map[devisit]bool{})
+//
+// twin, when non-nil, reports whether two nil types differ only as a nil
+// host *T and its source twin's (or bound) *T ([vm.VM.HostNilTwin]).
+func deepEql(a, b runtime.Value, twin func(a, b *runtime.TypeDef) bool) bool {
+	return deepEqlSeen(a, b, map[devisit]bool{}, twin)
 }
 
-func deepEqlSeen(a, b runtime.Value, seen map[devisit]bool) bool {
+func deepEqlSeen(a, b runtime.Value, seen map[devisit]bool, twin func(a, b *runtime.TypeDef) bool) bool {
 	for {
+		// a boxed host named basic (a FileMode from os.Stat) meets
+		// its source twin's value (io/fs's ModeDir) as that Named;
+		// a plain uint32 stays a different type.
+		a, b = deepTwinOperands(a, b)
 		an, aNamed := a.(*runtime.Named)
 		bn, bNamed := b.(*runtime.Named)
 		if aNamed != bNamed {
@@ -9328,16 +9335,17 @@ func deepEqlSeen(a, b runtime.Value, seen map[devisit]bool) bool {
 			return false
 		}
 		// an untyped nil and an empty-interface nil are just nil —
-		// equal to each other; a typed nil carries a dynamic type so
-		// only another typed nil of the same typedef compares equal
-		// (kind + spelling — anonymous typedefs all spell "" by name).
-		at, aTyped := a.(*runtime.TypedNil)
-		bt, bTyped := b.(*runtime.TypedNil)
-		if aTyped != bTyped {
+		// equal to each other; a typed nil, bare or boxed in an
+		// interface (`var a any = (*T)(nil)`), carries a dynamic type
+		// so only another typed nil of the same type compares equal
+		// (kind + spelling — anonymous typedefs all spell "" by name —
+		// or a nil host *T against its source twin's *T).
+		at, bt := deepNilTyp(a), deepNilTyp(b)
+		if (at == nil) != (bt == nil) {
 			return false
 		}
-		if aTyped {
-			return runtime.TypIdenticalStrict(at.Typ, bt.Typ)
+		if at != nil {
+			return runtime.TypIdenticalStrict(at, bt) || (twin != nil && twin(at, bt))
 		}
 		return true
 	}
@@ -9358,7 +9366,7 @@ func deepEqlSeen(a, b runtime.Value, seen map[devisit]bool) bool {
 		}
 		seen[v] = true
 		for i := range av.Elems {
-			if !deepEqlSeen(av.Elems[i], bs.Elems[i], seen) {
+			if !deepEqlSeen(av.Elems[i], bs.Elems[i], seen, twin) {
 				return false
 			}
 		}
@@ -9381,7 +9389,7 @@ func deepEqlSeen(a, b runtime.Value, seen map[devisit]bool) bool {
 		}
 		seen[v] = true
 		for i := range av.Fields {
-			if !deepEqlSeen(av.Fields[i], bs.Fields[i], seen) {
+			if !deepEqlSeen(av.Fields[i], bs.Fields[i], seen, twin) {
 				return false
 			}
 		}
@@ -9408,13 +9416,41 @@ func deepEqlSeen(a, b runtime.Value, seen map[devisit]bool) bool {
 			if !found {
 				return false
 			}
-			if !deepEqlSeen(aval, bval, seen) {
+			if !deepEqlSeen(aval, bval, seen, twin) {
 				return false
 			}
 		}
 		return true
 	}
 	return reflect.DeepEqual(goNative(a), goNative(b))
+}
+
+// deepNilTyp is the dynamic type of a nil v: a typed nil's own type or
+// the type boxed in an interface nil; nil for the nil interface.
+func deepNilTyp(v runtime.Value) *runtime.TypeDef {
+	if tn, ok := v.(*runtime.TypedNil); ok {
+		return tn.Typ
+	}
+	return runtime.BoxedNilTyp(v)
+}
+
+// deepTwinOperands lets a boxed host named basic meet a Named of its
+// source twin (a host FileMode against io/fs's ModeDir): the host one
+// reads as that Named. Like the VM's twinOperands, it folds only when
+// the Named is the host type's source twin or bound typedef
+// ([runtime.HostTwinOf]) — never a look-alike with the same payload.
+func deepTwinOperands(a, b runtime.Value) (runtime.Value, runtime.Value) {
+	if n, ok := b.(*runtime.Named); ok {
+		if p, rt, ok := runtime.HostNamedScalar(a); ok && runtime.HostTwinOf(rt, n.Typ) {
+			return runtime.Tag(n.Typ, p), b
+		}
+	}
+	if n, ok := a.(*runtime.Named); ok {
+		if p, rt, ok := runtime.HostNamedScalar(b); ok && runtime.HostTwinOf(rt, n.Typ) {
+			return a, runtime.Tag(n.Typ, p)
+		}
+	}
+	return a, b
 }
 
 // deepNilish reports whether v is any nil flavor (typed nil, iface nil,
