@@ -1367,32 +1367,12 @@ func (e *Engine) installStdlib() {
 			}
 			return int64(-1), nil
 		}},
-		"Max": h.fn("slices.Max", func(a []any) (any, error) {
-			el := scriptElems(a[0])
-			if len(el) == 0 {
-				return nil, fmt.Errorf("slices.Max: empty slice")
-			}
-			best := el[0]
-			for _, x := range el[1:] {
-				if lessScript(best, x) {
-					best = x
-				}
-			}
-			return best, nil
-		}),
-		"Min": h.fn("slices.Min", func(a []any) (any, error) {
-			el := scriptElems(a[0])
-			if len(el) == 0 {
-				return nil, fmt.Errorf("slices.Min: empty slice")
-			}
-			best := el[0]
-			for _, x := range el[1:] {
-				if lessScript(x, best) {
-					best = x
-				}
-			}
-			return best, nil
-		}),
+		"Max": &runtime.BuiltinFunc{Name: "slices.Max", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			return sliceExtreme(vc, "slices.Max", args, func(best, x runtime.Value) bool { return lessScript(best, x) })
+		}},
+		"Min": &runtime.BuiltinFunc{Name: "slices.Min", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			return sliceExtreme(vc, "slices.Min", args, func(best, x runtime.Value) bool { return lessScript(x, best) })
+		}},
 		"Reverse": &runtime.BuiltinFunc{Name: "slices.Reverse", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, ok := args[0].(*runtime.Slice)
 			if !ok {
@@ -1422,8 +1402,25 @@ func (e *Engine) installStdlib() {
 		}},
 	})
 	e.Bind("maps", map[string]runtime.Value{
-		"Keys":   h.fn("maps.Keys", func(a []any) (any, error) { return mapKeys(a[0]), nil }),
-		"Values": h.fn("maps.Values", func(a []any) (any, error) { return mapValues(a[0]), nil }),
+		"Keys": &runtime.BuiltinFunc{Name: "maps.Keys", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("maps.Keys needs 1 arg, got %d", len(args))
+			}
+			if ks, ok := scriptMapKeys(vc, args[0]); ok {
+				return ks, nil
+			}
+			return mapKeys(goNative(args[0])), nil
+		}},
+		"Values": &runtime.BuiltinFunc{Name: "maps.Values", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("maps.Values needs 1 arg, got %d", len(args))
+			}
+			if _, ok := runtime.Unwrap(args[0]).(*runtime.Map); ok {
+				// the script map's own values keep their declared type
+				return mapValues(args[0]), nil
+			}
+			return mapValues(goNative(args[0])), nil
+		}},
 		"Clone": &runtime.BuiltinFunc{Name: "maps.Clone", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("maps.Clone needs 1 arg")
@@ -7090,6 +7087,80 @@ func jsonDeep(v any) any {
 	default:
 		return v
 	}
+}
+
+// sliceExtreme is slices.Max/Min: the element better wins over best.
+// It returns the slice's own element, so its type survives —
+// slices.Max([]fs.FileMode{...}) prints a FileMode, not its payload.
+func sliceExtreme(vc runtime.VMCaller, name string, args []runtime.Value, better func(best, x runtime.Value) bool) (runtime.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("%s needs 1 arg, got %d", name, len(args))
+	}
+	el, _, ok := scriptSliceArg(vc, args[0])
+	if !ok {
+		el = scriptElems(goNative(args[0]))
+	}
+	if len(el) == 0 {
+		return nil, fmt.Errorf("%s: empty slice", name)
+	}
+	best := el[0]
+	for _, x := range el[1:] {
+		if better(best, x) {
+			best = x
+		}
+	}
+	return best, nil
+}
+
+// scriptMapKeys is maps.Keys over a script map: a typed map stores its
+// keys untagged, so each converts back to the declared key type (a
+// map[fs.FileMode]bool yields FileModes, not their payloads); an
+// interface-keyed map's keys already carry their dynamic types. ok is
+// false for anything but a script map.
+func scriptMapKeys(vc runtime.VMCaller, v runtime.Value) (*runtime.Slice, bool) {
+	mt := runtime.TagOf(v)
+	m, ok := runtime.Unwrap(v).(*runtime.Map)
+	if !ok {
+		return nil, false
+	}
+	if mt == nil {
+		mt = m.Typ
+	}
+	keys := append([]runtime.Value{}, m.Order...)
+	kt, kx := mapKeyType(vc, mt)
+	if kt == nil {
+		return &runtime.Slice{Elems: keys}, true
+	}
+	if !m.IfaceKey && kt.Kind != runtime.KindInterface {
+		for i, k := range keys {
+			if ck, err := vc.Convert(kt, k); err == nil {
+				keys[i] = ck
+			}
+		}
+	}
+	st := &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: kx}, Pkg: mt.Pkg, File: mt.File, Binds: mt.Binds}
+	return &runtime.Slice{Elems: keys, Typ: st}, true
+}
+
+// mapKeyType resolves the declared key type of a map typedef — the
+// typedef and its type expression; nil when td spells no map type.
+func mapKeyType(vc runtime.VMCaller, td *runtime.TypeDef) (*runtime.TypeDef, ast.Expr) {
+	if td == nil {
+		return nil, nil
+	}
+	x := td.Anon
+	if x == nil && td.Spec != nil {
+		x = td.Spec.Type
+	}
+	mt, ok := x.(*ast.MapType)
+	if !ok {
+		return nil, nil
+	}
+	kt, err := vc.ResolveType(td, mt.Key)
+	if err != nil {
+		return nil, nil
+	}
+	return kt, mt.Key
 }
 
 func mapKeys(v any) *runtime.Slice {
