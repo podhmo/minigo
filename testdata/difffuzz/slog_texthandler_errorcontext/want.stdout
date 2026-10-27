@@ -1,0 +1,25 @@
+*main.Buffer "hi" 8
+int 7
+*bytes.Buffer
+main.timeLocation
+true true UTC
+[1 2] 2 true 0
+true true
+1 1
+10 26
+4
+[1] [1 2 3] 0
+main.Ints 3
+level=ERROR msg="error ctx" k=1
+level=ERROR msg=error err=boom
+level=INFO msg=info s="a b" f=1.5 b=true
+level=INFO msg="info ctx" d=3s
+level=WARN msg=warn u=7
+level=WARN msg="warn ctx"
+level=DEBUG msg=debug p.x=1 p.y=2
+level=DEBUG msg="debug ctx" t=2020-01-02T03:04:05.000Z
+level=WARN+1 msg=log n=<nil>
+level=INFO msg=logattrs a=b g.i=1
+level=INFO msg=with req=42 grp.x=1 grp.err="wrap: inner"
+level=ERROR msg=nested req=42 grp.y=2
+level=INFO msg=any m=map[a:1] sl="[1 2]"

@@ -4845,26 +4845,6 @@ func deepHost(v runtime.Value, vc runtime.VMCaller, h *hostMarshal) runtime.Valu
 	return v
 }
 
-// structShaped reports whether deepHost would marshal v through
-// structDataHost: a script struct, possibly named, or a pointer to one.
-func structShaped(v runtime.Value) bool {
-	if n, ok := v.(*runtime.Named); ok {
-		v = n.V
-	}
-	switch x := v.(type) {
-	case *runtime.Struct:
-		return true
-	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
-		dv, ok := runtime.Deref(x)
-		if !ok {
-			return false
-		}
-		_, isStruct := dv.(*runtime.Struct)
-		return isStruct
-	}
-	return false
-}
-
 var (
 	poolType = reflect.TypeFor[sync.Pool]()
 	anyType  = reflect.TypeFor[any]()
@@ -4890,10 +4870,11 @@ var opaqueContainers = map[string]bool{
 }
 
 // hostFieldValue converts x for a host struct field: toReflectValue,
-// except that a script sync.Pool.New keeps a struct result opaque — the
+// except that a script sync.Pool.New keeps its result opaque — the
 // pool hands it back through Get, which returns a script value verbatim
-// (goValueOf), so it must not marshal to scriptData, which would invoke
-// its niladic methods on every miss (the same rule as Pool.Put).
+// (goValueOf), so it must not marshal: a struct would go to scriptData,
+// invoking its niladic methods on every miss, and a named non-struct
+// would lose its script type (the same rule as Pool.Put).
 func hostFieldValue(x runtime.Value, owner reflect.Type, name string, ft reflect.Type, vc runtime.VMCaller) (reflect.Value, error) {
 	if owner == poolType && name == "New" && ft.Kind() == reflect.Func {
 		switch x.(type) {
@@ -5494,8 +5475,8 @@ func adaptFunc(x runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.Va
 	return adaptFuncOut(x, t, vc, false)
 }
 
-// adaptFuncOut is adaptFunc; opaque hands a struct-shaped result to an
-// `any` result slot as is rather than marshaling it (see hostFieldValue).
+// adaptFuncOut is adaptFunc; opaque hands a result to an `any` result
+// slot as is rather than marshaling it (see hostFieldValue).
 func adaptFuncOut(x runtime.Value, t reflect.Type, vc runtime.VMCaller, opaque bool) (reflect.Value, error) {
 	if vc == nil {
 		return reflect.Value{}, fmt.Errorf("cannot adapt %T to %s off-VM", x, t)
@@ -5525,8 +5506,13 @@ func adaptFuncOut(x runtime.Value, t reflect.Type, vc runtime.VMCaller, opaque b
 		for i := range out {
 			var rv reflect.Value
 			var err error
-			if opaque && i < len(rs) && t.Out(i) == anyType && structShaped(rs[i]) {
-				rv = reflect.ValueOf(any(rs[i]))
+			if opaque && i < len(rs) && t.Out(i) == anyType {
+				// the pool stores the result verbatim, exactly as Put
+				// does: marshaling would lose the script type of a
+				// named non-struct (slog's `(*buffer.Buffer)(&b)`
+				// reading back as *[]uint8) and run a struct's
+				// niladic methods via scriptData.
+				rv, err = opaqueStoreArg("*sync.Pool", "Put", 0, rs[i])
 			} else if i < len(rs) {
 				rv, err = toReflectValue(rs[i], t.Out(i), vc)
 			} else {
@@ -11807,6 +11793,17 @@ func (v *VM) convertPointer(td *runtime.TypeDef, x runtime.Value, srcUnsafe bool
 		}
 		return runtime.Tag(td, x), nil
 	}
+	if !srcUnsafe && v.hostPtrConv(td, x) {
+		// a host pointer (time.UTC) converts to a pointer type whose
+		// pointee is that host type — `type timeLocation
+		// *time.Location` in log/slog, or back to *time.Location.
+		// The box carries no pointee tag to check or re-tag, so only
+		// a declared target needs the Named wrap.
+		if td.Spec != nil {
+			return runtime.Tag(td, x), nil
+		}
+		return x, nil
+	}
 	if _, ok := runtime.Deref(x); !ok && !(srcUnsafe && hostPtrBox(x)) {
 		return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
 	}
@@ -11843,6 +11840,33 @@ func (v *VM) convertPointer(td *runtime.TypeDef, x runtime.Value, srcUnsafe bool
 		}
 	}
 	return x, nil
+}
+
+// hostPtrConv reports whether x is a host pointer box whose type is
+// exactly the pointer type td spells: td's element is a bound host
+// type, so `P(x)` is Go's identical-underlying-type conversion.
+func (v *VM) hostPtrConv(td *runtime.TypeDef, x runtime.Value) bool {
+	if !hostPtrBox(x) || v.H.ElemOf == nil {
+		return false
+	}
+	et, err := v.H.ElemOf(v.peelNamed(td))
+	if err != nil || et == nil {
+		return false
+	}
+	if a := v.peelAlias(et); a != nil {
+		et = a
+	}
+	if et.HostNew == nil {
+		return false
+	}
+	rt := reflect.TypeOf(et.HostNew())
+	if rt == nil {
+		return false
+	}
+	if rt.Kind() != reflect.Pointer {
+		rt = reflect.PointerTo(rt)
+	}
+	return rt == reflect.TypeOf(x.(*runtime.GoValue).V)
 }
 
 // convertStruct implements `S(x)` on struct typedefs: legal when the

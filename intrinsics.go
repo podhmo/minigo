@@ -1329,6 +1329,69 @@ func (e *Engine) installStdlib() {
 			}
 			return &runtime.Slice{Elems: out, Typ: s.Typ}, nil
 		}},
+		"Grow": &runtime.BuiltinFunc{Name: "slices.Grow", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("slices.Grow needs 2 args")
+			}
+			n := int64Of(args[1])
+			if n < 0 {
+				panic(&runtime.Panic{Value: "cannot be negative"})
+			}
+			// log/slog's Record.AddAttrs grows its overflow slice on
+			// every LogAttrs call; a nil slice is still nil at n == 0.
+			var td *runtime.TypeDef
+			var elems []runtime.Value
+			switch s := runtime.Unwrap(args[0]).(type) {
+			case *runtime.Slice:
+				if s.Virtual() || int64(cap(s.Elems)-len(s.Elems)) >= n {
+					return args[0], nil
+				}
+				td, elems = s.Typ, s.Elems
+			case *runtime.TypedNil:
+				if n == 0 {
+					return args[0], nil
+				}
+				td = s.Typ
+			default:
+				return nil, fmt.Errorf("slices.Grow: arg must be a slice")
+			}
+			// gc grows through append — `append(s[:cap(s)],
+			// make([]E, n-(cap-len))...)[:len(s)]` — so the new cap
+			// follows append's growth rule (cap(Grow(make([]int, 5),
+			// 1)) is 10), the same host append the append builtin
+			// uses. The old spare keeps its contents; the fresh spare
+			// holds zeros, as growslice clears it.
+			full := elems[:cap(elems)]
+			grown := append(full, make([]runtime.Value, int(n)-(cap(elems)-len(elems)))...)
+			zero := vc.ElemZero(td)
+			if runtime.IsZeroSizeValue(zero) {
+				grown = grown[:len(grown):len(grown)]
+			}
+			for i, all := len(full), grown[:cap(grown)]; i < len(all); i++ {
+				all[i] = runtime.Copy(zero)
+			}
+			return retagSlice(args[0], &runtime.Slice{Elems: grown[:len(elems)], Typ: td}), nil
+		}},
+		"Clip": &runtime.BuiltinFunc{Name: "slices.Clip", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("slices.Clip needs 1 arg")
+			}
+			// s[:len(s):len(s)] — the clipped header shares the
+			// backing array, so a later append reallocates instead of
+			// writing into the original's spare capacity.
+			switch s := runtime.Unwrap(args[0]).(type) {
+			case *runtime.Slice:
+				if s.Virtual() {
+					c := *s
+					c.CapN = c.N
+					return retagSlice(args[0], &c), nil
+				}
+				return retagSlice(args[0], &runtime.Slice{Elems: s.Elems[:len(s.Elems):len(s.Elems)], Typ: s.Typ}), nil
+			case *runtime.TypedNil:
+				return args[0], nil
+			}
+			return nil, fmt.Errorf("slices.Clip: arg must be a slice")
+		}},
 		"SortFunc":       h.sortByCmpFunc("slices.SortFunc"),
 		"SortStableFunc": h.sortByCmpFunc("slices.SortStableFunc"),
 		"BinarySearch": &runtime.BuiltinFunc{Name: "slices.BinarySearch", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -4952,6 +5015,15 @@ func sliceOf(v runtime.Value) (*runtime.Slice, bool) {
 	}
 	s, ok := runtime.Unwrap(v).(*runtime.Slice)
 	return s, ok
+}
+
+// retagSlice re-applies orig's named slice type (`type Buffer []byte`)
+// to out, a new header over orig's elements; an unnamed orig returns out.
+func retagSlice(orig runtime.Value, out *runtime.Slice) runtime.Value {
+	if n, ok := orig.(*runtime.Named); ok {
+		return runtime.Tag(n.Typ, out)
+	}
+	return out
 }
 
 // packSlice moves kept elements to the front of s's backing array and
