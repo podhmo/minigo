@@ -1398,7 +1398,10 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 				// interpreter builtins (Pkg nil) get UConst so their own
 				// constant arms keep working (append's element-type
 				// conversion, real/imag's constant domain).
-				args = v.matBuiltinArgs(args)
+				var err error
+				if args, err = v.matBuiltinArgs(args, builtinTargetType(c)); err != nil {
+					return nil, fmt.Errorf("%s %w", c.Name, err)
+				}
 			}
 			if c.SyncCallbacks {
 				return c.Fn(ownerCaller{v}, args)
@@ -1418,7 +1421,12 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 			continue
 		case *runtime.GoValue:
 			if fv := reflect.ValueOf(c.V); fv.IsValid() && fv.Kind() == reflect.Func {
-				return callReflectFunc(fmt.Sprintf("%v", fv.Type()), fv, v, v.matBuiltinArgs(expandSpread(args)))
+				name := fmt.Sprintf("%v", fv.Type())
+				margs, err := v.matBuiltinArgs(expandSpread(args), fv.Type())
+				if err != nil {
+					return nil, fmt.Errorf("%s %w", name, err)
+				}
+				return callReflectFunc(name, fv, v, margs)
 			}
 			return nil, fmt.Errorf("value of type %T is not callable", callee)
 		default:
@@ -4176,6 +4184,72 @@ func (v *VM) initHostPositional(f *frame, td *runtime.TypeDef, hv any, raw []run
 	}
 }
 
+// hostConstKindNames names the basic type an untyped constant converts
+// to for a host parameter of each integer or float kind.
+var hostConstKindNames = map[reflect.Kind]string{
+	reflect.Int: "int", reflect.Int8: "int8", reflect.Int16: "int16",
+	reflect.Int32: "int32", reflect.Int64: "int64",
+	reflect.Uint: "uint", reflect.Uint8: "uint8", reflect.Uint16: "uint16",
+	reflect.Uint32: "uint32", reflect.Uint64: "uint64", reflect.Uintptr: "uintptr",
+	reflect.Float32: "float32", reflect.Float64: "float64",
+}
+
+// hostConstArg converts an untyped constant passed to a host parameter of
+// integer or float kind at the parameter's type, as gc does: 1<<64-1
+// fits a uint64 parameter though it overflows the default int, and 300
+// for an int8 parameter (or 1.5 for an int one, 1e300 for a float32 one)
+// is gc's compile error rather than a silent wrap. ok is false for every
+// other parameter kind, which takes the constant's default type.
+func hostConstArg(u *runtime.UConst, t reflect.Type) (rv reflect.Value, ok bool, err error) {
+	name, ok := hostConstKindNames[t.Kind()]
+	if !ok {
+		return reflect.Value{}, false, nil
+	}
+	cv := u.V
+	if cv.Kind() == constant.Complex && constant.Sign(constant.Imag(cv)) == 0 {
+		// complex(3, 0) is representable by any numeric type.
+		cv = constant.Real(cv)
+	}
+	switch t.Kind() {
+	case reflect.Float32, reflect.Float64:
+		if u.Wrap && u.WrapSure {
+			return reflect.Value{}, true, fmt.Errorf("invalid operation: shifted operand (type %s) must be integer", t)
+		}
+		f, ok := constFloat(cv)
+		if !ok {
+			return reflect.Value{}, true, fmt.Errorf("cannot use constant %s as %s", u.V, t)
+		}
+		if t.Kind() == reflect.Float32 {
+			f32, _ := constant.Float32Val(cv)
+			if math.IsInf(float64(f32), 0) || math.IsInf(f, 0) {
+				return reflect.Value{}, true, fmt.Errorf("constant %s overflows %s", u.V, t)
+			}
+			f = runtime.CanonConstZero(float64(f32))
+		} else if math.IsInf(f, 0) {
+			return reflect.Value{}, true, fmt.Errorf("constant %s overflows %s", u.V, t)
+		}
+		return reflect.ValueOf(f).Convert(t), true, nil
+	}
+	switch cv.Kind() {
+	case constant.Int:
+	case constant.Float:
+		if ti, ok := toIntConst(cv); !ok || ti.Kind() != constant.Int {
+			return reflect.Value{}, true, fmt.Errorf("cannot use constant %s as %s (truncated)", u.V, t)
+		}
+	default:
+		return reflect.Value{}, true, fmt.Errorf("cannot use constant %s as %s", u.V, t)
+	}
+	i, ok := fitsUConst(&runtime.UConst{V: cv, Wrap: u.Wrap}, name)
+	if !ok {
+		return reflect.Value{}, true, fmt.Errorf("constant %s overflows %s", u.V, t)
+	}
+	if t.Kind() >= reflect.Uint && t.Kind() <= reflect.Uintptr {
+		// i carries a uint64 above MaxInt64 in its two's-complement bits.
+		return reflect.ValueOf(uint64(i)).Convert(t), true, nil
+	}
+	return reflect.ValueOf(i).Convert(t), true, nil
+}
+
 // toReflectValue marshals a runtime value to a reflect.Value of the
 // requested type: empty interfaces carry the value verbatim (a *Cell stays
 // a pointer, slices/maps cross unconverted), func types wrap the callable
@@ -4184,6 +4258,9 @@ func (v *VM) initHostPositional(f *frame, td *runtime.TypeDef, hv any, raw []run
 // convert.
 func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.Value, error) {
 	if u, ok := v.(*runtime.UConst); ok {
+		if rv, ok, err := hostConstArg(u, t); ok {
+			return rv, err
+		}
 		mv, err := materializeDefault(u)
 		if err != nil {
 			return reflect.Value{}, err
@@ -8114,11 +8191,40 @@ func constPayload(x runtime.Value) (*runtime.UConst, bool) {
 // element through the declared element type, real/imag keep the
 // constant domain, and adaptConst still sees const-ness on script-to-
 // script calls.
-func (v *VM) matBuiltinArgs(args []runtime.Value) []runtime.Value {
+//
+// ft, when known, is the host func's signature: a bare constant passed
+// to an integer or float parameter converts at the parameter's type, as
+// gc does — strconv.FormatUint(1<<63, 10) is legal though 1<<63
+// overflows the default int, and a constant the parameter cannot hold
+// is reported (gc's compile error) instead of wrapping silently.
+func (v *VM) matBuiltinArgs(args []runtime.Value, ft reflect.Type) ([]runtime.Value, error) {
 	var out []runtime.Value
 	for i, a := range args {
 		var mv runtime.Value
 		var err error
+		if u, ok := a.(*runtime.UConst); ok && ft != nil {
+			if pt := hostParamType(ft, i, len(args)); pt != nil {
+				if _, ok, perr := hostConstArg(u, pt); ok {
+					if perr != nil {
+						return nil, fmt.Errorf("arg %d: %w", i, perr)
+					}
+					if k := pt.Kind(); k != reflect.Int && k != reflect.Int64 && k != reflect.Float64 {
+						// the default type would overflow (uint64) or
+						// lose the parameter's rounding (float32).
+						mv, err = v.materializeConstErr(u, &runtime.TypeDef{Name: hostConstKindNames[k], Kind: runtime.KindNamedBasic})
+						if err != nil {
+							return nil, fmt.Errorf("arg %d: %w", i, err)
+						}
+						if out == nil {
+							out = make([]runtime.Value, len(args))
+							copy(out, args)
+						}
+						out[i] = mv
+						continue
+					}
+				}
+			}
+		}
 		if n, ok := a.(*runtime.Named); ok {
 			// a converted constant T(c) materializes at T, not the
 			// default type — uint64(1<<63) crosses a bound call as a
@@ -8143,9 +8249,39 @@ func (v *VM) matBuiltinArgs(args []runtime.Value) []runtime.Value {
 		out[i] = mv
 	}
 	if out == nil {
-		return args
+		return args, nil
 	}
-	return out
+	return out, nil
+}
+
+// builtinTargetType is the signature of the host func a bound builtin
+// adapts (BuiltinFunc.Target), or nil when it declares none.
+func builtinTargetType(c *runtime.BuiltinFunc) reflect.Type {
+	if c.Target == nil {
+		return nil
+	}
+	t := reflect.TypeOf(c.Target)
+	if t.Kind() != reflect.Func {
+		return nil
+	}
+	return t
+}
+
+// hostParamType is the type argument i of nargs binds to in a call of
+// host func type ft — the variadic element past the fixed parameters —
+// or nil when the call's arity does not match ft.
+func hostParamType(ft reflect.Type, i, nargs int) reflect.Type {
+	nin := ft.NumIn()
+	if !ft.IsVariadic() {
+		if nargs != nin {
+			return nil
+		}
+		return ft.In(i)
+	}
+	if i < nin-1 {
+		return ft.In(i)
+	}
+	return ft.In(nin - 1).Elem()
 }
 
 // materializeDefault converts an untyped constant to its Go default
