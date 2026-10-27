@@ -120,6 +120,22 @@ func main() {
 		}
 	}
 	fmt.Println("seen", seen, len(mm))
+	// deleting the current key each turn still visits every entry once
+	dm := map[string]int{"a": 1, "b": 2, "c": 3, "d": 4, "e": 5}
+	visited := 0
+	for k := range maps.Keys(dm) {
+		visited++
+		delete(dm, k)
+	}
+	fmt.Println("visited", visited, len(dm))
+	// values read while other keys are deleted and re-added
+	vm := map[int]int{1: 10, 2: 20, 3: 30}
+	vsum := 0
+	for v := range maps.Values(vm) {
+		vsum += v
+		clear(vm)
+	}
+	fmt.Println("vsum one", vsum == 10 || vsum == 20 || vsum == 30, len(vm))
 	// a value written before its turn reads the new content
 	wm := map[string]int{"only": 1}
 	for k := range maps.Keys(wm) {

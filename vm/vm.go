@@ -4832,6 +4832,12 @@ func deepHost(v runtime.Value, vc runtime.VMCaller, h *hostMarshal) runtime.Valu
 		switch x.V.(type) {
 		case *runtime.Function, *runtime.Closure,
 			*runtime.BoundMethod, *runtime.BuiltinFunc:
+			// an iter.Seq / iter.Seq2 crosses as a real host seq func,
+			// so a host ranging over it (text/template's {{range}})
+			// can drive it through reflect.
+			if hf, ok := hostSeqFunc(x, vc); ok {
+				return hf
+			}
 			return v
 		}
 		// a bound host scalar (time.Duration, time.Month) crosses as
@@ -4880,6 +4886,109 @@ func deepHost(v runtime.Value, vc runtime.VMCaller, h *hostMarshal) runtime.Valu
 		return v
 	}
 	return v
+}
+
+// iterSeqArity reports 1 for an iter.Seq typedef, 2 for iter.Seq2 and 0
+// for anything else.
+func iterSeqArity(td *runtime.TypeDef) int {
+	if td == nil || td.Pkg == nil || td.Pkg.Path != "iter" {
+		return 0
+	}
+	switch td.Name {
+	case "Seq", "iter.Seq":
+		return 1
+	case "Seq2", "iter.Seq2":
+		return 2
+	}
+	return 0
+}
+
+// hostSeqFunc adapts a script iter.Seq / iter.Seq2 value to the host
+// func(yield func(any) bool) / func(yield func(any, any) bool) shape: the
+// host's yield receives each element marshaled like any other `any`
+// data, and its false return stops the script producer. A failure inside
+// the seq propagates as a panic, as a callback's would. ok is false for a
+// value not typed as a seq.
+func hostSeqFunc(n *runtime.Named, vc runtime.VMCaller) (any, bool) {
+	arity := iterSeqArity(n.Typ)
+	if arity == 0 {
+		return nil, false
+	}
+	seq := runtime.Value(n)
+	toHost := func(e runtime.Value) any {
+		return deepHost(e, vc, &hostMarshal{walk: runtime.NewWalk(), budget: hostEvalBudget})
+	}
+	drive := func(yield func(args []runtime.Value) bool) {
+		// a host panic out of yield (text/template unwinds {{break}}
+		// with one) must reach the host's recover unchanged: stop the
+		// producer and re-raise it once the VM call is out of the way.
+		var hostPanic any
+		panicked := false
+		yb := &runtime.BuiltinFunc{Name: "host yield", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			goon := false
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						hostPanic, panicked = r, true
+					}
+				}()
+				goon = yield(args)
+			}()
+			return goon && !panicked, nil
+		}}
+		_, err := vc.Call(seq, []runtime.Value{yb})
+		if panicked {
+			panic(hostPanic)
+		}
+		if err != nil {
+			panic(err)
+		}
+	}
+	at := func(args []runtime.Value, i int) runtime.Value {
+		if i < len(args) {
+			return args[i]
+		}
+		return runtime.NIL
+	}
+	// each element crosses at its host type when it has one (a
+	// predeclared basic, so a template sees int, not interface {}),
+	// else as any.
+	elemTs := make([]reflect.Type, arity)
+	names := []string{"V"}
+	if arity == 2 {
+		names = []string{"K", "V"}
+	}
+	if len(n.Typ.TParams) == arity {
+		names = n.Typ.TParams
+	}
+	for i, tp := range names {
+		elemTs[i] = anyType
+		if td, ok := n.Typ.Binds[tp].(*runtime.TypeDef); ok && td.Spec == nil && td.HostNew == nil && td.HostScalar == nil {
+			if rt := hostBasicTypes[td.Name]; rt != nil {
+				elemTs[i] = rt
+			}
+		}
+	}
+	yieldT := reflect.FuncOf(elemTs, []reflect.Type{reflect.TypeFor[bool]()}, false)
+	seqT := reflect.FuncOf([]reflect.Type{yieldT}, nil, false)
+	return reflect.MakeFunc(seqT, func(in []reflect.Value) []reflect.Value {
+		y := in[0]
+		vals := make([]reflect.Value, arity)
+		drive(func(args []runtime.Value) bool {
+			for i, et := range elemTs {
+				vals[i] = reflect.Zero(et)
+				if rv := reflect.ValueOf(toHost(at(args, i))); rv.IsValid() {
+					if rv.Type().AssignableTo(et) {
+						vals[i] = rv
+					} else if rv.Type().ConvertibleTo(et) {
+						vals[i] = rv.Convert(et)
+					}
+				}
+			}
+			return y.Call(vals)[0].Bool()
+		})
+		return nil
+	}).Interface(), true
 }
 
 var (
@@ -8584,6 +8693,9 @@ func (v *VM) driveFuncIter(f *frame, it *runtime.Iterator, nvars, top, end int) 
 	}()
 	yield := &runtime.BuiltinFunc{
 		Name: "yield",
+		// an intrinsic seq may call Fn straight from Go: it only pushes
+		// the args and runs the body on this frame.
+		DirectYield: true,
 		Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if it.Exited {
 				panic(runtime.RuntimePanic("range function continued iteration after function for loop body returned false"))

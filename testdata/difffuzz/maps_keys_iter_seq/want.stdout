@@ -17,6 +17,8 @@ iter.Seq[string] [A B C]
 []string [] true
 []string [] true
 seen 1 1
+visited 5 0
+vsum one true 0
 updated 42
 all 0 p
 all 1 q

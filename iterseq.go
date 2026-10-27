@@ -6,14 +6,26 @@ import (
 	"go/ast"
 	"slices"
 	"sort"
-	"strings"
 
 	"github.com/podhmo/minigo/runtime"
 )
 
 // iterSeqKey keys the instantiated iter.Seq / iter.Seq2 typedef cache
-// by the (named) element typedefs (b is nil for Seq).
+// by the element typedefs (b is nil for Seq).
 type iterSeqKey struct{ a, b *runtime.TypeDef }
+
+// iterSeqBaseKey keys the generic iter.Seq / iter.Seq2 typedefs in the
+// same cache.
+type iterSeqBaseKey string
+
+// sharedTd reports whether td is a canonical, shared typedef — a
+// predeclared or declared non-generic type, materialized once — so that
+// keying a cache on its pointer stays bounded. An anonymous composite
+// ([]int, struct{...}) or a generic instantiation (G[int]) is built
+// afresh per resolution.
+func sharedTd(td *runtime.TypeDef) bool {
+	return td != nil && td.Name != "" && len(td.Binds) == 0 && td.TParams == nil
+}
 
 // iterSeqTd instantiates iter.Seq[V] (one elem) or iter.Seq2[K, V] (two)
 // over resolved element typedefs, so an intrinsic seq spells and infers
@@ -38,12 +50,39 @@ func (e *Engine) iterSeqTd(elems ...*runtime.TypeDef) *runtime.TypeDef {
 	if key.a == nil {
 		return nil
 	}
-	if td, ok := e.iterSeqTds.Load(key); ok {
-		return td.(*runtime.TypeDef)
+	cacheable := sharedTd(key.a) && (key.b == nil || sharedTd(key.b))
+	if cacheable {
+		if td, ok := e.iterSeqTds.Load(key); ok {
+			return td.(*runtime.TypeDef)
+		}
 	}
+	base := e.iterSeqBase(len(elems))
+	if base == nil {
+		return nil
+	}
+	binds := make(map[string]runtime.Value, len(elems))
+	for i, tp := range base.TParams {
+		binds[tp] = elems[i]
+	}
+	td := e.instantiateBinds(base, binds)
+	if cacheable {
+		if prev, loaded := e.iterSeqTds.LoadOrStore(key, td); loaded {
+			return prev.(*runtime.TypeDef)
+		}
+	}
+	return td
+}
+
+// iterSeqBase is the generic iter.Seq (n=1) or iter.Seq2 (n=2) typedef,
+// loaded from the iter package once per engine; nil when it does not
+// load.
+func (e *Engine) iterSeqBase(n int) *runtime.TypeDef {
 	name := "Seq"
-	if len(elems) == 2 {
+	if n == 2 {
 		name = "Seq2"
+	}
+	if td, ok := e.iterSeqTds.Load(iterSeqBaseKey(name)); ok {
+		return td.(*runtime.TypeDef)
 	}
 	p, err := e.loadPath(context.Background(), "iter")
 	if err != nil {
@@ -54,21 +93,11 @@ func (e *Engine) iterSeqTd(elems ...*runtime.TypeDef) *runtime.TypeDef {
 		return nil
 	}
 	base, ok := m.(*runtime.TypeDef)
-	if !ok || len(base.TParams) != len(elems) {
+	if !ok || len(base.TParams) != n {
 		return nil
 	}
-	binds := make(map[string]runtime.Value, len(elems))
-	for i, tp := range base.TParams {
-		binds[tp] = elems[i]
-	}
-	td := e.instantiateBinds(base, binds)
-	if key.a.Name != "" && (key.b == nil || key.b.Name != "") {
-		// only named elements are shared typedefs; an anonymous one
-		// ([]int, struct{...}) is built afresh per resolution, so caching
-		// on it would grow the cache with every call.
-		e.iterSeqTds.Store(key, td)
-	}
-	return td
+	e.iterSeqTds.Store(iterSeqBaseKey(name), base)
+	return base
 }
 
 // iterSeqElems reads the element typedefs off an iter.Seq / iter.Seq2
@@ -139,39 +168,169 @@ func yieldOK(r runtime.Value) bool {
 	return !ok || goon
 }
 
-// seqFn wraps a producer body as an iter.Seq-shaped builtin: it checks
-// for the single yield argument and hands it to produce.
-func seqFn(name string, produce func(vc runtime.VMCaller, yield runtime.Value) error) *runtime.BuiltinFunc {
-	return &runtime.BuiltinFunc{Name: seqNamePrefix + name + ")", SyncCallbacks: true, Fn: func(vc runtime.VMCaller, ya []runtime.Value) (runtime.Value, error) {
+// seqFn builds an intrinsic seq builtin over a native producer: the
+// VM-facing Fn drives each with the script's yield func, and Go-side
+// consumers read src directly (see nativeSeq).
+func seqFn(name string, src *runtime.SeqSource) *runtime.BuiltinFunc {
+	return &runtime.BuiltinFunc{Name: "iter.Seq(" + name + ")", SyncCallbacks: true, Seq: src, Fn: func(vc runtime.VMCaller, ya []runtime.Value) (runtime.Value, error) {
 		if len(ya) != 1 {
 			return nil, fmt.Errorf("%s: Seq needs a yield func", name)
 		}
-		return runtime.NIL, produce(vc, ya[0])
+		return runtime.NIL, src.Each(vc, scriptYield(vc, ya[0]))
 	}}
 }
 
-// mapSeq is maps.Keys / Values / All over a script map: lazy like Go's —
-// it walks a snapshot of the key order and reads each pair live, so an
-// entry deleted before its turn is not produced and a value written
-// meanwhile reads its new content. emit returns the yield arguments for
-// one pair. A nil (or non-script) map produces nothing.
-func mapSeq(name string, m *runtime.Map, emit func(k, v runtime.Value) []runtime.Value) *runtime.BuiltinFunc {
-	return seqFn(name, func(vc runtime.VMCaller, yield runtime.Value) error {
-		if m == nil {
+// scriptYield adapts a script yield func to a native producer's yield.
+// The range-over-func loop body (DirectYield) runs straight from Go; any
+// other callable goes through the VM with a fresh argument slice, and a
+// panic in it propagates as a Go panic so a recover around the range
+// sees it, like in Go.
+func scriptYield(vc runtime.VMCaller, yield runtime.Value) func(args []runtime.Value) bool {
+	if c, ok := yield.(*runtime.BuiltinFunc); ok && c.DirectYield {
+		return func(args []runtime.Value) bool {
+			r, err := c.Fn(vc, args)
+			if err != nil {
+				panic(err)
+			}
+			return yieldOK(r)
+		}
+	}
+	return func(args []runtime.Value) bool {
+		return yieldOK(callOrPanic(vc, yield, slices.Clone(args)))
+	}
+}
+
+// nativeSeq is the native source of an intrinsic seq value (possibly
+// tagged iter.Seq[...]); nil for any other value.
+func nativeSeq(v runtime.Value) *runtime.SeqSource {
+	if c, ok := runtime.Unwrap(v).(*runtime.BuiltinFunc); ok {
+		return c.Seq
+	}
+	return nil
+}
+
+// driveSeq drives seq with a Go-side consumer: an intrinsic seq runs its
+// producer natively; anything else is called through the VM with a
+// yield builtin wrapping take.
+func driveSeq(vc runtime.VMCaller, seq runtime.Value, take func(args []runtime.Value)) error {
+	if src := nativeSeq(seq); src != nil {
+		return src.Each(vc, func(args []runtime.Value) bool {
+			take(args)
+			return true
+		})
+	}
+	yield := &runtime.BuiltinFunc{Name: "yield", SyncCallbacks: true, Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		take(args)
+		return true, nil
+	}}
+	callOrPanic(vc, seq, []runtime.Value{yield})
+	return nil
+}
+
+// sliceSource is the native source over pieces materialized up front
+// (strings.SplitSeq and friends, maps over host values).
+func sliceSource(pieces []runtime.Value) *runtime.SeqSource {
+	return &runtime.SeqSource{
+		Each: func(_ runtime.VMCaller, yield func([]runtime.Value) bool) error {
+			buf := make([]runtime.Value, 1)
+			for _, p := range pieces {
+				buf[0] = p
+				if !yield(buf) {
+					return nil
+				}
+			}
 			return nil
+		},
+		Collect: func(runtime.VMCaller) []runtime.Value { return slices.Clone(pieces) },
+	}
+}
+
+// mapSeqKind selects what a map seq yields.
+type mapSeqKind int
+
+const (
+	mapSeqKeys mapSeqKind = iota
+	mapSeqValues
+	mapSeqAll
+)
+
+// mapSource is the native source of maps.Keys / Values / All over a
+// script map: lazy like Go's — it walks a snapshot of the key order and
+// reads each pair live, so an entry deleted before its turn is not
+// produced and a value written meanwhile reads its new content. conv
+// converts a stored key back to the declared key type (nil: identity).
+// A nil map produces nothing.
+func mapSource(m *runtime.Map, kind mapSeqKind, conv func(runtime.Value) runtime.Value) *runtime.SeqSource {
+	key := func(k runtime.Value) runtime.Value {
+		if conv != nil {
+			return conv(k)
 		}
-		display, canonical := m.SnapshotKeys()
-		for i, ck := range canonical {
-			v, ok := m.LookupCanonical(ck)
-			if !ok {
-				continue
+		return k
+	}
+	src := &runtime.SeqSource{
+		Each: func(_ runtime.VMCaller, yield func([]runtime.Value) bool) error {
+			if m == nil || m.Len() == 0 {
+				return nil
 			}
-			if goon, err := callYield(vc, yield, emit(display[i], v)...); err != nil || !goon {
-				return err
+			w := m.BeginWalk()
+			defer w.End()
+			n := 1
+			if kind == mapSeqAll {
+				n = 2
 			}
+			buf := make([]runtime.Value, n)
+			for i := range w.Len() {
+				if kind == mapSeqKeys {
+					k, ok := w.Key(i)
+					if !ok {
+						continue
+					}
+					buf[0] = key(k)
+				} else {
+					k, v, ok := w.At(i)
+					if !ok {
+						continue
+					}
+					if kind == mapSeqValues {
+						buf[0] = v
+					} else {
+						buf[0], buf[1] = key(k), v
+					}
+				}
+				if !yield(buf) {
+					return nil
+				}
+			}
+			return nil
+		},
+	}
+	switch kind {
+	case mapSeqKeys:
+		src.Collect = func(runtime.VMCaller) []runtime.Value {
+			if m == nil {
+				return nil
+			}
+			out := slices.Clone(m.Order)
+			if conv != nil {
+				for i, k := range out {
+					out[i] = conv(k)
+				}
+			}
+			return out
 		}
-		return nil
-	})
+	case mapSeqValues:
+		src.Collect = func(runtime.VMCaller) []runtime.Value {
+			if m == nil {
+				return nil
+			}
+			out := make([]runtime.Value, len(m.Keys))
+			for i, ck := range m.Keys {
+				out[i] = m.Pairs[ck]
+			}
+			return out
+		}
+	}
+	return src
 }
 
 // scriptMapSeqArg reads a map argument of the maps seq helpers: the
@@ -205,13 +364,18 @@ func scriptMapSeqArg(vc runtime.VMCaller, v runtime.Value) (m *runtime.Map, kt, 
 
 // mapKeyConv converts a script map's stored (untagged) key back to the
 // declared key type — a map[fs.FileMode]bool yields FileModes, not their
-// payloads; an interface-keyed map's keys already carry their dynamic
-// types.
+// payloads. nil when keys need no conversion: an interface-keyed map's
+// keys already carry their dynamic types, and a predeclared int, string,
+// float64 or bool key is stored bare. A key already tagged with the key
+// type passes through.
 func mapKeyConv(vc runtime.VMCaller, m *runtime.Map, kt *runtime.TypeDef) func(runtime.Value) runtime.Value {
 	if kt == nil || m == nil || m.IfaceKey || kt.Kind == runtime.KindInterface || plainKeyTd(kt) {
-		return func(k runtime.Value) runtime.Value { return k }
+		return nil
 	}
 	return func(k runtime.Value) runtime.Value {
+		if n, ok := k.(*runtime.Named); ok && n.Typ == kt {
+			return k
+		}
 		if ck, err := vc.Convert(kt, k); err == nil {
 			return ck
 		}
@@ -278,53 +442,6 @@ func sliceLen(s *runtime.Slice) int {
 	return int(s.Len())
 }
 
-// callYield calls a seq's yield with args and reports whether the
-// consumer lets the producer go on.
-func callYield(vc runtime.VMCaller, yield runtime.Value, args ...runtime.Value) (bool, error) {
-	if c, ok := yield.(*runtime.BuiltinFunc); ok && c.Name == collectorName {
-		// a Go-side collector: skip the VM call boundary
-		r, err := c.Fn(vc, args)
-		if err != nil {
-			return false, err
-		}
-		return yieldOK(r), nil
-	}
-	// a panic in the loop body (or a script yield) propagates as a Go
-	// panic, so a recover around the range sees it, like in Go.
-	return yieldOK(callOrPanic(vc, yield, args)), nil
-}
-
-// collectorName names the Go-side yield funcs the consuming helpers
-// (slices.Collect/Sorted, maps.Insert/Collect, ...) hand a seq; an
-// intrinsic seq calls them directly instead of through the VM.
-const collectorName = "iter collector yield"
-
-// collector wraps a Go-side consumer as a yield func that always lets
-// the producer go on.
-func collector(take func(args []runtime.Value) error) *runtime.BuiltinFunc {
-	return &runtime.BuiltinFunc{Name: collectorName, SyncCallbacks: true, Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-		if err := take(args); err != nil {
-			return nil, err
-		}
-		return true, nil
-	}}
-}
-
-// driveSeq calls seq with yield. An intrinsic seq (seqFn / seqOf) runs
-// its producer directly — the consumer is Go-side, so the VM call
-// boundary would only add overhead; anything else goes through the VM.
-func driveSeq(vc runtime.VMCaller, seq, yield runtime.Value) error {
-	if c, ok := runtime.Unwrap(seq).(*runtime.BuiltinFunc); ok && strings.HasPrefix(c.Name, seqNamePrefix) {
-		_, err := c.Fn(vc, []runtime.Value{yield})
-		return err
-	}
-	callOrPanic(vc, seq, []runtime.Value{yield})
-	return nil
-}
-
-// seqNamePrefix starts the Name of every intrinsic seq builtin.
-const seqNamePrefix = "iter.Seq("
-
 // collectSeq drives seq and returns its elements, boxed as a []E typed
 // after the seq (a nil slice when it yields nothing, like
 // slices.Collect), plus the raw elements and the slice typedef.
@@ -357,7 +474,7 @@ func mapKeyOperand(vc runtime.VMCaller, mt *runtime.TypeDef, k runtime.Value) ru
 // slicesSeqHelpers adds the iterator helpers of slices (Go 1.23's
 // iter.Seq surface) to its symbol table.
 func (e *Engine) slicesSeqHelpers(slicesPkg map[string]runtime.Value) map[string]runtime.Value {
-	sliceSeq := func(name string, two bool, produce func(vc runtime.VMCaller, s *runtime.Slice, yield runtime.Value) error) *runtime.BuiltinFunc {
+	sliceSeq := func(name string, two bool, each func(s *runtime.Slice, yield func([]runtime.Value) bool)) *runtime.BuiltinFunc {
 		return &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("%s needs 1 arg, got %d", name, len(args))
@@ -366,36 +483,42 @@ func (e *Engine) slicesSeqHelpers(slicesPkg map[string]runtime.Value) map[string
 			if !ok {
 				return nil, fmt.Errorf("%s: arg must be a slice", name)
 			}
-			fn := seqFn(name, func(vc runtime.VMCaller, yield runtime.Value) error { return produce(vc, s, yield) })
+			fn := seqFn(name, &runtime.SeqSource{Each: func(_ runtime.VMCaller, yield func([]runtime.Value) bool) error {
+				each(s, yield)
+				return nil
+			}})
 			if two {
 				return e.typedSeq(fn, runtime.BasicTypedef("int"), et), nil
 			}
 			return e.typedSeq(fn, et), nil
 		}}
 	}
-	slicesPkg["Values"] = sliceSeq("slices.Values", false, func(vc runtime.VMCaller, s *runtime.Slice, yield runtime.Value) error {
+	slicesPkg["Values"] = sliceSeq("slices.Values", false, func(s *runtime.Slice, yield func([]runtime.Value) bool) {
+		buf := make([]runtime.Value, 1)
 		for i, n := 0, sliceLen(s); i < n; i++ {
-			if goon, err := callYield(vc, yield, sliceElemAt(s, i)); err != nil || !goon {
-				return err
+			buf[0] = sliceElemAt(s, i)
+			if !yield(buf) {
+				return
 			}
 		}
-		return nil
 	})
-	slicesPkg["All"] = sliceSeq("slices.All", true, func(vc runtime.VMCaller, s *runtime.Slice, yield runtime.Value) error {
+	slicesPkg["All"] = sliceSeq("slices.All", true, func(s *runtime.Slice, yield func([]runtime.Value) bool) {
+		buf := make([]runtime.Value, 2)
 		for i, n := 0, sliceLen(s); i < n; i++ {
-			if goon, err := callYield(vc, yield, int64(i), sliceElemAt(s, i)); err != nil || !goon {
-				return err
+			buf[0], buf[1] = int64(i), sliceElemAt(s, i)
+			if !yield(buf) {
+				return
 			}
 		}
-		return nil
 	})
-	slicesPkg["Backward"] = sliceSeq("slices.Backward", true, func(vc runtime.VMCaller, s *runtime.Slice, yield runtime.Value) error {
+	slicesPkg["Backward"] = sliceSeq("slices.Backward", true, func(s *runtime.Slice, yield func([]runtime.Value) bool) {
+		buf := make([]runtime.Value, 2)
 		for i := sliceLen(s) - 1; i >= 0; i-- {
-			if goon, err := callYield(vc, yield, int64(i), sliceElemAt(s, i)); err != nil || !goon {
-				return err
+			buf[0], buf[1] = int64(i), sliceElemAt(s, i)
+			if !yield(buf) {
+				return
 			}
 		}
-		return nil
 	})
 	slicesPkg["Collect"] = &runtime.BuiltinFunc{Name: "slices.Collect", SyncCallbacks: true, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) != 1 {
@@ -470,16 +593,17 @@ func (e *Engine) slicesSeqHelpers(slicesPkg map[string]runtime.Value) map[string
 		if n < 1 {
 			panic(&runtime.Panic{Value: "cannot be less than 1"})
 		}
-		fn := seqFn("slices.Chunk", func(vc runtime.VMCaller, yield runtime.Value) error {
+		fn := seqFn("slices.Chunk", &runtime.SeqSource{Each: func(_ runtime.VMCaller, yield func([]runtime.Value) bool) error {
+			buf := make([]runtime.Value, 1)
 			for i, l := 0, sliceLen(s); i < l; i += n {
 				end := min(i+n, l)
-				c := retagSlice(args[0], &runtime.Slice{Elems: s.Elems[i:end:end], Typ: st})
-				if goon, err := callYield(vc, yield, c); err != nil || !goon {
-					return err
+				buf[0] = retagSlice(args[0], &runtime.Slice{Elems: s.Elems[i:end:end], Typ: st})
+				if !yield(buf) {
+					return nil
 				}
 			}
 			return nil
-		})
+		}})
 		return e.typedSeq(fn, st), nil
 	}}
 	return slicesPkg
@@ -494,10 +618,9 @@ func (e *Engine) mapsSeqHelpers(mapsPkg map[string]runtime.Value) map[string]run
 		}
 		m, kt, _, ok := scriptMapSeqArg(vc, args[0])
 		if !ok {
-			return seqOf("maps.Keys", mapKeys(goNative(args[0])).Elems), nil
+			return seqFn("maps.Keys", sliceSource(mapKeys(goNative(args[0])).Elems)), nil
 		}
-		conv := mapKeyConv(vc, m, kt)
-		return e.typedSeq(mapSeq("maps.Keys", m, func(k, _ runtime.Value) []runtime.Value { return []runtime.Value{conv(k)} }), kt), nil
+		return e.typedSeq(seqFn("maps.Keys", mapSource(m, mapSeqKeys, mapKeyConv(vc, m, kt))), kt), nil
 	}}
 	mapsPkg["Values"] = &runtime.BuiltinFunc{Name: "maps.Values", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) != 1 {
@@ -505,9 +628,9 @@ func (e *Engine) mapsSeqHelpers(mapsPkg map[string]runtime.Value) map[string]run
 		}
 		m, _, vt, ok := scriptMapSeqArg(vc, args[0])
 		if !ok {
-			return seqOf("maps.Values", mapValues(goNative(args[0])).Elems), nil
+			return seqFn("maps.Values", sliceSource(mapValues(goNative(args[0])).Elems)), nil
 		}
-		return e.typedSeq(mapSeq("maps.Values", m, func(_, v runtime.Value) []runtime.Value { return []runtime.Value{v} }), vt), nil
+		return e.typedSeq(seqFn("maps.Values", mapSource(m, mapSeqValues, nil)), vt), nil
 	}}
 	mapsPkg["All"] = &runtime.BuiltinFunc{Name: "maps.All", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) != 1 {
@@ -517,8 +640,7 @@ func (e *Engine) mapsSeqHelpers(mapsPkg map[string]runtime.Value) map[string]run
 		if !ok {
 			return nil, fmt.Errorf("maps.All: arg must be a map")
 		}
-		conv := mapKeyConv(vc, m, kt)
-		return e.typedSeq(mapSeq("maps.All", m, func(k, v runtime.Value) []runtime.Value { return []runtime.Value{conv(k), v} }), kt, vt), nil
+		return e.typedSeq(seqFn("maps.All", mapSource(m, mapSeqAll, mapKeyConv(vc, m, kt))), kt, vt), nil
 	}}
 	mapsPkg["Insert"] = &runtime.BuiltinFunc{Name: "maps.Insert", SyncCallbacks: true, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) != 2 {
@@ -532,17 +654,21 @@ func (e *Engine) mapsSeqHelpers(mapsPkg map[string]runtime.Value) map[string]run
 		if m != nil && mt == nil {
 			mt = m.Typ
 		}
-		yield := collector(func(ya []runtime.Value) error {
+		var bad bool
+		err := driveSeq(vc, args[1], func(ya []runtime.Value) {
 			if len(ya) != 2 {
-				return fmt.Errorf("maps.Insert: seq must yield key and value")
+				bad = true
+				return
 			}
 			if m == nil {
 				panic(runtime.PlainPanic("assignment to entry in nil map"))
 			}
 			m.Insert(mapKeyOperand(vc, mt, ya[0]), ya[1])
-			return nil
 		})
-		if err := driveSeq(vc, args[1], yield); err != nil {
+		if err == nil && bad {
+			err = fmt.Errorf("maps.Insert: seq must yield key and value")
+		}
+		if err != nil {
 			return nil, err
 		}
 		return runtime.NIL, nil
@@ -562,14 +688,18 @@ func (e *Engine) mapsSeqHelpers(mapsPkg map[string]runtime.Value) map[string]run
 		if mt != nil {
 			m = vc.NewMap(mt)
 		}
-		yield := collector(func(ya []runtime.Value) error {
+		var bad bool
+		err := driveSeq(vc, args[0], func(ya []runtime.Value) {
 			if len(ya) != 2 {
-				return fmt.Errorf("maps.Collect: seq must yield key and value")
+				bad = true
+				return
 			}
 			m.Insert(mapKeyOperand(vc, mt, ya[0]), ya[1])
-			return nil
 		})
-		if err := driveSeq(vc, args[0], yield); err != nil {
+		if err == nil && bad {
+			err = fmt.Errorf("maps.Collect: seq must yield key and value")
+		}
+		if err != nil {
 			return nil, err
 		}
 		return m, nil

@@ -5031,12 +5031,13 @@ func seqElems(vc runtime.VMCaller, v runtime.Value) ([]runtime.Value, error) {
 	if s, ok := sliceOf(v); ok {
 		return append([]runtime.Value{}, s.Elems...), nil
 	}
+	if src := nativeSeq(v); src != nil && src.Collect != nil {
+		// an intrinsic seq over a known source (maps.Keys/Values of a
+		// script map, strings.SplitSeq) reads it in one pass.
+		return src.Collect(vc), nil
+	}
 	var out []runtime.Value
-	yield := collector(func(ya []runtime.Value) error {
-		out = append(out, ya...)
-		return nil
-	})
-	if err := driveSeq(vc, v, yield); err != nil {
+	if err := driveSeq(vc, v, func(ya []runtime.Value) { out = append(out, ya...) }); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -5057,17 +5058,7 @@ func strPieces(ss []string) []runtime.Value {
 // false back. Pieces are materialized up front; laziness is unobservable
 // from a script.
 func seqOf(name string, pieces []runtime.Value) *runtime.BuiltinFunc {
-	return &runtime.BuiltinFunc{Name: seqNamePrefix + name + ")", SyncCallbacks: true, Fn: func(vc runtime.VMCaller, ya []runtime.Value) (runtime.Value, error) {
-		if len(ya) != 1 {
-			return nil, fmt.Errorf("%s: Seq needs a yield func", name)
-		}
-		for _, p := range pieces {
-			if goon, err := callYield(vc, ya[0], p); err != nil || !goon {
-				return runtime.NIL, err
-			}
-		}
-		return runtime.NIL, nil
-	}}
+	return seqFn(name, sliceSource(pieces))
 }
 
 // nilish reports whether a value carries no concrete content — bare nil,

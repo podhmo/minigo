@@ -1565,6 +1565,60 @@ type Map struct {
 	// its keys hash by (dynamic type, value) ([IfaceKeyOf]). Set it
 	// when the map is made, before any insert.
 	IfaceKey bool
+	// walkers counts in-place walks of Order/Keys in flight
+	// ([Map.BeginWalk]); while any runs, Delete copies the order slices
+	// instead of shifting them under the walker.
+	walkers int
+	// dels counts removals (Delete, Clear), so a walker can tell that
+	// every slot it walks is still present without a lookup.
+	dels uint64
+}
+
+// MapWalk is an in-place walk over a [Map]'s entries as they were when
+// it began — the allocation-free counterpart of [Map.SnapshotKeys]. An
+// entry inserted meanwhile is not produced, an entry deleted before its
+// turn is skipped, and values read live. Call End when done.
+type MapWalk struct {
+	m         *Map
+	display   []Value
+	canonical []Value
+	dels      uint64
+}
+
+// BeginWalk starts an in-place walk over m's entries.
+func (m *Map) BeginWalk() *MapWalk {
+	m.walkers++
+	return &MapWalk{m: m, display: m.Order, canonical: m.Keys, dels: m.dels}
+}
+
+// Len is the number of slots the walk covers.
+func (w *MapWalk) Len() int { return len(w.display) }
+
+// At returns slot i's script key and current value; ok is false when the
+// entry was removed since the walk began.
+func (w *MapWalk) At(i int) (k, v Value, ok bool) {
+	ck := w.canonical[i]
+	v, ok = w.m.Pairs[ck]
+	return w.display[i], v, ok
+}
+
+// Key returns slot i's script key; ok is false when the entry was
+// removed since the walk began. It skips the lookup while nothing was
+// removed.
+func (w *MapWalk) Key(i int) (Value, bool) {
+	if w.m.dels == w.dels {
+		return w.display[i], true
+	}
+	_, ok := w.m.Pairs[w.canonical[i]]
+	return w.display[i], ok
+}
+
+// End finishes the walk.
+func (w *MapWalk) End() {
+	if w.m != nil {
+		w.m.walkers--
+		w.m = nil
+	}
 }
 
 // canonicalKey is the key k stores under in m.
@@ -1635,8 +1689,16 @@ func (m *Map) Delete(k Value) bool {
 		return false
 	}
 	delete(m.Pairs, ck)
+	m.dels++
 	for i := range m.Order {
 		if m.Keys[i] == ck {
+			if m.walkers > 0 {
+				// a walker holds the current arrays: drop the slot
+				// into fresh ones instead of shifting under it.
+				m.Order = append(m.Order[:i:i], m.Order[i+1:]...)
+				m.Keys = append(m.Keys[:i:i], m.Keys[i+1:]...)
+				break
+			}
 			m.Order = append(m.Order[:i], m.Order[i+1:]...)
 			m.Keys = append(m.Keys[:i], m.Keys[i+1:]...)
 			break
@@ -1650,6 +1712,7 @@ func (m *Map) Clear() {
 	m.Pairs = map[Value]Value{}
 	m.Order = nil
 	m.Keys = nil
+	m.dels++
 }
 
 // Chan is a channel value backed by a Go channel of [Value]: sends and
@@ -2025,6 +2088,25 @@ type BuiltinFunc struct {
 	// marker, so a script variadic parameter downstream still binds to
 	// the caller's slice.
 	Forwards bool
+	// Seq marks an intrinsic iter.Seq / iter.Seq2 producer and gives
+	// Go-side consumers a native way to drive it, skipping the VM call
+	// boundary Fn goes through. Nil for every other builtin.
+	Seq *SeqSource
+	// DirectYield marks a yield func (the range-over-func loop body)
+	// whose Fn a Go-side producer may call directly instead of through
+	// VMCaller.Call; it reads its arguments before returning and keeps
+	// no reference to the slice.
+	DirectYield bool
+}
+
+// SeqSource is the native side of an intrinsic seq builtin.
+type SeqSource struct {
+	// Each drives the seq: yield receives one element's values (the
+	// slice is reused between calls) and returns false to stop.
+	Each func(vc VMCaller, yield func(args []Value) bool) error
+	// Collect, when set, returns all elements of a single-value seq at
+	// once — a fast path for consumers like slices.Collect.
+	Collect func(vc VMCaller) []Value
 }
 
 // SmallIntOf converts a host value of any integer kind, including named

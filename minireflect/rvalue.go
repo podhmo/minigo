@@ -1052,9 +1052,7 @@ func (v *RValue) Clear() {
 		}
 	case reflect.Map:
 		if m, ok := runtime.Unwrap(v.get()).(*runtime.Map); ok {
-			m.Pairs = map[runtime.Value]runtime.Value{}
-			m.Order = nil
-			m.Keys = nil
+			m.Clear()
 		}
 	default:
 		trap("call of reflect.Value.Clear on %s Value", v.kindStr())
