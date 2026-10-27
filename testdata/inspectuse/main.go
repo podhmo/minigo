@@ -2337,6 +2337,22 @@ func ASTHostTokensTyped() string {
 	return "ok"
 }
 
+// ASTHostTokensOrder: a host token.Token orders among go/token's
+// constants in the slices ordering helpers.
+func ASTHostTokensOrder() string {
+	fd := inspect.AST(inspect.Symbol(inspect.Current(), "astInspectSubject")).(*goast.FuncDecl)
+	tok := fd.Body.List[0].(*goast.AssignStmt).Tok // total := 0
+	xs := []token.Token{tok, token.ASSIGN, token.ADD}
+	slices.Sort(xs)
+	got := fmt.Sprint(xs, slices.IsSorted(xs), len(slices.Compact([]token.Token{tok, token.DEFINE})))
+	i, found := slices.BinarySearch([]token.Token{token.ADD, token.DEFINE}, tok)
+	got += fmt.Sprint(" ", i, found)
+	if want := "[+ = :=] true 1 1 true"; got != want {
+		return "host token.Token orders as " + got + ", want " + want
+	}
+	return "ok"
+}
+
 // ASTBoundTrap: a bound (host) symbol carries no AST node.
 func ASTBoundTrap() string {
 	inspect.AST(inspect.Symbol(inspect.PackageOf("strings"), "Builder"))
