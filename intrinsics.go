@@ -5753,6 +5753,10 @@ func goJSON(c runtime.VMCaller, v any) any {
 // error surfaces as a *jsonScriptErr so it can ride out through
 // encoding/json's error channel like a top-level failure.
 func jsonMapKeyName(c runtime.VMCaller, k runtime.Value, kt *runtime.TypeDef) any {
+	if s, ok := runtime.Unwrap(k).(string); ok && (kt == nil || kt.Kind != runtime.KindInterface) {
+		// gc uses a string-kinded key directly, before MarshalText.
+		return s
+	}
 	probe := k
 	if kt != nil && kt.Spec != nil {
 		// a stored key can lose its declared tag or carry a synthetic
@@ -5772,7 +5776,16 @@ func jsonMapKeyName(c runtime.VMCaller, k runtime.Value, kt *runtime.TypeDef) an
 			}
 		}
 	}
-	return str(goNative(k))
+	nk := goNative(k)
+	// an integer key spells its number even when its host type has a
+	// String method: map[time.Month]int{3: 1} marshals as {"3":1}.
+	switch rv := reflect.ValueOf(nk); rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return strconv.FormatInt(rv.Int(), 10)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return strconv.FormatUint(rv.Uint(), 10)
+	}
+	return str(nk)
 }
 
 // jsonFieldKey maps a struct field to its JSON object key: the `json`
@@ -6852,10 +6865,8 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 		if pm, ok := prior.(*runtime.Map); ok {
 			// gc decodes into the existing map: prior pairs stay unless a
 			// decoded key overwrites them.
-			for _, k := range pm.Order {
-				if e, ok := pm.Pairs[k]; ok {
-					rm.Insert(k, e)
-				}
+			for i := 0; i < pm.Len(); i++ {
+				rm.Insert(pm.At(i))
 			}
 		}
 		kt := jsonMapKeyTyp(c, td)

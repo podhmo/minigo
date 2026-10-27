@@ -7,8 +7,8 @@ import (
 
 // time.Weekday and its Sunday..Saturday constants bind like time.Month:
 // printing, conversion, zero value, %T, comparison with Time.Weekday,
-// switch, map keys, min/max, the String method and fmt.Stringer —
-// including dynamic interface checks and method constraints on a bound
+// switch, map keys (printed and ranged as time.Weekday), min/max, the
+// String method and fmt.Stringer — including dynamic interface checks and method constraints on a bound
 // constant or conversion, not just on a value a host call returned.
 
 type sched map[time.Weekday]string
@@ -64,6 +64,12 @@ func main() {
 	fmt.Println(kind(t.Weekday()), kind(t.AddDate(0, 0, 1).Weekday()))
 	m := sched{time.Monday: "gym", t.Weekday(): "pizza"}
 	fmt.Println(m[time.Friday], m[time.Monday], m[time.Weekday(1)], len(m))
+	fmt.Println(m)
+	for d, what := range m {
+		if d == time.Friday {
+			fmt.Printf("%T %v=%s %s\n", d, d, what, d.String())
+		}
+	}
 	fmt.Println(max(time.Monday, t.Weekday()), min(t.Weekday(), time.Monday), max(t.Weekday(), 6))
 	fmt.Printf("%T\n", min(t.Weekday(), time.Monday))
 	fmt.Println(w.String(), time.Saturday.String(), t.Weekday().String(), time.Weekday(9).String())

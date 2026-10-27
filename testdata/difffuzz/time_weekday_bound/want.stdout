@@ -7,6 +7,8 @@ time.Weekday
 weekend weekday weekday weekday weekday friday weekend 
 friday weekend
 pizza gym gym 2
+map[Monday:gym Friday:pizza]
+time.Weekday Friday=pizza Friday
 Friday Monday Saturday
 time.Weekday
 Sunday Saturday Friday %!Weekday(9)

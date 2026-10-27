@@ -1,0 +1,51 @@
+map[January:1 March:3]
+map[k:1 kk:2 kkkkkkkkkk:10]
+map[k:1]|map[kk:2]|map[main.K2]int{1:1}|map[main.S]int{"a":1}
+map[3:3] map[ff:1] map[q:r]
+map[a:2 b:1] map[1.5:1] map[no:0 yes:1]
+map[1:2 3:1]
+map[Monday:gym Friday:pizza]
+map[-rw-r--r--:false drwxr-xr-x:true]
+map[DEBUG:d ERROR:e]
+map[1ms:2 1s:1]
+map[May:map[kkk:3]] map[kkkk:April]
+map[k:true] map[k:kk]
+main.K k k
+main.K k 1
+main.P 3 6
+time.Month June June
+main.M 3
+HI
+true false
+main.local
+map[kk:1 kkkk:1] 2 [kk kkkk]
+[]main.K [kk kkkk] 1
+[]main.K [kkk]
+[]main.K [k kk]
+map[k:1] true
+clone main.K
+copy main.K kk
+map[] 0
+time.Month February
+map[February:2] 2
+map[Sunday:true Friday:true Saturday:true] true
+map[int:1 string:2] 2
+reflect.Kind string
+map[+:1 -:2] 2
+token.Token - true
+map[k:map[May:[a] July:[b]]]
+main.K time.Month July [b]
+4 11 2 3 4
+main.K
+map[k:1]
+{"1":1} <nil>
+{"a":1} <nil>
+{"I-3":1} <nil>
+{"3":1} <nil>
+map[k:1 kk:2 kkkkk:5] <nil>
+main.K kkkkk
+main.K kk
+main.K kk 1
+map[kkk:9] 9
+Monday=1;Tuesday=2;
+May=1;
