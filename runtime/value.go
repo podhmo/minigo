@@ -2019,6 +2019,12 @@ type BuiltinFunc struct {
 	// and never retains the VMCaller (no stored callbacks, iterators or
 	// goroutines). The VM can then skip its cross-goroutine check.
 	SyncCallbacks bool
+	// Forwards declares that Fn only relays its arguments to another
+	// callable through VMCaller.Call (a method-expression adapter). A
+	// trailing `xs...` then reaches Fn as the unexpanded [Spread]
+	// marker, so a script variadic parameter downstream still binds to
+	// the caller's slice.
+	Forwards bool
 }
 
 // SmallIntOf converts a host value of any integer kind, including named
