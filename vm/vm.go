@@ -1365,6 +1365,7 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 	for {
 		switch c := callee.(type) {
 		case *runtime.BuiltinFunc:
+			args = expandSpread(args)
 			defer func() {
 				r := recover()
 				if r == nil {
@@ -1415,7 +1416,7 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 			continue
 		case *runtime.GoValue:
 			if fv := reflect.ValueOf(c.V); fv.IsValid() && fv.Kind() == reflect.Func {
-				return callReflectFunc(fmt.Sprintf("%v", fv.Type()), fv, v, v.matBuiltinArgs(args))
+				return callReflectFunc(fmt.Sprintf("%v", fv.Type()), fv, v, v.matBuiltinArgs(expandSpread(args)))
 			}
 			return nil, fmt.Errorf("value of type %T is not callable", callee)
 		default:
@@ -1657,7 +1658,7 @@ func (v *VM) prepFrameSeen(callee runtime.Value, args []runtime.Value, statics [
 	// an instantiated generic type arrives partly bound — the receiver's
 	// own type binds stay, only the method's own type params infer.
 	if fn != nil && len(fn.TParams) > 0 && hasUnbound(fn.TParams, fn.Binds) {
-		inferred, err := v.inferCached(fn, args, statics, spreadTd)
+		inferred, err := v.inferCached(fn, expandSpread(args), statics, spreadTd)
 		if err != nil {
 			return nil, err
 		}
@@ -1706,6 +1707,10 @@ func (v *VM) prepFrameSeen(callee runtime.Value, args []runtime.Value, statics [
 					// the type's single zero-size value either way.
 					if len(args) == i+1 {
 						rest = sp.S
+					} else if !sp.S.Virtual() {
+						pack := &runtime.Slice{Elems: append(append([]runtime.Value{}, args[i:len(args)-1]...), sp.S.Elems...)}
+						fr.vpack = pack
+						rest = pack
 					} else {
 						rn := int64(len(args)-i-1) + sp.S.Len()
 						rest = &runtime.Slice{N: rn, CapN: rn, Zero: sp.S.Zero, Typ: sp.S.Typ}
@@ -2162,7 +2167,7 @@ func (v *VM) invokeDeferred(d deferredCall) {
 		case *runtime.BuiltinFunc:
 			v.pushDeferredSentinel(c.Name)
 			defer v.framesPop()
-			if _, err := c.Fn(v, d.args); err != nil {
+			if _, err := c.Fn(v, expandSpread(d.args)); err != nil {
 				panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
 			}
 			return
@@ -2186,7 +2191,7 @@ func (v *VM) invokeDeferred(d deferredCall) {
 			}
 			v.pushDeferredSentinel(fv.Type().String())
 			defer v.framesPop()
-			if _, err := callReflectFunc(fv.Type().String(), fv, v, d.args); err != nil {
+			if _, err := callReflectFunc(fv.Type().String(), fv, v, expandSpread(d.args)); err != nil {
 				panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
 			}
 			return
@@ -2222,6 +2227,25 @@ func (v *VM) pushDeferredSentinel(name string) {
 }
 
 func (v *VM) framesPop() { v.frames = v.frames[:len(v.frames)-1] }
+
+// expandSpread replaces a trailing `xs...` marker over a real slice with
+// one argument per element, for callees that take a flat argument list
+// (builtins, host funcs, generic inference). A virtual slice's marker
+// stays: append and variadic binding expand it lazily, and every other
+// callee fails on it rather than answering wrong.
+func expandSpread(args []runtime.Value) []runtime.Value {
+	n := len(args)
+	if n == 0 {
+		return args
+	}
+	sp, ok := args[n-1].(*runtime.Spread)
+	if !ok || sp.S.Virtual() {
+		return args
+	}
+	out := make([]runtime.Value, 0, n-1+len(sp.S.Elems))
+	out = append(out, args[:n-1]...)
+	return append(out, sp.S.Elems...)
+}
 
 func firstArg(args []runtime.Value) runtime.Value {
 	if len(args) == 0 {
@@ -11732,14 +11756,12 @@ func (v *VM) popArgs(f *frame, argc int, mode int, pos token.Pos) ([]runtime.Val
 			f.trap("cannot use %T as spread argument", last)
 		}
 		declared = s.Typ
-		if s.Virtual() {
-			// a virtual slice can't expand into one argument per
-			// element — the logical count rides to the callee as a
-			// marker that append and variadic binding expand lazily.
-			args = append(args[:argc-1], &runtime.Spread{S: s})
-		} else {
-			args = append(args[:argc-1], s.Elems...)
-		}
+		// the slice rides to the callee whole: a script variadic
+		// parameter binds to it directly (Go passes the slice itself,
+		// so element writes and in-capacity appends reach the
+		// caller), and callees without a bytecode frame expand it
+		// through expandSpread.
+		args[argc-1] = &runtime.Spread{S: s}
 		spreadTd := v.elemTypedef(f, declared)
 		if spreadTd == nil && namedTyp != nil {
 			spreadTd = v.elemTypedef(f, namedTyp)
