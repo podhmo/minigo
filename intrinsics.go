@@ -4103,7 +4103,7 @@ func scriptElems(v any) []runtime.Value {
 	return nil
 }
 
-// lessScript orders int64/float64/string (heterogeneous pairs rank by kind:
+// lessScript orders int64/float64/string/bool (heterogeneous pairs rank by kind:
 // numbers < strings < others, comparing numerically across int64/float64).
 func lessScript(a, b runtime.Value) bool {
 	a = orderScalar(a)
@@ -4114,6 +4114,13 @@ func lessScript(a, b runtime.Value) bool {
 		// NaN orders before all other values, like cmp.Compare —
 		// slices.Sort/IsSorted/Search share this ordering.
 		return an < bn || (math.IsNaN(an) && !math.IsNaN(bn))
+	}
+	if ab, ok := a.(bool); ok {
+		if bb, ok := b.(bool); ok {
+			// false sorts before true, like fmtsort — never by a
+			// named bool's String text.
+			return !ab && bb
+		}
 	}
 	if as, ok := a.(string); ok {
 		if bs, ok := b.(string); ok {

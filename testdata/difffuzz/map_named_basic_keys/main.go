@@ -45,6 +45,17 @@ func (b B) String() string {
 	return "no"
 }
 
+// BR's String text sorts the other way round: fmt still orders false
+// before true.
+type BR bool
+
+func (b BR) String() string {
+	if b {
+		return "a"
+	}
+	return "z"
+}
+
 type M time.Month
 
 type P int
@@ -87,6 +98,7 @@ func main() {
 	fmt.Printf("%d %x %s\n", map[K]int{3: 3}, map[K2]int{255: 1}, map[S]string{"q": "r"})
 	fmt.Println(map[S]int{"b": 1, "a": 2}, map[F]int{1.5: 1}, map[B]int{true: 1, false: 0})
 	fmt.Println(map[M]int{3: 1, 1: 2})
+	fmt.Println(map[BR]int{true: 1, false: 2}, map[any]int{BR(true): 1, BR(false): 2})
 	fmt.Println(map[time.Weekday]string{time.Monday: "gym", time.Friday: "pizza"})
 	fmt.Println(map[fs.FileMode]bool{fs.ModeDir | 0o755: true, 0o644: false})
 	fmt.Println(map[slog.Level]string{slog.LevelDebug: "d", slog.LevelError: "e"})

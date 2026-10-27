@@ -4,6 +4,7 @@ map[k:1]|map[kk:2]|map[main.K2]int{1:1}|map[main.S]int{"a":1}
 map[3:3] map[ff:1] map[q:r]
 map[a:2 b:1] map[1.5:1] map[no:0 yes:1]
 map[1:2 3:1]
+map[z:2 a:1] map[z:2 a:1]
 map[Monday:gym Friday:pizza]
 map[-rw-r--r--:false drwxr-xr-x:true]
 map[DEBUG:d ERROR:e]
