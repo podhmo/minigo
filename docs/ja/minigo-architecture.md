@@ -142,6 +142,7 @@ minigo run ./app --entry F
 
 - `go`/`select`/チャネルは単一スレッド近似（同期実行、無限バッファ、ブロックは trap）。真の goroutine 並行はスコープ外。
 - スクリプト→ホストの marshal は値コピー（`*Struct` 等を直接書き換える intrinsic は自前で書く）。
+- ホストの `any` 引数（text/template の `Execute` など）にはスクリプトで宣言した型が渡らない（reflect では型を作れない）。基本型・束縛済みホスト型とそれらのスライス/配列/マップは Go の型のまま渡るが、`type N int` は `int`、スクリプト構造体はフィールド/メソッドの map になる。詳細は README の "Currently unsupported" を参照。
 - 名前解決は実行時 — 綴りミスのグローバルは実行時 trap（位置情報つき）。
 
 ## テストと開発

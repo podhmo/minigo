@@ -4842,12 +4842,27 @@ func deepHost(v runtime.Value, vc runtime.VMCaller, h *hostMarshal) runtime.Valu
 				return hv
 			}
 		}
+		// a sized basic (int8, float32, rune) or a script type defined
+		// over one (`type N int8`) crosses at that basic Go type — the
+		// payload alone is the widened int64/float64 the VM computes in.
+		// A script type's own name has no host equivalent.
+		if rt := hostBasicTypes[runtime.BasicNameOf(x.Typ)]; rt != nil && x.Typ.HostNew == nil {
+			if rv, ok := convertBasic(deepHost(x.V, vc, h), rt); ok {
+				return rv.Interface()
+			}
+		}
 		return deepHost(x.V, vc, h)
+	case int64:
+		// a bare int64 is a script `int` (sized ints carry a tag)
+		return int(x)
 	case *runtime.GoValue:
 		return x.V
 	case *runtime.Struct:
 		return structDataHost(x, x, vc, h)
 	case *runtime.Slice, *runtime.Map:
+		if out, ok := h.typedContainer(v, vc); ok {
+			return out
+		}
 		out, _ := h.walk.Container(v, func(e runtime.Value) any {
 			return deepHost(e, vc, h)
 		}, runtime.UnwrapKey)
@@ -4871,6 +4886,249 @@ var (
 	poolType = reflect.TypeFor[sync.Pool]()
 	anyType  = reflect.TypeFor[any]()
 )
+
+// hostBasicTypes maps the predeclared basic type names to their Go types.
+var hostBasicTypes = map[string]reflect.Type{
+	"bool": reflect.TypeFor[bool](), "string": reflect.TypeFor[string](),
+	"int": reflect.TypeFor[int](), "int8": reflect.TypeFor[int8](), "int16": reflect.TypeFor[int16](),
+	"int32": reflect.TypeFor[int32](), "int64": reflect.TypeFor[int64](), "rune": reflect.TypeFor[rune](),
+	"uint": reflect.TypeFor[uint](), "uint8": reflect.TypeFor[uint8](), "uint16": reflect.TypeFor[uint16](),
+	"uint32": reflect.TypeFor[uint32](), "uint64": reflect.TypeFor[uint64](), "byte": reflect.TypeFor[byte](),
+	"uintptr": reflect.TypeFor[uintptr](), "float32": reflect.TypeFor[float32](), "float64": reflect.TypeFor[float64](),
+	"complex64": reflect.TypeFor[complex64](), "complex128": reflect.TypeFor[complex128](),
+}
+
+// basicClass groups reflect kinds whose values convert into each other
+// without changing meaning: the VM computes every integer in int64 and
+// every float in float64, so only the width (or signedness) differs.
+func basicClass(k reflect.Kind) int {
+	switch {
+	case k >= reflect.Int && k <= reflect.Uintptr:
+		return 1
+	case k == reflect.Float32 || k == reflect.Float64:
+		return 2
+	case k == reflect.Complex64 || k == reflect.Complex128:
+		return 3
+	case k == reflect.String:
+		return 4
+	case k == reflect.Bool:
+		return 5
+	}
+	return 0
+}
+
+// convertBasic converts hv, a marshaled scalar, to the basic or host
+// scalar type rt when both sit in the same basic class; ok is false for
+// anything else.
+func convertBasic(hv any, rt reflect.Type) (reflect.Value, bool) {
+	rv := reflect.ValueOf(hv)
+	if !rv.IsValid() {
+		return reflect.Value{}, false
+	}
+	if rv.Type() == rt {
+		return rv, true
+	}
+	if c := basicClass(rv.Kind()); c != 0 && c == basicClass(rt.Kind()) {
+		return rv.Convert(rt), true
+	}
+	return reflect.Value{}, false
+}
+
+// hostShapeOf returns the Go type a script value of type td can cross a
+// host `any` parameter as: a basic type (or a script type defined over
+// one), a bound host type, the empty interface, and slices, arrays and
+// maps built from those. nil when some part has no host equivalent — a
+// script struct or a type with methods only the script knows — and the
+// value then marshals through the generic []any / map[any]any shape.
+func hostShapeOf(v *VM, td *runtime.TypeDef, depth int) reflect.Type {
+	if td == nil || depth > 8 {
+		return nil
+	}
+	if rt := hostTypOf(td); rt != nil {
+		return rt
+	}
+	if rt := hostBasicTypes[runtime.BasicNameOf(td)]; rt != nil {
+		return rt
+	}
+	x := td.Anon
+	if x == nil && td.Spec != nil {
+		x = td.Spec.Type
+	}
+	switch t := x.(type) {
+	case *ast.InterfaceType:
+		if t.Methods == nil || len(t.Methods.List) == 0 {
+			return anyType
+		}
+		return nil
+	case *ast.Ident:
+		if t.Name == "any" && td.Spec == nil {
+			return anyType
+		}
+	}
+	if td.Name == "any" && td.Spec == nil {
+		return anyType
+	}
+	if v == nil || v.H.ElemOf == nil {
+		return nil
+	}
+	switch td.Kind {
+	case runtime.KindSlice:
+		at, ok := x.(*ast.ArrayType)
+		if !ok {
+			return nil
+		}
+		et, err := v.H.ElemOf(td)
+		if err != nil {
+			return nil
+		}
+		ert := hostShapeOf(v, et, depth+1)
+		if ert == nil {
+			return nil
+		}
+		if at.Len == nil {
+			return reflect.SliceOf(ert)
+		}
+		lit, ok := at.Len.(*ast.BasicLit)
+		if !ok || lit.Kind != token.INT {
+			return nil
+		}
+		n, err := strconv.ParseInt(lit.Value, 0, 64)
+		if err != nil || n < 0 {
+			return nil
+		}
+		return reflect.ArrayOf(int(n), ert)
+	case runtime.KindMap:
+		et, err := v.H.ElemOf(td)
+		if err != nil {
+			return nil
+		}
+		ert := hostShapeOf(v, et, depth+1)
+		krt := hostShapeOf(v, v.mapKeyTypedef(nil, td), depth+1)
+		if ert == nil || krt == nil || !krt.Comparable() {
+			return nil
+		}
+		return reflect.MapOf(krt, ert)
+	}
+	return nil
+}
+
+// typedContainer marshals a script slice, array or map whose type has a
+// host shape ([hostShapeOf]) into a real Go value of that type —
+// []int, [2]string, map[string]int — so the callee sees the same type gc
+// would pass. ok is false when there is no shape or an element does not
+// fit it; the caller then falls back to the generic []any / map[any]any.
+func (h *hostMarshal) typedContainer(v runtime.Value, vc runtime.VMCaller) (any, bool) {
+	vm := vmOf(vc)
+	var td *runtime.TypeDef
+	switch x := v.(type) {
+	case *runtime.Slice:
+		if x.Virtual() {
+			return nil, false
+		}
+		td = x.Typ
+	case *runtime.Map:
+		td = x.Typ
+	}
+	rt := hostShapeOf(vm, td, 0)
+	if rt == nil {
+		return nil, false
+	}
+	set := func(dst reflect.Value, e runtime.Value) bool {
+		// raw script scalars store straight into a basic slot — no
+		// boxing per element on the common []int / []string path.
+		switch ev := e.(type) {
+		case int64:
+			switch basicKind := dst.Kind(); {
+			case basicKind >= reflect.Int && basicKind <= reflect.Int64:
+				dst.SetInt(ev)
+				return true
+			case basicKind >= reflect.Uint && basicKind <= reflect.Uintptr:
+				dst.SetUint(uint64(ev))
+				return true
+			}
+		case float64:
+			if k := dst.Kind(); k == reflect.Float32 || k == reflect.Float64 {
+				dst.SetFloat(ev)
+				return true
+			}
+		case string:
+			if dst.Kind() == reflect.String {
+				dst.SetString(ev)
+				return true
+			}
+		case bool:
+			if dst.Kind() == reflect.Bool {
+				dst.SetBool(ev)
+				return true
+			}
+		}
+		hv := deepHost(e, vc, h)
+		if dst.Kind() == reflect.Interface {
+			if hv != nil {
+				dst.Set(reflect.ValueOf(hv))
+			}
+			return true
+		}
+		cv, ok := convertBasic(hv, dst.Type())
+		if !ok {
+			rv := reflect.ValueOf(hv)
+			if !rv.IsValid() || !rv.Type().AssignableTo(dst.Type()) {
+				return false
+			}
+			cv = rv
+		}
+		dst.Set(cv)
+		return true
+	}
+	switch x := v.(type) {
+	case *runtime.Slice:
+		var out reflect.Value
+		switch rt.Kind() {
+		case reflect.Slice:
+			out = reflect.MakeSlice(rt, len(x.Elems), len(x.Elems))
+			if rt.Elem().Kind() == reflect.Interface {
+				// only an `any` element can lead back to this slice
+				h.walk.Register(x, out.Interface())
+			}
+		case reflect.Array:
+			if rt.Len() != len(x.Elems) {
+				return nil, false
+			}
+			out = reflect.New(rt).Elem()
+		default:
+			return nil, false
+		}
+		for i, e := range x.Elems {
+			if !set(out.Index(i), e) {
+				h.walk.Forget(x)
+				return nil, false
+			}
+		}
+		return out.Interface(), true
+	case *runtime.Map:
+		if rt.Kind() != reflect.Map {
+			return nil, false
+		}
+		out := reflect.MakeMapWithSize(rt, x.Len())
+		if rt.Elem().Kind() == reflect.Interface {
+			h.walk.Register(x, out.Interface())
+		}
+		kv := reflect.New(rt.Key()).Elem()
+		ev := reflect.New(rt.Elem()).Elem()
+		for i := 0; i < x.Len(); i++ {
+			k, e := x.At(i)
+			kv.SetZero()
+			ev.SetZero()
+			if !set(kv, k) || !set(ev, e) {
+				h.walk.Forget(x)
+				return nil, false
+			}
+			out.SetMapIndex(kv, ev)
+		}
+		return out.Interface(), true
+	}
+	return nil, false
+}
 
 // opaqueContainers are host container types whose `any` method args are
 // pure storage: the callee never reflects over the value, it hands it
