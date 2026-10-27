@@ -57,7 +57,34 @@ func zero[E any](xs ...E) {
 	xs[0] = z
 }
 
+type V struct{}
+
+func (V) m(a int, xs ...int) { xs[0] = a }
+
+type W struct{ V }
+
+type Mer interface{ m(a int, xs ...int) }
+
+func methodExprs() {
+	xs := []int{1, 2}
+	V.m(V{}, 3, xs...)
+	fmt.Println(xs)
+	(*V).m(&V{}, 4, xs...)
+	fmt.Println(xs)
+	W.m(W{}, 5, xs...)
+	fmt.Println(xs)
+	(*W).m(&W{}, 6, xs...)
+	fmt.Println(xs)
+	Mer.m(V{}, 7, xs...)
+	fmt.Println(xs)
+	func() {
+		defer (*V).m(&V{}, 8, xs...)
+	}()
+	fmt.Println(xs)
+}
+
 func main() {
+	methodExprs()
 	c := func(ys ...int) { ys[1] = 3 }
 	cs := []int{1, 2}
 	c(cs...)

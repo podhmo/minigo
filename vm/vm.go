@@ -1365,7 +1365,9 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 	for {
 		switch c := callee.(type) {
 		case *runtime.BuiltinFunc:
-			args = expandSpread(args)
+			if !c.Forwards {
+				args = expandSpread(args)
+			}
 			defer func() {
 				r := recover()
 				if r == nil {
@@ -1706,8 +1708,21 @@ func (v *VM) prepFrameSeen(callee runtime.Value, args []runtime.Value, statics [
 					// A virtual spread stays virtual: every element is
 					// the type's single zero-size value either way.
 					if len(args) == i+1 {
+						// sharing the *Slice is safe because slice
+						// headers are never mutated in place: a
+						// callee's `xs = append(xs, …)` or `xs =
+						// xs[1:]` stores a fresh header in its own
+						// cell, while element writes reach the
+						// shared backing array as in Go.
 						rest = sp.S
 					} else if !sp.S.Virtual() {
+						// Go rejects extra variadic args in front of
+						// `xs...`, so valid Go never reaches this arm;
+						// minigo accepts `sum(5, xs...)` as an
+						// extension (testdata/features SpreadTail),
+						// which concatenates into a fresh pack — no
+						// aliasing, since no single caller slice
+						// matches the parameter.
 						pack := &runtime.Slice{Elems: append(append([]runtime.Value{}, args[i:len(args)-1]...), sp.S.Elems...)}
 						fr.vpack = pack
 						rest = pack
@@ -2167,7 +2182,11 @@ func (v *VM) invokeDeferred(d deferredCall) {
 		case *runtime.BuiltinFunc:
 			v.pushDeferredSentinel(c.Name)
 			defer v.framesPop()
-			if _, err := c.Fn(v, expandSpread(d.args)); err != nil {
+			args := d.args
+			if !c.Forwards {
+				args = expandSpread(args)
+			}
+			if _, err := c.Fn(v, args); err != nil {
 				panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
 			}
 			return
@@ -5445,7 +5464,8 @@ func adaptFuncOut(x runtime.Value, t reflect.Type, vc runtime.VMCaller, opaque b
 // selector lowering.
 func (v *VM) methodExprThunk(td *runtime.TypeDef, name string) runtime.Value {
 	return &runtime.BuiltinFunc{
-		Name: tdName(td) + "." + name,
+		Name:     tdName(td) + "." + name,
+		Forwards: true,
 		Fn: func(vm runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) == 0 {
 				return nil, fmt.Errorf("method expression %s.%s needs a receiver argument", tdName(td), name)
@@ -5473,7 +5493,8 @@ func (v *VM) methodExprThunk(td *runtime.TypeDef, name string) runtime.Value {
 // pointee, `(*S).val(&s)` calling val with s.
 func (v *VM) methodExprDeref(td *runtime.TypeDef, m *runtime.Function) runtime.Value {
 	return &runtime.BuiltinFunc{
-		Name: tdName(td) + "." + m.Name,
+		Name:     tdName(td) + "." + m.Name,
+		Forwards: true,
 		Fn: func(vm runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) == 0 {
 				return nil, fmt.Errorf("method expression %s.%s needs a receiver argument", tdName(td), m.Name)
