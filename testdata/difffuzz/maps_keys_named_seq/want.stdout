@@ -1,0 +1,9 @@
+[]time.Month [January March]
+time.Month March
+[]main.M [-2 4]
+main.C z
+[y z]
+[]fs.FileMode [---------- d---------]
+map[main.C]int map[y:2 z:1]
+x 1
+[]main.M
