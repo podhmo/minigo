@@ -3587,6 +3587,27 @@ func (c *compiler) opGate(x, y ast.Expr, pos token.Pos, inSwitch bool) bool {
 		c.trapOpGate(x, y, pos, inSwitch, xName, yName)
 		return true
 	}
+	// an untyped constant shifted by a non-constant count takes the
+	// other operand's type, which must then be an integer type: `f +
+	// 1<<n` with a float64 f is gc's "shifted operand 1 (type float64)
+	// must be integer".
+	for _, side := range [2]struct {
+		e     ast.Expr
+		t     opTyp
+		other opTyp
+	}{{x, xt, yt}, {y, yt, xt}} {
+		if !side.t.untyped || side.other.te == nil || side.other.untyped || side.other.iface {
+			continue
+		}
+		if !c.nonIntBasicTyp(side.other.te) {
+			continue
+		}
+		if lhs := c.nonConstShiftOperand(side.e, 8); lhs != nil {
+			name := c.exprSpell(side.other.te)
+			c.trap(pos, "invalid operation: shifted operand %s (type %s) must be integer", c.exprSpell(lhs), name)
+			return true
+		}
+	}
 	if xt.te == nil || yt.te == nil || xt.untyped || yt.untyped || xt.iface || yt.iface {
 		return false
 	}
@@ -3600,6 +3621,64 @@ func (c *compiler) opGate(x, y ast.Expr, pos token.Pos, inSwitch bool) bool {
 	}
 	c.trapOpGate(x, y, pos, inSwitch, xi.name, yi.name)
 	return true
+}
+
+// nonIntBasicTyp reports whether a type expression's underlying type
+// is a float, complex or string basic type — one a non-constant
+// shift's untyped left operand cannot adopt.
+func (c *compiler) nonIntBasicTyp(te ast.Expr) bool {
+	id, ok := c.unfoldTypExpr(te, 8).(*ast.Ident)
+	if !ok {
+		return false
+	}
+	if id == ast.Unparen(te) && c.declared(id.Name) && !predeclaredTypeNames[id.Name] {
+		return false
+	}
+	switch id.Name {
+	case "float32", "float64", "complex64", "complex128", "string":
+		return true
+	}
+	return false
+}
+
+// nonConstShiftOperand finds, inside an untyped operand, a shift whose
+// left operand is an untyped constant and whose count is not constant
+// — `1<<n` in `f + 1<<n*2` — and returns that left operand; nil when
+// there is none. It descends only through the arithmetic that keeps
+// the expression untyped (parens, unary + - ^, binary non-comparison
+// ops), the places the outer operand's type flows into.
+func (c *compiler) nonConstShiftOperand(e ast.Expr, depth int) ast.Expr {
+	if depth <= 0 {
+		return nil
+	}
+	switch x := ast.Unparen(e).(type) {
+	case *ast.UnaryExpr:
+		switch x.Op {
+		case token.ADD, token.SUB, token.XOR:
+			return c.nonConstShiftOperand(x.X, depth-1)
+		}
+	case *ast.BinaryExpr:
+		switch x.Op {
+		case token.SHL, token.SHR:
+			if c.staticOpTyp(x.X).untyped && !c.isConstExpr(x.X) {
+				return c.nonConstShiftOperand(x.X, depth-1)
+			}
+			if c.staticOpTyp(x.X).untyped && !c.isConstExpr(x.Y) {
+				return x.X
+			}
+		case token.ADD, token.SUB, token.MUL, token.QUO, token.REM,
+			token.AND, token.OR, token.XOR, token.AND_NOT:
+			if c.staticOpTyp(x.X).untyped {
+				if l := c.nonConstShiftOperand(x.X, depth-1); l != nil {
+					return l
+				}
+			}
+			if c.staticOpTyp(x.Y).untyped {
+				return c.nonConstShiftOperand(x.Y, depth-1)
+			}
+		}
+	}
+	return nil
 }
 
 // trapOpGate emits the operand-gate trap in gc's wording for the

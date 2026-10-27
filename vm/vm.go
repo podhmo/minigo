@@ -7886,6 +7886,15 @@ func (v *VM) materializeConstErr(u *runtime.UConst, td *runtime.TypeDef) (runtim
 		return materializeDefault(u)
 	}
 	name := basicNameOf(utd)
+	if u.Wrap {
+		switch name {
+		case "float32", "float64", "complex64", "complex128", "string":
+			// a non-constant shift's untyped left operand takes this
+			// type, and a shift needs an integer operand: `var f
+			// float64 = 1 << n` is a gc compile error.
+			return nil, fmt.Errorf("invalid operation: shifted operand (type %s) must be integer", tdName(td))
+		}
+	}
 	var x runtime.Value
 	switch name {
 	case "int", "int8", "int16", "int32", "int64", "rune",
