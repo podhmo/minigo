@@ -1,0 +1,25 @@
+true
+0 0
+true
+false
+net.IP <nil>
+false 16 16 1.2.3.4 false
+<nil> true
+true 0
+true <nil>
+false false false true
+true true
+<nil>|<nil>|net.IP
+0
+true false
+4
+true 0 true
+true
+true
+true
+net.IP(nil) <nil> <nil>
+true true
+false true
+false 1.2.3.4
+{<nil> <nil>}
+[<nil> <nil>] map[a:<nil>] [<nil>]
