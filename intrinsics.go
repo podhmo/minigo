@@ -1526,34 +1526,46 @@ func (e *Engine) installStdlib() {
 		"Lstat":    h.fn1("os.Lstat", func(a []any) (any, error) { return fsOp2(e, "os.Lstat", a, os.Lstat) }),
 		"ReadFile": h.fn1("os.ReadFile", func(a []any) (any, error) { return fsOp2(e, "os.ReadFile", a, os.ReadFile) }),
 		"WriteFile": h.fn3("os.WriteFile", func(a []any) (any, error) {
-			p, err := e.fsPath(str(a[0]))
+			sp := str(a[0])
+			p, err := e.fsPath(sp)
 			if err != nil {
 				return nil, err
 			}
-			return errVal(os.WriteFile(p, byteSlice(a[1]), fs.FileMode(intOf(a[2])))), nil
+			return errVal(scriptPathErr(os.WriteFile(p, byteSlice(a[1]), fs.FileMode(intOf(a[2]))), sp, p)), nil
 		}),
 		"Mkdir": h.fn2("os.Mkdir", func(a []any) (any, error) {
-			p, err := e.fsPath(str(a[0]))
+			sp := str(a[0])
+			p, err := e.fsPath(sp)
 			if err != nil {
 				return nil, err
 			}
-			return errVal(os.Mkdir(p, fs.FileMode(intOf(a[1])))), nil
+			return errVal(scriptPathErr(os.Mkdir(p, fs.FileMode(intOf(a[1]))), sp, p)), nil
 		}),
 		"MkdirAll": h.fn2("os.MkdirAll", func(a []any) (any, error) {
-			p, err := e.fsPath(str(a[0]))
+			sp := str(a[0])
+			p, err := e.fsPath(sp)
 			if err != nil {
 				return nil, err
 			}
-			return errVal(os.MkdirAll(p, fs.FileMode(intOf(a[1])))), nil
+			return errVal(scriptPathErr(os.MkdirAll(p, fs.FileMode(intOf(a[1]))), sp, p)), nil
 		}),
 		"Remove":    h.fn1("os.Remove", func(a []any) (any, error) { return fsErrOp(e, "os.Remove", a, os.Remove) }),
 		"RemoveAll": h.fn1("os.RemoveAll", func(a []any) (any, error) { return fsErrOp(e, "os.RemoveAll", a, os.RemoveAll) }),
-		"Truncate": h.fn2("os.Truncate", func(a []any) (any, error) {
-			p, err := e.fsPath(str(a[0]))
+		"Chmod": h.fn2("os.Chmod", func(a []any) (any, error) {
+			sp := str(a[0])
+			p, err := e.fsPath(sp)
 			if err != nil {
 				return nil, err
 			}
-			return errVal(os.Truncate(p, int64Of(a[1]))), nil
+			return errVal(scriptPathErr(os.Chmod(p, fs.FileMode(intOf(a[1]))), sp, p)), nil
+		}),
+		"Truncate": h.fn2("os.Truncate", func(a []any) (any, error) {
+			sp := str(a[0])
+			p, err := e.fsPath(sp)
+			if err != nil {
+				return nil, err
+			}
+			return errVal(scriptPathErr(os.Truncate(p, int64Of(a[1])), sp, p)), nil
 		}),
 		"Rename": h.fn2("os.Rename", func(a []any) (any, error) {
 			old, err := e.fsPath(str(a[0]))
@@ -1564,14 +1576,22 @@ func (e *Engine) installStdlib() {
 			if err != nil {
 				return nil, err
 			}
-			return errVal(os.Rename(old, newp)), nil
+			err = os.Rename(old, newp)
+			if le, ok := err.(*os.LinkError); ok {
+				// each side maps through its own resolution.
+				le.Old = scriptPathOf(str(a[0]), old, le.Old)
+				le.New = scriptPathOf(str(a[1]), newp, le.New)
+			}
+			return errVal(err), nil
 		}),
 		"ReadDir": h.fn1("os.ReadDir", func(a []any) (any, error) {
-			p, err := e.fsPath(str(a[0]))
+			sp := str(a[0])
+			p, err := e.fsPath(sp)
 			if err != nil {
 				return nil, err
 			}
 			entries, err := os.ReadDir(p)
+			err = scriptPathErr(err, sp, p)
 			el := make([]runtime.Value, len(entries))
 			for i, en := range entries {
 				el[i] = &runtime.GoValue{V: en}
@@ -1583,16 +1603,22 @@ func (e *Engine) installStdlib() {
 		// without side effects on the embedding tool.
 		"Getwd": h.fn("os.Getwd", func(a []any) (any, error) { return retErr2(e.cwd, nil) }),
 		"Chdir": h.fn1("os.Chdir", func(a []any) (any, error) {
-			p, err := e.fsPath(str(a[0]))
+			sp := str(a[0])
+			p, err := e.fsPath(sp)
 			if err != nil {
 				return nil, err
 			}
+			// gc reports chdir(2)'s failure: op "chdir" on the path as
+			// the script spelled it.
 			st, err := os.Stat(p)
 			if err != nil {
+				if pe, ok := err.(*fs.PathError); ok {
+					return errVal(&fs.PathError{Op: "chdir", Path: sp, Err: pe.Err}), nil
+				}
 				return errVal(err), nil
 			}
 			if !st.IsDir() {
-				return errVal(fmt.Errorf("chdir %s: not a directory", p)), nil
+				return errVal(&fs.PathError{Op: "chdir", Path: sp, Err: syscall.ENOTDIR}), nil
 			}
 			e.cwd = p
 			return runtime.NIL, nil
@@ -1600,11 +1626,13 @@ func (e *Engine) installStdlib() {
 		"Open":   h.fn1("os.Open", func(a []any) (any, error) { return fsOp2(e, "os.Open", a, os.Open) }),
 		"Create": h.fn1("os.Create", func(a []any) (any, error) { return fsOp2(e, "os.Create", a, os.Create) }),
 		"OpenFile": h.fn3("os.OpenFile", func(a []any) (any, error) {
-			p, err := e.fsPath(str(a[0]))
+			sp := str(a[0])
+			p, err := e.fsPath(sp)
 			if err != nil {
 				return nil, err
 			}
-			return retErr2(os.OpenFile(p, intOf(a[1]), fs.FileMode(intOf(a[2]))))
+			f, err := os.OpenFile(p, intOf(a[1]), fs.FileMode(intOf(a[2])))
+			return retErr2(f, scriptPathErr(err, sp, p))
 		}),
 		"MkdirTemp": h.fn2("os.MkdirTemp", func(a []any) (any, error) {
 			dir, err := e.fsTempDir(str(a[0]))
@@ -1747,11 +1775,13 @@ func (e *Engine) installStdlib() {
 			return retErr2(filepath.Rel(e.cwdAbs(str(a[0])), e.cwdAbs(str(a[1]))))
 		}),
 		"EvalSymlinks": h.fn1("filepath.EvalSymlinks", func(a []any) (any, error) {
-			p, err := e.fsPath(str(a[0]))
+			sp := str(a[0])
+			p, err := e.fsPath(sp)
 			if err != nil {
 				return nil, err
 			}
-			return retErr2(filepath.EvalSymlinks(p))
+			r, err := filepath.EvalSymlinks(p)
+			return retErr2(r, scriptPathErr(err, sp, p))
 		}),
 		"Glob": h.fn1("filepath.Glob", func(a []any) (any, error) {
 			pat := str(a[0])
@@ -1798,7 +1828,7 @@ func (e *Engine) installStdlib() {
 				if d != nil {
 					dv = &runtime.GoValue{V: d}
 				}
-				return walkCallback(e, v, cb, root, p, dv, werr)
+				return walkCallback(e, v, cb, root, ap, p, dv, werr)
 			})
 			return errVal(werr), nil
 		}},
@@ -1817,7 +1847,7 @@ func (e *Engine) installStdlib() {
 				if info != nil {
 					iv = &runtime.GoValue{V: info}
 				}
-				return walkCallback(e, v, cb, root, p, iv, werr)
+				return walkCallback(e, v, cb, root, ap, p, iv, werr)
 			})
 			return errVal(werr), nil
 		}},
@@ -4536,20 +4566,108 @@ func durOf(v any) time.Duration { return time.Duration(int64Of(v)) }
 // through the virtual cwd + AllowedRoots check; the result goes back as a
 // Go-style (value, err) tuple.
 func fsOp2[T any](e *Engine, name string, a []any, op func(string) (T, error)) (any, error) {
-	p, err := e.fsPath(str(a[0]))
+	sp := str(a[0])
+	p, err := e.fsPath(sp)
 	if err != nil {
 		return nil, err
 	}
-	return retErr2(op(p))
+	v, err := op(p)
+	return retErr2(v, scriptPathErr(err, sp, p))
 }
 
 // fsErrOp is fsOp2 for error-only results.
 func fsErrOp(e *Engine, name string, a []any, op func(string) error) (any, error) {
-	p, err := e.fsPath(str(a[0]))
+	sp := str(a[0])
+	p, err := e.fsPath(sp)
 	if err != nil {
 		return nil, err
 	}
-	return errVal(op(p)), nil
+	return errVal(scriptPathErr(op(p), sp, p)), nil
+}
+
+// scriptPathOf maps a host path back to the script's spelling: ap is
+// the engine's resolved form (fsPath) of the script path sp, so ap
+// itself reads back as sp verbatim and a descendant of ap joins onto sp
+// (filepath.Join cleans, like the host's own joins from sp would).
+// Other paths pass through.
+//
+// A proper ancestor of ap (MkdirAll failing on an intermediate
+// component) is sp with as many trailing elements dropped — gc slices
+// the spelled path — provided that prefix of sp still resolves to p.
+func scriptPathOf(sp, ap, p string) string {
+	if p == ap {
+		return sp
+	}
+	if rest, ok := cutPathPrefix(p, ap); ok {
+		return filepath.Join(sp, rest)
+	}
+	if rest, ok := cutPathPrefix(ap, p); ok {
+		t := sp
+		for range strings.Split(rest, string(filepath.Separator)) {
+			t = strings.TrimRight(t, string(filepath.Separator))
+			i := strings.LastIndexByte(t, filepath.Separator)
+			if i < 0 {
+				return p
+			}
+			t = t[:i]
+			if t == "" {
+				t = string(filepath.Separator)
+			}
+		}
+		if t = strings.TrimRight(t, string(filepath.Separator)); t == "" {
+			t = string(filepath.Separator)
+		}
+		if resolveLike(sp, ap, t) == p {
+			return t
+		}
+	}
+	return p
+}
+
+// cutPathPrefix reports p's remainder below the directory dir.
+func cutPathPrefix(p, dir string) (string, bool) {
+	rest, ok := strings.CutPrefix(p, dir)
+	if !ok || rest == "" {
+		return "", false
+	}
+	if strings.HasSuffix(dir, string(filepath.Separator)) {
+		return rest, true
+	}
+	return strings.CutPrefix(rest, string(filepath.Separator))
+}
+
+// resolveLike resolves the spelled path t the way fsPath resolved sp to
+// ap — against the same base directory — or "" when the base cannot be
+// recovered from the pair.
+func resolveLike(sp, ap, t string) string {
+	if filepath.IsAbs(t) {
+		return filepath.Clean(t)
+	}
+	csp := filepath.Clean(sp)
+	if csp == "." {
+		return filepath.Join(ap, t)
+	}
+	base, ok := strings.CutSuffix(ap, string(filepath.Separator)+csp)
+	if !ok || strings.HasPrefix(csp, "..") {
+		return ""
+	}
+	return filepath.Join(base, t)
+}
+
+// scriptPathErr rewrites the path an os/filepath error reports from the
+// host form the engine resolved (absolute, under the virtual cwd) back
+// to the script's spelling — gc says `open nope: ...` for
+// os.ReadFile("nope"). The host error is fresh, so it is rewritten in
+// place and keeps its identity.
+func scriptPathErr(err error, sp, ap string) error {
+	switch x := err.(type) {
+	case *fs.PathError:
+		x.Path = scriptPathOf(sp, ap, x.Path)
+	case *os.LinkError:
+		x.Old = scriptPathOf(sp, ap, x.Old)
+		x.New = scriptPathOf(sp, ap, x.New)
+	}
+	return err
 }
 
 // fsTempDir resolves the dir argument of MkdirTemp/CreateTemp: an empty
@@ -5023,14 +5141,14 @@ func callOrPanic(v runtime.VMCaller, fn runtime.Value, args []runtime.Value) run
 // passed none), and the result goes back through hostErrOf so the host
 // walker compares fs.SkipDir/SkipAll by identity and a script error
 // keeps its identity on the way out (errVal).
-func walkCallback(e *Engine, v runtime.VMCaller, cb runtime.Value, root, p string, entry runtime.Value, werr error) error {
+func walkCallback(e *Engine, v runtime.VMCaller, cb runtime.Value, root, ap, p string, entry runtime.Value, werr error) error {
 	sp := p
 	if !filepath.IsAbs(root) {
 		if rel, rerr := filepath.Rel(e.cwd, p); rerr == nil {
 			sp = rel
 		}
 	}
-	r := callOrPanic(v, cb, []runtime.Value{sp, entry, errVal(werr)})
+	r := callOrPanic(v, cb, []runtime.Value{sp, entry, errVal(scriptPathErr(werr, root, ap))})
 	return hostErrOf(v, r)
 }
 
