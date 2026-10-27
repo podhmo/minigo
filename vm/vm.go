@@ -4317,7 +4317,21 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 			v = n.V
 			continue
 		}
-		switch v.(type) {
+		switch x := v.(type) {
+		case *runtime.UConst:
+			// a typed constant keeps its constant-domain payload under
+			// the type tag — time.Duration(5) is Named{time.Duration,
+			// UConst} — so it converts at the parameter's type the same
+			// way a bare untyped constant does above.
+			if rv, ok, err := hostConstArg(x, t); ok {
+				return rv, err
+			}
+			mv, err := materializeDefault(x)
+			if err != nil {
+				return reflect.Value{}, err
+			}
+			v = mv
+			continue
 		case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
 			holder = v // last ref wins — the deepest pointer chain link
 		}
