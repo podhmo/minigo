@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"go/ast"
 	"go/constant"
+	"go/token"
 	"os"
+	"reflect"
 	"strings"
 
 	"github.com/podhmo/minigo/compile"
@@ -520,28 +522,10 @@ func builtins(e *Engine) *runtime.Env {
 		return imag(cv), nil
 	})
 	bf("min", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-		if len(args) == 0 {
-			return nil, fmt.Errorf("min needs at least one argument")
-		}
-		m := args[0]
-		for _, a := range args[1:] {
-			if orderedLess(a, m) {
-				m = a
-			}
-		}
-		return m, nil
+		return minMax(v, "min", args, false)
 	})
 	bf("max", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-		if len(args) == 0 {
-			return nil, fmt.Errorf("max needs at least one argument")
-		}
-		m := args[0]
-		for _, a := range args[1:] {
-			if orderedLess(m, a) {
-				m = a
-			}
-		}
-		return m, nil
+		return minMax(v, "max", args, true)
 	})
 	bf("clear", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		switch m := runtime.Unwrap(args[0]).(type) {
@@ -672,11 +656,193 @@ func capOf(v runtime.Value) (runtime.Value, error) {
 	}
 }
 
+// minMax implements the builtins min and max. Go types the call like an
+// operator chain: untyped constant operands convert to the type of the
+// typed operand (`max(200, u8)` is the uint8 200, `min(m, 1)` an M),
+// a non-constant shift `1<<n` truncates at that type, and an all-
+// constant call is an untyped constant of the widest kind among its
+// operands (`min(1, 2.5)` is the float constant 1).
+func minMax(v runtime.VMCaller, name string, args []runtime.Value, isMax bool) (runtime.Value, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("%s needs at least one argument", name)
+	}
+	args, err := unifyMinMaxArgs(v, args)
+	if err != nil {
+		return nil, err
+	}
+	m := args[0]
+	for _, a := range args[1:] {
+		if isMax && orderedLess(m, a) || !isMax && orderedLess(a, m) {
+			m = a
+		}
+	}
+	if u, ok := m.(*runtime.UConst); ok && !u.Wrap {
+		m = widenConstKind(u, args)
+	}
+	return m, nil
+}
+
+// unifyMinMaxArgs converts min/max's untyped constant operands to the
+// type of the first typed operand. With no typed operand, non-constant
+// shift values (Wrap) settle at int, their default type; constants
+// stay untyped. A host named basic (fs.FileMode from a host call) keeps
+// its constants as they are — they compare by payload.
+func unifyMinMaxArgs(v runtime.VMCaller, args []runtime.Value) ([]runtime.Value, error) {
+	var typed runtime.Value
+	hasConst := false
+	for _, a := range args {
+		if _, ok := a.(*runtime.UConst); ok {
+			hasConst = true
+		} else if typed == nil {
+			typed = a
+		}
+	}
+	if !hasConst {
+		return args, nil
+	}
+	var td *runtime.TypeDef
+	switch {
+	case typed != nil:
+		if _, rt, host := runtime.HostNamedScalar(typed); host {
+			// a host named basic (fs.FileMode from os.Stat): its
+			// constants become host values of that type.
+			out := make([]runtime.Value, len(args))
+			for i, a := range args {
+				out[i] = a
+				if u, ok := a.(*runtime.UConst); ok {
+					hv, err := hostNamedConst(rt, u)
+					if err != nil {
+						return nil, err
+					}
+					out[i] = hv
+				}
+			}
+			return out, nil
+		}
+		td = v.TypeOf(typed)
+		if td == nil {
+			return args, nil
+		}
+	default:
+		td = runtime.BasicTypedef("int")
+	}
+	out := make([]runtime.Value, len(args))
+	for i, a := range args {
+		out[i] = a
+		u, ok := a.(*runtime.UConst)
+		if !ok || (typed == nil && !u.Wrap) {
+			continue
+		}
+		cv, err := v.Convert(td, u)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = cv
+	}
+	return out, nil
+}
+
+// hostNamedConst converts an untyped constant to a value of the host
+// named basic type rt (an integer, string or bool kind), truncating a
+// non-constant shift value (Wrap) to rt's width.
+func hostNamedConst(rt reflect.Type, u *runtime.UConst) (runtime.Value, error) {
+	rv := reflect.New(rt).Elem()
+	cv := u.V
+	switch rt.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		if cv.Kind() == constant.Float {
+			cv = constant.ToInt(cv)
+		}
+		if cv.Kind() != constant.Int {
+			return nil, fmt.Errorf("cannot use constant %s as %s", u.V, rt)
+		}
+		w := runtime.WrapInt64(cv)
+		if rv.CanInt() {
+			rv.SetInt(w)
+			if !u.Wrap && (rv.Int() != w || constant.Compare(cv, token.NEQ, constant.MakeInt64(w))) {
+				return nil, fmt.Errorf("constant %s overflows %s", u.V, rt)
+			}
+		} else {
+			rv.SetUint(uint64(w))
+			if !u.Wrap && (constant.Sign(cv) < 0 || rv.Uint() != uint64(w)) {
+				return nil, fmt.Errorf("constant %s overflows %s", u.V, rt)
+			}
+		}
+	case reflect.String:
+		if cv.Kind() != constant.String {
+			return nil, fmt.Errorf("cannot use constant %s as %s", u.V, rt)
+		}
+		rv.SetString(constant.StringVal(cv))
+	case reflect.Bool:
+		if cv.Kind() != constant.Bool {
+			return nil, fmt.Errorf("cannot use constant %s as %s", u.V, rt)
+		}
+		rv.SetBool(constant.BoolVal(cv))
+	default:
+		return u, nil
+	}
+	return &runtime.GoValue{V: rv.Interface()}, nil
+}
+
+// widenConstKind gives an all-constant min/max result the widest kind
+// among the operands — Go's untyped constant expression rule: `min(1,
+// 2.5)` is the float constant 1, `max(1, 'a')` a rune constant.
+func widenConstKind(u *runtime.UConst, args []runtime.Value) *runtime.UConst {
+	kind, isRune := u.V.Kind(), u.Rune
+	for _, a := range args {
+		au, ok := a.(*runtime.UConst)
+		if !ok {
+			return u
+		}
+		if k := au.V.Kind(); k > kind && k <= constant.Complex {
+			kind = k
+		}
+		isRune = isRune || au.Rune
+	}
+	switch {
+	case kind == u.V.Kind() && isRune == u.Rune:
+		return u
+	case kind == constant.Float:
+		return &runtime.UConst{V: constant.ToFloat(u.V)}
+	case kind == constant.Complex:
+		return &runtime.UConst{V: constant.ToComplex(u.V)}
+	case kind == constant.Int:
+		return &runtime.UConst{V: u.V, Rune: isRune}
+	}
+	return u
+}
+
+// hostNamedPayloads reads two min/max operands of the same host named
+// basic type — a host fs.FileMode from os.Stat and the source io/fs's
+// fs.ModeSymlink, or two host values — as their underlying payloads.
+// ok is false when either side is not such a value or the types differ.
+func hostNamedPayloads(a, b runtime.Value) (runtime.Value, runtime.Value, bool) {
+	pa, ra, aHost := runtime.HostNamedScalar(a)
+	pb, rb, bHost := runtime.HostNamedScalar(b)
+	switch {
+	case aHost && bHost:
+		return pa, pb, ra == rb
+	case aHost:
+		if n, ok := b.(*runtime.Named); ok && runtime.HostNamedIs(ra, n.Typ) {
+			return pa, n.V, true
+		}
+	case bHost:
+		if n, ok := a.(*runtime.Named); ok && runtime.HostNamedIs(rb, n.Typ) {
+			return n.V, pb, true
+		}
+	}
+	return nil, nil, false
+}
+
 // orderedLess implements the builtin min/max comparison over ordered
 // values: ints, floats and strings compare naturally; a float NaN is
 // never less (so a NaN argument wins the fold, matching Go's
 // "NaN propagates" rule). Named values compare by their underlying.
 func orderedLess(a, b runtime.Value) bool {
+	if pa, pb, ok := hostNamedPayloads(a, b); ok {
+		a, b = pa, pb
+	}
 	a = runtime.Unwrap(a)
 	b = runtime.Unwrap(b)
 	// const operands compare by their default-type value — min/max
