@@ -179,14 +179,39 @@ func (e *Engine) installStdlib() {
 			}
 			a, flat := fmtArgs(v, args)
 			spec := str(a[0])
+			// the %w operand indexes come from the spec as written —
+			// they index the raw args; rewriteTypeVerbs renumbers the
+			// directives and rebuilds the operand list for printing.
+			_, wrapPos := rewriteWrapVerbs(spec)
 			spec, tail := rewriteTypeVerbs(spec, a, flat, 0, v)
 			a = append(a[:1], tail...)
-			spec, wrapPos := rewriteWrapVerbs(spec)
+			spec, _ = rewriteWrapVerbs(spec)
 			msg := fmt.Sprintf(spec, a[1:]...)
-			if wrapPos >= 0 && wrapPos < len(args)-1 {
-				return errVal(&wrapError{msg: msg, err: hostErrOf(v, args[wrapPos+1])}), nil
+			// like gc: the shape follows the raw count of %w verbs that
+			// had an operand — one makes a wrapError (Unwrap() error),
+			// several a wrapErrors (Unwrap() []error) over the distinct
+			// operands in argument order; a non-error operand wraps
+			// nothing.
+			var pos []int
+			for _, p := range wrapPos {
+				if p < len(args)-1 {
+					pos = append(pos, p)
+				}
 			}
-			return errVal(errors.New(msg)), nil
+			switch len(pos) {
+			case 0:
+				return errVal(errors.New(msg)), nil
+			case 1:
+				return errVal(&wrapError{msg: msg, err: wrapOperand(v, args[pos[0]+1])}), nil
+			}
+			slices.Sort(pos)
+			var errs []error
+			for _, p := range slices.Compact(pos) {
+				if err := wrapOperand(v, args[p+1]); err != nil {
+					errs = append(errs, err)
+				}
+			}
+			return errVal(&wrapErrors{msg: msg, errs: errs}), nil
 		}},
 	})
 	e.Bind("errors", map[string]runtime.Value{
@@ -7512,6 +7537,36 @@ type wrapError struct {
 func (e *wrapError) Error() string { return e.msg }
 func (e *wrapError) Unwrap() error { return e.err }
 
+// wrapOperand is gc's `a[n].(error)` on a %w operand: a boxed host
+// error, a script value with an Error method, or a boxed typed nil
+// (a non-nil error) converts through hostErrOf; anything else — an
+// int, a string, a nil interface — wraps nothing.
+func wrapOperand(c runtime.VMCaller, v runtime.Value) error {
+	switch x := runtime.Unwrap(v).(type) {
+	case *runtime.GoValue:
+		if _, ok := x.V.(error); !ok {
+			return nil
+		}
+		return hostErrOf(c, v)
+	case *runtime.IfaceNil:
+		return hostErrOf(c, v)
+	}
+	if _, ok := runtime.IfaceMember(c, v, "Error"); ok {
+		return hostErrOf(c, v)
+	}
+	return nil
+}
+
+// wrapErrors is fmt.Errorf's product for several %w verbs: message plus
+// every cause, reachable through Unwrap() []error.
+type wrapErrors struct {
+	msg  string
+	errs []error
+}
+
+func (e *wrapErrors) Error() string   { return e.msg }
+func (e *wrapErrors) Unwrap() []error { return e.errs }
+
 // hostErrOf converts a script error value to a host error: boxed Go
 // errors pass through, script values get a scriptError that calls back
 // into the VM for Error().
@@ -7861,16 +7916,38 @@ func sameErrTyp(v runtime.VMCaller, st, want *runtime.TypeDef) bool {
 	return sp == wp
 }
 
-// rewriteWrapVerbs rewrites %w verbs to %v and reports the LAST %w's
-// argument position (-1 when absent); Go keeps the last %w's arg as the
-// wrapError's cause.
-func rewriteWrapVerbs(spec string) (string, int) {
-	if !strings.Contains(spec, "%w") {
-		return spec, -1
+// rewriteWrapVerbs rewrites %w verbs to %v (flags, width and explicit
+// [n] indexes kept) and reports the operand index of every %w, in verb
+// order, the way gc's doPrintf records p.wrappedErrs: explicit indexes
+// move the cursor, `*` width/precision consume an operand, and the list
+// may repeat an index (`%[1]w %[1]w`). Indexes past the operands are
+// reported too; the caller drops them (gc prints %!w(MISSING) and
+// records nothing).
+func rewriteWrapVerbs(spec string) (string, []int) {
+	if !strings.Contains(spec, "w") {
+		return spec, nil
 	}
 	var sb strings.Builder
-	wrapPos := -1
-	seq := 0
+	var wrapPos []int
+	argNum := 0
+	// index parses an explicit `[n]` at spec[i:], moving the cursor.
+	index := func(i int) int {
+		if i < len(spec) && spec[i] == '[' {
+			if k := strings.IndexByte(spec[i:], ']'); k > 1 {
+				if n, err := strconv.Atoi(spec[i+1 : i+k]); err == nil && n >= 1 {
+					argNum = n - 1
+					return i + k + 1
+				}
+			}
+		}
+		return i
+	}
+	digits := func(i int) int {
+		for i < len(spec) && spec[i] >= '0' && spec[i] <= '9' {
+			i++
+		}
+		return i
+	}
 	for i := 0; i < len(spec); {
 		j := strings.IndexByte(spec[i:], '%')
 		if j < 0 {
@@ -7881,9 +7958,26 @@ func rewriteWrapVerbs(spec string) (string, int) {
 		i += j
 		pct := i
 		i++
-		for i < len(spec) && (spec[i] == '#' || spec[i] == '+' || spec[i] == '-' || spec[i] == ' ' || spec[i] == '.' || (spec[i] >= '0' && spec[i] <= '9') || spec[i] == '[' || spec[i] == ']' || spec[i] == '*') {
+		for i < len(spec) && strings.IndexByte("#+- 0", spec[i]) >= 0 {
 			i++
 		}
+		i = index(i)
+		if i < len(spec) && spec[i] == '*' {
+			argNum++
+			i++
+		} else {
+			i = digits(i)
+		}
+		if i < len(spec) && spec[i] == '.' {
+			i = index(i + 1)
+			if i < len(spec) && spec[i] == '*' {
+				argNum++
+				i++
+			} else {
+				i = digits(i)
+			}
+		}
+		i = index(i)
 		if i >= len(spec) {
 			sb.WriteString(spec[pct:])
 			break
@@ -7892,14 +7986,15 @@ func rewriteWrapVerbs(spec string) (string, int) {
 		i++
 		switch verb {
 		case '%':
-			sb.WriteString("%%")
+			sb.WriteString(spec[pct:i])
 		case 'w':
-			sb.WriteString("%v")
-			wrapPos = seq
-			seq++
+			sb.WriteString(spec[pct : i-1])
+			sb.WriteByte('v')
+			wrapPos = append(wrapPos, argNum)
+			argNum++
 		default:
 			sb.WriteString(spec[pct:i])
-			seq++
+			argNum++
 		}
 	}
 	return sb.String(), wrapPos
