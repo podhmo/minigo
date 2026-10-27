@@ -485,6 +485,12 @@ func (e *Env) valueOfValue(vc runtime.VMCaller, v runtime.Value) *RValue {
 		}
 		return &RValue{e: e, vc: vc, rv: reflect.ValueOf(x.V)}
 	}
+	if _, _, ok := runtime.HostNamedPayload(v); ok {
+		// a raw host named scalar a host call or bound constant produced
+		// (time.Second, 2*time.Second) has no script typedef — reflect
+		// over the host value itself, as for a boxed one.
+		return &RValue{e: e, vc: vc, rv: reflect.ValueOf(v)}
+	}
 	// reflect.ValueOf copies its argument into the interface — a script
 	// struct must be snapshotted, or later script writes leak into the
 	// stored value (slices/maps/pointers keep sharing, like Go).
@@ -1016,6 +1022,18 @@ func intOf(v runtime.Value) int64 {
 			if i64, ok := i.(int64); ok {
 				return i64
 			}
+		}
+	default:
+		// a bound host scalar's payload is the host value itself when
+		// the kinds line up (Tag keeps time.Duration(5) as a real
+		// time.Duration), so read it by kind.
+		rv := reflect.ValueOf(v)
+		switch {
+		case !rv.IsValid():
+		case rv.CanInt():
+			return rv.Int()
+		case rv.CanUint():
+			return int64(rv.Uint())
 		}
 	}
 	return 0
