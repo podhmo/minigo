@@ -10551,6 +10551,14 @@ func (v *VM) Convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 
 // convert implements T(x) — a call on a *TypeDef.
 func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error) {
+	// an alias IS its target type: `A(3)` with `type A = uint8` is a
+	// uint8 (%T, interface identity), and a typed const `const a A`
+	// converts the same way.
+	if td != nil && td.Kind == runtime.KindAlias {
+		if u := v.peelAlias(td); u != nil && u.Kind != runtime.KindAlias {
+			td = u
+		}
+	}
 	// nil converts to a typed nil for nilable kinds, NIL for interfaces.
 	// Nilability reads through declared chains (`type C B` where B is a
 	// slice type takes nil even though C's own kind reads NamedBasic).
