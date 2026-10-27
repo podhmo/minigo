@@ -1,0 +1,26 @@
+false
+*os.File
+false
+false
+[e:true:<nil> f:false:*os.File mp:false:map[string]int nil:true:<nil> s:false:[]int t:false:*main.T x:false:*main.T]
+nil true true
+t false true
+f false true
+s false true
+mp false true
+x false true
+e true true
+true true
+nil T
+true false
+true true
+false true
+false true
+false true
+false
+false
+true
+true
+true true
+false
+true
