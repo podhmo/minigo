@@ -71,7 +71,7 @@ const (
 	OpEvalAST       // A: const idx of *ASTFragment; compile fragment at run time -> push result
 
 	// arithmetic
-	OpBinary // A: BinOp; B: flags (ShiftConstCount)
+	OpBinary // A: BinOp; B: flags (ShiftConstCount, ShiftTypedLeft, ShiftNonConstCount)
 	OpUnary  // A: UnOp
 
 	// control
@@ -147,6 +147,18 @@ const (
 // statically a constant expression, so an untyped-constant left operand
 // folds to an untyped constant instead of taking the context's type.
 const ShiftConstCount = 1
+
+// ShiftTypedLeft is an [OpBinary] B flag on << and >>: the left operand
+// is statically typed (`int(1) << n`), so even when it arrives as a
+// bare constant payload it is no untyped constant to adopt the
+// context's type.
+const ShiftTypedLeft = 2
+
+// ShiftNonConstCount is an [OpBinary] B flag on << and >>: the count is
+// statically known NOT to be a constant (a variable, a call, a field
+// read). Unflagged counts that the compiler could not prove constant
+// stay "maybe".
+const ShiftNonConstCount = 4
 
 // BinOp is the operator of an [OpBinary] instruction, carried in operand A.
 type BinOp uint8

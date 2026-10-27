@@ -8084,7 +8084,7 @@ func (v *VM) materializeConstErr(u *runtime.UConst, td *runtime.TypeDef) (runtim
 			u = &runtime.UConst{V: constant.Real(u.V)}
 		}
 	}
-	if u.Wrap {
+	if u.Wrap && u.WrapSure {
 		switch name {
 		case "float32", "float64", "complex64", "complex128", "string":
 			// a non-constant shift's untyped left operand takes this
@@ -8317,6 +8317,7 @@ func (v *VM) wrapConstBinary(f *frame, op bytecode.BinOp, a, b *runtime.Value) (
 				if ru, isConst := r.(*runtime.UConst); isConst {
 					ru.V = wrapReduce(ru.V)
 					ru.Wrap = true
+					ru.WrapSure = ua.WrapSure || ub.WrapSure
 					return ru, true
 				}
 			}
@@ -9089,7 +9090,7 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 				}
 			}
 		}
-		return v.shiftOp(f, op, a, b, flags&bytecode.ShiftConstCount != 0)
+		return v.shiftOp(f, op, a, b, flags)
 	}
 	// named basic values operate on their underlying value; two different
 	// declared types in one operation is a type error (Go: `x + y` on
@@ -9452,7 +9453,9 @@ func constShift(lv constant.Value, op bytecode.BinOp, count uint64) (res constan
 // the result by the left side alone (the count is always an unsigned
 // count), so a uintptr/uint64 value shifts logically while int64 shifts
 // arithmetically. A declared-width operand re-tags and re-masks.
-func (v *VM) shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value, staticConst bool) runtime.Value {
+func (v *VM) shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value, flags int) runtime.Value {
+	staticConst := flags&bytecode.ShiftConstCount != 0
+	sure := flags&bytecode.ShiftNonConstCount != 0
 	var count uint64
 	var countOK bool
 	// a constant count — untyped or typed — keeps a constant left
@@ -9490,6 +9493,12 @@ func (v *VM) shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value, staticCons
 	if !countOK {
 		f.trap("unsupported shift count %T", b)
 	}
+	if uc, isU := a.(*runtime.UConst); isU && !countConst && flags&bytecode.ShiftTypedLeft != 0 && !uc.Wrap {
+		// a typed left operand (`int(1) << n`) can arrive as a bare
+		// constant payload; it is no untyped constant to take the
+		// context's type — it shifts as the int value it is.
+		a = v.materialize(f, uc)
+	}
 	if uc, isU := a.(*runtime.UConst); isU && !(uc.Wrap && op == bytecode.BinShr) {
 		// both sides in the constant domain: Go folds the shift —
 		// `const c1 = chuge >> 100` (chuge = 1<<100) is the constant
@@ -9514,10 +9523,10 @@ func (v *VM) shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value, staticCons
 				// computes the exact big result: `1 << (1<<40)`
 				// would allocate a terabit integer.
 				if op == bytecode.BinShl && count >= 64 {
-					return &runtime.UConst{V: constant.MakeInt64(0), Rune: uc.Rune, Wrap: true}
+					return &runtime.UConst{V: constant.MakeInt64(0), Rune: uc.Rune, Wrap: true, WrapSure: sure || uc.WrapSure}
 				}
 				if res, ok := constShift(lv, op, count); ok {
-					return &runtime.UConst{V: wrapReduce(res), Rune: uc.Rune, Wrap: true}
+					return &runtime.UConst{V: wrapReduce(res), Rune: uc.Rune, Wrap: true, WrapSure: sure || uc.WrapSure}
 				}
 			} else if res, ok := constShift(lv, op, count); ok {
 				return &runtime.UConst{V: res, Rune: uc.Rune}
@@ -9788,7 +9797,7 @@ func constUnary(op bytecode.UnOp, u *runtime.UConst) (res *runtime.UConst, ok bo
 	if u.Wrap {
 		cv = wrapReduce(cv)
 	}
-	return &runtime.UConst{V: cv, Rune: u.Rune, Wrap: u.Wrap}, true
+	return &runtime.UConst{V: cv, Rune: u.Rune, Wrap: u.Wrap, WrapSure: u.WrapSure}, true
 }
 
 func (v *VM) unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value {
