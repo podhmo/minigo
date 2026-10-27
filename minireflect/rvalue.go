@@ -753,6 +753,23 @@ func (v *RValue) IsZero() bool {
 		return true
 	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
 		return false
+	case *runtime.UConst:
+		// a typed constant's payload (time.Duration(0)) stays in the
+		// constant domain.
+		switch t.V.Kind() {
+		case constant.Bool:
+			return !constant.BoolVal(t.V)
+		case constant.String:
+			return constant.StringVal(t.V) == ""
+		case constant.Unknown:
+			return false
+		}
+		return constant.Sign(t.V) == 0
+	}
+	if p, _, ok := runtime.HostNamedPayload(x); ok {
+		// a bound host scalar's payload is the host value itself
+		// (Tag keeps time.Duration(0) as a real time.Duration).
+		return reflect.ValueOf(p).IsZero()
 	}
 	return false
 }

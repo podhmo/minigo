@@ -1,0 +1,25 @@
+int64 time.Duration 5 5  5ns <time.Duration Value> false
+int64 time.Duration 5 5  5ns <time.Duration Value> false
+int64 time.Duration 1000000000 1000000000  1s <time.Duration Value> false
+int64 time.Duration 5 5  5ns <time.Duration Value> false
+int64 time.Duration 2000000000 2000000000  2s <time.Duration Value> false
+int time.Month 3 3  March <time.Month Value> false
+int time.Month 3 3  March <time.Month Value> false
+int time.Weekday 5 5  Friday <time.Weekday Value> false
+uint32 fs.FileMode 420 420  -rw-r--r-- <fs.FileMode Value> false
+int slog.Level 4 4  WARN <slog.Level Value> false
+int slog.Level 4 4  WARN <slog.Level Value> false
+5 1000000000 5 3
+true true
+true int64 time.Duration
+true 1
+1000000000 7ns
+5 5 5ns time.Duration
+42ns June
+1s
+11ns 11
+1s 5ns
+false true true
+true true true
+false true false
+true true

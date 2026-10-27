@@ -9775,11 +9775,31 @@ func deepEqlSeen(a, b runtime.Value, seen map[devisit]bool, twin func(a, b *runt
 		an, aNamed := a.(*runtime.Named)
 		bn, bNamed := b.(*runtime.Named)
 		if aNamed != bNamed {
+			// a raw bound host scalar (time.Second) against a tagged one
+			// (time.Duration(1e9)): compare as host values.
+			hn, raw := an, b
+			if bNamed {
+				hn, raw = bn, a
+			}
+			if hn.Typ != nil && hn.Typ.HostScalar != nil {
+				hv, ok := runtime.HostScalarOf(hn.Typ, hn.V)
+				return ok && reflect.TypeOf(raw) == reflect.TypeOf(hv) && any(raw) == hv
+			}
 			return false
 		}
 		if aNamed {
 			if !runtime.TypIdenticalStrict(an.Typ, bn.Typ) {
 				return false
+			}
+			if an.Typ != nil && an.Typ.HostScalar != nil {
+				// a bound host scalar's payload is either the host value
+				// or still a constant (time.Duration(1e9)): compare as
+				// host values.
+				ha, aok := runtime.HostScalarOf(an.Typ, an.V)
+				hb, bok := runtime.HostScalarOf(bn.Typ, bn.V)
+				if aok && bok {
+					return ha == hb
+				}
 			}
 			a, b = an.V, bn.V
 			continue
