@@ -38,6 +38,11 @@ func main() {
 	fmt.Println(sc.Err())
 	sc = bufio.NewScanner(strings.NewReader("x y\nz"))
 	sc.Split(bufio.ScanWords)
+	fmt.Printf("%T\n", bufio.ScanWords)
+	var sf bufio.SplitFunc = bufio.ScanLines
+	fmt.Println(sf == nil)
+	adv, tok, _ := sf([]byte("ab\ncd"), false)
+	fmt.Println(adv, string(tok))
 	n := 0
 	for sc.Scan() {
 		n++

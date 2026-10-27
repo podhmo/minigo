@@ -1888,7 +1888,8 @@ func (e *Engine) installStdlib() {
 		}},
 		"SkipDir": &runtime.GoValue{V: filepath.SkipDir},
 		"SkipAll": &runtime.GoValue{V: filepath.SkipAll},
-		// filepath.ErrBadPattern is path.ErrBadPattern in gc.
+		// filepath.ErrBadPattern is its own sentinel, distinct from
+		// path.ErrBadPattern (filepath.Match returns this one).
 		"ErrBadPattern": errVal(filepath.ErrBadPattern),
 	})
 	// os/exec: spawning a subprocess escapes per-path confinement, so the
@@ -2935,6 +2936,18 @@ func (e *Engine) installStdlib() {
 		// the stock split funcs are host funcs: callable from script
 		// (a custom split delegating to ScanWords) and handed to
 		// Scanner.Split as themselves.
+		"SplitFunc": &runtime.TypeDef{Name: "bufio.SplitFunc", Kind: runtime.KindFunc,
+			Anon: &ast.FuncType{
+				Params: &ast.FieldList{List: []*ast.Field{
+					{Type: &ast.ArrayType{Elt: ast.NewIdent("byte")}},
+					{Type: ast.NewIdent("bool")},
+				}},
+				Results: &ast.FieldList{List: []*ast.Field{
+					{Type: ast.NewIdent("int")},
+					{Type: &ast.ArrayType{Elt: ast.NewIdent("byte")}},
+					{Type: ast.NewIdent("error")},
+				}},
+			}},
 		"ScanBytes": hostSplitFunc("bufio.ScanBytes", bufio.ScanBytes),
 		"ScanRunes": hostSplitFunc("bufio.ScanRunes", bufio.ScanRunes),
 		"ScanLines": hostSplitFunc("bufio.ScanLines", bufio.ScanLines),
@@ -3333,7 +3346,11 @@ func hostType(name string, new func() any) *runtime.TypeDef {
 // returns the (advance, token, err) triple, and Target hands the host
 // func itself to Scanner.Split.
 func hostSplitFunc(name string, f bufio.SplitFunc) *runtime.BuiltinFunc {
-	return &runtime.BuiltinFunc{Name: name, Target: f, Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	// the Target is the unnamed func type: gc's stock split funcs are
+	// declared as plain funcs (%T spells the signature), and an unnamed
+	// func still assigns to a SplitFunc parameter.
+	var target func([]byte, bool) (int, []byte, error) = f
+	return &runtime.BuiltinFunc{Name: name, Target: target, Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) != 2 {
 			return nil, fmt.Errorf("%s needs 2 args, got %d", name, len(args))
 		}

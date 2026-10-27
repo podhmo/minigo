@@ -4,6 +4,9 @@ a
 b
 STOP
 <nil>
+func([]uint8, bool) (int, []uint8, error)
+false
+3 ab
 3
 true
 true
