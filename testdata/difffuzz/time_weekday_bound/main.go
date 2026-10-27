@@ -7,7 +7,9 @@ import (
 
 // time.Weekday and its Sunday..Saturday constants bind like time.Month:
 // printing, conversion, zero value, %T, comparison with Time.Weekday,
-// switch, map keys, min/max, the String method and fmt.Stringer.
+// switch, map keys, min/max, the String method and fmt.Stringer —
+// including dynamic interface checks and method constraints on a bound
+// constant or conversion, not just on a value a host call returned.
 
 type sched map[time.Weekday]string
 
@@ -19,6 +21,31 @@ func kind(w time.Weekday) string {
 		return "friday"
 	}
 	return "weekday"
+}
+
+type SI interface {
+	~int
+	String() string
+}
+
+type SD interface {
+	~int64
+	String() string
+}
+
+func name[T SI](x T) string  { return x.String() }
+func dname[T SD](x T) string { return x.String() }
+
+// D and M are fresh named types: they do not inherit the host methods.
+type D time.Duration
+type M time.Month
+
+func kindOf(v any) string {
+	switch x := v.(type) {
+	case fmt.Stringer:
+		return "stringer " + x.String()
+	}
+	return "plain"
 }
 
 func main() {
@@ -50,4 +77,21 @@ func main() {
 	_, ok := any1.(time.Weekday)
 	_, ok2 := any1.(time.Month)
 	fmt.Println(ok, ok2)
+
+	var a any = time.Wednesday
+	_, sok := a.(fmt.Stringer)
+	_, sok1 := any(time.March).(fmt.Stringer)
+	_, sok2 := any(time.Duration(5)).(fmt.Stringer)
+	_, sok3 := any(time.Month(0)).(fmt.Stringer)
+	_, sok4 := any(time.Weekday(3)).(fmt.Stringer)
+	fmt.Println(sok, sok1, sok2, sok3, sok4)
+	fmt.Println(kindOf(time.Friday), kindOf(time.March), kindOf(time.Second), kindOf(3))
+	var e any = s
+	s2, sok5 := e.(fmt.Stringer)
+	fmt.Println(sok5, s2)
+	_, sok6 := any(D(5)).(fmt.Stringer)
+	_, sok7 := any(M(1)).(fmt.Stringer)
+	fmt.Println(sok6, sok7, kindOf(D(5)), kindOf(M(1)))
+	fmt.Println(name(time.Monday), name(time.May), dname(time.Second), dname(3*time.Millisecond))
+	fmt.Println(name(t.Weekday()), name(t.Month()), kindOf(t.Weekday()))
 }

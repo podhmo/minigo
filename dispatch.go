@@ -239,6 +239,14 @@ func (e *Engine) typeMethodInfoU(td *runtime.TypeDef, ptr bool) (map[string]bool
 		}
 		return set, funcs, unsure, nil
 	}
+	if td.HostScalar != nil && len(td.Methods) == 0 {
+		// a bound host scalar (time.Month, time.Duration) offers its
+		// host type's reflect set, so dynamic checks on a constant or
+		// conversion (`any(time.March).(fmt.Stringer)`) see String
+		// just like a value a host call returned. A script `type M
+		// time.Month` is a fresh typedef without HostScalar.
+		return hostMethodSet(td.HostScalar), funcs, unsure, nil
+	}
 	return names, funcs, unsure, nil
 }
 
