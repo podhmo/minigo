@@ -2941,11 +2941,7 @@ func (c *compiler) isConstExprDepth(e ast.Expr, depth int) bool {
 				if c.lenOperandCalls(arg) {
 					return false
 				}
-				te := c.unfoldTypExpr(c.staticOpTyp(arg).te, 8)
-				if st, isPtr := te.(*ast.StarExpr); isPtr {
-					te = c.unfoldTypExpr(st.X, 8)
-				}
-				at, isArr := te.(*ast.ArrayType)
+				at, isArr := c.lenOperandArrayTyp(arg).(*ast.ArrayType)
 				return isArr && at.Len != nil
 			case "min", "max", "real", "imag", "complex":
 				for _, a := range x.Args {
@@ -2962,16 +2958,181 @@ func (c *compiler) isConstExprDepth(e ast.Expr, depth int) bool {
 				return false
 			}
 			id, ok := f.X.(*ast.Ident)
-			if !ok || c.fs.lookupBinding(id.Name) != nil || len(c.binds) > 0 {
-				// inside a generic body the operand's size may
-				// depend on a type parameter: not constant.
+			if !ok || c.fs.lookupBinding(id.Name) != nil || len(x.Args) != 1 {
+				return false
+			}
+			if len(c.binds) > 0 && c.mayInvolveTypeParam(x.Args[0]) {
+				// inside a generic body an operand whose type
+				// involves a type parameter has a size that is not
+				// constant.
 				return false
 			}
 			ref, isPkg := c.importRef(id.Name)
-			return isPkg && ref.Path == "unsafe" && len(x.Args) == 1
+			return isPkg && ref.Path == "unsafe"
 		}
 	}
 	return false
+}
+
+// certainlyNonConst reports whether e is statically known NOT to be a
+// constant expression: it reads a variable, a field, an index or a
+// pointer, receives, or calls a function. It is isConstExpr's
+// conservative counterpart — an operand neither proves is unknown.
+func (c *compiler) certainlyNonConst(e ast.Expr) bool {
+	return c.certainlyNonConstDepth(e, 16)
+}
+
+func (c *compiler) certainlyNonConstDepth(e ast.Expr, depth int) bool {
+	if depth <= 0 || e == nil {
+		return false
+	}
+	switch x := ast.Unparen(e).(type) {
+	case *ast.Ident:
+		if b := c.fs.lookupBinding(x.Name); b != nil {
+			return !b.constDecl && !b.untypedConst && !b.typeDecl
+		}
+		if _, isUp := c.fs.upmap[x.Name]; isUp {
+			return true
+		}
+		if _, bound := c.binds[x.Name]; bound {
+			return false
+		}
+		if c.pkg != nil && c.pkg.Index != nil && c.pkg.Index.Vars[x.Name] != nil {
+			return true
+		}
+		return false
+	case *ast.SelectorExpr:
+		if id, ok := x.X.(*ast.Ident); ok && c.fs.lookupBinding(id.Name) == nil {
+			if ref, isPkg := c.importRef(id.Name); isPkg {
+				p, err := ref.Materialize()
+				return err == nil && p != nil && p.Index != nil && p.Index.Vars[x.Sel.Name] != nil
+			}
+		}
+		return true // a field read is never a constant
+	case *ast.IndexExpr, *ast.SliceExpr, *ast.StarExpr, *ast.TypeAssertExpr:
+		return true
+	case *ast.UnaryExpr:
+		if x.Op == token.ARROW {
+			return true
+		}
+		return c.certainlyNonConstDepth(x.X, depth-1)
+	case *ast.BinaryExpr:
+		return c.certainlyNonConstDepth(x.X, depth-1) || c.certainlyNonConstDepth(x.Y, depth-1)
+	case *ast.CallExpr:
+		if c.conversionCall(x) {
+			return len(x.Args) == 1 && c.certainlyNonConstDepth(x.Args[0], depth-1)
+		}
+		switch f := ast.Unparen(x.Fun).(type) {
+		case *ast.Ident:
+			if !c.declared(f.Name) {
+				switch f.Name {
+				case "len", "cap":
+					if len(x.Args) != 1 || c.isConstExpr(x) {
+						return false
+					}
+					te := c.lenOperandArrayTyp(x.Args[0])
+					if te == nil {
+						return false
+					}
+					at, isArr := te.(*ast.ArrayType)
+					return !isArr || at.Len == nil || c.lenOperandCalls(x.Args[0])
+				case "min", "max", "real", "imag", "complex":
+					for _, a := range x.Args {
+						if c.certainlyNonConstDepth(a, depth-1) {
+							return true
+						}
+					}
+					return false
+				case "new", "make", "append", "recover":
+					return true
+				}
+				if _, builtin := universeFuncs[f.Name]; builtin {
+					return false
+				}
+			}
+			return true
+		case *ast.SelectorExpr:
+			if id, ok := f.X.(*ast.Ident); ok && c.fs.lookupBinding(id.Name) == nil {
+				if ref, isPkg := c.importRef(id.Name); isPkg && ref.Path == "unsafe" {
+					return false
+				}
+			}
+			return true
+		}
+		return true
+	}
+	return false
+}
+
+// universeFuncs are the predeclared functions certainlyNonConst leaves
+// undecided.
+var universeFuncs = map[string]struct{}{
+	"len": {}, "cap": {}, "min": {}, "max": {}, "real": {}, "imag": {}, "complex": {},
+}
+
+// lenOperandArrayTyp resolves the static type of a len/cap operand to
+// its underlying form, looking through one pointer: `len(arr)`, `len(p)`
+// with p a *[N]T, and a field selector through a struct or a pointer to
+// one (`len(w.a)` with w a *W, `len(s.b)` with s an anonymous struct).
+// Nil when unknown.
+func (c *compiler) lenOperandArrayTyp(arg ast.Expr) ast.Expr {
+	te := c.staticOpTyp(arg).te
+	if te == nil {
+		if sel, ok := ast.Unparen(arg).(*ast.SelectorExpr); ok {
+			te = c.structFieldTypExpr(c.staticOpTyp(sel.X).te, sel.Sel.Name)
+		}
+	}
+	te = c.unfoldTypExpr(te, 8)
+	if st, isPtr := te.(*ast.StarExpr); isPtr {
+		te = c.unfoldTypExpr(st.X, 8)
+	}
+	return te
+}
+
+// structFieldTypExpr is fieldTypExpr that also sees through a pointer
+// to the struct and accepts an anonymous struct type (direct fields
+// only for the latter).
+func (c *compiler) structFieldTypExpr(base ast.Expr, name string) ast.Expr {
+	if base == nil {
+		return nil
+	}
+	if st, isPtr := ast.Unparen(base).(*ast.StarExpr); isPtr {
+		base = st.X
+	}
+	if te := c.fieldTypExpr(base, name, 4); te != nil {
+		return te
+	}
+	st, ok := c.unfoldTypExpr(base, 8).(*ast.StructType)
+	if !ok || st.Fields == nil {
+		return nil
+	}
+	for _, f := range st.Fields.List {
+		for _, n := range f.Names {
+			if n.Name == name {
+				return f.Type
+			}
+		}
+	}
+	return nil
+}
+
+// mayInvolveTypeParam reports whether an operand's static type may
+// mention one of the bound type parameters — unknown counts as yes.
+func (c *compiler) mayInvolveTypeParam(e ast.Expr) bool {
+	te := c.staticOpTyp(e).te
+	if te == nil {
+		return true
+	}
+	found := false
+	ast.Inspect(te, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok {
+			if _, bound := c.binds[id.Name]; bound {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
 }
 
 // typeSpecOf resolves a type expression to its declaring TypeSpec — a
@@ -3700,7 +3861,9 @@ func (c *compiler) nonConstShiftOperand(e ast.Expr, depth int) ast.Expr {
 			if c.staticOpTyp(x.X).untyped && !c.isConstExpr(x.X) {
 				return c.nonConstShiftOperand(x.X, depth-1)
 			}
-			if c.staticOpTyp(x.X).untyped && !c.isConstExpr(x.Y) {
+			if c.staticOpTyp(x.X).untyped && c.certainlyNonConst(x.Y) {
+				// only a count proven non-constant: an unresolved
+				// constant count must not reject a valid program.
 				return x.X
 			}
 		case token.ADD, token.SUB, token.MUL, token.QUO, token.REM,
@@ -5273,12 +5436,21 @@ func (c *compiler) binary(x *ast.BinaryExpr) {
 			return
 		}
 		flag := 0
-		if (op == bytecode.BinShl || op == bytecode.BinShr) && c.isConstExpr(x.Y) {
-			// a constant count keeps an untyped-constant left operand's
-			// shift a constant expression — the VM cannot tell a typed
-			// constant count (`const T uint = 3`, `len("abc")`,
-			// `bits.UintSize`) from a variable by its value.
-			flag = bytecode.ShiftConstCount
+		if op == bytecode.BinShl || op == bytecode.BinShr {
+			switch {
+			case c.isConstExpr(x.Y):
+				// a constant count keeps an untyped-constant left
+				// operand's shift a constant expression — the VM
+				// cannot tell a typed constant count (`const T uint
+				// = 3`, `len("abc")`, `bits.UintSize`) from a
+				// variable by its value.
+				flag = bytecode.ShiftConstCount
+			case c.certainlyNonConst(x.Y):
+				flag = bytecode.ShiftNonConstCount
+			}
+			if lt := c.staticOpTyp(x.X); lt.te != nil && !lt.untyped {
+				flag |= bytecode.ShiftTypedLeft
+			}
 		}
 		c.emit(bytecode.OpBinary, int(op), flag, x.Pos())
 	}

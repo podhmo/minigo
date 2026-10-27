@@ -2275,6 +2275,12 @@ type UConst struct {
 	// for the modular operations (+ - * & | ^ &^ <<) the VM keeps
 	// folding it through — and stays bounded for `1 << (1<<40)`.
 	Wrap bool
+	// WrapSure marks a Wrap value whose count the compiler proved
+	// non-constant (a variable, a call, a field read). Only then is
+	// materializing it into a float, complex or string type gc's
+	// "shifted operand must be integer" error: an unproven count may
+	// still be a constant the compiler's walk could not resolve.
+	WrapSure bool
 
 	// memo caches the last operand-typed conversion (see Memo): a chunk
 	// constant is one shared *UConst, re-adapted on every execution of
