@@ -5865,13 +5865,22 @@ func constValue(e ast.Expr) (cv constant.Value, ok bool) {
 				return nil, false
 			}
 			cv, ok := constValue(x.Args[0])
-			if !ok || cv.Kind() != constant.Complex {
+			if !ok {
 				return nil, false
 			}
-			if id.Name == "real" {
-				return constant.Real(cv), true
+			switch cv.Kind() {
+			case constant.Int, constant.Float, constant.Complex:
+			default:
+				return nil, false
 			}
-			return constant.Imag(cv), true
+			// the parts of an untyped complex constant are untyped
+			// FLOAT constants — go/constant normalizes a whole-number
+			// part (and `complex(1, 0)` itself) to Int, which would
+			// make `real(complex(1, 0))/2` an integer division.
+			if id.Name == "real" {
+				return constant.ToFloat(constant.Real(cv)), true
+			}
+			return constant.ToFloat(constant.Imag(cv)), true
 		}
 	case *ast.BinaryExpr:
 		lv, ok := constValue(x.X)
