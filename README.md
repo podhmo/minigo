@@ -92,6 +92,15 @@ internals (e.g. `reflect`'s `internal/abi` init).
 - **`unsafe.Pointer` reinterpretation** — anything that needs
   `unsafe.Pointer`/`SliceHeader` tricks traps (e.g. go-toml's
   `internal/danger`, `reflect`'s `internal/abi` internals)
+- **script-declared types inside host code** — a host function that takes
+  `any` (text/template's `Execute` data, say) cannot see a type the
+  script declares, because reflect cannot mint one: a `type N int` value
+  arrives as its basic type (`int`), a slice of script structs as
+  `[]interface {}`, and a script struct as a field/method map, so
+  host-side `%T`, `{{.}}` and the script type's own methods (`String`)
+  do not apply. Basics, bound host types and slices/arrays/maps of them
+  keep their Go type. minigo's own intrinsics (`fmt`, `reflect`,
+  `encoding/json`, ...) see the script type as usual
 
 Smaller gaps shift as work lands — see `TODO.md` for the live list.
 

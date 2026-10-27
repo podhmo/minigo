@@ -4842,12 +4842,27 @@ func deepHost(v runtime.Value, vc runtime.VMCaller, h *hostMarshal) runtime.Valu
 				return hv
 			}
 		}
+		// a sized basic (int8, float32, rune) or a script type defined
+		// over one (`type N int8`) crosses at that basic Go type — the
+		// payload alone is the widened int64/float64 the VM computes in.
+		// A script type's own name has no host equivalent.
+		if rt := hostBasicTypes[runtime.BasicNameOf(x.Typ)]; rt != nil && x.Typ.HostNew == nil {
+			if rv, ok := convertBasic(deepHost(x.V, vc, h), rt); ok {
+				return rv.Interface()
+			}
+		}
 		return deepHost(x.V, vc, h)
+	case int64:
+		// a bare int64 is a script `int` (sized ints carry a tag)
+		return int(x)
 	case *runtime.GoValue:
 		return x.V
 	case *runtime.Struct:
 		return structDataHost(x, x, vc, h)
 	case *runtime.Slice, *runtime.Map:
+		if out, ok := h.typedContainer(v, vc); ok {
+			return out
+		}
 		out, _ := h.walk.Container(v, func(e runtime.Value) any {
 			return deepHost(e, vc, h)
 		}, runtime.UnwrapKey)
@@ -4871,6 +4886,393 @@ var (
 	poolType = reflect.TypeFor[sync.Pool]()
 	anyType  = reflect.TypeFor[any]()
 )
+
+// hostBasicTypes maps the predeclared basic type names to their Go types.
+var hostBasicTypes = map[string]reflect.Type{
+	"bool": reflect.TypeFor[bool](), "string": reflect.TypeFor[string](),
+	"int": reflect.TypeFor[int](), "int8": reflect.TypeFor[int8](), "int16": reflect.TypeFor[int16](),
+	"int32": reflect.TypeFor[int32](), "int64": reflect.TypeFor[int64](), "rune": reflect.TypeFor[rune](),
+	"uint": reflect.TypeFor[uint](), "uint8": reflect.TypeFor[uint8](), "uint16": reflect.TypeFor[uint16](),
+	"uint32": reflect.TypeFor[uint32](), "uint64": reflect.TypeFor[uint64](), "byte": reflect.TypeFor[byte](),
+	"uintptr": reflect.TypeFor[uintptr](), "float32": reflect.TypeFor[float32](), "float64": reflect.TypeFor[float64](),
+	"complex64": reflect.TypeFor[complex64](), "complex128": reflect.TypeFor[complex128](),
+}
+
+// basicClass groups reflect kinds whose values convert into each other
+// without changing meaning: the VM computes every integer in int64 and
+// every float in float64, so only the width (or signedness) differs.
+func basicClass(k reflect.Kind) int {
+	switch {
+	case k >= reflect.Int && k <= reflect.Uintptr:
+		return 1
+	case k == reflect.Float32 || k == reflect.Float64:
+		return 2
+	case k == reflect.Complex64 || k == reflect.Complex128:
+		return 3
+	case k == reflect.String:
+		return 4
+	case k == reflect.Bool:
+		return 5
+	}
+	return 0
+}
+
+// convertBasic converts hv, a marshaled scalar, to the basic or host
+// scalar type rt when both sit in the same basic class; ok is false for
+// anything else.
+func convertBasic(hv any, rt reflect.Type) (reflect.Value, bool) {
+	rv := reflect.ValueOf(hv)
+	if !rv.IsValid() {
+		return reflect.Value{}, false
+	}
+	if rv.Type() == rt {
+		return rv, true
+	}
+	if c := basicClass(rv.Kind()); c != 0 && c == basicClass(rt.Kind()) {
+		return rv.Convert(rt), true
+	}
+	return reflect.Value{}, false
+}
+
+// hostShapeOf returns the Go type a script value of type td can cross a
+// host `any` parameter as: a basic type (or a script type defined over
+// one), a bound host type, the empty interface, and slices, arrays and
+// maps built from those. A script type defined over a basic yields that
+// basic (its name and methods have no host equivalent). nil when some
+// part has no host equivalent at all — a script struct, a pointer — and
+// the value then marshals through the generic []any / map[any]any shape.
+func hostShapeOf(v *VM, td *runtime.TypeDef, depth int) reflect.Type {
+	if td == nil || depth > 8 {
+		return nil
+	}
+	if rt := hostTypOf(td); rt != nil {
+		return rt
+	}
+	if rt := hostBasicTypes[runtime.BasicNameOf(td)]; rt != nil {
+		return rt
+	}
+	x := td.Anon
+	if x == nil && td.Spec != nil {
+		x = td.Spec.Type
+	}
+	switch t := x.(type) {
+	case *ast.InterfaceType:
+		if t.Methods == nil || len(t.Methods.List) == 0 {
+			return anyType
+		}
+		return nil
+	case *ast.Ident:
+		if t.Name == "any" && td.Spec == nil {
+			return anyType
+		}
+	}
+	if td.Name == "any" && td.Spec == nil {
+		return anyType
+	}
+	if v == nil || v.H.ElemOf == nil {
+		return nil
+	}
+	switch td.Kind {
+	case runtime.KindSlice:
+		at, ok := x.(*ast.ArrayType)
+		if !ok {
+			return nil
+		}
+		et, err := v.H.ElemOf(td)
+		if err != nil {
+			return nil
+		}
+		ert := hostShapeOf(v, et, depth+1)
+		if ert == nil {
+			return nil
+		}
+		if at.Len == nil {
+			return reflect.SliceOf(ert)
+		}
+		lit, ok := at.Len.(*ast.BasicLit)
+		if !ok || lit.Kind != token.INT {
+			return nil
+		}
+		n, err := strconv.ParseInt(lit.Value, 0, 64)
+		if err != nil || n < 0 {
+			return nil
+		}
+		return reflect.ArrayOf(int(n), ert)
+	case runtime.KindMap:
+		et, err := v.H.ElemOf(td)
+		if err != nil {
+			return nil
+		}
+		ert := hostShapeOf(v, et, depth+1)
+		krt := hostShapeOf(v, v.mapKeyTypedef(nil, td), depth+1)
+		if ert == nil || krt == nil || !krt.Comparable() {
+			return nil
+		}
+		return reflect.MapOf(krt, ert)
+	}
+	return nil
+}
+
+// hostShapes caches [hostShapeOf] per container typedef — resolving the
+// element and key types runs the type hooks, which costs more than
+// marshaling a small map. Typedefs minted per value (host results) can
+// be many, so the cache stops growing at hostShapeCap entries.
+var (
+	hostShapes    sync.Map // *runtime.TypeDef -> reflect.Type (nil: no shape)
+	hostShapeSize atomic.Int64
+)
+
+const hostShapeCap = 4096
+
+func cachedHostShape(v *VM, td *runtime.TypeDef) reflect.Type {
+	if td == nil {
+		return nil
+	}
+	if rt, ok := hostShapes.Load(td); ok {
+		t, _ := rt.(reflect.Type)
+		return t
+	}
+	rt := hostShapeOf(v, td, 0)
+	// without a VM the type hooks are out of reach and the answer is a
+	// provisional nil — keep it out of the cache.
+	if v != nil && hostShapeSize.Load() < hostShapeCap {
+		if _, loaded := hostShapes.LoadOrStore(td, rt); !loaded {
+			hostShapeSize.Add(1)
+		}
+	}
+	return rt
+}
+
+// typedContainer marshals a script slice, array or map whose type has a
+// host shape ([hostShapeOf]) into a real Go value of that type —
+// []int, [2]string, map[string]int — so the callee sees the same type gc
+// would pass. ok is false when there is no shape or an element does not
+// fit it; the caller then falls back to the generic []any / map[any]any.
+// A container that can hold itself (an `any` element) registers with
+// the walk before its elements marshal, so a cycle folds back to it.
+func (h *hostMarshal) typedContainer(v runtime.Value, vc runtime.VMCaller) (any, bool) {
+	if old, ok := h.walk.Seen(v); ok {
+		return old, true
+	}
+	var td *runtime.TypeDef
+	switch x := v.(type) {
+	case *runtime.Slice:
+		if x.Virtual() {
+			return nil, false
+		}
+		td = x.Typ
+	case *runtime.Map:
+		td = x.Typ
+	}
+	rt := cachedHostShape(vmOf(vc), td)
+	if rt == nil {
+		return nil, false
+	}
+	switch x := v.(type) {
+	case *runtime.Slice:
+		switch rt.Kind() {
+		case reflect.Slice:
+			if out, ok := basicSliceFill(rt, x.Elems); ok {
+				return out, true
+			}
+			out := reflect.MakeSlice(rt, len(x.Elems), len(x.Elems))
+			if rt.Elem().Kind() == reflect.Interface {
+				// only an `any` element can lead back to this slice, and
+				// an `any` slot accepts every element: no fallback later.
+				h.walk.Register(x, out.Interface())
+			}
+			for i, e := range x.Elems {
+				if !h.setHost(out.Index(i), e, vc) {
+					return nil, false
+				}
+			}
+			return out.Interface(), true
+		case reflect.Array:
+			if rt.Len() != len(x.Elems) {
+				return nil, false
+			}
+			out := reflect.New(rt).Elem()
+			for i, e := range x.Elems {
+				if !h.setHost(out.Index(i), e, vc) {
+					return nil, false
+				}
+			}
+			return out.Interface(), true
+		}
+	case *runtime.Map:
+		if rt.Kind() != reflect.Map {
+			return nil, false
+		}
+		if rt == stringAnyMapType {
+			if out, ok := h.stringAnyMap(x, vc); ok {
+				return out, true
+			}
+		}
+		ifaceKey := rt.Key().Kind() == reflect.Interface
+		// keys convert first: a key that does not fit makes the whole
+		// map fall back before anything registers with the walk.
+		keys := make([]reflect.Value, x.Len())
+		for i := range keys {
+			k, _ := x.At(i)
+			kv := reflect.New(rt.Key()).Elem()
+			if ifaceKey {
+				// an `any` key keeps the generic projection's canonical
+				// key form — a script struct key must stay hashable.
+				if uk := runtime.UnwrapKey(k); uk != nil {
+					kv.Set(reflect.ValueOf(uk))
+				}
+			} else if !h.setHost(kv, k, vc) {
+				return nil, false
+			}
+			keys[i] = kv
+		}
+		out := reflect.MakeMapWithSize(rt, x.Len())
+		if rt.Elem().Kind() == reflect.Interface {
+			h.walk.Register(x, out.Interface())
+		}
+		ev := reflect.New(rt.Elem()).Elem()
+		for i, kv := range keys {
+			_, e := x.At(i)
+			ev.SetZero()
+			if !h.setHost(ev, e, vc) {
+				// only a concrete element can fail, and then nothing
+				// registered this map
+				return nil, false
+			}
+			out.SetMapIndex(kv, ev)
+		}
+		return out.Interface(), true
+	}
+	return nil, false
+}
+
+var stringAnyMapType = reflect.TypeFor[map[string]any]()
+
+// stringAnyMap fills a native map[string]any — the common template data
+// shape — with no reflect call per entry. ok is false (and nothing is
+// registered) when a key is not a plain script string.
+func (h *hostMarshal) stringAnyMap(x *runtime.Map, vc runtime.VMCaller) (map[string]any, bool) {
+	n := x.Len()
+	for i := 0; i < n; i++ {
+		k, _ := x.At(i)
+		if _, ok := k.(string); !ok {
+			return nil, false
+		}
+	}
+	out := make(map[string]any, n)
+	h.walk.Register(x, out)
+	for i := 0; i < n; i++ {
+		k, e := x.At(i)
+		out[k.(string)] = deepHost(e, vc, h)
+	}
+	return out, true
+}
+
+// basicSliceFill builds the common basic slices ([]int, []string,
+// []float64, []bool) natively when every element is a raw script scalar
+// — no reflect call per element. ok is false for any other shape.
+func basicSliceFill(rt reflect.Type, elems []runtime.Value) (any, bool) {
+	switch rt {
+	case reflect.TypeFor[[]int]():
+		out := make([]int, len(elems))
+		for i, e := range elems {
+			n, ok := e.(int64)
+			if !ok {
+				return nil, false
+			}
+			out[i] = int(n)
+		}
+		return out, true
+	case reflect.TypeFor[[]string]():
+		out := make([]string, len(elems))
+		for i, e := range elems {
+			s, ok := e.(string)
+			if !ok {
+				return nil, false
+			}
+			out[i] = s
+		}
+		return out, true
+	case reflect.TypeFor[[]float64]():
+		out := make([]float64, len(elems))
+		for i, e := range elems {
+			f, ok := e.(float64)
+			if !ok {
+				return nil, false
+			}
+			out[i] = f
+		}
+		return out, true
+	case reflect.TypeFor[[]bool]():
+		out := make([]bool, len(elems))
+		for i, e := range elems {
+			b, ok := e.(bool)
+			if !ok {
+				return nil, false
+			}
+			out[i] = b
+		}
+		return out, true
+	}
+	return nil, false
+}
+
+// setHost stores script value e into dst, a slot of a typed host
+// container: raw script scalars store straight into a basic slot (no
+// boxing), anything else marshals through deepHost and converts within
+// its basic class. ok is false when the value does not fit the slot.
+func (h *hostMarshal) setHost(dst reflect.Value, e runtime.Value, vc runtime.VMCaller) bool {
+	raw := e
+	if n, ok := e.(*runtime.Named); ok && dst.Kind() != reflect.Interface {
+		// a tagged scalar (int8, `type U8 uint8`, time.Month) stores its
+		// payload into a concrete slot directly; the slot's type is the
+		// host shape of the tag.
+		raw = n.V
+	}
+	switch ev := raw.(type) {
+	case int64:
+		switch k := dst.Kind(); {
+		case k >= reflect.Int && k <= reflect.Int64:
+			dst.SetInt(ev)
+			return true
+		case k >= reflect.Uint && k <= reflect.Uintptr:
+			dst.SetUint(uint64(ev))
+			return true
+		}
+	case float64:
+		if k := dst.Kind(); k == reflect.Float32 || k == reflect.Float64 {
+			dst.SetFloat(ev)
+			return true
+		}
+	case string:
+		if dst.Kind() == reflect.String {
+			dst.SetString(ev)
+			return true
+		}
+	case bool:
+		if dst.Kind() == reflect.Bool {
+			dst.SetBool(ev)
+			return true
+		}
+	}
+	hv := deepHost(e, vc, h)
+	if dst.Kind() == reflect.Interface {
+		if hv != nil {
+			dst.Set(reflect.ValueOf(hv))
+		}
+		return true
+	}
+	cv, ok := convertBasic(hv, dst.Type())
+	if !ok {
+		rv := reflect.ValueOf(hv)
+		if !rv.IsValid() || !rv.Type().AssignableTo(dst.Type()) {
+			return false
+		}
+		cv = rv
+	}
+	dst.Set(cv)
+	return true
+}
 
 // opaqueContainers are host container types whose `any` method args are
 // pure storage: the callee never reflects over the value, it hands it
@@ -5068,6 +5470,61 @@ type argBack struct {
 	rv  reflect.Value
 }
 
+// scalarPayload is a script scalar's payload: the value itself, or a
+// Named's payload.
+func scalarPayload(v runtime.Value) runtime.Value {
+	if n, ok := v.(*runtime.Named); ok {
+		return n.V
+	}
+	return v
+}
+
+// unchangedScalar reports whether the host element ev still holds the
+// basic value the script element old carried — the common case after a
+// read-only host call, which then skips the copy-back (no boxing per
+// element, and old keeps its declared tag).
+func unchangedScalar(old runtime.Value, ev reflect.Value) bool {
+	p := scalarPayload(old)
+	switch k := ev.Kind(); {
+	case k >= reflect.Int && k <= reflect.Int64:
+		n, ok := p.(int64)
+		return ok && n == ev.Int()
+	case k >= reflect.Uint && k <= reflect.Uintptr:
+		n, ok := p.(int64)
+		return ok && uint64(n) == ev.Uint()
+	case k == reflect.Float32 || k == reflect.Float64:
+		f, ok := p.(float64)
+		return ok && f == ev.Float()
+	case k == reflect.String:
+		s, ok := p.(string)
+		return ok && s == ev.String()
+	case k == reflect.Bool:
+		b, ok := p.(bool)
+		return ok && b == ev.Bool()
+	}
+	return false
+}
+
+// retagElem keeps a script slice element's declared type across the
+// copy-back after a host call: the host sees `type U8 uint8` elements as
+// plain uint8, and the value coming back carries that basic tag. When
+// the old element was tagged and the new payload has the same Go shape,
+// the old tag wins; anything else takes the host value as is.
+func retagElem(old, nv runtime.Value) runtime.Value {
+	on, ok := old.(*runtime.Named)
+	if !ok || on.Typ == nil {
+		return nv
+	}
+	p := runtime.Unwrap(nv)
+	if reflect.TypeOf(p) != reflect.TypeOf(runtime.Unwrap(on.V)) {
+		return nv
+	}
+	if nn, ok := nv.(*runtime.Named); ok && nn.Typ == on.Typ {
+		return nv
+	}
+	return runtime.Tag(on.Typ, p)
+}
+
 // sliceArg resolves an argument to the script slice it carries, through
 // Named tags and one level of pointer-like deref.
 func sliceArg(a runtime.Value) *runtime.Slice {
@@ -5260,13 +5717,30 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 				if rv.Type().Elem().Kind() == reflect.Uint8 && (rv.Kind() == reflect.Slice || rv.CanAddr()) {
 					bs := rv.Bytes()
 					for i := 0; i < len(bs) && i < len(ss.Elems); i++ {
-						ss.Elems[i] = runtime.ByteValue(bs[i])
+						if p, ok := scalarPayload(ss.Elems[i]).(int64); ok && p == int64(bs[i]) {
+							continue // unchanged: keep the element (and its tag)
+						}
+						ss.Elems[i] = retagElem(ss.Elems[i], runtime.ByteValue(bs[i]))
 					}
 					handled = true
 					continue
 				}
 				for i := 0; i < rv.Len() && i < len(ss.Elems); i++ {
-					ss.Elems[i] = goValueOf(rv.Index(i))
+					ev := rv.Index(i)
+					if unchangedScalar(ss.Elems[i], ev) {
+						continue // keep the element (and its tag) as is
+					}
+					if ev.Kind() == reflect.Interface && !ev.IsNil() {
+						if k := ev.Elem().Kind(); k == reflect.Slice || k == reflect.Map {
+							// an `any` element holding a container is the
+							// marshaled copy of a script container, which
+							// may be this very slice: keep the script
+							// element rather than rebuilding (and looping
+							// on) the copy.
+							continue
+						}
+					}
+					ss.Elems[i] = retagElem(ss.Elems[i], goValueOf(ev))
 				}
 				handled = true
 			}

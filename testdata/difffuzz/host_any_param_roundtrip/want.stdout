@@ -1,0 +1,13 @@
+1 1 1
+1 1
+1 1
+1
+1
+ba
+main.U8 [0 1]
+main.MyInt [my1 my2]
+main.F [1.5]
+int8 [1]
+uint8 [120]
+main.U8 [4]
+main.MyInt [my3 my4]
