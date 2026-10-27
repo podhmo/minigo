@@ -896,6 +896,7 @@ func (e *Engine) installStdlib() {
 				return nil, fmt.Errorf("json.Marshal needs 1 arg, got %d", len(args))
 			}
 			b, err := json.Marshal(goJSON(v, args[0]))
+			err = jsonUnsupportedOf(err)
 			var se *jsonScriptErr
 			if errors.As(err, &se) {
 				return &runtime.Tuple{Elems: []runtime.Value{scriptVal([]byte{}), errVal(jsonMarshalerErr(v, se))}}, nil
@@ -907,6 +908,7 @@ func (e *Engine) installStdlib() {
 				return nil, fmt.Errorf("json.MarshalIndent needs 3 args, got %d", len(args))
 			}
 			b, err := json.MarshalIndent(goJSON(v, args[0]), str(goNative(args[1])), str(goNative(args[2])))
+			err = jsonUnsupportedOf(err)
 			var se *jsonScriptErr
 			if errors.As(err, &se) {
 				return &runtime.Tuple{Elems: []runtime.Value{scriptVal([]byte{}), errVal(jsonMarshalerErr(v, se))}}, nil
@@ -5619,6 +5621,9 @@ func goJSON(c runtime.VMCaller, v any) any {
 			}
 		}
 	}
+	if u, ok := jsonFuncValue(v); ok {
+		return u
+	}
 	switch x := v.(type) {
 	case *runtime.Named:
 		return goJSON(c, x.V)
@@ -5907,6 +5912,58 @@ type jsonErrCtx struct {
 // unwraps it back out. operand is the value whose method failed —
 // gc's MarshalerError names that nested type, not the marshal's
 // top-level argument.
+// jsonUnsupported stands in for a script func value (an iter.Seq from
+// maps.Keys, a closure) in the host tree json.Marshal walks: its
+// MarshalJSON fails with an unsupportedFunc that jsonUnsupportedOf turns
+// into go's "json: unsupported type: T" — walking the builtin or closure
+// struct instead would leak interpreter internals.
+type jsonUnsupported struct{ e *unsupportedFunc }
+
+func (u jsonUnsupported) MarshalJSON() ([]byte, error) { return nil, u.e }
+
+// unsupportedFunc carries the script type of an unencodable func value:
+// its host type when the binary has one (iter.Seq[string]), else its
+// spelling.
+type unsupportedFunc struct {
+	rt   reflect.Type
+	name string
+}
+
+func (e *unsupportedFunc) Error() string { return "json: unsupported type: " + e.name }
+
+// jsonFuncValue reports the stand-in for a script func value.
+func jsonFuncValue(v any) (jsonUnsupported, bool) {
+	n, _ := v.(*runtime.Named)
+	inner := v
+	if n != nil {
+		inner = n.V
+	}
+	switch inner.(type) {
+	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
+	default:
+		return jsonUnsupported{}, false
+	}
+	e := &unsupportedFunc{name: scriptTypeString(v)}
+	if n != nil {
+		e.rt = runtime.HostIterSeqType(n.Typ)
+	}
+	return jsonUnsupported{e}, true
+}
+
+// jsonUnsupportedOf rewrites the marshaler error a jsonUnsupported
+// stand-in raised into go's own *json.UnsupportedTypeError (or its text,
+// when the type has no host equivalent).
+func jsonUnsupportedOf(err error) error {
+	var ue *unsupportedFunc
+	if !errors.As(err, &ue) {
+		return err
+	}
+	if ue.rt != nil {
+		return &json.UnsupportedTypeError{Type: ue.rt}
+	}
+	return ue
+}
+
 type jsonScriptErr struct {
 	sv      runtime.Value
 	method  string // "MarshalJSON" or "MarshalText"

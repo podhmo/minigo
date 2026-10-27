@@ -4888,21 +4888,6 @@ func deepHost(v runtime.Value, vc runtime.VMCaller, h *hostMarshal) runtime.Valu
 	return v
 }
 
-// iterSeqArity reports 1 for an iter.Seq typedef, 2 for iter.Seq2 and 0
-// for anything else.
-func iterSeqArity(td *runtime.TypeDef) int {
-	if td == nil || td.Pkg == nil || td.Pkg.Path != "iter" {
-		return 0
-	}
-	switch td.Name {
-	case "Seq", "iter.Seq":
-		return 1
-	case "Seq2", "iter.Seq2":
-		return 2
-	}
-	return 0
-}
-
 // hostSeqFunc adapts a script iter.Seq / iter.Seq2 value to the host
 // func(yield func(any) bool) / func(yield func(any, any) bool) shape: the
 // host's yield receives each element marshaled like any other `any`
@@ -4910,7 +4895,7 @@ func iterSeqArity(td *runtime.TypeDef) int {
 // the seq propagates as a panic, as a callback's would. ok is false for a
 // value not typed as a seq.
 func hostSeqFunc(n *runtime.Named, vc runtime.VMCaller) (any, bool) {
-	arity := iterSeqArity(n.Typ)
+	arity := runtime.IterSeqArity(n.Typ)
 	if arity == 0 {
 		return nil, false
 	}
@@ -4952,25 +4937,23 @@ func hostSeqFunc(n *runtime.Named, vc runtime.VMCaller) (any, bool) {
 	}
 	// each element crosses at its host type when it has one (a
 	// predeclared basic, so a template sees int, not interface {}),
-	// else as any.
+	// else as any; the seq itself is the host's real iter.Seq[...] type
+	// when the binary has that instantiation (%T then matches).
 	elemTs := make([]reflect.Type, arity)
-	names := []string{"V"}
-	if arity == 2 {
-		names = []string{"K", "V"}
-	}
-	if len(n.Typ.TParams) == arity {
-		names = n.Typ.TParams
-	}
-	for i, tp := range names {
+	els := runtime.IterSeqElemTypes(n.Typ)
+	for i := range elemTs {
 		elemTs[i] = anyType
-		if td, ok := n.Typ.Binds[tp].(*runtime.TypeDef); ok && td.Spec == nil && td.HostNew == nil && td.HostScalar == nil {
-			if rt := hostBasicTypes[td.Name]; rt != nil {
+		if i < len(els) {
+			if rt := runtime.HostBasicType(els[i]); rt != nil {
 				elemTs[i] = rt
 			}
 		}
 	}
-	yieldT := reflect.FuncOf(elemTs, []reflect.Type{reflect.TypeFor[bool]()}, false)
-	seqT := reflect.FuncOf([]reflect.Type{yieldT}, nil, false)
+	seqT := runtime.HostIterSeqType(n.Typ)
+	if seqT == nil {
+		yieldT := reflect.FuncOf(elemTs, []reflect.Type{reflect.TypeFor[bool]()}, false)
+		seqT = reflect.FuncOf([]reflect.Type{yieldT}, nil, false)
+	}
 	return reflect.MakeFunc(seqT, func(in []reflect.Value) []reflect.Value {
 		y := in[0]
 		vals := make([]reflect.Value, arity)
@@ -13681,9 +13664,9 @@ func containerTyp(x runtime.Value) *runtime.TypeDef {
 func stampContainerTyp(x runtime.Value, td *runtime.TypeDef) runtime.Value {
 	switch t := x.(type) {
 	case *runtime.Map:
-		c := *t
+		c := t.Header()
 		c.Typ = td
-		return &c
+		return c
 	case *runtime.Slice:
 		c := *t
 		c.Typ = td

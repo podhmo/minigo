@@ -36,6 +36,7 @@ import (
 	"math"
 	"math/big"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1565,10 +1566,16 @@ type Map struct {
 	// its keys hash by (dynamic type, value) ([IfaceKeyOf]). Set it
 	// when the map is made, before any insert.
 	IfaceKey bool
-	// walkers counts in-place walks of Order/Keys in flight
-	// ([Map.BeginWalk]); while any runs, Delete copies the order slices
-	// instead of shifting them under the walker.
-	walkers int
+	// shared marks Order/Keys as handed to an in-place walk
+	// ([Map.BeginWalk]): the next Delete copies them once (copy on
+	// write) instead of shifting them under the walker, and clears the
+	// flag — later deletes shift the private copy. Atomic because
+	// read-only walks may start from several goroutines at once.
+	shared atomic.Bool
+	// aliased marks a map whose storage another header shares
+	// ([Map.Header]): a removal through the other header does not count
+	// in this one's dels, so walks always look keys up.
+	aliased bool
 	// dels counts removals (Delete, Clear), so a walker can tell that
 	// every slot it walks is still present without a lookup.
 	dels uint64
@@ -1577,7 +1584,8 @@ type Map struct {
 // MapWalk is an in-place walk over a [Map]'s entries as they were when
 // it began — the allocation-free counterpart of [Map.SnapshotKeys]. An
 // entry inserted meanwhile is not produced, an entry deleted before its
-// turn is skipped, and values read live. Call End when done.
+// turn is skipped, and values read live. It needs no release: the map
+// copies its order slices on the first Delete after the walk began.
 type MapWalk struct {
 	m         *Map
 	display   []Value
@@ -1585,9 +1593,22 @@ type MapWalk struct {
 	dels      uint64
 }
 
+// Header returns a second header over m's storage — the map value Go
+// copies when it passes a map. Both headers alias the order slices, so
+// both are marked shared: a Delete through either copies them first.
+func (m *Map) Header() *Map {
+	m.shared.Store(true)
+	m.aliased = true
+	c := &Map{Pairs: m.Pairs, Order: m.Order, Keys: m.Keys, Typ: m.Typ, IfaceKey: m.IfaceKey, aliased: true}
+	c.shared.Store(true)
+	return c
+}
+
 // BeginWalk starts an in-place walk over m's entries.
 func (m *Map) BeginWalk() *MapWalk {
-	m.walkers++
+	if !m.shared.Load() {
+		m.shared.Store(true)
+	}
 	return &MapWalk{m: m, display: m.Order, canonical: m.Keys, dels: m.dels}
 }
 
@@ -1606,19 +1627,11 @@ func (w *MapWalk) At(i int) (k, v Value, ok bool) {
 // removed since the walk began. It skips the lookup while nothing was
 // removed.
 func (w *MapWalk) Key(i int) (Value, bool) {
-	if w.m.dels == w.dels {
+	if w.m.dels == w.dels && !w.m.aliased {
 		return w.display[i], true
 	}
 	_, ok := w.m.Pairs[w.canonical[i]]
 	return w.display[i], ok
-}
-
-// End finishes the walk.
-func (w *MapWalk) End() {
-	if w.m != nil {
-		w.m.walkers--
-		w.m = nil
-	}
 }
 
 // canonicalKey is the key k stores under in m.
@@ -1692,11 +1705,13 @@ func (m *Map) Delete(k Value) bool {
 	m.dels++
 	for i := range m.Order {
 		if m.Keys[i] == ck {
-			if m.walkers > 0 {
-				// a walker holds the current arrays: drop the slot
-				// into fresh ones instead of shifting under it.
-				m.Order = append(m.Order[:i:i], m.Order[i+1:]...)
-				m.Keys = append(m.Keys[:i:i], m.Keys[i+1:]...)
+			if m.shared.Load() {
+				// a walk holds the current arrays: drop the slot into
+				// fresh ones instead of shifting under it. The copy is
+				// private, so later deletes shift it in place.
+				m.Order = slices.Delete(slices.Clone(m.Order), i, i+1)
+				m.Keys = slices.Delete(slices.Clone(m.Keys), i, i+1)
+				m.shared.Store(false)
 				break
 			}
 			m.Order = append(m.Order[:i], m.Order[i+1:]...)

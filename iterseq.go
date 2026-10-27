@@ -105,30 +105,10 @@ func (e *Engine) iterSeqBase(n int) *runtime.TypeDef {
 // that is not typed as one.
 func iterSeqElems(v runtime.Value) []*runtime.TypeDef {
 	n, ok := v.(*runtime.Named)
-	if !ok || n.Typ == nil || n.Typ.Pkg == nil || n.Typ.Pkg.Path != "iter" {
+	if !ok {
 		return nil
 	}
-	var names []string
-	switch n.Typ.Name {
-	case "Seq", "iter.Seq":
-		names = []string{"V"}
-	case "Seq2", "iter.Seq2":
-		names = []string{"K", "V"}
-	default:
-		return nil
-	}
-	if len(n.Typ.TParams) == len(names) {
-		names = n.Typ.TParams
-	}
-	out := make([]*runtime.TypeDef, len(names))
-	for i, tp := range names {
-		td, _ := n.Typ.Binds[tp].(*runtime.TypeDef)
-		if td == nil {
-			return nil
-		}
-		out[i] = td
-	}
-	return out
+	return runtime.IterSeqElemTypes(n.Typ)
 }
 
 // sliceTdOf is the []E typedef over a resolved element typedef.
@@ -273,7 +253,6 @@ func mapSource(m *runtime.Map, kind mapSeqKind, conv func(runtime.Value) runtime
 				return nil
 			}
 			w := m.BeginWalk()
-			defer w.End()
 			n := 1
 			if kind == mapSeqAll {
 				n = 2
