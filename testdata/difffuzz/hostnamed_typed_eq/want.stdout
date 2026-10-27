@@ -1,0 +1,10 @@
+d--------- --------w- int March Friday
+field false false true true
+iface false true false true false
+any key 3 1 1
+2
+4 1 1 2 3 4
+1 0
+struct key 2 1
+slices false -1 false true 1
+narrow true 1

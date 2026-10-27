@@ -663,7 +663,11 @@ func (r *IndexRef) Get() (Value, bool) {
 // nor a map, or the index is out of range.
 func (r *IndexRef) Set(v Value) bool {
 	if m := r.mapOf(); m != nil {
-		m.Insert(Unwrap(r.Key), v)
+		k := r.Key
+		if !m.IfaceKey {
+			k = Unwrap(k)
+		}
+		m.Insert(k, v)
 		return true
 	}
 	s := r.sliceOf()
@@ -809,7 +813,7 @@ func CanonicalKey(v Value) Value {
 		}
 		var sb strings.Builder
 		sb.WriteString(typeTagOf(x.Def))
-		writeKeyRepr(&sb, x.Fields)
+		writeFieldsRepr(&sb, x)
 		return mapKey{typ: typeTagOf(x.Def), repr: sb.String()}
 	case *Slice:
 		// only fixed-size arrays are comparable; a slice key panics
@@ -830,13 +834,6 @@ func CanonicalKey(v Value) Value {
 	case *Function, *Closure, *BoundMethod, *BuiltinFunc:
 		panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type func()"}})
 	case *GoValue:
-		// a host named basic (io/fs's FileMode from the host os, a
-		// go/token Token off inspect.AST) keys by its payload, the form
-		// a [Named] of its source twin unwraps to: both spell one Go
-		// type, so m[t] finds m[fs.ModeDir] under any key type.
-		if p, _, ok := HostNamedScalar(x); ok {
-			return p
-		}
 		if !reflect.TypeOf(x.V).Comparable() {
 			panic(&Panic{Value: &RuntimeError{Msg: fmt.Sprintf("hash of unhashable type %T", x.V)}})
 		}
@@ -1107,7 +1104,7 @@ func writeKeyElem(sb *strings.Builder, v Value) {
 	switch x := Unwrap(v).(type) {
 	case *Struct:
 		sb.WriteString(typeTagOf(x.Def))
-		writeKeyRepr(sb, x.Fields)
+		writeFieldsRepr(sb, x)
 	case *Slice:
 		if !arrayTypedef(x.Typ) {
 			panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type " + msgTypeName(x.Typ)}})
@@ -1122,8 +1119,12 @@ func writeKeyElem(sb *strings.Builder, v Value) {
 	case *Cell, *FieldRef, *IndexRef, *Chan:
 		fmt.Fprintf(sb, "%p", x)
 	case *GoValue:
-		// a host named basic renders like its source twin's payload
-		// (see CanonicalKey): FileMode's %#v is hex, the twin's decimal.
+		// a host named basic in a slot of its own type renders like
+		// its source twin's payload: K{fi.Mode().Type()} finds
+		// K{fs.ModeDir} for `type K struct{ M fs.FileMode }`
+		// (FileMode's %#v is hex, the twin's decimal). An
+		// interface-typed slot renders the dynamic type too
+		// (writeFieldsRepr).
 		if p, _, ok := HostNamedScalar(x); ok {
 			writeKeyElem(sb, p)
 			return
@@ -1146,6 +1147,128 @@ func writeKeyElem(sb *strings.Builder, v Value) {
 	default:
 		fmt.Fprintf(sb, "%v", x)
 	}
+}
+
+// writeFieldsRepr renders a struct key's fields like [writeKeyRepr],
+// except that a field declared with an interface type renders its
+// dynamic type with the value ([IfaceKeyOf]) — K{any(M(2))} and
+// K{any(uint32(2))} are distinct Go keys. Field types come from the
+// engine's cache ([TypeDef.CachedFieldTypes]); without one every field
+// renders untyped.
+func writeFieldsRepr(sb *strings.Builder, x *Struct) {
+	var fts []*TypeDef
+	if x.Def != nil {
+		fts, _ = x.Def.CachedFieldTypes()
+	}
+	if fts == nil {
+		writeKeyRepr(sb, x.Fields)
+		return
+	}
+	sb.WriteByte('{')
+	for i, e := range x.Fields {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		if i < len(fts) && fts[i] != nil && fts[i].Kind == KindInterface {
+			if tk, ok := typedScalarKeyOf(e); ok {
+				sb.WriteString(tk.typ)
+				sb.WriteByte(':')
+				writeKeyElem(sb, tk.v)
+				continue
+			}
+		}
+		writeKeyElem(sb, e)
+	}
+	sb.WriteByte('}')
+}
+
+// typedKey keys a scalar by its dynamic type in an interface-keyed map
+// ([IfaceKeyOf]): the payload is the canonical script scalar, typ the
+// type's identity (a basic name, a declared type's tag, or a host
+// type's package path and name).
+type typedKey struct {
+	typ string
+	v   Value
+}
+
+// IfaceKeyOf is [CanonicalKey] for a key of an interface-typed map
+// ([Map.IfaceKey]): Go keys an interface by (dynamic type, value), so a
+// scalar's type tag joins the key — map[any]int{int8(1): 1}[1] misses,
+// and a host fs.FileMode (os.Stat's Mode) keys apart from uint32 and
+// from reflect.Kind with the same payload. A boxed host named basic and
+// a value of its source twin or bound typedef share one key, so
+// map[any]int{fs.ModeDir: 1}[fi.Mode().Type()] hits. Values of the
+// default types (int, float64, string, bool, complex128) key like
+// CanonicalKey; composites already key by type.
+func IfaceKeyOf(v Value) Value {
+	if tk, ok := typedScalarKeyOf(v); ok {
+		if ck, isNaN := tk.v.(mapKey); isNaN {
+			return ck
+		}
+		return tk
+	}
+	return CanonicalKey(v)
+}
+
+// typedScalarKeyOf is the typed key of a non-default-typed scalar —
+// see [IfaceKeyOf]; ok is false for anything else.
+func typedScalarKeyOf(v Value) (typedKey, bool) {
+	switch x := v.(type) {
+	case *Named:
+		if x.Typ == nil {
+			return typedKey{}, false
+		}
+		p := x.V
+		if u, ok := p.(*UConst); ok {
+			mv, err := UConstNative(u)
+			if err != nil {
+				return typedKey{}, false
+			}
+			p = Unwrap(mv)
+		}
+		var typ string
+		switch {
+		case x.Typ.HostScalar != nil:
+			typ = hostTypeTag(reflect.TypeOf(x.Typ.HostScalar))
+			if hp, _, ok := HostNamedPayload(p); ok {
+				p = hp
+			}
+		case x.Typ.Spec == nil && x.Typ.Anon == nil && basicTypedefName(x.Typ.Name):
+			typ = CanonicalBasicName(x.Typ.Name)
+			switch typ {
+			case "int", "float64", "string", "bool", "complex128":
+				return typedKey{}, false // the default types key untagged
+			}
+		default:
+			typ = typeTagOf(x.Typ)
+		}
+		switch p.(type) {
+		case int64, float64, float32, string, bool, complex64, complex128:
+			return typedKey{typ: typ, v: CanonicalKey(p)}, true
+		}
+		return typedKey{}, false
+	case *GoValue:
+		if p, rt, ok := HostNamedScalar(x); ok {
+			return typedKey{typ: hostTypeTag(rt), v: p}, true
+		}
+	case int64, float64, string, bool, complex128, *Struct, *Slice:
+		return typedKey{}, false
+	case float32:
+		return typedKey{typ: "float32", v: CanonicalKey(float64(x))}, true
+	default:
+		// a raw host scalar (a bound typedef's payload that lost its
+		// tag) keys like its boxed form.
+		if p, rt, ok := HostNamedPayload(x); ok {
+			return typedKey{typ: hostTypeTag(rt), v: p}, true
+		}
+	}
+	return typedKey{}, false
+}
+
+// hostTypeTag spells a named host type like [typeTagOf] spells its
+// source twin: "io/fs.FileMode".
+func hostTypeTag(rt reflect.Type) string {
+	return rt.PkgPath() + "." + rt.Name()
 }
 
 func nextKeyNonce() int64 {
@@ -1419,6 +1542,18 @@ type Map struct {
 	// a fresh nonce on every CanonicalKey call, so iteration remembers
 	// the one used at insert instead of recomputing it.
 	Typ *TypeDef // declared map type (nil => missing keys yield NIL)
+	// IfaceKey marks a map whose declared key type is an interface:
+	// its keys hash by (dynamic type, value) ([IfaceKeyOf]). Set it
+	// when the map is made, before any insert.
+	IfaceKey bool
+}
+
+// canonicalKey is the key k stores under in m.
+func (m *Map) canonicalKey(k Value) Value {
+	if m.IfaceKey {
+		return IfaceKeyOf(k)
+	}
+	return CanonicalKey(k)
 }
 
 // Len reports the number of stored pairs.
@@ -1436,7 +1571,7 @@ func (m *Map) At(i int) (Value, Value) {
 // key that is already canonical (from Pairs or [Map.SnapshotKeys]), use
 // [Map.LookupCanonical].
 func (m *Map) Get(k Value) (Value, bool) {
-	v, ok := m.Pairs[CanonicalKey(k)]
+	v, ok := m.Pairs[m.canonicalKey(k)]
 	return v, ok
 }
 
@@ -1460,7 +1595,7 @@ func (m *Map) LookupCanonical(ck Value) (Value, bool) {
 func (m *Map) Insert(k, v Value) {
 	// Keeping canonicalization and the order/keys append in one place is
 	// what makes the NaN-nonce key policy hold at every write site.
-	ck := CanonicalKey(k)
+	ck := m.canonicalKey(k)
 	if m.Pairs == nil {
 		m.Pairs = map[Value]Value{}
 	}
@@ -1476,7 +1611,7 @@ func (m *Map) Insert(k, v Value) {
 func (m *Map) Delete(k Value) bool {
 	// The canonical key stored per slot tells which order slot to drop —
 	// a stale order entry would render and range as `k:<nil>`.
-	ck := CanonicalKey(k)
+	ck := m.canonicalKey(k)
 	if _, ok := m.Pairs[ck]; !ok {
 		return false
 	}
@@ -1760,6 +1895,21 @@ func HostNamedIs(rt reflect.Type, td *TypeDef) bool {
 	return rt.PkgPath() == td.Pkg.Path && rt.Name() == td.Name
 }
 
+// HostTwinOf reports whether a value of td is a value of the host type
+// rt: td is rt's source twin ([HostNamedIs]) or the bound typedef that
+// boxes rt as a scalar (time.Month's HostScalar). A boxed host named
+// basic meets exactly these typedefs' values, never a look-alike of
+// another type with the same payload.
+func HostTwinOf(rt reflect.Type, td *TypeDef) bool {
+	if rt == nil || td == nil {
+		return false
+	}
+	if td.HostScalar != nil {
+		return reflect.TypeOf(td.HostScalar) == rt
+	}
+	return HostNamedIs(rt, td)
+}
+
 // HostType returns reflect.TypeOf(td.HostNew()) without allocating a new
 // zero value on every call. td.HostNew must be set.
 func (td *TypeDef) HostType() reflect.Type {
@@ -1896,6 +2046,14 @@ type VMCaller interface {
 	// coerces the key the same way indexing does (map[float64]int{1:7}
 	// deletes by float64(1), not int64(1)).
 	MapKeyOperand(mapTd *TypeDef, key Value) Value
+	// NewMap returns an empty map of the map typedef td, keyed the way
+	// its declared key type keys in Go ([Map.IfaceKey]) — used by make.
+	NewMap(td *TypeDef) *Map
+	// Equal reports a == b for two values of type td, as an element
+	// comparison of a []td: an interface td compares (dynamic type,
+	// value) pairs, a boxed host named basic meets its source twin.
+	// Convert an untyped operand to td first.
+	Equal(td *TypeDef, a, b Value) bool
 	// Zero returns the Go zero value of a typedef (struct fields get
 	// typed zeros, nilable kinds get TypedNil) — used by new().
 	Zero(td *TypeDef) Value

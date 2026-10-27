@@ -400,7 +400,7 @@ func builtins(e *Engine) *runtime.Env {
 			}
 			return &runtime.Slice{Elems: el, Typ: td}, nil
 		case runtime.KindMap:
-			return &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}, Typ: td}, nil
+			return v.NewMap(td), nil
 		case runtime.KindChan:
 			buf := int64(0)
 			if len(args) > 1 {
