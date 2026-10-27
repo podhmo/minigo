@@ -2194,6 +2194,15 @@ func (v *VM) invokeDeferred(d deferredCall) {
 			if !c.Forwards {
 				args = expandSpread(args)
 			}
+			if c.Pkg != nil {
+				// a deferred bound call sees the constants call() hands
+				// it: `defer strconv.FormatUint(1<<63, 10)` is legal.
+				var err error
+				if args, err = v.matBuiltinArgs(args, c.Target); err != nil {
+					err = fmt.Errorf("%s %w", c.Name, err)
+					panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
+				}
+			}
 			if _, err := c.Fn(v, args); err != nil {
 				panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
 			}
