@@ -12750,8 +12750,19 @@ func (v *VM) hostNilTwin(a, b *runtime.TypeDef) bool {
 		return v.hostTwinIs(nil, a, b)
 	case HostNilPtrType(b) != nil:
 		return v.hostTwinIs(nil, b, a)
+	case hostNilSliceIdent(a):
+		// a nil net.IP from net.ParseIP against a script zero net.IP
+		return v.hostTwinIs(nil, a, b)
+	case hostNilSliceIdent(b):
+		return v.hostTwinIs(nil, b, a)
 	}
 	return false
+}
+
+// hostNilSliceIdent reports whether td is the typedef [HostNil] mints for
+// a nil named host slice (net.IP): a slice kind carrying the host identity.
+func hostNilSliceIdent(td *runtime.TypeDef) bool {
+	return td != nil && td.Kind == runtime.KindSlice && td.HostIdent != nil && td.Spec == nil
 }
 
 // unresolvedSpells reports whether src, an anonymous *T typedef whose T

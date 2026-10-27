@@ -1369,6 +1369,12 @@ func typeTagOf(td *TypeDef) string {
 	if x != nil {
 		return anonTag(x)
 	}
+	if td.Kind == KindPointer && td.Elem != nil && td.Elem.HostIdent != nil {
+		// the *T of a nil host pointer (vm.HostNilPtrTypedef) carries
+		// no AST: spell it like the script's `*pkg.T` so a nil
+		// *os.File from os.Open keys like a script (*os.File)(nil).
+		return "*" + td.Elem.HostIdent.String()
+	}
 	return fmt.Sprintf("%p", td)
 }
 
