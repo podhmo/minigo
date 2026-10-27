@@ -865,7 +865,17 @@ func (f *frame) trap(format string, args ...any) {
 // The pack is fresh (prepFrame built it), so converting in place is
 // safe.
 func (v *VM) coerceVarPack(f *frame, pack *runtime.Slice, td *runtime.TypeDef) {
-	if v.H.ElemOf == nil {
+	// only a constant (or nil) changes under the element conversion — a
+	// runtime argument already has its type — so a pack of plain values
+	// (the common `f(x, y)`) skips the element-type lookup entirely.
+	first := -1
+	for i, e := range pack.Elems {
+		if varPackConverts(e) {
+			first = i
+			break
+		}
+	}
+	if first < 0 || v.H.ElemOf == nil {
 		return
 	}
 	utd := v.peelNamed(td)
@@ -876,9 +886,31 @@ func (v *VM) coerceVarPack(f *frame, pack *runtime.Slice, td *runtime.TypeDef) {
 	if err != nil || et == nil {
 		return
 	}
-	for i, e := range pack.Elems {
-		pack.Elems[i] = v.coerce(f, e, et)
+	// a basic element type takes an untyped constant straight from the
+	// materialization memo coerceConcrete fills (`sum(i, 2, 3)` converts
+	// the same chunk constants on every call).
+	direct := et.Kind != runtime.KindInterface && et.Kind != runtime.KindAlias && et.HostNew == nil
+	for i, e := range pack.Elems[first:] {
+		if u, ok := e.(*runtime.UConst); ok && direct {
+			if r, hit := u.Memo(et); hit {
+				pack.Elems[first+i] = r
+				continue
+			}
+		}
+		if varPackConverts(e) {
+			pack.Elems[first+i] = v.coerce(f, e, et)
+		}
 	}
+}
+
+// varPackConverts reports whether a packed variadic argument still
+// needs its element type: an untyped or typed constant, or a bare nil.
+func varPackConverts(e runtime.Value) bool {
+	if _, ok := constPayload(e); ok {
+		return true
+	}
+	_, isNil := e.(runtime.Nil)
+	return isNil
 }
 
 // assignCell stores into a cell, coercing to the cell's declared type
@@ -8041,12 +8073,43 @@ func materializeDefault(u *runtime.UConst) (runtime.Value, error) {
 // materializeConst converts an untyped constant for a declared target —
 // Go's representability check: `const B = 1<<100` is legal but
 // `var x int = B` fails with "constant ... overflows int".
+//
+// A successful scalar result is memoized on the constant under td (the
+// same entry adaptConst keeps): a typed constant `const k uint8 = 3`
+// is one shared *UConst re-materialized on every `s += k`.
 func (v *VM) materializeConst(f *frame, u *runtime.UConst, td *runtime.TypeDef) runtime.Value {
+	if td != nil {
+		if r, hit := u.Memo(td); hit {
+			return r
+		}
+	}
 	r, err := v.materializeConstErr(u, td)
 	if err != nil {
 		f.trap("%s", err)
 	}
+	if td != nil && immutableScalar(r) {
+		u.SetMemo(td, r)
+	}
 	return r
+}
+
+// immutableScalar reports whether a materialized constant is safe to
+// share between readers: a bare or tagged scalar, never a container a
+// conversion like []byte("s") produced.
+func immutableScalar(x runtime.Value) bool {
+	if n, ok := x.(*runtime.Named); ok {
+		x = n.V
+	}
+	switch x := x.(type) {
+	case int64, float64, string, bool:
+		return true
+	case *runtime.GoValue:
+		switch x.V.(type) {
+		case complex64, complex128:
+			return true
+		}
+	}
+	return false
 }
 
 // materializeOperandConst resolves a still-constant operand at the
@@ -8983,6 +9046,15 @@ func (v *VM) binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.V
 
 // binaryOpFlags is binaryOp with the instruction's B flags
 // (bytecode.ShiftConstCount).
+// typedFoldKey memoizes a typed constant expression's fold on its left
+// payload (see binaryOpFlags): the operator, the right payload and the
+// shared tag determine the result.
+type typedFoldKey struct {
+	op    bytecode.BinOp
+	other *runtime.UConst
+	tag   *runtime.TypeDef
+}
+
 func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flags int) runtime.Value {
 	// an interface-typed switch tag compares pairs, not coerced values.
 	if op == bytecode.BinEqlIface {
@@ -9170,15 +9242,23 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 		// Both payloads read in the tag's kind first: `float64(7)`
 		// carries the Int payload 7, but `float64(7) / 2` divides as
 		// float64 — 3.5, not the integer quotient.
+		// both payloads are immutable typed constants, so the folded
+		// result is memoized on the left one: `s += lk * k` re-folds
+		// the same pair on every iteration.
+		key := typedFoldKey{op: op, other: cb, tag: tag}
+		if r, hit := ca.Memo(key); hit {
+			return r
+		}
 		tn := basicNameOf(v.peelNamed(tag))
 		if r, ok := constBinary(op, constInKind(ca, tn), constInKind(cb, tn)); ok {
 			if ru, isConst := r.(*runtime.UConst); isConst {
 				if _, err := v.materializeConstErr(ru, tag); err != nil {
 					f.trap("%s", err)
 				}
-				return runtime.Tag(tag, ru)
+				r = runtime.Tag(tag, ru)
 			}
-			return r // comparisons fold to an untyped bool
+			ca.SetMemo(key, r) // comparisons fold to an untyped bool
+			return r
 		}
 		// unfoldable — division by zero, mismatched kinds — falls
 		// through to the runtime path for its own trap.
