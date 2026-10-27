@@ -1415,9 +1415,18 @@ func (e *Engine) installStdlib() {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("maps.Values needs 1 arg, got %d", len(args))
 			}
-			if _, ok := runtime.Unwrap(args[0]).(*runtime.Map); ok {
-				// the script map's own values keep their declared type
-				return mapValues(args[0]), nil
+			if m, ok := runtime.Unwrap(args[0]).(*runtime.Map); ok {
+				// the script map's own values keep their declared type,
+				// and the result is typed []V
+				vs := mapValues(args[0])
+				mt := runtime.TagOf(args[0])
+				if mt == nil {
+					mt = m.Typ
+				}
+				if x := mapTypeExpr(mt); x != nil {
+					vs.Typ = &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: x.Value}, Pkg: mt.Pkg, File: mt.File, Binds: mt.Binds}
+				}
+				return vs, nil
 			}
 			return mapValues(goNative(args[0])), nil
 		}},
@@ -1463,12 +1472,17 @@ func (e *Engine) installStdlib() {
 			return runtime.NIL, nil
 		}},
 		"Equal": &runtime.BuiltinFunc{Name: "maps.Equal", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			a, _ := args[0].(*runtime.Map)
-			b, _ := args[1].(*runtime.Map)
-			if a == nil || b == nil {
-				return args[0] == args[1], nil // nil == nil
+			if len(args) != 2 {
+				return nil, fmt.Errorf("maps.Equal needs 2 args, got %d", len(args))
 			}
-			if len(a.Pairs) != len(b.Pairs) {
+			// a nil map (or anything else that is no script map) holds
+			// no pairs: maps.Equal(nilMap, map[K]V{}) is true.
+			a, _ := runtime.Unwrap(args[0]).(*runtime.Map)
+			b, _ := runtime.Unwrap(args[1]).(*runtime.Map)
+			if a == nil || b == nil {
+				return (a == nil || a.Len() == 0) && (b == nil || b.Len() == 0), nil
+			}
+			if a.Len() != b.Len() {
 				return false, nil
 			}
 			// values compare with Go's == at the declared value type: a
@@ -7117,15 +7131,8 @@ func scriptMapKeys(vc runtime.VMCaller, v runtime.Value) (*runtime.Slice, bool) 
 // mapKeyType resolves the declared key type of a map typedef — the
 // typedef and its type expression; nil when td spells no map type.
 func mapKeyType(vc runtime.VMCaller, td *runtime.TypeDef) (*runtime.TypeDef, ast.Expr) {
-	if td == nil {
-		return nil, nil
-	}
-	x := td.Anon
-	if x == nil && td.Spec != nil {
-		x = td.Spec.Type
-	}
-	mt, ok := x.(*ast.MapType)
-	if !ok {
+	mt := mapTypeExpr(td)
+	if mt == nil {
 		return nil, nil
 	}
 	kt, err := vc.ResolveType(td, mt.Key)
@@ -7133,6 +7140,20 @@ func mapKeyType(vc runtime.VMCaller, td *runtime.TypeDef) (*runtime.TypeDef, ast
 		return nil, nil
 	}
 	return kt, mt.Key
+}
+
+// mapTypeExpr is the map type expression a map typedef spells — its
+// own anonymous `map[K]V` or a named type's declaration; nil otherwise.
+func mapTypeExpr(td *runtime.TypeDef) *ast.MapType {
+	if td == nil {
+		return nil
+	}
+	x := td.Anon
+	if x == nil && td.Spec != nil {
+		x = td.Spec.Type
+	}
+	mt, _ := x.(*ast.MapType)
+	return mt
 }
 
 func mapKeys(v any) *runtime.Slice {

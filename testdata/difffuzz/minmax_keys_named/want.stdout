@@ -6,3 +6,4 @@ March March
 [---------- d---------]
 main.M [2 4]
 [L--------- d---------]
+[]int []fs.FileMode [1 3]

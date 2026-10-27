@@ -50,4 +50,5 @@ func main() {
 	fmt.Printf("%T %v\n", mk[0], mk)
 	vs := slices.Sorted(maps.Values(map[string]fs.FileMode{"d": m, "l": fs.ModeSymlink}))
 	fmt.Println(vs)
+	fmt.Printf("%T %T %v\n", slices.Sorted(maps.Values(map[string]int{})), vs, slices.Sorted(maps.Values(map[int]M{1: 3, 2: 1})))
 }
