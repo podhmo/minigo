@@ -4834,6 +4834,14 @@ func deepHost(v runtime.Value, vc runtime.VMCaller, h *hostMarshal) runtime.Valu
 			*runtime.BoundMethod, *runtime.BuiltinFunc:
 			return v
 		}
+		// a bound host scalar (time.Duration, time.Month) crosses as
+		// the host type — its int64 or constant payload alone would
+		// reach the callee as a bare int64, losing String and %T.
+		if x.Typ != nil && x.Typ.HostScalar != nil {
+			if hv, ok := runtime.HostScalarOf(x.Typ, x.V); ok {
+				return hv
+			}
+		}
 		return deepHost(x.V, vc, h)
 	case *runtime.GoValue:
 		return x.V

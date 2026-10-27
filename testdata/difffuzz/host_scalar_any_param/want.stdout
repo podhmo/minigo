@@ -1,0 +1,17 @@
+5ns time.Duration
+7ns time.Duration
+March time.Month
+March time.Month
+9ns time.Duration
+Monday time.Weekday
+1s time.Duration
+5ns time.Duration
+7ns time.Duration
+March time.Month
+March time.Month
+Tuesday time.Weekday
+7ns April time.Duration time.Month
+2ns %!Month(0) time.Duration time.Month
+1ns/time.Duration 7ns/time.Duration 1s/time.Duration 
+Friday/time.Weekday Tuesday/time.Weekday 
+May/time.Month June/time.Month 
