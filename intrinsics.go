@@ -353,31 +353,31 @@ func (e *Engine) installStdlib() {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("strings.Lines needs 1 arg")
 			}
-			return seqOf("strings.Lines", strPieces(slices.Collect(strings.Lines(str(args[0]))))), nil
+			return e.typedSeq(seqOf("strings.Lines", strPieces(slices.Collect(strings.Lines(str(args[0]))))), runtime.BasicTypedef("string")), nil
 		}},
 		"SplitSeq": &runtime.BuiltinFunc{Name: "strings.SplitSeq", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("strings.SplitSeq needs 2 args")
 			}
-			return seqOf("strings.SplitSeq", strPieces(slices.Collect(strings.SplitSeq(str(args[0]), str(args[1]))))), nil
+			return e.typedSeq(seqOf("strings.SplitSeq", strPieces(slices.Collect(strings.SplitSeq(str(args[0]), str(args[1]))))), runtime.BasicTypedef("string")), nil
 		}},
 		"SplitAfterSeq": &runtime.BuiltinFunc{Name: "strings.SplitAfterSeq", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("strings.SplitAfterSeq needs 2 args")
 			}
-			return seqOf("strings.SplitAfterSeq", strPieces(slices.Collect(strings.SplitAfterSeq(str(args[0]), str(args[1]))))), nil
+			return e.typedSeq(seqOf("strings.SplitAfterSeq", strPieces(slices.Collect(strings.SplitAfterSeq(str(args[0]), str(args[1]))))), runtime.BasicTypedef("string")), nil
 		}},
 		"FieldsSeq": &runtime.BuiltinFunc{Name: "strings.FieldsSeq", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("strings.FieldsSeq needs 1 arg")
 			}
-			return seqOf("strings.FieldsSeq", strPieces(slices.Collect(strings.FieldsSeq(str(args[0]))))), nil
+			return e.typedSeq(seqOf("strings.FieldsSeq", strPieces(slices.Collect(strings.FieldsSeq(str(args[0]))))), runtime.BasicTypedef("string")), nil
 		}},
 		"FieldsFuncSeq": &runtime.BuiltinFunc{Name: "strings.FieldsFuncSeq", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("strings.FieldsFuncSeq needs 2 args")
 			}
-			return seqOf("strings.FieldsFuncSeq", strPieces(strings.FieldsFunc(str(args[0]), runePred(v, args[1])))), nil
+			return e.typedSeq(seqOf("strings.FieldsFuncSeq", strPieces(strings.FieldsFunc(str(args[0]), runePred(v, args[1])))), runtime.BasicTypedef("string")), nil
 		}},
 		"IndexAny":     h.fn2("strings.IndexAny", func(a []any) (any, error) { return strings.IndexAny(str(a[0]), str(a[1])), nil }),
 		"IndexByte":    h.fn2("strings.IndexByte", func(a []any) (any, error) { return strings.IndexByte(str(a[0]), byte(intOf(a[1]))), nil }),
@@ -1190,7 +1190,7 @@ func (e *Engine) installStdlib() {
 			return runtime.NIL, nil
 		}},
 	})
-	e.Bind("slices", map[string]runtime.Value{
+	e.Bind("slices", e.slicesSeqHelpers(map[string]runtime.Value{
 		"Sort": h.sortInPlace("slices.Sort"),
 		"Contains": &runtime.BuiltinFunc{Name: "slices.Contains", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			i, err := sliceIndexScript(vc, "slices.Contains", args)
@@ -1256,17 +1256,6 @@ func (e *Engine) installStdlib() {
 			el := scriptElems(a[0])
 			return sort.SliceIsSorted(el, func(i, j int) bool { return lessScript(el[i], el[j]) }), nil
 		}),
-		"Sorted": &runtime.BuiltinFunc{Name: "slices.Sorted", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			if len(args) != 1 {
-				return nil, fmt.Errorf("slices.Sorted needs 1 arg")
-			}
-			el, err := seqElems(vc, args[0])
-			if err != nil {
-				return nil, fmt.Errorf("slices.Sorted: %w", err)
-			}
-			sort.Slice(el, func(i, j int) bool { return lessScript(el[i], el[j]) })
-			return &runtime.Slice{Elems: el, Typ: sliceTypOf(args[0])}, nil
-		}},
 		"DeleteFunc": &runtime.BuiltinFunc{Name: "slices.DeleteFunc", SyncCallbacks: true, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("slices.DeleteFunc needs 2 args")
@@ -1495,36 +1484,8 @@ func (e *Engine) installStdlib() {
 			el := slices.Delete(s.Elems, int(i), int(j))
 			return &runtime.Slice{Elems: el, Typ: s.Typ}, nil
 		}},
-	})
-	e.Bind("maps", map[string]runtime.Value{
-		"Keys": &runtime.BuiltinFunc{Name: "maps.Keys", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			if len(args) != 1 {
-				return nil, fmt.Errorf("maps.Keys needs 1 arg, got %d", len(args))
-			}
-			if ks, ok := scriptMapKeys(vc, args[0]); ok {
-				return ks, nil
-			}
-			return mapKeys(goNative(args[0])), nil
-		}},
-		"Values": &runtime.BuiltinFunc{Name: "maps.Values", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			if len(args) != 1 {
-				return nil, fmt.Errorf("maps.Values needs 1 arg, got %d", len(args))
-			}
-			if m, ok := runtime.Unwrap(args[0]).(*runtime.Map); ok {
-				// the script map's own values keep their declared type,
-				// and the result is typed []V
-				vs := mapValues(args[0])
-				mt := runtime.TagOf(args[0])
-				if mt == nil {
-					mt = m.Typ
-				}
-				if x := mapTypeExpr(mt); x != nil {
-					vs.Typ = &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: x.Value}, Pkg: mt.Pkg, File: mt.File, Binds: mt.Binds}
-				}
-				return vs, nil
-			}
-			return mapValues(goNative(args[0])), nil
-		}},
+	}))
+	e.Bind("maps", e.mapsSeqHelpers(map[string]runtime.Value{
 		"Clone": &runtime.BuiltinFunc{Name: "maps.Clone", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("maps.Clone needs 1 arg")
@@ -1599,7 +1560,7 @@ func (e *Engine) installStdlib() {
 			}
 			return true, nil
 		}},
-	})
+	}))
 	// os: an interpreted program must never observe or terminate the host
 	// process — Exit unwinds out as a process exit; the environment/argv surface is only
 	// bound when the engine is unrestricted (no AllowedRoots). File-system
@@ -5071,11 +5032,11 @@ func seqElems(vc runtime.VMCaller, v runtime.Value) ([]runtime.Value, error) {
 		return append([]runtime.Value{}, s.Elems...), nil
 	}
 	var out []runtime.Value
-	yield := &runtime.BuiltinFunc{Name: "seq yield", Fn: func(_ runtime.VMCaller, ya []runtime.Value) (runtime.Value, error) {
+	yield := collector(func(ya []runtime.Value) error {
 		out = append(out, ya...)
-		return true, nil
-	}}
-	if _, err := vc.Call(v, []runtime.Value{yield}); err != nil {
+		return nil
+	})
+	if err := driveSeq(vc, v, yield); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -5095,21 +5056,17 @@ func strPieces(ss []string) []runtime.Value {
 // loop body executes inside each yield call, so early exit just reports
 // false back. Pieces are materialized up front; laziness is unobservable
 // from a script.
-func seqOf(name string, pieces []runtime.Value) runtime.Value {
-	return &runtime.BuiltinFunc{Name: "iter.Seq(" + name + ")", Fn: func(vc runtime.VMCaller, ya []runtime.Value) (runtime.Value, error) {
+func seqOf(name string, pieces []runtime.Value) *runtime.BuiltinFunc {
+	return &runtime.BuiltinFunc{Name: seqNamePrefix + name + ")", SyncCallbacks: true, Fn: func(vc runtime.VMCaller, ya []runtime.Value) (runtime.Value, error) {
 		if len(ya) != 1 {
 			return nil, fmt.Errorf("%s: Seq needs a yield func", name)
 		}
 		for _, p := range pieces {
-			r, err := vc.Call(ya[0], []runtime.Value{p})
-			if err != nil {
-				return nil, err
-			}
-			if goon, ok := r.(bool); ok && !goon {
-				return false, nil
+			if goon, err := callYield(vc, ya[0], p); err != nil || !goon {
+				return runtime.NIL, err
 			}
 		}
-		return true, nil
+		return runtime.NIL, nil
 	}}
 }
 
@@ -7478,36 +7435,6 @@ func sliceExtreme(vc runtime.VMCaller, name string, args []runtime.Value, better
 		}
 	}
 	return best, nil
-}
-
-// scriptMapKeys is maps.Keys over a script map: a typed map stores its
-// keys untagged, so each converts back to the declared key type (a
-// map[fs.FileMode]bool yields FileModes, not their payloads); an
-// interface-keyed map's keys already carry their dynamic types. ok is
-// false for anything but a script map.
-func scriptMapKeys(vc runtime.VMCaller, v runtime.Value) (*runtime.Slice, bool) {
-	mt := runtime.TagOf(v)
-	m, ok := runtime.Unwrap(v).(*runtime.Map)
-	if !ok {
-		return nil, false
-	}
-	if mt == nil {
-		mt = m.Typ
-	}
-	keys := append([]runtime.Value{}, m.Order...)
-	kt, kx := mapKeyType(vc, mt)
-	if kt == nil {
-		return &runtime.Slice{Elems: keys}, true
-	}
-	if !m.IfaceKey && kt.Kind != runtime.KindInterface {
-		for i, k := range keys {
-			if ck, err := vc.Convert(kt, k); err == nil {
-				keys[i] = ck
-			}
-		}
-	}
-	st := &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: kx}, Pkg: mt.Pkg, File: mt.File, Binds: mt.Binds}
-	return &runtime.Slice{Elems: keys, Typ: st}, true
 }
 
 // mapKeyType resolves the declared key type of a map typedef — the

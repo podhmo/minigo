@@ -1,0 +1,38 @@
+key a
+value true
+iter.Seq[string] iter.Seq[bool]
+iter.Seq2[main.Color,time.Month]
+[]string [a b c]
+[]int [1 2 3]
+[a b c]
+3 3
+[]time.Month [January March]
+[]main.Color [blue red]
+[]main.Color [red blue]
+calls 1
+broke at 2
+iter.Seq[string] [A B C]
+[]int [1 2]
+0 0
+[]string [] true
+[]string [] true
+seen 1 1
+updated 42
+all 0 p
+all 1 q
+all 2 r
+back 2 r
+back 1 q
+iter.Seq[string] iter.Seq2[int,string] iter.Seq2[int,string]
+[o p q r]
+chunk []int [1 2]
+chunk []int [3 4]
+chunk []int [5]
+[]main.Pair [{b 1} {a 2} {c 2}]
+sum 6
+map[string]int map[a:1 b:2 c:3]
+1 0
+map[keep:0 x:9]
+map[int]string map[0:zero 1:one]
+map[main.Color]bool
+[only]
