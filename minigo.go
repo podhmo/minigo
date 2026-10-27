@@ -90,6 +90,10 @@ type Engine struct {
 	// sigMemo remembers interface-satisfaction signature comparisons
 	// for every VM of this engine (vm.Hooks.SigMemo).
 	sigMemo runtime.SigMemo
+
+	// iterSeqTds caches the iter.Seq / iter.Seq2 instantiations intrinsic
+	// seqs are tagged with (see iterSeqTd).
+	iterSeqTds sync.Map
 }
 
 // Option configures an Engine.

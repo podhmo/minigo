@@ -1,0 +1,6 @@
+html/template
+text/template
+text/template/parse
+encoding/json
+encoding/hex
+slices

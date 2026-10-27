@@ -1,0 +1,10 @@
+json: unsupported type: iter.Seq[string]
+json: unsupported type: iter.Seq[int]
+json: unsupported type: iter.Seq2[string,int]
+json: unsupported type: func(int) int
+json: unsupported type: func(int) int
+json: unsupported type: iter.Seq[bool]
+iter.Seq[string]
+iter.Seq[int]
+iter.Seq2[int,float64]
+iter.Seq2[string,uint8]

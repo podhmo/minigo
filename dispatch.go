@@ -880,6 +880,13 @@ func (e *Engine) instantiateRef(from *runtime.TypeDef, base *runtime.TypeDef, ar
 		}
 		binds[tp] = at
 	}
+	return e.instantiateBinds(base, binds)
+}
+
+// instantiateBinds builds the specialized typedef of generic base with
+// its type parameters bound to binds (param name → typedef), re-binding
+// every method so its body sees the concrete arguments.
+func (e *Engine) instantiateBinds(base *runtime.TypeDef, binds map[string]runtime.Value) *runtime.TypeDef {
 	td := &runtime.TypeDef{
 		Pkg: base.Pkg, Name: base.Name, File: base.File, Spec: base.Spec, Kind: base.Kind,
 		Fields: base.Fields, FTags: base.FTags, Anon: base.Anon, TParams: base.TParams,

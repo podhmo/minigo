@@ -1,0 +1,9 @@
+<1>
+<v>
+<0><1><2>
+<a><b>
+<x><y>
+<x=1>
+<0=p><1=q>
+[0]
+error: template: t4:1:13: executing "t4" at <.X>: can't evaluate field X in type int

@@ -36,6 +36,7 @@ import (
 	"math"
 	"math/big"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1565,6 +1566,72 @@ type Map struct {
 	// its keys hash by (dynamic type, value) ([IfaceKeyOf]). Set it
 	// when the map is made, before any insert.
 	IfaceKey bool
+	// shared marks Order/Keys as handed to an in-place walk
+	// ([Map.BeginWalk]): the next Delete copies them once (copy on
+	// write) instead of shifting them under the walker, and clears the
+	// flag — later deletes shift the private copy. Atomic because
+	// read-only walks may start from several goroutines at once.
+	shared atomic.Bool
+	// aliased marks a map whose storage another header shares
+	// ([Map.Header]): a removal through the other header does not count
+	// in this one's dels, so walks always look keys up.
+	aliased bool
+	// dels counts removals (Delete, Clear), so a walker can tell that
+	// every slot it walks is still present without a lookup.
+	dels uint64
+}
+
+// MapWalk is an in-place walk over a [Map]'s entries as they were when
+// it began — the allocation-free counterpart of [Map.SnapshotKeys]. An
+// entry inserted meanwhile is not produced, an entry deleted before its
+// turn is skipped, and values read live. It needs no release: the map
+// copies its order slices on the first Delete after the walk began.
+type MapWalk struct {
+	m         *Map
+	display   []Value
+	canonical []Value
+	dels      uint64
+}
+
+// Header returns a second header over m's storage — the map value Go
+// copies when it passes a map. Both headers alias the order slices, so
+// both are marked shared: a Delete through either copies them first.
+func (m *Map) Header() *Map {
+	m.shared.Store(true)
+	m.aliased = true
+	c := &Map{Pairs: m.Pairs, Order: m.Order, Keys: m.Keys, Typ: m.Typ, IfaceKey: m.IfaceKey, aliased: true}
+	c.shared.Store(true)
+	return c
+}
+
+// BeginWalk starts an in-place walk over m's entries.
+func (m *Map) BeginWalk() *MapWalk {
+	if !m.shared.Load() {
+		m.shared.Store(true)
+	}
+	return &MapWalk{m: m, display: m.Order, canonical: m.Keys, dels: m.dels}
+}
+
+// Len is the number of slots the walk covers.
+func (w *MapWalk) Len() int { return len(w.display) }
+
+// At returns slot i's script key and current value; ok is false when the
+// entry was removed since the walk began.
+func (w *MapWalk) At(i int) (k, v Value, ok bool) {
+	ck := w.canonical[i]
+	v, ok = w.m.Pairs[ck]
+	return w.display[i], v, ok
+}
+
+// Key returns slot i's script key; ok is false when the entry was
+// removed since the walk began. It skips the lookup while nothing was
+// removed.
+func (w *MapWalk) Key(i int) (Value, bool) {
+	if w.m.dels == w.dels && !w.m.aliased {
+		return w.display[i], true
+	}
+	_, ok := w.m.Pairs[w.canonical[i]]
+	return w.display[i], ok
 }
 
 // canonicalKey is the key k stores under in m.
@@ -1635,8 +1702,18 @@ func (m *Map) Delete(k Value) bool {
 		return false
 	}
 	delete(m.Pairs, ck)
+	m.dels++
 	for i := range m.Order {
 		if m.Keys[i] == ck {
+			if m.shared.Load() {
+				// a walk holds the current arrays: drop the slot into
+				// fresh ones instead of shifting under it. The copy is
+				// private, so later deletes shift it in place.
+				m.Order = slices.Delete(slices.Clone(m.Order), i, i+1)
+				m.Keys = slices.Delete(slices.Clone(m.Keys), i, i+1)
+				m.shared.Store(false)
+				break
+			}
 			m.Order = append(m.Order[:i], m.Order[i+1:]...)
 			m.Keys = append(m.Keys[:i], m.Keys[i+1:]...)
 			break
@@ -1650,6 +1727,7 @@ func (m *Map) Clear() {
 	m.Pairs = map[Value]Value{}
 	m.Order = nil
 	m.Keys = nil
+	m.dels++
 }
 
 // Chan is a channel value backed by a Go channel of [Value]: sends and
@@ -2025,6 +2103,25 @@ type BuiltinFunc struct {
 	// marker, so a script variadic parameter downstream still binds to
 	// the caller's slice.
 	Forwards bool
+	// Seq marks an intrinsic iter.Seq / iter.Seq2 producer and gives
+	// Go-side consumers a native way to drive it, skipping the VM call
+	// boundary Fn goes through. Nil for every other builtin.
+	Seq *SeqSource
+	// DirectYield marks a yield func (the range-over-func loop body)
+	// whose Fn a Go-side producer may call directly instead of through
+	// VMCaller.Call; it reads its arguments before returning and keeps
+	// no reference to the slice.
+	DirectYield bool
+}
+
+// SeqSource is the native side of an intrinsic seq builtin.
+type SeqSource struct {
+	// Each drives the seq: yield receives one element's values (the
+	// slice is reused between calls) and returns false to stop.
+	Each func(vc VMCaller, yield func(args []Value) bool) error
+	// Collect, when set, returns all elements of a single-value seq at
+	// once — a fast path for consumers like slices.Collect.
+	Collect func(vc VMCaller) []Value
 }
 
 // SmallIntOf converts a host value of any integer kind, including named
