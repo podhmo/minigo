@@ -76,12 +76,6 @@ func (w *Walk) Register(v Value, out any) {
 	w.seen[v] = out
 }
 
-// Forget drops what [Walk.Register] recorded for v — a caller that gave
-// up on a partial projection falls back to another shape.
-func (w *Walk) Forget(v Value) {
-	delete(w.seen, v)
-}
-
 // Peel records that the walk follows the reference v. It reports false
 // when v was already followed, meaning the caller has found a cycle and
 // should stop.
