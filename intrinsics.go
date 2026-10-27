@@ -3469,6 +3469,12 @@ const (
 	atomicOpCAS
 )
 
+// atomicMu serializes the read-modify-write of every atomicOp: a script
+// pointer has no host address to run a hardware atomic on, so one lock
+// makes each Load/Store/Add/And/Or/Swap/CompareAndSwap indivisible
+// against all the others.
+var atomicMu sync.Mutex
+
 // atomicOp builds one of the bound sync/atomic *T-pointer functions.
 // A script &x has no host address, so the builtins load and store the
 // pointed-to cell through Deref/SetRef; arithmetic happens in the int64
@@ -3496,16 +3502,6 @@ func atomicOp(name string, op atomicOpKind) *runtime.BuiltinFunc {
 		if len(args) != want {
 			return nil, fmt.Errorf("%s needs %d args, got %d", name, want, len(args))
 		}
-		cur, ok := runtime.Deref(args[0])
-		if !ok {
-			return nil, fmt.Errorf("%s needs a pointer operand, got %T", name, args[0])
-		}
-		set := func(v runtime.Value) error {
-			if !runtime.SetRef(args[0], v) {
-				return fmt.Errorf("%s needs a pointer operand, got %T", name, args[0])
-			}
-			return nil
-		}
 		if wordTd != nil {
 			// every operand converts to the word type first: Go
 			// assigns it to the int32/uint32/... parameter.
@@ -3517,6 +3513,21 @@ func atomicOp(name string, op atomicOpKind) *runtime.BuiltinFunc {
 				}
 				args[i] = w
 			}
+		}
+		// the load, the computation and the store are one atomic step:
+		// script goroutines run on host goroutines, so a separate
+		// Deref/SetRef pair would lose concurrent updates.
+		atomicMu.Lock()
+		defer atomicMu.Unlock()
+		cur, ok := runtime.Deref(args[0])
+		if !ok {
+			return nil, fmt.Errorf("%s needs a pointer operand, got %T", name, args[0])
+		}
+		set := func(v runtime.Value) error {
+			if !runtime.SetRef(args[0], v) {
+				return fmt.Errorf("%s needs a pointer operand, got %T", name, args[0])
+			}
+			return nil
 		}
 		switch op {
 		case atomicOpLoad:
