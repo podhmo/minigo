@@ -855,21 +855,34 @@ func widenConstKind(u *runtime.UConst, args []runtime.Value) *runtime.UConst {
 // fs.ModeSymlink, or two host values — as their underlying payloads.
 // ok is false when either side is not such a value or the types differ.
 func hostNamedPayloads(a, b runtime.Value) (runtime.Value, runtime.Value, bool) {
-	pa, ra, aHost := runtime.HostNamedScalar(a)
-	pb, rb, bHost := runtime.HostNamedScalar(b)
+	pa, ra, aHost := hostScalarOf(a)
+	pb, rb, bHost := hostScalarOf(b)
 	switch {
 	case aHost && bHost:
 		return pa, pb, ra == rb
 	case aHost:
-		if n, ok := b.(*runtime.Named); ok && runtime.HostNamedIs(ra, n.Typ) {
-			return pa, n.V, true
+		if n, ok := b.(*runtime.Named); ok && runtime.HostTwinOf(ra, n.Typ) {
+			return pa, orderScalar(n.V), true
 		}
 	case bHost:
-		if n, ok := a.(*runtime.Named); ok && runtime.HostNamedIs(rb, n.Typ) {
-			return n.V, pb, true
+		if n, ok := a.(*runtime.Named); ok && runtime.HostTwinOf(rb, n.Typ) {
+			return orderScalar(n.V), pb, true
 		}
 	}
 	return nil, nil, false
+}
+
+// hostScalarOf reads a host named basic — boxed (GoValue) or the raw
+// host scalar a bound package's constant or method result carries
+// (time.Month from Time.Month) — as its payload and host type.
+func hostScalarOf(x runtime.Value) (runtime.Value, reflect.Type, bool) {
+	switch x.(type) {
+	case *runtime.GoValue:
+		return runtime.HostNamedScalar(x)
+	case *runtime.Named, *runtime.UConst, int64, float64, string, bool:
+		return nil, nil, false
+	}
+	return runtime.HostNamedPayload(x)
 }
 
 // orderedLess implements the builtin min/max comparison over ordered
