@@ -2774,7 +2774,7 @@ func (v *VM) loop(f *frame) {
 		case bytecode.OpBinary:
 			b := f.pop()
 			a := f.pop()
-			f.push(v.binaryOp(f, bytecode.BinOp(ins.A), a, b))
+			f.push(v.binaryOpFlags(f, bytecode.BinOp(ins.A), a, b, int(ins.B)))
 		case bytecode.OpUnary:
 			a := f.pop()
 			f.push(v.unaryOp(f, bytecode.UnOp(ins.A), a))
@@ -8768,6 +8768,12 @@ func isIfaceNilValue(x runtime.Value) bool {
 }
 
 func (v *VM) binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
+	return v.binaryOpFlags(f, op, a, b, 0)
+}
+
+// binaryOpFlags is binaryOp with the instruction's B flags
+// (bytecode.ShiftConstCount).
+func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flags int) runtime.Value {
 	// an interface-typed switch tag compares pairs, not coerced values.
 	if op == bytecode.BinEqlIface {
 		return v.ifaceEql(f, a, b)
@@ -8874,7 +8880,7 @@ func (v *VM) binaryOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.V
 				}
 			}
 		}
-		return v.shiftOp(f, op, a, b)
+		return v.shiftOp(f, op, a, b, flags&bytecode.ShiftConstCount != 0)
 	}
 	// named basic values operate on their underlying value; two different
 	// declared types in one operation is a type error (Go: `x + y` on
@@ -9237,14 +9243,17 @@ func constShift(lv constant.Value, op bytecode.BinOp, count uint64) (res constan
 // the result by the left side alone (the count is always an unsigned
 // count), so a uintptr/uint64 value shifts logically while int64 shifts
 // arithmetically. A declared-width operand re-tags and re-masks.
-func (v *VM) shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value) runtime.Value {
+func (v *VM) shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value, staticConst bool) runtime.Value {
 	var count uint64
 	var countOK bool
 	// a constant count — untyped or typed — keeps a constant left
 	// operand's shift a constant expression; any other count makes it
-	// a non-constant shift (`1 << n` for a variable n).
+	// a non-constant shift (`1 << n` for a variable n). The compiler
+	// knows statically (staticConst): a typed constant count arrives
+	// as a plain typed value (`const T uint = 3`, `len("abc")`), which
+	// the value alone cannot tell from a variable.
 	cu, countConst := constPayload(b)
-	countConst = countConst && !cu.Wrap
+	countConst = staticConst || (countConst && !cu.Wrap)
 	if uc, isU := b.(*runtime.UConst); isU {
 		// an untyped constant count is legal whenever it is
 		// representable as an unsigned integer (`x << (M+0)` with M =

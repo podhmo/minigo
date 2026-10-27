@@ -2786,6 +2786,154 @@ func defaultLitTyp(lit *ast.BasicLit) *ast.Ident {
 	return nil
 }
 
+// isConstExpr reports whether e is statically one of Go's constant
+// expressions: literals, const-bound names (local, package-level or
+// package-qualified, typed or not), operators and basic-type
+// conversions over constants, and the builtins whose result is
+// constant — len/cap of a constant string or of an array that calls
+// nothing, unsafe.Sizeof/Alignof/Offsetof, and min/max/real/imag/
+// complex over constants. It under-approximates: an unresolvable
+// shape reports false, and the VM still treats an operand that
+// arrives as an untyped constant as constant. The shift op reads it
+// to tell `1 << T` (T a typed constant: an untyped-constant result)
+// from `1 << n` (n a variable: the left operand takes the context's
+// type).
+func (c *compiler) isConstExpr(e ast.Expr) bool {
+	return c.isConstExprDepth(e, 16)
+}
+
+func (c *compiler) isConstExprDepth(e ast.Expr, depth int) bool {
+	if depth <= 0 || e == nil {
+		return false
+	}
+	switch x := ast.Unparen(e).(type) {
+	case *ast.BasicLit:
+		return true
+	case *ast.Ident:
+		if b := c.fs.lookupBinding(x.Name); b != nil {
+			return b.constDecl || b.untypedConst
+		}
+		if _, isUp := c.fs.upmap[x.Name]; isUp {
+			return false
+		}
+		if _, bound := c.binds[x.Name]; bound {
+			return false
+		}
+		if c.pkg != nil && c.pkg.Index != nil {
+			ix := c.pkg.Index
+			if ix.Consts[x.Name] != nil {
+				return true
+			}
+			if ix.Vars[x.Name] != nil || ix.Funcs[x.Name] != nil || ix.Types[x.Name] != nil {
+				return false
+			}
+		}
+		switch x.Name {
+		case "true", "false", "iota":
+			return true
+		}
+		return false
+	case *ast.SelectorExpr:
+		id, ok := x.X.(*ast.Ident)
+		if !ok || c.fs.lookupBinding(id.Name) != nil {
+			return false
+		}
+		ref, isPkg := c.importRef(id.Name)
+		if !isPkg {
+			return false
+		}
+		p, err := ref.Materialize()
+		if err != nil || p == nil {
+			return false
+		}
+		if p.Index != nil && p.Index.Consts[x.Sel.Name] != nil {
+			return true
+		}
+		if p.Globals != nil {
+			if v, ok := p.Globals.Get(x.Sel.Name); ok {
+				_, isU := v.(*runtime.UConst)
+				return isU
+			}
+		}
+		return false
+	case *ast.UnaryExpr:
+		switch x.Op {
+		case token.ADD, token.SUB, token.XOR, token.NOT:
+			return c.isConstExprDepth(x.X, depth-1)
+		}
+		return false
+	case *ast.BinaryExpr:
+		return c.isConstExprDepth(x.X, depth-1) && c.isConstExprDepth(x.Y, depth-1)
+	case *ast.CallExpr:
+		if x.Ellipsis.IsValid() {
+			return false
+		}
+		if c.conversionCall(x) {
+			if len(x.Args) != 1 {
+				return false
+			}
+			// only a conversion to a basic type keeps a constant
+			// (`[]byte("s")` does not).
+			te := c.unfoldTypExpr(x.Fun, 8)
+			id, ok := te.(*ast.Ident)
+			if !ok || !predeclaredTypeNames[id.Name] || id.Name == "error" || id.Name == "any" {
+				return false
+			}
+			if fid, isID := ast.Unparen(x.Fun).(*ast.Ident); isID && fid == id && c.declared(id.Name) {
+				return false
+			}
+			return c.isConstExprDepth(x.Args[0], depth-1)
+		}
+		switch f := ast.Unparen(x.Fun).(type) {
+		case *ast.Ident:
+			if c.declared(f.Name) || len(x.Args) == 0 {
+				return false
+			}
+			switch f.Name {
+			case "len", "cap":
+				if len(x.Args) != 1 {
+					return false
+				}
+				arg := x.Args[0]
+				if f.Name == "len" && c.isConstExprDepth(arg, depth-1) {
+					return true // len of a constant string
+				}
+				if c.lenOperandCalls(arg) {
+					return false
+				}
+				te := c.unfoldTypExpr(c.staticOpTyp(arg).te, 8)
+				if st, isPtr := te.(*ast.StarExpr); isPtr {
+					te = c.unfoldTypExpr(st.X, 8)
+				}
+				at, isArr := te.(*ast.ArrayType)
+				return isArr && at.Len != nil
+			case "min", "max", "real", "imag", "complex":
+				for _, a := range x.Args {
+					if !c.isConstExprDepth(a, depth-1) {
+						return false
+					}
+				}
+				return true
+			}
+		case *ast.SelectorExpr:
+			switch f.Sel.Name {
+			case "Sizeof", "Alignof", "Offsetof":
+			default:
+				return false
+			}
+			id, ok := f.X.(*ast.Ident)
+			if !ok || c.fs.lookupBinding(id.Name) != nil || len(c.binds) > 0 {
+				// inside a generic body the operand's size may
+				// depend on a type parameter: not constant.
+				return false
+			}
+			ref, isPkg := c.importRef(id.Name)
+			return isPkg && ref.Path == "unsafe" && len(x.Args) == 1
+		}
+	}
+	return false
+}
+
 // typeSpecOf resolves a type expression to its declaring TypeSpec — a
 // local or package-level named type. Predeclared types, qualified host
 // types, type parameters, and unnamed forms have no spec.
@@ -4967,7 +5115,15 @@ func (c *compiler) binary(x *ast.BinaryExpr) {
 			}
 			return
 		}
-		c.emit(bytecode.OpBinary, int(op), 0, x.Pos())
+		flag := 0
+		if (op == bytecode.BinShl || op == bytecode.BinShr) && c.isConstExpr(x.Y) {
+			// a constant count keeps an untyped-constant left operand's
+			// shift a constant expression — the VM cannot tell a typed
+			// constant count (`const T uint = 3`, `len("abc")`,
+			// `bits.UintSize`) from a variable by its value.
+			flag = bytecode.ShiftConstCount
+		}
+		c.emit(bytecode.OpBinary, int(op), flag, x.Pos())
 	}
 }
 
@@ -5613,6 +5769,12 @@ func (c *compiler) hoistedArgCalls(e ast.Expr) (calls []ast.Expr, ok bool) {
 		case *ast.CallExpr:
 			if c.conversionCall(t) {
 				return true // transparent op — descend into its args
+			}
+			if c.isConstExpr(t) {
+				// a constant call (`len("abc")`, `max(T, 3)`,
+				// `unsafe.Sizeof(x)`) evaluates nothing; it stays
+				// inline so a shift still sees its count as constant.
+				return false
 			}
 			calls = append(calls, t)
 			return false
