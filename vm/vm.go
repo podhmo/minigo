@@ -14553,6 +14553,10 @@ func (v *VM) inferBinds(fn *runtime.Function, args []runtime.Value, statics []*r
 			v.unifyTypeDef(ctx, tset, binds, et, spreadTd)
 		}
 	}
+	// Core-type inference runs before the constants' defaults, like
+	// Go's: in `has([]uint8{0}, 0)` with `S ~[]E`, S teaches E=uint8,
+	// and the constant 0 then converts to it instead of pinning E=int.
+	v.inferCoreTypes(ctx, tset, binds, fn.TParams, fn.TConstraints)
 	// Deferred untyped-constant contributors now bind their tparam to
 	// the widest kind's default type ('a' + 2.3 → float64, 3 + 'a' →
 	// rune). A tparam already bound by a real-typed argument keeps that
