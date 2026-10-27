@@ -66,7 +66,12 @@ func (e *Engine) methodInfoOfValue(v runtime.Value) (map[string]bool, map[string
 			}
 			if n.Typ != nil && n.Typ.HostScalar != nil && len(n.Typ.Methods) == 0 {
 				// a bound host scalar (time.Duration) exposes the raw
-				// host value's reflect method set.
+				// host value's reflect method set. A payload still in
+				// script shape (time.Month's int64) materializes to the
+				// host type first so String and friends show up.
+				if hv, ok := runtime.HostScalarOf(n.Typ, n.V); ok {
+					return hostMethodSet(hv), nil, false, nil
+				}
 				return hostMethodSet(runtime.Unwrap(n.V)), nil, false, nil
 			}
 			if n.Typ != nil && n.Typ.HostNew != nil && n.Typ.Kind == runtime.KindNamedBasic && len(n.Typ.Methods) == 0 {

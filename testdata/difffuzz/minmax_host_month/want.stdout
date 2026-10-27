@@ -2,4 +2,6 @@ March March March March
 March January
 time.Month time.Month
 May January
+Friday Monday Saturday
+time.Weekday
 5s 1s

@@ -2256,6 +2256,11 @@ func (e *Engine) installStdlib() {
 	monthConst := func(m time.Month) runtime.Value {
 		return &runtime.Named{Typ: monthTD, V: int64(m)}
 	}
+	// weekdayTD mirrors monthTD for time.Weekday and Sunday..Saturday.
+	weekdayTD := &runtime.TypeDef{Name: "time.Weekday", Kind: runtime.KindNamedBasic, Anon: ast.NewIdent("int"), HostScalar: time.Weekday(0)}
+	weekdayConst := func(d time.Weekday) runtime.Value {
+		return &runtime.Named{Typ: weekdayTD, V: int64(d)}
+	}
 	e.Bind("time", map[string]runtime.Value{
 		// *time.ParseError: errors.As / type asserts on Parse's error.
 		"ParseError": hostType("time.ParseError", func() any { return &time.ParseError{} }),
@@ -2324,6 +2329,14 @@ func (e *Engine) installStdlib() {
 		"October":   monthConst(time.October),
 		"November":  monthConst(time.November),
 		"December":  monthConst(time.December),
+		"Weekday":   weekdayTD,
+		"Sunday":    weekdayConst(time.Sunday),
+		"Monday":    weekdayConst(time.Monday),
+		"Tuesday":   weekdayConst(time.Tuesday),
+		"Wednesday": weekdayConst(time.Wednesday),
+		"Thursday":  weekdayConst(time.Thursday),
+		"Friday":    weekdayConst(time.Friday),
+		"Saturday":  weekdayConst(time.Saturday),
 		"Location":  hostType("time.Location", func() any { return time.Local }),
 		"UTC":       &runtime.GoValue{V: time.UTC},
 		"Local":     &runtime.GoValue{V: time.Local},
