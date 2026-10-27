@@ -66,7 +66,12 @@ func (e *Engine) methodInfoOfValue(v runtime.Value) (map[string]bool, map[string
 			}
 			if n.Typ != nil && n.Typ.HostScalar != nil && len(n.Typ.Methods) == 0 {
 				// a bound host scalar (time.Duration) exposes the raw
-				// host value's reflect method set.
+				// host value's reflect method set. A payload still in
+				// script shape (time.Month's int64) materializes to the
+				// host type first so String and friends show up.
+				if hv, ok := runtime.HostScalarOf(n.Typ, n.V); ok {
+					return hostMethodSet(hv), nil, false, nil
+				}
 				return hostMethodSet(runtime.Unwrap(n.V)), nil, false, nil
 			}
 			if n.Typ != nil && n.Typ.HostNew != nil && n.Typ.Kind == runtime.KindNamedBasic && len(n.Typ.Methods) == 0 {
@@ -233,6 +238,14 @@ func (e *Engine) typeMethodInfoU(td *runtime.TypeDef, ptr bool) (map[string]bool
 			set[t.Method(i).Name] = true
 		}
 		return set, funcs, unsure, nil
+	}
+	if td.HostScalar != nil && len(td.Methods) == 0 {
+		// a bound host scalar (time.Month, time.Duration) offers its
+		// host type's reflect set, so dynamic checks on a constant or
+		// conversion (`any(time.March).(fmt.Stringer)`) see String
+		// just like a value a host call returned. A script `type M
+		// time.Month` is a fresh typedef without HostScalar.
+		return hostMethodSet(td.HostScalar), funcs, unsure, nil
 	}
 	return names, funcs, unsure, nil
 }
