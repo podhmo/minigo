@@ -7233,23 +7233,47 @@ func (v *VM) mapKeyOperand(f *frame, td *runtime.TypeDef, idx runtime.Value) run
 			// yields it typed.
 			return k
 		}
+		u := runtime.Unwrap(k)
+		if n, ok := k.(*runtime.Named); ok && basicKeyPayload(u) {
+			// a named basic key (`map[K]V`, map[time.Month]V) keeps its
+			// tag: the map hashes the payload (runtime.CanonicalKey
+			// unwraps), while range, fmt and every reader of the
+			// stored key see a K, not the bare int.
+			return n
+		}
 		// a boxed host named basic under its twin's key type keys like
-		// the twin's values: m[as.Tok] finds m[token.DEFINE].
-		return unboxTwinScalar(runtime.Unwrap(k), kt)
+		// the twin's values: m[as.Tok] finds m[token.DEFINE] — and is
+		// stored as one, tagged like the twin's constants
+		// (m[t.Month()] ranges as a time.Month).
+		if !isGoValue(u) {
+			return u
+		}
+		p, rt, ok := runtime.HostNamedScalar(u)
+		if !ok || !runtime.HostTwinOf(rt, kt) {
+			return u
+		}
+		if kt.HostNew != nil {
+			// a bound host enum (reflect.Kind) holds GoValue boxes,
+			// not tagged payloads: keep the bare payload key.
+			return p
+		}
+		return runtime.Tag(kt, p)
 	}
 	return runtime.Unwrap(v.materialize(f, idx))
 }
 
-// unboxTwinScalar is the payload of x when x is a boxed host named basic
-// of the type td declares ([runtime.HostTwinOf]); x otherwise.
-func unboxTwinScalar(x runtime.Value, td *runtime.TypeDef) runtime.Value {
-	if !isGoValue(x) {
-		return x
+// basicKeyPayload reports whether x, a [runtime.Named] key's payload, is a
+// basic scalar — a script int64/string/... or a bound host scalar such as
+// a raw time.Month — rather than a composite or a host box.
+func basicKeyPayload(x runtime.Value) bool {
+	switch x.(type) {
+	case int64, string, float64, bool:
+		return true
+	case nil, *runtime.GoValue, *runtime.UConst:
+		return false
 	}
-	if p, rt, ok := runtime.HostNamedScalar(x); ok && runtime.HostTwinOf(rt, td) {
-		return p
-	}
-	return x
+	k := reflect.TypeOf(x).Kind()
+	return k <= reflect.Complex128 || k == reflect.String
 }
 
 // ifaceKeyed reports whether the map typedef td declares an interface
