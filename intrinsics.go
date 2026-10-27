@@ -1355,15 +1355,22 @@ func (e *Engine) installStdlib() {
 			default:
 				return nil, fmt.Errorf("slices.Grow: arg must be a slice")
 			}
-			// the spare capacity holds zeros like make's: a later
-			// s[:cap(s)] exposes it.
+			// gc grows through append — `append(s[:cap(s)],
+			// make([]E, n-(cap-len))...)[:len(s)]` — so the new cap
+			// follows append's growth rule (cap(Grow(make([]int, 5),
+			// 1)) is 10), the same host append the append builtin
+			// uses. The old spare keeps its contents; the fresh spare
+			// holds zeros, as growslice clears it.
+			full := elems[:cap(elems)]
+			grown := append(full, make([]runtime.Value, int(n)-(cap(elems)-len(elems)))...)
 			zero := vc.ElemZero(td)
-			grown := make([]runtime.Value, len(elems), len(elems)+int(n))
-			copy(grown, elems)
-			for i, all := len(elems), grown[:cap(grown)]; i < len(all); i++ {
+			if runtime.IsZeroSizeValue(zero) {
+				grown = grown[:len(grown):len(grown)]
+			}
+			for i, all := len(full), grown[:cap(grown)]; i < len(all); i++ {
 				all[i] = runtime.Copy(zero)
 			}
-			return retagSlice(args[0], &runtime.Slice{Elems: grown, Typ: td}), nil
+			return retagSlice(args[0], &runtime.Slice{Elems: grown[:len(elems)], Typ: td}), nil
 		}},
 		"Clip": &runtime.BuiltinFunc{Name: "slices.Clip", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {

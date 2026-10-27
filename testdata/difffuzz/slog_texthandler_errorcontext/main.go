@@ -58,6 +58,15 @@ func grow() {
 	fmt.Println(slices.Grow(n, 0) == nil, cap(slices.Grow(n, 3)) >= 3)
 	c := slices.Clip(make([]int, 1, 5))
 	fmt.Println(len(c), cap(c))
+	// gc grows through append: cap follows append's growth rule, and
+	// the old spare keeps its contents.
+	fmt.Println(cap(slices.Grow(make([]int, 5), 1)), cap(slices.Grow(make([]int, 5), 20)))
+	fmt.Println(cap(slices.Grow([]string{"a"}, 3)))
+	old := []int{1, 2, 3}[:1]
+	h := slices.Grow(old, 5)
+	fmt.Println(h, h[:cap(h)][:3], h[:cap(h)][cap(h)-1])
+	type Ints []int
+	fmt.Printf("%T %d\n", slices.Grow(Ints{1}, 2), cap(slices.Grow(Ints{1}, 2)))
 }
 
 func logs() {

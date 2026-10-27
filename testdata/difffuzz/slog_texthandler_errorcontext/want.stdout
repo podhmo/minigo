@@ -6,6 +6,10 @@ true true UTC
 [1 2] 2 true 0
 true true
 1 1
+10 26
+4
+[1] [1 2 3] 0
+main.Ints 3
 level=ERROR msg="error ctx" k=1
 level=ERROR msg=error err=boom
 level=INFO msg=info s="a b" f=1.5 b=true
