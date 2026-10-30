@@ -889,6 +889,22 @@ func (e *Engine) installStdlib() {
 		// malformed input, so `err.(*json.SyntaxError)` asserts on it.
 		"SyntaxError": hostType("encoding/json.SyntaxError", func() any { return &json.SyntaxError{} }),
 		"Unmarshaler": &runtime.TypeDef{Name: "encoding/json.Unmarshaler", Kind: runtime.KindInterface, MReqs: []string{"UnmarshalJSON"}},
+		"Encoder":     hostType("encoding/json.Encoder", func() any { return &jsonEncoder{enc: json.NewEncoder(io.Discard)} }),
+		// NewEncoder boxes a jsonEncoder — the wrapper, not the host
+		// *json.Encoder — so Encode can re-marshal its argument through
+		// goJSON: a script value reaches a host `any` parameter already
+		// projected, where struct tags and MarshalJSON dispatch would be
+		// lost (see jsonHostArg).
+		"NewEncoder": &runtime.BuiltinFunc{Name: "json.NewEncoder", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("json.NewEncoder needs 1 arg, got %d", len(args))
+			}
+			w, err := asWriterVM(v, args[0])
+			if err != nil {
+				return nil, err
+			}
+			return &runtime.GoValue{V: &jsonEncoder{c: v, enc: json.NewEncoder(w)}}, nil
+		}},
 		// Marshal/MarshalIndent take raw runtime args — h.fn's goNative
 		// would stringify *runtime.Struct before goJSON can field-map it.
 		"Marshal": &runtime.BuiltinFunc{Name: "json.Marshal", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -1932,6 +1948,18 @@ func (e *Engine) installStdlib() {
 				cmd.Dir = e.cwd
 				return &runtime.GoValue{V: cmd}, nil
 			}),
+			"CommandContext": h.fn("exec.CommandContext", func(a []any) (any, error) {
+				if len(a) < 2 {
+					return nil, errors.New("exec.CommandContext needs a context and a name")
+				}
+				ctx, err := asCtx(a[0])
+				if err != nil {
+					return nil, err
+				}
+				cmd := exec.CommandContext(ctx, str(a[1]), strSlice(a[2:])...)
+				cmd.Dir = e.cwd
+				return &runtime.GoValue{V: cmd}, nil
+			}),
 			"LookPath": h.fn1("exec.LookPath", func(a []any) (any, error) {
 				name := str(a[0])
 				// A separator-bearing relative name is checked against the
@@ -2124,6 +2152,17 @@ func (e *Engine) installStdlib() {
 			}
 			return nil, nil
 		}),
+		// AddCleanup is inert like SetFinalizer: the cleanup never fires
+		// without a GC, so the call only has to hand back a Cleanup
+		// handle whose Stop is a no-op (weak.Make-based registrars like
+		// Songmu/flagx call it once per FlagSet).
+		"AddCleanup": h.fn("runtime.AddCleanup", func(a []any) (any, error) {
+			if len(a) != 3 {
+				return nil, fmt.Errorf("runtime.AddCleanup needs 3 args, got %d", len(a))
+			}
+			return &runtime.GoValue{V: cleanupHandle{}}, nil
+		}),
+		"Cleanup":        hostType("runtime.Cleanup", func() any { return cleanupHandle{} }),
 		"MemProfileRate": &runtime.Cell{Elem: int64(512 * 1024)},
 		// liveness hints and heap profiling have no GC to act on —
 		// KeepAlive is a no-op; MemProfile reports no records.
@@ -5974,6 +6013,98 @@ func (e *jsonScriptErr) Error() string { return "json: script marshaler error" }
 func (e *jsonScriptErr) MarshalJSON() ([]byte, error) {
 	return nil, e
 }
+
+// jsonEncoder backs the bound encoding/json.Encoder: the host encoder
+// writes to the script-supplied writer while Encode re-marshals its
+// argument through goJSON, so a script struct gets Marshal's tag and
+// Marshaler fidelity (a raw *json.Encoder would see vm's host `any`
+// projection instead). SetIndent/SetEscapeHTML forward as-is.
+type jsonEncoder struct {
+	c   runtime.VMCaller
+	enc *json.Encoder
+}
+
+func (e *jsonEncoder) Encode(v any) error {
+	err := e.enc.Encode(goJSON(e.c, jsonHostArg(v)))
+	err = jsonUnsupportedOf(err)
+	var se *jsonScriptErr
+	if errors.As(err, &se) {
+		return jsonMarshalerErr(e.c, se)
+	}
+	return err
+}
+
+func (e *jsonEncoder) SetIndent(prefix, indent string) {
+	e.enc.SetIndent(prefix, indent)
+}
+
+func (e *jsonEncoder) SetEscapeHTML(on bool) {
+	e.enc.SetEscapeHTML(on)
+}
+
+// jsonHostArg recovers the script value a host `any` argument was
+// marshaled from: vm's reflect-call marshaling projects a script
+// struct to a named map carrying the original under the empty key
+// (unreachable through Go field syntax). Restoring the original lets
+// Encode apply goJSON — the projected map alone would lose tags,
+// omitempty and Marshaler dispatch. Container args (slices, maps)
+// walk element-wise for nested projections; values with no
+// projection pass through unchanged.
+func jsonHostArg(v any) any {
+	if orig, ok := projectedOrig(v); ok {
+		return orig
+	}
+	switch c := v.(type) {
+	case []any:
+		out := make([]any, len(c))
+		for i, e := range c {
+			out[i] = jsonHostArg(e)
+		}
+		return out
+	case map[any]any:
+		out := make(map[any]any, len(c))
+		for k, e := range c {
+			out[k] = jsonHostArg(e)
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(c))
+		for k, e := range c {
+			out[k] = jsonHostArg(e)
+		}
+		return out
+	}
+	return v
+}
+
+// projectedOrig reports the original script value a vm host `any`
+// projection carries under its empty key (scriptData's orig slot).
+// The projection's type is unexported, so detection is structural: a
+// string-keyed map with an original runtime.Value under "".
+func projectedOrig(v any) (runtime.Value, bool) {
+	rv := reflect.ValueOf(v)
+	if !rv.IsValid() || rv.Kind() != reflect.Map || rv.Type().Key().Kind() != reflect.String {
+		return nil, false
+	}
+	ov := rv.MapIndex(reflect.ValueOf(""))
+	if !ov.IsValid() {
+		return nil, false
+	}
+	// the orig slot holds the struct value or its pointer —
+	// scriptData stores only those two shapes.
+	switch orig := ov.Interface().(type) {
+	case *runtime.Struct, *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
+		return orig, true
+	}
+	return nil, false
+}
+
+// cleanupHandle is the runtime.Cleanup the bound AddCleanup returns:
+// the interpreter has no GC to fire cleanups, so the handle is an
+// inert token — Stop is a no-op.
+type cleanupHandle struct{}
+
+func (cleanupHandle) Stop() {}
 
 // jsonMarshalerErr renders gc's MarshalerError text for a script
 // MarshalJSON/MarshalText failure — `json: error calling MarshalJSON

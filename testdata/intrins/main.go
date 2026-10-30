@@ -13,6 +13,7 @@ import (
 	"io"
 	"math"
 	"net/url"
+	"os/exec"
 	"path"
 	"regexp"
 	goruntime "runtime"
@@ -700,6 +701,53 @@ func BufioReaderWriteToScript() string {
 		return "err"
 	}
 	return w.got
+}
+
+// JsonEncoderStream writes a tagged script struct through NewEncoder —
+// the writer adapts the host *bytes.Buffer, Encode re-marshals through
+// goJSON so `name`/`omitempty` apply, and SetIndent dispatch reaches
+// the boxed encoder.
+func JsonEncoderStream() string {
+	type rec struct {
+		Name string `json:"name"`
+		Skip string `json:"skip,omitempty"`
+	}
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(rec{Name: "n"}); err != nil {
+		return "err:" + err.Error()
+	}
+	return b.String() // "{\n  \"name\": \"n\"\n}\n"
+}
+
+// JsonEncoderScriptWriter feeds the encoder a script-defined writer —
+// the Write callback crosses back into the script.
+func JsonEncoderScriptWriter() string {
+	w := &scrSink{}
+	enc := json.NewEncoder(w)
+	if err := enc.Encode(map[string]int{"x": 1}); err != nil {
+		return "err"
+	}
+	return w.got // "{\"x\":1}\n"
+}
+
+// ExecCommandContext runs a real subprocess through the context
+// variant of Command.
+func ExecCommandContext() string {
+	out, err := exec.CommandContext(context.Background(), "echo", "hi").Output()
+	if err != nil {
+		return "err"
+	}
+	return strings.TrimSpace(string(out)) // "hi"
+}
+
+// RuntimeAddCleanup: the inert cleanup never fires without a GC; the
+// returned handle only has to accept Stop.
+func RuntimeAddCleanup() string {
+	c := goruntime.AddCleanup(new(int), func(k int) {}, 0)
+	c.Stop()
+	return "ok"
 }
 
 func main() {}

@@ -457,6 +457,10 @@ func TestStdlibIntrinsics(t *testing.T) {
 		{"ContextAfterFunc", "ok"},
 		{"IoCopyScriptPair", "copy-pair"},
 		{"BufioReaderWriteToScript", "via-writeto"},
+		{"JsonEncoderStream", "{\n  \"name\": \"n\"\n}\n"},
+		{"JsonEncoderScriptWriter", "{\"x\":1}\n"},
+		{"ExecCommandContext", "hi"},
+		{"RuntimeAddCleanup", "ok"},
 	}
 	for _, c := range cases {
 		got := run(t, e, "./testdata/intrins", c.fn)
