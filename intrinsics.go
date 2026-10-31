@@ -3383,7 +3383,13 @@ func proxyHostTypeOf(v any) reflect.Type {
 
 // Reset restarts the ticker like time.Ticker.Reset: a stopped feed
 // re-arms so parked receivers wake again.
+//
+// The interval is validated before the feed retires its pump: a
+// recovered panic must leave the ticker running, as in gc.
 func (b *tickerChanBox) Reset(d time.Duration) {
+	if d <= 0 {
+		panic("non-positive interval for Ticker.Reset")
+	}
 	b.feed.reset(func() bool { b.t.Reset(d); return false })
 }
 
