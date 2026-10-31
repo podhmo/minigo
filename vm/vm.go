@@ -3788,6 +3788,15 @@ func (v *VM) hostMember(hv any, name string) (runtime.Value, bool) {
 		return goSlotValueOf(fv), true
 	}
 	m := reflect.ValueOf(hv).MethodByName(name)
+	if sm, ok := hv.(runtime.ScriptMethoder); ok {
+		if fn, ok := sm.ScriptMethod(name); ok {
+			bf := &runtime.BuiltinFunc{Name: name, Fn: fn}
+			if m.IsValid() {
+				bf.Target = m.Interface()
+			}
+			return bf, true
+		}
+	}
 	if !m.IsValid() {
 		return nil, false
 	}

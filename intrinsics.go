@@ -48,7 +48,6 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
-	"unsafe"
 
 	"github.com/podhmo/minigo/minireflect"
 	"github.com/podhmo/minigo/runtime"
@@ -892,10 +891,8 @@ func (e *Engine) installStdlib() {
 		"Unmarshaler": &runtime.TypeDef{Name: "encoding/json.Unmarshaler", Kind: runtime.KindInterface, MReqs: []string{"UnmarshalJSON"}},
 		"Encoder":     hostType("encoding/json.Encoder", func() any { return &jsonEncoder{enc: json.NewEncoder(io.Discard)} }),
 		// NewEncoder boxes a jsonEncoder — the wrapper, not the host
-		// *json.Encoder — so Encode can re-marshal its argument through
-		// goJSON: a script value reaches a host `any` parameter already
-		// projected, where struct tags and MarshalJSON dispatch would be
-		// lost (see jsonHostArg).
+		// *json.Encoder — so Encode takes its raw script arg through
+		// goJSON like Marshal (see jsonEncoder.ScriptMethod).
 		"NewEncoder": &runtime.BuiltinFunc{Name: "json.NewEncoder", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("json.NewEncoder needs 1 arg, got %d", len(args))
@@ -5681,6 +5678,14 @@ func goJSONSeen(c runtime.VMCaller, v any, seen map[any]bool) any {
 		}
 		defer delete(seen, x)
 		return goJSONSeen(c, x.Elem, seen)
+	case *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
+		// a pointer to a field or element (`&s.F`, `&arr[i]`) encodes
+		// its pointee like any other pointer — passing the ref through
+		// would reflect on its bookkeeping fields.
+		if el, ok := runtime.Deref(x); ok {
+			return goJSONSeen(c, el, seen)
+		}
+		return nil
 	case *runtime.TypedNil, *runtime.IfaceNil:
 		// a nil pointer/interface field marshals as null — passing the
 		// wrapper through would reflect on its bookkeeping fields.
@@ -5766,17 +5771,6 @@ func goJSONSeen(c runtime.VMCaller, v any, seen map[any]bool) any {
 			m[str(k)] = goJSONSeen(c, e, seen)
 		}
 		return m
-	case map[string]any: // jsonHostArg's restored container copy
-		if len(x) > 0 {
-			if jsonSeen(seen, reflect.ValueOf(x).UnsafePointer()) {
-				return jsonCycle{}
-			}
-			defer delete(seen, reflect.ValueOf(x).UnsafePointer())
-		}
-		for k, e := range x {
-			x[k] = goJSONSeen(c, e, seen)
-		}
-		return x
 	case []any: // goNative's *runtime.Slice output
 		if len(x) > 0 {
 			if jsonSeen(seen, reflect.ValueOf(x).UnsafePointer()) {
@@ -6087,23 +6081,44 @@ func (e *jsonScriptErr) MarshalJSON() ([]byte, error) {
 }
 
 // jsonEncoder backs the bound encoding/json.Encoder: the host encoder
-// writes to the script-supplied writer while Encode re-marshals its
-// argument through goJSON, so a script struct gets Marshal's tag and
-// Marshaler fidelity (a raw *json.Encoder would see vm's host `any`
-// projection instead). SetIndent/SetEscapeHTML forward as-is.
+// writes to the script-supplied writer while Encode marshals its raw
+// script arg through goJSON exactly like json.Marshal. A reflected
+// Encode(v any) would see vm's host `any` projection instead — struct
+// tags, Marshaler dispatch and MarshalText map keys lost, typed
+// containers left unwalked, and the call's write-back replacing the
+// caller's script maps. SetIndent/SetEscapeHTML forward as-is.
 type jsonEncoder struct {
 	c   runtime.VMCaller
 	enc *json.Encoder
 }
 
-func (e *jsonEncoder) Encode(v any) error {
-	err := e.enc.Encode(goJSON(e.c, jsonHostArg(v)))
+// ScriptMethod routes Encode around the reflect call (runtime.ScriptMethoder).
+func (e *jsonEncoder) ScriptMethod(name string) (func(runtime.VMCaller, []runtime.Value) (runtime.Value, error), bool) {
+	if name != "Encode" {
+		return nil, false
+	}
+	return func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("json.Encoder.Encode needs 1 arg, got %d", len(args))
+		}
+		return errVal(e.encode(v, args[0])), nil
+	}, true
+}
+
+func (e *jsonEncoder) encode(c runtime.VMCaller, v runtime.Value) error {
+	err := e.enc.Encode(goJSON(c, v))
 	err = jsonUnsupportedOf(err)
 	var se *jsonScriptErr
 	if errors.As(err, &se) {
-		return jsonMarshalerErr(e.c, se)
+		return jsonMarshalerErr(c, se)
 	}
 	return err
+}
+
+// Encode serves host callers holding the boxed encoder; script calls
+// take ScriptMethod's raw-arg path.
+func (e *jsonEncoder) Encode(v any) error {
+	return e.encode(e.c, scriptVal(v))
 }
 
 func (e *jsonEncoder) SetIndent(prefix, indent string) {
@@ -6112,95 +6127,6 @@ func (e *jsonEncoder) SetIndent(prefix, indent string) {
 
 func (e *jsonEncoder) SetEscapeHTML(on bool) {
 	e.enc.SetEscapeHTML(on)
-}
-
-// jsonHostArg recovers the script value a host `any` argument was
-// marshaled from: vm's reflect-call marshaling projects a script
-// struct to a named map carrying the original under the empty key
-// (unreachable through Go field syntax). Restoring the original lets
-// Encode apply goJSON — the projected map alone would lose tags,
-// omitempty and Marshaler dispatch. Container args (slices, maps)
-// walk element-wise for nested projections; values with no
-// projection pass through unchanged.
-func jsonHostArg(v any) any {
-	return jsonHostArgSeen(v, map[unsafe.Pointer]bool{})
-}
-
-// jsonHostArgSeen is jsonHostArg tracking live container pointers: a
-// cyclic host container would otherwise recurse forever. The cycle is
-// left in place — goJSONSeen's own set reports it as gc's
-// UnsupportedValueError.
-func jsonHostArgSeen(v any, seen map[unsafe.Pointer]bool) any {
-	if orig, ok := projectedOrig(v); ok {
-		return orig
-	}
-	switch c := v.(type) {
-	case []any:
-		out := make([]any, len(c))
-		if len(c) > 0 {
-			p := reflect.ValueOf(c).UnsafePointer()
-			if seen[p] {
-				return c
-			}
-			seen[p] = true
-			defer delete(seen, p)
-		}
-		for i, e := range c {
-			out[i] = jsonHostArgSeen(e, seen)
-		}
-		return out
-	case map[any]any:
-		out := make(map[any]any, len(c))
-		if len(c) > 0 {
-			p := reflect.ValueOf(c).UnsafePointer()
-			if seen[p] {
-				return c
-			}
-			seen[p] = true
-			defer delete(seen, p)
-		}
-		for k, e := range c {
-			out[k] = jsonHostArgSeen(e, seen)
-		}
-		return out
-	case map[string]any:
-		out := make(map[string]any, len(c))
-		if len(c) > 0 {
-			p := reflect.ValueOf(c).UnsafePointer()
-			if seen[p] {
-				return c
-			}
-			seen[p] = true
-			defer delete(seen, p)
-		}
-		for k, e := range c {
-			out[k] = jsonHostArgSeen(e, seen)
-		}
-		return out
-	}
-	return v
-}
-
-// projectedOrig reports the original script value a vm host `any`
-// projection carries under its empty key (scriptData's orig slot).
-// The projection's type is unexported, so detection is structural: a
-// string-keyed map with an original runtime.Value under "".
-func projectedOrig(v any) (runtime.Value, bool) {
-	rv := reflect.ValueOf(v)
-	if !rv.IsValid() || rv.Kind() != reflect.Map || rv.Type().Key().Kind() != reflect.String {
-		return nil, false
-	}
-	ov := rv.MapIndex(reflect.ValueOf(""))
-	if !ov.IsValid() {
-		return nil, false
-	}
-	// the orig slot holds the struct value or its pointer —
-	// scriptData stores only those two shapes.
-	switch orig := ov.Interface().(type) {
-	case *runtime.Struct, *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
-		return orig, true
-	}
-	return nil, false
 }
 
 // cleanupHandle is the runtime.Cleanup the bound AddCleanup returns:
