@@ -5,9 +5,11 @@
 
 計測マシンは元レポートと異なるので、絶対時間ではなく**ネイティブ比の倍率**で比較する。
 
+> **追記（2026-10-31）**: 本文の §1〜§5 は `f191f06` 時点の記録として残す。そこで見つかった不具合は、スタック #1027 → #1029 → #1030 → #1031 → #1032 で修正した。修正後の再検証、レビューで見つかった退行、新しく分かったことは §6 にまとめた。各項目の現状は本文中に「→」で注記した。
+
 ## TL;DR
 
-- **主張の大筋は再現した**: 5ファイル入力（659関数）で minigo 上の出力はネイティブと完全一致（110ペア、text/JSON ともに。JSON は後述の unexported フィールド問題を除く）。gosimilarity を minigo 本体に当てたときの A 節の「層横断の実コピー」も現 main でそのまま残っている（`memberDeclOf`/`memberDecl` 100%, `deepTwinOperands`/`twinOperands` 100% など）。
+- **主張の大筋は再現した**: 5ファイル入力（659関数）で minigo 上の出力はネイティブと完全一致（110ペア、text/JSON ともに。JSON は後述の unexported フィールド問題を除く → #1027 以降は JSON も完全一致）。gosimilarity を minigo 本体に当てたときの A 節の「層横断の実コピー」も現 main でそのまま残っている（`memberDeclOf`/`memberDecl` 100%, `deepTwinOperands`/`twinOperands` 100% など）。
 - **倍率は約100倍ではなく約160倍**: realworld ハーネスの `oracle_s`（約1.3s）は `task.sh native` の rsync + `git apply` + `go build` を含む。素のネイティブ実行は 0.57s（GOMAXPROCS=1 でも 0.73s）、minigo は 87〜93s。元レポート内でも「約150倍」と「約100倍」が混在している。
 - **#1024 の目玉（cells ブロック再利用）は実質空振り**: 変数をセレクタのベースにする（`x.f` / `x.M()`）、`=` 代入、`op=`、添字代入、range 代入先、のどれか1つでも持つチャンクは `chunkCellsEscape` が「エスケープする」と判定する。ホットパスの `distance.func1`（2145万回呼び出し）を含め、計測したほぼ全フレームが fresh 確保側に落ちていた。PR の -20% alloc はフレーム/スタック/argbuf プーリング分と読める。
 - **ただし直しても伸びしろは小さい**: 判定を上限まで緩めた（不健全な）計測専用版で 86〜88s → 79.8s（約-9%）。「アロケーション削減で残り10〜30%」という元レポートの肌感とは整合する。
@@ -30,6 +32,8 @@
 ### プロファイル（自前ドライバ、in-process）
 
 realworld の `PROFILE=1` は task.sh 型タスクを対象外にする（"profile skipped (task.sh drives a program, not one main)"）。#1024 の作者は別ドライバを使っていたと思われる。ここでは `gosimilarity.Run` を固定引数で呼ぶ main を足して `prof/main.go` で計測した。
+
+→ #1035 / #1036 で `minigo run` に `--cpuprofile` / `--memprofile` / `--scriptprofile`（環境変数 `$MINIGO_*PROFILE` でも指定可）が入った。podhmo/minigo-usecasefuzz#14 以降は `PROFILE=1 ./run.sh gosimilarity-scan` だけで、cpu・allocs・script の3種類のプロファイルが取れる。script 側で見た結果は §6.7。
 
 - CPU: GC が約4割（`gcDrain` cum 41%, `tryDeferToSpanScan` flat 12%）。`VM.loop` cum 50%。
 - alloc_space 合計 54.5GB（#1024 記載の 58GB とほぼ同じ）。内訳: `prepFrameSeen` 19.0GB（うち `cells = make(...)` 15GB, `fr.locals = make(...)` 3.9GB — どちらもエスケープ判定側）、`OpVar` の `&runtime.Cell{...}` 6.4GB、BuiltinFunc 経路の `defer func()` 2.9GB と `args = append([]runtime.Value{}, args...)` 3.0GB、`Walk.Container` 3.8GB。
@@ -86,6 +90,8 @@ json.Marshal(A{Name: "n", body: "secret", a: 1})
 
 gosimilarity の `--format json` で `"tree": null, "body": ""` が余計に出て発覚。private データを外部に出してしまう類の不具合なので優先度は高い。
 
+→ #1027 で修正。`Unmarshal` 側も unexported フィールドに書き込んでいたので合わせて直した（Go は無視する）。埋め込みフィールドは、struct または struct へのポインタのときだけ昇格の対象として残す。
+
 ### 3.2 zero-return shim（解決できない linkname / 本体なし宣言）
 
 `//go:linkname local runtime.rand` のような宣言は、`Hooks.Linkname` で解決できないと黙ってゼロ値を返す（`Hooks.Linkname` のコメントどおりの仕様）。結果:
@@ -99,18 +105,21 @@ gosimilarity の `--format json` で `"tree": null, "body": ""` が余計に出�
 
 - `reflect.Type.Size` が `minireflect.RType` に無い（flagx の `--help` で `no member Size on host value *minireflect.RType`）。
 - `os.IsPathSeparator` 未バインド（gosimilarity に存在しないパスを渡すとエラーメッセージではなくトラップ）。
-- slog `JSONHandler`: `json.NewEncoder` バインドでトラップは消えたが、`"level":"INFO"` が `"level":0` になる（`slog.Level` の `MarshalJSON` が使われていない）。TODO の該当エントリは記述が古い。
+- slog `JSONHandler`: `json.NewEncoder` バインドでトラップは消えたが、`"level":"INFO"` が `"level":0` になる（`slog.Level` の `MarshalJSON` が使われていない）。TODO の該当エントリは記述が古い。→ #1030 の副作用で直った（§6.3）。
+
+`reflect.Type.Size`、`os.IsPathSeparator`、zero-return shim（§3.2）は未修正で、TODO に残っている。
 
 ### 3.4 #1024 / #1023 のコードレビュー（差分実行で確認）
 
-- **#1024: 脱出した `yield` を range-over-func のループ終了後に呼ぶとライブフレームが壊れる**。go は `range function continued iteration after whole loop exit` で panic。#1024 以前もループ本体を黙って再実行していた（既に誤り）が、#1024 後は yield クロージャが掴んでいたフレームが pool 経由で別関数に渡っているため、回復不能な nil deref / index -1 になる。`driveFuncIter` が producer の正常終了時に `it.Exited` を立てていないのが原因で、立てれば go と同じ panic になる。
+- **#1024: 脱出した `yield` を range-over-func のループ終了後に呼ぶとライブフレームが壊れる**。go は `range function continued iteration after whole loop exit` で panic。#1024 以前もループ本体を黙って再実行していた（既に誤り）が、#1024 後は yield クロージャが掴んでいたフレームが pool 経由で別関数に渡っているため、回復不能な nil deref / index -1 になる。`driveFuncIter` が producer の正常終了時に `it.Exited` を立てていないのが原因で、立てれば go と同じ panic になる。→ #1029 で修正（§6.2）。
 - **#1023 `json.Encoder.Encode`**（`Encode` が reflect 経由の host メソッドで、`json.Marshal` の raw-args 経路を通らないことに起因）:
   - 型付きコンテナ（`[]map[string]any`, `[][]any`, `map[string][]any`, `map[int]any` など）に script 値が入るとインタプリタ内部の構造を辿ってエラーになる。
   - `""` キーの orig スロット判定が実データと衝突: `Encode(map[string]any{"": &x, "a": 1})` が `5` になる（go `{"":5,"a":1}`）。
   - `Encode(rows)` 後に呼び出し側の `[]map[string]any` が `GoValue` に置き換わり `rows[0]["a"]` がトラップ（`callReflectFunc` の write-back。`text/template` の `Execute` でも以前から起きる既存バグ）。
   - `MarshalText` を持つ map キーが失われる。
   - 修正の方向: `Encode` を `json.Marshal` と同じ raw-args BuiltinFunc にする。
-- 細部: cycle エラーに ` via <type>` が無い、`%T` が `*minigo.jsonEncoder` / `minigo.cleanupHandle` を表示する。
+  - → `Encode` の raw-args 化は #1030、write-back は #1031 で修正。
+- 細部: cycle エラーに ` via <type>` が無い、`%T` が `*minigo.jsonEncoder` / `minigo.cleanupHandle` を表示する。→ #1032 で修正。
 - 範囲外: `iter.Pull`/`iter.Pull2` に script の `iter.Seq` を渡すと壊れている（`next()` が即 false、`Pull2` は "next called again before yield"）。#1024 の前後で同じ。
 
 #1024 について、GOROOT/test 約1150本の新旧差分実行と `-race` ビルドでは、上記以外の退行は見つからなかった。
@@ -120,12 +129,12 @@ gosimilarity の `--format json` で `"tree": null, "body": ""` が余計に出�
 - 「ネイティブ ~1.4s, ~100倍」→ 素の実行は約0.6s、約160倍（`oracle_s` はビルド込み）。
 - maphash ハングの原因推定（「asm フォールバック経路か」）→ zero-return shim による無限ループ。
 - 「flagx は weak のため素では動かない」→ スキャンは動く。`--help` だけ `reflect.Type.Size` で落ちる。
-- minigo-usecasefuzz `realworld/tasks/gosimilarity-scan/task.sh` のコメント（`AddCleanup` / `exec.CommandContext` 未バインド）と flagx シムの理由付けは #1023 以降古い。シムは maphash の1箇所に減らせ、`.git` 外に置く制約も不要。
+- minigo-usecasefuzz `realworld/tasks/gosimilarity-scan/task.sh` のコメント（`AddCleanup` / `exec.CommandContext` 未バインド）と flagx シムの理由付けは #1023 以降古い。シムは maphash の1箇所に減らせ、`.git` 外に置く制約も不要。→ podhmo/minigo-usecasefuzz#12 で `flagshim.go` を削除し、shim は maphash の差し替えだけにした。
 - 「リテラル種別化」は不正確（値も label に入る）、型比較はフィールド順に敏感、など。アルゴリズム側の訂正は [similarity-algorithms.md](./similarity-algorithms.md) §4。
 
 ## 5. セレンディピティ（範囲外の気づき）
 
-- **realworld の task.sh 型タスクはプロファイルを取れない**。gosimilarity のような CPU 負荷系こそ欲しいので、`task.sh profile` モード（Run 相当の main を生成）か、`minigo run` に `--cpuprofile` 相当を足すのが安い。
+- **realworld の task.sh 型タスクはプロファイルを取れない**。gosimilarity のような CPU 負荷系こそ欲しいので、`task.sh profile` モード（Run 相当の main を生成）か、`minigo run` に `--cpuprofile` 相当を足すのが安い。→ 後者を #1035 で入れ、script 関数単位のプロファイラ（#1036）も足した。usecasefuzz 側は #14 で `PROFILE=1` を CLI のプロファイルに切り替えた。
 - **builtin 経由のコストは呼び出し回数に比例して効く**: このワークロードでは builtin 呼び出しが1億2000万回超あり、「1呼び出しあたり数十バイト」の固定費が無視できない。perf を詰めるなら関数呼び出しより先に builtin 経路を見る価値がある。
 - **アロケーション量と wall は比例しない**: 計測専用版で alloc を2割強削っても wall は約-9%。GC は並列に走るので、alloc 削減の効果は wall より user 時間に出る。PR の効果報告は wall と CPU 時間の両方を載せるとよい。
 - **リポジトリ内 `.claude/worktrees/` に 18 個の古い agent worktree が残っている**（`git worktree list`）。`grep -r` などリポジトリ全体を舐める操作に混ざる（gosimilarity は dot ディレクトリを無視するので今回は影響なし）。
@@ -135,4 +144,82 @@ gosimilarity の `--format json` で `"tree": null, "body": ""` が余計に出�
 
 - 入力とシムは minigo-usecasefuzz の `realworld/tasks/gosimilarity-scan`（`input/` 5ファイル、`shim.patch`、`flagshim.go`）。
 - maphash だけ fnv に差し替えた本物の flagx 版: `tree.go` の `maphash.Seed`/`MakeSeed`/`Hash` を `fnv.New64a()` に置換するだけ。
-- プロファイル: `gosimilarity.Run(ctx, []string{"<abs path>/input"}, os.Stdout, os.Stderr)` を呼ぶ main を足し、realworld の `prof/main.go` を `-dir` に向けて実行。入力は絶対パスで渡す（エンジンの起点ディレクトリが main のディレクトリになるため）。
+- プロファイル: `gosimilarity.Run(ctx, []string{"<abs path>/input"}, os.Stdout, os.Stderr)` を呼ぶ main を足し、realworld の `prof/main.go` を `-dir` に向けて実行。入力は絶対パスで渡す（エンジンの起点ディレクトリが main のディレクトリになるため）。→ 今は `MINIGO_DIR=<minigo> PROFILE=1 ./run.sh gosimilarity-scan` だけでよい。
+
+## 6. 修正後の再検証（2026-10-31）
+
+対象: スタック最上段 `096ee829`（#1027 → #1029 → #1030 → #1031 → #1032）、podhmo/minigo-usecasefuzz#12 / #13。
+
+### 6.1 結果
+
+- **gosimilarity は text・JSON とも一致**: realworld タスクを `run input && run --format json input` に広げ（usecasefuzz#12）、ネイティブと完全一致で PASS。flagx はシムなしの本物を使い、差し替えは maphash→fnv だけにした。
+- **性能は変わらない**: 同一マシンで gosimilarity-scan は main 88.1s、スタック 93.2s。§1 の main 自身が 86〜93s でばらつくので、差はノイズの範囲。text と JSON の2回実行では 177.7s。
+- **他のコーパスに影響なし**: usecasefuzz の全コーパス（cases / language / concurrency / bytes / convert-define / extract-schema / realworld）を main とスタックで実行し、判定はひとつも変わらなかった。新しく足した `cases/apiexport`（usecasefuzz#13）は、main で TRAP、スタックで PASS。内容は JSONL の Encode、`SetIndent`、`MarshalText` キー、`%T`、slog JSONHandler、template 後の `[]map` 編集、cycle エラー。
+
+### 6.2 脱出した yield（#1029）
+
+- range-over-func のループが正常に終わった後に `yield` を呼ぶと、go と同じ `range function continued iteration after whole loop exit` で panic する。
+- ループ本体が panic で抜けた後の `yield` は、go と同じ panic にはせず unsupported のトラップにした。producer のフレームがすでに pool に戻っているかもしれず、ループ本体を安全に再開できないため。
+
+### 6.3 projection によるフィデリティ損失と `ScriptMethoder`（#1030）
+
+`json.Encoder` の不具合群には共通の根がある。
+
+- **原因**: host 値のメソッドは reflect 経由で呼ばれ、引数は host の形への projection を通る。projection では次の情報が落ちる。
+  - struct タグ（script struct は無名の host struct になる）
+  - `MarshalJSON` / `MarshalText` メソッド
+  - script 側の型名（`%T` や cycle の ` via <type>` に必要）
+  - 元の値を指す `""` キーの orig スロット（実データのキー `""` と衝突する）
+- `json.Marshal` は、最初から raw-args の BuiltinFunc にすることでこれを避けていた。一方、メソッド（`enc.Encode`）には同じ逃げ道がなかった。
+- **対応**: `runtime.ScriptMethoder` を足した。host 値が、自分のメソッドを「raw の script 引数を受け取る版」として提供できる。`vm.hostMember` はこれを reflect より優先する。script の型情報が必要な host メソッドが今後出てきたら、同じ仕組みに載せられる。
+- **副作用で直ったもの**: slog の `JSONHandler` は GOROOT ソースとして解釈され、内部で `json.NewEncoder(...).Encode(v)` を呼ぶ。そのため raw-args 化で `slog.Level.MarshalJSON` が効くようになり、`"level":0` が `"level":"INFO"` になった（§3.3）。
+
+### 6.4 レビューで見つかった退行
+
+スタックを別エージェントにレビューさせたところ、3件の退行が見つかった。すべて修正済み。
+
+1. **ref を辿ると循環する**（#1030）: `goJSON` が `FieldRef` / `IndexRef` / `DerefRef` を `runtime.Deref` で辿るようにした結果、`var s struct{ V any }; s.V = &s.V; json.Marshal(s)` が無限に再帰した。ref にも `jsonSeen` のガードを付けて解決した。
+   - **Go 1.27 の `encoding/json` 自身がこの入力でスタックオーバーフローする**（json/v2 ベースの実装）。そのため difffuzz の oracle では pin できず、minigo は cycle エラーを返す（Go より安全側への乖離）。testdata/intrins の `JsonRefCycle` で pin した。
+2. **host 側から呼ぶ `Encode`**（#1030）: host コードが script の encoder を `interface{ Encode(any) error }` として呼ぶ経路は `ScriptMethoder` を通らず、projection 済みの値を受け取る。#1030 では projection から script の値を取り戻す `jsonHostArg` を消していたため、この経路で struct タグが失われた。復元して `TestHostEncodeScriptValue` を足した。
+   - 教訓: 同じメソッドに「script から」と「host から」の2つの入口がある。raw-args 化が救うのは前者だけ。
+3. **host が置き換えた map 要素を捨てていた**（#1031）: 「script の map 要素は残す」という規則が、host の `rows[0] = newMap` も捨てていた。呼び出し前の map の identity（`reflect.Value.Pointer`）を記録し、変わった要素だけを `SnapshotOf` で script の map として書き戻すようにした（`TestHostReplacesMapElem`）。
+
+3件とも、difffuzz（`go run` との差分）では原理的に見つからない種類だった。1は oracle 自身が落ち、2と3は host の bind が必要になる。host 境界は、minigo_test の Go テストで別に守る必要がある。
+
+### 6.5 #1023 のテストが固定していたもの
+
+#1023 の minigo_test は、cycle エラーの文言を ` via <type>` なしで期待していた。期待値が `go run` の出力ではなく手で書かれていたため、go との差がテストとして固定されていた（#1032 で go の文言に合わせた）。intrinsics の期待値は `go run` で取るか、difffuzz の pin に載せるのが安全。
+
+### 6.6 残っている制約
+
+- **新しく見つかった制約**: host がスライス引数の map 要素を**その場で**書き換えても（`rows[1]["k"] = v`）、呼び出し側には届かない。
+  - map を直接渡した場合（`host.F(m)` の中で `m["k"] = v`）も、main から同じ挙動。host が受け取るのは projection のコピーだから。
+  - #1031 以前はスライスの場合だけ GoValue の箱を通して書き換えが見えていたが、その後の添字代入がトラップしていた。#1031 で、直接の map 引数と同じ挙動に揃った。
+  - TODO に追加した。
+- **未修正のまま TODO に残るもの**: zero-return shim（maphash の無限ループ、`weak`）、`reflect.Type.Size`、`os.IsPathSeparator`、`iter.Pull`、`chunkCellsEscape`、builtin 呼び出しの heap defer。
+
+### 6.7 script 関数・行単位のプロファイル（#1036）
+
+§1 では、`distance.func1` が 2145万フレームあることを、VM に一時パッチを当てて数えていた。#1036 の script プロファイラを使えば、パッチなしで「script のどの行に時間が付いているか」まで直接見える。実行は `MINIGO_SCRIPTPROFILE` を付けて realworld を走らせるだけで、89.4s（プロファイラなしの約88sとノイズの範囲で同じ）。
+
+- `distance.func1` は flat 86%、`compare` 経由の cum も 86%。字句解析や AST の走査（`go/scanner`, `go/ast.Walk`, `normalizer.nodeRole`）は合わせても1割に届かない。§2 の見立て（ボトルネックはほぼこのクロージャ1本）がそのまま確認できた。
+- 行単位の内訳（shim 適用後の `tree.go`）:
+
+| 行 | 内容 | flat |
+|---|---|---|
+| 92 | `math.Min(next[j]+..., prev[j]+visit(x, y))`（内側 DP。builtin 2回と再帰呼び出し） | 23% |
+| 75 | `if len(a.children) == 0 \|\| len(b.children) == 0`（葉の判定。`len` 2回） | 13% |
+| 76 | `return math.Min(...)`（葉の早期 return。`math.Min` 1回） | 11% |
+| 91 | `next[j+1] = math.Min(prev[j+1]+..., ...)`（外側の `math.Min`） | 8% |
+| 83 | `prev := make([]float64, ...)`（DP 行の確保） | 7% |
+| 99 | `visit` の終端（フレーム終了） | 6% |
+| 86, 96, 89, 90, 84 | DP 初期化、`v := math.Min(...)`、ループ | 各 2〜4% |
+
+- **builtin 呼び出しの行（75・76・91・92）だけで約55%**。§2.2 で指摘した builtin 経路の固定費（呼び出しごとの heap defer と引数コピー、`len` 専用 opcode の不在）が、関数呼び出しの行よりも大きな時間として行単位で見えている。
+- **葉の早期 return 経路（75〜76行）だけで約24%**。`visit` の呼び出しの大半は子を持たない葉で、`len` 2回と `math.Min` 1回で終わる。`len` の専用 opcode と builtin 経路の open-coded defer は、この 24% に直接効く。§2.2 の改善候補の優先度を裏付けるデータになる。
+- 同じ実行の CPU プロファイル（`--cpuprofile`）では、GC 関連（`tryDeferToSpanScan`, `scanObjectsSmall` など）が引き続き上位を占め、`VM.loop` の cum は 52%。§1 と同じ形だった。
+
+### 6.8 見立ての更新
+
+- **正しさ**: gosimilarity のような「ふつうの CLI」を動かすと、性能より先に host 境界（projection）のフィデリティ問題が表に出た。今回直した5件のうち4件（#1027, #1030, #1031, #1032）は JSON と host 境界の問題で、残る1件は frame pool（#1029）だった。legacy Go を lazy に解釈するという minigo の売りにとって、最大のリスクは stdlib バインディングの境界にある。
+- **性能**: §2 の見立てに変更はない。修正はどれも性能に影響していない。script プロファイル（§6.7）で見ると、時間の約55%が builtin 呼び出しの行にあり、§2.2（builtin 経路の固定費）が §2.1（cells 再利用）より優先度が高いことを裏付けている。
