@@ -2075,7 +2075,12 @@ func (v *VM) unwind(f *frame, r any) {
 		}
 		fallthrough // script panic recovered by a deferred function
 	default:
-		f.stack = []runtime.Value{v.finalResult(f)}
+		// keep the stack's backing: a fresh []runtime.Value{…} returns
+		// cap-1 to the frame pool and the next call reallocates.
+		// finalResult reads f.results/locals — never f.stack — so
+		// truncating first cannot corrupt the returned value.
+		r := v.finalResult(f)
+		f.stack = append(f.stack[:0], r)
 	}
 }
 
