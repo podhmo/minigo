@@ -273,6 +273,33 @@ func Default() {
 	}
 }
 
+// TestTaskFArgRetention: the args task.F binds into a taskCall must
+// stay private — the VM recycles a caller frame's argument buffer, so
+// a later call on the same frame once rewrote F(Emit,"first")'s
+// stored args with the next call's values.
+func TestTaskFArgRetention(t *testing.T) {
+	_, file := writeTaskfile(t, `package main
+
+import "task"
+
+func Emit(msg string) { task.Log(msg) }
+
+func Default() {
+	f1 := task.F(Emit, "first")
+	task.F(Emit, "clobber")
+	task.SerialDeps(f1)
+}
+`)
+	var errb bytes.Buffer
+	r := NewRunner(filepath.Dir(file), io.Discard, &errb)
+	if err := r.RunTask(context.Background(), file, "Default", nil); err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("first\n", errb.String()); diff != "" {
+		t.Errorf("retained args (-want +got):\n%s", diff)
+	}
+}
+
 func TestShAndTarget(t *testing.T) {
 	_, file := writeTaskfile(t, `package main
 

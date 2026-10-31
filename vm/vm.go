@@ -830,6 +830,12 @@ type frame struct {
 	retNamed bool // gather named result slots after defers run
 	results  []runtime.Value
 
+	// argbuf/statbuf are OpCall's reusable arg/static scratch (see
+	// popArgsCall): a frame issuing millions of calls otherwise allocates
+	// two slices per call.
+	argbuf  []runtime.Value
+	statbuf []*runtime.TypeDef
+
 	// boundLo/boundHi bound a re-entrant loop run (range-over-func yield):
 	// the bounded run executes only while boundLo < ip < boundHi and halts
 	// on either edge — the loop's back-edge address is boundLo, its exit
@@ -847,6 +853,95 @@ type frame struct {
 	// arguments, untyped constants included. A spread `f(xs...)` binds
 	// the caller's slice itself and leaves vpack nil.
 	vpack *runtime.Slice
+
+	// cells is the block backing locals when the chunk cannot leak its
+	// cells (chunkCellsEscape false): prepFrameSeen refills it each call
+	// and freeFrame recycles it. cellsShared marks that specialCtx.Eval
+	// lent this frame's cells to a nested eval frame — their escape can
+	// no longer be ruled out, so freeFrame drops the block.
+	cells       []runtime.Cell
+	cellsShared bool
+}
+
+// framePool recycles frames after a normal return. The frame object
+// and its flat scratch (operand stack, call arg buffers, the locals
+// pointer array, and — for chunks that cannot leak them — the cells
+// block) survive; everything else is freshly allocated per call.
+var framePool = sync.Pool{New: func() any { return &frame{} }}
+
+// freeFrame returns a frame to the pool after clearing every field:
+// stale values left in the retained buffers would pin dead script
+// objects across the frame's next life. Only frames that ended without
+// a panic in flight may be pooled — a panicking frame can still be
+// listed in v.unwinding for the live traceback.
+func freeFrame(f *frame) {
+	f.fn = nil
+	f.ch = nil
+	f.upvals = nil
+	for i := range f.locals {
+		f.locals[i] = nil
+	}
+	f.locals = f.locals[:0]
+	clear(f.stack)
+	f.stack = f.stack[:0]
+	f.ip = 0
+	for i := range f.defers {
+		f.defers[i] = deferredCall{}
+	}
+	f.defers = f.defers[:0]
+	f.sentinel = false
+	f.retNamed = false
+	// f.results' backing may be the returned Tuple's Elems — release it
+	// rather than clearing (OpReturn allocates a fresh slice per call).
+	f.results = nil
+	clear(f.argbuf)
+	f.argbuf = f.argbuf[:0]
+	clear(f.statbuf)
+	f.statbuf = f.statbuf[:0]
+	f.boundLo, f.boundHi = 0, 0
+	f.vpack = nil
+	if f.cellsShared {
+		f.cells = nil
+		f.cellsShared = false
+	} else {
+		clear(f.cells)
+	}
+	framePool.Put(f)
+}
+
+// chunkCellsEscape reports whether the chunk's local cells can outlive
+// the frame: an OpLocalRef pushes the cell itself as a script value,
+// and an OpMakeClosure whose literal captures a local slot (rather than
+// only parent upvals) keeps the cell in the closure's upvals. The memo
+// lives on the chunk (Escapes: 0 uncomputed, 1 bound, 2 escaping).
+func chunkCellsEscape(ch *bytecode.Chunk) bool {
+	if e := ch.Escapes.Load(); e != 0 {
+		return e == 2
+	}
+	esc := false
+scan:
+	for _, ins := range ch.Code {
+		switch ins.Op {
+		case bytecode.OpLocalRef:
+			esc = true
+			break scan
+		case bytecode.OpMakeClosure:
+			if proto, ok := ch.Consts[ins.A].(*runtime.Function); ok && proto.Chunk != nil {
+				for _, d := range proto.Chunk.Upvals {
+					if !d.FromParentUpval {
+						esc = true
+						break scan
+					}
+				}
+			}
+		}
+	}
+	if esc {
+		ch.Escapes.Store(2)
+	} else {
+		ch.Escapes.Store(1)
+	}
+	return esc
 }
 
 func (f *frame) push(v runtime.Value) { f.stack = append(f.stack, v) }
@@ -1407,6 +1502,11 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 					return nil, fmt.Errorf("%s %w", c.Name, err)
 				}
 			}
+			// a builtin may retain its args slice past the call —
+			// task.F binds it into a taskCall — while args may ride the
+			// caller frame's argbuf, which the next OpCall rewrites.
+			// Hand over a private copy like popArgs always produced.
+			args = append([]runtime.Value{}, args...)
 			if c.SyncCallbacks {
 				return c.Fn(ownerCaller{v}, args)
 			}
@@ -1446,10 +1546,12 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 		return nil, err
 	}
 	v.exec(fr)
-	if len(fr.stack) == 0 {
-		return runtime.NIL, nil
+	var r runtime.Value = runtime.NIL
+	if n := len(fr.stack); n > 0 {
+		r = fr.stack[n-1]
 	}
-	return fr.stack[len(fr.stack)-1], nil
+	freeFrame(fr)
+	return r, nil
 }
 
 // Member implements [runtime.VMCaller].
@@ -1692,8 +1794,40 @@ func (v *VM) prepFrameSeen(callee runtime.Value, args []runtime.Value, statics [
 		return nil, fmt.Errorf("stack exhausted: frame limit %d", maxFrames)
 	}
 	ch := fn.Chunk
-	fr := &frame{fn: fn, ch: ch, upvals: upvals}
-	fr.locals = make([]*runtime.Cell, ch.NLocals)
+	fr := framePool.Get().(*frame)
+	fr.fn, fr.ch, fr.upvals = fn, ch, upvals
+	if cap(fr.stack) < 16 {
+		// a first-use frame gets a stack deep enough to skip the 2→4→8
+		// append growth most expression evaluation would otherwise pay.
+		fr.stack = make([]runtime.Value, 0, 16)
+	} else {
+		fr.stack = fr.stack[:0]
+	}
+	// the local cells come out of one block — a cell per local was the
+	// interpreter's largest allocation source (a frame per call,
+	// NLocals+2 objects each); addressability is unchanged since
+	// locals[i] may still be replaced or captured. A chunk that cannot
+	// leak its cells recycles the block the pooled frame carries; a
+	// chunk that can allocates fresh cells every call.
+	var cells []runtime.Cell
+	if chunkCellsEscape(ch) {
+		cells = make([]runtime.Cell, ch.NLocals)
+		fr.locals = make([]*runtime.Cell, ch.NLocals)
+	} else {
+		if cap(fr.cells) < ch.NLocals {
+			fr.cells = make([]runtime.Cell, ch.NLocals)
+		}
+		cells = fr.cells[:ch.NLocals]
+		if cap(fr.locals) < ch.NLocals {
+			fr.locals = make([]*runtime.Cell, ch.NLocals)
+		} else {
+			fr.locals = fr.locals[:ch.NLocals]
+		}
+	}
+	for i := range cells {
+		cells[i] = runtime.Cell{Elem: runtime.NIL}
+		fr.locals[i] = &cells[i]
+	}
 	// bind params; arity mismatches are compile errors in Go, so trap
 	n := ch.NParams
 	want := n
@@ -1748,13 +1882,10 @@ func (v *VM) prepFrameSeen(callee runtime.Value, args []runtime.Value, statics [
 					rest = pack
 				}
 			}
-			fr.locals[i] = &runtime.Cell{Elem: rest}
+			cells[i].Elem = rest
 			break
 		}
-		fr.locals[i] = &runtime.Cell{Elem: valueCopy(a)}
-	}
-	for i := n; i < ch.NLocals; i++ {
-		fr.locals[i] = &runtime.Cell{Elem: runtime.NIL}
+		cells[i].Elem = valueCopy(a)
 	}
 	return fr, nil
 }
@@ -1944,7 +2075,12 @@ func (v *VM) unwind(f *frame, r any) {
 		}
 		fallthrough // script panic recovered by a deferred function
 	default:
-		f.stack = []runtime.Value{v.finalResult(f)}
+		// keep the stack's backing: a fresh []runtime.Value{…} returns
+		// cap-1 to the frame pool and the next call reallocates.
+		// finalResult reads f.results/locals — never f.stack — so
+		// truncating first cannot corrupt the returned value.
+		r := v.finalResult(f)
+		f.stack = append(f.stack[:0], r)
 	}
 }
 
@@ -2256,6 +2392,7 @@ func (v *VM) invokeDeferred(d deferredCall) {
 		panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
 	}
 	v.exec(fr)
+	freeFrame(fr)
 }
 
 // pushDeferredSentinel records a deferred host call on the frame stack so
@@ -2813,7 +2950,7 @@ func (v *VM) loop(f *frame) {
 			// coerces like a store into `var p T`.
 			f.push(&runtime.Cell{Elem: x, Typ: declaredTag(x)})
 		case bytecode.OpCall:
-			args, statics, spreadTd := v.popArgs(f, int(ins.A), int(ins.B), ins.Pos)
+			args, statics, spreadTd := v.popArgsCall(f, int(ins.A), int(ins.B), ins.Pos)
 			fn := f.pop()
 			r, err := v.call(fn, args, statics, spreadTd)
 			if err != nil {
@@ -2983,6 +3120,7 @@ func (v *VM) loop(f *frame) {
 					f.ip = int(ins.A)
 				}
 			} else if !v.iterNext(f, it, int(ins.C)&3, ins.C&4 != 0) {
+				freeIter(it)
 				f.ip = int(ins.A)
 			}
 		case bytecode.OpSend:
@@ -8508,6 +8646,27 @@ func (v *VM) newIterator(f *frame, coll runtime.Value) *runtime.Iterator {
 	return v.itFrom(f, coll, false)
 }
 
+// iterPool recycles range iterators: a loop that runs to completion
+// hands its Iterator back (OpRangeNext's exit branch); a loop left by
+// break, goto or panic abandons its iterator to the GC instead. The
+// local cell holding the dead iterator is never read again — OpIterInit
+// overwrites it when the loop is re-entered — so handing the object to
+// a later loop is invisible. 'f' (range-over-func) iterators are
+// allocated from the pool but never returned: an escaped yield closure
+// can reference them past the loop's end.
+var iterPool = sync.Pool{New: func() any { return &runtime.Iterator{} }}
+
+func mkIter(it runtime.Iterator) *runtime.Iterator {
+	p := iterPool.Get().(*runtime.Iterator)
+	*p = it
+	return p
+}
+
+func freeIter(it *runtime.Iterator) {
+	*it = runtime.Iterator{}
+	iterPool.Put(it)
+}
+
 // itFrom builds the iterator for coll. viaPtr is set once the operand
 // resolved through a storage ref: `range p` on a *[N]T iterates the live
 // pointee, while `range a` — an array VALUE — iterates a snapshot copy.
@@ -8526,7 +8685,7 @@ func (v *VM) itFrom(f *frame, coll runtime.Value, viaPtr bool) *runtime.Iterator
 		if c.Virtual() {
 			// a virtual zero-size slice iterates its logical length,
 			// vending the shared element value.
-			return &runtime.Iterator{Kind: 's', Limit: int(c.Len()), Zero: c.Zero}
+			return mkIter(runtime.Iterator{Kind: 's', Limit: int(c.Len()), Zero: c.Zero})
 		}
 		elems := c.Elems
 		if !viaPtr && isArrayTyp(c.Typ) {
@@ -8537,7 +8696,7 @@ func (v *VM) itFrom(f *frame, coll runtime.Value, viaPtr bool) *runtime.Iterator
 				elems[i] = runtime.Copy(e)
 			}
 		}
-		return &runtime.Iterator{Kind: 's', Elems: elems}
+		return mkIter(runtime.Iterator{Kind: 's', Elems: elems})
 	case *runtime.Map:
 		// Snapshot the key ORDER only — Elems carries the display keys
 		// and Keys their canonical forms — while pairs resolve live in
@@ -8545,41 +8704,41 @@ func (v *VM) itFrom(f *frame, coll runtime.Value, viaPtr bool) *runtime.Iterator
 		// the next (Delete shifts m.Order in place), and an entry
 		// removed before its turn is not produced, like Go.
 		display, canonical := c.SnapshotKeys()
-		return &runtime.Iterator{Kind: 'm', M: c, Elems: display, Keys: canonical}
+		return mkIter(runtime.Iterator{Kind: 'm', M: c, Elems: display, Keys: canonical})
 	case *runtime.Chan:
-		return &runtime.Iterator{Kind: 'c', ChRV: reflect.ValueOf(c.C), ETyp: v.elemTypedef(f, c.Typ)}
+		return mkIter(runtime.Iterator{Kind: 'c', ChRV: reflect.ValueOf(c.C), ETyp: v.elemTypedef(f, c.Typ)})
 	case *runtime.GoValue:
 		if rv := reflect.ValueOf(c.V); rv.IsValid() && rv.Kind() == reflect.Chan {
-			return &runtime.Iterator{Kind: 'c', ChRV: rv, HostChan: true}
+			return mkIter(runtime.Iterator{Kind: 'c', ChRV: rv, HostChan: true})
 		}
 		f.trap("range over %T", coll)
 		return nil
 	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
 		// iter.Seq/Seq2-style producer: the whole loop runs inside the
 		// first OpRangeNext via yield — see driveFuncIter.
-		return &runtime.Iterator{Kind: 'f', Fn: c}
+		return mkIter(runtime.Iterator{Kind: 'f', Fn: c})
 	case int64:
-		return &runtime.Iterator{Kind: 'i', Limit: int(c)}
+		return mkIter(runtime.Iterator{Kind: 'i', Limit: int(c)})
 	case string:
-		return &runtime.Iterator{Kind: 'x', String: c}
+		return mkIter(runtime.Iterator{Kind: 'x', String: c})
 	case *runtime.TypedNil, *runtime.IfaceNil:
 		if tn, ok := coll.(*runtime.TypedNil); ok && tn.Typ != nil {
 			if tn.Typ.Kind == runtime.KindChan {
 				// a nil channel range blocks forever, as in Go
-				return &runtime.Iterator{Kind: 'c', ChRV: nilChanRV, ETyp: v.elemTypedef(f, tn.Typ)}
+				return mkIter(runtime.Iterator{Kind: 'c', ChRV: nilChanRV, ETyp: v.elemTypedef(f, tn.Typ)})
 			}
 			// `for i := range p` over a nil *[N]T yields 0..N-1 — only the
 			// element read would dereference the nil pointer.
 			if at := runtime.PtrArrayType(tn.Typ); at != nil {
 				if n, ok := v.arrayLen(f, &runtime.TypeDef{Anon: at, Pkg: tn.Typ.Pkg, File: tn.Typ.File}); ok {
-					return &runtime.Iterator{Kind: 'i', Limit: int(n), NilArr: true}
+					return mkIter(runtime.Iterator{Kind: 'i', Limit: int(n), NilArr: true})
 				}
 			}
 		}
 		// range over a nil slice/map iterates zero times
-		return &runtime.Iterator{Kind: 's'}
+		return mkIter(runtime.Iterator{Kind: 's'})
 	case nil, runtime.Nil:
-		return &runtime.Iterator{Kind: 's'}
+		return mkIter(runtime.Iterator{Kind: 's'})
 	default:
 		f.trap("range over %T", coll)
 		return nil
@@ -12599,13 +12758,41 @@ func (v *VM) elemFamily(et *runtime.TypeDef) byte {
 // spreads a lone call argument's result tuple (`f(g())` — the only
 // multi-value spread Go allows).
 func (v *VM) popArgs(f *frame, argc int, mode int, pos token.Pos) ([]runtime.Value, []*runtime.TypeDef, *runtime.TypeDef) {
-	statics := make([]*runtime.TypeDef, argc)
+	return v.popArgsBuf(f, argc, mode, pos, make([]runtime.Value, argc), make([]*runtime.TypeDef, argc))
+}
+
+// popArgsCall is popArgs reusing the frame's arg scratch — valid only on
+// the synchronous OpCall path, where the popped slices are dead by the
+// time the frame runs again. OpDefer and OpGo retain theirs past the
+// call boundary and must use popArgs.
+func (v *VM) popArgsCall(f *frame, argc int, mode int, pos token.Pos) ([]runtime.Value, []*runtime.TypeDef, *runtime.TypeDef) {
+	argbuf, statbuf := f.argbuf, f.statbuf
+	if cap(argbuf) < argc {
+		argbuf = make([]runtime.Value, argc)
+	} else {
+		argbuf = argbuf[:argc]
+	}
+	if cap(statbuf) < argc {
+		statbuf = make([]*runtime.TypeDef, argc)
+	} else {
+		statbuf = statbuf[:argc]
+		for i := range statbuf {
+			statbuf[i] = nil
+		}
+	}
+	args, statics, spreadTd := v.popArgsBuf(f, argc, mode, pos, argbuf, statbuf)
+	f.argbuf, f.statbuf = argbuf, statbuf
+	return args, statics, spreadTd
+}
+
+// popArgsBuf pops into caller-provided buffers (sized at least argc):
+// the spread modes may still reassign args to a longer or foreign slice.
+func (v *VM) popArgsBuf(f *frame, argc int, mode int, pos token.Pos, args []runtime.Value, statics []*runtime.TypeDef) ([]runtime.Value, []*runtime.TypeDef, *runtime.TypeDef) {
 	for i := argc - 1; i >= 0; i-- {
 		if td, ok := f.pop().(*runtime.TypeDef); ok {
 			statics[i] = td
 		}
 	}
-	args := make([]runtime.Value, argc)
 	for i := argc - 1; i >= 0; i-- {
 		args[i] = f.pop()
 	}
@@ -15750,6 +15937,9 @@ func (s *specialCtx) Eval(e ast.Expr) (runtime.Value, error) {
 		n = len(fr.locals)
 	}
 	copy(fr.locals, s.f.locals[:n])
+	// the shared cells can now escape through this eval — disqualify the
+	// caller's block from recycling.
+	s.f.cellsShared = true
 	for i := n; i < len(fr.locals); i++ {
 		fr.locals[i] = &runtime.Cell{Elem: runtime.NIL}
 	}

@@ -269,6 +269,14 @@ type Chunk struct {
 	// Sites are the per-instruction caches of OpGlobal (indexed by the
 	// instruction's C operand).
 	Sites []*GlobalSite
+
+	// Escapes is the VM's memo of whether the chunk's local cells can
+	// outlive their frame: 0 uncomputed, 1 frame-bound (the chunk holds
+	// no OpLocalRef and no OpMakeClosure that captures a local slot —
+	// such frames may recycle their cell block), 2 cells may escape.
+	// The vm package computes and stores it; concurrent readers race
+	// benignly on the atomic.
+	Escapes atomic.Int32
 }
 
 // GlobalSite is one OpGlobal instruction's resolution cache. The VM owns
