@@ -472,6 +472,8 @@ func TestStdlibIntrinsics(t *testing.T) {
 		{"JsonPtrCycle", "json: unsupported value: encountered a cycle"},
 		{"JsonEncoderPtrCycle", "json: unsupported value: encountered a cycle"},
 		{"JsonTwoPtrCycle", "json: unsupported value: encountered a cycle"},
+		// go 1.27 overflows its stack on `s.V = &s.V` too; minigo reports it.
+		{"JsonRefCycle", "json: unsupported value: encountered a cycle"},
 		{"PtrSelfCycle", "ok"},
 		{"ExecCommandContext", "hi"},
 		{"RuntimeAddCleanup", "ok"},
@@ -1965,6 +1967,22 @@ func TestScriptProfilerReleasesPackages(t *testing.T) {
 	}
 	if diff := cmp.Diff(false, wp.Value() != nil); diff != "" {
 		t.Fatalf("package retained after the profiler stopped (-want +got):\n%s", diff)
+	}
+}
+
+// TestHostEncodeScriptValue: a bound host func calling Encode on a
+// script-made json.Encoder receives script values already projected to
+// host shapes; Encode must recover them and keep the struct tags.
+func TestHostEncodeScriptValue(t *testing.T) {
+	type encoder interface{ Encode(any) error }
+	e := newEngine(t)
+	e.Bind("example.com/hostenc", map[string]runtime.Value{
+		"Call": &runtime.GoValue{V: func(enc encoder, x any) error { return enc.Encode(x) }},
+	})
+	got := run(t, e, "./testdata/hostencode", "Encode")
+	want := "{\"name\":\"hello\"}\n[{\"name\":\"a\"},{\"name\":\"b\",\"age\":2}]\n"
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Fatalf("Encode mismatch (-want +got):\n%s", diff)
 	}
 }
 
