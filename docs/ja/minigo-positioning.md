@@ -7,7 +7,7 @@
 スクリプト実行の体験速度は **ビルド速度 + 起動速度 + 実行速度の合算** で決まる。
 
 - ビルドはキャッシュが効く。2回目以降の `go run`/`go build` は速い。
-- 実行速度はネイティブ Go が無条件に勝る（minigo は JIT のないバイトコードインタプリタで、ネイティブ比 ~100 倍が上限側の実測。`docs/sketch/ja/experiment-gosimilarity.md`）。
+- 実行速度はネイティブ Go が無条件に勝る（minigo は JIT のないバイトコードインタプリタで、ネイティブ比 ~100〜150 倍が上限側の実測。`docs/sketch/ja/experiment-gosimilarity.md` と追試の `experiment-gosimilarity-reverify.md` —— 後者は wall で約150〜165倍）。
 
 すると minigo の領域は自ずから「**キャッシュが効かない初回ビルドの遅さへの苛立ち**」への対処に絞られる。インタプリタ自体は Go でビルド済みなので、minigo 上でスクリプトを実行する経路にはビルドが存在しない —— これが価値の依存点。
 
