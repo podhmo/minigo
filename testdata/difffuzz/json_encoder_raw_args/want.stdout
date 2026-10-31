@@ -1,0 +1,19 @@
+struct: {"name":"a"} err=<nil> marshal={"name":"a"} err=<nil>
+typed-slice-of-maps: [{"k":{"name":"x"}}] err=<nil> marshal=[{"k":{"name":"x"}}] err=<nil>
+slice-of-slices: [[{"name":"y"}]] err=<nil> marshal=[[{"name":"y"}]] err=<nil>
+map-of-slices: {"s":[{"name":"z","age":3}]} err=<nil> marshal={"s":[{"name":"z","age":3}]} err=<nil>
+int-keyed: {"1":{"name":"w"}} err=<nil> marshal={"1":{"name":"w"}} err=<nil>
+marshaltext-keys: {"key1":2,"key2":1} err=<nil> marshal={"key1":2,"key2":1} err=<nil>
+marshaljson-value: {"s":"!hi!"} err=<nil> marshal={"s":"!hi!"} err=<nil>
+empty-key-ptr: {"":5,"a":1} err=<nil> marshal={"":5,"a":1} err=<nil>
+field-ptr: {"":"p","a":1} err=<nil> marshal={"":"p","a":1} err=<nil>
+idx-ptr: {"":7,"a":1} err=<nil> marshal={"":7,"a":1} err=<nil>
+caller data intact: 2
+{
+  "indent": [
+    {
+      "name": "i"
+    }
+  ]
+}
+{"NAME":"SCRIPT WRITER"}

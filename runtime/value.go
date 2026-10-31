@@ -2165,6 +2165,16 @@ func SmallIntOf(x any) (int64, bool) {
 // VMCaller is the interpreter as seen by a [BuiltinFunc]: it calls script
 // functions and answers questions about types that only the running
 // engine can resolve.
+// ScriptMethoder is implemented by a host value (boxed in a GoValue)
+// whose methods need the caller's raw script args: the VM's default
+// reflect call projects each arg to its host shape first, which loses
+// script struct tags, Marshaler dispatch and the original containers.
+// A method name it answers for takes precedence over the reflected
+// method of the same name.
+type ScriptMethoder interface {
+	ScriptMethod(name string) (func(VMCaller, []Value) (Value, error), bool)
+}
+
 type VMCaller interface {
 	// Call calls a callable script value — a function, closure, method
 	// value, builtin, or a typedef (a conversion).

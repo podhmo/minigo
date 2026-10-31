@@ -844,3 +844,13 @@ func PtrSelfCycle() string {
 	_ = *x
 	return "ok"
 }
+
+func JsonRefCycle() string {
+	var s struct{ V any }
+	s.V = &s.V
+	_, err := json.Marshal(s)
+	if err == nil {
+		return "noerr"
+	}
+	return err.Error()
+}

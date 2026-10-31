@@ -892,10 +892,8 @@ func (e *Engine) installStdlib() {
 		"Unmarshaler": &runtime.TypeDef{Name: "encoding/json.Unmarshaler", Kind: runtime.KindInterface, MReqs: []string{"UnmarshalJSON"}},
 		"Encoder":     hostType("encoding/json.Encoder", func() any { return &jsonEncoder{enc: json.NewEncoder(io.Discard)} }),
 		// NewEncoder boxes a jsonEncoder — the wrapper, not the host
-		// *json.Encoder — so Encode can re-marshal its argument through
-		// goJSON: a script value reaches a host `any` parameter already
-		// projected, where struct tags and MarshalJSON dispatch would be
-		// lost (see jsonHostArg).
+		// *json.Encoder — so Encode takes its raw script arg through
+		// goJSON like Marshal (see jsonEncoder.ScriptMethod).
 		"NewEncoder": &runtime.BuiltinFunc{Name: "json.NewEncoder", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("json.NewEncoder needs 1 arg, got %d", len(args))
@@ -5681,6 +5679,19 @@ func goJSONSeen(c runtime.VMCaller, v any, seen map[any]bool) any {
 		}
 		defer delete(seen, x)
 		return goJSONSeen(c, x.Elem, seen)
+	case *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
+		// a pointer to a field or element (`&s.F`, `&arr[i]`) encodes
+		// its pointee like any other pointer — passing the ref through
+		// would reflect on its bookkeeping fields. Guard it like a Cell:
+		// `s.V = &s.V` revisits the same ref.
+		if jsonSeen(seen, x) {
+			return jsonCycle{}
+		}
+		defer delete(seen, x)
+		if el, ok := runtime.Deref(x); ok {
+			return goJSONSeen(c, el, seen)
+		}
+		return nil
 	case *runtime.TypedNil, *runtime.IfaceNil:
 		// a nil pointer/interface field marshals as null — passing the
 		// wrapper through would reflect on its bookkeeping fields.
@@ -6087,23 +6098,47 @@ func (e *jsonScriptErr) MarshalJSON() ([]byte, error) {
 }
 
 // jsonEncoder backs the bound encoding/json.Encoder: the host encoder
-// writes to the script-supplied writer while Encode re-marshals its
-// argument through goJSON, so a script struct gets Marshal's tag and
-// Marshaler fidelity (a raw *json.Encoder would see vm's host `any`
-// projection instead). SetIndent/SetEscapeHTML forward as-is.
+// writes to the script-supplied writer while Encode marshals its raw
+// script arg through goJSON exactly like json.Marshal. A reflected
+// Encode(v any) would see vm's host `any` projection instead — struct
+// tags, Marshaler dispatch and MarshalText map keys lost, typed
+// containers left unwalked, and the call's write-back replacing the
+// caller's script maps. SetIndent/SetEscapeHTML forward as-is.
 type jsonEncoder struct {
 	c   runtime.VMCaller
 	enc *json.Encoder
 }
 
-func (e *jsonEncoder) Encode(v any) error {
-	err := e.enc.Encode(goJSON(e.c, jsonHostArg(v)))
+// ScriptMethod routes Encode around the reflect call (runtime.ScriptMethoder).
+func (e *jsonEncoder) ScriptMethod(name string) (func(runtime.VMCaller, []runtime.Value) (runtime.Value, error), bool) {
+	if name != "Encode" {
+		return nil, false
+	}
+	return func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("json.Encoder.Encode needs 1 arg, got %d", len(args))
+		}
+		return errVal(e.encode(v, args[0])), nil
+	}, true
+}
+
+func (e *jsonEncoder) encode(c runtime.VMCaller, v runtime.Value) error {
+	err := e.enc.Encode(goJSON(c, v))
 	err = jsonUnsupportedOf(err)
 	var se *jsonScriptErr
 	if errors.As(err, &se) {
-		return jsonMarshalerErr(e.c, se)
+		return jsonMarshalerErr(c, se)
 	}
 	return err
+}
+
+// Encode serves host callers holding the boxed encoder (a bound host
+// func taking `interface{ Encode(any) error }`); script calls take
+// ScriptMethod's raw-arg path. A script value reaches here already
+// projected to its host shape, so jsonHostArg recovers the original
+// before goJSON walks it.
+func (e *jsonEncoder) Encode(v any) error {
+	return e.encode(e.c, jsonHostArg(v))
 }
 
 func (e *jsonEncoder) SetIndent(prefix, indent string) {
