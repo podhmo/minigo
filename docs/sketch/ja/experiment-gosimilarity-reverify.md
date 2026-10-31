@@ -1,7 +1,7 @@
 # 追試: gosimilarity 実験（#1022）と後続 PR（#1023, #1024）
 
 対象: podhmo/minigo `f191f06`（#1024 マージ後の main）、Songmu/gosimilarity `298b2cd`（realworld の pin と同じ）、minigo-usecasefuzz `2e39dfe`。
-元レポート: [experiment-gosimilarity.md](./experiment-gosimilarity.md)。アルゴリズム側の調査（mizchi/similarity との比較、元レポート主張の検証）は [similarity-algorithms.md](./similarity-algorithms.md) に分けた。
+元レポート: [experiment-gosimilarity.md](./experiment-gosimilarity.md)。アルゴリズム側の調査（mizchi/similarity との比較、元レポート主張の検証）は [similarity-algorithms.md](./similarity-algorithms.md)、リファクタリング用途での評価は [experiment-gosimilarity-refactoring.md](./experiment-gosimilarity-refactoring.md) に分けた。
 
 計測マシンは元レポートと異なるので、絶対時間ではなく**ネイティブ比の倍率**で比較する。
 
