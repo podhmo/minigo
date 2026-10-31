@@ -48,6 +48,8 @@ import (
 // Builtin and Materialize are required to resolve global names; a hook
 // whose comment describes nil behavior is optional.
 type Hooks struct {
+	// Prof, when set, samples script call stacks (see Profiler).
+	Prof *Profiler
 	// Builtin resolves a predeclared name (len, append, int, ...).
 	Builtin func(name string) (runtime.Value, bool)
 	// Materialize builds the runtime value for a package-level decl
@@ -156,6 +158,8 @@ type VM struct {
 
 	// frames is the live call stack (innermost last); recover() consults it.
 	frames []*frame
+	// profTick is the Profiler tick this VM last checked in at.
+	profTick uint64
 	// callMu guards callDepth/callGid: the goroutine id owning the
 	// in-flight Call(s). A foreign goroutine's Call spawns instead.
 	callMu    sync.Mutex
@@ -1898,9 +1902,18 @@ func (v *VM) prepFrameSeen(callee runtime.Value, args []runtime.Value, statics [
 // error or a panic inside a builtin) is lifted into a script *Panic so it
 // records frames and can be recovered, like Go's own runtime errors.
 func (v *VM) exec(f *frame) {
+	// profiler safepoints bracket every push and pop, so the code run
+	// between two checks always has the same innermost frame: the caller
+	// is charged up to the call, the callee up to its return.
+	if v.H.Prof != nil {
+		v.profCheck()
+	}
 	v.frames = append(v.frames, f)
 	defer func() {
 		r := recover()
+		if v.H.Prof != nil {
+			v.profCheck()
+		}
 		v.frames = v.frames[:len(v.frames)-1]
 		if p, ok := asScriptPanic(r).(*runtime.Panic); ok && p != nil {
 			// keep the panicking frame visible to Callers while the
@@ -2281,6 +2294,11 @@ func (v *VM) runOneDefer(f *frame, unwinding *runtime.Panic) {
 	// call counts frames above depth — the owner below does not count.
 	depth := len(v.frames)
 	defer func() {
+		if v.H.Prof != nil {
+			// charge the deferred call (a host call has no frame of its
+			// own) to the frame draining it, not to its caller.
+			v.profCheck()
+		}
 		r := asScriptPanic(recover())
 		if r == nil {
 			return
@@ -2940,6 +2958,9 @@ func (v *VM) loop(f *frame) {
 				f.trap("unregistered special form %s.%s", sym.PackagePath, sym.Name)
 			}
 			res, err := h(&specialCtx{v: v, f: f, q: q}, q)
+			if v.H.Prof != nil {
+				v.profCheck()
+			}
 			if err != nil {
 				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
 			}
@@ -2953,6 +2974,9 @@ func (v *VM) loop(f *frame) {
 			args, statics, spreadTd := v.popArgsCall(f, int(ins.A), int(ins.B), ins.Pos)
 			fn := f.pop()
 			r, err := v.call(fn, args, statics, spreadTd)
+			if v.H.Prof != nil {
+				v.profCheck() // a long host call lands on its call line
+			}
 			if err != nil {
 				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
 			}
@@ -3054,6 +3078,9 @@ func (v *VM) loop(f *frame) {
 			a := f.pop()
 			f.push(v.unaryOp(f, bytecode.UnOp(ins.A), a))
 		case bytecode.OpJump:
+			if int(ins.A) < f.ip && v.H.Prof != nil {
+				v.profCheck() // loop back-edge: a long loop is a safepoint
+			}
 			f.ip = int(ins.A)
 		case bytecode.OpJumpFalse:
 			if !truthy(f.pop()) {
@@ -8566,9 +8593,17 @@ func (v *VM) park(w parkWake) func() {
 	if p == nil {
 		return func() {}
 	}
+	if v.H.Prof != nil {
+		// record the run up to the op: the resync on unpark drops only
+		// the time the op spent actually blocked.
+		v.profCheck()
+	}
 	gid := v.callGid
 	p.parkG(gid, w)
-	return func() { p.unparkG(gid) }
+	return func() {
+		p.unparkG(gid)
+		v.profResync()
+	}
 }
 
 // vcPark is park for code holding only a runtime.VMCaller (e.g.

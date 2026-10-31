@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+	"weak"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo"
@@ -1874,6 +1876,91 @@ func TestGotoViolations(t *testing.T) {
 	_, err = e.Run(context.Background(), "./testdata/gotoviol", "Shadow")
 	if err == nil || !strings.Contains(err.Error(), "jumps over declaration of x") {
 		t.Fatalf("Shadow: expected over-decl trap, got %v", err)
+	}
+}
+
+// TestScriptProfiler: a script profile names script functions the way
+// Go's pprof does, charges a busy loop to its line, and leaves out time a
+// goroutine spends parked on a channel.
+func TestScriptProfiler(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go tool pprof needed")
+	}
+	p := minigo.NewScriptProfiler(5 * time.Millisecond)
+	e := minigo.NewEngine(".", minigo.WithScriptProfiler(p))
+	run(t, e, "./testdata/scriptprof", "Main")
+	run(t, e, "./testdata/scriptprof", "Closure")
+	recvMs, _ := run(t, e, "./testdata/scriptprof", "Ops").(int64)
+	p.Stop()
+	path := filepath.Join(t.TempDir(), "script.pprof")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.WriteTo(f); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("go", "tool", "pprof", "-top", "-lines", "-unit=ms", path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("go tool pprof: %v\n%s", err, out)
+	}
+	top := string(out)
+	got := map[string]bool{
+		"spin loop line":  strings.Contains(top, "main.(*T).spin") && strings.Contains(top, "scriptprof/main.go:10"),
+		"parked excluded": !strings.Contains(top, "main.parked"),
+		"closure name":    strings.Contains(top, " main.Closure.func1 "),
+		// the deferred Sleep lands on the defer statement's line
+		"deferred host call": profFlatMs(top, "main.slowDefer ") >= 100,
+		// non-blocking channel ops are run time, not parked time
+		"quick channel ops": profFlatMs(top, "main.recvLoop ") >= float64(recvMs)/2,
+	}
+	want := map[string]bool{"spin loop line": true, "parked excluded": true, "closure name": true, "deferred host call": true, "quick channel ops": true}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Fatalf("profile mismatch (-want +got):\n%s\n%s", diff, top)
+	}
+}
+
+// profFlatMs sums the flat ms of the `go tool pprof -top -unit=ms` rows
+// whose name column starts with fn.
+func profFlatMs(top, fn string) float64 {
+	var total float64
+	for _, line := range strings.Split(top, "\n") {
+		fs := strings.Fields(line)
+		if len(fs) < 6 || !strings.Contains(line, " "+fn) {
+			continue
+		}
+		if v, err := strconv.ParseFloat(strings.TrimSuffix(fs[0], "ms"), 64); err == nil {
+			total += v
+		}
+	}
+	return total
+}
+
+// TestScriptProfilerReleasesPackages: a stopped profiler must not keep a
+// finished engine's packages alive.
+func TestScriptProfilerReleasesPackages(t *testing.T) {
+	p := minigo.NewScriptProfiler(time.Millisecond)
+	wp := func() weak.Pointer[runtime.Package] {
+		e := minigo.NewEngine(".", minigo.WithScriptProfiler(p))
+		pkg, err := e.Package(context.Background(), "./testdata/scriptprof")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.Call(context.Background(), pkg, "Closure"); err != nil {
+			t.Fatal(err)
+		}
+		return weak.Make(pkg)
+	}()
+	p.Stop()
+	p = nil
+	for range 5 {
+		goruntime.GC()
+	}
+	if diff := cmp.Diff(false, wp.Value() != nil); diff != "" {
+		t.Fatalf("package retained after the profiler stopped (-want +got):\n%s", diff)
 	}
 }
 

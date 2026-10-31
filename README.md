@@ -129,6 +129,17 @@ text := sb.String()
 The same holds for `bytes.Buffer`, `bufio`, `fmt.Fprint*` and the other
 `io` helpers when both ends are host values.
 
+To see where a slow script spends its time, profile it:
+
+```shell
+minigo run --scriptprofile script.pprof ./tool -- args...
+go tool pprof -top -lines script.pprof   # script functions and lines
+```
+
+See [docs/profiling.md](./docs/profiling.md) for what the samples mean,
+the interpreter profiles (`--cpuprofile`, `--memprofile`), and the
+embedding API.
+
 ## Provenance
 
 This repository is a reboot of [`minigo2/`](https://github.com/podhmo/go-scan/tree/main/minigo2)

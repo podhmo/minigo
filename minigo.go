@@ -37,6 +37,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/compile"
@@ -67,6 +68,7 @@ type Engine struct {
 	out        io.Writer                            // print/println/fmt.Print* destination; nil = io.Discard
 	cwd        string                               // virtual cwd for os.* path intrinsics (defaults to startDir)
 	args       []string                             // script-visible os.Args; nil = host process argv
+	prof       *ScriptProfiler                      // samples script stacks; nil = off
 
 	mu    sync.Mutex
 	pkgs  map[string]*runtime.Package // by import path
@@ -175,6 +177,23 @@ func WithArgs(argv []string) Option {
 	return func(e *Engine) { e.args = argv }
 }
 
+// ScriptProfiler samples script call stacks into a pprof profile of
+// script functions and lines (read it with go tool pprof). Time parked on
+// channel, select and host-join waits is excluded.
+type ScriptProfiler = vm.Profiler
+
+// NewScriptProfiler starts a profiler sampling every period (10ms if
+// <= 0). Pass it to [WithScriptProfiler]; Stop it when the run ends, then
+// WriteTo the profile.
+func NewScriptProfiler(period time.Duration) *ScriptProfiler {
+	return vm.NewProfiler(period)
+}
+
+// WithScriptProfiler samples every script goroutine the engine runs into p.
+func WithScriptProfiler(p *ScriptProfiler) Option {
+	return func(e *Engine) { e.prof = p }
+}
+
 // WithWorkingDir sets the engine's virtual working directory: relative
 // paths in a script's os and path/filepath calls resolve against it, and
 // os.Getwd reports it. The host process does not chdir; scripts still see
@@ -245,6 +264,7 @@ func NewEngine(startDir string, opts ...Option) *Engine {
 // newVM wires a VM to this engine's hooks.
 func (e *Engine) newVM() *vm.VM {
 	return &vm.VM{H: vm.Hooks{
+		Prof:              e.prof,
 		Builtin:           e.builtins.Get,
 		Materialize:       e.materialize,
 		CompileExpr:       compile.Expr,
@@ -403,6 +423,7 @@ func (e *Engine) NewSession() *Engine {
 		out:          e.out,
 		cwd:          e.cwd,
 		args:         e.args,
+		prof:         e.prof,
 		pkgs:         map[string]*runtime.Package{},
 		byDir:        map[string]*runtime.Package{},
 		files:        map[string]*runtime.Package{},
