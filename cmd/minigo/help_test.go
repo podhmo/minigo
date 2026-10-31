@@ -33,6 +33,8 @@ func TestSubcommandArgs(t *testing.T) {
 		{"run", func() error { return run(ctx, nil) }, "usage"},
 		{"run unknown flag", func() error { return run(ctx, []string{"./x", "-x"}) }, "usage"},
 		{"run --entry", func() error { return run(ctx, []string{"./x", "--entry"}) }, "usage"},
+		{"run --cpuprofile", func() error { return run(ctx, []string{"./x", "--cpuprofile"}) }, "usage"},
+		{"run --memprofile", func() error { return run(ctx, []string{"./x", "--memprofile"}) }, "usage"},
 		{"vet -h", func() error { return vet(ctx, []string{"-h"}) }, "help"},
 		{"vet", func() error { return vet(ctx, nil) }, "usage"},
 		{"vet two refs", func() error { return vet(ctx, []string{"a", "b"}) }, "usage"},
