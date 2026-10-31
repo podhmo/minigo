@@ -33,6 +33,8 @@
 
 realworld の `PROFILE=1` は task.sh 型タスクを対象外にする（"profile skipped (task.sh drives a program, not one main)"）。#1024 の作者は別ドライバを使っていたと思われる。ここでは `gosimilarity.Run` を固定引数で呼ぶ main を足して `prof/main.go` で計測した。
 
+→ #1035 / #1036 で `minigo run` に `--cpuprofile` / `--memprofile` / `--scriptprofile`（環境変数 `$MINIGO_*PROFILE` でも指定可）が入った。podhmo/minigo-usecasefuzz#14 以降は `PROFILE=1 ./run.sh gosimilarity-scan` だけで、cpu・allocs・script の3種類のプロファイルが取れる。script 側で見た結果は §6.7。
+
 - CPU: GC が約4割（`gcDrain` cum 41%, `tryDeferToSpanScan` flat 12%）。`VM.loop` cum 50%。
 - alloc_space 合計 54.5GB（#1024 記載の 58GB とほぼ同じ）。内訳: `prepFrameSeen` 19.0GB（うち `cells = make(...)` 15GB, `fr.locals = make(...)` 3.9GB — どちらもエスケープ判定側）、`OpVar` の `&runtime.Cell{...}` 6.4GB、BuiltinFunc 経路の `defer func()` 2.9GB と `args = append([]runtime.Value{}, args...)` 3.0GB、`Walk.Container` 3.8GB。
 - VM 計測（一時パッチでカウント）: `distance.func1` 2145万フレーム、builtin 呼び出しは `math.Min` 6379万、`len` 4917万、`make` 1088万。
@@ -132,7 +134,7 @@ gosimilarity の `--format json` で `"tree": null, "body": ""` が余計に出�
 
 ## 5. セレンディピティ（範囲外の気づき）
 
-- **realworld の task.sh 型タスクはプロファイルを取れない**。gosimilarity のような CPU 負荷系こそ欲しいので、`task.sh profile` モード（Run 相当の main を生成）か、`minigo run` に `--cpuprofile` 相当を足すのが安い。
+- **realworld の task.sh 型タスクはプロファイルを取れない**。gosimilarity のような CPU 負荷系こそ欲しいので、`task.sh profile` モード（Run 相当の main を生成）か、`minigo run` に `--cpuprofile` 相当を足すのが安い。→ 後者を #1035 で入れ、script 関数単位のプロファイラ（#1036）も足した。usecasefuzz 側は #14 で `PROFILE=1` を CLI のプロファイルに切り替えた。
 - **builtin 経由のコストは呼び出し回数に比例して効く**: このワークロードでは builtin 呼び出しが1億2000万回超あり、「1呼び出しあたり数十バイト」の固定費が無視できない。perf を詰めるなら関数呼び出しより先に builtin 経路を見る価値がある。
 - **アロケーション量と wall は比例しない**: 計測専用版で alloc を2割強削っても wall は約-9%。GC は並列に走るので、alloc 削減の効果は wall より user 時間に出る。PR の効果報告は wall と CPU 時間の両方を載せるとよい。
 - **リポジトリ内 `.claude/worktrees/` に 18 個の古い agent worktree が残っている**（`git worktree list`）。`grep -r` などリポジトリ全体を舐める操作に混ざる（gosimilarity は dot ディレクトリを無視するので今回は影響なし）。
@@ -142,7 +144,7 @@ gosimilarity の `--format json` で `"tree": null, "body": ""` が余計に出�
 
 - 入力とシムは minigo-usecasefuzz の `realworld/tasks/gosimilarity-scan`（`input/` 5ファイル、`shim.patch`、`flagshim.go`）。
 - maphash だけ fnv に差し替えた本物の flagx 版: `tree.go` の `maphash.Seed`/`MakeSeed`/`Hash` を `fnv.New64a()` に置換するだけ。
-- プロファイル: `gosimilarity.Run(ctx, []string{"<abs path>/input"}, os.Stdout, os.Stderr)` を呼ぶ main を足し、realworld の `prof/main.go` を `-dir` に向けて実行。入力は絶対パスで渡す（エンジンの起点ディレクトリが main のディレクトリになるため）。
+- プロファイル: `gosimilarity.Run(ctx, []string{"<abs path>/input"}, os.Stdout, os.Stderr)` を呼ぶ main を足し、realworld の `prof/main.go` を `-dir` に向けて実行。入力は絶対パスで渡す（エンジンの起点ディレクトリが main のディレクトリになるため）。→ 今は `MINIGO_DIR=<minigo> PROFILE=1 ./run.sh gosimilarity-scan` だけでよい。
 
 ## 6. 修正後の再検証（2026-10-31）
 
@@ -196,7 +198,28 @@ gosimilarity の `--format json` で `"tree": null, "body": ""` が余計に出�
   - TODO に追加した。
 - **未修正のまま TODO に残るもの**: zero-return shim（maphash の無限ループ、`weak`）、`reflect.Type.Size`、`os.IsPathSeparator`、`iter.Pull`、`chunkCellsEscape`、builtin 呼び出しの heap defer。
 
-### 6.7 見立ての更新
+### 6.7 script 関数・行単位のプロファイル（#1036）
+
+§1 では、`distance.func1` が 2145万フレームあることを、VM に一時パッチを当てて数えていた。#1036 の script プロファイラを使えば、パッチなしで「script のどの行に時間が付いているか」まで直接見える。実行は `MINIGO_SCRIPTPROFILE` を付けて realworld を走らせるだけで、89.4s（プロファイラなしの約88sとノイズの範囲で同じ）。
+
+- `distance.func1` は flat 86%、`compare` 経由の cum も 86%。字句解析や AST の走査（`go/scanner`, `go/ast.Walk`, `normalizer.nodeRole`）は合わせても1割に届かない。§2 の見立て（ボトルネックはほぼこのクロージャ1本）がそのまま確認できた。
+- 行単位の内訳（shim 適用後の `tree.go`）:
+
+| 行 | 内容 | flat |
+|---|---|---|
+| 92 | `math.Min(next[j]+..., prev[j]+visit(x, y))`（内側 DP。builtin 2回と再帰呼び出し） | 23% |
+| 75 | `if len(a.children) == 0 \|\| len(b.children) == 0`（葉の判定。`len` 2回） | 13% |
+| 76 | `return math.Min(...)`（葉の早期 return。`math.Min` 1回） | 11% |
+| 91 | `next[j+1] = math.Min(prev[j+1]+..., ...)`（外側の `math.Min`） | 8% |
+| 83 | `prev := make([]float64, ...)`（DP 行の確保） | 7% |
+| 99 | `visit` の終端（フレーム終了） | 6% |
+| 86, 96, 89, 90, 84 | DP 初期化、`v := math.Min(...)`、ループ | 各 2〜4% |
+
+- **builtin 呼び出しの行（75・76・91・92）だけで約55%**。§2.2 で指摘した builtin 経路の固定費（呼び出しごとの heap defer と引数コピー、`len` 専用 opcode の不在）が、関数呼び出しの行よりも大きな時間として行単位で見えている。
+- **葉の早期 return 経路（75〜76行）だけで約24%**。`visit` の呼び出しの大半は子を持たない葉で、`len` 2回と `math.Min` 1回で終わる。`len` の専用 opcode と builtin 経路の open-coded defer は、この 24% に直接効く。§2.2 の改善候補の優先度を裏付けるデータになる。
+- 同じ実行の CPU プロファイル（`--cpuprofile`）では、GC 関連（`tryDeferToSpanScan`, `scanObjectsSmall` など）が引き続き上位を占め、`VM.loop` の cum は 52%。§1 と同じ形だった。
+
+### 6.8 見立ての更新
 
 - **正しさ**: gosimilarity のような「ふつうの CLI」を動かすと、性能より先に host 境界（projection）のフィデリティ問題が表に出た。今回直した5件のうち4件（#1027, #1030, #1031, #1032）は JSON と host 境界の問題で、残る1件は frame pool（#1029）だった。legacy Go を lazy に解釈するという minigo の売りにとって、最大のリスクは stdlib バインディングの境界にある。
-- **性能**: §2 の見立てに変更はない。修正はどれも性能に影響していない。
+- **性能**: §2 の見立てに変更はない。修正はどれも性能に影響していない。script プロファイル（§6.7）で見ると、時間の約55%が builtin 呼び出しの行にあり、§2.2（builtin 経路の固定費）が §2.1（cells 再利用）より優先度が高いことを裏付けている。
