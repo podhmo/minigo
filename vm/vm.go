@@ -5760,6 +5760,26 @@ func scriptBytes(x *runtime.Slice) ([]byte, bool) {
 type argBack struct {
 	arg runtime.Value
 	rv  reflect.Value
+	// maps records each map element's identity before the call when rv
+	// is a slice/array of maps: an element the callee left alone is the
+	// host copy of the caller's script map, one it replaced is new data.
+	maps []uintptr
+}
+
+// mapElemPtrs snapshots the map identities of a slice/array arg's
+// elements (nil for any other shape).
+func mapElemPtrs(rv reflect.Value) []uintptr {
+	if rv.Kind() == reflect.Interface {
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() || (rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array) || rv.Type().Elem().Kind() != reflect.Map {
+		return nil
+	}
+	ps := make([]uintptr, rv.Len())
+	for i := range ps {
+		ps[i] = rv.Index(i).Pointer()
+	}
+	return ps
 }
 
 // scalarPayload is a script scalar's payload: the value itself, or a
@@ -5925,7 +5945,7 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 				if rv, err := toReflectValue(a, pt, vc); err == nil {
 					in[i] = rv
 					useSlice = true
-					backs = append(backs, argBack{arg: a, rv: rv})
+					backs = append(backs, argBack{arg: a, rv: rv, maps: mapElemPtrs(rv)})
 					continue
 				}
 			}
@@ -5936,7 +5956,7 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 			return nil, fmt.Errorf("%s arg %d: %w", name, i, err)
 		}
 		in[i] = rv
-		backs = append(backs, argBack{arg: a, rv: rv})
+		backs = append(backs, argBack{arg: a, rv: rv, maps: mapElemPtrs(rv)})
 	}
 	var out []reflect.Value
 	watched := false
@@ -6046,10 +6066,16 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 					}
 					if ev.Kind() == reflect.Map {
 						if _, ok := runtime.Unwrap(ss.Elems[i]).(*runtime.Map); ok {
-							// a map element crossed as a host copy: the
-							// script map is still the caller's value —
-							// swapping in the copy's GoValue box would
-							// break index/assign on it (`rows[0]["a"]`).
+							// a map element crossed as a host copy: left
+							// alone, the script map is still the caller's
+							// value — swapping in the copy's GoValue box
+							// would break index/assign on it
+							// (`rows[0]["a"]`). A map the callee put in its
+							// place lands as a script map, not a box.
+							if i < len(wb.maps) && wb.maps[i] == ev.Pointer() {
+								continue
+							}
+							ss.Elems[i] = retagElem(ss.Elems[i], SnapshotOf(ev.Interface()))
 							continue
 						}
 					}
