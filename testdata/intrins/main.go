@@ -732,6 +732,20 @@ func JsonEncoderScriptWriter() string {
 	return w.got // "{\"x\":1}\n"
 }
 
+// JsonEncoderMapStruct: a script struct nested under a string-keyed
+// map still marshals by its tags — Encode must convert the restored
+// original, not dump runtime internals.
+func JsonEncoderMapStruct() string {
+	type rec struct {
+		Name string `json:"name"`
+	}
+	var b bytes.Buffer
+	if err := json.NewEncoder(&b).Encode(map[string]any{"r": rec{Name: "n"}}); err != nil {
+		return "err:" + err.Error()
+	}
+	return b.String() // "{\"r\":{\"name\":\"n\"}}\n"
+}
+
 // JsonCycle: a self-referencing map answers gc's cycle error instead
 // of recursing until the stack dies.
 func JsonCycle() string {

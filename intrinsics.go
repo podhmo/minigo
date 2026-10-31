@@ -5762,6 +5762,17 @@ func goJSONSeen(c runtime.VMCaller, v any, seen map[any]bool) any {
 			m[str(k)] = goJSONSeen(c, e, seen)
 		}
 		return m
+	case map[string]any: // jsonHostArg's restored container copy
+		if len(x) > 0 {
+			if jsonSeen(seen, reflect.ValueOf(x).UnsafePointer()) {
+				return jsonCycle{}
+			}
+			defer delete(seen, reflect.ValueOf(x).UnsafePointer())
+		}
+		for k, e := range x {
+			x[k] = goJSONSeen(c, e, seen)
+		}
+		return x
 	case []any: // goNative's *runtime.Slice output
 		if len(x) > 0 {
 			if jsonSeen(seen, reflect.ValueOf(x).UnsafePointer()) {
