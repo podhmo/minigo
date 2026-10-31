@@ -772,7 +772,6 @@ package {{ .PackageName }}
 import (
 	"{{ .PackagePath }}"
 	"github.com/podhmo/minigo"
-	"github.com/podhmo/minigo/repl"
 	"github.com/podhmo/minigo/runtime"
 )
 

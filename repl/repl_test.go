@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	minigo "github.com/podhmo/minigo"
+	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/runtime"
 )
 

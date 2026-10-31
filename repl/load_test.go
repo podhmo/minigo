@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	minigo "github.com/podhmo/minigo"
+	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/runtime"
 )
 
