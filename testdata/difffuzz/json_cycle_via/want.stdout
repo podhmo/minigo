@@ -1,0 +1,7 @@
+self-ptr: json: unsupported value: encountered a cycle via *main.Node | json: unsupported value: encountered a cycle via *main.Node
+two-ptr: json: unsupported value: encountered a cycle via *main.A | json: unsupported value: encountered a cycle via *main.A
+map: json: unsupported value: encountered a cycle via map[string]interface {} | json: unsupported value: encountered a cycle via map[string]interface {}
+named-map: json: unsupported value: encountered a cycle via main.Tree | json: unsupported value: encountered a cycle via main.Tree
+slice: json: unsupported value: encountered a cycle via []interface {} | json: unsupported value: encountered a cycle via []interface {}
+struct-in-map: json: unsupported value: encountered a cycle via *main.W | json: unsupported value: encountered a cycle via *main.W
+shared-no-cycle: <nil> | <nil>

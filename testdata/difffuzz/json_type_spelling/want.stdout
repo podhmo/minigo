@@ -1,0 +1,4 @@
+*json.Encoder
+true
+runtime.Cleanup
+func(interface {}) error func(string, string)
