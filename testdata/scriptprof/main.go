@@ -41,3 +41,26 @@ func Closure() int {
 	f()
 	return 1
 }
+
+// slowDefer's deferred host call must be charged to slowDefer.
+func slowDefer() {
+	defer time.Sleep(150 * time.Millisecond)
+}
+
+// recvLoop receives n times on a closed channel: every receive parks,
+// but none blocks, so the whole loop is run time.
+func recvLoop(n int) {
+	ch := make(chan int)
+	close(ch)
+	for range n {
+		<-ch
+	}
+}
+
+// Ops returns recvLoop's wall time in ms.
+func Ops() int {
+	slowDefer()
+	start := time.Now()
+	recvLoop(300000)
+	return int(time.Since(start).Milliseconds())
+}

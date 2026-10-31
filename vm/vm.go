@@ -2294,6 +2294,11 @@ func (v *VM) runOneDefer(f *frame, unwinding *runtime.Panic) {
 	// call counts frames above depth — the owner below does not count.
 	depth := len(v.frames)
 	defer func() {
+		if v.H.Prof != nil {
+			// charge the deferred call (a host call has no frame of its
+			// own) to the frame draining it, not to its caller.
+			v.profCheck()
+		}
 		r := asScriptPanic(recover())
 		if r == nil {
 			return
@@ -8587,6 +8592,11 @@ func (v *VM) park(w parkWake) func() {
 	p := v.proc
 	if p == nil {
 		return func() {}
+	}
+	if v.H.Prof != nil {
+		// record the run up to the op: the resync on unpark drops only
+		// the time the op spent actually blocked.
+		v.profCheck()
 	}
 	gid := v.callGid
 	p.parkG(gid, w)

@@ -34,7 +34,10 @@ type Profiler struct {
 
 	mu      sync.Mutex
 	samples map[string]*profSample
-	end     time.Time
+	// fnIDs gives each sampled function a small id for sample keys; it
+	// lives and dies with the profiler.
+	fnIDs map[*runtime.Function]uint64
+	end   time.Time
 }
 
 type profSample struct {
@@ -59,6 +62,7 @@ func NewProfiler(period time.Duration) *Profiler {
 		stop:    make(chan struct{}),
 		done:    make(chan struct{}),
 		samples: map[string]*profSample{},
+		fnIDs:   map[*runtime.Function]uint64{},
 	}
 	p.tick.Store(1) // 0 marks a VM that has not checked in yet
 	go p.clock()
@@ -105,16 +109,23 @@ func (v *VM) profCheck() {
 	p.record(v.frames, int64(t-last))
 }
 
-// profResync drops the ticks elapsed while the goroutine was parked.
+// profResync drops the ticks a goroutine spent blocked in a parked op.
+// Every channel op parks, even one that completes at once (a receive on
+// a closed channel), and the op's own work is real run time — so only an
+// op that spanned more than one tick counts as blocked. A real wait
+// loses at most one tick of run time to this; a quick op loses none.
 func (v *VM) profResync() {
-	if p := v.H.Prof; p != nil {
-		v.profTick = p.tick.Load()
+	p := v.H.Prof
+	if p == nil {
+		return
+	}
+	if t := p.tick.Load(); t-v.profTick > 1 {
+		v.profTick = t
 	}
 }
 
 func (p *Profiler) record(frames []*frame, n int64) {
 	stack := make([]profFrame, 0, len(frames))
-	var key strings.Builder
 	for i := len(frames) - 1; i >= 0; i-- {
 		f := frames[i]
 		if f.sentinel || f.fn == nil {
@@ -125,35 +136,27 @@ func (p *Profiler) record(frames []*frame, n int64) {
 			pf.pos = f.fn.Decl.Pos() // sampled at entry, before any instruction
 		}
 		stack = append(stack, pf)
-		var b [16]byte
-		binary.LittleEndian.PutUint64(b[:8], uint64(fnID(f.fn)))
-		binary.LittleEndian.PutUint64(b[8:], uint64(pf.pos))
-		key.Write(b[:])
 	}
 	if len(stack) == 0 {
 		return
 	}
-	k := key.String()
 	p.mu.Lock()
-	if s := p.samples[k]; s != nil {
+	defer p.mu.Unlock()
+	key := make([]byte, 0, 16*len(stack))
+	for _, f := range stack {
+		id, ok := p.fnIDs[f.fn]
+		if !ok {
+			id = uint64(len(p.fnIDs) + 1)
+			p.fnIDs[f.fn] = id
+		}
+		key = binary.LittleEndian.AppendUint64(key, id)
+		key = binary.LittleEndian.AppendUint64(key, uint64(f.pos))
+	}
+	if s := p.samples[string(key)]; s != nil {
 		s.n += n
 	} else {
-		p.samples[k] = &profSample{stack: stack, n: n}
+		p.samples[string(key)] = &profSample{stack: stack, n: n}
 	}
-	p.mu.Unlock()
-}
-
-// fnIDs gives each sampled function a stable small id for sample keys.
-var fnIDs sync.Map // *runtime.Function -> uintptr
-
-var fnIDNext atomic.Uintptr
-
-func fnID(fn *runtime.Function) uintptr {
-	if id, ok := fnIDs.Load(fn); ok {
-		return id.(uintptr)
-	}
-	id, _ := fnIDs.LoadOrStore(fn, fnIDNext.Add(1))
-	return id.(uintptr)
 }
 
 // WriteTo writes the samples as a gzipped pprof profile with sample

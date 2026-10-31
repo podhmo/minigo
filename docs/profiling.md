@@ -55,9 +55,16 @@ _, err = p.WriteTo(f)
   The callee is charged from its entry up to its return.
 - **A host call is charged to the line that made it.** A host call (for example
   `strings.Builder.WriteString` or `time.Sleep`) has no script frame of its own.
-- **Parked time is excluded.** Time a goroutine spends parked on a channel
-  operation, a `select`, or a blocking host-call join is not counted. Host
-  sleeps are counted, because they are host calls.
+- **Blocked time is excluded.** Time a goroutine spends blocked on a channel
+  operation, a `select`, or a blocking host-call join is not counted. Every
+  channel op parks, even one that completes at once, so an op only counts as
+  blocked when it spans more than one tick. A real wait therefore loses at
+  most one tick of run time, and a quick op (a receive on a closed channel, a
+  `select` with a ready case) is counted as run time. Host sleeps are counted,
+  because they are host calls.
+- **Deferred calls are charged to the function that defers them.** That
+  includes a deferred host call such as `defer time.Sleep(d)`, which has no
+  script frame of its own.
 - **When off, the profiler costs almost nothing.** With no profiler set, each
   safepoint costs one nil check, which is not measurable.
 - **When on, it costs little.** On a 90s workload (gosimilarity), the run time
