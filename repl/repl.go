@@ -1,4 +1,7 @@
-package minigo
+// Package repl is the interactive front-end of the minigo interpreter:
+// a persistent read-eval-print session over a scratch package, plus the
+// completion machinery behind it. Create a session with [New].
+package repl
 
 import (
 	"context"
@@ -14,21 +17,23 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/internal/replhooks"
 	"github.com/podhmo/minigo/resolve"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
 )
 
 // REPL is a persistent read-eval-print session over a scratch package,
-// created by [Engine.NewREPL].
+// created by [New].
 //
 // An input is a top-level declaration, kept for later lines, or a list of
 // statements. Names introduced by `x := e`, `var` and `const` become
 // package globals so they persist across lines; unlike Go, `x := e`
 // reuses an existing global instead of shadowing it.
 type REPL struct {
-	engine  *Engine // session engine (created fresh by NewREPL)
+	engine  *replhooks.Hooks // session engine surface (created fresh by New)
 	pkg     *runtime.Package
 	imports []string // import specs, e.g. `"fmt"` or `f "fmt"`
 	decls   []string // accumulated func/type declarations
@@ -69,7 +74,7 @@ type REPL struct {
 	// `import "..."` completion — enumerated once per session (newly
 	// fetched modules or changed go.mod requires do not refresh it).
 	importCands []Candidate
-	// loads are the :load units, in load order (repl_load.go);
+	// loads are the :load units, in load order (load.go);
 	// pendingShadow the loaded decls the current input redefined.
 	loads         []*loadUnit
 	pendingShadow []shadowMark
@@ -104,31 +109,34 @@ type methodPatch struct {
 	name string
 }
 
-// NewREPL starts a [REPL] session on a new engine with e's configuration
-// (see [Engine.NewSession]).
-func (e *Engine) NewREPL() *REPL {
-	sess := e.NewSession()
+// New starts a [REPL] session on a new engine with e's configuration
+// (see [minigo.Engine.NewSession]).
+func New(e *minigo.Engine) *REPL {
+	return newREPL(e.NewSession().ReplHooks())
+}
+
+func newREPL(h *replhooks.Hooks) *REPL {
 	p := &runtime.Package{
 		Path:     "<repl>",
 		Name:     "repl",
-		Fset:     sess.fset,
+		Fset:     h.Fset,
 		Globals:  runtime.NewEnv(),
 		Scopes:   map[*syntax.File]map[string]*runtime.ImportRef{},
 		Imports:  map[*syntax.File][]*runtime.ImportRef{},
-		Specials: sess.specials,
+		Specials: h.Specials,
 		RunInit: func(fn *runtime.Function) error {
-			_, err := sess.newVM().Call(fn, nil)
+			_, err := h.NewVM().Call(fn, nil)
 			return err
 		},
 	}
 	p.SetState(runtime.Parsed)
-	p.Bootstrap = sess.bootstrap
-	return &REPL{engine: sess, pkg: p}
+	p.Bootstrap = h.Bootstrap
+	return &REPL{engine: h, pkg: p}
 }
 
 // Reset clears all session state: values, declarations and imports.
 func (r *REPL) Reset() {
-	fresh := r.engine.NewREPL()
+	fresh := newREPL(r.engine.Fresh())
 	*r = *fresh
 }
 
@@ -375,11 +383,11 @@ func (r *REPL) commitWrites() {
 		r.graftScope(p, r.pkg.Files[0])
 	}
 	for _, n := range r.pendingDecls {
-		d, err := r.engine.lookupDeclIn(r.pkg, n)
+		d, err := r.engine.LookupDeclIn(r.pkg, n)
 		if err != nil || d == nil {
 			continue
 		}
-		v, err := r.engine.materialize(r.pkg, d)
+		v, err := r.engine.Materialize(r.pkg, d)
 		if err != nil || v == nil || v == runtime.NIL {
 			continue
 		}
@@ -456,7 +464,7 @@ func (r *REPL) commitWrites() {
 				if td.Methods == nil {
 					td.Methods = map[string]*runtime.Function{}
 				}
-				td.Methods[m.name] = r.engine.methodFunc(p, m.recv, d)
+				td.Methods[m.name] = r.engine.MethodFunc(p, m.recv, d)
 				runtime.MethodSetsChanged()
 			}
 		}
@@ -579,9 +587,9 @@ func (r *REPL) acceptImport(ctx context.Context, fset *token.FileSet, spec *ast.
 	}
 	var p *runtime.Package
 	if resolve.LooksLikeDir(path) {
-		p, err = r.engine.loadDir(ctx, r.anchor(path))
+		p, err = r.engine.LoadDir(ctx, r.anchor(path))
 	} else {
-		p, err = r.engine.loadPath(ctx, path)
+		p, err = r.engine.LoadPath(ctx, path)
 	}
 	if err != nil {
 		return "", fmt.Errorf("import %q: %w", path, err)
@@ -600,10 +608,10 @@ func (r *REPL) acceptImport(ctx context.Context, fset *token.FileSet, spec *ast.
 // directory — the same root the module resolver anchors to — so
 // `import "./x"` means the same thing wherever the host process chdirs.
 func (r *REPL) anchor(path string) string {
-	if filepath.IsAbs(path) || r.engine.cwd == "" {
+	if filepath.IsAbs(path) || r.engine.Cwd == "" {
 		return path
 	}
-	return filepath.Join(r.engine.cwd, path)
+	return filepath.Join(r.engine.Cwd, path)
 }
 
 // hoistSpecs promotes each declared name to a package-global cell and lowers
@@ -838,7 +846,7 @@ func (r *REPL) reload() error {
 		b.WriteString(s + "\n")
 	}
 
-	sf, err := syntax.ParseFile(r.engine.fset, "repl.go", []byte(b.String()))
+	sf, err := syntax.ParseFile(r.engine.Fset, "repl.go", []byte(b.String()))
 	if err != nil {
 		return fmt.Errorf("repl: internal error: accumulated source does not parse: %w\n%s", err, b.String())
 	}
@@ -1081,16 +1089,16 @@ func (r *REPL) loadedFrom(p *runtime.Package, d *index.Decl) string {
 		return ""
 	}
 	name := d.File.Name
-	if rel, err := filepath.Rel(r.engine.cwd, name); err == nil && r.engine.cwd != "" && !strings.HasPrefix(rel, "..") {
+	if rel, err := filepath.Rel(r.engine.Cwd, name); err == nil && r.engine.Cwd != "" && !strings.HasPrefix(rel, "..") {
 		name = rel
 	}
 	return " (" + name + ")"
 }
 
-// BoundPackages is [Engine.BoundPackages] for the session's own engine
-// (:bindings). It differs from the result on the engine that created the
-// REPL in leaving out packages bound to that engine after
-// [Engine.NewREPL].
+// BoundPackages is [minigo.Engine.BoundPackages] for the session's own
+// engine (:bindings). It differs from the result on the engine that
+// created the REPL in leaving out packages bound to that engine after
+// [New].
 func (r *REPL) BoundPackages() []string {
 	return r.engine.BoundPackages()
 }
@@ -1141,9 +1149,9 @@ func (r *REPL) loadRef(ctx context.Context, ref string) (*runtime.Package, error
 	// relative dirs anchor at the engine's start directory, like
 	// `import "./x"` and :load — not at the host process's cwd
 	if dir := r.anchor(ref); dirExists(dir) {
-		return r.engine.loadDir(ctx, dir)
+		return r.engine.LoadDir(ctx, dir)
 	}
-	return r.engine.loadPath(ctx, ref)
+	return r.engine.LoadPath(ctx, ref)
 }
 
 // Display returns a form of v that prints with %v like fmt does;
@@ -1164,11 +1172,11 @@ func (r *REPL) render(v runtime.Value, spec string) any {
 	if v == nil {
 		return nil
 	}
-	vmm := r.engine.newVM()
+	vmm := r.engine.NewVM()
 	vmm.EnsureProc()
 	defer vmm.ReleaseProc()
 	format := func(x runtime.Value) string {
-		return fmt.Sprintf(spec, &fmtValue{c: vmm, x: x, nilSyntax: true})
+		return fmt.Sprintf(spec, r.engine.FormatValue(vmm, x))
 	}
 	if t, ok := v.(*runtime.Tuple); ok {
 		parts := make([]string, len(t.Elems))

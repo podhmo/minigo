@@ -1,4 +1,4 @@
-package minigo
+package repl
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -79,7 +80,7 @@ func TestREPLLoadFile(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{"fib.go": loadFib})
-	r := NewEngine(dir).NewREPL()
+	r := New(minigo.NewEngine(dir))
 
 	paths, err := r.Load(ctx, `"./fib.go"`)
 	if err != nil {
@@ -135,7 +136,7 @@ func TestREPLLoadDir(t *testing.T) {
 		"foo/sub/sub.go": "package sub\nfunc Hi() string { return \"sub\" }\n",
 		"foo/c.go":       "package foo\nimport \"./sub\"\nfunc Call() string { return sub.Hi() }\n",
 	})
-	r := NewEngine(dir).NewREPL()
+	r := New(minigo.NewEngine(dir))
 	paths, err := r.Load(ctx, "./foo")
 	if err != nil {
 		t.Fatal(err)
@@ -160,7 +161,7 @@ func TestREPLLoadShadowAndReload(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{"m.go": "package m\nfunc F() int { return 1 }\nfunc G() int { return 10 }\n"})
-	r := NewEngine(dir).NewREPL()
+	r := New(minigo.NewEngine(dir))
 
 	// a prompt decl of the same name is replaced by the load
 	replEval(t, r, "func F() int { return 0 }")
@@ -199,7 +200,7 @@ func TestREPLLoadCurrentDirUnexported(t *testing.T) {
 		"a.go": "package main\nvar counter = base * 2\nfunc bump() int { counter++; return counter }\n",
 		"b.go": "package main\nconst base = 5\ntype point struct{ x, y int }\nfunc (p point) sum() int { return p.x + p.y }\n",
 	})
-	r := NewEngine(dir).NewREPL()
+	r := New(minigo.NewEngine(dir))
 	if _, err := r.Load(ctx, `"./"`); err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +245,7 @@ func TestREPLLoadErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.Chmod(filepath.Join(dir, "dropped", "hidden.go"), 0o644)
-	r := NewEngine(dir).NewREPL()
+	r := New(minigo.NewEngine(dir))
 	if _, err := r.Load(ctx, "m.go"); err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +286,7 @@ func TestREPLConstRedeclare(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{"c.go": "package c\nconst C = 40\n"})
-	r := NewEngine(dir).NewREPL()
+	r := New(minigo.NewEngine(dir))
 
 	replEval(t, r, "const C = 10")
 	replFails(t, r, "C = 20", "cannot assign to constant") // assignment stays an error
@@ -343,7 +344,7 @@ func TestREPLLoadFileThenDir(t *testing.T) {
 		"pkg/f.go": "package p\nconst K = 1\nfunc F() int { return K }\n",
 		"pkg/g.go": "package p\nfunc G() int { return 2 }\n",
 	})
-	r := NewEngine(dir).NewREPL()
+	r := New(minigo.NewEngine(dir))
 	// f.go and ./pkg/f.go name the same load
 	for _, ref := range []string{"pkg/f.go", "./pkg/f.go"} {
 		if _, err := r.Load(ctx, ref); err != nil {
@@ -382,7 +383,7 @@ func TestREPLReviewRegressions(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("failed decl input keeps a same-named prompt var", func(t *testing.T) {
-		r := NewEngine(t.TempDir()).NewREPL()
+		r := New(minigo.NewEngine(t.TempDir()))
 		replEval(t, r, "G := 1")
 		replFails(t, r, "func G() {}\nvar z Nope", "Nope")
 		if diff := cmp.Diff("1", replEval(t, r, "G")); diff != "" {
@@ -393,7 +394,7 @@ func TestREPLReviewRegressions(t *testing.T) {
 	t.Run("failed re-load keeps the previous load", func(t *testing.T) {
 		dir := t.TempDir()
 		writeFiles(t, dir, map[string]string{"w.go": "package w\nvar W = 5\nfunc F() int { return W }\n"})
-		r := NewEngine(dir).NewREPL()
+		r := New(minigo.NewEngine(dir))
 		if _, err := r.Load(ctx, "w.go"); err != nil {
 			t.Fatal(err)
 		}
@@ -410,7 +411,7 @@ func TestREPLReviewRegressions(t *testing.T) {
 	t.Run("failed load keeps colliding prompt const and var", func(t *testing.T) {
 		dir := t.TempDir()
 		writeFiles(t, dir, map[string]string{"d.go": "package d\nconst C = 2\nvar V = 8\nvar X = boom()\nfunc boom() int { panic(\"boom\") }\n"})
-		r := NewEngine(dir).NewREPL()
+		r := New(minigo.NewEngine(dir))
 		replEval(t, r, "const C = 1")
 		replEval(t, r, "V := 7")
 		if _, err := r.Load(ctx, "d.go"); err == nil {
@@ -427,7 +428,7 @@ func TestREPLReviewRegressions(t *testing.T) {
 	t.Run("init runs once when load is the first input", func(t *testing.T) {
 		dir := t.TempDir()
 		writeFiles(t, dir, map[string]string{"i.go": "package i\nvar hits int\nvar N = next()\nfunc next() int { hits++; return hits }\nfunc init() { hits += 10 }\n"})
-		r := NewEngine(dir).NewREPL()
+		r := New(minigo.NewEngine(dir))
 		if _, err := r.Load(ctx, "i.go"); err != nil {
 			t.Fatal(err)
 		}
@@ -442,7 +443,7 @@ func TestREPLReviewRegressions(t *testing.T) {
 			"h.go": "package h\nfunc H() int { return 1 }\n",
 			"v.go": "package v\nvar V = 10\n",
 		})
-		r := NewEngine(dir).NewREPL()
+		r := New(minigo.NewEngine(dir))
 		replEval(t, r, "H := 7")
 		if _, err := r.Load(ctx, "h.go"); err != nil {
 			t.Fatal(err)
@@ -472,7 +473,7 @@ func TestREPLReviewRegressions(t *testing.T) {
 			"pk/pk.go": "package pk\nconst K = 1\nfunc G() int { return K }\nfunc F() int { return 1 }\n",
 			"ld/f.go":  "package ld\nfunc F() int { return 99 }\n",
 		})
-		r := NewEngine(dir).NewREPL()
+		r := New(minigo.NewEngine(dir))
 		if _, err := r.Enter(ctx, "./pk"); err != nil {
 			t.Fatal(err)
 		}
@@ -501,7 +502,7 @@ func TestREPLReviewRegressions(t *testing.T) {
 			"dd/a.go":      "package dd\nfunc A() int { return 1 }\n",
 			"dd/a_test.go": "package dd\nfunc T1() int { return 2 }\n",
 		})
-		r := NewEngine(dir).NewREPL()
+		r := New(minigo.NewEngine(dir))
 		if _, err := r.Load(ctx, "dd/a_test.go"); err != nil {
 			t.Fatal(err)
 		}
@@ -518,9 +519,9 @@ func TestREPLReviewRegressions(t *testing.T) {
 }
 
 func TestREPLImportBoundVersionedPath(t *testing.T) {
-	e := NewEngine(t.TempDir())
+	e := minigo.NewEngine(t.TempDir())
 	e.Bind("example.com/foo/v2", map[string]runtime.Value{"X": int64(3)})
-	r := e.NewREPL()
+	r := New(e)
 	replEval(t, r, `import "example.com/foo/v2"`)
 	if diff := cmp.Diff("3", replEval(t, r, "foo.X")); diff != "" {
 		t.Errorf("foo.X (-want +got):\n%s", diff)
@@ -539,7 +540,7 @@ func TestREPLLoadTakeOver(t *testing.T) {
 	t.Run("reload without a name brings the prompt definition back", func(t *testing.T) {
 		dir := t.TempDir()
 		writeFiles(t, dir, map[string]string{"m.go": "package m\nvar V = 10\nfunc F() int { return 1 }\n"})
-		r := NewEngine(dir).NewREPL()
+		r := New(minigo.NewEngine(dir))
 		replEval(t, r, "V := 7")
 		replEval(t, r, "func F() int { return 0 }")
 		load(t, r, "m.go")
@@ -556,7 +557,7 @@ func TestREPLLoadTakeOver(t *testing.T) {
 	t.Run("a still-declared name keeps the prompt definition for later", func(t *testing.T) {
 		dir := t.TempDir()
 		writeFiles(t, dir, map[string]string{"m.go": "package m\nvar V = 10\n"})
-		r := NewEngine(dir).NewREPL()
+		r := New(minigo.NewEngine(dir))
 		replEval(t, r, "V := 7")
 		load(t, r, "m.go")
 		writeFiles(t, dir, map[string]string{"m.go": "package m\nvar V = 20\n"})
@@ -574,7 +575,7 @@ func TestREPLLoadTakeOver(t *testing.T) {
 	t.Run("a newer prompt definition is not clobbered", func(t *testing.T) {
 		dir := t.TempDir()
 		writeFiles(t, dir, map[string]string{"m.go": "package m\nfunc F() int { return 1 }\n"})
-		r := NewEngine(dir).NewREPL()
+		r := New(minigo.NewEngine(dir))
 		replEval(t, r, "func F() int { return 0 }")
 		load(t, r, "m.go")
 		replEval(t, r, "func F() int { return 2 }")
@@ -590,7 +591,7 @@ func TestREPLLoadTakeOver(t *testing.T) {
 		// a const cell is replaced, not written through, so the prompt's
 		// C := 20 is a takeover of its own
 		writeFiles(t, dir, map[string]string{"m.go": "package m\nconst C = 10\nfunc F() int { return 1 }\n"})
-		r := NewEngine(dir).NewREPL()
+		r := New(minigo.NewEngine(dir))
 		replEval(t, r, "C := 7")
 		replEval(t, r, "func F() int { return 0 }")
 		load(t, r, "m.go")
@@ -608,7 +609,7 @@ func TestREPLLoadTakeOver(t *testing.T) {
 	t.Run("a grouped prompt type loses only the loaded spec", func(t *testing.T) {
 		dir := t.TempDir()
 		writeFiles(t, dir, map[string]string{"m.go": "package m\ntype A struct{ N int }\n"})
-		r := NewEngine(dir).NewREPL()
+		r := New(minigo.NewEngine(dir))
 		replEval(t, r, "type (\n\tA int\n\tB string\n)")
 		load(t, r, "m.go")
 		if diff := cmp.Diff("4", replEval(t, r, `A{N: 3}.N + len(B("b"))`)); diff != "" {
@@ -624,7 +625,7 @@ func TestREPLLoadTakeOver(t *testing.T) {
 	t.Run("a prompt takeover blanks one name and keeps the group's iota", func(t *testing.T) {
 		dir := t.TempDir()
 		writeFiles(t, dir, map[string]string{"m.go": "package m\nconst (\n\tA = iota\n\tB\n\tC\n)\nvar a, b = 1, 2\n"})
-		r := NewEngine(dir).NewREPL()
+		r := New(minigo.NewEngine(dir))
 		load(t, r, "m.go")
 		replEval(t, r, "type A struct{}")
 		replEval(t, r, "func a() int { return 5 }")
@@ -646,7 +647,7 @@ func TestREPLLoadTakeOver(t *testing.T) {
 			"m.go":   "package m\nvar V = 10\nfunc F() int { return V }\n",
 			"d/a.go": "package d\nfunc D() int { return 4 }\n",
 		})
-		r := NewEngine(dir).NewREPL()
+		r := New(minigo.NewEngine(dir))
 		replEval(t, r, "V := 7")
 		load(t, r, "m.go")
 		load(t, r, "d")
@@ -678,7 +679,7 @@ func TestREPLLoadTakeOver(t *testing.T) {
 			"d/a.go": "package d\ntype T struct{}\nfunc (T) M() {}\n",
 			"d/b.go": "package d\nvar V = 1\n",
 		})
-		r := NewEngine(dir).NewREPL()
+		r := New(minigo.NewEngine(dir))
 		replEval(t, r, "func P() {}")
 		load(t, r, "d")
 		lines, err := r.List(ctx, "")
@@ -704,7 +705,7 @@ func TestREPLCompleteCommandArg(t *testing.T) {
 		"pkg/sub/c.go":   "package sub\n",
 		"pkg/sub/c2.txt": "",
 	})
-	r := NewEngine(dir).NewREPL()
+	r := New(minigo.NewEngine(dir))
 	for _, c := range []struct {
 		line      string
 		wantStart int

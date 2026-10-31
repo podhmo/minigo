@@ -1,4 +1,4 @@
-package minigo
+package repl
 
 import (
 	"context"
@@ -95,7 +95,7 @@ func (r *REPL) Load(ctx context.Context, ref string) ([]string, error) {
 	}
 	var paths []string
 	if st.IsDir() {
-		meta, err := resolve.ReadPackageFiles(origin, "", r.engine.cfg)
+		meta, err := resolve.ReadPackageFiles(origin, "", r.engine.Cfg)
 		if err != nil {
 			return nil, fmt.Errorf("load: %w", err)
 		}
@@ -134,7 +134,7 @@ func (r *REPL) Load(ctx context.Context, ref string) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("load: %w", err)
 		}
-		sf, err := syntax.ParseFile(r.engine.fset, path, src)
+		sf, err := syntax.ParseFile(r.engine.Fset, path, src)
 		if err != nil {
 			return nil, fmt.Errorf("load: %w", err)
 		}
@@ -142,7 +142,7 @@ func (r *REPL) Load(ctx context.Context, ref string) ([]string, error) {
 		// not) rejects the load — no last-wins inside a load
 		for _, d := range sf.AST.Decls {
 			for _, k := range declKeys(d, true) {
-				at := r.engine.fset.Position(d.Pos())
+				at := r.engine.Fset.Position(d.Pos())
 				if prev, dup := declAt[k]; dup {
 					return nil, fmt.Errorf("load: %s: %s redeclared (previous declaration at %s)", at, k, prev)
 				}
@@ -423,7 +423,7 @@ func (r *REPL) initUnit(unit *loadUnit) error {
 	if err != nil {
 		return err
 	}
-	bindCompiles(p, ch)
+	r.engine.BindCompiles(p, ch)
 	return p.RunInit(&runtime.Function{Pkg: p, Name: p.Name + ".__load__", Chunk: ch})
 }
 
@@ -638,14 +638,14 @@ func (r *REPL) importRefs(sf *syntax.File, dir string) (scope map[string]*runtim
 				path = filepath.Join(dir, path)
 			}
 			ref.Load = func(string) (*runtime.Package, error) {
-				return r.engine.loadDir(context.Background(), path)
+				return r.engine.LoadDir(context.Background(), path)
 			}
 		} else {
 			ref.Load = func(path string) (*runtime.Package, error) {
-				return r.engine.loadPathFrom(context.Background(), dir, path)
+				return r.engine.LoadPathFrom(context.Background(), dir, path)
 			}
 			ref.LocateName = func(path string) (string, error) {
-				return r.engine.packageNameFrom(context.Background(), dir, path)
+				return r.engine.PackageNameFrom(context.Background(), dir, path)
 			}
 		}
 		refs = append(refs, ref)

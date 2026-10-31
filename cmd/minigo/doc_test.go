@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo"
+	"github.com/podhmo/minigo/repl"
 )
 
 func TestDocTarget(t *testing.T) {
@@ -17,7 +18,7 @@ func TestDocTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := minigo.NewEngine(cwd).NewREPL()
+	r := repl.New(minigo.NewEngine(cwd))
 	for _, line := range []string{`import foo "encoding/json"`, `import "./testdata/inspectpkg"`} {
 		if _, err := r.EvalLine(ctx, line); err != nil {
 			t.Fatalf("%s: %v", line, err)
