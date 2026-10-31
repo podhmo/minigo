@@ -32,6 +32,12 @@
 - **スタブで済ませる設計がコア**。LSP/fmt 等の再実装はしない。`minigo.dev/host` や `inspect/stub.go` のように本体が `panic("minigo intrinsic")` の宣言だけを置き、gopls/gofmt が効く静的に正しい Go のまま実行時は intrinsic が横取りする。解釈を変えれば同じ stub が minigo 側・Go 側双方への機能提供になる（`minigo vet` は未登録 stub 呼び出しの静的検出）。
 - **不足している部分**: code walk（AST/宣言の走査 —— `inspect` が半分）、code writer（生成・書き戻し —— `gen-sync` の managed block が最初の形）、LLM に渡す情報断片の収集・出力。可視化は AI 任せで十分。
 
+## なぜリリースするのか / してこなかったのか
+
+リリース（バージョン付け）の意味は **minigo に依存したコードを書けるようになる** こと —— バージョンを固定できる。利用側は `go.mod` で pin して、壊れない組み合わせを選べる。
+
+一方でリリースは **ユーザーから見たインターフェイスを固定する** という側面がある。ここまでリリースしてこなかったのは、モノリポの手軽さを捨てたくなかったため —— `examples/` 内での仮想的な利用（`task-run`/`convert-define`/`gen-sync`/`extract-schema`/`minigo-generate`）でフィードバックを集める形を取っていた。インターフェイスを固定してしまうと、その試行錯誤の余地が狭まる。
+
 ## 今後の検討
 
 - `repl.go`/`repl_load.go` の `minigo/repl` 等への切り離し —— 現在はルート `minigo` パッケージ内。
