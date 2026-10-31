@@ -6,6 +6,8 @@
 計測マシンは元レポートと異なるので、絶対時間ではなく**ネイティブ比の倍率**で比較する。
 
 > **追記（2026-10-31）**: 本文の §1〜§5 は `f191f06` 時点の記録として残す。そこで見つかった不具合は、スタック #1027 → #1029 → #1030 → #1031 → #1032 で修正した。修正後の再検証、レビューで見つかった退行、新しく分かったことは §6 にまとめた。各項目の現状は本文中に「→」で注記した。
+>
+> **追記2（2026-10-31）**: §2.2 の builtin 呼び出し固定費（heap defer、args コピー、`len`/`cap` 専用 opcode）を実装した。内容と検証・計測は §7。
 
 ## TL;DR
 
@@ -67,6 +69,8 @@ realworld の `PROFILE=1` は task.sh 型タスクを対象外にする（"profi
 - defer を分岐ごとヘルパ関数に切り出せば open-coded になる（挙動不変）。
 - 引数を保持する builtin（`task.F` 等）だけフラグでコピーし、他は argbuf をそのまま渡す。
 - `len`/`cap` の専用 opcode（シャドウされていない場合のみ）。`len` は1回のスキャンで約5000万回呼ばれる。
+
+→ 3件とも §7 で実装した。
 
 ### 2.3 倍率の天井について
 
@@ -196,7 +200,7 @@ gosimilarity の `--format json` で `"tree": null, "body": ""` が余計に出�
   - map を直接渡した場合（`host.F(m)` の中で `m["k"] = v`）も、main から同じ挙動。host が受け取るのは projection のコピーだから。
   - #1031 以前はスライスの場合だけ GoValue の箱を通して書き換えが見えていたが、その後の添字代入がトラップしていた。#1031 で、直接の map 引数と同じ挙動に揃った。
   - TODO に追加した。
-- **未修正のまま TODO に残るもの**: zero-return shim（maphash の無限ループ、`weak`）、`reflect.Type.Size`、`os.IsPathSeparator`、`iter.Pull`、`chunkCellsEscape`、builtin 呼び出しの heap defer。
+- **未修正のまま TODO に残るもの**: zero-return shim（maphash の無限ループ、`weak`）、`reflect.Type.Size`、`os.IsPathSeparator`、`iter.Pull`、`chunkCellsEscape`。builtin 呼び出しの heap defer は §7 で解消（条件付き args コピーと `len`/`cap` 専用 opcode も同時に実装した）。
 
 ### 6.7 script 関数・行単位のプロファイル（#1036）
 
@@ -223,3 +227,39 @@ gosimilarity の `--format json` で `"tree": null, "body": ""` が余計に出�
 
 - **正しさ**: gosimilarity のような「ふつうの CLI」を動かすと、性能より先に host 境界（projection）のフィデリティ問題が表に出た。今回直した5件のうち4件（#1027, #1030, #1031, #1032）は JSON と host 境界の問題で、残る1件は frame pool（#1029）だった。legacy Go を lazy に解釈するという minigo の売りにとって、最大のリスクは stdlib バインディングの境界にある。
 - **性能**: §2 の見立てに変更はない。修正はどれも性能に影響していない。script プロファイル（§6.7）で見ると、時間の約55%が builtin 呼び出しの行にあり、§2.2（builtin 経路の固定費）が §2.1（cells 再利用）より優先度が高いことを裏付けている。
+
+## 7. builtin 呼び出しの固定費の削減（2026-10-31, 第2ラウンド）
+
+§2.2 の3つの改善候補を実装した。
+
+### 7.1 変更
+
+- **heap defer の解消**: `VM.call` の `*runtime.BuiltinFunc` 分岐を `callBuiltin` に切り出した。panic 注釈の `defer` が関数トップレベルに出るため open-coded になり、呼び出しごとのヒープ確保が消えた（`-gcflags=-m` でクロージャが escape しないことを確認）。トレースバックの "(builtin)" エントリは同じ recover で作られるので挙動不変。
+- **args コピーの条件化**: `runtime.BuiltinFunc.RetainsArgs` を追加し、引数スライスを返却以後も保持する builtin だけがプライベートコピーを受け取るようにした。全 builtin を監査した結果、保持するのは `task.F`（`args[1:]` を `taskCall` に束縛）だけだったので、そこにフラグを立てた。`atomicOp` など `args[i]` に書き込む builtin は自前でコピーしており無関係。フィールドの doc には「スライスの保持のみが対象で、要素の保持は不要」と明記した。回帰テスト `TestBuiltinRetainsArgs` を追加（フラグを外すと `[<nil> <nil>]` で失敗することを確認 — `freeFrame` が argbuf を clear するため）。
+- **`len`/`cap` 専用 opcode**: `OpLenCallFold` を追加。`OpLenIdxFold`/`OpLenDerefFold` と同じ probe パターン — スタックが `[callee, operand]` のとき、callee が正準の predeclared builtin と一致すれば、operand スロットをそのまま1要素の args にして `callBuiltin` を直叩きし、static push + OpCall をスキップする。正準の builtin は `v.H.Builtin` で VM ごとに遅延解決してキャッシュ（hook が無い bare VM や再束縛では probe が外れて通常の OpCall に落ちる）。probe を外れるケース（コンパイル後の `len` 再束縛、import・dot import での名前、ローカル・パッケージ宣言でのシャドウ＝コンパイル時の `c.declared` で既に除外、lone call arg の `*runtime.Tuple`＝mode-2 spread）は全てフォールバックするので意味論は不変。fold-hit 時は `p.done` の procExit チェックも OpCall と同じ形で残し、dead process の goroutine が `for len(q) == 0 {}` で回り続けないようにした。
+
+### 7.2 検証
+
+- len/cap の operand 形状を網羅するスクリプト（index/deref/named/nil/chan/副作用あり/ネスト/`make`）を `go run` と差分実行 → 完全一致。
+- シャドウ系: ローカル `len :=`（999 が出る）、パッケージレベル `func len`/`var cap` → ユーザー定義が優先（一致）。
+- `len(f())`（複数戻り値の lone call arg）→ before と同じく mode-2 spread で `2`。
+- `make test`（root + examples 全件）、`make lint`（go vet + staticcheck）パス。`make format` の testdata エラーは main でも再現する既存事項。変更ファイルは個別に goimports 済み。
+- **レビューで見つかった2件を修正**: (1) `slices.Chunk` の `Each` クロージャが `args` を遅延読みする隠れた保持で、条件コピー化で露出した — 要素だけを捕捉するよう修正（retainer の監査は store 系を重点的に見たため、クロージャ遅延読みを見落とした）。(2) `OpLenCallFold` が `v.call` 冒頭の `p.done`（procExit セーフポイント）を通らなくなっていた — fold 側に同じチェックを入れた。細部は generic インスタンス化時の `RetainsArgs` 伝播（inert だが揃えた）と、フォールバックの static を `OpNil` から `c.staticTyp` に揃えた点。
+
+### 7.3 計測（同一マシン）
+
+| ワークロード | before | after |
+|---|---|---|
+| 合成 len/cap ループ（200万回） | 1.85s | 1.06s（約-43%） |
+| 合成 `max`/`min` ループ（150万回、fold 対象外） | 2.98s | 2.47s（約-17%） |
+| gosimilarity 本体（maphash→fnv 置換版、minigo 本体5ファイル入力 = 373関数・22ペア） | 45.8s | 41.3s（約-10%） |
+
+- 同じ入力のネイティブは 0.25s → 倍率は約183倍から約165倍へ。
+- after の出力は before・ネイティブと一致（パス表示の相対基準だけが実行ディレクトリ差）。
+- §6.7 の行内訳で ~55% を占めていた builtin 呼び出し行に直接効く。特に `len` は opcode 化で OpCall ごと消え、`math.Min`/`make` は callBuiltin 化による defer/copy 削減分だけが効く — opcode 化は今回 `len`/`cap` のみ。入力が元レポートより小さい（373関数・22ペア vs 659関数・110ペア）ので、距離計算の占める割合は小さく、元の入力ではもう少し効くはず。
+
+### 7.4 残り
+
+- `math.Min`/`math.Max` などパッケージ経由の builtin は OpCall 経路のまま。固定費は下がったが、`len` 級の opcode 化は正準 builtin の identity 解決が file scope 依存になるため別途設計が要る。
+- opcode 対象外の呼び出しでは `popArgsCall` の argbuf pop と `argStatics` の push/pop が残る。
+- 倍率 ~165倍: §2.3 の「GC が4割」に照らすと、builtin 経路の alloc 由来分は概ね取れた読み。残りはディスパッチ・`coerceConcrete`・`selectMember` などの固定費の積み上げ。

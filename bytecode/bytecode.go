@@ -141,6 +141,14 @@ const (
 	// call — a plain nil dereference — where a lazily bound method value
 	// reports the "value method ... called using nil" wrapper text.
 	OpSelectCall // A: const idx of field/method name; pop base -> push base.name
+
+	// OpLenCallFold folds len(x)/cap(x): the stack is [callee, operand];
+	// when the callee still is the predeclared len/cap builtin (B: 0=len,
+	// 1=cap) the operand's slot becomes the call's single argument, both
+	// slots collapse into the result, and control jumps to A, skipping
+	// the emitted static+OpCall run. A miss — the name rebound after
+	// compile, say — falls through to the ordinary call.
+	OpLenCallFold
 )
 
 // ShiftConstCount is an [OpBinary] B flag on << and >>: the count is

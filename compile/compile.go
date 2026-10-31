@@ -6483,6 +6483,21 @@ unwrapped:
 			c.patchA(jm1, len(c.ch.Code))
 			return
 		}
+		// every other operand: emit the resolved callee and the operand,
+		// then OpLenCallFold — a hit (the callee still is the predeclared
+		// builtin) runs it without the OpCall machinery and skips the
+		// emitted static+call run.
+		c.calleeExpr(x.Fun)
+		c.callArgs(x.Args)
+		b := 0
+		if id.Name == "cap" {
+			b = 1
+		}
+		jm := c.emit(bytecode.OpLenCallFold, 0, b, x.Pos())
+		c.staticTyp(x.Args[0])
+		c.emit(bytecode.OpCall, 1, callSpread(x), x.Pos())
+		c.patchA(jm, len(c.ch.Code))
+		return
 	}
 	c.calleeExpr(x.Fun)
 	newCall := isNewCall(x)

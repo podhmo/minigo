@@ -2133,6 +2133,15 @@ type BuiltinFunc struct {
 	// VMCaller.Call; it reads its arguments before returning and keeps
 	// no reference to the slice.
 	DirectYield bool
+	// RetainsArgs declares that Fn keeps its args slice (or a subslice
+	// of it) alive past its return — a task runner binding it into a
+	// queued call, say. The VM then calls Fn with a private copy;
+	// without it the slice may be the calling frame's reusable arg
+	// buffer, rewritten by that frame's next call. Retaining argument
+	// VALUES needs no flag — only the slice itself. Honored only where
+	// the VM dispatches the call: deferred calls get private slices
+	// already, and DirectYield invocations bypass it by contract.
+	RetainsArgs bool
 }
 
 // SeqSource is the native side of an intrinsic seq builtin.
