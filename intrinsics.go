@@ -3140,46 +3140,45 @@ func (e *Engine) installStdlib() {
 // parked on a dead feed as asleep, the way gc treats a channel no timer
 // can feed, instead of leaving the park wakeable forever.
 type chanFeed struct {
-	vc    runtime.VMCaller
-	C     chan time.Time   // the script-visible channel (proxied)
-	src   <-chan time.Time // the real timer channel the pump forwards
-	ptr   uintptr          // managed-channel id (0 = unmanaged, no proc)
-	done  chan struct{}    // closed to retire the pump
-	once  bool             // one-shot feed: die after the first value
-	mu    sync.Mutex
-	armed bool // the pump is expected to deliver (more) values
-	gen   int  // lifecycle generation — arm() bumps it so a superseded pump can't die on the new arm's behalf
+	vc   runtime.VMCaller
+	C    chan time.Time   // the script-visible channel (proxied)
+	src  <-chan time.Time // the real timer channel the pump forwards
+	ptr  uintptr          // managed-channel id (0 = unmanaged, no proc)
+	once bool             // one-shot feed: die after the first value
+	op   sync.Mutex       // serializes Stop/Reset (never taken by a pump)
+	mu   sync.Mutex
+	cur  *feedPump // the live pump (nil once retired)
+}
+
+// feedPump is one pump lifecycle: done retires it, exited closes when
+// the goroutine returns, and dropped records a fire it held but never
+// delivered (read only after exited closes).
+type feedPump struct {
+	done    chan struct{}
+	exited  chan struct{}
+	dropped bool
 }
 
 // newChanFeed starts a pump forwarding src into a buffered proxy channel
 // and registers the proxy's liveness with the caller's process.
 func newChanFeed(vc runtime.VMCaller, src <-chan time.Time, once bool) *chanFeed {
 	f := &chanFeed{
-		vc:    vc,
-		C:     make(chan time.Time, 1),
-		src:   src,
-		once:  once,
-		done:  make(chan struct{}),
-		armed: true,
+		vc:   vc,
+		C:    make(chan time.Time, 1),
+		src:  src,
+		once: once,
 	}
 	f.ptr = vm.RegisterWakeChan(vc, reflect.ValueOf(f.C))
-	go f.pump(f.done, f.gen)
+	f.start()
 	return f
 }
 
-// pump forwards each src value into the proxy until done closes; a
-// one-shot feed dies after its single delivery. The done channel and
-// the generation pin the pump to exactly one lifecycle — after a
-// die→arm or supersede→arm cycle the retired pump must exit on the
-// channel it was started with and must not retire the newer arm, so
-// neither observes f.done/f.gen swapped under it.
-//
-// A value already taken from src is delivered in preference to done: a
-// Reset to a tiny duration can fire the real timer before arm() closes
-// the old done, and the superseded pump is then the only one holding
-// that fire. Letting select pick done at random dropped it and left the
-// receiver parked forever.
-func (f *chanFeed) pump(done chan struct{}, gen int) {
+// pump forwards each src value into the proxy until p.done closes; a
+// one-shot feed dies after its single delivery. A pump is retired only
+// before the real timer is stopped or reset, so a fire it holds at that
+// point predates the Stop/Reset and is dropped, as go1.23 discards it.
+func (f *chanFeed) pump(p *feedPump) {
+	defer close(p.exited)
 	for {
 		select {
 		case v := <-f.src:
@@ -3191,81 +3190,102 @@ func (f *chanFeed) pump(done chan struct{}, gen int) {
 				case f.C <- v:
 				default:
 				}
-				select {
-				case <-done:
-					return
-				default:
-				}
 				continue
 			}
 			select {
 			case f.C <- v:
-			default:
-				select {
-				case f.C <- v:
-				case <-done:
-					return
-				}
+			case <-p.done:
+				p.dropped = true
+				return
 			}
-			f.dieIf(gen)
+			f.dieIf(p)
 			return
-		case <-done:
+		case <-p.done:
 			return
 		}
 	}
 }
 
-// dieIf retires the feed on a pump's behalf — but only while that
-// pump's generation is still the live one. A Reset that already
-// re-armed the feed owns its lifecycle; a superseded pump's death must
-// not kill it.
-func (f *chanFeed) dieIf(gen int) {
+// start (re)arms the feed with a fresh pump: the managed channel reports
+// alive again. Callers hold f.op (or own f exclusively).
+func (f *chanFeed) start() {
+	p := &feedPump{done: make(chan struct{}), exited: make(chan struct{})}
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	if gen != f.gen || !f.armed {
-		return
-	}
-	f.armed = false
-	close(f.done)
-	if f.ptr != 0 {
-		vm.SetWakeChanDead(f.vc, f.ptr, true)
-	}
-}
-
-// die marks the feed unable to deliver again: the pump retires and the
-// managed channel goes dead, so parked receivers join the asleep count.
-// It is unconditional — a Stop wins whatever generation is live.
-func (f *chanFeed) die() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if !f.armed {
-		return
-	}
-	f.armed = false
-	close(f.done)
-	if f.ptr != 0 {
-		vm.SetWakeChanDead(f.vc, f.ptr, true)
-	}
-}
-
-// arm (re)starts the feed after a Reset: the managed channel reports
-// alive again and a fresh pump forwards the rescheduled sends. An
-// already-armed feed is superseded, not skipped — its pump retires on
-// the old done channel so a mid-flight one-shot death cannot mark the
-// re-armed channel dead.
-func (f *chanFeed) arm() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.cur = p
 	if f.ptr != 0 {
 		vm.SetWakeChanDead(f.vc, f.ptr, false)
 	}
-	if f.armed {
-		close(f.done)
+	f.mu.Unlock()
+	go f.pump(p)
+}
+
+// dieIf marks the feed dead after a one-shot delivery — but only while
+// p is still the live pump; a Stop/Reset already owns the lifecycle.
+func (f *chanFeed) dieIf(p *feedPump) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.cur != p {
+		return
 	}
-	f.gen++
-	f.armed = true
-	f.done = make(chan struct{})
-	go f.pump(f.done, f.gen)
+	if f.ptr != 0 {
+		vm.SetWakeChanDead(f.vc, f.ptr, true)
+	}
+}
+
+// retire stops the live pump and waits for it to exit, so no value read
+// from src before the coming Stop/Reset can reach C afterwards. It
+// reports whether the pump held an undelivered fire. Callers hold f.op;
+// f.mu is released while waiting so the pump's dieIf cannot deadlock.
+func (f *chanFeed) retire() bool {
+	f.mu.Lock()
+	p := f.cur
+	f.cur = nil
+	f.mu.Unlock()
+	if p == nil {
+		return false
+	}
+	close(p.done)
+	<-p.exited
+	return p.dropped
+}
+
+// drain discards a fire left in the proxy buffer, reporting whether one
+// was there: go1.23 makes no pre-Stop/Reset value receivable afterwards.
+func (f *chanFeed) drain() bool {
+	select {
+	case <-f.C:
+		return true
+	default:
+		return false
+	}
+}
+
+// stop retires the feed for good around the real stop: parked receivers
+// join the asleep count. It reports whether a fire was still pending
+// (the real timer's own stop result, a dropped fire, or a buffered one).
+func (f *chanFeed) stop(realStop func() bool) bool {
+	f.op.Lock()
+	defer f.op.Unlock()
+	dropped := f.retire()
+	stopped := realStop()
+	drained := f.drain()
+	if f.ptr != 0 {
+		vm.SetWakeChanDead(f.vc, f.ptr, true)
+	}
+	return stopped || dropped || drained
+}
+
+// reset retires the old pump, resets the real timer, discards any stale
+// fire, and re-arms with a fresh pump. It reports whether a fire was
+// still pending, like stop.
+func (f *chanFeed) reset(realReset func() bool) bool {
+	f.op.Lock()
+	defer f.op.Unlock()
+	dropped := f.retire()
+	active := realReset()
+	drained := f.drain()
+	f.start()
+	return active || dropped || drained
 }
 
 // timerChanBox is the time.Timer NewTimer hands to the script: only the
@@ -3278,22 +3298,17 @@ type timerChanBox struct {
 	feed *chanFeed
 }
 
-// Stop cancels the timer like time.Timer.Stop: a true return means no
-// fire can arrive, so the feed dies and parked receivers count asleep.
+// Stop cancels the timer like time.Timer.Stop: the feed dies and parked
+// receivers count asleep. As in go1.23, a fire not yet received counts
+// as stopped (true) and is discarded.
 func (b *timerChanBox) Stop() bool {
-	if !b.t.Stop() {
-		return false
-	}
-	b.feed.die()
-	return true
+	return b.feed.stop(b.t.Stop)
 }
 
 // Reset reschedules the timer like time.Timer.Reset: a dead feed
-// re-arms, a live one keeps its pump.
+// re-arms and a stale fire is discarded.
 func (b *timerChanBox) Reset(d time.Duration) bool {
-	active := b.t.Reset(d)
-	b.feed.arm()
-	return active
+	return b.feed.reset(func() bool { return b.t.Reset(d) })
 }
 
 // tickerChanBox is the time.Ticker NewTicker hands to the script; the
@@ -3307,8 +3322,7 @@ type tickerChanBox struct {
 // Stop halts the ticker like time.Ticker.Stop: no more ticks can arrive,
 // so the feed dies and parked receivers count asleep.
 func (b *tickerChanBox) Stop() {
-	b.t.Stop()
-	b.feed.die()
+	b.feed.stop(func() bool { b.t.Stop(); return false })
 }
 
 // proxyHostTypes maps each liveness-tracking proxy box to the API type
@@ -3370,8 +3384,7 @@ func proxyHostTypeOf(v any) reflect.Type {
 // Reset restarts the ticker like time.Ticker.Reset: a stopped feed
 // re-arms so parked receivers wake again.
 func (b *tickerChanBox) Reset(d time.Duration) {
-	b.t.Reset(d)
-	b.feed.arm()
+	b.feed.reset(func() bool { b.t.Reset(d); return false })
 }
 
 // afterFuncTimer is the time.Timer AfterFunc hands to the script: a

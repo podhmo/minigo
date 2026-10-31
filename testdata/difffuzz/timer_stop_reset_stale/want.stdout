@@ -1,0 +1,10 @@
+timer reset active: true
+timer reset: none
+timer stop pending: true
+timer stop again: false
+timer stop fired: true
+timer stop: none
+timer reset after stop: false
+timer stop received: false
+ticker reset: none
+ticker stop: none
