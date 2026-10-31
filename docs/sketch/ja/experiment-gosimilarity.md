@@ -4,6 +4,8 @@
 
 目的は2つ: (1) AST 類似度ツールを minigo コードベースに適用して、リファクタリングのタネや構造上の傾向を洗い出すこと、(2) gosimilarity 本体を `minigo run` で動かして、実在ツールの実行で minigo のカバレッジと性能を測ること（oapi-codegen 実験と同じ位置付けの負荷サンプル）。
 
+> 追試: [experiment-gosimilarity-reverify.md](./experiment-gosimilarity-reverify.md)（倍率・maphash の原因・flagx/weak の記述を訂正）、アルゴリズム比較: [similarity-algorithms.md](./similarity-algorithms.md)。
+
 ## TL;DR
 
 - gosimilarity は minigo に対して**即戦力**だった。デフォルトスキャン（約20秒）だけで、compile / runtime / vm の3層にまたがる**実コピー10箇所以上**を発見。`memberDeclOf`/`memberDecl`/`lookupDecl` の三重コピーや `deepTwinOperands`/`twinOperands` の完全一致など、人間が grep では拾いにくい「名前だけ違う複製」を網羅的に列挙できる。
