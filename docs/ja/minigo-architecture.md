@@ -14,7 +14,8 @@ v1 (`minigo/`) が AST ツリーウォーカーだったのに対し、v2 は AS
 
 ```
 cmd/minigo          CLI: run / repl / vet / gen-intrinsics
-minigo (engine)    Engine, Bind/RegisterSpecial, installStdlib, Vet, WrapFunc, REPL
+repl               REPL フロントエンド: セッション (`REPL`) + 補完 — Engine 内部は internal/replhooks 経由
+minigo (engine)    Engine, Bind/RegisterSpecial, installStdlib, Vet, WrapFunc
   ├─ host           ホスト向け stub パッケージ（panic("minigo intrinsic") 本体）
   ├─ vm             フレーム + 命令ディスパッチ + イテレータ駆動
   │   ├─ compile    AST → bytecode.Chunk（スコープを slot に解決）
@@ -134,7 +135,7 @@ minigo run ./app --entry F
 | コマンド | 内容 |
 |---|---|
 | `minigo run <ref> [--entry F]` | パッケージの関数を実行（`minigo <ref> [F]` 短縮形） |
-| `minigo repl` | 持続セッション REPL。`:reset`/`:exit`。未完了入力行は `IncompleteInput` で `.. ` 継続 |
+| `minigo repl` | 持続セッション REPL。`:reset`/`:exit`。未完了入力行は `repl.IncompleteInput` で `.. ` 継続 |
 | `minigo vet <ref> [--special path.Sym]...` | `panic("minigo intrinsic")` 本体を持つメンバへの未登録呼出を静的に報告（位置つき、検出時 exit 1） |
 | `minigo gen-intrinsics -output <dir> <pkg>...` | `<path>/install.go` に `Bind` テーブル生成（関数→WrapFunc、var/const→ValueOf、型→合成 `*TypeDef`（KindNamedBasic＋仮想 Package）なので `var x pkg.T` でホスト値を型付き宣言できる。ジェネリックとメソッドはスキップ） |
 

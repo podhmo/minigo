@@ -19,7 +19,7 @@
 // where runtime values are absent: `var s pkg.T` in an uninitialized
 // package still completes through the decl's type expression.
 
-package minigo
+package repl
 
 import (
 	"go/ast"
@@ -278,8 +278,8 @@ func (c *completer) scopeNames(out *[]Candidate) {
 			}
 		}
 	}
-	for _, name := range r.engine.builtins.Names() {
-		bv, _ := r.engine.builtins.Get(name)
+	for _, name := range r.engine.Builtins.Names() {
+		bv, _ := r.engine.Builtins.Get(name)
 		c.add(out, name, globalKind(bv), globalDetail(bv))
 	}
 	for _, name := range predeclared {
@@ -413,7 +413,7 @@ func (r *REPL) resolveIdent(name string) (runtime.Value, bool) {
 	}
 	if r.pkg.Index != nil {
 		if d, ok := memberDeclOf(r.pkg.Index, name); ok {
-			if mv, err := r.engine.materialize(r.pkg, d); err == nil && mv != nil {
+			if mv, err := r.engine.Materialize(r.pkg, d); err == nil && mv != nil {
 				return mv, true
 			}
 		}
@@ -434,7 +434,7 @@ func (r *REPL) resolveIdent(name string) (runtime.Value, bool) {
 			}
 		}
 	}
-	if bv, ok := r.engine.builtins.Get(name); ok {
+	if bv, ok := r.engine.Builtins.Get(name); ok {
 		return bv, true
 	}
 	return nil, false
@@ -487,7 +487,7 @@ func (r *REPL) memberValue(v runtime.Value, name string) (runtime.Value, bool) {
 			return m, true
 		}
 		for _, spec := range b.Def.EmbedSpecs {
-			emb, err := r.engine.resolveTypeRef(b.Def, spec)
+			emb, err := r.engine.ResolveTypeRef(b.Def, spec)
 			if err != nil || emb == nil {
 				continue
 			}
@@ -552,7 +552,7 @@ func (r *REPL) structMemberValue(s *runtime.Struct, name string) (runtime.Value,
 				}
 				fv := st.Fields[i]
 				if _, isNil := fv.(runtime.Nil); fv == nil || isNil {
-					if fts, err := r.engine.fieldTypes(st.Def); err == nil && i < len(fts) && fts[i] != nil {
+					if fts, err := r.engine.FieldTypes(st.Def); err == nil && i < len(fts) && fts[i] != nil {
 						return &runtime.TypedNil{Typ: fts[i]}, true
 					}
 				}
@@ -588,13 +588,13 @@ func (r *REPL) typeFieldValue(td *runtime.TypeDef, name string) (runtime.Value, 
 				if n != name {
 					continue
 				}
-				if fts, err := r.engine.fieldTypes(t); err == nil && i < len(fts) && fts[i] != nil {
+				if fts, err := r.engine.FieldTypes(t); err == nil && i < len(fts) && fts[i] != nil {
 					return &runtime.TypedNil{Typ: fts[i]}, true
 				}
 				return &runtime.TypedNil{Typ: t}, true
 			}
 			for _, spec := range t.EmbedSpecs {
-				if emb, err := r.engine.resolveTypeRef(t, spec); err == nil && emb != nil {
+				if emb, err := r.engine.ResolveTypeRef(t, spec); err == nil && emb != nil {
 					next = append(next, emb)
 				}
 			}
@@ -633,7 +633,7 @@ func (r *REPL) typeMethodValue(td *runtime.TypeDef, name string) (runtime.Value,
 // embeds (`type Node struct{ *Node }`) are legal Go and must terminate.
 func (r *REPL) typeMethodValueOf(td *runtime.TypeDef, name string, seen map[*runtime.TypeDef]bool) (runtime.Value, bool) {
 	for td != nil {
-		td = r.engine.peelAliasTd(td)
+		td = r.engine.PeelAliasTd(td)
 		if td == nil || seen[td] {
 			return nil, false
 		}
@@ -642,7 +642,7 @@ func (r *REPL) typeMethodValueOf(td *runtime.TypeDef, name string, seen map[*run
 			return m, true
 		}
 		for _, spec := range td.EmbedSpecs {
-			emb, err := r.engine.resolveTypeRef(td, spec)
+			emb, err := r.engine.ResolveTypeRef(td, spec)
 			if err != nil || emb == nil {
 				continue
 			}
@@ -656,7 +656,7 @@ func (r *REPL) typeMethodValueOf(td *runtime.TypeDef, name string, seen map[*run
 		if td.Kind != runtime.KindPointer || td.Spec != nil {
 			break
 		}
-		et, err := r.engine.elemOf(td)
+		et, err := r.engine.ElemOf(td)
 		if err != nil || et == nil {
 			break
 		}
@@ -734,7 +734,7 @@ func (r *REPL) pkgMemberValue(p *runtime.Package, name string) (runtime.Value, b
 	}
 	switch d.Kind {
 	case index.FuncDecl, index.TypeDecl:
-		if mv, err := r.engine.materialize(p, d); err == nil && mv != nil {
+		if mv, err := r.engine.Materialize(p, d); err == nil && mv != nil {
 			return mv, true
 		}
 	case index.VarDecl, index.ConstDecl:
@@ -742,7 +742,7 @@ func (r *REPL) pkgMemberValue(p *runtime.Package, name string) (runtime.Value, b
 		// initializing the package for a live value.
 		if vs, ok := d.Spec.(*ast.ValueSpec); ok && vs.Type != nil {
 			ctx := &runtime.TypeDef{Pkg: p, File: d.File}
-			if td, err := r.engine.resolveTypeRef(ctx, vs.Type); err == nil && td != nil {
+			if td, err := r.engine.ResolveTypeRef(ctx, vs.Type); err == nil && td != nil {
 				return &runtime.TypedNil{Typ: td}, true
 			}
 		}
@@ -799,7 +799,7 @@ func (c *completer) members(v runtime.Value, out *[]Candidate, depth int) {
 		c.structFields(b.Def, out)
 		c.typedefMethods(b.Def, out)
 	case *runtime.Named:
-		td := c.r.engine.peelAliasTd(b.Typ)
+		td := c.r.engine.PeelAliasTd(b.Typ)
 		c.typedefMethods(td, out)
 		if st, ok := b.V.(*runtime.Struct); ok && td == b.Typ {
 			// `type A B` shares B's storage: the inner struct's Def is B's
@@ -826,7 +826,7 @@ func (c *completer) members(v runtime.Value, out *[]Candidate, depth int) {
 		// its fields still come from the declared element type.
 		td := b.Typ
 		for i := 0; i < 8 && td != nil && td.Kind == runtime.KindPointer; i++ {
-			et, err := c.r.engine.elemOf(td)
+			et, err := c.r.engine.ElemOf(td)
 			if err != nil || et == nil {
 				td = nil
 				break
@@ -898,7 +898,7 @@ func (c *completer) typedefMethodsOpt(td *runtime.TypeDef, out *[]Candidate, ptr
 		ptrs = append(ptrs, true)
 	}
 	for _, ptr := range ptrs {
-		for name, m := range c.r.engine.methodFuncs(td, ptr, map[*runtime.TypeDef]bool{}) {
+		for name, m := range c.r.engine.MethodFuncs(td, ptr, map[*runtime.TypeDef]bool{}) {
 			c.add(out, name, CandMethod, funcDetail(m))
 		}
 	}
@@ -932,7 +932,7 @@ func (c *completer) structFieldsOf(td *runtime.TypeDef, out *[]Candidate, seen m
 		return
 	}
 	seen[td] = true
-	fts, _ := c.r.engine.fieldTypes(td)
+	fts, _ := c.r.engine.FieldTypes(td)
 	for i, name := range td.Fields {
 		var detail string
 		if i < len(fts) && fts[i] != nil {
@@ -941,7 +941,7 @@ func (c *completer) structFieldsOf(td *runtime.TypeDef, out *[]Candidate, seen m
 		c.add(out, name, CandField, detail)
 	}
 	for _, spec := range td.EmbedSpecs {
-		emb, err := c.r.engine.resolveTypeRef(td, spec)
+		emb, err := c.r.engine.ResolveTypeRef(td, spec)
 		if err != nil || emb == nil {
 			continue
 		}
@@ -1113,7 +1113,7 @@ func (r *REPL) dirImportCandidates(prefix string) []Candidate {
 	if strings.HasPrefix(dirPart, "/") {
 		dir = filepath.Clean(dirPart)
 	} else {
-		dir = filepath.Join(r.engine.WorkingDir(), dirPart)
+		dir = filepath.Join(r.engine.Cwd, dirPart)
 	}
 	ents, err := os.ReadDir(dir)
 	if err != nil {
@@ -1263,7 +1263,7 @@ func (r *REPL) loadedCandidates(prefix string) []Candidate {
 	var out []Candidate
 	for _, u := range r.loads {
 		name := u.origin
-		if rel, err := filepath.Rel(r.engine.cwd, name); err == nil && r.engine.cwd != "" && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(prefix) {
+		if rel, err := filepath.Rel(r.engine.Cwd, name); err == nil && r.engine.Cwd != "" && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(prefix) {
 			name = rel
 			if strings.HasPrefix(prefix, "./") {
 				name = "./" + rel
@@ -1298,7 +1298,7 @@ func (r *REPL) importables() []Candidate {
 		seen[path] = true
 		out = append(out, Candidate{Name: path, Kind: CandPackage, Detail: detail})
 	}
-	for path := range r.engine.binds {
+	for path := range r.engine.Binds {
 		add(path, "bound")
 	}
 	// stdlib: walk GOROOT/src the same way `go list std` would — dirs
@@ -1332,7 +1332,7 @@ func (r *REPL) importables() []Candidate {
 		ModulePath() string
 		Requires() map[string]string
 	}
-	if loc, ok := r.engine.resolver.(moduleLocator); ok {
+	if loc, ok := r.engine.Resolver.(moduleLocator); ok {
 		for mod := range loc.Requires() {
 			add(mod, "module")
 		}

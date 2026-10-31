@@ -23,6 +23,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/repl"
 	"github.com/podhmo/minigo/resolve"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -1573,7 +1574,7 @@ func TestBoundPackages(t *testing.T) {
 	if !slices.IsSorted(paths) {
 		t.Errorf("BoundPackages not sorted: %v", paths)
 	}
-	if got := e.NewREPL().BoundPackages(); !slices.Contains(got, "example.com/probe") {
+	if got := repl.New(e).BoundPackages(); !slices.Contains(got, "example.com/probe") {
 		t.Errorf("REPL session must inherit user binds: %v", got)
 	}
 

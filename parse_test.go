@@ -3,6 +3,7 @@ package minigo
 import (
 	"go/ast"
 	"go/token"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -63,6 +64,20 @@ func TestParsePackageFilesBases(t *testing.T) {
 	})
 	if diff := cmp.Diff(seq, par); diff != "" {
 		t.Errorf("concurrent parse differs from sequential (-seq +par):\n%s", diff)
+	}
+}
+
+// writeFiles lays out name -> source under dir.
+func writeFiles(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
+	for name, src := range files {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

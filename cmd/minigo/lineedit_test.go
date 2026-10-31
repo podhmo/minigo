@@ -7,12 +7,13 @@ import (
 	"testing"
 
 	"github.com/podhmo/minigo"
+	"github.com/podhmo/minigo/repl"
 )
 
-func testREPL(t *testing.T) *minigo.REPL {
+func testREPL(t *testing.T) *repl.REPL {
 	t.Helper()
 	e := minigo.NewEngine("../../testdata")
-	r := e.NewREPL()
+	r := repl.New(e)
 	for _, line := range []string{
 		`import "./inspectpkg"`,
 		`var u inspectpkg.User`,
@@ -159,7 +160,7 @@ func TestWriteWithCRLF(t *testing.T) {
 }
 
 func TestFormatCandidates(t *testing.T) {
-	cands := []minigo.Candidate{
+	cands := []repl.Candidate{
 		{Name: "alpha"}, {Name: "beta"}, {Name: "gamma"},
 	}
 	got := formatCandidates(cands)

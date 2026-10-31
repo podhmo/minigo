@@ -40,7 +40,6 @@
 
 ## 今後の検討
 
-- `repl.go`/`repl_load.go` の `minigo/repl` 等への切り離し —— 現在はルート `minigo` パッケージ内。
 - `go run`/`go generate` 経路の `minigo-generate` への集約 —— `//minigo:generate` directive を in-process で実行する runner（`examples/minigo-generate`）。`cmd/minigo-generate` 昇格案が `docs/sketch/plan-minigo-generate.md` にある。
 - 設定の探索による SSOT（single source of truth）の維持。
 - 呼び出しフックによる仮想実行 vet 的チェック —— VM の `Hooks`（`vm/vm.go`）経路に載せる形。

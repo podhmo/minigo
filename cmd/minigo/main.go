@@ -31,6 +31,7 @@ import (
 
 	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/repl"
 	"github.com/podhmo/minigo/resolve"
 	"github.com/podhmo/minigo/runtime"
 	"golang.org/x/term"
@@ -504,7 +505,7 @@ func runREPL(ctx context.Context, in io.Reader, out io.Writer) error {
 		}
 	}
 	e := minigo.NewEngine(cwd, minigo.WithOutput(out))
-	r := e.NewREPL()
+	r := repl.New(e)
 	if ts, ok := src.(*termSource); ok {
 		ts.t.AutoCompleteCallback = completerFor(r, ts.t)
 	}
@@ -667,7 +668,7 @@ func runREPL(ctx context.Context, in io.Reader, out io.Writer) error {
 		}
 		frag.WriteString(text)
 		src := frag.String()
-		if minigo.IncompleteInput(src) {
+		if repl.IncompleteInput(src) {
 			continue
 		}
 		frag.Reset()
@@ -697,7 +698,7 @@ func runREPL(ctx context.Context, in io.Reader, out io.Writer) error {
 //
 // Directory packages run go doc inside the directory (`go doc . Sym`) so
 // the module that owns them supplies the context.
-func docTarget(r *minigo.REPL, cwd, arg string) (dir string, args []string, err error) {
+func docTarget(r *repl.REPL, cwd, arg string) (dir string, args []string, err error) {
 	arg = strings.TrimSpace(arg)
 	if arg == "" {
 		return "", nil, fmt.Errorf("usage: :doc <pkg>[.<sym>[.<method>]]")
@@ -740,7 +741,7 @@ func docTarget(r *minigo.REPL, cwd, arg string) (dir string, args []string, err 
 }
 
 // runDoc prints `go doc` output for a :doc argument.
-func runDoc(ctx context.Context, out io.Writer, r *minigo.REPL, cwd, arg string) {
+func runDoc(ctx context.Context, out io.Writer, r *repl.REPL, cwd, arg string) {
 	dir, args, err := docTarget(r, cwd, arg)
 	if err != nil {
 		fmt.Fprintf(out, "error: %s\n", err)
@@ -771,6 +772,7 @@ package {{ .PackageName }}
 import (
 	"{{ .PackagePath }}"
 	"github.com/podhmo/minigo"
+	"github.com/podhmo/minigo/repl"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -1067,7 +1069,7 @@ var metaCommands = []string{
 // completerFor builds the AutoCompleteCallback: tab splices the common
 // extension (or the whole match) into the line; an ambiguous press lists
 // the candidates above the repainted prompt.
-func completerFor(r *minigo.REPL, t *term.Terminal) func(line string, pos int, key rune) (string, int, bool) {
+func completerFor(r *repl.REPL, t *term.Terminal) func(line string, pos int, key rune) (string, int, bool) {
 	return func(line string, pos int, key rune) (string, int, bool) {
 		if key != '\t' {
 			return "", 0, false
@@ -1086,7 +1088,7 @@ func completerFor(r *minigo.REPL, t *term.Terminal) func(line string, pos int, k
 // completeSplice computes the post-tab line: the shared extension of
 // every candidate is inserted (a unique candidate completes fully), and
 // the rest of the line past the cursor is preserved.
-func completeSplice(r *minigo.REPL, line string, pos int) (newLine string, newPos int, cands []minigo.Candidate, ok bool) {
+func completeSplice(r *repl.REPL, line string, pos int) (newLine string, newPos int, cands []repl.Candidate, ok bool) {
 	head, tail := line[:pos], line[pos:]
 	if c, isCmd := strings.CutPrefix(head, ":"); isCmd && !strings.ContainsAny(c, " \t") {
 		var names []string
@@ -1115,15 +1117,15 @@ func completeSplice(r *minigo.REPL, line string, pos int) (newLine string, newPo
 
 // commandCandidates renders the meta-command matches as Candidates so
 // they list like any other completion.
-func commandCandidates(names []string) []minigo.Candidate {
-	out := make([]minigo.Candidate, len(names))
+func commandCandidates(names []string) []repl.Candidate {
+	out := make([]repl.Candidate, len(names))
 	for i, n := range names {
-		out[i] = minigo.Candidate{Name: n, Kind: "command"}
+		out[i] = repl.Candidate{Name: n, Kind: "command"}
 	}
 	return out
 }
 
-func candidateNames(cands []minigo.Candidate) []string {
+func candidateNames(cands []repl.Candidate) []string {
 	out := make([]string, len(cands))
 	for i, c := range cands {
 		out[i] = c.Name
@@ -1152,7 +1154,7 @@ func commonPrefix(names []string) string {
 // formatCandidates renders the ambiguous-press listing: names packed
 // into a few columns, detail dropped (the table stays compact — `:comp`
 // exists for the verbose view).
-func formatCandidates(cands []minigo.Candidate) string {
+func formatCandidates(cands []repl.Candidate) string {
 	const maxRows = 20
 	names := candidateNames(cands)
 	shown := names

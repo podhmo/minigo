@@ -1,4 +1,4 @@
-package minigo
+package repl
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	minigo "github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -29,8 +30,8 @@ func hasCand(cands []Candidate, name string) bool {
 
 func TestCompleteBareNames(t *testing.T) {
 	ctx := context.Background()
-	e := NewEngine("testdata")
-	r := e.NewREPL()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
 
 	// builtins and keywords are in scope before anything is declared
 	if !hasCand(r.Complete("printl"), "println") {
@@ -63,8 +64,8 @@ func TestCompleteBareNames(t *testing.T) {
 
 func TestCompletePackage(t *testing.T) {
 	ctx := context.Background()
-	e := NewEngine("testdata")
-	r := e.NewREPL()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
 
 	if _, err := r.EvalLine(ctx, `import "strings"`); err != nil {
 		t.Fatalf("EvalLine: %v", err)
@@ -89,8 +90,8 @@ func TestCompletePackage(t *testing.T) {
 
 func TestCompleteStructAndMethods(t *testing.T) {
 	ctx := context.Background()
-	e := NewEngine("testdata")
-	r := e.NewREPL()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
 
 	for _, line := range []string{
 		`type Pair struct { A int; B string }`,
@@ -119,8 +120,8 @@ func TestCompleteStructAndMethods(t *testing.T) {
 
 func TestCompleteNamedBasic(t *testing.T) {
 	ctx := context.Background()
-	e := NewEngine("testdata")
-	r := e.NewREPL()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
 
 	for _, line := range []string{
 		`type MyInt int`,
@@ -141,8 +142,8 @@ func TestCompleteNamedBasic(t *testing.T) {
 
 func TestCompleteEnumMembers(t *testing.T) {
 	ctx := context.Background()
-	e := NewEngine("testdata")
-	r := e.NewREPL()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
 
 	for _, line := range []string{
 		`type Color int`,
@@ -172,8 +173,8 @@ func TestCompleteEnumMembers(t *testing.T) {
 
 func TestCompleteDefinedType(t *testing.T) {
 	ctx := context.Background()
-	e := NewEngine("testdata")
-	r := e.NewREPL()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
 
 	for _, line := range []string{
 		`type Base struct { X int }`,
@@ -208,8 +209,8 @@ func TestCompleteDefinedType(t *testing.T) {
 
 func TestCompleteNamedSliceElement(t *testing.T) {
 	ctx := context.Background()
-	e := NewEngine("testdata")
-	r := e.NewREPL()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
 
 	for _, line := range []string{
 		`import "./inspectpkg"`,
@@ -234,8 +235,8 @@ func TestCompleteNamedSliceElement(t *testing.T) {
 
 func TestCompleteMethodExprValueSet(t *testing.T) {
 	ctx := context.Background()
-	e := NewEngine("testdata")
-	r := e.NewREPL()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
 
 	for _, line := range []string{
 		`type Pair struct { A int; B string }`,
@@ -295,8 +296,8 @@ func TestCompleteMethodExprValueSet(t *testing.T) {
 }
 
 func TestCompleteTokenStart(t *testing.T) {
-	e := NewEngine("testdata")
-	r := e.NewREPL()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
 	for _, tc := range []struct {
 		line  string
 		start int
@@ -318,8 +319,8 @@ func TestCompleteTokenStart(t *testing.T) {
 }
 
 func TestCompleteClosedImportLiteral(t *testing.T) {
-	e := NewEngine("testdata")
-	r := e.NewREPL()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
 
 	// a closed literal is past the import context — offering paths
 	// here would splice over the closing quote.
@@ -338,8 +339,8 @@ func TestCompleteClosedImportLiteral(t *testing.T) {
 
 func TestCompleteRecursiveEmbed(t *testing.T) {
 	ctx := context.Background()
-	e := NewEngine("testdata")
-	r := e.NewREPL()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
 
 	// `type Node struct{ *Node }` is legal Go — the enumeration walk
 	// must break the cycle, not recurse until the process dies.
@@ -366,8 +367,8 @@ func TestCompleteRecursiveEmbed(t *testing.T) {
 
 func TestCompleteNilPointerFields(t *testing.T) {
 	ctx := context.Background()
-	e := NewEngine("testdata")
-	r := e.NewREPL()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
 
 	// `var p *Inner` holds a typed nil — no live pointee — but its
 	// fields come from the declared element type.
@@ -395,8 +396,8 @@ type hostOuter struct {
 }
 
 func TestCompleteHostEmbeddedFields(t *testing.T) {
-	e := NewEngine("testdata")
-	r := e.NewREPL()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
 	r.pkg.Globals.Set("hv", &runtime.GoValue{V: hostOuter{Name: "x"}})
 
 	// embedded fields promote: hv.ID is reachable through hostInner even
@@ -414,8 +415,8 @@ func TestCompleteHostEmbeddedFields(t *testing.T) {
 
 func TestCompleteHostType(t *testing.T) {
 	ctx := context.Background()
-	e := NewEngine("testdata")
-	r := e.NewREPL()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
 
 	for _, line := range []string{
 		`import "strings"`,
@@ -441,8 +442,8 @@ func TestCompleteHostType(t *testing.T) {
 
 func TestCompleteDirPackage(t *testing.T) {
 	ctx := context.Background()
-	e := NewEngine("testdata")
-	r := e.NewREPL()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
 
 	if _, err := r.EvalLine(ctx, `import "./inspectpkg"`); err != nil {
 		t.Fatalf("EvalLine: %v", err)
@@ -486,8 +487,8 @@ func TestCompleteDirPackage(t *testing.T) {
 
 func TestCompleteChainAndEmbeds(t *testing.T) {
 	ctx := context.Background()
-	e := NewEngine("testdata")
-	r := e.NewREPL()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
 
 	for _, line := range []string{
 		`import "./inspectpkg"`,
@@ -520,8 +521,8 @@ func TestCompleteChainAndEmbeds(t *testing.T) {
 
 func TestCompleteDotImport(t *testing.T) {
 	ctx := context.Background()
-	e := NewEngine("testdata")
-	r := e.NewREPL()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
 
 	if _, err := r.EvalLine(ctx, `import . "./inspectpkg"`); err != nil {
 		t.Fatalf("EvalLine: %v", err)
@@ -533,8 +534,8 @@ func TestCompleteDotImport(t *testing.T) {
 
 func TestCompleteSelectors(t *testing.T) {
 	ctx := context.Background()
-	e := NewEngine("testdata")
-	r := e.NewREPL()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
 
 	for _, line := range []string{
 		`import "./inspectpkg"`,
@@ -550,8 +551,8 @@ func TestCompleteSelectors(t *testing.T) {
 }
 
 func TestCompleteImportPaths(t *testing.T) {
-	e := NewEngine("testdata")
-	r := e.NewREPL()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
 
 	// bound intrinsics + GOROOT stdlib share one namespace
 	cands := r.Complete(`import "str`)
@@ -594,7 +595,7 @@ func TestCompleteImportPaths(t *testing.T) {
 
 func TestCompleteCommandArgPackageRefs(t *testing.T) {
 	ctx := context.Background()
-	r := NewEngine("testdata").NewREPL()
+	r := New(minigo.NewEngine("../testdata"))
 	for _, line := range []string{`import ip "./inspectpkg"`, `import "strings"`, `var u ip.User`} {
 		if _, err := r.EvalLine(ctx, line); err != nil {
 			t.Fatalf("EvalLine(%q): %v", line, err)

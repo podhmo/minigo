@@ -1,4 +1,4 @@
-package minigo
+package repl
 
 import (
 	"context"
@@ -8,13 +8,14 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	minigo "github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/runtime"
 )
 
 func TestREPL(t *testing.T) {
 	ctx := context.Background()
-	e := NewEngine("testdata")
-	r := e.NewREPL()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
 
 	eval := func(line string) any {
 		t.Helper()
@@ -93,7 +94,7 @@ func TestREPL(t *testing.T) {
 
 func TestREPLRedefinition(t *testing.T) {
 	ctx := context.Background()
-	r := NewEngine("testdata").NewREPL()
+	r := New(minigo.NewEngine("../testdata"))
 	if _, err := r.EvalLine(ctx, "func f() int { return 1 }"); err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +126,7 @@ func TestREPLRedefinition(t *testing.T) {
 // ran (caching its callee read) must see the patch.
 func TestREPLGlobalSiteCache(t *testing.T) {
 	ctx := context.Background()
-	r := NewEngine(".").NewREPL()
+	r := New(minigo.NewEngine("."))
 	mustEval := func(line string) {
 		t.Helper()
 		if _, err := r.EvalLine(ctx, line); err != nil {
@@ -167,7 +168,7 @@ func TestREPLGlobalSiteCache(t *testing.T) {
 
 func TestREPLFailedHoistRollsBack(t *testing.T) {
 	ctx := context.Background()
-	r := NewEngine("testdata").NewREPL()
+	r := New(minigo.NewEngine("../testdata"))
 	if _, err := r.EvalLine(ctx, "bad := missing"); err == nil {
 		t.Fatal("expected undefined-name error")
 	}
@@ -179,8 +180,8 @@ func TestREPLFailedHoistRollsBack(t *testing.T) {
 
 func TestREPLCrossLineDecl(t *testing.T) {
 	ctx := context.Background()
-	e := NewEngine("testdata")
-	r := e.NewREPL()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
 	// const decls are hoisted too
 	if _, err := r.EvalLine(ctx, "const k = 42"); err != nil {
 		t.Fatal(err)
@@ -196,7 +197,7 @@ func TestREPLCrossLineDecl(t *testing.T) {
 
 func TestREPLConstAndTypedVar(t *testing.T) {
 	ctx := context.Background()
-	r := NewEngine("testdata").NewREPL()
+	r := New(minigo.NewEngine("../testdata"))
 
 	evalErr := func(line string) error {
 		t.Helper()
@@ -246,8 +247,8 @@ func TestREPLConstAndTypedVar(t *testing.T) {
 // line, and bind the package's declared name like Go does.
 func TestREPLDirImport(t *testing.T) {
 	ctx := context.Background()
-	e := NewEngine("testdata")
-	r := e.NewREPL()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
 
 	eval := func(line string) (any, error) {
 		v, err := r.EvalLine(ctx, line)
@@ -314,7 +315,7 @@ func TestREPLDirImport(t *testing.T) {
 // evaluate silently. A multi-return call renders as a tuple.
 func TestREPLResultEcho(t *testing.T) {
 	ctx := context.Background()
-	r := NewEngine("testdata").NewREPL()
+	r := New(minigo.NewEngine("../testdata"))
 
 	for _, line := range []string{
 		`import "strings"`,
@@ -413,8 +414,8 @@ func TestIncompleteInput(t *testing.T) {
 
 func TestREPLSpecialsAndBoundPkgs(t *testing.T) {
 	ctx := context.Background()
-	e := NewEngine("testdata")
-	r := e.NewREPL()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
 	if _, err := r.EvalLine(ctx, `import "fmt"`); err != nil {
 		t.Fatal(err)
 	}
@@ -431,8 +432,8 @@ func TestREPLSpecialsAndBoundPkgs(t *testing.T) {
 
 func TestREPLCdLs(t *testing.T) {
 	ctx := context.Background()
-	e := NewEngine(".")
-	r := e.NewREPL()
+	e := minigo.NewEngine(".")
+	r := New(e)
 
 	eval := func(line string) (any, error) {
 		v, err := r.EvalLine(ctx, line)
@@ -524,8 +525,8 @@ func TestREPLCdLs(t *testing.T) {
 // the patch, and :unpin decouples the repl scope without undoing them.
 func TestREPLPinWrite(t *testing.T) {
 	ctx := context.Background()
-	e := NewEngine(".")
-	r := e.NewREPL()
+	e := minigo.NewEngine(".")
+	r := New(e)
 
 	eval := func(line string) (any, error) {
 		v, err := r.EvalLine(ctx, line)
@@ -744,15 +745,15 @@ func TestREPLPinWrite(t *testing.T) {
 
 func TestREPLImportNameRefs(t *testing.T) {
 	ctx := context.Background()
-	e := NewEngine(".")
-	r := e.NewREPL()
-	for _, line := range []string{`import foo "encoding/json"`, `import "./testdata/inspectpkg"`, `import "strings"`} {
+	e := minigo.NewEngine(".")
+	r := New(e)
+	for _, line := range []string{`import foo "encoding/json"`, `import "../testdata/inspectpkg"`, `import "strings"`} {
 		if _, err := r.EvalLine(ctx, line); err != nil {
 			t.Fatalf("%s: %v", line, err)
 		}
 	}
 
-	abs, err := filepath.Abs("testdata/inspectpkg")
+	abs, err := filepath.Abs("../testdata/inspectpkg")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -788,7 +789,7 @@ func TestREPLImportNameRefs(t *testing.T) {
 
 func TestREPLListHoistedKinds(t *testing.T) {
 	ctx := context.Background()
-	r := NewEngine("testdata").NewREPL()
+	r := New(minigo.NewEngine("../testdata"))
 	for _, line := range []string{"const C = 1", "var v = 2", "x := 3", "const (A = 1; B = 2)"} {
 		if _, err := r.EvalLine(ctx, line); err != nil {
 			t.Fatalf("%s: %v", line, err)
@@ -806,7 +807,7 @@ func TestREPLListHoistedKinds(t *testing.T) {
 
 func TestREPLConstIota(t *testing.T) {
 	ctx := context.Background()
-	r := NewEngine("testdata").NewREPL()
+	r := New(minigo.NewEngine("../testdata"))
 	for _, line := range []string{
 		"const (A = iota; B; C)",
 		"const (_ = iota; KB = 1 << (10 * iota); MB)",
@@ -845,7 +846,7 @@ func TestREPLConstIota(t *testing.T) {
 
 func TestREPLImportResolvesEagerly(t *testing.T) {
 	ctx := context.Background()
-	r := NewEngine(".").NewREPL()
+	r := New(minigo.NewEngine("."))
 
 	// an unresolvable path fails the import line, not the first use
 	if _, err := r.EvalLine(ctx, `import "nosuch/pkg"`); err == nil || !strings.Contains(err.Error(), `import "nosuch/pkg"`) {
@@ -879,7 +880,7 @@ func TestREPLImportResolvesEagerly(t *testing.T) {
 
 func TestREPLResultVars(t *testing.T) {
 	ctx := context.Background()
-	r := NewEngine("testdata").NewREPL()
+	r := New(minigo.NewEngine("../testdata"))
 	eval := func(line string) any {
 		t.Helper()
 		v, err := r.EvalLine(ctx, line)
@@ -918,7 +919,7 @@ func TestREPLResultVars(t *testing.T) {
 
 func TestREPLDisplay(t *testing.T) {
 	ctx := context.Background()
-	r := NewEngine("testdata").NewREPL()
+	r := New(minigo.NewEngine("../testdata"))
 	for _, line := range []string{
 		`import "fmt"`,
 		`type In struct{ A int }`,
@@ -960,7 +961,7 @@ func TestREPLDisplay(t *testing.T) {
 
 func TestREPLDump(t *testing.T) {
 	ctx := context.Background()
-	r := NewEngine("testdata").NewREPL()
+	r := New(minigo.NewEngine("../testdata"))
 	for _, line := range []string{
 		`type In struct{ A int }`,
 		`type T struct{ N int }`,
