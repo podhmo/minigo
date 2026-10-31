@@ -6644,6 +6644,21 @@ func jsonStructFields(c runtime.VMCaller, td *runtime.TypeDef) []jsonFieldEntry 
 			if skip {
 				continue
 			}
+			// encoding/json ignores unexported fields; an unexported
+			// embed survives only when it is a struct (or a pointer to
+			// one), whose exported fields still promote.
+			if !token.IsExported(name) {
+				if !jsonEmbedded(st, i) {
+					continue
+				}
+				et := jsonPeelPtr(c, jsonEmbedTyp(c, st, i))
+				if et == nil {
+					continue
+				}
+				if _, ok := typedefAst(et).(*ast.StructType); !ok {
+					continue
+				}
+			}
 			p := append(append(make([]int, 0, len(prefix)+1), prefix...), i)
 			if jsonEmbedded(st, i) && !named {
 				if et := jsonPeelPtr(c, jsonEmbedTyp(c, st, i)); et != nil {

@@ -1,0 +1,12 @@
+A: {"name":"n"} <nil>
+B: {"Pub":1,"X":4} <nil>
+C: {"Pub":5,"Y":6} <nil>
+Cnil: {"Y":6} <nil>
+D: {"in":{"Pub":7},"W":8} <nil>
+E: {"Shown":"s"} <nil>
+F: {"Z":1,"Pub":2} <nil>
+slice: [{"name":"x"}] <nil>
+map: {"a":{"name":"z"}} <nil>
+{"name":"enc"}
+unmarshal: "" "S" <nil>
+unmarshalA: "N" "" 0 <nil>
