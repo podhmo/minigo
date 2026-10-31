@@ -215,6 +215,12 @@ type VM struct {
 	// panic propagates back through the joining Call instead of
 	// failing the process the way a real goroutine's would.
 	syncCall bool
+
+	// lenB/capB cache the predeclared len/cap builtins for
+	// OpLenCallFold's identity probe — resolved lazily on the first
+	// fold, since a bare VM's Hooks may carry no Builtin lookup.
+	lenB, capB runtime.Value
+	lenCapDone bool
 }
 
 // proc is one interpreter process: the goroutines belonging to a root Call.
@@ -1468,53 +1474,7 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 	for {
 		switch c := callee.(type) {
 		case *runtime.BuiltinFunc:
-			if !c.Forwards {
-				args = expandSpread(args)
-			}
-			defer func() {
-				r := recover()
-				if r == nil {
-					return
-				}
-				r = asScriptPanic(r)
-				// a builtin has no frame of its own — record one attributed
-				// to the OpCall site so its failure names the builtin.
-				if c.Name != "" {
-					var entry string
-					if n := len(v.frames); n > 0 {
-						caller := v.frames[n-1]
-						entry = v.frameLine(caller, caller.pos(), c.Name+"() (builtin)")
-					} else {
-						entry = c.Name + "() (builtin)"
-					}
-					switch e := r.(type) {
-					case *runtime.Panic:
-						e.Frames = append(e.Frames, entry)
-					case *runtime.Trap:
-						e.Frames = append(e.Frames, entry)
-					}
-				}
-				panic(r)
-			}()
-			if c.Pkg != nil {
-				// a package-bound host call sees materialized constants —
-				// interpreter builtins (Pkg nil) get UConst so their own
-				// constant arms keep working (append's element-type
-				// conversion, real/imag's constant domain).
-				var err error
-				if args, err = v.matBuiltinArgs(args, c.Target); err != nil {
-					return nil, fmt.Errorf("%s %w", c.Name, err)
-				}
-			}
-			// a builtin may retain its args slice past the call —
-			// task.F binds it into a taskCall — while args may ride the
-			// caller frame's argbuf, which the next OpCall rewrites.
-			// Hand over a private copy like popArgs always produced.
-			args = append([]runtime.Value{}, args...)
-			if c.SyncCallbacks {
-				return c.Fn(ownerCaller{v}, args)
-			}
-			return c.Fn(v, args)
+			return v.callBuiltin(c, args)
 		case *runtime.TypeDef:
 			if len(args) != 1 {
 				return nil, fmt.Errorf("conversion to %s needs exactly one argument", c.Name)
@@ -1556,6 +1516,61 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 	}
 	freeFrame(fr)
 	return r, nil
+}
+
+// callBuiltin runs a builtin. It lives outside call's callee switch so
+// the panic-annotating defer open-codes: inside the for {} it allocated
+// a heap closure on every builtin call.
+func (v *VM) callBuiltin(c *runtime.BuiltinFunc, args []runtime.Value) (runtime.Value, error) {
+	if !c.Forwards {
+		args = expandSpread(args)
+	}
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		r = asScriptPanic(r)
+		// a builtin has no frame of its own — record one attributed
+		// to the OpCall site so its failure names the builtin.
+		if c.Name != "" {
+			var entry string
+			if n := len(v.frames); n > 0 {
+				caller := v.frames[n-1]
+				entry = v.frameLine(caller, caller.pos(), c.Name+"() (builtin)")
+			} else {
+				entry = c.Name + "() (builtin)"
+			}
+			switch e := r.(type) {
+			case *runtime.Panic:
+				e.Frames = append(e.Frames, entry)
+			case *runtime.Trap:
+				e.Frames = append(e.Frames, entry)
+			}
+		}
+		panic(r)
+	}()
+	if c.Pkg != nil {
+		// a package-bound host call sees materialized constants —
+		// interpreter builtins (Pkg nil) get UConst so their own
+		// constant arms keep working (append's element-type
+		// conversion, real/imag's constant domain).
+		var err error
+		if args, err = v.matBuiltinArgs(args, c.Target); err != nil {
+			return nil, fmt.Errorf("%s %w", c.Name, err)
+		}
+	}
+	// a builtin may retain its args slice past the call — task.F
+	// binds it into a taskCall — while args may ride the caller
+	// frame's argbuf, which the next OpCall rewrites. Retaining
+	// builtins get a private copy like popArgs always produced.
+	if c.RetainsArgs {
+		args = append([]runtime.Value{}, args...)
+	}
+	if c.SyncCallbacks {
+		return c.Fn(ownerCaller{v}, args)
+	}
+	return c.Fn(v, args)
 }
 
 // Member implements [runtime.VMCaller].
@@ -3117,6 +3132,39 @@ func (v *VM) loop(f *frame) {
 				f.ip = int(ins.A)
 			} else if ins.B == 0 {
 				f.stack = f.stack[:len(f.stack)-1]
+			}
+		case bytecode.OpLenCallFold:
+			// len(x)/cap(x): the stack is [callee, operand]; when the
+			// callee still is the predeclared builtin, call it straight
+			// — the operand's own slot is the one-argument list — and
+			// skip the emitted static+OpCall run. A rebound name falls
+			// through to the ordinary call, and so does a lone call's
+			// Tuple operand — the call may spread multi-results into
+			// the builtin's params instead.
+			n := len(f.stack)
+			if bf, ok := f.stack[n-2].(*runtime.BuiltinFunc); ok && bf == v.lenCapBuiltin(ins.B) {
+				if _, tup := f.stack[n-1].(*runtime.Tuple); !tup {
+					// keep OpCall's procExit safepoint: without the
+					// check a goroutine looping on len/cap in a dead
+					// process would spin instead of dying.
+					if p := v.proc; p != nil {
+						select {
+						case <-p.done:
+							panic(procExit{})
+						default:
+						}
+					}
+					r, err := v.callBuiltin(bf, f.stack[n-1:n])
+					if v.H.Prof != nil {
+						v.profCheck()
+					}
+					if err != nil {
+						panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
+					}
+					f.stack = f.stack[:n-2]
+					f.push(r)
+					f.ip = int(ins.A)
+				}
 			}
 		case bytecode.OpIter:
 			coll := v.materialize(f, f.pop())
@@ -15031,6 +15079,24 @@ func (v *VM) lenIdxFold(f *frame, base runtime.Value) (runtime.Value, bool) {
 	return int64(n), true
 }
 
+// lenCapBuiltin resolves the predeclared len/cap builtins once — the
+// values OpLenCallFold's identity probe compares the resolved callee
+// against. which selects: 0 len, 1 cap. A nil result (no Builtin hook,
+// or the name unbound) simply never folds — the plain call runs.
+func (v *VM) lenCapBuiltin(which int32) runtime.Value {
+	if !v.lenCapDone {
+		v.lenCapDone = true
+		if v.H.Builtin != nil {
+			v.lenB, _ = v.H.Builtin("len")
+			v.capB, _ = v.H.Builtin("cap")
+		}
+	}
+	if which == 0 {
+		return v.lenB
+	}
+	return v.capB
+}
+
 // callSite renders one frame for runtime.Callers: the function's Go
 // symbol name and the source position it is (or was) executing.
 func (v *VM) callSite(f *frame) runtime.CallSite {
@@ -15531,8 +15597,9 @@ func (v *VM) instantiate(f *frame, base runtime.Value, targs []runtime.Value, po
 		}
 		gen := g.GenFn
 		return &runtime.BuiltinFunc{
-			Name: g.Name,
-			Pkg:  g.Pkg,
+			Name:        g.Name,
+			Pkg:         g.Pkg,
+			RetainsArgs: g.RetainsArgs,
 			Fn: func(vm runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 				return gen(vm, targs, args)
 			},

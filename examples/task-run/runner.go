@@ -414,7 +414,7 @@ func (r *Runner) taskBinds() map[string]runtime.Value {
 	return map[string]runtime.Value{
 		"Deps":       &runtime.BuiltinFunc{Name: "task.Deps", Fn: r.deps},
 		"SerialDeps": &runtime.BuiltinFunc{Name: "task.SerialDeps", Fn: r.serialDeps},
-		"F": &runtime.BuiltinFunc{Name: "task.F", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"F": &runtime.BuiltinFunc{Name: "task.F", RetainsArgs: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) == 0 {
 				return nil, errors.New("task.F needs a task function")
 			}

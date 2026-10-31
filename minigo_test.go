@@ -2300,6 +2300,31 @@ func TestNativeBindings(t *testing.T) {
 	}
 }
 
+// A builtin declaring RetainsArgs gets a private args copy: without it
+// the slice is the caller frame's reusable arg buffer, which that
+// frame's next call rewrites — the same bug TestTaskFArgRetention pins
+// for task.F.
+func TestBuiltinRetainsArgs(t *testing.T) {
+	var kept []runtime.Value
+	e := newEngine(t)
+	e.Bind("example.com/keep", map[string]runtime.Value{
+		"Hold": &runtime.BuiltinFunc{
+			Name:        "keep.Hold",
+			RetainsArgs: true,
+			Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+				if args[0] == "first" {
+					kept = args // keep only the first call's slice
+				}
+				return runtime.NIL, nil
+			},
+		},
+	})
+	run(t, e, "./testdata/keepargs", "Main")
+	if len(kept) != 2 || kept[0] != "first" || kept[1] != int64(1) {
+		t.Fatalf("retained args = %v, want [first 1]", kept)
+	}
+}
+
 // A package's init() side effects must be visible when its members are
 // used — Go runs every imported package's init before use, and the
 // default GoCompatibleInit mode reproduces that on first member access,

@@ -572,11 +572,14 @@ func (e *Engine) slicesSeqHelpers(slicesPkg map[string]runtime.Value) map[string
 		if n < 1 {
 			panic(&runtime.Panic{Value: "cannot be less than 1"})
 		}
+		// capture the element, not the args slice: Each may run after
+		// Fn returns, when the caller's arg buffer is already rewritten.
+		orig := args[0]
 		fn := seqFn("slices.Chunk", &runtime.SeqSource{Each: func(_ runtime.VMCaller, yield func([]runtime.Value) bool) error {
 			buf := make([]runtime.Value, 1)
 			for i, l := 0, sliceLen(s); i < l; i += n {
 				end := min(i+n, l)
-				buf[0] = retagSlice(args[0], &runtime.Slice{Elems: s.Elems[i:end:end], Typ: st})
+				buf[0] = retagSlice(orig, &runtime.Slice{Elems: s.Elems[i:end:end], Typ: st})
 				if !yield(buf) {
 					return nil
 				}
