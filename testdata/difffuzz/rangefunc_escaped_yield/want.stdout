@@ -1,0 +1,16 @@
+body 0
+body 1
+whole recovered: runtime error: range function continued iteration after whole loop exit
+0
+break body 0
+break recovered: runtime error: range function continued iteration after whole loop exit
+0
+nested 0 0
+nested 0 1
+nested 1 0
+nested 1 1
+nested recovered: runtime error: range function continued iteration after whole loop exit
+body 0
+body 1
+again recovered: runtime error: range function continued iteration after whole loop exit
+0
