@@ -1986,6 +1986,21 @@ func TestHostEncodeScriptValue(t *testing.T) {
 	}
 }
 
+// TestHostReplacesMapElem: a bound host func that replaces a map element
+// of a slice arg must hand the new map back to the script as a script map,
+// while an element it left alone keeps the caller's script map.
+func TestHostReplacesMapElem(t *testing.T) {
+	e := newEngine(t)
+	e.Bind("example.com/hostwb", map[string]runtime.Value{
+		"Change": &runtime.GoValue{V: func(rows []map[string]int) { rows[0] = map[string]int{"new": 2} }},
+	})
+	got := run(t, e, "./testdata/hostwriteback", "Change")
+	want := "[{\"new\":2},{\"keep\":3}]\n[{\"new\":2,\"x\":5},{\"keep\":3,\"more\":4}]"
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Fatalf("Change mismatch (-want +got):\n%s", diff)
+	}
+}
+
 // TestSessionInheritsBinds: user-bound host packages must resolve in a
 // NewSession the same as on the parent engine.
 func TestSessionInheritsBinds(t *testing.T) {
