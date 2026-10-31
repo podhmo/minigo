@@ -800,3 +800,47 @@ func RuntimeAddCleanup() string {
 }
 
 func main() {}
+
+// JsonPtrCycle: a self-referencing pointer answers gc's cycle error —
+// the value walks resolve through refArg/methodInfoOfValue/selectMember,
+// which must not loop on x = &x.
+func JsonPtrCycle() string {
+	var x any
+	x = &x
+	_, err := json.Marshal(x)
+	if err == nil {
+		return "noerr"
+	}
+	return err.Error() // "json: unsupported value: encountered a cycle"
+}
+
+// JsonEncoderPtrCycle: same check through Encoder.Encode.
+func JsonEncoderPtrCycle() string {
+	var b bytes.Buffer
+	var x any
+	x = &x
+	if err := json.NewEncoder(&b).Encode(x); err != nil {
+		return err.Error()
+	}
+	return "out:" + b.String()
+}
+
+// JsonTwoPtrCycle: a two-hop pointer cycle (x = &y; y = &x).
+func JsonTwoPtrCycle() string {
+	var x, y any
+	x, y = &y, &x
+	_, err := json.Marshal(x)
+	if err == nil {
+		return "noerr"
+	}
+	return err.Error()
+}
+
+// PtrSelfCycle: dereferencing a cyclic pointer resolves to itself
+// rather than hanging.
+func PtrSelfCycle() string {
+	var x any
+	x = &x
+	_ = *x
+	return "ok"
+}

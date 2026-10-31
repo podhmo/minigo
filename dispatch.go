@@ -47,6 +47,7 @@ func (e *Engine) methodSetOfValue(v runtime.Value) (map[string]bool, bool, error
 // each pick their view.
 func (e *Engine) methodInfoOfValue(v runtime.Value) (map[string]bool, map[string]*runtime.Function, bool, error) {
 	ptr := false
+	var seen map[runtime.Value]bool
 	for {
 		// a Named value exposes its own declared method set — `type A B`
 		// does not inherit B's methods (Go). Checked inside the deref
@@ -84,6 +85,22 @@ func (e *Engine) methodInfoOfValue(v runtime.Value) (map[string]bool, map[string
 				}
 			}
 			return e.typeMethodInfoU(n.Typ, ptr)
+		}
+		// a cyclic pointer (x := any(nil); x = &x) never lands on a
+		// method-bearing value — stop rather than spin. Only ref kinds
+		// can repeat; other values are skipped (some are unhashable).
+		switch v.(type) {
+		case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
+			if seen == nil {
+				seen = map[runtime.Value]bool{v: true}
+			} else if seen[v] {
+				v = nil
+			} else {
+				seen[v] = true
+			}
+		}
+		if v == nil {
+			break
 		}
 		dv, ok := runtime.Deref(v)
 		if !ok {

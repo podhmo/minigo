@@ -535,7 +535,28 @@ func (r *DerefRef) Get() (Value, bool) {
 	if !ok {
 		return nil, false
 	}
-	return Deref(loc)
+	if _, isRef := loc.(*DerefRef); !isRef {
+		return Deref(loc)
+	}
+	// A pointer stored through a pointer: walk the chain of locations
+	// iteratively so a cyclic one — `x := any(nil); x = &x` — cannot
+	// recurse forever. A revisited ref means the chain never resolves
+	// to a pointee: report it unresolvable rather than loop.
+	seen := map[*DerefRef]bool{r: true}
+	for {
+		d, isRef := loc.(*DerefRef)
+		if !isRef {
+			return Deref(loc)
+		}
+		if seen[d] {
+			return nil, false
+		}
+		seen[d] = true
+		loc, ok = d.loc()
+		if !ok {
+			return nil, false
+		}
+	}
 }
 
 // Set writes through the resolved pointee location.

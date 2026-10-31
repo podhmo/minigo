@@ -5676,6 +5676,10 @@ func goJSONSeen(c runtime.VMCaller, v any, seen map[any]bool) any {
 	case *runtime.Named:
 		return goJSONSeen(c, x.V, seen)
 	case *runtime.Cell:
+		if jsonSeen(seen, x) {
+			return jsonCycle{}
+		}
+		defer delete(seen, x)
 		return goJSONSeen(c, x.Elem, seen)
 	case *runtime.TypedNil, *runtime.IfaceNil:
 		// a nil pointer/interface field marshals as null — passing the
@@ -6326,8 +6330,17 @@ func jsonAllocPointee(c runtime.VMCaller, ptd *runtime.TypeDef) runtime.Value {
 // json's nil probe (any nilish payload) and fmt's pointer skip
 // (pointer-tagged nil only) share.
 func peelNil(v runtime.Value) (*runtime.TypeDef, bool) {
+	var seen map[runtime.Value]bool
 	for {
 		if dv, ok := runtime.Deref(v); ok {
+			if seen == nil {
+				seen = map[runtime.Value]bool{v: true}
+			} else if seen[v] {
+				// a cyclic pointer (x := any(nil); x = &x) is no nil
+				return nil, false
+			} else {
+				seen[v] = true
+			}
 			v = dv
 			continue
 		}

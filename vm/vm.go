@@ -837,6 +837,10 @@ type frame struct {
 	boundLo int
 	boundHi int
 
+	// selSeen marks the refs currently on a selectMember refollow path:
+	// a cyclic pointer (x := any(nil); x = &x) refollows forever.
+	selSeen map[runtime.Value]bool
+
 	// vpack is the slice prepFrame packed a variadic call's trailing
 	// arguments into (`f(1, 2)` for `func f(xs ...T)`): the parameter's
 	// coerce converts its elements to T — they arrive as raw call
@@ -3389,7 +3393,16 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		// to the pointee, not into p's cell.
 		switch b.Elem.(type) {
 		case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
-			return v.selectMember(f, b.Elem, name)
+			if f.selSeen == nil {
+				f.selSeen = map[runtime.Value]bool{}
+			}
+			if f.selSeen[b.Elem] {
+				f.trap("select %s on cyclic reference %T", name, b.Elem)
+			}
+			f.selSeen[b.Elem] = true
+			r := v.selectMember(f, b.Elem, name)
+			delete(f.selSeen, b.Elem)
+			return r
 		}
 		switch e := b.Elem.(type) {
 		case *runtime.Struct:
@@ -3469,6 +3482,19 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		}
 		// pointer boxes ([]*T), nils, host values, packages — dispatch
 		// on the element value itself, like an unindexed select.
+		switch dv.(type) {
+		case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
+			if f.selSeen == nil {
+				f.selSeen = map[runtime.Value]bool{}
+			}
+			if f.selSeen[dv] {
+				f.trap("select %s on cyclic reference %T", name, dv)
+			}
+			f.selSeen[dv] = true
+			r := v.selectMember(f, dv, name)
+			delete(f.selSeen, dv)
+			return r
+		}
 		return v.selectMember(f, dv, name)
 	case *runtime.TypeDef:
 		if _, isPtr := b.Anon.(*ast.StarExpr); isPtr {
@@ -5633,14 +5659,26 @@ func sliceArg(a runtime.Value) *runtime.Slice {
 // pointer crossed by address — plus the leaf it resolved to.
 func refArg(a runtime.Value) (ref runtime.Value, leaf runtime.Value) {
 	u := a
+	var seen map[runtime.Value]bool
 	for {
 		if n, ok := u.(*runtime.Named); ok {
 			u = n.V
 			continue
 		}
 		switch u.(type) {
-		case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
-			ref = u
+		case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
+			if _, isDR := u.(*runtime.DerefRef); !isDR {
+				ref = u
+			}
+			// a cyclic pointer (x := any(nil); x = &x) resolves to
+			// itself forever — stop on a revisit.
+			if seen == nil {
+				seen = map[runtime.Value]bool{u: true}
+			} else if seen[u] {
+				return ref, u
+			} else {
+				seen[u] = true
+			}
 		}
 		if dv, ok := runtime.Deref(u); ok {
 			u = dv

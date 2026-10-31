@@ -463,6 +463,10 @@ func TestStdlibIntrinsics(t *testing.T) {
 		{"JsonCycle", "json: unsupported value: encountered a cycle"},
 		{"JsonSliceCycle", "json: unsupported value: encountered a cycle"},
 		{"JsonSharedSlice", `{"a":[1],"b":[1]}`},
+		{"JsonPtrCycle", "json: unsupported value: encountered a cycle"},
+		{"JsonEncoderPtrCycle", "json: unsupported value: encountered a cycle"},
+		{"JsonTwoPtrCycle", "json: unsupported value: encountered a cycle"},
+		{"PtrSelfCycle", "ok"},
 		{"ExecCommandContext", "hi"},
 		{"RuntimeAddCleanup", "ok"},
 	}
