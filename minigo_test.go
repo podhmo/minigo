@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo"
@@ -1874,6 +1875,45 @@ func TestGotoViolations(t *testing.T) {
 	_, err = e.Run(context.Background(), "./testdata/gotoviol", "Shadow")
 	if err == nil || !strings.Contains(err.Error(), "jumps over declaration of x") {
 		t.Fatalf("Shadow: expected over-decl trap, got %v", err)
+	}
+}
+
+// TestScriptProfiler: a script profile names script functions the way
+// Go's pprof does, charges a busy loop to its line, and leaves out time a
+// goroutine spends parked on a channel.
+func TestScriptProfiler(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go tool pprof needed")
+	}
+	p := minigo.NewScriptProfiler(5 * time.Millisecond)
+	e := minigo.NewEngine(".", minigo.WithScriptProfiler(p))
+	run(t, e, "./testdata/scriptprof", "Main")
+	run(t, e, "./testdata/scriptprof", "Closure")
+	p.Stop()
+	path := filepath.Join(t.TempDir(), "script.pprof")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.WriteTo(f); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("go", "tool", "pprof", "-top", "-lines", path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("go tool pprof: %v\n%s", err, out)
+	}
+	top := string(out)
+	got := map[string]bool{
+		"spin loop line":  strings.Contains(top, "main.(*T).spin") && strings.Contains(top, "scriptprof/main.go:10"),
+		"parked excluded": !strings.Contains(top, "main.parked"),
+		"closure name":    strings.Contains(top, " main.Closure.func1 "),
+	}
+	want := map[string]bool{"spin loop line": true, "parked excluded": true, "closure name": true}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Fatalf("profile mismatch (-want +got):\n%s\n%s", diff, top)
 	}
 }
 

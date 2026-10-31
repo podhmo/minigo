@@ -129,6 +129,23 @@ text := sb.String()
 The same holds for `bytes.Buffer`, `bufio`, `fmt.Fprint*` and the other
 `io` helpers when both ends are host values.
 
+To see where a slow script spends its time, profile it:
+
+```shell
+minigo run --scriptprofile script.pprof ./tool -- args...
+go tool pprof -top -lines script.pprof   # script functions and lines
+```
+
+The script profile samples the interpreted program's call stacks every
+10ms. It reports wall time spent running script code and host calls,
+charged to the calling line, and leaves out time a goroutine spends
+parked on a channel or `select`. `--cpuprofile` and `--memprofile`
+profile the interpreter itself instead. Each flag also reads a default
+from `$MINIGO_SCRIPTPROFILE` / `$MINIGO_CPUPROFILE` /
+`$MINIGO_MEMPROFILE`, so a wrapper script that runs `minigo` can be
+profiled without editing it. Embedders use `minigo.NewScriptProfiler`
+with `minigo.WithScriptProfiler`.
+
 ## Provenance
 
 This repository is a reboot of [`minigo2/`](https://github.com/podhmo/go-scan/tree/main/minigo2)

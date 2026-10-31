@@ -140,11 +140,16 @@ flags (accepted before or after <ref>):
                    (default: $MINIGO_CPUPROFILE)
   --memprofile f   write an allocation profile of the interpreter to f
                    at exit (default: $MINIGO_MEMPROFILE)
+  --scriptprofile f
+                   write a profile of the script's own functions and
+                   lines to f (default: $MINIGO_SCRIPTPROFILE)
   -h, --help       show this help
 
-The profiles are Go pprof profiles of minigo itself (read them with
-go tool pprof); the env defaults let a wrapper script that runs minigo
-be profiled without editing its command line.
+--cpuprofile and --memprofile profile minigo itself; --scriptprofile
+samples the interpreted program's call stacks (wall time, excluding
+time parked on channels and select). All three are pprof profiles: read
+them with go tool pprof. The env defaults let a wrapper script that runs
+minigo be profiled without editing its command line.
 `,
 	"repl": `usage: minigo repl
 
@@ -192,6 +197,7 @@ func run(ctx context.Context, args []string) error {
 	var rest []string
 	var denys, srcs []string
 	cpuProfile, memProfile := os.Getenv("MINIGO_CPUPROFILE"), os.Getenv("MINIGO_MEMPROFILE")
+	scriptProfile := os.Getenv("MINIGO_SCRIPTPROFILE")
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -235,6 +241,14 @@ func run(ctx context.Context, args []string) error {
 			memProfile = args[i]
 		case strings.HasPrefix(a, "--memprofile="), strings.HasPrefix(a, "-memprofile="):
 			memProfile = strings.SplitN(a, "=", 2)[1]
+		case a == "--scriptprofile" || a == "-scriptprofile":
+			i++
+			if i >= len(args) {
+				return usageErrorf("--scriptprofile requires a file name")
+			}
+			scriptProfile = args[i]
+		case strings.HasPrefix(a, "--scriptprofile="), strings.HasPrefix(a, "-scriptprofile="):
+			scriptProfile = strings.SplitN(a, "=", 2)[1]
 		case isHelpFlag(a):
 			return errHelp
 		case strings.HasPrefix(a, "-"):
@@ -272,6 +286,15 @@ func run(ctx context.Context, args []string) error {
 	stop, err := startProfiles(cpuProfile, memProfile)
 	if err != nil {
 		return err
+	}
+	if scriptProfile != "" {
+		sp := minigo.NewScriptProfiler(0)
+		opts = append(opts, minigo.WithScriptProfiler(sp))
+		stopHost := stop
+		stop = func() error {
+			sp.Stop()
+			return errors.Join(writeScriptProfile(scriptProfile, sp), stopHost())
+		}
 	}
 	e := minigo.NewEngine(cwd, opts...)
 	r, err := e.Run(ctx, ref, fn)
@@ -321,6 +344,18 @@ func startProfiles(cpuPath, memPath string) (func() error, error) {
 		}
 		return errors.Join(errs...)
 	}, nil
+}
+
+func writeScriptProfile(path string, sp *minigo.ScriptProfiler) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("scriptprofile: %w", err)
+	}
+	if _, err := sp.WriteTo(f); err != nil {
+		f.Close()
+		return fmt.Errorf("scriptprofile: %w", err)
+	}
+	return f.Close()
 }
 
 func writeAllocProfile(path string) error {
