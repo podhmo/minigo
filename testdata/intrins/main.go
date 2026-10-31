@@ -13,6 +13,7 @@ import (
 	"io"
 	"math"
 	"net/url"
+	"os/exec"
 	"path"
 	"regexp"
 	goruntime "runtime"
@@ -702,4 +703,144 @@ func BufioReaderWriteToScript() string {
 	return w.got
 }
 
+// JsonEncoderStream writes a tagged script struct through NewEncoder —
+// the writer adapts the host *bytes.Buffer, Encode re-marshals through
+// goJSON so `name`/`omitempty` apply, and SetIndent dispatch reaches
+// the boxed encoder.
+func JsonEncoderStream() string {
+	type rec struct {
+		Name string `json:"name"`
+		Skip string `json:"skip,omitempty"`
+	}
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(rec{Name: "n"}); err != nil {
+		return "err:" + err.Error()
+	}
+	return b.String() // "{\n  \"name\": \"n\"\n}\n"
+}
+
+// JsonEncoderScriptWriter feeds the encoder a script-defined writer —
+// the Write callback crosses back into the script.
+func JsonEncoderScriptWriter() string {
+	w := &scrSink{}
+	enc := json.NewEncoder(w)
+	if err := enc.Encode(map[string]int{"x": 1}); err != nil {
+		return "err"
+	}
+	return w.got // "{\"x\":1}\n"
+}
+
+// JsonEncoderMapStruct: a script struct nested under a string-keyed
+// map still marshals by its tags — Encode must convert the restored
+// original, not dump runtime internals.
+func JsonEncoderMapStruct() string {
+	type rec struct {
+		Name string `json:"name"`
+	}
+	var b bytes.Buffer
+	if err := json.NewEncoder(&b).Encode(map[string]any{"r": rec{Name: "n"}}); err != nil {
+		return "err:" + err.Error()
+	}
+	return b.String() // "{\"r\":{\"name\":\"n\"}}\n"
+}
+
+// JsonCycle: a self-referencing map answers gc's cycle error instead
+// of recursing until the stack dies.
+func JsonCycle() string {
+	m := map[string]any{}
+	m["m"] = m
+	_, err := json.Marshal(m)
+	if err == nil {
+		return "noerr"
+	}
+	return err.Error() // "json: unsupported value: encountered a cycle"
+}
+
+// JsonSliceCycle: same check through a slice element.
+func JsonSliceCycle() string {
+	s := []any{nil}
+	s[0] = s
+	_, err := json.Marshal(s)
+	if err == nil {
+		return "noerr"
+	}
+	return err.Error()
+}
+
+// JsonSharedSlice: a DAG — the same slice under two keys — is NOT a
+// cycle and marshals twice.
+func JsonSharedSlice() string {
+	inner := []int{1}
+	m := map[string]any{"a": inner, "b": inner}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "err:" + err.Error()
+	}
+	return string(b) // {"a":[1],"b":[1]}
+}
+
+// ExecCommandContext runs a real subprocess through the context
+// variant of Command.
+func ExecCommandContext() string {
+	out, err := exec.CommandContext(context.Background(), "echo", "hi").Output()
+	if err != nil {
+		return "err"
+	}
+	return strings.TrimSpace(string(out)) // "hi"
+}
+
+// RuntimeAddCleanup: the inert cleanup never fires without a GC; the
+// returned handle only has to accept Stop.
+func RuntimeAddCleanup() string {
+	c := goruntime.AddCleanup(new(int), func(k int) {}, 0)
+	c.Stop()
+	return "ok"
+}
+
 func main() {}
+
+// JsonPtrCycle: a self-referencing pointer answers gc's cycle error —
+// the value walks resolve through refArg/methodInfoOfValue/selectMember,
+// which must not loop on x = &x.
+func JsonPtrCycle() string {
+	var x any
+	x = &x
+	_, err := json.Marshal(x)
+	if err == nil {
+		return "noerr"
+	}
+	return err.Error() // "json: unsupported value: encountered a cycle"
+}
+
+// JsonEncoderPtrCycle: same check through Encoder.Encode.
+func JsonEncoderPtrCycle() string {
+	var b bytes.Buffer
+	var x any
+	x = &x
+	if err := json.NewEncoder(&b).Encode(x); err != nil {
+		return err.Error()
+	}
+	return "out:" + b.String()
+}
+
+// JsonTwoPtrCycle: a two-hop pointer cycle (x = &y; y = &x).
+func JsonTwoPtrCycle() string {
+	var x, y any
+	x, y = &y, &x
+	_, err := json.Marshal(x)
+	if err == nil {
+		return "noerr"
+	}
+	return err.Error()
+}
+
+// PtrSelfCycle: dereferencing a cyclic pointer resolves to itself
+// rather than hanging.
+func PtrSelfCycle() string {
+	var x any
+	x = &x
+	_ = *x
+	return "ok"
+}
