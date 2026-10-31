@@ -732,6 +732,41 @@ func JsonEncoderScriptWriter() string {
 	return w.got // "{\"x\":1}\n"
 }
 
+// JsonCycle: a self-referencing map answers gc's cycle error instead
+// of recursing until the stack dies.
+func JsonCycle() string {
+	m := map[string]any{}
+	m["m"] = m
+	_, err := json.Marshal(m)
+	if err == nil {
+		return "noerr"
+	}
+	return err.Error() // "json: unsupported value: encountered a cycle"
+}
+
+// JsonSliceCycle: same check through a slice element.
+func JsonSliceCycle() string {
+	s := []any{nil}
+	s[0] = s
+	_, err := json.Marshal(s)
+	if err == nil {
+		return "noerr"
+	}
+	return err.Error()
+}
+
+// JsonSharedSlice: a DAG — the same slice under two keys — is NOT a
+// cycle and marshals twice.
+func JsonSharedSlice() string {
+	inner := []int{1}
+	m := map[string]any{"a": inner, "b": inner}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "err:" + err.Error()
+	}
+	return string(b) // {"a":[1],"b":[1]}
+}
+
 // ExecCommandContext runs a real subprocess through the context
 // variant of Command.
 func ExecCommandContext() string {

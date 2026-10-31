@@ -459,6 +459,9 @@ func TestStdlibIntrinsics(t *testing.T) {
 		{"BufioReaderWriteToScript", "via-writeto"},
 		{"JsonEncoderStream", "{\n  \"name\": \"n\"\n}\n"},
 		{"JsonEncoderScriptWriter", "{\"x\":1}\n"},
+		{"JsonCycle", "json: unsupported value: encountered a cycle"},
+		{"JsonSliceCycle", "json: unsupported value: encountered a cycle"},
+		{"JsonSharedSlice", `{"a":[1],"b":[1]}`},
 		{"ExecCommandContext", "hi"},
 		{"RuntimeAddCleanup", "ok"},
 	}

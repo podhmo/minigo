@@ -48,6 +48,7 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/podhmo/minigo/minireflect"
 	"github.com/podhmo/minigo/runtime"
@@ -5626,6 +5627,14 @@ func asReader(v any) (io.Reader, error) {
 // unwraps. c carries the engine's type-resolution hooks — embedded
 // fields promote through them.
 func goJSON(c runtime.VMCaller, v any) any {
+	return goJSONSeen(c, v, map[any]bool{})
+}
+
+// goJSONSeen is goJSON carrying a path set of live container
+// pointers: re-encountering one means a reference cycle, which gc
+// answers with UnsupportedValueError (a jsonCycle marker carries that
+// error out through the host encoder's channel).
+func goJSONSeen(c runtime.VMCaller, v any, seen map[any]bool) any {
 	// a value whose method set offers MarshalJSON encodes itself —
 	// gc's marshalerEncoder calls it instead of walking the value by
 	// shape. A nil pointer/interface answers null below without a call
@@ -5665,14 +5674,18 @@ func goJSON(c runtime.VMCaller, v any) any {
 	}
 	switch x := v.(type) {
 	case *runtime.Named:
-		return goJSON(c, x.V)
+		return goJSONSeen(c, x.V, seen)
 	case *runtime.Cell:
-		return goJSON(c, x.Elem)
+		return goJSONSeen(c, x.Elem, seen)
 	case *runtime.TypedNil, *runtime.IfaceNil:
 		// a nil pointer/interface field marshals as null — passing the
 		// wrapper through would reflect on its bookkeeping fields.
 		return nil
 	case *runtime.Struct:
+		if jsonSeen(seen, x) {
+			return jsonCycle{}
+		}
+		defer delete(seen, x)
 		// structs marshal in DECLARATION order (encoding/json never
 		// sorts struct fields) — an ordered map keeps that visible.
 		// Anonymous embeds flatten: promoted fields emit in place, a
@@ -5691,7 +5704,7 @@ func goJSON(c runtime.VMCaller, v any) any {
 			if e.omit && jsonIsEmpty(f) {
 				continue
 			}
-			fv := goJSON(c, f)
+			fv := goJSONSeen(c, f, seen)
 			// `,string` applies to the DECLARED kind: interface
 			// fields marshal normally even when the tag asks.
 			if e.asStr && !jsonPathIsIface(c, x.Def, e.path) {
@@ -5710,12 +5723,20 @@ func goJSON(c runtime.VMCaller, v any) any {
 		}
 		return o
 	case *runtime.Slice:
+		if jsonSeen(seen, x) {
+			return jsonCycle{}
+		}
+		defer delete(seen, x)
 		out := make([]any, len(x.Elems))
 		for i, e := range x.Elems {
-			out[i] = goJSON(c, e)
+			out[i] = goJSONSeen(c, e, seen)
 		}
 		return out
 	case *runtime.Map:
+		if jsonSeen(seen, x) {
+			return jsonCycle{}
+		}
+		defer delete(seen, x)
 		m := make(map[string]any, x.Len())
 		kt := jsonMapKeyTyp(c, x.Typ)
 		for i := 0; i < x.Len(); i++ {
@@ -5724,26 +5745,57 @@ func goJSON(c runtime.VMCaller, v any) any {
 			if se, ok := kk.(*jsonScriptErr); ok {
 				return se
 			}
-			m[kk.(string)] = goJSON(c, e)
+			m[kk.(string)] = goJSONSeen(c, e, seen)
 		}
 		return m
 	case *runtime.GoValue:
 		return x.V
 	case map[any]any: // goNative's *runtime.Map output — keys stringify
+		if len(x) > 0 {
+			if jsonSeen(seen, reflect.ValueOf(x).UnsafePointer()) {
+				return jsonCycle{}
+			}
+			defer delete(seen, reflect.ValueOf(x).UnsafePointer())
+		}
 		m := make(map[string]any, len(x))
 		for k, e := range x {
-			m[str(k)] = goJSON(c, e)
+			m[str(k)] = goJSONSeen(c, e, seen)
 		}
 		return m
 	case []any: // goNative's *runtime.Slice output
+		if len(x) > 0 {
+			if jsonSeen(seen, reflect.ValueOf(x).UnsafePointer()) {
+				return jsonCycle{}
+			}
+			defer delete(seen, reflect.ValueOf(x).UnsafePointer())
+		}
 		for i, e := range x {
-			x[i] = goJSON(c, e)
+			x[i] = goJSONSeen(c, e, seen)
 		}
 		return x
 	default:
 		return v
 	}
 }
+
+// jsonSeen marks a container pointer on the current marshal path —
+// gc's ptrSeen equivalent. A repeat visit means a reference cycle.
+func jsonSeen(seen map[any]bool, p any) bool {
+	if seen[p] {
+		return true
+	}
+	seen[p] = true
+	return false
+}
+
+// errJSONCycle is the exact UnsupportedValueError gc returns for a
+// reference cycle; the jsonCycle stand-in raises it through the host
+// encoder's MarshalJSON error channel.
+var errJSONCycle = &json.UnsupportedValueError{Str: "encountered a cycle"}
+
+type jsonCycle struct{}
+
+func (jsonCycle) MarshalJSON() ([]byte, error) { return nil, errJSONCycle }
 
 // jsonMapKeyName renders one map key the way gc's marshaler does: a
 // key type offering MarshalText names itself through the text
@@ -5993,6 +6045,11 @@ func jsonFuncValue(v any) (jsonUnsupported, bool) {
 // stand-in raised into go's own *json.UnsupportedTypeError (or its text,
 // when the type has no host equivalent).
 func jsonUnsupportedOf(err error) error {
+	if errors.Is(err, errJSONCycle) {
+		// a jsonCycle marker raised gc's UnsupportedValueError inside a
+		// MarshalerError — unwrap it so callers see gc's exact error.
+		return errJSONCycle
+	}
 	var ue *unsupportedFunc
 	if !errors.As(err, &ue) {
 		return err
@@ -6051,26 +6108,58 @@ func (e *jsonEncoder) SetEscapeHTML(on bool) {
 // walk element-wise for nested projections; values with no
 // projection pass through unchanged.
 func jsonHostArg(v any) any {
+	return jsonHostArgSeen(v, map[unsafe.Pointer]bool{})
+}
+
+// jsonHostArgSeen is jsonHostArg tracking live container pointers: a
+// cyclic host container would otherwise recurse forever. The cycle is
+// left in place — goJSONSeen's own set reports it as gc's
+// UnsupportedValueError.
+func jsonHostArgSeen(v any, seen map[unsafe.Pointer]bool) any {
 	if orig, ok := projectedOrig(v); ok {
 		return orig
 	}
 	switch c := v.(type) {
 	case []any:
 		out := make([]any, len(c))
+		if len(c) > 0 {
+			p := reflect.ValueOf(c).UnsafePointer()
+			if seen[p] {
+				return c
+			}
+			seen[p] = true
+			defer delete(seen, p)
+		}
 		for i, e := range c {
-			out[i] = jsonHostArg(e)
+			out[i] = jsonHostArgSeen(e, seen)
 		}
 		return out
 	case map[any]any:
 		out := make(map[any]any, len(c))
+		if len(c) > 0 {
+			p := reflect.ValueOf(c).UnsafePointer()
+			if seen[p] {
+				return c
+			}
+			seen[p] = true
+			defer delete(seen, p)
+		}
 		for k, e := range c {
-			out[k] = jsonHostArg(e)
+			out[k] = jsonHostArgSeen(e, seen)
 		}
 		return out
 	case map[string]any:
 		out := make(map[string]any, len(c))
+		if len(c) > 0 {
+			p := reflect.ValueOf(c).UnsafePointer()
+			if seen[p] {
+				return c
+			}
+			seen[p] = true
+			defer delete(seen, p)
+		}
 		for k, e := range c {
-			out[k] = jsonHostArg(e)
+			out[k] = jsonHostArgSeen(e, seen)
 		}
 		return out
 	}
