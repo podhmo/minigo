@@ -8901,7 +8901,14 @@ func (v *VM) driveFuncIter(f *frame, it *runtime.Iterator, nvars, top, end int) 
 	it.Started = true
 	bodyStart := top + 1
 	stackMark := len(f.stack)
+	// loopDone marks the whole loop as over once the producer returns
+	// (or panics out). An escaped yield called after that must not touch
+	// f: the frame may already be recycled for an unrelated call. After
+	// a normal exit go panics; after a panic exit gc re-runs the body
+	// closure, which a frame-based loop cannot do — trap instead.
+	loopDone, returned := false, false
 	defer func() {
+		loopDone = true
 		// A panic recovered inside the producer can leave the body's
 		// operand pushes behind — restore the pre-loop depth.
 		f.stack = f.stack[:stackMark]
@@ -8912,6 +8919,12 @@ func (v *VM) driveFuncIter(f *frame, it *runtime.Iterator, nvars, top, end int) 
 		// the args and runs the body on this frame.
 		DirectYield: true,
 		Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if loopDone {
+				if !returned {
+					return nil, fmt.Errorf("unsupported: yield called after its range-over-func loop exited by panic")
+				}
+				panic(runtime.RuntimePanic("range function continued iteration after whole loop exit"))
+			}
 			if it.Exited {
 				panic(runtime.RuntimePanic("range function continued iteration after function for loop body returned false"))
 			}
@@ -8942,6 +8955,7 @@ func (v *VM) driveFuncIter(f *frame, it *runtime.Iterator, nvars, top, end int) 
 	if _, err := v.call(it.Fn, []runtime.Value{yield}, nil, nil); err != nil {
 		panic(&runtime.Trap{Pos: f.pos(), Reason: err.Error(), Err: err})
 	}
+	returned = true
 }
 
 // arithmetic

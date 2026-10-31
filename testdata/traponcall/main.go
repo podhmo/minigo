@@ -36,3 +36,24 @@ func FallthroughAndAssert() int {
 }
 
 func main() {}
+
+var escapedYield func(int) bool
+
+func panickySeq(yield func(int) bool) {
+	escapedYield = yield
+	yield(1)
+	panic("boom")
+}
+
+// EscapedYieldAfterPanic calls a yield that escaped a range-over-func
+// loop the producer's panic ended: gc re-runs the body closure there,
+// which a frame-based loop cannot do, so it traps instead.
+func EscapedYieldAfterPanic() int {
+	func() {
+		defer func() { recover() }()
+		for range panickySeq {
+		}
+	}()
+	escapedYield(10)
+	return 0
+}

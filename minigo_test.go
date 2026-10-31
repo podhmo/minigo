@@ -312,6 +312,10 @@ func TestTrapOnCall(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "label not defined") {
 		t.Fatalf("Channy: expected undefined-label trap, got %v", err)
 	}
+	_, err = e.Run(context.Background(), "./testdata/traponcall", "EscapedYieldAfterPanic")
+	if err == nil || !strings.Contains(err.Error(), "loop exited by panic") {
+		t.Fatalf("EscapedYieldAfterPanic: expected escaped-yield trap, got %v", err)
+	}
 	// fallthrough + type assert work now: both old traps became real code
 	if got := run(t, e, "./testdata/traponcall", "FallthroughAndAssert"); got != int64(16) {
 		t.Fatalf("FallthroughAndAssert: got %v", got)
