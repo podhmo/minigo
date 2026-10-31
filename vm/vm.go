@@ -1502,6 +1502,11 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 					return nil, fmt.Errorf("%s %w", c.Name, err)
 				}
 			}
+			// a builtin may retain its args slice past the call —
+			// task.F binds it into a taskCall — while args may ride the
+			// caller frame's argbuf, which the next OpCall rewrites.
+			// Hand over a private copy like popArgs always produced.
+			args = append([]runtime.Value{}, args...)
 			if c.SyncCallbacks {
 				return c.Fn(ownerCaller{v}, args)
 			}
