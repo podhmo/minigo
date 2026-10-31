@@ -6044,6 +6044,15 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 							continue
 						}
 					}
+					if ev.Kind() == reflect.Map {
+						if _, ok := runtime.Unwrap(ss.Elems[i]).(*runtime.Map); ok {
+							// a map element crossed as a host copy: the
+							// script map is still the caller's value —
+							// swapping in the copy's GoValue box would
+							// break index/assign on it (`rows[0]["a"]`).
+							continue
+						}
+					}
 					ss.Elems[i] = retagElem(ss.Elems[i], goValueOf(ev))
 				}
 				handled = true
