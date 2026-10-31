@@ -21,6 +21,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
+	"runtime/pprof"
 	"sort"
 	"strconv"
 	"strings"
@@ -134,7 +136,15 @@ flags (accepted before or after <ref>):
   --deny pkg,...   make importing these packages fail with a clear error
   --src pkg,...    interpret these packages from source even where a
                    host-bound version exists
+  --cpuprofile f   write a CPU profile of the interpreter to f
+                   (default: $MINIGO_CPUPROFILE)
+  --memprofile f   write an allocation profile of the interpreter to f
+                   at exit (default: $MINIGO_MEMPROFILE)
   -h, --help       show this help
+
+The profiles are Go pprof profiles of minigo itself (read them with
+go tool pprof); the env defaults let a wrapper script that runs minigo
+be profiled without editing its command line.
 `,
 	"repl": `usage: minigo repl
 
@@ -181,6 +191,7 @@ func run(ctx context.Context, args []string) error {
 	var entry string
 	var rest []string
 	var denys, srcs []string
+	cpuProfile, memProfile := os.Getenv("MINIGO_CPUPROFILE"), os.Getenv("MINIGO_MEMPROFILE")
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -208,6 +219,22 @@ func run(ctx context.Context, args []string) error {
 			srcs = append(srcs, strings.Split(args[i], ",")...)
 		case strings.HasPrefix(a, "--src="), strings.HasPrefix(a, "-src="):
 			srcs = append(srcs, strings.Split(strings.SplitN(a, "=", 2)[1], ",")...)
+		case a == "--cpuprofile" || a == "-cpuprofile":
+			i++
+			if i >= len(args) {
+				return usageErrorf("--cpuprofile requires a file name")
+			}
+			cpuProfile = args[i]
+		case strings.HasPrefix(a, "--cpuprofile="), strings.HasPrefix(a, "-cpuprofile="):
+			cpuProfile = strings.SplitN(a, "=", 2)[1]
+		case a == "--memprofile" || a == "-memprofile":
+			i++
+			if i >= len(args) {
+				return usageErrorf("--memprofile requires a file name")
+			}
+			memProfile = args[i]
+		case strings.HasPrefix(a, "--memprofile="), strings.HasPrefix(a, "-memprofile="):
+			memProfile = strings.SplitN(a, "=", 2)[1]
 		case isHelpFlag(a):
 			return errHelp
 		case strings.HasPrefix(a, "-"):
@@ -242,8 +269,17 @@ func run(ctx context.Context, args []string) error {
 	if len(modes) > 0 {
 		opts = append(opts, minigo.WithPackageModes(modes))
 	}
+	stop, err := startProfiles(cpuProfile, memProfile)
+	if err != nil {
+		return err
+	}
 	e := minigo.NewEngine(cwd, opts...)
 	r, err := e.Run(ctx, ref, fn)
+	// profiles cover failed runs too (a trap, os.Exit(N)): the run is
+	// over either way, and a slow failing script is worth profiling.
+	if perr := stop(); err == nil {
+		err = perr
+	}
 	if err != nil {
 		return err
 	}
@@ -252,6 +288,52 @@ func run(ctx context.Context, args []string) error {
 		fmt.Printf("%v\n", minigo.Format(r))
 	}
 	return nil
+}
+
+// startProfiles starts a CPU profile to cpuPath (if set) and returns a
+// stop func that ends it and writes an allocation profile to memPath (if
+// set).
+func startProfiles(cpuPath, memPath string) (func() error, error) {
+	var cpu *os.File
+	if cpuPath != "" {
+		f, err := os.Create(cpuPath)
+		if err != nil {
+			return nil, fmt.Errorf("cpuprofile: %w", err)
+		}
+		if err := pprof.StartCPUProfile(f); err != nil {
+			f.Close()
+			return nil, fmt.Errorf("cpuprofile: %w", err)
+		}
+		cpu = f
+	}
+	return func() error {
+		var errs []error
+		if cpu != nil {
+			pprof.StopCPUProfile()
+			if err := cpu.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("cpuprofile: %w", err))
+			}
+		}
+		if memPath != "" {
+			if err := writeAllocProfile(memPath); err != nil {
+				errs = append(errs, fmt.Errorf("memprofile: %w", err))
+			}
+		}
+		return errors.Join(errs...)
+	}, nil
+}
+
+func writeAllocProfile(path string) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	goruntime.GC() // settle the live-heap numbers, like go test -memprofile
+	if err := pprof.Lookup("allocs").WriteTo(f, 0); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func vet(ctx context.Context, args []string) error {
