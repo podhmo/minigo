@@ -5675,7 +5675,7 @@ func goJSONSeen(c runtime.VMCaller, v any, seen map[any]bool) any {
 		return goJSONSeen(c, x.V, seen)
 	case *runtime.Cell:
 		if jsonSeen(seen, x) {
-			return jsonCycle{}
+			return jsonCycle{via: scriptTypeString(x)}
 		}
 		defer delete(seen, x)
 		return goJSONSeen(c, x.Elem, seen)
@@ -5685,7 +5685,7 @@ func goJSONSeen(c runtime.VMCaller, v any, seen map[any]bool) any {
 		// would reflect on its bookkeeping fields. Guard it like a Cell:
 		// `s.V = &s.V` revisits the same ref.
 		if jsonSeen(seen, x) {
-			return jsonCycle{}
+			return jsonCycle{via: scriptTypeString(x)}
 		}
 		defer delete(seen, x)
 		if el, ok := runtime.Deref(x); ok {
@@ -5698,7 +5698,9 @@ func goJSONSeen(c runtime.VMCaller, v any, seen map[any]bool) any {
 		return nil
 	case *runtime.Struct:
 		if jsonSeen(seen, x) {
-			return jsonCycle{}
+			// a struct only recurs through a pointer to it — gc names
+			// that pointer type.
+			return jsonCycle{via: "*" + scriptTypeString(x)}
 		}
 		defer delete(seen, x)
 		// structs marshal in DECLARATION order (encoding/json never
@@ -5739,7 +5741,7 @@ func goJSONSeen(c runtime.VMCaller, v any, seen map[any]bool) any {
 		return o
 	case *runtime.Slice:
 		if jsonSeen(seen, x) {
-			return jsonCycle{}
+			return jsonCycle{via: scriptTypeString(x)}
 		}
 		defer delete(seen, x)
 		out := make([]any, len(x.Elems))
@@ -5749,7 +5751,7 @@ func goJSONSeen(c runtime.VMCaller, v any, seen map[any]bool) any {
 		return out
 	case *runtime.Map:
 		if jsonSeen(seen, x) {
-			return jsonCycle{}
+			return jsonCycle{via: scriptTypeString(x)}
 		}
 		defer delete(seen, x)
 		m := make(map[string]any, x.Len())
@@ -5768,7 +5770,7 @@ func goJSONSeen(c runtime.VMCaller, v any, seen map[any]bool) any {
 	case map[any]any: // goNative's *runtime.Map output — keys stringify
 		if len(x) > 0 {
 			if jsonSeen(seen, reflect.ValueOf(x).UnsafePointer()) {
-				return jsonCycle{}
+				return jsonCycle{via: fmt.Sprintf("%T", x)}
 			}
 			defer delete(seen, reflect.ValueOf(x).UnsafePointer())
 		}
@@ -5780,7 +5782,7 @@ func goJSONSeen(c runtime.VMCaller, v any, seen map[any]bool) any {
 	case map[string]any: // jsonHostArg's restored container copy
 		if len(x) > 0 {
 			if jsonSeen(seen, reflect.ValueOf(x).UnsafePointer()) {
-				return jsonCycle{}
+				return jsonCycle{via: fmt.Sprintf("%T", x)}
 			}
 			defer delete(seen, reflect.ValueOf(x).UnsafePointer())
 		}
@@ -5791,7 +5793,7 @@ func goJSONSeen(c runtime.VMCaller, v any, seen map[any]bool) any {
 	case []any: // goNative's *runtime.Slice output
 		if len(x) > 0 {
 			if jsonSeen(seen, reflect.ValueOf(x).UnsafePointer()) {
-				return jsonCycle{}
+				return jsonCycle{via: fmt.Sprintf("%T", x)}
 			}
 			defer delete(seen, reflect.ValueOf(x).UnsafePointer())
 		}
@@ -5814,14 +5816,17 @@ func jsonSeen(seen map[any]bool, p any) bool {
 	return false
 }
 
-// errJSONCycle is the exact UnsupportedValueError gc returns for a
-// reference cycle; the jsonCycle stand-in raises it through the host
-// encoder's MarshalJSON error channel.
-var errJSONCycle = &json.UnsupportedValueError{Str: "encountered a cycle"}
+// jsonCycle stands in for a container revisited on the marshal path:
+// its MarshalJSON raises gc's exact UnsupportedValueError ("encountered
+// a cycle via <type>", naming the container gc's ptrSeen trips on)
+// through the host encoder's error channel.
+type jsonCycle struct{ via string }
 
-type jsonCycle struct{}
+func (j jsonCycle) MarshalJSON() ([]byte, error) {
+	return nil, &json.UnsupportedValueError{Str: jsonCyclePrefix + j.via}
+}
 
-func (jsonCycle) MarshalJSON() ([]byte, error) { return nil, errJSONCycle }
+const jsonCyclePrefix = "encountered a cycle via "
 
 // jsonMapKeyName renders one map key the way gc's marshaler does: a
 // key type offering MarshalText names itself through the text
@@ -5893,6 +5898,9 @@ func jsonFieldKey(def *runtime.TypeDef, name string) (key string, named, omitEmp
 			if j != "" {
 				return j, true, omit, asStr, false
 			}
+			// an empty name part (`json:",omitempty"`) keeps the
+			// field's own name but still applies its options.
+			return name, false, omit, asStr, false
 		}
 	}
 	return name, false, false, false, false
@@ -6071,10 +6079,10 @@ func jsonFuncValue(v any) (jsonUnsupported, bool) {
 // stand-in raised into go's own *json.UnsupportedTypeError (or its text,
 // when the type has no host equivalent).
 func jsonUnsupportedOf(err error) error {
-	if errors.Is(err, errJSONCycle) {
+	if uve, ok := errors.AsType[*json.UnsupportedValueError](err); ok && strings.HasPrefix(uve.Str, jsonCyclePrefix) {
 		// a jsonCycle marker raised gc's UnsupportedValueError inside a
 		// MarshalerError — unwrap it so callers see gc's exact error.
-		return errJSONCycle
+		return uve
 	}
 	var ue *unsupportedFunc
 	if !errors.As(err, &ue) {
@@ -9473,6 +9481,10 @@ func scriptTypeString(x runtime.Value) string {
 			return scriptTypeString(se.v)
 		}
 		switch t.V.(type) {
+		case *jsonEncoder:
+			return "*json.Encoder"
+		case cleanupHandle:
+			return "runtime.Cleanup"
 		case *minireflect.RValue:
 			return "reflect.Value"
 		case *minireflect.RType:

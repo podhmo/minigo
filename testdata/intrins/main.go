@@ -755,7 +755,7 @@ func JsonCycle() string {
 	if err == nil {
 		return "noerr"
 	}
-	return err.Error() // "json: unsupported value: encountered a cycle"
+	return err.Error() // "json: unsupported value: encountered a cycle via <type>"
 }
 
 // JsonSliceCycle: same check through a slice element.
@@ -811,7 +811,7 @@ func JsonPtrCycle() string {
 	if err == nil {
 		return "noerr"
 	}
-	return err.Error() // "json: unsupported value: encountered a cycle"
+	return err.Error() // "json: unsupported value: encountered a cycle via <type>"
 }
 
 // JsonEncoderPtrCycle: same check through Encoder.Encode.

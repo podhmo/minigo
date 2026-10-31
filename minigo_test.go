@@ -466,14 +466,16 @@ func TestStdlibIntrinsics(t *testing.T) {
 		{"JsonEncoderStream", "{\n  \"name\": \"n\"\n}\n"},
 		{"JsonEncoderScriptWriter", "{\"x\":1}\n"},
 		{"JsonEncoderMapStruct", "{\"r\":{\"name\":\"n\"}}\n"},
-		{"JsonCycle", "json: unsupported value: encountered a cycle"},
-		{"JsonSliceCycle", "json: unsupported value: encountered a cycle"},
+		{"JsonCycle", "json: unsupported value: encountered a cycle via map[string]interface {}"},
+		{"JsonSliceCycle", "json: unsupported value: encountered a cycle via []interface {}"},
 		{"JsonSharedSlice", `{"a":[1],"b":[1]}`},
-		{"JsonPtrCycle", "json: unsupported value: encountered a cycle"},
-		{"JsonEncoderPtrCycle", "json: unsupported value: encountered a cycle"},
-		{"JsonTwoPtrCycle", "json: unsupported value: encountered a cycle"},
+		// go 1.27 overflows its stack on an any-pointer cycle; minigo
+		// reports it with v1's "via <pointer type>" spelling instead.
+		{"JsonPtrCycle", "json: unsupported value: encountered a cycle via *interface {}"},
+		{"JsonEncoderPtrCycle", "json: unsupported value: encountered a cycle via *interface {}"},
+		{"JsonTwoPtrCycle", "json: unsupported value: encountered a cycle via *interface {}"},
 		// go 1.27 overflows its stack on `s.V = &s.V` too; minigo reports it.
-		{"JsonRefCycle", "json: unsupported value: encountered a cycle"},
+		{"JsonRefCycle", "json: unsupported value: encountered a cycle via *interface {}"},
 		{"PtrSelfCycle", "ok"},
 		{"ExecCommandContext", "hi"},
 		{"RuntimeAddCleanup", "ok"},
