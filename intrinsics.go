@@ -3173,6 +3173,12 @@ func newChanFeed(vc runtime.VMCaller, src <-chan time.Time, once bool) *chanFeed
 // die→arm or supersede→arm cycle the retired pump must exit on the
 // channel it was started with and must not retire the newer arm, so
 // neither observes f.done/f.gen swapped under it.
+//
+// A value already taken from src is delivered in preference to done: a
+// Reset to a tiny duration can fire the real timer before arm() closes
+// the old done, and the superseded pump is then the only one holding
+// that fire. Letting select pick done at random dropped it and left the
+// receiver parked forever.
 func (f *chanFeed) pump(done chan struct{}, gen int) {
 	for {
 		select {
@@ -3183,6 +3189,9 @@ func (f *chanFeed) pump(done chan struct{}, gen int) {
 				// latest.
 				select {
 				case f.C <- v:
+				default:
+				}
+				select {
 				case <-done:
 					return
 				default:
@@ -3191,8 +3200,12 @@ func (f *chanFeed) pump(done chan struct{}, gen int) {
 			}
 			select {
 			case f.C <- v:
-			case <-done:
-				return
+			default:
+				select {
+				case f.C <- v:
+				case <-done:
+					return
+				}
 			}
 			f.dieIf(gen)
 			return
