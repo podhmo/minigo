@@ -1,6 +1,6 @@
 ---
 name: todo-md
-description: Maintaining minigo's task tracker (TODO.md + TODO-archive.md). Use whenever you add a task, complete or partially complete one, or re-apply TODO.md changes across merges/rebases.
+description: Maintaining minigo's task tracker (TODO.md + TODO-archive.md). Use whenever you add a task, complete or partially complete one, re-apply TODO.md changes across merges/rebases, or run the GC sweep (`make todo-gc`).
 ---
 
 # TODO.md upkeep
@@ -28,32 +28,25 @@ asynchronous so the archive can never conflict between branches.
 
 ## GC: consolidating completed entries
 
-Run whenever `[x]` entries accumulate in `TODO.md` — any session may do it
-(e.g. at the end of a work round); there is no fixed schedule. For each
-`[x]` entry in `TODO.md`:
-
-1. Delete it from `TODO.md`.
-2. Append it to the **end** of `TODO-archive.md` verbatim, keeping the
-   `- [x]` marker. If it was nested under a parent item, prepend one context
-   line `> parent: <parent's title text>` (the parent's own text, *without*
-   its `[ ]`/`[-]` marker) so the line is self-contained. Deeper nesting:
-   collapse the ancestor chain into that one line (`> parent: A › B › …`).
-   If the parent's title has drifted, use its current text — the GC pass is
-   where such drift gets reconciled.
-
-Only GC writes to `TODO-archive.md`, so the file stays append-only and
-conflict-free.
+When `[x]` entries accumulate, any session may run `make todo-gc` (no fixed
+schedule). Only GC writes to `TODO-archive.md`. Read [gc.md](gc.md) only
+when running or changing the sweep.
 
 ## Reading the archive
 
-Never read it whole. `rg <symbol>` to find the entry, then read the
-surrounding window (`rg -C 20`, or an offset read).
+Never read it whole. `rg <symbol>` returns the matching item with its
+ancestor chain on the same line; read neighbouring lines (`rg -C 3`) only
+to see its siblings.
 
 ## Porting this scheme to another repo
 
-Reference starters are bundled:
-[example-TODO.md](example-TODO.md) /
-[example-TODO-archive.md](example-TODO-archive.md). They ship under
-`example-*` names so nothing reads them as the live files day to day.
+Copy this whole directory to `.claude/skills/todo-md/` — it is
+self-contained: the rules (this file and [gc.md](gc.md)), the GC tool
+([todo-gc/](todo-gc/main.go), its own Go module with no dependencies), and
+reference starters [example-TODO.md](example-TODO.md) /
+[example-TODO-archive.md](example-TODO-archive.md). The starters ship under
+`example-*` names so nothing reads them as the live files day to day. Then
+rename `minigo` in the `description` above and optionally add a
+`todo-gc` make target that runs the command in [gc.md](gc.md).
 
 See [why.md](why.md) for the background of this scheme.

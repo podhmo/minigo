@@ -19,6 +19,7 @@ This file tracks actionable tasks only; completed work is swept to
   it has open children.
   - [ ] **Open child task**: details and links go here.
   - [x] **Completed child**: marked but not yet swept — the next GC pass
-    moves it to `TODO-archive.md` with a `> parent:` context line.
+    moves it to `TODO-archive.md` as one line prefixed with
+    `Partially-done work > `.
 - [x] **Just-finished item**: feature PRs only mark `[x]`; they never edit
   `TODO-archive.md` themselves.

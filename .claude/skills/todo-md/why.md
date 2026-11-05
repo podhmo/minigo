@@ -22,4 +22,16 @@ One deliberate looseness: consolidation is *asynchronous GC*, not part of
 the completing PR. Feature branches just mark `[x]` (or delete); a periodic
 sweep appends stragglers to the archive. That keeps `TODO-archive.md`
 conflict-free across parallel branches and moves every judgment call
-(parent renames, context lines) into one place — the GC pass.
+(parent renames, ancestor chains) into one place — the GC pass.
+
+The archive is **always greppable**: every item is one physical line that
+starts with its ancestor chain (`- [x] A > B > **C**: ...`). The earlier
+verbatim layout kept wrapped lines, nested children and `> parent:` context
+lines, so an `rg` hit was often a fragment whose owner sat dozens of lines
+above. With one line per item the hit itself is the whole entry, path
+included. Because the rule is mechanical, it is enforced by a tool
+(`todo-gc/`) rather than by hand, and the tool lives inside this skill
+directory so the scheme can be copied to another repo as one folder. The
+one-line rule was worked out in
+[podhmo/html-sandbox](https://github.com/podhmo/html-sandbox) and ported
+back here.
