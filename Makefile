@@ -1,4 +1,4 @@
-.PHONY: all test format clean lint go-mod-tidy-all difffuzz difffuzz-corpus tmpltests tmpltests-parse tmpltests-html tmpltests-examples tmpltests-html-examples tmpltests-all
+.PHONY: all test todo-gc format clean lint go-mod-tidy-all difffuzz difffuzz-corpus tmpltests tmpltests-parse tmpltests-html tmpltests-examples tmpltests-html-examples tmpltests-all
 
 all:
 	go build ./...
@@ -21,6 +21,12 @@ test:
 	go -C ./examples/test-detect test ./...
 	go -C ./examples/minigo-generate test ./...
 	go -C ./examples/extract-schema test ./...
+	go -C ./.claude/skills/todo-md/todo-gc test ./...
+
+# move [x] entries from TODO.md to TODO-archive.md, one greppable line per
+# item (see .claude/skills/todo-md/SKILL.md)
+todo-gc:
+	go -C ./.claude/skills/todo-md/todo-gc run ./ -w ../../../..
 
 # differential harness vs the go toolchain (see tools/difffuzz/README.md).
 # override e.g. `make difffuzz DIFFFUZZ_ARGS="-domain num -seed 1"`
