@@ -2,7 +2,7 @@
 
 > **What this file is:** append-only history of completed work moved out of
 > `TODO.md` by a periodic GC sweep (`make todo-gc`, see
-> `.claude/skills/todo-md/SKILL.md` — feature PRs never write here, so this
+> `.claude/skills/todo-md/gc.md` — feature PRs never write here, so this
 > file never conflicts). Each item is one line, prefixed with its ancestor
 > chain (`- [x] A > B > **C**: ...`), so a grep hit names the whole path.
 > Wording and links into `docs/sketch/*`, issues, and PRs are kept verbatim;
