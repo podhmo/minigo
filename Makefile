@@ -24,7 +24,7 @@ test:
 	go -C ./.claude/skills/todo-md/todo-gc test ./...
 
 # move [x] entries from TODO.md to TODO-archive.md, one greppable line per
-# item (see .claude/skills/todo-md/SKILL.md)
+# item (see .claude/skills/todo-md/gc.md)
 todo-gc:
 	go -C ./.claude/skills/todo-md/todo-gc run ./ -w ../../../..
 
