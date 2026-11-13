@@ -3,6 +3,7 @@ package app
 
 import (
 	"html/template"
+	"io"
 	"net/http"
 	"slices"
 	"strconv"
@@ -40,7 +41,10 @@ func (h *Handler) ShowUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	RenderUser(w, u)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := RenderUser(w, u); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 // ListUsers lists the users carrying any ?tag=, ordered by ?sort= (name
@@ -70,7 +74,7 @@ func (h *Handler) ListUsers(w http.ResponseWriter, r *http.Request) {
 	slices.Sort(filters)
 	w.Header()["X-Total-Count"] = []string{strconv.Itoa(len(hits))}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := listTmpl.Execute(w, map[string]any{"Users": hits, "Filters": filters}); err != nil {
+	if err := RenderUserList(w, UserListView{Users: hits, Filters: filters}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -111,10 +115,19 @@ var userTmpl = template.Must(template.New("user").Parse(`<!doctype html>
 </body></html>
 `))
 
-// RenderUser is the rendering half of ShowUser.
-func RenderUser(w http.ResponseWriter, u *User) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := userTmpl.Execute(w, u); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
+// RenderUser is the rendering half of ShowUser: a page-level component
+// that turns view data into HTML, with no lookup and no HTTP.
+func RenderUser(w io.Writer, u *User) error {
+	return userTmpl.Execute(w, u)
+}
+
+// UserListView is the view data of the user list page.
+type UserListView struct {
+	Users   []*User
+	Filters []string // effective query, shown as-is
+}
+
+// RenderUserList is the rendering half of ListUsers.
+func RenderUserList(w io.Writer, v UserListView) error {
+	return listTmpl.Execute(w, v)
 }

@@ -1,10 +1,27 @@
-# Preview handler output with an ordinary Story function
+# Preview server-rendered pages with ordinary Story functions
 
-The goal is to inspect the HTML and appearance produced by an existing HTTP
-handler or rendering function in a real browser. A Go test can do this too:
-call the handler with a request and fake dependencies, save its body as an
-HTML file, and open that file. minigo is useful when calling a function by
-name is easier than adding a native test or another `main`.
+The goal is what Storybook does for SPA components, applied to a classic
+server-rendered MPA: render a page in a real browser for a chosen data
+state and adjust its CSS and layout, without real data or a running
+server. A Go test can do this too: call the render function with view
+data, save the HTML as a file, and open it. minigo is useful when calling
+a function by name is easier than adding a native test or another `main`.
+
+In Storybook terms the component is the page's render function (view data
+to HTML), not the handler that also looks data up. Stories here therefore
+come in two kinds:
+
+- **Page stories** (`app/story_page.go`, the primary kind) call a render
+  function such as `RenderUser` or `RenderUserList` with one data state:
+  a typical user, a hostile name, a very long name with many tags, an
+  empty list. No store, request, or recorder is needed.
+- **Handler stories** (`app/story_handler.go`, the fallback) call a handler
+  with a fake store and a request. Use them for code whose rendering is
+  not split out of the handler.
+
+The value is in looking at these pages in a browser while editing CSS and
+templates, not in asserting their HTML; the goldens below only check that
+native and minigo runs agree.
 
 This example's `app` is a small synthetic collection of handlers and
 templates, not evidence that an existing large application needs no changes.
@@ -28,7 +45,8 @@ the Go-only alternative; it is not an additional setup step.
 ## The primitive: run a Story directly
 
 A Story is a zero-argument function that owns its display conditions and
-prints only the rendered response body to stdout:
+prints only the rendered HTML to stdout. A page story builds view data and
+calls the render function:
 
 ```go
 //go:build story
@@ -37,19 +55,21 @@ package app
 
 import (
     "fmt"
-    "net/http/httptest"
+    "strings"
 )
 
-func StoryUser() {
-    rec := httptest.NewRecorder()
-    RenderUser(rec, users["1"])
-    fmt.Print(rec.Body.String())
+func StoryUserListEmpty() {
+    var b strings.Builder
+    if err := RenderUserList(&b, UserListView{Filters: []string{"sort=name", "tag=nobody"}}); err != nil {
+        panic(err)
+    }
+    fmt.Print(b.String())
 }
 ```
 
-Handler stories also construct their own request and fake store. For
-example, `StoryListUsersByTag` fixes `?tag=go&sort=id` inside the function;
-it is a different display condition from `StoryListUsers`.
+Handler stories instead construct their own request and fake store and
+print the response body. For example, `StoryListUsersByTag` fixes
+`?tag=go&sort=id` inside the function and runs the handler's filtering.
 
 With the minigo executable installed:
 
@@ -160,8 +180,9 @@ preview environment in addition to discovery and browser serving.
 
 ## Layout and checks
 
-- `app/handler.go`: ordinary handlers, routes, and templates.
-- `app/story_user.go`: zero-argument Stories and their fake store.
+- `app/handler.go`: ordinary handlers, routes, templates, and the render functions they call.
+- `app/story_page.go`: page stories calling render functions with data states.
+- `app/story_handler.go`: fallback handler stories and their fake store.
 - `app/testdata/golden`: expected response bodies only.
 - `app/handler_test.go`: native HTTP routing, status/header assertions, and bodies.
 - `app/story_test.go`: native Story stdout checks and optional HTML export.

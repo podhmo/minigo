@@ -18,13 +18,14 @@ var htmlDir = flag.String("html-dir", "", "also write native Story output as HTM
 // their HTML for browser inspection. This explicit list is only for Go tests.
 func TestStories(t *testing.T) {
 	stories := map[string]func(){
-		"StoryListUsers":        StoryListUsers,
 		"StoryListUsersByTag":   StoryListUsersByTag,
 		"StoryShowUser":         StoryShowUser,
 		"StoryShowUserNotFound": StoryShowUserNotFound,
 		"StoryUser":             StoryUser,
 		"StoryUserEscaped":      StoryUserEscaped,
-		"StoryUserFromQuery":    StoryUserFromQuery,
+		"StoryUserList":         StoryUserList,
+		"StoryUserListEmpty":    StoryUserListEmpty,
+		"StoryUserLongName":     StoryUserLongName,
 	}
 	if *htmlDir != "" {
 		if err := os.MkdirAll(*htmlDir, 0o755); err != nil {

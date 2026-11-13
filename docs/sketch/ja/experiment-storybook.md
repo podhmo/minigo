@@ -41,17 +41,19 @@ package app
 
 import (
     "fmt"
-    "net/http/httptest"
+    "strings"
 )
 
 func StoryUser() {
-    rec := httptest.NewRecorder()
-    RenderUser(rec, &User{ID: "1", Name: "Alice"})
-    fmt.Print(rec.Body.String())
+    var b strings.Builder
+    if err := RenderUser(&b, &User{ID: "1", Name: "Alice"}); err != nil {
+        panic(err)
+    }
+    fmt.Print(b.String())
 }
 ```
 
-ハンドラー全体を確認する Story なら、同じ関数内で fake と request を作り、ハンドラーまたはルーターを呼ぶ。パスやクエリもその Story が条件として指定する。表示条件を変えたければ、Story のソースを編集するか別の Story を定義する。
+これは render 関数（表示用データ → HTML）を呼ぶページ Story で、Story の主な形である（§8）。ハンドラー全体を確認する Story なら、同じ関数内で fake と request を作り、ハンドラーまたはルーターを呼ぶ。パスやクエリもその Story が条件として指定する。表示条件を変えたければ、Story のソースを編集するか別の Story を定義する。
 
 以下のコマンドは `examples/storybook` で実行する。`minigo` コマンドが PATH にある場合は、storybook コマンドを経由する必要がない。
 
@@ -225,7 +227,12 @@ minigo 固有の価値になりうる候補は、表示用データの組み立�
 
 ただし、render 関数を Story の対象にする価値は、`TestRenderXXX()` で render 関数をテストすることの延長にはない。出力した HTML を golden と比較しても、CSS やレイアウトが意図どおりかは分からない。価値は、データ状態ごとに render 関数を呼んで実ブラウザで描画し、CSS とレイアウトを確認・調整する作業にある。§7 の golden 比較は minigo とネイティブの実行結果の一致を確かめる回帰テストであり、この目的を担うものではない。
 
-ハンドラーを対象にした Story は、render 関数が切り出されていない既存コードのための代替手段とする。§9 のデータ取得関数の部分差し替えは、この代替手段を支えるものと位置づける。現在の example では `StoryUser` → `RenderUser` が render 関数を対象にした形だが、ハンドラー経由の Story と同列に並んでおり、どちらが主かを示していない。Story の並べ方を render 関数中心に整理する作業は [TODO.md](../../../TODO.md) に記録する。
+ハンドラーを対象にした Story は、render 関数が切り出されていない既存コードのための代替手段とする。§9 のデータ取得関数の部分差し替えは、この代替手段を支えるものと位置づける。example はこの方針に合わせて整理した。`RenderUser` と `RenderUserList` は `io.Writer` と表示用データだけを受け取る render 関数とし、HTTP ヘッダーやエラー応答はハンドラー側に残した。Story は 2 種類のファイルに分けた。
+
+- `app/story_page.go`（主）: render 関数をデータ状態ごとに呼ぶ。通常のユーザー、悪意のある名前とタグなし、非常に長い名前と多数のタグ、複数件の一覧、0 件の一覧。fake の Store も request も使わない。
+- `app/story_handler.go`（代替手段）: fake の Store と request でハンドラーを呼ぶ。成功、404、タグ絞り込みの 3 つ。
+
+以前あった `StoryUserFromQuery`（request のクエリから表示用データを作る例）は、どちらの位置づけにも当てはまらないため削除した。host map の読み書きは、ハンドラー Story の `StoryListUsersByTag` が引き続き通る。ハンドラーテストの `/users` は、ページ Story の `StoryUserList` と同じ golden に一致する。ハンドラーが組み立てる表示用データと、Story が直接渡すデータが同じ HTML になることを示している。
 
 次の検証は、まず静的ファイルの配信と状態違いの並列表示を足し、実際に CSS を調整する作業で使ってみることとする。型からの値生成は、fixture の手書きが負担だと確認できてから着手する。タスクは [TODO.md](../../../TODO.md) に記録する。
 
