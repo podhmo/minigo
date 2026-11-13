@@ -1230,24 +1230,18 @@ func (e *Engine) installStdlib() {
 			case *runtime.Slice:
 				// keep the declared slice type: a clone boxed as []any loses
 				// `[]string` and `sort.Strings(c)` traps on the reuse.
-				return &runtime.Slice{Elems: append([]runtime.Value{}, s.Elems...), Typ: s.Typ}, nil
+				return &runtime.Slice{Elems: cloneElems(s.Elems), Typ: s.Typ}, nil
 			case *runtime.Named:
 				if _, ok := s.V.(*runtime.TypedNil); ok {
 					return s, nil
 				}
 				if sl, ok := s.V.(*runtime.Slice); ok {
-					return runtime.Tag(s.Typ, &runtime.Slice{Elems: append([]runtime.Value{}, sl.Elems...), Typ: sl.Typ}), nil
+					return runtime.Tag(s.Typ, &runtime.Slice{Elems: cloneElems(sl.Elems), Typ: sl.Typ}), nil
 				}
 			}
 			return nil, fmt.Errorf("slices.Clone: arg must be a slice")
 		}},
-		"Concat": h.fn("slices.Concat", func(a []any) (any, error) {
-			var parts [][]any
-			for _, p := range a {
-				parts = append(parts, anySlice(p))
-			}
-			return slices.Concat(parts...), nil
-		}),
+		"Concat": slicesConcat(),
 		"Equal": &runtime.BuiltinFunc{Name: "slices.Equal", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("slices.Equal needs 2 args, got %d", len(args))
@@ -1318,24 +1312,7 @@ func (e *Engine) installStdlib() {
 			}
 			return h.packSlice(vc, s, out), nil
 		}},
-		"Repeat": &runtime.BuiltinFunc{Name: "slices.Repeat", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			if len(args) != 2 {
-				return nil, fmt.Errorf("slices.Repeat needs 2 args")
-			}
-			s, ok := sliceOf(args[0])
-			if !ok {
-				return nil, fmt.Errorf("slices.Repeat: arg must be a slice")
-			}
-			n := int64Of(args[1])
-			if n < 0 {
-				return nil, fmt.Errorf("slices.Repeat: negative count %d", n)
-			}
-			var out []runtime.Value
-			for i := int64(0); i < n; i++ {
-				out = append(out, s.Elems...)
-			}
-			return &runtime.Slice{Elems: out, Typ: s.Typ}, nil
-		}},
+		"Repeat": slicesRepeat(),
 		"Grow": &runtime.BuiltinFunc{Name: "slices.Grow", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("slices.Grow needs 2 args")
@@ -1399,76 +1376,12 @@ func (e *Engine) installStdlib() {
 			}
 			return nil, fmt.Errorf("slices.Clip: arg must be a slice")
 		}},
-		"SortFunc":       h.sortByCmpFunc("slices.SortFunc"),
-		"SortStableFunc": h.sortByCmpFunc("slices.SortStableFunc"),
-		"BinarySearch": &runtime.BuiltinFunc{Name: "slices.BinarySearch", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			s, ok := args[0].(*runtime.Slice)
-			if !ok {
-				return nil, fmt.Errorf("slices.BinarySearch: first arg must be a slice")
-			}
-			target := args[1]
-			i := sort.Search(len(s.Elems), func(i int) bool { return !lessScript(s.Elems[i], target) })
-			found := i < len(s.Elems) && !lessScript(target, s.Elems[i])
-			return &runtime.Tuple{Elems: []runtime.Value{int64(i), found}}, nil
-		}},
-		"BinarySearchFunc": &runtime.BuiltinFunc{Name: "slices.BinarySearchFunc", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			s, ok := args[0].(*runtime.Slice)
-			if !ok {
-				return nil, fmt.Errorf("slices.BinarySearchFunc: first arg must be a slice")
-			}
-			target := args[1]
-			cf := args[2]
-			cmpAt := func(i int) int64 {
-				r := callOrPanic(v, cf, []runtime.Value{s.Elems[i], target})
-				n, _ := runtime.Unwrap(r).(int64)
-				return n
-			}
-			i, j := 0, len(s.Elems)
-			for i < j {
-				m := int(uint(i+j) >> 1)
-				if cmpAt(m) < 0 {
-					i = m + 1
-				} else {
-					j = m
-				}
-			}
-			found := false
-			if i < len(s.Elems) {
-				found = cmpAt(i) == 0
-			}
-			return &runtime.Tuple{Elems: []runtime.Value{int64(i), found}}, nil
-		}},
-		"EqualFunc": &runtime.BuiltinFunc{Name: "slices.EqualFunc", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			a, _ := args[0].(*runtime.Slice)
-			b, _ := args[1].(*runtime.Slice)
-			eq := args[2]
-			if a == nil || b == nil {
-				return nil, fmt.Errorf("slices.EqualFunc: first two args must be slices")
-			}
-			if len(a.Elems) != len(b.Elems) {
-				return false, nil
-			}
-			for i := range a.Elems {
-				r := callOrPanic(v, eq, []runtime.Value{a.Elems[i], b.Elems[i]})
-				if ok, _ := r.(bool); !ok {
-					return false, nil
-				}
-			}
-			return true, nil
-		}},
-		"IndexFunc": &runtime.BuiltinFunc{Name: "slices.IndexFunc", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			s, ok := args[0].(*runtime.Slice)
-			if !ok {
-				return nil, fmt.Errorf("slices.IndexFunc: first arg must be a slice")
-			}
-			for i, el := range s.Elems {
-				r := callOrPanic(v, args[1], []runtime.Value{el})
-				if ok, _ := r.(bool); ok {
-					return int64(i), nil
-				}
-			}
-			return int64(-1), nil
-		}},
+		"SortFunc":         h.sortByCmpFunc("slices.SortFunc"),
+		"SortStableFunc":   h.sortByCmpFunc("slices.SortStableFunc"),
+		"BinarySearch":     slicesBinarySearch(false),
+		"BinarySearchFunc": slicesBinarySearch(true),
+		"EqualFunc":        slicesEqualFunc(),
+		"IndexFunc":        slicesIndexFunc(),
 		"ContainsFunc": &runtime.BuiltinFunc{Name: "slices.ContainsFunc", SyncCallbacks: true, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("slices.ContainsFunc needs 2 args, got %d", len(args))
@@ -1497,33 +1410,9 @@ func (e *Engine) installStdlib() {
 		"Min": &runtime.BuiltinFunc{Name: "slices.Min", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			return sliceExtreme(vc, "slices.Min", args, func(best, x runtime.Value) bool { return lessScript(x, best) })
 		}},
-		"Reverse": &runtime.BuiltinFunc{Name: "slices.Reverse", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			s, ok := args[0].(*runtime.Slice)
-			if !ok {
-				return nil, fmt.Errorf("slices.Reverse: arg must be a slice")
-			}
-			slices.Reverse(s.Elems)
-			return runtime.NIL, nil
-		}},
-		"Insert": &runtime.BuiltinFunc{Name: "slices.Insert", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			s, ok := args[0].(*runtime.Slice)
-			if !ok || len(args) < 2 {
-				return nil, fmt.Errorf("slices.Insert(slice, i, elems...)")
-			}
-			i, _ := runtime.Unwrap(args[1]).(int64)
-			el := slices.Insert(s.Elems, int(i), args[2:]...)
-			return &runtime.Slice{Elems: el, Typ: s.Typ}, nil
-		}},
-		"Delete": &runtime.BuiltinFunc{Name: "slices.Delete", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			s, ok := args[0].(*runtime.Slice)
-			if !ok || len(args) != 3 {
-				return nil, fmt.Errorf("slices.Delete(slice, i, j)")
-			}
-			i, _ := runtime.Unwrap(args[1]).(int64)
-			j, _ := runtime.Unwrap(args[2]).(int64)
-			el := slices.Delete(s.Elems, int(i), int(j))
-			return &runtime.Slice{Elems: el, Typ: s.Typ}, nil
-		}},
+		"Reverse": slicesReverse(),
+		"Insert":  slicesInsert(),
+		"Delete":  slicesDelete(),
 	}))
 	e.Bind("maps", e.mapsSeqHelpers(map[string]runtime.Value{
 		"Clone": &runtime.BuiltinFunc{Name: "maps.Clone", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -1549,11 +1438,22 @@ func (e *Engine) installStdlib() {
 			}
 			return nil, fmt.Errorf("maps.Clone: arg must be a map")
 		}},
-		"Copy": &runtime.BuiltinFunc{Name: "maps.Copy", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			dst, _ := args[0].(*runtime.Map)
-			src, _ := args[1].(*runtime.Map)
-			if dst == nil || src == nil {
+		"Copy": &runtime.BuiltinFunc{Name: "maps.Copy", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("maps.Copy needs 2 args, got %d", len(args))
+			}
+			dst, _, _, okDst := scriptMapSeqArg(vc, args[0])
+			src, _, _, okSrc := scriptMapSeqArg(vc, args[1])
+			if !okDst || !okSrc {
 				return nil, fmt.Errorf("maps.Copy: args must be maps")
+			}
+			// a nil src copies nothing; a nil dst only fails when
+			// there is an entry to store.
+			if src == nil || src.Len() == 0 {
+				return runtime.NIL, nil
+			}
+			if dst == nil {
+				panic(runtime.NilMapAssignPanic())
 			}
 			for i := 0; i < src.Len(); i++ {
 				k, e := src.At(i)
@@ -7847,21 +7747,106 @@ func emptyListPanic(name string) *runtime.Panic {
 	return &runtime.Panic{Value: name + ": empty list"}
 }
 
-// sliceParam resolves the slice parameter of the callback-taking and
-// comparing slices helpers: the slice itself, or nil for a nil slice
-// (which holds no elements). A slice of zero-size elements stores none
-// of them, so the helpers do not read it.
+// sliceParam resolves the slice parameter of the slices helpers: the
+// slice itself, or nil for a nil slice (which holds no elements) — a
+// bare `var s []int`, a typed or named nil, a nil read out of a struct
+// field or an `any`. Every helper reading a slice argument goes through
+// it, so a nil slice behaves as in Go instead of failing a type
+// assertion. A slice of zero-size elements stores none of them, so the
+// helpers that read elements do not take it; see [sliceParamAny].
 func sliceParam(name string, v runtime.Value) (*runtime.Slice, error) {
+	s, err := sliceParamAny(name, v)
+	if err == nil && s != nil && s.Virtual() {
+		return nil, fmt.Errorf("%s: slices of zero-size elements are not supported", name)
+	}
+	return s, err
+}
+
+// sliceParamAny is [sliceParam] that also accepts a slice of zero-size
+// elements, for the helpers that never read its elements.
+func sliceParamAny(name string, v runtime.Value) (*runtime.Slice, error) {
 	if s, ok := sliceOf(v); ok {
-		if s.Virtual() {
-			return nil, fmt.Errorf("%s: slices of zero-size elements are not supported", name)
-		}
 		return s, nil
 	}
 	if nilish(v) {
 		return nil, nil
 	}
 	return nil, fmt.Errorf("%s: arg must be a slice", name)
+}
+
+// sliceParamTyp is the declared slice type of a [sliceParam] result s
+// that was read from v — the slice's own, or the nil slice's — nil when
+// unknown.
+func sliceParamTyp(s *runtime.Slice, v runtime.Value) *runtime.TypeDef {
+	if s != nil {
+		return s.Typ
+	}
+	if tn, ok := runtime.Unwrap(v).(*runtime.TypedNil); ok {
+		return tn.Typ
+	}
+	return nil
+}
+
+// nilSliceLike is the nil slice of type typ, tagged with orig's named
+// slice type when orig carries one (see [retagSlice]).
+func nilSliceLike(orig runtime.Value, typ *runtime.TypeDef) runtime.Value {
+	nl := &runtime.TypedNil{Typ: typ}
+	if n, ok := orig.(*runtime.Named); ok {
+		return runtime.Tag(n.Typ, nl)
+	}
+	return nl
+}
+
+// elemOperands prepares the variadic element operands of slices.Insert
+// and Replace for storing into a slice of type typ: an untyped constant
+// takes the element type (like sliceIndexScript's operand), and each
+// operand is copied so an array or struct is not shared with its source.
+func elemOperands(vc runtime.VMCaller, name string, typ *runtime.TypeDef, vals []runtime.Value) ([]runtime.Value, error) {
+	var et *runtime.TypeDef
+	if typ != nil {
+		et, _ = vc.ElemOf(typ)
+	}
+	out := make([]runtime.Value, len(vals))
+	for k, v := range vals {
+		switch v.(type) {
+		case *runtime.UConst, int64, float64:
+			if et != nil && et.Kind != runtime.KindInterface {
+				cv, err := vc.Convert(et, v)
+				if err != nil {
+					return nil, fmt.Errorf("%s: %w", name, err)
+				}
+				v = cv
+			}
+		}
+		out[k] = runtime.Copy(v)
+	}
+	return out, nil
+}
+
+// fillHoles gives the slots of full that the host left empty — the
+// tail slices.Delete cleared, the spare capacity of a freshly grown
+// array — the zero value of typ's element, which is what a script slot
+// holds there (a hole would print as <nil>).
+func fillHoles(vc runtime.VMCaller, typ *runtime.TypeDef, full []runtime.Value) {
+	var zero runtime.Value = runtime.NIL
+	if typ != nil {
+		zero = vc.ElemZero(typ)
+	}
+	for k, v := range full {
+		if v == nil {
+			full[k] = runtime.Copy(zero)
+		}
+	}
+}
+
+// cloneElems copies a slice's elements into a fresh backing array; an
+// array or struct element is copied, not shared with the original.
+func cloneElems(el []runtime.Value) []runtime.Value {
+	out := append([]runtime.Value{}, el...)
+	for i, v := range out {
+		out[i] = runtime.Copy(v)
+	}
+	return out
 }
 
 // sliceElems is a [sliceParam] result's elements — none for nil.
@@ -8037,48 +8022,260 @@ func slicesReplace() *runtime.BuiltinFunc {
 		if err != nil {
 			return nil, err
 		}
-		var typ *runtime.TypeDef
-		if s != nil {
-			typ = s.Typ
-		} else if tn, ok := runtime.Unwrap(args[0]).(*runtime.TypedNil); ok {
-			typ = tn.Typ
-		}
-		var et *runtime.TypeDef
-		if typ != nil {
-			et, _ = vc.ElemOf(typ)
-		}
-		vs := make([]runtime.Value, len(args)-3)
-		for k, v := range args[3:] {
-			switch v.(type) {
-			case *runtime.UConst, int64, float64:
-				// an untyped operand takes the element type, like
-				// sliceIndexScript's.
-				if et != nil && et.Kind != runtime.KindInterface {
-					cv, err := vc.Convert(et, v)
-					if err != nil {
-						return nil, fmt.Errorf("%s: %w", name, err)
-					}
-					v = cv
-				}
-			}
-			vs[k] = v
+		typ := sliceParamTyp(s, args[0])
+		vs, err := elemOperands(vc, name, typ, args[3:])
+		if err != nil {
+			return nil, err
 		}
 		// a bounds failure panics in the host exactly as it would in Go
 		// (the backing array has the script slice's len and cap); the
 		// VM wraps it as the runtime.boundsError the script recovers.
 		base := sliceElems(s)
 		out := slices.Replace(base, int(intOf(args[1])), int(intOf(args[2])), vs...)
+		if s == nil && len(out) == 0 {
+			return args[0], nil // nothing to put in a nil slice: it stays nil
+		}
 		// a shrunk result shares the backing array; Go cleared the
 		// vacated slots with a hole, the script's slot holds the zero.
 		if len(out) < len(base) {
-			zero := vc.ElemZero(typ)
-			for k := len(out); k < len(base); k++ {
-				if base[k] == nil {
-					base[k] = runtime.Copy(zero)
-				}
-			}
+			fillHoles(vc, typ, base[len(out):])
 		}
 		return retagSlice(args[0], &runtime.Slice{Elems: out, Typ: typ}), nil
+	}}
+}
+
+// slicesIndexFunc is slices.IndexFunc: the first index whose element
+// satisfies the predicate, -1 for none or for a nil slice.
+func slicesIndexFunc() *runtime.BuiltinFunc {
+	const name = "slices.IndexFunc"
+	return &runtime.BuiltinFunc{Name: name, SyncCallbacks: true, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) != 2 {
+			return nil, fmt.Errorf("%s needs 2 args, got %d", name, len(args))
+		}
+		s, err := sliceParam(name, args[0])
+		if err != nil {
+			return nil, err
+		}
+		for i, el := range sliceElems(s) {
+			if callBool(vc, args[1], el) {
+				return int64(i), nil
+			}
+		}
+		return int64(-1), nil
+	}}
+}
+
+// slicesEqualFunc is slices.EqualFunc: equal lengths and eq true for
+// every pair, probed in order. Either slice may be nil — a nil slice
+// equals an empty one.
+func slicesEqualFunc() *runtime.BuiltinFunc {
+	const name = "slices.EqualFunc"
+	return &runtime.BuiltinFunc{Name: name, SyncCallbacks: true, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) != 3 {
+			return nil, fmt.Errorf("%s needs 3 args, got %d", name, len(args))
+		}
+		s1, err := sliceParam(name, args[0])
+		if err != nil {
+			return nil, err
+		}
+		s2, err := sliceParam(name, args[1])
+		if err != nil {
+			return nil, err
+		}
+		x, y := sliceElems(s1), sliceElems(s2)
+		if len(x) != len(y) {
+			return false, nil
+		}
+		for i := range x {
+			if !callBool(vc, args[2], x[i], y[i]) {
+				return false, nil
+			}
+		}
+		return true, nil
+	}}
+}
+
+// slicesBinarySearch is slices.BinarySearch (elements ordered with
+// cmp.Compare) and slices.BinarySearchFunc (ordered by the script cmp
+// callback, called as cmp(element, target)): the insertion index and
+// whether the target is there. A nil slice yields (0, false).
+func slicesBinarySearch(withFunc bool) *runtime.BuiltinFunc {
+	name, want := "slices.BinarySearch", 2
+	if withFunc {
+		name, want = "slices.BinarySearchFunc", 3
+	}
+	return &runtime.BuiltinFunc{Name: name, SyncCallbacks: withFunc, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) != want {
+			return nil, fmt.Errorf("%s needs %d args, got %d", name, want, len(args))
+		}
+		s, err := sliceParam(name, args[0])
+		if err != nil {
+			return nil, err
+		}
+		x, target := sliceElems(s), args[1]
+		cmpAt := func(i int) int64 {
+			if withFunc {
+				return callInt(vc, args[2], x[i], target)
+			}
+			return cmpScript(x[i], target)
+		}
+		i, j := 0, len(x)
+		for i < j {
+			m := int(uint(i+j) >> 1)
+			if cmpAt(m) < 0 {
+				i = m + 1
+			} else {
+				j = m
+			}
+		}
+		found := i < len(x) && cmpAt(i) == 0
+		return &runtime.Tuple{Elems: []runtime.Value{int64(i), found}}, nil
+	}}
+}
+
+// slicesReverse is slices.Reverse: the elements swap in place; a nil
+// slice, or one of zero-size elements (all alike), has nothing to move.
+func slicesReverse() *runtime.BuiltinFunc {
+	const name = "slices.Reverse"
+	return &runtime.BuiltinFunc{Name: name, Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("%s needs 1 arg, got %d", name, len(args))
+		}
+		s, err := sliceParamAny(name, args[0])
+		if err != nil {
+			return nil, err
+		}
+		if s != nil && !s.Virtual() {
+			slices.Reverse(s.Elems)
+		}
+		return runtime.NIL, nil
+	}}
+}
+
+// slicesInsert is slices.Insert(s, i, v...): Go's own algorithm runs
+// over the script slice's backing array, so spare capacity is reused and
+// a bad index panics with the boundsError the script recovers. Inserting
+// into a nil slice builds a new one of the same type; inserting nothing
+// returns s itself.
+func slicesInsert() *runtime.BuiltinFunc {
+	const name = "slices.Insert"
+	return &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) < 2 {
+			return nil, fmt.Errorf("%s(slice, i, elems...) needs at least 2 args, got %d", name, len(args))
+		}
+		s, err := sliceParam(name, args[0])
+		if err != nil {
+			return nil, err
+		}
+		typ := sliceParamTyp(s, args[0])
+		vs, err := elemOperands(vc, name, typ, args[2:])
+		if err != nil {
+			return nil, err
+		}
+		out := slices.Insert(sliceElems(s), intOf(args[1]), vs...)
+		if len(vs) == 0 {
+			return args[0], nil // the index was checked; s is returned as is
+		}
+		// a grown array's spare capacity holds holes where Go has zeros.
+		fillHoles(vc, typ, out[len(out):cap(out)])
+		return retagSlice(args[0], &runtime.Slice{Elems: out, Typ: typ}), nil
+	}}
+}
+
+// slicesDelete is slices.Delete(s, i, j): the elements move down over
+// [i, j) in the backing array and the vacated tail is zeroed, so slices
+// re-sliced from the original observe the deletion. A nil slice stays
+// nil; a bad range panics with the boundsError the script recovers.
+func slicesDelete() *runtime.BuiltinFunc {
+	const name = "slices.Delete"
+	return &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) != 3 {
+			return nil, fmt.Errorf("%s(slice, i, j) needs 3 args, got %d", name, len(args))
+		}
+		s, err := sliceParam(name, args[0])
+		if err != nil {
+			return nil, err
+		}
+		base := sliceElems(s)
+		out := slices.Delete(base, intOf(args[1]), intOf(args[2]))
+		if s == nil {
+			return args[0], nil // only the empty range [0, 0) passed the bounds check
+		}
+		typ := sliceParamTyp(s, args[0])
+		if len(out) < len(base) {
+			fillHoles(vc, typ, base[len(out):])
+		}
+		return retagSlice(args[0], &runtime.Slice{Elems: out, Typ: typ}), nil
+	}}
+}
+
+// slicesRepeat is slices.Repeat(s, n): a new slice (never nil, even for
+// a nil s or n == 0) of n copies of s, sized exactly len(s)*n.
+func slicesRepeat() *runtime.BuiltinFunc {
+	const name = "slices.Repeat"
+	return &runtime.BuiltinFunc{Name: name, Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) != 2 {
+			return nil, fmt.Errorf("%s needs 2 args, got %d", name, len(args))
+		}
+		s, err := sliceParam(name, args[0])
+		if err != nil {
+			return nil, err
+		}
+		n := intOf(args[1])
+		if n < 0 {
+			panic(&runtime.Panic{Value: "cannot be negative"})
+		}
+		el := sliceElems(s)
+		if len(el) > 0 && n > math.MaxInt/len(el) {
+			panic(&runtime.Panic{Value: "the result of (len(x) * count) overflows"})
+		}
+		out := make([]runtime.Value, 0, len(el)*n)
+		for range n {
+			for _, v := range el {
+				out = append(out, runtime.Copy(v))
+			}
+		}
+		return retagSlice(args[0], &runtime.Slice{Elems: out, Typ: sliceParamTyp(s, args[0])}), nil
+	}}
+}
+
+// slicesConcat is slices.Concat: the arguments' elements in one new
+// slice, typed after the arguments. It is nil when there are no
+// elements at all, like Go's (Grow(nil, 0) is nil), and any argument may
+// be nil.
+func slicesConcat() *runtime.BuiltinFunc {
+	const name = "slices.Concat"
+	return &runtime.BuiltinFunc{Name: name, Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		var (
+			typ   *runtime.TypeDef
+			first runtime.Value
+			size  int
+			parts = make([][]runtime.Value, len(args))
+		)
+		for i, a := range args {
+			s, err := sliceParam(name, a)
+			if err != nil {
+				return nil, err
+			}
+			parts[i] = sliceElems(s)
+			size += len(parts[i])
+			if t := sliceParamTyp(s, a); typ == nil && t != nil {
+				typ, first = t, a
+			}
+		}
+		if size == 0 {
+			if typ == nil {
+				return runtime.NIL, nil
+			}
+			return nilSliceLike(first, typ), nil
+		}
+		out := make([]runtime.Value, 0, size)
+		for _, p := range parts {
+			for _, v := range p {
+				out = append(out, runtime.Copy(v))
+			}
+		}
+		return retagSlice(first, &runtime.Slice{Elems: out, Typ: typ}), nil
 	}}
 }
 
