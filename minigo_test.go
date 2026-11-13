@@ -2802,3 +2802,23 @@ func TestHostBoxedWrites(t *testing.T) {
 		t.Errorf("hostboxed (-want +got):\n%s", diff)
 	}
 }
+
+// TestTemplateFuncMap registers script and bound funcs through
+// template.FuncMap under both template bindings. Wants come from
+// `go run ./testdata/funcmap`.
+func TestTemplateFuncMap(t *testing.T) {
+	e := newEngine(t)
+	var got []any
+	for _, fn := range []string{"Text", "Fail", "HTML", "NilFields"} {
+		got = append(got, run(t, e, "./testdata/funcmap", fn))
+	}
+	want := []any{
+		"BOB BOB! a-b 3",
+		`template: t:1:2: executing "t" at <fail>: error calling fail: boom`,
+		"<p><b>&lt;Bob&gt;</b> &lt;bob&gt;</p>",
+		"[] 0",
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("FuncMap (-want +got):\n%s", diff)
+	}
+}

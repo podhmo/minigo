@@ -213,3 +213,23 @@ A と B を `examples/storybook/testdata/app` で組んで測った（8 コア�
 ここで新たに `slices.ContainsFunc` が未 binding（`undefined: slices.ContainsFunc`、TODO の未 binding 一覧に既出）で、`slices.IndexFunc` も nil slice を渡すと `first arg must be a slice` で落ちることが分かった。前者を足し、両方を nil slice で -1 / false を返すよう共通化した。実アプリ寄りに書き直すと、こうした「小さいが確実に踏む」未対応が出てくる。
 
 残り: `template.FuncMap`（次の層）、host の構造体フィールド経由の slice 書き込み（`ce.Args[0] = v`、TODO 既出）、nil の named host map が typed nil にならない件（TODO に分離）。
+
+## 9. 追補: `template.FuncMap`（stack 2 層目）
+
+4.1 で残した `template.FuncMap` を、text/template・html/template の両 binding で使えるようにした。
+
+- `template.FuncMap` は script 側では `map[string]any` の named map として bind する。composite literal はそのまま書ける。
+- `Template.Funcs` に渡るとき（host の `FuncMap` 型への変換時）に、各値を host の func に変換する（`vm.funcMapElem`）。bind 済みの host 関数（`strings.Join` など）はその実体をそのまま渡す。script の関数は宣言のシグネチャから host の func 型を組み立て（`sigHostType`）、`reflect.MakeFunc` で VM に呼び戻す。predeclared な基本型と `error` は Go の型を保つので、`(string, error)` を返す関数のエラーも template のエラーとして伝わる。それ以外の型（script の構造体など）は `any` になる。
+- 可変長引数の関数（`func(sep string, xs ...string) string`）で、host が詰めた最後の slice を script 側へ 1 引数として渡していた不具合も直した（`adaptFunc` で展開する）。
+
+`testdata/funcmap` の 4 関数（bind 済み関数・script 関数・可変長・エラー返却・html/template で `template.HTML` を返す関数・nil フィールド）はネイティブ Go の出力と一致する（`TestTemplateFuncMap`）。
+
+### 9.1 example でも使う
+
+`ListUsers` のテンプレートに `listFuncs`（`"join": strings.Join` と script の `plural`）を足し、`{{plural (len .Users) "user"}}` と `{{join .Tags ", "}}` を書いた。ここでもう 1 つ食い違いが出た: `Tags` が nil のユーザーで、ネイティブは空文字を出すのに、minigo は `wrong type for value; expected []string; got interface {}` になった。script の構造体を host に渡すとフィールドの map に変換されるが、nil の slice が型なしの nil になっていた。host 上の形がわかる nil slice/map は型付きのゼロ値として渡すようにした（`deepHost`。Go でも `any` に入った nil slice は型を持つ）。
+
+### 9.2 残り
+
+- `--src html/template` は init を越えたが、`Template.Parse` で text/template の内部を辿るところで止まる（TODO）。bind 版を使う限りは問題ない。
+- script の型を引数に取る FuncMap 関数は `any` で登録されるので、型の合わない引数を template が渡しても gc のようにエラーにならない（TODO）。
+- 7.4 の評価で「埋める必要がある」とした `template.FuncMap` と host の map への代入・`range` は、どちらも埋まった。次の判断材料は、依存の多い実アプリで 7.2 の編集ループを測り直すこと。

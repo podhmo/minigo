@@ -4641,7 +4641,12 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 			if err != nil {
 				return reflect.Value{}, fmt.Errorf("map key: %w", err)
 			}
-			ev, err := toReflectValue(e, t.Elem(), vc)
+			var ev reflect.Value
+			if funcMapTypes[t] {
+				ev, err = funcMapElem(e, vc)
+			} else {
+				ev, err = toReflectValue(e, t.Elem(), vc)
+			}
 			if err != nil {
 				return reflect.Value{}, fmt.Errorf("map elem: %w", err)
 			}
@@ -5058,13 +5063,24 @@ type hostMarshal struct {
 // deepHost converts a script value for an `any` parameter: containers
 // become real host values (Slice → []any, Map → map[any]any) so the
 // callee can reflect over them; Named and GoValue unwrap; typed nils
-// read as nil; structs marshal to field maps (see structDataHost).
+// read as nil (a nil slice or map with a host shape as its typed zero);
+// structs marshal to field maps (see structDataHost).
 // Everything else — funcs, non-struct pointers — stays verbatim.
 func deepHost(v runtime.Value, vc runtime.VMCaller, h *hostMarshal) runtime.Value {
 	switch x := v.(type) {
 	case nil, runtime.Nil:
 		return nil
-	case *runtime.TypedNil, *runtime.IfaceNil:
+	case *runtime.TypedNil:
+		// a nil slice or map keeps its type in an `any`, as in Go: a
+		// nil []string field reaches text/template's {{join .Tags}} as
+		// a []string, not as a bare nil it cannot pass to the func.
+		if x.Typ != nil && (x.Typ.Kind == runtime.KindSlice || x.Typ.Kind == runtime.KindMap) {
+			if rt := cachedHostShape(vmOf(vc), x.Typ); rt != nil {
+				return reflect.Zero(rt).Interface()
+			}
+		}
+		return nil
+	case *runtime.IfaceNil:
 		return nil
 	case *runtime.UConst:
 		mv, err := materializeDefault(x)
@@ -6348,6 +6364,94 @@ func namedLoadValue(n runtime.Named) *runtime.Named {
 	return &n
 }
 
+// funcMapTypes are host map[string]any types whose values the host
+// requires to be real funcs — text/template's and html/template's
+// FuncMap, which Template.Funcs checks with reflect. Registered at init
+// by the engine's bindings ([RegisterFuncMapType]); read-only after.
+var funcMapTypes = map[reflect.Type]bool{}
+
+// RegisterFuncMapType marks t (a map with `any` values) as a FuncMap:
+// converting a script map to t adapts each script func value to a host
+// func of its own signature. Call it from an init func only.
+func RegisterFuncMapType(t reflect.Type) { funcMapTypes[t] = true }
+
+// funcMapElem converts one FuncMap value. A bound host func hands over
+// its Target; a script func adapts to a host func whose signature comes
+// from its declaration — predeclared basic and error types keep their
+// Go type (so the template engine converts and checks arguments like
+// gc's would), any other parameter or result type is `any`.
+func funcMapElem(x runtime.Value, vc runtime.VMCaller) (reflect.Value, error) {
+	wrap := func(fv reflect.Value) reflect.Value {
+		out := reflect.New(anyType).Elem()
+		out.Set(fv)
+		return out
+	}
+	switch fx := x.(type) {
+	case *runtime.BuiltinFunc:
+		if rv := reflect.ValueOf(fx.Target); rv.Kind() == reflect.Func {
+			return wrap(rv), nil
+		}
+	case *runtime.GoValue:
+		if rv := reflect.ValueOf(fx.V); rv.Kind() == reflect.Func {
+			return wrap(rv), nil
+		}
+	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod:
+		sig, _, _, _ := runtime.FuncSigOf(x)
+		if sig == nil {
+			break
+		}
+		ft := sigHostType(sig)
+		fv, err := adaptFunc(x, ft, vc)
+		if err != nil {
+			return reflect.Value{}, err
+		}
+		return wrap(fv), nil
+	}
+	return reflect.Value{}, fmt.Errorf("FuncMap value %T is not a function", x)
+}
+
+// sigHostType builds a host func type for a script signature: each
+// predeclared basic and `error` keeps its Go type, everything else is
+// `any`. A trailing ...T parameter stays variadic.
+func sigHostType(sig *ast.FuncType) reflect.Type {
+	slot := func(e ast.Expr) reflect.Type {
+		if id, ok := e.(*ast.Ident); ok {
+			if id.Name == "error" {
+				return errorType
+			}
+			if rt := hostBasicTypes[id.Name]; rt != nil {
+				return rt
+			}
+		}
+		return anyType
+	}
+	var in, out []reflect.Type
+	variadic := false
+	if sig.Params != nil {
+		for _, fl := range sig.Params.List {
+			e := fl.Type
+			var rt reflect.Type
+			if el, ok := e.(*ast.Ellipsis); ok {
+				variadic = true
+				rt = reflect.SliceOf(slot(el.Elt))
+			} else {
+				rt = slot(e)
+			}
+			for range max(1, len(fl.Names)) {
+				in = append(in, rt)
+			}
+		}
+	}
+	if sig.Results != nil {
+		for _, fl := range sig.Results.List {
+			for range max(1, len(fl.Names)) {
+				out = append(out, slot(fl.Type))
+			}
+		}
+	}
+	return reflect.FuncOf(in, out, variadic)
+}
+
 // adaptFunc wraps a script callable as a host-typed func so methods taking
 // a func parameter (sync.Once.Do, sort callbacks, WalkDir-style visitors)
 // can invoke it: calls run back on vc — the VM the host call is executing
@@ -6371,9 +6475,17 @@ func adaptFuncOut(x runtime.Value, t reflect.Type, vc runtime.VMCaller, opaque b
 		return reflect.Value{}, fmt.Errorf("cannot use %T as %s", x, t)
 	}
 	fv := reflect.MakeFunc(t, func(in []reflect.Value) []reflect.Value {
-		sargs := make([]runtime.Value, len(in))
+		sargs := make([]runtime.Value, 0, len(in))
 		for i, a := range in {
-			sargs[i] = goSlotValueOf(a)
+			if t.IsVariadic() && i == len(in)-1 {
+				// the host packs a ...T call into one slice; the script
+				// callee collects separate args back into its own ...T.
+				for j := range a.Len() {
+					sargs = append(sargs, goSlotValueOf(a.Index(j)))
+				}
+				continue
+			}
+			sargs = append(sargs, goSlotValueOf(a))
 		}
 		r, err := vc.Call(x, sargs)
 		if err != nil {

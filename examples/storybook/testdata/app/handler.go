@@ -84,11 +84,23 @@ func (h *Handler) Routes() *http.ServeMux {
 	return mux
 }
 
-var listTmpl = template.Must(template.New("list").Parse(`<!doctype html>
+// listFuncs are the view helpers the list template calls.
+var listFuncs = template.FuncMap{
+	"join": strings.Join,
+	"plural": func(n int, word string) string {
+		if n == 1 {
+			return "1 " + word
+		}
+		return strconv.Itoa(n) + " " + word + "s"
+	},
+}
+
+var listTmpl = template.Must(template.New("list").Funcs(listFuncs).Parse(`<!doctype html>
 <html><head><title>users</title></head>
 <body>
 <p class="filters">{{range .Filters}}<code>{{.}}</code> {{end}}</p>
-<ul>{{range .Users}}<li><a href="/users/{{.ID}}">{{.Name}}</a></li>{{else}}<li>no users</li>{{end}}</ul>
+<p>{{plural (len .Users) "user"}}</p>
+<ul>{{range .Users}}<li><a href="/users/{{.ID}}">{{.Name}}</a> <small>{{join .Tags ", "}}</small></li>{{else}}<li>no users</li>{{end}}</ul>
 </body></html>
 `))
 
