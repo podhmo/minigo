@@ -586,6 +586,8 @@ func builtins(e *Engine) *runtime.Env {
 			for i := range m.Elems {
 				m.Elems[i] = zero
 			}
+		case *runtime.TypedNil, *runtime.IfaceNil, runtime.Nil:
+			// clear of a nil map or slice is a no-op
 		case *runtime.GoValue:
 			// a boxed host named map or slice
 			if hc, ok := v.(interface {

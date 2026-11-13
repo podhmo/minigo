@@ -51,7 +51,7 @@ const (
 	// composite access
 	OpSelect   // A: const idx of field/method name; pop base -> push base.name
 	OpSetField // A: const idx of name; pop value, pop base -> base.name = value
-	OpIndex    // pop index, pop base -> push base[index]
+	OpIndex    // pop index, pop base -> push base[index]; B=1: container operand of a nested store or address-of (a boxed host map/slice element stays boxed over its storage)
 	OpIndexOK  // pop index, pop base -> push Tuple{value, ok} (comma-ok map access)
 	OpSetIndex // pop value, pop index, pop base -> base[index] = value
 	OpSlice    // pop hi, pop lo, pop base -> base[lo:hi] (Nil bounds = absent); B=1: pop max first -> base[lo:hi:max]

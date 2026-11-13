@@ -116,4 +116,99 @@ func sortedPairs(q map[string][]string) string {
 	return strings.Join(ps, "&")
 }
 
+// holder keeps a header in a script struct field.
+type holder struct{ H http.Header }
+
+// NestedTuple assigns elements of a header's slice values in tuple
+// assignments: every operand pins the host backing, mixed with script
+// slices and a host slice, and a direct tuple of map elements too.
+func NestedTuple(h http.Header, ip net.IP) string {
+	h["A"][0], h["A"][1] = h["A"][1], h["A"][0]
+	s := fmt.Sprint(h["A"])
+	h["A"][0], h["A"][1] = "p", "q"
+	s += fmt.Sprint(h["A"])
+	h["A"][0], h["B"][0] = "r", "s"
+	s += fmt.Sprint(h["A"], h["B"])
+	loc := []string{"x", "y"}
+	loc[0], h["A"][1] = h["A"][1], loc[0]
+	s += fmt.Sprint(loc, h["A"])
+	h["A"][0], ip[0] = "v", 9
+	ip[1], ip[2] = ip[2], ip[1]
+	h["A"], h["B"] = h["B"], h["A"]
+	return s + fmt.Sprint(h, ip)
+}
+
+// NestedTupleOrder pins the container operand before the stores land:
+// the element write goes to the old slice, the map ends up holding the
+// new one, whichever side comes first.
+func NestedTupleOrder(h http.Header) string {
+	h["A"][0], h["A"] = "v", []string{"n0", "n1"}
+	s := fmt.Sprint(h["A"])
+	h["B"], h["B"][0] = []string{"m0"}, "w"
+	return s + fmt.Sprint(h["B"])
+}
+
+// NestedTupleMissing writes into the nil slice of a missing key in a
+// tuple: the first store panics and the second never runs.
+func NestedTupleMissing(h http.Header) (msg string) {
+	defer func() { msg = fmt.Sprint(recover(), h["A"]) }()
+	h["nope"][0], h["A"][0] = "x", "y"
+	return ""
+}
+
+// NestedContainers writes nested elements reached through a pointer to
+// a host struct, a script struct field, a slice and a map of headers,
+// both singly and in tuples.
+func NestedContainers(h http.Header) string {
+	r := &http.Request{Header: h}
+	r.Header["A"][0] = "r0"
+	r.Header["A"][1], r.Header["B"][0] = "r1", "rb"
+	s := fmt.Sprint(h)
+	w := holder{h}
+	w.H["A"][0] = "w0"
+	w.H["A"][1], w.H["B"][0] = "w1", "wb"
+	s += fmt.Sprint(h)
+	hs := []http.Header{h}
+	hs[0]["A"][0] = "s0"
+	hs[0]["A"][1], hs[0]["B"][0] = "s1", "sb"
+	s += fmt.Sprint(h)
+	m := map[string]http.Header{"k": h}
+	m["k"]["A"][0] = "m0"
+	m["k"]["A"][1], m["k"]["B"][0] = "m1", "mb"
+	return s + fmt.Sprint(h)
+}
+
+// NestedPtr writes through a pointer to the host map and slice: element
+// stores, tuples, compound assignment, and the address of an element.
+func NestedPtr(h http.Header, ip net.IP) string {
+	p := &h
+	(*p)["A"][0] = "v"
+	(*p)["A"][1] += "!"
+	(*p)["B"][0], (*p)["A"][0] = (*p)["A"][0], "t"
+	(*p)["Z"] = []string{"z"}
+	s := fmt.Sprint(h)
+	q := &ip
+	(*q)[1] = 9
+	(*q)[2], (*q)[3] = (*q)[3], (*q)[2]
+	s += fmt.Sprint(ip)
+	e := &h["A"][0]
+	*e = "e"
+	*e += "+"
+	f := &ip[0]
+	*f += 5
+	*f++
+	g, k := &ip[1], &ip[2]
+	*g, *k = *k, *g
+	return s + fmt.Sprint(h["A"], ip, *e, *f)
+}
+
+// NestedAddrMissing takes the address of an element of a missing key's
+// nil slice: the write through it panics like the index does.
+func NestedAddrMissing(h http.Header) (msg string) {
+	defer func() { msg = fmt.Sprint(recover()) }()
+	p := &h["nope"][0]
+	*p = "x"
+	return ""
+}
+
 func main() {}

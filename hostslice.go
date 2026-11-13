@@ -30,8 +30,8 @@ func hostSliceBase(x runtime.Value) (runtime.Value, bool) {
 	case *runtime.IfaceNil:
 		td = n.Typ
 	}
-	rt := vm.HostNilSliceType(td)
-	if rt == nil {
+	rt := vm.HostNilType(td)
+	if rt == nil || rt.Kind() != reflect.Slice {
 		return nil, false
 	}
 	zero := &runtime.GoValue{V: reflect.Zero(rt).Interface()}

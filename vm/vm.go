@@ -2675,7 +2675,11 @@ func (v *VM) loop(f *frame) {
 		case bytecode.OpIndex:
 			idx := f.pop()
 			base := f.pop()
-			f.push(v.index(f, base, idx))
+			if ins.B == 1 {
+				f.push(v.indexAlias(f, base, idx))
+			} else {
+				f.push(v.index(f, base, idx))
+			}
 		case bytecode.OpIndexOK:
 			idx := f.pop()
 			base := f.pop()
@@ -2758,6 +2762,13 @@ func (v *VM) loop(f *frame) {
 						if tn.Typ.Kind == runtime.KindPointer {
 							panic(runtime.NilDerefPanic())
 						}
+					}
+					// `*p += 1` after `p := &ip[1]` on a boxed host
+					// slice: the element ref only resolves through the
+					// VM's own reads, as the plain IndexRef read above.
+					if ev, ok := v.readElemRef(f, pv); ok {
+						f.push(ev)
+						break
 					}
 				}
 				f.trap("deref of non-pointer %T", x)
@@ -3954,7 +3965,7 @@ func uncontendedLock(hv any, name string) func() bool {
 // reflect type is *U where U is the element typedef's boxed value type
 // — a HostNew that returns a pointer already is the *T box.
 func (v *VM) hostNilMethod(td *runtime.TypeDef, name string) (runtime.Value, bool) {
-	if rt := HostNilSliceType(td); rt != nil {
+	if rt := HostNilType(td); rt != nil {
 		// a nil named host slice ([HostNil]): IP's methods on nil IP
 		return hostZeroMethod(rt, name)
 	}
@@ -4181,6 +4192,14 @@ func goValueOf(rv reflect.Value) runtime.Value {
 					el[i] = goValueOf(rv.Index(i))
 				}
 				return &runtime.Slice{Elems: el, Typ: td}
+			}
+		case reflect.Map:
+			if rv.IsNil() && rv.Type().Name() != "" {
+				// a nil named host map (a request's Form, Trailer) is a
+				// typed nil of the host type, like a nil named slice
+				if tn := HostNil(rv.Type()); tn != nil {
+					return tn
+				}
 			}
 		case reflect.Array:
 			if rv.Type().Name() == "" {
@@ -5074,6 +5093,10 @@ func deepHost(v runtime.Value, vc runtime.VMCaller, h *hostMarshal) runtime.Valu
 		// a nil slice or map keeps its type in an `any`, as in Go: a
 		// nil []string field reaches text/template's {{join .Tags}} as
 		// a []string, not as a bare nil it cannot pass to the func.
+		if rt := HostNilType(x.Typ); rt != nil {
+			// a nil named host map or slice (a request's Form, net.IP)
+			return reflect.Zero(rt).Interface()
+		}
 		if x.Typ != nil && (x.Typ.Kind == runtime.KindSlice || x.Typ.Kind == runtime.KindMap) {
 			if rt := cachedHostShape(vmOf(vc), x.Typ); rt != nil {
 				return reflect.Zero(rt).Interface()
@@ -5083,6 +5106,9 @@ func deepHost(v runtime.Value, vc runtime.VMCaller, h *hostMarshal) runtime.Valu
 	case *runtime.IfaceNil:
 		// `var a any = s` with a nil s []string: the same typed zero
 		// (coerce turns the TypedNil into a concretely tagged IfaceNil).
+		if rt := HostNilType(x.Typ); rt != nil {
+			return reflect.Zero(rt).Interface()
+		}
 		if x.Typ != nil && (x.Typ.Kind == runtime.KindSlice || x.Typ.Kind == runtime.KindMap) {
 			if rt := cachedHostShape(vmOf(vc), x.Typ); rt != nil {
 				return reflect.Zero(rt).Interface()
@@ -7172,6 +7198,56 @@ func (v *VM) hostElemRef(f *frame, b *runtime.GoValue, idx runtime.Value) (runti
 	return &runtime.GoValue{V: ev.Interface()}, true
 }
 
+// hostBoxOf peels the pointers, refs and names off v to the boxed host
+// value behind it (a *Cell holding an http.Header reads as the header).
+// The walk is bounded so a pointer cycle cannot spin.
+func hostBoxOf(v runtime.Value) (*runtime.GoValue, bool) {
+	for range 8 {
+		switch x := v.(type) {
+		case *runtime.GoValue:
+			return x, true
+		case *runtime.Named:
+			v = x.V
+			continue
+		}
+		dv, ok := runtime.Deref(v)
+		if !ok {
+			return nil, false
+		}
+		v = dv
+	}
+	return nil, false
+}
+
+// indexAlias is v.index for the container operand of a nested store or
+// address-of (`h[k][i] = v`, `&h[k][i]`, a tuple assignment's pinned
+// operand): when base is a boxed host map or slice whose element is a
+// slice or map, the element stays boxed over its host storage — the
+// plain read hands back a script copy a write would not survive. Any
+// other base reads as v.index does.
+func (v *VM) indexAlias(f *frame, base, idx runtime.Value) runtime.Value {
+	if gv, ok := hostBoxOf(base); ok {
+		if ev, ok := v.hostElemRef(f, gv, idx); ok {
+			return ev
+		}
+	}
+	return v.index(f, base, idx)
+}
+
+// readElemRef reads the element or field a pointer value names when only
+// the VM's own reads resolve it — IndexRef.Get and FieldRef.Get know
+// script storage alone, not a boxed host slice. ok is false for any
+// other pointer.
+func (v *VM) readElemRef(f *frame, ptr runtime.Value) (runtime.Value, bool) {
+	switch r := ptr.(type) {
+	case *runtime.IndexRef:
+		return v.index(f, r.Base, r.Key), true
+	case *runtime.FieldRef:
+		return v.selectMember(f, r.Base, r.Name), true
+	}
+	return nil, false
+}
+
 // HostMapDelete runs the delete builtin on a boxed host map; ok is false
 // when m does not hold a map.
 func (v *VM) HostMapDelete(m *runtime.GoValue, key runtime.Value) (ok bool) {
@@ -8218,10 +8294,11 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 		if bx == nil {
 			bx = b.Base
 		}
-		if gv, ok := bx.(*runtime.GoValue); ok {
+		if gv, ok := hostBoxOf(bx); ok {
 			// q["tag"][0] = v on a boxed host map or slice: write the
 			// host element's own backing, not the script copy
-			// v.index would hand back.
+			// v.index would hand back. A base reached through a
+			// pointer ((*p)["tag"][0] = v) peels to its box first.
 			if ev, ok := v.hostElemRef(f, gv, b.Key); ok {
 				v.setIndex(f, ev, rawIdx, val)
 				return
@@ -11913,6 +11990,8 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 			// a nil interface value equals nil; a typed nil boxed in
 			// an interface does not.
 			return runtime.IfaceTaggedNil(bi) != nil
+		case *runtime.GoValue:
+			return hostBoxIsNil(bi)
 		}
 		return false
 	}
@@ -12008,6 +12087,12 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 		}
 		return false
 	case *runtime.GoValue:
+		// a nil map or slice the embedder handed in as a box (a nil
+		// http.Header, net.IP) equals nil, like the typed nil a host
+		// call result reads as.
+		if _, isNil := b.(runtime.Nil); isNil {
+			return hostBoxIsNil(av)
+		}
 		// host values compare by underlying identity: two wrappers
 		// around the same object (e.g. the io.EOF sentinel) are equal.
 		if bg, ok := b.(*runtime.GoValue); ok {
@@ -12075,6 +12160,17 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 		return false
 	}
 	return a == b // pointers, strings, bools
+}
+
+// hostBoxIsNil reports whether a boxed host value holds a nil map,
+// slice, pointer, chan or func.
+func hostBoxIsNil(gv *runtime.GoValue) bool {
+	rv := reflect.ValueOf(gv.V)
+	switch rv.Kind() {
+	case reflect.Map, reflect.Slice, reflect.Pointer, reflect.Chan, reflect.Func:
+		return rv.IsNil()
+	}
+	return false
 }
 
 // refBase unwraps a ref's base to the identity object pointer
@@ -14126,8 +14222,8 @@ func (v *VM) typeMatchesTD(f *frame, td, dyn *runtime.TypeDef) bool {
 		// containerAssert.
 		return true
 	}
-	if HostNilPtrType(dyn) != nil || (dyn.Kind == runtime.KindSlice && dyn.HostIdent != nil) {
-		// a nil host *T (or named host slice, net.IP) asserts to its
+	if HostNilPtrType(dyn) != nil || ((dyn.Kind == runtime.KindSlice || dyn.Kind == runtime.KindMap) && dyn.HostIdent != nil) {
+		// a nil host *T (or named host slice or map, net.IP) asserts to its
 		// source twin's type (or to the bound one) by identity, like
 		// a non-nil host box.
 		return v.hostTwinIs(f, dyn, td)
@@ -14259,7 +14355,7 @@ func (v *VM) memberOfType(f *frame, td *runtime.TypeDef, name string, recv runti
 		}
 		panic(runtime.NilDerefPanic())
 	}
-	if nt, ok := asTypedNil(rv); ok && HostNilSliceType(nt.Typ) != nil {
+	if nt, ok := asTypedNil(rv); ok && HostNilType(nt.Typ) != nil {
 		// a nil named host slice (net.IP) dispatches its value
 		// methods on the nil receiver, as in Go
 		if bf, ok := v.hostNilMethod(nt.Typ, name); ok {
@@ -14567,19 +14663,21 @@ func (v *VM) hostNilTwin(a, b *runtime.TypeDef) bool {
 		return v.hostTwinIs(nil, a, b)
 	case HostNilPtrType(b) != nil:
 		return v.hostTwinIs(nil, b, a)
-	case hostNilSliceIdent(a):
-		// a nil net.IP from net.ParseIP against a script zero net.IP
+	case hostNilIdent(a):
+		// a nil net.IP from net.ParseIP against a script zero net.IP (or a
+		// nil url.Values against a script zero one)
 		return v.hostTwinIs(nil, a, b)
-	case hostNilSliceIdent(b):
+	case hostNilIdent(b):
 		return v.hostTwinIs(nil, b, a)
 	}
 	return false
 }
 
-// hostNilSliceIdent reports whether td is the typedef [HostNil] mints for
-// a nil named host slice (net.IP): a slice kind carrying the host identity.
-func hostNilSliceIdent(td *runtime.TypeDef) bool {
-	return td != nil && td.Kind == runtime.KindSlice && td.HostIdent != nil && td.Spec == nil
+// hostNilIdent reports whether td is the typedef [HostNil] mints for a
+// nil named host slice or map (net.IP, url.Values): a slice or map kind
+// carrying the host identity.
+func hostNilIdent(td *runtime.TypeDef) bool {
+	return td != nil && (td.Kind == runtime.KindSlice || td.Kind == runtime.KindMap) && td.HostIdent != nil && td.Spec == nil
 }
 
 // unresolvedSpells reports whether src, an anonymous *T typedef whose T
@@ -17377,7 +17475,8 @@ func HostNilPtrTypedef(rt reflect.Type) *runtime.TypeDef {
 var hostNils sync.Map // reflect.Type -> *runtime.TypedNil
 
 // HostNil is the typed nil a nil host value of type rt reads as: a nil
-// *T of a named host type ([HostNilPtrTypedef]), or a nil chan, func or
+// *T of a named host type ([HostNilPtrTypedef]), a nil named host slice
+// or map (net.IP, url.Values), or a nil chan, func or
 // pointer of an unnamed type spelled from predeclared types only
 // (`<-chan struct{}` from context.Background().Done(), exec.Cmd's
 // `func() error` Cancel, `*int`). It compares equal to nil but keeps
@@ -17391,7 +17490,7 @@ func HostNil(rt reflect.Type) *runtime.TypedNil {
 	var tn *runtime.TypedNil
 	if td := HostNilPtrTypedef(rt); td != nil {
 		tn = &runtime.TypedNil{Typ: td}
-	} else if rt.Kind() == reflect.Slice && rt.Name() != "" && rt.PkgPath() != "" {
+	} else if (rt.Kind() == reflect.Slice || rt.Kind() == reflect.Map) && rt.Name() != "" && rt.PkgPath() != "" {
 		tn = &runtime.TypedNil{Typ: hostPkgElemTypedef(rt)}
 	} else if rt.Name() == "" && (rt.Kind() == reflect.Chan || rt.Kind() == reflect.Func || rt.Kind() == reflect.Pointer) &&
 		universeSpelled(rt) {
@@ -17439,18 +17538,19 @@ func universeSpelled(rt reflect.Type) bool {
 	return false
 }
 
-// HostNilSliceType reports the named host slice type a nil of type td
-// holds: the typedef [HostNil] mints for one (net.IP), or a bound host
-// type (hostType) whose zero is a slice. nil for any other typedef.
-func HostNilSliceType(td *runtime.TypeDef) reflect.Type {
+// HostNilType reports the named host slice or map type a nil of type td
+// holds: the typedef [HostNil] mints for one (net.IP, url.Values), or a
+// bound host type (hostType) whose zero is a slice or map. nil for any
+// other typedef.
+func HostNilType(td *runtime.TypeDef) reflect.Type {
 	if td == nil || td.Spec != nil {
 		return nil
 	}
-	if td.Kind == runtime.KindSlice && td.HostIdent != nil {
+	if (td.Kind == runtime.KindSlice || td.Kind == runtime.KindMap) && td.HostIdent != nil {
 		return td.HostIdent
 	}
 	if td.HostNew != nil {
-		if rt := td.HostType(); rt != nil && rt.Kind() == reflect.Slice && rt.Name() != "" {
+		if rt := td.HostType(); rt != nil && (rt.Kind() == reflect.Slice || rt.Kind() == reflect.Map) && rt.Name() != "" {
 			return rt
 		}
 	}
