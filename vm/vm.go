@@ -8665,6 +8665,10 @@ func (v *VM) compositeOf(f *frame, td *runtime.TypeDef, n int, kv bool, raw []ru
 		// exported fields of the host struct through reflection
 		// (`&sync.Pool{New: f}`).
 		hv := td.HostNew()
+		if rt := reflect.TypeOf(hv); rt != nil && rt.Kind() == reflect.Slice {
+			// a bound named slice (net.IP{1, 2, 3, 4})
+			return v.hostSliceLiteral(f, td, rt, n, kv, raw)
+		}
 		if n > 0 {
 			if !kv {
 				v.initHostPositional(f, td, hv, raw[:n])
@@ -11045,6 +11049,8 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 	// (reflect.Kind and friends) so an arithmetic result can be re-boxed
 	// into the same type — `reflect.Int + 1` stays a reflect.Kind.
 	var numTag reflect.Type
+	var strTag reflect.Type
+	var strBoxed bool
 	if g, ok := a.(*runtime.GoValue); ok {
 		if u, isU := g.V.(uint64); isU {
 			a = int64(u)
@@ -11072,8 +11078,31 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 			}
 		}
 	}
+	// a host named string (template.HTML) operates as its underlying
+	// string — boxed, or raw under a Named tag. A boxed operand's
+	// string result is boxed back into the host type, as in Go.
+	// (the int64 check keeps the common arithmetic path call-free)
+	if _, isInt := a.(int64); !isInt {
+		if hs, ok := hostStrOperand(a); ok {
+			a = hs.s
+			strTag, strBoxed = hs.rt, hs.boxed
+		}
+	}
+	if _, isInt := b.(int64); !isInt {
+		if hs, ok := hostStrOperand(b); ok {
+			if strTag != nil && hs.rt != strTag {
+				f.trap("invalid operation: mismatched types %s and %s", strTag, hs.rt)
+			}
+			b = hs.s
+			strTag, strBoxed = hs.rt, strBoxed || hs.boxed
+		}
+	}
 	if s, ok := a.(string); ok {
-		return stringBinOp(f, op, s, b)
+		res := stringBinOp(f, op, s, b)
+		if rs, isStr := res.(string); isStr && strBoxed {
+			return &runtime.GoValue{V: reflect.ValueOf(rs).Convert(strTag).Interface()}
+		}
+		return res
 	}
 	if isFloat(a) || isFloat(b) {
 		return floatBinOp(f, op, toFloat(a), toFloat(b))
@@ -11126,6 +11155,31 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 	}
 	f.trap("unsupported types: %T %s %T", a, op, b)
 	return nil
+}
+
+// hostString is a host named string operand read as a plain string.
+type hostString struct {
+	s     string
+	rt    reflect.Type
+	boxed bool // carried in a GoValue (else a raw payload under a Named tag)
+}
+
+// hostStrOperand reads a host named string (template.HTML) — boxed in
+// a GoValue, or raw — as its string. Plain strings and the script's own
+// scalars are not host strings.
+func hostStrOperand(x runtime.Value) (hs hostString, ok bool) {
+	switch g := x.(type) {
+	case string, int64, float64, bool, nil:
+		return hs, false
+	case *runtime.GoValue:
+		x, hs.boxed = g.V, true
+	}
+	rv := reflect.ValueOf(x)
+	if rv.Kind() != reflect.String || rv.Type() == reflect.TypeFor[string]() {
+		return hs, false
+	}
+	hs.s, hs.rt = rv.String(), rv.Type()
+	return hs, true
 }
 
 // uintOperand reads an int-domain runtime value as uint64: int64s carry
@@ -12409,11 +12463,13 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 	// is 2^63, not -2^63).
 	srcUnsigned := false
 	srcUnsafe := false
+	peeled := false
 	for {
 		n, ok := x.(*runtime.Named)
 		if !ok {
 			break
 		}
+		peeled = true
 		if sameTypeDef(n.Typ, td) {
 			return x, nil
 		}
@@ -12430,9 +12486,25 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 	if tn, isTN := asTypedNil(x); isTN && v.unsafePtrTd(tn.Typ) {
 		srcUnsafe = true
 	}
+	// a bound host slice type (net.IP) converts from a host slice, a
+	// script slice or a string without unboxing its source first.
+	if r, ok, err := v.hostSliceConv(td, x); ok || err != nil {
+		return r, err
+	}
 	// a host value unboxes so its concrete value converts like a script
 	// value of the same shape (a []byte arriving boxed becomes a slice).
 	x = unboxGoValue(x)
+	if peeled {
+		// a tagged host named string (template.HTML("x")) holds its raw
+		// host payload; it converts as the plain string.
+		switch x.(type) {
+		case int64, float64, string, bool:
+		default:
+			if rv := reflect.ValueOf(x); rv.Kind() == reflect.String && rv.Type() != reflect.TypeFor[string]() {
+				x = rv.String()
+			}
+		}
+	}
 	if u, ok := x.(*runtime.UConst); ok {
 		// a peeled typed constant converts in the constant domain like a
 		// direct T(c) — `float64(int64(0))` stays a constant.
@@ -12800,11 +12872,18 @@ func stringFromInt(sx int64) string {
 
 // unboxGoValue gives a boxed host value the script value of the same
 // shape where one exists, so `[]byte(x)` and `string(x)` see through a
-// GoValue carrying []byte, []rune or string. Other shapes stay boxed.
+// GoValue carrying []byte, []rune or string — or a named type of those
+// kinds (net.IP, template.HTML). Other shapes stay boxed.
 func unboxGoValue(x runtime.Value) runtime.Value {
 	gv, ok := x.(*runtime.GoValue)
 	if !ok {
 		return x
+	}
+	if rv := reflect.ValueOf(gv.V); rv.Kind() == reflect.String && rv.Type() != reflect.TypeFor[string]() {
+		return rv.String()
+	}
+	if s, ok := UnboxHostSlice(gv); ok {
+		return s
 	}
 	switch h := gv.V.(type) {
 	case string:
@@ -13366,6 +13445,11 @@ func (v *VM) popArgsBuf(f *frame, argc int, mode int, pos token.Pos, args []runt
 		var declared *runtime.TypeDef
 		if dv, ok := runtime.Deref(last); ok {
 			last = dv
+		}
+		if sv, ok := UnboxHostSlice(last); ok {
+			// a boxed host slice (net.IP) spreads as its elements; the
+			// callee sees a copy, not the host backing
+			last = sv
 		}
 		if in, ok := last.(*runtime.IfaceNil); ok {
 			last = &runtime.TypedNil{Typ: in.Typ}
