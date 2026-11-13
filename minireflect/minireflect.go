@@ -686,11 +686,35 @@ func (e *Env) makeFunc(vc runtime.VMCaller, args []runtime.Value) (runtime.Value
 	if kindOfValue(callee) != reflect.Func {
 		panic(&runtime.Panic{Value: "reflect: MakeFunc: fn must be a function"})
 	}
+	// A variadic signature hands the callback its variadic tail as ONE
+	// []T Value — nil when a direct call passes no extras, the caller's
+	// own slice for `f(xs...)` — never as flat arguments.
+	numIn := t.NumIn()
+	variadic := t.IsVariadic()
+	var sliceT, elemT *RType
+	if variadic {
+		sliceT = t.In(numIn - 1)
+		elemT = sliceT.Elem()
+	}
 	var produced *RValue
 	bf := &runtime.BuiltinFunc{
-		Name: "MakeFunc",
+		Name: makeFuncName,
+		// a trailing `xs...` must reach the callback as the caller's
+		// slice, not a copy, so the VM keeps the Spread marker.
+		Forwards: variadic,
 		Fn: func(callVc runtime.VMCaller, cargs []runtime.Value) (runtime.Value, error) {
-			inSlice := &runtime.Slice{Elems: make([]runtime.Value, len(cargs))}
+			// spread is the variadic slice itself when the call carried
+			// `xs...` (Value.Call/CallSlice pack one the same way); a
+			// marker anywhere else is not valid Go.
+			var spread *runtime.Slice
+			if n := len(cargs); variadic && n > 0 {
+				if sp, ok := cargs[n-1].(*runtime.Spread); ok {
+					if n != numIn {
+						return nil, fmt.Errorf("reflect.MakeFunc: unsupported spread argument")
+					}
+					spread, cargs = sp.S, cargs[:n-1]
+				}
+			}
 			ins := make([]*RValue, len(cargs))
 			for i, a := range cargs {
 				var rv *RValue
@@ -698,18 +722,43 @@ func (e *Env) makeFunc(vc runtime.VMCaller, args []runtime.Value) (runtime.Value
 					// bare script values borrow the declared param type
 					// so the signature check sees `func()` not `<unnamed>`.
 					var pt *runtime.TypeDef
-					if rt := t.In(i); rt != nil {
-						pt = rt.td
+					switch {
+					case variadic && i >= numIn-1:
+						pt = elemT.td
+					case i < numIn:
+						if rt := t.In(i); rt != nil {
+							pt = rt.td
+						}
 					}
-					rv = e.wrap(callVc, a, nil, pt)
+					rv = e.wrap(callVc, materializeArg(callVc, a, pt), nil, pt)
 				}
 				ins[i] = rv
-				inSlice.Elems[i] = &runtime.GoValue{V: rv}
 			}
-			if produced != nil {
+			// args is the callback's argument list: the variadic extras
+			// fold into the one slice Value of the declared []T param.
+			args := ins
+			if spread == nil && produced != nil {
 				// Go's MakeFunc'd funcs enforce the declared signature —
 				// `reflect: Call with too few/too many input arguments`.
 				produced.checkCallArgs(ins, false)
+			}
+			if variadic {
+				fixed, tail := ins, ins[len(ins):]
+				if spread == nil {
+					if len(ins) < numIn-1 {
+						return nil, fmt.Errorf("reflect.MakeFunc: got %d arguments, want at least %d", len(ins), numIn-1)
+					}
+					fixed, tail = ins[:numIn-1], ins[numIn-1:]
+				}
+				packed := e.packVariadic(callVc, sliceT, tail, spread)
+				args = append(fixed[:len(fixed):len(fixed)], packed)
+				if spread != nil && produced != nil {
+					produced.checkCallArgs(args, true)
+				}
+			}
+			inSlice := &runtime.Slice{Elems: make([]runtime.Value, len(args))}
+			for i, rv := range args {
+				inSlice.Elems[i] = &runtime.GoValue{V: rv}
 			}
 			r, err := callVc.Call(callee, []runtime.Value{inSlice})
 			if err != nil {
@@ -765,6 +814,81 @@ func (e *Env) makeFunc(vc runtime.VMCaller, args []runtime.Value) (runtime.Value
 	}
 	produced = e.wrap(vc, bf, nil, t.td)
 	return &runtime.GoValue{V: produced}, nil
+}
+
+// materializeArg gives an untyped constant argument of a MakeFunc'd call
+// (`f("a", 1)`) the declared parameter type — or its default type for
+// an interface or unresolved parameter — so the callback's typed
+// accessors (String, Int, Len) read a value, not the constant box.
+func materializeArg(vc runtime.VMCaller, a runtime.Value, td *runtime.TypeDef) runtime.Value {
+	u, ok := a.(*runtime.UConst)
+	if !ok {
+		return a
+	}
+	if td != nil && td.Kind != runtime.KindInterface {
+		if cv, err := vc.Convert(td, a); err == nil {
+			return cv
+		}
+	}
+	if x, err := runtime.UConstNative(u); err == nil {
+		return normVal(x)
+	}
+	return a
+}
+
+// makeFuncName names the BuiltinFunc reflect.MakeFunc produces, so
+// Value.Call/CallSlice can tell a variadic one that takes its tail as
+// a Spread marker (see [Env.makeFunc]).
+const makeFuncName = "MakeFunc"
+
+// packVariadic builds the single []T Value a variadic MakeFunc'd func's
+// callback gets for its variadic parameter (sliceT): the caller's own
+// slice when the call spread one (`f(xs...)`, CallSlice — the callback
+// aliases it, as in Go), else a fresh slice of the extra arguments in
+// tail, nil when there are none (a direct call `f(a)` passes a nil
+// slice).
+func (e *Env) packVariadic(vc runtime.VMCaller, sliceT *RType, tail []*RValue, spread *runtime.Slice) *RValue {
+	if sliceT.rt != nil {
+		// host-typed signature (reflect.TypeOf(fmt.Sprintf)): the
+		// callback sees a real host slice.
+		var xs []any
+		if spread != nil {
+			if spread.Virtual() {
+				trap("MakeFunc: cannot pass a zero-size-element slice to a host-typed signature")
+			}
+			xs = append(xs, spread.Elems...)
+		} else {
+			for _, rv := range tail {
+				xs = append(xs, rv.ifaceVal())
+			}
+		}
+		if spread == nil && len(xs) == 0 {
+			return e.wrapHost(vc, reflect.Zero(sliceT.rt))
+		}
+		hv := reflect.MakeSlice(sliceT.rt, len(xs), len(xs))
+		for i, x := range xs {
+			hx, err := toHost(x, sliceT.rt.Elem(), e)
+			if err != nil {
+				trap("MakeFunc: %s", err)
+			}
+			hv.Index(i).Set(hx)
+		}
+		return e.wrapHost(vc, hv)
+	}
+	var val runtime.Value
+	switch {
+	case spread != nil:
+		val = spread
+	case len(tail) == 0:
+		val = &runtime.TypedNil{Typ: sliceT.td}
+	default:
+		elems := make([]runtime.Value, len(tail))
+		for i, rv := range tail {
+			elems[i] = normVal(rv.ifaceVal())
+		}
+		val = &runtime.Slice{Elems: elems, Typ: sliceT.td}
+	}
+	return e.wrap(vc, val, nil, sliceT.td)
 }
 
 func (e *Env) makeSlice(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
