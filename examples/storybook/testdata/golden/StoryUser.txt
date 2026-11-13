@@ -1,0 +1,9 @@
+200 text/html; charset=utf-8
+
+<!doctype html>
+<html><head><title>Alice</title></head>
+<body>
+<h1><span class="avatar">A</span> Alice <b class="badge">staff</b></h1>
+<ul><li>admin</li><li>go</li></ul>
+<a href="/users/1?tab=Alice">permalink</a>
+</body></html>

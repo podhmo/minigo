@@ -9,6 +9,8 @@ import (
 	"go/parser"
 	"go/token"
 	"math"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -201,11 +203,10 @@ func TestCallArgs(t *testing.T) {
 		t.Errorf("Empty: got %v (%T)", got, got)
 	}
 	// a named map keeps its box — member dispatch lives there, the same
-	// rule named host slices follow — so indexing it still traps at the
-	// use site.
+	// rule named host slices follow — and indexing reads through it.
 	type hostNamedMap map[string]int
-	if _, err := e.Run(context.Background(), "./testdata/callargs", "MapGet", hostNamedMap{"k": 7}); err == nil {
-		t.Errorf("MapGet(named): want error, got nil")
+	if got := run(t, e, "./testdata/callargs", "MapGet", hostNamedMap{"k": 7}); got != int64(7) {
+		t.Errorf("MapGet(named): got %v (%T)", got, got)
 	}
 	// the same boundary holds inside composite args: a named host map
 	// in an `any` slot keeps its box — only anonymous shapes unbox.
@@ -2728,5 +2729,38 @@ func TestDirWalkSkipsCgo(t *testing.T) {
 	if _, err := e.Package(ctx, only); err == nil ||
 		!strings.Contains(err.Error(), "cgo") {
 		t.Fatalf("all-cgo dir must fail naming cgo: got %v", err)
+	}
+}
+
+// TestHTMLTemplateBound runs the bound html/template: script struct
+// data escapes by context, script methods and template.HTML values work,
+// and Must panics with the parse error.
+func TestHTMLTemplateBound(t *testing.T) {
+	e := newEngine(t)
+	got := []any{
+		run(t, e, "./testdata/htmltmpl", "Render"),
+		run(t, e, "./testdata/htmltmpl", "ParseError"),
+	}
+	want := []any{
+		`<p title="&lt;bob&gt;">&lt; &lt;bob&gt; <b>x</b></p>|a&amp;b`,
+		"template: bad:1: unclosed action",
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("html/template (-want +got):\n%s", diff)
+	}
+}
+
+// TestHostNamedMapIndex indexes a boxed host named map (url.Values as
+// http.Request.URL.Query() hands it over): plain and comma-ok reads.
+func TestHostNamedMapIndex(t *testing.T) {
+	e := newEngine(t)
+	q := url.Values{"tag": {"a", "b"}, "name": {"x"}}
+	got := run(t, e, "./testdata/htmltmpl", "HostQuery", &runtime.GoValue{V: q})
+	if diff := cmp.Diff("a,b|x|TF", got); diff != "" {
+		t.Errorf("HostQuery (-want +got):\n%s", diff)
+	}
+	got = run(t, e, "./testdata/htmltmpl", "HostSliceOOB", &runtime.GoValue{V: net.IP{1, 2, 3, 4}})
+	if diff := cmp.Diff("runtime error: index out of range [18446744073709551615] with length 4", got); diff != "" {
+		t.Errorf("HostSliceOOB (-want +got):\n%s", diff)
 	}
 }
