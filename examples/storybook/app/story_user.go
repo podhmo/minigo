@@ -4,9 +4,11 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"html/template"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 )
 
@@ -31,42 +33,57 @@ var users = fakeStore{
 }
 
 // StoryUser renders the user page with a fixed user.
-func StoryUser(w http.ResponseWriter, r *http.Request) {
-	RenderUser(w, users["1"])
+func StoryUser() {
+	rec := httptest.NewRecorder()
+	RenderUser(rec, users["1"])
+	fmt.Print(rec.Body.String())
 }
 
 // StoryUserEscaped shows that a hostile name is escaped.
-func StoryUserEscaped(w http.ResponseWriter, r *http.Request) {
-	RenderUser(w, users["2"])
+func StoryUserEscaped() {
+	rec := httptest.NewRecorder()
+	RenderUser(rec, users["2"])
+	fmt.Print(rec.Body.String())
 }
 
-// StoryUserFromQuery takes the name from ?name=, like a story control.
-func StoryUserFromQuery(w http.ResponseWriter, r *http.Request) {
-	name := r.URL.Query().Get("name")
-	if name == "" {
-		name = "(set ?name=)"
-	}
-	RenderUser(w, &User{ID: "q", Name: name, Tags: r.URL.Query()["tag"]})
+// StoryUserFromQuery renders data read from a fixed request query.
+func StoryUserFromQuery() {
+	req := httptest.NewRequest(http.MethodGet, "/?name=Bob&tag=x&tag=%3Cy%3E", nil)
+	rec := httptest.NewRecorder()
+	RenderUser(rec, &User{ID: "q", Name: req.URL.Query().Get("name"), Tags: req.URL.Query()["tag"]})
+	fmt.Print(rec.Body.String())
 }
 
-// StoryShowUser runs the whole handler against the dummy store.
-func StoryShowUser(w http.ResponseWriter, r *http.Request) {
-	r.SetPathValue("id", "1")
-	(&Handler{Store: users}).ShowUser(w, r)
+// StoryShowUser calls the handler with a successful lookup.
+func StoryShowUser() {
+	req := httptest.NewRequest(http.MethodGet, "/users/1", nil)
+	req.SetPathValue("id", "1")
+	rec := httptest.NewRecorder()
+	(&Handler{Store: users}).ShowUser(rec, req)
+	fmt.Print(rec.Body.String())
 }
 
-// StoryShowUserNotFound runs the handler's error path.
-func StoryShowUserNotFound(w http.ResponseWriter, r *http.Request) {
-	r.SetPathValue("id", "404")
-	(&Handler{Store: users}).ShowUser(w, r)
+// StoryShowUserNotFound prints the response body of the handler's error path.
+func StoryShowUserNotFound() {
+	req := httptest.NewRequest(http.MethodGet, "/users/404", nil)
+	req.SetPathValue("id", "404")
+	rec := httptest.NewRecorder()
+	(&Handler{Store: users}).ShowUser(rec, req)
+	fmt.Print(rec.Body.String())
 }
 
-// StoryListUsers lists every user, default order.
-func StoryListUsers(w http.ResponseWriter, r *http.Request) {
-	(&Handler{Store: users}).ListUsers(w, r)
+// StoryListUsers lists every user in the default order.
+func StoryListUsers() {
+	req := httptest.NewRequest(http.MethodGet, "/users", nil)
+	rec := httptest.NewRecorder()
+	(&Handler{Store: users}).ListUsers(rec, req)
+	fmt.Print(rec.Body.String())
 }
 
-// StoryListUsersByTag filters by ?tag= and orders by ?sort=.
-func StoryListUsersByTag(w http.ResponseWriter, r *http.Request) {
-	(&Handler{Store: users}).ListUsers(w, r)
+// StoryListUsersByTag fixes a tag filter and sorts by ID.
+func StoryListUsersByTag() {
+	req := httptest.NewRequest(http.MethodGet, "/users?tag=go&sort=id", nil)
+	rec := httptest.NewRecorder()
+	(&Handler{Store: users}).ListUsers(rec, req)
+	fmt.Print(rec.Body.String())
 }

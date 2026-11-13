@@ -1,12 +1,12 @@
 // Command storybook renders "stories" of a net/http application with
 // minigo, without building the application.
 //
-// A story is an exported func StoryXxx(w http.ResponseWriter, r
-// *http.Request) in a file guarded by a build tag (default "story"), so
+// A story is an exported func StoryXxx() in a file guarded by a build tag (default "story"), so
 // the go toolchain never builds it into the real binary. The story calls
 // the application's rendering code with dummy values; storybook
 // interprets the package with that tag enabled and captures what the
-// story writes.
+// story prints to stdout. The command is an optional browser/list helper;
+// minigo run --tags story ./app StoryUser can call the same story directly.
 //
 //	storybook -list ./app                 # list stories
 //	storybook ./app StoryUser             # print one story's body
@@ -66,11 +66,11 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 		slog.InfoContext(ctx, "serving stories", "addr", *addr, "dir", b.Dir, "stories", len(stories))
 		return http.ListenAndServe(*addr, b.Handler())
 	case fs.NArg() >= 2:
-		res, err := b.Render(ctx, fs.Arg(1), "/")
+		res, err := b.Render(ctx, fs.Arg(1))
 		if err != nil {
 			return err
 		}
-		_, err = stdout.Write(res.Body)
+		_, err = stdout.Write(res)
 		return err
 	default:
 		return errors.New("one of -list, -o, -http or a story name is required")

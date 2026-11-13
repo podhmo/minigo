@@ -1,4 +1,4 @@
-// Package app implements the user pages served by cmd/server.
+// Package app implements HTTP handlers and templates for user pages.
 package app
 
 import (

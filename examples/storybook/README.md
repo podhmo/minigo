@@ -1,111 +1,169 @@
-# storybook — render net/http views with minigo, Storybook style
+# Preview handler output with an ordinary Story function
 
-An experiment: preview the HTML a `net/http` application renders without
-building or starting the application server. Stories are ordinary Go functions in
-files behind a build tag, so the real binary never contains them:
+The goal is to inspect the HTML and appearance produced by an existing HTTP
+handler or rendering function in a real browser. A Go test can do this too:
+call the handler with a request and fake dependencies, save its body as an
+HTML file, and open that file. minigo is useful when calling a function by
+name is easier than adding a native test or another `main`.
+
+This example's `app` is a small synthetic collection of handlers and
+templates, not evidence that an existing large application needs no changes.
+It has no fake-only server command. Application code imports neither minigo
+nor the preview helper; fixtures live in tagged stories and tests.
+
+Run the following commands from `examples/storybook`.
+
+## Choose a workflow
+
+| Purpose | Targets | When to use them |
+|---|---|---|
+| Direct minigo use | `render` | Run one Story and redirect its HTML to a file. This is sufficient to inspect a self-contained page in a browser. |
+| Optional minigo helper | `list`, `export`, `preview` | Discover Stories, save them together, or repeatedly browse them while editing. These targets use `cmd/storybook`. |
+| Comparison and verification | `native-html`, `test` | Compare the Go-only alternative and check native/minigo behavior. Neither is a prerequisite for minigo previewing. |
+
+For the smallest workflow, use `make render STORY=StoryUser > /tmp/story-user.html`
+and open the file in a browser. You can stop there. `native-html` demonstrates
+the Go-only alternative; it is not an additional setup step.
+
+## The primitive: run a Story directly
+
+A Story is a zero-argument function that owns its display conditions and
+prints only the rendered response body to stdout:
 
 ```go
 //go:build story
 
 package app
 
-// StoryUser renders the user page with a fixed user.
-func StoryUser(w http.ResponseWriter, r *http.Request) {
-	RenderUser(w, &User{ID: "1", Name: "Alice"})
+import (
+    "fmt"
+    "net/http/httptest"
+)
+
+func StoryUser() {
+    rec := httptest.NewRecorder()
+    RenderUser(rec, users["1"])
+    fmt.Print(rec.Body.String())
 }
 ```
 
-`storybook` interprets the package with minigo and the tag enabled, calls
-the story with a host `httptest.ResponseRecorder` and request, and shows
-the status, headers and body it wrote.
+Handler stories also construct their own request and fake store. For
+example, `StoryListUsersByTag` fixes `?tag=go&sort=id` inside the function;
+it is a different display condition from `StoryListUsers`.
 
-Run these commands from `examples/storybook`.
+With the minigo executable installed:
 
-The Makefile provides the same execution paths:
+```sh
+minigo run --tags story ./app StoryUser > /tmp/story-user.html
+```
+
+Using this repository's command sources, without installing anything:
+
+```sh
+make render STORY=StoryUser > /tmp/story-user.html
+```
+
+Open `/tmp/story-user.html` in a real browser to inspect it. This path
+needs neither the storybook helper nor a Go test, registration map, or
+application server. `make render` writes no command banner to stdout.
+The `story` tag keeps fixtures out of ordinary Go builds; it is a choice
+for this example, not a requirement of minigo's arbitrary-entry API.
+
+## Comparison: Go alone is a valid alternative
+
+```sh
+make native-html OUT=/tmp/storybook-native
+```
+
+This calls the same Stories through `app/story_test.go` with the
+native Go toolchain and saves `<Story>.html` files. Open, for example,
+`/tmp/storybook-native/StoryUser.html` in a browser. The underlying command
+is:
+
+```sh
+go test -tags story ./app -run '^TestStories$' -count=1 \
+  -args -html-dir /tmp/storybook-native
+```
+
+For an application already easy to exercise through a test, saving its
+rendered HTML this way may be sufficient. Native Go needs an explicit
+reference to each Story in that test and a buildable package. minigo can
+call the entry by name, including entries in `package main`, without
+running the application's `main()`. An uncalled function with an undefined
+name need not block the preview. Source syntax, initialization, and the
+executed path must still be supported by minigo.
+
+## Optional helper: discover, select, and browse
+
+Specifying function names and opening individual files gets repetitive.
+`cmd/storybook` adds discovery and a browser index over the same Stories:
+
+```sh
+make list
+make preview                       # http://127.0.0.1:6006/
+make export OUT=/tmp/storybook-out  # open index.html
+```
+
+`export` saves a snapshot: run it again after source changes. `preview`
+keeps an HTTP server running and re-executes the selected Story on each
+request, so a browser reload reflects edits. Use it when repeated exports
+become inconvenient; it is not needed for a one-time HTML inspection.
+
+Equivalent commands from this directory:
+
+```sh
+go run ./cmd/storybook -list ./app
+go run ./cmd/storybook ./app StoryUser
+go run ./cmd/storybook -http 127.0.0.1:6006 ./app
+go run ./cmd/storybook -o /tmp/storybook-out ./app
+```
+
+The helper is an ordinary Go executable embedding minigo as a library.
+`Book` scans the target source directory for exported top-level `Story*`
+functions in files selected only by the story tag, rejects signatures other
+than `func()`, then calls the chosen function with `Engine.Call`.
+`minigo.WithOutput` captures stdout without replacing the host's
+`os.Stdout`. A fresh engine per rendering reflects source changes on the
+next browser reload. There is no application import, HTTP argument
+injection, query control, or integration with an application's server main.
+
+Successful previews serve captured stdout as `text/html` with HTTP 200.
+A Story printing a handler's 404 body still produces a successful preview;
+original HTTP status and headers are not encoded in stdout. Interpreter
+failures produce preview HTTP 500. Use handler tests to check actual HTTP
+status and headers.
+
+The sample pages are self-contained HTML. If a real page references CSS,
+images, JavaScript, or routes, those resources need an appropriate serving
+setup; file URLs and preview URLs are not the application's original
+origin. An iframe view is not an end-to-end browser test of the application.
+
+## Layout and checks
+
+- `app/handler.go`: ordinary handlers, routes, and templates.
+- `app/story_user.go`: zero-argument Stories and their fake store.
+- `app/testdata/golden`: expected response bodies only.
+- `app/handler_test.go`: native HTTP routing, status/header assertions, and bodies.
+- `app/story_test.go`: native Story stdout checks and optional HTML export.
+- `cmd/storybook/`: optional discovery, capture, export, and browser helper.
+- `cmd/storybook/book_test.go`: direct minigo CLI and helper output checks.
 
 ```sh
 make help
-make run                         # ordinary Go server: http://127.0.0.1:8080/users
-make preview                     # minigo preview: http://127.0.0.1:6006/
-make list
-make render STORY=StoryUser
-make export OUT=/tmp/storybook-out
-make test                        # ordinary routes, minigo, and native stories
+make test
 ```
 
-`run` and `preview` stay in the foreground; stop them with Ctrl-C or run
-them in separate terminals. Override addresses with `ADDR` and
-`PREVIEW_ADDR`, and select another preview package with `PKG`.
-From the repository root, use `make -C examples/storybook <target>`.
+Override `STORY`, `PKG`, `OUT`, or `PREVIEW_ADDR` as needed. `native-html`
+is specifically the Go-only test of this example's `app`; `PKG` selects the
+direct minigo and helper target. From the repository root use
+`make -C examples/storybook <target>`. Stop `make preview` with Ctrl-C.
 
-The ordinary application is independent of the preview tool:
+The tests independently compare native stdout, direct minigo CLI stdout,
+and helper stdout with the same body goldens. They also verify source
+reload, package-main entry execution without calling main, discovery,
+export, and preview HTTP behavior. These are behavioral and regression
+checks for the selected fixtures, not proof of visual equivalence in a
+browser or usefulness on an existing application.
 
-```console
-$ go run ./cmd/server -addr 127.0.0.1:8080
-$ curl 'http://127.0.0.1:8080/users?tag=go&sort=id'
-$ curl http://127.0.0.1:8080/users/1
-```
-
-`cmd/server/main.go` creates an `app.MemoryStore`, supplies it to
-`app.Handler`, and calls `http.ListenAndServe` with `h.Routes()`. It does
-not import minigo, register stories, or enable a build tag. The application
-uses ordinary `net/http` and `html/template` code.
-
-Start the preview tool separately:
-
-`cmd/storybook` is a native Go command that embeds minigo as a library.
-Its `Book` reads the target directory and calls its stories through
-`Engine.Call`; it does not import `app`. `cmd/server` imports `app` and
-serves its routes directly.
-
-```console
-$ go run ./cmd/storybook -list ./app              # name, position, doc comment
-$ go run ./cmd/storybook ./app StoryUser          # print one story's body
-$ go run ./cmd/storybook -o out ./app             # out/index.html + one page per story
-$ go run ./cmd/storybook -http :6006 ./app        # browse; every request re-interprets
-```
-
-- A story is an exported top-level `func StoryXxx(w http.ResponseWriter, r
-  *http.Request)` in a file the tag selects and plain `go build` drops.
-  A `Story`-prefixed func with any other shape is an error, not skipped.
-- `-http` forwards the query string, so `/story/StoryUserFromQuery?name=Bob`
-  works as a story control. Source edits show up on reload.
-- `-tag` changes the build tag; `-src pkg,...` interprets those packages
-  from source (`minigo run --src`).
-
-The layout separates the application from the preview and its fixtures:
-
-- `app/handler.go`: handlers, routes, and templates used by the real server.
-- `app/store.go`: an in-memory `Store` implementation for the real server.
-- `app/story_user.go`: tagged preview functions and their fake store.
-- `cmd/server/main.go`: the ordinary application entry point.
-- `cmd/storybook/`: the preview command, including `Book`, which embeds minigo.
-- `app/testdata/golden`: expected responses, not application source.
-
-The `Store` interface permits fake data in previews and tests; it is an
-application design choice, not a requirement of minigo or Go. The story
-tag, exported `Story*` names, and handler signature are conventions of this
-preview tool, not limitations of minigo's entry-point API.
-
-Go does not let a separate program import `package main` or look up a
-package-level function by name. Neither restriction applies to minigo's
-preview: handlers and stories may live in a server's `package main`, and
-its `main()` is not called when rendering a story. The separate `app`
-package here is a conventional server layout, not required for previewing.
-
-`cmd/storybook/book_test.go` renders stories with minigo and checks the goldens, including
-a copy of the handlers and stories in `package main` with an uncalled,
-unfinished function that would prevent a native Go build. `app/handler_test.go`
-checks ordinary application routes without the story tag.
-`app/oracle_story_test.go` (`go test -tags story ./...`) calls the stories
-natively and checks the same goldens. Its explicit list of functions is
-only for native verification: preview users need no Go registry, generated
-main, native test, or successful whole-application Go build. The native
-test is in the target package so it does not require importing that package.
-
-The preview executable runs as native Go; `Book.Render` uses minigo to
-interpret the application and supplies the recorder and request. Running
-`minigo run --tags story ./app StoryUser` directly cannot supply those two
-arguments; use the preview command above or `Engine.Call` with host values.
-
-Notes and results: [docs/sketch/ja/experiment-storybook.md](../../docs/sketch/ja/experiment-storybook.md).
+Design and evidence limits:
+[docs/sketch/ja/experiment-storybook.md](../../docs/sketch/ja/experiment-storybook.md).

@@ -1,303 +1,172 @@
-# storybook: minigo で net/http のレンダリングを Storybook 風に覗く実験
+# ハンドラーの HTML をブラウザで確認する: Go のテスト、minigo の直接実行、任意の補助ツール
 
-対象: `examples/storybook`（実験。マージされるかは未定）
-問い: minigo の「任意のエントリーポイントを呼べる」機構とインタプリタ自身を使って、net/http ハンドラーのレンダリング部分を、ビルドタグで本物の Go から隔離したコードブロックからダミー値つきで呼び出し、HTML の見た目を確認できるか。足りない binding は何か。
+対象は `examples/storybook`。目的は、既存の Go アプリのハンドラーやレンダリング関数を、指定したデータ・条件で呼び、その HTML とブラウザ上の見た目を確認することである。
 
----
+最小の仕組みは、引数なしの `StoryXXX()` を minigo で直接実行して HTML を標準出力へ出すこと。storybook コマンドは、その仕組みに一覧・選択・配信を足す任意の補助ツールとする。
 
-## 0. 現在の使い方と、Go 側の制約
+## 1. 何を確認したいのか
 
-この例は、通常の Go HTTP アプリと、そのコードを minigo で呼ぶプレビューツールからなる。コマンドは `examples/storybook` で実行する。
+確認対象によって入口を選ぶ。
 
-通常のサーバーは `cmd/server/main.go`、プレビューツールは `cmd/storybook/` に置く。後者は minigo をライブラリとして組み込んだ通常の Go コマンドで、`Book` が対象ディレクトリを読み、`Engine.Call` で Story を実行する。`cmd/server` は `app` を import するが、`cmd/storybook` は import せずソースを解釈する。
-
-Makefile からは `make run` で通常の Go サーバー（`http://127.0.0.1:8080/users`）、`make preview` で minigo のプレビュー（`http://127.0.0.1:6006/`）を起動できる。両方ともフォアグラウンドで動き、Ctrl-C で停止する。`make list`、`make render STORY=StoryUser`、`make export OUT=/tmp/storybook-out` で一覧・単体描画・HTML 出力を確認できる。`make test` は通常ルートと minigo 描画、およびネイティブ Story の比較テストを実行する。アドレスは `ADDR` / `PREVIEW_ADDR`、プレビュー対象は `PKG` で変更できる。リポジトリルートからは `make -C examples/storybook <target>` を使う。
-
-```sh
-# 通常の Go アプリ。story タグも minigo も不要
-go run ./cmd/server -addr 127.0.0.1:8080
-# 別のターミナルで通常のルートにアクセス
-curl 'http://127.0.0.1:8080/users?tag=go&sort=id'
-curl http://127.0.0.1:8080/users/1
-
-# プレビューツール。内部で minigo が app の Story を解釈する
-go run ./cmd/storybook -list ./app
-go run ./cmd/storybook ./app StoryUser
-go run ./cmd/storybook -http 127.0.0.1:6006 ./app
-```
-
-`app/handler.go` は通常のハンドラー・テンプレート・`Routes()`、`app/store.go` は通常サーバー用のメモリストアである。`cmd/server/main.go` がストアを `app.Handler` に渡し、`http.ListenAndServe(*addr, h.Routes())` を呼ぶ。これらに minigo の import や Story の登録処理はない。`app/story_user.go` だけが `story` タグ付きで、ダミーデータと Story を持つ。`app/testdata` には期待値だけを置き、アプリのコードは置かない。
-
-### 0.1 Go の都合を minigo に持ち込まない
-
-Go での比較検証に必要な構成と、minigo でのプレビューに必要な構成を区別する。Go 側の制約をプレビュー対象の設計に課す必要はない。
-
-| 記述・構成 | 必要になる理由 | minigo のプレビューに必要か |
+| 確認対象 | 呼び出すもの | 必要な準備 |
 |---|---|---|
-| import 可能な `app` と `cmd/server` への分割 | 通常のサーバー構成としての選択。Go の別プログラムから呼ぶなら `package main` を import できない | 不要。サーバーの `package main` にハンドラーと Story を置いても呼べる |
-| 関数を列挙する map・レジストリ、生成 main | Go の別プログラムはパッケージの関数を文字列の名前から取得できない | 不要。`Engine.Call` が名前で呼ぶ |
-| ネイティブ比較テストでの Story の明示的な列挙 | Go で同じ関数を実行し、出力の一致を検証するため | プレビューには不要。これはこのリポジトリの比較検証用コード |
-| パッケージ全体が Go でビルドできること | ネイティブ実行・比較検証に必要 | 呼ばれない関数の型エラー等は許容できる。ただし選択したソースの構文解析、init、実行経路の解決は必要 |
-| `Store` interface | 通常サーバーのデータ取得と、Story の fake を差し替える設計 | minigo 固有の必須条件ではない。固定データでレンダリング関数だけを呼ぶこともできる |
-| `story` タグ、exported な `Story*`、ハンドラー型の引数 | このプレビューツールが探索・実行するための規約 | 現在のツールでは必要。minigo API 全般の制約ではない |
+| データ取得、分岐、HTTP 応答を含むハンドラー | ハンドラー、またはアプリのルーター | ダミーの依存、request、recorder |
+| 特定のデータに対するテンプレート出力 | レンダリング関数 | 表示用データ、出力先 |
+| 実際の見た目 | 生成した HTML を開くブラウザ | HTML ファイルまたは配信先、必要な CSS・画像など |
 
-以前のネイティブ比較テストはツール側からアプリを import していた。現在は `app/oracle_story_test.go` として対象と同じパッケージに置き、比較テストのために import 可能な構成を要求しない形にした。通常のルートも `app/handler_test.go` で story タグなしに検証する。`cmd/storybook/book_test.go` はアプリを `package main` にしたコピーでも描画でき、`main()` が呼ばれないことを検証する。このコピーには未定義関数を呼ぶ未使用の関数も置き、パッケージ全体が Go でビルドできる必要がないことも確認する。
+ダミーの依存を差し込んでハンドラーを簡単に実行できるなら、通常の Go テストで確認すればよい。レンダリング関数へデータを渡すだけでよい場合も同様である。minigo を使うことを先に目的にしない。
 
-通常のアプリ側に、Go で実行するための minigo 用アダプターや Story 登録は追加していない。ネイティブ比較の明示的な関数一覧は検証の都合であり、利用側に要求する構成ではない。
+`httptest.ResponseRecorder` での呼び出しは、ハンドラーの HTTP 入出力の検証である。実ブラウザで CSS・JavaScript・画像を読み込み、操作まで確認する E2E テストとは区別する。HTML の一致だけでも、見た目の正しさは保証されない。
 
-### 0.2 直接の minigo CLI とプレビューツールの違い
+## 2. Go だけでもできること
 
-`go run ./cmd/storybook ./app StoryUser` は、Go で起動したツールが minigo の `Engine.Call` に recorder と request を渡す。一方、`minigo run --tags story ./app StoryUser` は引数を渡さずに呼ぶため、`not enough arguments to StoryUser: 0 given, want 2` になる。`--tags` が指定できることと、HTTP の引数が自動で用意されることは別である。
+普通の Go テストからハンドラーやレンダリング関数を呼び、生成した HTML をファイルへ書けば、ブラウザで開いて確認できる。これが比較対象となる手軽な方法である。
 
-以下の 1〜7 章は初期実験の記録であり、当時の不足・評価を含む。8〜9 章に host map と `FuncMap` の対応を追記している。過去の測定値は、今回のサーバー構成で再測定した値ではない。
+- HTTP のステータス・ヘッダー・body を確認したいなら、request と recorder を使ってテストする。
+- 特定データの表示を確認したいなら、レンダリング関数を直接テストする。
+- 見た目を確認したいなら、得られた HTML をファイルへ出力して開く。必要ならそのファイルとアセットを静的配信する。
 
-## 1. 総評
+この例では `make native-html` が、同じ Story をネイティブの Go テストから実行し、HTML ファイルへ出力する。ネイティブ実行では、対象パッケージ全体が Go でビルドできる必要がある。また、テストには呼び出す関数への明示的な参照が必要になる。
 
-**できる。** 小さなアプリ（`app`）で、ストーリー 5 本すべてが minigo 上でレンダリングでき、ネイティブ Go で同じストーリーを実行した結果（golden）とバイト単位で一致した。ブラウザで一覧・プレビューでき、ソースを編集するとリロードだけで反映される（アプリのビルドは不要）。
+HTML を生成すること、ハンドラーをダミーデータで実行すること、ブラウザで表示すること自体は、minigo 独自の機能ではない。
 
-ただし素の minigo のままでは動かず、次の 3 点を足した。
+## 3. 最初の一歩: 引数なし Story の直接実行
 
-1. **`html/template` の host binding**（最大の障害。従来は init 時に trap して一切使えなかった）
-2. **boxed host map/slice の index**（`r.URL.Query()["tag"]` が trap していた）
-3. **CLI の `--tags`**（ビルドタグ付きファイルをエントリーポイントとして選ぶため）
-
-エントリーポイント機構そのもの（`Engine.Run` / `Engine.Call` / `minigo run --entry`）は既存のもので足りた。
-
-素の Go で同じことをやる場合との比較は [7 章](#7-minigo-を使わず-go-だけでやる場合との比較)。結論だけ書くと、優位性は「速さ」より「ビルドを通さずに名前で呼べること」にあるが、現状の忠実度の穴を考えると十分とまでは言えず、いまのところは動作検証寄り。
-
-## 2. 仕組み
-
-### 2.1 ストーリーの書き方
+Story は、表示条件を用意し、既存コードを呼び、結果を標準出力へ書く普通の Go 関数である。引数も戻り値も持たない。
 
 ```go
 //go:build story
 
 package app
 
-// StoryUser renders the user page with a fixed user.
-func StoryUser(w http.ResponseWriter, r *http.Request) {
-	RenderUser(w, users["1"])
+import (
+    "fmt"
+    "net/http/httptest"
+)
+
+func StoryUser() {
+    rec := httptest.NewRecorder()
+    RenderUser(rec, &User{ID: "1", Name: "Alice"})
+    fmt.Print(rec.Body.String())
 }
 ```
 
-- ストーリーは「タグで選ばれ、素の `go build` では落ちるファイル」にある、exported なトップレベル `func StoryXxx(w http.ResponseWriter, r *http.Request)`。
-- シグネチャを `http.HandlerFunc` と同じにしたので、ストーリーはレンダリング関数（`RenderUser`）を直接呼んでも、ハンドラー全体（`(&Handler{Store: fake}).ShowUser(w, r)`）を偽の依存込みで呼んでもよい。`r.SetPathValue` でパスパラメータも差し込める。
-- ダミー値（`fakeStore` など）もストーリー側のファイルに置くので、本番バイナリには一切入らない。`go vet .` と `go vet -tags story .` の両方が通る。
-- `Story` で始まるのにシグネチャが違う関数はエラーにする（黙って無視しない）。
+ハンドラー全体を確認する Story なら、同じ関数内で fake と request を作り、ハンドラーまたはルーターを呼ぶ。パスやクエリもその Story が条件として指定する。表示条件を変えたければ、Story のソースを編集するか別の Story を定義する。
 
-### 2.2 実行
+以下のコマンドは `examples/storybook` で実行する。`minigo` コマンドが PATH にある場合は、storybook コマンドを経由する必要がない。
 
-`storybook` は `go/build.Context.MatchFile` でタグあり/なしを比較してストーリーファイルを見つけ、`go/parser` で `Story*` 関数を列挙する（`go/packages`・`go list` は使わない）。
-
-レンダリングは 1 ストーリーごとに
-
-1. `minigo.NewEngine(dir, WithBuildConfig(resolve.BuildConfig{Tags: []string{tag}}))` でパッケージを解釈
-2. host 側で `httptest.NewRecorder()` と `httptest.NewRequestWithContext(...)` を作る
-3. `Engine.Call(ctx, pkg, "StoryXxx", &runtime.GoValue{V: rec}, &runtime.GoValue{V: req})`
-4. recorder から status / header / body を取り出す
-
-という流れ。`w` と `r` は host の値のまま渡るので、`w.Header().Set`、`http.Error`、`r.URL.Query()`、`r.SetPathValue` などは host の net/http がそのまま処理する。
-
-CLI:
-
-```console
-$ go run ./cmd/storybook -list ./app
-$ go run ./cmd/storybook ./app StoryUser
-$ go run ./cmd/storybook -o out ./app       # index.html + ストーリーごとの .html
-$ go run ./cmd/storybook -http :6006 ./app  # 左にナビ、右に iframe
+```sh
+minigo run --tags story ./app StoryUser > /tmp/story-user.html
 ```
 
-`-http` モードはリクエストごとにエンジンを作り直してパッケージを解釈し直す。`handler.go` のテンプレートを書き換えて curl すると、再起動なしで変更後の HTML が返ることを確認した。クエリ文字列はストーリーに転送されるので `/story/StoryUserFromQuery?name=Carol&tag=a` が Storybook の controls 相当になる。
+`/tmp/story-user.html` を本物のブラウザで開く。ブラウザの起動はこのコマンドの仕事ではない。
 
-## 3. 結果
+このリポジトリの minigo ソースから起動する場合は、次のように実行できる。
 
-| ストーリー | 内容 | 結果 |
-|---|---|---|
-| `StoryUser` | 固定ユーザー、`template.HTML` のバッジ、`{{.Initial}}`（スクリプト側メソッド）、`{{range}}` | 200, golden 一致 |
-| `StoryUserEscaped` | 名前が `<script>alert(1)</script>` | エスケープされる。golden 一致 |
-| `StoryUserFromQuery` | `?name=Bob&tag=x&tag=%3Cy%3E` | 200, `<li>&lt;y&gt;</li>`。golden 一致 |
-| `StoryShowUser` | ハンドラー全体を fake store で | 200, golden 一致 |
-| `StoryShowUserNotFound` | エラー経路 (`http.Error`) | 404 `text/plain`, golden 一致 |
+```sh
+go -C ../../cmd/minigo run ./ run --tags story \
+  "$(pwd)/app" StoryUser > /tmp/story-user.html
+```
 
-- `cmd/storybook/book_test.go` は minigo で全ストーリーを描画して `app/testdata/golden` と比較、`app/oracle_story_test.go`（`-tags story`）は同じストーリーをネイティブ実行して同じ golden と比較する。Makefile の `test` に両方を追加した。
-- 1 ストーリーの描画（プロセス起動込み）は約 0.07 秒 / 約 42MB。
+Go で起動するのは minigo CLI であり、対象の Story と、そこから呼ぶアプリのコードは minigo が解釈する。
 
-## 4. 見つかった不足と対処
+### minigo を使う理由
 
-### 4.1 `html/template` が init で trap する（対処済み）
+- 指定したパッケージの関数を、名前を指定して呼べる。呼び出し用 main や Go のテスト関数を追加する必要がない。
+- `package main` に置いたハンドラーや Story も呼べる。プレビューのために import 可能なパッケージへ分ける必要はない。
+- 呼ばれない関数の未定義名など、Go のビルドを妨げる一部の未完成コードがあっても、必要な表示だけを確認できる。
+
+ただし、選択したソースの構文解析、パッケージの初期化、実行する経路の解決は必要である。依存の init を省略できるという意味ではない。minigo に未対応の構文やライブラリ機能があれば実行できない場合もある。
+
+## 4. アプリと表示用コードの境界
 
 ```text
-runtime trap: undefined: template.FuncMap
-File "/usr/local/go/src/html/template/escape.go", line 65, in template.__init__()
+既存の server main ── import ──> app
+
+StoryXXX() ── 呼び出し ──> app のハンドラー／レンダリング関数
+minigo CLI ── 名前で実行 ──> StoryXXX()
+
+任意の storybook コマンド
+    ├─ Story の探索と選択
+    ├─ minigo で同じ Story を実行
+    └─ HTML のファイル出力・ブラウザへの配信
 ```
 
-`html/template` はソース解釈され、その中の `var funcMap = template.FuncMap{...}` が、host binding 版の `text/template` に `FuncMap` が無いため落ちていた（TODO に既出）。net/http のビュー層ではほぼ必ず使うので、これが最大の障害だった。
+既存の server main は Story・fake・storybook を知る必要がない。本番用の依存構築を、表示確認用の fake に置き換えない。
 
-対処: `text/template` と同じく `html/template` を host binding にした（`intrinsics.go`）。`Template` / `New` / `Must` / エスケープ関数に加え、`HTML` / `HTMLAttr` / `JS` / `JSStr` / `CSS` / `URL` / `Srcset` を **host のスカラー named type** として bind したので、スクリプト側の `template.HTML("<b>..</b>")` が host の escaper に「信頼済み」として届き、エスケープされない。`Must` は text/template と共通の `templateMust` に寄せた。`testdata/htmltmpl` で、文脈依存エスケープ・スクリプト側メソッド呼び出し・`template.HTML`・`Must` の panic をネイティブ Go と同じ出力で固定した。
+このサンプルで以前追加した固定データだけの `cmd/server` は、表示確認用サーバーをもう一つ作る構成になっていた。通常サーバーの起動例を示すために fake を持たせることは、ここで検証したい境界を曖昧にするため撤去した。現在の `app` はハンドラーとテンプレートの例であり、本番サーバーの起動・依存構築まで再現したものではない。
 
-残り: `template.FuncMap` は text/template・html/template の両 binding で未定義のまま（スクリプトの関数を host テンプレートの FuncMap に渡す変換が要る）。`--src html/template` も同じ理由で動かない。TODO の既存 entry に残した。
+`Store` interface は、データ取得を差し替えられるようにしたアプリ側の設計である。minigo 固有の要件ではない。ダミーデータや fake の準備は Story またはテストに置く。
 
-### 4.2 `r.URL.Query()["tag"]` が trap する（対処済み）
+`story` ビルドタグは、表示用コードを通常の Go ビルドから除くための選択である。minigo が任意の関数を呼ぶために、常にタグが必要なわけではない。`Story` という名前の接頭辞は、補助ツールが探索するための規約である。
 
-```text
-runtime trap: index on *runtime.GoValue
+## 5. 必要になったら storybook を使う
+
+Story が増えると、関数名の指定や HTML ファイルの管理が面倒になる。その段階で、探索・選択・配信を補助するコマンドを使う。
+
+```sh
+go run ./cmd/storybook -list ./app
+go run ./cmd/storybook ./app StoryUser
+go run ./cmd/storybook -o /tmp/storybook-out ./app
+go run ./cmd/storybook -http 127.0.0.1:6006 ./app
 ```
 
-`url.Values` は host の named map なので、メソッド（`.Get`）を呼べるよう `GoValue` の箱のまま渡ってくる。`len` は箱の中身を測れるようになっていたが、index は `Map`/`Slice`/`Named` しか扱っていなかった。単体の `url.ParseQuery` では再現しない（その経路では箱にならない）ため、最小化に手間取った。
+HTTP モードでは `http://127.0.0.1:6006/` をブラウザで開き、一覧から Story を選ぶ。ツールは、直接実行と同じ引数なし Story を呼ぶ。
 
-対処: `VM.index` / `VM.indexOK` に、`GoValue` の中身が map/slice/array なら reflect で読むフォールバック（`VM.hostIndex`）を足した。comma-ok（`v, ok := q["x"]`）も効く。副作用として既存 TODO の `net.IP` の `ip[3]` も通るようになった。slice 式と range は未対応のままなので、TODO entry を部分完了 `[-]` にした。
+`cmd/storybook` は minigo をライブラリとして組み込んだ通常の Go コマンドである。`Book` は対象の `app` を import せず、対象ディレクトリを minigo で読み、指定関数を実行する。`minigo.WithOutput` で標準出力を捕捉し、その HTML を保存・配信する。HTTP request や recorder を Story へ注入する仕組みは不要である。
 
-読み取り以外はまだ trap する（追加で試した結果、TODO に新規 entry として記録）:
+描画ごとに新しいエンジンを作るので、Story やテンプレートの編集は次のリクエストで読み直される。ファイル変更を監視してブラウザを自動リロードする機能とは別である。
 
-| 書き方 | 結果 |
-|---|---|
-| `r.URL.Query()["tag"][:1]` | OK（要素の `[]string` は箱から出る） |
-| `var q url.Values = r.URL.Query(); q.Get("tag")` | OK |
-| `for k, v := range r.URL.Query()` | `range over *runtime.GoValue` |
-| `w.Header()["X-A"] = []string{"1"}` | `index assign on *runtime.GoValue` |
-| `q := r.URL.Query(); q["z"] = ...` | 同上 |
+### stdout と HTTP 応答を混同しない
 
-`w.Header()` への直接代入はハンドラーでよく書くので、実アプリに当てると最初に踏みそう。
+Story が出力するのは body だけである。元のハンドラーの HTTP ステータス・ヘッダーは stdout に含めない。
 
-### 4.3 タグ付きファイルをエントリーポイントにできない（対処済み）
+たとえば元のハンドラーが 404 を書いていても、補助ツールが HTML を正常に生成して配信できたことと、その 404 は別の事柄である。元の HTTP 応答を検証する場合はアプリのハンドラーテストを使う。Story の実行失敗は、補助ツール側のエラーとして扱う。
 
-`Engine` には `WithBuildConfig` があったが、CLI からタグを指定する手段がなかった。`--tags`（`--tags=a,b` 形式も可）を追加した。これはタグ付きファイルを選択する機能で、HTTP 引数を用意するものではない。`StoryUser(w, r)` を CLI から直接実行することはできず、storybook の `Engine.Call` 経由で recorder と request を渡す（0.2 節）。
+ブラウザで URL にクエリを追加しても、それを Story の request へ転送する controls は提供しない。引数なし Story は、自分自身で表示条件を完結させる。
 
-### 4.4 net/http 側の binding
+### ブラウザで確認できる範囲
 
-今回の範囲（`ResponseWriter`・`Request`・`Header`・`http.Error`・`SetPathValue`・`ServeMux` 登録）では **追加は不要だった**。いずれも host の値として扱われるため。`-src net/http` でも 5 本とも描画できた。
+サンプルの HTML は自己完結した表示を中心にしている。実アプリの CSS・画像・JavaScript、相対 URL、フォーム送信やリンク先まで自動で再現するものではない。アセットが必要なら、それらの参照先と配信方法も用意する。補助ツールで一画面を表示できることを、アプリ全体の E2E 成功とはしない。
 
-## 5. 気づいたこと・限界
+## 6. Makefile からの操作
 
-- **パッケージ単位で解釈する。** ストーリーファイル単体を参照すると同じパッケージの `RenderUser` が見えない（`undefined: RenderUser`）。ディレクトリを渡す必要がある。
-- **アプリ側の書き方に依存する。** レンダリングが `func(w, data)` のように切り出されていれば素直に呼べる。DB クライアントなどを直接握るハンドラーは、interface で受けていないと fake を差し込めない（これは Go のテスト容易性と同じ条件）。
-- **ネイティブとの一致は golden で担保している。** minigo の解釈結果が Go と食い違うと、見た目のプレビューが嘘をつく。`app/oracle_story_test.go` のように、同じストーリーをネイティブでも実行して比較する仕組みをセットで持つのがよい。
-- minigo が binding を持たないパッケージ（サードパーティのテンプレートエンジン等）をソース解釈すると、今回の `html/template` のように init で落ちる可能性がある。その場合 trap のトレースバックでどの宣言が原因かは分かる。
+`examples/storybook` から次を実行する。リポジトリルートからなら `make -C examples/storybook <target>` を使う。
 
-## 6. 今後やるなら
+```sh
+make help
+make render STORY=StoryUser   # minigo CLI で直接実行し、HTML を標準出力へ
+make native-html             # Go テストで同じ Story を実行し、HTML ファイルへ
+make list                    # 任意の補助ツールによる一覧
+make export                  # 一覧と各 Story の HTML を出力
+make preview                 # 任意の補助ツールでブラウザ向けに配信
+make test
+```
 
-- `template.FuncMap` の binding（スクリプト関数を host 関数に変換）。実アプリのテンプレートはほぼ FuncMap を使う。
-- ストーリーに引数（ダミー値）を外から与える仕組み。今は `?query` を読む程度だが、例えば `func StoryUser(w, r, u *User)` のように型付きの controls を JSON から組み立てる案がある。
-- `-http` で、ファイル変更を監視してブラウザを自動リロードする。
+`make preview` はフォアグラウンドで動き、Ctrl-C で停止する。生成した HTML の保存先や各ターゲットのオプションは、`examples/storybook/Makefile` と README を参照する。
 
-## 7. minigo を使わず Go だけでやる場合との比較
+## 7. テストで保証すること、しないこと
 
-minigo の存在価値は「Go でもできることを、Go より安く・制約少なくできるか」で決まる。素の Go での代替案を実際に組んで測った。
-
-### 7.1 Go での代替案
-
-- **A. 同じパッケージのテストから呼ぶ**: `story_user.go` はそのままにして、`go test -tags story` のテスト（`app/oracle_story_test.go` と同じ形）でストーリーを呼び、HTML をファイルに書くか比較する。追加の道具は要らず、結果はネイティブそのもの。
-- **B. レジストリ付きの main を生成して `go run -tags story`**: `map[string]http.HandlerFunc{"StoryUser": app.StoryUser, ...}` を持つ main を go/parser で生成し、ビルドして配信する。ブラウザで見るには、ファイル変更を監視して再ビルド・再起動する仕組み（air のようなもの）を足す必要がある。
-- **C. plugin**: Linux/macOS 限定で、ツールチェーンとビルドフラグが完全に一致している必要があり、一度ロードすると外せない（更新するにはプロセスの再起動が要る）。試していない。
-
-A と B を当時の `examples/storybook/testdata/app`（現在の `examples/storybook/app`）で組んで測った（8 コア、go1.27.1、ビルドキャッシュあり）。
-
-### 7.2 測定
-
-| 操作 | 時間 |
-|---|---|
-| B: GOCACHE が空の状態からの初回 `go run -tags story` | 5.66 秒 |
-| B: 変更なしでの再実行 | 0.06 秒 |
-| B: `handler.go` を編集した後の `go run` | 0.32 秒（`go build` だけなら 0.39 秒、バイナリ 10.8MB） |
-| A: `handler.go` を編集した後の `go test -tags story -run TestNativeGolden` | 0.55〜0.60 秒 |
-| minigo: 1 ストーリーの描画（プロセス起動込み） | 0.07 秒 |
-| minigo: `-http` サーバーでの 1 リクエスト（パッケージの再解釈込み） | 0.06〜0.07 秒 |
-
-パッケージが大きい場合も見るため、アプリに 2000 個のメソッド（約 2 万行）を足した合成パッケージで測った。
-
-| 操作 | 時間 |
-|---|---|
-| B: `handler.go` を編集した後の `go run` | 0.96 秒 |
-| minigo: 1 ストーリーの描画（プロセス起動込み） | 0.08〜0.09 秒（約 50MB） |
-
-観測できたこと: Go は編集したパッケージ全体を機械語に再コンパイルし、バイナリ全体をリンクし直すので、パッケージが大きくなるほど編集ループが伸びる。minigo は同じ 2 万行でも 0.02 秒ほどしか増えなかった。minigo は VM のインタプリタで、機械語へのコンパイルもリンクもしない。パッケージは必要になった時点で構文解析と索引づけだけを行い、関数は最初に呼ばれたときにバイトコードへ変換して VM で実行する（`minigo.go` のパッケージドキュメント）。そのため、呼ばれない関数にはほとんどコストがかからない。依存の多い実アプリでは Go 側のコンパイルとリンクがもっと重くなるはずだが、これは測っていない推測。
-
-### 7.3 制約の違い
-
-| 観点 | Go（A / B） | minigo |
+| 検証 | 目的 | そこからは言えないこと |
 |---|---|---|
-| 名前でストーリーを呼ぶ | A は `-run`、B はレジストリのコード生成が要る（Go の reflect ではパッケージの関数を名前で引けない） | `Engine.Call(pkg, "StoryXxx")` で直接呼べる。生成物がない |
-| ハンドラーが `package main` にある | B は不可（`import "im/srv" is a program, not an importable package` を確認）。A なら可 | 可（`package main` に変えたコピーで描画できることを確認） |
-| 同じパッケージに編集途中のコードがある | パッケージ全体がビルドできない（`declared and not used` や型エラー、未定義の識別子など。`wip.go` を足して確認） | 呼ばれない関数の型エラーは無視されて描画できる（同じ `wip.go` で確認）。プレビューとしては長所だが、エラーを見逃す原因にもなる |
-| 再読み込み | 再ビルドして、サーバーなら再起動する。状態は消える | サーバーのプロセス内でリクエストごとに解釈し直す。再起動しない |
-| 忠実度 | ネイティブそのもの | 本書 4〜5 章の穴がある（`template.FuncMap`、`w.Header()[k] = v`、host の map の `range` など）。一致を保証するにはネイティブとの比較（＝ Go）が結局必要 |
-| 必要な環境 | Go ツールチェーンとビルドキャッシュ | storybook のバイナリとソース（ソース解釈するパッケージは GOROOT/モジュールのソースを読む） |
-| 依存パッケージの init | 実行される | 実行される（違いはない） |
+| 通常の Go のハンドラーテスト | ダミーの依存と request に対する HTTP 入出力を確認する | 実ブラウザでの見た目・操作が正しいこと |
+| ネイティブ Story と body の golden の比較 | 普通の Go として実行した表示用コードの出力を確認する | アプリ全体の本番環境が再現されていること |
+| minigo の直接実行と同じ golden の比較 | storybook なしで Story を実行でき、選んだ条件の出力が一致すること | あらゆる Go コードで一致すること |
+| `package main` と未使用の未完成関数を含む例 | import や全体の Go ビルドをプレビューの前提にしないこと | 実行経路や init のエラーも無視できること |
+| 補助ツールの探索・出力・HTTP 配信 | 一覧から選んだ Story の HTML を取得できること | HTML の視覚的な正しさ、本番ルーターと同じ挙動 |
 
-### 7.4 評価
+期待する HTML は `app/testdata/golden` に置く。native と minigo の一致を確認するための明示的な関数一覧は、Go 側の比較検証の都合であり、利用側のアプリへ要求するレジストリではない。
 
-- **速さの優位は、小さなアプリでは薄い。** Go の再ビルドは 0.3〜0.6 秒で、人間の編集ループの邪魔にはほとんどならない。差が意味を持つのは、パッケージが大きく編集ループが秒単位になる場合（合成パッケージで 0.96 秒 対 0.09 秒）。依存の多い実アプリではさらに差が開くと見込まれるが、未測定。
-- **構造的な優位はある。** (1) レジストリの生成もテスト関数も書かずに名前で呼べる、(2) `package main` に直接書かれたハンドラーをそのまま呼べる、(3) 同じパッケージに壊れたコードがあっても見た目だけ確認できる、(4) 常駐サーバーで再起動なしに反映できる。どれも Go 単体では工夫が要るか、できないこと。
-- **ただし忠実度の穴が優位を相殺している。** 実際のビューのコードはほぼ確実に `template.FuncMap` を使い、ハンドラーは `w.Header()` に直接書く。どちらも今の minigo では trap するので、実アプリに当てると構造的な優位を活かす前に止まる可能性が高い。さらに、表示が正しいことを保証するには A の形でネイティブと比較するしかなく、Go を使わずに済むわけではない。
-- **結論**: いまの段階では「Go に対して十分な優位性がある」とは言えず、**主に動作検証**の位置づけ。存在価値の候補になるのは「大きい・壊れている・`package main` のコードを、ビルドせずに名前で叩いて覗く」という用途に絞った場合で、そのためには少なくとも `template.FuncMap` と、host の map への代入・`range` を埋める必要がある（いずれも TODO に記録済み）。埋めた後に、依存の多い実アプリで 7.2 の編集ループを測り直すのが次の判断材料になる。
+## 8. 現時点での評価と次の判断材料
 
-## 8. 追補: host の map/slice への書き込みと range（stack 1 層目）
+小さな例で直接実行とネイティブの出力が一致しても、既存の実アプリで便利だと確認できたことにはならない。用例の適切さは次の順で判断する。
 
-7.4 で「実アプリに当てると最初に踏みそう」とした穴のうち、host の named map/slice（`url.Values`・`http.Header`・`net.IP`）を箱のまま扱う経路をまとめて埋めた。
+1. 通常の Go アプリのハンドラーやレンダリング関数を基準にする。
+2. 表示条件の準備だけを行う小さな Story を追加する。
+3. Go テストから HTML を出す方法と、minigo の直接実行の両方を試す。
+4. アプリ本体の変更、追加コード、実行手順、編集から表示までの手間を比べる。
+5. Story が増えたときだけ、一覧と常駐プレビューの利便性を評価する。
 
-| 書き方 | 以前 | 現在 |
-|---|---|---|
-| `w.Header()["X-A"] = []string{"1"}` / `q["z"] = v` | `index assign on *runtime.GoValue` | host の map に書く（`VM.hostSetIndex`） |
-| `for k, v := range r.URL.Query()` | `range over *runtime.GoValue` | キーを snapshot し値は都度読む（iterator kind `'h'`）。到達前に消したキーは出ない |
-| `q["tag"][0] = v` | 黙って失われる（script 側のコピーに書く） | host の要素の backing に書く（`VM.hostElemRef`） |
-| `delete(q, k)` / `clear(q)` | `delete on *runtime.GoValue` | reflect で消す |
-| `ip[:2]` / `ip[1:3:4]` / `range ip` / `ip[0] = 9` | `slice on` / `range over` | 動く。`ip[:2]` は `net.IP` のまま（`%T` も一致） |
+このサンプル自体は実験用に作ったアプリであり、自然な既存アプリをそのまま持ち込んだ検証ではない。特定の binding を通るように作った例だけで適用範囲を広く主張しない。
 
-境界外アクセスは script の slice と同じ runtime error を出す。`testdata/hostboxed` で、ネイティブ Go の実行結果と同じ文字列を `TestHostBoxedWrites` で固定した。
-
-### 8.1 example を実アプリ寄りにした
-
-`app` に `ListUsers` ハンドラー（`?tag=` で絞り込み、`?sort=` で並べ替え、件数を `X-Total-Count` ヘッダーで返す）を足した。書き方は素の Go のハンドラーとして自然なものにしている。
-
-- `q := r.URL.Query(); if _, ok := q["sort"]; !ok { q["sort"] = ... }` で既定値を入れる
-- `for k, vs := range q` で有効なクエリを画面に出す
-- `w.Header()["X-Total-Count"] = ...`
-- `slices.ContainsFunc(u.Tags, ...)` でタグを照合する
-
-ストーリーは `StoryListUsers` と `StoryListUsersByTag`（`/?tag=go&sort=id`）。golden は Content-Type だけでなく **全ヘッダー** を比較するようにした（`X-Total-Count` や `http.Error` が付ける `X-Content-Type-Options` もネイティブと一致する）。
-
-ここで新たに `slices.ContainsFunc` が未 binding（`undefined: slices.ContainsFunc`、TODO の未 binding 一覧に既出）で、`slices.IndexFunc` も nil slice を渡すと `first arg must be a slice` で落ちることが分かった。前者を足し、両方を nil slice で -1 / false を返すよう共通化した。実アプリ寄りに書き直すと、こうした「小さいが確実に踏む」未対応が出てくる。
-
-別エージェントによるレビューで、同じ種類の取りこぼしを 3 つ直した。`maps.Keys` / `maps.Values` が boxed host map に対して黙って空を返していた件、`slices.Contains` / `Index` が `net.IP` に対して false / -1 を返していた件、`map[string]http.Header` の `m["k"]["C"] = v` が trap していた件。`append` / `copy` / 型変換、タプル代入を経由した入れ子の書き込みなどの残りは TODO に記録した。host の map から読み出した値は script 側のコピーになり、host の map に入れた値は host 側のコピーになるので、Go のように backing array を共有しない。これは表現上の制約として README の "Currently unsupported" に書いた。
-
-残り: `template.FuncMap`（次の層）、host の構造体フィールド経由の slice 書き込み（`ce.Args[0] = v`、TODO 既出）、nil の named host map が typed nil にならない件（TODO に分離）。
-
-## 9. 追補: `template.FuncMap`（stack 2 層目）
-
-4.1 で残した `template.FuncMap` を、text/template・html/template の両 binding で使えるようにした。
-
-- `template.FuncMap` は script 側では `map[string]any` の named map として bind する。composite literal はそのまま書ける。
-- `Template.Funcs` に渡るとき（host の `FuncMap` 型への変換時）に、各値を host の func に変換する（`vm.funcMapElem`）。bind 済みの host 関数（`strings.Join` など）はその実体をそのまま渡す。script の関数は宣言のシグネチャから host の func 型を組み立て（`sigHostType`）、`reflect.MakeFunc` で VM に呼び戻す。predeclared な基本型と `error` は Go の型を保つので、`(string, error)` を返す関数のエラーも template のエラーとして伝わる。それ以外の型（script の構造体など）は `any` になる。
-- 可変長引数の関数（`func(sep string, xs ...string) string`）で、host が詰めた最後の slice を script 側へ 1 引数として渡していた不具合も直した（`adaptFunc` で展開する）。
-
-`testdata/funcmap` の 4 関数（bind 済み関数・script 関数・可変長・エラー返却・html/template で `template.HTML` を返す関数・nil フィールド）はネイティブ Go の出力と一致する（`TestTemplateFuncMap`）。
-
-別エージェントによるレビューで、さらに 3 点を直した。
-
-- `strings.Split`・`strings.Fields`・`strconv.Atoi` のように host の関数実体（`Target`）を持たない intrinsic を FuncMap に入れると trap していた。`func(...any) (any, error)` で包んで VM 上で呼ぶようにした（`(値, error)` の結果は template のエラーになる）。
-- `html/template.FuncMap` と `text/template.FuncMap` が別の型になっていた。Go では前者は後者の alias なので、同じ TypeDef を bind した。
-- `any` に入った nil slice（`map[string]any{"a": none}`）も型付きのゼロ値として渡す（`IfaceNil` 側）。
-
-### 9.1 example でも使う
-
-`ListUsers` のテンプレートに `listFuncs`（`"join": strings.Join` と script の `plural`）を足し、`{{plural (len .Users) "user"}}` と `{{join .Tags ", "}}` を書いた。ここでもう 1 つ食い違いが出た: `Tags` が nil のユーザーで、ネイティブは空文字を出すのに、minigo は `wrong type for value; expected []string; got interface {}` になった。script の構造体を host に渡すとフィールドの map に変換されるが、nil の slice が型なしの nil になっていた。host 上の形がわかる nil slice/map は型付きのゼロ値として渡すようにした（`deepHost`。Go でも `any` に入った nil slice は型を持つ）。
-
-### 9.2 残り
-
-- `--src html/template` は init を越えたが、`Template.Parse` で text/template の内部を辿るところで止まる（TODO）。bind 版を使う限りは問題ない。
-- script の型を引数に取る FuncMap 関数と、要素が script の型である nil slice/map は 9.3 で直した。
-- レビューでは、この stack と無関係の重大な既存バグも見つかった。named map を unnamed map 型の引数や変数に渡すと map のヘッダーが分裂し、片方での追加や削除がもう片方から見えなくなる（main でも再現）。別 PR（#1052）で main 側を先に直し、この stack はその上に載せ直した。
-- 7.4 の評価で「埋める必要がある」とした `template.FuncMap` と host の map への代入・`range` は、どちらも埋まった。次の判断材料は、依存の多い実アプリで 7.2 の編集ループを測り直すこと。
-
-### 9.3 追補: script の型を取る引数、nil の slice/map、panic
-
-レビューで見つかった 3 点を直した（`testdata/funcmap` の `TypedParams`・`WrongTypes`・`NilElems`・`Panics`・`NotFunc`・`CallbackPanics`・`Goroutine`・`HTMLTyped`。いずれもネイティブ Go の出力と一致する）。
-
-- **script の型を取る引数**: FuncMap 関数の引数は `any` で受けるので、`[]Pt` を取る関数に `[]any`（script の構造体の slice を host に渡した形）が届いて trap していた。呼ぶ直前に、宣言された引数の型へ変換する（`funcMapArgs`・`hostArgAs`）。`[]any` / `map[any]any` を、宣言の要素型で再帰的に作り直す（`[]*Pt`・名前付きの `Pts`・`[2]Pt`・`[][]Pt`・`map[string][]Pt`・可変長の `...[]Pt`）。要素の構造体は元のまま渡すので、関数が slice の要素へ書いた値は template のデータにも届く（Go と同じ）。ポインタは値の引数にも渡せる（template の indirect と同じ）。型が合わないときは gc と同じ `wrong type for value; expected *main.User; got int` を返す。ただし template の位置ではなく `error calling f:` の下に出る。変換は呼び出しを実行する VM 上で行う（別の goroutine で template を実行すると呼び出しは子 VM に回る）。
-- **nil の slice/map**: host 上の形がない型でも、型付きのゼロ値（`[]any(nil)` / `map[any]any(nil)`）で渡す（`hostNilOf`）。`{{len .Users}}` は 0、`{{.Users}}` は `[]` になる。`[]Pt` を取る関数も nil を受け取れる（変換が `[]any(nil)` を宣言の型の nil に直す）。
-- **panic と非 func の値**: script の `panic("boom")` は `*runtime.Panic` のまま template に渡っていて、`error calling p: panic: boom` になっていた。FuncMap の関数に限り、panic の値を host に渡す（`funcMapPanicValue`。`Error()` を持つ値は error、`String()` は文字列、host の値はそのまま）ので `error calling p: boom` になる。他のコールバック（`sort.Slice` の less、`sync.Once.Do`、http ハンドラー）は従来どおり `*runtime.Panic` を通し、script の `recover()` が元の値を受け取る（`CallbackPanics` が確認する）。template を別 goroutine で実行したとき、関数の panic はプロセスごと落ちていた。`VM.CallCatching` で、panic をエラーとして呼び出し元の host（template の `safeCall`）へ返すようにした。FuncMap に関数でない値（`"bad": 42`）を入れると、unrecoverable な trap ではなく値を `any` のまま `Template.Funcs` に渡し、Go と同じ回復できる panic `value for bad not a function` になる。
-
-### 9.4 残り
-
-- 関数内で宣言した型（`type local struct{}` を `main` の中に書く）を引数に取る関数は、型を解決できず変換されない。名前付きの基本型の要素（`[]Level`）は tag の付かない int で届く。script の構造体を値にした panic は map の形で出る（TODO「FuncMap param/panic conversion gaps」）。
-- script の名前付きの型を返す関数（`func(int) Level`）の `%T` は `int` のまま。reflect が型を作れないための構造的な限界で、README の Currently unsupported に書いた。
+以前の文書では `html/template`、`template.FuncMap`、host map の読み書きなどの不足と対応、および編集ループの測定を時系列で記録していた。それらの実装履歴は Git の履歴から参照できる。本書の刷新後の構成について速度・メモリを再測定したわけではなく、古い測定値を現在の優位性の根拠として再利用しない。
