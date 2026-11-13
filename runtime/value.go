@@ -2167,7 +2167,11 @@ type BoundMethod struct {
 // An error returned from Fn stops the script with a [Trap] that script
 // code cannot recover; to raise a recoverable script panic, panic with a
 // [*Panic] such as [RuntimePanic]. Use the [VMCaller] to call back into
-// script code.
+// script code. Unless SyncCallbacks is set, the VM-provided caller's Call
+// and Spawn remain bound to this invocation's process when retained: they
+// refuse execution after that process ends, even if the public VM is reused.
+// Other frame/type operations are for the host call currently executing;
+// retaining a caller does not make its execution-local state concurrent.
 type BuiltinFunc struct {
 	Name string
 	Fn   func(vm VMCaller, args []Value) (Value, error)
