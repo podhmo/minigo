@@ -6921,9 +6921,16 @@ func (v *VM) hostIndex(f *frame, b *runtime.GoValue, idx runtime.Value) (val run
 		}
 		return goValueOf(ev), true, true
 	case reflect.Slice, reflect.Array, reflect.String:
-		i, isInt := indexSmallInt(runtime.Unwrap(v.materialize(f, idx)))
+		ix := runtime.Unwrap(v.materialize(f, idx))
+		i, isInt := indexSmallInt(ix)
 		if !isInt {
+			if u, isU := uintOperand(ix); isU {
+				panic(runtime.BoundsPanic(u, rv.Len()))
+			}
 			f.trap("%s index is %T", rv.Type(), idx)
+		}
+		if i < 0 && v.boundUnsigned(idx) {
+			panic(runtime.BoundsPanic(uint64(i), rv.Len()))
 		}
 		if i < 0 || i >= int64(rv.Len()) {
 			panic(runtime.BoundsPanic(i, rv.Len()))

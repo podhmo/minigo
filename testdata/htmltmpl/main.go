@@ -1,7 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"html/template"
+	"math"
+	"net"
 	"net/url"
 	"strings"
 )
@@ -38,6 +41,15 @@ func HostQuery(q url.Values) string {
 	tags, ok := q["tag"]
 	_, missing := q["nope"]
 	return strings.Join(tags, ",") + "|" + q["name"][0] + "|" + boolStr(ok) + boolStr(missing)
+}
+
+// HostSliceOOB indexes a boxed host named slice past its end with a
+// uint64 index: a recoverable bounds panic, as for script slices.
+func HostSliceOOB(ip net.IP) (msg string) {
+	defer func() { msg = fmt.Sprint(recover()) }()
+	var i uint64 = math.MaxUint64
+	_ = ip[i]
+	return ""
 }
 
 func boolStr(b bool) string {

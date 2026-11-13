@@ -9,6 +9,7 @@ import (
 	"go/parser"
 	"go/token"
 	"math"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -2757,5 +2758,9 @@ func TestHostNamedMapIndex(t *testing.T) {
 	got := run(t, e, "./testdata/htmltmpl", "HostQuery", &runtime.GoValue{V: q})
 	if diff := cmp.Diff("a,b|x|TF", got); diff != "" {
 		t.Errorf("HostQuery (-want +got):\n%s", diff)
+	}
+	got = run(t, e, "./testdata/htmltmpl", "HostSliceOOB", &runtime.GoValue{V: net.IP{1, 2, 3, 4}})
+	if diff := cmp.Diff("runtime error: index out of range [18446744073709551615] with length 4", got); diff != "" {
+		t.Errorf("HostSliceOOB (-want +got):\n%s", diff)
 	}
 }
