@@ -15,9 +15,8 @@ import (
 // entry is one row of the index page.
 type entry struct {
 	Story
-	Href   string
-	Status int // 0 when not rendered (serve mode renders lazily)
-	Err    string
+	Href string
+	Err  string
 }
 
 var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
@@ -34,7 +33,7 @@ iframe { flex: 1; border: 0; }
 <body>
 <nav>
 <strong>{{.Dir}}</strong>
-{{range .Entries}}<a href="{{.Href}}" target="story">{{.Name}}{{if .Status}} <small>{{.Status}}</small>{{end}}
+{{range .Entries}}<a href="{{.Href}}" target="story">{{.Name}}
 <small>{{.Doc}}</small>{{if .Err}}<small class="err">{{.Err}}</small>{{end}}</a>
 {{end}}</nav>
 <iframe name="story"{{with .Entries}} src="{{(index . 0).Href}}"{{end}}></iframe>
@@ -52,14 +51,13 @@ func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 	entries := make([]entry, len(stories))
 	for i, s := range stories {
 		entries[i] = entry{Story: s, Href: s.Name + ".html"}
-		res, err := b.Render(ctx, s.Name, "/")
+		res, err := b.Render(ctx, s.Name)
 		if err != nil {
 			entries[i].Err = firstLine(err.Error())
 			errs = append(errs, err)
 			continue
 		}
-		entries[i].Status = res.Status
-		if err := os.WriteFile(filepath.Join(dir, s.Name+".html"), res.Body, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, s.Name+".html"), res, 0o644); err != nil {
 			return err
 		}
 	}
@@ -75,9 +73,10 @@ func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 }
 
 // Handler serves the index at / and each story at /story/<Name>; the
-// story's query string reaches its *http.Request. Stories are listed and
-// re-interpreted on every request, so editing the package needs only a
-// reload. A failing story answers 500 with minigo's error text.
+// stdout is served as HTML. Stories choose their own fixtures, so the
+// preview query string does not control them. A fresh interpretation on
+// each request reflects source edits on reload. Story failures answer 500;
+// successful previews answer 200, independent of a handler's original status.
 func (b *Book) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
@@ -96,22 +95,15 @@ func (b *Book) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /story/{name}", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
-		target := "/"
-		if r.URL.RawQuery != "" {
-			target += "?" + r.URL.RawQuery
-		}
-		res, err := b.Render(r.Context(), name, target)
+		res, err := b.Render(r.Context(), name)
 		if err != nil {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Fprintln(w, err)
 			return
 		}
-		for k, vs := range res.Header {
-			w.Header()[k] = vs
-		}
-		w.WriteHeader(res.Status)
-		w.Write(res.Body)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(res)
 	})
 	return mux
 }

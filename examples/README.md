@@ -1,7 +1,8 @@
 # Examples
 
-Each subdirectory is a self-contained Go module that uses `minigo` to
-interpret user-supplied Go files at runtime. The exception is
+Each example is a separate Go module demonstrating minigo through
+interpreted task definitions, metadata scripts, generators, or application
+preview entry points. The exception is
 `test-detect`, a pure-stdlib experiment that shares the theme —
 Go source as data — without running the interpreter.
 
@@ -9,8 +10,9 @@ Go source as data — without running the interpreter.
 
 A task runner in the spirit of [mage](https://magefile.org) /
 [go-task](https://taskfile.dev). The **Taskfile is a plain Go file that
-minigo interprets**: exported `func()`, `func() error`, and
-`func(...string) error` declarations become runnable tasks. The file
+minigo interprets**: exported functions with fixed `string` parameters
+(or no parameters), returning nothing or one `error`, become runnable
+tasks. For example, `func Greet(name string) error` runs as `Greet:Alice`. The file
 imports a stub `task` package so it typechecks under ordinary Go
 tooling, but `task-run` binds that package's members to host intrinsics
 and evaluates the Taskfile in the interpreter — including `Deps`,
@@ -40,8 +42,9 @@ rewrites a managed `//go:generate` block in each scanned file — the
 inverse shape of convert-define: **the index is read and edits are written
 back into the same files that were scanned**. Targets are inferred from
 declarations themselves (enum shapes, struct tags, method sets,
-interface names); no marker comments. `-deps` follows same-module
-imports transitively; `-check` reports drift for CI.
+interface names); no marker comments. The scan follows same-module imports
+within the target package's subtree; `-deps` expands the write set to those
+dependencies rather than only the target package. `-check` reports drift for CI.
 
 See [gen-sync/README.md](./gen-sync/README.md) and the design notes in
 [docs/sketch/plan-gen-sync.md](../docs/sketch/plan-gen-sync.md).
@@ -95,20 +98,42 @@ See [test-detect/README.md](./test-detect/README.md) and the design notes in
 
 ## storybook — previewing net/http views (experiment)
 
-Stories are `func StoryXxx(w http.ResponseWriter, r *http.Request)`
-declarations in files behind `//go:build story`, calling the
-application's rendering code with dummy values. `storybook` interprets
-the package with minigo and the tag enabled, hands each story a host
-`httptest.ResponseRecorder`, and lists, exports or serves the HTML — the
-application is never built. Unlike the other examples, **the interpreted
-code is not written for minigo**: it is the application's own package,
-and minigo — a VM interpreter that compiles a function to bytecode on
-first call and never links a binary — is only asked to call one named
-function with host values. Like `task-run` it runs selected functions
-out of a package; unlike `task-run` the package exists for `go build`
-and is merely borrowed, so interpreter fidelity on unmodified code is
-the ceiling.
+Inspect HTML produced by an application's handlers or rendering functions.
+The primitive is an ordinary **zero-argument `func StoryXxx()`** in a file
+behind `//go:build story`: it prepares its own fixtures, request and recorder
+when needed, calls existing application code, and prints the body to stdout.
+Run it directly with minigo and open the saved HTML in a browser; no
+storybook helper or application server is required.
 
-See [storybook/README.md](./storybook/README.md) and the experiment log
+```sh
+cd examples/storybook
+make render STORY=StoryUser > /tmp/story-user.html
+# With minigo installed, the equivalent direct command is:
+minigo run --tags story ./app StoryUser > /tmp/story-user.html
+```
+
+The Makefile separates three workflows:
+
+- **Direct minigo use:** `render` is sufficient to save a self-contained
+  page for browser inspection.
+- **Optional helper:** `cmd/storybook` embeds minigo to provide `list`,
+  `export` (saved HTML and an index), and `preview` (HTTP serving with fresh
+  interpretation on each request). It captures the same Story stdout;
+  it does not inject HTTP arguments or alter the application's server main.
+- **Comparison and verification:** `native-html` saves the same Stories
+  through ordinary Go tests, and `test` compares native, direct CLI, and
+  helper results. These are not prerequisites for minigo use.
+
+Go tests that save HTML are a valid alternative. minigo adds named entry
+execution, including `package main`, without requiring a native test wrapper
+or a successful whole-package Go build for uncalled, unfinished functions.
+Syntax, initialization, and executed code must still be supported.
+The sample app is synthetic, so matching its output is not proof of
+compatibility with an existing application or of visual correctness.
+Story stdout contains bodies only; original HTTP status and headers are
+checked separately in handler tests. External assets need a suitable
+serving setup for browser inspection.
+
+See [storybook/README.md](./storybook/README.md) and the design discussion
 (Japanese) in
 [docs/sketch/ja/experiment-storybook.md](../docs/sketch/ja/experiment-storybook.md).

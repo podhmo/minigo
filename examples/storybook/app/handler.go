@@ -1,6 +1,4 @@
-// Package app is a small net/http application whose rendering half the
-// storybook stories (story_*.go, behind //go:build story) call with
-// dummy values.
+// Package app implements HTTP handlers and templates for user pages.
 package app
 
 import (

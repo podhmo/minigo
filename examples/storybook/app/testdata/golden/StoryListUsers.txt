@@ -1,7 +1,3 @@
-200
-Content-Type: text/html; charset=utf-8
-X-Total-Count: 3
-
 <!doctype html>
 <html><head><title>users</title></head>
 <body>
