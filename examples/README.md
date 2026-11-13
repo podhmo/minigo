@@ -96,43 +96,42 @@ modules; packages without tests are dropped from the output by default.
 See [test-detect/README.md](./test-detect/README.md) and the design notes in
 [docs/sketch/plan-test-detect.md](../docs/sketch/plan-test-detect.md).
 
-## storybook — previewing net/http views (experiment)
+## storybook — Storybook-style previews for server-rendered pages (experiment)
 
-Inspect HTML produced by an application's handlers or rendering functions.
+What Storybook does for SPA components, applied to a classic
+server-rendered MPA: render a page in a real browser for a chosen data
+state and adjust its CSS and layout without real data or a running server.
 The primitive is an ordinary **zero-argument `func StoryXxx()`** in a file
-behind `//go:build story`: it prepares its own fixtures, request and recorder
-when needed, calls existing application code, and prints the body to stdout.
-Run it directly with minigo and open the saved HTML in a browser; no
-storybook helper or application server is required.
+behind `//go:build story` that prints HTML to stdout. Run it directly with
+minigo and open the saved HTML in a browser; no storybook helper or
+application server is required.
 
 ```sh
 cd examples/storybook
-make render STORY=StoryUser > /tmp/story-user.html
+make render STORY=StoryUserLongName > /tmp/story-user.html
 # With minigo installed, the equivalent direct command is:
-minigo run --tags story ./app StoryUser > /tmp/story-user.html
+minigo run --tags story ./app StoryUserLongName > /tmp/story-user.html
 ```
 
-The Makefile separates three workflows:
+Stories come in two kinds:
 
-- **Direct minigo use:** `render` is sufficient to save a self-contained
-  page for browser inspection.
-- **Optional helper:** `cmd/storybook` embeds minigo to provide `list`,
-  `export` (saved HTML and an index), and `preview` (HTTP serving with fresh
-  interpretation on each request). It captures the same Story stdout;
-  it does not inject HTTP arguments or alter the application's server main.
-- **Comparison and verification:** `native-html` saves the same Stories
-  through ordinary Go tests, and `test` compares native, direct CLI, and
-  helper results. These are not prerequisites for minigo use.
+- **Page stories** (primary) call a page's render function — view data in,
+  HTML out — once per data state: a typical user, a hostile name, a very
+  long name with many tags, an empty list. No fake store or request.
+- **Handler stories** (fallback) call a handler with a fake store and a
+  request, for code whose rendering is not split out of the handler.
 
-Go tests that save HTML are a valid alternative. minigo adds named entry
-execution, including `package main`, without requiring a native test wrapper
-or a successful whole-package Go build for uncalled, unfinished functions.
-Syntax, initialization, and executed code must still be supported.
-The sample app is synthetic, so matching its output is not proof of
+`cmd/storybook` is an optional helper embedding minigo: `list`, `export`
+(saved HTML and an index), and `preview` (HTTP serving with fresh
+interpretation on each request). `make test` checks handler HTTP behavior
+and that the direct CLI and the helper print the same bodies.
+
+minigo calls Stories by name, including in `package main`, without a test
+wrapper or a successful whole-package Go build for uncalled, unfinished
+functions. Syntax, initialization, and executed code must still be
+supported. The sample app is synthetic, so its output is not proof of
 compatibility with an existing application or of visual correctness.
-Story stdout contains bodies only; original HTTP status and headers are
-checked separately in handler tests. External assets need a suitable
-serving setup for browser inspection.
+External assets such as the app's CSS still need a suitable serving setup.
 
 See [storybook/README.md](./storybook/README.md) and the design discussion
 (Japanese) in

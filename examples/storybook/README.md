@@ -3,9 +3,7 @@
 The goal is what Storybook does for SPA components, applied to a classic
 server-rendered MPA: render a page in a real browser for a chosen data
 state and adjust its CSS and layout, without real data or a running
-server. A Go test can do this too: call the render function with view
-data, save the HTML as a file, and open it. minigo is useful when calling
-a function by name is easier than adding a native test or another `main`.
+server. minigo runs a Story by name, without a test or another `main`.
 
 In Storybook terms the component is the page's render function (view data
 to HTML), not the handler that also looks data up. Stories here therefore
@@ -20,8 +18,8 @@ come in two kinds:
   not split out of the handler.
 
 The value is in looking at these pages in a browser while editing CSS and
-templates, not in asserting their HTML; the goldens below only check that
-native and minigo runs agree.
+templates, not in asserting their HTML; the goldens below are regression
+checks of the preview path, not checks of appearance.
 
 This example's `app` is a small synthetic collection of handlers and
 templates, not evidence that an existing large application needs no changes.
@@ -36,11 +34,10 @@ Run the following commands from `examples/storybook`.
 |---|---|---|
 | Direct minigo use | `render` | Run one Story and redirect its HTML to a file. This is sufficient to inspect a self-contained page in a browser. |
 | Optional minigo helper | `list`, `export`, `preview` | Discover Stories, save them together, or repeatedly browse them while editing. These targets use `cmd/storybook`. |
-| Comparison and verification | `native-html`, `test` | Compare the Go-only alternative and check native/minigo behavior. Neither is a prerequisite for minigo previewing. |
+| Verification | `test` | Check handler HTTP behavior and the direct CLI and helper outputs. Not a prerequisite for previewing. |
 
 For the smallest workflow, use `make render STORY=StoryUser > /tmp/story-user.html`
-and open the file in a browser. You can stop there. `native-html` demonstrates
-the Go-only alternative; it is not an additional setup step.
+and open the file in a browser. You can stop there.
 
 ## The primitive: run a Story directly
 
@@ -89,29 +86,16 @@ application server. `make render` writes no command banner to stdout.
 The `story` tag keeps fixtures out of ordinary Go builds; it is a choice
 for this example, not a requirement of minigo's arbitrary-entry API.
 
-## Comparison: Go alone is a valid alternative
+## Why not a Go test
 
-```sh
-make native-html OUT=/tmp/storybook-native
-```
-
-This calls the same Stories through `app/story_test.go` with the
-native Go toolchain and saves `<Story>.html` files. Open, for example,
-`/tmp/storybook-native/StoryUser.html` in a browser. The underlying command
-is:
-
-```sh
-go test -tags story ./app -run '^TestStories$' -count=1 \
-  -args -html-dir /tmp/storybook-native
-```
-
-For an application already easy to exercise through a test, saving its
-rendered HTML this way may be sufficient. Native Go needs an explicit
-reference to each Story in that test and a buildable package. minigo can
-call the entry by name, including entries in `package main`, without
-running the application's `main()`. An uncalled function with an undefined
-name need not block the preview. Source syntax, initialization, and the
-executed path must still be supported by minigo.
+A Go test could call a render function and save its HTML too, but each
+Story would need an explicit reference in a test, the whole package would
+have to build, and a test is not where one edits CSS while watching a
+browser. minigo calls the entry by name, including entries in
+`package main`, without running the application's `main()`. An uncalled
+function with an undefined name need not block the preview. Source
+syntax, initialization, and the executed path must still be supported by
+minigo.
 
 ## Optional helper: discover, select, and browse
 
@@ -185,7 +169,6 @@ preview environment in addition to discovery and browser serving.
 - `app/story_handler.go`: fallback handler stories and their fake store.
 - `app/testdata/golden`: expected response bodies only.
 - `app/handler_test.go`: native HTTP routing, status/header assertions, and bodies.
-- `app/story_test.go`: native Story stdout checks and optional HTML export.
 - `cmd/storybook/`: optional discovery, capture, export, and browser helper.
 - `cmd/storybook/book_test.go`: direct minigo CLI and helper output checks.
 
@@ -194,15 +177,14 @@ make help
 make test
 ```
 
-Override `STORY`, `PKG`, `OUT`, or `PREVIEW_ADDR` as needed. `native-html`
-is specifically the Go-only test of this example's `app`; `PKG` selects the
-direct minigo and helper target. From the repository root use
+Override `STORY`, `PKG`, `OUT`, or `PREVIEW_ADDR` as needed. `PKG` selects
+the direct minigo and helper target. From the repository root use
 `make -C examples/storybook <target>`. Stop `make preview` with Ctrl-C.
 
-The tests independently compare native stdout, direct minigo CLI stdout,
-and helper stdout with the same body goldens. They also verify source
-reload, package-main entry execution without calling main, discovery,
-export, and preview HTTP behavior. These are behavioral and regression
+The tests compare direct minigo CLI stdout and helper stdout with the same
+body goldens; the handler test checks the routes against them natively.
+They also verify source reload, package-main entry execution without
+calling main, discovery, export, and preview HTTP behavior. These are behavioral and regression
 checks for the selected fixtures, not proof of visual equivalence in a
 browser or usefulness on an existing application.
 
