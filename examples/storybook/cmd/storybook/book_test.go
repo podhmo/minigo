@@ -17,8 +17,8 @@ import (
 const appDir = "../../app"
 
 var storyNames = []string{
-	"StoryListUsers", "StoryListUsersByTag", "StoryShowUser", "StoryShowUserNotFound",
-	"StoryUser", "StoryUserEscaped", "StoryUserFromQuery",
+	"StoryListUsersByTag", "StoryShowUser", "StoryShowUserNotFound",
+	"StoryUser", "StoryUserEscaped", "StoryUserList", "StoryUserListEmpty", "StoryUserLongName",
 }
 
 func golden(t *testing.T, name string) []byte {
@@ -39,7 +39,7 @@ func TestStories(t *testing.T) {
 	var names []string
 	for _, s := range stories {
 		names = append(names, s.Name)
-		if s.Doc == "" || !strings.HasPrefix(s.Pos, filepath.Join(appDir, "story_user.go")+":") {
+		if s.Doc == "" || !strings.HasPrefix(s.Pos, filepath.Join(appDir, "story_")) {
 			t.Errorf("missing doc or position: %+v", s)
 		}
 	}
@@ -114,7 +114,7 @@ func TestRenderGolden(t *testing.T) {
 // Neither an importable package nor a successful native build is needed.
 func TestRenderMainPackage(t *testing.T) {
 	dir := t.TempDir()
-	for _, name := range []string{"handler.go", "story_user.go"} {
+	for _, name := range []string{"handler.go", "story_page.go"} {
 		src, err := os.ReadFile(filepath.Join(appDir, name))
 		if err != nil {
 			t.Fatal(err)

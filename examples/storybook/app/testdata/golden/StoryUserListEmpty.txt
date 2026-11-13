@@ -1,0 +1,7 @@
+<!doctype html>
+<html><head><title>users</title></head>
+<body>
+<p class="filters"><code>sort=name</code> <code>tag=nobody</code> </p>
+<p>0 users</p>
+<ul><li>no users</li></ul>
+</body></html>

@@ -1,4 +1,4 @@
-.PHONY: help render native-html preview list export test
+.PHONY: help render preview list export test
 
 PREVIEW_ADDR ?= 127.0.0.1:6006
 PKG ?= ./app
@@ -17,9 +17,8 @@ help:
 		'make export      Export stories and a browser index (OUT=/tmp/minigo-storybook-out)' \
 		'  export saves a snapshot; preview re-renders on each request.' \
 		'' \
-		'Comparison and verification (not required for minigo previewing):' \
-		'make native-html Save the same Stories with Go tests (OUT=/tmp/minigo-storybook-out)' \
-		'make test        Check HTTP behavior, direct CLI output, and native output'
+		'Verification (not required for previewing):' \
+		'make test        Check HTTP behavior, direct CLI output, and helper output'
 
 # Direct minigo use: save stdout as HTML and open it in a browser.
 # Keep stdout suitable for redirection to an HTML file. Resolve PKG before -C.
@@ -35,10 +34,6 @@ list:
 
 export:
 	go -C ./cmd/storybook run ./ -o "$(abspath $(OUT))" "$(abspath $(PKG))"
-
-# Comparison and verification: neither target is needed for direct minigo use.
-native-html:
-	go test -tags story ./app -run '^TestStories$$' -count=1 -args -html-dir "$(abspath $(OUT))"
 
 test:
 	go test ./...
