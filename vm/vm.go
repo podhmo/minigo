@@ -203,7 +203,11 @@ type VM struct {
 	// done closes and every parked channel op aborts with procExit (like
 	// a Go process exiting under live goroutines). A goroutine's panic
 	// fails the process the same way, aborting everyone else.
-	proc      *proc
+	// Written under callMu, but read without it — a host callback on a
+	// foreign goroutine (context.AfterFunc, an http handler) checks it
+	// while the owner's ReleaseProc clears it — so it is atomic; read it
+	// once into a local for a check-then-use.
+	proc      atomic.Pointer[proc]
 	procHolds int
 	// procDead records that this VM's process ended — a dead process
 	// spawns nothing, so a timer or host callback bound to a finished
@@ -706,8 +710,8 @@ func IsProcExit(err error) bool { _, ok := err.(procExit); return ok }
 func (v *VM) EnsureProc() {
 	v.callMu.Lock()
 	defer v.callMu.Unlock()
-	if v.proc == nil {
-		v.proc = newProc()
+	if v.proc.Load() == nil {
+		v.proc.Store(newProc())
 	}
 	v.procHolds++
 }
@@ -719,9 +723,9 @@ func (v *VM) ReleaseProc() {
 	defer v.callMu.Unlock()
 	v.procHolds--
 	if v.procHolds <= 0 {
-		if v.proc != nil {
-			v.proc.kill()
-			v.proc = nil
+		if p := v.proc.Load(); p != nil {
+			p.kill()
+			v.proc.Store(nil)
 			v.procDead = true
 		}
 		v.procHolds = 0
@@ -731,7 +735,7 @@ func (v *VM) ReleaseProc() {
 // doneRV is the process-done channel as a reflect select operand — nil
 // (never ready) when this VM has no process.
 func (v *VM) doneRV() reflect.Value {
-	if p := v.proc; p != nil {
+	if p := v.proc.Load(); p != nil {
 		return reflect.ValueOf(p.done)
 	}
 	return nilChanValue
@@ -754,7 +758,7 @@ func (v *VM) Spawn(fn runtime.Value, args []runtime.Value) *runtime.Task {
 // can run.
 func (v *VM) spawn(fn runtime.Value, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef, failProc bool) *runtime.Task {
 	v.callMu.Lock()
-	if v.proc == nil {
+	if v.proc.Load() == nil {
 		if v.procDead {
 			// the caller's process already ended — Go kills pending
 			// timers with the process, so the spawn never starts.
@@ -767,10 +771,10 @@ func (v *VM) spawn(fn runtime.Value, args []runtime.Value, statics []*runtime.Ty
 		// process: nothing kills it, matching a goroutine that outlives
 		// the program it was expected to die with — the hold is
 		// deliberately never released.
-		v.proc = newProc()
+		v.proc.Store(newProc())
 		v.procHolds++
 	}
-	p := v.proc
+	p := v.proc.Load()
 	select {
 	case <-p.done:
 		// the process died between hold and spawn — same refusal: a
@@ -783,7 +787,8 @@ func (v *VM) spawn(fn runtime.Value, args []runtime.Value, statics []*runtime.Ty
 	}
 	v.callMu.Unlock()
 	t := &runtime.Task{Done: make(chan struct{}), Parent: v.task}
-	child := &VM{H: v.H, proc: p, task: t, syncCall: !failProc}
+	child := &VM{H: v.H, task: t, syncCall: !failProc}
+	child.proc.Store(p)
 	go func() {
 		r, err := child.callBounded(fn, args, statics, spreadTd)
 		t.Result = r
@@ -1396,7 +1401,7 @@ func (v *VM) callBoundedCatch(callee runtime.Value, args []runtime.Value, static
 		// goroutine where the script's own recover can see it. Failing
 		// the process here would kill it before that recover runs.
 		failProc := !catch
-		if p := v.proc; p != nil && p.isSyncCaller(gid) {
+		if p := v.proc.Load(); p != nil && p.isSyncCaller(gid) {
 			failProc = false
 		}
 		t := v.spawn(callee, args, statics, spreadTd, failProc)
@@ -1440,11 +1445,11 @@ func (v *VM) callEntered(callee runtime.Value, args []runtime.Value, statics []*
 		}
 		v.callMu.Unlock()
 	}()
-	p := v.proc
+	p := v.proc.Load()
 	if p == nil {
 		v.EnsureProc()
 		defer v.ReleaseProc()
-		p = v.proc
+		p = v.proc.Load()
 	}
 	// register the calling goroutine for deadlock detection — released
 	// when this Call's outermost frame returns.
@@ -1454,7 +1459,7 @@ func (v *VM) callEntered(callee runtime.Value, args []runtime.Value, statics []*
 	defer func() {
 		if r := recover(); r != nil {
 			if ex, isExit := r.(*ExitRequest); isExit {
-				v.proc.kill()
+				p.kill()
 				result, err = nil, nil
 				if ex.Code != 0 {
 					err = ex
@@ -1478,7 +1483,7 @@ func (v *VM) callEntered(callee runtime.Value, args []runtime.Value, statics []*
 // spreadTd carries the element typedef a trailing `xs...` slice supplied
 // at the call site; nil when the call had no spread.
 func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (runtime.Value, error) {
-	if p := v.proc; p != nil {
+	if p := v.proc.Load(); p != nil {
 		select {
 		case <-p.done:
 			// the process ended while this call was queued — a sibling
@@ -2138,7 +2143,8 @@ func (v *VM) unwind(f *frame, r any) {
 // already ending on its own terms, and recording procExit as the fatal
 // would mask the real failure on the root call.
 func (v *VM) failProc(r any) {
-	if len(v.frames) != 0 || v.draining != 0 || v.proc == nil || v.syncCall {
+	p := v.proc.Load()
+	if len(v.frames) != 0 || v.draining != 0 || p == nil || v.syncCall {
 		return
 	}
 	switch r := r.(type) {
@@ -2153,9 +2159,9 @@ func (v *VM) failProc(r any) {
 		for pp := r; pp != nil; pp = pp.Prev {
 			pp.VC = caller
 		}
-		v.proc.fail(r)
+		p.fail(r)
 	case *runtime.Trap:
-		v.proc.fail(asError(r))
+		p.fail(asError(r))
 	}
 }
 
@@ -3176,7 +3182,7 @@ func (v *VM) loop(f *frame) {
 					// keep OpCall's procExit safepoint: without the
 					// check a goroutine looping on len/cap in a dead
 					// process would spin instead of dying.
-					if p := v.proc; p != nil {
+					if p := v.proc.Load(); p != nil {
 						select {
 						case <-p.done:
 							panic(procExit{})
@@ -6046,9 +6052,9 @@ func procDoneOf(vc runtime.VMCaller) <-chan struct{} {
 func procOf(vc runtime.VMCaller) *proc {
 	switch v := vc.(type) {
 	case *VM:
-		return v.proc
+		return v.proc.Load()
 	case ownerCaller:
-		return v.proc
+		return v.proc.Load()
 	}
 	return nil
 }
@@ -9412,7 +9418,7 @@ func (v *VM) chanOf(f *frame, x runtime.Value) (reflect.Value, *runtime.TypeDef,
 // and a nil proc report no wake source.
 func (v *VM) chanParkWake(rv reflect.Value) parkWake {
 	if rv.IsValid() && rv.Kind() == reflect.Chan {
-		if p := v.proc; p != nil {
+		if p := v.proc.Load(); p != nil {
 			if managed, _ := p.chanState(rv.Pointer()); managed {
 				return parkWake{chans: []uintptr{rv.Pointer()}}
 			}
@@ -9444,7 +9450,7 @@ func (v *VM) chanSendValue(val runtime.Value, elemT reflect.Type) (reflect.Value
 // plus the defer both landing is harmless. w reports whether the op can
 // end without a script goroutine acting.
 func (v *VM) park(w parkWake) func() {
-	p := v.proc
+	p := v.proc.Load()
 	if p == nil {
 		return func() {}
 	}
