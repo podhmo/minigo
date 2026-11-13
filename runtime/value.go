@@ -1420,7 +1420,7 @@ func anonTag(e ast.Expr) string {
 	case *ast.ArrayType:
 		n := ""
 		if t.Len != nil {
-			switch l := t.Len.(type) {
+			switch l := ArrayLenExpr(t).(type) {
 			case *ast.BasicLit:
 				n = l.Value
 			case *ast.Ident:

@@ -6881,15 +6881,16 @@ func (c *compiler) litTypeAt(baseType ast.Expr, depth int) (t ast.Expr, ptr bool
 }
 
 // emitLenFolds emits the in-scope evaluation of every non-literal array
-// length inside a type AST. Each OpFoldArrayLen folds one len node into
-// the typedef's AST so `[n]int`/`[len(a)]*T` spell the concrete `[3]*T`
-// at type-identity compares, like Go's constant folding. The DFS order
-// is runtime.ArrayLenNodes — the same walk the VM folds against, so
-// `[]T`, `[3]T` and `[...]T` emit nothing on either side.
+// length inside a type AST. Each OpFoldArrayLen publishes the value as
+// the length of its node (A: const index of the *ast.ArrayType) so
+// `[n]int`/`[len(a)]*T` spell the concrete `[3]*T` at type-identity
+// compares, like Go's constant folding. The AST itself is never
+// rewritten — it is shared by every goroutine running the code.
+// `[]T`, `[3]T` and `[...]T` emit nothing (runtime.ArrayLenNodes).
 func (c *compiler) emitLenFolds(e ast.Expr) {
 	for _, at := range runtime.ArrayLenNodes(e) {
 		c.expr(at.Len)
-		c.emit(bytecode.OpFoldArrayLen, 0, 0, e.Pos())
+		c.emit(bytecode.OpFoldArrayLen, c.constIdx(at), 0, e.Pos())
 	}
 }
 
