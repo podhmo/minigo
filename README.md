@@ -101,6 +101,13 @@ internals (e.g. `reflect`'s `internal/abi` init).
   do not apply. Basics, bound host types and slices/arrays/maps of them
   keep their Go type. minigo's own intrinsics (`fmt`, `reflect`,
   `encoding/json`, ...) see the script type as usual
+- **sharing backing arrays with host maps and slices** — a host map or
+  slice the embedder hands in (`http.Header`, `url.Values`, `net.IP`) is
+  written in place (`h["X"] = v`, `h["X"][0] = v`, `ip[0] = 9`), but a
+  value read out of it is a script copy and a value stored into it is a
+  host copy: `a := h["X"]; a[0] = v`, `sort.Strings(h["X"])` or
+  `s := []string{"a"}; h["X"] = s; s[0] = "b"` do not reach the other
+  side as they would in Go, and the stored slice's capacity is not kept
 
 Smaller gaps shift as work lands — see `TODO.md` for the live list.
 

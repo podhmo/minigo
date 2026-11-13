@@ -349,6 +349,14 @@ func builtins(e *Engine) *runtime.Env {
 			return check(m.Typ)
 		case runtime.Nil:
 			// delete on a nil map is a no-op
+		case *runtime.GoValue:
+			// a boxed host named map (url.Values, http.Header)
+			if hd, ok := v.(interface {
+				HostMapDelete(*runtime.GoValue, runtime.Value) bool
+			}); ok && hd.HostMapDelete(m, args[1]) {
+				return runtime.NIL, nil
+			}
+			return nil, fmt.Errorf("delete on %T", args[0])
 		default:
 			return nil, fmt.Errorf("delete on %T", args[0])
 		}
@@ -544,6 +552,13 @@ func builtins(e *Engine) *runtime.Env {
 			}
 			for i := range m.Elems {
 				m.Elems[i] = zero
+			}
+		case *runtime.GoValue:
+			// a boxed host named map or slice
+			if hc, ok := v.(interface {
+				HostClear(*runtime.GoValue) bool
+			}); !ok || !hc.HostClear(m) {
+				return nil, fmt.Errorf("clear of %T", args[0])
 			}
 		default:
 			return nil, fmt.Errorf("clear of %T", args[0])

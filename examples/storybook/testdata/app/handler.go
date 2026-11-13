@@ -6,6 +6,8 @@ package app
 import (
 	"html/template"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -26,6 +28,7 @@ func (u *User) Initial() string {
 
 type Store interface {
 	Find(id string) (*User, error)
+	List() []*User
 }
 
 type Handler struct {
@@ -42,11 +45,52 @@ func (h *Handler) ShowUser(w http.ResponseWriter, r *http.Request) {
 	RenderUser(w, u)
 }
 
+// ListUsers lists the users carrying any ?tag=, ordered by ?sort= (name
+// or id; name when absent), and reports the match count in a header.
+func (h *Handler) ListUsers(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if _, ok := q["sort"]; !ok {
+		q["sort"] = []string{"name"}
+	}
+	var hits []*User
+	for _, u := range h.Store.List() {
+		if len(q["tag"]) == 0 || slices.ContainsFunc(u.Tags, func(t string) bool { return slices.Contains(q["tag"], t) }) {
+			hits = append(hits, u)
+		}
+	}
+	slices.SortFunc(hits, func(a, b *User) int {
+		if q.Get("sort") == "id" {
+			return strings.Compare(a.ID, b.ID)
+		}
+		return strings.Compare(a.Name, b.Name)
+	})
+	// the effective query, echoed so the page shows what it filtered by
+	var filters []string
+	for k, vs := range q {
+		filters = append(filters, k+"="+strings.Join(vs, ","))
+	}
+	slices.Sort(filters)
+	w.Header()["X-Total-Count"] = []string{strconv.Itoa(len(hits))}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := listTmpl.Execute(w, map[string]any{"Users": hits, "Filters": filters}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
 func (h *Handler) Routes() *http.ServeMux {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /users", h.ListUsers)
 	mux.HandleFunc("GET /users/{id}", h.ShowUser)
 	return mux
 }
+
+var listTmpl = template.Must(template.New("list").Parse(`<!doctype html>
+<html><head><title>users</title></head>
+<body>
+<p class="filters">{{range .Filters}}<code>{{.}}</code> {{end}}</p>
+<ul>{{range .Users}}<li><a href="/users/{{.ID}}">{{.Name}}</a></li>{{else}}<li>no users</li>{{end}}</ul>
+</body></html>
+`))
 
 var userTmpl = template.Must(template.New("user").Parse(`<!doctype html>
 <html><head><title>{{.Name}}</title></head>

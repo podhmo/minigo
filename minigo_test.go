@@ -10,6 +10,8 @@ import (
 	"go/token"
 	"math"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
@@ -2762,5 +2764,41 @@ func TestHostNamedMapIndex(t *testing.T) {
 	got = run(t, e, "./testdata/htmltmpl", "HostSliceOOB", &runtime.GoValue{V: net.IP{1, 2, 3, 4}})
 	if diff := cmp.Diff("runtime error: index out of range [18446744073709551615] with length 4", got); diff != "" {
 		t.Errorf("HostSliceOOB (-want +got):\n%s", diff)
+	}
+}
+
+// TestHostBoxedWrites writes, deletes, clears, ranges over and slices
+// boxed host named maps and slices handed in by the embedder (an
+// http.Request's URL.Query(), w.Header(), url.Values, net.IP). Wants
+// come from running testdata/hostboxed natively.
+func TestHostBoxedWrites(t *testing.T) {
+	e := newEngine(t)
+	ip := func() runtime.Value { return &runtime.GoValue{V: net.IP{1, 2, 3, 4}} }
+	got := []any{
+		run(t, e, "./testdata/hostboxed", "Handler",
+			&runtime.GoValue{V: httptest.NewRecorder()},
+			&runtime.GoValue{V: httptest.NewRequest("GET", "/?a=1&b=2&b=3", nil)}),
+		run(t, e, "./testdata/hostboxed", "Values", &runtime.GoValue{V: url.Values{"a": {"1"}, "b": {"2"}, "c": {"3"}}}),
+		run(t, e, "./testdata/hostboxed", "IP", ip()),
+		run(t, e, "./testdata/hostboxed", "SliceOOB", ip()),
+		run(t, e, "./testdata/hostboxed", "SetOOB", ip()),
+		run(t, e, "./testdata/hostboxed", "Nested", &runtime.GoValue{V: url.Values{"tag": {"a", "b"}}}),
+		run(t, e, "./testdata/hostboxed", "NestedMissing", &runtime.GoValue{V: url.Values{}}),
+		run(t, e, "./testdata/hostboxed", "ContainsFunc", &runtime.GoValue{V: url.Values{"tag": {"a", "go"}}}),
+		run(t, e, "./testdata/hostboxed", "Helpers", &runtime.GoValue{V: http.Header{"B": {"2"}, "A": {"1"}}}, ip()),
+	}
+	want := []any{
+		"a=1&b=2,3&z=9 12 2",
+		"b=2&c=3&z=9 1 1 0",
+		"?0102 2 net.IP|0:1 1:2 2:3 3:4 9.2.3.4",
+		"runtime error: slice bounds out of range [:5] with capacity 4",
+		"runtime error: index out of range [4] with length 4",
+		"tag=X,b!",
+		"runtime error: index out of range [0] with length 0",
+		"true false -1",
+		"[A B] 2 true 3 4 true3",
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("hostboxed (-want +got):\n%s", diff)
 	}
 }

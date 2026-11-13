@@ -184,3 +184,32 @@ A と B を `examples/storybook/testdata/app` で組んで測った（8 コア�
 - **構造的な優位はある。** (1) レジストリの生成もテスト関数も書かずに名前で呼べる、(2) `package main` に直接書かれたハンドラーをそのまま呼べる、(3) 同じパッケージに壊れたコードがあっても見た目だけ確認できる、(4) 常駐サーバーで再起動なしに反映できる。どれも Go 単体では工夫が要るか、できないこと。
 - **ただし忠実度の穴が優位を相殺している。** 実際のビューのコードはほぼ確実に `template.FuncMap` を使い、ハンドラーは `w.Header()` に直接書く。どちらも今の minigo では trap するので、実アプリに当てると構造的な優位を活かす前に止まる可能性が高い。さらに、表示が正しいことを保証するには A の形でネイティブと比較するしかなく、Go を使わずに済むわけではない。
 - **結論**: いまの段階では「Go に対して十分な優位性がある」とは言えず、**主に動作検証**の位置づけ。存在価値の候補になるのは「大きい・壊れている・`package main` のコードを、ビルドせずに名前で叩いて覗く」という用途に絞った場合で、そのためには少なくとも `template.FuncMap` と、host の map への代入・`range` を埋める必要がある（いずれも TODO に記録済み）。埋めた後に、依存の多い実アプリで 7.2 の編集ループを測り直すのが次の判断材料になる。
+
+## 8. 追補: host の map/slice への書き込みと range（stack 1 層目）
+
+7.4 で「実アプリに当てると最初に踏みそう」とした穴のうち、host の named map/slice（`url.Values`・`http.Header`・`net.IP`）を箱のまま扱う経路をまとめて埋めた。
+
+| 書き方 | 以前 | 現在 |
+|---|---|---|
+| `w.Header()["X-A"] = []string{"1"}` / `q["z"] = v` | `index assign on *runtime.GoValue` | host の map に書く（`VM.hostSetIndex`） |
+| `for k, v := range r.URL.Query()` | `range over *runtime.GoValue` | キーを snapshot し値は都度読む（iterator kind `'h'`）。到達前に消したキーは出ない |
+| `q["tag"][0] = v` | 黙って失われる（script 側のコピーに書く） | host の要素の backing に書く（`VM.hostElemRef`） |
+| `delete(q, k)` / `clear(q)` | `delete on *runtime.GoValue` | reflect で消す |
+| `ip[:2]` / `ip[1:3:4]` / `range ip` / `ip[0] = 9` | `slice on` / `range over` | 動く。`ip[:2]` は `net.IP` のまま（`%T` も一致） |
+
+境界外アクセスは script の slice と同じ runtime error を出す。`testdata/hostboxed` で、ネイティブ Go の実行結果と同じ文字列を `TestHostBoxedWrites` で固定した。
+
+### 8.1 example を実アプリ寄りにした
+
+`testdata/app` に `ListUsers` ハンドラー（`?tag=` で絞り込み、`?sort=` で並べ替え、件数を `X-Total-Count` ヘッダーで返す）を足した。書き方は素の Go のハンドラーとして自然なものにしている。
+
+- `q := r.URL.Query(); if _, ok := q["sort"]; !ok { q["sort"] = ... }` で既定値を入れる
+- `for k, vs := range q` で有効なクエリを画面に出す
+- `w.Header()["X-Total-Count"] = ...`
+- `slices.ContainsFunc(u.Tags, ...)` でタグを照合する
+
+ストーリーは `StoryListUsers` と `StoryListUsersByTag`（`/?tag=go&sort=id`）。golden は Content-Type だけでなく **全ヘッダー** を比較するようにした（`X-Total-Count` や `http.Error` が付ける `X-Content-Type-Options` もネイティブと一致する）。
+
+ここで新たに `slices.ContainsFunc` が未 binding（`undefined: slices.ContainsFunc`、TODO の未 binding 一覧に既出）で、`slices.IndexFunc` も nil slice を渡すと `first arg must be a slice` で落ちることが分かった。前者を足し、両方を nil slice で -1 / false を返すよう共通化した。実アプリ寄りに書き直すと、こうした「小さいが確実に踏む」未対応が出てくる。
+
+残り: `template.FuncMap`（次の層）、host の構造体フィールド経由の slice 書き込み（`ce.Args[0] = v`、TODO 既出）、nil の named host map が typed nil にならない件（TODO に分離）。

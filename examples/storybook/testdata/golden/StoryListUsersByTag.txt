@@ -1,0 +1,10 @@
+200
+Content-Type: text/html; charset=utf-8
+X-Total-Count: 2
+
+<!doctype html>
+<html><head><title>users</title></head>
+<body>
+<p class="filters"><code>sort=id</code> <code>tag=go</code> </p>
+<ul><li><a href="/users/1">Alice</a></li><li><a href="/users/3">Bob</a></li></ul>
+</body></html>

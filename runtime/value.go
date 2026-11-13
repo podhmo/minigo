@@ -589,9 +589,18 @@ func SharedElem(v Value) bool {
 			*Cell, *FieldRef, *IndexRef, *DerefRef:
 			return true
 		case *GoValue:
-			// host values share only through pointers, like Go's
-			// implicit deref of `m[k]` on a map of *T.
-			return x.V != nil && reflect.TypeOf(x.V).Kind() == reflect.Pointer
+			// host values share through pointers, like Go's implicit
+			// deref of `m[k]` on a map of *T, and through the backing
+			// of a boxed host map or slice (m[k]["X"] = v on a
+			// map[string]http.Header).
+			if x.V == nil {
+				return false
+			}
+			switch reflect.TypeOf(x.V).Kind() {
+			case reflect.Pointer, reflect.Map, reflect.Slice:
+				return true
+			}
+			return false
 		case *TypedNil, *IfaceNil:
 			var td *TypeDef
 			switch t := x.(type) {
@@ -2433,7 +2442,7 @@ type Closure struct {
 
 // Iterator is the state of a range loop in progress.
 type Iterator struct {
-	Kind   byte // 's' slice, 'm' map, 'i' int, 'x' string, 'c' chan, 'f' func
+	Kind   byte // 's' slice, 'm' map, 'i' int, 'x' string, 'c' chan, 'f' func, 'h' host map/slice
 	Elems  []Value
 	Keys   []Value // map keys
 	Idx    int
@@ -2460,6 +2469,11 @@ type Iterator struct {
 	ChRV     reflect.Value
 	ETyp     *TypeDef
 	HostChan bool
+	// HostRV is the boxed host map, slice or array an 'h' iterator
+	// ranges over (Limit counts slice/array elements); HostKeys
+	// snapshots a map's keys, each value is read live.
+	HostRV   reflect.Value
+	HostKeys []reflect.Value
 
 	// Fn is the producer for 'f' (range-over-func) iterators. Started marks
 	// that the producer was invoked once; Exited marks that the loop body

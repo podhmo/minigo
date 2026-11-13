@@ -6911,33 +6911,164 @@ func (v *VM) hostIndex(f *frame, b *runtime.GoValue, idx runtime.Value) (val run
 	rv := reflect.ValueOf(b.V)
 	switch rv.Kind() {
 	case reflect.Map:
-		kv, err := toReflectValue(v.materialize(f, idx), rv.Type().Key(), v)
-		if err != nil {
-			f.trap("index %s with %T: %v", rv.Type(), idx, err)
-		}
-		ev := rv.MapIndex(kv)
+		ev := rv.MapIndex(v.hostMapKey(f, rv, idx))
 		if !ev.IsValid() {
 			return goValueOf(reflect.Zero(rv.Type().Elem())), false, true
 		}
 		return goValueOf(ev), true, true
 	case reflect.Slice, reflect.Array, reflect.String:
-		ix := runtime.Unwrap(v.materialize(f, idx))
-		i, isInt := indexSmallInt(ix)
-		if !isInt {
-			if u, isU := uintOperand(ix); isU {
-				panic(runtime.BoundsPanic(u, rv.Len()))
-			}
-			f.trap("%s index is %T", rv.Type(), idx)
-		}
-		if i < 0 && v.boundUnsigned(idx) {
-			panic(runtime.BoundsPanic(uint64(i), rv.Len()))
-		}
-		if i < 0 || i >= int64(rv.Len()) {
-			panic(runtime.BoundsPanic(i, rv.Len()))
-		}
-		return goValueOf(rv.Index(int(i))), true, true
+		return goValueOf(rv.Index(v.hostIndexInt(f, rv, idx))), true, true
 	}
 	return nil, false, false
+}
+
+// hostIndexInt reads idx as an in-range index into the host slice, array
+// or string rv, panicking like a script slice index when it is out of
+// range (wide unsigned indices included).
+func (v *VM) hostIndexInt(f *frame, rv reflect.Value, idx runtime.Value) int {
+	ix := runtime.Unwrap(v.materialize(f, idx))
+	i, isInt := indexSmallInt(ix)
+	if !isInt {
+		if u, isU := uintOperand(ix); isU {
+			panic(runtime.BoundsPanic(u, rv.Len()))
+		}
+		f.trap("%s index is %T", rv.Type(), idx)
+	}
+	if i < 0 && v.boundUnsigned(idx) {
+		panic(runtime.BoundsPanic(uint64(i), rv.Len()))
+	}
+	if i < 0 || i >= int64(rv.Len()) {
+		panic(runtime.BoundsPanic(i, rv.Len()))
+	}
+	return int(i)
+}
+
+// hostMapKey converts idx to the key type of the host map rv.
+func (v *VM) hostMapKey(f *frame, rv reflect.Value, idx runtime.Value) reflect.Value {
+	kv, err := toReflectValue(v.materialize(f, idx), rv.Type().Key(), v)
+	if err != nil {
+		f.trap("index %s with %T: %v", rv.Type(), idx, err)
+	}
+	return kv
+}
+
+// hostSetIndex writes b[idx] = val on a boxed host map or slice
+// (http.Header, url.Values, net.IP), converting val to the element type.
+// ok is false when b holds neither; a host array value is a copy, so
+// writing it is not offered.
+func (v *VM) hostSetIndex(f *frame, b *runtime.GoValue, idx, val runtime.Value) bool {
+	rv := reflect.ValueOf(b.V)
+	var dst reflect.Value
+	var key reflect.Value
+	switch rv.Kind() {
+	case reflect.Map:
+		key = v.hostMapKey(f, rv, idx)
+		if rv.IsNil() {
+			panic(runtime.NilMapAssignPanic())
+		}
+	case reflect.Slice:
+		dst = rv.Index(v.hostIndexInt(f, rv, idx))
+	default:
+		return false
+	}
+	ev, err := toReflectValue(v.materialize(f, val), rv.Type().Elem(), v)
+	if err != nil {
+		f.trap("cannot use %T as %s value in assignment: %v", val, rv.Type().Elem(), err)
+	}
+	if rv.Kind() == reflect.Map {
+		rv.SetMapIndex(key, ev)
+	} else {
+		dst.Set(ev)
+	}
+	return true
+}
+
+// hostElemRef returns b[idx] as a box over the host value itself when
+// the element is a slice or map, so a nested write (q["tag"][0] = v,
+// h[k][i] = v) reaches host storage the way Go's shared backing does. ok
+// is false for any other base or element shape.
+func (v *VM) hostElemRef(f *frame, b *runtime.GoValue, idx runtime.Value) (runtime.Value, bool) {
+	rv := reflect.ValueOf(b.V)
+	var ev reflect.Value
+	switch rv.Kind() {
+	case reflect.Map:
+		if k := rv.Type().Elem().Kind(); k != reflect.Slice && k != reflect.Map {
+			return nil, false
+		}
+		ev = rv.MapIndex(v.hostMapKey(f, rv, idx))
+		if !ev.IsValid() {
+			ev = reflect.Zero(rv.Type().Elem()) // missing key: the nil element
+		}
+	case reflect.Slice:
+		if k := rv.Type().Elem().Kind(); k != reflect.Slice && k != reflect.Map {
+			return nil, false
+		}
+		ev = rv.Index(v.hostIndexInt(f, rv, idx))
+	default:
+		return nil, false
+	}
+	return &runtime.GoValue{V: ev.Interface()}, true
+}
+
+// HostMapDelete runs the delete builtin on a boxed host map; ok is false
+// when m does not hold a map.
+func (v *VM) HostMapDelete(m *runtime.GoValue, key runtime.Value) (ok bool) {
+	rv := reflect.ValueOf(m.V)
+	if rv.Kind() != reflect.Map {
+		return false
+	}
+	f := v.topFrame()
+	kv := v.hostMapKey(f, rv, key)
+	if !rv.IsNil() {
+		rv.SetMapIndex(kv, reflect.Value{})
+	}
+	return true
+}
+
+// HostClear runs the clear builtin on a boxed host map or slice; ok is
+// false when m holds neither.
+func (v *VM) HostClear(m *runtime.GoValue) (ok bool) {
+	rv := reflect.ValueOf(m.V)
+	switch rv.Kind() {
+	case reflect.Map, reflect.Slice:
+		rv.Clear()
+		return true
+	}
+	return false
+}
+
+// hostSlice evaluates b[lo:hi(:max)] on a boxed host slice or string. The
+// result keeps the host type (net.IP's ip[:2] is a net.IP), so a named
+// slice stays boxed for its methods.
+func (v *VM) hostSlice(f *frame, b *runtime.GoValue, lo, hi, max runtime.Value, three bool) (runtime.Value, bool) {
+	rv := reflect.ValueOf(b.V)
+	switch rv.Kind() {
+	case reflect.Slice:
+		l, h := v.bounds(f, lo, hi, int64(rv.Len()))
+		cp := int64(rv.Cap())
+		if three {
+			m := v.maxBound(f, max, cp)
+			if r := sliceBoundsReason(l, h, m, cp, true, "capacity"); r != "" {
+				panic(runtime.SliceBoundsPanic(r))
+			}
+			return goValueOf(rv.Slice3(int(l.i), int(h.i), int(m.i))), true
+		}
+		if r := sliceBoundsReason(l, h, boundOperand{}, cp, false, "capacity"); r != "" {
+			panic(runtime.SliceBoundsPanic(r))
+		}
+		return goValueOf(rv.Slice(int(l.i), int(h.i))), true
+	case reflect.String:
+		if three {
+			f.trap("cannot slice a string with 3 indices")
+		}
+		n := int64(rv.Len())
+		l, h := v.bounds(f, lo, hi, n)
+		if r := sliceBoundsReason(l, h, boundOperand{}, n, false, "length"); r != "" {
+			panic(runtime.SliceBoundsPanic(r))
+		}
+		return goValueOf(rv.Slice(int(l.i), int(h.i))), true
+	}
+	return nil, false
 }
 
 // fieldTypedefs returns declared field types for a struct typedef (nil
@@ -7925,6 +8056,15 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 		if bx == nil {
 			bx = b.Base
 		}
+		if gv, ok := bx.(*runtime.GoValue); ok {
+			// q["tag"][0] = v on a boxed host map or slice: write the
+			// host element's own backing, not the script copy
+			// v.index would hand back.
+			if ev, ok := v.hostElemRef(f, gv, b.Key); ok {
+				v.setIndex(f, ev, rawIdx, val)
+				return
+			}
+		}
 		x := v.index(f, bx, b.Key)
 		if m := b.Map(); m != nil && !runtime.SharedElem(x) {
 			// Go rejects interior writes on a non-reference map
@@ -7945,6 +8085,13 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 			f.trap("index assign on %T", base)
 		}
 		v.setIndex(f, x, rawIdx, val)
+	case *runtime.GoValue:
+		// a boxed host named map or slice (w.Header(), url.Values,
+		// net.IP) keeps its box for method dispatch; write the host
+		// value itself so the host sees the change.
+		if !v.hostSetIndex(f, b, rawIdx, val) {
+			f.trap("index assign on %T", base)
+		}
 	default:
 		f.trap("index assign on %T", base)
 	}
@@ -8154,6 +8301,12 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 			}
 		}
 		return b[l.i:h.i]
+	case *runtime.GoValue:
+		if r, ok := v.hostSlice(f, b, lo, hi, max, three); ok {
+			return r
+		}
+		f.trap("slice on %T", base)
+		return nil
 	default:
 		f.trap("slice on %T", base)
 		return nil
@@ -8884,8 +9037,26 @@ func (v *VM) itFrom(f *frame, coll runtime.Value, viaPtr bool) *runtime.Iterator
 	case *runtime.Chan:
 		return mkIter(runtime.Iterator{Kind: 'c', ChRV: reflect.ValueOf(c.C), ETyp: v.elemTypedef(f, c.Typ)})
 	case *runtime.GoValue:
-		if rv := reflect.ValueOf(c.V); rv.IsValid() && rv.Kind() == reflect.Chan {
+		rv := reflect.ValueOf(c.V)
+		switch rv.Kind() {
+		case reflect.Chan:
 			return mkIter(runtime.Iterator{Kind: 'c', ChRV: rv, HostChan: true})
+		case reflect.Map:
+			// a boxed host named map (url.Values, http.Header): snapshot
+			// the keys, read each value live like the script map
+			// iterator — an entry deleted before its turn is skipped.
+			return mkIter(runtime.Iterator{Kind: 'h', HostRV: rv, HostKeys: rv.MapKeys()})
+		case reflect.Slice:
+			// a boxed host named slice (net.IP): the length is fixed at
+			// loop entry, each element is read live.
+			return mkIter(runtime.Iterator{Kind: 'h', HostRV: rv, Limit: rv.Len()})
+		case reflect.Array:
+			// an array value ranges over a copy, as in Go.
+			cp := reflect.New(rv.Type()).Elem()
+			cp.Set(rv)
+			return mkIter(runtime.Iterator{Kind: 'h', HostRV: cp, Limit: cp.Len()})
+		case reflect.String:
+			return mkIter(runtime.Iterator{Kind: 'x', String: rv.String()})
 		}
 		f.trap("range over %T", coll)
 		return nil
@@ -8964,6 +9135,26 @@ func (v *VM) iterNext(f *frame, it *runtime.Iterator, nvars int, elemRead bool) 
 			return true
 		}
 		return false
+	case 'h':
+		if it.HostRV.Kind() == reflect.Map {
+			for it.Idx < len(it.HostKeys) {
+				k := it.HostKeys[it.Idx]
+				it.Idx++
+				val := it.HostRV.MapIndex(k)
+				if !val.IsValid() {
+					continue // removed before being reached: not produced
+				}
+				push(goValueOf(k), goValueOf(val))
+				return true
+			}
+			return false
+		}
+		if it.Idx >= it.Limit {
+			return false
+		}
+		push(int64(it.Idx), goValueOf(it.HostRV.Index(it.Idx)))
+		it.Idx++
+		return true
 	case 'i':
 		if it.Idx >= it.Limit {
 			return false

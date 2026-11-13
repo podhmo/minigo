@@ -5137,8 +5137,31 @@ func scriptSliceArg(vc runtime.VMCaller, v runtime.Value) ([]runtime.Value, *run
 		if nilSliceArg(x) {
 			return nil, nil, true
 		}
+	case *runtime.GoValue:
+		// a boxed host named slice (net.IP) read element by element —
+		// callers only read, so the elements may be copies.
+		return hostSliceElems(x)
 	}
 	return nil, nil, false
+}
+
+// hostSliceElems reads a boxed host slice or array's elements as script
+// values. The element typedef is the predeclared basic when the element
+// type is an unnamed basic (net.IP's byte), else nil.
+func hostSliceElems(x *runtime.GoValue) ([]runtime.Value, *runtime.TypeDef, bool) {
+	rv := reflect.ValueOf(x.V)
+	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+		return nil, nil, false
+	}
+	el := make([]runtime.Value, rv.Len())
+	for i := range el {
+		el[i] = scriptVal(rv.Index(i).Interface())
+	}
+	var et *runtime.TypeDef
+	if t := rv.Type().Elem(); t.PkgPath() == "" && t.Kind() <= reflect.Complex128 && t.Kind() != reflect.Invalid {
+		et = runtime.BasicTypedef(t.Kind().String())
+	}
+	return el, et, true
 }
 
 // sliceIndexScript is slices.Index(s, x) over a script slice with Go's
@@ -8435,6 +8458,14 @@ func mapKeys(v any) *runtime.Slice {
 	if m, ok := v.(map[any]any); ok {
 		return &runtime.Slice{Elems: slices.Collect(maps.Keys(m))}
 	}
+	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Map {
+		// a boxed host named map (http.Header, url.Values)
+		el := make([]runtime.Value, 0, rv.Len())
+		for it := rv.MapRange(); it.Next(); {
+			el = append(el, scriptVal(it.Key().Interface()))
+		}
+		return &runtime.Slice{Elems: el}
+	}
 	return &runtime.Slice{}
 }
 
@@ -8451,6 +8482,14 @@ func mapValues(v any) *runtime.Slice {
 	}
 	if m, ok := v.(map[any]any); ok {
 		return &runtime.Slice{Elems: slices.Collect(maps.Values(m))}
+	}
+	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Map {
+		// a boxed host named map (http.Header, url.Values)
+		el := make([]runtime.Value, 0, rv.Len())
+		for it := rv.MapRange(); it.Next(); {
+			el = append(el, scriptVal(it.Value().Interface()))
+		}
+		return &runtime.Slice{Elems: el}
 	}
 	return &runtime.Slice{}
 }
