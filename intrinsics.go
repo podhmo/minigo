@@ -1152,7 +1152,7 @@ func (e *Engine) installStdlib() {
 	})
 	// reflect is bound by installReflect (the minireflect facade).
 	e.installReflect()
-	e.Bind("sort", map[string]runtime.Value{
+	e.Bind("sort", hostSliceBoundary(map[string]runtime.Value{
 		"Ints":     h.sortInPlace("sort.Ints"),
 		"Float64s": h.sortInPlace("sort.Float64s"),
 		"Strings":  h.sortInPlace("sort.Strings"),
@@ -1161,6 +1161,16 @@ func (e *Engine) installStdlib() {
 		"Sort":  &runtime.BuiltinFunc{Name: "sort.Sort", Fn: h.sortInterface},
 		"Slice": &runtime.BuiltinFunc{Name: "sort.Slice", Fn: h.sortSlice},
 		"SliceIsSorted": &runtime.BuiltinFunc{Name: "sort.SliceIsSorted", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if _, rv, isHost := vm.HostSliceOf(args[0]); isHost {
+				// a boxed host slice: the less function reads it live
+				for i := rv.Len() - 1; i > 0; i-- {
+					r := callOrPanic(v, args[1], []runtime.Value{int64(i), int64(i - 1)})
+					if b, _ := r.(bool); b {
+						return false, nil
+					}
+				}
+				return true, nil
+			}
 			s, ok := sliceOf(args[0])
 			if !ok {
 				if nilSliceArg(args[0]) {
@@ -1193,6 +1203,9 @@ func (e *Engine) installStdlib() {
 			return i, nil
 		}},
 		"SliceStable": &runtime.BuiltinFunc{Name: "sort.SliceStable", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if hostSortSlice(v, args[0], args[1], true) {
+				return runtime.NIL, nil // a boxed host slice (net.IP)
+			}
 			s, ok := sliceOf(args[0])
 			if !ok {
 				if nilSliceArg(args[0]) {
@@ -1208,8 +1221,8 @@ func (e *Engine) installStdlib() {
 			})
 			return runtime.NIL, nil
 		}},
-	})
-	e.Bind("slices", e.slicesSeqHelpers(map[string]runtime.Value{
+	}, sortHostUse, nil))
+	e.Bind("slices", hostSliceBoundary(e.slicesSeqHelpers(map[string]runtime.Value{
 		"Sort": h.sortInPlace("slices.Sort"),
 		"Contains": &runtime.BuiltinFunc{Name: "slices.Contains", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			i, err := sliceIndexScript(vc, "slices.Contains", args)
@@ -1414,7 +1427,7 @@ func (e *Engine) installStdlib() {
 		"Reverse": slicesReverse(),
 		"Insert":  slicesInsert(),
 		"Delete":  slicesDelete(),
-	}))
+	}), slicesHostUse, &firstSliceRead))
 	e.Bind("maps", e.mapsSeqHelpers(map[string]runtime.Value{
 		"Clone": &runtime.BuiltinFunc{Name: "maps.Clone", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
@@ -4232,6 +4245,9 @@ func (s *scriptSortable) Swap(i, j int) {
 }
 
 func (h *hostHelpers) sortSlice(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	if hostSortSlice(v, args[0], args[1], false) {
+		return runtime.NIL, nil // a boxed host slice (net.IP)
+	}
 	s, ok := sliceOf(args[0])
 	if !ok {
 		if nilSliceArg(args[0]) {

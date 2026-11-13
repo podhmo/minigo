@@ -7,11 +7,13 @@ import (
 	"go/token"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/podhmo/minigo/compile"
 	"github.com/podhmo/minigo/runtime"
+	"github.com/podhmo/minigo/vm"
 )
 
 // builtins returns the predeclared universe: builtin functions and builtin
@@ -44,6 +46,11 @@ func builtins(e *Engine) *runtime.Env {
 		return capOf(x)
 	})
 	bf("append", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if _, plain := args[0].(*runtime.Slice); !plain {
+			if base, ok := hostSliceBase(args[0]); ok {
+				return appendHostSlice(v, base, args[1:])
+			}
+		}
 		var s *runtime.Slice
 		var tag *runtime.TypeDef
 		var rtyp *runtime.TypeDef
@@ -235,9 +242,19 @@ func builtins(e *Engine) *runtime.Env {
 			case *runtime.TypedNil, *runtime.IfaceNil, runtime.Nil:
 				return nil, true // nil slice: copies 0 elements
 			}
+			// a boxed host slice (net.IP) reads as a snapshot
+			if sv, ok := vm.UnboxHostSlice(x); ok {
+				ss, _ := sv.(*runtime.Slice)
+				return ss, true
+			}
 			return nil, false
 		}
-		dst, ok1 := sliceOf(args[0])
+		_, _, hostDst := vm.HostSliceOf(args[0])
+		var dst *runtime.Slice
+		ok1 := hostDst
+		if !hostDst {
+			dst, ok1 = sliceOf(args[0])
+		}
 		src, ok2 := sliceOf(args[1])
 		if src == nil && ok1 {
 			// copy(dst, "str"): a string source copies into []byte. A
@@ -258,6 +275,19 @@ func builtins(e *Engine) *runtime.Env {
 		}
 		if !ok1 || !ok2 {
 			return nil, fmt.Errorf("copy on non-slice")
+		}
+		if hostDst {
+			// copy into a boxed host slice writes its backing; src is
+			// a snapshot of its own, so overlapping host slices copy
+			// like memmove.
+			var el []runtime.Value
+			if src != nil {
+				el = src.Elems
+				if src.Virtual() {
+					el = slices.Repeat([]runtime.Value{src.Zero}, int(src.Len()))
+				}
+			}
+			return copyIntoHostSlice(v, args[0], el)
 		}
 		if dst == nil || src == nil {
 			return int64(0), nil
@@ -366,6 +396,9 @@ func builtins(e *Engine) *runtime.Env {
 		td, ok := args[0].(*runtime.TypeDef)
 		if !ok {
 			return nil, fmt.Errorf("make of non-type %T", args[0])
+		}
+		if r, ok := makeHostType(td, args); ok {
+			return r, nil // a bound host slice or map type (net.IP)
 		}
 		switch td.Kind {
 		case runtime.KindSlice:

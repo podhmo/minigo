@@ -107,7 +107,12 @@ internals (e.g. `reflect`'s `internal/abi` init).
   value read out of it is a script copy and a value stored into it is a
   host copy: `a := h["X"]; a[0] = v`, `sort.Strings(h["X"])` or
   `s := []string{"a"}; h["X"] = s; s[0] = "b"` do not reach the other
-  side as they would in Go, and the stored slice's capacity is not kept
+  side as they would in Go, and the stored slice's capacity is not kept.
+  The same holds for a host named slice handed to something that wants
+  a plain script slice: `b := []byte(ip); b[0] = 9` and a callee writing
+  into its `...byte` parameter after `f(ip...)` leave `ip` alone, where
+  `append`, `copy`, `slices.Sort`/`Reverse`/`Delete`, `sort.Slice` and
+  `ip[:n]` act on the host backing
 
 Smaller gaps shift as work lands — see `TODO.md` for the live list.
 

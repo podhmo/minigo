@@ -8,6 +8,7 @@ import (
 	"go/constant"
 	"go/parser"
 	"go/token"
+	"html/template"
 	"math"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -2800,6 +2802,63 @@ func TestHostBoxedWrites(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("hostboxed (-want +got):\n%s", diff)
+	}
+}
+
+// TestHostBoxedNamed runs append, copy, spread, conversions, the
+// slices/sort helpers, literals and make on a boxed host net.IP and
+// the operators and conversions on a boxed host template.HTML, handed in
+// by the embedder, plus the script-built forms of both. Wants come from
+// running testdata/hostnamed natively; hostAfter is the host argument
+// after the call, so an in-place operation is seen to write the host
+// backing.
+func TestHostBoxedNamed(t *testing.T) {
+	e := newEngine(t)
+	box := func(v any) []runtime.Value { return []runtime.Value{&runtime.GoValue{V: v}} }
+	ip := func() []runtime.Value { return box(net.IP{1, 2, 3, 4}) }
+	html := func() []runtime.Value { return box(template.HTML("<b>hi</b>")) }
+	cases := []struct {
+		fn        string
+		args      []runtime.Value
+		want      string
+		hostAfter any
+	}{
+		{"Append", ip(), "?0102030409 net.IP 5|?01020304010203 7|?010207|1.2.7.4", net.IP{1, 2, 7, 4}},
+		{"AppendNil", box(net.IP(nil)), "?0102 net.IP|?03 net.IP|?04 net.IP", net.IP(nil)},
+		{"Spread", ip(), "[0 1 2 3 4]|1.3.4.4 net.IP|12|3", net.IP{1, 3, 4, 4}},
+		{"Copy", ip(), "4 [1 2 3 4 0 0]|2 3 2|120.121.8.3", net.IP{120, 121, 8, 3}},
+		{"CopyIP", append(box(net.IP{1, 2, 3, 4}), box(net.IP{5, 6})...), "2 5.6.3.4 ?0506", net.IP{5, 6, 3, 4}},
+		{"Convert", ip(), `[1 2 3 4] []uint8 "\x01\x02\x03\x04" [1 2 3 4] [4]uint8`, net.IP{1, 2, 3, 4}},
+		{"ConvertShort", ip(), "runtime error: cannot convert slice with length 4 to array or pointer to array with length 8", net.IP{1, 2, 3, 4}},
+		{"ConvertTo", ip(), "10.20.30.40 net.IP|01:02:03:04 net.HardwareAddr|true|97.98.99.100 net.IP", net.IP{1, 2, 3, 4}},
+		{"Helpers", box(net.IP{4, 1, 3, 2}), "4.1.3.2 net.IP|1.2.3.4|4.3.2.1|4.3.2.1|1 true|false", net.IP{4, 3, 2, 1}},
+		{"Reshape", box(net.IP{1, 1, 2, 2}), "?0102 net.IP|?010202 net.IP|?010203 net.IP|1.2.2.0", net.IP{1, 2, 2, 0}},
+		{"Alias", ip(), "99.3.4.0 ?630304 net.IP", net.IP{99, 3, 4, 0}},
+		{"Captured", ip(), "?0902030405 5", net.IP{1, 2, 3, 4}},
+		{"SortSlice", box(net.IP{4, 1, 3, 2}), "4.3.2.1 1.2.3.4 true", net.IP{1, 2, 3, 4}},
+		{"SortStrings", box(sort.StringSlice{"b", "a", "c"}), "[a b c] true", sort.StringSlice{"a", "b", "c"}},
+		{"Parsed", nil, "?0102030409 net.IP|1|9.4.3.2 net.IP|4.3.2.9|[4 3 2 9]", nil},
+		{"Literal", nil, "1.2.3.4 net.IP 4|9.0.0.7|?0a000b 3 8|1.2.3.4|true 0", nil},
+		{"LiteralOps", nil, "?0102030405 net.IP|1 9.2.3.4|[9 2 3 4]|4.3.2.9 net.IP", nil},
+		{"MakeOOB", nil, "runtime error: makeslice: len out of range", nil},
+		{"MakeMap", nil, "map[a:[1 2]] 1a=1&a=2", nil},
+		{"Add", html(), "<b>hi</b>x! template.HTML 11", template.HTML("<b>hi</b>")},
+		{"Order", html(), "true false true true true true", template.HTML("<b>hi</b>")},
+		{"Bytes", html(), `[60 98 62] []uint8|9|"<b>hi</b>" string`, template.HTML("<b>hi</b>")},
+		{"Script", nil, "<i>x template.HTML true 105 <i>x", nil},
+	}
+	for _, c := range cases {
+		t.Run(c.fn, func(t *testing.T) {
+			got := run(t, e, "./testdata/hostnamed", c.fn, c.args...)
+			if diff := cmp.Diff(c.want, got); diff != "" {
+				t.Errorf("%s (-want +got):\n%s", c.fn, diff)
+			}
+			if c.hostAfter != nil {
+				if diff := cmp.Diff(c.hostAfter, c.args[0].(*runtime.GoValue).V); diff != "" {
+					t.Errorf("%s host argument after the call (-want +got):\n%s", c.fn, diff)
+				}
+			}
+		})
 	}
 }
 
