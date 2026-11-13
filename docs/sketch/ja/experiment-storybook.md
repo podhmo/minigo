@@ -99,6 +99,18 @@ runtime trap: index on *runtime.GoValue
 
 対処: `VM.index` / `VM.indexOK` に、`GoValue` の中身が map/slice/array なら reflect で読むフォールバック（`VM.hostIndex`）を足した。comma-ok（`v, ok := q["x"]`）も効く。副作用として既存 TODO の `net.IP` の `ip[3]` も通るようになった。slice 式と range は未対応のままなので、TODO entry を部分完了 `[-]` にした。
 
+読み取り以外はまだ trap する（追加で試した結果、TODO に新規 entry として記録）:
+
+| 書き方 | 結果 |
+|---|---|
+| `r.URL.Query()["tag"][:1]` | OK（要素の `[]string` は箱から出る） |
+| `var q url.Values = r.URL.Query(); q.Get("tag")` | OK |
+| `for k, v := range r.URL.Query()` | `range over *runtime.GoValue` |
+| `w.Header()["X-A"] = []string{"1"}` | `index assign on *runtime.GoValue` |
+| `q := r.URL.Query(); q["z"] = ...` | 同上 |
+
+`w.Header()` への直接代入はハンドラーでよく書くので、実アプリに当てると最初に踏みそう。
+
 ### 4.3 タグ付きファイルをエントリーポイントにできない（対処済み）
 
 `Engine` には `WithBuildConfig` があったが、CLI からタグを指定する手段がなかった。`minigo run --tags story ./app StoryUser`（`--tags=a,b` 形式も可）を追加した。storybook 自体は API 経由なのでこれを使わないが、ストーリーを素の minigo で 1 本叩くのに便利。
