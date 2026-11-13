@@ -1,0 +1,30 @@
+true
+false
+false false
+true true false
+true
+true
+true
+false
+true
+false 1
+false 0
+equalfunc-panic: panic: boom (string)
+true
+map[1:a 4:d] 2
+map[1:a 4:d]
+map[] 0 false
+true 0
+map[b:2] [b]
+map[1:x 3:z] [1 3]
+1 2
+map[1.5:true]
+1
+map[a:{x 1}]
+2 1 3
+[a=1] map[a:1]
+1 1
+deletefunc-panic: panic: boom (string)
+map[2:2] map[2:2] map[1:1 2:2]
+[{a 1} {c 3}] [{a 1} {c 3} { 0}]
+[{a 1} {b 2}] [{a 1} {b 2} { 0}]

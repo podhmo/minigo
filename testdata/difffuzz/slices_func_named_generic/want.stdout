@@ -1,0 +1,22 @@
+main.IDs [1 2 3]
+main.IDs []
+[]string []string
+int int bool
+main.Rec float64
+[100 2 3 0 0] [100 2 3]
+[99 20 30 5 0] [99 20 30 5] 4 8
+c a
+-1 0
+true false
+[a b]
+true
+{b 9} 4
+[x y] [5]
+[[1 2] [1 3]] 3
+[1 3] []
+false -1
+[[a] [a z] [b a]]
+-1 0
+-1 [74 101 108 108 111] hippyllo
+2.5 -1
+1 -1 1

@@ -1,0 +1,46 @@
+fn 2 slice []int 0 true []
+A
+fn 2 slice []int 2 false [1 2]
+B
+fn 2 slice []int 3 false [7 8 9]
+C
+[100 8 9]
+fn 2 slice []int 0 true []
+D
+fn 2 slice []int 0 false []
+E
+fn 2 slice []int 0 false []
+F
+fn 2 slice []int 2 false [5 6]
+G
+fn 2 slice []int 3 false [1 2 3]
+H
+[100 2 3]
+fn 2 slice []int 0 true []
+I
+fn 2 slice []int 0 false []
+J
+0 3
+fn 2 slice []int 0 true []
+fn 2 slice []int 2 false [4 5]
+fn 2 slice []int 1 false [3]
+g 1 0 []
+g 1 3 [x y z]
+g 1 2 [p q]
+0 3 2
+h 0 interface int
+h 1 interface string
+h 2 interface invalid
+3
+sprintf 2 []interface {} 0
+sprintf 2 []interface {} 2
+sprintf 2 []interface {} 2
+res res res
+panic: reflect: Call with too few input arguments
+panic: reflect: cannot use string as type int in Call
+panic: reflect: CallSlice with too many input arguments
+panic: reflect: CallSlice using []string as type []int
+0 6 30
+fl ab 2 float64
+fl cd 2 float64
+0 3.5

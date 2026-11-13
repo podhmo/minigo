@@ -1,0 +1,29 @@
+-1 0 1
+-1 1
+-1 0
+0 -1 1
+-1 1 0
+0
+-1 -1
+-1
+-1 0
+-1 1
+-1
+0 -1 1
+0 -1
+2
+42 -7
+[aa bx]
+cmpfunc-panic: panic: boom (string)
+true false
+true true
+[3 2 2 1]
+false [2 3]
+{ann 30} {bob 25}
+bb a
+9 1.5
+[3 1 2 3 3 1 2 1]
+maxfunc-empty: panic: slices.MaxFunc: empty list (string)
+minfunc-nil: panic: slices.MinFunc: empty list (string)
+max-empty: panic: slices.Max: empty list (string)
+min-nil: panic: slices.Min: empty list (string)

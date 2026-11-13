@@ -2640,6 +2640,32 @@ func (v *RValue) Call(in []*RValue) []*RValue {
 		}
 		args[i] = normVal(a.ifaceVal())
 	}
+	if isVariadicMakeFunc(v.get()) {
+		// Call folds the extras into a fresh non-nil slice, like
+		// reflect.MakeSlice(In(n-1), m, m) — also when m is zero, where a
+		// direct call passes nil. The MakeFunc'd callee takes it whole.
+		if ft := v.callSig(); ft != nil && ft.Params != nil {
+			if numIn, ell := numParams(ft); ell != nil {
+				tail := append([]runtime.Value{}, args[numIn-1:]...)
+				sliceTd := v.Type().In(numIn - 1).td
+				args = append(args[:numIn-1:numIn-1], &runtime.Spread{S: &runtime.Slice{Elems: tail, Typ: sliceTd}})
+			}
+		}
+	}
+	return v.invoke(args)
+}
+
+// isVariadicMakeFunc reports whether fn is a reflect.MakeFunc'd func
+// with a variadic signature — the one callee that takes its variadic
+// tail as a [runtime.Spread] marker (see [Env.makeFunc]).
+func isVariadicMakeFunc(fn runtime.Value) bool {
+	bf, ok := runtime.Unwrap(fn).(*runtime.BuiltinFunc)
+	return ok && bf.Forwards && bf.Name == makeFuncName
+}
+
+// invoke calls the func Value's callee with the marshalled args and
+// converts the result to Go's result arity.
+func (v *RValue) invoke(args []runtime.Value) []*RValue {
 	r, err := v.vc.Call(v.get(), args)
 	if err != nil {
 		// A panic the callee raised crosses as an error wrapping
@@ -2776,6 +2802,11 @@ func (v *RValue) checkCallArgs(in []*RValue, sliceMode bool) {
 			continue
 		}
 		if xt := a.Type(); xt != nil && !xt.AssignableTo(pt) {
+			if variadic && !sliceMode && i >= numIn-1 {
+				// Go packs the extras into the variadic slice itself and
+				// words its failure differently from the fixed params.
+				plain("reflect: cannot use %s as type %s in %s", xt.String(), pt.String(), name)
+			}
 			plain("reflect: %s using %s as type %s", name, xt.String(), pt.String())
 		}
 	}
@@ -2890,8 +2921,26 @@ func (v *RValue) CallSlice(in []*RValue) []*RValue {
 	case *runtime.Named:
 		s, _ = x.V.(*runtime.Slice)
 	}
-	if s == nil {
-		trap("reflect.Value.CallSlice: last argument must be a slice")
+	nilSlice := s == nil
+	if nilSlice {
+		if !last.IsNil() {
+			trap("reflect.Value.CallSlice: last argument must be a slice")
+		}
+		// a nil slice spreads to no extra arguments
+		s = &runtime.Slice{}
+	}
+	if isVariadicMakeFunc(v.get()) {
+		// hand the slice over whole, as Go does: the callee's variadic
+		// parameter aliases it (a nil one arrives as the nil it is, so
+		// no marker rides along).
+		args := make([]runtime.Value, len(in)-1, len(in))
+		for i, a := range in[:len(in)-1] {
+			args[i] = normVal(a.ifaceVal())
+		}
+		if !nilSlice {
+			args = append(args, &runtime.Spread{S: s})
+		}
+		return v.invoke(args)
 	}
 	spread := make([]*RValue, 0, len(in)-1+len(s.Elems))
 	spread = append(spread, in[:len(in)-1]...)
