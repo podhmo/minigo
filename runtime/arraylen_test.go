@@ -3,8 +3,11 @@ package runtime
 import (
 	"go/ast"
 	"go/token"
+	goruntime "runtime"
 	"sync"
 	"testing"
+	"time"
+	"weak"
 
 	"github.com/google/go-cmp/cmp"
 )
@@ -75,7 +78,7 @@ func TestFoldedArrayLen(t *testing.T) {
 func TestFoldArrayLenCanonicalIsNotRecorded(t *testing.T) {
 	at := arrayOf(intLit("4"))
 	FoldArrayLen(at, 4)
-	if _, ok := arrayFolds.Load(at); ok {
+	if _, ok := arrayFolds.Load(weak.Make(at)); ok {
 		t.Errorf("a canonical literal length was recorded in the fold table")
 	}
 	if got, want := ArrayLenExpr(at), ast.Expr(at.Len); got != want {
@@ -132,5 +135,49 @@ func TestFoldArrayLenConcurrent(t *testing.T) {
 		if got, want := TypSpelling(at, nil), "[3]int"; got != want {
 			t.Errorf("%T len %v spells %q, want %q", at.Len, at.Len, got, want)
 		}
+	}
+}
+
+// foldFresh folds n fresh non-canonical array types and returns the weak
+// keys their entries are stored under. The nodes are unreachable when it
+// returns.
+//
+//go:noinline
+func foldFresh(t *testing.T, n int) []weak.Pointer[ast.ArrayType] {
+	t.Helper()
+	keys := make([]weak.Pointer[ast.ArrayType], 0, n)
+	for i := 0; i < n; i++ {
+		at := arrayOf(ast.NewIdent("N"))
+		FoldArrayLen(at, 3)
+		key := weak.Make(at)
+		if _, ok := arrayFolds.Load(key); !ok {
+			t.Fatalf("fold %d was not stored while its node is live", i)
+		}
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+// The fold table must not keep a program alive: a host that loads a
+// fresh engine per request would otherwise leak one entry per
+// non-canonical length site per load. An entry goes away with its node.
+func TestFoldTableReleasesEntries(t *testing.T) {
+	keys := foldFresh(t, 64)
+	live := func() int {
+		n := 0
+		for _, k := range keys {
+			if _, ok := arrayFolds.Load(k); ok {
+				n++
+			}
+		}
+		return n
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for live() > 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d of %d fold entries outlived their nodes", live(), len(keys))
+		}
+		goruntime.GC()
+		time.Sleep(5 * time.Millisecond) // cleanups run on their own goroutine
 	}
 }
