@@ -1,0 +1,9 @@
+200 text/html; charset=utf-8
+
+<!doctype html>
+<html><head><title>&lt;script&gt;alert(1)&lt;/script&gt;</title></head>
+<body>
+<h1><span class="avatar">&lt;</span> &lt;script&gt;alert(1)&lt;/script&gt; </h1>
+<p>no tags</p>
+<a href="/users/2?tab=%3cscript%3ealert%281%29%3c%2fscript%3e">permalink</a>
+</body></html>

@@ -6890,11 +6890,47 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 			panic(runtime.BoundsPanic(uint64(i), len(b)))
 		}
 		return runtime.Tag(v.builtinTypedef("uint8"), int64(b[i]))
+	case *runtime.GoValue:
+		// a boxed host named map or slice (url.Values, http.Header,
+		// net.IP) keeps its box for method dispatch; index the host
+		// value itself.
+		if val, _, ok := v.hostIndex(f, b, rawIdx); ok {
+			return val
+		}
+		f.trap("index on %T", base)
 	default:
 		f.trap("index on %T", base)
 		return nil
 	}
 	return nil
+}
+
+// hostIndex reads b[idx] on a boxed host map, slice, array or string. ok
+// is false when b holds none of those; found is the map comma-ok.
+func (v *VM) hostIndex(f *frame, b *runtime.GoValue, idx runtime.Value) (val runtime.Value, found, ok bool) {
+	rv := reflect.ValueOf(b.V)
+	switch rv.Kind() {
+	case reflect.Map:
+		kv, err := toReflectValue(v.materialize(f, idx), rv.Type().Key(), v)
+		if err != nil {
+			f.trap("index %s with %T: %v", rv.Type(), idx, err)
+		}
+		ev := rv.MapIndex(kv)
+		if !ev.IsValid() {
+			return goValueOf(reflect.Zero(rv.Type().Elem())), false, true
+		}
+		return goValueOf(ev), true, true
+	case reflect.Slice, reflect.Array, reflect.String:
+		i, isInt := indexSmallInt(runtime.Unwrap(v.materialize(f, idx)))
+		if !isInt {
+			f.trap("%s index is %T", rv.Type(), idx)
+		}
+		if i < 0 || i >= int64(rv.Len()) {
+			panic(runtime.BoundsPanic(i, rv.Len()))
+		}
+		return goValueOf(rv.Index(int(i))), true, true
+	}
+	return nil, false, false
 }
 
 // fieldTypedefs returns declared field types for a struct typedef (nil
@@ -7799,6 +7835,11 @@ func (v *VM) indexOK(f *frame, base, idx runtime.Value) runtime.Value {
 			val = v.mapZero(f, m.Typ)
 		}
 		return &runtime.Tuple{Elems: []runtime.Value{val, found}}
+	}
+	if gv, ok := base.(*runtime.GoValue); ok {
+		if val, found, ok := v.hostIndex(f, gv, rawIdx); ok {
+			return &runtime.Tuple{Elems: []runtime.Value{val, found}}
+		}
 	}
 	return &runtime.Tuple{Elems: []runtime.Value{v.index(f, base, rawIdx), true}}
 }

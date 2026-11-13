@@ -1,0 +1,9 @@
+200 text/html; charset=utf-8
+
+<!doctype html>
+<html><head><title>Bob</title></head>
+<body>
+<h1><span class="avatar">B</span> Bob </h1>
+<ul><li>x</li><li>&lt;y&gt;</li></ul>
+<a href="/users/q?tab=Bob">permalink</a>
+</body></html>

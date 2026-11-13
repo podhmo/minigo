@@ -25,6 +25,7 @@ import (
 	"go/constant"
 	"go/token"
 	"html"
+	htmltemplate "html/template"
 	"io"
 	"io/fs"
 	"maps"
@@ -3013,28 +3014,7 @@ func (e *Engine) installStdlib() {
 		"New": h.fn1("template.New", func(a []any) (any, error) {
 			return &runtime.GoValue{V: template.New(str(a[0]))}, nil
 		}, template.New),
-		"Must": &runtime.BuiltinFunc{Name: "template.Must", Target: template.Must, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			// Must takes the (t, err) pair of New/Parse — a Tuple arg
-			// unpacks — or the two values spelled out. The panic on a
-			// non-nil err mirrors template.Must and carries the error
-			// value itself, so recover() hands back the script's error.
-			var t, ev runtime.Value
-			switch {
-			case len(args) == 1:
-				t, ev = args[0], runtime.NIL
-				if tup, ok := args[0].(*runtime.Tuple); ok && len(tup.Elems) == 2 {
-					t, ev = tup.Elems[0], tup.Elems[1]
-				}
-			case len(args) == 2:
-				t, ev = args[0], args[1]
-			default:
-				return nil, fmt.Errorf("template.Must needs 2 args, got %d", len(args))
-			}
-			if err := hostErrOf(v, ev); err != nil {
-				panic(&runtime.Panic{Value: errVal(err), VC: v})
-			}
-			return scriptVal(goNative(t)), nil
-		}},
+		"Must": templateMust(template.Must),
 		"HTMLEscapeString": h.fn1("template.HTMLEscapeString", func(a []any) (any, error) {
 			return template.HTMLEscapeString(str(a[0])), nil
 		}, template.HTMLEscapeString),
@@ -3049,6 +3029,67 @@ func (e *Engine) installStdlib() {
 			return template.URLQueryEscaper(ss...), nil
 		}, template.URLQueryEscaper),
 	})
+	// html/template is bound like text/template rather than interpreted:
+	// its source walks text/template's parse trees and FuncMap, which the
+	// bound text/template does not expose. Script data marshals through
+	// goNative the same way, and the content types (template.HTML, ...)
+	// are host scalars so a script value of them skips escaping.
+	htmlContent := func(name string, zero any) *runtime.TypeDef {
+		return &runtime.TypeDef{Name: "html/template." + name, Kind: runtime.KindNamedBasic, Anon: ast.NewIdent("string"), HostScalar: zero}
+	}
+	e.Bind("html/template", map[string]runtime.Value{
+		"Template": hostType("html/template.Template", func() any { return htmltemplate.New("") }),
+		"New": h.fn1("template.New", func(a []any) (any, error) {
+			return &runtime.GoValue{V: htmltemplate.New(str(a[0]))}, nil
+		}, htmltemplate.New),
+		"Must":     templateMust(htmltemplate.Must),
+		"HTML":     htmlContent("HTML", htmltemplate.HTML("")),
+		"HTMLAttr": htmlContent("HTMLAttr", htmltemplate.HTMLAttr("")),
+		"JS":       htmlContent("JS", htmltemplate.JS("")),
+		"JSStr":    htmlContent("JSStr", htmltemplate.JSStr("")),
+		"CSS":      htmlContent("CSS", htmltemplate.CSS("")),
+		"URL":      htmlContent("URL", htmltemplate.URL("")),
+		"Srcset":   htmlContent("Srcset", htmltemplate.Srcset("")),
+		"HTMLEscapeString": h.fn1("template.HTMLEscapeString", func(a []any) (any, error) {
+			return htmltemplate.HTMLEscapeString(str(a[0])), nil
+		}, htmltemplate.HTMLEscapeString),
+		"JSEscapeString": h.fn1("template.JSEscapeString", func(a []any) (any, error) {
+			return htmltemplate.JSEscapeString(str(a[0])), nil
+		}, htmltemplate.JSEscapeString),
+		"URLQueryEscaper": h.fn("template.URLQueryEscaper", func(a []any) (any, error) {
+			ss := make([]any, len(a))
+			for i, x := range a {
+				ss[i] = str(x)
+			}
+			return htmltemplate.URLQueryEscaper(ss...), nil
+		}, htmltemplate.URLQueryEscaper),
+	})
+}
+
+// templateMust binds text/template's or html/template's Must. It takes
+// the (t, err) pair of New/Parse — a Tuple arg unpacks — or the two
+// values spelled out. The panic on a non-nil err mirrors template.Must
+// and carries the error value itself, so recover() hands back the
+// script's error.
+func templateMust(target any) *runtime.BuiltinFunc {
+	return &runtime.BuiltinFunc{Name: "template.Must", Target: target, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		var t, ev runtime.Value
+		switch {
+		case len(args) == 1:
+			t, ev = args[0], runtime.NIL
+			if tup, ok := args[0].(*runtime.Tuple); ok && len(tup.Elems) == 2 {
+				t, ev = tup.Elems[0], tup.Elems[1]
+			}
+		case len(args) == 2:
+			t, ev = args[0], args[1]
+		default:
+			return nil, fmt.Errorf("template.Must needs 2 args, got %d", len(args))
+		}
+		if err := hostErrOf(v, ev); err != nil {
+			panic(&runtime.Panic{Value: errVal(err), VC: v})
+		}
+		return scriptVal(goNative(t)), nil
+	}}
 }
 
 // chanFeed proxies a timer/ticker channel so a parked receiver's wake

@@ -137,6 +137,7 @@ flags (accepted before or after <ref>):
   --deny pkg,...   make importing these packages fail with a clear error
   --src pkg,...    interpret these packages from source even where a
                    host-bound version exists
+  --tags tag,...   build tags for file selection, like go build -tags
   --cpuprofile f   write a CPU profile of the interpreter to f
                    (default: $MINIGO_CPUPROFILE)
   --memprofile f   write an allocation profile of the interpreter to f
@@ -196,7 +197,7 @@ func run(ctx context.Context, args []string) error {
 	// --entry F` should work
 	var entry string
 	var rest []string
-	var denys, srcs []string
+	var denys, srcs, tags []string
 	cpuProfile, memProfile := os.Getenv("MINIGO_CPUPROFILE"), os.Getenv("MINIGO_MEMPROFILE")
 	scriptProfile := os.Getenv("MINIGO_SCRIPTPROFILE")
 	for i := 0; i < len(args); i++ {
@@ -226,6 +227,14 @@ func run(ctx context.Context, args []string) error {
 			srcs = append(srcs, strings.Split(args[i], ",")...)
 		case strings.HasPrefix(a, "--src="), strings.HasPrefix(a, "-src="):
 			srcs = append(srcs, strings.Split(strings.SplitN(a, "=", 2)[1], ",")...)
+		case a == "--tags" || a == "-tags":
+			i++
+			if i >= len(args) {
+				return usageErrorf("--tags requires a tag list")
+			}
+			tags = append(tags, splitTags(args[i])...)
+		case strings.HasPrefix(a, "--tags="), strings.HasPrefix(a, "-tags="):
+			tags = append(tags, splitTags(strings.SplitN(a, "=", 2)[1])...)
 		case a == "--cpuprofile" || a == "-cpuprofile":
 			i++
 			if i >= len(args) {
@@ -284,6 +293,9 @@ func run(ctx context.Context, args []string) error {
 	if len(modes) > 0 {
 		opts = append(opts, minigo.WithPackageModes(modes))
 	}
+	if len(tags) > 0 {
+		opts = append(opts, minigo.WithBuildConfig(resolve.BuildConfig{Tags: tags}))
+	}
 	stop, err := startProfiles(cpuProfile, memProfile)
 	if err != nil {
 		return err
@@ -312,6 +324,18 @@ func run(ctx context.Context, args []string) error {
 		fmt.Printf("%v\n", minigo.Format(r))
 	}
 	return nil
+}
+
+// splitTags splits a -tags list like go build does: comma-separated,
+// empty elements dropped.
+func splitTags(s string) []string {
+	var tags []string
+	for _, t := range strings.Split(s, ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			tags = append(tags, t)
+		}
+	}
+	return tags
 }
 
 // startProfiles starts a CPU profile to cpuPath (if set) and returns a

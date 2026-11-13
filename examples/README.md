@@ -92,3 +92,15 @@ modules; packages without tests are dropped from the output by default.
 
 See [test-detect/README.md](./test-detect/README.md) and the design notes in
 [docs/sketch/plan-test-detect.md](../docs/sketch/plan-test-detect.md).
+
+## storybook — previewing net/http views (experiment)
+
+Stories are `func StoryXxx(w http.ResponseWriter, r *http.Request)`
+declarations in files behind `//go:build story`, calling the
+application's rendering code with dummy values. `storybook` interprets
+the package with minigo and the tag enabled, hands each story a host
+`httptest.ResponseRecorder`, and lists, exports or serves the HTML — the
+application is never built.
+
+See [storybook/README.md](./storybook/README.md) and the notes in
+[docs/sketch/ja/experiment-storybook.md](../docs/sketch/ja/experiment-storybook.md).
