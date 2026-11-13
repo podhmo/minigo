@@ -66,11 +66,11 @@ func TestDeepUnwrap(t *testing.T) {
 		},
 		{
 			"nested containers",
-			&Tuple{Elems: []Value{
-				&Slice{Elems: []Value{
-					&Map{Pairs: map[Value]Value{"k": &GoValue{V: "host"}}, Order: []Value{"k"}, Keys: []Value{"k"}},
-				}},
-			}},
+			func() Value {
+				m := NewMap(nil, false)
+				m.Insert("k", &GoValue{V: "host"})
+				return &Tuple{Elems: []Value{&Slice{Elems: []Value{m}}}}
+			}(),
 			[]any{[]any{map[any]any{"k": "host"}}},
 		},
 	}

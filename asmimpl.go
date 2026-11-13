@@ -50,12 +50,7 @@ func mapsClone(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) 
 		case *runtime.Named:
 			return &runtime.Named{V: clone(m.V), Typ: m.Typ}
 		case *runtime.Map:
-			pairs := make(map[runtime.Value]runtime.Value, len(m.Pairs))
-			for k, e := range m.Pairs {
-				pairs[k] = e
-			}
-			return &runtime.Map{Pairs: pairs, Order: append([]runtime.Value(nil), m.Order...),
-				Keys: append([]runtime.Value(nil), m.Keys...), Typ: m.Typ, IfaceKey: m.IfaceKey}
+			return m.Clone()
 		}
 		if d, ok := runtime.Deref(v); ok {
 			return clone(d)

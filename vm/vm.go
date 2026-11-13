@@ -4120,7 +4120,7 @@ func goValueOf(rv reflect.Value) runtime.Value {
 		if orig := scriptDataOrig(v); orig != nil {
 			return orig
 		}
-		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}}
+		m := runtime.NewMap(nil, false)
 		for k, e := range v {
 			m.Insert(goValueOf(reflect.ValueOf(k)), goValueOf(reflect.ValueOf(e)))
 		}
@@ -4130,7 +4130,7 @@ func goValueOf(rv reflect.Value) runtime.Value {
 			return &runtime.TypedNil{Typ: &runtime.TypeDef{Kind: runtime.KindMap,
 				Anon: &ast.MapType{Key: ast.NewIdent("any"), Value: ast.NewIdent("any")}}}
 		}
-		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}}
+		m := runtime.NewMap(nil, false)
 		for k, e := range v {
 			m.Insert(goValueOf(reflect.ValueOf(k)), goValueOf(reflect.ValueOf(e)))
 		}
@@ -4280,7 +4280,7 @@ func snapshotValue(x any, visiting map[uintptr]struct{}) runtime.Value {
 			return &runtime.GoValue{V: x}
 		}
 		visiting[rv.Pointer()] = struct{}{}
-		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}, Typ: td, IfaceKey: rv.Type().Key().Kind() == reflect.Interface}
+		m := runtime.NewMap(td, rv.Type().Key().Kind() == reflect.Interface)
 		for _, k := range rv.MapKeys() {
 			m.Insert(snapshotValue(k.Interface(), visiting), snapshotValue(rv.MapIndex(k).Interface(), visiting))
 		}
@@ -7715,7 +7715,7 @@ func nilSlotValue(x runtime.Value) bool {
 
 // NewMap implements [runtime.VMCaller].
 func (v *VM) NewMap(td *runtime.TypeDef) *runtime.Map {
-	return &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}, Typ: td, IfaceKey: v.ifaceKeyed(v.topFrame(), td)}
+	return runtime.NewMap(td, v.ifaceKeyed(v.topFrame(), td))
 }
 
 // checkMapKey runs the declared-key-type check and drops the operand —
@@ -8405,7 +8405,7 @@ func (v *VM) compositeOf(f *frame, td *runtime.TypeDef, n int, kv bool, raw []ru
 		}
 		return s
 	case runtime.KindMap:
-		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}, Typ: td, IfaceKey: v.ifaceKeyed(f, td)}
+		m := runtime.NewMap(td, v.ifaceKeyed(f, td))
 		et := v.elemTypedef(f, td)
 		for i := 0; i < n; i++ {
 			if _, isImp := raw[i*2].(*runtime.ImplicitIndex); isImp {
@@ -14027,6 +14027,8 @@ func containerTyp(x runtime.Value) *runtime.TypeDef {
 // stamping must not mutate the shared header in place — a `[]Word`
 // parameter receiving a `nat` argument would otherwise strip the
 // caller's method set (math/big divW hands z to divWVW(z []Word,...)).
+// A map's new header shares its contents ([runtime.Map.Header]), so an
+// insert, delete or clear through either header is seen by both.
 func stampContainerTyp(x runtime.Value, td *runtime.TypeDef) runtime.Value {
 	switch t := x.(type) {
 	case *runtime.Map:
