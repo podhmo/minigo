@@ -125,6 +125,13 @@ func isHandlerShape(ft *ast.FuncType) bool {
 // shows up on the next call, and returns what it wrote. target is the
 // request URI handed to the story (its query is the story's "args").
 func (b *Book) Render(ctx context.Context, name, target string) (*Result, error) {
+	stories, err := b.Stories()
+	if err != nil {
+		return nil, err
+	}
+	if !slices.ContainsFunc(stories, func(s Story) bool { return s.Name == name }) {
+		return nil, fmt.Errorf("%s: not a story", name)
+	}
 	opts := []minigo.Option{minigo.WithBuildConfig(resolve.BuildConfig{Tags: []string{b.Tag}})}
 	if len(b.Src) > 0 {
 		modes := map[string]minigo.PackageMode{}

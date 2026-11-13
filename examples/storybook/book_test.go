@@ -105,6 +105,16 @@ func TestRenderTrapReportsStory(t *testing.T) {
 	}
 }
 
+// TestRenderRejectsNonStory pins that Render (and so /story/{name})
+// only calls discovered stories, not any package-level func.
+func TestRenderRejectsNonStory(t *testing.T) {
+	b := &Book{Dir: "testdata/app", Tag: "story"}
+	_, err := b.Render(context.Background(), "RenderUser", "/")
+	if diff := cmp.Diff("RenderUser: not a story", fmt.Sprint(err)); diff != "" {
+		t.Errorf("Render(RenderUser) error (-want +got):\n%s", diff)
+	}
+}
+
 func TestExport(t *testing.T) {
 	out := t.TempDir()
 	b := &Book{Dir: "testdata/app", Tag: "story"}
