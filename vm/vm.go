@@ -11081,16 +11081,21 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 	// a host named string (template.HTML) operates as its underlying
 	// string — boxed, or raw under a Named tag. A boxed operand's
 	// string result is boxed back into the host type, as in Go.
-	if hs, ok := hostStrOperand(a); ok {
-		a = hs.s
-		strTag, strBoxed = hs.rt, hs.boxed
-	}
-	if hs, ok := hostStrOperand(b); ok {
-		if strTag != nil && hs.rt != strTag {
-			f.trap("invalid operation: mismatched types %s and %s", strTag, hs.rt)
+	// (the int64 check keeps the common arithmetic path call-free)
+	if _, isInt := a.(int64); !isInt {
+		if hs, ok := hostStrOperand(a); ok {
+			a = hs.s
+			strTag, strBoxed = hs.rt, hs.boxed
 		}
-		b = hs.s
-		strTag, strBoxed = hs.rt, strBoxed || hs.boxed
+	}
+	if _, isInt := b.(int64); !isInt {
+		if hs, ok := hostStrOperand(b); ok {
+			if strTag != nil && hs.rt != strTag {
+				f.trap("invalid operation: mismatched types %s and %s", strTag, hs.rt)
+			}
+			b = hs.s
+			strTag, strBoxed = hs.rt, strBoxed || hs.boxed
+		}
 	}
 	if s, ok := a.(string); ok {
 		res := stringBinOp(f, op, s, b)
