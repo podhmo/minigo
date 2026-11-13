@@ -303,7 +303,7 @@ func typSpelling(e ast.Expr, ctx *TypeDef, under bool) string {
 		return "*" + typSpelling(t.X, ctx, under)
 	case *ast.ArrayType:
 		if t.Len != nil {
-			return "[" + typLenName(t.Len) + "]" + typSpelling(t.Elt, ctx, under)
+			return "[" + typLenName(ArrayLenExpr(t)) + "]" + typSpelling(t.Elt, ctx, under)
 		}
 		return "[]" + typSpelling(t.Elt, ctx, under)
 	case *ast.Ellipsis:
@@ -546,7 +546,7 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 		return "*" + TypGoSpelling(t.X, ctx)
 	case *ast.ArrayType:
 		if t.Len != nil {
-			return "[" + typLenName(t.Len) + "]" + TypGoSpelling(t.Elt, ctx)
+			return "[" + typLenName(ArrayLenExpr(t)) + "]" + TypGoSpelling(t.Elt, ctx)
 		}
 		return "[]" + TypGoSpelling(t.Elt, ctx)
 	case *ast.Ellipsis:
@@ -892,7 +892,7 @@ func (c sigComparer) sigTypEq(a, b *TypeDef) bool {
 		if (at.Len == nil) != (bt.Len == nil) {
 			return false // []T and [N]T are different types
 		}
-		if at.Len != nil && !sigLenEq(at.Len, bt.Len) {
+		if at.Len != nil && !sigLenEq(ArrayLenExpr(at), ArrayLenExpr(bt)) {
 			return false
 		}
 		return c.sigExprEq(at.Elt, a, bt.Elt, b)
@@ -1697,11 +1697,9 @@ func typImportPath(pkg *Package, file *syntax.File, alias string) string {
 
 // ArrayLenNodes lists the array types inside the type expression e whose
 // length is an expression rather than a literal, in depth-first order;
-// `[]T`, `[3]T` and `[...]T` yield nothing. Replacing a node's Len with a
-// literal removes it from the next call's result. This order is the
-// contract between the compiler, which emits each node's length
-// evaluation followed by OpFoldArrayLen, and the interpreter, which folds each value
-// into the first node still unfolded.
+// `[]T`, `[3]T` and `[...]T` yield nothing. The compiler emits each
+// node's length evaluation followed by OpFoldArrayLen naming that node,
+// which publishes the value through [FoldArrayLen].
 func ArrayLenNodes(e ast.Expr) []*ast.ArrayType {
 	var out []*ast.ArrayType
 	var walk func(e ast.Expr)

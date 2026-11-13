@@ -132,7 +132,7 @@ const (
 	OpSpecialCall // A: const idx *SymbolID; B: const idx *QuotedCall — quoted args, handler fires at run time
 
 	// types / interfaces / generics (cont.)
-	OpFoldArrayLen // pop len value, pop typedef -> fold len into the typedef's array AST -> push typedef
+	OpFoldArrayLen // A: const idx of the *ast.ArrayType; pop len value, pop typedef -> publish the len as that node's folded length -> push typedef
 	OpLocalType    // pop typedef -> push typedef re-parameterized by the enclosing generic function's resolved type args
 
 	// OpSelectCall is OpSelect in callee position (`i.M()`, and the

@@ -2864,16 +2864,17 @@ func (v *VM) loop(f *frame) {
 			f.push(top)
 		case bytecode.OpFoldArrayLen:
 			// [td, len] on the stack: evaluate-at-use constants like
-			// `[n]int`/`[len(a)]*T` fold into the typedef's AST so type
-			// identity spells the concrete `[3]*T` like Go. The op
-			// folds the next un-folded len node — runtime.ArrayLenNodes
-			// is the same DFS walk the compiler emitted the evals in,
-			// and folded nodes drop out so nodes[0] is always next.
+			// `[n]int`/`[len(a)]*T` fold so type identity spells the
+			// concrete `[3]*T` like Go. A is the const index of the
+			// *ast.ArrayType whose length this value is — the compiler
+			// emitted the eval for exactly that node. The fold is
+			// published beside the AST (runtime.FoldArrayLen), never
+			// written into it: the AST is shared by every goroutine.
 			lv := f.pop()
 			td := f.pop().(*runtime.TypeDef)
 			if n, ok := lenConstInt(lv); ok {
-				if nodes := runtime.ArrayLenNodes(td.Anon); len(nodes) > 0 {
-					nodes[0].Len = &ast.BasicLit{Kind: token.INT, Value: strconv.FormatInt(n, 10)}
+				if at, ok := consts[ins.A].(*ast.ArrayType); ok {
+					runtime.FoldArrayLen(at, n)
 				}
 			}
 			f.push(td)
@@ -5329,7 +5330,7 @@ func hostShapeOf(v *VM, td *runtime.TypeDef, depth int) reflect.Type {
 		if at.Len == nil {
 			return reflect.SliceOf(ert)
 		}
-		lit, ok := at.Len.(*ast.BasicLit)
+		lit, ok := runtime.ArrayLenExpr(at).(*ast.BasicLit)
 		if !ok || lit.Kind != token.INT {
 			return nil
 		}
@@ -8398,9 +8399,9 @@ func (v *VM) compositeOf(f *frame, td *runtime.TypeDef, n int, kv bool, raw []ru
 		if at, ok := td.Anon.(*ast.ArrayType); ok {
 			if _, isEll := at.Len.(*ast.Ellipsis); isEll {
 				// `[...]T` takes its length from the element count —
-				// fold it into the AST so the typedef spells the
-				// concrete [N]T like Go's inferred length.
-				at.Len = &ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(len(s.Elems))}
+				// fold it so the typedef spells the concrete [N]T like
+				// Go's inferred length.
+				runtime.FoldArrayLen(at, int64(len(s.Elems)))
 			}
 		}
 		return s
@@ -11807,7 +11808,7 @@ func typeExprName(e ast.Expr) string {
 	case *ast.StarExpr:
 		return "*" + typeExprName(t.X)
 	case *ast.ArrayType:
-		return "[" + lenExprName(t.Len) + "]" + typeExprName(t.Elt)
+		return "[" + lenExprName(runtime.ArrayLenExpr(t)) + "]" + typeExprName(t.Elt)
 	case *ast.MapType:
 		return "map[" + typeExprName(t.Key) + "]" + typeExprName(t.Value)
 	case *ast.ChanType:
@@ -15164,6 +15165,11 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 	if !ok || at.Len == nil {
 		return 0, false
 	}
+	// a canonical literal (`[3]T`) or an already-folded length answers
+	// without evaluating anything.
+	if n, ok := runtime.FoldedArrayLen(at); ok {
+		return n, true
+	}
 	switch l := at.Len.(type) {
 	case *ast.BasicLit:
 		// the length literal evaluates in the constant domain — `1e1`,
@@ -15171,7 +15177,7 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 		// strconv.ParseInt cannot read.
 		if iv, ok := toIntConst(constant.MakeFromLiteral(l.Value, l.Kind, 0)); ok {
 			if n, ok := constant.Int64Val(iv); ok {
-				return v.foldArrLen(at, n), true
+				return runtime.FoldArrayLen(at, n), true
 			}
 		}
 		return 0, false
@@ -15185,14 +15191,14 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 					gv = d
 				}
 				if n, ok2 := lenConstInt(gv); ok2 {
-					return v.foldArrLen(at, n), true
+					return runtime.FoldArrayLen(at, n), true
 				}
 			}
 			if td.Pkg.Index != nil && v.H.Materialize != nil {
 				if d := td.Pkg.Index.Consts[l.Name]; d != nil {
 					if mv, err := v.H.Materialize(td.Pkg, d); err == nil {
 						if n, ok := lenConstInt(mv); ok {
-							return v.foldArrLen(at, n), true
+							return runtime.FoldArrayLen(at, n), true
 						}
 					}
 				}
@@ -15218,7 +15224,7 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 			}
 		}()
 		if ok {
-			return v.foldArrLen(at, n), true
+			return runtime.FoldArrayLen(at, n), true
 		}
 	}
 	return 0, false
@@ -15247,14 +15253,6 @@ func lenConstShaped(e ast.Expr) bool {
 		return ok && (id.Name == "len" || id.Name == "cap")
 	}
 	return false
-}
-
-// foldArrLen rewrites an array typedef's length expression to the
-// evaluated count so type spellings — `[3]*T`, `[N]T` — compare
-// identically after folding, like Go's constant evaluation.
-func (v *VM) foldArrLen(at *ast.ArrayType, n int64) int64 {
-	at.Len = &ast.BasicLit{Kind: token.INT, Value: strconv.FormatInt(n, 10)}
-	return n
 }
 
 // copyArray clones an array value for Go's assignment semantics —

@@ -3,10 +3,8 @@ package minireflect
 import (
 	"fmt"
 	"go/ast"
-	"go/token"
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"unicode"
 
@@ -697,10 +695,8 @@ func (t *RType) Len() int {
 		return t.alen
 	}
 	if at, ok := t.td.Anon.(*ast.ArrayType); ok && at.Len != nil {
-		if bl, ok := at.Len.(*ast.BasicLit); ok && bl.Kind == token.INT {
-			if n, err := strconv.Atoi(bl.Value); err == nil {
-				return n
-			}
+		if n, ok := runtime.FoldedArrayLen(at); ok {
+			return int(n)
 		}
 	}
 	trap("Len of non-array type %s", t.String())
