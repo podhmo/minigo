@@ -1,4 +1,4 @@
-.PHONY: all test todo-gc format clean lint go-mod-tidy-all difffuzz difffuzz-corpus tmpltests tmpltests-parse tmpltests-html tmpltests-examples tmpltests-html-examples tmpltests-all
+.PHONY: all test test-race todo-gc format clean lint go-mod-tidy-all difffuzz difffuzz-corpus tmpltests tmpltests-parse tmpltests-html tmpltests-examples tmpltests-html-examples tmpltests-all
 
 all:
 	go build ./...
@@ -22,6 +22,11 @@ test:
 	go -C ./examples/minigo-generate test ./...
 	go -C ./examples/extract-schema test ./...
 	go -C ./.claude/skills/todo-md/todo-gc test ./...
+
+# test-race runs the root module's tests under the race detector; script
+# goroutines share compiled code and typedefs, so CI runs it too.
+test-race:
+	go test -race ./...
 
 # move [x] entries from TODO.md to TODO-archive.md, one greppable line per
 # item (see .claude/skills/todo-md/gc.md)
