@@ -19,6 +19,7 @@
 package vm
 
 import (
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/constant"
@@ -1359,6 +1360,22 @@ func (v *VM) Call(callee runtime.Value, args []runtime.Value) (result runtime.Va
 // callBounded is Call carrying the call site's spread element typedef
 // into generic inference; nil spreadTd is an ordinary call.
 func (v *VM) callBounded(callee runtime.Value, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (result runtime.Value, err error) {
+	return v.callBoundedCatch(callee, args, statics, spreadTd, false)
+}
+
+// CallCatching is Call for a host callback whose host side recovers a
+// panic of its own accord — text/template's safeCall around a FuncMap
+// func. Called from a goroutine other than the VM's (an http handler
+// executing a template), Call treats a panic in callee as a crash of the
+// process; here it comes back as the returned error, for the host to
+// re-raise where its recover is.
+func (v *VM) CallCatching(callee runtime.Value, args []runtime.Value) (runtime.Value, error) {
+	return v.callBoundedCatch(callee, args, nil, nil, true)
+}
+
+// callBoundedCatch is callBounded; catch returns a foreign goroutine's
+// panic as the error instead of failing the process.
+func (v *VM) callBoundedCatch(callee runtime.Value, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef, catch bool) (result runtime.Value, err error) {
 	// goroutineID parses runtime.Stack, whose traceback walks the
 	// interpreter's deep Go stack — tens of µs per call. Callbacks from
 	// a SyncCallbacks builtin skip it through ownerCaller.
@@ -1378,7 +1395,7 @@ func (v *VM) callBounded(callee runtime.Value, args []runtime.Value, statics []*
 		// it to callReflectFunc, which re-panics it on the calling
 		// goroutine where the script's own recover can see it. Failing
 		// the process here would kill it before that recover runs.
-		failProc := true
+		failProc := !catch
 		if p := v.proc; p != nil && p.isSyncCaller(gid) {
 			failProc = false
 		}
@@ -5082,7 +5099,7 @@ type hostMarshal struct {
 // deepHost converts a script value for an `any` parameter: containers
 // become real host values (Slice → []any, Map → map[any]any) so the
 // callee can reflect over them; Named and GoValue unwrap; typed nils
-// read as nil (a nil slice or map with a host shape as its typed zero);
+// read as nil (a nil slice or map as its typed zero, see hostNilOf);
 // structs marshal to field maps (see structDataHost).
 // Everything else — funcs, non-struct pointers — stays verbatim.
 func deepHost(v runtime.Value, vc runtime.VMCaller, h *hostMarshal) runtime.Value {
@@ -5090,31 +5107,11 @@ func deepHost(v runtime.Value, vc runtime.VMCaller, h *hostMarshal) runtime.Valu
 	case nil, runtime.Nil:
 		return nil
 	case *runtime.TypedNil:
-		// a nil slice or map keeps its type in an `any`, as in Go: a
-		// nil []string field reaches text/template's {{join .Tags}} as
-		// a []string, not as a bare nil it cannot pass to the func.
-		if rt := HostNilType(x.Typ); rt != nil {
-			// a nil named host map or slice (a request's Form, net.IP)
-			return reflect.Zero(rt).Interface()
-		}
-		if x.Typ != nil && (x.Typ.Kind == runtime.KindSlice || x.Typ.Kind == runtime.KindMap) {
-			if rt := cachedHostShape(vmOf(vc), x.Typ); rt != nil {
-				return reflect.Zero(rt).Interface()
-			}
-		}
-		return nil
+		return hostNilOf(x.Typ, vc)
 	case *runtime.IfaceNil:
 		// `var a any = s` with a nil s []string: the same typed zero
 		// (coerce turns the TypedNil into a concretely tagged IfaceNil).
-		if rt := HostNilType(x.Typ); rt != nil {
-			return reflect.Zero(rt).Interface()
-		}
-		if x.Typ != nil && (x.Typ.Kind == runtime.KindSlice || x.Typ.Kind == runtime.KindMap) {
-			if rt := cachedHostShape(vmOf(vc), x.Typ); rt != nil {
-				return reflect.Zero(rt).Interface()
-			}
-		}
-		return nil
+		return hostNilOf(x.Typ, vc)
 	case *runtime.UConst:
 		mv, err := materializeDefault(x)
 		if err != nil {
@@ -5184,6 +5181,43 @@ func deepHost(v runtime.Value, vc runtime.VMCaller, h *hostMarshal) runtime.Valu
 		return v
 	}
 	return v
+}
+
+// hostNilOf is the host value a nil slice or map of type td crosses an
+// `any` as: its typed zero, as in Go, where a nil []Pt in an interface is
+// not a nil interface — a nil []string field reaches text/template's
+// {{join .Tags}} as a []string, and {{len .Users}} counts a nil []Pt as 0.
+// A type with a host shape ([hostShapeOf]) keeps it; any other falls back
+// to the generic projection's []any / map[any]any, the shape a non-nil
+// value of the same type takes. Every other nil reads as a bare nil.
+func hostNilOf(td *runtime.TypeDef, vc runtime.VMCaller) any {
+	if td == nil {
+		return nil
+	}
+	if rt := HostNilType(td); rt != nil {
+		// a nil named host map or slice (a request's Form, net.IP)
+		return reflect.Zero(rt).Interface()
+	}
+	v := vmOf(vc)
+	if v != nil {
+		td = v.peelAlias(td)
+	}
+	switch td.Kind {
+	case runtime.KindSlice:
+		if at, ok := td.Anon.(*ast.ArrayType); ok && at.Len != nil {
+			return nil // an array has no nil
+		}
+		if rt := cachedHostShape(v, td); rt != nil {
+			return reflect.Zero(rt).Interface()
+		}
+		return []any(nil)
+	case runtime.KindMap:
+		if rt := cachedHostShape(v, td); rt != nil {
+			return reflect.Zero(rt).Interface()
+		}
+		return map[any]any(nil)
+	}
+	return nil
 }
 
 // hostSeqFunc adapts a script iter.Seq / iter.Seq2 value to the host
@@ -6412,12 +6446,22 @@ func RegisterFuncMapType(t reflect.Type) { funcMapTypes[t] = true }
 // its Target; a script func adapts to a host func whose signature comes
 // from its declaration — predeclared basic and error types keep their
 // Go type (so the template engine converts and checks arguments like
-// gc's would), any other parameter or result type is `any`.
+// gc's would), any other parameter or result type is `any`, and each
+// argument converts to its declared script type before the call (see
+// funcMapArgs). A value that is no func at all crosses as an ordinary
+// `any`, so Template.Funcs itself rejects it with gc's recoverable
+// `value for NAME not a function` panic.
 func funcMapElem(x runtime.Value, vc runtime.VMCaller) (reflect.Value, error) {
 	wrap := func(fv reflect.Value) reflect.Value {
 		out := reflect.New(anyType).Elem()
 		out.Set(fv)
 		return out
+	}
+	if n, ok := x.(*runtime.Named); ok {
+		switch n.V.(type) {
+		case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
+			x = n.V // a value of a named func type adapts like its func
+		}
 	}
 	switch fx := x.(type) {
 	case *runtime.BuiltinFunc:
@@ -6434,18 +6478,19 @@ func funcMapElem(x runtime.Value, vc runtime.VMCaller) (reflect.Value, error) {
 			return wrap(rv), nil
 		}
 	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod:
-		sig, _, _, _ := runtime.FuncSigOf(x)
+		sig, pkg, file, binds := runtime.FuncSigOf(x)
 		if sig == nil {
-			break
+			return reflect.Value{}, fmt.Errorf("FuncMap value %T has no declared signature", x)
 		}
-		ft := sigHostType(sig)
-		fv, err := adaptFunc(x, ft, vc)
+		fv, err := adaptFuncWith(x, sigHostType(sig), vc, adaptOpts{
+			funcMap: funcMapArgs(vmOf(vc), sig, &runtime.TypeDef{Pkg: pkg, File: file, Binds: binds}),
+		})
 		if err != nil {
 			return reflect.Value{}, err
 		}
 		return wrap(fv), nil
 	}
-	return reflect.Value{}, fmt.Errorf("FuncMap value %T is not a function", x)
+	return toReflectValue(x, anyType, vc)
 }
 
 var builtinFuncMapType = reflect.TypeFor[func(...any) (any, error)]()
@@ -6528,6 +6573,250 @@ func sigHostType(sig *ast.FuncType) reflect.Type {
 	return reflect.FuncOf(in, out, variadic)
 }
 
+// funcMapSig is what a FuncMap func needs besides its host signature
+// ([sigHostType]): the script type each parameter declares, so the
+// arguments the template engine hands over as `any` bind like gc's typed
+// ones would.
+type funcMapSig struct {
+	// params holds one typedef per declared parameter — a trailing
+	// ...T contributes its element type T — nil where the host type
+	// already carries it (basics, error, `any`) or the declaration does
+	// not resolve (a function-local type).
+	params  []*runtime.TypeDef
+	spell   []string // Go spelling of each param, for the type-mismatch error
+	convert bool     // some param has a typedef: guard converts the arguments
+}
+
+// funcMapArgs resolves the declared parameter types of a script func
+// registered through FuncMap. When no parameter needs converting — the
+// common case of basics only — calls skip the conversion step.
+func funcMapArgs(v *VM, sig *ast.FuncType, ctx *runtime.TypeDef) *funcMapSig {
+	fs := &funcMapSig{}
+	if v == nil || v.H.ResolveType == nil || sig.Params == nil {
+		return fs
+	}
+	for _, fl := range sig.Params.List {
+		e := fl.Type
+		if el, ok := e.(*ast.Ellipsis); ok {
+			e = el.Elt
+		}
+		td := v.funcMapParamType(ctx, e)
+		fs.convert = fs.convert || td != nil
+		for range max(1, len(fl.Names)) {
+			fs.params = append(fs.params, td)
+			fs.spell = append(fs.spell, runtime.TypGoSpelling(e, ctx))
+		}
+	}
+	return fs
+}
+
+// funcMapParamType resolves a parameter's declared type, or nil when the
+// host slot already says all there is to say: a predeclared basic or
+// `error` keeps its Go type, `any` takes whatever arrives.
+func (v *VM) funcMapParamType(ctx *runtime.TypeDef, e ast.Expr) *runtime.TypeDef {
+	for {
+		p, ok := e.(*ast.ParenExpr)
+		if !ok {
+			break
+		}
+		e = p.X
+	}
+	switch t := e.(type) {
+	case *ast.Ident:
+		if t.Name == "any" || t.Name == "error" || hostBasicTypes[t.Name] != nil {
+			return nil
+		}
+	case *ast.InterfaceType:
+		if t.Methods == nil || len(t.Methods.List) == 0 {
+			return nil
+		}
+	case *ast.StarExpr:
+		// resolveTypeRef peels *T to T: the pointer typedef is built
+		// the way the compiler spells one.
+		return &runtime.TypeDef{Kind: runtime.KindPointer, Anon: t, Pkg: ctx.Pkg, File: ctx.File, Binds: ctx.Binds}
+	}
+	td, err := v.H.ResolveType(ctx, e)
+	if err != nil {
+		return nil
+	}
+	return td
+}
+
+// guard wraps callee so the conversion of the arguments runs on the VM
+// that executes the call — not the one that registered the func when the
+// template runs on another goroutine (an http handler, a `go`
+// statement): there the call reroutes to a child VM, and the conversion
+// (type hooks, the interface memo) belongs to that VM.
+func (fs *funcMapSig) guard(callee runtime.Value) runtime.Value {
+	if !fs.convert {
+		return callee
+	}
+	return &runtime.BuiltinFunc{Name: "template func", Forwards: true, SyncCallbacks: true, Fn: func(c runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		v := vmOf(c)
+		conv := make([]runtime.Value, len(args))
+		for i, a := range args {
+			j := min(i, len(fs.params)-1) // the variadic tail
+			if v == nil || j < 0 || fs.params[j] == nil {
+				conv[i] = a
+				continue
+			}
+			r, err := v.hostArgAsChecked(a, fs.params[j], fs.spell[j])
+			if err != nil {
+				return nil, err
+			}
+			conv[i] = r
+		}
+		return c.Call(callee, conv)
+	}}
+}
+
+// hostArgAsChecked is hostArgAs reporting a mismatch as gc's template
+// error, `wrong type for value; expected T; got U`, rather than a trap.
+func (v *VM) hostArgAsChecked(x runtime.Value, td *runtime.TypeDef, spell string) (r runtime.Value, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			if _, ok := p.(*runtime.Trap); !ok {
+				panic(p)
+			}
+			r, err = nil, fmt.Errorf("wrong type for value; expected %s; got %s", spell, typeNameOf(x))
+		}
+	}()
+	arg := x
+	if u := v.peelNamed(td); u != nil && u.Kind != runtime.KindPointer && u.Kind != runtime.KindInterface {
+		// like the template engine's own indirection: a pointer argument
+		// fits a parameter of its pointee type.
+		switch x.(type) {
+		case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
+			if dv, ok := runtime.Deref(x); ok {
+				arg = dv
+			}
+		}
+	}
+	return v.hostArgAs(&frame{fn: &runtime.Function{Name: "<template func>"}}, arg, td, 0), nil
+}
+
+// hostArgAs lifts x, an argument that crossed the host as `any`, to the
+// value of the script type td a parameter declares. A script container
+// reached the host as the generic []any / map[any]any projection (see
+// deepHost), which a `[]Pt` or `map[string]Pt` parameter rejects; here
+// its elements convert to the declared element type and the container
+// takes the declared type, recursively. Whatever does not fit traps, as
+// coerce does for a callee's own parameter binding.
+func (v *VM) hostArgAs(fr *frame, x runtime.Value, td *runtime.TypeDef, depth int) runtime.Value {
+	utd := v.peelNamed(td)
+	if utd == nil || depth > 8 {
+		return x
+	}
+	switch utd.Kind {
+	case runtime.KindSlice:
+		switch s := x.(type) {
+		case *runtime.TypedNil:
+			if hostGenericTyp(s.Typ) {
+				x = &runtime.TypedNil{Typ: td}
+			}
+		case *runtime.Slice:
+			if et := v.elemTypedef(nil, utd); et != nil && !s.Virtual() && hostGenericTyp(s.Typ) {
+				// an array parameter takes only a value of its length
+				if n, isArr := v.arrayLen(fr, utd); isArr && n != int64(len(s.Elems)) {
+					fr.trap("cannot use %s as %s", typeNameOf(x), tdName(td))
+				}
+				elems := make([]runtime.Value, len(s.Elems))
+				for i, e := range s.Elems {
+					elems[i] = v.hostArgAs(fr, e, et, depth+1)
+				}
+				x = &runtime.Slice{Elems: elems}
+			}
+		}
+	case runtime.KindMap:
+		switch m := x.(type) {
+		case *runtime.TypedNil:
+			if hostGenericTyp(m.Typ) {
+				x = &runtime.TypedNil{Typ: td}
+			}
+		case *runtime.Map:
+			kt, et := v.mapKeyTypedef(nil, utd), v.elemTypedef(nil, utd)
+			if kt != nil && et != nil && (m.Typ == nil || hostGenericTyp(m.Typ)) {
+				ku := v.peelNamed(kt)
+				out := runtime.NewMap(nil, ku != nil && ku.Kind == runtime.KindInterface)
+				for i := 0; i < m.Len(); i++ {
+					k, e := m.At(i)
+					out.Insert(v.hostArgAs(fr, k, kt, depth+1), v.hostArgAs(fr, e, et, depth+1))
+				}
+				x = out
+			}
+		}
+	}
+	r := v.coerce(fr, x, td)
+	if _, ok := r.(*runtime.Struct); ok {
+		// coerce copied the struct; an element of a slice the callee
+		// writes through must stay the caller's own, as in Go (the
+		// callee's parameter binding copies it again where Go would).
+		if _, ok := x.(*runtime.Struct); ok {
+			return x
+		}
+	}
+	return r
+}
+
+// hostGenericTyp reports whether td is the type a generic host
+// projection carries — []any or map[any]any, or none at all — the shapes
+// hostArgAs lifts (a script value of a declared type is left to coerce).
+func hostGenericTyp(td *runtime.TypeDef) bool {
+	if td == nil {
+		return true
+	}
+	if td.Name != "" {
+		return false
+	}
+	isAny := func(e ast.Expr) bool {
+		switch t := e.(type) {
+		case *ast.Ident:
+			return t.Name == "any"
+		case *ast.InterfaceType:
+			return t.Methods == nil || len(t.Methods.List) == 0
+		}
+		return false
+	}
+	switch t := td.Anon.(type) {
+	case *ast.ArrayType:
+		return t.Len == nil && isAny(t.Elt)
+	case *ast.MapType:
+		return isAny(t.Key) && isAny(t.Value)
+	}
+	return false
+}
+
+// funcMapPanicValue maps the error a script FuncMap func came back with
+// to the value the host panics with. text/template recovers that panic
+// in safeCall — an error stands as is, anything else prints with %v —
+// so a script panic must cross as its payload: panic("boom") reads
+// `error calling p: boom`, not the `panic: boom` the *runtime.Panic
+// renders. Other failures (a trap, a mismatched argument) keep their
+// error.
+func funcMapPanicValue(err error, vc runtime.VMCaller) any {
+	var p *runtime.Panic
+	if !errors.As(err, &p) || p == nil {
+		return err
+	}
+	switch x := p.Value.(type) {
+	case *runtime.GoValue:
+		return x.V
+	case *runtime.Named:
+		if gv, ok := x.V.(*runtime.GoValue); ok {
+			return gv.V
+		}
+	}
+	if _, ok := runtime.IfaceMember(vc, p.Value, "Error"); ok {
+		if e := hostErr(vc, p.Value); e != nil {
+			return e
+		}
+	}
+	if s, ok := runtime.IfaceCallString(vc, p.Value, "String"); ok {
+		return s
+	}
+	return deepHost(p.Value, vc, &hostMarshal{walk: runtime.NewWalk(), budget: hostEvalBudget})
+}
+
 // adaptFunc wraps a script callable as a host-typed func so methods taking
 // a func parameter (sync.Once.Do, sort callbacks, WalkDir-style visitors)
 // can invoke it: calls run back on vc — the VM the host call is executing
@@ -6542,6 +6831,23 @@ func adaptFunc(x runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.Va
 // adaptFuncOut is adaptFunc; opaque hands a result to an `any` result
 // slot as is rather than marshaling it (see hostFieldValue).
 func adaptFuncOut(x runtime.Value, t reflect.Type, vc runtime.VMCaller, opaque bool) (reflect.Value, error) {
+	return adaptFuncWith(x, t, vc, adaptOpts{opaque: opaque})
+}
+
+// adaptOpts tunes adaptFuncWith beyond adaptFunc's defaults.
+type adaptOpts struct {
+	// opaque hands a result to an `any` result slot as is (see
+	// adaptFuncOut).
+	opaque bool
+	// funcMap marks a func registered through template.FuncMap: its
+	// arguments convert to the declared script types, and a script
+	// panic reaches the host as its payload (see funcMapPanicValue).
+	funcMap *funcMapSig
+}
+
+// adaptFuncWith is adaptFuncOut with the full option set.
+func adaptFuncWith(x runtime.Value, t reflect.Type, vc runtime.VMCaller, o adaptOpts) (reflect.Value, error) {
+	opaque := o.opaque
 	if vc == nil {
 		return reflect.Value{}, fmt.Errorf("cannot adapt %T to %s off-VM", x, t)
 	}
@@ -6549,6 +6855,15 @@ func adaptFuncOut(x runtime.Value, t reflect.Type, vc runtime.VMCaller, opaque b
 	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc, *runtime.Named:
 	default:
 		return reflect.Value{}, fmt.Errorf("cannot use %T as %s", x, t)
+	}
+	callee, call := x, vc.Call
+	if o.funcMap != nil {
+		callee = o.funcMap.guard(x)
+		if cc, ok := vc.(interface {
+			CallCatching(runtime.Value, []runtime.Value) (runtime.Value, error)
+		}); ok {
+			call = cc.CallCatching
+		}
 	}
 	fv := reflect.MakeFunc(t, func(in []reflect.Value) []reflect.Value {
 		sargs := make([]runtime.Value, 0, len(in))
@@ -6563,8 +6878,11 @@ func adaptFuncOut(x runtime.Value, t reflect.Type, vc runtime.VMCaller, opaque b
 			}
 			sargs = append(sargs, goSlotValueOf(a))
 		}
-		r, err := vc.Call(x, sargs)
+		r, err := call(callee, sargs)
 		if err != nil {
+			if o.funcMap != nil {
+				panic(funcMapPanicValue(err, vc))
+			}
 			panic(err)
 		}
 		nout := t.NumOut()
