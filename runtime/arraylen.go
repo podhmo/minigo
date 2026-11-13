@@ -3,8 +3,10 @@ package runtime
 import (
 	"go/ast"
 	"go/token"
+	goruntime "runtime"
 	"strconv"
 	"sync"
+	"weak"
 )
 
 // Array-length folding.
@@ -22,6 +24,14 @@ import (
 // of a length goes through [ArrayLenExpr] / [FoldedArrayLen]. The AST
 // itself stays immutable after parsing.
 //
+// The table must not keep a program alive: a host that loads a fresh
+// engine per request would otherwise leak one entry (and the node it is
+// keyed by) per non-canonical length site per load. Keys are therefore
+// weak pointers to the node, and a cleanup attached to the node deletes
+// its entry once the AST is unreachable. A weak pointer, unlike a raw
+// address, stays distinct from every later allocation, so a node that
+// reuses a freed one's memory can never see its stale fold.
+//
 // A canonical decimal literal (`[3]T`, by far the common spelling) is
 // already its own folded form: it is never recorded and its readers never
 // touch the table, so the hot path is a pure read.
@@ -33,9 +43,14 @@ type arrayFold struct {
 	lit *ast.BasicLit
 }
 
-// arrayFolds maps *ast.ArrayType -> *arrayFold. Entries are bounded by the
-// number of non-canonical length sites in the loaded programs.
+// arrayFolds maps weak.Pointer[ast.ArrayType] -> *arrayFold. An entry
+// lives as long as its node: a cleanup deletes it when the node is
+// collected (see [FoldArrayLen]).
 var arrayFolds sync.Map
+
+// forgetArrayFold is the cleanup of a node's fold: it runs after the node
+// is unreachable and drops the entry its weak key stood for.
+func forgetArrayFold(key weak.Pointer[ast.ArrayType]) { arrayFolds.Delete(key) }
 
 // canonicalLen reports the count of a plain decimal integer literal — the
 // form that needs no folding: ASCII digits only, no sign, base prefix,
@@ -72,7 +87,7 @@ func FoldedArrayLen(at *ast.ArrayType) (int64, bool) {
 			return n, true
 		}
 	}
-	if f, ok := arrayFolds.Load(at); ok {
+	if f, ok := arrayFolds.Load(weak.Make(at)); ok {
 		return f.(*arrayFold).n, true
 	}
 	return 0, false
@@ -80,17 +95,24 @@ func FoldedArrayLen(at *ast.ArrayType) (int64, bool) {
 
 // FoldArrayLen publishes n as the evaluated length of at and returns it.
 // It never writes to the AST, so it is safe to call concurrently with any
-// reader. A repeated fold of the same count is a no-op.
+// reader. The first fold of a node wins — a length is one constant per
+// site — and later folds are no-ops.
 func FoldArrayLen(at *ast.ArrayType, n int64) int64 {
 	if l, ok := at.Len.(*ast.BasicLit); ok {
 		if m, ok := canonicalLen(l); ok && m == n {
 			return n // already spelled in its folded form
 		}
 	}
-	if f, ok := arrayFolds.Load(at); ok && f.(*arrayFold).n == n {
+	key := weak.Make(at)
+	if _, ok := arrayFolds.Load(key); ok {
 		return n
 	}
-	arrayFolds.Store(at, &arrayFold{n: n, lit: &ast.BasicLit{Kind: token.INT, Value: strconv.FormatInt(n, 10)}})
+	f := &arrayFold{n: n, lit: &ast.BasicLit{Kind: token.INT, Value: strconv.FormatInt(n, 10)}}
+	if _, loaded := arrayFolds.LoadOrStore(key, f); !loaded {
+		// exactly one storer registers the cleanup; key does not keep at
+		// alive, so the entry goes away with the node.
+		goruntime.AddCleanup(at, forgetArrayFold, key)
+	}
 	return n
 }
 
@@ -107,7 +129,7 @@ func ArrayLenExpr(at *ast.ArrayType) ast.Expr {
 			return l
 		}
 	}
-	if f, ok := arrayFolds.Load(at); ok {
+	if f, ok := arrayFolds.Load(weak.Make(at)); ok {
 		return f.(*arrayFold).lit
 	}
 	return at.Len
