@@ -3015,7 +3015,7 @@ func (e *Engine) installStdlib() {
 			return &runtime.GoValue{V: template.New(str(a[0]))}, nil
 		}, template.New),
 		"Must":    templateMust(template.Must),
-		"FuncMap": funcMapTypedef("text/template.FuncMap"),
+		"FuncMap": templateFuncMap,
 		"HTMLEscapeString": h.fn1("template.HTMLEscapeString", func(a []any) (any, error) {
 			return template.HTMLEscapeString(str(a[0])), nil
 		}, template.HTMLEscapeString),
@@ -3044,7 +3044,7 @@ func (e *Engine) installStdlib() {
 			return &runtime.GoValue{V: htmltemplate.New(str(a[0]))}, nil
 		}, htmltemplate.New),
 		"Must":     templateMust(htmltemplate.Must),
-		"FuncMap":  funcMapTypedef("html/template.FuncMap"),
+		"FuncMap":  templateFuncMap, // html/template.FuncMap aliases text/template's
 		"HTML":     htmlContent("HTML", htmltemplate.HTML("")),
 		"HTMLAttr": htmlContent("HTMLAttr", htmltemplate.HTMLAttr("")),
 		"JS":       htmlContent("JS", htmltemplate.JS("")),
@@ -3073,13 +3073,11 @@ func init() {
 	vm.RegisterFuncMapType(reflect.TypeFor[htmltemplate.FuncMap]())
 }
 
-// funcMapTypedef binds text/template's or html/template's FuncMap as a
-// script map[string]any; handing it to Template.Funcs adapts each script
-// func to a host func (see vm.funcMapTypes).
-func funcMapTypedef(name string) *runtime.TypeDef {
-	return &runtime.TypeDef{Name: name, Kind: runtime.KindMap,
-		Anon: &ast.MapType{Key: ast.NewIdent("string"), Value: ast.NewIdent("any")}}
-}
+// templateFuncMap binds text/template's FuncMap — and html/template's,
+// an alias of it in Go — as a script map[string]any; handing it to
+// Template.Funcs adapts each func to a host func (see vm.funcMapTypes).
+var templateFuncMap = &runtime.TypeDef{Name: "text/template.FuncMap", Kind: runtime.KindMap,
+	Anon: &ast.MapType{Key: ast.NewIdent("string"), Value: ast.NewIdent("any")}}
 
 // templateMust binds text/template's or html/template's Must. It takes
 // the (t, err) pair of New/Parse — a Tuple arg unpacks — or the two

@@ -2809,7 +2809,7 @@ func TestHostBoxedWrites(t *testing.T) {
 func TestTemplateFuncMap(t *testing.T) {
 	e := newEngine(t)
 	var got []any
-	for _, fn := range []string{"Text", "Fail", "HTML", "NilFields"} {
+	for _, fn := range []string{"Text", "Fail", "HTML", "NilFields", "Builtins"} {
 		got = append(got, run(t, e, "./testdata/funcmap", fn))
 	}
 	want := []any{
@@ -2817,6 +2817,7 @@ func TestTemplateFuncMap(t *testing.T) {
 		`template: t:1:2: executing "t" at <fail>: error calling fail: boom`,
 		"<p><b>&lt;Bob&gt;</b> &lt;bob&gt;</p>",
 		"[] 0",
+		`[a][b]3 42 0 | template: e:1:2: executing "e" at <atoi "x">: error calling atoi: strconv.Atoi: parsing "x": invalid syntax`,
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("FuncMap (-want +got):\n%s", diff)

@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	htmpl "html/template"
+	"strconv"
 	"strings"
 	"text/template"
 )
@@ -71,7 +72,27 @@ func NilFields() string {
 	return sb.String()
 }
 
+// Builtins registers intrinsics that have no host func of their own,
+// passes an html FuncMap where a text one is expected, and hands the
+// template a nil slice through `any`.
+func Builtins() string {
+	var fm template.FuncMap = htmpl.FuncMap{
+		"split":  strings.Split,
+		"fields": strings.Fields,
+		"atoi":   strconv.Atoi,
+	}
+	var sb strings.Builder
+	t := template.Must(template.New("b").Funcs(fm).Parse(`{{range split "a,b" ","}}[{{.}}]{{end}}{{len (fields "x y z")}} {{atoi "42"}} {{len .a}}`))
+	var none []string
+	if err := t.Execute(&sb, map[string]any{"a": none}); err != nil {
+		return "error: " + err.Error()
+	}
+	err := template.Must(template.New("e").Funcs(fm).Parse(`{{atoi "x"}}`)).Execute(&sb, nil)
+	return sb.String() + fmt.Sprint(" | ", err)
+}
+
 func main() {
+	fmt.Println(Builtins())
 	fmt.Println(Text())
 	fmt.Println(Fail())
 	fmt.Println(HTML())

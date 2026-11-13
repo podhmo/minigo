@@ -5081,6 +5081,13 @@ func deepHost(v runtime.Value, vc runtime.VMCaller, h *hostMarshal) runtime.Valu
 		}
 		return nil
 	case *runtime.IfaceNil:
+		// `var a any = s` with a nil s []string: the same typed zero
+		// (coerce turns the TypedNil into a concretely tagged IfaceNil).
+		if x.Typ != nil && (x.Typ.Kind == runtime.KindSlice || x.Typ.Kind == runtime.KindMap) {
+			if rt := cachedHostShape(vmOf(vc), x.Typ); rt != nil {
+				return reflect.Zero(rt).Interface()
+			}
+		}
 		return nil
 	case *runtime.UConst:
 		mv, err := materializeDefault(x)
@@ -6391,6 +6398,11 @@ func funcMapElem(x runtime.Value, vc runtime.VMCaller) (reflect.Value, error) {
 		if rv := reflect.ValueOf(fx.Target); rv.Kind() == reflect.Func {
 			return wrap(rv), nil
 		}
+		// an intrinsic without a host Target (strings.Split): a
+		// func(...any) (any, error) that calls it on the VM.
+		return wrap(reflect.MakeFunc(builtinFuncMapType, func(in []reflect.Value) []reflect.Value {
+			return callBuiltinFuncMap(fx, in[0], vc)
+		})), nil
 	case *runtime.GoValue:
 		if rv := reflect.ValueOf(fx.V); rv.Kind() == reflect.Func {
 			return wrap(rv), nil
@@ -6408,6 +6420,44 @@ func funcMapElem(x runtime.Value, vc runtime.VMCaller) (reflect.Value, error) {
 		return wrap(fv), nil
 	}
 	return reflect.Value{}, fmt.Errorf("FuncMap value %T is not a function", x)
+}
+
+var builtinFuncMapType = reflect.TypeFor[func(...any) (any, error)]()
+
+// callBuiltinFuncMap runs a Target-less intrinsic for a FuncMap call:
+// the args arrive packed in one []any, a (value, error) tuple result
+// splits into the template's value and error, a single value has a nil
+// error.
+func callBuiltinFuncMap(fx *runtime.BuiltinFunc, packed reflect.Value, vc runtime.VMCaller) []reflect.Value {
+	sargs := make([]runtime.Value, packed.Len())
+	for i := range sargs {
+		sargs[i] = goSlotValueOf(packed.Index(i))
+	}
+	fail := func(err error) []reflect.Value {
+		return []reflect.Value{reflect.Zero(anyType), reflect.ValueOf(&err).Elem()}
+	}
+	r, err := vc.Call(fx, sargs)
+	if err != nil {
+		return fail(err)
+	}
+	rs := []runtime.Value{r}
+	if tup, ok := r.(*runtime.Tuple); ok {
+		rs = tup.Elems
+	}
+	if len(rs) == 0 || len(rs) > 2 {
+		return fail(fmt.Errorf("%s returns %d values; a FuncMap func returns 1, or 2 with an error", fx.Name, len(rs)))
+	}
+	val, err := toReflectValue(rs[0], anyType, vc)
+	if err != nil {
+		return fail(err)
+	}
+	errv := reflect.Zero(errorType)
+	if len(rs) == 2 {
+		if errv, err = toReflectValue(rs[1], errorType, vc); err != nil {
+			return fail(fmt.Errorf("%s: second result is not an error: %w", fx.Name, err))
+		}
+	}
+	return []reflect.Value{val, errv}
 }
 
 // sigHostType builds a host func type for a script signature: each
