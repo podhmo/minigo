@@ -100,7 +100,16 @@ declarations in files behind `//go:build story`, calling the
 application's rendering code with dummy values. `storybook` interprets
 the package with minigo and the tag enabled, hands each story a host
 `httptest.ResponseRecorder`, and lists, exports or serves the HTML — the
-application is never built.
+application is never built. Unlike the other examples, **the interpreted
+code is not written for minigo**: it is the application's own package,
+and minigo — a VM interpreter that compiles a function to bytecode on
+first call and never links a binary — is only asked to call one named
+function with host values. Like `task-run` it runs selected functions
+out of a package; unlike `task-run` the package exists for `go build`
+and is merely borrowed, so interpreter fidelity on unmodified code is
+the ceiling.
 
-See [storybook/README.md](./storybook/README.md) and the notes in
+See [storybook/README.md](./storybook/README.md), the design notes in
+[docs/sketch/plan-storybook.md](../docs/sketch/plan-storybook.md), and
+the experiment log (Japanese) in
 [docs/sketch/ja/experiment-storybook.md](../docs/sketch/ja/experiment-storybook.md).
