@@ -666,9 +666,11 @@ func (e *Engine) mapsSeqHelpers(mapsPkg map[string]runtime.Value) map[string]run
 				Binds: map[string]runtime.Value{"K": els[0], "V": els[1]}, Pkg: els[1].Pkg, File: els[1].File,
 			}
 		}
-		m := &runtime.Map{}
+		var m *runtime.Map
 		if mt != nil {
 			m = vc.NewMap(mt)
+		} else {
+			m = runtime.NewMap(nil, false)
 		}
 		var bad bool
 		err := driveSeq(vc, args[0], func(ya []runtime.Value) {

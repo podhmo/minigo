@@ -1,0 +1,27 @@
+map[a:[1] b:[2] z:[1]] 3
+map[b:[2]] 1
+range b [2]
+named [q r] 2 map[q:[x] r:[]]
+plain [q r] 2 map[q:[x] r:[]]
+named [b y] 2 map[b:[] y:[9]]
+plain [b y] 2 map[b:[] y:[9]]
+map[a:[1] c:[] d:[]] map[a:[1] c:[] d:[]] map[a:[1] c:[] d:[]]
+map[r:[]] map[r:[]] map[r:[]]
+map[] 0
+map[k:3] 1
+map[ch:[]] map[ch:[]]
+sm [h mm sl] 3 map[h:[] mm:[] sl:[]]
+h.plain [h mm sl] 3 map[h:[] mm:[] sl:[]]
+sl[0] [h mm sl] 3 map[h:[] mm:[] sl:[]]
+mm[k] [h mm sl] 3 map[h:[] mm:[] sl:[]]
+um [a named] 2 map[a:[] named:[]]
+h.named [a named] 2 map[a:[] named:[]]
+4 4 4
+1 0 0
+range again
+[a c] 2 2
+2 1 3 2
+1 2
+sm [any h mm sl] 4 map[any:[] h:[] mm:[] sl:[]]
+map[b:[2]] 1 map[b:[2]] 1
+map[X:[1]] 1 map[X:[1]] 1

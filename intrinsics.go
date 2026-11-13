@@ -1507,15 +1507,9 @@ func (e *Engine) installStdlib() {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("maps.Clone needs 1 arg")
 			}
-			clone := func(m *runtime.Map) *runtime.Map {
-				pairs := make(map[runtime.Value]runtime.Value, len(m.Pairs))
-				for k, v := range m.Pairs {
-					pairs[k] = v
-				}
-				// keep the declared map type: without Typ a missing key
-				// reads NIL and `c[k]++` traps instead of zero-starting.
-				return &runtime.Map{Pairs: pairs, Order: append([]runtime.Value{}, m.Order...), Keys: append([]runtime.Value{}, m.Keys...), Typ: m.Typ, IfaceKey: m.IfaceKey}
-			}
+			// Clone keeps the declared map type: without Typ a missing key
+			// reads NIL and `c[k]++` traps instead of zero-starting.
+			clone := (*runtime.Map).Clone
 			switch m := args[0].(type) {
 			case *runtime.TypedNil:
 				// Clone(nil) is the same typed nil map.
@@ -4563,7 +4557,7 @@ func scriptVal(v any) runtime.Value {
 			return &runtime.TypedNil{Typ: &runtime.TypeDef{Kind: runtime.KindMap,
 				Anon: &ast.MapType{Key: ast.NewIdent("any"), Value: ast.NewIdent("any")}}}
 		}
-		m := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}, IfaceKey: true}
+		m := runtime.NewMap(nil, true)
 		for k, vv := range x {
 			m.Insert(scriptVal(k), scriptVal(vv))
 		}
@@ -7207,7 +7201,7 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 			return priorOr(prior, c, td)
 		}
 		et := c.TypeOf(c.ElemZero(td))
-		rm := &runtime.Map{Pairs: map[runtime.Value]runtime.Value{}, Typ: td}
+		rm := runtime.NewMap(td, false)
 		if pm, ok := prior.(*runtime.Map); ok {
 			// gc decodes into the existing map: prior pairs stay unless a
 			// decoded key overwrites them.

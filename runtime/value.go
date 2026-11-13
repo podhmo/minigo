@@ -33,6 +33,7 @@ import (
 	"go/ast"
 	"go/constant"
 	"go/token"
+	"maps"
 	"math"
 	"math/big"
 	"reflect"
@@ -1571,35 +1572,72 @@ func IsZeroSizeValue(v Value) bool {
 	return false
 }
 
-// Map is a map value. Pairs is keyed by the [CanonicalKey] of each script
-// key; Order and Keys hold the script key and canonical key of each entry
-// in insertion order. Modify it through [Map.Insert], [Map.Delete] and
-// [Map.Clear] to keep the three in sync, and iterate with [Map.Len] and
-// [Map.At].
+// Map is a map value: a header over a [mapStore]. Pairs is keyed by the
+// [CanonicalKey] of each script key; Order and Keys hold the script key
+// and canonical key of each entry in insertion order. Modify it through
+// [Map.Insert], [Map.Delete] and [Map.Clear] to keep the three in sync,
+// and iterate with [Map.Len] and [Map.At].
+//
+// Contents and tag are split because Go's map type is not a property of
+// the map: `type M map[K]V` and `map[K]V` are two views of one hash
+// table, and a conversion or assignment between them copies a pointer.
+// Typ and IfaceKey are per header (the declared type this value is
+// currently viewed as); every mutable part sits in the store, which all
+// headers over the same map share — [Map.Header] makes another header
+// without copying any contents. Build a Map with [NewMap]; Pairs, Order
+// and Keys are promoted from the store and read-only outside this
+// package. The zero Map is an empty, untyped map for every method.
 type Map struct {
-	Pairs map[Value]Value
-	Order []Value // insertion order for stable-ish range
-	Keys  []Value // canonical key per Order slot — a NaN canonical key is
-	// a fresh nonce on every CanonicalKey call, so iteration remembers
-	// the one used at insert instead of recomputing it.
+	*mapStore
 	Typ *TypeDef // declared map type (nil => missing keys yield NIL)
 	// IfaceKey marks a map whose declared key type is an interface:
 	// its keys hash by (dynamic type, value) ([IfaceKeyOf]). Set it
 	// when the map is made, before any insert.
 	IfaceKey bool
+}
+
+// mapStore is the contents of a map, shared by every [Map] header over
+// it.
+type mapStore struct {
+	Pairs map[Value]Value
+	Order []Value // insertion order for stable-ish range
+	Keys  []Value // canonical key per Order slot — a NaN canonical key is
+	// a fresh nonce on every CanonicalKey call, so iteration remembers
+	// the one used at insert instead of recomputing it.
 	// shared marks Order/Keys as handed to an in-place walk
 	// ([Map.BeginWalk]): the next Delete copies them once (copy on
 	// write) instead of shifting them under the walker, and clears the
 	// flag — later deletes shift the private copy. Atomic because
 	// read-only walks may start from several goroutines at once.
 	shared atomic.Bool
-	// aliased marks a map whose storage another header shares
-	// ([Map.Header]): a removal through the other header does not count
-	// in this one's dels, so walks always look keys up.
-	aliased bool
-	// dels counts removals (Delete, Clear), so a walker can tell that
-	// every slot it walks is still present without a lookup.
+	// dels counts removals (Delete, Clear) through any header, so a
+	// walker can tell that every slot it walks is still present without
+	// a lookup.
 	dels uint64
+}
+
+// mapBox is a [Map] and its first store in one allocation: the common
+// map has a single header, and the store keeps the box alive for as long
+// as any later header needs it.
+type mapBox struct {
+	m  Map
+	st mapStore
+}
+
+// NewMap returns an empty map of the declared map type td (nil for an
+// untyped one); ifaceKey is [Map.IfaceKey].
+func NewMap(td *TypeDef, ifaceKey bool) *Map {
+	b := &mapBox{st: mapStore{Pairs: map[Value]Value{}}}
+	b.m = Map{mapStore: &b.st, Typ: td, IfaceKey: ifaceKey}
+	return &b.m
+}
+
+// store returns the map's store, creating it for a zero Map.
+func (m *Map) store() *mapStore {
+	if m.mapStore == nil {
+		m.mapStore = &mapStore{Pairs: map[Value]Value{}}
+	}
+	return m.mapStore
 }
 
 // MapWalk is an in-place walk over a [Map]'s entries as they were when
@@ -1608,29 +1646,41 @@ type Map struct {
 // turn is skipped, and values read live. It needs no release: the map
 // copies its order slices on the first Delete after the walk began.
 type MapWalk struct {
-	m         *Map
+	s         *mapStore
 	display   []Value
 	canonical []Value
 	dels      uint64
 }
 
-// Header returns a second header over m's storage — the map value Go
-// copies when it passes a map. Both headers alias the order slices, so
-// both are marked shared: a Delete through either copies them first.
+// Header returns another header over m's contents, the value Go copies
+// when it passes a map: both see every insert, delete and clear made
+// through either. Set the new header's Typ to view the map as another
+// type — an unnamed map passed as a named one or back — without
+// touching m's own tag, which carries its method set.
 func (m *Map) Header() *Map {
-	m.shared.Store(true)
-	m.aliased = true
-	c := &Map{Pairs: m.Pairs, Order: m.Order, Keys: m.Keys, Typ: m.Typ, IfaceKey: m.IfaceKey, aliased: true}
-	c.shared.Store(true)
+	return &Map{mapStore: m.store(), Typ: m.Typ, IfaceKey: m.IfaceKey}
+}
+
+// Clone returns an independent map with m's type tag and a copy of its
+// entries; later changes to either do not reach the other.
+func (m *Map) Clone() *Map {
+	c := NewMap(m.Typ, m.IfaceKey)
+	if s := m.mapStore; s != nil {
+		cs := c.mapStore
+		maps.Copy(cs.Pairs, s.Pairs)
+		cs.Order = slices.Clone(s.Order)
+		cs.Keys = slices.Clone(s.Keys)
+	}
 	return c
 }
 
 // BeginWalk starts an in-place walk over m's entries.
 func (m *Map) BeginWalk() *MapWalk {
-	if !m.shared.Load() {
-		m.shared.Store(true)
+	s := m.store()
+	if !s.shared.Load() {
+		s.shared.Store(true)
 	}
-	return &MapWalk{m: m, display: m.Order, canonical: m.Keys, dels: m.dels}
+	return &MapWalk{s: s, display: s.Order, canonical: s.Keys, dels: s.dels}
 }
 
 // Len is the number of slots the walk covers.
@@ -1640,7 +1690,7 @@ func (w *MapWalk) Len() int { return len(w.display) }
 // entry was removed since the walk began.
 func (w *MapWalk) At(i int) (k, v Value, ok bool) {
 	ck := w.canonical[i]
-	v, ok = w.m.Pairs[ck]
+	v, ok = w.s.Pairs[ck]
 	return w.display[i], v, ok
 }
 
@@ -1648,10 +1698,10 @@ func (w *MapWalk) At(i int) (k, v Value, ok bool) {
 // removed since the walk began. It skips the lookup while nothing was
 // removed.
 func (w *MapWalk) Key(i int) (Value, bool) {
-	if w.m.dels == w.dels && !w.m.aliased {
+	if w.s.dels == w.dels {
 		return w.display[i], true
 	}
-	_, ok := w.m.Pairs[w.canonical[i]]
+	_, ok := w.s.Pairs[w.canonical[i]]
 	return w.display[i], ok
 }
 
@@ -1665,6 +1715,9 @@ func (m *Map) canonicalKey(k Value) Value {
 
 // Len reports the number of stored pairs.
 func (m *Map) Len() int {
+	if m.mapStore == nil {
+		return 0
+	}
 	return len(m.Order)
 }
 
@@ -1678,6 +1731,9 @@ func (m *Map) At(i int) (Value, Value) {
 // key that is already canonical (from Pairs or [Map.SnapshotKeys]), use
 // [Map.LookupCanonical].
 func (m *Map) Get(k Value) (Value, bool) {
+	if m.mapStore == nil {
+		return nil, false
+	}
 	v, ok := m.Pairs[m.canonicalKey(k)]
 	return v, ok
 }
@@ -1687,12 +1743,18 @@ func (m *Map) Get(k Value) (Value, bool) {
 // entry is still present with [Map.LookupCanonical] on the canonical
 // key; [Map.Get] on a NaN script key would never find it.
 func (m *Map) SnapshotKeys() (display, canonical []Value) {
+	if m.mapStore == nil {
+		return nil, nil
+	}
 	return append([]Value(nil), m.Order...), append([]Value(nil), m.Keys...)
 }
 
 // LookupCanonical looks up a canonical key taken from Pairs or
 // [Map.SnapshotKeys]. Look up script keys with [Map.Get].
 func (m *Map) LookupCanonical(ck Value) (Value, bool) {
+	if m.mapStore == nil {
+		return nil, false
+	}
 	v, ok := m.Pairs[ck]
 	return v, ok
 }
@@ -1703,14 +1765,12 @@ func (m *Map) Insert(k, v Value) {
 	// Keeping canonicalization and the order/keys append in one place is
 	// what makes the NaN-nonce key policy hold at every write site.
 	ck := m.canonicalKey(k)
-	if m.Pairs == nil {
-		m.Pairs = map[Value]Value{}
+	s := m.store()
+	if _, exists := s.Pairs[ck]; !exists {
+		s.Order = append(s.Order, k)
+		s.Keys = append(s.Keys, ck)
 	}
-	if _, exists := m.Pairs[ck]; !exists {
-		m.Order = append(m.Order, k)
-		m.Keys = append(m.Keys, ck)
-	}
-	m.Pairs[ck] = v
+	s.Pairs[ck] = v
 }
 
 // Delete removes the script key k and reports whether it was present. A
@@ -1718,25 +1778,29 @@ func (m *Map) Insert(k, v Value) {
 func (m *Map) Delete(k Value) bool {
 	// The canonical key stored per slot tells which order slot to drop —
 	// a stale order entry would render and range as `k:<nil>`.
-	ck := m.canonicalKey(k)
-	if _, ok := m.Pairs[ck]; !ok {
+	if m.mapStore == nil {
 		return false
 	}
-	delete(m.Pairs, ck)
-	m.dels++
-	for i := range m.Order {
-		if m.Keys[i] == ck {
-			if m.shared.Load() {
+	s := m.mapStore
+	ck := m.canonicalKey(k)
+	if _, ok := s.Pairs[ck]; !ok {
+		return false
+	}
+	delete(s.Pairs, ck)
+	s.dels++
+	for i := range s.Order {
+		if s.Keys[i] == ck {
+			if s.shared.Load() {
 				// a walk holds the current arrays: drop the slot into
 				// fresh ones instead of shifting under it. The copy is
 				// private, so later deletes shift it in place.
-				m.Order = slices.Delete(slices.Clone(m.Order), i, i+1)
-				m.Keys = slices.Delete(slices.Clone(m.Keys), i, i+1)
-				m.shared.Store(false)
+				s.Order = slices.Delete(slices.Clone(s.Order), i, i+1)
+				s.Keys = slices.Delete(slices.Clone(s.Keys), i, i+1)
+				s.shared.Store(false)
 				break
 			}
-			m.Order = append(m.Order[:i], m.Order[i+1:]...)
-			m.Keys = append(m.Keys[:i], m.Keys[i+1:]...)
+			s.Order = append(s.Order[:i], s.Order[i+1:]...)
+			s.Keys = append(s.Keys[:i], s.Keys[i+1:]...)
 			break
 		}
 	}
@@ -1745,10 +1809,11 @@ func (m *Map) Delete(k Value) bool {
 
 // Clear removes every entry.
 func (m *Map) Clear() {
-	m.Pairs = map[Value]Value{}
-	m.Order = nil
-	m.Keys = nil
-	m.dels++
+	s := m.store()
+	s.Pairs = map[Value]Value{}
+	s.Order = nil
+	s.Keys = nil
+	s.dels++
 }
 
 // Chan is a channel value backed by a Go channel of [Value]: sends and

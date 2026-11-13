@@ -103,6 +103,110 @@ func TestMapDeleteAndClear(t *testing.T) {
 	}
 }
 
+// mapKeysOf lists m's keys in insertion order.
+func mapKeysOf(m *Map) []Value {
+	var out []Value
+	for i := range m.Len() {
+		k, _ := m.At(i)
+		out = append(out, k)
+	}
+	return out
+}
+
+// TestMapHeadersShareContents: a second header over a map sees every
+// insert, delete and clear made through the first, and the other way
+// round, while keeping its own type tag.
+func TestMapHeadersShareContents(t *testing.T) {
+	named := &TypeDef{Name: "M", Kind: KindMap}
+	for _, tc := range []struct {
+		name string
+		new  func() *Map
+	}{
+		{"NewMap", func() *Map { return NewMap(nil, false) }},
+		{"zero Map", func() *Map { return &Map{} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := tc.new()
+			b := a.Header()
+			b.Typ = named
+			if a.Typ != nil || b.Typ != named {
+				t.Fatalf("Typ: a=%v b=%v; the tag is per header", a.Typ, b.Typ)
+			}
+
+			a.Insert("x", int64(1))
+			b.Insert("y", int64(2))
+			if diff := cmp.Diff([]Value{"x", "y"}, mapKeysOf(a)); diff != "" {
+				t.Errorf("a keys after inserts (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(mapKeysOf(a), mapKeysOf(b)); diff != "" {
+				t.Errorf("headers disagree on keys (-a +b):\n%s", diff)
+			}
+
+			// a delete through either header leaves no ghost in the other
+			if !b.Delete("x") {
+				t.Errorf("b.Delete(x) reported absent")
+			}
+			if _, ok := a.Get("x"); ok || a.Len() != 1 {
+				t.Errorf("a still holds x after b.Delete: len=%d", a.Len())
+			}
+			if k, v := a.At(0); k != "y" || v != int64(2) {
+				t.Errorf("a.At(0) = %v, %v; want y, 2", k, v)
+			}
+			if !a.Delete("y") || b.Len() != 0 {
+				t.Errorf("b.Len after a.Delete(y) = %d, want 0", b.Len())
+			}
+
+			// a walk begun through one header survives a delete through
+			// the other: the delete copies the order slices, not shifts
+			a.Insert("p", int64(1))
+			a.Insert("q", int64(2))
+			w := a.BeginWalk()
+			b.Delete("p")
+			if k, ok := w.Key(0); ok {
+				t.Errorf("walk reports deleted key %v present", k)
+			}
+			if k, ok := w.Key(1); !ok || k != "q" {
+				t.Errorf("walk slot 1 = %v, %v; want q, true", k, ok)
+			}
+
+			// clear through either header empties both
+			a.Insert("r", int64(3))
+			b.Clear()
+			if a.Len() != 0 || b.Len() != 0 {
+				t.Errorf("after b.Clear: a.Len=%d b.Len=%d", a.Len(), b.Len())
+			}
+			a.Insert("s", int64(4))
+			if v, ok := b.Get("s"); !ok || v != int64(4) {
+				t.Errorf("b.Get(s) = %v, %v after a.Insert", v, ok)
+			}
+		})
+	}
+}
+
+// TestMapClone: a clone keeps the type tag and entries but not the
+// storage.
+func TestMapClone(t *testing.T) {
+	td := &TypeDef{Name: "M", Kind: KindMap}
+	m := NewMap(td, false)
+	m.Insert("a", int64(1))
+	m.Insert("b", int64(2))
+	c := m.Clone()
+	if c.Typ != td {
+		t.Errorf("clone Typ = %v, want %v", c.Typ, td)
+	}
+	m.Delete("a")
+	c.Insert("c", int64(3))
+	if diff := cmp.Diff([]Value{"a", "b", "c"}, mapKeysOf(c)); diff != "" {
+		t.Errorf("clone keys (-want +got):\n%s", diff)
+	}
+	if _, ok := m.Get("c"); ok || m.Len() != 1 {
+		t.Errorf("original reflects clone writes: len=%d", m.Len())
+	}
+	if got := (&Map{}).Clone().Len(); got != 0 {
+		t.Errorf("clone of zero Map has %d entries", got)
+	}
+}
+
 // TestFoldRepeatedFrames: consecutive identical frames (recursion dumps)
 // keep their first maxRunShown verbatim then fold the rest into
 // "... repeated N more times ..." — ~50 real frames stay visible for
