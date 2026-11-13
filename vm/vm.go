@@ -1592,7 +1592,7 @@ func (v *VM) callBuiltin(c *runtime.BuiltinFunc, args []runtime.Value) (runtime.
 	if c.SyncCallbacks {
 		return c.Fn(ownerCaller{v}, args)
 	}
-	return c.Fn(v, args)
+	return c.Fn(bindCaller(v), args)
 }
 
 // Member implements [runtime.VMCaller].
@@ -2399,7 +2399,7 @@ func (v *VM) invokeDeferred(d deferredCall) {
 					panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
 				}
 			}
-			if _, err := c.Fn(v, args); err != nil {
+			if _, err := c.Fn(bindCaller(v), args); err != nil {
 				panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
 			}
 			return
@@ -4842,11 +4842,12 @@ type scriptIface struct {
 func (s *scriptIface) ScriptValue() runtime.Value { return s.recv }
 
 func (s *scriptIface) call(name string, args ...runtime.Value) ([]runtime.Value, error) {
-	m, ok := s.vc.Member(s.recv, name)
+	vc := callbackContext(s.vc)
+	m, ok := vc.Member(s.recv, name)
 	if !ok || m == nil || m == runtime.NIL {
 		return nil, fmt.Errorf("runtime error: invalid memory address or nil pointer dereference")
 	}
-	r, err := s.vc.Call(m, args)
+	r, err := vc.Call(m, args)
 	if err != nil {
 		return nil, err
 	}
@@ -4887,6 +4888,7 @@ func errOut(vc runtime.VMCaller, rs []runtime.Value, i int) error {
 // engine's HostErr hook, falling back to the scriptIface proxy (whose
 // Error forwards to the script method).
 func hostErr(vc runtime.VMCaller, v runtime.Value) error {
+	vc = callbackContext(vc)
 	if m := vmOf(vc); m != nil && m.H.HostErr != nil {
 		return m.H.HostErr(vc, v)
 	}
@@ -4901,6 +4903,8 @@ func vmOf(vc runtime.VMCaller) *VM {
 	case *VM:
 		return v
 	case ownerCaller:
+		return v.VM
+	case processCaller:
 		return v.VM
 	}
 	return nil
@@ -5238,16 +5242,16 @@ func hostSeqFunc(n *runtime.Named, vc runtime.VMCaller) (any, bool) {
 		return nil, false
 	}
 	seq := runtime.Value(n)
-	toHost := func(e runtime.Value) any {
-		return deepHost(e, vc, &hostMarshal{walk: runtime.NewWalk(), budget: hostEvalBudget})
+	toHost := func(e runtime.Value, c runtime.VMCaller) any {
+		return deepHost(e, c, &hostMarshal{walk: runtime.NewWalk(), budget: hostEvalBudget})
 	}
-	drive := func(yield func(args []runtime.Value) bool) {
+	drive := func(yield func(runtime.VMCaller, []runtime.Value) bool) {
 		// a host panic out of yield (text/template unwinds {{break}}
 		// with one) must reach the host's recover unchanged: stop the
 		// producer and re-raise it once the VM call is out of the way.
 		var hostPanic any
 		panicked := false
-		yb := &runtime.BuiltinFunc{Name: "host yield", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		yb := &runtime.BuiltinFunc{Name: "host yield", Fn: func(c runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			goon := false
 			func() {
 				defer func() {
@@ -5255,7 +5259,7 @@ func hostSeqFunc(n *runtime.Named, vc runtime.VMCaller) (any, bool) {
 						hostPanic, panicked = r, true
 					}
 				}()
-				goon = yield(args)
+				goon = yield(c, args)
 			}()
 			return goon && !panicked, nil
 		}}
@@ -5295,10 +5299,10 @@ func hostSeqFunc(n *runtime.Named, vc runtime.VMCaller) (any, bool) {
 	return reflect.MakeFunc(seqT, func(in []reflect.Value) []reflect.Value {
 		y := in[0]
 		vals := make([]reflect.Value, arity)
-		drive(func(args []runtime.Value) bool {
+		drive(func(c runtime.VMCaller, args []runtime.Value) bool {
 			for i, et := range elemTs {
 				vals[i] = reflect.Zero(et)
-				if rv := reflect.ValueOf(toHost(at(args, i))); rv.IsValid() {
+				if rv := reflect.ValueOf(toHost(at(args, i), c)); rv.IsValid() {
 					if rv.Type().AssignableTo(et) {
 						vals[i] = rv
 					} else if rv.Type().ConvertibleTo(et) {
@@ -6055,6 +6059,8 @@ func procOf(vc runtime.VMCaller) *proc {
 		return v.proc.Load()
 	case ownerCaller:
 		return v.proc.Load()
+	case processCaller:
+		return v.p
 	}
 	return nil
 }
@@ -6063,6 +6069,7 @@ func procOf(vc runtime.VMCaller) *proc {
 // arity checks, variadic/CallSlice handling, and result marshaling —
 // shared by host method values and callable GoValue funcs.
 func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	vc = bindCaller(vc)
 	mt := m.Type()
 	nin := mt.NumIn()
 	if !mt.IsVariadic() && len(args) != nin {
@@ -6458,6 +6465,7 @@ func RegisterFuncMapType(t reflect.Type) { funcMapTypes[t] = true }
 // `any`, so Template.Funcs itself rejects it with gc's recoverable
 // `value for NAME not a function` panic.
 func funcMapElem(x runtime.Value, vc runtime.VMCaller) (reflect.Value, error) {
+	vc = bindCaller(vc)
 	wrap := func(fv reflect.Value) reflect.Value {
 		out := reflect.New(anyType).Elem()
 		out.Set(fv)
@@ -6506,6 +6514,7 @@ var builtinFuncMapType = reflect.TypeFor[func(...any) (any, error)]()
 // splits into the template's value and error, a single value has a nil
 // error.
 func callBuiltinFuncMap(fx *runtime.BuiltinFunc, packed reflect.Value, vc runtime.VMCaller) []reflect.Value {
+	vc = callbackContext(vc)
 	sargs := make([]runtime.Value, packed.Len())
 	for i := range sargs {
 		sargs[i] = goSlotValueOf(packed.Index(i))
@@ -6862,16 +6871,17 @@ func adaptFuncWith(x runtime.Value, t reflect.Type, vc runtime.VMCaller, o adapt
 	default:
 		return reflect.Value{}, fmt.Errorf("cannot use %T as %s", x, t)
 	}
-	callee, call := x, vc.Call
-	if o.funcMap != nil {
-		callee = o.funcMap.guard(x)
-		if cc, ok := vc.(interface {
-			CallCatching(runtime.Value, []runtime.Value) (runtime.Value, error)
-		}); ok {
-			call = cc.CallCatching
-		}
-	}
 	fv := reflect.MakeFunc(t, func(in []reflect.Value) []reflect.Value {
+		vc := callbackContext(vc)
+		callee, call := x, vc.Call
+		if o.funcMap != nil {
+			callee = o.funcMap.guard(x)
+			if cc, ok := vc.(interface {
+				CallCatching(runtime.Value, []runtime.Value) (runtime.Value, error)
+			}); ok {
+				call = cc.CallCatching
+			}
+		}
 		sargs := make([]runtime.Value, 0, len(in))
 		for i, a := range in {
 			if t.IsVariadic() && i == len(in)-1 {
@@ -9474,6 +9484,8 @@ func vcPark(vc runtime.VMCaller, w parkWake) func() {
 	case *VM:
 		return v.park(w)
 	case ownerCaller:
+		return v.VM.park(w)
+	case processCaller:
 		return v.VM.park(w)
 	default:
 		return func() {}
