@@ -2433,7 +2433,7 @@ type Closure struct {
 
 // Iterator is the state of a range loop in progress.
 type Iterator struct {
-	Kind   byte // 's' slice, 'm' map, 'i' int, 'x' string, 'c' chan, 'f' func
+	Kind   byte // 's' slice, 'm' map, 'i' int, 'x' string, 'c' chan, 'f' func, 'h' host map/slice
 	Elems  []Value
 	Keys   []Value // map keys
 	Idx    int
@@ -2460,6 +2460,11 @@ type Iterator struct {
 	ChRV     reflect.Value
 	ETyp     *TypeDef
 	HostChan bool
+	// HostRV is the boxed host map, slice or array an 'h' iterator
+	// ranges over (Limit counts slice/array elements); HostKeys
+	// snapshots a map's keys, each value is read live.
+	HostRV   reflect.Value
+	HostKeys []reflect.Value
 
 	// Fn is the producer for 'f' (range-over-func) iterators. Started marks
 	// that the producer was invoked once; Exited marks that the loop body

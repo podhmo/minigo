@@ -17,6 +17,8 @@ import (
 // compiled application writes.
 func TestNativeGolden(t *testing.T) {
 	stories := map[string]func(http.ResponseWriter, *http.Request){
+		"StoryListUsers":        app.StoryListUsers,
+		"StoryListUsersByTag":   app.StoryListUsersByTag,
 		"StoryShowUser":         app.StoryShowUser,
 		"StoryShowUserNotFound": app.StoryShowUserNotFound,
 		"StoryUser":             app.StoryUser,

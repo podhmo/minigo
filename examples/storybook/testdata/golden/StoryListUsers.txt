@@ -1,0 +1,10 @@
+200
+Content-Type: text/html; charset=utf-8
+X-Total-Count: 3
+
+<!doctype html>
+<html><head><title>users</title></head>
+<body>
+<p class="filters"><code>sort=name</code> </p>
+<ul><li><a href="/users/2">&lt;script&gt;alert(1)&lt;/script&gt;</a></li><li><a href="/users/1">Alice</a></li><li><a href="/users/3">Bob</a></li></ul>
+</body></html>

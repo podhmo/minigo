@@ -5,10 +5,12 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -19,6 +21,8 @@ var update = flag.Bool("update", false, "rewrite testdata/golden from minigo's r
 
 // storyTargets are the request URIs each golden story is rendered with.
 var storyTargets = map[string]string{
+	"StoryListUsers":        "/",
+	"StoryListUsersByTag":   "/?tag=go&sort=id",
 	"StoryShowUser":         "/",
 	"StoryShowUserNotFound": "/",
 	"StoryUser":             "/",
@@ -29,7 +33,15 @@ var storyTargets = map[string]string{
 // goldenText is the comparable form of a rendered story; both the minigo
 // test and the native one (oracle_story_test.go) write it.
 func goldenText(status int, h http.Header, body []byte) string {
-	return fmt.Sprintf("%d %s\n\n%s", status, h.Get("Content-Type"), body)
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d\n", status)
+	for _, k := range slices.Sorted(maps.Keys(h)) {
+		for _, v := range h[k] {
+			fmt.Fprintf(&sb, "%s: %s\n", k, v)
+		}
+	}
+	fmt.Fprintf(&sb, "\n%s", body)
+	return sb.String()
 }
 
 func goldenPath(name string) string {
@@ -49,7 +61,7 @@ func TestStories(t *testing.T) {
 			t.Errorf("%s: want a doc line and a story_user.go position, got %+v", s.Name, s)
 		}
 	}
-	want := []string{"StoryShowUser", "StoryShowUserNotFound", "StoryUser", "StoryUserEscaped", "StoryUserFromQuery"}
+	want := []string{"StoryListUsers", "StoryListUsersByTag", "StoryShowUser", "StoryShowUserNotFound", "StoryUser", "StoryUserEscaped", "StoryUserFromQuery"}
 	if diff := cmp.Diff(want, names); diff != "" {
 		t.Errorf("stories (-want +got):\n%s", diff)
 	}
