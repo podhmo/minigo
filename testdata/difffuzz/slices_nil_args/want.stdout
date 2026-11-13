@@ -1,0 +1,120 @@
+IndexFunc -1 -1 -1 -1 -1 -1 -1
+IndexFunc -1 -1 -1 -1
+IndexFunc 2 2 -1 -1 -1 2
+IndexFunc calls 0
+EqualFunc true true true true true true
+EqualFunc false false true true false
+EqualFunc true true
+EqualFunc true true false
+0 false
+0 false
+0 false
+0 false
+0 false
+0 false
+1 true
+2 false
+0 false
+0 false
+0 false
+0 false
+1 true
+Reverse true true true true true true true
+Reverse [2 1 3] [] false
+Reverse 3
+Insert: [1 2] []int nil=false len=2
+Insert: [7] main.IDs nil=false len=1
+Insert: [a b] []string nil=false len=2
+Insert: [{x 1}] []main.Rec nil=false len=1
+Insert: [k] []string nil=false len=1
+Insert: [1] []int nil=false len=1
+Insert: [1 2] []float64 nil=false len=2
+Insert: [1 x] []interface {} nil=false len=2
+Insert: [4 5] []int nil=false len=2
+Insert: [] []int nil=true len=0
+Insert: [9] []int nil=false len=1
+Insert: [9] main.IDs nil=false len=1
+Insert: [] []int nil=true len=0
+Insert: [] main.IDs nil=true len=0
+Insert: [] []int nil=false len=0
+Insert: [3 1 2 9] []int nil=false len=4
+Insert: [2 9 8 1 3] main.IDs nil=false len=5
+Insert: [2 1] []float64 nil=false len=2
+Insert: [{a 1} {b 2}] []main.Rec nil=false len=2
+Insert: panic: runtime error: slice bounds out of range [1:0] (runtime.boundsError)
+Insert: panic: runtime error: slice bounds out of range [-1:] (runtime.boundsError)
+Insert: panic: runtime error: slice bounds out of range [2:0] (runtime.boundsError)
+Insert: panic: runtime error: slice bounds out of range [3:1] (runtime.boundsError)
+ni: [] []int nil=true len=0
+Delete: [] []int nil=true len=0
+Delete: [] main.IDs nil=true len=0
+Delete: [] []string nil=true len=0
+Delete: [] main.IDs nil=true len=0
+Delete: [] []int nil=true len=0
+Delete: [] []main.Rec nil=true len=0
+Delete: [] []int nil=true len=0
+Delete: [] main.IDs nil=true len=0
+Delete: [] []int nil=false len=0
+Delete: panic: runtime error: slice bounds out of range [:1:0] (runtime.boundsError)
+Delete: panic: runtime error: slice bounds out of range [1:0:] (runtime.boundsError)
+Delete: panic: runtime error: slice bounds out of range [:1:0] (runtime.boundsError)
+Delete: panic: runtime error: slice bounds out of range [:5:2] (runtime.boundsError)
+Delete: [1 4] []int nil=false len=2
+Delete tail [1 4 0 0]
+Delete: [c] []string nil=false len=1
+Delete tail ["c" "" ""]
+Delete: [{b 2}] []main.Rec nil=false len=1
+Delete tail [{b 2} { 0}]
+Delete: [1 2] main.IDs nil=false len=2
+Delete tail [1 2 0]
+Delete: [1 2] []int nil=false len=2
+Delete tail [1 2]
+Replace: [] []int nil=true len=0
+Replace: [] main.IDs nil=true len=0
+Replace: [1 2] []int nil=false len=2
+Replace: [1] main.IDs nil=false len=1
+Replace: panic: runtime error: slice bounds out of range [:1] with capacity 0 (runtime.boundsError)
+Concat: [] []int nil=true len=0
+Concat: [1] []int nil=false len=1
+Concat: [1] main.IDs nil=false len=1
+Concat: [] []int nil=true len=0
+Concat: [a b] []string nil=false len=2
+Concat: [] main.IDs nil=true len=0
+Concat cap 2 3
+Repeat: [] []int nil=false len=0
+Repeat: [] main.IDs nil=false len=0
+Repeat: [] []int nil=false len=0
+Repeat: [] []int nil=false len=0
+Repeat: [3 1 2 3 1 2] []int nil=false len=6
+Repeat: [2 1 3 2 1 3] main.IDs nil=false len=6
+Repeat cap 6
+Repeat: panic: cannot be negative (string)
+Repeat: panic: cannot be negative (string)
+Clip: [] []int nil=true len=0
+Clip: [] main.IDs nil=true len=0
+Clone: [] []int nil=true len=0
+Clone: [] main.IDs nil=true len=0
+Clone: [] []int nil=true len=0
+Grow: [] []int nil=true len=0
+Grow: [] main.IDs nil=true len=0
+Compact: [] []int nil=true len=0
+Compact: [] main.IDs nil=true len=0
+CompactFunc: [] []int nil=true len=0
+DeleteFunc: [] []int nil=true len=0
+DeleteFunc: [] main.IDs nil=true len=0
+Sort true true true
+AppendSeq: [1 2] []int nil=false len=2
+AppendSeq: [] main.IDs nil=true len=0
+Collect: [] []int nil=true len=0
+IsSorted true true
+Compare 0 -1 1
+Index -1 false false true
+copies [{a 1} {b 2}] [{X 1} {b 2}] [{Y 1} {b 2} {a 1} {b 2}] [{W 1} {b 2} {a 1} {b 2}]
+operand copy [{q 5}] {changed 5}
+maps.Copy map[a:1] map[s:true] true true
+maps.Copy: panic: assignment to entry in nil map
+maps.Copy: panic: assignment to entry in nil map
+expvar {"a": 0, "b": 0, "c": 3}
+expvar a 0
+expvar b 0
+expvar c 3
