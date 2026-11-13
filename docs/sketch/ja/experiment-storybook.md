@@ -5,9 +5,51 @@
 
 ---
 
+## 0. 現在の使い方と、Go 側の制約
+
+この例は、通常の Go HTTP アプリと、そのコードを minigo で呼ぶプレビューツールからなる。コマンドは `examples/storybook` で実行する。
+
+```sh
+# 通常の Go アプリ。story タグも minigo も不要
+go run ./cmd/server -addr 127.0.0.1:8080
+# 別のターミナルで通常のルートにアクセス
+curl 'http://127.0.0.1:8080/users?tag=go&sort=id'
+curl http://127.0.0.1:8080/users/1
+
+# プレビューツール。内部で minigo が app の Story を解釈する
+go run . -list ./app
+go run . ./app StoryUser
+go run . -http 127.0.0.1:6006 ./app
+```
+
+`app/handler.go` は通常のハンドラー・テンプレート・`Routes()`、`app/store.go` は通常サーバー用のメモリストアである。`cmd/server/main.go` がストアを `app.Handler` に渡し、`http.ListenAndServe(*addr, h.Routes())` を呼ぶ。これらに minigo の import や Story の登録処理はない。`app/story_user.go` だけが `story` タグ付きで、ダミーデータと Story を持つ。`testdata` には期待値だけを置き、アプリのコードは置かない。
+
+### 0.1 Go の都合を minigo に持ち込まない
+
+Go での比較検証に必要な構成と、minigo でのプレビューに必要な構成を区別する。Go 側の制約をプレビュー対象の設計に課す必要はない。
+
+| 記述・構成 | 必要になる理由 | minigo のプレビューに必要か |
+|---|---|---|
+| import 可能な `app` と `cmd/server` への分割 | 通常のサーバー構成としての選択。Go の別プログラムから呼ぶなら `package main` を import できない | 不要。サーバーの `package main` にハンドラーと Story を置いても呼べる |
+| 関数を列挙する map・レジストリ、生成 main | Go の別プログラムはパッケージの関数を文字列の名前から取得できない | 不要。`Engine.Call` が名前で呼ぶ |
+| ネイティブ比較テストでの Story の明示的な列挙 | Go で同じ関数を実行し、出力の一致を検証するため | プレビューには不要。これはこのリポジトリの比較検証用コード |
+| パッケージ全体が Go でビルドできること | ネイティブ実行・比較検証に必要 | 呼ばれない関数の型エラー等は許容できる。ただし選択したソースの構文解析、init、実行経路の解決は必要 |
+| `Store` interface | 通常サーバーのデータ取得と、Story の fake を差し替える設計 | minigo 固有の必須条件ではない。固定データでレンダリング関数だけを呼ぶこともできる |
+| `story` タグ、exported な `Story*`、ハンドラー型の引数 | このプレビューツールが探索・実行するための規約 | 現在のツールでは必要。minigo API 全般の制約ではない |
+
+以前のネイティブ比較テストはツール側からアプリを import していた。現在は `app/oracle_story_test.go` として対象と同じパッケージに置き、比較テストのために import 可能な構成を要求しない形にした。通常のルートも `app/handler_test.go` で story タグなしに検証する。`book_test.go` はアプリを `package main` にしたコピーでも描画でき、`main()` が呼ばれないことを検証する。このコピーには未定義関数を呼ぶ未使用の関数も置き、パッケージ全体が Go でビルドできる必要がないことも確認する。
+
+通常のアプリ側に、Go で実行するための minigo 用アダプターや Story 登録は追加していない。ネイティブ比較の明示的な関数一覧は検証の都合であり、利用側に要求する構成ではない。
+
+### 0.2 直接の minigo CLI とプレビューツールの違い
+
+`go run . ./app StoryUser` は、Go で起動したツールが minigo の `Engine.Call` に recorder と request を渡す。一方、`minigo run --tags story ./app StoryUser` は引数を渡さずに呼ぶため、`not enough arguments to StoryUser: 0 given, want 2` になる。`--tags` が指定できることと、HTTP の引数が自動で用意されることは別である。
+
+以下の 1〜7 章は初期実験の記録であり、当時の不足・評価を含む。8〜9 章に host map と `FuncMap` の対応を追記している。過去の測定値は、今回のサーバー構成で再測定した値ではない。
+
 ## 1. 総評
 
-**できる。** 小さなアプリ（`testdata/app`）で、ストーリー 5 本すべてが minigo 上でレンダリングでき、ネイティブ Go で同じストーリーを実行した結果（golden）とバイト単位で一致した。ブラウザで一覧・プレビューでき、ソースを編集するとリロードだけで反映される（アプリのビルドは不要）。
+**できる。** 小さなアプリ（`app`）で、ストーリー 5 本すべてが minigo 上でレンダリングでき、ネイティブ Go で同じストーリーを実行した結果（golden）とバイト単位で一致した。ブラウザで一覧・プレビューでき、ソースを編集するとリロードだけで反映される（アプリのビルドは不要）。
 
 ただし素の minigo のままでは動かず、次の 3 点を足した。
 
@@ -55,10 +97,10 @@ func StoryUser(w http.ResponseWriter, r *http.Request) {
 CLI:
 
 ```console
-$ go run . -list ./testdata/app
-$ go run . ./testdata/app StoryUser
-$ go run . -o out ./testdata/app       # index.html + ストーリーごとの .html
-$ go run . -http :6006 ./testdata/app  # 左にナビ、右に iframe
+$ go run . -list ./app
+$ go run . ./app StoryUser
+$ go run . -o out ./app       # index.html + ストーリーごとの .html
+$ go run . -http :6006 ./app  # 左にナビ、右に iframe
 ```
 
 `-http` モードはリクエストごとにエンジンを作り直してパッケージを解釈し直す。`handler.go` のテンプレートを書き換えて curl すると、再起動なしで変更後の HTML が返ることを確認した。クエリ文字列はストーリーに転送されるので `/story/StoryUserFromQuery?name=Carol&tag=a` が Storybook の controls 相当になる。
@@ -73,7 +115,7 @@ $ go run . -http :6006 ./testdata/app  # 左にナビ、右に iframe
 | `StoryShowUser` | ハンドラー全体を fake store で | 200, golden 一致 |
 | `StoryShowUserNotFound` | エラー経路 (`http.Error`) | 404 `text/plain`, golden 一致 |
 
-- `book_test.go` は minigo で全ストーリーを描画して `testdata/golden` と比較、`oracle_story_test.go`（`-tags story`）は同じストーリーをネイティブ実行して同じ golden と比較する。Makefile の `test` に両方を追加した。
+- `book_test.go` は minigo で全ストーリーを描画して `testdata/golden` と比較、`app/oracle_story_test.go`（`-tags story`）は同じストーリーをネイティブ実行して同じ golden と比較する。Makefile の `test` に両方を追加した。
 - 1 ストーリーの描画（プロセス起動込み）は約 0.07 秒 / 約 42MB。
 
 ## 4. 見つかった不足と対処
@@ -115,7 +157,7 @@ runtime trap: index on *runtime.GoValue
 
 ### 4.3 タグ付きファイルをエントリーポイントにできない（対処済み）
 
-`Engine` には `WithBuildConfig` があったが、CLI からタグを指定する手段がなかった。`minigo run --tags story ./app StoryUser`（`--tags=a,b` 形式も可）を追加した。storybook 自体は API 経由なのでこれを使わないが、ストーリーを素の minigo で 1 本叩くのに便利。
+`Engine` には `WithBuildConfig` があったが、CLI からタグを指定する手段がなかった。`--tags`（`--tags=a,b` 形式も可）を追加した。これはタグ付きファイルを選択する機能で、HTTP 引数を用意するものではない。`StoryUser(w, r)` を CLI から直接実行することはできず、storybook の `Engine.Call` 経由で recorder と request を渡す（0.2 節）。
 
 ### 4.4 net/http 側の binding
 
@@ -125,7 +167,7 @@ runtime trap: index on *runtime.GoValue
 
 - **パッケージ単位で解釈する。** ストーリーファイル単体を参照すると同じパッケージの `RenderUser` が見えない（`undefined: RenderUser`）。ディレクトリを渡す必要がある。
 - **アプリ側の書き方に依存する。** レンダリングが `func(w, data)` のように切り出されていれば素直に呼べる。DB クライアントなどを直接握るハンドラーは、interface で受けていないと fake を差し込めない（これは Go のテスト容易性と同じ条件）。
-- **ネイティブとの一致は golden で担保している。** minigo の解釈結果が Go と食い違うと、見た目のプレビューが嘘をつく。`oracle_story_test.go` のように、同じストーリーをネイティブでも実行して比較する仕組みをセットで持つのがよい。
+- **ネイティブとの一致は golden で担保している。** minigo の解釈結果が Go と食い違うと、見た目のプレビューが嘘をつく。`app/oracle_story_test.go` のように、同じストーリーをネイティブでも実行して比較する仕組みをセットで持つのがよい。
 - minigo が binding を持たないパッケージ（サードパーティのテンプレートエンジン等）をソース解釈すると、今回の `html/template` のように init で落ちる可能性がある。その場合 trap のトレースバックでどの宣言が原因かは分かる。
 
 ## 6. 今後やるなら
@@ -140,11 +182,11 @@ minigo の存在価値は「Go でもできることを、Go より安く・制�
 
 ### 7.1 Go での代替案
 
-- **A. 同じパッケージのテストから呼ぶ**: `story_user.go` はそのままにして、`go test -tags story` のテスト（`oracle_story_test.go` と同じ形）でストーリーを呼び、HTML をファイルに書くか比較する。追加の道具は要らず、結果はネイティブそのもの。
+- **A. 同じパッケージのテストから呼ぶ**: `story_user.go` はそのままにして、`go test -tags story` のテスト（`app/oracle_story_test.go` と同じ形）でストーリーを呼び、HTML をファイルに書くか比較する。追加の道具は要らず、結果はネイティブそのもの。
 - **B. レジストリ付きの main を生成して `go run -tags story`**: `map[string]http.HandlerFunc{"StoryUser": app.StoryUser, ...}` を持つ main を go/parser で生成し、ビルドして配信する。ブラウザで見るには、ファイル変更を監視して再ビルド・再起動する仕組み（air のようなもの）を足す必要がある。
 - **C. plugin**: Linux/macOS 限定で、ツールチェーンとビルドフラグが完全に一致している必要があり、一度ロードすると外せない（更新するにはプロセスの再起動が要る）。試していない。
 
-A と B を `examples/storybook/testdata/app` で組んで測った（8 コア、go1.27.1、ビルドキャッシュあり）。
+A と B を当時の `examples/storybook/testdata/app`（現在の `examples/storybook/app`）で組んで測った（8 コア、go1.27.1、ビルドキャッシュあり）。
 
 ### 7.2 測定
 
@@ -201,7 +243,7 @@ A と B を `examples/storybook/testdata/app` で組んで測った（8 コア�
 
 ### 8.1 example を実アプリ寄りにした
 
-`testdata/app` に `ListUsers` ハンドラー（`?tag=` で絞り込み、`?sort=` で並べ替え、件数を `X-Total-Count` ヘッダーで返す）を足した。書き方は素の Go のハンドラーとして自然なものにしている。
+`app` に `ListUsers` ハンドラー（`?tag=` で絞り込み、`?sort=` で並べ替え、件数を `X-Total-Count` ヘッダーで返す）を足した。書き方は素の Go のハンドラーとして自然なものにしている。
 
 - `q := r.URL.Query(); if _, ok := q["sort"]; !ok { q["sort"] = ... }` で既定値を入れる
 - `for k, vs := range q` で有効なクエリを画面に出す

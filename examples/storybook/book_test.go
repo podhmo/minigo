@@ -31,7 +31,7 @@ var storyTargets = map[string]string{
 }
 
 // goldenText is the comparable form of a rendered story; both the minigo
-// test and the native one (oracle_story_test.go) write it.
+// test and the native one (app/oracle_story_test.go) write it.
 func goldenText(status int, h http.Header, body []byte) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "%d\n", status)
@@ -49,7 +49,7 @@ func goldenPath(name string) string {
 }
 
 func TestStories(t *testing.T) {
-	b := &Book{Dir: "testdata/app", Tag: "story"}
+	b := &Book{Dir: "app", Tag: "story"}
 	stories, err := b.Stories()
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +57,7 @@ func TestStories(t *testing.T) {
 	var names []string
 	for _, s := range stories {
 		names = append(names, s.Name)
-		if s.Doc == "" || !strings.HasPrefix(s.Pos, filepath.Join("testdata", "app", "story_user.go")+":") {
+		if s.Doc == "" || !strings.HasPrefix(s.Pos, filepath.Join("app", "story_user.go")+":") {
 			t.Errorf("%s: want a doc line and a story_user.go position, got %+v", s.Name, s)
 		}
 	}
@@ -83,8 +83,44 @@ func TestStoriesRejectsBadShape(t *testing.T) {
 	}
 }
 
+// A preview can call handlers in package main without importing it or
+// executing its server entry point, even with an unfinished, uncalled function
+// that would prevent a native Go build. Native oracle tests are not required.
+func TestRenderMainPackage(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"handler.go", "story_user.go"} {
+		src, err := os.ReadFile(filepath.Join("app", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), bytes.Replace(src, []byte("package app"), []byte("package main"), 1), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, src := range map[string]string{
+		"go.mod":  "module example.com/server\n\ngo 1.26.0\n",
+		"main.go": "package main\n\nfunc main() { panic(\"server must not start during preview\") }\n",
+		"wip.go":  "package main\n\nfunc unfinished() { undefinedFunction() }\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res, err := (&Book{Dir: dir, Tag: "story"}).Render(context.Background(), "StoryUser", "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile(goldenPath("StoryUser"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(string(want), goldenText(res.Status, res.Header, res.Body)); diff != "" {
+		t.Errorf("package main response (-golden +got):\n%s", diff)
+	}
+}
+
 func TestRenderGolden(t *testing.T) {
-	b := &Book{Dir: "testdata/app", Tag: "story"}
+	b := &Book{Dir: "app", Tag: "story"}
 	for name, target := range storyTargets {
 		t.Run(name, func(t *testing.T) {
 			res, err := b.Render(context.Background(), name, target)
@@ -110,7 +146,7 @@ func TestRenderGolden(t *testing.T) {
 }
 
 func TestRenderTrapReportsStory(t *testing.T) {
-	b := &Book{Dir: "testdata/app", Tag: "story"}
+	b := &Book{Dir: "app", Tag: "story"}
 	_, err := b.Render(context.Background(), "StoryMissing", "/")
 	if err == nil || !strings.Contains(err.Error(), "StoryMissing") {
 		t.Fatalf("want an error naming StoryMissing, got %v", err)
@@ -120,7 +156,7 @@ func TestRenderTrapReportsStory(t *testing.T) {
 // TestRenderRejectsNonStory pins that Render (and so /story/{name})
 // only calls discovered stories, not any package-level func.
 func TestRenderRejectsNonStory(t *testing.T) {
-	b := &Book{Dir: "testdata/app", Tag: "story"}
+	b := &Book{Dir: "app", Tag: "story"}
 	_, err := b.Render(context.Background(), "RenderUser", "/")
 	if diff := cmp.Diff("RenderUser: not a story", fmt.Sprint(err)); diff != "" {
 		t.Errorf("Render(RenderUser) error (-want +got):\n%s", diff)
@@ -129,7 +165,7 @@ func TestRenderRejectsNonStory(t *testing.T) {
 
 func TestExport(t *testing.T) {
 	out := t.TempDir()
-	b := &Book{Dir: "testdata/app", Tag: "story"}
+	b := &Book{Dir: "app", Tag: "story"}
 	stories, err := b.Stories()
 	if err != nil {
 		t.Fatal(err)
@@ -155,7 +191,7 @@ func TestExport(t *testing.T) {
 }
 
 func TestHandler(t *testing.T) {
-	srv := httptest.NewServer((&Book{Dir: "testdata/app", Tag: "story"}).Handler())
+	srv := httptest.NewServer((&Book{Dir: "app", Tag: "story"}).Handler())
 	defer srv.Close()
 	get := func(path string) (int, string) {
 		t.Helper()
