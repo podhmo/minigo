@@ -138,6 +138,26 @@ images, JavaScript, or routes, those resources need an appropriate serving
 setup; file URLs and preview URLs are not the application's original
 origin. An iframe view is not an end-to-end browser test of the application.
 
+## Extension: supply fake standard-library bindings
+
+A custom preview command embedding minigo can replace host bindings,
+including standard-library intrinsics. This can fix the clock or supply
+predictable external I/O results for interpreted application code without
+adding an application interface solely for previews.
+
+`Engine.Bind` registers a host package at an import path, including a
+standard-library path; `Engine.BoundOf` exposes an existing bound package.
+Configure replacements before application initialization and execution,
+and apply them to each fresh engine. If re-registering a whole package,
+preserve its other required symbols. `ModeSource` bypasses host bindings,
+so the target package's execution mode matters too.
+
+Replacements affect interpreted calls through those bindings, not calls
+inside compiled host implementations. This is an extension point of the
+existing minigo API; the current `cmd/storybook` has no CLI configuration
+for fake bindings. A custom runner can therefore provide a controlled
+preview environment in addition to discovery and browser serving.
+
 ## Layout and checks
 
 - `app/handler.go`: ordinary handlers, routes, and templates.
