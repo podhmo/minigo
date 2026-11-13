@@ -32,7 +32,7 @@ func TestNativeGolden(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 			story.handler(rec, httptest.NewRequest(http.MethodGet, story.target, nil))
-			want, err := os.ReadFile(filepath.Join("..", "testdata", "golden", name+".txt"))
+			want, err := os.ReadFile(filepath.Join("testdata", "golden", name+".txt"))
 			if err != nil {
 				t.Fatal(err)
 			}

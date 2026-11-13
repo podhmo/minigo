@@ -17,7 +17,9 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
-var update = flag.Bool("update", false, "rewrite testdata/golden from minigo's rendering")
+const appDir = "../../app"
+
+var update = flag.Bool("update", false, "rewrite app/testdata/golden from minigo's rendering")
 
 // storyTargets are the request URIs each golden story is rendered with.
 var storyTargets = map[string]string{
@@ -31,7 +33,7 @@ var storyTargets = map[string]string{
 }
 
 // goldenText is the comparable form of a rendered story; both the minigo
-// test and the native one (app/oracle_story_test.go) write it.
+// test and the native one (../../app/oracle_story_test.go) write it.
 func goldenText(status int, h http.Header, body []byte) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "%d\n", status)
@@ -45,11 +47,11 @@ func goldenText(status int, h http.Header, body []byte) string {
 }
 
 func goldenPath(name string) string {
-	return filepath.Join("testdata", "golden", name+".txt")
+	return filepath.Join(appDir, "testdata", "golden", name+".txt")
 }
 
 func TestStories(t *testing.T) {
-	b := &Book{Dir: "app", Tag: "story"}
+	b := &Book{Dir: appDir, Tag: "story"}
 	stories, err := b.Stories()
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +59,7 @@ func TestStories(t *testing.T) {
 	var names []string
 	for _, s := range stories {
 		names = append(names, s.Name)
-		if s.Doc == "" || !strings.HasPrefix(s.Pos, filepath.Join("app", "story_user.go")+":") {
+		if s.Doc == "" || !strings.HasPrefix(s.Pos, filepath.Join(appDir, "story_user.go")+":") {
 			t.Errorf("%s: want a doc line and a story_user.go position, got %+v", s.Name, s)
 		}
 	}
@@ -89,7 +91,7 @@ func TestStoriesRejectsBadShape(t *testing.T) {
 func TestRenderMainPackage(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"handler.go", "story_user.go"} {
-		src, err := os.ReadFile(filepath.Join("app", name))
+		src, err := os.ReadFile(filepath.Join(appDir, name))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -120,7 +122,7 @@ func TestRenderMainPackage(t *testing.T) {
 }
 
 func TestRenderGolden(t *testing.T) {
-	b := &Book{Dir: "app", Tag: "story"}
+	b := &Book{Dir: appDir, Tag: "story"}
 	for name, target := range storyTargets {
 		t.Run(name, func(t *testing.T) {
 			res, err := b.Render(context.Background(), name, target)
@@ -146,7 +148,7 @@ func TestRenderGolden(t *testing.T) {
 }
 
 func TestRenderTrapReportsStory(t *testing.T) {
-	b := &Book{Dir: "app", Tag: "story"}
+	b := &Book{Dir: appDir, Tag: "story"}
 	_, err := b.Render(context.Background(), "StoryMissing", "/")
 	if err == nil || !strings.Contains(err.Error(), "StoryMissing") {
 		t.Fatalf("want an error naming StoryMissing, got %v", err)
@@ -156,7 +158,7 @@ func TestRenderTrapReportsStory(t *testing.T) {
 // TestRenderRejectsNonStory pins that Render (and so /story/{name})
 // only calls discovered stories, not any package-level func.
 func TestRenderRejectsNonStory(t *testing.T) {
-	b := &Book{Dir: "app", Tag: "story"}
+	b := &Book{Dir: appDir, Tag: "story"}
 	_, err := b.Render(context.Background(), "RenderUser", "/")
 	if diff := cmp.Diff("RenderUser: not a story", fmt.Sprint(err)); diff != "" {
 		t.Errorf("Render(RenderUser) error (-want +got):\n%s", diff)
@@ -165,7 +167,7 @@ func TestRenderRejectsNonStory(t *testing.T) {
 
 func TestExport(t *testing.T) {
 	out := t.TempDir()
-	b := &Book{Dir: "app", Tag: "story"}
+	b := &Book{Dir: appDir, Tag: "story"}
 	stories, err := b.Stories()
 	if err != nil {
 		t.Fatal(err)
@@ -191,7 +193,7 @@ func TestExport(t *testing.T) {
 }
 
 func TestHandler(t *testing.T) {
-	srv := httptest.NewServer((&Book{Dir: "app", Tag: "story"}).Handler())
+	srv := httptest.NewServer((&Book{Dir: appDir, Tag: "story"}).Handler())
 	defer srv.Close()
 	get := func(path string) (int, string) {
 		t.Helper()

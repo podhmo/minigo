@@ -32,7 +32,7 @@ func TestRoutesGolden(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 			mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.target, nil))
-			want, err := os.ReadFile(filepath.Join("..", "testdata", "golden", tc.name+".txt"))
+			want, err := os.ReadFile(filepath.Join("testdata", "golden", tc.name+".txt"))
 			if err != nil {
 				t.Fatal(err)
 			}

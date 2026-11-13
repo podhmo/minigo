@@ -9,6 +9,10 @@
 
 この例は、通常の Go HTTP アプリと、そのコードを minigo で呼ぶプレビューツールからなる。コマンドは `examples/storybook` で実行する。
 
+通常のサーバーは `cmd/server/main.go`、プレビューツールは `cmd/storybook/` に置く。後者は minigo をライブラリとして組み込んだ通常の Go コマンドで、`Book` が対象ディレクトリを読み、`Engine.Call` で Story を実行する。`cmd/server` は `app` を import するが、`cmd/storybook` は import せずソースを解釈する。
+
+Makefile からは `make run` で通常の Go サーバー（`http://127.0.0.1:8080/users`）、`make preview` で minigo のプレビュー（`http://127.0.0.1:6006/`）を起動できる。両方ともフォアグラウンドで動き、Ctrl-C で停止する。`make list`、`make render STORY=StoryUser`、`make export OUT=/tmp/storybook-out` で一覧・単体描画・HTML 出力を確認できる。`make test` は通常ルートと minigo 描画、およびネイティブ Story の比較テストを実行する。アドレスは `ADDR` / `PREVIEW_ADDR`、プレビュー対象は `PKG` で変更できる。リポジトリルートからは `make -C examples/storybook <target>` を使う。
+
 ```sh
 # 通常の Go アプリ。story タグも minigo も不要
 go run ./cmd/server -addr 127.0.0.1:8080
@@ -17,12 +21,12 @@ curl 'http://127.0.0.1:8080/users?tag=go&sort=id'
 curl http://127.0.0.1:8080/users/1
 
 # プレビューツール。内部で minigo が app の Story を解釈する
-go run . -list ./app
-go run . ./app StoryUser
-go run . -http 127.0.0.1:6006 ./app
+go run ./cmd/storybook -list ./app
+go run ./cmd/storybook ./app StoryUser
+go run ./cmd/storybook -http 127.0.0.1:6006 ./app
 ```
 
-`app/handler.go` は通常のハンドラー・テンプレート・`Routes()`、`app/store.go` は通常サーバー用のメモリストアである。`cmd/server/main.go` がストアを `app.Handler` に渡し、`http.ListenAndServe(*addr, h.Routes())` を呼ぶ。これらに minigo の import や Story の登録処理はない。`app/story_user.go` だけが `story` タグ付きで、ダミーデータと Story を持つ。`testdata` には期待値だけを置き、アプリのコードは置かない。
+`app/handler.go` は通常のハンドラー・テンプレート・`Routes()`、`app/store.go` は通常サーバー用のメモリストアである。`cmd/server/main.go` がストアを `app.Handler` に渡し、`http.ListenAndServe(*addr, h.Routes())` を呼ぶ。これらに minigo の import や Story の登録処理はない。`app/story_user.go` だけが `story` タグ付きで、ダミーデータと Story を持つ。`app/testdata` には期待値だけを置き、アプリのコードは置かない。
 
 ### 0.1 Go の都合を minigo に持ち込まない
 
@@ -37,13 +41,13 @@ Go での比較検証に必要な構成と、minigo でのプレビューに必�
 | `Store` interface | 通常サーバーのデータ取得と、Story の fake を差し替える設計 | minigo 固有の必須条件ではない。固定データでレンダリング関数だけを呼ぶこともできる |
 | `story` タグ、exported な `Story*`、ハンドラー型の引数 | このプレビューツールが探索・実行するための規約 | 現在のツールでは必要。minigo API 全般の制約ではない |
 
-以前のネイティブ比較テストはツール側からアプリを import していた。現在は `app/oracle_story_test.go` として対象と同じパッケージに置き、比較テストのために import 可能な構成を要求しない形にした。通常のルートも `app/handler_test.go` で story タグなしに検証する。`book_test.go` はアプリを `package main` にしたコピーでも描画でき、`main()` が呼ばれないことを検証する。このコピーには未定義関数を呼ぶ未使用の関数も置き、パッケージ全体が Go でビルドできる必要がないことも確認する。
+以前のネイティブ比較テストはツール側からアプリを import していた。現在は `app/oracle_story_test.go` として対象と同じパッケージに置き、比較テストのために import 可能な構成を要求しない形にした。通常のルートも `app/handler_test.go` で story タグなしに検証する。`cmd/storybook/book_test.go` はアプリを `package main` にしたコピーでも描画でき、`main()` が呼ばれないことを検証する。このコピーには未定義関数を呼ぶ未使用の関数も置き、パッケージ全体が Go でビルドできる必要がないことも確認する。
 
 通常のアプリ側に、Go で実行するための minigo 用アダプターや Story 登録は追加していない。ネイティブ比較の明示的な関数一覧は検証の都合であり、利用側に要求する構成ではない。
 
 ### 0.2 直接の minigo CLI とプレビューツールの違い
 
-`go run . ./app StoryUser` は、Go で起動したツールが minigo の `Engine.Call` に recorder と request を渡す。一方、`minigo run --tags story ./app StoryUser` は引数を渡さずに呼ぶため、`not enough arguments to StoryUser: 0 given, want 2` になる。`--tags` が指定できることと、HTTP の引数が自動で用意されることは別である。
+`go run ./cmd/storybook ./app StoryUser` は、Go で起動したツールが minigo の `Engine.Call` に recorder と request を渡す。一方、`minigo run --tags story ./app StoryUser` は引数を渡さずに呼ぶため、`not enough arguments to StoryUser: 0 given, want 2` になる。`--tags` が指定できることと、HTTP の引数が自動で用意されることは別である。
 
 以下の 1〜7 章は初期実験の記録であり、当時の不足・評価を含む。8〜9 章に host map と `FuncMap` の対応を追記している。過去の測定値は、今回のサーバー構成で再測定した値ではない。
 
@@ -97,10 +101,10 @@ func StoryUser(w http.ResponseWriter, r *http.Request) {
 CLI:
 
 ```console
-$ go run . -list ./app
-$ go run . ./app StoryUser
-$ go run . -o out ./app       # index.html + ストーリーごとの .html
-$ go run . -http :6006 ./app  # 左にナビ、右に iframe
+$ go run ./cmd/storybook -list ./app
+$ go run ./cmd/storybook ./app StoryUser
+$ go run ./cmd/storybook -o out ./app       # index.html + ストーリーごとの .html
+$ go run ./cmd/storybook -http :6006 ./app  # 左にナビ、右に iframe
 ```
 
 `-http` モードはリクエストごとにエンジンを作り直してパッケージを解釈し直す。`handler.go` のテンプレートを書き換えて curl すると、再起動なしで変更後の HTML が返ることを確認した。クエリ文字列はストーリーに転送されるので `/story/StoryUserFromQuery?name=Carol&tag=a` が Storybook の controls 相当になる。
@@ -115,7 +119,7 @@ $ go run . -http :6006 ./app  # 左にナビ、右に iframe
 | `StoryShowUser` | ハンドラー全体を fake store で | 200, golden 一致 |
 | `StoryShowUserNotFound` | エラー経路 (`http.Error`) | 404 `text/plain`, golden 一致 |
 
-- `book_test.go` は minigo で全ストーリーを描画して `testdata/golden` と比較、`app/oracle_story_test.go`（`-tags story`）は同じストーリーをネイティブ実行して同じ golden と比較する。Makefile の `test` に両方を追加した。
+- `cmd/storybook/book_test.go` は minigo で全ストーリーを描画して `app/testdata/golden` と比較、`app/oracle_story_test.go`（`-tags story`）は同じストーリーをネイティブ実行して同じ golden と比較する。Makefile の `test` に両方を追加した。
 - 1 ストーリーの描画（プロセス起動込み）は約 0.07 秒 / 約 42MB。
 
 ## 4. 見つかった不足と対処

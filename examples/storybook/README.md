@@ -21,6 +21,23 @@ the status, headers and body it wrote.
 
 Run these commands from `examples/storybook`.
 
+The Makefile provides the same execution paths:
+
+```sh
+make help
+make run                         # ordinary Go server: http://127.0.0.1:8080/users
+make preview                     # minigo preview: http://127.0.0.1:6006/
+make list
+make render STORY=StoryUser
+make export OUT=/tmp/storybook-out
+make test                        # ordinary routes, minigo, and native stories
+```
+
+`run` and `preview` stay in the foreground; stop them with Ctrl-C or run
+them in separate terminals. Override addresses with `ADDR` and
+`PREVIEW_ADDR`, and select another preview package with `PKG`.
+From the repository root, use `make -C examples/storybook <target>`.
+
 The ordinary application is independent of the preview tool:
 
 ```console
@@ -36,11 +53,16 @@ uses ordinary `net/http` and `html/template` code.
 
 Start the preview tool separately:
 
+`cmd/storybook` is a native Go command that embeds minigo as a library.
+Its `Book` reads the target directory and calls its stories through
+`Engine.Call`; it does not import `app`. `cmd/server` imports `app` and
+serves its routes directly.
+
 ```console
-$ go run . -list ./app              # name, position, doc comment
-$ go run . ./app StoryUser          # print one story's body
-$ go run . -o out ./app             # out/index.html + one page per story
-$ go run . -http :6006 ./app        # browse; every request re-interprets
+$ go run ./cmd/storybook -list ./app              # name, position, doc comment
+$ go run ./cmd/storybook ./app StoryUser          # print one story's body
+$ go run ./cmd/storybook -o out ./app             # out/index.html + one page per story
+$ go run ./cmd/storybook -http :6006 ./app        # browse; every request re-interprets
 ```
 
 - A story is an exported top-level `func StoryXxx(w http.ResponseWriter, r
@@ -57,8 +79,8 @@ The layout separates the application from the preview and its fixtures:
 - `app/store.go`: an in-memory `Store` implementation for the real server.
 - `app/story_user.go`: tagged preview functions and their fake store.
 - `cmd/server/main.go`: the ordinary application entry point.
-- `main.go`, `book.go`, `page.go`: the preview tool.
-- `testdata/golden`: expected responses, not application source.
+- `cmd/storybook/`: the preview command, including `Book`, which embeds minigo.
+- `app/testdata/golden`: expected responses, not application source.
 
 The `Store` interface permits fake data in previews and tests; it is an
 application design choice, not a requirement of minigo or Go. The story
@@ -71,7 +93,7 @@ preview: handlers and stories may live in a server's `package main`, and
 its `main()` is not called when rendering a story. The separate `app`
 package here is a conventional server layout, not required for previewing.
 
-`book_test.go` renders stories with minigo and checks the goldens, including
+`cmd/storybook/book_test.go` renders stories with minigo and checks the goldens, including
 a copy of the handlers and stories in `package main` with an uncalled,
 unfinished function that would prevent a native Go build. `app/handler_test.go`
 checks ordinary application routes without the story tag.
