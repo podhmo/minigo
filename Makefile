@@ -1,4 +1,4 @@
-.PHONY: all test test-race todo-gc format clean lint go-mod-tidy-all difffuzz difffuzz-corpus tmpltests tmpltests-parse tmpltests-html tmpltests-examples tmpltests-html-examples tmpltests-all
+.PHONY: all test test-race concurrency-stress todo-gc format clean lint go-mod-tidy-all difffuzz difffuzz-corpus tmpltests tmpltests-parse tmpltests-html tmpltests-examples tmpltests-html-examples tmpltests-all
 
 all:
 	go build ./...
@@ -29,6 +29,14 @@ test:
 # goroutines share compiled code and typedefs, so CI runs it too.
 test-race:
 	go test -race ./...
+
+# Classified shared-engine stress; see docs/concurrency-stress.md. Reuses
+# the callback/release fixture introduced with the fix in #1061.
+CONCURRENCY_STRESS_CPU ?= 1,2,4
+CONCURRENCY_STRESS_TIMEOUT ?= 2m
+CONCURRENCY_STRESS_ARGS ?=
+concurrency-stress:
+	go test -race . -run '^TestConcurrencyStress$$' -count=1 -v -cpu=$(CONCURRENCY_STRESS_CPU) -timeout=$(CONCURRENCY_STRESS_TIMEOUT) -args -concurrency-stress $(CONCURRENCY_STRESS_ARGS)
 
 # move [x] entries from TODO.md to TODO-archive.md, one greppable line per
 # item (see .claude/skills/todo-md/gc.md)
