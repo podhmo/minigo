@@ -212,4 +212,34 @@ A と B を `examples/storybook/testdata/app` で組んで測った（8 コア�
 
 ここで新たに `slices.ContainsFunc` が未 binding（`undefined: slices.ContainsFunc`、TODO の未 binding 一覧に既出）で、`slices.IndexFunc` も nil slice を渡すと `first arg must be a slice` で落ちることが分かった。前者を足し、両方を nil slice で -1 / false を返すよう共通化した。実アプリ寄りに書き直すと、こうした「小さいが確実に踏む」未対応が出てくる。
 
+別エージェントによるレビューで、同じ種類の取りこぼしを 3 つ直した。`maps.Keys` / `maps.Values` が boxed host map に対して黙って空を返していた件、`slices.Contains` / `Index` が `net.IP` に対して false / -1 を返していた件、`map[string]http.Header` の `m["k"]["C"] = v` が trap していた件。`append` / `copy` / 型変換、タプル代入を経由した入れ子の書き込みなどの残りは TODO に記録した。host の map から読み出した値は script 側のコピーになり、host の map に入れた値は host 側のコピーになるので、Go のように backing array を共有しない。これは表現上の制約として README の "Currently unsupported" に書いた。
+
 残り: `template.FuncMap`（次の層）、host の構造体フィールド経由の slice 書き込み（`ce.Args[0] = v`、TODO 既出）、nil の named host map が typed nil にならない件（TODO に分離）。
+
+## 9. 追補: `template.FuncMap`（stack 2 層目）
+
+4.1 で残した `template.FuncMap` を、text/template・html/template の両 binding で使えるようにした。
+
+- `template.FuncMap` は script 側では `map[string]any` の named map として bind する。composite literal はそのまま書ける。
+- `Template.Funcs` に渡るとき（host の `FuncMap` 型への変換時）に、各値を host の func に変換する（`vm.funcMapElem`）。bind 済みの host 関数（`strings.Join` など）はその実体をそのまま渡す。script の関数は宣言のシグネチャから host の func 型を組み立て（`sigHostType`）、`reflect.MakeFunc` で VM に呼び戻す。predeclared な基本型と `error` は Go の型を保つので、`(string, error)` を返す関数のエラーも template のエラーとして伝わる。それ以外の型（script の構造体など）は `any` になる。
+- 可変長引数の関数（`func(sep string, xs ...string) string`）で、host が詰めた最後の slice を script 側へ 1 引数として渡していた不具合も直した（`adaptFunc` で展開する）。
+
+`testdata/funcmap` の 4 関数（bind 済み関数・script 関数・可変長・エラー返却・html/template で `template.HTML` を返す関数・nil フィールド）はネイティブ Go の出力と一致する（`TestTemplateFuncMap`）。
+
+別エージェントによるレビューで、さらに 3 点を直した。
+
+- `strings.Split`・`strings.Fields`・`strconv.Atoi` のように host の関数実体（`Target`）を持たない intrinsic を FuncMap に入れると trap していた。`func(...any) (any, error)` で包んで VM 上で呼ぶようにした（`(値, error)` の結果は template のエラーになる）。
+- `html/template.FuncMap` と `text/template.FuncMap` が別の型になっていた。Go では前者は後者の alias なので、同じ TypeDef を bind した。
+- `any` に入った nil slice（`map[string]any{"a": none}`）も型付きのゼロ値として渡す（`IfaceNil` 側）。
+
+### 9.1 example でも使う
+
+`ListUsers` のテンプレートに `listFuncs`（`"join": strings.Join` と script の `plural`）を足し、`{{plural (len .Users) "user"}}` と `{{join .Tags ", "}}` を書いた。ここでもう 1 つ食い違いが出た: `Tags` が nil のユーザーで、ネイティブは空文字を出すのに、minigo は `wrong type for value; expected []string; got interface {}` になった。script の構造体を host に渡すとフィールドの map に変換されるが、nil の slice が型なしの nil になっていた。host 上の形がわかる nil slice/map は型付きのゼロ値として渡すようにした（`deepHost`。Go でも `any` に入った nil slice は型を持つ）。
+
+### 9.2 残り
+
+- `--src html/template` は init を越えたが、`Template.Parse` で text/template の内部を辿るところで止まる（TODO）。bind 版を使う限りは問題ない。
+- script の型を引数に取る FuncMap 関数は `any` で登録されるので、型の合わない引数を template が渡しても gc のようにエラーにならない。`[]Pt`（script の構造体の slice）を引数に取る関数は呼べない（TODO）。
+- 要素が script の型である nil slice/map は、host 上の形がないので型なし nil のままになる（`{{len .Users}}` が失敗する。TODO）。
+- レビューでは、この stack と無関係の重大な既存バグも見つかった。named map を unnamed map 型の引数や変数に渡すと map のヘッダーが分裂し、片方での追加や削除がもう片方から見えなくなる（main でも再現）。別 PR（#1052）で main 側を先に直し、この stack はその上に載せ直した。
+- 7.4 の評価で「埋める必要がある」とした `template.FuncMap` と host の map への代入・`range` は、どちらも埋まった。次の判断材料は、依存の多い実アプリで 7.2 の編集ループを測り直すこと。

@@ -6,5 +6,6 @@ X-Total-Count: 2
 <html><head><title>users</title></head>
 <body>
 <p class="filters"><code>sort=id</code> <code>tag=go</code> </p>
-<ul><li><a href="/users/1">Alice</a></li><li><a href="/users/3">Bob</a></li></ul>
+<p>2 users</p>
+<ul><li><a href="/users/1">Alice</a> <small>admin, go</small></li><li><a href="/users/3">Bob</a> <small>go</small></li></ul>
 </body></html>
