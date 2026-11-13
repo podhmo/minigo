@@ -4083,7 +4083,7 @@ func (c *compiler) refTarget(lhs ast.Expr, pin bool) {
 		// multi-assign pins the container value like gc's save pass
 		// (`s, s[i] = f()` writes the old s's element).
 		if pin {
-			c.expr(t.X)
+			c.aliasBase(t.X)
 		} else {
 			c.refTargetBase(t.X, pin)
 		}
@@ -4190,6 +4190,22 @@ func (c *compiler) refableIndexBase(e ast.Expr) bool {
 	return false
 }
 
+// aliasBase emits the container operand of an index store or
+// address-of by value — `h[k]` in `h[k][i] = v` / `&h[k][i]`, pinned by a
+// multi-assign. Each nested element read it emits (OpIndex B=1) keeps a
+// boxed host map or slice element over its host storage, where the plain
+// read (OpInstantiate) hands a write a script copy; every other base
+// reads as c.expr does.
+func (c *compiler) aliasBase(e ast.Expr) {
+	if ix, ok := indexOperand(e); ok && !c.isTypeForm(ix.Index) {
+		c.aliasBase(ix.X)
+		c.expr(ix.Index)
+		c.emit(bytecode.OpIndex, 0, 1, ix.Lbrack)
+		return
+	}
+	c.expr(e)
+}
+
 // refTargetBase emits the operand of a field/index ref — a storage ref
 // for addressable bases (idents, fields, elements, derefs), the
 // evaluated value for anything else (e.g. a call returning a pointer).
@@ -4257,7 +4273,7 @@ func (c *compiler) storeTarget(lhs ast.Expr, isDefine bool) {
 		c.emit(bytecode.OpSetField, c.nameIdx(t.Sel.Name), 0, t.Pos())
 	case *ast.IndexExpr:
 		// stack: [v]; eval base,idx -> [v base idx]; rot3 -> [base idx v]
-		c.expr(t.X)
+		c.aliasBase(t.X)
 		c.expr(t.Index)
 		c.emit(bytecode.OpRot3, 0, 0, t.Pos())
 		c.emit(bytecode.OpSetIndex, 0, 0, t.Lbrack)
@@ -5354,7 +5370,7 @@ func (c *compiler) unary(x *ast.UnaryExpr) {
 			c.refTargetBase(t.X, false)
 			c.emit(bytecode.OpFieldRef, c.nameIdx(t.Sel.Name), 0, t.Pos())
 		case *ast.IndexExpr:
-			c.expr(t.X)
+			c.aliasBase(t.X)
 			c.expr(t.Index)
 			c.emit(bytecode.OpIndexRef, 0, 0, t.Lbrack)
 		case *ast.StarExpr:

@@ -2771,11 +2771,13 @@ func TestHostNamedMapIndex(t *testing.T) {
 
 // TestHostBoxedWrites writes, deletes, clears, ranges over and slices
 // boxed host named maps and slices handed in by the embedder (an
-// http.Request's URL.Query(), w.Header(), url.Values, net.IP). Wants
-// come from running testdata/hostboxed natively.
+// http.Request's URL.Query(), w.Header(), url.Values, net.IP), including
+// nested element writes in tuples and through pointers. Wants come from
+// running testdata/hostboxed natively.
 func TestHostBoxedWrites(t *testing.T) {
 	e := newEngine(t)
 	ip := func() runtime.Value { return &runtime.GoValue{V: net.IP{1, 2, 3, 4}} }
+	hdr := func() runtime.Value { return &runtime.GoValue{V: http.Header{"A": {"a0", "a1"}, "B": {"b0"}}} }
 	got := []any{
 		run(t, e, "./testdata/hostboxed", "Handler",
 			&runtime.GoValue{V: httptest.NewRecorder()},
@@ -2788,6 +2790,12 @@ func TestHostBoxedWrites(t *testing.T) {
 		run(t, e, "./testdata/hostboxed", "NestedMissing", &runtime.GoValue{V: url.Values{}}),
 		run(t, e, "./testdata/hostboxed", "ContainsFunc", &runtime.GoValue{V: url.Values{"tag": {"a", "go"}}}),
 		run(t, e, "./testdata/hostboxed", "Helpers", &runtime.GoValue{V: http.Header{"B": {"2"}, "A": {"1"}}}, ip()),
+		run(t, e, "./testdata/hostboxed", "NestedTuple", hdr(), ip()),
+		run(t, e, "./testdata/hostboxed", "NestedTupleOrder", hdr()),
+		run(t, e, "./testdata/hostboxed", "NestedTupleMissing", hdr()),
+		run(t, e, "./testdata/hostboxed", "NestedContainers", hdr()),
+		run(t, e, "./testdata/hostboxed", "NestedPtr", hdr(), ip()),
+		run(t, e, "./testdata/hostboxed", "NestedAddrMissing", hdr()),
 	}
 	want := []any{
 		"a=1&b=2,3&z=9 12 2",
@@ -2799,6 +2807,12 @@ func TestHostBoxedWrites(t *testing.T) {
 		"runtime error: index out of range [0] with length 0",
 		"true false -1",
 		"[A B] 2 true 3 4 true3",
+		"[a1 a0][p q][r q] [s][q y] [r x]map[A:[s] B:[v x]] 9.3.2.4",
+		"[n0 n1][m0]",
+		"runtime error: index out of range [0] with length 0 [a0 a1]",
+		"map[A:[r0 r1] B:[rb]]map[A:[w0 w1] B:[wb]]map[A:[s0 s1] B:[sb]]map[A:[m0 m1] B:[mb]]",
+		"map[A:[t a1!] B:[v] Z:[z]]1.9.4.3[e+ a1!] 7.4.9.3e+7",
+		"runtime error: index out of range [0] with length 0",
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("hostboxed (-want +got):\n%s", diff)
@@ -2859,6 +2873,45 @@ func TestHostBoxedNamed(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestHostNilMap reads nil named host maps and slices — a request's Form
+// and Trailer, and nil boxes the embedder hands in — as typed nils that
+// keep their host type, next to a populated one. Wants come from running
+// testdata/hostnil natively.
+func TestHostNilMap(t *testing.T) {
+	e := newEngine(t)
+	req := func() runtime.Value {
+		return &runtime.GoValue{V: httptest.NewRequest("GET", "/?a=1", nil)}
+	}
+	const ref = "./testdata/hostnil"
+	got := []any{
+		run(t, e, ref, "Equal", req()),
+		run(t, e, ref, "Spelling", req()),
+		run(t, e, ref, "Reads", req()),
+		run(t, e, ref, "Writes", req()),
+		run(t, e, ref, "ClearNil", &runtime.GoValue{V: url.Values(nil)}, &runtime.GoValue{V: net.IP(nil)}),
+		run(t, e, ref, "Interface", req()),
+		run(t, e, ref, "Assign", req()),
+		run(t, e, ref, "Host", req()),
+		run(t, e, ref, "NonNil", req()),
+		run(t, e, ref, "Handed", &runtime.GoValue{V: http.Header(nil)}, &runtime.GoValue{V: net.IP(nil)}, &runtime.GoValue{V: url.Values(nil)}),
+	}
+	want := []any{
+		"true true false false true true true nil true 0 true false true",
+		"url.Values map[] 0 url.Values(nil) map[]|map[]",
+		"0 0 true false true true false true true true true [] 0 true",
+		"0 assignment to entry in nil map assignment to entry in nil map",
+		"true true true true 0 0 0 0",
+		"false url.Values true true values true false true true",
+		"true true true true true false true true 2 1 true true 0 falsetrue",
+		`null{"f":null,"t":null} true url.Values true 0|map[]|<nil>`,
+		"false true url.Values 1 1 false false false 2 false|a=1&z=9",
+		"true true true 0 0 0 true 0 http.Header net.IP url.Values false map[] <nil> true true<nil>false",
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("hostnil (-want +got):\n%s", diff)
 	}
 }
 

@@ -4568,7 +4568,7 @@ func scriptVal(v any) runtime.Value {
 		// nil chan/func of a predeclared spelling, is a typed nil, as
 		// goValueOf reads it: equal to nil, typed once stored in an
 		// interface. A box would make `f == nil` false.
-		if rv := reflect.ValueOf(x); (rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Chan || rv.Kind() == reflect.Func || rv.Kind() == reflect.Slice) && rv.IsNil() {
+		if rv := reflect.ValueOf(x); (rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Chan || rv.Kind() == reflect.Func || rv.Kind() == reflect.Slice || rv.Kind() == reflect.Map) && rv.IsNil() {
 			if tn := vm.HostNil(rv.Type()); tn != nil {
 				return tn
 			}
@@ -9608,7 +9608,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		if verb == 'T' {
 			return typedefSpelling(v.Typ)
 		}
-		if rt := vm.HostNilSliceType(v.Typ); rt != nil {
+		if rt := vm.HostNilType(v.Typ); rt != nil {
 			// a nil named host slice (net.IP) renders as the host nil
 			// would — its String method on the nil receiver
 			return fmt.Sprintf(formatOf(f, verb), reflect.Zero(rt).Interface())
@@ -9629,7 +9629,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		if verb == 'T' {
 			return typedefSpelling(v.Typ)
 		}
-		if rt := vm.HostNilSliceType(v.Typ); rt != nil {
+		if rt := vm.HostNilType(v.Typ); rt != nil {
 			return fmt.Sprintf(formatOf(f, verb), reflect.Zero(rt).Interface())
 		}
 		return s.nilTyp(verb, f, v.Typ)
@@ -10631,11 +10631,11 @@ func fmtArg(v runtime.VMCaller, x runtime.Value) any {
 	case *runtime.TypedNil, *runtime.IfaceNil:
 		// a nil named host slice (net.IP) crosses as the host nil so
 		// fmt runs its String method on the nil receiver ("<nil>")
-		if rt := vm.HostNilSliceType(runtime.BoxedNilTyp(x)); rt != nil {
+		if rt := vm.HostNilType(runtime.BoxedNilTyp(x)); rt != nil {
 			return reflect.Zero(rt).Interface()
 		}
 		if tn, ok := x.(*runtime.TypedNil); ok {
-			if rt := vm.HostNilSliceType(tn.Typ); rt != nil {
+			if rt := vm.HostNilType(tn.Typ); rt != nil {
 				return reflect.Zero(rt).Interface()
 			}
 		}
