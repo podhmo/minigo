@@ -589,9 +589,18 @@ func SharedElem(v Value) bool {
 			*Cell, *FieldRef, *IndexRef, *DerefRef:
 			return true
 		case *GoValue:
-			// host values share only through pointers, like Go's
-			// implicit deref of `m[k]` on a map of *T.
-			return x.V != nil && reflect.TypeOf(x.V).Kind() == reflect.Pointer
+			// host values share through pointers, like Go's implicit
+			// deref of `m[k]` on a map of *T, and through the backing
+			// of a boxed host map or slice (m[k]["X"] = v on a
+			// map[string]http.Header).
+			if x.V == nil {
+				return false
+			}
+			switch reflect.TypeOf(x.V).Kind() {
+			case reflect.Pointer, reflect.Map, reflect.Slice:
+				return true
+			}
+			return false
 		case *TypedNil, *IfaceNil:
 			var td *TypeDef
 			switch t := x.(type) {

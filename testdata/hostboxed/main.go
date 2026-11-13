@@ -6,6 +6,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -94,6 +95,16 @@ func ContainsFunc(q url.Values) string {
 	var none []string
 	isGo := func(t string) bool { return t == "go" }
 	return fmt.Sprint(slices.ContainsFunc(q["tag"], isGo), slices.ContainsFunc(none, isGo), slices.IndexFunc(none, isGo))
+}
+
+// Helpers reads a boxed host map and slice through maps/slices helpers
+// and writes through a map of boxed host maps.
+func Helpers(h http.Header, ip net.IP) string {
+	keys := slices.Sorted(maps.Keys(h))
+	vals := slices.Collect(maps.Values(h))
+	m := map[string]http.Header{"k": h}
+	m["k"]["C"] = []string{"3"}
+	return fmt.Sprint(keys, len(vals), slices.Contains(ip, 3), slices.Index(ip, 4), slices.Max(ip), slices.Equal(ip, ip[:]), h.Get("C"))
 }
 
 func sortedPairs(q map[string][]string) string {
