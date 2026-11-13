@@ -39,4 +39,4 @@ $ go run . -http :6006 ./testdata/app        # browse; every request re-interpre
 compares against `testdata/golden`; `oracle_story_test.go` (`-tags story`)
 runs the same stories natively and compares against the same goldens.
 
-Design notes: [docs/sketch/plan-storybook.md](../../docs/sketch/plan-storybook.md). Experiment log (Japanese): [docs/sketch/ja/experiment-storybook.md](../../docs/sketch/ja/experiment-storybook.md).
+Notes and results: [docs/sketch/ja/experiment-storybook.md](../../docs/sketch/ja/experiment-storybook.md).

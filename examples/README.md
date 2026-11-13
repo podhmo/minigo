@@ -109,7 +109,6 @@ out of a package; unlike `task-run` the package exists for `go build`
 and is merely borrowed, so interpreter fidelity on unmodified code is
 the ceiling.
 
-See [storybook/README.md](./storybook/README.md), the design notes in
-[docs/sketch/plan-storybook.md](../docs/sketch/plan-storybook.md), and
-the experiment log (Japanese) in
+See [storybook/README.md](./storybook/README.md) and the experiment log
+(Japanese) in
 [docs/sketch/ja/experiment-storybook.md](../docs/sketch/ja/experiment-storybook.md).
