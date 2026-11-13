@@ -239,7 +239,19 @@ A と B を `examples/storybook/testdata/app` で組んで測った（8 コア�
 ### 9.2 残り
 
 - `--src html/template` は init を越えたが、`Template.Parse` で text/template の内部を辿るところで止まる（TODO）。bind 版を使う限りは問題ない。
-- script の型を引数に取る FuncMap 関数は `any` で登録されるので、型の合わない引数を template が渡しても gc のようにエラーにならない。`[]Pt`（script の構造体の slice）を引数に取る関数は呼べない（TODO）。
-- 要素が script の型である nil slice/map は、host 上の形がないので型なし nil のままになる（`{{len .Users}}` が失敗する。TODO）。
+- script の型を引数に取る FuncMap 関数と、要素が script の型である nil slice/map は 9.3 で直した。
 - レビューでは、この stack と無関係の重大な既存バグも見つかった。named map を unnamed map 型の引数や変数に渡すと map のヘッダーが分裂し、片方での追加や削除がもう片方から見えなくなる（main でも再現）。別 PR（#1052）で main 側を先に直し、この stack はその上に載せ直した。
 - 7.4 の評価で「埋める必要がある」とした `template.FuncMap` と host の map への代入・`range` は、どちらも埋まった。次の判断材料は、依存の多い実アプリで 7.2 の編集ループを測り直すこと。
+
+### 9.3 追補: script の型を取る引数、nil の slice/map、panic
+
+レビューで見つかった 3 点を直した（`testdata/funcmap` の `TypedParams`・`WrongTypes`・`NilElems`・`Panics`・`NotFunc`・`CallbackPanics`・`Goroutine`・`HTMLTyped`。いずれもネイティブ Go の出力と一致する）。
+
+- **script の型を取る引数**: FuncMap 関数の引数は `any` で受けるので、`[]Pt` を取る関数に `[]any`（script の構造体の slice を host に渡した形）が届いて trap していた。呼ぶ直前に、宣言された引数の型へ変換する（`funcMapArgs`・`hostArgAs`）。`[]any` / `map[any]any` を、宣言の要素型で再帰的に作り直す（`[]*Pt`・名前付きの `Pts`・`[2]Pt`・`[][]Pt`・`map[string][]Pt`・可変長の `...[]Pt`）。要素の構造体は元のまま渡すので、関数が slice の要素へ書いた値は template のデータにも届く（Go と同じ）。ポインタは値の引数にも渡せる（template の indirect と同じ）。型が合わないときは gc と同じ `wrong type for value; expected *main.User; got int` を返す。ただし template の位置ではなく `error calling f:` の下に出る。変換は呼び出しを実行する VM 上で行う（別の goroutine で template を実行すると呼び出しは子 VM に回る）。
+- **nil の slice/map**: host 上の形がない型でも、型付きのゼロ値（`[]any(nil)` / `map[any]any(nil)`）で渡す（`hostNilOf`）。`{{len .Users}}` は 0、`{{.Users}}` は `[]` になる。`[]Pt` を取る関数も nil を受け取れる（変換が `[]any(nil)` を宣言の型の nil に直す）。
+- **panic と非 func の値**: script の `panic("boom")` は `*runtime.Panic` のまま template に渡っていて、`error calling p: panic: boom` になっていた。FuncMap の関数に限り、panic の値を host に渡す（`funcMapPanicValue`。`Error()` を持つ値は error、`String()` は文字列、host の値はそのまま）ので `error calling p: boom` になる。他のコールバック（`sort.Slice` の less、`sync.Once.Do`、http ハンドラー）は従来どおり `*runtime.Panic` を通し、script の `recover()` が元の値を受け取る（`CallbackPanics` が確認する）。template を別 goroutine で実行したとき、関数の panic はプロセスごと落ちていた。`VM.CallCatching` で、panic をエラーとして呼び出し元の host（template の `safeCall`）へ返すようにした。FuncMap に関数でない値（`"bad": 42`）を入れると、unrecoverable な trap ではなく値を `any` のまま `Template.Funcs` に渡し、Go と同じ回復できる panic `value for bad not a function` になる。
+
+### 9.4 残り
+
+- 関数内で宣言した型（`type local struct{}` を `main` の中に書く）を引数に取る関数は、型を解決できず変換されない。名前付きの基本型の要素（`[]Level`）は tag の付かない int で届く。script の構造体を値にした panic は map の形で出る（TODO「FuncMap param/panic conversion gaps」）。
+- script の名前付きの型を返す関数（`func(int) Level`）の `%T` は `int` のまま。reflect が型を作れないための構造的な限界で、README の Currently unsupported に書いた。

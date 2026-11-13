@@ -100,7 +100,12 @@ internals (e.g. `reflect`'s `internal/abi` init).
   host-side `%T`, `{{.}}` and the script type's own methods (`String`)
   do not apply. Basics, bound host types and slices/arrays/maps of them
   keep their Go type. minigo's own intrinsics (`fmt`, `reflect`,
-  `encoding/json`, ...) see the script type as usual
+  `encoding/json`, ...) see the script type as usual. A script func
+  registered through `template.FuncMap` gets its arguments converted
+  back to its declared parameter types before it runs, but the
+  template engine itself still cannot check them (the mismatch error
+  comes from the func call) or see a named result's type (`%T` of a
+  `func(int) Level` result prints `int`)
 - **sharing backing arrays with host maps and slices** — a host map or
   slice the embedder hands in (`http.Header`, `url.Values`, `net.IP`) is
   written in place (`h["X"] = v`, `h["X"][0] = v`, `ip[0] = 9`), but a

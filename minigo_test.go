@@ -2921,7 +2921,10 @@ func TestHostNilMap(t *testing.T) {
 func TestTemplateFuncMap(t *testing.T) {
 	e := newEngine(t)
 	var got []any
-	for _, fn := range []string{"Text", "Fail", "HTML", "NilFields", "Builtins"} {
+	for _, fn := range []string{
+		"Text", "Fail", "HTML", "NilFields", "Builtins",
+		"TypedParams", "WrongTypes", "NilElems", "Panics", "NotFunc", "CallbackPanics", "Goroutine", "HTMLTyped",
+	} {
 		got = append(got, run(t, e, "./testdata/funcmap", fn))
 	}
 	want := []any{
@@ -2930,6 +2933,45 @@ func TestTemplateFuncMap(t *testing.T) {
 		"<p><b>&lt;Bob&gt;</b> &lt;bob&gt;</p>",
 		"[] 0",
 		`[a][b]3 42 0 | template: e:1:2: executing "e" at <atoi "x">: error calling atoi: strconv.Atoi: parsing "x": invalid syntax`,
+		// slices, arrays, maps and pointers of script structs reach funcs
+		// declaring them; bump's write through its slice parameter reaches
+		// the data (first reads 100)
+		"10 7 15 3 5 20 12 me me 0100",
+		// the mismatch error is gc's wording from `wrong type` on; the
+		// template position before it differs (the arg's, in gc)
+		strings.Join([]string{
+			"wrong type for value; expected *main.user; got int",
+			"wrong type for value; expected *main.user; got main.user",
+			"wrong type for value; expected main.pt; got main.user",
+			"wrong type for value; expected main.pt; got int",
+		}, "\n"),
+		// nil slices and maps of script structs: len 0, print as empty,
+		// nil in the funcs declaring them
+		"0 [] 0 map[] 0 true true true true empty n",
+		// a script panic reaches the template as its payload
+		strings.Join([]string{
+			`template: str:1:2: executing "str" at <p>: error calling p: boom`,
+			`template: err:1:2: executing "err" at <p>: error calling p: eboom`,
+			`template: int:1:2: executing "int" at <p>: error calling p: 42`,
+			`template: custom:1:2: executing "custom" at <p>: error calling p: code 7`,
+			`template: stringer:1:2: executing "stringer" at <p>: error calling p: tag:x`,
+			`template: nilmap:1:2: executing "nilmap" at <p>: error calling p: assignment to entry in nil map`,
+			`template: index:1:2: executing "index" at <p>: error calling p: runtime error: index out of range [3] with length 0`,
+		}, "\n"),
+		// Template.Funcs panics, recoverably, on what it cannot register
+		`value for bad not a function; value for bad not a function; value for bad not a function; function name "1bad" is not a valid identifier; function f has 3 return values; should be 1 or 2; X`,
+		// other callbacks keep propagating their panic payload
+		strings.Join([]string{
+			"sort 1 true", "once once", "map map a", "handler handler",
+			`template: t:1:2: executing "t" at <p>: error calling p: tmpl`,
+			"sort 1 true", "once once", "map map a", "handler handler",
+		}, "\n"),
+		strings.Join([]string{
+			"10/<nil>",
+			`/template: g1:1:2: executing "g1" at <p>: error calling p: gp`,
+			"me/wrong type for value; expected *main.user; got int",
+		}, "\n"),
+		"<ul><li>1,2</li><li>3,4</li></ul>",
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("FuncMap (-want +got):\n%s", diff)
