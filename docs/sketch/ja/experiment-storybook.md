@@ -241,5 +241,5 @@ A と B を `examples/storybook/testdata/app` で組んで測った（8 コア�
 - `--src html/template` は init を越えたが、`Template.Parse` で text/template の内部を辿るところで止まる（TODO）。bind 版を使う限りは問題ない。
 - script の型を引数に取る FuncMap 関数は `any` で登録されるので、型の合わない引数を template が渡しても gc のようにエラーにならない。`[]Pt`（script の構造体の slice）を引数に取る関数は呼べない（TODO）。
 - 要素が script の型である nil slice/map は、host 上の形がないので型なし nil のままになる（`{{len .Users}}` が失敗する。TODO）。
-- レビューでは、この stack と無関係の重大な既存バグも見つかった。named map を unnamed map 型の引数や変数に渡すと map のヘッダーが分裂し、片方での追加や削除がもう片方から見えなくなる（main でも再現。TODO）。
+- レビューでは、この stack と無関係の重大な既存バグも見つかった。named map を unnamed map 型の引数や変数に渡すと map のヘッダーが分裂し、片方での追加や削除がもう片方から見えなくなる（main でも再現）。別 PR（#1052）で main 側を先に直し、この stack はその上に載せ直した。
 - 7.4 の評価で「埋める必要がある」とした `template.FuncMap` と host の map への代入・`range` は、どちらも埋まった。次の判断材料は、依存の多い実アプリで 7.2 の編集ループを測り直すこと。
