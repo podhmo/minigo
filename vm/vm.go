@@ -5812,6 +5812,14 @@ func structDataHost(recv runtime.Value, s *runtime.Struct, vc runtime.VMCaller, 
 	for _, name := range mnames {
 		sfs = append(sfs, reflect.StructField{Name: name, Type: anyType})
 	}
+	if len(sfs) == 0 {
+		// a zero-size struct projects to a shared address (reflect.New
+		// of struct{} returns zerobase), so every empty-exported type
+		// would collide in structOrigs and fold to the newest orig — a
+		// blank field keeps each projection's pointer distinct without
+		// adding a member template field syntax can reach.
+		sfs = append(sfs, reflect.StructField{Name: "_", Type: reflect.TypeFor[int64](), PkgPath: "github.com/podhmo/minigo/vm"})
+	}
 	out := reflect.New(reflect.StructOf(sfs))
 	h.walk.Register(s, out.Interface())
 	structOrigs.Store(out.Interface(), recv)

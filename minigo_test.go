@@ -2927,7 +2927,7 @@ func TestTemplateFuncMap(t *testing.T) {
 	var got []any
 	for _, fn := range []string{
 		"Text", "Fail", "HTML", "NilFields", "Builtins",
-		"TypedParams", "WrongTypes", "NilElems", "Panics", "NotFunc", "CallbackPanics", "Goroutine", "HTMLTyped",
+		"TypedParams", "WrongTypes", "NilElems", "Panics", "NotFunc", "CallbackPanics", "Goroutine", "HiddenFields", "HTMLTyped",
 	} {
 		got = append(got, run(t, e, "./testdata/funcmap", fn))
 	}
@@ -2975,6 +2975,9 @@ func TestTemplateFuncMap(t *testing.T) {
 			`/template: g1:1:2: executing "g1" at <p>: error calling p: gp`,
 			"me/wrong type for value; expected *main.user; got int",
 		}, "\n"),
+		// two struct values with no exported members fold back to their
+		// own originals (a zero-size *struct{} would share one address)
+		"1 2",
 		"<ul><li>1,2</li><li>3,4</li></ul>",
 	}
 	if diff := cmp.Diff(want, got); diff != "" {

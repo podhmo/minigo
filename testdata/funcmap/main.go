@@ -316,6 +316,24 @@ func Goroutine() string {
 	return strings.Join(res, "\n")
 }
 
+type hidden struct{ n int }
+
+// HiddenFields calls a func with two distinct values of a struct type
+// that declares no exported members: both project to the same shape,
+// so a projection registry keyed on the host pointer must keep their
+// originals apart — a zero-size *struct{} shares one address and
+// would fold every arg to the newest value.
+func HiddenFields() string {
+	t := template.Must(template.New("t").Funcs(template.FuncMap{
+		"get": func(h *hidden) int { return h.n },
+	}).Parse(`{{get .A}} {{get .B}}`))
+	var sb strings.Builder
+	if err := t.Execute(&sb, map[string]any{"A": &hidden{n: 1}, "B": &hidden{n: 2}}); err != nil {
+		return "error: " + err.Error()
+	}
+	return sb.String()
+}
+
 // HTMLTyped registers a func with a script-typed parameter under
 // html/template.
 func HTMLTyped() string {
