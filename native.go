@@ -174,6 +174,11 @@ func nativeElem(av reflect.Value, pt reflect.Type) (reflect.Value, error) {
 	if av.Type().AssignableTo(pt) {
 		return av, nil
 	}
+	// a HostTypeOf literal boxes *T where gc spells T — the element
+	// conversion needs the same pointee unwrap toNative applies.
+	if av.Kind() == reflect.Pointer && !av.IsNil() && av.Type().Elem().AssignableTo(pt) {
+		return av.Elem(), nil
+	}
 	if av.Type().ConvertibleTo(pt) {
 		return av.Convert(pt), nil
 	}

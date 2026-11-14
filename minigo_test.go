@@ -2899,12 +2899,29 @@ func TestBoundStructLiteral(t *testing.T) {
 		"Describe": minigo.WrapFunc("store.Describe", func(i boundIssue) string {
 			return fmt.Sprintf("%d:%s:%v", i.ID, i.Title, i.Done)
 		}),
+		"SumIDs": minigo.WrapFunc("store.SumIDs", func(xs []boundIssue) int64 {
+			var s int64
+			for _, i := range xs {
+				s += i.ID
+			}
+			return s
+		}),
+		"SumMap": minigo.WrapFunc("store.SumMap", func(m map[string]boundIssue) int64 {
+			var s int64
+			for _, i := range m {
+				s += i.ID
+			}
+			return s
+		}),
 	})
 	for fn, want := range map[string]any{
-		"Render":     "7:x:false",
-		"RenderZero": "0::false",
-		"Fields":     "7:y:true",
-		"RoundTrip":  "7:x:true",
+		"Render":        "7:x:false",
+		"RenderZero":    "0::false",
+		"Fields":        "7:y:true",
+		"RoundTrip":     "7:x:true",
+		"InSlice":       int64(3),
+		"InMap":         int64(3),
+		"InSliceElided": int64(4),
 	} {
 		got := run(t, e, "./testdata/boundstruct", fn)
 		if diff := cmp.Diff(want, got); diff != "" {

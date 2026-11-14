@@ -63,3 +63,20 @@ func BadField() {
 }
 
 func main() {}
+
+// InSlice passes literal-minted host structs as a []store.Issue —
+// each element boxes *T, the by-value slice param wants T elements.
+func InSlice() int64 {
+	return store.SumIDs([]store.Issue{store.Issue{ID: 1}, store.Issue{ID: 2}})
+}
+
+// InMap passes the same through a map[string]store.Issue.
+func InMap() int64 {
+	return store.SumMap(map[string]store.Issue{"a": store.Issue{ID: 3}})
+}
+
+// InSliceElided uses the elided-element form []T{{...}} — each elided
+// literal is still a bound-type composite.
+func InSliceElided() int64 {
+	return store.SumIDs([]store.Issue{{ID: 4}})
+}
