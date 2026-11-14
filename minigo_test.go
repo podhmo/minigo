@@ -9,6 +9,7 @@ import (
 	"go/parser"
 	"go/token"
 	"html/template"
+	"io/fs"
 	"math"
 	"net"
 	"net/http"
@@ -2975,5 +2976,55 @@ func TestTemplateFuncMap(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("FuncMap (-want +got):\n%s", diff)
+	}
+}
+
+// TestScriptFSIntoHost: a script filesystem — a //go:embed'd embed.FS
+// or a script type declaring fs.FS methods — crosses a bound host
+// function's fs.FS parameter through a live proxy, and bound
+// text/template and html/template expose ParseFS consuming the same
+// value (#1068).
+func TestScriptFSIntoHost(t *testing.T) {
+	e := newEngine(t)
+	e.Bind("example.com/fsbox", map[string]runtime.Value{
+		"ReadFile": &runtime.GoValue{V: func(fsys fs.FS, name string) (string, error) {
+			b, err := fs.ReadFile(fsys, name)
+			if err != nil {
+				return "", err
+			}
+			return string(b), nil
+		}},
+		"Glob": &runtime.GoValue{V: func(fsys fs.FS, pattern string) (string, error) {
+			names, err := fs.Glob(fsys, pattern)
+			return strings.Join(names, ","), err
+		}},
+		"Stat": &runtime.GoValue{V: func(fsys fs.FS, name string) string {
+			fi, err := fs.Stat(fsys, name)
+			if err != nil {
+				return "err:" + err.Error()
+			}
+			return fmt.Sprintf("%s %d %v %q", fi.Name(), fi.Size(), fi.IsDir(), fi.Mode())
+		}},
+	})
+	got := []any{
+		run(t, e, "./testdata/scriptfs", "EmbedToHostFS"),
+		run(t, e, "./testdata/scriptfs", "EmbedGlob"),
+		run(t, e, "./testdata/scriptfs", "ParseFSEmbed"),
+		run(t, e, "./testdata/scriptfs", "ParseFSEmbedHTML"),
+		run(t, e, "./testdata/scriptfs", "ScriptToHostFS"),
+		run(t, e, "./testdata/scriptfs", "ScriptToHostFSStat"),
+		run(t, e, "./testdata/scriptfs", "EmbedMissing"),
+	}
+	want := []any{
+		"in-b",
+		"tpl/a.tmpl",
+		"hello world",
+		"hello &lt;x&gt;",
+		"hi host",
+		"hello.txt 7 false \"----------\"",
+		"open tpl/missing.txt: file does not exist",
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("script fs into host (-want +got):\n%s", diff)
 	}
 }
