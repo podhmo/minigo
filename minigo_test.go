@@ -2091,6 +2091,85 @@ func TestBindDefaultName(t *testing.T) {
 	}
 }
 
+// TestBindPlainGoValues: Bind accepts plain Go values as symbols — funcs
+// are wrapped with WrapFunc, other values convert with ValueOf — so a host
+// package binds without a WrapFunc per entry.
+func TestBindPlainGoValues(t *testing.T) {
+	fname := filepath.Join(t.TempDir(), "main.go")
+	src := `package main
+
+import "example.com/lib"
+
+func Upper() string { return lib.Upper("abc") }
+
+func Join() string { return lib.Join([]string{"a", "b"}, "-") }
+
+func Sum() int { return lib.Sum(1, 2, 3) + lib.N }
+
+func Pi() float64 { return lib.Pi }
+
+func Replacer() string { return lib.Replacer.Replace("a.b") }
+
+func Fail() error {
+	_, err := lib.Atoi("x")
+	return err
+}
+
+func Raw() int { return lib.Raw() }
+`
+	if err := os.WriteFile(fname, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e := newEngine(t)
+	e.Bind("example.com/lib", map[string]runtime.Value{
+		"Upper": strings.ToUpper,
+		"Join":  strings.Join,
+		"Sum": func(xs ...int) int {
+			n := 0
+			for _, x := range xs {
+				n += x
+			}
+			return n
+		},
+		"Atoi":     strconv.Atoi,
+		"N":        10,         // int widens to int64
+		"Pi":       float32(3), // float32 widens to float64
+		"Replacer": strings.NewReplacer(".", "/"),
+		"Raw": &runtime.BuiltinFunc{Name: "Raw", Fn: func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
+			return int64(7), nil
+		}},
+	})
+	for name, eng := range map[string]*minigo.Engine{"engine": e, "session": e.NewSession()} {
+		for fn, want := range map[string]runtime.Value{
+			"Upper":    "ABC",
+			"Join":     "a-b",
+			"Sum":      int64(16),
+			"Pi":       float64(3),
+			"Replacer": "a/b",
+			"Raw":      int64(7),
+		} {
+			got, err := eng.RunFile(context.Background(), fname, fn)
+			if err != nil {
+				t.Fatalf("%s: %s: %v", name, fn, err)
+			}
+			if diff := cmp.Diff(want, runtime.DeepUnwrap(got)); diff != "" {
+				t.Errorf("%s: %s mismatch (-want +got):\n%s", name, fn, diff)
+			}
+		}
+		// WrapFunc turns a trailing error result into the call's error
+		if _, err := eng.RunFile(context.Background(), fname, "Fail"); err == nil || !strings.Contains(err.Error(), "invalid syntax") {
+			t.Errorf("%s: Fail: expected the Atoi error, got %v", name, err)
+		}
+	}
+	bf, ok := e.BoundOf("example.com/lib").Globals.Get("Upper")
+	if !ok {
+		t.Fatal("Upper not bound")
+	}
+	if diff := cmp.Diff("lib.Upper", bf.(*runtime.BuiltinFunc).Name); diff != "" {
+		t.Errorf("wrapped name mismatch (-want +got):\n%s", diff)
+	}
+}
+
 // TestSessionInheritsPackageModes: a WithPackageModes policy applies to a
 // NewSession the same as on the parent engine — a denied import must fail
 // in both.
