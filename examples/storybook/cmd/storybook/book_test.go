@@ -390,6 +390,76 @@ func TestExportRejectsStaticNesting(t *testing.T) {
 	}
 }
 
+// Exporting into the package directory itself must refuse, not delete
+// the application's real assets — a relative -o used to slip the
+// dst == src containment check because src is absolute.
+func TestExportRejectsOutputCoveringStaticSource(t *testing.T) {
+	dir, stories := staticStories(t)
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(wd, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := &Book{Book: &storybook.Book{Dir: dir, Tag: "story"}}
+	if err := b.Export(context.Background(), rel, stories); err == nil {
+		t.Error("export covering the static source must fail")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "static", "app.css")); err != nil {
+		t.Errorf("export deleted the real assets: %v", err)
+	}
+}
+
+// A `static` that is a regular file is not a mirror source, but the
+// unconditional cleanup must still not delete it when -o covers it.
+func TestExportRejectsFileStaticSource(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/filesrc\n\ngo 1.26.0\n")
+	writeFile(t, filepath.Join(dir, "app.go"), "package app\n")
+	writeFile(t, filepath.Join(dir, "story.go"), "//go:build story\n\npackage app\n\nfunc StoryX() {}\n")
+	writeFile(t, filepath.Join(dir, "static"), "not a directory\n")
+	b := &Book{Book: &storybook.Book{Dir: dir, Tag: "story"}}
+	stories, err := b.Stories()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Export(context.Background(), dir, stories); err == nil {
+		t.Error("export covering a file static source must fail")
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "static"))
+	if err != nil {
+		t.Fatalf("export deleted the file: %v", err)
+	}
+	if diff := cmp.Diff("not a directory\n", string(got)); diff != "" {
+		t.Errorf("file contents changed (-want +got):\n%s", diff)
+	}
+}
+
+// When the source static dir disappears between exports, the stale
+// mirror must disappear too.
+func TestExportDropsStaticWhenSourceGone(t *testing.T) {
+	dir, stories := staticStories(t)
+	b := &Book{Book: &storybook.Book{Dir: dir, Tag: "story"}}
+	out := filepath.Join(t.TempDir(), "out")
+	if err := b.Export(context.Background(), out, stories); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "static", "app.css")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(dir, "static")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Export(context.Background(), out, stories); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "static")); !os.IsNotExist(err) {
+		t.Errorf("stale static mirror survives a vanished source: %v", err)
+	}
+}
+
 func TestHandler(t *testing.T) {
 	b := &Book{Book: &storybook.Book{Dir: appDir, Tag: "story"}}
 	wantStatus := map[string]int{

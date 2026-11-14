@@ -140,30 +140,42 @@ figcaption { padding: .3rem .6rem; font-size: .85em; border-top: 1px solid #ccc;
 // gets its row (with the error) so the rest of the book is written, but
 // Export then reports the failures.
 func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
+	// The containment checks below compare against the absolute static
+	// root, so the output must be absolute too — a relative -o would
+	// otherwise let dst compare unequal to src and RemoveAll it.
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	dir = absDir
 	// Fail fast on pathological layouts before writing anything: the
 	// snapshot must neither write inside the static source (recursive
 	// self-copy) nor contain it (the re-export cleanup would erase it).
 	src := b.staticRoot()
 	srcOK := false
 	if src != "" {
+		// The checks run whenever a static root is named — not only
+		// when it is a directory: a `static` that is a regular file or
+		// a path os.Stat cannot read must not pass the checks and reach
+		// the unconditional cleanup below.
+		dst := filepath.Join(dir, "static")
+		// Compare link-resolved paths: a symlinked static root can
+		// hide containment that the literal paths do not show. The
+		// literal check still matters — a source reached through a
+		// link inside the output dies with the re-export cleanup.
+		realSrc, realDst := resolvePath(src), resolvePath(dst)
+		inside := func(a, b string) bool { // a inside-or-equal b
+			rel, err := filepath.Rel(b, a)
+			return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+		}
+		if inside(dst, src) || inside(realDst, realSrc) {
+			return fmt.Errorf("export output must not be inside the static directory: %s", dst)
+		}
+		if inside(src, dst) || inside(realSrc, realDst) {
+			return fmt.Errorf("static directory must not be inside the export output: %s", src)
+		}
 		if info, err := os.Stat(src); err == nil && info.IsDir() {
 			srcOK = true
-			dst := filepath.Join(dir, "static")
-			// Compare link-resolved paths: a symlinked static root can
-			// hide containment that the literal paths do not show. The
-			// literal check still matters — a source reached through a
-			// link inside the output dies with the re-export cleanup.
-			realSrc, realDst := resolvePath(src), resolvePath(dst)
-			inside := func(a, b string) bool { // a inside-or-equal b
-				rel, err := filepath.Rel(b, a)
-				return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-			}
-			if inside(dst, src) || inside(realDst, realSrc) {
-				return fmt.Errorf("export output must not be inside the static directory: %s", dst)
-			}
-			if inside(src, dst) || inside(realSrc, realDst) {
-				return fmt.Errorf("static directory must not be inside the export output: %s", src)
-			}
 		}
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -224,13 +236,15 @@ func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 	if err := indexTmpl.Execute(f, map[string]any{"Dir": b.Dir, "Groups": groups, "Default": def}); err != nil {
 		return err
 	}
+	// The snapshot mirrors the static source: a fresh copy drops assets
+	// deleted upstream since the last export, and a vanished source
+	// means no static in the output either. The containment checks
+	// above keep the removal safe.
+	dst := filepath.Join(dir, "static")
+	if err := os.RemoveAll(dst); err != nil {
+		return err
+	}
 	if srcOK {
-		dst := filepath.Join(dir, "static")
-		// A fresh copy drops assets deleted upstream since the last
-		// export; the containment checks above keep this safe.
-		if err := os.RemoveAll(dst); err != nil {
-			return err
-		}
 		if err := copyTree(src, dst); err != nil {
 			return err
 		}
