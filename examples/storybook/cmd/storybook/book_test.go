@@ -275,6 +275,37 @@ func TestExportDropsStaleStaticAssets(t *testing.T) {
 	}
 }
 
+// A directory symlink pointing back into the source must not recurse
+// forever; the snapshot takes the loop once and moves on.
+func TestExportStaticLinkCycle(t *testing.T) {
+	dir, stories := staticStories(t)
+	if err := os.Symlink(".", filepath.Join(dir, "static", "self")); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "out")
+	if err := (&Book{Dir: dir, Tag: "story"}).Export(context.Background(), out, stories); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "static", "app.css")); err != nil {
+		t.Errorf("export misses static assets: %v", err)
+	}
+}
+
+// The source must not live inside the output directory either: the
+// re-export cleanup would delete the source itself.
+func TestExportRejectsStaticInsideOutput(t *testing.T) {
+	dir, stories := staticStories(t)
+	out := filepath.Join(dir, "out")
+	deep := filepath.Join(out, "static", "deeper")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b := &Book{Dir: dir, Tag: "story", StaticDir: deep}
+	if err := b.Export(context.Background(), out, stories); err == nil {
+		t.Error("export must refuse a static source inside its output")
+	}
+}
+
 // The output root must not live inside the static directory: copying it
 // would recurse into itself.
 func TestExportRejectsStaticNesting(t *testing.T) {

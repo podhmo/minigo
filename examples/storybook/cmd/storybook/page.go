@@ -82,14 +82,20 @@ func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 	if src := b.staticRoot(); src != "" {
 		if info, err := os.Stat(src); err == nil && info.IsDir() {
 			dst := filepath.Join(dir, "static")
-			// Writing the snapshot inside the static directory would copy
-			// the output into itself — refuse.
-			if rel, err := filepath.Rel(src, dst); err == nil &&
-				rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			inside := func(a, b string) bool { // a inside-or-equal b
+				rel, err := filepath.Rel(b, a)
+				return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+			}
+			// The snapshot must neither write inside the source (recursive
+			// self-copy) nor contain it (RemoveAll would erase the source).
+			if inside(dst, src) {
 				return fmt.Errorf("export output must not be inside the static directory: %s", dst)
 			}
+			if inside(src, dst) {
+				return fmt.Errorf("static directory must not be inside the export output: %s", src)
+			}
 			// A fresh copy drops assets deleted upstream since the last
-			// export; the dst-inside-src check above keeps this safe.
+			// export; the containment checks above keep this safe.
 			if err := os.RemoveAll(dst); err != nil {
 				return err
 			}
@@ -106,6 +112,14 @@ func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 // linked assets land in the snapshot too; a dangling link, which the
 // live server would answer 404, is skipped.
 func copyTree(src, dst string) error {
+	seen := map[string]bool{}
+	if real, err := filepath.EvalSymlinks(src); err == nil {
+		seen[real] = true
+	}
+	return copyTreeSeen(src, dst, seen)
+}
+
+func copyTreeSeen(src, dst string, seen map[string]bool) error {
 	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -116,6 +130,19 @@ func copyTree(src, dst string) error {
 		}
 		to := filepath.Join(dst, rel)
 		if d.IsDir() {
+			// Refuse cycles: a symlink below may point back at this
+			// directory, which is only detected by resolved path. The
+			// walk root was already marked by the caller — skip it.
+			real, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				return err
+			}
+			if path != src {
+				if seen[real] {
+					return filepath.SkipDir
+				}
+				seen[real] = true
+			}
 			return os.MkdirAll(to, 0o755)
 		}
 		mode := d.Type()
@@ -129,8 +156,13 @@ func copyTree(src, dst string) error {
 				return nil
 			}
 			if info.IsDir() {
-				// WalkDir does not descend into symlinked directories.
-				return copyTree(target, to)
+				// WalkDir does not descend into symlinked directories;
+				// revisit detection stops link cycles like self -> .
+				if seen[target] {
+					return nil
+				}
+				seen[target] = true
+				return copyTreeSeen(target, to, seen)
 			}
 			mode = info.Mode().Type()
 		}

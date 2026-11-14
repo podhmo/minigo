@@ -57,6 +57,8 @@ func StoryUser() {
 
 もう 1 つの形が、`func StoryHttpXxx(w http.ResponseWriter, r *http.Request)` のハンドラー形 Story である。`StoryHttp` 接頭辞が印になり、storybook コマンドが `httptest.ResponseRecorder` を差し込んで実行する。Story は自身で作った request を実物の mux（`ServeMux`）へ渡すので、ルーティングとパスパラメータは本番と同じ経路を通り、応答の status・header もプレビューに再現される（例: 404 と `X-Total-Count`）。引数なしの直接実行では呼べないため、この形には storybook コマンドが必要になる（§5）。いずれの形も、表示条件を変えたければ Story のソースを編集するか別の Story を定義する。
 
+既定は print 形とする。`func StoryXxx()` は `minigo run` で直接呼べ、補助ツールなしで 1 状態のプレビューが回る。`StoryHttpXxx` は応答が HTTP の意味論に依存するときだけ使う —— 200 以外の status、応答 header、リダイレクト、header 駆動の分岐などで、recorder 駆動が必須になるからである。
+
 以下のコマンドは `examples/storybook` で実行する。`minigo` コマンドが PATH にある場合は、storybook コマンドを経由する必要がない。
 
 ```sh

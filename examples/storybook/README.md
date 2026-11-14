@@ -20,6 +20,13 @@ come in two kinds:
   recorded status and headers — a 404 stays a 404 and `X-Total-Count`
   survives — where a print story would flatten everything to a 200 body.
 
+Default to the print kind: `func StoryXxx()` runs under the bare `minigo
+run` CLI with no helper, and covers the common case of previewing one
+rendered state. Reach for `StoryHttpXxx` only when the story actually
+depends on HTTP semantics — a non-200 status, response headers,
+redirects, or header-driven branching — because it can only run through
+the helper's recorder.
+
 The value is in looking at these pages in a browser while editing CSS and
 templates, not in asserting their HTML; the goldens below are regression
 checks of the preview path, not checks of appearance.
