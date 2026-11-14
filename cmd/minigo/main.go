@@ -897,7 +897,7 @@ func genOne(ctx context.Context, e *minigo.Engine, output, ref string) error {
 		// keep the named-basic shim — their literals stay opaque either
 		// way, so the source-interpreted boundary (Engine.Bind's doc)
 		// applies to them unchanged.
-		if ts, ok := ti.Decl.Spec.(*ast.TypeSpec); ok {
+		if ts, ok := ti.Decl.Spec.(*ast.TypeSpec); ok && !ts.Assign.IsValid() {
 			if _, isStruct := ts.Type.(*ast.StructType); isStruct {
 				structTypes = append(structTypes, name)
 				continue
