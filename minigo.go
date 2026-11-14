@@ -711,10 +711,24 @@ func BindAs(name string) BindOption {
 }
 
 // Bind registers a host package: scripts importing importPath get symbols
-// as its members, without any source. Use [WrapFunc] and [ValueOf] to build
-// symbols from Go values. [WithHostPolicy] can hide individual symbols.
-// The package is named after the last import-path element unless
+// as its members, without any source. [WithHostPolicy] can hide individual
+// symbols. The package is named after the last import-path element unless
 // [BindAs] gives its declared name.
+//
+// Symbols may be runtime values or plain Go values: a Go function is
+// wrapped with [WrapFunc] under the name "<pkg>.<symbol>", a named host
+// scalar such as time.Duration is kept as is, and any other Go value
+// converts with [ValueOf]. A host package is therefore bound by
+// listing its members directly:
+//
+//	e.Bind("github.com/yuin/goldmark-alert", map[string]runtime.Value{
+//		"NewParser":       alert.NewParser,
+//		"NewHTMLRenderer": alert.NewHTMLRenderer,
+//	}, minigo.BindAs("alert"))
+//
+// Go cannot enumerate a package's members at run time, so the map lists
+// what scripts use; `minigo gen-intrinsics` generates the table for every
+// exported member of a package instead.
 func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value, opts ...BindOption) {
 	cfg := bindConfig{name: lastElem(importPath)}
 	for _, opt := range opts {
@@ -734,6 +748,7 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value, opts 
 		if e.hostPolicy != nil && !e.hostPolicy(importPath, k) {
 			continue
 		}
+		v = hostSymbol(cfg.name+"."+k, v)
 		if bf, ok := v.(*runtime.BuiltinFunc); ok && (bf.Pkg == nil || bf.Pkg.Path == p.Path) {
 			// the same BuiltinFunc may be bound under several paths
 			// (minigo.dev/x and its module path): the first owner wins,
@@ -751,6 +766,34 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value, opts 
 	e.binds[importPath] = p
 	e.mu.Unlock()
 }
+
+// hostSymbol converts a plain Go value in a [Engine.Bind] symbol map to its
+// script form; runtime values pass through unchanged.
+func hostSymbol(name string, v runtime.Value) runtime.Value {
+	switch v.(type) {
+	case *runtime.BuiltinFunc, *runtime.TypeDef, *runtime.GoValue, int64, float64, string, bool:
+		return v // the common cases, without reflect
+	case nil:
+		return runtime.NIL
+	}
+	t := reflect.TypeOf(v)
+	base := t
+	if base.Kind() == reflect.Pointer {
+		base = base.Elem()
+	}
+	if base.PkgPath() == runtimePkgPath {
+		return v
+	}
+	if t.Kind() == reflect.Func {
+		return WrapFunc(name, v)
+	}
+	if t.Name() != "" && t.PkgPath() != "" && (t.Kind() <= reflect.Complex128 || t.Kind() == reflect.String) {
+		return v // named host scalars (time.Duration) are script values as is
+	}
+	return ValueOf(v)
+}
+
+var runtimePkgPath = reflect.TypeOf(runtime.Nil{}).PkgPath()
 
 // BoundPackages returns the sorted import paths of every host-bound
 // package: std intrinsics and packages registered with [Engine.Bind].

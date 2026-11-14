@@ -811,7 +811,7 @@ func Bind(e *minigo.Engine) {
 {{- range .TypeSymbols }}
 		"{{ . }}": &runtime.TypeDef{Name: "{{ . }}", Kind: runtime.KindNamedBasic, Pkg: &runtime.Package{Path: "{{ $.PackagePath }}", Name: "{{ $.PackageName }}"}},
 {{- end }}
-	})
+	}{{ if .BindAs }}, minigo.BindAs("{{ .PackageName }}"){{ end }})
 }
 `))
 
@@ -899,7 +899,8 @@ func genOne(ctx context.Context, e *minigo.Engine, output, ref string) error {
 		FuncSymbols  []string
 		ValueSymbols []string
 		TypeSymbols  []string
-	}{p.Name, p.Path, funcs, values, types}
+		BindAs       bool // the declared name differs from the last path element
+	}{p.Name, p.Path, funcs, values, types, p.Name != p.Path[strings.LastIndex(p.Path, "/")+1:]}
 
 	dir := filepath.Join(output, filepath.FromSlash(p.Path))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
