@@ -62,17 +62,20 @@ func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 	if src != "" {
 		if info, err := os.Stat(src); err == nil && info.IsDir() {
 			srcOK = true
+			dst := filepath.Join(dir, "static")
 			// Compare link-resolved paths: a symlinked static root can
-			// hide containment that the literal paths do not show.
-			realSrc, realDst := resolvePath(src), resolvePath(filepath.Join(dir, "static"))
+			// hide containment that the literal paths do not show. The
+			// literal check still matters — a source reached through a
+			// link inside the output dies with the re-export cleanup.
+			realSrc, realDst := resolvePath(src), resolvePath(dst)
 			inside := func(a, b string) bool { // a inside-or-equal b
 				rel, err := filepath.Rel(b, a)
 				return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 			}
-			if inside(realDst, realSrc) {
-				return fmt.Errorf("export output must not be inside the static directory: %s", filepath.Join(dir, "static"))
+			if inside(dst, src) || inside(realDst, realSrc) {
+				return fmt.Errorf("export output must not be inside the static directory: %s", dst)
 			}
-			if inside(realSrc, realDst) {
+			if inside(src, dst) || inside(realSrc, realDst) {
 				return fmt.Errorf("static directory must not be inside the export output: %s", src)
 			}
 		}

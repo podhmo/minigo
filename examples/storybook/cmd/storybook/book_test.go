@@ -342,6 +342,27 @@ func TestExportRejectsOutputInsideRealStatic(t *testing.T) {
 	}
 }
 
+// A StaticDir reached through a symlink inside the output's static dir
+// resolves outside it, so the resolved-path check alone passes — but
+// the re-export cleanup deletes the link before the copy runs.
+func TestExportRejectsStaticLinkInsideOutput(t *testing.T) {
+	dir, stories := staticStories(t)
+	out := filepath.Join(dir, "out")
+	if err := os.MkdirAll(filepath.Join(out, "static"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "static"), filepath.Join(out, "static", "real")); err != nil {
+		t.Fatal(err)
+	}
+	b := &Book{Dir: dir, Tag: "story", StaticDir: filepath.Join(out, "static", "real")}
+	if err := b.Export(context.Background(), out, stories); err == nil {
+		t.Error("export must refuse a static source linked inside its output")
+	}
+	if _, err := os.Lstat(filepath.Join(out, "static", "real")); err != nil {
+		t.Error("the source link must survive the refused export")
+	}
+}
+
 // The source must not live inside the output directory either: the
 // re-export cleanup would delete the source itself.
 func TestExportRejectsStaticInsideOutput(t *testing.T) {
