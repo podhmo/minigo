@@ -5159,16 +5159,37 @@ func (s *scriptFS) Open(name string) (fs.File, error) {
 	return s.fileOf(rs[0]), nil
 }
 
-// fileOf wraps a script Open result as a host fs.File: Read/Seek/Close
-// ride scriptIface's surface, Stat joins on scriptFile, and ReadDir —
-// which fs.ReadDir/fs.Glob/fs.WalkDir assert — appears only when the
-// script file declares it, keeping the fs.ReadDirFile probe honest.
+// fileOf wraps a script Open result as a host fs.File. A host file
+// riding inside a script value passes through untouched. A script file
+// gets scriptFile — Read/Close/Stat only — plus wrapper types for the
+// optional surfaces the script declares (Seek, which http.FS asserts;
+// WriteTo, which io.Copy asserts; ReadDir, which fs.ReadDir/fs.Glob/
+// fs.WalkDir assert), so a host probe never finds a method the script
+// lacks.
 func (s *scriptFS) fileOf(v runtime.Value) fs.File {
-	f := &scriptFile{scriptIface: &scriptIface{vc: s.vc, recv: v}}
-	if _, ok := runtime.IfaceMember(callbackContext(s.vc), v, "ReadDir"); ok {
-		return scriptDirFile{f}
+	if gv, ok := runtime.Unwrap(v).(*runtime.GoValue); ok {
+		if f, ok := gv.V.(fs.File); ok {
+			return f
+		}
 	}
-	return f
+	si := &scriptIface{vc: s.vc, recv: v}
+	f := &scriptFile{inner: si}
+	var out fs.File = f
+	ctx := callbackContext(s.vc)
+	_, seek := runtime.IfaceMember(ctx, v, "Seek")
+	_, wt := runtime.IfaceMember(ctx, v, "WriteTo")
+	switch {
+	case seek && wt:
+		out = scriptFileSeekWT{f}
+	case seek:
+		out = scriptFileSeek{f}
+	case wt:
+		out = scriptFileWT{f}
+	}
+	if _, ok := runtime.IfaceMember(ctx, v, "ReadDir"); ok {
+		out = scriptDirFile{File: out, inner: si}
+	}
+	return out
 }
 
 // readDir/readFile back the fs extension variants — unexported like
@@ -5178,27 +5199,39 @@ func (s *scriptFS) readDir(name string) ([]fs.DirEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := errOut(s.vc, rs, 1); err != nil {
-		return nil, err
-	}
-	if len(rs) == 0 {
-		return nil, nil
-	}
-	return dirEntriesOf(s.vc, rs[0])
+	return dirEntriesOf(s.vc, rs, errOut(s.vc, rs, 1))
 }
 
 // dirEntriesOf wraps each element of a script []fs.DirEntry result as a
-// host DirEntry proxy.
-func dirEntriesOf(vc runtime.VMCaller, v runtime.Value) ([]fs.DirEntry, error) {
-	sl, ok := runtime.Unwrap(v).(*runtime.Slice)
-	if !ok {
-		return nil, fmt.Errorf("script ReadDir returned %T, want []fs.DirEntry", v)
+// host DirEntry proxy. A nil script slice means an empty directory, and
+// the script's own error rides along so partial results survive — e.g.
+// entries plus io.EOF, which fs.ReadDirFile permits.
+func dirEntriesOf(vc runtime.VMCaller, rs []runtime.Value, serr error) ([]fs.DirEntry, error) {
+	if len(rs) == 0 {
+		return nil, serr
 	}
-	out := make([]fs.DirEntry, 0, len(sl.Elems))
-	for _, e := range sl.Elems {
-		out = append(out, &scriptDirEntry{scriptIface: &scriptIface{vc: vc, recv: e}})
+	switch v := runtime.Unwrap(rs[0]).(type) {
+	case nil, runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
+		return nil, serr
+	case *runtime.GoValue:
+		if es, ok := v.V.([]fs.DirEntry); ok {
+			return es, serr
+		}
+		if serr != nil {
+			return nil, serr
+		}
+		return nil, fmt.Errorf("script ReadDir returned %T, want []fs.DirEntry", v.V)
+	case *runtime.Slice:
+		out := make([]fs.DirEntry, 0, len(v.Elems))
+		for _, e := range v.Elems {
+			out = append(out, &scriptDirEntry{scriptIface: &scriptIface{vc: vc, recv: e}})
+		}
+		return out, serr
 	}
-	return out, nil
+	if serr != nil {
+		return nil, serr
+	}
+	return nil, fmt.Errorf("script ReadDir returned %T, want []fs.DirEntry", rs[0])
 }
 
 func (s *scriptFS) readFile(name string) ([]byte, error) {
@@ -5206,16 +5239,24 @@ func (s *scriptFS) readFile(name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := errOut(s.vc, rs, 1); err != nil {
-		return nil, err
-	}
+	serr := errOut(s.vc, rs, 1)
 	if len(rs) == 0 {
-		return nil, nil
+		return nil, serr
 	}
-	if sl, ok := runtime.Unwrap(rs[0]).(*runtime.Slice); ok {
-		if bs, ok := scriptBytes(sl); ok {
-			return bs, nil
+	switch v := runtime.Unwrap(rs[0]).(type) {
+	case nil, runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
+		return nil, serr
+	case *runtime.GoValue:
+		if bs, ok := v.V.([]byte); ok {
+			return bs, serr
 		}
+	case *runtime.Slice:
+		if bs, ok := scriptBytes(v); ok {
+			return bs, serr
+		}
+	}
+	if serr != nil {
+		return nil, serr
 	}
 	return nil, fmt.Errorf("script ReadFile returned %T, want []byte", rs[0])
 }
@@ -5225,41 +5266,61 @@ func (s scriptFSRF) ReadFile(name string) ([]byte, error)         { return s.rea
 func (s scriptFSRDRF) ReadDir(name string) ([]fs.DirEntry, error) { return s.readDir(name) }
 func (s scriptFSRDRF) ReadFile(name string) ([]byte, error)       { return s.readFile(name) }
 
-// scriptFile adapts a script fs.File: Stat joins scriptIface's
-// Read/Close/Seek (an embed openFile declares all of them, which keeps
-// http.FS's io.Seeker probe working), and scriptDirFile adds ReadDir.
-type scriptFile struct{ *scriptIface }
+// scriptFile adapts a script fs.File with just the fs.File contract —
+// Read, Close, Stat. It cannot embed *scriptIface: scriptIface's Seek/
+// ReadByte/WriteTo surface would answer host interface probes the
+// script never declared, turning a host's fallback path into a failed
+// call. Optional methods join through the wrapper types below.
+type scriptFile struct{ inner *scriptIface }
+
+func (s *scriptFile) Read(p []byte) (int, error) { return s.inner.Read(p) }
+func (s *scriptFile) Close() error               { return s.inner.Close() }
 
 func (s *scriptFile) Stat() (fs.FileInfo, error) {
-	rs, err := s.call("Stat")
+	rs, err := s.inner.call("Stat")
 	if err != nil {
 		return nil, err
 	}
-	if err := errOut(s.vc, rs, 1); err != nil {
+	if err := errOut(s.inner.vc, rs, 1); err != nil {
 		return nil, err
 	}
 	if len(rs) == 0 {
 		return nil, fmt.Errorf("script Stat returned no FileInfo")
 	}
-	return &scriptFileInfo{scriptIface: &scriptIface{vc: s.vc, recv: rs[0]}}, nil
+	return &scriptFileInfo{scriptIface: &scriptIface{vc: s.inner.vc, recv: rs[0]}}, nil
 }
 
-// scriptDirFile is a scriptFile whose script value declares ReadDir —
-// fs.ReadDirFile's extra method.
-type scriptDirFile struct{ *scriptFile }
+// scriptFileSeek/scriptFileWT/scriptFileSeekWT add the io extension
+// methods a script file declares: Seek is asserted by http.FS and
+// http.ServeContent, WriteTo by io.Copy.
+type (
+	scriptFileSeek   struct{ *scriptFile }
+	scriptFileWT     struct{ *scriptFile }
+	scriptFileSeekWT struct{ *scriptFile }
+)
+
+func (s scriptFileSeek) Seek(offset int64, whence int) (int64, error) {
+	return s.inner.Seek(offset, whence)
+}
+func (s scriptFileWT) WriteTo(w io.Writer) (int64, error) { return s.inner.writeTo(w) }
+func (s scriptFileSeekWT) Seek(offset int64, whence int) (int64, error) {
+	return s.inner.Seek(offset, whence)
+}
+func (s scriptFileSeekWT) WriteTo(w io.Writer) (int64, error) { return s.inner.writeTo(w) }
+
+// scriptDirFile layers fs.ReadDirFile's ReadDir onto whichever file
+// variant the probes selected.
+type scriptDirFile struct {
+	fs.File
+	inner *scriptIface
+}
 
 func (s scriptDirFile) ReadDir(count int) ([]fs.DirEntry, error) {
-	rs, err := s.call("ReadDir", int64(count))
+	rs, err := s.inner.call("ReadDir", int64(count))
 	if err != nil {
 		return nil, err
 	}
-	if err := errOut(s.vc, rs, 1); err != nil {
-		return nil, err
-	}
-	if len(rs) == 0 {
-		return nil, nil
-	}
-	return dirEntriesOf(s.vc, rs[0])
+	return dirEntriesOf(s.inner.vc, rs, errOut(s.inner.vc, rs, 1))
 }
 
 // scriptFileInfo proxies a script fs.FileInfo: each getter forwards to
@@ -5307,6 +5368,8 @@ func (s *scriptFileInfo) Sys() any {
 	switch v := runtime.Unwrap(rs[0]).(type) {
 	case nil, runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
 		return nil
+	case *runtime.GoValue:
+		return v.V
 	default:
 		return v
 	}
