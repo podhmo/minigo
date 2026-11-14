@@ -6205,12 +6205,11 @@ func (e *jsonEncoder) SetEscapeHTML(on bool) {
 
 // jsonHostArg recovers the script value a host `any` argument was
 // marshaled from: vm's reflect-call marshaling projects a script
-// struct to a named map carrying the original under the empty key
-// (unreachable through Go field syntax). Restoring the original lets
-// Encode apply goJSON — the projected map alone would lose tags,
-// omitempty and Marshaler dispatch. Container args (slices, maps)
-// walk element-wise for nested projections; values with no
-// projection pass through unchanged.
+// struct to an anonymous *struct{...} recorded in vm's structOrigs.
+// Restoring the original lets Encode apply goJSON — the projected
+// struct alone would lose tags, omitempty and Marshaler dispatch.
+// Container args (slices, maps) walk element-wise for nested
+// projections; values with no projection pass through unchanged.
 func jsonHostArg(v any) any {
 	return jsonHostArgSeen(v, map[unsafe.Pointer]bool{})
 }
@@ -6271,25 +6270,10 @@ func jsonHostArgSeen(v any, seen map[unsafe.Pointer]bool) any {
 }
 
 // projectedOrig reports the original script value a vm host `any`
-// projection carries under its empty key (scriptData's orig slot).
-// The projection's type is unexported, so detection is structural: a
-// string-keyed map with an original runtime.Value under "".
+// projection stands for — the *struct{...} structDataHost mints,
+// recorded in vm's structOrigs.
 func projectedOrig(v any) (runtime.Value, bool) {
-	rv := reflect.ValueOf(v)
-	if !rv.IsValid() || rv.Kind() != reflect.Map || rv.Type().Key().Kind() != reflect.String {
-		return nil, false
-	}
-	ov := rv.MapIndex(reflect.ValueOf(""))
-	if !ov.IsValid() {
-		return nil, false
-	}
-	// the orig slot holds the struct value or its pointer —
-	// scriptData stores only those two shapes.
-	switch orig := ov.Interface().(type) {
-	case *runtime.Struct, *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
-		return orig, true
-	}
-	return nil, false
+	return vm.StructOrig(v)
 }
 
 // cleanupHandle is the runtime.Cleanup the bound AddCleanup returns:

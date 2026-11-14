@@ -2744,10 +2744,14 @@ func TestHTMLTemplateBound(t *testing.T) {
 	got := []any{
 		run(t, e, "./testdata/htmltmpl", "Render"),
 		run(t, e, "./testdata/htmltmpl", "ParseError"),
+		run(t, e, "./testdata/htmltmpl", "MissingField"),
+		run(t, e, "./testdata/htmltmpl", "MissingMethod"),
 	}
 	want := []any{
 		`<p title="&lt;bob&gt;">&lt; &lt;bob&gt; <b>x</b></p>|a&amp;b`,
 		"template: bad:1: unclosed action",
+		`error: template: m:1:2: executing "m" at <.Nope>: can't evaluate field Nope in type *struct { Name interface {}; Badge interface {}; Initial interface {} }`,
+		`error: template: m:1:10: executing "m" at <.Initial.Nope>: can't evaluate field Nope in type interface {}`,
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("html/template (-want +got):\n%s", diff)
@@ -2923,7 +2927,7 @@ func TestTemplateFuncMap(t *testing.T) {
 	var got []any
 	for _, fn := range []string{
 		"Text", "Fail", "HTML", "NilFields", "Builtins",
-		"TypedParams", "WrongTypes", "NilElems", "Panics", "NotFunc", "CallbackPanics", "Goroutine", "HTMLTyped",
+		"TypedParams", "WrongTypes", "NilElems", "Panics", "NotFunc", "CallbackPanics", "Goroutine", "HiddenFields", "HTMLTyped",
 	} {
 		got = append(got, run(t, e, "./testdata/funcmap", fn))
 	}
@@ -2971,6 +2975,9 @@ func TestTemplateFuncMap(t *testing.T) {
 			`/template: g1:1:2: executing "g1" at <p>: error calling p: gp`,
 			"me/wrong type for value; expected *main.user; got int",
 		}, "\n"),
+		// two struct values with no exported members fold back to their
+		// own originals (a zero-size *struct{} would share one address)
+		"1 2",
 		"<ul><li>1,2</li><li>3,4</li></ul>",
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
