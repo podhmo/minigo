@@ -227,6 +227,23 @@ func TestSessionForkArrayLenFold(t *testing.T) {
 	if got := size(base.NewSession()); got != 5 {
 		t.Fatalf("after editing the const file: Size = %d, want 5 (stale array-length fold)", got)
 	}
+
+	// the refold path re-parses at the registered Pos range — the
+	// shared FileSet must not grow on repeated loads.
+	fcount := func() int {
+		n := 0
+		base.fset.Iterate(func(*token.File) bool { n++; return true })
+		return n
+	}
+	count := fcount()
+	for range 3 {
+		if got := size(base.NewSession()); got != 5 {
+			t.Fatalf("reload: Size = %d, want 5", got)
+		}
+	}
+	if got := fcount(); got != count {
+		t.Fatalf("FileSet grew on refold loads: %d -> %d", count, got)
+	}
 }
 
 // TestSessionForkLangChange covers the go.mod `go` directive: a cached
