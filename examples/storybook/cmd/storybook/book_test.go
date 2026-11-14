@@ -97,6 +97,31 @@ func TestStoriesRejectsBadShape(t *testing.T) {
 	}
 }
 
+// Only print stories group. A handler story calling an unqualified
+// helper must not end up pointing the index at a grid that cannot
+// frame it (the grid serves print stories only).
+func TestHTTPStoryStaysUngrouped(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module x\n\ngo 1.26\n")
+	writeFile(t, filepath.Join(dir, "app.go"), "package app\n")
+	writeFile(t, filepath.Join(dir, "story.go"), `//go:build story
+
+package app
+
+import "net/http"
+
+func StoryHttpX(w http.ResponseWriter, r *http.Request) { helper() }
+func helper() {}
+`)
+	stories, err := (&Book{Dir: dir, Tag: "story"}).Stories()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("", stories[0].Group); diff != "" {
+		t.Errorf("http story group (-want +got):\n%s", diff)
+	}
+}
+
 // The direct minigo CLI, not the optional Book helper, is the primitive.
 // Its stdout and the native test both match the same body-only goldens.
 // It calls a story with no arguments, so it covers the print kind only.
@@ -232,6 +257,11 @@ func TestExport(t *testing.T) {
 	}
 	if !bytes.Contains(grid, []byte(`src="StoryUserEscaped.html"`)) {
 		t.Error("grid misses a variant")
+	}
+	// The grid renders inside the story iframe; its back link must
+	// leave the frame, not nest a second index inside the first.
+	if !bytes.Contains(grid, []byte(`href="index.html" target="_top"`)) {
+		t.Error("grid back link stays inside the story iframe")
 	}
 }
 

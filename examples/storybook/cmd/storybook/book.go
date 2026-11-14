@@ -119,7 +119,14 @@ func (b *Book) Stories() ([]Story, error) {
 				return nil, fmt.Errorf("%s:%d: %s must be func()", pos.Filename, pos.Line, fd.Name.Name)
 			}
 			doc, _, _ := strings.Cut(strings.TrimSpace(fd.Doc.Text()), "\n")
-			stories = append(stories, Story{Name: fd.Name.Name, Doc: doc, Pos: fmt.Sprintf("%s:%d", pos.Filename, pos.Line), Kind: kind, Group: storyGroup(fd.Body)})
+			// Only print stories group: a handler story calling an
+			// unqualified helper would otherwise point the index at a
+			// grid that cannot frame it.
+			group := ""
+			if kind == KindPrint {
+				group = storyGroup(fd.Body)
+			}
+			stories = append(stories, Story{Name: fd.Name.Name, Doc: doc, Pos: fmt.Sprintf("%s:%d", pos.Filename, pos.Line), Kind: kind, Group: group})
 		}
 	}
 	if len(stories) == 0 {
