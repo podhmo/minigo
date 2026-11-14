@@ -187,11 +187,11 @@ predictable external I/O results for interpreted application code without
 adding an application interface solely for previews.
 
 `Engine.Bind` registers a host package at an import path, including a
-standard-library path; `Engine.BoundOf` exposes an existing bound package —
-and renaming it there is how a package whose declared name differs from
-its last path element (e.g. `goldmark-alert` declaring `package alert`)
-becomes reachable by that name. Bind names a bound package after the last
-import-path element. Configure replacements before application
+standard-library path; `Engine.BoundOf` exposes an existing bound package.
+Bind names a bound package after the last import-path element; pass
+`minigo.BindAs(name)` when the declared package name differs (e.g.
+`goldmark-alert` declaring `package alert`) so scripts reach it by that
+name. Configure replacements before application
 initialization and execution; a session forked with `Engine.NewSession`
 inherits them, so `Book.baseEngine` is the single place they belong. If
 re-registering a whole package, preserve its other required symbols.
