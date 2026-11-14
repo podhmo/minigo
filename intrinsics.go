@@ -3029,6 +3029,11 @@ func (e *Engine) installStdlib() {
 		}, template.New),
 		"Must":    templateMust(template.Must),
 		"FuncMap": templateFuncMap,
+		// a boxed host func: the fsys arg marshals through
+		// callReflectFunc's fs.FS adaptation, so a script embed.FS (or
+		// any script type declaring Open) works as template.ParseFS's
+		// filesystem.
+		"ParseFS": &runtime.GoValue{V: template.ParseFS},
 		"HTMLEscapeString": h.fn1("template.HTMLEscapeString", func(a []any) (any, error) {
 			return template.HTMLEscapeString(str(a[0])), nil
 		}, template.HTMLEscapeString),
@@ -3058,6 +3063,7 @@ func (e *Engine) installStdlib() {
 		}, htmltemplate.New),
 		"Must":     templateMust(htmltemplate.Must),
 		"FuncMap":  templateFuncMap, // html/template.FuncMap aliases text/template's
+		"ParseFS":  &runtime.GoValue{V: htmltemplate.ParseFS},
 		"HTML":     htmlContent("HTML", htmltemplate.HTML("")),
 		"HTMLAttr": htmlContent("HTMLAttr", htmltemplate.HTMLAttr("")),
 		"JS":       htmlContent("JS", htmltemplate.JS("")),

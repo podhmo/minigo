@@ -9,6 +9,8 @@ import (
 	"go/parser"
 	"go/token"
 	"html/template"
+	"io"
+	"io/fs"
 	"math"
 	"net"
 	"net/http"
@@ -2975,5 +2977,190 @@ func TestTemplateFuncMap(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("FuncMap (-want +got):\n%s", diff)
+	}
+}
+
+// sysMeta is a host value a script FileInfo's Sys carries back across
+// the proxy — SysTag asserts the concrete type survives unwrapped.
+type sysMeta struct{ N int }
+
+// TestScriptFSIntoHost: a script filesystem — a //go:embed'd embed.FS
+// or a script type declaring fs.FS methods — crosses a bound host
+// function's fs.FS parameter through a live proxy, and bound
+// text/template and html/template expose ParseFS consuming the same
+// value (#1068).
+func TestScriptFSIntoHost(t *testing.T) {
+	e := newEngine(t)
+	e.Bind("example.com/fsbox", map[string]runtime.Value{
+		"ReadFile": &runtime.GoValue{V: func(fsys fs.FS, name string) (string, error) {
+			b, err := fs.ReadFile(fsys, name)
+			if err != nil {
+				return "", err
+			}
+			return string(b), nil
+		}},
+		"Glob": &runtime.GoValue{V: func(fsys fs.FS, pattern string) (string, error) {
+			names, err := fs.Glob(fsys, pattern)
+			return strings.Join(names, ","), err
+		}},
+		"Stat": &runtime.GoValue{V: func(fsys fs.FS, name string) string {
+			fi, err := fs.Stat(fsys, name)
+			if err != nil {
+				return "err:" + err.Error()
+			}
+			return fmt.Sprintf("%s %d %v %q", fi.Name(), fi.Size(), fi.IsDir(), fi.Mode())
+		}},
+		"Token": &runtime.GoValue{V: func() any { return sysMeta{N: 7} }},
+		"OpenFile": &runtime.GoValue{V: func(fsys fs.FS, name string) (fs.File, error) {
+			return fsys.Open(name)
+		}},
+		"Probes": &runtime.GoValue{V: func(fsys fs.FS, name string) string {
+			f, err := fsys.Open(name)
+			if err != nil {
+				return "err:" + err.Error()
+			}
+			defer f.Close()
+			_, seek := f.(io.Seeker)
+			_, wt := f.(io.WriterTo)
+			_, rd := f.(fs.ReadDirFile)
+			return fmt.Sprintf("seek:%v writeto:%v readdir:%v", seek, wt, rd)
+		}},
+		"ChunkedReadDir": &runtime.GoValue{V: func(fsys fs.FS, name string, n int64) (string, error) {
+			f, err := fsys.Open(name)
+			if err != nil {
+				return "", err
+			}
+			defer f.Close()
+			rd, ok := f.(fs.ReadDirFile)
+			if !ok {
+				return "", fmt.Errorf("%T is not an fs.ReadDirFile", f)
+			}
+			var names []string
+			for {
+				ents, err := rd.ReadDir(int(n))
+				for _, ent := range ents {
+					names = append(names, ent.Name())
+				}
+				if err != nil {
+					if err == io.EOF {
+						break
+					}
+					return "", err
+				}
+				if len(ents) == 0 {
+					break
+				}
+			}
+			return strings.Join(names, ","), nil
+		}},
+		"ReReadDir": &runtime.GoValue{V: func(fsys fs.FS, name string, n int64) (string, error) {
+			f, err := fsys.Open(name)
+			if err != nil {
+				return "", err
+			}
+			defer f.Close()
+			rd, ok := f.(fs.ReadDirFile)
+			if !ok {
+				return "", fmt.Errorf("%T is not an fs.ReadDirFile", f)
+			}
+			drain := func() ([]string, error) {
+				var names []string
+				for {
+					ents, err := rd.ReadDir(int(n))
+					for _, ent := range ents {
+						names = append(names, ent.Name())
+					}
+					if err != nil {
+						if err == io.EOF {
+							return names, nil
+						}
+						return nil, err
+					}
+					if len(ents) == 0 {
+						return names, nil
+					}
+				}
+			}
+			first, err := drain()
+			if err != nil {
+				return "", err
+			}
+			sk, ok := f.(io.Seeker)
+			if !ok {
+				return "", fmt.Errorf("%T is not an io.Seeker", f)
+			}
+			if _, err := sk.Seek(0, io.SeekStart); err != nil {
+				return "", err
+			}
+			second, err := drain()
+			if err != nil {
+				return "", err
+			}
+			return strings.Join(first, ",") + "," + strings.Join(second, ","), nil
+		}},
+		"ReadDirNames": &runtime.GoValue{V: func(fsys fs.FS, name string) (string, error) {
+			ents, err := fs.ReadDir(fsys, name)
+			if err != nil {
+				return "", err
+			}
+			names := make([]string, 0, len(ents))
+			for _, ent := range ents {
+				names = append(names, ent.Name())
+			}
+			return strings.Join(names, ","), nil
+		}},
+		"SysTag": &runtime.GoValue{V: func(fsys fs.FS, name string) string {
+			fi, err := fs.Stat(fsys, name)
+			if err != nil {
+				return "err:" + err.Error()
+			}
+			if m, ok := fi.Sys().(sysMeta); ok {
+				return fmt.Sprintf("sys:%d", m.N)
+			}
+			return "nosys"
+		}},
+	})
+	got := []any{
+		run(t, e, "./testdata/scriptfs", "EmbedToHostFS"),
+		run(t, e, "./testdata/scriptfs", "EmbedGlob"),
+		run(t, e, "./testdata/scriptfs", "ParseFSEmbed"),
+		run(t, e, "./testdata/scriptfs", "ParseFSEmbedHTML"),
+		run(t, e, "./testdata/scriptfs", "ScriptToHostFS"),
+		run(t, e, "./testdata/scriptfs", "ScriptToHostFSStat"),
+		run(t, e, "./testdata/scriptfs", "EmbedMissing"),
+		run(t, e, "./testdata/scriptfs", "HostFileProbes"),
+		run(t, e, "./testdata/scriptfs", "HostDirProbes"),
+		run(t, e, "./testdata/scriptfs", "HostEmbedFileProbes"),
+		run(t, e, "./testdata/scriptfs", "HostEmbedDirProbes"),
+		run(t, e, "./testdata/scriptfs", "HostReadDirChunked"),
+		run(t, e, "./testdata/scriptfs", "HostEmptyDir"),
+		run(t, e, "./testdata/scriptfs", "HostEmptyFile"),
+		run(t, e, "./testdata/scriptfs", "HostSysTag"),
+		run(t, e, "./testdata/scriptfs", "HostSeekDir"),
+		run(t, e, "./testdata/scriptfs", "HostRoundTripFile"),
+		run(t, e, "./testdata/scriptfs", "HostRoundTripDir"),
+	}
+	want := []any{
+		"in-b",
+		"tpl/a.tmpl",
+		"hello world",
+		"hello &lt;x&gt;",
+		"hi host",
+		"hello.txt 7 false \"----------\"",
+		"open tpl/missing.txt: file does not exist",
+		"seek:false writeto:false readdir:false",
+		"seek:true writeto:false readdir:true",
+		"seek:true writeto:false readdir:false",
+		"seek:false writeto:false readdir:true",
+		"x,y,z",
+		"[]",
+		"[]",
+		"sys:7",
+		"x,y,z,x,y,z",
+		"ok",
+		"ok",
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("script fs into host (-want +got):\n%s", diff)
 	}
 }
