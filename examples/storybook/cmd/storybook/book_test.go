@@ -16,9 +16,19 @@ import (
 
 const appDir = "../../app"
 
-var storyNames = []string{
-	"StoryListUsersByTag", "StoryShowUser", "StoryShowUserNotFound",
-	"StoryUser", "StoryUserEscaped", "StoryUserList", "StoryUserListEmpty", "StoryUserLongName",
+// Print stories run under the direct minigo CLI too; handler-shaped
+// (StoryHttp*) stories need this helper's recorder drive.
+var (
+	printNames = []string{
+		"StoryUser", "StoryUserEscaped", "StoryUserList", "StoryUserListEmpty", "StoryUserLongName",
+	}
+	httpNames = []string{
+		"StoryHttpListUsersByTag", "StoryHttpShowUser", "StoryHttpShowUserNotFound",
+	}
+)
+
+func storyNames() []string {
+	return append(append([]string{}, httpNames...), printNames...)
 }
 
 func golden(t *testing.T, name string) []byte {
@@ -42,26 +52,34 @@ func TestStories(t *testing.T) {
 		if s.Doc == "" || !strings.HasPrefix(s.Pos, filepath.Join(appDir, "story_")) {
 			t.Errorf("missing doc or position: %+v", s)
 		}
+		if want := strings.HasPrefix(s.Name, "StoryHttp"); s.IsHTTP() != want {
+			t.Errorf("%s: IsHTTP %v, want %v", s.Name, s.IsHTTP(), want)
+		}
 	}
-	if diff := cmp.Diff(storyNames, names); diff != "" {
+	if diff := cmp.Diff(storyNames(), names); diff != "" {
 		t.Errorf("stories (-want +got):\n%s", diff)
 	}
 }
 
 func TestStoriesRejectsBadShape(t *testing.T) {
-	for _, decl := range []string{
-		"func StoryX(w http.ResponseWriter, r *http.Request) {}",
-		"func StoryX() string { return \"\" }",
-		"func StoryX[T any]() {}",
+	for _, tc := range []struct {
+		decl, want string
+	}{
+		{"func StoryX(w http.ResponseWriter, r *http.Request) {}", "StoryX must be func()"},
+		{"func StoryX() string { return \"\" }", "StoryX must be func()"},
+		{"func StoryX[T any]() {}", "StoryX must be func()"},
+		{"func StoryHttpX() {}", "StoryHttpX must be func(http.ResponseWriter, *http.Request)"},
+		{"func StoryHttpX(w, extra http.ResponseWriter, r *http.Request) {}", "StoryHttpX must be func(http.ResponseWriter, *http.Request)"},
+		{"func StoryHttpX(w http.ResponseWriter, r *http.Request) error { return nil }", "StoryHttpX must be func(http.ResponseWriter, *http.Request)"},
 	} {
-		t.Run(decl, func(t *testing.T) {
+		t.Run(tc.decl, func(t *testing.T) {
 			dir := t.TempDir()
 			writeFile(t, filepath.Join(dir, "go.mod"), "module x\n\ngo 1.26\n")
 			writeFile(t, filepath.Join(dir, "app.go"), "package app\n")
-			writeFile(t, filepath.Join(dir, "story.go"), "//go:build story\n\npackage app\n\n"+decl+"\n")
+			writeFile(t, filepath.Join(dir, "story.go"), "//go:build story\n\npackage app\n\nimport \"net/http\"\n\n"+tc.decl+"\n")
 			_, err := (&Book{Dir: dir, Tag: "story"}).Stories()
-			if err == nil || !strings.Contains(err.Error(), "StoryX must be func()") {
-				t.Fatalf("want invalid signature error, got %v", err)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want invalid signature error %q, got %v", tc.want, err)
 			}
 		})
 	}
@@ -69,6 +87,7 @@ func TestStoriesRejectsBadShape(t *testing.T) {
 
 // The direct minigo CLI, not the optional Book helper, is the primitive.
 // Its stdout and the native test both match the same body-only goldens.
+// It calls a story with no arguments, so it covers the print kind only.
 func TestDirectCLIStdout(t *testing.T) {
 	cli := filepath.Join(t.TempDir(), "minigo")
 	build := exec.Command("go", "build", "-o", cli, "./")
@@ -80,7 +99,7 @@ func TestDirectCLIStdout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range storyNames {
+	for _, name := range printNames {
 		t.Run(name, func(t *testing.T) {
 			cmd := exec.Command(cli, "run", "--tags", "story", dir, name)
 			var stderr bytes.Buffer
@@ -98,16 +117,38 @@ func TestDirectCLIStdout(t *testing.T) {
 
 func TestRenderGolden(t *testing.T) {
 	b := &Book{Dir: appDir, Tag: "story"}
-	for _, name := range storyNames {
+	// Handler stories replay the status and headers their recorder captured.
+	wantStatus := map[string]int{
+		"StoryHttpListUsersByTag":   http.StatusOK,
+		"StoryHttpShowUser":         http.StatusOK,
+		"StoryHttpShowUserNotFound": http.StatusNotFound,
+	}
+	for _, name := range storyNames() {
 		t.Run(name, func(t *testing.T) {
 			got, err := b.Render(context.Background(), name)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if diff := cmp.Diff(string(golden(t, name)), string(got)); diff != "" {
-				t.Errorf("helper stdout (-golden +got):\n%s", diff)
+			if diff := cmp.Diff(string(golden(t, name)), string(got.Body)); diff != "" {
+				t.Errorf("helper output (-golden +got):\n%s", diff)
+			}
+			want := wantStatus[name]
+			if want == 0 {
+				want = http.StatusOK
+			}
+			if diff := cmp.Diff(want, got.Status); diff != "" {
+				t.Errorf("status (-want +got):\n%s", diff)
 			}
 		})
+	}
+	// The list handler reports the match count in a response header;
+	// only the HTTP kind surfaces it.
+	res, err := b.Render(context.Background(), "StoryHttpListUsersByTag")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff([]string{"2"}, res.Header["X-Total-Count"]); diff != "" {
+		t.Errorf("X-Total-Count (-want +got):\n%s", diff)
 	}
 }
 
@@ -127,7 +168,7 @@ func TestRenderMainPackage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if diff := cmp.Diff(string(golden(t, "StoryUser")), string(got)); diff != "" {
+	if diff := cmp.Diff(string(golden(t, "StoryUser")), string(got.Body)); diff != "" {
 		t.Errorf("package main (-golden +got):\n%s", diff)
 	}
 }
@@ -167,32 +208,255 @@ func TestExport(t *testing.T) {
 			t.Errorf("export (-golden +got):\n%s", diff)
 		}
 	}
+	// The snapshot ships the app's assets too, so serving the export root
+	// resolves /static/ the way the live preview does.
+	if _, err := os.Stat(filepath.Join(out, "static", "app.css")); err != nil {
+		t.Errorf("export misses static assets: %v", err)
+	}
+}
+
+// A minimal app with one story and one static asset.
+func staticStories(t *testing.T) (string, []Story) {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/staticx\n\ngo 1.26.0\n")
+	writeFile(t, filepath.Join(dir, "app.go"), "package app\n")
+	writeFile(t, filepath.Join(dir, "story.go"), "//go:build story\n\npackage app\n\nfunc StoryX() {}\n")
+	if err := os.MkdirAll(filepath.Join(dir, "static"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "static", "app.css"), "a{}\n")
+	b := &Book{Dir: dir, Tag: "story"}
+	stories, err := b.Stories()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir, stories
+}
+
+// http.FileServer serves a symlinked asset, so the snapshot carries its
+// contents too.
+func TestExportFollowsStaticSymlinks(t *testing.T) {
+	dir, stories := staticStories(t)
+	if err := os.Symlink("app.css", filepath.Join(dir, "static", "linked.css")); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "out")
+	if err := (&Book{Dir: dir, Tag: "story"}).Export(context.Background(), out, stories); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(out, "static", "linked.css"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("a{}\n", string(got)); diff != "" {
+		t.Errorf("symlinked asset (-want +got):\n%s", diff)
+	}
+}
+
+// Re-exporting drops assets deleted since the last run, so the snapshot
+// mirrors the source instead of merging into it.
+func TestExportDropsStaleStaticAssets(t *testing.T) {
+	dir, stories := staticStories(t)
+	writeFile(t, filepath.Join(dir, "static", "stale.css"), "stale{}\n")
+	b := &Book{Dir: dir, Tag: "story"}
+	out := filepath.Join(t.TempDir(), "out")
+	if err := b.Export(context.Background(), out, stories); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "static", "stale.css")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Export(context.Background(), out, stories); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "static", "stale.css")); !os.IsNotExist(err) {
+		t.Errorf("deleted asset survives re-export: %v", err)
+	}
+}
+
+// A directory symlink pointing back into the source must not recurse
+// forever; the snapshot takes the loop once and moves on. A second link
+// to a sibling directory is an alias, not a cycle: the live server
+// serves both paths, so the snapshot copies both.
+func TestExportStaticLinkCycle(t *testing.T) {
+	dir, stories := staticStories(t)
+	if err := os.MkdirAll(filepath.Join(dir, "static", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "static", "sub", "x.css"), "x{}\n")
+	if err := os.Symlink(".", filepath.Join(dir, "static", "self")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("sub", filepath.Join(dir, "static", "dup")); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "out")
+	if err := (&Book{Dir: dir, Tag: "story"}).Export(context.Background(), out, stories); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"app.css", filepath.Join("sub", "x.css"), filepath.Join("dup", "x.css")} {
+		if _, err := os.Stat(filepath.Join(out, "static", name)); err != nil {
+			t.Errorf("export misses %s: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(out, "static", "self", "self")); !os.IsNotExist(err) {
+		t.Errorf("link cycle recursed: %v", err)
+	}
+}
+
+// The static root itself may be a symlink; it must export its target's
+// contents rather than being mistaken for a cycle.
+func TestExportStaticRootSymlink(t *testing.T) {
+	dir, stories := staticStories(t)
+	real := filepath.Join(dir, "real-static")
+	if err := os.Rename(filepath.Join(dir, "static"), real); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, filepath.Join(dir, "static")); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "out")
+	if err := (&Book{Dir: dir, Tag: "story"}).Export(context.Background(), out, stories); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "static", "app.css")); err != nil {
+		t.Errorf("export misses root-link assets: %v", err)
+	}
+}
+
+// Containment is decided on resolved paths: exporting under the real
+// directory a symlinked static root points to is still self-copying.
+func TestExportRejectsOutputInsideRealStatic(t *testing.T) {
+	dir, stories := staticStories(t)
+	real := filepath.Join(dir, "real-static")
+	if err := os.Rename(filepath.Join(dir, "static"), real); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, filepath.Join(dir, "static")); err != nil {
+		t.Fatal(err)
+	}
+	err := (&Book{Dir: dir, Tag: "story"}).Export(context.Background(), filepath.Join(real, "snap"), stories)
+	if err == nil {
+		t.Error("export into the resolved static directory must fail")
+	}
+}
+
+// A StaticDir reached through a symlink inside the output's static dir
+// resolves outside it, so the resolved-path check alone passes — but
+// the re-export cleanup deletes the link before the copy runs.
+func TestExportRejectsStaticLinkInsideOutput(t *testing.T) {
+	dir, stories := staticStories(t)
+	out := filepath.Join(dir, "out")
+	if err := os.MkdirAll(filepath.Join(out, "static"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "static"), filepath.Join(out, "static", "real")); err != nil {
+		t.Fatal(err)
+	}
+	b := &Book{Dir: dir, Tag: "story", StaticDir: filepath.Join(out, "static", "real")}
+	if err := b.Export(context.Background(), out, stories); err == nil {
+		t.Error("export must refuse a static source linked inside its output")
+	}
+	if _, err := os.Lstat(filepath.Join(out, "static", "real")); err != nil {
+		t.Error("the source link must survive the refused export")
+	}
+}
+
+// The source must not live inside the output directory either: the
+// re-export cleanup would delete the source itself.
+func TestExportRejectsStaticInsideOutput(t *testing.T) {
+	dir, stories := staticStories(t)
+	out := filepath.Join(dir, "out")
+	deep := filepath.Join(out, "static", "deeper")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b := &Book{Dir: dir, Tag: "story", StaticDir: deep}
+	if err := b.Export(context.Background(), out, stories); err == nil {
+		t.Error("export must refuse a static source inside its output")
+	}
+}
+
+// The output root must not live inside the static directory: copying it
+// would recurse into itself.
+func TestExportRejectsStaticNesting(t *testing.T) {
+	dir, stories := staticStories(t)
+	err := (&Book{Dir: dir, Tag: "story"}).Export(context.Background(), filepath.Join(dir, "static", "nested"), stories)
+	if err == nil {
+		t.Error("export into the static directory must fail")
+	}
 }
 
 func TestHandler(t *testing.T) {
 	b := &Book{Dir: appDir, Tag: "story"}
-	for _, name := range storyNames {
+	wantStatus := map[string]int{
+		"StoryHttpListUsersByTag":   http.StatusOK,
+		"StoryHttpShowUser":         http.StatusOK,
+		"StoryHttpShowUserNotFound": http.StatusNotFound,
+	}
+	for _, name := range storyNames() {
 		rec := httptest.NewRecorder()
 		b.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/story/"+name+"?name=Ignored", nil))
-		if diff := cmp.Diff(http.StatusOK, rec.Code); diff != "" {
-			t.Errorf("preview status (-want +got):\n%s", diff)
+		want := wantStatus[name]
+		if want == 0 {
+			want = http.StatusOK
 		}
-		if diff := cmp.Diff("text/html; charset=utf-8", rec.Header().Get("Content-Type")); diff != "" {
-			t.Errorf("content type (-want +got):\n%s", diff)
+		if diff := cmp.Diff(want, rec.Code); diff != "" {
+			t.Errorf("preview status for %s (-want +got):\n%s", name, diff)
+		}
+		wantType := "text/html; charset=utf-8"
+		if name == "StoryHttpShowUserNotFound" {
+			wantType = "text/plain; charset=utf-8"
+		}
+		if diff := cmp.Diff(wantType, rec.Header().Get("Content-Type")); diff != "" {
+			t.Errorf("content type for %s (-want +got):\n%s", name, diff)
 		}
 		if diff := cmp.Diff(string(golden(t, name)), rec.Body.String()); diff != "" {
-			t.Errorf("preview (-golden +got):\n%s", diff)
+			t.Errorf("preview for %s (-golden +got):\n%s", name, diff)
 		}
 	}
 	rec := httptest.NewRecorder()
 	b.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
-	if !strings.Contains(rec.Body.String(), `href="/story/StoryUser"`) {
-		t.Fatal("index misses story link")
+	body := rec.Body.String()
+	if !strings.Contains(body, `href="?s=StoryUser"`) {
+		t.Error("index misses story link")
+	}
+	if !strings.Contains(body, `target="_blank"`) {
+		t.Error("index misses new-tab link for http stories")
+	}
+	if !strings.Contains(body, `?w=360`) {
+		t.Error("index misses viewport widths")
 	}
 	rec = httptest.NewRecorder()
 	b.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/story/StoryMissing", nil))
 	if diff := cmp.Diff(http.StatusInternalServerError, rec.Code); diff != "" {
 		t.Errorf("missing story status (-want +got):\n%s", diff)
+	}
+	// The app's stylesheet is served at its original path.
+	rec = httptest.NewRecorder()
+	b.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/static/app.css", nil))
+	if diff := cmp.Diff(http.StatusOK, rec.Code); diff != "" {
+		t.Errorf("static status (-want +got):\n%s", diff)
+	}
+	if !strings.Contains(rec.Body.String(), ".avatar") {
+		t.Error("static body misses app.css")
+	}
+}
+
+// A discovery failure still serves: the index shows the error instead of
+// crashing, so stories can be added to an empty package live.
+func TestHandlerToleratesNoStories(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/empty\n\ngo 1.26.0\n")
+	writeFile(t, filepath.Join(dir, "app.go"), "package app\n")
+	rec := httptest.NewRecorder()
+	(&Book{Dir: dir, Tag: "story"}).Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if diff := cmp.Diff(http.StatusOK, rec.Code); diff != "" {
+		t.Errorf("index status (-want +got):\n%s", diff)
+	}
+	if !strings.Contains(rec.Body.String(), "no Story funcs") {
+		t.Error("index misses the discovery error")
 	}
 }
 

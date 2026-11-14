@@ -26,9 +26,9 @@ func TestRoutesGolden(t *testing.T) {
 		contentType, total string
 	}{
 		{"StoryUserList", "/users", 200, "text/html; charset=utf-8", "3"},
-		{"StoryListUsersByTag", "/users?tag=go&sort=id", 200, "text/html; charset=utf-8", "2"},
-		{"StoryShowUser", "/users/1", 200, "text/html; charset=utf-8", ""},
-		{"StoryShowUserNotFound", "/users/404", 404, "text/plain; charset=utf-8", ""},
+		{"StoryHttpListUsersByTag", "/users?tag=go&sort=id", 200, "text/html; charset=utf-8", "2"},
+		{"StoryHttpShowUser", "/users/1", 200, "text/html; charset=utf-8", ""},
+		{"StoryHttpShowUserNotFound", "/users/404", 404, "text/plain; charset=utf-8", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()

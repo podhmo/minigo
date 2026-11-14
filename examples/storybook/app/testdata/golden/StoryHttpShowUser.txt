@@ -1,5 +1,5 @@
 <!doctype html>
-<html><head><title>Alice</title></head>
+<html><head><title>Alice</title><link rel="stylesheet" href="/static/app.css"></head>
 <body>
 <h1><span class="avatar">A</span> Alice <b class="badge">staff</b></h1>
 <ul><li>admin</li><li>go</li></ul>

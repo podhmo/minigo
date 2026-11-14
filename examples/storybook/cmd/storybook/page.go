@@ -15,8 +15,9 @@ import (
 // entry is one row of the index page.
 type entry struct {
 	Story
-	Href string
-	Err  string
+	Href   string
+	Target string // "story" in the static export, "_blank" for served http stories
+	Err    string
 }
 
 var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
@@ -26,38 +27,73 @@ body { margin: 0; display: flex; height: 100vh; font-family: sans-serif; }
 nav { width: 18rem; overflow: auto; border-right: 1px solid #ccc; padding: .5rem; }
 nav a { display: block; padding: .25rem; color: inherit; text-decoration: none; }
 nav a:hover { background: #eef; }
+nav a.active { background: #eef; font-weight: 600; }
 nav small { display: block; color: #666; }
 .err { color: #b00; }
+.viewport { display: flex; gap: .5em; margin: .5rem 0; font-size: .9em; }
+.viewport a { padding: .1em .4em; border: 1px solid #ccc; border-radius: .3em; }
+.viewport a.active { background: #def; border-color: #79b; }
 iframe { flex: 1; border: 0; }
+iframe.sized { flex: none; margin-inline: auto; border-inline: 1px dashed #ccc; }
 </style></head>
 <body>
 <nav>
 <strong>{{.Dir}}</strong>
-{{range .Entries}}<a href="{{.Href}}" target="story">{{.Name}}
+{{if .Err}}<small class="err">{{.Err}}</small>{{end}}
+<div class="viewport">{{range .Widths}}<a href="?w={{.}}&s={{$.S}}"{{if eq . $.W}} class="active"{{end}}>{{if .}}{{.}}px{{else}}full{{end}}</a>{{end}}</div>
+{{range .Entries}}<a href="{{.Href}}"{{if .Target}} target="{{.Target}}"{{end}}{{if eq .Name $.S}} class="active"{{end}}>{{.Name}}{{if .IsHTTP}} <small>&#8599;</small>{{end}}
 <small>{{.Doc}}</small>{{if .Err}}<small class="err">{{.Err}}</small>{{end}}</a>
 {{end}}</nav>
-<iframe name="story"{{with .Entries}} src="{{(index . 0).Href}}"{{end}}></iframe>
+<iframe name="story"{{if .S}} src="/story/{{.S}}"{{else}}{{with .Entries}} src="{{(index . 0).Href}}"{{end}}{{end}}{{if .W}} class="sized" style="width: {{.W}}px"{{end}}></iframe>
 </body></html>
 `))
 
-// Export renders every story into dir: index.html plus <Story>.html.
-// A failing story still gets its row (with the error) so the rest of
-// the book is written, but Export then reports the failures.
+// Export renders every story into dir: index.html plus <Story>.html and
+// a copy of the static directory, so serving the export root resolves
+// /static/ the same way the live preview does. A failing story still
+// gets its row (with the error) so the rest of the book is written, but
+// Export then reports the failures.
 func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
+	// Fail fast on pathological layouts before writing anything: the
+	// snapshot must neither write inside the static source (recursive
+	// self-copy) nor contain it (the re-export cleanup would erase it).
+	src := b.staticRoot()
+	srcOK := false
+	if src != "" {
+		if info, err := os.Stat(src); err == nil && info.IsDir() {
+			srcOK = true
+			dst := filepath.Join(dir, "static")
+			// Compare link-resolved paths: a symlinked static root can
+			// hide containment that the literal paths do not show. The
+			// literal check still matters — a source reached through a
+			// link inside the output dies with the re-export cleanup.
+			realSrc, realDst := resolvePath(src), resolvePath(dst)
+			inside := func(a, b string) bool { // a inside-or-equal b
+				rel, err := filepath.Rel(b, a)
+				return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+			}
+			if inside(dst, src) || inside(realDst, realSrc) {
+				return fmt.Errorf("export output must not be inside the static directory: %s", dst)
+			}
+			if inside(src, dst) || inside(realSrc, realDst) {
+				return fmt.Errorf("static directory must not be inside the export output: %s", src)
+			}
+		}
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	var errs []error
 	entries := make([]entry, len(stories))
 	for i, s := range stories {
-		entries[i] = entry{Story: s, Href: s.Name + ".html"}
+		entries[i] = entry{Story: s, Href: s.Name + ".html", Target: "story"}
 		res, err := b.Render(ctx, s.Name)
 		if err != nil {
 			entries[i].Err = firstLine(err.Error())
 			errs = append(errs, err)
 			continue
 		}
-		if err := os.WriteFile(filepath.Join(dir, s.Name+".html"), res, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, s.Name+".html"), res.Body, 0o644); err != nil {
 			return err
 		}
 	}
@@ -69,27 +105,164 @@ func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 	if err := indexTmpl.Execute(f, map[string]any{"Dir": b.Dir, "Entries": entries}); err != nil {
 		return err
 	}
+	if srcOK {
+		dst := filepath.Join(dir, "static")
+		// A fresh copy drops assets deleted upstream since the last
+		// export; the containment checks above keep this safe.
+		if err := os.RemoveAll(dst); err != nil {
+			return err
+		}
+		if err := copyTree(src, dst); err != nil {
+			return err
+		}
+	}
 	return errors.Join(errs...)
 }
 
-// Handler serves the index at / and each story at /story/<Name>; the
-// stdout is served as HTML. Stories choose their own fixtures, so the
-// preview query string does not control them. A fresh interpretation on
-// each request reflects source edits on reload. Story failures answer 500;
-// successful previews answer 200, independent of a handler's original status.
+// copyTree copies regular files under src into dst, preserving the
+// layout. Symlinks resolve the way http.FileServer resolves them: linked
+// assets land in the snapshot, and an alias naming a directory already
+// copied is copied again under its own name. What is refused is a link
+// cycle — a directory on its own copy path (self -> .) — tracked by the
+// real paths currently on the copy stack, not by every directory seen;
+// a dangling link, which the live server would answer 404, is skipped.
+func copyTree(src, dst string) error {
+	real, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		return err
+	}
+	return copyDir(real, dst, map[string]bool{real: true})
+}
+
+func copyDir(dir, dst string, active map[string]bool) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		path := filepath.Join(dir, e.Name())
+		to := filepath.Join(dst, e.Name())
+		mode := e.Type()
+		if mode&os.ModeSymlink != 0 {
+			target, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				continue
+			}
+			info, err := os.Stat(target)
+			if err != nil {
+				continue
+			}
+			if info.IsDir() {
+				if active[target] {
+					continue
+				}
+				active[target] = true
+				err := copyDir(target, to, active)
+				delete(active, target)
+				if err != nil {
+					return err
+				}
+				continue
+			}
+			mode = info.Mode().Type()
+		}
+		if e.IsDir() {
+			real, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				return err
+			}
+			active[real] = true
+			err = copyDir(real, to, active)
+			delete(active, real)
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		if !mode.IsRegular() {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(to, data, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Handler serves the index at /, each story at /story/<Name>, and the
+// application's static assets under /static/ (default <pkgdir>/static),
+// so previews pick up stylesheet edits on a plain browser reload. A fresh
+// interpretation on each request reflects source and template edits;
+// CSS needs no re-execution at all. Story failures answer 500. Print
+// stories answer 200; handler-shaped stories replay the status and
+// headers their recorder captured.
 func (b *Book) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		stories, err := b.Stories()
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			// No stories yet (or a malformed one): show the error in the
+			// nav rather than failing, so the book is usable while the
+			// stories are written.
+			if err := indexTmpl.Execute(w, map[string]any{
+				"Dir": b.Dir,
+				"Err": err.Error(),
+			}); err != nil {
+				slog.ErrorContext(r.Context(), "index", "err", err)
+			}
 			return
 		}
+		wpx := r.URL.Query().Get("w")
 		entries := make([]entry, len(stories))
 		for i, s := range stories {
-			entries[i] = entry{Story: s, Href: "/story/" + s.Name}
+			if s.IsHTTP() {
+				// Handler stories replay the app's real response headers,
+				// which can include frame-ancestors 'none' / X-Frame-Options:
+				// DENY — they may not render inside the iframe, so they
+				// open in a new tab with the headers intact.
+				entries[i] = entry{Story: s, Href: "/story/" + s.Name, Target: "_blank"}
+				continue
+			}
+			href := "?s=" + s.Name
+			if wpx != "" {
+				href += "&w=" + wpx
+			}
+			entries[i] = entry{Story: s, Href: href}
 		}
-		if err := indexTmpl.Execute(w, map[string]any{"Dir": b.Dir, "Entries": entries}); err != nil {
+		// ?s=<Name> selects the previewed story so width switching (a full
+		// index reload) keeps it; an unknown or missing name falls back to
+		// the first non-HTTP entry.
+		sel := r.URL.Query().Get("s")
+		known := false
+		for _, s := range stories {
+			if s.Name == sel && !s.IsHTTP() {
+				known = true
+				break
+			}
+		}
+		if !known {
+			sel = ""
+			for _, s := range stories {
+				if !s.IsHTTP() {
+					sel = s.Name
+					break
+				}
+			}
+		}
+		if err := indexTmpl.Execute(w, map[string]any{
+			"Dir":     b.Dir,
+			"Entries": entries,
+			"S":       sel,
+			"W":       wpx,
+			"Widths":  []string{"", "320", "360", "768"},
+		}); err != nil {
 			slog.ErrorContext(r.Context(), "index", "err", err)
 		}
 	})
@@ -102,10 +275,41 @@ func (b *Book) Handler() http.Handler {
 			fmt.Fprintln(w, err)
 			return
 		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(res)
+		// Handler-shaped stories recorded real response headers and a
+		// status — replay them so the preview exercises what the app's
+		// handler emits (security headers, CSP, non-200 states).
+		h := w.Header()
+		for k, vs := range res.Header {
+			h[k] = vs
+		}
+		if len(res.Body) > 0 && h.Get("Content-Type") == "" {
+			h.Set("Content-Type", "text/html; charset=utf-8")
+		}
+		w.WriteHeader(res.Status)
+		w.Write(res.Body)
 	})
+	mux.Handle("GET /static/", b.staticHandler())
 	return mux
+}
+
+// resolvePath resolves symlinks in the existing prefix of p and rejoins
+// the not-yet-existing tail, so containment checks work on planned paths.
+func resolvePath(p string) string {
+	rest := ""
+	for {
+		if real, err := filepath.EvalSymlinks(p); err == nil {
+			if rest == "" {
+				return real
+			}
+			return filepath.Join(real, rest)
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return p
+		}
+		rest = filepath.Join(filepath.Base(p), rest)
+		p = parent
+	}
 }
 
 func firstLine(s string) string {

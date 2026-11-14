@@ -12,10 +12,20 @@ come in two kinds:
 - **Page stories** (`app/story_page.go`, the primary kind) call a render
   function such as `RenderUser` or `RenderUserList` with one data state:
   a typical user, a hostile name, a very long name with many tags, an
-  empty list. No store, request, or recorder is needed.
-- **Handler stories** (`app/story_handler.go`, the fallback) call a handler
-  with a fake store and a request. Use them for code whose rendering is
-  not split out of the handler.
+  empty list. No store, request, or recorder is needed. They are plain
+  `func StoryXxx()` printing HTML to stdout.
+- **Handler stories** (`app/story_handler.go`, the fallback) have the
+  handler shape `func StoryHttpXxx(w http.ResponseWriter, r *http.Request)`
+  and drive the real mux through `httptest`. The helper replays the
+  recorded status and headers — a 404 stays a 404 and `X-Total-Count`
+  survives — where a print story would flatten everything to a 200 body.
+
+Default to the print kind: `func StoryXxx()` runs under the bare `minigo
+run` CLI with no helper, and covers the common case of previewing one
+rendered state. Reach for `StoryHttpXxx` only when the story actually
+depends on HTTP semantics — a non-200 status, response headers,
+redirects, or header-driven branching — because it can only run through
+the helper's recorder.
 
 The value is in looking at these pages in a browser while editing CSS and
 templates, not in asserting their HTML; the goldens below are regression
@@ -24,7 +34,9 @@ checks of the preview path, not checks of appearance.
 This example's `app` is a small synthetic collection of handlers and
 templates, not evidence that an existing large application needs no changes.
 It has no fake-only server command. Application code imports neither minigo
-nor the preview helper; fixtures live in tagged stories and tests.
+nor the preview helper; fixtures live in tagged stories and tests. The
+pages link a real external stylesheet (`app/static/app.css`) so the preview
+serves it the way an application's static directory would.
 
 Run the following commands from `examples/storybook`.
 
@@ -64,9 +76,12 @@ func StoryUserListEmpty() {
 }
 ```
 
-Handler stories instead construct their own request and fake store and
-print the response body. For example, `StoryListUsersByTag` fixes
-`?tag=go&sort=id` inside the function and runs the handler's filtering.
+Handler stories instead get the handler signature. `StoryHttpListUsersByTag`
+hands a `?tag=go&sort=id` request to the application's mux, so routing and
+path values behave as in production and the recorder keeps the real status
+and headers. The `StoryHttp` prefix selects this shape; the direct CLI
+below calls stories with no arguments, so it can only run the print kind —
+handler stories need the `cmd/storybook` helper.
 
 With the minigo executable installed:
 
@@ -108,10 +123,16 @@ make preview                       # http://127.0.0.1:6006/
 make export OUT=/tmp/storybook-out  # open index.html
 ```
 
-`export` saves a snapshot: run it again after source changes. `preview`
-keeps an HTTP server running and re-executes the selected Story on each
-request, so a browser reload reflects edits. Use it when repeated exports
-become inconvenient; it is not needed for a one-time HTML inspection.
+`export` saves a snapshot — the index, one page per story, and a copy of
+the static directory — so serving the export root resolves `/static/` the
+same way the live preview does; run it again after source changes. `preview`
+keeps an HTTP server running and forks a fresh interpreter session on each
+request, so a browser reload reflects edits to Go code, templates, and
+stories. It also serves `app/static/` under `/static/`, so stylesheet
+edits need no re-execution at all, and the index offers fixed iframe
+widths (320px, 360px, 768px) for checking narrow layouts. Use it when
+repeated exports become inconvenient; it is not needed for a one-time
+HTML inspection.
 
 Equivalent commands from this directory:
 
@@ -119,26 +140,34 @@ Equivalent commands from this directory:
 go run ./cmd/storybook -list ./app
 go run ./cmd/storybook ./app StoryUser
 go run ./cmd/storybook -http 127.0.0.1:6006 ./app
+go run ./cmd/storybook -static ./app/static -http 127.0.0.1:6006 ./app
 go run ./cmd/storybook -o /tmp/storybook-out ./app
 ```
 
+`-static` defaults to `<pkgdir>/static`; pass it to serve a different
+directory.
+
 The helper is an ordinary Go executable embedding minigo as a library.
 `Book` scans the target source directory for exported top-level `Story*`
-functions in files selected only by the story tag, rejects signatures other
-than `func()`, then calls the chosen function with `Engine.Call`.
-`minigo.WithOutput` captures stdout without replacing the host's
-`os.Stdout`. A fresh engine per rendering reflects source changes on the
-next browser reload. There is no application import, HTTP argument
-injection, query control, or integration with an application's server main.
+functions in files selected only by the story tag, checks each against its
+shape — `func()` for `StoryXxx`, `func(http.ResponseWriter, *http.Request)`
+for `StoryHttpXxx` — then calls the chosen function with `Engine.Call` on a
+session forked from a shared base engine. `Engine.NewSession` keeps build
+options and host bindings warm while re-reading the source package per
+request, so `Book.base` is built once and edits still show up on reload.
+`minigo.WithOutput` captures stdout on each session without replacing the
+host's `os.Stdout`. Handler stories instead run against an injected
+`httptest` recorder. There is no application import or integration with an
+application's server main.
 
-Successful previews serve captured stdout as `text/html` with HTTP 200.
-A Story printing a handler's 404 body still produces a successful preview;
-original HTTP status and headers are not encoded in stdout. Interpreter
-failures produce preview HTTP 500. Use handler tests to check actual HTTP
-status and headers.
+Print stories serve captured stdout as `text/html` with HTTP 200; handler
+stories replay the recorder's real status and headers, so security headers
+and error states render as the application emits them — and a response
+forbidding framing opens in a separate tab instead of the index's iframe.
+Interpreter failures produce preview HTTP 500.
 
-The sample pages are self-contained HTML. If a real page references CSS,
-images, JavaScript, or routes, those resources need an appropriate serving
+The sample pages link `/static/app.css`, served from `app/static` — a real
+page's images, JavaScript, or routes likewise need an appropriate serving
 setup; file URLs and preview URLs are not the application's original
 origin. An iframe view is not an end-to-end browser test of the application.
 
@@ -150,11 +179,16 @@ predictable external I/O results for interpreted application code without
 adding an application interface solely for previews.
 
 `Engine.Bind` registers a host package at an import path, including a
-standard-library path; `Engine.BoundOf` exposes an existing bound package.
-Configure replacements before application initialization and execution,
-and apply them to each fresh engine. If re-registering a whole package,
-preserve its other required symbols. `ModeSource` bypasses host bindings,
-so the target package's execution mode matters too.
+standard-library path; `Engine.BoundOf` exposes an existing bound package —
+and renaming it there is how a package whose declared name differs from
+its last path element (e.g. `goldmark-alert` declaring `package alert`)
+becomes reachable by that name. Bind names a bound package after the last
+import-path element. Configure replacements before application
+initialization and execution; a session forked with `Engine.NewSession`
+inherits them, so `Book.baseEngine` is the single place they belong. If
+re-registering a whole package, preserve its other required symbols.
+`ModeSource` bypasses host bindings, so the target package's execution
+mode matters too.
 
 Replacements affect interpreted calls through those bindings, not calls
 inside compiled host implementations. This is an extension point of the
@@ -165,8 +199,9 @@ preview environment in addition to discovery and browser serving.
 ## Layout and checks
 
 - `app/handler.go`: ordinary handlers, routes, templates, and the render functions they call.
+- `app/static/app.css`: the stylesheet the templates link at `/static/app.css`.
 - `app/story_page.go`: page stories calling render functions with data states.
-- `app/story_handler.go`: fallback handler stories and their fake store.
+- `app/story_handler.go`: fallback handler stories (`StoryHttp*`) and their fake store.
 - `app/testdata/golden`: expected response bodies only.
 - `app/handler_test.go`: native HTTP routing, status/header assertions, and bodies.
 - `cmd/storybook/`: optional discovery, capture, export, and browser helper.

@@ -4,7 +4,6 @@ package app
 
 import (
 	"errors"
-	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -12,8 +11,14 @@ import (
 )
 
 // Handler stories: the fallback kind, for code whose rendering is not split
-// out of the handler. They need a fake Store and a request, and print only
-// the response body.
+// out of the handler. The StoryHttp prefix marks the handler shape,
+// func(http.ResponseWriter, *http.Request): storybook drives it through a
+// recorder, so the preview replays the real status and headers, not just
+// the body. These stories hand their own request to the real mux, so
+// routing and path values behave as in production.
+//
+// The direct minigo CLI can only run the print kind — it calls a story by
+// name with no arguments — so handler stories need the storybook helper.
 
 // fakeStore is the dummy Store the handler stories hand to Handler.
 type fakeStore map[string]*User
@@ -31,28 +36,19 @@ func (s fakeStore) List() []*User {
 
 var users = fakeStore{"1": alice, "2": hostile, "3": bob}
 
-// StoryShowUser calls the handler with a successful lookup.
-func StoryShowUser() {
-	req := httptest.NewRequest(http.MethodGet, "/users/1", nil)
-	req.SetPathValue("id", "1")
-	rec := httptest.NewRecorder()
-	(&Handler{Store: users}).ShowUser(rec, req)
-	fmt.Print(rec.Body.String())
+// StoryHttpShowUser drives the real mux for a successful lookup.
+func StoryHttpShowUser(w http.ResponseWriter, r *http.Request) {
+	(&Handler{Store: users}).Routes().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/users/1", nil))
 }
 
-// StoryShowUserNotFound prints the response body of the handler's error path.
-func StoryShowUserNotFound() {
-	req := httptest.NewRequest(http.MethodGet, "/users/404", nil)
-	req.SetPathValue("id", "404")
-	rec := httptest.NewRecorder()
-	(&Handler{Store: users}).ShowUser(rec, req)
-	fmt.Print(rec.Body.String())
+// StoryHttpShowUserNotFound drives the handler's error path; the preview
+// replays the 404 status and text/plain body a print story would hide.
+func StoryHttpShowUserNotFound(w http.ResponseWriter, r *http.Request) {
+	(&Handler{Store: users}).Routes().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/users/404", nil))
 }
 
-// StoryListUsersByTag fixes a tag filter and sorts by ID.
-func StoryListUsersByTag() {
-	req := httptest.NewRequest(http.MethodGet, "/users?tag=go&sort=id", nil)
-	rec := httptest.NewRecorder()
-	(&Handler{Store: users}).ListUsers(rec, req)
-	fmt.Print(rec.Body.String())
+// StoryHttpListUsersByTag fixes a tag filter and sorts by ID; the
+// preview replays the X-Total-Count response header too.
+func StoryHttpListUsersByTag(w http.ResponseWriter, r *http.Request) {
+	(&Handler{Store: users}).Routes().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/users?tag=go&sort=id", nil))
 }

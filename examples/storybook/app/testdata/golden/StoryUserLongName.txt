@@ -1,5 +1,5 @@
 <!doctype html>
-<html><head><title>Maximiliana-Wolfeschlegelsteinhausenbergerdorff</title></head>
+<html><head><title>Maximiliana-Wolfeschlegelsteinhausenbergerdorff</title><link rel="stylesheet" href="/static/app.css"></head>
 <body>
 <h1><span class="avatar">M</span> Maximiliana-Wolfeschlegelsteinhausenbergerdorff </h1>
 <ul><li>admin</li><li>go</li><li>frontend</li><li>on-call</li><li>reviewer</li><li>mentor</li><li>release-manager</li><li>i18n</li></ul>
