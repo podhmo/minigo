@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo"
 )
 
@@ -35,8 +36,8 @@ func TestGenIntrinsicsBindAs(t *testing.T) {
 				t.Fatal(err)
 			}
 			got := strings.Contains(string(b), `minigo.BindAs("`+tc.pkg+`")`)
-			if got != tc.bindAs {
-				t.Fatalf("BindAs emitted = %v, want %v:\n%s", got, tc.bindAs, b)
+			if diff := cmp.Diff(tc.bindAs, got); diff != "" {
+				t.Fatalf("BindAs emitted mismatch (-want +got):\n%s\n%s", diff, b)
 			}
 		})
 	}
