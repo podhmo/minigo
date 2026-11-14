@@ -88,15 +88,25 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 }
 
-// staticHandler serves the application's real assets under /static/, so
-// previews pick up stylesheet edits on a plain browser reload.
-func (b *Book) staticHandler() http.Handler {
+// staticRoot is the absolute path of the directory served under /static/:
+// -static when given, <pkgdir>/static otherwise.
+func (b *Book) staticRoot() string {
 	dir := b.StaticDir
 	if dir == "" {
 		dir = filepath.Join(b.Dir, "static")
 	}
 	root, err := filepath.Abs(dir)
 	if err != nil {
+		return ""
+	}
+	return root
+}
+
+// staticHandler serves the application's real assets under /static/, so
+// previews pick up stylesheet edits on a plain browser reload.
+func (b *Book) staticHandler() http.Handler {
+	root := b.staticRoot()
+	if root == "" {
 		return http.NotFoundHandler()
 	}
 	return http.StripPrefix("/static/", http.FileServer(http.Dir(root)))

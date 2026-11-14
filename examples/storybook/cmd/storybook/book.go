@@ -132,11 +132,24 @@ func isStoryShape(ft *ast.FuncType) bool {
 
 // isHandlerShape accepts func(http.ResponseWriter, *http.Request) — the
 // http.HandlerFunc signature, detected structurally so the import alias
-// does not matter.
+// does not matter. Parameter names count: one field declaring two names
+// is two parameters, so `func(w, extra http.ResponseWriter, r *Request)`
+// is rejected.
 func isHandlerShape(ft *ast.FuncType) bool {
 	if (ft.TypeParams != nil && len(ft.TypeParams.List) > 0) ||
 		(ft.Results != nil && len(ft.Results.List) > 0) ||
 		ft.Params == nil || len(ft.Params.List) != 2 {
+		return false
+	}
+	n := 0
+	for _, f := range ft.Params.List {
+		if len(f.Names) == 0 {
+			n++
+		} else {
+			n += len(f.Names)
+		}
+	}
+	if n != 2 {
 		return false
 	}
 	sel0, ok0 := ft.Params.List[0].Type.(*ast.SelectorExpr)

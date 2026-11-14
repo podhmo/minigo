@@ -48,9 +48,11 @@ iframe.sized { flex: none; margin-inline: auto; border-inline: 1px dashed #ccc; 
 </body></html>
 `))
 
-// Export renders every story into dir: index.html plus <Story>.html.
-// A failing story still gets its row (with the error) so the rest of
-// the book is written, but Export then reports the failures.
+// Export renders every story into dir: index.html plus <Story>.html and
+// a copy of the static directory, so serving the export root resolves
+// /static/ the same way the live preview does. A failing story still
+// gets its row (with the error) so the rest of the book is written, but
+// Export then reports the failures.
 func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -77,7 +79,39 @@ func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 	if err := indexTmpl.Execute(f, map[string]any{"Dir": b.Dir, "Entries": entries}); err != nil {
 		return err
 	}
+	if src := b.staticRoot(); src != "" {
+		if info, err := os.Stat(src); err == nil && info.IsDir() {
+			if err := copyTree(src, filepath.Join(dir, "static")); err != nil {
+				return err
+			}
+		}
+	}
 	return errors.Join(errs...)
+}
+
+// copyTree copies regular files under src into dst, preserving the layout.
+func copyTree(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		to := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(to, 0o755)
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(to, data, 0o644)
+	})
 }
 
 // Handler serves the index at /, each story at /story/<Name>, and the

@@ -69,6 +69,7 @@ func TestStoriesRejectsBadShape(t *testing.T) {
 		{"func StoryX() string { return \"\" }", "StoryX must be func()"},
 		{"func StoryX[T any]() {}", "StoryX must be func()"},
 		{"func StoryHttpX() {}", "StoryHttpX must be func(http.ResponseWriter, *http.Request)"},
+		{"func StoryHttpX(w, extra http.ResponseWriter, r *http.Request) {}", "StoryHttpX must be func(http.ResponseWriter, *http.Request)"},
 		{"func StoryHttpX(w http.ResponseWriter, r *http.Request) error { return nil }", "StoryHttpX must be func(http.ResponseWriter, *http.Request)"},
 	} {
 		t.Run(tc.decl, func(t *testing.T) {
@@ -206,6 +207,11 @@ func TestExport(t *testing.T) {
 		if diff := cmp.Diff(string(golden(t, s.Name)), string(got)); diff != "" {
 			t.Errorf("export (-golden +got):\n%s", diff)
 		}
+	}
+	// The snapshot ships the app's assets too, so serving the export root
+	// resolves /static/ the way the live preview does.
+	if _, err := os.Stat(filepath.Join(out, "static", "app.css")); err != nil {
+		t.Errorf("export misses static assets: %v", err)
 	}
 }
 

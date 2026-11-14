@@ -116,7 +116,9 @@ make preview                       # http://127.0.0.1:6006/
 make export OUT=/tmp/storybook-out  # open index.html
 ```
 
-`export` saves a snapshot: run it again after source changes. `preview`
+`export` saves a snapshot — the index, one page per story, and a copy of
+the static directory — so serving the export root resolves `/static/` the
+same way the live preview does; run it again after source changes. `preview`
 keeps an HTTP server running and forks a fresh interpreter session on each
 request, so a browser reload reflects edits to Go code, templates, and
 stories. It also serves `app/static/` under `/static/`, so stylesheet
