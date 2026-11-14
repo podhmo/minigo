@@ -25,8 +25,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
+
+	"github.com/podhmo/minigo/storybook"
 )
 
 func main() {
@@ -50,7 +51,7 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 	if fs.NArg() < 1 {
 		return errors.New("usage: storybook [flags] <pkgdir> [Story]")
 	}
-	b := &Book{Dir: fs.Arg(0), Tag: *tag, StaticDir: *staticDir}
+	b := &Book{Book: &storybook.Book{Dir: fs.Arg(0), Tag: *tag}, StaticDir: *staticDir}
 	if *src != "" {
 		b.Src = strings.Split(*src, ",")
 	}
@@ -86,28 +87,4 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 	default:
 		return errors.New("one of -list, -o, -http or a story name is required")
 	}
-}
-
-// staticRoot is the absolute path of the directory served under /static/:
-// -static when given, <pkgdir>/static otherwise.
-func (b *Book) staticRoot() string {
-	dir := b.StaticDir
-	if dir == "" {
-		dir = filepath.Join(b.Dir, "static")
-	}
-	root, err := filepath.Abs(dir)
-	if err != nil {
-		return ""
-	}
-	return root
-}
-
-// staticHandler serves the application's real assets under /static/, so
-// previews pick up stylesheet edits on a plain browser reload.
-func (b *Book) staticHandler() http.Handler {
-	root := b.staticRoot()
-	if root == "" {
-		return http.NotFoundHandler()
-	}
-	return http.StripPrefix("/static/", http.FileServer(http.Dir(root)))
 }
