@@ -113,6 +113,12 @@ func toNative(v runtime.Value, pt reflect.Type) (reflect.Value, error) {
 	if av.Type().AssignableTo(pt) {
 		return av, nil
 	}
+	// a HostTypeOf literal boxes *T where gc spells T: a by-value
+	// parameter wants the pointee (the same rule toReflectValue
+	// applies inside fields and elements).
+	if av.Kind() == reflect.Pointer && !av.IsNil() && av.Type().Elem().AssignableTo(pt) {
+		return av.Elem(), nil
+	}
 	if av.Type().ConvertibleTo(pt) {
 		return av.Convert(pt), nil
 	}
@@ -168,6 +174,11 @@ func nativeElem(av reflect.Value, pt reflect.Type) (reflect.Value, error) {
 	if av.Type().AssignableTo(pt) {
 		return av, nil
 	}
+	// a HostTypeOf literal boxes *T where gc spells T — the element
+	// conversion needs the same pointee unwrap toNative applies.
+	if av.Kind() == reflect.Pointer && !av.IsNil() && av.Type().Elem().AssignableTo(pt) {
+		return av.Elem(), nil
+	}
 	if av.Type().ConvertibleTo(pt) {
 		return av.Convert(pt), nil
 	}
@@ -175,6 +186,41 @@ func nativeElem(av reflect.Value, pt reflect.Type) (reflect.Value, error) {
 		return av, nil
 	}
 	return reflect.Value{}, fmt.Errorf("cannot use %s as %s", av.Type(), pt)
+}
+
+// HostTypeOf returns the typedef [Engine.Bind] needs for a named host
+// type whose literals must mint real host values — pass a zero value of
+// the type (HostTypeOf(store.Issue{})) or a pointer to it. A script
+// composite literal of the bound type (store.Issue{ID: 7}) then builds
+// a *T through reflection: keyed fields must name exported fields and
+// each value converts to the field's type, and the result is a genuine
+// *store.Issue — bound reflect-driven code (html/template,
+// encoding/json) sees its fields, and the value passes back into the
+// bound package's own functions. `var x T` mints the same host zero.
+//
+// A bound type declared without it — the shape `minigo gen-intrinsics`
+// emits for non-struct types — carries no field knowledge: a keyed
+// literal traps "has no field", and a value its package hands out stays
+// an opaque box. Where that shape is unavoidable, keep the
+// value-producing package source-interpreted ([WithPackageModes]
+// ModeSource): script-declared structs marshal into bound templates
+// field-by-field already.
+func HostTypeOf(x any) *runtime.TypeDef {
+	rt := reflect.TypeOf(x)
+	if rt == nil {
+		panic("minigo.HostTypeOf: nil value")
+	}
+	for rt.Kind() == reflect.Pointer {
+		rt = rt.Elem()
+	}
+	if rt.Name() == "" {
+		panic("minigo.HostTypeOf: " + rt.String() + " is not a named type")
+	}
+	return &runtime.TypeDef{
+		Name:    rt.String(),
+		Kind:    runtime.KindStruct,
+		HostNew: func() any { return reflect.New(rt).Interface() },
+	}
 }
 
 // ValueOf converts x for use in scripts: runtime values pass through,

@@ -729,6 +729,16 @@ func BindAs(name string) BindOption {
 // Go cannot enumerate a package's members at run time, so the map lists
 // what scripts use; `minigo gen-intrinsics` generates the table for every
 // exported member of a package instead.
+//
+// For a type symbol, bind the typedef [HostTypeOf] returns when scripts
+// must build values of it: a literal `pkg.T{Field: v}` then mints a real
+// host *T through reflection, so bound reflect-driven code —
+// html/template, encoding/json — sees its fields. A plain
+// *runtime.TypeDef carries no field knowledge: the keyed literal traps
+// "has no field". Where a host typedef is unavailable, the boundary is
+// to keep the value-producing package source-interpreted
+// ([WithPackageModes] ModeSource): script-declared structs marshal into
+// bound templates field-by-field.
 func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value, opts ...BindOption) {
 	cfg := bindConfig{name: lastElem(importPath)}
 	for _, opt := range opts {

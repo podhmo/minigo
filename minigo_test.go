@@ -2881,6 +2881,76 @@ func TestDirWalkSkipsCgo(t *testing.T) {
 	}
 }
 
+type boundIssue struct {
+	ID    int64
+	Title string
+	Done  bool
+}
+
+// TestBoundStructLiteral binds a host struct type through HostTypeOf:
+// a script `store.Issue{...}` literal mints a real *issue, so the bound
+// html/template sees its fields, field reads/writes land on the box,
+// and the value round-trips into the bound package's own functions
+// (#1068).
+func TestBoundStructLiteral(t *testing.T) {
+	e := newEngine(t)
+	e.Bind("example.com/store", map[string]runtime.Value{
+		"Issue": minigo.HostTypeOf(boundIssue{}),
+		"Describe": minigo.WrapFunc("store.Describe", func(i boundIssue) string {
+			return fmt.Sprintf("%d:%s:%v", i.ID, i.Title, i.Done)
+		}),
+		"SumIDs": minigo.WrapFunc("store.SumIDs", func(xs []boundIssue) int64 {
+			var s int64
+			for _, i := range xs {
+				s += i.ID
+			}
+			return s
+		}),
+		"SumMap": minigo.WrapFunc("store.SumMap", func(m map[string]boundIssue) int64 {
+			var s int64
+			for _, i := range m {
+				s += i.ID
+			}
+			return s
+		}),
+	})
+	for fn, want := range map[string]any{
+		"Render":        "7:x:false",
+		"RenderZero":    "0::false",
+		"Fields":        "7:y:true",
+		"RoundTrip":     "7:x:true",
+		"InSlice":       int64(3),
+		"InMap":         int64(3),
+		"InSliceElided": int64(4),
+	} {
+		got := run(t, e, "./testdata/boundstruct", fn)
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("%s mismatch (-want +got):\n%s", fn, diff)
+		}
+	}
+	// a keyed field the host struct does not declare traps like gc's
+	// compile-time "unknown field" — it is not a script-level panic.
+	_, err := e.Run(context.Background(), "./testdata/boundstruct", "BadField")
+	if err == nil || !strings.Contains(err.Error(), "has no field Nope") {
+		t.Fatalf("want unknown-field trap, got %v", err)
+	}
+}
+
+// TestBoundStructLiteralOpaque documents the boundary HostTypeOf
+// removes: a bound type symbol with no host backing — the shape
+// `minigo gen-intrinsics` emits for non-struct types — has no field
+// knowledge, so a keyed literal traps rather than minting a struct.
+func TestBoundStructLiteralOpaque(t *testing.T) {
+	e := newEngine(t)
+	e.Bind("example.com/store", map[string]runtime.Value{
+		"Issue": &runtime.TypeDef{Name: "Issue", Kind: runtime.KindNamedBasic},
+	})
+	_, err := e.Run(context.Background(), "./testdata/boundstruct", "Render")
+	if err == nil || !strings.Contains(err.Error(), "Issue has no field ID") {
+		t.Fatalf("want no-field trap, got %v", err)
+	}
+}
+
 // TestHTMLTemplateBound runs the bound html/template: script struct
 // data escapes by context, script methods and template.HTML values work,
 // and Must panics with the parse error.
