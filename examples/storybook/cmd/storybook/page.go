@@ -96,7 +96,10 @@ func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 	return errors.Join(errs...)
 }
 
-// copyTree copies regular files under src into dst, preserving the layout.
+// copyTree copies regular files under src into dst, preserving the
+// layout. Symlinks resolve the way http.FileServer resolves them, so
+// linked assets land in the snapshot too; a dangling link, which the
+// live server would answer 404, is skipped.
 func copyTree(src, dst string) error {
 	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -110,7 +113,23 @@ func copyTree(src, dst string) error {
 		if d.IsDir() {
 			return os.MkdirAll(to, 0o755)
 		}
-		if !d.Type().IsRegular() {
+		mode := d.Type()
+		if mode&os.ModeSymlink != 0 {
+			target, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				return nil
+			}
+			info, err := os.Stat(target)
+			if err != nil {
+				return nil
+			}
+			if info.IsDir() {
+				// WalkDir does not descend into symlinked directories.
+				return copyTree(target, to)
+			}
+			mode = info.Mode().Type()
+		}
+		if !mode.IsRegular() {
 			return nil
 		}
 		data, err := os.ReadFile(path)

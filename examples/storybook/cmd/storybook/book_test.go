@@ -234,6 +234,26 @@ func staticStories(t *testing.T) (string, []Story) {
 	return dir, stories
 }
 
+// http.FileServer serves a symlinked asset, so the snapshot carries its
+// contents too.
+func TestExportFollowsStaticSymlinks(t *testing.T) {
+	dir, stories := staticStories(t)
+	if err := os.Symlink("app.css", filepath.Join(dir, "static", "linked.css")); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "out")
+	if err := (&Book{Dir: dir, Tag: "story"}).Export(context.Background(), out, stories); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(out, "static", "linked.css"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("a{}\n", string(got)); diff != "" {
+		t.Errorf("symlinked asset (-want +got):\n%s", diff)
+	}
+}
+
 // The output root must not live inside the static directory: copying it
 // would recurse into itself.
 func TestExportRejectsStaticNesting(t *testing.T) {
