@@ -29,6 +29,30 @@ func Render() string {
 	return sb.String() + "|" + template.HTMLEscapeString("a&b")
 }
 
+// MissingField executes a template naming a member the script struct
+// does not declare: the projection is a real struct shape, so the miss
+// reports gc's can't-evaluate rather than a map's <no value>.
+func MissingField() string {
+	var sb strings.Builder
+	err := template.Must(template.New("m").Parse(`{{.Nope}}`)).Execute(&sb, user{Name: "x"})
+	if err == nil {
+		return "no error: " + sb.String()
+	}
+	return "error: " + err.Error()
+}
+
+// MissingMethod is the same miss a level deeper: evalField walks a
+// method's result — a real string here — so the error names a type the
+// projection did not fabricate.
+func MissingMethod() string {
+	var sb strings.Builder
+	err := template.Must(template.New("m").Parse(`{{.Initial.Nope}}`)).Execute(&sb, user{Name: "x"})
+	if err == nil {
+		return "no error: " + sb.String()
+	}
+	return "error: " + err.Error()
+}
+
 // ParseError recovers Must's panic on a bad template.
 func ParseError() (msg string) {
 	defer func() { msg = recover().(error).Error() }()
