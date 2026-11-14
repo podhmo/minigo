@@ -262,9 +262,9 @@ func (b *Book) Render(ctx context.Context, name string) (*Page, error) {
 // output buffer is installed on each session instead. An application that
 // needs host binds — faking a driver import, binding a third-party
 // package so it stays compiled — registers them on the base engine here,
-// once, and every session inherits them (Engine.Bind; rename the bound
-// package via BoundOf when the declared package name differs from the
-// last import-path element).
+// once, and every session inherits them (Engine.Bind; pass
+// minigo.BindAs when the declared package name differs from the last
+// import-path element).
 func (b *Book) baseEngine() (*minigo.Engine, string, error) {
 	// the handler can serve concurrent first requests, so the build is
 	// serialized: otherwise b.base could be observed before b.dir.

@@ -2027,6 +2027,70 @@ func TestSessionInheritsBinds(t *testing.T) {
 	}
 }
 
+// bindAsScript imports a bound package by its declared name, which differs
+// from the last import-path element. It is written at test time: kept
+// under testdata, `make format` (goimports) would drop the unresolvable
+// import.
+const bindAsScript = `package main
+
+import "example.com/goldmark-alert"
+
+func Main() int {
+	return alert.Magic()
+}
+`
+
+func writeBindAsScript(t *testing.T) string {
+	t.Helper()
+	fname := filepath.Join(t.TempDir(), "main.go")
+	if err := os.WriteFile(fname, []byte(bindAsScript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return fname
+}
+
+// TestBindAs: a bound package whose declared name differs from the last
+// import-path element is reachable by that name, on the engine and on a
+// session forked from it.
+func TestBindAs(t *testing.T) {
+	fname := writeBindAsScript(t)
+	e := newEngine(t)
+	e.Bind("example.com/goldmark-alert", map[string]runtime.Value{
+		"Magic": &runtime.BuiltinFunc{
+			Name: "Magic",
+			Fn: func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
+				return int64(42), nil
+			},
+		},
+	}, minigo.BindAs("alert"))
+	if diff := cmp.Diff("alert", e.BoundOf("example.com/goldmark-alert").Name); diff != "" {
+		t.Fatalf("bound name mismatch (-want +got):\n%s", diff)
+	}
+	for name, eng := range map[string]*minigo.Engine{"engine": e, "session": e.NewSession()} {
+		got, err := eng.RunFile(context.Background(), fname, "Main")
+		if err != nil {
+			t.Fatalf("%s: RunFile: %v", name, err)
+		}
+		if diff := cmp.Diff(int64(42), got); diff != "" {
+			t.Fatalf("%s: Main mismatch (-want +got):\n%s", name, diff)
+		}
+	}
+}
+
+// TestBindDefaultName: without BindAs the bound package keeps the last
+// import-path element as its name, so the declared name is undefined.
+func TestBindDefaultName(t *testing.T) {
+	fname := writeBindAsScript(t)
+	e := newEngine(t)
+	e.Bind("example.com/goldmark-alert", map[string]runtime.Value{})
+	if diff := cmp.Diff("goldmark-alert", e.BoundOf("example.com/goldmark-alert").Name); diff != "" {
+		t.Fatalf("bound name mismatch (-want +got):\n%s", diff)
+	}
+	if _, err := e.RunFile(context.Background(), fname, "Main"); err == nil || !strings.Contains(err.Error(), "undefined: alert") {
+		t.Fatalf("expected undefined: alert, got %v", err)
+	}
+}
+
 // TestSessionInheritsPackageModes: a WithPackageModes policy applies to a
 // NewSession the same as on the parent engine — a denied import must fail
 // in both.

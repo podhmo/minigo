@@ -694,13 +694,35 @@ func (e *Engine) modinfo() string {
 	return sentinel + b.String() + sentinel
 }
 
+// BindOption configures a single [Engine.Bind] registration.
+type BindOption func(*bindConfig)
+
+type bindConfig struct {
+	name string
+}
+
+// BindAs sets the declared package name of a bound package: the
+// identifier an unaliased import refers to it by. Without it Bind uses the
+// last import-path element, which is wrong whenever the package clause
+// differs from it (github.com/yuin/goldmark-alert declares package alert,
+// gopkg.in/yaml.v3 declares yaml, example.com/lib/v2 declares lib).
+func BindAs(name string) BindOption {
+	return func(c *bindConfig) { c.name = name }
+}
+
 // Bind registers a host package: scripts importing importPath get symbols
 // as its members, without any source. Use [WrapFunc] and [ValueOf] to build
 // symbols from Go values. [WithHostPolicy] can hide individual symbols.
-func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value) {
+// The package is named after the last import-path element unless
+// [BindAs] gives its declared name.
+func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value, opts ...BindOption) {
+	cfg := bindConfig{name: lastElem(importPath)}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	p := &runtime.Package{
 		Path:     importPath,
-		Name:     lastElem(importPath),
+		Name:     cfg.name,
 		Globals:  runtime.NewEnv(),
 		Specials: e.specials,
 		// bound paths without a dot in the first element stand in for the
