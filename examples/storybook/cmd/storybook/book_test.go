@@ -47,6 +47,13 @@ func TestStories(t *testing.T) {
 		t.Fatal(err)
 	}
 	var names []string
+	wantGroup := map[string]string{
+		"StoryUser":          "RenderUser",
+		"StoryUserEscaped":   "RenderUser",
+		"StoryUserLongName":  "RenderUser",
+		"StoryUserList":      "RenderUserList",
+		"StoryUserListEmpty": "RenderUserList",
+	}
 	for _, s := range stories {
 		names = append(names, s.Name)
 		if s.Doc == "" || !strings.HasPrefix(s.Pos, filepath.Join(appDir, "story_")) {
@@ -54,6 +61,11 @@ func TestStories(t *testing.T) {
 		}
 		if want := strings.HasPrefix(s.Name, "StoryHttp"); s.IsHTTP() != want {
 			t.Errorf("%s: IsHTTP %v, want %v", s.Name, s.IsHTTP(), want)
+		}
+		// Stories group by the render function they drive; handler
+		// stories call methods only and stay ungrouped.
+		if diff := cmp.Diff(wantGroup[s.Name], s.Group); diff != "" {
+			t.Errorf("%s: group (-want +got):\n%s", s.Name, diff)
 		}
 	}
 	if diff := cmp.Diff(storyNames(), names); diff != "" {
@@ -82,6 +94,31 @@ func TestStoriesRejectsBadShape(t *testing.T) {
 				t.Fatalf("want invalid signature error %q, got %v", tc.want, err)
 			}
 		})
+	}
+}
+
+// Only print stories group. A handler story calling an unqualified
+// helper must not end up pointing the index at a grid that cannot
+// frame it (the grid serves print stories only).
+func TestHTTPStoryStaysUngrouped(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module x\n\ngo 1.26\n")
+	writeFile(t, filepath.Join(dir, "app.go"), "package app\n")
+	writeFile(t, filepath.Join(dir, "story.go"), `//go:build story
+
+package app
+
+import "net/http"
+
+func StoryHttpX(w http.ResponseWriter, r *http.Request) { helper() }
+func helper() {}
+`)
+	stories, err := (&Book{Dir: dir, Tag: "story"}).Stories()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("", stories[0].Group); diff != "" {
+		t.Errorf("http story group (-want +got):\n%s", diff)
 	}
 }
 
@@ -212,6 +249,19 @@ func TestExport(t *testing.T) {
 	// resolves /static/ the way the live preview does.
 	if _, err := os.Stat(filepath.Join(out, "static", "app.css")); err != nil {
 		t.Errorf("export misses static assets: %v", err)
+	}
+	// And one variants grid per render function, framing the exported pages.
+	grid, err := os.ReadFile(filepath.Join(out, "grid_RenderUser.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(grid, []byte(`src="StoryUserEscaped.html"`)) {
+		t.Error("grid misses a variant")
+	}
+	// The grid renders inside the story iframe; its back link must
+	// leave the frame, not nest a second index inside the first.
+	if !bytes.Contains(grid, []byte(`href="index.html" target="_top"`)) {
+		t.Error("grid back link stays inside the story iframe")
 	}
 }
 
@@ -427,6 +477,28 @@ func TestHandler(t *testing.T) {
 	}
 	if !strings.Contains(body, `?w=360`) {
 		t.Error("index misses viewport widths")
+	}
+	if !strings.Contains(body, `href="/grid/RenderUser"`) {
+		t.Error("index misses the variants grid link")
+	}
+	// The grid lays one render function's data-state variants side by side.
+	rec = httptest.NewRecorder()
+	b.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/grid/RenderUser", nil))
+	if diff := cmp.Diff(http.StatusOK, rec.Code); diff != "" {
+		t.Errorf("grid status (-want +got):\n%s", diff)
+	}
+	for _, name := range []string{"StoryUser", "StoryUserEscaped", "StoryUserLongName"} {
+		if !strings.Contains(rec.Body.String(), `src="/story/`+name+`"`) {
+			t.Errorf("grid misses %s", name)
+		}
+	}
+	if strings.Contains(rec.Body.String(), "StoryUserList") {
+		t.Error("grid leaks another template's variants")
+	}
+	rec = httptest.NewRecorder()
+	b.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/grid/Nope", nil))
+	if diff := cmp.Diff(http.StatusNotFound, rec.Code); diff != "" {
+		t.Errorf("unknown group status (-want +got):\n%s", diff)
 	}
 	rec = httptest.NewRecorder()
 	b.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/story/StoryMissing", nil))

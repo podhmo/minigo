@@ -50,6 +50,12 @@ type Story struct {
 	Doc  string // first line of the doc comment
 	Pos  string // file:line
 	Kind StoryKind
+	// Group names the render function the story drives — by convention
+	// the last non-builtin unqualified call in the story body, e.g.
+	// RenderUser. The index uses it to lay a template's data-state
+	// variants out together; "" when the body has no such call
+	// (handler stories call methods, so they stay ungrouped).
+	Group string
 }
 
 // IsHTTP reports whether the story is the handler-shaped kind.
@@ -113,7 +119,14 @@ func (b *Book) Stories() ([]Story, error) {
 				return nil, fmt.Errorf("%s:%d: %s must be func()", pos.Filename, pos.Line, fd.Name.Name)
 			}
 			doc, _, _ := strings.Cut(strings.TrimSpace(fd.Doc.Text()), "\n")
-			stories = append(stories, Story{Name: fd.Name.Name, Doc: doc, Pos: fmt.Sprintf("%s:%d", pos.Filename, pos.Line), Kind: kind})
+			// Only print stories group: a handler story calling an
+			// unqualified helper would otherwise point the index at a
+			// grid that cannot frame it.
+			group := ""
+			if kind == KindPrint {
+				group = storyGroup(fd.Body)
+			}
+			stories = append(stories, Story{Name: fd.Name.Name, Doc: doc, Pos: fmt.Sprintf("%s:%d", pos.Filename, pos.Line), Kind: kind, Group: group})
 		}
 	}
 	if len(stories) == 0 {
@@ -121,6 +134,35 @@ func (b *Book) Stories() ([]Story, error) {
 	}
 	slices.SortFunc(stories, func(x, y Story) int { return strings.Compare(x.Name, y.Name) })
 	return stories, nil
+}
+
+// storyGroup reads the render function out of a story body: the last
+// call whose callee is a plain identifier and not a builtin. Stories
+// conventionally end by calling their render function with one data
+// state (RenderUser(&b, u)), so the callee groups the template's
+// variants. Selector calls (RenderUserList.Run, fmt.Print) and builtins
+// (panic, make) never count.
+func storyGroup(body *ast.BlockStmt) string {
+	group := ""
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if id, ok := call.Fun.(*ast.Ident); ok && !builtins[id.Name] {
+			group = id.Name
+		}
+		return true
+	})
+	return group
+}
+
+var builtins = map[string]bool{
+	"append": true, "cap": true, "clear": true, "close": true,
+	"complex": true, "copy": true, "delete": true, "imag": true,
+	"len": true, "make": true, "max": true, "min": true, "new": true,
+	"panic": true, "print": true, "println": true, "real": true,
+	"recover": true,
 }
 
 // isStoryShape accepts only func() with no results or type parameters.

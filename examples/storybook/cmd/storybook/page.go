@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -20,6 +21,60 @@ type entry struct {
 	Err    string
 }
 
+// group is one render function's set of stories in the index. Ungrouped
+// entries (handler stories) sit in the trailing group with an empty
+// Name and no grid view: they are not variants of one template.
+type group struct {
+	Name    string
+	Href    string // the side-by-side grid view
+	Target  string
+	Entries []entry
+}
+
+// groupEntries buckets entries by their story's render function
+// (Story.Group), ordered by group name; ungrouped entries keep their
+// place in a trailing unnamed group.
+func groupEntries(entries []entry) []group {
+	var order []string
+	byName := map[string]*group{}
+	var rest []entry
+	for _, e := range entries {
+		if e.Group == "" {
+			rest = append(rest, e)
+			continue
+		}
+		g, ok := byName[e.Group]
+		if !ok {
+			g = &group{Name: e.Group}
+			byName[e.Group] = g
+			order = append(order, e.Group)
+		}
+		g.Entries = append(g.Entries, e)
+	}
+	slices.Sort(order)
+	groups := make([]group, 0, len(order)+1)
+	for _, n := range order {
+		groups = append(groups, *byName[n])
+	}
+	if len(rest) > 0 {
+		groups = append(groups, group{Entries: rest})
+	}
+	return groups
+}
+
+// gridRows filters a group's entries down to what the grid can frame:
+// handler stories replay their app's real response headers, which can
+// deny framing, so they stay index links only.
+func gridRows(g group) []entry {
+	var rows []entry
+	for _, e := range g.Entries {
+		if !e.IsHTTP() {
+			rows = append(rows, e)
+		}
+	}
+	return rows
+}
+
 var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
 <html><head><meta charset="utf-8"><title>stories: {{.Dir}}</title>
 <style>
@@ -29,6 +84,7 @@ nav a { display: block; padding: .25rem; color: inherit; text-decoration: none; 
 nav a:hover { background: #eef; }
 nav a.active { background: #eef; font-weight: 600; }
 nav small { display: block; color: #666; }
+nav .group a { padding: .4rem .25rem 0; font-size: .9em; font-weight: 600; color: #444; }
 .err { color: #b00; }
 .viewport { display: flex; gap: .5em; margin: .5rem 0; font-size: .9em; }
 .viewport a { padding: .1em .4em; border: 1px solid #ccc; border-radius: .3em; }
@@ -41,10 +97,40 @@ iframe.sized { flex: none; margin-inline: auto; border-inline: 1px dashed #ccc; 
 <strong>{{.Dir}}</strong>
 {{if .Err}}<small class="err">{{.Err}}</small>{{end}}
 <div class="viewport">{{range .Widths}}<a href="?w={{.}}&s={{$.S}}"{{if eq . $.W}} class="active"{{end}}>{{if .}}{{.}}px{{else}}full{{end}}</a>{{end}}</div>
+{{range .Groups}}{{if .Name}}<div class="group"><a href="{{.Href}}"{{if .Target}} target="{{.Target}}"{{end}} title="variants side by side">{{.Name}} &#10514;</a></div>{{end}}
 {{range .Entries}}<a href="{{.Href}}"{{if .Target}} target="{{.Target}}"{{end}}{{if eq .Name $.S}} class="active"{{end}}>{{.Name}}{{if .IsHTTP}} <small>&#8599;</small>{{end}}
 <small>{{.Doc}}</small>{{if .Err}}<small class="err">{{.Err}}</small>{{end}}</a>
-{{end}}</nav>
-<iframe name="story"{{if .S}} src="/story/{{.S}}"{{else}}{{with .Entries}} src="{{(index . 0).Href}}"{{end}}{{end}}{{if .W}} class="sized" style="width: {{.W}}px"{{end}}></iframe>
+{{end}}{{end}}</nav>
+<iframe name="story"{{if .S}} src="/story/{{.S}}"{{else}}{{if .Default}} src="{{.Default}}"{{end}}{{end}}{{if .W}} class="sized" style="width: {{.W}}px"{{end}}></iframe>
+</body></html>
+`))
+
+// gridTmpl lays one render function's stories side by side, so a CSS or
+// template edit can be checked against every data state at once. Each
+// variant is an iframe at the chosen width (?w=, flexible when unset).
+var gridTmpl = template.Must(template.New("grid").Parse(`<!doctype html>
+<html><head><meta charset="utf-8"><title>{{.Name}} variants</title>
+<style>
+body { margin: 0; display: flex; flex-direction: column; height: 100vh; font-family: sans-serif; }
+header { display: flex; gap: 1em; align-items: baseline; padding: .4rem .6rem; border-bottom: 1px solid #ccc; }
+header a { color: inherit; }
+.viewport { display: flex; gap: .5em; font-size: .9em; }
+.viewport a { padding: .1em .4em; border: 1px solid #ccc; border-radius: .3em; text-decoration: none; color: inherit; }
+.viewport a.active { background: #def; border-color: #79b; }
+.row { flex: 1; display: flex; overflow-x: auto; }
+figure { flex: 1 1 0; min-width: 0; margin: 0; display: flex; flex-direction: column; }
+figure.sized { flex: none; }
+figure + figure { border-left: 1px solid #ccc; }
+figure iframe { flex: 1; border: 0; width: 100%; }
+figcaption { padding: .3rem .6rem; font-size: .85em; border-top: 1px solid #ccc; }
+</style></head>
+<body>
+<header><a href="{{.Index}}"{{if .IndexTarget}} target="{{.IndexTarget}}"{{end}}>&#8592; index</a><strong>{{.Name}}</strong>
+<div class="viewport">{{range .Widths}}<a href="?w={{.}}"{{if eq . $.W}} class="active"{{end}}>{{if .}}{{.}}px{{else}}flex{{end}}</a>{{end}}</div>
+</header>
+<div class="row">
+{{range .Stories}}<figure{{if $.W}} class="sized"{{end}}><iframe src="{{.Href}}"{{if $.W}} style="width: {{$.W}}px"{{end}}></iframe><figcaption>{{.Name}}</figcaption></figure>
+{{end}}</div>
 </body></html>
 `))
 
@@ -97,12 +183,45 @@ func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 			return err
 		}
 	}
+	// The variants grid exports too: one page per render function whose
+	// iframes point at the exported story pages.
+	groups := groupEntries(entries)
+	for i := range groups {
+		if groups[i].Name == "" {
+			continue
+		}
+		groups[i].Href = "grid_" + groups[i].Name + ".html"
+		groups[i].Target = "story"
+		f, err := os.Create(filepath.Join(dir, groups[i].Href))
+		if err != nil {
+			return err
+		}
+		err = gridTmpl.Execute(f, map[string]any{
+			"Index": "index.html",
+			// The grid renders inside the story iframe; the back link
+			// must leave it, not nest a second index inside the first.
+			"IndexTarget": "_top",
+			"Name":        groups[i].Name,
+			"Stories":     gridRows(groups[i]),
+		})
+		f.Close()
+		if err != nil {
+			return err
+		}
+	}
 	f, err := os.Create(filepath.Join(dir, "index.html"))
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	if err := indexTmpl.Execute(f, map[string]any{"Dir": b.Dir, "Entries": entries}); err != nil {
+	def := ""
+	for _, e := range entries {
+		if !e.IsHTTP() {
+			def = e.Href
+			break
+		}
+	}
+	if err := indexTmpl.Execute(f, map[string]any{"Dir": b.Dir, "Groups": groups, "Default": def}); err != nil {
 		return err
 	}
 	if srcOK {
@@ -256,14 +375,51 @@ func (b *Book) Handler() http.Handler {
 				}
 			}
 		}
+		groups := groupEntries(entries)
+		for i := range groups {
+			if groups[i].Name == "" {
+				continue
+			}
+			groups[i].Href = "/grid/" + groups[i].Name
+			if wpx != "" {
+				groups[i].Href += "?w=" + wpx
+			}
+		}
 		if err := indexTmpl.Execute(w, map[string]any{
-			"Dir":     b.Dir,
-			"Entries": entries,
-			"S":       sel,
-			"W":       wpx,
-			"Widths":  []string{"", "320", "360", "768"},
+			"Dir":    b.Dir,
+			"Groups": groups,
+			"S":      sel,
+			"W":      wpx,
+			"Widths": []string{"", "320", "360", "768"},
 		}); err != nil {
 			slog.ErrorContext(r.Context(), "index", "err", err)
+		}
+	})
+	mux.HandleFunc("GET /grid/{group}", func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("group")
+		stories, err := b.Stories()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		var entries []entry
+		for _, s := range stories {
+			if s.Group == name && !s.IsHTTP() {
+				entries = append(entries, entry{Story: s, Href: "/story/" + s.Name})
+			}
+		}
+		if len(entries) == 0 {
+			http.NotFound(w, r)
+			return
+		}
+		if err := gridTmpl.Execute(w, map[string]any{
+			"Index":   "/",
+			"Name":    name,
+			"Stories": entries,
+			"W":       r.URL.Query().Get("w"),
+			"Widths":  []string{"", "320", "360", "768"},
+		}); err != nil {
+			slog.ErrorContext(r.Context(), "grid", "err", err)
 		}
 	})
 	mux.HandleFunc("GET /story/{name}", func(w http.ResponseWriter, r *http.Request) {
