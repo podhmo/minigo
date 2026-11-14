@@ -5174,22 +5174,33 @@ func (s *scriptFS) fileOf(v runtime.Value) fs.File {
 	}
 	si := &scriptIface{vc: s.vc, recv: v}
 	f := &scriptFile{inner: si}
-	var out fs.File = f
 	ctx := callbackContext(s.vc)
 	_, seek := runtime.IfaceMember(ctx, v, "Seek")
 	_, wt := runtime.IfaceMember(ctx, v, "WriteTo")
+	if _, ok := runtime.IfaceMember(ctx, v, "ReadDir"); ok {
+		// a directory file can still be seekable — pick a dir variant
+		// carrying every optional surface the script declares, since
+		// embedding fs.File would hide Seek/WriteTo again.
+		df := scriptDirFile{File: f, inner: si}
+		switch {
+		case seek && wt:
+			return scriptDirFileSeekWT{df}
+		case seek:
+			return scriptDirFileSeek{df}
+		case wt:
+			return scriptDirFileWT{df}
+		}
+		return df
+	}
 	switch {
 	case seek && wt:
-		out = scriptFileSeekWT{f}
+		return scriptFileSeekWT{f}
 	case seek:
-		out = scriptFileSeek{f}
+		return scriptFileSeek{f}
 	case wt:
-		out = scriptFileWT{f}
+		return scriptFileWT{f}
 	}
-	if _, ok := runtime.IfaceMember(ctx, v, "ReadDir"); ok {
-		out = scriptDirFile{File: out, inner: si}
-	}
-	return out
+	return f
 }
 
 // readDir/readFile back the fs extension variants — unexported like
@@ -5276,6 +5287,12 @@ type scriptFile struct{ inner *scriptIface }
 func (s *scriptFile) Read(p []byte) (int, error) { return s.inner.Read(p) }
 func (s *scriptFile) Close() error               { return s.inner.Close() }
 
+// ScriptValue lets goValueOf hand the original script file back when
+// host code carries the proxy through an fs.File return — declared on
+// scriptFile so every wrapper variant promotes it (scriptDirFile
+// embeds fs.File, which hides it, so it declares its own).
+func (s *scriptFile) ScriptValue() runtime.Value { return s.inner.ScriptValue() }
+
 func (s *scriptFile) Stat() (fs.FileInfo, error) {
 	rs, err := s.inner.call("Stat")
 	if err != nil {
@@ -5321,6 +5338,29 @@ func (s scriptDirFile) ReadDir(count int) ([]fs.DirEntry, error) {
 		return nil, err
 	}
 	return dirEntriesOf(s.inner.vc, rs, errOut(s.inner.vc, rs, 1))
+}
+
+// ScriptValue: see scriptFile.ScriptValue — the embedded fs.File
+// interface hides the inner file's own.
+func (s scriptDirFile) ScriptValue() runtime.Value { return s.inner.ScriptValue() }
+
+// scriptDirFileSeek/scriptDirFileWT/scriptDirFileSeekWT restore the
+// Seek/WriteTo probes on a directory file that declares them.
+type (
+	scriptDirFileSeek   struct{ scriptDirFile }
+	scriptDirFileWT     struct{ scriptDirFile }
+	scriptDirFileSeekWT struct{ scriptDirFile }
+)
+
+func (s scriptDirFileSeek) Seek(offset int64, whence int) (int64, error) {
+	return s.inner.Seek(offset, whence)
+}
+func (s scriptDirFileWT) WriteTo(w io.Writer) (int64, error) { return s.inner.writeTo(w) }
+func (s scriptDirFileSeekWT) Seek(offset int64, whence int) (int64, error) {
+	return s.inner.Seek(offset, whence)
+}
+func (s scriptDirFileSeekWT) WriteTo(w io.Writer) (int64, error) {
+	return s.inner.writeTo(w)
 }
 
 // scriptFileInfo proxies a script fs.FileInfo: each getter forwards to

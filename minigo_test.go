@@ -3011,6 +3011,9 @@ func TestScriptFSIntoHost(t *testing.T) {
 			return fmt.Sprintf("%s %d %v %q", fi.Name(), fi.Size(), fi.IsDir(), fi.Mode())
 		}},
 		"Token": &runtime.GoValue{V: func() any { return sysMeta{N: 7} }},
+		"OpenFile": &runtime.GoValue{V: func(fsys fs.FS, name string) (fs.File, error) {
+			return fsys.Open(name)
+		}},
 		"Probes": &runtime.GoValue{V: func(fsys fs.FS, name string) string {
 			f, err := fsys.Open(name)
 			if err != nil {
@@ -3050,6 +3053,51 @@ func TestScriptFSIntoHost(t *testing.T) {
 			}
 			return strings.Join(names, ","), nil
 		}},
+		"ReReadDir": &runtime.GoValue{V: func(fsys fs.FS, name string, n int64) (string, error) {
+			f, err := fsys.Open(name)
+			if err != nil {
+				return "", err
+			}
+			defer f.Close()
+			rd, ok := f.(fs.ReadDirFile)
+			if !ok {
+				return "", fmt.Errorf("%T is not an fs.ReadDirFile", f)
+			}
+			drain := func() ([]string, error) {
+				var names []string
+				for {
+					ents, err := rd.ReadDir(int(n))
+					for _, ent := range ents {
+						names = append(names, ent.Name())
+					}
+					if err != nil {
+						if err == io.EOF {
+							return names, nil
+						}
+						return nil, err
+					}
+					if len(ents) == 0 {
+						return names, nil
+					}
+				}
+			}
+			first, err := drain()
+			if err != nil {
+				return "", err
+			}
+			sk, ok := f.(io.Seeker)
+			if !ok {
+				return "", fmt.Errorf("%T is not an io.Seeker", f)
+			}
+			if _, err := sk.Seek(0, io.SeekStart); err != nil {
+				return "", err
+			}
+			second, err := drain()
+			if err != nil {
+				return "", err
+			}
+			return strings.Join(first, ",") + "," + strings.Join(second, ","), nil
+		}},
 		"ReadDirNames": &runtime.GoValue{V: func(fsys fs.FS, name string) (string, error) {
 			ents, err := fs.ReadDir(fsys, name)
 			if err != nil {
@@ -3088,6 +3136,9 @@ func TestScriptFSIntoHost(t *testing.T) {
 		run(t, e, "./testdata/scriptfs", "HostEmptyDir"),
 		run(t, e, "./testdata/scriptfs", "HostEmptyFile"),
 		run(t, e, "./testdata/scriptfs", "HostSysTag"),
+		run(t, e, "./testdata/scriptfs", "HostSeekDir"),
+		run(t, e, "./testdata/scriptfs", "HostRoundTripFile"),
+		run(t, e, "./testdata/scriptfs", "HostRoundTripDir"),
 	}
 	want := []any{
 		"in-b",
@@ -3098,13 +3149,16 @@ func TestScriptFSIntoHost(t *testing.T) {
 		"hello.txt 7 false \"----------\"",
 		"open tpl/missing.txt: file does not exist",
 		"seek:false writeto:false readdir:false",
-		"seek:false writeto:false readdir:true",
+		"seek:true writeto:false readdir:true",
 		"seek:true writeto:false readdir:false",
 		"seek:false writeto:false readdir:true",
 		"x,y,z",
 		"[]",
 		"[]",
 		"sys:7",
+		"x,y,z,x,y,z",
+		"ok",
+		"ok",
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("script fs into host (-want +got):\n%s", diff)
