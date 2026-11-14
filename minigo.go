@@ -59,6 +59,14 @@ type Engine struct {
 	resolver resolve.Resolver
 	cfg      resolve.BuildConfig
 	fset     *token.FileSet
+	// pcache shares parsed files across sessions forked from one base
+	// engine; entries revalidate against disk by content hash so an
+	// edited file is never served stale (see parseFilesCached).
+	pcache *parseCache
+	// ixcache shares package indexes across those sessions, keyed by
+	// the exact parsed file set: one edited file means a new
+	// fingerprint and a fresh index (see indexCache).
+	ixcache *indexCache
 
 	builtins   *runtime.Env
 	initMode   InitMode
@@ -231,6 +239,8 @@ func (e *Engine) fsPath(p string) (string, error) {
 func NewEngine(startDir string, opts ...Option) *Engine {
 	e := &Engine{
 		fset:         token.NewFileSet(),
+		pcache:       newParseCache(),
+		ixcache:      newIndexCache(),
 		pkgs:         map[string]*runtime.Package{},
 		byDir:        map[string]*runtime.Package{},
 		files:        map[string]*runtime.Package{},
@@ -411,11 +421,19 @@ func (e *Engine) linknameTarget(vc runtime.VMCaller, fn *runtime.Function) (runt
 // repeated runs get isolated package state. Bindings are copied: a later
 // [Engine.Bind] on e does not reach the session. Special forms are
 // shared: a later [Engine.RegisterSpecial] on either engine affects both.
+// Parsed source files are shared too, keyed by content hash: a session
+// reloading a package re-parses only files that changed on disk, so a
+// reload after an edit always sees the new source.
 func (e *Engine) NewSession() *Engine {
 	s := &Engine{
-		resolver:     e.resolver,
-		cfg:          e.cfg,
-		fset:         token.NewFileSet(),
+		resolver: e.resolver,
+		cfg:      e.cfg,
+		// sessions share the parent's FileSet and parse cache: a cached
+		// file's Pos values stay valid in the session, and a preview
+		// reload re-parses only files whose content changed.
+		fset:         e.fset,
+		pcache:       e.pcache,
+		ixcache:      e.ixcache,
 		initMode:     e.initMode,
 		specials:     e.specials,
 		hostPolicy:   e.hostPolicy,
@@ -988,13 +1006,10 @@ func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, e
 	defer e.buildMu.Unlock()
 	p := e.newPackage(meta.ImportPath, meta.Name, meta.Dir)
 	p.Standard = meta.Standard
-	files, failed, err := parsePackageFiles(e.fset, meta.GoFiles)
+	files, failed, err := e.parseFilesCached(meta.GoFiles, meta.Lang)
 	if err != nil {
 		p.SetState(runtime.Failed)
 		return nil, fmt.Errorf("parse %s: %w", failed, err)
-	}
-	for _, sf := range files {
-		sf.LangMod = meta.Lang
 	}
 	if err := e.indexFiles(p, files, true); err != nil {
 		p.SetState(runtime.Failed)
@@ -1049,14 +1064,11 @@ func (e *Engine) buildPackage(meta *resolve.PackageMeta, lenient bool) (*runtime
 	}
 	e.mu.Unlock()
 
-	files, failed, err := parsePackageFiles(e.fset, meta.GoFiles)
+	files, failed, err := e.parseFilesCached(meta.GoFiles, meta.Lang)
 	if err != nil {
 		p.SetState(runtime.Failed)
 		p.FinishIndexing()
 		return nil, fmt.Errorf("parse %s: %w", failed, err)
-	}
-	for _, sf := range files {
-		sf.LangMod = meta.Lang
 	}
 	if err := e.indexFiles(p, files, lenient); err != nil {
 		p.SetState(runtime.Failed)
@@ -1112,11 +1124,7 @@ func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File, lenient bo
 		}
 	}
 
-	buildIx := index.Build
-	if lenient {
-		buildIx = index.BuildLenient
-	}
-	ix, err := buildIx(files)
+	ix, err := e.ixcache.indexFor(files, lenient)
 	if err != nil {
 		var re *index.RedeclError
 		if errors.As(err, &re) {
@@ -1203,11 +1211,11 @@ func (e *Engine) loadFileMode(ctx context.Context, filename string, lenient bool
 	}
 	e.buildMu.Lock()
 	defer e.buildMu.Unlock()
-	sf, err := syntax.ParseFile(e.fset, abs, nil)
+	sfs, failed, err := e.parseFilesCached([]string{abs}, resolve.ModuleLang(filepath.Dir(abs)))
 	if err != nil {
-		return nil, fmt.Errorf("parse %s: %w", filename, err)
+		return nil, fmt.Errorf("parse %s: %w", failed, err)
 	}
-	sf.LangMod = resolve.ModuleLang(filepath.Dir(abs))
+	sf := sfs[0]
 
 	p := e.newPackage("<file>"+filepath.ToSlash(abs), sf.AST.Name.Name, filepath.Dir(abs))
 	if err := e.indexFiles(p, []*syntax.File{sf}, lenient); err != nil {
@@ -1256,12 +1264,9 @@ func (e *Engine) LoadDirScope(ctx context.Context, filename string) (*runtime.Pa
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", filename, err)
 	}
-	files, failed, err := parsePackageFiles(e.fset, gofiles)
+	files, failed, err := e.parseFilesCached(gofiles, resolve.ModuleLang(dir))
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", failed, err)
-	}
-	for _, sf := range files {
-		sf.LangMod = resolve.ModuleLang(dir)
 	}
 	p := e.newPackage("<dir>"+filepath.ToSlash(dir), pkgName, dir)
 	if err := e.indexFiles(p, files, false); err != nil {

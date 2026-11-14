@@ -382,6 +382,13 @@ func (r *REPL) commitWrites() {
 	if len(r.pendingDecls)+len(r.pendingMethods) > 0 {
 		r.graftScope(p, r.pkg.Files[0])
 	}
+	// The entered package's index may be the engine's shared copy —
+	// sessions forked from one base engine reuse a single index build.
+	// The patches below must land on a private index, or a REPL pin
+	// leaks into every other session's load of the same files.
+	if p.Index != nil && len(r.pendingDecls)+len(r.pendingMethods) > 0 {
+		p.Index = index.Clone(p.Index)
+	}
 	for _, n := range r.pendingDecls {
 		d, err := r.engine.LookupDeclIn(r.pkg, n)
 		if err != nil || d == nil {

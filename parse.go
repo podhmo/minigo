@@ -31,7 +31,17 @@ func parsePackageFiles(fset *token.FileSet, paths []string) (files []*syntax.Fil
 			return parseFilesSeq(fset, paths)
 		}
 	}
+	files, _, failed, err = parseSrcs(fset, paths, srcs)
+	return files, failed, err
+}
 
+// parseSrcs parses pre-read sources into fset concurrently, with the
+// same Pos bases a sequential parse would assign. Each file is parsed
+// into a private FileSet whose next base is its reserved slot, and the
+// resulting token.Files join fset in file order. The returned token
+// files align with files. Any parse failure is reported for the first
+// failing file. failed names that file.
+func parseSrcs(fset *token.FileSet, paths []string, srcs [][]byte) (files []*syntax.File, tfs []*token.File, failed string, err error) {
 	// reserve the whole range: a placeholder advances fset's base past
 	// it, so concurrent AddFile calls elsewhere land after it.
 	total := 0
@@ -47,7 +57,8 @@ func parsePackageFiles(fset *token.FileSet, paths []string) (files []*syntax.Fil
 	}
 
 	files = make([]*syntax.File, len(paths))
-	tfs := make([]*token.File, len(paths))
+	tfs = make([]*token.File, len(paths))
+	errs := make([]error, len(paths))
 	each(len(paths), func(i int) {
 		private := token.NewFileSet()
 		if bases[i] > 1 {
@@ -67,16 +78,16 @@ func parsePackageFiles(fset *token.FileSet, paths []string) (files []*syntax.Fil
 	fset.RemoveFile(ph)
 	for i, err := range errs {
 		if err != nil {
-			return nil, paths[i], err
+			return nil, nil, paths[i], err
 		}
 	}
 	for i, tf := range tfs {
 		if tf == nil || tf.Base() != bases[i] {
-			return nil, paths[i], fmt.Errorf("file base slot %d not taken", bases[i])
+			return nil, nil, paths[i], fmt.Errorf("file base slot %d not taken", bases[i])
 		}
 	}
 	fset.AddExistingFiles(tfs...)
-	return files, "", nil
+	return files, tfs, "", nil
 }
 
 func parseFilesSeq(fset *token.FileSet, paths []string) ([]*syntax.File, string, error) {

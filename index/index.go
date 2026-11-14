@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"maps"
+	"slices"
 
 	"github.com/podhmo/minigo/syntax"
 )
@@ -260,4 +262,28 @@ func ReceiverTypeName(recv *ast.FieldList) string {
 			return ""
 		}
 	}
+}
+
+// Clone returns an Index a caller may mutate without touching ix: the
+// name maps and decl slices are new, and each TypeDeclInfo carries its
+// own Methods map. The Decls themselves stay shared — a patch replaces
+// an entry instead of editing a Decl.
+func Clone(ix *Index) *Index {
+	cp := &Index{
+		Decls:   slices.Clone(ix.Decls),
+		Methods: slices.Clone(ix.Methods),
+		Funcs:   maps.Clone(ix.Funcs),
+		Types:   make(map[string]*TypeDeclInfo, len(ix.Types)),
+		Vars:    maps.Clone(ix.Vars),
+		Consts:  maps.Clone(ix.Consts),
+		Inits:   slices.Clone(ix.Inits),
+		// LocalGens is read-only after Build; sharing it is safe.
+		LocalGens: ix.LocalGens,
+	}
+	for n, td := range ix.Types {
+		ntd := *td
+		ntd.Methods = maps.Clone(td.Methods)
+		cp.Types[n] = &ntd
+	}
+	return cp
 }
