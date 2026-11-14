@@ -4069,6 +4069,12 @@ func goValueOf(rv reflect.Value) runtime.Value {
 	if orig, ok := runtime.OpaqueKeyOrig(x); ok {
 		return orig
 	}
+	// an anonymous *struct{...} is the projection structDataHost
+	// fabricates for a script struct; a host handing it back (a FuncMap
+	// func's argument, an `any` load) restores the script value.
+	if orig, ok := StructOrig(x); ok {
+		return orig
+	}
 	switch v := x.(type) {
 	case nil:
 		return runtime.NIL
@@ -4148,18 +4154,6 @@ func goValueOf(rv reflect.Value) runtime.Value {
 			el[i] = goValueOf(reflect.ValueOf(e))
 		}
 		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("any")}
-	case scriptData:
-		// a struct's host projection folds back to the original value
-		// when an `any` round-trips it (a sync.Pool Get, say); a bare
-		// copy without the orig key reads as an ordinary map.
-		if orig := scriptDataOrig(v); orig != nil {
-			return orig
-		}
-		m := runtime.NewMap(nil, false)
-		for k, e := range v {
-			m.Insert(goValueOf(reflect.ValueOf(k)), goValueOf(reflect.ValueOf(e)))
-		}
-		return m
 	case map[any]any:
 		if v == nil {
 			return &runtime.TypedNil{Typ: &runtime.TypeDef{Kind: runtime.KindMap,
@@ -5110,7 +5104,8 @@ type hostMarshal struct {
 // become real host values (Slice → []any, Map → map[any]any) so the
 // callee can reflect over them; Named and GoValue unwrap; typed nils
 // read as nil (a nil slice or map as its typed zero, see hostNilOf);
-// structs marshal to field maps (see structDataHost).
+// structs marshal to fabricated *struct{...} values (see
+// structDataHost).
 // Everything else — funcs, non-struct pointers — stays verbatim.
 func deepHost(v runtime.Value, vc runtime.VMCaller, h *hostMarshal) runtime.Value {
 	switch x := v.(type) {
@@ -5714,9 +5709,9 @@ func (h *hostMarshal) setHost(dst reflect.Value, e runtime.Value, vc runtime.VMC
 // context.Value) or compares it against another boxed arg
 // (Map.CompareAndSwap). A script value
 // crosses these boundaries verbatim inside the `any` box, exactly as
-// gc's interface boxing keeps it — marshaling to scriptData would
-// invoke the value's niladic methods on every Store (a json Decoder's
-// ReadToken/SkipValue on every Put), calls gc never makes. Keyed by
+// gc's interface boxing keeps it — marshaling to a host projection
+// would invoke the value's niladic methods on every Store (a json
+// Decoder's ReadToken/SkipValue on every Put), calls gc never makes. Keyed by
 // reflect.Type's string so *minigo.atomicBox — the bound
 // sync/atomic.Value/Pointer cell in package minigo — can join; vm
 // cannot name it without an import cycle.
@@ -5730,9 +5725,10 @@ var opaqueContainers = map[string]bool{
 // hostFieldValue converts x for a host struct field: toReflectValue,
 // except that a script sync.Pool.New keeps its result opaque — the
 // pool hands it back through Get, which returns a script value verbatim
-// (goValueOf), so it must not marshal: a struct would go to scriptData,
-// invoking its niladic methods on every miss, and a named non-struct
-// would lose its script type (the same rule as Pool.Put).
+// (goValueOf), so it must not marshal: a struct would become a
+// *struct{...} projection, invoking its niladic methods on every miss,
+// and a named non-struct would lose its script type (the same rule as
+// Pool.Put).
 func hostFieldValue(x runtime.Value, owner reflect.Type, name string, ft reflect.Type, vc runtime.VMCaller) (reflect.Value, error) {
 	if owner == poolType && name == "New" && ft.Kind() == reflect.Func {
 		switch x.(type) {
@@ -5745,65 +5741,94 @@ func hostFieldValue(x runtime.Value, owner reflect.Type, name string, ft reflect
 	return toReflectValue(x, ft, vc)
 }
 
-// scriptData is the host-facing projection of a script struct for an
-// `any` parameter: a named map field/method walkers — text/template's
-// evalField above all — can navigate. The empty key, unreachable
-// through Go's .Name syntax, carries the original script value so a
-// host that hands the projection back (a sync.Pool round-trip say)
-// restores the object it started from rather than a bare map.
-type scriptData map[string]any
+// structOrigs records the script value each fabricated *struct{...}
+// projection stands for: a host that hands one back — a FuncMap func's
+// argument, an `any` round-trip — restores the script object it
+// started from rather than surfacing the anonymous host struct.
+// Entries live for the process, the same trade-off as
+// runtime.opaqueKeyOrigs.
+var structOrigs sync.Map // any -> runtime.Value
 
-const scriptDataOrigKey = ""
-
-// scriptDataOrig returns the script value a projection was built
-// from, or nil when m is a foreign map (one not minted here).
-func scriptDataOrig(m scriptData) runtime.Value {
-	return m[scriptDataOrigKey]
+// StructOrig reports the script value a *struct{...} projection
+// minted by structDataHost stands for — for recoverers outside the vm
+// package (minigo's jsonHostArg). The type gate precedes the lookup:
+// an unhashable x (a slice or map payload) would panic in sync.Map.
+func StructOrig(x any) (runtime.Value, bool) {
+	rt := reflect.TypeOf(x)
+	if rt == nil || rt.Kind() != reflect.Pointer {
+		return nil, false
+	}
+	if et := rt.Elem(); et.Kind() != reflect.Struct || et.Name() != "" {
+		return nil, false
+	}
+	if orig, ok := structOrigs.Load(x); ok {
+		return orig, true
+	}
+	return nil, false
 }
 
 // structDataHost marshals a script struct (or a pointer to one) for a
-// host `any` parameter as a scriptData map: exported fields plus its
-// exported methods as bound members. A map can never re-enter the
-// script for a method call, and text/template's evalField reads a map
-// key verbatim — it does not call what it finds — so a method matching
-// the template-callable shape (niladic; 1 result, or 2 with error last)
-// is invoked at marshal time and its result stands in, like Go calling
-// it on field access. The marshal's budget caps these calls; on
-// exhaustion, a pointer-receiver method on a value receiver, and any
-// non-matching shape, the bound function value stays verbatim. A call
-// that fails — panic, or a non-nil error result — drops the entry so
-// the template reports can't-evaluate, close to Go reporting the call
-// error. Only declared methods bind here — promoted ones stay out —
-// and unexported members are absent, matching Go's can't-evaluate and
-// unexported-field errors as a missing key.
+// host `any` parameter as a *struct{...} fabricated by
+// reflect.StructOf: the type's exported fields plus its exported
+// methods as `any` fields, so a member the type does not offer reports
+// like gc — "can't evaluate field X in type ..." — where a map
+// projection would read the miss as an absent key and print
+// <no value>.
+//
+// A field carries its member deepHost'd; a method matching the
+// template-callable shape (niladic; 1 result, or 2 with error last) is
+// invoked at marshal time and its result stands in — text/template's
+// evalField does not call what it finds, so Go's field-access call is
+// replayed here. The marshal's budget caps these calls; on exhaustion,
+// a pointer-receiver method on a value receiver, and any non-matching
+// shape, the bound function value stays verbatim. A call that fails —
+// panic, or a non-nil error result — leaves the field nil, printing
+// <no value> as the dropped map entry did before. Only declared
+// methods bind here — promoted ones stay out — and unexported members
+// are absent, matching Go's can't-evaluate and unexported-field errors
+// as a missing field.
 func structDataHost(recv runtime.Value, s *runtime.Struct, vc runtime.VMCaller, h *hostMarshal) any {
 	if old, ok := h.walk.Seen(s); ok {
 		return old
 	}
 	td := s.Def
-	out := make(scriptData, len(s.Fields)+1)
-	h.walk.Register(s, out)
-	out[scriptDataOrigKey] = recv
-	if td == nil {
-		return out
-	}
-	for i, name := range td.Fields {
-		if i < len(s.Fields) && ast.IsExported(name) {
-			out[name] = deepHost(s.Fields[i], vc, h)
+	var sfs []reflect.StructField
+	var fidx []int
+	var mnames []string
+	if td != nil {
+		for i, name := range td.Fields {
+			if i < len(s.Fields) && ast.IsExported(name) {
+				sfs = append(sfs, reflect.StructField{Name: name, Type: anyType})
+				fidx = append(fidx, i)
+			}
 		}
+		for name := range td.Methods {
+			if ast.IsExported(name) {
+				mnames = append(mnames, name)
+			}
+		}
+	}
+	sort.Strings(mnames)
+	for _, name := range mnames {
+		sfs = append(sfs, reflect.StructField{Name: name, Type: anyType})
+	}
+	out := reflect.New(reflect.StructOf(sfs))
+	h.walk.Register(s, out.Interface())
+	structOrigs.Store(out.Interface(), recv)
+	ev := out.Elem()
+	for j, i := range fidx {
+		if fv := deepHost(s.Fields[i], vc, h); fv != nil {
+			ev.Field(j).Set(reflect.ValueOf(fv))
+		}
+	}
+	if td == nil {
+		return out.Interface()
 	}
 	// a value receiver excludes pointer-receiver methods from the method
 	// set, exactly as Go does — a *runtime.Struct recv is the struct
 	// value, anything else is a pointer carrying its ref.
 	_, valueRecv := recv.(*runtime.Struct)
-	names := make([]string, 0, len(td.Methods))
-	for name := range td.Methods {
-		if ast.IsExported(name) {
-			names = append(names, name)
-		}
-	}
-	sort.Strings(names)
-	for _, name := range names {
+	for k, name := range mnames {
 		m := td.Methods[name]
 		r := recv
 		if !m.PtrRecv {
@@ -5812,9 +5837,10 @@ func structDataHost(recv runtime.Value, s *runtime.Struct, vc runtime.VMCaller, 
 			}
 		}
 		bm := &runtime.BoundMethod{Recv: r, Fn: m}
+		fv := ev.Field(len(fidx) + k)
 		nout := templateCallableNout(m)
 		if vc == nil || h.budget <= 0 || nout == 0 || (m.PtrRecv && valueRecv) {
-			out[name] = bm
+			fv.Set(reflect.ValueOf(bm))
 			continue
 		}
 		h.budget--
@@ -5829,9 +5855,11 @@ func structDataHost(recv runtime.Value, s *runtime.Struct, vc runtime.VMCaller, 
 			}
 			res = t.Elems[0]
 		}
-		out[name] = deepHost(res, vc, h)
+		if hv := deepHost(res, vc, h); hv != nil {
+			fv.Set(reflect.ValueOf(hv))
+		}
 	}
-	return out
+	return out.Interface()
 }
 
 // templateCallableNout reports whether a method matches the shape
@@ -6278,7 +6306,7 @@ func goResults(out []reflect.Value) (runtime.Value, error) {
 
 // callOpaqueStore calls a container method (opaqueContainers) whose
 // `any` parameters are pure storage: each `any` arg crosses inside the
-// interface box — what gc's boxing stores — so the scriptData
+// interface box — what gc's boxing stores — so the struct's host
 // projection, and the niladic method calls it runs at marshal time,
 // never happen. A position gc hashes or compares as a key (a sync.Map
 // key, a context key, CompareAndSwap's comparand) crosses in its
@@ -6917,7 +6945,7 @@ func adaptFuncWith(x runtime.Value, t reflect.Type, vc runtime.VMCaller, o adapt
 				// does: marshaling would lose the script type of a
 				// named non-struct (slog's `(*buffer.Buffer)(&b)`
 				// reading back as *[]uint8) and run a struct's
-				// niladic methods via scriptData.
+				// niladic methods via its host projection.
 				rv, err = opaqueStoreArg("*sync.Pool", "Put", 0, rs[i])
 			} else if i < len(rs) {
 				rv, err = toReflectValue(rs[i], t.Out(i), vc)
