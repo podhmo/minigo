@@ -134,6 +134,14 @@ widths (320px, 360px, 768px) for checking narrow layouts. Use it when
 repeated exports become inconvenient; it is not needed for a one-time
 HTML inspection.
 
+The index groups stories by the render function they drive — by
+convention the last unqualified call in the story body (`RenderUser`,
+`RenderUserList`), so handler stories stay ungrouped. Each group header
+opens a side-by-side grid (`/grid/<func>`) laying that template's
+data-state variants out at the chosen width, which is where a CSS edit
+can be checked against every state at once. `export` writes the same
+grids as `grid_<func>.html` pages framing the exported stories.
+
 Equivalent commands from this directory:
 
 ```sh
