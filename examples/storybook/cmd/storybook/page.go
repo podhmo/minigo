@@ -154,24 +154,28 @@ func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 	src := b.staticRoot()
 	srcOK := false
 	if src != "" {
+		// The checks run whenever a static root is named — not only
+		// when it is a directory: a `static` that is a regular file or
+		// a path os.Stat cannot read must not pass the checks and reach
+		// the unconditional cleanup below.
+		dst := filepath.Join(dir, "static")
+		// Compare link-resolved paths: a symlinked static root can
+		// hide containment that the literal paths do not show. The
+		// literal check still matters — a source reached through a
+		// link inside the output dies with the re-export cleanup.
+		realSrc, realDst := resolvePath(src), resolvePath(dst)
+		inside := func(a, b string) bool { // a inside-or-equal b
+			rel, err := filepath.Rel(b, a)
+			return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+		}
+		if inside(dst, src) || inside(realDst, realSrc) {
+			return fmt.Errorf("export output must not be inside the static directory: %s", dst)
+		}
+		if inside(src, dst) || inside(realSrc, realDst) {
+			return fmt.Errorf("static directory must not be inside the export output: %s", src)
+		}
 		if info, err := os.Stat(src); err == nil && info.IsDir() {
 			srcOK = true
-			dst := filepath.Join(dir, "static")
-			// Compare link-resolved paths: a symlinked static root can
-			// hide containment that the literal paths do not show. The
-			// literal check still matters — a source reached through a
-			// link inside the output dies with the re-export cleanup.
-			realSrc, realDst := resolvePath(src), resolvePath(dst)
-			inside := func(a, b string) bool { // a inside-or-equal b
-				rel, err := filepath.Rel(b, a)
-				return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-			}
-			if inside(dst, src) || inside(realDst, realSrc) {
-				return fmt.Errorf("export output must not be inside the static directory: %s", dst)
-			}
-			if inside(src, dst) || inside(realSrc, realDst) {
-				return fmt.Errorf("static directory must not be inside the export output: %s", src)
-			}
 		}
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {

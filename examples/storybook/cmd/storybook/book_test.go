@@ -412,6 +412,31 @@ func TestExportRejectsOutputCoveringStaticSource(t *testing.T) {
 	}
 }
 
+// A `static` that is a regular file is not a mirror source, but the
+// unconditional cleanup must still not delete it when -o covers it.
+func TestExportRejectsFileStaticSource(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/filesrc\n\ngo 1.26.0\n")
+	writeFile(t, filepath.Join(dir, "app.go"), "package app\n")
+	writeFile(t, filepath.Join(dir, "story.go"), "//go:build story\n\npackage app\n\nfunc StoryX() {}\n")
+	writeFile(t, filepath.Join(dir, "static"), "not a directory\n")
+	b := &Book{Book: &storybook.Book{Dir: dir, Tag: "story"}}
+	stories, err := b.Stories()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Export(context.Background(), dir, stories); err == nil {
+		t.Error("export covering a file static source must fail")
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "static"))
+	if err != nil {
+		t.Fatalf("export deleted the file: %v", err)
+	}
+	if diff := cmp.Diff("not a directory\n", string(got)); diff != "" {
+		t.Errorf("file contents changed (-want +got):\n%s", diff)
+	}
+}
+
 // When the source static dir disappears between exports, the stale
 // mirror must disappear too.
 func TestExportDropsStaticWhenSourceGone(t *testing.T) {
