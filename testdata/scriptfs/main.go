@@ -8,6 +8,7 @@ package main
 import (
 	"bytes"
 	"embed"
+	"fmt"
 	htmltemplate "html/template"
 	"io"
 	"io/fs"
@@ -150,6 +151,16 @@ func (d *memDir) Read(p []byte) (int, error) {
 }
 func (d *memDir) Close() error { return nil }
 
+// Seek makes memDir a seekable directory — enough to prove a
+// ReadDir+Seek script file keeps both probes on the host side.
+func (d *memDir) Seek(offset int64, whence int) (int64, error) {
+	if whence == io.SeekStart && offset == 0 {
+		d.off = 0
+		return 0, nil
+	}
+	return 0, &fs.PathError{Op: "seek", Path: "d", Err: fs.ErrInvalid}
+}
+
 func (d *memDir) ReadDir(count int) ([]fs.DirEntry, error) {
 	n := len(d.ents) - d.off
 	if n == 0 {
@@ -258,3 +269,39 @@ func HostEmptyFile() string {
 // HostSysTag: a host value carried by a script FileInfo's Sys crosses
 // back unwrapped — the host sees the concrete type, not a GoValue box.
 func HostSysTag() string { return fsbox.SysTag(treeFS{}, "f") }
+
+// HostSeekDir: after a chunked drain the host seeks the directory file
+// back to offset 0 and drains it again — ReadDir+Seek coexist on the
+// same proxied file.
+func HostSeekDir() string {
+	names, err := fsbox.ReReadDir(treeFS{}, "d", 2)
+	if err != nil {
+		return "err:" + err.Error()
+	}
+	return names
+}
+
+// HostRoundTripFile/HostRoundTripDir: a file the host opened returns
+// to script land as the original script value — type assertions on
+// *memFile and *memDir must succeed.
+func HostRoundTripFile() string {
+	f, err := fsbox.OpenFile(treeFS{}, "f")
+	if err != nil {
+		return "err:" + err.Error()
+	}
+	if _, ok := f.(*memFile); !ok {
+		return fmt.Sprintf("not-memfile:%T", f)
+	}
+	return "ok"
+}
+
+func HostRoundTripDir() string {
+	f, err := fsbox.OpenFile(treeFS{}, "d")
+	if err != nil {
+		return "err:" + err.Error()
+	}
+	if _, ok := f.(*memDir); !ok {
+		return fmt.Sprintf("not-memdir:%T", f)
+	}
+	return "ok"
+}
