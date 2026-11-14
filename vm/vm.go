@@ -4799,6 +4799,16 @@ func adaptIface(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.V
 			proxy = fsv
 			st = reflect.TypeOf(proxy)
 		}
+		if !st.Implements(t) {
+			// fs.File beside it: a script value declaring Stat — an
+			// embed openFile, a script file type, or a file a host
+			// handed back — adapts through the same per-file probe
+			// Open results get.
+			if fv := scriptFileFor(vc, v); fv != nil && reflect.TypeOf(fv).Implements(t) {
+				proxy = fv
+				st = reflect.TypeOf(proxy)
+			}
+		}
 	}
 	if !st.Implements(t) {
 		return reflect.Value{}, false
@@ -5119,6 +5129,17 @@ func scriptFSFor(vc runtime.VMCaller, v runtime.Value) any {
 		return scriptFSRF{sfs}
 	}
 	return sfs
+}
+
+// scriptFileFor reports the fs.File adapter for v when v declares
+// Stat — the fs.File contract's discriminator beside Read/Close — nil
+// otherwise, so a non-file value keeps the generic error. fileOf does
+// the per-file variant probing.
+func scriptFileFor(vc runtime.VMCaller, v runtime.Value) any {
+	if _, ok := runtime.IfaceMember(callbackContext(vc), v, "Stat"); !ok {
+		return nil
+	}
+	return (&scriptFS{scriptIface: &scriptIface{vc: vc, recv: v}}).fileOf(v)
 }
 
 // scriptFS/scriptFSRD/scriptFSRF/scriptFSRDRF adapt a script fs.FS: the

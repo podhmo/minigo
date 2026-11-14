@@ -305,3 +305,29 @@ func HostRoundTripDir() string {
 	}
 	return "ok"
 }
+
+// HostRePassFile/HostRePassDir: a file a host opened and handed back
+// adapts again into another host's fs.File/fs.ReadDirFile parameter.
+func HostRePassFile() string {
+	f, err := fsbox.OpenFile(treeFS{}, "f")
+	if err != nil {
+		return "err:" + err.Error()
+	}
+	s, err := fsbox.ReadAllFile(f)
+	if err != nil {
+		return "err:" + err.Error()
+	}
+	return s
+}
+
+func HostRePassDir() string {
+	f, err := fsbox.OpenFile(treeFS{}, "d")
+	if err != nil {
+		return "err:" + err.Error()
+	}
+	names, err := fsbox.ReadDirFileNames(f)
+	if err != nil {
+		return "err:" + err.Error()
+	}
+	return names
+}

@@ -3164,6 +3164,28 @@ func TestScriptFSIntoHost(t *testing.T) {
 		"OpenFile": &runtime.GoValue{V: func(fsys fs.FS, name string) (fs.File, error) {
 			return fsys.Open(name)
 		}},
+		"ReadAllFile": &runtime.GoValue{V: func(f fs.File) (string, error) {
+			b, err := io.ReadAll(f)
+			if err != nil {
+				return "", err
+			}
+			fi, err := f.Stat()
+			if err != nil {
+				return "", err
+			}
+			return fi.Name() + ":" + string(b), nil
+		}},
+		"ReadDirFileNames": &runtime.GoValue{V: func(f fs.ReadDirFile) (string, error) {
+			ents, err := f.ReadDir(-1)
+			if err != nil {
+				return "", err
+			}
+			names := make([]string, 0, len(ents))
+			for _, ent := range ents {
+				names = append(names, ent.Name())
+			}
+			return strings.Join(names, ","), nil
+		}},
 		"Probes": &runtime.GoValue{V: func(fsys fs.FS, name string) string {
 			f, err := fsys.Open(name)
 			if err != nil {
@@ -3289,6 +3311,8 @@ func TestScriptFSIntoHost(t *testing.T) {
 		run(t, e, "./testdata/scriptfs", "HostSeekDir"),
 		run(t, e, "./testdata/scriptfs", "HostRoundTripFile"),
 		run(t, e, "./testdata/scriptfs", "HostRoundTripDir"),
+		run(t, e, "./testdata/scriptfs", "HostRePassFile"),
+		run(t, e, "./testdata/scriptfs", "HostRePassDir"),
 	}
 	want := []any{
 		"in-b",
@@ -3309,6 +3333,8 @@ func TestScriptFSIntoHost(t *testing.T) {
 		"x,y,z,x,y,z",
 		"ok",
 		"ok",
+		"f:data",
+		"x,y,z",
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("script fs into host (-want +got):\n%s", diff)
