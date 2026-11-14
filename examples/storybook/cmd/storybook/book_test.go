@@ -254,6 +254,27 @@ func TestExportFollowsStaticSymlinks(t *testing.T) {
 	}
 }
 
+// Re-exporting drops assets deleted since the last run, so the snapshot
+// mirrors the source instead of merging into it.
+func TestExportDropsStaleStaticAssets(t *testing.T) {
+	dir, stories := staticStories(t)
+	writeFile(t, filepath.Join(dir, "static", "stale.css"), "stale{}\n")
+	b := &Book{Dir: dir, Tag: "story"}
+	out := filepath.Join(t.TempDir(), "out")
+	if err := b.Export(context.Background(), out, stories); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "static", "stale.css")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Export(context.Background(), out, stories); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "static", "stale.css")); !os.IsNotExist(err) {
+		t.Errorf("deleted asset survives re-export: %v", err)
+	}
+}
+
 // The output root must not live inside the static directory: copying it
 // would recurse into itself.
 func TestExportRejectsStaticNesting(t *testing.T) {

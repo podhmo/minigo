@@ -88,6 +88,11 @@ func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 				rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 				return fmt.Errorf("export output must not be inside the static directory: %s", dst)
 			}
+			// A fresh copy drops assets deleted upstream since the last
+			// export; the dst-inside-src check above keeps this safe.
+			if err := os.RemoveAll(dst); err != nil {
+				return err
+			}
 			if err := copyTree(src, dst); err != nil {
 				return err
 			}
