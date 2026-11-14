@@ -3,6 +3,7 @@ package minigo
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"go/ast"
 	"go/token"
 	"hash/fnv"
 	"os"
@@ -64,7 +65,11 @@ func (e *Engine) parseFilesCached(paths []string, lang string) (files []*syntax.
 	pc.mu.Lock()
 	for i, path := range paths {
 		sums[i] = sha256.Sum256(srcs[i])
-		if ent := pc.m[path]; ent != nil && ent.sum == sums[i] {
+		// lang must match too: a file is cached under the module's
+		// language version, and a changed go.mod `go` directive means
+		// the stored *syntax.File's already-fixed LangMod is stale —
+		// re-parse so CheckLang judges the new version.
+		if ent := pc.m[path]; ent != nil && ent.sum == sums[i] && ent.sf.LangMod == lang {
 			files[i] = ent.sf
 		} else {
 			miss = append(miss, i)
@@ -93,17 +98,47 @@ func (e *Engine) parseFilesCached(paths []string, lang string) (files []*syntax.
 	for j, i := range miss {
 		// a racing load may have published the same file first; share
 		// the stored entry so concurrent packages converge on one
-		// *syntax.File per path. An entry whose sum no longer matches
-		// is stale: this load just parsed fresher bytes — replace it.
-		if ent := pc.m[paths[i]]; ent != nil && ent.sum == sums[i] {
+		// *syntax.File per path. An entry whose sum or language no
+		// longer matches is stale: this load just parsed fresher
+		// bytes — replace it.
+		if ent := pc.m[paths[i]]; ent != nil && ent.sum == sums[i] && ent.sf.LangMod == lang {
 			files[i] = ent.sf
-		} else {
-			files[i] = missFiles[j]
+			continue
+		}
+		files[i] = missFiles[j]
+		if !symbolicArrayLen(missFiles[j]) {
 			pc.m[paths[i]] = &parseCacheEntry{sum: sums[i], sf: missFiles[j], tf: tfs[j]}
 		}
 	}
 	pc.mu.Unlock()
 	return files, "", nil
+}
+
+// symbolicArrayLen reports whether a file contains an array type whose
+// length is an expression rather than a literal or `...` — e.g. `[N]int`
+// where N is a const declared in a sibling file. runtime's array-length
+// fold table is keyed by the AST node, so a node shared across sessions
+// would keep the value folded in the first session even after the
+// const's file is edited. Such files are therefore parsed fresh on
+// every load and never enter the shared cache; a literal or `...`
+// length derives its value from this file alone and stays shareable.
+func symbolicArrayLen(sf *syntax.File) bool {
+	found := false
+	ast.Inspect(sf.AST, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		if at, ok := n.(*ast.ArrayType); ok && at.Len != nil {
+			switch at.Len.(type) {
+			case *ast.BasicLit, *ast.Ellipsis:
+			default:
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	return found
 }
 
 // indexCacheEntry is one package index shared by sessions: the index is

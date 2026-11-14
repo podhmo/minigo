@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/podhmo/minigo/resolve"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -184,6 +185,82 @@ func TestSessionForkSeesEdits(t *testing.T) {
 	}
 	if v, err := s3.Call(ctx, p3, "V"); err != nil || v != int64(2) {
 		t.Fatalf("Call after edit: %v, %v, want 2", v, err)
+	}
+}
+
+// TestSessionForkArrayLenFold covers the runtime's process-global
+// array-length fold table: it is keyed by the *ast.ArrayType node, so
+// a `[N]int` node shared across sessions would keep the length folded
+// under the first session's const values even after the const's file
+// is edited. Files containing such types skip the shared parse cache
+// entirely, and this test proves the new session folds anew.
+func TestSessionForkArrayLenFold(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("const.go", "package p\nconst N = 3\n")
+	write("arr.go", "package p\nvar Arr [N]int\nfunc Size() int { return len(Arr) }\n")
+
+	base := NewEngine(dir)
+	ctx := context.Background()
+
+	size := func(s *Engine) int64 {
+		t.Helper()
+		p, err := s.Package(ctx, dir)
+		if err != nil {
+			t.Fatalf("Package: %v", err)
+		}
+		v, err := s.Call(ctx, p, "Size")
+		if err != nil {
+			t.Fatalf("Call: %v", err)
+		}
+		return v.(int64)
+	}
+
+	if got := size(base.NewSession()); got != 3 {
+		t.Fatalf("first load: Size = %d, want 3", got)
+	}
+	write("const.go", "package p\nconst N = 5\n")
+	if got := size(base.NewSession()); got != 5 {
+		t.Fatalf("after editing the const file: Size = %d, want 5 (stale array-length fold)", got)
+	}
+}
+
+// TestSessionForkLangChange covers the go.mod `go` directive: a cached
+// *syntax.File already carries the language version it was parsed with,
+// so a changed directive must re-parse instead of reusing the stale
+// LangMod for CheckLang.
+func TestSessionForkLangChange(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module forkpkg\n\ngo 1.20\n")
+	write("v.go", "package forkpkg\nfunc V() int { return 1 }\n")
+
+	base := NewEngine(dir)
+	ctx := context.Background()
+
+	lang := func(s *Engine) string {
+		t.Helper()
+		p, err := s.Package(ctx, dir)
+		if err != nil {
+			t.Fatalf("Package: %v", err)
+		}
+		return p.Files[0].LangMod
+	}
+
+	first := lang(base.NewSession())
+	write("go.mod", "module forkpkg\n\ngo 1.22\n")
+	got := lang(base.NewSession())
+	want := resolve.ModuleLang(dir)
+	if got != want || got == first {
+		t.Fatalf("after go.mod change: LangMod = %q, want %q (was %q)", got, want, first)
 	}
 }
 
