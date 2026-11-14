@@ -67,6 +67,25 @@ Inside the session, `:help` lists the meta commands: `:cd <ref>` /
 `:ls [ref]` lists top-level decls, `:pin` / `:unpin` monkey-patch the
 entered package's globals, `:reset` clears the session, `:exit` quits.
 
+## Binding host packages
+
+`Engine.Bind` registers a compiled Go package so scripts importing its
+path call the real code instead of interpreting source. Symbols may be
+plain Go values — functions are wrapped with `minigo.WrapFunc`, other
+values convert with `minigo.ValueOf`:
+
+```go
+e.Bind("github.com/yuin/goldmark-alert", map[string]runtime.Value{
+	"NewParser":       alert.NewParser,
+	"NewHTMLRenderer": alert.NewHTMLRenderer,
+}, minigo.BindAs("alert")) // the declared name differs from the path
+```
+
+Go cannot enumerate a package's members at run time, so the map lists the
+symbols scripts use. To bind every exported member, generate the table:
+`minigo gen-intrinsics -output <dir> <pkg>` writes `<dir>/<path>/install.go`
+with a `Bind(*minigo.Engine)` function.
+
 ## Import resolution
 
 Package loading follows the Go module on disk — there is no `go list` and

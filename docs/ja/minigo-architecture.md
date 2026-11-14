@@ -116,7 +116,7 @@ minigo run ./app --entry F
 
 ## ホスト境界
 
-- **`Bind(path, symbols)`**: 実パッケージを `map[string]runtime.Value` で登録（`State: Ready`、ソース不要）。stdlib の intrinsic（`fmt`/`strings`/`sort`/`os` 等）は `installStdlib` がここに流し込む。
+- **`Bind(path, symbols)`**: 実パッケージを `map[string]runtime.Value` で登録（`State: Ready`、ソース不要）。stdlib の intrinsic（`fmt`/`strings`/`sort`/`os` 等）は `installStdlib` がここに流し込む。シンボルには素の Go 値も置ける: Go 関数は `WrapFunc("<pkg>.<sym>", fn)` で、それ以外は `ValueOf` で変換される（runtime 値はそのまま）。Go は実行時にパッケージのメンバを列挙できないので、使うシンボルだけを列挙するか、全 exported メンバの表を `gen-intrinsics` で生成する。宣言名が import path 末尾と違うパッケージは `BindAs(name)` を渡す（`gen-intrinsics` は自動で付ける）。
 - **`host` パッケージ（`minigo.dev/host`）**: stub 本体が `panic("minigo intrinsic")`。エディタからは普通の Go パッケージに見え、実行時は intrinsic テーブルが横取りする。`WithHostPolicy` でシンボル単位の公開を制御できる。
 - **`WrapFunc(name, fn)`**: 実 Go 関数を `*BuiltinFunc` にする reflect アダプタ（marshal-by-copy、末尾 `error` は呼出エラー、複数戻り値は `*Tuple`）。引数は assignable/convertible ならそのまま、`[]T`/`map[K]V` パラメータには `[]any`/`map[any]any` から要素ごと変換する。`gen-intrinsics` が生成する `install.go` が `e.Bind` にこれを並べる。
 - **`ValueOf(x)`**: ホスト値を runtime 値に変換する marshal ヘルパー。注意点: `runtime.Value` は `any` エイリアスなので `case runtime.Value:` は全マッチしてしまう — 具象型を列挙する必要がある。
