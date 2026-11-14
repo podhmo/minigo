@@ -325,6 +325,23 @@ func TestExportStaticRootSymlink(t *testing.T) {
 	}
 }
 
+// Containment is decided on resolved paths: exporting under the real
+// directory a symlinked static root points to is still self-copying.
+func TestExportRejectsOutputInsideRealStatic(t *testing.T) {
+	dir, stories := staticStories(t)
+	real := filepath.Join(dir, "real-static")
+	if err := os.Rename(filepath.Join(dir, "static"), real); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, filepath.Join(dir, "static")); err != nil {
+		t.Fatal(err)
+	}
+	err := (&Book{Dir: dir, Tag: "story"}).Export(context.Background(), filepath.Join(real, "snap"), stories)
+	if err == nil {
+		t.Error("export into the resolved static directory must fail")
+	}
+}
+
 // The source must not live inside the output directory either: the
 // re-export cleanup would delete the source itself.
 func TestExportRejectsStaticInsideOutput(t *testing.T) {

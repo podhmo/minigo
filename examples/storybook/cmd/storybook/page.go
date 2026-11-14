@@ -62,15 +62,17 @@ func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 	if src != "" {
 		if info, err := os.Stat(src); err == nil && info.IsDir() {
 			srcOK = true
-			dst := filepath.Join(dir, "static")
+			// Compare link-resolved paths: a symlinked static root can
+			// hide containment that the literal paths do not show.
+			realSrc, realDst := resolvePath(src), resolvePath(filepath.Join(dir, "static"))
 			inside := func(a, b string) bool { // a inside-or-equal b
 				rel, err := filepath.Rel(b, a)
 				return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 			}
-			if inside(dst, src) {
-				return fmt.Errorf("export output must not be inside the static directory: %s", dst)
+			if inside(realDst, realSrc) {
+				return fmt.Errorf("export output must not be inside the static directory: %s", filepath.Join(dir, "static"))
 			}
-			if inside(src, dst) {
+			if inside(realSrc, realDst) {
 				return fmt.Errorf("static directory must not be inside the export output: %s", src)
 			}
 		}
@@ -285,6 +287,26 @@ func (b *Book) Handler() http.Handler {
 	})
 	mux.Handle("GET /static/", b.staticHandler())
 	return mux
+}
+
+// resolvePath resolves symlinks in the existing prefix of p and rejoins
+// the not-yet-existing tail, so containment checks work on planned paths.
+func resolvePath(p string) string {
+	rest := ""
+	for {
+		if real, err := filepath.EvalSymlinks(p); err == nil {
+			if rest == "" {
+				return real
+			}
+			return filepath.Join(real, rest)
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return p
+		}
+		rest = filepath.Join(filepath.Base(p), rest)
+		p = parent
+	}
 }
 
 func firstLine(s string) string {
