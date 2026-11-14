@@ -54,6 +54,27 @@ iframe.sized { flex: none; margin-inline: auto; border-inline: 1px dashed #ccc; 
 // gets its row (with the error) so the rest of the book is written, but
 // Export then reports the failures.
 func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
+	// Fail fast on pathological layouts before writing anything: the
+	// snapshot must neither write inside the static source (recursive
+	// self-copy) nor contain it (the re-export cleanup would erase it).
+	src := b.staticRoot()
+	srcOK := false
+	if src != "" {
+		if info, err := os.Stat(src); err == nil && info.IsDir() {
+			srcOK = true
+			dst := filepath.Join(dir, "static")
+			inside := func(a, b string) bool { // a inside-or-equal b
+				rel, err := filepath.Rel(b, a)
+				return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+			}
+			if inside(dst, src) {
+				return fmt.Errorf("export output must not be inside the static directory: %s", dst)
+			}
+			if inside(src, dst) {
+				return fmt.Errorf("static directory must not be inside the export output: %s", src)
+			}
+		}
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -79,102 +100,95 @@ func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 	if err := indexTmpl.Execute(f, map[string]any{"Dir": b.Dir, "Entries": entries}); err != nil {
 		return err
 	}
-	if src := b.staticRoot(); src != "" {
-		if info, err := os.Stat(src); err == nil && info.IsDir() {
-			dst := filepath.Join(dir, "static")
-			inside := func(a, b string) bool { // a inside-or-equal b
-				rel, err := filepath.Rel(b, a)
-				return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-			}
-			// The snapshot must neither write inside the source (recursive
-			// self-copy) nor contain it (RemoveAll would erase the source).
-			if inside(dst, src) {
-				return fmt.Errorf("export output must not be inside the static directory: %s", dst)
-			}
-			if inside(src, dst) {
-				return fmt.Errorf("static directory must not be inside the export output: %s", src)
-			}
-			// A fresh copy drops assets deleted upstream since the last
-			// export; the containment checks above keep this safe.
-			if err := os.RemoveAll(dst); err != nil {
-				return err
-			}
-			if err := copyTree(src, dst); err != nil {
-				return err
-			}
+	if srcOK {
+		dst := filepath.Join(dir, "static")
+		// A fresh copy drops assets deleted upstream since the last
+		// export; the containment checks above keep this safe.
+		if err := os.RemoveAll(dst); err != nil {
+			return err
+		}
+		if err := copyTree(src, dst); err != nil {
+			return err
 		}
 	}
 	return errors.Join(errs...)
 }
 
 // copyTree copies regular files under src into dst, preserving the
-// layout. Symlinks resolve the way http.FileServer resolves them, so
-// linked assets land in the snapshot too; a dangling link, which the
-// live server would answer 404, is skipped.
+// layout. Symlinks resolve the way http.FileServer resolves them: linked
+// assets land in the snapshot, and an alias naming a directory already
+// copied is copied again under its own name. What is refused is a link
+// cycle — a directory on its own copy path (self -> .) — tracked by the
+// real paths currently on the copy stack, not by every directory seen;
+// a dangling link, which the live server would answer 404, is skipped.
 func copyTree(src, dst string) error {
-	seen := map[string]bool{}
-	if real, err := filepath.EvalSymlinks(src); err == nil {
-		seen[real] = true
+	real, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		return err
 	}
-	return copyTreeSeen(src, dst, seen)
+	return copyDir(real, dst, map[string]bool{real: true})
 }
 
-func copyTreeSeen(src, dst string, seen map[string]bool) error {
-	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
+func copyDir(dir, dst string, active map[string]bool) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		path := filepath.Join(dir, e.Name())
+		to := filepath.Join(dst, e.Name())
+		mode := e.Type()
+		if mode&os.ModeSymlink != 0 {
+			target, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				continue
+			}
+			info, err := os.Stat(target)
+			if err != nil {
+				continue
+			}
+			if info.IsDir() {
+				if active[target] {
+					continue
+				}
+				active[target] = true
+				err := copyDir(target, to, active)
+				delete(active, target)
+				if err != nil {
+					return err
+				}
+				continue
+			}
+			mode = info.Mode().Type()
 		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		to := filepath.Join(dst, rel)
-		if d.IsDir() {
-			// Refuse cycles: a symlink below may point back at this
-			// directory, which is only detected by resolved path. The
-			// walk root was already marked by the caller — skip it.
+		if e.IsDir() {
 			real, err := filepath.EvalSymlinks(path)
 			if err != nil {
 				return err
 			}
-			if path != src {
-				if seen[real] {
-					return filepath.SkipDir
-				}
-				seen[real] = true
-			}
-			return os.MkdirAll(to, 0o755)
-		}
-		mode := d.Type()
-		if mode&os.ModeSymlink != 0 {
-			target, err := filepath.EvalSymlinks(path)
+			active[real] = true
+			err = copyDir(real, to, active)
+			delete(active, real)
 			if err != nil {
-				return nil
+				return err
 			}
-			info, err := os.Stat(target)
-			if err != nil {
-				return nil
-			}
-			if info.IsDir() {
-				// WalkDir does not descend into symlinked directories;
-				// revisit detection stops link cycles like self -> .
-				if seen[target] {
-					return nil
-				}
-				seen[target] = true
-				return copyTreeSeen(target, to, seen)
-			}
-			mode = info.Mode().Type()
+			continue
 		}
 		if !mode.IsRegular() {
-			return nil
+			continue
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(to, data, 0o644)
-	})
+		if err := os.WriteFile(to, data, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Handler serves the index at /, each story at /story/<Name>, and the

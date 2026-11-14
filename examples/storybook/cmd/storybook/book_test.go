@@ -276,10 +276,44 @@ func TestExportDropsStaleStaticAssets(t *testing.T) {
 }
 
 // A directory symlink pointing back into the source must not recurse
-// forever; the snapshot takes the loop once and moves on.
+// forever; the snapshot takes the loop once and moves on. A second link
+// to a sibling directory is an alias, not a cycle: the live server
+// serves both paths, so the snapshot copies both.
 func TestExportStaticLinkCycle(t *testing.T) {
 	dir, stories := staticStories(t)
+	if err := os.MkdirAll(filepath.Join(dir, "static", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "static", "sub", "x.css"), "x{}\n")
 	if err := os.Symlink(".", filepath.Join(dir, "static", "self")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("sub", filepath.Join(dir, "static", "dup")); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "out")
+	if err := (&Book{Dir: dir, Tag: "story"}).Export(context.Background(), out, stories); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"app.css", filepath.Join("sub", "x.css"), filepath.Join("dup", "x.css")} {
+		if _, err := os.Stat(filepath.Join(out, "static", name)); err != nil {
+			t.Errorf("export misses %s: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(out, "static", "self", "self")); !os.IsNotExist(err) {
+		t.Errorf("link cycle recursed: %v", err)
+	}
+}
+
+// The static root itself may be a symlink; it must export its target's
+// contents rather than being mistaken for a cycle.
+func TestExportStaticRootSymlink(t *testing.T) {
+	dir, stories := staticStories(t)
+	real := filepath.Join(dir, "real-static")
+	if err := os.Rename(filepath.Join(dir, "static"), real); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, filepath.Join(dir, "static")); err != nil {
 		t.Fatal(err)
 	}
 	out := filepath.Join(t.TempDir(), "out")
@@ -287,7 +321,7 @@ func TestExportStaticLinkCycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(out, "static", "app.css")); err != nil {
-		t.Errorf("export misses static assets: %v", err)
+		t.Errorf("export misses root-link assets: %v", err)
 	}
 }
 
