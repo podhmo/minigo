@@ -16,9 +16,19 @@ import (
 
 const appDir = "../../app"
 
-var storyNames = []string{
-	"StoryListUsersByTag", "StoryShowUser", "StoryShowUserNotFound",
-	"StoryUser", "StoryUserEscaped", "StoryUserList", "StoryUserListEmpty", "StoryUserLongName",
+// Print stories run under the direct minigo CLI too; handler-shaped
+// (StoryHttp*) stories need this helper's recorder drive.
+var (
+	printNames = []string{
+		"StoryUser", "StoryUserEscaped", "StoryUserList", "StoryUserListEmpty", "StoryUserLongName",
+	}
+	httpNames = []string{
+		"StoryHttpListUsersByTag", "StoryHttpShowUser", "StoryHttpShowUserNotFound",
+	}
+)
+
+func storyNames() []string {
+	return append(append([]string{}, httpNames...), printNames...)
 }
 
 func golden(t *testing.T, name string) []byte {
@@ -42,26 +52,33 @@ func TestStories(t *testing.T) {
 		if s.Doc == "" || !strings.HasPrefix(s.Pos, filepath.Join(appDir, "story_")) {
 			t.Errorf("missing doc or position: %+v", s)
 		}
+		if want := strings.HasPrefix(s.Name, "StoryHttp"); s.IsHTTP() != want {
+			t.Errorf("%s: IsHTTP %v, want %v", s.Name, s.IsHTTP(), want)
+		}
 	}
-	if diff := cmp.Diff(storyNames, names); diff != "" {
+	if diff := cmp.Diff(storyNames(), names); diff != "" {
 		t.Errorf("stories (-want +got):\n%s", diff)
 	}
 }
 
 func TestStoriesRejectsBadShape(t *testing.T) {
-	for _, decl := range []string{
-		"func StoryX(w http.ResponseWriter, r *http.Request) {}",
-		"func StoryX() string { return \"\" }",
-		"func StoryX[T any]() {}",
+	for _, tc := range []struct {
+		decl, want string
+	}{
+		{"func StoryX(w http.ResponseWriter, r *http.Request) {}", "StoryX must be func()"},
+		{"func StoryX() string { return \"\" }", "StoryX must be func()"},
+		{"func StoryX[T any]() {}", "StoryX must be func()"},
+		{"func StoryHttpX() {}", "StoryHttpX must be func(http.ResponseWriter, *http.Request)"},
+		{"func StoryHttpX(w http.ResponseWriter, r *http.Request) error { return nil }", "StoryHttpX must be func(http.ResponseWriter, *http.Request)"},
 	} {
-		t.Run(decl, func(t *testing.T) {
+		t.Run(tc.decl, func(t *testing.T) {
 			dir := t.TempDir()
 			writeFile(t, filepath.Join(dir, "go.mod"), "module x\n\ngo 1.26\n")
 			writeFile(t, filepath.Join(dir, "app.go"), "package app\n")
-			writeFile(t, filepath.Join(dir, "story.go"), "//go:build story\n\npackage app\n\n"+decl+"\n")
+			writeFile(t, filepath.Join(dir, "story.go"), "//go:build story\n\npackage app\n\nimport \"net/http\"\n\n"+tc.decl+"\n")
 			_, err := (&Book{Dir: dir, Tag: "story"}).Stories()
-			if err == nil || !strings.Contains(err.Error(), "StoryX must be func()") {
-				t.Fatalf("want invalid signature error, got %v", err)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want invalid signature error %q, got %v", tc.want, err)
 			}
 		})
 	}
@@ -69,6 +86,7 @@ func TestStoriesRejectsBadShape(t *testing.T) {
 
 // The direct minigo CLI, not the optional Book helper, is the primitive.
 // Its stdout and the native test both match the same body-only goldens.
+// It calls a story with no arguments, so it covers the print kind only.
 func TestDirectCLIStdout(t *testing.T) {
 	cli := filepath.Join(t.TempDir(), "minigo")
 	build := exec.Command("go", "build", "-o", cli, "./")
@@ -80,7 +98,7 @@ func TestDirectCLIStdout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range storyNames {
+	for _, name := range printNames {
 		t.Run(name, func(t *testing.T) {
 			cmd := exec.Command(cli, "run", "--tags", "story", dir, name)
 			var stderr bytes.Buffer
@@ -98,16 +116,38 @@ func TestDirectCLIStdout(t *testing.T) {
 
 func TestRenderGolden(t *testing.T) {
 	b := &Book{Dir: appDir, Tag: "story"}
-	for _, name := range storyNames {
+	// Handler stories replay the status and headers their recorder captured.
+	wantStatus := map[string]int{
+		"StoryHttpListUsersByTag":   http.StatusOK,
+		"StoryHttpShowUser":         http.StatusOK,
+		"StoryHttpShowUserNotFound": http.StatusNotFound,
+	}
+	for _, name := range storyNames() {
 		t.Run(name, func(t *testing.T) {
 			got, err := b.Render(context.Background(), name)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if diff := cmp.Diff(string(golden(t, name)), string(got)); diff != "" {
-				t.Errorf("helper stdout (-golden +got):\n%s", diff)
+			if diff := cmp.Diff(string(golden(t, name)), string(got.Body)); diff != "" {
+				t.Errorf("helper output (-golden +got):\n%s", diff)
+			}
+			want := wantStatus[name]
+			if want == 0 {
+				want = http.StatusOK
+			}
+			if diff := cmp.Diff(want, got.Status); diff != "" {
+				t.Errorf("status (-want +got):\n%s", diff)
 			}
 		})
+	}
+	// The list handler reports the match count in a response header;
+	// only the HTTP kind surfaces it.
+	res, err := b.Render(context.Background(), "StoryHttpListUsersByTag")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff([]string{"2"}, res.Header["X-Total-Count"]); diff != "" {
+		t.Errorf("X-Total-Count (-want +got):\n%s", diff)
 	}
 }
 
@@ -127,7 +167,7 @@ func TestRenderMainPackage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if diff := cmp.Diff(string(golden(t, "StoryUser")), string(got)); diff != "" {
+	if diff := cmp.Diff(string(golden(t, "StoryUser")), string(got.Body)); diff != "" {
 		t.Errorf("package main (-golden +got):\n%s", diff)
 	}
 }
@@ -171,28 +211,73 @@ func TestExport(t *testing.T) {
 
 func TestHandler(t *testing.T) {
 	b := &Book{Dir: appDir, Tag: "story"}
-	for _, name := range storyNames {
+	wantStatus := map[string]int{
+		"StoryHttpListUsersByTag":   http.StatusOK,
+		"StoryHttpShowUser":         http.StatusOK,
+		"StoryHttpShowUserNotFound": http.StatusNotFound,
+	}
+	for _, name := range storyNames() {
 		rec := httptest.NewRecorder()
 		b.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/story/"+name+"?name=Ignored", nil))
-		if diff := cmp.Diff(http.StatusOK, rec.Code); diff != "" {
-			t.Errorf("preview status (-want +got):\n%s", diff)
+		want := wantStatus[name]
+		if want == 0 {
+			want = http.StatusOK
 		}
-		if diff := cmp.Diff("text/html; charset=utf-8", rec.Header().Get("Content-Type")); diff != "" {
-			t.Errorf("content type (-want +got):\n%s", diff)
+		if diff := cmp.Diff(want, rec.Code); diff != "" {
+			t.Errorf("preview status for %s (-want +got):\n%s", name, diff)
+		}
+		wantType := "text/html; charset=utf-8"
+		if name == "StoryHttpShowUserNotFound" {
+			wantType = "text/plain; charset=utf-8"
+		}
+		if diff := cmp.Diff(wantType, rec.Header().Get("Content-Type")); diff != "" {
+			t.Errorf("content type for %s (-want +got):\n%s", name, diff)
 		}
 		if diff := cmp.Diff(string(golden(t, name)), rec.Body.String()); diff != "" {
-			t.Errorf("preview (-golden +got):\n%s", diff)
+			t.Errorf("preview for %s (-golden +got):\n%s", name, diff)
 		}
 	}
 	rec := httptest.NewRecorder()
 	b.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
-	if !strings.Contains(rec.Body.String(), `href="/story/StoryUser"`) {
-		t.Fatal("index misses story link")
+	body := rec.Body.String()
+	if !strings.Contains(body, `href="?s=StoryUser"`) {
+		t.Error("index misses story link")
+	}
+	if !strings.Contains(body, `target="_blank"`) {
+		t.Error("index misses new-tab link for http stories")
+	}
+	if !strings.Contains(body, `?w=360`) {
+		t.Error("index misses viewport widths")
 	}
 	rec = httptest.NewRecorder()
 	b.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/story/StoryMissing", nil))
 	if diff := cmp.Diff(http.StatusInternalServerError, rec.Code); diff != "" {
 		t.Errorf("missing story status (-want +got):\n%s", diff)
+	}
+	// The app's stylesheet is served at its original path.
+	rec = httptest.NewRecorder()
+	b.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/static/app.css", nil))
+	if diff := cmp.Diff(http.StatusOK, rec.Code); diff != "" {
+		t.Errorf("static status (-want +got):\n%s", diff)
+	}
+	if !strings.Contains(rec.Body.String(), ".avatar") {
+		t.Error("static body misses app.css")
+	}
+}
+
+// A discovery failure still serves: the index shows the error instead of
+// crashing, so stories can be added to an empty package live.
+func TestHandlerToleratesNoStories(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/empty\n\ngo 1.26.0\n")
+	writeFile(t, filepath.Join(dir, "app.go"), "package app\n")
+	rec := httptest.NewRecorder()
+	(&Book{Dir: dir, Tag: "story"}).Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if diff := cmp.Diff(http.StatusOK, rec.Code); diff != "" {
+		t.Errorf("index status (-want +got):\n%s", diff)
+	}
+	if !strings.Contains(rec.Body.String(), "no Story funcs") {
+		t.Error("index misses the discovery error")
 	}
 }
 

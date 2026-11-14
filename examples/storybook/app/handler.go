@@ -98,7 +98,7 @@ var listFuncs = template.FuncMap{
 }
 
 var listTmpl = template.Must(template.New("list").Funcs(listFuncs).Parse(`<!doctype html>
-<html><head><title>users</title></head>
+<html><head><title>users</title><link rel="stylesheet" href="/static/app.css"></head>
 <body>
 <p class="filters">{{range .Filters}}<code>{{.}}</code> {{end}}</p>
 <p>{{plural (len .Users) "user"}}</p>
@@ -107,7 +107,7 @@ var listTmpl = template.Must(template.New("list").Funcs(listFuncs).Parse(`<!doct
 `))
 
 var userTmpl = template.Must(template.New("user").Parse(`<!doctype html>
-<html><head><title>{{.Name}}</title></head>
+<html><head><title>{{.Name}}</title><link rel="stylesheet" href="/static/app.css"></head>
 <body>
 <h1><span class="avatar">{{.Initial}}</span> {{.Name}} {{.Badge}}</h1>
 {{if .Tags}}<ul>{{range .Tags}}<li>{{.}}</li>{{end}}</ul>{{else}}<p>no tags</p>{{end}}

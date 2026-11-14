@@ -1,5 +1,5 @@
 <!doctype html>
-<html><head><title>users</title></head>
+<html><head><title>users</title><link rel="stylesheet" href="/static/app.css"></head>
 <body>
 <p class="filters"><code>sort=id</code> <code>tag=go</code> </p>
 <p>2 users</p>

@@ -1,5 +1,5 @@
 <!doctype html>
-<html><head><title>&lt;script&gt;alert(1)&lt;/script&gt;</title></head>
+<html><head><title>&lt;script&gt;alert(1)&lt;/script&gt;</title><link rel="stylesheet" href="/static/app.css"></head>
 <body>
 <h1><span class="avatar">&lt;</span> &lt;script&gt;alert(1)&lt;/script&gt; </h1>
 <p>no tags</p>

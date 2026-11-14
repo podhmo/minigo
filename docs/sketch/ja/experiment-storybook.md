@@ -53,7 +53,9 @@ func StoryUser() {
 }
 ```
 
-これは render 関数（表示用データ → HTML）を呼ぶページ Story で、Story の主な形である（§8）。ハンドラー全体を確認する Story なら、同じ関数内で fake と request を作り、ハンドラーまたはルーターを呼ぶ。パスやクエリもその Story が条件として指定する。表示条件を変えたければ、Story のソースを編集するか別の Story を定義する。
+これは render 関数（表示用データ → HTML）を呼ぶページ Story で、Story の主な形である（§8）。
+
+もう 1 つの形が、`func StoryHttpXxx(w http.ResponseWriter, r *http.Request)` のハンドラー形 Story である。`StoryHttp` 接頭辞が印になり、storybook コマンドが `httptest.ResponseRecorder` を差し込んで実行する。Story は自身で作った request を実物の mux（`ServeMux`）へ渡すので、ルーティングとパスパラメータは本番と同じ経路を通り、応答の status・header もプレビューに再現される（例: 404 と `X-Total-Count`）。引数なしの直接実行では呼べないため、この形には storybook コマンドが必要になる（§5）。いずれの形も、表示条件を変えたければ Story のソースを編集するか別の Story を定義する。
 
 以下のコマンドは `examples/storybook` で実行する。`minigo` コマンドが PATH にある場合は、storybook コマンドを経由する必要がない。
 
@@ -113,11 +115,11 @@ go run ./cmd/storybook -o /tmp/storybook-out ./app
 go run ./cmd/storybook -http 127.0.0.1:6006 ./app
 ```
 
-HTTP モードでは `http://127.0.0.1:6006/` をブラウザで開き、一覧から Story を選ぶ。ツールは、直接実行と同じ引数なし Story を呼ぶ。
+HTTP モードでは `http://127.0.0.1:6006/` をブラウザで開き、一覧から Story を選ぶ。`?w=320|360|768` で iframe の幅を固定できるので、モバイル幅の見た目もその場で確認できる。`?s=` で選択中の Story を維持する。アプリの静的ファイルは `/static/`（既定 `<pkgdir>/static`、`-static` で変更可）から元のパスで配信されるため、CSS だけの編集は再解釈なしのブラウザリロードで反映される。
 
-`cmd/storybook` は minigo をライブラリとして組み込んだ通常の Go コマンドである。`Book` は対象の `app` を import せず、対象ディレクトリを minigo で読み、指定関数を実行する。`minigo.WithOutput` で標準出力を捕捉し、その HTML を保存・配信する。HTTP request や recorder を Story へ注入する仕組みは不要である。
+`cmd/storybook` は minigo をライブラリとして組み込んだ通常の Go コマンドである。`Book` は対象の `app` を import せず、対象ディレクトリを minigo で読み、指定関数を実行する。`minigo.WithOutput` で標準出力を捕捉する。StoryHttp 形の Story には `httptest.ResponseRecorder` と request を注入し、記録された status・header を応答として再送する。
 
-描画ごとに新しいエンジンを作るので、Story やテンプレートの編集は次のリクエストで読み直される。ファイル変更を監視してブラウザを自動リロードする機能とは別である。
+描画ごとに長寿命のベースエンジンから `Engine.NewSession()` で session を fork する。session は build 設定と host binding を引き継ぎつつ package cache が空なので、Story・テンプレート・`//go:embed` 対象のファイルは次のリクエストで読み直され、bound パッケージ（標準ライブラリ等）はロード済みのまま再利用される。ファイル変更を監視してブラウザを自動リロードする機能とは別である。
 
 ### 独自コマンドで標準ライブラリにも fake を設定する
 
@@ -131,15 +133,15 @@ minigo をライブラリとして組み込んだ独自のプレビューコマ�
 
 ### stdout と HTTP 応答を混同しない
 
-Story が出力するのは body だけである。元のハンドラーの HTTP ステータス・ヘッダーは stdout に含めない。
+引数なし Story（`StoryXxx`）が出力するのは body だけである。元のハンドラーの HTTP ステータス・ヘッダーは stdout に含めない。この形でハンドラーごと確認するなら、Story が自分で recorder を作って body だけを取り出すことになるが、その 404 はプレビュー上では 200 の HTML として見える。
 
-たとえば元のハンドラーが 404 を書いていても、補助ツールが HTML を正常に生成して配信できたことと、その 404 は別の事柄である。元の HTTP 応答を検証する場合はアプリのハンドラーテストを使う。Story の実行失敗は、補助ツール側のエラーとして扱う。
+応答をそのまま確認したい場合は `StoryHttpXxx` 形を使う。storybook が recorder を差し込み、記録された status・header を `/story/<name>` の応答として再送するので、404 や security header が実際どう出るかをブラウザで確認できる。framing を拒否する header（`X-Frame-Options` や `frame-ancestors`）を返す応答は index の iframe では表示できないため、別タブで開く。元の HTTP 応答を厳密に検証する場合はアプリのハンドラーテストを使う。Story の実行失敗は、補助ツール側のエラーとして扱う。
 
-ブラウザで URL にクエリを追加しても、それを Story の request へ転送する controls は提供しない。引数なし Story は、自分自身で表示条件を完結させる。
+ブラウザで URL にクエリを追加しても、それを Story の request へ転送する controls は提供しない。Story は、自分自身で表示条件を完結させる。
 
 ### ブラウザで確認できる範囲
 
-サンプルの HTML は自己完結した表示を中心にしている。実アプリの CSS・画像・JavaScript、相対 URL、フォーム送信やリンク先まで自動で再現するものではない。アセットが必要なら、それらの参照先と配信方法も用意する。補助ツールで一画面を表示できることを、アプリ全体の E2E 成功とはしない。
+サンプルの各ページは `/static/app.css` を参照し、preview サーバーが `app/static` を同じパスで配信する。実アプリの画像・JavaScript、相対 URL、フォーム送信やリンク先まで自動で再現するものではない。アセットが必要なら、それらの参照先と配信方法も用意する。補助ツールで一画面を表示できることを、アプリ全体の E2E 成功とはしない。
 
 ## 6. Makefile からの操作
 
@@ -193,10 +195,13 @@ make test
 
 この観点で見ると、現在の例はまだ次の点で調整作業のループを支えていない。
 
-- **アプリの実際の CSS が当たらない。** サンプルの HTML は自己完結しており、§5 のとおりアセット配信は範囲外としている。実アプリは `/static/app.css` のような外部ファイルを参照するため、プレビューがアプリの静的ファイルを元と同じパスで配信しなければ、調整対象の CSS が読み込まれない。
 - **データ状態の fixture が少なく、手書きである。** レイアウト調整で見たいのは、0 件・1 件・大量、長い名前や改行できない長い英単語、任意フィールドの欠落、画像なし、多言語混在といった状態である。「適切なデータがない」ことへの対処は、こうした状態を揃えた fixture を用意することにある。
-- **状態違いを並べて比べられない。** CSS の一箇所の変更は複数の状態に同時に効く。1 Story = 1 ページより、同じテンプレートの状態違いと viewport 幅違いを一画面に並べる方が調整に向く。
-- **変更の種類で必要な再実行が違う。** CSS だけの変更なら Go 側の再実行は不要で、ブラウザの再読み込みで足りるべきである。テンプレートや Go の変更では再実行が必要になり、ビルドなしで読み直せる minigo の性質が効くのはこちらである。
+- **状態違いを並べて比べられない。** CSS の一箇所の変更は複数の状態に同時に効く。`?w=` による viewport 幅の切替は入れたが、同じテンプレートの状態違いを一画面に並べる表示はまだない。
+
+次の 2 点は、後述の実アプリ適用（§8 末尾）を経て解消した。
+
+- ~~アプリの実際の CSS が当たらない~~ → preview が `/static/`（既定 `<pkgdir>/static`、`-static` で変更可）を元のパスで配信する。サンプルのテンプレートも `app/static/app.css` を参照する。
+- ~~変更の種類で必要な再実行が違う~~ → CSS の変更は静的配信なのでブラウザの再読み込みだけで反映され、Go・テンプレート・Story の変更は `NewSession` ごとの再解釈が拾う。
 
 minigo 固有の価値になりうる候補は、表示用データの組み立てである。既存アプリの表示用構造体は深く入れ子になりがちで、実データは DB にある。テンプレートが使う型から「空・最小・最大・長文」の値を生成できれば、fixture の手書きを減らせる。ソースを必要な分だけ読む minigo の性質と相性がよい可能性があるが、未検証である。§9 のデータ取得関数の部分差し替えも、同じく実データなしで状態を再現する手段として位置づけられる。
 
@@ -225,13 +230,23 @@ minigo 固有の価値になりうる候補は、表示用データの組み立�
 ハンドラーを対象にした Story は、render 関数が切り出されていない既存コードのための代替手段とする。§9 のデータ取得関数の部分差し替えは、この代替手段を支えるものと位置づける。example の `RenderUser` と `RenderUserList` は `io.Writer` と表示用データだけを受け取る render 関数であり、HTTP ヘッダーやエラー応答はハンドラー側が持つ。Story は 2 種類のファイルに分かれる。
 
 - `app/story_page.go`（主）: render 関数をデータ状態ごとに呼ぶ。通常のユーザー、悪意のある名前とタグなし、非常に長い名前と多数のタグ、複数件の一覧、0 件の一覧。fake の Store も request も使わない。
-- `app/story_handler.go`（代替手段）: fake の Store と request でハンドラーを呼ぶ。成功、404、タグ絞り込みの 3 つ。
+- `app/story_handler.go`（代替手段）: `StoryHttpXxx(w, r)` 形。fake の Store を差し込み、Story 自身が作った request を実物の mux へ渡す。成功、404、タグ絞り込みの 3 つ。status・header（`X-Total-Count` 等）も recorder 経由でプレビューに再現される。
 
-host map の読み書きは、ハンドラー Story の `StoryListUsersByTag` が通る。ハンドラーテストの `/users` は、ページ Story の `StoryUserList` と同じ golden に一致する。ハンドラーが組み立てる表示用データと、Story が直接渡すデータが同じ HTML になることを示している。
+host map の読み書きは、ハンドラー Story の `StoryHttpListUsersByTag` が通る。ハンドラーテストの `/users` は、ページ Story の `StoryUserList` と同じ golden に一致する。ハンドラーが組み立てる表示用データと、Story が直接渡すデータが同じ HTML になることを示している。
 
-次の検証は、まず静的ファイルの配信と状態違いの並列表示を足し、実際に CSS を調整する作業で使ってみることとする。型からの値生成は、fixture の手書きが負担だと確認できてから着手する。タスクは [TODO.md](../../../TODO.md) に記録する。
+次の検証は、状態違いの並列表示を足し、実際に CSS を調整する作業で使ってみることとする。型からの値生成は、fixture の手書きが負担だと確認できてから着手する。タスクは [TODO.md](../../../TODO.md) に記録する。
 
 速度・メモリはこの構成で測定していない。
+
+### 実アプリへの適用と example への還流
+
+`podhmo/go-classic-mpa-sample`（html/template + embed.FS + SQLite の実 MPA）へ同じ仕組みを適用した記録が [issue #1068](https://github.com/podhmo/minigo/issues/1068) にある。そこで有効と確認できた構成は example に取り込んだ。
+
+- **`StoryHttpXxx(w, r)` 形**: recorder 駆動で status・header を再現するハンドラー Story。
+- **ベースエンジン + `NewSession()`**: bind・build 設定を共有しつつソースを毎回読み直す（実アプリ規模で 100〜200ms/req）。
+- **`/static/` 配信と viewport 幅切替**: 実 CSS を元のパスで配信し、320/360/768px で確認する。
+
+同時に issue には minigo 本体側の境界（bound パッケージ名の推導、bound 構造体 literal と bound template、script 側 `fs.FS` の受け渡し、missing field が黙って空描画される点 等）も記録されている。これらは example の体裁ではなく minigo API の課題として引き続き検討する（§9）。
 
 ## 9. Future work: ソース関数の部分差し替え
 

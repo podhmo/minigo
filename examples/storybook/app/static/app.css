@@ -1,0 +1,34 @@
+body {
+  font-family: sans-serif;
+  margin: 2rem;
+}
+h1 {
+  font-size: 1.4rem;
+  overflow-wrap: anywhere;
+}
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  background: #346;
+  color: #fff;
+}
+.badge {
+  font-size: 0.7rem;
+  vertical-align: super;
+  color: #a40;
+}
+.filters code {
+  background: #eee;
+  padding: 0.1em 0.3em;
+  border-radius: 0.3em;
+}
+ul {
+  padding-left: 1.2rem;
+}
+a {
+  color: #146;
+}
