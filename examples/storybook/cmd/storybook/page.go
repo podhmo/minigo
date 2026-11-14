@@ -125,7 +125,7 @@ figure iframe { flex: 1; border: 0; width: 100%; }
 figcaption { padding: .3rem .6rem; font-size: .85em; border-top: 1px solid #ccc; }
 </style></head>
 <body>
-<header><a href="{{.Index}}">&#8592; index</a><strong>{{.Name}}</strong>
+<header><a href="{{.Index}}"{{if .IndexTarget}} target="{{.IndexTarget}}"{{end}}>&#8592; index</a><strong>{{.Name}}</strong>
 <div class="viewport">{{range .Widths}}<a href="?w={{.}}"{{if eq . $.W}} class="active"{{end}}>{{if .}}{{.}}px{{else}}flex{{end}}</a>{{end}}</div>
 </header>
 <div class="row">
@@ -197,9 +197,12 @@ func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 			return err
 		}
 		err = gridTmpl.Execute(f, map[string]any{
-			"Index":   "index.html",
-			"Name":    groups[i].Name,
-			"Stories": gridRows(groups[i]),
+			"Index": "index.html",
+			// The grid renders inside the story iframe; the back link
+			// must leave it, not nest a second index inside the first.
+			"IndexTarget": "_top",
+			"Name":        groups[i].Name,
+			"Stories":     gridRows(groups[i]),
 		})
 		f.Close()
 		if err != nil {
