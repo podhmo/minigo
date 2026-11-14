@@ -215,6 +215,35 @@ func TestExport(t *testing.T) {
 	}
 }
 
+// A minimal app with one story and one static asset.
+func staticStories(t *testing.T) (string, []Story) {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/staticx\n\ngo 1.26.0\n")
+	writeFile(t, filepath.Join(dir, "app.go"), "package app\n")
+	writeFile(t, filepath.Join(dir, "story.go"), "//go:build story\n\npackage app\n\nfunc StoryX() {}\n")
+	if err := os.MkdirAll(filepath.Join(dir, "static"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "static", "app.css"), "a{}\n")
+	b := &Book{Dir: dir, Tag: "story"}
+	stories, err := b.Stories()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir, stories
+}
+
+// The output root must not live inside the static directory: copying it
+// would recurse into itself.
+func TestExportRejectsStaticNesting(t *testing.T) {
+	dir, stories := staticStories(t)
+	err := (&Book{Dir: dir, Tag: "story"}).Export(context.Background(), filepath.Join(dir, "static", "nested"), stories)
+	if err == nil {
+		t.Error("export into the static directory must fail")
+	}
+}
+
 func TestHandler(t *testing.T) {
 	b := &Book{Dir: appDir, Tag: "story"}
 	wantStatus := map[string]int{

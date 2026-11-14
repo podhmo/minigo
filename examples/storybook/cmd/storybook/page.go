@@ -81,7 +81,14 @@ func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 	}
 	if src := b.staticRoot(); src != "" {
 		if info, err := os.Stat(src); err == nil && info.IsDir() {
-			if err := copyTree(src, filepath.Join(dir, "static")); err != nil {
+			dst := filepath.Join(dir, "static")
+			// Writing the snapshot inside the static directory would copy
+			// the output into itself — refuse.
+			if rel, err := filepath.Rel(src, dst); err == nil &&
+				rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("export output must not be inside the static directory: %s", dst)
+			}
+			if err := copyTree(src, dst); err != nil {
 				return err
 			}
 		}
