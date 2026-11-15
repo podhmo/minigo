@@ -29,8 +29,12 @@ const (
 
 // liveReloadScript reloads the page on a "reload" event. It also
 // reloads when the connection comes back, which happens when the
-// server restarts.
+// server restarts. Only the top document subscribes: iframes ride the
+// parent's reload, so each tab holds one SSE connection regardless of
+// how many stories a grid frames — HTTP/1.1 caps connections per
+// origin and a page per variant would exhaust them.
 const liveReloadScript = `(() => {
+  if (window.top !== window) return;
   let lost = false;
   const es = new EventSource("` + LiveReloadEventsPath + `");
   es.addEventListener("reload", () => location.reload());
