@@ -79,13 +79,32 @@ func (b *Book) ScriptTag() template.HTML {
 // the response is HTML and Watch is running, so a story page opened in
 // its own tab reloads too. Anything else comes back unchanged. The
 // body grew, so a recorded Content-Length in header is dropped —
-// leaving it would truncate the response.
+// leaving it would truncate the response. A replayed CSP without its
+// own connect-src (e.g. default-src 'none') would silently block the
+// script's EventSource in the browser, so 'self' is added — an
+// explicit directive wins over the default-src fallback, and a policy
+// already naming connect-src is left alone.
 func (b *Book) AppendLiveReload(header http.Header, body []byte) []byte {
 	if b.reload == nil || !strings.Contains(header.Get("Content-Type"), "html") {
 		return body
 	}
 	header.Del("Content-Length")
+	policies := header.Values("Content-Security-Policy")
+	for i, policy := range policies {
+		if !hasConnectSrc(policy) {
+			policies[i] = policy + "; connect-src 'self'"
+		}
+	}
 	return append(body, b.ScriptTag()...)
+}
+
+func hasConnectSrc(policy string) bool {
+	for _, d := range strings.Split(policy, ";") {
+		if f := strings.Fields(d); len(f) > 0 && strings.EqualFold(f[0], "connect-src") {
+			return true
+		}
+	}
+	return false
 }
 
 // LiveReloadHandler serves the live-reload endpoints: the SSE stream at
