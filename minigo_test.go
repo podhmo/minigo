@@ -510,6 +510,128 @@ func TestNetHTTPRoundtrip(t *testing.T) {
 	}
 }
 
+// TestHostRequestServeMux routes a host *http.Request through an
+// interpreted http.ServeMux: ServeHTTP stamps the routing internals
+// (Pattern, pat, matches) on the request itself, and the dispatched
+// handler reads them back through PathValue and Pattern — the host
+// request needs no script-side rebuild (issue #1082). SetPathValue's
+// mutation is also observed, since it writes the same fields.
+func TestHostRequestServeMux(t *testing.T) {
+	e := newEngine(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/issues/2/comments", nil)
+	got := run(t, e, "./testdata/hostreq", "Dispatch",
+		&runtime.GoValue{V: rec}, &runtime.GoValue{V: req})
+	if diff := cmp.Diff("dispatched", got); diff != "" {
+		t.Errorf("Dispatch mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff("id=3 pattern=POST /issues/{id}/comments", rec.Body.String()); diff != "" {
+		t.Errorf("body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestHostRequestMiddleware wraps dispatch in an interpreted
+// middleware: r.WithContext returns a real host clone, the mux stamps
+// that clone, and the handler sees both the wildcard and the context
+// value installed upstream.
+func TestHostRequestMiddleware(t *testing.T) {
+	e := newEngine(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/v/x", nil)
+	got := run(t, e, "./testdata/hostreq", "DispatchMW",
+		&runtime.GoValue{V: rec}, &runtime.GoValue{V: req})
+	if diff := cmp.Diff("dispatched", got); diff != "" {
+		t.Errorf("DispatchMW mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff("k=x ctxv=from-mw", rec.Body.String()); diff != "" {
+		t.Errorf("body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestHostRequestPostForm runs the storybook parseForm path on the host
+// request itself: a script-side MaxBytesReader fills r.Body and
+// ParseForm reads through it. urlencoded answers "hi"; multipart
+// answers "" — compiled Go leaves PostFormValue empty once ParseForm
+// ran, so the empty result locks standard semantics (issue #1084), not
+// an interpreter divergence. Explicit ParseMultipartForm still parses.
+func TestHostRequestPostForm(t *testing.T) {
+	e := newEngine(t)
+	const mp = "--xxxboundary\r\n" +
+		"Content-Disposition: form-data; name=\"body\"\r\n" +
+		"\r\n" +
+		"hi\r\n" +
+		"--xxxboundary--\r\n"
+	for _, c := range []struct {
+		name, ct, body, want string
+	}{
+		{"urlencoded", "application/x-www-form-urlencoded",
+			url.Values{"body": {"hi"}}.Encode(), `id=2 body="hi"`},
+		{"multipart-after-parseform", "multipart/form-data; boundary=xxxboundary",
+			mp, `id=2 body=""`},
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/issues/2/comments", strings.NewReader(c.body))
+		req.Header.Set("Content-Type", c.ct)
+		got := run(t, e, "./testdata/hostreq", "PostForm",
+			&runtime.GoValue{V: rec}, &runtime.GoValue{V: req})
+		if diff := cmp.Diff("dispatched", got); diff != "" {
+			t.Errorf("%s: PostForm mismatch (-want +got):\n%s", c.name, diff)
+		}
+		if diff := cmp.Diff(c.want, rec.Body.String()); diff != "" {
+			t.Errorf("%s: body mismatch (-want +got):\n%s", c.name, diff)
+		}
+	}
+}
+
+// TestHostRequestExplicitMultipart parses multipart fields on the host
+// request directly — ParseMultipartForm reads through the real body
+// (issue #1084).
+func TestHostRequestExplicitMultipart(t *testing.T) {
+	e := newEngine(t)
+	const mp = "--xxxboundary\r\n" +
+		"Content-Disposition: form-data; name=\"body\"\r\n" +
+		"\r\n" +
+		"hi\r\n" +
+		"--xxxboundary--\r\n"
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/issues/2/comments", strings.NewReader(mp))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=xxxboundary")
+	got := run(t, e, "./testdata/hostreq", "ExplicitMultipart",
+		&runtime.GoValue{V: rec}, &runtime.GoValue{V: req})
+	if diff := cmp.Diff("dispatched", got); diff != "" {
+		t.Errorf("ExplicitMultipart mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(`body="hi"`, rec.Body.String()); diff != "" {
+		t.Errorf("body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestHostRequestPrivateField keeps the package-visibility rule on host
+// fields: unexported writes/reads only succeed for code in the field's
+// own package — interpreted net/http stamps r.pat, but a user package
+// must still be rejected like gc's compile error.
+func TestHostRequestPrivateField(t *testing.T) {
+	e := newEngine(t)
+	req := httptest.NewRequest("GET", "/x", nil)
+	for _, fn := range []string{"WritePrivateField", "ReadPrivateField"} {
+		if _, err := e.Run(context.Background(), "./testdata/hostreq", fn,
+			&runtime.GoValue{V: req}); err == nil {
+			t.Errorf("%s: expected error", fn)
+		}
+	}
+}
+
+// TestHttptestBytesReaderBody is issue #1083: httptest.NewRequest's
+// body type switch resolves *bytes.Reader through the bound bytes
+// package.
+func TestHttptestBytesReaderBody(t *testing.T) {
+	e := newEngine(t)
+	got := run(t, e, "./testdata/hostreq", "ReaderBody")
+	if diff := cmp.Diff("cl=7 body=body=hi", got); diff != "" {
+		t.Errorf("ReaderBody mismatch (-want +got):\n%s", diff)
+	}
+}
+
 // TestPanicTraceback locks the panic traceback shape: unwinding Panic
 // carries "name at file:line" frames plus the source line under each
 // entry — for script panics, host (Go runtime) panics, and panics

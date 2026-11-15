@@ -534,6 +534,7 @@ func (e *Engine) installStdlib() {
 		// *bytes.Buffer so methods (WriteString, String, ...) dispatch
 		// on the host value.
 		"Buffer":    hostType("bytes.Buffer", func() any { return &bytes.Buffer{} }),
+		"Reader":    hostType("bytes.Reader", func() any { return &bytes.Reader{} }),
 		"NewBuffer": h.fn("bytes.NewBuffer", func(a []any) (any, error) { return bytes.NewBuffer(byteSlice(a[0])), nil }, bytes.NewBuffer),
 		"NewReader": h.fn("bytes.NewReader", func(a []any) (any, error) {
 			return &runtime.GoValue{V: bytes.NewReader(byteSlice(a[0]))}, nil

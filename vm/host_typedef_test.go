@@ -70,3 +70,50 @@ func TestHostTypedefOfBuiltinShadow(t *testing.T) {
 		t.Fatalf("predeclared int should resolve to the builtin typedef")
 	}
 }
+
+// source twins of these types fill through toReflectValue.
+type testPair struct {
+	a string
+	b int64
+}
+type testCyc struct{ next *testCyc }
+
+var _ = testCyc{next: nil}
+
+func testTwinDef(name string, fields ...string) *runtime.TypeDef {
+	return &runtime.TypeDef{
+		Pkg:    &runtime.Package{Path: "github.com/podhmo/minigo/vm"},
+		Name:   name,
+		Kind:   runtime.KindStruct,
+		Fields: fields,
+	}
+}
+
+// TestTwinStructConversion checks the source-twin arm of toReflectValue:
+// a script struct mints a real host struct — unexported fields included —
+// and a self-referential twin fails on the depth cap instead of crashing.
+func TestTwinStructConversion(t *testing.T) {
+	pair := &runtime.Struct{Def: testTwinDef("testPair", "a", "b"),
+		Fields: []runtime.Value{"x", int64(3)}}
+	rv, err := toReflectValue(pair, reflect.TypeOf(testPair{}), nil)
+	if err != nil {
+		t.Fatalf("twin convert: %v", err)
+	}
+	if got := rv.Interface().(testPair); got.a != "x" || got.b != 3 {
+		t.Fatalf("converted %+v, want {a:x b:3}", got)
+	}
+
+	// `type P testPair` is not a twin — a Named tag of a different
+	// declared type must not convert, like gc's unassignability.
+	aliased := &runtime.Named{Typ: testTwinDef("notPair", "a", "b"), V: pair}
+	if _, err := toReflectValue(aliased, reflect.TypeOf(testPair{}), nil); err == nil {
+		t.Fatal("differently-named struct converted; want unassignable")
+	}
+
+	// a cyclic twin must error, not recurse until the stack gives out.
+	cyc := &runtime.Struct{Def: testTwinDef("testCyc", "next"), Fields: []runtime.Value{nil}}
+	cyc.Fields[0] = &runtime.Cell{Elem: cyc}
+	if _, err := toReflectValue(&runtime.Cell{Elem: cyc}, reflect.TypeOf((*testCyc)(nil)), nil); err == nil {
+		t.Fatal("cyclic twin converted; want depth error")
+	}
+}
