@@ -76,7 +76,7 @@ func gridRows(g group) []entry {
 }
 
 var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
-<html><head><meta charset="utf-8"><title>stories: {{.Dir}}</title>
+<html><head><meta charset="utf-8"><title>stories: {{.Dir}}</title>{{if .ScriptTag}}{{.ScriptTag}}{{end}}
 <style>
 body { margin: 0; display: flex; height: 100vh; font-family: sans-serif; }
 nav { width: 18rem; overflow: auto; border-right: 1px solid #ccc; padding: .5rem; }
@@ -109,7 +109,7 @@ iframe.sized { flex: none; margin-inline: auto; border-inline: 1px dashed #ccc; 
 // template edit can be checked against every data state at once. Each
 // variant is an iframe at the chosen width (?w=, flexible when unset).
 var gridTmpl = template.Must(template.New("grid").Parse(`<!doctype html>
-<html><head><meta charset="utf-8"><title>{{.Name}} variants</title>
+<html><head><meta charset="utf-8"><title>{{.Name}} variants</title>{{if .ScriptTag}}{{.ScriptTag}}{{end}}
 <style>
 body { margin: 0; display: flex; flex-direction: column; height: 100vh; font-family: sans-serif; }
 header { display: flex; gap: 1em; align-items: baseline; padding: .4rem .6rem; border-bottom: 1px solid #ccc; }
@@ -345,8 +345,9 @@ func (b *Book) Handler() http.Handler {
 			// nav rather than failing, so the book is usable while the
 			// stories are written.
 			if err := indexTmpl.Execute(w, map[string]any{
-				"Dir": b.Dir,
-				"Err": err.Error(),
+				"Dir":       b.Dir,
+				"Err":       err.Error(),
+				"ScriptTag": b.ScriptTag(),
 			}); err != nil {
 				slog.ErrorContext(r.Context(), "index", "err", err)
 			}
@@ -400,11 +401,12 @@ func (b *Book) Handler() http.Handler {
 			}
 		}
 		if err := indexTmpl.Execute(w, map[string]any{
-			"Dir":    b.Dir,
-			"Groups": groups,
-			"S":      sel,
-			"W":      wpx,
-			"Widths": []string{"", "320", "360", "768"},
+			"Dir":       b.Dir,
+			"Groups":    groups,
+			"S":         sel,
+			"W":         wpx,
+			"Widths":    []string{"", "320", "360", "768"},
+			"ScriptTag": b.ScriptTag(),
 		}); err != nil {
 			slog.ErrorContext(r.Context(), "index", "err", err)
 		}
@@ -413,7 +415,7 @@ func (b *Book) Handler() http.Handler {
 		name := r.PathValue("group")
 		stories, err := b.Stories()
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			b.errorPage(w, http.StatusInternalServerError, err)
 			return
 		}
 		var entries []entry
@@ -423,15 +425,16 @@ func (b *Book) Handler() http.Handler {
 			}
 		}
 		if len(entries) == 0 {
-			http.NotFound(w, r)
+			b.errorPage(w, http.StatusNotFound, errors.New("no stories in this group"))
 			return
 		}
 		if err := gridTmpl.Execute(w, map[string]any{
-			"Index":   "/",
-			"Name":    name,
-			"Stories": entries,
-			"W":       r.URL.Query().Get("w"),
-			"Widths":  []string{"", "320", "360", "768"},
+			"Index":     "/",
+			"Name":      name,
+			"Stories":   entries,
+			"W":         r.URL.Query().Get("w"),
+			"Widths":    []string{"", "320", "360", "768"},
+			"ScriptTag": b.ScriptTag(),
 		}); err != nil {
 			slog.ErrorContext(r.Context(), "grid", "err", err)
 		}
@@ -440,9 +443,7 @@ func (b *Book) Handler() http.Handler {
 		name := r.PathValue("name")
 		res, err := b.Render(r.Context(), name)
 		if err != nil {
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintln(w, err)
+			b.errorPage(w, http.StatusInternalServerError, err)
 			return
 		}
 		// Handler-shaped stories recorded real response headers and a
@@ -455,11 +456,31 @@ func (b *Book) Handler() http.Handler {
 		if len(res.Body) > 0 && h.Get("Content-Type") == "" {
 			h.Set("Content-Type", "text/html; charset=utf-8")
 		}
+		// A story opened in its own tab reloads too — only when the
+		// response is HTML, so non-HTML bodies stay byte-identical.
+		body := b.AppendLiveReload(h, res.Body)
 		w.WriteHeader(res.Status)
-		w.Write(res.Body)
+		w.Write(body)
 	})
 	mux.Handle("GET /static/", b.staticHandler())
+	b.MountLiveReload(mux)
 	return mux
+}
+
+// errorPage answers an error response. While watching it is a small
+// HTML page carrying the reload script — a text/plain error cannot run
+// it, and a page that loses the script never rejoins the reload loop,
+// so a transient mid-edit failure would stick until a manual refresh.
+func (b *Book) errorPage(w http.ResponseWriter, status int, err error) {
+	if tag := b.ScriptTag(); tag != "" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(status)
+		fmt.Fprintf(w, "<pre>%s</pre>%s", template.HTMLEscapeString(err.Error()), tag)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(status)
+	fmt.Fprintln(w, err)
 }
 
 // resolvePath resolves symlinks in the existing prefix of p and rejoins

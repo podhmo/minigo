@@ -13,9 +13,15 @@
 // adds the render loop a preview server needs: it keeps one configured
 // base [*minigo.Engine] and forks a session ([Engine.NewSession]) per
 // render, so a source, template, or //go:embed edit shows up on the
-// next call while bound packages stay loaded. Print stories render by
-// capturing stdout; handler stories drive an [httptest.ResponseRecorder]
-// so status code and headers are captured too.
+// next call while bound packages stay loaded — every render reads the
+// current file contents; no restart is needed to pick up edits. Print
+// stories render by capturing stdout; handler stories drive an
+// [httptest.ResponseRecorder] so status code and headers are captured
+// too.
+//
+// [Book.Watch] is the opt-in browser side of that loop: while it runs,
+// file changes under the book's directory publish a reload to every
+// open page embedding [Book.ScriptTag].
 package storybook
 
 import (
@@ -56,6 +62,8 @@ type Book struct {
 	base    *minigo.Engine // configured once; each Render forks a session
 	dir     string         // absolute Dir, computed with base
 	baseErr error
+
+	reload *broadcaster // non-nil once Watch is running; nil means off
 }
 
 // StoryKind distinguishes the two story shapes.
@@ -239,7 +247,8 @@ func isHandlerShape(ft *ast.FuncType) bool {
 // the session keeps the configuration and host bindings but starts with an
 // empty package cache, so an edit to the package — template, Go code, or an
 // //go:embed'ed file — shows up on the next call while bound packages stay
-// loaded. Stories own their fixtures; the helper injects no HTTP values.
+// loaded. This is the reload guarantee: nothing but the once-built base
+// engine is cached across calls. Stories own their fixtures; the helper injects no HTTP values.
 // Print stories answer Status 200 with an empty Header; handler stories
 // report the recorder's result.
 func (b *Book) Render(ctx context.Context, name string) (*Page, error) {

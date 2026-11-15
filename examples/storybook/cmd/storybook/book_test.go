@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo/storybook"
@@ -535,6 +537,56 @@ func TestHandler(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), ".avatar") {
 		t.Error("static body misses app.css")
+	}
+}
+
+// -watch is a preview-server option: without -http it is an error.
+func TestWatchRequiresHTTP(t *testing.T) {
+	err := run(context.Background(), []string{"-watch", appDir}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "-watch requires -http") {
+		t.Fatalf("want -watch requires -http, got %v", err)
+	}
+}
+
+// Watching stamps the reload script on the preview pages — index, grid,
+// and HTML story bodies — and serves its endpoints; non-HTML bodies stay
+// byte-identical.
+func TestHandlerWatch(t *testing.T) {
+	b := &Book{Book: &storybook.Book{Dir: appDir, Tag: "story"}}
+	if err := b.Watch(context.Background(), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	h := b.Handler()
+	const tag = `<script src="/_livereload.js" defer></script>`
+	for _, target := range []string{"/", "/grid/RenderUser", "/story/StoryUser"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		if !strings.Contains(rec.Body.String(), tag) {
+			t.Errorf("%s: missing the reload script", target)
+		}
+	}
+	// A non-HTML story response stays byte-identical.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/story/StoryHttpShowUserNotFound", nil))
+	if strings.Contains(rec.Body.String(), "_livereload") {
+		t.Error("non-HTML response must not get the script")
+	}
+	// Error pages keep the script too: a page that loses it never
+	// rejoins the reload loop once the source is fixed.
+	for _, target := range []string{"/story/StoryMissing", "/grid/Nope"} {
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		if !strings.Contains(rec.Body.String(), tag) {
+			t.Errorf("%s: error page misses the reload script", target)
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "html") {
+			t.Errorf("%s: error page Content-Type %q", target, ct)
+		}
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/_livereload.js", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "EventSource") {
+		t.Error("want the live reload script")
 	}
 }
 
