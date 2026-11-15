@@ -389,8 +389,6 @@ func structOf(v runtime.Value) *runtime.Struct {
 	return runtime.StructOf(v)
 }
 
-// ---- reflect.Value methods ----
-
 func (v *RValue) IsValid() bool {
 	if v == nil {
 		return false
@@ -2082,8 +2080,6 @@ func (v *RValue) Methods() runtime.Value {
 	}}
 }
 
-// ---- scalar reads ----
-
 func (v *RValue) Int() int64 {
 	v.mustValid("Int")
 	if v.host() {
@@ -2247,8 +2243,6 @@ func (v *RValue) Complex() complex128 {
 	trap("call of reflect.Value.Complex on %s Value", v.kindStr())
 	return 0
 }
-
-// ---- writes ----
 
 // set stores a script value through the ref-view.
 func (v *RValue) set(val runtime.Value) {
@@ -2575,8 +2569,6 @@ func (v *RValue) SetBytes(x []byte) {
 }
 
 // SetLen is not part of reflect.Value — kept absent.
-
-// ---- calls ----
 
 func (v *RValue) Call(in []*RValue) []*RValue {
 	v.mustValid("Call")
@@ -3038,8 +3030,6 @@ func (v *RValue) MethodByName(name string) *RValue {
 	return v.e.wrap(v.vc, m, nil, typeOfValue(v.e, m))
 }
 
-// ---- conversions / misc ----
-
 func (v *RValue) Convert(t *RType) *RValue {
 	if !v.IsValid() {
 		// Go's Convert dereferences the source type before any
@@ -3299,8 +3289,6 @@ func (v *RValue) UnsafeAddr() uintptr {
 	return fakeAddr
 }
 
-// CanComplex / Overflow* follow.
-
 func (v *RValue) OverflowInt(x int64) bool {
 	v.mustValid("OverflowInt")
 	if v.host() {
@@ -3369,8 +3357,6 @@ func (v *RValue) OverflowComplex(x complex128) bool {
 	plain("reflect: call of reflect.Value.OverflowComplex on %s Value", v.kindStr())
 	return false
 }
-
-// ---- channel ops ----
 
 func (v *RValue) Recv() (*RValue, bool) {
 	v.mustValid("Recv")
@@ -3466,8 +3452,6 @@ func (v *RValue) Close() {
 	}
 	trap("call of reflect.Value.Close on %s Value", v.kindStr())
 }
-
-// ---- helpers ----
 
 func isExported(name string) bool {
 	if name == "" {
@@ -3638,7 +3622,7 @@ func toHost(v any, t reflect.Type, e *Env) (reflect.Value, error) {
 // valueEqual is a small structural equality for Equal().
 func valueEqual(a, b any, depth int) bool {
 	if depth > 32 {
-		return true // cycle break
+		return true
 	}
 	if a == nil && b == nil {
 		return true

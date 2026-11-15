@@ -93,19 +93,17 @@ func TestREPLLoadFile(t *testing.T) {
 		line string
 		want any
 	}{
-		{"len(memo)", "2"}, // init() ran at load
+		{"len(memo)", "2"},
 		{"Fib(10)", "55"},
 		{"Base", "2"},
-		{"X{3}.Show()", "X(3)!"}, // the file's own import alias resolves
+		{"X{3}.Show()", "X(3)!"},
 	} {
 		if diff := cmp.Diff(c.want, replEval(t, r, c.line)); diff != "" {
 			t.Errorf("%s (-want +got):\n%s", c.line, diff)
 		}
 	}
-	// file imports stay file-scoped
 	replFails(t, r, `fmt.Sprint(1)`, "undefined: fmt")
 	replFails(t, r, `s.Repeat("a", 2)`, "undefined: s")
-	// the prompt shares the package block: types extend, methods attach
 	replEval(t, r, "type XX X")
 	replEval(t, r, "func (x X) Twice() int { return x.N * 2 }")
 	if diff := cmp.Diff("8", replEval(t, r, "XX{N: 1}.N + X{N: 2}.Twice() + 3")); diff != "" {
@@ -129,10 +127,9 @@ func TestREPLLoadDir(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{
-		// both files bind x to different packages: legal per-file scopes
 		"foo/a.go":       "package foo\nimport x \"strings\"\nvar A = B + 1\nfunc Up(v string) string { return x.ToUpper(v) }\n",
 		"foo/b.go":       "package foo\nimport x \"bytes\"\nvar B = 41\nfunc Len(v string) int { return len(x.TrimSpace([]byte(v))) }\n",
-		"foo/b_test.go":  "package foo\nfunc Up() {}\n", // excluded like go build
+		"foo/b_test.go":  "package foo\nfunc Up() {}\n",
 		"foo/sub/sub.go": "package sub\nfunc Hi() string { return \"sub\" }\n",
 		"foo/c.go":       "package foo\nimport \"./sub\"\nfunc Call() string { return sub.Hi() }\n",
 	})
@@ -145,10 +142,10 @@ func TestREPLLoadDir(t *testing.T) {
 		t.Errorf("Load paths: want a.go b.go c.go, got %v", paths)
 	}
 	for line, want := range map[string]any{
-		"A":            "42", // cross-file dependency order
+		"A":            "42",
 		`Up("hi")`:     "HI",
 		`Len("  ab ")`: "2",
-		"Call()":       "sub", // relative import anchors at the file's dir
+		"Call()":       "sub",
 	} {
 		if diff := cmp.Diff(want, replEval(t, r, line)); diff != "" {
 			t.Errorf("%s (-want +got):\n%s", line, diff)
@@ -163,7 +160,6 @@ func TestREPLLoadShadowAndReload(t *testing.T) {
 	writeFiles(t, dir, map[string]string{"m.go": "package m\nfunc F() int { return 1 }\nfunc G() int { return 10 }\n"})
 	r := New(minigo.NewEngine(dir))
 
-	// a prompt decl of the same name is replaced by the load
 	replEval(t, r, "func F() int { return 0 }")
 	if _, err := r.Load(ctx, "m.go"); err != nil {
 		t.Fatal(err)
@@ -171,18 +167,15 @@ func TestREPLLoadShadowAndReload(t *testing.T) {
 	if diff := cmp.Diff("1", replEval(t, r, "F()")); diff != "" {
 		t.Errorf("load over prompt (-want +got):\n%s", diff)
 	}
-	// a failed input does not keep shadowing the file's F
 	replFails(t, r, "import _ \"example.com/nosuch\"\nfunc F() int { return 0 }", "nosuch")
 	if diff := cmp.Diff("1", replEval(t, r, "F()")); diff != "" {
 		t.Errorf("after failed input (-want +got):\n%s", diff)
 	}
-	// a later prompt redefinition wins until the next load
 	replEval(t, r, "func F() int { return 2 }")
 	if diff := cmp.Diff("12", replEval(t, r, "F() + G()")); diff != "" {
 		t.Errorf("prompt over load (-want +got):\n%s", diff)
 	}
 
-	// reloading picks up edits: G removed, F changed
 	writeFiles(t, dir, map[string]string{"m.go": "package m\nfunc F() int { return 3 }\n"})
 	if _, err := r.Load(ctx, "m.go"); err != nil {
 		t.Fatal(err)
@@ -204,13 +197,11 @@ func TestREPLLoadCurrentDirUnexported(t *testing.T) {
 	if _, err := r.Load(ctx, `"./"`); err != nil {
 		t.Fatal(err)
 	}
-	// unexported funcs, vars, consts, types and methods are package-block
-	// names: the prompt reaches them like any file of the package would
 	for _, c := range []struct {
 		line string
 		want any
 	}{
-		{"bump()", "11"}, // ordered: bump mutates counter
+		{"bump()", "11"},
 		{"counter", "11"},
 		{"point{1, 2}.sum()", "3"},
 		{"base", "5"},
@@ -266,7 +257,6 @@ func TestREPLLoadErrors(t *testing.T) {
 			t.Errorf("Load(%s): want error containing %q, got %v", ref, want, err)
 		}
 	}
-	// failed loads leave the session as it was
 	if diff := cmp.Diff([]string{filepath.Join(dir, "m.go")}, r.Loaded()); diff != "" {
 		t.Errorf("Loaded after failures (-want +got):\n%s", diff)
 	}
@@ -289,11 +279,10 @@ func TestREPLConstRedeclare(t *testing.T) {
 	r := New(minigo.NewEngine(dir))
 
 	replEval(t, r, "const C = 10")
-	replFails(t, r, "C = 20", "cannot assign to constant") // assignment stays an error
+	replFails(t, r, "C = 20", "cannot assign to constant")
 	if len(r.Warnings()) != 0 {
 		t.Errorf("failed assignment must not warn: %v", r.Warnings())
 	}
-	// redeclaration is a new definition: allowed, with a warning
 	replEval(t, r, "const C = 30")
 	if diff := cmp.Diff([]string{"const C redeclared (was 10)"}, r.Warnings()); diff != "" {
 		t.Errorf("redeclare warnings (-want +got):\n%s", diff)
@@ -301,7 +290,6 @@ func TestREPLConstRedeclare(t *testing.T) {
 	if diff := cmp.Diff("30", replEval(t, r, "C")); diff != "" {
 		t.Errorf("C (-want +got):\n%s", diff)
 	}
-	// a failing redeclaration keeps the old const and drops the warning
 	replFails(t, r, "const C = missing()", "missing")
 	if len(r.Warnings()) != 0 {
 		t.Errorf("failed redeclaration must not warn: %v", r.Warnings())
@@ -310,7 +298,6 @@ func TestREPLConstRedeclare(t *testing.T) {
 		t.Errorf("C after failed redeclaration (-want +got):\n%s", diff)
 	}
 
-	// :load replacing a prompt const warns; re-loading its own does not
 	for _, c := range []struct {
 		input string
 		want  []string
@@ -367,7 +354,6 @@ func TestREPLLoadFileThenDir(t *testing.T) {
 	if diff := cmp.Diff("3", replEval(t, r, "F() + G()")); diff != "" {
 		t.Errorf("F() + G() (-want +got):\n%s", diff)
 	}
-	// a file of a loaded directory reloads through the directory
 	if _, err := r.Load(ctx, "pkg/g.go"); err == nil || !strings.Contains(err.Error(), "is part of :load "+filepath.Join(dir, "pkg")) {
 		t.Errorf("Load(pkg/g.go): want part-of error, got %v", err)
 	}
@@ -458,7 +444,6 @@ func TestREPLReviewRegressions(t *testing.T) {
 		if diff := cmp.Diff("2", replEval(t, r, "V()")); diff != "" {
 			t.Errorf("prompt func over loaded var (-want +got):\n%s", diff)
 		}
-		// the next load restores the file's var
 		if _, err := r.Load(ctx, "v.go"); err != nil {
 			t.Fatal(err)
 		}
@@ -588,8 +573,6 @@ func TestREPLLoadTakeOver(t *testing.T) {
 
 	t.Run("a reload keeps the prompt definition it took over, not an older one", func(t *testing.T) {
 		dir := t.TempDir()
-		// a const cell is replaced, not written through, so the prompt's
-		// C := 20 is a takeover of its own
 		writeFiles(t, dir, map[string]string{"m.go": "package m\nconst C = 10\nfunc F() int { return 1 }\n"})
 		r := New(minigo.NewEngine(dir))
 		replEval(t, r, "C := 7")

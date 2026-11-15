@@ -26,18 +26,15 @@ func TestREPL(t *testing.T) {
 		return r.Display(v)
 	}
 
-	// a bare expression evaluates and prints
 	if diff := cmp.Diff("3", eval("1 + 2")); diff != "" {
 		t.Fatalf("1+2 (-want +got):\n%s", diff)
 	}
 
-	// := introduces a persistent global
 	eval("x := 10")
 	if diff := cmp.Diff("20", eval("x * 2")); diff != "" {
 		t.Fatalf("x*2 (-want +got):\n%s", diff)
 	}
 
-	// var with and without initializer
 	eval(`var y = "hi"`)
 	if diff := cmp.Diff("hi!", eval(`y + "!"`)); diff != "" {
 		t.Fatalf(`y+"!" (-want +got):\n%s`, diff)
@@ -47,37 +44,31 @@ func TestREPL(t *testing.T) {
 		t.Fatalf("z (-want +got):\n%s", diff)
 	}
 
-	// := on an existing name re-assigns it rather than shadowing
 	eval("x := 99")
 	if diff := cmp.Diff("99", eval("x")); diff != "" {
 		t.Fatalf("x (-want +got):\n%s", diff)
 	}
 
-	// func declarations persist and can call globals
 	eval("func double(n int) int { return n * 2 }")
 	if diff := cmp.Diff("198", eval("double(x)")); diff != "" {
 		t.Fatalf("double(x) (-want +got):\n%s", diff)
 	}
 
-	// type declarations persist
 	eval("type Pair struct { A int\nB int }")
 	eval("p := Pair{A: 1, B: 2}")
 	if diff := cmp.Diff("2", eval("p.B")); diff != "" {
 		t.Fatalf("p.B (-want +got):\n%s", diff)
 	}
 
-	// imports accumulate for later lines
 	eval(`import "strings"`)
 	if diff := cmp.Diff("ABC", eval(`strings.ToUpper("abc")`)); diff != "" {
 		t.Fatalf("strings.ToUpper (-want +got):\n%s", diff)
 	}
 
-	// multi-statement input works; trailing expr is the value
 	if diff := cmp.Diff("5", eval("a := 2\nb := 3\na + b")); diff != "" {
 		t.Fatalf("a+b (-want +got):\n%s", diff)
 	}
 
-	// an error does not corrupt the session
 	if _, err := r.EvalLine(ctx, "x +"); err == nil {
 		t.Fatal("expected parse error")
 	}
@@ -85,7 +76,6 @@ func TestREPL(t *testing.T) {
 		t.Fatalf("x after error (-want +got):\n%s", diff)
 	}
 
-	// Reset clears everything
 	r.Reset()
 	if _, err := r.EvalLine(ctx, "x"); err == nil {
 		t.Fatal("expected undefined name after Reset")
@@ -172,7 +162,6 @@ func TestREPLFailedHoistRollsBack(t *testing.T) {
 	if _, err := r.EvalLine(ctx, "bad := missing"); err == nil {
 		t.Fatal("expected undefined-name error")
 	}
-	// the hoisted cell must be rolled back: `bad` is still undefined
 	if _, err := r.EvalLine(ctx, "bad"); err == nil {
 		t.Fatal("expected bad to stay undefined after failed initializer")
 	}
@@ -182,7 +171,6 @@ func TestREPLCrossLineDecl(t *testing.T) {
 	ctx := context.Background()
 	e := minigo.NewEngine("../testdata")
 	r := New(e)
-	// const decls are hoisted too
 	if _, err := r.EvalLine(ctx, "const k = 42"); err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +193,6 @@ func TestREPLConstAndTypedVar(t *testing.T) {
 		return err
 	}
 
-	// const bindings are read-only after their initializer runs
 	if err := evalErr("const k = 42"); err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +200,6 @@ func TestREPLConstAndTypedVar(t *testing.T) {
 		t.Fatal("expected error assigning to const")
 	}
 
-	// a typed var keeps its declared constraint on later assignments
 	if err := evalErr("var n int"); err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +217,6 @@ func TestREPLConstAndTypedVar(t *testing.T) {
 		t.Fatalf("n (-want +got):\n%s", diff)
 	}
 
-	// a failed blank import must not poison later lines
 	if err := evalErr(`import _ "missing/pkg"`); err == nil {
 		t.Fatal("expected error for missing blank import")
 	}
@@ -258,7 +243,6 @@ func TestREPLDirImport(t *testing.T) {
 		return r.Display(v), nil
 	}
 
-	// a directory import makes the package usable qualified
 	if _, err := r.EvalLine(ctx, `import "./inspectpkg"`); err != nil {
 		t.Fatalf("dir import: %v", err)
 	}
@@ -268,7 +252,6 @@ func TestREPLDirImport(t *testing.T) {
 	if got, err := eval(`inspectpkg.Count`); err != nil || got != "3" {
 		t.Fatalf("dir-imported var: %v %v", got, err)
 	}
-	// the binding survives later reloads (each line re-parses the spec)
 	if got, err := eval(`inspectpkg.User{Name: "n"}.Greet()`); err != nil || got != "hi n" {
 		t.Fatalf("dir-imported method: %v %v", got, err)
 	}
@@ -285,7 +268,6 @@ func TestREPLDirImport(t *testing.T) {
 		t.Fatal("the directory basename must not bind")
 	}
 
-	// an explicit alias wins over the declared name, like Go
 	if _, err := r.EvalLine(ctx, `import odd "./oddname"`); err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +275,6 @@ func TestREPLDirImport(t *testing.T) {
 		t.Fatalf("aliased dir import: %v %v", got, err)
 	}
 
-	// a dot dir-import exposes exported members unqualified
 	if _, err := r.EvalLine(ctx, `import . "./inspectpkg"`); err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +282,6 @@ func TestREPLDirImport(t *testing.T) {
 		t.Fatalf("dot dir import: %v %v", got, err)
 	}
 
-	// a missing dir fails at the import line and poisons nothing
 	if _, err := r.EvalLine(ctx, `import "./missing"`); err == nil {
 		t.Fatal("expected error for a missing dir import")
 	}
@@ -338,7 +318,6 @@ func TestREPLResultEcho(t *testing.T) {
 		}
 	}
 
-	// a trailing expression still echoes — including a literal nil
 	v, err := r.EvalLine(ctx, "x")
 	if err != nil {
 		t.Fatal(err)
@@ -346,7 +325,6 @@ func TestREPLResultEcho(t *testing.T) {
 	if diff := cmp.Diff("2", r.Display(v)); diff != "" {
 		t.Fatalf("x (-want +got):\n%s", diff)
 	}
-	// a literal nil is an expression too — it echoes its nil spelling
 	v, err = r.EvalLine(ctx, "nil")
 	if err != nil {
 		t.Fatal(err)
@@ -389,21 +367,21 @@ func TestIncompleteInput(t *testing.T) {
 		{"x := []int{1,\n2,\n}", false},
 		{"x := []int{1,\n2,", true},
 		{"if x {", true},
-		{"if x {\n}\nelse {", true}, // `} else {` only binds inside one buffer
+		{"if x {\n}\nelse {", true},
 		{"x := (1", true},
-		{"x := 1 +", true}, // operator at EOL: no semicolon inserted
+		{"x := 1 +", true},
 		{"x :=", true},
 		{"x.", true},
-		{"}", false},  // negative depth: an error, not a continuation
-		{"x +", true}, // also a parse error, but waits for the operand
+		{"}", false},
+		{"x +", true},
 		{"// note", false},
 		{"", false},
-		{"x := `abc", true}, // raw strings legitimately span lines
+		{"x := `abc", true},
 		{"x := `abc\ndef`", false},
-		{"/* note", true}, // so do block comments
+		{"/* note", true},
 		{"/* note\nmore */", false},
-		{"x := \"abc", false}, // '"' strings cannot span lines: error now
-		{"x := 'a", false},    // rune literals likewise
+		{"x := \"abc", false},
+		{"x := 'a", false},
 	}
 	for _, c := range cases {
 		if got := IncompleteInput(c.src); got != c.want {
@@ -419,7 +397,6 @@ func TestREPLSpecialsAndBoundPkgs(t *testing.T) {
 	if _, err := r.EvalLine(ctx, `import "fmt"`); err != nil {
 		t.Fatal(err)
 	}
-	// fmt.Println writes via the engine's output writer (discard by default)
 	if _, err := r.EvalLine(ctx, `fmt.Sprintln("ok")`); err != nil {
 		t.Fatal(err)
 	}
@@ -443,7 +420,6 @@ func TestREPLCdLs(t *testing.T) {
 		return r.Display(v), nil
 	}
 
-	// unexported names are not reachable before :cd
 	if _, err := eval("hiddenVar"); err == nil {
 		t.Fatal("hiddenVar should be undefined before :cd")
 	}
@@ -459,7 +435,6 @@ func TestREPLCdLs(t *testing.T) {
 		t.Fatal("Current() should return the entered package")
 	}
 
-	// :ls on the entered package enumerates decls incl. unexported
 	lines, err := r.List(ctx, "")
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -472,7 +447,6 @@ func TestREPLCdLs(t *testing.T) {
 		t.Errorf(":ls missing %q", l)
 	}
 
-	// bare names — including unexported — resolve while inside
 	if got, err := eval("hiddenVar"); err != nil || got != "1" {
 		t.Fatalf("hiddenVar: %v %v", got, err)
 	}
@@ -499,7 +473,6 @@ func TestREPLCdLs(t *testing.T) {
 		}
 	}
 
-	// :cd - restores <repl> scope
 	if err := r.Leave(); err != nil {
 		t.Fatalf("Leave: %v", err)
 	}
@@ -560,7 +533,6 @@ func TestREPLPinWrite(t *testing.T) {
 	// alias — and restored by unpin
 	mustEval("hiddenVar := 100")
 
-	// pin needs an entered package
 	if err := r.Pin(); err == nil {
 		t.Fatal("Pin outside :cd should fail")
 	}
@@ -694,7 +666,6 @@ func TestREPLPinWrite(t *testing.T) {
 		t.Fatalf("Symbol(Wrap): %v %v", got, err)
 	}
 
-	// unpin decouples: writes stay in the package, repl names detach
 	r.Unpin()
 	if r.Pinned() {
 		t.Fatal("unpin should clear write mode")
@@ -702,11 +673,9 @@ func TestREPLPinWrite(t *testing.T) {
 	if got := globalCell(p, "hiddenVar").Elem; got != int64(8) {
 		t.Fatalf("written value lost on unpin: %v", got)
 	}
-	// the repl binding shadowed by the alias is restored, value intact
 	if got, err := eval("hiddenVar"); err != nil || got != "100" {
 		t.Fatalf("hiddenVar after unpin: %v %v", got, err)
 	}
-	// assigns now land in <repl> only — a plain shadow, not a patch
 	if _, err := eval("hiddenVar = 99"); err != nil {
 		t.Fatal(err)
 	}
@@ -716,13 +685,10 @@ func TestREPLPinWrite(t *testing.T) {
 	if got, err := eval("hiddenVar"); err != nil || got != "99" {
 		t.Fatalf("repl shadow: %v %v", got, err)
 	}
-	// a borrowed name (published var) still resolves through the dot-import
 	if got, err := eval("newvar"); err != nil || got != "5" {
 		t.Fatalf("newvar after unpin: %v %v", got, err)
 	}
 
-	// leaving keeps the package patched — including bodies that
-	// reference package members or repl-side imports
 	if err := r.Leave(); err != nil {
 		t.Fatal(err)
 	}
@@ -896,8 +862,8 @@ func TestREPLResultVars(t *testing.T) {
 		{"1 + 2", "3"},
 		{"_1 * 10", "30"},
 		{`"s"`, "s"},
-		{"x := 1", nil},   // no printed value: nothing remembered
-		{"_3 + _2", "33"}, // _1="s", _2=30, _3=3
+		{"x := 1", nil},
+		{"_3 + _2", "33"},
 		{`func pair() (int, string) { return 7, "seven" }`, nil},
 	} {
 		if diff := cmp.Diff(c.want, eval(c.line)); diff != "" {
@@ -905,10 +871,9 @@ func TestREPLResultVars(t *testing.T) {
 		}
 	}
 	eval("pair()")
-	if diff := cmp.Diff("seven", eval("_1[1]")); diff != "" { // a multi-value result is a []any
+	if diff := cmp.Diff("seven", eval("_1[1]")); diff != "" {
 		t.Errorf("_1[1] (-want +got):\n%s", diff)
 	}
-	// a failing input remembers nothing
 	if _, err := r.EvalLine(ctx, "undefinedName"); err == nil {
 		t.Fatal("want error")
 	}

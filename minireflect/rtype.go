@@ -588,8 +588,6 @@ func (e *Env) structTd(td *runtime.TypeDef) *runtime.TypeDef {
 	return td
 }
 
-// ---- reflect.Type methods ----
-
 func (t *RType) Kind() reflect.Kind {
 	if t.rt != nil {
 		return t.rt.Kind()

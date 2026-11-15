@@ -417,8 +417,6 @@ func asRType(v runtime.Value) *RType {
 	return nil
 }
 
-// ---- package-level reflect functions ----
-
 func (e *Env) valueOf(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("reflect.ValueOf needs 1 arg, got %d", len(args))
@@ -1130,8 +1128,6 @@ func (e *Env) copy_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, e
 	}
 	return int64(n), nil
 }
-
-// ---- arg helpers ----
 
 func intOf(v runtime.Value) int64 {
 	switch x := v.(type) {

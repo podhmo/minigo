@@ -234,8 +234,6 @@ func (r *REPL) file() *syntax.File {
 	return r.pkg.Files[0]
 }
 
-// ---- bare-name enumeration ----
-
 // scopeNames enumerates every name a bare identifier could resolve to at
 // the cursor, mirroring the VM's lookup order: file-scope imports,
 // globals, index decls, unnamed imports' package names, dot-import
@@ -289,8 +287,6 @@ func (c *completer) scopeNames(out *[]Candidate) {
 		c.add(out, kw, CandKeyword, "")
 	}
 }
-
-// ---- base-expression resolution (pure AST walk, no eval) ----
 
 // resolveBase parses the selector's base text and resolves it to a value.
 // The whole text is tried first; when it does not parse or resolve
@@ -457,8 +453,6 @@ func memberDeclOf(ix *index.Index, name string) (*index.Decl, bool) {
 	}
 	return nil, false
 }
-
-// ---- member value resolution (read-only selectMember) ----
 
 // memberValue resolves base.name without running user code — the
 // read-only twin of the VM's selectMember. It answers "what would x.y
@@ -778,8 +772,6 @@ func hostMemberValue(x any, name string) (runtime.Value, bool) {
 	return nil, false
 }
 
-// ---- member enumeration ----
-
 // members enumerates everything `v.` could select — the read-only twin
 // of selectMember's dispatch. Declared typedefs contribute methods and
 // fields; host values contribute reflect members; packages contribute
@@ -1004,8 +996,6 @@ func (c *completer) pkgMembers(p *runtime.Package, allNames bool, out *[]Candida
 		}
 	}
 }
-
-// ---- kind/detail rendering ----
 
 func globalKind(v runtime.Value) string {
 	switch x := v.(type) {

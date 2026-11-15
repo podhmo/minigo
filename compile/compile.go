@@ -422,8 +422,6 @@ func (c *compiler) constIdx(v any) int {
 
 func (c *compiler) nameIdx(s string) int { return c.constIdx(s) }
 
-// ---- name resolution ----
-
 func (c *compiler) getRef(name string, pos token.Pos) {
 	isUp, idx, ok := c.fs.find(name)
 	switch {
@@ -653,8 +651,6 @@ func (c *compiler) refRef(name string, pos token.Pos) {
 	}
 }
 
-// ---- public entry points ----
-
 // Func compiles fn.Decl into fn.Chunk.
 func Func(fn *runtime.Function) error {
 	if len(fn.Binds) == 0 || fn.Pkg == nil {
@@ -776,7 +772,6 @@ func compileFunc(fn *runtime.Function) error {
 			c.emit(bytecode.OpCoerceTop, 0, 0, fn.Decl.End())
 		}
 	}
-	// implicit return
 	c.emit(bytecode.OpReturn, nresults, 0, fn.Decl.End())
 	c.ch.NLocals = c.fs.nlocals
 	c.ch.Upvals = c.fs.upvals
@@ -1245,7 +1240,7 @@ func (c *compiler) valueSpec(vs *ast.ValueSpec, d *index.Decl) {
 			c.emit(bytecode.OpConst, c.constIdx(pat), 0, vs.Pos())
 		}
 		for range len(pats) + 1 {
-			c.emit(bytecode.OpNil, 0, 0, vs.Pos()) // no static arg types
+			c.emit(bytecode.OpNil, 0, 0, vs.Pos())
 		}
 		c.emit(bytecode.OpCall, len(pats)+1, 0, vs.Pos())
 		bind(vs.Names[0])
@@ -1354,8 +1349,6 @@ func splitEmbedPatterns(s string) []string {
 		s = s[i:]
 	}
 }
-
-// ---- statements ----
 
 func (c *compiler) stmt(s ast.Stmt) {
 	switch st := s.(type) {
@@ -1986,8 +1979,6 @@ func (c *compiler) inferredTypExpr(e ast.Expr) ast.Expr {
 	}
 	return nil
 }
-
-// ---- compile-time operand typing (the assignability gate) ----
 
 // opTyp is an operand's statically-known type picture for the
 // assignability gate (opCmpGate): te is the declared type expression
@@ -5177,8 +5168,6 @@ func (c *compiler) typeSwitchStmt(st *ast.TypeSwitchStmt) {
 	c.fs.popBlock()
 }
 
-// ---- expressions ----
-
 func (c *compiler) expr(e ast.Expr) {
 	switch x := e.(type) {
 	case *ast.BasicLit:
@@ -5359,7 +5348,7 @@ func (c *compiler) staticTyp(e ast.Expr) {
 
 func (c *compiler) unary(x *ast.UnaryExpr) {
 	switch x.Op {
-	case token.AND: // &x
+	case token.AND:
 		switch t := x.X.(type) {
 		case *ast.Ident:
 			c.refRef(t.Name, t.Pos())
@@ -7170,7 +7159,6 @@ func orderSpecs(ix *index.Index, reps []*index.Decl) []*index.Decl {
 		}
 		r := map[string]bool{}
 		refs(d.Func, r)
-		// follow function-valued references one level further
 		for n := range r {
 			if declared[n] {
 				continue
@@ -7204,7 +7192,6 @@ func orderSpecs(ix *index.Index, reps []*index.Decl) []*index.Decl {
 		for _, e := range vals {
 			refs(e, names)
 		}
-		// widen direct references through function bodies
 		for n := range names {
 			if declared[n] {
 				continue

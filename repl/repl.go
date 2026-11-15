@@ -165,7 +165,6 @@ func (r *REPL) EvalLine(ctx context.Context, input string) (runtime.Value, error
 	// back exactly what this input appended.
 	il, dl, sl := len(r.imports), len(r.decls), len(r.steps)
 
-	// Classify: does the input parse as top-level declarations?
 	fset := token.NewFileSet()
 	if sf, err := syntax.ParseFile(fset, "repl-decl.go", []byte("package repl\n"+input)); err == nil {
 		step, err := r.acceptDecls(ctx, fset, sf.AST)
@@ -186,7 +185,6 @@ func (r *REPL) EvalLine(ctx context.Context, input string) (runtime.Value, error
 		return r.runStep(ctx, step)
 	}
 
-	// Otherwise parse the input as function-body statements.
 	fset = token.NewFileSet()
 	sf, err := syntax.ParseFile(fset, "repl-stmt.go", []byte("package repl\nfunc __s() any {\n"+input+"\n}"))
 	if err != nil {

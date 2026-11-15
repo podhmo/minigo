@@ -76,7 +76,6 @@ func TestCompletePackage(t *testing.T) {
 			t.Fatalf("%s missing in strings. -> %v", want, candNames(cands))
 		}
 	}
-	// prefix filtering
 	cands = r.Complete("strings.New")
 	for _, c := range cands {
 		if c.Name[:3] != "New" {
@@ -302,14 +301,14 @@ func TestCompleteTokenStart(t *testing.T) {
 		line  string
 		start int
 	}{
-		{"pri", 0},         // bare ident: replace the whole tail
-		{"x.pri", 2},       // selector prefix: replace after the dot
-		{"x.", 2},          // dot tail: insert after the dot
-		{`import "str`, 8}, // inside the import literal
-		{"f(", 2},          // no token: pure insertion point
-		{":comp x", 7},     // meta lines are not completed here
-		{"var ", 4},        // trailing space: fresh empty token at the cursor
-		{"x. ", 3},         // space after the dot: fresh empty token
+		{"pri", 0},
+		{"x.pri", 2},
+		{"x.", 2},
+		{`import "str`, 8},
+		{"f(", 2},
+		{":comp x", 7},
+		{"var ", 4},
+		{"x. ", 3},
 	} {
 		start, _ := r.CompleteToken(tc.line)
 		if start != tc.start {
@@ -331,7 +330,6 @@ func TestCompleteClosedImportLiteral(t *testing.T) {
 	if start != len(`import "strings"`) {
 		t.Fatalf("start = %d", start)
 	}
-	// still-open literals complete as before
 	if _, cands := r.CompleteToken(`import "str`); len(cands) == 0 {
 		t.Fatal("open import literal lost its candidates")
 	}
@@ -358,7 +356,6 @@ func TestCompleteRecursiveEmbed(t *testing.T) {
 			t.Fatalf("%s missing in n. -> %v", want, candNames(cands))
 		}
 	}
-	// one level deeper still resolves instead of hanging
 	cands = r.Complete("n.Node.")
 	if !hasCand(cands, "Value") {
 		t.Fatalf("Value missing in n.Node. -> %v", candNames(cands))
@@ -454,7 +451,6 @@ func TestCompleteDirPackage(t *testing.T) {
 			t.Fatalf("%s missing in inspectpkg. -> %v", want, candNames(cands))
 		}
 	}
-	// unexported members stay hidden
 	if hasCand(cands, "hiddenFn") {
 		t.Fatalf("unexported member leaked: %v", candNames(cands))
 	}
@@ -604,7 +600,7 @@ func TestCompleteCommandArgPackageRefs(t *testing.T) {
 	for _, c := range []struct {
 		line      string
 		wantStart int
-		want      []string // must all be present
+		want      []string
 		absent    []string
 	}{
 		{":ls i", 4, []string{"ip", "io"}, nil},

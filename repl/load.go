@@ -231,7 +231,6 @@ func (r *REPL) Load(ctx context.Context, ref string) ([]string, error) {
 		r.release(u, unit)
 	}
 	if i := slices.IndexFunc(r.loads, replaces); i >= 0 {
-		// take the first superseded unit's place, drop the rest
 		r.loads[i] = unit
 		r.loads = slices.Concat(r.loads[:i+1], slices.DeleteFunc(slices.Clone(r.loads[i+1:]), replaces))
 	} else {
