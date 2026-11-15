@@ -71,7 +71,6 @@ func main() {
 	case "gen-intrinsics":
 		err = genIntrinsics(ctx, args[1:])
 	default:
-		// shorthand: `minigo <ref> [func]`
 		cmd = "run"
 		err = run(ctx, args)
 	}
@@ -311,15 +310,12 @@ func run(ctx context.Context, args []string) error {
 	}
 	e := minigo.NewEngine(cwd, opts...)
 	r, err := e.Run(ctx, ref, fn)
-	// profiles cover failed runs too (a trap, os.Exit(N)): the run is
-	// over either way, and a slow failing script is worth profiling.
 	if perr := stop(); err == nil {
 		err = perr
 	}
 	if err != nil {
 		return err
 	}
-	// a void main returns the nil runtime value — print nothing.
 	if r != nil && r != runtime.NIL {
 		fmt.Printf("%v\n", minigo.Format(r))
 	}
@@ -710,8 +706,6 @@ func runREPL(ctx context.Context, in io.Reader, out io.Writer) error {
 	}
 }
 
-// ---- REPL :doc command (go doc) ----
-
 // docTarget maps a :doc argument to `go doc` arguments and the directory
 // to run it in. Accepted spellings:
 //
@@ -779,8 +773,6 @@ func runDoc(ctx context.Context, out io.Writer, r *repl.REPL, cwd, arg string) {
 		fmt.Fprintf(out, "error: %s\n", err)
 	}
 }
-
-// ---- gen-intrinsics subcommand ----
 
 // `minigo gen-intrinsics` emits a Bind table for a package's exported
 // members: functions become WrapFunc reflect adapters, vars/consts become
@@ -917,7 +909,7 @@ func genOne(ctx context.Context, e *minigo.Engine, output, ref string) error {
 		ValueSymbols      []string
 		TypeSymbols       []string
 		StructTypeSymbols []string
-		BindAs            bool // the declared name differs from the last path element
+		BindAs            bool
 	}{p.Name, p.Path, funcs, values, types, structTypes, p.Name != p.Path[strings.LastIndex(p.Path, "/")+1:]}
 
 	dir := filepath.Join(output, filepath.FromSlash(p.Path))
@@ -939,12 +931,6 @@ func genOne(ctx context.Context, e *minigo.Engine, output, ref string) error {
 	fmt.Fprintln(os.Stderr, "generated", name)
 	return nil
 }
-
-// ---- persistent REPL history ----
-
-// Persistent REPL history: a term.History backed by a file
-// (~/.minigo_history). Entries load at startup so Up/Down recall
-// crosses sessions; each accepted line appends to the file.
 
 // fileHistory implements term.History (index 0 = most recent) over a
 // newline-separated file. File errors are ignored — history is
@@ -997,7 +983,7 @@ func (h *fileHistory) Add(entry string) {
 		return
 	}
 	if n := len(h.entries); n > 0 && h.entries[n-1] == entry {
-		return // consecutive duplicates are noise, not history
+		return
 	}
 	h.entries = append(h.entries, entry)
 	if h.max > 0 && len(h.entries) > h.max {
@@ -1021,8 +1007,6 @@ func (h *fileHistory) rewrite() {
 		fmt.Fprintln(f, e)
 	}
 }
-
-// ---- line editing for minigo repl ----
 
 // Line editing for `minigo repl`: on a real terminal the input loop
 // upgrades to a raw-mode line editor (golang.org/x/term) so cursor keys,
@@ -1147,7 +1131,7 @@ func completeSplice(r *repl.REPL, line string, pos int) (newLine string, newPos 
 	}
 	complete := r.CompleteToken
 	if strings.HasPrefix(head, ":") {
-		complete = r.CompleteCommandArg // `:load ./fi` and the like
+		complete = r.CompleteCommandArg
 	}
 	start, cc := complete(head)
 	if len(cc) == 0 {

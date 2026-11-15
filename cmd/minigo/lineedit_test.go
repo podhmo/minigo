@@ -27,7 +27,6 @@ func testREPL(t *testing.T) *repl.REPL {
 
 func TestCompleteSpliceSingle(t *testing.T) {
 	r := testREPL(t)
-	// one candidate: the full name is spliced in
 	newLine, newPos, cands, ok := completeSplice(r, "u.Gre", 5)
 	if !ok {
 		t.Fatal("no splice for u.Gre")
@@ -42,12 +41,10 @@ func TestCompleteSpliceSingle(t *testing.T) {
 
 func TestCompleteSpliceAmbiguous(t *testing.T) {
 	r := testREPL(t)
-	// many candidates share the common extension only
 	newLine, newPos, cands, ok := completeSplice(r, "u.", 2)
 	if !ok {
 		t.Fatal("no splice for u.")
 	}
-	// User members share no common prefix — the line is untouched
 	if newLine != "u." || newPos != 2 {
 		t.Fatalf("u. -> %q pos=%d", newLine, newPos)
 	}
@@ -58,7 +55,6 @@ func TestCompleteSpliceAmbiguous(t *testing.T) {
 
 func TestCompleteSplicePreservesTail(t *testing.T) {
 	r := testREPL(t)
-	// completing mid-line keeps the text after the cursor
 	newLine, newPos, _, ok := completeSplice(r, "println(u.Gre)", 13)
 	if !ok {
 		t.Fatal("no splice mid-line")
@@ -70,8 +66,6 @@ func TestCompleteSplicePreservesTail(t *testing.T) {
 
 func TestCompleteSpliceImport(t *testing.T) {
 	r := testREPL(t)
-	// testdata has two dirs sharing the prefix — only the common
-	// extension goes in
 	newLine, _, cands, ok := completeSplice(r, `import "./insp`, 14)
 	if !ok {
 		t.Fatal("no splice for import path")
@@ -106,7 +100,6 @@ func TestCompleteSpliceCommand(t *testing.T) {
 
 func TestCompleteSpliceEmpty(t *testing.T) {
 	r := testREPL(t)
-	// an unresolvable selector yields no candidates and no rewrite
 	if _, _, _, ok := completeSplice(r, "nosuch.", 7); ok {
 		t.Fatal("nosuch. unexpectedly spliced")
 	}

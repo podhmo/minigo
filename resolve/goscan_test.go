@@ -44,7 +44,6 @@ replace example.com/b => example.com/a v0.0.0
 		t.Errorf("Locate: want ErrBrokenConfig in the chain, got %v", err)
 	}
 
-	// control: a plain miss still carries ErrUnresolved.
 	if _, err := r.Locate(context.Background(), "", "example.com/nothing"); !errors.Is(err, resolve.ErrUnresolved) {
 		t.Errorf("Locate(miss): want ErrUnresolved, got %v", err)
 	}

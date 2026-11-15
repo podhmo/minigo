@@ -26,7 +26,7 @@ func TestSubcommandArgs(t *testing.T) {
 	cases := []struct {
 		name string
 		call func() error
-		want string // "help", "usage", or "" for neither
+		want string
 	}{
 		{"run -h", func() error { return run(ctx, []string{"-h"}) }, "help"},
 		{"run ref --help", func() error { return run(ctx, []string{"./x", "--help"}) }, "help"},

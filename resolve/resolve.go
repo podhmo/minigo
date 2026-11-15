@@ -87,7 +87,7 @@ func resolveSymlinkNearest(path string) (string, error) {
 	for {
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return abs, nil // reached the filesystem root unresolved
+			return abs, nil
 		}
 		tail = append([]string{filepath.Base(dir)}, tail...)
 		dir = parent

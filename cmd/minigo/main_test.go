@@ -21,10 +21,10 @@ func TestRunREPLMultiLine(t *testing.T) {
 		"2,",
 		"}",
 		"x[1]",
-		"s := `a", // multi-line raw string literal
+		"s := `a",
 		"b`",
 		"s",
-		"/* hi", // multi-line block comment
+		"/* hi",
 		"there */",
 		"7",
 		":exit",
@@ -65,13 +65,12 @@ func TestRunREPLPrintGoSyntax(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := out.String()
-	// :dump, then its :p alias on the remembered result
 	if n := strings.Count(got, `repl.P{S:"x", L:[]int(nil)}`+"\n"); n != 2 {
 		t.Errorf("Go-syntax lines = %d, want 2\n---\n%s", n, got)
 	}
 	for _, want := range []string{
 		"usage: :dump <expr>\n",
-		"{x []int(nil)}\n", // :p results are remembered like any other
+		"{x []int(nil)}\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output missing %q\n---\n%s", want, got)

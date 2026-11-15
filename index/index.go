@@ -207,14 +207,12 @@ func build(files []*syntax.File, lenient bool) (*Index, error) {
 						ix.Types[ts.Name.Name] = &TypeDeclInfo{Decl: dl, Methods: map[string]*Decl{}}
 					}
 				case token.IMPORT:
-					// already collected into syntax.File.Imports
 				default:
 					return nil, fmt.Errorf("unexpected GenDecl token %s", d.Tok)
 				}
 			}
 		}
 	}
-	// Attach methods to their receiver type.
 	for _, md := range methodDecls {
 		tname := ReceiverTypeName(md.Func.Recv)
 		if tname == "" {

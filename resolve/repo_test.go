@@ -36,8 +36,8 @@ func TestScanRepo(t *testing.T) {
 	writeFile(t, root, "testdata/t/t.go", "package t\n")
 	writeFile(t, root, ".hidden/h.go", "package h\n")
 	writeFile(t, root, "_under/u.go", "package u\n")
-	writeFile(t, root, "a/b/.dot.go", "package b\n") // dot file ignored
-	writeFile(t, root, "a/b/_gen.go", "package b\n") // underscore file ignored
+	writeFile(t, root, "a/b/.dot.go", "package b\n")
+	writeFile(t, root, "a/b/_gen.go", "package b\n")
 	writeFile(t, root, "nested/go.mod", "module example.com/nested\n\ngo 1.24\n")
 	writeFile(t, root, "nested/n.go", "package nested\n")
 	writeFile(t, root, "nested/sub/s.go", "package sub\n")

@@ -1,11 +1,5 @@
 package resolve
 
-// repo.go — repo-wide package enumeration: the counterpart of the
-// one-dir-at-a-time Resolver interface. ScanRepo finds every directory
-// holding .go files under a root and reports which module claims it,
-// so callers that need "all packages" (affected-package detection,
-// repo sweeps) do not have to name the packages first.
-
 import (
 	"fmt"
 	"io/fs"

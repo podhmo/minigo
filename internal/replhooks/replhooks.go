@@ -22,7 +22,6 @@ import (
 // by (*minigo.Engine).ReplHooks and consumed by repl.New; fields are set
 // once at session creation and treated read-only afterwards.
 type Hooks struct {
-	// Session state.
 	Fset     *token.FileSet
 	Builtins *runtime.Env
 	Specials map[runtime.SymbolID]runtime.SpecialFunc
@@ -35,13 +34,11 @@ type Hooks struct {
 	// replacement session through it.
 	Fresh func() *Hooks
 
-	// Evaluation.
 	NewVM     func() *vm.VM
 	Call      func(ctx context.Context, pkg *runtime.Package, name string, args ...runtime.Value) (runtime.Value, error)
 	EvalExpr  func(ctx context.Context, pkg *runtime.Package, file *syntax.File, expr ast.Expr) (runtime.Value, error)
 	Bootstrap func(p *runtime.Package, run func(*runtime.Function) error) error
 
-	// Package loading and lookup.
 	LoadPath        func(ctx context.Context, path string) (*runtime.Package, error)
 	LoadPathFrom    func(ctx context.Context, fromDir, path string) (*runtime.Package, error)
 	LoadDir         func(ctx context.Context, dir string) (*runtime.Package, error)
@@ -50,7 +47,6 @@ type Hooks struct {
 	LookupDeclIn    func(p *runtime.Package, name string) (*index.Decl, error)
 	Materialize     func(pkg *runtime.Package, d *index.Decl) (runtime.Value, error)
 
-	// Type machinery — the same helpers member dispatch uses.
 	MethodFunc     func(pkg *runtime.Package, recv string, md *index.Decl) *runtime.Function
 	MethodFuncs    func(td *runtime.TypeDef, ptr bool, seen map[*runtime.TypeDef]bool) map[string]*runtime.Function
 	FieldTypes     func(td *runtime.TypeDef) ([]*runtime.TypeDef, error)

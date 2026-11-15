@@ -127,7 +127,6 @@ func langMax(a, b string) string {
 func CheckLang(fset *token.FileSet, f *File, declared map[string]DeclKind) error {
 	lang := f.Lang()
 	if lang == "" || version.Compare(lang, latestGate) >= 0 {
-		// nothing to reject: every gate is at or below the file's lang
 		return nil
 	}
 	c := &langChecker{
@@ -347,7 +346,6 @@ func (c *langChecker) builtinCall(n *ast.CallExpr) {
 			switch n.Args[0].(type) {
 			case *ast.BasicLit, *ast.CompositeLit, *ast.CallExpr,
 				*ast.BinaryExpr, *ast.UnaryExpr:
-				// value form — gated below
 			default:
 				c.typeExpr(n.Args[0])
 			}

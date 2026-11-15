@@ -49,8 +49,6 @@ func FileScopeFiles(dir, named string, cfg BuildConfig) ([]string, error) {
 		}
 		name, cgo, err := packageClause(fset, abs)
 		if err != nil || cgo {
-			// a file whose package clause cannot be read — or that uses
-			// cgo — contributes nothing
 			continue
 		}
 		if name == pkgName {

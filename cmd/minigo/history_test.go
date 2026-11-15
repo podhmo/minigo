@@ -12,7 +12,6 @@ func TestFileHistoryPersist(t *testing.T) {
 	h.Add("x := 1")
 	h.Add("x * 2")
 
-	// a new session sees the previous session's lines
 	h2 := newFileHistory(path, 100)
 	if h2.Len() != 2 {
 		t.Fatalf("want 2 entries, got %d", h2.Len())
@@ -45,7 +44,6 @@ func TestFileHistoryTrim(t *testing.T) {
 	if h.Len() != 3 || h.At(0) != "d" || h.At(2) != "b" {
 		t.Fatalf("ring wrong: Len=%d At=%q..%q", h.Len(), h.At(0), h.At(2))
 	}
-	// the file itself was rewritten down to the tail
 	h2 := newFileHistory(path, 100)
 	if h2.Len() != 3 || h2.At(0) != "d" {
 		t.Fatalf("reloaded: Len=%d At=%q", h2.Len(), h2.At(0))
@@ -57,7 +55,7 @@ func TestFileHistoryMissing(t *testing.T) {
 	if h.Len() != 0 {
 		t.Fatalf("want empty, got %d", h.Len())
 	}
-	h.Add("first") // creates the file
+	h.Add("first")
 	if data, err := os.ReadFile(h.path); err != nil || string(data) != "first\n" {
 		t.Fatalf("file: %q err=%v", data, err)
 	}
