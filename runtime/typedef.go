@@ -12,16 +12,6 @@ import (
 	"github.com/podhmo/minigo/syntax"
 )
 
-// ---- typedef identity ----
-//
-// Type identity is judged in many places — DeepEqual, `==` on interface
-// values, conversions, type switches — and historically each site grew
-// its own comparison (object identity here, name+package there, field
-// lists elsewhere) with subtly different answers. The single entry point
-// is TypIdentical / TypIdenticalStrict; each caller picks the strength
-// its semantics need and the shared spelling machinery below does the
-// work.
-
 // TypIdentical reports whether two typedefs denote the same type, as
 // type assertions and interface comparisons require. For reflect.DeepEqual
 // use [TypIdenticalStrict], which also requires a declared type to be the
@@ -227,8 +217,6 @@ func bindArgEq(a, b Value) bool {
 	}
 	return TypIdentical(at, bt)
 }
-
-// ---- type spelling ----
 
 // TypSpelling renders a type expression to a string that identifies the
 // type: anonymous types are identical when their spellings are equal,

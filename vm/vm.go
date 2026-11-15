@@ -14377,8 +14377,6 @@ func (v *VM) elemFamily(et *runtime.TypeDef) byte {
 	return 0
 }
 
-// ---- references, spread, types, specials (round 4) ----
-
 // popArgs pops argc args off the stack, preceded by the argc static
 // typedefs the compiler emitted above them — one declared typedef per
 // source argument so generic inference binds T to the argument's static
@@ -15077,8 +15075,6 @@ func (s sigResolver) ElemOf(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 }
 
 var errSigNoHook = fmt.Errorf("type resolution hook unavailable")
-
-// ---- declared types: zeros, typed nils, interface boxing (round 5) ----
 
 // asTypedNil unwraps an interface-boxed nil down to its TypedNil.
 func asTypedNil(x runtime.Value) (*runtime.TypedNil, bool) {
@@ -17318,8 +17314,6 @@ func recvTypeParamNames(d *ast.FuncDecl) []string {
 	return syntax.RecvTypeParamNames(d.Recv)
 }
 
-// ---- special forms ----
-
 // specialCtx implements runtime.SpecialContext: the surface a special-form
 // handler sees of the caller's frame.
 type specialCtx struct {
@@ -17609,8 +17603,6 @@ func (s *specialCtx) Eval(e ast.Expr) (runtime.Value, error) {
 func (s *specialCtx) Errorf(n ast.Node, formatStr string, args ...any) error {
 	return fmt.Errorf("%s: %s", s.Position(n), fmt.Sprintf(formatStr, args...))
 }
-
-// ---- call-site generic inference + constraint checks ----
 
 // hasUnbound reports whether any of the given type params lacks a bind.
 func hasUnbound(tparams []string, binds map[string]runtime.Value) bool {
