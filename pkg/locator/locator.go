@@ -86,8 +86,6 @@ func New(startPath string, options ...Option) (*Locator, error) {
 		if !l.UseGoModuleResolver {
 			return nil, err
 		}
-		// We can proceed without a module root, but some features will be limited.
-		// Let's assign rootDir to startPath to have a reference point.
 		rootDir = absPath
 	}
 	l.rootDir = rootDir
@@ -101,7 +99,6 @@ func New(startPath string, options ...Option) (*Locator, error) {
 
 	if goModContent == nil && l.rootDir != "" {
 		goModFilePath := filepath.Join(l.rootDir, "go.mod")
-		// It's okay if go.mod doesn't exist, especially if UseGoModuleResolver is true
 		if content, readErr := os.ReadFile(goModFilePath); readErr == nil {
 			goModContent = content
 		}
@@ -179,7 +176,6 @@ func (l *Locator) FindPackageDir(importPath string) (string, error) {
 // $GOROOT/src/vendor/golang.org/x/net/http/httpguts). A fromDir outside
 // GOROOT skips the vendor search entirely.
 func (l *Locator) FindPackageDirFrom(fromDir, importPath string) (string, error) {
-	// 0. Vendored dependencies of a GOROOT importer.
 	if dir, ok := l.findInVendor(fromDir, importPath); ok {
 		return dir, nil
 	}
@@ -397,7 +393,7 @@ func getModulePathFromBytes(content []byte) (string, error) {
 // getReplaceDirectivesFromBytes reads replace directives from go.mod content.
 func getReplaceDirectivesFromBytes(content []byte) ([]ReplaceDirective, error) {
 	if len(content) == 0 {
-		return nil, nil // No directives in empty file
+		return nil, nil
 	}
 	var directives []ReplaceDirective
 	scanner := bufio.NewScanner(bytes.NewReader(content))
@@ -406,11 +402,11 @@ func getReplaceDirectivesFromBytes(content []byte) ([]ReplaceDirective, error) {
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 
-		if strings.HasPrefix(line, "//") { // Skip comments
+		if strings.HasPrefix(line, "//") {
 			continue
 		}
 
-		if line == "" { // Skip empty lines
+		if line == "" {
 			continue
 		}
 
@@ -419,12 +415,9 @@ func getReplaceDirectivesFromBytes(content []byte) ([]ReplaceDirective, error) {
 				inReplaceBlock = true
 				line = strings.TrimSpace(strings.TrimPrefix(line, "replace"))
 				line = strings.TrimSpace(strings.TrimPrefix(line, "("))
-				// Process first line if it's not just "replace ("
 				if line != "" {
 					directive, err := parseReplaceLine(line)
 					if err != nil {
-						// TODO: Log or handle individual line parsing errors more gracefully
-						// For now, skip malformed lines.
 						fmt.Fprintf(os.Stderr, "warning: skipping malformed replace directive line: %q in go.mod: %v\n", line, err)
 						continue
 					}
@@ -432,31 +425,26 @@ func getReplaceDirectivesFromBytes(content []byte) ([]ReplaceDirective, error) {
 				}
 				continue
 			} else {
-				// Single line replace
-				contentParts := strings.Fields(line) // line is "replace old [v] => new [v]"
-				if len(contentParts) < 1 {           // Should not happen if HasPrefix("replace") is true and line is trimmed
+				contentParts := strings.Fields(line)
+				if len(contentParts) < 1 {
 					continue
 				}
-				directiveLine := strings.Join(contentParts[1:], " ") // "old [v] => new [v]"
+				directiveLine := strings.Join(contentParts[1:], " ")
 
-				// parseReplaceLine will check for "=>"
 				directive, err := parseReplaceLine(directiveLine)
 				if err != nil {
-					// Log the original line for better context if parsing fails
 					fmt.Fprintf(os.Stderr, "warning: skipping malformed single-line replace directive content: %q (from line: %q) in go.mod: %v\n", directiveLine, line, err)
 					continue
 				}
 				directives = append(directives, directive)
-				// No need for 'continue' here as it's the end of the 'if strings.HasPrefix(line, "replace")' block's else path
 			}
-		} else if inReplaceBlock { // Ensure this is 'else if' or structure appropriately
+		} else if inReplaceBlock {
 			if line == ")" {
 				inReplaceBlock = false
 				continue
 			}
 			directive, err := parseReplaceLine(line)
 			if err != nil {
-				// fmt.Fprintf(os.Stderr, "warning: skipping malformed replace directive line: %q in go.mod: %v\n", line, err)
 				continue
 			}
 			directives = append(directives, directive)
@@ -583,9 +571,6 @@ func parseReplaceLine(line string) (ReplaceDirective, error) {
 		dir.IsLocal = true
 		dir.NewPath = newPathOrModule
 		if len(newParts) > 1 {
-			// This case should ideally not happen for local paths as per go.mod spec,
-			// but we'll capture it if present.
-			// The go command itself might error on such go.mod.
 			return ReplaceDirective{}, fmt.Errorf("local replacement path %q should not have a version: %q", dir.NewPath, line)
 		}
 	} else {
@@ -613,7 +598,6 @@ func (l *Locator) PathToImport(absPath string) (string, error) {
 		return "", fmt.Errorf("failed to get absolute path for %s: %w", absPath, err)
 	}
 
-	// 1. Check if it's inside the main module root.
 	if strings.HasPrefix(absPath, l.rootDir) {
 		relPath, err := filepath.Rel(l.rootDir, absPath)
 		if err != nil {
@@ -625,7 +609,6 @@ func (l *Locator) PathToImport(absPath string) (string, error) {
 		return filepath.ToSlash(filepath.Join(l.modulePath, relPath)), nil
 	}
 
-	// 2. Check if it's inside a replaced local directory.
 	for _, r := range l.replaces {
 		if !r.IsLocal {
 			continue
@@ -663,17 +646,13 @@ func ResolvePkgPath(ctx context.Context, path string) (string, error) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			if isFilePathLike {
-				// It looks like a file path but doesn't exist. This is an error.
 				return "", fmt.Errorf("path %q does not exist: %w", path, err)
 			}
-			// It doesn't look like a file path and doesn't exist. Assume it's a package path.
 			return path, nil
 		}
-		// Other stat error.
 		return "", fmt.Errorf("error checking path %q: %w", path, err)
 	}
 
-	// Path exists, so it's a file/dir path.
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return "", fmt.Errorf("could not get absolute path for %q: %w", path, err)
@@ -686,7 +665,6 @@ func ResolvePkgPath(ctx context.Context, path string) (string, error) {
 
 	modRoot, err := findModuleRoot(searchDir)
 	if err != nil {
-		// Re-wrap the error for more context.
 		return "", fmt.Errorf("could not find go.mod for path %q: %w", path, err)
 	}
 	goModPath := filepath.Join(modRoot, "go.mod")

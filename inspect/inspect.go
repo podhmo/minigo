@@ -1456,9 +1456,9 @@ func (te *TypeExpr) Children() []*TypeExpr {
 			out = append(out, wrap(ix))
 		}
 	case *ast.UnaryExpr:
-		out = append(out, wrap(e.X)) // ~T constraints
+		out = append(out, wrap(e.X))
 	case *ast.BinaryExpr:
-		out = append(out, wrap(e.X), wrap(e.Y)) // A | B unions
+		out = append(out, wrap(e.X), wrap(e.Y))
 	case *ast.FuncType:
 		for _, fd := range fieldList(e.Params, te.file, te.pkg, te.tparams) {
 			out = append(out, fd.Type)

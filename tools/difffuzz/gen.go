@@ -101,7 +101,7 @@ func (n *Node) Expr() string {
 	case "sprint":
 		return "fmt.Sprint(" + n.Kids[0].Expr() + ")"
 	}
-	if len(n.Kids) == 1 { // unary - ^ !
+	if len(n.Kids) == 1 {
 		return n.Op + "(" + n.Kids[0].Expr() + ")"
 	}
 	if len(n.Kids) == 2 {
@@ -293,7 +293,7 @@ func (g *Gen) stringExpr(depth int) *Node {
 // Reflect-domain probes instead carry R, a statement-sequence chain.
 type Probe struct {
 	D    *Domain
-	Ctx  string // see Body
+	Ctx  string
 	Root *Node
 	R    *rchain // non-nil for the reflect domain
 }
@@ -363,11 +363,11 @@ func (p Probe) Body() string {
 	}
 	n := p.Root
 	switch p.Ctx {
-	case "assign": // t := a; t op= b — the compound-assign path
+	case "assign":
 		if len(n.Kids) == 2 && n.T.Kind != "bool" && n.Op != "&&" && n.Op != "||" && n.Op != "call" && n.T == n.Kids[0].T {
 			return fmt.Sprintf("t := %s; t %s= %s; return t", n.Kids[0].Expr(), n.Op, n.Kids[1].Expr())
 		}
-	case "incdec": // t := a; t++ / t--
+	case "incdec":
 		if n.T.Kind == "int" || n.T.Kind == "float" {
 			op := "++"
 			if n.Size()%2 == 0 {
@@ -502,7 +502,6 @@ func Shrink(p Probe) []Probe {
 	}
 	var walk func(n *Node, rebuild func(*Node) *Node)
 	walk = func(n *Node, rebuild func(*Node) *Node) {
-		// hoist same-typed descendants
 		for _, d := range descendants(n) {
 			if d.T == n.T {
 				add(rebuild(d), p.Ctx)

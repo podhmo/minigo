@@ -26,21 +26,20 @@ func setupTestModuleWithContent(t *testing.T, goModContent string, subDirsToCrea
 
 	goModPath := filepath.Join(rootDir, "go.mod")
 	if err := os.WriteFile(goModPath, []byte(goModContent), 0644); err != nil {
-		os.RemoveAll(rootDir) // cleanup before fatal
+		os.RemoveAll(rootDir)
 		t.Fatalf("Failed to write go.mod: %v", err)
 	}
 
 	for _, p := range subDirsToCreate {
 		fullPath := filepath.Join(rootDir, p)
 		if err := os.MkdirAll(fullPath, 0755); err != nil {
-			os.RemoveAll(rootDir) // cleanup before fatal
+			os.RemoveAll(rootDir)
 			t.Fatalf("Failed to create sub dir %s: %v", fullPath, err)
 		}
 	}
 
 	var startLookupPath string
 	if len(subDirsToCreate) > 0 {
-		// Use the first created subdirectory for lookup tests, good for testing upward search for go.mod
 		startLookupPath = filepath.Join(rootDir, subDirsToCreate[0])
 	} else {
 		startLookupPath = rootDir
@@ -54,9 +53,8 @@ func setupTestModuleWithContent(t *testing.T, goModContent string, subDirsToCrea
 // setupTestModule is a simplified version for compatibility with old tests.
 func setupTestModule(t *testing.T, modulePath string) (string, func()) {
 	t.Helper()
-	// This setup implies "internal/api" is created and used as the start path for New()
 	_, startPath, cleanup := setupTestModuleWithContent(t, "module "+modulePath, []string{filepath.Join("internal", "api")})
-	return startPath, cleanup // startPath is rootDir/internal/api
+	return startPath, cleanup
 }
 
 func TestNew(t *testing.T) {
@@ -65,7 +63,7 @@ func TestNew(t *testing.T) {
 		startLookupPath, cleanup := setupTestModule(t, moduleName)
 		defer cleanup()
 
-		l, err := New(startLookupPath) // No options
+		l, err := New(startLookupPath)
 		if err != nil {
 			t.Fatalf("New() returned an error: %v", err)
 		}
@@ -85,7 +83,6 @@ func TestNew(t *testing.T) {
 	t.Run("from_overlay", func(t *testing.T) {
 		moduleName := "example.com/fromoverlay"
 		overlayContent := "module " + moduleName
-		// Setup a dummy module on filesystem, but the overlay should take precedence
 		_, startLookupPath, cleanup := setupTestModuleWithContent(t, "module example.com/filesystem", nil)
 		defer cleanup()
 
@@ -102,7 +99,6 @@ func TestNew(t *testing.T) {
 			t.Errorf("Expected module path from overlay %q, got %q", moduleName, l.ModulePath())
 		}
 
-		// Check that replaces are also parsed from overlay
 		overlayWithReplace := Overlay{
 			"go.mod": []byte("module example.com/rp\nreplace example.com/a => ./b"),
 		}
@@ -118,11 +114,9 @@ func TestNew(t *testing.T) {
 
 func TestFindPackageDir(t *testing.T) {
 	moduleName := "example.com/myproject"
-	// startLookupPath will be .../locator-test-XYZ/internal/api
 	startLookupPath, cleanup := setupTestModule(t, moduleName)
 	defer cleanup()
 
-	// moduleActualRootDir is where go.mod is.
 	moduleActualRootDir := filepath.Dir(filepath.Dir(startLookupPath))
 
 	l, err := New(startLookupPath)
@@ -133,12 +127,12 @@ func TestFindPackageDir(t *testing.T) {
 	tests := []struct {
 		name        string
 		importPath  string
-		expectedRel string // Relative to moduleActualRootDir
+		expectedRel string
 		expectErr   bool
 	}{
 		{"standard_subpackage", "example.com/myproject/internal/api", filepath.Join("internal", "api"), false},
 		{"standard_root", "example.com/myproject", "", false},
-		{"other_project", "example.com/otherproject/api", "", true}, // Cannot find other project
+		{"other_project", "example.com/otherproject/api", "", true},
 	}
 
 	for _, tt := range tests {
@@ -165,14 +159,12 @@ func TestFindPackageDir(t *testing.T) {
 func TestFindPackageDirWithReplace(t *testing.T) {
 	mainModulePath := "example.com/mainmodule"
 
-	// Create a master temporary directory for tests that might use absolute paths for replacement
 	masterTmpDir, err := os.MkdirTemp("", "locator-master-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create master temp dir: %v", err)
 	}
 	defer os.RemoveAll(masterTmpDir)
 
-	// Prepare an absolute path target for one of the tests
 	absReplaceDir := filepath.Join(masterTmpDir, "absreplacement", "another")
 	absReplaceSubPkgDir := filepath.Join(absReplaceDir, "pkg")
 	if err := os.MkdirAll(absReplaceSubPkgDir, 0755); err != nil {
@@ -182,9 +174,9 @@ func TestFindPackageDirWithReplace(t *testing.T) {
 	testCases := []struct {
 		name              string
 		goModContent      string
-		subDirsToCreate   []string // Relative to module root for the primary module being set up
+		subDirsToCreate   []string
 		importPath        string
-		expectedFoundPath string // Expected absolute path, or relative to the setup module's root
+		expectedFoundPath string
 		expectErr         bool
 	}{
 		{
@@ -195,7 +187,7 @@ replace example.com/replacedmodule => ./local/replacedmodule
 `,
 			subDirsToCreate:   []string{filepath.Join("local", "replacedmodule", "pkg")},
 			importPath:        "example.com/replacedmodule/pkg",
-			expectedFoundPath: filepath.Join("local", "replacedmodule", "pkg"), // Relative to module root
+			expectedFoundPath: filepath.Join("local", "replacedmodule", "pkg"),
 			expectErr:         false,
 		},
 		{
@@ -223,9 +215,9 @@ replace example.com/replacedmodule v1.0.0 => ./local/versionedreplacedmodule
 		{
 			name:              "replace_with_local_absolute_path",
 			goModContent:      "module example.com/mainmodule\ngo 1.16\nreplace example.com/another => " + absReplaceDir,
-			subDirsToCreate:   []string{}, // No subdirs needed in the main module for this
+			subDirsToCreate:   []string{},
 			importPath:        "example.com/another/pkg",
-			expectedFoundPath: absReplaceSubPkgDir, // This is an absolute path
+			expectedFoundPath: absReplaceSubPkgDir,
 			expectErr:         false,
 		},
 		{
@@ -236,7 +228,7 @@ replace example.com/oldinternal => example.com/mainmodule/newinternal v1.0.0
 `,
 			subDirsToCreate:   []string{filepath.Join("newinternal", "api")},
 			importPath:        "example.com/oldinternal/api",
-			expectedFoundPath: filepath.Join("newinternal", "api"), // Relative to module root
+			expectedFoundPath: filepath.Join("newinternal", "api"),
 			expectErr:         false,
 		},
 		{
@@ -256,9 +248,9 @@ replace example.com/nonexistent => ./does/not/exist
 go 1.16
 replace example.com/foo => ./bar
 `,
-			subDirsToCreate:   []string{"actualpkg"}, // Subdir of mainmodule
+			subDirsToCreate:   []string{"actualpkg"},
 			importPath:        "example.com/mainmodule/actualpkg",
-			expectedFoundPath: "actualpkg", // Relative to module root
+			expectedFoundPath: "actualpkg",
 			expectErr:         false,
 		},
 		{
@@ -317,7 +309,7 @@ replace example.com/prefixmod => ./local/prefixmod
 go 1.16
 replace example.com/prefixmod => ./local/prefixmod
 `,
-			subDirsToCreate:   []string{filepath.Join("local", "prefixmod")}, // only root of replacement exists
+			subDirsToCreate:   []string{filepath.Join("local", "prefixmod")},
 			importPath:        "example.com/prefixmod",
 			expectedFoundPath: filepath.Join("local", "prefixmod"),
 			expectErr:         false,
@@ -336,11 +328,11 @@ require example.com/parent v0.0.0
 replace example.com/parent => ./replaced-parent
 `,
 			subDirsToCreate: []string{
-				"pkg", // real package inside the inner module
-				filepath.Join("replaced-parent", "inner", "pkg"), // shadow in the replaced tree
+				"pkg",
+				filepath.Join("replaced-parent", "inner", "pkg"),
 			},
 			importPath:        "example.com/parent/inner/pkg",
-			expectedFoundPath: "pkg", // Relative to module root
+			expectedFoundPath: "pkg",
 			expectErr:         false,
 		},
 		{
@@ -376,7 +368,6 @@ replace example.com/parent => ./replaced-parent
 
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
-			// Ensure module path in goModContent is consistent for tests assuming mainModulePath
 			var currentGoModContent string
 			if strings.HasPrefix(strings.TrimSpace(tt.goModContent), "module ") {
 				currentGoModContent = tt.goModContent
@@ -389,7 +380,6 @@ replace example.com/parent => ./replaced-parent
 
 			l, err := New(startLookupPath)
 			if err != nil {
-				// This might indicate an issue with go.mod parsing in New() if the go.mod was intended to be valid.
 				t.Fatalf("Test %q: New() returned an error: %v. go.mod content:\n%s", tt.name, err, currentGoModContent)
 			}
 
@@ -399,14 +389,13 @@ replace example.com/parent => ./replaced-parent
 				t.Errorf("Test %q: FindPackageDir() error = %v, expectErr %v. Import path: %s", tt.name, err, tt.expectErr, tt.importPath)
 			}
 
-			if !tt.expectErr && err == nil { // Only check path if no error was expected and no error occurred
+			if !tt.expectErr && err == nil {
 				var expectedPathAbs string
 				if filepath.IsAbs(tt.expectedFoundPath) {
 					expectedPathAbs = tt.expectedFoundPath
 				} else {
 					expectedPathAbs = filepath.Join(moduleRootDir, tt.expectedFoundPath)
 				}
-				// Normalize paths for comparison
 				absExpected, _ := filepath.Abs(expectedPathAbs)
 				absGot, _ := filepath.Abs(dir)
 
@@ -447,17 +436,12 @@ replace example.com/b => example.com/a v0.0.0
 	if !errors.Is(err, ErrBrokenConfig) {
 		t.Errorf("want ErrBrokenConfig, got %v", err)
 	}
-	// a plain miss is not a broken configuration.
 	if _, err := l.FindPackageDir("example.com/neverhere"); errors.Is(err, ErrBrokenConfig) {
 		t.Errorf("plain miss must not carry ErrBrokenConfig: %v", err)
 	}
 }
 
-// TODO: Add tests for getReplaceDirectives specifically if complex parsing logic needs unit testing.
-// For now, its behavior is indirectly tested via TestFindPackageDirWithReplace.
-
 func TestPathToImport(t *testing.T) {
-	// 1. Setup parent module structure
 	parentDir, err := os.MkdirTemp("", "parent-module-*")
 	if err != nil {
 		t.Fatalf("Failed to create parent temp dir: %v", err)
@@ -472,7 +456,6 @@ func TestPathToImport(t *testing.T) {
 		t.Fatalf("Failed to create dependency dir: %v", err)
 	}
 
-	// 2. Setup sub-module structure inside parent
 	subDir := filepath.Join(parentDir, "sub")
 	if err := os.Mkdir(subDir, 0755); err != nil {
 		t.Fatalf("Failed to create sub dir: %v", err)
@@ -490,7 +473,6 @@ replace example.com/parent => ../
 		t.Fatalf("Failed to create sub package dir: %v", err)
 	}
 
-	// 3. Create locator for the sub-module
 	l, err := New(subDir)
 	if err != nil {
 		t.Fatalf("New() failed in sub-directory: %v", err)
@@ -537,18 +519,7 @@ replace example.com/parent => ../
 }
 
 func TestFindPackageDirWithReplaceParent(t *testing.T) {
-	// This test simulates a common scenario in development where a tool (sub-module)
-	// wants to use the development version of its dependency (the parent module).
-	// Structure:
-	// /tmp/root/
-	//   go.mod (module example.com/parent)
-	//   dependency/
-	//     ...
-	//   sub/
-	//     go.mod (module example.com/parent/sub, replace example.com/parent => ../)
-	//     main.go
 
-	// 1. Setup parent module structure
 	parentDir, err := os.MkdirTemp("", "parent-module-*")
 	if err != nil {
 		t.Fatalf("Failed to create parent temp dir: %v", err)
@@ -563,7 +534,6 @@ func TestFindPackageDirWithReplaceParent(t *testing.T) {
 		t.Fatalf("Failed to create dependency dir: %v", err)
 	}
 
-	// 2. Setup sub-module structure inside parent
 	subDir := filepath.Join(parentDir, "sub")
 	if err := os.Mkdir(subDir, 0755); err != nil {
 		t.Fatalf("Failed to create sub dir: %v", err)
@@ -577,15 +547,11 @@ replace example.com/parent => ../
 		t.Fatalf("Failed to write sub go.mod: %v", err)
 	}
 
-	// 3. Test: from within the sub-module, locate a package in the parent module via replace
 	l, err := New(subDir)
 	if err != nil {
 		t.Fatalf("New() failed in sub-directory: %v", err)
 	}
 
-	// We are in "sub", trying to find "example.com/parent/dependency"
-	// The replace rule should map "example.com/parent" to "../" relative to sub's root, which is `parentDir`.
-	// So, "example.com/parent/dependency" becomes "../dependency", which resolves to `parentDir/dependency`.
 	importPath := "example.com/parent/dependency"
 	foundPath, err := l.FindPackageDir(importPath)
 	if err != nil {
@@ -601,14 +567,12 @@ replace example.com/parent => ../
 }
 
 func TestFindPackageDirWithGoModuleResolver(t *testing.T) {
-	// Setup: Create a fake GOMODCACHE
 	fakeGoModCache, err := os.MkdirTemp("", "gomodcache-*")
 	if err != nil {
 		t.Fatalf("failed to create fake gomodcache: %v", err)
 	}
 	defer os.RemoveAll(fakeGoModCache)
 
-	// Setup: Create a fake external module in the cache
 	depPath := "github.com/some/dependency"
 	depVersion := "v1.2.3"
 	depDir := filepath.Join(fakeGoModCache, depPath+"@"+depVersion, "pkg")
@@ -616,7 +580,6 @@ func TestFindPackageDirWithGoModuleResolver(t *testing.T) {
 		t.Fatalf("failed to create fake dependency dir: %v", err)
 	}
 
-	// Setup: Create another fake external module with uppercase letters
 	depPathWithUpper := "github.com/Azure/go-autorest"
 	escapedDepPath, _ := module.EscapePath(depPathWithUpper)
 	depVersionWithUpper := "v0.1.0"
@@ -625,7 +588,6 @@ func TestFindPackageDirWithGoModuleResolver(t *testing.T) {
 		t.Fatalf("failed to create fake dependency dir: %v", err)
 	}
 
-	// Setup: Create a test module that requires the fake dependency
 	goModContent := `
 module example.com/testproject
 go 1.18
@@ -648,18 +610,15 @@ require (
 		expectFound          bool
 		expectedPathContains string
 	}{
-		// Standard Library tests
 		{"stdlib_found_with_resolver", "fmt", true, true, filepath.Join("src", "fmt")},
-		{"stdlib_not_found_without_resolver_heuristic_miss", "net/http", false, false, ""}, // This might pass if old heuristic is kept, but new logic is what we test
+		{"stdlib_not_found_without_resolver_heuristic_miss", "net/http", false, false, ""},
 		{"stdlib_subpkg_found_with_resolver", "net/http", true, true, filepath.Join("src", "net", "http")},
 
-		// External Dependency tests
 		{"external_dep_found_with_resolver", "github.com/some/dependency/pkg", true, true, depDir},
 		{"external_dep_not_found_without_resolver", "github.com/some/dependency/pkg", false, false, ""},
 		{"external_dep_root_found_with_resolver", "github.com/some/dependency", true, true, filepath.Dir(depDir)},
 		{"external_dep_with_upper_found", "github.com/Azure/go-autorest/autorest", true, true, depDirWithUpper},
 
-		// Negative tests
 		{"non_existent_dep_not_found", "github.com/non/existent", true, false, ""},
 		{"package_in_module_still_found", "example.com/testproject/cmd", true, true, "cmd"},
 	}
@@ -671,7 +630,6 @@ require (
 				opts = append(opts, WithGoModuleResolver())
 			}
 
-			// The overlay needs to be passed via an option now
 			overlay := Overlay{"go.mod": []byte(goModContent)}
 			opts = append(opts, WithOverlay(overlay))
 
@@ -691,7 +649,7 @@ require (
 				if !strings.Contains(absFoundPath, tc.expectedPathContains) {
 					t.Errorf("expected found path %q to contain %q", absFoundPath, tc.expectedPathContains)
 				}
-			} else { // expect not found
+			} else {
 				if err == nil {
 					t.Errorf("expected error for %q, but found path: %q", tc.importPath, foundPath)
 				}
@@ -725,7 +683,7 @@ func TestGetGoModCache(t *testing.T) {
 		}
 		originalGOMODCACHE := os.Getenv("GOMODCACHE")
 		originalGOPATH := os.Getenv("GOPATH")
-		os.Setenv("GOMODCACHE", "") // Unset
+		os.Setenv("GOMODCACHE", "")
 		os.Setenv("GOPATH", gopath)
 		defer func() {
 			os.Setenv("GOMODCACHE", originalGOMODCACHE)
@@ -742,8 +700,6 @@ func TestGetGoModCache(t *testing.T) {
 		}
 	})
 
-	// Testing the home directory case is complex as it depends on the user's environment.
-	// We'll skip it as the two main cases are covered.
 }
 
 func TestResolvePkgPath(t *testing.T) {
@@ -826,13 +782,10 @@ func main() {}
 		},
 		{
 			name: "path outside module",
-			// This test requires creating a directory outside the module.
-			// We'll create a sibling directory to tmpdir.
 			startPath: func() string {
 				parentDir := filepath.Dir(tmpdir)
 				outsideDir := filepath.Join(parentDir, "outside_module")
 				os.Mkdir(outsideDir, 0755)
-				// Defer cleanup of this new directory
 				t.Cleanup(func() { os.RemoveAll(outsideDir) })
 				return outsideDir
 			}(),
@@ -881,7 +834,6 @@ func TestFindPackageDirFromVendor(t *testing.T) {
 		t.Errorf("vendor dir mismatch (-want +got):\n%s", diff)
 	}
 
-	// an importer outside GOROOT skips the vendor search entirely.
 	if _, err := l.FindPackageDirFrom(t.TempDir(), "golang.org/x/net/http/httpguts"); err == nil {
 		t.Errorf("expected resolution to fail for a non-GOROOT importer")
 	}

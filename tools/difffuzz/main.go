@@ -125,8 +125,6 @@ func (c *common) writer() (io.Writer, func() error, error) {
 	return f, f.Close, nil
 }
 
-// ---- gen ------------------------------------------------------------------
-
 type finding struct {
 	Probe   Probe
 	Result  ProbeResult
@@ -139,7 +137,7 @@ type finding struct {
 // expression contains another (smaller, non-leaf) finding's expression is
 // most likely the same bug propagated upward, so it is folded under it.
 func foldDerived(bugs map[string]*finding) {
-	keys := sortedKeys(bugs, func(f *finding) int { return -f.Probe.Size() }) // smallest first
+	keys := sortedKeys(bugs, func(f *finding) int { return -f.Probe.Size() })
 	for i := len(keys) - 1; i >= 0; i-- {
 		b := bugs[keys[i]]
 		for _, ka := range keys[:i] {

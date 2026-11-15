@@ -177,7 +177,6 @@ type Pair[K comparable, V any] struct {
 func (p Pair[K, V]) String() string { return fmt.Sprintf("%v=%v", p.Key, p.Val) }`
 
 var langSigs = []*Sig{
-	// --- structs: value/pointer methods, method values/expressions, value semantics
 	sig("PointLit", lPoint, "(Point{X: $1, Y: $2})", lInt, lInt),
 	sig("Point.Add", lPoint, "$1.Add($2)", lPoint, lPoint),
 	sig("Point.Scale", lPoint, "func() Point { c := $1; c.Scale($2); return c }()", lPoint, lInt),
@@ -199,7 +198,6 @@ var langSigs = []*Sig{
 	sig("anonStruct", lStr, `fmt.Sprint(struct{ A int; B string }{$1, $2})`, lInt, lStr),
 	sig("Counter%v", lStr, `fmt.Sprint(Counter{$1}, " ", &Counter{$1})`, lInt),
 
-	// --- embedding and promotion
 	sig("LabeledLit", lLab, "(Labeled{Point: $1, Label: $2})", lPoint, lStr),
 	sig("Labeled%v", lStr, `fmt.Sprintf("%v|%+v", $1, $1)`, lLab),
 	sig("Labeled.X", lInt, "$1.X", lLab),
@@ -208,7 +206,6 @@ var langSigs = []*Sig{
 	sig("Labeled.Scale", lLab, "func() Labeled { c := $1; c.Scale($2); return c }()", lLab, lInt),
 	sig("Labeled==", xBool, "($1 == $2)", lLab, lLab),
 
-	// --- pointers
 	sig("addrOf", lPP, "(&Point{$1, $2})", lInt, lInt),
 	sig("newPoint", lPP, "func() *Point { p := new(Point); p.X = $1; return p }()", lInt),
 	sig("Ptr", lPP, "Ptr($1)", lPoint),
@@ -220,7 +217,6 @@ var langSigs = []*Sig{
 	sig("ptrEq", xBool, "($1 == $2)", lPP, lPP),
 	sig("ptrAlias", lInt, "func() int { c := *$1; p := &c; q := p; q.X = 9; return p.X + c.X }()", lPP),
 
-	// --- interfaces: dispatch, typed nil, assertions, type switches
 	sig("Shape.Area", lInt, "$1.Area()", lShape),
 	sig("Shape.Kind", lStr, "$1.Kind()", lShape),
 	sig("Shape==nil", xBool, "($1 == nil)", lShape),
@@ -248,7 +244,6 @@ var langSigs = []*Sig{
 	sig("KindOf", lStr, "KindOf($1)", lAny),
 	sig("KindOfPoint", lStr, "KindOf($1)", lPoint),
 
-	// --- error values
 	sig("err.Error", lStr, "$1.Error()", lErr),
 	sig("err==nil", xBool, "($1 == nil)", lErr),
 	sig("err%v", lStr, `fmt.Sprintf("%v|%T", $1, $1)`, lErr),
@@ -257,7 +252,6 @@ var langSigs = []*Sig{
 	sig("typedNilErr", lErr, "func() error { var p *MyErr; if $1 { return p }; return nil }()", xBool),
 	sig("errAsAny", lAny, "any($1)", lErr),
 
-	// --- control flow
 	sig("labeledLoop", lInt, "func() int { n := 0; outer: for i := 0; i < $1; i++ { for j := 0; j < $2; j++ { if j > i { continue outer }; if i*j > 6 { break outer }; n++ } }; return n }()", lInt, lInt),
 	sig("goto", lInt, "func() int { i, n := 0, 0; loop: if i < $1 { n += i; i++; goto loop }; return n }()", lInt),
 	sig("fallthrough", lStr, `func() string { out := ""; switch { case $1 > 2: out += "a"; fallthrough; case $1 > 0: out += "b"; default: out += "c" }; return out }()`, lInt),
@@ -286,7 +280,6 @@ var langSigs = []*Sig{
 	sig("goroutineWG", lInt, "func() int { var wg sync.WaitGroup; var mu sync.Mutex; t := 0; for i := range 4 { wg.Add(1); go func() { defer wg.Done(); mu.Lock(); t += i * $1; mu.Unlock() }() }; wg.Wait(); return t }()", lInt),
 	sig("goroutinePipe", lStr, "func() string { in := make(chan int); out := make(chan string); go func() { for v := range in { out <- fmt.Sprint(v * 2) }; close(out) }(); go func() { for _, x := range $1 { in <- x }; close(in) }(); s := \"\"; for v := range out { s += v + \",\" }; return s }()", lIS),
 
-	// --- generics
 	sig("Map", xSS, "Map($1, func(x int) string { return fmt.Sprint(x * 2) })", lIS),
 	sig("MapPoint", lStr, "fmt.Sprint(Map($1, func(x int) Point { return Point{x, -x} }))", lIS),
 	sig("Filter", lIS, "Filter($1, func(x int) bool { return x > $2 })", lIS, lInt),

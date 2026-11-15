@@ -50,17 +50,13 @@ func RenderB()  {}
 func serve()    {}
 func notStory() {}
 `,
-		// an untagged file is not scanned — its Story funcs do not
-		// exist for discovery.
-		"other.go": "package app\n\nfunc StoryOther() {}\n",
-		// test files are never scanned.
+		"other.go":    "package app\n\nfunc StoryOther() {}\n",
 		"app_test.go": "package app\n\nfunc StoryInTest() {}\n",
 	})
 	stories, err := storybook.Discover(dir, "story")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// sorted by name; only the tagged file's exported Story funcs.
 	names := make([]string, 0, len(stories))
 	for _, s := range stories {
 		names = append(names, s.Name)

@@ -24,8 +24,6 @@ func TestRunReportsTheWriteSet(t *testing.T) {
 	})
 
 	res, err := gentest.Run(t, context.Background(), dir, func(ctx context.Context) error {
-		// a pretend generator: creates one file, rewrites another,
-		// removes a third; go.mod and gen.go stay untouched.
 		if err := os.WriteFile(filepath.Join(dir, "generated.go"), []byte("package m\n\n// generated\n"), 0644); err != nil {
 			return err
 		}
