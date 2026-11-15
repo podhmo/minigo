@@ -76,7 +76,7 @@ func gridRows(g group) []entry {
 }
 
 var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
-<html><head><meta charset="utf-8"><title>stories: {{.Dir}}</title>
+<html><head><meta charset="utf-8"><title>stories: {{.Dir}}</title>{{if .ScriptTag}}{{.ScriptTag}}{{end}}
 <style>
 body { margin: 0; display: flex; height: 100vh; font-family: sans-serif; }
 nav { width: 18rem; overflow: auto; border-right: 1px solid #ccc; padding: .5rem; }
@@ -109,7 +109,7 @@ iframe.sized { flex: none; margin-inline: auto; border-inline: 1px dashed #ccc; 
 // template edit can be checked against every data state at once. Each
 // variant is an iframe at the chosen width (?w=, flexible when unset).
 var gridTmpl = template.Must(template.New("grid").Parse(`<!doctype html>
-<html><head><meta charset="utf-8"><title>{{.Name}} variants</title>
+<html><head><meta charset="utf-8"><title>{{.Name}} variants</title>{{if .ScriptTag}}{{.ScriptTag}}{{end}}
 <style>
 body { margin: 0; display: flex; flex-direction: column; height: 100vh; font-family: sans-serif; }
 header { display: flex; gap: 1em; align-items: baseline; padding: .4rem .6rem; border-bottom: 1px solid #ccc; }
@@ -345,8 +345,9 @@ func (b *Book) Handler() http.Handler {
 			// nav rather than failing, so the book is usable while the
 			// stories are written.
 			if err := indexTmpl.Execute(w, map[string]any{
-				"Dir": b.Dir,
-				"Err": err.Error(),
+				"Dir":       b.Dir,
+				"Err":       err.Error(),
+				"ScriptTag": b.ScriptTag(),
 			}); err != nil {
 				slog.ErrorContext(r.Context(), "index", "err", err)
 			}
@@ -400,11 +401,12 @@ func (b *Book) Handler() http.Handler {
 			}
 		}
 		if err := indexTmpl.Execute(w, map[string]any{
-			"Dir":    b.Dir,
-			"Groups": groups,
-			"S":      sel,
-			"W":      wpx,
-			"Widths": []string{"", "320", "360", "768"},
+			"Dir":       b.Dir,
+			"Groups":    groups,
+			"S":         sel,
+			"W":         wpx,
+			"Widths":    []string{"", "320", "360", "768"},
+			"ScriptTag": b.ScriptTag(),
 		}); err != nil {
 			slog.ErrorContext(r.Context(), "index", "err", err)
 		}
@@ -427,11 +429,12 @@ func (b *Book) Handler() http.Handler {
 			return
 		}
 		if err := gridTmpl.Execute(w, map[string]any{
-			"Index":   "/",
-			"Name":    name,
-			"Stories": entries,
-			"W":       r.URL.Query().Get("w"),
-			"Widths":  []string{"", "320", "360", "768"},
+			"Index":     "/",
+			"Name":      name,
+			"Stories":   entries,
+			"W":         r.URL.Query().Get("w"),
+			"Widths":    []string{"", "320", "360", "768"},
+			"ScriptTag": b.ScriptTag(),
 		}); err != nil {
 			slog.ErrorContext(r.Context(), "grid", "err", err)
 		}
@@ -455,10 +458,14 @@ func (b *Book) Handler() http.Handler {
 		if len(res.Body) > 0 && h.Get("Content-Type") == "" {
 			h.Set("Content-Type", "text/html; charset=utf-8")
 		}
+		// A story opened in its own tab reloads too — only when the
+		// response is HTML, so non-HTML bodies stay byte-identical.
+		body := b.AppendLiveReload(h.Get("Content-Type"), res.Body)
 		w.WriteHeader(res.Status)
-		w.Write(res.Body)
+		w.Write(body)
 	})
 	mux.Handle("GET /static/", b.staticHandler())
+	b.MountLiveReload(mux)
 	return mux
 }
 

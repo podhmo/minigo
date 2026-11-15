@@ -128,11 +128,21 @@ the static directory — so serving the export root resolves `/static/` the
 same way the live preview does; run it again after source changes. `preview`
 keeps an HTTP server running and forks a fresh interpreter session on each
 request, so a browser reload reflects edits to Go code, templates, and
-stories. It also serves `app/static/` under `/static/`, so stylesheet
+stories — every request re-reads the current file contents, no restart
+needed. It also serves `app/static/` under `/static/`, so stylesheet
 edits need no re-execution at all, and the index offers fixed iframe
 widths (320px, 360px, 768px) for checking narrow layouts. Use it when
 repeated exports become inconvenient; it is not needed for a one-time
 HTML inspection.
+
+Adding `-watch` makes open pages reload on their own: the server polls
+the package directory (and the static root) by path, size, and mtime,
+and pushes a reload event over `/_livereload` (SSE) whenever a file
+changes — story sources, templates, `//go:embed` assets, CSS. Pages
+load `/_livereload.js` only in this mode, so a plain run serves no
+extra JavaScript, and a new `Story*` file shows up in the index on the
+next reload. A mid-edit parse or render failure shows the error page on
+the next reload and does not stop watching.
 
 The index groups stories by the render function they drive — by
 convention the last unqualified call in the story body (`RenderUser`,
@@ -149,11 +159,14 @@ go run ./cmd/storybook -list ./app
 go run ./cmd/storybook ./app StoryUser
 go run ./cmd/storybook -http 127.0.0.1:6006 ./app
 go run ./cmd/storybook -static ./app/static -http 127.0.0.1:6006 ./app
+go run ./cmd/storybook -watch -http 127.0.0.1:6006 ./app
 go run ./cmd/storybook -o /tmp/storybook-out ./app
 ```
 
 `-static` defaults to `<pkgdir>/static`; pass it to serve a different
-directory.
+directory. `-watch` is `-http`-only; consumers embedding `storybook.Book`
+expose the same option through `Book.Watch`, `Book.MountLiveReload`,
+`Book.ScriptTag`, and `Book.AppendLiveReload`.
 
 The helper is an ordinary Go executable embedding minigo as a library.
 `Book` scans the target source directory for exported top-level `Story*`

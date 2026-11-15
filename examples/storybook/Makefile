@@ -1,4 +1,4 @@
-.PHONY: help render preview list export test
+.PHONY: help render preview preview-watch list export test
 
 PREVIEW_ADDR ?= 127.0.0.1:6006
 PKG ?= ./app
@@ -13,6 +13,7 @@ help:
 		'' \
 		'Optional helper (discovery, snapshots, or repeated browser reloads):' \
 		'make preview     Optional browser helper (PREVIEW_ADDR=127.0.0.1:6006)' \
+		'make preview-watch  Same, reloading open pages on file changes (-watch)' \
 		'make list        List stories (PKG=./app)' \
 		'make export      Export stories and a browser index (OUT=/tmp/minigo-storybook-out)' \
 		'  export saves a snapshot; preview re-renders on each request.' \
@@ -28,6 +29,10 @@ render:
 # Optional helper: discovery, saved snapshots, and a server for editing loops.
 preview:
 	go -C ./cmd/storybook run ./ -http "$(PREVIEW_ADDR)" "$(abspath $(PKG))"
+
+# Same server with live reload: open pages refresh on every file change.
+preview-watch:
+	go -C ./cmd/storybook run ./ -watch -http "$(PREVIEW_ADDR)" "$(abspath $(PKG))"
 
 list:
 	go -C ./cmd/storybook run ./ -list "$(abspath $(PKG))"
