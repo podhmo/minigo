@@ -232,7 +232,9 @@ func fingerprint(dirs []string) (string, error) {
 	return sb.String(), nil
 }
 
-// walkFingerprint records one tree. A symlink entry keeps its own line
+// walkFingerprint records one tree. A root reached through a symlink is
+// resolved first — WalkDir does not follow it — so a linked directory
+// is walked where it points. A symlink entry keeps its own line
 // (relinking moves it) plus its target's — an asset reachable through a
 // link updates like a real file. A linked directory is walked too, with
 // seen guarding against link cycles; an alias naming a tree already
@@ -247,11 +249,11 @@ func walkFingerprint(sb *strings.Builder, i int, root string, seen map[string]bo
 		return nil
 	}
 	seen[real] = true
-	return filepath.WalkDir(root, func(name string, d fs.DirEntry, err error) error {
+	return filepath.WalkDir(real, func(name string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if strings.HasPrefix(d.Name(), ".") && name != root {
+		if strings.HasPrefix(d.Name(), ".") && name != real {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}

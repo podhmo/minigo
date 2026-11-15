@@ -205,6 +205,50 @@ func TestWatchFollowsSymlinks(t *testing.T) {
 	}
 }
 
+// A watched directory reached through a symlink is walked where it
+// points — filepath.WalkDir does not follow the root link itself.
+func TestWatchLinkedRoot(t *testing.T) {
+	outside := writePackage(t, map[string]string{
+		"go.mod":   "module x\n\ngo 1.26\n",
+		"app.go":   "package app\n",
+		"story.go": "//go:build story\n\npackage app\n\nfunc StoryX() {}\n",
+	})
+	link := filepath.Join(t.TempDir(), "app")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	b := &storybook.Book{Dir: link, Tag: "story"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := b.Watch(ctx, 10*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	b.MountLiveReload(mux)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	reqCtx, reqCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer reqCancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, ts.URL+storybook.LiveReloadEventsPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	r := bufio.NewReader(res.Body)
+	if got := readEvent(t, r); got != "retry: 1000\n" {
+		t.Fatalf("first message %q", got)
+	}
+	writeFile(t, filepath.Join(outside, "app.go"), "package app\n\nvar X = 1\n")
+	if got := readEvent(t, r); got != "event: reload\ndata: \n" {
+		t.Errorf("edit under a linked root: event %q", got)
+	}
+}
+
 // readEvent reads one SSE message, up to the blank line that ends it.
 func readEvent(t *testing.T, r *bufio.Reader) string {
 	t.Helper()
