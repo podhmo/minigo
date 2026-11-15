@@ -408,8 +408,6 @@ func taskShape(ft *ast.FuncType) ([]string, bool) {
 	return names, true
 }
 
-// ---- task package intrinsics ----
-
 func (r *Runner) taskBinds() map[string]runtime.Value {
 	return map[string]runtime.Value{
 		"Deps":       &runtime.BuiltinFunc{Name: "task.Deps", Fn: r.deps},
@@ -704,8 +702,6 @@ func (r *Runner) resolvePath(p string) string {
 	}
 	return filepath.Join(r.engine.WorkingDir(), p)
 }
-
-// ---- marshalling helpers ----
 
 // strOf renders a script argument as a string for command lines.
 func strOf(v runtime.Value) string {

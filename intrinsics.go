@@ -3522,8 +3522,6 @@ func syncOnceWrap(name string, args []runtime.Value) (runtime.Value, error) {
 	}}, nil
 }
 
-// ---- sync/atomic ----
-
 // atomicBox backs the bound sync/atomic Value and Pointer[T]: the cell
 // holds script values verbatim under a mutex so Load hands back the same
 // objects Store received (a host atomic.Value would serve identically —
@@ -3841,8 +3839,6 @@ func atomicWord(vc runtime.VMCaller, td *runtime.TypeDef, x runtime.Value) (runt
 	}
 	return cv, nil
 }
-
-// ---- value marshalling ----
 
 // hostHelpers builds BuiltinFuncs whose Fn marshals arguments to Go natives
 // and results back to runtime values.

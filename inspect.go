@@ -53,12 +53,11 @@ func (e *Engine) installInspect() {
 			}
 			return xinspect.NoDeclPath(str(runtime.Unwrap(args[0]))), nil
 		}),
-		// ---- view types: the typedef entries let scripts spell
-		// *inspect.Field in signatures and type asserts. HostNew boxes
-		// the same pointer the intrinsics return, so x.(*inspect.Field)
-		// matches the *xinspect.Field a GoValue carries — no host
-		// construction surface is intended, the typedef only names the
-		// identity.
+		// view types: the typedef entries let scripts spell *inspect.Field
+		// in signatures and type asserts. HostNew boxes the same pointer
+		// the intrinsics return, so x.(*inspect.Field) matches the
+		// *xinspect.Field a GoValue carries — no host construction surface
+		// is intended, the typedef only names the identity.
 		"Decl":     hostType("inspect.Decl", func() any { return &xinspect.Decl{} }),
 		"Field":    hostType("inspect.Field", func() any { return &xinspect.Field{} }),
 		"File":     hostType("inspect.File", func() any { return &xinspect.File{} }),
@@ -72,7 +71,6 @@ func (e *Engine) installInspect() {
 		// Packages' element view — a resolve.RepoPackage descriptor, not
 		// a parsed package: loaders (DirOf/FileOf) do the loading.
 		"RepoPackage": hostType("inspect.RepoPackage", func() any { return &xinspect.RepoPackage{} }),
-		// ---- locators ----
 		"PackageOf": bf("PackageOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("PackageOf", "one path string")
@@ -185,7 +183,6 @@ func (e *Engine) installInspect() {
 			}
 			return p, nil
 		}),
-		// ---- symbol -> package / value -> decl ----
 		"OwnerOf": bf("OwnerOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("OwnerOf", "one value")
@@ -235,7 +232,6 @@ func (e *Engine) installInspect() {
 			}
 			return &runtime.GoValue{V: d}, nil
 		}),
-		// ---- index layer ----
 		"Decls": bf("Decls", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("Decls", "a package or file view")
@@ -308,7 +304,6 @@ func (e *Engine) installInspect() {
 			}
 			return boxedSlice(xinspect.CommentsOf(f)), nil
 		}),
-		// ---- metadata ----
 		"Kind": bf("Kind", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {
@@ -403,7 +398,6 @@ func (e *Engine) installInspect() {
 			}
 			return &runtime.GoValue{V: &runtime.SymbolID{PackagePath: path, Name: s.Name}}, nil
 		}),
-		// ---- syntax layer ----
 		"Fields": bf("Fields", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {
@@ -524,7 +518,6 @@ func (e *Engine) installInspect() {
 			}
 			return &runtime.GoValue{V: node}, nil
 		}),
-		// ---- body layer ----
 		"Body": bf("Body", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {
@@ -697,7 +690,6 @@ func (e *Engine) installInspect() {
 			}
 			return &runtime.Slice{Elems: xs}, nil
 		}),
-		// ---- value layer ----
 		"Value": bf("Value", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, argerr("Value", "a package and a name")

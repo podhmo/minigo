@@ -14,8 +14,6 @@ import (
 	"github.com/podhmo/minigo/vm"
 )
 
-// ---- interface satisfaction, method sets, embedded dispatch ----
-//
 // Duck-typing: an interface typedef carries its required method names
 // (declared + transitively embedded); a value satisfies it when its
 // callable method names cover the requirement set. Method names on
@@ -973,8 +971,6 @@ func (e *Engine) elemTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.TypeDe
 	}
 	return e.resolveTypeRef(from, x)
 }
-
-// ---- shared helpers ----
 
 // typeParamNames extracts parameter names from a type parameter list,
 // in declaration order — the shared walk lives in syntax.

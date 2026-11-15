@@ -681,10 +681,6 @@ func registerImports(im *ImportManager, te *xinspect.TypeExpr) {
 	}
 }
 
-// -----------------------------------------------------------------------------
-// Assignment Logic
-// -----------------------------------------------------------------------------
-
 type ruleMatchResult struct {
 	Rule           *model.TypeRule
 	IsPointerMatch bool
@@ -713,10 +709,6 @@ func findMatchingRule(info *model.ParsedInfo, srcT, dstT *xinspect.TypeExpr) *ru
 
 	return nil
 }
-
-// -----------------------------------------------------------------------------
-// Conversion fragments
-// -----------------------------------------------------------------------------
 
 // frag is one converted value: stmts must run first, after which expr
 // holds the value. Every shape (pointer, slice, array, map, struct,

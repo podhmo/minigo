@@ -82,7 +82,7 @@ func TestEntryPoints(t *testing.T) {
 		fn   string
 		want any
 	}{
-		{"Answer", int64(67)}, // fib(10)=55 + Global=10 + B=2
+		{"Answer", int64(67)},
 		{"SumRange", int64(0 + 1 + 1 + 2 + 2 + 3 + 3 + 4)},
 		{"Methods", int64(7)},
 		{"Closure", int64(3)},
@@ -291,12 +291,12 @@ func TestDepOrderAndFixes(t *testing.T) {
 		fn   string
 		want any
 	}{
-		{"Dep", int64(2)},          // var B = A+1 before var A — dep order
-		{"ImportInit", "hi x"},     // import inside a package-level init expr
-		{"ForContinue", int64(25)}, // 1+3+5+7+9
-		{"RangeOne", int64(12)},    // single-var range yields indexes 0,1,2
-		{"Redefine", int64(56)},    // x,y := keeps existing x binding
-		{"StructCopy", int64(1)},   // b := a copies struct value
+		{"Dep", int64(2)},
+		{"ImportInit", "hi x"},
+		{"ForContinue", int64(25)},
+		{"RangeOne", int64(12)},
+		{"Redefine", int64(56)},
+		{"StructCopy", int64(1)},
 	}
 	for _, c := range cases {
 		got := run(t, e, "./testdata/deporder", c.fn)
@@ -336,14 +336,14 @@ func TestDeferRecover(t *testing.T) {
 		fn   string
 		want runtime.Value
 	}{
-		{"DeferOrder", int64(321)},        // defers run LIFO
-		{"DeferArgCaptured", int64(1)},    // args evaluated at defer time
-		{"NamedResultDefer", int64(15)},   // defer mutates named result
-		{"RecoverValue", "boom"},          // defer+recover captures panic
-		{"RecoverOutsideDefer", int64(1)}, // recover outside defer is nil
-		{"StillPanic", runtime.NIL},       // recovered panic returns normally
-		{"DeferBuiltinClose", int64(2)},   // deferred builtin runs at teardown
-		{"DeferBuiltinRecover", int64(3)}, // defer func(){ defer recover() } catches
+		{"DeferOrder", int64(321)},
+		{"DeferArgCaptured", int64(1)},
+		{"NamedResultDefer", int64(15)},
+		{"RecoverValue", "boom"},
+		{"RecoverOutsideDefer", int64(1)},
+		{"StillPanic", runtime.NIL},
+		{"DeferBuiltinClose", int64(2)},
+		{"DeferBuiltinRecover", int64(3)},
 	}
 	for _, c := range cases {
 		got := run(t, e, "./testdata/deferchan", c.fn)
@@ -357,7 +357,6 @@ func TestDeferRecover(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "swallowed") {
 		t.Fatalf("DeferBuiltinRecoverPanic: expected 'swallowed' panic, got %v", err)
 	}
-	// a panic raised inside a defer propagates
 	_, err = e.Run(context.Background(), "./testdata/deferchan", "ReraiseReplace")
 	if err == nil || !strings.Contains(err.Error(), "second") {
 		t.Fatalf("ReraiseReplace: expected 'second' panic, got %v", err)
@@ -370,19 +369,19 @@ func TestChanSelect(t *testing.T) {
 		fn   string
 		want runtime.Value
 	}{
-		{"ChanQueue", int64(321)},     // FIFO send/receive
-		{"ChanCommaOk", int64(1)},     // comma-ok on non-empty
-		{"ChanClosedRecv", int64(42)}, // closed empty recv -> nil,false
-		{"ChanRange", int64(60)},      // range drains the queue
-		{"GoSync", int64(12)},         // go f() runs synchronously
+		{"ChanQueue", int64(321)},
+		{"ChanCommaOk", int64(1)},
+		{"ChanClosedRecv", int64(42)},
+		{"ChanRange", int64(60)},
+		{"GoSync", int64(12)},
 		{"GoChanRoundtrip", int64(42)},
 		{"SelectRecv", int64(5)},
 		{"SelectDefault", int64(9)},
 		{"SelectCommaOk", int64(3)},
 		{"SelectSend", int64(11)},
-		{"SelectConsumeBare", int64(2)},   // bare case <-ch consumes
-		{"SelectEvalOrder", int64(11)},    // all operands eval on entry
-		{"SelectSendEvalOrder", int64(7)}, // send chan+value eval too
+		{"SelectConsumeBare", int64(2)},
+		{"SelectEvalOrder", int64(11)},
+		{"SelectSendEvalOrder", int64(7)},
 	}
 	for _, c := range cases {
 		got := run(t, e, "./testdata/deferchan", c.fn)
@@ -406,24 +405,24 @@ func TestStdlibIntrinsics(t *testing.T) {
 		fn   string
 		want runtime.Value
 	}{
-		{"Sprintf", "hi 7"},                         // real fmt.Sprintf without GOROOT parse
-		{"SprintfCycle", "map[string]interface {}"}, // cycle folds, no overflow
-		{"SprintfArrKey", "map[[1]int]string"},      // array key stays boxed
-		{"StrconvAtoi", int64(42)},                  // (val, err) tuple
+		{"Sprintf", "hi 7"},
+		{"SprintfCycle", "map[string]interface {}"},
+		{"SprintfArrKey", "map[[1]int]string"},
+		{"StrconvAtoi", int64(42)},
 		{"StringsJoin", "a,b,c"},
 		{"ErrorsNew", "oops"},
-		{"SortIntsInPlace", int64(123)}, // sort mutates the slice
-		{"SlicesSortInPlace", "abc"},    // slices.Sort mutates too
+		{"SortIntsInPlace", int64(123)},
+		{"SlicesSortInPlace", "abc"},
 		{"SortSearch", int64(6)},
 		{"SortStableByLen", "adbbcc"},
 		{"SortStableFuncByLen", "adbbcc"},
 		{"BinarySearchHit", int64(2)},
 		{"BinarySearchMiss", int64(2)},
 		{"BinarySearchFunc", int64(3)},
-		{"BinarySearchNamed", int64(1)}, // named-string elements
+		{"BinarySearchNamed", int64(1)},
 		{"RuntimeGOOS", true},
-		{"RuntimeGoroutines", true},     // host goroutine count ≥ 1
-		{"RuntimeGOMAXPROCS", int64(1)}, // read-only: setter arg is ignored
+		{"RuntimeGoroutines", true},
+		{"RuntimeGOMAXPROCS", int64(1)},
 		{"UnsafeSizeofInt", int64(8)},
 		{"UnsafeSizeofSlice", int64(24)},
 		{"UnsafeAlignofEmpty", int64(1)},
@@ -1031,7 +1030,7 @@ func TestEmbedAllowedRoots(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		dir     string
-		wantErr string // empty = must succeed
+		wantErr string
 	}{
 		{"regular file embeds", good, ""},
 		{"symlink file is irregular", symfile, "irregular file"},
@@ -1384,14 +1383,12 @@ func GlobStar() string {
 		t.Fatal(err)
 	}
 	e := minigo.NewEngine(root, minigo.WithAllowedRoots(root))
-	// inside-root relative write anchors at the virtual cwd and succeeds
 	if got, err := e.RunFile(context.Background(), fname, "WriteInside", "inside.txt"); err != nil || got != "inside.txt" {
 		t.Fatalf("WriteInside: got %v, err %v", got, err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "inside.txt")); err != nil {
 		t.Fatalf("inside-root write missing: %v", err)
 	}
-	// escape attempts fail the call itself — per-call path checks
 	out := filepath.Join(outside, "x.txt")
 	if err := os.WriteFile(out, []byte("x"), 0644); err != nil {
 		t.Fatal(err)
@@ -1485,44 +1482,35 @@ func TestFeatures(t *testing.T) {
 		fn   string
 		want runtime.Value
 	}{
-		// spread calls
 		{"Spread", int64(36)},
 		{"SpreadTail", int64(8)},
-		// compound assign & ++/-- on fields, indices, derefs
 		{"CompoundOps", int64(172)},
 		{"PtrOps", int64(12)},
-		// labels, break/continue L, goto
 		{"LabeledBreak", int64(3)},
 		{"LabeledContinue", int64(16)},
 		{"GotoSkip", int64(5)},
 		{"LabeledSwitch", int64(3)},
 		{"SelectLabel", int64(2)},
-		// interfaces: dispatch, embedding, satisfaction
 		{"InterfaceDispatch", int64(16)},
 		{"EmbeddedMethod", int64(25)},
 		{"IfaceHolds", int64(1)},
-		// assertions + type switches
 		{"AssertFail", false},
 		{"TypeSwitch", int64(120)},
 		{"TypeSwitchBind", "hey!"},
 		{"AssertPanic", int64(99)},
 		{"NilAssert", int64(1)},
-		// nil-slice semantics + comma-ok zero + elided literal types
 		{"NilRange", int64(0)},
 		{"AppendNil", int64(4)},
 		{"CommaOkZero", int64(5)},
 		{"ElidedLits", int64(19)},
 		{"NamedElided", int64(5)},
-		// named types over composite literals
 		{"NamedCompArr", int64(3)},
 		{"NamedCompSlice", int64(4)},
 		{"NamedCompMap", int64(5)},
 		{"NamedCompPtrElided", int64(3)},
-		// generics
 		{"GenericFns", int64(42)},
 		{"GenericConvert", int64(42)},
 		{"GenericType", int64(42)},
-		// range-over-func (iter.Seq/Seq2)
 		{"SeqIter", int64(60)},
 		{"SeqIter2", int64(5)},
 		{"SeqBreak", int64(10)},
@@ -1544,7 +1532,6 @@ func TestFeatures(t *testing.T) {
 			t.Errorf("%s mismatch (-want +got):\n%s", c.fn, diff)
 		}
 	}
-	// comma-ok assert returns a tuple
 	got := run(t, e, "./testdata/features", "AssertOK")
 	tp, ok := got.(*runtime.Tuple)
 	if !ok || len(tp.Elems) != 2 || tp.Elems[0] != int64(2) || tp.Elems[1] != true {
@@ -1575,7 +1562,7 @@ func TestSpecialForms(t *testing.T) {
 		})
 	e.RegisterSpecial(runtime.SymbolID{PackagePath: "example.com/dsl", Name: "Skipped"},
 		func(ctx runtime.SpecialContext, call *runtime.QuotedCall) (runtime.Value, error) {
-			return int64(42), nil // arg never evaluated -> no panic
+			return int64(42), nil
 		})
 	e.RegisterSpecial(runtime.SymbolID{PackagePath: "example.com/dsl", Name: "SymOf"},
 		func(ctx runtime.SpecialContext, call *runtime.QuotedCall) (runtime.Value, error) {
@@ -1628,9 +1615,9 @@ func TestSpecialForms(t *testing.T) {
 		fn   string
 		want runtime.Value
 	}{
-		{"TwiceIt", int64(44)}, // Eval sees caller's local x=21
-		{"Quoted", "y + 1"},    // quoted, unevaluated source
-		{"Lazy", int64(42)},    // handler never Evals -> boom() never runs
+		{"TwiceIt", int64(44)},
+		{"Quoted", "y + 1"},
+		{"Lazy", int64(42)},
 		// ResolveSymbol resolves through the import table only: lazyboom's
 		// panicking init must not run, proving index-level laziness.
 		{"SymPkg", "github.com/podhmo/minigo/testdata/lazyboom::Get"},
@@ -1746,11 +1733,11 @@ func TestDeclTypes(t *testing.T) {
 		{"ConstraintOK", int64(42)},
 		{"SliceElemBox", int64(1)},
 		{"SliceAlias", int64(1)},
-		{"VarargZero", int64(8)}, // 0+1 from empty rest; 3+4 from 3 elems
+		{"VarargZero", int64(8)},
 		{"MapMissZero", int64(1)},
 		{"NamedZero", int64(1)},
 		{"MultiReturnBox", int64(1)},
-		{"NamedIdent", 36.5*9/5 + 32}, // Celsius keeps its declared type
+		{"NamedIdent", 36.5*9/5 + 32},
 		{"NamedOps", "a!"},
 		{"NamedStore", int64(42)},
 		{"NamedAssert", int64(4)},
@@ -2256,8 +2243,8 @@ func Raw() int { return lib.Raw() }
 			return n
 		},
 		"Atoi":     strconv.Atoi,
-		"N":        10,         // int widens to int64
-		"Pi":       float32(3), // float32 widens to float64
+		"N":        10,
+		"Pi":       float32(3),
 		"Replacer": strings.NewReplacer(".", "/"),
 		"Raw": &runtime.BuiltinFunc{Name: "Raw", Fn: func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
 			return int64(7), nil
@@ -2352,8 +2339,6 @@ func TestResultAs(t *testing.T) {
 		t.Fatalf("As: got %d", n)
 	}
 }
-
-// ---- file-level entries + the convert-define shape (plan §12) ----
 
 // spyResolver counts Locate/LocateDir calls to prove laziness claims: a
 // package the engine materializes always shows up as a resolver hit.
@@ -2585,7 +2570,7 @@ func TestBuiltinRetainsArgs(t *testing.T) {
 			RetainsArgs: true,
 			Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 				if args[0] == "first" {
-					kept = args // keep only the first call's slice
+					kept = args
 				}
 				return runtime.NIL, nil
 			},
@@ -2604,9 +2589,9 @@ func TestBuiltinRetainsArgs(t *testing.T) {
 func TestInitOnMemberAccess(t *testing.T) {
 	e := newEngine(t)
 	for fn, want := range map[string]runtime.Value{
-		"ViaFunc":     int64(5), // func init() populated Table before Lookup ran
-		"ViaIndirect": int64(5), // same through an intermediate package
-		"ViaHook":     int64(7), // an init() writing into a not-yet-initialized import
+		"ViaFunc":     int64(5),
+		"ViaIndirect": int64(5),
+		"ViaHook":     int64(7),
 	} {
 		got := run(t, e, "./testdata/inituser", fn)
 		if got != want {
@@ -2779,17 +2764,15 @@ func TestLangGate(t *testing.T) {
 		// a local is in scope only where the spec says: the RHS of :=
 		// and var, a range expression, and a signature still see the
 		// predeclared name
-		{"./testdata/langgate/ms117", "built-in min requires go1.21 or later"},    // min := min(1, 2)
-		{"./testdata/langgate/vm120", "built-in min requires go1.21 or later"},    // var min = min(1, 2)
-		{"./testdata/langgate/rm120", "built-in min requires go1.21 or later"},    // for min := range []int{min(1, 2)}
-		{"./testdata/langgate/pa117", "predeclared any requires go1.18 or later"}, // func F(any int) any
+		{"./testdata/langgate/ms117", "built-in min requires go1.21 or later"},
+		{"./testdata/langgate/vm120", "built-in min requires go1.21 or later"},
+		{"./testdata/langgate/rm120", "built-in min requires go1.21 or later"},
+		{"./testdata/langgate/pa117", "predeclared any requires go1.18 or later"},
 		{"./testdata/langgate/i117", "type instantiation requires go1.18 or later"},
-		// versioned names and instantiation inside builtin-call arguments
-		// and conversions, plus instantiation through a selector
-		{"./testdata/langgate/mk117", "predeclared any requires go1.18 or later"},      // make([]any, 0)
-		{"./testdata/langgate/nw117", "predeclared any requires go1.18 or later"},      // new([]any)
-		{"./testdata/langgate/cv117", "predeclared any requires go1.18 or later"},      // []any(nil)
-		{"./testdata/langgate/sel", "function instantiation requires go1.18 or later"}, // lib.Id[[]int]
+		{"./testdata/langgate/mk117", "predeclared any requires go1.18 or later"},
+		{"./testdata/langgate/nw117", "predeclared any requires go1.18 or later"},
+		{"./testdata/langgate/cv117", "predeclared any requires go1.18 or later"},
+		{"./testdata/langgate/sel", "function instantiation requires go1.18 or later"},
 		{"./testdata/langgate/im117", "implicit function instantiation requires go1.18 or later"},
 		// a go.mod with no `go` directive compiles at go1.16, like the
 		// toolchain's documented default
@@ -2848,11 +2831,11 @@ func TestLangGate(t *testing.T) {
 		fn   string
 		want runtime.Value
 	}{
-		{"Lo", int64(1)},  // min := func(a,b int) int
-		{"Pm2", int64(2)}, // param `min func(a,b int) int`
-		{"Ty", int64(5)},  // local `type any = int`
-		{"If", int64(7)},  // if-init `new := func(int) *int`
-		{"Sel", int64(0)}, // local `clear` func over a map
+		{"Lo", int64(1)},
+		{"Pm2", int64(2)},
+		{"Ty", int64(5)},
+		{"If", int64(7)},
+		{"Sel", int64(0)},
 	}
 	for _, c := range lo {
 		if got := run(t, e, "./testdata/langgate/lo117", c.fn); got != c.want {

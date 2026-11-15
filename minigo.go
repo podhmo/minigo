@@ -874,8 +874,6 @@ func lastElem(path string) string {
 	return path
 }
 
-// ---- loading ----
-
 func (e *Engine) loadPath(ctx context.Context, path string) (*runtime.Package, error) {
 	return e.loadPathMode(ctx, "", path, false)
 }
