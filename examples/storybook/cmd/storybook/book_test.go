@@ -571,6 +571,18 @@ func TestHandlerWatch(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "_livereload") {
 		t.Error("non-HTML response must not get the script")
 	}
+	// Error pages keep the script too: a page that loses it never
+	// rejoins the reload loop once the source is fixed.
+	for _, target := range []string{"/story/StoryMissing", "/grid/Nope"} {
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		if !strings.Contains(rec.Body.String(), tag) {
+			t.Errorf("%s: error page misses the reload script", target)
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "html") {
+			t.Errorf("%s: error page Content-Type %q", target, ct)
+		}
+	}
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/_livereload.js", nil))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "EventSource") {

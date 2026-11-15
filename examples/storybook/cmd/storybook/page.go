@@ -415,7 +415,7 @@ func (b *Book) Handler() http.Handler {
 		name := r.PathValue("group")
 		stories, err := b.Stories()
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			b.errorPage(w, http.StatusInternalServerError, err)
 			return
 		}
 		var entries []entry
@@ -425,7 +425,7 @@ func (b *Book) Handler() http.Handler {
 			}
 		}
 		if len(entries) == 0 {
-			http.NotFound(w, r)
+			b.errorPage(w, http.StatusNotFound, errors.New("no stories in this group"))
 			return
 		}
 		if err := gridTmpl.Execute(w, map[string]any{
@@ -443,9 +443,7 @@ func (b *Book) Handler() http.Handler {
 		name := r.PathValue("name")
 		res, err := b.Render(r.Context(), name)
 		if err != nil {
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintln(w, err)
+			b.errorPage(w, http.StatusInternalServerError, err)
 			return
 		}
 		// Handler-shaped stories recorded real response headers and a
@@ -467,6 +465,22 @@ func (b *Book) Handler() http.Handler {
 	mux.Handle("GET /static/", b.staticHandler())
 	b.MountLiveReload(mux)
 	return mux
+}
+
+// errorPage answers an error response. While watching it is a small
+// HTML page carrying the reload script — a text/plain error cannot run
+// it, and a page that loses the script never rejoins the reload loop,
+// so a transient mid-edit failure would stick until a manual refresh.
+func (b *Book) errorPage(w http.ResponseWriter, status int, err error) {
+	if tag := b.ScriptTag(); tag != "" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(status)
+		fmt.Fprintf(w, "<pre>%s</pre>%s", template.HTMLEscapeString(err.Error()), tag)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(status)
+	fmt.Fprintln(w, err)
 }
 
 // resolvePath resolves symlinks in the existing prefix of p and rejoins
