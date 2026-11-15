@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -150,6 +151,52 @@ func TestLiveReload(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "story.go"), "//go:build story\n\npackage app\n\nfunc StoryX() {}\nfunc StoryY() {}\n")
 	if got := readEvent(t, r); got != "event: reload\ndata: \n" {
 		t.Errorf("event %q", got)
+	}
+}
+
+// An asset served through a symlink changes the fingerprint when its
+// target is edited — http.FileServer follows the link, so the watcher
+// must follow it too.
+func TestWatchFollowsSymlinks(t *testing.T) {
+	dir := writePackage(t, map[string]string{
+		"go.mod":   "module x\n\ngo 1.26\n",
+		"app.go":   "package app\n",
+		"story.go": "//go:build story\n\npackage app\n\nfunc StoryX() {}\n",
+	})
+	outside := t.TempDir()
+	writeFile(t, filepath.Join(outside, "app.css"), "a{}\n")
+	if err := os.Symlink(filepath.Join(outside, "app.css"), filepath.Join(dir, "app.css")); err != nil {
+		t.Fatal(err)
+	}
+	b := &storybook.Book{Dir: dir, Tag: "story"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := b.Watch(ctx, 10*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	b.MountLiveReload(mux)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	reqCtx, reqCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer reqCancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, ts.URL+storybook.LiveReloadEventsPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	r := bufio.NewReader(res.Body)
+	if got := readEvent(t, r); got != "retry: 1000\n" {
+		t.Fatalf("first message %q", got)
+	}
+	writeFile(t, filepath.Join(outside, "app.css"), "a{color:red}\n")
+	if got := readEvent(t, r); got != "event: reload\ndata: \n" {
+		t.Errorf("symlink target edit: event %q", got)
 	}
 }
 

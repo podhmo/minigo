@@ -212,27 +212,9 @@ func (b *broadcaster) publish() {
 // its later appearance is itself a change.
 func fingerprint(dirs []string) (string, error) {
 	var sb strings.Builder
+	seen := map[string]bool{}
 	for i, dir := range dirs {
-		err := fs.WalkDir(os.DirFS(dir), ".", func(name string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if strings.HasPrefix(d.Name(), ".") && name != "." {
-				if d.IsDir() {
-					return fs.SkipDir
-				}
-				return nil
-			}
-			if d.IsDir() {
-				return nil
-			}
-			info, err := d.Info()
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(&sb, "%d:%s\t%d\t%d\n", i, name, info.Size(), info.ModTime().UnixNano())
-			return nil
-		})
+		err := walkFingerprint(&sb, i, dir, seen)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -241,4 +223,50 @@ func fingerprint(dirs []string) (string, error) {
 		}
 	}
 	return sb.String(), nil
+}
+
+// walkFingerprint records one tree. A symlink entry keeps its own line
+// (relinking moves it) plus its target's — an asset reachable through a
+// link updates like a real file. A linked directory is walked too, with
+// seen guarding against link cycles; an alias naming a tree already
+// walked adds nothing new to notice. A dangling link records just its
+// own line, matching the server's 404.
+func walkFingerprint(sb *strings.Builder, i int, root string, seen map[string]bool) error {
+	real, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return err
+	}
+	if seen[real] {
+		return nil
+	}
+	seen[real] = true
+	return filepath.WalkDir(root, func(name string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if strings.HasPrefix(d.Name(), ".") && name != root {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			fmt.Fprintf(sb, "%d:%s\t%d\t%d\n", i, name, info.Size(), info.ModTime().UnixNano())
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Stat(name)
+			if err != nil {
+				return nil
+			}
+			if target.IsDir() {
+				return walkFingerprint(sb, i, name, seen)
+			}
+			fmt.Fprintf(sb, "%d:%s!\t%d\t%d\n", i, name, target.Size(), target.ModTime().UnixNano())
+		}
+		return nil
+	})
 }
