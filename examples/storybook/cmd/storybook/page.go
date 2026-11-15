@@ -458,7 +458,7 @@ func (b *Book) Handler() http.Handler {
 		}
 		// A story opened in its own tab reloads too — only when the
 		// response is HTML, so non-HTML bodies stay byte-identical.
-		body := b.AppendLiveReload(h.Get("Content-Type"), res.Body)
+		body := b.AppendLiveReload(h, res.Body)
 		w.WriteHeader(res.Status)
 		w.Write(body)
 	})

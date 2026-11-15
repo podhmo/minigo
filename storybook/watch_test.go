@@ -84,7 +84,7 @@ func TestLiveReloadOff(t *testing.T) {
 			t.Errorf("%s: status %d, want 404", p, rec.Code)
 		}
 	}
-	if got := b.AppendLiveReload("text/html; charset=utf-8", []byte("<p>x</p>")); string(got) != "<p>x</p>" {
+	if got := b.AppendLiveReload(http.Header{"Content-Type": {"text/html; charset=utf-8"}}, []byte("<p>x</p>")); string(got) != "<p>x</p>" {
 		t.Errorf("body must pass through while off: %q", got)
 	}
 }
@@ -120,11 +120,16 @@ func TestLiveReload(t *testing.T) {
 		t.Errorf("script: Content-Type %q, body %.40q", ct, body)
 	}
 
-	// AppendLiveReload stamps HTML bodies only.
-	if got := string(b.AppendLiveReload("text/html; charset=utf-8", []byte("<p>x</p>"))); !strings.Contains(got, "_livereload.js") {
+	// AppendLiveReload stamps HTML bodies only, dropping a stale
+	// Content-Length since the body grew.
+	hdr := http.Header{"Content-Type": {"text/html; charset=utf-8"}, "Content-Length": {"8"}}
+	if got := string(b.AppendLiveReload(hdr, []byte("<p>x</p>"))); !strings.Contains(got, "_livereload.js") {
 		t.Errorf("html body misses the script: %q", got)
 	}
-	if got := string(b.AppendLiveReload("text/plain; charset=utf-8", []byte("x"))); got != "x" {
+	if _, ok := hdr["Content-Length"]; ok {
+		t.Error("stale Content-Length must be dropped")
+	}
+	if got := string(b.AppendLiveReload(http.Header{"Content-Type": {"text/plain; charset=utf-8"}}, []byte("x"))); got != "x" {
 		t.Errorf("non-HTML body must pass through: %q", got)
 	}
 

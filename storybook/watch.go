@@ -77,11 +77,14 @@ func (b *Book) ScriptTag() template.HTML {
 
 // AppendLiveReload returns body with the reload script appended when
 // the response is HTML and Watch is running, so a story page opened in
-// its own tab reloads too. Anything else comes back unchanged.
-func (b *Book) AppendLiveReload(contentType string, body []byte) []byte {
-	if b.reload == nil || !strings.Contains(contentType, "html") {
+// its own tab reloads too. Anything else comes back unchanged. The
+// body grew, so a recorded Content-Length in header is dropped —
+// leaving it would truncate the response.
+func (b *Book) AppendLiveReload(header http.Header, body []byte) []byte {
+	if b.reload == nil || !strings.Contains(header.Get("Content-Type"), "html") {
 		return body
 	}
+	header.Del("Content-Length")
 	return append(body, b.ScriptTag()...)
 }
 
