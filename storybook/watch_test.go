@@ -151,6 +151,24 @@ func TestLiveReload(t *testing.T) {
 	if got := strict.Get("Content-Security-Policy"); got != "default-src 'none'; connect-src 'none'" {
 		t.Errorf("explicit connect-src must win: got %q", got)
 	}
+	// default-src sources carry over so external APIs stay reachable.
+	open := http.Header{
+		"Content-Type":            {"text/html"},
+		"Content-Security-Policy": {"default-src 'self' https:"},
+	}
+	b.AppendLiveReload(open, nil)
+	if got := open.Get("Content-Security-Policy"); got != "default-src 'self' https:; connect-src 'self' https:" {
+		t.Errorf("default-src fallback must be preserved: got %q", got)
+	}
+	// No default-src means connections were unrestricted; don't narrow.
+	nodflt := http.Header{
+		"Content-Type":            {"text/html"},
+		"Content-Security-Policy": {"script-src 'self'"},
+	}
+	b.AppendLiveReload(nodflt, nil)
+	if got := nodflt.Get("Content-Security-Policy"); got != "script-src 'self'" {
+		t.Errorf("policy without default-src must stay untouched: got %q", got)
+	}
 
 	// A file change publishes a reload event to subscribed pages.
 	reqCtx, reqCancel := context.WithTimeout(context.Background(), 5*time.Second)

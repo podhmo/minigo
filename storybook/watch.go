@@ -81,9 +81,8 @@ func (b *Book) ScriptTag() template.HTML {
 // body grew, so a recorded Content-Length in header is dropped —
 // leaving it would truncate the response. A replayed CSP without its
 // own connect-src (e.g. default-src 'none') would silently block the
-// script's EventSource in the browser, so 'self' is added — an
-// explicit directive wins over the default-src fallback, and a policy
-// already naming connect-src is left alone.
+// script's EventSource in the browser, so relaxConnectSrc adds a
+// connect-src that keeps the default-src fallback sources plus 'self'.
 func (b *Book) AppendLiveReload(header http.Header, body []byte) []byte {
 	if b.reload == nil || !strings.Contains(header.Get("Content-Type"), "html") {
 		return body
@@ -91,20 +90,44 @@ func (b *Book) AppendLiveReload(header http.Header, body []byte) []byte {
 	header.Del("Content-Length")
 	policies := header.Values("Content-Security-Policy")
 	for i, policy := range policies {
-		if !hasConnectSrc(policy) {
-			policies[i] = policy + "; connect-src 'self'"
-		}
+		policies[i] = relaxConnectSrc(policy)
 	}
 	return append(body, b.ScriptTag()...)
 }
 
-func hasConnectSrc(policy string) bool {
+// relaxConnectSrc keeps a page's EventSource to this origin working
+// without narrowing what it could connect to before. A policy without
+// connect-src falls back to default-src, so the added directive copies
+// that source list and prepends 'self'; a policy already naming
+// connect-src, or one with no default-src at all (connections were
+// unrestricted), is returned unchanged.
+func relaxConnectSrc(policy string) string {
+	var defaultSrcs []string
 	for _, d := range strings.Split(policy, ";") {
-		if f := strings.Fields(d); len(f) > 0 && strings.EqualFold(f[0], "connect-src") {
-			return true
+		f := strings.Fields(d)
+		if len(f) == 0 {
+			continue
+		}
+		if strings.EqualFold(f[0], "connect-src") {
+			return policy
+		}
+		if strings.EqualFold(f[0], "default-src") && defaultSrcs == nil {
+			defaultSrcs = f[1:]
 		}
 	}
-	return false
+	if defaultSrcs == nil {
+		return policy
+	}
+	var srcs []string
+	for _, s := range defaultSrcs {
+		if s != "'none'" && s != "'self'" { // 'none' can't combine; 'self' is already added
+			srcs = append(srcs, s)
+		}
+	}
+	if len(srcs) > 0 {
+		return policy + "; connect-src 'self' " + strings.Join(srcs, " ")
+	}
+	return policy + "; connect-src 'self'"
 }
 
 // LiveReloadHandler serves the live-reload endpoints: the SSE stream at
