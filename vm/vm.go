@@ -4412,7 +4412,7 @@ var hostRValueType = reflect.TypeOf((*minireflect.RValue)(nil))
 // unexported ones resolve only for callers in the field's own package
 // (Go's visibility rule), read through the field's address so
 // interpreted stdlib code can see what it stamped — net/http's
-// findHandler reading r.pat off a host *http.Request.
+// ServeMux reading back the r.pat it wrote on a host *http.Request.
 func hostField(v any, name, pkg string) (reflect.Value, bool) {
 	rv := reflect.ValueOf(v)
 	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
@@ -4570,6 +4570,12 @@ func hostConstArg(u *runtime.UConst, t reflect.Type) (rv reflect.Value, ok bool,
 	return reflect.ValueOf(i).Convert(t), true, nil
 }
 
+// maxHostConvertDepth caps the container/struct recursion a script
+// value can drive into a host type: a cyclic twin (type T struct {
+// next *T } with n.next = n) would otherwise recurse until the
+// goroutine stack gives out — an uncatchable death, not a trap.
+const maxHostConvertDepth = 128
+
 // toReflectValue marshals a runtime value to a reflect.Value of the
 // requested type: empty interfaces carry the value verbatim (a *Cell stays
 // a pointer, slices/maps cross unconverted), func types wrap the callable
@@ -4577,6 +4583,13 @@ func hostConstArg(u *runtime.UConst, t reflect.Type) (rv reflect.Value, ok bool,
 // wrappers unwrap, slices and maps convert element-wise, scalars assign or
 // convert.
 func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.Value, error) {
+	return toReflectValueDepth(v, t, vc, 0)
+}
+
+func toReflectValueDepth(v runtime.Value, t reflect.Type, vc runtime.VMCaller, depth int) (reflect.Value, error) {
+	if depth > maxHostConvertDepth {
+		return reflect.Value{}, fmt.Errorf("cannot convert to %s: value nesting too deep", t)
+	}
 	if u, ok := v.(*runtime.UConst); ok {
 		if rv, ok, err := hostConstArg(u, t); ok {
 			return rv, err
@@ -4621,10 +4634,19 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 	// orig keeps the arg as passed — a `&w` cell, a field ref — so the
 	// interface adaptation below sees the arg's method set under Go's
 	// receiver rule (a pointer's set includes pointer receivers).
+	// namedTyp keeps the outermost named tag the unwrap peels: a script
+	// struct reached through `type P pattern` is typed P, not pattern,
+	// so the source-twin conversion below must not claim it for
+	// pattern's host type. Unnamed typedefs (a *T wrapper) name nothing,
+	// so only a named tag counts.
 	var holder runtime.Value
+	var namedTyp *runtime.TypeDef
 	orig := v
 	for {
 		if n, ok := v.(*runtime.Named); ok {
+			if namedTyp == nil && n.Typ != nil && n.Typ.Name != "" {
+				namedTyp = n.Typ
+			}
 			v = n.V
 			continue
 		}
@@ -4685,7 +4707,7 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 			if i >= out.Len() {
 				break
 			}
-			ev, err := toReflectValue(e, t.Elem(), vc)
+			ev, err := toReflectValueDepth(e, t.Elem(), vc, depth+1)
 			if err != nil {
 				return reflect.Value{}, err
 			}
@@ -4699,7 +4721,7 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 		out := reflect.MakeMapWithSize(t, x.Len())
 		for i := 0; i < x.Len(); i++ {
 			k, e := x.At(i)
-			kv, err := toReflectValue(k, t.Key(), vc)
+			kv, err := toReflectValueDepth(k, t.Key(), vc, depth+1)
 			if err != nil {
 				return reflect.Value{}, fmt.Errorf("map key: %w", err)
 			}
@@ -4707,7 +4729,7 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 			if funcMapTypes[t] {
 				ev, err = funcMapElem(e, vc)
 			} else {
-				ev, err = toReflectValue(e, t.Elem(), vc)
+				ev, err = toReflectValueDepth(e, t.Elem(), vc, depth+1)
 			}
 			if err != nil {
 				return reflect.Value{}, fmt.Errorf("map elem: %w", err)
@@ -4720,20 +4742,24 @@ func toReflectValue(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (refle
 		// net/http.pattern for the real net/http.pattern — packs into a
 		// fresh host struct field-by-field, so interpreted stdlib writes
 		// like `r.pat = pat` land real values host code reads back
-		// (Request.PathValue). A look-alike of another package is not a
-		// twin and stays unconvertible, like gc's type error.
+		// (Request.PathValue). The fresh struct is a snapshot, not an
+		// alias: mutating the script value later does not reach the
+		// stamped copy. A value tagged by a different named type — a
+		// `type P pattern` conversion — is not a twin either, matching
+		// gc's named-type unassignability; and a look-alike of another
+		// package stays unconvertible, like gc's type error.
 		var hst reflect.Type
 		if t.Kind() == reflect.Pointer && t.Elem().Kind() == reflect.Struct {
 			hst = t.Elem()
 		} else if t.Kind() == reflect.Struct {
 			hst = t
 		}
-		if hst == nil || !runtime.HostNamedIs(hst, x.Def) {
+		if hst == nil || !runtime.HostNamedIs(hst, x.Def) || (namedTyp != nil && namedTyp != x.Def) {
 			av = reflect.ValueOf(x)
 			break
 		}
 		pv := reflect.New(hst)
-		if err := fillHostStruct(pv.Elem(), x, vc); err != nil {
+		if err := fillHostStruct(pv.Elem(), x, vc, depth); err != nil {
 			return reflect.Value{}, err
 		}
 		if t.Kind() == reflect.Pointer {
@@ -6219,14 +6245,14 @@ func hostFieldValue(x runtime.Value, owner reflect.Type, name string, ft reflect
 // skew adds or drops internals). Unexported fields set through their
 // address: out is freshly allocated, so the write stays private to the
 // twin being built.
-func fillHostStruct(out reflect.Value, s *runtime.Struct, vc runtime.VMCaller) error {
+func fillHostStruct(out reflect.Value, s *runtime.Struct, vc runtime.VMCaller, depth int) error {
 	st := out.Type()
 	for i, name := range s.Def.Fields {
 		fv := out.FieldByName(name)
 		if !fv.IsValid() {
 			continue
 		}
-		ev, err := toReflectValue(s.Fields[i], fv.Type(), vc)
+		ev, err := toReflectValueDepth(s.Fields[i], fv.Type(), vc, depth+1)
 		if err != nil {
 			return fmt.Errorf("%s.%s: %w", st, name, err)
 		}
@@ -7809,6 +7835,16 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 		if !fv.IsValid() {
 			f.trap("host value %T has no field %s", b.V, name)
 		}
+		// Go lets a package write its own unexported fields; interpreted
+		// stdlib code runs in that package, so ServeMux stamping r.pat on
+		// a host *http.Request lands in the real memory. Anything else —
+		// another package's private field, or an unaddressable copy —
+		// still traps like gc's rejection, before the value converts.
+		sf, _ := rv.Type().FieldByName(name)
+		ownPkg := fv.CanAddr() && sf.PkgPath != "" && sf.PkgPath == framePkgPath(f)
+		if !fv.CanSet() && !ownPkg {
+			f.trap("host value %T has no settable field %s", b.V, name)
+		}
 		nv, err := hostFieldValue(val, rv.Type(), name, fv.Type(), v)
 		if err != nil {
 			f.trap("set field %s: %s", name, err)
@@ -7817,16 +7853,7 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 			fv.Set(nv)
 			return
 		}
-		// Go lets a package write its own unexported fields; interpreted
-		// stdlib code runs in that package, so ServeMux stamping r.pat on
-		// a host *http.Request lands in the real memory. Anything else —
-		// another package's private field, or an unaddressable copy —
-		// still traps like gc's rejection.
-		if sf, ok := rv.Type().FieldByName(name); ok && fv.CanAddr() && sf.PkgPath != "" && sf.PkgPath == framePkgPath(f) {
-			reflect.NewAt(fv.Type(), unsafe.Pointer(fv.UnsafeAddr())).Elem().Set(nv)
-			return
-		}
-		f.trap("host value %T has no settable field %s", b.V, name)
+		reflect.NewAt(fv.Type(), unsafe.Pointer(fv.UnsafeAddr())).Elem().Set(nv)
 	case *runtime.TypedNil:
 		if b.Typ != nil && b.Typ.Kind == runtime.KindPointer {
 			panic(runtime.NilDerefPanic())
