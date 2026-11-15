@@ -207,7 +207,6 @@ func (r *Runner) handleConvert(ctx runtime.SpecialContext, call *runtime.QuotedC
 		Mapping:     &model.MappingInfo{},
 	}
 
-	// Walk the function body to find Map/Convert/Compute calls
 	walker := &mappingWalker{
 		r:       r,
 		ctx:     ctx,

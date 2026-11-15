@@ -29,7 +29,6 @@ func TestParser(t *testing.T) {
 		t.Fatal("runner.Info is nil")
 	}
 
-	// Check global rules
 	if want, got := 2, len(info.GlobalRules); want != got {
 		t.Fatalf("expected %d global rules, but got %d", want, got)
 	}
@@ -40,12 +39,10 @@ func TestParser(t *testing.T) {
 		t.Errorf("GlobalRules[1].SrcTypeName: want %q, got %q", want, got)
 	}
 
-	// Check conversion pairs
 	if want, got := 2, len(info.ConversionPairs); want != got {
 		t.Fatalf("expected %d conversion pairs, but got %d", want, got)
 	}
 
-	// -- Pair 1: SrcUser -> DstUser
 	userPair := info.ConversionPairs[0]
 	if want, got := "SrcUser", userPair.SrcTypeName; want != got {
 		t.Errorf("userPair.SrcTypeName: want %q, got %q", want, got)
@@ -54,7 +51,6 @@ func TestParser(t *testing.T) {
 		t.Errorf("userPair.DstTypeName: want %q, got %q", want, got)
 	}
 
-	// Check computed fields for user
 	if want, got := 1, len(userPair.Computed); want != got {
 		t.Fatalf("expected %d computed field for user, but got %d", want, got)
 	}
@@ -81,7 +77,6 @@ func TestParser(t *testing.T) {
 		t.Errorf("userPair.Mapping.Maps mismatch (-want +got):\n%s", diff)
 	}
 
-	// -- Pair 2: SrcAddress -> DstAddress
 	addrPair := info.ConversionPairs[1]
 	if want, got := "SrcAddress", addrPair.SrcTypeName; want != got {
 		t.Errorf("addrPair.SrcTypeName: want %q, got %q", want, got)

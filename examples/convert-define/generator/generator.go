@@ -808,13 +808,9 @@ func (e *emitter) assignment(field FieldMap, srcVar, dstVar string) string {
 
 	var f frag
 	switch {
-	// Priority 1: field-level converter (c.Convert)
 	case field.Converter != "":
 		f = e.call(field.Converter, src)
 	default:
-		// Priority 2: global conversion rule; Priority 3: default
-		// conversion logic — warnings are labelled with the
-		// destination path of this field.
 		saved := e.diag
 		e.diag = e.diag.at(dst)
 		f = e.conv(src, field.SrcFieldT, field.DstFieldT)
@@ -884,7 +880,6 @@ func (e *emitter) conv(src string, srcT, dstT *xinspect.TypeExpr) frag {
 		return e.mapOf(src, srcT, dstT)
 	}
 
-	// Structs
 	srcDecl, dstDecl := namedDeclOf(e.res, srcT), namedDeclOf(e.res, dstT)
 	if model.IsStructDecl(srcDecl) && model.IsStructDecl(dstDecl) {
 		srcPtr := src
@@ -962,7 +957,7 @@ func (e *emitter) namedComposite(src string, srcT, dstT *xinspect.TypeExpr) (fra
 			case isMap(srcI) && isMap(dstI):
 				f = e.mapOf(src, srcI, dstI)
 			default:
-				okS = false // a spec with no element-wise shape
+				okS = false
 			}
 			if okS {
 				f.expr = castExpr(e.im, dstT, f.expr)

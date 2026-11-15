@@ -694,7 +694,7 @@ func reachHasRequired(ex *scanx.Explorer, d *inspect.Decl) bool {
 		def := inspect.Def(nd)
 		if def != nil && def.Kind == "StructType" && hasRequiredTag(nd) {
 			found = true
-			return false // stop early
+			return false
 		}
 		return true
 	})

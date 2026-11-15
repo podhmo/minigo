@@ -28,7 +28,7 @@ func TestGeneratedUserConversion(t *testing.T) {
 		},
 		ContactInfo: source.SrcContact{
 			Email: "john.doe@example.com",
-			Phone: nil, // important: phone is nil
+			Phone: nil,
 		},
 		Details: []source.SrcInternalDetail{
 			{Code: 1, Description: "Detail 1"},
@@ -37,8 +37,6 @@ func TestGeneratedUserConversion(t *testing.T) {
 		UpdatedAt: &updatedAt,
 	}
 
-	// Expected result from the *generated* converter.
-	// With the new annotations, most fields should be correctly converted.
 	expected := &destination.DstUser{
 		UserID:   "user-101",
 		FullName: "John Doe",
@@ -48,7 +46,7 @@ func TestGeneratedUserConversion(t *testing.T) {
 		},
 		Contact: destination.DstContact{
 			EmailAddress: "john.doe@example.com",
-			PhoneNumber:  "N/A", // nil phone becomes "N/A"
+			PhoneNumber:  "N/A",
 		},
 		Details: []destination.DstInternalDetail{
 			{ItemCode: 1, LocalizedDesc: "翻訳済み (JP): Detail 1"},
@@ -77,7 +75,6 @@ func TestGeneratedOrderConversion(t *testing.T) {
 		},
 	}
 
-	// With the new annotations, all fields should be converted.
 	expected := &destination.DstOrder{
 		ID:          "ORD-001",
 		TotalAmount: 99.99,
