@@ -75,32 +75,102 @@ func gridRows(g group) []entry {
 	return rows
 }
 
+// chromeTokens is the color-scheme token block shared by indexTmpl and
+// gridTmpl: a neutral light/dark scheme, so the chrome follows the OS
+// theme instead of boxing a dark story in light UI. Stories render
+// inside their own iframe documents, so these tokens never reach the
+// previewed page.
+const chromeTokens = `
+:root {
+  color-scheme: light dark;
+  --bg-light: #f6f8fa; --surface-light: #fff; --surface-hover-light: #fbfcfd;
+  --border-light: #d0d7de; --border-muted-light: #e4e9ee;
+  --text-light: #1f2328; --text-muted-light: #656d76;
+  --accent-light: #0969da; --accent-soft-light: #ddf4ff; --danger-light: #cf222e;
+  --bg-dark: #0d1117; --surface-dark: #151b23; --surface-hover-dark: #1b222c;
+  --border-dark: #3d444d; --border-muted-dark: #2a313c;
+  --text-dark: #f0f6fc; --text-muted-dark: #9198a1;
+  --accent-dark: #4493f8; --accent-soft-dark: #0c2d4f; --danger-dark: #f85149;
+  --bg: var(--bg-light); --surface: var(--surface-light); --surface-hover: var(--surface-hover-light);
+  --border: var(--border-light); --border-muted: var(--border-muted-light);
+  --text: var(--text-light); --text-muted: var(--text-muted-light);
+  --accent: var(--accent-light); --accent-soft: var(--accent-soft-light); --danger: var(--danger-light);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: var(--bg-dark); --surface: var(--surface-dark); --surface-hover: var(--surface-hover-dark);
+    --border: var(--border-dark); --border-muted: var(--border-muted-dark);
+    --text: var(--text-dark); --text-muted: var(--text-muted-dark);
+    --accent: var(--accent-dark); --accent-soft: var(--accent-soft-dark); --danger: var(--danger-dark);
+  }
+}
+@supports (color: light-dark(#000, #fff)) {
+  :root {
+    --bg: light-dark(var(--bg-light), var(--bg-dark));
+    --surface: light-dark(var(--surface-light), var(--surface-dark));
+    --surface-hover: light-dark(var(--surface-hover-light), var(--surface-hover-dark));
+    --border: light-dark(var(--border-light), var(--border-dark));
+    --border-muted: light-dark(var(--border-muted-light), var(--border-muted-dark));
+    --text: light-dark(var(--text-light), var(--text-dark));
+    --text-muted: light-dark(var(--text-muted-light), var(--text-muted-dark));
+    --accent: light-dark(var(--accent-light), var(--accent-dark));
+    --accent-soft: light-dark(var(--accent-soft-light), var(--accent-soft-dark));
+    --danger: light-dark(var(--danger-light), var(--danger-dark));
+  }
+}
+`
+
 var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
-<html><head><meta charset="utf-8"><title>stories: {{.Dir}}</title>{{if .ScriptTag}}{{.ScriptTag}}{{end}}
-<style>
-body { margin: 0; display: flex; height: 100vh; font-family: sans-serif; }
-nav { width: 18rem; overflow: auto; border-right: 1px solid #ccc; padding: .5rem; }
-nav a { display: block; padding: .25rem; color: inherit; text-decoration: none; }
-nav a:hover { background: #eef; }
-nav a.active { background: #eef; font-weight: 600; }
-nav small { display: block; color: #666; }
-nav .group a { padding: .4rem .25rem 0; font-size: .9em; font-weight: 600; color: #444; }
-.err { color: #b00; }
-.viewport { display: flex; gap: .5em; margin: .5rem 0; font-size: .9em; }
-.viewport a { padding: .1em .4em; border: 1px solid #ccc; border-radius: .3em; }
-.viewport a.active { background: #def; border-color: #79b; }
-iframe { flex: 1; border: 0; }
-iframe.sized { flex: none; margin-inline: auto; border-inline: 1px dashed #ccc; }
+<html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>stories: {{.Dir}}</title>{{if .ScriptTag}}{{.ScriptTag}}{{end}}
+<style>` + chromeTokens + `
+body { margin: 0; display: flex; height: 100vh; height: 100dvh; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); }
+nav { width: 17rem; flex: none; display: flex; flex-direction: column; background: var(--surface); border-right: 1px solid var(--border); }
+nav > header { padding: .75rem .875rem; border-bottom: 1px solid var(--border-muted); }
+.brand { font-size: .85rem; font-weight: 600; }
+.dir { margin-top: .15rem; font-size: .72rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted); word-break: break-all; }
+.err { color: var(--danger); }
+.viewport { display: flex; gap: .25rem; margin-top: .625rem; font-size: .78rem; }
+.viewport a { flex: 1; padding: .2rem .4rem; text-align: center; color: var(--text-muted); text-decoration: none; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
+.viewport a:hover { color: var(--accent); border-color: var(--accent); }
+.viewport a.active { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+.list { flex: 1; overflow-y: auto; padding: .375rem .5rem .75rem; container-type: scroll-state; }
+.group { display: block; margin-top: .75rem; padding: .25rem .5rem; font-size: .72rem; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted); text-decoration: none; }
+.group:first-child { margin-top: .375rem; }
+.group:hover { color: var(--accent); }
+.story { display: block; padding: .3rem .5rem; border-radius: 6px; color: inherit; text-decoration: none; line-height: 1.4; overflow-wrap: anywhere; }
+.story:hover { background: var(--surface-hover); }
+.story.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.story .ext { color: var(--text-muted); font-size: .8em; }
+.story small { display: block; font-size: .75rem; font-weight: 400; color: var(--text-muted); }
+.list::before, .list::after { content: ""; display: block; position: sticky; block-size: .5rem; z-index: 1; pointer-events: none; opacity: 0; transition: opacity .2s; }
+.list::before { inset-block-start: 0; margin-block-end: -.5rem; background: radial-gradient(farthest-side at 50% 0, rgb(0 0 0 / .18), transparent); }
+.list::after { inset-block-end: 0; margin-block-start: -.5rem; background: radial-gradient(farthest-side at 50% 100%, rgb(0 0 0 / .18), transparent); }
+@container scroll-state(scrollable: block-start) { .list::before { opacity: 1; } }
+@container scroll-state(scrollable: block-end) { .list::after { opacity: 1; } }
+@supports not (container-type: scroll-state) {
+  .list::before, .list::after { animation: edge-shadow linear both; animation-timeline: scroll(); }
+  .list::before { animation-range: 0 2rem; }
+  .list::after { animation-direction: reverse; animation-range: calc(100% - 2rem) 100%; }
+}
+@keyframes edge-shadow { to { opacity: 1; } }
+iframe { flex: 1; border: 0; background: var(--surface); }
+iframe.sized { flex: none; margin-inline: auto; border-inline: 1px dashed var(--border); }
 </style></head>
 <body>
 <nav>
-<strong>{{.Dir}}</strong>
+<header>
+<div class="brand">stories</div>
+<div class="dir">{{.Dir}}</div>
 {{if .Err}}<small class="err">{{.Err}}</small>{{end}}
 <div class="viewport">{{range .Widths}}<a href="?w={{.}}&s={{$.S}}"{{if eq . $.W}} class="active"{{end}}>{{if .}}{{.}}px{{else}}full{{end}}</a>{{end}}</div>
-{{range .Groups}}{{if .Name}}<div class="group"><a href="{{.Href}}"{{if .Target}} target="{{.Target}}"{{end}} title="variants side by side">{{.Name}} &#10514;</a></div>{{end}}
-{{range .Entries}}<a href="{{.Href}}"{{if .Target}} target="{{.Target}}"{{end}}{{if eq .Name $.S}} class="active"{{end}}>{{.Name}}{{if .IsHTTP}} <small>&#8599;</small>{{end}}
-<small>{{.Doc}}</small>{{if .Err}}<small class="err">{{.Err}}</small>{{end}}</a>
-{{end}}{{end}}</nav>
+</header>
+<div class="list">
+{{range .Groups}}{{if .Name}}<a class="group" href="{{.Href}}"{{if .Target}} target="{{.Target}}"{{end}} title="variants side by side">{{.Name}} &#10514;</a>{{end}}
+{{range .Entries}}<a class="story{{if eq .Name $.S}} active{{end}}" href="{{.Href}}"{{if .Target}} target="{{.Target}}"{{end}}{{if eq .Name $.S}} aria-current="true"{{end}}>{{.Name}}{{if .IsHTTP}}<span class="ext" title="opens in a new tab">&#8599;</span>{{end}}
+{{if .Doc}}<small>{{.Doc}}</small>{{end}}{{if .Err}}<small class="err">{{.Err}}</small>{{end}}</a>
+{{end}}{{end}}
+</div>
+</nav>
 <iframe name="story"{{if .S}} src="/story/{{.S}}"{{else}}{{if .Default}} src="{{.Default}}"{{end}}{{end}}{{if .W}} class="sized" style="width: {{.W}}px"{{end}}></iframe>
 </body></html>
 `))
@@ -109,23 +179,27 @@ iframe.sized { flex: none; margin-inline: auto; border-inline: 1px dashed #ccc; 
 // template edit can be checked against every data state at once. Each
 // variant is an iframe at the chosen width (?w=, flexible when unset).
 var gridTmpl = template.Must(template.New("grid").Parse(`<!doctype html>
-<html><head><meta charset="utf-8"><title>{{.Name}} variants</title>{{if .ScriptTag}}{{.ScriptTag}}{{end}}
-<style>
-body { margin: 0; display: flex; flex-direction: column; height: 100vh; font-family: sans-serif; }
-header { display: flex; gap: 1em; align-items: baseline; padding: .4rem .6rem; border-bottom: 1px solid #ccc; }
-header a { color: inherit; }
-.viewport { display: flex; gap: .5em; font-size: .9em; }
-.viewport a { padding: .1em .4em; border: 1px solid #ccc; border-radius: .3em; text-decoration: none; color: inherit; }
-.viewport a.active { background: #def; border-color: #79b; }
+<html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>{{.Name}} variants</title>{{if .ScriptTag}}{{.ScriptTag}}{{end}}
+<style>` + chromeTokens + `
+body { margin: 0; display: flex; flex-direction: column; height: 100vh; height: 100dvh; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); }
+header { display: flex; gap: .875rem; align-items: baseline; padding: .5rem .875rem; background: var(--surface); border-bottom: 1px solid var(--border); }
+header .back { color: var(--text-muted); text-decoration: none; font-size: .85rem; }
+header .back:hover { color: var(--accent); }
+header strong { font-size: .85rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+header .viewport { margin-inline-start: auto; }
+.viewport { display: flex; gap: .25rem; font-size: .78rem; }
+.viewport a { padding: .2rem .4rem; text-align: center; color: var(--text-muted); text-decoration: none; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
+.viewport a:hover { color: var(--accent); border-color: var(--accent); }
+.viewport a.active { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
 .row { flex: 1; display: flex; overflow-x: auto; }
-figure { flex: 1 1 0; min-width: 0; margin: 0; display: flex; flex-direction: column; }
+figure { flex: 1 1 0; min-width: 0; margin: 0; display: flex; flex-direction: column; background: var(--surface); }
 figure.sized { flex: none; }
-figure + figure { border-left: 1px solid #ccc; }
+figure + figure { border-left: 1px solid var(--border); }
 figure iframe { flex: 1; border: 0; width: 100%; }
-figcaption { padding: .3rem .6rem; font-size: .85em; border-top: 1px solid #ccc; }
+figcaption { padding: .3rem .6rem; font-size: .72rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted); border-top: 1px solid var(--border-muted); }
 </style></head>
 <body>
-<header><a href="{{.Index}}"{{if .IndexTarget}} target="{{.IndexTarget}}"{{end}}>&#8592; index</a><strong>{{.Name}}</strong>
+<header><a class="back" href="{{.Index}}"{{if .IndexTarget}} target="{{.IndexTarget}}"{{end}}>&#8592; index</a><strong>{{.Name}}</strong>
 <div class="viewport">{{range .Widths}}<a href="?w={{.}}"{{if eq . $.W}} class="active"{{end}}>{{if .}}{{.}}px{{else}}flex{{end}}</a>{{end}}</div>
 </header>
 <div class="row">
