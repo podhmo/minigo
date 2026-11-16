@@ -283,10 +283,20 @@ iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
     if(a.dataset.frame){actOpen.href=a.dataset.frame;actOpen.hidden=false}else{actOpen.hidden=true}
     mark(a);
   }
+  function withW(href,w){
+    var u=new URL(href,location.href);
+    if(w){u.searchParams.set('w',w)}else{u.searchParams.delete('w')}
+    return u.href;
+  }
   function applyWidth(w,save){
     frame.classList.toggle('sized',!!w);
     frame.style.width=w?w+'px':'';
     widths.forEach(function(a){a.classList.toggle('active',a.dataset.w===w)});
+    // The grid views carry their own ?w=; keep every link to them in
+    // step with the chosen width so a grid opens at the same size.
+    [].forEach.call(document.querySelectorAll('.gridlink'),function(a){a.href=withW(a.href,w)});
+    items.forEach(function(a){if(a.dataset.grid){a.dataset.grid=withW(a.dataset.grid,w)}});
+    if(!actGrid.hidden&&actGrid.getAttribute('href')){actGrid.href=withW(actGrid.href,w)}
     if(save){history.replaceState(null,'',params({w:w}))}
   }
   function sync(){
@@ -308,9 +318,14 @@ iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
     mark(null);
   }
   frame.addEventListener('load',sync);
+  function plainClick(ev){
+    return ev.button===0&&!ev.ctrlKey&&!ev.metaKey&&!ev.shiftKey&&!ev.altKey;
+  }
   items.forEach(function(a){
     if(!a.dataset.frame){return}
     a.addEventListener('click',function(ev){
+      // Modified clicks (new tab, etc.) keep the browser default.
+      if(!plainClick(ev)){return}
       ev.preventDefault();
       frame.src=a.dataset.frame;
       history.pushState(null,'',params({s:a.dataset.name}));
@@ -318,7 +333,10 @@ iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
     });
   });
   widths.forEach(function(a){
-    a.addEventListener('click',function(ev){ev.preventDefault();applyWidth(a.dataset.w,true)});
+    a.addEventListener('click',function(ev){
+      if(!plainClick(ev)){return}
+      ev.preventDefault();applyWidth(a.dataset.w,true);
+    });
   });
   window.addEventListener('popstate',function(){
     var u=new URL(location.href),a=itemByName(u.searchParams.get('s')||'');
