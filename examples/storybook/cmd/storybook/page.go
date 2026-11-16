@@ -277,11 +277,31 @@ iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
     crumbSep.hidden=!group;
     crumbName.textContent=name||'';
   }
+  // cur tracks the live selection for the ?s=/?w= links rendered at
+  // load time — a modified click (new tab) should reproduce the current
+  // view, not the story and width the page first opened with.
+  var cur={s:'',w:''};
+  function syncHrefs(){
+    items.forEach(function(a){
+      var href=a.getAttribute('href')||'';
+      if(!a.dataset.frame||href.charAt(0)!=='?'){return}
+      var u=new URL(href,location.href);
+      if(cur.w){u.searchParams.set('w',cur.w)}else{u.searchParams.delete('w')}
+      a.setAttribute('href',u.search);
+    });
+    widths.forEach(function(a){
+      var u=new URL(a.getAttribute('href'),location.href);
+      if(cur.s){u.searchParams.set('s',cur.s)}else{u.searchParams.delete('s')}
+      a.setAttribute('href',u.search);
+    });
+  }
   function showStory(a){
+    cur.s=a.dataset.name;
     showCrumb(a.dataset.group,a.dataset.name);
     if(a.dataset.grid){actGrid.href=a.dataset.grid;actGrid.hidden=false}else{actGrid.hidden=true}
     if(a.dataset.frame){actOpen.href=a.dataset.frame;actOpen.hidden=false}else{actOpen.hidden=true}
     mark(a);
+    syncHrefs();
   }
   function withW(href,w){
     var u=new URL(href,location.href);
@@ -289,6 +309,7 @@ iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
     return u.href;
   }
   function applyWidth(w,save){
+    cur.w=w;
     frame.classList.toggle('sized',!!w);
     frame.style.width=w?w+'px':'';
     widths.forEach(function(a){a.classList.toggle('active',a.dataset.w===w)});
@@ -297,6 +318,7 @@ iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
     [].forEach.call(document.querySelectorAll('.gridlink'),function(a){a.href=withW(a.href,w)});
     items.forEach(function(a){if(a.dataset.grid){a.dataset.grid=withW(a.dataset.grid,w)}});
     if(!actGrid.hidden&&actGrid.getAttribute('href')){actGrid.href=withW(actGrid.href,w)}
+    syncHrefs();
     if(save){history.replaceState(null,'',params({w:w}))}
   }
   function sync(){
