@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/csv"
@@ -30,6 +31,7 @@ import (
 	"io/fs"
 	"maps"
 	"math"
+	"math/big"
 	"net"
 	"net/netip"
 	"os"
@@ -2816,6 +2818,7 @@ func (e *Engine) installStdlib() {
 		// `lr.N == 0` for early-EOF) need the typedef; field reads like
 		// `lr.N` dispatch on the host struct through reflection.
 		"LimitedReader": hostType("io.LimitedReader", func() any { return &io.LimitedReader{} }),
+		"SectionReader": hostType("io.SectionReader", func() any { return &io.SectionReader{} }),
 		"SeekStart":     &runtime.UConst{V: constant.MakeInt64(io.SeekStart)},
 		"SeekCurrent":   &runtime.UConst{V: constant.MakeInt64(io.SeekCurrent)},
 		"SeekEnd":       &runtime.UConst{V: constant.MakeInt64(io.SeekEnd)},
@@ -2888,6 +2891,36 @@ func (e *Engine) installStdlib() {
 			pr, pw := io.Pipe()
 			return &runtime.Tuple{Elems: []runtime.Value{&runtime.GoValue{V: pr}, &runtime.GoValue{V: pw}}}, nil
 		}, io.Pipe),
+	})
+	// crypto/rand: bound so interpreted callers — mime/multipart's
+	// randomBoundary is the reported one (#1084) — never reach
+	// crypto/internal/sysrand → internal/syscall/unix, whose GOROOT
+	// sources read syscall symbols the bound package does not carry
+	// and drive the OS CSPRNG through linknamed trampolines.
+	e.Bind("crypto/rand", map[string]runtime.Value{
+		// Reader is the real host io.Reader: `io.ReadFull(rand.Reader, b)`
+		// in interpreted code reads through it via asReaderVM.
+		"Reader": &runtime.GoValue{V: crand.Reader},
+		"Text":   h.fn("rand.Text", func(a []any) (any, error) { return crand.Text(), nil }, crand.Text),
+		"Read": &runtime.BuiltinFunc{Name: "rand.Read", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("rand.Read needs 1 arg, got %d", len(args))
+			}
+			bs, commit := borrowBytes(args[0])
+			n, rerr := crand.Read(bs)
+			commit()
+			return &runtime.Tuple{Elems: []runtime.Value{int64(n), errVal(rerr)}}, nil
+		}},
+		"Int": h.randBig("rand.Int", func(r io.Reader, a []any) (*big.Int, error) {
+			max, ok := a[1].(*big.Int)
+			if !ok {
+				return nil, fmt.Errorf("rand.Int: not a *big.Int: %T", a[1])
+			}
+			return crand.Int(r, max)
+		}),
+		"Prime": h.randBig("rand.Prime", func(r io.Reader, a []any) (*big.Int, error) {
+			return crand.Prime(r, intOf(a[1]))
+		}),
 	})
 	// crypto/sha256: Sum256's [32]byte result unboxes element-wise so
 	// `sum[:]` slices and hex.EncodeToString consume it.
@@ -5517,6 +5550,26 @@ func (h *hostHelpers) asReaderVM(vc runtime.VMCaller, v any) (io.Reader, error) 
 		}
 	}
 	return nil, fmt.Errorf("not an io.Reader: %T", v)
+}
+
+// randBig adapts crypto/rand's (io.Reader, x) (*big.Int, error) helpers:
+// the reader crosses through asReaderVM (the bound rand.Reader or a
+// script reader), the tail args marshal to natives for f to convert.
+func (h *hostHelpers) randBig(name string, f func(r io.Reader, a []any) (*big.Int, error)) *runtime.BuiltinFunc {
+	return &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) != 2 {
+			return nil, fmt.Errorf("%s needs 2 args, got %d", name, len(args))
+		}
+		r, err := h.asReaderVM(vc, args[0])
+		if err != nil {
+			return nil, err
+		}
+		a := make([]any, len(args))
+		for i, v := range args {
+			a[i] = goNative(v)
+		}
+		return retErr2(f(r, a))
+	}}
 }
 
 // scriptReader adapts a script-side Read method to io.Reader so host
