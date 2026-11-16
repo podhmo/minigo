@@ -334,7 +334,16 @@ iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
       return;
     }
     var a=itemByName(nameFromURL(loc));
-    if(a){showStory(a);return}
+    if(a){
+      showStory(a);
+      // A Back press can restore only the iframe's history entry, leaving
+      // the top-level ?s= pointing at the previously selected story.
+      // Re-align it so the URL always names what is on screen.
+      if(new URL(location.href).searchParams.get('s')!==a.dataset.name){
+        history.replaceState(null,'',params({s:a.dataset.name}));
+      }
+      return;
+    }
     showCrumb('',loc.pathname);
     actGrid.hidden=true;actOpen.hidden=true;
     mark(null);
