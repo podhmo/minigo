@@ -16,9 +16,23 @@ import (
 // entry is one row of the index page.
 type entry struct {
 	Story
-	Href   string
-	Target string // "story" in the static export, "_blank" for served http stories
-	Err    string
+	Href      string // index link: ?s=<Name> in live mode, <Name>.html in export
+	FrameHref string // URL the preview iframe loads for this story; "" when it cannot be framed
+	Grid      string // side-by-side grid URL of the entry's group
+	Target    string // "story" in the static export, "_blank" for served http stories
+	Blurb     string // Doc with the redundant story-name prefix dropped
+	Err       string
+}
+
+// blurb is the doc line without its redundant "StoryXxx renders ..."
+// prefix — the row already shows the name, so repeating it only adds
+// noise to the list.
+func blurb(s Story) string {
+	rest, ok := strings.CutPrefix(s.Doc, s.Name)
+	if !ok {
+		return s.Doc
+	}
+	return strings.TrimLeft(rest, " \t:—-")
 }
 
 // group is one render function's set of stories in the index. Ungrouped
@@ -60,6 +74,16 @@ func groupEntries(entries []entry) []group {
 		groups = append(groups, group{Entries: rest})
 	}
 	return groups
+}
+
+// gridHref is a group's grid URL, "" when the story has no group.
+func gridHref(groups []group, name string) string {
+	for _, g := range groups {
+		if g.Name == name {
+			return g.Href
+		}
+	}
+	return ""
 }
 
 // gridRows filters a group's entries down to what the grid can frame:
@@ -123,25 +147,34 @@ const chromeTokens = `
 var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
 <html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>stories: {{.Dir}}</title>{{if .ScriptTag}}{{.ScriptTag}}{{end}}
 <style>` + chromeTokens + `
+[hidden] { display: none !important; }
 body { margin: 0; display: flex; height: 100vh; height: 100dvh; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); }
 nav { width: 17rem; flex: none; display: flex; flex-direction: column; background: var(--surface); border-right: 1px solid var(--border); }
 nav > header { padding: .75rem .875rem; border-bottom: 1px solid var(--border-muted); }
 .brand { font-size: .85rem; font-weight: 600; }
 .dir { margin-top: .15rem; font-size: .72rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted); word-break: break-all; }
 .err { color: var(--danger); }
-.viewport { display: flex; gap: .25rem; margin-top: .625rem; font-size: .78rem; }
-.viewport a { flex: 1; padding: .2rem .4rem; text-align: center; color: var(--text-muted); text-decoration: none; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
-.viewport a:hover { color: var(--accent); border-color: var(--accent); }
-.viewport a.active { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+.search { display: flex; align-items: center; gap: .5rem; margin-top: .625rem; }
+.search input { flex: 1; min-width: 0; padding: .3rem .55rem; font: inherit; font-size: .8rem; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
+.search input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.search input::placeholder { color: var(--text-muted); }
+.search .count { font-size: .72rem; color: var(--text-muted); white-space: nowrap; }
 .list { flex: 1; overflow-y: auto; padding: .375rem .5rem .75rem; container-type: scroll-state; }
-.group { display: block; margin-top: .75rem; padding: .25rem .5rem; font-size: .72rem; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted); text-decoration: none; }
+.group { display: flex; align-items: center; gap: .375rem; margin-top: .875rem; padding: .25rem .5rem; }
 .group:first-child { margin-top: .375rem; }
-.group:hover { color: var(--accent); }
-.story { display: block; padding: .3rem .5rem; border-radius: 6px; color: inherit; text-decoration: none; line-height: 1.4; overflow-wrap: anywhere; }
+.group .gname { font-size: .72rem; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted); }
+.gridlink { margin-inline-start: auto; padding: .1rem .5rem; font-size: .68rem; color: var(--text-muted); text-decoration: none; border: 1px solid var(--border); border-radius: 99px; }
+.gridlink:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.story { display: block; padding: .4rem .55rem; border-radius: 6px; color: inherit; text-decoration: none; line-height: 1.35; overflow-wrap: anywhere; }
 .story:hover { background: var(--surface-hover); }
-.story.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-.story .ext { color: var(--text-muted); font-size: .8em; }
-.story small { display: block; font-size: .75rem; font-weight: 400; color: var(--text-muted); }
+.story:focus-visible, .gridlink:focus-visible, .act:focus-visible, .viewport a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.story.active { background: var(--accent-soft); color: var(--accent); }
+.story .sname { display: flex; align-items: center; flex-wrap: wrap; gap: .125rem .375rem; font-size: .85rem; font-weight: 500; word-break: break-word; }
+.story.active .sname { font-weight: 600; }
+.story .kind { margin-inline-start: auto; padding: 0 .35rem; font-size: .62rem; font-weight: 400; letter-spacing: .03em; color: var(--text-muted); border: 1px solid var(--border); border-radius: 99px; }
+.story small { display: block; margin-top: .1rem; font-size: .74rem; font-weight: 400; color: var(--text-muted); }
+.hidden { display: none !important; }
+.empty { padding: .75rem .5rem; font-size: .78rem; color: var(--text-muted); }
 .list::before, .list::after { content: ""; display: block; position: sticky; block-size: .5rem; z-index: 1; pointer-events: none; opacity: 0; transition: opacity .2s; }
 .list::before { inset-block-start: 0; margin-block-end: -.5rem; background: radial-gradient(farthest-side at 50% 0, rgb(0 0 0 / .18), transparent); }
 .list::after { inset-block-end: 0; margin-block-start: -.5rem; background: radial-gradient(farthest-side at 50% 100%, rgb(0 0 0 / .18), transparent); }
@@ -153,8 +186,21 @@ nav > header { padding: .75rem .875rem; border-bottom: 1px solid var(--border-mu
   .list::after { animation-direction: reverse; animation-range: calc(100% - 2rem) 100%; }
 }
 @keyframes edge-shadow { to { opacity: 1; } }
+main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.bar { display: flex; align-items: center; gap: .5rem; padding: .4rem .75rem; background: var(--surface); border-bottom: 1px solid var(--border); font-size: .8rem; }
+.crumb { min-width: 0; display: flex; align-items: baseline; gap: .35rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.crumb .sep { color: var(--text-muted); }
+#crumb-group { font-size: .72rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted); }
+#crumb-name { font-size: .85rem; }
+.act { padding: .18rem .55rem; font-size: .74rem; color: var(--text-muted); text-decoration: none; border: 1px solid var(--border); border-radius: 6px; }
+.act:hover { color: var(--accent); border-color: var(--accent); }
+.bar .spacer { flex: 1; }
+.viewport { display: flex; gap: .25rem; font-size: .78rem; }
+.viewport a { padding: .2rem .4rem; text-align: center; color: var(--text-muted); text-decoration: none; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
+.viewport a:hover { color: var(--accent); border-color: var(--accent); }
+.viewport a.active { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
 iframe { flex: 1; border: 0; background: var(--surface); }
-iframe.sized { flex: none; margin-inline: auto; border-inline: 1px dashed var(--border); }
+iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
 </style></head>
 <body>
 <nav>
@@ -162,16 +208,170 @@ iframe.sized { flex: none; margin-inline: auto; border-inline: 1px dashed var(--
 <div class="brand">stories</div>
 <div class="dir">{{.Dir}}</div>
 {{if .Err}}<small class="err">{{.Err}}</small>{{end}}
-<div class="viewport">{{range .Widths}}<a href="?w={{.}}&s={{$.S}}"{{if eq . $.W}} class="active"{{end}}>{{if .}}{{.}}px{{else}}full{{end}}</a>{{end}}</div>
+<div class="search"><input id="filter" type="search" placeholder="filter stories  ( / )" autocomplete="off" aria-label="filter stories"><span class="count" id="count"></span></div>
 </header>
-<div class="list">
-{{range .Groups}}{{if .Name}}<a class="group" href="{{.Href}}"{{if .Target}} target="{{.Target}}"{{end}} title="variants side by side">{{.Name}} &#10514;</a>{{end}}
-{{range .Entries}}<a class="story{{if eq .Name $.S}} active{{end}}" href="{{.Href}}"{{if .Target}} target="{{.Target}}"{{end}}{{if eq .Name $.S}} aria-current="true"{{end}}>{{.Name}}{{if .IsHTTP}}<span class="ext" title="opens in a new tab">&#8599;</span>{{end}}
-{{if .Doc}}<small>{{.Doc}}</small>{{end}}{{if .Err}}<small class="err">{{.Err}}</small>{{end}}</a>
-{{end}}{{end}}
+<div class="list" id="list">
+{{range .Groups}}<section>
+{{if .Name}}<div class="group"><span class="gname">{{.Name}}</span><a class="gridlink" href="{{.Href}}"{{if .Target}} target="{{.Target}}"{{end}} title="all {{.Name}} variants side by side">grid &#10514;</a></div>{{end}}
+{{range .Entries}}<a class="story{{if eq .Name $.S}} active{{end}}" data-name="{{.Name}}" data-group="{{.Group}}"{{if .FrameHref}} data-frame="{{.FrameHref}}"{{end}}{{if .Grid}} data-grid="{{.Grid}}"{{end}} data-search="{{.Name}} {{.Doc}}" href="{{.Href}}"{{if .Target}} target="{{.Target}}"{{end}}{{if eq .Name $.S}} aria-current="true"{{end}}><span class="sname">{{.Name}}{{if .IsHTTP}}<span class="kind" title="handler story — replays real status and headers">http &#8599;</span>{{end}}</span>
+{{if .Blurb}}<small>{{.Blurb}}</small>{{end}}{{if .Err}}<small class="err">{{.Err}}</small>{{end}}</a>
+{{end}}</section>{{end}}
+<div class="empty" id="empty" hidden>no matching stories</div>
 </div>
 </nav>
-<iframe name="story"{{if .S}} src="/story/{{.S}}"{{else}}{{if .Default}} src="{{.Default}}"{{end}}{{end}}{{if .W}} class="sized" style="width: {{.W}}px"{{end}}></iframe>
+<main>
+<div class="bar">
+<span class="crumb"><span id="crumb-group"{{if not .SelGroup}} hidden{{end}}>{{.SelGroup}}</span><span id="crumb-sep" class="sep"{{if not .SelGroup}} hidden{{end}}>/</span><strong id="crumb-name">{{.S}}</strong></span>
+<span class="spacer"></span>
+<a id="act-grid" class="act" href="{{.GridHref}}"{{if not .GridHref}} hidden{{end}} title="all variants of this template side by side">grid &#10514;</a>
+<a id="act-open" class="act"{{if .OpenHref}} href="{{.OpenHref}}"{{else}} hidden{{end}} target="_blank" title="open this story in its own tab">open &#8599;</a>
+<div class="viewport" aria-label="preview width">{{range .Widths}}<a href="?w={{.}}&s={{$.S}}" data-w="{{.}}"{{if eq . $.W}} class="active"{{end}}>{{if .}}{{.}}px{{else}}full{{end}}</a>{{end}}</div>
+</div>
+<iframe id="frame" name="story"{{if .S}} src="{{.OpenHref}}"{{else}}{{if .Default}} src="{{.Default}}"{{end}}{{end}}{{if .W}} class="sized" style="width: {{.W}}px"{{end}}></iframe>
+</main>
+<script>(function(){
+  var frame=document.getElementById('frame');
+  var list=document.getElementById('list');
+  var items=[].slice.call(list.querySelectorAll('a.story'));
+  var sections=[].slice.call(list.querySelectorAll('section'));
+  var crumbGroup=document.getElementById('crumb-group');
+  var crumbSep=document.getElementById('crumb-sep');
+  var crumbName=document.getElementById('crumb-name');
+  var actGrid=document.getElementById('act-grid');
+  var actOpen=document.getElementById('act-open');
+  var widths=[].slice.call(document.querySelectorAll('.viewport a'));
+  var q=document.getElementById('filter');
+  var count=document.getElementById('count');
+  var empty=document.getElementById('empty');
+  function itemByName(name){
+    for(var i=0;i<items.length;i++){if(items[i].dataset.name===name)return items[i]}
+    return null;
+  }
+  function nameFromURL(u){
+    var m=u.pathname.match(/\/story\/([^/]+)$/);if(m)return decodeURIComponent(m[1]);
+    m=u.pathname.match(/([^/]+)\.html$/);if(m)return decodeURIComponent(m[1]);
+    return '';
+  }
+  function gridFromURL(u){
+    var m=u.pathname.match(/\/grid\/([^/]+)$/);if(m)return decodeURIComponent(m[1]);
+    m=u.pathname.match(/grid_([^/]+)\.html$/);if(m)return decodeURIComponent(m[1]);
+    return '';
+  }
+  function params(o){
+    var u=new URL(location.href);
+    if(o.s!==undefined){o.s?u.searchParams.set('s',o.s):u.searchParams.delete('s')}
+    if(o.w!==undefined){o.w?u.searchParams.set('w',o.w):u.searchParams.delete('w')}
+    return u;
+  }
+  function mark(a){
+    items.forEach(function(x){
+      var on=x===a;
+      x.classList.toggle('active',on);
+      if(on){x.setAttribute('aria-current','true');x.scrollIntoView({block:'nearest'})}
+      else{x.removeAttribute('aria-current')}
+    });
+  }
+  function showCrumb(group,name){
+    crumbGroup.textContent=group||'';
+    crumbGroup.hidden=!group;
+    crumbSep.hidden=!group;
+    crumbName.textContent=name||'';
+  }
+  function showStory(a){
+    showCrumb(a.dataset.group,a.dataset.name);
+    if(a.dataset.grid){actGrid.href=a.dataset.grid;actGrid.hidden=false}else{actGrid.hidden=true}
+    if(a.dataset.frame){actOpen.href=a.dataset.frame;actOpen.hidden=false}else{actOpen.hidden=true}
+    mark(a);
+  }
+  function applyWidth(w,save){
+    frame.classList.toggle('sized',!!w);
+    frame.style.width=w?w+'px':'';
+    widths.forEach(function(a){a.classList.toggle('active',a.dataset.w===w)});
+    if(save){history.replaceState(null,'',params({w:w}))}
+  }
+  function sync(){
+    var loc;
+    try{loc=frame.contentWindow.location}catch(e){return}
+    if(!loc||loc.href==='about:blank'){return}
+    var g=gridFromURL(loc);
+    if(g){
+      showCrumb('grid',g+' variants');
+      actGrid.hidden=true;
+      actOpen.href=loc.href;actOpen.hidden=false;
+      mark(null);
+      return;
+    }
+    var a=itemByName(nameFromURL(loc));
+    if(a){showStory(a);return}
+    showCrumb('',loc.pathname);
+    actGrid.hidden=true;actOpen.hidden=true;
+    mark(null);
+  }
+  frame.addEventListener('load',sync);
+  items.forEach(function(a){
+    if(!a.dataset.frame){return}
+    a.addEventListener('click',function(ev){
+      ev.preventDefault();
+      frame.src=a.dataset.frame;
+      history.pushState(null,'',params({s:a.dataset.name}));
+      showStory(a);
+    });
+  });
+  widths.forEach(function(a){
+    a.addEventListener('click',function(ev){ev.preventDefault();applyWidth(a.dataset.w,true)});
+  });
+  window.addEventListener('popstate',function(){
+    var u=new URL(location.href),a=itemByName(u.searchParams.get('s')||'');
+    if(a&&a.dataset.frame){frame.src=a.dataset.frame;showStory(a)}
+    applyWidth(u.searchParams.get('w')||'',false);
+  });
+  function visible(){return items.filter(function(a){return !a.classList.contains('hidden')})}
+  function applyFilter(){
+    var needle=(q.value||'').trim().toLowerCase();
+    var shown=0;
+    items.forEach(function(a){
+      var hit=!needle||(a.dataset.search||'').toLowerCase().indexOf(needle)>=0;
+      a.classList.toggle('hidden',!hit);
+      if(hit){shown++}
+    });
+    sections.forEach(function(sec){
+      var any=[].some.call(sec.querySelectorAll('a.story'),function(a){return !a.classList.contains('hidden')});
+      sec.classList.toggle('hidden',!any);
+    });
+    count.textContent=needle?shown+'/'+items.length:'';
+    empty.hidden=shown!==0;
+  }
+  function step(dir){
+    var vis=visible();
+    if(!vis.length){return}
+    var i=vis.indexOf(document.activeElement);
+    var n=dir>0?(i<0?0:i+1):(i<0?vis.length-1:i-1);
+    n=(n+vis.length)%vis.length;
+    vis[n].focus();
+  }
+  q.addEventListener('input',applyFilter);
+  document.addEventListener('keydown',function(ev){
+    var t=document.activeElement;
+    var typing=t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA');
+    if(ev.key==='/'&&!typing){ev.preventDefault();q.focus();q.select();return}
+    if(ev.key==='Escape'&&t===q){q.value='';applyFilter();return}
+    if(ev.key==='ArrowDown'||ev.key==='ArrowUp'){
+      if(t===q||list.contains(t)){ev.preventDefault();step(ev.key==='ArrowDown'?1:-1)}
+      return;
+    }
+    if(ev.key==='Enter'&&t===q){var vis=visible();if(vis[0]){vis[0].click()}}
+  });
+  // Honor ?s= / ?w= in both modes: the live server pre-renders them and
+  // the static export relies on this script alone.
+  var u=new URL(location.href);
+  applyWidth(u.searchParams.get('w')||'',false);
+  var a=itemByName(u.searchParams.get('s')||'');
+  if(a&&a.dataset.frame){
+    var want=new URL(a.dataset.frame,location.href);
+    if(frame.src!==want.href){frame.src=want.href}
+    showStory(a);
+  }else{sync()}
+})();</script>
 </body></html>
 `))
 
@@ -186,24 +386,28 @@ header { display: flex; gap: .875rem; align-items: baseline; padding: .5rem .875
 header .back { color: var(--text-muted); text-decoration: none; font-size: .85rem; }
 header .back:hover { color: var(--accent); }
 header strong { font-size: .85rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+header .count { font-size: .74rem; color: var(--text-muted); }
 header .viewport { margin-inline-start: auto; }
 .viewport { display: flex; gap: .25rem; font-size: .78rem; }
 .viewport a { padding: .2rem .4rem; text-align: center; color: var(--text-muted); text-decoration: none; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
 .viewport a:hover { color: var(--accent); border-color: var(--accent); }
 .viewport a.active { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
-.row { flex: 1; display: flex; overflow-x: auto; }
-figure { flex: 1 1 0; min-width: 0; margin: 0; display: flex; flex-direction: column; background: var(--surface); }
+.row { flex: 1; display: flex; gap: .875rem; overflow-x: auto; padding: .875rem; }
+figure { flex: 1 1 0; min-width: 0; margin: 0; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 figure.sized { flex: none; }
-figure + figure { border-left: 1px solid var(--border); }
+figcaption { display: flex; align-items: center; gap: .5rem; padding: .35rem .6rem; font-size: .72rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; border-bottom: 1px solid var(--border-muted); }
+figcaption .name { color: var(--text); text-decoration: none; font-weight: 600; }
+figcaption .name:hover { color: var(--accent); text-decoration: underline; }
+figcaption .open { margin-inline-start: auto; color: var(--text-muted); text-decoration: none; font-family: system-ui, sans-serif; }
+figcaption .open:hover { color: var(--accent); }
 figure iframe { flex: 1; border: 0; width: 100%; }
-figcaption { padding: .3rem .6rem; font-size: .72rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted); border-top: 1px solid var(--border-muted); }
 </style></head>
 <body>
-<header><a class="back" href="{{.Index}}"{{if .IndexTarget}} target="{{.IndexTarget}}"{{end}}>&#8592; index</a><strong>{{.Name}}</strong>
+<header><a class="back" href="{{.Index}}"{{if .IndexTarget}} target="{{.IndexTarget}}"{{end}}>&#8592; index</a><strong>{{.Name}}</strong><span class="count">{{len .Stories}} variants</span>
 <div class="viewport">{{range .Widths}}<a href="?w={{.}}"{{if eq . $.W}} class="active"{{end}}>{{if .}}{{.}}px{{else}}flex{{end}}</a>{{end}}</div>
 </header>
 <div class="row">
-{{range .Stories}}<figure{{if $.W}} class="sized"{{end}}><iframe src="{{.Href}}"{{if $.W}} style="width: {{$.W}}px"{{end}}></iframe><figcaption>{{.Name}}</figcaption></figure>
+{{range .Stories}}<figure{{if $.W}} class="sized"{{end}}><figcaption><a class="name" href="{{$.Index}}?s={{.Name}}"{{if $.IndexTarget}} target="{{$.IndexTarget}}"{{end}} title="open {{.Name}} in the index">{{.Name}}</a><a class="open" href="{{.Href}}" target="_blank" title="open this story in its own tab">&#8599;</a></figcaption><iframe src="{{.Href}}"{{if $.W}} style="width: {{$.W}}px"{{end}}></iframe></figure>
 {{end}}</div>
 </body></html>
 `))
@@ -258,7 +462,7 @@ func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 	var errs []error
 	entries := make([]entry, len(stories))
 	for i, s := range stories {
-		entries[i] = entry{Story: s, Href: s.Name + ".html", Target: "story"}
+		entries[i] = entry{Story: s, Href: s.Name + ".html", FrameHref: s.Name + ".html", Target: "story", Blurb: blurb(s)}
 		res, err := b.Render(ctx, s.Name)
 		if err != nil {
 			entries[i].Err = firstLine(err.Error())
@@ -278,6 +482,9 @@ func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 		}
 		groups[i].Href = "grid_" + groups[i].Name + ".html"
 		groups[i].Target = "story"
+		for j := range groups[i].Entries {
+			groups[i].Entries[j].Grid = groups[i].Href
+		}
 		f, err := os.Create(filepath.Join(dir, groups[i].Href))
 		if err != nil {
 			return err
@@ -300,14 +507,33 @@ func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 		return err
 	}
 	defer f.Close()
-	def := ""
-	for _, e := range entries {
-		if !e.IsHTTP() {
-			def = e.Href
+	// The first frameable story is the snapshot's landing page; the
+	// toolbar shows it selected the way the live index does. Prefer a
+	// print story when one exists, matching the live index's default.
+	var sel *entry
+	for i := range entries {
+		if !entries[i].IsHTTP() {
+			sel = &entries[i]
 			break
 		}
 	}
-	if err := indexTmpl.Execute(f, map[string]any{"Dir": b.Dir, "Groups": groups, "Default": def}); err != nil {
+	if sel == nil {
+		for i := range entries {
+			if entries[i].FrameHref != "" {
+				sel = &entries[i]
+				break
+			}
+		}
+	}
+	data := map[string]any{"Dir": b.Dir, "Groups": groups, "Widths": []string{"", "320", "360", "768"}}
+	if sel != nil {
+		data["S"] = sel.Name
+		data["Default"] = sel.Href
+		data["SelGroup"] = sel.Group
+		data["GridHref"] = gridHref(groups, sel.Group)
+		data["OpenHref"] = sel.FrameHref
+	}
+	if err := indexTmpl.Execute(f, data); err != nil {
 		return err
 	}
 	// The snapshot mirrors the static source: a fresh copy drops assets
@@ -435,14 +661,14 @@ func (b *Book) Handler() http.Handler {
 				// which can include frame-ancestors 'none' / X-Frame-Options:
 				// DENY — they may not render inside the iframe, so they
 				// open in a new tab with the headers intact.
-				entries[i] = entry{Story: s, Href: "/story/" + s.Name, Target: "_blank"}
+				entries[i] = entry{Story: s, Href: "/story/" + s.Name, Target: "_blank", Blurb: blurb(s)}
 				continue
 			}
 			href := "?s=" + s.Name
 			if wpx != "" {
 				href += "&w=" + wpx
 			}
-			entries[i] = entry{Story: s, Href: href}
+			entries[i] = entry{Story: s, Href: href, FrameHref: "/story/" + s.Name, Blurb: blurb(s)}
 		}
 		// ?s=<Name> selects the previewed story so width switching (a full
 		// index reload) keeps it; an unknown or missing name falls back to
@@ -473,11 +699,28 @@ func (b *Book) Handler() http.Handler {
 			if wpx != "" {
 				groups[i].Href += "?w=" + wpx
 			}
+			for j := range groups[i].Entries {
+				groups[i].Entries[j].Grid = groups[i].Href
+			}
+		}
+		// The toolbar mirrors the selected story: its group, the group's
+		// grid, and the story's own URL for opening it in a tab.
+		selGroup, grid, open := "", "", ""
+		for _, e := range entries {
+			if e.Name == sel {
+				selGroup = e.Group
+				grid = gridHref(groups, e.Group)
+				open = e.FrameHref
+				break
+			}
 		}
 		if err := indexTmpl.Execute(w, map[string]any{
 			"Dir":       b.Dir,
 			"Groups":    groups,
 			"S":         sel,
+			"SelGroup":  selGroup,
+			"GridHref":  grid,
+			"OpenHref":  open,
 			"W":         wpx,
 			"Widths":    []string{"", "320", "360", "768"},
 			"ScriptTag": b.ScriptTag(),
