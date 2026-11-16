@@ -146,11 +146,19 @@ the next reload and does not stop watching.
 
 The index groups stories by the render function they drive — by
 convention the last unqualified call in the story body (`RenderUser`,
-`RenderUserList`), so handler stories stay ungrouped. Each group header
-opens a side-by-side grid (`/grid/<func>`) laying that template's
-data-state variants out at the chosen width, which is where a CSS edit
-can be checked against every state at once. `export` writes the same
-grids as `grid_<func>.html` pages framing the exported stories.
+`RenderUserList`), so handler stories stay ungrouped. A filter box at
+the top of the sidebar narrows the list by name or doc text (`/` focuses
+it, `↑`/`↓` move through the matches, `Enter` opens the first). Each
+group header carries a `grid` chip that opens a side-by-side grid
+(`/grid/<func>`) laying that template's data-state variants out at the
+chosen width, which is where a CSS edit can be checked against every
+state at once; a caption on each card links back to that story in the
+index. The toolbar above the preview shows the current group and story
+with `grid` and `open` (own tab) actions plus the width presets, and
+selecting a story swaps the frame without a page reload — the selection
+lives in `?s=`/`?w=`, so links and reloads keep it, in the live preview
+and in the export alike. `export` writes the same grids as
+`grid_<func>.html` pages framing the exported stories.
 
 Equivalent commands from this directory:
 
