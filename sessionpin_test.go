@@ -69,19 +69,19 @@ func TestSessionIsolationPin(t *testing.T) {
 		base := NewEngine(dir)
 		s1 := base.NewSession()
 
-		if v := callPinInt(t, s1, ctx, dir, "Version"); v != 1 {
-			t.Fatalf("Version before edit = %d, want 1", v)
+		if diff := cmp.Diff(int64(1), callPinInt(t, s1, ctx, dir, "Version")); diff != "" {
+			t.Fatalf("Version before edit mismatch (-want +got):\n%s", diff)
 		}
 
 		// edit the source: Version now returns 2
 		writePinSrc(t, dir, 2)
 
-		if v := callPinInt(t, s1, ctx, dir, "Version"); v != 1 {
-			t.Errorf("Version in existing session after edit = %d, want 1 (old version pinned)", v)
+		if diff := cmp.Diff(int64(1), callPinInt(t, s1, ctx, dir, "Version")); diff != "" {
+			t.Errorf("Version in existing session after edit mismatch (-want +got):\n%s", diff)
 		}
 		s2 := base.NewSession()
-		if v := callPinInt(t, s2, ctx, dir, "Version"); v != 2 {
-			t.Errorf("Version in fresh session after edit = %d, want 2", v)
+		if diff := cmp.Diff(int64(2), callPinInt(t, s2, ctx, dir, "Version")); diff != "" {
+			t.Errorf("Version in fresh session after edit mismatch (-want +got):\n%s", diff)
 		}
 	})
 }
