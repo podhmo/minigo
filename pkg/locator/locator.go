@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"golang.org/x/mod/module"
 )
@@ -130,12 +131,12 @@ func New(startPath string, options ...Option) (*Locator, error) {
 	}
 
 	if l.UseGoModuleResolver {
-		goRoot, err := getGoRoot()
+		goRoot, err := getGoRootOnce()
 		if err != nil {
 			return nil, fmt.Errorf("could not determine GOROOT: %w", err)
 		}
 		l.goRoot = goRoot
-		cache, err := getGoModCache()
+		cache, err := getGoModCacheOnce()
 		if err != nil {
 			return nil, fmt.Errorf("could not determine go mod cache location: %w", err)
 		}
@@ -489,6 +490,14 @@ func getGoModCache() (string, error) {
 	}
 	return strings.TrimSpace(string(output)), nil
 }
+
+// getGoRootOnce / getGoModCacheOnce memoize the `go env` lookups per
+// process: they spawn a subprocess each and the values cannot change
+// during a run.
+var (
+	getGoRootOnce     = sync.OnceValues(getGoRoot)
+	getGoModCacheOnce = sync.OnceValues(getGoModCache)
+)
 
 // getRequireDirectivesFromBytes reads require directives from go.mod content.
 func getRequireDirectivesFromBytes(content []byte) (map[string]string, error) {

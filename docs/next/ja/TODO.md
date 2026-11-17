@@ -10,7 +10,7 @@
 
 ## M0 + P0: 振る舞いの固定とベースライン
 
-- [ ] **M0-1 `pkg/locator` の `go env` をメモ化する**: `getGoRoot`/`getGoModCache`（locator.go:474, 484）がロケータの生成ごとにサブプロセスを起動しており、最小の `NewEngine` 実行のほとんどの時間を占めている。プロセス単位で `sync.OnceValues` にする。完了条件: `NewEngine` のベンチで差分を報告している。[references/baseline.md](./references/baseline.md)
+- [x] **M0-1 `pkg/locator` の `go env` をメモ化する**: `getGoRoot`/`getGoModCache`（locator.go:474, 484）がロケータの生成ごとにサブプロセスを起動しており、最小の `NewEngine` 実行のほとんどの時間を占めている。プロセス単位で `sync.OnceValues` にする。完了条件: `NewEngine` のベンチで差分を報告している。[references/baseline.md](./references/baseline.md)
 - [ ] **M0-2 ベースラインを記録する**: `session_bench_test`、`genericbench_test`、`NewEngine`/`NewSession` 単体、realworld の `grafana-openapi` の実行時間と alloc を記録する。完了条件: 以降の PR が差分を報告できる表が [references/baseline.md](./references/baseline.md) にある。
 - [ ] **M0-3 スパイクのカウンタを常設する**: コンパイル起因のビルド数、C1 違反（コンパイル中の初期化）、`chunkCellsEscape` 率を、テスト専用のフックかビルドタグで取れるようにする。完了条件: C1 違反が 0 であることを確かめるテストが CI にある。[references/spike-instrumentation.md](./references/spike-instrumentation.md)
 - [ ] **M0-4 遅延性の振る舞いを pin する**: 型の問い合わせだけでは init が panic するパッケージの初期化が走らないこと、import 先の未使用分岐は初期化されないこと、を確かめる振る舞いテストを書く。完了条件: index と初期化の対象をパス単位で検証するテストがある（出力だけを見ない）。[references/ownership.md](./references/ownership.md)
