@@ -280,6 +280,25 @@ func TagOf(v Value) *TypeDef {
 	return nil
 }
 
+// TwinOperands lets a boxed host named basic meet its source twin's
+// value in one operation: when the other operand is a Named of the
+// source declaration, the host one reads as that Named too — an
+// inspect.AST node's Tok against go/token's DEFINE, a host FileMode
+// against io/fs's ModeDir. The stored values stay as they are.
+func TwinOperands(a, b Value) (Value, Value) {
+	if n, ok := b.(*Named); ok {
+		if p, rt, ok := HostNamedScalar(a); ok && HostTwinOf(rt, n.Typ) {
+			return Tag(n.Typ, p), b
+		}
+	}
+	if n, ok := a.(*Named); ok {
+		if p, rt, ok := HostNamedScalar(b); ok && HostTwinOf(rt, n.Typ) {
+			return a, Tag(n.Typ, p)
+		}
+	}
+	return a, b
+}
+
 // Unwrap removes every [Named] tag from v; any other value passes through
 // unchanged. It does not look inside containers or references; use
 // [DeepUnwrap] for a host-side Go value.

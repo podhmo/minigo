@@ -417,7 +417,7 @@ func (c *compiler) funcLit(x *ast.FuncLit) {
 		}
 		ic.ch.NResults = countResults(x.Type.Results)
 	}
-	ic.results = resultTypes(x.Type.Results)
+	ic.results = syntax.FieldTypes(x.Type.Results)
 	if x.Body != nil {
 		// same as Func: the body's outer scope is the signature's block.
 		for _, s := range x.Body.List {
@@ -431,12 +431,6 @@ func (c *compiler) funcLit(x *ast.FuncLit) {
 	inner.Chunk = ic.ch
 
 	c.emit(bytecode.OpMakeClosure, c.constIdx(inner), 0, x.Pos())
-}
-
-// embedFieldName derives the field name of an anonymous (embedded) struct
-// field: the base type name, ignoring pointers, packages and type args.
-func embedFieldName(x ast.Expr) string {
-	return runtime.AnonFieldName(x)
 }
 
 // literalValue converts a BasicLit to a runtime value.

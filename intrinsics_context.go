@@ -266,3 +266,13 @@ func watchCtxDone(vc runtime.VMCaller, parent, child context.Context) {
 		vm.SetWakeChanDead(vc, ptr, true)
 	}
 }
+
+func (s *scriptLocker) Lock() { s.call(s.lock) }
+
+func (s *scriptLocker) Unlock() { s.call(s.unlock) }
+
+func (s *scriptLocker) call(fn runtime.Value) {
+	if _, err := s.vc.Call(fn, nil); err != nil {
+		panic(err)
+	}
+}

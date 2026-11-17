@@ -249,3 +249,25 @@ type callerFrame struct {
 
 // callerFunc is the script-side *runtime.Func (only Name() is used).
 type callerFunc struct{ name string }
+
+// Next implements (*runtime.Frames).Next — the bool reports whether a
+// further call would yield another frame, so the last real frame
+// returns false and `for { f, more := frames.Next(); ...; if !more {
+// break } }` does not process an extra empty frame.
+func (cf *callerFrames) Next() (callerFrame, bool) {
+	if cf.i >= len(cf.sites) {
+		return callerFrame{}, false
+	}
+	s := cf.sites[cf.i]
+	cf.i++
+	return callerFrame{
+		PC:       uintptr(cf.i),
+		Func:     &callerFunc{name: s.Name},
+		Function: s.Name,
+		File:     s.File,
+		Line:     s.Line,
+	}, cf.i < len(cf.sites)
+}
+
+// Name implements (*runtime.Func).Name.
+func (f *callerFunc) Name() string { return f.name }

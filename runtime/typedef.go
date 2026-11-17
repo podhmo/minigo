@@ -201,12 +201,19 @@ func CanonicalBasicName(n string) string {
 // `Wrap[string]` share Name+Pkg but instantiate differently — a declared
 // type is identical only when its type arguments are.
 func bindsEq(a, b map[string]Value) bool {
+	return bindsEqBy(a, b, bindArgEq)
+}
+
+// bindsEqBy compares instantiation bindings pairwise with eq — the
+// callers' element compare (bindArgEq, sigComparer.bindArgEqSig)
+// decides whether arguments identify by declaration or by spelling.
+func bindsEqBy(a, b map[string]Value, eq func(a, b Value) bool) bool {
 	if len(a) != len(b) {
 		return false
 	}
 	for k, av := range a {
 		bv, ok := b[k]
-		if !ok || !bindArgEq(av, bv) {
+		if !ok || !eq(av, bv) {
 			return false
 		}
 	}
@@ -300,7 +307,7 @@ func typSpelling(e ast.Expr, ctx *TypeDef, under bool) string {
 		return "*" + typSpelling(t.X, ctx, under)
 	case *ast.ArrayType:
 		if t.Len != nil {
-			return "[" + typLenName(ArrayLenExpr(t)) + "]" + typSpelling(t.Elt, ctx, under)
+			return "[" + TypLenName(ArrayLenExpr(t)) + "]" + typSpelling(t.Elt, ctx, under)
 		}
 		return "[]" + typSpelling(t.Elt, ctx, under)
 	case *ast.Ellipsis:
@@ -543,7 +550,7 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 		return "*" + TypGoSpelling(t.X, ctx)
 	case *ast.ArrayType:
 		if t.Len != nil {
-			return "[" + typLenName(ArrayLenExpr(t)) + "]" + TypGoSpelling(t.Elt, ctx)
+			return "[" + TypLenName(ArrayLenExpr(t)) + "]" + TypGoSpelling(t.Elt, ctx)
 		}
 		return "[]" + TypGoSpelling(t.Elt, ctx)
 	case *ast.Ellipsis:
@@ -927,6 +934,40 @@ func (c sigComparer) sigTypEq(a, b *TypeDef) bool {
 	return TypIdentical(a, b)
 }
 
+// SetStructShape fills td's struct shape (Kind/Fields/FTags/EmbedIdx/
+// EmbedSpecs) from an ast.StructType — embedded fields record their
+// type expression in EmbedSpecs and their index in EmbedIdx.
+func (td *TypeDef) SetStructShape(t *ast.StructType) {
+	td.Kind = KindStruct
+	td.FTags = StructFieldTags(t)
+	for _, f := range t.Fields.List {
+		if len(f.Names) == 0 {
+			td.EmbedSpecs = append(td.EmbedSpecs, f.Type)
+			td.EmbedIdx = append(td.EmbedIdx, len(td.Fields))
+			td.Fields = append(td.Fields, AnonFieldName(f.Type))
+			continue
+		}
+		for _, n := range f.Names {
+			td.Fields = append(td.Fields, n.Name)
+		}
+	}
+}
+
+// SetInterfaceShape fills td's interface shape (Kind/MReqs/IEmbeds)
+// from an ast.InterfaceType — embedded elements go to IEmbeds.
+func (td *TypeDef) SetInterfaceShape(t *ast.InterfaceType) {
+	td.Kind = KindInterface
+	for _, m := range t.Methods.List {
+		if len(m.Names) == 0 {
+			td.IEmbeds = append(td.IEmbeds, m.Type)
+			continue
+		}
+		for _, n := range m.Names {
+			td.MReqs = append(td.MReqs, n.Name)
+		}
+	}
+}
+
 // TypeExpr returns the type expression a typedef spells — its Anon,
 // or the declared underlying type for a Spec-carrying typedef.
 func (td *TypeDef) TypeExpr() ast.Expr {
@@ -1011,16 +1052,7 @@ func (c sigComparer) namedTypEq(a, b *TypeDef) bool {
 // bindsEqSig compares instantiation bindings like bindsEq but through
 // sigTypEq — an argument spelled by alias identifies with its target.
 func (c sigComparer) bindsEqSig(a, b map[string]Value) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, av := range a {
-		bv, ok := b[k]
-		if !ok || !c.bindArgEqSig(av, bv) {
-			return false
-		}
-	}
-	return true
+	return bindsEqBy(a, b, c.bindArgEqSig)
 }
 
 func (c sigComparer) bindArgEqSig(a, b Value) bool {
@@ -1039,8 +1071,8 @@ func (c sigComparer) bindArgEqSig(a, b Value) bool {
 // int` expands to two int params like typFieldSpellings does, and
 // parameter names never decide identity.
 func (c sigComparer) sigFieldListEq(fa *ast.FieldList, ca *TypeDef, fb *ast.FieldList, cb *TypeDef) bool {
-	ea := sigFieldExprs(fa)
-	eb := sigFieldExprs(fb)
+	ea := syntax.FieldTypes(fa)
+	eb := syntax.FieldTypes(fb)
 	if len(ea) != len(eb) {
 		return false
 	}
@@ -1050,25 +1082,6 @@ func (c sigComparer) sigFieldListEq(fa *ast.FieldList, ca *TypeDef, fb *ast.Fiel
 		}
 	}
 	return true
-}
-
-// sigFieldExprs expands a field list to one type expression per
-// declared name — `a, b int` contributes int twice.
-func sigFieldExprs(fl *ast.FieldList) []ast.Expr {
-	if fl == nil {
-		return nil
-	}
-	var out []ast.Expr
-	for _, f := range fl.List {
-		n := len(f.Names)
-		if n == 0 {
-			n = 1
-		}
-		for i := 0; i < n; i++ {
-			out = append(out, f.Type)
-		}
-	}
-	return out
 }
 
 // sigExprEq compares two type expressions written in different
@@ -1131,7 +1144,7 @@ func (c sigComparer) structTypEq(sa *ast.StructType, ca *TypeDef, sb *ast.Struct
 		if fa[i].name != fb[i].name {
 			return false
 		}
-		if sigTagKey(fa[i].tag) != sigTagKey(fb[i].tag) {
+		if structTagKey(fa[i].tag) != structTagKey(fb[i].tag) {
 			return false
 		}
 		if !c.sigExprEq(fa[i].typ, ca, fb[i].typ, cb) {
@@ -1158,7 +1171,7 @@ func sigStructFields(fl *ast.FieldList) []sigStructField {
 	var out []sigStructField
 	for _, f := range fl.List {
 		if len(f.Names) == 0 {
-			out = append(out, sigStructField{name: sigEmbedName(f.Type), typ: f.Type, tag: f.Tag})
+			out = append(out, sigStructField{name: AnonFieldName(f.Type), typ: f.Type, tag: f.Tag})
 			continue
 		}
 		for _, n := range f.Names {
@@ -1168,59 +1181,12 @@ func sigStructFields(fl *ast.FieldList) []sigStructField {
 	return out
 }
 
-// sigEmbedName derives the field name of an embedded struct field —
-// the written type name like embedBaseName: T for T or *T, T for
-// pkg.T, G for G[int].
-func sigEmbedName(x ast.Expr) string {
-	switch t := x.(type) {
-	case *ast.Ident:
-		return t.Name
-	case *ast.StarExpr:
-		return sigEmbedName(t.X)
-	case *ast.SelectorExpr:
-		return t.Sel.Name
-	case *ast.IndexExpr:
-		return sigEmbedName(t.X)
-	case *ast.IndexListExpr:
-		return sigEmbedName(t.X)
-	}
-	return ""
-}
-
-// sigTagKey normalizes a field tag literal for identity compare, like
-// structTagKey: absent and empty tags fold, and quote styles
-// normalize.
-func sigTagKey(tag *ast.BasicLit) string {
-	if tag == nil {
-		return ""
-	}
-	s, err := strconv.Unquote(tag.Value)
-	if err != nil || s == "" {
-		return ""
-	}
-	return strconv.Quote(s)
-}
-
 // sigLenEq compares array-length expressions for identity, mirroring
 // typLenName: literals by value, named lengths by name — a named const
 // is not folded, so [N]T and [3]T stay distinct here as they do in
 // TypSpelling.
 func sigLenEq(a, b ast.Expr) bool {
-	return sigLenKey(a) == sigLenKey(b)
-}
-
-func sigLenKey(e ast.Expr) string {
-	switch l := e.(type) {
-	case nil:
-		return ""
-	case *ast.BasicLit:
-		return l.Value
-	case *ast.Ident:
-		return l.Name
-	case *ast.Ellipsis:
-		return "..."
-	}
-	return fmt.Sprintf("%T", e)
+	return TypLenName(a) == TypLenName(b)
 }
 
 // importClauseName resolves a file import's package clause name — the
@@ -1548,14 +1514,8 @@ func goFieldSpellings(fl *ast.FieldList, ctx *TypeDef) string {
 		return ""
 	}
 	var parts []string
-	for _, f := range fl.List {
-		n := len(f.Names)
-		if n == 0 {
-			n = 1
-		}
-		for i := 0; i < n; i++ {
-			parts = append(parts, TypGoSpelling(f.Type, ctx))
-		}
+	for _, t := range syntax.FieldTypes(fl) {
+		parts = append(parts, TypGoSpelling(t, ctx))
 	}
 	return strings.Join(parts, ", ")
 }
@@ -1627,21 +1587,15 @@ func typFieldSpellings(fl *ast.FieldList, ctx *TypeDef, under bool) string {
 		return ""
 	}
 	var parts []string
-	for _, f := range fl.List {
-		n := len(f.Names)
-		if n == 0 {
-			n = 1
-		}
-		for i := 0; i < n; i++ {
-			parts = append(parts, typSpelling(f.Type, ctx, under))
-		}
+	for _, t := range syntax.FieldTypes(fl) {
+		parts = append(parts, typSpelling(t, ctx, under))
 	}
 	return strings.Join(parts, ",")
 }
 
-// typLenName renders an array-length expression inside a type-identity
+// TypLenName renders an array-length expression inside a type-identity
 // spelling — the `3` of `[3]int`, a named const, or `...`.
-func typLenName(e ast.Expr) string {
+func TypLenName(e ast.Expr) string {
 	switch l := e.(type) {
 	case nil:
 		return ""

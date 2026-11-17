@@ -154,3 +154,39 @@ func isDigits(s string) bool {
 	}
 	return true
 }
+
+// FieldTypes expands a signature field list to one type expression per
+// declared name — `a, b int` contributes int twice.
+func FieldTypes(fl *ast.FieldList) []ast.Expr {
+	if fl == nil {
+		return nil
+	}
+	var out []ast.Expr
+	for _, f := range fl.List {
+		n := len(f.Names)
+		if n == 0 {
+			n = 1
+		}
+		for i := 0; i < n; i++ {
+			out = append(out, f.Type)
+		}
+	}
+	return out
+}
+
+// FieldCount counts the value slots a signature field list declares —
+// `a, b int` counts as two.
+func FieldCount(fl *ast.FieldList) int {
+	if fl == nil {
+		return 0
+	}
+	n := 0
+	for _, f := range fl.List {
+		if len(f.Names) > 0 {
+			n += len(f.Names)
+		} else {
+			n++
+		}
+	}
+	return n
+}

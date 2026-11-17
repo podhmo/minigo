@@ -267,3 +267,32 @@ func atomicWord(vc runtime.VMCaller, td *runtime.TypeDef, x runtime.Value) (runt
 	}
 	return cv, nil
 }
+
+func (b *atomicBox) Load() (old any) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.v
+}
+
+func (b *atomicBox) Store(x any) {
+	b.mu.Lock()
+	b.v = x
+	b.mu.Unlock()
+}
+
+func (b *atomicBox) Swap(x any) (old any) {
+	b.mu.Lock()
+	old, b.v = b.v, x
+	b.mu.Unlock()
+	return old
+}
+
+func (b *atomicBox) CompareAndSwap(old, new any) (swapped bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !atomicCellEq(b.v, old) {
+		return false
+	}
+	b.v = new
+	return true
+}

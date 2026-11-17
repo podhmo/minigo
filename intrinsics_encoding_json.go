@@ -2175,3 +2175,137 @@ func jsonDeep(v any) any {
 		return v
 	}
 }
+
+func (j jsonCycle) MarshalJSON() ([]byte, error) {
+	return nil, &json.UnsupportedValueError{Str: jsonCyclePrefix + j.via}
+}
+
+func (o orderedObject) MarshalJSON() ([]byte, error) {
+	var sb strings.Builder
+	sb.WriteByte('{')
+	for i, k := range o.keys {
+		kb, err := json.Marshal(k)
+		if err != nil {
+			return nil, err
+		}
+		vb, err := json.Marshal(o.vals[i])
+		if err != nil {
+			return nil, err
+		}
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		sb.Write(kb)
+		sb.WriteByte(':')
+		sb.Write(vb)
+	}
+	sb.WriteByte('}')
+	return []byte(sb.String()), nil
+}
+
+func (u jsonUnsupported) MarshalJSON() ([]byte, error) { return nil, u.e }
+
+func (e *unsupportedFunc) Error() string { return "json: unsupported type: " + e.name }
+
+func (e *jsonScriptErr) Error() string { return "json: script marshaler error" }
+
+func (e *jsonScriptErr) MarshalJSON() ([]byte, error) {
+	return nil, e
+}
+
+// ScriptMethod routes Encode around the reflect call (runtime.ScriptMethoder).
+func (e *jsonEncoder) ScriptMethod(name string) (func(runtime.VMCaller, []runtime.Value) (runtime.Value, error), bool) {
+	if name != "Encode" {
+		return nil, false
+	}
+	return func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("json.Encoder.Encode needs 1 arg, got %d", len(args))
+		}
+		return errVal(e.encode(v, args[0])), nil
+	}, true
+}
+
+func (e *jsonEncoder) encode(c runtime.VMCaller, v runtime.Value) error {
+	err := e.enc.Encode(goJSON(c, v))
+	err = jsonUnsupportedOf(err)
+	var se *jsonScriptErr
+	if errors.As(err, &se) {
+		return jsonMarshalerErr(c, se)
+	}
+	return err
+}
+
+// Encode serves host callers holding the boxed encoder (a bound host
+// func taking `interface{ Encode(any) error }`); script calls take
+// ScriptMethod's raw-arg path. A script value reaches here already
+// projected to its host shape, so jsonHostArg recovers the original
+// before goJSON walks it.
+func (e *jsonEncoder) Encode(v any) error {
+	return e.encode(e.c, jsonHostArg(v))
+}
+
+func (e *jsonEncoder) SetIndent(prefix, indent string) {
+	e.enc.SetIndent(prefix, indent)
+}
+
+func (e *jsonEncoder) SetEscapeHTML(on bool) {
+	e.enc.SetEscapeHTML(on)
+}
+
+func (cleanupHandle) Stop() {}
+
+func (e *jsonMarshalTextErr) Error() string {
+	return "json: error calling MarshalText for type " + e.me.Type.String() + ": " + e.me.Err.Error()
+}
+
+func (e *jsonMarshalTextErr) Unwrap() error { return e.me }
+
+func (t scriptReflectType) String() string { return t.name }
+
+// fail records the first type-mismatch error the way saveError does:
+// later failures are ignored while decoding continues.
+func (x *jsonErrCtx) fail(value string, td *runtime.TypeDef, cause error) {
+	err := &jsonUnmarshalTypeError{
+		value: value,
+		strct: x.strct,
+		field: strings.Join(x.path, "."),
+		typ:   runtime.DisplayName(td),
+		cause: cause,
+	}
+	x.errs = append(x.errs, jsonErrAt{err: err, path: append([]string{}, x.path...)})
+	if x.err == nil {
+		x.err = err
+	}
+}
+
+// failErr records a ready-made error verbatim — for failures whose
+// text is not an UnmarshalTypeError (e.g. the inner-literal syntax
+// error of a `,string` decode into an interface field).
+func (x *jsonErrCtx) failErr(err error) {
+	x.errs = append(x.errs, jsonErrAt{err: err, path: append([]string{}, x.path...)})
+	if x.err == nil {
+		x.err = err
+	}
+}
+
+func (e *jsonUnmarshalTypeError) Error() string {
+	var s string
+	// gc names a struct field only when the failure sits INSIDE one —
+	// a root-level mismatch reports "into Go value" even when the
+	// target is a struct.
+	if e.field != "" {
+		intoWhat := "Go struct field "
+		i := strings.LastIndexByte(e.field, '.') + 1
+		if len(e.field[i:]) > 0 && strings.TrimRight(e.field[i:], "0123456789") == "" {
+			intoWhat = "" // likely a Go slice or array
+		}
+		s = "json: cannot unmarshal " + e.value + " into " + intoWhat + e.strct + "." + e.field + " of type " + e.typ
+	} else {
+		s = "json: cannot unmarshal " + e.value + " into Go value of type " + e.typ
+	}
+	if e.cause != nil {
+		s += ": " + e.cause.Error()
+	}
+	return s
+}

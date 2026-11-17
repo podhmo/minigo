@@ -570,3 +570,90 @@ func sameErrTyp(v runtime.VMCaller, st, want *runtime.TypeDef) bool {
 	}
 	return sp == wp
 }
+
+// ScriptValue is the script-visible error the box carries: a typed nil
+// (`var err error = (*E)(nil)`) reads back boxed in its interface so it
+// stays non-nil.
+func (e *scriptError) ScriptValue() runtime.Value {
+	if tn, ok := e.v.(*runtime.TypedNil); ok {
+		return &runtime.IfaceNil{Typ: tn.Typ}
+	}
+	return e.v
+}
+
+func (e *scriptError) Error() string {
+	s, ok := runtime.IfaceCallString(e.c, e.v, "Error")
+	if !ok {
+		return fmt.Sprintf("%v", goNative(e.v))
+	}
+	return s
+}
+
+// Unwrap lets a script-declared `Unwrap() error` method join the host
+// errors chain — errors.Unwrap/Is/As walk through it like Go's. A
+// script `Unwrap() []error` reports no single cause — like
+// errors.Join, the type has no Unwrap() error.
+func (e *scriptError) Unwrap() error {
+	kids := e.errKids()
+	if len(kids) != 1 {
+		return nil
+	}
+	return kids[0]
+}
+
+// Is lets a script-declared `Is(error) bool` method join host
+// errors.Is — the error's own equality override like Go's custom-Is
+// rule. The host error target maps back to its script value the way
+// hostErrOf boxed it, so the script side compares what it sees.
+func (e *scriptError) Is(target error) bool {
+	m, ok := runtime.IfaceMember(e.c, e.v, "Is")
+	if !ok {
+		return false
+	}
+	r, err := e.c.Call(m, []runtime.Value{errVal(target)})
+	if err != nil {
+		return false
+	}
+	b, _ := r.(bool)
+	return b
+}
+
+// As lets a script-declared `As(any) bool` method join host
+// errors.As/AsType — the error's own As assigns the target like Go's
+// custom-As rule. A non-pointer target has nothing to write to and
+// simply fails the script side's assert.
+func (e *scriptError) As(target any) bool {
+	m, ok := runtime.IfaceMember(e.c, e.v, "As")
+	if !ok {
+		return false
+	}
+	r, err := e.c.Call(m, []runtime.Value{target})
+	if err != nil {
+		return false
+	}
+	b, _ := r.(bool)
+	return b
+}
+
+// Timeout lets a script-declared `Timeout() bool` method answer host
+// checks like os.IsTimeout; without one the error is not a timeout.
+func (e *scriptError) Timeout() bool {
+	m, ok := runtime.IfaceMember(e.c, e.v, "Timeout")
+	if !ok {
+		return false
+	}
+	r, err := e.c.Call(m, nil)
+	if err != nil {
+		return false
+	}
+	b, _ := runtime.Unwrap(r).(bool)
+	return b
+}
+
+func (e *wrapError) Error() string { return e.msg }
+
+func (e *wrapError) Unwrap() error { return e.err }
+
+func (e *wrapErrors) Error() string { return e.msg }
+
+func (e *wrapErrors) Unwrap() []error { return e.errs }

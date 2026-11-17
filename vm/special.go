@@ -218,31 +218,12 @@ func (s *specialCtx) ResolveType(e ast.Expr) (*runtime.TypeDef, error) {
 	case *ast.FuncType:
 		return &runtime.TypeDef{Kind: runtime.KindFunc, Anon: t, Pkg: pkg, File: s.q.File, Binds: s.f.fn.Binds}, nil
 	case *ast.StructType:
-		td := &runtime.TypeDef{Kind: runtime.KindStruct, Anon: t, Pkg: pkg, File: s.q.File, Binds: s.f.fn.Binds}
-		td.FTags = runtime.StructFieldTags(t)
-		for _, fld := range t.Fields.List {
-			if len(fld.Names) == 0 {
-				td.EmbedSpecs = append(td.EmbedSpecs, fld.Type)
-				td.EmbedIdx = append(td.EmbedIdx, len(td.Fields))
-				td.Fields = append(td.Fields, runtime.AnonFieldName(fld.Type))
-				continue
-			}
-			for _, n := range fld.Names {
-				td.Fields = append(td.Fields, n.Name)
-			}
-		}
+		td := &runtime.TypeDef{Anon: t, Pkg: pkg, File: s.q.File, Binds: s.f.fn.Binds}
+		td.SetStructShape(t)
 		return td, nil
 	case *ast.InterfaceType:
-		td := &runtime.TypeDef{Kind: runtime.KindInterface, Anon: t, Pkg: pkg, File: s.q.File, Binds: s.f.fn.Binds}
-		for _, m := range t.Methods.List {
-			if len(m.Names) == 0 {
-				td.IEmbeds = append(td.IEmbeds, m.Type)
-				continue
-			}
-			for _, n := range m.Names {
-				td.MReqs = append(td.MReqs, n.Name)
-			}
-		}
+		td := &runtime.TypeDef{Anon: t, Pkg: pkg, File: s.q.File, Binds: s.f.fn.Binds}
+		td.SetInterfaceShape(t)
 		return td, nil
 	case *ast.ParenExpr:
 		return s.ResolveType(t.X)

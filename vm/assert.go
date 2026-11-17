@@ -204,22 +204,6 @@ func sameTypeDef(a, b *runtime.TypeDef) bool {
 	return runtime.TypIdentical(a, b)
 }
 
-// lenExprName renders an array-length expression inside a type spelling
-// — the `3` of `[3]int`, a named const, or `...`.
-func lenExprName(e ast.Expr) string {
-	switch l := e.(type) {
-	case nil:
-		return ""
-	case *ast.BasicLit:
-		return l.Value
-	case *ast.Ident:
-		return l.Name
-	case *ast.Ellipsis:
-		return "..."
-	}
-	return fmt.Sprintf("%T", e)
-}
-
 // typeExprName renders a type AST to a comparable shape string for
 // anonymous-type identity (approximation: structural equality by shape,
 // not by the go/types identity rules).
@@ -230,7 +214,7 @@ func typeExprName(e ast.Expr) string {
 	case *ast.StarExpr:
 		return "*" + typeExprName(t.X)
 	case *ast.ArrayType:
-		return "[" + lenExprName(runtime.ArrayLenExpr(t)) + "]" + typeExprName(t.Elt)
+		return "[" + runtime.TypLenName(runtime.ArrayLenExpr(t)) + "]" + typeExprName(t.Elt)
 	case *ast.MapType:
 		return "map[" + typeExprName(t.Key) + "]" + typeExprName(t.Value)
 	case *ast.ChanType:

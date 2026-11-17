@@ -251,7 +251,7 @@ func (h *hostHelpers) asReaderVM(vc runtime.VMCaller, v any) (io.Reader, error) 
 		set, _, _ := h.e.methodSetOfValue(orig)
 		if set["Read"] {
 			if set["WriteTo"] {
-				return &scriptReaderWriterTo{v: vc, recv: orig}, nil
+				return &scriptReaderWriterTo{scriptReader{v: vc, recv: orig}}, nil
 			}
 			return &scriptReader{v: vc, recv: orig}, nil
 		}
@@ -287,8 +287,7 @@ func copyBackBytes(dst []byte, src runtime.Value, n int) {
 // scriptReaderWriterTo adds a WriteTo proxy: the pair of interfaces is
 // what net/http's nopCloser type probes dispatch on.
 type scriptReaderWriterTo struct {
-	v    runtime.VMCaller
-	recv runtime.Value
+	scriptReader
 }
 
 // readResult decodes a script (n int, err error) pair.
@@ -344,4 +343,74 @@ func asReader(v any) (io.Reader, error) {
 		return r, nil
 	}
 	return nil, fmt.Errorf("not an io.Reader: %T", v)
+}
+
+func (s *scriptReader) Read(p []byte) (int, error) {
+	m, ok := s.v.Member(s.recv, "Read")
+	if !ok || m == nil || m == runtime.NIL {
+		return 0, fmt.Errorf("runtime error: invalid memory address or nil pointer dereference")
+	}
+	pv := scriptVal(p)
+	r, err := s.v.Call(m, []runtime.Value{pv})
+	if err != nil {
+		// a panic inside the script Read propagates as a panic like
+		// callOrPanic — io.Copy's caller must not see "panic: boom"
+		// as an error return.
+		panic(err)
+	}
+	n, err2 := readResult(s.v, r)
+	copyBackBytes(p, pv, n)
+	return n, err2
+}
+
+func (s *scriptReaderWriterTo) Read(p []byte) (int, error) {
+	m, ok := s.v.Member(s.recv, "Read")
+	if !ok || m == nil || m == runtime.NIL {
+		return 0, fmt.Errorf("runtime error: invalid memory address or nil pointer dereference")
+	}
+	pv := scriptVal(p)
+	r, err := s.v.Call(m, []runtime.Value{pv})
+	if err != nil {
+		panic(err)
+	}
+	n, err2 := readResult(s.v, r)
+	copyBackBytes(p, pv, n)
+	return n, err2
+}
+
+func (s *scriptReaderWriterTo) WriteTo(w io.Writer) (int64, error) {
+	m, ok := s.v.Member(s.recv, "WriteTo")
+	if !ok || m == nil || m == runtime.NIL {
+		return 0, fmt.Errorf("runtime error: invalid memory address or nil pointer dereference")
+	}
+	r, err := s.v.Call(m, []runtime.Value{&runtime.GoValue{V: w}})
+	if err != nil {
+		panic(err)
+	}
+	return readResult64(s.v, r)
+}
+
+func (s *scriptWriter) Write(p []byte) (int, error) {
+	r, err := s.v.Call(s.write, []runtime.Value{scriptVal(p)})
+	if err != nil {
+		panic(err)
+	}
+	switch t := r.(type) {
+	case *runtime.Tuple:
+		var n int
+		if len(t.Elems) > 0 {
+			if i, ok := runtime.Unwrap(t.Elems[0]).(int64); ok {
+				n = int(i)
+			}
+		}
+		if len(t.Elems) > 1 {
+			return n, hostErrOf(s.v, t.Elems[1])
+		}
+		return n, nil
+	default:
+		if i, ok := runtime.Unwrap(r).(int64); ok {
+			return int(i), nil
+		}
+		return 0, nil
+	}
 }

@@ -29,25 +29,6 @@ import (
 	"github.com/podhmo/minigo/runtime"
 )
 
-// twinOperands lets a boxed host named basic meet its source twin's
-// value in one operation: when the other operand is a Named of the
-// source declaration, the host one reads as that Named too — an
-// inspect.AST node's Tok against go/token's DEFINE, a host FileMode
-// against io/fs's ModeDir. The stored values stay as they are.
-func twinOperands(a, b runtime.Value) (runtime.Value, runtime.Value) {
-	if n, ok := b.(*runtime.Named); ok {
-		if p, rt, ok := runtime.HostNamedScalar(a); ok && runtime.HostTwinOf(rt, n.Typ) {
-			return runtime.Tag(n.Typ, p), b
-		}
-	}
-	if n, ok := a.(*runtime.Named); ok {
-		if p, rt, ok := runtime.HostNamedScalar(b); ok && runtime.HostTwinOf(rt, n.Typ) {
-			return a, runtime.Tag(n.Typ, p)
-		}
-	}
-	return a, b
-}
-
 // rawHostScalarOperands is twinOperands for a raw host scalar — a bound
 // named basic's payload that crossed an interface untagged, as
 // any(2*time.Second) does: against a Named of its bound typedef it
@@ -222,7 +203,7 @@ func (v *VM) ifaceEql(f *frame, a, b runtime.Value) bool {
 	// eqlValue paths relax across typedefs for static =='s
 	// assignability rules).
 	if isGoValue(a) || isGoValue(b) {
-		a, b = twinOperands(a, b)
+		a, b = runtime.TwinOperands(a, b)
 	} else {
 		a, b = rawHostScalarOperands(a, b)
 	}
@@ -413,7 +394,7 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 	if op >= bytecode.BinEql && op <= bytecode.BinEqlIface && (isGoValue(a) || isGoValue(b)) {
 		// comparisons only: an arithmetic result keeps the host value's
 		// own type, whose host String prints it (Go sees one type)
-		a, b = twinOperands(a, b)
+		a, b = runtime.TwinOperands(a, b)
 	}
 	if n, ok := a.(*runtime.Named); ok {
 		tag = n.Typ

@@ -70,24 +70,6 @@ func (c *compiler) emitTypeCoerce(slot int, t ast.Expr, pos token.Pos) {
 	c.emit(bytecode.OpCoerce, slot, 0, pos)
 }
 
-// resultTypes flattens the declared result types, one per result value.
-func resultTypes(fl *ast.FieldList) []ast.Expr {
-	if fl == nil {
-		return nil
-	}
-	var out []ast.Expr
-	for _, f := range fl.List {
-		n := len(f.Names)
-		if n == 0 {
-			n = 1
-		}
-		for i := 0; i < n; i++ {
-			out = append(out, f.Type)
-		}
-	}
-	return out
-}
-
 func countResults(fl *ast.FieldList) int {
 	n := 0
 	for _, f := range fl.List {

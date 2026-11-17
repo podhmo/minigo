@@ -229,7 +229,7 @@ func compileFunc(fn *runtime.Function) error {
 		}
 	}
 	c.ch.NResults = nresults
-	c.results = resultTypes(fn.Decl.Type.Results)
+	c.results = syntax.FieldTypes(fn.Decl.Type.Results)
 
 	if fn.Decl.Body != nil {
 		// the body's outermost scope is the signature's block — params
