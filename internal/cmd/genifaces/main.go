@@ -11,7 +11,9 @@ package main
 
 import (
 	"fmt"
+	"go/format"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -26,10 +28,10 @@ type method struct {
 }
 
 var (
-	writeTo = method{"WT", "WriteTo(w io.Writer) (int64, error)", "s.writeTo(w)"}
+	writeTo  = method{"WT", "WriteTo(w io.Writer) (int64, error)", "s.writeTo(w)"}
 	readFrom = method{"RF", "ReadFrom(r io.Reader) (int64, error)", "s.readFrom(r)"}
-	seek = method{"Seek", "Seek(offset int64, whence int) (int64, error)", "s.inner.Seek(offset, whence)"}
-	readDir = method{"RD", "ReadDir(name string) ([]fs.DirEntry, error)", "s.readDir(name)"}
+	seek     = method{"Seek", "Seek(offset int64, whence int) (int64, error)", "s.inner.Seek(offset, whence)"}
+	readDir  = method{"RD", "ReadDir(name string) ([]fs.DirEntry, error)", "s.readDir(name)"}
 	readFile = method{"RF", "ReadFile(name string) ([]byte, error)", "s.readFile(name)"}
 )
 
@@ -101,9 +103,20 @@ func suffixes(ms []method) string {
 }
 
 func main() {
+	// go generate runs in the directive file's dir and exports GOFILE;
+	// plain `go run ./internal/cmd/genifaces` runs at the repo root.
+	out := "vm/scriptiface_gen.go"
+	if f := os.Getenv("GOFILE"); f != "" {
+		out = filepath.Join(filepath.Dir(f), "scriptiface_gen.go")
+	}
 	var b strings.Builder
 	emit(&b)
-	if err := os.WriteFile("vm/scriptiface_gen.go", []byte(b.String()), 0o644); err != nil {
+	src, err := format.Source([]byte(b.String()))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "genifaces:", err)
+		os.Exit(1)
+	}
+	if err := os.WriteFile(out, src, 0o644); err != nil {
 		fmt.Fprintln(os.Stderr, "genifaces:", err)
 		os.Exit(1)
 	}

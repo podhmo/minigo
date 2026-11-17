@@ -16,7 +16,7 @@
 // nothing left to wake them. Host intrinsics that will call into the
 // script later, such as timers, must report the pending callback, or the
 // waiting process may be reported as deadlocked.
-//go:generate go run ./internal/cmd/genifaces
+//go:generate go run ../internal/cmd/genifaces
 
 package vm
 
