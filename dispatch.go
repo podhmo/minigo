@@ -344,6 +344,28 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 		funcs = e.ifaceSigFuncs(td)
 		return names, funcs, false
 	}
+	if td.HostNew != nil {
+		// a bound host type's methods live on its reflect method set,
+		// not in td.Methods: enumerate them by name so a script struct
+		// embedding one (`struct{ bytes.Buffer }`, `struct{ *os.File }`)
+		// satisfies interfaces through the promoted methods. The func
+		// map stays empty — host members keep their name-only pass and
+		// resolve through member selection at call time.
+		rt := td.HostType()
+		if rt == nil {
+			return nil, nil, true
+		}
+		if !ptr && rt.Kind() == reflect.Pointer {
+			// a value embed promotes only the embedded type's value
+			// receivers; the host box is always the pointer type.
+			rt = rt.Elem()
+		}
+		names = map[string]bool{}
+		for i := 0; i < rt.NumMethod(); i++ {
+			names[rt.Method(i).Name] = true
+		}
+		return names, funcs, false
+	}
 	names = map[string]bool{}
 	funcs = map[string]*runtime.Function{}
 	for name, m := range td.Methods {

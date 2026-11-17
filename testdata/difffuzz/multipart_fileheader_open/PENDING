@@ -1,6 +1,0 @@
-blocked on the host-embed promoted-method method-set gap: FileHeader.Open
-returns sectionReadCloser (a script struct embedding the host
-*io.SectionReader) as multipart.File, and interface satisfaction misses
-the promoted host methods — `cannot use multipart.sectionReadCloser as
-File`. See TODO.md "a script struct embedding a host pointer does not
-satisfy interfaces through promoted methods".
