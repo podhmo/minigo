@@ -131,17 +131,25 @@ func Check(g Graph, rules map[string][]string) []Violation {
 	return out
 }
 
-// pkgDecls is one parsed package: named type declarations plus its
-// import alias table, for resolving SelectorExpr types.
-type pkgDecls struct {
-	types   map[string]*ast.TypeSpec
+// typeDecl is a named type plus the import table of the file that
+// declares it — selector types must resolve through that file's
+// aliases, since different files may reuse an alias for different
+// paths.
+type typeDecl struct {
+	spec    *ast.TypeSpec
 	imports map[string]string
 }
 
+// pkgDecls is one parsed package: named type declarations keyed by
+// name.
+type pkgDecls struct {
+	types map[string]typeDecl
+}
+
 // loadPkg parses every non-test .go file in root/pkgRel and returns its
-// type and import tables.
+// type table.
 func loadPkg(root, pkgRel string) (*pkgDecls, error) {
-	p := &pkgDecls{types: map[string]*ast.TypeSpec{}, imports: map[string]string{}}
+	p := &pkgDecls{types: map[string]typeDecl{}}
 	ents, err := os.ReadDir(filepath.Join(root, filepath.FromSlash(pkgRel)))
 	if err != nil {
 		return nil, err
@@ -155,6 +163,7 @@ func loadPkg(root, pkgRel string) (*pkgDecls, error) {
 		if err != nil {
 			return nil, err
 		}
+		imports := map[string]string{}
 		for _, spec := range f.Imports {
 			path, _ := strconv.Unquote(spec.Path.Value)
 			alias := ""
@@ -165,7 +174,7 @@ func loadPkg(root, pkgRel string) (*pkgDecls, error) {
 				alias = path[strings.LastIndex(path, "/")+1:]
 			}
 			if alias != "." && alias != "_" {
-				p.imports[alias] = path
+				imports[alias] = path
 			}
 		}
 		for _, decl := range f.Decls {
@@ -175,7 +184,7 @@ func loadPkg(root, pkgRel string) (*pkgDecls, error) {
 			}
 			for _, spec := range gd.Specs {
 				if ts, ok := spec.(*ast.TypeSpec); ok {
-					p.types[ts.Name.Name] = ts
+					p.types[ts.Name.Name] = typeDecl{ts, imports}
 				}
 			}
 		}
@@ -220,8 +229,11 @@ func CheckSharedFields(root, pkgDir, typeName string, forbidden, exempt map[stri
 		}
 		out = append(out, Violation{pkg, fq, fmt.Sprintf("%s.%s holds forbidden shared state: field %s has type %s", strct, field, field, fq)})
 	}
-	var walkType func(pkg, strct, field string, expr ast.Expr) error
-	walkType = func(pkg, strct, field string, expr ast.Expr) error {
+	// walkType inspects a field type expression. imports is the table of
+	// the file that declares the type — selector resolution must happen
+	// per declaring file, since files may reuse an alias.
+	var walkType func(pkg, strct, field string, imports map[string]string, expr ast.Expr) error
+	walkType = func(pkg, strct, field string, imports map[string]string, expr ast.Expr) error {
 		d, err := load(pkg)
 		if err != nil {
 			return err
@@ -240,7 +252,7 @@ func CheckSharedFields(root, pkgDir, typeName string, forbidden, exempt map[stri
 			if !ok {
 				return nil
 			}
-			path, ok := d.imports[id.Name]
+			path, ok := imports[id.Name]
 			if !ok {
 				return nil
 			}
@@ -257,20 +269,48 @@ func CheckSharedFields(root, pkgDir, typeName string, forbidden, exempt map[stri
 				}
 			}
 		case *ast.StarExpr:
-			return walkType(pkg, strct, field, t.X)
+			return walkType(pkg, strct, field, imports, t.X)
+		case *ast.ParenExpr:
+			return walkType(pkg, strct, field, imports, t.X)
+		case *ast.Ellipsis:
+			return walkType(pkg, strct, field, imports, t.Elt)
 		case *ast.ArrayType:
-			return walkType(pkg, strct, field, t.Elt)
+			return walkType(pkg, strct, field, imports, t.Elt)
 		case *ast.MapType:
-			if err := walkType(pkg, strct, field, t.Key); err != nil {
+			if err := walkType(pkg, strct, field, imports, t.Key); err != nil {
 				return err
 			}
-			return walkType(pkg, strct, field, t.Value)
+			return walkType(pkg, strct, field, imports, t.Value)
 		case *ast.ChanType:
-			return walkType(pkg, strct, field, t.Value)
+			return walkType(pkg, strct, field, imports, t.Value)
 		case *ast.IndexExpr:
-			return walkType(pkg, strct, field, t.X)
+			// generic instantiation: the args can carry forbidden types
+			// even when the generic base is clean
+			if err := walkType(pkg, strct, field, imports, t.X); err != nil {
+				return err
+			}
+			return walkType(pkg, strct, field, imports, t.Index)
 		case *ast.IndexListExpr:
-			return walkType(pkg, strct, field, t.X)
+			if err := walkType(pkg, strct, field, imports, t.X); err != nil {
+				return err
+			}
+			for _, ix := range t.Indices {
+				if err := walkType(pkg, strct, field, imports, ix); err != nil {
+					return err
+				}
+			}
+		case *ast.StructType:
+			for _, f := range t.Fields.List {
+				name := ""
+				if len(f.Names) > 0 {
+					name = f.Names[0].Name
+				} else {
+					name = embeddedName(f.Type)
+				}
+				if err := walkType(pkg, strct, field+"."+name, imports, f.Type); err != nil {
+					return err
+				}
+			}
 		case *ast.FuncType:
 			key := strct + "." + field
 			if !exempt[key] {
@@ -286,11 +326,11 @@ func CheckSharedFields(root, pkgDir, typeName string, forbidden, exempt map[stri
 		if err != nil {
 			return nil, err
 		}
-		ts, ok := d.types[r.name]
+		td, ok := d.types[r.name]
 		if !ok {
 			continue // external shape we cannot see; interface types land here too
 		}
-		switch t := ts.Type.(type) {
+		switch t := td.spec.Type.(type) {
 		case *ast.StructType:
 			for _, f := range t.Fields.List {
 				name := ""
@@ -300,7 +340,7 @@ func CheckSharedFields(root, pkgDir, typeName string, forbidden, exempt map[stri
 					// embedded field: name is the type's own
 					name = embeddedName(f.Type)
 				}
-				if err := walkType(r.pkg, r.name, name, f.Type); err != nil {
+				if err := walkType(r.pkg, r.name, name, td.imports, f.Type); err != nil {
 					return nil, err
 				}
 			}
@@ -308,8 +348,9 @@ func CheckSharedFields(root, pkgDir, typeName string, forbidden, exempt map[stri
 			if !exempt[r.name] {
 				out = append(out, Violation{r.pkg, "", fmt.Sprintf("shared state reaches function type %s", r.name)})
 			}
-		case *ast.Ident, *ast.SelectorExpr, *ast.StarExpr, *ast.MapType, *ast.ArrayType, *ast.IndexExpr, *ast.IndexListExpr:
-			if err := walkType(r.pkg, r.name, r.name, t); err != nil {
+		default:
+			// named alias-ish decls (chan, map, paren, selector, ...)
+			if err := walkType(r.pkg, r.name, r.name, td.imports, t); err != nil {
 				return nil, err
 			}
 		}
