@@ -3806,7 +3806,11 @@ func (c *compiler) opGate(x, y ast.Expr, pos token.Pos, inSwitch bool) bool {
 	// case side compares: `switch x < y { case B(true): }` mismatches B
 	// against bool even though `x < y` is untyped — an untyped case expr
 	// (xt) still adopts into the tag's type.
+	pinnedDte := ""
 	if inSwitch && yt.untyped && yt.dte != nil {
+		if id, ok := ast.Unparen(yt.dte).(*ast.Ident); ok {
+			pinnedDte = id.Name
+		}
 		yt = opTyp{te: yt.dte, dte: yt.dte}
 	}
 	if xt.te == nil || yt.te == nil || xt.untyped || yt.untyped || xt.iface || yt.iface {
@@ -3816,8 +3820,16 @@ func (c *compiler) opGate(x, y ast.Expr, pos token.Pos, inSwitch bool) bool {
 	if !ok {
 		return false
 	}
-	yi, ok := c.namedIdentOf(yt.te)
-	if !ok || yi.id == xi.id {
+	var yi namedTypID
+	if pinnedDte != "" && predeclaredTypeNames[pinnedDte] {
+		// the tag's default type is always a predeclared basic type —
+		// a local `type rune int` shadows the ident, so spell it
+		// canonically instead of resolving the name in scope.
+		yi = namedTypID{id: "predecl:" + runtime.CanonicalBasicName(pinnedDte), name: pinnedDte}
+	} else if yi, ok = c.namedIdentOf(yt.te); !ok {
+		return false
+	}
+	if yi.id == xi.id {
 		return false
 	}
 	c.trapOpGate(x, y, pos, inSwitch, xi.name, yi.name)
