@@ -3215,23 +3215,8 @@ func (c *compiler) unfoldTypExpr(te ast.Expr, depth int) ast.Expr {
 		if _, isUp := c.fs.upmap[tt.Name]; isUp {
 			break // a captured var — opaque
 		}
-		if bv, bound := c.binds[tt.Name]; bound {
-			// a bound type parameter: the instantiated typedef's own
-			// spelling exposes the container shape a literal needs
-			// (`M ~map[string]int` bound to map[string]int shows its
-			// MapType, so `M{k: v}` keys evaluate as expressions).
-			// The shape is all that matters here — the leaf idents
-			// keep their instantiating-file scope, which only the
-			// declared conversion target reads, not the key check.
-			if td, ok := bv.(*runtime.TypeDef); ok && td != nil {
-				if ax := td.Anon; ax != nil {
-					return c.unfoldTypExpr(ax, depth-1)
-				}
-				if td.Spec != nil {
-					return c.unfoldTypExpr(td.Spec.Type, depth-1)
-				}
-			}
-			break
+		if _, bound := c.binds[tt.Name]; bound {
+			break // a bound type parameter — opaque (resolveLitType peels it)
 		}
 		// A package-level spec's names resolve in its own package's
 		// file scope, not the caller's.
@@ -5629,9 +5614,42 @@ func (c *compiler) resolveLitType(t ast.Expr, fuel int) ast.Expr {
 		u := c.unfoldTypExpr(t, fuel)
 		inst := c.instantiateLitType(u)
 		if inst == nil {
+			// a bound type parameter stays opaque to unfoldTypExpr —
+			// but a literal spelled against the parameter's own name
+			// takes the argument's container shape (`M{k: v}` for
+			// `M ~map[string]int` bound to map[string]int), with the
+			// declared form's leaf names kept in their declaring
+			// package's scope.
+			if id, ok := ast.Unparen(u).(*ast.Ident); ok {
+				if e := c.litBindShape(id.Name); e != nil {
+					return e
+				}
+			}
 			return u
 		}
 		t = inst
+	}
+	return nil
+}
+
+// litBindShape returns the container shape a bound type parameter's
+// argument typedef declares — its Anon spelling, or its spec's type
+// resolved and re-scoped through the declaring package the way
+// unfoldSpecType does (a leaf `N` of `lib.Items` stays lib's `N`, never
+// the caller's). Nil when the argument exposes no syntactic form.
+func (c *compiler) litBindShape(name string) ast.Expr {
+	td, ok := c.binds[name].(*runtime.TypeDef)
+	if !ok || td == nil {
+		return nil
+	}
+	if td.Anon != nil {
+		if td.Pkg != nil && td.File != nil {
+			return c.scopeSpecType(td.Pkg, td.File, td.Anon)
+		}
+		return td.Anon
+	}
+	if td.Spec != nil && td.Pkg != nil {
+		return c.unfoldSpecType(td.Pkg, td.Spec, 8)
 	}
 	return nil
 }
