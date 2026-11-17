@@ -65,6 +65,21 @@ func TestTypeDeclOf(t *testing.T) {
 		if diff := cmp.Diff(ctx.Pkg, got.Val.Ctx.Pkg); diff != "" {
 			t.Fatal(diff)
 		}
+		if got.Val.Ctx.File == nil {
+			t.Fatal("ctx.File is nil, want the declaring file")
+		}
+	})
+
+	t.Run("Found context points at the declaring file, not the caller's", func(t *testing.T) {
+		s := New(&fakeSource{indexes: map[string]*index.Index{"foo": ix}})
+		caller := &syntax.File{}
+		got := s.TypeDeclOf(DeclContext{Pkg: "foo", File: caller}, "T", IndexedOnly)
+		if got.Kind != Found {
+			t.Fatalf("kind: %v", got.Kind)
+		}
+		if got.Val.Ctx.File == caller {
+			t.Fatal("Ctx.File is the caller's file, want the declaring file")
+		}
 	})
 
 	t.Run("Missing: name declares no type", func(t *testing.T) {

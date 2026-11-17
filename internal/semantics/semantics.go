@@ -141,5 +141,8 @@ func (s *Service) TypeDeclOf(ctx DeclContext, name string, p Policy) Result[Type
 	if !ok {
 		return Result[TypeRef]{Kind: Failed, Err: fmt.Errorf("%s: %q declares %T, not *ast.TypeSpec", ctx.Pkg, name, ti.Decl.Spec)}
 	}
-	return Result[TypeRef]{Kind: Found, Val: TypeRef{Expr: ts.Type, Ctx: ctx}}
+	// The answer's context is the declaring file's, not the caller's:
+	// qualified names inside the type expr resolve against the import
+	// table of the file that declares them.
+	return Result[TypeRef]{Kind: Found, Val: TypeRef{Expr: ts.Type, Ctx: DeclContext{Pkg: ctx.Pkg, File: ti.Decl.File, Binds: ctx.Binds}}}
 }
