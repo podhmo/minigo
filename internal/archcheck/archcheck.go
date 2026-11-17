@@ -300,6 +300,13 @@ func CheckSharedFields(root, pkgDir, typeName string, forbidden, exempt map[stri
 				}
 			}
 		case *ast.StructType:
+			// field is "" when the walk expands a named type's own
+			// (possibly parenthesized) declaration: "Good.Cb", not
+			// "Good.Good.Cb"
+			prefix := field
+			if prefix != "" {
+				prefix += "."
+			}
 			for _, f := range t.Fields.List {
 				name := ""
 				if len(f.Names) > 0 {
@@ -307,12 +314,15 @@ func CheckSharedFields(root, pkgDir, typeName string, forbidden, exempt map[stri
 				} else {
 					name = embeddedName(f.Type)
 				}
-				if err := walkType(pkg, strct, field+"."+name, imports, f.Type); err != nil {
+				if err := walkType(pkg, strct, prefix+name, imports, f.Type); err != nil {
 					return err
 				}
 			}
 		case *ast.FuncType:
 			key := strct + "." + field
+			if field == "" {
+				key = strct // named func-ish decl reached through the default switch
+			}
 			if !exempt[key] {
 				out = append(out, Violation{pkg, "", fmt.Sprintf("%s.%s is a function-typed field; shared state must not hold code", strct, field)})
 			}
@@ -349,8 +359,9 @@ func CheckSharedFields(root, pkgDir, typeName string, forbidden, exempt map[stri
 				out = append(out, Violation{r.pkg, "", fmt.Sprintf("shared state reaches function type %s", r.name)})
 			}
 		default:
-			// named alias-ish decls (chan, map, paren, selector, ...)
-			if err := walkType(r.pkg, r.name, r.name, td.imports, t); err != nil {
+			// named alias-ish decls (chan, map, paren, selector, ...);
+			// field="" means the walk is expanding the decl itself
+			if err := walkType(r.pkg, r.name, "", td.imports, t); err != nil {
 				return nil, err
 			}
 		}
