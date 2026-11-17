@@ -3798,6 +3798,13 @@ func (c *compiler) opGate(x, y ast.Expr, pos token.Pos, inSwitch bool) bool {
 			return true
 		}
 	}
+	// a switch tag's untyped value pins to its default type before the
+	// case side compares: `switch x < y { case B(true): }` mismatches B
+	// against bool even though `x < y` is untyped — an untyped case expr
+	// (xt) still adopts into the tag's type.
+	if inSwitch && yt.untyped && yt.dte != nil {
+		yt = opTyp{te: yt.dte, dte: yt.dte}
+	}
 	if xt.te == nil || yt.te == nil || xt.untyped || yt.untyped || xt.iface || yt.iface {
 		return false
 	}
