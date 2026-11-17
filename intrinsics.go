@@ -1676,6 +1676,53 @@ func (e *Engine) installStdlib() {
 		"IsExist":      osErrPred("os.IsExist", os.IsExist),
 		"IsPermission": osErrPred("os.IsPermission", os.IsPermission),
 		"IsTimeout":    osErrPred("os.IsTimeout", os.IsTimeout),
+		// the error structs os's helpers type-switch on. PathError
+		// aliases io/fs's source-interpreted typedef, so a script-built
+		// &os.PathError{} is the same *fs.PathError twin hostErrArg
+		// rebuilds for the host helpers — errors.As sees one type like
+		// gc's `type PathError = fs.PathError`. LinkError/SyscallError
+		// box the host struct: field writes in &os.LinkError{Err: ...}
+		// reach the host fields through reflection.
+		"PathError": &runtime.TypeDef{
+			Name: "io/fs.PathError",
+			Kind: runtime.KindAlias,
+			Anon: &ast.SelectorExpr{X: ast.NewIdent("io/fs"), Sel: ast.NewIdent("PathError")},
+		},
+		"LinkError":    hostType("os.LinkError", func() any { return &os.LinkError{} }),
+		"SyscallError": hostType("os.SyscallError", func() any { return &os.SyscallError{} }),
+		"NewSyscallError": &runtime.BuiltinFunc{
+			Name:   "os.NewSyscallError",
+			Target: os.NewSyscallError,
+			Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+				if len(args) != 2 {
+					return nil, fmt.Errorf("os.NewSyscallError needs 2 args, got %d", len(args))
+				}
+				// the error arg stays a script value — h.fn2's
+				// goNative flattening would drop a script error's
+				// type and methods before hostErrOf can box them.
+				return errVal(os.NewSyscallError(str(goNative(args[0])), hostErrArg(vc, args[1]))), nil
+			},
+		},
+		"Link": h.fn2("os.Link", func(a []any) (any, error) {
+			so, sn := str(a[0]), str(a[1])
+			old, err := e.fsPath(so)
+			if err != nil {
+				return nil, err
+			}
+			newp, err := e.fsPath(sn)
+			if err != nil {
+				return nil, err
+			}
+			lerr := os.Link(old, newp)
+			if le, ok := lerr.(*os.LinkError); ok {
+				// the host error spells the resolved paths — rewrite
+				// both halves to the script's spelling like
+				// scriptPathErr does for *fs.PathError.
+				le.Old = scriptPathOf(so, old, le.Old)
+				le.New = scriptPathOf(sn, newp, le.New)
+			}
+			return errVal(lerr), nil
+		}),
 		// error sentinels for errors.Is on the script side
 		"ErrNotExist": &runtime.GoValue{V: fs.ErrNotExist},
 		// *os.File asserts (x/tools' gocommand checks cmd.Stdout's type)
@@ -8830,7 +8877,15 @@ func hostErrOf(c runtime.VMCaller, v runtime.Value) error {
 		}
 		return fmt.Errorf("%v", x.V)
 	case *runtime.Named:
-		return hostErrOf(c, x.V)
+		if _, ok := x.V.(*runtime.GoValue); ok {
+			// a bound named type's payload is the host value —
+			// peel to it so the helpers see the real error.
+			return hostErrOf(c, x.V)
+		}
+		// keep the tag: a named script type's methods (Error,
+		// Timeout, Is) live on it, and boxing the bare payload
+		// would drop them.
+		return &scriptError{c: c, v: v}
 	case runtime.Nil, *runtime.IfaceNil:
 		// an untyped nil error unwraps to nothing — but a boxed typed
 		// nil (`var err error = (*E)(nil)`) is a real error value: its
@@ -8889,18 +8944,94 @@ func structField(s *runtime.Struct, name string) runtime.Value {
 // hostErrArg is hostErrOf for host helpers that type-switch on concrete
 // host error types: a pointer to a script struct that is the source twin
 // of a hostErrTwins entry converts to the host type (a fresh value — the
-// helpers only read it); anything else boxes like hostErrOf.
+// helpers only read it); anything else boxes like hostErrOf. The arg is
+// unwrapped first — a var of pointer type arrives as a Cell whose
+// hostErrOf would otherwise box the cell itself as a script error.
 func hostErrArg(c runtime.VMCaller, v runtime.Value) error {
-	if cell, ok := runtime.Unwrap(v).(*runtime.Cell); ok {
-		if s, ok := cell.Elem.(*runtime.Struct); ok && s.Def != nil {
-			for _, t := range hostErrTwins {
-				if runtime.HostNamedIs(t.rt, s.Def) {
-					return t.build(c, s)
+	u := v
+	for {
+		switch x := u.(type) {
+		case *runtime.Named:
+			if _, ok := x.V.(*runtime.GoValue); ok {
+				u = x.V // a bound named type's payload is the host value
+				continue
+			}
+			inner := runtime.Unwrap(x.V)
+			if _, ok := inner.(*runtime.Cell); ok {
+				u = inner // reach the pointer cell below
+				continue
+			}
+			// a script named value: matching looks through the tag,
+			// but the boxed error keeps the Named itself — its
+			// methods (Error, Timeout, Is) live on the tag.
+			if s, ok := inner.(*runtime.Struct); ok && s.Def != nil {
+				for _, t := range hostErrTwins {
+					if runtime.HostNamedIs(t.rt, s.Def) {
+						return t.build(c, s)
+					}
 				}
 			}
+			if tn, ok := inner.(*runtime.TypedNil); ok {
+				if err := twinNilHost(tn); err != nil {
+					return err
+				}
+			}
+			return hostErrOf(c, u)
+		case *runtime.Cell:
+			inner := runtime.Unwrap(x.Elem)
+			if s, ok := inner.(*runtime.Struct); ok && s.Def != nil {
+				for _, t := range hostErrTwins {
+					if runtime.HostNamedIs(t.rt, s.Def) {
+						return t.build(c, s)
+					}
+				}
+				// a script struct pointer: the cell is the *T its
+				// pointer-receiver methods (Error, Timeout, Is) hang
+				// on — unwrapping to the struct would drop them.
+				return hostErrOf(c, u)
+			}
+			u = inner
+		case *runtime.Struct:
+			if x.Def != nil {
+				for _, t := range hostErrTwins {
+					if runtime.HostNamedIs(t.rt, x.Def) {
+						return t.build(c, x)
+					}
+				}
+			}
+			return hostErrOf(c, u)
+		case *runtime.TypedNil:
+			// a typed nil of a twin pointer type hands the host a
+			// real (*T)(nil): gc's underlyingError type-switches on
+			// it and panics dereferencing the field, the same crash
+			// the script should see rather than a quietly false
+			// predicate.
+			if err := twinNilHost(x); err != nil {
+				return err
+			}
+			return hostErrOf(c, u)
+		default:
+			return hostErrOf(c, u)
 		}
 	}
-	return hostErrOf(c, v)
+}
+
+// twinNilHost returns the real host (*T)(nil) for a script typed nil
+// of a hostErrTwins pointer type, nil for any other typed nil.
+func twinNilHost(tn *runtime.TypedNil) error {
+	et := tn.Typ
+	if et == nil {
+		return nil
+	}
+	for et.Kind == runtime.KindPointer {
+		et = et.Elem
+	}
+	for _, t := range hostErrTwins {
+		if runtime.HostNamedIs(t.rt, et) {
+			return reflect.Zero(reflect.PointerTo(t.rt)).Interface().(error)
+		}
+	}
+	return nil
 }
 
 // asMatchVal maps a chain element to the value errors.As matches on — a

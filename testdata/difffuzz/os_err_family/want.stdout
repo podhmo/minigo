@@ -1,0 +1,19 @@
+as pe: true
+op/path: open testdata/difffuzz/os_err_family/nope.txt
+as fe: true
+isnotexist: true
+is: true
+as synth: true
+as se: true
+syscall: mmap
+is invalid: true
+as le: true
+link op/old/new: link testdata/difffuzz/os_err_family/nope.txt testdata/difffuzz/os_err_family/x
+is notexist: true
+isexist sle: true
+sle.Error: link a b: file already exists
+se2: dial: dial timed out
+timeout se2: true
+is myErr: true
+timeout plain: true
+timeout named: true
