@@ -131,6 +131,204 @@ func Check(g Graph, rules map[string][]string) []Violation {
 	return out
 }
 
+// pkgDecls is one parsed package: named type declarations plus its
+// import alias table, for resolving SelectorExpr types.
+type pkgDecls struct {
+	types   map[string]*ast.TypeSpec
+	imports map[string]string
+}
+
+// loadPkg parses every non-test .go file in root/pkgRel and returns its
+// type and import tables.
+func loadPkg(root, pkgRel string) (*pkgDecls, error) {
+	p := &pkgDecls{types: map[string]*ast.TypeSpec{}, imports: map[string]string{}}
+	ents, err := os.ReadDir(filepath.Join(root, filepath.FromSlash(pkgRel)))
+	if err != nil {
+		return nil, err
+	}
+	for _, ent := range ents {
+		name := ent.Name()
+		if ent.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(root, filepath.FromSlash(pkgRel), name), nil, 0)
+		if err != nil {
+			return nil, err
+		}
+		for _, spec := range f.Imports {
+			path, _ := strconv.Unquote(spec.Path.Value)
+			alias := ""
+			if spec.Name != nil {
+				alias = spec.Name.Name
+			}
+			if alias == "" {
+				alias = path[strings.LastIndex(path, "/")+1:]
+			}
+			if alias != "." && alias != "_" {
+				p.imports[alias] = path
+			}
+		}
+		for _, decl := range f.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				if ts, ok := spec.(*ast.TypeSpec); ok {
+					p.types[ts.Name.Name] = ts
+				}
+			}
+		}
+	}
+	return p, nil
+}
+
+// CheckSharedFields walks every field type reachable from the struct
+// typeName in package pkgDir (following named types into other
+// module-internal packages) and reports execution-state leaks:
+//
+//   - a field whose type is in forbidden ("pkg/path.Type" entries)
+//   - a function-typed field, unless its "StructName.FieldName" path is
+//     in exempt
+//
+// Field names use the declaring struct's name, so a nested violation
+// reports the struct that holds it.
+func CheckSharedFields(root, pkgDir, typeName string, forbidden, exempt map[string]bool) ([]Violation, error) {
+	modPath, err := modulePath(filepath.Join(root, "go.mod"))
+	if err != nil {
+		return nil, err
+	}
+	type ref struct{ pkg, name string }
+	seen := map[ref]bool{}
+	queue := []ref{{pkgDir, typeName}}
+	pkgs := map[string]*pkgDecls{}
+	load := func(pkg string) (*pkgDecls, error) {
+		if d, ok := pkgs[pkg]; ok {
+			return d, nil
+		}
+		d, err := loadPkg(root, pkg)
+		if err != nil {
+			return nil, err
+		}
+		pkgs[pkg] = d
+		return d, nil
+	}
+	var out []Violation
+	report := func(pkg, strct, field, fq string) {
+		if exempt[strct+"."+field] {
+			return
+		}
+		out = append(out, Violation{pkg, fq, fmt.Sprintf("%s.%s holds forbidden shared state: field %s has type %s", strct, field, field, fq)})
+	}
+	var walkType func(pkg, strct, field string, expr ast.Expr) error
+	walkType = func(pkg, strct, field string, expr ast.Expr) error {
+		d, err := load(pkg)
+		if err != nil {
+			return err
+		}
+		switch t := expr.(type) {
+		case *ast.Ident:
+			if _, ok := d.types[t.Name]; ok {
+				r := ref{pkg, t.Name}
+				if !seen[r] {
+					seen[r] = true
+					queue = append(queue, r)
+				}
+			}
+		case *ast.SelectorExpr:
+			id, ok := t.X.(*ast.Ident)
+			if !ok {
+				return nil
+			}
+			path, ok := d.imports[id.Name]
+			if !ok {
+				return nil
+			}
+			fq := path + "." + t.Sel.Name
+			if forbidden[fq] {
+				report(pkg, strct, field, fq)
+				return nil
+			}
+			if rel, ok := strings.CutPrefix(path, modPath+"/"); ok {
+				r := ref{rel, t.Sel.Name}
+				if !seen[r] {
+					seen[r] = true
+					queue = append(queue, r)
+				}
+			}
+		case *ast.StarExpr:
+			return walkType(pkg, strct, field, t.X)
+		case *ast.ArrayType:
+			return walkType(pkg, strct, field, t.Elt)
+		case *ast.MapType:
+			if err := walkType(pkg, strct, field, t.Key); err != nil {
+				return err
+			}
+			return walkType(pkg, strct, field, t.Value)
+		case *ast.ChanType:
+			return walkType(pkg, strct, field, t.Value)
+		case *ast.IndexExpr:
+			return walkType(pkg, strct, field, t.X)
+		case *ast.IndexListExpr:
+			return walkType(pkg, strct, field, t.X)
+		case *ast.FuncType:
+			key := strct + "." + field
+			if !exempt[key] {
+				out = append(out, Violation{pkg, "", fmt.Sprintf("%s.%s is a function-typed field; shared state must not hold code", strct, field)})
+			}
+		}
+		return nil
+	}
+	for len(queue) > 0 {
+		r := queue[0]
+		queue = queue[1:]
+		d, err := load(r.pkg)
+		if err != nil {
+			return nil, err
+		}
+		ts, ok := d.types[r.name]
+		if !ok {
+			continue // external shape we cannot see; interface types land here too
+		}
+		switch t := ts.Type.(type) {
+		case *ast.StructType:
+			for _, f := range t.Fields.List {
+				name := ""
+				if len(f.Names) > 0 {
+					name = f.Names[0].Name
+				} else {
+					// embedded field: name is the type's own
+					name = embeddedName(f.Type)
+				}
+				if err := walkType(r.pkg, r.name, name, f.Type); err != nil {
+					return nil, err
+				}
+			}
+		case *ast.FuncType:
+			if !exempt[r.name] {
+				out = append(out, Violation{r.pkg, "", fmt.Sprintf("shared state reaches function type %s", r.name)})
+			}
+		case *ast.Ident, *ast.SelectorExpr, *ast.StarExpr, *ast.MapType, *ast.ArrayType, *ast.IndexExpr, *ast.IndexListExpr:
+			if err := walkType(r.pkg, r.name, r.name, t); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return out, nil
+}
+
+func embeddedName(expr ast.Expr) string {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.StarExpr:
+		return embeddedName(t.X)
+	case *ast.SelectorExpr:
+		return t.Sel.Name
+	}
+	return "_"
+}
+
 // SelectorReport is a banned selector use inside a package's files.
 type SelectorReport struct {
 	Pkg  string

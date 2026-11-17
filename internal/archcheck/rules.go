@@ -34,3 +34,29 @@ var Rules = map[string][]string{
 	"tools/tmpltests":        {},
 	"vm":                     {"bytecode", "index", "internal/spike", "minireflect", "runtime", "syntax"},
 }
+
+// SharedStateTypes are the execution-state types that must never appear
+// in shared assets or their cache entries (M1-3): script cells,
+// functions, type definitions and import refs are per-session runtime
+// state. Keyed by fully qualified "pkg/path.Type".
+var SharedStateTypes = map[string]bool{
+	"github.com/podhmo/minigo/runtime.Cell":      true,
+	"github.com/podhmo/minigo/runtime.Function":  true,
+	"github.com/podhmo/minigo/runtime.TypeDef":   true,
+	"github.com/podhmo/minigo/runtime.ImportRef": true,
+}
+
+// SharedFuncExempt lists fields allowed to hold forbidden or
+// function-typed data inside shared assets: "StructName.FieldName" for
+// struct fields, or the bare type name for a named func type. These are
+// host-provided callbacks wired at engine construction, or known debt
+// documented here until it is redesigned away.
+var SharedFuncExempt = map[string]bool{
+	"sharedAssets.hostPolicy": true, // host config: decides which bound symbols are visible
+	"SpecialFunc":             true, // host-registered special forms (engine.Bind specials table)
+	// Known debt: the script profiler keeps *runtime.Function only as
+	// map keys for naming sampled frames (vm/profile.go). It is off by
+	// default; revisit when the profiler moves out of shared assets.
+	"profFrame.fn":   true,
+	"Profiler.fnIDs": true,
+}

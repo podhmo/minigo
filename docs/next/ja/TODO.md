@@ -23,7 +23,7 @@
 
 - [x] **M1-1 `sharedAssets` と `sessionState` に機械的に分割する**: Engine のフィールドを、ソース由来の共有物（resolver、FileSet、AST/index キャッシュ）と Session 状態（pkgs、binds、globals など）に分ける。完了条件: 公開 API と共有の規則が変わっていない。[references/ownership.md](./references/ownership.md)
 - [x] **M1-2 `internal/archcheck` と `internal/cmd/archcheck` を作る**: `go/parser` だけで import グラフを検査する。最初は現在のグラフを許可集合にして、ラチェットで締めていく。完了条件: CI で動き、負例（禁止された import を足す）で落ちる。[references/archcheck.md](./references/archcheck.md)
-- [ ] **M1-3 共有資産のフィールド許可リスト**: 共有資産とそのキャッシュエントリのフィールド型を再帰的に検査し、実行状態（`*runtime.Cell`、`*runtime.Function` など）が入ったら落とす。完了条件: 負例と正例のテストがある。[references/archcheck.md](./references/archcheck.md)
+- [x] **M1-3 共有資産のフィールド許可リスト**: 共有資産とそのキャッシュエントリのフィールド型を再帰的に検査し、実行状態（`*runtime.Cell`、`*runtime.Function` など）が入ったら落とす。完了条件: 負例と正例のテストがある。[references/archcheck.md](./references/archcheck.md)
 - [ ] **M1-4 ファイルサイズのラチェット**: 生成ファイルでもテストでもない `.go` ファイルが記録済みのサイズを超えたら失敗させる。完了条件: 記録表があり、予算は縮む方向にしか変わらない。
 
 ## P1: ファイル分割（機械的。ロジックの変更はゼロ）
