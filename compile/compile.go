@@ -6210,12 +6210,23 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 	case *ast.Ident:
 		if pkgIota == -1 {
 			if b := c.fs.lookupBinding(x.Name); b != nil && b.constVal != nil {
+				if !b.untypedConst {
+					// a typed const's operators wrap at the
+					// declared width — `^K` on `const K uint8 =
+					// 0` is 255, not the untyped -1 — which the
+					// bare value cannot express; emit and
+					// evaluate it instead.
+					return nil, false
+				}
 				return b.constVal, true
 			}
 		}
 		if c.pkg != nil && c.pkg.Index != nil {
 			if cd := c.pkg.Index.Consts[x.Name]; cd != nil {
 				if vs, ok := cd.Spec.(*ast.ValueSpec); ok {
+					if vs.Type != nil || cd.InheritedType != nil {
+						return nil, false // typed const — see above
+					}
 					var v ast.Expr
 					switch {
 					case len(vs.Values) == len(vs.Names) && cd.NameIdx < len(vs.Values):

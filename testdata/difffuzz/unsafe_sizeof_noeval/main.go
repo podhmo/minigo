@@ -10,6 +10,12 @@ import (
 const PJ = 5
 const PK = PJ + 1
 
+// a typed const's operators wrap at the declared width, so ^KC is
+// 255 — the fold cannot express that in a bare value and leaves it
+// to evaluation.
+const KC uint8 = 0
+const UKC = ^KC >> 7 & 3
+
 // a declared iota shadows the predeclared one for the whole package.
 const iota = 10
 const IK = iota
@@ -73,4 +79,8 @@ func main() {
 	}
 	const PK2 = "shadow"
 	fmt.Printf("%v\n", unsafe.Sizeof(shadowed))
+	// a typed-const key emits rather than folding, so its width
+	// still wraps: ^KC is 255, and a named alias of the
+	// expression keys position 1.
+	fmt.Printf("%v %v\n", unsafe.Sizeof([...]byte{uint8(0): 0, ^KC >> 7 & 3: 0}), unsafe.Sizeof([...]byte{UKC: 0, 0}))
 }
