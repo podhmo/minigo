@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/vm"
@@ -179,9 +180,14 @@ var sortHostUse = map[string]hostSliceUse{
 // genericFns marks a bound package's intrinsics as generic: every
 // function in `slices` and `maps` is generic in gc, and the intrinsics
 // are already parametric over the runtime value shapes, so an explicit
-// instantiation (`slices.Contains[[]int]`) binds the same callee with
-// the type arguments unused — without GenFn the index traps
-// `index on *runtime.BuiltinFunc`.
+// instantiation (`slices.Contains[[]int]`) binds the same callee —
+// without GenFn the index traps `index on *runtime.BuiltinFunc`. The
+// type arguments still matter where they are the only type
+// information: a nil argument reads as the arg's nilable type
+// (`slices.Clone[[]int](nil)` is `[]int(nil)`, not an error) and a nil
+// or named-container result keeps the argument's declared type
+// (`slices.Concat[[]int]()` returns `[]int(nil)`, `slices.Clone[S]`
+// returns S).
 func genericFns(pkg map[string]runtime.Value) map[string]runtime.Value {
 	for name, val := range pkg {
 		bf, ok := val.(*runtime.BuiltinFunc)
@@ -190,12 +196,93 @@ func genericFns(pkg map[string]runtime.Value) map[string]runtime.Value {
 		}
 		wrapped := *bf
 		fn := bf.Fn
-		wrapped.GenFn = func(vc runtime.VMCaller, _ []runtime.Value, args []runtime.Value) (runtime.Value, error) {
-			return fn(vc, args)
+		wrapped.GenFn = func(vc runtime.VMCaller, targs []runtime.Value, args []runtime.Value) (runtime.Value, error) {
+			copied := false
+			for i, a := range args {
+				if a != runtime.NIL || i >= len(targs) {
+					continue
+				}
+				if td, ok := targs[i].(*runtime.TypeDef); ok && instNilable(td) {
+					if !copied {
+						args = slices.Clone(args)
+						copied = true
+					}
+					args[i] = &runtime.TypedNil{Typ: td}
+				}
+			}
+			res, err := fn(vc, args)
+			if err != nil {
+				return nil, err
+			}
+			return instResult(targs, res), nil
 		}
 		pkg[name] = &wrapped
 	}
 	return pkg
+}
+
+// instNilable reports whether td's underlying is a nilable shape — a
+// nil argument of an instantiated call binds as td's zero.
+func instNilable(td *runtime.TypeDef) bool {
+	if td.Kind == runtime.KindPointer || td.Kind == runtime.KindMap ||
+		td.Kind == runtime.KindChan || td.Kind == runtime.KindFunc ||
+		td.Kind == runtime.KindInterface {
+		return true
+	}
+	u := runtime.TypUnderlyingSpelling(td)
+	return strings.HasPrefix(u, "[]") || strings.HasPrefix(u, "map[") ||
+		strings.HasPrefix(u, "chan ") || strings.HasPrefix(u, "<-chan ") ||
+		strings.HasPrefix(u, "*") || u == "interface{}" || u == "any" || u == "error"
+}
+
+// instResult types an instantiated call's result by its first type
+// argument: an untyped nil becomes that arg's nil when it is nilable
+// (`Concat[[]int]()` is `[]int(nil)`), and a container value re-tags to
+// a named argument of the same underlying (`Clone[S]` returns S, not
+// the []int the argument carried).
+func instResult(targs []runtime.Value, res runtime.Value) runtime.Value {
+	if len(targs) == 0 {
+		return res
+	}
+	td, ok := targs[0].(*runtime.TypeDef)
+	if !ok || td == nil {
+		return res
+	}
+	if res == runtime.NIL {
+		if instNilable(td) {
+			return &runtime.TypedNil{Typ: td}
+		}
+		return res
+	}
+	if tn, ok := res.(*runtime.TypedNil); ok {
+		if td.Name != "" && (tn.Typ == nil || runtime.TypUnderlyingSpelling(tn.Typ) == runtime.TypUnderlyingSpelling(td)) {
+			return &runtime.TypedNil{Typ: td}
+		}
+		return res
+	}
+	if td.Name == "" {
+		return res
+	}
+	u := runtime.TypUnderlyingSpelling(td)
+	var rt *runtime.TypeDef
+	switch res.(type) {
+	case *runtime.Slice:
+		if rt = runtime.TagOf(res); rt == nil && !strings.HasPrefix(u, "[]") {
+			return res
+		}
+	case *runtime.Map:
+		if rt = runtime.TagOf(res); rt == nil && !strings.HasPrefix(u, "map[") {
+			return res
+		}
+	case *runtime.Named:
+		rt = runtime.TagOf(res)
+	default:
+		return res
+	}
+	if rt == nil || runtime.TypUnderlyingSpelling(rt) == u {
+		return runtime.Tag(td, res)
+	}
+	return res
 }
 
 // hostSliceBoundary wraps the intrinsics of pkg so a boxed host slice

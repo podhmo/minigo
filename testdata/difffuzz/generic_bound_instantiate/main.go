@@ -22,4 +22,15 @@ func main() {
 		fmt.Println(k)
 	}
 	fmt.Println(maps.Equal[map[string]int](map[string]int{"a": 1}, map[string]int{"a": 1}))
+	named()
+}
+
+type S []int
+
+func named() {
+	// the type argument types nils and results
+	fmt.Printf("%T %v\n", slices.Clone[[]int](nil), slices.Clone[[]int](nil))
+	fmt.Printf("%T\n", slices.Clone[S]([]int{1}))
+	fmt.Printf("%T %v\n", slices.Concat[[]int](), slices.Concat[[]int]())
+	fmt.Printf("%T %v\n", maps.Clone[map[string]int](nil), maps.Clone[map[string]int](nil))
 }
