@@ -30,6 +30,7 @@ package runtime
 import (
 	"errors"
 	"fmt"
+	"github.com/podhmo/minigo/special"
 	"go/ast"
 	"go/constant"
 	"go/token"
@@ -2639,25 +2640,19 @@ func (u *UConst) DefaultName() string {
 	return "unknown"
 }
 
-// SymbolID names a package-level declaration by the import path of the
-// package that declares it, whatever alias the calling file imports it
-// under. It is the key of a special form: see [SpecialFunc] and
-// [SpecialContext.ResolveSymbol].
-type SymbolID struct {
-	PackagePath string
-	Name        string
-}
+// SymbolID names a package-level declaration — type alias for
+// [special.SymbolID], kept so the public API and QuotedCall below keep
+// their runtime.* spellings.
+type SymbolID = special.SymbolID
 
-// QuotedCall is the call a [SpecialFunc] handles: Call is the call
-// expression with its unevaluated arguments, in File. Evaluate parts of it
-// on demand with [SpecialContext.Eval] and related methods; Locals and
-// Upvals record the caller's variables they can see.
-type QuotedCall struct {
-	Call   *ast.CallExpr
-	File   *syntax.File
-	Locals map[string]int // visible local name -> caller slot index
-	Upvals map[string]int // visible upvalue name -> caller upvalue index
-}
+// QuotedCall is the call a [SpecialFunc] handles — type alias for
+// [special.QuotedCall].
+type QuotedCall = special.QuotedCall
+
+// SpecialFunc and SpecialContext stay defined here rather than in
+// [special]: their signatures reference runtime.Value, *Package and
+// *TypeDef, so moving them with aliases would create a
+// runtime <-> special import cycle.
 
 // SpecialFunc handles calls to a special form, registered with
 // [github.com/podhmo/minigo.Engine.RegisterSpecial]. It runs each time
