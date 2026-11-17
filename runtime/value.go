@@ -2421,6 +2421,45 @@ type VMCaller interface {
 	CallerFrame(pc uintptr) (site CallSite, ok bool)
 }
 
+// Capability interfaces (P2-1): the optional powers a caller may have
+// beyond VMCaller. *vm.VM implements all of them; thinner callers —
+// process-scoped wrappers, test fakes — implement a subset, so a site
+// reaches a capability through a type assertion and treats ok=false as
+// "this caller cannot do it", never a bug. VMCaller stays the union:
+// it declares only what every caller must have, and these stay outside
+// it so a thin caller is not forced to stub them.
+
+// HostMapDeleter runs delete on a boxed host map (url.Values,
+// http.Header).
+type HostMapDeleter interface {
+	HostMapDelete(m *GoValue, key Value) (ok bool)
+}
+
+// HostClearer runs clear on a boxed host map or slice.
+type HostClearer interface {
+	HostClear(m *GoValue) (ok bool)
+}
+
+// HostNilTwiner reports whether two typedefs are the host *T and its
+// source (or bound) twin — the pair reflect.DeepEqual must not
+// distinguish.
+type HostNilTwiner interface {
+	HostNilTwin(a, b *TypeDef) bool
+}
+
+// ConstMaterializer converts an untyped constant to a value of type td,
+// reporting overflow instead of trapping.
+type ConstMaterializer interface {
+	MaterializeConstErr(u *UConst, td *TypeDef) (Value, error)
+}
+
+// CatchCaller calls a script value like [VMCaller.Call] but recovers a
+// script panic into an error — used when a host callback must not let
+// a panic cross reflect.MakeFunc into the host.
+type CatchCaller interface {
+	CallCatching(callee Value, args []Value) (Value, error)
+}
+
 // CallSite is one script call-stack entry: the function's Go-style symbol name (as runtime.Func.Name reports it)
 // and the source position it is executing.
 type CallSite struct {
