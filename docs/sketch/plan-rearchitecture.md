@@ -19,6 +19,7 @@
 > [ja/experiment-gosimilarity-refactoring.md](./ja/experiment-gosimilarity-refactoring.md),
 > [experiment-frame-path-perf.md](./experiment-frame-path-perf.md).
 > Japanese version: [ja/plan-rearchitecture.md](./ja/plan-rearchitecture.md).
+> Actionable task list (Japanese): [../next/ja/TODO.md](../next/ja/TODO.md).
 
 ## How the three sources fit together
 

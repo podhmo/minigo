@@ -9,6 +9,7 @@
 > 両者が衝突する箇所は、どちらかを既定とはせず、筋の良さを比較して選んだ（§8）。コードオーナーとしてパッケージ構成も VM の形も自由に変えてよい、という立場で書いた。ただしプロジェクトの根幹にある考え方は保つ。スナップショットは main `a3f4e24`（2026-11-17）。
 >
 > 英語版: [../plan-rearchitecture.md](../plan-rearchitecture.md)
+> 実行用のタスク一覧: [../../next/ja/TODO.md](../../next/ja/TODO.md)
 > 関連: [../plan-minigo-vm.md](../plan-minigo-vm.md)（元の設計）、[todo-priority.md](./todo-priority.md)、[experiment-gosimilarity-refactoring.md](./experiment-gosimilarity-refactoring.md)、[../experiment-frame-path-perf.md](../experiment-frame-path-perf.md)
 
 ## 3 つの情報源の関係
