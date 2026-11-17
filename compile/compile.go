@@ -54,6 +54,11 @@ type binding struct {
 	// constant-expression walk can tell it from a var. An untyped const
 	// carries untypedConst instead of a declTyp.
 	constDecl bool
+	// constExpr is a const-bound name's initializer — the const
+	// evaluator resolves `const K = 1 << 3` back to its expression so
+	// keyed literal positions and const-folded sizes compute at compile
+	// time.
+	constExpr ast.Expr
 	// dte is an untyped const's default type expression — the type it
 	// binds at `y := c` (`const c = 5` makes y an int like gc).
 	dte ast.Expr
@@ -151,6 +156,17 @@ func (s *fscope) noteConstDecl(name string) {
 	}
 	if b := s.blocks[len(s.blocks)-1][name]; b != nil {
 		b.constDecl = true
+	}
+}
+
+// noteConstExpr records a just-declared `const` name's initializer, so
+// the scope-aware const evaluator can fold references to it.
+func (s *fscope) noteConstExpr(name string, rhs ast.Expr) {
+	if len(s.blocks) == 0 || rhs == nil {
+		return
+	}
+	if b := s.blocks[len(s.blocks)-1][name]; b != nil {
+		b.constExpr = rhs
 	}
 }
 
@@ -2148,38 +2164,41 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 		return opTyp{}
 	case *ast.CompositeLit:
 		if at, ok := x.Type.(*ast.ArrayType); ok {
-			if _, isEl := at.Len.(*ast.Ellipsis); isEl {
+			if el, isEl := at.Len.(*ast.Ellipsis); isEl {
 				// [...]T{...}: the declared length is the highest
-				// position + 1. Build it as an expression —
-				// `max(k+1, ...)` over each element's position —
-				// so named-const, hex and arithmetic keys fold
-				// through emitLenFolds like Go's constant keys,
-				// and the literal's elements never evaluate.
-				one := &ast.BasicLit{Kind: token.INT, Value: "1"}
-				plus1 := func(e ast.Expr) ast.Expr {
-					return &ast.BinaryExpr{X: e, Op: token.ADD, OpPos: x.Lbrace, Y: one}
-				}
-				next := ast.Expr(&ast.BasicLit{Kind: token.INT, Value: "0"})
-				var ps []ast.Expr
+				// position + 1 (or the element count) — the ellipsis
+				// itself carries none. Keys are constant expressions,
+				// so positions fold at compile time through
+				// scopeConstValue (named consts, hex, arithmetic) and
+				// the literal's elements never evaluate.
+				n, next := int64(0), int64(0)
+				known := true
 				for _, e := range x.Elts {
 					if kv, ok := e.(*ast.KeyValueExpr); ok {
-						ps = append(ps, kv.Key)
-						next = plus1(kv.Key)
+						cv, ok := c.scopeConstValue(kv.Key, 0)
+						if !ok {
+							known = false
+							break
+						}
+						k, ok := constant.Int64Val(constant.ToInt(cv))
+						if !ok || k < 0 {
+							known = false
+							break
+						}
+						next = k + 1
 					} else {
-						ps = append(ps, next)
-						next = plus1(next)
+						next++
+					}
+					if next > n {
+						n = next
 					}
 				}
-				lenExpr := ast.Expr(&ast.BasicLit{Kind: token.INT, Value: "0"})
-				if len(ps) > 0 {
-					lenExpr = plus1(&ast.CallExpr{
-						Fun:  &ast.Ident{Name: "max", NamePos: x.Lbrace},
-						Args: ps,
-					})
+				if !known {
+					return opTyp{}
 				}
 				return opTyp{te: &ast.ArrayType{
 					Lbrack: at.Lbrack,
-					Len:    lenExpr,
+					Len:    &ast.BasicLit{Kind: token.INT, Value: strconv.FormatInt(n, 10), ValuePos: el.Ellipsis},
 					Elt:    at.Elt,
 				}}
 			}
@@ -4074,6 +4093,7 @@ func (c *compiler) selNilable(ref *runtime.ImportRef, name string) (bool, bool) 
 func (c *compiler) noteDeclTyp(name string, effType ast.Expr, isConst bool, rhs ast.Expr) {
 	if isConst {
 		c.fs.noteConstDecl(name)
+		c.fs.noteConstExpr(name, rhs)
 	}
 	te := effType
 	if te == nil && rhs != nil {
@@ -6047,6 +6067,143 @@ func constValue(e ast.Expr) (cv constant.Value, ok bool) {
 			return constant.BinaryOp(lv, x.Op, rv), true
 		default:
 			return constant.BinaryOp(lv, x.Op, rv), true
+		}
+	}
+	return nil, false
+}
+
+// scopeConstValue evaluates a constant expression the way constValue
+// does, but also through names that denote constants at this point:
+// `iota`, a local const binding's initializer, and package-level const
+// decls — so a `[K]T` or keyed `[...]T` literal's compile-time length
+// resolves without evaluating the literal.
+func (c *compiler) scopeConstValue(e ast.Expr, depth int) (cv constant.Value, ok bool) {
+	if depth > 8 {
+		return nil, false
+	}
+	if cv, ok := constValue(e); ok {
+		return cv, true
+	}
+	defer func() {
+		// like constValue: go/constant panics on unsound inputs; those
+		// keep runtime semantics.
+		if recover() != nil {
+			cv, ok = nil, false
+		}
+	}()
+	switch x := e.(type) {
+	case *ast.ParenExpr:
+		return c.scopeConstValue(x.X, depth+1)
+	case *ast.Ident:
+		if x.Name == "iota" && c.iotaVal >= 0 {
+			return constant.MakeInt64(int64(c.iotaVal)), true
+		}
+		if b := c.fs.lookupBinding(x.Name); b != nil && b.constExpr != nil {
+			return c.scopeConstValue(b.constExpr, depth+1)
+		}
+		if c.pkg != nil && c.pkg.Index != nil {
+			if cd := c.pkg.Index.Consts[x.Name]; cd != nil {
+				if vs, ok := cd.Spec.(*ast.ValueSpec); ok {
+					var v ast.Expr
+					switch {
+					case len(vs.Values) == len(vs.Names) && cd.NameIdx < len(vs.Values):
+						v = vs.Values[cd.NameIdx]
+					case cd.NameIdx < len(cd.Inherited):
+						v = cd.Inherited[cd.NameIdx]
+					}
+					if v != nil {
+						return c.scopeConstValue(v, depth+1)
+					}
+				}
+			}
+		}
+		return nil, false
+	case *ast.UnaryExpr:
+		xv, ok := c.scopeConstValue(x.X, depth+1)
+		if !ok {
+			return nil, false
+		}
+		switch x.Op {
+		case token.ADD, token.SUB, token.XOR, token.NOT:
+			return constant.UnaryOp(x.Op, xv, 0), true
+		}
+		return nil, false
+	case *ast.BinaryExpr:
+		lv, ok := c.scopeConstValue(x.X, depth+1)
+		if !ok {
+			return nil, false
+		}
+		rv, ok := c.scopeConstValue(x.Y, depth+1)
+		if !ok {
+			return nil, false
+		}
+		switch x.Op {
+		case token.SHL, token.SHR:
+			if lv.Kind() == constant.Float {
+				lv = constant.ToInt(lv)
+			}
+			if rv.Kind() == constant.Float {
+				rv = constant.ToInt(rv)
+			}
+			s, ok := constant.Uint64Val(rv)
+			if !ok {
+				return nil, false
+			}
+			return constant.Shift(lv, x.Op, uint(s)), true
+		case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ:
+			return constant.MakeBool(constant.Compare(lv, x.Op, rv)), true
+		case token.QUO:
+			if lv.Kind() == constant.Int && rv.Kind() == constant.Int {
+				return constant.BinaryOp(lv, token.QUO_ASSIGN, rv), true
+			}
+			return constant.BinaryOp(lv, x.Op, rv), true
+		case token.LAND, token.LOR:
+			return nil, false
+		default:
+			return constant.BinaryOp(lv, x.Op, rv), true
+		}
+	case *ast.CallExpr:
+		id, ok := ast.Unparen(x.Fun).(*ast.Ident)
+		if !ok {
+			return nil, false
+		}
+		switch id.Name {
+		case "len", "cap":
+			if len(x.Args) != 1 {
+				return nil, false
+			}
+			sv, ok := c.scopeConstValue(x.Args[0], depth+1)
+			if !ok || sv.Kind() != constant.String {
+				return nil, false
+			}
+			return constant.MakeInt64(int64(len(constant.StringVal(sv)))), true
+		case "min", "max":
+			if len(x.Args) == 0 {
+				return nil, false
+			}
+			op := token.LSS
+			if id.Name == "max" {
+				op = token.GTR
+			}
+			var best constant.Value
+			for _, a := range x.Args {
+				av, ok := c.scopeConstValue(a, depth+1)
+				if !ok {
+					return nil, false
+				}
+				if best == nil || constant.Compare(av, op, best) {
+					best = av
+				}
+			}
+			return best, true
+		default:
+			// T(c): a conversion of a constant is still a constant —
+			// positionally the operand's own value (uint8(255) keys
+			// at 255; the length is an untyped count, never the key's
+			// type).
+			if len(x.Args) == 1 {
+				return c.scopeConstValue(x.Args[0], depth+1)
+			}
 		}
 	}
 	return nil, false
