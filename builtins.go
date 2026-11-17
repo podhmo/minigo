@@ -199,6 +199,14 @@ func builtins(e *Engine) *runtime.Env {
 		// storage, past it the host append allocates a fresh array.
 		elems2 := append(elems, add...)
 		if len(elems2) > cap(elems) && rtyp != nil {
+			// the fresh backing array holds element copies, like gc's
+			// growslice memcpy: a struct element becomes a fresh value,
+			// so `b[0].X = v` on the grown slice cannot alias the old
+			// array's struct. Copy() shares scalars, slices, maps and
+			// pointers — the same as copying a Go slice header.
+			for i := range elems {
+				elems2[i] = v.Copy(elems2[i])
+			}
 			if ez, ok := v.(interface {
 				ElemZero(*runtime.TypeDef) runtime.Value
 			}); ok {

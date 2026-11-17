@@ -535,11 +535,31 @@ func (e *Engine) slicesSeqHelpers(slicesPkg map[string]runtime.Value) map[string
 		if len(el) == 0 {
 			return args[0], nil
 		}
-		base := make([]runtime.Value, 0, sliceLen(s)+len(el))
-		for i, n := 0, sliceLen(s); i < n; i++ {
-			base = append(base, sliceElemAt(s, i))
+		// AppendSeq is append over a seq: the result shares the
+		// backing while spare capacity suffices, and a grown array
+		// copies every moved element (gc's growslice memcpy). The
+		// appended elements are copied in either case — gc stores
+		// element copies, not references to the yielded values.
+		var base []runtime.Value
+		if s != nil && !s.Virtual() {
+			base = s.Elems
+		} else {
+			for i, n := 0, sliceLen(s); i < n; i++ {
+				base = append(base, sliceElemAt(s, i))
+			}
 		}
-		return retagSlice(args[0], &runtime.Slice{Elems: append(base, el...), Typ: st}), nil
+		add := make([]runtime.Value, len(el))
+		for i, e := range el {
+			add[i] = runtime.Copy(e)
+		}
+		grown := append(base, add...)
+		if cap(grown) > cap(base) {
+			for i := range base {
+				grown[i] = vc.Copy(grown[i])
+			}
+			fillHoles(vc, st, grown[len(grown):cap(grown)])
+		}
+		return retagSlice(args[0], &runtime.Slice{Elems: grown, Typ: st}), nil
 	}}
 	sortedBy := func(name string, sorter func([]runtime.Value, func(a, b runtime.Value) int)) *runtime.BuiltinFunc {
 		return &runtime.BuiltinFunc{Name: name, SyncCallbacks: true, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
