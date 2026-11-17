@@ -132,7 +132,7 @@ var opOperands = map[Op][3]operandKind{
 	OpSelect:        {opdConst, opdSkip, opdSkip},
 	OpSetField:      {opdConst, opdSkip, opdSkip},
 	OpSelectCall:    {opdConst, opdSkip, opdSkip},
-	OpFieldRef:      {opdConst, opdSkip, opdSkip},
+	OpFieldRef:      {opdConst, opdFlags, opdSkip},
 	OpIndex:         {opdNum, opdNum, opdSkip},
 	OpIndexOK:       {opdSkip, opdSkip, opdSkip},
 	OpSlice:         {opdSkip, opdNum, opdSkip},
@@ -221,7 +221,10 @@ func disasmInto(b *strings.Builder, c *Chunk, indent string) {
 			if v == 0 && kind == opdNum {
 				continue
 			}
-			if v < 0 && kind != opdFlags {
+			// A negative operand is meaningful only where the op table
+			// declares a number field (OpReturn's -1 collects named
+			// results); unused fields default to -1 elsewhere.
+			if v < 0 && !(known && kind == opdNum) {
 				continue
 			}
 			switch kind {

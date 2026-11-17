@@ -3,7 +3,7 @@ chunk Counter.Bump (params=1 locals=1 results=1)
   0001  OpLocalType
   0002  OpCoerce slot0
   0003  OpLocalRef slot0
-  0004  OpFieldRef k1
+  0004  OpFieldRef k1 flags=1
   0005  OpDup
   0006  OpDeref
   0007  OpConst k2

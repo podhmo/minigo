@@ -10,7 +10,7 @@ chunk NamedRet (params=0 locals=1 results=1)
   0008  OpGlobal k2 site1
   0009  OpLocalType
   0010  OpCoerce slot0
-  0011  OpReturn
+  0011  OpReturn -1
   0012  OpReturn 1
 consts:
   k0: "int" (string)
