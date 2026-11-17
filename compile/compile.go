@@ -2262,6 +2262,13 @@ func (c *compiler) selOpTyp(x *ast.SelectorExpr) opTyp {
 	}
 	te := c.fieldTypExpr(base.te, x.Sel.Name, 4)
 	if te == nil {
+		// a selector through a pointer reads the pointee's fields
+		// the same way — `p.A` on a *Pair is Pair's A.
+		if sb := c.starBaseTypExpr(base.te, 4); sb != nil {
+			te = c.fieldTypExpr(sb, x.Sel.Name, 4)
+		}
+	}
+	if te == nil {
 		return opTyp{}
 	}
 	if c.isIfaceTypeExpr(te) {
@@ -6457,10 +6464,28 @@ unwrapped:
 		if id, ok2 := sel.X.(*ast.Ident); ok2 {
 			if ref, ok3 := c.importRef(id.Name); ok3 && ref.Path == "unsafe" {
 				if fs, ok4 := x.Args[0].(*ast.SelectorExpr); ok4 {
-					args := []ast.Expr{fs.X, &ast.BasicLit{Kind: token.STRING, Value: strconv.Quote(fs.Sel.Name), ValuePos: fs.Sel.Pos()}}
+					name := &ast.BasicLit{Kind: token.STRING, Value: strconv.Quote(fs.Sel.Name), ValuePos: fs.Sel.Pos()}
 					c.calleeExpr(x.Fun)
-					c.callArgs(args)
-					c.argStatics(args)
+					// the base never evaluates — a nil *Pair still
+					// offsets; its declared typedef describes the
+					// struct layout. An opaque base falls back to the
+					// evaluated value.
+					var bte ast.Expr
+					if ot := c.staticOpTyp(fs.X); ot.te != nil {
+						bte = ot.te
+					}
+					if bte != nil {
+						c.typeExpr(bte)
+					} else {
+						c.expr(fs.X)
+					}
+					c.expr(name)
+					if bte != nil {
+						c.typeExpr(bte)
+					} else {
+						c.staticTyp(fs.X)
+					}
+					c.emit(bytecode.OpNil, 0, 0, x.Pos())
 					c.emit(bytecode.OpCall, 2, 0, x.Pos())
 					return
 				}
@@ -6490,8 +6515,31 @@ unwrapped:
 					break
 				}
 				c.calleeExpr(x.Fun)
-				c.expr(x.Args[0])
-				c.staticTyp(operand)
+				ot := c.staticOpTyp(operand)
+				var te ast.Expr
+				switch {
+				case ot.te != nil:
+					te = ot.te
+				case ot.untyped:
+					// a literal's size is its default type's
+					// (`unsafe.Sizeof(1)` measures int).
+					te = ot.dte
+				case ot.iface:
+					te = &ast.InterfaceType{Interface: x.Pos(), Methods: &ast.FieldList{}}
+				}
+				if te != nil {
+					// gc folds Sizeof/Alignof statically — the operand
+					// never evaluates; a nil stands in for its value
+					// and the resolved typedef answers the size.
+					c.emit(bytecode.OpNil, 0, 0, x.Pos())
+					c.typeExpr(te)
+				} else {
+					// the operand's type is statically opaque (a host
+					// func's result, a reflect value) — evaluate it
+					// and let the intrinsic size the boxed shape.
+					c.expr(x.Args[0])
+					c.staticTyp(operand)
+				}
 				if ix, ok4 := operand.(*ast.IndexExpr); ok4 {
 					c.staticTyp(ix.X)
 				} else {
