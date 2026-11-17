@@ -353,8 +353,8 @@ func hostMapSource(rv reflect.Value, kind mapSeqKind) *runtime.SeqSource {
 				return nil
 			}
 			out := make([]runtime.Value, 0, rv.Len())
-			for _, k := range rv.MapKeys() {
-				out = append(out, scriptVal(k.Interface()))
+			for it := rv.MapRange(); it.Next(); {
+				out = append(out, scriptVal(it.Key().Interface()))
 			}
 			return out
 		}
@@ -364,8 +364,10 @@ func hostMapSource(rv reflect.Value, kind mapSeqKind) *runtime.SeqSource {
 				return nil
 			}
 			out := make([]runtime.Value, 0, rv.Len())
-			for _, k := range rv.MapKeys() {
-				out = append(out, scriptVal(rv.MapIndex(k).Interface()))
+			// MapRange, not MapKeys+MapIndex: a NaN key is not equal to
+			// itself, so a re-lookup comes back invalid and panics.
+			for it := rv.MapRange(); it.Next(); {
+				out = append(out, scriptVal(it.Value().Interface()))
 			}
 			return out
 		}
@@ -411,7 +413,15 @@ func hostMapSeqArg(v runtime.Value) (rv reflect.Value, kt, vt *runtime.TypeDef, 
 // hostMapElemOf converts a yielded script pair element to the host
 // map's key or element reflect type for maps.Insert.
 func hostMapElemOf(v runtime.Value, rt reflect.Type) (reflect.Value, error) {
-	nv := goNative(v)
+	return hostReflectOf(goNative(v), rt)
+}
+
+// hostReflectOf converts a native value to reflect type rt for host map
+// writes: the assignable/convertible scalar paths first, then slices
+// and maps rebuilt element-wise — a script container arrives through
+// goNative as []any / map[any]any and a host map's declared element
+// type ([]string, map[string]int, ...) is not one conversion away.
+func hostReflectOf(nv any, rt reflect.Type) (reflect.Value, error) {
 	if nv == nil {
 		if rt.Kind() == reflect.Interface || rt.Kind() == reflect.Pointer ||
 			rt.Kind() == reflect.Map || rt.Kind() == reflect.Slice ||
@@ -426,6 +436,38 @@ func hostMapElemOf(v runtime.Value, rt reflect.Type) (reflect.Value, error) {
 	}
 	if rv.Type().ConvertibleTo(rt) {
 		return rv.Convert(rt), nil
+	}
+	switch rt.Kind() {
+	case reflect.Slice:
+		if rv.Kind() != reflect.Slice {
+			break
+		}
+		out := reflect.MakeSlice(rt, rv.Len(), rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			ev, err := hostReflectOf(rv.Index(i).Interface(), rt.Elem())
+			if err != nil {
+				return reflect.Value{}, err
+			}
+			out.Index(i).Set(ev)
+		}
+		return out, nil
+	case reflect.Map:
+		if rv.Kind() != reflect.Map {
+			break
+		}
+		out := reflect.MakeMapWithSize(rt, rv.Len())
+		for it := rv.MapRange(); it.Next(); {
+			kv, err := hostReflectOf(it.Key().Interface(), rt.Key())
+			if err != nil {
+				return reflect.Value{}, err
+			}
+			vv, err := hostReflectOf(it.Value().Interface(), rt.Elem())
+			if err != nil {
+				return reflect.Value{}, err
+			}
+			out.SetMapIndex(kv, vv)
+		}
+		return out, nil
 	}
 	return reflect.Value{}, fmt.Errorf("cannot use %T as %s in map entry", nv, rt)
 }
