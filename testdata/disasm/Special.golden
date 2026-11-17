@@ -3,5 +3,5 @@ chunk Special (params=0 locals=0 results=0)
   0001  OpPop
   0002  OpReturn
 consts:
-  k0: <runtime.SymbolID>
-  k1: <*runtime.QuotedCall>
+  k0: <special.SymbolID>
+  k1: <*special.QuotedCall>
