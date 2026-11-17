@@ -2079,21 +2079,23 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 		return opTyp{}
 	case *ast.BinaryExpr:
 		switch x.Op {
-		case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ,
-			token.LAND, token.LOR:
+		case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ:
+			// a comparison's result is always an untyped bool — it
+			// adopts into a named operand (`f == (x < y)` with
+			// `type B bool` is a B), constant operands or not.
+			return opTyp{te: &ast.Ident{Name: "bool"}, untyped: true, dte: &ast.Ident{Name: "bool"}}
+		case token.LAND, token.LOR:
 			// a constant-only predicate is itself an untyped bool
 			// constant — it adopts into a named operand (`f && (1 ==
-			// 1)`, `f == (2 > 1)`), like any untyped literal.
+			// 1)`), like any untyped literal.
 			ux := c.staticOpTyp(x.X)
 			uy := c.staticOpTyp(x.Y)
 			if (ux.untyped || ux.nilOperand) && (uy.untyped || uy.nilOperand) {
 				return opTyp{te: &ast.Ident{Name: "bool"}, untyped: true, dte: &ast.Ident{Name: "bool"}}
 			}
-			if x.Op == token.LAND || x.Op == token.LOR {
-				// `v && true` with `type B bool` is a B.
-				if te := c.logicalNamedTyp(x); te != nil {
-					return opTyp{te: te}
-				}
+			// `v && true` with `type B bool` is a B.
+			if te := c.logicalNamedTyp(x); te != nil {
+				return opTyp{te: te}
 			}
 			return opTyp{te: &ast.Ident{Name: "bool"}}
 		}
