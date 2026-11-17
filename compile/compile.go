@@ -54,11 +54,10 @@ type binding struct {
 	// constant-expression walk can tell it from a var. An untyped const
 	// carries untypedConst instead of a declTyp.
 	constDecl bool
-	// constExpr is a const-bound name's initializer — the const
-	// evaluator resolves `const K = 1 << 3` back to its expression so
-	// keyed literal positions and const-folded sizes compute at compile
-	// time.
-	constExpr ast.Expr
+	// constVal is a const-bound name's folded value, computed where the
+	// name binds — the const evaluator folds references at their use
+	// sites without re-resolving the initializer in the use scope.
+	constVal constant.Value
 	// dte is an untyped const's default type expression — the type it
 	// binds at `y := c` (`const c = 5` makes y an int like gc).
 	dte ast.Expr
@@ -159,14 +158,14 @@ func (s *fscope) noteConstDecl(name string) {
 	}
 }
 
-// noteConstExpr records a just-declared `const` name's initializer, so
-// the scope-aware const evaluator can fold references to it.
-func (s *fscope) noteConstExpr(name string, rhs ast.Expr) {
-	if len(s.blocks) == 0 || rhs == nil {
+// noteConstVal records a just-declared `const` name's folded value, so
+// the scope-aware const evaluator folds references to it.
+func (s *fscope) noteConstVal(name string, cv constant.Value) {
+	if len(s.blocks) == 0 || cv == nil {
 		return
 	}
 	if b := s.blocks[len(s.blocks)-1][name]; b != nil {
-		b.constExpr = rhs
+		b.constVal = cv
 	}
 }
 
@@ -2026,6 +2025,11 @@ type opTyp struct {
 	// type (`x := 1 + 2` is int, `x := 'a'` is rune) rather than
 	// staying adoption-shaped forever.
 	dte ast.Expr
+	// elLit is a `[...]T` composite literal whose length the compile
+	// time fold could not resolve — callers that must not evaluate the
+	// operand (unsafe.Sizeof/Alignof) emit the key positions for a
+	// runtime fold instead of evaluating the elements.
+	elLit *ast.CompositeLit
 }
 
 // staticOpTyp resolves the statically-known type of an operand
@@ -2198,7 +2202,11 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 					}
 				}
 				if !known {
-					return opTyp{}
+					// a key needing scope the compile fold cannot see
+					// (an imported const, a typed conversion) still
+					// must not evaluate the elements — the caller
+					// emits the key positions for a runtime fold.
+					return opTyp{te: x.Type, elLit: x}
 				}
 				return opTyp{te: &ast.ArrayType{
 					Lbrack: at.Lbrack,
@@ -3161,6 +3169,37 @@ func (c *compiler) certainlyNonConstDepth(e ast.Expr, depth int) bool {
 	return false
 }
 
+// emitEllipsisLenFold emits the typedef of a `[...]T` literal whose
+// length the compile-time fold could not resolve, for a call that must
+// not evaluate the operand: the typedef's length folds at run time
+// from the literal's index positions — the keys evaluate in scope the
+// way Go evaluates constant keys — while the elements never run.
+func (c *compiler) emitEllipsisLenFold(cl *ast.CompositeLit, te ast.Expr) {
+	at := te.(*ast.ArrayType)
+	c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindSlice, Anon: at, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}), 0, cl.Pos())
+	c.emit(bytecode.OpConst, c.constIdx(runtime.EllipsisLen), 0, cl.Pos())
+	prev := false
+	for _, e := range cl.Elts {
+		if kv, ok := e.(*ast.KeyValueExpr); ok {
+			// the key's position — constant or not, evaluated in scope
+			c.expr(kv.Key)
+		} else if prev {
+			// an unkeyed element takes the previous position + 1
+			c.emit(bytecode.OpDup, 0, 0, e.Pos())
+			c.emit(bytecode.OpConst, c.constIdx(int64(1)), 0, e.Pos())
+			c.emit(bytecode.OpBinary, int(bytecode.BinAdd), 0, e.Pos())
+		} else {
+			c.emit(bytecode.OpConst, c.constIdx(int64(0)), 0, e.Pos())
+		}
+		prev = true
+	}
+	c.emit(bytecode.OpPack, len(cl.Elts), 0, cl.Pos())
+	c.emit(bytecode.OpNil, 0, 0, cl.Pos())
+	c.emit(bytecode.OpCall, 1, 0, cl.Pos())
+	c.emit(bytecode.OpFoldArrayLen, c.constIdx(at), 0, cl.Pos())
+	c.emit(bytecode.OpLocalType, 0, 0, cl.Pos())
+}
+
 // universeFuncs are the predeclared functions certainlyNonConst leaves
 // undecided.
 var universeFuncs = map[string]struct{}{
@@ -4097,7 +4136,13 @@ func (c *compiler) selNilable(ref *runtime.ImportRef, name string) (bool, bool) 
 func (c *compiler) noteDeclTyp(name string, effType ast.Expr, isConst bool, rhs ast.Expr) {
 	if isConst {
 		c.fs.noteConstDecl(name)
-		c.fs.noteConstExpr(name, rhs)
+		if rhs != nil {
+			// fold in the declaring scope: the initializer's names
+			// resolve here, not wherever the const is later read.
+			if cv, ok := c.scopeConstValue(rhs, 0); ok {
+				c.fs.noteConstVal(name, cv)
+			}
+		}
 	}
 	te := effType
 	if te == nil && rhs != nil {
@@ -6082,6 +6127,14 @@ func constValue(e ast.Expr) (cv constant.Value, ok bool) {
 // decls — so a `[K]T` or keyed `[...]T` literal's compile-time length
 // resolves without evaluating the literal.
 func (c *compiler) scopeConstValue(e ast.Expr, depth int) (cv constant.Value, ok bool) {
+	return c.scopeConstVal(e, depth, -1)
+}
+
+// scopeConstVal is scopeConstValue with an explicit scope mode:
+// pkgIota >= 0 walks a package const's spec — the use site's local
+// bindings and iota are out of scope there; `iota` reads the spec's
+// own index and names resolve only through the package's consts.
+func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Value, ok bool) {
 	if depth > 8 {
 		return nil, false
 	}
@@ -6097,13 +6150,20 @@ func (c *compiler) scopeConstValue(e ast.Expr, depth int) (cv constant.Value, ok
 	}()
 	switch x := e.(type) {
 	case *ast.ParenExpr:
-		return c.scopeConstValue(x.X, depth+1)
+		return c.scopeConstVal(x.X, depth+1, pkgIota)
 	case *ast.Ident:
-		if x.Name == "iota" && c.iotaVal >= 0 {
-			return constant.MakeInt64(int64(c.iotaVal)), true
+		if x.Name == "iota" {
+			if pkgIota >= 0 {
+				return constant.MakeInt64(int64(pkgIota)), true
+			}
+			if c.iotaVal >= 0 {
+				return constant.MakeInt64(int64(c.iotaVal)), true
+			}
 		}
-		if b := c.fs.lookupBinding(x.Name); b != nil && b.constExpr != nil {
-			return c.scopeConstValue(b.constExpr, depth+1)
+		if pkgIota < 0 {
+			if b := c.fs.lookupBinding(x.Name); b != nil && b.constVal != nil {
+				return b.constVal, true
+			}
 		}
 		if c.pkg != nil && c.pkg.Index != nil {
 			if cd := c.pkg.Index.Consts[x.Name]; cd != nil {
@@ -6116,14 +6176,14 @@ func (c *compiler) scopeConstValue(e ast.Expr, depth int) (cv constant.Value, ok
 						v = cd.Inherited[cd.NameIdx]
 					}
 					if v != nil {
-						return c.scopeConstValue(v, depth+1)
+						return c.scopeConstVal(v, depth+1, cd.Idx)
 					}
 				}
 			}
 		}
 		return nil, false
 	case *ast.UnaryExpr:
-		xv, ok := c.scopeConstValue(x.X, depth+1)
+		xv, ok := c.scopeConstVal(x.X, depth+1, pkgIota)
 		if !ok {
 			return nil, false
 		}
@@ -6133,11 +6193,11 @@ func (c *compiler) scopeConstValue(e ast.Expr, depth int) (cv constant.Value, ok
 		}
 		return nil, false
 	case *ast.BinaryExpr:
-		lv, ok := c.scopeConstValue(x.X, depth+1)
+		lv, ok := c.scopeConstVal(x.X, depth+1, pkgIota)
 		if !ok {
 			return nil, false
 		}
-		rv, ok := c.scopeConstValue(x.Y, depth+1)
+		rv, ok := c.scopeConstVal(x.Y, depth+1, pkgIota)
 		if !ok {
 			return nil, false
 		}
@@ -6176,7 +6236,7 @@ func (c *compiler) scopeConstValue(e ast.Expr, depth int) (cv constant.Value, ok
 			if len(x.Args) != 1 {
 				return nil, false
 			}
-			sv, ok := c.scopeConstValue(x.Args[0], depth+1)
+			sv, ok := c.scopeConstVal(x.Args[0], depth+1, pkgIota)
 			if !ok || sv.Kind() != constant.String {
 				return nil, false
 			}
@@ -6191,7 +6251,7 @@ func (c *compiler) scopeConstValue(e ast.Expr, depth int) (cv constant.Value, ok
 			}
 			var best constant.Value
 			for _, a := range x.Args {
-				av, ok := c.scopeConstValue(a, depth+1)
+				av, ok := c.scopeConstVal(a, depth+1, pkgIota)
 				if !ok {
 					return nil, false
 				}
@@ -6201,13 +6261,11 @@ func (c *compiler) scopeConstValue(e ast.Expr, depth int) (cv constant.Value, ok
 			}
 			return best, true
 		default:
-			// T(c): a conversion of a constant is still a constant —
-			// positionally the operand's own value (uint8(255) keys
-			// at 255; the length is an untyped count, never the key's
-			// type).
-			if len(x.Args) == 1 {
-				return c.scopeConstValue(x.Args[0], depth+1)
-			}
+			// a T(c) conversion carries the target's width —
+			// `^uint8(0) >> 7` is 1, not the untyped 3 — which the
+			// untyped constant.Value cannot express. The emitted
+			// position fold evaluates it instead.
+			return nil, false
 		}
 	}
 	return nil, false
@@ -6741,7 +6799,11 @@ unwrapped:
 					// never evaluates; a nil stands in for its value
 					// and the resolved typedef answers the size.
 					c.emit(bytecode.OpNil, 0, 0, x.Pos())
-					c.typeExpr(te)
+					if cl := ot.elLit; cl != nil {
+						c.emitEllipsisLenFold(cl, te)
+					} else {
+						c.typeExpr(te)
+					}
 				} else {
 					// the operand's type is statically opaque (a host
 					// func's result, a reflect value) — evaluate it
