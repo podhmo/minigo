@@ -5666,11 +5666,14 @@ func (s *scriptReader) Read(p []byte) (int, error) {
 	}
 	pv := scriptVal(p)
 	r, err := s.v.Call(m, []runtime.Value{pv})
+	if err != nil {
+		// a panic inside the script Read propagates as a panic like
+		// callOrPanic — io.Copy's caller must not see "panic: boom"
+		// as an error return.
+		panic(err)
+	}
 	n, err2 := readResult(s.v, r)
 	copyBackBytes(p, pv, n)
-	if err != nil {
-		return 0, err
-	}
 	return n, err2
 }
 
@@ -5703,11 +5706,11 @@ func (s *scriptReaderWriterTo) Read(p []byte) (int, error) {
 	}
 	pv := scriptVal(p)
 	r, err := s.v.Call(m, []runtime.Value{pv})
+	if err != nil {
+		panic(err)
+	}
 	n, err2 := readResult(s.v, r)
 	copyBackBytes(p, pv, n)
-	if err != nil {
-		return 0, err
-	}
 	return n, err2
 }
 
@@ -5718,7 +5721,7 @@ func (s *scriptReaderWriterTo) WriteTo(w io.Writer) (int64, error) {
 	}
 	r, err := s.v.Call(m, []runtime.Value{&runtime.GoValue{V: w}})
 	if err != nil {
-		return 0, err
+		panic(err)
 	}
 	return readResult64(s.v, r)
 }
@@ -5759,7 +5762,7 @@ type scriptWriter struct {
 func (s *scriptWriter) Write(p []byte) (int, error) {
 	r, err := s.v.Call(s.write, []runtime.Value{scriptVal(p)})
 	if err != nil {
-		return 0, err
+		panic(err)
 	}
 	switch t := r.(type) {
 	case *runtime.Tuple:
