@@ -52,11 +52,22 @@ import (
 // Engine is a long-lived interpreter instance. It caches loaded packages,
 // so values and package state persist across calls on the same Engine;
 // use [Engine.NewSession] for isolated state. Create one with [NewEngine].
+// Engine is split into two embedded groups (M1-1): sharedAssets holds
+// the source-derived values every session forked from an engine shares
+// (resolver, file set, AST/index caches, and the construction-time
+// configuration), while sessionState holds the per-session interpreter
+// state (package/build caches, binds, globals, mutexes). Embedding keeps
+// every existing `e.field` access working through promotion; the split
+// only makes ownership explicit.
 type Engine struct {
-	// mainPkg is the package Run entered first — runtime/debug's build
-	// info names it.
-	mainPkg *runtime.Package
+	*sharedAssets
+	sessionState
+}
 
+// sharedAssets is the source-derived part of an engine: constructed
+// once by [NewEngine] and shared (by pointer) with every
+// [Engine.NewSession] fork.
+type sharedAssets struct {
 	resolver resolve.Resolver
 	cfg      resolve.BuildConfig
 	fset     *token.FileSet
@@ -69,7 +80,6 @@ type Engine struct {
 	// fingerprint and a fresh index (see indexCache).
 	ixcache *indexCache
 
-	builtins   *runtime.Env
 	initMode   InitMode
 	specials   map[runtime.SymbolID]runtime.SpecialFunc
 	hostPolicy func(importPath, symbol string) bool // nil = allow all bound intrinsics
@@ -78,6 +88,16 @@ type Engine struct {
 	cwd        string                               // virtual cwd for os.* path intrinsics (defaults to startDir)
 	args       []string                             // script-visible os.Args; nil = host process argv
 	prof       *ScriptProfiler                      // samples script stacks; nil = off
+}
+
+// sessionState is the per-session part of an engine: a forked session
+// starts with fresh maps so runs never share package state.
+type sessionState struct {
+	// mainPkg is the package Run entered first — runtime/debug's build
+	// info names it.
+	mainPkg *runtime.Package
+
+	builtins *runtime.Env
 
 	mu    sync.Mutex
 	pkgs  map[string]*runtime.Package // by import path
@@ -239,18 +259,22 @@ func (e *Engine) fsPath(p string) (string, error) {
 // go.work found from startDir; [Engine.WithResolver] replaces the resolver.
 func NewEngine(startDir string, opts ...Option) *Engine {
 	e := &Engine{
-		fset:         token.NewFileSet(),
-		pcache:       newParseCache(),
-		ixcache:      newIndexCache(),
-		pkgs:         map[string]*runtime.Package{},
-		byDir:        map[string]*runtime.Package{},
-		files:        map[string]*runtime.Package{},
-		filesLenient: map[string]*runtime.Package{},
-		binds:        map[string]*runtime.Package{},
-		srcs:         map[string]*runtime.Package{},
-		pkgsLenient:  map[string]*runtime.Package{},
-		byDirLenient: map[string]*runtime.Package{},
-		specials:     map[runtime.SymbolID]runtime.SpecialFunc{},
+		sharedAssets: &sharedAssets{
+			fset:     token.NewFileSet(),
+			pcache:   newParseCache(),
+			ixcache:  newIndexCache(),
+			specials: map[runtime.SymbolID]runtime.SpecialFunc{},
+		},
+		sessionState: sessionState{
+			pkgs:         map[string]*runtime.Package{},
+			byDir:        map[string]*runtime.Package{},
+			files:        map[string]*runtime.Package{},
+			filesLenient: map[string]*runtime.Package{},
+			binds:        map[string]*runtime.Package{},
+			srcs:         map[string]*runtime.Package{},
+			pkgsLenient:  map[string]*runtime.Package{},
+			byDirLenient: map[string]*runtime.Package{},
+		},
 	}
 	for _, o := range opts {
 		o(e)
@@ -430,30 +454,20 @@ func (e *Engine) linknameTarget(vc runtime.VMCaller, fn *runtime.Function) (runt
 // reload after an edit always sees the new source.
 func (e *Engine) NewSession() *Engine {
 	s := &Engine{
-		resolver: e.resolver,
-		cfg:      e.cfg,
-		// sessions share the parent's FileSet and parse cache: a cached
+		// sessions share the parent's source-derived assets: a cached
 		// file's Pos values stay valid in the session, and a preview
 		// reload re-parses only files whose content changed.
-		fset:         e.fset,
-		pcache:       e.pcache,
-		ixcache:      e.ixcache,
-		initMode:     e.initMode,
-		specials:     e.specials,
-		hostPolicy:   e.hostPolicy,
-		pkgModes:     e.pkgModes,
-		out:          e.out,
-		cwd:          e.cwd,
-		args:         e.args,
-		prof:         e.prof,
-		pkgs:         map[string]*runtime.Package{},
-		byDir:        map[string]*runtime.Package{},
-		files:        map[string]*runtime.Package{},
-		binds:        map[string]*runtime.Package{},
-		srcs:         map[string]*runtime.Package{},
-		pkgsLenient:  map[string]*runtime.Package{},
-		byDirLenient: map[string]*runtime.Package{},
-		filesLenient: map[string]*runtime.Package{},
+		sharedAssets: e.sharedAssets,
+		sessionState: sessionState{
+			pkgs:         map[string]*runtime.Package{},
+			byDir:        map[string]*runtime.Package{},
+			files:        map[string]*runtime.Package{},
+			binds:        map[string]*runtime.Package{},
+			srcs:         map[string]*runtime.Package{},
+			pkgsLenient:  map[string]*runtime.Package{},
+			byDirLenient: map[string]*runtime.Package{},
+			filesLenient: map[string]*runtime.Package{},
+		},
 	}
 	s.builtins = builtins(s)
 	s.installStdlib()
