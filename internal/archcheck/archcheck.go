@@ -67,7 +67,9 @@ func Build(root string) (Graph, error) {
 			}
 			for _, spec := range f.Imports {
 				p, _ := strconv.Unquote(spec.Path.Value)
-				if rel, ok := strings.CutPrefix(p, modPath+"/"); ok {
+				if p == modPath {
+					imports["."] = true
+				} else if rel, ok := strings.CutPrefix(p, modPath+"/"); ok {
 					imports[rel] = true
 				}
 			}

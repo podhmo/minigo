@@ -58,8 +58,8 @@ func TestCheckViolations(t *testing.T) {
 func TestBuildSyntheticModule(t *testing.T) {
 	dir := gentest.WriteFiles(t, map[string]string{
 		"go.mod":     "module example.com/m\n\ngo 1.26\n",
-		"m.go":       "package m\n",
-		"a/a.go":     "package a\nimport (\n\t\"fmt\"\n\t\"example.com/m/b\"\n\t\"example.com/else\"\n)\nvar _ = fmt.Sprint\nvar _ = b.X\nvar _ = else.Y\n",
+		"m.go":       "package m\nvar V = 0\n",
+		"a/a.go":     "package a\nimport (\n\t\"fmt\"\n\tm \"example.com/m\"\n\t\"example.com/m/b\"\n\t\"example.com/else\"\n)\nvar _ = fmt.Sprint\nvar _ = m.V\nvar _ = b.X\nvar _ = else.Y\n",
 		"b/b.go":     "package b\nvar X = 1\n",
 		"sub/go.mod": "module example.com/sub\n\ngo 1.26\n",
 		"sub/s.go":   "package sub\n",
@@ -70,7 +70,7 @@ func TestBuildSyntheticModule(t *testing.T) {
 	}
 	want := archcheck.Graph{
 		".": {},
-		"a": {"b"},
+		"a": {".", "b"},
 		"b": {},
 	}
 	if diff := cmp.Diff(want, g); diff != "" {
