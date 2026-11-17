@@ -105,7 +105,7 @@ var FileBudgets = map[string]int{
 	"internal/archcheck/archcheck.go": 536,
 	"internal/archcheck/rules.go":     227, "internal/hostbridge/opaque.go": 146, "special/special.go": 34,
 	"internal/assetaudit/assetaudit.go": 112,
-	"internal/cmd/archcheck/main.go":    96, "internal/cmd/genifaces/main.go": 111,
+	"internal/cmd/archcheck/main.go":    96, "internal/cmd/genifaces/main.go": 40, "internal/cmd/genifaces/table.go": 92,
 	"internal/replhooks/replhooks.go":    68,
 	"internal/semantics/semantics.go":    149,
 	"internal/source/source.go":          105,
