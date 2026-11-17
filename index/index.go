@@ -79,6 +79,27 @@ func (ix *Index) LocalGen(ts *ast.TypeSpec) int {
 	return ix.LocalGens[ts]
 }
 
+// Lookup finds a top-level decl by name, in funcs, types, consts, vars
+// order. A type maps to its TypeSpec decl.
+func (ix *Index) Lookup(name string) (*Decl, bool) {
+	if ix == nil {
+		return nil, false
+	}
+	if d, ok := ix.Funcs[name]; ok {
+		return d, true
+	}
+	if d, ok := ix.Types[name]; ok && d.Decl != nil {
+		return d.Decl, true
+	}
+	if d, ok := ix.Consts[name]; ok {
+		return d, true
+	}
+	if d, ok := ix.Vars[name]; ok {
+		return d, true
+	}
+	return nil, false
+}
+
 // RedeclError reports a duplicate package-block name from [Build] —
 // Go's `X redeclared in this block` compile error. Pos points at the
 // second declaration, PrevPos at the first; callers render them through

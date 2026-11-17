@@ -172,10 +172,7 @@ func BasicNameOf(td *TypeDef) string {
 	if basicTypedefName(td.Name) {
 		return td.Name
 	}
-	x := td.Anon
-	if x == nil && td.Spec != nil {
-		x = td.Spec.Type
-	}
+	x := td.TypeExpr()
 	if id, ok := x.(*ast.Ident); ok && basicTypedefName(id.Name) {
 		return id.Name
 	}
@@ -930,9 +927,12 @@ func (c sigComparer) sigTypEq(a, b *TypeDef) bool {
 	return TypIdentical(a, b)
 }
 
-// sigAnonOf returns the type expression a typedef spells — its Anon,
+// TypeExpr returns the type expression a typedef spells — its Anon,
 // or the declared underlying type for a Spec-carrying typedef.
-func sigAnonOf(td *TypeDef) ast.Expr {
+func (td *TypeDef) TypeExpr() ast.Expr {
+	if td == nil {
+		return nil
+	}
 	if td.Anon != nil {
 		return td.Anon
 	}
@@ -941,6 +941,9 @@ func sigAnonOf(td *TypeDef) ast.Expr {
 	}
 	return nil
 }
+
+// sigAnonOf is [TypeDef.TypeExpr] kept for internal callers.
+func sigAnonOf(td *TypeDef) ast.Expr { return td.TypeExpr() }
 
 // ifaceTypEq compares two interface typedefs as method SETS: member
 // order never decides identity, embedded requirements flatten through
@@ -1392,10 +1395,7 @@ func DisplayName(td *TypeDef) string {
 		}
 		return "*" + DisplayName(elem)
 	}
-	anon := td.Anon
-	if anon == nil && td.Spec != nil {
-		anon = td.Spec.Type
-	}
+	anon := td.TypeExpr()
 	if anon != nil {
 		// synthesized composites keep an identity-path qualifier in
 		// their Anon selector (*<dir>/x.T); Go's Type.String requalifies
@@ -1568,10 +1568,7 @@ func TypUnderlyingSpelling(td *TypeDef) string {
 	if td == nil {
 		return ""
 	}
-	src := td.Anon
-	if src == nil && td.Spec != nil {
-		src = td.Spec.Type
-	}
+	src := td.TypeExpr()
 	if src != nil {
 		return typSpelling(src, td, true)
 	}
@@ -1602,10 +1599,7 @@ func typBoundSpellingU(td *TypeDef, under bool) string {
 		}
 		return canonBasicName(td.Name)
 	}
-	src := td.Anon
-	if src == nil && td.Spec != nil {
-		src = td.Spec.Type
-	}
+	src := td.TypeExpr()
 	if src != nil {
 		return TypSpelling(src, td)
 	}

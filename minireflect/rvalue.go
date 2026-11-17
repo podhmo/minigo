@@ -948,28 +948,7 @@ func (v *RValue) FieldByName(name string) *RValue {
 	if s == nil {
 		trap("call of reflect.Value.FieldByName on %s Value", v.kindStr())
 	}
-	for i, fn := range s.Def.Fields {
-		if fn == name {
-			return v.Field(i)
-		}
-	}
-	for _, ei := range s.Def.EmbedIdx {
-		sub := v.Field(ei)
-		for {
-			if st := structOf(sub.get()); st != nil {
-				if r := sub.fieldByNameRec(st, name); r.IsValid() {
-					return r
-				}
-				break
-			}
-			ev := sub.Elem()
-			if !ev.IsValid() {
-				break
-			}
-			sub = ev
-		}
-	}
-	return &RValue{e: v.e, vc: v.vc}
+	return v.fieldByNameRec(s, name)
 }
 
 func (v *RValue) FieldByNameFunc(match func(string) bool) *RValue {
@@ -3498,10 +3477,7 @@ func arrayTypeOf(td *runtime.TypeDef) *ast.ArrayType {
 	if td == nil {
 		return nil
 	}
-	x := td.Anon
-	if x == nil && td.Spec != nil {
-		x = td.Spec.Type
-	}
+	x := td.TypeExpr()
 	at, _ := x.(*ast.ArrayType)
 	if at != nil && at.Len != nil {
 		return at

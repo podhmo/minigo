@@ -193,11 +193,7 @@ func mapTypeExpr(td *runtime.TypeDef) *ast.MapType {
 	if td == nil {
 		return nil
 	}
-	x := td.Anon
-	if x == nil && td.Spec != nil {
-		x = td.Spec.Type
-	}
-	mt, _ := x.(*ast.MapType)
+	mt, _ := td.TypeExpr().(*ast.MapType)
 	return mt
 }
 

@@ -412,7 +412,7 @@ func (r *REPL) resolveIdent(name string) (runtime.Value, bool) {
 		return gv, true
 	}
 	if r.pkg.Index != nil {
-		if d, ok := memberDeclOf(r.pkg.Index, name); ok {
+		if d, ok := r.pkg.Index.Lookup(name); ok {
 			if mv, err := r.engine.Materialize(r.pkg, d); err == nil && mv != nil {
 				return mv, true
 			}
@@ -436,24 +436,6 @@ func (r *REPL) resolveIdent(name string) (runtime.Value, bool) {
 	}
 	if bv, ok := r.engine.Builtins.Get(name); ok {
 		return bv, true
-	}
-	return nil, false
-}
-
-// memberDeclOf is runtime.memberDecl re-exposed for the completion walk:
-// index lookup order funcs, types, consts, vars.
-func memberDeclOf(ix *index.Index, name string) (*index.Decl, bool) {
-	if d, ok := ix.Funcs[name]; ok {
-		return d, true
-	}
-	if d, ok := ix.Types[name]; ok && d.Decl != nil {
-		return d.Decl, true
-	}
-	if d, ok := ix.Consts[name]; ok {
-		return d, true
-	}
-	if d, ok := ix.Vars[name]; ok {
-		return d, true
 	}
 	return nil, false
 }
@@ -728,7 +710,7 @@ func (r *REPL) pkgMemberValue(p *runtime.Package, name string) (runtime.Value, b
 	if p.Index == nil {
 		return nil, false
 	}
-	d, ok := memberDeclOf(p.Index, name)
+	d, ok := p.Index.Lookup(name)
 	if !ok {
 		return nil, false
 	}

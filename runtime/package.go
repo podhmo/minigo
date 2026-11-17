@@ -433,7 +433,7 @@ func (p *Package) MemberV(name string, materialize func(*Package, *index.Decl) (
 		// cycle) keeps serving the in-progress cell rather than
 		// deadlocking on initOnce re-entry.
 		if run != nil && p.Index != nil && p.State() < Initializing {
-			if d, ok := memberDecl(p.Index, name); ok && (d.Kind == index.ConstDecl || d.Kind == index.VarDecl) {
+			if d, ok := p.Index.Lookup(name); ok && (d.Kind == index.ConstDecl || d.Kind == index.VarDecl) {
 				if err := p.EnsureReadyRun(run); err != nil {
 					return nil, err
 				}
@@ -447,7 +447,7 @@ func (p *Package) MemberV(name string, materialize func(*Package, *index.Decl) (
 	if p.Index != nil && p.LazyInit {
 		// functions and type decls are queryable without running
 		// initializers; var/const values require the package to be Ready
-		if d, ok := memberDecl(p.Index, name); ok && (d.Kind == index.FuncDecl || d.Kind == index.TypeDecl) {
+		if d, ok := p.Index.Lookup(name); ok && (d.Kind == index.FuncDecl || d.Kind == index.TypeDecl) {
 			if materialize == nil {
 				return nil, fmt.Errorf("no materializer for %s.%s", p.Name, name)
 			}
@@ -462,7 +462,7 @@ func (p *Package) MemberV(name string, materialize func(*Package, *index.Decl) (
 	// crypto's vars — so in-VM member access keeps Go's guarantee that an
 	// imported package is fully initialized.
 	if run == nil && p.Index != nil {
-		if d, ok := memberDecl(p.Index, name); ok && d.Kind == index.ConstDecl {
+		if d, ok := p.Index.Lookup(name); ok && d.Kind == index.ConstDecl {
 			if err := p.EnsureConstsRun(run); err == nil {
 				if v, ok := p.Globals.Get(name); ok {
 					return v, nil
@@ -477,7 +477,7 @@ func (p *Package) MemberV(name string, materialize func(*Package, *index.Decl) (
 		return v, nil
 	}
 	if p.Index != nil {
-		if d, ok := memberDecl(p.Index, name); ok {
+		if d, ok := p.Index.Lookup(name); ok {
 			if materialize == nil {
 				return nil, fmt.Errorf("no materializer for %s.%s", p.Name, name)
 			}
@@ -485,22 +485,6 @@ func (p *Package) MemberV(name string, materialize func(*Package, *index.Decl) (
 		}
 	}
 	return nil, fmt.Errorf("undefined: %s.%s", p.Name, name)
-}
-
-func memberDecl(ix *index.Index, name string) (*index.Decl, bool) {
-	if d, ok := ix.Funcs[name]; ok {
-		return d, true
-	}
-	if d, ok := ix.Types[name]; ok && d.Decl != nil {
-		return d.Decl, true
-	}
-	if d, ok := ix.Consts[name]; ok {
-		return d, true
-	}
-	if d, ok := ix.Vars[name]; ok {
-		return d, true
-	}
-	return nil, false
 }
 
 // instChunk is one cached instantiation. It keeps the binds alive, so

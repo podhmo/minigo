@@ -53,10 +53,7 @@ func isArrayTyp(td *runtime.TypeDef) bool {
 	if td == nil {
 		return false
 	}
-	x := td.Anon
-	if x == nil && td.Spec != nil {
-		x = td.Spec.Type
-	}
+	x := td.TypeExpr()
 	at, ok := x.(*ast.ArrayType)
 	return ok && at.Len != nil
 }
@@ -67,11 +64,7 @@ func arrayASTOf(td *runtime.TypeDef) *ast.ArrayType {
 	if td == nil {
 		return nil
 	}
-	x := td.Anon
-	if x == nil && td.Spec != nil {
-		x = td.Spec.Type
-	}
-	at, _ := x.(*ast.ArrayType)
+	at, _ := td.TypeExpr().(*ast.ArrayType)
 	return at
 }
 
@@ -1353,13 +1346,7 @@ func (v *VM) tdShapeEq(a, b *runtime.TypeDef) bool {
 	// declaring spec's for a named type — `map[string]int` spelled
 	// anonymously and as `type M map[string]int` is one shape.
 	src := func(t *runtime.TypeDef) ast.Expr {
-		if t.Anon != nil {
-			return t.Anon
-		}
-		if t.Spec != nil {
-			return t.Spec.Type
-		}
-		return nil
+		return t.TypeExpr()
 	}
 	sa, sb := src(pa), src(pb)
 	if sa != nil && sb != nil {
