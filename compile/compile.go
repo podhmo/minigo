@@ -2041,7 +2041,18 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 	case *ast.IndexExpr:
 		return opTyp{te: c.elemTypExpr(c.staticOpTyp(x.X).te, 4)}
 	case *ast.SliceExpr:
-		return c.staticOpTyp(x.X) // a subslice keeps its type (so does a substring)
+		// a subslice keeps its type (so does a substring) — except an
+		// array operand, which reads a slice of its elements, and so
+		// does *A[:] on a pointer to array.
+		ot := c.staticOpTyp(x.X)
+		ue := ast.Unparen(c.unfoldTypExpr(ot.te, 4))
+		if st, ok := ue.(*ast.StarExpr); ok {
+			ue = ast.Unparen(c.unfoldTypExpr(st.X, 3))
+		}
+		if at, ok := ue.(*ast.ArrayType); ok && at.Len != nil {
+			return opTyp{te: &ast.ArrayType{Lbrack: at.Lbrack, Elt: at.Elt}}
+		}
+		return ot
 	case *ast.StarExpr:
 		// *p dereferences a pointer-typed operand
 		return opTyp{te: c.starBaseTypExpr(c.staticOpTyp(x.X).te, 4)}
@@ -2140,6 +2151,42 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 		// + 1` types by f's result, which the static walk can't see.
 		return opTyp{}
 	case *ast.CompositeLit:
+		if at, ok := x.Type.(*ast.ArrayType); ok {
+			if el, isEl := at.Len.(*ast.Ellipsis); isEl {
+				// [...]T{...}: the declared length is the highest
+				// keyed index + 1 (or the element count) — the
+				// ellipsis itself carries none.
+				n, next := 0, 0
+				known := true
+				for _, e := range x.Elts {
+					if kv, ok := e.(*ast.KeyValueExpr); ok {
+						lit, isInt := kv.Key.(*ast.BasicLit)
+						k, err := 0, error(nil)
+						if isInt && lit.Kind == token.INT {
+							k, err = strconv.Atoi(lit.Value)
+						}
+						if !isInt || err != nil || k < 0 {
+							known = false
+							break
+						}
+						next = k + 1
+					} else {
+						next++
+					}
+					if next > n {
+						n = next
+					}
+				}
+				if !known {
+					return opTyp{}
+				}
+				return opTyp{te: &ast.ArrayType{
+					Lbrack: at.Lbrack,
+					Len:    &ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(n), ValuePos: el.Ellipsis},
+					Elt:    at.Elt,
+				}}
+			}
+		}
 		return opTyp{te: x.Type}
 	case *ast.FuncLit:
 		return opTyp{te: x.Type}
@@ -6549,7 +6596,11 @@ unwrapped:
 				} else {
 					c.emit(bytecode.OpNil, 0, 0, x.Pos())
 				}
-				c.staticTyp(operand)
+				if te != nil {
+					c.typeExpr(te)
+				} else {
+					c.staticTyp(operand)
+				}
 				c.emit(bytecode.OpNil, 0, 0, x.Pos())
 				c.emit(bytecode.OpNil, 0, 0, x.Pos())
 				c.emit(bytecode.OpCall, 3, 0, x.Pos())

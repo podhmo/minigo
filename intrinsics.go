@@ -4546,6 +4546,16 @@ func (e *Engine) unsafeStaticTyp(args []runtime.Value) *runtime.TypeDef {
 
 func (e *Engine) unsafeSizeOf(v runtime.Value, declared *runtime.TypeDef) int64 {
 	if declared != nil {
+		if declared.HostNew != nil {
+			// a host-bound type's layout lives in reflect — its typedef
+			// has no script field list. HostNew allocates a pointer —
+			// peel it to the value type.
+			rt := declared.HostType()
+			for rt.Kind() == reflect.Pointer {
+				rt = rt.Elem()
+			}
+			return int64(rt.Size())
+		}
 		return int64(minireflect.SizeOf(e.reflectHooks(), declared))
 	}
 	if td := sizeDeclTyp(v); td != nil {
@@ -4606,6 +4616,13 @@ func sizeDeclTyp(v runtime.Value) *runtime.TypeDef {
 
 func (e *Engine) unsafeAlignOf(v runtime.Value, declared *runtime.TypeDef) int64 {
 	if declared != nil {
+		if declared.HostNew != nil {
+			rt := declared.HostType()
+			for rt.Kind() == reflect.Pointer {
+				rt = rt.Elem()
+			}
+			return int64(rt.Align())
+		}
 		return int64(minireflect.AlignOf(e.reflectHooks(), declared))
 	}
 	if td := sizeDeclTyp(v); td != nil {
@@ -4659,6 +4676,20 @@ func (e *Engine) unsafeFieldOffset(base runtime.Value, name string) (int64, erro
 				break
 			}
 			td = next
+		}
+		if td.HostNew != nil {
+			// a host-bound struct's layout lives in reflect — its
+			// typedef has no script field list.
+			rt := td.HostType()
+			for rt.Kind() == reflect.Pointer {
+				rt = rt.Elem()
+			}
+			if rt.Kind() == reflect.Struct {
+				if sf, ok := rt.FieldByName(name); ok {
+					return int64(sf.Offset), nil
+				}
+			}
+			return 0, fmt.Errorf("unsafe.Offsetof: %s has no field %s", rt, name)
 		}
 		off, err := minireflect.OffsetOf(e.reflectHooks(), td, name)
 		if err != nil {
