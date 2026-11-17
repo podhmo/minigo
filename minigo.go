@@ -660,6 +660,12 @@ func isGoFile(ref string) bool {
 // writes do not reach the host value. A named map or struct stays boxed so
 // its methods remain callable.
 func (e *Engine) Call(ctx context.Context, pkg *runtime.Package, name string, args ...runtime.Value) (runtime.Value, error) {
+	// dev-time guard (M3-1): a package built by another session carries
+	// that session's globals, init results and materialized values —
+	// running it here would alias state across sessions.
+	if pkg.Owner != nil && pkg.Owner != e {
+		return nil, fmt.Errorf("minigo: package %q belongs to a different session", pkg.Path)
+	}
 	// one Call = one process = one root VM: concurrent Calls never share
 	// interpreter state, and lazy inits triggered inside the run join this
 	// run's process scope through the per-call runner below.
@@ -1114,6 +1120,7 @@ func (e *Engine) newPackage(path, name, dir string) *runtime.Package {
 		Scopes:   map[*syntax.File]map[string]*runtime.ImportRef{},
 		Imports:  map[*syntax.File][]*runtime.ImportRef{},
 		Specials: e.specials,
+		Owner:    e,
 		// host-side init runs on a fresh VM on the caller's goroutine —
 		// sharing a VM between goroutines is not safe
 		RunInit: func(fn *runtime.Function) error {
