@@ -2644,12 +2644,27 @@ func (v *RValue) Call(in []*RValue) []*RValue {
 		// Call folds the extras into a fresh non-nil slice, like
 		// reflect.MakeSlice(In(n-1), m, m) — also when m is zero, where a
 		// direct call passes nil. The MakeFunc'd callee takes it whole.
+		numIn, sliceTd := 0, (*runtime.TypeDef)(nil)
 		if ft := v.callSig(); ft != nil && ft.Params != nil {
-			if numIn, ell := numParams(ft); ell != nil {
-				tail := append([]runtime.Value{}, args[numIn-1:]...)
-				sliceTd := v.Type().In(numIn - 1).td
-				args = append(args[:numIn-1:numIn-1], &runtime.Spread{S: &runtime.Slice{Elems: tail, Typ: sliceTd}})
+			if n, ell := numParams(ft); ell != nil {
+				numIn = n
+				if t := v.Type(); t != nil {
+					if last := t.In(numIn - 1); last != nil {
+						sliceTd = last.td
+					}
+				}
 			}
+		}
+		// A MakeFunc'd func that crossed an `any` has no FuncType to
+		// read the signature from — MakeFunc stores it on the builtin.
+		if numIn == 0 {
+			if bf, ok := runtime.Unwrap(v.get()).(*runtime.BuiltinFunc); ok && bf.VarIn > 0 {
+				numIn, sliceTd = bf.VarIn, bf.VarSlice
+			}
+		}
+		if numIn > 0 && len(args) >= numIn-1 {
+			tail := append([]runtime.Value{}, args[numIn-1:]...)
+			args = append(args[:numIn-1:numIn-1], &runtime.Spread{S: &runtime.Slice{Elems: tail, Typ: sliceTd}})
 		}
 	}
 	return v.invoke(args)

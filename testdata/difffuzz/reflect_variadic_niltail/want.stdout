@@ -1,0 +1,8 @@
+tail nil? true
+tail len: 0
+tail nil? false
+tail len: 0
+tail nil? false
+tail len: 0
+tail nil? false
+tail len: 1
