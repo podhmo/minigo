@@ -139,6 +139,8 @@ func (c *compiler) isConstExpr(e ast.Expr) bool {
 	return c.isConstExprDepth(e, 16)
 }
 
+// semantics: fact — pkg.C's constness decides shift-count constness
+// (ShiftConstCount) and const-call inlining.
 func (c *compiler) isConstExprDepth(e ast.Expr, depth int) bool {
 	if depth <= 0 || e == nil {
 		return false
@@ -279,6 +281,8 @@ func (c *compiler) certainlyNonConst(e ast.Expr) bool {
 	return c.certainlyNonConstDepth(e, 16)
 }
 
+// semantics: fact — decides ShiftNonConstCount and the left operand
+// verdict for a non-const shift.
 func (c *compiler) certainlyNonConstDepth(e ast.Expr, depth int) bool {
 	if depth <= 0 || e == nil {
 		return false

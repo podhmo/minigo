@@ -546,6 +546,9 @@ func (c *compiler) selOpTyp(x *ast.SelectorExpr) opTyp {
 // member's static type comes from its declaration spec instead — read
 // in the declaring package's own scope, never the caller's. Types used
 // as values and unknown members report unknown.
+// semantics: fact — decides the static operand type of pkg.Name, which
+// drives `==` lowering and gc-parity rejections. The typed-const
+// defaulting path alone would be a hint; the rest is not.
 func (c *compiler) selPkgMemberOpTyp(x *ast.SelectorExpr, ref *runtime.ImportRef) opTyp {
 	p, err := ref.Materialize()
 	if err != nil || p == nil {
@@ -1425,6 +1428,9 @@ func (c *compiler) synthImportName(ref *runtime.ImportRef) string {
 // pkgDispName spells a package for gate diagnostics the way gc does —
 // the package clause's name, not an import alias or a synthesized
 // qualifier's minted text.
+// semantics: fact (messages only) — semantics is unchanged, but the
+// diagnostic wording must match gc's. When the lookup is Deferred the
+// runtime trap prints the same resolved name.
 func pkgDispName(ref *runtime.ImportRef) string {
 	if q, err := ref.Materialize(); err == nil && q != nil && q.Name != "" {
 		return q.Name
@@ -1480,6 +1486,8 @@ func pkgTypeSpec(p *runtime.Package, name string) *ast.TypeSpec {
 // selTypeSpec resolves an imported package's member name to the
 // package and the type spec declaring it — nil when the name is not a
 // source-indexed type there.
+// semantics: fact — pkg.T's TypeSpec decides composite-literal key
+// types and conversions.
 func selTypeSpec(ref *runtime.ImportRef, name string) (*runtime.Package, *ast.TypeSpec) {
 	p, err := ref.Materialize()
 	if err != nil || p == nil {
@@ -1495,6 +1503,8 @@ func selTypeSpec(ref *runtime.ImportRef, name string) (*runtime.Package, *ast.Ty
 // package p: first by the recorded local name, then by the package
 // clause when it differs from the path's last element — the same
 // real-name fallback importRef applies for the caller's file.
+// semantics: fact — name resolution itself when a package clause
+// differs from its path's last element.
 func pkgImportRef(p *runtime.Package, sf *syntax.File, name string) (*runtime.ImportRef, bool) {
 	if ref, ok := p.Scopes[sf][name]; ok {
 		return ref, true
@@ -1703,6 +1713,8 @@ func (c *compiler) selIsIface(ref *runtime.ImportRef, name string) bool {
 // know about it: the declaring TypeSpec for a source-indexed type decl,
 // or the bound runtime typedef for a host-bound member. selIsType,
 // selIsIface, and selNilable all read the same walk.
+// semantics: fact — whether pkg.T names a type, and its spec/typedef;
+// selIsType, selIsIface and selNilable all answer through this.
 func (c *compiler) selMember(ref *runtime.ImportRef, name string) (*ast.TypeSpec, *runtime.TypeDef, bool) {
 	p, err := ref.Materialize()
 	if err != nil || p == nil {
@@ -1767,6 +1779,10 @@ func (c *compiler) nilableTypExpr(te ast.Expr) bool {
 	return false
 }
 
+// semantics: fact — decides whether `x == nil` on pkg.T traps the way
+// gc rejects it (interfaces/pointers/slices/maps/chans/funcs are
+// nilable; structs and basic types are not).
+//
 // selNilable reports whether the type a qualified name picks out of an
 // imported package can be nil: interfaces, pointers, slices, maps,
 // chans and funcs can; structs and basic types cannot. ok=false when

@@ -1314,6 +1314,8 @@ func DisplayName(td *TypeDef) string {
 	if td.Name != "" {
 		name := td.Name
 		if td.Pkg != nil && td.Pkg.Name != "" {
+			// semantics: hint — the qualifier spelling is display-only,
+			// though its wording must still match gc's.
 			// the qualifier is the package's declared NAME — prefer the
 			// file's own package clause when available (a dir-loaded
 			// package's Pkg.Name can be a synthesized import path).
