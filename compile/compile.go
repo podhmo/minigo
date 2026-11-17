@@ -2306,7 +2306,11 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 					t := c.staticOpTyp(rhs)
 					c.pkgScopeFold = false
 					if !t.untyped {
-						if t.elLit != nil {
+						// the literal's own decl file wins over
+						// a copying var's — `var b = a` in
+						// another file still evaluates a's keys
+						// under a's imports.
+						if t.elLit != nil && t.elFile == nil {
 							t.elFile = vd.File
 						}
 						return t
