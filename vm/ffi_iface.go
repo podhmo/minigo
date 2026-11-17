@@ -16,6 +16,8 @@
 // nothing left to wake them. Host intrinsics that will call into the
 // script later, such as timers, must report the pending callback, or the
 // waiting process may be reported as deadlocked.
+//go:generate go run ./internal/cmd/genifaces
+
 package vm
 
 import (
@@ -31,22 +33,6 @@ import (
 // methods a script value may declare: embedding *scriptIface promotes
 // its methods and the variant adds only the probe methods the script
 // actually has, so the concrete method set stays honest.
-type (
-	scriptIfaceWT   struct{ *scriptIface }
-	scriptIfaceRF   struct{ *scriptIface }
-	scriptIfaceWTRF struct{ *scriptIface }
-)
-
-func (s scriptIfaceWT) WriteTo(w io.Writer) (int64, error) { return s.writeTo(w) }
-
-func (s scriptIfaceRF) ReadFrom(r io.Reader) (int64, error) { return s.readFrom(r) }
-
-func (s scriptIfaceWTRF) WriteTo(w io.Writer) (int64, error) { return s.writeTo(w) }
-
-func (s scriptIfaceWTRF) ReadFrom(r io.Reader) (int64, error) {
-	return s.readFrom(r)
-}
-
 // scriptIface forwards host-interface calls into script: the script
 // value's Read/Write/Close/... methods run through vc, so an
 // interpreted type can serve as an io.Writer or error to bound host
@@ -263,12 +249,7 @@ func scriptFileFor(vc runtime.VMCaller, v runtime.Value) any {
 // optional surface the script declares — like scriptIface's WriteTo/
 // ReadFrom variants, an unprobed method would let a host assertion
 // (fs.ReadDirFS, fs.ReadFileFS) claim support the script lacks.
-type (
-	scriptFS     struct{ *scriptIface }
-	scriptFSRD   struct{ *scriptFS }
-	scriptFSRF   struct{ *scriptFS }
-	scriptFSRDRF struct{ *scriptFS }
-)
+type scriptFS struct{ *scriptIface }
 
 func (s *scriptFS) Open(name string) (fs.File, error) {
 	rs, err := s.call("Open", name)
@@ -403,14 +384,6 @@ func (s *scriptFS) readFile(name string) ([]byte, error) {
 	return nil, fmt.Errorf("script ReadFile returned %T, want []byte", rs[0])
 }
 
-func (s scriptFSRD) ReadDir(name string) ([]fs.DirEntry, error) { return s.readDir(name) }
-
-func (s scriptFSRF) ReadFile(name string) ([]byte, error) { return s.readFile(name) }
-
-func (s scriptFSRDRF) ReadDir(name string) ([]fs.DirEntry, error) { return s.readDir(name) }
-
-func (s scriptFSRDRF) ReadFile(name string) ([]byte, error) { return s.readFile(name) }
-
 // scriptFile adapts a script fs.File with just the fs.File contract —
 // Read, Close, Stat. It cannot embed *scriptIface: scriptIface's Seek/
 // ReadByte/WriteTo surface would answer host interface probes the
@@ -442,27 +415,6 @@ func (s *scriptFile) Stat() (fs.FileInfo, error) {
 	return &scriptFileInfo{scriptIface: &scriptIface{vc: s.inner.vc, recv: rs[0]}}, nil
 }
 
-// scriptFileSeek/scriptFileWT/scriptFileSeekWT add the io extension
-// methods a script file declares: Seek is asserted by http.FS and
-// http.ServeContent, WriteTo by io.Copy.
-type (
-	scriptFileSeek   struct{ *scriptFile }
-	scriptFileWT     struct{ *scriptFile }
-	scriptFileSeekWT struct{ *scriptFile }
-)
-
-func (s scriptFileSeek) Seek(offset int64, whence int) (int64, error) {
-	return s.inner.Seek(offset, whence)
-}
-
-func (s scriptFileWT) WriteTo(w io.Writer) (int64, error) { return s.inner.writeTo(w) }
-
-func (s scriptFileSeekWT) Seek(offset int64, whence int) (int64, error) {
-	return s.inner.Seek(offset, whence)
-}
-
-func (s scriptFileSeekWT) WriteTo(w io.Writer) (int64, error) { return s.inner.writeTo(w) }
-
 // scriptDirFile layers fs.ReadDirFile's ReadDir onto whichever file
 // variant the probes selected.
 type scriptDirFile struct {
@@ -484,25 +436,6 @@ func (s scriptDirFile) ScriptValue() runtime.Value { return s.inner.ScriptValue(
 
 // scriptDirFileSeek/scriptDirFileWT/scriptDirFileSeekWT restore the
 // Seek/WriteTo probes on a directory file that declares them.
-type (
-	scriptDirFileSeek   struct{ scriptDirFile }
-	scriptDirFileWT     struct{ scriptDirFile }
-	scriptDirFileSeekWT struct{ scriptDirFile }
-)
-
-func (s scriptDirFileSeek) Seek(offset int64, whence int) (int64, error) {
-	return s.inner.Seek(offset, whence)
-}
-
-func (s scriptDirFileWT) WriteTo(w io.Writer) (int64, error) { return s.inner.writeTo(w) }
-
-func (s scriptDirFileSeekWT) Seek(offset int64, whence int) (int64, error) {
-	return s.inner.Seek(offset, whence)
-}
-
-func (s scriptDirFileSeekWT) WriteTo(w io.Writer) (int64, error) {
-	return s.inner.writeTo(w)
-}
 
 // scriptFileInfo proxies a script fs.FileInfo: each getter forwards to
 // the script method, so Mode/ModTime/Size read lazily like a real
