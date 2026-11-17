@@ -895,8 +895,17 @@ func (e *Engine) installStdlib() {
 		// *json.SyntaxError: the bound decoder returns the host error for
 		// malformed input, so `err.(*json.SyntaxError)` asserts on it.
 		"SyntaxError": hostType("encoding/json.SyntaxError", func() any { return &json.SyntaxError{} }),
-		"Unmarshaler": &runtime.TypeDef{Name: "encoding/json.Unmarshaler", Kind: runtime.KindInterface, MReqs: []string{"UnmarshalJSON"}},
-		"Encoder":     hostType("encoding/json.Encoder", func() any { return &jsonEncoder{enc: json.NewEncoder(io.Discard)} }),
+		// *json.UnsupportedTypeError: Marshal's unsupported-type failure
+		// surfaces the host error, so `err.(*json.UnsupportedTypeError)`
+		// and errors.As assert on it.
+		"UnsupportedTypeError": hostType("encoding/json.UnsupportedTypeError", func() any { return &json.UnsupportedTypeError{} }),
+		// *json.MarshalerError: a script MarshalJSON/MarshalText failure
+		// surfaces the host error (its Type is a scriptReflectType
+		// spelling — a script type has no reflect.Type), so the same
+		// assert and errors.As apply.
+		"MarshalerError": hostType("encoding/json.MarshalerError", func() any { return &json.MarshalerError{} }),
+		"Unmarshaler":    &runtime.TypeDef{Name: "encoding/json.Unmarshaler", Kind: runtime.KindInterface, MReqs: []string{"UnmarshalJSON"}},
+		"Encoder":        hostType("encoding/json.Encoder", func() any { return &jsonEncoder{enc: json.NewEncoder(io.Discard)} }),
 		// NewEncoder boxes a jsonEncoder — the wrapper, not the host
 		// *json.Encoder — so Encode takes its raw script arg through
 		// goJSON like Marshal (see jsonEncoder.ScriptMethod).
@@ -6544,14 +6553,40 @@ func jsonMarshalerErr(c runtime.VMCaller, se *jsonScriptErr) error {
 			name = "*" + name
 		}
 	}
-	text := "script error"
-	if s, ok := runtime.IfaceCallString(c, se.sv, "Error"); ok && s != "" {
-		text = s
-	}
 	// the script error stays the cause — errors.Is/As reach it like
 	// MarshalerError's Unwrap.
-	return &wrapError{msg: fmt.Sprintf("json: error calling %s for type %s: %s", se.method, name, text), err: hostErrOf(c, se.sv)}
+	me := &json.MarshalerError{Type: scriptReflectType{name: name}, Err: hostErrOf(c, se.sv)}
+	if se.method == "MarshalJSON" {
+		return me
+	}
+	// sourceFunc is unexported and an empty one reports "MarshalJSON",
+	// so a MarshalText failure wraps its MarshalerError instead —
+	// errors.As still matches it through Unwrap.
+	return &jsonMarshalTextErr{me: me}
 }
+
+// jsonMarshalTextErr is the MarshalText half of a script marshaler
+// failure: Error renders gc's text while Unwrap hands the real
+// *json.MarshalerError to errors.As.
+type jsonMarshalTextErr struct {
+	me *json.MarshalerError
+}
+
+func (e *jsonMarshalTextErr) Error() string {
+	return "json: error calling MarshalText for type " + e.me.Type.String() + ": " + e.me.Err.Error()
+}
+func (e *jsonMarshalTextErr) Unwrap() error { return e.me }
+
+// scriptReflectType is a reflect.Type stand-in carrying a script type's
+// display spelling — a *json.MarshalerError needs a Type, and its Error
+// text is the only reader (it calls String). Any other method panics on
+// the embedded nil.
+type scriptReflectType struct {
+	reflect.Type
+	name string
+}
+
+func (t scriptReflectType) String() string { return t.name }
 
 // jsonMarshalResult extracts the ([]byte, error) a script MarshalJSON
 // returns: ok=false when the call result is not the Marshaler shape

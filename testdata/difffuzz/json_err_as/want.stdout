@@ -1,0 +1,7 @@
+true true
+assert ok true
+json: error calling MarshalJSON for type *main.T: boom
+true true
+assert2 boom
+json: error calling MarshalText for type *main.U: texterr
+true true
