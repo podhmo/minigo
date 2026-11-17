@@ -19,7 +19,7 @@ var Rules = map[string][]string{
 	"index":                  {"syntax"},
 	"inspect":                {"index", "resolve", "runtime", "syntax"},
 	"internal/archcheck":     {"pkg/gentest"}, // test-only dep
-	"internal/cmd/archcheck": {"internal/archcheck"}, "internal/process": {},
+	"internal/cmd/archcheck": {"internal/archcheck"}, "internal/hostbridge": {"runtime"}, "internal/process": {},
 	"internal/assetaudit": {"index", "syntax"},
 	"internal/replhooks":  {"bytecode", "index", "resolve", "runtime", "syntax", "vm"},
 	"internal/semantics":  {"index", "syntax"},
@@ -34,7 +34,7 @@ var Rules = map[string][]string{
 	"storybook":       {".", "resolve"},
 	"syntax":          {},
 	"tools/difffuzz":  {},
-	"tools/tmpltests": {}, "vm": {"bytecode", "index", "internal/process", "internal/spike", "minireflect", "runtime", "syntax"},
+	"tools/tmpltests": {}, "vm": {"bytecode", "index", "internal/hostbridge", "internal/process", "internal/spike", "minireflect", "runtime", "syntax"},
 }
 
 // BannedCalls lists selector calls a package directory must never
@@ -103,7 +103,7 @@ var FileBudgets = map[string]int{
 	"inspect/inspect.go":              2543,
 	"inspect/stub.go":                 382,
 	"internal/archcheck/archcheck.go": 536,
-	"internal/archcheck/rules.go":     227, "special/special.go": 34,
+	"internal/archcheck/rules.go":     227, "internal/hostbridge/opaque.go": 146, "special/special.go": 34,
 	"internal/assetaudit/assetaudit.go":  112,
 	"internal/cmd/archcheck/main.go":     96,
 	"internal/replhooks/replhooks.go":    68,
@@ -207,7 +207,7 @@ var FileBudgets = map[string]int{
 	"vm/const.go":               1283,
 	"vm/convert.go":             1416,
 	"vm/ffi_iface.go":           591,
-	"vm/ffi_marshal.go":         2836,
+	"vm/ffi_marshal.go":         2711,
 	"vm/frame.go":               200,
 	"vm/generic.go":             1970,
 	"vm/goroutine_id.go":        36,
