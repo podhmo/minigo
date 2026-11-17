@@ -2048,6 +2048,12 @@ type opTyp struct {
 	// may run in a scope that shadows the literal's key names, so a
 	// foldable key becomes an int const instead of an emitted expr.
 	elPos []constant.Value
+	// elFile is the file a package-var literal was declared in —
+	// set only when the literal is re-derived at a use site. Keys
+	// that did not fold emit an OpEvalAST fragment over it so their
+	// names resolve in the decl's package scope rather than in the
+	// use site's (a local shadow must not rebind them).
+	elFile *syntax.File
 }
 
 // staticOpTyp resolves the statically-known type of an operand
@@ -2206,7 +2212,7 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 					mode = -2
 				}
 				keyPos := func(e ast.Expr) (int64, bool) {
-					cv, ok := c.scopeConstVal(e, 0, mode)
+					cv, _, ok := c.scopeConstVal(e, 0, mode)
 					if !ok || cv.Kind() != constant.Int {
 						return 0, false
 					}
@@ -2300,6 +2306,9 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 					t := c.staticOpTyp(rhs)
 					c.pkgScopeFold = false
 					if !t.untyped {
+						if t.elLit != nil {
+							t.elFile = vd.File
+						}
 						return t
 					}
 					// an untyped initializer binds its constant's
@@ -3222,7 +3231,7 @@ func (c *compiler) certainlyNonConstDepth(e ast.Expr, depth int) bool {
 // not evaluate the operand: the typedef's length folds at run time
 // from the literal's index positions — the keys evaluate in scope the
 // way Go evaluates constant keys — while the elements never run.
-func (c *compiler) emitEllipsisLenFold(cl *ast.CompositeLit, te ast.Expr, elPos []constant.Value) {
+func (c *compiler) emitEllipsisLenFold(cl *ast.CompositeLit, te ast.Expr, elPos []constant.Value, elFile *syntax.File) {
 	at := te.(*ast.ArrayType)
 	c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindSlice, Anon: at, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}), 0, cl.Pos())
 	c.emit(bytecode.OpConst, c.constIdx(runtime.EllipsisLen), 0, cl.Pos())
@@ -3233,6 +3242,12 @@ func (c *compiler) emitEllipsisLenFold(cl *ast.CompositeLit, te ast.Expr, elPos 
 				// shadow what the key resolved to at the decl.
 				k, _ := constant.Int64Val(constant.ToInt(elPos[i]))
 				c.emit(bytecode.OpConst, c.constIdx(k), 0, kv.Key.Pos())
+			} else if elFile != nil {
+				// a key the fold could not see still resolves in
+				// the decl's package scope — the use site may
+				// shadow its names — so the fragment compiles and
+				// evaluates there at run time.
+				c.emit(bytecode.OpEvalAST, c.constIdx(&bytecode.ASTFragment{Expr: kv.Key, File: elFile}), 0, kv.Key.Pos())
 			} else {
 				// the key's position — constant or not, evaluated
 				// in scope; a typed value (uint8(255)) keeps its
@@ -6180,7 +6195,8 @@ func constValue(e ast.Expr) (cv constant.Value, ok bool) {
 // decls — so a `[K]T` or keyed `[...]T` literal's compile-time length
 // resolves without evaluating the literal.
 func (c *compiler) scopeConstValue(e ast.Expr, depth int) (cv constant.Value, ok bool) {
-	return c.scopeConstVal(e, depth, -1)
+	cv, _, ok = c.scopeConstVal(e, depth, -1)
+	return cv, ok
 }
 
 // scopeConstVal is scopeConstValue with an explicit scope mode:
@@ -6190,18 +6206,24 @@ func (c *compiler) scopeConstValue(e ast.Expr, depth int) (cv constant.Value, ok
 // pkgIota == -2 is package scope outside a const spec (a package var's
 // initializer re-derived at a use site): the same package-only name
 // resolution, but `iota` is undefined.
-func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Value, ok bool) {
+//
+// typed reports that the folded value came from a declared type's
+// const. A bare name's value is exact either way, but operators on a
+// typed constant wrap at the declared width, which the bare
+// constant.Value cannot express — those refuse to fold so the key
+// emits and evaluates with the type's semantics.
+func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Value, typed bool, ok bool) {
 	if depth > 8 {
-		return nil, false
+		return nil, false, false
 	}
 	if cv, ok := constValue(e); ok {
-		return cv, true
+		return cv, false, true
 	}
 	defer func() {
 		// like constValue: go/constant panics on unsound inputs; those
 		// keep runtime semantics.
 		if recover() != nil {
-			cv, ok = nil, false
+			cv, typed, ok = nil, false, false
 		}
 	}()
 	switch x := e.(type) {
@@ -6210,23 +6232,12 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 	case *ast.Ident:
 		if pkgIota == -1 {
 			if b := c.fs.lookupBinding(x.Name); b != nil && b.constVal != nil {
-				if !b.untypedConst {
-					// a typed const's operators wrap at the
-					// declared width — `^K` on `const K uint8 =
-					// 0` is 255, not the untyped -1 — which the
-					// bare value cannot express; emit and
-					// evaluate it instead.
-					return nil, false
-				}
-				return b.constVal, true
+				return b.constVal, !b.untypedConst, true
 			}
 		}
 		if c.pkg != nil && c.pkg.Index != nil {
 			if cd := c.pkg.Index.Consts[x.Name]; cd != nil {
 				if vs, ok := cd.Spec.(*ast.ValueSpec); ok {
-					if vs.Type != nil || cd.InheritedType != nil {
-						return nil, false // typed const — see above
-					}
 					var v ast.Expr
 					switch {
 					case len(vs.Values) == len(vs.Names) && cd.NameIdx < len(vs.Values):
@@ -6235,7 +6246,11 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 						v = cd.Inherited[cd.NameIdx]
 					}
 					if v != nil {
-						return c.scopeConstVal(v, depth+1, cd.Idx)
+						cv, vtyped, ok := c.scopeConstVal(v, depth+1, cd.Idx)
+						if !ok {
+							return nil, false, false
+						}
+						return cv, vtyped || vs.Type != nil || cd.InheritedType != nil, true
 					}
 				}
 			}
@@ -6246,31 +6261,55 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 			// spec index reads only when nothing else resolved the
 			// name.
 			if pkgIota >= 0 {
-				return constant.MakeInt64(int64(pkgIota)), true
+				return constant.MakeInt64(int64(pkgIota)), false, true
 			}
 			if pkgIota == -1 && c.iotaVal >= 0 {
-				return constant.MakeInt64(int64(c.iotaVal)), true
+				return constant.MakeInt64(int64(c.iotaVal)), false, true
 			}
 		}
-		return nil, false
+		return nil, false, false
 	case *ast.UnaryExpr:
-		xv, ok := c.scopeConstVal(x.X, depth+1, pkgIota)
+		xv, xt, ok := c.scopeConstVal(x.X, depth+1, pkgIota)
 		if !ok {
-			return nil, false
+			return nil, false, false
 		}
 		switch x.Op {
-		case token.ADD, token.SUB, token.XOR, token.NOT:
-			return constant.UnaryOp(x.Op, xv, 0), true
+		case token.ADD, token.SUB, token.XOR:
+			if xt {
+				// a typed operand wraps the result at the
+				// declared width — `^K` on `const K uint8 = 0`
+				// is 255, not the untyped -1 — which the bare
+				// value cannot express; emit and evaluate it
+				// instead.
+				return nil, false, false
+			}
+			return constant.UnaryOp(x.Op, xv, 0), false, true
+		case token.NOT:
+			return constant.UnaryOp(x.Op, xv, 0), xt, true
 		}
-		return nil, false
+		return nil, false, false
 	case *ast.BinaryExpr:
-		lv, ok := c.scopeConstVal(x.X, depth+1, pkgIota)
+		lv, lt, ok := c.scopeConstVal(x.X, depth+1, pkgIota)
 		if !ok {
-			return nil, false
+			return nil, false, false
 		}
-		rv, ok := c.scopeConstVal(x.Y, depth+1, pkgIota)
+		rv, rt, ok := c.scopeConstVal(x.Y, depth+1, pkgIota)
 		if !ok {
-			return nil, false
+			return nil, false, false
+		}
+		switch x.Op {
+		case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ:
+			// comparisons never round — a typed operand's value
+			// compares exactly and the result is an untyped
+			// bool constant.
+			return constant.MakeBool(constant.Compare(lv, x.Op, rv)), false, true
+		case token.LAND, token.LOR:
+			return nil, false, false
+		}
+		if lt || rt {
+			// an operator on a typed constant wraps at the
+			// declared width — see UnaryExpr.
+			return nil, false, false
 		}
 		switch x.Op {
 		case token.SHL, token.SHR:
@@ -6282,64 +6321,62 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 			}
 			s, ok := constant.Uint64Val(rv)
 			if !ok {
-				return nil, false
+				return nil, false, false
 			}
-			return constant.Shift(lv, x.Op, uint(s)), true
-		case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ:
-			return constant.MakeBool(constant.Compare(lv, x.Op, rv)), true
+			return constant.Shift(lv, x.Op, uint(s)), false, true
 		case token.QUO:
 			if lv.Kind() == constant.Int && rv.Kind() == constant.Int {
-				return constant.BinaryOp(lv, token.QUO_ASSIGN, rv), true
+				return constant.BinaryOp(lv, token.QUO_ASSIGN, rv), false, true
 			}
-			return constant.BinaryOp(lv, x.Op, rv), true
-		case token.LAND, token.LOR:
-			return nil, false
+			return constant.BinaryOp(lv, x.Op, rv), false, true
 		default:
-			return constant.BinaryOp(lv, x.Op, rv), true
+			return constant.BinaryOp(lv, x.Op, rv), false, true
 		}
 	case *ast.CallExpr:
 		id, ok := ast.Unparen(x.Fun).(*ast.Ident)
 		if !ok {
-			return nil, false
+			return nil, false, false
 		}
 		switch id.Name {
 		case "len", "cap":
 			if len(x.Args) != 1 {
-				return nil, false
+				return nil, false, false
 			}
-			sv, ok := c.scopeConstVal(x.Args[0], depth+1, pkgIota)
+			sv, _, ok := c.scopeConstVal(x.Args[0], depth+1, pkgIota)
 			if !ok || sv.Kind() != constant.String {
-				return nil, false
+				return nil, false, false
 			}
-			return constant.MakeInt64(int64(len(constant.StringVal(sv)))), true
+			return constant.MakeInt64(int64(len(constant.StringVal(sv)))), false, true
 		case "min", "max":
 			if len(x.Args) == 0 {
-				return nil, false
+				return nil, false, false
 			}
 			op := token.LSS
 			if id.Name == "max" {
 				op = token.GTR
 			}
 			var best constant.Value
+			var bTyped bool
 			for _, a := range x.Args {
-				av, ok := c.scopeConstVal(a, depth+1, pkgIota)
+				av, at, ok := c.scopeConstVal(a, depth+1, pkgIota)
 				if !ok {
-					return nil, false
+					return nil, false, false
 				}
+				bTyped = bTyped || at
 				if best == nil || constant.Compare(av, op, best) {
 					best = av
 				}
 			}
-			return best, true
+			return best, bTyped, true
 		default:
 			// a T(c) conversion carries the target's width —
 			// `^uint8(0) >> 7` is 1, not the untyped 3 — which the
 			// untyped constant.Value cannot express. The emitted
 			// position fold evaluates it instead.
-			return nil, false
+			return nil, false, false
 		}
 	}
-	return nil, false
+	return nil, false, false
 }
 
 func binOpOf(tok token.Token) (bytecode.BinOp, bool) {
@@ -6871,7 +6908,7 @@ unwrapped:
 					// and the resolved typedef answers the size.
 					c.emit(bytecode.OpNil, 0, 0, x.Pos())
 					if cl := ot.elLit; cl != nil {
-						c.emitEllipsisLenFold(cl, te, ot.elPos)
+						c.emitEllipsisLenFold(cl, te, ot.elPos, ot.elFile)
 					} else {
 						c.typeExpr(te)
 					}

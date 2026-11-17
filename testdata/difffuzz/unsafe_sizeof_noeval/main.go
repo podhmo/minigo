@@ -23,6 +23,12 @@ const PK2 = 4
 
 var shadowed = [...]byte{PK2: 0, math.MaxInt8: 0}
 
+// a typed-const key on a package var bakes its value (a same-named
+// local cannot rebind it), while an operator on it emits and
+// evaluates in the decl's package scope at run time.
+var ptyped = [...]byte{KC: 0}
+var ptypedExpr = [...]byte{^KC >> 7 & 3: 0}
+
 type Pair struct {
 	A int64
 	B int32
@@ -83,4 +89,8 @@ func main() {
 	// still wraps: ^KC is 255, and a named alias of the
 	// expression keys position 1.
 	fmt.Printf("%v %v\n", unsafe.Sizeof([...]byte{uint8(0): 0, ^KC >> 7 & 3: 0}), unsafe.Sizeof([...]byte{UKC: 0, 0}))
+	{
+		const KC = "shadow"
+		fmt.Printf("%v %v\n", unsafe.Sizeof(ptyped), unsafe.Sizeof(ptypedExpr))
+	}
 }
