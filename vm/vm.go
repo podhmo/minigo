@@ -14458,7 +14458,44 @@ func (v *VM) underlyingShape(td *runtime.TypeDef) string {
 	if u == nil {
 		return ""
 	}
-	return runtime.TypUnderlyingSpelling(u)
+	if s := runtime.TypUnderlyingSpelling(u); s != "" {
+		return s
+	}
+	// a typedef synthesized at a boundary (`&x` yields
+	// {Kind: KindPointer, Elem: pointee}) carries its shape as Kind+Elem
+	// with no Anon/Spec/Name to spell — rebuild it from those.
+	return v.synthShape(u)
+}
+
+// synthShape spells a typedef that has no AST or name: only Kind and the
+// resolved Elem chain. Element positions keep the declared identity, the
+// same way TypSpelling renders a bound type argument (`*N`, not `*int`).
+func (v *VM) synthShape(td *runtime.TypeDef) string {
+	if td == nil {
+		return ""
+	}
+	if td.Name != "" {
+		if td.Pkg != nil {
+			if strings.HasPrefix(td.Name, td.Pkg.Path+".") {
+				return td.Name
+			}
+			return td.Pkg.Path + "." + td.Name
+		}
+		return runtime.CanonicalBasicName(td.Name)
+	}
+	var elem string
+	if td.Elem != nil {
+		elem = v.synthShape(td.Elem)
+	}
+	switch td.Kind {
+	case runtime.KindPointer:
+		return "*" + elem
+	case runtime.KindSlice:
+		return "[]" + elem
+	case runtime.KindChan:
+		return "chan " + elem
+	}
+	return ""
 }
 
 // elemFamily classifies a slice element typedef for the special string
