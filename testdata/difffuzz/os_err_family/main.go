@@ -52,4 +52,26 @@ func main() {
 	sle := &os.LinkError{Op: "link", Old: "a", New: "b", Err: os.ErrExist}
 	fmt.Println("isexist sle:", os.IsExist(sle))
 	fmt.Println("sle.Error:", sle.Error())
+
+	// a script-defined error keeps its methods through the host
+	// boundary: NewSyscallError wraps it and os.IsTimeout calls back
+	// into the script's pointer-receiver Timeout.
+	myErr := &timeoutErr{msg: "dial timed out"}
+	se2 := os.NewSyscallError("dial", myErr)
+	fmt.Println("se2:", se2.Error())
+	fmt.Println("timeout se2:", os.IsTimeout(se2))
+	fmt.Println("is myErr:", errors.Is(se2, myErr))
+	fmt.Println("timeout plain:", os.IsTimeout(myErr))
+	fmt.Println("timeout named:", os.IsTimeout(namedTimeout(true)))
 }
+
+type timeoutErr struct{ msg string }
+
+func (e *timeoutErr) Error() string   { return e.msg }
+func (e *timeoutErr) Timeout() bool   { return true }
+func (e *timeoutErr) Temporary() bool { return false }
+
+type namedTimeout bool
+
+func (n namedTimeout) Error() string { return "named timeout" }
+func (n namedTimeout) Timeout() bool { return bool(n) }
