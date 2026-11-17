@@ -697,11 +697,20 @@ func (e *Env) makeFunc(vc runtime.VMCaller, args []runtime.Value) (runtime.Value
 		elemT = sliceT.Elem()
 	}
 	var produced *RValue
+	var varIn int
+	var varSlice *runtime.TypeDef
+	if variadic {
+		varIn, varSlice = numIn, sliceT.td
+	}
 	bf := &runtime.BuiltinFunc{
 		Name: makeFuncName,
 		// a trailing `xs...` must reach the callback as the caller's
 		// slice, not a copy, so the VM keeps the Spread marker.
 		Forwards: variadic,
+		// the signature survives on the builtin: once the func crosses
+		// an `any`, Value.Call has no FuncType to fold the tail from.
+		VarIn:    varIn,
+		VarSlice: varSlice,
 		Fn: func(callVc runtime.VMCaller, cargs []runtime.Value) (runtime.Value, error) {
 			// spread is the variadic slice itself when the call carried
 			// `xs...` (Value.Call/CallSlice pack one the same way); a
