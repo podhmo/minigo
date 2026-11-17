@@ -379,6 +379,13 @@ type compiler struct {
 	// the names the decl's keys mean.
 	pkgScopeFold bool
 
+	// pkgScopeTyp, when non-nil, makes typeExpr resolve the emitted
+	// type in package scope — under the file a package decl spelled
+	// it in — because the typedef re-derived from a package var spec
+	// at a use site whose locals (and local type decls) must not
+	// shadow the decl's names.
+	pkgScopeTyp *syntax.File
+
 	// synthImports binds qualifier identifiers minted by
 	// synthImportName to their import refs: an operand or type
 	// expression re-scoped through a foreign package's file refers to
@@ -534,6 +541,19 @@ func (c *compiler) resolveName(name string) (nameInfo, bool) {
 // function returning `item`) must not push the variable where
 // OpCoerce* expects a typedef.
 func (c *compiler) typeIdent(e ast.Expr, name string) {
+	if c.pkgScopeTyp != nil {
+		// a re-derived package decl's type resolves in package
+		// scope — the use site's locals and bound type params
+		// cannot rename it.
+		if c.pkg != nil && c.pkg.Index != nil && c.pkg.Index.Types[name] != nil {
+			c.emit(bytecode.OpGlobal, c.nameIdx(name), 0, e.Pos())
+			return
+		}
+		if predeclaredTypeNames[name] {
+			c.emit(bytecode.OpGlobal, c.nameIdx(name), 0, e.Pos())
+			return
+		}
+	}
 	if b := c.fs.lookupBinding(name); b != nil {
 		if b.typeDecl {
 			if b.tdef != nil {
@@ -2054,6 +2074,11 @@ type opTyp struct {
 	// names resolve in the decl's package scope rather than in the
 	// use site's (a local shadow must not rebind them).
 	elFile *syntax.File
+	// teFile is the file a package decl spelled te in — set when the
+	// operand's type re-derives from a package var spec, so a
+	// use-site local type or const of the same name cannot shadow
+	// the decl's spelling.
+	teFile *syntax.File
 }
 
 // staticOpTyp resolves the statically-known type of an operand
@@ -2291,7 +2316,7 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 		if vd := c.pkg.Index.Vars[id.Name]; vd != nil {
 			if vs, ok := vd.Spec.(*ast.ValueSpec); ok {
 				if vs.Type != nil {
-					return opTyp{te: vs.Type}
+					return opTyp{te: vs.Type, teFile: vd.File}
 				}
 				// `var x = e` — the initializer at the name's own slot
 				// types it. An untyped initializer binds its literal
@@ -2796,7 +2821,22 @@ func (c *compiler) callOpTyp(x *ast.CallExpr) opTyp {
 				return opTyp{te: &ast.StarExpr{Star: f.Pos(), X: x.Args[0]}}
 			case "make":
 				return opTyp{te: x.Args[0]} // make's first arg is a type expr
-			case "min", "max", "append":
+			case "min", "max":
+				// gc: the result takes the first typed argument's
+				// type — untyped constants convert to it — or
+				// stays untyped when every argument is one.
+				var t opTyp
+				for _, a := range x.Args {
+					at := c.staticOpTyp(a)
+					if !at.untyped {
+						return at
+					}
+					if t.dte == nil {
+						t = at
+					}
+				}
+				return t
+			case "append":
 				return c.staticOpTyp(x.Args[0])
 			case "recover":
 				return opTyp{iface: true}
@@ -3237,7 +3277,16 @@ func (c *compiler) certainlyNonConstDepth(e ast.Expr, depth int) bool {
 // way Go evaluates constant keys — while the elements never run.
 func (c *compiler) emitEllipsisLenFold(cl *ast.CompositeLit, te ast.Expr, elPos []constant.Value, elFile *syntax.File) {
 	at := te.(*ast.ArrayType)
-	c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindSlice, Anon: at, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}), 0, cl.Pos())
+	file := c.file
+	var localTypes map[string]*runtime.TypeDef
+	if elFile != nil {
+		// the literal belongs to the decl's file — its typedef
+		// resolves there, with no use-site local types.
+		file = elFile
+	} else {
+		localTypes = c.fs.localTypeDefs()
+	}
+	c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindSlice, Anon: at, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}), 0, cl.Pos())
 	c.emit(bytecode.OpConst, c.constIdx(runtime.EllipsisLen), 0, cl.Pos())
 	for i, e := range cl.Elts {
 		if kv, ok := e.(*ast.KeyValueExpr); ok {
@@ -6850,17 +6899,23 @@ unwrapped:
 					// struct layout. An opaque base falls back to the
 					// evaluated value.
 					var bte ast.Expr
+					var bteFile *syntax.File
 					if ot := c.staticOpTyp(fs.X); ot.te != nil {
 						bte = ot.te
+						bteFile = ot.teFile
 					}
 					if bte != nil {
+						c.pkgScopeTyp = bteFile
 						c.typeExpr(bte)
+						c.pkgScopeTyp = nil
 					} else {
 						c.expr(fs.X)
 					}
 					c.expr(name)
 					if bte != nil {
+						c.pkgScopeTyp = bteFile
 						c.typeExpr(bte)
+						c.pkgScopeTyp = nil
 					} else {
 						c.staticTyp(fs.X)
 					}
@@ -6914,7 +6969,9 @@ unwrapped:
 					if cl := ot.elLit; cl != nil {
 						c.emitEllipsisLenFold(cl, te, ot.elPos, ot.elFile)
 					} else {
+						c.pkgScopeTyp = ot.teFile
 						c.typeExpr(te)
+						c.pkgScopeTyp = nil
 					}
 				} else {
 					// the operand's type is statically opaque (a host
@@ -6929,7 +6986,9 @@ unwrapped:
 					c.emit(bytecode.OpNil, 0, 0, x.Pos())
 				}
 				if te != nil {
+					c.pkgScopeTyp = ot.teFile
 					c.typeExpr(te)
+					c.pkgScopeTyp = nil
 				} else {
 					c.staticTyp(operand)
 				}
@@ -7394,34 +7453,56 @@ func (c *compiler) litTypeAt(baseType ast.Expr, depth int) (t ast.Expr, ptr bool
 // `[]T`, `[3]T` and `[...]T` emit nothing (runtime.ArrayLenNodes).
 func (c *compiler) emitLenFolds(e ast.Expr) {
 	for _, at := range runtime.ArrayLenNodes(e) {
-		c.expr(at.Len)
+		if c.pkgScopeTyp != nil {
+			// the length belongs to a package decl — its names
+			// resolve in that file's scope, not the use site's.
+			c.emit(bytecode.OpEvalAST, c.constIdx(&bytecode.ASTFragment{Expr: at.Len, File: c.pkgScopeTyp}), 0, at.Len.Pos())
+		} else {
+			c.expr(at.Len)
+		}
 		c.emit(bytecode.OpFoldArrayLen, c.constIdx(at), 0, e.Pos())
 	}
 }
 
 // typeExpr emits a push of *runtime.TypeDef for a type expression.
 func (c *compiler) typeExpr(e ast.Expr) {
+	// under pkgScopeTyp the spelling belongs to a package decl: its
+	// file's imports resolve names, and the use site contributes no
+	// function-local types.
+	file := c.file
+	var localTypes map[string]*runtime.TypeDef
+	if c.pkgScopeTyp != nil {
+		file = c.pkgScopeTyp
+	} else {
+		localTypes = c.fs.localTypeDefs()
+	}
 	switch t := e.(type) {
 	case *ast.Ident:
 		c.typeIdent(e, t.Name)
 	case *ast.SelectorExpr:
-		// pkg.Type: a selector cannot be shadowed by a local var
-		c.expr(t)
+		if c.pkgScopeTyp != nil {
+			// pkg.Type spelled in the decl's file — the use site
+			// may not import pkg at all.
+			c.emit(bytecode.OpEvalAST, c.constIdx(&bytecode.ASTFragment{Expr: t, File: file}), 0, e.Pos())
+		} else {
+			// pkg.Type: a selector cannot be shadowed by a local var
+			c.expr(t)
+		}
 	case *ast.ArrayType:
 		// Anon/Pkg/File let OpElemType resolve the element typedef later;
 		// Binds carries the generic instantiation so `[]T` resolves T.
-		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindSlice, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}), 0, e.Pos())
+		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindSlice, Anon: t, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}), 0, e.Pos())
 		c.emitLenFolds(t)
 	case *ast.MapType:
-		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindMap, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}), 0, e.Pos())
+		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindMap, Anon: t, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}), 0, e.Pos())
 		c.emitLenFolds(t)
 	case *ast.StarExpr:
 		// *T is a real typedef now: `var p *int` yields a TypedNil,
 		// `x.(*T)` asserts on pointer identity, `[]*T{{...}}` auto-takes &.
-		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindPointer, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}), 0, e.Pos())
+		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindPointer, Anon: t, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}), 0, e.Pos())
 		c.emitLenFolds(t)
 	case *ast.StructType:
-		td := &runtime.TypeDef{Kind: runtime.KindStruct, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}
+		td := &runtime.TypeDef{Kind: runtime.KindStruct, Anon: t, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}
 		td.FTags = runtime.StructFieldTags(t)
 		for _, f := range t.Fields.List {
 			if len(f.Names) == 0 {
@@ -7439,10 +7520,10 @@ func (c *compiler) typeExpr(e ast.Expr) {
 	case *ast.FuncType:
 		// the signature AST rides on the typedef so generalized inference
 		// (Go 1.27) can unify it against a generic function's parameters.
-		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindFunc, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}), 0, e.Pos())
+		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindFunc, Anon: t, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}), 0, e.Pos())
 		c.emitLenFolds(t)
 	case *ast.InterfaceType:
-		td := &runtime.TypeDef{Kind: runtime.KindInterface, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}
+		td := &runtime.TypeDef{Kind: runtime.KindInterface, Anon: t, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}
 		for _, m := range t.Methods.List {
 			if len(m.Names) == 0 {
 				td.IEmbeds = append(td.IEmbeds, m.Type)
@@ -7470,10 +7551,10 @@ func (c *compiler) typeExpr(e ast.Expr) {
 	case *ast.Ellipsis:
 		// ...T binds as []T: a variadic param's declared type IS a slice,
 		// so a missing rest coerces to TypedNil{slice}, not the elem zero
-		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Lbrack: t.Pos(), Elt: t.Elt}, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}), 0, e.Pos())
+		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Lbrack: t.Pos(), Elt: t.Elt}, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}), 0, e.Pos())
 		c.emitLenFolds(t)
 	case *ast.ChanType:
-		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindChan, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}), 0, e.Pos())
+		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindChan, Anon: t, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}), 0, e.Pos())
 		c.emitLenFolds(t)
 	default:
 		c.trap(e.Pos(), "unsupported type expression %T", e)

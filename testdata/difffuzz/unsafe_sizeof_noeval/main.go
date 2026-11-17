@@ -34,6 +34,12 @@ type Pair struct {
 	B int32
 }
 
+type Box int64
+
+var boxed Box
+
+var boxedSlice []Box
+
 func f() int { fmt.Println("f ran"); return 1 }
 
 func main() {
@@ -92,5 +98,14 @@ func main() {
 	{
 		const KC = "shadow"
 		fmt.Printf("%v %v\n", unsafe.Sizeof(ptyped), unsafe.Sizeof(ptypedExpr))
+	}
+	// min/max type by the first TYPED argument — untyped constants
+	// convert to it — not by argument position.
+	fmt.Printf("%v %v %v\n", unsafe.Sizeof(min(1, int8(2))), unsafe.Sizeof(min(int64(1), 2)), unsafe.Sizeof(min(1, 2)))
+	// a package var's declared type resolves in the decl's scope —
+	// a use-site local type of the same name cannot shadow it.
+	{
+		type Box int8
+		fmt.Printf("%v %v\n", unsafe.Sizeof(boxed), unsafe.Sizeof(boxedSlice))
 	}
 }
