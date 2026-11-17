@@ -130,7 +130,7 @@ func (v *VM) callBoundedCatch(callee runtime.Value, args []runtime.Value, static
 		// goroutine where the script's own recover can see it. Failing
 		// the process here would kill it before that recover runs.
 		failProc := !catch
-		if p := v.proc.Load(); p != nil && p.isSyncCaller(gid) {
+		if p := v.proc.Load(); p != nil && p.IsSyncCaller(gid) {
 			failProc = false
 		}
 		t := v.spawn(callee, args, statics, spreadTd, failProc)
@@ -188,12 +188,12 @@ func (v *VM) callEntered(callee runtime.Value, args []runtime.Value, statics []*
 	// register the calling goroutine for deadlock detection — released
 	// when this Call's outermost frame returns.
 	gid := v.callGid
-	p.enterG(gid)
-	defer p.leaveG(gid)
+	p.EnterG(gid)
+	defer p.LeaveG(gid)
 	defer func() {
 		if r := recover(); r != nil {
 			if ex, isExit := r.(*ExitRequest); isExit {
-				p.kill()
+				p.Kill()
 				result, err = nil, nil
 				if ex.Code != 0 {
 					err = ex
@@ -205,7 +205,7 @@ func (v *VM) callEntered(callee runtime.Value, args []runtime.Value, statics []*
 		// a goroutine's panic fails the process like Go's crash: report
 		// the real failure over this call's own outcome (including a
 		// procExit this goroutine received while unwinding)
-		if ferr := p.fatalErr(); ferr != nil && (err == nil || IsProcExit(err)) {
+		if ferr := p.FatalErr(); ferr != nil && (err == nil || IsProcExit(err)) {
 			err = ferr
 		}
 	}()
@@ -219,7 +219,7 @@ func (v *VM) callEntered(callee runtime.Value, args []runtime.Value, statics []*
 func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (runtime.Value, error) {
 	if p := v.proc.Load(); p != nil {
 		select {
-		case <-p.done:
+		case <-p.Done():
 			// the process ended while this call was queued — a sibling
 			// panic already won; die like Go's exit() rather than
 			// running the call's observable effects.
