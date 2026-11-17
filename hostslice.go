@@ -194,15 +194,20 @@ func genericFns(pkg map[string]runtime.Value) map[string]runtime.Value {
 		if !ok || bf.Fn == nil || bf.GenFn != nil {
 			continue
 		}
+		fname := bf.Name
 		wrapped := *bf
 		fn := bf.Fn
 		wrapped.GenFn = func(vc runtime.VMCaller, targs []runtime.Value, args []runtime.Value) (runtime.Value, error) {
 			copied := false
 			for i, a := range args {
-				if a != runtime.NIL || i >= len(targs) {
+				if a != runtime.NIL {
 					continue
 				}
-				if td, ok := targs[i].(*runtime.TypeDef); ok && instNilable(td) {
+				ti := instNilTarg(fname, i, len(targs))
+				if ti < 0 || ti >= len(targs) {
+					continue
+				}
+				if td, ok := targs[ti].(*runtime.TypeDef); ok && instNilable(td) && !instIface(td) {
 					if !copied {
 						args = slices.Clone(args)
 						copied = true
@@ -214,11 +219,102 @@ func genericFns(pkg map[string]runtime.Value) map[string]runtime.Value {
 			if err != nil {
 				return nil, err
 			}
-			return instResult(targs, res), nil
+			return instResult(fname, targs, res), nil
 		}
 		pkg[name] = &wrapped
 	}
 	return pkg
+}
+
+// instNilTarg reports which type argument the declared type of arg
+// position `i` of `fname` is bound to: position i binds targ i except
+// for the params that are not a type argument (a comparator, a count,
+// a seq operand) or bind a different one — BinarySearchFunc[S,E,T]'s
+// target is T, the third type argument, not the positional second. -1
+// leaves the arg's nil bare; the variadic tail binds the last targ.
+func instNilTarg(fname string, i int, ntargs int) int {
+	if ntargs == 0 {
+		return -1
+	}
+	m := instNilTargs[fname]
+	if ti, ok := m[i]; ok {
+		return ti
+	}
+	if i >= ntargs || i > instMaxPos(m) {
+		// a nil past the fixed params belongs to the variadic tail,
+		// which binds the last type argument (`Concat`'s `...S`,
+		// `Replace`'s `...E`); extra args on a fixed arity are a
+		// caller error either way.
+		return ntargs - 1
+	}
+	return i
+}
+
+func instMaxPos(m map[int]int) int {
+	max := -1
+	for k := range m {
+		if k > max {
+			max = k
+		}
+	}
+	return max
+}
+
+// instNilTargs: bound func name → arg position → type-argument index.
+// Only the params that are not themselves a type argument, or bind a
+// different one, appear; -1 leaves the nil bare.
+var instNilTargs = map[string]map[int]int{
+	"slices.BinarySearchFunc": {1: 2, 2: -1},
+	"slices.SortFunc":         {1: -1},
+	"slices.SortStableFunc":   {1: -1},
+	"slices.DeleteFunc":       {1: -1},
+	"slices.EqualFunc":        {2: -1},
+	"slices.IndexFunc":        {1: -1},
+	"slices.ContainsFunc":     {1: -1},
+	"slices.IsSortedFunc":     {1: -1},
+	"slices.MaxFunc":          {1: -1},
+	"slices.MinFunc":          {1: -1},
+	"slices.CompactFunc":      {1: -1},
+	"slices.Replace":          {1: -1, 2: -1},
+	"slices.Insert":           {1: -1},
+	"slices.Delete":           {1: -1, 2: -1},
+	"slices.Grow":             {1: -1},
+	"slices.Repeat":           {1: -1},
+	"slices.Chunk":            {1: -1},
+	"slices.Collect":          {0: -1},
+	"slices.Sorted":           {0: -1},
+	"slices.SortedFunc":       {0: -1, 1: -1},
+	"slices.SortedStableFunc": {0: -1, 1: -1},
+	"slices.AppendSeq":        {1: -1},
+	"maps.EqualFunc":          {2: -1},
+	"maps.DeleteFunc":         {1: -1},
+	"maps.Insert":             {1: -1},
+	"maps.Collect":            {0: -1},
+}
+
+// instResSelf names the bound funcs whose result type is their first
+// type argument (S/M): only those re-tag a nil or container result —
+// `Clone[S]` → S, `Concat[[]int]()` → `[]int(nil)`. `Collect` and the
+// `Sorted` family return a slice OF a type argument (`[]E`, `[]K`), the
+// seq helpers return a seq, the rest a scalar — absent on purpose.
+var instResSelf = map[string]bool{
+	"slices.Clone": true, "slices.Concat": true, "slices.Compact": true,
+	"slices.CompactFunc": true, "slices.Grow": true, "slices.Clip": true,
+	"slices.Repeat": true, "slices.Insert": true, "slices.Delete": true,
+	"slices.DeleteFunc": true, "slices.Replace": true, "slices.AppendSeq": true,
+	"maps.Clone": true,
+}
+
+// instIface reports whether td's underlying is an interface — a nil
+// arg binds as the untyped nil the interface elements already hold,
+// not a TypedNil (a nil element of []any is an IfaceNil and slotEql
+// would miss it).
+func instIface(td *runtime.TypeDef) bool {
+	if td.Kind == runtime.KindInterface {
+		return true
+	}
+	u := runtime.TypUnderlyingSpelling(td)
+	return u == "interface{}" || u == "any" || u == "error"
 }
 
 // instNilable reports whether td's underlying is a nilable shape — a
@@ -236,12 +332,15 @@ func instNilable(td *runtime.TypeDef) bool {
 }
 
 // instResult types an instantiated call's result by its first type
+// argument — only for the instResSelf funcs whose result IS that
 // argument: an untyped nil becomes that arg's nil when it is nilable
 // (`Concat[[]int]()` is `[]int(nil)`), and a container value re-tags to
 // a named argument of the same underlying (`Clone[S]` returns S, not
-// the []int the argument carried).
-func instResult(targs []runtime.Value, res runtime.Value) runtime.Value {
-	if len(targs) == 0 {
+// the []int the argument carried). Other funcs return `[]E` of an arg
+// (Collect, Sorted), a seq, or a scalar — re-tagging any of those to
+// targs[0] would lie about the result's type.
+func instResult(fname string, targs []runtime.Value, res runtime.Value) runtime.Value {
+	if len(targs) == 0 || !instResSelf[fname] {
 		return res
 	}
 	td, ok := targs[0].(*runtime.TypeDef)

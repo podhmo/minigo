@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"iter"
 	"maps"
 	"slices"
 )
@@ -33,4 +34,21 @@ func named() {
 	fmt.Printf("%T\n", slices.Clone[S]([]int{1}))
 	fmt.Printf("%T %v\n", slices.Concat[[]int](), slices.Concat[[]int]())
 	fmt.Printf("%T %v\n", maps.Clone[map[string]int](nil), maps.Clone[map[string]int](nil))
+
+	// Collect[E] returns []E, not E: a named-slice element arg does
+	// not retag the result.
+	fmt.Printf("%T\n", slices.Collect[S](seq()))
+
+	// a nil binds its declared param's targ, not the positional one:
+	// BinarySearchFunc[S,E,T]'s target is T.
+	i, ok := slices.BinarySearchFunc[[]*int, *int, *string]([]*int{new(int)}, nil,
+		func(e *int, t *string) int { return 0 })
+	fmt.Println(i, ok)
+
+	// an interface targ's nil stays the bare nil the elements hold.
+	fmt.Println(slices.Contains[[]any, any]([]any{nil}, nil))
+}
+
+func seq() iter.Seq[S] {
+	return func(yield func(S) bool) { yield(S{1}); yield(S{2}) }
 }
