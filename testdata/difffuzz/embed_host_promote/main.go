@@ -27,6 +27,22 @@ type namer interface {
 	Name() string
 }
 
+// A declared field at depth 0 shadows a promoted method of the same
+// name: &shadowed is not an io.Writer in gc.
+
+type shadowed struct {
+	*bytes.Buffer
+	Write int
+}
+
+// The same method promoted through two same-depth embeds is ambiguous:
+// &ambiguous is not an io.Writer either.
+
+type ambiguous struct {
+	*os.File
+	*bytes.Buffer
+}
+
 func main() {
 	var t T
 	n, err := io.Copy(&t, strings.NewReader("hello"))
@@ -39,4 +55,9 @@ func main() {
 	var w io.Writer = &t
 	fmt.Fprint(w, "!")
 	fmt.Println(t.String())
+
+	_, ok := any(&shadowed{}).(io.Writer)
+	fmt.Println(ok)
+	_, ok2 := any(&ambiguous{}).(io.Writer)
+	fmt.Println(ok2)
 }

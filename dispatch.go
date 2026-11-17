@@ -378,6 +378,24 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 		names[name] = true
 		funcs[name] = m
 	}
+	// a declared field at this depth shadows every promoted member of
+	// the same name (`struct{ *bytes.Buffer; Write int }` keeps the
+	// field's Write, not the embed's method) — field names, including
+	// the embedded fields' own, are td.Fields.
+	var shadowed map[string]bool
+	if len(td.Fields) > 0 {
+		shadowed = map[string]bool{}
+		for _, f := range td.Fields {
+			shadowed[f] = true
+		}
+	}
+	promoted := func(m string) bool { return !shadowed[m] }
+	// Two same-depth non-interface embeds each offering a member leave
+	// it out of the method set — gc's selector is ambiguous there, not
+	// first-wins. (Embedded interfaces keep their own rule: identical
+	// duplicate requirements are permitted.) A member declared at this
+	// depth dominates any promotion.
+	contribs := map[string]int{}
 	for _, spec := range td.EmbedSpecs {
 		emb, err := e.resolveTypeRef(td, spec)
 		// the embed's package failed its init (a trap or a panic): the
@@ -401,10 +419,12 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 			// without AST still count) while the func map keeps only the
 			// members a signature can be synthesized for.
 			for m := range e.ifaceReqSet(emb) {
-				names[m] = true
+				if promoted(m) {
+					names[m] = true
+				}
 			}
 			for name, fn := range e.ifaceSigFuncs(emb) {
-				if _, dup := funcs[name]; !dup {
+				if _, dup := funcs[name]; !dup && promoted(name) {
 					funcs[name] = fn
 				}
 			}
@@ -420,12 +440,23 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 		subNames, subFuncs, subUnsure := e.methodWalkU(emb, embPtr, seen)
 		unsure = unsure || subUnsure
 		for m := range subNames {
-			names[m] = true
+			if promoted(m) {
+				contribs[m]++
+				names[m] = true
+			}
 		}
 		for name, m := range subFuncs {
-			if _, dup := funcs[name]; !dup {
+			if _, dup := funcs[name]; !dup && promoted(name) {
 				funcs[name] = m
 			}
+		}
+	}
+	for m, n := range contribs {
+		if n > 1 && funcs[m] == nil && td.Methods[m] == nil {
+			delete(names, m)
+		}
+		if n > 1 && td.Methods[m] == nil {
+			delete(funcs, m)
 		}
 	}
 	return names, funcs, unsure
