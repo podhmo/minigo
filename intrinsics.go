@@ -2029,6 +2029,7 @@ func (e *Engine) installStdlib() {
 	// identity for a shared backing is the only guarantee unsafe offers
 	// here, and it is what callers like x/tools' stringptr rely on.
 	strDataBacks := map[string]*runtime.Slice{}
+	uintptrTyp := &runtime.TypeDef{Name: "uintptr", Kind: runtime.KindNamedBasic}
 	e.Bind("unsafe", map[string]runtime.Value{
 		// unsafe.Pointer: a named pointer to the opaque ArbitraryType.
 		// Values carry it as a Named tag over the real ref, so *T <->
@@ -2043,10 +2044,12 @@ func (e *Engine) installStdlib() {
 			Elem: &runtime.TypeDef{Name: "unsafe.ArbitraryType", Kind: runtime.KindNamedBasic},
 		},
 		"Sizeof": &runtime.BuiltinFunc{Name: "unsafe.Sizeof", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			return e.unsafeSizeOf(args[0], e.unsafeStaticTyp(args)), nil
+			// gc's result is an untyped uintptr constant — the closest
+			// runtime shape is an int64 tagged uintptr.
+			return runtime.Tag(uintptrTyp, e.unsafeSizeOf(args[0], e.unsafeStaticTyp(args))), nil
 		}},
 		"Alignof": &runtime.BuiltinFunc{Name: "unsafe.Alignof", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			return e.unsafeAlignOf(args[0], e.unsafeStaticTyp(args)), nil
+			return runtime.Tag(uintptrTyp, e.unsafeAlignOf(args[0], e.unsafeStaticTyp(args))), nil
 		}},
 		"Offsetof": &runtime.BuiltinFunc{Name: "unsafe.Offsetof", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			// The compiler rewrites unsafe.Offsetof(s.f) to pass the
@@ -2063,7 +2066,7 @@ func (e *Engine) installStdlib() {
 			if err != nil {
 				return nil, err
 			}
-			return int64(off), nil
+			return runtime.Tag(uintptrTyp, int64(off)), nil
 		}},
 		// Element pointers are &s[i] refs over a script slice, so the
 		// StringData/String and SliceData/Slice round trips used for
@@ -4543,6 +4546,16 @@ func (e *Engine) unsafeStaticTyp(args []runtime.Value) *runtime.TypeDef {
 
 func (e *Engine) unsafeSizeOf(v runtime.Value, declared *runtime.TypeDef) int64 {
 	if declared != nil {
+		if declared.HostNew != nil {
+			// a host-bound type's layout lives in reflect — its typedef
+			// has no script field list. HostNew allocates a pointer —
+			// peel it to the value type.
+			rt := declared.HostType()
+			for rt.Kind() == reflect.Pointer {
+				rt = rt.Elem()
+			}
+			return int64(rt.Size())
+		}
 		return int64(minireflect.SizeOf(e.reflectHooks(), declared))
 	}
 	if td := sizeDeclTyp(v); td != nil {
@@ -4603,6 +4616,13 @@ func sizeDeclTyp(v runtime.Value) *runtime.TypeDef {
 
 func (e *Engine) unsafeAlignOf(v runtime.Value, declared *runtime.TypeDef) int64 {
 	if declared != nil {
+		if declared.HostNew != nil {
+			rt := declared.HostType()
+			for rt.Kind() == reflect.Pointer {
+				rt = rt.Elem()
+			}
+			return int64(rt.Align())
+		}
 		return int64(minireflect.AlignOf(e.reflectHooks(), declared))
 	}
 	if td := sizeDeclTyp(v); td != nil {
@@ -4645,6 +4665,37 @@ func unsafeStringArg(v runtime.Value) (string, bool) {
 // through reflect's real field offset instead.
 func (e *Engine) unsafeFieldOffset(base runtime.Value, name string) (int64, error) {
 	switch x := base.(type) {
+	case *runtime.TypeDef:
+		// a statically-resolved base arrives as its typedef — a nil
+		// *Pair still offsets Pair's field. Peel the stars; a
+		// non-struct typedef has no fields.
+		td := x
+		for td.Kind == runtime.KindPointer {
+			next, err := e.elemOf(td)
+			if err != nil || next == nil || next == td {
+				break
+			}
+			td = next
+		}
+		if td.HostNew != nil {
+			// a host-bound struct's layout lives in reflect — its
+			// typedef has no script field list.
+			rt := td.HostType()
+			for rt.Kind() == reflect.Pointer {
+				rt = rt.Elem()
+			}
+			if rt.Kind() == reflect.Struct {
+				if sf, ok := rt.FieldByName(name); ok {
+					return int64(sf.Offset), nil
+				}
+			}
+			return 0, fmt.Errorf("unsafe.Offsetof: %s has no field %s", rt, name)
+		}
+		off, err := minireflect.OffsetOf(e.reflectHooks(), td, name)
+		if err != nil {
+			return 0, err
+		}
+		return int64(off), nil
 	case *runtime.Cell:
 		return e.unsafeFieldOffset(x.Elem, name)
 	case *runtime.Named:

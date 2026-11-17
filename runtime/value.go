@@ -2257,6 +2257,63 @@ func SmallIntOf(x any) (int64, bool) {
 	return 0, false
 }
 
+// EllipsisLen is the builtin a `[...]T` literal's length folds through
+// where the literal's elements must not run (the unsafe.Sizeof/Alignof
+// operand path): the compiler emits the literal's index positions —
+// the keys evaluated in scope like Go's constant keys — packed in one
+// Tuple argument, and this answers the highest position + 1.
+var EllipsisLen = &BuiltinFunc{Name: "minigo.ellipsisLen", Fn: func(_ VMCaller, args []Value) (Value, error) {
+	var positions *Tuple
+	if len(args) == 1 {
+		positions, _ = args[0].(*Tuple)
+	}
+	if positions == nil {
+		return nil, errors.New("minigo.ellipsisLen: a position tuple is expected")
+	}
+	next, n := int64(0), int64(-1)
+	for _, p := range positions.Elems {
+		var k int64
+		if p == EllipsisNext {
+			// an unkeyed element resumes after the last position
+			k = next
+		} else {
+			var ok bool
+			k, ok = ellipsisPos(p)
+			if !ok || k < 0 {
+				return nil, errors.New("array index is not a non-negative integer constant")
+			}
+		}
+		next = k + 1
+		if k > n {
+			n = k
+		}
+	}
+	return n + 1, nil
+}}
+
+type ellipsisNextMark struct{}
+
+// EllipsisNext marks an unkeyed `[...]T` element's position in the
+// stream EllipsisLen folds: the index resumes after the last keyed
+// position, like Go's implicit array index — counted here, in int64,
+// so a narrow typed key (uint8(255)) never truncates the count.
+var EllipsisNext Value = &ellipsisNextMark{}
+
+// ellipsisPos reads one emitted `[...]T` index position as int64 —
+// untyped constants, plain ints and named integer values all count.
+func ellipsisPos(x Value) (int64, bool) {
+	switch v := Unwrap(x).(type) {
+	case int64:
+		return v, true
+	case *UConst:
+		if iv, ok := constant.Int64Val(constant.ToInt(v.V)); ok {
+			return iv, true
+		}
+		return 0, false
+	}
+	return SmallIntOf(Unwrap(x))
+}
+
 // VMCaller is the interpreter as seen by a [BuiltinFunc]: it calls script
 // functions and answers questions about types that only the running
 // engine can resolve.

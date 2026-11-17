@@ -47,6 +47,10 @@ type binding struct {
 	// — the compile-time operand-assignability gate reads it; nil means
 	// the name's type is unknown statically.
 	declTyp ast.Expr
+	// declTypFile is the file declTyp's spelling belongs to when it
+	// re-derived from a package decl — its names resolve in that
+	// package scope, not the use site's.
+	declTypFile *syntax.File
 	// untypedConst marks a `const` bound without a declared type: the
 	// operand adopts the other side's type, like a literal does.
 	untypedConst bool
@@ -54,6 +58,10 @@ type binding struct {
 	// constant-expression walk can tell it from a var. An untyped const
 	// carries untypedConst instead of a declTyp.
 	constDecl bool
+	// constVal is a const-bound name's folded value, computed where the
+	// name binds — the const evaluator folds references at their use
+	// sites without re-resolving the initializer in the use scope.
+	constVal constant.Value
 	// dte is an untyped const's default type expression — the type it
 	// binds at `y := c` (`const c = 5` makes y an int like gc).
 	dte ast.Expr
@@ -134,12 +142,13 @@ func (s *fscope) markIface(name string) {
 // noteDeclTyp records the statically-known type expression a var/param
 // name was declared with (or inferrably bound to by `:=`), so the
 // operand-assignability gate can compare named types at compile time.
-func (s *fscope) noteDeclTyp(name string, te ast.Expr) {
+func (s *fscope) noteDeclTyp(name string, te ast.Expr, file *syntax.File) {
 	if len(s.blocks) == 0 || te == nil {
 		return
 	}
 	if b := s.blocks[len(s.blocks)-1][name]; b != nil {
 		b.declTyp = te
+		b.declTypFile = file
 	}
 }
 
@@ -151,6 +160,17 @@ func (s *fscope) noteConstDecl(name string) {
 	}
 	if b := s.blocks[len(s.blocks)-1][name]; b != nil {
 		b.constDecl = true
+	}
+}
+
+// noteConstVal records a just-declared `const` name's folded value, so
+// the scope-aware const evaluator folds references to it.
+func (s *fscope) noteConstVal(name string, cv constant.Value) {
+	if len(s.blocks) == 0 || cv == nil {
+		return
+	}
+	if b := s.blocks[len(s.blocks)-1][name]; b != nil {
+		b.constVal = cv
 	}
 }
 
@@ -358,6 +378,19 @@ type compiler struct {
 	// var/const initializers (a named cycle would not terminate).
 	opTypDepth int
 
+	// pkgScopeFold marks a const fold as resolving in package scope:
+	// a package-level var's initializer re-derives its literal's shape
+	// at the Sizeof call site, whose local bindings must not shadow
+	// the names the decl's keys mean.
+	pkgScopeFold bool
+
+	// pkgScopeTyp, when non-nil, makes typeExpr resolve the emitted
+	// type in package scope — under the file a package decl spelled
+	// it in — because the typedef re-derived from a package var spec
+	// at a use site whose locals (and local type decls) must not
+	// shadow the decl's names.
+	pkgScopeTyp *syntax.File
+
 	// synthImports binds qualifier identifiers minted by
 	// synthImportName to their import refs: an operand or type
 	// expression re-scoped through a foreign package's file refers to
@@ -513,6 +546,19 @@ func (c *compiler) resolveName(name string) (nameInfo, bool) {
 // function returning `item`) must not push the variable where
 // OpCoerce* expects a typedef.
 func (c *compiler) typeIdent(e ast.Expr, name string) {
+	if c.pkgScopeTyp != nil {
+		// a re-derived package decl's type resolves in package
+		// scope — the use site's locals and bound type params
+		// cannot rename it.
+		if c.pkg != nil && c.pkg.Index != nil && c.pkg.Index.Types[name] != nil {
+			c.emit(bytecode.OpGlobal, c.nameIdx(name), 0, e.Pos())
+			return
+		}
+		if predeclaredTypeNames[name] {
+			c.emit(bytecode.OpGlobal, c.nameIdx(name), 0, e.Pos())
+			return
+		}
+	}
 	if b := c.fs.lookupBinding(name); b != nil {
 		if b.typeDecl {
 			if b.tdef != nil {
@@ -708,7 +754,7 @@ func compileFunc(fn *runtime.Function) error {
 		nparams++
 		if recvType != nil {
 			coerces = append(coerces, paramCoerce{slot: slot, typ: recvType})
-			c.fs.noteDeclTyp(recv, recvType)
+			c.fs.noteDeclTyp(recv, recvType, nil)
 		}
 	}
 	if fn.Decl.Type.Params != nil {
@@ -723,7 +769,7 @@ func compileFunc(fn *runtime.Function) error {
 					c.fs.markIface(n.Name)
 				}
 				coerces = append(coerces, paramCoerce{slot: slot, typ: field.Type})
-				c.fs.noteDeclTyp(n.Name, field.Type)
+				c.fs.noteDeclTyp(n.Name, field.Type, nil)
 				nparams++
 			}
 			if _, ok := field.Type.(*ast.Ellipsis); ok {
@@ -748,7 +794,7 @@ func compileFunc(fn *runtime.Function) error {
 				if c.isIfaceTypeExpr(field.Type) {
 					c.fs.markIface(n.Name)
 				}
-				c.fs.noteDeclTyp(n.Name, field.Type)
+				c.fs.noteDeclTyp(n.Name, field.Type, nil)
 				c.ch.NamedSlots = append(c.ch.NamedSlots, slot)
 				c.emit(bytecode.OpNil, 0, 0, n.Pos())
 				c.emit(bytecode.OpNewLocal, slot, 0, n.Pos())
@@ -1440,12 +1486,12 @@ func (c *compiler) stmt(s ast.Stmt) {
 						switch {
 						case isCommaOk && i == 1:
 							// `var v, ok = m[k]` — the second name is bool.
-							c.fs.noteDeclTyp(vs.Names[i].Name, &ast.Ident{Name: "bool"})
+							c.fs.noteDeclTyp(vs.Names[i].Name, &ast.Ident{Name: "bool"}, nil)
 						default:
 							if t := c.nthResultOpTyp(vals[0], i); t.te != nil {
-								c.fs.noteDeclTyp(vs.Names[i].Name, t.te)
+								c.fs.noteDeclTyp(vs.Names[i].Name, t.te, t.teFile)
 							} else {
-								c.noteDeclTyp(vs.Names[i].Name, effType, isConst, nil)
+								c.noteDeclTyp(vs.Names[i].Name, effType, isConst, nil, nil)
 							}
 						}
 					}
@@ -1468,15 +1514,22 @@ func (c *compiler) stmt(s ast.Stmt) {
 						}
 						coerceTop()
 					}
-					if slot := c.bindLocal(name.Name, name.Pos(), isConst); !typedConst {
-						coerce(name, slot)
-					}
 					var rhs ast.Expr
 					if i < len(vals) {
 						rhs = vals[i]
 					}
+					// fold before the binding installs the name: a
+					// `const K = K + 1` initializer's K resolves in
+					// the enclosing scope, not against the new K.
+					var cv constant.Value
+					if isConst && rhs != nil {
+						cv, _ = c.scopeConstValue(rhs, 0)
+					}
+					if slot := c.bindLocal(name.Name, name.Pos(), isConst); !typedConst {
+						coerce(name, slot)
+					}
 					markIface(name, rhs)
-					c.noteDeclTyp(name.Name, effType, isConst, rhs)
+					c.noteDeclTyp(name.Name, effType, isConst, rhs, cv)
 				}
 				stampVars()
 				c.iotaVal = -1
@@ -1822,21 +1875,21 @@ func (c *compiler) noteIfaceBinds(st *ast.AssignStmt) {
 		// second name of a comma-ok bind is always bool; a multi-result
 		// call types each name from the callee's signature.
 		if len(st.Rhs) == len(st.Lhs) {
-			c.noteDeclTyp(id.Name, nil, false, st.Rhs[i])
+			c.noteDeclTyp(id.Name, nil, false, st.Rhs[i], nil)
 		} else if len(st.Rhs) == 1 && commaOkStatic(st.Rhs[0]) {
 			if i == 0 {
-				c.noteDeclTyp(id.Name, nil, false, st.Rhs[0])
+				c.noteDeclTyp(id.Name, nil, false, st.Rhs[0], nil)
 			} else {
-				c.fs.noteDeclTyp(id.Name, &ast.Ident{Name: "bool"})
+				c.fs.noteDeclTyp(id.Name, &ast.Ident{Name: "bool"}, nil)
 			}
 		} else if len(st.Rhs) == 1 {
 			if t := c.nthResultOpTyp(st.Rhs[0], i); t.te != nil || t.iface {
 				if t.iface {
 					c.fs.markIface(id.Name)
 				}
-				c.fs.noteDeclTyp(id.Name, t.te)
+				c.fs.noteDeclTyp(id.Name, t.te, t.teFile)
 			} else if i == 0 {
-				c.noteDeclTyp(id.Name, nil, false, st.Rhs[0])
+				c.noteDeclTyp(id.Name, nil, false, st.Rhs[0], nil)
 			}
 		}
 	}
@@ -2010,6 +2063,27 @@ type opTyp struct {
 	// type (`x := 1 + 2` is int, `x := 'a'` is rune) rather than
 	// staying adoption-shaped forever.
 	dte ast.Expr
+	// elLit is a `[...]T` composite literal whose length the compile
+	// time fold could not resolve — callers that must not evaluate the
+	// operand (unsafe.Sizeof/Alignof) emit the key positions for a
+	// runtime fold instead of evaluating the elements.
+	elLit *ast.CompositeLit
+	// elPos, parallel to elLit.Elts, bakes the key positions the
+	// decl-scope fold could still see at capture time: a later emit
+	// may run in a scope that shadows the literal's key names, so a
+	// foldable key becomes an int const instead of an emitted expr.
+	elPos []constant.Value
+	// elFile is the file a package-var literal was declared in —
+	// set only when the literal is re-derived at a use site. Keys
+	// that did not fold emit an OpEvalAST fragment over it so their
+	// names resolve in the decl's package scope rather than in the
+	// use site's (a local shadow must not rebind them).
+	elFile *syntax.File
+	// teFile is the file a package decl spelled te in — set when the
+	// operand's type re-derives from a package var spec, so a
+	// use-site local type or const of the same name cannot shadow
+	// the decl's spelling.
+	teFile *syntax.File
 }
 
 // staticOpTyp resolves the statically-known type of an operand
@@ -2041,7 +2115,18 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 	case *ast.IndexExpr:
 		return opTyp{te: c.elemTypExpr(c.staticOpTyp(x.X).te, 4)}
 	case *ast.SliceExpr:
-		return c.staticOpTyp(x.X) // a subslice keeps its type (so does a substring)
+		// a subslice keeps its type (so does a substring) — except an
+		// array operand, which reads a slice of its elements, and so
+		// does *A[:] on a pointer to array.
+		ot := c.staticOpTyp(x.X)
+		ue := ast.Unparen(c.unfoldTypExpr(ot.te, 4))
+		if st, ok := ue.(*ast.StarExpr); ok {
+			ue = ast.Unparen(c.unfoldTypExpr(st.X, 3))
+		}
+		if at, ok := ue.(*ast.ArrayType); ok && at.Len != nil {
+			return opTyp{te: &ast.ArrayType{Lbrack: at.Lbrack, Elt: at.Elt}}
+		}
+		return ot
 	case *ast.StarExpr:
 		// *p dereferences a pointer-typed operand
 		return opTyp{te: c.starBaseTypExpr(c.staticOpTyp(x.X).te, 4)}
@@ -2140,6 +2225,75 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 		// + 1` types by f's result, which the static walk can't see.
 		return opTyp{}
 	case *ast.CompositeLit:
+		if at, ok := x.Type.(*ast.ArrayType); ok {
+			if el, isEl := at.Len.(*ast.Ellipsis); isEl {
+				// [...]T{...}: the declared length is the highest
+				// position + 1 (or the element count) — the ellipsis
+				// itself carries none. Keys are constant expressions,
+				// so positions fold at compile time through
+				// scopeConstValue (named consts, hex, arithmetic) and
+				// the literal's elements never evaluate.
+				// -2 folds in the literal's package scope (a package
+				// var's initializer re-derived at a use site whose
+				// locals must not shadow the decl's names); -1 folds
+				// in the literal's own scope.
+				mode := -1
+				if c.pkgScopeFold {
+					mode = -2
+				}
+				keyPos := func(e ast.Expr) (int64, bool) {
+					cv, _, ok := c.scopeConstVal(e, 0, mode)
+					if !ok || cv.Kind() != constant.Int {
+						return 0, false
+					}
+					k, ok := constant.Int64Val(cv)
+					if !ok || k < 0 {
+						return 0, false
+					}
+					return k, true
+				}
+				n, next := int64(0), int64(0)
+				known := true
+				for _, e := range x.Elts {
+					if kv, ok := e.(*ast.KeyValueExpr); ok {
+						k, ok := keyPos(kv.Key)
+						if !ok {
+							known = false
+							break
+						}
+						next = k + 1
+					} else {
+						next++
+					}
+					if next > n {
+						n = next
+					}
+				}
+				if !known {
+					// a key needing scope the compile fold cannot see
+					// (an imported const, a typed conversion) still
+					// must not evaluate the elements — the caller
+					// emits the key positions for a runtime fold.
+					// Keys that DO fold here bake their positions:
+					// the emit site may sit in a scope that shadows
+					// the names the literal's keys resolve through.
+					elPos := make([]constant.Value, len(x.Elts))
+					for i, e := range x.Elts {
+						if kv, ok := e.(*ast.KeyValueExpr); ok {
+							if k, ok := keyPos(kv.Key); ok {
+								elPos[i] = constant.MakeInt64(k)
+							}
+						}
+					}
+					return opTyp{te: x.Type, elLit: x, elPos: elPos}
+				}
+				return opTyp{te: &ast.ArrayType{
+					Lbrack: at.Lbrack,
+					Len:    &ast.BasicLit{Kind: token.INT, Value: strconv.FormatInt(n, 10), ValuePos: el.Ellipsis},
+					Elt:    at.Elt,
+				}}
+			}
+		}
 		return opTyp{te: x.Type}
 	case *ast.FuncLit:
 		return opTyp{te: x.Type}
@@ -2156,7 +2310,7 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 		if b.untypedConst {
 			return opTyp{untyped: true, dte: b.dte}
 		}
-		return opTyp{te: b.declTyp}
+		return opTyp{te: b.declTyp, teFile: b.declTypFile}
 	}
 	if _, bound := c.binds[id.Name]; bound {
 		return opTyp{} // a bound type parameter — its value is opaque here
@@ -2167,7 +2321,7 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 		if vd := c.pkg.Index.Vars[id.Name]; vd != nil {
 			if vs, ok := vd.Spec.(*ast.ValueSpec); ok {
 				if vs.Type != nil {
-					return opTyp{te: vs.Type}
+					return opTyp{te: vs.Type, teFile: vd.File}
 				}
 				// `var x = e` — the initializer at the name's own slot
 				// types it. An untyped initializer binds its literal
@@ -2175,8 +2329,20 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 				// (`var x = 5` is int).
 				if len(vs.Values) == len(vs.Names) && vd.NameIdx < len(vs.Values) {
 					rhs := vs.Values[vd.NameIdx]
+					// the initializer's names live in the package's
+					// scope — a local binding at the use site must
+					// not shadow what the decl's keys resolve to.
+					c.pkgScopeFold = true
 					t := c.staticOpTyp(rhs)
+					c.pkgScopeFold = false
 					if !t.untyped {
+						// the literal's own decl file wins over
+						// a copying var's — `var b = a` in
+						// another file still evaluates a's keys
+						// under a's imports.
+						if t.elLit != nil && t.elFile == nil {
+							t.elFile = vd.File
+						}
 						return t
 					}
 					// an untyped initializer binds its constant's
@@ -2265,6 +2431,13 @@ func (c *compiler) selOpTyp(x *ast.SelectorExpr) opTyp {
 		return opTyp{}
 	}
 	te := c.fieldTypExpr(base.te, x.Sel.Name, 4)
+	if te == nil {
+		// a selector through a pointer reads the pointee's fields
+		// the same way — `p.A` on a *Pair is Pair's A.
+		if sb := c.starBaseTypExpr(base.te, 4); sb != nil {
+			te = c.fieldTypExpr(sb, x.Sel.Name, 4)
+		}
+	}
 	if te == nil {
 		return opTyp{}
 	}
@@ -2653,7 +2826,22 @@ func (c *compiler) callOpTyp(x *ast.CallExpr) opTyp {
 				return opTyp{te: &ast.StarExpr{Star: f.Pos(), X: x.Args[0]}}
 			case "make":
 				return opTyp{te: x.Args[0]} // make's first arg is a type expr
-			case "min", "max", "append":
+			case "min", "max":
+				// gc: the result takes the first typed argument's
+				// type — untyped constants convert to it — or
+				// stays untyped when every argument is one.
+				var t opTyp
+				for _, a := range x.Args {
+					at := c.staticOpTyp(a)
+					if !at.untyped {
+						return at
+					}
+					if t.dte == nil {
+						t = at
+					}
+				}
+				return t
+			case "append":
 				return c.staticOpTyp(x.Args[0])
 			case "recover":
 				return opTyp{iface: true}
@@ -3085,6 +3273,57 @@ func (c *compiler) certainlyNonConstDepth(e ast.Expr, depth int) bool {
 		return true
 	}
 	return false
+}
+
+// emitEllipsisLenFold emits the typedef of a `[...]T` literal whose
+// length the compile-time fold could not resolve, for a call that must
+// not evaluate the operand: the typedef's length folds at run time
+// from the literal's index positions — the keys evaluate in scope the
+// way Go evaluates constant keys — while the elements never run.
+func (c *compiler) emitEllipsisLenFold(cl *ast.CompositeLit, te ast.Expr, elPos []constant.Value, elFile *syntax.File) {
+	at := te.(*ast.ArrayType)
+	file := c.file
+	var localTypes map[string]*runtime.TypeDef
+	if elFile != nil {
+		// the literal belongs to the decl's file — its typedef
+		// resolves there, with no use-site local types.
+		file = elFile
+	} else {
+		localTypes = c.fs.localTypeDefs()
+	}
+	c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindSlice, Anon: at, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}), 0, cl.Pos())
+	c.emit(bytecode.OpConst, c.constIdx(runtime.EllipsisLen), 0, cl.Pos())
+	for i, e := range cl.Elts {
+		if kv, ok := e.(*ast.KeyValueExpr); ok {
+			if i < len(elPos) && elPos[i] != nil {
+				// baked at capture: a use-site binding must not
+				// shadow what the key resolved to at the decl.
+				k, _ := constant.Int64Val(constant.ToInt(elPos[i]))
+				c.emit(bytecode.OpConst, c.constIdx(k), 0, kv.Key.Pos())
+			} else if elFile != nil {
+				// a key the fold could not see still resolves in
+				// the decl's package scope — the use site may
+				// shadow its names — so the fragment compiles and
+				// evaluates there at run time.
+				c.emit(bytecode.OpEvalAST, c.constIdx(&bytecode.ASTFragment{Expr: kv.Key, File: elFile}), 0, kv.Key.Pos())
+			} else {
+				// the key's position — constant or not, evaluated
+				// in scope; a typed value (uint8(255)) keeps its
+				// own width but the counter counts in int64.
+				c.expr(kv.Key)
+			}
+		} else {
+			// an unkeyed element resumes after the last position —
+			// emitting a sentinel keeps the count out of the key's
+			// own (possibly narrow) type.
+			c.emit(bytecode.OpConst, c.constIdx(runtime.EllipsisNext), 0, e.Pos())
+		}
+	}
+	c.emit(bytecode.OpPack, len(cl.Elts), 0, cl.Pos())
+	c.emit(bytecode.OpNil, 0, 0, cl.Pos())
+	c.emit(bytecode.OpCall, 1, 0, cl.Pos())
+	c.emit(bytecode.OpFoldArrayLen, c.constIdx(at), 0, cl.Pos())
+	c.emit(bytecode.OpLocalType, 0, 0, cl.Pos())
 }
 
 // universeFuncs are the predeclared functions certainlyNonConst leaves
@@ -4020,14 +4259,23 @@ func (c *compiler) selNilable(ref *runtime.ImportRef, name string) (bool, bool) 
 // inferred decl (`var x = e`, `x := e`) takes the initializer's static
 // type when the expression spells one (`x := 5` is int like gc), and an
 // untyped const keeps no type — it adopts like a literal.
-func (c *compiler) noteDeclTyp(name string, effType ast.Expr, isConst bool, rhs ast.Expr) {
+// noteDeclTyp records a declared name's type. preCV is the const
+// initializer folded BEFORE the binding installed — `const K = K + 1`
+// resolves the initializer's names in the enclosing scope, so callers
+// fold the rhs ahead of bindLocal and pass the result here.
+func (c *compiler) noteDeclTyp(name string, effType ast.Expr, isConst bool, rhs ast.Expr, preCV constant.Value) {
 	if isConst {
 		c.fs.noteConstDecl(name)
+		if preCV != nil {
+			c.fs.noteConstVal(name, preCV)
+		}
 	}
 	te := effType
+	var teFile *syntax.File
 	if te == nil && rhs != nil {
 		t := c.staticOpTyp(rhs)
 		te = t.te
+		teFile = t.teFile
 		if te == nil && !isConst {
 			if t.untyped {
 				// an untyped constant binds its default type at
@@ -4049,7 +4297,7 @@ func (c *compiler) noteDeclTyp(name string, effType ast.Expr, isConst bool, rhs 
 		}
 	}
 	if te != nil {
-		c.fs.noteDeclTyp(name, te)
+		c.fs.noteDeclTyp(name, te, teFile)
 		return
 	}
 	if isConst {
@@ -4519,7 +4767,7 @@ func (c *compiler) noteBindVar(e ast.Expr, te ast.Expr, define bool) {
 	if !ok || id.Name == "_" {
 		return
 	}
-	c.fs.noteDeclTyp(id.Name, te)
+	c.fs.noteDeclTyp(id.Name, te, nil)
 }
 
 // rangeVarTyps resolves the (key, value) types a `for k, v := range e`
@@ -6001,6 +6249,196 @@ func constValue(e ast.Expr) (cv constant.Value, ok bool) {
 	return nil, false
 }
 
+// scopeConstValue evaluates a constant expression the way constValue
+// does, but also through names that denote constants at this point:
+// `iota`, a local const binding's initializer, and package-level const
+// decls — so a `[K]T` or keyed `[...]T` literal's compile-time length
+// resolves without evaluating the literal.
+func (c *compiler) scopeConstValue(e ast.Expr, depth int) (cv constant.Value, ok bool) {
+	cv, _, ok = c.scopeConstVal(e, depth, -1)
+	return cv, ok
+}
+
+// scopeConstVal is scopeConstValue with an explicit scope mode:
+// pkgIota >= 0 walks a package const's spec — the use site's local
+// bindings and iota are out of scope there; `iota` reads the spec's
+// own index and names resolve only through the package's consts.
+// pkgIota == -2 is package scope outside a const spec (a package var's
+// initializer re-derived at a use site): the same package-only name
+// resolution, but `iota` is undefined.
+//
+// typed reports that the folded value came from a declared type's
+// const. A bare name's value is exact either way, but operators on a
+// typed constant wrap at the declared width, which the bare
+// constant.Value cannot express — those refuse to fold so the key
+// emits and evaluates with the type's semantics.
+func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Value, typed bool, ok bool) {
+	if depth > 8 {
+		return nil, false, false
+	}
+	if cv, ok := constValue(e); ok {
+		return cv, false, true
+	}
+	defer func() {
+		// like constValue: go/constant panics on unsound inputs; those
+		// keep runtime semantics.
+		if recover() != nil {
+			cv, typed, ok = nil, false, false
+		}
+	}()
+	switch x := e.(type) {
+	case *ast.ParenExpr:
+		return c.scopeConstVal(x.X, depth+1, pkgIota)
+	case *ast.Ident:
+		if pkgIota == -1 {
+			if b := c.fs.lookupBinding(x.Name); b != nil && b.constVal != nil {
+				return b.constVal, !b.untypedConst, true
+			}
+		}
+		if c.pkg != nil && c.pkg.Index != nil {
+			if cd := c.pkg.Index.Consts[x.Name]; cd != nil {
+				if vs, ok := cd.Spec.(*ast.ValueSpec); ok {
+					var v ast.Expr
+					switch {
+					case len(vs.Values) == len(vs.Names) && cd.NameIdx < len(vs.Values):
+						v = vs.Values[cd.NameIdx]
+					case cd.NameIdx < len(cd.Inherited):
+						v = cd.Inherited[cd.NameIdx]
+					}
+					if v != nil {
+						cv, vtyped, ok := c.scopeConstVal(v, depth+1, cd.Idx)
+						if !ok {
+							return nil, false, false
+						}
+						return cv, vtyped || vs.Type != nil || cd.InheritedType != nil, true
+					}
+				}
+			}
+		}
+		if x.Name == "iota" {
+			// iota is a predeclared identifier, not a keyword — a
+			// declared iota (`const iota = 10`) shadows it, so the
+			// spec index reads only when nothing else resolved the
+			// name.
+			if pkgIota >= 0 {
+				return constant.MakeInt64(int64(pkgIota)), false, true
+			}
+			if pkgIota == -1 && c.iotaVal >= 0 {
+				return constant.MakeInt64(int64(c.iotaVal)), false, true
+			}
+		}
+		return nil, false, false
+	case *ast.UnaryExpr:
+		xv, xt, ok := c.scopeConstVal(x.X, depth+1, pkgIota)
+		if !ok {
+			return nil, false, false
+		}
+		switch x.Op {
+		case token.ADD, token.SUB, token.XOR:
+			if xt {
+				// a typed operand wraps the result at the
+				// declared width — `^K` on `const K uint8 = 0`
+				// is 255, not the untyped -1 — which the bare
+				// value cannot express; emit and evaluate it
+				// instead.
+				return nil, false, false
+			}
+			return constant.UnaryOp(x.Op, xv, 0), false, true
+		case token.NOT:
+			return constant.UnaryOp(x.Op, xv, 0), xt, true
+		}
+		return nil, false, false
+	case *ast.BinaryExpr:
+		lv, lt, ok := c.scopeConstVal(x.X, depth+1, pkgIota)
+		if !ok {
+			return nil, false, false
+		}
+		rv, rt, ok := c.scopeConstVal(x.Y, depth+1, pkgIota)
+		if !ok {
+			return nil, false, false
+		}
+		switch x.Op {
+		case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ:
+			// comparisons never round — a typed operand's value
+			// compares exactly and the result is an untyped
+			// bool constant.
+			return constant.MakeBool(constant.Compare(lv, x.Op, rv)), false, true
+		case token.LAND, token.LOR:
+			return nil, false, false
+		}
+		if lt || rt {
+			// an operator on a typed constant wraps at the
+			// declared width — see UnaryExpr.
+			return nil, false, false
+		}
+		switch x.Op {
+		case token.SHL, token.SHR:
+			if lv.Kind() == constant.Float {
+				lv = constant.ToInt(lv)
+			}
+			if rv.Kind() == constant.Float {
+				rv = constant.ToInt(rv)
+			}
+			s, ok := constant.Uint64Val(rv)
+			if !ok {
+				return nil, false, false
+			}
+			return constant.Shift(lv, x.Op, uint(s)), false, true
+		case token.QUO:
+			if lv.Kind() == constant.Int && rv.Kind() == constant.Int {
+				return constant.BinaryOp(lv, token.QUO_ASSIGN, rv), false, true
+			}
+			return constant.BinaryOp(lv, x.Op, rv), false, true
+		default:
+			return constant.BinaryOp(lv, x.Op, rv), false, true
+		}
+	case *ast.CallExpr:
+		id, ok := ast.Unparen(x.Fun).(*ast.Ident)
+		if !ok {
+			return nil, false, false
+		}
+		switch id.Name {
+		case "len", "cap":
+			if len(x.Args) != 1 {
+				return nil, false, false
+			}
+			sv, _, ok := c.scopeConstVal(x.Args[0], depth+1, pkgIota)
+			if !ok || sv.Kind() != constant.String {
+				return nil, false, false
+			}
+			return constant.MakeInt64(int64(len(constant.StringVal(sv)))), false, true
+		case "min", "max":
+			if len(x.Args) == 0 {
+				return nil, false, false
+			}
+			op := token.LSS
+			if id.Name == "max" {
+				op = token.GTR
+			}
+			var best constant.Value
+			var bTyped bool
+			for _, a := range x.Args {
+				av, at, ok := c.scopeConstVal(a, depth+1, pkgIota)
+				if !ok {
+					return nil, false, false
+				}
+				bTyped = bTyped || at
+				if best == nil || constant.Compare(av, op, best) {
+					best = av
+				}
+			}
+			return best, bTyped, true
+		default:
+			// a T(c) conversion carries the target's width —
+			// `^uint8(0) >> 7` is 1, not the untyped 3 — which the
+			// untyped constant.Value cannot express. The emitted
+			// position fold evaluates it instead.
+			return nil, false, false
+		}
+	}
+	return nil, false, false
+}
+
 func binOpOf(tok token.Token) (bytecode.BinOp, bool) {
 	switch tok {
 	case token.ADD:
@@ -6278,8 +6716,8 @@ func (c *compiler) hoistEagerOps(es []ast.Expr, prefix string) (subs []ast.Expr,
 		}
 		// the assignability gate keeps the hoisted call's static type:
 		// `d < len(x)` compares Duration to int through the scratch name.
-		if t := c.staticOpTyp(call).te; t != nil {
-			c.fs.noteDeclTyp(name, t)
+		if t := c.staticOpTyp(call); t.te != nil {
+			c.fs.noteDeclTyp(name, t.te, t.teFile)
 		}
 		c.emit(bytecode.OpNewLocal, slot, 0, call.Pos())
 		names[call] = name
@@ -6461,10 +6899,34 @@ unwrapped:
 		if id, ok2 := sel.X.(*ast.Ident); ok2 {
 			if ref, ok3 := c.importRef(id.Name); ok3 && ref.Path == "unsafe" {
 				if fs, ok4 := x.Args[0].(*ast.SelectorExpr); ok4 {
-					args := []ast.Expr{fs.X, &ast.BasicLit{Kind: token.STRING, Value: strconv.Quote(fs.Sel.Name), ValuePos: fs.Sel.Pos()}}
+					name := &ast.BasicLit{Kind: token.STRING, Value: strconv.Quote(fs.Sel.Name), ValuePos: fs.Sel.Pos()}
 					c.calleeExpr(x.Fun)
-					c.callArgs(args)
-					c.argStatics(args)
+					// the base never evaluates — a nil *Pair still
+					// offsets; its declared typedef describes the
+					// struct layout. An opaque base falls back to the
+					// evaluated value.
+					var bte ast.Expr
+					var bteFile *syntax.File
+					if ot := c.staticOpTyp(fs.X); ot.te != nil {
+						bte = ot.te
+						bteFile = ot.teFile
+					}
+					if bte != nil {
+						c.pkgScopeTyp = bteFile
+						c.typeExpr(bte)
+						c.pkgScopeTyp = nil
+					} else {
+						c.expr(fs.X)
+					}
+					c.expr(name)
+					if bte != nil {
+						c.pkgScopeTyp = bteFile
+						c.typeExpr(bte)
+						c.pkgScopeTyp = nil
+					} else {
+						c.staticTyp(fs.X)
+					}
+					c.emit(bytecode.OpNil, 0, 0, x.Pos())
 					c.emit(bytecode.OpCall, 2, 0, x.Pos())
 					return
 				}
@@ -6494,14 +6956,49 @@ unwrapped:
 					break
 				}
 				c.calleeExpr(x.Fun)
-				c.expr(x.Args[0])
-				c.staticTyp(operand)
+				ot := c.staticOpTyp(operand)
+				var te ast.Expr
+				switch {
+				case ot.te != nil:
+					te = ot.te
+				case ot.untyped:
+					// a literal's size is its default type's
+					// (`unsafe.Sizeof(1)` measures int).
+					te = ot.dte
+				case ot.iface:
+					te = &ast.InterfaceType{Interface: x.Pos(), Methods: &ast.FieldList{}}
+				}
+				if te != nil {
+					// gc folds Sizeof/Alignof statically — the operand
+					// never evaluates; a nil stands in for its value
+					// and the resolved typedef answers the size.
+					c.emit(bytecode.OpNil, 0, 0, x.Pos())
+					if cl := ot.elLit; cl != nil {
+						c.emitEllipsisLenFold(cl, te, ot.elPos, ot.elFile)
+					} else {
+						c.pkgScopeTyp = ot.teFile
+						c.typeExpr(te)
+						c.pkgScopeTyp = nil
+					}
+				} else {
+					// the operand's type is statically opaque (a host
+					// func's result, a reflect value) — evaluate it
+					// and let the intrinsic size the boxed shape.
+					c.expr(x.Args[0])
+					c.staticTyp(operand)
+				}
 				if ix, ok4 := operand.(*ast.IndexExpr); ok4 {
 					c.staticTyp(ix.X)
 				} else {
 					c.emit(bytecode.OpNil, 0, 0, x.Pos())
 				}
-				c.staticTyp(operand)
+				if te != nil {
+					c.pkgScopeTyp = ot.teFile
+					c.typeExpr(te)
+					c.pkgScopeTyp = nil
+				} else {
+					c.staticTyp(operand)
+				}
 				c.emit(bytecode.OpNil, 0, 0, x.Pos())
 				c.emit(bytecode.OpNil, 0, 0, x.Pos())
 				c.emit(bytecode.OpCall, 3, 0, x.Pos())
@@ -6963,34 +7460,56 @@ func (c *compiler) litTypeAt(baseType ast.Expr, depth int) (t ast.Expr, ptr bool
 // `[]T`, `[3]T` and `[...]T` emit nothing (runtime.ArrayLenNodes).
 func (c *compiler) emitLenFolds(e ast.Expr) {
 	for _, at := range runtime.ArrayLenNodes(e) {
-		c.expr(at.Len)
+		if c.pkgScopeTyp != nil {
+			// the length belongs to a package decl — its names
+			// resolve in that file's scope, not the use site's.
+			c.emit(bytecode.OpEvalAST, c.constIdx(&bytecode.ASTFragment{Expr: at.Len, File: c.pkgScopeTyp}), 0, at.Len.Pos())
+		} else {
+			c.expr(at.Len)
+		}
 		c.emit(bytecode.OpFoldArrayLen, c.constIdx(at), 0, e.Pos())
 	}
 }
 
 // typeExpr emits a push of *runtime.TypeDef for a type expression.
 func (c *compiler) typeExpr(e ast.Expr) {
+	// under pkgScopeTyp the spelling belongs to a package decl: its
+	// file's imports resolve names, and the use site contributes no
+	// function-local types.
+	file := c.file
+	var localTypes map[string]*runtime.TypeDef
+	if c.pkgScopeTyp != nil {
+		file = c.pkgScopeTyp
+	} else {
+		localTypes = c.fs.localTypeDefs()
+	}
 	switch t := e.(type) {
 	case *ast.Ident:
 		c.typeIdent(e, t.Name)
 	case *ast.SelectorExpr:
-		// pkg.Type: a selector cannot be shadowed by a local var
-		c.expr(t)
+		if c.pkgScopeTyp != nil {
+			// pkg.Type spelled in the decl's file — the use site
+			// may not import pkg at all.
+			c.emit(bytecode.OpEvalAST, c.constIdx(&bytecode.ASTFragment{Expr: t, File: file}), 0, e.Pos())
+		} else {
+			// pkg.Type: a selector cannot be shadowed by a local var
+			c.expr(t)
+		}
 	case *ast.ArrayType:
 		// Anon/Pkg/File let OpElemType resolve the element typedef later;
 		// Binds carries the generic instantiation so `[]T` resolves T.
-		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindSlice, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}), 0, e.Pos())
+		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindSlice, Anon: t, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}), 0, e.Pos())
 		c.emitLenFolds(t)
 	case *ast.MapType:
-		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindMap, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}), 0, e.Pos())
+		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindMap, Anon: t, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}), 0, e.Pos())
 		c.emitLenFolds(t)
 	case *ast.StarExpr:
 		// *T is a real typedef now: `var p *int` yields a TypedNil,
 		// `x.(*T)` asserts on pointer identity, `[]*T{{...}}` auto-takes &.
-		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindPointer, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}), 0, e.Pos())
+		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindPointer, Anon: t, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}), 0, e.Pos())
 		c.emitLenFolds(t)
 	case *ast.StructType:
-		td := &runtime.TypeDef{Kind: runtime.KindStruct, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}
+		td := &runtime.TypeDef{Kind: runtime.KindStruct, Anon: t, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}
 		td.FTags = runtime.StructFieldTags(t)
 		for _, f := range t.Fields.List {
 			if len(f.Names) == 0 {
@@ -7008,10 +7527,10 @@ func (c *compiler) typeExpr(e ast.Expr) {
 	case *ast.FuncType:
 		// the signature AST rides on the typedef so generalized inference
 		// (Go 1.27) can unify it against a generic function's parameters.
-		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindFunc, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}), 0, e.Pos())
+		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindFunc, Anon: t, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}), 0, e.Pos())
 		c.emitLenFolds(t)
 	case *ast.InterfaceType:
-		td := &runtime.TypeDef{Kind: runtime.KindInterface, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}
+		td := &runtime.TypeDef{Kind: runtime.KindInterface, Anon: t, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}
 		for _, m := range t.Methods.List {
 			if len(m.Names) == 0 {
 				td.IEmbeds = append(td.IEmbeds, m.Type)
@@ -7039,10 +7558,10 @@ func (c *compiler) typeExpr(e ast.Expr) {
 	case *ast.Ellipsis:
 		// ...T binds as []T: a variadic param's declared type IS a slice,
 		// so a missing rest coerces to TypedNil{slice}, not the elem zero
-		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Lbrack: t.Pos(), Elt: t.Elt}, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}), 0, e.Pos())
+		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Lbrack: t.Pos(), Elt: t.Elt}, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}), 0, e.Pos())
 		c.emitLenFolds(t)
 	case *ast.ChanType:
-		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindChan, Anon: t, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}), 0, e.Pos())
+		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindChan, Anon: t, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}), 0, e.Pos())
 		c.emitLenFolds(t)
 	default:
 		c.trap(e.Pos(), "unsupported type expression %T", e)
@@ -7081,7 +7600,7 @@ func (c *compiler) funcLit(x *ast.FuncLit) {
 			for _, n := range names {
 				slot := ic.fs.declare(n.Name, n.Pos())
 				coerces = append(coerces, paramCoerce{slot: slot, typ: field.Type})
-				ic.fs.noteDeclTyp(n.Name, field.Type)
+				ic.fs.noteDeclTyp(n.Name, field.Type, nil)
 				nparams++
 			}
 			if _, ok := field.Type.(*ast.Ellipsis); ok {
@@ -7095,7 +7614,7 @@ func (c *compiler) funcLit(x *ast.FuncLit) {
 		for _, field := range x.Type.Results.List {
 			for _, n := range field.Names {
 				slot := ic.fs.declare(n.Name, n.Pos())
-				ic.fs.noteDeclTyp(n.Name, field.Type)
+				ic.fs.noteDeclTyp(n.Name, field.Type, nil)
 				ic.ch.NamedSlots = append(ic.ch.NamedSlots, slot)
 				ic.emit(bytecode.OpNil, 0, 0, n.Pos())
 				ic.emit(bytecode.OpNewLocal, slot, 0, n.Pos())
