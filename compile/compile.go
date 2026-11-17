@@ -3215,8 +3215,23 @@ func (c *compiler) unfoldTypExpr(te ast.Expr, depth int) ast.Expr {
 		if _, isUp := c.fs.upmap[tt.Name]; isUp {
 			break // a captured var — opaque
 		}
-		if _, bound := c.binds[tt.Name]; bound {
-			break // a bound type parameter — opaque
+		if bv, bound := c.binds[tt.Name]; bound {
+			// a bound type parameter: the instantiated typedef's own
+			// spelling exposes the container shape a literal needs
+			// (`M ~map[string]int` bound to map[string]int shows its
+			// MapType, so `M{k: v}` keys evaluate as expressions).
+			// The shape is all that matters here — the leaf idents
+			// keep their instantiating-file scope, which only the
+			// declared conversion target reads, not the key check.
+			if td, ok := bv.(*runtime.TypeDef); ok && td != nil {
+				if ax := td.Anon; ax != nil {
+					return c.unfoldTypExpr(ax, depth-1)
+				}
+				if td.Spec != nil {
+					return c.unfoldTypExpr(td.Spec.Type, depth-1)
+				}
+			}
+			break
 		}
 		// A package-level spec's names resolve in its own package's
 		// file scope, not the caller's.
