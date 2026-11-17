@@ -1660,6 +1660,10 @@ func (c *compiler) localTypeDecl(ts *ast.TypeSpec) {
 	slot := c.fs.declare(ts.Name.Name, ts.Pos())
 	c.fs.recordType(ts.Name.Name, ts, td, isIface)
 	c.emit(bytecode.OpConst, c.constIdx(td), 0, ts.Pos())
+	// array lengths inside the local decl may name a function-local
+	// const — fold them in this scope, like a local var's `[n]T`;
+	// runtime.arrayLen resolves only package-scoped const names.
+	c.emitLenFolds(ts.Type)
 	// gc treats every function-local type declared inside a generic
 	// function as implicitly parameterized by the enclosing type
 	// arguments: `type X int` in F[T] is a different X per F[T]'s
