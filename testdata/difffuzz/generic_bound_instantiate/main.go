@@ -47,6 +47,10 @@ func named() {
 
 	// an interface targ's nil stays the bare nil the elements hold.
 	fmt.Println(slices.Contains[[]any, any]([]any{nil}, nil))
+
+	// a nil binds positionally even under a full explicit
+	// instantiation — Clone[S,E]'s first arg is S, not E.
+	fmt.Printf("%T\n", slices.Clone[[]int, int](nil))
 }
 
 func seq() iter.Seq[S] {

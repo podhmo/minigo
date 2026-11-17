@@ -236,11 +236,10 @@ func instNilTarg(fname string, i int, ntargs int) int {
 	if ntargs == 0 {
 		return -1
 	}
-	m := instNilTargs[fname]
-	if ti, ok := m[i]; ok {
+	if ti, ok := instNilTargs[fname][i]; ok {
 		return ti
 	}
-	if i >= ntargs || i > instMaxPos(m) {
+	if i >= ntargs {
 		// a nil past the fixed params belongs to the variadic tail,
 		// which binds the last type argument (`Concat`'s `...S`,
 		// `Replace`'s `...E`); extra args on a fixed arity are a
@@ -248,16 +247,6 @@ func instNilTarg(fname string, i int, ntargs int) int {
 		return ntargs - 1
 	}
 	return i
-}
-
-func instMaxPos(m map[int]int) int {
-	max := -1
-	for k := range m {
-		if k > max {
-			max = k
-		}
-	}
-	return max
 }
 
 // instNilTargs: bound func name → arg position → type-argument index.
