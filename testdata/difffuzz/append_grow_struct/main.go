@@ -31,4 +31,15 @@ func main() {
 	e := slices.AppendSeq(a, slices.Values([]Rec{{"e", 9}}))
 	e[0].Name = "W"
 	fmt.Println(a[0], e[0])
+
+	// spare capacity: AppendSeq shares the backing like append does,
+	// and the yielded elements are stored as copies.
+	p := make([]Rec, 1, 8)
+	p[0] = Rec{"p", 1}
+	src := []Rec{{"s", 7}}
+	q := slices.AppendSeq(p, slices.Values(src))
+	q[0].Name = "Q"
+	fmt.Println(p[0], q[0])
+	q[1].Name = "R"
+	fmt.Println(src[0], q[1])
 }
