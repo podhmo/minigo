@@ -2460,6 +2460,92 @@ type CatchCaller interface {
 	CallCatching(callee Value, args []Value) (Value, error)
 }
 
+// Narrow caller capabilities (P2-2): a helper takes the smallest
+// interface covering the methods it calls, so a thinner caller can
+// serve it without implementing all of VMCaller. Every VMCaller
+// satisfies each of these.
+
+// ScriptCaller just calls a script value.
+type ScriptCaller interface {
+	Call(fn Value, args []Value) (Value, error)
+}
+
+// MemberLookup resolves base.name and answers method-set probes.
+type MemberLookup interface {
+	Member(base Value, name string) (m Value, ok bool)
+	MethodSetOf(v Value) (set map[string]bool, unsure bool)
+}
+
+// MemberCaller probes a member then calls it — the common "find the
+// method, invoke it" helper shape.
+type MemberCaller interface {
+	ScriptCaller
+	MemberLookup
+}
+
+// MemberZeroCaller adds typed-zero construction to MemberCaller.
+type MemberZeroCaller interface {
+	MemberCaller
+	Zeroer
+}
+
+// Zeroer makes the Go zero value of a typedef.
+type Zeroer interface {
+	Zero(td *TypeDef) Value
+}
+
+// ElemTyper answers a container typedef's element type.
+type ElemTyper interface {
+	ElemOf(td *TypeDef) (*TypeDef, error)
+}
+
+// ExprResolver resolves a type expression in a typedef's declaring
+// context.
+type ExprResolver interface {
+	ResolveType(from *TypeDef, x ast.Expr) (*TypeDef, error)
+}
+
+// SeqTyper answers the key/value types a range-over-func argument
+// needs — map key type via ResolveType, element type via ElemOf.
+type SeqTyper interface {
+	ExprResolver
+	ElemTyper
+}
+
+// FieldTyper answers a struct typedef's field types.
+type FieldTyper interface {
+	FieldTypes(td *TypeDef) ([]*TypeDef, error)
+}
+
+// ShapeTyper is the type-query set shape-driven helpers need: type
+// expression resolution, element types, and struct field lists.
+type ShapeTyper interface {
+	ExprResolver
+	ElemTyper
+	FieldTyper
+}
+
+// MemberShapeCaller probes members, calls them, and answers shape
+// queries — the encoding/json helpers' full capability.
+type MemberShapeCaller interface {
+	MemberCaller
+	ShapeTyper
+}
+
+// ZeroElemTyper makes typed zeros and answers element types — what a
+// helper building a fresh embedded struct field needs.
+type ZeroElemTyper interface {
+	Zeroer
+	ElemTyper
+}
+
+// MemberShapeZeroCaller is MemberShapeCaller plus typed-zero
+// construction — the encoding/json unmarshal path's full capability.
+type MemberShapeZeroCaller interface {
+	MemberShapeCaller
+	Zeroer
+}
+
 // CallSite is one script call-stack entry: the function's Go-style symbol name (as runtime.Func.Name reports it)
 // and the source position it is executing.
 type CallSite struct {
@@ -3109,7 +3195,7 @@ func StructFieldTags(st *ast.StructType) map[string]string {
 // implements an interface (a Stringer, an io.Reader) before calling the
 // method. When the method set is unknown or incomplete
 // ([VMCaller.MethodSetOf]), it falls back to [VMCaller.Member].
-func IfaceMember(c VMCaller, v Value, name string) (Value, bool) {
+func IfaceMember(c MemberLookup, v Value, name string) (Value, bool) {
 	if set, unsure := c.MethodSetOf(v); set != nil && !set[name] && !unsure {
 		return nil, false
 	}
@@ -3120,7 +3206,7 @@ func IfaceMember(c VMCaller, v Value, name string) (Value, bool) {
 // script panic raised inside the method call surfaces as inner (gc's
 // printpanics treats a panic during the Error/String probe as fatal),
 // while every other failure reports (s, ok) the lenient way.
-func ifaceCallStringFatal(c VMCaller, v Value, name string) (s string, ok bool, inner *Panic) {
+func ifaceCallStringFatal(c MemberCaller, v Value, name string) (s string, ok bool, inner *Panic) {
 	defer func() {
 		if r := recover(); r != nil {
 			if p, isPanic := r.(*Panic); isPanic {
@@ -3153,7 +3239,7 @@ func ifaceCallStringFatal(c VMCaller, v Value, name string) (s string, ok bool, 
 // panic the method raised, so the caller can report it as fmt does
 // (`%!v(PANIC=String method: ...)`). The panic is nil for an absent
 // method, a signature mismatch, or an ordinary call failure.
-func IfaceCallStringPanic(c VMCaller, v Value, name string) (string, bool, *Panic) {
+func IfaceCallStringPanic(c MemberCaller, v Value, name string) (string, bool, *Panic) {
 	return ifaceCallStringFatal(c, v, name)
 }
 
@@ -3178,7 +3264,7 @@ func PanicPrintString(p *Panic) string {
 // have exactly that signature. ok is false when the method is absent or
 // has another signature, when the call fails or panics, or when it
 // returns a non-string.
-func IfaceCallString(c VMCaller, v Value, name string) (s string, ok bool) {
+func IfaceCallString(c MemberCaller, v Value, name string) (s string, ok bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			s, ok = "", false

@@ -105,7 +105,7 @@ func (e *Engine) installErrors(h *hostHelpers) {
 // method) as a host error, so fmt.Errorf's %w chains and errors.Is/As
 // walk it through host errors.Unwrap.
 type scriptError struct {
-	c runtime.VMCaller
+	c runtime.MemberCaller
 	v runtime.Value
 }
 
@@ -178,7 +178,7 @@ type wrapErrors struct {
 // hostErrOf converts a script error value to a host error: boxed Go
 // errors pass through, script values get a scriptError that calls back
 // into the VM for Error().
-func hostErrOf(c runtime.VMCaller, v runtime.Value) error {
+func hostErrOf(c runtime.MemberCaller, v runtime.Value) error {
 	switch x := v.(type) {
 	case *runtime.GoValue:
 		if e, ok := x.V.(error); ok {

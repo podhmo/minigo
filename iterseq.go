@@ -475,7 +475,7 @@ func hostReflectOf(nv any, rt reflect.Type) (reflect.Value, error) {
 // scriptMapSeqArg reads a map argument of the maps seq helpers: the
 // script map (nil for a nil map), its typedef, and the declared key and
 // value typedefs (nil when unknown). ok is false for a non-map.
-func scriptMapSeqArg(vc runtime.VMCaller, v runtime.Value) (m *runtime.Map, kt, vt *runtime.TypeDef, ok bool) {
+func scriptMapSeqArg(vc runtime.SeqTyper, v runtime.Value) (m *runtime.Map, kt, vt *runtime.TypeDef, ok bool) {
 	mt := runtime.TagOf(v)
 	switch x := runtime.Unwrap(v).(type) {
 	case *runtime.Map:

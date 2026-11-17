@@ -175,7 +175,7 @@ func mapsDeleteFunc() *runtime.BuiltinFunc {
 
 // mapKeyType resolves the declared key type of a map typedef — the
 // typedef and its type expression; nil when td spells no map type.
-func mapKeyType(vc runtime.VMCaller, td *runtime.TypeDef) (*runtime.TypeDef, ast.Expr) {
+func mapKeyType(vc runtime.ExprResolver, td *runtime.TypeDef) (*runtime.TypeDef, ast.Expr) {
 	mt := mapTypeExpr(td)
 	if mt == nil {
 		return nil, nil

@@ -226,7 +226,7 @@ func asWriterVM(vc runtime.VMCaller, v any) (io.Writer, error) {
 // is checked on the method set, not member selection: a method promoted
 // from an embedded interface (net/http's nopCloser type probes) has no
 // selectable member yet still declares the interface.
-func (h *hostHelpers) asReaderVM(vc runtime.VMCaller, v any) (io.Reader, error) {
+func (h *hostHelpers) asReaderVM(vc runtime.MemberCaller, v any) (io.Reader, error) {
 	if fv, ok := v.(*fmtValue); ok {
 		v = fv.x
 	}
@@ -265,7 +265,7 @@ func (h *hostHelpers) asReaderVM(vc runtime.VMCaller, v any) (io.Reader, error) 
 // method set without a selectable member (the embedded slot may be nil,
 // which then errors like a Go nil-interface dispatch).
 type scriptReader struct {
-	v    runtime.VMCaller
+	v    runtime.MemberCaller
 	recv runtime.Value
 }
 
@@ -291,12 +291,12 @@ type scriptReaderWriterTo struct {
 }
 
 // readResult decodes a script (n int, err error) pair.
-func readResult(c runtime.VMCaller, r runtime.Value) (int, error) {
+func readResult(c runtime.MemberCaller, r runtime.Value) (int, error) {
 	n, err := readResult64(c, r)
 	return int(n), err
 }
 
-func readResult64(c runtime.VMCaller, r runtime.Value) (int64, error) {
+func readResult64(c runtime.MemberCaller, r runtime.Value) (int64, error) {
 	if t, ok := r.(*runtime.Tuple); ok {
 		var n int64
 		if len(t.Elems) > 0 {

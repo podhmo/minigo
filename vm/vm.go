@@ -123,7 +123,7 @@ type Hooks struct {
 	// Write's error handed to host fmt.Fprintf, or a script error passed
 	// to a host `error` parameter, comes back to the script as itself.
 	// Nil falls back to the scriptIface proxy.
-	HostErr func(vc runtime.VMCaller, v runtime.Value) error
+	HostErr func(vc runtime.MemberCaller, v runtime.Value) error
 }
 
 // VM is a stack machine. Create one as a struct literal with [Hooks] set
