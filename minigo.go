@@ -677,6 +677,13 @@ func (e *Engine) Call(ctx context.Context, pkg *runtime.Package, name string, ar
 	if pkg.Owner != nil && pkg.Owner != e {
 		return nil, fmt.Errorf("minigo: package %q belongs to a different session", pkg.Path)
 	}
+	if e.assetAudit {
+		// a concurrently-loading package writes AssetHash inside
+		// indexFiles; wait for indexing to finish so the read cannot
+		// race the write (and so a half-built package is still audited
+		// — skipping on "" would let one slip through).
+		pkg.WaitIndexed()
+	}
 	if e.assetAudit && pkg.AssetHash != "" {
 		h, err := assetaudit.HashPackage(e.fset, pkg.Files, pkg.Index)
 		if err != nil {

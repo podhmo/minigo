@@ -38,11 +38,14 @@ func HashPackage(fset *token.FileSet, files []*syntax.File, ix *index.Index) (st
 }
 
 // hashIndex writes a deterministic projection of the index: every
-// decl's kind, name, and position, in a canonical order (decl lists in
-// source order, the maps sorted by name).
+// decl's kind, name, spec position, and in-spec ordinals (Idx,
+// NameIdx), in a canonical order — decl lists in source order, the
+// lookup maps sorted by name, Types with each type's method set.
 func hashIndex(h io.Writer, fset *token.FileSet, ix *index.Index) {
 	pos := func(d *index.Decl) string {
 		switch {
+		case d == nil:
+			return "!"
 		case d.Func != nil:
 			return fset.Position(d.Func.Pos()).String()
 		case d.Spec != nil:
@@ -52,7 +55,11 @@ func hashIndex(h io.Writer, fset *token.FileSet, ix *index.Index) {
 		}
 	}
 	writeDecl := func(d *index.Decl) {
-		fmt.Fprintf(h, "\x00decl\x00%d\x00%s\x00%s", d.Kind, d.Name, pos(d))
+		if d == nil {
+			io.WriteString(h, "\x00decl\x00nil")
+			return
+		}
+		fmt.Fprintf(h, "\x00decl\x00%d\x00%s\x00%s\x00%d\x00%d", d.Kind, d.Name, pos(d), d.Idx, d.NameIdx)
 	}
 	for _, d := range ix.Decls {
 		writeDecl(d)
@@ -63,11 +70,7 @@ func hashIndex(h io.Writer, fset *token.FileSet, ix *index.Index) {
 	for _, d := range ix.Inits {
 		writeDecl(d)
 	}
-	for tag, m := range map[string]map[string]*index.Decl{
-		"funcs":  ix.Funcs,
-		"vars":   ix.Vars,
-		"consts": ix.Consts,
-	} {
+	writeMap := func(tag string, m map[string]*index.Decl) {
 		names := make([]string, 0, len(m))
 		for n := range m {
 			names = append(names, n)
@@ -77,5 +80,32 @@ func hashIndex(h io.Writer, fset *token.FileSet, ix *index.Index) {
 			io.WriteString(h, "\x00"+tag+"\x00"+n)
 			writeDecl(m[n])
 		}
+	}
+	// a fixed tag order: ranging a Go map literal would make the digest
+	// nondeterministic and flag an unmodified package as mutated.
+	writeMap("funcs", ix.Funcs)
+	writeMap("vars", ix.Vars)
+	writeMap("consts", ix.Consts)
+
+	types := make([]string, 0, len(ix.Types))
+	for n := range ix.Types {
+		types = append(types, n)
+	}
+	sort.Strings(types)
+	for _, n := range types {
+		tdi := ix.Types[n]
+		io.WriteString(h, "\x00type\x00"+n)
+		writeDecl(tdi.Decl)
+		writeMap("methods", tdi.Methods)
+	}
+
+	// LocalGens is keyed by *ast.TypeSpec — order by spec position.
+	gens := make([]*ast.TypeSpec, 0, len(ix.LocalGens))
+	for ts := range ix.LocalGens {
+		gens = append(gens, ts)
+	}
+	sort.Slice(gens, func(i, j int) bool { return gens[i].Pos() < gens[j].Pos() })
+	for _, ts := range gens {
+		fmt.Fprintf(h, "\x00localgen\x00%s\x00%d", fset.Position(ts.Pos()), ix.LocalGens[ts])
 	}
 }
