@@ -961,6 +961,8 @@ func countResults(fl *ast.FieldList) int {
 // [ConstInitFunc] to bind only the constants, without running var
 // initializers or init functions.
 func InitFunc(pkg *runtime.Package) (*bytecode.Chunk, error) {
+	spike.EnterCompile()
+	defer spike.LeaveCompile()
 	c := &compiler{pkg: pkg, fs: newFScope(nil), ch: &bytecode.Chunk{Name: pkg.Name + ".__init__"}, iotaVal: -1}
 	c.fs.pushBlock()
 
@@ -1015,6 +1017,8 @@ func InitFunc(pkg *runtime.Package) (*bytecode.Chunk, error) {
 // returns a nil chunk and nil error when a const initializer references a
 // package-level var or function; use [InitFunc] then.
 func ConstInitFunc(pkg *runtime.Package) (*bytecode.Chunk, error) {
+	spike.EnterCompile()
+	defer spike.LeaveCompile()
 	var specReps []*index.Decl
 	seen := map[*ast.ValueSpec]bool{}
 	for _, d := range pkg.Index.Decls {

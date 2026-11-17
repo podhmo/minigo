@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/internal/spike"
 )
@@ -21,8 +22,8 @@ func TestSpikeNoInitDuringCompile(t *testing.T) {
 	if _, err := e.Run(context.Background(), "./testdata/spikeinit", "Answer"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if got := spike.InitDuringCompile(); got != 0 {
-		t.Errorf("C1 violations (init during compile) = %d, want 0", got)
+	if diff := cmp.Diff(int64(0), spike.InitDuringCompile()); diff != "" {
+		t.Errorf("C1 violations (init during compile) mismatch (-want +got):\n%s", diff)
 	}
 	t.Logf("builds during compile: %d", spike.CompileBuilds())
 	t.Logf("chunkCellsEscape: %d/%d chunks escape", spike.ChunksEscaped(), spike.ChunksScanned())
