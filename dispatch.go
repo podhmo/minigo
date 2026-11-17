@@ -113,7 +113,7 @@ func (e *Engine) methodInfoOfValue(v runtime.Value) (map[string]bool, map[string
 	}
 	switch x := v.(type) {
 	case *runtime.Struct:
-		names, funcs, unsure := e.methodWalkU(x.Def, ptr, map[*runtime.TypeDef]bool{})
+		names, funcs, _, unsure := e.methodWalkU(x.Def, ptr, map[*runtime.TypeDef]bool{})
 		return names, funcs, unsure, nil
 	case *runtime.TypedNil:
 		return e.typeMethodInfoU(x.Typ, ptr)
@@ -241,7 +241,7 @@ func (e *Engine) typeMethodInfoU(td *runtime.TypeDef, ptr bool) (map[string]bool
 	if td == nil {
 		return nil, nil, unsure, nil
 	}
-	names, funcs, subUnsure := e.methodWalkU(td, ptr, map[*runtime.TypeDef]bool{})
+	names, funcs, _, subUnsure := e.methodWalkU(td, ptr, map[*runtime.TypeDef]bool{})
 	unsure = unsure || subUnsure
 	if td.HostNew != nil {
 		// a host-backed typedef's name set is the boxed host type's
@@ -319,10 +319,15 @@ func (e *Engine) peelAliasTd(td *runtime.TypeDef) *runtime.TypeDef {
 // an unresolved embed. An interface typedef contributes its requirement
 // names to the name set — including AST-less facades — while the func
 // map only gains members backed by a declared signature.
-func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.TypeDef]bool) (names map[string]bool, funcs map[string]*runtime.Function, unsure bool) {
+//
+// depths maps each name to the smallest embedding depth it appears at
+// inside the returned subtree (0 for members the type declares): a
+// caller embedding td sees every promotion one level deeper, and a
+// member survives only when its shallowest promotion is unique.
+func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.TypeDef]bool) (names map[string]bool, funcs map[string]*runtime.Function, depths map[string]int, unsure bool) {
 	td = e.peelAliasTd(td)
 	if td == nil || seen[td] {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 	// seen guards cycles along a path only — a sibling embed path that
 	// reaches the same type under a different ptr condition still has
@@ -342,7 +347,11 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 	if td.Kind == runtime.KindInterface {
 		names = e.ifaceReqSet(td)
 		funcs = e.ifaceSigFuncs(td)
-		return names, funcs, false
+		depths = map[string]int{}
+		for m := range names {
+			depths[m] = 0
+		}
+		return names, funcs, depths, false
 	}
 	if td.HostNew != nil {
 		// a bound host type's methods live on its reflect method set,
@@ -353,7 +362,7 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 		// resolve through member selection at call time.
 		rt := td.HostType()
 		if rt == nil {
-			return nil, nil, true
+			return nil, nil, nil, true
 		}
 		if !ptr && rt.Kind() == reflect.Pointer {
 			// a value embed promotes only the embedded type's value
@@ -361,10 +370,12 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 			rt = rt.Elem()
 		}
 		names = map[string]bool{}
+		depths = map[string]int{}
 		for i := 0; i < rt.NumMethod(); i++ {
 			names[rt.Method(i).Name] = true
+			depths[rt.Method(i).Name] = 0
 		}
-		return names, funcs, false
+		return names, funcs, depths, false
 	}
 	names = map[string]bool{}
 	funcs = map[string]*runtime.Function{}
@@ -390,12 +401,23 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 		}
 	}
 	promoted := func(m string) bool { return !shadowed[m] }
-	// Two same-depth non-interface embeds each offering a member leave
-	// it out of the method set — gc's selector is ambiguous there, not
-	// first-wins. (Embedded interfaces keep their own rule: identical
-	// duplicate requirements are permitted.) A member declared at this
-	// depth dominates any promotion.
-	contribs := map[string]int{}
+	// A member promoted through more than one embed survives only when
+	// its shallowest promotion is unique — gc's selector is ambiguous
+	// where two paths offer the member at the same smallest depth, and
+	// the member drops out of the method set entirely rather than
+	// first-wins. smin is that smallest depth per member, dup the
+	// number of embeds promoting it there, winner the member func of a
+	// unique-shallowest path. An embedded interface contributes its
+	// requirements at depth 1 (ifaceAt): identical duplicates among
+	// interface embeds merge like the spec permits, but an interface
+	// requirement contests a same-depth struct promotion — and beats a
+	// deeper one (`struct{ io.Writer; T }` keeps Write when T promotes
+	// it from depth 2). A member declared at this depth dominates any
+	// promotion.
+	smin := map[string]int{}
+	dup := map[string]int{}
+	winner := map[string]*runtime.Function{}
+	ifaceAt := map[string]bool{}
 	for _, spec := range td.EmbedSpecs {
 		emb, err := e.resolveTypeRef(td, spec)
 		// the embed's package failed its init (a trap or a panic): the
@@ -421,6 +443,7 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 			for m := range e.ifaceReqSet(emb) {
 				if promoted(m) {
 					names[m] = true
+					ifaceAt[m] = true
 				}
 			}
 			for name, fn := range e.ifaceSigFuncs(emb) {
@@ -437,29 +460,49 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 		if _, isStar := spec.(*ast.StarExpr); isStar || emb.Kind == runtime.KindPointer {
 			embPtr = true
 		}
-		subNames, subFuncs, subUnsure := e.methodWalkU(emb, embPtr, seen)
+		subNames, subFuncs, subDepths, subUnsure := e.methodWalkU(emb, embPtr, seen)
 		unsure = unsure || subUnsure
 		for m := range subNames {
-			if promoted(m) {
-				contribs[m]++
-				names[m] = true
+			if !promoted(m) {
+				continue
 			}
-		}
-		for name, m := range subFuncs {
-			if _, dup := funcs[name]; !dup && promoted(name) {
-				funcs[name] = m
+			d := subDepths[m] + 1
+			names[m] = true
+			if c, ok := smin[m]; !ok || d < c {
+				smin[m] = d
+				dup[m] = 1
+				winner[m] = subFuncs[m]
+			} else if d == c {
+				dup[m]++
 			}
 		}
 	}
-	for m, n := range contribs {
-		if n > 1 && funcs[m] == nil && td.Methods[m] == nil {
+	depths = map[string]int{}
+	for m, d := range smin {
+		if td.Methods[m] != nil {
+			continue // a declared member dominates every promotion
+		}
+		if dup[m] > 1 || (d == 1 && ifaceAt[m]) {
+			// the shallowest promotion is not unique: the member is
+			// absent from the method set, name and func alike — a
+			// leftover name would still satisfy interface assertions
+			// name-only.
 			delete(names, m)
-		}
-		if n > 1 && td.Methods[m] == nil {
 			delete(funcs, m)
+			continue
+		}
+		if f := winner[m]; f != nil && !ifaceAt[m] {
+			funcs[m] = f
 		}
 	}
-	return names, funcs, unsure
+	for m := range names {
+		d := smin[m]
+		if td.Methods[m] == nil && ifaceAt[m] && d != 1 {
+			d = 1
+		}
+		depths[m] = d
+	}
+	return names, funcs, depths, unsure
 }
 
 // ifaceSigFunc synthesizes the member Function an interface typedef's
@@ -518,7 +561,7 @@ func (e *Engine) methodSet(td *runtime.TypeDef) (map[string]*runtime.Function, e
 // exported methods only). An interface typedef yields synthesized
 // members carrying each required method's declared signature.
 func (e *Engine) methodFuncs(td *runtime.TypeDef, ptr bool, seen map[*runtime.TypeDef]bool) map[string]*runtime.Function {
-	_, funcs, _ := e.methodWalkU(td, ptr, seen)
+	_, funcs, _, _ := e.methodWalkU(td, ptr, seen)
 	return funcs
 }
 

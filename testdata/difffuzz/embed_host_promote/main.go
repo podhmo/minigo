@@ -8,56 +8,90 @@ import (
 	"strings"
 )
 
-// A script struct embedding a host value (bytes.Buffer) promotes its
-// pointer-receiver methods through the addressable parent, so &t is an
-// io.Writer for the host io helpers.
-
-type T struct {
-	bytes.Buffer
-}
-
-// A script struct embedding a host pointer (*os.File) satisfies an
-// interface through the promoted methods.
-
-type F struct {
-	*os.File
-}
-
 type namer interface {
 	Name() string
 }
 
-// A declared field at depth 0 shadows a promoted method of the same
-// name: &shadowed is not an io.Writer in gc.
+// a script struct embedding a host struct promotes its methods: both
+// value and pointer embeds satisfy io.Writer through Write.
+type F struct {
+	bytes.Buffer
+}
 
+type G struct {
+	*os.File
+}
+
+// a declared field shadows the promoted method of the same name.
 type shadowed struct {
 	*bytes.Buffer
 	Write int
 }
 
-// The same method promoted through two same-depth embeds is ambiguous:
-// &ambiguous is not an io.Writer either.
-
+// the same member through two same-depth embeds is ambiguous and
+// absent from the method set.
 type ambiguous struct {
 	*os.File
 	*bytes.Buffer
 }
 
-func main() {
-	var t T
-	n, err := io.Copy(&t, strings.NewReader("hello"))
-	fmt.Println(n, err, t.String())
+// the shallower promotion wins across depths: A's Write via E is
+// depth 2, B's Write depth 1.
+type sw struct{}
 
-	f := F{os.Stdout}
-	var c namer = f
+func (sw) Write(p []byte) (int, error) { return len(p), nil }
+
+type viaA struct{ sw }
+type viaB struct{ sw }
+type deepAmbiguous struct {
+	viaA
+	viaB
+}
+type shallowWins struct {
+	viaA
+	sw
+}
+
+// an interface embed contributes at depth 1: it contests a same-depth
+// struct promotion but beats a deeper one.
+type ifaceShallow struct {
+	io.Writer
+	sw
+}
+type ifaceDeep struct {
+	io.Writer
+	viaA
+}
+
+// two host embeds with identical signatures still contest at depth 1.
+type hostAmbiguous struct {
+	bytes.Buffer
+	strings.Builder
+}
+
+func main() {
+	var w io.Writer = &F{}
+	n, err := fmt.Fprint(w, "abc")
+	fmt.Println(n, err, w.(*F).String())
+
+	var c namer = G{os.Stdout}
 	fmt.Println(c.Name())
 
-	var w io.Writer = &t
-	fmt.Fprint(w, "!")
-	fmt.Println(t.String())
+	var h io.Writer = G{os.Stdout}
+	fmt.Println(h.Write([]byte("x")))
 
 	_, ok := any(&shadowed{}).(io.Writer)
 	fmt.Println(ok)
-	_, ok2 := any(&ambiguous{}).(io.Writer)
-	fmt.Println(ok2)
+	_, ok = any(&ambiguous{}).(io.Writer)
+	fmt.Println(ok)
+	_, ok = any(&deepAmbiguous{}).(io.Writer)
+	fmt.Println(ok)
+	_, ok = any(&shallowWins{}).(io.Writer)
+	fmt.Println(ok)
+	_, ok = any(&ifaceShallow{}).(io.Writer)
+	fmt.Println(ok)
+	_, ok = any(&ifaceDeep{}).(io.Writer)
+	fmt.Println(ok)
+	_, ok = any(&hostAmbiguous{}).(io.Writer)
+	fmt.Println(ok)
 }
