@@ -47,6 +47,10 @@ type binding struct {
 	// — the compile-time operand-assignability gate reads it; nil means
 	// the name's type is unknown statically.
 	declTyp ast.Expr
+	// declTypFile is the file declTyp's spelling belongs to when it
+	// re-derived from a package decl — its names resolve in that
+	// package scope, not the use site's.
+	declTypFile *syntax.File
 	// untypedConst marks a `const` bound without a declared type: the
 	// operand adopts the other side's type, like a literal does.
 	untypedConst bool
@@ -138,12 +142,13 @@ func (s *fscope) markIface(name string) {
 // noteDeclTyp records the statically-known type expression a var/param
 // name was declared with (or inferrably bound to by `:=`), so the
 // operand-assignability gate can compare named types at compile time.
-func (s *fscope) noteDeclTyp(name string, te ast.Expr) {
+func (s *fscope) noteDeclTyp(name string, te ast.Expr, file *syntax.File) {
 	if len(s.blocks) == 0 || te == nil {
 		return
 	}
 	if b := s.blocks[len(s.blocks)-1][name]; b != nil {
 		b.declTyp = te
+		b.declTypFile = file
 	}
 }
 
@@ -749,7 +754,7 @@ func compileFunc(fn *runtime.Function) error {
 		nparams++
 		if recvType != nil {
 			coerces = append(coerces, paramCoerce{slot: slot, typ: recvType})
-			c.fs.noteDeclTyp(recv, recvType)
+			c.fs.noteDeclTyp(recv, recvType, nil)
 		}
 	}
 	if fn.Decl.Type.Params != nil {
@@ -764,7 +769,7 @@ func compileFunc(fn *runtime.Function) error {
 					c.fs.markIface(n.Name)
 				}
 				coerces = append(coerces, paramCoerce{slot: slot, typ: field.Type})
-				c.fs.noteDeclTyp(n.Name, field.Type)
+				c.fs.noteDeclTyp(n.Name, field.Type, nil)
 				nparams++
 			}
 			if _, ok := field.Type.(*ast.Ellipsis); ok {
@@ -789,7 +794,7 @@ func compileFunc(fn *runtime.Function) error {
 				if c.isIfaceTypeExpr(field.Type) {
 					c.fs.markIface(n.Name)
 				}
-				c.fs.noteDeclTyp(n.Name, field.Type)
+				c.fs.noteDeclTyp(n.Name, field.Type, nil)
 				c.ch.NamedSlots = append(c.ch.NamedSlots, slot)
 				c.emit(bytecode.OpNil, 0, 0, n.Pos())
 				c.emit(bytecode.OpNewLocal, slot, 0, n.Pos())
@@ -1481,10 +1486,10 @@ func (c *compiler) stmt(s ast.Stmt) {
 						switch {
 						case isCommaOk && i == 1:
 							// `var v, ok = m[k]` — the second name is bool.
-							c.fs.noteDeclTyp(vs.Names[i].Name, &ast.Ident{Name: "bool"})
+							c.fs.noteDeclTyp(vs.Names[i].Name, &ast.Ident{Name: "bool"}, nil)
 						default:
 							if t := c.nthResultOpTyp(vals[0], i); t.te != nil {
-								c.fs.noteDeclTyp(vs.Names[i].Name, t.te)
+								c.fs.noteDeclTyp(vs.Names[i].Name, t.te, t.teFile)
 							} else {
 								c.noteDeclTyp(vs.Names[i].Name, effType, isConst, nil, nil)
 							}
@@ -1875,14 +1880,14 @@ func (c *compiler) noteIfaceBinds(st *ast.AssignStmt) {
 			if i == 0 {
 				c.noteDeclTyp(id.Name, nil, false, st.Rhs[0], nil)
 			} else {
-				c.fs.noteDeclTyp(id.Name, &ast.Ident{Name: "bool"})
+				c.fs.noteDeclTyp(id.Name, &ast.Ident{Name: "bool"}, nil)
 			}
 		} else if len(st.Rhs) == 1 {
 			if t := c.nthResultOpTyp(st.Rhs[0], i); t.te != nil || t.iface {
 				if t.iface {
 					c.fs.markIface(id.Name)
 				}
-				c.fs.noteDeclTyp(id.Name, t.te)
+				c.fs.noteDeclTyp(id.Name, t.te, t.teFile)
 			} else if i == 0 {
 				c.noteDeclTyp(id.Name, nil, false, st.Rhs[0], nil)
 			}
@@ -2305,7 +2310,7 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 		if b.untypedConst {
 			return opTyp{untyped: true, dte: b.dte}
 		}
-		return opTyp{te: b.declTyp}
+		return opTyp{te: b.declTyp, teFile: b.declTypFile}
 	}
 	if _, bound := c.binds[id.Name]; bound {
 		return opTyp{} // a bound type parameter — its value is opaque here
@@ -4266,9 +4271,11 @@ func (c *compiler) noteDeclTyp(name string, effType ast.Expr, isConst bool, rhs 
 		}
 	}
 	te := effType
+	var teFile *syntax.File
 	if te == nil && rhs != nil {
 		t := c.staticOpTyp(rhs)
 		te = t.te
+		teFile = t.teFile
 		if te == nil && !isConst {
 			if t.untyped {
 				// an untyped constant binds its default type at
@@ -4290,7 +4297,7 @@ func (c *compiler) noteDeclTyp(name string, effType ast.Expr, isConst bool, rhs 
 		}
 	}
 	if te != nil {
-		c.fs.noteDeclTyp(name, te)
+		c.fs.noteDeclTyp(name, te, teFile)
 		return
 	}
 	if isConst {
@@ -4760,7 +4767,7 @@ func (c *compiler) noteBindVar(e ast.Expr, te ast.Expr, define bool) {
 	if !ok || id.Name == "_" {
 		return
 	}
-	c.fs.noteDeclTyp(id.Name, te)
+	c.fs.noteDeclTyp(id.Name, te, nil)
 }
 
 // rangeVarTyps resolves the (key, value) types a `for k, v := range e`
@@ -6709,8 +6716,8 @@ func (c *compiler) hoistEagerOps(es []ast.Expr, prefix string) (subs []ast.Expr,
 		}
 		// the assignability gate keeps the hoisted call's static type:
 		// `d < len(x)` compares Duration to int through the scratch name.
-		if t := c.staticOpTyp(call).te; t != nil {
-			c.fs.noteDeclTyp(name, t)
+		if t := c.staticOpTyp(call); t.te != nil {
+			c.fs.noteDeclTyp(name, t.te, t.teFile)
 		}
 		c.emit(bytecode.OpNewLocal, slot, 0, call.Pos())
 		names[call] = name
@@ -7593,7 +7600,7 @@ func (c *compiler) funcLit(x *ast.FuncLit) {
 			for _, n := range names {
 				slot := ic.fs.declare(n.Name, n.Pos())
 				coerces = append(coerces, paramCoerce{slot: slot, typ: field.Type})
-				ic.fs.noteDeclTyp(n.Name, field.Type)
+				ic.fs.noteDeclTyp(n.Name, field.Type, nil)
 				nparams++
 			}
 			if _, ok := field.Type.(*ast.Ellipsis); ok {
@@ -7607,7 +7614,7 @@ func (c *compiler) funcLit(x *ast.FuncLit) {
 		for _, field := range x.Type.Results.List {
 			for _, n := range field.Names {
 				slot := ic.fs.declare(n.Name, n.Pos())
-				ic.fs.noteDeclTyp(n.Name, field.Type)
+				ic.fs.noteDeclTyp(n.Name, field.Type, nil)
 				ic.ch.NamedSlots = append(ic.ch.NamedSlots, slot)
 				ic.emit(bytecode.OpNil, 0, 0, n.Pos())
 				ic.emit(bytecode.OpNewLocal, slot, 0, n.Pos())

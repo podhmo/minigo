@@ -107,5 +107,9 @@ func main() {
 	{
 		type Box int8
 		fmt.Printf("%v %v\n", unsafe.Sizeof(boxed), unsafe.Sizeof(boxedSlice))
+		// an inferred binding keeps its decl's file: x's type is
+		// the package Box the initializer spelled, not the local.
+		x := min(1, boxed)
+		fmt.Printf("%v\n", unsafe.Sizeof(x))
 	}
 }
