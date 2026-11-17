@@ -398,7 +398,10 @@ func (e *Engine) linknameTarget(vc runtime.VMCaller, fn *runtime.Function) (runt
 	var v runtime.Value
 	var lerr error
 	ok := false
-	if i := strings.LastIndex(spec, "."); i > 0 && strings.Contains(spec[:i], "/") {
+	// a two-arg directive's target spells importpath.name — the package
+	// path may be a bare GOROOT element (runtime.rand), so only the
+	// trailing ".name" split marks the member.
+	if i := strings.LastIndex(spec, "."); i > 0 {
 		p, err := e.Package(context.Background(), spec[:i])
 		if err != nil {
 			lerr = err

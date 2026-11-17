@@ -2,6 +2,7 @@ package minigo
 
 import (
 	"math/bits"
+	"sync/atomic"
 
 	"github.com/podhmo/minigo/runtime"
 )
@@ -36,6 +37,41 @@ var asmImpls = map[string]func(vc runtime.VMCaller, args []runtime.Value) (runti
 	// interpreted Write path feeds blocks through it — an unimplemented
 	// stub would leave dig.s at the IV, so Sum prints the IV bytes.
 	"crypto/md5.block": md5Block,
+	// weak's linknamed runtime hooks (pointer.go, one-arg directives):
+	// with no GC a weak pointer is its referent, so both are identity.
+	"weak.runtime_registerWeakPointer": weakIdentity,
+	"weak.runtime_makeStrongFromWeak":  weakIdentity,
+	// crypto/internal/fips140's service indicator (indicator.go): the
+	// runtime-held per-goroutine flag becomes an interpreter-global —
+	// the VM is single-threaded, so one cell matches the contract.
+	"crypto/internal/fips140.getIndicator": fipsGetIndicator,
+	"crypto/internal/fips140.setIndicator": fipsSetIndicator,
+}
+
+var fipsIndicator atomic.Uint32
+
+func fipsGetIndicator(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	return int64(fipsIndicator.Load()), nil
+}
+
+func fipsSetIndicator(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	if len(args) != 1 {
+		return runtime.NIL, nil
+	}
+	if n, ok := runtime.Unwrap(args[0]).(int64); ok {
+		fipsIndicator.Store(uint32(n))
+	}
+	return runtime.NIL, nil
+}
+
+// weakIdentity passes an unsafe.Pointer argument straight through —
+// weak.runtime_registerWeakPointer/runtime_makeStrongFromWeak under a
+// GC-less interpreter: weak.Pointer.Value() reads back what Make stored.
+func weakIdentity(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	if len(args) != 1 {
+		return runtime.NIL, nil
+	}
+	return args[0], nil
 }
 
 // mapsClone is the runtime map clone behind maps.Clone: a shallow copy

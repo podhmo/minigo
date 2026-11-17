@@ -17,6 +17,7 @@ import (
 	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
@@ -2064,6 +2065,43 @@ func (e *Engine) installStdlib() {
 		"Version":  h.fn("runtime.Version", func(a []any) (any, error) { return goruntime.Version(), nil }),
 		"GC":       h.fn("runtime.GC", func(a []any) (any, error) { return nil, nil }),
 		"Compiler": "gc",
+		// //go:linkname targets other packages wire to (maphash's
+		// runtime_rand/runtime_memhash): unexported, so only reachable
+		// through the linkname hook. rand feeds seed generation;
+		// memhash is a deterministic byte-span hash keyed by seed —
+		// gc's aeshash is process-random anyway, so parity lives in the
+		// contract (same input, same hash), not the value.
+		"rand": &runtime.BuiltinFunc{Name: "runtime.rand", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			var b [8]byte
+			if _, err := crand.Read(b[:]); err != nil {
+				return nil, err
+			}
+			// the decl is `func rand() uint64`; returning int64 would
+			// leak a different dynamic type to the script side.
+			return uint64(binary.LittleEndian.Uint64(b[:])), nil
+		}},
+		"memhash": &runtime.BuiltinFunc{Name: "runtime.memhash", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 3 {
+				return nil, fmt.Errorf("runtime.memhash needs 3 args, got %d", len(args))
+			}
+			elems, err := unsafeElems(args[0], args[2])
+			if err != nil {
+				return nil, err
+			}
+			// FNV-1a over the byte span, keyed by the seed and put
+			// through a murmur-style finalizer.
+			h := uint64(int64Of(goNative(args[1]))) ^ 14695981039346656037
+			for _, el := range elems {
+				h ^= uint64(int64Of(goNative(el))) & 0xFF
+				h *= 1099511628211
+			}
+			h ^= h >> 33
+			h *= 0xff51afd7ed558ccd
+			h ^= h >> 33
+			h *= 0xc4ceb9fe1a85ec53
+			h ^= h >> 33
+			return uintptr(h), nil
+		}},
 		// runtime.GOROOT is deprecated for the host; report the env's
 		// root, falling back to `go env GOROOT` like go/build does.
 		"GOROOT": h.fn("runtime.GOROOT", func(a []any) (any, error) {
