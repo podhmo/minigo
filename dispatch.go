@@ -543,9 +543,11 @@ func hostDepthsIn(rt reflect.Type, seen map[reflect.Type]bool) map[string]int {
 			continue
 		}
 		ft := f.Type
-		if ft.Kind() != reflect.Pointer && rt.Kind() == reflect.Pointer {
+		if ft.Kind() != reflect.Pointer && ft.Kind() != reflect.Interface && rt.Kind() == reflect.Pointer {
 			// under a pointer receiver view an embedded value field
-			// also promotes its pointer receivers.
+			// also promotes its pointer receivers; an embedded
+			// interface contributes its own method set as is (a
+			// pointer to it has none).
 			ft = reflect.PointerTo(ft)
 		}
 		for m, d := range hostDepthsIn(ft, seen) {
