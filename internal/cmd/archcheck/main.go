@@ -1,9 +1,11 @@
-// Command archcheck checks the module's internal import graph against
-// the allow list in internal/archcheck/rules.go. It is a ratchet: today
-// the allow list pins the current graph; later phases tighten it.
+// Command archcheck checks the module's internal import graph, shared
+// assets and file sizes against the allow lists in
+// internal/archcheck/rules.go. It is a ratchet: today the lists pin the
+// current state; later phases tighten it.
 //
-//	go run ./internal/cmd/archcheck          # check
-//	go run ./internal/cmd/archcheck -print   # print the live graph in rules.go form
+//	go run ./internal/cmd/archcheck                # check everything
+//	go run ./internal/cmd/archcheck -print         # print the live import graph in rules.go form
+//	go run ./internal/cmd/archcheck -print-sizes   # print live file sizes in rules.go form
 package main
 
 import (
@@ -18,7 +20,25 @@ import (
 func main() {
 	root := flag.String("root", ".", "module root")
 	printGraph := flag.Bool("print", false, "print the live graph in rules.go form and exit")
+	printSizes := flag.Bool("print-sizes", false, "print live file line counts in rules.go form and exit")
 	flag.Parse()
+
+	if *printSizes {
+		sizes, err := archcheck.Sizes(*root)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "archcheck:", err)
+			os.Exit(2)
+		}
+		var paths []string
+		for p := range sizes {
+			paths = append(paths, p)
+		}
+		sort.Strings(paths)
+		for _, p := range paths {
+			fmt.Printf("\t%q: %d,\n", p, sizes[p])
+		}
+		return
+	}
 
 	g, err := archcheck.Build(*root)
 	if err != nil {
@@ -46,13 +66,21 @@ func main() {
 	}
 	violations = append(violations, sv...)
 
+	// M1-4: files may only shrink.
+	sizes, err := archcheck.Sizes(*root)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "archcheck:", err)
+		os.Exit(2)
+	}
+	violations = append(violations, archcheck.CheckSizes(sizes, archcheck.FileBudgets)...)
+
 	if len(violations) > 0 {
 		for _, v := range violations {
 			fmt.Fprintln(os.Stderr, "archcheck:", v.Message)
 		}
 		os.Exit(1)
 	}
-	fmt.Println("archcheck: import graph and shared assets match the allow lists")
+	fmt.Println("archcheck: import graph, shared assets and file sizes match the allow lists")
 }
 
 func joinQuoted(ss []string) string {
