@@ -5,6 +5,7 @@ import (
 	"go/token"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo/index"
 	"github.com/podhmo/minigo/internal/semantics"
 	"github.com/podhmo/minigo/runtime"
@@ -38,8 +39,8 @@ func TestView(t *testing.T) {
 		if got := v.Indexed("foo"); got != nil {
 			t.Fatalf("Indexed() = %v before materialize", got)
 		}
-		if loads != 0 {
-			t.Fatalf("Indexed triggered %d loads", loads)
+		if diff := cmp.Diff(0, loads); diff != "" {
+			t.Fatalf("Indexed triggered loads: %s", diff)
 		}
 	})
 
@@ -52,8 +53,8 @@ func TestView(t *testing.T) {
 		if _, err := ref.Materialize(); err != nil {
 			t.Fatal(err)
 		}
-		if got := v.Indexed("foo"); got != ix {
-			t.Fatalf("Indexed() = %v, want %v", got, ix)
+		if diff := cmp.Diff(ix, v.Indexed("foo")); diff != "" {
+			t.Fatal(diff)
 		}
 	})
 
@@ -69,24 +70,28 @@ func TestView(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got != ix {
-			t.Fatalf("Load() = %v, want %v", got, ix)
+		if diff := cmp.Diff(ix, got); diff != "" {
+			t.Fatal(diff)
 		}
-		if loads != 1 {
-			t.Fatalf("loads = %d", loads)
+		if diff := cmp.Diff(1, loads); diff != "" {
+			t.Fatalf("loads: %s", diff)
 		}
-		if p.State() != runtime.Unseen && p.State() >= runtime.Initializing {
-			t.Fatalf("package initialized: state %v", p.State())
+		if diff := cmp.Diff(false, p.State() >= runtime.Initializing); diff != "" {
+			t.Fatalf("package initialized: %s", diff)
 		}
 	})
 
 	t.Run("unknown path and loader error", func(t *testing.T) {
 		v := New(func(string) (*runtime.ImportRef, bool) { return nil, false })
-		if got := v.Indexed("nope"); got != nil {
-			t.Fatalf("Indexed() = %v", got)
+		if diff := cmp.Diff((*index.Index)(nil), v.Indexed("nope")); diff != "" {
+			t.Fatal(diff)
 		}
-		if got, err := v.Load("nope"); got != nil || err != nil {
-			t.Fatalf("Load() = %v, %v", got, err)
+		got, err := v.Load("nope")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if diff := cmp.Diff((*index.Index)(nil), got); diff != "" {
+			t.Fatal(diff)
 		}
 
 		want := errors.New("boom")
@@ -106,8 +111,8 @@ func TestView(t *testing.T) {
 		}}
 		svc := semantics.New(New(func(string) (*runtime.ImportRef, bool) { return ref, true }))
 		got := svc.TypeDeclOf(semantics.DeclContext{Pkg: "foo"}, "T", semantics.AllowIndex)
-		if got.Kind != semantics.Found {
-			t.Fatalf("kind %v, want Found", got.Kind)
+		if diff := cmp.Diff(semantics.Found, got.Kind); diff != "" {
+			t.Fatal(diff)
 		}
 	})
 }

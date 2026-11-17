@@ -38,6 +38,10 @@ func (v *View) Indexed(path string) *index.Index {
 	if !ok {
 		return nil
 	}
+	// Materialize returning only means Load returned — a package
+	// answered mid-indexing (import cycle) is still being built; wait
+	// for FinishIndexing before reading Index.
+	p.WaitIndexed()
 	return p.Index
 }
 
