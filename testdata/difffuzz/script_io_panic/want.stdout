@@ -1,0 +1,4 @@
+R: boom in Read
+W: boom in Write
+WT: boom in WriteTo
+2 <nil>
