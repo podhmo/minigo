@@ -53,20 +53,22 @@ import (
 // so values and package state persist across calls on the same Engine;
 // use [Engine.NewSession] for isolated state. Create one with [NewEngine].
 // Engine is split into two embedded groups (M1-1): sharedAssets holds
-// the source-derived values every session forked from an engine shares
+// the source-derived values every session forked from an engine inherits
 // (resolver, file set, AST/index caches, and the construction-time
 // configuration), while sessionState holds the per-session interpreter
 // state (package/build caches, binds, globals, mutexes). Embedding keeps
 // every existing `e.field` access working through promotion; the split
 // only makes ownership explicit.
 type Engine struct {
-	*sharedAssets
+	sharedAssets
 	sessionState
 }
 
-// sharedAssets is the source-derived part of an engine: constructed
-// once by [NewEngine] and shared (by pointer) with every
-// [Engine.NewSession] fork.
+// sharedAssets is the source-derived part of an engine. [NewSession]
+// copies it, so a fork's scalar fields (out, cwd, resolver, ...) are its
+// own — assigning through an Option on a session never rewrites the
+// parent's — while the pointer and map members (fset, caches, specials,
+// pkgModes) still point at the shared underlying state.
 type sharedAssets struct {
 	resolver resolve.Resolver
 	cfg      resolve.BuildConfig
@@ -259,7 +261,7 @@ func (e *Engine) fsPath(p string) (string, error) {
 // go.work found from startDir; [Engine.WithResolver] replaces the resolver.
 func NewEngine(startDir string, opts ...Option) *Engine {
 	e := &Engine{
-		sharedAssets: &sharedAssets{
+		sharedAssets: sharedAssets{
 			fset:     token.NewFileSet(),
 			pcache:   newParseCache(),
 			ixcache:  newIndexCache(),
@@ -454,9 +456,12 @@ func (e *Engine) linknameTarget(vc runtime.VMCaller, fn *runtime.Function) (runt
 // reload after an edit always sees the new source.
 func (e *Engine) NewSession() *Engine {
 	s := &Engine{
-		// sessions share the parent's source-derived assets: a cached
+		// sessions copy the parent's source-derived assets: a cached
 		// file's Pos values stay valid in the session, and a preview
-		// reload re-parses only files whose content changed.
+		// reload re-parses only files whose content changed. Copying the
+		// struct keeps scalar config (out, cwd, resolver, ...) per-session
+		// — an Option applied to a session must not rewrite the parent —
+		// while the fset/cache/map members still share their contents.
 		sharedAssets: e.sharedAssets,
 		sessionState: sessionState{
 			pkgs:         map[string]*runtime.Package{},
