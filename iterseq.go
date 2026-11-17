@@ -537,7 +537,10 @@ func (e *Engine) slicesSeqHelpers(slicesPkg map[string]runtime.Value) map[string
 		}
 		base := make([]runtime.Value, 0, sliceLen(s)+len(el))
 		for i, n := 0, sliceLen(s); i < n; i++ {
-			base = append(base, sliceElemAt(s, i))
+			// the new array copies each element (gc's growslice
+			// memcpy): a struct element must not alias the old
+			// backing's struct.
+			base = append(base, runtime.Copy(sliceElemAt(s, i)))
 		}
 		return retagSlice(args[0], &runtime.Slice{Elems: append(base, el...), Typ: st}), nil
 	}}
