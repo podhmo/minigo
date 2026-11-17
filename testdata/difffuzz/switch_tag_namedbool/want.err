@@ -1,0 +1,1 @@
+invalid case B(true) in switch on x < y (mismatched types B and bool)

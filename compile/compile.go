@@ -2079,21 +2079,23 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 		return opTyp{}
 	case *ast.BinaryExpr:
 		switch x.Op {
-		case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ,
-			token.LAND, token.LOR:
+		case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ:
+			// a comparison's result is always an untyped bool — it
+			// adopts into a named operand (`f == (x < y)` with
+			// `type B bool` is a B), constant operands or not.
+			return opTyp{te: &ast.Ident{Name: "bool"}, untyped: true, dte: &ast.Ident{Name: "bool"}}
+		case token.LAND, token.LOR:
 			// a constant-only predicate is itself an untyped bool
 			// constant — it adopts into a named operand (`f && (1 ==
-			// 1)`, `f == (2 > 1)`), like any untyped literal.
+			// 1)`), like any untyped literal.
 			ux := c.staticOpTyp(x.X)
 			uy := c.staticOpTyp(x.Y)
 			if (ux.untyped || ux.nilOperand) && (uy.untyped || uy.nilOperand) {
 				return opTyp{te: &ast.Ident{Name: "bool"}, untyped: true, dte: &ast.Ident{Name: "bool"}}
 			}
-			if x.Op == token.LAND || x.Op == token.LOR {
-				// `v && true` with `type B bool` is a B.
-				if te := c.logicalNamedTyp(x); te != nil {
-					return opTyp{te: te}
-				}
+			// `v && true` with `type B bool` is a B.
+			if te := c.logicalNamedTyp(x); te != nil {
+				return opTyp{te: te}
 			}
 			return opTyp{te: &ast.Ident{Name: "bool"}}
 		}
@@ -3800,6 +3802,17 @@ func (c *compiler) opGate(x, y ast.Expr, pos token.Pos, inSwitch bool) bool {
 			return true
 		}
 	}
+	// a switch tag's untyped value pins to its default type before the
+	// case side compares: `switch x < y { case B(true): }` mismatches B
+	// against bool even though `x < y` is untyped — an untyped case expr
+	// (xt) still adopts into the tag's type.
+	pinnedDte := ""
+	if inSwitch && yt.untyped && yt.dte != nil {
+		if id, ok := ast.Unparen(yt.dte).(*ast.Ident); ok {
+			pinnedDte = id.Name
+		}
+		yt = opTyp{te: yt.dte, dte: yt.dte}
+	}
 	if xt.te == nil || yt.te == nil || xt.untyped || yt.untyped || xt.iface || yt.iface {
 		return false
 	}
@@ -3807,8 +3820,16 @@ func (c *compiler) opGate(x, y ast.Expr, pos token.Pos, inSwitch bool) bool {
 	if !ok {
 		return false
 	}
-	yi, ok := c.namedIdentOf(yt.te)
-	if !ok || yi.id == xi.id {
+	var yi namedTypID
+	if pinnedDte != "" && predeclaredTypeNames[pinnedDte] {
+		// the tag's default type is always a predeclared basic type —
+		// a local `type rune int` shadows the ident, so spell it
+		// canonically instead of resolving the name in scope.
+		yi = namedTypID{id: "predecl:" + runtime.CanonicalBasicName(pinnedDte), name: pinnedDte}
+	} else if yi, ok = c.namedIdentOf(yt.te); !ok {
+		return false
+	}
+	if yi.id == xi.id {
 		return false
 	}
 	c.trapOpGate(x, y, pos, inSwitch, xi.name, yi.name)
