@@ -3216,7 +3216,7 @@ func (c *compiler) unfoldTypExpr(te ast.Expr, depth int) ast.Expr {
 			break // a captured var — opaque
 		}
 		if _, bound := c.binds[tt.Name]; bound {
-			break // a bound type parameter — opaque
+			break // a bound type parameter — opaque (resolveLitType peels it)
 		}
 		// A package-level spec's names resolve in its own package's
 		// file scope, not the caller's.
@@ -5614,9 +5614,42 @@ func (c *compiler) resolveLitType(t ast.Expr, fuel int) ast.Expr {
 		u := c.unfoldTypExpr(t, fuel)
 		inst := c.instantiateLitType(u)
 		if inst == nil {
+			// a bound type parameter stays opaque to unfoldTypExpr —
+			// but a literal spelled against the parameter's own name
+			// takes the argument's container shape (`M{k: v}` for
+			// `M ~map[string]int` bound to map[string]int), with the
+			// declared form's leaf names kept in their declaring
+			// package's scope.
+			if id, ok := ast.Unparen(u).(*ast.Ident); ok {
+				if e := c.litBindShape(id.Name); e != nil {
+					return e
+				}
+			}
 			return u
 		}
 		t = inst
+	}
+	return nil
+}
+
+// litBindShape returns the container shape a bound type parameter's
+// argument typedef declares — its Anon spelling, or its spec's type
+// resolved and re-scoped through the declaring package the way
+// unfoldSpecType does (a leaf `N` of `lib.Items` stays lib's `N`, never
+// the caller's). Nil when the argument exposes no syntactic form.
+func (c *compiler) litBindShape(name string) ast.Expr {
+	td, ok := c.binds[name].(*runtime.TypeDef)
+	if !ok || td == nil {
+		return nil
+	}
+	if td.Anon != nil {
+		if td.Pkg != nil && td.File != nil {
+			return c.scopeSpecType(td.Pkg, td.File, td.Anon)
+		}
+		return td.Anon
+	}
+	if td.Spec != nil && td.Pkg != nil {
+		return c.unfoldSpecType(td.Pkg, td.Spec, 8)
 	}
 	return nil
 }
