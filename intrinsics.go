@@ -2076,7 +2076,9 @@ func (e *Engine) installStdlib() {
 			if _, err := crand.Read(b[:]); err != nil {
 				return nil, err
 			}
-			return int64(binary.LittleEndian.Uint64(b[:])), nil
+			// the decl is `func rand() uint64`; returning int64 would
+			// leak a different dynamic type to the script side.
+			return uint64(binary.LittleEndian.Uint64(b[:])), nil
 		}},
 		"memhash": &runtime.BuiltinFunc{Name: "runtime.memhash", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 3 {
@@ -2098,7 +2100,7 @@ func (e *Engine) installStdlib() {
 			h ^= h >> 33
 			h *= 0xc4ceb9fe1a85ec53
 			h ^= h >> 33
-			return int64(h), nil
+			return uintptr(h), nil
 		}},
 		// runtime.GOROOT is deprecated for the host; report the env's
 		// root, falling back to `go env GOROOT` like go/build does.

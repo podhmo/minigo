@@ -1510,7 +1510,7 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 					seen = map[*runtime.Function]bool{}
 				}
 				seen[fn] = true
-				callee = tv
+				callee, args = relinkCallee(callee, tv, args)
 				continue
 			}
 		}
@@ -1790,6 +1790,22 @@ func linknameDecl(callee runtime.Value) *runtime.Function {
 		return nil
 	}
 	return fn
+}
+
+// relinkCallee substitutes the linkname-resolved target for callee,
+// keeping a bound method's receiver: a resolved Function is called as a
+// method of the original receiver, while a non-function target (a
+// builtin, a host func) takes the receiver as its first argument — the
+// call sequence gc emits for a linked method.
+func relinkCallee(callee, tv runtime.Value, args []runtime.Value) (runtime.Value, []runtime.Value) {
+	bm, ok := callee.(*runtime.BoundMethod)
+	if !ok {
+		return tv, args
+	}
+	if tfn, ok := tv.(*runtime.Function); ok {
+		return &runtime.BoundMethod{Recv: bm.Recv, Fn: tfn, Direct: bm.Direct}, args
+	}
+	return tv, append([]runtime.Value{bm.Recv}, args...)
 }
 
 // prepFrameSeen is prepFrame carrying the linkname resolutions already
@@ -2446,7 +2462,7 @@ func (v *VM) invokeDeferred(d deferredCall) {
 					seen = map[*runtime.Function]bool{}
 				}
 				seen[fn] = true
-				callee = tv
+				callee, d.args = relinkCallee(callee, tv, d.args)
 				continue
 			}
 		}
