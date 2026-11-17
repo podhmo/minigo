@@ -114,7 +114,6 @@ type ImportRef struct {
 	once sync.Once
 	pkg  *Package
 	err  error
-	done atomic.Bool // set once Materialize has run
 
 	nameOnce sync.Once
 	name     string
@@ -157,19 +156,8 @@ func (r *ImportRef) Materialize() (*Package, error) {
 			return
 		}
 		r.pkg, r.err = r.Load(r.Path)
-		r.done.Store(true)
 	})
 	return r.pkg, r.err
-}
-
-// Peek returns the package only when [ImportRef.Materialize] has
-// already run and succeeded — it never triggers a load. (false, _) just
-// means "not materialized yet", not "the package does not exist".
-func (r *ImportRef) Peek() (*Package, bool) {
-	if !r.done.Load() {
-		return nil, false
-	}
-	return r.pkg, r.pkg != nil && r.err == nil
 }
 
 // Package is a script package, loaded lazily: it is located and indexed
