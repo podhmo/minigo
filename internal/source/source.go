@@ -27,6 +27,42 @@ func New(refsFor func(path string) (*runtime.ImportRef, bool)) *View {
 	return &View{refsFor: refsFor}
 }
 
+// PackageAtIndexed answers the package ref materializes to, at the
+// Indexed stage. It is the adapter the compiler's fact sites call
+// instead of ImportRef.Materialize directly: IndexedOnly only peeks
+// (Deferred when nothing is materialized yet), AllowIndex loads.
+// Found carries the indexed package, Deferred means no package is
+// indexed (not an error), Failed carries the load error.
+func PackageAtIndexed(ref *runtime.ImportRef, pol semantics.Policy) semantics.Result[*runtime.Package] {
+	if ref == nil {
+		return semantics.Result[*runtime.Package]{Kind: semantics.Deferred}
+	}
+	p, ok := ref.Peek()
+	if !ok {
+		if pol == semantics.IndexedOnly {
+			return semantics.Result[*runtime.Package]{Kind: semantics.Deferred}
+		}
+		var err error
+		p, err = ref.Materialize()
+		if err != nil {
+			return semantics.Result[*runtime.Package]{Kind: semantics.Failed, Err: err}
+		}
+	}
+	if p == nil {
+		return semantics.Result[*runtime.Package]{Kind: semantics.Deferred}
+	}
+	// A package answered mid-indexing (import cycle) is not yet
+	// "indexed": under IndexedOnly that is Deferred, while AllowIndex
+	// waits for FinishIndexing since it asked for the finished answer.
+	if !p.IndexReady() {
+		if pol == semantics.IndexedOnly {
+			return semantics.Result[*runtime.Package]{Kind: semantics.Deferred}
+		}
+		p.WaitIndexed()
+	}
+	return semantics.Result[*runtime.Package]{Kind: semantics.Found, Val: p}
+}
+
 // Indexed returns the package's index when the import has already been
 // materialized to the Indexed stage — never triggering a load.
 func (v *View) Indexed(path string) *index.Index {

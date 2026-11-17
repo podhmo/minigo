@@ -14,7 +14,7 @@ var Rules = map[string][]string{
 	".":                      {"bytecode", "compile", "index", "inspect", "internal/replhooks", "internal/spike", "minireflect", "repl", "resolve", "runtime", "syntax", "vm"},
 	"bytecode":               {"syntax"},
 	"cmd/minigo":             {".", "index", "repl", "resolve", "runtime"},
-	"compile":                {"bytecode", "index", "internal/spike", "runtime", "syntax"},
+	"compile":                {"bytecode", "index", "internal/semantics", "internal/source", "internal/spike", "runtime", "syntax"},
 	"host":                   {},
 	"index":                  {"syntax"},
 	"inspect":                {"index", "resolve", "runtime", "syntax"},
@@ -35,6 +35,14 @@ var Rules = map[string][]string{
 	"tools/difffuzz":         {},
 	"tools/tmpltests":        {},
 	"vm":                     {"bytecode", "index", "internal/spike", "minireflect", "runtime", "syntax"},
+}
+
+// BannedCalls lists selector calls a package directory must never
+// make — the ratchet for "queries go through the adapter" rules like
+// M2-4's "compile never materializes an import itself". Keyed by
+// package dir under the module root.
+var BannedCalls = map[string][]string{
+	"compile": {"Materialize", "EnsureReady", "EnsureReadyRun"},
 }
 
 // SharedStateTypes are the execution-state types that must never appear
@@ -76,14 +84,14 @@ var FileBudgets = map[string]int{
 	"compile/assign.go":                  880,
 	"compile/call.go":                    810,
 	"compile/compile.go":                 408,
-	"compile/constfold.go":               858,
+	"compile/constfold.go":               861,
 	"compile/expr.go":                    687,
 	"compile/goto.go":                    103,
 	"compile/lit.go":                     661,
 	"compile/scope.go":                   536,
 	"compile/special.go":                 53,
 	"compile/stmt.go":                    1077,
-	"compile/typehint.go":                1969,
+	"compile/typehint.go":                1975,
 	"dispatch.go":                        1151,
 	"embed.go":                           271,
 	"host/host.go":                       42,
@@ -95,11 +103,11 @@ var FileBudgets = map[string]int{
 	"inspect/inspect.go":                 2543,
 	"inspect/stub.go":                    382,
 	"internal/archcheck/archcheck.go":    536,
-	"internal/archcheck/rules.go":        218,
+	"internal/archcheck/rules.go":        226,
 	"internal/cmd/archcheck/main.go":     96,
 	"internal/replhooks/replhooks.go":    68,
 	"internal/semantics/semantics.go":    149,
-	"internal/source/source.go":          69,
+	"internal/source/source.go":          105,
 	"internal/spike/spike_off.go":        45,
 	"internal/spike/spike_on.go":         49,
 	"intrinsics.go":                      1607,
