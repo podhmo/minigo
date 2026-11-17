@@ -1,0 +1,24 @@
+chunk Counter.Bump (params=1 locals=1 results=1)
+  0000  OpConst k0
+  0001  OpLocalType
+  0002  OpCoerce slot0
+  0003  OpLocalRef slot0
+  0004  OpFieldRef k1
+  0005  OpDup
+  0006  OpDeref
+  0007  OpConst k2
+  0008  OpBinary +
+  0009  OpSetRefs 1
+  0010  OpLocalRef slot0
+  0011  OpSelect k3
+  0012  OpGlobal k4 site0
+  0013  OpLocalType
+  0014  OpCoerceTop
+  0015  OpReturn 1
+  0016  OpReturn 1
+consts:
+  k0: <*runtime.TypeDef>
+  k1: "N" (string)
+  k2: <*runtime.UConst>
+  k3: "N" (string)
+  k4: "int" (string)

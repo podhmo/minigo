@@ -1,0 +1,19 @@
+chunk Add (params=2 locals=2 results=1)
+  0000  OpGlobal k0 site0
+  0001  OpLocalType
+  0002  OpCoerce slot0
+  0003  OpGlobal k1 site1
+  0004  OpLocalType
+  0005  OpCoerce slot1
+  0006  OpLocal slot0
+  0007  OpLocal slot1
+  0008  OpBinary +
+  0009  OpGlobal k2 site2
+  0010  OpLocalType
+  0011  OpCoerceTop
+  0012  OpReturn 1
+  0013  OpReturn 1
+consts:
+  k0: "int" (string)
+  k1: "int" (string)
+  k2: "int" (string)

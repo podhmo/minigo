@@ -1,0 +1,38 @@
+chunk RangeMap (params=1 locals=5 results=1)
+  0000  OpConst k0
+  0001  OpLocalType
+  0002  OpCoerce slot0
+  0003  OpConst k1
+  0004  OpNewLocal slot1
+  0005  OpLocal slot0
+  0006  OpIter
+  0007  OpNewLocal slot2
+  0008  OpRangeNext ->26 slot2 6
+  0009  OpNewLocal slot3
+  0010  OpNewLocal slot4
+  0011  OpLocalRef slot1
+  0012  OpGlobal k2 site0
+  0013  OpLocal slot4
+  0014  OpLenCallFold ->17
+  0015  OpLocalTyp slot4
+  0016  OpCall 1
+  0017  OpLocal slot3
+  0018  OpBinary +
+  0019  OpSwap
+  0020  OpDup
+  0021  OpDeref
+  0022  OpRot3
+  0023  OpBinary +
+  0024  OpSetRefs 1
+  0025  OpJump ->8
+  0026  OpLocal slot1
+  0027  OpGlobal k3 site1
+  0028  OpLocalType
+  0029  OpCoerceTop
+  0030  OpReturn 1
+  0031  OpReturn 1
+consts:
+  k0: <*runtime.TypeDef>
+  k1: <*runtime.UConst>
+  k2: "len" (string)
+  k3: "int" (string)

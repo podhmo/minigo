@@ -1,0 +1,13 @@
+chunk Generic (params=1 locals=1 results=1)
+  0000  OpGlobal k0 site0
+  0001  OpLocalType
+  0002  OpCoerce slot0
+  0003  OpLocal slot0
+  0004  OpGlobal k1 site1
+  0005  OpLocalType
+  0006  OpCoerceTop
+  0007  OpReturn 1
+  0008  OpReturn 1
+consts:
+  k0: "T" (string)
+  k1: "T" (string)

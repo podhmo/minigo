@@ -1,0 +1,28 @@
+chunk Closure (params=0 locals=1 results=1)
+  0000  OpConst k0
+  0001  OpNewLocal slot0
+  0002  OpMakeClosure k1
+  0003  OpConst k2
+  0004  OpLocalType
+  0005  OpCoerceTop
+  0006  OpReturn 1
+  0007  OpReturn 1
+consts:
+  k0: <*runtime.UConst>
+  k1: <*runtime.Function>
+  k2: <*runtime.TypeDef>
+nested k1:
+  chunk main.Closure.func1 (params=0 locals=0 results=1 upvals=1)
+    0000  OpUpval uv0
+    0001  OpConst k0
+    0002  OpBinary +
+    0003  OpSetUpval uv0
+    0004  OpUpval uv0
+    0005  OpGlobal k1 site0
+    0006  OpLocalType
+    0007  OpCoerceTop
+    0008  OpReturn 1
+    0009  OpReturn 1
+  consts:
+    k0: <*runtime.UConst>
+    k1: "int" (string)

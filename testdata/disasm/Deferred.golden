@@ -1,0 +1,29 @@
+chunk Deferred (params=0 locals=1 results=1)
+  0000  OpNil
+  0001  OpNewLocal slot0
+  0002  OpGlobal k0 site0
+  0003  OpLocalType
+  0004  OpCoerce slot0
+  0005  OpMakeClosure k1
+  0006  OpDefer
+  0007  OpLocalRef slot0
+  0008  OpConst k2
+  0009  OpSetRefs 1
+  0010  OpGlobal k3 site1
+  0011  OpLocalType
+  0012  OpCoerce slot0
+  0013  OpReturn
+  0014  OpReturn 1
+consts:
+  k0: "int" (string)
+  k1: <*runtime.Function>
+  k2: <*runtime.UConst>
+  k3: "int" (string)
+nested k1:
+  chunk main.Deferred.func1 (params=0 locals=0 results=0 upvals=1)
+    0000  OpUpvalRef uv0
+    0001  OpConst k0
+    0002  OpSetRefs 1
+    0003  OpReturn
+  consts:
+    k0: <*runtime.UConst>
