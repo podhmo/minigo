@@ -616,13 +616,8 @@ func procDoneOf(vc runtime.VMCaller) <-chan struct{} {
 // can nil v.proc concurrently, so check-then-use pairs must capture the
 // pointer first or they race a nil receiver/field panic.
 func procOf(vc runtime.VMCaller) *proc {
-	switch v := vc.(type) {
-	case *VM:
-		return v.proc.Load()
-	case ownerCaller:
-		return v.proc.Load()
-	case processCaller:
-		return v.p
+	if b, ok := vc.(currentProcBearer); ok {
+		return b.currentProc()
 	}
 	return nil
 }
@@ -680,14 +675,8 @@ func ParkedChanRecv(vc runtime.VMCaller, ch chan struct{}) {
 // vcPark is park for code holding only a runtime.VMCaller (e.g.
 // callReflectFunc's blocking-host join).
 func vcPark(vc runtime.VMCaller, w parkWake) func() {
-	switch v := vc.(type) {
-	case *VM:
-		return v.park(w)
-	case ownerCaller:
-		return v.VM.park(w)
-	case processCaller:
-		return v.VM.park(w)
-	default:
-		return func() {}
+	if p, ok := vc.(vcParker); ok {
+		return p.parkCaller(w)
 	}
+	return func() {}
 }
