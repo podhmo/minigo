@@ -14483,6 +14483,15 @@ func (v *VM) synthShape(td *runtime.TypeDef) string {
 		}
 		return runtime.CanonicalBasicName(td.Name)
 	}
+	// an anonymous element still spells its own AST — *struct{a int}
+	// and *struct{b string} must not collapse to the same "*".
+	src := td.Anon
+	if src == nil && td.Spec != nil {
+		src = td.Spec.Type
+	}
+	if src != nil {
+		return runtime.TypSpelling(src, td)
+	}
 	var elem string
 	if td.Elem != nil {
 		elem = v.synthShape(td.Elem)
