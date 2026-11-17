@@ -4457,8 +4457,9 @@ func (h *hostHelpers) sortSlice(v runtime.VMCaller, args []runtime.Value) (runti
 }
 
 // sortByCmpFunc implements slices.SortFunc and slices.SortStableFunc: cmp is
-// a script callable returning negative/zero/positive. The sort is stable,
-// like Go's implementation.
+// a script callable returning negative/zero/positive. The host sort is the
+// real algorithm (pdqsort / stable pdqsort), so element order under a cmp
+// that reports ties matches go's even past the 12-element insertion bound.
 func (h *hostHelpers) sortByCmpFunc(name string) *runtime.BuiltinFunc {
 	return &runtime.BuiltinFunc{Name: name, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		s, ok := sliceOf(args[0])
@@ -4469,11 +4470,16 @@ func (h *hostHelpers) sortByCmpFunc(name string) *runtime.BuiltinFunc {
 			return nil, fmt.Errorf("%s: first arg must be a slice, got %T", name, args[0])
 		}
 		cmp := args[1]
-		sort.SliceStable(s.Elems, func(i, j int) bool {
-			r := callOrPanic(v, cmp, []runtime.Value{s.Elems[i], s.Elems[j]})
+		cf := func(a, b runtime.Value) int {
+			r := callOrPanic(v, cmp, []runtime.Value{a, b})
 			n, _ := runtime.Unwrap(r).(int64)
-			return n < 0
-		})
+			return int(n)
+		}
+		if name == "slices.SortFunc" {
+			slices.SortFunc(s.Elems, cf)
+		} else {
+			slices.SortStableFunc(s.Elems, cf)
+		}
 		return runtime.NIL, nil
 	}}
 }
