@@ -13,7 +13,6 @@ migration; history above that point lives in the source repository.
 
 ## To Be Implemented
 
-- [ ] **`NewEngine` runs `go env GOROOT` and `go env GOMODCACHE` as subprocesses every time**: `pkg/locator` (locator.go:133–138) shells out on each locator creation, which dominates a trivial `NewEngine` run (6–11 ms of 11–14 ms on the spike machine). Memoize per process. ([docs/sketch/spike-rearchitecture.md](./docs/sketch/spike-rearchitecture.md) S6)
 - [ ] **unverified impact: the global `templateFuncMap` TypeDef keeps the first engine's package**: it is a package-level `*runtime.TypeDef` shared by text/template and html/template in every engine, and `Bind` sets `td.Pkg` only when nil (minigo.go:787), so later engines see the first engine's `*runtime.Package`. ([docs/sketch/spike-rearchitecture.md](./docs/sketch/spike-rearchitecture.md) S6)
 
 - [ ] **Classify callback-bearing host fields before extending process-bound entry**: distinguish reusable synchronous factories such as package-global `sync.Pool.New` from retained external callbacks, and define the adapter contract for generic raw-VM value/field conversion. The initial process-bound caller covers retaining builtins and reflected host-call arguments; field factories keep their existing behavior to preserve engine reuse. ([#1062](https://github.com/podhmo/minigo/issues/1062), [docs/process-callbacks.md](./docs/process-callbacks.md))
