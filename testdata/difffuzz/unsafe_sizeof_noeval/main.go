@@ -2,9 +2,13 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"unicode"
 	"unsafe"
 )
+
+const PJ = 5
+const PK = PJ + 1
 
 type Pair struct {
 	A int64
@@ -43,4 +47,11 @@ func main() {
 	fmt.Printf("%v %v\n", unsafe.Sizeof([...]int{K: f()}), unsafe.Sizeof([...]int{0x10: f(), 1}))
 	fmt.Printf("%v %v\n", unsafe.Sizeof([...]int{J: f()}), unsafe.Sizeof([...]int{uint8(255): f()}))
 	fmt.Printf("%v %v\n", unsafe.Sizeof([...]int{max: f()}), unsafe.Sizeof([...]int{len("abc"): f()}))
+	// keys the compile fold cannot see still keep the elements
+	// unevaluated: an imported const, a typed-constant expression, a
+	// package const whose initializer names a shadowed name, and
+	// unkeyed positions after a keyed one.
+	const PJ = 9
+	fmt.Printf("%v %v\n", unsafe.Sizeof([...]int{math.MaxInt8: f()}), unsafe.Sizeof([...]int{^uint8(0) >> 7 & 3: f()}))
+	fmt.Printf("%v %v\n", unsafe.Sizeof([...]int{PK: f()}), unsafe.Sizeof([...]int{3: f(), f(), 10: f(), f()}))
 }
