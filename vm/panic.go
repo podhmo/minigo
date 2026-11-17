@@ -314,9 +314,9 @@ func (v *VM) failProc(r any) {
 		for pp := r; pp != nil; pp = pp.Prev {
 			pp.VC = caller
 		}
-		p.fail(r)
+		p.Fail(r)
 	case *runtime.Trap:
-		p.fail(asError(r))
+		p.Fail(asError(r))
 	}
 }
 

@@ -24,6 +24,7 @@ import (
 	"reflect"
 
 	"github.com/podhmo/minigo/bytecode"
+	"github.com/podhmo/minigo/internal/process"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
 )
@@ -761,7 +762,7 @@ func (v *VM) loop(f *frame) {
 					// process would spin instead of dying.
 					if p := v.proc.Load(); p != nil {
 						select {
-						case <-p.done:
+						case <-p.Done():
 							panic(procExit{})
 						default:
 						}
@@ -844,11 +845,11 @@ func (v *VM) loop(f *frame) {
 				if err != nil {
 					f.trap("cannot send on %s: %s", chRV.Type(), err)
 				}
-				f.push(&runtime.SelArm{Send: true, Wakeable: w.misc, WakeChan: w.chanPtr(), Case: reflect.SelectCase{Dir: reflect.SelectSend, Chan: chRV, Send: sv}})
+				f.push(&runtime.SelArm{Send: true, Wakeable: w.Misc, WakeChan: w.ChanPtr(), Case: reflect.SelectCase{Dir: reflect.SelectSend, Chan: chRV, Send: sv}})
 			} else {
 				chv := f.pop()
 				chRV, et, w := v.chanOf(f, chv)
-				f.push(&runtime.SelArm{NRecv: int(ins.A), ETyp: et, Wakeable: w.misc, WakeChan: w.chanPtr(), Case: reflect.SelectCase{Dir: reflect.SelectRecv, Chan: chRV}})
+				f.push(&runtime.SelArm{NRecv: int(ins.A), ETyp: et, Wakeable: w.Misc, WakeChan: w.ChanPtr(), Case: reflect.SelectCase{Dir: reflect.SelectRecv, Chan: chRV}})
 			}
 		case bytecode.OpSelWait:
 			// arms were pushed in source order; the jump table follows this
@@ -876,15 +877,15 @@ func (v *VM) loop(f *frame) {
 			}
 			// a select without a default can park: it counts toward
 			// deadlock unless some arm watches a wake-capable channel.
-			wake := parkWake{}
+			wake := process.Wake{}
 			for _, a := range arms {
-				// Wakeable is only ever set for unmanaged/misc arms — a
+				// Wakeable is only ever set for unmanaged/Misc arms — a
 				// managed arm carries its channel in WakeChan instead.
 				if a.Wakeable {
-					wake.misc = true
+					wake.Misc = true
 				}
 				if a.WakeChan != 0 {
-					wake.chans = append(wake.chans, a.WakeChan)
+					wake.Chans = append(wake.Chans, a.WakeChan)
 				}
 			}
 			chosen, rv, open := func() (int, reflect.Value, bool) {
