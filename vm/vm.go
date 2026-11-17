@@ -17273,14 +17273,12 @@ func (v *VM) instantiate(f *frame, base runtime.Value, targs []runtime.Value, po
 			return v.indexFallback(f, base, targs)
 		}
 		gen := g.GenFn
-		return &runtime.BuiltinFunc{
-			Name:        g.Name,
-			Pkg:         g.Pkg,
-			RetainsArgs: g.RetainsArgs,
-			Fn: func(vm runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-				return gen(vm, targs, args)
-			},
+		inst := *g
+		inst.GenFn = nil
+		inst.Fn = func(vm runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			return gen(vm, targs, args)
 		}
+		return &inst
 	case *runtime.TypeDef:
 		if len(g.TParams) == 0 {
 			return v.indexFallback(f, base, targs)

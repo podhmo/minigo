@@ -176,6 +176,28 @@ var sortHostUse = map[string]hostSliceUse{
 	"Strings":  firstSliceReorder,
 }
 
+// genericFns marks a bound package's intrinsics as generic: every
+// function in `slices` and `maps` is generic in gc, and the intrinsics
+// are already parametric over the runtime value shapes, so an explicit
+// instantiation (`slices.Contains[[]int]`) binds the same callee with
+// the type arguments unused — without GenFn the index traps
+// `index on *runtime.BuiltinFunc`.
+func genericFns(pkg map[string]runtime.Value) map[string]runtime.Value {
+	for name, val := range pkg {
+		bf, ok := val.(*runtime.BuiltinFunc)
+		if !ok || bf.Fn == nil || bf.GenFn != nil {
+			continue
+		}
+		wrapped := *bf
+		fn := bf.Fn
+		wrapped.GenFn = func(vc runtime.VMCaller, _ []runtime.Value, args []runtime.Value) (runtime.Value, error) {
+			return fn(vc, args)
+		}
+		pkg[name] = &wrapped
+	}
+	return pkg
+}
+
 // hostSliceBoundary wraps the intrinsics of pkg so a boxed host slice
 // among their slice arguments reads as a script slice: the intrinsic runs
 // on a snapshot, an in-place one writes the reordered elements back to the
