@@ -35,6 +35,10 @@ test-race:
 test-spike:
 	go test -tags minigo_spike -run '^TestSpike' .
 
+# Internal import-graph ratchet; see docs/next/ja/references/archcheck.md.
+archcheck:
+	go run ./internal/cmd/archcheck
+
 # Classified shared-engine stress; see docs/concurrency-stress.md. Reuses
 # the callback/release fixture introduced with the fix in #1061.
 CONCURRENCY_STRESS_CPU ?= 1,2,4

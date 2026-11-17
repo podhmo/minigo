@@ -38,6 +38,9 @@ jobs:
     - name: Spike counters (C1 invariant)
       run: make test-spike
 
+    - name: Internal import graph (archcheck)
+      run: make archcheck
+
   race-test:
     runs-on: ubuntu-latest
     steps:
