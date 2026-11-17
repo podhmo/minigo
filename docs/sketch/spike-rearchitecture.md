@@ -55,7 +55,7 @@ Japanese version: [ja/spike-rearchitecture.md](./ja/spike-rearchitecture.md).
 |---|---|---|
 | Wrong output (I5 violation) | `assign_pkgname_differs`, `litkey_named_peel`, `src_pkgtype_maplit_keys`, `shift_const_count` (`none` only) | Composite-literal key typing, assignment through a package whose name differs from its path, and the shift-count constness flag (`ShiftConstCount`) all read the imported package |
 | Spurious trap | `TestNetHTTPRoundtrip` (`none` only) | `rc == NoBody` traps `mismatched types io.ReadCloser and noBody`: without the member's declared type, the comparison is not lowered to an interface compare |
-| Lost gc rejection | 8 `gate_*`, `selconv_typearg`, `selnilable_trap` | The run succeeds where gc reports `mismatched types time.Duration and int64`, etc. |
+| Lost gc rejection | 7 `gate_*`, `selconv_typearg`, `selnilable_trap` | The run succeeds where gc reports `mismatched types time.Duration and int64`, etc. |
 | Unit test | `compile.TestSelMemberSyntheticTypeEntry` | Tests the lookup directly |
 
 - `peek` still breaks 13 tests, so "answer only for what is already

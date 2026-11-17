@@ -39,7 +39,7 @@
 |---|---|---|
 | 誤った出力（I5 違反） | `assign_pkgname_differs`、`litkey_named_peel`、`src_pkgtype_maplit_keys`、`shift_const_count`（`none` のみ） | 複合リテラルのキーの型付け、パス末尾とパッケージ名が異なるパッケージを経由する代入、シフト回数の定数性フラグ（`ShiftConstCount`）が、いずれも import 先パッケージを読んでいる |
 | 偽の trap | `TestNetHTTPRoundtrip`（`none` のみ） | メンバの宣言型が分からないため比較が interface 比較に下ろされず、`rc == NoBody` が `mismatched types io.ReadCloser and noBody` で trap する |
-| gc なら拒否するプログラムが通る | `gate_*` 8 件、`selconv_typearg`、`selnilable_trap` | gc が `mismatched types time.Duration and int64` などで拒否するところで、実行が成功してしまう |
+| gc なら拒否するプログラムが通る | `gate_*` 7 件、`selconv_typearg`、`selnilable_trap` | gc が `mismatched types time.Duration and int64` などで拒否するところで、実行が成功してしまう |
 | ユニットテスト | `compile.TestSelMemberSyntheticTypeEntry` | 検索関数そのものを直接テストしている |
 
 - `peek` でも 13 件が壊れる。つまり「すでに `Indexed` のものにだけ答える」方式では、結果がロードの順序に依存する。ロード順に依存するモードは、CI の同値性チェックには使えない。
