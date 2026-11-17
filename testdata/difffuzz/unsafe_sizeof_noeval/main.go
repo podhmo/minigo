@@ -38,5 +38,9 @@ func main() {
 	// named-const and non-decimal keys fold to the length too, and
 	// the elements still never evaluate.
 	const K = 5
+	const J = K + 2
+	const max = 99 // shadows the builtin
 	fmt.Printf("%v %v\n", unsafe.Sizeof([...]int{K: f()}), unsafe.Sizeof([...]int{0x10: f(), 1}))
+	fmt.Printf("%v %v\n", unsafe.Sizeof([...]int{J: f()}), unsafe.Sizeof([...]int{uint8(255): f()}))
+	fmt.Printf("%v %v\n", unsafe.Sizeof([...]int{max: f()}), unsafe.Sizeof([...]int{len("abc"): f()}))
 }
