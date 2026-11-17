@@ -42,6 +42,7 @@ import (
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/compile"
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/internal/spike"
 	"github.com/podhmo/minigo/resolve"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
@@ -1031,6 +1032,7 @@ func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, e
 // Initialize stays lazy (Bootstrap hook). lenient relaxes the index's
 // redeclaration check for inspect callers that must see duplicates.
 func (e *Engine) buildPackage(meta *resolve.PackageMeta, lenient bool) (*runtime.Package, error) {
+	spike.NoteBuildDuringCompile()
 	// serialize whole builds so two goroutines cold-loading the same
 	// package converge on one object (the indexed gate closes in
 	// indexFiles for concurrent member access)

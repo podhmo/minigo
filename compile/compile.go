@@ -24,6 +24,7 @@ import (
 
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/internal/spike"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
 )
@@ -725,6 +726,8 @@ func Func(fn *runtime.Function) error {
 }
 
 func compileFunc(fn *runtime.Function) error {
+	spike.EnterCompile()
+	defer spike.LeaveCompile()
 	c := &compiler{pkg: fn.Pkg, file: fn.File, fs: newFScope(nil), ch: &bytecode.Chunk{Name: fn.Name}, labels: map[string]*labelInfo{}, binds: fn.Binds, symName: fn.Name, iotaVal: -1}
 	if fn.Pkg != nil {
 		c.symName = fn.Pkg.Name + "." + fn.Name
@@ -835,6 +838,8 @@ func compileFunc(fn *runtime.Function) error {
 // globals and builtins. Use [ExprScoped] to resolve names against a running
 // function's frame instead.
 func Expr(pkg *runtime.Package, file *syntax.File, e ast.Expr) (*bytecode.Chunk, error) {
+	spike.EnterCompile()
+	defer spike.LeaveCompile()
 	c := &compiler{pkg: pkg, file: file, fs: newFScope(nil), ch: &bytecode.Chunk{Name: "<eval>"}, iotaVal: -1}
 	c.fs.pushBlock()
 	c.expr(e)
@@ -848,6 +853,8 @@ func Expr(pkg *runtime.Package, file *syntax.File, e ast.Expr) (*bytecode.Chunk,
 // that frame's locals and upvalue tables. The chunk reads and writes the
 // caller's live cells.
 func ExprScoped(pkg *runtime.Package, file *syntax.File, e ast.Expr, locals, upvals map[string]int) (*bytecode.Chunk, error) {
+	spike.EnterCompile()
+	defer spike.LeaveCompile()
 	c := &compiler{pkg: pkg, file: file, fs: newFScope(nil), ch: &bytecode.Chunk{Name: "<special-eval>"}, labels: map[string]*labelInfo{}, iotaVal: -1}
 	c.fs.pushBlock()
 	max := -1

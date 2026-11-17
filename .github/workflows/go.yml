@@ -35,6 +35,9 @@ jobs:
     - name: Test
       run: make test
 
+    - name: Spike counters (C1 invariant)
+      run: make test-spike
+
   race-test:
     runs-on: ubuntu-latest
     steps:
