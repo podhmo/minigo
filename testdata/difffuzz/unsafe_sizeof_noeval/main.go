@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"unicode"
 	"unsafe"
 )
 
@@ -27,4 +28,11 @@ func main() {
 	fmt.Printf("%v\n", unsafe.Sizeof("abc"))
 	var arr [4]int32
 	fmt.Printf("%v %v\n", unsafe.Sizeof(arr), unsafe.Sizeof(arr[2]))
+	// an array operand's subslice is a slice header; a host struct's
+	// layout lives in reflect; an ellipsis literal's length is the
+	// element count.
+	fmt.Printf("%v %v\n", unsafe.Sizeof(arr[:]), unsafe.Alignof(arr[:]))
+	var r unicode.Range16
+	fmt.Printf("%v %v\n", unsafe.Sizeof(r), unsafe.Offsetof(r.Hi))
+	fmt.Printf("%v %v\n", unsafe.Sizeof([...]int{1, 2}), unsafe.Sizeof([...]int{9: 1}))
 }
