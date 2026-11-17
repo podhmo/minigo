@@ -2220,6 +2220,14 @@ type BuiltinFunc struct {
 	// the VM dispatches the call: deferred calls get private slices
 	// already, and DirectYield invocations bypass it by contract.
 	RetainsArgs bool
+	// VarIn and VarSlice describe the variadic signature of a
+	// reflect.MakeFunc'd func: VarIn is the declared input count and
+	// VarSlice its trailing []T parameter. Set only on variadic
+	// MakeFunc products — reflect.Value.Call folds trailing args into
+	// one []T even when the func's own typedef was lost through an
+	// `any`.
+	VarIn    int
+	VarSlice *TypeDef
 }
 
 // SeqSource is the native side of an intrinsic seq builtin.
