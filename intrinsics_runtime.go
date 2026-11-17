@@ -146,7 +146,7 @@ func (e *Engine) installRuntime(h *hostHelpers) {
 		// liveness hints and heap profiling have no GC to act on —
 		// KeepAlive is a no-op; MemProfile reports no records.
 		"KeepAlive": h.fn("runtime.KeepAlive", func(a []any) (any, error) { return nil, nil }),
-		"MemProfile": &runtime.BuiltinFunc{Name: "runtime.MemProfile", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"MemProfile": &runtime.BuiltinFunc{Name: "runtime.MemProfile", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			return &runtime.Tuple{Elems: []runtime.Value{int64(0), true}}, nil
 		}},
 		"MemProfileRecord": &runtime.TypeDef{

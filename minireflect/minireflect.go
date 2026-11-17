@@ -510,7 +510,7 @@ func (e *Env) typeOf(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, 
 	return &runtime.GoValue{V: rv.Type()}, nil
 }
 
-func (e *Env) indirect(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+func (e *Env) indirect(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("reflect.Indirect needs 1 arg, got %d", len(args))
 	}
@@ -571,7 +571,7 @@ func (e *Env) zeroOf(vc runtime.Zeroer, td *runtime.TypeDef) runtime.Value {
 	return runtime.Zero(td)
 }
 
-func (e *Env) ptrTo(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+func (e *Env) ptrTo(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("reflect.PtrTo needs 1 arg, got %d", len(args))
 	}
@@ -586,7 +586,7 @@ func (e *Env) ptrTo(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, e
 		Anon: &ast.StarExpr{X: e.exprOf(t.td)}})}, nil
 }
 
-func (e *Env) sliceOf(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+func (e *Env) sliceOf(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("reflect.SliceOf needs 1 arg, got %d", len(args))
 	}
@@ -601,7 +601,7 @@ func (e *Env) sliceOf(vc runtime.VMCaller, args []runtime.Value) (runtime.Value,
 		Anon: &ast.ArrayType{Elt: e.exprOf(t.td)}})}, nil
 }
 
-func (e *Env) mapOf(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+func (e *Env) mapOf(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("reflect.MapOf needs 2 args, got %d", len(args))
 	}
@@ -617,7 +617,7 @@ func (e *Env) mapOf(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, e
 	return &runtime.GoValue{V: e.internT(e.keyOf(mtd), &RType{td: mtd, keyTd: k.td})}, nil
 }
 
-func (e *Env) chanOf(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+func (e *Env) chanOf(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("reflect.ChanOf needs 2 args, got %d", len(args))
 	}
@@ -644,7 +644,7 @@ func (e *Env) chanOf(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, 
 		Anon: &ast.ChanType{Dir: adir, Value: e.exprOf(t.td)}})}, nil
 }
 
-func (e *Env) arrayOf(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+func (e *Env) arrayOf(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("reflect.ArrayOf needs 2 args, got %d", len(args))
 	}
@@ -1075,7 +1075,7 @@ func (e *Env) appendSlice(vc runtime.VMCaller, args []runtime.Value) (runtime.Va
 	return &runtime.GoValue{V: &RValue{e: e, vc: vc, val: val, td: s.td}}, nil
 }
 
-func (e *Env) copy_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+func (e *Env) copy_(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("reflect.Copy needs 2 args, got %d", len(args))
 	}

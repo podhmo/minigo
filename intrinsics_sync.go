@@ -40,13 +40,13 @@ func (e *Engine) installSync(h *hostHelpers) {
 		// sync.Once), while the wrapped function runs on whichever VM
 		// calls the result — like Go, a panic on the first call still
 		// consumes the once.
-		"OnceFunc": &runtime.BuiltinFunc{Name: "sync.OnceFunc", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"OnceFunc": &runtime.BuiltinFunc{Name: "sync.OnceFunc", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			return syncOnceWrap("sync.OnceFunc", args)
 		}},
-		"OnceValue": &runtime.BuiltinFunc{Name: "sync.OnceValue", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"OnceValue": &runtime.BuiltinFunc{Name: "sync.OnceValue", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			return syncOnceWrap("sync.OnceValue", args)
 		}},
-		"OnceValues": &runtime.BuiltinFunc{Name: "sync.OnceValues", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"OnceValues": &runtime.BuiltinFunc{Name: "sync.OnceValues", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			return syncOnceWrap("sync.OnceValues", args)
 		}},
 	})
