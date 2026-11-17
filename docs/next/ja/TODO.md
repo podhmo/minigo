@@ -47,7 +47,7 @@
 
 ## P2: パッケージの抽出
 
-- [ ] **P2-1 capability インタフェースを定義する**: `VMCaller` を union として残す。隠れた capability（`HostClear`、`HostMapDelete`、`HostNilTwin`、`MaterializeConstErr`、`CallCatching`）も含める。完了条件: 型アサーションで呼んでいた箇所が、インタフェースのメソッド呼び出しになっている。[references/vmcaller.md](./references/vmcaller.md)
+- [x] **P2-1 capability インタフェースを定義する**: `VMCaller` を union として残す。隠れた capability（`HostClear`、`HostMapDelete`、`HostNilTwin`、`MaterializeConstErr`、`CallCatching`）も含める。完了条件: 型アサーションで呼んでいた箇所が、インタフェースのメソッド呼び出しになっている。[references/vmcaller.md](./references/vmcaller.md)
 - [ ] **P2-2 受け渡し先の helper を capability 型にする**: `runtime.IfaceMember`、`hostErrOf`、`display`、`callOrPanic`、`goJSONSeen` などが対象。完了条件: caller を受け渡すだけの 184 関数が、本当に必要とする capability に絞られている。
 - [ ] **P2-3 使っていない `VMCaller` 引数を削る**: 対象は 96 関数。完了条件: スキャナ（[references/vmcaller.md](./references/vmcaller.md)）の「未使用」が 0 になる。
 - [ ] **P2-4 `vmOf` のダウンキャストをなくす**: 7 箇所を capability のメソッドに置き換える。
