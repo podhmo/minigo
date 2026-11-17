@@ -13,6 +13,8 @@ migration; history above that point lives in the source repository.
 
 ## To Be Implemented
 
+- [ ] **unverified impact: the global `templateFuncMap` TypeDef keeps the first engine's package**: it is a package-level `*runtime.TypeDef` shared by text/template and html/template in every engine, and `Bind` sets `td.Pkg` only when nil (minigo.go:787), so later engines see the first engine's `*runtime.Package`. ([docs/sketch/spike-rearchitecture.md](./docs/sketch/spike-rearchitecture.md) S6)
+
 - [ ] **Classify callback-bearing host fields before extending process-bound entry**: distinguish reusable synchronous factories such as package-global `sync.Pool.New` from retained external callbacks, and define the adapter contract for generic raw-VM value/field conversion. The initial process-bound caller covers retaining builtins and reflected host-call arguments; field factories keep their existing behavior to preserve engine reuse. ([#1062](https://github.com/podhmo/minigo/issues/1062), [docs/process-callbacks.md](./docs/process-callbacks.md))
 
 - [x] **data race on a VM's process pointer between a host callback and the run's end**: a host callback on a foreign goroutine (`context.AfterFunc` fired by `cancel()` just before the run returns) read `v.proc` without `callMu` in `callBoundedCatch` while the owner's `ReleaseProc` cleared it; CI's `race-test` caught it on #1054. `VM.proc` is now an `atomic.Pointer[proc]`, read once per check-then-use. Pinned by `TestHostCallbackRacesProcRelease`.
