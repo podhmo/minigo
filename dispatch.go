@@ -369,11 +369,10 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 			// receivers; the host box is always the pointer type.
 			rt = rt.Elem()
 		}
+		depths = hostDepths(rt)
 		names = map[string]bool{}
-		depths = map[string]int{}
-		for i := 0; i < rt.NumMethod(); i++ {
-			names[rt.Method(i).Name] = true
-			depths[rt.Method(i).Name] = 0
+		for m := range depths {
+			names[m] = true
 		}
 		return names, funcs, depths, false
 	}
@@ -503,6 +502,64 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 		depths[m] = d
 	}
 	return names, funcs, depths, unsure
+}
+
+// hostDepths maps each method in a bound host type's method set to the
+// depth it is promoted at inside the host struct. reflect flattens the
+// method table, so the depth is rebuilt by walking anonymous fields —
+// a member only reachable through one counts one deeper than inside
+// that field's type (bufio.ReadWriter.Write sits at depth 1 via the
+// embedded *bufio.Writer, so a struct embedding ReadWriter sees it at
+// depth 2 like gc's selector). Members ambiguous inside the host type
+// are already absent from rt's method set. A member a host type both
+// declares and receives from an anonymous field reads as promoted —
+// reflect cannot tell them apart, and shadowing declarations are the
+// rarer case.
+func hostDepths(rt reflect.Type) map[string]int {
+	return hostDepthsIn(rt, map[reflect.Type]bool{})
+}
+
+func hostDepthsIn(rt reflect.Type, seen map[reflect.Type]bool) map[string]int {
+	out := map[string]int{}
+	for i := 0; i < rt.NumMethod(); i++ {
+		out[rt.Method(i).Name] = 0
+	}
+	st := rt
+	if st.Kind() == reflect.Pointer {
+		st = st.Elem()
+	}
+	if st.Kind() != reflect.Struct || seen[st] {
+		return out
+	}
+	seen[st] = true
+	defer delete(seen, st)
+	// the smallest internal depth each member is promoted at through
+	// an anonymous field; a revisit means a cycle, which contributes
+	// nothing a shallower level does not already declare.
+	sub := map[string]int{}
+	for i := 0; i < st.NumField(); i++ {
+		f := st.Field(i)
+		if !f.Anonymous {
+			continue
+		}
+		ft := f.Type
+		if ft.Kind() != reflect.Pointer && rt.Kind() == reflect.Pointer {
+			// under a pointer receiver view an embedded value field
+			// also promotes its pointer receivers.
+			ft = reflect.PointerTo(ft)
+		}
+		for m, d := range hostDepthsIn(ft, seen) {
+			if c, ok := sub[m]; !ok || d < c {
+				sub[m] = d
+			}
+		}
+	}
+	for m := range out {
+		if d, ok := sub[m]; ok {
+			out[m] = d + 1
+		}
+	}
+	return out
 }
 
 // ifaceSigFunc synthesizes the member Function an interface typedef's

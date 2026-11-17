@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -69,6 +70,19 @@ type hostAmbiguous struct {
 	strings.Builder
 }
 
+// a member promoted inside the host type itself keeps that depth:
+// bufio.ReadWriter.Write sits at depth 1 via *bufio.Writer, so it
+// loses to a depth-1 script method and contests another depth-2 path.
+type viaFile struct{ *os.File }
+type hostDeepWins struct {
+	bufio.ReadWriter
+	sw
+}
+type hostDeepAmbiguous struct {
+	bufio.ReadWriter
+	viaFile
+}
+
 func main() {
 	var w io.Writer = &F{}
 	n, err := fmt.Fprint(w, "abc")
@@ -93,5 +107,9 @@ func main() {
 	_, ok = any(&ifaceDeep{}).(io.Writer)
 	fmt.Println(ok)
 	_, ok = any(&hostAmbiguous{}).(io.Writer)
+	fmt.Println(ok)
+	_, ok = any(&hostDeepWins{}).(io.Writer)
+	fmt.Println(ok)
+	_, ok = any(&hostDeepAmbiguous{}).(io.Writer)
 	fmt.Println(ok)
 }
