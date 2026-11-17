@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -26,12 +27,12 @@ func TestHostMapInsert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if v != "[1 2]v" {
-		t.Fatalf("got %v, want [1 2]v", v)
+	if diff := cmp.Diff("[1 2]v", v); diff != "" {
+		t.Fatalf("InsertRoundTrip (-want +got):\n%s", diff)
 	}
 	// the host map itself was written (not a copy)
-	if dst["b"][0] != "3" {
-		t.Fatalf("host map unchanged: %v", dst)
+	if diff := cmp.Diff([]string{"3"}, dst["b"]); diff != "" {
+		t.Fatalf("host map dst[b] (-want +got):\n%s", diff)
 	}
 }
 
@@ -48,7 +49,10 @@ func TestHostMapValuesNaN(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	s, ok := v.(*runtime.Slice)
-	if !ok || len(s.Elems) != 2 {
-		t.Fatalf("got %v (%T), want 2 values", v, v)
+	if !ok {
+		t.Fatalf("got %v (%T), want *runtime.Slice", v, v)
+	}
+	if diff := cmp.Diff(2, len(s.Elems)); diff != "" {
+		t.Fatalf("values count (-want +got):\n%s", diff)
 	}
 }
