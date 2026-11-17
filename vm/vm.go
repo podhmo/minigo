@@ -1495,7 +1495,25 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 		default:
 		}
 	}
+	var seen map[*runtime.Function]bool
 	for {
+		// a bodiless decl may carry //go:linkname wiring it to another
+		// package's implementation — resolve before dispatch so a
+		// builtin or typedef target sees the generic callee path.
+		if fn := linknameDecl(callee); fn != nil && v.H.Linkname != nil {
+			tv, ok, err := v.H.Linkname(v, fn)
+			if err != nil {
+				return nil, err
+			}
+			if ok && !seen[fn] {
+				if seen == nil {
+					seen = map[*runtime.Function]bool{}
+				}
+				seen[fn] = true
+				callee = tv
+				continue
+			}
+		}
 		switch c := callee.(type) {
 		case *runtime.BuiltinFunc:
 			return v.callBuiltin(c, args)
@@ -1529,7 +1547,7 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 		}
 		break
 	}
-	fr, err := v.prepFrame(callee, args, statics, spreadTd)
+	fr, err := v.prepFrameSeen(callee, args, statics, spreadTd, seen)
 	if err != nil {
 		return nil, err
 	}
@@ -1755,9 +1773,23 @@ func asError(r any) error {
 	}
 }
 
-// prepFrame builds the frame for callee.
-func (v *VM) prepFrame(callee runtime.Value, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (*frame, error) {
-	return v.prepFrameSeen(callee, args, statics, spreadTd, nil)
+// linknameDecl returns the bodiless *runtime.Function behind a callable —
+// a Function itself, a Closure's Fn, or a BoundMethod's Fn — or nil when
+// the callee has a body to run.
+func linknameDecl(callee runtime.Value) *runtime.Function {
+	var fn *runtime.Function
+	switch c := callee.(type) {
+	case *runtime.Function:
+		fn = c
+	case *runtime.Closure:
+		fn = c.Fn
+	case *runtime.BoundMethod:
+		fn = c.Fn
+	}
+	if fn == nil || fn.Decl == nil || fn.Decl.Body != nil {
+		return nil
+	}
+	return fn
 }
 
 // prepFrameSeen is prepFrame carrying the linkname resolutions already
@@ -1799,17 +1831,36 @@ func (v *VM) prepFrameSeen(callee runtime.Value, args []runtime.Value, statics [
 	// a bodiless declaration may carry a //go:linkname directive whose
 	// target argument wires it to a real implementation in another
 	// package — substitute the resolved target and re-dispatch.
-	if fn != nil && fn.Decl != nil && fn.Decl.Body == nil && v.H.Linkname != nil {
-		tv, ok, err := v.H.Linkname(v, fn)
-		if err != nil {
-			return nil, err
-		}
-		if ok && !seen[fn] {
-			if seen == nil {
-				seen = map[*runtime.Function]bool{}
+	if fn != nil && fn.Decl != nil && fn.Decl.Body == nil {
+		if v.H.Linkname != nil {
+			tv, ok, err := v.H.Linkname(v, fn)
+			if err != nil {
+				return nil, err
 			}
-			seen[fn] = true
-			return v.prepFrameSeen(tv, args, statics, spreadTd, seen)
+			if ok && !seen[fn] {
+				if seen == nil {
+					seen = map[*runtime.Function]bool{}
+				}
+				seen[fn] = true
+				return v.prepFrameSeen(tv, args, statics, spreadTd, seen)
+			}
+		}
+		// An unresolved bodiless decl compiles to a zero-return shim,
+		// which is only acceptable for the result-free no-op class
+		// (registration hooks and memory primitives an interpreter
+		// needn't run). A decl with results would silently answer
+		// wrong — runtime_rand replying 0 looped maphash.MakeSeed —
+		// so trap instead of running the shim.
+		if fn.Decl.Type != nil && fn.Decl.Type.Results != nil && len(fn.Decl.Type.Results.List) > 0 {
+			where := ""
+			if fn.Pkg != nil && fn.Pkg.Fset != nil {
+				where = fmt.Sprintf(" declared at %s", fn.Pkg.Fset.Position(fn.Decl.Pos()))
+			}
+			name := fn.Name
+			if fn.Pkg != nil && fn.Pkg.Name != "" {
+				name = fn.Pkg.Name + "." + name
+			}
+			return nil, fmt.Errorf("no implementation for bodiless decl %s%s", name, where)
 		}
 	}
 	// generic function called without instantiation (Id(40)): infer the
@@ -2383,7 +2434,22 @@ func (v *VM) runOneDefer(f *frame, unwinding *runtime.Panic) {
 // function sees exactly one and recovers, matching Go.
 func (v *VM) invokeDeferred(d deferredCall) {
 	callee := d.fn
+	var seen map[*runtime.Function]bool
 	for {
+		if fn := linknameDecl(callee); fn != nil && v.H.Linkname != nil {
+			tv, ok, err := v.H.Linkname(v, fn)
+			if err != nil {
+				panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
+			}
+			if ok && !seen[fn] {
+				if seen == nil {
+					seen = map[*runtime.Function]bool{}
+				}
+				seen[fn] = true
+				callee = tv
+				continue
+			}
+		}
 		switch c := callee.(type) {
 		case *runtime.BuiltinFunc:
 			v.pushDeferredSentinel(c.Name)
@@ -2445,7 +2511,7 @@ func (v *VM) invokeDeferred(d deferredCall) {
 	if _, ok := asTypedNil(callee); ok {
 		panic(runtime.NilDerefPanic())
 	}
-	fr, err := v.prepFrame(callee, d.args, d.statics, d.spreadTd)
+	fr, err := v.prepFrameSeen(callee, d.args, d.statics, d.spreadTd, seen)
 	if err != nil {
 		panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
 	}

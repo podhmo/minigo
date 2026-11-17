@@ -2669,7 +2669,6 @@ func TestFuzzFixes(t *testing.T) {
 		{"CsvBind", "[[a b]] <nil>"},
 		{"BufioBind", "[a b] <nil>"},
 		{"TemplateBind", "hi ann <nil>"},
-		{"BodilessCall", int64(3)},
 
 		// fuzz-round leftovers (docs/sketch/ja/fuzz-language.md)
 		{"ThreeIndexSlice", "[2 3] 2 3"},
@@ -2702,6 +2701,7 @@ func TestFuzzFixes(t *testing.T) {
 		{"UConstFloatOverflow", "overflows float64"},
 		{"ComplexMixedWidth", "mismatched types complex64 and complex128"},
 		{"ComplexOrdered", "complex numbers are not ordered"},
+		{"BodilessCall", "no implementation for bodiless decl"},
 	}
 	for _, c := range traps {
 		_, err := e.Run(context.Background(), "./testdata/fuzzfix", c.fn)

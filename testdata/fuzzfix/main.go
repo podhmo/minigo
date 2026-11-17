@@ -431,8 +431,8 @@ func TemplateBind() string {
 	return fmt.Sprintf("%s %v", sb.String(), err)
 }
 
-// a bodiless declaration (asm stub, //go:linkname target) compiles to
-// a no-op returning its declared zero values.
+// a bodiless declaration (asm stub, //go:linkname target) with results
+// traps at call time rather than silently returning zero values.
 func Bodiless() int
 
 func BodilessCall() int { return Bodiless() + 3 }
