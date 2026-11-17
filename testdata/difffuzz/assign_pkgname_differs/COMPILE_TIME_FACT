@@ -1,0 +1,1 @@
+compile-time fact: import resolution for a package name that differs from the path's last element (pkgImportRef)

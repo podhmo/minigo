@@ -14,6 +14,8 @@ import (
 // index (REPL-merged or single-file builds create those with Decl==nil).
 // Requiring Decl.Spec.(*ast.TypeSpec) non-nil reported "not a type" for
 // a name the index knows is a type.
+// Compile-time fact (M0-7): exercises selMember's is-type
+// classification directly. docs/next/ja/references/acceptance-set.md.
 func TestSelMemberSyntheticTypeEntry(t *testing.T) {
 	fset := token.NewFileSet()
 	f, err := syntax.ParseFile(fset, "m.go", []byte("package p\nfunc (T) M() {}"))
