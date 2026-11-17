@@ -8,10 +8,9 @@ import (
 )
 
 // FileHeader.Open returns sectionReadCloser — a script struct embedding
-// the host *io.SectionReader — as multipart.File. Interface satisfaction
-// misses the methods promoted from the host embed (TODO.md "a script
-// struct embedding a host pointer does not satisfy interfaces through
-// promoted methods"), so the return traps `cannot use ... as File`.
+// the host *io.SectionReader — as multipart.File. The promoted host
+// methods satisfy the interface once the method-set walk enumerates a
+// host-bound embed's reflect methods.
 
 func main() {
 	var buf bytes.Buffer
