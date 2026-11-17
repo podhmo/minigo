@@ -287,6 +287,21 @@ func (p *Package) WaitIndexed() {
 	}
 }
 
+// IndexReady reports whether indexing finished — the non-blocking form
+// of [Package.WaitIndexed]. A package never marked is ready (bound
+// packages index at construction).
+func (p *Package) IndexReady() bool {
+	if p.indexed == nil {
+		return true
+	}
+	select {
+	case <-p.indexed:
+		return true
+	default:
+		return false
+	}
+}
+
 // MatCache returns the value built for decl d, calling build when there
 // is none yet, so every caller gets the same *TypeDef or *Function for a
 // declaration (type identity depends on it). Concurrent callers may both

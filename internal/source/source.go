@@ -39,9 +39,12 @@ func (v *View) Indexed(path string) *index.Index {
 		return nil
 	}
 	// Materialize returning only means Load returned — a package
-	// answered mid-indexing (import cycle) is still being built; wait
-	// for FinishIndexing before reading Index.
-	p.WaitIndexed()
+	// answered mid-indexing (import cycle) is still being built, so it
+	// is not "already indexed": report it absent rather than wait, so
+	// callers under IndexedOnly correctly see Deferred.
+	if !p.IndexReady() {
+		return nil
+	}
 	return p.Index
 }
 
