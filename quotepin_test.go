@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -56,8 +57,8 @@ func TestQuotedGoPin(t *testing.T) {
 		if _, err := e.Call(ctx, load(t, e), "aliasCall"); err != nil {
 			t.Fatalf("aliasCall: %v", err)
 		}
-		if len(fired) != 1 {
-			t.Errorf("special fired %d times, want 1", len(fired))
+		if diff := cmp.Diff([]string{"Convert"}, fired); diff != "" {
+			t.Errorf("fired specials mismatch (-want +got):\n%s", diff)
 		}
 	})
 
@@ -68,11 +69,11 @@ func TestQuotedGoPin(t *testing.T) {
 		if err != nil {
 			t.Fatalf("sameSpelling: %v", err)
 		}
-		if v != int64(42) {
-			t.Errorf("sameSpelling = %v, want 42 (bound package)", v)
+		if diff := cmp.Diff(int64(42), v); diff != "" {
+			t.Errorf("sameSpelling mismatch (-want +got):\n%s", diff)
 		}
-		if len(fired) != 0 {
-			t.Errorf("special fired on a different package's member: %v", fired)
+		if diff := cmp.Diff([]string(nil), fired); diff != "" {
+			t.Errorf("fired specials mismatch (-want +got):\n%s", diff)
 		}
 	})
 
@@ -86,11 +87,11 @@ func TestQuotedGoPin(t *testing.T) {
 		if err != nil {
 			t.Fatalf("shadowed: %v", err)
 		}
-		if len(fired) != 1 {
-			t.Errorf("special fired %d times, want 1 (known divergence)", len(fired))
+		if diff := cmp.Diff([]string{"Convert"}, fired); diff != "" {
+			t.Errorf("fired specials mismatch (-want +got):\n%s", diff)
 		}
-		if v != int64(0) && v != runtime.NIL {
-			t.Errorf("shadowed returned %v, want the quoted special's result", v)
+		if diff := cmp.Diff(int64(0), v); diff != "" {
+			t.Errorf("shadowed mismatch (-want +got):\n%s", diff)
 		}
 	})
 }
