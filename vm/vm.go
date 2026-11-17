@@ -2821,7 +2821,11 @@ func (v *VM) loop(f *frame) {
 			} else if td, ok := x.(*runtime.TypeDef); ok {
 				// `(*T)` in a method-expression position evaluates to the
 				// pointer typedef so selectMember can bind pointer methods.
-				f.push(&runtime.TypeDef{Kind: runtime.KindPointer, Anon: &ast.StarExpr{X: typeExprFor(td)}, Pkg: td.Pkg, File: td.File})
+				// Elem keeps the dereferenced typedef — an instantiation
+				// (`(*G[string])`) needs its bound methods and its exact
+				// pointee for the receiver coerce, which a `*G` spelling
+				// alone loses.
+				f.push(&runtime.TypeDef{Kind: runtime.KindPointer, Anon: &ast.StarExpr{X: instExprFor(td)}, Elem: td, Pkg: td.Pkg, File: td.File})
 			} else if dv, ok := runtime.Deref(x); ok {
 				// a pointer value typed *Declared dereferences to the
 				// declared pointee type — `*s` on `(*T)(p)` reads as T,
@@ -13342,6 +13346,29 @@ func typeExprFor(td *runtime.TypeDef) ast.Expr {
 		return td.Anon
 	}
 	return ast.NewIdent("interface{}")
+}
+
+// instExprFor spells the type expression a typedef denotes, restoring
+// the instantiation arguments an instantiated typedef carries only in
+// Binds — `G[string]`, not the bare `G` typeExprFor gives. Anonymous or
+// partially bound typedefs fall back to the unindexed spelling.
+func instExprFor(td *runtime.TypeDef) ast.Expr {
+	if td.Name == "" || len(td.TParams) == 0 || len(td.Binds) == 0 {
+		return typeExprFor(td)
+	}
+	args := make([]ast.Expr, 0, len(td.TParams))
+	for _, tp := range td.TParams {
+		btd, ok := td.Binds[tp].(*runtime.TypeDef)
+		if !ok {
+			return typeExprFor(td)
+		}
+		args = append(args, instExprFor(btd))
+	}
+	base := ast.NewIdent(td.Name)
+	if len(args) == 1 {
+		return &ast.IndexExpr{X: base, Index: args[0]}
+	}
+	return &ast.IndexListExpr{X: base, Indices: args}
 }
 
 // sameTypeDef reports whether two typedefs name the same type — the
