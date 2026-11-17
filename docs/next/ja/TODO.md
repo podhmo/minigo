@@ -28,7 +28,7 @@
 
 ## P1: ファイル分割（機械的。ロジックの変更はゼロ）
 
-- [ ] **P1-1 `vm/vm.go` を分割する**: `// ----` セクションに沿って `loop.go`、`frame.go`、`call.go`、`panic.go`、`trace.go`、`sched.go`、`ffi_marshal.go`、`ffi_iface.go`、`const.go`、`binop.go`、`convert.go`、`assert.go`、`generic.go`、`special.go`、`select.go`、`composite.go`、`iter.go` に分ける。完了条件: `git diff --color-moved=dimmed-zebra` で移動だけであることを確認している。
+- [x] **P1-1 `vm/vm.go` を分割する**: `// ----` セクションに沿って `loop.go`、`frame.go`、`call.go`、`panic.go`、`trace.go`、`sched.go`、`ffi_marshal.go`、`ffi_iface.go`、`const.go`、`binop.go`、`convert.go`、`assert.go`、`generic.go`、`special.go`、`select.go`、`composite.go`、`iter.go` に分ける。完了条件: `git diff --color-moved=dimmed-zebra` で移動だけであることを確認している。
 - [ ] **P1-2 `compile/compile.go` を分割する**: `scope.go`、`stmt.go`、`assign.go`、`expr.go`、`call.go`、`lit.go`、`constfold.go`、`typehint.go`、`goto.go`、`special.go` に分ける。完了条件: P1-1 と同じ。
 - [ ] **P1-3 `intrinsics.go` を import パスごとに分割する**: `installStdlib` を `installStrings(h)` などの呼び出しを並べるだけの関数にする。完了条件: P1-1 と同じ。
 - [ ] **P1-4 gosimilarity の R1〜R6 を取り込む**: scratch worktree で検証済みの統合（正味 −452 行、`(*TypeDef).TypeExpr()` を含む）を入れる。[../../sketch/ja/experiment-gosimilarity-refactoring.md](../../sketch/ja/experiment-gosimilarity-refactoring.md)
