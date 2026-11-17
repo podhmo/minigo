@@ -2158,15 +2158,18 @@ func (e *Engine) installStdlib() {
 			// the worker parks in c before running f like gc's
 			// coroutine does, and its exit releases whoever is parked
 			// in c — coroexit's half-switch that does not park itself.
+			// Both parks are registered channel ops, so the rendezvous
+			// counts toward deadlock detection and a process ending
+			// unwinds a parked side with procExit instead of leaking it.
 			vc.Spawn(&runtime.BuiltinFunc{Name: "runtime.newcoro worker", Fn: func(wc runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
-				defer func() { c.ch <- struct{}{} }()
-				<-c.ch
+				defer func() { vm.ParkedChanSend(wc, c.ch) }()
+				vm.ParkedChanRecv(wc, c.ch)
 				_, err := wc.Call(args[0], []runtime.Value{cv})
 				return nil, err
 			}}, nil)
 			return cv, nil
 		}},
-		"coroswitch": &runtime.BuiltinFunc{Name: "runtime.coroswitch", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"coroswitch": &runtime.BuiltinFunc{Name: "runtime.coroswitch", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("runtime.coroswitch needs 1 arg, got %d", len(args))
 			}
@@ -2174,8 +2177,8 @@ func (e *Engine) installStdlib() {
 			if !ok {
 				return nil, fmt.Errorf("runtime.coroswitch needs a *coro, got %T", goNative(args[0]))
 			}
-			c.ch <- struct{}{} // release the goroutine parked in c…
-			<-c.ch             // …and become it
+			vm.ParkedChanSend(vc, c.ch) // release the goroutine parked in c…
+			vm.ParkedChanRecv(vc, c.ch) // …and become it
 			return nil, nil
 		}},
 		"memhash": &runtime.BuiltinFunc{Name: "runtime.memhash", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
