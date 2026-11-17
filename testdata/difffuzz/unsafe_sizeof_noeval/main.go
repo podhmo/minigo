@@ -10,6 +10,13 @@ import (
 const PJ = 5
 const PK = PJ + 1
 
+// a declared iota shadows the predeclared one for the whole package.
+const iota = 10
+const IK = iota
+const PK2 = 4
+
+var shadowed = [...]byte{PK2: 0, math.MaxInt8: 0}
+
 type Pair struct {
 	A int64
 	B int32
@@ -54,4 +61,16 @@ func main() {
 	const PJ = 9
 	fmt.Printf("%v %v\n", unsafe.Sizeof([...]int{math.MaxInt8: f()}), unsafe.Sizeof([...]int{^uint8(0) >> 7 & 3: f()}))
 	fmt.Printf("%v %v\n", unsafe.Sizeof([...]int{PK: f()}), unsafe.Sizeof([...]int{3: f(), f(), 10: f(), f()}))
+	// a declared iota shadows the predeclared one; a re-declared const
+	// folds its initializer against the outer binding; a narrow typed
+	// key does not truncate the position count; and a package var's
+	// literal keys resolve in the decl's scope even where a local
+	// name shadows them.
+	fmt.Printf("%v %v\n", unsafe.Sizeof([...]byte{IK: 0}), unsafe.Sizeof([...]byte{uint8(255): 0, 0}))
+	{
+		const PJ = PJ + 1
+		fmt.Printf("%v\n", unsafe.Sizeof([...]byte{PJ: 0}))
+	}
+	const PK2 = "shadow"
+	fmt.Printf("%v\n", unsafe.Sizeof(shadowed))
 }

@@ -373,6 +373,12 @@ type compiler struct {
 	// var/const initializers (a named cycle would not terminate).
 	opTypDepth int
 
+	// pkgScopeFold marks a const fold as resolving in package scope:
+	// a package-level var's initializer re-derives its literal's shape
+	// at the Sizeof call site, whose local bindings must not shadow
+	// the names the decl's keys mean.
+	pkgScopeFold bool
+
 	// synthImports binds qualifier identifiers minted by
 	// synthImportName to their import refs: an operand or type
 	// expression re-scoped through a foreign package's file refers to
@@ -1460,7 +1466,7 @@ func (c *compiler) stmt(s ast.Stmt) {
 							if t := c.nthResultOpTyp(vals[0], i); t.te != nil {
 								c.fs.noteDeclTyp(vs.Names[i].Name, t.te)
 							} else {
-								c.noteDeclTyp(vs.Names[i].Name, effType, isConst, nil)
+								c.noteDeclTyp(vs.Names[i].Name, effType, isConst, nil, nil)
 							}
 						}
 					}
@@ -1483,15 +1489,22 @@ func (c *compiler) stmt(s ast.Stmt) {
 						}
 						coerceTop()
 					}
-					if slot := c.bindLocal(name.Name, name.Pos(), isConst); !typedConst {
-						coerce(name, slot)
-					}
 					var rhs ast.Expr
 					if i < len(vals) {
 						rhs = vals[i]
 					}
+					// fold before the binding installs the name: a
+					// `const K = K + 1` initializer's K resolves in
+					// the enclosing scope, not against the new K.
+					var cv constant.Value
+					if isConst && rhs != nil {
+						cv, _ = c.scopeConstValue(rhs, 0)
+					}
+					if slot := c.bindLocal(name.Name, name.Pos(), isConst); !typedConst {
+						coerce(name, slot)
+					}
 					markIface(name, rhs)
-					c.noteDeclTyp(name.Name, effType, isConst, rhs)
+					c.noteDeclTyp(name.Name, effType, isConst, rhs, cv)
 				}
 				stampVars()
 				c.iotaVal = -1
@@ -1837,10 +1850,10 @@ func (c *compiler) noteIfaceBinds(st *ast.AssignStmt) {
 		// second name of a comma-ok bind is always bool; a multi-result
 		// call types each name from the callee's signature.
 		if len(st.Rhs) == len(st.Lhs) {
-			c.noteDeclTyp(id.Name, nil, false, st.Rhs[i])
+			c.noteDeclTyp(id.Name, nil, false, st.Rhs[i], nil)
 		} else if len(st.Rhs) == 1 && commaOkStatic(st.Rhs[0]) {
 			if i == 0 {
-				c.noteDeclTyp(id.Name, nil, false, st.Rhs[0])
+				c.noteDeclTyp(id.Name, nil, false, st.Rhs[0], nil)
 			} else {
 				c.fs.noteDeclTyp(id.Name, &ast.Ident{Name: "bool"})
 			}
@@ -1851,7 +1864,7 @@ func (c *compiler) noteIfaceBinds(st *ast.AssignStmt) {
 				}
 				c.fs.noteDeclTyp(id.Name, t.te)
 			} else if i == 0 {
-				c.noteDeclTyp(id.Name, nil, false, st.Rhs[0])
+				c.noteDeclTyp(id.Name, nil, false, st.Rhs[0], nil)
 			}
 		}
 	}
@@ -2030,6 +2043,11 @@ type opTyp struct {
 	// operand (unsafe.Sizeof/Alignof) emit the key positions for a
 	// runtime fold instead of evaluating the elements.
 	elLit *ast.CompositeLit
+	// elPos, parallel to elLit.Elts, bakes the key positions the
+	// decl-scope fold could still see at capture time: a later emit
+	// may run in a scope that shadows the literal's key names, so a
+	// foldable key becomes an int const instead of an emitted expr.
+	elPos []constant.Value
 }
 
 // staticOpTyp resolves the statically-known type of an operand
@@ -2179,17 +2197,31 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 				// so positions fold at compile time through
 				// scopeConstValue (named consts, hex, arithmetic) and
 				// the literal's elements never evaluate.
+				// -2 folds in the literal's package scope (a package
+				// var's initializer re-derived at a use site whose
+				// locals must not shadow the decl's names); -1 folds
+				// in the literal's own scope.
+				mode := -1
+				if c.pkgScopeFold {
+					mode = -2
+				}
+				keyPos := func(e ast.Expr) (int64, bool) {
+					cv, ok := c.scopeConstVal(e, 0, mode)
+					if !ok || cv.Kind() != constant.Int {
+						return 0, false
+					}
+					k, ok := constant.Int64Val(cv)
+					if !ok || k < 0 {
+						return 0, false
+					}
+					return k, true
+				}
 				n, next := int64(0), int64(0)
 				known := true
 				for _, e := range x.Elts {
 					if kv, ok := e.(*ast.KeyValueExpr); ok {
-						cv, ok := c.scopeConstValue(kv.Key, 0)
+						k, ok := keyPos(kv.Key)
 						if !ok {
-							known = false
-							break
-						}
-						k, ok := constant.Int64Val(constant.ToInt(cv))
-						if !ok || k < 0 {
 							known = false
 							break
 						}
@@ -2206,7 +2238,18 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 					// (an imported const, a typed conversion) still
 					// must not evaluate the elements — the caller
 					// emits the key positions for a runtime fold.
-					return opTyp{te: x.Type, elLit: x}
+					// Keys that DO fold here bake their positions:
+					// the emit site may sit in a scope that shadows
+					// the names the literal's keys resolve through.
+					elPos := make([]constant.Value, len(x.Elts))
+					for i, e := range x.Elts {
+						if kv, ok := e.(*ast.KeyValueExpr); ok {
+							if k, ok := keyPos(kv.Key); ok {
+								elPos[i] = constant.MakeInt64(k)
+							}
+						}
+					}
+					return opTyp{te: x.Type, elLit: x, elPos: elPos}
 				}
 				return opTyp{te: &ast.ArrayType{
 					Lbrack: at.Lbrack,
@@ -2250,7 +2293,12 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 				// (`var x = 5` is int).
 				if len(vs.Values) == len(vs.Names) && vd.NameIdx < len(vs.Values) {
 					rhs := vs.Values[vd.NameIdx]
+					// the initializer's names live in the package's
+					// scope — a local binding at the use site must
+					// not shadow what the decl's keys resolve to.
+					c.pkgScopeFold = true
 					t := c.staticOpTyp(rhs)
+					c.pkgScopeFold = false
 					if !t.untyped {
 						return t
 					}
@@ -3174,24 +3222,29 @@ func (c *compiler) certainlyNonConstDepth(e ast.Expr, depth int) bool {
 // not evaluate the operand: the typedef's length folds at run time
 // from the literal's index positions — the keys evaluate in scope the
 // way Go evaluates constant keys — while the elements never run.
-func (c *compiler) emitEllipsisLenFold(cl *ast.CompositeLit, te ast.Expr) {
+func (c *compiler) emitEllipsisLenFold(cl *ast.CompositeLit, te ast.Expr, elPos []constant.Value) {
 	at := te.(*ast.ArrayType)
 	c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindSlice, Anon: at, Pkg: c.pkg, File: c.file, Binds: c.binds, LocalTypes: c.fs.localTypeDefs()}), 0, cl.Pos())
 	c.emit(bytecode.OpConst, c.constIdx(runtime.EllipsisLen), 0, cl.Pos())
-	prev := false
-	for _, e := range cl.Elts {
+	for i, e := range cl.Elts {
 		if kv, ok := e.(*ast.KeyValueExpr); ok {
-			// the key's position — constant or not, evaluated in scope
-			c.expr(kv.Key)
-		} else if prev {
-			// an unkeyed element takes the previous position + 1
-			c.emit(bytecode.OpDup, 0, 0, e.Pos())
-			c.emit(bytecode.OpConst, c.constIdx(int64(1)), 0, e.Pos())
-			c.emit(bytecode.OpBinary, int(bytecode.BinAdd), 0, e.Pos())
+			if i < len(elPos) && elPos[i] != nil {
+				// baked at capture: a use-site binding must not
+				// shadow what the key resolved to at the decl.
+				k, _ := constant.Int64Val(constant.ToInt(elPos[i]))
+				c.emit(bytecode.OpConst, c.constIdx(k), 0, kv.Key.Pos())
+			} else {
+				// the key's position — constant or not, evaluated
+				// in scope; a typed value (uint8(255)) keeps its
+				// own width but the counter counts in int64.
+				c.expr(kv.Key)
+			}
 		} else {
-			c.emit(bytecode.OpConst, c.constIdx(int64(0)), 0, e.Pos())
+			// an unkeyed element resumes after the last position —
+			// emitting a sentinel keeps the count out of the key's
+			// own (possibly narrow) type.
+			c.emit(bytecode.OpConst, c.constIdx(runtime.EllipsisNext), 0, e.Pos())
 		}
-		prev = true
 	}
 	c.emit(bytecode.OpPack, len(cl.Elts), 0, cl.Pos())
 	c.emit(bytecode.OpNil, 0, 0, cl.Pos())
@@ -4133,15 +4186,15 @@ func (c *compiler) selNilable(ref *runtime.ImportRef, name string) (bool, bool) 
 // inferred decl (`var x = e`, `x := e`) takes the initializer's static
 // type when the expression spells one (`x := 5` is int like gc), and an
 // untyped const keeps no type — it adopts like a literal.
-func (c *compiler) noteDeclTyp(name string, effType ast.Expr, isConst bool, rhs ast.Expr) {
+// noteDeclTyp records a declared name's type. preCV is the const
+// initializer folded BEFORE the binding installed — `const K = K + 1`
+// resolves the initializer's names in the enclosing scope, so callers
+// fold the rhs ahead of bindLocal and pass the result here.
+func (c *compiler) noteDeclTyp(name string, effType ast.Expr, isConst bool, rhs ast.Expr, preCV constant.Value) {
 	if isConst {
 		c.fs.noteConstDecl(name)
-		if rhs != nil {
-			// fold in the declaring scope: the initializer's names
-			// resolve here, not wherever the const is later read.
-			if cv, ok := c.scopeConstValue(rhs, 0); ok {
-				c.fs.noteConstVal(name, cv)
-			}
+		if preCV != nil {
+			c.fs.noteConstVal(name, preCV)
 		}
 	}
 	te := effType
@@ -6134,6 +6187,9 @@ func (c *compiler) scopeConstValue(e ast.Expr, depth int) (cv constant.Value, ok
 // pkgIota >= 0 walks a package const's spec — the use site's local
 // bindings and iota are out of scope there; `iota` reads the spec's
 // own index and names resolve only through the package's consts.
+// pkgIota == -2 is package scope outside a const spec (a package var's
+// initializer re-derived at a use site): the same package-only name
+// resolution, but `iota` is undefined.
 func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Value, ok bool) {
 	if depth > 8 {
 		return nil, false
@@ -6152,15 +6208,7 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 	case *ast.ParenExpr:
 		return c.scopeConstVal(x.X, depth+1, pkgIota)
 	case *ast.Ident:
-		if x.Name == "iota" {
-			if pkgIota >= 0 {
-				return constant.MakeInt64(int64(pkgIota)), true
-			}
-			if c.iotaVal >= 0 {
-				return constant.MakeInt64(int64(c.iotaVal)), true
-			}
-		}
-		if pkgIota < 0 {
+		if pkgIota == -1 {
 			if b := c.fs.lookupBinding(x.Name); b != nil && b.constVal != nil {
 				return b.constVal, true
 			}
@@ -6179,6 +6227,18 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 						return c.scopeConstVal(v, depth+1, cd.Idx)
 					}
 				}
+			}
+		}
+		if x.Name == "iota" {
+			// iota is a predeclared identifier, not a keyword — a
+			// declared iota (`const iota = 10`) shadows it, so the
+			// spec index reads only when nothing else resolved the
+			// name.
+			if pkgIota >= 0 {
+				return constant.MakeInt64(int64(pkgIota)), true
+			}
+			if pkgIota == -1 && c.iotaVal >= 0 {
+				return constant.MakeInt64(int64(c.iotaVal)), true
 			}
 		}
 		return nil, false
@@ -6800,7 +6860,7 @@ unwrapped:
 					// and the resolved typedef answers the size.
 					c.emit(bytecode.OpNil, 0, 0, x.Pos())
 					if cl := ot.elLit; cl != nil {
-						c.emitEllipsisLenFold(cl, te)
+						c.emitEllipsisLenFold(cl, te, ot.elPos)
 					} else {
 						c.typeExpr(te)
 					}
