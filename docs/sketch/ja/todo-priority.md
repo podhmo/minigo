@@ -15,6 +15,7 @@
 - 逆方向の差分 (gc はコンパイルエラーにする入力を minigo が受理する) は実害が小さいので低寄り
 - `unverified` / 未計測 / 条件付き ("実ユースケースが出たら") / 到達不能の項目は低寄り
 - 表示 (`%T`・要素順) だけの差分は低寄り
+- 性能系は「明らかに遅いものを native 化する」ものだけ中寄り、それ以外 (interpreter 内部 tuning) は低。[experiment-oapi-codegen-perf](../experiment-oapi-codegen-perf.md) で "running work natively was the only lever worth more than ~7%"、[experiment-frame-path-perf](../experiment-frame-path-perf.md) でも landed 済みの cache 系を除くと残りの profile は flat (単一点 ~5% 以下) で、内部 tuning には天井があることが分かっている
 
 ## 高
 
@@ -98,33 +99,14 @@
 - **io helper edge cases** — nil `*bytes.Buffer` への `io.Copy` が panic しない、`MyBuf(b)` 変換 trap、`json.NewDecoder`/`Indent`/`Compact`、`hex`/`base64` encoder、`bufio.NewReadWriter` が未 bind
 - **`--src` 系**: `--src errors` traps `cannot use interface value as EmptyInterface` in `abi.TypeOf` — source-interpreted `errors.As`/`Is` の経路
 
-### 性能 (realworld `grafana-openapi` 実測ベース)
+### 性能: 明らかに遅い部分の native 化・host 境界
 
-重い script を ~3min の痛み閾値から遠ざけるためのもの。大きい順に概ね:
-
-- **frame allocation** (`prepFrame`, ~700MB/34%) — frame の pool 化または arena
-- **`chunkCellsEscape` is true for nearly every chunk** — optimistic pool + "leaked" flag で ~-9% wall (計測済み upper bound)
-- **interface satisfaction walks the dynamic method set twice** (`methodWalkU`, ~359MB/17%) — 1 walk で両 view
-- **operand stack grows from empty on every call** (`frame.push`, ~244MB) — compile-time max depth で一括確保
-- **`runtime.Tag` allocates a fresh `*Named` per tagging** (~208MB) — 同 tag 再 tag の box 再利用
-- **non-param locals are allocated twice** — `prepFrame` 事前充填 + `OpNewLocal` の二重化
-- **selector resolution re-searches by name** — `Def`+name → path の cache (dynamic re-dispatch は残す)
-- **global resolution cost per `OpGlobal`** — `fileOf`+mutex `Env.Get` の inline cache (generation counter で invalidate)
-- **every local is a heap `*Cell`** — capture/address-taken を compile 時に分類して plain slot 化
-- **#485's selector lowering costs ~0.2 s** — var base の `refTargetBase` を pointer-receiver call に限定
-- **`append` builds a whole zero value to learn the element type** — `VMCaller.ElemTypeOf(td)` で直接 typedef 解決
-- **generic calls still pay per-call key spelling and type re-specialization** — call-site inline cache
-- **gosimilarity residuals** — `prepFrameSeen` ~19GB、`arity` の `[]any` ~1.9GB、`CanonicalKey` ~3GB
-- **`Map.Delete` is O(n)** — tombstone index (synthetic のみ、低でもよい)
-
-### host 境界の per-byte / per-call コスト
+「native で実行する」のみが ~7% を超える lever だった (experiment-oapi-codegen-perf) ので、性能で中に残すのはこの系だけ。
 
 - **close the `os.ReadFile` gap to plain Go** — 32MB で ~560MB RSS。compact `[]byte` 表現か `string(...)` 直行 fast path
 - **residual per-byte costs at the host boundary** — `[]any` 経由の `[]byte` 引数、Read 後の全バッファ copy-back、`namedSized`/`sizedIntTyp` の per-call コスト
-- **per-call cost of host methods and interpreted stream packages** — bound method ~0.8µs/call、`bufio.Scanner` 320k 行 ~420ms
+- **per-call cost of host methods and interpreted stream packages** — bound method ~0.8µs/call、`bufio.Scanner` 320k 行 ~420ms、解釈実行の `compress/gzip` ~2s/320KB (native bind が lever)
 - **perf: ~90µs per 1-byte script `Read` via `io.Copy` / `io.ReadAll`** — proxy Read ごとの全バッファ往復
-- **perf: arithmetic on named-int values is slower than on plain ints** — `binaryOpFlags` の `Named{int64}` fast path
-- **range-over-func pays a Go call per element; no compiler lowering** — script 記述 `iter.Seq` が `VMCaller.Call`/要素 (~2x)
 
 ### 基盤・ツール (採用済みの方向)
 
@@ -217,6 +199,27 @@ experiment でまだ merge するか未決の親 (`[-]`) の子なので、親�
 
 - **`Engine.Call`: opt-in write-through for container args** — "実 write-back ユースケースが出たら" の条件付き
 - **Story preview: generate display data from types** — "hand-written fixture が苦になってから" の条件付き
+
+### 性能: interpreter 内部 tuning (realworld `grafana-openapi` 実測ベース)
+
+重い script を ~3min の痛み閾値から遠ざけるためのものだが、内部 tuning には天井がある (上の基準参照) ので低に置く。再開するときのため大きい順に概ね残す:
+
+- **frame allocation** (`prepFrame`, ~700MB/34%) — frame の pool 化または arena
+- **`chunkCellsEscape` is true for nearly every chunk** — optimistic pool + "leaked" flag で ~-9% wall (計測済み upper bound)
+- **interface satisfaction walks the dynamic method set twice** (`methodWalkU`, ~359MB/17%) — 1 walk で両 view
+- **operand stack grows from empty on every call** (`frame.push`, ~244MB) — compile-time max depth で一括確保
+- **`runtime.Tag` allocates a fresh `*Named` per tagging** (~208MB) — 同 tag 再 tag の box 再利用
+- **non-param locals are allocated twice** — `prepFrame` 事前充填 + `OpNewLocal` の二重化
+- **selector resolution re-searches by name** — `Def`+name → path の cache (dynamic re-dispatch は残す)
+- **global resolution cost per `OpGlobal`** — `fileOf`+mutex `Env.Get` の inline cache (generation counter で invalidate)
+- **every local is a heap `*Cell`** — capture/address-taken を compile 時に分類して plain slot 化
+- **#485's selector lowering costs ~0.2 s** — var base の `refTargetBase` を pointer-receiver call に限定
+- **`append` builds a whole zero value to learn the element type** — `VMCaller.ElemTypeOf(td)` で直接 typedef 解決
+- **generic calls still pay per-call key spelling and type re-specialization** — call-site inline cache
+- **gosimilarity residuals** — `prepFrameSeen` ~19GB、`arity` の `[]any` ~1.9GB、`CanonicalKey` ~3GB
+- **`Map.Delete` is O(n)** — tombstone index (synthetic のみ)
+- **perf: arithmetic on named-int values is slower than on plain ints** — `binaryOpFlags` の `Named{int64}` fast path
+- **range-over-func pays a Go call per element; no compiler lowering** — script 記述 `iter.Seq` が `VMCaller.Call`/要素 (~2x)
 
 ### 設計変更が大きい・既知の壁
 
