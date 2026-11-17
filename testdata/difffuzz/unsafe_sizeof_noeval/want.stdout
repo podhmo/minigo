@@ -1,0 +1,10 @@
+after Sizeof
+uintptr 8
+uintptr 24
+8
+uintptr 4
+uintptr 8
+16
+8
+16
+16 4
