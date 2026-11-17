@@ -10136,6 +10136,32 @@ func (v *VM) park(w parkWake) func() {
 	}
 }
 
+// ParkedChanSend sends on ch parked like a script channel op: the block
+// counts toward deadlock detection — a rendezvous channel like
+// iter.Pull's coroutine is resumed only by a script goroutine, so it
+// reports no external wake source — and the op unwinds with a procExit
+// panic when vc's process ends instead of parking past it.
+func ParkedChanSend(vc runtime.VMCaller, ch chan struct{}) {
+	unpark := vcPark(vc, parkWake{})
+	defer unpark()
+	select {
+	case ch <- struct{}{}:
+	case <-procDoneOf(vc):
+		panic(procExit{})
+	}
+}
+
+// ParkedChanRecv is ParkedChanSend's receive half.
+func ParkedChanRecv(vc runtime.VMCaller, ch chan struct{}) {
+	unpark := vcPark(vc, parkWake{})
+	defer unpark()
+	select {
+	case <-ch:
+	case <-procDoneOf(vc):
+		panic(procExit{})
+	}
+}
+
 // vcPark is park for code holding only a runtime.VMCaller (e.g.
 // callReflectFunc's blocking-host join).
 func vcPark(vc runtime.VMCaller, w parkWake) func() {

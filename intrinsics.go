@@ -1114,6 +1114,18 @@ func (e *Engine) installStdlib() {
 			return make([]byte, int(int64Of(a[0]))), nil
 		}),
 	})
+	e.Bind("internal/race", map[string]runtime.Value{
+		// the interpreter runs no race detector: iter.Pull's
+		// race.Acquire/Release/Write calls are no-ops — the coroutine
+		// rendezvous itself carries the synchronization.
+		"Acquire":      h.fn("internal/race.Acquire", func(a []any) (any, error) { return nil, nil }),
+		"Release":      h.fn("internal/race.Release", func(a []any) (any, error) { return nil, nil }),
+		"ReleaseMerge": h.fn("internal/race.ReleaseMerge", func(a []any) (any, error) { return nil, nil }),
+		"Read":         h.fn("internal/race.Read", func(a []any) (any, error) { return nil, nil }),
+		"Write":        h.fn("internal/race.Write", func(a []any) (any, error) { return nil, nil }),
+		"Disable":      h.fn("internal/race.Disable", func(a []any) (any, error) { return nil, nil }),
+		"Enable":       h.fn("internal/race.Enable", func(a []any) (any, error) { return nil, nil }),
+	})
 	e.Bind("internal/stringslite", map[string]runtime.Value{
 		"HasPrefix": h.fn2("stringslite.HasPrefix", func(a []any) (any, error) { return strings.HasPrefix(str(a[0]), str(a[1])), nil }),
 		"HasSuffix": h.fn2("stringslite.HasSuffix", func(a []any) (any, error) { return strings.HasSuffix(str(a[0]), str(a[1])), nil }),
@@ -2132,6 +2144,42 @@ func (e *Engine) installStdlib() {
 			// the decl is `func rand() uint64`; returning int64 would
 			// leak a different dynamic type to the script side.
 			return uint64(binary.LittleEndian.Uint64(b[:])), nil
+		}},
+		// the coroutine leaves iter.Pull/Pull2 linkname to: a coro is a
+		// rendezvous holding exactly one parked goroutine — coroswitch
+		// releases the one parked inside and parks the caller, so the
+		// seq worker and the next/stop caller alternate control.
+		"newcoro": &runtime.BuiltinFunc{Name: "runtime.newcoro", RetainsArgs: true, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("runtime.newcoro needs 1 arg, got %d", len(args))
+			}
+			c := &scriptCoro{ch: make(chan struct{})}
+			cv := &runtime.GoValue{V: c}
+			// the worker parks in c before running f like gc's
+			// coroutine does, and its exit releases whoever is parked
+			// in c — coroexit's half-switch that does not park itself.
+			// Both parks are registered channel ops, so the rendezvous
+			// counts toward deadlock detection and a process ending
+			// unwinds a parked side with procExit instead of leaking it.
+			vc.Spawn(&runtime.BuiltinFunc{Name: "runtime.newcoro worker", Fn: func(wc runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
+				defer func() { vm.ParkedChanSend(wc, c.ch) }()
+				vm.ParkedChanRecv(wc, c.ch)
+				_, err := wc.Call(args[0], []runtime.Value{cv})
+				return nil, err
+			}}, nil)
+			return cv, nil
+		}},
+		"coroswitch": &runtime.BuiltinFunc{Name: "runtime.coroswitch", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("runtime.coroswitch needs 1 arg, got %d", len(args))
+			}
+			c, ok := goNative(args[0]).(*scriptCoro)
+			if !ok {
+				return nil, fmt.Errorf("runtime.coroswitch needs a *coro, got %T", goNative(args[0]))
+			}
+			vm.ParkedChanSend(vc, c.ch) // release the goroutine parked in c…
+			vm.ParkedChanRecv(vc, c.ch) // …and become it
+			return nil, nil
 		}},
 		"memhash": &runtime.BuiltinFunc{Name: "runtime.memhash", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 3 {
@@ -3606,6 +3654,14 @@ func lockerOf(vc runtime.VMCaller, v runtime.Value) (sync.Locker, error) {
 		return &scriptLocker{vc: vc, lock: lock, unlock: unlock}, nil
 	}
 	return nil, fmt.Errorf("sync.NewCond: cannot use %T as sync.Locker", v)
+}
+
+// scriptCoro emulates runtime's coro for the iter.Pull/Pull2 linknames:
+// a rendezvous that always holds exactly one parked goroutine — either
+// the seq worker (waiting to run or suspended in yield) or the next/
+// stop caller that switched into it.
+type scriptCoro struct {
+	ch chan struct{}
 }
 
 // scriptLocker adapts a script value with Lock/Unlock methods to a host
