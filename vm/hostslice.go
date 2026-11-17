@@ -48,7 +48,25 @@ func UnboxHostSlice(x runtime.Value) (runtime.Value, bool) {
 	if rv.Type().Name() != "" {
 		rv = rv.Convert(reflect.SliceOf(rv.Type().Elem()))
 	}
-	return goValueOf(rv), true
+	var td *runtime.TypeDef
+	if n, isNamed := x.(*runtime.Named); isNamed && n.Typ != nil && n.Typ.Name != "" {
+		// a named host slice (net.IP) keeps its own typedef — the
+		// name carries the host methods and the %T spelling.
+		td = n.Typ
+	} else {
+		td = anonSliceTypX(anonExprOf(rv.Type().Elem()))
+		td.Elem = hostPkgElemTypedef(rv.Type().Elem())
+	}
+	if rv.IsNil() {
+		return &runtime.TypedNil{Typ: td}, true
+	}
+	// the snapshot copies element-wise — goValueOf keeps a slice's
+	// box, which is the wrong shape for a mutable snapshot.
+	el := make([]runtime.Value, rv.Len())
+	for i := range el {
+		el[i] = goValueOf(rv.Index(i))
+	}
+	return &runtime.Slice{Elems: el, Typ: td}, true
 }
 
 // hostSliceLike boxes hv, a host slice derived from host, the way host was

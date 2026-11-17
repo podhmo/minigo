@@ -4224,37 +4224,27 @@ func goValueOf(rv reflect.Value) runtime.Value {
 		// dispatch through reflection and binaryOp unwraps for arithmetic.
 		return v
 	case []byte:
-		// []byte unmarshals to a slice of int64s so `string(b)` and
-		// indexing behave like Go source suggests. A nil slice is a
-		// typed nil so `b == nil` reads like Go.
+		// a host []byte keeps its box so element writes reach the
+		// backing (b.Bytes()[0] = x mutates the buffer); reads unbox
+		// on demand. A nil slice is a typed nil so `b == nil` reads
+		// like Go.
 		if v == nil {
 			return &runtime.TypedNil{Typ: anonSliceTyp("byte")}
 		}
-		el := make([]runtime.Value, len(v))
-		for i, b := range v {
-			el[i] = runtime.ByteValue(b)
-		}
-		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("byte")}
+		return runtime.Tag(anonSliceTyp("byte"), &runtime.GoValue{V: v})
 	case []string:
 		if v == nil {
 			return &runtime.TypedNil{Typ: anonSliceTyp("string")}
 		}
-		el := make([]runtime.Value, len(v))
-		for i, s := range v {
-			el[i] = s
-		}
-		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("string")}
+		return runtime.Tag(anonSliceTyp("string"), &runtime.GoValue{V: v})
 	case []any:
 		// a `chan any` send deep-hosts script containers (see deepHost);
-		// the receive rehydrates the flat slice shape so indexing works.
+		// the box keeps them, and each element read restores its
+		// script shape through the per-element goValueOf.
 		if v == nil {
 			return &runtime.TypedNil{Typ: anonSliceTyp("any")}
 		}
-		el := make([]runtime.Value, len(v))
-		for i, e := range v {
-			el[i] = goValueOf(reflect.ValueOf(e))
-		}
-		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("any")}
+		return runtime.Tag(anonSliceTyp("any"), &runtime.GoValue{V: v})
 	case map[any]any:
 		if v == nil {
 			return &runtime.TypedNil{Typ: &runtime.TypeDef{Kind: runtime.KindMap,
@@ -4286,10 +4276,11 @@ func goValueOf(rv reflect.Value) runtime.Value {
 		// form, keeping its tag for script type asserts.
 		return namedLoadValue(v)
 	default:
-		// an unnamed host slice/array ([N]T, []T) unboxes element-wise so
-		// indexing and range work; a named slice type keeps its box to
-		// preserve method dispatch. A nil slice is a typed nil so
-		// `v == nil` reads like Go.
+		// an unnamed host slice keeps its box so writes reach the
+		// host backing; a named slice type also keeps its box to
+		// preserve method dispatch; an unnamed array unboxes
+		// element-wise (a host array value is a copy anyway). A nil
+		// slice is a typed nil so `v == nil` reads like Go.
 		switch rv.Kind() {
 		case reflect.Slice:
 			if rv.IsNil() && rv.Type().Name() != "" {
@@ -4305,11 +4296,11 @@ func goValueOf(rv reflect.Value) runtime.Value {
 				if rv.IsNil() {
 					return &runtime.TypedNil{Typ: td}
 				}
-				el := make([]runtime.Value, rv.Len())
-				for i := range el {
-					el[i] = goValueOf(rv.Index(i))
-				}
-				return &runtime.Slice{Elems: el, Typ: td}
+				// keep the box — element writes (sort.Strings,
+				// s[i] = v, copy) reach the host backing; reads
+				// unbox on demand. The tag keeps the element
+				// identity for %T and coercion.
+				return runtime.Tag(td, &runtime.GoValue{V: x})
 			}
 		case reflect.Map:
 			if rv.IsNil() && rv.Type().Name() != "" {
@@ -7373,6 +7364,12 @@ func (v *VM) hostArgAs(fr *frame, x runtime.Value, td *runtime.TypeDef, depth in
 	}
 	switch utd.Kind {
 	case runtime.KindSlice:
+		// a host slice reads boxed now — unbox to its script
+		// snapshot so the generic-projection lift below sees its
+		// elements.
+		if s, ok := UnboxHostSlice(x); ok {
+			x = s
+		}
 		switch s := x.(type) {
 		case *runtime.TypedNil:
 			if hostGenericTyp(s.Typ) {
@@ -13802,6 +13799,17 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 			if rv := reflect.ValueOf(sx.V); rv.Kind() == reflect.String {
 				return rv.String(), nil
 			}
+			// a boxed host []byte or []rune converts through its
+			// backing; the element must be exactly byte/rune like gc
+			// ([]MyByte does not convert).
+			if rv := reflect.ValueOf(sx.V); rv.Kind() == reflect.Slice {
+				switch rv.Type().Elem() {
+				case reflect.TypeFor[byte]():
+					return string(rv.Interface().([]byte)), nil
+				case reflect.TypeFor[rune]():
+					return string(rv.Interface().([]rune)), nil
+				}
+			}
 		default:
 			// a raw host scalar of integer kind (time.Duration)
 			// converts like int64: string(time.Duration(65)) is "A".
@@ -15921,6 +15929,12 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		if s, ok := runtime.Unwrap(n.V).(*runtime.Slice); ok &&
 			sameSpelledTwin(n.Typ, td) && v.peelNamed(td).Kind == runtime.KindSlice {
 			return stampContainerTyp(s, td)
+		}
+		// a boxed host slice binds a slice slot whose element type is
+		// the host element's twin — a host []*ast.Ident into go/ast's
+		// `[]N` with N bound to *Ident, like the nil case below.
+		if _, ok := n.V.(*runtime.GoValue); ok && v.hostElemTwin(f, n.Typ, td) {
+			return x
 		}
 		f.trap("cannot use %s as %s", tdName(n.Typ), tdName(td))
 	}

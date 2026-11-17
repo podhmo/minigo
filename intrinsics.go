@@ -4950,12 +4950,28 @@ func goNativeWalk(v runtime.Value, w *runtime.Walk) any {
 				return hv
 			}
 		}
+		// a named host box prints through its own methods (net.IP's
+		// String) — only an anonymous slice box descends to the
+		// element-wise unboxing below.
+		if gv, ok := x.V.(*runtime.GoValue); ok && x.Typ != nil && x.Typ.Name != "" {
+			return gv.V
+		}
 		return goNativeWalk(x.V, w)
 	case *runtime.Cell:
 		return goNativeWalk(x.Elem, w)
 	case *runtime.Struct:
 		return fmt.Sprintf("%s%+v", x.Def.Name, x.Fields)
 	case *runtime.GoValue:
+		// a boxed host slice hands an intrinsic the script snapshot it
+		// would have seen when host slices unboxed at the boundary —
+		// strSlice & friends switch on *runtime.Slice, not []string.
+		// A named slice (net.IP) keeps its box: it prints through its
+		// own methods.
+		if rt := reflect.TypeOf(x.V); rt == nil || rt.Name() == "" {
+			if s, ok := vm.UnboxHostSlice(x); ok {
+				return goNativeWalk(s, w)
+			}
+		}
 		return x.V
 	default:
 		return v
