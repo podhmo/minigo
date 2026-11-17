@@ -2152,37 +2152,38 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 		return opTyp{}
 	case *ast.CompositeLit:
 		if at, ok := x.Type.(*ast.ArrayType); ok {
-			if el, isEl := at.Len.(*ast.Ellipsis); isEl {
+			if _, isEl := at.Len.(*ast.Ellipsis); isEl {
 				// [...]T{...}: the declared length is the highest
-				// keyed index + 1 (or the element count) — the
-				// ellipsis itself carries none.
-				n, next := 0, 0
-				known := true
+				// position + 1. Build it as an expression —
+				// `max(k+1, ...)` over each element's position —
+				// so named-const, hex and arithmetic keys fold
+				// through emitLenFolds like Go's constant keys,
+				// and the literal's elements never evaluate.
+				one := &ast.BasicLit{Kind: token.INT, Value: "1"}
+				plus1 := func(e ast.Expr) ast.Expr {
+					return &ast.BinaryExpr{X: e, Op: token.ADD, OpPos: x.Lbrace, Y: one}
+				}
+				next := ast.Expr(&ast.BasicLit{Kind: token.INT, Value: "0"})
+				var ps []ast.Expr
 				for _, e := range x.Elts {
 					if kv, ok := e.(*ast.KeyValueExpr); ok {
-						lit, isInt := kv.Key.(*ast.BasicLit)
-						k, err := 0, error(nil)
-						if isInt && lit.Kind == token.INT {
-							k, err = strconv.Atoi(lit.Value)
-						}
-						if !isInt || err != nil || k < 0 {
-							known = false
-							break
-						}
-						next = k + 1
+						ps = append(ps, kv.Key)
+						next = plus1(kv.Key)
 					} else {
-						next++
-					}
-					if next > n {
-						n = next
+						ps = append(ps, next)
+						next = plus1(next)
 					}
 				}
-				if !known {
-					return opTyp{}
+				lenExpr := ast.Expr(&ast.BasicLit{Kind: token.INT, Value: "0"})
+				if len(ps) > 0 {
+					lenExpr = plus1(&ast.CallExpr{
+						Fun:  &ast.Ident{Name: "max", NamePos: x.Lbrace},
+						Args: ps,
+					})
 				}
 				return opTyp{te: &ast.ArrayType{
 					Lbrack: at.Lbrack,
-					Len:    &ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(n), ValuePos: el.Ellipsis},
+					Len:    lenExpr,
 					Elt:    at.Elt,
 				}}
 			}

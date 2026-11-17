@@ -35,4 +35,8 @@ func main() {
 	var r unicode.Range16
 	fmt.Printf("%v %v\n", unsafe.Sizeof(r), unsafe.Offsetof(r.Hi))
 	fmt.Printf("%v %v\n", unsafe.Sizeof([...]int{1, 2}), unsafe.Sizeof([...]int{9: 1}))
+	// named-const and non-decimal keys fold to the length too, and
+	// the elements still never evaluate.
+	const K = 5
+	fmt.Printf("%v %v\n", unsafe.Sizeof([...]int{K: f()}), unsafe.Sizeof([...]int{0x10: f(), 1}))
 }
