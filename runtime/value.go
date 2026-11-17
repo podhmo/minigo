@@ -2546,6 +2546,96 @@ type MemberShapeZeroCaller interface {
 	Zeroer
 }
 
+// CallerRef is an opaque caller handed to helpers that only probe it
+// for optional capabilities (constAtWidth's ConstMaterializer) or
+// forward it opaquely — nothing is required of it statically.
+type CallerRef = any
+
+// ValTyper answers the typedef of a runtime value.
+type ValTyper interface {
+	TypeOf(x Value) *TypeDef
+}
+
+// Converter applies the T(x) conversion.
+type Converter interface {
+	Convert(td *TypeDef, x Value) (Value, error)
+}
+
+// Equaler compares two values of a typedef.
+type Equaler interface {
+	Equal(td *TypeDef, a, b Value) bool
+}
+
+// ElemZeroer builds the element-type zero of a container typedef.
+type ElemZeroer interface {
+	ElemZero(td *TypeDef) Value
+}
+
+// ArraySizer reports an array typedef's length.
+type ArraySizer interface {
+	ArrayLenOf(td *TypeDef) (n int64, ok bool)
+}
+
+// MapKeyer applies the declared-key-type check indexing runs.
+type MapKeyer interface {
+	MapKeyOperand(mapTd *TypeDef, key Value) Value
+}
+
+// NewMapper builds an empty map for a map typedef.
+type NewMapper interface {
+	NewMap(td *TypeDef) *Map
+}
+
+// ConvertTyper converts values and types them — the unify/min-max
+// operand helpers' capability.
+type ConvertTyper interface {
+	Converter
+	ValTyper
+}
+
+// ElemZeroTyper types values and builds element zeros — the
+// errors-matcher and json-alloc helpers' capability.
+type ElemZeroTyper interface {
+	ValTyper
+	ElemZeroer
+}
+
+// TypeMemberCaller calls members and types values — the encoding/json
+// error path's capability.
+type TypeMemberCaller interface {
+	MemberCaller
+	ValTyper
+}
+
+// MemberShapeTyper is MemberShapeCaller plus value typing — the
+// encoding/json marshal entry's capability.
+type MemberShapeTyper interface {
+	MemberShapeCaller
+	ValTyper
+}
+
+// ErrMatchCaller probes members and types/zeros values — the
+// errors.As/Is target matcher's capability.
+type ErrMatchCaller interface {
+	MemberLookup
+	ElemZeroTyper
+}
+
+// ElemOperandTyper converts values and answers element typedefs — the
+// element-operand helpers' capability.
+type ElemOperandTyper interface {
+	Converter
+	ElemTyper
+}
+
+// IndexTyper converts, compares and answers element typedefs — the
+// slice-index helpers' capability.
+type IndexTyper interface {
+	Converter
+	Equaler
+	ElemTyper
+}
+
 // CallSite is one script call-stack entry: the function's Go-style symbol name (as runtime.Func.Name reports it)
 // and the source position it is executing.
 type CallSite struct {
@@ -2963,7 +3053,7 @@ type panicPrintFatal struct {
 // describe spells the inner panic on gc's fatal line — `type <T>` for
 // every payload but a bare string, which prints its own text
 // (`panic while printing panic value: inner-str`).
-func (pf *panicPrintFatal) describe(c VMCaller) string {
+func (pf *panicPrintFatal) describe(c ValTyper) string {
 	v := pf.inner.Value
 	if uc, ok := v.(*UConst); ok {
 		if nv, err := UConstNative(uc); err == nil {
@@ -2980,7 +3070,7 @@ func (pf *panicPrintFatal) describe(c VMCaller) string {
 // (`type runtime.errorString`): the payload's static type — host error
 // payloads name their Go runtime counterparts, script values their
 // declared type.
-func (pf *panicPrintFatal) typeName(c VMCaller) string {
+func (pf *panicPrintFatal) typeName(c ValTyper) string {
 	switch re := pf.inner.Value.(type) {
 	case *RuntimeError:
 		if re.Kind != "" {
@@ -3037,7 +3127,7 @@ func (*PanicNilError) Error() string {
 // named scalar prints `pkg.T(v)` — except a predeclared name, whose
 // payload prints bare. c may be nil — without an engine the method
 // probes and type spelling are skipped and the value renders as %v.
-func panicValue(v Value, c VMCaller) any {
+func panicValue(v Value, c TypeMemberCaller) any {
 	switch t := v.(type) {
 	case *GoValue:
 		return t.V

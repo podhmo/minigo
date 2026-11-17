@@ -321,7 +321,7 @@ func (h *hostHelpers) wffn(name string, formatAt, minArgs int, f func(runtime.VM
 // fmtValue wraps one script value for host fmt: Format renders %v/%+v/%#v
 // with Go's composite layout and honors script String/Error/GoString.
 type fmtValue struct {
-	c     runtime.VMCaller
+	c     runtime.MemberCaller
 	x     runtime.Value
 	et    *runtime.TypeDef // declared element/field typedef, for bad-verb naming
 	depth int
@@ -358,7 +358,7 @@ func nested(f fmt.State) fmt.State {
 // %p so rewriteTypeVerbs substitutes this string. Typed nils print 0x0
 // like Go; slices, maps, chans and script pointers print an address;
 // anything else produces Go's %!p(type=value) marker.
-func ptrSpelling(c runtime.VMCaller, x runtime.Value) string {
+func ptrSpelling(c runtime.MemberCaller, x runtime.Value) string {
 	zs := zeroState{}
 	switch t := x.(type) {
 	case runtime.Nil:
@@ -416,7 +416,7 @@ func ptrSpelling(c runtime.VMCaller, x runtime.Value) string {
 // arg (a nil-receiver-friendly Error still prints), but a panic from
 // one renders <nil> rather than the PANIC marker — gc's catchPanic
 // swaps the marker for <nil> when the arg is a nil pointer.
-func ifaceCallStringPanic(c runtime.VMCaller, x runtime.Value, name string) (string, bool, *runtime.Panic) {
+func ifaceCallStringPanic(c runtime.MemberCaller, x runtime.Value, name string) (string, bool, *runtime.Panic) {
 	s, ok, pan := runtime.IfaceCallStringPanic(c, x, name)
 	if pan != nil && fmtNilPointer(x) {
 		return "", false, nil
@@ -1088,7 +1088,7 @@ func withWidth(f fmt.State, s string) string {
 // callFormatReport invokes a script Formatter like callFormat, and
 // also reports a panic the call raised — fmt's catchPanic turns it into
 // the %!v(PANIC=Format method: ...) marker rather than a silent miss.
-func callFormatReport(c runtime.VMCaller, x runtime.Value, f fmt.State, verb rune) (bool, *runtime.Panic) {
+func callFormatReport(c runtime.MemberCaller, x runtime.Value, f fmt.State, verb rune) (bool, *runtime.Panic) {
 	m, ok := runtime.IfaceMember(c, x, "Format")
 	if !ok {
 		return false, nil
@@ -1155,7 +1155,7 @@ func isNamedString(x runtime.Value) bool {
 // operands rule (only when neither is a string) sees the real scalars.
 // Returns the host args plus the flattened script args for spec
 // rewriting (%T/%p positional lookup).
-func fmtArgs(v runtime.VMCaller, args []runtime.Value) ([]any, []runtime.Value) {
+func fmtArgs(v runtime.MemberCaller, args []runtime.Value) ([]any, []runtime.Value) {
 	a := make([]any, 0, len(args))
 	flat := make([]runtime.Value, 0, len(args))
 	for _, x := range args {
@@ -1177,7 +1177,7 @@ func fmtArgs(v runtime.VMCaller, args []runtime.Value) ([]any, []runtime.Value) 
 // display and fmtArg share it so a UConst never spills its untyped
 // reading into output. ok is false when x holds no UConst, the caller
 // can't materialize, or the conversion fails.
-func constAtWidth(v runtime.VMCaller, x *runtime.Named) (runtime.Value, bool) {
+func constAtWidth(v runtime.CallerRef, x *runtime.Named) (runtime.Value, bool) {
 	u, ok := x.V.(*runtime.UConst)
 	if !ok {
 		return nil, false
@@ -1195,7 +1195,7 @@ func constAtWidth(v runtime.VMCaller, x *runtime.Named) (runtime.Value, bool) {
 
 // fmtArg routes a script value into a host fmt call: scalars unbox to
 // Go natives; composites keep their script shape inside a fmtValue.
-func fmtArg(v runtime.VMCaller, x runtime.Value) any {
+func fmtArg(v runtime.MemberCaller, x runtime.Value) any {
 	switch x := x.(type) {
 	case *runtime.Named:
 		// a fmtValue box inside the payload is already the argument
@@ -1259,7 +1259,7 @@ func fmtArg(v runtime.VMCaller, x runtime.Value) any {
 // stays wrapped so its String still yields Go's nested `<T Value>` form
 // — while every other payload formats as the viewed value under any
 // verb. %T/%p are rewritten before this runs (rewriteTypeVerbs).
-func fmtRValue(c runtime.VMCaller, rv *minireflect.RValue) any {
+func fmtRValue(c runtime.MemberCaller, rv *minireflect.RValue) any {
 	if !rv.IsValid() {
 		return "<invalid reflect.Value>"
 	}

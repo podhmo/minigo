@@ -562,7 +562,7 @@ func (e *Env) zero(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, er
 
 // zeroOf produces t's zero: delegate to the VM's zero when a caller is
 // bound (it honors HostNew and co. via runtime.Zero anyway).
-func (e *Env) zeroOf(vc runtime.VMCaller, td *runtime.TypeDef) runtime.Value {
+func (e *Env) zeroOf(vc runtime.Zeroer, td *runtime.TypeDef) runtime.Value {
 	if vc != nil && td != nil && td.HostNew == nil {
 		if z := vc.Zero(td); z != nil {
 			return z

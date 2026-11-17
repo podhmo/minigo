@@ -118,7 +118,7 @@ func makeHostType(td *runtime.TypeDef, args []runtime.Value) (runtime.Value, boo
 // the host slice itself is reordered while the script less function reads
 // it by index, as the slice the script passed. ok is false when x is no
 // host slice.
-func hostSortSlice(v runtime.VMCaller, x, less runtime.Value, stable bool) bool {
+func hostSortSlice(v runtime.ScriptCaller, x, less runtime.Value, stable bool) bool {
 	_, rv, ok := vm.HostSliceOf(x)
 	if !ok {
 		return false

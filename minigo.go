@@ -409,7 +409,7 @@ type linkEntry struct {
 // net/http's readMIMEHeader (which links to net/textproto's) otherwise
 // compile to the zero-return shim and silently lose parsed data. A
 // one-arg directive exports the local name only, so it resolves nothing.
-func (e *Engine) linknameTarget(vc runtime.VMCaller, fn *runtime.Function) (runtime.Value, bool, error) {
+func (e *Engine) linknameTarget(vc runtime.ScriptCaller, fn *runtime.Function) (runtime.Value, bool, error) {
 	if fn == nil || fn.Decl == nil || fn.Decl.Body != nil || fn.Decl.Doc == nil {
 		return nil, false, nil
 	}

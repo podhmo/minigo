@@ -507,7 +507,7 @@ func scriptMapSeqArg(vc runtime.SeqTyper, v runtime.Value) (m *runtime.Map, kt, 
 // keys already carry their dynamic types, and a predeclared int, string,
 // float64 or bool key is stored bare. A key already tagged with the key
 // type passes through.
-func mapKeyConv(vc runtime.VMCaller, m *runtime.Map, kt *runtime.TypeDef) func(runtime.Value) runtime.Value {
+func mapKeyConv(vc runtime.Converter, m *runtime.Map, kt *runtime.TypeDef) func(runtime.Value) runtime.Value {
 	if kt == nil || m == nil || m.IfaceKey || kt.Kind == runtime.KindInterface || plainKeyTd(kt) {
 		return nil
 	}
@@ -537,7 +537,7 @@ func plainKeyTd(kt *runtime.TypeDef) bool {
 // seqSliceArg reads the slice argument of the slices seq helpers: the
 // slice (nil for a nil slice), the argument's own type (a named slice
 // type stays named) and its element typedef. ok is false for a non-slice.
-func seqSliceArg(vc runtime.VMCaller, v runtime.Value) (s *runtime.Slice, st, et *runtime.TypeDef, ok bool) {
+func seqSliceArg(vc runtime.ElemTyper, v runtime.Value) (s *runtime.Slice, st, et *runtime.TypeDef, ok bool) {
 	if d, isRef := runtime.Deref(v); isRef {
 		v = d
 	}
@@ -603,7 +603,7 @@ func packCollected(el []runtime.Value, st *runtime.TypeDef) runtime.Value {
 }
 
 // mapKeyOperand is the stored form of key k in a map typed mt.
-func mapKeyOperand(vc runtime.VMCaller, mt *runtime.TypeDef, k runtime.Value) runtime.Value {
+func mapKeyOperand(vc runtime.MapKeyer, mt *runtime.TypeDef, k runtime.Value) runtime.Value {
 	if mt == nil {
 		return k
 	}

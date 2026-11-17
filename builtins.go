@@ -642,7 +642,7 @@ func builtins(e *Engine) *runtime.Env {
 
 // nilArrLen folds len/cap of a nil *[N]T to its constant N — Go's len
 // of an array-typed operand never evaluates the operand.
-func nilArrLen(v runtime.VMCaller, x runtime.Value) (runtime.Value, bool) {
+func nilArrLen(v runtime.ArraySizer, x runtime.Value) (runtime.Value, bool) {
 	if n, ok := x.(*runtime.Named); ok {
 		x = n.V
 	}
@@ -741,7 +741,7 @@ func capOf(v runtime.Value) (runtime.Value, error) {
 // a non-constant shift `1<<n` truncates at that type, and an all-
 // constant call is an untyped constant of the widest kind among its
 // operands (`min(1, 2.5)` is the float constant 1).
-func minMax(v runtime.VMCaller, name string, args []runtime.Value, isMax bool) (runtime.Value, error) {
+func minMax(v runtime.ConvertTyper, name string, args []runtime.Value, isMax bool) (runtime.Value, error) {
 	if len(args) == 0 {
 		return nil, fmt.Errorf("%s needs at least one argument", name)
 	}
@@ -766,7 +766,7 @@ func minMax(v runtime.VMCaller, name string, args []runtime.Value, isMax bool) (
 // shift values (Wrap) settle at int, their default type; constants
 // stay untyped. A host named basic (fs.FileMode from a host call) keeps
 // its constants as they are — they compare by payload.
-func unifyMinMaxArgs(v runtime.VMCaller, args []runtime.Value) ([]runtime.Value, error) {
+func unifyMinMaxArgs(v runtime.ConvertTyper, args []runtime.Value) ([]runtime.Value, error) {
 	var typed runtime.Value
 	hasConst := false
 	for _, a := range args {
@@ -1113,7 +1113,7 @@ func namedFloat32(x runtime.Value) bool {
 	return ok && float32Tag(n.Typ)
 }
 
-func display(vc runtime.VMCaller, v runtime.Value) any {
+func display(vc runtime.CallerRef, v runtime.Value) any {
 	switch x := v.(type) {
 	case runtime.Nil, *runtime.IfaceNil:
 		// print/println spell a nil interface like the runtime's

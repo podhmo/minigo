@@ -152,7 +152,7 @@ type wrapError struct {
 // error, a script value with an Error method, or a boxed typed nil
 // (a non-nil error) converts through hostErrOf; anything else — an
 // int, a string, a nil interface — wraps nothing.
-func wrapOperand(c runtime.VMCaller, v runtime.Value) error {
+func wrapOperand(c runtime.MemberCaller, v runtime.Value) error {
 	switch x := runtime.Unwrap(v).(type) {
 	case *runtime.GoValue:
 		if _, ok := x.V.(error); !ok {
@@ -350,7 +350,7 @@ func asMatchVal(e error) runtime.Value {
 // (nil accepts anything); reqs is want's required method set for an
 // interface target; target is the destination pointer a node's As
 // method writes through (errors.As's user cell, AsType's result cell).
-func findAsTarget(v runtime.VMCaller, err error, want *runtime.TypeDef, reqs map[string]bool, target runtime.Value) (runtime.Value, bool) {
+func findAsTarget(v runtime.ErrMatchCaller, err error, want *runtime.TypeDef, reqs map[string]bool, target runtime.Value) (runtime.Value, bool) {
 	for err != nil {
 		sv := asMatchVal(err)
 		if matchAsTarget(v, sv, want, reqs) {
@@ -467,7 +467,7 @@ func errKids(err error) []error {
 // package, the way reflect.TypeOf(err) == elem(target) works — and a
 // GoValue-boxed host error, which carries no typedef of its own,
 // matches on its reflect type (*strconv.NumError).
-func matchAsTarget(v runtime.VMCaller, sv runtime.Value, want *runtime.TypeDef, reqs map[string]bool) bool {
+func matchAsTarget(v runtime.ErrMatchCaller, sv runtime.Value, want *runtime.TypeDef, reqs map[string]bool) bool {
 	if want == nil {
 		return true
 	}
@@ -496,7 +496,7 @@ func matchAsTarget(v runtime.VMCaller, sv runtime.Value, want *runtime.TypeDef, 
 // Pointer depth must match first; the leaf compares a bound typedef's
 // "pkg/path.Name" spelling with reflect's PkgPath+Name, which cannot
 // collide with a script-declared type's short name.
-func sameErrTypHost(v runtime.VMCaller, rt reflect.Type, want *runtime.TypeDef) bool {
+func sameErrTypHost(v runtime.ElemZeroTyper, rt reflect.Type, want *runtime.TypeDef) bool {
 	if rt == nil || want == nil {
 		return false
 	}
@@ -533,7 +533,7 @@ func sameErrTypHost(v runtime.VMCaller, rt reflect.Type, want *runtime.TypeDef) 
 // reflect.TypeOf(err) == reflect.TypeOf(target).Elem()), and leaf
 // identity is name + package path — leaf spelling alone lets two
 // packages declaring the same error type name match each other.
-func sameErrTyp(v runtime.VMCaller, st, want *runtime.TypeDef) bool {
+func sameErrTyp(v runtime.ElemZeroTyper, st, want *runtime.TypeDef) bool {
 	if st == nil || want == nil || st.Kind != want.Kind {
 		return false
 	}
