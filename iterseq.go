@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"go/ast"
+	"reflect"
 	"slices"
 	"sort"
 
@@ -310,6 +311,165 @@ func mapSource(m *runtime.Map, kind mapSeqKind, conv func(runtime.Value) runtime
 		}
 	}
 	return src
+}
+
+// hostMapSource is the native source of maps.Keys / Values / All over a
+// host map: lazy over a live MapIter like Go's — an entry deleted
+// before its turn is not produced and a value written meanwhile reads
+// its new content. A nil map produces nothing.
+func hostMapSource(rv reflect.Value, kind mapSeqKind) *runtime.SeqSource {
+	src := &runtime.SeqSource{
+		Each: func(_ runtime.VMCaller, yield func([]runtime.Value) bool) error {
+			if !rv.IsValid() || rv.IsNil() {
+				return nil
+			}
+			n := 1
+			if kind == mapSeqAll {
+				n = 2
+			}
+			buf := make([]runtime.Value, n)
+			it := rv.MapRange()
+			for it.Next() {
+				switch kind {
+				case mapSeqKeys:
+					buf[0] = scriptVal(it.Key().Interface())
+				case mapSeqValues:
+					buf[0] = scriptVal(it.Value().Interface())
+				default:
+					buf[0] = scriptVal(it.Key().Interface())
+					buf[1] = scriptVal(it.Value().Interface())
+				}
+				if !yield(buf) {
+					return nil
+				}
+			}
+			return nil
+		},
+	}
+	switch kind {
+	case mapSeqKeys:
+		src.Collect = func(runtime.VMCaller) []runtime.Value {
+			if !rv.IsValid() || rv.IsNil() {
+				return nil
+			}
+			out := make([]runtime.Value, 0, rv.Len())
+			for it := rv.MapRange(); it.Next(); {
+				out = append(out, scriptVal(it.Key().Interface()))
+			}
+			return out
+		}
+	case mapSeqValues:
+		src.Collect = func(runtime.VMCaller) []runtime.Value {
+			if !rv.IsValid() || rv.IsNil() {
+				return nil
+			}
+			out := make([]runtime.Value, 0, rv.Len())
+			// MapRange, not MapKeys+MapIndex: a NaN key is not equal to
+			// itself, so a re-lookup comes back invalid and panics.
+			for it := rv.MapRange(); it.Next(); {
+				out = append(out, scriptVal(it.Value().Interface()))
+			}
+			return out
+		}
+	}
+	return src
+}
+
+// basicTdOfReflect returns the element typedef of a host map's key or
+// element type when it spells a predeclared basic (int, string, ...) or
+// the empty interface (`any`) — nil for named host types, where the seq
+// stays untyped.
+func basicTdOfReflect(rt reflect.Type) *runtime.TypeDef {
+	if rt == nil {
+		return nil
+	}
+	if rt.Kind() == reflect.Interface && rt.NumMethod() == 0 {
+		return &runtime.TypeDef{Kind: runtime.KindInterface, Anon: &ast.InterfaceType{}}
+	}
+	if rt.PkgPath() == "" && rt.Name() != "" {
+		if td := runtime.BasicTypedef(rt.Name()); td != nil {
+			return td
+		}
+	}
+	return nil
+}
+
+// hostMapSeqArg reads a host map argument of the maps seq helpers: the
+// live reflect map plus the typedefs of its key and element types when
+// they spell predeclared basics or `any` (nil when unspellable — the
+// seq then stays untyped). ok is false for a non-host-map.
+func hostMapSeqArg(v runtime.Value) (rv reflect.Value, kt, vt *runtime.TypeDef, ok bool) {
+	nv := goNative(v)
+	if nv == nil {
+		return reflect.Value{}, nil, nil, false
+	}
+	rv = reflect.ValueOf(nv)
+	if !rv.IsValid() || rv.Kind() != reflect.Map {
+		return reflect.Value{}, nil, nil, false
+	}
+	return rv, basicTdOfReflect(rv.Type().Key()), basicTdOfReflect(rv.Type().Elem()), true
+}
+
+// hostMapElemOf converts a yielded script pair element to the host
+// map's key or element reflect type for maps.Insert.
+func hostMapElemOf(v runtime.Value, rt reflect.Type) (reflect.Value, error) {
+	return hostReflectOf(goNative(v), rt)
+}
+
+// hostReflectOf converts a native value to reflect type rt for host map
+// writes: the assignable/convertible scalar paths first, then slices
+// and maps rebuilt element-wise — a script container arrives through
+// goNative as []any / map[any]any and a host map's declared element
+// type ([]string, map[string]int, ...) is not one conversion away.
+func hostReflectOf(nv any, rt reflect.Type) (reflect.Value, error) {
+	if nv == nil {
+		if rt.Kind() == reflect.Interface || rt.Kind() == reflect.Pointer ||
+			rt.Kind() == reflect.Map || rt.Kind() == reflect.Slice ||
+			rt.Kind() == reflect.Chan || rt.Kind() == reflect.Func {
+			return reflect.Zero(rt), nil
+		}
+		return reflect.Value{}, fmt.Errorf("cannot assign nil to %s", rt)
+	}
+	rv := reflect.ValueOf(nv)
+	if rv.Type().AssignableTo(rt) {
+		return rv, nil
+	}
+	if rv.Type().ConvertibleTo(rt) {
+		return rv.Convert(rt), nil
+	}
+	switch rt.Kind() {
+	case reflect.Slice:
+		if rv.Kind() != reflect.Slice {
+			break
+		}
+		out := reflect.MakeSlice(rt, rv.Len(), rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			ev, err := hostReflectOf(rv.Index(i).Interface(), rt.Elem())
+			if err != nil {
+				return reflect.Value{}, err
+			}
+			out.Index(i).Set(ev)
+		}
+		return out, nil
+	case reflect.Map:
+		if rv.Kind() != reflect.Map {
+			break
+		}
+		out := reflect.MakeMapWithSize(rt, rv.Len())
+		for it := rv.MapRange(); it.Next(); {
+			kv, err := hostReflectOf(it.Key().Interface(), rt.Key())
+			if err != nil {
+				return reflect.Value{}, err
+			}
+			vv, err := hostReflectOf(it.Value().Interface(), rt.Elem())
+			if err != nil {
+				return reflect.Value{}, err
+			}
+			out.SetMapIndex(kv, vv)
+		}
+		return out, nil
+	}
+	return reflect.Value{}, fmt.Errorf("cannot use %T as %s in map entry", nv, rt)
 }
 
 // scriptMapSeqArg reads a map argument of the maps seq helpers: the
@@ -620,7 +780,11 @@ func (e *Engine) mapsSeqHelpers(mapsPkg map[string]runtime.Value) map[string]run
 		}
 		m, kt, _, ok := scriptMapSeqArg(vc, args[0])
 		if !ok {
-			return seqFn("maps.Keys", sliceSource(mapKeys(goNative(args[0])).Elems)), nil
+			rv, hkt, _, hok := hostMapSeqArg(args[0])
+			if !hok {
+				return seqFn("maps.Keys", sliceSource(mapKeys(goNative(args[0])).Elems)), nil
+			}
+			return e.typedSeq(seqFn("maps.Keys", hostMapSource(rv, mapSeqKeys)), hkt), nil
 		}
 		return e.typedSeq(seqFn("maps.Keys", mapSource(m, mapSeqKeys, mapKeyConv(vc, m, kt))), kt), nil
 	}}
@@ -630,7 +794,11 @@ func (e *Engine) mapsSeqHelpers(mapsPkg map[string]runtime.Value) map[string]run
 		}
 		m, _, vt, ok := scriptMapSeqArg(vc, args[0])
 		if !ok {
-			return seqFn("maps.Values", sliceSource(mapValues(goNative(args[0])).Elems)), nil
+			rv, _, hvt, hok := hostMapSeqArg(args[0])
+			if !hok {
+				return seqFn("maps.Values", sliceSource(mapValues(goNative(args[0])).Elems)), nil
+			}
+			return e.typedSeq(seqFn("maps.Values", hostMapSource(rv, mapSeqValues)), hvt), nil
 		}
 		return e.typedSeq(seqFn("maps.Values", mapSource(m, mapSeqValues, nil)), vt), nil
 	}}
@@ -640,7 +808,11 @@ func (e *Engine) mapsSeqHelpers(mapsPkg map[string]runtime.Value) map[string]run
 		}
 		m, kt, vt, ok := scriptMapSeqArg(vc, args[0])
 		if !ok {
-			return nil, fmt.Errorf("maps.All: arg must be a map")
+			rv, hkt, hvt, hok := hostMapSeqArg(args[0])
+			if !hok {
+				return nil, fmt.Errorf("maps.All: arg must be a map")
+			}
+			return e.typedSeq(seqFn("maps.All", hostMapSource(rv, mapSeqAll)), hkt, hvt), nil
 		}
 		return e.typedSeq(seqFn("maps.All", mapSource(m, mapSeqAll, mapKeyConv(vc, m, kt))), kt, vt), nil
 	}}
@@ -650,7 +822,37 @@ func (e *Engine) mapsSeqHelpers(mapsPkg map[string]runtime.Value) map[string]run
 		}
 		m, _, _, ok := scriptMapSeqArg(vc, args[0])
 		if !ok {
-			return nil, fmt.Errorf("maps.Insert: first arg must be a map")
+			rv, _, _, hok := hostMapSeqArg(args[0])
+			if !hok {
+				return nil, fmt.Errorf("maps.Insert: first arg must be a map")
+			}
+			krt, vrt := rv.Type().Key(), rv.Type().Elem()
+			var bad bool
+			err := driveSeq(vc, args[1], func(ya []runtime.Value) {
+				if len(ya) != 2 {
+					bad = true
+					return
+				}
+				if rv.IsNil() {
+					panic(runtime.PlainPanic("assignment to entry in nil map"))
+				}
+				kv, kerr := hostMapElemOf(ya[0], krt)
+				if kerr != nil {
+					panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: kerr.Error()}})
+				}
+				vv, verr := hostMapElemOf(ya[1], vrt)
+				if verr != nil {
+					panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: verr.Error()}})
+				}
+				rv.SetMapIndex(kv, vv)
+			})
+			if err == nil && bad {
+				err = fmt.Errorf("maps.Insert: seq must yield key and value")
+			}
+			if err != nil {
+				return nil, err
+			}
+			return runtime.NIL, nil
 		}
 		mt := runtime.TagOf(args[0])
 		if m != nil && mt == nil {
