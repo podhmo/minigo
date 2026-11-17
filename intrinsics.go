@@ -1247,7 +1247,7 @@ func (e *Engine) installStdlib() {
 			return runtime.NIL, nil
 		}},
 	}, sortHostUse, nil))
-	e.Bind("slices", hostSliceBoundary(e.slicesSeqHelpers(map[string]runtime.Value{
+	e.Bind("slices", genericFns(hostSliceBoundary(e.slicesSeqHelpers(map[string]runtime.Value{
 		"Sort": h.sortInPlace("slices.Sort"),
 		"Contains": &runtime.BuiltinFunc{Name: "slices.Contains", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			i, err := sliceIndexScript(vc, "slices.Contains", args)
@@ -1458,8 +1458,8 @@ func (e *Engine) installStdlib() {
 		"Reverse": slicesReverse(),
 		"Insert":  slicesInsert(),
 		"Delete":  slicesDelete(),
-	}), slicesHostUse, &firstSliceRead))
-	e.Bind("maps", e.mapsSeqHelpers(map[string]runtime.Value{
+	}), slicesHostUse, &firstSliceRead)))
+	e.Bind("maps", genericFns(e.mapsSeqHelpers(map[string]runtime.Value{
 		"Clone": &runtime.BuiltinFunc{Name: "maps.Clone", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("maps.Clone needs 1 arg")
@@ -1541,7 +1541,7 @@ func (e *Engine) installStdlib() {
 			}
 			return true, nil
 		}},
-	}))
+	})))
 	// os: an interpreted program must never observe or terminate the host
 	// process — Exit unwinds out as a process exit; the environment/argv surface is only
 	// bound when the engine is unrestricted (no AllowedRoots). File-system
