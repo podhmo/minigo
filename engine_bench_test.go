@@ -11,3 +11,14 @@ func BenchmarkNewEngine(b *testing.B) {
 		_ = NewEngine(".")
 	}
 }
+
+// BenchmarkNewSession measures forking a session off a base engine,
+// which re-runs installStdlib on the session's own package cache.
+func BenchmarkNewSession(b *testing.B) {
+	base := NewEngine(".")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		_ = base.NewSession()
+	}
+}
