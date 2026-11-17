@@ -150,6 +150,11 @@ func (v *VM) callBoundedCatch(callee runtime.Value, args []runtime.Value, static
 // re-entry by construction and needs no goroutine id.
 type ownerCaller struct{ *VM }
 
+// bindProc keeps the owner binding: the embedded *VM's bindProc would
+// rebind this caller to the VM's current proc, but an ownerCaller is
+// already bound to its Call frame and must not pick up another proc.
+func (o ownerCaller) bindProc() runtime.VMCaller { return o }
+
 func (o ownerCaller) Call(callee runtime.Value, args []runtime.Value) (runtime.Value, error) {
 	v := o.VM
 	v.callMu.Lock()

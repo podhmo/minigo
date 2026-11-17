@@ -6,6 +6,12 @@ import "github.com/podhmo/minigo/runtime"
 // keep the process in which it was obtained, even after the public VM is reused
 // for another root Call. The other methods are execution-local: embedding the
 // VM preserves the frame/type context of the host call currently running.
+// bindProc keeps the process binding: the embedded *VM's bindProc would
+// rebind this caller to the VM's *current* proc, but a retained
+// processCaller must keep its own proc or a callback could run under a
+// different process.
+func (c processCaller) bindProc() runtime.VMCaller { return c }
+
 type processCaller struct {
 	*VM
 	p *proc
