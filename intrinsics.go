@@ -1365,6 +1365,12 @@ func (e *Engine) installStdlib() {
 			// holds zeros, as growslice clears it.
 			full := elems[:cap(elems)]
 			grown := append(full, make([]runtime.Value, int(n)-(cap(elems)-len(elems)))...)
+			// the grown array copies the live elements (gc's growslice
+			// memcpy): without it a struct element aliases the old
+			// backing, the same bug append's growth had.
+			for i := 0; i < len(elems); i++ {
+				grown[i] = vc.Copy(grown[i])
+			}
 			zero := vc.ElemZero(td)
 			if runtime.IsZeroSizeValue(zero) {
 				grown = grown[:len(grown):len(grown)]
@@ -8380,9 +8386,18 @@ func slicesInsert() *runtime.BuiltinFunc {
 		if err != nil {
 			return nil, err
 		}
-		out := slices.Insert(sliceElems(s), intOf(args[1]), vs...)
+		base := sliceElems(s)
+		out := slices.Insert(base, intOf(args[1]), vs...)
 		if len(vs) == 0 {
 			return args[0], nil // the index was checked; s is returned as is
+		}
+		if cap(out) > cap(base) {
+			// the fresh backing copies every element, like gc's
+			// growslice memcpy: a struct element must not alias the
+			// old array's struct.
+			for i, e := range out {
+				out[i] = vc.Copy(e)
+			}
 		}
 		// a grown array's spare capacity holds holes where Go has zeros.
 		fillHoles(vc, typ, out[len(out):cap(out)])
