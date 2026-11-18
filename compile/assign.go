@@ -851,7 +851,7 @@ func (c *compiler) importRef(name string) (*runtime.ImportRef, bool) {
 	if c.pkg == nil || c.file == nil {
 		return nil, false
 	}
-	return pkgImportRef(c.pkg, c.file, name)
+	return c.pkgImportRef(c.pkg, c.file, name)
 }
 
 // storeTarget emits the store for one LHS expression; the value is on stack.

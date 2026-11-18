@@ -188,72 +188,100 @@ func (e *Engine) constExpr(ctx *runtime.TypeDef, consts map[string]bool, x ast.E
 // typedef a value expression carries — a qualified package member's
 // declared or inferred type, or an untyped constant's default type.
 // nil is a lawful answer: the gate stays silent on what it can't type.
-func (e *Engine) valueTypOf(site *bytecode.CallSite, ctx *runtime.TypeDef) (*runtime.TypeDef, error) {
+func (e *Engine) valueTypOf(site *bytecode.CallSite, ctx *runtime.TypeDef) (*runtime.TypeDef, bool, error) {
 	return e.valueTyp(ctx, site.Expr)
 }
 
-func (e *Engine) valueTyp(ctx *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, error) {
+func (e *Engine) valueTyp(ctx *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, bool, error) {
 	return e.valueTypDepth(ctx, x, 0)
 }
 
-func (e *Engine) valueTypDepth(ctx *runtime.TypeDef, x ast.Expr, depth int) (*runtime.TypeDef, error) {
+func (e *Engine) valueTypDepth(ctx *runtime.TypeDef, x ast.Expr, depth int) (*runtime.TypeDef, bool, error) {
 	switch t := x.(type) {
 	case *ast.ParenExpr:
 		return e.valueTypDepth(ctx, t.X, depth)
+	case *ast.BasicLit:
+		return basicLitTypedef(t.Kind), true, nil
 	case *ast.Ident:
 		if t.Name == "nil" {
 			// nil is never a package member — looking it up would
 			// re-enter the package's init-once during a deferred
 			// gate that runs inside that very initializer.
-			return nil, nil
+			return nil, false, nil
 		}
 		if ctx == nil || ctx.Pkg == nil {
-			return nil, nil
+			return nil, false, nil
 		}
 		return e.memberTypOf(ctx.Pkg, t.Name, depth+1)
+	case *ast.UnaryExpr:
+		if t.Op != token.SUB && t.Op != token.ADD {
+			return nil, false, nil
+		}
+		return e.valueTypDepth(ctx, t.X, depth+1)
 	case *ast.CallExpr:
 		// a conversion T(v) carries T's typedef; anything else is a
 		// call whose result type this resolver cannot infer.
 		td, err := e.resolveTypeRef(ctx, t.Fun)
 		if err != nil {
-			return nil, nil
+			return nil, false, nil
 		}
-		return td, nil
+		return td, false, nil
 	case *ast.SelectorExpr:
 		id, ok := t.X.(*ast.Ident)
 		if !ok {
-			return nil, nil
+			return nil, false, nil
 		}
 		p, err := e.importPackageAt(ctx, id.Name)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if p == nil {
-			return nil, nil
+			return nil, false, nil
 		}
 		return e.memberTypOf(p, t.Sel.Name, depth+1)
 	}
-	return nil, nil
+	return nil, false, nil
+}
+
+// basicLitTypedef is the default typedef of an untyped literal — the
+// runtime answer to a const decl's `const C = 'a'`.
+func basicLitTypedef(k token.Token) *runtime.TypeDef {
+	switch k {
+	case token.CHAR:
+		return runtime.BasicTypedef("rune")
+	case token.STRING:
+		return runtime.BasicTypedef("string")
+	case token.INT:
+		return runtime.BasicTypedef("int")
+	case token.FLOAT:
+		return runtime.BasicTypedef("float64")
+	case token.IMAG:
+		return runtime.BasicTypedef("complex128")
+	}
+	return nil
 }
 
 // memberTyp is the typedef a package member carries for the compare
 // gate: a Named value's tag, a cell's declared slot, an untyped
 // constant's default type. Non-value members and unshaped values give
 // nil — the gate stays silent.
-func memberTyp(m runtime.Value) *runtime.TypeDef {
+// memberTyp is the typedef a package member carries for the compare
+// gate — plus whether the member is an untyped constant, which a
+// maybe-untyped operand adopts instead of gating on its default type.
+func memberTyp(m runtime.Value) (*runtime.TypeDef, bool) {
 	for {
 		switch v := m.(type) {
 		case *runtime.Named:
-			return v.Typ
+			return v.Typ, false
 		case *runtime.Cell:
 			if v.Typ != nil {
-				return v.Typ
+				return v.Typ, false
 			}
 			m = v.Elem
 		case *runtime.UConst:
-			return uconstTypedef(v)
+			return uconstTypedef(v), true
 		default:
-			return nil
+			return nil, false
 		}
 	}
 }

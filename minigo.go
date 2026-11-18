@@ -93,6 +93,7 @@ type sharedAssets struct {
 	cwd        string                               // virtual cwd for os.* path intrinsics (defaults to startDir)
 	args       []string                             // script-visible os.Args; nil = host process argv
 	prof       *ScriptProfiler                      // samples script stacks; nil = off
+	strictLazy bool                                 // compile every indexed fact under IndexedOnly
 	assetAudit bool                                 // hash package AST+index and verify on Call (M3-2; off = no hash cost)
 }
 
@@ -235,6 +236,13 @@ func NewScriptProfiler(period time.Duration) *ScriptProfiler {
 	return vm.NewProfiler(period)
 }
 
+// WithStrictLazyCompile compiles under IndexedOnly: an indexed fact
+// whose package is not yet indexed defers to run time instead of
+// triggering a build at compile time — the M4-8 strict lazy mode.
+func WithStrictLazyCompile() Option {
+	return func(e *Engine) { e.strictLazy = true }
+}
+
 // WithScriptProfiler samples every script goroutine the engine runs into p.
 func WithScriptProfiler(p *ScriptProfiler) Option {
 	return func(e *Engine) { e.prof = p }
@@ -331,8 +339,8 @@ func (e *Engine) newVM() *vm.VM {
 		Prof:              e.prof,
 		Builtin:           e.builtins.Get,
 		Materialize:       e.materialize,
-		CompileExpr:       compile.Expr,
-		CompileScopedExpr: compile.ExprScoped,
+		CompileExpr:       e.compileExpr,
+		CompileScopedExpr: e.compileScopedExpr,
 		Special: func(id runtime.SymbolID) (runtime.SpecialFunc, bool) {
 			e.mu.Lock()
 			defer e.mu.Unlock()
@@ -365,6 +373,24 @@ func (e *Engine) newVM() *vm.VM {
 		Linkname:         e.linknameTarget,
 		HostErr:          hostErrOf,
 	}}
+}
+
+// compileExpr compiles an eval fragment under this engine's laziness
+// policy; compileFunc is the per-function compile hook materialization
+// stamps onto Function.Compile.
+func (e *Engine) compileExpr(pkg *runtime.Package, file *syntax.File, x ast.Expr) (*bytecode.Chunk, error) {
+	return compile.ExprStrict(pkg, file, x, e.strictLazy)
+}
+
+func (e *Engine) compileScopedExpr(pkg *runtime.Package, file *syntax.File, x ast.Expr, locals, upvals map[string]int) (*bytecode.Chunk, error) {
+	return compile.ExprScopedStrict(pkg, file, x, locals, upvals, e.strictLazy)
+}
+
+func (e *Engine) compileFunc(fn *runtime.Function) error {
+	if e.strictLazy {
+		return compile.FuncStrict(fn)
+	}
+	return compile.Func(fn)
 }
 
 // fieldPathService builds the FieldPaths adapter over this engine's
@@ -1408,11 +1434,11 @@ func (e *Engine) bootstrap(p *runtime.Package, run func(*runtime.Function) error
 			}
 		}
 	}
-	ch, err := compile.InitFunc(p)
+	ch, err := compile.InitFuncStrict(p, e.strictLazy)
 	if err != nil {
 		return err
 	}
-	bindCompiles(p, ch)
+	e.bindCompiles(p, ch)
 	fn := &runtime.Function{Pkg: p, Name: p.Name + ".__init__", Chunk: ch}
 	return run(fn)
 }
@@ -1423,14 +1449,14 @@ func (e *Engine) bootstrap(p *runtime.Package, run func(*runtime.Function) error
 // no const-only path: ConstInitFunc reports nil and the caller falls back
 // to the full initializer.
 func (e *Engine) bootstrapConsts(p *runtime.Package, run func(*runtime.Function) error) error {
-	ch, err := compile.ConstInitFunc(p)
+	ch, err := compile.ConstInitFuncStrict(p, e.strictLazy)
 	if err != nil {
 		return err
 	}
 	if ch == nil {
 		return fmt.Errorf("package %s: const specs need the full initializer", p.Name)
 	}
-	bindCompiles(p, ch)
+	e.bindCompiles(p, ch)
 	fn := &runtime.Function{Pkg: p, Name: p.Name + ".__consts__", Chunk: ch}
 	return run(fn)
 }
@@ -1439,12 +1465,12 @@ func (e *Engine) bootstrapConsts(p *runtime.Package, run func(*runtime.Function)
 // that still need lazy compilation. Function-literal protos carry their
 // chunk already (eager compile) and have no Decl — hooking them would
 // re-run compile.Func on a nil Decl.
-func bindCompiles(p *runtime.Package, ch *bytecode.Chunk) {
+func (e *Engine) bindCompiles(p *runtime.Package, ch *bytecode.Chunk) {
 	for _, cv := range ch.Consts {
 		if fn, ok := cv.(*runtime.Function); ok {
 			fn.Pkg = p
 			if fn.Decl != nil && fn.Chunk == nil {
-				fn.Compile = compile.Func
+				fn.Compile = e.compileFunc
 			}
 		}
 	}
@@ -1473,7 +1499,7 @@ func (e *Engine) materializeOne(pkg *runtime.Package, d *index.Decl) (runtime.Va
 		return &runtime.Function{Pkg: pkg, File: d.File, Decl: d.Func, Name: d.Name,
 			TParams:      typeParamNames(d.Func.Type.TypeParams),
 			TConstraints: typeParamConstraints(d.Func.Type.TypeParams),
-			Compile:      compile.Func}, nil
+			Compile:      e.compileFunc}, nil
 	case index.TypeDecl:
 		return e.typeDefOf(pkg, d)
 	case index.ConstDecl, index.VarDecl:
@@ -1530,7 +1556,7 @@ func (e *Engine) methodFunc(pkg *runtime.Package, recv string, md *index.Decl) *
 	_, ptrRecv := md.Func.Recv.List[0].Type.(*ast.StarExpr)
 	return &runtime.Function{
 		Pkg: pkg, File: md.File, Decl: md.Func, Name: recv + "." + md.Name,
-		Recv: recv, PtrRecv: ptrRecv, Compile: compile.Func,
+		Recv: recv, PtrRecv: ptrRecv, Compile: e.compileFunc,
 		// Go 1.27 generic methods: `func (l List[E]) Map[R any](...)`
 		// — the method's own type params ride alongside the receiver's.
 		TParams:      typeParamNames(md.Func.Type.TypeParams),
