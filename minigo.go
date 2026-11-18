@@ -109,6 +109,7 @@ type sessionState struct {
 	files           map[string]*runtime.Package // single-file packages by abs path
 	names           *bind.Names                 // installed host-bound packages (sessions inherit)
 	pending         *bind.Pending               // registered but not yet installed bound packages
+	preservePkgs    map[string]bool             // source pkgs kept in e.pkgs during a bound install
 	templateFuncMap *runtime.TypeDef            // this session's FuncMap typedef (per-registry; P2-12)
 	srcs            map[string]*runtime.Package // source packages SourceOf builds past a bound shadow or a deny mode
 	// lenient builds (inspect.DirOf/FileOf/PackageOf) are privately
@@ -825,8 +826,7 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value, opts 
 		Name:     cfg.name,
 		Globals:  runtime.NewEnv(),
 		Specials: e.specials,
-		// bound paths without a dot in the first element stand in for the
-		// GOROOT package of that name ("strings", "fmt", "unsafe").
+		// bound paths without a dot in the first element stand in for GOROOT.
 		Standard: !strings.Contains(strings.SplitN(importPath, "/", 2)[0], "."),
 	}
 	p.SetState(runtime.Ready)
@@ -836,10 +836,8 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value, opts 
 		}
 		v = hostSymbol(cfg.name+"."+k, v)
 		if bf, ok := v.(*runtime.BuiltinFunc); ok && (bf.Pkg == nil || bf.Pkg.Path == p.Path) {
-			// the same BuiltinFunc may be bound under several paths
-			// (minigo.dev/x and its module path): the first owner wins,
-			// but a re-Bind under the SAME path must re-point at the
-			// new live package object, not the stale one
+			// a BuiltinFunc bound under several paths keeps its first
+			// owner; a re-Bind re-points at the new live package
 			bf.Pkg = p
 		}
 		if td, ok := v.(*runtime.TypeDef); ok && td.Pkg == nil {
@@ -849,7 +847,9 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value, opts 
 	}
 	e.mu.Lock()
 	e.pending.Clear(importPath)
-	e.pkgs[importPath] = p
+	if _, skip := e.preservePkgs[importPath]; !skip {
+		e.pkgs[importPath] = p
+	}
 	e.names.Set(importPath, p)
 	e.mu.Unlock()
 }
