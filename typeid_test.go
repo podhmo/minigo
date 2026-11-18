@@ -141,6 +141,20 @@ func TestTypeIDAnonymousIsStructural(t *testing.T) {
 	if string(e.typeIDOf(hp)) == "" {
 		t.Errorf("anonymous ptr over host elem produced no key")
 	}
+	// an anonymous typedef inside a generic function inherits the
+	// enclosing Binds as resolution context — NOT its own arguments:
+	// `use[[]int]` inside wrap[int] and wrap[string] is one type and
+	// must share its instantiation-cache key.
+	withBinds := func(bv runtime.Value) *runtime.TypeDef {
+		return &runtime.TypeDef{
+			Kind:  runtime.KindSlice,
+			Elem:  runtime.BasicTypedef("int"),
+			Binds: map[string]runtime.Value{"T": bv},
+		}
+	}
+	if a, b := e.typeIDOf(withBinds(runtime.BasicTypedef("int"))), e.typeIDOf(withBinds(runtime.BasicTypedef("string"))); a != b {
+		t.Errorf("enclosing generic's binds split an anonymous typedef's key: %q vs %q", a, b)
+	}
 }
 
 // vtdForKey is the Value-typedef for the anonymous-composition case.
