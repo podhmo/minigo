@@ -203,6 +203,22 @@ func PromotedDeepPtrPanic() int {
 	return o.V
 }
 
+// a declared field and a method behind a nil embedded pointer at the
+// same depth tie — the field's path does not hide the ambiguity.
+type NMIn struct{}
+
+func (NMIn) V() int { return 0 }
+
+type NMOut struct {
+	*NMIn
+	E1
+}
+
+func PromotedNilMethodAmbig() int {
+	o := NMOut{E1: E1{V: 1}}
+	return o.V
+}
+
 // ---- Go 1.27: generalized function-type inference ----
 
 func Id[T any](v T) T { return v }
