@@ -2,6 +2,7 @@ package compile
 
 import (
 	"go/ast"
+	"go/token"
 
 	"github.com/podhmo/minigo/index"
 )
@@ -69,7 +70,7 @@ func (c *compiler) selectNeedsCell(base ast.Expr, sel string) bool {
 	case baseUnknown:
 		return true
 	}
-	return c.typSelectNeedsCell(te, sel)
+	return c.typSelectNeedsCellDepth(te, sel, 4)
 }
 
 // baseStaticTyp resolves the static type expression of a ref operand:
@@ -176,11 +177,12 @@ func embeddedName(te ast.Expr) string {
 	return ""
 }
 
-// typSelectNeedsCell classifies a select on an operand whose static
-// type expression is te: a pointer-receiver method binds the cell;
-// fields, value-receiver methods, interfaces and memberless types do
-// not. Unresolvable receivers box.
-func (c *compiler) typSelectNeedsCell(te ast.Expr, sel string) bool {
+// typSelectNeedsCellDepth classifies a select on an operand whose
+// static type expression is te: a pointer-receiver method binds the
+// cell; fields, value-receiver methods, interfaces and memberless
+// types do not. Unresolvable receivers box. depth bounds alias-chain
+// resolution (`type A = B = C`).
+func (c *compiler) typSelectNeedsCellDepth(te ast.Expr, sel string, depth int) bool {
 	t := ast.Unparen(te)
 	switch t := t.(type) {
 	case *ast.StarExpr:
@@ -188,27 +190,46 @@ func (c *compiler) typSelectNeedsCell(te ast.Expr, sel string) bool {
 		// pointer value, never the cell holding it.
 		return false
 	case *ast.Ident:
-		if _, bound := c.binds[t.Name]; bound {
-			return true // a type parameter's receiver is unknown
-		}
-		if predeclaredTypeNames[t.Name] {
+		if t.NamePos == token.NoPos && predeclaredTypeNames[t.Name] {
+			// a positionless name is declTypCanon's marker for a name
+			// that already resolved to a builtin at bind time — a
+			// user-declared `type int` can never claim it.
 			return false
 		}
 		if b := c.fs.lookupBinding(t.Name); b != nil && b.typeDecl {
 			// a local `type` decl cannot carry methods: an interface
 			// dispatches dynamically, a struct member is a field or a
 			// promoted member of an embedded field.
-			if b.ifaceT {
-				return false
+			local := false
+			switch {
+			case b.ifaceT:
+			case c.structFieldTyp(t, sel) != nil:
+			default:
+				_, isStruct := ast.Unparen(c.unfoldTypExpr(t, 4)).(*ast.StructType)
+				local = isStruct // a promoted member could be a ptr method
 			}
-			if c.structFieldTyp(t, sel) != nil {
-				return false
+			if local {
+				return true
 			}
-			_, isStruct := ast.Unparen(c.unfoldTypExpr(t, 4)).(*ast.StructType)
-			return isStruct // a promoted member could be a ptr method
+			// the declTyp spelling may predate this shadow and name
+			// the package-level type instead (`func f(s S)` inside a
+			// `type S int` block) — union the answers so either
+			// referent's pointer method still boxes.
+			if c.pkg != nil && c.pkg.Index != nil {
+				if tdi := c.pkg.Index.Types[t.Name]; tdi != nil {
+					return c.indexSelectNeedsCell(tdi, sel, 4)
+				}
+			}
+			return false
+		}
+		if _, bound := c.binds[t.Name]; bound {
+			return true // a type parameter's receiver is unknown
 		}
 		if tdi := c.typeDeclOf(t); tdi != nil {
-			return indexSelectNeedsCell(tdi, sel)
+			return c.indexSelectNeedsCell(tdi, sel, depth)
+		}
+		if predeclaredTypeNames[t.Name] {
+			return false
 		}
 		return true // an unresolved type name — conservative
 	case *ast.StructType, *ast.InterfaceType, *ast.MapType,
@@ -225,10 +246,13 @@ func (c *compiler) typSelectNeedsCell(te ast.Expr, sel string) bool {
 // indexSelectNeedsCell resolves member sel on the indexed type: a
 // method's receiver kind answers directly; a direct struct field needs
 // no cell; anything else — a promoted member or a member on an
-// uninspectable spec — could be a pointer method, so it boxes.
-func indexSelectNeedsCell(tdi *index.TypeDeclInfo, sel string) bool {
+// uninspectable spec — could be a pointer method, so it boxes. An alias
+// spec (`type A = T`) declares no members of its own: the member set is
+// the target type's, resolved through the same ident rules (depth caps
+// alias chains).
+func (c *compiler) indexSelectNeedsCell(tdi *index.TypeDeclInfo, sel string, depth int) bool {
 	if d := tdi.Methods[sel]; d != nil && d.Func != nil && d.Func.Recv != nil && len(d.Func.Recv.List) > 0 {
-		_, ptr := d.Func.Recv.List[0].Type.(*ast.StarExpr)
+		_, ptr := ast.Unparen(d.Func.Recv.List[0].Type).(*ast.StarExpr)
 		return ptr
 	}
 	if tdi.Decl == nil {
@@ -237,6 +261,14 @@ func indexSelectNeedsCell(tdi *index.TypeDeclInfo, sel string) bool {
 	ts, ok := tdi.Decl.Spec.(*ast.TypeSpec)
 	if !ok {
 		return false
+	}
+	if ts.Assign.IsValid() {
+		// `type A = T` — members live on T's declaration. A chain past
+		// the depth cap is unresolvable — conservative box.
+		if depth <= 0 {
+			return true
+		}
+		return c.typSelectNeedsCellDepth(ts.Type, sel, depth-1)
 	}
 	switch st := ts.Type.(type) {
 	case *ast.InterfaceType:

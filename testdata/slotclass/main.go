@@ -95,3 +95,16 @@ func Special() {
 		_ = x
 	})
 }
+
+// an alias's member set is the target's — Bump is a pointer method.
+type CA = Counter
+
+func AliasMethod() { c := CA{}; c.Bump() }
+
+// the parameter's S is the package type — the local `type S int`
+// shadow cannot hide its promoted pointer method.
+func ShadowedParam(s S) {
+	type S int
+	_ = S(0)
+	s.PP()
+}
