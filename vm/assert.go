@@ -1403,6 +1403,15 @@ func (v *VM) nilableTypedef(td *runtime.TypeDef) bool {
 		runtime.KindChan, runtime.KindFunc, runtime.KindInterface:
 		return true
 	}
+	if u.HostNew != nil {
+		// a bound host type is classed a struct whatever its shape;
+		// its zero's own kind tells a named slice or map (net.IP,
+		// net.HardwareAddr) that answers `== nil`.
+		switch u.HostType().Kind() {
+		case reflect.Slice, reflect.Map, reflect.Chan, reflect.Func:
+			return true
+		}
+	}
 	return false
 }
 
