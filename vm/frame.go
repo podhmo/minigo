@@ -131,8 +131,10 @@ func freeFrame(f *frame) {
 		f.ltyps[i] = nil
 	}
 	f.ltyps = f.ltyps[:0]
+	// keep the len so the clear drops every wrapper's cell pointer —
+	// truncating first would pin the cells a recycled frame still
+	// references through the stale tail.
 	clear(f.slotRefs)
-	f.slotRefs = f.slotRefs[:0]
 	clear(f.stack)
 	f.stack = f.stack[:0]
 	f.ip = 0
