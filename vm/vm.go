@@ -106,6 +106,13 @@ type Hooks struct {
 	// anonymous typedefs. Used for promoted-field lookup, constraint
 	// resolution and generalized type inference.
 	ResolveType func(td *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, error)
+	// FieldPath answers where selector field name lands in the declared
+	// struct shape of td — the index-path convention of reflect's
+	// Field.Index. decided reports the declaration answered (found:
+	// a unique field winner with index set; missing: the name is no
+	// field); !decided falls back to the value-level member search.
+	// Nil keeps the value walk.
+	FieldPath func(td *runtime.TypeDef, name string) (index []int, found, decided bool)
 	// HostTwin returns the engine's own typedef for the named host type
 	// rt — the source declaration when rt's package is interpreted from
 	// source (go/ast), the bound typedef when it is host-bound — or nil

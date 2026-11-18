@@ -103,7 +103,8 @@ type sessionState struct {
 	// info names it.
 	mainPkg *runtime.Package
 
-	builtins *runtime.Env
+	builtins   *runtime.Env
+	fieldPaths *source.FieldPaths // lazily built by fieldPath (M4-1b)
 
 	mu              sync.Mutex
 	pkgs            map[string]*runtime.Package // by import path
@@ -343,10 +344,45 @@ func (e *Engine) newVM() *vm.VM {
 		AliasOf:     e.aliasOf,
 		FieldTypes:  e.fieldTypes,
 		ResolveType: e.resolveTypeRef,
+		FieldPath:   e.fieldPath,
 		HostTwin:    e.hostTwin,
 		Linkname:    e.linknameTarget,
 		HostErr:     hostErrOf,
 	}}
+}
+
+// fieldPath implements the VM's FieldPath hook (M4-1b): the declared
+// index path of a selector's field inside td's struct shape, answered
+// through internal/source's FieldPaths adapter over the engine's lazy
+// index. decided=false keeps the value-level member search.
+func (e *Engine) fieldPath(td *runtime.TypeDef, name string) ([]int, bool, bool) {
+	if e.fieldPaths == nil {
+		e.fieldPaths = source.NewFieldPaths(&source.IndexSource{
+			IndexedFunc: func(path string) *index.Index {
+				e.mu.Lock()
+				defer e.mu.Unlock()
+				if p := e.pkgs[path]; p != nil && p.IndexReady() {
+					return p.Index
+				}
+				return nil
+			},
+			LoadFunc: func(path string) (*index.Index, error) {
+				p, err := e.loadPathFrom(context.Background(), "", path)
+				if err != nil || p == nil {
+					return nil, err
+				}
+				p.WaitIndexed()
+				return p.Index, nil
+			},
+		})
+	}
+	switch res := e.fieldPaths.Of(td, name); res.Kind {
+	case source.FieldPathFound:
+		return res.Index, true, true
+	case source.FieldPathMissing:
+		return nil, false, true
+	}
+	return nil, false, false
 }
 
 // hostTwin implements the VM's HostTwin hook: the typedef this engine
