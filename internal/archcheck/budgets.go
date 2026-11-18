@@ -52,7 +52,7 @@ var FileBudgets = map[string]int{
 	"internal/hostbridge/opaque.go":      146,
 	"internal/process/process.go":        517,
 	"internal/replhooks/replhooks.go":    69,
-	"internal/semantics/fieldpath.go":    248,
+	"internal/semantics/fieldpath.go":    253,
 	"internal/semantics/semantics.go":    149,
 	"internal/source/embed.go":           282,
 	"internal/source/parse.go":           127,

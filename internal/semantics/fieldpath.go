@@ -170,6 +170,10 @@ func (s *Service) resolveStruct(t TypeRef, p Policy, seen map[ast.Expr]bool) Res
 				return Result[TypeRef]{Kind: r.Kind, Err: r.Err}
 			}
 			t, expr = r.Val, r.Val.Expr
+			// the binds are the caller's instantiation context —
+			// they do not apply inside another declaration's body
+			// (a plain type there may share a parameter's name).
+			t.Ctx.Binds = nil
 		case *ast.SelectorExpr:
 			id, ok := x.X.(*ast.Ident)
 			if !ok {
@@ -187,6 +191,7 @@ func (s *Service) resolveStruct(t TypeRef, p Policy, seen map[ast.Expr]bool) Res
 				return Result[TypeRef]{Kind: r.Kind, Err: r.Err}
 			}
 			t, expr = r.Val, r.Val.Expr
+			t.Ctx.Binds = nil
 		default:
 			return Result[TypeRef]{Kind: Missing}
 		}
