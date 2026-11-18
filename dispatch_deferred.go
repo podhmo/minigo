@@ -354,6 +354,18 @@ func (e *Engine) constIntValue(from *runtime.TypeDef, x ast.Expr) (int64, bool) 
 		if !ok {
 			return 0, false
 		}
+		// constant.BinaryOp rejects shifts — they go through Shift,
+		// and a negative or huge count can't spell an array length.
+		if t.Op == token.SHL || t.Op == token.SHR {
+			if b < 0 || b > 63 {
+				return 0, false
+			}
+			cv := constant.Shift(constant.MakeInt64(a), t.Op, uint(b))
+			if iv, ok := constant.Int64Val(constant.ToInt(cv)); ok {
+				return iv, true
+			}
+			return 0, false
+		}
 		cv := constant.BinaryOp(constant.MakeInt64(a), t.Op, constant.MakeInt64(b))
 		if iv, ok := constant.Int64Val(constant.ToInt(cv)); ok {
 			return iv, true
@@ -428,6 +440,18 @@ func resultSpellsParam(d *ast.FuncDecl, rt ast.Expr) bool {
 	found := false
 	ast.Inspect(rt, func(n ast.Node) bool {
 		if found {
+			return false
+		}
+		if f, ok := n.(*ast.Field); ok {
+			// a field's NAME is not a type reference — only its type
+			// expression can spell a type parameter. `struct{ T int }`
+			// returning from F[T] is a concrete answer, not T.
+			ast.Inspect(f.Type, func(m ast.Node) bool {
+				if id, ok := m.(*ast.Ident); ok && funcDeclHasParam(d, id.Name) {
+					found = true
+				}
+				return !found
+			})
 			return false
 		}
 		if id, ok := n.(*ast.Ident); ok && funcDeclHasParam(d, id.Name) {
