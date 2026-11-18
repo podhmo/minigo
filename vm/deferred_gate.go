@@ -76,7 +76,19 @@ func (v *VM) typGate(f *frame, siteA, siteB *bytecode.CallSite, mask int) {
 	if tda == nil || tdb == nil || tda.Name == "" || tdb.Name == "" {
 		return
 	}
+	// an interface-typed operand never mismatches — whether the other
+	// side is legal is assignability, which the comparison itself
+	// decides (the static gate declines iface operands the same way).
+	if v.ifaceTypedef(tda) || v.ifaceTypedef(tdb) {
+		return
+	}
 	if !sameTypeDef(tda, tdb) {
 		f.trap("invalid operation: mismatched types %s and %s", tdName(tda), tdName(tdb))
 	}
+}
+
+// ifaceTypedef reports whether td's underlying type is an interface.
+func (v *VM) ifaceTypedef(td *runtime.TypeDef) bool {
+	u := v.peelNamed(td)
+	return u != nil && u.Kind == runtime.KindInterface
 }

@@ -55,22 +55,26 @@ func (e *Engine) importPackageAt(from *runtime.TypeDef, name string) (*runtime.P
 // isConstExprDepth answered under AllowIndex: qualified package members
 // answer from the package's index and globals at runtime.
 func (e *Engine) constExprOf(site *bytecode.CallSite, ctx *runtime.TypeDef) (bool, error) {
-	return e.constExpr(ctx, site.Expr)
+	return e.constExpr(ctx, site.Consts, site.Expr)
 }
 
 // constExpr is the runtime counterpart of compile's isConstExprDepth —
 // gc's rule, not the compile-time conservative one: where compile had
 // to be sure, the runtime can look a member up for real.
-func (e *Engine) constExpr(ctx *runtime.TypeDef, x ast.Expr) (bool, error) {
+func (e *Engine) constExpr(ctx *runtime.TypeDef, consts map[string]bool, x ast.Expr) (bool, error) {
 	switch t := x.(type) {
 	case *ast.ParenExpr:
-		return e.constExpr(ctx, t.X)
+		return e.constExpr(ctx, consts, t.X)
 	case *ast.BasicLit:
 		return true, nil
 	case *ast.Ident:
 		switch t.Name {
 		case "true", "false", "iota":
 			return true, nil
+		}
+		if v, ok := consts[t.Name]; ok {
+			// a local declaration answers for the name — const or not.
+			return v, nil
 		}
 		if ctx == nil || ctx.Pkg == nil {
 			return false, nil
@@ -110,15 +114,15 @@ func (e *Engine) constExpr(ctx *runtime.TypeDef, x ast.Expr) (bool, error) {
 	case *ast.UnaryExpr:
 		switch t.Op {
 		case token.ADD, token.SUB, token.XOR, token.NOT:
-			return e.constExpr(ctx, t.X)
+			return e.constExpr(ctx, consts, t.X)
 		}
 		return false, nil
 	case *ast.BinaryExpr:
-		a, err := e.constExpr(ctx, t.X)
+		a, err := e.constExpr(ctx, consts, t.X)
 		if !a || err != nil {
 			return a, err
 		}
-		return e.constExpr(ctx, t.Y)
+		return e.constExpr(ctx, consts, t.Y)
 	case *ast.CallExpr:
 		if t.Ellipsis.IsValid() || len(t.Args) == 0 {
 			return false, nil
@@ -136,10 +140,10 @@ func (e *Engine) constExpr(ctx *runtime.TypeDef, x ast.Expr) (bool, error) {
 				if len(t.Args) != 1 {
 					return false, nil
 				}
-				return e.constExpr(ctx, t.Args[0])
+				return e.constExpr(ctx, consts, t.Args[0])
 			case "min", "max", "real", "imag", "complex":
 				for _, a := range t.Args {
-					c, err := e.constExpr(ctx, a)
+					c, err := e.constExpr(ctx, consts, a)
 					if !c || err != nil {
 						return c, err
 					}
@@ -159,7 +163,7 @@ func (e *Engine) constExpr(ctx *runtime.TypeDef, x ast.Expr) (bool, error) {
 			if len(t.Args) != 1 {
 				return false, nil
 			}
-			return e.constExpr(ctx, t.Args[0])
+			return e.constExpr(ctx, consts, t.Args[0])
 		case *ast.SelectorExpr:
 			switch f.Sel.Name {
 			case "Sizeof", "Alignof", "Offsetof":
