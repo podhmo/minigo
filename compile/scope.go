@@ -403,6 +403,13 @@ func (c *compiler) resolveName(name string) (nameInfo, bool) {
 // function returning `item`) must not push the variable where
 // OpCoerce* expects a typedef.
 func (c *compiler) typeIdent(e ast.Expr, name string) {
+	if id, ok := e.(*ast.Ident); ok && id.NamePos == token.NoPos && predeclaredTypeNames[name] {
+		// a synthesized predeclared name — `int` for a range index,
+		// `rune` for a string element, `bool` for comma-ok — names
+		// the builtin type itself: no shadow can rename it.
+		c.emit(bytecode.OpConst, c.constIdx(runtime.BasicTypedef(name)), 0, e.Pos())
+		return
+	}
 	if c.pkgScopeTyp != nil {
 		// a re-derived package decl's type resolves in package
 		// scope — the use site's locals and bound type params
