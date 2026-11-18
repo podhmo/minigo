@@ -1462,7 +1462,9 @@ func (v *VM) promotedMemberEx(f *frame, s *runtime.Struct, name string, allowPtr
 			}
 		}
 		if nilDepth > 0 && nilDepth <= depth+1 {
-			if nilPaths > 1 {
+			if nilPaths > 1 || nilDepth == maxWin {
+				// several nil paths, or a nil-path member tying the
+				// declared field's depth — ambiguous like Go.
 				f.trap("ambiguous selector %s", name)
 			}
 			panic(runtime.NilDerefPanic())
