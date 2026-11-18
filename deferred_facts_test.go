@@ -41,6 +41,7 @@ func TestDeferFacts(t *testing.T) {
 		"gate_nilinit",
 		"gate_nilhost",
 		"gate_builtinconst",
+		"gate_nilgeneric",
 
 	} {
 		dir := filepath.Join("testdata/difffuzz", slug)
