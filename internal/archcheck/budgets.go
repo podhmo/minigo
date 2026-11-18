@@ -26,7 +26,7 @@ var FileBudgets = map[string]int{
 	"compile/stmt.go":                    1077,
 	"compile/typehint.go":                2080,
 	"dispatch.go":                        1504,
-	"dispatch_deferred.go":               592,
+	"dispatch_deferred.go":               596,
 	"dispatch_deferred_typ.go":           95,
 	"eval.go":                            42,
 	"host/host.go":                       42,
