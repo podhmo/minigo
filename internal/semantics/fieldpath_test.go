@@ -282,6 +282,30 @@ type S struct{ I; X int }
 		}
 	})
 
+	t.Run("wrapped base type peels to its struct", func(t *testing.T) {
+		ix := indexOf(t, `package foo
+type S (struct{ X int })
+type P *struct{ Y int }
+`)
+		s := New(&fakeSource{indexes: map[string]*index.Index{"foo": ix}})
+		ref := refFor(t, s, "foo", "S")
+		got := s.FieldPathOf(ref, "X", IndexedOnly)
+		if got.Kind != Found {
+			t.Fatalf("kind %v, want Found", got.Kind)
+		}
+		if diff := cmp.Diff([]int{0}, got.Val.Index); diff != "" {
+			t.Fatal(diff)
+		}
+		pref := refFor(t, s, "foo", "P")
+		got = s.FieldPathOf(pref, "Y", IndexedOnly)
+		if got.Kind != Found {
+			t.Fatalf("kind %v, want Found", got.Kind)
+		}
+		if diff := cmp.Diff([]int{0}, got.Val.Index); diff != "" {
+			t.Fatal(diff)
+		}
+	})
+
 	t.Run("bound type parameter contributes no fields", func(t *testing.T) {
 		ix := indexOf(t, `package foo
 type E struct{ X int }
