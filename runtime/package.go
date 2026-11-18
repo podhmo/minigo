@@ -13,6 +13,7 @@ import (
 
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/internal/execution"
 	"github.com/podhmo/minigo/internal/spike"
 	"github.com/podhmo/minigo/syntax"
 )
@@ -219,11 +220,10 @@ type Package struct {
 	Owner any
 
 	state atomic.Int32 // a State value — member access can come from any goroutine
-	// indexed closes when the package finishes indexing (success or
-	// failure): a goroutine racing a cold load waits for it instead of
-	// seeing a half-indexed package. Nil on bound host packages, which
-	// are born Ready.
-	indexed chan struct{}
+	// indexed publishes index completion: a goroutine racing a cold
+	// load waits on it instead of seeing a half-indexed package.
+	// Unmarked on bound host packages, which are born Ready.
+	indexed execution.IndexGate
 
 	initOnce sync.Once
 	initErr  error
@@ -277,43 +277,21 @@ func (p *Package) SetState(s State) { p.state.Store(int32(s)) }
 // MarkIndexed declares that the package is still being indexed: until
 // [Package.FinishIndexing], member lookups from other goroutines wait.
 // Loaders call it when they create the package.
-func (p *Package) MarkIndexed() {
-	if p.indexed == nil {
-		p.indexed = make(chan struct{})
-	}
-}
+func (p *Package) MarkIndexed() { p.indexed.Mark() }
 
 // FinishIndexing releases the lookups held since [Package.MarkIndexed],
 // whether indexing succeeded or failed.
-func (p *Package) FinishIndexing() {
-	if p.indexed != nil {
-		close(p.indexed)
-	}
-}
+func (p *Package) FinishIndexing() { p.indexed.Finish() }
 
 // WaitIndexed blocks until the package has finished indexing (see
 // [Package.MarkIndexed]); afterwards Index and the import scopes are
 // safe to read from any goroutine.
-func (p *Package) WaitIndexed() {
-	if p.indexed != nil {
-		<-p.indexed
-	}
-}
+func (p *Package) WaitIndexed() { p.indexed.Wait() }
 
 // IndexReady reports whether indexing finished — the non-blocking form
 // of [Package.WaitIndexed]. A package never marked is ready (bound
 // packages index at construction).
-func (p *Package) IndexReady() bool {
-	if p.indexed == nil {
-		return true
-	}
-	select {
-	case <-p.indexed:
-		return true
-	default:
-		return false
-	}
-}
+func (p *Package) IndexReady() bool { return p.indexed.Ready() }
 
 // MatCache returns the value built for decl d, calling build when there
 // is none yet, so every caller gets the same *TypeDef or *Function for a
