@@ -316,7 +316,7 @@ func (e *Engine) aliasOf(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 	}
 	for ; n > 0; n-- {
 		expr = &ast.StarExpr{X: expr}
-		elem = &runtime.TypeDef{Kind: runtime.KindPointer, Elem: elem, Anon: expr, Pkg: td.Pkg, File: td.File, TParams: td.TParams, Binds: td.Binds}
+		elem = &runtime.TypeDef{Kind: runtime.KindPointer, Elem: elem, Anon: expr, Pkg: td.Pkg, File: td.File, TParams: td.TParams, Binds: td.Binds, LocalTypes: td.LocalTypes}
 	}
 	return elem, nil
 }
@@ -370,7 +370,7 @@ func (e *Engine) underlying(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 			pt := elem
 			for ; n > 0; n-- {
 				expr = &ast.StarExpr{X: expr}
-				pt = &runtime.TypeDef{Kind: runtime.KindPointer, Elem: pt, Anon: expr, Pkg: td.Pkg, File: td.File, TParams: td.TParams, Binds: td.Binds}
+				pt = &runtime.TypeDef{Kind: runtime.KindPointer, Elem: pt, Anon: expr, Pkg: td.Pkg, File: td.File, TParams: td.TParams, Binds: td.Binds, LocalTypes: td.LocalTypes}
 			}
 			return pt, nil
 		}
