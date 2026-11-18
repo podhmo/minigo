@@ -78,8 +78,8 @@ func TestSigTypEqParen(t *testing.T) {
 		{"nested paren vs int", "func(((*int)))", "func((int))", false},
 	}
 	for _, tt := range tests {
-		if got := SigTypEq(fn(tt.a), fn(tt.b), nil); got != tt.want {
-			t.Errorf("%s: SigTypEq(%s, %s) = %v, want %v", tt.name, tt.a, tt.b, got, tt.want)
+		if diff := cmp.Diff(tt.want, SigTypEq(fn(tt.a), fn(tt.b), nil)); diff != "" {
+			t.Errorf("%s: SigTypEq(%s, %s) mismatch (-want +got):\n%s", tt.name, tt.a, tt.b, diff)
 		}
 	}
 }
