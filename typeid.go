@@ -36,7 +36,12 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 		return "?"
 	}
 	var args string
-	if td.Binds != nil {
+	// Spell arguments only for a named instantiation (TParams, or a
+	// declared type whose TParams a copy dropped). An anonymous typedef
+	// merely inherits the enclosing generic's Binds as resolution
+	// context — spelling them would split `use[[]int]` inside wrap[int]
+	// and wrap[string] into different identities for one type.
+	if td.Binds != nil && (len(td.TParams) > 0 || td.Spec != nil) {
 		// TParams gives declaration order; copies that drop it (e.g.
 		// argTypedef's) still carry Binds — sort the names so an
 		// instantiation always spells its arguments.
