@@ -1341,7 +1341,14 @@ func (e *Engine) instantiateBinds(base *runtime.TypeDef, binds map[string]runtim
 				mbinds[tp] = tv
 			}
 			// the receiver may rename the type's parameters — bind them too
-			for i, rp := range recvParamNames(m.Decl) {
+			var rpn []string
+			if m.Decl != nil {
+				rpn = syntax.RecvTypeParamNames(m.Decl.Recv)
+			}
+			for i, rp := range rpn {
+				if rp == "_" {
+					continue // `_` names no parameter to bind
+				}
 				if i < len(base.TParams) {
 					mbinds[rp] = binds[base.TParams[i]]
 				}
@@ -1357,29 +1364,6 @@ func (e *Engine) instantiateBinds(base *runtime.TypeDef, binds map[string]runtim
 	// M4-3d: the instantiated descriptor is canonical — two mints of the
 	// same instantiation are the same pointer.
 	return e.internTypedef(td)
-}
-
-// recvParamNames extracts the type parameter names a method receiver
-// declares — `func (l List[E, F])` yields [E, F]. Non-generic receivers
-// yield nil.
-func recvParamNames(d *ast.FuncDecl) []string {
-	if d == nil || d.Recv == nil || len(d.Recv.List) == 0 {
-		return nil
-	}
-	var idxs []ast.Expr
-	switch t := d.Recv.List[0].Type.(type) {
-	case *ast.IndexExpr:
-		idxs = []ast.Expr{t.Index}
-	case *ast.IndexListExpr:
-		idxs = t.Indices
-	}
-	var out []string
-	for _, x := range idxs {
-		if id, ok := x.(*ast.Ident); ok {
-			out = append(out, id.Name)
-		}
-	}
-	return out
 }
 
 // elemTypeRef resolves a container's element type expression: `*T`

@@ -205,3 +205,18 @@ func F12() string {
 	return fmt.Sprint(p == nil, q == nil, any(p) == any(GP[int](nil)), any(p) == any(GQ[int](nil)))
 	// "true true true false"
 }
+
+// an early (embed-driven) instantiation interned before the runtime
+// mint: the pointer receiver's own parameter name `U` must still bind
+// to the concrete argument — the interned descriptor carries it.
+type PT2[T any] struct{ v T }
+
+func (p *PT2[U]) Get() U { return p.v }
+
+type PE2 struct{ PT2[int] }
+
+func F13() string {
+	b := &PE2{}
+	b.v = 7
+	return fmt.Sprint(b.Get()) // "7"
+}
