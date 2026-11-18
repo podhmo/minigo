@@ -955,15 +955,18 @@ func (e *Engine) bindPublishLocked(importPath string, p *runtime.Package) []stri
 	return tdKeys
 }
 
-// bindInternTypedefs swaps each bound typedef global for the canonical
-// descriptor interned under its TypeID (M4-3c) — a synthesized twin
-// resolves to it. Interning runs outside the engine lock: spelling a
-// TypeID can install a lazily-bound package, which re-takes e.mu.
+// bindInternTypedefs records each bound typedef as the canonical
+// descriptor for its TypeID (M4-3c) — a synthesized twin resolves to it,
+// and Store replaces so a re-Bind of the same type redefines it.
+// Interning runs outside the engine lock: spelling a TypeID can install
+// a lazily-bound package, which re-takes e.mu.
 func (e *Engine) bindInternTypedefs(p *runtime.Package, keys []string) {
 	for _, k := range keys {
 		if v, ok := p.Globals.Get(k); ok {
 			if td, ok := v.(*runtime.TypeDef); ok {
-				p.Globals.Set(k, e.internTypedef(td))
+				if tid := e.typeIDOf(td); tid != "" && tid != "?" && e.typeIntern != nil {
+					e.typeIntern.Store(tid, td)
+				}
 			}
 		}
 	}

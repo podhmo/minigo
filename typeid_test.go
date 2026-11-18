@@ -195,3 +195,32 @@ func TestInternTypedefBoundConverges(t *testing.T) {
 		t.Errorf("synthesized twin did not converge on the bound typedef: %p vs %p", got, bound)
 	}
 }
+
+// two packages can share a package-name and a type-name: identity is
+// the owning package's PATH, not the name's spelling.
+func TestInternTypedefSameNamedPackagesStayDistinct(t *testing.T) {
+	e := NewEngine(".")
+	a := &runtime.TypeDef{Name: "dup.T", Kind: runtime.KindStruct,
+		Pkg: &runtime.Package{Path: "example.com/a/dup", Name: "dup"}}
+	b := &runtime.TypeDef{Name: "dup.T", Kind: runtime.KindStruct,
+		Pkg: &runtime.Package{Path: "example.com/b/dup", Name: "dup"}}
+	if e.typeIDOf(a) == e.typeIDOf(b) {
+		t.Fatalf("same-named types of different packages share a key: %q", e.typeIDOf(a))
+	}
+	if e.internTypedef(a) == e.internTypedef(b) {
+		t.Error("different packages' same-named typedefs interned together")
+	}
+}
+
+// a re-Bind of the same type re-registers the descriptor: the newer
+// typedef becomes canonical and the package sees it.
+func TestInternTypedefRebindRefreshes(t *testing.T) {
+	e := NewEngine(".")
+	first := hostType("example.com/x.Widget", func() any { return &strings.Builder{} })
+	second := hostType("example.com/x.Widget", func() any { return &strings.Reader{} })
+	e.Bind("example.com/x", map[string]runtime.Value{"Widget": first})
+	e.Bind("example.com/x", map[string]runtime.Value{"Widget": second})
+	if e.internTypedef(first) != second {
+		t.Error("re-Bound typedef did not become canonical")
+	}
+}

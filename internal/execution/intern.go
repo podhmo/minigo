@@ -33,6 +33,16 @@ func (t *Intern[K, V]) Of(k K, v V) V {
 	return got.(V)
 }
 
+// Store replaces the descriptor stored for k: a re-registration (a
+// re-Bind of the same type) makes the newer descriptor canonical,
+// while Of keeps the first.
+func (t *Intern[K, V]) Store(k K, v V) {
+	if t == nil {
+		return
+	}
+	t.m.Store(k, v)
+}
+
 // Lookup returns the stored descriptor without storing.
 func (t *Intern[K, V]) Lookup(k K) (V, bool) {
 	if t == nil {
