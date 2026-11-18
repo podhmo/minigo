@@ -62,6 +62,10 @@ func (c *compiler) isIfaceTypeExpr(e ast.Expr) bool {
 	case *ast.ParenExpr:
 		return c.isIfaceTypeExpr(t.X)
 	case *ast.Ident:
+		if t.NamePos == token.NoPos && predeclaredTypeNames[t.Name] {
+			// synthesized name: the builtin, not the shadow
+			return t.Name == "any" || t.Name == "error"
+		}
 		info, found := c.resolveName(t.Name)
 		return found && info.iface
 	}
@@ -1705,6 +1709,13 @@ type namedTypID struct {
 func (c *compiler) namedIdentOf(te ast.Expr) (namedTypID, bool) {
 	switch t := ast.Unparen(te).(type) {
 	case *ast.Ident:
+		if t.NamePos == token.NoPos && predeclaredTypeNames[t.Name] {
+			// a synthesized predeclared name — `int` for a range
+			// index, `rune` for a string element, `bool` for
+			// comma-ok — means the builtin itself: a decl like
+			// `type int uint8` cannot rename it.
+			return namedTypID{id: "predecl:" + runtime.CanonicalBasicName(t.Name), name: t.Name}, true
+		}
 		info, found := c.resolveName(t.Name)
 		if !found || !info.isType || info.iface {
 			return namedTypID{}, false
