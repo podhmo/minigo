@@ -8,5 +8,5 @@ import (
 )
 
 func main() {
-	fmt.Println(unsafe.Sizeof(inner.G()))
+	fmt.Println(unsafe.Sizeof(inner.G()), unsafe.Sizeof(inner.H()))
 }

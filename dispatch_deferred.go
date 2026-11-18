@@ -354,11 +354,15 @@ func (e *Engine) constIntValue(from *runtime.TypeDef, x ast.Expr) (int64, bool) 
 		if !ok {
 			return 0, false
 		}
-		// constant.BinaryOp rejects shifts — they go through Shift,
-		// and a negative or huge count can't spell an array length.
+		// constant.BinaryOp rejects shifts — they go through Shift.
+		// Go defines x >> 64 as 0 (x >= 0), and a SHL that large can't
+		// spell an array length, so only counts under 64 reach Shift.
 		if t.Op == token.SHL || t.Op == token.SHR {
-			if b < 0 || b > 63 {
+			if b < 0 {
 				return 0, false
+			}
+			if b >= 64 {
+				return 0, t.Op == token.SHR && a >= 0
 			}
 			cv := constant.Shift(constant.MakeInt64(a), t.Op, uint(b))
 			if iv, ok := constant.Int64Val(constant.ToInt(cv)); ok {
