@@ -363,8 +363,14 @@ func (v *VM) ifaceFailReason(td *runtime.TypeDef, x runtime.Value) string {
 		}
 	} else if v.H.MethodInfoOf != nil {
 		// one walk: names, unsure and signature-bearing funcs come from
-		// the same method set.
-		if ms, err := v.H.MethodInfoOf(x); err == nil && ms != nil {
+		// the same method set. A nil set is a legitimately empty one —
+		// a basic type's dynamic value has no declared methods — so
+		// every requirement is missing and names a method.
+		ms, err := v.H.MethodInfoOf(x)
+		if err != nil {
+			return ""
+		}
+		if ms != nil {
 			have, unsure, dynFns = ms.Names, ms.Unsure, ms.Funcs
 		}
 	} else {
@@ -372,6 +378,8 @@ func (v *VM) ifaceFailReason(td *runtime.TypeDef, x runtime.Value) string {
 			have, unsure, err = v.H.MethodSetOf(x)
 		} else if v.H.MethodsOf != nil {
 			have, err = v.H.MethodsOf(x)
+		} else {
+			return "" // no method-set hook answered — leave the generic panic
 		}
 		if err != nil {
 			return ""
@@ -379,9 +387,6 @@ func (v *VM) ifaceFailReason(td *runtime.TypeDef, x runtime.Value) string {
 		if v.H.MethodFuncsOf != nil {
 			dynFns, _ = v.H.MethodFuncsOf(x)
 		}
-	}
-	if have == nil && !unsure {
-		return "" // no method-set hook answered — leave the generic panic
 	}
 	missing := make([]string, 0, len(reqs))
 	for m := range reqs {
