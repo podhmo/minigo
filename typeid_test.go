@@ -190,6 +190,36 @@ func TestDeferredTypeOfKeepsPointerShape(t *testing.T) {
 	if td.Kind == runtime.KindPointer {
 		t.Fatalf("plain ident gained a pointer layer")
 	}
+	// **int: the inner pointer's Anon is the `*int` expr — tagging every
+	// level with the whole `**int` tree would make TypIdentical equate
+	// the result with its own element.
+	inner := &ast.StarExpr{X: ast.NewIdent("int")}
+	outer := &ast.StarExpr{X: inner}
+	dd, err := e.deferredTypeOf(&bytecode.CallSite{Expr: outer}, ctx)
+	if err != nil {
+		t.Fatalf("starstar: %v", err)
+	}
+	el := dd.Elem
+	if el == nil || el.Kind != runtime.KindPointer {
+		t.Fatalf("**int's element is %v, want a pointer typedef", dd.Elem)
+	}
+	if dd.Anon != ast.Expr(outer) || el.Anon != ast.Expr(inner) {
+		t.Fatalf("pointer levels carry the wrong syntax trees")
+	}
+	if runtime.TypIdentical(dd, el) {
+		t.Fatalf("**int reads identical to its *int element")
+	}
+	// a pointer over a local type keeps the decl-scope snapshot so its
+	// spelling matches pointers minted by typeExpr.
+	ltd := &runtime.TypeDef{Kind: runtime.KindNamedBasic, Name: "L"}
+	lctx := &runtime.TypeDef{Pkg: ctx.Pkg, LocalTypes: map[string]*runtime.TypeDef{"L": ltd}}
+	lp, err := e.deferredTypeOf(&bytecode.CallSite{Expr: &ast.StarExpr{X: ast.NewIdent("L")}}, lctx)
+	if err != nil {
+		t.Fatalf("local star: %v", err)
+	}
+	if lp.LocalTypes["L"] != ltd {
+		t.Fatalf("*L dropped the local-type snapshot")
+	}
 }
 
 // the M4-3b contract: one session holds ONE canonical descriptor per

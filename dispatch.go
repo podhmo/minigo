@@ -1282,13 +1282,14 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 // keeps the expression's own shape: `*int` resolves to a pointer
 // typedef, parens count their inner stars the same way.
 func (e *Engine) deferredTypeOf(site *bytecode.CallSite, ctx *runtime.TypeDef) (*runtime.TypeDef, error) {
-	expr, stars := site.Expr, 0
+	expr := site.Expr
+	var stars []*ast.StarExpr
 	for {
 		switch t := expr.(type) {
 		case *ast.ParenExpr:
 			expr = t.X
 		case *ast.StarExpr:
-			stars++
+			stars = append(stars, t)
 			expr = t.X
 		default:
 			goto peeled
@@ -1299,8 +1300,12 @@ peeled:
 	if err != nil {
 		return nil, err
 	}
-	for ; stars > 0 && td != nil; stars-- {
-		td = &runtime.TypeDef{Kind: runtime.KindPointer, Anon: site.Expr, Elem: td, Pkg: ctx.Pkg, File: ctx.File, Binds: ctx.Binds}
+	// wrap innermost star first so `**int`'s *int level spells `*int`,
+	// and keep the context's local-type snapshot: typeExpr-minted
+	// pointers carry LocalTypes, and TypSpelling needs it to name
+	// function-local element types alike.
+	for i := len(stars) - 1; i >= 0 && td != nil; i-- {
+		td = &runtime.TypeDef{Kind: runtime.KindPointer, Anon: stars[i], Elem: td, Pkg: ctx.Pkg, File: ctx.File, Binds: ctx.Binds, LocalTypes: ctx.LocalTypes}
 	}
 	return td, nil
 }
