@@ -34,5 +34,5 @@ func (e *Engine) installEncodingBase64(h *hostHelpers) {
 		}
 		return &runtime.GoValue{V: base64.NewDecoder(enc, r)}, nil
 	}, base64.NewDecoder)
-	e.Bind("encoding/base64", tbl)
+	e.bindBound("encoding/base64", tbl)
 }

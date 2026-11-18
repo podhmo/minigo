@@ -9,7 +9,7 @@ import (
 func (e *Engine) installEncodingCsv(h *hostHelpers) {
 	// encoding/csv: NewReader binds the real *csv.Reader so Read/ReadAll and
 	// field tuning (Comma/FieldsPerRecord via host field writes) work.
-	e.Bind("encoding/csv", map[string]runtime.Value{
+	e.bindBound("encoding/csv", map[string]runtime.Value{
 		"NewReader": h.fn1("csv.NewReader", func(a []any) (any, error) {
 			r, err := asReader(a[0])
 			if err != nil {

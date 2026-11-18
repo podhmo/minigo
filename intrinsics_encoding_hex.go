@@ -80,5 +80,5 @@ func (e *Engine) installEncodingHex(h *hostHelpers) {
 		}
 		return &runtime.GoValue{V: hex.Dumper(w)}, nil
 	}, hex.Dumper)
-	e.Bind("encoding/hex", tbl)
+	e.bindBound("encoding/hex", tbl)
 }

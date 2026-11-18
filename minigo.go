@@ -818,6 +818,17 @@ func BindAs(name string) BindOption {
 // ([WithPackageModes] ModeSource): script-declared structs marshal into
 // bound templates field-by-field.
 func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value, opts ...BindOption) {
+	p := e.bindTable(importPath, symbols, opts...)
+	e.mu.Lock()
+	e.bindPublishLocked(importPath, p)
+	e.mu.Unlock()
+}
+
+// bindTable builds the ready package a Bind publishes. The host policy
+// filter and the per-symbol host conversions run outside the engine
+// lock: either may read engine state (a policy that queries BoundOf
+// would otherwise deadlock).
+func (e *Engine) bindTable(importPath string, symbols map[string]runtime.Value, opts ...BindOption) *runtime.Package {
 	cfg := bindConfig{name: lastElem(importPath)}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -836,6 +847,20 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value, opts 
 			continue
 		}
 		v = hostSymbol(cfg.name+"."+k, v)
+		p.Globals.Set(k, v)
+	}
+	return p
+}
+
+// bindPublishLocked publishes a bound table: the pending registration
+// clears, pkgs answers loads (unless a source package is being
+// preserved), names serves the bound queries, and the table's funcs
+// and typedefs adopt it as their owner. The engine lock is held;
+// adoption runs inside it so a skipped publish never re-points shared
+// symbols at an unbound package.
+func (e *Engine) bindPublishLocked(importPath string, p *runtime.Package) {
+	for _, k := range p.Globals.Names() {
+		v, _ := p.Globals.Get(k)
 		if bf, ok := v.(*runtime.BuiltinFunc); ok && (bf.Pkg == nil || bf.Pkg.Path == p.Path) {
 			// a BuiltinFunc bound under several paths keeps its first
 			// owner; a re-Bind re-points at the new live package
@@ -844,15 +869,12 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value, opts 
 		if td, ok := v.(*runtime.TypeDef); ok && td.Pkg == nil {
 			td.Pkg = p
 		}
-		p.Globals.Set(k, v)
 	}
-	e.mu.Lock()
 	e.pending.Clear(importPath)
 	if _, skip := e.preservePkgs[importPath]; !skip {
 		e.pkgs[importPath] = p
 	}
 	e.names.Set(importPath, p)
-	e.mu.Unlock()
 }
 
 var runtimePkgPath = reflect.TypeOf(runtime.Nil{}).PkgPath()

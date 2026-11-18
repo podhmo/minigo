@@ -12,7 +12,7 @@ func (e *Engine) installInternalBytealg(h *hostHelpers) {
 	// GOROOT, and their sources lean on unsafe (bytealg's init reads
 	// unsafe.Offsetof of cpu flags). Stub the pure entry points stdlib
 	// sources call — embed.FS's lookup, for one — over strings/bytes.
-	e.Bind("internal/bytealg", map[string]runtime.Value{
+	e.bindBound("internal/bytealg", map[string]runtime.Value{
 		"MaxLen":        int64(bytealgMaxLen()),
 		"MaxBruteForce": int64(bytealgMaxBruteForce()),
 		"Compare":       h.fn2("bytealg.Compare", func(a []any) (any, error) { return int(bytes.Compare(byteSlice(a[0]), byteSlice(a[1]))), nil }),

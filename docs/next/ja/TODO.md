@@ -42,7 +42,7 @@
 
 ## M3: 実行時チェック
 
-- [x] **M3-1 軽量な所有権チェック**: 他の Session の PackageInstance を、初期化や呼び出しの前に拒否する（開発時のみ有効）。完了条件: 誤用テスト（Session A の dep を Session B の Call に渡す）がある。[references/ownership.md](./references/ownership.md)
+- [x] **M3-1 軽量な所有権チェック**: 他の Session の PackageInstance を、初期化や呼び出しの前に拒否する。実装は owner が設定された package に対し `Engine.Call` の入口で常時有効（開発時限定ではない）。完了条件: 誤用テスト（Session A の dep を Session B の Call に渡す）がある。[references/ownership.md](./references/ownership.md)
 - [x] **M3-2 資産監査をオプトインで分ける**: AST/index の改変を検出する。D-own の計測ではリロード+呼び出しが約 2〜3 ms、完全ハッシュ付きでは約 1〜1.6 s なので、既定では無効にする。完了条件: 通常の実行ではハッシュのコストを払っていない。
 
 ## P2: パッケージの抽出
@@ -72,7 +72,7 @@
   - [x] 遅延構築の仕組み（`bind.Pending` + installbound.go の入口、`templateFuncMap` のセッション化、ベンチ差分 0.47ms→10µs）: PR #1147
   - [ ] 残り: `e.installX` を `internal/stdlib/<path>` ファイルへ移す（root helper 層の切り出しが先 — P2-9/P2-14 と同じ地層）
 - [x] **P2-13 純粋なシグネチャの bind を生成する**: 約半分のエントリを `gen-intrinsics` で生成し、`// Code generated` ヘッダ付きでチェックインする。完了条件: 生成したパッケージに、source 解釈版との parity テストがある。[references/stdlib-lazy.md](./references/stdlib-lazy.md) — `internal/cmd/genbind` が index の Funcs/Vars/Consts/Types から `<camel>GenEntries()` を生成（`wrapBind` 経由）。12 パッケージ・約 500 エントリを生成済み。環境依存の filepath 系・値コンストラクタ型・コールバック系は手書きのまま installX がマージする。parity テストは `genbind_parity_test.go`（構造: 全 export をカバー / 振る舞い: bound vs source の呼び出し結果一致）
-- [-] **P2-14 `internal/execution` と `internal/source` を抽出する**: ライフサイクルの状態機械を `runtime/package.go` と `minigo.go` から移す。`embed.go`、`parse.go`、`parsecache.go` は `internal/source` へ移す。完了条件: root と `vm.go` がそれぞれ約 3,000 行を下回る。
+- [-] **P2-14 `internal/execution` と `internal/source` を抽出する**: ライフサイクルの状態機械を `runtime/package.go` と `minigo.go` から移す。`embed.go`、`parse.go`、`parsecache.go` は `internal/source` へ移す。完了条件: root パッケージ全体（非テスト・非生成 .go の合計、現状約 19,500 行）と `vm.go` がそれぞれ約 3,000 行を下回る（`minigo.go` 単体は既に達成済みのため、測る範囲はパッケージ全体とする）。
   - [x] `parse.go`/`parsecache.go`/`embed.go` を `internal/source` へ（`ParseCache`/`IndexCache` + `ParsePackageFiles` + `EmbedBuiltin`/`EmbedEnv`）（PR #1149）
   - [ ] 残り: ライフサイクル状態機械の `internal/execution` への移動（`runtime/package.go` + `minigo.go`）
 

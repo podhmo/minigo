@@ -17,7 +17,7 @@ func (e *Engine) installHtmlTemplate(h *hostHelpers) {
 		return &runtime.TypeDef{Name: "html/template." + name, Kind: runtime.KindNamedBasic, Anon: ast.NewIdent("string"), HostScalar: zero}
 	}
 
-	e.Bind("html/template", map[string]runtime.Value{
+	e.bindBound("html/template", map[string]runtime.Value{
 		"Template": hostType("html/template.Template", func() any { return htmltemplate.New("") }),
 		"New": h.fn1("template.New", func(a []any) (any, error) {
 			return &runtime.GoValue{V: htmltemplate.New(str(a[0]))}, nil

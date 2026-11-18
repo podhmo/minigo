@@ -129,3 +129,40 @@ func TestConcurrentSourceAndBoundQuery(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestExplicitBindWinsDuringLazyInstall is the regression reported on
+// #1149's review: bindBound checked names and published in two
+// critical sections, so an explicit Bind landing between them was
+// overwritten by the default table. The host policy pauses the lazy
+// build mid-table so the explicit Bind provably lands in the window.
+func TestExplicitBindWinsDuringLazyInstall(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	e := NewEngine(".", WithHostPolicy(func(path, name string) bool {
+		// block on a symbol only the lazy table carries so the
+		// explicit Bind's own hostPolicy call does not pause
+		if path == "html" && name == "EscapeString" {
+			once.Do(func() { close(started) })
+			<-release
+		}
+		return true
+	}))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.BoundOf("html")
+	}()
+	<-started
+	e.Bind("html", map[string]runtime.Value{"Explicit": int64(1)})
+	close(release)
+	<-done
+
+	p := e.BoundOf("html")
+	if _, ok := p.Globals.Get("Explicit"); !ok {
+		t.Fatal("the lazy table clobbered the explicit Bind")
+	}
+	if _, ok := p.Globals.Get("EscapeString"); ok {
+		t.Fatal("the default table won over the explicit Bind")
+	}
+}

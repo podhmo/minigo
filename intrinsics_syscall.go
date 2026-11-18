@@ -10,7 +10,7 @@ func (e *Engine) installSyscall(h *hostHelpers) {
 	// syscall's sources need unsafe layout (route_bsd's Offsetof) in
 	// init. Bind the portable surface tools reach for — signals and
 	// common errnos — as host values.
-	e.Bind("syscall", map[string]runtime.Value{
+	e.bindBound("syscall", map[string]runtime.Value{
 		"SIGINT":  &runtime.GoValue{V: syscall.SIGINT},
 		"SIGQUIT": &runtime.GoValue{V: syscall.SIGQUIT},
 		"SIGTERM": &runtime.GoValue{V: syscall.SIGTERM},

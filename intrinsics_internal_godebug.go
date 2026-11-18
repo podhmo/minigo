@@ -16,7 +16,7 @@ func (e *Engine) installInternalGodebug(h *hostHelpers) {
 	// defaults to its enabled behavior (e.g. url's query-param limit
 	// check in ParseQuery), and a t.Setenv-style GODEBUG write made
 	// through internal/testenv.SetGODEBUG below is honored.
-	e.Bind("internal/godebug", map[string]runtime.Value{
+	e.bindBound("internal/godebug", map[string]runtime.Value{
 		"New": h.fn1("godebug.New", func(a []any) (any, error) {
 			return &runtime.GoValue{V: &godebugSetting{name: str(a[0])}}, nil
 		}),

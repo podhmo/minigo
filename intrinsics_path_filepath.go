@@ -106,5 +106,5 @@ func (e *Engine) installPathFilepath(h *hostHelpers) {
 		})
 		return errVal(werr), nil
 	}}
-	e.Bind("path/filepath", tbl)
+	e.bindBound("path/filepath", tbl)
 }

@@ -15,7 +15,7 @@ import (
 )
 
 func (e *Engine) installRuntime(h *hostHelpers) {
-	e.Bind("runtime", map[string]runtime.Value{
+	e.bindBound("runtime", map[string]runtime.Value{
 		"GOOS":   goruntime.GOOS,
 		"GOARCH": goruntime.GOARCH,
 		"NumGoroutine": h.fn("runtime.NumGoroutine", func(a []any) (any, error) {
