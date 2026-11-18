@@ -6,9 +6,9 @@ package archcheck
 // (`go run ./internal/cmd/archcheck -print-sizes`).
 var FileBudgets = map[string]int{
 	"asmimpl.go":                         279,
-	"bindenv.go":                         48,
+	"bindenv.go":                         52,
 	"boundreads.go":                      70,
-	"builtins.go":                        1223,
+	"builtins.go":                        1224,
 	"bytecode/bytecode.go":               299,
 	"bytecode/disasm.go":                 277,
 	"cmd/minigo/main.go":                 1231,
@@ -24,7 +24,6 @@ var FileBudgets = map[string]int{
 	"compile/stmt.go":                    1077,
 	"compile/typehint.go":                1975,
 	"dispatch.go":                        1151,
-	"embed.go":                           271,
 	"host/host.go":                       42,
 	"hostslice.go":                       448,
 	"hostvars.go":                        54,
@@ -50,6 +49,7 @@ var FileBudgets = map[string]int{
 	"internal/process/process.go":        517,
 	"internal/replhooks/replhooks.go":    68,
 	"internal/semantics/semantics.go":    149,
+	"internal/source/embed.go":           282,
 	"internal/source/parse.go":           127,
 	"internal/source/parsecache.go":      259,
 	"internal/source/source.go":          105,
