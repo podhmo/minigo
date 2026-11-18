@@ -257,7 +257,7 @@ type Package struct {
 	// Specials is the engine's special-form registry (canonical symbol ->
 	// handler); the compiler emits OpSpecialCall for calls to these
 	// symbols.
-	Specials map[SymbolID]SpecialFunc
+	Specials *execution.Registry[SymbolID, SpecialFunc]
 
 	matMu sync.Mutex
 	matM  map[*index.Decl]Value // materialization dedup: one TypeDef/Function identity per decl
