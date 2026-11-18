@@ -259,6 +259,9 @@ func TestInternTypedefStragglerRebindKeepsNewest(t *testing.T) {
 	e.bindInternTypedefs(p1, keys1, seq1)
 	if diff := cmp.Diff(true, e.internTypedef(first) == second); diff != "" {
 		t.Errorf("straggling older bind rolled the interned typedef back (-want +got):\n%s", diff)
+	}
+}
+
 // Two functions' same-named local types are different types: the anon
 // composite `[]L` must not collide on their shared spelling, or an
 // instance cache keyed on it binds the wrong local decl.
@@ -475,6 +478,35 @@ func TestTypeIDAnonLocalLeafsDistinct(t *testing.T) {
 	}
 	if a, b := e.typeIDOf(embedPkgAlias), e.typeIDOf(embedAliasOf("int")); a != b {
 		t.Errorf("package alias a=int and local alias a=int key differently: %q vs %q", a, b)
+	}
+	// a generic package alias instantiates like a local one — its
+	// parameter names must not resolve against the package (the `Y`
+	// decl here) nor be left unbound.
+	pairBody := &ast.IndexListExpr{X: ast.NewIdent("Pair"), Indices: []ast.Expr{ast.NewIdent("Y"), ast.NewIdent("X")}}
+	genSpec := &ast.TypeSpec{
+		Assign: 1, Type: pairBody,
+		TypeParams: &ast.FieldList{List: []*ast.Field{
+			{Names: []*ast.Ident{ast.NewIdent("X"), ast.NewIdent("Y")}, Type: ast.NewIdent("any")},
+		}},
+	}
+	pGen := &runtime.Package{Path: p1.Path, Name: "p", Index: &index.Index{
+		Types: map[string]*index.TypeDeclInfo{
+			"G": {Decl: &index.Decl{Spec: genSpec}},
+			"Y": {Decl: &index.Decl{Spec: &ast.TypeSpec{Type: ast.NewIdent("int")}}},
+		},
+	}}
+	sliceGen := &ast.ArrayType{Elt: &ast.IndexListExpr{X: ast.NewIdent("G"), Indices: []ast.Expr{ast.NewIdent("int"), ast.NewIdent("string")}}}
+	pkgSide := &runtime.TypeDef{Kind: runtime.KindSlice, Pkg: pGen, File: f, Anon: sliceGen}
+	localAlias := &runtime.TypeDef{
+		Kind: runtime.KindAlias, Pkg: pGen, File: f,
+		Anon: pairBody, TParams: []string{"X", "Y"}, TConstraints: []ast.Expr{ast.NewIdent("any"), ast.NewIdent("any")},
+	}
+	localSide := &runtime.TypeDef{
+		Kind: runtime.KindSlice, Pkg: pGen, File: f, Anon: sliceGen,
+		LocalTypes: map[string]*runtime.TypeDef{"G": localAlias},
+	}
+	if a, b := e.typeIDOf(pkgSide), e.typeIDOf(localSide); a != b {
+		t.Errorf("generic package alias and local alias key differently: %q vs %q", a, b)
 	}
 	// an unnamed func parameter's type is not an embedded field:
 	// `func(A)` with `type A = int` keys like `func(int)` and `func(x A)`.
