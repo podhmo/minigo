@@ -180,6 +180,12 @@ type opTyp struct {
 	// from (`var y = p.C` asks about p.C, not y).
 	deferred bool
 	dexpr    ast.Expr
+	// logical marks `!x`, `x && y`, `x || y` whose operand types are
+	// opaque: the result is SOME bool-flavoured type (the operand's
+	// named bool type, or builtin bool), so its size and alignment are
+	// always bool's — unsafe.Sizeof/Alignof may answer without
+	// evaluating the expression.
+	logical bool
 	// elLit is a `[...]T` composite literal whose length the compile
 	// time fold could not resolve — callers that must not evaluate the
 	// operand (unsafe.Sizeof/Alignof) emit the key positions for a
@@ -270,7 +276,7 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 				// `!v` is SOME bool but which is unknowable when the
 				// operand's type is opaque — `f() == b` with `type B
 				// bool` returning B must not gate on a guessed bool.
-				return opTyp{}
+				return opTyp{logical: true}
 			}
 			if te := c.namedBoolTyp(xt); te != nil {
 				return opTyp{te: te} // !v keeps a named bool's type
@@ -314,7 +320,7 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 			// flavour unknowable — `v && f()` is a B when f returns a
 			// named bool; guessing builtin would trap a legal compare.
 			if ux.te == nil || uy.te == nil {
-				return opTyp{}
+				return opTyp{logical: true}
 			}
 			return opTyp{te: &ast.Ident{Name: "bool"}}
 		}
