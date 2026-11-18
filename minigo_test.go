@@ -2297,6 +2297,40 @@ func Raw() int { return lib.Raw() }
 	}
 }
 
+// hostTwinEntryScript never imports time, yet a time.Time arrives from
+// the bound context package — member calls on it resolve through the
+// time typedef, which hostPackageOf (the install entry, P2-11)
+// guarantees is installed before the typedef search. Written at test
+// time like bindAsScript.
+const hostTwinEntryScript = `package main
+
+import "context"
+
+func Main() int {
+	dl, _ := context.Background().Deadline()
+	return dl.Year()
+}
+`
+
+// TestHostTwinInstallEntry (P2-11): a script that never imports time
+// receives a time.Time from another bound package (ctx.Deadline()) and
+// still gets its typedef — a registered path is guaranteed installed
+// before the typedef search. Zero time's year is 1.
+func TestHostTwinInstallEntry(t *testing.T) {
+	fname := filepath.Join(t.TempDir(), "main.go")
+	if err := os.WriteFile(fname, []byte(hostTwinEntryScript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e := newEngine(t)
+	got, err := e.RunFile(context.Background(), fname, "Main")
+	if err != nil {
+		t.Fatalf("RunFile: %v", err)
+	}
+	if diff := cmp.Diff(int64(1), got); diff != "" {
+		t.Fatalf("Main mismatch (-want +got):\n%s", diff)
+	}
+}
+
 // TestSessionInheritsPackageModes: a WithPackageModes policy applies to a
 // NewSession the same as on the parent engine — a denied import must fail
 // in both.

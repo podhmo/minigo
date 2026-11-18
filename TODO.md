@@ -13,6 +13,8 @@ migration; history above that point lives in the source repository.
 
 ## To Be Implemented
 
+- [ ] **`runtime/value.go`'s `special` import sits inside the stdlib group, so `make format` (goimports) always rewrites it and the FileBudgets ratchet then fails CI**: the file's `import` block lists `github.com/podhmo/minigo/special` between `fmt` and `go/ast`, and goimports keeps moving it into the third-party group (+1 line → `TestFileBudgetsMatchRepo` rejects the growth). Moving the import properly and dropping one line elsewhere (or a dedicated normalization commit) would stop the churn; until then every `make format` run must revert the file.
+
 - [ ] **unverified impact: the global `templateFuncMap` TypeDef keeps the first engine's package**: it is a package-level `*runtime.TypeDef` shared by text/template and html/template in every engine, and `Bind` sets `td.Pkg` only when nil (minigo.go:787), so later engines see the first engine's `*runtime.Package`. ([docs/sketch/spike-rearchitecture.md](./docs/sketch/spike-rearchitecture.md) S6)
 
 - [ ] **Classify callback-bearing host fields before extending process-bound entry**: distinguish reusable synchronous factories such as package-global `sync.Pool.New` from retained external callbacks, and define the adapter contract for generic raw-VM value/field conversion. The initial process-bound caller covers retaining builtins and reflected host-call arguments; field factories keep their existing behavior to preserve engine reuse. ([#1062](https://github.com/podhmo/minigo/issues/1062), [docs/process-callbacks.md](./docs/process-callbacks.md))
