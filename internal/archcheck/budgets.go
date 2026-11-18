@@ -124,7 +124,7 @@ var FileBudgets = map[string]int{
 	"runtime/package.go":                 750,
 	"runtime/typedef.go":                 1705,
 	"runtime/unwrap.go":                  106,
-	"runtime/value.go":                   3255,
+	"runtime/value.go":                   3254,
 	"runtime/walk.go":                    131,
 	"special/special.go":                 34,
 	"stdlibreg.go":                       54,
