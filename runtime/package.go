@@ -267,7 +267,7 @@ type Package struct {
 	instCount map[*ast.FuncDecl]int
 
 	inferMu    sync.Mutex
-	inferM     map[string]inferEntry // inferred generic instances (Inferred)
+	inferM     map[InstCacheKey]inferEntry // inferred generic instances (Inferred)
 	inferCount map[*ast.FuncDecl]int
 }
 
@@ -609,11 +609,18 @@ func AppendTypeKey(b *strings.Builder, td *TypeDef) {
 	writeTypeKey(b, td, instKeyDepth)
 }
 
-// inferEntry is one cached inference result. keep holds what the key's
-// addresses point into (the argument typedefs), so they stay unique.
+// InstCacheKey identifies one cached generic instance: the function
+// declaration plus the type identities the instance depends on (the
+// existing binds and the argument types inference read), spelled as
+// TypeID segments joined by the caller — identities, not addresses,
+// so separately-minted typedefs of one type share the instance.
+type InstCacheKey struct {
+	Decl *ast.FuncDecl
+	Args string
+}
+
 type inferEntry struct {
-	keep []any
-	fn   *Function
+	fn *Function
 }
 
 // maxInferPerDecl bounds the cached inference results per generic decl.
@@ -621,7 +628,7 @@ const maxInferPerDecl = 256
 
 // Inferred returns the instance of a generic function that
 // [Package.SetInferred] recorded under key.
-func (p *Package) Inferred(key string) (*Function, bool) {
+func (p *Package) Inferred(key InstCacheKey) (*Function, bool) {
 	p.inferMu.Lock()
 	defer p.inferMu.Unlock()
 	e, ok := p.inferM[key]
@@ -629,21 +636,20 @@ func (p *Package) Inferred(key string) (*Function, bool) {
 }
 
 // SetInferred records fn, an instance of the generic function decl
-// inferred from argument types, under key. keep must hold everything the
-// key's addresses point into, so they are not reused. Only a bounded
-// number of instances is kept per decl; the rest are silently dropped.
-func (p *Package) SetInferred(key string, decl *ast.FuncDecl, keep []any, fn *Function) {
+// inferred from argument types, under key. Only a bounded number of
+// instances is kept per decl; the rest are silently dropped.
+func (p *Package) SetInferred(key InstCacheKey, fn *Function) {
 	p.inferMu.Lock()
 	defer p.inferMu.Unlock()
 	if p.inferM == nil {
-		p.inferM = map[string]inferEntry{}
+		p.inferM = map[InstCacheKey]inferEntry{}
 		p.inferCount = map[*ast.FuncDecl]int{}
 	}
-	if _, ok := p.inferM[key]; ok || p.inferCount[decl] >= maxInferPerDecl {
+	if _, ok := p.inferM[key]; ok || p.inferCount[key.Decl] >= maxInferPerDecl {
 		return
 	}
-	p.inferCount[decl]++
-	p.inferM[key] = inferEntry{keep: keep, fn: fn}
+	p.inferCount[key.Decl]++
+	p.inferM[key] = inferEntry{fn: fn}
 }
 
 // writePtr spells a pointer-shaped value's address (0 for nil).
