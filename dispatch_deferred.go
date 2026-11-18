@@ -140,7 +140,33 @@ func (e *Engine) constExpr(ctx *runtime.TypeDef, consts map[string]bool, x ast.E
 				if len(t.Args) != 1 {
 					return false, nil
 				}
-				return e.constExpr(ctx, consts, t.Args[0])
+				arg := t.Args[0]
+				if f.Name == "len" {
+					if c, err := e.constExpr(ctx, consts, arg); c || err != nil {
+						return c, err // len of a constant string
+					}
+				}
+				// len/cap of an array-typed operand is constant even
+				// though the operand is not — `len(p.A)` asks the
+				// declared type, so the runtime answer resolves it
+				// instead of probing the operand's constness.
+				if e.lenOperandCalls(ctx, arg) {
+					return false, nil
+				}
+				td, _, err := e.valueTyp(ctx, arg)
+				if err != nil || td == nil {
+					return false, nil
+				}
+				u, err := e.underlying(td)
+				if err != nil || u == nil {
+					return false, nil
+				}
+				if u.Kind == runtime.KindPointer && u.Elem != nil {
+					if u2, err2 := e.underlying(u.Elem); err2 == nil && u2 != nil {
+						u = u2
+					}
+				}
+				return runtime.ArrayTypedef(u), nil
 			case "min", "max", "real", "imag", "complex":
 				for _, a := range t.Args {
 					c, err := e.constExpr(ctx, consts, a)
@@ -182,6 +208,35 @@ func (e *Engine) constExpr(ctx *runtime.TypeDef, consts map[string]bool, x ast.E
 		}
 	}
 	return false, nil
+}
+
+// lenOperandCalls mirrors the compile-side len/cap rule: an operand
+// containing a call or receive is never a constant operand, while a
+// conversion is transparent and descends into its args.
+func (e *Engine) lenOperandCalls(ctx *runtime.TypeDef, ex ast.Expr) bool {
+	calls := false
+	ast.Inspect(ex, func(n ast.Node) bool {
+		if calls || n == nil {
+			return false
+		}
+		switch t := n.(type) {
+		case *ast.FuncLit:
+			return false // body calls run at invocation, not operand time
+		case *ast.CallExpr:
+			if td, err := e.resolveTypeRef(ctx, t.Fun); err == nil && td != nil {
+				return true
+			}
+			calls = true
+			return false
+		case *ast.UnaryExpr:
+			if t.Op == token.ARROW {
+				calls = true
+				return false
+			}
+		}
+		return true
+	})
+	return calls
 }
 
 // valueTypOf implements the Hooks.DeferredValueTyp hook (M4-7c): the

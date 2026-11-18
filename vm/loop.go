@@ -648,6 +648,23 @@ func (v *VM) loop(f *frame) {
 				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
 			}
 			f.push(td)
+		case bytecode.OpDeferredValueTyp:
+			// the value-typedef question OpTypGate asks — here pushed
+			// as a value so unsafe.Sizeof/Alignof can size a deferred
+			// operand's type without evaluating it.
+			td, _, err := v.deferredValueTyp(f, f.ch.CallSites[ins.A])
+			if err != nil {
+				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
+			}
+			f.push(td)
+		case bytecode.OpJumpIfTypedef:
+			x := f.pop()
+			if c, ok := x.(*runtime.Cell); ok {
+				x = c.Elem
+			}
+			if _, ok := x.(*runtime.TypeDef); ok {
+				f.ip = int(ins.A)
+			}
 		case bytecode.OpLitKey:
 			// a deferred literal key: the resolved literal type decides
 			// whether the ident is a key expression (map/array — the

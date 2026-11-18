@@ -53,6 +53,11 @@ type compiler struct {
 	// var/const initializers (a named cycle would not terminate).
 	opTypDepth int
 
+	// deferCallTemps maps a hoist scratch name to its undecidable member
+	// call — `p.T(x)` under IndexedOnly, where conversion-vs-call is a
+	// run-time question: the ident emits the member-shape branch
+	// instead of a plain local load.
+	deferCallTemps map[string]*deferredCallTemp
 	// sawDeferred records that the last fact check (isConstExpr,
 	// certainlyNonConst) hit a deferred package member — the caller
 	// emits the CallSite variant instead of guessing. Cleared before
