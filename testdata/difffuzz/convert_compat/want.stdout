@@ -11,3 +11,10 @@ string->[]int: false
 int->float: true
 S1->S2: true
 S1 assignable S2: false
+S1->S3: false
+[]byte->string: true
+[]B->string: true
+[]int->string: false
+nested tag: false
+anon nested tag: true
+renamed field: false
