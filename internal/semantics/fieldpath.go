@@ -166,6 +166,9 @@ func (s *Service) resolveStruct(t TypeRef, p Policy, seen map[ast.Expr]bool) Res
 			if !ok {
 				return Result[TypeRef]{Kind: Missing}
 			}
+			if r.Kind == Missing {
+				r = s.dotImportDecl(t.Ctx, x.Name, p)
+			}
 			if r.Kind != Found {
 				return Result[TypeRef]{Kind: r.Kind, Err: r.Err}
 			}
@@ -259,6 +262,25 @@ func (s *Service) importPathOf(ctx DeclContext, id string, p Policy) (string, Re
 		}
 	}
 	return "", Result[struct{}]{Kind: Found}
+}
+
+// dotImportDecl retries a name TypeDeclOf could not find in ctx's own
+// package against each dot-imported package — first hit wins (real Go
+// rejects ambiguous dot imports; the interpreter stays lenient).
+func (s *Service) dotImportDecl(ctx DeclContext, name string, p Policy) Result[TypeRef] {
+	if ctx.File == nil {
+		return Result[TypeRef]{Kind: Missing}
+	}
+	for _, imp := range ctx.File.Imports {
+		if imp.Alias != "." {
+			continue
+		}
+		r := s.TypeDeclOf(DeclContext{Pkg: imp.Path, Binds: ctx.Binds}, name, p)
+		if r.Kind != Missing {
+			return r
+		}
+	}
+	return Result[TypeRef]{Kind: Missing}
 }
 
 // packageNameOf returns the name the package's files declare — the
