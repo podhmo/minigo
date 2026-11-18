@@ -118,7 +118,8 @@ func (v *VM) loop(f *frame) {
 				// Go checks at store time so the RHS evaluates first.
 				v.checkAddrBase(base, nil)
 			}
-			f.push(&runtime.FieldRef{Base: base, Name: consts[ins.A].(string), Path: v.declaredFieldPath(base, consts[ins.A].(string))})
+			path, def := v.declaredFieldPath(base, consts[ins.A].(string))
+			f.push(&runtime.FieldRef{Base: base, Name: consts[ins.A].(string), Def: def, Path: path})
 		case bytecode.OpIndexRef:
 			key := f.pop()
 			base := f.pop()

@@ -244,6 +244,22 @@ func PromotedPtrAddrPanic() int {
 	return 0
 }
 
+// `w.PRIn.X = f()`: PRIn promotes through a nil embedded *PRMid. Go defers
+// the target's pointer dereference to the store, so f's side effect
+// survives the panic.
+type PRIn struct{ X int }
+type PRMid struct{ PRIn }
+type PROut struct{ *PRMid }
+
+func PromotedStoreRhsFirst() (r int) {
+	n := 0
+	f := func() int { n = 7; return 1 }
+	defer func() { recover(); r = n }()
+	w := PROut{}
+	w.PRIn.X = f()
+	return -1
+}
+
 // ---- Go 1.27: generalized function-type inference ----
 
 func Id[T any](v T) T { return v }

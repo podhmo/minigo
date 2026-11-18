@@ -568,17 +568,84 @@ func (v *VM) fieldSlotAtPath(f *frame, s *runtime.Struct, path []int, name strin
 // declaredFieldPath resolves a selector's field to its declared index
 // path for pinning into a runtime.FieldRef — nil keeps the ref's
 // name-search. Field and member collisions stay observable through the
-// ref's own rules, same as the BFS.
-func (v *VM) declaredFieldPath(base runtime.Value, name string) []int {
+// ref's own rules, same as the BFS. The second result is the typedef
+// the field resolves to, pinned onto the ref so a deeper selection
+// never has to dereference it for its type.
+//
+// The base's typedef must come without evaluating lazy storage refs:
+// Go evaluates a store target's indirections and element fetches at
+// the store, after the right side runs (`w.In.X = f()` runs f before
+// the nil panic on w.In). A FieldRef base answers from its pinned Def;
+// IndexRef and DerefRef bases keep the name-search at the store.
+func (v *VM) declaredFieldPath(base runtime.Value, name string) ([]int, *runtime.TypeDef) {
 	if v.H.FieldPath == nil {
-		return nil
+		return nil, nil
 	}
-	s := runtime.StructOf(base)
-	if s == nil || s.Def == nil || len(s.Def.LocalTypes) > 0 {
-		return nil
+	var def *runtime.TypeDef
+	switch b := base.(type) {
+	case *runtime.FieldRef:
+		def = b.Def
+	case *runtime.IndexRef, *runtime.DerefRef:
+		return nil, nil
+	default:
+		if s := runtime.StructOf(base); s != nil {
+			def = s.Def
+		}
 	}
-	if idx, found, decided := v.H.FieldPath(s.Def, name); decided && found {
-		return idx
+	if def == nil || len(def.LocalTypes) > 0 {
+		return nil, nil
+	}
+	if idx, found, decided := v.H.FieldPath(def, name); decided && found {
+		return idx, v.pathTypedef(def, idx)
+	}
+	return nil, nil
+}
+
+// pathTypedef reports the typedef a declared index path lands on —
+// statically, off the embed specs and field typedefs, so a nil
+// embedded pointer in the base is never touched by a type query.
+func (v *VM) pathTypedef(def *runtime.TypeDef, path []int) *runtime.TypeDef {
+	for i, ix := range path {
+		var nt *runtime.TypeDef
+		if i == len(path)-1 {
+			if fts := v.fieldTypedefs(def); 0 <= ix && ix < len(fts) {
+				nt = fts[ix]
+			}
+			if nt == nil {
+				nt = v.embedTypedef(def, ix)
+			}
+		} else {
+			nt = v.embedTypedef(def, ix)
+		}
+		if nt == nil {
+			return nil
+		}
+		def = v.peelNamed(nt)
+		// a `*T` field's pointee typedef is already resolved on Elem;
+		// named fields holding pointers reach the struct through it.
+		for def != nil && def.Kind == runtime.KindPointer && def.Elem != nil {
+			def = def.Elem
+		}
+		if def == nil {
+			return nil
+		}
+	}
+	return def
+}
+
+// embedTypedef resolves the typedef of the embedded field at struct
+// field index ix — nil when ix is not an embed or cannot resolve.
+func (v *VM) embedTypedef(def *runtime.TypeDef, ix int) *runtime.TypeDef {
+	for j, ei := range def.EmbedIdx {
+		if ei != ix || j >= len(def.EmbedSpecs) {
+			continue
+		}
+		spec := def.EmbedSpecs[j]
+		if sx, ok := spec.(*ast.StarExpr); ok {
+			spec = sx.X
+		}
+		nt, _ := v.H.ResolveType(def, spec)
+		return nt
 	}
 	return nil
 }
