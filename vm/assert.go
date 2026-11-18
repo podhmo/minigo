@@ -1242,9 +1242,17 @@ func (v *VM) hostTypedefIs(rt reflect.Type, td *runtime.TypeDef) bool {
 	// resolve rt's twin through the hook, never a minted stamp: a bare
 	// HostIdent stamp interned here would land a hollow descriptor in
 	// the table before the real typedef resolves — the table answers
-	// whichever descriptor registered first.
+	// whichever descriptor registered first. An unnamed pointer rt is
+	// the exception: canonicalization resolves its named element's real
+	// typedef and mints an anon *T, so no hollow key is stored — this
+	// covers `x.(**T)` where rt.Elem() has no name for the hook.
 	if v.H.HostTwin != nil {
 		if twin := v.H.HostTwin(rt); twin != nil && v.sameTypedef(twin, td) {
+			return true
+		}
+	}
+	if rt.Kind() == reflect.Pointer && rt.Elem().Name() != "" && rt.Elem().PkgPath() != "" {
+		if v.sameTypedef(&runtime.TypeDef{HostIdent: rt}, td) {
 			return true
 		}
 	}
