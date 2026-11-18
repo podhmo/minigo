@@ -133,7 +133,7 @@ var FileBudgets = map[string]int{
 	"runtime/errors.go":                  111,
 	"runtime/hostseq.go":                 130,
 	"runtime/methodset.go":               53,
-	"runtime/package.go":                  719,
+	"runtime/package.go":                 719,
 	"runtime/package_image.go":           46,
 	"runtime/typedef.go":                 1785,
 	"runtime/assignable.go":              159,

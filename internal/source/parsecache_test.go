@@ -10,11 +10,19 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo/syntax"
 )
+
+// ptr reports a shared object's identity as a uintptr so cmp.Diff can
+// assert "same object" / "different object" — a structural cmp.Diff on
+// two parsed files would call separately-parsed identical sources equal.
+func ptr(v any) uintptr {
+	return reflect.ValueOf(v).Pointer()
+}
 
 func writeFile(t *testing.T, dir, name, body string) string {
 	t.Helper()
@@ -43,8 +51,8 @@ func TestParseCacheContentVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files1[0] != files2[0] {
-		t.Fatal("unchanged file must share the cached *syntax.File")
+	if diff := cmp.Diff(ptr(files1[0]), ptr(files2[0])); diff != "" {
+		t.Fatalf("unchanged file must share the cached *syntax.File: %s", diff)
 	}
 
 	writeFile(t, dir, "a.go", "package a\n\nfunc Two() {}\n")
@@ -52,7 +60,7 @@ func TestParseCacheContentVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files3[0] == files1[0] {
+	if diff := cmp.Diff(ptr(files3[0]), ptr(files1[0])); diff == "" {
 		t.Fatal("an edited file must re-parse to a new *syntax.File")
 	}
 
@@ -92,22 +100,22 @@ func TestParseCacheLangVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files2[0] == files1[0] {
+	if diff := cmp.Diff(ptr(files2[0]), ptr(files1[0])); diff == "" {
 		t.Fatal("a changed language version must re-parse to a new *syntax.File")
 	}
-	if files1[0].LangMod != "go1.24" {
-		t.Errorf("old version's LangMod mutated: %q", files1[0].LangMod)
+	if diff := cmp.Diff("go1.24", files1[0].LangMod); diff != "" {
+		t.Errorf("old version's LangMod mutated: %s", diff)
 	}
-	if files2[0].LangMod != "go1.21" {
-		t.Errorf("new version's LangMod = %q, want go1.21", files2[0].LangMod)
+	if diff := cmp.Diff("go1.21", files2[0].LangMod); diff != "" {
+		t.Errorf("new version's LangMod: %s", diff)
 	}
 
 	files3, _, err := pc.Files(fset, []string{path}, "go1.21")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if files3[0] != files2[0] {
-		t.Fatal("same content and language must share the cached *syntax.File")
+	if diff := cmp.Diff(ptr(files3[0]), ptr(files2[0])); diff != "" {
+		t.Fatalf("same content and language must share the cached *syntax.File: %s", diff)
 	}
 }
 
@@ -132,8 +140,8 @@ func TestIndexCacheFileSetVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ix1 != ix2 {
-		t.Fatal("the same file set must reuse the one built index")
+	if diff := cmp.Diff(ptr(ix1), ptr(ix2)); diff != "" {
+		t.Fatalf("the same file set must reuse the one built index: %s", diff)
 	}
 
 	// the file SET is part of the key: an extra file is a new version
@@ -145,7 +153,7 @@ func TestIndexCacheFileSetVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ix3 == ix1 {
+	if diff := cmp.Diff(ptr(ix3), ptr(ix1)); diff == "" {
 		t.Fatal("a different file set must build a new index")
 	}
 
@@ -155,7 +163,7 @@ func TestIndexCacheFileSetVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ix4 == ix1 {
+	if diff := cmp.Diff(ptr(ix4), ptr(ix1)); diff == "" {
 		t.Fatal("a reordered file set must build a new index")
 	}
 
@@ -170,15 +178,15 @@ func TestIndexCacheFileSetVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ix5 == ix1 {
+	if diff := cmp.Diff(ptr(ix5), ptr(ix1)); diff == "" {
 		t.Fatal("an edited file must produce a new index version")
 	}
 
 	// the index a session already holds is untouched by the rebuild
-	if ix1.Funcs["A"] == nil {
-		t.Error("old index version lost its decls")
+	if diff := cmp.Diff(true, ix1.Funcs["A"] != nil); diff != "" {
+		t.Errorf("old index version lost its decls: %s", diff)
 	}
-	if ix5.Funcs["A2"] == nil {
-		t.Error("new index version lacks the edited decl")
+	if diff := cmp.Diff(true, ix5.Funcs["A2"] != nil); diff != "" {
+		t.Errorf("new index version lacks the edited decl: %s", diff)
 	}
 }
