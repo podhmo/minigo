@@ -61,8 +61,8 @@ type S struct{ A int }
 		t.Fatalf("lenient load: %v", err)
 	}
 
-	if sp == lp {
-		t.Fatal("strict and lenient caches returned the same package object")
+	if diff := cmp.Diff(sp == lp, false); diff != "" {
+		t.Errorf("strict and lenient caches returned the same package object")
 	}
 
 	// declarations, build config and positions agree across both paths
@@ -72,20 +72,23 @@ type S struct{ A int }
 	if diff := cmp.Diff(sp.GoFiles, lp.GoFiles); diff != "" {
 		t.Errorf("GoFiles differ (-strict +lenient):\n%s", diff)
 	}
-	if len(sp.GoFiles) != 1 || filepath.Base(sp.GoFiles[0]) != "p.go" {
-		t.Errorf("build-constraint selection missing from image: %v", sp.GoFiles)
+	if diff := cmp.Diff(len(sp.GoFiles), 1); diff != "" {
+		t.Errorf("build-constraint selection missing from image (-got +want):\n%s", diff)
+	}
+	if diff := cmp.Diff(filepath.Base(sp.GoFiles[0]), "p.go"); diff != "" {
+		t.Errorf("GoFiles (-got +want):\n%s", diff)
 	}
 	for name, p := range map[string]*runtime.Package{"strict": sp, "lenient": lp} {
-		if p.Lang != "1.24" {
-			t.Errorf("%s: Lang = %q, want 1.24", name, p.Lang)
+		if diff := cmp.Diff(p.Lang, "1.24"); diff != "" {
+			t.Errorf("%s: Lang (-got +want):\n%s", name, diff)
 		}
-		if p.Fset != e.fset {
+		if diff := cmp.Diff(p.Fset == e.fset, true); diff != "" {
 			t.Errorf("%s: image does not carry the engine's FileSet", name)
 		}
 		// initialization stays lazy: parsing and indexing a package
 		// never runs its initializer
-		if p.State() != runtime.Indexed {
-			t.Errorf("%s: State = %v, want Indexed (init not yet run)", name, p.State())
+		if diff := cmp.Diff(p.State(), runtime.Indexed); diff != "" {
+			t.Errorf("%s: State (-got +want):\n%s", name, diff)
 		}
 	}
 }
