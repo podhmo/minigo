@@ -65,7 +65,11 @@ func (c *compiler) opGate(x, y ast.Expr, pos token.Pos, inSwitch bool) bool {
 			} else if nilable {
 				return false
 			} else if oi, ok := c.namedIdentOf(other.te); !ok {
-				return false // unnamed non-nilable — rare; stays silent
+				// a spelled type compile cannot name — `Box[int]` —
+				// defers too: run time resolves it and traps a named
+				// non-nilable compare, while an anonymous shape
+				// (struct{...}) still resolves unnamed and silent.
+				nilGate = true
 			} else {
 				// gc orders the operands as written: `nil == i` reports
 				// "untyped nil and int", `i == nil` the reverse.
@@ -263,12 +267,15 @@ func (c *compiler) exprSite(x ast.Expr, pos token.Pos) int {
 }
 
 // typExprDeferred reports whether te is a qualified type name whose
-// member lookup the index deferred — an answer the run-time gate can
-// still give once the package materializes.
+// package question is still open — the index deferred it, or the
+// package never loaded at all (Missing/Failed): an answer the
+// run-time gate can still give, or surface the load error, once the
+// package materializes. A FOUND package whose member is absent
+// (io.NotAReader) is not deferred.
 func (c *compiler) typExprDeferred(te ast.Expr) bool {
 	if sel, ok := c.unfoldTypExpr(te, 4).(*ast.SelectorExpr); ok {
 		if ref, _, ok := c.selTypRef(sel); ok {
-			return askIndexed(ref).Kind == semantics.Deferred
+			return askIndexed(ref).Kind != semantics.Found
 		}
 	}
 	return false

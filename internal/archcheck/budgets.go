@@ -18,7 +18,7 @@ var FileBudgets = map[string]int{
 	"compile/constfold.go":               866,
 	"compile/expr.go":                    566,
 
-	"compile/gate.go":                    372,
+	"compile/gate.go":                    380,
 	"compile/goto.go":                    103,
 	"compile/lit.go":                     738,
 	"compile/scope.go":                   566,
@@ -39,7 +39,7 @@ var FileBudgets = map[string]int{
 	"inspect/stub.go":                    382,
 	"installbound.go":                    110,
 	"internal/archcheck/archcheck.go":    536,
-	"internal/archcheck/budgets.go":      191,
+	"internal/archcheck/budgets.go":      192,
 	"internal/archcheck/rules.go":        74,
 	"internal/assetaudit/assetaudit.go":  112,
 	"internal/bind/env.go":               48,
