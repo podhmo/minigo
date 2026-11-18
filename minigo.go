@@ -1112,6 +1112,8 @@ func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, e
 	defer e.buildMu.Unlock()
 	p := e.newPackage(meta.ImportPath, meta.Name, meta.Dir)
 	p.Standard = meta.Standard
+	p.Lang = meta.Lang
+	p.GoFiles = meta.GoFiles
 	files, failed, err := e.pcache.Files(e.fset, meta.GoFiles, meta.Lang)
 	if err != nil {
 		p.SetState(runtime.Failed)
@@ -1165,6 +1167,8 @@ func (e *Engine) buildPackage(meta *resolve.PackageMeta, lenient bool) (*runtime
 
 	p := e.newPackage(meta.ImportPath, meta.Name, meta.Dir)
 	p.Standard = meta.Standard
+	p.Lang = meta.Lang
+	p.GoFiles = meta.GoFiles
 	// publish before parsing to make import cycles convergent
 	e.mu.Lock()
 	pkgs[meta.ImportPath] = p
@@ -1328,13 +1332,16 @@ func (e *Engine) loadFileMode(ctx context.Context, filename string, lenient bool
 	}
 	e.buildMu.Lock()
 	defer e.buildMu.Unlock()
-	sfs, failed, err := e.pcache.Files(e.fset, []string{abs}, resolve.ModuleLang(filepath.Dir(abs)))
+	lang := resolve.ModuleLang(filepath.Dir(abs))
+	sfs, failed, err := e.pcache.Files(e.fset, []string{abs}, lang)
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", failed, err)
 	}
 	sf := sfs[0]
 
 	p := e.newPackage("<file>"+filepath.ToSlash(abs), sf.AST.Name.Name, filepath.Dir(abs))
+	p.Lang = lang
+	p.GoFiles = []string{abs}
 	if err := e.indexFiles(p, []*syntax.File{sf}, lenient); err != nil {
 		return nil, err
 	}
@@ -1381,11 +1388,14 @@ func (e *Engine) LoadDirScope(ctx context.Context, filename string) (*runtime.Pa
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", filename, err)
 	}
-	files, failed, err := e.pcache.Files(e.fset, gofiles, resolve.ModuleLang(dir))
+	lang := resolve.ModuleLang(dir)
+	files, failed, err := e.pcache.Files(e.fset, gofiles, lang)
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", failed, err)
 	}
 	p := e.newPackage("<dir>"+filepath.ToSlash(dir), pkgName, dir)
+	p.Lang = lang
+	p.GoFiles = gofiles
 	if err := e.indexFiles(p, files, false); err != nil {
 		return nil, err
 	}

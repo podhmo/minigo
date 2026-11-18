@@ -27,6 +27,17 @@ type PackageImage struct {
 	Files []*syntax.File
 	Index *index.Index
 
+	// Lang is the module `go` directive the files were parsed under —
+	// raw directive text like "1.26.0", "" outside any module. A file's
+	// own //go:build version may still narrow its effective -lang
+	// (syntax.File.LangMod).
+	Lang string
+	// GoFiles is the build configuration the image was assembled from:
+	// the build-constraint-selected absolute file set in resolve order
+	// (a file-scope load records its own selection — filename
+	// invisibility applies there, //go:build does not).
+	GoFiles []string
+
 	// FileByName maps an absolute source path to its file — used to
 	// recover per-declaration file context from instruction positions
 	// (the synthetic __init__ chunk mixes decls from several files).
