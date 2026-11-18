@@ -58,16 +58,23 @@ func TestTypeIDHostKeyIsTheRepresentedType(t *testing.T) {
 	}
 
 	// timerChanBox and afterFuncTimer are different carriers for the
-	// same represented *time.Timer — the keys must agree.
+	// same represented *time.Timer — and a *time.Timer synthesized the
+	// ordinary way keys alike: one interned type per represented type.
 	a := e.typeIDOf(hostPtrTd("minigo.timerChanBox", func() any { return &timerChanBox{} }))
 	b := e.typeIDOf(hostPtrTd("minigo.afterFuncTimer", func() any { return &afterFuncTimer{} }))
 	if a != b {
 		t.Errorf("timer proxies key differently:\n a=%q\n b=%q", a, b)
 	}
-	// ...but they are not the same as a real *time.Timer typedef.
 	c := e.typeIDOf(hostPtrTd("time.Timer", func() any { return &time.Timer{} }))
-	if a == c {
-		t.Errorf("proxy *time.Timer keys like the real one: %q", c)
+	if a != c {
+		t.Errorf("proxy *time.Timer keys differently from the real one:\n a=%q\n c=%q", a, c)
+	}
+	// ...and the carrier must not double-wrap: **time.Timer is another
+	// type with a key of its own.
+	pp := &runtime.TypeDef{Kind: runtime.KindPointer,
+		Elem: hostPtrTd("time.Timer", func() any { return &time.Timer{} })}
+	if a == e.typeIDOf(pp) {
+		t.Errorf("**time.Timer keys like *time.Timer: %q", a)
 	}
 }
 
