@@ -112,8 +112,10 @@ func (c *compiler) stmt(s ast.Stmt) {
 							} else if t.deferred {
 								// `var a, b = p.F()` — the name defers
 								// to the call's i-th declared result.
-								c.fs.noteDeferTyp(vs.Names[i].Name, &ast.IndexExpr{X: vals[0],
-									Index: &ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(i)}})
+								if src := c.deferOperandOf(vals[0]); src != nil {
+									c.fs.noteDeferTyp(vs.Names[i].Name, &ast.IndexExpr{X: src,
+										Index: &ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(i)}})
+								}
 							} else {
 								c.noteDeclTyp(vs.Names[i].Name, effType, isConst, nil, nil)
 							}
@@ -414,8 +416,10 @@ func (c *compiler) rangeStmt(st *ast.RangeStmt) {
 			// the bound names' types are facts of the deferred operand:
 			// k/v of a map or slice are its key/index and element — the
 			// synthetic index/indexlist sites answer them at run time.
-			c.noteDeferBindVar(st.Key, st.Tok == token.DEFINE, &ast.IndexListExpr{X: st.X})
-			c.noteDeferBindVar(st.Value, st.Tok == token.DEFINE, &ast.IndexExpr{X: st.X})
+			if src := c.deferOperandOf(st.X); src != nil {
+				c.noteDeferBindVar(st.Key, st.Tok == token.DEFINE, &ast.IndexListExpr{X: src})
+				c.noteDeferBindVar(st.Value, st.Tok == token.DEFINE, &ast.IndexExpr{X: src})
+			}
 		}
 	}
 	c.stmt(st.Body)
@@ -477,6 +481,48 @@ func (c *compiler) noteDeferBindVar(e ast.Expr, define bool, dx ast.Expr) {
 		return
 	}
 	c.fs.noteDeferTyp(id.Name, dx)
+}
+
+// deferOperandOf normalizes the operand a deferred bind-site marker
+// records: `items := p.Ints; for _, v := range items` leaves p.Ints on
+// items' own binding, and a marker holding the bare `items` name would
+// at run time resolve it as a package member — answering a same-named
+// global's type instead of the local's. Substitute the chain's
+// original deferred expr. A bare ident bound without deferred info
+// answers nil: nothing useful is recordable, and a package-member
+// answer would be wrong.
+func (c *compiler) deferOperandOf(e ast.Expr) ast.Expr {
+	for {
+		id, ok := e.(*ast.Ident)
+		if !ok {
+			return e
+		}
+		b := c.fs.lookupBinding(id.Name)
+		if b == nil || b.declDefer == nil || c.deferExprHasLocal(b.declDefer) {
+			return nil
+		}
+		e = b.declDefer
+	}
+}
+
+// deferExprHasLocal reports whether e names a function-local binding:
+// a marker resolves in package scope at run time, where a local name
+// resolves to a same-named package member — or, wrapped in a call or
+// conversion, fails the walk outright. Either way the marker must not
+// carry it.
+func (c *compiler) deferExprHasLocal(e ast.Expr) bool {
+	local := false
+	ast.Inspect(e, func(n ast.Node) bool {
+		if local {
+			return false
+		}
+		if id, ok := n.(*ast.Ident); ok {
+			_, _, found := c.fs.find(id.Name)
+			local = found
+		}
+		return !local
+	})
+	return local
 }
 
 // rangeVarTyps resolves the (key, value) types a `for k, v := range e`
@@ -812,7 +858,9 @@ func (c *compiler) bindRecv(lhs []ast.Expr, define bool, chExpr ast.Expr) {
 		c.storeTarget(lhs[0], define)
 		c.noteBindVar(lhs[0], elem, define)
 		if deferred {
-			c.noteDeferBindVar(lhs[0], define, &ast.IndexExpr{X: chExpr})
+			if src := c.deferOperandOf(chExpr); src != nil {
+				c.noteDeferBindVar(lhs[0], define, &ast.IndexExpr{X: src})
+			}
 		}
 	default:
 		c.emit3(bytecode.OpUnpack, len(lhs), 0, 0, 0)
@@ -823,7 +871,9 @@ func (c *compiler) bindRecv(lhs []ast.Expr, define bool, chExpr ast.Expr) {
 			if i == 0 {
 				c.noteBindVar(l, elem, define)
 				if deferred {
-					c.noteDeferBindVar(l, define, &ast.IndexExpr{X: chExpr})
+					if src := c.deferOperandOf(chExpr); src != nil {
+						c.noteDeferBindVar(l, define, &ast.IndexExpr{X: src})
+					}
 				}
 			} else {
 				c.noteBindVar(l, &ast.Ident{Name: "bool"}, define)

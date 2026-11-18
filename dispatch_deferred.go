@@ -529,9 +529,11 @@ func (e *Engine) valueTypDepth(ctx *runtime.TypeDef, x ast.Expr, depth int) (*ru
 	case *ast.IndexExpr:
 		// a synthetic bind-site marker the compiler emits for a
 		// deferred multi-result call — `f(args)[i]` asks the callee's
-		// i-th declared result typedef; `src[0]` asks the element
-		// typedef of a deferred container member.
-		if call, ok := ast.Unparen(t.X).(*ast.CallExpr); ok {
+		// i-th declared result typedef. The explicit index tells it
+		// apart from the element marker `f(args)`-less `src`, which
+		// asks the operand's element typedef — including a call's
+		// 0-th result's element (`for _, v := range p.Ints()`).
+		if call, ok := ast.Unparen(t.X).(*ast.CallExpr); ok && t.Index != nil {
 			i := 0
 			if lit, ok := t.Index.(*ast.BasicLit); ok {
 				i, _ = strconv.Atoi(lit.Value)

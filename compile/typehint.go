@@ -2010,7 +2010,7 @@ func (c *compiler) staticTyp(e ast.Expr) {
 		}
 		c.emit(bytecode.OpGlobalTyp, c.nameIdx(id.Name), 0, id.Pos())
 	default:
-		if b := c.fs.lookupBinding(id.Name); b != nil && b.declDefer != nil {
+		if b := c.fs.lookupBinding(id.Name); b != nil && b.declDefer != nil && b.declTyp == nil {
 			// a deferred bind site (range/recv/multi-result markers)
 			// stamps no cell typedef — resolve the marker expr at
 			// run time instead of answering NIL.
