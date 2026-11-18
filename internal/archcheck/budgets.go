@@ -154,7 +154,7 @@ var FileBudgets = map[string]int{
 	"vm/assert.go":                       1732,
 	"vm/binop.go":                        1637,
 	"vm/call.go":                         741,
-	"vm/composite.go":                    3475,
+	"vm/composite.go":                    3514,
 	"vm/const.go":                        1283,
 	"vm/convert.go":                      1416,
 	"vm/ffi_iface.go":                    524,

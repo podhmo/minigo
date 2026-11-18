@@ -575,23 +575,16 @@ func (v *VM) fieldSlotAtPath(f *frame, s *runtime.Struct, path []int, name strin
 // The base's typedef must come without evaluating lazy storage refs:
 // Go evaluates a store target's indirections and element fetches at
 // the store, after the right side runs (`w.In.X = f()` runs f before
-// the nil panic on w.In). A FieldRef base answers from its pinned Def;
-// IndexRef and DerefRef bases keep the name-search at the store.
-func (v *VM) declaredFieldPath(base runtime.Value, name string) ([]int, *runtime.TypeDef) {
+// the nil panic on w.In). refTypedef is the type-level walk parallel
+// to the storage walk — a ref's typedef answers from pinned or
+// declared information, never from the value it points at, so the
+// declared path pins even through nil embedded pointers and
+// out-of-bounds indexes.
+func (v *VM) declaredFieldPath(f *frame, base runtime.Value, name string) ([]int, *runtime.TypeDef) {
 	if v.H.FieldPath == nil {
 		return nil, nil
 	}
-	var def *runtime.TypeDef
-	switch b := base.(type) {
-	case *runtime.FieldRef:
-		def = b.Def
-	case *runtime.IndexRef, *runtime.DerefRef:
-		return nil, nil
-	default:
-		if s := runtime.StructOf(base); s != nil {
-			def = s.Def
-		}
-	}
+	def := v.peelStructTypedef(v.refTypedef(f, base))
 	if def == nil || len(def.LocalTypes) > 0 {
 		return nil, nil
 	}
@@ -599,6 +592,55 @@ func (v *VM) declaredFieldPath(base runtime.Value, name string) ([]int, *runtime
 		return idx, v.pathTypedef(def, idx)
 	}
 	return nil, nil
+}
+
+// refTypedef answers the typedef of the value base resolves to —
+// statically. A lazy ref answers from what it already carries or what
+// its base's type declares (an IndexRef's element type, a DerefRef's
+// pointee), so neither the ref nor its target is ever evaluated: Go
+// runs those fetches and derefs at the store, after the right side.
+func (v *VM) refTypedef(f *frame, base runtime.Value) *runtime.TypeDef {
+	switch b := base.(type) {
+	case *runtime.FieldRef:
+		return b.Def
+	case *runtime.IndexRef:
+		// the element type of the container — a type query on the
+		// base's declared type, not an element fetch.
+		return v.elemTypedef(f, v.refTypedef(f, b.Base))
+	case *runtime.DerefRef:
+		return v.elemTypedef(f, v.refTypedef(f, b.Ptr))
+	case *runtime.Cell:
+		// an inferred slot (`a := []S{...}`) stamps no declared type
+		// on the cell — the stored value carries it instead.
+		if b.Typ != nil {
+			return b.Typ
+		}
+		return v.refTypedef(f, b.Elem)
+	case *runtime.Named:
+		return b.Typ
+	case *runtime.Slice:
+		return b.Typ
+	case *runtime.Map:
+		return b.Typ
+	case *runtime.Chan:
+		return b.Typ
+	default:
+		if s := runtime.StructOf(base); s != nil {
+			return s.Def
+		}
+		return nil
+	}
+}
+
+// peelStructTypedef peels aliases, named scalars and pointers down to
+// the struct typedef a selector would see — the same hops pathTypedef
+// makes per level. Nil stays nil.
+func (v *VM) peelStructTypedef(def *runtime.TypeDef) *runtime.TypeDef {
+	def = v.peelNamed(def)
+	for def != nil && def.Kind == runtime.KindPointer && def.Elem != nil {
+		def = def.Elem
+	}
+	return def
 }
 
 // pathTypedef reports the typedef a declared index path lands on —
@@ -620,12 +662,9 @@ func (v *VM) pathTypedef(def *runtime.TypeDef, path []int) *runtime.TypeDef {
 		if nt == nil {
 			return nil
 		}
-		def = v.peelNamed(nt)
 		// a `*T` field's pointee typedef is already resolved on Elem;
 		// named fields holding pointers reach the struct through it.
-		for def != nil && def.Kind == runtime.KindPointer && def.Elem != nil {
-			def = def.Elem
-		}
+		def = v.peelStructTypedef(nt)
 		if def == nil {
 			return nil
 		}
