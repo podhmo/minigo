@@ -1203,7 +1203,7 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 			// a host nil []*ast.Ident into go/ast's `[]N` with N=*Ident.
 			v.hostElemTwin(f, tn.Typ, td) ||
 			// a host nil *ast.FieldList into go/ast's *FieldList.
-			v.hostTwinIs(f, tn.Typ, td) {
+			v.sameTypedef(tn.Typ, td) {
 			return &runtime.TypedNil{Typ: td} // re-tag to the declared type
 		}
 		if HostNilPtrType(tn.Typ) != nil {
@@ -1224,7 +1224,7 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		if sameTypeDef(bn, td) || v.tdShapeEq(bn, td) || v.samePointeeAlias(bn, td) ||
 			(v.sameTypedef(bn, td) && utd0 != nil &&
 				(utd0.Kind == runtime.KindSlice || utd0.Kind == runtime.KindMap || utd0.Kind == runtime.KindChan)) ||
-			v.hostTwinIs(f, bn, td) {
+			v.sameTypedef(bn, td) {
 			return &runtime.TypedNil{Typ: td}
 		}
 	}
@@ -1304,7 +1304,6 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		if td.Name != "" && typeNameOf(x) == td.Name {
 			return runtime.Tag(td, x)
 		}
-		println("T0:", typeNameOf(x), "|", tdName(td))
 		f.trap("cannot use %s as %s", typeNameOf(x), tdName(td))
 	}
 	// array-typed slots copy on assignment: `var b = a` owns its own
