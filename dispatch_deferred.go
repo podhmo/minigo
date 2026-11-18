@@ -239,6 +239,90 @@ func (e *Engine) lenOperandCalls(ctx *runtime.TypeDef, ex ast.Expr) bool {
 	return calls
 }
 
+// callResultTypOf answers a call's single-result typedef from the
+// callee's declared signature: `p.F(v)` under IndexedOnly resolves
+// p.F's FuncType and returns its one result's typedef, without ever
+// calling F. A member that is not a source function, a signature with
+// more than one result, or a result spelling a type parameter reports
+// unknown — the intrinsic or gate stays silent like before.
+func (e *Engine) callResultTypOf(ctx *runtime.TypeDef, fun ast.Expr, depth int) (*runtime.TypeDef, bool, error) {
+	if depth > 8 {
+		return nil, false, nil
+	}
+	var m runtime.Value
+	switch t := ast.Unparen(fun).(type) {
+	case *ast.SelectorExpr:
+		id, ok := t.X.(*ast.Ident)
+		if !ok {
+			return nil, false, nil
+		}
+		p, err := e.importPackageAt(ctx, id.Name)
+		if err != nil {
+			return nil, false, err
+		}
+		if p == nil {
+			return nil, false, nil
+		}
+		m, err = p.Member(t.Sel.Name, e.materialize)
+		if err != nil {
+			return nil, false, nil
+		}
+	case *ast.Ident:
+		if ctx == nil || ctx.Pkg == nil {
+			return nil, false, nil
+		}
+		var err error
+		m, err = ctx.Pkg.Member(t.Name, e.materialize)
+		if err != nil {
+			return nil, false, nil
+		}
+	default:
+		return nil, false, nil
+	}
+	f, ok := m.(*runtime.Function)
+	if !ok || f.Decl == nil || f.Decl.Type == nil || f.Decl.Type.Results == nil {
+		return nil, false, nil
+	}
+	res := f.Decl.Type.Results
+	if len(res.List) != 1 || len(res.List[0].Names) > 1 {
+		// more than one result can't be a value operand anyway.
+		return nil, false, nil
+	}
+	rt := res.List[0].Type
+	if id, ok := ast.Unparen(rt).(*ast.Ident); ok && funcDeclHasParam(f.Decl, id.Name) {
+		// `F[T any](v T) T` — the result type binds at the call, and
+		// resolving T against the package's decls would answer a
+		// same-named package type instead.
+		return nil, false, nil
+	}
+	// keep the declared `*` levels — `*ClientTrace` is a nilable
+	// pointer, and resolving to its pointee would answer a named
+	// struct for the nil check.
+	td, err := e.starKeepingTypedef(&runtime.TypeDef{Pkg: f.Pkg, File: f.File}, rt)
+	if err != nil {
+		return nil, false, nil
+	}
+	return td, false, nil
+}
+
+// funcDeclHasParam reports whether name is one of d's declared type
+// parameters — compile/typehint.go's funcTypeHasParam counterpart for
+// the run-time resolver.
+func funcDeclHasParam(d *ast.FuncDecl, name string) bool {
+	tps := d.Type.TypeParams
+	if tps == nil {
+		return false
+	}
+	for _, tp := range tps.List {
+		for _, n := range tp.Names {
+			if n.Name == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // valueTypOf implements the Hooks.DeferredValueTyp hook (M4-7c): the
 // typedef a value expression carries — a qualified package member's
 // declared or inferred type, or an untyped constant's default type.
@@ -275,12 +359,14 @@ func (e *Engine) valueTypDepth(ctx *runtime.TypeDef, x ast.Expr, depth int) (*ru
 		return e.valueTypDepth(ctx, t.X, depth+1)
 	case *ast.CallExpr:
 		// a conversion T(v) carries T's typedef; anything else is a
-		// call whose result type this resolver cannot infer.
-		td, err := e.resolveTypeRef(ctx, t.Fun)
-		if err != nil {
-			return nil, false, nil
+		// call whose result typedef comes from the callee's declared
+		// signature — never by running the call (`unsafe.Sizeof`
+		// evaluates nothing, and neither does the gate).
+		td, err := e.starKeepingTypedef(ctx, t.Fun)
+		if err == nil && td != nil {
+			return td, false, nil
 		}
-		return td, false, nil
+		return e.callResultTypOf(ctx, t.Fun, depth+1)
 	case *ast.SelectorExpr:
 		id, ok := t.X.(*ast.Ident)
 		if !ok {
