@@ -443,46 +443,115 @@ func (v *VM) structMember(f *frame, s *runtime.Struct, name string, recv runtime
 	}
 	// promoted member: fields, methods, interface-stored values and
 	// host members all compete at promotion depth, breadth-first like
-	// Go (the same walk composite-literal keys use).
+	// Go (the same walk composite-literal keys use). The declaration
+	// answers the field side first when the hook can: a unique field
+	// path then only competes against non-field members at a
+	// shallower-or-equal depth — the bounded member search owns those.
+	if v.H.FieldPath != nil && len(s.Def.LocalTypes) == 0 {
+		if idx, found, decided := v.H.FieldPath(s.Def, name); decided {
+			if found {
+				if pr, ok := v.promotedMemberEx(f, s, name, true, false, len(idx)-1); ok {
+					return v.promotedValue(f, name, pr)
+				}
+				return v.fieldAtPath(f, s, idx, name)
+			}
+			if pr, ok := v.promotedMemberEx(f, s, name, true, false, -1); ok {
+				return v.promotedValue(f, name, pr)
+			}
+			f.trap("%s has no field or method %s", def.Name, name)
+			return nil
+		}
+	}
 	if pr, ok := v.promotedMember(f, s, name, true); ok {
-		switch {
-		case pr.host != nil:
-			return v.selectMember(f, pr.host, name)
-		case pr.st != nil:
-			return pr.st.Fields[pr.idx]
-		case pr.m == nil:
-			// interface-typed embedded field: dispatch on the
-			// stored concrete value.
-			return v.selectMember(f, pr.recv, name)
-		}
-		m := pr.m
-		if err := m.EnsureCompiled(); err != nil {
-			f.trap("%s", err)
-		}
-		r := pr.recv
-		if m.PtrRecv {
-			// bind the field's live slot: a FieldRef over the struct
-			// that holds it — `*p = x` inside the method writes the
-			// stored field, not a copy of the value.
-			if pr.mst != nil && pr.midx < len(pr.mst.Def.Fields) {
-				r = v.ptrReceiver(&runtime.FieldRef{Base: pr.mst, Name: pr.mst.Def.Fields[pr.midx]})
-			} else {
-				r = v.ptrReceiver(r)
-			}
-		} else {
-			if dv, ok := runtime.Deref(r); ok {
-				r = dv
-			} else if tn, isNil := r.(*runtime.TypedNil); isNil && tn.Typ != nil && tn.Typ.Kind == runtime.KindPointer {
-				// a value method promoted through a nil embedded
-				// pointer dereferences it at selection — `a.h()`
-				// on A{B{*D}} with D nil panics like Go.
-				panic(runtime.NilDerefPanic())
-			}
-			r = valueCopy(r)
-		}
-		return &runtime.BoundMethod{Recv: r, Fn: m}
+		return v.promotedValue(f, name, pr)
 	}
 	f.trap("%s has no field or method %s", def.Name, name)
+	return nil
+}
+
+// promotedValue binds the member promotedMember found: a field value,
+// a host member to reselect on, an interface member's dynamic dispatch,
+// or a bound method with its receiver adjustments.
+func (v *VM) promotedValue(f *frame, name string, pr *promoted) runtime.Value {
+	switch {
+	case pr.host != nil:
+		return v.selectMember(f, pr.host, name)
+	case pr.st != nil:
+		return pr.st.Fields[pr.idx]
+	case pr.m == nil:
+		// interface-typed embedded field: dispatch on the
+		// stored concrete value.
+		return v.selectMember(f, pr.recv, name)
+	}
+	m := pr.m
+	if err := m.EnsureCompiled(); err != nil {
+		f.trap("%s", err)
+	}
+	r := pr.recv
+	if m.PtrRecv {
+		// bind the field's live slot: a FieldRef over the struct
+		// that holds it — `*p = x` inside the method writes the
+		// stored field, not a copy of the value.
+		if pr.mst != nil && pr.midx < len(pr.mst.Def.Fields) {
+			r = v.ptrReceiver(&runtime.FieldRef{Base: pr.mst, Name: pr.mst.Def.Fields[pr.midx]})
+		} else {
+			r = v.ptrReceiver(r)
+		}
+	} else {
+		if dv, ok := runtime.Deref(r); ok {
+			r = dv
+		} else if tn, isNil := r.(*runtime.TypedNil); isNil && tn.Typ != nil && tn.Typ.Kind == runtime.KindPointer {
+			// a value method promoted through a nil embedded
+			// pointer dereferences it at selection — `a.h()`
+			// on A{B{*D}} with D nil panics like Go.
+			panic(runtime.NilDerefPanic())
+		}
+		r = valueCopy(r)
+	}
+	return &runtime.BoundMethod{Recv: r, Fn: m}
+}
+
+// fieldAtPath binds the field a declared index path names — each step
+// crosses one embedded field (reflect's Field.Index convention). A nil
+// embedded pointer on the way panics on the implicit dereference, like
+// the hit-through-nil path of the value search.
+func (v *VM) fieldAtPath(f *frame, s *runtime.Struct, path []int, name string) runtime.Value {
+	st := s
+	for i, ix := range path {
+		if ix < 0 || ix >= len(st.Fields) {
+			f.trap("field %s: index %d out of range on %s", name, ix, st.Def.Name)
+			return nil
+		}
+		if i == len(path)-1 {
+			return st.Fields[ix]
+		}
+		k := -1
+		for j, ei := range st.Def.EmbedIdx {
+			if ei == ix {
+				k = j
+				break
+			}
+		}
+		if k < 0 || k >= len(st.Def.EmbedSpecs) {
+			f.trap("field %s: no embed spec at index %d on %s", name, ix, st.Def.Name)
+			return nil
+		}
+		spec := st.Def.EmbedSpecs[k]
+		var ptr bool
+		if sx, ok := spec.(*ast.StarExpr); ok {
+			ptr, spec = true, sx.X
+		}
+		embTd, err := v.H.ResolveType(st.Def, spec)
+		if err != nil || embTd == nil {
+			f.trap("field %s: cannot resolve embed on %s", name, st.Def.Name)
+			return nil
+		}
+		inner, ok := v.embedValue(f, st, ix, v.peelNamed(embTd), ptr)
+		if !ok {
+			panic(runtime.NilDerefPanic())
+		}
+		st = inner
+	}
 	return nil
 }
 
@@ -617,6 +686,31 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 		for i, fn := range s.Def.Fields {
 			if fn == name {
 				return s.Fields[i]
+			}
+		}
+		// the declaration answers the field side when it can —
+		// non-field members compete at a shallower-or-equal depth,
+		// though a defined type inherits none of them.
+		if v.H.FieldPath != nil && len(s.Def.LocalTypes) == 0 {
+			if idx, found, decided := v.H.FieldPath(s.Def, name); decided {
+				if found {
+					if pr, ok := v.promotedMemberEx(f, s, name, true, false, len(idx)-1); ok {
+						if pr.host != nil {
+							return v.selectMember(f, pr.host, name)
+						}
+						// methods and interface members do not
+						// inherit — the trap below reports.
+						f.trap("%s has no field or method %s", tdName(n.Typ), name)
+					}
+					return v.fieldAtPath(f, s, idx, name)
+				}
+				if pr, ok := v.promotedMemberEx(f, s, name, true, false, -1); ok {
+					if pr.host != nil {
+						return v.selectMember(f, pr.host, name)
+					}
+				}
+				f.trap("%s has no field or method %s", tdName(n.Typ), name)
+				return nil
 			}
 		}
 		if pr, ok := v.promotedMember(f, s, name, true); ok {
@@ -1151,6 +1245,18 @@ type methCand struct {
 // keys forbid pointer indirection (Go reports "invalid implicit pointer
 // indirection"), while selector access allows it.
 func (v *VM) promotedMember(f *frame, s *runtime.Struct, name string, allowPtr bool) (*promoted, bool) {
+	return v.promotedMemberEx(f, s, name, allowPtr, true, -1)
+}
+
+// promotedMemberEx is promotedMember with the field side optionally
+// already decided by the declaration: scanFields=false skips the
+// per-level field-name scan (the caller knows the name is no field —
+// the embedded subtrees still queue, since methods and host or
+// interface members live deeper), and maxWin >= 0 caps the search at a
+// declared field's winning depth — a member at exactly maxWin ties it
+// (ambiguous, like Go's compile-time rejection) while deeper members
+// cannot outrank it, so the walk stops.
+func (v *VM) promotedMemberEx(f *frame, s *runtime.Struct, name string, allowPtr, scanFields bool, maxWin int) (*promoted, bool) {
 	if v.H.ResolveType == nil || v.H.IfaceReqs == nil {
 		return nil, false
 	}
@@ -1164,7 +1270,7 @@ func (v *VM) promotedMember(f *frame, s *runtime.Struct, name string, allowPtr b
 	// behind the nil are never bindable — reaching them dereferences
 	// the nil pointer, so a winning nil path always panics.
 	nilDepth, nilPaths := 0, 0
-	for depth := 0; len(level) > 0 && depth < 32; depth++ {
+	for depth := 0; len(level) > 0 && depth < 32 && (maxWin < 0 || depth < maxWin); depth++ {
 		var hits []slot
 		var methCands []methCand
 		var ifaceCands []runtime.Value
@@ -1260,10 +1366,12 @@ func (v *VM) promotedMember(f *frame, s *runtime.Struct, name string, allowPtr b
 					continue
 				}
 				j := -1
-				for fi, fn := range embTd.Fields {
-					if fn == name {
-						j = fi
-						break
+				if scanFields {
+					for fi, fn := range embTd.Fields {
+						if fn == name {
+							j = fi
+							break
+						}
 					}
 				}
 				if j < 0 {
@@ -1275,13 +1383,18 @@ func (v *VM) promotedMember(f *frame, s *runtime.Struct, name string, allowPtr b
 					if ptr {
 						// a nil embedded pointer cannot be searched
 						// by value — ask the type whether the member
-						// exists deeper, and at which depth.
-						if d, c := v.embedTypeDepth(embTd, name, map[*runtime.TypeDef]bool{}); d > 0 {
-							abs := depth + 1 + d
-							if nilDepth == 0 || abs < nilDepth {
-								nilDepth, nilPaths = abs, c
-							} else if abs == nilDepth {
-								nilPaths += c
+						// exists deeper, and at which depth. Field
+						// hits are only recorded when the field side
+						// is still open: a decided field path's own
+						// nil links panic in fieldAtPath instead.
+						if scanFields {
+							if d, c := v.embedTypeDepth(embTd, name, map[*runtime.TypeDef]bool{}); d > 0 {
+								abs := depth + 1 + d
+								if nilDepth == 0 || abs < nilDepth {
+									nilDepth, nilPaths = abs, c
+								} else if abs == nilDepth {
+									nilPaths += c
+								}
 							}
 						}
 						if d, c := v.embedTypeMethodDepth(embTd, name, map[*runtime.TypeDef]bool{}); d > 0 {
@@ -1328,6 +1441,11 @@ func (v *VM) promotedMember(f *frame, s *runtime.Struct, name string, allowPtr b
 				}
 				panic(runtime.NilDerefPanic())
 			}
+			if maxWin >= 0 && depth+1 == maxWin {
+				// a member at the declared field's depth ties it —
+				// Go rejects the selector as ambiguous.
+				f.trap("ambiguous selector %s", name)
+			}
 			if total > 1 {
 				f.trap("ambiguous selector %s", name)
 			}
@@ -1360,6 +1478,14 @@ func (v *VM) promotedMember(f *frame, s *runtime.Struct, name string, allowPtr b
 				minAbs = hh.abs
 			}
 		}
+		if maxWin >= 0 && minAbs >= maxWin {
+			// a host member at the declared field's depth ties it
+			// (ambiguous); a deeper one cannot outrank it.
+			if minAbs == maxWin {
+				f.trap("ambiguous selector %s", name)
+			}
+			return nil, false
+		}
 		if nilDepth > 0 && nilDepth <= minAbs {
 			if nilDepth == minAbs || nilPaths > 1 {
 				f.trap("ambiguous selector %s", name)
@@ -1379,8 +1505,8 @@ func (v *VM) promotedMember(f *frame, s *runtime.Struct, name string, allowPtr b
 		}
 		return &promoted{host: recv}, true
 	}
-	if nilDepth > 0 {
-		if nilPaths > 1 {
+	if nilDepth > 0 && (maxWin < 0 || nilDepth <= maxWin) {
+		if nilPaths > 1 || nilDepth == maxWin {
 			f.trap("ambiguous selector %s", name)
 		}
 		panic(runtime.NilDerefPanic())
