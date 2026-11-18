@@ -26,8 +26,11 @@ import (
 // Structs offer declared + promoted methods; host GoValues expose their
 // reflect method set. Other values have no methods.
 func (e *Engine) methodsOfValue(v runtime.Value) (map[string]bool, error) {
-	set, _, err := e.methodSetOfValue(v)
-	return set, err
+	ms, err := e.methodInfoOfValue(v)
+	if ms == nil {
+		return nil, err
+	}
+	return ms.Names, err
 }
 
 // methodSetOfValue implements the Hooks.MethodSetOf hook: methodsOfValue
@@ -35,17 +38,20 @@ func (e *Engine) methodsOfValue(v runtime.Value) (map[string]bool, error) {
 // (e.g. a vendored stdlib package), so the returned set may be missing
 // promoted methods that the embed would have contributed.
 func (e *Engine) methodSetOfValue(v runtime.Value) (map[string]bool, bool, error) {
-	set, _, unsure, err := e.methodInfoOfValue(v)
-	return set, unsure, err
+	ms, err := e.methodInfoOfValue(v)
+	if ms == nil {
+		return nil, false, err
+	}
+	return ms.Names, ms.Unsure, err
 }
 
 // methodInfoOfValue is the single value walk behind the method-set
 // hooks: it resolves a dynamic value to the typedef its methods come
 // from (dereferencing pointers, honoring Named tags and host boxes) and
 // reports the callable names, the signature-bearing member functions,
-// and the unsure report in one pass — MethodSetOf and MethodFuncsOf
-// each pick their view.
-func (e *Engine) methodInfoOfValue(v runtime.Value) (map[string]bool, map[string]*runtime.Function, bool, error) {
+// and the unsure report in one pass — MethodSetOf, MethodFuncsOf and
+// MethodInfoOf each pick their view.
+func (e *Engine) methodInfoOfValue(v runtime.Value) (*runtime.MethodSet, error) {
 	ptr := false
 	var seen map[runtime.Value]bool
 	for {
@@ -63,7 +69,7 @@ func (e *Engine) methodInfoOfValue(v runtime.Value) (map[string]bool, map[string
 				if n.Typ != nil && len(n.Typ.Methods) > 0 {
 					return e.typeMethodInfoU(n.Typ, ptr)
 				}
-				return hostMethodSet(gv.V), nil, false, nil
+				return &runtime.MethodSet{Names: hostMethodSet(gv.V)}, nil
 			}
 			if n.Typ != nil && n.Typ.HostScalar != nil && len(n.Typ.Methods) == 0 {
 				// a bound host scalar (time.Duration) exposes the raw
@@ -71,9 +77,9 @@ func (e *Engine) methodInfoOfValue(v runtime.Value) (map[string]bool, map[string
 				// script shape (time.Month's int64) materializes to the
 				// host type first so String and friends show up.
 				if hv, ok := runtime.HostScalarOf(n.Typ, n.V); ok {
-					return hostMethodSet(hv), nil, false, nil
+					return &runtime.MethodSet{Names: hostMethodSet(hv)}, nil
 				}
-				return hostMethodSet(runtime.Unwrap(n.V)), nil, false, nil
+				return &runtime.MethodSet{Names: hostMethodSet(runtime.Unwrap(n.V))}, nil
 			}
 			if n.Typ != nil && n.Typ.HostNew != nil && n.Typ.Kind == runtime.KindNamedBasic && len(n.Typ.Methods) == 0 {
 				// a bound host named basic keeps a script payload
@@ -81,7 +87,7 @@ func (e *Engine) methodInfoOfValue(v runtime.Value) (map[string]bool, map[string
 				// the host type to see its reflect method set.
 				rt := reflect.TypeOf(n.Typ.HostNew())
 				if rv := reflect.ValueOf(runtime.Unwrap(n.V)); rv.IsValid() && rv.Type().ConvertibleTo(rt) {
-					return hostMethodSet(rv.Convert(rt).Interface()), nil, false, nil
+					return &runtime.MethodSet{Names: hostMethodSet(rv.Convert(rt).Interface())}, nil
 				}
 			}
 			return e.typeMethodInfoU(n.Typ, ptr)
@@ -114,7 +120,7 @@ func (e *Engine) methodInfoOfValue(v runtime.Value) (map[string]bool, map[string
 	switch x := v.(type) {
 	case *runtime.Struct:
 		names, funcs, _, unsure := e.methodWalkU(x.Def, ptr, map[*runtime.TypeDef]bool{})
-		return names, funcs, unsure, nil
+		return &runtime.MethodSet{Names: names, Funcs: funcs, Unsure: unsure}, nil
 	case *runtime.TypedNil:
 		return e.typeMethodInfoU(x.Typ, ptr)
 	case *runtime.IfaceNil:
@@ -130,13 +136,13 @@ func (e *Engine) methodInfoOfValue(v runtime.Value) (map[string]bool, map[string
 	case time.Duration:
 		// a raw duration exposes the host method set the same way the
 		// GoValue box below does — selectMember special-cases it too.
-		return hostMethodSet(x), nil, false, nil
+		return &runtime.MethodSet{Names: hostMethodSet(x)}, nil
 	case *runtime.GoValue:
 		// host values satisfy requirements by name alone — reflect
 		// methods carry no declared signature for the func view.
-		return e.hostTwinMethodSet(x.V), nil, false, nil
+		return &runtime.MethodSet{Names: e.hostTwinMethodSet(x.V)}, nil
 	default:
-		return nil, nil, false, nil
+		return nil, nil
 	}
 }
 
@@ -202,26 +208,29 @@ func (e *Engine) typeMethods(td *runtime.TypeDef) (map[string]bool, error) {
 // ptr reports whether the set is computed through a pointer — Go's
 // method set for *T includes pointer receivers while T's does not.
 func (e *Engine) typeMethodsU(td *runtime.TypeDef, ptr bool) (map[string]bool, bool, error) {
-	set, _, unsure, err := e.typeMethodInfoU(td, ptr)
-	return set, unsure, err
+	ms, err := e.typeMethodInfoU(td, ptr)
+	if ms == nil {
+		return nil, false, err
+	}
+	return ms.Names, ms.Unsure, err
 }
 
 // typeMethodInfoU is the typedef-level dispatch behind typeMethodsU:
 // one resolution (alias peel → anonymous-*T peel → interface and host
 // checks → embedded walk) producing both views — the callable name set
 // and the signature-bearing member functions.
-func (e *Engine) typeMethodInfoU(td *runtime.TypeDef, ptr bool) (map[string]bool, map[string]*runtime.Function, bool, error) {
+func (e *Engine) typeMethodInfoU(td *runtime.TypeDef, ptr bool) (*runtime.MethodSet, error) {
 	// resolve aliases first — `type A = sync.Mutex` carries A's typedef
 	// but its method set is the host type's reflect set; checking
 	// HostNew on the unresolved alias would drop it.
 	td = e.peelAliasTd(td)
 	if td == nil {
-		return nil, nil, false, nil
+		return nil, nil
 	}
 	if rt := vm.HostNilPtrType(td); rt != nil {
 		// the type of a nil host *T offers *T's reflect method set,
 		// like a non-nil box of it.
-		return e.hostTwinMethodSet(reflect.Zero(rt).Interface()), nil, false, nil
+		return &runtime.MethodSet{Names: e.hostTwinMethodSet(reflect.Zero(rt).Interface())}, nil
 	}
 	var unsure bool
 	// an anonymous *T typedef sees T's method set including pointer
@@ -239,7 +248,7 @@ func (e *Engine) typeMethodInfoU(td *runtime.TypeDef, ptr bool) (map[string]bool
 	// — peel again so the interface and host checks see the real type.
 	td = e.peelAliasTd(td)
 	if td == nil {
-		return nil, nil, unsure, nil
+		return &runtime.MethodSet{Unsure: unsure}, nil
 	}
 	names, funcs, _, subUnsure := e.methodWalkU(td, ptr, map[*runtime.TypeDef]bool{})
 	unsure = unsure || subUnsure
@@ -254,7 +263,7 @@ func (e *Engine) typeMethodInfoU(td *runtime.TypeDef, ptr bool) (map[string]bool
 		for i := 0; i < t.NumMethod(); i++ {
 			set[t.Method(i).Name] = true
 		}
-		return set, funcs, unsure, nil
+		return &runtime.MethodSet{Names: set, Funcs: funcs, Unsure: unsure}, nil
 	}
 	if td.HostScalar != nil && len(td.Methods) == 0 {
 		// a bound host scalar (time.Month, time.Duration) offers its
@@ -262,9 +271,9 @@ func (e *Engine) typeMethodInfoU(td *runtime.TypeDef, ptr bool) (map[string]bool
 		// conversion (`any(time.March).(fmt.Stringer)`) see String
 		// just like a value a host call returned. A script `type M
 		// time.Month` is a fresh typedef without HostScalar.
-		return hostMethodSet(td.HostScalar), funcs, unsure, nil
+		return &runtime.MethodSet{Names: hostMethodSet(td.HostScalar), Funcs: funcs, Unsure: unsure}, nil
 	}
-	return names, funcs, unsure, nil
+	return &runtime.MethodSet{Names: names, Funcs: funcs, Unsure: unsure}, nil
 }
 
 // aliasOf implements the Hooks.AliasOf hook: a KindAlias typedef resolves
@@ -637,8 +646,11 @@ func (e *Engine) ifaceSigReqs(td *runtime.TypeDef) (map[string]*runtime.Function
 // methods carry no decl signature, so host boxes report nil here and
 // satisfy requirements by name alone.
 func (e *Engine) methodFuncsOfValue(v runtime.Value) (map[string]*runtime.Function, error) {
-	_, funcs, _, err := e.methodInfoOfValue(v)
-	return funcs, err
+	ms, err := e.methodInfoOfValue(v)
+	if ms == nil {
+		return nil, err
+	}
+	return ms.Funcs, err
 }
 
 // ifaceSig is an interface's required method together with the typedef

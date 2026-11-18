@@ -719,13 +719,25 @@ func (v *VM) ifaceSatisfiedUncached(td *runtime.TypeDef, x runtime.Value) (bool,
 	}
 	var have map[string]bool
 	var unsure bool
-	if v.H.MethodSetOf != nil {
-		have, unsure, err = v.H.MethodSetOf(x)
+	var ms *runtime.MethodSet
+	if v.H.MethodInfoOf != nil {
+		var err error
+		ms, err = v.H.MethodInfoOf(x)
+		if err != nil {
+			return false, err
+		}
+		if ms != nil {
+			have, unsure = ms.Names, ms.Unsure
+		}
 	} else {
-		have, err = v.H.MethodsOf(x)
-	}
-	if err != nil {
-		return false, err
+		if v.H.MethodSetOf != nil {
+			have, unsure, err = v.H.MethodSetOf(x)
+		} else {
+			have, err = v.H.MethodsOf(x)
+		}
+		if err != nil {
+			return false, err
+		}
 	}
 	for m := range reqs {
 		if !have[m] && !unsure {
@@ -734,16 +746,21 @@ func (v *VM) ifaceSatisfiedUncached(td *runtime.TypeDef, x runtime.Value) (bool,
 			return false, nil
 		}
 	}
-	return v.ifaceSigsMatch(td, x)
+	return v.ifaceSigsMatch(td, x, ms)
 }
 
 // ifaceSigsMatch runs the signature pass of interface satisfaction: a
 // same-named method whose declared signature differs does not satisfy
 // the requirement — `foo() float64` never fulfills `foo() int`.
 // Members without a comparable signature (facade requirements, host
-// reflect methods) satisfy by name alone, as before.
-func (v *VM) ifaceSigsMatch(td *runtime.TypeDef, x runtime.Value) (bool, error) {
-	if v.H.IfaceSigs == nil || v.H.MethodFuncsOf == nil {
+// reflect methods) satisfy by name alone, as before. ms, when non-nil,
+// carries the method set computed for the name pass, so the signature
+// pass reads the same walk's funcs instead of walking again.
+func (v *VM) ifaceSigsMatch(td *runtime.TypeDef, x runtime.Value, ms *runtime.MethodSet) (bool, error) {
+	if v.H.IfaceSigs == nil {
+		return true, nil
+	}
+	if ms == nil && v.H.MethodFuncsOf == nil {
 		return true, nil
 	}
 	reqFns, err := v.H.IfaceSigs(td)
@@ -753,9 +770,14 @@ func (v *VM) ifaceSigsMatch(td *runtime.TypeDef, x runtime.Value) (bool, error) 
 	if len(reqFns) == 0 {
 		return true, nil
 	}
-	dynFns, err := v.H.MethodFuncsOf(x)
-	if err != nil {
-		return false, err
+	var dynFns map[string]*runtime.Function
+	if ms != nil {
+		dynFns = ms.Funcs
+	} else {
+		dynFns, err = v.H.MethodFuncsOf(x)
+		if err != nil {
+			return false, err
+		}
 	}
 	return v.memberSigsMatch(reqFns, dynFns), nil
 }
