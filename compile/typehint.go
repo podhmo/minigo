@@ -552,7 +552,7 @@ func (c *compiler) selOpTyp(x *ast.SelectorExpr) opTyp {
 // drives `==` lowering and gc-parity rejections. The typed-const
 // defaulting path alone would be a hint; the rest is not.
 func (c *compiler) selPkgMemberOpTyp(x *ast.SelectorExpr, ref *runtime.ImportRef) opTyp {
-	res := source.PackageAtIndexed(ref, semantics.AllowIndex)
+	res := askIndexed(ref)
 	if res.Kind != semantics.Found {
 		return opTyp{}
 	}
@@ -1435,7 +1435,7 @@ func (c *compiler) synthImportName(ref *runtime.ImportRef) string {
 // diagnostic wording must match gc's. When the lookup is Deferred the
 // runtime trap prints the same resolved name.
 func pkgDispName(ref *runtime.ImportRef) string {
-	if res := source.PackageAtIndexed(ref, semantics.AllowIndex); res.Kind == semantics.Found && res.Val.Name != "" {
+	if res := askIndexed(ref); res.Kind == semantics.Found && res.Val.Name != "" {
 		return res.Val.Name
 	}
 	if i := strings.LastIndexByte(ref.Path, '/'); i >= 0 {
@@ -1492,7 +1492,7 @@ func pkgTypeSpec(p *runtime.Package, name string) *ast.TypeSpec {
 // semantics: fact — pkg.T's TypeSpec decides composite-literal key
 // types and conversions.
 func selTypeSpec(ref *runtime.ImportRef, name string) (*runtime.Package, *ast.TypeSpec) {
-	res := source.PackageAtIndexed(ref, semantics.AllowIndex)
+	res := askIndexed(ref)
 	if res.Kind != semantics.Found {
 		return nil, nil
 	}
@@ -1517,7 +1517,7 @@ func pkgImportRef(p *runtime.Package, sf *syntax.File, name string) (*runtime.Im
 		if ref.Alias != "" {
 			continue
 		}
-		res := source.PackageAtIndexed(ref, semantics.AllowIndex)
+		res := askIndexed(ref)
 		if res.Kind != semantics.Found {
 			continue
 		}
@@ -1720,8 +1720,10 @@ func (c *compiler) selIsIface(ref *runtime.ImportRef, name string) bool {
 // semantics: fact — whether pkg.T names a type, and its spec/typedef;
 // selIsType, selIsIface and selNilable all answer through this.
 func (c *compiler) selMember(ref *runtime.ImportRef, name string) (*ast.TypeSpec, *runtime.TypeDef, bool) {
-	res := source.PackageAtIndexed(ref, semantics.AllowIndex)
-	if res.Kind != semantics.Found {
+	res := askIndexed(ref)
+	if res.Val == nil {
+		// Missing, Failed — and Deferred without a materialized
+		// package — all mean the oracle cannot answer here.
 		return nil, nil, false
 	}
 	p := res.Val
@@ -1793,7 +1795,7 @@ func (c *compiler) nilableTypExpr(te ast.Expr) bool {
 // chans and funcs can; structs and basic types cannot. ok=false when
 // the member can't be resolved at all.
 func (c *compiler) selNilable(ref *runtime.ImportRef, name string) (bool, bool) {
-	res := source.PackageAtIndexed(ref, semantics.AllowIndex)
+	res := askIndexed(ref)
 	if res.Kind != semantics.Found {
 		return false, false
 	}
@@ -1971,4 +1973,26 @@ func (c *compiler) selIsType(ref *runtime.ImportRef, name string) bool {
 func (c *compiler) isTypeName(name string) bool {
 	info, found := c.resolveName(name)
 	return found && info.isType
+}
+
+// DeferFacts, when set, makes every indexed-fact query answer Deferred:
+// questions the compiler would answer under AllowIndex fall through to
+// the CallSite paths that resolve at run time — the M4-7b test knob
+// previewing IndexedOnly emission.
+var DeferFacts bool
+
+// askIndexed is the one indexed-fact query in this package. It asks the
+// import question under AllowIndex and — under DeferFacts — downgrades
+// Found to Deferred so callers take the same fallbacks IndexedOnly
+// will give them.
+func askIndexed(ref *runtime.ImportRef) semantics.Result[*runtime.Package] {
+	res := source.PackageAtIndexed(ref, semantics.AllowIndex)
+	if DeferFacts && res.Kind == semantics.Found {
+		// downgrade but keep Val: callers answering an out-of-band
+		// question (selMember) still read the materialized package,
+		// while emission paths treating !Found as "not decidable"
+		// take their CallSite fallbacks.
+		res.Kind = semantics.Deferred
+	}
+	return res
 }

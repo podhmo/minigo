@@ -19,7 +19,6 @@ import (
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/index"
 	"github.com/podhmo/minigo/internal/semantics"
-	"github.com/podhmo/minigo/internal/source"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -183,7 +182,7 @@ func (c *compiler) isConstExprDepth(e ast.Expr, depth int) bool {
 		if !isPkg {
 			return false
 		}
-		res := source.PackageAtIndexed(ref, semantics.AllowIndex)
+		res := askIndexed(ref)
 		if res.Kind != semantics.Found {
 			return false
 		}
@@ -308,7 +307,7 @@ func (c *compiler) certainlyNonConstDepth(e ast.Expr, depth int) bool {
 	case *ast.SelectorExpr:
 		if id, ok := x.X.(*ast.Ident); ok && c.fs.lookupBinding(id.Name) == nil {
 			if ref, isPkg := c.importRef(id.Name); isPkg {
-				res := source.PackageAtIndexed(ref, semantics.AllowIndex)
+				res := askIndexed(ref)
 				return res.Kind == semantics.Found && res.Val.Index != nil && res.Val.Index.Vars[x.Sel.Name] != nil
 			}
 		}

@@ -645,6 +645,15 @@ func (v *VM) loop(f *frame) {
 				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
 			}
 			f.push(td)
+		case bytecode.OpLitKey:
+			// a deferred literal key: the resolved literal type decides
+			// whether the ident is a key expression (map/array — the
+			// emitted expression instructions run next) or a field name
+			// (push its const and jump over them).
+			if !v.litKeyExprKey(f, f.ch.CallSites[ins.B]) {
+				f.push(consts[ins.C])
+				f.ip = int(ins.A)
+			}
 		case bytecode.OpPack:
 			n := int(ins.A)
 			el := make([]runtime.Value, n)
