@@ -58,9 +58,6 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 		rt0 = td.HostType()
 	}
 	if rt0 != nil {
-		if rt := proxyHostType(rt0); rt != rt0 {
-			return hostTypeID(rt, args)
-		}
 		if rt0.Name() != "" {
 			return hostTypeID(rt0, args)
 		}
@@ -70,6 +67,19 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 			return runtime.TypeID(fmt.Sprintf("host:%s:%s%s", pkg, name, args))
 		}
 		return hostTypeID(rt0, args)
+	}
+	// a *box typedef carries the whole value's carrier on its element:
+	// a named host type's box IS its pointer, so the element's HostType
+	// is this typedef's carrier. Proxy-map it here — *timerChanBox and
+	// *afterFuncTimer both key as *time.Timer — rather than at the
+	// element level, which would wrap the pointer twice (**time.Timer)
+	// and collide with a real **time.Timer typedef.
+	if td.Kind == runtime.KindPointer && td.Elem != nil && td.Elem.HostNew != nil {
+		if ert := td.Elem.HostType(); ert != nil {
+			if rt := proxyHostType(ert); rt != ert {
+				return hostTypeID(rt, args)
+			}
+		}
 	}
 	// anonymous and named-basic composites: recurse through Elem when
 	// the typedef carries one, else fall back to the canonical
