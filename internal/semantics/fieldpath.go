@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"go/ast"
 
-	"github.com/podhmo/minigo/syntax"
+	"github.com/podhmo/minigo/index"
 )
 
 // FieldPath records where a selector's field name lands inside a
@@ -179,7 +179,10 @@ func (s *Service) resolveStruct(t TypeRef, p Policy, seen map[ast.Expr]bool) Res
 			if !ok {
 				return Result[TypeRef]{Kind: Missing}
 			}
-			path := importPathOf(t.Ctx.File, id.Name)
+			path, pres := s.importPathOf(t.Ctx, id.Name, p)
+			if pres.Kind != Found {
+				return Result[TypeRef]{Kind: pres.Kind, Err: pres.Err}
+			}
 			if path == "" {
 				return Result[TypeRef]{Kind: Missing}
 			}
@@ -217,16 +220,53 @@ func (s *Service) declOfExpr(ctx DeclContext, expr ast.Expr, p Policy, seen map[
 	return s.TypeDeclOf(ctx, name, p), true
 }
 
-// importPathOf resolves the package name id in file's import table to
-// its path; "" when no import binds that name (a dot-import's members
-// spell as plain identifiers — they are not seen here).
-func importPathOf(file *syntax.File, id string) string {
-	if file == nil {
-		return ""
+// importPathOf resolves the package name id in ctx's import table to
+// its path; "" when no import binds it. A no-alias import whose path
+// basename does not spell id is still a candidate — the real package
+// clause may name it differently — so its declared name is checked via
+// the index (a load the policy does not allow defers the whole answer,
+// since the embedded spec may be resolvable after all).
+func (s *Service) importPathOf(ctx DeclContext, id string, p Policy) (string, Result[struct{}]) {
+	if ctx.File == nil {
+		return "", Result[struct{}]{Kind: Found}
 	}
-	for _, imp := range file.Imports {
+	var candidates []string
+	for _, imp := range ctx.File.Imports {
 		if imp.LocalName() == id {
-			return imp.Path
+			return imp.Path, Result[struct{}]{Kind: Found}
+		}
+		if imp.Alias == "" {
+			candidates = append(candidates, imp.Path)
+		}
+	}
+	for _, path := range candidates {
+		ix := s.src.Indexed(path)
+		if ix == nil {
+			if p == IndexedOnly {
+				return "", Result[struct{}]{Kind: Deferred}
+			}
+			var err error
+			ix, err = s.src.Load(path)
+			if err != nil {
+				return "", Result[struct{}]{Kind: Failed, Err: err}
+			}
+			if ix == nil {
+				return "", Result[struct{}]{Kind: Deferred}
+			}
+		}
+		if packageNameOf(ix) == id {
+			return path, Result[struct{}]{Kind: Found}
+		}
+	}
+	return "", Result[struct{}]{Kind: Found}
+}
+
+// packageNameOf returns the name the package's files declare — the
+// package clause, which may differ from the path basename.
+func packageNameOf(ix *index.Index) string {
+	for _, d := range ix.Decls {
+		if d.File != nil && d.File.AST != nil && d.File.AST.Name != nil {
+			return d.File.AST.Name.Name
 		}
 	}
 	return ""

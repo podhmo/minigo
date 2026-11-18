@@ -324,6 +324,25 @@ type G[T any] struct{ E }
 		}
 	})
 
+	t.Run("package clause beats the path basename", func(t *testing.T) {
+		odd := indexOf(t, `package zzz
+type T struct{ X int }
+`)
+		bar := indexOf(t, `package bar
+import "x/odd"
+type S struct{ zzz.T }
+`)
+		s := New(&fakeSource{indexes: map[string]*index.Index{"bar": bar, "x/odd": odd}})
+		ref := refFor(t, s, "bar", "S")
+		got := s.FieldPathOf(ref, "X", IndexedOnly)
+		if got.Kind != Found {
+			t.Fatalf("kind %v, want Found", got.Kind)
+		}
+		if diff := cmp.Diff([]int{0, 0}, got.Val.Index); diff != "" {
+			t.Fatal(diff)
+		}
+	})
+
 	t.Run("bound type parameter contributes no fields", func(t *testing.T) {
 		ix := indexOf(t, `package foo
 type E struct{ X int }
