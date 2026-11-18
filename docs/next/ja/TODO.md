@@ -65,7 +65,7 @@
 - [ ] **P2-9 `builtin/` を抽出する**: `builtins.go` を移す。
   - [ ] ブロック中: `builtins.go` は root パッケージの helper（`display`/`uconstNative`/`makeHostType`/`constAtWidth` 他 ~17 個）を `intrinsics_*.go` と共有しており、先に helper 層の切り出しが必要（P2-7 残り + P2-14 と同じ地層）
 - [-] **P2-10 stdlib: 名前レジストリと `bind.Env`**: テーブルはまだ即時に構築したまま、`BoundPackages`/`BoundSymbols`/`BoundOf`/`vet`/`SourceOf`/`NewSession` の優先順位/bound-shadow チェックを `names` ビューに移す。エンジンを捕捉している約 45 個のクロージャを `bind.Env` 経由にする。完了条件: 振る舞いが変わっていない。[references/stdlib-lazy.md](./references/stdlib-lazy.md)
-  - [ ] `bind.Env` インタフェース（`internal/bind`）を導入し、エンジン捕捉のクロージャを `h.env` 経由に変更（`bindenv.go` アダプタ）
+  - [x] `bind.Env` インタフェース（`internal/bind`）を導入し、エンジン捕捉のクロージャを `h.env` 経由に変更（`bindenv.go` アダプタ）（PR #1144）
   - [ ] 残り: `names` ビューへの移行（`BoundPackages`/`BoundSymbols`/`BoundOf`/`vet`/`SourceOf`/`NewSession` の優先順位・bound-shadow チェック）
 - [ ] **P2-11 stdlib: `hostTwin` の検索で install を起動する**: 他のパッケージから流れてきた host 値（`ctx.Deadline()` → `time.Time`）が bind 済みの typedef を見つけられるようにする。完了条件: `time` を import しないスクリプトでのテストがある。
 - [ ] **P2-12 stdlib: パッケージ単位の遅延構築**: `internal/stdlib/<path>` ごとに `Install(r, env)` を持たせ、初めて必要になったときに構築する。グローバルな `templateFuncMap` もここでレジストリ単位にする（バグとしてはルートの [TODO.md](../../../TODO.md) で管理している）。完了条件: `NewSession` のベンチで差分を報告している（ベースラインでは実行時間の 60〜70%）。
