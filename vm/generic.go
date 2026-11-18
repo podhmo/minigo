@@ -24,6 +24,7 @@ import (
 	"go/constant"
 	"go/token"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -447,7 +448,7 @@ func (v *VM) instantiateFunc(f *frame, g *runtime.Function, targs []runtime.Valu
 	if g.Pkg == nil || g.Decl == nil {
 		return v.instantiateFuncUncached(f, g, targs)
 	}
-	key, keep, ok := instFuncKey(g, targs)
+	key, ok := v.instFuncKey(g, targs)
 	if !ok {
 		return v.instantiateFuncUncached(f, g, targs)
 	}
@@ -457,41 +458,75 @@ func (v *VM) instantiateFunc(f *frame, g *runtime.Function, targs []runtime.Valu
 	// a failed constraint check traps out of here, so only checked
 	// instances are recorded
 	r := v.instantiateFuncUncached(f, g, targs)
-	g.Pkg.SetInferred(key, g.Decl, keep, r)
+	g.Pkg.SetInferred(key, r)
 	return r
 }
 
-// instFuncKey spells what instantiateFuncUncached reads: g's identity
-// and binds (InstKey — a generic method's receiver binds, a partial
-// instantiation's earlier args) and each explicit type argument by type
-// identity (AppendTypeKey: distinct named types differ by Spec, local
-// types by scope and generation). It shares the inference cache's map,
-// so the "inst" prefix keeps the two key spaces apart. keep holds what
-// the key's addresses point into.
-func instFuncKey(g *runtime.Function, targs []runtime.Value) (string, []any, bool) {
-	fk, ok := runtime.InstKey(g.Decl, g.File, g.Name, g.Binds)
+// typeIDArg returns td's canonical identity for an instance-cache key.
+// ok is false when the engine cannot name the type — the uncached path
+// runs instead.
+func (v *VM) typeIDArg(td *runtime.TypeDef) (runtime.TypeID, bool) {
+	if td == nil || v.H.TypeIDOf == nil {
+		return "", false
+	}
+	tid := v.H.TypeIDOf(td)
+	return tid, tid != "" && tid != "?"
+}
+
+// instBindsKey spells the binds a generic value already carries — one
+// "name=TypeID" segment per bound parameter, sorted by name.
+func (v *VM) instBindsKey(binds map[string]runtime.Value) (string, bool) {
+	if len(binds) == 0 {
+		return "", true
+	}
+	names := make([]string, 0, len(binds))
+	for n := range binds {
+		names = append(names, n)
+	}
+	slices.Sort(names)
+	var b strings.Builder
+	for _, n := range names {
+		td, ok := binds[n].(*runtime.TypeDef)
+		if !ok {
+			return "", false
+		}
+		tid, ok := v.typeIDArg(td)
+		if !ok {
+			return "", false
+		}
+		fmt.Fprintf(&b, "|%s=%s", n, tid)
+	}
+	return b.String(), true
+}
+
+// instFuncKey spells what instantiateFuncUncached reads: g's declaration
+// plus, as TypeID segments, the binds it already carries (a generic
+// method's receiver binds, a partial instantiation's earlier args) and
+// each explicit type argument. It shares the inference cache's map, so
+// the "inst" prefix keeps the two key spaces apart.
+func (v *VM) instFuncKey(g *runtime.Function, targs []runtime.Value) (runtime.InstCacheKey, bool) {
+	bk, ok := v.instBindsKey(g.Binds)
 	if !ok {
-		return "", nil, false
+		return runtime.InstCacheKey{}, false
 	}
 	var b strings.Builder
-	b.WriteString("inst|")
-	b.WriteString(fk)
-	keep := make([]any, 0, len(targs)+1)
-	keep = append(keep, g)
+	b.WriteString("inst")
+	b.WriteString(bk)
 	for _, a := range targs {
 		td, ok := a.(*runtime.TypeDef)
-		if !ok || td == nil {
-			return "", nil, false
+		if !ok {
+			return runtime.InstCacheKey{}, false
 		}
-		b.WriteString("|t")
-		runtime.AppendTypeKey(&b, td)
-		keep = append(keep, td)
+		tid, ok := v.typeIDArg(td)
+		if !ok {
+			return runtime.InstCacheKey{}, false
+		}
+		fmt.Fprintf(&b, "|t%s", tid)
 	}
 	for _, n := range g.OuterTParams {
-		b.WriteString("|o")
-		b.WriteString(n)
+		fmt.Fprintf(&b, "|o%s", n)
 	}
-	return b.String(), keep, true
+	return runtime.InstCacheKey{Decl: g.Decl, Args: b.String()}, true
 }
 
 func (v *VM) instantiateFuncUncached(f *frame, g *runtime.Function, targs []runtime.Value) *runtime.Function {
@@ -680,7 +715,7 @@ func (v *VM) inferCached(fn *runtime.Function, args []runtime.Value, statics []*
 	if fn.Pkg == nil || fn.Decl == nil {
 		return v.inferBinds(fn, args, statics, spreadTd)
 	}
-	key, keep, ok := v.inferKey(fn, args, statics, spreadTd)
+	key, ok := v.inferKey(fn, args, statics, spreadTd)
 	if !ok {
 		return v.inferBinds(fn, args, statics, spreadTd)
 	}
@@ -689,23 +724,23 @@ func (v *VM) inferCached(fn *runtime.Function, args []runtime.Value, statics []*
 	}
 	r, err := v.inferBinds(fn, args, statics, spreadTd)
 	if err == nil {
-		fn.Pkg.SetInferred(key, fn.Decl, keep, r)
+		fn.Pkg.SetInferred(key, r)
 	}
 	return r, err
 }
 
-// inferKey spells what inferBinds reads. keep lists the typedefs the
-// key's addresses point into; the cache holds them so an address in a
-// live key is never reused.
-func (v *VM) inferKey(fn *runtime.Function, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (string, []any, bool) {
-	fk, ok := runtime.InstKey(fn.Decl, fn.File, fn.Name, fn.Binds)
+// inferKey spells what inferBinds reads as TypeID segments: the callee's
+// declaration and existing binds, then per argument either the untyped
+// constant payload it carries or the TypeID of the typedef it unifies
+// against (the static type, else the value's). Identities, not
+// addresses — two mints of one type hit the same instance.
+func (v *VM) inferKey(fn *runtime.Function, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (runtime.InstCacheKey, bool) {
+	bk, ok := v.instBindsKey(fn.Binds)
 	if !ok {
-		return "", nil, false
+		return runtime.InstCacheKey{}, false
 	}
 	var b strings.Builder
-	b.WriteString(fk)
-	keep := make([]any, 0, len(args)+2)
-	keep = append(keep, fn)
+	b.WriteString(bk)
 	for i, a := range args {
 		b.WriteString("|a")
 		if v.untypedConstArg(a) {
@@ -714,9 +749,11 @@ func (v *VM) inferKey(fn *runtime.Function, args []runtime.Value, statics []*run
 			u, _ := constPayload(a)
 			fmt.Fprintf(&b, "c%d:%t:%s", u.V.Kind(), u.Rune, u.V.ExactString())
 			if n, isN := a.(*runtime.Named); isN && n.Typ != nil {
-				b.WriteByte(':')
-				runtime.AppendTypeKey(&b, n.Typ)
-				keep = append(keep, n.Typ)
+				tid, ok := v.typeIDArg(n.Typ)
+				if !ok {
+					return runtime.InstCacheKey{}, false
+				}
+				fmt.Fprintf(&b, ":%s", tid)
 			}
 			continue
 		}
@@ -728,15 +765,20 @@ func (v *VM) inferKey(fn *runtime.Function, args []runtime.Value, statics []*run
 			b.WriteByte('_')
 			continue
 		}
-		runtime.AppendTypeKey(&b, conc)
-		keep = append(keep, conc)
+		tid, ok := v.typeIDArg(conc)
+		if !ok {
+			return runtime.InstCacheKey{}, false
+		}
+		b.WriteString(string(tid))
 	}
 	if spreadTd != nil {
-		b.WriteString("|spread:")
-		runtime.AppendTypeKey(&b, spreadTd)
-		keep = append(keep, spreadTd)
+		tid, ok := v.typeIDArg(spreadTd)
+		if !ok {
+			return runtime.InstCacheKey{}, false
+		}
+		fmt.Fprintf(&b, "|spread:%s", tid)
 	}
-	return b.String(), keep, true
+	return runtime.InstCacheKey{Decl: fn.Decl, Args: b.String()}, true
 }
 
 // inferBinds binds a generic function's unbound type parameters from the
