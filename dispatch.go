@@ -334,12 +334,14 @@ func (e *Engine) underlying(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 				return nil, err
 			}
 			// the rebuilt pointer keeps an underlying spelling so
-			// anonymous comparisons (*S vs *R) stay distinct.
+			// anonymous comparisons (*S vs *R) stay distinct, and the
+			// generic binds so *T spells *int when P[int]'s underlying
+			// compares against an anonymous *int (convShapeEq).
 			expr := ast.Expr(x)
 			pt := elem
 			for ; n > 0; n-- {
 				expr = &ast.StarExpr{X: expr}
-				pt = &runtime.TypeDef{Kind: runtime.KindPointer, Elem: pt, Anon: expr, Pkg: td.Pkg, File: td.File}
+				pt = &runtime.TypeDef{Kind: runtime.KindPointer, Elem: pt, Anon: expr, Pkg: td.Pkg, File: td.File, TParams: td.TParams, Binds: td.Binds}
 			}
 			return pt, nil
 		}

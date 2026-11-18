@@ -193,3 +193,15 @@ func F11() string {
 	var b any = PT(nil)
 	return fmt.Sprint(a == b) // "false" — different dynamic types
 }
+
+// generic defined pointers: nil converts, and the rebuilt underlying
+// keeps the binds so GP[int]'s *T compares as *int.
+type GP[T any] *T
+type GQ[T any] *T
+
+func F12() string {
+	p := GP[int](nil)
+	var q GP[int] = nil
+	return fmt.Sprint(p == nil, q == nil, any(p) == any(GP[int](nil)), any(p) == any(GQ[int](nil)))
+	// "true true true false"
+}
