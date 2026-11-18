@@ -495,6 +495,43 @@ func AssertMissingMethod() (r string) {
 	return
 }
 
+// a same-named method with a different signature is still "missing" in
+// Go's itab comparison — the panic spells "missing method MSig".
+type asSigI interface{ MSig() string }
+type asSigT struct{}
+
+func (asSigT) MSig() int { return 0 }
+
+func AssertWrongSig() (r string) {
+	defer func() { r = fmt.Sprintf("%v", recover()) }()
+	var a any = asSigT{}
+	_ = a.(asSigI)
+	return
+}
+
+// a method declared only on the pointer receiver is absent from the
+// value's method set, so asserting the value reports it missing.
+type asPtrT struct{}
+
+func (*asPtrT) MSig() string { return "" }
+
+func AssertPtrRecv() (r string) {
+	defer func() { r = fmt.Sprintf("%v", recover()) }()
+	var a any = asPtrT{}
+	_ = a.(asSigI)
+	return
+}
+
+// the pointer itself carries the pointer-receiver method and satisfies
+// the requirement — comma-ok form confirms no panic.
+func AssertPtrRecvOK() string {
+	var a any = &asPtrT{}
+	if _, ok := a.(asSigI); ok {
+		return "ok"
+	}
+	return "ng"
+}
+
 // []byte and []rune element reads carry the element type (uint8/int32),
 // not a bare int.
 func ByteRuneElemTyp() string {
