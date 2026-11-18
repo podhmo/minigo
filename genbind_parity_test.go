@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"go/ast"
+	"net/netip"
 	"os"
 	"regexp"
 	goruntime "runtime"
@@ -242,8 +243,9 @@ func TestGeneratedBindExtras(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddrFrom4: %v", err)
 	}
-	if got := fmt.Sprint(goNative(v)); got != "127.0.0.1" {
-		t.Errorf("AddrFrom4 = %v, want 127.0.0.1", got)
+	got, _ := goNative(v).(netip.Addr)
+	if diff := cmp.Diff("127.0.0.1", got.String()); diff != "" {
+		t.Errorf("AddrFrom4 (-want +got):\n%s", diff)
 	}
 
 	// dst-writeback: hex.Encode writes into the script slice's elements.
@@ -258,10 +260,39 @@ func TestGeneratedBindExtras(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
-	if fmt.Sprint(goNative(n)) != "4" {
-		t.Errorf("Encode n = %v, want 4", goNative(n))
+	if diff := cmp.Diff(int64(4), goNative(n)); diff != "" {
+		t.Errorf("Encode n (-want +got):\n%s", diff)
 	}
 	if diff := cmp.Diff([]byte("dead"), byteSlice(dst)); diff != "" {
 		t.Errorf("dst not written back (-want +got):\n%s", diff)
+	}
+
+	// a named []byte dst unwraps to its inner slice for writeback.
+	named := &runtime.Named{V: &runtime.Slice{Elems: []runtime.Value{
+		runtime.ByteValue(0), runtime.ByteValue(0)}}}
+	if _, err := be.Call(ctx, hp, "Encode", named, []any{int64('a')}); err != nil {
+		t.Fatalf("Encode into a named []byte: %v", err)
+	}
+	if diff := cmp.Diff([]byte("61"), byteSlice(named.V.(*runtime.Slice))); diff != "" {
+		t.Errorf("named dst not written back (-want +got):\n%s", diff)
+	}
+
+	// a malformed src decodes a prefix only: n counts it, the buffer
+	// keeps its tail, and the error arrives as a script value.
+	ddst := &runtime.Slice{Elems: []runtime.Value{
+		runtime.ByteValue(0), runtime.ByteValue(0), runtime.ByteValue(0xff)}}
+	d, err := be.Call(ctx, hp, "Decode", ddst, []any{int64('6'), int64('1'), int64('z'), int64('z')})
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	tup, ok := d.(*runtime.Tuple)
+	if !ok || len(tup.Elems) != 2 {
+		t.Fatalf("Decode result = %T, want (n, err) tuple", d)
+	}
+	if diff := cmp.Diff(int64(1), goNative(tup.Elems[0])); diff != "" {
+		t.Errorf("Decode n (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]byte{'a', 0, 0xff}, byteSlice(ddst)); diff != "" {
+		t.Errorf("partial decode wrote past n (-want +got):\n%s", diff)
 	}
 }

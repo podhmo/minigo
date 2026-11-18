@@ -134,8 +134,8 @@ func (h *hostHelpers) fnvc(name string, f func(runtime.VMCaller, []any) (any, er
 // fnvcRaw is an arity-checked fnvc that also hands f the raw script
 // args — an error argument must reach hostErrOf unflattened so a script
 // error keeps its identity through the host (goNative would format it).
-func (h *hostHelpers) fnvcRaw(name string, arity int, f func(runtime.VMCaller, []any, []runtime.Value) (any, error)) *runtime.BuiltinFunc {
-	return &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+func (h *hostHelpers) fnvcRaw(name string, arity int, f func(runtime.VMCaller, []any, []runtime.Value) (any, error), target ...any) *runtime.BuiltinFunc {
+	bf := &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) != arity {
 			return nil, fmt.Errorf("%s needs %d args, got %d", name, arity, len(args))
 		}
@@ -149,6 +149,10 @@ func (h *hostHelpers) fnvcRaw(name string, arity int, f func(runtime.VMCaller, [
 		}
 		return scriptVal(r), nil
 	}}
+	if len(target) > 0 {
+		bf.Target = target[0]
+	}
+	return bf
 }
 
 // fn1/fn2/fn3 are arity-checked variants.
