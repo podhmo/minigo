@@ -312,6 +312,7 @@ func NewEngine(startDir string, opts ...Option) *Engine {
 		res = nil
 	}
 	e.resolver = res
+	e.fieldPaths = fieldPathService(e)
 	e.registerStdlib()
 	return e
 }
@@ -351,30 +352,37 @@ func (e *Engine) newVM() *vm.VM {
 	}}
 }
 
+// fieldPathService builds the FieldPaths adapter over this engine's
+// lazy index — assigned in NewEngine/NewSession so the VM hook is
+// race-free across script goroutines.
+func fieldPathService(e *Engine) *source.FieldPaths {
+	return source.NewFieldPaths(&source.IndexSource{
+		IndexedFunc: func(path string) *index.Index {
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			if p := e.pkgs[path]; p != nil && p.IndexReady() {
+				return p.Index
+			}
+			return nil
+		},
+		LoadFunc: func(path string) (*index.Index, error) {
+			p, err := e.loadPathFrom(context.Background(), "", path)
+			if err != nil || p == nil {
+				return nil, err
+			}
+			p.WaitIndexed()
+			return p.Index, nil
+		},
+	})
+}
+
 // fieldPath implements the VM's FieldPath hook (M4-1b): the declared
 // index path of a selector's field inside td's struct shape, answered
 // through internal/source's FieldPaths adapter over the engine's lazy
 // index. decided=false keeps the value-level member search.
 func (e *Engine) fieldPath(td *runtime.TypeDef, name string) ([]int, bool, bool) {
 	if e.fieldPaths == nil {
-		e.fieldPaths = source.NewFieldPaths(&source.IndexSource{
-			IndexedFunc: func(path string) *index.Index {
-				e.mu.Lock()
-				defer e.mu.Unlock()
-				if p := e.pkgs[path]; p != nil && p.IndexReady() {
-					return p.Index
-				}
-				return nil
-			},
-			LoadFunc: func(path string) (*index.Index, error) {
-				p, err := e.loadPathFrom(context.Background(), "", path)
-				if err != nil || p == nil {
-					return nil, err
-				}
-				p.WaitIndexed()
-				return p.Index, nil
-			},
-		})
+		return nil, false, false
 	}
 	switch res := e.fieldPaths.Of(td, name); res.Kind {
 	case source.FieldPathFound:
@@ -527,6 +535,7 @@ func (e *Engine) NewSession() *Engine {
 		},
 	}
 	s.builtins = builtins(s)
+	s.fieldPaths = fieldPathService(s)
 	s.registerStdlib()
 	// sessions inherit the parent's host bindings: a script importing a
 	// custom bound package must resolve identically in the new session.
