@@ -90,10 +90,24 @@ func (e *Engine) anonLeafSpelling(td *runtime.TypeDef, s string) string {
 				used[id.Name] = bv
 			} else if td.Pkg.Index != nil {
 				// a package-level alias peels like a local one:
-				// `struct{a}` spells its target, not `pkg.a`.
+				// `struct{a}` spells its target, not `pkg.a`. The
+				// synthesized typedef carries the decl's type
+				// parameters so a generic alias instantiates the
+				// same way a function-local one does — without
+				// them the body's parameter names would resolve
+				// against the package instead.
 				if info, ok := td.Pkg.Index.Types[id.Name]; ok && info.Decl != nil {
 					if ts, isTs := info.Decl.Spec.(*ast.TypeSpec); isTs && ts.Assign.IsValid() {
-						used[id.Name] = &runtime.TypeDef{Kind: runtime.KindAlias, Anon: ts.Type, Spec: ts, Pkg: td.Pkg, File: info.Decl.File}
+						alt := &runtime.TypeDef{Kind: runtime.KindAlias, Anon: ts.Type, Spec: ts, Pkg: td.Pkg, File: info.Decl.File}
+						if ts.TypeParams != nil {
+							for _, tp := range ts.TypeParams.List {
+								for _, nm := range tp.Names {
+									alt.TParams = append(alt.TParams, nm.Name)
+									alt.TConstraints = append(alt.TConstraints, tp.Type)
+								}
+							}
+						}
+						used[id.Name] = alt
 					}
 				}
 			}
@@ -188,7 +202,7 @@ func (e *Engine) anonLeafSpelling(td *runtime.TypeDef, s string) string {
 				// function-local one (name+pkg+target), a
 				// declared type is already pinned by
 				// name+pkg — one name per package.
-				if ts, isTs := info.Decl.Spec.(*ast.TypeSpec); isTs && ts.Assign.IsValid() {
+				if ts, isTs := info.Decl.Spec.(*ast.TypeSpec); isTs && ts.Assign.IsValid() && ts.TypeParams == nil {
 					if tgt, err := e.resolveTypeRef(td, ts.Type); err == nil && tgt != nil {
 						ids[q+"="+string(e.typeIDOf(tgt))] = true
 					} else {
