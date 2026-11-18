@@ -266,6 +266,12 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 			if xt.untyped {
 				return opTyp{te: &ast.Ident{Name: "bool"}, untyped: true, dte: &ast.Ident{Name: "bool"}}
 			}
+			if xt.te == nil {
+				// `!v` is SOME bool but which is unknowable when the
+				// operand's type is opaque — `f() == b` with `type B
+				// bool` returning B must not gate on a guessed bool.
+				return opTyp{}
+			}
 			if te := c.namedBoolTyp(xt); te != nil {
 				return opTyp{te: te} // !v keeps a named bool's type
 			}
@@ -303,6 +309,12 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 			// `v && true` with `type B bool` is a B.
 			if te := c.logicalNamedTyp(x); te != nil {
 				return opTyp{te: te}
+			}
+			// an operand with no static type leaves the result's bool
+			// flavour unknowable — `v && f()` is a B when f returns a
+			// named bool; guessing builtin would trap a legal compare.
+			if ux.te == nil || uy.te == nil {
+				return opTyp{}
 			}
 			return opTyp{te: &ast.Ident{Name: "bool"}}
 		}
@@ -1713,7 +1725,11 @@ func (c *compiler) namedIdentOf(te ast.Expr) (namedTypID, bool) {
 			// a synthesized predeclared name — `int` for a range
 			// index, `rune` for a string element, `bool` for
 			// comma-ok — means the builtin itself: a decl like
-			// `type int uint8` cannot rename it.
+			// `type int uint8` cannot rename it. `any`/`error` stay
+			// unnamed — interface types report none.
+			if t.Name == "any" || t.Name == "error" {
+				return namedTypID{}, false
+			}
 			return namedTypID{id: "predecl:" + runtime.CanonicalBasicName(t.Name), name: t.Name}, true
 		}
 		info, found := c.resolveName(t.Name)
@@ -1967,7 +1983,7 @@ func (c *compiler) noteDeclTyp(name string, effType ast.Expr, isConst bool, rhs 
 		}
 	}
 	if te != nil {
-		c.fs.noteDeclTyp(name, te, teFile)
+		c.fs.noteDeclTyp(name, c.declTypCanon(te), teFile)
 		return
 	}
 	if isConst {

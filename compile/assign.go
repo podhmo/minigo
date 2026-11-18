@@ -467,7 +467,7 @@ func (c *compiler) noteIfaceBinds(st *ast.AssignStmt) {
 				if t.iface {
 					c.fs.markIface(id.Name)
 				}
-				c.fs.noteDeclTyp(id.Name, t.te, t.teFile)
+				c.fs.noteDeclTyp(id.Name, c.declTypCanon(t.te), t.teFile)
 			} else if t.deferred {
 				// `a, b := p.F()` where p is unindexed — the name's type
 				// is the call's i-th declared result, a deferred fact.
