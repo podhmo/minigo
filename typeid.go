@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/podhmo/minigo/runtime"
@@ -120,37 +121,65 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 			// functions' same-named `type L` — or one local L bound to
 			// different type arguments across instantiations — would
 			// collide on it. Unused locals key as before, and a member
-			// or field name is never a type reference.
+			// or field/parameter name is never a type reference.
 			sels := map[*ast.Ident]bool{}
 			ast.Inspect(td.Anon, func(n ast.Node) bool {
-				if x, ok := n.(*ast.SelectorExpr); ok {
+				switch x := n.(type) {
+				case *ast.SelectorExpr:
 					sels[x.Sel] = true
-				}
-				if x, ok := n.(*ast.StructType); ok && x.Fields != nil {
-					for _, fld := range x.Fields.List {
-						for _, nm := range fld.Names {
-							sels[nm] = true
-						}
+				case *ast.Field:
+					for _, nm := range x.Names {
+						sels[nm] = true
 					}
 				}
 				return true
 			})
-			ids := map[string]bool{}
+			used := map[string]*runtime.TypeDef{}
 			ast.Inspect(td.Anon, func(n ast.Node) bool {
 				if id, ok := n.(*ast.Ident); ok && !sels[id] {
 					if lt := td.LocalTypes[id.Name]; lt != nil {
-						ids[id.Name+"="+string(e.typeIDOf(lt))] = true
+						used[id.Name] = lt
 					}
 				}
 				return true
 			})
-			if len(ids) > 0 {
-				leafs := make([]string, 0, len(ids))
-				for k := range ids {
-					leafs = append(leafs, k)
+			if len(used) > 0 {
+				// Re-spell with the used leafs resolved: a local alias
+				// unfolds to its target (`[]A` is `[]int`) and a declared
+				// local qualifies by decl site; a declared leaf bound to
+				// instantiation arguments also suffixes its own key,
+				// which spells the binds.
+				ctx := *td
+				ctx.LocalTypes = make(map[string]*runtime.TypeDef, len(td.LocalTypes))
+				for n, lt := range td.LocalTypes {
+					ctx.LocalTypes[n] = lt
 				}
-				slices.Sort(leafs)
-				s += "#" + strings.Join(leafs, ";")
+				ids := map[string]bool{}
+				for n, lt := range used {
+					if lt.Kind == runtime.KindAlias {
+						if tgt := e.peelAliasTd(lt); tgt != nil {
+							ctx.LocalTypes[n] = tgt
+						}
+						continue
+					}
+					cl := lt.CloneUncached()
+					if lt.Spec != nil {
+						cl.Name = n + "@" + strconv.FormatInt(int64(lt.Spec.Pos()), 10)
+					}
+					ctx.LocalTypes[n] = cl
+					ids[n+"="+string(e.typeIDOf(lt))] = true
+				}
+				if is := runtime.TypGoSpelling(td.Anon, &ctx); is != "" {
+					s = is
+				}
+				if len(ids) > 0 {
+					leafs := make([]string, 0, len(ids))
+					for k := range ids {
+						leafs = append(leafs, k)
+					}
+					slices.Sort(leafs)
+					s += "#" + strings.Join(leafs, ";")
+				}
 			}
 		}
 		if s != "" {

@@ -320,4 +320,30 @@ func TestTypeIDAnonLocalLeafsDistinct(t *testing.T) {
 	if a, b := e.typeIDOf(memberKey(nil)), e.typeIDOf(memberKey(map[string]*runtime.TypeDef{"L": srcTd(pkg, f, 10, "L")})); a != b {
 		t.Errorf("map[string]x.L keys differ by member-name lookalike: %q vs %q", a, b)
 	}
+	// a local alias is transparent: `[]A` with `type A = int` keys as
+	// `[]int`.
+	aliasTd := srcTd(pkg, f, 10, "A")
+	aliasTd.Kind = runtime.KindAlias
+	aliasTd.Anon = ast.NewIdent("int")
+	if a, b := e.typeIDOf(leaf(nil)), e.typeIDOf(&runtime.TypeDef{
+		Kind: runtime.KindSlice, Pkg: pkg, File: f,
+		Anon:       &ast.ArrayType{Elt: ast.NewIdent("A")},
+		LocalTypes: map[string]*runtime.TypeDef{"A": aliasTd},
+	}); a != b {
+		t.Errorf("[]A with local alias A=int keys unlike []int: %q vs %q", a, b)
+	}
+	// a function parameter name matching a local type is not a type
+	// reference: `func(L int)` keys like `func(x int)`.
+	paramFn := func(param string, lts map[string]*runtime.TypeDef) *runtime.TypeDef {
+		return &runtime.TypeDef{
+			Kind: runtime.KindFunc, Pkg: pkg, File: f,
+			Anon: &ast.FuncType{Params: &ast.FieldList{List: []*ast.Field{
+				{Names: []*ast.Ident{ast.NewIdent(param)}, Type: ast.NewIdent("int")},
+			}}},
+			LocalTypes: lts,
+		}
+	}
+	if a, b := e.typeIDOf(paramFn("x", nil)), e.typeIDOf(paramFn("L", map[string]*runtime.TypeDef{"L": srcTd(pkg, f, 10, "L")})); a != b {
+		t.Errorf("func(L int) keys unlike func(x int): %q vs %q", a, b)
+	}
 }
