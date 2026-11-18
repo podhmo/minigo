@@ -1216,15 +1216,20 @@ func stampContainerTyp(x runtime.Value, td *runtime.TypeDef) runtime.Value {
 	return x
 }
 
-// sameSpelledTwin reports whether tag is a host-minted twin of the
-// declared type td: bound host code stamps name-only typedefs
-// (Spec == nil) on containers it hands to source-interpreted stdlib —
-// a host []fs.DirEntry feeding io/fs's `[]DirEntry` slot — and those
-// re-tag when the spellings agree. Script declarations carry a Spec,
-// so same-named script types from different scopes never qualify
-// (named-to-named needs a conversion in Go).
-func sameSpelledTwin(tag, td *runtime.TypeDef) bool {
-	return tag != nil && tag.Spec == nil && td != nil && tdName(tag) == tdName(td)
+// sameTypedef reports whether two typedefs denote the same type: the
+// interned canonical descriptors equal (M4-4 — a stamped fs.DirEntry
+// converges on the source declaration), or one side is a spelled twin
+// interning cannot resolve — a host-minted tag carrying only a name
+// (Spec == nil), or two source-anonymous descriptors whose spellings
+// agree in different resolution contexts.
+func (v *VM) sameTypedef(a, b *runtime.TypeDef) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if v.internTypedef(a) == v.internTypedef(b) {
+		return true
+	}
+	return a.Spec == nil && tdName(a) == tdName(b)
 }
 
 // hostElemTwin reports whether tag is an unnamed host slice whose

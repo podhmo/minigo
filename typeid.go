@@ -133,12 +133,37 @@ func (e *Engine) internTypedef(td *runtime.TypeDef) *runtime.TypeDef {
 // interns to the same descriptor source `*fs.DirEntry` does. Anything
 // else returns unchanged.
 func (e *Engine) canonicalTypedef(td *runtime.TypeDef) *runtime.TypeDef {
-	if td == nil || td.Spec != nil {
+	// A td carrying a package IS a canonical descriptor (bound at
+	// Bind, or the source declaration) — no twin to resolve, and
+	// short-circuiting keeps a re-entrant Bind from deadlocking the
+	// lazy package install hostTwin would trigger.
+	if td == nil || td.Spec != nil || td.Pkg != nil {
 		return td
 	}
 	if td.HostIdent != nil {
 		if twin := e.hostTwin(td.HostIdent); twin != nil {
 			return twin
+		}
+		return td
+	}
+	var rt0 reflect.Type
+	if td.HostScalar != nil {
+		rt0 = reflect.TypeOf(td.HostScalar)
+	} else if td.HostNew != nil {
+		rt0 = td.HostType()
+	}
+	if rt0 != nil {
+		// carrier-backed: the typedef represents the host type its box
+		// mints — *T carriers name T — but only when the descriptor
+		// names that very type: a bound Widget boxing *strings.Builder
+		// represents Widget, not Builder.
+		if rt0.Kind() == reflect.Pointer && rt0.Name() == "" {
+			rt0 = rt0.Elem()
+		}
+		if rt0.Name() != "" && td.Name == rt0.String() {
+			if twin := e.hostTwin(rt0); twin != nil {
+				return twin
+			}
 		}
 		return td
 	}

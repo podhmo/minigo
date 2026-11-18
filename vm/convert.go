@@ -1144,7 +1144,7 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		// same-named type is a different type, and stamping a
 		// slice-named payload with a struct target is nonsense.
 		if s, ok := runtime.Unwrap(n.V).(*runtime.Slice); ok &&
-			sameSpelledTwin(n.Typ, td) && v.peelNamed(td).Kind == runtime.KindSlice {
+			v.sameTypedef(n.Typ, td) && v.peelNamed(td).Kind == runtime.KindSlice {
 			return stampContainerTyp(s, td)
 		}
 		f.trap("cannot use %s as %s", tdName(n.Typ), tdName(td))
@@ -1198,7 +1198,7 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 			// re-tags to the declared type when the spellings agree.
 			// Restricted to host-minted twin tags of container targets:
 			// a script-declared same-named type stays distinct.
-			(sameSpelledTwin(tn.Typ, td) && utd0 != nil &&
+			(v.sameTypedef(tn.Typ, td) && utd0 != nil &&
 				(utd0.Kind == runtime.KindSlice || utd0.Kind == runtime.KindMap || utd0.Kind == runtime.KindChan)) ||
 			// a host nil []*ast.Ident into go/ast's `[]N` with N=*Ident.
 			v.hostElemTwin(f, tn.Typ, td) ||
@@ -1222,7 +1222,7 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		// Zero(*T).Interface() arg into the callee's *T parameter.
 		utd0 := v.peelNamed(td)
 		if sameTypeDef(bn, td) || v.tdShapeEq(bn, td) || v.samePointeeAlias(bn, td) ||
-			(sameSpelledTwin(bn, td) && utd0 != nil &&
+			(v.sameTypedef(bn, td) && utd0 != nil &&
 				(utd0.Kind == runtime.KindSlice || utd0.Kind == runtime.KindMap || utd0.Kind == runtime.KindChan)) ||
 			v.hostTwinIs(f, bn, td) {
 			return &runtime.TypedNil{Typ: td}
@@ -1248,7 +1248,7 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		// spellings agree: its elements are already script values
 		// (each a GoValue box dispatching by reflection).
 		if s, ok := runtime.Unwrap(x).(*runtime.Slice); ok &&
-			utd != nil && utd.Kind == runtime.KindSlice && sameSpelledTwin(tag, td) {
+			utd != nil && utd.Kind == runtime.KindSlice && v.sameTypedef(tag, td) {
 			return stampContainerTyp(s, td)
 		}
 		// a named target whose underlying is an interface (`type Token
@@ -1304,6 +1304,7 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		if td.Name != "" && typeNameOf(x) == td.Name {
 			return runtime.Tag(td, x)
 		}
+		println("T0:", typeNameOf(x), "|", tdName(td))
 		f.trap("cannot use %s as %s", typeNameOf(x), tdName(td))
 	}
 	// array-typed slots copy on assignment: `var b = a` owns its own
@@ -1363,7 +1364,7 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 			// declared element zero instead of NIL.
 			x = stampContainerTyp(x, td)
 		} else if !sameTypeDef(ct, td) {
-			if sameSpelledTwin(ct, td) || v.hostElemTwin(f, ct, td) {
+			if v.sameTypedef(ct, td) || v.hostElemTwin(f, ct, td) {
 				// a host-produced container tagged with the target
 				// type's twin — a host []fs.DirEntry feeding a
 				// source-interpreted io/fs's `[]DirEntry` slot, or a
