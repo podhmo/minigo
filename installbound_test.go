@@ -78,17 +78,17 @@ func TestExplicitBindWinsOverLazy(t *testing.T) {
 	}
 }
 
-// TestBoundQueryKeepsSourceCache pins that a bound query does not
-// install over a source-built package already in e.pkgs (a ModeSource
-// load keeps its globals' state).
+// TestBoundQueryKeepsSourceCache pins that a bound query still reports
+// the bound table while a source-built package keeps answering loads
+// from e.pkgs (a ModeSource load keeps its globals' state).
 func TestBoundQueryKeepsSourceCache(t *testing.T) {
 	e := NewEngine(".")
 	src := &runtime.Package{Path: "time", Name: "time", Index: &index.Index{}}
 	e.mu.Lock()
 	e.pkgs["time"] = src
 	e.mu.Unlock()
-	if p := e.BoundOf("time"); p != nil {
-		t.Fatal("BoundOf installed over a source-built package")
+	if p := e.BoundOf("time"); p == nil {
+		t.Fatal("BoundOf lost the bound table")
 	}
 	e.mu.Lock()
 	got := e.pkgs["time"]

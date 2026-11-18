@@ -847,8 +847,8 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value, opts 
 		}
 		p.Globals.Set(k, v)
 	}
-	e.pending.Clear(importPath)
 	e.mu.Lock()
+	e.pending.Clear(importPath)
 	e.pkgs[importPath] = p
 	e.names.Set(importPath, p)
 	e.mu.Unlock()
@@ -1000,11 +1000,11 @@ func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, e
 	if err != nil {
 		return nil, fmt.Errorf("resolve %q: %w", path, err)
 	}
-	e.buildMu.Lock()
-	defer e.buildMu.Unlock()
 	if e.pkgModes[meta.ImportPath] != ModeSource {
 		e.installBound(meta.ImportPath)
 	}
+	e.buildMu.Lock()
+	defer e.buildMu.Unlock()
 	p := e.newPackage(meta.ImportPath, meta.Name, meta.Dir)
 	p.Standard = meta.Standard
 	files, failed, err := e.parseFilesCached(meta.GoFiles, meta.Lang)
@@ -1030,14 +1030,17 @@ func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, e
 // redeclaration check for inspect callers that must see duplicates.
 func (e *Engine) buildPackage(meta *resolve.PackageMeta, lenient bool) (*runtime.Package, error) {
 	spike.NoteBuildDuringCompile()
+	if e.pkgModes[meta.ImportPath] == ModeDeny {
+		return nil, fmt.Errorf("minigo: import of %q denied by package policy", meta.ImportPath)
+	}
+	if e.pkgModes[meta.ImportPath] != ModeSource {
+		e.installBound(meta.ImportPath)
+	}
 	// serialize whole builds so two goroutines cold-loading the same
 	// package converge on one object (the indexed gate closes in
 	// indexFiles for concurrent member access)
 	e.buildMu.Lock()
 	defer e.buildMu.Unlock()
-	if e.pkgModes[meta.ImportPath] != ModeSource {
-		e.installBound(meta.ImportPath)
-	}
 
 	// lenient builds live in their own caches: publishing a lenient
 	// package into e.pkgs would hide a redeclare error from a later
@@ -1054,10 +1057,6 @@ func (e *Engine) buildPackage(meta *resolve.PackageMeta, lenient bool) (*runtime
 		return p, nil
 	}
 	e.mu.Unlock()
-
-	if e.pkgModes[meta.ImportPath] == ModeDeny {
-		return nil, fmt.Errorf("minigo: import of %q denied by package policy", meta.ImportPath)
-	}
 
 	p := e.newPackage(meta.ImportPath, meta.Name, meta.Dir)
 	p.Standard = meta.Standard
