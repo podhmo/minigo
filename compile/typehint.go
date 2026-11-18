@@ -242,7 +242,9 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 		return c.callOpTyp(x)
 	case *ast.IndexExpr:
 		ot := c.staticOpTyp(x.X)
-		return opTyp{te: c.elemTypExpr(ot.te, ot.teFile, 4)}
+		// the element is a subexpr of the operand's spelling —
+		// its names resolve in the same decl file.
+		return opTyp{te: c.elemTypExpr(ot.te, ot.teFile, 4), teFile: ot.teFile}
 	case *ast.SliceExpr:
 		// a subslice keeps its type (so does a substring) — except an
 		// array operand, which reads a slice of its elements, and so
@@ -253,13 +255,13 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 			ue = ast.Unparen(c.unfoldScopedTypExpr(st.X, ot.teFile, 3))
 		}
 		if at, ok := ue.(*ast.ArrayType); ok && at.Len != nil {
-			return opTyp{te: &ast.ArrayType{Lbrack: at.Lbrack, Elt: at.Elt}}
+			return opTyp{te: &ast.ArrayType{Lbrack: at.Lbrack, Elt: at.Elt}, teFile: ot.teFile}
 		}
 		return ot
 	case *ast.StarExpr:
 		// *p dereferences a pointer-typed operand
 		ot := c.staticOpTyp(x.X)
-		return opTyp{te: c.starBaseTypExpr(ot.te, ot.teFile, 4)}
+		return opTyp{te: c.starBaseTypExpr(ot.te, ot.teFile, 4), teFile: ot.teFile}
 	case *ast.TypeAssertExpr:
 		if x.Type == nil {
 			return opTyp{} // a type switch's guard, not an operand
@@ -288,7 +290,7 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 			return c.staticOpTyp(x.X) // -x/+x/^x keeps the operand's type
 		case token.ARROW:
 			ot := c.staticOpTyp(x.X)
-			return opTyp{te: c.chanElemTypExpr(ot.te, ot.teFile, 4)}
+			return opTyp{te: c.chanElemTypExpr(ot.te, ot.teFile, 4), teFile: ot.teFile}
 		case token.AND:
 			// &x answers a pointer to x's static type — `i == &d`
 			// mismatches int and *D. An operand without a static
@@ -495,11 +497,13 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 						if t.elLit != nil && t.elFile == nil {
 							t.elFile = vd.File
 						}
-						// the literal's type was spelled in the decl's
-						// file too — `var xs = inner.Bytes{}` resolves
+						// a literal's type was spelled in the decl's
+						// file — `var xs = inner.Bytes{}` resolves
 						// `inner` under the decl's imports, so a
 						// use-site local `inner` cannot rebind it.
-						if t.te != nil && t.teFile == nil {
+						// A call's result belongs to the callee's
+						// scope, not this file — leave its teFile.
+						if _, isLit := ast.Unparen(rhs).(*ast.CompositeLit); isLit && t.te != nil && t.teFile == nil {
 							t.teFile = vd.File
 						}
 						return t
@@ -590,11 +594,13 @@ func (c *compiler) selOpTyp(x *ast.SelectorExpr) opTyp {
 		return opTyp{}
 	}
 	te := c.fieldTypExpr(base.te, x.Sel.Name, 4)
+	teFile := c.typSpecFile(base.te)
 	if te == nil {
 		// a selector through a pointer reads the pointee's fields
 		// the same way — `p.A` on a *Pair is Pair's A.
 		if sb := c.starBaseTypExpr(base.te, base.teFile, 4); sb != nil {
 			te = c.fieldTypExpr(sb, x.Sel.Name, 4)
+			teFile = c.typSpecFile(sb)
 		}
 	}
 	if te == nil {
@@ -603,7 +609,33 @@ func (c *compiler) selOpTyp(x *ast.SelectorExpr) opTyp {
 	if c.isIfaceTypeExpr(te) {
 		return opTyp{iface: true}
 	}
-	return opTyp{te: te}
+	return opTyp{te: te, teFile: teFile}
+}
+
+// typSpecFile returns the file a named type's spec was declared in —
+// the scope its field and element names resolve under. A local `type`
+// decl has no file of its own (its scope is the use site's) and an
+// unnamed or unresolvable type reports none.
+func (c *compiler) typSpecFile(te ast.Expr) *syntax.File {
+	t := ast.Unparen(te)
+	if _, ok := t.(*ast.Ident); ok {
+		id := t.(*ast.Ident)
+		if c.fs.lookupBinding(id.Name) != nil {
+			return nil // a local decl's names live in the use site's scope
+		}
+		if ts := pkgTypeSpec(c.pkg, id.Name); ts != nil {
+			return specFileOf(c.pkg, ts.Pos())
+		}
+		return nil
+	}
+	if _, ok := t.(*ast.SelectorExpr); ok {
+		if ref, name, ok := c.selTypRef(t); ok {
+			if p, ts := c.selTypeSpec(ref, name); ts != nil {
+				return specFileOf(p, ts.Pos())
+			}
+		}
+	}
+	return nil
 }
 
 // valueSpecMemberOpTyp types one name of a foreign package's var/const
@@ -873,15 +905,15 @@ func (c *compiler) callOpTyp(x *ast.CallExpr) opTyp {
 		// T() {...}` answers its own signature, not g's.
 		if b := c.fs.lookupBinding(f.Name); b != nil {
 			if ft, ok := ast.Unparen(b.declTyp).(*ast.FuncType); ok {
-				return c.funcTypeResultOpTyp(ft)
+				return c.funcTypeResultOpTyp(ft, b.declTypFile)
 			}
 			return opTyp{}
 		}
 		// a declared function resolves its result type regardless of
 		// arity — the args gate below exists for builtins like len()
 		// whose zero-arg form has no meaningful static result.
-		if ft := c.calleeFuncTyp(x); ft != nil {
-			return c.funcTypeResultOpTyp(ft)
+		if ft, ftFile := c.calleeFuncTyp(x); ft != nil {
+			return c.funcTypeResultOpTyp(ft, ftFile)
 		}
 		if len(x.Args) == 0 {
 			return opTyp{}
@@ -953,7 +985,7 @@ func (c *compiler) callOpTyp(x *ast.CallExpr) opTyp {
 				if p := res.Val; p.Index != nil {
 					if ot := c.srcMemberOpTyp(p, f.Sel.Name); ot.te != nil {
 						if ft, ok2 := ast.Unparen(ot.te).(*ast.FuncType); ok2 {
-							return c.funcTypeResultOpTyp(ft)
+							return c.funcTypeResultOpTyp(ft, nil)
 						}
 					}
 				}
@@ -961,8 +993,8 @@ func (c *compiler) callOpTyp(x *ast.CallExpr) opTyp {
 			}
 		}
 		// a method call on a known named type resolves to its decl.
-		if ft := c.calleeFuncTyp(x); ft != nil {
-			return c.funcTypeResultOpTyp(ft)
+		if ft, ftFile := c.calleeFuncTyp(x); ft != nil {
+			return c.funcTypeResultOpTyp(ft, ftFile)
 		}
 		return opTyp{}
 	case *ast.IndexExpr, *ast.IndexListExpr:
@@ -992,7 +1024,10 @@ func (c *compiler) argsAllUntyped(args []ast.Expr) bool {
 // only a single-result signature can type an operand; a result spelling
 // a declared type parameter is opaque (each instantiation binds it, the
 // static name doesn't).
-func (c *compiler) funcTypeResultOpTyp(ft *ast.FuncType) opTyp {
+// file is the file the signature was spelled in — a nil file means the
+// signature was already re-scoped for the caller (srcMemberOpTyp) or is
+// a use-site spelling.
+func (c *compiler) funcTypeResultOpTyp(ft *ast.FuncType, file *syntax.File) opTyp {
 	if ft == nil || ft.Results == nil || len(ft.Results.List) != 1 {
 		return opTyp{}
 	}
@@ -1007,7 +1042,7 @@ func (c *compiler) funcTypeResultOpTyp(ft *ast.FuncType) opTyp {
 	if c.isIfaceTypeExpr(te) {
 		return opTyp{iface: true}
 	}
-	return opTyp{te: te}
+	return opTyp{te: te, teFile: file}
 }
 
 // calleeFuncTyp resolves a call's callee to its signature: a declared
@@ -1015,18 +1050,22 @@ func (c *compiler) funcTypeResultOpTyp(ft *ast.FuncType) opTyp {
 // FuncType. Builtins, host-package functions, and opaque callees report
 // nil. Shared by callOpTyp (result typing) and nthResultOpTyp
 // (multi-result binding) so the callee walk lives in one place.
-func (c *compiler) calleeFuncTyp(x *ast.CallExpr) *ast.FuncType {
+// The signature's decl file rides along: a raw declared signature
+// resolves its names in the file that wrote it, while a member's
+// srcMemberOpTyp answer is already re-scoped for the caller and needs
+// none.
+func (c *compiler) calleeFuncTyp(x *ast.CallExpr) (*ast.FuncType, *syntax.File) {
 	switch f := x.Fun.(type) {
 	case *ast.Ident:
 		if b := c.fs.lookupBinding(f.Name); b != nil {
 			if ft, ok := ast.Unparen(b.declTyp).(*ast.FuncType); ok {
-				return ft
+				return ft, b.declTypFile
 			}
-			return nil
+			return nil, nil
 		}
 		if c.pkg != nil && c.pkg.Index != nil {
 			if fd := c.pkg.Index.Funcs[f.Name]; fd != nil {
-				return fd.Func.Type
+				return fd.Func.Type, fd.File
 			}
 		}
 	case *ast.SelectorExpr:
@@ -1041,30 +1080,30 @@ func (c *compiler) calleeFuncTyp(x *ast.CallExpr) *ast.FuncType {
 					if p := res.Val; p.Index != nil {
 						if ot := c.srcMemberOpTyp(p, f.Sel.Name); ot.te != nil {
 							if ft, ok2 := ast.Unparen(ot.te).(*ast.FuncType); ok2 {
-								return ft
+								return ft, nil
 							}
 						}
 					}
 				}
-				return nil
+				return nil, nil
 			}
 		}
 		base := c.staticOpTyp(f.X)
 		if base.te == nil {
-			return nil
+			return nil, nil
 		}
 		if tdi := c.typeDeclOf(base.te); tdi != nil {
 			if md := tdi.Methods[f.Sel.Name]; md != nil {
-				return md.Func.Type
+				return md.Func.Type, md.File
 			}
 		}
 		// a struct field of func type is callable too —
 		// `p := S{F: func() int{…}}; p.F()` has a declared signature.
 		if ft, ok := ast.Unparen(c.structFieldTypExpr(base.te, f.Sel.Name)).(*ast.FuncType); ok {
-			return ft
+			return ft, c.typSpecFile(base.te)
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // nthResultOpTyp resolves the static type a multi-result call binds at
@@ -1079,7 +1118,7 @@ func (c *compiler) nthResultOpTyp(e ast.Expr, i int) opTyp {
 	if !ok || c.conversionCall(x) {
 		return opTyp{}
 	}
-	ft := c.calleeFuncTyp(x)
+	ft, ftFile := c.calleeFuncTyp(x)
 	if ft == nil || ft.Results == nil {
 		if t := c.staticOpTyp(x); t.deferred {
 			return opTyp{deferred: true}
@@ -1088,7 +1127,7 @@ func (c *compiler) nthResultOpTyp(e ast.Expr, i int) opTyp {
 	}
 	if i == 0 && len(ft.Results.List) == 1 {
 		// the single-result walk is the i=0 case.
-		return c.funcTypeResultOpTyp(ft)
+		return c.funcTypeResultOpTyp(ft, ftFile)
 	}
 	pos := 0
 	for _, res := range ft.Results.List {
@@ -1104,7 +1143,7 @@ func (c *compiler) nthResultOpTyp(e ast.Expr, i int) opTyp {
 			if c.isIfaceTypeExpr(te) {
 				return opTyp{iface: true}
 			}
-			return opTyp{te: te}
+			return opTyp{te: te, teFile: ftFile}
 		}
 		pos += arity
 	}
