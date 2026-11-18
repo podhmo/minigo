@@ -468,6 +468,11 @@ func (c *compiler) noteIfaceBinds(st *ast.AssignStmt) {
 					c.fs.markIface(id.Name)
 				}
 				c.fs.noteDeclTyp(id.Name, t.te, t.teFile)
+			} else if t.deferred {
+				// `a, b := p.F()` where p is unindexed — the name's type
+				// is the call's i-th declared result, a deferred fact.
+				c.fs.noteDeferTyp(id.Name, &ast.IndexExpr{X: st.Rhs[0],
+					Index: &ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(i)}})
 			} else if i == 0 {
 				c.noteDeclTyp(id.Name, nil, false, st.Rhs[0], nil)
 			}

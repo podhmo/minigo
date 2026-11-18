@@ -15,6 +15,7 @@ import (
 	"go/ast"
 	"go/constant"
 	"go/token"
+	"strconv"
 
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/index"
@@ -108,6 +109,11 @@ func (c *compiler) stmt(s ast.Stmt) {
 						default:
 							if t := c.nthResultOpTyp(vals[0], i); t.te != nil {
 								c.fs.noteDeclTyp(vs.Names[i].Name, t.te, t.teFile)
+							} else if t.deferred {
+								// `var a, b = p.F()` — the name defers
+								// to the call's i-th declared result.
+								c.fs.noteDeferTyp(vs.Names[i].Name, &ast.IndexExpr{X: vals[0],
+									Index: &ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(i)}})
 							} else {
 								c.noteDeclTyp(vs.Names[i].Name, effType, isConst, nil, nil)
 							}
@@ -395,7 +401,7 @@ func (c *compiler) rangeStmt(st *ast.RangeStmt) {
 		c.emit3(bytecode.OpSetRefs, nvars, 1, 0, st.Pos())
 	} else {
 		// OpRangeNext pushes nvars values (key, val); bind in reverse.
-		keyTyp, valTyp := c.rangeVarTyps(st.X)
+		keyTyp, valTyp, deferred := c.rangeVarTyps(st.X)
 		if st.Value != nil {
 			c.bindRangeVar(st.Value, st.Tok == token.DEFINE)
 			c.noteBindVar(st.Value, valTyp, st.Tok == token.DEFINE)
@@ -403,6 +409,13 @@ func (c *compiler) rangeStmt(st *ast.RangeStmt) {
 		if st.Key != nil {
 			c.bindRangeVar(st.Key, st.Tok == token.DEFINE)
 			c.noteBindVar(st.Key, keyTyp, st.Tok == token.DEFINE)
+		}
+		if deferred {
+			// the bound names' types are facts of the deferred operand:
+			// k/v of a map or slice are its key/index and element — the
+			// synthetic index/indexlist sites answer them at run time.
+			c.noteDeferBindVar(st.Key, st.Tok == token.DEFINE, &ast.IndexListExpr{X: st.X})
+			c.noteDeferBindVar(st.Value, st.Tok == token.DEFINE, &ast.IndexExpr{X: st.X})
 		}
 	}
 	c.stmt(st.Body)
@@ -450,19 +463,35 @@ func (c *compiler) noteBindVar(e ast.Expr, te ast.Expr, define bool) {
 	c.fs.noteDeclTyp(id.Name, te, nil)
 }
 
+// noteDeferBindVar is noteBindVar for a bind whose operand type is a
+// deferred fact: `for i := range p.Arr` cannot spell i's declared type
+// without indexing p, so the name defers to a synthetic expression of
+// the range operand — `p.Arr[0]`'s element for a value var — and the
+// run-time gate still traps "mismatched types int and D" like gc.
+func (c *compiler) noteDeferBindVar(e ast.Expr, define bool, dx ast.Expr) {
+	if !define || dx == nil {
+		return
+	}
+	id, ok := e.(*ast.Ident)
+	if !ok || id.Name == "_" {
+		return
+	}
+	c.fs.noteDeferTyp(id.Name, dx)
+}
+
 // rangeVarTyps resolves the (key, value) types a `for k, v := range e`
 // binds: int indices for arrays, slices, and strings; the operand's own
 // type for an integer range; a map's key and value types; a channel's
 // element on the single-variable form. An opaque range expression
 // reports none.
-func (c *compiler) rangeVarTyps(e ast.Expr) (key, val ast.Expr) {
+func (c *compiler) rangeVarTyps(e ast.Expr) (key, val ast.Expr, deferred bool) {
 	t := c.staticOpTyp(e)
 	te := t.te
 	if te == nil {
 		te = t.dte // `for i := range 10` iterates ints
 	}
 	if te == nil {
-		return nil, nil
+		return nil, nil, t.deferred
 	}
 	u := c.unfoldTypExpr(te, 4)
 	if s, ok := u.(*ast.StarExpr); ok {
@@ -472,25 +501,25 @@ func (c *compiler) rangeVarTyps(e ast.Expr) (key, val ast.Expr) {
 	intIdent := &ast.Ident{Name: "int"}
 	switch tt := u.(type) {
 	case *ast.ArrayType:
-		return intIdent, tt.Elt
+		return intIdent, tt.Elt, false
 	case *ast.MapType:
-		return tt.Key, tt.Value
+		return tt.Key, tt.Value, false
 	case *ast.ChanType:
 		// `for v := range ch` binds the element to the single var;
 		// a second variable is a compile error elsewhere anyway.
-		return tt.Value, nil
+		return tt.Value, nil, false
 	case *ast.Ident:
 		if tt.Name == "string" {
 			// `for i, r := range s` — int index, rune element
-			return intIdent, &ast.Ident{Name: "rune"}
+			return intIdent, &ast.Ident{Name: "rune"}, false
 		}
 		if intTypeNames[runtime.CanonicalBasicName(tt.Name)] {
 			// `for i := range n` binds n's own type — a named
 			// integer keeps its name (gc: i is N, not int).
-			return te, nil
+			return te, nil, false
 		}
 	}
-	return nil, nil
+	return nil, nil, false
 }
 
 // isBlankIdent reports whether e is the blank identifier — possibly
@@ -768,9 +797,12 @@ func selectRecv(comm ast.Stmt) (recv *ast.UnaryExpr, lhs []ast.Expr, define bool
 // channel's element for v, bool for ok.
 func (c *compiler) bindRecv(lhs []ast.Expr, define bool, chExpr ast.Expr) {
 	var elem ast.Expr
+	var deferred bool
 	if define && len(lhs) > 0 && chExpr != nil {
 		if t := c.staticOpTyp(chExpr); t.te != nil {
 			elem = c.chanElemTypExpr(t.te, 4)
+		} else if t.deferred {
+			deferred = true
 		}
 	}
 	switch len(lhs) {
@@ -779,6 +811,9 @@ func (c *compiler) bindRecv(lhs []ast.Expr, define bool, chExpr ast.Expr) {
 	case 1:
 		c.storeTarget(lhs[0], define)
 		c.noteBindVar(lhs[0], elem, define)
+		if deferred {
+			c.noteDeferBindVar(lhs[0], define, &ast.IndexExpr{X: chExpr})
+		}
 	default:
 		c.emit3(bytecode.OpUnpack, len(lhs), 0, 0, 0)
 		for i := len(lhs) - 1; i >= 0; i-- {
@@ -787,6 +822,9 @@ func (c *compiler) bindRecv(lhs []ast.Expr, define bool, chExpr ast.Expr) {
 		for i, l := range lhs {
 			if i == 0 {
 				c.noteBindVar(l, elem, define)
+				if deferred {
+					c.noteDeferBindVar(l, define, &ast.IndexExpr{X: chExpr})
+				}
 			} else {
 				c.noteBindVar(l, &ast.Ident{Name: "bool"}, define)
 			}
