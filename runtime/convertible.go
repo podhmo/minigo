@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"fmt"
 	"go/ast"
 
 	"github.com/podhmo/minigo/syntax"
@@ -115,13 +116,38 @@ func convIsArray(td *TypeDef) bool {
 	return ok && at.Len != nil
 }
 
-// convArrayLen spells a fixed-length array's length expr.
+// convArrayLen spells a fixed-length array's length expr recursively —
+// a literal `2`, a named const `N`, or a constant expression `1+1` all
+// keep their own spelling (TypLenName's %T fallback would equate
+// `1+1` and `2+1`, both *ast.BinaryExpr).
 func convArrayLen(td *TypeDef) string {
 	at, ok := td.TypeExpr().(*ast.ArrayType)
 	if !ok {
 		return ""
 	}
-	return TypLenName(at.Len)
+	return convLenSpelling(at.Len)
+}
+
+func convLenSpelling(e ast.Expr) string {
+	switch l := e.(type) {
+	case nil:
+		return ""
+	case *ast.BasicLit:
+		return l.Value
+	case *ast.Ident:
+		return l.Name
+	case *ast.Ellipsis:
+		return "..."
+	case *ast.ParenExpr:
+		return "(" + convLenSpelling(l.X) + ")"
+	case *ast.UnaryExpr:
+		return l.Op.String() + convLenSpelling(l.X)
+	case *ast.BinaryExpr:
+		return convLenSpelling(l.X) + l.Op.String() + convLenSpelling(l.Y)
+	case *ast.SelectorExpr:
+		return convLenSpelling(l.X) + "." + l.Sel.Name
+	}
+	return fmt.Sprintf("%T", e)
 }
 
 // runeSliceTd reports whether a peeled typedef is []byte or []rune —
@@ -189,57 +215,80 @@ func convSameElem(a, b *TypeDef, r TypeResolver) bool {
 }
 
 // convTagBlind is the recursive comparison behind tag-blind
-// conversion: identical types with struct tags erased. Field and
-// element positions compare by identity — defined types are not
-// peeled (`struct{Y S1}` and `struct{Y S2}` do NOT convert even when
-// S1 and S2 share a shape); only anonymous structs recurse, so a tag
-// nested inside an anonymous struct still converts. Chan directions
-// and func signatures keep the strict compare — tags inside them are
-// not modeled.
+// conversion: identical types with struct tags erased. Identity here
+// is [SigTypEq] — alias-transparent and order-free for interface
+// member sets; defined types still differ from the shape they spell
+// (`struct{Y S1}` and `struct{Y S2}` do NOT convert even when S1 and
+// S2 share a shape). Only anonymous shells recurse, so a tag nested
+// inside an anonymous struct still converts. Func signatures keep
+// the strict compare — tags inside them are not modeled.
 func convTagBlind(a, b *TypeDef, r TypeResolver) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	if a == b || TypIdentical(a, b) {
+	if a == b || SigTypEq(a, b, r) {
 		return true
 	}
+	pa, pb := r.PeelAlias(a), r.PeelAlias(b)
 	switch {
-	case a.Kind == KindStruct && b.Kind == KindStruct &&
-		anonShapedTd(a) && anonShapedTd(b):
-		return convStructTagBlind(a, b, r)
-	case a.Kind == KindSlice && b.Kind == KindSlice &&
-		convIsSlice(a) == convIsSlice(b) &&
-		anonShapedTd(a) && anonShapedTd(b):
+	case pa.Kind == KindStruct && pb.Kind == KindStruct &&
+		anonShapedTd(pa) && anonShapedTd(pb):
+		return convStructTagBlind(pa, pb, r)
+	case pa.Kind == KindSlice && pb.Kind == KindSlice &&
+		convIsSlice(pa) == convIsSlice(pb) &&
+		anonShapedTd(pa) && anonShapedTd(pb):
 		// arrays share KindSlice with slices: []T only pairs with []U,
-		// [n]T with [n]U (the length lives in the strict compare).
-		ea, eb := convElemOf(a, r), convElemOf(b, r)
+		// [n]T with [n]U (the length compares below).
+		ea, eb := convElemOf(pa, r), convElemOf(pb, r)
 		if ea == nil || eb == nil {
 			return false
 		}
 		if !convTagBlind(ea, eb, r) {
 			return false
 		}
-		if convIsArray(a) {
-			return convArrayLen(a) != "" && convArrayLen(a) == convArrayLen(b)
+		if convIsArray(pa) {
+			la, lb := convArrayLen(pa), convArrayLen(pb)
+			return la != "" && la == lb
 		}
 		return true
-	case a.Kind == KindPointer && b.Kind == KindPointer &&
-		anonShapedTd(a) && anonShapedTd(b):
-		ea, eb := convElemOf(a, r), convElemOf(b, r)
+	case pa.Kind == KindPointer && pb.Kind == KindPointer &&
+		anonShapedTd(pa) && anonShapedTd(pb):
+		ea, eb := convElemOf(pa, r), convElemOf(pb, r)
 		if ea == nil || eb == nil {
 			return false
 		}
 		return convTagBlind(ea, eb, r)
-	case a.Kind == KindMap && b.Kind == KindMap &&
-		anonShapedTd(a) && anonShapedTd(b):
-		ka, kb := convElemOfKey(a, r), convElemOfKey(b, r)
-		ea, eb := convElemOf(a, r), convElemOf(b, r)
+	case pa.Kind == KindMap && pb.Kind == KindMap &&
+		anonShapedTd(pa) && anonShapedTd(pb):
+		ka, kb := convElemOfKey(pa, r), convElemOfKey(pb, r)
+		ea, eb := convElemOf(pa, r), convElemOf(pb, r)
 		if ka == nil || kb == nil || ea == nil || eb == nil {
 			return false
 		}
 		return convTagBlind(ka, kb, r) && convTagBlind(ea, eb, r)
+	case pa.Kind == KindChan && pb.Kind == KindChan &&
+		anonShapedTd(pa) && anonShapedTd(pb):
+		da, db := convChanDir(pa), convChanDir(pb)
+		if da == 0 || da != db {
+			return false
+		}
+		ea, eb := convElemOf(pa, r), convElemOf(pb, r)
+		if ea == nil || eb == nil {
+			return false
+		}
+		return convTagBlind(ea, eb, r)
 	}
 	return false
+}
+
+// convChanDir reads a chan typedef's direction from its AST; 0 means
+// unknown (no AST carried) and compares unequal — direction is part of
+// identity.
+func convChanDir(td *TypeDef) ast.ChanDir {
+	if ct, ok := td.TypeExpr().(*ast.ChanType); ok {
+		return ct.Dir
+	}
+	return 0
 }
 
 // anonShapedTd reports whether a typedef spells its shape anonymously
@@ -258,7 +307,7 @@ func anonShell(td *TypeDef) *TypeDef {
 		return td
 	}
 	return &TypeDef{Kind: td.Kind, Anon: td.TypeExpr(), Pkg: td.Pkg, File: td.File, Binds: td.Binds,
-		Fields: td.Fields, FTags: td.FTags, EmbedIdx: td.EmbedIdx}
+		LocalTypes: td.LocalTypes, Fields: td.Fields, FTags: td.FTags, EmbedIdx: td.EmbedIdx}
 }
 
 // convStructTagBlind compares two struct shapes field by field: names
