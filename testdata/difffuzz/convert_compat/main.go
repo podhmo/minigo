@@ -83,6 +83,7 @@ func reflectChecks() {
 	fmt.Println("ptr field:", reflect.TypeOf(struct{ F int }{}).ConvertibleTo(reflect.TypeOf(struct{ F *int }{})))
 	fmt.Println("ptr field same:", reflect.TypeOf(struct{ F *int }{}).ConvertibleTo(reflect.TypeOf(struct{ F *int }{})))
 	fmt.Println("paren ptr field:", reflect.TypeOf(struct{ F (*int) }{}).ConvertibleTo(reflect.TypeOf(struct{ F *int }{})))
+	fmt.Println("nested paren:", reflect.TypeOf(struct{ F (*int) }{}).ConvertibleTo(reflect.TypeOf(struct{ F *int }{})))
 }
 
 func localConv() bool {

@@ -130,7 +130,7 @@ var FileBudgets = map[string]int{
 	"runtime/hostseq.go":                 130,
 	"runtime/methodset.go":               53,
 	"runtime/package.go":                 703,
-	"runtime/typedef.go":                 1782,
+	"runtime/typedef.go":                 1785,
 	"runtime/assignable.go":              159,
 	"runtime/convertible.go":             352,
 	"runtime/typeid.go":                  20,

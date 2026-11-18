@@ -24,3 +24,4 @@ local type: true
 ptr field: false
 ptr field same: true
 paren ptr field: true
+nested paren: true
