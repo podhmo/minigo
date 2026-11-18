@@ -336,6 +336,14 @@ type Chunk struct {
 	// The vm package computes and stores it; concurrent readers race
 	// benignly on the atomic.
 	Escapes atomic.Int32
+
+	// Boxed is the compile-time slot classification (P4-2), parallel to
+	// NLocals: Boxed[i] marks a local whose cell can outlive its frame —
+	// its address is taken (&x, &x.f), a closure captures it, a special
+	// form snapshots it, or a select may bind it through a pointer
+	// receiver. Unclassified chunks (hand-built code) leave it nil and
+	// fall back to the opcode scan in the VM.
+	Boxed []bool
 }
 
 // GlobalSite is one OpGlobal instruction's resolution cache. The VM owns

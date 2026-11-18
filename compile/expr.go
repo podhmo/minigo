@@ -167,6 +167,7 @@ func (c *compiler) expr(e ast.Expr) {
 			c.getRef(x.Name, x.Pos())
 		}
 	case *ast.SelectorExpr:
+		c.boxReceiver(x.X, x.Sel.Name)
 		c.selectorBase(x.X)
 		// the member's own position — Go reports a select failure at the
 		// .Sel token, which matters when the callee wraps to the next
@@ -273,6 +274,12 @@ func (c *compiler) unary(x *ast.UnaryExpr) {
 			c.compositeLit(t)
 			c.emit(bytecode.OpBox, 0, 0, x.Pos())
 		case *ast.SelectorExpr:
+			// `&x.f` — the FieldRef the operand ref builds keeps the
+			// base's cell alive; `&x[i]` takes the index-ref branch and
+			// reads the container by value instead.
+			if id := rootIdent(t.X); id != nil {
+				c.fs.boxName(id.Name)
+			}
 			c.refTargetBase(t.X, false)
 			c.emit(bytecode.OpFieldRef, c.nameIdx(t.Sel.Name), 0, t.Pos())
 		case *ast.IndexExpr:
