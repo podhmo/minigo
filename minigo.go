@@ -847,36 +847,11 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value, opts 
 		}
 		p.Globals.Set(k, v)
 	}
+	e.pending.Clear(importPath)
 	e.mu.Lock()
 	e.pkgs[importPath] = p
 	e.names.Set(importPath, p)
 	e.mu.Unlock()
-}
-
-// hostSymbol converts a plain Go value in a [Engine.Bind] symbol map to its
-// script form; runtime values pass through unchanged.
-func hostSymbol(name string, v runtime.Value) runtime.Value {
-	switch v.(type) {
-	case *runtime.BuiltinFunc, *runtime.TypeDef, *runtime.GoValue, int64, float64, string, bool:
-		return v // the common cases, without reflect
-	case nil:
-		return runtime.NIL
-	}
-	t := reflect.TypeOf(v)
-	base := t
-	if base.Kind() == reflect.Pointer {
-		base = base.Elem()
-	}
-	if base.PkgPath() == runtimePkgPath {
-		return v
-	}
-	if t.Kind() == reflect.Func {
-		return WrapFunc(name, v)
-	}
-	if t.Name() != "" && t.PkgPath() != "" && (t.Kind() <= reflect.Complex128 || t.Kind() == reflect.String) {
-		return v // named host scalars (time.Duration) are script values as is
-	}
-	return ValueOf(v)
 }
 
 var runtimePkgPath = reflect.TypeOf(runtime.Nil{}).PkgPath()
@@ -1005,7 +980,11 @@ func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, e
 	// path takes the same private build: deny gates imports, not reading,
 	// and the private cache keeps the denied package out of the stores
 	// [Engine.Package] and DirOf answer from.
-	if !e.registered(path) && e.pkgModes[path] != ModeDeny {
+	e.mu.Lock()
+	installed := e.names.Bound(path)
+	denied := e.pkgModes[path] == ModeDeny
+	e.mu.Unlock()
+	if !installed && !e.pending.Registered(path) && !denied {
 		return e.loadPath(ctx, path)
 	}
 	e.mu.Lock()
@@ -1023,6 +1002,9 @@ func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, e
 	}
 	e.buildMu.Lock()
 	defer e.buildMu.Unlock()
+	if e.pkgModes[meta.ImportPath] != ModeSource {
+		e.installBound(meta.ImportPath)
+	}
 	p := e.newPackage(meta.ImportPath, meta.Name, meta.Dir)
 	p.Standard = meta.Standard
 	files, failed, err := e.parseFilesCached(meta.GoFiles, meta.Lang)
@@ -1053,6 +1035,9 @@ func (e *Engine) buildPackage(meta *resolve.PackageMeta, lenient bool) (*runtime
 	// indexFiles for concurrent member access)
 	e.buildMu.Lock()
 	defer e.buildMu.Unlock()
+	if e.pkgModes[meta.ImportPath] != ModeSource {
+		e.installBound(meta.ImportPath)
+	}
 
 	// lenient builds live in their own caches: publishing a lenient
 	// package into e.pkgs would hide a redeclare error from a later

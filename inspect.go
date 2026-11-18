@@ -737,7 +737,7 @@ func (e *Engine) installInspect() {
 		}),
 	}
 	for _, path := range []string{"minigo.dev/inspect", "github.com/podhmo/minigo/inspect"} {
-		e.Bind(path, pkg)
+		e.bindBound(path, pkg)
 	}
 }
 

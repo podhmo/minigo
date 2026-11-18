@@ -32,6 +32,6 @@ func (e *Engine) installHost(h *hostHelpers) {
 	}
 
 	for _, path := range []string{"minigo.dev/host", "github.com/podhmo/minigo/host"} {
-		e.Bind(path, hostpkg)
+		e.bindBound(path, hostpkg)
 	}
 }

@@ -9,7 +9,7 @@ package minigo
 
 import (
 	"go/ast"
-	"slices"
+	"reflect"
 
 	"github.com/podhmo/minigo/runtime"
 )
@@ -27,74 +27,36 @@ func (e *Engine) hostPackageOf(path string) *runtime.Package {
 
 // installBound installs a registered path's bound package on first
 // use (concurrent first uses wait on each other); unregistered and
-// already-installed paths are a no-op.
+// already-installed paths are a no-op. A source-built package already
+// in e.pkgs wins: installing now would clobber its state for later
+// ModeSource loads.
 func (e *Engine) installBound(path string) {
+	e.mu.Lock()
+	if _, ok := e.pkgs[path]; ok && !e.names.Bound(path) {
+		e.mu.Unlock()
+		return
+	}
+	e.mu.Unlock()
 	e.pending.Install(path)
+}
+
+// bindBound is [Engine.Bind] for the lazy installers: a path already
+// bound — an explicit Bind, or a sibling alias installed on first use
+// — is not clobbered by the default table.
+func (e *Engine) bindBound(importPath string, symbols map[string]runtime.Value) {
+	e.mu.Lock()
+	bound := e.names.Bound(importPath)
+	e.mu.Unlock()
+	if bound {
+		return
+	}
+	e.Bind(importPath, symbols)
 }
 
 // registered reports whether path is bound — installed already or
 // registered for lazy install.
 func (e *Engine) registered(path string) bool {
 	return e.names.Bound(path) || e.pending.Registered(path)
-}
-
-// BoundPackages returns the sorted import paths of every host-bound
-// package: std intrinsics and packages registered with [Engine.Bind],
-// installed or still pending.
-func (e *Engine) BoundPackages() []string {
-	e.mu.Lock()
-	paths := e.names.Paths()
-	e.mu.Unlock()
-	seen := make(map[string]bool, len(paths))
-	for _, p := range paths {
-		seen[p] = true
-	}
-	for _, p := range e.pending.Paths() {
-		if !seen[p] {
-			paths = append(paths, p)
-		}
-	}
-	slices.Sort(paths)
-	return paths
-}
-
-// BoundOf returns the host-bound package registered for path, or nil when
-// path is not bound. Unlike [Engine.Package] and [Engine.SourceOf] it
-// never loads source, and it ignores [PackageMode]: a [ModeDeny] path
-// still reports its registration.
-func (e *Engine) BoundOf(path string) *runtime.Package {
-	e.installBound(path)
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.names.Lookup(path)
-}
-
-// BoundSymbols returns the sorted symbol names a bound package exposes to
-// scripts, after [WithHostPolicy] filtering; ok is false when importPath
-// is not bound.
-func (e *Engine) BoundSymbols(importPath string) (names []string, ok bool) {
-	e.installBound(importPath)
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.names.Symbols(importPath)
-}
-
-// registeredVetSymbol reports whether path.Name is already intercepted:
-// a special form the compiler emits OpSpecialCall for, or a symbol in a
-// host-bound package.
-func (e *Engine) registeredVetSymbol(path, name string) bool {
-	e.installBound(path)
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if _, ok := e.specials[runtime.SymbolID{PackagePath: path, Name: name}]; ok {
-		return true
-	}
-	if b := e.names.Lookup(path); b != nil {
-		if _, ok := b.Globals.Get(name); ok {
-			return true
-		}
-	}
-	return false
 }
 
 // registerStdlib registers the intrinsic per-path installers without
@@ -130,20 +92,10 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("os", func() { e.installOs(h) })
 	e.pending.Register("path/filepath", func() { e.installPathFilepath(h) })
 	e.pending.Register("os/exec", func() { e.installOsExec(h) })
-	hostInstall := func() {
-		e.installHost(h)
-		e.pending.Clear("minigo.dev/host")
-		e.pending.Clear("github.com/podhmo/minigo/host")
-	}
-	e.pending.Register("minigo.dev/host", hostInstall)
-	e.pending.Register("github.com/podhmo/minigo/host", hostInstall)
-	inspectInstall := func() {
-		e.installInspect()
-		e.pending.Clear("minigo.dev/inspect")
-		e.pending.Clear("github.com/podhmo/minigo/inspect")
-	}
-	e.pending.Register("minigo.dev/inspect", inspectInstall)
-	e.pending.Register("github.com/podhmo/minigo/inspect", inspectInstall)
+	e.pending.Register("minigo.dev/host", func() { e.installHost(h) })
+	e.pending.Register("github.com/podhmo/minigo/host", func() { e.installHost(h) })
+	e.pending.Register("minigo.dev/inspect", func() { e.installInspect() })
+	e.pending.Register("github.com/podhmo/minigo/inspect", func() { e.installInspect() })
 	e.pending.Register("unsafe", func() { e.installUnsafe(h) })
 	e.pending.Register("runtime", func() { e.installRuntime(h) })
 	e.pending.Register("time", func() { e.installTime(h) })
@@ -172,4 +124,30 @@ func (e *Engine) templateFuncMap() *runtime.TypeDef {
 			Anon: &ast.MapType{Key: ast.NewIdent("string"), Value: ast.NewIdent("any")}}
 	}
 	return e.sessionState.templateFuncMap
+}
+
+// hostSymbol converts a plain Go value in a [Engine.Bind] symbol map to its
+// script form; runtime values pass through unchanged.
+func hostSymbol(name string, v runtime.Value) runtime.Value {
+	switch v.(type) {
+	case *runtime.BuiltinFunc, *runtime.TypeDef, *runtime.GoValue, int64, float64, string, bool:
+		return v // the common cases, without reflect
+	case nil:
+		return runtime.NIL
+	}
+	t := reflect.TypeOf(v)
+	base := t
+	if base.Kind() == reflect.Pointer {
+		base = base.Elem()
+	}
+	if base.PkgPath() == runtimePkgPath {
+		return v
+	}
+	if t.Kind() == reflect.Func {
+		return WrapFunc(name, v)
+	}
+	if t.Name() != "" && t.PkgPath() != "" && (t.Kind() <= reflect.Complex128 || t.Kind() == reflect.String) {
+		return v // named host scalars (time.Duration) are script values as is
+	}
+	return ValueOf(v)
 }
