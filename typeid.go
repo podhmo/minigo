@@ -112,7 +112,18 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 	// canonical twin the spelling already names), and spelled keys are
 	// context-stable in a way per-file elem keys are not.
 	if td.Anon != nil && td.Pkg != nil {
-		if s := runtime.TypGoSpelling(td.Anon, td); s != "" {
+		s := runtime.TypGoSpelling(td.Anon, td)
+		if len(td.LocalTypes) > 0 {
+			// The composite was spelled where function-local types are
+			// in scope: the display spelling prints a local leaf's bare
+			// name, so two functions' same-named `type L` would share a
+			// key — spell identity instead, whose local leafs carry
+			// their decl position.
+			if is := runtime.TypSpelling(td.Anon, td); is != "" {
+				s = is
+			}
+		}
+		if s != "" {
 			// identity spelling (keeps chan direction), not underlying.
 			// Selector qualifiers already resolve to import paths through
 			// the file's imports, so same-named packages do not collide.

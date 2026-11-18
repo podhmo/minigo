@@ -258,5 +258,37 @@ func TestInternTypedefStragglerRebindKeepsNewest(t *testing.T) {
 	e.bindInternTypedefs(p1, keys1, seq1)
 	if diff := cmp.Diff(true, e.internTypedef(first) == second); diff != "" {
 		t.Errorf("straggling older bind rolled the interned typedef back (-want +got):\n%s", diff)
+// Two functions' same-named local types are different types: the anon
+// composite `[]L` must not collide on their shared spelling, or an
+// instance cache keyed on it binds the wrong local decl.
+func TestTypeIDAnonLocalLeafsDistinct(t *testing.T) {
+	e := NewEngine(".")
+	pkg := &runtime.Package{Path: "example.com/mod"}
+	f := &syntax.File{}
+	localSlice := func(pos token.Pos) *runtime.TypeDef {
+		l := srcTd(pkg, f, pos, "L")
+		return &runtime.TypeDef{
+			Kind: runtime.KindSlice, Pkg: pkg, File: f,
+			Anon:       &ast.ArrayType{Elt: ast.NewIdent("L")},
+			LocalTypes: map[string]*runtime.TypeDef{"L": l},
+		}
+	}
+	if e.typeIDOf(localSlice(10)) == e.typeIDOf(localSlice(20)) {
+		t.Errorf("[]L keys alike across decl sites: %q", e.typeIDOf(localSlice(10)))
+	}
+	once := e.typeIDOf(localSlice(10))
+	if e.typeIDOf(localSlice(10)) != once {
+		t.Error("same local decl keys differently")
+	}
+	// locals in scope do not disturb leafs that don't use them.
+	leaf := func(lts map[string]*runtime.TypeDef) *runtime.TypeDef {
+		return &runtime.TypeDef{
+			Kind: runtime.KindSlice, Pkg: pkg, File: f,
+			Anon:       &ast.ArrayType{Elt: ast.NewIdent("int")},
+			LocalTypes: lts,
+		}
+	}
+	if a, b := e.typeIDOf(leaf(nil)), e.typeIDOf(leaf(map[string]*runtime.TypeDef{"L": srcTd(pkg, f, 10, "L")})); a != b {
+		t.Errorf("[]int keys differ by unused locals: %q vs %q", a, b)
 	}
 }
