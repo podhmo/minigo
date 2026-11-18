@@ -503,9 +503,9 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 			// generic function spells with the enclosing args —
 			// `main.L0[int]` — display only; identity lives on the
 			// runtime-declared clone.
-			bc := *btd
+			bc := btd.CloneUncached()
 			bc.OuterArgs = ctx.OuterSpell
-			btd = &bc
+			btd = bc
 		}
 		if btd != nil {
 			// display, not identity: a bound argument qualifies by the
@@ -1271,9 +1271,9 @@ func instArgsSpelling(td *TypeDef) string {
 // (`main.T[main.L0·1]`); the head name of a spelled type stays bare
 // (`main.T[...]`, `main.L0`).
 func withInstArgs(td *TypeDef) *TypeDef {
-	ad := *td
+	ad := td.CloneUncached()
 	ad.inInstArgs = true
-	return &ad
+	return ad
 }
 
 // instArgName spells a typedef inside an instantiation's arg list (see
@@ -1370,12 +1370,12 @@ func DisplayName(td *TypeDef) string {
 		// it by the declaring package's clause name (*main.T). Borrow
 		// the element's package context for display only — identity
 		// spelling (TypSpelling/keyOf) keeps running on td itself.
-		cd := *td
+		cd := td.CloneUncached()
 		for at := td; cd.Pkg == nil && at.Elem != nil; at = at.Elem {
 			cd.Pkg = at.Elem.Pkg
 			cd.File = at.Elem.File
 		}
-		return TypGoSpelling(anon, &cd)
+		return TypGoSpelling(anon, cd)
 	}
 	if td.Elem != nil {
 		elem := td.Elem
@@ -1435,10 +1435,10 @@ func instHead(x ast.Expr, ctx *TypeDef) string {
 	if ctx == nil {
 		return TypGoSpelling(x, ctx)
 	}
-	hc := *ctx
+	hc := ctx.CloneUncached()
 	hc.inInstArgs = false
 	hc.OuterSpell = nil
-	return TypGoSpelling(x, &hc)
+	return TypGoSpelling(x, hc)
 }
 
 // localHeadTypedef resolves a head ident in an instantiation context:

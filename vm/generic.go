@@ -1669,7 +1669,7 @@ func (v *VM) checkTArgs(ctx *runtime.TypeDef, tparams []string, cons []ast.Expr,
 	if ctx != nil && len(binds) > 0 {
 		// constraint elements may mention the other type parameters
 		// (`S ~[]E`): spell them with this instantiation's binds.
-		c := *ctx
+		c := ctx.CloneUncached()
 		c.TParams = tparams
 		c.Binds = make(map[string]runtime.Value, len(ctx.Binds)+len(binds))
 		for k, b := range ctx.Binds {
@@ -1678,7 +1678,7 @@ func (v *VM) checkTArgs(ctx *runtime.TypeDef, tparams []string, cons []ast.Expr,
 		for k, b := range binds {
 			c.Binds[k] = b
 		}
-		ctx = &c
+		ctx = c
 	}
 	for i, tp := range tparams {
 		if i >= len(cons) {

@@ -2021,8 +2021,8 @@ type TypeDef struct {
 	OuterSpell []Value
 
 	// fieldTypes caches the engine's resolved field typedefs ([]*TypeDef,
-	// see CachedFieldTypes). A copy that changes what resolution reads
-	// (Binds, Pkg, File, LocalTypes) must call ResetCaches.
+	// see CachedFieldTypes). Copy td through [TypeDef.CloneUncached]:
+	// a shallow `*td` copy races with the Stores filling these slots.
 	fieldTypes atomic.Value
 	// ifaceReqs and ifaceSigs cache an interface typedef's flattened
 	// requirement names (map[string]bool) and signature shells
@@ -2037,6 +2037,28 @@ type TypeDef struct {
 	// conversion paths recompute it — and its zero-value allocation —
 	// once per comparison otherwise.
 	hostType atomic.Value
+}
+
+// CloneUncached copies td's descriptive fields and drops the cached
+// lookups — a `*td` shallow copy reads the atomic cache words while a
+// concurrent [TypeDef.SetFieldTypes]-style Store writes them, which is
+// a data race. Copies start with empty caches; the first resolution
+// re-fills them.
+func (td *TypeDef) CloneUncached() *TypeDef {
+	if td == nil {
+		return nil
+	}
+	return &TypeDef{
+		Pkg: td.Pkg, Name: td.Name, File: td.File, Spec: td.Spec,
+		Kind: td.Kind, Fields: td.Fields, FTags: td.FTags, Anon: td.Anon,
+		Methods: td.Methods, TParams: td.TParams, TConstraints: td.TConstraints,
+		Binds: td.Binds, OuterArgs: td.OuterArgs, MReqs: td.MReqs,
+		IEmbeds: td.IEmbeds, EmbedSpecs: td.EmbedSpecs, EmbedIdx: td.EmbedIdx,
+		Embeds: td.Embeds, LocalTypes: td.LocalTypes, Elem: td.Elem,
+		HostNew: td.HostNew, HostScalar: td.HostScalar, HostIdent: td.HostIdent,
+		Local: td.Local, Gen: td.Gen, inInstArgs: td.inInstArgs,
+		OuterSpell: td.OuterSpell,
+	}
 }
 
 // CachedFieldTypes returns the field typedefs stored by
