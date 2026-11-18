@@ -3,7 +3,12 @@ package minigo
 // P2-12: bound packages build on first use, not at engine construction.
 
 import (
+	"context"
+	"sync"
 	"testing"
+
+	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/runtime"
 )
 
 // TestBoundInstallIsLazy pins that a registered stdlib path stays
@@ -56,4 +61,71 @@ func TestBoundPackagesListsPending(t *testing.T) {
 	if !found {
 		t.Fatal("BoundPackages missing registered (pending) path time")
 	}
+}
+
+// TestExplicitBindWinsOverLazy pins that an explicit Bind of a
+// registered path survives the lazy installer — including when a
+// sibling alias of the same package installs first.
+func TestExplicitBindWinsOverLazy(t *testing.T) {
+	e := NewEngine(".")
+	e.Bind("minigo.dev/host", map[string]runtime.Value{"Mine": int64(1)})
+	if p := e.BoundOf("github.com/podhmo/minigo/host"); p == nil {
+		t.Fatal("sibling alias did not install")
+	}
+	mine := e.BoundOf("minigo.dev/host")
+	if _, ok := mine.Globals.Get("Mine"); !ok {
+		t.Fatal("explicit bind clobbered by the sibling alias's install")
+	}
+}
+
+// TestBoundQueryKeepsSourceCache pins that a bound query does not
+// install over a source-built package already in e.pkgs (a ModeSource
+// load keeps its globals' state).
+func TestBoundQueryKeepsSourceCache(t *testing.T) {
+	e := NewEngine(".")
+	src := &runtime.Package{Path: "time", Name: "time", Index: &index.Index{}}
+	e.mu.Lock()
+	e.pkgs["time"] = src
+	e.mu.Unlock()
+	if p := e.BoundOf("time"); p != nil {
+		t.Fatal("BoundOf installed over a source-built package")
+	}
+	e.mu.Lock()
+	got := e.pkgs["time"]
+	e.mu.Unlock()
+	if got != src {
+		t.Fatal("source-built package clobbered by the bound install")
+	}
+}
+
+// TestDirRefInstallsBound pins that a directory ref resolving to a
+// bound module path answers the bound package, not the source stub.
+func TestDirRefInstallsBound(t *testing.T) {
+	e := NewEngine(".")
+	p, err := e.Package(context.Background(), "./host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := p.Globals.Get("Args"); !ok {
+		t.Fatal("./host did not answer the bound host package")
+	}
+}
+
+// TestConcurrentSourceAndBoundQuery exercises the registered/bound
+// reads against concurrent installs; run under -race to flag map races.
+func TestConcurrentSourceAndBoundQuery(t *testing.T) {
+	e := NewEngine(".")
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if i%2 == 0 {
+				_, _ = e.SourceOf(context.Background(), "strings")
+			} else {
+				_, _ = e.Package(context.Background(), "strings")
+			}
+		}(i)
+	}
+	wg.Wait()
 }
