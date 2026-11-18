@@ -1715,28 +1715,29 @@ func (c *compiler) selMember(ref *runtime.ImportRef, name string) (*ast.TypeSpec
 // nilableTypExpr reports whether a resolved type expression denotes a
 // type a `nil` comparison can lawfully answer — pointer, slice, map,
 // channel, func, or interface — through named-type specs.
-func (c *compiler) nilableTypExpr(te ast.Expr) bool {
+func (c *compiler) nilableTypExpr(te ast.Expr) (nilable, resolved bool) {
 	switch t := c.unfoldTypExpr(te, 4).(type) {
 	case *ast.StarExpr, *ast.MapType, *ast.ChanType, *ast.FuncType, *ast.InterfaceType:
-		return true
+		return true, true
 	case *ast.ArrayType:
-		return t.Len == nil // a slice
+		return t.Len == nil, true // a slice
 	case *ast.Ident:
-		return t.Name == "error" || t.Name == "any"
+		return t.Name == "error" || t.Name == "any", true
 	case *ast.SelectorExpr:
 		// a qualified name resolves when the member is knowable —
 		// `time.Duration` proves non-nilable so `d == nil` traps like
 		// gc's reject, while an interface (`io.Reader`) keeps the
-		// lawful dynamic compare. An unresolved name stays
-		// maybe-nilable: silence over inventing an error.
+		// lawful dynamic compare. An unresolved name reports
+		// unresolved: the caller defers the nil check to run time
+		// instead of guessing nilable.
 		if ref, name, ok := c.selTypRef(t); ok {
 			if n, ok := c.selNilable(ref, name); ok {
-				return n
+				return n, true
 			}
 		}
-		return true
+		return true, false
 	}
-	return false
+	return false, true
 }
 
 // semantics: fact — decides whether `x == nil` on pkg.T traps the way
@@ -1762,7 +1763,8 @@ func (c *compiler) selNilable(ref *runtime.ImportRef, name string) (bool, bool) 
 		// `type T = otherpkg.Nilable` must read otherpkg through the
 		// spec's own imports, never the caller's, or a same-named
 		// import there would flip the verdict.
-		return c.nilableTypExpr(c.unfoldSpecType(p, ts, 4)), true
+		n, _ := c.nilableTypExpr(c.unfoldSpecType(p, ts, 4))
+		return n, true
 	}
 	if td == nil {
 		// a type name with no spec or typedef in view (synthetic

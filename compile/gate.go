@@ -38,29 +38,39 @@ func (c *compiler) opGate(x, y ast.Expr, pos token.Pos, inSwitch bool) bool {
 	// compile error (mismatched types Duration and untyped nil), while
 	// a pointer/slice/map/chan/func/interface operand legitimately
 	// answers it. A side that did not resolve stays silent.
+	// nilGate defers the nil check to run time when the non-nil
+	// operand's type is itself a deferred fact (or a type expression
+	// compile cannot name-resolve) — OpTypGate answers nilability once
+	// the package member or qualified type materializes.
+	nilGate := false
 	if xt.nilOperand || yt.nilOperand {
 		other := yt
 		if yt.nilOperand {
 			other = xt
 		}
-		if other.nilOperand || other.te == nil || other.untyped || other.iface {
+		if other.nilOperand || other.untyped || other.iface || (other.te == nil && !other.deferred) {
 			return false
 		}
-		if c.nilableTypExpr(other.te) {
-			return false
+		if other.deferred {
+			nilGate = true
+		} else {
+			if nilable, resolved := c.nilableTypExpr(other.te); !resolved {
+				nilGate = true // a deferred fact — let run time decide
+			} else if nilable {
+				return false
+			} else if oi, ok := c.namedIdentOf(other.te); !ok {
+				nilGate = true // unnamed non-nilable — let run time decide
+			} else {
+				// gc orders the operands as written: `nil == i` reports
+				// "untyped nil and int", `i == nil` the reverse.
+				xName, yName := oi.name, "untyped nil"
+				if xt.nilOperand {
+					xName, yName = "untyped nil", oi.name
+				}
+				c.trapOpGate(x, y, pos, inSwitch, xName, yName)
+				return true
+			}
 		}
-		oi, ok := c.namedIdentOf(other.te)
-		if !ok {
-			return false // unnamed non-nilable — rare; stays silent
-		}
-		// gc orders the operands as written: `nil == i` reports
-		// "untyped nil and int", `i == nil` the reverse.
-		xName, yName := oi.name, "untyped nil"
-		if xt.nilOperand {
-			xName, yName = "untyped nil", oi.name
-		}
-		c.trapOpGate(x, y, pos, inSwitch, xName, yName)
-		return true
 	}
 	// an untyped constant shifted by a non-constant count takes the
 	// other operand's type, which must then be an integer type: `f +
@@ -94,7 +104,7 @@ func (c *compiler) opGate(x, y ast.Expr, pos token.Pos, inSwitch bool) bool {
 		}
 		yt = opTyp{te: yt.dte, dte: yt.dte}
 	}
-	if xt.deferred || yt.deferred {
+	if xt.deferred || yt.deferred || nilGate {
 		// the same operands the static gate declines stay undecided:
 		// an untyped constant adopts the other operand's type, and an
 		// interface-typed operand's legality is assignability, not
@@ -264,14 +274,21 @@ func (c *compiler) selPkgMemberOpTyp(x *ast.SelectorExpr, ref *runtime.ImportRef
 		// compared to a float64 adopts float64 like any untyped
 		// operand, so it must never feed the run-time gate a default
 		// type. The materialized package (res.Val survives the
-		// downgrade) answers which members are untyped consts.
+		// downgrade) answers which members are untyped consts; dte is
+		// kept so a switch tag still pins to the default type.
 		if p := res.Val; p != nil {
 			if v, ok := p.Globals.Get(x.Sel.Name); ok {
-				_, ot.untyped = v.(*runtime.UConst)
+				if uc, isU := v.(*runtime.UConst); isU {
+					ot.untyped = true
+					ot.dte = constKindDte(uc)
+				}
 			} else if p.Index != nil {
 				if d := p.Index.Consts[x.Sel.Name]; d != nil {
-					if vs, ok := d.Spec.(*ast.ValueSpec); ok {
-						ot.untyped = vs.Type == nil && d.InheritedType == nil
+					// valueSpecMemberOpTyp checks the initializer too —
+					// `const C = T(1)` is typed T, not untyped.
+					if mt := c.valueSpecMemberOpTyp(p, d, true); mt.untyped {
+						ot.untyped = true
+						ot.dte = mt.dte
 					}
 				}
 			}
