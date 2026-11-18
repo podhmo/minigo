@@ -7,6 +7,7 @@ import (
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/internal/semantics"
 	"github.com/podhmo/minigo/runtime"
+	"github.com/podhmo/minigo/syntax"
 )
 
 // opCmpGate emits an OpTrap in place of a binary op or switch-case
@@ -152,7 +153,7 @@ func (c *compiler) opGate(x, y ast.Expr, pos token.Pos, inSwitch bool) bool {
 				if te == nil {
 					return false
 				}
-				sites[i] = c.exprSite(te, o.x.Pos())
+				sites[i] = c.exprSiteAt(te, o.ot.teFile, o.x.Pos())
 			}
 		}
 		c.emit3(bytecode.OpTypGate, sites[0], sites[1], mask, pos)
@@ -247,11 +248,21 @@ func (c *compiler) emitShift(op bytecode.BinOp, x *ast.BinaryExpr) {
 // constness question OpConstExpr asks and the operand-typedef question
 // OpTypGate asks — pinning the same compile scope callSite pins.
 func (c *compiler) exprSite(x ast.Expr, pos token.Pos) int {
+	return c.exprSiteAt(x, nil, pos)
+}
+
+// exprSiteAt is exprSite for a type expression spelled in another file
+// — a package decl's `otherpkg.Box[int]` keeps its own file's imports,
+// never the file the compare happens to be compiled in.
+func (c *compiler) exprSiteAt(x ast.Expr, teFile *syntax.File, pos token.Pos) int {
 	file := c.file
 	var localTypes map[string]*runtime.TypeDef
-	if c.pkgScopeTyp != nil {
+	switch {
+	case teFile != nil:
+		file = teFile
+	case c.pkgScopeTyp != nil:
 		file = c.pkgScopeTyp
-	} else {
+	default:
 		localTypes = c.fs.localTypeDefs()
 	}
 	var localConsts map[string]bool
