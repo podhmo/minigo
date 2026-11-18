@@ -1776,34 +1776,3 @@ func funcTypeName(xv *runtime.Function) string {
 	}
 	return "func"
 }
-
-// sourceTwinOf maps a host element typedef from [hostPkgElemTypedef] to
-// the engine's own typedef for that type ([Hooks.HostTwin]) — a host
-// []ast.Stmt passed to walkList[N Node](v, list []N), in go/ast or in a
-// script, binds N to the source-interpreted go/ast's Stmt, as the static
-// type would in Go. Anything else is returned unchanged.
-func (v *VM) sourceTwinOf(td *runtime.TypeDef) *runtime.TypeDef {
-	if td == nil || v.H.HostTwin == nil {
-		return td
-	}
-	if td.Kind == runtime.KindPointer && td.Name == "" && td.Anon == nil && td.Elem != nil {
-		// host *Comment -> the engine's own *Comment
-		if et := v.sourceTwinOf(td.Elem); et != td.Elem {
-			pt := &runtime.TypeDef{Kind: runtime.KindPointer, Elem: et}
-			if et.Pkg != nil {
-				pt.Anon = &ast.StarExpr{X: ast.NewIdent(et.Name)}
-				pt.Pkg = et.Pkg
-				pt.File = et.File
-			}
-			return pt
-		}
-		return td
-	}
-	if td.HostIdent == nil {
-		return td
-	}
-	if twin := v.H.HostTwin(td.HostIdent); twin != nil {
-		return twin
-	}
-	return td
-}

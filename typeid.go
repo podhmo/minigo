@@ -2,6 +2,7 @@ package minigo
 
 import (
 	"fmt"
+	"go/ast"
 	"reflect"
 	"strings"
 
@@ -119,18 +120,54 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 
 // internTypedef returns the session's canonical descriptor for td's
 // type identity (M4-3b): the first typedef stored under td's TypeID
-// wins, later equivalents are dropped. Typedefs with no stable
+// wins, later equivalents are dropped. Host-stamped twins resolve to
+// the engine's own typedef first (canonicalTypedef), so a stamped
+// fs.DirEntry IS the source declaration. Typedefs with no stable
 // identity (the "?" fallback — no Spec, no host carrier, no expr)
 // pass through uninterned.
 func (e *Engine) internTypedef(td *runtime.TypeDef) *runtime.TypeDef {
 	if td == nil || e.typeIntern == nil {
 		return td
 	}
+	td = e.canonicalTypedef(td)
 	tid := e.typeIDOf(td)
 	if tid == "" || tid == "?" {
 		return td
 	}
 	return e.typeIntern.Of(tid, td)
+}
+
+// canonicalTypedef resolves a host-stamped twin to the engine's own
+// typedef for the same type (M4-4): a Spec-less td carrying a HostIdent
+// becomes the source declaration or bound typedef the engine itself
+// answers, and a host-minted composite (pointer, slice, …) is rebuilt
+// over the canonical element so `*fs.DirEntry` stamped by host code
+// interns to the same descriptor source `*fs.DirEntry` does. Anything
+// else returns unchanged.
+func (e *Engine) canonicalTypedef(td *runtime.TypeDef) *runtime.TypeDef {
+	if td == nil || td.Spec != nil {
+		return td
+	}
+	if td.HostIdent != nil {
+		if twin := e.hostTwin(td.HostIdent); twin != nil {
+			return twin
+		}
+		return td
+	}
+	if td.Elem != nil && td.Name == "" && td.Anon == nil {
+		et := e.canonicalTypedef(td.Elem)
+		if et != td.Elem {
+			nt := *td
+			nt.Elem = et
+			if td.Kind == runtime.KindPointer && et.Pkg != nil {
+				nt.Anon = &ast.StarExpr{X: ast.NewIdent(et.Name)}
+				nt.Pkg = et.Pkg
+				nt.File = et.File
+			}
+			return &nt
+		}
+	}
+	return td
 }
 
 // boundTypedefOf unwraps a Binds value to its typedef (type arguments
