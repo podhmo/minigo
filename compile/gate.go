@@ -55,7 +55,13 @@ func (c *compiler) opGate(x, y ast.Expr, pos token.Pos, inSwitch bool) bool {
 			nilGate = true
 		} else {
 			if nilable, resolved := c.nilableTypExpr(other.te); !resolved {
-				nilGate = true // a deferred fact — let run time decide
+				// an absent member (io.NotAReader) resolves to
+				// nothing — only a package question still deferred
+				// hands the nil check to run time.
+				if !c.typExprDeferred(other.te) {
+					return false
+				}
+				nilGate = true
 			} else if nilable {
 				return false
 			} else if oi, ok := c.namedIdentOf(other.te); !ok {
@@ -72,6 +78,7 @@ func (c *compiler) opGate(x, y ast.Expr, pos token.Pos, inSwitch bool) bool {
 			}
 		}
 	}
+
 	// an untyped constant shifted by a non-constant count takes the
 	// other operand's type, which must then be an integer type: `f +
 	// 1<<n` with a float64 f is gc's "shifted operand 1 (type float64)
@@ -350,4 +357,20 @@ func (c *compiler) srcMemberOpTyp(p *runtime.Package, name string) opTyp {
 		}
 	}
 	return opTyp{}
+}
+
+// typExprDeferred reports whether a type expression's package member
+// is itself a deferred fact — the qualified name's package answers
+// semantics.Deferred. An unresolvable member of a FOUND package (a
+// name that simply isn't there, io.NotAReader) is not deferred.
+func (c *compiler) typExprDeferred(te ast.Expr) bool {
+	t, ok := c.unfoldTypExpr(te, 4).(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	ref, _, ok := c.selTypRef(t)
+	if !ok {
+		return false
+	}
+	return askIndexed(ref).Kind == semantics.Deferred
 }
