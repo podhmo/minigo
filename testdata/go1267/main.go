@@ -260,6 +260,29 @@ func PromotedStoreRhsFirst() (r int) {
 	return -1
 }
 
+// `a[0].In.Y = f()`: In promotes through a nil embedded *PRA2 at
+// depth 1, shadowing PRBB's deeper In. Go panics on the nil
+// dereference at the store, after f ran — the deeper In must not
+// absorb the write.
+type PRInn struct{ Y int }
+type PRA2 struct{ In PRInn }
+type PRBB struct{ PRA2 }
+type PRS2 struct {
+	*PRA2
+	PRBB
+}
+
+func PromotedIndexStoreRhsFirst() (r int) {
+	a := []PRS2{{PRBB: PRBB{PRA2{In: PRInn{Y: 5}}}}}
+	n := 0
+	f := func() int { n = 9; return 1 }
+	// silent write to the deeper In lands at 9*100+1 = 901; the
+	// declared path's nil panic leaves it at 9*100+5 = 905.
+	defer func() { recover(); r = n*100 + a[0].PRBB.PRA2.In.Y }()
+	a[0].In.Y = f()
+	return -1
+}
+
 // ---- Go 1.27: generalized function-type inference ----
 
 func Id[T any](v T) T { return v }
