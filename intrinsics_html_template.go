@@ -23,7 +23,7 @@ func (e *Engine) installHtmlTemplate(h *hostHelpers) {
 			return &runtime.GoValue{V: htmltemplate.New(str(a[0]))}, nil
 		}, htmltemplate.New),
 		"Must":     templateMust(htmltemplate.Must),
-		"FuncMap":  templateFuncMap, // html/template.FuncMap aliases text/template's
+		"FuncMap":  e.templateFuncMap(), // html/template.FuncMap aliases text/template's
 		"ParseFS":  &runtime.GoValue{V: htmltemplate.ParseFS},
 		"HTML":     htmlContent("HTML", htmltemplate.HTML("")),
 		"HTMLAttr": htmlContent("HTMLAttr", htmltemplate.HTMLAttr("")),

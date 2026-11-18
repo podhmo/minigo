@@ -103,12 +103,14 @@ type sessionState struct {
 
 	builtins *runtime.Env
 
-	mu    sync.Mutex
-	pkgs  map[string]*runtime.Package // by import path
-	byDir map[string]*runtime.Package // synthetic packages by dir
-	files map[string]*runtime.Package // single-file packages by abs path
-	names *bind.Names                 // host-bound packages (sessions inherit)
-	srcs  map[string]*runtime.Package // source packages SourceOf builds past a bound shadow or a deny mode
+	mu              sync.Mutex
+	pkgs            map[string]*runtime.Package // by import path
+	byDir           map[string]*runtime.Package // synthetic packages by dir
+	files           map[string]*runtime.Package // single-file packages by abs path
+	names           *bind.Names                 // installed host-bound packages (sessions inherit)
+	pending         *bind.Pending               // registered but not yet installed bound packages
+	templateFuncMap *runtime.TypeDef            // this session's FuncMap typedef (per-registry; P2-12)
+	srcs            map[string]*runtime.Package // source packages SourceOf builds past a bound shadow or a deny mode
 	// lenient builds (inspect.DirOf/FileOf/PackageOf) are privately
 	// cached — a lenient package in e.pkgs would hide a redeclare error
 	// from a later strict load, and a strict package in e.byDir would
@@ -284,6 +286,7 @@ func NewEngine(startDir string, opts ...Option) *Engine {
 			files:        map[string]*runtime.Package{},
 			filesLenient: map[string]*runtime.Package{},
 			names:        bind.NewNames(),
+			pending:      bind.NewPending(),
 			srcs:         map[string]*runtime.Package{},
 			pkgsLenient:  map[string]*runtime.Package{},
 			byDirLenient: map[string]*runtime.Package{},
@@ -305,7 +308,7 @@ func NewEngine(startDir string, opts ...Option) *Engine {
 		res = nil
 	}
 	e.resolver = res
-	e.installStdlib()
+	e.registerStdlib()
 	return e
 }
 
@@ -477,6 +480,7 @@ func (e *Engine) NewSession() *Engine {
 			byDir:        map[string]*runtime.Package{},
 			files:        map[string]*runtime.Package{},
 			names:        bind.NewNames(),
+			pending:      bind.NewPending(),
 			srcs:         map[string]*runtime.Package{},
 			pkgsLenient:  map[string]*runtime.Package{},
 			byDirLenient: map[string]*runtime.Package{},
@@ -484,7 +488,7 @@ func (e *Engine) NewSession() *Engine {
 		},
 	}
 	s.builtins = builtins(s)
-	s.installStdlib()
+	s.registerStdlib()
 	// sessions inherit the parent's host bindings: a script importing a
 	// custom bound package must resolve identically in the new session.
 	// Intrinsic packages the session already bound itself keep the
@@ -877,33 +881,6 @@ func hostSymbol(name string, v runtime.Value) runtime.Value {
 
 var runtimePkgPath = reflect.TypeOf(runtime.Nil{}).PkgPath()
 
-// BoundPackages returns the sorted import paths of every host-bound
-// package: std intrinsics and packages registered with [Engine.Bind].
-func (e *Engine) BoundPackages() []string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.names.Paths()
-}
-
-// BoundOf returns the host-bound package registered for path, or nil when
-// path is not bound. Unlike [Engine.Package] and [Engine.SourceOf] it
-// never loads source, and it ignores [PackageMode]: a [ModeDeny] path
-// still reports its registration.
-func (e *Engine) BoundOf(path string) *runtime.Package {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.names.Lookup(path)
-}
-
-// BoundSymbols returns the sorted symbol names a bound package exposes to
-// scripts, after [WithHostPolicy] filtering; ok is false when importPath
-// is not bound.
-func (e *Engine) BoundSymbols(importPath string) (names []string, ok bool) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.names.Symbols(importPath)
-}
-
 func lastElem(path string) string {
 	for i := len(path) - 1; i >= 0; i-- {
 		if path[i] == '/' {
@@ -938,6 +915,9 @@ func (e *Engine) loadPathMode(ctx context.Context, fromDir, path string, lenient
 	mode := e.pkgModes[path]
 	if mode == ModeDeny {
 		return nil, fmt.Errorf("minigo: import of %q denied by package policy", path)
+	}
+	if mode != ModeSource {
+		e.installBound(path)
 	}
 	e.mu.Lock()
 	if p, ok := e.pkgs[path]; ok && (mode != ModeSource || p.Index != nil) {
@@ -1025,7 +1005,7 @@ func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, e
 	// path takes the same private build: deny gates imports, not reading,
 	// and the private cache keeps the denied package out of the stores
 	// [Engine.Package] and DirOf answer from.
-	if !e.names.Bound(path) && e.pkgModes[path] != ModeDeny {
+	if !e.registered(path) && e.pkgModes[path] != ModeDeny {
 		return e.loadPath(ctx, path)
 	}
 	e.mu.Lock()
