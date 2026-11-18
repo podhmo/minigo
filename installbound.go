@@ -24,20 +24,30 @@ func (e *Engine) hostPackageOf(path string) *runtime.Package {
 
 // installBound installs a registered path's bound package on first use.
 // A source-built package already in e.pkgs keeps answering loads: the
-// bound table still installs into names, but pkgs is restored.
+// bound table still installs into names, but preservePkgs keeps the
+// installer's Bind from touching e.pkgs — no overwrite, no restore
+// window, so a concurrent Bind can never be clobbered.
 func (e *Engine) installBound(path string) {
 	e.mu.Lock()
-	src, occupied := e.pkgs[path]
+	_, occupied := e.pkgs[path]
 	if occupied && e.names.Bound(path) {
 		occupied = false // pkgs already holds a bound package
 	}
-	e.mu.Unlock()
-	e.pending.Install(path)
 	if occupied {
-		e.mu.Lock()
-		e.pkgs[path] = src
-		e.mu.Unlock()
+		if e.preservePkgs == nil {
+			e.preservePkgs = map[string]bool{}
+		}
+		e.preservePkgs[path] = true
 	}
+	e.mu.Unlock()
+	if occupied {
+		defer func() {
+			e.mu.Lock()
+			delete(e.preservePkgs, path)
+			e.mu.Unlock()
+		}()
+	}
+	e.pending.Install(path)
 }
 
 // bindBound is [Engine.Bind] for the lazy installers: a path already
@@ -57,58 +67,6 @@ func (e *Engine) bindBound(importPath string, symbols map[string]runtime.Value) 
 // registered for lazy install.
 func (e *Engine) registered(path string) bool {
 	return e.names.Bound(path) || e.pending.Registered(path)
-}
-
-// registerStdlib registers the per-path installers without running
-// them: bound packages build on first use through the install entry.
-func (e *Engine) registerStdlib() {
-	h := &hostHelpers{env: bindEnv{e}}
-	e.pending.Register("fmt", func() { e.installFmt(h) })
-	e.pending.Register("errors", func() { e.installErrors(h) })
-	e.pending.Register("strings", func() { e.installStrings(h) })
-	e.pending.Register("strconv", func() { e.installStrconv(h) })
-	e.pending.Register("bytes", func() { e.installBytes(h) })
-	e.pending.Register("unicode", func() { e.installUnicode(h) })
-	e.pending.Register("unicode/utf8", func() { e.installUnicodeUtf8(h) })
-	e.pending.Register("math", func() { e.installMath(h) })
-	e.pending.Register("regexp", func() { e.installRegexp(h) })
-	e.pending.Register("encoding/base64", func() { e.installEncodingBase64(h) })
-	e.pending.Register("encoding/hex", func() { e.installEncodingHex(h) })
-	e.pending.Register("encoding/json", func() { e.installEncodingJson(h) })
-	e.pending.Register("internal/godebug", func() { e.installInternalGodebug(h) })
-	e.pending.Register("internal/testenv", func() { e.installInternalTestenv(h) })
-	e.pending.Register("syscall", func() { e.installSyscall(h) })
-	e.pending.Register("internal/bytealg", func() { e.installInternalBytealg(h) })
-	e.pending.Register("internal/race", func() { e.installInternalRace(h) })
-	e.pending.Register("internal/stringslite", func() { e.installInternalStringslite(h) })
-	e.pending.Register("html", func() { e.installHtml(h) })
-	e.pending.Register("path", func() { e.installPath(h) })
-	e.pending.Register("reflect", func() { e.installReflect() })
-	e.pending.Register("sort", func() { e.installSort(h) })
-	e.pending.Register("slices", func() { e.installSlices(h) })
-	e.pending.Register("maps", func() { e.installMaps(h) })
-	e.pending.Register("os", func() { e.installOs(h) })
-	e.pending.Register("path/filepath", func() { e.installPathFilepath(h) })
-	e.pending.Register("os/exec", func() { e.installOsExec(h) })
-	e.pending.Register("minigo.dev/host", func() { e.installHost(h) })
-	e.pending.Register("github.com/podhmo/minigo/host", func() { e.installHost(h) })
-	e.pending.Register("minigo.dev/inspect", func() { e.installInspect() })
-	e.pending.Register("github.com/podhmo/minigo/inspect", func() { e.installInspect() })
-	e.pending.Register("unsafe", func() { e.installUnsafe(h) })
-	e.pending.Register("runtime", func() { e.installRuntime(h) })
-	e.pending.Register("time", func() { e.installTime(h) })
-	e.pending.Register("sync", func() { e.installSync(h) })
-	e.pending.Register("sync/atomic", func() { e.installSyncAtomic(h) })
-	e.pending.Register("context", func() { e.installContext(h) })
-	e.pending.Register("net", func() { e.installNet(h) })
-	e.pending.Register("net/netip", func() { e.installNetNetip(h) })
-	e.pending.Register("io", func() { e.installIo(h) })
-	e.pending.Register("crypto/rand", func() { e.installCryptoRand(h) })
-	e.pending.Register("crypto/sha256", func() { e.installCryptoSha256(h) })
-	e.pending.Register("encoding/csv", func() { e.installEncodingCsv(h) })
-	e.pending.Register("bufio", func() { e.installBufio(h) })
-	e.pending.Register("text/template", func() { e.installTextTemplate(h) })
-	e.pending.Register("html/template", func() { e.installHtmlTemplate(h) })
 }
 
 // templateFuncMap returns this session's FuncMap typedef — one per

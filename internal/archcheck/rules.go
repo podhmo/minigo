@@ -97,7 +97,7 @@ var FileBudgets = map[string]int{
 	"host/host.go":         42,
 	"hostslice.go":         448,
 	"hostvars.go":          54,
-	"index/index.go":       311, "bindenv.go": 48, "internal/bind/env.go": 48, "internal/bind/names.go": 88, "installbound.go": 152, "boundreads.go": 70, "internal/bind/install.go": 102,
+	"index/index.go":       311, "bindenv.go": 48, "internal/bind/env.go": 48, "internal/bind/names.go": 88, "installbound.go": 110, "boundreads.go": 70, "stdlibreg.go": 54, "internal/bind/install.go": 102,
 	"index/value_specs.go":            45,
 	"inspect.go":                      1192,
 	"inspect/inspect.go":              2543,
