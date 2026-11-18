@@ -300,7 +300,12 @@ func (e *Engine) underlying(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 	// zero value picks the right literal kind.
 	for td != nil && (td.Kind == runtime.KindAlias || td.Kind == runtime.KindNamedBasic) && td.Anon != nil {
 		x := td.Anon
-		for p, ok := x.(*ast.ParenExpr); ok; x = p.X {
+		for {
+			p, ok := x.(*ast.ParenExpr)
+			if !ok {
+				break
+			}
+			x = p.X
 		}
 		if _, isStar := x.(*ast.StarExpr); isStar {
 			// the declared underlying is a pointer type (`type P *S`,
@@ -310,7 +315,12 @@ func (e *Engine) underlying(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 			// nothing the pointee carries.
 			n := 0
 			for {
-				for p, ok := x.(*ast.ParenExpr); ok; x = p.X {
+				for {
+					p, ok := x.(*ast.ParenExpr)
+					if !ok {
+						break
+					}
+					x = p.X
 				}
 				st, ok := x.(*ast.StarExpr)
 				if !ok {
@@ -323,9 +333,13 @@ func (e *Engine) underlying(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 			if err != nil || elem == nil {
 				return nil, err
 			}
+			// the rebuilt pointer keeps an underlying spelling so
+			// anonymous comparisons (*S vs *R) stay distinct.
+			expr := ast.Expr(x)
 			pt := elem
 			for ; n > 0; n-- {
-				pt = &runtime.TypeDef{Kind: runtime.KindPointer, Elem: pt, Pkg: td.Pkg, File: td.File}
+				expr = &ast.StarExpr{X: expr}
+				pt = &runtime.TypeDef{Kind: runtime.KindPointer, Elem: pt, Anon: expr, Pkg: td.Pkg, File: td.File}
 			}
 			return pt, nil
 		}
@@ -686,12 +700,14 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]boo
 		depths[m] = smin[m]
 	}
 	// a member contested deeper inside an embed is absent unless a
-	// shallower unique promotion outranks the contested depth.
+	// shallower unique promotion outranks the contested depth. The
+	// unique winner counts even when it is not a method — a winning
+	// field still shadows the contested name below it.
 	for m, ad := range ambig {
 		if td.Methods[m] != nil {
 			continue // a declared member dominates any inner ambiguity
 		}
-		if sd, ok := depths[m]; ok && sd < ad {
+		if sd, ok := smin[m]; ok && dup[m] == 1 && sd < ad {
 			delete(ambig, m) // the unique shallower path wins
 			continue
 		}

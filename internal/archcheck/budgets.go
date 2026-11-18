@@ -23,7 +23,7 @@ var FileBudgets = map[string]int{
 	"compile/special.go":                 53,
 	"compile/stmt.go":                    1077,
 	"compile/typehint.go":                1975,
-	"dispatch.go":                        1398,
+	"dispatch.go":                        1414,
 	"eval.go":                            42,
 	"host/host.go":                       42,
 	"hostslice.go":                       448,

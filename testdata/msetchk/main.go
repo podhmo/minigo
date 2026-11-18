@@ -152,3 +152,44 @@ func F9() string {
 	}
 	return "ng"
 }
+
+// parens around the underlying expression must not stall the walk.
+type NInt (int)
+type NPtr *(Base)
+type NPtr2 (*(Base))
+
+// a winning host FIELD stays a member: one level out it contests a
+// same-depth method — gc's answer is ambiguous, not method-wins.
+type WQ1 struct{}
+
+func (WQ1) Port() string { return "wq" }
+
+type WQ struct{ WQ1 }
+type T7 struct {
+	T6
+	WQ
+}
+
+// distinct defined pointer types are distinct nil values.
+type PS *Base
+type PT *Inner
+
+func F10() string {
+	var n NInt
+	var p NPtr
+	var p2 NPtr2
+	return fmt.Sprint(n, p, p2) // "0 <nil> <nil>"
+}
+
+func F7() (r string) {
+	defer func() { r = fmt.Sprintf("%v", recover()) }()
+	var a any = T7{}
+	_ = a.(PortI) // gc: T7.Port is ambiguous — does not implement
+	return
+}
+
+func F11() string {
+	var a any = PS(nil)
+	var b any = PT(nil)
+	return fmt.Sprint(a == b) // "false" — different dynamic types
+}
