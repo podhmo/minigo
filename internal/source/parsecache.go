@@ -1,4 +1,4 @@
-package minigo
+package source
 
 import (
 	"crypto/sha256"
@@ -29,24 +29,24 @@ type parseCacheEntry struct {
 	refold bool
 }
 
-// parseCache holds parsed files keyed by path. The engine that owns a
+// ParseCache holds parsed files keyed by path. The engine that owns a
 // FileSet owns the cache: entries are parsed into it, so their Pos
 // values stay valid in every session sharing that FileSet.
-type parseCache struct {
+type ParseCache struct {
 	mu sync.Mutex
 	m  map[string]*parseCacheEntry
 }
 
-func newParseCache() *parseCache {
-	return &parseCache{m: map[string]*parseCacheEntry{}}
+func NewParseCache() *ParseCache {
+	return &ParseCache{m: map[string]*parseCacheEntry{}}
 }
 
-// parseFilesCached parses paths like parsePackageFiles but reuses the
-// parse result of any file whose on-disk content hash is unchanged.
-// lang is the File.LangMod of the loaded files; it is assigned once,
-// before a file enters the shared cache, so sessions never mutate a
-// shared *syntax.File.
-func (e *Engine) parseFilesCached(paths []string, lang string) (files []*syntax.File, failed string, err error) {
+// Files parses paths like ParsePackageFiles but reuses the parse
+// result of any file whose on-disk content hash is unchanged. lang is
+// the File.LangMod of the loaded files; it is assigned once, before a
+// file enters the shared cache, so sessions never mutate a shared
+// *syntax.File.
+func (pc *ParseCache) Files(fset *token.FileSet, paths []string, lang string) (files []*syntax.File, failed string, err error) {
 	srcs := make([][]byte, len(paths))
 	errs := make([]error, len(paths))
 	each(len(paths), func(i int) {
@@ -55,7 +55,7 @@ func (e *Engine) parseFilesCached(paths []string, lang string) (files []*syntax.
 	for _, err := range errs {
 		if err != nil {
 			// let the sequential path report it exactly as before
-			files, failed, err := parseFilesSeq(e.fset, paths)
+			files, failed, err := ParseFilesSeq(fset, paths)
 			for _, sf := range files {
 				sf.LangMod = lang
 			}
@@ -63,7 +63,6 @@ func (e *Engine) parseFilesCached(paths []string, lang string) (files []*syntax.
 		}
 	}
 
-	pc := e.pcache
 	files = make([]*syntax.File, len(paths))
 	sums := make([][sha256.Size]byte, len(paths))
 	var miss []int
@@ -123,7 +122,7 @@ func (e *Engine) parseFilesCached(paths []string, lang string) (files []*syntax.
 		missPaths[j] = paths[i]
 		missSrcs[j] = srcs[i]
 	}
-	missFiles, tfs, failed, err := parseSrcs(e.fset, missPaths, missSrcs)
+	missFiles, tfs, failed, err := parseSrcs(fset, missPaths, missSrcs)
 	if err != nil {
 		return nil, failed, err
 	}
@@ -201,24 +200,24 @@ type indexCacheKey struct {
 	lenient bool
 }
 
-// indexCache shares index builds across sessions forked from one base
+// IndexCache shares index builds across sessions forked from one base
 // engine. The map is bounded: at capacity it resets — entries are cheap
 // to rebuild and steady-state reloads keep reusing one fingerprint.
-type indexCache struct {
+type IndexCache struct {
 	mu sync.Mutex
 	m  map[indexCacheKey]*indexCacheEntry
 }
 
 const indexCacheCap = 64
 
-func newIndexCache() *indexCache {
-	return &indexCache{m: map[indexCacheKey]*indexCacheEntry{}}
+func NewIndexCache() *IndexCache {
+	return &IndexCache{m: map[indexCacheKey]*indexCacheEntry{}}
 }
 
-// indexFor returns the index for files, building it on a cache miss.
+// IndexFor returns the index for files, building it on a cache miss.
 // The fingerprint hashes file identity in order: same pointers in the
 // same order is the same set; one re-parsed file changes the key.
-func (c *indexCache) indexFor(files []*syntax.File, lenient bool) (*index.Index, error) {
+func (c *IndexCache) IndexFor(files []*syntax.File, lenient bool) (*index.Index, error) {
 	h := fnv.New64a()
 	var buf [8]byte
 	for _, sf := range files {

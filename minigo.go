@@ -43,6 +43,7 @@ import (
 	"github.com/podhmo/minigo/index"
 	"github.com/podhmo/minigo/internal/assetaudit"
 	"github.com/podhmo/minigo/internal/bind"
+	"github.com/podhmo/minigo/internal/source"
 	"github.com/podhmo/minigo/internal/spike"
 	"github.com/podhmo/minigo/resolve"
 	"github.com/podhmo/minigo/runtime"
@@ -76,12 +77,12 @@ type sharedAssets struct {
 	fset     *token.FileSet
 	// pcache shares parsed files across sessions forked from one base
 	// engine; entries revalidate against disk by content hash so an
-	// edited file is never served stale (see parseFilesCached).
-	pcache *parseCache
+	// edited file is never served stale (see source.ParseCache.Files).
+	pcache *source.ParseCache
 	// ixcache shares package indexes across those sessions, keyed by
 	// the exact parsed file set: one edited file means a new
 	// fingerprint and a fresh index (see indexCache).
-	ixcache *indexCache
+	ixcache *source.IndexCache
 
 	initMode   InitMode
 	specials   map[runtime.SymbolID]runtime.SpecialFunc
@@ -277,8 +278,8 @@ func NewEngine(startDir string, opts ...Option) *Engine {
 	e := &Engine{
 		sharedAssets: sharedAssets{
 			fset:     token.NewFileSet(),
-			pcache:   newParseCache(),
-			ixcache:  newIndexCache(),
+			pcache:   source.NewParseCache(),
+			ixcache:  source.NewIndexCache(),
 			specials: map[runtime.SymbolID]runtime.SpecialFunc{},
 		},
 		sessionState: sessionState{
@@ -1007,7 +1008,7 @@ func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, e
 	defer e.buildMu.Unlock()
 	p := e.newPackage(meta.ImportPath, meta.Name, meta.Dir)
 	p.Standard = meta.Standard
-	files, failed, err := e.parseFilesCached(meta.GoFiles, meta.Lang)
+	files, failed, err := e.pcache.Files(e.fset, meta.GoFiles, meta.Lang)
 	if err != nil {
 		p.SetState(runtime.Failed)
 		return nil, fmt.Errorf("parse %s: %w", failed, err)
@@ -1068,7 +1069,7 @@ func (e *Engine) buildPackage(meta *resolve.PackageMeta, lenient bool) (*runtime
 	}
 	e.mu.Unlock()
 
-	files, failed, err := e.parseFilesCached(meta.GoFiles, meta.Lang)
+	files, failed, err := e.pcache.Files(e.fset, meta.GoFiles, meta.Lang)
 	if err != nil {
 		p.SetState(runtime.Failed)
 		p.FinishIndexing()
@@ -1129,7 +1130,7 @@ func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File, lenient bo
 		}
 	}
 
-	ix, err := e.ixcache.indexFor(files, lenient)
+	ix, err := e.ixcache.IndexFor(files, lenient)
 	if err != nil {
 		var re *index.RedeclError
 		if errors.As(err, &re) {
@@ -1223,7 +1224,7 @@ func (e *Engine) loadFileMode(ctx context.Context, filename string, lenient bool
 	}
 	e.buildMu.Lock()
 	defer e.buildMu.Unlock()
-	sfs, failed, err := e.parseFilesCached([]string{abs}, resolve.ModuleLang(filepath.Dir(abs)))
+	sfs, failed, err := e.pcache.Files(e.fset, []string{abs}, resolve.ModuleLang(filepath.Dir(abs)))
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", failed, err)
 	}
@@ -1276,7 +1277,7 @@ func (e *Engine) LoadDirScope(ctx context.Context, filename string) (*runtime.Pa
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", filename, err)
 	}
-	files, failed, err := e.parseFilesCached(gofiles, resolve.ModuleLang(dir))
+	files, failed, err := e.pcache.Files(e.fset, gofiles, resolve.ModuleLang(dir))
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", failed, err)
 	}

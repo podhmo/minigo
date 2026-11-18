@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/podhmo/minigo/internal/source"
 	"github.com/podhmo/minigo/resolve"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -111,14 +112,14 @@ func BenchmarkReloadStages(b *testing.B) {
 	b.Run("Parse", func(b *testing.B) {
 		for b.Loop() {
 			fset := token.NewFileSet()
-			if _, _, err := parsePackageFiles(fset, meta.GoFiles); err != nil {
+			if _, _, err := source.ParsePackageFiles(fset, meta.GoFiles); err != nil {
 				b.Fatal(err)
 			}
 		}
 	})
 	b.Run("Index", func(b *testing.B) {
 		fset := token.NewFileSet()
-		files, _, err := parsePackageFiles(fset, meta.GoFiles)
+		files, _, err := source.ParsePackageFiles(fset, meta.GoFiles)
 		if err != nil {
 			b.Fatal(err)
 		}
