@@ -291,4 +291,33 @@ func TestTypeIDAnonLocalLeafsDistinct(t *testing.T) {
 	if a, b := e.typeIDOf(leaf(nil)), e.typeIDOf(leaf(map[string]*runtime.TypeDef{"L": srcTd(pkg, f, 10, "L")})); a != b {
 		t.Errorf("[]int keys differ by unused locals: %q vs %q", a, b)
 	}
+	// a local bound differently across instantiations is a different
+	// leaf: `type L []T` inside f[int] and f[string].
+	boundSlice := func(t runtime.Value) *runtime.TypeDef {
+		l := srcTd(pkg, f, 10, "L")
+		l.Binds = map[string]runtime.Value{"T": t}
+		return &runtime.TypeDef{
+			Kind: runtime.KindSlice, Pkg: pkg, File: f,
+			Anon:       &ast.ArrayType{Elt: ast.NewIdent("L")},
+			LocalTypes: map[string]*runtime.TypeDef{"L": l},
+		}
+	}
+	if e.typeIDOf(boundSlice(runtime.BasicTypedef("int"))) == e.typeIDOf(boundSlice(runtime.BasicTypedef("string"))) {
+		t.Errorf("[]L keys alike across instantiation binds: %q", e.typeIDOf(boundSlice(runtime.BasicTypedef("int"))))
+	}
+	// a member name matching a local type is not a type reference:
+	// `map[string]x.L` keys by its element alone.
+	memberKey := func(lts map[string]*runtime.TypeDef) *runtime.TypeDef {
+		return &runtime.TypeDef{
+			Kind: runtime.KindMap, Pkg: pkg, File: f,
+			Anon: &ast.MapType{
+				Key:   ast.NewIdent("string"),
+				Value: &ast.SelectorExpr{X: ast.NewIdent("x"), Sel: ast.NewIdent("L")},
+			},
+			LocalTypes: lts,
+		}
+	}
+	if a, b := e.typeIDOf(memberKey(nil)), e.typeIDOf(memberKey(map[string]*runtime.TypeDef{"L": srcTd(pkg, f, 10, "L")})); a != b {
+		t.Errorf("map[string]x.L keys differ by member-name lookalike: %q vs %q", a, b)
+	}
 }

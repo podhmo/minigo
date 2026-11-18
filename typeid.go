@@ -2,6 +2,7 @@ package minigo
 
 import (
 	"fmt"
+	"go/ast"
 	"reflect"
 	"slices"
 	"strings"
@@ -113,14 +114,43 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 	// context-stable in a way per-file elem keys are not.
 	if td.Anon != nil && td.Pkg != nil {
 		s := runtime.TypGoSpelling(td.Anon, td)
-		if len(td.LocalTypes) > 0 {
-			// The composite was spelled where function-local types are
-			// in scope: the display spelling prints a local leaf's bare
-			// name, so two functions' same-named `type L` would share a
-			// key — spell identity instead, whose local leafs carry
-			// their decl position.
-			if is := runtime.TypSpelling(td.Anon, td); is != "" {
-				s = is
+		if s != "" && len(td.LocalTypes) > 0 {
+			// A leaf naming a function-local type has to spell that
+			// decl's identity: the display name is bare, so two
+			// functions' same-named `type L` — or one local L bound to
+			// different type arguments across instantiations — would
+			// collide on it. Unused locals key as before, and a member
+			// or field name is never a type reference.
+			sels := map[*ast.Ident]bool{}
+			ast.Inspect(td.Anon, func(n ast.Node) bool {
+				if x, ok := n.(*ast.SelectorExpr); ok {
+					sels[x.Sel] = true
+				}
+				if x, ok := n.(*ast.StructType); ok && x.Fields != nil {
+					for _, fld := range x.Fields.List {
+						for _, nm := range fld.Names {
+							sels[nm] = true
+						}
+					}
+				}
+				return true
+			})
+			ids := map[string]bool{}
+			ast.Inspect(td.Anon, func(n ast.Node) bool {
+				if id, ok := n.(*ast.Ident); ok && !sels[id] {
+					if lt := td.LocalTypes[id.Name]; lt != nil {
+						ids[id.Name+"="+string(e.typeIDOf(lt))] = true
+					}
+				}
+				return true
+			})
+			if len(ids) > 0 {
+				leafs := make([]string, 0, len(ids))
+				for k := range ids {
+					leafs = append(leafs, k)
+				}
+				slices.Sort(leafs)
+				s += "#" + strings.Join(leafs, ";")
 			}
 		}
 		if s != "" {
