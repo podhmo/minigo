@@ -147,3 +147,36 @@ func vtdForKey(t *testing.T, e *Engine) *runtime.TypeDef {
 	t.Helper()
 	return hostType("sync/atomic.Value", func() any { return &atomicBox{} })
 }
+
+// the M4-3b contract: one session holds ONE canonical descriptor per
+// TypeID, and a forked session's table never aliases the parent's.
+func TestInternTypedef(t *testing.T) {
+	e := NewEngine(".")
+
+	a := hostPtrTd("minigo.timerChanBox", func() any { return &timerChanBox{} })
+	b := hostPtrTd("minigo.afterFuncTimer", func() any { return &afterFuncTimer{} })
+	if e.internTypedef(a) != e.internTypedef(b) {
+		t.Error("two carriers of *time.Timer did not converge on one typedef")
+	}
+	// the winner is stable across repeated queries.
+	if e.internTypedef(b) != e.internTypedef(a) {
+		t.Error("the interned winner changed between queries")
+	}
+
+	// a typedef with no identity passes through uninterned.
+	bare := &runtime.TypeDef{Kind: runtime.KindStruct}
+	if e.internTypedef(bare) != bare {
+		t.Error("unidentifiable typedef was interned")
+	}
+
+	// a forked session holds its own table: same identity, own winner.
+	s := e.NewSession()
+	sa := hostPtrTd("time.Timer", func() any { return &time.Timer{} })
+	if got := s.internTypedef(sa); got != sa {
+		t.Error("the session inherited its parent's interned typedef")
+	}
+	// ...and interning there does not rewrite the parent's winner.
+	if e.internTypedef(a) != a {
+		t.Error("session interning rewrote the parent's table")
+	}
+}
