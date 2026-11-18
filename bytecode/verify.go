@@ -234,13 +234,15 @@ func needed(ins Instruction) int {
 		OpDeferredTyp, OpDeferredValueTyp, OpConstExpr, OpTypGate,
 		OpRangeNext, OpLocalType:
 		return 0 // locals/upvals/globals and const-driven ops read no operand
-	case OpDup2, OpSwap, OpBinary, OpSetField, OpIndex, OpIndexRef,
+	case OpDup2, OpSwap, OpBinary, OpSetField, OpIndex,
 		OpIndexOK, OpAssertOK, OpSetInd, OpSend,
 		OpCoerceTop, OpFoldArrayLen,
 		OpLenIdxFold, OpLenCallFold:
 		return 2
 	case OpRot3, OpSetIndex:
 		return 3
+	case OpIndexRef:
+		return 2 // base + key
 	case OpSlice:
 		if ins.B == 1 {
 			return 4 // three-index: base + lo + hi + max

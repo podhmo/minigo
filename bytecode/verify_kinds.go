@@ -51,8 +51,11 @@ func (k SlotKind) String() string {
 func VerifyKinds(ch *Chunk) (int, error) {
 	code := ch.Code
 	n := len(code)
-	// entry stack per instruction; nil = not yet reached.
+	// entry stack per instruction; visited marks reachability — an
+	// empty stack is indistinguishable from a nil slice otherwise,
+	// and a loop head re-entered with no operands would loop forever.
 	stacks := make([][]SlotKind, n)
+	visited := make([]bool, n)
 	var problems []string
 	maxStack := 0
 	type item struct {
@@ -66,7 +69,8 @@ func VerifyKinds(ch *Chunk) (int, error) {
 		if it.ip == n {
 			continue // ran off the end — the loop exits, nothing to check
 		}
-		if seen := stacks[it.ip]; seen != nil {
+		if visited[it.ip] {
+			seen := stacks[it.ip]
 			if len(seen) != len(it.stack) {
 				problems = append(problems,
 					fmt.Sprintf("ip %d: merge depth %d and %d disagree", it.ip, len(seen), len(it.stack)))
@@ -81,6 +85,7 @@ func VerifyKinds(ch *Chunk) (int, error) {
 			}
 			continue
 		}
+		visited[it.ip] = true
 		stacks[it.ip] = it.stack
 		ins := code[it.ip]
 		if need := needed(ins); len(it.stack) < need {
@@ -158,10 +163,11 @@ func kindSuccs(ch *Chunk, ip int, ins Instruction, st []SlotKind, problems *[]st
 		return one(st)
 	case OpJump:
 		return []ksucc{{int(ins.A), st}}
-	case OpConst, OpEvalAST, OpSpecialCall:
+	case OpConst, OpEvalAST, OpSpecialCall, OpNil:
+		// a pushed constant's kind is whatever the const holds — even
+		// nil doubles as an absent typedef tier (unresolved static
+		// types), so nothing concrete can be claimed here.
 		return one(push(st, KindAny))
-	case OpNil:
-		return one(push(st, KindScalar))
 	case OpLocal, OpUpval, OpGlobal:
 		return one(push(st, KindAny))
 	case OpLocalTyp, OpUpvalTyp, OpGlobalTyp,
@@ -169,8 +175,14 @@ func kindSuccs(ch *Chunk, ip int, ins Instruction, st []SlotKind, problems *[]st
 		return one(push(st, KindType))
 	case OpDeferredValueTyp:
 		return one(push(st, KindType))
-	case OpLocalRef, OpUpvalRef, OpGlobalRef, OpFieldRef, OpIndexRef:
+	case OpLocalRef, OpUpvalRef, OpGlobalRef:
 		return one(push(st, KindRef))
+	case OpFieldRef:
+		return one(push(pop(1), KindRef))
+	case OpIndexRef:
+		return one(push(pop(2), KindRef))
+	case OpDerefRef:
+		return one(push(pop(1), KindRef))
 	case OpMakeClosure:
 		return one(push(st, KindCallable))
 	case OpDup:
@@ -183,7 +195,7 @@ func kindSuccs(ch *Chunk, ip int, ins Instruction, st []SlotKind, problems *[]st
 	case OpRot3:
 		post := pop(3)
 		return one(push(post, st[len(st)-2], st[len(st)-1], st[len(st)-3]))
-	case OpDeref, OpDerefRef:
+	case OpDeref:
 		return one(push(pop(1), KindAny))
 	case OpSelect, OpSelectCall, OpRenewVar, OpIter, OpRecv:
 		return one(push(pop(1), KindAny))
@@ -274,13 +286,10 @@ func kindSuccs(ch *Chunk, ip int, ins Instruction, st []SlotKind, problems *[]st
 		expect(exp...)
 		return one(push(pop(int(ins.A)+1), KindAny))
 	case OpInstantiate:
-		exp := make([]SlotKind, 0, int(ins.A)+1)
-		exp = append(exp, KindCallable)
-		for i := 0; i < int(ins.A); i++ {
-			exp = append(exp, KindType)
-		}
-		expect(exp...)
-		return one(push(pop(int(ins.A)+1), KindType))
+		// base is a generic TypeDef or a function value — and the
+		// result is the instantiated typedef or the instantiated
+		// function (`Id[int]`), so both sides stay Any.
+		return one(push(pop(int(ins.A)+1), KindAny))
 	case OpJumpFalse, OpJumpTrue, OpJumpIfTypedef:
 		return pair(pop(1))
 	case OpRangeNext:

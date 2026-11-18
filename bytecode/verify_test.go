@@ -157,11 +157,12 @@ func TestVerifyKindsReject(t *testing.T) {
 				// ip4 arrives [Type], ip3 jumps to ip5 with [Scalar]:
 				// both concrete, different — a merge conflict.
 				Instruction{Op: OpConst},           // 0 [Any]
-				Instruction{Op: OpJumpFalse, A: 4}, // 1 -> 4 on false
-				Instruction{Op: OpNil},             // 2 [Scalar]
-				Instruction{Op: OpJump, A: 5},      // 3 -> 5 [Scalar]
-				Instruction{Op: OpDeferredTyp},     // 4 [Type]
-				Instruction{Op: OpReturn, A: 1},    // 5 merge
+				Instruction{Op: OpJumpFalse, A: 5}, // 1 -> 5 on false
+				Instruction{Op: OpLocal},           // 2 [Any]
+				Instruction{Op: OpUnary},           // 3 [Scalar]
+				Instruction{Op: OpJump, A: 6},      // 4 -> 6 [Scalar]
+				Instruction{Op: OpDeferredTyp},     // 5 [Type]
+				Instruction{Op: OpReturn, A: 1},    // 6 merge
 			},
 			want: "merge slot 0 kind type and scalar disagree",
 		},
@@ -180,7 +181,8 @@ func TestVerifyKindsReject(t *testing.T) {
 		{
 			name: "coerce without typedef",
 			code: []Instruction{
-				Instruction{Op: OpNil},    // [Scalar]
+				Instruction{Op: OpLocal},
+				Instruction{Op: OpUnary},  // [Scalar]
 				Instruction{Op: OpCoerce}, // wants Type on top
 			},
 			want: "holds scalar, want type",
@@ -188,7 +190,8 @@ func TestVerifyKindsReject(t *testing.T) {
 		{
 			name: "unpack a scalar",
 			code: []Instruction{
-				Instruction{Op: OpNil},
+				Instruction{Op: OpLocal},
+				Instruction{Op: OpUnary},
 				Instruction{Op: OpUnpack, A: 2},
 			},
 			want: "holds scalar, want tuple",
