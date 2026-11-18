@@ -54,7 +54,7 @@ func (i *Inferer) resolveType(from *TypeDef, x ast.Expr) (*TypeDef, error) {
 func (i *Inferer) UnifyDef(ctx *TypeDef, tset map[string]bool, binds map[string]Value, pat ast.Expr, conc *TypeDef) {
 	switch p := pat.(type) {
 	case *ast.Ident:
-		if tset[p.Name] {
+		if tset[p.Name] && conc != nil {
 			if _, ok := binds[p.Name]; !ok {
 				binds[p.Name] = conc
 			}
@@ -93,10 +93,10 @@ func (i *Inferer) UnifyDef(ctx *TypeDef, tset map[string]bool, binds map[string]
 		}
 	case *ast.MapType:
 		if mt, ok := conc.Anon.(*ast.MapType); ok {
-			if kt, err := i.ResolveOperand(conc, mt.Key); err == nil {
+			if kt, err := i.ResolveOperand(conc, mt.Key); err == nil && kt != nil {
 				i.UnifyDef(ctx, tset, binds, p.Key, kt)
 			}
-			if vt, err := i.ResolveOperand(conc, mt.Value); err == nil {
+			if vt, err := i.ResolveOperand(conc, mt.Value); err == nil && vt != nil {
 				i.UnifyDef(ctx, tset, binds, p.Value, vt)
 			}
 		}
