@@ -83,6 +83,13 @@ type S struct{ E; Z int }
 		t.Fatalf("cached answer %+v differs from %+v", second, first)
 	}
 
+	// mutating a returned path must not corrupt the memo.
+	second.Index[0] = 99
+	again := fps.OfKeyed(td2, "X", "k1")
+	if diff := cmp.Diff([]int{0, 0}, again.Index); diff != "" {
+		t.Fatalf("caller mutation corrupted the memo: %s", diff)
+	}
+
 	// a fresh key — a re-parse is a new source version — explores
 	// again, so a stale path can never leak through.
 	td3, _ := fieldPathsTd(t, "foo", src, "S")

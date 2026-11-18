@@ -99,7 +99,11 @@ func (fp *FieldPaths) OfKeyed(td *runtime.TypeDef, name, key string) FieldPathAn
 	cacheable := key != "" && fp != nil
 	if cacheable {
 		if v, ok := fp.cache.Load(fieldPathKey{id: key, name: name}); ok {
-			return v.(FieldPathAnswer)
+			// copy the path on hit too — the caller gets a slice it may
+			// mutate, and the memo must keep the canonical one.
+			ans := v.(FieldPathAnswer)
+			ans.Index = append([]int(nil), ans.Index...)
+			return ans
 		}
 	}
 	ans := fp.of(td, name)
