@@ -531,6 +531,15 @@ func AssertBasicMissingMethod() (r string) {
 	return
 }
 
+// a nil interface value has no dynamic type — a failed assert spells
+// "interface {} is nil", not a missing-method name.
+func AssertNilIface() (r string) {
+	defer func() { r = fmt.Sprintf("%v", recover()) }()
+	var a any = nil
+	_ = a.(io.Writer)
+	return
+}
+
 // the pointer itself carries the pointer-receiver method and satisfies
 // the requirement — comma-ok form confirms no panic.
 func AssertPtrRecvOK() string {
