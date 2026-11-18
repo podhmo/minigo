@@ -908,8 +908,20 @@ func (c *compiler) callOpTyp(x *ast.CallExpr) opTyp {
 				// stays opaque — the run-time gate resolves which
 				// once the member materializes, and a non-type
 				// answer there declines like today.
-				if c.askIndexed(ref).Kind != semantics.Found {
+				res := c.askIndexed(ref)
+				if res.Kind != semantics.Found {
 					return opTyp{deferred: true, dexpr: x}
+				}
+				// an indexed source package answers the member's
+				// signature: `p.F()` types its result like a local
+				// function's, a func-typed member var's declared
+				// signature likewise.
+				if p := res.Val; p.Index != nil {
+					if ot := c.srcMemberOpTyp(p, f.Sel.Name); ot.te != nil {
+						if ft, ok2 := ast.Unparen(ot.te).(*ast.FuncType); ok2 {
+							return c.funcTypeResultOpTyp(ft)
+						}
+					}
 				}
 				return opTyp{} // a host-package function's result is opaque
 			}
@@ -985,7 +997,20 @@ func (c *compiler) calleeFuncTyp(x *ast.CallExpr) *ast.FuncType {
 		}
 	case *ast.SelectorExpr:
 		if id, ok := f.X.(*ast.Ident); ok {
-			if _, isPkg := c.importRef(id.Name); isPkg {
+			if ref, isPkg := c.importRef(id.Name); isPkg {
+				// an indexed source package answers the member's
+				// declared signature — `a, b := p.F()` binds each
+				// result's type. Anything else (bound package,
+				// unindexed under IndexedOnly) stays opaque.
+				if res := c.askIndexed(ref); res.Kind == semantics.Found {
+					if p := res.Val; p.Index != nil {
+						if ot := c.srcMemberOpTyp(p, f.Sel.Name); ot.te != nil {
+							if ft, ok2 := ast.Unparen(ot.te).(*ast.FuncType); ok2 {
+								return ft
+							}
+						}
+					}
+				}
 				return nil
 			}
 		}

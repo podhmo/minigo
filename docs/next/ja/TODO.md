@@ -123,7 +123,7 @@
   - [x] **M4-8a strict モードとロード順の比較**: M4-7 の全ケースが通ってから `WithStrictLazyCompile` を導入する。未 index と事前 index の両条件で結果を比較し、C1 の計測でコンパイル時初期化がゼロであることを確かめる。
   - [x] **M4-8b CI の conformance ジョブ**: M4-8a を通常モードと併走させる。15 件の受け入れセットに加え、既存 conformance の出力と `TRAP` の同値性を確認する。
 - [ ] **M4-9 `staticOpTyp` 系の裏ルートを置き換える**: `staticOpTyp`/`callOpTyp`/`opTyp`/`stampVarTyps`/`OpLocalTyp`/`OpGlobalTyp`/`statics` を、chunk に格納するヒントと事実に置き換える。
-  - [ ] **M4-9a 既存の静的情報を仕分ける**: `staticOpTyp` / `callOpTyp` / `opTyp` の利用側を列挙し、変換・推論・診断で事実を必要とするケースを固定する。
+  - [x] **M4-9a 既存の静的情報を仕分ける**: `staticOpTyp` / `callOpTyp` / `opTyp` の利用側を列挙し、変換・推論・診断で事実を必要とするケースを固定する。[references/static-typ-sites.md](./references/static-typ-sites.md)
   - [ ] **M4-9b chunk への格納と旧経路の削除**: M4-7/8 のあと、`stampVarTyps`、`OpLocalTyp`、`OpGlobalTyp`、`statics` を利用側ごとに置き換える。各差分で通常・strict のテストと bytecode golden を照合する。
 
 ## M5: PackageImage と PackageInstance
