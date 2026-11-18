@@ -2,7 +2,8 @@
 
 > リポジトリ直下の [TODO.md](../../../TODO.md) とは別に、[リアーキテクチャ計画](../../sketch/ja/plan-rearchitecture.md)（第 3 版）を実行可能な単位に分けたもの。運用は [todo-md スキル](../../../.claude/skills/todo-md/SKILL.md) に準じる。`[ ]` は未着手、`[-]` は一部完了、`[x]` は完了を表す。
 >
-> - 各項目は 1 PR 程度の大きさにした。番号はおおむね依存の順になっている。
+> - チェック項目の末端を 1 PR の目安にする。親の番号は計画書や参照資料からのリンクに使い、明示した依存先から着手する。
+> - 既存の意味論を固定するテスト、実装の移動、挙動や性能を変える切り替えは、個別に検証できる単位で進める。
 > - 「完了条件」が満たされたら `[x]` にする。
 > - どの PR でも、`make format`、`make lint`、`make test`、pin 済みの difffuzz ケース、examples を通す。共有状態やコールバックに触れる PR では `make test-race` も通す。
 > - 詳細は [references/](./references/) に置いた。
@@ -51,7 +52,8 @@
 - [-] **P2-2 受け渡し先の helper を capability 型にする**: `runtime.IfaceMember`、`hostErrOf`、`display`、`callOrPanic`、`goJSONSeen` などが対象。完了条件: caller を受け渡すだけの 184 関数が、本当に必要とする capability に絞られている。
   - [x] JSON/io/errors/maps/seq 系の中核 helper を絞った（`IfaceMember`→`MemberLookup`、`hostErrOf`→`MemberCaller`、`goJSONSeen`→`MemberShapeCaller`、`callOrPanic`→`ScriptCaller` など）。
   - [x] メソッド別の原子 capability（`ValTyper`/`Converter`/`Equaler`/`ElemZeroer`/`ArraySizer`/`MapKeyer`/`NewMapper`/`Copier`）と合成型を追加し、中間層の受け渡し関数を絞った。`fmtValue.c`/`scriptLocker.vc` フィールドも `MemberCaller` 化。
-  - [ ] 残り。`BuiltinFunc.Fn`/`src.Each`/`scriptIface.vc`/`bindCaller`/`callbackContext`/`vmOf` など VMCaller 型のフィールド・ダウンキャストにアンカーされている関数（bf() 登録群・ffi marshaling 群の大半）は P2-4 の前提になる。
+  - [ ] **P2-2a 組み込み関数と反復の helper**: `BuiltinFunc.Fn`、`src.Each` を経由する受け渡しのうち、参照や呼び出しだけを使う helper の引数を絞る。完了条件は既存の builtin・反復テストと、受け渡しだけの `VMCaller` 引数の削減。
+  - [ ] **P2-2b host コールバックの helper**: `scriptIface.vc`、`bindCaller`、`callbackContext` から始まる受け渡しを絞る。P2-4 の capability を使い、登録時の process への束縛、再入、解放後の呼び出しを回帰テストで固定する。
 - [x] **P2-3 使っていない `VMCaller` 引数を削る**: 対象は 96 関数。完了条件: スキャナ（[references/vmcaller.md](./references/vmcaller.md)）の「未使用」が 0 になる。
 - [x] **P2-4 `vmOf` のダウンキャストをなくす**: 7 箇所を capability のメソッドに置き換える。
 - [x] **P2-5 `internal/process` を抽出する**: goroutine、park/wake、デッドロック検出を移す。ループとのやり取りは `spawn`/`park`/`unpark` だけにする。完了条件: `make test-race` と `make concurrency-stress` が通る。
@@ -60,21 +62,33 @@
   - [ ] `SpecialFunc` / `SpecialContext` は `runtime.Value`/`Package`/`TypeDef` 参照のため移すと import cycle — `runtime` に残置。registry・context 実装の `internal/execution` 移行は P2-14 に含める
 - [-] **P2-7 `internal/hostbridge` を抽出する**: `goValueOf`、`toReflectValueDepth`、`hostMarshal`、`adaptFunc`、`hostArgAs`、opaque store、host↔script の変換層（`hostErrTwins`、`goNative`、プロキシのボックス）を移す。完了条件: archcheck が `vm/` での `reflect` を禁止している。
   - [x] opaque コンテナの引数パッキング（`OpaqueStoreArg`/`opaqueStoreKey`/`opaqueStoreValue`/`namedStoreValue`/`OpaqueKeyPosition`/`NamedLoadValue`）を `internal/hostbridge` へ（PR #1142）
-  - [ ] 残り: `goValueOf`/`toReflectValueDepth`/`hostMarshal`/`adaptFunc`/`hostArgAs`/`hostErrTwins`/`goNative` と `vm/` の `reflect` 禁止（select/composite/convert/binop の reflect 使用も含め別 PR 群）
+  - [ ] **P2-7a host 値との基本変換**: `goValueOf`、`goNative` と、値のコピー・box 化を担う処理を移す。名前付きスカラー、型付き nil、共有されるポインタ・map・slice の挙動を固定する。
+  - [ ] **P2-7b 引数・返り値の変換**: P2-7a の変換を使って `toReflectValueDepth`、`hostMarshal`、`hostArgAs`、`hostErrTwins` を移す。可変長引数、入れ子のコレクション、書き戻し、error の回帰テストを通す。
+  - [ ] **P2-7c 関数とインタフェースのアダプタ**: P2-2b と P2-7b のあとに `adaptFunc`、script interface のアダプタと proxy の box 化を移す。callback の再入、process 解放、panic の伝播を確認する。
+  - [ ] **P2-7d VM の値操作に残る reflect**: `composite`、`convert`、`binop` の host 値操作を機能ごとに bridge 経由へ移す。各差分を該当する difffuzz と既存の host 値テストで確認する。
+  - [ ] **P2-7e VM の channel 操作と依存制約**: `select` などに残る host channel 操作を切り替える。送受信、close、待機解除のテストを通し、残存する `reflect` import がゼロになった時点で `archcheck` に禁止規則と負例を加える。
 - [x] **P2-8 `scriptIface` のアダプタ一族を生成に切り替える**: インタフェース → メソッド → arity の表から生成し、`scriptFileSeek` などの組み合わせ爆発をなくす。
 - [ ] **P2-9 `builtin/` を抽出する**: `builtins.go` を移す。
-  - [ ] ブロック中: `builtins.go` は root パッケージの helper（`display`/`uconstNative`/`makeHostType`/`constAtWidth` 他 ~17 個）を `intrinsics_*.go` と共有しており、先に helper 層の切り出しが必要（P2-7 残り + P2-14 と同じ地層）
+  - [ ] **P2-9a 定数と値の共通 helper**: `uconstNative`、`constAtWidth`、`makeHostType` などを、root や Engine への依存がない置き場所に移す。定数の幅・オーバーフロー、名前付き host 型を既存テストで確認する。
+  - [ ] **P2-9b 表示と callback の共通 helper**: `display` など実行側に問い合わせる helper を、必要な capability で呼べるようにする。型・値の表示と script method への再入を固定する。
+  - [ ] **P2-9c builtin の登録を移す**: P2-9a/b のあとに `builtins.go` の組み込み関数と登録を移す。root の登録窓口から既存名を解決でき、examples が無修正で通ることを確認する。
 - [x] **P2-10 stdlib: 名前レジストリと `bind.Env`**: テーブルはまだ即時に構築したまま、`BoundPackages`/`BoundSymbols`/`BoundOf`/`vet`/`SourceOf`/`NewSession` の優先順位/bound-shadow チェックを `names` ビューに移す。エンジンを捕捉している約 45 個のクロージャを `bind.Env` 経由にする。完了条件: 振る舞いが変わっていない。[references/stdlib-lazy.md](./references/stdlib-lazy.md)
   - [x] `bind.Env` インタフェース（`internal/bind`）を導入し、エンジン捕捉のクロージャを `h.env` 経由に変更（`bindenv.go` アダプタ）（PR #1144）
   - [x] 残り: `names` ビューへの移行（`BoundPackages`/`BoundSymbols`/`BoundOf`/`vet`/`SourceOf`/`NewSession` の優先順位・bound-shadow チェック）（PR #1145）
 - [x] **P2-11 stdlib: `hostTwin` を install の入口につなぐ**: P2-10 の名前レジストリを使い、登録済みの stdlib パスについて、typedef を検索する前に対象パッケージの install を保証する入口を通す。この段階では起動時の即時構築を続ける。未登録のパスは従来どおり既存パッケージだけを検索する。完了条件: `time` を import しないスクリプトに別のパッケージから `time.Time`（例 `ctx.Deadline()` の戻り値）を渡し、対応する typedef を使えることをテストで固定する。（PR #1146）[references/stdlib-lazy.md](./references/stdlib-lazy.md)
 - [-] **P2-12 stdlib: パッケージ単位の遅延構築**: P2-11 の入口で、`internal/stdlib/<path>` ごとの `Install(r, env)` を初回利用時に実行する。グローバルな `templateFuncMap` もここでレジストリ単位にする（バグとしてはルートの [TODO.md](../../../TODO.md) で管理している）。完了条件: P2-11 の回帰テストが通り、`time` のテーブルが初回の `hostTwin` 検索で構築されることを確認する。`NewSession` のベンチで差分を報告する（ベースラインでは install が実行時間の 60〜70%）。
   - [x] 遅延構築の仕組み（`bind.Pending` + installbound.go の入口、`templateFuncMap` のセッション化、ベンチ差分 0.47ms→10µs）: PR #1147
-  - [ ] 残り: `e.installX` を `internal/stdlib/<path>` ファイルへ移す（root helper 層の切り出しが先 — P2-9/P2-14 と同じ地層）
+  - [ ] **P2-12a 初回 install と明示 Bind の登録順を固定する**: `html` の既定テーブルの初回構築中に、同じパスへ明示 `Bind` が完了しても、既定テーブルで上書きされる。公開時に明示登録を優先し、`WithHostPolicy` で順序を固定した並行テストで `BoundSymbols` と通常の import が明示テーブルを返すことを確かめる。 [登録処理](https://github.com/podhmo/minigo/blob/9918230e/installbound.go#L53-L65)
+  - [ ] **P2-12b 依存の少ない stdlib installer を移す**: P2-9a のあとの最初の対象を `html` や `unicode/utf8` とし、`internal/stdlib/<path>` の `Install` から登録する。生成テーブルの再生成、初回構築、bound/source の結果を確認する。
+  - [ ] **P2-12c 状態を持つ stdlib installer を移す**: P2-12a/b のあと、`bind.Env` を介して `time`・`context`、`text/template`・`html/template` など依存が近いパッケージを一組ずつ移す。間接の `time.Time`、Session ごとの `FuncMap`、source 優先設定を保ち、Session 生成と初回利用のベンチ差分を記録する。
 - [x] **P2-13 純粋なシグネチャの bind を生成する**: 約半分のエントリを `gen-intrinsics` で生成し、`// Code generated` ヘッダ付きでチェックインする。完了条件: 生成したパッケージに、source 解釈版との parity テストがある。[references/stdlib-lazy.md](./references/stdlib-lazy.md) — `internal/cmd/genbind` が index の Funcs/Vars/Consts/Types から `<camel>GenEntries()` を生成（`wrapBind` 経由）。12 パッケージ・約 500 エントリを生成済み。環境依存の filepath 系・値コンストラクタ型・コールバック系は手書きのまま installX がマージする。parity テストは `genbind_parity_test.go`（構造: 全 export をカバー / 振る舞い: bound vs source の呼び出し結果一致）
 - [-] **P2-14 `internal/execution` と `internal/source` を抽出する**: ライフサイクルの状態機械を `runtime/package.go` と `minigo.go` から移す。`embed.go`、`parse.go`、`parsecache.go` は `internal/source` へ移す。完了条件: root と `vm.go` がそれぞれ約 3,000 行を下回る。
   - [x] `parse.go`/`parsecache.go`/`embed.go` を `internal/source` へ（`ParseCache`/`IndexCache` + `ParsePackageFiles` + `EmbedBuiltin`/`EmbedEnv`）（PR #1149）
-  - [ ] 残り: ライフサイクル状態機械の `internal/execution` への移動（`runtime/package.go` + `minigo.go`）
+  - [ ] **P2-14a root の完了条件を明確にする**: `minigo.go` 単体と、root 直下の非テスト・非生成 Go ファイルの合計を記録する。計画書の約 3,000 行の対象と、残すファサードの責務を決める。
+  - [ ] **P2-14b index 完了の公開と待機を抽出する**: `buildPackage` と `indexFiles` の完了通知を抽出し、`runtime.Package` に互換の入口を残す。並行した初回ロード、strict/lenient の分離、パース・index 失敗後の待機解除と既存診断をテストする。
+  - [ ] **P2-14c 初期化の状態遷移と runner を抽出する**: P2-14b のあとに `EnsureReady` / `EnsureReadyRun` が使う状態遷移・初期化処理を抽出する。一度だけの初期化、エラーと panic 後の状態、実行中の process に所属する初期化をテストする。
+  - [ ] **P2-14d 特殊形式の registry と context を抽出する**: P2-14c のあと、P2-6 に残った実装を `internal/execution` 側に移す。公開型を参照する既存 examples、別名 import・shadowing・スタブがロードされないことを確認する。
+  - [ ] **P2-14e Session 所有権チェックの入口をそろえる**: M3-1 の計画と現在の `Engine.Call` の常時チェックを照合し、適用する入口と対象を決める。別 Session の source package を渡した場合と、共有を許す host bind の場合をテストする。
 
 ## M4 + P3: 型情報の統合（機能グループごとに 1 PR）
 
