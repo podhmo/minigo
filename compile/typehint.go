@@ -900,7 +900,9 @@ func (c *compiler) callOpTyp(x *ast.CallExpr) opTyp {
 		}
 		return opTyp{}
 	case *ast.SelectorExpr:
-		if id, ok := f.X.(*ast.Ident); ok {
+		if id, ok := f.X.(*ast.Ident); ok && c.fs.lookupBinding(id.Name) == nil {
+			// a local binding shadows the import name — `p := …; p.F()`
+			// calls the local's member, never the package's.
 			if ref, isPkg := c.importRef(id.Name); isPkg {
 				// an unindexed package leaves the member question
 				// open: `pkg.T(v)` is a conversion whose result
@@ -996,7 +998,8 @@ func (c *compiler) calleeFuncTyp(x *ast.CallExpr) *ast.FuncType {
 			}
 		}
 	case *ast.SelectorExpr:
-		if id, ok := f.X.(*ast.Ident); ok {
+		if id, ok := f.X.(*ast.Ident); ok && c.fs.lookupBinding(id.Name) == nil {
+			// a local binding shadows the import name, like selOpTyp.
 			if ref, isPkg := c.importRef(id.Name); isPkg {
 				// an indexed source package answers the member's
 				// declared signature — `a, b := p.F()` binds each
@@ -1317,8 +1320,20 @@ func (c *compiler) unfoldSpecType(p *runtime.Package, ts *ast.TypeSpec, depth in
 // qualifier in the caller may name a different package, or none.
 // Composite forms recurse; anything else returns as-is.
 func (c *compiler) scopeSpecType(p *runtime.Package, sf *syntax.File, e ast.Expr) ast.Expr {
+	return c.scopeSpecTypeNames(p, sf, e, nil)
+}
+
+// scopeSpecTypeNames is scopeSpecType with a set of names that bind
+// locally inside the spec — a FuncType's declared type parameters:
+// `func F[T any](v T) T` keeps its T a bare ident even when the
+// declaring package also has a `type T int`, since the parameter
+// shadows it for the signature's whole extent.
+func (c *compiler) scopeSpecTypeNames(p *runtime.Package, sf *syntax.File, e ast.Expr, tparams map[string]bool) ast.Expr {
 	switch t := ast.Unparen(e).(type) {
 	case *ast.Ident:
+		if tparams[t.Name] {
+			return t
+		}
 		if p != c.pkg && pkgTypeSpec(p, t.Name) != nil {
 			return &ast.SelectorExpr{X: &ast.Ident{Name: c.callerImportName(p.Path)}, Sel: &ast.Ident{Name: t.Name}}
 		}
@@ -1331,53 +1346,65 @@ func (c *compiler) scopeSpecType(p *runtime.Package, sf *syntax.File, e ast.Expr
 		}
 		return t
 	case *ast.ArrayType:
-		if e := c.scopeSpecType(p, sf, t.Elt); e != t.Elt {
+		if e := c.scopeSpecTypeNames(p, sf, t.Elt, tparams); e != t.Elt {
 			return &ast.ArrayType{Lbrack: t.Lbrack, Len: t.Len, Elt: e}
 		}
 		return t
 	case *ast.MapType:
-		k, v := c.scopeSpecType(p, sf, t.Key), c.scopeSpecType(p, sf, t.Value)
+		k, v := c.scopeSpecTypeNames(p, sf, t.Key, tparams), c.scopeSpecTypeNames(p, sf, t.Value, tparams)
 		if k != t.Key || v != t.Value {
 			return &ast.MapType{Map: t.Map, Key: k, Value: v}
 		}
 		return t
 	case *ast.StarExpr:
-		if x := c.scopeSpecType(p, sf, t.X); x != t.X {
+		if x := c.scopeSpecTypeNames(p, sf, t.X, tparams); x != t.X {
 			return &ast.StarExpr{Star: t.Star, X: x}
 		}
 		return t
 	case *ast.ChanType:
-		if v := c.scopeSpecType(p, sf, t.Value); v != t.Value {
+		if v := c.scopeSpecTypeNames(p, sf, t.Value, tparams); v != t.Value {
 			return &ast.ChanType{Begin: t.Begin, Arrow: t.Arrow, Dir: t.Dir, Value: v}
 		}
 		return t
 	case *ast.Ellipsis:
-		if e := c.scopeSpecType(p, sf, t.Elt); e != t.Elt {
+		if e := c.scopeSpecTypeNames(p, sf, t.Elt, tparams); e != t.Elt {
 			return &ast.Ellipsis{Ellipsis: t.Ellipsis, Elt: e}
 		}
 		return t
 	case *ast.ParenExpr:
-		if x := c.scopeSpecType(p, sf, t.X); x != t.X {
+		if x := c.scopeSpecTypeNames(p, sf, t.X, tparams); x != t.X {
 			return &ast.ParenExpr{Lparen: t.Lparen, X: x, Rparen: t.Rparen}
 		}
 		return t
 	case *ast.StructType:
-		if fs := c.scopeFieldList(p, sf, t.Fields); fs != t.Fields {
+		if fs := c.scopeFieldListNames(p, sf, t.Fields, tparams); fs != t.Fields {
 			return &ast.StructType{Struct: t.Struct, Fields: fs, Incomplete: t.Incomplete}
 		}
 		return t
 	case *ast.InterfaceType:
-		if ms := c.scopeFieldList(p, sf, t.Methods); ms != t.Methods {
+		if ms := c.scopeFieldListNames(p, sf, t.Methods, tparams); ms != t.Methods {
 			return &ast.InterfaceType{Interface: t.Interface, Methods: ms, Incomplete: t.Incomplete}
 		}
 		return t
 	case *ast.FuncType:
+		inner := tparams
+		if t.TypeParams != nil {
+			inner = map[string]bool{}
+			for n := range tparams {
+				inner[n] = true
+			}
+			for _, tp := range t.TypeParams.List {
+				for _, n := range tp.Names {
+					inner[n.Name] = true
+				}
+			}
+		}
 		var dirty bool
 		params, results := t.Params, t.Results
-		if fs := c.scopeFieldList(p, sf, t.Params); fs != t.Params {
+		if fs := c.scopeFieldListNames(p, sf, t.Params, inner); fs != t.Params {
 			params, dirty = fs, true
 		}
-		if fs := c.scopeFieldList(p, sf, t.Results); fs != t.Results {
+		if fs := c.scopeFieldListNames(p, sf, t.Results, inner); fs != t.Results {
 			results, dirty = fs, true
 		}
 		if dirty {
@@ -1385,12 +1412,12 @@ func (c *compiler) scopeSpecType(p *runtime.Package, sf *syntax.File, e ast.Expr
 		}
 		return t
 	case *ast.IndexExpr:
-		if x := c.scopeSpecType(p, sf, t.X); x != t.X {
+		if x := c.scopeSpecTypeNames(p, sf, t.X, tparams); x != t.X {
 			return &ast.IndexExpr{X: x, Lbrack: t.Lbrack, Index: t.Index, Rbrack: t.Rbrack}
 		}
 		return t
 	case *ast.IndexListExpr:
-		if x := c.scopeSpecType(p, sf, t.X); x != t.X {
+		if x := c.scopeSpecTypeNames(p, sf, t.X, tparams); x != t.X {
 			return &ast.IndexListExpr{X: x, Lbrack: t.Lbrack, Indices: t.Indices, Rbrack: t.Rbrack}
 		}
 		return t
@@ -1401,14 +1428,14 @@ func (c *compiler) scopeSpecType(p *runtime.Package, sf *syntax.File, e ast.Expr
 // scopeFieldList re-scopes the types of one field list (struct fields,
 // interface methods, func params/results), returning it unchanged when
 // no field's type needed rewriting.
-func (c *compiler) scopeFieldList(p *runtime.Package, sf *syntax.File, fl *ast.FieldList) *ast.FieldList {
+func (c *compiler) scopeFieldListNames(p *runtime.Package, sf *syntax.File, fl *ast.FieldList, tparams map[string]bool) *ast.FieldList {
 	if fl == nil {
 		return nil
 	}
 	var dirty bool
 	list := make([]*ast.Field, len(fl.List))
 	for i, f := range fl.List {
-		nt := c.scopeSpecType(p, sf, f.Type)
+		nt := c.scopeSpecTypeNames(p, sf, f.Type, tparams)
 		if nt != f.Type {
 			dirty = true
 			nf := *f

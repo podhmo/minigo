@@ -397,43 +397,16 @@ func (c *compiler) undecidableCalls(e ast.Expr) []*ast.CallExpr {
 }
 
 // emitDeferredTypOperand pushes the resolved typedef of a deferred
-// operand for unsafe.Sizeof/Alignof. A plain OpDeferredValueTyp
-// answers only when the expression's typedef is resolvable; an
-// undecidable member call (`p.F(v)`, where the conversion question is
-// open) branches instead: a *TypeDef member means a conversion — push
-// it — and a function member evaluates the call and pushes nil so the
-// intrinsic sizes the boxed result, exactly the statically-opaque
-// path's behavior (the call's side effects run, like normal mode).
+// operand for unsafe.Sizeof/Alignof: nil for the value slot, then the
+// typedef the OpDeferredValueTyp hook resolves at run time — a member
+// conversion's target, a member function's declared result, an
+// untyped const's default.
 func (c *compiler) emitDeferredTypOperand(operand ast.Expr, pos token.Pos) {
-	if uc, ok := operand.(*ast.CallExpr); ok {
-		if sel, isUC := c.undecidableMemberCall(uc); isUC {
-			// load the member; the type question is resolved at run
-			// time by what it turned out to be.
-			c.expr(sel)
-			cname := c.fresh("$cm")
-			c.emit(bytecode.OpNewLocal, c.fs.declare(cname, sel.Pos()), 0, sel.Pos())
-			c.emit(bytecode.OpLocal, c.fs.lookupBinding(cname).slot, 0, pos)
-			jT := c.emit(bytecode.OpJumpIfTypedef, 0, 0, pos)
-			// not a TypeDef — a function: evaluate the call into the
-			// value slot and pass a nil typedef, the statically-opaque
-			// path — the intrinsic sizes the boxed result.
-			c.emit(bytecode.OpLocal, c.fs.lookupBinding(cname).slot, 0, pos)
-			for _, a := range uc.Args {
-				c.expr(a)
-			}
-			c.argStatics(uc.Args)
-			c.emit(bytecode.OpCall, len(uc.Args), callSpread(uc), pos)
-			c.emit(bytecode.OpNil, 0, 0, pos)
-			jEnd := c.emit(bytecode.OpJump, 0, 0, pos)
-			c.patchA(jT, len(c.ch.Code))
-			// a TypeDef — a conversion: the operand never evaluates
-			// (gc folds Sizeof); nil value + the member's typedef.
-			c.emit(bytecode.OpNil, 0, 0, pos)
-			c.emit(bytecode.OpLocal, c.fs.lookupBinding(cname).slot, 0, pos)
-			c.patchA(jEnd, len(c.ch.Code))
-			return
-		}
-	}
+	// a nil value + the operand's typedef, resolved at run time from
+	// the site — the DeferredValueTyp hook reads a member's declared
+	// signature for `p.F(v)`, so the call itself never evaluates
+	// (unsafe.Sizeof folds statically under gc; running p.F's args
+	// would invent side effects gc never has).
 	c.emit(bytecode.OpNil, 0, 0, pos)
 	c.emit(bytecode.OpDeferredValueTyp, c.exprSite(operand, pos), 0, pos)
 }
@@ -466,6 +439,12 @@ func (c *compiler) undecidableMemberCall(x *ast.CallExpr) (*ast.SelectorExpr, bo
 	}
 	sel, ok := ast.Unparen(x.Fun).(*ast.SelectorExpr)
 	if !ok {
+		return nil, false
+	}
+	// a local binding shadows the import name — `inner := …;
+	// inner.F()` selects the local's member, so there is no package
+	// member question to defer.
+	if id, ok := sel.X.(*ast.Ident); ok && c.fs.lookupBinding(id.Name) != nil {
 		return nil, false
 	}
 	if ref, _, ok := c.selTypRef(sel); !ok {
