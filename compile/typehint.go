@@ -872,6 +872,19 @@ func (c *compiler) callOpTyp(x *ast.CallExpr) opTyp {
 				return c.staticOpTyp(x.Args[0])
 			case "recover":
 				return opTyp{iface: true}
+			case "real", "imag":
+				// constant args keep the result an untyped
+				// constant; a typed complex arg's component type
+				// is left undecided here.
+				if !c.argsAllUntyped(x.Args) {
+					return opTyp{}
+				}
+				return opTyp{untyped: true, dte: &ast.Ident{Name: "float64"}}
+			case "complex":
+				if !c.argsAllUntyped(x.Args) {
+					return opTyp{}
+				}
+				return opTyp{untyped: true, dte: &ast.Ident{Name: "complex128"}}
 			}
 		}
 		return opTyp{}
@@ -891,6 +904,22 @@ func (c *compiler) callOpTyp(x *ast.CallExpr) opTyp {
 		return opTyp{}
 	}
 	return opTyp{}
+}
+
+// argsAllUntyped reports whether every argument reads as an untyped
+// constant — the case where real/imag/complex keep their result
+// untyped.
+func (c *compiler) argsAllUntyped(args []ast.Expr) bool {
+	if len(args) == 0 {
+		return false
+	}
+	for _, a := range args {
+		if ot := c.staticOpTyp(a); ot.untyped {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // funcTypeResultOpTyp resolves a signature to its single result type —
