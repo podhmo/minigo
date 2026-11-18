@@ -2,7 +2,6 @@ package minigo
 
 import (
 	"fmt"
-	"go/ast"
 	htmltemplate "html/template"
 	"reflect"
 	"text/template"
@@ -21,7 +20,7 @@ func (e *Engine) installTextTemplate(h *hostHelpers) {
 			return &runtime.GoValue{V: template.New(str(a[0]))}, nil
 		}, template.New),
 		"Must":    templateMust(template.Must),
-		"FuncMap": templateFuncMap,
+		"FuncMap": e.templateFuncMap(),
 		// a boxed host func: the fsys arg marshals through
 		// callReflectFunc's fs.FS adaptation, so a script embed.FS (or
 		// any script type declaring Open) works as template.ParseFS's
@@ -51,8 +50,7 @@ func init() {
 // templateFuncMap binds text/template's FuncMap — and html/template's,
 // an alias of it in Go — as a script map[string]any; handing it to
 // Template.Funcs adapts each func to a host func (see vm.funcMapTypes).
-var templateFuncMap = &runtime.TypeDef{Name: "text/template.FuncMap", Kind: runtime.KindMap,
-	Anon: &ast.MapType{Key: ast.NewIdent("string"), Value: ast.NewIdent("any")}}
+// Each session owns its own typedef (installbound.go: templateFuncMap).
 
 // templateMust binds text/template's or html/template's Must. It takes
 // the (t, err) pair of New/Parse — a Tuple arg unpacks — or the two
