@@ -343,6 +343,22 @@ type S struct{ zzz.T }
 		}
 	})
 
+	t.Run("dot-imported embedded type resolves", func(t *testing.T) {
+		bar := indexOf(t, `package bar
+import . "x/inner"
+type S struct{ T }
+`)
+		s := New(&fakeSource{indexes: map[string]*index.Index{"bar": bar, "x/inner": inner}})
+		ref := refFor(t, s, "bar", "S")
+		got := s.FieldPathOf(ref, "X", IndexedOnly)
+		if got.Kind != Found {
+			t.Fatalf("kind %v, want Found", got.Kind)
+		}
+		if diff := cmp.Diff([]int{0, 0}, got.Val.Index); diff != "" {
+			t.Fatal(diff)
+		}
+	})
+
 	t.Run("bound type parameter contributes no fields", func(t *testing.T) {
 		ix := indexOf(t, `package foo
 type E struct{ X int }
