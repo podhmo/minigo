@@ -28,6 +28,9 @@ func TestDeferFacts(t *testing.T) {
 		"assign_pkgname_differs",
 		"litkey_named_peel",
 		"src_pkgtype_maplit_keys",
+		"shift_const_count",
+		"gate_qualconst",
+		"gate_qualconstbind",
 	} {
 		dir := filepath.Join("testdata/difffuzz", slug)
 		t.Run(slug, func(t *testing.T) {
@@ -35,6 +38,8 @@ func TestDeferFacts(t *testing.T) {
 			if err != nil {
 				t.Fatalf("want.stdout: %v", err)
 			}
+			wantErrText, err := os.ReadFile(filepath.Join(dir, "want.err"))
+			expectErr := err == nil
 			var buf bytes.Buffer
 			opts := []minigo.Option{minigo.WithOutput(&buf)}
 			if src, err := os.ReadFile(filepath.Join(dir, "SRC")); err == nil {
@@ -52,7 +57,14 @@ func TestDeferFacts(t *testing.T) {
 			}()
 			select {
 			case runErr := <-resCh:
-				if runErr != nil {
+				if expectErr {
+					if runErr == nil {
+						t.Fatalf("run under DeferFacts: want error %q, got nil", strings.TrimSpace(string(wantErrText)))
+					}
+					if !strings.Contains(runErr.Error(), strings.TrimSpace(string(wantErrText))) {
+						t.Fatalf("run under DeferFacts: error %q does not contain %q", runErr, strings.TrimSpace(string(wantErrText)))
+					}
+				} else if runErr != nil {
 					t.Fatalf("run under DeferFacts: %v", runErr)
 				}
 			case <-time.After(runCaseTimeout):
