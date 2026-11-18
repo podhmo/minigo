@@ -118,8 +118,12 @@ func TestStrictLazyCompile(t *testing.T) {
 		"gate_nilvariadic",
 		"gate_nilaliasfile",
 		"convarg_order",
+		"convarg_nested",
+		"convarg_seqorder",
+		"convarg_gate",
 		"shift_lenarr",
 		"sizeof_deferred",
+		"sizeof_funcret",
 	} {
 		dir := filepath.Join("testdata/difffuzz", slug)
 		t.Run(slug, func(t *testing.T) {

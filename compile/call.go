@@ -150,11 +150,12 @@ func (c *compiler) hoistedArgCalls(e ast.Expr) (calls []ast.Expr, ok bool) {
 			}
 		case *ast.CallExpr:
 			if _, undecidable := c.undecidableMemberCall(t); undecidable {
-				// conversion or call is a deferred question — keep it
-				// inline like a conversion so hoistEagerOps can emit
-				// the member-shape branch; interior calls ride inside
-				// whichever path the branch picks.
-				return false
+				// conversion or call is a deferred question — the call
+				// itself stays inline like a conversion so hoistEagerOps
+				// can emit the member-shape branch, but its interior
+				// eager ops still hoist (a conversion's interior calls
+				// do, and the branch's arg slots read the scratches).
+				return true
 			}
 			if c.conversionCall(t) {
 				return true // transparent op — descend into its args
@@ -214,23 +215,43 @@ func (c *compiler) hoistEagerOps(es []ast.Expr, prefix string) (subs []ast.Expr,
 		if !eok {
 			return nil, false
 		}
+		ucs := c.undecidableCalls(e)
+		var eff []ast.Expr
+		eff = append(eff, ec...)
+		for _, uc := range ucs {
+			eff = append(eff, uc)
+		}
+		sort.SliceStable(eff, func(i, j int) bool { return eff[i].Pos() < eff[j].Pos() })
 		switch {
-		case len(ec) == 0:
+		case len(eff) == 0:
 			sawDeferred = true
-		case sawDeferred || len(ec) > 1 || ec[0] != ast.Unparen(e):
+		case sawDeferred || len(eff) > 1 || eff[0] != ast.Unparen(e):
 			inOrder = false
 		}
-		work = append(work, ec...)
-		for _, uc := range c.undecidableCalls(e) {
-			work = append(work, uc)
+		if len(ucs) > 0 {
+			// a deferred member call is half conversion — its operand
+			// side defers — so a later arg's eager op must hoist:
+			// `take(p.T(x), bump())` reads x after bump like normal.
+			sawDeferred = true
 		}
+		work = append(work, eff...)
 	}
 	if len(work) == 0 || inOrder {
 		return nil, false
 	}
 	// eager ops and undecidable member calls interleave in lexical
-	// order — a member load belongs to phase 1 for the call outcome.
-	sort.SliceStable(work, func(i, j int) bool { return work[i].Pos() < work[j].Pos() })
+	// order — a member load belongs to phase 1 for the call outcome —
+	// keyed so an undecidable call follows the interior ops hoisted out
+	// of its own args (its emission references their scratch slots).
+	wkey := func(x ast.Expr) token.Pos {
+		if uc, ok := x.(*ast.CallExpr); ok {
+			if _, isUC := c.undecidableMemberCall(uc); isUC {
+				return uc.End()
+			}
+		}
+		return x.Pos()
+	}
+	sort.SliceStable(work, func(i, j int) bool { return wkey(work[i]) < wkey(work[j]) })
 	// Phase 1: evaluate each hoisted op into a scratch local, in order.
 	// An interface-typed hoisted expr marks its scratch name like a :=
 	// bind does, so a substituted == operand still picks pair equality.
@@ -242,21 +263,26 @@ func (c *compiler) hoistEagerOps(es []ast.Expr, prefix string) (subs []ast.Expr,
 			// member eagerly (cheap — no user side effect), run the
 			// call now only when it is not a *TypeDef, and let the
 			// operand-position ident pick the conversion path when
-			// it is — a conversion's args defer like always.
+			// it is — a conversion's args defer like always. Args
+			// read their hoisted scratches on both paths.
 			c.expr(sel)
 			cname := c.fresh("$cm")
 			c.emit(bytecode.OpNewLocal, c.fs.declare(cname, sel.Pos()), 0, sel.Pos())
 			rname := c.fresh("$cv")
 			rslot := c.fs.declare(rname, call.Pos())
+			subArgs := make([]ast.Expr, len(uc.Args))
+			for i, a := range uc.Args {
+				subArgs[i] = substCallArg(a, names)
+			}
 			c.emit(bytecode.OpLocal, c.fs.lookupBinding(cname).slot, 0, call.Pos())
 			jT := c.emit(bytecode.OpJumpIfTypedef, 0, 0, call.Pos())
-			c.expr(&ast.CallExpr{Fun: &ast.Ident{Name: cname, NamePos: uc.Fun.Pos()}, Args: uc.Args, Lparen: uc.Lparen, Ellipsis: uc.Ellipsis, Rparen: uc.Rparen})
+			c.expr(&ast.CallExpr{Fun: &ast.Ident{Name: cname, NamePos: uc.Fun.Pos()}, Args: subArgs, Lparen: uc.Lparen, Ellipsis: uc.Ellipsis, Rparen: uc.Rparen})
 			c.emit(bytecode.OpNewLocal, rslot, 0, call.Pos())
 			c.patchA(jT, len(c.ch.Code))
 			if c.deferCallTemps == nil {
 				c.deferCallTemps = map[string]*deferredCallTemp{}
 			}
-			c.deferCallTemps[rname] = &deferredCallTemp{callee: cname, res: rname, call: uc}
+			c.deferCallTemps[rname] = &deferredCallTemp{callee: cname, res: rname, call: uc, args: subArgs}
 			names[call] = rname
 			continue
 		}
@@ -288,20 +314,87 @@ func (c *compiler) hoistEagerOps(es []ast.Expr, prefix string) (subs []ast.Expr,
 
 // undecidableCalls collects the package-qualified calls whose member
 // question is still open — the conversion-vs-call branch hoistEagerOps
-// emits for each. Their interiors stay opaque to hoisting: whichever
-// path the runtime branch picks evaluates the args at its own time.
+// emits for each. Nodes a phase-1 emission would evaluate wholesale
+// (eager calls, receives, slices, asserts, map lits, function literals
+// and conditional operators) keep their interiors: an undecidable call
+// nested inside one already evaluates with it.
 func (c *compiler) undecidableCalls(e ast.Expr) []*ast.CallExpr {
 	var out []*ast.CallExpr
 	ast.Inspect(e, func(n ast.Node) bool {
-		if uc, ok := n.(*ast.CallExpr); ok {
-			if _, isUC := c.undecidableMemberCall(uc); isUC {
-				out = append(out, uc)
+		switch t := n.(type) {
+		case *ast.FuncLit:
+			return false // body calls run at invocation, not arg time
+		case *ast.BinaryExpr:
+			if t.Op == token.LAND || t.Op == token.LOR {
+				return false
+			}
+		case *ast.CallExpr:
+			if _, isUC := c.undecidableMemberCall(t); isUC {
+				out = append(out, t)
+				return false
+			}
+			if c.conversionCall(t) {
+				return true // transparent op — descend into its args
+			}
+			if c.isConstExpr(t) {
+				return false
+			}
+			return false // an eager op — its interior evaluates with it
+		case *ast.UnaryExpr:
+			if t.Op == token.ARROW {
+				return false
+			}
+		case *ast.SliceExpr, *ast.TypeAssertExpr:
+			return false
+		case *ast.CompositeLit:
+			if c.mapLitType(t.Type, 8) {
 				return false
 			}
 		}
 		return true
 	})
 	return out
+}
+
+// emitDeferredTypOperand pushes the resolved typedef of a deferred
+// operand for unsafe.Sizeof/Alignof. A plain OpDeferredValueTyp
+// answers only when the expression's typedef is resolvable; an
+// undecidable member call (`p.F(v)`, where the conversion question is
+// open) branches instead: a *TypeDef member means a conversion — push
+// it — and a function member evaluates the call and pushes nil so the
+// intrinsic sizes the boxed result, exactly the statically-opaque
+// path's behavior (the call's side effects run, like normal mode).
+func (c *compiler) emitDeferredTypOperand(operand ast.Expr, pos token.Pos) {
+	if uc, ok := operand.(*ast.CallExpr); ok {
+		if sel, isUC := c.undecidableMemberCall(uc); isUC {
+			// load the member; the type question is resolved at run
+			// time by what it turned out to be.
+			c.expr(sel)
+			cname := c.fresh("$cm")
+			c.emit(bytecode.OpNewLocal, c.fs.declare(cname, sel.Pos()), 0, sel.Pos())
+			c.emit(bytecode.OpLocal, c.fs.lookupBinding(cname).slot, 0, pos)
+			jT := c.emit(bytecode.OpJumpIfTypedef, 0, 0, pos)
+			// not a TypeDef — a function: evaluate the call into the
+			// value slot and pass a nil typedef, the statically-opaque
+			// path — the intrinsic sizes the boxed result.
+			c.emit(bytecode.OpLocal, c.fs.lookupBinding(cname).slot, 0, pos)
+			for _, a := range uc.Args {
+				c.expr(a)
+			}
+			c.emit(bytecode.OpCall, len(uc.Args), 0, pos)
+			c.emit(bytecode.OpNil, 0, 0, pos)
+			jEnd := c.emit(bytecode.OpJump, 0, 0, pos)
+			c.patchA(jT, len(c.ch.Code))
+			// a TypeDef — a conversion: the operand never evaluates
+			// (gc folds Sizeof); nil value + the member's typedef.
+			c.emit(bytecode.OpNil, 0, 0, pos)
+			c.emit(bytecode.OpLocal, c.fs.lookupBinding(cname).slot, 0, pos)
+			c.patchA(jEnd, len(c.ch.Code))
+			return
+		}
+	}
+	c.emit(bytecode.OpNil, 0, 0, pos)
+	c.emit(bytecode.OpDeferredValueTyp, c.exprSite(operand, pos), 0, pos)
 }
 
 // deferredCallTemp ties a hoist scratch name to an undecidable member
@@ -311,6 +404,10 @@ type deferredCallTemp struct {
 	callee string
 	res    string
 	call   *ast.CallExpr
+	// args is call.Args with hoisted interior ops rewritten to their
+	// scratch idents — the phase-2 conversion path evaluates exactly
+	// the arguments phase 1 would have.
+	args []ast.Expr
 }
 
 // undecidableMemberCall reports whether a CallExpr's callee is a
@@ -346,7 +443,7 @@ func (c *compiler) deferredCallOperand(dc *deferredCallTemp, pos token.Pos) {
 	c.getRef(dc.res, pos)
 	jEnd := c.emit(bytecode.OpJump, 0, 0, pos)
 	c.patchA(jConv, len(c.ch.Code))
-	c.expr(&ast.CallExpr{Fun: &ast.Ident{Name: dc.callee, NamePos: call.Fun.Pos()}, Args: call.Args, Lparen: call.Lparen, Ellipsis: call.Ellipsis, Rparen: call.Rparen})
+	c.expr(&ast.CallExpr{Fun: &ast.Ident{Name: dc.callee, NamePos: call.Fun.Pos()}, Args: dc.args, Lparen: call.Lparen, Ellipsis: call.Ellipsis, Rparen: call.Rparen})
 	c.patchA(jEnd, len(c.ch.Code))
 }
 
@@ -603,10 +700,8 @@ unwrapped:
 				} else if ot.deferred {
 					// the operand's type is a deferred fact
 					// (`p.T(v)` under IndexedOnly): Sizeof answers
-					// from the resolved typedef at run time — the
-					// operand still never evaluates.
-					c.emit(bytecode.OpNil, 0, 0, x.Pos())
-					c.emit(bytecode.OpDeferredValueTyp, c.exprSite(operand, x.Pos()), 0, x.Pos())
+					// from the resolved typedef at run time.
+					c.emitDeferredTypOperand(operand, x.Pos())
 				} else {
 					// the operand's type is statically opaque (a host
 					// func's result, a reflect value) — evaluate it
