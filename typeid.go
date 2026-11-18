@@ -90,6 +90,22 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 	return runtime.TypeID(fmt.Sprintf("anon:%d:%s%s", td.Kind, runtime.TypUnderlyingSpelling(td), args))
 }
 
+// internTypedef returns the session's canonical descriptor for td's
+// type identity (M4-3b): the first typedef stored under td's TypeID
+// wins, later equivalents are dropped. Typedefs with no stable
+// identity (the "?" fallback — no Spec, no host carrier, no expr)
+// pass through uninterned.
+func (e *Engine) internTypedef(td *runtime.TypeDef) *runtime.TypeDef {
+	if td == nil || e.typeIntern == nil {
+		return td
+	}
+	tid := e.typeIDOf(td)
+	if tid == "" || tid == "?" {
+		return td
+	}
+	return e.typeIntern.Of(tid, td)
+}
+
 // boundTypedefOf unwraps a Binds value to its typedef (type arguments
 // bind typedefs; anything else means the parameter is unbound).
 func boundTypedefOf(v runtime.Value) *runtime.TypeDef {

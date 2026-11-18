@@ -106,6 +106,13 @@ type sessionState struct {
 	builtins   *runtime.Env
 	fieldPaths *source.FieldPaths // lazily built by fieldPath (M4-1b)
 
+	// typeIntern is the session's TypeID → *runtime.TypeDef table
+	// (M4-3b): one canonical descriptor per type identity, so td == td
+	// is a correct same-type check inside the session. A forked session
+	// gets a fresh table — a re-declared type must never alias the
+	// parent's descriptor.
+	typeIntern *execution.Intern[runtime.TypeID, *runtime.TypeDef]
+
 	mu              sync.Mutex
 	pkgs            map[string]*runtime.Package // by import path
 	byDir           map[string]*runtime.Package // synthetic packages by dir
@@ -294,6 +301,7 @@ func NewEngine(startDir string, opts ...Option) *Engine {
 			srcs:         map[string]*runtime.Package{},
 			pkgsLenient:  map[string]*runtime.Package{},
 			byDirLenient: map[string]*runtime.Package{},
+			typeIntern:   execution.NewIntern[runtime.TypeID, *runtime.TypeDef](),
 		},
 	}
 	for _, o := range opts {
@@ -545,6 +553,7 @@ func (e *Engine) NewSession() *Engine {
 			pkgsLenient:  map[string]*runtime.Package{},
 			byDirLenient: map[string]*runtime.Package{},
 			filesLenient: map[string]*runtime.Package{},
+			typeIntern:   execution.NewIntern[runtime.TypeID, *runtime.TypeDef](),
 		},
 	}
 	s.builtins = builtins(s)
