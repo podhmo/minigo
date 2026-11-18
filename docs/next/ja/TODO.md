@@ -93,7 +93,7 @@
 ## M4 + P3: 型情報の統合
 
 - [ ] **M4-1 フィールドと埋め込み**: `semantics.FieldPath` を作り、`(TypeID, name)` ごとにパスをキャッシュする。完了条件: 「selector resolution re-searches by name」の TODO が解消する。[references/typeid.md](./references/typeid.md)
-  - [ ] **M4-1a 埋め込みを含むパス探索**: 宣言情報から `FieldPath` を求める。直下のフィールドの優先、同じ深さでの曖昧性、非公開フィールド、埋め込みポインタをテストする。
+  - [x] **M4-1a 埋め込みを含むパス探索**: 宣言情報から `FieldPath` を求める。直下のフィールドの優先、同じ深さでの曖昧性、非公開フィールド、埋め込みポインタをテストする。→ `semantics.FieldPath`（`{Index, PkgPath, Exported}`、reflect の `Field.Index` 流の index 列）と `Service.FieldPathOf` を追加。埋め込みフィールドは型名でも選べ、曖昧性は Failed、非公開は PkgPath+Exported で呼び出し側が判定（PR TBD）
   - [ ] **M4-1b selector の読み出し**: M4-1a のパスを VM の読み出しに使い、nil の埋め込みポインタや名前の衝突で既存の結果になることを確認する。
   - [ ] **M4-1c 書き込みとアドレス取得**: M4-1b のあと、代入・複合代入・`&x.f` を同じパスに切り替える。書き込み先・アドレスの同一性・nil の診断を検証する。
   - [ ] **M4-1d FieldPath のキャッシュ**: M4-1b/c と M4-3a のあと、`(TypeID, name)` ごとにパスを再利用する。宣言が変われば古いパスを使わず、selector が同じパスを再探索しないことを確認する。
