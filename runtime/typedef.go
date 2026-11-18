@@ -1147,13 +1147,16 @@ func (c sigComparer) sigExprEq(ea ast.Expr, ca *TypeDef, eb ast.Expr, cb *TypeDe
 	return TypSpelling(ea, ca) == TypSpelling(eb, cb)
 }
 
-// sigParenOff unwraps one level of parenthesization — `(*T)` spells
-// the same type as `*T` — so the StarExpr check below sees through.
+// sigParenOff unwraps parenthesization — `(*T)` (and `((*T))`) spells
+// the same type as `*T` — so the StarExpr check above sees through.
 func sigParenOff(e ast.Expr) ast.Expr {
-	if p, ok := e.(*ast.ParenExpr); ok {
-		return p.X
+	for {
+		if p, ok := e.(*ast.ParenExpr); ok {
+			e = p.X
+			continue
+		}
+		return e
 	}
-	return e
 }
 
 // sigElemOf resolves the element typedef of a container typedef whose
