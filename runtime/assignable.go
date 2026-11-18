@@ -156,3 +156,141 @@ func StructFieldsEq(a, b *TypeDef) bool {
 	}
 	return true
 }
+
+// ConvertibleTo reports whether a value of typedef a can be converted to
+// typedef b under Go's conversion rules — the judgment behind `T(x)` and
+// reflect's ConvertibleTo: identical underlying types (with struct tags
+// ignored, unlike assignment), integer/floating numerics between
+// themselves, complex only to complex, integer to string, string to and
+// from []byte/[]rune, and a slice to an array or array pointer of the
+// same element type. Whatever res cannot resolve answers false — the
+// judgment is never wider than the rules allow.
+func ConvertibleTo(a, b *TypeDef, res TypeResolver) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	if a == b || TypIdentical(a, b) {
+		return true
+	}
+	r := orResolver(res)
+	if NewShapeEq(r).Conv(a, b) {
+		return true
+	}
+	ua, ub := r.Underlying(a), r.Underlying(b)
+	if ua == nil || ub == nil {
+		return false
+	}
+	// tag-blind struct conversion (Go 1.8+): identical underlying struct
+	// shapes convert even when field tags differ — unlike assignment.
+	if ua.Kind == KindStruct && ub.Kind == KindStruct && StructFieldsEq(ua, ub) {
+		return true
+	}
+	na, nb := convBasicName(ua), convBasicName(ub)
+	cls := func(n string) byte {
+		switch n {
+		case "int", "int8", "int16", "int32", "int64",
+			"uint", "uint8", "uint16", "uint32", "uint64", "uintptr":
+			return 'i'
+		case "float32", "float64":
+			return 'f'
+		case "complex64", "complex128":
+			return 'c'
+		case "string":
+			return 's'
+		}
+		return 0
+	}
+	ca, cb := cls(na), cls(nb)
+	if ca == 'c' || cb == 'c' {
+		return ca == 'c' && cb == 'c'
+	}
+	num := func(c byte) bool { return c == 'i' || c == 'f' }
+	if num(ca) && num(cb) {
+		return true
+	}
+	if ca == 'i' && cb == 's' {
+		return true // integer -> one-rune string
+	}
+	if ca == 's' && runeSliceTd(ub) {
+		return true // string -> []byte / []rune
+	}
+	if cb == 's' && runeSliceTd(ua) {
+		return true // []byte / []rune -> string
+	}
+	if convIsSlice(ua) && convIsArray(ub) {
+		return convSameElem(ua, ub, r)
+	}
+	if convIsSlice(ua) && ub.Kind == KindPointer {
+		if ue, err := r.ElemOf(ub); err == nil && ue != nil && convIsArray(r.Underlying(ue)) {
+			return convSameElem(ua, r.Underlying(ue), r)
+		}
+	}
+	return false
+}
+
+// convBasicName is the canonical basic-type name a peeled typedef
+// denotes — "" for composite or unresolvable shapes.
+func convBasicName(td *TypeDef) string {
+	if td == nil {
+		return ""
+	}
+	if td.Name != "" {
+		return CanonicalBasicName(td.Name)
+	}
+	if id, ok := td.Anon.(*ast.Ident); ok {
+		return CanonicalBasicName(id.Name)
+	}
+	return ""
+}
+
+// convIsSlice reports whether a peeled typedef is a slice ([]T, not
+// [n]T — both share KindSlice; the AST's Len distinguishes).
+func convIsSlice(td *TypeDef) bool {
+	if td == nil || td.Kind != KindSlice {
+		return false
+	}
+	if at, ok := td.TypeExpr().(*ast.ArrayType); ok {
+		return at.Len == nil
+	}
+	return true
+}
+
+// convIsArray reports whether a peeled typedef is a fixed-length array.
+func convIsArray(td *TypeDef) bool {
+	if td == nil {
+		return false
+	}
+	at, ok := td.TypeExpr().(*ast.ArrayType)
+	return ok && at.Len != nil
+}
+
+// runeSliceTd reports whether a peeled typedef is []byte or []rune —
+// the shapes string converts to and from.
+func runeSliceTd(td *TypeDef) bool {
+	if !convIsSlice(td) {
+		return false
+	}
+	et := td.Elem
+	if et == nil {
+		return false
+	}
+	switch convBasicName(et) {
+	case "uint8", "int32":
+		return true
+	}
+	return false
+}
+
+// convSameElem checks element-typedef identity for the slice->array
+// conversion rules.
+func convSameElem(a, b *TypeDef, r TypeResolver) bool {
+	ea, err := r.ElemOf(a)
+	if err != nil || ea == nil {
+		ea = a.Elem
+	}
+	eb, err := r.ElemOf(b)
+	if err != nil || eb == nil {
+		eb = b.Elem
+	}
+	return ea != nil && eb != nil && (ea == eb || TypIdentical(ea, eb))
+}

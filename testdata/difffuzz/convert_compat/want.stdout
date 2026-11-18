@@ -1,0 +1,13 @@
+1
+A
+ab
+3 3
+3 7
+[1 2]
+[1 2]
+int->string: true
+string->[]byte: true
+string->[]int: false
+int->float: true
+S1->S2: true
+S1 assignable S2: false

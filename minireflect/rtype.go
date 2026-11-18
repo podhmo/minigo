@@ -1258,11 +1258,12 @@ func (t *RType) AssignableTo(u *RType) bool {
 }
 
 func (t *RType) ConvertibleTo(u *RType) bool {
-	// Go's conversion rules: identical underlying types, non-complex
-	// numerics between themselves, complex only to complex,
-	// integer<->string (rune), []byte/[]rune<->string, and a slice to an
-	// array or array pointer of the same element. Anything else is false
-	// (string -> []int, []int -> string, int -> complex).
+	// Go's conversion rules: identical underlying types (struct tags
+	// ignored, unlike assignment), non-complex numerics between
+	// themselves, complex only to complex, integer<->string (rune),
+	// []byte/[]rune<->string, and a slice to an array or array pointer
+	// of the same element. Anything else is false (string -> []int,
+	// []int -> string, int -> complex).
 	if u == nil {
 		return false
 	}
@@ -1272,10 +1273,11 @@ func (t *RType) ConvertibleTo(u *RType) bool {
 	if t.rt != nil && u.rt != nil {
 		return t.rt.ConvertibleTo(u.rt)
 	}
-	if t.td != nil && u.td != nil &&
-		runtime.TypUnderlyingSpelling(t.td) == runtime.TypUnderlyingSpelling(u.td) {
+	if t.td != nil && u.td != nil && runtime.ConvertibleTo(t.td, u.td, reflectResolver{t.e}) {
 		return true
 	}
+	// the td-level judgment covers script typedefs; for host/rt hybrids
+	// (one side rt-only) fall back to kind-level rules.
 	tk, uk := t.Kind(), u.Kind()
 	complexKind := func(k reflect.Kind) bool {
 		return k == reflect.Complex64 || k == reflect.Complex128
