@@ -496,10 +496,13 @@ func (e *Engine) NewSession() *Engine {
 	// Intrinsic packages the session already bound itself keep the
 	// session version — their builtins close over the session engine
 	// and its package cache, so e.g. inspect.PackageOf observes the
-	// session's (patched) packages, not the parent's copy.
+	// session's (patched) packages, not the parent's copy. Paths the
+	// session still holds pending for lazy install skip the copy too:
+	// the parent's package there carries builtins closing over the
+	// parent engine (a session's os.Chdir would move the parent's cwd).
 	e.mu.Lock()
 	e.names.Each(func(path string, p *runtime.Package) bool {
-		if !s.names.Bound(path) {
+		if !s.names.Bound(path) && !s.pending.Registered(path) {
 			s.names.Set(path, p)
 			s.pkgs[path] = p
 		}

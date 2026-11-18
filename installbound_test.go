@@ -166,3 +166,17 @@ func TestExplicitBindWinsDuringLazyInstall(t *testing.T) {
 		t.Fatal("the default table won over the explicit Bind")
 	}
 }
+
+// TestSessionLazyInstallBindsItsOwnTable pins that a session builds its
+// own lazy tables: NewSession copies the parent's bound registry, but a
+// path still pending in the session must not take the parent's package —
+// its builtins close over the parent engine, so e.g. the session's
+// os.Chdir would move the parent's virtual cwd.
+func TestSessionLazyInstallBindsItsOwnTable(t *testing.T) {
+	e := NewEngine(".")
+	parent := e.BoundOf("os")
+	s := e.NewSession()
+	if child := s.BoundOf("os"); child == parent {
+		t.Fatal("the session answered the parent's os package")
+	}
+}
