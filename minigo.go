@@ -85,16 +85,17 @@ type sharedAssets struct {
 	// fingerprint and a fresh index (see indexCache).
 	ixcache *source.IndexCache
 
-	initMode   InitMode
-	specials   *execution.Registry[runtime.SymbolID, runtime.SpecialFunc]
-	hostPolicy func(importPath, symbol string) bool // nil = allow all bound intrinsics
-	pkgModes   map[string]PackageMode               // per-path import mode; nil = ModeAuto everywhere
-	out        io.Writer                            // print/println/fmt.Print* destination; nil = io.Discard
-	cwd        string                               // virtual cwd for os.* path intrinsics (defaults to startDir)
-	args       []string                             // script-visible os.Args; nil = host process argv
-	prof       *ScriptProfiler                      // samples script stacks; nil = off
-	strictLazy bool                                 // compile every indexed fact under IndexedOnly
-	assetAudit bool                                 // hash package AST+index and verify on Call (M3-2; off = no hash cost)
+	initMode     InitMode
+	specials     *execution.Registry[runtime.SymbolID, runtime.SpecialFunc]
+	hostPolicy   func(importPath, symbol string) bool // nil = allow all bound intrinsics
+	pkgModes     map[string]PackageMode               // per-path import mode; nil = ModeAuto everywhere
+	out          io.Writer                            // print/println/fmt.Print* destination; nil = io.Discard
+	cwd          string                               // virtual cwd for os.* path intrinsics (defaults to startDir)
+	args         []string                             // script-visible os.Args; nil = host process argv
+	prof         *ScriptProfiler                      // samples script stacks; nil = off
+	strictLazy   bool                                 // compile every indexed fact under IndexedOnly
+	verifyChunks bool                                 // run bytecode.Verify/VerifyKinds on every compiled chunk
+	assetAudit   bool                                 // hash package AST+index and verify on Call (M3-2; off = no hash cost)
 }
 
 // sessionState is the per-session part of an engine: a forked session
@@ -248,6 +249,15 @@ func WithScriptProfiler(p *ScriptProfiler) Option {
 	return func(e *Engine) { e.prof = p }
 }
 
+// WithBytecodeVerify runs the bytecode verifier on every chunk the
+// engine compiles (P4-1b): stack depths via [bytecode.Verify], slot
+// kinds via [bytecode.VerifyKinds]. A malformed chunk fails the
+// compile with the verifier's diagnostics — a debug option, off by
+// default so bad generated code still runs for production sessions.
+func WithBytecodeVerify() Option {
+	return func(e *Engine) { e.verifyChunks = true }
+}
+
 // WithAssetAudit enables the opt-in asset audit (M3-2): the engine
 // fingerprints every built package's AST + index and re-verifies the
 // fingerprint in [Engine.Call], erroring when a shared asset was
@@ -387,10 +397,22 @@ func (e *Engine) compileScopedExpr(pkg *runtime.Package, file *syntax.File, x as
 }
 
 func (e *Engine) compileFunc(fn *runtime.Function) error {
+	var err error
 	if e.strictLazy {
-		return compile.FuncStrict(fn)
+		err = compile.FuncStrict(fn)
+	} else {
+		err = compile.Func(fn)
 	}
-	return compile.Func(fn)
+	if err != nil || !e.verifyChunks || fn.Chunk == nil {
+		return err
+	}
+	if _, verr := bytecode.Verify(fn.Chunk); verr != nil {
+		return fmt.Errorf("%s: %w", fn.Name, verr)
+	}
+	if _, verr := bytecode.VerifyKinds(fn.Chunk); verr != nil {
+		return fmt.Errorf("%s: %w", fn.Name, verr)
+	}
+	return nil
 }
 
 // fieldPathService builds the FieldPaths adapter over this engine's

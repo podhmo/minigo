@@ -145,6 +145,82 @@ func TestVerifyReject(t *testing.T) {
 	}
 }
 
+func TestVerifyKindsReject(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		code []Instruction
+		want string
+	}{
+		{
+			name: "merge kind mismatch",
+			code: []Instruction{
+				// ip4 arrives [Type], ip3 jumps to ip5 with [Scalar]:
+				// both concrete, different — a merge conflict.
+				Instruction{Op: OpConst},           // 0 [Any]
+				Instruction{Op: OpJumpFalse, A: 4}, // 1 -> 4 on false
+				Instruction{Op: OpNil},             // 2 [Scalar]
+				Instruction{Op: OpJump, A: 5},      // 3 -> 5 [Scalar]
+				Instruction{Op: OpDeferredTyp},     // 4 [Type]
+				Instruction{Op: OpReturn, A: 1},    // 5 merge
+			},
+			want: "merge slot 0 kind type and scalar disagree",
+		},
+		{
+			name: "call on a typedef tier",
+			code: []Instruction{
+				// OpCall A=1 wants [callable, arg, staticTd] —
+				// a TypeDef where the callee should be conflicts.
+				Instruction{Op: OpDeferredTyp},
+				Instruction{Op: OpLocal},
+				Instruction{Op: OpDeferredTyp},
+				Instruction{Op: OpCall, A: 1},
+			},
+			want: "holds type, want callable",
+		},
+		{
+			name: "coerce without typedef",
+			code: []Instruction{
+				Instruction{Op: OpNil},    // [Scalar]
+				Instruction{Op: OpCoerce}, // wants Type on top
+			},
+			want: "holds scalar, want type",
+		},
+		{
+			name: "unpack a scalar",
+			code: []Instruction{
+				Instruction{Op: OpNil},
+				Instruction{Op: OpUnpack, A: 2},
+			},
+			want: "holds scalar, want tuple",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := VerifyKinds(&Chunk{Code: tt.code})
+			if err == nil {
+				t.Fatalf("VerifyKinds succeeded, want error containing %q", tt.want)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error %q does not contain %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestVerifyKindsPositive(t *testing.T) {
+	// a call with its full static typedef tier verifies:
+	// [callable, arg, staticTd] -> [result]
+	c := chunk(
+		Instruction{Op: OpMakeClosure},
+		Instruction{Op: OpLocal},
+		Instruction{Op: OpDeferredTyp},
+		Instruction{Op: OpCall, A: 1},
+		Instruction{Op: OpReturn, A: 1},
+	)
+	if _, err := VerifyKinds(c); err != nil {
+		t.Fatalf("VerifyKinds: %v", err)
+	}
+}
+
 func TestVerifyTypGateIsNotAJump(t *testing.T) {
 	// OpTypGate's A/B index CallSites, not code offsets — a gate
 	// pointing at sites 5/6 in a 1-instruction chunk must not read
