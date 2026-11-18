@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/podhmo/minigo/index"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
 )
@@ -431,6 +432,31 @@ func TestTypeIDAnonLocalLeafsDistinct(t *testing.T) {
 		{Type: ast.NewIdent("int")},
 	}}})); a != b {
 		t.Errorf("[]T bound to struct{int} keys unlike []struct{int}: %q vs %q", a, b)
+	}
+	// two function-local aliases of the same name in one package embed
+	// different fields: `a = int` and `a = string` are not one type.
+	embedAliasOf := func(target string) *runtime.TypeDef {
+		a := srcTd(p1, f, 10, "a")
+		a.Kind = runtime.KindAlias
+		a.Anon = ast.NewIdent(target)
+		return &runtime.TypeDef{
+			Kind: runtime.KindStruct, Pkg: p1, File: f,
+			Anon: &ast.StructType{Fields: &ast.FieldList{List: []*ast.Field{
+				{Type: ast.NewIdent("a")},
+			}}},
+			LocalTypes: map[string]*runtime.TypeDef{"a": a},
+		}
+	}
+	if a, b := e.typeIDOf(embedAliasOf("int")), e.typeIDOf(embedAliasOf("string")); a == b {
+		t.Errorf("struct{a} collides across alias targets in one package: %q", a)
+	}
+	// a package that shadows a universe name embeds ITS decl, not the
+	// builtin: `type int string` + struct{int} is not builtin struct{int}.
+	pShadow := &runtime.Package{Path: "shadow/p", Name: "p", Index: &index.Index{
+		Types: map[string]*index.TypeDeclInfo{"int": {}},
+	}}
+	if a, b := e.typeIDOf(embedInt(pShadow)), e.typeIDOf(embedInt(p1)); a == b {
+		t.Errorf("struct{int} collides with package-shadowed int: %q", a)
 	}
 	// an unnamed func parameter's type is not an embedded field:
 	// `func(A)` with `type A = int` keys like `func(int)` and `func(x A)`.

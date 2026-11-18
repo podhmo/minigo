@@ -254,14 +254,30 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 					continue
 				}
 				lt := used[n]
-				if lt == nil && universeTypeName[n] {
-					continue
-				}
 				pkg := td.Pkg.Path
 				if lt != nil && lt.Pkg != nil {
 					pkg = lt.Pkg.Path
 				}
-				ids[n+"@"+pkg] = true
+				q := n + "@" + pkg
+				if lt != nil {
+					// name + package + target: function-local
+					// `a = int` and `a = string` in the same package
+					// embed different fields.
+					ids[q+"="+string(e.typeIDOf(lt))] = true
+					continue
+				}
+				if td.Pkg.Index != nil {
+					if _, ok := td.Pkg.Index.Types[n]; ok {
+						// the package shadows the name itself —
+						// its decl is the lock, one name per package.
+						ids[q] = true
+						continue
+					}
+				}
+				if universeTypeName[n] {
+					continue
+				}
+				ids[q] = true
 			}
 			if len(ids) > 0 {
 				leafs := make([]string, 0, len(ids))
