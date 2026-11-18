@@ -13,7 +13,7 @@ import (
 func (e *Engine) installPathFilepath(h *hostHelpers) {
 	// path/filepath: pure path math is always available; operations that
 	// touch the filesystem (Glob, WalkDir, EvalSymlinks) go through
-	// e.fsPath like the os.* equivalents.
+	// env.FsPath like the os.* equivalents.
 	e.Bind("path/filepath", map[string]runtime.Value{
 		"Join":          h.fn("filepath.Join", func(a []any) (any, error) { return filepath.Join(strSlice(a)...), nil }, filepath.Join),
 		"Base":          h.fn1("filepath.Base", func(a []any) (any, error) { return filepath.Base(str(a[0])), nil }, filepath.Base),
@@ -34,13 +34,13 @@ func (e *Engine) installPathFilepath(h *hostHelpers) {
 		}),
 		// Abs/Rel anchor relative paths at the engine's virtual cwd, not the
 		// host process's (divergence from real filepath.Abs is deliberate).
-		"Abs": h.fn1("filepath.Abs", func(a []any) (any, error) { return retErr2(e.cwdAbs(str(a[0])), nil) }),
+		"Abs": h.fn1("filepath.Abs", func(a []any) (any, error) { return retErr2(h.env.CwdAbs(str(a[0])), nil) }),
 		"Rel": h.fn2("filepath.Rel", func(a []any) (any, error) {
-			return retErr2(filepath.Rel(e.cwdAbs(str(a[0])), e.cwdAbs(str(a[1]))))
+			return retErr2(filepath.Rel(h.env.CwdAbs(str(a[0])), h.env.CwdAbs(str(a[1]))))
 		}),
 		"EvalSymlinks": h.fn1("filepath.EvalSymlinks", func(a []any) (any, error) {
 			sp := str(a[0])
-			p, err := e.fsPath(sp)
+			p, err := h.env.FsPath(sp)
 			if err != nil {
 				return nil, err
 			}
@@ -49,7 +49,7 @@ func (e *Engine) installPathFilepath(h *hostHelpers) {
 		}),
 		"Glob": h.fn1("filepath.Glob", func(a []any) (any, error) {
 			pat := str(a[0])
-			ap, err := e.fsPath(pat)
+			ap, err := h.env.FsPath(pat)
 			if err != nil {
 				return nil, err
 			}
@@ -62,7 +62,7 @@ func (e *Engine) installPathFilepath(h *hostHelpers) {
 			// escape comes back as the call's error value (Go's shape), not
 			// a trap — the script gets nil matches either way.
 			for _, p := range m {
-				if err := e.cfg.CheckPath(p); err != nil {
+				if err := h.env.CheckPath(p); err != nil {
 					return retErr2([]string(nil), err)
 				}
 			}
@@ -70,7 +70,7 @@ func (e *Engine) installPathFilepath(h *hostHelpers) {
 				// Go returns matches in the shape of the pattern: keep
 				// relative patterns relative to the virtual cwd.
 				for i, p := range m {
-					if rel, rerr := filepath.Rel(e.cwd, p); rerr == nil {
+					if rel, rerr := filepath.Rel(h.env.Cwd(), p); rerr == nil {
 						m[i] = rel
 					}
 				}
@@ -83,7 +83,7 @@ func (e *Engine) installPathFilepath(h *hostHelpers) {
 			}
 			root := str(goNative(args[0]))
 			cb := args[1]
-			ap, err := e.fsPath(root)
+			ap, err := h.env.FsPath(root)
 			if err != nil {
 				return nil, err
 			}
@@ -91,7 +91,7 @@ func (e *Engine) installPathFilepath(h *hostHelpers) {
 				var dv runtime.Value = runtime.NIL
 				if d != nil {
 					if p == ap {
-						d = walkRootEntry(d, e.hostSpelling(root))
+						d = walkRootEntry(d, hostSpelling(h.env, root))
 					}
 					dv = &runtime.GoValue{V: d}
 				}
@@ -105,7 +105,7 @@ func (e *Engine) installPathFilepath(h *hostHelpers) {
 			}
 			root := str(goNative(args[0]))
 			cb := args[1]
-			ap, err := e.fsPath(root)
+			ap, err := h.env.FsPath(root)
 			if err != nil {
 				return nil, err
 			}
@@ -113,7 +113,7 @@ func (e *Engine) installPathFilepath(h *hostHelpers) {
 				var iv runtime.Value = runtime.NIL
 				if info != nil {
 					if p == ap {
-						info = walkRootInfo(info, e.hostSpelling(root))
+						info = walkRootInfo(info, hostSpelling(h.env, root))
 					}
 					iv = &runtime.GoValue{V: info}
 				}

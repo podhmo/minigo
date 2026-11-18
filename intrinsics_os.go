@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/podhmo/minigo/internal/bind"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/vm"
 )
@@ -21,7 +22,7 @@ func (e *Engine) installOs(h *hostHelpers) {
 	// process — Exit unwinds out as a process exit; the environment/argv surface is only
 	// bound when the engine is unrestricted (no AllowedRoots). File-system
 	// operations are always bound: each path argument resolves through
-	// e.fsPath, which anchors relative paths at the engine's virtual cwd
+	// env.FsPath, which anchors relative paths at the engine's virtual cwd
 	// and enforces AllowedRoots per call — that is the restricted-mode
 	// file policy (host-surface gating stays per-symbol via WithHostPolicy).
 	ospkg := map[string]runtime.Value{
@@ -31,12 +32,12 @@ func (e *Engine) installOs(h *hostHelpers) {
 			// boundary: 0 cleanly, N as `exit status N`.
 			panic(&vm.ExitRequest{Code: int(intOf(a[0]))})
 		}),
-		"Stat":     h.fn1("os.Stat", func(a []any) (any, error) { return fsOp2(e, "os.Stat", a, os.Stat) }),
-		"Lstat":    h.fn1("os.Lstat", func(a []any) (any, error) { return fsOp2(e, "os.Lstat", a, os.Lstat) }),
-		"ReadFile": h.fn1("os.ReadFile", func(a []any) (any, error) { return fsOp2(e, "os.ReadFile", a, os.ReadFile) }),
+		"Stat":     h.fn1("os.Stat", func(a []any) (any, error) { return fsOp2(h.env, "os.Stat", a, os.Stat) }),
+		"Lstat":    h.fn1("os.Lstat", func(a []any) (any, error) { return fsOp2(h.env, "os.Lstat", a, os.Lstat) }),
+		"ReadFile": h.fn1("os.ReadFile", func(a []any) (any, error) { return fsOp2(h.env, "os.ReadFile", a, os.ReadFile) }),
 		"WriteFile": h.fn3("os.WriteFile", func(a []any) (any, error) {
 			sp := str(a[0])
-			p, err := e.fsPath(sp)
+			p, err := h.env.FsPath(sp)
 			if err != nil {
 				return nil, err
 			}
@@ -44,7 +45,7 @@ func (e *Engine) installOs(h *hostHelpers) {
 		}),
 		"Mkdir": h.fn2("os.Mkdir", func(a []any) (any, error) {
 			sp := str(a[0])
-			p, err := e.fsPath(sp)
+			p, err := h.env.FsPath(sp)
 			if err != nil {
 				return nil, err
 			}
@@ -52,17 +53,17 @@ func (e *Engine) installOs(h *hostHelpers) {
 		}),
 		"MkdirAll": h.fn2("os.MkdirAll", func(a []any) (any, error) {
 			sp := str(a[0])
-			p, err := e.fsPath(sp)
+			p, err := h.env.FsPath(sp)
 			if err != nil {
 				return nil, err
 			}
 			return errVal(scriptPathErr(os.MkdirAll(p, fs.FileMode(intOf(a[1]))), sp, p)), nil
 		}),
-		"Remove":    h.fn1("os.Remove", func(a []any) (any, error) { return fsErrOp(e, "os.Remove", a, os.Remove) }),
-		"RemoveAll": h.fn1("os.RemoveAll", func(a []any) (any, error) { return fsErrOp(e, "os.RemoveAll", a, os.RemoveAll) }),
+		"Remove":    h.fn1("os.Remove", func(a []any) (any, error) { return fsErrOp(h.env, "os.Remove", a, os.Remove) }),
+		"RemoveAll": h.fn1("os.RemoveAll", func(a []any) (any, error) { return fsErrOp(h.env, "os.RemoveAll", a, os.RemoveAll) }),
 		"Chmod": h.fn2("os.Chmod", func(a []any) (any, error) {
 			sp := str(a[0])
-			p, err := e.fsPath(sp)
+			p, err := h.env.FsPath(sp)
 			if err != nil {
 				return nil, err
 			}
@@ -70,18 +71,18 @@ func (e *Engine) installOs(h *hostHelpers) {
 		}),
 		"Truncate": h.fn2("os.Truncate", func(a []any) (any, error) {
 			sp := str(a[0])
-			p, err := e.fsPath(sp)
+			p, err := h.env.FsPath(sp)
 			if err != nil {
 				return nil, err
 			}
 			return errVal(scriptPathErr(os.Truncate(p, int64Of(a[1])), sp, p)), nil
 		}),
 		"Rename": h.fn2("os.Rename", func(a []any) (any, error) {
-			old, err := e.fsPath(str(a[0]))
+			old, err := h.env.FsPath(str(a[0]))
 			if err != nil {
 				return nil, err
 			}
-			newp, err := e.fsPath(str(a[1]))
+			newp, err := h.env.FsPath(str(a[1]))
 			if err != nil {
 				return nil, err
 			}
@@ -95,7 +96,7 @@ func (e *Engine) installOs(h *hostHelpers) {
 		}),
 		"ReadDir": h.fn1("os.ReadDir", func(a []any) (any, error) {
 			sp := str(a[0])
-			p, err := e.fsPath(sp)
+			p, err := h.env.FsPath(sp)
 			if err != nil {
 				return nil, err
 			}
@@ -110,10 +111,10 @@ func (e *Engine) installOs(h *hostHelpers) {
 		// Getwd/Chdir operate on the engine's virtual cwd (see WithWorkingDir):
 		// the host process cwd is never touched, so scripts can "cd" freely
 		// without side effects on the embedding tool.
-		"Getwd": h.fn("os.Getwd", func(a []any) (any, error) { return retErr2(e.cwd, nil) }),
+		"Getwd": h.fn("os.Getwd", func(a []any) (any, error) { return retErr2(h.env.Cwd(), nil) }),
 		"Chdir": h.fn1("os.Chdir", func(a []any) (any, error) {
 			sp := str(a[0])
-			p, err := e.fsPath(sp)
+			p, err := h.env.FsPath(sp)
 			if err != nil {
 				return nil, err
 			}
@@ -129,14 +130,14 @@ func (e *Engine) installOs(h *hostHelpers) {
 			if !st.IsDir() {
 				return errVal(&fs.PathError{Op: "chdir", Path: sp, Err: syscall.ENOTDIR}), nil
 			}
-			e.cwd = p
+			h.env.SetCwd(p)
 			return runtime.NIL, nil
 		}),
-		"Open":   h.fn1("os.Open", func(a []any) (any, error) { return fsOp2(e, "os.Open", a, os.Open) }),
-		"Create": h.fn1("os.Create", func(a []any) (any, error) { return fsOp2(e, "os.Create", a, os.Create) }),
+		"Open":   h.fn1("os.Open", func(a []any) (any, error) { return fsOp2(h.env, "os.Open", a, os.Open) }),
+		"Create": h.fn1("os.Create", func(a []any) (any, error) { return fsOp2(h.env, "os.Create", a, os.Create) }),
 		"OpenFile": h.fn3("os.OpenFile", func(a []any) (any, error) {
 			sp := str(a[0])
-			p, err := e.fsPath(sp)
+			p, err := h.env.FsPath(sp)
 			if err != nil {
 				return nil, err
 			}
@@ -144,14 +145,14 @@ func (e *Engine) installOs(h *hostHelpers) {
 			return retErr2(f, scriptPathErr(err, sp, p))
 		}),
 		"MkdirTemp": h.fn2("os.MkdirTemp", func(a []any) (any, error) {
-			dir, err := e.fsTempDir(str(a[0]))
+			dir, err := fsTempDir(h.env, str(a[0]))
 			if err != nil {
 				return nil, err
 			}
 			return retErr2(os.MkdirTemp(dir, str(a[1])))
 		}),
 		"CreateTemp": h.fn2("os.CreateTemp", func(a []any) (any, error) {
-			dir, err := e.fsTempDir(str(a[0]))
+			dir, err := fsTempDir(h.env, str(a[0]))
 			if err != nil {
 				return nil, err
 			}
@@ -162,7 +163,7 @@ func (e *Engine) installOs(h *hostHelpers) {
 		// there (os.DirFS itself never escapes — reads go through the
 		// rooted handle, like Open).
 		"DirFS": h.fn1("os.DirFS", func(a []any) (any, error) {
-			p, err := e.fsPath(str(a[0]))
+			p, err := h.env.FsPath(str(a[0]))
 			if err != nil {
 				return nil, err
 			}
@@ -201,11 +202,11 @@ func (e *Engine) installOs(h *hostHelpers) {
 		},
 		"Link": h.fn2("os.Link", func(a []any) (any, error) {
 			so, sn := str(a[0]), str(a[1])
-			old, err := e.fsPath(so)
+			old, err := h.env.FsPath(so)
 			if err != nil {
 				return nil, err
 			}
-			newp, err := e.fsPath(sn)
+			newp, err := h.env.FsPath(sn)
 			if err != nil {
 				return nil, err
 			}
@@ -269,7 +270,7 @@ func (e *Engine) installOs(h *hostHelpers) {
 		"FileInfo": &runtime.TypeDef{Name: "FileInfo", Kind: runtime.KindInterface},
 	}
 
-	if len(e.cfg.AllowedRoots) == 0 {
+	if len(h.env.AllowedRoots()) == 0 {
 		ospkg["Getenv"] = h.fn("os.Getenv", func(a []any) (any, error) { return os.Getenv(str(a[0])), nil })
 		ospkg["Setenv"] = h.fn2("os.Setenv", func(a []any) (any, error) { return errVal(os.Setenv(str(a[0]), str(a[1]))), nil })
 		ospkg["Unsetenv"] = h.fn1("os.Unsetenv", func(a []any) (any, error) { return errVal(os.Unsetenv(str(a[0]))), nil })
@@ -279,8 +280,8 @@ func (e *Engine) installOs(h *hostHelpers) {
 		// process argv), bound as a VARIABLE like Go's — flag's package
 		// init reads it via len(os.Args).
 		argv := os.Args
-		if e.args != nil {
-			argv = e.args
+		if args := h.env.Args(); args != nil {
+			argv = args
 		}
 		ospkg["Args"] = strsSlice(argv)
 		ospkg["Hostname"] = h.fn("os.Hostname", func(a []any) (any, error) { return retErr2(os.Hostname()) })
@@ -310,9 +311,9 @@ func (e *Engine) installOs(h *hostHelpers) {
 // fsOp2 applies a one-path os operation after resolving the script path
 // through the virtual cwd + AllowedRoots check; the result goes back as a
 // Go-style (value, err) tuple.
-func fsOp2[T any](e *Engine, name string, a []any, op func(string) (T, error)) (any, error) {
+func fsOp2[T any](env bind.Env, name string, a []any, op func(string) (T, error)) (any, error) {
 	sp := str(a[0])
-	p, err := e.fsPath(sp)
+	p, err := env.FsPath(sp)
 	if err != nil {
 		return nil, err
 	}
@@ -320,10 +321,9 @@ func fsOp2[T any](e *Engine, name string, a []any, op func(string) (T, error)) (
 	return retErr2(v, scriptPathErr(err, sp, p))
 }
 
-// fsErrOp is fsOp2 for error-only results.
-func fsErrOp(e *Engine, name string, a []any, op func(string) error) (any, error) {
+func fsErrOp(env bind.Env, name string, a []any, op func(string) error) (any, error) {
 	sp := str(a[0])
-	p, err := e.fsPath(sp)
+	p, err := env.FsPath(sp)
 	if err != nil {
 		return nil, err
 	}
@@ -418,14 +418,14 @@ func scriptPathErr(err error, sp, ap string) error {
 // fsTempDir resolves the dir argument of MkdirTemp/CreateTemp: an empty
 // dir means os.TempDir() — only allowed when the engine is unrestricted
 // (a temp dir outside the roots could otherwise anchor escaped writes).
-func (e *Engine) fsTempDir(dir string) (string, error) {
+func fsTempDir(env bind.Env, dir string) (string, error) {
 	if dir == "" {
-		if len(e.cfg.AllowedRoots) == 0 {
+		if len(env.AllowedRoots()) == 0 {
 			return "", nil
 		}
 		return "", errors.New("dir must name a directory inside the allowed roots")
 	}
-	return e.fsPath(dir)
+	return env.FsPath(dir)
 }
 
 // cwdAbs anchors a script path at the virtual cwd without a roots check —
