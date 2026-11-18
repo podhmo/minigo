@@ -155,7 +155,7 @@ var FileBudgets = map[string]int{
 	"tools/tmpltests/main.go":            816,
 	"tools/tmpltests/shims.go":           130,
 	"vet.go":                             221,
-	"vm/assert.go":                             1771,
+	"vm/assert.go":                             1776,
 	"vm/binop.go":                        1637,
 	"vm/call.go":                         741,
 	"vm/composite.go":                    3586,

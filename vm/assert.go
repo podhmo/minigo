@@ -1265,18 +1265,23 @@ func (v *VM) hostTypedefIs(rt reflect.Type, td *runtime.TypeDef) bool {
 			}
 			if want == nil {
 				// the element's package is not loaded — no twin, no
-				// descriptor to stamp; spell *T by import path and let
-				// interned identity (or the spelled acceptance in
-				// sameTypedef) compare it against the declared form.
-				want = &runtime.TypeDef{
+				// descriptor to stamp. Compare by import-path spelling
+				// only: sameTypedef would intern the minted td and park
+				// it under the spelled key the real *T resolves to,
+				// leaving a hollow descriptor behind.
+				want := &runtime.TypeDef{
 					Kind: runtime.KindPointer,
 					Anon: &ast.StarExpr{X: &ast.SelectorExpr{
 						X:   ast.NewIdent(ert.PkgPath()),
 						Sel: ast.NewIdent(ert.Name()),
 					}},
 				}
-			}
-			if v.sameTypedef(want, td) {
+				if td.Anon != nil {
+					if gs := runtime.TypGoSpelling(td.Anon, td); gs != "" && gs == runtime.TypSpelling(want.Anon, want) {
+						return true
+					}
+				}
+			} else if v.sameTypedef(want, td) {
 				return true
 			}
 		}
