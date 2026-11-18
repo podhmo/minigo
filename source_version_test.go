@@ -166,41 +166,45 @@ func Len() int { var a A; return len(a) }
 	// version — the folds live on per-version AST nodes, so neither
 	// session's answer leaks into the other's.
 	var wg sync.WaitGroup
-	got := make(chan runtime.Value, 8)
+	vals := make([][2]runtime.Value, 4)
+	errs := make(chan error, 4)
 	for i := 0; i < 4; i++ {
 		wg.Add(1)
-		go func(s *Engine) {
+		go func(i int, s *Engine) {
 			defer wg.Done()
 			for j := 0; j < 2; j++ {
 				v, err := s.Run(ctx, dir, "Report")
 				if err != nil {
-					got <- err
+					errs <- err
 					return
 				}
-				got <- v
+				vals[i][j] = v
 			}
-		}([]*Engine{sa, sb}[i%2])
+		}(i, []*Engine{sa, sb}[i%2])
 	}
 	wg.Wait()
-	close(got)
-	var old, nu int
-	for v := range got {
-		if err, isErr := v.(error); isErr {
-			t.Fatal(err)
-		}
-		switch v {
-		case int64(3):
-			old++
-		case int64(5):
-			nu++
-		default:
-			t.Fatalf("unexpected value: %v", v)
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	// even-indexed goroutines ran sa (version 3), odd ones sb (5) —
+	// answers keyed per session so a value crossing versions fails.
+	var oldAns, newAns []runtime.Value
+	for i, pair := range vals {
+		for _, v := range pair {
+			if i%2 == 0 {
+				oldAns = append(oldAns, v)
+			} else {
+				newAns = append(newAns, v)
+			}
 		}
 	}
-	if diff := cmp.Diff(4, old); diff != "" {
+	wantOld := []runtime.Value{int64(3), int64(3), int64(3), int64(3)}
+	wantNew := []runtime.Value{int64(5), int64(5), int64(5), int64(5)}
+	if diff := cmp.Diff(wantOld, oldAns); diff != "" {
 		t.Errorf("old-version answers (-want +got):\n%s", diff)
 	}
-	if diff := cmp.Diff(4, nu); diff != "" {
+	if diff := cmp.Diff(wantNew, newAns); diff != "" {
 		t.Errorf("new-version answers (-want +got):\n%s", diff)
 	}
 }
