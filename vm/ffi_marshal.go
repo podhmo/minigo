@@ -1391,7 +1391,9 @@ func hostShapeOf(v *VM, td *runtime.TypeDef, depth int) reflect.Type {
 		if at.Len == nil {
 			return reflect.SliceOf(ert)
 		}
-		lit, ok := runtime.ArrayLenExpr(et.Pkg, at).(*ast.BasicLit)
+		// the fold's owner is the array's declaring package, not
+		// the element type's — `int` has no package to key on.
+		lit, ok := runtime.ArrayLenExpr(td.Pkg, at).(*ast.BasicLit)
 		if !ok || lit.Kind != token.INT {
 			return nil
 		}
