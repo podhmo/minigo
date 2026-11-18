@@ -903,7 +903,7 @@ func (c *compiler) bindRecv(lhs []ast.Expr, define bool, chExpr ast.Expr) {
 	var deferred bool
 	if define && len(lhs) > 0 && chExpr != nil {
 		if t := c.staticOpTyp(chExpr); t.te != nil {
-			elem = c.chanElemTypExpr(t.te, 4)
+			elem = c.chanElemTypExpr(t.te, t.teFile, 4)
 			elemFile = t.teFile
 		} else if t.deferred {
 			deferred = true

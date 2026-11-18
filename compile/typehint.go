@@ -241,15 +241,16 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 	case *ast.CallExpr:
 		return c.callOpTyp(x)
 	case *ast.IndexExpr:
-		return opTyp{te: c.elemTypExpr(c.staticOpTyp(x.X).te, 4)}
+		ot := c.staticOpTyp(x.X)
+		return opTyp{te: c.elemTypExpr(ot.te, ot.teFile, 4)}
 	case *ast.SliceExpr:
 		// a subslice keeps its type (so does a substring) — except an
 		// array operand, which reads a slice of its elements, and so
 		// does *A[:] on a pointer to array.
 		ot := c.staticOpTyp(x.X)
-		ue := ast.Unparen(c.unfoldTypExpr(ot.te, 4))
+		ue := ast.Unparen(c.unfoldScopedTypExpr(ot.te, ot.teFile, 4))
 		if st, ok := ue.(*ast.StarExpr); ok {
-			ue = ast.Unparen(c.unfoldTypExpr(st.X, 3))
+			ue = ast.Unparen(c.unfoldScopedTypExpr(st.X, ot.teFile, 3))
 		}
 		if at, ok := ue.(*ast.ArrayType); ok && at.Len != nil {
 			return opTyp{te: &ast.ArrayType{Lbrack: at.Lbrack, Elt: at.Elt}}
@@ -257,7 +258,8 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 		return ot
 	case *ast.StarExpr:
 		// *p dereferences a pointer-typed operand
-		return opTyp{te: c.starBaseTypExpr(c.staticOpTyp(x.X).te, 4)}
+		ot := c.staticOpTyp(x.X)
+		return opTyp{te: c.starBaseTypExpr(ot.te, ot.teFile, 4)}
 	case *ast.TypeAssertExpr:
 		if x.Type == nil {
 			return opTyp{} // a type switch's guard, not an operand
@@ -285,7 +287,8 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 		case token.SUB, token.ADD, token.XOR:
 			return c.staticOpTyp(x.X) // -x/+x/^x keeps the operand's type
 		case token.ARROW:
-			return opTyp{te: c.chanElemTypExpr(c.staticOpTyp(x.X).te, 4)}
+			ot := c.staticOpTyp(x.X)
+			return opTyp{te: c.chanElemTypExpr(ot.te, ot.teFile, 4)}
 		case token.AND:
 			// &x answers a pointer to x's static type — `i == &d`
 			// mismatches int and *D. An operand without a static
@@ -492,6 +495,13 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 						if t.elLit != nil && t.elFile == nil {
 							t.elFile = vd.File
 						}
+						// the literal's type was spelled in the decl's
+						// file too — `var xs = inner.Bytes{}` resolves
+						// `inner` under the decl's imports, so a
+						// use-site local `inner` cannot rebind it.
+						if t.te != nil && t.teFile == nil {
+							t.teFile = vd.File
+						}
 						return t
 					}
 					// an untyped initializer binds its constant's
@@ -583,7 +593,7 @@ func (c *compiler) selOpTyp(x *ast.SelectorExpr) opTyp {
 	if te == nil {
 		// a selector through a pointer reads the pointee's fields
 		// the same way — `p.A` on a *Pair is Pair's A.
-		if sb := c.starBaseTypExpr(base.te, 4); sb != nil {
+		if sb := c.starBaseTypExpr(base.te, base.teFile, 4); sb != nil {
 			te = c.fieldTypExpr(sb, x.Sel.Name, 4)
 		}
 	}
@@ -1615,9 +1625,25 @@ func (c *compiler) pkgImportRef(p *runtime.Package, sf *syntax.File, name string
 	return nil, false
 }
 
+// unfoldScopedTypExpr unfolds a decl-scope spelling: names in te
+// resolve in file's package scope, so a use-site local that shadows
+// an import name does not rebind a qualified `pkg.T` the decl wrote.
+func (c *compiler) unfoldScopedTypExpr(te ast.Expr, file *syntax.File, depth int) ast.Expr {
+	saved := c.pkgScopeTyp
+	c.pkgScopeTyp = file
+	defer func() { c.pkgScopeTyp = saved }()
+	return c.unfoldTypExpr(te, depth)
+}
+
 // elemTypExpr resolves the element type of an indexing operand — an
 // array/slice's Elt or a map's Value, through a named type's spec.
-func (c *compiler) elemTypExpr(te ast.Expr, depth int) ast.Expr {
+// file is the decl's file for a package-derived spelling (opTyp.teFile):
+// under it names resolve in package scope — use-site locals do not
+// rebind a qualified `pkg.T` the decl wrote.
+func (c *compiler) elemTypExpr(te ast.Expr, file *syntax.File, depth int) ast.Expr {
+	saved := c.pkgScopeTyp
+	c.pkgScopeTyp = file
+	defer func() { c.pkgScopeTyp = saved }()
 	switch t := c.unfoldTypExpr(te, depth).(type) {
 	case *ast.ArrayType:
 		return t.Elt
@@ -1641,8 +1667,12 @@ func (c *compiler) elemTypExpr(te ast.Expr, depth int) ast.Expr {
 }
 
 // chanElemTypExpr resolves the element type of a receive operand's
-// channel type, through a named type's spec.
-func (c *compiler) chanElemTypExpr(te ast.Expr, depth int) ast.Expr {
+// channel type, through a named type's spec. file scopes the unfold
+// like elemTypExpr's.
+func (c *compiler) chanElemTypExpr(te ast.Expr, file *syntax.File, depth int) ast.Expr {
+	saved := c.pkgScopeTyp
+	c.pkgScopeTyp = file
+	defer func() { c.pkgScopeTyp = saved }()
 	if t, ok := c.unfoldTypExpr(te, depth).(*ast.ChanType); ok {
 		return t.Value
 	}
@@ -1650,8 +1680,12 @@ func (c *compiler) chanElemTypExpr(te ast.Expr, depth int) ast.Expr {
 }
 
 // starBaseTypExpr resolves the base type of a deref operand's pointer
-// type, through a named type's spec.
-func (c *compiler) starBaseTypExpr(te ast.Expr, depth int) ast.Expr {
+// type, through a named type's spec. file scopes the unfold like
+// elemTypExpr's.
+func (c *compiler) starBaseTypExpr(te ast.Expr, file *syntax.File, depth int) ast.Expr {
+	saved := c.pkgScopeTyp
+	c.pkgScopeTyp = file
+	defer func() { c.pkgScopeTyp = saved }()
 	if t, ok := c.unfoldTypExpr(te, depth).(*ast.StarExpr); ok {
 		return t.X
 	}
