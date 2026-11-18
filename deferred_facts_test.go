@@ -50,6 +50,7 @@ func TestDeferFacts(t *testing.T) {
 		"gate_rangenested",
 		"gate_pkgvarelem",
 		"gate_resultindex",
+		"gate_typeshadow",
 	} {
 		dir := filepath.Join("testdata/difffuzz", slug)
 		t.Run(slug, func(t *testing.T) {
@@ -129,6 +130,7 @@ func TestStrictLazyCompile(t *testing.T) {
 		"gate_rangenested",
 		"gate_pkgvarelem",
 		"gate_resultindex",
+		"gate_typeshadow",
 		"convarg_order",
 		"convarg_nested",
 		"convarg_seqorder",
