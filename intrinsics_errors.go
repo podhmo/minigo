@@ -336,7 +336,7 @@ func twinNilHost(c runtime.VMCaller, tn *runtime.TypedNil) error {
 		et = et.Elem
 	}
 	for _, t := range hostErrTwins {
-		if runtime.HostNamedIs(t.rt, et) {
+		if hostNamedIsOf(c, t.rt, et) {
 			return reflect.Zero(reflect.PointerTo(t.rt)).Interface().(error)
 		}
 	}
