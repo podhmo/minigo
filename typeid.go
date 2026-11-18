@@ -3,6 +3,7 @@ package minigo
 import (
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/podhmo/minigo/runtime"
 )
