@@ -3275,7 +3275,11 @@ func (v *VM) lenIdxFold(f *frame, base runtime.Value) (runtime.Value, bool) {
 	if !ok || at.Len == nil {
 		return nil, false
 	}
-	n, ok := v.arrayLen(f, &runtime.TypeDef{Anon: at, Kind: runtime.KindSlice})
+	// the element's array wraps in a fresh typedef — carry the
+	// declaring package so its folded lengths are findable: folds
+	// keyed by const names live on the owner, and a nil-Pkg typedef
+	// neither reads them nor re-evaluates the name.
+	n, ok := v.arrayLen(f, &runtime.TypeDef{Anon: at, Kind: runtime.KindSlice, Pkg: td.Pkg, File: td.File})
 	if !ok {
 		return nil, false
 	}
