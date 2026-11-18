@@ -166,7 +166,10 @@ func (s *Service) resolveStruct(t TypeRef, p Policy, seen map[ast.Expr]bool) Res
 			if !ok {
 				return Result[TypeRef]{Kind: Missing}
 			}
-			if r.Kind == Missing {
+			if r.Kind == Missing && ast.IsExported(x.Name) {
+				// a dot import introduces exported names only, so an
+				// unexported ident cannot resolve through one — its
+				// Missing is already final (no Deferred consult).
 				r = s.dotImportDecl(t.Ctx, x.Name, p)
 			}
 			if r.Kind != Found {
