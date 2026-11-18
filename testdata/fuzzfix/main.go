@@ -522,6 +522,15 @@ func AssertPtrRecv() (r string) {
 	return
 }
 
+// a basic type's dynamic value has an empty method set — the missing
+// requirement still names a method rather than falling back generic.
+func AssertBasicMissingMethod() (r string) {
+	defer func() { r = fmt.Sprintf("%v", recover()) }()
+	var a any = 42
+	_ = a.(io.Writer)
+	return
+}
+
 // the pointer itself carries the pointer-receiver method and satisfies
 // the requirement — comma-ok form confirms no panic.
 func AssertPtrRecvOK() string {
