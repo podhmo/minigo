@@ -19,17 +19,14 @@ func (e *Engine) installContext(h *hostHelpers) {
 	// context object cannot satisfy a host context.Context parameter.
 	// With* family values ride GoValue boxes; CancelFunc results arrive
 	// as plain host funcs.
-	e.Bind("context", map[string]runtime.Value{
+	tbl := contextGenEntries()
+	for k, v := range map[string]runtime.Value{
 		"Context": &runtime.TypeDef{Name: "context.Context", Kind: runtime.KindInterface,
 			MReqs: []string{"Deadline", "Done", "Err", "Value"}},
 		"CancelFunc": &runtime.TypeDef{Name: "context.CancelFunc", Kind: runtime.KindFunc,
 			Anon: &ast.FuncType{Params: &ast.FieldList{}}},
 		"CancelCauseFunc": &runtime.TypeDef{Name: "context.CancelCauseFunc", Kind: runtime.KindFunc,
 			Anon: &ast.FuncType{Params: &ast.FieldList{List: []*ast.Field{{Type: ast.NewIdent("error")}}}}},
-		"Canceled":         &runtime.GoValue{V: context.Canceled},
-		"DeadlineExceeded": &runtime.GoValue{V: context.DeadlineExceeded},
-		"Background":       h.fn("context.Background", func(a []any) (any, error) { return context.Background(), nil }, context.Background),
-		"TODO":             h.fn("context.TODO", func(a []any) (any, error) { return context.TODO(), nil }, context.TODO),
 		"WithCancel": h.fnvc("context.WithCancel", func(vc runtime.VMCaller, a []any) (any, error) {
 			c, err := asCtx(a[0])
 			if err != nil {
@@ -147,7 +144,10 @@ func (e *Engine) installContext(h *hostHelpers) {
 			}
 			return errVal(context.Cause(c)), nil
 		}),
-	})
+	} {
+		tbl[k] = v
+	}
+	e.Bind("context", tbl)
 }
 
 // lockerOf resolves a script value to a sync.Locker for NewCond: host
