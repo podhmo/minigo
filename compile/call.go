@@ -324,7 +324,7 @@ func (c *compiler) hoistEagerOps(es []ast.Expr, prefix string) (subs []ast.Expr,
 		if t := c.staticOpTyp(call); t.deferred {
 			c.fs.noteDeferTyp(name, t.dexpr)
 		} else if t.te != nil {
-			c.fs.noteDeclTyp(name, t.te, t.teFile)
+			c.fs.noteDeclTyp(name, c.declTypCanon(t.te), t.teFile)
 		}
 		c.emit(bytecode.OpNewLocal, slot, 0, call.Pos())
 		names[call] = name

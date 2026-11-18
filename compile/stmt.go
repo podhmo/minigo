@@ -109,7 +109,7 @@ func (c *compiler) stmt(s ast.Stmt) {
 							c.fs.noteDeclTyp(vs.Names[i].Name, &ast.Ident{Name: "bool"}, nil)
 						default:
 							if t := c.nthResultOpTyp(vals[0], i); t.te != nil {
-								c.fs.noteDeclTyp(vs.Names[i].Name, t.te, t.teFile)
+								c.fs.noteDeclTyp(vs.Names[i].Name, c.declTypCanon(t.te), t.teFile)
 							} else if t.deferred {
 								// `var a, b = p.F()` — the name defers
 								// to the call's i-th declared result.
@@ -469,7 +469,7 @@ func (c *compiler) noteBindVar(e ast.Expr, te ast.Expr, teFile *syntax.File, def
 	if !ok || id.Name == "_" {
 		return
 	}
-	c.fs.noteDeclTyp(id.Name, te, nil)
+	c.fs.noteDeclTyp(id.Name, c.declTypCanon(te), nil)
 	// teFile scopes the type name to the declaring file — an `I`
 	// shadowed by a local type here is still the declared I, both for
 	// the iface check and for the coerce the stamp emits.
