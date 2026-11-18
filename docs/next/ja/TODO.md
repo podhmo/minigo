@@ -109,7 +109,7 @@
 - [ ] **M4-4 host twin 系の helper を消す（1 つにつき 1 PR）**: 対象は `hostTwinIs`、`hostNilTwin`、`sameSpelledTwin`、`HostNamedIs`/`HostTwinOf`、`sourceTwinOf`。完了条件: 各 PR が pin 済みのリグレッションケースで裏付けられている。
 - [ ] **M4-5 代入可能性と変換可能性を semantics に移す**: `tdShapeEq`、`underlyingShape`/`convShapeEq`、`structFieldsEq` を、`AssignableTo`/`ConvertibleTo`/`Identical` として移す（消すのではない）。`peelAlias` は `TypeOf` の解決に含める。
   - [x] **M4-5a 同一性とエイリアス**: `Identical` と `TypeOf` の alias 解決を先に導入する。定義型・エイリアス、構造体のタグ、パッケージ固有名の比較を固定する。
-  - [ ] **M4-5b 代入可能性**: M4-5a の結果を使って `AssignableTo` を移す。型なし定数、named/unnamed の組み合わせ、インタフェース充足を既存挙動と照合する。
+  - [x] **M4-5b 代入可能性**: M4-5a の結果を使って `AssignableTo` を移す。型なし定数、named/unnamed の組み合わせ、インタフェース充足を既存挙動と照合する。
   - [ ] **M4-5c 変換可能性**: `ConvertibleTo` を移し、構造・タグや数値など、代入の規則と結果が異なるケースを分けて検証する。
 - [ ] **M4-6 ジェネリクス推論を分割する**: TypeID の上での単一化は `semantics` に、引数の値から TypeID への対応づけは実行側のアダプタに置く。インスタンスキャッシュのキーは `(関数宣言, []TypeID)` にする。完了条件: 「per-call key spelling」の TODO が解消する。
   - [ ] **M4-6a TypeID 上の単一化**: M4-3 のキーを使い、値の取り出しを実行側アダプタに残して推論を移す。制約、部分指定、推論不能の診断を固定する。
