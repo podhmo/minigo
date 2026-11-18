@@ -636,6 +636,15 @@ func (v *VM) loop(f *frame) {
 				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
 			}
 			f.push(r)
+		case bytecode.OpDeferredTyp:
+			// one deferred fact: resolve the site's type expression on
+			// first execution (the engine answers under AllowIndex);
+			// Missing and Failed both trap at the instruction's Pos.
+			td, err := v.deferredType(f, f.ch.CallSites[ins.A])
+			if err != nil {
+				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
+			}
+			f.push(td)
 		case bytecode.OpPack:
 			n := int(ins.A)
 			el := make([]runtime.Value, n)

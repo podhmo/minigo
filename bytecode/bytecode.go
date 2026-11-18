@@ -149,6 +149,13 @@ const (
 	// the emitted static+OpCall run. A miss — the name rebound after
 	// compile, say — falls through to the ordinary call.
 	OpLenCallFold
+
+	// OpDeferredTyp resolves one deferred fact: A indexes
+	// [Chunk.CallSites]. On first execution the VM answers the site's
+	// type question through the engine hook under AllowIndex and caches
+	// the result on the site; Missing/Failed trap. An unexecuted
+	// instruction's site is never consulted.
+	OpDeferredTyp // A: CallSites index -> push resolved *TypeDef
 )
 
 // ShiftConstCount is an [OpBinary] B flag on << and >>: the count is
@@ -278,6 +285,10 @@ type Chunk struct {
 	// instruction's C operand).
 	Sites []*GlobalSite
 
+	// CallSites are the deferred-fact records of OpDeferredTyp (indexed
+	// by the instruction's A operand). One record per emitted question.
+	CallSites []*CallSite
+
 	// Escapes is the VM's memo of whether the chunk's local cells can
 	// outlive their frame: 0 uncomputed, 1 frame-bound (the chunk holds
 	// no OpLocalRef and no OpMakeClosure that captures a local slot —
@@ -294,5 +305,29 @@ type Chunk struct {
 // setting a global must call
 // [github.com/podhmo/minigo/runtime.Env.Touch].
 type GlobalSite struct {
+	Cache atomic.Value
+}
+
+// CallSite is one deferred fact (M4-7): a type expression the compiler
+// could not resolve under IndexedOnly. The VM resolves it on first
+// execution — under AllowIndex, through the engine hook — and caches the
+// outcome on the site, so an unexecuted instruction never asks and a
+// resolved one never asks twice. bytecode cannot name runtime types:
+// Ctx is whatever resolution context the chunk's producer stashed (the
+// compiler stores a context typedef), and Cache holds a producer-side
+// result box.
+type CallSite struct {
+	// Expr is the type expression in question — `pkg.T`, `[]L`, a
+	// composite-literal element — in the declaring file's syntax.
+	Expr ast.Expr
+	// File is the declaring file, whose imports resolve qualifiers.
+	File *syntax.File
+	// Pos is the source position traps report at.
+	Pos token.Pos
+	// Ctx is opaque producer context for the resolver (package,
+	// type-parameter binds); nil when the frame's own context applies.
+	Ctx any
+	// Cache stores the resolution result, written once and read by
+	// every goroutine running the chunk.
 	Cache atomic.Value
 }
