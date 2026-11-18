@@ -2,9 +2,7 @@ package minigo
 
 import (
 	"fmt"
-	"go/ast"
 	"reflect"
-	"strings"
 
 	"github.com/podhmo/minigo/runtime"
 )
@@ -165,7 +163,7 @@ func (e *Engine) canonicalTypedef(td *runtime.TypeDef) *runtime.TypeDef {
 				// canonical is a pointer over T's twin, keyed like a source
 				// *T descriptor.
 				if et := e.hostTwin(ert); et != nil {
-					return anonPtrTypedefOf(et)
+					return runtime.AnonPtrTypedefOf(et)
 				}
 			}
 		}
@@ -196,7 +194,7 @@ func (e *Engine) canonicalTypedef(td *runtime.TypeDef) *runtime.TypeDef {
 		et := e.canonicalTypedef(td.Elem)
 		if et != td.Elem {
 			if td.Kind == runtime.KindPointer && et.Pkg != nil {
-				return anonPtrTypedefOf(et)
+				return runtime.AnonPtrTypedefOf(et)
 			}
 			nt := td.CloneUncached()
 			nt.Elem = et
@@ -256,24 +254,3 @@ func splitHostName(s string) (string, string, bool) {
 // twin: the same anonymous pointer a source `*T` resolves to — the
 // expr, package and file are what a declared *T carries, so its intern
 // key spells identically.
-func anonPtrTypedefOf(et *runtime.TypeDef) *runtime.TypeDef {
-	// the qualifier spells the element's import PATH, matching what
-	// typSpelling produces for a declared `*T` (it resolves the
-	// selector's package name through the file's import table to the
-	// path, so a renamed import `rx "regexp"` still keys *regexp.Regexp).
-	var x ast.Expr = ast.NewIdent(et.Name)
-	if et.Pkg != nil && et.Pkg.Path != "" {
-		if _, short, ok := strings.Cut(et.Name, "."); ok {
-			x = &ast.SelectorExpr{X: ast.NewIdent(et.Pkg.Path), Sel: ast.NewIdent(short)}
-		}
-	} else if pkg, short, ok := strings.Cut(et.Name, "."); ok {
-		x = &ast.SelectorExpr{X: ast.NewIdent(pkg), Sel: ast.NewIdent(short)}
-	}
-	return &runtime.TypeDef{
-		Kind: runtime.KindPointer,
-		Elem: et,
-		Anon: &ast.StarExpr{X: x},
-		Pkg:  et.Pkg,
-		File: et.File,
-	}
-}
