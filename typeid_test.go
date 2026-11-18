@@ -180,3 +180,4 @@ func TestInternTypedef(t *testing.T) {
 		t.Error("session interning rewrote the parent's table")
 	}
 }
+

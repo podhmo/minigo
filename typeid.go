@@ -87,7 +87,17 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 	if td.Elem != nil {
 		return runtime.TypeID(fmt.Sprintf("anon:%d:%s%s", td.Kind, e.typeIDOf(td.Elem), args))
 	}
-	return runtime.TypeID(fmt.Sprintf("anon:%d:%s%s", td.Kind, runtime.TypUnderlyingSpelling(td), args))
+	s := runtime.TypUnderlyingSpelling(td)
+	if s == "" {
+		// no spec, no carrier, no expr, no spelling: a bare placeholder
+		// descriptor — unidentifiable, so it must not intern. A lone
+		// declared name is still an identity ("host:pkg:name").
+		if pkg, name, ok := splitHostName(td.Name); ok {
+			return runtime.TypeID(fmt.Sprintf("host:%s:%s%s", pkg, name, args))
+		}
+		return "?"
+	}
+	return runtime.TypeID(fmt.Sprintf("anon:%d:%s%s", td.Kind, s, args))
 }
 
 // internTypedef returns the session's canonical descriptor for td's
