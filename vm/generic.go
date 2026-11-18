@@ -283,7 +283,7 @@ func (v *VM) inferForFuncTarget(x runtime.Value, td *runtime.TypeDef) (runtime.V
 	if u == nil || u.Kind != runtime.KindFunc {
 		return x, nil
 	}
-	sig := funcTypeExpr(u)
+	sig := runtime.FuncTypeExpr(u)
 	if sig == nil || v.H.ResolveType == nil {
 		return x, nil
 	}
@@ -845,59 +845,10 @@ func (v *VM) inferBinds(fn *runtime.Function, args []runtime.Value, statics []*r
 
 // inferCoreTypes is Go's constraint type inference: a bound parameter
 // whose constraint has a core type (`Map ~map[K]V`, `S ~[]E`) teaches the
-// parameters that core type mentions — maps.Values(m) learns K and V from
-// Map. It repeats while a round binds something new.
+// parameters that core type mentions — maps.Values(m) learns K and V
+// from Map. It repeats while a round binds something new.
 func (v *VM) inferCoreTypes(ctx *runtime.TypeDef, tset map[string]bool, binds map[string]runtime.Value, tparams []string, cons []ast.Expr) {
-	for changed := true; changed; {
-		changed = false
-		for i, tp := range tparams {
-			if i >= len(cons) {
-				break
-			}
-			core := coreTypeExpr(cons[i])
-			if core == nil {
-				continue
-			}
-			td := typedefOf(binds[tp])
-			if td == nil {
-				continue
-			}
-			u := v.peelNamed(td)
-			if u == nil {
-				continue
-			}
-			if u.Anon == nil && u.Spec != nil {
-				// a declared container (`type M map[string]int`): unify
-				// against its underlying type expression.
-				u = &runtime.TypeDef{Kind: u.Kind, Anon: u.Spec.Type, Pkg: u.Pkg, File: u.File, Binds: u.Binds}
-			}
-			before := len(binds)
-			v.unifyTypeDef(ctx, tset, binds, core, u)
-			changed = changed || len(binds) > before
-		}
-	}
-}
-
-// coreTypeExpr extracts the single composite type element of a
-// constraint — `~[]E`, `[]E`, `interface{ ~map[K]V }` — or nil.
-func coreTypeExpr(c ast.Expr) ast.Expr {
-	switch t := c.(type) {
-	case *ast.ParenExpr:
-		return coreTypeExpr(t.X)
-	case *ast.UnaryExpr:
-		if t.Op == token.TILDE && isCompositeTypeExpr(t.X) {
-			return t.X
-		}
-	case *ast.InterfaceType:
-		if t.Methods != nil && len(t.Methods.List) == 1 && len(t.Methods.List[0].Names) == 0 {
-			return coreTypeExpr(t.Methods.List[0].Type)
-		}
-	default:
-		if isCompositeTypeExpr(c) {
-			return c
-		}
-	}
-	return nil
+	v.inferer().CoreTypes(ctx, tset, binds, tparams, cons)
 }
 
 // unifyType learns type-argument binds by walking a parameter's declared
@@ -935,90 +886,36 @@ func staticAt(statics []*runtime.TypeDef, i int) *runtime.TypeDef {
 }
 
 func (v *VM) unifyTypeDef(ctx *runtime.TypeDef, tset map[string]bool, binds map[string]runtime.Value, pat ast.Expr, conc *runtime.TypeDef) {
-	switch p := pat.(type) {
-	case *ast.Ident:
-		if tset[p.Name] {
-			if _, ok := binds[p.Name]; !ok {
-				binds[p.Name] = conc
-			}
-		}
-		// a bound or foreign ident teaches nothing
-	case *ast.ParenExpr:
-		v.unifyTypeDef(ctx, tset, binds, p.X, conc)
-	case *ast.Ellipsis:
-		v.unifyTypeDef(ctx, tset, binds, p.Elt, conc)
-	case *ast.StarExpr:
-		// *T unifies only against pointer-shaped args — a slice or
-		// map's element type is not a pointee and must teach nothing.
-		if u := v.peelNamed(conc); u != nil && u.Kind == runtime.KindPointer {
-			et := v.elemTypedef(v.topFrame(), conc)
-			if et == nil {
-				et = conc.Elem
-			}
-			if et != nil {
-				v.unifyTypeDef(ctx, tset, binds, p.X, et)
-			}
-		}
-	case *ast.ArrayType:
-		// []T unifies only against slice/array-shaped args — a pointer's
-		// pointee is not an element and must teach nothing.
-		if u := v.peelNamed(conc); u != nil && u.Kind == runtime.KindSlice {
-			et := v.elemTypedef(v.topFrame(), conc)
+	v.inferer().UnifyDef(ctx, tset, binds, pat, conc)
+}
+
+// inferer exposes the runtime-side unification with this VM's own
+// resolution: declared-chain peel, element typedefs through the
+// frame's locals and host stamps (interned so a host element binds by
+// identity), and type-expr resolution through the engine hook.
+func (v *VM) inferer() *runtime.Inferer {
+	return &runtime.Inferer{
+		Underlying: v.peelNamed,
+		ElemOf: func(td *runtime.TypeDef) *runtime.TypeDef {
+			et := v.elemTypedef(v.topFrame(), td)
 			if et == nil {
 				// element named by a type the typedef cannot resolve —
 				// a function-local `type` decl, say — falls back to the
 				// element evidence argTypedef lifted off the value.
-				et = conc.Elem
+				et = td.Elem
 			}
 			if et != nil {
-				// a host-stamped elem resolves to the engine's own td
-				// through the intern table (M4-4).
 				et = v.internTypedef(et)
-				v.unifyTypeDef(ctx, tset, binds, p.Elt, et)
 			}
-		}
-	case *ast.MapType:
-		if mt, ok := conc.Anon.(*ast.MapType); ok && v.H.ResolveType != nil {
-			if kt, err := v.resolveOperandType(conc, mt.Key); err == nil {
-				v.unifyTypeDef(ctx, tset, binds, p.Key, kt)
-			}
-			if vt, err := v.resolveOperandType(conc, mt.Value); err == nil {
-				v.unifyTypeDef(ctx, tset, binds, p.Value, vt)
-			}
-		}
-	case *ast.ChanType:
-		if u := v.peelNamed(conc); u != nil && u.Kind == runtime.KindChan {
-			if et := v.elemTypedef(v.topFrame(), conc); et != nil {
-				v.unifyTypeDef(ctx, tset, binds, p.Value, et)
-			}
-		}
-	case *ast.FuncType:
-		cs := funcTypeExpr(conc)
-		if cs == nil || v.H.ResolveType == nil {
-			break
-		}
-		v.unifyFieldTypes(ctx, tset, binds, p.Params, cs.Params, conc)
-		v.unifyFieldTypes(ctx, tset, binds, p.Results, cs.Results, conc)
-	case *ast.IndexExpr:
-		v.unifyIndices(ctx, tset, binds, p.X, []ast.Expr{p.Index}, conc)
-	case *ast.IndexListExpr:
-		v.unifyIndices(ctx, tset, binds, p.X, p.Indices, conc)
+			return et
+		},
+		ResolveType: v.H.ResolveType,
 	}
 }
 
-// resolveOperandType resolves a type expression inside conc's own type
-// (a map key or value) to the typedef it denotes. ResolveType peels *T to
-// T — right for method sets, wrong here: map[string]E over
-// map[string]*Item must bind E=*Item — so a pointer expr becomes an
-// anonymous pointer typedef in conc's context.
+// resolveOperandType resolves a type expression inside conc's own type.
 func (v *VM) resolveOperandType(conc *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, error) {
-	if px, ok := x.(*ast.ParenExpr); ok {
-		return v.resolveOperandType(conc, px.X)
-	}
-	if _, ok := x.(*ast.StarExpr); ok {
-		return &runtime.TypeDef{Kind: runtime.KindPointer, Anon: x, Pkg: conc.Pkg, File: conc.File, Binds: conc.Binds}, nil
-	}
-	return v.H.ResolveType(conc, x)
+	return v.inferer().ResolveOperand(conc, x)
 }
 
 // unifyFieldTypes zips two flattened field lists (params or results):
@@ -1026,79 +923,7 @@ func (v *VM) resolveOperandType(conc *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 // resolved typedef on the concrete side. A pattern `...T` pairs with
 // either `...U` or `[]U`.
 func (v *VM) unifyFieldTypes(ctx *runtime.TypeDef, tset map[string]bool, binds map[string]runtime.Value, pat, conc *ast.FieldList, concCtx *runtime.TypeDef) {
-	if pat == nil || conc == nil {
-		return
-	}
-	pe := syntax.FieldTypes(pat)
-	ce := syntax.FieldTypes(conc)
-	for i, p := range pe {
-		if i >= len(ce) {
-			break
-		}
-		pv := p
-		cvv := ce[i]
-		peEl, _ := pv.(*ast.Ellipsis)
-		ceEl, _ := cvv.(*ast.Ellipsis)
-		if peEl != nil && ceEl == nil {
-			// variadic pattern against a non-variadic concrete func:
-			// approximate by unifying the element against the param as-is.
-			pv = peEl.Elt
-		}
-		ct, err := v.resolveOperandType(concCtx, cvv)
-		if err != nil || ct == nil {
-			continue
-		}
-		if ceEl != nil {
-			// the concrete side is `...U` — the pattern sees []U
-			ct = &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Lbrack: ceEl.Pos(), Elt: ceEl.Elt}, Pkg: concCtx.Pkg, File: concCtx.File, Binds: concCtx.Binds}
-		}
-		v.unifyTypeDef(ctx, tset, binds, pv, ct)
-	}
-}
-
-// unifyIndices handles a `Name[E]`-shaped pattern against an instantiated
-// concrete typedef: each tparam index binds to the concrete type's own
-// binding for the base's parameter at that position.
-func (v *VM) unifyIndices(ctx *runtime.TypeDef, tset map[string]bool, binds map[string]runtime.Value, base ast.Expr, idxs []ast.Expr, conc *runtime.TypeDef) {
-	if v.H.ResolveType == nil {
-		return
-	}
-	bt, err := v.H.ResolveType(ctx, base)
-	if err != nil || bt == nil || len(bt.TParams) == 0 {
-		return
-	}
-	for i, x := range idxs {
-		if i >= len(bt.TParams) {
-			break
-		}
-		id, ok := x.(*ast.Ident)
-		if !ok || !tset[id.Name] {
-			continue
-		}
-		if bv, ok := conc.Binds[bt.TParams[i]]; ok {
-			if _, bound := binds[id.Name]; !bound {
-				binds[id.Name] = bv
-			}
-		}
-	}
-}
-
-// funcTypeExpr returns the *ast.FuncType carried by a func-typed typedef,
-// from its anonymous or declared form.
-func funcTypeExpr(td *runtime.TypeDef) *ast.FuncType {
-	for _, x := range []ast.Expr{td.Anon, specTypeOf(td)} {
-		if ft, ok := x.(*ast.FuncType); ok {
-			return ft
-		}
-	}
-	return nil
-}
-
-func specTypeOf(td *runtime.TypeDef) ast.Expr {
-	if td.Spec != nil {
-		return td.Spec.Type
-	}
-	return nil
+	v.inferer().UnifyFields(ctx, tset, binds, pat, conc, concCtx)
 }
 
 // argTypedef is typeOfValue enriched for inference: stamped container
@@ -1773,7 +1598,7 @@ func (v *VM) satisfiesTypeElem(ctx *runtime.TypeDef, e ast.Expr, td *runtime.Typ
 			// instantiation's binds (checkTArgs puts them on ctx).
 			// A parameter not inferred yet (E, bound later from S's core
 			// type) leaves only the composite's kind to check.
-			if ctx != nil && isCompositeTypeExpr(t.X) {
+			if ctx != nil && runtime.IsCompositeTypeExpr(t.X) {
 				if mentionsUnbound(t.X, ctx) {
 					return compositeKindMatches(t.X, u)
 				}
@@ -1864,15 +1689,6 @@ func compositeKindMatches(e ast.Expr, td *runtime.TypeDef) bool {
 		return td.Kind == runtime.KindChan
 	case *ast.FuncType:
 		return td.Kind == runtime.KindFunc
-	}
-	return false
-}
-
-// isCompositeTypeExpr reports whether e spells a composite type literal.
-func isCompositeTypeExpr(e ast.Expr) bool {
-	switch e.(type) {
-	case *ast.ArrayType, *ast.MapType, *ast.StarExpr, *ast.ChanType, *ast.FuncType:
-		return true
 	}
 	return false
 }
