@@ -120,13 +120,15 @@ func newREPL(h *replhooks.Hooks) *REPL {
 		Path:         "<repl>",
 		Name:         "repl",
 		PackageImage: runtime.PackageImage{Fset: h.Fset},
-		Globals:      runtime.NewEnv(),
-		Scopes:       map[*syntax.File]map[string]*runtime.ImportRef{},
-		Imports:      map[*syntax.File][]*runtime.ImportRef{},
-		Specials:     h.Specials,
-		RunInit: func(fn *runtime.Function) error {
-			_, err := h.NewVM().Call(fn, nil)
-			return err
+		PackageInstance: runtime.PackageInstance{
+			Globals:  runtime.NewEnv(),
+			Scopes:   map[*syntax.File]map[string]*runtime.ImportRef{},
+			Imports:  map[*syntax.File][]*runtime.ImportRef{},
+			Specials: h.Specials,
+			RunInit: func(fn *runtime.Function) error {
+				_, err := h.NewVM().Call(fn, nil)
+				return err
+			},
 		},
 	}
 	p.SetState(runtime.Parsed)
