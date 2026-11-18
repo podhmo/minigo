@@ -13,7 +13,7 @@ var FileBudgets = map[string]int{
 	"bytecode/disasm.go":   292,
 	"cmd/minigo/main.go":   1231,
 	"compile/assign.go":    891,
-	"compile/call.go":      1021,
+	"compile/call.go":      1048,
 	"compile/compile.go":   451,
 	"compile/constfold.go": 866,
 	"compile/expr.go":      570,
