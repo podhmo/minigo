@@ -3,6 +3,7 @@ package minigo
 import (
 	"go/ast"
 	"go/token"
+	"strings"
 	"testing"
 	"time"
 
@@ -181,3 +182,16 @@ func TestInternTypedef(t *testing.T) {
 	}
 }
 
+// M4-3c: a bound typedef is the canonical descriptor for its TypeID —
+// a synthesized twin (hostTypedefOf-shaped) resolves to it through
+// internTypedef, so the bind entry and the synth entry meet.
+func TestInternTypedefBoundConverges(t *testing.T) {
+	e := NewEngine(".")
+	bound := hostType("example.com/x.Widget", func() any { return &strings.Builder{} })
+	e.Bind("example.com/x", map[string]runtime.Value{"Widget": bound})
+
+	twin := hostType("example.com/x.Widget", func() any { return &strings.Builder{} })
+	if got := e.internTypedef(twin); got != bound {
+		t.Errorf("synthesized twin did not converge on the bound typedef: %p vs %p", got, bound)
+	}
+}

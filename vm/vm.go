@@ -124,6 +124,11 @@ type Hooks struct {
 	// field); !decided falls back to the value-level member search.
 	// Nil keeps the value walk.
 	FieldPath func(td *runtime.TypeDef, name string) (index []int, found, decided bool)
+	// InternTypedef returns the session's canonical descriptor for td's
+	// type identity (M4-3c): synthesized typedefs route through it so
+	// every path minting the same type hands back the same pointer.
+	// Nil means no interning — the synthesized descriptor passes through.
+	InternTypedef func(td *runtime.TypeDef) *runtime.TypeDef
 	// HostTwin returns the engine's own typedef for the named host type
 	// rt — the source declaration when rt's package is interpreted from
 	// source (go/ast), the bound typedef when it is host-bound — or nil

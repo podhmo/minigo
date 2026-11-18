@@ -349,16 +349,17 @@ func (e *Engine) newVM() *vm.VM {
 		TypeMethodInfoOf: e.typeMethodInfoU,
 		SigMemo:          &e.sigMemo,
 
-		ElemOf:      e.elemOf,
-		TypeMethods: e.typeMethods,
-		Underlying:  e.underlying,
-		AliasOf:     e.aliasOf,
-		FieldTypes:  e.fieldTypes,
-		ResolveType: e.resolveTypeRef,
-		FieldPath:   e.fieldPath,
-		HostTwin:    e.hostTwin,
-		Linkname:    e.linknameTarget,
-		HostErr:     hostErrOf,
+		ElemOf:        e.elemOf,
+		TypeMethods:   e.typeMethods,
+		Underlying:    e.underlying,
+		AliasOf:       e.aliasOf,
+		FieldTypes:    e.fieldTypes,
+		ResolveType:   e.resolveTypeRef,
+		FieldPath:     e.fieldPath,
+		InternTypedef: e.internTypedef,
+		HostTwin:      e.hostTwin,
+		Linkname:      e.linknameTarget,
+		HostErr:       hostErrOf,
 	}}
 }
 
@@ -909,8 +910,13 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value, opts 
 			// owner; a re-Bind re-points at the new live package
 			bf.Pkg = p
 		}
-		if td, ok := v.(*runtime.TypeDef); ok && td.Pkg == nil {
-			td.Pkg = p
+		if td, ok := v.(*runtime.TypeDef); ok {
+			if td.Pkg == nil {
+				td.Pkg = p
+			}
+			// M4-3c: the bound typedef is the canonical descriptor for
+			// its TypeID — a synthesized twin resolves to it.
+			v = e.internTypedef(td)
 		}
 		p.Globals.Set(k, v)
 	}
