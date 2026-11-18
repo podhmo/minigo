@@ -201,6 +201,12 @@ func (e *Engine) valueTypDepth(ctx *runtime.TypeDef, x ast.Expr, depth int) (*ru
 	case *ast.ParenExpr:
 		return e.valueTypDepth(ctx, t.X, depth)
 	case *ast.Ident:
+		if t.Name == "nil" {
+			// nil is never a package member — looking it up would
+			// re-enter the package's init-once during a deferred
+			// gate that runs inside that very initializer.
+			return nil, nil
+		}
 		if ctx == nil || ctx.Pkg == nil {
 			return nil, nil
 		}
