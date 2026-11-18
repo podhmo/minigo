@@ -193,21 +193,26 @@ func (e *Engine) valueTypOf(site *bytecode.CallSite, ctx *runtime.TypeDef) (*run
 }
 
 func (e *Engine) valueTyp(ctx *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, error) {
+	return e.valueTypDepth(ctx, x, 0)
+}
+
+func (e *Engine) valueTypDepth(ctx *runtime.TypeDef, x ast.Expr, depth int) (*runtime.TypeDef, error) {
 	switch t := x.(type) {
 	case *ast.ParenExpr:
-		return e.valueTyp(ctx, t.X)
+		return e.valueTypDepth(ctx, t.X, depth)
 	case *ast.Ident:
 		if ctx == nil || ctx.Pkg == nil {
 			return nil, nil
 		}
-		if v, ok := ctx.Pkg.Globals.Get(t.Name); ok {
-			return memberTyp(v), nil
-		}
-		m, err := ctx.Pkg.Member(t.Name, e.materialize)
+		return e.memberTypOf(ctx.Pkg, t.Name, depth+1)
+	case *ast.CallExpr:
+		// a conversion T(v) carries T's typedef; anything else is a
+		// call whose result type this resolver cannot infer.
+		td, err := e.resolveTypeRef(ctx, t.Fun)
 		if err != nil {
 			return nil, nil
 		}
-		return memberTyp(m), nil
+		return td, nil
 	case *ast.SelectorExpr:
 		id, ok := t.X.(*ast.Ident)
 		if !ok {
@@ -220,11 +225,7 @@ func (e *Engine) valueTyp(ctx *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, e
 		if p == nil {
 			return nil, nil
 		}
-		m, err := p.Member(t.Sel.Name, e.materialize)
-		if err != nil {
-			return nil, err
-		}
-		return memberTyp(m), nil
+		return e.memberTypOf(p, t.Sel.Name, depth+1)
 	}
 	return nil, nil
 }
