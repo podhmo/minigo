@@ -147,7 +147,7 @@ var FileBudgets = map[string]int{
 	"syntax/scope.go":                    129,
 	"syntax/syntax.go":                   193,
 	"syntax/universe.go":                 29,
-	"typeid.go":                          404,
+	"typeid.go":                          435,
 	"tools/difffuzz/gen.go":              542,
 	"tools/difffuzz/lang.go":             314,
 	"tools/difffuzz/main.go":             605,

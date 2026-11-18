@@ -12,6 +12,19 @@ import (
 	"github.com/podhmo/minigo/runtime"
 )
 
+// universeTypeName is the set of predeclared type names — universe-block
+// identifiers, so an embedded `int` or `any` is the same type in every
+// package and takes no package lock.
+var universeTypeName = map[string]bool{
+	"bool": true, "byte": true, "rune": true, "string": true,
+	"error": true, "any": true, "comparable": true,
+	"complex64": true, "complex128": true,
+	"float32": true, "float64": true,
+	"int": true, "int8": true, "int16": true, "int32": true, "int64": true,
+	"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true,
+	"uintptr": true,
+}
+
 // typeIDOf computes the intern key for a typedef (M4-3a): the identity
 // every synthesis path agrees on so a session interns one canonical
 // TypeDef per type. See runtime.TypeID for the key shape; the rules
@@ -169,6 +182,11 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 				if id, ok := n.(*ast.Ident); ok && !sels[id] {
 					if lt := td.LocalTypes[id.Name]; lt != nil {
 						used[id.Name] = lt
+					} else if bv, ok := td.Binds[id.Name].(*runtime.TypeDef); ok && bv != nil {
+						// a type parameter is transparent: `[]T` under
+						// T=int IS `[]int`, so the bound typedef spells
+						// the leaf itself.
+						used[id.Name] = bv
 					}
 				}
 				return true
@@ -205,6 +223,12 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 						}
 						continue
 					}
+					if _, bound := td.Binds[n]; td.LocalTypes[n] == nil && bound {
+						// a bound type parameter substitutes its
+						// argument's own spelling — no name survives.
+						ctx.LocalTypes[n] = lt
+						continue
+					}
 					cl := lt.CloneUncached()
 					if lt.Spec != nil {
 						cl.Name = n + "@" + strconv.FormatInt(int64(lt.Spec.Pos()), 10)
@@ -216,21 +240,28 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 					s = is
 				}
 			}
-			// An unexported embedded name is locked to the declaring
-			// package: `struct{a}` from `type a = int` in one package is
-			// not `struct{a}` from a same-named package at another
-			// import path, so the key qualifies the name with the
-			// package path (and the leaf's identity when resolved).
+			// An unexported embedded name declared in a package is
+			// locked to it: `struct{a}` from `type a = int` in one
+			// package is not `struct{a}` from a same-named package at
+			// another import path, so the key qualifies the name with
+			// the declaring package's path — the leaf's own package
+			// when the leaf resolved (a bound name locks to the
+			// argument's package), td's otherwise. Universe-scope
+			// names (`int`, `any`, `error`) are the same type in every
+			// package and take no lock.
 			for n := range embedded {
 				if token.IsExported(n) {
 					continue
 				}
-				q := n + "@" + td.Pkg.Path
-				if lt := used[n]; lt != nil {
-					ids[q+"="+string(e.typeIDOf(lt))] = true
-				} else {
-					ids[q] = true
+				lt := used[n]
+				if lt == nil && universeTypeName[n] {
+					continue
 				}
+				pkg := td.Pkg.Path
+				if lt != nil && lt.Pkg != nil {
+					pkg = lt.Pkg.Path
+				}
+				ids[n+"@"+pkg] = true
 			}
 			if len(ids) > 0 {
 				leafs := make([]string, 0, len(ids))

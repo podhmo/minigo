@@ -404,6 +404,34 @@ func TestTypeIDAnonLocalLeafsDistinct(t *testing.T) {
 	if a, b := e.typeIDOf(pkgLevelEmbed(p1)), e.typeIDOf(pkgLevelEmbed(p1)); a != b {
 		t.Errorf("same-package struct{a} keys differ: %q vs %q", a, b)
 	}
+	// a universe-scope name is not package-locked: `struct{int}` is one
+	// type in every package.
+	embedInt := func(p *runtime.Package) *runtime.TypeDef {
+		return &runtime.TypeDef{
+			Kind: runtime.KindStruct, Pkg: p, File: f,
+			Anon: &ast.StructType{Fields: &ast.FieldList{List: []*ast.Field{
+				{Type: ast.NewIdent("int")},
+			}}},
+		}
+	}
+	if a, b := e.typeIDOf(embedInt(p1)), e.typeIDOf(embedInt(p2)); a != b {
+		t.Errorf("struct{int} keys differ across packages: %q vs %q", a, b)
+	}
+	// a bound type parameter is transparent: `[]T` under T=struct{int}
+	// is `[]struct{int}` — the bound typedef spells the leaf.
+	sliceOf := func(elt ast.Expr) *runtime.TypeDef {
+		return &runtime.TypeDef{
+			Kind: runtime.KindSlice, Pkg: p1, File: f,
+			Anon: &ast.ArrayType{Elt: elt},
+		}
+	}
+	bound := sliceOf(ast.NewIdent("T"))
+	bound.Binds = map[string]runtime.Value{"T": embedInt(p1)}
+	if a, b := e.typeIDOf(bound), e.typeIDOf(sliceOf(&ast.StructType{Fields: &ast.FieldList{List: []*ast.Field{
+		{Type: ast.NewIdent("int")},
+	}}})); a != b {
+		t.Errorf("[]T bound to struct{int} keys unlike []struct{int}: %q vs %q", a, b)
+	}
 	// an unnamed func parameter's type is not an embedded field:
 	// `func(A)` with `type A = int` keys like `func(int)` and `func(x A)`.
 	anonFn := func(elt ast.Expr, lts map[string]*runtime.TypeDef) *runtime.TypeDef {
