@@ -453,10 +453,28 @@ func TestTypeIDAnonLocalLeafsDistinct(t *testing.T) {
 	// a package that shadows a universe name embeds ITS decl, not the
 	// builtin: `type int string` + struct{int} is not builtin struct{int}.
 	pShadow := &runtime.Package{Path: "shadow/p", Name: "p", Index: &index.Index{
-		Types: map[string]*index.TypeDeclInfo{"int": {}},
+		Types: map[string]*index.TypeDeclInfo{"int": {Decl: &index.Decl{
+			Spec: &ast.TypeSpec{Type: ast.NewIdent("string")},
+		}}},
 	}}
 	if a, b := e.typeIDOf(embedInt(pShadow)), e.typeIDOf(embedInt(p1)); a == b {
 		t.Errorf("struct{int} collides with package-shadowed int: %q", a)
+	}
+	// a package-level `type a = int` and a function-local `a = int` in
+	// the same package name one embedded field — the keys converge.
+	pAlias := &runtime.Package{Path: p1.Path, Name: "p", Index: &index.Index{
+		Types: map[string]*index.TypeDeclInfo{"a": {Decl: &index.Decl{
+			Spec: &ast.TypeSpec{Assign: 1, Type: ast.NewIdent("int")},
+		}}},
+	}}
+	embedPkgAlias := &runtime.TypeDef{
+		Kind: runtime.KindStruct, Pkg: pAlias, File: f,
+		Anon: &ast.StructType{Fields: &ast.FieldList{List: []*ast.Field{
+			{Type: ast.NewIdent("a")},
+		}}},
+	}
+	if a, b := e.typeIDOf(embedPkgAlias), e.typeIDOf(embedAliasOf("int")); a != b {
+		t.Errorf("package alias a=int and local alias a=int key differently: %q vs %q", a, b)
 	}
 	// an unnamed func parameter's type is not an embedded field:
 	// `func(A)` with `type A = int` keys like `func(int)` and `func(x A)`.
