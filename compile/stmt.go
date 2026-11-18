@@ -469,14 +469,6 @@ func (c *compiler) noteBindVar(e ast.Expr, te ast.Expr, teFile *syntax.File, def
 	if !ok || id.Name == "_" {
 		return
 	}
-	if sid, ok := ast.Unparen(te).(*ast.Ident); ok && sid.NamePos == token.NoPos && c.typeNameShadowed(sid.Name, teFile) {
-		// a name we synthesized for the operand's shape — `int` for
-		// an index, `rune` for a string element, `bool` for ok —
-		// means the predeclared type; when a package or local decl
-		// shadows it the spelling resolves wrong, so leave the bind
-		// untyped rather than coerce to the shadow.
-		return
-	}
 	c.fs.noteDeclTyp(id.Name, te, nil)
 	// teFile scopes the type name to the declaring file — an `I`
 	// shadowed by a local type here is still the declared I, both for
@@ -533,27 +525,6 @@ func (c *compiler) deferOperandOf(e ast.Expr) ast.Expr {
 		}
 		e = b.declDefer
 	}
-}
-
-// typeNameShadowed reports whether name resolves to something other
-// than its predeclared type when emitted from this package: a `type`
-// or `var` package decl wins over the universe block, and — only
-// without a declaring file to scope to — function-local bindings and
-// bound type parameters shadow too (typeIdent consults them).
-func (c *compiler) typeNameShadowed(name string, teFile *syntax.File) bool {
-	if c.pkg != nil && c.pkg.Index != nil &&
-		(c.pkg.Index.Types[name] != nil || c.pkg.Index.Vars[name] != nil) {
-		return true
-	}
-	if teFile == nil {
-		if c.fs.lookupBinding(name) != nil {
-			return true
-		}
-		if _, bound := c.binds[name]; bound {
-			return true
-		}
-	}
-	return false
 }
 
 // deferExprHasLocal reports whether e names a function-local binding:
