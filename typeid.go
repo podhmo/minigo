@@ -209,9 +209,9 @@ func (e *Engine) canonicalTypedef(td *runtime.TypeDef) *runtime.TypeDef {
 			if td.Kind == runtime.KindPointer && et.Pkg != nil {
 				return anonPtrTypedefOf(et)
 			}
-			nt := *td
+			nt := td.CloneUncached()
 			nt.Elem = et
-			return &nt
+			return nt
 		}
 	}
 	return td

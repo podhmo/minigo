@@ -458,7 +458,7 @@ func (v *VM) loop(f *frame) {
 						}
 					}
 					if !bound {
-						clone := *td
+						clone := td.CloneUncached()
 						clone.OuterSpell = outer
 						if td.Local {
 							binds := map[string]runtime.Value{}
@@ -470,7 +470,7 @@ func (v *VM) loop(f *frame) {
 							clone.OuterArgs = outer
 							clone.Binds = binds
 						}
-						top = &clone
+						top = clone
 					}
 				}
 			}
