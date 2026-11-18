@@ -1861,6 +1861,7 @@ func TestGo1267(t *testing.T) {
 		{"PromotedLitGeneric", int64(6)},
 		{"PromotedReadWrite", int64(9)},
 		{"PromotedAddrIdentity", int64(8)},
+		{"PromotedStoreRhsFirst", int64(7)}, // RHS runs before the nil panic at the store
 		// 1.27: generalized inference — a generic function infers from
 		// the func-typed slot it is bound to
 		{"InferAssign", int64(42)},

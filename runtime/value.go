@@ -420,6 +420,12 @@ type Cell struct {
 type FieldRef struct {
 	Base Value
 	Name string
+	// Def, when the engine resolved one, is the typedef of the struct
+	// this ref points at — pinned statically so a deeper selection
+	// (`w.In.X = v` computing In's typedef) never dereferences the ref:
+	// Go defers a store target's nil-pointer panic until the store,
+	// after the right side runs.
+	Def *TypeDef
 	// Path, when the engine resolved one, pins the declared index path
 	// of the field (reflect's Field.Index convention) — find walks it
 	// instead of the breadth-first name search.
