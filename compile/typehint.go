@@ -491,12 +491,6 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 					savedScope := c.pkgScopeTyp
 					c.pkgScopeTyp = vd.File
 					t := c.staticOpTyp(rhs)
-					var isConv bool
-					if cx, isCall := ast.Unparen(rhs).(*ast.CallExpr); isCall {
-						// conversion-or-call answers in the decl's
-						// scope too — the callee is spelled there.
-						isConv = c.conversionCall(cx)
-					}
 					c.pkgScopeTyp = savedScope
 					c.pkgScopeFold = false
 					if !t.untyped {
@@ -507,15 +501,13 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 						if t.elLit != nil && t.elFile == nil {
 							t.elFile = vd.File
 						}
-						// a literal's or conversion's type was spelled
-						// in the decl's file — `var xs = inner.Bytes{}`
-						// and `var x = inner.T(v)` resolve `inner` under
-						// the decl's imports, so a use-site local
-						// `inner` cannot rebind it. A call's result
-						// belongs to the callee's scope, not this file
-						// — leave its teFile.
-						_, isLit := ast.Unparen(rhs).(*ast.CompositeLit)
-						if (isLit || isConv) && t.te != nil && t.teFile == nil {
+						// the whole initializer walked under vd.File's
+						// package scope, so a type it produced is
+						// spelled for that file — `var V = -dep.Word(1)`
+						// resolves `dep` under the decl's imports, not
+						// the use site's. A nested type that already
+						// carries its own file keeps it.
+						if t.te != nil && t.teFile == nil {
 							t.teFile = vd.File
 						}
 						return t
@@ -528,7 +520,14 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 				// by the call's i-th result; a comma-ok second name is
 				// bool, the first carries the operand's static type.
 				if len(vs.Values) == 1 && len(vs.Names) > 1 {
-					if t := c.nthResultOpTyp(vs.Values[0], vd.NameIdx); t.te != nil || t.deferred {
+					savedScope := c.pkgScopeTyp
+					c.pkgScopeTyp = vd.File
+					t := c.nthResultOpTyp(vs.Values[0], vd.NameIdx)
+					c.pkgScopeTyp = savedScope
+					if t.te != nil || t.deferred {
+						if t.te != nil && t.teFile == nil {
+							t.teFile = vd.File
+						}
 						return t
 					}
 					if vd.NameIdx == 1 && commaOkStatic(vs.Values[0]) {
@@ -791,7 +790,10 @@ func (c *compiler) scopeOperandExpr(p *runtime.Package, sf *syntax.File, e ast.E
 		return nil
 	case *ast.CompositeLit:
 		te := c.scopeSpecType(p, sf, t.Type)
-		if te == nil {
+		if te == nil && t.Type != nil {
+			// the spelled type re-scoped to nothing — opaque. An
+			// elided inner literal ([][]int{{1}} has a bare {1}) has
+			// no type to lose: its elements still re-scope.
 			return nil
 		}
 		elts := make([]ast.Expr, len(t.Elts))
@@ -1403,7 +1405,10 @@ func (c *compiler) scopeSpecTypeNames(p *runtime.Package, sf *syntax.File, e ast
 	case *ast.ArrayType:
 		e := c.scopeSpecTypeNames(p, sf, t.Elt, tparams)
 		if e == nil {
-			return nil
+			if t.Len != nil {
+				return nil // [N]T is T-sized — opaque
+			}
+			e = opaqueTypExpr() // []T stays a slice when T is unspellable
 		}
 		if e != t.Elt {
 			return &ast.ArrayType{Lbrack: t.Lbrack, Len: t.Len, Elt: e}
@@ -1411,8 +1416,11 @@ func (c *compiler) scopeSpecTypeNames(p *runtime.Package, sf *syntax.File, e ast
 		return t
 	case *ast.MapType:
 		k, v := c.scopeSpecTypeNames(p, sf, t.Key, tparams), c.scopeSpecTypeNames(p, sf, t.Value, tparams)
-		if k == nil || v == nil {
-			return nil
+		if k == nil {
+			k = opaqueTypExpr()
+		}
+		if v == nil {
+			v = opaqueTypExpr()
 		}
 		if k != t.Key || v != t.Value {
 			return &ast.MapType{Map: t.Map, Key: k, Value: v}
@@ -1421,7 +1429,7 @@ func (c *compiler) scopeSpecTypeNames(p *runtime.Package, sf *syntax.File, e ast
 	case *ast.StarExpr:
 		x := c.scopeSpecTypeNames(p, sf, t.X, tparams)
 		if x == nil {
-			return nil
+			x = opaqueTypExpr() // *T stays a pointer when T is unspellable
 		}
 		if x != t.X {
 			return &ast.StarExpr{Star: t.Star, X: x}
@@ -1430,7 +1438,7 @@ func (c *compiler) scopeSpecTypeNames(p *runtime.Package, sf *syntax.File, e ast
 	case *ast.ChanType:
 		v := c.scopeSpecTypeNames(p, sf, t.Value, tparams)
 		if v == nil {
-			return nil
+			v = opaqueTypExpr() // chan T stays a channel
 		}
 		if v != t.Value {
 			return &ast.ChanType{Begin: t.Begin, Arrow: t.Arrow, Dir: t.Dir, Value: v}
@@ -1439,7 +1447,7 @@ func (c *compiler) scopeSpecTypeNames(p *runtime.Package, sf *syntax.File, e ast
 	case *ast.Ellipsis:
 		e := c.scopeSpecTypeNames(p, sf, t.Elt, tparams)
 		if e == nil {
-			return nil
+			e = opaqueTypExpr() // ...T stays a spread slice
 		}
 		if e != t.Elt {
 			return &ast.Ellipsis{Ellipsis: t.Ellipsis, Elt: e}
@@ -1553,6 +1561,14 @@ func (c *compiler) scopeFieldListNames(p *runtime.Package, sf *syntax.File, fl *
 		return fl
 	}
 	return &ast.FieldList{Opening: fl.Opening, List: list, Closing: fl.Closing}
+}
+
+// opaqueTypExpr spells a type that resolves safely anywhere — used
+// where a container's shape survives an element the caller cannot
+// spell: []interface{} keeps slice-ness for nil-compare and sizing
+// without claiming the element's identity.
+func opaqueTypExpr() ast.Expr {
+	return &ast.InterfaceType{Methods: &ast.FieldList{}}
 }
 
 // callerImportName returns the qualifier under which the caller's file
