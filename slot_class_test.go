@@ -61,6 +61,8 @@ func TestSlotClassification(t *testing.T) {
 		"PtrTyped":         false,
 		"DeferPtr":         true,
 		"Special":          true,
+		"AliasMethod":      true,
+		"ShadowedParam":    true,
 	}
 	for name, want := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -69,4 +71,25 @@ func TestSlotClassification(t *testing.T) {
 			}
 		})
 	}
+
+	// a user type named `int` shadows the builtin for its whole package
+	// — a declTyp spelled `int` there names the declared type and its
+	// pointer methods, not the builtin.
+	t.Run("ShadowedPredecl", func(t *testing.T) {
+		pkg2, err := e.Package(ctx, "./testdata/slotshadow")
+		if err != nil {
+			t.Fatalf("Package(slotshadow): %v", err)
+		}
+		v, err := pkg2.MemberV("Use", e.materialize, nil)
+		if err != nil {
+			t.Fatalf("MemberV(Use): %v", err)
+		}
+		fn := v.(*runtime.Function)
+		if err := fn.EnsureCompiled(); err != nil {
+			t.Fatalf("EnsureCompiled(Use): %v", err)
+		}
+		if !slices.Contains(fn.Chunk.Boxed, true) {
+			t.Errorf("Use: no boxed slot; the *int receiver cell must survive")
+		}
+	})
 }
