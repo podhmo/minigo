@@ -369,6 +369,41 @@ func TestTypeIDAnonLocalLeafsDistinct(t *testing.T) {
 	if a, b := e.typeIDOf(embed("A", 10)), e.typeIDOf(embed("A", 30)); a != b {
 		t.Errorf("struct{A} keys differ across alias decl sites: %q vs %q", a, b)
 	}
+	// ...but an unexported embedded name is locked to its declaring
+	// package: same-named packages at different import paths embed
+	// different `a`s.
+	embedUnexported := func(p *runtime.Package) *runtime.TypeDef {
+		a := srcTd(p, f, 10, "a")
+		a.Kind = runtime.KindAlias
+		a.Anon = ast.NewIdent("int")
+		return &runtime.TypeDef{
+			Kind: runtime.KindStruct, Pkg: p, File: f,
+			Anon: &ast.StructType{Fields: &ast.FieldList{List: []*ast.Field{
+				{Type: ast.NewIdent("a")},
+			}}},
+			LocalTypes: map[string]*runtime.TypeDef{"a": a},
+		}
+	}
+	p1 := &runtime.Package{Path: "one/p", Name: "p"}
+	p2 := &runtime.Package{Path: "two/p", Name: "p"}
+	if a, b := e.typeIDOf(embedUnexported(p1)), e.typeIDOf(embedUnexported(p2)); a == b {
+		t.Errorf("struct{a} collides across same-named packages: %q", a)
+	}
+	// a package-level unexported embed (no LocalTypes leaf) locks too.
+	pkgLevelEmbed := func(p *runtime.Package) *runtime.TypeDef {
+		return &runtime.TypeDef{
+			Kind: runtime.KindStruct, Pkg: p, File: f,
+			Anon: &ast.StructType{Fields: &ast.FieldList{List: []*ast.Field{
+				{Type: ast.NewIdent("a")},
+			}}},
+		}
+	}
+	if a, b := e.typeIDOf(pkgLevelEmbed(p1)), e.typeIDOf(pkgLevelEmbed(p2)); a == b {
+		t.Errorf("package-level struct{a} collides across same-named packages: %q", a)
+	}
+	if a, b := e.typeIDOf(pkgLevelEmbed(p1)), e.typeIDOf(pkgLevelEmbed(p1)); a != b {
+		t.Errorf("same-package struct{a} keys differ: %q vs %q", a, b)
+	}
 	// an unnamed func parameter's type is not an embedded field:
 	// `func(A)` with `type A = int` keys like `func(int)` and `func(x A)`.
 	anonFn := func(elt ast.Expr, lts map[string]*runtime.TypeDef) *runtime.TypeDef {

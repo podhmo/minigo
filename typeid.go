@@ -3,6 +3,7 @@ package minigo
 import (
 	"fmt"
 	"go/ast"
+	"go/token"
 	"reflect"
 	"slices"
 	"strconv"
@@ -115,7 +116,7 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 	// context-stable in a way per-file elem keys are not.
 	if td.Anon != nil && td.Pkg != nil {
 		s := runtime.TypGoSpelling(td.Anon, td)
-		if s != "" && len(td.LocalTypes) > 0 {
+		if s != "" {
 			// A leaf naming a function-local type has to spell that
 			// decl's identity: the display name is bare, so two
 			// functions' same-named `type L` — or one local L bound to
@@ -172,6 +173,7 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 				}
 				return true
 			})
+			ids := map[string]bool{}
 			if len(used) > 0 {
 				// Re-spell with the used leafs resolved: a local alias
 				// unfolds to its target (`[]A` is `[]int`) and a declared
@@ -183,10 +185,14 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 				for n, lt := range td.LocalTypes {
 					ctx.LocalTypes[n] = lt
 				}
-				ids := map[string]bool{}
 				for n, lt := range used {
 					if lt.Kind == runtime.KindAlias {
 						if embedded[n] {
+							if !token.IsExported(n) {
+								// handled by the package-locked
+								// suffix below.
+								continue
+							}
 							// embedded alias: the name stays in the
 							// spelling, and the key is the name plus
 							// the shared target — two `type A = int`
@@ -209,14 +215,30 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 				if is := runtime.TypGoSpelling(td.Anon, &ctx); is != "" {
 					s = is
 				}
-				if len(ids) > 0 {
-					leafs := make([]string, 0, len(ids))
-					for k := range ids {
-						leafs = append(leafs, k)
-					}
-					slices.Sort(leafs)
-					s += "#" + strings.Join(leafs, ";")
+			}
+			// An unexported embedded name is locked to the declaring
+			// package: `struct{a}` from `type a = int` in one package is
+			// not `struct{a}` from a same-named package at another
+			// import path, so the key qualifies the name with the
+			// package path (and the leaf's identity when resolved).
+			for n := range embedded {
+				if token.IsExported(n) {
+					continue
 				}
+				q := n + "@" + td.Pkg.Path
+				if lt := used[n]; lt != nil {
+					ids[q+"="+string(e.typeIDOf(lt))] = true
+				} else {
+					ids[q] = true
+				}
+			}
+			if len(ids) > 0 {
+				leafs := make([]string, 0, len(ids))
+				for k := range ids {
+					leafs = append(leafs, k)
+				}
+				slices.Sort(leafs)
+				s += "#" + strings.Join(leafs, ";")
 			}
 		}
 		if s != "" {
