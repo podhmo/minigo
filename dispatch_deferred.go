@@ -534,11 +534,13 @@ func (e *Engine) valueTypDepth(ctx *runtime.TypeDef, x ast.Expr, depth int) (*ru
 		// asks the operand's element typedef — including a call's
 		// 0-th result's element (`for _, v := range p.Ints()`).
 		if call, ok := ast.Unparen(t.X).(*ast.CallExpr); ok && t.Index != nil {
-			i := 0
-			if lit, ok := t.Index.(*ast.BasicLit); ok {
-				i, _ = strconv.Atoi(lit.Value)
+			// the marker's synthetic literal carries no source position;
+			// a REAL `f()[0]` — say `var Rows = makeRows()[0]` — indexes
+			// into the result and falls through to the element walk.
+			if lit, ok2 := t.Index.(*ast.BasicLit); ok2 && lit.ValuePos == token.NoPos {
+				i, _ := strconv.Atoi(lit.Value)
+				return e.callResultTypOf(ctx, call.Fun, i, depth+1)
 			}
-			return e.callResultTypOf(ctx, call.Fun, i, depth+1)
 		}
 		td, _, err := e.valueTypDepth(ctx, t.X, depth+1)
 		if err != nil || td == nil {
