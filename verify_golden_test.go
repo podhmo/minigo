@@ -26,6 +26,9 @@ func verifyFn(t *testing.T, fn *runtime.Function) {
 		if _, err := bytecode.Verify(ch); err != nil {
 			t.Fatalf("Verify(%s):\n%s\n%v", label, bytecode.Disasm(ch), err)
 		}
+		if _, err := bytecode.VerifyKinds(ch); err != nil {
+			t.Fatalf("VerifyKinds(%s):\n%s\n%v", label, bytecode.Disasm(ch), err)
+		}
 		for _, cst := range ch.Consts {
 			if f, ok := cst.(*runtime.Function); ok {
 				if err := f.EnsureCompiled(); err != nil {
@@ -77,4 +80,37 @@ func TestVerifyCompiled(t *testing.T) {
 		t.Fatalf("Counter is %T, want *runtime.TypeDef", v)
 	}
 	verifyFn(t, td.Methods["Bump"])
+}
+
+// TestWithBytecodeVerify pins the debug entry point (P4-1b): an
+// engine built with WithBytecodeVerify runs Verify + VerifyKinds on
+// every chunk it compiles — a healthy corpus still compiles and runs.
+func TestWithBytecodeVerify(t *testing.T) {
+	ctx := context.Background()
+	e := NewEngine(".", WithBytecodeVerify())
+	e.RegisterSpecial(runtime.SymbolID{PackagePath: "example.com/define", Name: "Convert"},
+		func(ctx runtime.SpecialContext, call *runtime.QuotedCall) (runtime.Value, error) {
+			return runtime.NIL, nil
+		})
+	pkg, err := e.Package(ctx, "./testdata/disasm")
+	if err != nil {
+		t.Fatalf("Package: %v", err)
+	}
+	for _, name := range []string{
+		"Add", "Closure", "Deferred", "RangeSlice", "RangeMap",
+		"MultiRet", "NamedRet", "Generic", "Goto", "Variadic",
+		"Spread", "Special",
+	} {
+		v, err := pkg.MemberV(name, e.materialize, nil)
+		if err != nil {
+			t.Fatalf("MemberV(%s): %v", name, err)
+		}
+		fn, ok := v.(*runtime.Function)
+		if !ok {
+			t.Fatalf("%s is %T, want *runtime.Function", name, v)
+		}
+		if err := fn.EnsureCompiled(); err != nil {
+			t.Fatalf("EnsureCompiled(%s) under WithBytecodeVerify: %v", name, err)
+		}
+	}
 }
