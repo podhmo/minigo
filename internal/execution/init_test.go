@@ -3,6 +3,9 @@ package execution
 import (
 	"errors"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 )
 
 // TestInitRunOnce pins the at-most-once contract, including that a
@@ -16,14 +19,24 @@ func TestInitRunOnce(t *testing.T) {
 		calls++
 		return errBoom
 	}, func(error) { failures++ })
-	if err != errBoom || calls != 1 || failures != 1 {
-		t.Fatalf("run: err=%v calls=%d failures=%d", err, calls, failures)
+	if diff := cmp.Diff(err, errBoom, cmpopts.EquateErrors()); diff != "" {
+		t.Fatalf("run err mismatch (-got +want):\n%s", diff)
 	}
-	if err := i.Run(func() error {
+	if diff := cmp.Diff(calls, 1); diff != "" {
+		t.Fatalf("calls mismatch (-got +want):\n%s", diff)
+	}
+	if diff := cmp.Diff(failures, 1); diff != "" {
+		t.Fatalf("failures mismatch (-got +want):\n%s", diff)
+	}
+	err = i.Run(func() error {
 		calls++
 		return nil
-	}, nil); err != errBoom || calls != 1 {
-		t.Fatalf("second run: err=%v calls=%d", err, calls)
+	}, nil)
+	if diff := cmp.Diff(err, errBoom, cmpopts.EquateErrors()); diff != "" {
+		t.Fatalf("second run err mismatch (-got +want):\n%s", diff)
+	}
+	if diff := cmp.Diff(calls, 1); diff != "" {
+		t.Fatalf("second-run calls mismatch (-got +want):\n%s", diff)
 	}
 }
 
@@ -34,8 +47,8 @@ func TestInitRunPanicRecordsAndRepanicks(t *testing.T) {
 	var i Init
 	var failed error
 	defer func() {
-		if v := recover(); v != "kaboom" {
-			t.Fatalf("recover = %v", v)
+		if diff := cmp.Diff(recover(), "kaboom"); diff != "" {
+			t.Fatalf("recover mismatch (-got +want):\n%s", diff)
 		}
 		if failed == nil {
 			t.Fatal("panic did not reach the failure callback")
@@ -49,11 +62,15 @@ func TestInitRunPanicRecordsAndRepanicks(t *testing.T) {
 func TestInitTrySwallowsPanic(t *testing.T) {
 	var i Init
 	err := i.Try(func() error { panic("nope") })
-	if err == nil || err.Error() != "panic: nope" {
-		t.Fatalf("err = %v", err)
+	if diff := cmp.Diff(err.Error(), "panic: nope"); diff != "" {
+		t.Fatalf("err mismatch (-got +want):\n%s", diff)
 	}
 	calls := 0
-	if err := i.Try(func() error { calls++; return nil }); err == nil || calls != 0 {
-		t.Fatalf("try re-ran: err=%v calls=%d", err, calls)
+	err = i.Try(func() error { calls++; return nil })
+	if diff := cmp.Diff(err.Error(), "panic: nope"); diff != "" {
+		t.Fatalf("second try err mismatch (-got +want):\n%s", diff)
+	}
+	if diff := cmp.Diff(calls, 0); diff != "" {
+		t.Fatalf("try re-ran (-got +want):\n%s", diff)
 	}
 }
