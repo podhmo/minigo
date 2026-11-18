@@ -188,6 +188,20 @@ type Package struct {
 	// pointer) so bound-package guards like `p.Fset != nil` still work.
 	PackageImage
 
+	// the per-session execution state: globals, initialization, runtime
+	// import refs and the materialization caches. Two sessions built on
+	// the same source share nothing here — a session that mutates its
+	// globals must not reach another session. Value-embedded (not a
+	// pointer) so bound-package literals need no initialization and
+	// `p.Globals`-style promoted access keeps working.
+	PackageInstance
+}
+
+// PackageInstance is everything about a package that is execution
+// state rather than definition — the piece [PackageImage] must never
+// hold. An instance belongs to one session; it is what
+// docs/next/ja/references/ownership.md calls the per-session unit.
+type PackageInstance struct {
 	Globals *Env // values populated at Initialize / on member access
 
 	// HostVars pins package-level vars of a source-built package to host

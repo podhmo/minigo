@@ -922,10 +922,12 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value, opts 
 		opt(&cfg)
 	}
 	p := &runtime.Package{
-		Path:     importPath,
-		Name:     cfg.name,
-		Globals:  runtime.NewEnv(),
-		Specials: e.specials,
+		Path: importPath,
+		Name: cfg.name,
+		PackageInstance: runtime.PackageInstance{
+			Globals:  runtime.NewEnv(),
+			Specials: e.specials,
+		},
 		// bound paths without a dot in the first element stand in for GOROOT.
 		Standard: !strings.Contains(strings.SplitN(importPath, "/", 2)[0], "."),
 	}
@@ -1197,18 +1199,20 @@ func (e *Engine) newPackage(path, name, dir string) *runtime.Package {
 		Name:         name,
 		Dir:          dir,
 		PackageImage: runtime.PackageImage{Fset: e.fset},
-		LazyInit:     e.initMode == LazyInit,
-		Globals:      runtime.NewEnv(),
-		HostVars:     hostVars[path],
-		Scopes:       map[*syntax.File]map[string]*runtime.ImportRef{},
-		Imports:      map[*syntax.File][]*runtime.ImportRef{},
-		Specials:     e.specials,
-		Owner:        e,
-		// host-side init runs on a fresh VM on the caller's goroutine —
-		// sharing a VM between goroutines is not safe
-		RunInit: func(fn *runtime.Function) error {
-			_, err := e.newVM().Call(fn, nil)
-			return err
+		PackageInstance: runtime.PackageInstance{
+			LazyInit: e.initMode == LazyInit,
+			Globals:  runtime.NewEnv(),
+			HostVars: hostVars[path],
+			Scopes:   map[*syntax.File]map[string]*runtime.ImportRef{},
+			Imports:  map[*syntax.File][]*runtime.ImportRef{},
+			Specials: e.specials,
+			Owner:    e,
+			// host-side init runs on a fresh VM on the caller's goroutine —
+			// sharing a VM between goroutines is not safe
+			RunInit: func(fn *runtime.Function) error {
+				_, err := e.newVM().Call(fn, nil)
+				return err
+			},
 		},
 	}
 	p.SetState(runtime.Parsed)
