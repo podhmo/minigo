@@ -364,6 +364,26 @@ func TestTypeIDAnonLocalLeafsDistinct(t *testing.T) {
 	if a, b := e.typeIDOf(embed("A", 10)), e.typeIDOf(embed("A2", 20)); a == b {
 		t.Errorf("struct{A} and struct{A2} key alike: %q", a)
 	}
+	// ...but two `type A = int` decls name one field type: alias decl
+	// sites are identity-irrelevant.
+	if a, b := e.typeIDOf(embed("A", 10)), e.typeIDOf(embed("A", 30)); a != b {
+		t.Errorf("struct{A} keys differ across alias decl sites: %q vs %q", a, b)
+	}
+	// an unnamed func parameter's type is not an embedded field:
+	// `func(A)` with `type A = int` keys like `func(int)` and `func(x A)`.
+	anonFn := func(elt ast.Expr, lts map[string]*runtime.TypeDef) *runtime.TypeDef {
+		return &runtime.TypeDef{
+			Kind: runtime.KindFunc, Pkg: pkg, File: f,
+			Anon: &ast.FuncType{Params: &ast.FieldList{List: []*ast.Field{
+				{Type: elt},
+			}}},
+			LocalTypes: lts,
+		}
+	}
+	aliases := map[string]*runtime.TypeDef{"A": aliasTd}
+	if a, b := e.typeIDOf(anonFn(ast.NewIdent("int"), nil)), e.typeIDOf(anonFn(ast.NewIdent("A"), aliases)); a != b {
+		t.Errorf("func(A) keys unlike func(int): %q vs %q", a, b)
+	}
 	// a declared (named) field of an alias type does unfold —
 	// `struct{x A}` is `struct{x int}`.
 	namedFld := func(elt ast.Expr, lts map[string]*runtime.TypeDef) *runtime.TypeDef {

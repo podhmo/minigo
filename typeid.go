@@ -132,12 +132,19 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 					for _, nm := range x.Names {
 						sels[nm] = true
 					}
-					if len(x.Names) == 0 {
+				case *ast.StructType:
+					if x.Fields == nil {
+						break
+					}
+					for _, f := range x.Fields.List {
+						if len(f.Names) != 0 {
+							continue
+						}
 						// an embedded field's name is the type name as
 						// written — `struct{A}` is not `struct{T}` even
 						// when A is an alias for T, so the leaf keeps
 						// its spelled name.
-						te := ast.Expr(x.Type)
+						te := ast.Expr(f.Type)
 						for {
 							switch w := te.(type) {
 							case *ast.ParenExpr:
@@ -181,10 +188,10 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 					if lt.Kind == runtime.KindAlias {
 						if embedded[n] {
 							// embedded alias: the name stays in the
-							// spelling but the decl site still keys it.
-							if lt.Spec != nil {
-								ids[n+"="+fmt.Sprintf("src:%p:%d", lt.File, lt.Spec.Pos())] = true
-							}
+							// spelling, and the key is the name plus
+							// the shared target — two `type A = int`
+							// decls name one field type.
+							ids[n+"="+string(e.typeIDOf(lt))] = true
 							continue
 						}
 						if tgt := e.peelAliasTd(lt); tgt != nil {
