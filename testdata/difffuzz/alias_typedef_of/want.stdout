@@ -1,0 +1,10 @@
+*main.Base 1
+main.Base 2
+[]int [1]
+i.(Base): true
+i.(B): true
+j.(*Base): true
+j.(PA): true
+typeOf(B): Base
+typeOf(C).Kind: slice
+t2: 3
