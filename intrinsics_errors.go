@@ -265,13 +265,13 @@ func hostErrArg(c runtime.VMCaller, v runtime.Value) error {
 			// methods (Error, Timeout, Is) live on the tag.
 			if s, ok := inner.(*runtime.Struct); ok && s.Def != nil {
 				for _, t := range hostErrTwins {
-					if runtime.HostNamedIs(t.rt, s.Def) {
+					if hostNamedIsOf(c, t.rt, s.Def) {
 						return t.build(c, s)
 					}
 				}
 			}
 			if tn, ok := inner.(*runtime.TypedNil); ok {
-				if err := twinNilHost(tn); err != nil {
+				if err := twinNilHost(c, tn); err != nil {
 					return err
 				}
 			}
@@ -280,7 +280,7 @@ func hostErrArg(c runtime.VMCaller, v runtime.Value) error {
 			inner := runtime.Unwrap(x.Elem)
 			if s, ok := inner.(*runtime.Struct); ok && s.Def != nil {
 				for _, t := range hostErrTwins {
-					if runtime.HostNamedIs(t.rt, s.Def) {
+					if hostNamedIsOf(c, t.rt, s.Def) {
 						return t.build(c, s)
 					}
 				}
@@ -293,7 +293,7 @@ func hostErrArg(c runtime.VMCaller, v runtime.Value) error {
 		case *runtime.Struct:
 			if x.Def != nil {
 				for _, t := range hostErrTwins {
-					if runtime.HostNamedIs(t.rt, x.Def) {
+					if hostNamedIsOf(c, t.rt, x.Def) {
 						return t.build(c, x)
 					}
 				}
@@ -305,7 +305,7 @@ func hostErrArg(c runtime.VMCaller, v runtime.Value) error {
 			// it and panics dereferencing the field, the same crash
 			// the script should see rather than a quietly false
 			// predicate.
-			if err := twinNilHost(x); err != nil {
+			if err := twinNilHost(c, x); err != nil {
 				return err
 			}
 			return hostErrOf(c, u)
@@ -315,9 +315,19 @@ func hostErrArg(c runtime.VMCaller, v runtime.Value) error {
 	}
 }
 
+// hostNamedIsOf answers source-twin identity through the caller's intern
+// table when it has one ([runtime.HostNamedTwinner]); thinner callers
+// keep [runtime.HostNamedIs]'s name+path compare.
+func hostNamedIsOf(c any, rt reflect.Type, td *runtime.TypeDef) bool {
+	if tw, ok := c.(runtime.HostNamedTwinner); ok {
+		return tw.HostNamedTwin(rt, td)
+	}
+	return runtime.HostNamedIs(rt, td)
+}
+
 // twinNilHost returns the real host (*T)(nil) for a script typed nil
 // of a hostErrTwins pointer type, nil for any other typed nil.
-func twinNilHost(tn *runtime.TypedNil) error {
+func twinNilHost(c runtime.VMCaller, tn *runtime.TypedNil) error {
 	et := tn.Typ
 	if et == nil {
 		return nil
@@ -525,7 +535,7 @@ func sameErrTypHost(v runtime.ElemZeroTyper, rt reflect.Type, want *runtime.Type
 	}
 	// a type declared in a source-interpreted package (io/fs's
 	// PathError) is named by its package and bare name instead.
-	return wt.Name == rt.PkgPath()+"."+rt.Name() || runtime.HostNamedIs(rt, wt)
+	return wt.Name == rt.PkgPath()+"."+rt.Name() || hostNamedIsOf(v, rt, wt)
 }
 
 // sameErrTyp compares a chain element's dynamic typedef with the As
