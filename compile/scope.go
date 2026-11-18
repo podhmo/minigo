@@ -175,6 +175,31 @@ func (s *fscope) noteUntypedConst(name string, dte ast.Expr) {
 	}
 }
 
+// localConsts maps every in-scope local declaration to whether it is
+// const-bound — true for a `const` name, false for vars, params and
+// type decls (a shadowing non-const must still answer for its name so
+// a package const of the same name does not leak through). Package
+// members never appear here.
+func (s *fscope) localConsts() map[string]bool {
+	seen := map[string]bool{}
+	var out map[string]bool
+	for cur := s; cur != nil; cur = cur.parent {
+		for i := len(cur.blocks) - 1; i >= 0; i-- {
+			for name, b := range cur.blocks[i] {
+				if seen[name] {
+					continue
+				}
+				seen[name] = true
+				if out == nil {
+					out = map[string]bool{}
+				}
+				out[name] = b.constDecl
+			}
+		}
+	}
+	return out
+}
+
 // lookupBinding walks the scope chain for the innermost declaration of
 // name and returns its binding record.
 func (s *fscope) lookupBinding(name string) *binding {

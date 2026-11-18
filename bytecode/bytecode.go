@@ -353,6 +353,12 @@ type CallSite struct {
 	// Ctx is opaque producer context for the resolver (package,
 	// type-parameter binds); nil when the frame's own context applies.
 	Ctx any
+	// Consts maps the local declarations in scope where Expr was
+	// spelled: true for a `const`-bound name, false for a non-const
+	// one (a local var or type shadows a package const of the same
+	// name, so presence alone cannot answer "is this identifier a
+	// constant"). Nil when the site has no local scope.
+	Consts map[string]bool
 	// Depth peels Expr's resolved typedef through its element typedefs
 	// (a `[]T` literal's elements sit one peel below). Key then takes
 	// the map key typedef, and After peels further element typedefs —

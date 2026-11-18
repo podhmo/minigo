@@ -95,6 +95,13 @@ func (c *compiler) opGate(x, y ast.Expr, pos token.Pos, inSwitch bool) bool {
 		yt = opTyp{te: yt.dte, dte: yt.dte}
 	}
 	if xt.deferred || yt.deferred {
+		// the same operands the static gate declines stay undecided:
+		// an untyped constant adopts the other operand's type, and an
+		// interface-typed operand's legality is assignability, not
+		// identity — `time.January == 1` and `rc == i` are both legal.
+		if xt.untyped || yt.untyped || xt.iface || yt.iface {
+			return false
+		}
 		// an operand's static type is a deferred fact — emit the
 		// run-time gate instead of guessing: OpTypGate resolves both
 		// operand typedefs and traps gc's mismatched-types wording
@@ -226,9 +233,14 @@ func (c *compiler) exprSite(x ast.Expr, pos token.Pos) int {
 	} else {
 		localTypes = c.fs.localTypeDefs()
 	}
+	var localConsts map[string]bool
+	if c.pkgScopeTyp == nil {
+		localConsts = c.fs.localConsts()
+	}
 	c.ch.CallSites = append(c.ch.CallSites, &bytecode.CallSite{
 		Expr: x, File: file, Pos: pos,
-		Ctx: &runtime.TypeDef{Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes},
+		Ctx:    &runtime.TypeDef{Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes},
+		Consts: localConsts,
 	})
 	return len(c.ch.CallSites) - 1
 }
@@ -247,7 +259,24 @@ func (c *compiler) exprSite(x ast.Expr, pos token.Pos) int {
 func (c *compiler) selPkgMemberOpTyp(x *ast.SelectorExpr, ref *runtime.ImportRef) opTyp {
 	res := askIndexed(ref)
 	if res.Kind == semantics.Deferred {
-		return opTyp{deferred: true, dexpr: x}
+		ot := opTyp{deferred: true, dexpr: x}
+		// an untyped const stays untyped through the deferral — `p.C`
+		// compared to a float64 adopts float64 like any untyped
+		// operand, so it must never feed the run-time gate a default
+		// type. The materialized package (res.Val survives the
+		// downgrade) answers which members are untyped consts.
+		if p := res.Val; p != nil {
+			if v, ok := p.Globals.Get(x.Sel.Name); ok {
+				_, ot.untyped = v.(*runtime.UConst)
+			} else if p.Index != nil {
+				if d := p.Index.Consts[x.Sel.Name]; d != nil {
+					if vs, ok := d.Spec.(*ast.ValueSpec); ok {
+						ot.untyped = vs.Type == nil && d.InheritedType == nil
+					}
+				}
+			}
+		}
+		return ot
 	}
 	if res.Kind != semantics.Found {
 		return opTyp{}
