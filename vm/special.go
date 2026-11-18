@@ -123,7 +123,7 @@ func (s *specialCtx) Resolve(e ast.Expr) (runtime.Value, error) {
 			if slot >= len(s.f.locals) || s.f.locals[slot] == nil {
 				return nil, s.Errorf(x, "local %s is not bound", x.Name)
 			}
-			return s.f.locals[slot].Elem, nil
+			return s.f.localVal(slot), nil
 		}
 		if idx, ok := s.q.Upvals[x.Name]; ok {
 			if idx >= len(s.f.upvals) || s.f.upvals[idx] == nil {
@@ -252,20 +252,24 @@ func (s *specialCtx) Eval(e ast.Expr) (runtime.Value, error) {
 	fr := &frame{
 		fn:     &runtime.Function{Pkg: s.f.fn.Pkg, File: s.q.File, Name: "<special-eval>"},
 		ch:     ch,
-		locals: make([]*runtime.Cell, ch.NLocals),
+		locals: make([]runtime.Value, ch.NLocals),
+		ltyps:  make([]*runtime.TypeDef, ch.NLocals),
 		upvals: s.f.upvals,
 	}
-	// share the caller's cells — slot indices line up by construction
+	// share the caller's slots — slot indices line up by construction;
+	// the locals a quoted form can name are all boxed (P4-2a), so they
+	// arrive as shared cell pointers and writes propagate back.
 	n := len(s.f.locals)
 	if n > len(fr.locals) {
 		n = len(fr.locals)
 	}
 	copy(fr.locals, s.f.locals[:n])
+	copy(fr.ltyps, s.f.ltyps[:min(n, len(s.f.ltyps))])
 	// the shared cells can now escape through this eval — disqualify the
 	// caller's block from recycling.
 	s.f.cellsShared = true
 	for i := n; i < len(fr.locals); i++ {
-		fr.locals[i] = &runtime.Cell{Elem: runtime.NIL}
+		fr.locals[i] = &localCell{&runtime.Cell{Elem: runtime.NIL}}
 	}
 	s.v.exec(fr)
 	if len(fr.stack) == 0 {
