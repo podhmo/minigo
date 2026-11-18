@@ -1748,6 +1748,8 @@ func (c *compiler) nilableTypExpr(te ast.Expr) (nilable, resolved bool) {
 	switch t := c.unfoldTypExpr(te, 4).(type) {
 	case *ast.StarExpr, *ast.MapType, *ast.ChanType, *ast.FuncType, *ast.InterfaceType:
 		return true, true
+	case *ast.Ellipsis:
+		return true, true // a variadic parameter's type is a slice
 	case *ast.ArrayType:
 		return t.Len == nil, true // a slice
 	case *ast.Ident:
