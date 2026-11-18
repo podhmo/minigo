@@ -2224,12 +2224,16 @@ func (v *VM) mapKeyOperand(f *frame, td *runtime.TypeDef, idx runtime.Value) run
 			return u
 		}
 		p, rt, ok := runtime.HostNamedScalar(u)
-		if !ok || !runtime.HostTwinOf(rt, kt) {
+		if !ok || !v.hostTypedefIs(rt, kt) {
+			return u
+		}
+		if kt.HostScalar == nil && kt.HostNew != nil {
+			// a bound host enum without a scalar (reflect.Kind) keeps
+			// its GoValue box: the named display and identity live in
+			// the box, a bare payload key would lose both.
 			return u
 		}
 		if kt.HostNew != nil {
-			// a bound host enum (reflect.Kind) holds GoValue boxes,
-			// not tagged payloads: keep the bare payload key.
 			return p
 		}
 		return runtime.Tag(kt, p)

@@ -521,7 +521,7 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 			if et.HostNew != nil {
 				return reflect.TypeOf(gv.V) == et.HostType()
 			}
-			if rt := reflect.TypeOf(gv.V); rt.Kind() == reflect.Pointer && runtime.HostNamedIs(rt.Elem(), et) {
+			if rt := reflect.TypeOf(gv.V); rt.Kind() == reflect.Pointer && v.hostTypedefIs(rt.Elem(), et) {
 				return true
 			}
 			return reflect.TypeOf(gv.V).String() == tdName(td)
@@ -605,7 +605,7 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 				return rt.String() == runtime.TypGoSpelling(ft, td)
 			}
 		}
-		if runtime.HostTwinOf(rt, td) {
+		if v.hostTypedefIs(rt, td) {
 			return true
 		}
 		return rt.String() == tdName(td)
@@ -1230,6 +1230,30 @@ func stampContainerTyp(x runtime.Value, td *runtime.TypeDef) runtime.Value {
 // interning cannot resolve — a host-minted tag carrying only a name
 // (Spec == nil), or two source-anonymous descriptors whose spellings
 // agree in different resolution contexts.
+// hostTypedefIs reports whether td denotes the host type rt: a bare
+// HostIdent stamp canonicalizes to rt's bound or source twin, so
+// interned descriptors agree exactly when td is that twin —
+// [runtime.HostTwinOf] remains the fallback for typedefs the intern
+// table cannot key.
+func (v *VM) hostTypedefIs(rt reflect.Type, td *runtime.TypeDef) bool {
+	if rt == nil || td == nil {
+		return false
+	}
+	if v.sameTypedef(&runtime.TypeDef{HostIdent: rt}, td) {
+		return true
+	}
+	// bound typedefs the intern table cannot key (a "?" identity —
+	// no Spec, no importable package) never converge; the name/path
+	// compare answers them like it always has.
+	return runtime.HostTwinOf(rt, td)
+}
+
+// HostNamedTwin is [VM.hostTypedefIs] for intrinsics holding only a
+// [runtime.VMCaller] (see [runtime.HostNamedTwinner]).
+func (v *VM) HostNamedTwin(rt reflect.Type, td *runtime.TypeDef) bool {
+	return v.hostTypedefIs(rt, td)
+}
+
 func (v *VM) sameTypedef(a, b *runtime.TypeDef) bool {
 	if a == nil || b == nil {
 		return a == b
