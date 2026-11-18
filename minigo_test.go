@@ -2047,6 +2047,9 @@ func TestMethodSetDepthContests(t *testing.T) {
 	if got := run(t, e, "./testdata/msetchk", "F12"); got != "true true true false" {
 		t.Errorf("F12: want %q, got %v", "true true true false", got)
 	}
+	if got := run(t, e, "./testdata/msetchk", "F13"); got != "7" {
+		t.Errorf("F13: want %q, got %v", "7", got)
+	}
 }
 
 // toolchainAtLeast reports whether the host Go toolchain is >= major.minor
