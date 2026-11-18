@@ -105,7 +105,7 @@
   - [x] **M4-3a TypeID のキーと反例**: source named 型、host が表す型、無名型のキーを定める。`atomic.Value` と `atomic.Pointer` の区別、運搬型が異なる `*time.Timer` の同一性、ソース版と型引数の違いを固定する。M4-1d のキャッシュはこのキーを使う。
   - [x] **M4-3b Session 内の intern 表**: M4-3a と P2-14c のあとに導入する。同じキーを並行登録しても Session 内で同じ typedef を返し、別 Session の typedef と混ざらないことをテストする。
   - [x] **M4-3c host typedef の入口を切り替える**: `hostTypedefOf` / `hostPkgElemTypedef`、`HostTypeOf` / bind 側を入口ごとに移す。source・bind 間の twin、型付き nil と型の表示を各差分で確認する。
-  - [ ] **M4-3d インスタンス化の typedef を切り替える**: M4-3b の表へコピーを集約する。型引数が異なる型、別宣言の同名型、別 Session の分離を確認する。
+  - [x] **M4-3d インスタンス化の typedef を切り替える**: M4-3b の表へコピーを集約する。型引数が異なる型、別宣言の同名型、別 Session の分離を確認する。
 - [ ] **M4-4 host twin 系の helper を消す（1 つにつき 1 PR）**: 対象は `hostTwinIs`、`hostNilTwin`、`sameSpelledTwin`、`HostNamedIs`/`HostTwinOf`、`sourceTwinOf`。完了条件: 各 PR が pin 済みのリグレッションケースで裏付けられている。
 - [ ] **M4-5 代入可能性と変換可能性を semantics に移す**: `tdShapeEq`、`underlyingShape`/`convShapeEq`、`structFieldsEq` を、`AssignableTo`/`ConvertibleTo`/`Identical` として移す（消すのではない）。`peelAlias` は `TypeOf` の解決に含める。
   - [ ] **M4-5a 同一性とエイリアス**: `Identical` と `TypeOf` の alias 解決を先に導入する。定義型・エイリアス、構造体のタグ、パッケージ固有名の比較を固定する。

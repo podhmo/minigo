@@ -1354,7 +1354,9 @@ func (e *Engine) instantiateBinds(base *runtime.TypeDef, binds map[string]runtim
 			}
 		}
 	}
-	return td
+	// M4-3d: the instantiated descriptor is canonical — two mints of the
+	// same instantiation are the same pointer.
+	return e.internTypedef(td)
 }
 
 // recvParamNames extracts the type parameter names a method receiver
