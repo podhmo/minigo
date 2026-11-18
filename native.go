@@ -49,12 +49,9 @@ func wrapFuncWith(name string, fn any, box func(any) runtime.Value, keepErr bool
 	}
 	ft := rv.Type()
 	nin := ft.NumIn()
-	return &runtime.BuiltinFunc{Name: name, Target: fn, Fn: func(_ runtime.VMCaller, args []runtime.Value) (result runtime.Value, err error) {
-		defer func() {
-			if r := recover(); r != nil {
-				result, err = nil, fmt.Errorf("%s: %v", name, r)
-			}
-		}()
+	return &runtime.BuiltinFunc{Name: name, Target: fn, Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		// no recover(): a stdlib panic must reach the VM so a script
+		// recover() sees it — the same contract h.fn bindings keep.
 		variadic := ft.IsVariadic()
 		if (!variadic && len(args) != nin) || (variadic && len(args) < nin-1) {
 			return nil, fmt.Errorf("%s: got %d argument(s)", name, len(args))
@@ -153,6 +150,13 @@ func toNative(v runtime.Value, pt reflect.Type) (reflect.Value, error) {
 	if x == nil {
 		return reflect.Zero(pt), nil
 	}
+	return nativeValue(x, pt)
+}
+
+// nativeValue marshals one already-unwrapped Go value toward parameter
+// type pt — the body of toNative, shared with collection-element
+// conversions so a [][]byte or [4]byte argument converts recursively.
+func nativeValue(x any, pt reflect.Type) (reflect.Value, error) {
 	av := reflect.ValueOf(x)
 	if av.Type().AssignableTo(pt) {
 		return av, nil
@@ -170,6 +174,20 @@ func toNative(v runtime.Value, pt reflect.Type) (reflect.Value, error) {
 	case reflect.Slice:
 		if av.Kind() == reflect.Slice {
 			out := reflect.MakeSlice(pt, av.Len(), av.Len())
+			for i := 0; i < av.Len(); i++ {
+				ev, err := nativeElem(av.Index(i), pt.Elem())
+				if err != nil {
+					return reflect.Value{}, fmt.Errorf("index %d: %w", i, err)
+				}
+				out.Index(i).Set(ev)
+			}
+			return out, nil
+		}
+	case reflect.Array:
+		// a fixed-size parameter (netip.AddrFrom4's [4]byte) takes a
+		// same-length script array, converted element-wise.
+		if av.Kind() == reflect.Slice && av.Len() == pt.Len() {
+			out := reflect.New(pt).Elem()
 			for i := 0; i < av.Len(); i++ {
 				ev, err := nativeElem(av.Index(i), pt.Elem())
 				if err != nil {
@@ -259,21 +277,9 @@ func nativeElem(av reflect.Value, pt reflect.Type) (reflect.Value, error) {
 	if !av.IsValid() {
 		return reflect.Zero(pt), nil
 	}
-	if av.Type().AssignableTo(pt) {
-		return av, nil
-	}
-	// a HostTypeOf literal boxes *T where gc spells T — the element
-	// conversion needs the same pointee unwrap toNative applies.
-	if av.Kind() == reflect.Pointer && !av.IsNil() && av.Type().Elem().AssignableTo(pt) {
-		return av.Elem(), nil
-	}
-	if av.Type().ConvertibleTo(pt) {
-		return av.Convert(pt), nil
-	}
-	if pt.Kind() == reflect.Interface && av.Type().Implements(pt) {
-		return av, nil
-	}
-	return reflect.Value{}, fmt.Errorf("cannot use %s as %s", av.Type(), pt)
+	// the element marshals through the same rules as an argument, so a
+	// nested collection ([][]byte members of a Join argument) converts.
+	return nativeValue(av.Interface(), pt)
 }
 
 // HostTypeOf returns the typedef [Engine.Bind] needs for a named host
