@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/podhmo/minigo/runtime"
 )
 
 // writePinPkg writes the session-isolation fixture and returns its dir.
@@ -107,5 +108,38 @@ func TestSessionOwnershipCheck(t *testing.T) {
 	// the owning session still calls it normally
 	if _, err := s1.Call(ctx, p, "Inc"); err != nil {
 		t.Errorf("Call on the owning session failed: %v", err)
+	}
+	// EvalExpr is the other entry that runs a passed-in package on this
+	// engine's interpreter: same refusal.
+	if _, err := s2.EvalExpr(ctx, p, p.Files[0], nil); err == nil {
+		t.Error("EvalExpr on another session's package succeeded; want an ownership error")
+	}
+}
+
+// TestSessionOwnershipBoundShared pins the other half of the rule (P2-14e):
+// a host-bound package is a shared asset, not session state — bound
+// packages carry no owner and stay callable from a sibling session.
+func TestSessionOwnershipBoundShared(t *testing.T) {
+	ctx := context.Background()
+	base := NewEngine(t.TempDir())
+	base.Bind("myhost/lib", map[string]runtime.Value{
+		"Magic": &runtime.BuiltinFunc{
+			Name: "Magic",
+			Fn: func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
+				return int64(42), nil
+			},
+		},
+	})
+	s1, s2 := base.NewSession(), base.NewSession()
+	p := s1.BoundOf("myhost/lib")
+	if p == nil {
+		t.Fatal("BoundOf: bound package not visible on the session")
+	}
+	got, err := s2.Call(ctx, p, "Magic")
+	if err != nil {
+		t.Fatalf("Call on a bound package from a sibling session: %v", err)
+	}
+	if diff := cmp.Diff(int64(42), got); diff != "" {
+		t.Errorf("Magic mismatch (-want +got):\n%s", diff)
 	}
 }
