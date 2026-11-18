@@ -34,7 +34,6 @@ import (
 	"io"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +42,7 @@ import (
 	"github.com/podhmo/minigo/compile"
 	"github.com/podhmo/minigo/index"
 	"github.com/podhmo/minigo/internal/assetaudit"
+	"github.com/podhmo/minigo/internal/bind"
 	"github.com/podhmo/minigo/internal/spike"
 	"github.com/podhmo/minigo/resolve"
 	"github.com/podhmo/minigo/runtime"
@@ -107,7 +107,7 @@ type sessionState struct {
 	pkgs  map[string]*runtime.Package // by import path
 	byDir map[string]*runtime.Package // synthetic packages by dir
 	files map[string]*runtime.Package // single-file packages by abs path
-	binds map[string]*runtime.Package // host-bound packages (sessions inherit)
+	names *bind.Names                 // host-bound packages (sessions inherit)
 	srcs  map[string]*runtime.Package // source packages SourceOf builds past a bound shadow or a deny mode
 	// lenient builds (inspect.DirOf/FileOf/PackageOf) are privately
 	// cached — a lenient package in e.pkgs would hide a redeclare error
@@ -283,7 +283,7 @@ func NewEngine(startDir string, opts ...Option) *Engine {
 			byDir:        map[string]*runtime.Package{},
 			files:        map[string]*runtime.Package{},
 			filesLenient: map[string]*runtime.Package{},
-			binds:        map[string]*runtime.Package{},
+			names:        bind.NewNames(),
 			srcs:         map[string]*runtime.Package{},
 			pkgsLenient:  map[string]*runtime.Package{},
 			byDirLenient: map[string]*runtime.Package{},
@@ -478,7 +478,7 @@ func (e *Engine) NewSession() *Engine {
 			pkgs:         map[string]*runtime.Package{},
 			byDir:        map[string]*runtime.Package{},
 			files:        map[string]*runtime.Package{},
-			binds:        map[string]*runtime.Package{},
+			names:        bind.NewNames(),
 			srcs:         map[string]*runtime.Package{},
 			pkgsLenient:  map[string]*runtime.Package{},
 			byDirLenient: map[string]*runtime.Package{},
@@ -494,13 +494,13 @@ func (e *Engine) NewSession() *Engine {
 	// and its package cache, so e.g. inspect.PackageOf observes the
 	// session's (patched) packages, not the parent's copy.
 	e.mu.Lock()
-	for path, p := range e.binds {
-		if _, installed := s.binds[path]; installed {
-			continue
+	e.names.Each(func(path string, p *runtime.Package) bool {
+		if !s.names.Bound(path) {
+			s.names.Set(path, p)
+			s.pkgs[path] = p
 		}
-		s.binds[path] = p
-		s.pkgs[path] = p
-	}
+		return true
+	})
 	e.mu.Unlock()
 	return s
 }
@@ -847,7 +847,7 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value, opts 
 	}
 	e.mu.Lock()
 	e.pkgs[importPath] = p
-	e.binds[importPath] = p
+	e.names.Set(importPath, p)
 	e.mu.Unlock()
 }
 
@@ -884,12 +884,7 @@ var runtimePkgPath = reflect.TypeOf(runtime.Nil{}).PkgPath()
 func (e *Engine) BoundPackages() []string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	paths := make([]string, 0, len(e.binds))
-	for path := range e.binds {
-		paths = append(paths, path)
-	}
-	slices.Sort(paths)
-	return paths
+	return e.names.Paths()
 }
 
 // BoundOf returns the host-bound package registered for path, or nil when
@@ -899,7 +894,7 @@ func (e *Engine) BoundPackages() []string {
 func (e *Engine) BoundOf(path string) *runtime.Package {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.binds[path]
+	return e.names.Lookup(path)
 }
 
 // BoundSymbols returns the sorted symbol names a bound package exposes to
@@ -907,18 +902,8 @@ func (e *Engine) BoundOf(path string) *runtime.Package {
 // is not bound.
 func (e *Engine) BoundSymbols(importPath string) (names []string, ok bool) {
 	e.mu.Lock()
-	p, ok := e.binds[importPath]
-	e.mu.Unlock()
-	if !ok {
-		return nil, false
-	}
-	for _, name := range p.Globals.Names() {
-		if !strings.HasPrefix(name, "__") {
-			names = append(names, name)
-		}
-	}
-	slices.Sort(names)
-	return names, true
+	defer e.mu.Unlock()
+	return e.names.Symbols(importPath)
 }
 
 func lastElem(path string) string {
@@ -1042,7 +1027,7 @@ func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, e
 	// path takes the same private build: deny gates imports, not reading,
 	// and the private cache keeps the denied package out of the stores
 	// [Engine.Package] and DirOf answer from.
-	if _, bound := e.binds[path]; !bound && e.pkgModes[path] != ModeDeny {
+	if !e.names.Bound(path) && e.pkgModes[path] != ModeDeny {
 		return e.loadPath(ctx, path)
 	}
 	e.mu.Lock()
