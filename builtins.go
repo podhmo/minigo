@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/podhmo/minigo/compile"
+	"github.com/podhmo/minigo/internal/source"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/vm"
 )
@@ -453,7 +454,7 @@ func builtins(e *Engine) *runtime.Env {
 		}
 	})
 	bf(compile.EmbedBuiltin, func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-		return embedBuiltin(e, v, args)
+		return source.EmbedBuiltin(bindEnv{e}, compile.EmbedBuiltin, v, args)
 	})
 	bf("new", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) != 1 {
