@@ -149,6 +149,14 @@ func (c *compiler) hoistedArgCalls(e ast.Expr) (calls []ast.Expr, ok bool) {
 				return false
 			}
 		case *ast.CallExpr:
+			if c.isSpecialCall(t) {
+				// a registered special form evaluates at its
+				// position like any call — hoist it eagerly, but
+				// never descend: its args stay quoted for the
+				// handler.
+				calls = append(calls, t)
+				return false
+			}
 			if c.isConstExpr(t) {
 				// a constant call (`len("abc")`, `max(T, 3)`,
 				// `unsafe.Sizeof(x)`) evaluates nothing; it stays
@@ -346,6 +354,12 @@ func (c *compiler) undecidableCalls(e ast.Expr) []*ast.CallExpr {
 				return false
 			}
 		case *ast.CallExpr:
+			if c.isSpecialCall(t) {
+				// a registered special form is never undecidable —
+				// the registry answers it — and its quoted args run
+				// inside the handler, so neither collect nor descend.
+				return false
+			}
 			if c.isConstExpr(t) {
 				// constant calls evaluate nothing (`unsafe.Sizeof`,
 				// `len("abc")`) — under IndexedOnly `unsafe.Sizeof`
@@ -443,6 +457,11 @@ type deferredCallTemp struct {
 // args defer to the operand position) or a real call (eager).
 func (c *compiler) undecidableMemberCall(x *ast.CallExpr) (*ast.SelectorExpr, bool) {
 	if x == nil {
+		return nil, false
+	}
+	// a registered special form's dispatch is decided by the
+	// registry, not the package member — the question is answered.
+	if c.isSpecialCall(x) {
 		return nil, false
 	}
 	sel, ok := ast.Unparen(x.Fun).(*ast.SelectorExpr)
