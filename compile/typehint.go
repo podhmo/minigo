@@ -1421,9 +1421,13 @@ func (c *compiler) scopeSpecTypeNames(p *runtime.Package, sf *syntax.File, e ast
 			// the length expression's names live in the declaring
 			// file's scope too — `[dep3.Size]T` must not reach the
 			// caller unscoped or emitLenFolds evaluates `dep3` there.
-			nl = c.scopeOperandExpr(p, sf, nl)
-			if nl == nil {
-				return nil
+			// `[...]T` carries an Ellipsis — nothing to re-scope, and
+			// scoping it would drop the whole array type.
+			if _, isEllipsis := nl.(*ast.Ellipsis); !isEllipsis {
+				nl = c.scopeOperandExpr(p, sf, nl)
+				if nl == nil {
+					return nil
+				}
 			}
 		}
 		if e != t.Elt || nl != t.Len {
@@ -1600,15 +1604,14 @@ func (c *compiler) callerImportName(pkgPath string) string {
 // caller's import list. The ".imp:" prefix can never collide with a
 // declared identifier.
 func (c *compiler) synthImportName(ref *runtime.ImportRef) string {
-	name := ".imp:" + ref.Path
+	// the mint is globally unique — same-path packages in different
+	// sessions never share a qualifier, so the runtime registry below
+	// can only hand back this session's own ref.
+	name := runtime.MintSynthImportName(ref)
 	if c.synthImports == nil {
 		c.synthImports = map[string]*runtime.ImportRef{}
 	}
 	c.synthImports[name] = ref
-	// deferred eval compiles the qualifier in a fresh pass (its own
-	// empty synthImports map): the runtime registry is the fall-back
-	// that still binds the name to a working ref.
-	runtime.RegisterSynthImport(name, ref)
 	return name
 }
 

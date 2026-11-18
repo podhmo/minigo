@@ -48,6 +48,11 @@ func (e *Engine) importPackageAt(from *runtime.TypeDef, name string) (*runtime.P
 		// spell — the path is embedded in the name itself.
 		if strings.HasPrefix(name, ".imp:") {
 			path = strings.TrimPrefix(name, ".imp:")
+			// minted names carry a uniqueness suffix past the path
+			// (`.imp:path#seq`) — strip it for the load.
+			if i := strings.IndexByte(path, '#'); i >= 0 {
+				path = path[:i]
+			}
 		}
 		ref = &runtime.ImportRef{
 			Path: path,

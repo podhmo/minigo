@@ -169,9 +169,17 @@ func (r *ImportRef) Materialize() (*Package, error) {
 // meets the name with no file-scope import to answer it.
 var synthImports sync.Map // string -> *ImportRef
 
-// RegisterSynthImport records the ref a minted `.imp:` qualifier names.
-func RegisterSynthImport(name string, ref *ImportRef) {
+// synthSeq makes every minted name unique: two sessions compiling the
+// same path must never share a qualifier, or one's global resolution
+// would read the other's package.
+var synthSeq atomic.Uint64
+
+// MintSynthImportName returns the qualifier a re-scoped expression uses
+// for ref — globally unique and already bound in the registry.
+func MintSynthImportName(ref *ImportRef) string {
+	name := ".imp:" + ref.Path + "#" + strconv.FormatUint(synthSeq.Add(1), 16)
 	synthImports.Store(name, ref)
+	return name
 }
 
 // SynthImportRef returns the import ref a `.imp:` qualifier was minted
