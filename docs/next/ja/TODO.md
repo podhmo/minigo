@@ -129,18 +129,37 @@
 ## M5: PackageImage と PackageInstance
 
 - [ ] **M5-1 `PackageImage` を具体化する**: 不変で共有できる定義（AST、index、宣言位置、import spec、言語バージョン、ビルド設定）として切り出す。完了条件: archcheck が、イメージの中に実行状態が入らないことを保証している。[references/ownership.md](./references/ownership.md)
+  - [ ] **M5-1a 不変の定義を組み立てる**: P2-14b の index 結果から AST・index・宣言位置・import spec をまとめる。共有資産に実行時の `ImportRef` や cell が入る負例を `archcheck` で検出する。
+  - [ ] **M5-1b ソースのロード経路を切り替える**: M5-1a に言語バージョンとビルド設定を持たせ、通常ロードと inspect 用の lenient ロードから参照する。両経路の宣言・診断と遅延初期化の挙動を照合する。
 - [ ] **M5-2 `PackageInstance` を具体化する**: globals、初期化状態、実行時の `ImportRef`、materialize した関数と型を持たせる。`runtime.Package` は互換の窓口として残す。完了条件: 同じイメージから作った 2 つのインスタンスが独立している。
+  - [ ] **M5-2a Session ごとの globals と初期化状態**: P2-14c と M5-1 のあと、共有イメージからそれぞれの実行状態を作る。同じソースの 2 つの Session で globals が独立し、初期化がそれぞれ一度だけ走ることを確認する。
+  - [ ] **M5-2b import と materialize の所有**: M5-2a のあと、実行時 `ImportRef` と関数・型の materialize キャッシュを各インスタンスに移す。並行した最初の参照、別 Session への漏出、既存 `runtime.Package` API との互換性を検証する。
 - [ ] **M5-3 ソース版と派生キャッシュの所有**: キャッシュのキーに内容、ファイル集合、言語バージョン、ビルド設定を含める。キャッシュから追い出しても、既存の Session の参照は変わらない。
+  - [ ] **M5-3a ソース版とキャッシュキー**: ファイル内容・集合、言語バージョン、ビルド設定を変えたときに新しい版が使われることを個別に固定する。既存 Session が参照する版は編集後も保持する。
+  - [ ] **M5-3b 派生キャッシュの所有と eviction**: M5-2 と M5-3a のあと、parse/index と Session 状態の再利用単位を明記する。追い出し後に旧 Session の値と位置情報が保たれ、新 Session が新版を読み込むことをテストする。
 - [ ] **M5-4 配列長の畳み込みの所有を明示する**: `runtime.arrayFolds`（グローバル、weak pointer で管理）を、どの所有単位に属するかを決めて移す。
+  - [ ] **M5-4a 配列長の依存と再 parse の理由を固定する**: 別ファイルの定数を編集したときの旧・新 Session の配列長と型情報、並行参照時の挙動をテストする。
+  - [ ] **M5-4b 畳み込みの所有を移す**: M5-3 と M5-4a のあと、派生情報をその結果が属する版またはインスタンスへ移す。再 parse の特例は、外しても M5-4a が通ることを確認できた場合に限り外す。
 
 ## P4: VM の形
 
 - [ ] **P4-1 bytecode verifier と `MaxStack`**: スタック効果、ジャンプ先、スロット種別を検査する。テスト時とデバッグオプション指定時に走らせる。
+  - [ ] **P4-1a 命令と制御フローの検証**: スタック効果、分岐先、マージ地点の深さを検証し `MaxStack` を計算する。既存 golden と、不正な分岐・スタック不足の負例を使う。
+  - [ ] **P4-1b スロット種別と検証の入口**: P4-1a にスロット種別の検査を足し、テストとデバッグオプションから有効にする。正常な chunk の結果と診断が保たれることを確認する。
 - [ ] **P4-2 スロット分類**: ストア、selector の読み出し、レシーバを分類の対象にする。Plain なローカルでは `OpNewLocal`/`OpRenewVar` がその場に書き込む。特殊形式の呼び出し地点から見えるローカルは Boxed にする。完了条件: escape する chunk が約 10% になる。[references/slot-classification.md](./references/slot-classification.md)
+  - [ ] **P4-2a 分類を記録する**: ストア、読み出し、アドレス取得、捕捉、メソッドのレシーバ、特殊形式からの参照を分類して計測する。M4 の事実を使い、レシーバが不明な場合は保守的に Boxed とする。
+  - [ ] **P4-2b Plain ローカルの初期化と書き込み**: P4-2a と P4-1 のあと、`OpNewLocal` / `OpRenewVar` を Plain スロットの直接書き込みに切り替える。ループ変数・多重代入・名前付き戻り値を確認する。
+  - [ ] **P4-2c selector・レシーバと特殊形式**: P4-2b のあと、値の読み出しとアドレスが必要な経路を分ける。ポインタレシーバ、closure、Quoted Go が参照するローカルの同一性を確認し、escape 率を同じケース集合で測る。
 - [ ] **P4-3 goroutine ごとの連続スタック**: frame を `(base, sp)` の窓にし、引数はその場で渡す。
+  - [ ] **P4-3a frame を連続スタックの窓にする**: P4-1/2 のあと、goroutine ごとに `(base, sp)` を使う。ネストした呼び出し、スタックの拡張、panic/recover 前後の値をテストする。
+  - [ ] **P4-3b 引数をスタック上で受け渡す**: P4-3a のあと、通常呼び出しから切り替える。可変長引数、defer、host callback を個別に移し、既存の結果と割り当て数を測る。
 - [ ] **P4-4 `CallSite` 記述子**: 引数のヒント、spread の型、quote インデックス、遅延された事実、ソース位置をまとめる。完了条件: `frame.argbuf/statbuf` と `deferredCall.statics/spreadTd` が消えている。
+  - [ ] **P4-4a 通常呼び出しの引数メタデータ**: M4-7a の `CallSite` に引数のヒント、spread の型、quote インデックスを載せる。通常・可変長・特殊形式で結果が一致することを確認する。
+  - [ ] **P4-4b defer とバッファの撤去**: P4-4a のあと、defer が同じ記述子を使うようにする。評価順、spread、panic 経由の呼び出しをテストし、既存のバッファと重複フィールドを削除する。
 - [ ] **P4-5 インラインキャッシュ**: `OpGlobal`（`Env` epoch でガード）と `OpSelect`（`TypeID → パス`）にキャッシュを置く。Chunk は Session ごとのままにする。完了条件: `make test-race` と `make concurrency-stress` が通る。
-- [ ] **P4-6 `OpEvalAST` を `OpEvalFragment` に改名する**: REPL/`EvalExpr` のブリッジとしてだけ残す。
+  - [ ] **P4-5a OpGlobal のキャッシュ**: `Env` epoch で再束縛時に無効化する。別 Session や同一 Session 内の goroutine で値が混ざらないことを確認し、ベンチ差分を記録する。
+  - [ ] **P4-5b OpSelect のキャッシュ**: M4-1d と M4-3 のあと、`TypeID` ごとの `FieldPath` を使う。同じサイトに異なるレシーバ型が来る場合と、並行アクセスをテストする。
+- [ ] **P4-6 `OpEvalAST` を `OpEvalFragment` に改名する**: REPL/`EvalExpr` のブリッジとしてだけ残す。独立した PR で命令名・逆アセンブル出力・golden を更新し、REPL と `EvalExpr` の挙動を確認する。
 
 ## M6（任意・判断ゲート付き）
 
