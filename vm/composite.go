@@ -2151,11 +2151,8 @@ func (v *VM) localElemTypedef(f *frame, td *runtime.TypeDef) *runtime.TypeDef {
 // localTypedefOf finds a typedef value bound as a local constant — how a
 // `type` decl inside a function body stores its typedef.
 func (v *VM) localTypedefOf(f *frame, name string) *runtime.TypeDef {
-	for _, e := range f.locals {
-		if c, ok := e.(*runtime.Cell); ok {
-			e = c.Elem
-		}
-		if td, ok := e.(*runtime.TypeDef); ok && td.Name == name {
+	for i := range f.locals {
+		if td, ok := f.localVal(i).(*runtime.TypeDef); ok && td.Name == name {
 			return td
 		}
 	}
