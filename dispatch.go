@@ -390,8 +390,18 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 		names := map[string]bool{}
 		for m := range depths {
 			names[m] = true
+			// host members take the embed slot itself as receiver —
+			// selectMember resolves method and field alike on the
+			// unwrapped box, nested promotion included.
 		}
-		return &runtime.MethodSet{Names: names, Depths: depths}
+		members := map[string]*runtime.PromotedMember{}
+		for m, d := range depths {
+			members[m] = &runtime.PromotedMember{Depth: d, Via: "host"}
+		}
+		for m, fd := range hostFieldDepths(rt) {
+			members[m] = &runtime.PromotedMember{Depth: fd, Via: "host"}
+		}
+		return &runtime.MethodSet{Names: names, Depths: depths, Members: members}
 	}
 	names := map[string]bool{}
 	funcs := map[string]*runtime.Function{}
@@ -418,29 +428,88 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 			shadowed[f] = true
 		}
 	}
-	promoted := func(m string) bool { return !shadowed[m] }
-	// A member promoted through more than one embed survives only when
-	// its shallowest promotion is unique — gc's selector is ambiguous
-	// where two paths offer the member at the same smallest depth, and
-	// the member drops out of the method set entirely rather than
-	// first-wins. smin is that smallest depth per member, dup the
-	// number of embeds promoting it there, winner the member func of a
-	// unique-shallowest path. An embedded interface contributes its
-	// requirements at depth 1 (ifaceAt): identical duplicates among
-	// interface embeds merge like the spec permits, but an interface
-	// requirement contests a same-depth struct promotion — and beats a
-	// deeper one (`struct{ io.Writer; T }` keeps Write when T promotes
-	// it from depth 2). A member declared at this depth dominates any
-	// promotion.
+	// a name declared at this depth — field or method alike — is not
+	// promoted: embeds cannot contest it (the declared member always
+	// wins, so its smin entry would only poison Depths).
+	promoted := func(m string) bool { return !shadowed[m] && td.Methods[m] == nil }
+	// A member promoted through more than one source survives only
+	// when its shallowest promotion is unique — gc's selector is
+	// ambiguous where two paths offer the member at the same smallest
+	// depth, and the member drops out of the method set entirely
+	// rather than first-wins (gc reports "does not implement" too,
+	// not only "ambiguous selector" on access). smin is that smallest
+	// depth per member, dup the number of sources promoting it there,
+	// winner the member func of a unique-shallowest path. Every
+	// candidate competes at its promotion depth: an interface embed's
+	// requirements at depth 1, promoted members one deeper than their
+	// inner depth, a defined type's underlying promotions at the
+	// depth they hold inside the shared field layout. A member
+	// declared at this depth dominates any promotion.
 	smin := map[string]int{}
 	dup := map[string]int{}
 	winner := map[string]*runtime.Function{}
 	winnerPath := map[string][]int{}
 	winnerVia := map[string]string{}
-	ifaceAt := map[string]bool{}
-	ifaceCnt := map[string]int{}
-	ifaceTie := map[string]bool{}
 	unsure := false
+	contest := func(m string, d int, fn *runtime.Function, path []int, via string) {
+		if c, ok := smin[m]; !ok || d < c {
+			smin[m] = d
+			dup[m] = 1
+			winner[m] = fn
+			winnerPath[m] = path
+			winnerVia[m] = via
+		} else if d == c {
+			dup[m]++
+		}
+	}
+	if td.Kind == runtime.KindNamedBasic {
+		// a defined type's method set starts empty — nothing the
+		// underlying named type DECLARES transfers — but members the
+		// underlying struct promotes through its own anonymous fields
+		// still come along (gc promotes Inner.M for `type Wrap Base`
+		// where Base = struct{ Inner }), at the depth they hold inside
+		// the shared field layout. Over a host type the same rule
+		// keeps its exported fields (a defined type never gains host
+		// methods).
+		u, uerr := e.underlying(td)
+		if uerr != nil || u == nil {
+			unsure = true
+		} else if u != td && u.Kind == runtime.KindStruct {
+			if u.HostNew != nil {
+				for m, fd := range hostFieldDepths(u.HostType()) {
+					if promoted(m) {
+						contest(m, fd, nil, nil, "host")
+					}
+				}
+			} else if sub2 := e.methodWalkU(u, ptr, seen); sub2 != nil {
+				unsure = unsure || sub2.Unsure
+				for m := range sub2.Names {
+					if sub2.Depths[m] == 0 || !promoted(m) {
+						continue // declared on the underlying — not promoted
+					}
+					names[m] = true
+					path, via := []int(nil), "method"
+					if pm := sub2.Members[m]; pm != nil {
+						path, via = pm.Path, pm.Via
+					}
+					contest(m, sub2.Depths[m], sub2.Funcs[m], path, via)
+				}
+				for m, pm := range sub2.Members {
+					if sub2.Names[m] || !promoted(m) {
+						continue
+					}
+					contest(m, pm.Depth, nil, pm.Path, pm.Via)
+				}
+				for m, ad := range sub2.Ambiguous {
+					if promoted(m) {
+						if c, ok := ambig[m]; !ok || ad < c {
+							ambig[m] = ad
+						}
+					}
+				}
+			}
+		}
+	}
 	for k, spec := range td.EmbedSpecs {
 		emb, err := e.resolveTypeRef(td, spec)
 		// the embed's package failed its init (a trap or a panic): the
@@ -467,25 +536,14 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 			// an embedded interface field satisfies its own requirements:
 			// the name set covers every required name (facade typedefs
 			// without AST still count) while the func map keeps only the
-			// members a signature can be synthesized for. The member's
-			// receiver is the stored interface value itself.
+			// members a signature can be synthesized for. Requirements
+			// compete at depth 1 like every other member — an iface
+			// promise beats a deeper promotion and ties a same-depth
+			// one; the receiver is the stored interface value itself.
 			for m := range e.ifaceReqSet(peeled) {
 				if promoted(m) {
 					names[m] = true
-					ifaceAt[m] = true
-					ifaceCnt[m]++
-					if ifaceCnt[m] > 1 {
-						// two embedded interfaces promising the same
-						// method collide for a selector like any other
-						// same-depth pair — the name stays in the set
-						// (satisfaction reads it name-only) but is
-						// marked ambiguous for member access.
-						ifaceTie[m] = true
-						ambig[m] = 1
-					}
-					if fieldIdx >= 0 && members[m] == nil {
-						members[m] = &runtime.PromotedMember{Path: []int{fieldIdx}, Depth: 1, Via: "iface"}
-					}
+					contest(m, 1, nil, []int{fieldIdx}, "iface")
 				}
 			}
 			for name, fn := range e.ifaceSigFuncs(peeled) {
@@ -507,58 +565,31 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 			continue
 		}
 		unsure = unsure || sub.Unsure
-		hostEmb := peeled != nil && peeled.HostNew != nil
-		if hostEmb {
-			// a host embed's exported FIELDS promote like members — a
-			// same-depth contest with a method is ambiguous, and a
-			// shallower one outranks a deeper script member, but a
-			// field name never enters the method set itself.
-			for m, fd := range hostFieldDepths(peeled.HostType()) {
-				if !promoted(m) {
-					continue
-				}
-				d := fd + 1
-				if c, ok := smin[m]; !ok || d < c {
-					smin[m] = d
-					dup[m] = 1
-					winner[m] = nil
-					winnerPath[m] = []int{fieldIdx}
-					winnerVia[m] = "host"
-				} else if d == c {
-					dup[m]++
-				}
-			}
-		}
 		for m := range sub.Names {
 			if !promoted(m) {
 				continue
 			}
 			d := sub.Depths[m] + 1
 			names[m] = true
-			via := "method"
-			var path []int
-			if hostEmb {
-				// a host-typed embed is a leaf: the member lives on
-				// the boxed value, the slot at the embed index is the
-				// receiver, and the depth already counts the member's
-				// promotion inside the host struct.
-				via = "host"
-				path = []int{fieldIdx}
-			} else if pm := sub.Members[m]; pm != nil {
+			via, path := "method", []int{fieldIdx}
+			if pm := sub.Members[m]; pm != nil {
+				// a member the subwalk already located keeps its
+				// dispatch kind — interface members stay dynamic,
+				// host members keep reselecting on the box — and
+				// its receiver slot one embed level deeper.
 				via = pm.Via
 				path = append([]int{fieldIdx}, pm.Path...)
-			} else {
-				path = []int{fieldIdx}
 			}
-			if c, ok := smin[m]; !ok || d < c {
-				smin[m] = d
-				dup[m] = 1
-				winner[m] = sub.Funcs[m]
-				winnerPath[m] = path
-				winnerVia[m] = via
-			} else if d == c {
-				dup[m]++
+			contest(m, d, sub.Funcs[m], path, via)
+		}
+		// member-only entries — a host embed's promoted fields and
+		// anything else the name set never counts — still compete
+		// for the selector at their promotion depth.
+		for m, pm := range sub.Members {
+			if sub.Names[m] || !promoted(m) {
+				continue
 			}
+			contest(m, pm.Depth+1, nil, append([]int{fieldIdx}, pm.Path...), pm.Via)
 		}
 		// a member contested inside an embed stays contested one level
 		// up — unless a shallower unique path wins.
@@ -576,42 +607,32 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 		if td.Methods[m] != nil {
 			continue // a declared member dominates every promotion
 		}
-		if dup[m] > 1 || (d == 1 && ifaceAt[m]) {
+		if dup[m] > 1 {
 			// the shallowest promotion is not unique: the member is
-			// absent from the method set, name and func alike — a
-			// leftover name would still satisfy interface assertions
-			// name-only. Ambiguous keeps the contested depth so a
-			// selector can still diagnose "ambiguous selector".
+			// absent from the method set, name and func alike — gc
+			// reports "does not implement" for an ambiguous method
+			// too, not only "ambiguous selector" on access. Ambiguous
+			// keeps the contested depth so a selector can still
+			// diagnose.
 			delete(names, m)
 			delete(funcs, m)
+			delete(members, m)
 			ambig[m] = d
 			continue
 		}
-		if f := winner[m]; f != nil && !ifaceAt[m] {
+		if f := winner[m]; f != nil && winnerVia[m] == "method" {
 			funcs[m] = f
 		}
-		if members[m] == nil {
-			members[m] = &runtime.PromotedMember{Path: winnerPath[m], Depth: d, Via: winnerVia[m]}
-		}
+		members[m] = &runtime.PromotedMember{Path: winnerPath[m], Depth: d, Via: winnerVia[m]}
 	}
 	for m := range names {
-		d := smin[m]
-		if td.Methods[m] == nil && ifaceAt[m] && d != 1 {
-			d = 1
-		}
-		depths[m] = d
+		depths[m] = smin[m]
 	}
 	// a member contested deeper inside an embed is absent unless a
-	// shallower unique promotion outranks the contested depth. An
-	// iface×iface tie keeps its name — satisfaction has always read
-	// the merged requirement set name-only — but stays Ambiguous so
-	// selector access traps.
+	// shallower unique promotion outranks the contested depth.
 	for m, ad := range ambig {
 		if td.Methods[m] != nil {
 			continue // a declared member dominates any inner ambiguity
-		}
-		if ifaceTie[m] {
-			continue
 		}
 		if sd, ok := depths[m]; ok && sd < ad {
 			delete(ambig, m) // the unique shallower path wins

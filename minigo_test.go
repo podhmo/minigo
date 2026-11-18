@@ -1988,6 +1988,27 @@ func TestPromotedMethodResolution(t *testing.T) {
 	}
 }
 
+func TestMethodSetDepthContests(t *testing.T) {
+	e := newEngine(t)
+	// The shared method set must answer the same depth contests the
+	// value walk did — each case verified against `go run`:
+	// an interface requirement at depth 1 beats a deeper same-name
+	// promotion, and a defined type promotes through its underlying
+	// struct's anonymous fields (see fixture comments in msetchk).
+	if got := run(t, e, "./testdata/msetchk", "F2"); got != "u" {
+		t.Errorf("F2: want %q, got %v", "u", got)
+	}
+	if got := run(t, e, "./testdata/msetchk", "F3"); got != "inner" {
+		t.Errorf("F3: want %q, got %v", "inner", got)
+	}
+	for _, fn := range []string{"F1", "F4"} {
+		if _, err := e.Run(context.Background(), "./testdata/msetchk", fn); err == nil ||
+			!strings.Contains(err.Error(), "ambiguous") {
+			t.Fatalf("%s: expected \"ambiguous\" error, got %v", fn, err)
+		}
+	}
+}
+
 // toolchainAtLeast reports whether the host Go toolchain is >= major.minor
 // — the parsed language surface (go/parser) depends on it.
 func toolchainAtLeast(major, minor int) bool {
