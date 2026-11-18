@@ -6,74 +6,70 @@ import (
 	"github.com/podhmo/minigo/syntax"
 )
 
-// typSpecFile returns the file a named type's spec was declared in —
-// the scope its field and element names resolve under. A local `type`
-// decl has no file of its own (its scope is the use site's) and an
-// unnamed or unresolvable type reports none.
-func (c *compiler) typSpecFile(te ast.Expr) *syntax.File {
-	t := ast.Unparen(te)
-	if _, ok := t.(*ast.Ident); ok {
-		id := t.(*ast.Ident)
-		if c.fs.lookupBinding(id.Name) != nil {
-			return nil // a local decl's names live in the use site's scope
-		}
-		if ts := pkgTypeSpec(c.pkg, id.Name); ts != nil {
-			return specFileOf(c.pkg, ts.Pos())
-		}
-		return nil
-	}
-	if _, ok := t.(*ast.SelectorExpr); ok {
-		if ref, name, ok := c.selTypRef(t); ok {
-			if p, ts := c.selTypeSpec(ref, name); ts != nil {
-				return specFileOf(p, ts.Pos())
-			}
-		}
-	}
-	return nil
-}
-
 // structFieldTypExpr is fieldTypExpr that also sees through a pointer
 // to the struct and accepts an anonymous struct type (direct fields
 // only for the latter).
-func (c *compiler) structFieldTypExpr(base ast.Expr, name string) ast.Expr {
+func (c *compiler) structFieldTypExpr(base ast.Expr, file *syntax.File, name string) (ast.Expr, *syntax.File) {
 	if base == nil {
-		return nil
+		return nil, nil
 	}
 	if st, isPtr := ast.Unparen(base).(*ast.StarExpr); isPtr {
 		base = st.X
 	}
-	if te, _ := c.fieldTypExpr(base, name, 4); te != nil {
-		return te
+	if te, tf := c.fieldTypExpr(base, file, name, 4); te != nil {
+		return te, tf
 	}
 	st, ok := c.unfoldTypExpr(base, 8).(*ast.StructType)
 	if !ok || st.Fields == nil {
-		return nil
+		return nil, nil
 	}
 	for _, f := range st.Fields.List {
 		for _, n := range f.Names {
 			if n.Name == name {
-				return f.Type
+				// an anonymous struct's field types spell where the
+				// struct type did.
+				return f.Type, file
 			}
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // fieldTypExpr reports a named field's declared type expression and
 // the file that declaring spec lives in — the scope the field type's
-// names resolve under. A promoted field carries its own spec's file,
-// not the outer type's.
-func (c *compiler) fieldTypExpr(te ast.Expr, sel string, depth int) (ast.Expr, *syntax.File) {
+// names resolve under. file is where te itself was spelled (nil for
+// the use site's scope): a name written in a package decl resolves in
+// package scope, so a use-site local of the same name cannot steal
+// it. A promoted field carries its own spec's file, not the outer
+// type's.
+func (c *compiler) fieldTypExpr(te ast.Expr, file *syntax.File, sel string, depth int) (ast.Expr, *syntax.File) {
 	if depth <= 0 {
 		return nil, nil
 	}
-	ts := c.typeSpecOf(te)
+	var ts *ast.TypeSpec
+	if file != nil {
+		// spelled in a package file — resolve in package scope
+		// (locals and universe shadows belong to the use site).
+		if id, ok := ast.Unparen(te).(*ast.Ident); ok {
+			ts = pkgTypeSpec(c.pkg, id.Name)
+		}
+	} else {
+		ts = c.typeSpecOf(te)
+	}
 	if ts == nil {
 		return nil, nil
 	}
 	st, ok := ast.Unparen(ts.Type).(*ast.StructType)
 	if !ok {
 		return nil, nil
+	}
+	// the file deeper names were spelled in: a package spec's own
+	// file; a local decl's names live in the use site's scope.
+	var specFile *syntax.File
+	if file != nil {
+		specFile = specFileOf(c.pkg, ts.Pos())
+	} else if id, ok := ast.Unparen(te).(*ast.Ident); ok && pkgTypeSpec(c.pkg, id.Name) == ts {
+		specFile = specFileOf(c.pkg, ts.Pos())
 	}
 	// direct fields win over promoted ones regardless of declaration
 	// order — Go's shallower-depth rule. A first pass over named
@@ -82,7 +78,7 @@ func (c *compiler) fieldTypExpr(te ast.Expr, sel string, depth int) (ast.Expr, *
 	for _, f := range st.Fields.List {
 		for _, n := range f.Names {
 			if n.Name == sel {
-				return f.Type, c.typSpecFile(te)
+				return f.Type, specFile
 			}
 		}
 	}
@@ -98,7 +94,7 @@ func (c *compiler) fieldTypExpr(te ast.Expr, sel string, depth int) (ast.Expr, *
 		if s, ok := emb.(*ast.StarExpr); ok {
 			emb = ast.Unparen(s.X)
 		}
-		t, tf := c.fieldTypExpr(emb, sel, depth-1)
+		t, tf := c.fieldTypExpr(emb, specFile, sel, depth-1)
 		if t == nil {
 			continue
 		}

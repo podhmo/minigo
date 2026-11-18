@@ -355,15 +355,20 @@ type nameInfo struct {
 func (c *compiler) resolveName(name string) (nameInfo, bool) {
 	// lookupBinding is a pure scope walk — find() would capture an
 	// enclosing name into this function's upvals as a side effect,
-	// and a classifier must never emit.
-	if b := c.fs.lookupBinding(name); b != nil {
-		if b.typeDecl {
-			return nameInfo{isType: true, tspec: b.tspec, td: b.tdef, iface: b.ifaceT}, true
+	// and a classifier must never emit. Under pkgScopeTyp the name
+	// was spelled in a package decl — the use site's locals and
+	// upvalues cannot shadow it (the same rule typeIdent applies at
+	// emit).
+	if c.pkgScopeTyp == nil {
+		if b := c.fs.lookupBinding(name); b != nil {
+			if b.typeDecl {
+				return nameInfo{isType: true, tspec: b.tspec, td: b.tdef, iface: b.ifaceT}, true
+			}
+			return nameInfo{}, true // a var/const binding — never a type
 		}
-		return nameInfo{}, true // a var/const binding — never a type
-	}
-	if _, isUp := c.fs.upmap[name]; isUp {
-		return nameInfo{}, true // an already-captured var
+		if _, isUp := c.fs.upmap[name]; isUp {
+			return nameInfo{}, true // an already-captured var
+		}
 	}
 	if bv, bound := c.binds[name]; bound {
 		info := nameInfo{isType: true} // generic instantiation binds name a type

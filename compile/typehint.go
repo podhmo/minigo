@@ -483,11 +483,21 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 				// (`var x = 5` is int).
 				if len(vs.Values) == len(vs.Names) && vd.NameIdx < len(vs.Values) {
 					rhs := vs.Values[vd.NameIdx]
-					// the initializer's names live in the package's
-					// scope — a local binding at the use site must
-					// not shadow what the decl's keys resolve to.
+					// the initializer's names live in the decl's own
+					// scope — its file's imports resolve qualifiers
+					// and a local binding at the use site must not
+					// shadow what the decl's keys resolve to.
 					c.pkgScopeFold = true
+					savedScope := c.pkgScopeTyp
+					c.pkgScopeTyp = vd.File
 					t := c.staticOpTyp(rhs)
+					var isConv bool
+					if cx, isCall := ast.Unparen(rhs).(*ast.CallExpr); isCall {
+						// conversion-or-call answers in the decl's
+						// scope too — the callee is spelled there.
+						isConv = c.conversionCall(cx)
+					}
+					c.pkgScopeTyp = savedScope
 					c.pkgScopeFold = false
 					if !t.untyped {
 						// the literal's own decl file wins over
@@ -504,12 +514,8 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 						// `inner` cannot rebind it. A call's result
 						// belongs to the callee's scope, not this file
 						// — leave its teFile.
-						r := ast.Unparen(rhs)
-						_, isLit := r.(*ast.CompositeLit)
-						if cx, isCall := r.(*ast.CallExpr); isCall && c.conversionCall(cx) {
-							isLit = true
-						}
-						if isLit && t.te != nil && t.teFile == nil {
+						_, isLit := ast.Unparen(rhs).(*ast.CompositeLit)
+						if (isLit || isConv) && t.te != nil && t.teFile == nil {
 							t.teFile = vd.File
 						}
 						return t
@@ -588,8 +594,10 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 func (c *compiler) selOpTyp(x *ast.SelectorExpr) opTyp {
 	if id, ok := x.X.(*ast.Ident); ok {
 		// a closer declaration shadows the import name — `v.F` then
-		// reads the local's field, never a package member.
-		if c.fs.lookupBinding(id.Name) == nil {
+		// reads the local's field, never a package member. Under
+		// pkgScopeTyp the selector was spelled in a package decl,
+		// which use-site locals cannot shadow.
+		if c.pkgScopeTyp != nil || c.fs.lookupBinding(id.Name) == nil {
 			if ref, isPkg := c.importRef(id.Name); isPkg {
 				return c.selPkgMemberOpTyp(x, ref)
 			}
@@ -599,12 +607,12 @@ func (c *compiler) selOpTyp(x *ast.SelectorExpr) opTyp {
 	if base.te == nil || base.untyped || base.iface {
 		return opTyp{}
 	}
-	te, teFile := c.fieldTypExpr(base.te, x.Sel.Name, 4)
+	te, teFile := c.fieldTypExpr(base.te, base.teFile, x.Sel.Name, 4)
 	if te == nil {
 		// a selector through a pointer reads the pointee's fields
 		// the same way — `p.A` on a *Pair is Pair's A.
 		if sb := c.starBaseTypExpr(base.te, base.teFile, 4); sb != nil {
-			te, teFile = c.fieldTypExpr(sb, x.Sel.Name, 4)
+			te, teFile = c.fieldTypExpr(sb, base.teFile, x.Sel.Name, 4)
 		}
 	}
 	if te == nil {
@@ -689,7 +697,11 @@ func (c *compiler) scopeOperandExpr(p *runtime.Package, sf *syntax.File, e ast.E
 		// true = 'a'` binds `true` there, so the index wins.
 		if p.Index.Consts[t.Name] != nil || p.Index.Vars[t.Name] != nil ||
 			p.Index.Funcs[t.Name] != nil || p.Index.Types[t.Name] != nil {
-			return &ast.SelectorExpr{X: &ast.Ident{Name: c.callerImportName(p.Path)}, Sel: ast.NewIdent(t.Name)}
+			name := c.callerImportName(p.Path)
+			if name == "" {
+				return nil // the caller cannot spell p — opaque, not a wrong name
+			}
+			return &ast.SelectorExpr{X: &ast.Ident{Name: name}, Sel: ast.NewIdent(t.Name)}
 		}
 		if universeIdent(t.Name) {
 			// the bare ident reads the CALLER's scope back — keep it
@@ -779,6 +791,9 @@ func (c *compiler) scopeOperandExpr(p *runtime.Package, sf *syntax.File, e ast.E
 		return nil
 	case *ast.CompositeLit:
 		te := c.scopeSpecType(p, sf, t.Type)
+		if te == nil {
+			return nil
+		}
 		elts := make([]ast.Expr, len(t.Elts))
 		for i, el := range t.Elts {
 			elts[i] = c.scopeOperandExpr(p, sf, el)
@@ -1077,8 +1092,10 @@ func (c *compiler) calleeFuncTyp(x *ast.CallExpr) (*ast.FuncType, *syntax.File) 
 		}
 		// a struct field of func type is callable too —
 		// `p := S{F: func() int{…}}; p.F()` has a declared signature.
-		if ft, ok := ast.Unparen(c.structFieldTypExpr(base.te, f.Sel.Name)).(*ast.FuncType); ok {
-			return ft, c.typSpecFile(base.te)
+		if fte, ftf := c.structFieldTypExpr(base.te, base.teFile, f.Sel.Name); fte != nil {
+			if ft, ok := ast.Unparen(fte).(*ast.FuncType); ok {
+				return ft, ftf
+			}
 		}
 	}
 	return nil, nil
@@ -1210,7 +1227,8 @@ func (c *compiler) lenOperandArrayTyp(arg ast.Expr) ast.Expr {
 	te := c.staticOpTyp(arg).te
 	if te == nil {
 		if sel, ok := ast.Unparen(arg).(*ast.SelectorExpr); ok {
-			te = c.structFieldTypExpr(c.staticOpTyp(sel.X).te, sel.Sel.Name)
+			xt := c.staticOpTyp(sel.X)
+			te, _ = c.structFieldTypExpr(xt.te, xt.teFile, sel.Sel.Name)
 		}
 	}
 	te = c.unfoldTypExpr(te, 8)
@@ -1368,7 +1386,11 @@ func (c *compiler) scopeSpecTypeNames(p *runtime.Package, sf *syntax.File, e ast
 			return t
 		}
 		if p != c.pkg && pkgTypeSpec(p, t.Name) != nil {
-			return &ast.SelectorExpr{X: &ast.Ident{Name: c.callerImportName(p.Path)}, Sel: &ast.Ident{Name: t.Name}}
+			name := c.callerImportName(p.Path)
+			if name == "" {
+				return nil // the caller cannot spell p — opaque, not a wrong name
+			}
+			return &ast.SelectorExpr{X: &ast.Ident{Name: name}, Sel: &ast.Ident{Name: t.Name}}
 		}
 		return t
 	case *ast.SelectorExpr:
@@ -1379,43 +1401,76 @@ func (c *compiler) scopeSpecTypeNames(p *runtime.Package, sf *syntax.File, e ast
 		}
 		return t
 	case *ast.ArrayType:
-		if e := c.scopeSpecTypeNames(p, sf, t.Elt, tparams); e != t.Elt {
+		e := c.scopeSpecTypeNames(p, sf, t.Elt, tparams)
+		if e == nil {
+			return nil
+		}
+		if e != t.Elt {
 			return &ast.ArrayType{Lbrack: t.Lbrack, Len: t.Len, Elt: e}
 		}
 		return t
 	case *ast.MapType:
 		k, v := c.scopeSpecTypeNames(p, sf, t.Key, tparams), c.scopeSpecTypeNames(p, sf, t.Value, tparams)
+		if k == nil || v == nil {
+			return nil
+		}
 		if k != t.Key || v != t.Value {
 			return &ast.MapType{Map: t.Map, Key: k, Value: v}
 		}
 		return t
 	case *ast.StarExpr:
-		if x := c.scopeSpecTypeNames(p, sf, t.X, tparams); x != t.X {
+		x := c.scopeSpecTypeNames(p, sf, t.X, tparams)
+		if x == nil {
+			return nil
+		}
+		if x != t.X {
 			return &ast.StarExpr{Star: t.Star, X: x}
 		}
 		return t
 	case *ast.ChanType:
-		if v := c.scopeSpecTypeNames(p, sf, t.Value, tparams); v != t.Value {
+		v := c.scopeSpecTypeNames(p, sf, t.Value, tparams)
+		if v == nil {
+			return nil
+		}
+		if v != t.Value {
 			return &ast.ChanType{Begin: t.Begin, Arrow: t.Arrow, Dir: t.Dir, Value: v}
 		}
 		return t
 	case *ast.Ellipsis:
-		if e := c.scopeSpecTypeNames(p, sf, t.Elt, tparams); e != t.Elt {
+		e := c.scopeSpecTypeNames(p, sf, t.Elt, tparams)
+		if e == nil {
+			return nil
+		}
+		if e != t.Elt {
 			return &ast.Ellipsis{Ellipsis: t.Ellipsis, Elt: e}
 		}
 		return t
 	case *ast.ParenExpr:
-		if x := c.scopeSpecTypeNames(p, sf, t.X, tparams); x != t.X {
+		x := c.scopeSpecTypeNames(p, sf, t.X, tparams)
+		if x == nil {
+			return nil
+		}
+		if x != t.X {
 			return &ast.ParenExpr{Lparen: t.Lparen, X: x, Rparen: t.Rparen}
 		}
 		return t
 	case *ast.StructType:
-		if fs := c.scopeFieldListNames(p, sf, t.Fields, tparams); fs != t.Fields {
+		fs := c.scopeFieldListNames(p, sf, t.Fields, tparams)
+		if fs == nil {
+			if t.Fields != nil {
+				return nil
+			}
+		} else if fs != t.Fields {
 			return &ast.StructType{Struct: t.Struct, Fields: fs, Incomplete: t.Incomplete}
 		}
 		return t
 	case *ast.InterfaceType:
-		if ms := c.scopeFieldListNames(p, sf, t.Methods, tparams); ms != t.Methods {
+		ms := c.scopeFieldListNames(p, sf, t.Methods, tparams)
+		if ms == nil {
+			if t.Methods != nil {
+				return nil
+			}
+		} else if ms != t.Methods {
 			return &ast.InterfaceType{Interface: t.Interface, Methods: ms, Incomplete: t.Incomplete}
 		}
 		return t
@@ -1434,10 +1489,14 @@ func (c *compiler) scopeSpecTypeNames(p *runtime.Package, sf *syntax.File, e ast
 		}
 		var dirty bool
 		params, results := t.Params, t.Results
-		if fs := c.scopeFieldListNames(p, sf, t.Params, inner); fs != t.Params {
+		if fs := c.scopeFieldListNames(p, sf, t.Params, inner); fs == nil && t.Params != nil {
+			return nil
+		} else if fs != t.Params {
 			params, dirty = fs, true
 		}
-		if fs := c.scopeFieldListNames(p, sf, t.Results, inner); fs != t.Results {
+		if fs := c.scopeFieldListNames(p, sf, t.Results, inner); fs == nil && t.Results != nil {
+			return nil
+		} else if fs != t.Results {
 			results, dirty = fs, true
 		}
 		if dirty {
@@ -1445,12 +1504,20 @@ func (c *compiler) scopeSpecTypeNames(p *runtime.Package, sf *syntax.File, e ast
 		}
 		return t
 	case *ast.IndexExpr:
-		if x := c.scopeSpecTypeNames(p, sf, t.X, tparams); x != t.X {
+		x := c.scopeSpecTypeNames(p, sf, t.X, tparams)
+		if x == nil {
+			return nil
+		}
+		if x != t.X {
 			return &ast.IndexExpr{X: x, Lbrack: t.Lbrack, Index: t.Index, Rbrack: t.Rbrack}
 		}
 		return t
 	case *ast.IndexListExpr:
-		if x := c.scopeSpecTypeNames(p, sf, t.X, tparams); x != t.X {
+		x := c.scopeSpecTypeNames(p, sf, t.X, tparams)
+		if x == nil {
+			return nil
+		}
+		if x != t.X {
 			return &ast.IndexListExpr{X: x, Lbrack: t.Lbrack, Indices: t.Indices, Rbrack: t.Rbrack}
 		}
 		return t
@@ -1469,6 +1536,10 @@ func (c *compiler) scopeFieldListNames(p *runtime.Package, sf *syntax.File, fl *
 	list := make([]*ast.Field, len(fl.List))
 	for i, f := range fl.List {
 		nt := c.scopeSpecTypeNames(p, sf, f.Type, tparams)
+		if nt == nil {
+			return nil // a field type the caller cannot spell — the
+			// whole spec is opaque rather than half-scoped
+		}
 		if nt != f.Type {
 			dirty = true
 			nf := *f
@@ -1486,9 +1557,10 @@ func (c *compiler) scopeFieldListNames(p *runtime.Package, sf *syntax.File, fl *
 
 // callerImportName returns the qualifier under which the caller's file
 // reaches pkgPath — the import's local name. When the caller does not
-// import the package the result is deliberately unresolvable: a bare
-// path element like `time` could otherwise pick up a same-named caller
-// decl, which belongs to a different scope entirely.
+// import the package the result is empty: a bare path element like
+// `time` could otherwise pick up a same-named caller decl, which
+// belongs to a different scope entirely, so unspellable means the
+// caller must treat the re-scoped expression as unknown instead.
 func (c *compiler) callerImportName(pkgPath string) string {
 	if c.pkg != nil && c.file != nil {
 		for name, ref := range c.pkg.Scopes[c.file] {
@@ -1497,7 +1569,7 @@ func (c *compiler) callerImportName(pkgPath string) string {
 			}
 		}
 	}
-	return "." + pkgPath
+	return ""
 }
 
 // synthImportName mints the qualifier a re-scoped expression uses for a
