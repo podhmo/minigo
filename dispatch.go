@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/token"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/podhmo/minigo/runtime"
@@ -119,7 +120,7 @@ func (e *Engine) methodInfoOfValue(v runtime.Value) (*runtime.MethodSet, error) 
 	}
 	switch x := v.(type) {
 	case *runtime.Struct:
-		if ms := e.methodWalkU(x.Def, ptr, map[*runtime.TypeDef]bool{}); ms != nil {
+		if ms := e.methodWalkU(x.Def, ptr, map[walkKey]bool{}); ms != nil {
 			return ms, nil
 		}
 		return &runtime.MethodSet{}, nil
@@ -252,7 +253,7 @@ func (e *Engine) typeMethodInfoU(td *runtime.TypeDef, ptr bool) (*runtime.Method
 	if td == nil {
 		return &runtime.MethodSet{Unsure: unsure}, nil
 	}
-	ms := e.methodWalkU(td, ptr, map[*runtime.TypeDef]bool{})
+	ms := e.methodWalkU(td, ptr, map[walkKey]bool{})
 	if ms == nil {
 		ms = &runtime.MethodSet{}
 	}
@@ -298,6 +299,36 @@ func (e *Engine) underlying(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 	// `type S string` bottoms out at the builtin "string" typedef so a
 	// zero value picks the right literal kind.
 	for td != nil && (td.Kind == runtime.KindAlias || td.Kind == runtime.KindNamedBasic) && td.Anon != nil {
+		x := td.Anon
+		for p, ok := x.(*ast.ParenExpr); ok; x = p.X {
+		}
+		if _, isStar := x.(*ast.StarExpr); isStar {
+			// the declared underlying is a pointer type (`type P *S`,
+			// `type P A` with `type A = *S`): resolveTypeRef peels the
+			// star for embed lookup, so rebuild it here — a defined
+			// pointer type's underlying IS the pointer, and it promotes
+			// nothing the pointee carries.
+			n := 0
+			for {
+				for p, ok := x.(*ast.ParenExpr); ok; x = p.X {
+				}
+				st, ok := x.(*ast.StarExpr)
+				if !ok {
+					break
+				}
+				n++
+				x = st.X
+			}
+			elem, err := e.resolveTypeRef(td, x)
+			if err != nil || elem == nil {
+				return nil, err
+			}
+			pt := elem
+			for ; n > 0; n-- {
+				pt = &runtime.TypeDef{Kind: runtime.KindPointer, Elem: pt, Pkg: td.Pkg, File: td.File}
+			}
+			return pt, nil
+		}
 		next, err := e.resolveTypeRef(td, td.Anon)
 		if err != nil || next == nil || next == td {
 			return nil, err
@@ -341,9 +372,36 @@ func (e *Engine) peelAliasTd(td *runtime.TypeDef) *runtime.TypeDef {
 // unique — contested members move to Ambiguous at that depth.
 // Members locates each promoted member's receiver slot so a selector
 // can bind it directly.
-func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.TypeDef]bool) *runtime.MethodSet {
+// walkKey is the per-path cycle guard's identity for a typedef. A
+// declared type keys on its Spec plus, for a generic instantiation,
+// the resolved argument typedefs: instantiateBinds mints a fresh
+// TypeDef per call, so pointer identity cannot catch the recursive
+// embed `type Rec[T any] struct{ *Rec[T] }` — a legal declaration
+// whose method set is a fixpoint. Synthesized typedefs (no Spec)
+// keep pointer identity.
+type walkKey struct {
+	spec *ast.TypeSpec
+	td   *runtime.TypeDef
+	args string
+}
+
+func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]bool) *runtime.MethodSet {
 	td = e.peelAliasTd(td)
-	if td == nil || seen[td] {
+	if td == nil {
+		return nil
+	}
+	key := walkKey{td: td}
+	if td.Spec != nil {
+		key = walkKey{spec: td.Spec}
+		if len(td.TParams) > 0 {
+			var b strings.Builder
+			for _, tp := range td.TParams {
+				fmt.Fprintf(&b, "%p;", td.Binds[tp])
+			}
+			key.args = b.String()
+		}
+	}
+	if seen[key] {
 		return nil
 	}
 	// seen guards cycles along a path only — a sibling embed path that
@@ -352,8 +410,8 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 	// visiting A.T as a value must not hide the *T embed's pointer
 	// receivers), so the mark lifts when the path unwinds like
 	// methodInner's.
-	seen[td] = true
-	defer delete(seen, td)
+	seen[key] = true
+	defer delete(seen, key)
 	// an anonymous *T typedef sees T's method set including pointer
 	// receivers; a declared pointer typedef keeps only its own decls.
 	if td.Kind == runtime.KindPointer && td.Spec == nil {
@@ -388,15 +446,13 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 		}
 		depths := hostDepths(rt)
 		names := map[string]bool{}
-		for m := range depths {
+		members := map[string]*runtime.PromotedMember{}
+		for m, d := range depths {
 			names[m] = true
 			// host members take the embed slot itself as receiver —
 			// selectMember resolves method and field alike on the
 			// unwrapped box, nested promotion included.
-		}
-		members := map[string]*runtime.PromotedMember{}
-		for m, d := range depths {
-			members[m] = &runtime.PromotedMember{Depth: d, Via: "host"}
+			members[m] = &runtime.PromotedMember{Depth: d, Via: "host", Method: true}
 		}
 		for m, fd := range hostFieldDepths(rt) {
 			members[m] = &runtime.PromotedMember{Depth: fd, Via: "host"}
@@ -450,14 +506,16 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 	winner := map[string]*runtime.Function{}
 	winnerPath := map[string][]int{}
 	winnerVia := map[string]string{}
+	winnerMethod := map[string]bool{}
 	unsure := false
-	contest := func(m string, d int, fn *runtime.Function, path []int, via string) {
+	contest := func(m string, d int, fn *runtime.Function, path []int, via string, method bool) {
 		if c, ok := smin[m]; !ok || d < c {
 			smin[m] = d
 			dup[m] = 1
 			winner[m] = fn
 			winnerPath[m] = path
 			winnerVia[m] = via
+			winnerMethod[m] = method
 		} else if d == c {
 			dup[m]++
 		}
@@ -478,7 +536,7 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 			if u.HostNew != nil {
 				for m, fd := range hostFieldDepths(u.HostType()) {
 					if promoted(m) {
-						contest(m, fd, nil, nil, "host")
+						contest(m, fd, nil, nil, "host", false)
 					}
 				}
 			} else if sub2 := e.methodWalkU(u, ptr, seen); sub2 != nil {
@@ -487,18 +545,17 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 					if sub2.Depths[m] == 0 || !promoted(m) {
 						continue // declared on the underlying — not promoted
 					}
-					names[m] = true
 					path, via := []int(nil), "method"
 					if pm := sub2.Members[m]; pm != nil {
 						path, via = pm.Path, pm.Via
 					}
-					contest(m, sub2.Depths[m], sub2.Funcs[m], path, via)
+					contest(m, sub2.Depths[m], sub2.Funcs[m], path, via, true)
 				}
 				for m, pm := range sub2.Members {
 					if sub2.Names[m] || !promoted(m) {
 						continue
 					}
-					contest(m, pm.Depth, nil, pm.Path, pm.Via)
+					contest(m, pm.Depth, nil, pm.Path, pm.Via, pm.Method)
 				}
 				for m, ad := range sub2.Ambiguous {
 					if promoted(m) {
@@ -540,15 +597,12 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 			// compete at depth 1 like every other member — an iface
 			// promise beats a deeper promotion and ties a same-depth
 			// one; the receiver is the stored interface value itself.
+			// The signature shell contests with the name so a promoted
+			// requirement keeps its signature for assertion checks.
+			sigs := e.ifaceSigFuncs(peeled)
 			for m := range e.ifaceReqSet(peeled) {
 				if promoted(m) {
-					names[m] = true
-					contest(m, 1, nil, []int{fieldIdx}, "iface")
-				}
-			}
-			for name, fn := range e.ifaceSigFuncs(peeled) {
-				if _, dup := funcs[name]; !dup && promoted(name) {
-					funcs[name] = fn
+					contest(m, 1, sigs[m], []int{fieldIdx}, "iface", true)
 				}
 			}
 			continue
@@ -570,7 +624,6 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 				continue
 			}
 			d := sub.Depths[m] + 1
-			names[m] = true
 			via, path := "method", []int{fieldIdx}
 			if pm := sub.Members[m]; pm != nil {
 				// a member the subwalk already located keeps its
@@ -580,7 +633,7 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 				via = pm.Via
 				path = append([]int{fieldIdx}, pm.Path...)
 			}
-			contest(m, d, sub.Funcs[m], path, via)
+			contest(m, d, sub.Funcs[m], path, via, true)
 		}
 		// member-only entries — a host embed's promoted fields and
 		// anything else the name set never counts — still compete
@@ -589,7 +642,7 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 			if sub.Names[m] || !promoted(m) {
 				continue
 			}
-			contest(m, pm.Depth+1, nil, append([]int{fieldIdx}, pm.Path...), pm.Via)
+			contest(m, pm.Depth+1, nil, append([]int{fieldIdx}, pm.Path...), pm.Via, pm.Method)
 		}
 		// a member contested inside an embed stays contested one level
 		// up — unless a shallower unique path wins.
@@ -614,16 +667,20 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[*runtime.Ty
 			// too, not only "ambiguous selector" on access. Ambiguous
 			// keeps the contested depth so a selector can still
 			// diagnose.
-			delete(names, m)
-			delete(funcs, m)
-			delete(members, m)
 			ambig[m] = d
 			continue
 		}
-		if f := winner[m]; f != nil && winnerVia[m] == "method" {
+		members[m] = &runtime.PromotedMember{Path: winnerPath[m], Depth: d, Via: winnerVia[m], Method: winnerMethod[m]}
+		if !winnerMethod[m] {
+			// a promoted FIELD wins the selector at its depth but is
+			// no method — gc reports "x.M is a field, not a method" on
+			// interface satisfaction, so the name stays out.
+			continue
+		}
+		names[m] = true
+		if f := winner[m]; f != nil {
 			funcs[m] = f
 		}
-		members[m] = &runtime.PromotedMember{Path: winnerPath[m], Depth: d, Via: winnerVia[m]}
 	}
 	for m := range names {
 		depths[m] = smin[m]
@@ -794,7 +851,7 @@ func (e *Engine) ifaceSigFuncs(td *runtime.TypeDef) map[string]*runtime.Function
 // Hooks.TypeMethodFuncs hook: the signature-bearing method set of a
 // typedef.
 func (e *Engine) methodSet(td *runtime.TypeDef) (map[string]*runtime.Function, error) {
-	return e.methodFuncs(td, false, map[*runtime.TypeDef]bool{}), nil
+	return e.methodFuncs(td, false), nil
 }
 
 // methodFuncs collects the method FUNCTIONS of a typedef — declared plus
@@ -804,8 +861,8 @@ func (e *Engine) methodSet(td *runtime.TypeDef) (map[string]*runtime.Function, e
 // the set; callers apply their own visibility rules (reflect exposes
 // exported methods only). An interface typedef yields synthesized
 // members carrying each required method's declared signature.
-func (e *Engine) methodFuncs(td *runtime.TypeDef, ptr bool, seen map[*runtime.TypeDef]bool) map[string]*runtime.Function {
-	if ms := e.methodWalkU(td, ptr, seen); ms != nil {
+func (e *Engine) methodFuncs(td *runtime.TypeDef, ptr bool) map[string]*runtime.Function {
+	if ms := e.methodWalkU(td, ptr, map[walkKey]bool{}); ms != nil {
 		return ms.Funcs
 	}
 	return nil
