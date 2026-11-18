@@ -359,6 +359,33 @@ type S struct{ T }
 		}
 	})
 
+	t.Run("unexported name never defers on a dot import", func(t *testing.T) {
+		bar := indexOf(t, `package bar
+import . "x/inner"
+type S struct{ u }
+type u struct{ X int }
+`)
+		// an unindexed dot import cannot yield an unexported name —
+		// S's own u answers and the consult is skipped entirely.
+		s := New(&fakeSource{indexes: map[string]*index.Index{"bar": bar}})
+		ref := refFor(t, s, "bar", "S")
+		got := s.FieldPathOf(ref, "X", IndexedOnly)
+		if got.Kind != Found {
+			t.Fatalf("kind %v, want Found", got.Kind)
+		}
+		// a missing unexported spec answers Missing, not Deferred.
+		ix := indexOf(t, `package foo
+import . "x/inner"
+type S struct{ q }
+`)
+		s = New(&fakeSource{indexes: map[string]*index.Index{"foo": ix}})
+		ref = refFor(t, s, "foo", "S")
+		got = s.FieldPathOf(ref, "X", IndexedOnly)
+		if got.Kind != Missing {
+			t.Fatalf("kind %v, want Missing", got.Kind)
+		}
+	})
+
 	t.Run("bound type parameter contributes no fields", func(t *testing.T) {
 		ix := indexOf(t, `package foo
 type E struct{ X int }
