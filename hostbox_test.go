@@ -25,7 +25,7 @@ func TestHostBoxReachesIOHelpersUnadapted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("asWriterVM: %v", err)
 	}
-	h := &hostHelpers{e: NewEngine("testdata")}
+	h := &hostHelpers{env: bindEnv{NewEngine("testdata")}}
 	r, err := h.asReaderVM(nil, bufBox)
 	if err != nil {
 		t.Fatalf("asReaderVM: %v", err)

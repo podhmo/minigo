@@ -248,7 +248,7 @@ func (h *hostHelpers) asReaderVM(vc runtime.MemberCaller, v any) (io.Reader, err
 		return r, nil
 	}
 	if vc != nil && v != nil && v != runtime.NIL {
-		set, _, _ := h.e.methodSetOfValue(orig)
+		set, _, _ := h.env.MethodSetOfValue(orig)
 		if set["Read"] {
 			if set["WriteTo"] {
 				return &scriptReaderWriterTo{scriptReader{v: vc, recv: orig}}, nil
