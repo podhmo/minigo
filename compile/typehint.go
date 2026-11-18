@@ -431,6 +431,12 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 		if b.declDefer != nil {
 			return opTyp{deferred: true, dexpr: b.declDefer}
 		}
+		if dc, ok := c.deferCallTemps[id.Name]; ok {
+			// an undecidable member call's scratch: its type is the
+			// call's own deferred question (`p.T(v)` -> T, or the
+			// function's result type — the runtime gate resolves it).
+			return opTyp{deferred: true, dexpr: dc.call}
+		}
 		return opTyp{te: b.declTyp, teFile: b.declTypFile}
 	}
 	if _, bound := c.binds[id.Name]; bound {
