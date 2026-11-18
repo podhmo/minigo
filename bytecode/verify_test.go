@@ -104,11 +104,33 @@ func TestVerifyReject(t *testing.T) {
 		{
 			name: "select table past end",
 			code: []Instruction{
+				Instruction{Op: OpConst}, Instruction{Op: OpConst},
 				Instruction{Op: OpSelArm, B: 1},
 				Instruction{Op: OpSelWait, A: 1, B: 0},
 				// no OpJump table follows — slot 0 reads past end.
 			},
 			want: "jump table slot",
+		},
+		{
+			name: "dup on empty stack",
+			code: []Instruction{Instruction{Op: OpDup}},
+			// net +1 yet reads the top slot — underflow by inputs
+			want: "stack underflow",
+		},
+		{
+			name: "call without callee",
+			code: []Instruction{Instruction{Op: OpCall}},
+			want: "stack underflow",
+		},
+		{
+			name: "underflow loop terminates",
+			code: []Instruction{
+				Instruction{Op: OpPop},
+				// OpJump 1 is never reached: the starving OpPop
+				// propagates no negative depth, so no self-loop.
+				Instruction{Op: OpJump, A: 1},
+			},
+			want: "stack underflow",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -120,6 +142,16 @@ func TestVerifyReject(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestVerifyTypGateIsNotAJump(t *testing.T) {
+	// OpTypGate's A/B index CallSites, not code offsets — a gate
+	// pointing at sites 5/6 in a 1-instruction chunk must not read
+	// as an out-of-range branch.
+	c := chunk(Instruction{Op: OpTypGate, A: 5, B: 6})
+	if _, err := Verify(c); err != nil {
+		t.Fatalf("Verify: %v", err)
 	}
 }
 
