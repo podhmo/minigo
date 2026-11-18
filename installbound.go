@@ -1,11 +1,9 @@
 package minigo
 
-// The lazy-install seam for bound (host/registered) packages: the
-// per-path installers register into e.pending at engine/session
-// construction instead of running eagerly (P2-12), and the read
-// paths — hostTwin's typedef lookup, imports, BoundOf/BoundSymbols and
-// the vet bound-symbol check — run a path's installer on first use
-// through Install.
+// The lazy-install seam for bound packages: per-path installers
+// register into e.pending at engine/session construction (P2-12), and
+// the read paths — hostTwin, imports, Bound* queries, the vet check —
+// run a path's installer on first use through Install.
 
 import (
 	"go/ast"
@@ -14,10 +12,9 @@ import (
 	"github.com/podhmo/minigo/runtime"
 )
 
-// hostPackageOf is the typedef lookup's install entry: for a
-// registered (bound) path it guarantees the package's install before
-// returning it, while an unregistered path only answers the packages
-// already present.
+// hostPackageOf is the typedef lookup's install entry: a registered
+// path's install is guaranteed before it is returned; an unregistered
+// path only answers the packages already present.
 func (e *Engine) hostPackageOf(path string) *runtime.Package {
 	e.installBound(path)
 	e.mu.Lock()
@@ -25,19 +22,22 @@ func (e *Engine) hostPackageOf(path string) *runtime.Package {
 	return e.pkgs[path]
 }
 
-// installBound installs a registered path's bound package on first
-// use (concurrent first uses wait on each other); unregistered and
-// already-installed paths are a no-op. A source-built package already
-// in e.pkgs wins: installing now would clobber its state for later
-// ModeSource loads.
+// installBound installs a registered path's bound package on first use.
+// A source-built package already in e.pkgs keeps answering loads: the
+// bound table still installs into names, but pkgs is restored.
 func (e *Engine) installBound(path string) {
 	e.mu.Lock()
-	if _, ok := e.pkgs[path]; ok && !e.names.Bound(path) {
-		e.mu.Unlock()
-		return
+	src, occupied := e.pkgs[path]
+	if occupied && e.names.Bound(path) {
+		occupied = false // pkgs already holds a bound package
 	}
 	e.mu.Unlock()
 	e.pending.Install(path)
+	if occupied {
+		e.mu.Lock()
+		e.pkgs[path] = src
+		e.mu.Unlock()
+	}
 }
 
 // bindBound is [Engine.Bind] for the lazy installers: a path already
@@ -59,10 +59,8 @@ func (e *Engine) registered(path string) bool {
 	return e.names.Bound(path) || e.pending.Registered(path)
 }
 
-// registerStdlib registers the intrinsic per-path installers without
-// running them: bound packages build on first use (P2-12). Bound
-// packages still win over source resolution, since every lookup routes
-// through the install entry first.
+// registerStdlib registers the per-path installers without running
+// them: bound packages build on first use through the install entry.
 func (e *Engine) registerStdlib() {
 	h := &hostHelpers{env: bindEnv{e}}
 	e.pending.Register("fmt", func() { e.installFmt(h) })
