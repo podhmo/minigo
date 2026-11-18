@@ -22,7 +22,7 @@ func (e *Engine) installEncodingBase64(h *hostHelpers) {
 			return nil, fmt.Errorf("base64.NewEncoder: %w", err)
 		}
 		return &runtime.GoValue{V: base64.NewEncoder(enc, w)}, nil
-	})
+	}, base64.NewEncoder)
 	tbl["NewDecoder"] = h.fnvcRaw("base64.NewDecoder", 2, func(_ runtime.VMCaller, a []any, _ []runtime.Value) (any, error) {
 		enc, ok := a[0].(*base64.Encoding)
 		if !ok {
@@ -33,6 +33,6 @@ func (e *Engine) installEncodingBase64(h *hostHelpers) {
 			return nil, fmt.Errorf("base64.NewDecoder: %w", err)
 		}
 		return &runtime.GoValue{V: base64.NewDecoder(enc, r)}, nil
-	})
+	}, base64.NewDecoder)
 	e.Bind("encoding/base64", tbl)
 }
