@@ -157,6 +157,20 @@ const (
 	// instruction's site is never consulted.
 	OpDeferredTyp // A: CallSites index -> push resolved *TypeDef
 
+	// OpDeferredValueTyp is OpDeferredTyp over the value-typedef
+	// question (M4-8): the site's expression is a VALUE (a deferred
+	// conversion like `time.Duration(x)`), and the pushed typedef is
+	// the member type it resolves to. unsafe.Sizeof/Alignof use it to
+	// size a deferred operand without evaluating it.
+	OpDeferredValueTyp // A: CallSites index -> push resolved *TypeDef
+
+	// OpJumpIfTypedef pops the stack top and jumps (A) when it is a
+	// *runtime.TypeDef. M4-8's undecidable member call (`p.T(x)` under
+	// IndexedOnly — conversion or call?) emits two paths and picks on
+	// the member's runtime shape: TypeDef keeps the conversion's
+	// deferred-operand timing, anything else runs the call eagerly.
+	OpJumpIfTypedef // A: jump target
+
 	// OpLitKey is the deferred form of a composite literal's ident key
 	// (M4-7b): the compile side could not decide whether `T{K: v}`'s K
 	// is a field name or a key expression because T's shape was a
