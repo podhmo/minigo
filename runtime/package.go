@@ -204,6 +204,15 @@ type Package struct {
 type PackageInstance struct {
 	Globals *Env // values populated at Initialize / on member access
 
+	// arrayFolds holds this session's folded array lengths: weak
+	// *ast.ArrayType -> *arrayFold. A fold's value depends on the
+	// session's ambient constants, so it belongs here — never in a
+	// shared table, where another version's session could read it. The
+	// map dies with the session; node-keyed entries need no cleanup
+	// bookkeeping of their own (a node can be GC'd only when nothing
+	// references it — the entry is dead weight until then).
+	arrayFolds sync.Map
+
 	// HostVars pins package-level vars of a source-built package to host
 	// values: the initializer binds the host value instead of evaluating
 	// the declared expression. Sentinels like io/fs's ErrNotExist and

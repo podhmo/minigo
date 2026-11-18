@@ -487,7 +487,7 @@ func (v *VM) loop(f *frame) {
 			td := f.pop().(*runtime.TypeDef)
 			if n, ok := lenConstInt(lv); ok {
 				if at, ok := consts[ins.A].(*ast.ArrayType); ok {
-					runtime.FoldArrayLen(at, n)
+					runtime.FoldArrayLen(td.Pkg, at, n)
 				}
 			}
 			f.push(td)

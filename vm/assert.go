@@ -207,47 +207,47 @@ func sameTypeDef(a, b *runtime.TypeDef) bool {
 // typeExprName renders a type AST to a comparable shape string for
 // anonymous-type identity (approximation: structural equality by shape,
 // not by the go/types identity rules).
-func typeExprName(e ast.Expr) string {
+func typeExprName(p *runtime.Package, e ast.Expr) string {
 	switch t := e.(type) {
 	case *ast.Ident:
 		return t.Name
 	case *ast.StarExpr:
-		return "*" + typeExprName(t.X)
+		return "*" + typeExprName(p, t.X)
 	case *ast.ArrayType:
-		return "[" + runtime.TypLenName(runtime.ArrayLenExpr(t)) + "]" + typeExprName(t.Elt)
+		return "[" + runtime.TypLenName(runtime.ArrayLenExpr(p, t)) + "]" + typeExprName(p, t.Elt)
 	case *ast.MapType:
-		return "map[" + typeExprName(t.Key) + "]" + typeExprName(t.Value)
+		return "map[" + typeExprName(p, t.Key) + "]" + typeExprName(p, t.Value)
 	case *ast.ChanType:
 		// direction is part of the type identity: <-chan T, chan<- T
 		// and chan T are three different types.
 		if t.Dir == ast.SEND {
-			return "chan<- " + typeExprName(t.Value)
+			return "chan<- " + typeExprName(p, t.Value)
 		}
 		if t.Dir == ast.RECV {
-			return "<-chan " + typeExprName(t.Value)
+			return "<-chan " + typeExprName(p, t.Value)
 		}
-		return "chan " + typeExprName(t.Value)
+		return "chan " + typeExprName(p, t.Value)
 	case *ast.SelectorExpr:
-		return typeExprName(t.X) + "." + t.Sel.Name
+		return typeExprName(p, t.X) + "." + t.Sel.Name
 	case *ast.IndexExpr:
-		return typeExprName(t.X) + "[" + typeExprName(t.Index) + "]"
+		return typeExprName(p, t.X) + "[" + typeExprName(p, t.Index) + "]"
 	case *ast.IndexListExpr:
-		s := typeExprName(t.X) + "["
+		s := typeExprName(p, t.X) + "["
 		for i, x := range t.Indices {
 			if i > 0 {
 				s += ","
 			}
-			s += typeExprName(x)
+			s += typeExprName(p, x)
 		}
 		return s + "]"
 	case *ast.ParenExpr:
-		return typeExprName(t.X)
+		return typeExprName(p, t.X)
 	case *ast.UnaryExpr:
 		if t.Op == token.TILDE {
-			return "~" + typeExprName(t.X)
+			return "~" + typeExprName(p, t.X)
 		}
 	case *ast.Ellipsis:
-		return "..." + typeExprName(t.Elt)
+		return "..." + typeExprName(p, t.Elt)
 	case *ast.InterfaceType:
 		return "interface{}"
 	case *ast.StructType:
@@ -267,7 +267,7 @@ func tdName(td *runtime.TypeDef) string {
 		return td.Name
 	}
 	if td.Anon != nil {
-		return typeExprName(td.Anon)
+		return typeExprName(td.Pkg, td.Anon)
 	}
 	switch td.Kind {
 	case runtime.KindInterface:

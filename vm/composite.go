@@ -2989,7 +2989,7 @@ func (v *VM) compositeOf(f *frame, td *runtime.TypeDef, n int, kv bool, raw []ru
 				// `[...]T` takes its length from the element count —
 				// fold it so the typedef spells the concrete [N]T like
 				// Go's inferred length.
-				runtime.FoldArrayLen(at, int64(len(s.Elems)))
+				runtime.FoldArrayLen(td.Pkg, at, int64(len(s.Elems)))
 			}
 		}
 		return s
@@ -3334,7 +3334,7 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 	}
 	// a canonical literal (`[3]T`) or an already-folded length answers
 	// without evaluating anything.
-	if n, ok := runtime.FoldedArrayLen(at); ok {
+	if n, ok := runtime.FoldedArrayLen(td.Pkg, at); ok {
 		return n, true
 	}
 	switch l := at.Len.(type) {
@@ -3344,7 +3344,7 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 		// strconv.ParseInt cannot read.
 		if iv, ok := toIntConst(constant.MakeFromLiteral(l.Value, l.Kind, 0)); ok {
 			if n, ok := constant.Int64Val(iv); ok {
-				return runtime.FoldArrayLen(at, n), true
+				return runtime.FoldArrayLen(td.Pkg, at, n), true
 			}
 		}
 		return 0, false
@@ -3358,14 +3358,14 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 					gv = d
 				}
 				if n, ok2 := lenConstInt(gv); ok2 {
-					return runtime.FoldArrayLen(at, n), true
+					return runtime.FoldArrayLen(td.Pkg, at, n), true
 				}
 			}
 			if td.Pkg.Index != nil && v.H.Materialize != nil {
 				if d := td.Pkg.Index.Consts[l.Name]; d != nil {
 					if mv, err := v.H.Materialize(td.Pkg, d); err == nil {
 						if n, ok := lenConstInt(mv); ok {
-							return runtime.FoldArrayLen(at, n), true
+							return runtime.FoldArrayLen(td.Pkg, at, n), true
 						}
 					}
 				}
@@ -3391,7 +3391,7 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 			}
 		}()
 		if ok {
-			return runtime.FoldArrayLen(at, n), true
+			return runtime.FoldArrayLen(td.Pkg, at, n), true
 		}
 	}
 	return 0, false

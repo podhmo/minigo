@@ -331,11 +331,11 @@ func (e *Engine) foldArrayLens(from *runtime.TypeDef, x ast.Expr) {
 		if !ok || at.Len == nil {
 			return true
 		}
-		if _, done := runtime.FoldedArrayLen(at); done {
+		if _, done := runtime.FoldedArrayLen(from.Pkg, at); done {
 			return true
 		}
 		if n, ok := e.constIntValue(from, at.Len); ok {
-			runtime.FoldArrayLen(at, n)
+			runtime.FoldArrayLen(from.Pkg, at, n)
 		}
 		return true
 	})

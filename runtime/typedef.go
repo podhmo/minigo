@@ -280,6 +280,15 @@ func pkgAliasTarget(pkg *Package, name string) (ast.Expr, *TypeDef) {
 	return ts.Type, &TypeDef{Pkg: pkg, File: info.Decl.File}
 }
 
+// ctxPkg returns the package a type-expression's declaring context
+// belongs to — nil for spelling without a declaration context.
+func ctxPkg(ctx *TypeDef) *Package {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Pkg
+}
+
 func typSpelling(e ast.Expr, ctx *TypeDef, under bool) string {
 	var binds map[string]Value
 	var file *syntax.File
@@ -322,7 +331,7 @@ func typSpelling(e ast.Expr, ctx *TypeDef, under bool) string {
 		return "*" + typSpelling(t.X, ctx, under)
 	case *ast.ArrayType:
 		if t.Len != nil {
-			return "[" + TypLenName(ArrayLenExpr(t)) + "]" + typSpelling(t.Elt, ctx, under)
+			return "[" + TypLenName(ArrayLenExpr(ctxPkg(ctx), t)) + "]" + typSpelling(t.Elt, ctx, under)
 		}
 		return "[]" + typSpelling(t.Elt, ctx, under)
 	case *ast.Ellipsis:
@@ -565,7 +574,7 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 		return "*" + TypGoSpelling(t.X, ctx)
 	case *ast.ArrayType:
 		if t.Len != nil {
-			return "[" + TypLenName(ArrayLenExpr(t)) + "]" + TypGoSpelling(t.Elt, ctx)
+			return "[" + TypLenName(ArrayLenExpr(ctxPkg(ctx), t)) + "]" + TypGoSpelling(t.Elt, ctx)
 		}
 		return "[]" + TypGoSpelling(t.Elt, ctx)
 	case *ast.Ellipsis:
@@ -915,7 +924,7 @@ func (c sigComparer) sigTypEq(a, b *TypeDef) bool {
 		if (at.Len == nil) != (bt.Len == nil) {
 			return false // []T and [N]T are different types
 		}
-		if at.Len != nil && !sigLenEq(ArrayLenExpr(at), ArrayLenExpr(bt)) {
+		if at.Len != nil && !sigLenEq(ArrayLenExpr(a.Pkg, at), ArrayLenExpr(b.Pkg, bt)) {
 			return false
 		}
 		return c.sigExprEq(at.Elt, a, bt.Elt, b)

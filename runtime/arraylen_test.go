@@ -38,12 +38,12 @@ func TestFoldedArrayLen(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			n, ok := FoldedArrayLen(c.at)
+			n, ok := FoldedArrayLen(nil, c.at)
 			if ok != c.known || n != c.wantKnow {
 				t.Fatalf("FoldedArrayLen before fold = (%d, %v), want (%d, %v)", n, ok, c.wantKnow, c.known)
 			}
 			if c.at.Len == nil {
-				if got := ArrayLenExpr(c.at); got != nil {
+				if got := ArrayLenExpr(nil, c.at); got != nil {
 					t.Fatalf("ArrayLenExpr of a slice = %v, want nil", got)
 				}
 				return
@@ -52,19 +52,19 @@ func TestFoldedArrayLen(t *testing.T) {
 				return // a canonical literal is already its folded form
 			}
 			before := c.at.Len
-			if got := FoldArrayLen(c.at, 7); got != 7 {
+			if got := FoldArrayLen(nil, c.at, 7); got != 7 {
 				t.Fatalf("FoldArrayLen returned %d, want 7", got)
 			}
 			if c.at.Len != before {
 				t.Fatalf("FoldArrayLen rewrote the AST: Len %v -> %v", before, c.at.Len)
 			}
-			n, ok = FoldedArrayLen(c.at)
+			n, ok = FoldedArrayLen(nil, c.at)
 			if !ok || n != 7 {
 				t.Fatalf("FoldedArrayLen after fold = (%d, %v), want (7, true)", n, ok)
 			}
-			lit, ok := ArrayLenExpr(c.at).(*ast.BasicLit)
+			lit, ok := ArrayLenExpr(nil, c.at).(*ast.BasicLit)
 			if !ok {
-				t.Fatalf("ArrayLenExpr after fold is %T, want *ast.BasicLit", ArrayLenExpr(c.at))
+				t.Fatalf("ArrayLenExpr after fold is %T, want *ast.BasicLit", ArrayLenExpr(nil, c.at))
 			}
 			if diff := cmp.Diff(&ast.BasicLit{Kind: token.INT, Value: "7"}, lit); diff != "" {
 				t.Errorf("folded literal mismatch (-want +got):\n%s", diff)
@@ -77,11 +77,11 @@ func TestFoldedArrayLen(t *testing.T) {
 // records nothing, so its readers never consult the side table.
 func TestFoldArrayLenCanonicalIsNotRecorded(t *testing.T) {
 	at := arrayOf(intLit("4"))
-	FoldArrayLen(at, 4)
-	if _, ok := arrayFolds.Load(weak.Make(at)); ok {
+	FoldArrayLen(nil, at, 4)
+	if _, ok := sharedArrayFolds.Load(weak.Make(at)); ok {
 		t.Errorf("a canonical literal length was recorded in the fold table")
 	}
-	if got, want := ArrayLenExpr(at), ast.Expr(at.Len); got != want {
+	if got, want := ArrayLenExpr(nil, at), ast.Expr(at.Len); got != want {
 		t.Errorf("ArrayLenExpr = %v, want the written literal %v", got, want)
 	}
 }
@@ -93,11 +93,11 @@ func TestSpellingFollowsFold(t *testing.T) {
 	if got, want := TypSpelling(at, nil), "[N]int"; got != want {
 		t.Fatalf("before fold: %q, want %q", got, want)
 	}
-	FoldArrayLen(at, 3)
+	FoldArrayLen(nil, at, 3)
 	if got, want := TypSpelling(at, nil), "[3]int"; got != want {
 		t.Errorf("after fold: %q, want %q", got, want)
 	}
-	if got, want := anonTag(at), "[3]int"; got != want {
+	if got, want := anonTag(nil, at), "[3]int"; got != want {
 		t.Errorf("anonTag after fold: %q, want %q", got, want)
 	}
 	if id, ok := at.Len.(*ast.Ident); !ok || id.Name != "N" {
@@ -121,10 +121,10 @@ func TestFoldArrayLenConcurrent(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < 200; i++ {
 				for _, at := range nodes {
-					FoldArrayLen(at, 3)
+					FoldArrayLen(nil, at, 3)
 					_ = TypSpelling(at, nil)
-					_, _ = FoldedArrayLen(at)
-					_ = ArrayLenExpr(at)
+					_, _ = FoldedArrayLen(nil, at)
+					_ = ArrayLenExpr(nil, at)
 					_ = arrayTypedef(&TypeDef{Anon: at})
 				}
 			}
@@ -148,9 +148,9 @@ func foldFresh(t *testing.T, n int) []weak.Pointer[ast.ArrayType] {
 	keys := make([]weak.Pointer[ast.ArrayType], 0, n)
 	for i := 0; i < n; i++ {
 		at := arrayOf(ast.NewIdent("N"))
-		FoldArrayLen(at, 3)
+		FoldArrayLen(nil, at, 3)
 		key := weak.Make(at)
-		if _, ok := arrayFolds.Load(key); !ok {
+		if _, ok := sharedArrayFolds.Load(key); !ok {
 			t.Fatalf("fold %d was not stored while its node is live", i)
 		}
 		keys = append(keys, key)
@@ -166,7 +166,7 @@ func TestFoldTableReleasesEntries(t *testing.T) {
 	live := func() int {
 		n := 0
 		for _, k := range keys {
-			if _, ok := arrayFolds.Load(k); ok {
+			if _, ok := sharedArrayFolds.Load(k); ok {
 				n++
 			}
 		}
