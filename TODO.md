@@ -13,6 +13,8 @@ migration; history above that point lives in the source repository.
 
 ## To Be Implemented
 
+- [ ] **unexported interface methods are matched by name only, ignoring declaring package**: `TypeDef.MReqs` and method sets are both `map[string]bool`-style name sets, so a script type's unexported `m()` can satisfy an interface requirement `m()` declared in a different package — in Go, unexported method names are package-scoped and never match across packages. Narrow in practice (script code is all `main`, host method sets only carry exported names), but the model cannot express the distinction until requirements record `(pkg, name)`. Found during M4-2b diagnostics work.
+
 - [ ] **`runtime/value.go`'s `special` import sits inside the stdlib group, so `make format` (goimports) always rewrites it and the FileBudgets ratchet then fails CI**: the file's `import` block lists `github.com/podhmo/minigo/special` between `fmt` and `go/ast`, and goimports keeps moving it into the third-party group (+1 line → `TestFileBudgetsMatchRepo` rejects the growth). Moving the import properly and dropping one line elsewhere (or a dedicated normalization commit) would stop the churn; until then every `make format` run must revert the file.
 
 - [ ] **unverified impact: the global `templateFuncMap` TypeDef keeps the first engine's package**: it is a package-level `*runtime.TypeDef` shared by text/template and html/template in every engine, and `Bind` sets `td.Pkg` only when nil (minigo.go:787), so later engines see the first engine's `*runtime.Package`. ([docs/sketch/spike-rearchitecture.md](./docs/sketch/spike-rearchitecture.md) S6)
