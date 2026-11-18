@@ -97,7 +97,9 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 	// context-stable in a way per-file elem keys are not.
 	if td.Anon != nil && td.Pkg != nil {
 		if s := runtime.TypGoSpelling(td.Anon, td); s != "" {
-			// identity spelling (keeps chan direction), not underlying
+			// identity spelling (keeps chan direction), not underlying.
+			// Selector qualifiers already resolve to import paths through
+			// the file's imports, so same-named packages do not collide.
 			return runtime.TypeID(fmt.Sprintf("anon:%d:%s%s", td.Kind, s, args))
 		}
 	}
@@ -266,8 +268,16 @@ func splitHostName(s string) (string, string, bool) {
 // expr, package and file are what a declared *T carries, so its intern
 // key spells identically.
 func anonPtrTypedefOf(et *runtime.TypeDef) *runtime.TypeDef {
+	// the qualifier spells the element's import PATH, matching what
+	// typSpelling produces for a declared `*T` (it resolves the
+	// selector's package name through the file's import table to the
+	// path, so a renamed import `rx "regexp"` still keys *regexp.Regexp).
 	var x ast.Expr = ast.NewIdent(et.Name)
-	if pkg, short, ok := strings.Cut(et.Name, "."); ok {
+	if et.Pkg != nil && et.Pkg.Path != "" {
+		if _, short, ok := strings.Cut(et.Name, "."); ok {
+			x = &ast.SelectorExpr{X: ast.NewIdent(et.Pkg.Path), Sel: ast.NewIdent(short)}
+		}
+	} else if pkg, short, ok := strings.Cut(et.Name, "."); ok {
 		x = &ast.SelectorExpr{X: ast.NewIdent(pkg), Sel: ast.NewIdent(short)}
 	}
 	return &runtime.TypeDef{
