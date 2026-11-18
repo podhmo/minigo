@@ -24,114 +24,6 @@ import (
 	"github.com/podhmo/minigo/runtime"
 )
 
-// opCmpGate emits an OpTrap in place of a binary op or switch-case
-// compare whose operands statically resolve to distinct named types:
-// gc rejects `d == i` / `f.Tag == s` / `d < len(x)` at compile time,
-// and a run-time check cannot recover it — an any-carried operand
-// reaches the same instruction and interface equality is lawful, which
-// is why '=='/'!=' stayed dynamic under the runtime operand gate.
-// The gate only speaks when statically certain — an untyped constant
-// (it adopts), an interface operand (dynamic pairs compare lawfully),
-// or any unknown side keeps the op evaluating, so a partial static
-// picture never invents an error gc wouldn't issue. Returns true when
-// it trapped. Shifts are exempt: their operands are only required to be
-// integer-typed, not mutually assignable (`i << d` is legal Go).
-func (c *compiler) opCmpGate(x, y ast.Expr, pos token.Pos) bool {
-	return c.opGate(x, y, pos, false)
-}
-
-// opCaseGate is opCmpGate for a switch case clause — the same operand
-// check with gc's case-clause wording: `invalid case s in switch on d
-// (mismatched types string and D)`.
-func (c *compiler) opCaseGate(e, tag ast.Expr, pos token.Pos) bool {
-	return c.opGate(e, tag, pos, true)
-}
-
-func (c *compiler) opGate(x, y ast.Expr, pos token.Pos, inSwitch bool) bool {
-	xt, yt := c.staticOpTyp(x), c.staticOpTyp(y)
-	// `nil` compares only against nilable types: `d == nil` is a gc
-	// compile error (mismatched types Duration and untyped nil), while
-	// a pointer/slice/map/chan/func/interface operand legitimately
-	// answers it. A side that did not resolve stays silent.
-	if xt.nilOperand || yt.nilOperand {
-		other := yt
-		if yt.nilOperand {
-			other = xt
-		}
-		if other.nilOperand || other.te == nil || other.untyped || other.iface {
-			return false
-		}
-		if c.nilableTypExpr(other.te) {
-			return false
-		}
-		oi, ok := c.namedIdentOf(other.te)
-		if !ok {
-			return false // unnamed non-nilable — rare; stays silent
-		}
-		// gc orders the operands as written: `nil == i` reports
-		// "untyped nil and int", `i == nil` the reverse.
-		xName, yName := oi.name, "untyped nil"
-		if xt.nilOperand {
-			xName, yName = "untyped nil", oi.name
-		}
-		c.trapOpGate(x, y, pos, inSwitch, xName, yName)
-		return true
-	}
-	// an untyped constant shifted by a non-constant count takes the
-	// other operand's type, which must then be an integer type: `f +
-	// 1<<n` with a float64 f is gc's "shifted operand 1 (type float64)
-	// must be integer".
-	for _, side := range [2]struct {
-		e     ast.Expr
-		t     opTyp
-		other opTyp
-	}{{x, xt, yt}, {y, yt, xt}} {
-		if !side.t.untyped || side.other.te == nil || side.other.untyped || side.other.iface {
-			continue
-		}
-		if !c.nonIntBasicTyp(side.other.te) {
-			continue
-		}
-		if lhs := c.nonConstShiftOperand(side.e, 8); lhs != nil {
-			name := c.exprSpell(side.other.te)
-			c.trap(pos, "invalid operation: shifted operand %s (type %s) must be integer", c.exprSpell(lhs), name)
-			return true
-		}
-	}
-	// a switch tag's untyped value pins to its default type before the
-	// case side compares: `switch x < y { case B(true): }` mismatches B
-	// against bool even though `x < y` is untyped — an untyped case expr
-	// (xt) still adopts into the tag's type.
-	pinnedDte := ""
-	if inSwitch && yt.untyped && yt.dte != nil {
-		if id, ok := ast.Unparen(yt.dte).(*ast.Ident); ok {
-			pinnedDte = id.Name
-		}
-		yt = opTyp{te: yt.dte, dte: yt.dte}
-	}
-	if xt.te == nil || yt.te == nil || xt.untyped || yt.untyped || xt.iface || yt.iface {
-		return false
-	}
-	xi, ok := c.namedIdentOf(xt.te)
-	if !ok {
-		return false
-	}
-	var yi namedTypID
-	if pinnedDte != "" && predeclaredTypeNames[pinnedDte] {
-		// the tag's default type is always a predeclared basic type —
-		// a local `type rune int` shadows the ident, so spell it
-		// canonically instead of resolving the name in scope.
-		yi = namedTypID{id: "predecl:" + runtime.CanonicalBasicName(pinnedDte), name: pinnedDte}
-	} else if yi, ok = c.namedIdentOf(yt.te); !ok {
-		return false
-	}
-	if yi.id == xi.id {
-		return false
-	}
-	c.trapOpGate(x, y, pos, inSwitch, xi.name, yi.name)
-	return true
-}
-
 // namedBoolTyp returns t's type expression when it is a typed operand
 // of a declared (non-predeclared) type — a named bool in a logical op —
 // and nil otherwise.
@@ -464,6 +356,10 @@ func (c *compiler) binary(x *ast.BinaryExpr) {
 		if op != bytecode.BinShl && op != bytecode.BinShr && c.opCmpGate(x.X, x.Y, x.Pos()) {
 			return
 		}
+		if op == bytecode.BinShl || op == bytecode.BinShr {
+			c.emitShift(op, x)
+			return
+		}
 		c.binaryOperands(x.X, x.Y)
 		if (op == bytecode.BinEql || op == bytecode.BinNeq) && (c.isIfaceExpr(x.X) || c.isIfaceExpr(x.Y)) {
 			// an interface-typed operand compares (dynamic type, value)
@@ -478,24 +374,7 @@ func (c *compiler) binary(x *ast.BinaryExpr) {
 			}
 			return
 		}
-		flag := 0
-		if op == bytecode.BinShl || op == bytecode.BinShr {
-			switch {
-			case c.isConstExpr(x.Y):
-				// a constant count keeps an untyped-constant left
-				// operand's shift a constant expression — the VM
-				// cannot tell a typed constant count (`const T uint
-				// = 3`, `len("abc")`, `bits.UintSize`) from a
-				// variable by its value.
-				flag = bytecode.ShiftConstCount
-			case c.certainlyNonConst(x.Y):
-				flag = bytecode.ShiftNonConstCount
-			}
-			if lt := c.staticOpTyp(x.X); lt.te != nil && !lt.untyped {
-				flag |= bytecode.ShiftTypedLeft
-			}
-		}
-		c.emit(bytecode.OpBinary, int(op), flag, x.Pos())
+		c.emit(bytecode.OpBinary, int(op), 0, x.Pos())
 	}
 }
 

@@ -165,6 +165,23 @@ const (
 	// expression instructions that follow run; otherwise the field name
 	// (consts[C]) is pushed and control jumps to A.
 	OpLitKey // A: else ip; B: CallSites index; C: field-name const
+
+	// OpConstExpr is the deferred form of a constant-expression verdict
+	// (M4-7c): the compile side could not decide whether the site's
+	// expression is constant because a qualified package member was a
+	// deferred fact. The VM asks the engine hook once and caches the
+	// answer on the site; a false answer jumps to A (the non-constant
+	// emission), a true one falls through to the constant emission.
+	OpConstExpr // A: else ip; B: CallSites index
+
+	// OpTypGate is the deferred form of the compile-time compare gate
+	// (M4-7c): one compare operand's static type was a deferred fact.
+	// A and B index [Chunk.CallSites]; C bit0 marks site A a value
+	// expression (resolved through the DeferredValueTyp hook), bit1 the
+	// same for site B — cleared bits resolve through DeferredType. Both
+	// sides resolving to distinct named typedefs traps
+	// "mismatched types X and Y" in source order; anything else runs on.
+	OpTypGate // A: CallSites index; B: CallSites index; C: value-site mask
 )
 
 // ShiftConstCount is an [OpBinary] B flag on << and >>: the count is

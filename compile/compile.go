@@ -48,6 +48,12 @@ type compiler struct {
 	// var/const initializers (a named cycle would not terminate).
 	opTypDepth int
 
+	// sawDeferred records that the last fact check (isConstExpr,
+	// certainlyNonConst) hit a deferred package member — the caller
+	// emits the CallSite variant instead of guessing. Cleared before
+	// each check.
+	sawDeferred bool
+
 	// pkgScopeFold marks a const fold as resolving in package scope:
 	// a package-level var's initializer re-derives its literal's shape
 	// at the Sizeof call site, whose local bindings must not shadow

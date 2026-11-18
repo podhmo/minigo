@@ -45,6 +45,11 @@ type binding struct {
 	// re-derived from a package decl — its names resolve in that
 	// package scope, not the use site's.
 	declTypFile *syntax.File
+	// declDefer holds the initializer value expression whose member
+	// type is a deferred fact (`var y = p.C` when the index couldn't
+	// answer p.C): reads of the name report deferred so OpTypGate
+	// asks the question at run time.
+	declDefer ast.Expr
 	// untypedConst marks a `const` bound without a declared type: the
 	// operand adopts the other side's type, like a literal does.
 	untypedConst bool

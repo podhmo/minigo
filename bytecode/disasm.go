@@ -86,6 +86,8 @@ var opNames = [...]string{
 	OpLenCallFold:   "OpLenCallFold",
 	OpDeferredTyp:   "OpDeferredTyp",
 	OpLitKey:        "OpLitKey",
+	OpConstExpr:     "OpConstExpr",
+	OpTypGate:       "OpTypGate",
 }
 
 // String renders the op's name for disassembly output.
@@ -171,6 +173,8 @@ var opOperands = map[Op][3]operandKind{
 	OpLenCallFold:   {opdJump, opdNum, opdSkip},
 	OpDeferredTyp:   {opdCSite, opdSkip, opdSkip},
 	OpLitKey:        {opdJump, opdCSite, opdConst},
+	OpConstExpr:     {opdJump, opdCSite},
+	OpTypGate:       {opdCSite, opdCSite, opdConst},
 }
 
 // Disasm renders a chunk's code to a stable, line-oriented text form for
