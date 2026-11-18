@@ -3,9 +3,10 @@
 // pure-signature members (functions, vars, consts, plain struct typedefs)
 // so the handwritten intrinsics keep only the custom adapters.
 //
-// Regenerate after editing the table:
+// Regenerate after editing the table — under the toolchain go.mod's go
+// directive names, so emitted `q.<name>` references always compile:
 //
-//	go run ./internal/cmd/genbind
+//	GOTOOLCHAIN=go1.26.0 go run ./internal/cmd/genbind
 package main
 
 import (
@@ -15,6 +16,7 @@ import (
 	"go/format"
 	"go/token"
 	"os"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -23,6 +25,12 @@ import (
 )
 
 func main() {
+	floor := moduleFloor()
+	v := gorVersion()
+	if v != floor {
+		fmt.Fprintf(os.Stderr, "genbind: running under go%s but go.mod floors at go%s — rerun with GOTOOLCHAIN=go%s\n", v, floor, floor)
+		os.Exit(1)
+	}
 	modes := map[string]minigo.PackageMode{}
 	for _, sp := range specs {
 		modes[sp.Path] = minigo.ModeSource
@@ -44,6 +52,31 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+// gorVersion reports the running toolchain's major.minor ("1.26").
+func gorVersion() string {
+	v := strings.TrimPrefix(runtime.Version(), "go")
+	parts := strings.Split(v, ".")
+	return strings.Join(parts[:2], ".")
+}
+
+// moduleFloor reads go.mod's go directive as a major.minor string.
+func moduleFloor() string {
+	b, err := os.ReadFile("go.mod")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "genbind: go.mod: %v\n", err)
+		os.Exit(1)
+	}
+	for _, l := range strings.Split(string(b), "\n") {
+		if f := strings.Fields(l); len(f) == 2 && f[0] == "go" {
+			parts := strings.Split(f[1], ".")
+			return strings.Join(parts[:2], ".")
+		}
+	}
+	fmt.Fprintln(os.Stderr, "genbind: go.mod: no go directive")
+	os.Exit(1)
+	return ""
 }
 
 func emit(sp spec, pkgName string, ix *index.Index) error {

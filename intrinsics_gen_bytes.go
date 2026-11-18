@@ -22,7 +22,6 @@ func bytesGenEntries() map[string]runtime.Value {
 		"ContainsRune":    wrapBind("bytes.ContainsRune", bytes.ContainsRune),
 		"Count":           wrapBind("bytes.Count", bytes.Count),
 		"Cut":             wrapBind("bytes.Cut", bytes.Cut),
-		"CutLast":         wrapBind("bytes.CutLast", bytes.CutLast),
 		"CutPrefix":       wrapBind("bytes.CutPrefix", bytes.CutPrefix),
 		"CutSuffix":       wrapBind("bytes.CutSuffix", bytes.CutSuffix),
 		"Equal":           wrapBind("bytes.Equal", bytes.Equal),
