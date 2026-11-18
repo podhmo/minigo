@@ -225,16 +225,20 @@ type Package struct {
 	// Unmarked on bound host packages, which are born Ready.
 	indexed execution.IndexGate
 
-	initOnce sync.Once
-	initErr  error
+	// initOnce runs the initializer at most once and caches its failure
+	// — including panics, which re-panic after being recorded so the
+	// once does not leave the package stuck Initializing.
+	initOnce execution.Init
 	// Bootstrap builds and runs the package initializer (var/const decls +
 	// init() funcs). Injected by the engine; called exactly once. The run
 	// argument executes the __init__ function — supplied by the triggering
 	// caller so a spawned goroutine's init runs on ITS VM.
 	Bootstrap func(p *Package, run func(*Function) error) error
 
-	constOnce sync.Once
-	constErr  error
+	// constOnce is the const-only counterpart of initOnce: its panics
+	// stay swallowed so the caller can fall back to the full
+	// initializer.
+	constOnce execution.Init
 	// ConstBootstrap builds and runs the const-only initializer (const
 	// decls, no var specs, no init() funcs) — injected by the engine.
 	// A constant binds without the package's side effects; a failure or
@@ -337,26 +341,23 @@ func (p *Package) EnsureReady() error {
 // interpreter initializes the package on that same interpreter. A nil run
 // falls back to RunInit.
 func (p *Package) EnsureReadyRun(run func(*Function) error) error {
-	p.initOnce.Do(func() {
+	return p.initOnce.Run(func() error {
 		if p.State() == Ready {
-			return
+			return nil
 		}
 		p.SetState(Initializing)
 		spike.NoteInitDuringCompile()
 		if err := p.runBootstrap(run); err != nil {
-			p.initErr = err
-			p.SetState(Failed)
-			return
+			return err
 		}
 		p.SetState(Ready)
-	})
-	return p.initErr
+		return nil
+	}, func(error) { p.SetState(Failed) })
 }
 
-// runBootstrap invokes p.Bootstrap, converting a panic into initErr (and
-// Failed state) before re-panicking: sync.Once consumes a panicked Do as
-// done, so without recording it later callers would see a successful-but-
-// partial init.
+// runBootstrap invokes p.Bootstrap with the init runner; [Init.Run]
+// around it records panics and marks the package Failed before
+// re-panicking.
 func (p *Package) runBootstrap(run func(*Function) error) (err error) {
 	if p.Bootstrap == nil {
 		return nil
@@ -367,21 +368,6 @@ func (p *Package) runBootstrap(run func(*Function) error) (err error) {
 	if run == nil {
 		return fmt.Errorf("package %s: no init runner", p.Name)
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			if e, ok := r.(error); ok {
-				err = e
-			} else {
-				err = fmt.Errorf("panic: %v", r)
-			}
-			// the re-panic still consumes initOnce — without recording the
-			// failure here the package would stay Initializing forever and
-			// later member access would silently see partial state.
-			p.initErr = err
-			p.SetState(Failed)
-			panic(r)
-		}
-	}()
 	return p.Bootstrap(p, run)
 }
 
@@ -400,30 +386,19 @@ func (p *Package) Member(name string, materialize func(*Package, *index.Decl) (V
 // from a panic) only means the constants are not bound; the caller can
 // fall back to [Package.EnsureReadyRun].
 func (p *Package) EnsureConstsRun(run func(*Function) error) error {
-	p.constOnce.Do(func() {
+	return p.constOnce.Try(func() error {
 		if p.State() == Ready || p.ConstBootstrap == nil {
-			return
+			return nil
 		}
-		defer func() {
-			if r := recover(); r != nil {
-				if e, ok := r.(error); ok {
-					p.constErr = e
-				} else {
-					p.constErr = fmt.Errorf("panic: %v", r)
-				}
-			}
-		}()
 		if run == nil {
 			run = p.RunInit
 		}
 		if run == nil {
-			p.constErr = fmt.Errorf("package %s: no init runner", p.Name)
-			return
+			return fmt.Errorf("package %s: no init runner", p.Name)
 		}
 		spike.NoteInitDuringCompile()
-		p.constErr = p.ConstBootstrap(p, run)
+		return p.ConstBootstrap(p, run)
 	})
-	return p.constErr
 }
 
 // MemberV is [Package.Member] with an explicit init runner (see

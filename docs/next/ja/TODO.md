@@ -85,8 +85,8 @@
 - [-] **P2-14 `internal/execution` と `internal/source` を抽出する**: ライフサイクルの状態機械を `runtime/package.go` と `minigo.go` から移す。`embed.go`、`parse.go`、`parsecache.go` は `internal/source` へ移す。完了条件: root パッケージ全体（非テスト・非生成 .go の合計、現状約 19,500 行）と `vm.go` がそれぞれ約 3,000 行を下回る（`minigo.go` 単体は既に達成済みのため、測る範囲はパッケージ全体とする）。
   - [x] `parse.go`/`parsecache.go`/`embed.go` を `internal/source` へ（`ParseCache`/`IndexCache` + `ParsePackageFiles` + `EmbedBuiltin`/`EmbedEnv`）（PR #1149）
   - [x] **P2-14a root の完了条件を明確にする**: 実測: `minigo.go` 単体 1,489 行、root 直下の非テスト・非生成 Go の合計 19,338 行（archcheck の計測、`vm.go` は 883 行）。計画書の約 3,000 行は root パッケージ合計と解釈する（`minigo.go` 単体は達成済みのため）。残すファサードの責務: 公開 API（`Engine`/`NewEngine`/`Run`/`Call`/`Bind`/`NewSession`/`With*` オプション）とセッション状態の保持、内部実装は `internal/*` 側へ。
-  - [ ] **P2-14b index 完了の公開と待機を抽出する**: `buildPackage` と `indexFiles` の完了通知を抽出し、`runtime.Package` に互換の入口を残す。並行した初回ロード、strict/lenient の分離、パース・index 失敗後の待機解除と既存診断をテストする。→ `execution.IndexGate`（`internal/execution`）に抽出、`Package.MarkIndexed`/`FinishIndexing`/`WaitIndexed`/`IndexReady` が互換の窓口（#1155）
-  - [ ] **P2-14c 初期化の状態遷移と runner を抽出する**: P2-14b のあとに `EnsureReady` / `EnsureReadyRun` が使う状態遷移・初期化処理を抽出する。一度だけの初期化、エラーと panic 後の状態、実行中の process に所属する初期化をテストする。
+  - [x] **P2-14b index 完了の公開と待機を抽出する**: `buildPackage` と `indexFiles` の完了通知を抽出し、`runtime.Package` に互換の入口を残す。並行した初回ロード、strict/lenient の分離、パース・index 失敗後の待機解除と既存診断をテストする。→ `execution.IndexGate`（`internal/execution`）に抽出、`Package.MarkIndexed`/`FinishIndexing`/`WaitIndexed`/`IndexReady` が互換の窓口（#1155） — 完了
+  - [ ] **P2-14c 初期化の状態遷移と runner を抽出する**: P2-14b のあとに `EnsureReady` / `EnsureReadyRun` が使う状態遷移・初期化処理を抽出する。一度だけの初期化、エラーと panic 後の状態、実行中の process に所属する初期化をテストする。→ `execution.Init` に一度だけの実行+panic→error 記録を抽出（PR TBD）
   - [ ] **P2-14d 特殊形式の registry と context を抽出する**: P2-14c のあと、P2-6 に残った実装を `internal/execution` 側に移す。公開型を参照する既存 examples、別名 import・shadowing・スタブがロードされないことを確認する。
   - [ ] **P2-14e Session 所有権チェックの入口をそろえる**: M3-1 の計画と現在の `Engine.Call` の常時チェックを照合し、適用する入口と対象を決める。別 Session の source package を渡した場合と、共有を許す host bind の場合をテストする。
 
