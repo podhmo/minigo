@@ -2,6 +2,7 @@ package vm
 
 import (
 	"errors"
+	"fmt"
 	"go/ast"
 	"testing"
 
@@ -63,6 +64,93 @@ func TestDeferredTyp(t *testing.T) {
 		}
 		if asks != 1 {
 			t.Fatalf("cache miss: hook asked %d times", asks)
+		}
+	})
+
+	t.Run("instantiation binds key the site's cache", func(t *testing.T) {
+		asks := 0
+		v := newVM(nil, nil, &asks)
+		ids := map[*runtime.TypeDef]runtime.TypeID{}
+		v.H.TypeIDOf = func(td *runtime.TypeDef) runtime.TypeID {
+			if _, ok := ids[td]; !ok {
+				ids[td] = runtime.TypeID(fmt.Sprintf("t%d", len(ids)))
+			}
+			return ids[td]
+		}
+		intTd, strTd := runtime.BasicTypedef("int"), runtime.BasicTypedef("string")
+		v.H.ResolveType = func(ctx *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, error) {
+			asks++
+			bt, _ := ctx.Binds["T"].(*runtime.TypeDef)
+			return bt, nil
+		}
+		ch := chunk(siteFor(), siteFor())
+		mkfn := func(arg runtime.Value) *runtime.Function {
+			return &runtime.Function{Chunk: ch, Pkg: &runtime.Package{}, Binds: map[string]runtime.Value{"T": arg}}
+		}
+		if _, err := call(v, ch); err != nil { // no binds: hook sees nil Binds
+			t.Fatalf("call: %v", err)
+		}
+		ri, err := v.Call(mkfn(intTd), nil)
+		if err != nil {
+			t.Fatalf("int call: %v", err)
+		}
+		rs, err := v.Call(mkfn(strTd), nil)
+		if err != nil {
+			t.Fatalf("string call: %v", err)
+		}
+		if ri != intTd || rs != strTd {
+			t.Fatalf("binds leaked through the site cache: %v, %v", ri, rs)
+		}
+		if asks != 3 {
+			t.Fatalf("hook asked %d times, want 3 (unbound, int, string)", asks)
+		}
+		// the int instantiation's answer replays without re-asking.
+		if _, err := v.Call(mkfn(intTd), nil); err != nil {
+			t.Fatalf("int replay: %v", err)
+		}
+		if asks != 3 {
+			t.Fatalf("binds-keyed cache missed: %d asks", asks)
+		}
+	})
+
+	t.Run("pinned context caches across instantiations", func(t *testing.T) {
+		asks := 0
+		td := runtime.BasicTypedef("int")
+		v := newVM(td, nil, &asks)
+		pinned := &runtime.TypeDef{Pkg: &runtime.Package{}}
+		site := siteFor()
+		site.Ctx = pinned
+		ch := chunk(site, siteFor())
+		for _, arg := range []runtime.Value{runtime.BasicTypedef("int"), runtime.BasicTypedef("string")} {
+			_, err := v.Call(&runtime.Function{Chunk: ch, Pkg: pinned.Pkg, Binds: map[string]runtime.Value{"T": arg}}, nil)
+			if err != nil {
+				t.Fatalf("call: %v", err)
+			}
+		}
+		if asks != 1 {
+			t.Fatalf("pinned context re-asked: %d", asks)
+		}
+	})
+
+	t.Run("deferred hook wins over ResolveType", func(t *testing.T) {
+		asks := 0
+		td := runtime.BasicTypedef("int")
+		v := newVM(nil, errors.New("fallback must not run"), &asks)
+		v.H.DeferredType = func(site *bytecode.CallSite, ctx *runtime.TypeDef) (*runtime.TypeDef, error) {
+			asks++
+			if _, isStar := site.Expr.(*ast.StarExpr); !isStar {
+				t.Errorf("hook saw %T, want the original *ast.StarExpr", site.Expr)
+			}
+			return td, nil
+		}
+		site := siteFor()
+		site.Expr = &ast.StarExpr{X: ast.NewIdent("int")}
+		r, err := call(v, chunk(site, siteFor()))
+		if err != nil {
+			t.Fatalf("call: %v", err)
+		}
+		if r != td || asks != 1 {
+			t.Fatalf("got %v with %d asks", r, asks)
 		}
 	})
 

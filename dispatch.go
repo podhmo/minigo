@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
 	"github.com/podhmo/minigo/vm"
@@ -1273,6 +1274,35 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 		return td, nil
 	}
 	return nil, fmt.Errorf("unsupported embedded type expression %T", x)
+}
+
+// deferredTypeOf implements the Hooks.DeferredType hook (M4-7a): a
+// deferred fact's type expression resolved under AllowIndex. Unlike
+// resolveTypeRef — a reference resolver that strips `*` — the answer
+// keeps the expression's own shape: `*int` resolves to a pointer
+// typedef, parens count their inner stars the same way.
+func (e *Engine) deferredTypeOf(site *bytecode.CallSite, ctx *runtime.TypeDef) (*runtime.TypeDef, error) {
+	expr, stars := site.Expr, 0
+	for {
+		switch t := expr.(type) {
+		case *ast.ParenExpr:
+			expr = t.X
+		case *ast.StarExpr:
+			stars++
+			expr = t.X
+		default:
+			goto peeled
+		}
+	}
+peeled:
+	td, err := e.resolveTypeRef(ctx, expr)
+	if err != nil {
+		return nil, err
+	}
+	for ; stars > 0 && td != nil; stars-- {
+		td = &runtime.TypeDef{Kind: runtime.KindPointer, Anon: site.Expr, Elem: td, Pkg: ctx.Pkg, File: ctx.File, Binds: ctx.Binds}
+	}
+	return td, nil
 }
 
 // elemOf implements the Hooks.ElemOf hook: the element typedef of a

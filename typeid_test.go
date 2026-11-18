@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/index"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
@@ -162,6 +163,33 @@ func TestTypeIDAnonymousIsStructural(t *testing.T) {
 func vtdForKey(t *testing.T, e *Engine) *runtime.TypeDef {
 	t.Helper()
 	return hostType("sync/atomic.Value", func() any { return &atomicBox{} })
+}
+
+// M4-7a: a deferred fact's answer keeps the expression's own shape —
+// `*int` is a pointer typedef (resolveTypeRef's reference resolution
+// strips the star), and parens count their inner star the same way.
+func TestDeferredTypeOfKeepsPointerShape(t *testing.T) {
+	e := NewEngine(".")
+	ctx := &runtime.TypeDef{Pkg: &runtime.Package{Path: "main"}}
+	for name, expr := range map[string]ast.Expr{
+		"star":  &ast.StarExpr{X: ast.NewIdent("int")},
+		"paren": &ast.ParenExpr{X: &ast.StarExpr{X: ast.NewIdent("int")}},
+	} {
+		td, err := e.deferredTypeOf(&bytecode.CallSite{Expr: expr}, ctx)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if td.Kind != runtime.KindPointer {
+			t.Fatalf("%s: resolved to %v, want a pointer typedef", name, td.Kind)
+		}
+	}
+	td, err := e.deferredTypeOf(&bytecode.CallSite{Expr: ast.NewIdent("int")}, ctx)
+	if err != nil {
+		t.Fatalf("ident: %v", err)
+	}
+	if td.Kind == runtime.KindPointer {
+		t.Fatalf("plain ident gained a pointer layer")
+	}
 }
 
 // the M4-3b contract: one session holds ONE canonical descriptor per
