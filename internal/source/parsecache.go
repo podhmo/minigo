@@ -3,7 +3,6 @@ package source
 import (
 	"crypto/sha256"
 	"encoding/binary"
-	"go/ast"
 	"go/token"
 	"hash/fnv"
 	"os"
@@ -17,16 +16,12 @@ import (
 // parseCacheEntry is one file's parse result, shared by every session
 // forked from one base engine. sum revalidates against the bytes on
 // disk on every load, so an edited file is re-parsed — a preview
-// reload always sees current source. refold marks a file that may
-// never be shared: its AST must be minted per load (see
-// symbolicArrayLen), so the entry then only keeps the content hash and
-// the registered token.File — a re-parse at tf's base reuses the Pos
-// range instead of growing the FileSet.
+// reload always sees current source. An array length spelled with a
+// name from another file folds per session (the fold lives in the
+// session's PackageInstance), so even symbolic lengths stay shareable.
 type parseCacheEntry struct {
-	sum    [sha256.Size]byte
-	sf     *syntax.File
-	tf     *token.File // registered in the engine's shared FileSet
-	refold bool
+	sum [sha256.Size]byte
+	sf  *syntax.File
 }
 
 // ParseCache holds parsed files keyed by path. The engine that owns a
@@ -66,10 +61,6 @@ func (pc *ParseCache) Files(fset *token.FileSet, paths []string, lang string) (f
 	files = make([]*syntax.File, len(paths))
 	sums := make([][sha256.Size]byte, len(paths))
 	var miss []int
-	var refolds []struct {
-		i    int
-		base int
-	}
 	pc.mu.Lock()
 	for i, path := range paths {
 		sums[i] = sha256.Sum256(srcs[i])
@@ -78,40 +69,12 @@ func (pc *ParseCache) Files(fset *token.FileSet, paths []string, lang string) (f
 		// the stored *syntax.File's already-fixed LangMod is stale —
 		// re-parse so CheckLang judges the new version.
 		if ent := pc.m[path]; ent != nil && ent.sum == sums[i] && ent.sf.LangMod == lang {
-			if ent.refold {
-				refolds = append(refolds, struct {
-					i    int
-					base int
-				}{i, ent.tf.Base()})
-			} else {
-				files[i] = ent.sf
-			}
+			files[i] = ent.sf
 		} else {
 			miss = append(miss, i)
 		}
 	}
 	pc.mu.Unlock()
-	if len(miss) == 0 && len(refolds) == 0 {
-		return files, "", nil
-	}
-
-	// refold files keep their Pos range: re-parse at the registered
-	// token.File's base so positions still resolve through the shared
-	// FileSet while the fresh AST gets fresh fold-table entries. The
-	// private set's token.File is discarded — the cached one covers it.
-	for _, r := range refolds {
-		private := token.NewFileSet()
-		if r.base > 1 {
-			private.AddFile("", 1, r.base-2)
-		}
-		sf, err := syntax.ParseFile(private, paths[r.i], srcs[r.i])
-		if err != nil {
-			return nil, paths[r.i], err
-		}
-		sf.Src = nil
-		sf.LangMod = lang
-		files[r.i] = sf
-	}
 	if len(miss) == 0 {
 		return files, "", nil
 	}
@@ -122,7 +85,7 @@ func (pc *ParseCache) Files(fset *token.FileSet, paths []string, lang string) (f
 		missPaths[j] = paths[i]
 		missSrcs[j] = srcs[i]
 	}
-	missFiles, tfs, failed, err := parseSrcs(fset, missPaths, missSrcs)
+	missFiles, _, failed, err := parseSrcs(fset, missPaths, missSrcs)
 	if err != nil {
 		return nil, failed, err
 	}
@@ -134,51 +97,18 @@ func (pc *ParseCache) Files(fset *token.FileSet, paths []string, lang string) (f
 	for j, i := range miss {
 		// a racing load may have published the same file first; share
 		// the stored entry so concurrent packages converge on one
-		// *syntax.File per path — unless the entry refolds, where
-		// sharing its AST would freeze another session's folds. An
-		// entry whose sum or language no longer matches is stale:
-		// this load just parsed fresher bytes — replace it.
-		if ent := pc.m[paths[i]]; ent != nil && ent.sum == sums[i] && ent.sf.LangMod == lang && !ent.refold {
+		// *syntax.File per path. An entry whose sum or language no
+		// longer matches is stale: this load just parsed fresher bytes
+		// — replace it.
+		if ent := pc.m[paths[i]]; ent != nil && ent.sum == sums[i] && ent.sf.LangMod == lang {
 			files[i] = ent.sf
 			continue
 		}
 		files[i] = missFiles[j]
-		pc.m[paths[i]] = &parseCacheEntry{
-			sum:    sums[i],
-			sf:     missFiles[j],
-			tf:     tfs[j],
-			refold: symbolicArrayLen(missFiles[j]),
-		}
+		pc.m[paths[i]] = &parseCacheEntry{sum: sums[i], sf: missFiles[j]}
 	}
 	pc.mu.Unlock()
 	return files, "", nil
-}
-
-// symbolicArrayLen reports whether a file contains an array type whose
-// length is an expression rather than a literal or `...` — e.g. `[N]int`
-// where N is a const declared in a sibling file. runtime's array-length
-// fold table is keyed by the AST node, so a node shared across sessions
-// would keep the value folded in the first session even after the
-// const's file is edited. Such files are marked refold in the cache and
-// re-parsed per load at their registered Pos range; a literal or `...`
-// length derives its value from this file alone and stays shareable.
-func symbolicArrayLen(sf *syntax.File) bool {
-	found := false
-	ast.Inspect(sf.AST, func(n ast.Node) bool {
-		if found {
-			return false
-		}
-		if at, ok := n.(*ast.ArrayType); ok && at.Len != nil {
-			switch at.Len.(type) {
-			case *ast.BasicLit, *ast.Ellipsis:
-			default:
-				found = true
-				return false
-			}
-		}
-		return true
-	})
-	return found
 }
 
 // indexCacheEntry is one package index shared by sessions: the index is

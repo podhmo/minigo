@@ -696,7 +696,7 @@ func (t *RType) Len() int {
 		return t.alen
 	}
 	if at, ok := t.td.Anon.(*ast.ArrayType); ok && at.Len != nil {
-		if n, ok := runtime.FoldedArrayLen(at); ok {
+		if n, ok := runtime.FoldedArrayLen(t.td.Pkg, at); ok {
 			return int(n)
 		}
 	}

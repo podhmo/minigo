@@ -1391,7 +1391,7 @@ func hostShapeOf(v *VM, td *runtime.TypeDef, depth int) reflect.Type {
 		if at.Len == nil {
 			return reflect.SliceOf(ert)
 		}
-		lit, ok := runtime.ArrayLenExpr(at).(*ast.BasicLit)
+		lit, ok := runtime.ArrayLenExpr(et.Pkg, at).(*ast.BasicLit)
 		if !ok || lit.Kind != token.INT {
 			return nil
 		}
