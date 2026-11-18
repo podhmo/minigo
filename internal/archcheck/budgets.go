@@ -17,7 +17,8 @@ var FileBudgets = map[string]int{
 	"compile/compile.go":                 414,
 	"compile/constfold.go":               866,
 	"compile/expr.go":                    566,
-	"compile/gate.go":                    377,
+
+	"compile/gate.go":                    372,
 	"compile/goto.go":                    103,
 	"compile/lit.go":                     738,
 	"compile/scope.go":                   566,

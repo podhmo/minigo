@@ -118,7 +118,7 @@
   - [x] **M4-7a 遅延参照を保持・解決する経路**: `CallSite` に必要な `TypeRef` とソース位置だけを載せる。VM での初回解決、Missing/Failed の `TRAP`、未実行分岐で解決が走らないことを固定する。既存の引数バッファ等の移行は P4-4 で扱う。
   - [x] **M4-7b import 名・型宣言・複合リテラル**: M4-7a を使い、`assign_pkgname_differs`、`litkey_named_peel`、`src_pkgtype_maplit_keys`、`TestSelMemberSyntheticTypeEntry` を強制 Deferred で通す。
   - [x] **M4-7c 定数の有無・型・シフト**: `isConstExprDepth`、`certainlyNonConstDepth` と修飾定数の判定を移す。`shift_const_count`、`gate_qualconst`、`gate_qualconstbind` を強制 Deferred で通す。
-  - [ ] **M4-7d 比較・変換・nil 判定と診断**: 残る selector 経路と診断用の package 名を移し、`TestNetHTTPRoundtrip`、残りの `gate_qual*`、`selconv_typearg`、`selnilable_trap` を固定する。全 15 件で通常・強制 Deferred の出力または `TRAP` 文言を照合する。
+  - [x] **M4-7d 比較・変換・nil 判定と診断**: 残る selector 経路と診断用の package 名を移し、`TestNetHTTPRoundtrip`、残りの `gate_qual*`、`selconv_typearg`、`selnilable_trap` を固定する。全 15 件で通常・強制 Deferred の出力または `TRAP` 文言を照合する。
 - [ ] **M4-8 `WithStrictLazyCompile` を入れて CI で回す**: `IndexedOnly` で、すべての事実を Deferred にしてコンパイルするモード。完了条件: conformance スイートの結果がこのモードでも同一である。
   - [ ] **M4-8a strict モードとロード順の比較**: M4-7 の全ケースが通ってから `WithStrictLazyCompile` を導入する。未 index と事前 index の両条件で結果を比較し、C1 の計測でコンパイル時初期化がゼロであることを確かめる。
   - [ ] **M4-8b CI の conformance ジョブ**: M4-8a を通常モードと併走させる。15 件の受け入れセットに加え、既存 conformance の出力と `TRAP` の同値性を確認する。
