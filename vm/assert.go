@@ -1239,12 +1239,15 @@ func (v *VM) hostTypedefIs(rt reflect.Type, td *runtime.TypeDef) bool {
 	if rt == nil || td == nil {
 		return false
 	}
-	if v.sameTypedef(&runtime.TypeDef{HostIdent: rt}, td) {
-		return true
+	// resolve rt's twin through the hook, never a minted stamp: a bare
+	// HostIdent stamp interned here would land a hollow descriptor in
+	// the table before the real typedef resolves — the table answers
+	// whichever descriptor registered first.
+	if v.H.HostTwin != nil {
+		if twin := v.H.HostTwin(rt); twin != nil && v.sameTypedef(twin, td) {
+			return true
+		}
 	}
-	// bound typedefs the intern table cannot key (a "?" identity —
-	// no Spec, no importable package) never converge; the name/path
-	// compare answers them like it always has.
 	return runtime.HostTwinOf(rt, td)
 }
 
