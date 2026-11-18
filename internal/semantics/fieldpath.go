@@ -52,8 +52,8 @@ func (s *Service) FieldPathOf(t TypeRef, name string, p Policy) Result[FieldPath
 		var deferred bool
 		var failed error
 		for _, q := range level {
-			st := q.ref.Expr.(*ast.StructType)
-			if st.Fields == nil {
+			st, ok := q.ref.Expr.(*ast.StructType)
+			if !ok || st.Fields == nil {
 				continue
 			}
 			idx := 0
@@ -144,6 +144,9 @@ func (s *Service) resolveStruct(t TypeRef, p Policy, seen map[ast.Expr]bool) Res
 	for depth := 0; depth < 32; depth++ {
 		switch x := expr.(type) {
 		case *ast.StructType:
+			// wrappers peeled along the way left t.Expr stale — the
+			// caller asserts the resolved expr is the struct.
+			t.Expr = expr
 			return Result[TypeRef]{Kind: Found, Val: t}
 		case *ast.ParenExpr:
 			expr = x.X
