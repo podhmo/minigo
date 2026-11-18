@@ -855,16 +855,26 @@ func (c *compiler) importRef(name string) (*runtime.ImportRef, bool) {
 	// a local declaration shadows the import name: `unsafe := f()` in
 	// a function means `unsafe.Sizeof(x)` calls a field or method, not
 	// the intrinsic — its argument must be evaluated like any call.
-	if c.fs != nil && c.fs.lookupBinding(name) != nil {
+	// Under pkgScopeTyp the spelling comes from a package decl, whose
+	// scope has no function-local bindings — the check stands down
+	// and the decl file's imports answer instead.
+	if c.pkgScopeTyp == nil && c.fs != nil && c.fs.lookupBinding(name) != nil {
 		return nil, false
 	}
 	if ref, ok := c.synthImports[name]; ok {
 		return ref, true
 	}
-	if c.pkg == nil || c.file == nil {
+	if c.pkg == nil {
 		return nil, false
 	}
-	return c.pkgImportRef(c.pkg, c.file, name)
+	file := c.file
+	if c.pkgScopeTyp != nil {
+		file = c.pkgScopeTyp
+	}
+	if file == nil {
+		return nil, false
+	}
+	return c.pkgImportRef(c.pkg, file, name)
 }
 
 // storeTarget emits the store for one LHS expression; the value is on stack.
