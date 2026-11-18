@@ -57,7 +57,7 @@ func (e *Engine) registeredVetSymbol(path, name string) bool {
 	e.installBound(path)
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if _, ok := e.specials[runtime.SymbolID{PackagePath: path, Name: name}]; ok {
+	if e.specials.Has(runtime.SymbolID{PackagePath: path, Name: name}) {
 		return true
 	}
 	if b := e.names.Lookup(path); b != nil {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/internal/execution"
 	"github.com/podhmo/minigo/resolve"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
@@ -25,7 +26,7 @@ type Hooks struct {
 	// Session state.
 	Fset     *token.FileSet
 	Builtins *runtime.Env
-	Specials map[runtime.SymbolID]runtime.SpecialFunc
+	Specials *execution.Registry[runtime.SymbolID, runtime.SpecialFunc]
 	Binds    map[string]*runtime.Package
 	Cfg      resolve.BuildConfig
 	Resolver resolve.Resolver
