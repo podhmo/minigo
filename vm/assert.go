@@ -910,6 +910,21 @@ func (s sigResolver) Underlying(td *runtime.TypeDef) *runtime.TypeDef { return s
 
 var errSigNoHook = fmt.Errorf("type resolution hook unavailable")
 
+// isNilVal reports whether x is a nil of any flavour — bare NIL, a
+// TypedNil carrying its declared type, or an interface-boxed nil.
+func isNilVal(x runtime.Value) bool {
+	if _, ok := x.(runtime.Nil); ok {
+		return true
+	}
+	// a nil adopted into an interface-typed slot is still nil — the
+	// slot's tag is a representation, not a value.
+	if _, ok := x.(*runtime.IfaceNil); ok {
+		return true
+	}
+	_, ok := asTypedNil(x)
+	return ok
+}
+
 // asTypedNil unwraps an interface-boxed nil down to its TypedNil.
 func asTypedNil(x runtime.Value) (*runtime.TypedNil, bool) {
 	if tn, ok := x.(*runtime.TypedNil); ok {
@@ -1394,23 +1409,62 @@ func (v *VM) peelNamed(td *runtime.TypeDef) *runtime.TypeDef {
 // nil zero, so a nil receiver of one of these types still binds as a
 // method receiver (the body decides). Structs and basics cannot be nil.
 func (v *VM) nilableTypedef(td *runtime.TypeDef) bool {
-	u := v.peelNamed(td)
-	if u == nil {
-		return false
-	}
-	switch u.Kind {
-	case runtime.KindPointer, runtime.KindSlice, runtime.KindMap,
-		runtime.KindChan, runtime.KindFunc, runtime.KindInterface:
-		return true
-	}
-	if u.HostNew != nil {
-		// a bound host type is classed a struct whatever its shape;
-		// its zero's own kind tells a named slice or map (net.IP,
-		// net.HardwareAddr) that answers `== nil`.
-		switch u.HostType().Kind() {
-		case reflect.Slice, reflect.Map, reflect.Chan, reflect.Func:
+	// bound the peel loop: an engine Underlying answer that names
+	// another declared type re-enters here, and a cyclic `type A B;
+	// type B A` would otherwise never return.
+	for i := 0; td != nil && i < 8; i++ {
+		u := v.peelNamed(td)
+		if u == nil {
+			return false
+		}
+		switch u.Kind {
+		case runtime.KindPointer, runtime.KindSlice, runtime.KindMap,
+			runtime.KindChan, runtime.KindFunc, runtime.KindInterface:
 			return true
 		}
+		if u.HostNew != nil {
+			// a bound host type is classed a struct whatever its shape;
+			// its zero's own kind tells a named slice or map (net.IP,
+			// net.HardwareAddr) that answers `== nil`. A struct
+			// binds a pointer zero, which is no evidence of nilability.
+			switch u.HostType().Kind() {
+			case reflect.Slice, reflect.Map, reflect.Chan, reflect.Func:
+				return true
+			}
+		}
+		// the declared spec itself spells a nilable shape — a
+		// deferred-resolved `type List []T` carries its `[]T` in Anon
+		// while Kind still reports the declared (default struct) kind.
+		switch u.Anon.(type) {
+		case *ast.StarExpr, *ast.MapType, *ast.ChanType,
+			*ast.FuncType, *ast.InterfaceType, *ast.Ellipsis:
+			return true
+		case *ast.ArrayType:
+			return u.Anon.(*ast.ArrayType).Len == nil
+		}
+		// a deferred-resolved typedef can arrive as a bare spelling
+		// before its shape is known — `type List []T` reached through
+		// an indirect dep reports a non-nilable kind and `s == nil`
+		// traps "mismatched types". Resolve the spelling (Anon) under
+		// its declaring package, then the engine's underlying, before
+		// concluding.
+		if td.Anon != nil && v.H.ResolveType != nil {
+			rt, err := v.H.ResolveType(&runtime.TypeDef{
+				Pkg: td.Pkg, File: td.File, Binds: td.Binds,
+			}, td.Anon)
+			if err == nil && rt != nil && rt != td && rt != u {
+				td = rt
+				continue
+			}
+		}
+		if td.Name == "" || v.H.Underlying == nil {
+			return false
+		}
+		u2, err := v.H.Underlying(td)
+		if err != nil || u2 == nil || u2 == td || u2 == u {
+			return false
+		}
+		td = u2
 	}
 	return false
 }

@@ -163,6 +163,26 @@ func (r *ImportRef) Materialize() (*Package, error) {
 	return r.pkg, r.err
 }
 
+// synthImports binds compiler-minted `.imp:` qualifiers to their
+// import refs: a deferred eval compiles the qualifier in a fresh pass
+// whose own synthImports map is empty, and the VM's global resolution
+// meets the name with no file-scope import to answer it.
+var synthImports sync.Map // string -> *ImportRef
+
+// RegisterSynthImport records the ref a minted `.imp:` qualifier names.
+func RegisterSynthImport(name string, ref *ImportRef) {
+	synthImports.Store(name, ref)
+}
+
+// SynthImportRef returns the import ref a `.imp:` qualifier was minted
+// for, or nil when the name is not one of ours.
+func SynthImportRef(name string) *ImportRef {
+	if r, ok := synthImports.Load(name); ok {
+		return r.(*ImportRef)
+	}
+	return nil
+}
+
 // Peek returns the package only when [ImportRef.Materialize] has
 // already run and succeeded — it never triggers a load. (false, _) just
 // means "not materialized yet", not "the package does not exist".

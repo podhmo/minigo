@@ -1390,7 +1390,16 @@ func (c *compiler) scopeSpecTypeNames(p *runtime.Package, sf *syntax.File, e ast
 		if p != c.pkg && pkgTypeSpec(p, t.Name) != nil {
 			name := c.callerImportName(p.Path)
 			if name == "" {
-				return nil // the caller cannot spell p — opaque, not a wrong name
+				// the caller cannot spell p — mint an unspellable
+				// qualifier that binds p's ref directly, like the
+				// selector arm does, instead of going opaque.
+				ref := &runtime.ImportRef{
+					Path: p.Path,
+					Load: func(string) (*runtime.Package, error) {
+						return p, nil
+					},
+				}
+				name = c.synthImportName(ref)
 			}
 			return &ast.SelectorExpr{X: &ast.Ident{Name: name}, Sel: &ast.Ident{Name: t.Name}}
 		}
@@ -1405,22 +1414,26 @@ func (c *compiler) scopeSpecTypeNames(p *runtime.Package, sf *syntax.File, e ast
 	case *ast.ArrayType:
 		e := c.scopeSpecTypeNames(p, sf, t.Elt, tparams)
 		if e == nil {
-			if t.Len != nil {
-				return nil // [N]T is T-sized — opaque
-			}
-			e = opaqueTypExpr() // []T stays a slice when T is unspellable
+			return nil
 		}
-		if e != t.Elt {
-			return &ast.ArrayType{Lbrack: t.Lbrack, Len: t.Len, Elt: e}
+		nl := t.Len
+		if nl != nil {
+			// the length expression's names live in the declaring
+			// file's scope too — `[dep3.Size]T` must not reach the
+			// caller unscoped or emitLenFolds evaluates `dep3` there.
+			nl = c.scopeOperandExpr(p, sf, nl)
+			if nl == nil {
+				return nil
+			}
+		}
+		if e != t.Elt || nl != t.Len {
+			return &ast.ArrayType{Lbrack: t.Lbrack, Len: nl, Elt: e}
 		}
 		return t
 	case *ast.MapType:
 		k, v := c.scopeSpecTypeNames(p, sf, t.Key, tparams), c.scopeSpecTypeNames(p, sf, t.Value, tparams)
-		if k == nil {
-			k = opaqueTypExpr()
-		}
-		if v == nil {
-			v = opaqueTypExpr()
+		if k == nil || v == nil {
+			return nil
 		}
 		if k != t.Key || v != t.Value {
 			return &ast.MapType{Map: t.Map, Key: k, Value: v}
@@ -1429,7 +1442,7 @@ func (c *compiler) scopeSpecTypeNames(p *runtime.Package, sf *syntax.File, e ast
 	case *ast.StarExpr:
 		x := c.scopeSpecTypeNames(p, sf, t.X, tparams)
 		if x == nil {
-			x = opaqueTypExpr() // *T stays a pointer when T is unspellable
+			return nil
 		}
 		if x != t.X {
 			return &ast.StarExpr{Star: t.Star, X: x}
@@ -1438,7 +1451,7 @@ func (c *compiler) scopeSpecTypeNames(p *runtime.Package, sf *syntax.File, e ast
 	case *ast.ChanType:
 		v := c.scopeSpecTypeNames(p, sf, t.Value, tparams)
 		if v == nil {
-			v = opaqueTypExpr() // chan T stays a channel
+			return nil
 		}
 		if v != t.Value {
 			return &ast.ChanType{Begin: t.Begin, Arrow: t.Arrow, Dir: t.Dir, Value: v}
@@ -1447,7 +1460,7 @@ func (c *compiler) scopeSpecTypeNames(p *runtime.Package, sf *syntax.File, e ast
 	case *ast.Ellipsis:
 		e := c.scopeSpecTypeNames(p, sf, t.Elt, tparams)
 		if e == nil {
-			e = opaqueTypExpr() // ...T stays a spread slice
+			return nil
 		}
 		if e != t.Elt {
 			return &ast.Ellipsis{Ellipsis: t.Ellipsis, Elt: e}
@@ -1563,14 +1576,6 @@ func (c *compiler) scopeFieldListNames(p *runtime.Package, sf *syntax.File, fl *
 	return &ast.FieldList{Opening: fl.Opening, List: list, Closing: fl.Closing}
 }
 
-// opaqueTypExpr spells a type that resolves safely anywhere — used
-// where a container's shape survives an element the caller cannot
-// spell: []interface{} keeps slice-ness for nil-compare and sizing
-// without claiming the element's identity.
-func opaqueTypExpr() ast.Expr {
-	return &ast.InterfaceType{Methods: &ast.FieldList{}}
-}
-
 // callerImportName returns the qualifier under which the caller's file
 // reaches pkgPath — the import's local name. When the caller does not
 // import the package the result is empty: a bare path element like
@@ -1600,6 +1605,10 @@ func (c *compiler) synthImportName(ref *runtime.ImportRef) string {
 		c.synthImports = map[string]*runtime.ImportRef{}
 	}
 	c.synthImports[name] = ref
+	// deferred eval compiles the qualifier in a fresh pass (its own
+	// empty synthImports map): the runtime registry is the fall-back
+	// that still binds the name to a working ref.
+	runtime.RegisterSynthImport(name, ref)
 	return name
 }
 
@@ -1997,6 +2006,14 @@ func (c *compiler) selNilable(ref *runtime.ImportRef, name string) (bool, bool) 
 		case reflect.Slice, reflect.Map, reflect.Chan, reflect.Func:
 			return true, true
 		}
+	}
+	// a declared type's spec still spells its shape — `type List []T`
+	// materializes with the declared kind, not the slice's, and the
+	// Kind switch above reports it non-nilable. Read the spec expr,
+	// unfolded under the decl's own file scope.
+	if td.Anon != nil {
+		n, _ := c.nilableTypExpr(c.unfoldScopedTypExpr(td.Anon, td.File, 4))
+		return n, true
 	}
 	return false, true
 }

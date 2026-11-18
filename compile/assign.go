@@ -864,6 +864,14 @@ func (c *compiler) importRef(name string) (*runtime.ImportRef, bool) {
 	if ref, ok := c.synthImports[name]; ok {
 		return ref, true
 	}
+	// a deferred-eval fragment recompiled in a fresh pass meets the
+	// `.imp:` qualifier without this instance's mint table — the
+	// runtime registry still binds it.
+	if strings.HasPrefix(name, ".imp:") {
+		if ref := runtime.SynthImportRef(name); ref != nil {
+			return ref, true
+		}
+	}
 	if c.pkg == nil {
 		return nil, false
 	}
