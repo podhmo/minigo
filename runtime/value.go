@@ -420,6 +420,10 @@ type Cell struct {
 type FieldRef struct {
 	Base Value
 	Name string
+	// Path, when the engine resolved one, pins the declared index path
+	// of the field (reflect's Field.Index convention) — find walks it
+	// instead of the breadth-first name search.
+	Path []int
 }
 
 // structOf resolves the base to the struct being referenced.
@@ -492,6 +496,26 @@ func (r *FieldRef) fieldHits(level []*Struct) (hits []struct {
 func (r *FieldRef) find() (st *Struct, idx int, ok bool) {
 	s := r.structOf()
 	if s == nil {
+		return nil, 0, false
+	}
+	if r.Path != nil {
+		// the declared index path pins the slot — a nil embedded
+		// pointer on the way panics on the implicit dereference like
+		// the value walk's hit-through-nil.
+		st = s
+		for i, ix := range r.Path {
+			if ix < 0 || ix >= len(st.Fields) {
+				return nil, 0, false
+			}
+			if i == len(r.Path)-1 {
+				return st, ix, true
+			}
+			emb := StructOf(st.Fields[ix])
+			if emb == nil {
+				panic(NilDerefPanic())
+			}
+			st = emb
+		}
 		return nil, 0, false
 	}
 	// a direct field needs no BFS: depth 0 has a single struct and

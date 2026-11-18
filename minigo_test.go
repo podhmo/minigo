@@ -1860,6 +1860,7 @@ func TestGo1267(t *testing.T) {
 		{"PromotedLitShadow", int64(3)},
 		{"PromotedLitGeneric", int64(6)},
 		{"PromotedReadWrite", int64(9)},
+		{"PromotedAddrIdentity", int64(8)},
 		// 1.27: generalized inference — a generic function infers from
 		// the func-typed slot it is bound to
 		{"InferAssign", int64(42)},
@@ -1887,6 +1888,8 @@ func TestGo1267(t *testing.T) {
 		{"PromotedPtrPanic", "nil pointer"},         // promoted field through nil *E1
 		{"PromotedDeepPtrPanic", "nil pointer"},     // deeper field, still a nil deref
 		{"PromotedNilMethodAmbig", "ambiguous"},     // field ties a nil-path method
+		{"PromotedPtrWritePanic", "nil pointer"},    // promoted write through nil *E1
+		{"PromotedPtrAddrPanic", "nil pointer"},     // &p.V through nil *E1
 	}
 	for _, c := range bads {
 		if _, err := e.Run(context.Background(), "./testdata/go1267", c.fn); err == nil ||
