@@ -349,16 +349,17 @@ func (e *Engine) newVM() *vm.VM {
 		TypeMethodInfoOf: e.typeMethodInfoU,
 		SigMemo:          &e.sigMemo,
 
-		ElemOf:      e.elemOf,
-		TypeMethods: e.typeMethods,
-		Underlying:  e.underlying,
-		AliasOf:     e.aliasOf,
-		FieldTypes:  e.fieldTypes,
-		ResolveType: e.resolveTypeRef,
-		FieldPath:   e.fieldPath,
-		HostTwin:    e.hostTwin,
-		Linkname:    e.linknameTarget,
-		HostErr:     hostErrOf,
+		ElemOf:        e.elemOf,
+		TypeMethods:   e.typeMethods,
+		Underlying:    e.underlying,
+		AliasOf:       e.aliasOf,
+		FieldTypes:    e.fieldTypes,
+		ResolveType:   e.resolveTypeRef,
+		FieldPath:     e.fieldPath,
+		InternTypedef: e.internTypedef,
+		HostTwin:      e.hostTwin,
+		Linkname:      e.linknameTarget,
+		HostErr:       hostErrOf,
 	}}
 }
 
@@ -891,8 +892,9 @@ func BindAs(name string) BindOption {
 func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value, opts ...BindOption) {
 	p := e.bindTable(importPath, symbols, opts...)
 	e.mu.Lock()
-	e.bindPublishLocked(importPath, p)
+	tdKeys := e.bindPublishLocked(importPath, p)
 	e.mu.Unlock()
+	e.bindInternTypedefs(p, tdKeys)
 }
 
 // bindTable builds the ready package a Bind publishes. The host policy
@@ -929,7 +931,8 @@ func (e *Engine) bindTable(importPath string, symbols map[string]runtime.Value, 
 // and typedefs adopt it as their owner. The engine lock is held;
 // adoption runs inside it so a skipped publish never re-points shared
 // symbols at an unbound package.
-func (e *Engine) bindPublishLocked(importPath string, p *runtime.Package) {
+func (e *Engine) bindPublishLocked(importPath string, p *runtime.Package) []string {
+	var tdKeys []string
 	for _, k := range p.Globals.Names() {
 		v, _ := p.Globals.Get(k)
 		if bf, ok := v.(*runtime.BuiltinFunc); ok && (bf.Pkg == nil || bf.Pkg.Path == p.Path) {
@@ -937,8 +940,11 @@ func (e *Engine) bindPublishLocked(importPath string, p *runtime.Package) {
 			// owner; a re-Bind re-points at the new live package
 			bf.Pkg = p
 		}
-		if td, ok := v.(*runtime.TypeDef); ok && td.Pkg == nil {
-			td.Pkg = p
+		if td, ok := v.(*runtime.TypeDef); ok {
+			if td.Pkg == nil {
+				td.Pkg = p
+			}
+			tdKeys = append(tdKeys, k)
 		}
 	}
 	e.pending.Clear(importPath)
@@ -946,6 +952,21 @@ func (e *Engine) bindPublishLocked(importPath string, p *runtime.Package) {
 		e.pkgs[importPath] = p
 	}
 	e.names.Set(importPath, p)
+	return tdKeys
+}
+
+// bindInternTypedefs swaps each bound typedef global for the canonical
+// descriptor interned under its TypeID (M4-3c) — a synthesized twin
+// resolves to it. Interning runs outside the engine lock: spelling a
+// TypeID can install a lazily-bound package, which re-takes e.mu.
+func (e *Engine) bindInternTypedefs(p *runtime.Package, keys []string) {
+	for _, k := range keys {
+		if v, ok := p.Globals.Get(k); ok {
+			if td, ok := v.(*runtime.TypeDef); ok {
+				p.Globals.Set(k, e.internTypedef(td))
+			}
+		}
+	}
 }
 
 var runtimePkgPath = reflect.TypeOf(runtime.Nil{}).PkgPath()

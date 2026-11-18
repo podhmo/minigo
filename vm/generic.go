@@ -1192,14 +1192,30 @@ func (v *VM) argTypedef(x runtime.Value) *runtime.TypeDef {
 	return td
 }
 
+// internTypedef routes a synthesized typedef through the session's
+// intern table (M4-3c): every path minting the same type returns the
+// same pointer, so pointer equality is a correct same-type check. A
+// nil hook passes the descriptor through uninterned.
+func (v *VM) internTypedef(td *runtime.TypeDef) *runtime.TypeDef {
+	if td == nil || v.H.InternTypedef == nil {
+		return td
+	}
+	return v.H.InternTypedef(td)
+}
+
 // hostTypedefOf synthesizes a typedef from a host value's reflect type
 // for generic inference. Named types spell `pkg.Name` (predeclared
 // names resolve to the builtin typedef) and carry a HostNew like the
 // bound host typedefs — the method-set walk reads the boxed type's
 // reflect set, so `kind[T io.Reader]` sees *strings.Reader's methods
 // and the constraint check passes. Composites wrap the element so a
-// `*T`/`[]T` host value binds the same-shaped T.
+// `*T`/`[]T` host value binds the same-shaped T. The result is the
+// session's canonical descriptor (M4-3c).
 func (v *VM) hostTypedefOf(rt reflect.Type) *runtime.TypeDef {
+	return v.internTypedef(v.hostTypedefOfNew(rt))
+}
+
+func (v *VM) hostTypedefOfNew(rt reflect.Type) *runtime.TypeDef {
 	if rt == nil {
 		return nil
 	}
