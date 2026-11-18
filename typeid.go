@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go/ast"
 	"reflect"
+	"strings"
 
 	"github.com/podhmo/minigo/runtime"
 )
@@ -89,7 +90,17 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 	}
 	// anonymous and named-basic composites: recurse through Elem when
 	// the typedef carries one, else fall back to the canonical
-	// underlying spelling (func signatures, anonymous structs).
+	// underlying spelling (func signatures, anonymous structs). A
+	// package-resolved anonymous descriptor keeps its spelling: a *T
+	// stamped by a host value converges on a source *T (its Elem is a
+	// canonical twin the spelling already names), and spelled keys are
+	// context-stable in a way per-file elem keys are not.
+	if td.Anon != nil && td.Pkg != nil {
+		if s := runtime.TypGoSpelling(td.Anon, td); s != "" {
+			// identity spelling (keeps chan direction), not underlying
+			return runtime.TypeID(fmt.Sprintf("anon:%d:%s%s", td.Kind, s, args))
+		}
+	}
 	if td.Elem != nil {
 		return runtime.TypeID(fmt.Sprintf("anon:%d:%s%s", td.Kind, e.typeIDOf(td.Elem), args))
 	}
@@ -144,6 +155,17 @@ func (e *Engine) canonicalTypedef(td *runtime.TypeDef) *runtime.TypeDef {
 		if twin := e.hostTwin(td.HostIdent); twin != nil {
 			return twin
 		}
+		rt := td.HostIdent
+		if ert := rt.Elem(); rt.Kind() == reflect.Pointer &&
+			ert != nil && ert.Name() != "" && ert.PkgPath() != "" {
+			// an unnamed host *T stamp ([hostPkgElemTypedef] via
+			// [HostNilPtrTypedef]) — the descriptor stands for *T, so
+			// canonical is a pointer over T's twin, keyed like a source
+			// *T descriptor.
+			if et := e.hostTwin(ert); et != nil {
+				return anonPtrTypedefOf(et)
+			}
+		}
 		return td
 	}
 	var rt0 reflect.Type
@@ -170,13 +192,11 @@ func (e *Engine) canonicalTypedef(td *runtime.TypeDef) *runtime.TypeDef {
 	if td.Elem != nil && td.Name == "" && td.Anon == nil {
 		et := e.canonicalTypedef(td.Elem)
 		if et != td.Elem {
+			if td.Kind == runtime.KindPointer && et.Pkg != nil {
+				return anonPtrTypedefOf(et)
+			}
 			nt := *td
 			nt.Elem = et
-			if td.Kind == runtime.KindPointer && et.Pkg != nil {
-				nt.Anon = &ast.StarExpr{X: ast.NewIdent(et.Name)}
-				nt.Pkg = et.Pkg
-				nt.File = et.File
-			}
 			return &nt
 		}
 	}
@@ -227,4 +247,22 @@ func splitHostName(s string) (string, string, bool) {
 		}
 	}
 	return "", "", false
+}
+
+// anonPtrTypedefOf mints the canonical *T descriptor over an element
+// twin: the same anonymous pointer a source `*T` resolves to — the
+// expr, package and file are what a declared *T carries, so its intern
+// key spells identically.
+func anonPtrTypedefOf(et *runtime.TypeDef) *runtime.TypeDef {
+	var x ast.Expr = ast.NewIdent(et.Name)
+	if pkg, short, ok := strings.Cut(et.Name, "."); ok {
+		x = &ast.SelectorExpr{X: ast.NewIdent(pkg), Sel: ast.NewIdent(short)}
+	}
+	return &runtime.TypeDef{
+		Kind: runtime.KindPointer,
+		Elem: et,
+		Anon: &ast.StarExpr{X: x},
+		Pkg:  et.Pkg,
+		File: et.File,
+	}
 }

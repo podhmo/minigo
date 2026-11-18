@@ -218,6 +218,14 @@ func typeExprName(e ast.Expr) string {
 	case *ast.MapType:
 		return "map[" + typeExprName(t.Key) + "]" + typeExprName(t.Value)
 	case *ast.ChanType:
+		// direction is part of the type identity: <-chan T, chan<- T
+		// and chan T are three different types.
+		if t.Dir == ast.SEND {
+			return "chan<- " + typeExprName(t.Value)
+		}
+		if t.Dir == ast.RECV {
+			return "<-chan " + typeExprName(t.Value)
+		}
 		return "chan " + typeExprName(t.Value)
 	case *ast.SelectorExpr:
 		return typeExprName(t.X) + "." + t.Sel.Name
@@ -1229,7 +1237,17 @@ func (v *VM) sameTypedef(a, b *runtime.TypeDef) bool {
 	if v.internTypedef(a) == v.internTypedef(b) {
 		return true
 	}
-	return a.Spec == nil && tdName(a) == tdName(b)
+	// the spelled acceptance needs actual content on both sides — a
+	// fabricated bare {Kind: Slice} descriptor would equal every other
+	// unspellable slice via tdName's kind fallback. Func is excluded:
+	// the fabricated signature-free FuncType spells "func()" for any
+	// signature and must not equate a real `func(int)`.
+	return a.Spec == nil &&
+		a.Kind != runtime.KindFunc &&
+		b.Kind != runtime.KindFunc &&
+		(a.Name != "" || a.Anon != nil) &&
+		(b.Name != "" || b.Anon != nil) &&
+		tdName(a) == tdName(b)
 }
 
 // hostElemTwin reports whether tag is an unnamed host slice whose
@@ -1243,34 +1261,10 @@ func (v *VM) hostElemTwin(f *frame, tag, td *runtime.TypeDef) bool {
 	return v.hostTwinIs(f, tag.Elem, v.elemTypedef(f, td))
 }
 
-// HostNilTwin is [VM.hostNilTwin] for intrinsics (reflect.DeepEqual).
-func (v *VM) HostNilTwin(a, b *runtime.TypeDef) bool { return v.hostNilTwin(a, b) }
-
-// hostNilTwin reports whether a and b, the types of two nils, denote the
-// same type because one is a nil host *T ([HostNilPtrTypedef]) and the
-// other the *T of its source twin (or of the bound type).
-func (v *VM) hostNilTwin(a, b *runtime.TypeDef) bool {
-	switch {
-	case HostNilPtrType(a) != nil:
-		return v.hostTwinIs(nil, a, b)
-	case HostNilPtrType(b) != nil:
-		return v.hostTwinIs(nil, b, a)
-	case hostNilIdent(a):
-		// a nil net.IP from net.ParseIP against a script zero net.IP (or a
-		// nil url.Values against a script zero one)
-		return v.hostTwinIs(nil, a, b)
-	case hostNilIdent(b):
-		return v.hostTwinIs(nil, b, a)
-	}
-	return false
-}
-
-// hostNilIdent reports whether td is the typedef [HostNil] mints for a
-// nil named host slice or map (net.IP, url.Values): a slice or map kind
-// carrying the host identity.
-func hostNilIdent(td *runtime.TypeDef) bool {
-	return td != nil && (td.Kind == runtime.KindSlice || td.Kind == runtime.KindMap) && td.HostIdent != nil && td.Spec == nil
-}
+// HostNilTwin is [VM.sameTypedef] for intrinsics (reflect.DeepEqual):
+// nil types denote the same type when their canonical descriptors do —
+// a nil host *T interns to the *T of its source or bound twin (M4-4).
+func (v *VM) HostNilTwin(a, b *runtime.TypeDef) bool { return v.sameTypedef(a, b) }
 
 // unresolvedSpells reports whether src, an anonymous *T typedef whose T
 // does not resolve, spells rt: `*pkg.Name` where pkg names rt's package
