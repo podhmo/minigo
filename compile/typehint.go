@@ -497,13 +497,19 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 						if t.elLit != nil && t.elFile == nil {
 							t.elFile = vd.File
 						}
-						// a literal's type was spelled in the decl's
-						// file — `var xs = inner.Bytes{}` resolves
-						// `inner` under the decl's imports, so a
-						// use-site local `inner` cannot rebind it.
-						// A call's result belongs to the callee's
-						// scope, not this file — leave its teFile.
-						if _, isLit := ast.Unparen(rhs).(*ast.CompositeLit); isLit && t.te != nil && t.teFile == nil {
+						// a literal's or conversion's type was spelled
+						// in the decl's file — `var xs = inner.Bytes{}`
+						// and `var x = inner.T(v)` resolve `inner` under
+						// the decl's imports, so a use-site local
+						// `inner` cannot rebind it. A call's result
+						// belongs to the callee's scope, not this file
+						// — leave its teFile.
+						r := ast.Unparen(rhs)
+						_, isLit := r.(*ast.CompositeLit)
+						if cx, isCall := r.(*ast.CallExpr); isCall && c.conversionCall(cx) {
+							isLit = true
+						}
+						if isLit && t.te != nil && t.teFile == nil {
 							t.teFile = vd.File
 						}
 						return t
@@ -593,14 +599,12 @@ func (c *compiler) selOpTyp(x *ast.SelectorExpr) opTyp {
 	if base.te == nil || base.untyped || base.iface {
 		return opTyp{}
 	}
-	te := c.fieldTypExpr(base.te, x.Sel.Name, 4)
-	teFile := c.typSpecFile(base.te)
+	te, teFile := c.fieldTypExpr(base.te, x.Sel.Name, 4)
 	if te == nil {
 		// a selector through a pointer reads the pointee's fields
 		// the same way — `p.A` on a *Pair is Pair's A.
 		if sb := c.starBaseTypExpr(base.te, base.teFile, 4); sb != nil {
-			te = c.fieldTypExpr(sb, x.Sel.Name, 4)
-			teFile = c.typSpecFile(sb)
+			te, teFile = c.fieldTypExpr(sb, x.Sel.Name, 4)
 		}
 	}
 	if te == nil {
@@ -610,32 +614,6 @@ func (c *compiler) selOpTyp(x *ast.SelectorExpr) opTyp {
 		return opTyp{iface: true}
 	}
 	return opTyp{te: te, teFile: teFile}
-}
-
-// typSpecFile returns the file a named type's spec was declared in —
-// the scope its field and element names resolve under. A local `type`
-// decl has no file of its own (its scope is the use site's) and an
-// unnamed or unresolvable type reports none.
-func (c *compiler) typSpecFile(te ast.Expr) *syntax.File {
-	t := ast.Unparen(te)
-	if _, ok := t.(*ast.Ident); ok {
-		id := t.(*ast.Ident)
-		if c.fs.lookupBinding(id.Name) != nil {
-			return nil // a local decl's names live in the use site's scope
-		}
-		if ts := pkgTypeSpec(c.pkg, id.Name); ts != nil {
-			return specFileOf(c.pkg, ts.Pos())
-		}
-		return nil
-	}
-	if _, ok := t.(*ast.SelectorExpr); ok {
-		if ref, name, ok := c.selTypRef(t); ok {
-			if p, ts := c.selTypeSpec(ref, name); ts != nil {
-				return specFileOf(p, ts.Pos())
-			}
-		}
-	}
-	return nil
 }
 
 // valueSpecMemberOpTyp types one name of a foreign package's var/const
@@ -1242,33 +1220,6 @@ func (c *compiler) lenOperandArrayTyp(arg ast.Expr) ast.Expr {
 	return te
 }
 
-// structFieldTypExpr is fieldTypExpr that also sees through a pointer
-// to the struct and accepts an anonymous struct type (direct fields
-// only for the latter).
-func (c *compiler) structFieldTypExpr(base ast.Expr, name string) ast.Expr {
-	if base == nil {
-		return nil
-	}
-	if st, isPtr := ast.Unparen(base).(*ast.StarExpr); isPtr {
-		base = st.X
-	}
-	if te := c.fieldTypExpr(base, name, 4); te != nil {
-		return te
-	}
-	st, ok := c.unfoldTypExpr(base, 8).(*ast.StructType)
-	if !ok || st.Fields == nil {
-		return nil
-	}
-	for _, f := range st.Fields.List {
-		for _, n := range f.Names {
-			if n.Name == name {
-				return f.Type
-			}
-		}
-	}
-	return nil
-}
-
 // mayInvolveTypeParam reports whether an operand's static type may
 // mention one of the bound type parameters — unknown counts as yes.
 func (c *compiler) mayInvolveTypeParam(e ast.Expr) bool {
@@ -1735,53 +1686,6 @@ func (c *compiler) starBaseTypExpr(te ast.Expr, file *syntax.File, depth int) as
 // type: te names the struct (or aliases to one), sel the field. Embedded
 // fields are searched like selector promotion; the depth cap keeps a
 // cyclic type graph finite. nil means the field isn't statically known.
-func (c *compiler) fieldTypExpr(te ast.Expr, sel string, depth int) ast.Expr {
-	if depth <= 0 {
-		return nil
-	}
-	ts := c.typeSpecOf(te)
-	if ts == nil {
-		return nil
-	}
-	st, ok := ast.Unparen(ts.Type).(*ast.StructType)
-	if !ok {
-		return nil
-	}
-	// direct fields win over promoted ones regardless of declaration
-	// order — Go's shallower-depth rule. A first pass over named
-	// fields, then the embeds; the other order lets a promoted field
-	// shadow a direct one, which gc rejects in the opposite direction.
-	for _, f := range st.Fields.List {
-		for _, n := range f.Names {
-			if n.Name == sel {
-				return f.Type
-			}
-		}
-	}
-	var promoted ast.Expr
-	for _, f := range st.Fields.List {
-		if len(f.Names) != 0 {
-			continue
-		}
-		// an embedded field promotes its own fields; `*T` embeds
-		// promote like `T` (a parens/star wrapper is not a selector).
-		emb := ast.Unparen(f.Type)
-		if s, ok := emb.(*ast.StarExpr); ok {
-			emb = ast.Unparen(s.X)
-		}
-		t := c.fieldTypExpr(emb, sel, depth-1)
-		if t == nil {
-			continue
-		}
-		if promoted != nil {
-			// two same-depth promotions — gc rejects the selector
-			// itself as ambiguous, so the operand is opaque.
-			return nil
-		}
-		promoted = t
-	}
-	return promoted
-}
 
 // namedTypID is a named type's compile-time identity: two operand types
 // with different ids are different named types, which gc never assigns
