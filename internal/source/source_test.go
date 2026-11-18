@@ -33,7 +33,7 @@ func TestView(t *testing.T) {
 		loads := 0
 		ref := &runtime.ImportRef{Path: "foo", Load: func(string) (*runtime.Package, error) {
 			loads++
-			return &runtime.Package{Index: ix}, nil
+			return &runtime.Package{PackageImage: runtime.PackageImage{Index: ix}}, nil
 		}}
 		v := New(func(string) (*runtime.ImportRef, bool) { return ref, true })
 		if got := v.Indexed("foo"); got != nil {
@@ -45,7 +45,7 @@ func TestView(t *testing.T) {
 	})
 
 	t.Run("Indexed answers once materialized", func(t *testing.T) {
-		p := &runtime.Package{Index: ix}
+		p := &runtime.Package{PackageImage: runtime.PackageImage{Index: ix}}
 		ref := &runtime.ImportRef{Path: "foo", Load: func(string) (*runtime.Package, error) {
 			return p, nil
 		}}
@@ -60,7 +60,7 @@ func TestView(t *testing.T) {
 
 	t.Run("Load materializes to indexed, no init", func(t *testing.T) {
 		loads := 0
-		p := &runtime.Package{Index: ix}
+		p := &runtime.Package{PackageImage: runtime.PackageImage{Index: ix}}
 		ref := &runtime.ImportRef{Path: "foo", Load: func(string) (*runtime.Package, error) {
 			loads++
 			return p, nil
@@ -105,7 +105,7 @@ func TestView(t *testing.T) {
 	})
 
 	t.Run("serves semantics.Service", func(t *testing.T) {
-		p := &runtime.Package{Index: ix}
+		p := &runtime.Package{PackageImage: runtime.PackageImage{Index: ix}}
 		ref := &runtime.ImportRef{Path: "foo", Load: func(string) (*runtime.Package, error) {
 			return p, nil
 		}}

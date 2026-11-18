@@ -47,7 +47,7 @@ func checkSelMemberSyntheticTypeEntry(t *testing.T) {
 	ref := &runtime.ImportRef{
 		Path: "p",
 		Load: func(path string) (*runtime.Package, error) {
-			return &runtime.Package{Path: path, Index: ix}, nil
+			return &runtime.Package{Path: path, PackageImage: runtime.PackageImage{Index: ix}}, nil
 		},
 	}
 	c := &compiler{}

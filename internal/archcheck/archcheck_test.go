@@ -130,6 +130,21 @@ func TestSharedFieldsRealRepo(t *testing.T) {
 	}
 }
 
+// CheckSharedFields on the real repo: PackageImage (M5-1) must stay
+// clean of runtime execution-state types — a runtime ImportRef or a
+// cell inside the immutable definition is a boundary violation, since
+// those objects cache per-Session resolutions.
+func TestPackageImageSharedFields(t *testing.T) {
+	root := filepath.Join("..", "..")
+	vs, err := archcheck.CheckSharedFields(root, "runtime", "PackageImage", archcheck.SharedStateTypes, archcheck.SharedFuncExempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff([]archcheck.Violation(nil), vs); diff != "" {
+		t.Error(diff)
+	}
+}
+
 // CheckSharedFields: synthetic module — clean struct passes, a struct
 // holding a forbidden type or a non-exempt func field fails.
 func TestCheckSharedFields(t *testing.T) {

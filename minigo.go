@@ -1189,17 +1189,17 @@ func (e *Engine) buildPackage(meta *resolve.PackageMeta, lenient bool) (*runtime
 // newPackage builds a Package shell wired to this engine (Parsed state).
 func (e *Engine) newPackage(path, name, dir string) *runtime.Package {
 	p := &runtime.Package{
-		Path:     path,
-		Name:     name,
-		Dir:      dir,
-		Fset:     e.fset,
-		LazyInit: e.initMode == LazyInit,
-		Globals:  runtime.NewEnv(),
-		HostVars: hostVars[path],
-		Scopes:   map[*syntax.File]map[string]*runtime.ImportRef{},
-		Imports:  map[*syntax.File][]*runtime.ImportRef{},
-		Specials: e.specials,
-		Owner:    e,
+		Path:         path,
+		Name:         name,
+		Dir:          dir,
+		PackageImage: runtime.PackageImage{Fset: e.fset},
+		LazyInit:     e.initMode == LazyInit,
+		Globals:      runtime.NewEnv(),
+		HostVars:     hostVars[path],
+		Scopes:       map[*syntax.File]map[string]*runtime.ImportRef{},
+		Imports:      map[*syntax.File][]*runtime.ImportRef{},
+		Specials:     e.specials,
+		Owner:        e,
 		// host-side init runs on a fresh VM on the caller's goroutine —
 		// sharing a VM between goroutines is not safe
 		RunInit: func(fn *runtime.Function) error {

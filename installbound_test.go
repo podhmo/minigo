@@ -83,7 +83,7 @@ func TestExplicitBindWinsOverLazy(t *testing.T) {
 // from e.pkgs (a ModeSource load keeps its globals' state).
 func TestBoundQueryKeepsSourceCache(t *testing.T) {
 	e := NewEngine(".")
-	src := &runtime.Package{Path: "time", Name: "time", Index: &index.Index{}}
+	src := &runtime.Package{Path: "time", Name: "time", PackageImage: runtime.PackageImage{Index: &index.Index{}}}
 	e.mu.Lock()
 	e.pkgs["time"] = src
 	e.mu.Unlock()

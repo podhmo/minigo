@@ -3,7 +3,6 @@ package runtime
 import (
 	"fmt"
 	"go/ast"
-	"go/token"
 	"reflect"
 	"slices"
 	"strconv"
@@ -183,9 +182,11 @@ type Package struct {
 	Dir      string
 	Standard bool // inside GOROOT (or a bound stdlib stub)
 
-	Fset  *token.FileSet
-	Files []*syntax.File
-	Index *index.Index
+	// the immutable definition: files, index, declaration positions.
+	// Bound packages carry a zero image — they have no source — while
+	// their execution fields below are populated. Value-embedded (not a
+	// pointer) so bound-package guards like `p.Fset != nil` still work.
+	PackageImage
 
 	Globals *Env // values populated at Initialize / on member access
 
@@ -200,11 +201,6 @@ type Package struct {
 	Scopes map[*syntax.File]map[string]*ImportRef
 	// Imports retains every import in source order, including dot and blank imports.
 	Imports map[*syntax.File][]*ImportRef
-
-	// FileByName maps an absolute source path to its file — used to recover
-	// per-declaration file context from instruction positions (the synthetic
-	// __init__ chunk mixes decls from several files).
-	FileByName map[string]*syntax.File
 
 	// AssetHash is the asset audit's fingerprint of this package's AST
 	// and index (see WithAssetAudit); empty when the audit is off so the
