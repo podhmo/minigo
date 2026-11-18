@@ -149,8 +149,10 @@ type Hooks struct {
 	// DeferredValueTyp resolves the typedef of a deferred fact's VALUE
 	// expression (M4-7c) — `pkg.C` answers the member's declared or
 	// inferred type, which a compare gate reads for gc's
-	// mismatched-types rejection. Nil makes OpTypGate run on unchecked.
-	DeferredValueTyp func(site *bytecode.CallSite, ctx *runtime.TypeDef) (*runtime.TypeDef, error)
+	// mismatched-types rejection. The bool reports an untyped-const
+	// answer, which a maybe-untyped operand adopts instead of gating.
+	// Nil makes OpTypGate run on unchecked.
+	DeferredValueTyp func(site *bytecode.CallSite, ctx *runtime.TypeDef) (*runtime.TypeDef, bool, error)
 	// HostTwin returns the engine's own typedef for the named host type
 	// rt — the source declaration when rt's package is interpreted from
 	// source (go/ast), the bound typedef when it is host-bound — or nil

@@ -44,6 +44,11 @@ type compiler struct {
 	symName  string
 	litCount int
 
+	// strictLazy makes every indexed-fact query run under
+	// semantics.IndexedOnly: what is not already indexed comes back
+	// Deferred — compilation never triggers an indexing build.
+	strictLazy bool
+
 	// opTypDepth bounds staticOpTyp's recursion through package-level
 	// var/const initializers (a named cycle would not terminate).
 	opTypDepth int
@@ -132,9 +137,16 @@ func (c *compiler) constIdx(v any) int {
 func (c *compiler) nameIdx(s string) int { return c.constIdx(s) }
 
 // Func compiles fn.Decl into fn.Chunk.
-func Func(fn *runtime.Function) error {
+func Func(fn *runtime.Function) error { return funcStrict(fn, false) }
+
+// FuncStrict is [Func] under strict lazy compilation ([WithStrictLazyCompile]
+// on the engine): every indexed-fact query runs IndexedOnly, so a package
+// not yet indexed defers instead of building at compile time.
+func FuncStrict(fn *runtime.Function) error { return funcStrict(fn, true) }
+
+func funcStrict(fn *runtime.Function, strict bool) error {
 	if len(fn.Binds) == 0 || fn.Pkg == nil {
-		return compileFunc(fn)
+		return compileFuncStrict(fn, strict)
 	}
 	// a generic instantiation compiles once per distinct binds: every
 	// call of an inferred generic mints a fresh Function
@@ -145,7 +157,7 @@ func Func(fn *runtime.Function) error {
 			return nil
 		}
 	}
-	if err := compileFunc(fn); err != nil {
+	if err := compileFuncStrict(fn, strict); err != nil {
 		return err
 	}
 	if ok {
@@ -154,10 +166,10 @@ func Func(fn *runtime.Function) error {
 	return nil
 }
 
-func compileFunc(fn *runtime.Function) error {
+func compileFuncStrict(fn *runtime.Function, strict bool) error {
 	spike.EnterCompile()
 	defer spike.LeaveCompile()
-	c := &compiler{pkg: fn.Pkg, file: fn.File, fs: newFScope(nil), ch: &bytecode.Chunk{Name: fn.Name}, labels: map[string]*labelInfo{}, binds: fn.Binds, symName: fn.Name, iotaVal: -1}
+	c := &compiler{pkg: fn.Pkg, file: fn.File, fs: newFScope(nil), ch: &bytecode.Chunk{Name: fn.Name}, labels: map[string]*labelInfo{}, binds: fn.Binds, symName: fn.Name, iotaVal: -1, strictLazy: strict}
 	if fn.Pkg != nil {
 		c.symName = fn.Pkg.Name + "." + fn.Name
 	}
@@ -267,9 +279,14 @@ func compileFunc(fn *runtime.Function) error {
 // globals and builtins. Use [ExprScoped] to resolve names against a running
 // function's frame instead.
 func Expr(pkg *runtime.Package, file *syntax.File, e ast.Expr) (*bytecode.Chunk, error) {
+	return ExprStrict(pkg, file, e, false)
+}
+
+// ExprStrict is [Expr] under strict lazy compilation.
+func ExprStrict(pkg *runtime.Package, file *syntax.File, e ast.Expr, strict bool) (*bytecode.Chunk, error) {
 	spike.EnterCompile()
 	defer spike.LeaveCompile()
-	c := &compiler{pkg: pkg, file: file, fs: newFScope(nil), ch: &bytecode.Chunk{Name: "<eval>"}, iotaVal: -1}
+	c := &compiler{pkg: pkg, file: file, fs: newFScope(nil), ch: &bytecode.Chunk{Name: "<eval>"}, iotaVal: -1, strictLazy: strict}
 	c.fs.pushBlock()
 	c.expr(e)
 	c.emit(bytecode.OpReturn, 1, 0, e.End())
@@ -282,9 +299,14 @@ func Expr(pkg *runtime.Package, file *syntax.File, e ast.Expr) (*bytecode.Chunk,
 // that frame's locals and upvalue tables. The chunk reads and writes the
 // caller's live cells.
 func ExprScoped(pkg *runtime.Package, file *syntax.File, e ast.Expr, locals, upvals map[string]int) (*bytecode.Chunk, error) {
+	return ExprScopedStrict(pkg, file, e, locals, upvals, false)
+}
+
+// ExprScopedStrict is [ExprScoped] under strict lazy compilation.
+func ExprScopedStrict(pkg *runtime.Package, file *syntax.File, e ast.Expr, locals, upvals map[string]int, strict bool) (*bytecode.Chunk, error) {
 	spike.EnterCompile()
 	defer spike.LeaveCompile()
-	c := &compiler{pkg: pkg, file: file, fs: newFScope(nil), ch: &bytecode.Chunk{Name: "<special-eval>"}, labels: map[string]*labelInfo{}, iotaVal: -1}
+	c := &compiler{pkg: pkg, file: file, fs: newFScope(nil), ch: &bytecode.Chunk{Name: "<special-eval>"}, labels: map[string]*labelInfo{}, iotaVal: -1, strictLazy: strict}
 	c.fs.pushBlock()
 	max := -1
 	for name, slot := range locals {
@@ -310,9 +332,14 @@ func ExprScoped(pkg *runtime.Package, file *syntax.File, e ast.Expr, locals, upv
 // [ConstInitFunc] to bind only the constants, without running var
 // initializers or init functions.
 func InitFunc(pkg *runtime.Package) (*bytecode.Chunk, error) {
+	return InitFuncStrict(pkg, false)
+}
+
+// InitFuncStrict is [InitFunc] under strict lazy compilation.
+func InitFuncStrict(pkg *runtime.Package, strict bool) (*bytecode.Chunk, error) {
 	spike.EnterCompile()
 	defer spike.LeaveCompile()
-	c := &compiler{pkg: pkg, fs: newFScope(nil), ch: &bytecode.Chunk{Name: pkg.Name + ".__init__"}, iotaVal: -1}
+	c := &compiler{pkg: pkg, fs: newFScope(nil), ch: &bytecode.Chunk{Name: pkg.Name + ".__init__"}, iotaVal: -1, strictLazy: strict}
 	c.fs.pushBlock()
 
 	// iota is a real identifier in const specs; bind it as a hidden local
@@ -366,6 +393,11 @@ func InitFunc(pkg *runtime.Package) (*bytecode.Chunk, error) {
 // returns a nil chunk and nil error when a const initializer references a
 // package-level var or function; use [InitFunc] then.
 func ConstInitFunc(pkg *runtime.Package) (*bytecode.Chunk, error) {
+	return ConstInitFuncStrict(pkg, false)
+}
+
+// ConstInitFuncStrict is [ConstInitFunc] under strict lazy compilation.
+func ConstInitFuncStrict(pkg *runtime.Package, strict bool) (*bytecode.Chunk, error) {
 	spike.EnterCompile()
 	defer spike.LeaveCompile()
 	var specReps []*index.Decl
@@ -388,7 +420,7 @@ func ConstInitFunc(pkg *runtime.Package) (*bytecode.Chunk, error) {
 		return nil, nil
 	}
 
-	c := &compiler{pkg: pkg, fs: newFScope(nil), ch: &bytecode.Chunk{Name: pkg.Name + ".__consts__"}, iotaVal: -1}
+	c := &compiler{pkg: pkg, fs: newFScope(nil), ch: &bytecode.Chunk{Name: pkg.Name + ".__consts__"}, iotaVal: -1, strictLazy: strict}
 	c.fs.pushBlock()
 
 	// same iota plumbing as InitFunc: a hidden local backs the `iota`

@@ -197,6 +197,11 @@ type opTyp struct {
 	// use-site local type or const of the same name cannot shadow
 	// the decl's spelling.
 	teFile *syntax.File
+	// maybeUntyped marks a deferred operand whose package is not yet
+	// materialized (IndexedOnly): compile cannot tell whether the
+	// member is an untyped const, so the run-time gate treats an
+	// untyped-const resolution as adopting, a typed one as gated.
+	maybeUntyped bool
 }
 
 // staticOpTyp resolves the statically-known type of an operand
@@ -649,7 +654,7 @@ func (c *compiler) scopeOperandExpr(p *runtime.Package, sf *syntax.File, e ast.E
 		return nil
 	case *ast.SelectorExpr:
 		if id, ok := t.X.(*ast.Ident); ok {
-			if ref, ok := pkgImportRef(p, sf, id.Name); ok {
+			if ref, ok := c.pkgImportRef(p, sf, id.Name); ok {
 				return &ast.SelectorExpr{X: &ast.Ident{Name: c.synthImportName(ref)}, Sel: t.Sel}
 			}
 		}
@@ -890,7 +895,16 @@ func (c *compiler) callOpTyp(x *ast.CallExpr) opTyp {
 		return opTyp{}
 	case *ast.SelectorExpr:
 		if id, ok := f.X.(*ast.Ident); ok {
-			if _, isPkg := c.importRef(id.Name); isPkg {
+			if ref, isPkg := c.importRef(id.Name); isPkg {
+				// an unindexed package leaves the member question
+				// open: `pkg.T(v)` is a conversion whose result
+				// carries T's type, `pkg.fn(v)` a call whose result
+				// stays opaque — the run-time gate resolves which
+				// once the member materializes, and a non-type
+				// answer there declines like today.
+				if c.askIndexed(ref).Kind != semantics.Found {
+					return opTyp{deferred: true, dexpr: x}
+				}
 				return opTyp{} // a host-package function's result is opaque
 			}
 		}
@@ -1230,7 +1244,7 @@ func (c *compiler) unfoldTypExpr(te ast.Expr, depth int) ast.Expr {
 		// `type FuncMap map[string]any` must expose its MapType shape so
 		// a composite literal's keys evaluate as expressions.
 		if ref, name, ok := c.selTypRef(tt); ok {
-			if p, ts := selTypeSpec(ref, name); ts != nil {
+			if p, ts := c.selTypeSpec(ref, name); ts != nil {
 				return c.unfoldSpecType(p, ts, depth-1)
 			}
 		}
@@ -1256,7 +1270,7 @@ func (c *compiler) unfoldSpecType(p *runtime.Package, ts *ast.TypeSpec, depth in
 			return c.unfoldSpecType(p, ts2, depth-1)
 		}
 	case *ast.SelectorExpr:
-		if p2, ts2 := selTypeSpecIn(p, ts, tt); ts2 != nil {
+		if p2, ts2 := c.selTypeSpecIn(p, ts, tt); ts2 != nil {
 			return c.unfoldSpecType(p2, ts2, depth-1)
 		}
 	}
@@ -1280,7 +1294,7 @@ func (c *compiler) scopeSpecType(p *runtime.Package, sf *syntax.File, e ast.Expr
 		return t
 	case *ast.SelectorExpr:
 		if id, ok := t.X.(*ast.Ident); ok {
-			if ref, ok := pkgImportRef(p, sf, id.Name); ok {
+			if ref, ok := c.pkgImportRef(p, sf, id.Name); ok {
 				return &ast.SelectorExpr{X: &ast.Ident{Name: c.synthImportName(ref)}, Sel: t.Sel}
 			}
 		}
@@ -1416,8 +1430,8 @@ func (c *compiler) synthImportName(ref *runtime.ImportRef) string {
 // semantics: fact (messages only) — semantics is unchanged, but the
 // diagnostic wording must match gc's. When the lookup is Deferred the
 // runtime trap prints the same resolved name.
-func pkgDispName(ref *runtime.ImportRef) string {
-	if res := askIndexed(ref); res.Kind == semantics.Found && res.Val.Name != "" {
+func (c *compiler) pkgDispName(ref *runtime.ImportRef) string {
+	if res := c.askIndexed(ref); res.Kind == semantics.Found && res.Val.Name != "" {
 		return res.Val.Name
 	}
 	if i := strings.LastIndexByte(ref.Path, '/'); i >= 0 {
@@ -1428,7 +1442,7 @@ func pkgDispName(ref *runtime.ImportRef) string {
 
 // selTypeSpecIn resolves a pkg.T selector written inside a type spec of
 // package p — the qualifier names an import of the spec's own file.
-func selTypeSpecIn(p *runtime.Package, ts *ast.TypeSpec, se *ast.SelectorExpr) (*runtime.Package, *ast.TypeSpec) {
+func (c *compiler) selTypeSpecIn(p *runtime.Package, ts *ast.TypeSpec, se *ast.SelectorExpr) (*runtime.Package, *ast.TypeSpec) {
 	id, ok := se.X.(*ast.Ident)
 	if !ok {
 		return nil, nil
@@ -1437,11 +1451,11 @@ func selTypeSpecIn(p *runtime.Package, ts *ast.TypeSpec, se *ast.SelectorExpr) (
 	if sf == nil {
 		return nil, nil
 	}
-	ref, ok := pkgImportRef(p, sf, id.Name)
+	ref, ok := c.pkgImportRef(p, sf, id.Name)
 	if !ok {
 		return nil, nil
 	}
-	return selTypeSpec(ref, se.Sel.Name)
+	return c.selTypeSpec(ref, se.Sel.Name)
 }
 
 // specFileOf returns the source file holding a declaration position,
@@ -1473,8 +1487,8 @@ func pkgTypeSpec(p *runtime.Package, name string) *ast.TypeSpec {
 // source-indexed type there.
 // semantics: fact — pkg.T's TypeSpec decides composite-literal key
 // types and conversions.
-func selTypeSpec(ref *runtime.ImportRef, name string) (*runtime.Package, *ast.TypeSpec) {
-	res := askIndexed(ref)
+func (c *compiler) selTypeSpec(ref *runtime.ImportRef, name string) (*runtime.Package, *ast.TypeSpec) {
+	res := c.askIndexed(ref)
 	if res.Kind != semantics.Found {
 		return nil, nil
 	}
@@ -1491,7 +1505,7 @@ func selTypeSpec(ref *runtime.ImportRef, name string) (*runtime.Package, *ast.Ty
 // real-name fallback importRef applies for the caller's file.
 // semantics: fact — name resolution itself when a package clause
 // differs from its path's last element.
-func pkgImportRef(p *runtime.Package, sf *syntax.File, name string) (*runtime.ImportRef, bool) {
+func (c *compiler) pkgImportRef(p *runtime.Package, sf *syntax.File, name string) (*runtime.ImportRef, bool) {
 	if ref, ok := p.Scopes[sf][name]; ok {
 		return ref, true
 	}
@@ -1499,7 +1513,7 @@ func pkgImportRef(p *runtime.Package, sf *syntax.File, name string) (*runtime.Im
 		if ref.Alias != "" {
 			continue
 		}
-		res := askIndexed(ref)
+		res := c.askIndexed(ref)
 		if res.Kind != semantics.Found {
 			continue
 		}
@@ -1656,7 +1670,7 @@ func (c *compiler) namedIdentOf(te ast.Expr) (namedTypID, bool) {
 		if _, synth := c.synthImports[id.Name]; synth {
 			// a minted qualifier has no source spelling — the
 			// package clause's name is what gc prints.
-			name = pkgDispName(ref)
+			name = c.pkgDispName(ref)
 		}
 		return namedTypID{id: ref.Path + "." + t.Sel.Name, name: name + "." + t.Sel.Name}, true
 	case *ast.StarExpr:
@@ -1702,7 +1716,7 @@ func (c *compiler) selIsIface(ref *runtime.ImportRef, name string) bool {
 // semantics: fact — whether pkg.T names a type, and its spec/typedef;
 // selIsType, selIsIface and selNilable all answer through this.
 func (c *compiler) selMember(ref *runtime.ImportRef, name string) (*ast.TypeSpec, *runtime.TypeDef, bool) {
-	res := askIndexed(ref)
+	res := c.askIndexed(ref)
 	if res.Val == nil {
 		// Missing, Failed — and Deferred without a materialized
 		// package — all mean the oracle cannot answer here.
@@ -1780,7 +1794,7 @@ func (c *compiler) nilableTypExpr(te ast.Expr) (nilable, resolved bool) {
 // chans and funcs can; structs and basic types cannot. ok=false when
 // the member can't be resolved at all.
 func (c *compiler) selNilable(ref *runtime.ImportRef, name string) (bool, bool) {
-	res := askIndexed(ref)
+	res := c.askIndexed(ref)
 	if res.Kind != semantics.Found {
 		return false, false
 	}
@@ -1981,7 +1995,15 @@ var DeferFacts bool
 // import question under AllowIndex and — under DeferFacts — downgrades
 // Found to Deferred so callers take the same fallbacks IndexedOnly
 // will give them.
-func askIndexed(ref *runtime.ImportRef) semantics.Result[*runtime.Package] {
+// askIndexed is the one indexed-fact query in this package. It asks the
+// index under AllowIndex — under strict lazy compilation ([FuncStrict]
+// and friends) it asks under IndexedOnly instead, so a package not yet
+// indexed comes back Deferred with no Val and compilation never
+// triggers an indexing build.
+func (c *compiler) askIndexed(ref *runtime.ImportRef) semantics.Result[*runtime.Package] {
+	if c.strictLazy {
+		return source.PackageAtIndexed(ref, semantics.IndexedOnly)
+	}
 	res := source.PackageAtIndexed(ref, semantics.AllowIndex)
 	if DeferFacts && res.Kind == semantics.Found {
 		// downgrade but keep Val: callers answering an out-of-band

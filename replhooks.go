@@ -44,7 +44,7 @@ func (e *Engine) ReplHooks() *replhooks.Hooks {
 		PeelAliasTd:    e.peelAliasTd,
 		ResolveTypeRef: e.resolveTypeRef,
 
-		BindCompiles: bindCompiles,
+		BindCompiles: e.bindCompiles,
 		FormatValue: func(c runtime.VMCaller, x runtime.Value) fmt.Formatter {
 			return &fmtValue{c: c, x: x, nilSyntax: true}
 		},

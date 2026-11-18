@@ -229,7 +229,11 @@ func (c *compiler) hoistEagerOps(es []ast.Expr, prefix string) (subs []ast.Expr,
 		}
 		// the assignability gate keeps the hoisted call's static type:
 		// `d < len(x)` compares Duration to int through the scratch name.
-		if t := c.staticOpTyp(call); t.te != nil {
+		// A deferred result type (`p.T(v)` under IndexedOnly, where the
+		// conversion question is open) stays deferred through the temp.
+		if t := c.staticOpTyp(call); t.deferred {
+			c.fs.noteDeferTyp(name, t.dexpr)
+		} else if t.te != nil {
 			c.fs.noteDeclTyp(name, t.te, t.teFile)
 		}
 		c.emit(bytecode.OpNewLocal, slot, 0, call.Pos())
