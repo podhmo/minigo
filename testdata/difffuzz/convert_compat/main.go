@@ -80,6 +80,9 @@ func reflectChecks() {
 	}{}))) // true: same method set
 	fmt.Println("array len expr:", reflect.TypeOf([1 + 1]int{}).ConvertibleTo(reflect.TypeOf([2 + 1]int{})))
 	fmt.Println("local type:", localConv())
+	fmt.Println("ptr field:", reflect.TypeOf(struct{ F int }{}).ConvertibleTo(reflect.TypeOf(struct{ F *int }{})))
+	fmt.Println("ptr field same:", reflect.TypeOf(struct{ F *int }{}).ConvertibleTo(reflect.TypeOf(struct{ F *int }{})))
+	fmt.Println("paren ptr field:", reflect.TypeOf(struct{ F (*int) }{}).ConvertibleTo(reflect.TypeOf(struct{ F *int }{})))
 }
 
 func localConv() bool {
