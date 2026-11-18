@@ -149,6 +149,15 @@ func (c *compiler) hoistedArgCalls(e ast.Expr) (calls []ast.Expr, ok bool) {
 				return false
 			}
 		case *ast.CallExpr:
+			if c.isConstExpr(t) {
+				// a constant call (`len("abc")`, `max(T, 3)`,
+				// `unsafe.Sizeof(x)`) evaluates nothing; it stays
+				// inline so a shift still sees its count as constant.
+				// Checked first: under IndexedOnly `unsafe.Sizeof`
+				// also reads as an undecidable member call, and its
+				// operand must never evaluate.
+				return false
+			}
 			if _, undecidable := c.undecidableMemberCall(t); undecidable {
 				// conversion or call is a deferred question — the call
 				// itself stays inline like a conversion so hoistEagerOps
@@ -159,12 +168,6 @@ func (c *compiler) hoistedArgCalls(e ast.Expr) (calls []ast.Expr, ok bool) {
 			}
 			if c.conversionCall(t) {
 				return true // transparent op — descend into its args
-			}
-			if c.isConstExpr(t) {
-				// a constant call (`len("abc")`, `max(T, 3)`,
-				// `unsafe.Sizeof(x)`) evaluates nothing; it stays
-				// inline so a shift still sees its count as constant.
-				return false
 			}
 			calls = append(calls, t)
 			return false
@@ -276,7 +279,21 @@ func (c *compiler) hoistEagerOps(es []ast.Expr, prefix string) (subs []ast.Expr,
 			}
 			c.emit(bytecode.OpLocal, c.fs.lookupBinding(cname).slot, 0, call.Pos())
 			jT := c.emit(bytecode.OpJumpIfTypedef, 0, 0, call.Pos())
-			c.expr(&ast.CallExpr{Fun: &ast.Ident{Name: cname, NamePos: uc.Fun.Pos()}, Args: subArgs, Lparen: uc.Lparen, Ellipsis: uc.Ellipsis, Rparen: uc.Rparen})
+			synth := &ast.CallExpr{Fun: &ast.Ident{Name: cname, NamePos: uc.Fun.Pos()}, Args: subArgs, Lparen: uc.Lparen, Ellipsis: uc.Ellipsis, Rparen: uc.Rparen}
+			if callSpread(uc) == 2 && callSpread(synth) != 2 {
+				// `p.F(pair())` — the sole call arg spreads its
+				// result tuple into F's params; after substitution
+				// the arg reads as an Ident, so emit the call with
+				// the source call's flag.
+				c.emit(bytecode.OpLocal, c.fs.lookupBinding(cname).slot, 0, call.Pos())
+				for _, a := range subArgs {
+					c.expr(a)
+				}
+				c.argStatics(subArgs)
+				c.emit(bytecode.OpCall, len(uc.Args), 2, call.Pos())
+			} else {
+				c.expr(synth)
+			}
 			c.emit(bytecode.OpNewLocal, rslot, 0, call.Pos())
 			c.patchA(jT, len(c.ch.Code))
 			if c.deferCallTemps == nil {
@@ -329,15 +346,24 @@ func (c *compiler) undecidableCalls(e ast.Expr) []*ast.CallExpr {
 				return false
 			}
 		case *ast.CallExpr:
+			if c.isConstExpr(t) {
+				// constant calls evaluate nothing (`unsafe.Sizeof`,
+				// `len("abc")`) — under IndexedOnly `unsafe.Sizeof`
+				// also reads as undecidable; its operand must never
+				// evaluate, so neither collect nor descend.
+				return false
+			}
 			if _, isUC := c.undecidableMemberCall(t); isUC {
 				out = append(out, t)
-				return false
+				// its own args may hold a nested undecidable call —
+				// `p.Min(float64(q.Bump(&x)), read())` — each gets
+				// its own member-shape branch (keyed before the
+				// parent's by End()). Eager-op interiors inside the
+				// args still stay out, by the arms below.
+				return true
 			}
 			if c.conversionCall(t) {
 				return true // transparent op — descend into its args
-			}
-			if c.isConstExpr(t) {
-				return false
 			}
 			return false // an eager op — its interior evaluates with it
 		case *ast.UnaryExpr:
@@ -381,7 +407,8 @@ func (c *compiler) emitDeferredTypOperand(operand ast.Expr, pos token.Pos) {
 			for _, a := range uc.Args {
 				c.expr(a)
 			}
-			c.emit(bytecode.OpCall, len(uc.Args), 0, pos)
+			c.argStatics(uc.Args)
+			c.emit(bytecode.OpCall, len(uc.Args), callSpread(uc), pos)
 			c.emit(bytecode.OpNil, 0, 0, pos)
 			jEnd := c.emit(bytecode.OpJump, 0, 0, pos)
 			c.patchA(jT, len(c.ch.Code))

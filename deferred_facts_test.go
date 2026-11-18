@@ -121,9 +121,13 @@ func TestStrictLazyCompile(t *testing.T) {
 		"convarg_nested",
 		"convarg_seqorder",
 		"convarg_gate",
+		"convarg_pair",
+		"convarg_ucorder",
 		"shift_lenarr",
 		"sizeof_deferred",
 		"sizeof_funcret",
+		"sizeof_ucall",
+		"sizeof_sideeffect",
 	} {
 		dir := filepath.Join("testdata/difffuzz", slug)
 		t.Run(slug, func(t *testing.T) {
