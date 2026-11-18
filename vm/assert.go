@@ -967,7 +967,7 @@ func (v *VM) typeMatchesTD(f *frame, td, dyn *runtime.TypeDef) bool {
 		// a nil host *T (or named host slice or map, net.IP) asserts to its
 		// source twin's type (or to the bound one) by identity, like
 		// a non-nil host box.
-		return v.hostTwinIs(f, dyn, td)
+		return v.sameTypedef(dyn, td)
 	}
 	return v.sigTypEq(td, dyn)
 }
@@ -1258,82 +1258,13 @@ func (v *VM) hostElemTwin(f *frame, tag, td *runtime.TypeDef) bool {
 	if tag == nil || tag.Kind != runtime.KindSlice || tag.Name != "" || tag.Elem == nil {
 		return false
 	}
-	return v.hostTwinIs(f, tag.Elem, v.elemTypedef(f, td))
+	return v.sameTypedef(tag.Elem, v.elemTypedef(f, td))
 }
 
 // HostNilTwin is [VM.sameTypedef] for intrinsics (reflect.DeepEqual):
 // nil types denote the same type when their canonical descriptors do —
 // a nil host *T interns to the *T of its source or bound twin (M4-4).
 func (v *VM) HostNilTwin(a, b *runtime.TypeDef) bool { return v.sameTypedef(a, b) }
-
-// unresolvedSpells reports whether src, an anonymous *T typedef whose T
-// does not resolve, spells rt: `*pkg.Name` where pkg names rt's package
-// in src's file — through the file's import table, so a renamed import
-// (`rx "regexp"`) matches by path — and Name is rt's type name.
-func unresolvedSpells(src *runtime.TypeDef, rt reflect.Type) bool {
-	st, ok := src.Anon.(*ast.StarExpr)
-	if !ok {
-		return false
-	}
-	sel, ok := st.X.(*ast.SelectorExpr)
-	if !ok || sel.Sel.Name != rt.Name() {
-		return false
-	}
-	pkg, ok := sel.X.(*ast.Ident)
-	if !ok {
-		return false
-	}
-	if src.Pkg != nil && src.File != nil {
-		for _, ref := range src.Pkg.Imports[src.File] {
-			name := ref.Alias
-			if name == "" {
-				name = ref.PackageName()
-			}
-			if name == pkg.Name {
-				return ref.Path == rt.PkgPath()
-			}
-		}
-	}
-	// no import table to consult: rt.String() is "pkgname.Name", its
-	// prefix the package clause name an import spells by default.
-	return rt.String() == pkg.Name+"."+rt.Name()
-}
-
-// hostTwinIs reports whether host, a [hostPkgElemTypedef] typedef, and
-// src, a source typedef, denote the same type: the same named type, or
-// pointers to it.
-func (v *VM) hostTwinIs(f *frame, host, src *runtime.TypeDef) bool {
-	if host == nil || src == nil {
-		return false
-	}
-	src = v.peelAlias(src)
-	if host.Kind == runtime.KindPointer && host.HostIdent == nil {
-		if src.Kind != runtime.KindPointer || src.Name != "" {
-			return false
-		}
-		et := v.elemTypedef(f, src)
-		if et == nil {
-			// the pointee names nothing the engine can resolve — a
-			// bound package that registers no entry for the type
-			// (regexp.Regexp) shadows its source decl. The spelling is
-			// all there is: *regexp.Regexp against the host *Regexp.
-			return host.Elem != nil && host.Elem.HostIdent != nil && unresolvedSpells(src, host.Elem.HostIdent)
-		}
-		return v.hostTwinIs(f, host.Elem, et)
-	}
-	if host.HostIdent == nil {
-		return false
-	}
-	if src.HostIdent != nil {
-		return src.HostIdent == host.HostIdent
-	}
-	if src.HostNew != nil {
-		// a bound typedef boxes a pointer zero (or the value itself)
-		ht := src.HostType()
-		return ht == host.HostIdent || (ht.Kind() == reflect.Pointer && ht.Elem() == host.HostIdent)
-	}
-	return runtime.HostNamedIs(host.HostIdent, src)
-}
 
 // peelAlias follows only Alias links, one hop at a time: `type A = B`
 // is the same type as B, while `type A B` defines a distinct named type
