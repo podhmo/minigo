@@ -456,6 +456,10 @@ func (c *compiler) bindRangeVar(e ast.Expr, define bool) {
 // variable, a select case's receive — so the operand gate sees it:
 // `for i := range arr` binds int and comparing it against a named type
 // traps like gc. Only `:=` binds declare a new name.
+//
+// An interface-typed bind also stamps the fresh cell: `[]any`'s
+// element is declared any, and an unstamped cell's OpLocalTyp would
+// answer the concrete element's type instead.
 func (c *compiler) noteBindVar(e ast.Expr, te ast.Expr, define bool) {
 	if !define || te == nil {
 		return
@@ -465,6 +469,12 @@ func (c *compiler) noteBindVar(e ast.Expr, te ast.Expr, define bool) {
 		return
 	}
 	c.fs.noteDeclTyp(id.Name, te, nil)
+	if c.isIfaceTypeExpr(te) {
+		if b := c.fs.lookupBinding(id.Name); b != nil && b.declDefer == nil {
+			c.typeExpr(te)
+			c.emit(bytecode.OpCoerce, b.slot, 0, e.Pos())
+		}
+	}
 }
 
 // noteDeferBindVar is noteBindVar for a bind whose operand type is a
@@ -488,13 +498,18 @@ func (c *compiler) noteDeferBindVar(e ast.Expr, define bool, dx ast.Expr) {
 // items' own binding, and a marker holding the bare `items` name would
 // at run time resolve it as a package member — answering a same-named
 // global's type instead of the local's. Substitute the chain's
-// original deferred expr. A bare ident bound without deferred info
-// answers nil: nothing useful is recordable, and a package-member
-// answer would be wrong.
+// original deferred expr. A name that is NOT function-local (a package
+// member like `var Items = p.Ints`) keeps its spelling — the
+// package-member lookup answers it correctly. A local bound without
+// deferred info answers nil: nothing useful is recordable, and a
+// package-member answer would be wrong.
 func (c *compiler) deferOperandOf(e ast.Expr) ast.Expr {
 	for {
 		id, ok := e.(*ast.Ident)
 		if !ok {
+			return e
+		}
+		if _, _, found := c.fs.find(id.Name); !found {
 			return e
 		}
 		b := c.fs.lookupBinding(id.Name)
@@ -510,18 +525,52 @@ func (c *compiler) deferOperandOf(e ast.Expr) ast.Expr {
 // resolves to a same-named package member — or, wrapped in a call or
 // conversion, fails the walk outright. Either way the marker must not
 // carry it.
+//
+// The walk is manual because marker exprs carry nil children
+// (IndexExpr.Index is empty on element markers), which ast.Inspect
+// panics on; a SelectorExpr's Sel is a member name, not a binding.
 func (c *compiler) deferExprHasLocal(e ast.Expr) bool {
 	local := false
-	ast.Inspect(e, func(n ast.Node) bool {
-		if local {
-			return false
+	var visit func(ast.Expr)
+	visit = func(x ast.Expr) {
+		if local || x == nil {
+			return
 		}
-		if id, ok := n.(*ast.Ident); ok {
-			_, _, found := c.fs.find(id.Name)
-			local = found
+		switch t := x.(type) {
+		case *ast.Ident:
+			_, _, local = c.fs.find(t.Name)
+		case *ast.SelectorExpr:
+			visit(t.X)
+		case *ast.IndexExpr:
+			visit(t.X)
+			visit(t.Index)
+		case *ast.IndexListExpr:
+			visit(t.X)
+			for _, ix := range t.Indices {
+				visit(ix)
+			}
+		case *ast.CallExpr:
+			visit(t.Fun)
+			for _, a := range t.Args {
+				visit(a)
+			}
+		case *ast.ParenExpr:
+			visit(t.X)
+		case *ast.StarExpr:
+			visit(t.X)
+		case *ast.UnaryExpr:
+			visit(t.X)
+		case *ast.BinaryExpr:
+			visit(t.X)
+			visit(t.Y)
+		case *ast.BasicLit:
+			// no names
+		default:
+			// an unhandled shape may hide a local — stay silent
+			local = true
 		}
-		return !local
-	})
+	}
+	visit(e)
 	return local
 }
 
