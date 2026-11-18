@@ -73,7 +73,7 @@ func TypIdentical(a, b *TypeDef) bool {
 			// name the same Go type when their boxes' natives match.
 			return a.HostNew != nil && b.HostNew != nil && a.HostType() == b.HostType()
 		}
-		return a.Name != "" && canonBasicName(a.Name) == canonBasicName(b.Name) && a.Pkg == b.Pkg && bindsEq(a.Binds, b.Binds)
+		return a.Name != "" && canonBasicName(a.Name) == canonBasicName(b.Name) && pkgPathEq(a.Pkg, b.Pkg) && bindsEq(a.Binds, b.Binds)
 	}
 	if a.Anon != nil && b.Anon != nil {
 		return TypSpelling(a.Anon, a) == TypSpelling(b.Anon, b)
@@ -84,6 +84,21 @@ func TypIdentical(a, b *TypeDef) bool {
 		return TypIdentical(a.Elem, b.Elem)
 	}
 	return false
+}
+
+// pkgPathEq compares two packages by import path: the same package
+// reached through different import edges materializes distinct *Package
+// handles, but `a.Pkg == b.Pkg` on those would deny identity between
+// typedefs of one declared type. Two nil packages count as equal —
+// builtins and the local package both carry nil.
+func pkgPathEq(a, b *Package) bool {
+	if a == b {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return a.Path == b.Path
 }
 
 // anonEmptyIface reports whether td is an anonymous empty interface:
