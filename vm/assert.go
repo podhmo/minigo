@@ -1251,13 +1251,32 @@ func (v *VM) hostTypedefIs(rt reflect.Type, td *runtime.TypeDef) bool {
 			return true
 		}
 	}
-	if rt.Kind() == reflect.Pointer && rt.Name() == "" && v.H.HostTwin != nil {
+	if rt.Kind() == reflect.Pointer && rt.Name() == "" {
 		// `x.(**T)` hands an unnamed *T: resolve the element's twin
 		// and mint the *T typedef directly — interning a HostIdent
 		// stamp could park a hollow descriptor in the table, and a
 		// NAMED pointer type (`type P *T`) is not *T.
 		if ert := rt.Elem(); ert.Name() != "" && ert.PkgPath() != "" {
-			if et := v.H.HostTwin(ert); et != nil && v.sameTypedef(runtime.AnonPtrTypedefOf(et), td) {
+			var want *runtime.TypeDef
+			if v.H.HostTwin != nil {
+				if et := v.H.HostTwin(ert); et != nil {
+					want = runtime.AnonPtrTypedefOf(et)
+				}
+			}
+			if want == nil {
+				// the element's package is not loaded — no twin, no
+				// descriptor to stamp; spell *T by import path and let
+				// interned identity (or the spelled acceptance in
+				// sameTypedef) compare it against the declared form.
+				want = &runtime.TypeDef{
+					Kind: runtime.KindPointer,
+					Anon: &ast.StarExpr{X: &ast.SelectorExpr{
+						X:   ast.NewIdent(ert.PkgPath()),
+						Sel: ast.NewIdent(ert.Name()),
+					}},
+				}
+			}
+			if v.sameTypedef(want, td) {
 				return true
 			}
 		}
