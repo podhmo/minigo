@@ -208,7 +208,7 @@ func (v *VM) ifaceEql(f *frame, a, b runtime.Value) bool {
 		a, b = rawHostScalarOperands(a, b)
 	}
 	atd, btd := v.typeOfValue(a), v.typeOfValue(b)
-	if !sameTypeDef(atd, btd) && !v.hostNilTwin(atd, btd) {
+	if !sameTypeDef(atd, btd) && !v.sameTypedef(atd, btd) {
 		// a nil host *T is the same dynamic type as its twin's *T
 		return false
 	}
@@ -1410,11 +1410,11 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 		switch bi := b.(type) {
 		case *runtime.IfaceNil:
 			if bt := runtime.BoxedNilTyp(bi); bt != nil {
-				return sameTypeDef(in.Typ, bt) || v.hostNilTwin(in.Typ, bt)
+				return sameTypeDef(in.Typ, bt) || v.sameTypedef(in.Typ, bt)
 			}
 			return false
 		case *runtime.TypedNil:
-			return sameTypeDef(in.Typ, bi.Typ) || v.hostNilTwin(in.Typ, bi.Typ)
+			return sameTypeDef(in.Typ, bi.Typ) || v.sameTypedef(in.Typ, bi.Typ)
 		}
 		return false
 	}
@@ -1428,7 +1428,7 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 			// only the SAME type can panic for being uncomparable.
 			if !runtime.TypIdentical(tn.Typ, bi.Typ) {
 				// a nil host *T equals a nil of its source twin's *T
-				return v.hostNilTwin(tn.Typ, bi.Typ)
+				return v.sameTypedef(tn.Typ, bi.Typ)
 			}
 			// a typed nil of a slice/map/func type is still uncomparable —
 			// Go panics on the TYPE even when the value is nil.
@@ -1438,7 +1438,7 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 			return true
 		case *runtime.IfaceNil:
 			if bt := runtime.BoxedNilTyp(bi); bt != nil {
-				return sameTypeDef(tn.Typ, bt) || v.hostNilTwin(tn.Typ, bt)
+				return sameTypeDef(tn.Typ, bt) || v.sameTypedef(tn.Typ, bt)
 			}
 			return false
 		}
