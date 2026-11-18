@@ -18,3 +18,6 @@ S1->S3: false
 nested tag: false
 anon nested tag: true
 renamed field: false
+iface order: true
+array len expr: false
+local type: true

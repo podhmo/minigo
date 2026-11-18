@@ -67,4 +67,29 @@ func reflectChecks() {
 		}
 	}{}))) // true: tags ignored inside anonymous structs
 	fmt.Println("renamed field:", reflect.TypeOf(struct{ A int }{}).ConvertibleTo(reflect.TypeOf(struct{ B int }{})))
+	fmt.Println("iface order:", reflect.TypeOf(struct {
+		F interface {
+			A()
+			B()
+		}
+	}{}).ConvertibleTo(reflect.TypeOf(struct {
+		F interface {
+			B()
+			A()
+		}
+	}{}))) // true: same method set
+	fmt.Println("array len expr:", reflect.TypeOf([1 + 1]int{}).ConvertibleTo(reflect.TypeOf([2 + 1]int{})))
+	fmt.Println("local type:", localConv())
+}
+
+func localConv() bool {
+	type L struct {
+		X int
+	}
+	a := struct {
+		F L `a:"1"`
+	}{F: L{X: 1}}
+	return reflect.ValueOf(a).CanConvert(reflect.TypeOf(struct {
+		F L `b:"2"`
+	}{}))
 }
