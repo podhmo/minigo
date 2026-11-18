@@ -36,6 +36,11 @@ func main() {
 	reflectChecks()
 }
 
+type S3 struct {
+	X string
+}
+type B byte
+
 func reflectChecks() {
 	it := reflect.TypeOf(int(0))
 	st := reflect.TypeOf("")
@@ -46,4 +51,20 @@ func reflectChecks() {
 	s1t, s2t := reflect.TypeOf(S1{}), reflect.TypeOf(S2{})
 	fmt.Println("S1->S2:", s1t.ConvertibleTo(s2t))          // true, tags ignored
 	fmt.Println("S1 assignable S2:", s1t.AssignableTo(s2t)) // false
+	s3t := reflect.TypeOf(S3{})
+	fmt.Println("S1->S3:", s1t.ConvertibleTo(s3t)) // false, field types differ
+	fmt.Println("[]byte->string:", reflect.TypeOf([]byte{}).ConvertibleTo(st))
+	fmt.Println("[]B->string:", reflect.TypeOf([]B{}).ConvertibleTo(st)) // elem underlying byte
+	fmt.Println("[]int->string:", reflect.TypeOf([]int{}).ConvertibleTo(st))
+	fmt.Println("nested tag:", reflect.TypeOf(struct{ Y S1 }{}).ConvertibleTo(reflect.TypeOf(struct{ Y S2 }{})))
+	fmt.Println("anon nested tag:", reflect.TypeOf(struct {
+		Y struct {
+			X int `a:"1"`
+		}
+	}{}).ConvertibleTo(reflect.TypeOf(struct {
+		Y struct {
+			X int `b:"2"`
+		}
+	}{}))) // true: tags ignored inside anonymous structs
+	fmt.Println("renamed field:", reflect.TypeOf(struct{ A int }{}).ConvertibleTo(reflect.TypeOf(struct{ B int }{})))
 }
