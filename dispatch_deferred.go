@@ -542,6 +542,13 @@ func (e *Engine) valueTypDepth(ctx *runtime.TypeDef, x ast.Expr, depth int) (*ru
 		if err != nil || td == nil {
 			return nil, false, err
 		}
+		// `for _, v := range s` binds rune for a string operand —
+		// elemOf answers the string itself, not what ranging yields.
+		if u, uerr := e.underlying(td); uerr == nil && u != nil &&
+			u.Kind == runtime.KindNamedBasic &&
+			runtime.CanonicalBasicName(u.Name) == "string" {
+			return runtime.BasicTypedef("rune"), false, nil
+		}
 		etd, err := e.elemOf(td)
 		if err != nil || etd == nil {
 			return nil, false, err
