@@ -219,6 +219,31 @@ func PromotedNilMethodAmbig() int {
 	return o.V
 }
 
+// &w.V pins the promoted field's slot — a write through the pointer
+// reads back through the embedded field.
+func PromotedAddrIdentity() int {
+	w := Wrap{Y: 1}
+	p := &w.V
+	*p = 7
+	return w.E1.V + w.Y // 8
+}
+
+// writing a promoted field behind a nil embedded pointer panics on the
+// implicit dereference, like the read.
+func PromotedPtrWritePanic() int {
+	p := PE{}
+	p.V = 1
+	return 0
+}
+
+// &p.V evaluates the dereference path — a nil embedded pointer panics.
+func PromotedPtrAddrPanic() int {
+	p := PE{}
+	q := &p.V
+	*q = 1
+	return 0
+}
+
 // ---- Go 1.27: generalized function-type inference ----
 
 func Id[T any](v T) T { return v }
