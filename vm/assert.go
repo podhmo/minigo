@@ -1242,12 +1242,14 @@ func (v *VM) sameTypedef(a, b *runtime.TypeDef) bool {
 	// unspellable slice via tdName's kind fallback. Func is excluded:
 	// the fabricated signature-free FuncType spells "func()" for any
 	// signature and must not equate a real `func(int)`.
+	na, nb := tdName(a), tdName(b)
 	return a.Spec == nil &&
 		a.Kind != runtime.KindFunc &&
 		b.Kind != runtime.KindFunc &&
 		(a.Name != "" || a.Anon != nil) &&
 		(b.Name != "" || b.Anon != nil) &&
-		tdName(a) == tdName(b)
+		na == nb &&
+		na != "struct{}" && na != "func()" && na != "interface{}"
 }
 
 // hostElemTwin reports whether tag is an unnamed host slice whose
