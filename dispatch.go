@@ -1135,6 +1135,7 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 		}
 		return e.instantiateRef(from, base, t.Indices), nil
 	case *ast.ArrayType:
+		e.foldArrayLens(from, t)
 		return &runtime.TypeDef{Kind: runtime.KindSlice, Anon: t, Pkg: from.Pkg, File: from.File, Binds: from.Binds, LocalTypes: from.LocalTypes}, nil
 	case *ast.MapType:
 		return &runtime.TypeDef{Kind: runtime.KindMap, Anon: t, Pkg: from.Pkg, File: from.File, Binds: from.Binds, LocalTypes: from.LocalTypes}, nil

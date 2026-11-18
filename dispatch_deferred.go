@@ -289,10 +289,10 @@ func (e *Engine) callResultTypOf(ctx *runtime.TypeDef, fun ast.Expr, depth int) 
 		return nil, false, nil
 	}
 	rt := res.List[0].Type
-	if id, ok := ast.Unparen(rt).(*ast.Ident); ok && funcDeclHasParam(f.Decl, id.Name) {
-		// `F[T any](v T) T` — the result type binds at the call, and
-		// resolving T against the package's decls would answer a
-		// same-named package type instead.
+	if resultSpellsParam(f.Decl, rt) {
+		// `F[T any](v T) T` or `G[T]() [1]T` — the result binds at the
+		// call site, and resolving T against the package's decls would
+		// answer a same-named package type instead.
 		return nil, false, nil
 	}
 	// keep the declared `*` levels — `*ClientTrace` is a nilable
@@ -303,6 +303,104 @@ func (e *Engine) callResultTypOf(ctx *runtime.TypeDef, fun ast.Expr, depth int) 
 		return nil, false, nil
 	}
 	return td, false, nil
+}
+
+// foldArrayLens walks a type expression and publishes the constant
+// length of every array it contains — resolveTypeRef mints array
+// typedefs without running their length expression, and readers like
+// minireflect.Len only accept a literal or a [FoldArrayLen] fold.
+func (e *Engine) foldArrayLens(from *runtime.TypeDef, x ast.Expr) {
+	ast.Inspect(x, func(n ast.Node) bool {
+		at, ok := n.(*ast.ArrayType)
+		if !ok || at.Len == nil {
+			return true
+		}
+		if _, done := runtime.FoldedArrayLen(at); done {
+			return true
+		}
+		if n, ok := e.constIntValue(from, at.Len); ok {
+			runtime.FoldArrayLen(at, n)
+		}
+		return true
+	})
+}
+
+// constIntValue evaluates an integer-constant expression in a package
+// context — literals, unary/binary arithmetic, and named constants
+// (local or qualified). It never runs code: unsafe.Sizeof's argument
+// must not evaluate, and neither does a `[N]T` in a signature.
+func (e *Engine) constIntValue(from *runtime.TypeDef, x ast.Expr) (int64, bool) {
+	switch t := ast.Unparen(x).(type) {
+	case *ast.BasicLit:
+		cv := constant.MakeFromLiteral(t.Value, t.Kind, 0)
+		if iv, ok := constant.Int64Val(constant.ToInt(cv)); ok {
+			return iv, true
+		}
+	case *ast.UnaryExpr:
+		v, ok := e.constIntValue(from, t.X)
+		if !ok {
+			return 0, false
+		}
+		cv := constant.UnaryOp(t.Op, constant.MakeInt64(v), 0)
+		if iv, ok := constant.Int64Val(constant.ToInt(cv)); ok {
+			return iv, true
+		}
+	case *ast.BinaryExpr:
+		a, ok := e.constIntValue(from, t.X)
+		if !ok {
+			return 0, false
+		}
+		b, ok := e.constIntValue(from, t.Y)
+		if !ok {
+			return 0, false
+		}
+		cv := constant.BinaryOp(constant.MakeInt64(a), t.Op, constant.MakeInt64(b))
+		if iv, ok := constant.Int64Val(constant.ToInt(cv)); ok {
+			return iv, true
+		}
+	case *ast.Ident:
+		v, ok := e.constValueOf(from, t.Name)
+		return v, ok
+	case *ast.SelectorExpr:
+		id, ok := t.X.(*ast.Ident)
+		if !ok {
+			return 0, false
+		}
+		p, err := e.importPackageAt(from, id.Name)
+		if err != nil || p == nil {
+			return 0, false
+		}
+		return e.constValueOf(&runtime.TypeDef{Pkg: p, File: from.File}, t.Sel.Name)
+	}
+	return 0, false
+}
+
+// constValueOf answers a named constant's int64 value: the package's
+// bound globals first (UConst), then the index's const decls
+// materialized lazily — `const N = 4` declared below the use site.
+func (e *Engine) constValueOf(from *runtime.TypeDef, name string) (int64, bool) {
+	if from == nil || from.Pkg == nil {
+		return 0, false
+	}
+	if gv, ok := from.Pkg.Globals.Get(name); ok {
+		if u, ok := gv.(*runtime.UConst); ok {
+			if iv, ok := constant.Int64Val(constant.ToInt(u.V)); ok {
+				return iv, true
+			}
+		}
+	}
+	if from.Pkg.Index != nil {
+		if d := from.Pkg.Index.Consts[name]; d != nil {
+			if mv, err := e.materialize(from.Pkg, d); err == nil {
+				if u, ok := mv.(*runtime.UConst); ok {
+					if iv, ok := constant.Int64Val(constant.ToInt(u.V)); ok {
+						return iv, true
+					}
+				}
+			}
+		}
+	}
+	return 0, false
 }
 
 // funcDeclHasParam reports whether name is one of d's declared type
@@ -321,6 +419,23 @@ func funcDeclHasParam(d *ast.FuncDecl, name string) bool {
 		}
 	}
 	return false
+}
+
+// resultSpellsParam reports whether a result type expression spells
+// any of the func's declared type parameters, at any depth — `T`,
+// `[8]T`, `map[string]T`, `Pair[T, U]` all count.
+func resultSpellsParam(d *ast.FuncDecl, rt ast.Expr) bool {
+	found := false
+	ast.Inspect(rt, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		if id, ok := n.(*ast.Ident); ok && funcDeclHasParam(d, id.Name) {
+			found = true
+		}
+		return !found
+	})
+	return found
 }
 
 // valueTypOf implements the Hooks.DeferredValueTyp hook (M4-7c): the

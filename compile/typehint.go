@@ -1026,6 +1026,11 @@ func (c *compiler) calleeFuncTyp(x *ast.CallExpr) *ast.FuncType {
 				return md.Func.Type
 			}
 		}
+		// a struct field of func type is callable too —
+		// `p := S{F: func() int{…}}; p.F()` has a declared signature.
+		if ft, ok := ast.Unparen(c.structFieldTypExpr(base.te, f.Sel.Name)).(*ast.FuncType); ok {
+			return ft
+		}
 	}
 	return nil
 }
