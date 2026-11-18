@@ -144,25 +144,37 @@ func freeFrame(f *frame) {
 // chunkCellsEscape reports whether the chunk's local cells can outlive
 // the frame: an OpLocalRef pushes the cell itself as a script value,
 // and an OpMakeClosure whose literal captures a local slot (rather than
-// only parent upvals) keeps the cell in the closure's upvals. The memo
-// lives on the chunk (Escapes: 0 uncomputed, 1 bound, 2 escaping).
+// only parent upvals) keeps the cell in the closure's upvals. A chunk
+// the compiler classified (Boxed non-nil) answers from the recorded
+// per-slot classes instead — stores and reads hold their refs
+// transiently, so only boxed slots escape. The memo lives on the chunk
+// (Escapes: 0 uncomputed, 1 bound, 2 escaping).
 func chunkCellsEscape(ch *bytecode.Chunk) bool {
 	if e := ch.Escapes.Load(); e != 0 {
 		return e == 2
 	}
 	esc := false
-scan:
-	for _, ins := range ch.Code {
-		switch ins.Op {
-		case bytecode.OpLocalRef:
-			esc = true
-			break scan
-		case bytecode.OpMakeClosure:
-			if proto, ok := ch.Consts[ins.A].(*runtime.Function); ok && proto.Chunk != nil {
-				for _, d := range proto.Chunk.Upvals {
-					if !d.FromParentUpval {
-						esc = true
-						break scan
+	if ch.Boxed != nil {
+		for _, b := range ch.Boxed {
+			if b {
+				esc = true
+				break
+			}
+		}
+	} else {
+	scan:
+		for _, ins := range ch.Code {
+			switch ins.Op {
+			case bytecode.OpLocalRef:
+				esc = true
+				break scan
+			case bytecode.OpMakeClosure:
+				if proto, ok := ch.Consts[ins.A].(*runtime.Function); ok && proto.Chunk != nil {
+					for _, d := range proto.Chunk.Upvals {
+						if !d.FromParentUpval {
+							esc = true
+							break scan
+						}
 					}
 				}
 			}

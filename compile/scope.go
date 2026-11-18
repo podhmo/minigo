@@ -76,6 +76,11 @@ type fscope struct {
 	nlocals  int
 	upvals   []bytecode.UpvalDesc
 	upmap    map[string]int
+	// boxed is the P4-2 slot classification: the slots whose cell can
+	// outlive the frame (address taken, captured, shared with a special
+	// form, or bound through a pointer-receiver select) — everything
+	// else stays a plain local.
+	boxed map[int]bool
 }
 
 func newFScope(parent *fscope) *fscope {
@@ -290,6 +295,44 @@ func (s *fscope) lookupLocal(name string) (int, bool) {
 	return 0, false
 }
 
+// box marks a local slot of this function as escaping its frame.
+func (s *fscope) box(slot int) {
+	if s.boxed == nil {
+		s.boxed = map[int]bool{}
+	}
+	s.boxed[slot] = true
+}
+
+// boxName marks the slot name currently resolves to — in whichever
+// enclosing function scope declared it — as escaping its frame. A name
+// that resolves to no local binding (a global, a builtin) marks
+// nothing; a name the inner scopes only reach through upvals still
+// finds its declaring scope's binding here, so an `&x` on an upvalue
+// boxes the owner's slot directly.
+func (s *fscope) boxName(name string) {
+	for cur := s; cur != nil; cur = cur.parent {
+		for i := len(cur.blocks) - 1; i >= 0; i-- {
+			if b, ok := cur.blocks[i][name]; ok {
+				cur.box(b.slot)
+				return
+			}
+		}
+	}
+}
+
+// boxedSlice renders the classification as a per-slot flag slice sized
+// to nlocals — always non-nil so a compiled chunk reports a computed
+// (empty or not) answer rather than "unclassified".
+func (s *fscope) boxedSlice() []bool {
+	boxed := make([]bool, s.nlocals)
+	for slot := range s.boxed {
+		if slot < len(boxed) {
+			boxed[slot] = true
+		}
+	}
+	return boxed
+}
+
 // inCurrentBlock reports whether name is declared in the innermost block —
 // `x := 1` on an existing same-block name is a redefinition (assignment),
 // while an outer-block name is shadowed by a fresh cell.
@@ -329,6 +372,11 @@ func (s *fscope) capture(name string) bool {
 	fromUpval, idx, ok := s.parent.find(name)
 	if !ok {
 		return false
+	}
+	if !fromUpval {
+		// the captured var's cell moves into this closure's upvalue
+		// table — it outlives the parent's frame.
+		s.parent.box(idx)
 	}
 	s.upvals = append(s.upvals, bytecode.UpvalDesc{FromParentUpval: fromUpval, Index: idx})
 	s.upmap[name] = len(s.upvals) - 1
