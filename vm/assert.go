@@ -906,6 +906,8 @@ func (s sigResolver) ElemOf(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 	return s.v.H.ElemOf(td)
 }
 
+func (s sigResolver) Underlying(td *runtime.TypeDef) *runtime.TypeDef { return s.v.peelNamed(td) }
+
 var errSigNoHook = fmt.Errorf("type resolution hook unavailable")
 
 // asTypedNil unwraps an interface-boxed nil down to its TypedNil.
@@ -1388,53 +1390,14 @@ func (v *VM) nilableTypedef(td *runtime.TypeDef) bool {
 // Shape spelling normalizes byte/rune and resolves bound type params
 // (convShapeEq), so []byte and []uint8 count as one shape.
 func (v *VM) tdShapeEq(a, b *runtime.TypeDef) bool {
-	pa, pb := v.peelNamed(a), v.peelNamed(b)
-	if pa == pb {
-		return true
-	}
-	if pa == nil || pb == nil || pa.Kind != pb.Kind {
-		return false
-	}
-	if sameTypeDef(pa, pb) {
-		return true
-	}
-	if v.convShapeEq(pa, pb) {
-		return true
-	}
-	// the shape spelling comes from the anonymous type AST, or the
-	// declaring spec's for a named type — `map[string]int` spelled
-	// anonymously and as `type M map[string]int` is one shape.
-	src := func(t *runtime.TypeDef) ast.Expr {
-		return t.TypeExpr()
-	}
-	sa, sb := src(pa), src(pb)
-	if sa != nil && sb != nil {
-		// not implied by convShapeEq: the spelling resolves type
-		// params through each side's binds, so `[]E` with E bound to
-		// KeyValue matches `type SortedMap []KeyValue` (a generic
-		// `S ~[]E` argument passed on as a `[]E` parameter).
-		return runtime.TypSpelling(sa, pa) == runtime.TypSpelling(sb, pb)
-	}
-	return sa == nil && sb == nil
+	return runtime.NewShapeEq(sigResolver{v}).Same(a, b)
 }
 
 // samePointeeAlias reports whether two anonymous pointer typedefs point
 // at the same type once aliases peel — a nil *inner.Tree binds *tree for
 // `type tree = inner.Tree` (kin-openapi's originTree).
 func (v *VM) samePointeeAlias(a, b *runtime.TypeDef) bool {
-	if a == nil || b == nil || a.Kind != runtime.KindPointer || b.Kind != runtime.KindPointer ||
-		a.Spec != nil || b.Spec != nil || v.H.ElemOf == nil {
-		return false
-	}
-	ea, err := v.H.ElemOf(a)
-	if err != nil || ea == nil {
-		return false
-	}
-	eb, err := v.H.ElemOf(b)
-	if err != nil || eb == nil {
-		return false
-	}
-	return sameTypeDef(v.peelAlias(ea), v.peelAlias(eb))
+	return runtime.NewShapeEq(sigResolver{v}).PointeeAlias(a, b)
 }
 
 // tdShapeEval is tdShapeEq with evaluated array lengths: `[len(x)]*T`
@@ -1455,22 +1418,6 @@ func (v *VM) tdShapeEval(f *frame, a, b *runtime.TypeDef) bool {
 		return ea == nil && eb == nil
 	}
 	return v.tdShapeEval(f, ea, eb)
-}
-
-// structFieldsEq compares two struct typedefs by field name lists —
-// the approximate "identical underlying" for an unnamed struct literal
-// binding a named type (Go also requires matching tags and element
-// types; neither is modeled here).
-func structFieldsEq(a, b *runtime.TypeDef) bool {
-	if len(a.Fields) != len(b.Fields) {
-		return false
-	}
-	for i := range a.Fields {
-		if a.Fields[i] != b.Fields[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // shapeOK checks a bare value against a fully-peeled (non-named) typedef:
@@ -1536,7 +1483,7 @@ func (v *VM) shapeOK(f *frame, x runtime.Value, td *runtime.TypeDef) bool {
 		// check in coerceConcrete decides those binds. Field tags are
 		// not tracked, so the comparison is names only.
 		if !tagIsNamed(s.Def) {
-			return structFieldsEq(s.Def, td)
+			return runtime.StructFieldsEq(s.Def, td)
 		}
 		return false
 	case runtime.KindSlice:
