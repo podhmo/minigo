@@ -358,6 +358,7 @@ func (e *Engine) newVM() *vm.VM {
 		FieldPath:     e.fieldPath,
 		InternTypedef: e.internTypedef,
 		TypeIDOf:      e.typeIDOf,
+		DeferredType:  e.deferredTypeOf,
 		HostTwin:      e.hostTwin,
 		Linkname:      e.linknameTarget,
 		HostErr:       hostErrOf,
