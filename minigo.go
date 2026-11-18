@@ -331,14 +331,15 @@ func (e *Engine) newVM() *vm.VM {
 			h, ok := e.specials.Lookup(id)
 			return h, ok
 		},
-		MethodsOf:       e.methodsOfValue,
-		MethodSetOf:     e.methodSetOfValue,
-		IfaceReqs:       e.ifaceReqs,
-		IfaceSigs:       e.ifaceSigReqs,
-		MethodFuncsOf:   e.methodFuncsOfValue,
-		MethodInfoOf:    e.methodInfoOfValue,
-		TypeMethodFuncs: e.methodSet,
-		SigMemo:         &e.sigMemo,
+		MethodsOf:        e.methodsOfValue,
+		MethodSetOf:      e.methodSetOfValue,
+		IfaceReqs:        e.ifaceReqs,
+		IfaceSigs:        e.ifaceSigReqs,
+		MethodFuncsOf:    e.methodFuncsOfValue,
+		MethodInfoOf:     e.methodInfoOfValue,
+		TypeMethodFuncs:  e.methodSet,
+		TypeMethodInfoOf: e.typeMethodInfoU,
+		SigMemo:          &e.sigMemo,
 
 		ElemOf:      e.elemOf,
 		TypeMethods: e.typeMethods,
