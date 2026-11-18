@@ -123,6 +123,7 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 			// collide on it. Unused locals key as before, and a member
 			// or field/parameter name is never a type reference.
 			sels := map[*ast.Ident]bool{}
+			embedded := map[string]bool{}
 			ast.Inspect(td.Anon, func(n ast.Node) bool {
 				switch x := n.(type) {
 				case *ast.SelectorExpr:
@@ -130,6 +131,27 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 				case *ast.Field:
 					for _, nm := range x.Names {
 						sels[nm] = true
+					}
+					if len(x.Names) == 0 {
+						// an embedded field's name is the type name as
+						// written — `struct{A}` is not `struct{T}` even
+						// when A is an alias for T, so the leaf keeps
+						// its spelled name.
+						te := ast.Expr(x.Type)
+						for {
+							switch w := te.(type) {
+							case *ast.ParenExpr:
+								te = w.X
+							case *ast.StarExpr:
+								te = w.X
+							default:
+								goto unwrapped
+							}
+						}
+					unwrapped:
+						if id, ok := te.(*ast.Ident); ok {
+							embedded[id.Name] = true
+						}
 					}
 				}
 				return true
@@ -157,6 +179,14 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 				ids := map[string]bool{}
 				for n, lt := range used {
 					if lt.Kind == runtime.KindAlias {
+						if embedded[n] {
+							// embedded alias: the name stays in the
+							// spelling but the decl site still keys it.
+							if lt.Spec != nil {
+								ids[n+"="+fmt.Sprintf("src:%p:%d", lt.File, lt.Spec.Pos())] = true
+							}
+							continue
+						}
 						if tgt := e.peelAliasTd(lt); tgt != nil {
 							ctx.LocalTypes[n] = tgt
 						}

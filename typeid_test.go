@@ -346,4 +346,36 @@ func TestTypeIDAnonLocalLeafsDistinct(t *testing.T) {
 	if a, b := e.typeIDOf(paramFn("x", nil)), e.typeIDOf(paramFn("L", map[string]*runtime.TypeDef{"L": srcTd(pkg, f, 10, "L")})); a != b {
 		t.Errorf("func(L int) keys unlike func(x int): %q vs %q", a, b)
 	}
+	// an embedded field's name is the type name as written: `struct{A}`
+	// is not `struct{T}` even when A is an alias for T, and two aliases
+	// of one target differ too.
+	embed := func(name string, pos token.Pos) *runtime.TypeDef {
+		a := srcTd(pkg, f, pos, name)
+		a.Kind = runtime.KindAlias
+		a.Anon = ast.NewIdent("int")
+		return &runtime.TypeDef{
+			Kind: runtime.KindStruct, Pkg: pkg, File: f,
+			Anon: &ast.StructType{Fields: &ast.FieldList{List: []*ast.Field{
+				{Type: ast.NewIdent(name)},
+			}}},
+			LocalTypes: map[string]*runtime.TypeDef{name: a},
+		}
+	}
+	if a, b := e.typeIDOf(embed("A", 10)), e.typeIDOf(embed("A2", 20)); a == b {
+		t.Errorf("struct{A} and struct{A2} key alike: %q", a)
+	}
+	// a declared (named) field of an alias type does unfold —
+	// `struct{x A}` is `struct{x int}`.
+	namedFld := func(elt ast.Expr, lts map[string]*runtime.TypeDef) *runtime.TypeDef {
+		return &runtime.TypeDef{
+			Kind: runtime.KindStruct, Pkg: pkg, File: f,
+			Anon: &ast.StructType{Fields: &ast.FieldList{List: []*ast.Field{
+				{Names: []*ast.Ident{ast.NewIdent("x")}, Type: elt},
+			}}},
+			LocalTypes: lts,
+		}
+	}
+	if a, b := e.typeIDOf(namedFld(ast.NewIdent("int"), nil)), e.typeIDOf(namedFld(ast.NewIdent("A"), map[string]*runtime.TypeDef{"A": aliasTd})); a != b {
+		t.Errorf("struct{x A} keys unlike struct{x int}: %q vs %q", a, b)
+	}
 }
