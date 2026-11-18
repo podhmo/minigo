@@ -353,9 +353,7 @@ func (e *Engine) hostTwin(rt reflect.Type) *runtime.TypeDef {
 	if rt == nil || rt.Name() == "" || rt.PkgPath() == "" {
 		return nil
 	}
-	e.mu.Lock()
-	p := e.pkgs[rt.PkgPath()]
-	e.mu.Unlock()
+	p := e.hostPackageOf(rt.PkgPath())
 	if p == nil {
 		return nil
 	}
