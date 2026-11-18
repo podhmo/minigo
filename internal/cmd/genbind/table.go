@@ -11,8 +11,14 @@ type spec struct {
 }
 
 var specs = []spec{
-	{Path: "encoding/hex", File: "encoding_hex"},
-	{Path: "encoding/base64", File: "encoding_base64"},
+	{Path: "encoding/hex", File: "encoding_hex",
+		// Encode/Decode write through the dst argument; the encoder
+		// constructors take io.Writer/io.Reader — all handwritten.
+		Skip: map[string]bool{"Encode": true, "Decode": true,
+			"NewEncoder": true, "NewDecoder": true, "Dumper": true}},
+	{Path: "encoding/base64", File: "encoding_base64",
+		// the constructors adapt script io.Writer/io.Reader values.
+		Skip: map[string]bool{"NewEncoder": true, "NewDecoder": true}},
 	{Path: "crypto/sha256", File: "crypto_sha256"},
 	{Path: "html", File: "html"},
 	{Path: "path", File: "path"},
@@ -29,7 +35,14 @@ var specs = []spec{
 		// Upper/Lower/TitleCase are consts typed unicode.Case in source but
 		// scripts spell them as ints — they stay handwritten.
 		Skip: map[string]bool{"UpperCase": true, "LowerCase": true, "TitleCase": true}},
-	{Path: "bytes", File: "bytes"},
+	{Path: "bytes", File: "bytes",
+		// rune-predicate callbacks need the caller — a signature-pure
+		// bind cannot adapt a script function (strings keeps its own
+		// handwritten runePred adapters for the same reason).
+		Skip: map[string]bool{"ContainsFunc": true, "FieldsFunc": true,
+			"FieldsFuncSeq": true, "IndexFunc": true, "LastIndexFunc": true,
+			"Map": true, "TrimFunc": true, "TrimLeftFunc": true,
+			"TrimRightFunc": true}},
 	{Path: "context", File: "context",
 		Skip: map[string]bool{"Context": true, "CancelFunc": true, "CancelCauseFunc": true,
 			"WithValue": true, "AfterFunc": true, "Cause": true,

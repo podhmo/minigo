@@ -35,6 +35,16 @@ var genbindPackages = []string{
 	"context",
 }
 
+// genbindSkips mirrors each spec's Skip in internal/cmd/genbind — the
+// source-exported members a signature-pure bind cannot carry
+// (callback parameters, dst-writeback functions, io adaptors) and that
+// no handwritten adapter replaces either, so the bound table
+// legitimately lacks them.
+var genbindSkips = map[string][]string{
+	"bytes": {"ContainsFunc", "FieldsFunc", "FieldsFuncSeq", "IndexFunc",
+		"LastIndexFunc", "Map", "TrimFunc", "TrimLeftFunc", "TrimRightFunc"},
+}
+
 // exportedOf collects the names a source-interpreted package exports.
 func exportedOf(ix *index.Index) []string {
 	var out []string
@@ -114,6 +124,9 @@ func TestGeneratedBindCoversSourceExports(t *testing.T) {
 		for _, n := range names {
 			have[n] = true
 		}
+		for _, n := range genbindSkips[path] {
+			have[n] = true
+		}
 		var missing []string
 		for _, n := range want {
 			if !have[n] {
@@ -167,6 +180,10 @@ func TestGeneratedBindCallParity(t *testing.T) {
 		{"unicode", "IsDigit", []any{int64('5')}},
 		{"unicode", "ToUpper", []any{int64('a')}},
 		{"bytes", "Contains", []any{[]byte("haystack"), []byte("stack")}},
+		// netip and bytes.Join are absent: netip's source init runs
+		// unique.Make through unsafe.Pointer, and the source-interpreted
+		// bytes.Join rejects an []any argument as [][]byte — both are
+		// exercised bound-side in TestGeneratedBindExtras instead.
 	}
 	for _, c := range calls {
 		be := NewEngine(".")
@@ -192,5 +209,59 @@ func TestGeneratedBindCallParity(t *testing.T) {
 		if diff := cmp.Diff(norm(sg), norm(bg)); diff != "" {
 			t.Errorf("%s.%s parity mismatch (-source +bound):\n%s", c.path, c.name, diff)
 		}
+	}
+}
+
+// TestGeneratedBindExtras checks bound calls the parity loop cannot
+// express: nested collection arguments, an array-typed parameter and a
+// dst-writeback function.
+func TestGeneratedBindExtras(t *testing.T) {
+	ctx := context.Background()
+
+	// [][]byte argument: bytes.Join converts element-wise.
+	xe := NewEngine(".")
+	xp, err := xe.Package(ctx, "bytes")
+	if err != nil {
+		t.Fatalf("bytes bound load: %v", err)
+	}
+	j, err := xe.Call(ctx, xp, "Join", []any{[]any{int64('a'), int64('b')}, []any{int64('c')}}, []byte("-"))
+	if err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+	if diff := cmp.Diff([]byte("ab-c"), byteSlice(j)); diff != "" {
+		t.Errorf("Join (-want +got):\n%s", diff)
+	}
+
+	// [4]byte argument: netip.AddrFrom4 converts element-wise.
+	be := NewEngine(".")
+	bp, err := be.Package(ctx, "net/netip")
+	if err != nil {
+		t.Fatalf("netip bound load: %v", err)
+	}
+	v, err := be.Call(ctx, bp, "AddrFrom4", []any{int64(127), int64(0), int64(0), int64(1)})
+	if err != nil {
+		t.Fatalf("AddrFrom4: %v", err)
+	}
+	if got := fmt.Sprint(goNative(v)); got != "127.0.0.1" {
+		t.Errorf("AddrFrom4 = %v, want 127.0.0.1", got)
+	}
+
+	// dst-writeback: hex.Encode writes into the script slice's elements.
+	hp, err := be.Package(ctx, "encoding/hex")
+	if err != nil {
+		t.Fatalf("hex bound load: %v", err)
+	}
+	dst := &runtime.Slice{Elems: []runtime.Value{
+		runtime.ByteValue(0), runtime.ByteValue(0),
+		runtime.ByteValue(0), runtime.ByteValue(0)}}
+	n, err := be.Call(ctx, hp, "Encode", dst, []any{int64(0xde), int64(0xad)})
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if fmt.Sprint(goNative(n)) != "4" {
+		t.Errorf("Encode n = %v, want 4", goNative(n))
+	}
+	if diff := cmp.Diff([]byte("dead"), byteSlice(dst)); diff != "" {
+		t.Errorf("dst not written back (-want +got):\n%s", diff)
 	}
 }

@@ -13,8 +13,6 @@ import (
 // pure-signature members; custom adapters stay handwritten.
 func encodingBase64GenEntries() map[string]runtime.Value {
 	return map[string]runtime.Value{
-		"NewDecoder":        wrapBind("base64.NewDecoder", base64.NewDecoder),
-		"NewEncoder":        wrapBind("base64.NewEncoder", base64.NewEncoder),
 		"NewEncoding":       wrapBind("base64.NewEncoding", base64.NewEncoding),
 		"RawStdEncoding":    &runtime.GoValue{V: base64.RawStdEncoding},
 		"RawURLEncoding":    &runtime.GoValue{V: base64.RawURLEncoding},
