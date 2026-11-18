@@ -852,6 +852,12 @@ func (c *compiler) isImportName(name string) bool {
 // real name by materializing each unnamed import, like the VM's global
 // resolution does (vm.go's step 2.5).
 func (c *compiler) importRef(name string) (*runtime.ImportRef, bool) {
+	// a local declaration shadows the import name: `unsafe := f()` in
+	// a function means `unsafe.Sizeof(x)` calls a field or method, not
+	// the intrinsic — its argument must be evaluated like any call.
+	if c.fs != nil && c.fs.lookupBinding(name) != nil {
+		return nil, false
+	}
 	if ref, ok := c.synthImports[name]; ok {
 		return ref, true
 	}
