@@ -3,6 +3,7 @@ package minigo
 import (
 	"fmt"
 	"reflect"
+	"slices"
 
 	"github.com/podhmo/minigo/runtime"
 )
@@ -34,8 +35,19 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 		return "?"
 	}
 	var args string
-	if len(td.TParams) > 0 && td.Binds != nil {
-		for _, tp := range td.TParams {
+	if td.Binds != nil {
+		// TParams gives declaration order; copies that drop it (e.g.
+		// argTypedef's) still carry Binds — sort the names so an
+		// instantiation always spells its arguments.
+		params := td.TParams
+		if len(params) == 0 {
+			params = make([]string, 0, len(td.Binds))
+			for n := range td.Binds {
+				params = append(params, n)
+			}
+			slices.Sort(params)
+		}
+		for _, tp := range params {
 			args += ";" + string(e.typeIDOf(boundTypedefOf(td.Binds[tp])))
 		}
 	}

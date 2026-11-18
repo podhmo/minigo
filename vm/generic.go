@@ -992,6 +992,7 @@ func (v *VM) argTypedef(x runtime.Value) *runtime.TypeDef {
 				Kind: xv.Typ.Kind, Name: xv.Typ.Name, Pkg: xv.Typ.Pkg,
 				File: xv.Typ.File, Anon: xv.Typ.Anon, Spec: xv.Typ.Spec,
 				Binds: xv.Typ.Binds, Elem: ev,
+				TParams: xv.Typ.TParams, OuterArgs: xv.Typ.OuterArgs,
 			}
 		}
 		return &runtime.TypeDef{Kind: runtime.KindSlice, Elem: ev}
