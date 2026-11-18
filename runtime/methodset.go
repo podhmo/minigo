@@ -14,6 +14,11 @@ type PromotedMember struct {
 	Path  []int
 	Depth int
 	Via   string
+	// Method reports whether the member is callable — a method or an
+	// interface requirement. A promoted FIELD (host structs expose them)
+	// wins the selector at its depth like any member but never belongs
+	// to the method set, so a winning field keeps the name out of Names.
+	Method bool
 }
 
 // MethodSet is the result of computing a value or typedef's method

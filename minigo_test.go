@@ -2007,6 +2007,31 @@ func TestMethodSetDepthContests(t *testing.T) {
 			t.Fatalf("%s: expected \"ambiguous\" error, got %v", fn, err)
 		}
 	}
+	// a requirement promoted through two embeds keeps its signature:
+	// W00's M is M() int — it satisfies I0 but not an M() string
+	// requirement, and a recursive generic embed reaches the same
+	// fixpoint gc does.
+	if got := run(t, e, "./testdata/msetchk", "F5ok"); got != "ok" {
+		t.Errorf("F5ok: want %q, got %v", "ok", got)
+	}
+	if got := run(t, e, "./testdata/msetchk", "F9"); got != "ok" {
+		t.Errorf("F9: want %q, got %v", "ok", got)
+	}
+	// a promoted host FIELD wins the selector but is no method, and a
+	// defined pointer type promotes nothing its pointee carries.
+	if got := run(t, e, "./testdata/msetchk", "F6sel"); got != "0" {
+		t.Errorf("F6sel: want %q, got %v", "0", got)
+	}
+	for fn, want := range map[string]string{
+		"F5":  "missing method M",
+		"F6":  "missing method Port",
+		"F8":  "missing method M",
+		"F8b": "missing method M",
+	} {
+		if got := run(t, e, "./testdata/msetchk", fn); !strings.Contains(got.(string), want) {
+			t.Errorf("%s: want a recover string containing %q, got %v", fn, want, got)
+		}
+	}
 }
 
 // toolchainAtLeast reports whether the host Go toolchain is >= major.minor
