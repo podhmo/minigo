@@ -1251,9 +1251,15 @@ func (v *VM) hostTypedefIs(rt reflect.Type, td *runtime.TypeDef) bool {
 			return true
 		}
 	}
-	if rt.Kind() == reflect.Pointer && rt.Elem().Name() != "" && rt.Elem().PkgPath() != "" {
-		if v.sameTypedef(&runtime.TypeDef{HostIdent: rt}, td) {
-			return true
+	if rt.Kind() == reflect.Pointer && rt.Name() == "" && v.H.HostTwin != nil {
+		// `x.(**T)` hands an unnamed *T: resolve the element's twin
+		// and mint the *T typedef directly — interning a HostIdent
+		// stamp could park a hollow descriptor in the table, and a
+		// NAMED pointer type (`type P *T`) is not *T.
+		if ert := rt.Elem(); ert.Name() != "" && ert.PkgPath() != "" {
+			if et := v.H.HostTwin(ert); et != nil && v.sameTypedef(runtime.AnonPtrTypedefOf(et), td) {
+				return true
+			}
 		}
 	}
 	return runtime.HostTwinOf(rt, td)

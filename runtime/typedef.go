@@ -1702,3 +1702,30 @@ func ArrayLenNodes(e ast.Expr) []*ast.ArrayType {
 	}
 	return out
 }
+
+// AnonPtrTypedefOf mints the *T anonymous typedef over the element's
+// own twin. The qualifier spells the element's import PATH, matching
+// what typSpelling produces for a declared `*T` (it resolves the
+// selector's package name through the file's import table to the
+// path, so a renamed import `rx "regexp"` still keys *regexp.Regexp).
+func AnonPtrTypedefOf(et *TypeDef) *TypeDef {
+	// the qualifier spells the element's import PATH, matching what
+	// typSpelling produces for a declared `*T` (it resolves the
+	// selector's package name through the file's import table to the
+	// path, so a renamed import `rx "regexp"` still keys *regexp.Regexp).
+	var x ast.Expr = ast.NewIdent(et.Name)
+	if et.Pkg != nil && et.Pkg.Path != "" {
+		if _, short, ok := strings.Cut(et.Name, "."); ok {
+			x = &ast.SelectorExpr{X: ast.NewIdent(et.Pkg.Path), Sel: ast.NewIdent(short)}
+		}
+	} else if pkg, short, ok := strings.Cut(et.Name, "."); ok {
+		x = &ast.SelectorExpr{X: ast.NewIdent(pkg), Sel: ast.NewIdent(short)}
+	}
+	return &TypeDef{
+		Kind: KindPointer,
+		Elem: et,
+		Anon: &ast.StarExpr{X: x},
+		Pkg:  et.Pkg,
+		File: et.File,
+	}
+}
