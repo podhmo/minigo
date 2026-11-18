@@ -1,9 +1,9 @@
 package archcheck
 
-// FileBudgets is the per-file line-count ratchet: CheckSizes fails on
-// growth past the budget AND on shrink below it (the budget is the
-// recorded size, not a ceiling). Regenerate with
-// `go run ./internal/cmd/archcheck -print-sizes`.
+// FileBudgets is the M1-4 file-size ratchet: recorded line counts for
+// every .go file in the module. A file may only shrink — growing one
+// fails TestFileBudgetsMatchRepo until the map is regenerated
+// (`go run ./internal/cmd/archcheck -print-sizes`).
 var FileBudgets = map[string]int{
 	"asmimpl.go":                         279,
 	"bindenv.go":                         52,
@@ -24,6 +24,7 @@ var FileBudgets = map[string]int{
 	"compile/stmt.go":                    1077,
 	"compile/typehint.go":                1975,
 	"dispatch.go":                        1151,
+	"eval.go":                            42,
 	"host/host.go":                       42,
 	"hostslice.go":                       448,
 	"hostvars.go":                        54,
@@ -34,7 +35,7 @@ var FileBudgets = map[string]int{
 	"inspect/stub.go":                    382,
 	"installbound.go":                    118,
 	"internal/archcheck/archcheck.go":    536,
-	"internal/archcheck/budgets.go":      175,
+	"internal/archcheck/budgets.go":      176,
 	"internal/archcheck/rules.go":        74,
 	"internal/assetaudit/assetaudit.go":  112,
 	"internal/bind/env.go":               48,
@@ -102,7 +103,7 @@ var FileBudgets = map[string]int{
 	"intrinsics_unicode_utf8.go":         108,
 	"intrinsics_unsafe.go":               367,
 	"iterseq.go":                         915,
-	"minigo.go":                          1516,
+	"minigo.go":                          1488,
 	"minigo_reflect.go":                  48,
 	"minireflect/minireflect.go":         1183,
 	"minireflect/rtype.go":               1861,
