@@ -2027,10 +2027,22 @@ func TestMethodSetDepthContests(t *testing.T) {
 		"F6":  "missing method Port",
 		"F8":  "missing method M",
 		"F8b": "missing method M",
+		// one level out the winning host field contests the same-depth
+		// method — gc calls the member ambiguous, so the interface is
+		// not implemented.
+		"F7": "missing method Port",
 	} {
 		if got := run(t, e, "./testdata/msetchk", fn); !strings.Contains(got.(string), want) {
 			t.Errorf("%s: want a recover string containing %q, got %v", fn, want, got)
 		}
+	}
+	// parenthesized underlying expressions resolve, and two defined
+	// pointer types' nils are not the same nil.
+	if got := run(t, e, "./testdata/msetchk", "F10"); got != "0 <nil> <nil>" {
+		t.Errorf("F10: want %q, got %v", "0 <nil> <nil>", got)
+	}
+	if got := run(t, e, "./testdata/msetchk", "F11"); got != "false" {
+		t.Errorf("F11: want %q, got %v", "false", got)
 	}
 }
 
