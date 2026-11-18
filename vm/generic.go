@@ -971,7 +971,9 @@ func (v *VM) unifyTypeDef(ctx *runtime.TypeDef, tset map[string]bool, binds map[
 				et = conc.Elem
 			}
 			if et != nil {
-				et = v.sourceTwinOf(et)
+				// a host-stamped elem resolves to the engine's own td
+				// through the intern table (M4-4).
+				et = v.internTypedef(et)
 				v.unifyTypeDef(ctx, tset, binds, p.Elt, et)
 			}
 		}
