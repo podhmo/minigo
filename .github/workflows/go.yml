@@ -35,6 +35,9 @@ jobs:
     - name: Test
       run: make test
 
+    - name: Strict-lazy conformance (M4-8b)
+      run: go test -run 'TestStrictLazy|TestDeferFacts' .
+
     - name: Spike counters (C1 invariant)
       run: make test-spike
 

@@ -41,120 +41,152 @@ func TestDiffRegressions(t *testing.T) {
 	for _, f := range dirs {
 		dir := filepath.Dir(f)
 		t.Run(filepath.Base(dir), func(t *testing.T) {
-			want, err := os.ReadFile(filepath.Join(dir, "want.stdout"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			// want.err holds the expected error text; an absent runErr
-			// or a non-matching one both fail below.
-			wantErrText, err := os.ReadFile(filepath.Join(dir, "want.err"))
-			expectErr := err == nil
-			_, statErr := os.Stat(filepath.Join(dir, "PENDING"))
-			pending := statErr == nil
-			// COMPILE_TIME_FACT (M0-7) labels cases whose expected
-			// result leans on a compile-time fact — the file's text
-			// names which. They are the M4-7/M4-8 acceptance set:
-			// docs/next/ja/references/acceptance-set.md.
-			if fact, err := os.ReadFile(filepath.Join(dir, "COMPILE_TIME_FACT")); err == nil {
-				t.Log(strings.TrimSpace(string(fact)))
-			}
-			// A case with a want.stderr file also compares stderr (e.g.
-			// builtin print/println output). Builtins write to os.Stderr
-			// directly, so the run happens with os.Stderr redirected to
-			// a pipe; subtests run serially, so the swap is safe.
-			wantStderr, err := os.ReadFile(filepath.Join(dir, "want.stderr"))
-			captureErr := err == nil
-
-			type outcome struct {
-				stdout string
-				stderr string
-				runErr error
-			}
-			resCh := make(chan outcome, 1)
-			// The os.Stderr swap happens before the run goroutine starts
-			// so it is never racy, and the pipe lives long enough for the
-			// timeout path to close it: an abandoned run then writes to
-			// the restored stderr and the reader drains and exits instead
-			// of leaking on ReadAll.
-			var stderrOld, pipeR, pipeW *os.File
-			var done chan string
-			if captureErr {
-				r, w, err := os.Pipe()
-				if err != nil {
-					t.Fatalf("os.Pipe: %v", err)
-				}
-				pipeR, pipeW = r, w
-				stderrOld = os.Stderr
-				os.Stderr = w
-				done = make(chan string, 1)
-				go func() {
-					b, _ := io.ReadAll(r)
-					done <- string(b)
-				}()
-			}
-			go func() {
-				var buf bytes.Buffer
-				opts := []minigo.Option{minigo.WithOutput(&buf)}
-				// A SRC file lists packages to interpret from source (the
-				// CLI's --src), one per line — for fixes on the source path
-				// of a package that also has a host binding.
-				if src, err := os.ReadFile(filepath.Join(dir, "SRC")); err == nil {
-					modes := map[string]minigo.PackageMode{}
-					for _, p := range strings.Fields(string(src)) {
-						modes[p] = minigo.ModeSource
-					}
-					opts = append(opts, minigo.WithPackageModes(modes))
-				}
-				e := minigo.NewEngine(".", opts...)
-
-				var runErr error
-				var gotErr string
-				_, runErr = e.Run(context.Background(), "./"+filepath.ToSlash(dir), "")
-				if captureErr {
-					pipeW.Close()
-					gotErr = <-done
-					os.Stderr = stderrOld
-					pipeR.Close()
-				}
-				resCh <- outcome{stdout: buf.String(), stderr: gotErr, runErr: runErr}
-			}()
-
-			var res outcome
-			select {
-			case res = <-resCh:
-			case <-time.After(runCaseTimeout):
-				if stderrOld != nil {
-					os.Stderr = stderrOld
-					pipeW.Close()
-					pipeR.Close()
-				}
-				t.Fatalf("run did not finish within %s (HANG regression?)", runCaseTimeout)
-			}
-
-			diff := cmp.Diff(string(want), res.stdout)
-			if captureErr && diff == "" {
-				diff = cmp.Diff(string(wantStderr), res.stderr)
-			}
-			errMatch := expectErr && res.runErr != nil &&
-				strings.Contains(res.runErr.Error(), strings.TrimSpace(string(wantErrText)))
-			matched := diff == "" && (expectErr == (res.runErr != nil)) && (!expectErr || errMatch)
-
-			switch {
-			case pending && matched:
-				t.Errorf("%s now matches go: delete %s/PENDING to pin the fix", dir, dir)
-			case pending:
-				t.Skipf("known divergence (see %s/PENDING)", dir)
-			case expectErr && res.runErr == nil:
-				t.Errorf("expected error containing %q, but the run succeeded", strings.TrimSpace(string(wantErrText)))
-			case expectErr && !errMatch:
-				t.Errorf("run error differs from %s/want.err (-want +got):\n%s", dir, cmp.Diff(strings.TrimSpace(string(wantErrText)), res.runErr.Error()))
-			case diff != "":
-				t.Errorf("output differs from go (-go +minigo):\n%s", diff)
-			case matched:
-				// the pinned outcome holds — nothing to report
-			case res.runErr != nil:
-				t.Errorf("run: %v", res.runErr)
-			}
+			runDiffCase(t, dir, "PENDING", nil)
 		})
+	}
+}
+
+// TestStrictLazyConformance is the M4-8b conformance job: the whole
+// difffuzz corpus under WithStrictLazyCompile, against the same
+// want.stdout/want.err/want.stderr oracles as TestDiffRegressions —
+// output and TRAP equivalence with normal mode (and gc) in one check.
+// A STRICT_PENDING file marks a case that only converges under normal
+// mode: it must still diverge under strict, and matching asks to delete
+// the marker, same protocol as PENDING.
+func TestStrictLazyConformance(t *testing.T) {
+	dirs, err := filepath.Glob("testdata/difffuzz/*/main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range dirs {
+		dir := filepath.Dir(f)
+		t.Run(filepath.Base(dir), func(t *testing.T) {
+			runDiffCase(t, dir, "STRICT_PENDING", []minigo.Option{minigo.WithStrictLazyCompile()})
+		})
+	}
+}
+
+// runDiffCase runs one difffuzz dir and applies the verdict contract:
+// stdout against want.stdout, stderr against want.stderr when present,
+// an error containing want.err's text when present, and the pending
+// marker's must-still-diverge protocol. extra prepends engine options
+// (e.g. WithStrictLazyCompile).
+func runDiffCase(t *testing.T, dir, pendingFile string, extra []minigo.Option) {
+	{
+		want, err := os.ReadFile(filepath.Join(dir, "want.stdout"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// want.err holds the expected error text; an absent runErr
+		// or a non-matching one both fail below.
+		wantErrText, err := os.ReadFile(filepath.Join(dir, "want.err"))
+		expectErr := err == nil
+		_, statErr := os.Stat(filepath.Join(dir, pendingFile))
+		pending := statErr == nil
+		// COMPILE_TIME_FACT (M0-7) labels cases whose expected
+		// result leans on a compile-time fact — the file's text
+		// names which. They are the M4-7/M4-8 acceptance set:
+		// docs/next/ja/references/acceptance-set.md.
+		if fact, err := os.ReadFile(filepath.Join(dir, "COMPILE_TIME_FACT")); err == nil {
+			t.Log(strings.TrimSpace(string(fact)))
+		}
+		// A case with a want.stderr file also compares stderr (e.g.
+		// builtin print/println output). Builtins write to os.Stderr
+		// directly, so the run happens with os.Stderr redirected to
+		// a pipe; subtests run serially, so the swap is safe.
+		wantStderr, err := os.ReadFile(filepath.Join(dir, "want.stderr"))
+		captureErr := err == nil
+
+		type outcome struct {
+			stdout string
+			stderr string
+			runErr error
+		}
+		resCh := make(chan outcome, 1)
+		// The os.Stderr swap happens before the run goroutine starts
+		// so it is never racy, and the pipe lives long enough for the
+		// timeout path to close it: an abandoned run then writes to
+		// the restored stderr and the reader drains and exits instead
+		// of leaking on ReadAll.
+		var stderrOld, pipeR, pipeW *os.File
+		var done chan string
+		if captureErr {
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatalf("os.Pipe: %v", err)
+			}
+			pipeR, pipeW = r, w
+			stderrOld = os.Stderr
+			os.Stderr = w
+			done = make(chan string, 1)
+			go func() {
+				b, _ := io.ReadAll(r)
+				done <- string(b)
+			}()
+		}
+		go func() {
+			var buf bytes.Buffer
+			opts := append([]minigo.Option{}, extra...)
+			opts = append(opts, minigo.WithOutput(&buf))
+			// A SRC file lists packages to interpret from source (the
+			// CLI's --src), one per line — for fixes on the source path
+			// of a package that also has a host binding.
+			if src, err := os.ReadFile(filepath.Join(dir, "SRC")); err == nil {
+				modes := map[string]minigo.PackageMode{}
+				for _, p := range strings.Fields(string(src)) {
+					modes[p] = minigo.ModeSource
+				}
+				opts = append(opts, minigo.WithPackageModes(modes))
+			}
+			e := minigo.NewEngine(".", opts...)
+
+			var runErr error
+			var gotErr string
+			_, runErr = e.Run(context.Background(), "./"+filepath.ToSlash(dir), "")
+			if captureErr {
+				pipeW.Close()
+				gotErr = <-done
+				os.Stderr = stderrOld
+				pipeR.Close()
+			}
+			resCh <- outcome{stdout: buf.String(), stderr: gotErr, runErr: runErr}
+		}()
+
+		var res outcome
+		select {
+		case res = <-resCh:
+		case <-time.After(runCaseTimeout):
+			if stderrOld != nil {
+				os.Stderr = stderrOld
+				pipeW.Close()
+				pipeR.Close()
+			}
+			t.Fatalf("run did not finish within %s (HANG regression?)", runCaseTimeout)
+		}
+
+		diff := cmp.Diff(string(want), res.stdout)
+		if captureErr && diff == "" {
+			diff = cmp.Diff(string(wantStderr), res.stderr)
+		}
+		errMatch := expectErr && res.runErr != nil &&
+			strings.Contains(res.runErr.Error(), strings.TrimSpace(string(wantErrText)))
+		matched := diff == "" && (expectErr == (res.runErr != nil)) && (!expectErr || errMatch)
+
+		switch {
+		case pending && matched:
+			t.Errorf("%s now matches go: delete %s/%s to pin the fix", dir, dir, pendingFile)
+		case pending:
+			t.Skipf("known divergence (see %s/%s)", dir, pendingFile)
+		case expectErr && res.runErr == nil:
+			t.Errorf("expected error containing %q, but the run succeeded", strings.TrimSpace(string(wantErrText)))
+		case expectErr && !errMatch:
+			t.Errorf("run error differs from %s/want.err (-want +got):\n%s", dir, cmp.Diff(strings.TrimSpace(string(wantErrText)), res.runErr.Error()))
+		case diff != "":
+			t.Errorf("output differs from go (-go +minigo):\n%s", diff)
+		case matched:
+			// the pinned outcome holds — nothing to report
+		case res.runErr != nil:
+			t.Errorf("run: %v", res.runErr)
+		}
 	}
 }
