@@ -334,6 +334,11 @@ func (v *VM) typeAssert(f *frame, x, tdv, static runtime.Value, pos token.Pos) r
 // sorted for determinism. Empty when the check can't name one (hooks
 // missing, or the failure came from something else).
 func (v *VM) ifaceFailReason(td *runtime.TypeDef, x runtime.Value) string {
+	if x == nil || x == runtime.NIL || runtime.IfaceTaggedNil(x) != nil {
+		// no dynamic type — the generic "interface {} is nil, not T"
+		// panic stands; there is no missing method to name.
+		return ""
+	}
 	if len(td.MReqs) == 0 && len(td.IEmbeds) == 0 {
 		return ""
 	}

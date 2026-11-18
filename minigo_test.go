@@ -2721,6 +2721,7 @@ func TestFuzzFixes(t *testing.T) {
 		{"AssertWrongSig", "interface conversion: main.asSigT is not main.asSigI: missing method MSig"},
 		{"AssertPtrRecv", "interface conversion: main.asPtrT is not main.asSigI: missing method MSig"},
 		{"AssertBasicMissingMethod", "interface conversion: int is not io.Writer: missing method Write"},
+		{"AssertNilIface", "interface conversion: interface {} is nil, not io.Writer"},
 		{"AssertPtrRecvOK", "ok"},
 		{"ErrAsCrossPkg", "true false"},
 		{"ByteRuneElemTyp", "uint8 int32 uint8"},
