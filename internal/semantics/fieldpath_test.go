@@ -306,6 +306,24 @@ type P *struct{ Y int }
 		}
 	})
 
+	t.Run("caller binds do not leak into another declaration", func(t *testing.T) {
+		ix := indexOf(t, `package foo
+type T struct{ X int }
+type E struct{ T }
+type G[T any] struct{ E }
+`)
+		s := New(&fakeSource{indexes: map[string]*index.Index{"foo": ix}})
+		ref := refFor(t, s, "foo", "G")
+		ref.Ctx.Binds = map[string]ast.Expr{"T": &ast.Ident{Name: "int"}}
+		got := s.FieldPathOf(ref, "X", IndexedOnly)
+		if got.Kind != Found {
+			t.Fatalf("kind %v, want Found — E's own type T is not G's parameter", got.Kind)
+		}
+		if diff := cmp.Diff([]int{0, 0, 0}, got.Val.Index); diff != "" {
+			t.Fatal(diff)
+		}
+	})
+
 	t.Run("bound type parameter contributes no fields", func(t *testing.T) {
 		ix := indexOf(t, `package foo
 type E struct{ X int }
