@@ -659,6 +659,28 @@ func (r *Resolver) MethodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]b
 		u, uerr := r.Underlying(td)
 		if uerr != nil || u == nil {
 			unsure = true
+		} else if u != td && u.Kind == runtime.KindInterface {
+			// a defined type over an interface type is itself an
+			// interface type (`type E error`, `type W E`): its method
+			// set adds the underlying interface's requirements at this
+			// level. The members ride as iface dispatch so a struct
+			// embedding the type promotes them exactly like an
+			// embedded `error` — `struct{ E }.Error()` selects on the
+			// stored interface value.
+			for m := range r.IfaceReqSet(u) {
+				names[m] = true
+				if p := PlainReqName(m); p != m {
+					names[p] = true
+				}
+				if td.Methods[m] == nil && td.Methods[PlainReqName(m)] == nil {
+					members[m] = &runtime.PromotedMember{Depth: 0, Via: "iface", Method: true}
+				}
+			}
+			for m, sf := range r.IfaceSigFuncs(u) {
+				if funcs[m] == nil {
+					funcs[m] = sf
+				}
+			}
 		} else if u != td && u.Kind == runtime.KindStruct {
 			if u.HostNew != nil {
 				for m, fd := range hostFieldDepths(u.HostType()) {

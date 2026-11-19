@@ -112,7 +112,7 @@ var FileBudgets = map[string]int{
 	"internal/stdlib/inspect/inspect.go":           1194,
 	"internal/stdlib/inspect/hooks.go":             24,
 	"internal/stdlib/json/json.go":                 2304,
-	"internal/typedef/dispatch.go":                 1455,
+	"internal/typedef/dispatch.go":                 1477,
 	"internal/typedef/dispatch_deferred.go":        687,
 	"internal/typedef/dispatch_deferred_typ.go":    93,
 	"internal/typedef/iface_reqs.go":               182,
