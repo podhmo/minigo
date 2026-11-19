@@ -942,17 +942,12 @@ func (c *compiler) selectorBase(x ast.Expr, sel string) {
 	// the write lands; a type-form operand (F[T].M) stays an
 	// instantiation.
 	if ix, ok := indexOperand(x); ok && !c.isTypeForm(ix.Index) && c.refableIndexBase(ix.X) {
-		if c.selectorBaseNoCell(x, sel) {
-			// the member provably cannot bind the element's storage —
-			// read the element itself instead of a tolerated ref.
-			c.expr(ix.X)
-			c.expr(ix.Index)
-			c.emit(bytecode.OpIndex, 0, 0, ix.Lbrack)
-		} else {
-			c.refTargetBase(ix.X, false)
-			c.expr(ix.Index)
-			c.emit(bytecode.OpIndexRef, 0, 1, ix.Lbrack)
-		}
+		// the element must stay a ref: a value read deep-copies the
+		// element, so a write through a nested ref, a [:] on an array
+		// field, or a promoted pointer method would land on the copy.
+		c.refTargetBase(ix.X, false)
+		c.expr(ix.Index)
+		c.emit(bytecode.OpIndexRef, 0, 1, ix.Lbrack)
 	} else if c.selectorBaseIsVar(x) && !c.selectorBaseNoCell(x, sel) {
 		// `x.M()` lowers to `(&x).M()` when M needs a pointer — a
 		// scalar named value is a detached copy otherwise, so the
