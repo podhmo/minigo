@@ -1676,9 +1676,7 @@ func NewFmtValue(c runtime.MemberCaller, x runtime.Value) fmt.Formatter {
 func mapKeyRank(v runtime.Value) (int, string) {
 	var spell string
 	switch x := v.(type) {
-	case nil:
-		return 0, ""
-	case *runtime.TypedNil:
+	case nil, runtime.Nil, *runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
 		return 0, ""
 	case int64:
 		spell = "int"
@@ -1690,11 +1688,38 @@ func mapKeyRank(v runtime.Value) (int, string) {
 		spell = "bool"
 	case complex128:
 		spell = "complex128"
+	case *runtime.UConst:
+		// an untyped constant's dynamic type is its default type.
+		switch x.V.Kind() {
+		case constant.Int:
+			spell = "int"
+		case constant.Float:
+			spell = "float64"
+		case constant.String:
+			spell = "string"
+		case constant.Bool:
+			spell = "bool"
+		case constant.Complex:
+			spell = "complex128"
+		default:
+			return 60, ""
+		}
 	case *runtime.Named:
 		if x.Typ == nil {
 			return 60, ""
 		}
-		spell = stdlib.TypedefSpelling(x.Typ)
+		// the tag of a host-typed named — "time.Duration" — must
+		// match its GoValue and unboxed forms' spelling below;
+		// host types rank after the predeclared set like go's
+		// rtype layout does.
+		if rt := runtime.HostReflectType(x.Typ); rt != nil {
+			if _, basic := fmtKeyBasicRank[rt.String()]; !basic {
+				return 50, rt.String()
+			}
+			spell = rt.String()
+		} else {
+			spell = stdlib.TypedefSpelling(x.Typ)
+		}
 	case *runtime.Struct:
 		if x.Def != nil && stdlib.IsArrayTyp(x.Def) {
 			return 10, stdlib.TypedefSpelling(x.Def)
@@ -1710,11 +1735,19 @@ func mapKeyRank(v runtime.Value) (int, string) {
 		return 11, ""
 	case *runtime.GoValue:
 		if rt := reflect.TypeOf(x.V); rt != nil {
+			if _, basic := fmtKeyBasicRank[rt.String()]; !basic {
+				return 50, rt.String()
+			}
 			spell = rt.String()
 		} else {
 			return 0, ""
 		}
 	default:
+		// a raw host named scalar (a bound const's payload) spells
+		// like its boxed Named/GoValue forms.
+		if _, rt, ok := runtime.HostNamedPayload(v); ok {
+			return 50, rt.String()
+		}
 		return 60, fmt.Sprintf("%T", v)
 	}
 	if r, ok := fmtKeyBasicRank[spell]; ok {
