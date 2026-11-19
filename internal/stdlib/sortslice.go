@@ -909,6 +909,11 @@ func SortScript(el []runtime.Value) {
 // (the argument may arrive as a []any via hostbridge.GoNative).
 
 func ScriptElems(v any) []runtime.Value {
+	// a defined slice type arrives Named-wrapped — Clone and
+	// instantiation results keep the declared-type tag.
+	if n, ok := v.(*runtime.Named); ok {
+		v = n.V
+	}
 	switch s := v.(type) {
 	case *runtime.Slice:
 		return s.Elems

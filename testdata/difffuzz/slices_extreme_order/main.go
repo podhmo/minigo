@@ -6,12 +6,15 @@ import (
 	"slices"
 )
 
+type S []int
+
 func main() {
 	nan := math.NaN()
 	pz, nz := 0.0, math.Copysign(0, -1)
 
-	// gc propagates NaN through both extremes.
+	// gc propagates NaN through both extremes — also mid-slice.
 	fmt.Println(slices.Max([]float64{1, 2, nan}))
+	fmt.Println(slices.Max([]float64{2, nan, 1}))
 	fmt.Println(slices.Min([]float64{nan, 1, 2}))
 	fmt.Println(slices.Min([]float64{1, nan, 2}))
 
@@ -24,6 +27,9 @@ func main() {
 	slices.Sort(us)
 	fmt.Println(us, slices.IsSorted(us))
 	fmt.Println(slices.Max(us), slices.Min(us))
+
+	// a named slice type keeps IsSorted honest.
+	fmt.Println(slices.IsSorted(slices.Clone(S{2, 1})), slices.IsSorted(S{1, 2}))
 
 	// int64 neighbours past 2^53 stay distinct.
 	fmt.Println(slices.Max([]int64{math.MaxInt64 - 1, math.MaxInt64}))
