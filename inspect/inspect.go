@@ -570,7 +570,7 @@ func MethodsIn(p *runtime.Package, file *syntax.File) ([]*Decl, error) {
 type Method struct {
 	Name string
 	Sig  *Sig
-	Decl *Decl // the method declaration; nil for an interface method spec
+	Decl *Decl // the method declaration; nil for an interface method spec or a host-bound member
 	// Via is the type declaring the member: the embedded type a method
 	// was promoted from, or the interface declaring a method spec. It
 	// is nil for a method declared on the queried type itself.
@@ -638,10 +638,19 @@ func MethodSetOf(s *Decl, res Resolver) ([]*Method, error) {
 		cur := queue[0]
 		queue = queue[1:]
 		if cur.owner.decl == nil {
-			// a host-bound member: only an interface whose binding
-			// carries its requirement AST has members to read here.
+			// a host-bound member: an interface binding promotes the
+			// specs its requirement AST carries; other bindings'
+			// method sets come from reflect (exported members only).
 			if it, known, _ := hostIface(cur.owner); known {
 				promoteIfaceSpecs(it, cur.owner, cur.depth, res, record, visited, &out)
+			} else {
+				for _, m := range hostMethodSpecs(cur.owner, cur.ptr) {
+					if !record(m.Name, cur.depth, declKey(cur.owner)) {
+						continue
+					}
+					m.Via = cur.via
+					out = append(out, m)
+				}
 			}
 			continue
 		}
