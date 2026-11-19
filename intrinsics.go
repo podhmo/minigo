@@ -441,11 +441,11 @@ func sizeDeclTyp(v runtime.Value) *runtime.TypeDef {
 // retErr wraps a (n int, err error) or single-value+error result into the
 // script-visible tuple (value, err-or-nil).
 func retErr(n int, err error) (any, error) {
-	return &runtime.Tuple{Elems: []runtime.Value{int64(n), errVal(err)}}, nil
+	return stdlib.RetErr(n, err)
 }
 
 func retErr2[T any](v T, err error) (any, error) {
-	return &runtime.Tuple{Elems: []runtime.Value{scriptVal(v), errVal(err)}}, nil
+	return stdlib.RetErr2(v, err)
 }
 
 // errVal delegates to the shared binding machinery in internal/stdlib.
@@ -506,42 +506,10 @@ func proxyHostTypeOf(v any) reflect.Type {
 }
 
 func intOf(v any) int {
-	switch x := v.(type) {
-	case *runtime.Named:
-		return intOf(x.V)
-	case *runtime.UConst:
-		// a named constant stays a UConst through declaration storage;
-		// a builtin argument position materializes it at its default
-		// type — Go folds these calls at compile time.
-		return intOf(hostbridge.MustNativeConst(x))
-	case int64:
-		return int(x)
-	case int:
-		return x
-	case float64:
-		return int(x)
-	case uint64:
-		return int(x)
-	case uint, uint8, uint16, uint32, uintptr:
-		return int(reflect.ValueOf(x).Uint())
-	case time.Duration:
-		return int(x)
-	case *runtime.GoValue:
-		return intOf(x.V)
-	}
-	// a defined numeric type the switch above missed (e.g. fs.FileMode
-	// from a host call's result) still carries its integer value — Go
-	// would fold passing it to an int-typed parameter at compile time.
-	switch rv := reflect.ValueOf(v); rv.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return int(rv.Int())
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		return int(rv.Uint())
-	}
-	return 0
+	return stdlib.IntOf(v)
 }
 
-func int64Of(v any) int64 { return int64(intOf(v)) }
+func int64Of(v any) int64 { return stdlib.Int64Of(v) }
 
 func durOf(v any) time.Duration { return time.Duration(int64Of(v)) }
 
@@ -599,40 +567,8 @@ func sliceTypFromPtr(td *runtime.TypeDef) *runtime.TypeDef {
 	return td
 }
 
-// byteSlice unmarshals a script value to []byte for os.WriteFile & co:
-// accepts strings, []byte natives and int64 element slices.
 func byteSlice(v any) []byte {
-	if n, ok := v.(*runtime.Named); ok {
-		return byteSlice(n.V)
-	}
-	switch x := v.(type) {
-	case string:
-		return []byte(x)
-	case []byte:
-		return x
-	case []any:
-		out := make([]byte, len(x))
-		for i, e := range x {
-			out[i] = byte(int64Of(e))
-		}
-		return out
-	case *runtime.Slice:
-		out := make([]byte, len(x.Elems))
-		for i, e := range x.Elems {
-			// byte elements are Named{byte, int64} or raw int64 — read
-			// them directly instead of a hostbridge.GoNative walk per element.
-			if n, ok := e.(*runtime.Named); ok && (n.Typ == nil || n.Typ.HostScalar == nil) {
-				e = n.V
-			}
-			if iv, ok := e.(int64); ok {
-				out[i] = byte(iv)
-				continue
-			}
-			out[i] = byte(int64Of(hostbridge.GoNative(e)))
-		}
-		return out
-	}
-	return nil
+	return stdlib.ByteSlice(v)
 }
 
 func strSlice(v any) []string {
@@ -866,22 +802,6 @@ func runePred(v runtime.ScriptCaller, fn runtime.Value) func(rune) bool {
 		b, _ := res.(bool)
 		return b
 	}
-}
-
-func floatOf(v any) float64 {
-	switch x := v.(type) {
-	case *runtime.Named:
-		return floatOf(x.V)
-	case float64:
-		return x
-	case float32:
-		return float64(x)
-	case int64:
-		return float64(x)
-	case int:
-		return float64(x)
-	}
-	return 0
 }
 
 func runeOf(v any) rune { return rune(intOf(v)) }
