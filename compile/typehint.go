@@ -98,9 +98,10 @@ func (c *compiler) isIfaceExpr(e ast.Expr) bool {
 			if c.fs.lookupBinding(fn.Name) == nil && c.pkg != nil && c.pkg.Index != nil {
 				if fd := c.pkg.Index.Funcs[fn.Name]; fd != nil && fd.Func != nil {
 					if rs := fd.Func.Type.Results; rs != nil && len(rs.List) == 1 {
-						// a package decl's signature resolves its type
-						// names in package scope, not the use site's.
-						return c.isIfaceTypeExprPkg(rs.List[0].Type)
+						// the declared-signature walk: a type-param
+						// result is opaque, and the spelling's type
+						// names resolve in the decl file's scope.
+						return c.funcTypeResultOpTyp(fd.Func.Type, fd.File).iface
 					}
 				}
 			}
