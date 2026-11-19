@@ -2477,7 +2477,7 @@ func (n *Node) litUnderlying(lt litType) (litType, bool) {
 			// load here. Its inner names resolve in that package's
 			// scope, not this file's (foreign).
 			if pid, ok := ast.Unparen(x.X).(*ast.Ident); ok {
-				if lt.local && n.locals[pid.Name] {
+				if lt.local && n.scopes != nil && n.scopes.AtLocal(pid.Name, lt.pos) {
 					// a local binding named like the import makes
 					// `imp.Sel` a field or method select — under-resolve.
 					return litType{}, false
