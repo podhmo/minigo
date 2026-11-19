@@ -229,9 +229,9 @@ func osErrPred(name string, pred func(error) bool) *runtime.BuiltinFunc {
 // script struct's fields (by name), the error fields via hostErrOf.
 var hostErrTwins = []struct {
 	rt    reflect.Type
-	build func(c runtime.VMCaller, s *runtime.Struct) error
+	build func(c runtime.MemberCaller, s *runtime.Struct) error
 }{
-	{reflect.TypeFor[fs.PathError](), func(c runtime.VMCaller, s *runtime.Struct) error {
+	{reflect.TypeFor[fs.PathError](), func(c runtime.MemberCaller, s *runtime.Struct) error {
 		return &fs.PathError{
 			Op:   str(goNative(structField(s, "Op"))),
 			Path: str(goNative(structField(s, "Path"))),
@@ -246,7 +246,7 @@ var hostErrTwins = []struct {
 // helpers only read it); anything else boxes like hostErrOf. The arg is
 // unwrapped first — a var of pointer type arrives as a Cell whose
 // hostErrOf would otherwise box the cell itself as a script error.
-func hostErrArg(c runtime.VMCaller, v runtime.Value) error {
+func hostErrArg(c runtime.MemberCaller, v runtime.Value) error {
 	u := v
 	for {
 		switch x := u.(type) {
@@ -327,7 +327,7 @@ func hostNamedIsOf(c any, rt reflect.Type, td *runtime.TypeDef) bool {
 
 // twinNilHost returns the real host (*T)(nil) for a script typed nil
 // of a hostErrTwins pointer type, nil for any other typed nil.
-func twinNilHost(c runtime.VMCaller, tn *runtime.TypedNil) error {
+func twinNilHost(c runtime.CallerRef, tn *runtime.TypedNil) error {
 	et := tn.Typ
 	if et == nil {
 		return nil

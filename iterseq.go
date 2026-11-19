@@ -193,7 +193,7 @@ func nativeSeq(v runtime.Value) *runtime.SeqSource {
 // driveSeq drives seq with a Go-side consumer: an intrinsic seq runs its
 // producer natively; anything else is called through the VM with a
 // yield builtin wrapping take.
-func driveSeq(vc runtime.VMCaller, seq runtime.Value, take func(args []runtime.Value)) error {
+func driveSeq(vc runtime.ScriptCaller, seq runtime.Value, take func(args []runtime.Value)) error {
 	if src := nativeSeq(seq); src != nil {
 		return src.Each(vc, func(args []runtime.Value) bool {
 			take(args)
@@ -212,7 +212,7 @@ func driveSeq(vc runtime.VMCaller, seq runtime.Value, take func(args []runtime.V
 // (strings.SplitSeq and friends, maps over host values).
 func sliceSource(pieces []runtime.Value) *runtime.SeqSource {
 	return &runtime.SeqSource{
-		Each: func(_ runtime.VMCaller, yield func([]runtime.Value) bool) error {
+		Each: func(_ runtime.ScriptCaller, yield func([]runtime.Value) bool) error {
 			buf := make([]runtime.Value, 1)
 			for _, p := range pieces {
 				buf[0] = p
@@ -222,7 +222,7 @@ func sliceSource(pieces []runtime.Value) *runtime.SeqSource {
 			}
 			return nil
 		},
-		Collect: func(runtime.VMCaller) []runtime.Value { return slices.Clone(pieces) },
+		Collect: func(runtime.ScriptCaller) []runtime.Value { return slices.Clone(pieces) },
 	}
 }
 
@@ -249,7 +249,7 @@ func mapSource(m *runtime.Map, kind mapSeqKind, conv func(runtime.Value) runtime
 		return k
 	}
 	src := &runtime.SeqSource{
-		Each: func(_ runtime.VMCaller, yield func([]runtime.Value) bool) error {
+		Each: func(_ runtime.ScriptCaller, yield func([]runtime.Value) bool) error {
 			if m == nil || m.Len() == 0 {
 				return nil
 			}
@@ -286,7 +286,7 @@ func mapSource(m *runtime.Map, kind mapSeqKind, conv func(runtime.Value) runtime
 	}
 	switch kind {
 	case mapSeqKeys:
-		src.Collect = func(runtime.VMCaller) []runtime.Value {
+		src.Collect = func(runtime.ScriptCaller) []runtime.Value {
 			if m == nil {
 				return nil
 			}
@@ -299,7 +299,7 @@ func mapSource(m *runtime.Map, kind mapSeqKind, conv func(runtime.Value) runtime
 			return out
 		}
 	case mapSeqValues:
-		src.Collect = func(runtime.VMCaller) []runtime.Value {
+		src.Collect = func(runtime.ScriptCaller) []runtime.Value {
 			if m == nil {
 				return nil
 			}
@@ -319,7 +319,7 @@ func mapSource(m *runtime.Map, kind mapSeqKind, conv func(runtime.Value) runtime
 // its new content. A nil map produces nothing.
 func hostMapSource(rv reflect.Value, kind mapSeqKind) *runtime.SeqSource {
 	src := &runtime.SeqSource{
-		Each: func(_ runtime.VMCaller, yield func([]runtime.Value) bool) error {
+		Each: func(_ runtime.ScriptCaller, yield func([]runtime.Value) bool) error {
 			if !rv.IsValid() || rv.IsNil() {
 				return nil
 			}
@@ -348,7 +348,7 @@ func hostMapSource(rv reflect.Value, kind mapSeqKind) *runtime.SeqSource {
 	}
 	switch kind {
 	case mapSeqKeys:
-		src.Collect = func(runtime.VMCaller) []runtime.Value {
+		src.Collect = func(runtime.ScriptCaller) []runtime.Value {
 			if !rv.IsValid() || rv.IsNil() {
 				return nil
 			}
@@ -359,7 +359,7 @@ func hostMapSource(rv reflect.Value, kind mapSeqKind) *runtime.SeqSource {
 			return out
 		}
 	case mapSeqValues:
-		src.Collect = func(runtime.VMCaller) []runtime.Value {
+		src.Collect = func(runtime.ScriptCaller) []runtime.Value {
 			if !rv.IsValid() || rv.IsNil() {
 				return nil
 			}
@@ -584,7 +584,7 @@ func sliceLen(s *runtime.Slice) int {
 // collectSeq drives seq and returns its elements, boxed as a []E typed
 // after the seq (a nil slice when it yields nothing, like
 // slices.Collect), plus the raw elements and the slice typedef.
-func collectSeq(vc runtime.VMCaller, seq runtime.Value) (runtime.Value, []runtime.Value, *runtime.TypeDef, error) {
+func collectSeq(vc runtime.ScriptCaller, seq runtime.Value) (runtime.Value, []runtime.Value, *runtime.TypeDef, error) {
 	el, err := seqElems(vc, seq)
 	if err != nil {
 		return nil, nil, nil, err
@@ -622,7 +622,7 @@ func (e *Engine) slicesSeqHelpers(slicesPkg map[string]runtime.Value) map[string
 			if !ok {
 				return nil, fmt.Errorf("%s: arg must be a slice", name)
 			}
-			fn := seqFn(name, &runtime.SeqSource{Each: func(_ runtime.VMCaller, yield func([]runtime.Value) bool) error {
+			fn := seqFn(name, &runtime.SeqSource{Each: func(_ runtime.ScriptCaller, yield func([]runtime.Value) bool) error {
 				each(s, yield)
 				return nil
 			}})
@@ -755,7 +755,7 @@ func (e *Engine) slicesSeqHelpers(slicesPkg map[string]runtime.Value) map[string
 		// capture the element, not the args slice: Each may run after
 		// Fn returns, when the caller's arg buffer is already rewritten.
 		orig := args[0]
-		fn := seqFn("slices.Chunk", &runtime.SeqSource{Each: func(_ runtime.VMCaller, yield func([]runtime.Value) bool) error {
+		fn := seqFn("slices.Chunk", &runtime.SeqSource{Each: func(_ runtime.ScriptCaller, yield func([]runtime.Value) bool) error {
 			buf := make([]runtime.Value, 1)
 			for i, l := 0, sliceLen(s); i < l; i += n {
 				end := min(i+n, l)

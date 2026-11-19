@@ -196,7 +196,7 @@ func (h *hostHelpers) arity(name string, n int, f func([]any) (any, error), targ
 // non-pointer args (a format string or reader); headFn converts any
 // prefix of them it needs to (nil: none) and scanFn goNatives the rest,
 // so a converter like scanReader never has to know the arg count.
-func (h *hostHelpers) scanFn(name string, heads int, headFn func(runtime.VMCaller, []runtime.Value) ([]any, error), target any, call func(head, ptrs []any) (int, error)) *runtime.BuiltinFunc {
+func (h *hostHelpers) scanFn(name string, heads int, headFn func(runtime.MemberCaller, []runtime.Value) ([]any, error), target any, call func(head, ptrs []any) (int, error)) *runtime.BuiltinFunc {
 	return &runtime.BuiltinFunc{Name: name, Target: target, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) < heads {
 			return nil, fmt.Errorf("%s needs at least %d args, got %d", name, heads, len(args))
@@ -248,7 +248,7 @@ func (h *hostHelpers) scanFn(name string, heads int, headFn func(runtime.VMCalle
 
 // scanReader converts an Fscan family's leading reader arg, accepting
 // both host io.Reader values and script-defined readers.
-func (h *hostHelpers) scanReader(v runtime.VMCaller, args []runtime.Value) ([]any, error) {
+func (h *hostHelpers) scanReader(v runtime.MemberCaller, args []runtime.Value) ([]any, error) {
 	r, err := h.asReaderVM(v, args[0])
 	if err != nil {
 		return nil, err
@@ -888,7 +888,7 @@ func (h *hostHelpers) packSlice(vc runtime.VMCaller, s *runtime.Slice, kept []ru
 // verbatim, and an iter.Seq-shaped callable (seqOf's BuiltinFunc, or a
 // script func used as a seq) is driven with a yield that gathers each
 // element — the seq stops when yield reports false.
-func seqElems(vc runtime.VMCaller, v runtime.Value) ([]runtime.Value, error) {
+func seqElems(vc runtime.ScriptCaller, v runtime.Value) ([]runtime.Value, error) {
 	if s, ok := sliceOf(v); ok {
 		return append([]runtime.Value{}, s.Elems...), nil
 	}
@@ -1201,7 +1201,7 @@ func elemAt(vs []runtime.Value, i int) runtime.Value {
 // sliceExtreme is slices.Max/Min: the element better wins over best.
 // It returns the slice's own element, so its type survives —
 // slices.Max([]fs.FileMode{...}) prints a FileMode, not its payload.
-func sliceExtreme(vc runtime.VMCaller, name string, args []runtime.Value, better func(best, x runtime.Value) bool) (runtime.Value, error) {
+func sliceExtreme(vc runtime.ElemTyper, name string, args []runtime.Value, better func(best, x runtime.Value) bool) (runtime.Value, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("%s needs 1 arg, got %d", name, len(args))
 	}

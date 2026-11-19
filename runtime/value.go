@@ -2294,11 +2294,12 @@ type BuiltinFunc struct {
 // SeqSource is the native side of an intrinsic seq builtin.
 type SeqSource struct {
 	// Each drives the seq: yield receives one element's values (the
-	// slice is reused between calls) and returns false to stop.
-	Each func(vc VMCaller, yield func(args []Value) bool) error
+	// slice is reused between calls) and returns false to stop. A
+	// producer reaches the caller as a [ScriptCaller] only.
+	Each func(vc ScriptCaller, yield func(args []Value) bool) error
 	// Collect, when set, returns all elements of a single-value seq at
 	// once — a fast path for consumers like slices.Collect.
-	Collect func(vc VMCaller) []Value
+	Collect func(vc ScriptCaller) []Value
 }
 
 // SmallIntOf converts a host value of any integer kind, including named

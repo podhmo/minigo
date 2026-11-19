@@ -52,7 +52,7 @@
 - [-] **P2-2 受け渡し先の helper を capability 型にする**: `runtime.IfaceMember`、`hostErrOf`、`display`、`callOrPanic`、`goJSONSeen` などが対象。完了条件: caller を受け渡すだけの 184 関数が、本当に必要とする capability に絞られている。
   - [x] JSON/io/errors/maps/seq 系の中核 helper を絞った（`IfaceMember`→`MemberLookup`、`hostErrOf`→`MemberCaller`、`goJSONSeen`→`MemberShapeCaller`、`callOrPanic`→`ScriptCaller` など）。
   - [x] メソッド別の原子 capability（`ValTyper`/`Converter`/`Equaler`/`ElemZeroer`/`ArraySizer`/`MapKeyer`/`NewMapper`/`Copier`）と合成型を追加し、中間層の受け渡し関数を絞った。`fmtValue.c`/`scriptLocker.vc` フィールドも `MemberCaller` 化。
-  - [ ] **P2-2a 組み込み関数と反復の helper**: `BuiltinFunc.Fn`、`src.Each` を経由する受け渡しのうち、参照や呼び出しだけを使う helper の引数を絞る。完了条件は既存の builtin・反復テストと、受け渡しだけの `VMCaller` 引数の削減。
+  - [x] **P2-2a 組み込み関数と反復の helper**: `SeqSource.Each`/`Collect` を `ScriptCaller` に絞り、それに乗る `driveSeq`/`seqElems`/`collectSeq` と、`scanReader`/`asWriterVM`/`sliceExtreme`/`encode`/`hostErrArg`/`rewriteTypeVerbs`/`scriptWriter`/`scriptSortable` を最小 capability へ。`scriptYield` だけは `DirectYield` の `Fn` が `VMCaller` を要求するため据え置き。process 束縛系（`watchCtxDone`/`newChanFeed`）は P2-2b、marshal 系（`toReflectValue` 系）は P2-7 へ送る。
   - [ ] **P2-2b host コールバックの helper**: `scriptIface.vc`、`bindCaller`、`callbackContext` から始まる受け渡しを絞る。P2-4 の capability を使い、登録時の process への束縛、再入、解放後の呼び出しを回帰テストで固定する。
 - [x] **P2-3 使っていない `VMCaller` 引数を削る**: 対象は 96 関数。完了条件: スキャナ（[references/vmcaller.md](./references/vmcaller.md)）の「未使用」が 0 になる。
 - [x] **P2-4 `vmOf` のダウンキャストをなくす**: 7 箇所を capability のメソッドに置き換える。
