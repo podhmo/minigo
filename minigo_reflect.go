@@ -43,5 +43,5 @@ func (e *Engine) installReflect() {
 		}
 		return deepEql(args[0], args[1], twin), nil
 	}}
-	e.Bind("reflect", syms)
+	e.bindBound("reflect", syms)
 }
