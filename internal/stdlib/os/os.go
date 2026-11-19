@@ -293,7 +293,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 		// keep the real files: there is no engine-level abstraction for
 		// them.)
 		ospkg["Stdin"] = &runtime.GoValue{V: os.Stdin}
-		ospkg["Stdout"] = &runtime.GoValue{V: &EngineStdout{File: os.Stdout, Env: env}}
+		ospkg["Stdout"] = &runtime.GoValue{V: &EngineStdout{File: os.Stdout, env: env}}
 		ospkg["Stderr"] = &runtime.GoValue{V: os.Stderr}
 		ospkg["Pipe"] = h.Fn("os.Pipe", func(a []any) (any, error) {
 			r, w, err := os.Pipe()
@@ -349,7 +349,7 @@ func fsTempDir(env intbind.Env, dir string) (string, error) {
 // print/println write instead of escaping to the process stdout.
 type EngineStdout struct {
 	*os.File
-	Env intbind.Env
+	env intbind.Env
 }
 
 func (w *EngineStdout) Write(p []byte) (int, error) { return w.out().Write(p) }
@@ -370,10 +370,10 @@ func (w *EngineStdout) ReadFrom(r io.Reader) (int64, error) {
 
 // out returns the environment's output writer (io.Discard when unset).
 func (w *EngineStdout) out() io.Writer {
-	if w.Env == nil {
+	if w.env == nil {
 		return io.Discard
 	}
-	return w.Env.Out()
+	return w.env.Out()
 }
 
 // EngineFileOf unwraps the script-visible os.Stdout facade to the real
