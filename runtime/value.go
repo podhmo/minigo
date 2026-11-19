@@ -735,7 +735,13 @@ func (r *IndexRef) Get() (Value, bool) {
 	if m := r.mapOf(); m != nil {
 		// a missing key reports no value — callers needing the zero
 		// go through the VM's index path, which knows the elem typedef.
-		v, ok := m.Get(Unwrap(r.Key))
+		// an interface-keyed map hashes the key's dynamic type —
+		// Named tags must survive like in [IndexRef.Set].
+		k := r.Key
+		if !m.IfaceKey {
+			k = Unwrap(k)
+		}
+		v, ok := m.Get(k)
 		if !ok || !SharedElem(v) {
 			// interior access on a non-reference element must not
 			// resolve: `m[k]` reads a copy in Go, so writes like
@@ -1348,6 +1354,15 @@ func typedScalarKeyOf(v Value) (typedKey, bool) {
 			}
 			p = Unwrap(mv)
 		}
+		// a declared type over an interface carries no tag: the
+		// interface's dynamic type lives in the payload — `type E
+		// error; E(err)` keys like err, and a nil E keys like nil.
+		// KindInterface covers literal interface decls; `type E error`
+		// and `type A any` stay KindNamedBasic, so the underlying
+		// spelling is the tell.
+		if x.Typ.Kind == KindInterface || ifaceUnderlyingSpell(TypUnderlyingSpelling(x.Typ)) {
+			return typedKey{}, false
+		}
 		// a nil interface carries no dynamic type — `var e E` for
 		// `type E error` keys like plain nil, tag or not. (E's
 		// td is KindNamedBasic, not KindInterface, so the payload
@@ -1384,6 +1399,13 @@ func typedScalarKeyOf(v Value) (typedKey, bool) {
 	case *GoValue:
 		if p, rt, ok := HostNamedScalar(x); ok {
 			return typedKey{typ: hostTypeTag(rt), v: p}, true
+		}
+	case *Chan:
+		// `make(C)` and `var c C` carry the declared type on the
+		// channel value itself — key it like the C(x) conversion's
+		// Named wrap so both forms of one channel key alike.
+		if x.Typ != nil && x.Typ.Name != "" && x.Typ.Kind != KindAlias {
+			return typedKey{typ: typeTagOf(x.Typ), v: x}, true
 		}
 	case int64, float64, string, bool, complex128, *Struct, *Slice:
 		return typedKey{}, false
@@ -3352,4 +3374,11 @@ func packageTypeSpec(fn *Function, name string) *ast.TypeSpec {
 		}
 	}
 	return nil
+}
+
+// ifaceUnderlyingSpell reports whether s spells an interface type —
+// [TypUnderlyingSpelling] renders `type E error` as "error" and
+// `type A any` / `interface{...}` decls under "interface{".
+func ifaceUnderlyingSpell(s string) bool {
+	return s == "error" || strings.HasPrefix(s, "interface{")
 }

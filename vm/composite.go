@@ -2315,7 +2315,13 @@ func (v *VM) refThrough(f *frame, base runtime.Value) (runtime.Value, bool) {
 			// Get is gated for copies; the raw element read lands on
 			// the map element itself (writable only when it is
 			// reference-shaped) or the map zero for a missing key.
-			x, found := m.Get(runtime.Unwrap(b.Key))
+			// an interface-keyed map hashes the key's dynamic
+			// type — keep a Named key's tag like IndexRef.Get.
+			k := b.Key
+			if !m.IfaceKey {
+				k = runtime.Unwrap(k)
+			}
+			x, found := m.Get(k)
 			if !found {
 				x = v.index(f, b.Base, b.Key)
 			}
@@ -2327,7 +2333,11 @@ func (v *VM) refThrough(f *frame, base runtime.Value) (runtime.Value, bool) {
 		}
 		switch cb := runtime.Unwrap(bv).(type) {
 		case *runtime.Map:
-			x, found := cb.Get(runtime.Unwrap(b.Key))
+			k := b.Key
+			if !cb.IfaceKey {
+				k = runtime.Unwrap(k)
+			}
+			x, found := cb.Get(k)
 			if !found {
 				x = v.index(f, bv, b.Key)
 			}

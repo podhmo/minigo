@@ -31,5 +31,5 @@ func concreteUnderNamedIface() {
 	type K struct{ X any }
 	var e3 E = myErr{"a"}
 	m := map[K]int{K{myErr{"a"}}: 9}
-	fmt.Println(m[K{e3}])
+	fmt.Println(m[K{e3}], m[K{E(myErr{"a"})}])
 }
