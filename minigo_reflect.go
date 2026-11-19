@@ -13,7 +13,7 @@ func (e *Engine) reflectHooks() minireflect.Hooks {
 		ResolveType: e.td.ResolveTypeRef,
 		FieldTypes:  e.td.FieldTypes,
 		TypeMethods: e.td.TypeMethods,
-		IfaceReqs:   e.ifaceReqs,
+		IfaceReqs:   e.td.IfaceReqs,
 		Underlying:  e.td.Underlying,
 		AliasOf:     e.td.AliasOf,
 		MethodSet:   e.td.MethodSet,

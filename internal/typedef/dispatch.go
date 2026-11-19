@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/podhmo/minigo/index"
@@ -26,19 +27,16 @@ import (
 type Resolver struct {
 	materialize   func(pkg *runtime.Package, d *index.Decl) (runtime.Value, error)
 	internTypedef func(td *runtime.TypeDef) *runtime.TypeDef
-	ifaceReqSet   func(td *runtime.TypeDef) map[string]bool
-	ifaceSigFuncs func(td *runtime.TypeDef) map[string]*runtime.Function
 	hostTwin      func(rt reflect.Type) *runtime.TypeDef
 	builtins      *runtime.Env
 	loadPath      func(ctx context.Context, path string) (*runtime.Package, error)
+	iterSeqTds    sync.Map
 }
 
 // Deps are the engine operations the resolver reaches back for.
 type Deps struct {
 	Materialize   func(pkg *runtime.Package, d *index.Decl) (runtime.Value, error)
 	InternTypedef func(td *runtime.TypeDef) *runtime.TypeDef
-	IfaceReqSet   func(td *runtime.TypeDef) map[string]bool
-	IfaceSigFuncs func(td *runtime.TypeDef) map[string]*runtime.Function
 	HostTwin      func(rt reflect.Type) *runtime.TypeDef
 	Builtins      *runtime.Env
 	LoadPath      func(ctx context.Context, path string) (*runtime.Package, error)
@@ -46,7 +44,6 @@ type Deps struct {
 
 func New(d Deps) *Resolver {
 	return &Resolver{materialize: d.Materialize, internTypedef: d.InternTypedef,
-		ifaceReqSet: d.IfaceReqSet, ifaceSigFuncs: d.IfaceSigFuncs,
 		hostTwin: d.HostTwin, builtins: d.Builtins, loadPath: d.LoadPath}
 }
 
@@ -528,13 +525,13 @@ func (r *Resolver) MethodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]b
 		// plain name so `x.m` and `I.m` keep resolving. Never write
 		// back into the cached req set — copy.
 		names := map[string]bool{}
-		for m := range r.ifaceReqSet(td) {
+		for m := range r.IfaceReqSet(td) {
 			names[m] = true
 			if p := PlainReqName(m); p != m {
 				names[p] = true
 			}
 		}
-		funcs := r.ifaceSigFuncs(td)
+		funcs := r.IfaceSigFuncs(td)
 		depths := map[string]int{}
 		for m := range names {
 			depths[m] = 0
@@ -738,8 +735,8 @@ func (r *Resolver) MethodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]b
 			// one; the receiver is the stored interface value itself.
 			// The signature shell contests with the name so a promoted
 			// requirement keeps its signature for assertion checks.
-			sigs := r.ifaceSigFuncs(peeled)
-			for m := range r.ifaceReqSet(peeled) {
+			sigs := r.IfaceSigFuncs(peeled)
+			for m := range r.IfaceReqSet(peeled) {
 				if promoted(m) {
 					contest(m, 1, sigs[m], []int{fieldIdx}, "iface", true)
 				}

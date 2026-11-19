@@ -1,9 +1,8 @@
-package minigo
+package typedef
 
 import (
 	"go/ast"
 
-	"github.com/podhmo/minigo/internal/typedef"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -11,15 +10,15 @@ import (
 // declared methods union the requirements of embedded interface elements.
 // Constraint elements (~T, unions) are approximated away — satisfaction
 // checks treat them as fulfilled.
-func (e *Engine) ifaceReqs(td *runtime.TypeDef) (map[string]bool, error) {
-	return e.ifaceReqSet(td), nil
+func (r *Resolver) IfaceReqs(td *runtime.TypeDef) (map[string]bool, error) {
+	return r.IfaceReqSet(td), nil
 }
 
 // ifaceReqSet is ifaceReqs cached on td (callers treat the set as
 // read-only). A set built while an embed failed to resolve — a
 // constraint element (~T, unions) or a not-yet-loadable package — is
 // not cached, so it is recomputed exactly as before.
-func (e *Engine) ifaceReqSet(td *runtime.TypeDef) map[string]bool {
+func (r *Resolver) IfaceReqSet(td *runtime.TypeDef) map[string]bool {
 	if td == nil {
 		return nil
 	}
@@ -27,30 +26,30 @@ func (e *Engine) ifaceReqSet(td *runtime.TypeDef) map[string]bool {
 		return set
 	}
 	complete := true
-	set := e.ifaceReqsRec(td, map[*runtime.TypeDef]bool{}, &complete)
+	set := r.ifaceReqsRec(td, map[*runtime.TypeDef]bool{}, &complete)
 	if complete {
 		td.SetIfaceReqs(set)
 	}
 	return set
 }
 
-func (e *Engine) ifaceReqsRec(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool, complete *bool) map[string]bool {
-	td = e.td.PeelAliasTd(td)
+func (r *Resolver) ifaceReqsRec(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool, complete *bool) map[string]bool {
+	td = r.PeelAliasTd(td)
 	if td == nil || seen[td] {
 		return nil
 	}
 	seen[td] = true
 	set := map[string]bool{}
 	for _, m := range td.MReqs {
-		set[typedef.ReqKey(td.Pkg, m)] = true
+		set[ReqKey(td.Pkg, m)] = true
 	}
 	for _, spec := range td.IEmbeds {
-		sub, err := e.td.ResolveTypeRef(td, spec)
+		sub, err := r.ResolveTypeRef(td, spec)
 		if err != nil || sub == nil {
 			*complete = false
 			continue // constraint exprs (~T, |) don't resolve to typedefs
 		}
-		for m := range e.ifaceReqsRec(sub, seen, complete) {
+		for m := range r.ifaceReqsRec(sub, seen, complete) {
 			set[m] = true
 		}
 	}
@@ -84,7 +83,7 @@ func ifaceSigFunc(sig ifaceSig) *runtime.Function {
 // conversion to an interface runs this, and the stable shell pointers
 // let SigMemo remember each requirement's comparison. A set built while
 // an embed failed to resolve is not cached — it may be incomplete.
-func (e *Engine) ifaceSigFuncs(td *runtime.TypeDef) map[string]*runtime.Function {
+func (r *Resolver) IfaceSigFuncs(td *runtime.TypeDef) map[string]*runtime.Function {
 	if td == nil {
 		return nil
 	}
@@ -92,7 +91,7 @@ func (e *Engine) ifaceSigFuncs(td *runtime.TypeDef) map[string]*runtime.Function
 		return out
 	}
 	complete := true
-	sigs := e.ifaceSigsOf(td, map[*runtime.TypeDef]bool{}, &complete)
+	sigs := r.ifaceSigsOf(td, map[*runtime.TypeDef]bool{}, &complete)
 	var out map[string]*runtime.Function
 	if len(sigs) > 0 {
 		out = make(map[string]*runtime.Function, len(sigs))
@@ -109,8 +108,8 @@ func (e *Engine) ifaceSigFuncs(td *runtime.TypeDef) map[string]*runtime.Function
 // ifaceSigReqs implements the Hooks.IfaceSigs hook: the interface's
 // required methods that carry a declared signature, as Function shells
 // spelling that signature in their declaring typedef's context.
-func (e *Engine) ifaceSigReqs(td *runtime.TypeDef) (map[string]*runtime.Function, error) {
-	return e.ifaceSigFuncs(td), nil
+func (r *Resolver) IfaceSigReqs(td *runtime.TypeDef) (map[string]*runtime.Function, error) {
+	return r.IfaceSigFuncs(td), nil
 }
 
 // ifaceSigsOf maps an interface's required methods to their declared
@@ -118,15 +117,15 @@ func (e *Engine) ifaceSigReqs(td *runtime.TypeDef) (map[string]*runtime.Function
 // which interface satisfaction via reflect needs.
 //
 // complete turns false when an embedded element fails to resolve.
-func (e *Engine) ifaceSigsOf(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool, complete *bool) map[string]ifaceSig {
-	td = e.td.PeelAliasTd(td)
+func (r *Resolver) ifaceSigsOf(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool, complete *bool) map[string]ifaceSig {
+	td = r.PeelAliasTd(td)
 	if td == nil || seen[td] {
 		return nil
 	}
 	seen[td] = true
 	out := map[string]ifaceSig{}
 	var it *ast.InterfaceType
-	for _, x := range []ast.Expr{td.Anon, typedef.SpecType(td)} {
+	for _, x := range []ast.Expr{td.Anon, SpecType(td)} {
 		if s, ok := x.(*ast.InterfaceType); ok {
 			it = s
 			break
@@ -147,19 +146,19 @@ func (e *Engine) ifaceSigsOf(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool
 				// unexported requirements compare under their
 				// declaring package's key (M4-2b); ifaceTypEq looks
 				// signatures up by the qualified requirement key.
-				if k := typedef.ReqKey(td.Pkg, n.Name); k != n.Name {
+				if k := ReqKey(td.Pkg, n.Name); k != n.Name {
 					out[k] = sig
 				}
 			}
 		}
 	}
 	for _, spec := range td.IEmbeds {
-		emb, err := e.td.ResolveTypeRef(td, spec)
+		emb, err := r.ResolveTypeRef(td, spec)
 		if err != nil || emb == nil {
 			*complete = false
 			continue
 		}
-		for name, sig := range e.ifaceSigsOf(emb, seen, complete) {
+		for name, sig := range r.ifaceSigsOf(emb, seen, complete) {
 			if _, dup := out[name]; !dup {
 				out[name] = sig
 			}

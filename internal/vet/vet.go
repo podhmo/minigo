@@ -3,7 +3,7 @@
 // `panic("minigo intrinsic")` — reaching it at run time is a loud but late
 // failure, so this checker surfaces the same mistake statically (plan §16).
 
-package minigo
+package vet
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 	"strconv"
 
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/runtime"
 )
 
 // stubPanic is the marker body of a stub-package member: a declaration that
@@ -21,33 +22,34 @@ import (
 // special form or a bound host symbol.
 const stubPanic = "minigo intrinsic"
 
-// VetResult is one [Engine.Vet] finding.
-type VetResult struct {
+// Deps wires the scanner to the engine: Package resolves an import path
+// (indexed, not initialized), Position maps a token.Pos, Registered
+// reports symbols handled by special forms or host bindings.
+type Deps struct {
+	Package    func(ctx context.Context, path string) (*runtime.Package, error)
+	Position   func(pos token.Pos) token.Position
+	Registered func(path, name string) bool
+}
+
+// Result is one [Scan] finding.
+type Result struct {
 	Pos      token.Position
 	Call     string // "pkg.Sym" as written (alias.Sym form)
 	Resolved string // canonical "import/path.Sym" it resolves to
 }
 
-func (r VetResult) String() string {
+func (r Result) String() string {
 	return fmt.Sprintf("%s: call %s resolves to unregistered stub member %s", r.Pos, r.Call, r.Resolved)
 }
 
-// Vet loads ref without initializing it and reports calls that would
-// fail at run time because nothing handles them: calls `pkgAlias.Sym(...)`
-// where Sym is a stub (its body is exactly `panic("minigo intrinsic")`)
-// that is neither registered with [Engine.RegisterSpecial] nor bound with
-// [Engine.Bind]. Calls through dot imports are not checked, and an import
-// name shadowed anywhere in a function is not checked in that function.
-func (e *Engine) Vet(ctx context.Context, ref string) ([]VetResult, error) {
-	// Shadowing is handled conservatively: a name declared anywhere inside
-	// the enclosing function (even a nested literal's params) hides the
-	// import binding for that whole function — a shadowed alias may miss a
-	// real finding but never reports a local variable's method call.
-	p, err := e.Package(ctx, ref)
-	if err != nil {
-		return nil, err
-	}
-	var out []VetResult
+// Scan checks an already-loaded package for calls that would fail at
+// run time because nothing handles them: `pkgAlias.Sym(...)` where Sym
+// is a stub (its body is exactly `panic("minigo intrinsic")`) that is
+// neither a registered special form nor a bound host symbol. Calls
+// through dot imports are not checked, and an import name shadowed
+// anywhere in a function is not checked in that function.
+func Scan(ctx context.Context, p *runtime.Package, deps Deps) ([]Result, error) {
+	var out []Result
 	for _, sf := range p.Files {
 		imports := map[string]string{} // local name -> import path
 		for _, im := range sf.Imports {
@@ -61,7 +63,7 @@ func (e *Engine) Vet(ctx context.Context, ref string) ([]VetResult, error) {
 			if fd, ok := decl.(*ast.FuncDecl); ok {
 				shadow = declaredNames(fd)
 			}
-			e.scanStubCalls(ctx, decl, imports, shadow, &out)
+			scanStubCalls(ctx, decl, imports, shadow, &out, deps)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -133,7 +135,7 @@ func declaredNames(root ast.Node) map[string]bool {
 // scanStubCalls inspects one declaration subtree for `alias.Sym(...)` calls
 // that reach unregistered stub members, skipping selector bases hidden by
 // the shadow set.
-func (e *Engine) scanStubCalls(ctx context.Context, root ast.Node, imports map[string]string, shadow map[string]bool, out *[]VetResult) {
+func scanStubCalls(ctx context.Context, root ast.Node, imports map[string]string, shadow map[string]bool, out *[]Result, deps Deps) {
 	ast.Inspect(root, func(n ast.Node) bool {
 		if lit, ok := n.(*ast.FuncLit); ok && root != lit {
 			// A nested function literal introduces its own scope: scan it
@@ -145,7 +147,7 @@ func (e *Engine) scanStubCalls(ctx context.Context, root ast.Node, imports map[s
 			for k := range declaredNames(lit) {
 				merged[k] = true
 			}
-			e.scanStubCalls(ctx, lit, imports, merged, out)
+			scanStubCalls(ctx, lit, imports, merged, out, deps)
 			return false
 		}
 		call, ok := n.(*ast.CallExpr)
@@ -168,14 +170,14 @@ func (e *Engine) scanStubCalls(ctx context.Context, root ast.Node, imports map[s
 			return true // method call or local value selector
 		}
 		name := sel.Sel.Name
-		if e.registeredVetSymbol(path, name) {
+		if deps.Registered(path, name) {
 			return true
 		}
-		if !e.stubMember(ctx, path, name) {
+		if !stubMember(ctx, path, name, deps) {
 			return true
 		}
-		*out = append(*out, VetResult{
-			Pos:      e.fset.Position(call.Lparen),
+		*out = append(*out, Result{
+			Pos:      deps.Position(call.Lparen),
 			Call:     x.Name + "." + name,
 			Resolved: path + "." + name,
 		})
@@ -187,8 +189,8 @@ func (e *Engine) scanStubCalls(ctx context.Context, root ast.Node, imports map[s
 // function whose body is exactly `panic("minigo intrinsic")`. The callee
 // package is located and indexed but never initialized; packages that
 // cannot be located answer false (nothing to inspect).
-func (e *Engine) stubMember(ctx context.Context, path, name string) bool {
-	p, err := e.Package(ctx, path)
+func stubMember(ctx context.Context, path, name string, deps Deps) bool {
+	p, err := deps.Package(ctx, path)
 	if err != nil || p.Index == nil {
 		return false
 	}
