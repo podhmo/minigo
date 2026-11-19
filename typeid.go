@@ -35,6 +35,18 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 	if td == nil {
 		return "?"
 	}
+	// the key is stable once minted: a td's spec, host identity and
+	// instantiation binds are fixed at construction, and the memo is
+	// per-engine so a re-parse (a new *syntax.File) keys fresh anyway.
+	if s, ok := e.tidMemo.Load(td); ok {
+		return s.(runtime.TypeID)
+	}
+	id := e.typeIDOfSlow(td)
+	e.tidMemo.Store(td, id)
+	return id
+}
+
+func (e *Engine) typeIDOfSlow(td *runtime.TypeDef) runtime.TypeID {
 	var args string
 	// Spell arguments only for a named instantiation (TParams, or a
 	// declared type whose TParams a copy dropped). An anonymous typedef
