@@ -15,6 +15,7 @@ import (
 	"unsafe"
 
 	"github.com/podhmo/minigo/internal/hostbridge"
+	"github.com/podhmo/minigo/internal/stdlib"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -1567,7 +1568,7 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 			for i := range el {
 				if i < len(arr) {
 					ectx.path = append(ectx.path, strconv.Itoa(i))
-					el[i] = jsonShape(c, arr[i], et, elemAt(pe, i), ectx)
+					el[i] = jsonShape(c, arr[i], et, stdlib.ElemAt(pe, i), ectx)
 					ectx.path = ectx.path[:len(ectx.path)-1]
 				} else {
 					el[i] = c.ElemZero(td)
@@ -1582,7 +1583,7 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 		}
 		for i := range arr {
 			ectx.path = append(ectx.path, strconv.Itoa(i))
-			el[i] = jsonShape(c, arr[i], et, elemAt(pe, i), ectx)
+			el[i] = jsonShape(c, arr[i], et, stdlib.ElemAt(pe, i), ectx)
 			ectx.path = ectx.path[:len(ectx.path)-1]
 		}
 		return &runtime.Slice{Elems: el, Typ: td}
