@@ -168,8 +168,14 @@ func (v *VM) instantiate(f *frame, base runtime.Value, targs []runtime.Value, po
 		if s, ok := site.Cache.Load().(*instSiteSlot); ok && s.match(base, targs) {
 			return s.out
 		}
-		if instSiteCacheable(base, targs) {
-			slot = &instSiteSlot{base: base, targs: targs}
+		if env, ok := instSiteEnv(base); ok && instSiteCacheable(targs) {
+			slot = &instSiteSlot{base: base, env: env, targs: targs}
+			if env != nil {
+				// read the generation first: a redeclare during
+				// dispatch leaves the slot stale on arrival, so the
+				// next instantiate resolves again.
+				slot.gen = env.Gen()
+			}
 		}
 	}
 	r := v.instantiateDispatch(f, base, targs, pos)

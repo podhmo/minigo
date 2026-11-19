@@ -102,6 +102,61 @@ func TestSelectSiteCache(t *testing.T) {
 	})
 }
 
+// TestInstantiateSite covers the OpInstantiate memo's guards: a chunk
+// with no Sites runs without one (hand-built bytecode), and a slot
+// pinned on (base, targs) identity still misses once the base's
+// declaring env redeclares — instTypeKey reads constraint names that a
+// REPL redeclare repoints without changing either pointer.
+func TestInstantiateSite(t *testing.T) {
+	t.Run("chunk without sites instantiates", func(t *testing.T) {
+		gen := &runtime.BuiltinFunc{
+			Name: "mk",
+			GenFn: func(vm runtime.VMCaller, targs, args []runtime.Value) (runtime.Value, error) {
+				return targs[0], nil
+			},
+		}
+		want := &runtime.TypeDef{Name: "int", Kind: runtime.KindNamedBasic}
+		chunk := &bytecode.Chunk{
+			Consts: []any{gen, want},
+			Code: []bytecode.Instruction{
+				{Op: bytecode.OpConst, A: 0},
+				{Op: bytecode.OpConst, A: 1},
+				{Op: bytecode.OpInstantiate, A: 1},
+				{Op: bytecode.OpReturn, A: 1},
+			},
+		}
+		got, err := (&VM{}).Call(&runtime.Function{Chunk: chunk, Pkg: &runtime.Package{}}, nil)
+		if err != nil {
+			t.Fatalf("call: %v", err)
+		}
+		inst, ok := got.(*runtime.BuiltinFunc)
+		if !ok {
+			t.Fatalf("want *BuiltinFunc, got %T", got)
+		}
+		r, err := inst.Fn(nil, nil)
+		if err != nil {
+			t.Fatalf("inst call: %v", err)
+		}
+		if r != want {
+			t.Fatalf("want %p, got %p", want, r)
+		}
+	})
+
+	t.Run("env redeclare invalidates the slot", func(t *testing.T) {
+		env := runtime.NewEnv()
+		base := &runtime.TypeDef{Name: "C", Kind: runtime.KindStruct}
+		arg := &runtime.TypeDef{Name: "int", Kind: runtime.KindNamedBasic}
+		s := &instSiteSlot{base: base, env: env, gen: env.Gen(), targs: []runtime.Value{arg}}
+		if !s.match(base, []runtime.Value{arg}) {
+			t.Fatal("same gen must match")
+		}
+		env.Touch() // a constraint redeclare bumps the declaring env's generation
+		if s.match(base, []runtime.Value{arg}) {
+			t.Fatal("new gen must miss even with identical pointers")
+		}
+	})
+}
+
 type testErr struct{ msg string }
 
 func (e *testErr) Error() string { return e.msg }
