@@ -102,14 +102,24 @@ func Env(ee source.EmbedEnv) *runtime.Env {
 		// an untyped-constant element converts through the declared
 		// element type — append(b, 'i') on []byte is Go's constant
 		// conversion; without a declared type it takes its default.
+		// et resolves lazily: ElemZero builds a full zero (a struct
+		// element walks every field), and a typed composite arg never
+		// consults it, so appending structs stays off the builder.
 		var et *runtime.TypeDef
-		if rtyp != nil {
-			et = v.TypeOf(v.ElemZero(rtyp))
+		etDone := false
+		elemTyp := func() *runtime.TypeDef {
+			if !etDone {
+				etDone = true
+				if rtyp != nil {
+					et = v.TypeOf(v.ElemZero(rtyp))
+				}
+			}
+			return et
 		}
 		add := make([]runtime.Value, len(args)-1)
 		for i, a := range args[1:] {
 			if u, ok := a.(*runtime.UConst); ok {
-				if et != nil {
+				if elemTyp() != nil {
 					cv, err := v.Convert(et, a)
 					if err != nil {
 						return nil, err
@@ -125,13 +135,18 @@ func Env(ee source.EmbedEnv) *runtime.Env {
 					}
 					a = nv
 				}
-			} else if et != nil {
-				// a materialized scalar converts like the constant it
-				// came from — append(f, 0) on []float64 stores 0.0.
+			} else {
+				// the element typedef is resolved only for an arg
+				// that can need converting — a typed composite arg
+				// (struct, slice, Named) never asks.
 				switch a.(type) {
 				case int64, int, uint64, rune, float64:
-					if cv, err := v.Convert(et, a); err == nil {
-						a = cv
+					// a materialized scalar converts like the constant it
+					// came from — append(f, 0) on []float64 stores 0.0.
+					if et := elemTyp(); et != nil {
+						if cv, err := v.Convert(et, a); err == nil {
+							a = cv
+						}
 					}
 				case runtime.Nil:
 					// untyped nil takes the declared element
@@ -139,11 +154,13 @@ func Env(ee source.EmbedEnv) *runtime.Env {
 					// stores List(nil), not a bare NIL that
 					// panics on member select or prints
 					// <nil> inside the slice.
-					cv, err := v.Convert(et, a)
-					if err != nil {
-						return nil, err
+					if et := elemTyp(); et != nil {
+						cv, err := v.Convert(et, a)
+						if err != nil {
+							return nil, err
+						}
+						a = cv
 					}
-					a = cv
 				}
 			}
 			add[i] = v.Copy(a)
