@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/podhmo/minigo/builtin"
 	"github.com/podhmo/minigo/internal/bind"
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
@@ -319,7 +320,7 @@ func numOf(v runtime.Value) (float64, bool) {
 	case *runtime.UConst:
 		// a constant ranks as its default-typed numeric —
 		// `slices.BinarySearch(s, 5)` compares target 5 as a number.
-		return argFloat(n)
+		return builtin.ArgFloat(n)
 	case int64:
 		return float64(n), true
 	case float64:

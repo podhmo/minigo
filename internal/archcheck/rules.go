@@ -11,9 +11,10 @@ package archcheck
 // A pkg_test file importing its own package does not count as an edge,
 // so self-edges never appear.
 var Rules = map[string][]string{
-	".":                      {"bytecode", "compile", "index", "inspect", "internal/assetaudit", "internal/bind", "internal/execution", "internal/hostbridge", "internal/replhooks", "internal/source", "internal/spike", "minireflect", "repl", "resolve", "runtime", "syntax", "vm"},
+	".":                      {"builtin", "bytecode", "compile", "index", "inspect", "internal/assetaudit", "internal/bind", "internal/execution", "internal/hostbridge", "internal/replhooks", "internal/source", "internal/spike", "minireflect", "repl", "resolve", "runtime", "syntax", "vm"},
 	"bytecode":               {"syntax"},
 	"cmd/minigo":             {".", "index", "repl", "resolve", "runtime"},
+	"builtin":                {"compile", "internal/hostbridge", "internal/source", "runtime", "vm"},
 	"compile":                {"bytecode", "index", "internal/semantics", "internal/source", "internal/spike", "runtime", "syntax"},
 	"host":                   {},
 	"index":                  {"syntax"},

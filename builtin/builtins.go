@@ -1,0 +1,1117 @@
+package builtin
+
+import (
+	"fmt"
+	"go/ast"
+	"go/constant"
+	"go/token"
+	"os"
+	"reflect"
+	"slices"
+	"time"
+
+	"github.com/podhmo/minigo/compile"
+	"github.com/podhmo/minigo/internal/hostbridge"
+	"github.com/podhmo/minigo/internal/source"
+	"github.com/podhmo/minigo/runtime"
+	"github.com/podhmo/minigo/vm"
+)
+
+// Env returns the predeclared universe: builtin functions and builtin
+// type names (as *TypeDef values so `int(x)` is a normal conversion
+// call). ee resolves the go:embed builtin's paths (the engine supplies
+// its binding env).
+func Env(ee source.EmbedEnv) *runtime.Env {
+	env := runtime.NewEnv()
+
+	bf := func(name string, fn func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error)) {
+		env.Set(name, &runtime.BuiltinFunc{Name: name, Fn: fn})
+	}
+
+	bf("len", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		x := args[0]
+		if c, ok := x.(*runtime.Cell); ok {
+			x = c.Elem
+		}
+		if n, ok := nilArrLen(v, x); ok {
+			return n, nil
+		}
+		return lenOf(x)
+	})
+	bf("cap", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		x := args[0]
+		if c, ok := x.(*runtime.Cell); ok {
+			x = c.Elem
+		}
+		if n, ok := nilArrLen(v, x); ok {
+			return n, nil
+		}
+		return capOf(x)
+	})
+	bf("append", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if _, plain := args[0].(*runtime.Slice); !plain {
+			if base, ok := hostSliceBase(args[0]); ok {
+				return appendHostSlice(v, base, args[1:])
+			}
+		}
+		var s *runtime.Slice
+		var tag *runtime.TypeDef
+		var rtyp *runtime.TypeDef
+		switch x := args[0].(type) {
+		case *runtime.Named:
+			tag = x.Typ
+			s, _ = x.V.(*runtime.Slice)
+			if s == nil {
+				// a Named nil slice appends fine, keeping the declared tag
+				switch tn := x.V.(type) {
+				case *runtime.TypedNil:
+					rtyp = tn.Typ
+				case *runtime.IfaceNil:
+					rtyp = tn.Typ
+				default:
+					return nil, fmt.Errorf("append on named %s", x.Typ.Name)
+				}
+			}
+		case *runtime.Slice:
+			s = x
+		case *runtime.Cell:
+			s, _ = x.Elem.(*runtime.Slice)
+		case *runtime.IfaceNil:
+			rtyp = x.Typ
+		case *runtime.TypedNil:
+			rtyp = x.Typ
+		case runtime.Nil:
+		default:
+			return nil, fmt.Errorf("append on %T", args[0])
+		}
+		var elems []runtime.Value
+		if s != nil {
+			elems = s.Elems
+			rtyp = s.Typ
+		}
+		// a trailing `xs...` operand rides as one lazy marker when its
+		// slice is virtual — a real spread was already expanded into
+		// args by popArgs.
+		var spread *runtime.Slice
+		if len(args) > 0 {
+			if sp, ok := args[len(args)-1].(*runtime.Spread); ok {
+				spread = sp.S
+				args = args[:len(args)-1]
+			}
+		}
+		// an untyped-constant element converts through the declared
+		// element type — append(b, 'i') on []byte is Go's constant
+		// conversion; without a declared type it takes its default.
+		var et *runtime.TypeDef
+		if rtyp != nil {
+			et = v.TypeOf(v.ElemZero(rtyp))
+		}
+		add := make([]runtime.Value, len(args)-1)
+		for i, a := range args[1:] {
+			if u, ok := a.(*runtime.UConst); ok {
+				if et != nil {
+					cv, err := v.Convert(et, a)
+					if err != nil {
+						return nil, err
+					}
+					a = cv
+				} else {
+					nv, err := runtime.UConstNative(u)
+					if err != nil {
+						return nil, err
+					}
+					if cv, isC := nv.(complex128); isC {
+						nv = &runtime.GoValue{V: cv}
+					}
+					a = nv
+				}
+			} else if et != nil {
+				// a materialized scalar converts like the constant it
+				// came from — append(f, 0) on []float64 stores 0.0.
+				switch a.(type) {
+				case int64, int, uint64, rune, float64:
+					if cv, err := v.Convert(et, a); err == nil {
+						a = cv
+					}
+				case runtime.Nil:
+					// untyped nil takes the declared element
+					// type's zero — append(s, nil) on []List
+					// stores List(nil), not a bare NIL that
+					// panics on member select or prints
+					// <nil> inside the slice.
+					cv, err := v.Convert(et, a)
+					if err != nil {
+						return nil, err
+					}
+					a = cv
+				}
+			}
+			add[i] = v.Copy(a)
+		}
+		if s == nil && len(add) == 0 && rtyp != nil && spread == nil {
+			// appending nothing to a nil slice keeps the nil — Go's
+			// append(nilSlice) is still nil, not an empty slice.
+			res := runtime.Value(&runtime.TypedNil{Typ: rtyp})
+			if tag != nil {
+				return runtime.Tag(tag, res), nil
+			}
+			return res, nil
+		}
+		// a virtual zero-size slice stays virtual — and so does a real
+		// one that a virtual spread lands on: the appended elements are
+		// all the same single value the type already vends.
+		if (s != nil && s.Virtual()) || spread != nil {
+			var dstLen, dstCap int64
+			var zero runtime.Value
+			if s != nil {
+				// a real dst keeps its element COUNT in the virtual
+				// result — every element is the type's single
+				// zero-size value, so the logical length suffices.
+				dstLen, dstCap, zero = s.Len(), s.Cap(), s.Zero
+			}
+			if spread != nil {
+				if zero == nil {
+					zero = spread.Zero
+				}
+				if rtyp == nil {
+					rtyp = spread.Typ
+				}
+			}
+			// the len overflow panics like Go's growslice; growth picks
+			// up exactly the needed length (0-byte elements round to the
+			// request, not to a doubling), while spare capacity stays.
+			nn := dstLen + int64(len(add))
+			if spread != nil {
+				nn += spread.Len()
+			}
+			if nn < 0 {
+				panic(runtime.RuntimePanic("growslice: len out of range"))
+			}
+			nc := dstCap
+			if nn > nc {
+				nc = nn
+			}
+			res := &runtime.Slice{N: nn, CapN: nc, Zero: zero, Typ: rtyp}
+			if tag != nil {
+				return runtime.Tag(tag, res), nil
+			}
+			return res, nil
+		}
+		// appending onto the backing array itself keeps Go's sharing
+		// semantics: within spare capacity the result aliases the same
+		// storage, past it the host append allocates a fresh array.
+		elems2 := append(elems, add...)
+		if len(elems2) > cap(elems) && rtyp != nil {
+			// the fresh backing array holds element copies, like gc's
+			// growslice memcpy: a struct element becomes a fresh value,
+			// so `b[0].X = v` on the grown slice cannot alias the old
+			// array's struct. Copy() shares scalars, slices, maps and
+			// pointers — the same as copying a Go slice header.
+			for i := range elems {
+				elems2[i] = v.Copy(elems2[i])
+			}
+			{
+				zero := v.ElemZero(rtyp)
+				if runtime.IsZeroSizeValue(zero) {
+					// for a zero-size element Go's growslice never
+					// doubles — cap is exactly the new length — while
+					// the host []Value grew by its own rule. Clip the
+					// spare so cap() agrees.
+					elems2 = elems2[:len(elems2):len(elems2)]
+				} else {
+					// a fresh backing array's spare capacity holds
+					// zeros, as growslice clears it: `s[:cap(s)]`
+					// must not expose absent values.
+					spare := elems2[len(elems2):cap(elems2)]
+					for i := range spare {
+						spare[i] = v.Copy(zero)
+					}
+				}
+			}
+		}
+		res := &runtime.Slice{Elems: elems2, Typ: rtyp}
+		if tag != nil {
+			return runtime.Tag(tag, res), nil // append keeps the declared type
+		}
+		return res, nil
+	})
+	bf("copy", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		sliceOf := func(x runtime.Value) (*runtime.Slice, bool) {
+			switch s := x.(type) {
+			case *runtime.Named:
+				if ss, ok := s.V.(*runtime.Slice); ok {
+					return ss, true
+				}
+			case *runtime.Slice:
+				return s, true
+			case *runtime.Cell:
+				if ss, ok := s.Elem.(*runtime.Slice); ok {
+					return ss, true
+				}
+			case *runtime.TypedNil, *runtime.IfaceNil, runtime.Nil:
+				return nil, true // nil slice: copies 0 elements
+			}
+			// a boxed host slice (net.IP) reads as a snapshot
+			if sv, ok := vm.UnboxHostSlice(x); ok {
+				ss, _ := sv.(*runtime.Slice)
+				return ss, true
+			}
+			return nil, false
+		}
+		_, _, hostDst := vm.HostSliceOf(args[0])
+		var dst *runtime.Slice
+		ok1 := hostDst
+		if !hostDst {
+			dst, ok1 = sliceOf(args[0])
+		}
+		src, ok2 := sliceOf(args[1])
+		if src == nil && ok1 {
+			// copy(dst, "str"): a string source copies into []byte. A
+			// declared untyped const arrives as a *UConst — materialize
+			// it like the literal Go folds at compile time.
+			if s, ok := hostbridge.ConstNative(runtime.Unwrap(args[1])).(string); ok {
+				src = &runtime.Slice{Elems: make([]runtime.Value, len(s))}
+				if dst != nil {
+					// a nil-slice dst copies 0 elements — keep Typ
+					// propagation only when there is a real dst.
+					src.Typ = dst.Typ
+				}
+				for i := 0; i < len(s); i++ {
+					src.Elems[i] = int64(s[i])
+				}
+				ok2 = true
+			}
+		}
+		if !ok1 || !ok2 {
+			return nil, fmt.Errorf("copy on non-slice")
+		}
+		if hostDst {
+			// copy into a boxed host slice writes its backing; src is
+			// a snapshot of its own, so overlapping host slices copy
+			// like memmove.
+			var el []runtime.Value
+			if src != nil {
+				el = src.Elems
+				if src.Virtual() {
+					el = slices.Repeat([]runtime.Value{src.Zero}, int(src.Len()))
+				}
+			}
+			return copyIntoHostSlice(v, args[0], el)
+		}
+		if dst == nil || src == nil {
+			return int64(0), nil
+		}
+		// the counts are LOGICAL: a virtual zero-size slice's elements
+		// were never materialized into Elems — N carries the length.
+		dstLen := dst.Len()
+		srcLen := src.Len()
+		n := dstLen
+		if srcLen < n {
+			n = srcLen
+		}
+		if dst.Virtual() {
+			// writes into a virtual slice are unobservable: a copied
+			// element is the type's single zero-size value either way.
+			return int64(n), nil
+		}
+		if src.Virtual() {
+			// a virtual source vends its shared zero-size element — the
+			// fill is bounded by the real destination's length.
+			for i := int64(0); i < n; i++ {
+				dst.Elems[i] = v.Copy(src.Zero)
+			}
+			return int64(n), nil
+		}
+		// copy through a snapshot: dst and src may overlap in the same
+		// backing array (e.g. copy(s[2:], s[1:]) shifting a queue), and a
+		// forward element loop would cascade-write the source.
+		tmp := make([]runtime.Value, n)
+		for i := int64(0); i < n; i++ {
+			tmp[i] = v.Copy(src.Elems[i])
+		}
+		for i := int64(0); i < n; i++ {
+			dst.Elems[i] = tmp[i]
+		}
+		return int64(n), nil
+	})
+	bf("delete", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		// The key operand takes the same declared-key-type coercion an
+		// index expression does — map[float64]int{1:7} deletes by
+		// float64(1), and a mismatched key traps like gc's compile
+		// reject rather than silently keeping the element.
+		kvFor := func(mapTd *runtime.TypeDef) (runtime.Value, error) {
+			kv := v.MapKeyOperand(mapTd, args[1])
+			if u, ok := kv.(*runtime.UConst); ok {
+				// no declared key type to materialize against — keep the
+				// raw native shape (complex keys box into GoValue).
+				nv, err := runtime.UConstNative(u)
+				if err != nil {
+					return nil, err
+				}
+				if cv, isC := nv.(complex128); isC {
+					nv = &runtime.GoValue{V: cv}
+				}
+				kv = nv
+			}
+			return kv, nil
+		}
+		check := func(mapTd *runtime.TypeDef) (runtime.Value, error) {
+			_, err := kvFor(mapTd)
+			return runtime.NIL, err
+		}
+		drop := func(m *runtime.Map) (runtime.Value, error) {
+			kv, err := kvFor(m.Typ)
+			if err != nil {
+				return nil, err
+			}
+			m.Delete(kv)
+			return runtime.NIL, nil
+		}
+		switch m := args[0].(type) {
+		case *runtime.Named:
+			if mm, ok := m.V.(*runtime.Map); ok {
+				return drop(mm)
+			}
+			return nil, fmt.Errorf("delete on named %s", m.Typ.Name)
+		case *runtime.Map:
+			return drop(m)
+		case *runtime.Cell:
+			if mm, ok := m.Elem.(*runtime.Map); ok {
+				return drop(mm)
+			}
+			return nil, fmt.Errorf("delete on %T", args[0])
+		case *runtime.TypedNil:
+			// delete on a nil map is a no-op — the key still runs the
+			// static declared-key-type check.
+			return check(m.Typ)
+		case *runtime.IfaceNil:
+			return check(m.Typ)
+		case runtime.Nil:
+			// delete on a nil map is a no-op
+		case *runtime.GoValue:
+			// a boxed host named map (url.Values, http.Header)
+			if hd, ok := v.(runtime.HostMapDeleter); ok && hd.HostMapDelete(m, args[1]) {
+				return runtime.NIL, nil
+			}
+			return nil, fmt.Errorf("delete on %T", args[0])
+		default:
+			return nil, fmt.Errorf("delete on %T", args[0])
+		}
+		return runtime.NIL, nil
+	})
+	bf("make", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		td, ok := args[0].(*runtime.TypeDef)
+		if !ok {
+			return nil, fmt.Errorf("make of non-type %T", args[0])
+		}
+		if r, ok := hostbridge.MakeHostType(td, args); ok {
+			return r, nil // a bound host slice or map type (net.IP)
+		}
+		switch td.Kind {
+		case runtime.KindSlice:
+			n := int64(0)
+			if len(args) > 1 {
+				n = hostbridge.Int64Of(runtime.Unwrap(args[1]))
+			}
+			cap := n
+			if len(args) > 2 {
+				cap = hostbridge.Int64Of(runtime.Unwrap(args[2]))
+			}
+			zero := v.ElemZero(td)
+			// Go's makeslice measures BYTES, so a zero-size element
+			// allocates 0 for any len — `make([]struct{}, maxInt)`
+			// succeeds ($GOROOT/test/fixedbugs/issue29190.go). A huge
+			// virtual slice keeps the logical length instead of
+			// materializing elements it would OOM on.
+			const maxSliceElems = 1 << 32
+			if n > maxSliceElems || cap > maxSliceElems {
+				if n >= 0 && cap >= n && runtime.IsZeroSizeValue(zero) {
+					return &runtime.Slice{N: n, CapN: cap, Zero: zero, Typ: td}, nil
+				}
+			}
+			if n < 0 || n > maxSliceElems {
+				panic(runtime.MakeslicePanic("len"))
+			}
+			if cap < n || cap > maxSliceElems {
+				panic(runtime.MakeslicePanic("cap"))
+			}
+			// the spare capacity holds zeros too: `s[:cap(s)]` and
+			// reflect's SetLen expose it, and Go zero-fills the whole
+			// backing array.
+			el := make([]runtime.Value, n, cap)
+			for i, all := 0, el[:cap]; i < len(all); i++ {
+				all[i] = v.Copy(zero)
+			}
+			return &runtime.Slice{Elems: el, Typ: td}, nil
+		case runtime.KindMap:
+			return v.NewMap(td), nil
+		case runtime.KindChan:
+			buf := int64(0)
+			if len(args) > 1 {
+				buf = hostbridge.Int64Of(runtime.Unwrap(args[1]))
+			}
+			return &runtime.Chan{C: make(chan runtime.Value, int(buf)), Typ: td}, nil
+		default:
+			return nil, fmt.Errorf("make of kind %d", td.Kind)
+		}
+	})
+	bf(compile.EmbedBuiltin, func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		return source.EmbedBuiltin(ee, compile.EmbedBuiltin, v, args)
+	})
+	bf("new", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("new expects exactly one argument")
+		}
+		if td, ok := args[0].(*runtime.TypeDef); ok {
+			return &runtime.Cell{Elem: v.Zero(td), Typ: td}, nil
+		}
+		// Go 1.26: new(expr) allocates and initializes to a copy of the
+		// expression's value — the cell is typed by the value's own
+		// typedef rather than a declared type form.
+		if _, isNil := args[0].(runtime.Nil); isNil {
+			return nil, fmt.Errorf("cannot use nil as type or value in new")
+		}
+		return &runtime.Cell{Elem: v.Copy(args[0]), Typ: v.TypeOf(args[0])}, nil
+	})
+	bf("close", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		var ch *runtime.Chan
+		switch x := args[0].(type) {
+		case *runtime.Chan:
+			ch = x
+		case *runtime.Named:
+			ch, _ = x.V.(*runtime.Chan)
+		case *runtime.Cell:
+			ch, _ = x.Elem.(*runtime.Chan)
+		case *runtime.TypedNil, *runtime.IfaceNil, runtime.Nil:
+			panic(runtime.CloseNilChanPanic())
+		default:
+			return nil, fmt.Errorf("close of non-channel %T", args[0])
+		}
+		if ch == nil || ch.C == nil {
+			panic(runtime.CloseNilChanPanic())
+		}
+		// a second close — or a send past close — panics via the host
+		// channel itself, which the VM surfaces as a script panic
+		close(ch.C)
+		return runtime.NIL, nil
+	})
+	bf("panic", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		// panic(nil) carries a *PanicNilError since Go 1.21 — recover()
+		// reports a non-nil value.
+		arg := args[0]
+		switch a := runtime.Unwrap(arg).(type) {
+		case runtime.Nil:
+			panic(&runtime.Panic{Value: &runtime.PanicNilError{}})
+		case *runtime.IfaceNil:
+			// the nil interface itself panics as nil; a typed nil
+			// already boxed in an interface stays a non-nil payload.
+			if runtime.IsNilIface(a) {
+				panic(&runtime.Panic{Value: &runtime.PanicNilError{}})
+			}
+		case *runtime.TypedNil:
+			// a typed nil crosses panic's any parameter boxed into an
+			// interface — recover() hands back a non-nil value carrying
+			// the nil pointer's dynamic type.
+			arg = &runtime.IfaceNil{Typ: a.Typ}
+		}
+		// VC lets Error() render a script payload's Error()/String()
+		// text — `panic(err)` prints like gc's, not a value dump.
+		panic(&runtime.Panic{Value: arg, VC: v})
+	})
+	bf("recover", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		return v.Recover(), nil
+	})
+	bf("complex", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if len(args) != 2 {
+			return nil, fmt.Errorf("complex expects two arguments")
+		}
+		if c, ok := complexConst(args[0], args[1]); ok {
+			return c, nil
+		}
+		re, ok1 := ArgFloat(args[0])
+		im, ok2 := ArgFloat(args[1])
+		if !ok1 || !ok2 {
+			return nil, fmt.Errorf("complex on non-numeric")
+		}
+		// float32 operands yield a complex64 (the narrower side wins —
+		// Go types the call by its arguments' type, not float64).
+		if namedFloat32(args[0]) || namedFloat32(args[1]) {
+			return &runtime.GoValue{V: complex64(complex(re, im))}, nil
+		}
+		return &runtime.GoValue{V: complex(re, im)}, nil
+	})
+	bf("real", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		// a constant stays a constant: real(1+2i) is the untyped
+		// float 1, still materializable to any numeric target.
+		if r, ok := constPart(args[0], false); ok {
+			return r, nil
+		}
+		cv, w, ok := argComplex(args[0])
+		if !ok {
+			return nil, fmt.Errorf("real of %T", args[0])
+		}
+		if w == 64 {
+			return runtime.Tag(runtime.BasicTypedef("float32"), float64(real(complex64(cv)))), nil
+		}
+		return real(cv), nil
+	})
+	bf("imag", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		if r, ok := constPart(args[0], true); ok {
+			return r, nil
+		}
+		cv, w, ok := argComplex(args[0])
+		if !ok {
+			return nil, fmt.Errorf("imag of %T", args[0])
+		}
+		if w == 64 {
+			return runtime.Tag(runtime.BasicTypedef("float32"), float64(imag(complex64(cv)))), nil
+		}
+		return imag(cv), nil
+	})
+	bf("min", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		return minMax(v, "min", args, false)
+	})
+	bf("max", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		return minMax(v, "max", args, true)
+	})
+	bf("clear", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		switch m := runtime.Unwrap(args[0]).(type) {
+		case *runtime.Map:
+			m.Clear()
+		case *runtime.Slice:
+			zero := v.ElemZero(m.Typ)
+			for i := range m.Elems {
+				m.Elems[i] = zero
+			}
+		case *runtime.TypedNil, *runtime.IfaceNil, runtime.Nil:
+			// clear of a nil map or slice is a no-op
+		case *runtime.GoValue:
+			// a boxed host named map or slice
+			if hc, ok := v.(runtime.HostClearer); !ok || !hc.HostClear(m) {
+				return nil, fmt.Errorf("clear of %T", args[0])
+			}
+		default:
+			return nil, fmt.Errorf("clear of %T", args[0])
+		}
+		return runtime.NIL, nil
+	})
+	// print/println write to stderr like Go's builtins do; gc's print
+	// concatenates operands with no separator at all (print(1, 2)
+	// writes "12"), while println always spaces them.
+	bf("print", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		for _, a := range args {
+			fmt.Fprint(os.Stderr, hostbridge.Display(materializerOf(v), a))
+		}
+		return runtime.NIL, nil
+	})
+	bf("println", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		parts := make([]any, len(args))
+		for i, a := range args {
+			parts[i] = hostbridge.Display(materializerOf(v), a)
+		}
+		fmt.Fprintln(os.Stderr, parts...)
+		return runtime.NIL, nil
+	})
+
+	// builtin type names
+	for _, n := range []string{
+		"int", "int8", "int16", "int32", "int64",
+		"uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
+		"float32", "float64", "complex64", "complex128",
+		"string", "bool", "byte", "rune",
+	} {
+		env.Set(n, runtime.BasicTypedef(n))
+	}
+	// any / error: predeclared interface typedefs (assertion + decl targets)
+	env.Set("any", &runtime.TypeDef{Name: "any", Kind: runtime.KindInterface})
+	// error carries its requirement as a real interface AST so the
+	// facade's signature machinery (ifaceSigsOf → methodSet) can check
+	// Implements/TypeAssert against `Error() string` rather than
+	// degenerating to the empty interface.
+	env.Set("error", &runtime.TypeDef{
+		Name:  "error",
+		Kind:  runtime.KindInterface,
+		MReqs: []string{"Error"},
+		Anon: &ast.InterfaceType{Methods: &ast.FieldList{List: []*ast.Field{{
+			Names: []*ast.Ident{{Name: "Error"}},
+			Type: &ast.FuncType{
+				Params:  &ast.FieldList{},
+				Results: &ast.FieldList{List: []*ast.Field{{Type: ast.NewIdent("string")}}},
+			},
+		}}}},
+	})
+	return env
+}
+
+// nilArrLen folds len/cap of a nil *[N]T to its constant N — Go's len
+// of an array-typed operand never evaluates the operand.
+func nilArrLen(v runtime.ArraySizer, x runtime.Value) (runtime.Value, bool) {
+	if n, ok := x.(*runtime.Named); ok {
+		x = n.V
+	}
+	tn, ok := x.(*runtime.TypedNil)
+	if !ok || tn.Typ == nil || tn.Typ.Kind != runtime.KindPointer {
+		return nil, false
+	}
+	at := runtime.PtrArrayType(tn.Typ)
+	if at == nil {
+		return nil, false
+	}
+	if n, ok := v.ArrayLenOf(&runtime.TypeDef{Anon: at, Pkg: tn.Typ.Pkg, File: tn.Typ.File}); ok {
+		return n, true
+	}
+	return nil, false
+}
+
+func lenOf(v runtime.Value) (runtime.Value, error) {
+	switch x := v.(type) {
+	case *runtime.Named:
+		return lenOf(x.V)
+	case *runtime.UConst:
+		// len("lit")/len(NamedConstStr) — Go folds the call on a
+		// constant operand; materialize before measuring.
+		nv, err := runtime.UConstNative(x)
+		if err != nil {
+			return nil, err
+		}
+		return lenOf(nv)
+	case *runtime.Slice:
+		return x.Len(), nil // N for a virtual zero-size-element slice
+	case *runtime.Map:
+		return int64(x.Len()), nil
+	case *runtime.Chan:
+		return int64(len(x.C)), nil
+	case string:
+		return int64(len(x)), nil
+	case runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
+		return int64(0), nil // len(nil slice/map/chan) == 0
+	case *runtime.GoValue:
+		// a boxed host named slice or map (net.IP, http.Header) keeps
+		// its box for method dispatch; measure the host value itself.
+		switch rv := reflect.ValueOf(x.V); rv.Kind() {
+		case reflect.Chan:
+			if isTimeChan(rv) {
+				return int64(0), nil
+			}
+			return int64(rv.Len()), nil
+		case reflect.Slice, reflect.Array, reflect.Map, reflect.String:
+			return int64(rv.Len()), nil
+		}
+		return nil, fmt.Errorf("len of %T", v)
+	default:
+		return nil, fmt.Errorf("len of %T", v)
+	}
+}
+
+// isTimeChan reports whether rv, a host channel, carries time.Time: the
+// channel of a time.Timer/Ticker/After, which minigo serves through a
+// 1-buffered feed proxy (newChanFeed). Since Go 1.23 timer channels are
+// synchronous, so len and cap report 0 rather than the proxy's buffer.
+// A script chan time.Time is a runtime.Chan and never reaches here.
+func isTimeChan(rv reflect.Value) bool {
+	return rv.Type().Elem() == reflect.TypeFor[time.Time]()
+}
+
+func capOf(v runtime.Value) (runtime.Value, error) {
+	switch x := v.(type) {
+	case *runtime.Named:
+		return capOf(x.V)
+	case *runtime.Cell:
+		return capOf(x.Elem)
+	case *runtime.Slice:
+		return x.Cap(), nil // CapN for a virtual zero-size-element slice
+	case *runtime.Chan:
+		return int64(cap(x.C)), nil
+	case *runtime.GoValue:
+		switch rv := reflect.ValueOf(x.V); rv.Kind() {
+		case reflect.Chan:
+			if isTimeChan(rv) {
+				return int64(0), nil
+			}
+			return int64(rv.Cap()), nil
+		case reflect.Slice, reflect.Array:
+			return int64(rv.Cap()), nil
+		}
+		return lenOf(v)
+	default:
+		return lenOf(v)
+	}
+}
+
+// minMax implements the builtins min and max. Go types the call like an
+// operator chain: untyped constant operands convert to the type of the
+// typed operand (`max(200, u8)` is the uint8 200, `min(m, 1)` an M),
+// a non-constant shift `1<<n` truncates at that type, and an all-
+// constant call is an untyped constant of the widest kind among its
+// operands (`min(1, 2.5)` is the float constant 1).
+func minMax(v runtime.ConvertTyper, name string, args []runtime.Value, isMax bool) (runtime.Value, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("%s needs at least one argument", name)
+	}
+	args, err := unifyMinMaxArgs(v, args)
+	if err != nil {
+		return nil, err
+	}
+	m := args[0]
+	for _, a := range args[1:] {
+		if isMax && orderedLess(m, a) || !isMax && orderedLess(a, m) {
+			m = a
+		}
+	}
+	if u, ok := m.(*runtime.UConst); ok && !u.Wrap {
+		m = widenConstKind(u, args)
+	}
+	return m, nil
+}
+
+// unifyMinMaxArgs converts min/max's untyped constant operands to the
+// type of the first typed operand. With no typed operand, non-constant
+// shift values (Wrap) settle at int, their default type; constants
+// stay untyped. A host named basic (fs.FileMode from a host call) keeps
+// its constants as they are — they compare by payload.
+func unifyMinMaxArgs(v runtime.ConvertTyper, args []runtime.Value) ([]runtime.Value, error) {
+	var typed runtime.Value
+	hasConst := false
+	for _, a := range args {
+		if _, ok := a.(*runtime.UConst); ok {
+			hasConst = true
+		} else if typed == nil {
+			typed = a
+		}
+	}
+	if !hasConst {
+		return args, nil
+	}
+	var td *runtime.TypeDef
+	switch {
+	case typed != nil:
+		if _, rt, host := runtime.HostNamedScalar(typed); host {
+			// a host named basic (fs.FileMode from os.Stat): its
+			// constants become host values of that type.
+			out := make([]runtime.Value, len(args))
+			for i, a := range args {
+				out[i] = a
+				if u, ok := a.(*runtime.UConst); ok {
+					hv, err := hostNamedConst(rt, u)
+					if err != nil {
+						return nil, err
+					}
+					out[i] = hv
+				}
+			}
+			return out, nil
+		}
+		td = v.TypeOf(typed)
+		if td == nil {
+			return args, nil
+		}
+	default:
+		td = runtime.BasicTypedef("int")
+	}
+	out := make([]runtime.Value, len(args))
+	for i, a := range args {
+		out[i] = a
+		u, ok := a.(*runtime.UConst)
+		if !ok || (typed == nil && !u.Wrap) {
+			continue
+		}
+		cv, err := v.Convert(td, u)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = cv
+	}
+	return out, nil
+}
+
+// hostNamedConst converts an untyped constant to a value of the host
+// named basic type rt (an integer, string or bool kind), truncating a
+// non-constant shift value (Wrap) to rt's width.
+func hostNamedConst(rt reflect.Type, u *runtime.UConst) (runtime.Value, error) {
+	rv := reflect.New(rt).Elem()
+	cv := u.V
+	switch rt.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		if cv.Kind() == constant.Float {
+			cv = constant.ToInt(cv)
+		}
+		if cv.Kind() != constant.Int {
+			return nil, fmt.Errorf("cannot use constant %s as %s", u.V, rt)
+		}
+		w := runtime.WrapInt64(cv)
+		if rv.CanInt() {
+			rv.SetInt(w)
+			if !u.Wrap && (rv.Int() != w || constant.Compare(cv, token.NEQ, constant.MakeInt64(w))) {
+				return nil, fmt.Errorf("constant %s overflows %s", u.V, rt)
+			}
+		} else {
+			rv.SetUint(uint64(w))
+			if !u.Wrap && (constant.Sign(cv) < 0 || rv.Uint() != uint64(w)) {
+				return nil, fmt.Errorf("constant %s overflows %s", u.V, rt)
+			}
+		}
+	case reflect.String:
+		if cv.Kind() != constant.String {
+			return nil, fmt.Errorf("cannot use constant %s as %s", u.V, rt)
+		}
+		rv.SetString(constant.StringVal(cv))
+	case reflect.Bool:
+		if cv.Kind() != constant.Bool {
+			return nil, fmt.Errorf("cannot use constant %s as %s", u.V, rt)
+		}
+		rv.SetBool(constant.BoolVal(cv))
+	default:
+		return u, nil
+	}
+	return &runtime.GoValue{V: rv.Interface()}, nil
+}
+
+// widenConstKind gives an all-constant min/max result the widest kind
+// among the operands — Go's untyped constant expression rule: `min(1,
+// 2.5)` is the float constant 1, `max(1, 'a')` a rune constant.
+func widenConstKind(u *runtime.UConst, args []runtime.Value) *runtime.UConst {
+	kind, isRune := u.V.Kind(), u.Rune
+	for _, a := range args {
+		au, ok := a.(*runtime.UConst)
+		if !ok {
+			return u
+		}
+		if k := au.V.Kind(); k > kind && k <= constant.Complex {
+			kind = k
+		}
+		isRune = isRune || au.Rune
+	}
+	switch {
+	case kind == u.V.Kind() && isRune == u.Rune:
+		return u
+	case kind == constant.Float:
+		return &runtime.UConst{V: constant.ToFloat(u.V)}
+	case kind == constant.Complex:
+		return &runtime.UConst{V: constant.ToComplex(u.V)}
+	case kind == constant.Int:
+		return &runtime.UConst{V: u.V, Rune: isRune}
+	}
+	return u
+}
+
+// hostNamedPayloads reads two min/max operands of the same host named
+// basic type — a host fs.FileMode from os.Stat and the source io/fs's
+// fs.ModeSymlink, or two host values — as their underlying payloads.
+// ok is false when either side is not such a value or the types differ.
+func hostNamedPayloads(a, b runtime.Value) (runtime.Value, runtime.Value, bool) {
+	pa, ra, aHost := hostScalarOf(a)
+	pb, rb, bHost := hostScalarOf(b)
+	switch {
+	case aHost && bHost:
+		return pa, pb, ra == rb
+	case aHost:
+		if n, ok := b.(*runtime.Named); ok && runtime.HostTwinOf(ra, n.Typ) {
+			return pa, OrderScalar(n.V), true
+		}
+	case bHost:
+		if n, ok := a.(*runtime.Named); ok && runtime.HostTwinOf(rb, n.Typ) {
+			return OrderScalar(n.V), pb, true
+		}
+	}
+	return nil, nil, false
+}
+
+// hostScalarOf reads a host named basic — boxed (GoValue) or the raw
+// host scalar a bound package's constant or method result carries
+// (time.Month from Time.Month) — as its payload and host type.
+func hostScalarOf(x runtime.Value) (runtime.Value, reflect.Type, bool) {
+	switch x.(type) {
+	case *runtime.GoValue:
+		return runtime.HostNamedScalar(x)
+	case *runtime.Named, *runtime.UConst, int64, float64, string, bool:
+		return nil, nil, false
+	}
+	return runtime.HostNamedPayload(x)
+}
+
+// orderedLess implements the builtin min/max comparison over ordered
+// values: ints, floats and strings compare naturally; a float NaN is
+// never less (so a NaN argument wins the fold, matching Go's
+// "NaN propagates" rule). Named values compare by their underlying.
+func orderedLess(a, b runtime.Value) bool {
+	if pa, pb, ok := hostNamedPayloads(a, b); ok {
+		a, b = pa, pb
+	}
+	a = runtime.Unwrap(a)
+	b = runtime.Unwrap(b)
+	// const operands compare by their default-type value — min/max
+	// of constants is itself a constant expression in Go, so the
+	// winning (still-UConst) argument is what gets returned.
+	a = hostbridge.ConstNative(a)
+	b = hostbridge.ConstNative(b)
+	// a raw host integer scalar (time.Duration) compares by its int64
+	// nanoseconds — the same reading the VM's equality path uses.
+	if iv, ok := runtime.SmallIntOf(a); ok {
+		a = iv
+	}
+	if iv, ok := runtime.SmallIntOf(b); ok {
+		b = iv
+	}
+	switch x := a.(type) {
+	case int64:
+		switch y := b.(type) {
+		case int64:
+			return x < y
+		case float64:
+			return float64(x) < y
+		}
+	case float64:
+		switch y := b.(type) {
+		case int64:
+			return x < float64(y)
+		case float64:
+			return x < y
+		}
+	case string:
+		if y, ok := b.(string); ok {
+			return x < y
+		}
+	}
+	return false
+}
+
+// constNative materializes an untyped constant reaching a builtin
+// argument — the call Go would fold at compile time runs at runtime
+// constPart implements real/imag on a constant operand: an untyped
+// complex constant gives an untyped FLOAT constant (`real(1+2i)/2` is
+// 0.5), a typed one — `complex64(c)`, Tag{complex64, UConst} — the
+// constant at the matching float type (float32 for complex64).
+func constPart(x runtime.Value, imagPart bool) (runtime.Value, bool) {
+	var tag *runtime.TypeDef
+	if n, ok := x.(*runtime.Named); ok {
+		tag, x = n.Typ, n.V
+	}
+	u, ok := x.(*runtime.UConst)
+	if !ok || !numericConst(u) || u.Wrap {
+		return nil, false
+	}
+	part := constant.Real(u.V)
+	if imagPart {
+		part = constant.Imag(u.V)
+	}
+	r := &runtime.UConst{V: constant.ToFloat(part)}
+	if tag == nil {
+		return r, true
+	}
+	switch runtime.BasicNameOf(tag) {
+	case "complex64":
+		f32, _ := constant.Float32Val(r.V)
+		return runtime.Tag(runtime.BasicTypedef("float32"), &runtime.UConst{V: constant.MakeFloat64(float64(f32))}), true
+	case "complex128":
+		return runtime.Tag(runtime.BasicTypedef("float64"), r), true
+	}
+	return nil, false
+}
+
+// complexConst folds complex(re, im) over two untyped constants into
+// the untyped complex constant Go makes of it (`const k = complex(3,
+// 0)` still converts to int).
+func complexConst(re, im runtime.Value) (runtime.Value, bool) {
+	ur, ok1 := re.(*runtime.UConst)
+	ui, ok2 := im.(*runtime.UConst)
+	if !ok1 || !ok2 || ur.Wrap || ui.Wrap {
+		return nil, false
+	}
+	rv, iv := constant.ToFloat(ur.V), constant.ToFloat(ui.V)
+	if rv.Kind() != constant.Float || iv.Kind() != constant.Float {
+		return nil, false
+	}
+	return &runtime.UConst{V: constant.BinaryOp(rv, token.ADD, constant.MakeImag(iv))}, true
+}
+
+// argFloat reads a builtin argument as float64 (ints promote).
+func ArgFloat(x runtime.Value) (float64, bool) {
+	switch n := runtime.Unwrap(x).(type) {
+	case *runtime.UConst:
+		// a constant under a typedef tag stays a constant:
+		// `float32(1.5)` is Tag{float32, UConst}, still numeric.
+		if n.V.Kind() == constant.Complex {
+			if constant.Sign(constant.Imag(n.V)) != 0 {
+				return 0, false
+			}
+			f, _ := constant.Float64Val(constant.ToFloat(constant.Real(n.V)))
+			return runtime.CanonConstZero(f), true
+		}
+		if n.V.Kind() != constant.Int && n.V.Kind() != constant.Float {
+			return 0, false
+		}
+		f, _ := constant.Float64Val(n.V)
+		return runtime.CanonConstZero(f), true
+	case int64:
+		return float64(n), true
+	case float64:
+		return n, true
+	}
+	return 0, false
+}
+
+// argComplex reads a builtin argument as complex128 with its width —
+// ints and floats promote to complex128.
+func argComplex(x runtime.Value) (complex128, int, bool) {
+	w := 128
+	if n, ok := x.(*runtime.Named); ok {
+		if runtime.BasicNameOf(n.Typ) == "complex64" {
+			w = 64
+		}
+		x = n.V
+	}
+	switch n := x.(type) {
+	case *runtime.UConst:
+		// a typed complex constant (`complex64(c)`) keeps its exact
+		// parts; read both halves.
+		if n.V.Kind() == constant.Complex {
+			re, _ := constant.Float64Val(constant.ToFloat(constant.Real(n.V)))
+			im, _ := constant.Float64Val(constant.ToFloat(constant.Imag(n.V)))
+			return complex(re, im), w, true
+		}
+	case *runtime.GoValue:
+		switch c := n.V.(type) {
+		case complex64:
+			return complex128(c), 64, true
+		case complex128:
+			return c, 128, true
+		}
+	}
+	if f, ok := ArgFloat(x); ok {
+		return complex(f, 0), 128, true
+	}
+	return 0, 0, false
+}
+
+// numericConst reports whether a constant is numeric — real/imag on a
+// non-complex-kind constant is Go's compile-time reject.
+func numericConst(u *runtime.UConst) bool {
+	switch u.V.Kind() {
+	case constant.Int, constant.Float, constant.Complex:
+		return true
+	}
+	return false
+}
+
+// namedFloat32 reports whether x carries a float32 typedef.
+func namedFloat32(x runtime.Value) bool {
+	n, ok := x.(*runtime.Named)
+	return ok && hostbridge.Float32Tag(n.Typ)
+}
+
+// Format returns a form of v to print with %v, such as an [Engine.Run]
+// result, without running script code. Unlike repl.REPL.Display it does
+// not call String or Error methods, and nil values take the print
+// builtin's spelling: (0x0,0x0) for a nil interface, [0/0]0x0 for a nil
+// slice.
+// materializerOf views a builtin caller as the optional constant
+// materialization capability display needs.
+func materializerOf(v runtime.VMCaller) runtime.ConstMaterializer {
+	mc, _ := v.(runtime.ConstMaterializer)
+	return mc
+}
+
+func Format(v runtime.Value) any {
+	return hostbridge.Display(nil, v)
+}

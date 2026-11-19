@@ -157,3 +157,10 @@ import とセレクタ名の検査では、コールバック経由の実行が�
   nil caller の wrapper として残置）。`callOrPanic`/`callBool` →
   `hostbridge.CallOrPanic`/`CallBool`（`runtime.ScriptCaller` のみ）。
   `callInt` は `int64Of` 依存のため root 残置で `CallOrPanic` を呼ぶ。
+
+- P2-9c: `builtins.go` → `builtin/` パッケージ (`builtin/builtins.go`
+  の `Env(ee source.EmbedEnv)`)。Engine 依存は `bindEnv` が既に
+  `source.EmbedEnv` を満たすため interface 注入で解消。root との共有
+  helper は `OrderScalar`/`ArgFloat`/`hostbridge.Int64Of` として
+  export。archcheck Rules に `.→builtin`/`builtin→{compile,
+  internal/hostbridge, internal/source, runtime, vm}` を追加。
