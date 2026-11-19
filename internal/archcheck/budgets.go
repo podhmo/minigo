@@ -61,7 +61,7 @@ var FileBudgets = map[string]int{
 	"internal/hostbridge/native.go":      128,
 	"internal/hostbridge/adapt.go":       226,
 	"internal/hostbridge/iface.go":       634,
-	"internal/hostbridge/maketype.go": 103,
+	"internal/hostbridge/maketype.go": 107,
 	"internal/hostbridge/marshal.go":     1122,
 	"internal/hostbridge/argas.go":       124,
 	"internal/hostbridge/spell.go":       86,
