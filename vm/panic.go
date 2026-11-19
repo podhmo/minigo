@@ -516,7 +516,7 @@ func (v *VM) invokeDeferred(d deferredCall) {
 	if _, ok := asTypedNil(callee); ok {
 		panic(runtime.NilDerefPanic())
 	}
-	fr, err := v.prepFrameSeen(nil, callee, d.args, -1, nil, d.typs.statics, d.typs.spreadTd, seen)
+	fr, err := v.prepFrameSeen(nil, callee, d.args, -1, nil, d.typs.statics, d.typs.spreadTd, nil, seen)
 	if err != nil {
 		panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
 	}

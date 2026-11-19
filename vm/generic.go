@@ -196,10 +196,7 @@ func (v *VM) instantiate(f *frame, base runtime.Value, targs []runtime.Value, po
 		if len(targs) != len(g.TParams) {
 			f.trap("cannot instantiate %s: needs %d type arguments, got %d", g.Name, len(g.TParams), len(targs))
 		}
-		binds := map[string]runtime.Value{}
-		bindArgs(binds, g.TParams, targs)
-		ctx := &runtime.TypeDef{Pkg: g.Pkg, File: g.File, Binds: binds}
-		key, ok := v.instTypeKey(f, ctx, g, targs)
+		key, ok := v.instTypeKey(f, g, targs)
 		if ok {
 			// an instantiated generic function re-spells its receiver's
 			// type T[args] per call — the specialization depends only on
@@ -209,6 +206,9 @@ func (v *VM) instantiate(f *frame, base runtime.Value, targs []runtime.Value, po
 				return r
 			}
 		}
+		binds := map[string]runtime.Value{}
+		bindArgs(binds, g.TParams, targs)
+		ctx := &runtime.TypeDef{Pkg: g.Pkg, File: g.File, Binds: binds}
 		if err := v.checkTArgs(ctx, g.TParams, g.TConstraints, binds); err != nil {
 			f.trap("%s", err)
 		}
@@ -321,8 +321,9 @@ func (v *VM) instFuncKey(g *runtime.Function, targs []runtime.Value) (runtime.In
 // changed constraint) and — for a function-local generic — the
 // enclosing instantiation's args, which specializeType folds into the
 // type's identity. A typedef without a package/spec cannot key: the
-// uncached path runs.
-func (v *VM) instTypeKey(f *frame, ctx, g *runtime.TypeDef, targs []runtime.Value) (runtime.SpecKey, bool) {
+// uncached path runs. Constraint names resolve under a binds-free ctx:
+// the key needs their identity, not their element evaluation.
+func (v *VM) instTypeKey(f *frame, g *runtime.TypeDef, targs []runtime.Value) (runtime.SpecKey, bool) {
 	if g.Pkg == nil || g.Spec == nil {
 		return runtime.SpecKey{}, false
 	}
@@ -345,7 +346,14 @@ func (v *VM) instTypeKey(f *frame, ctx, g *runtime.TypeDef, targs []runtime.Valu
 		fmt.Fprintf(&b, "|t%s", tid)
 	}
 
+	var ctx *runtime.TypeDef // a TypeDef is ~1KB; mint it only when a constraint needs resolving
 	for i := 0; i < len(targs) && i < len(g.TConstraints); i++ {
+		if constraintBase(g.TConstraints[i]) == nil {
+			continue
+		}
+		if ctx == nil {
+			ctx = &runtime.TypeDef{Pkg: g.Pkg, File: g.File}
+		}
 		ct := v.constraintType(ctx, g.TConstraints[i])
 		if ct == nil {
 			continue
@@ -607,6 +615,72 @@ func (v *VM) inferCached(fn *runtime.Function, args []runtime.Value, statics []*
 		fn.Pkg.SetInferred(key, r)
 	}
 	return r, err
+}
+
+// genCallSlot memoizes one OpCall site's inferred instance: on a hit
+// — same callee, same spread, and every argument pinned on what
+// inferKey would read — the inferKey spelling and the package-cache
+// probe are skipped. Pinning is identity, not spelling: a const arg
+// pins its value pointer (one site re-pushes the same UConst/Named
+// object, which carries both payload and tag), a static-covered arg
+// the resolved typedef, any other arg the value's own typedef.
+type genCallSlot struct {
+	fn     *runtime.Function
+	spread *runtime.TypeDef
+	tds    []*runtime.TypeDef
+	consts []runtime.Value // per-arg pinned const values; nil elsewhere
+	inst   *runtime.Function
+}
+
+func (g *genCallSlot) match(v *VM, fn *runtime.Function, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) bool {
+	if g.fn != fn || g.spread != spreadTd || len(g.tds) != len(args) {
+		return false
+	}
+	for i, a := range args {
+		if _, isC := constPayload(a); isC {
+			if g.consts[i] != a {
+				return false
+			}
+			continue
+		}
+		if st := staticAt(statics, i); st != nil {
+			// statics resolve fresh each call — a REPL redeclared
+			// global or upval typedef shows up here.
+			if st != g.tds[i] {
+				return false
+			}
+			continue
+		}
+		if v.argTypedef(a) != g.tds[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// newGenCallSlot records the instance inference produced for this
+// site's argument shape. An arg inferKey cannot pin — one that is
+// neither const nor static nor typedef-able — leaves no slot: those
+// calls always spell a key.
+func newGenCallSlot(v *VM, fn, inst *runtime.Function, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) *genCallSlot {
+	g := &genCallSlot{fn: fn, spread: spreadTd, inst: inst,
+		tds: make([]*runtime.TypeDef, len(args)), consts: make([]runtime.Value, len(args))}
+	for i, a := range args {
+		if _, isC := constPayload(a); isC {
+			g.consts[i] = a
+			continue
+		}
+		if st := staticAt(statics, i); st != nil {
+			g.tds[i] = st
+			continue
+		}
+		td := v.argTypedef(a)
+		if td == nil {
+			return nil
+		}
+		g.tds[i] = td
+	}
+	return g
 }
 
 // inferKey spells what inferBinds reads as TypeID segments: the callee's
@@ -1603,6 +1677,10 @@ var builtinTypeNames = map[string]bool{
 	"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true,
 	"uintptr": true, "byte": true, "rune": true,
 	"float32": true, "float64": true, "complex64": true, "complex128": true,
+	// the permissive constraints constrain nothing, so they key no
+	// identity — treated as builtin names like the satisfiesConstraint
+	// Ident arm already does.
+	"any": true, "comparable": true,
 }
 
 func isBuiltinTypeName(n string) bool { return builtinTypeNames[n] }
