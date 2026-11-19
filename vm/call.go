@@ -423,11 +423,18 @@ func (v *VM) callBuiltin(c *runtime.BuiltinFunc, args []runtime.Value) (runtime.
 			return nil, fmt.Errorf("%s %w", c.Name, err)
 		}
 	}
-	// a builtin may retain its args slice past the call — task.F
-	// binds it into a taskCall — while args may ride the caller
-	// frame's argbuf, which the next OpCall rewrites. Retaining
-	// builtins get a private copy like popArgs always produced.
-	if c.RetainsArgs {
+	// args on an in-place call are a view into the arena — either the
+	// caller window's tail (inPlaceArgs) or the operand stack slice
+	// the len/cap fast path passes. A builtin that calls back into
+	// script can reach a yield whose suspended-frame park truncates
+	// that region and lets the loop body's pushes overwrite it
+	// (driveFuncIter); a retaining builtin keeps it past the call —
+	// task.F binds it into a taskCall — while the next OpCall rewrites
+	// the same slots. Both get a private copy like popArgs' buffer
+	// always produced.
+	if n := len(args); n > 0 && len(v.vals) >= n && &args[0] == &v.vals[len(v.vals)-n] {
+		args = append([]runtime.Value{}, args...)
+	} else if c.RetainsArgs {
 		args = append([]runtime.Value{}, args...)
 	}
 	if c.SyncCallbacks {
