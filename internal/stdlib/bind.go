@@ -451,6 +451,7 @@ type Helpers interface {
 	FnvcRaw(name string, arity int, f func(runtime.VMCaller, []any, []runtime.Value) (any, error), target ...any) *runtime.BuiltinFunc
 	Fn1(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc
 	Fn2(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc
+	Fn3(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc
 }
 
 // Str renders a script value as a host string: Named peels, UConst

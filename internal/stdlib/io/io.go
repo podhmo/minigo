@@ -1,4 +1,8 @@
-package minigo
+// Package io moves the io installer and the script-reader/writer
+// adapters out of the root package (P2-12). The adapters need two
+// engine hooks supplied by the caller: MethodSetOf (env's
+// MethodSetOfValue) and UnwrapArg (the fmt argument box unwrap).
+package io
 
 import (
 	"fmt"
@@ -6,10 +10,24 @@ import (
 	"io"
 
 	"github.com/podhmo/minigo/internal/hostbridge"
+	"github.com/podhmo/minigo/internal/stdlib"
 	"github.com/podhmo/minigo/runtime"
 )
 
-func (e *Engine) installIo(h *hostHelpers) {
+// Adapters carries the engine hooks the reader/writer adapters need:
+// MethodSetOf reports a value's declared method set (env.MethodSetOfValue)
+// and UnwrapArg peels the fmt argument box off a `&x` reference.
+type Adapters struct {
+	MethodSetOf func(any) map[string]bool
+	UnwrapArg   func(any) any
+}
+
+// Install binds the io intrinsics: interface typedefs so script values
+// can declare and satisfy them, the host sentinels (err == io.EOF must
+// compare by pointer), and the Copy/Read*/Write* helpers — each adapted
+// through Adapters so script-defined readers/writers resolve by method
+// set.
+func Install(bind stdlib.Bind, h stdlib.Helpers, ad *Adapters) {
 	// io: bound as natives because the interpreted io package cannot provide
 	// singleton identity — `err == io.EOF` compares GoValues by pointer, so
 	// EOF must be the real host sentinel. Reader/Writer interfaces are
@@ -36,13 +54,13 @@ func (e *Engine) installIo(h *hostHelpers) {
 				}
 				switch c {
 				case 'r':
-					r, err := h.asReaderVM(vc, args[i])
+					r, err := ad.AsReaderVM(vc, args[i])
 					if err != nil {
 						return nil, err
 					}
 					a[i] = r
 				case 'w':
-					w, err := asWriterVM(vc, args[i])
+					w, err := ad.AsWriterVM(vc, args[i])
 					if err != nil {
 						return nil, err
 					}
@@ -55,7 +73,7 @@ func (e *Engine) installIo(h *hostHelpers) {
 		}}
 	}
 
-	e.bindBound("io", map[string]runtime.Value{
+	bind("io", map[string]runtime.Value{
 		"Reader":       &runtime.TypeDef{Name: "io.Reader", Kind: runtime.KindInterface, MReqs: []string{"Read"}},
 		"Writer":       &runtime.TypeDef{Name: "io.Writer", Kind: runtime.KindInterface, MReqs: []string{"Write"}},
 		"Closer":       &runtime.TypeDef{Name: "io.Closer", Kind: runtime.KindInterface, MReqs: []string{"Close"}},
@@ -79,7 +97,7 @@ func (e *Engine) installIo(h *hostHelpers) {
 			MReqs: []string{"Read", "Seek", "Close"}},
 		"ReadWriteSeeker": &runtime.TypeDef{Name: "io.ReadWriteSeeker", Kind: runtime.KindInterface,
 			MReqs: []string{"Read", "Write", "Seek"}},
-		"NewSectionReader": h.fn3("io.NewSectionReader", func(a []any) (any, error) {
+		"NewSectionReader": h.Fn3("io.NewSectionReader", func(a []any) (any, error) {
 			ra, ok := a[0].(io.ReaderAt)
 			if !ok {
 				if g, isGV := a[0].(*runtime.GoValue); isGV {
@@ -92,60 +110,60 @@ func (e *Engine) installIo(h *hostHelpers) {
 			if !ok {
 				return nil, fmt.Errorf("io.NewSectionReader: not an io.ReaderAt: %T", a[0])
 			}
-			return &runtime.GoValue{V: io.NewSectionReader(ra, int64Of(a[1]), int64Of(a[2]))}, nil
+			return &runtime.GoValue{V: io.NewSectionReader(ra, stdlib.Int64Of(a[1]), stdlib.Int64Of(a[2]))}, nil
 		}, io.NewSectionReader),
-		"EOF":              errVal(io.EOF),
-		"ErrClosedPipe":    errVal(io.ErrClosedPipe),
-		"ErrNoProgress":    errVal(io.ErrNoProgress),
-		"ErrShortBuffer":   errVal(io.ErrShortBuffer),
-		"ErrShortWrite":    errVal(io.ErrShortWrite),
-		"ErrUnexpectedEOF": errVal(io.ErrUnexpectedEOF),
+		"EOF":              stdlib.ErrVal(io.EOF),
+		"ErrClosedPipe":    stdlib.ErrVal(io.ErrClosedPipe),
+		"ErrNoProgress":    stdlib.ErrVal(io.ErrNoProgress),
+		"ErrShortBuffer":   stdlib.ErrVal(io.ErrShortBuffer),
+		"ErrShortWrite":    stdlib.ErrVal(io.ErrShortWrite),
+		"ErrUnexpectedEOF": stdlib.ErrVal(io.ErrUnexpectedEOF),
 		"Discard":          &runtime.GoValue{V: io.Discard},
 		// *io.LimitedReader assertions (http's body.readLocked probes
 		// `lr.N == 0` for early-EOF) need the typedef; field reads like
 		// `lr.N` dispatch on the host struct through reflection.
-		"LimitedReader": hostType("io.LimitedReader", func() any { return &io.LimitedReader{} }),
-		"SectionReader": hostType("io.SectionReader", func() any { return &io.SectionReader{} }),
+		"LimitedReader": stdlib.HostType("io.LimitedReader", func() any { return &io.LimitedReader{} }),
+		"SectionReader": stdlib.HostType("io.SectionReader", func() any { return &io.SectionReader{} }),
 		"SeekStart":     &runtime.UConst{V: constant.MakeInt64(io.SeekStart)},
 		"SeekCurrent":   &runtime.UConst{V: constant.MakeInt64(io.SeekCurrent)},
 		"SeekEnd":       &runtime.UConst{V: constant.MakeInt64(io.SeekEnd)},
 		"ReadAll": ioCall("io.ReadAll", "r", func(a []any) (any, error) {
 			b, rerr := io.ReadAll(a[0].(io.Reader))
-			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(b), errVal(rerr)}}, nil
+			return &runtime.Tuple{Elems: []runtime.Value{stdlib.ScriptVal(b), stdlib.ErrVal(rerr)}}, nil
 		}),
 		"WriteString": ioCall("io.WriteString", "wv", func(a []any) (any, error) {
-			n, werr := io.WriteString(a[0].(io.Writer), str(a[1]))
-			return &runtime.Tuple{Elems: []runtime.Value{int64(n), errVal(werr)}}, nil
+			n, werr := io.WriteString(a[0].(io.Writer), stdlib.Str(a[1]))
+			return &runtime.Tuple{Elems: []runtime.Value{int64(n), stdlib.ErrVal(werr)}}, nil
 		}),
 		"Copy": ioCall("io.Copy", "wr", func(a []any) (any, error) {
 			n, cerr := io.Copy(a[0].(io.Writer), a[1].(io.Reader))
-			return &runtime.Tuple{Elems: []runtime.Value{int64(n), errVal(cerr)}}, nil
+			return &runtime.Tuple{Elems: []runtime.Value{int64(n), stdlib.ErrVal(cerr)}}, nil
 		}),
 		"CopyBuffer": ioCall("io.CopyBuffer", "wrv", func(a []any) (any, error) {
-			n, cerr := io.CopyBuffer(a[0].(io.Writer), a[1].(io.Reader), byteSlice(a[2]))
-			return &runtime.Tuple{Elems: []runtime.Value{int64(n), errVal(cerr)}}, nil
+			n, cerr := io.CopyBuffer(a[0].(io.Writer), a[1].(io.Reader), stdlib.ByteSlice(a[2]))
+			return &runtime.Tuple{Elems: []runtime.Value{int64(n), stdlib.ErrVal(cerr)}}, nil
 		}),
 		"CopyN": ioCall("io.CopyN", "wrv", func(a []any) (any, error) {
-			n, cerr := io.CopyN(a[0].(io.Writer), a[1].(io.Reader), int64Of(a[2]))
-			return &runtime.Tuple{Elems: []runtime.Value{int64(n), errVal(cerr)}}, nil
+			n, cerr := io.CopyN(a[0].(io.Writer), a[1].(io.Reader), stdlib.Int64Of(a[2]))
+			return &runtime.Tuple{Elems: []runtime.Value{int64(n), stdlib.ErrVal(cerr)}}, nil
 		}),
 		// ReadFull borrows the script buffer instead of a byteSlice copy —
 		// a copy would drop the reader's writes and leave the script slice
 		// untouched (#362).
 		"ReadFull": ioCall("io.ReadFull", "rv", func(a []any) (any, error) {
-			bs, commit := borrowBytes(a[1])
+			bs, commit := stdlib.BorrowBytes(a[1])
 			n, rerr := io.ReadFull(a[0].(io.Reader), bs)
 			commit()
-			return &runtime.Tuple{Elems: []runtime.Value{int64(n), errVal(rerr)}}, nil
+			return &runtime.Tuple{Elems: []runtime.Value{int64(n), stdlib.ErrVal(rerr)}}, nil
 		}),
 		"ReadAtLeast": ioCall("io.ReadAtLeast", "rvv", func(a []any) (any, error) {
-			bs, commit := borrowBytes(a[1])
-			n, rerr := io.ReadAtLeast(a[0].(io.Reader), bs, intOf(a[2]))
+			bs, commit := stdlib.BorrowBytes(a[1])
+			n, rerr := io.ReadAtLeast(a[0].(io.Reader), bs, stdlib.IntOf(a[2]))
 			commit()
-			return &runtime.Tuple{Elems: []runtime.Value{int64(n), errVal(rerr)}}, nil
+			return &runtime.Tuple{Elems: []runtime.Value{int64(n), stdlib.ErrVal(rerr)}}, nil
 		}),
 		"LimitReader": ioCall("io.LimitReader", "rv", func(a []any) (any, error) {
-			return &runtime.GoValue{V: io.LimitReader(a[0].(io.Reader), int64Of(a[1]))}, nil
+			return &runtime.GoValue{V: io.LimitReader(a[0].(io.Reader), stdlib.Int64Of(a[1]))}, nil
 		}),
 		"TeeReader": ioCall("io.TeeReader", "rw", func(a []any) (any, error) {
 			return &runtime.GoValue{V: io.TeeReader(a[0].(io.Reader), a[1].(io.Writer))}, nil
@@ -168,34 +186,32 @@ func (e *Engine) installIo(h *hostHelpers) {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("io.NopCloser needs 1 arg, got %d", len(args))
 			}
-			r, err := h.asReaderVM(vc, args[0])
+			r, err := ad.AsReaderVM(vc, args[0])
 			if err != nil {
 				return nil, err
 			}
 			return &runtime.GoValue{V: io.NopCloser(r)}, nil
 		}},
-		"Pipe": h.fn("io.Pipe", func(a []any) (any, error) {
+		"Pipe": h.Fn("io.Pipe", func(a []any) (any, error) {
 			pr, pw := io.Pipe()
 			return &runtime.Tuple{Elems: []runtime.Value{&runtime.GoValue{V: pr}, &runtime.GoValue{V: pw}}}, nil
 		}, io.Pipe),
 	})
 }
 
-// asWriter pulls an io.Writer out of a bound stdio handle (os.Stdout,
+// AsWriter pulls an io.Writer out of a bound stdio handle (os.Stdout,
 // os.Stderr, an *os.File) for the fmt.Fprint* family.
-func asWriter(v any) (io.Writer, error) {
-	return asWriterVM(nil, v)
+func (ad *Adapters) AsWriter(v any) (io.Writer, error) {
+	return ad.AsWriterVM(nil, v)
 }
 
-// asWriterVM is asWriter plus script-defined writers: when the VM is
+// AsWriterVM is AsWriter plus script-defined writers: when the VM is
 // available and the value carries a Write method, it adapts into an
 // io.Writer that calls back into the script.
-func asWriterVM(vc runtime.MemberCaller, v any) (io.Writer, error) {
+func (ad *Adapters) AsWriterVM(vc runtime.MemberCaller, v any) (io.Writer, error) {
 	// args arrive fmtArg'd: a *runtime.Cell (a `&b` address-of) surfaces
-	// as *fmtValue — unwrap back through the reference to the box.
-	if fv, ok := v.(*fmtValue); ok {
-		v = fv.x
-	}
+	// as the fmt box — unwrap back through the reference to the box.
+	v = ad.UnwrapArg(v)
 	// the method-set check runs on the box (&w keeps its pointer
 	// receivers); the Write callback itself resolves on the unwrapped
 	// value like before.
@@ -203,7 +219,7 @@ func asWriterVM(vc runtime.MemberCaller, v any) (io.Writer, error) {
 	if dv, ok := runtime.Deref(orig); ok {
 		v = dv
 	}
-	v = hostBoxOf(orig, v)
+	v = stdlib.HostBoxOf(orig, v)
 	if g, ok := v.(*runtime.GoValue); ok {
 		v = g.V
 	}
@@ -218,7 +234,7 @@ func asWriterVM(vc runtime.MemberCaller, v any) (io.Writer, error) {
 	return nil, fmt.Errorf("not an io.Writer: %T", v)
 }
 
-// asReaderVM is asReader plus script-defined readers: when the VM is
+// AsReaderVM is AsReader plus script-defined readers: when the VM is
 // available, a script value advertising a Read method adapts to io.Reader
 // through a callback proxy, like asWriterVM does for writers. When the
 // value also advertises WriteTo the proxy implements it too — Go's
@@ -227,10 +243,8 @@ func asWriterVM(vc runtime.MemberCaller, v any) (io.Writer, error) {
 // is checked on the method set, not member selection: a method promoted
 // from an embedded interface (net/http's nopCloser type probes) has no
 // selectable member yet still declares the interface.
-func (h *hostHelpers) asReaderVM(vc runtime.MemberCaller, v any) (io.Reader, error) {
-	if fv, ok := v.(*fmtValue); ok {
-		v = fv.x
-	}
+func (ad *Adapters) AsReaderVM(vc runtime.MemberCaller, v any) (io.Reader, error) {
+	v = ad.UnwrapArg(v)
 	if v == nil || v == runtime.NIL {
 		return nil, nil
 	}
@@ -241,7 +255,7 @@ func (h *hostHelpers) asReaderVM(vc runtime.MemberCaller, v any) (io.Reader, err
 	if dv, ok := runtime.Deref(orig); ok {
 		v = dv
 	}
-	v = hostBoxOf(orig, v)
+	v = stdlib.HostBoxOf(orig, v)
 	if g, ok := v.(*runtime.GoValue); ok {
 		v = g.V
 	}
@@ -249,7 +263,7 @@ func (h *hostHelpers) asReaderVM(vc runtime.MemberCaller, v any) (io.Reader, err
 		return r, nil
 	}
 	if vc != nil && v != nil && v != runtime.NIL {
-		set, _, _ := h.env.MethodSetOfValue(orig)
+		set := ad.MethodSetOf(orig)
 		if set["Read"] {
 			if set["WriteTo"] {
 				return &scriptReaderWriterTo{scriptReader{v: vc, recv: orig}}, nil
@@ -281,7 +295,7 @@ func copyBackBytes(dst []byte, src runtime.Value, n int) {
 		return
 	}
 	for i := 0; i < n && i < len(sl.Elems) && i < len(dst); i++ {
-		dst[i] = byte(int64Of(sl.Elems[i]))
+		dst[i] = byte(stdlib.Int64Of(sl.Elems[i]))
 	}
 }
 
@@ -324,13 +338,10 @@ type scriptWriter struct {
 	write runtime.Value
 }
 
-// asReader mirrors asWriter for io.Reader args: `strings.NewReader`'s
+// AsReader mirrors AsWriter for io.Reader args: `strings.NewReader`'s
 // GoValue unwraps to the real reader, `&r` cells deref through. A nil
 // argument is a valid (nil) io.Reader — `io.NopCloser(nil)` is legal Go.
-func asReader(v any) (io.Reader, error) {
-	if fv, ok := v.(*fmtValue); ok {
-		v = fv.x
-	}
+func AsReader(v any) (io.Reader, error) {
 	if v == nil {
 		return nil, nil
 	}
@@ -351,7 +362,7 @@ func (s *scriptReader) Read(p []byte) (int, error) {
 	if !ok || m == nil || m == runtime.NIL {
 		return 0, fmt.Errorf("runtime error: invalid memory address or nil pointer dereference")
 	}
-	pv := scriptVal(p)
+	pv := stdlib.ScriptVal(p)
 	r, err := s.v.Call(m, []runtime.Value{pv})
 	if err != nil {
 		// a panic inside the script Read propagates as a panic like
@@ -369,7 +380,7 @@ func (s *scriptReaderWriterTo) Read(p []byte) (int, error) {
 	if !ok || m == nil || m == runtime.NIL {
 		return 0, fmt.Errorf("runtime error: invalid memory address or nil pointer dereference")
 	}
-	pv := scriptVal(p)
+	pv := stdlib.ScriptVal(p)
 	r, err := s.v.Call(m, []runtime.Value{pv})
 	if err != nil {
 		panic(err)
@@ -392,7 +403,7 @@ func (s *scriptReaderWriterTo) WriteTo(w io.Writer) (int64, error) {
 }
 
 func (s *scriptWriter) Write(p []byte) (int, error) {
-	r, err := s.v.Call(s.write, []runtime.Value{scriptVal(p)})
+	r, err := s.v.Call(s.write, []runtime.Value{stdlib.ScriptVal(p)})
 	if err != nil {
 		panic(err)
 	}
