@@ -991,6 +991,15 @@ func PromotedWalk() string {
 	if gs == nil || gs.Via != nil || gs.Decl == nil {
 		return "declared method did not win"
 	}
+	// a host-bound embed promotes its reflect method set.
+	ep := inspect.DirOf("./testdata/embedhost")
+	bw := find(inspect.MethodSet(inspect.Symbol(ep, "BufWrap")), "WriteString")
+	if bw == nil || bw.Decl != nil || bw.Via == nil || bw.Via.Name != "Buffer" {
+		return "host embed lost its reflect method set"
+	}
+	if len(bw.Sig.ParamFields()) != 1 || len(bw.Sig.ResultFields()) != 2 {
+		return "bad host promoted sig"
+	}
 	// composite aliases borrow nothing; the pointer alias borrows *T's set.
 	if len(inspect.MethodSet(inspect.Symbol(p, "SliceAlias"))) != 0 {
 		return "slice alias borrowed a method set"
