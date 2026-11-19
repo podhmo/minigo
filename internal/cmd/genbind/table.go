@@ -46,7 +46,7 @@ var specs = []spec{
 			"FieldsFuncSeq": true, "IndexFunc": true, "LastIndexFunc": true,
 			"Map": true, "TrimFunc": true, "TrimLeftFunc": true,
 			"TrimRightFunc": true}},
-	{Path: "context", File: "context",
+	{Path: "context", File: "context", Dir: "internal/stdlib/context",
 		Skip: map[string]bool{"Context": true, "CancelFunc": true, "CancelCauseFunc": true,
 			"WithValue": true, "AfterFunc": true, "Cause": true,
 			"WithCancel": true, "WithCancelCause": true,
