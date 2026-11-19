@@ -1,3 +1,5 @@
+//go:generate go run ./internal/cmd/genbind
+
 package minigo
 
 import (
