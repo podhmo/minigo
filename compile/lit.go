@@ -55,7 +55,7 @@ func (c *compiler) emitEllipsisLenFold(cl *ast.CompositeLit, te ast.Expr, elPos 
 				// the decl's package scope — the use site may
 				// shadow its names — so the fragment compiles and
 				// evaluates there at run time.
-				c.emit(bytecode.OpEvalAST, c.constIdx(&bytecode.ASTFragment{Expr: kv.Key, File: elFile}), 0, kv.Key.Pos())
+				c.emit(bytecode.OpEvalFragment, c.constIdx(&bytecode.ASTFragment{Expr: kv.Key, File: elFile}), 0, kv.Key.Pos())
 			} else {
 				// the key's position — constant or not, evaluated
 				// in scope; a typed value (uint8(255)) keeps its
@@ -440,7 +440,7 @@ func (c *compiler) emitLenFolds(e ast.Expr) {
 		if c.pkgScopeTyp != nil {
 			// the length belongs to a package decl — its names
 			// resolve in that file's scope, not the use site's.
-			c.emit(bytecode.OpEvalAST, c.constIdx(&bytecode.ASTFragment{Expr: at.Len, File: c.pkgScopeTyp}), 0, at.Len.Pos())
+			c.emit(bytecode.OpEvalFragment, c.constIdx(&bytecode.ASTFragment{Expr: at.Len, File: c.pkgScopeTyp}), 0, at.Len.Pos())
 		} else {
 			c.expr(at.Len)
 		}

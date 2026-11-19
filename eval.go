@@ -33,7 +33,7 @@ func (e *Engine) EvalExpr(ctx context.Context, pkg *runtime.Package, file *synta
 		Name:   "<eval>",
 		Consts: []any{&bytecode.ASTFragment{Expr: expr, File: file}},
 		Code: []bytecode.Instruction{
-			{Op: bytecode.OpEvalAST, A: 0, C: -1},
+			{Op: bytecode.OpEvalFragment, A: 0, C: -1},
 			{Op: bytecode.OpReturn, A: 1, C: -1},
 		},
 	}

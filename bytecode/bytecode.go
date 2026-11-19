@@ -68,7 +68,7 @@ const (
 	OpUnpack        // pop Tuple -> push A values (multi-assign)
 	OpMakeComposite // A: nelems, B: flags(1=kv pairs); pop elems, pop *TypeDef -> push composite
 	OpMakeClosure   // A: const idx of *Function; captures per fn.UpvalDescs -> push Closure
-	OpEvalAST       // A: const idx of *ASTFragment; compile fragment at run time -> push result
+	OpEvalFragment  // A: const idx of *ASTFragment; compile fragment at run time -> push result
 
 	// arithmetic
 	OpBinary // A: BinOp; B: flags (ShiftConstCount, ShiftTypedLeft, ShiftNonConstCount)
@@ -301,7 +301,7 @@ type UpvalDesc struct {
 }
 
 // ASTFragment is an AST expression kept uncompiled as a chunk constant.
-// [OpEvalAST] compiles it each time it executes and pushes its value; the
+// [OpEvalFragment] compiles it each time it executes and pushes its value; the
 // expression sees package globals, File's imports and builtins, but not
 // the enclosing function's locals.
 type ASTFragment struct {

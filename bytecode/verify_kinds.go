@@ -163,7 +163,7 @@ func kindSuccs(ch *Chunk, ip int, ins Instruction, st []SlotKind, problems *[]st
 		return one(st)
 	case OpJump:
 		return []ksucc{{int(ins.A), st}}
-	case OpConst, OpEvalAST, OpSpecialCall, OpNil:
+	case OpConst, OpEvalFragment, OpSpecialCall, OpNil:
 		// a pushed constant's kind is whatever the const holds — even
 		// nil doubles as an absent typedef tier (unresolved static
 		// types), so nothing concrete can be claimed here.

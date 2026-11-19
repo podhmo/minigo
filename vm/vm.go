@@ -45,9 +45,9 @@ type Hooks struct {
 	// (function, type, var, const) on first access.
 	Materialize func(pkg *runtime.Package, d *index.Decl) (runtime.Value, error)
 	// CompileExpr compiles a single expression into a chunk for
-	// OpEvalAST and for constant array lengths such as [N*2]int; the
+	// OpEvalFragment and for constant array lengths such as [N*2]int; the
 	// expression sees globals, file imports and builtins but not the
-	// caller's locals (see compile.Expr). Nil makes OpEvalAST trap.
+	// caller's locals (see compile.Expr). Nil makes OpEvalFragment trap.
 	CompileExpr func(pkg *runtime.Package, file *syntax.File, e ast.Expr) (*bytecode.Chunk, error)
 	// CompileScopedExpr compiles an expression with a caller-scope overlay
 	// (name -> caller slot/upval index) for special forms (see

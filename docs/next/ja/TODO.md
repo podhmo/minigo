@@ -159,7 +159,7 @@
 - [x] **P4-5 インラインキャッシュ**: `OpGlobal`（`Env` epoch でガード）と `OpSelect`（`TypeID → パス`）にキャッシュを置く。Chunk は Session ごとのままにする。完了条件: `make test-race` と `make concurrency-stress` が通る。
   - [x] **P4-5a OpGlobal のキャッシュ**: `Env` epoch で再束縛時に無効化する。別 Session や同一 Session 内の goroutine で値が混ざらないことを確認し、ベンチ差分を記録する。
   - [x] **P4-5b OpSelect のキャッシュ**: M4-1d と M4-3 のあと、`TypeID` ごとの `FieldPath` を使う。同じサイトに異なるレシーバ型が来る場合と、並行アクセスをテストする。
-- [ ] **P4-6 `OpEvalAST` を `OpEvalFragment` に改名する**: REPL/`EvalExpr` のブリッジとしてだけ残す。独立した PR で命令名・逆アセンブル出力・golden を更新し、REPL と `EvalExpr` の挙動を確認する。
+- [x] **P4-6 `OpEvalAST` を `OpEvalFragment` に改名する**: REPL/`EvalExpr` のブリッジとしてだけ残す。独立した PR で命令名・逆アセンブル出力・golden を更新し、REPL と `EvalExpr` の挙動を確認する。
 
 ## M6（任意・判断ゲート付き）
 
