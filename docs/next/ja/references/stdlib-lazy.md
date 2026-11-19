@@ -25,3 +25,10 @@
 | 手書きのアダプタ | 約 200（約 25%） | 生の `BuiltinFunc` 72、`atomicOp` 39、複数行の `h.fn*` 約 70、scan/sort/slices/`ioCall`/split-func/`templateMust`/`osErrPred`/`randBig` など |
 
 `gen-intrinsics`（cmd/minigo/main.go:783〜940）は、関数ごとに `WrapFunc`、変数と定数ごとに `ValueOf`、構造体ごとに `HostTypeOf` を出力する。ジェネリックな関数と型はスキップする。`WrapFunc` は呼び出しのたびに reflect を使うので、現在の直接ラッパより遅い。
+
+## P2-12b（internal/stdlib/<path> の Install）
+
+- `internal/stdlib` に共有バインド機構を移設: `WrapFuncWith`/`WrapBind`/`ScriptVal`/`ErrVal`/`NamedSized`/`StrsSlice`/`RuneSlice`/`BytesSliceOf`/`HostType`/`SliceOf` + `type Bind func(path, symbols)`。ルートの `native.go`/`intrinsics.go` は薄いラッパだけを残し、既存の呼び出しサイトは無変更。
+- `internal/stdlib/html`・`internal/stdlib/utf8` がそれぞれ `Install(bind)` で `e.bindBound` 経由の遅延登録を実行（stdlibreg.go の pending.Register から呼ぶ）。`unicode/utf8` の手書き `EncodeRune`/`AppendRune`（スクリプトのスライス backing へ直接書く gc 互換シグネチャ）も同パッケージへ移動。`int64Of` は `hostbridge.Int64Of` を利用。
+- genbind の spec に `Dir` フィールドを追加: 設定時は `<dir>/gen.go`（package = ディレクトリ名、`stdlib.WrapBind`/`stdlib.HostType` 参照）を出力する。`html`・`unicode/utf8` の生成テーブルは新パッケージに再生成済み。
+- archcheck: `internal/stdlib→{internal/hostbridge, runtime}`、`internal/stdlib/html→{internal/stdlib, runtime}`、`internal/stdlib/utf8→{internal/hostbridge, internal/stdlib, runtime}` の辺を追加。
