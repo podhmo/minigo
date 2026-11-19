@@ -225,7 +225,7 @@ func (c *compiler) emitShift(op bytecode.BinOp, x *ast.BinaryExpr) {
 			if c.isIfaceExpr(x.Y) {
 				c.fs.markIface(name)
 			}
-			c.emit(bytecode.OpNewLocal, slot, 0, x.Y.Pos())
+			c.emit(bytecode.OpNewLocal, slot, 1, x.Y.Pos()) // B!=0 keeps the count's UConst box — materializing would default `p.C` to int and overflow
 			ys = ast.NewIdent(name)
 		}
 		gate := c.emit3(bytecode.OpConstExpr, 0, c.exprSite(x.Y, x.Y.Pos()), 0, x.Pos())
