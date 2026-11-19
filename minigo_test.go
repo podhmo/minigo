@@ -507,7 +507,7 @@ func TestStdlibIntrinsics(t *testing.T) {
 // `==` lowers to an interface comparison (selPkgMemberOpTyp).
 // docs/next/ja/references/acceptance-set.md.
 func TestNetHTTPRoundtrip(t *testing.T) {
-	checkNetHTTPRoundtrip(t)
+	checkNetHTTPRoundtrip(t, newEngine(t))
 }
 
 // The same roundtrip under forced-deferred facts (M4-7d): `rc ==
@@ -516,11 +516,18 @@ func TestNetHTTPRoundtrip(t *testing.T) {
 func TestNetHTTPRoundtripDeferred(t *testing.T) {
 	defer func(d bool) { compile.DeferFacts = d }(compile.DeferFacts)
 	compile.DeferFacts = true
-	checkNetHTTPRoundtrip(t)
+	checkNetHTTPRoundtrip(t, newEngine(t))
 }
 
-func checkNetHTTPRoundtrip(t *testing.T) {
-	e := newEngine(t)
+// The same roundtrip under strict lazy compilation (M4-8a): every
+// indexed-fact query runs IndexedOnly, so the operand static types
+// arrive through the deferred-fact path — the strict acceptance job
+// exercises this compile-time-fact dependency directly.
+func TestStrictLazyHTTPRoundtrip(t *testing.T) {
+	checkNetHTTPRoundtrip(t, minigo.NewEngine(".", minigo.WithStrictLazyCompile()))
+}
+
+func checkNetHTTPRoundtrip(t *testing.T, e *minigo.Engine) {
 	got := run(t, e, "./testdata/httpio", "Roundtrip")
 	if diff := cmp.Diff("200 OK|hi /hello", got); diff != "" {
 		t.Errorf("Roundtrip mismatch (-want +got):\n%s", diff)
