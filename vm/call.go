@@ -242,11 +242,13 @@ func (v *VM) inPlaceArgs(f *frame, argc int, args []runtime.Value) []runtime.Val
 	if cap(buf) < argc {
 		buf = make([]runtime.Value, argc)
 	} else {
+		// nil only the delta — len(buf) is the previous call's count,
+		// so [argc, len) is exactly where stale args sit.
+		stale := len(buf)
 		buf = buf[:argc]
-		// nil the stale tail — a shorter call leaves the previous
-		// call's args past len(buf) where freeFrame's clear cannot
-		// reach them.
-		clear(buf[argc:cap(buf)])
+		if argc < stale {
+			clear(f.argbuf[argc:stale])
+		}
 	}
 	copy(buf, v.vals[len(v.vals)-argc:])
 	f.argbuf = buf
@@ -729,7 +731,13 @@ func (v *VM) popArgsCall(f *frame, argc int, mode int, pos token.Pos) ([]runtime
 	if cap(argbuf) < argc {
 		argbuf = make([]runtime.Value, argc)
 	} else {
+		// nil only the delta — len(argbuf) is the previous call's
+		// count, so [argc, len) is exactly where stale args sit.
+		stale := len(argbuf)
 		argbuf = argbuf[:argc]
+		if argc < stale {
+			clear(f.argbuf[argc:stale])
+		}
 	}
 	if cap(statbuf) < argc {
 		statbuf = make([]*runtime.TypeDef, argc)
