@@ -9,6 +9,7 @@ import (
 	"sort"
 
 	"github.com/podhmo/minigo/internal/hostbridge"
+	"github.com/podhmo/minigo/internal/stdlib"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -144,44 +145,6 @@ func (e *Engine) typedSeq(fn *runtime.BuiltinFunc, elems ...*runtime.TypeDef) ru
 	return fn
 }
 
-// yieldOK reports whether a yield call's result lets the producer go on.
-func yieldOK(r runtime.Value) bool {
-	goon, ok := r.(bool)
-	return !ok || goon
-}
-
-// seqFn builds an intrinsic seq builtin over a native producer: the
-// VM-facing Fn drives each with the script's yield func, and Go-side
-// consumers read src directly (see nativeSeq).
-func seqFn(name string, src *runtime.SeqSource) *runtime.BuiltinFunc {
-	return &runtime.BuiltinFunc{Name: "iter.Seq(" + name + ")", SyncCallbacks: true, Seq: src, Fn: func(vc runtime.VMCaller, ya []runtime.Value) (runtime.Value, error) {
-		if len(ya) != 1 {
-			return nil, fmt.Errorf("%s: Seq needs a yield func", name)
-		}
-		return runtime.NIL, src.Each(vc, scriptYield(vc, ya[0]))
-	}}
-}
-
-// scriptYield adapts a script yield func to a native producer's yield.
-// The range-over-func loop body (DirectYield) runs straight from Go; any
-// other callable goes through the VM with a fresh argument slice, and a
-// panic in it propagates as a Go panic so a recover around the range
-// sees it, like in Go.
-func scriptYield(vc runtime.VMCaller, yield runtime.Value) func(args []runtime.Value) bool {
-	if c, ok := yield.(*runtime.BuiltinFunc); ok && c.DirectYield {
-		return func(args []runtime.Value) bool {
-			r, err := c.Fn(vc, args)
-			if err != nil {
-				panic(err)
-			}
-			return yieldOK(r)
-		}
-	}
-	return func(args []runtime.Value) bool {
-		return yieldOK(hostbridge.CallOrPanic(vc, yield, slices.Clone(args)))
-	}
-}
-
 // nativeSeq is the native source of an intrinsic seq value (possibly
 // tagged iter.Seq[...]); nil for any other value.
 func nativeSeq(v runtime.Value) *runtime.SeqSource {
@@ -207,24 +170,6 @@ func driveSeq(vc runtime.ScriptCaller, seq runtime.Value, take func(args []runti
 	}}
 	hostbridge.CallOrPanic(vc, seq, []runtime.Value{yield})
 	return nil
-}
-
-// sliceSource is the native source over pieces materialized up front
-// (strings.SplitSeq and friends, maps over host values).
-func sliceSource(pieces []runtime.Value) *runtime.SeqSource {
-	return &runtime.SeqSource{
-		Each: func(_ runtime.ScriptCaller, yield func([]runtime.Value) bool) error {
-			buf := make([]runtime.Value, 1)
-			for _, p := range pieces {
-				buf[0] = p
-				if !yield(buf) {
-					return nil
-				}
-			}
-			return nil
-		},
-		Collect: func(runtime.ScriptCaller) []runtime.Value { return slices.Clone(pieces) },
-	}
 }
 
 // mapSeqKind selects what a map seq yields.
@@ -623,7 +568,7 @@ func (e *Engine) slicesSeqHelpers(slicesPkg map[string]runtime.Value) map[string
 			if !ok {
 				return nil, fmt.Errorf("%s: arg must be a slice", name)
 			}
-			fn := seqFn(name, &runtime.SeqSource{Each: func(_ runtime.ScriptCaller, yield func([]runtime.Value) bool) error {
+			fn := stdlib.SeqFn(name, &runtime.SeqSource{Each: func(_ runtime.ScriptCaller, yield func([]runtime.Value) bool) error {
 				each(s, yield)
 				return nil
 			}})
@@ -756,7 +701,7 @@ func (e *Engine) slicesSeqHelpers(slicesPkg map[string]runtime.Value) map[string
 		// capture the element, not the args slice: Each may run after
 		// Fn returns, when the caller's arg buffer is already rewritten.
 		orig := args[0]
-		fn := seqFn("slices.Chunk", &runtime.SeqSource{Each: func(_ runtime.ScriptCaller, yield func([]runtime.Value) bool) error {
+		fn := stdlib.SeqFn("slices.Chunk", &runtime.SeqSource{Each: func(_ runtime.ScriptCaller, yield func([]runtime.Value) bool) error {
 			buf := make([]runtime.Value, 1)
 			for i, l := 0, sliceLen(s); i < l; i += n {
 				end := min(i+n, l)
@@ -783,11 +728,11 @@ func (e *Engine) mapsSeqHelpers(mapsPkg map[string]runtime.Value) map[string]run
 		if !ok {
 			rv, hkt, _, hok := hostMapSeqArg(args[0])
 			if !hok {
-				return seqFn("maps.Keys", sliceSource(mapKeys(hostbridge.GoNative(args[0])).Elems)), nil
+				return stdlib.SeqFn("maps.Keys", stdlib.SliceSource(mapKeys(hostbridge.GoNative(args[0])).Elems)), nil
 			}
-			return e.typedSeq(seqFn("maps.Keys", hostMapSource(rv, mapSeqKeys)), hkt), nil
+			return e.typedSeq(stdlib.SeqFn("maps.Keys", hostMapSource(rv, mapSeqKeys)), hkt), nil
 		}
-		return e.typedSeq(seqFn("maps.Keys", mapSource(m, mapSeqKeys, mapKeyConv(vc, m, kt))), kt), nil
+		return e.typedSeq(stdlib.SeqFn("maps.Keys", mapSource(m, mapSeqKeys, mapKeyConv(vc, m, kt))), kt), nil
 	}}
 	mapsPkg["Values"] = &runtime.BuiltinFunc{Name: "maps.Values", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) != 1 {
@@ -797,11 +742,11 @@ func (e *Engine) mapsSeqHelpers(mapsPkg map[string]runtime.Value) map[string]run
 		if !ok {
 			rv, _, hvt, hok := hostMapSeqArg(args[0])
 			if !hok {
-				return seqFn("maps.Values", sliceSource(mapValues(hostbridge.GoNative(args[0])).Elems)), nil
+				return stdlib.SeqFn("maps.Values", stdlib.SliceSource(mapValues(hostbridge.GoNative(args[0])).Elems)), nil
 			}
-			return e.typedSeq(seqFn("maps.Values", hostMapSource(rv, mapSeqValues)), hvt), nil
+			return e.typedSeq(stdlib.SeqFn("maps.Values", hostMapSource(rv, mapSeqValues)), hvt), nil
 		}
-		return e.typedSeq(seqFn("maps.Values", mapSource(m, mapSeqValues, nil)), vt), nil
+		return e.typedSeq(stdlib.SeqFn("maps.Values", mapSource(m, mapSeqValues, nil)), vt), nil
 	}}
 	mapsPkg["All"] = &runtime.BuiltinFunc{Name: "maps.All", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) != 1 {
@@ -813,9 +758,9 @@ func (e *Engine) mapsSeqHelpers(mapsPkg map[string]runtime.Value) map[string]run
 			if !hok {
 				return nil, fmt.Errorf("maps.All: arg must be a map")
 			}
-			return e.typedSeq(seqFn("maps.All", hostMapSource(rv, mapSeqAll)), hkt, hvt), nil
+			return e.typedSeq(stdlib.SeqFn("maps.All", hostMapSource(rv, mapSeqAll)), hkt, hvt), nil
 		}
-		return e.typedSeq(seqFn("maps.All", mapSource(m, mapSeqAll, mapKeyConv(vc, m, kt))), kt, vt), nil
+		return e.typedSeq(stdlib.SeqFn("maps.All", mapSource(m, mapSeqAll, mapKeyConv(vc, m, kt))), kt, vt), nil
 	}}
 	mapsPkg["Insert"] = &runtime.BuiltinFunc{Name: "maps.Insert", SyncCallbacks: true, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) != 2 {
