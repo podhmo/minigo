@@ -42,6 +42,20 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 		return s.(runtime.TypeID)
 	}
 	id := e.typeIDOfSlow(td)
+	// transient clones of one identity (a generic instantiation mints
+	// a fresh descriptor per call) must not each hold a memo slot:
+	// register the first under its identity and key the memo on that
+	// canonical descriptor, so later clones dedupe instead of growing
+	// the map for the engine's lifetime.
+	if e.typeIntern != nil && id != "" && id != "?" {
+		if got, ok := e.typeIntern.Lookup(id); ok {
+			e.tidMemo.Store(got, id)
+			return id
+		}
+		got := e.typeIntern.Of(id, td)
+		e.tidMemo.Store(got, id)
+		return id
+	}
 	e.tidMemo.Store(td, id)
 	return id
 }
