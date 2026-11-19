@@ -3666,3 +3666,60 @@ func TestScriptFSIntoHost(t *testing.T) {
 		t.Errorf("script fs into host (-want +got):\n%s", diff)
 	}
 }
+
+// M4-2b: an unexported interface method belongs to its declaring
+// package — a.T's m() satisfies a.I but must never satisfy b.I.
+func TestIfaceUnexportedMethodPkg(t *testing.T) {
+	root := t.TempDir()
+	write := func(path, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(root, "go.mod"), "module example.com/m\n\ngo 1.26\n")
+	write(filepath.Join(root, "a", "a.go"), `package a
+
+type I interface{ m() }
+
+type T struct{}
+
+func (T) m() {}
+
+func Use(x I) { x.m() }
+
+func Do() { Use(T{}) }
+`)
+	write(filepath.Join(root, "b", "b.go"), `package b
+
+type I interface{ m() }
+
+func Use(x I) {}
+`)
+	write(filepath.Join(root, "ok", "main.go"), `package main
+
+import "example.com/m/a"
+
+func main() { a.Do() }
+`)
+	write(filepath.Join(root, "bad", "main.go"), `package main
+
+import (
+	"example.com/m/a"
+	"example.com/m/b"
+)
+
+func main() { b.Use(a.T{}) }
+`)
+	e := minigo.NewEngine(root)
+	if _, err := e.Run(context.Background(), filepath.Join(root, "ok"), "main"); err != nil {
+		t.Fatalf("same-package unexported method must satisfy: %v", err)
+	}
+	_, err := e.Run(context.Background(), filepath.Join(root, "bad"), "main")
+	if err == nil || !strings.Contains(err.Error(), "cannot use a.T as I") {
+		t.Fatalf("cross-package unexported method must not satisfy, got %v", err)
+	}
+}
