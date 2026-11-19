@@ -564,7 +564,7 @@ func (m *Marshal) hostSeqFunc(n *runtime.Named, vc runtime.VMCaller) (any, bool)
 	for i := range elemTs {
 		elemTs[i] = anyType
 		if i < len(els) {
-			if rt := runtime.HostBasicType(els[i]); rt != nil {
+			if rt := runtime.HostReflectType(els[i]); rt != nil {
 				elemTs[i] = rt
 			}
 		}

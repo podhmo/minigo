@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	goruntime "runtime"
 	"slices"
 	"sort"
@@ -4046,3 +4047,21 @@ func TestBoundStarStarAssert(t *testing.T) {
 
 type starPtrT struct{ X int }
 type starPtrU struct{ Y int }
+
+// A seq crossing to a host any carries its element's host type when one
+// exists: iter.Seq[time.Duration] marshals as func(func(time.Duration)
+// bool), not func(func(any) bool) (reflect cannot build the named
+// iter.Seq instantiation, so the func spelling stands in).
+func TestHostSeqElemSpelling(t *testing.T) {
+	e := newEngine(t)
+	e.Bind("example.com/lib", map[string]runtime.Value{
+		"TypeOf": &runtime.GoValue{V: func(x any) string {
+			return reflect.TypeOf(x).String()
+		}},
+	})
+	got := run(t, e, "./testdata/hostseqtype", "Spell")
+	want := "func(func(time.Duration) bool)\niter.Seq2[int,string]\nfunc(func(interface {}) bool)"
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("mismatch (-want +got):\n%s", diff)
+	}
+}
