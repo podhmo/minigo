@@ -187,7 +187,7 @@ var FileBudgets = map[string]int{
 	"vm/deferred_lit.go":                           57,
 	"vm/ffi_marshal.go":                            633,
 	"vm/frame.go":                                  392,
-	"vm/generic.go":                                1735,
+	"vm/generic.go":                                1693,
 	"vm/goroutine_id.go":                           36,
 	"vm/goroutine_id_asm.go":                       17,
 	"vm/iface_reqs.go":                             69,
@@ -294,6 +294,6 @@ var FileBudgetExceptions = map[string]string{
 	"vm/frame.go":                     "P4-2c: plain-slot promotion counters + pooled promotion cells; heap-vs-pooled promote split",
 	"vm/loop.go":                      "P4-6 fragment memo + P2-7e host chanops move + profiler alloc counting + OpLocalRef publish mark",
 	"vm/processcaller.go":             "P2-2b: narrowed host callback helper callers",
-	"vm/selectsite.go":                "M4-2b: select unexported members by (call package, name); deref-site slot also keys the member name; the site cache also covers namedMember (selNamedMethod, payload field/path replays)",
+	"vm/selectsite.go":                "M4-2b: select unexported members by (call package, name); deref-site slot also keys the member name; the site cache also covers namedMember (selNamedMethod, payload field/path replays) + genCallSlot/instSiteSlot site memos",
 	"replhooks.go":                    "stdinspect.LookupDeclIn import for the moved inspect installer (P2-12)",
 }
