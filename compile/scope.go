@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/podhmo/minigo/bytecode"
+	"github.com/podhmo/minigo/index"
 	"github.com/podhmo/minigo/internal/spike"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
@@ -437,7 +438,7 @@ func (c *compiler) resolveName(name string) (nameInfo, bool) {
 			if tdi.Decl != nil {
 				if ts, ok := tdi.Decl.Spec.(*ast.TypeSpec); ok {
 					info.tspec = ts
-					_, info.iface = ts.Type.(*ast.InterfaceType)
+					info.iface = idxSpecIface(idx, ts, 0)
 				}
 			}
 			return info, true
@@ -639,6 +640,29 @@ var predeclaredTypeNames = map[string]bool{
 func (s *fscope) isTypeDeclName(name string) bool {
 	if b := s.lookupBinding(name); b != nil {
 		return b.typeDecl
+	}
+	return false
+}
+
+// idxSpecIface mirrors the package mint's identSpecIface chain for the
+// classifier: a `type X <id>` spec resolves <id> in package scope —
+// declared names follow their specs (bounded), the interface builtins
+// `any`/`error` answer true, and a shadowing decl answers false.
+func idxSpecIface(idx *index.Index, ts *ast.TypeSpec, depth int) bool {
+	if depth > 8 {
+		return false
+	}
+	switch u := ts.Type.(type) {
+	case *ast.InterfaceType:
+		return true
+	case *ast.Ident:
+		if tdi := idx.Types[u.Name]; tdi != nil && tdi.Decl != nil {
+			if ts2, ok := tdi.Decl.Spec.(*ast.TypeSpec); ok {
+				return idxSpecIface(idx, ts2, depth+1)
+			}
+			return false
+		}
+		return u.Name == "error" || u.Name == "any"
 	}
 	return false
 }
