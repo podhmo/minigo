@@ -200,7 +200,7 @@ func (e *Engine) installSlices(h *hostHelpers) {
 				return nil, err
 			}
 			for _, el := range sliceElems(s) {
-				if callBool(vc, args[1], el) {
+				if hostbridge.CallBool(vc, args[1], el) {
 					return true, nil
 				}
 			}
@@ -337,7 +337,7 @@ func (h *hostHelpers) slicesCompactFunc() *runtime.BuiltinFunc {
 		kept := make([]runtime.Value, 1, len(s.Elems))
 		kept[0] = s.Elems[0]
 		for i := 1; i < len(s.Elems); i++ {
-			if !callBool(vc, args[1], s.Elems[i], s.Elems[i-1]) {
+			if !hostbridge.CallBool(vc, args[1], s.Elems[i], s.Elems[i-1]) {
 				kept = append(kept, s.Elems[i])
 			}
 		}
@@ -394,7 +394,7 @@ func slicesIndexFunc() *runtime.BuiltinFunc {
 			return nil, err
 		}
 		for i, el := range sliceElems(s) {
-			if callBool(vc, args[1], el) {
+			if hostbridge.CallBool(vc, args[1], el) {
 				return int64(i), nil
 			}
 		}
@@ -424,7 +424,7 @@ func slicesEqualFunc() *runtime.BuiltinFunc {
 			return false, nil
 		}
 		for i := range x {
-			if !callBool(vc, args[2], x[i], y[i]) {
+			if !hostbridge.CallBool(vc, args[2], x[i], y[i]) {
 				return false, nil
 			}
 		}

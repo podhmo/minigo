@@ -25,7 +25,7 @@ func (e *Engine) installSort(h *hostHelpers) {
 			if _, rv, isHost := vm.HostSliceOf(args[0]); isHost {
 				// a boxed host slice: the less function reads it live
 				for i := rv.Len() - 1; i > 0; i-- {
-					r := callOrPanic(v, args[1], []runtime.Value{int64(i), int64(i - 1)})
+					r := hostbridge.CallOrPanic(v, args[1], []runtime.Value{int64(i), int64(i - 1)})
 					if b, _ := r.(bool); b {
 						return false, nil
 					}
@@ -41,7 +41,7 @@ func (e *Engine) installSort(h *hostHelpers) {
 			}
 			less := args[1]
 			for i := len(s.Elems) - 1; i > 0; i-- {
-				r := callOrPanic(v, less, []runtime.Value{int64(i), int64(i - 1)})
+				r := hostbridge.CallOrPanic(v, less, []runtime.Value{int64(i), int64(i - 1)})
 				if b, _ := r.(bool); b {
 					return false, nil
 				}
@@ -54,7 +54,7 @@ func (e *Engine) installSort(h *hostHelpers) {
 			i, j := int64(0), n
 			for i < j {
 				m := int64(uint64(i+j) >> 1)
-				r := callOrPanic(v, f, []runtime.Value{m})
+				r := hostbridge.CallOrPanic(v, f, []runtime.Value{m})
 				if b, _ := r.(bool); b {
 					j = m
 				} else {
@@ -76,7 +76,7 @@ func (e *Engine) installSort(h *hostHelpers) {
 			}
 			less := args[1]
 			sort.SliceStable(s.Elems, func(i, j int) bool {
-				r := callOrPanic(v, less, []runtime.Value{int64(i), int64(j)})
+				r := hostbridge.CallOrPanic(v, less, []runtime.Value{int64(i), int64(j)})
 				b, _ := r.(bool)
 				return b
 			})

@@ -151,3 +151,9 @@ import とセレクタ名の検査では、コールバック経由の実行が�
   廃止して直接呼びに。`constNative` → `ConstNative`、`constAtWidth`
   （`runtime.ConstMaterializer` capability 注入）→ `ConstAtWidth`、
   `makeHostType`（host slice/map の make）→ `MakeHostType`。
+
+- P2-9b: `display`/`joinDisplay` → `hostbridge.Display`/`JoinDisplay`
+  （caller は `runtime.ConstMaterializer`、nil 可。`minigo.Format` は
+  nil caller の wrapper として残置）。`callOrPanic`/`callBool` →
+  `hostbridge.CallOrPanic`/`CallBool`（`runtime.ScriptCaller` のみ）。
+  `callInt` は `int64Of` 依存のため root 残置で `CallOrPanic` を呼ぶ。
