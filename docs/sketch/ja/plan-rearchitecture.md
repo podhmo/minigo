@@ -154,7 +154,7 @@ minigo
 ├── vm                dispatch ループ, frame, call, defer/panic/recover
 ├── runtime           公開の値と基本的な実行契約 (データのみ)
 ├── builtin           len, append, make, … (capability インタフェース)
-├── special           公開: SymbolID, QuotedCall, SpecialContext (examples が import している)
+├── special           公開: SymbolID, QuotedCall (値を参照しない型だけ)
 ├── inspect  minireflect  repl   semantics の利用側。独自のエンジンにはならない
 ```
 
@@ -337,7 +337,7 @@ internal/stdlib/
 
 ### 2.8 特殊形式: `special/`
 
-- `SymbolID`、`QuotedCall`、`SpecialContext` は公開パッケージ `special/` に置く（examples が import している）。レジストリと VM 側の context 実装は `internal/execution` に置く。
+- `SymbolID`、`QuotedCall` は公開パッケージ `special/` に置き、`runtime` にエイリアスを残す（I7）。`SpecialFunc`/`SpecialContext` はシグネチャが `runtime.Value`・`*Package`・`*TypeDef` を参照するため `runtime` に残す — `special` へ移すと runtime <-> special の循環になる。examples は `runtime.*` 経由で見るので影響しない。レジストリは `internal/execution.Registry` に置いたが、VM 側の context 実装（`vm/special.go` の `specialCtx`）は `*VM`/`*frame` を必要とし execution は runtime/vm を import できないため vm に残る。
 - ディスパッチは、宣言パッケージ由来の canonical なシンボル同一性で行う。つまり import の別名、ローカルなシャドウイング、メソッドの宣言元をすべて考慮する。
 - コンパイラがレジストリに問うのは `Has(SymbolID)` だけで、スタブパッケージは決してロードしない（I4）。
 - 特殊形式の context が持つもの:
@@ -378,7 +378,7 @@ internal/hostbridge  → runtime, internal/semantics
 vm                   → bytecode, runtime, internal/process, internal/hostbridge(インタフェース)
 internal/execution   → internal/source, internal/semantics, runtime, compile, vm, special
 builtin              → runtime (capability インタフェース)
-special              → runtime, internal/semantics
+special              → syntax（値を持たない識別子と引用呼び出しのみ）
 internal/stdlib/...  → internal/stdlib/bind → runtime (capability), internal/hostbridge
 minigo               → 上記すべて
 inspect, minireflect, repl, storybook, cmd → minigo (inspect/minireflect は internal/semantics に問う)
@@ -466,7 +466,7 @@ M0〜M3 が最初のマイルストーンで、これは D-own と同じであ�
 | K5 | 型レイヤが `runtime` を import するか | する: `types → runtime`。段階的に移行するための `Def *runtime.TypeDef` の逆参照あり | しない: `semantics` は runtime、VM、compiler に依存しない | D-own なら C1 が import グラフで強制され、inspect/minireflect が VM なしで答えを共有できる（**I**、**S**）。D-vm のほうが移行は安い（**M**）。スパイクでこれらの答えが意味論を決めると分かった（S2）ので、VM なしでテストできるレイヤにはアダプタのコストを払う価値がある | **D-own**。D-vm の移行手法（呼び出し箇所ごとに移す。`TypeDef` に `TypeID` フィールドを持たせる）は残すが、semantics 内の逆参照ではなく実行側のアダプタとして使う |
 | K6 | ジェネリクス推論をどこに置くか | まるごと `types/infer.go` | semantics を機能グループごとに育てる | `inferCached` は実行時の値を受け取っているので、そのままでは純粋な semantics には置けない | **分割**する（§2.3）: 単一化は semantics、値 → TypeID はアダプタ。どちらの案にもなかった |
 | K7 | 型なし定数の演算 | `vm` の下に独立した `constant/` パッケージ | semantics は実行に必要なことにだけ答え、評価はしない | 実行時の `UConst` 値に対する演算は評価であって、宣言の問いではない | **D-own の境界**。演算は実行側に残し、`semantics` は「定数か、宣言された型は何か」だけに答える |
-| K8 | パッケージのレイアウト | 公開の `types/`、`loader/`、`hostffi/`、`stdlib/`、`vm/sched/` | `internal/{source, semantics, execution, process, hostbridge, stdlib, archcheck}` | `internal/` にすれば、移行途中の API が I7 の義務にならない（**I**、**M**）。D-vm の名前は仕組みを表し、D-own の名前は所有を表すので、レビューチェックリストと揃う | **D-own**。例外として `special` は公開のまま残す。examples が `SymbolID`、`QuotedCall`、`SpecialContext` を import しているため（I7）。レジストリの実装は `internal/execution` に置く |
+| K8 | パッケージのレイアウト | 公開の `types/`、`loader/`、`hostffi/`、`stdlib/`、`vm/sched/` | `internal/{source, semantics, execution, process, hostbridge, stdlib, archcheck}` | `internal/` にすれば、移行途中の API が I7 の義務にならない（**I**、**M**）。D-vm の名前は仕組みを表し、D-own の名前は所有を表すので、レビューチェックリストと揃う | **D-own**。例外として `special` は公開のまま残す（I7）。ただし `special` に入るのは値を参照しない `SymbolID`/`QuotedCall` だけで、`SpecialFunc`/`SpecialContext` は runtime 値を参照するため `runtime` に残す（移すと循環依存）。examples は `runtime.*` の公開面を使う。レジストリの実装は `internal/execution`、VM 側の context 実装は `vm` に置く |
 | K9 | bind テーブル | 遅延構築し、エンジン間で共有し得る | `NewSession` で bind を継承する。Session ごとに変わる状態には明示的な factory が要る | **E**: 約 45 個のクロージャがエンジンの状態を捕捉しているので、その状態を移さない限り共有はできない。D-own の factory がまさに欠けていた部品である。D-vm の遅延化は、セッションのコスト（60〜70%）が求めているもの | **両方**。D-own の所有モデルを、`bind.Env` を factory として採り、D-vm のパッケージ単位の遅延構築と組み合わせる。エンジン間の共有は M6 に送る |
 | K10 | アーキテクチャの強制 | `archtest_test.go`: import グラフとファイルサイズのラチェット | `internal/cmd/archcheck`: import グラフ、可変グローバル、共有資産に対する再帰的なフィールド許可リスト | D-own は、Session の状態が共有資産の *中に* 漏れることを検出できる。これは import グラフでは見えない。D-vm のサイズのラチェットは別の観点である | **D-own** に、D-vm のファイルサイズのラチェットを加える |
 | K11 | 実行時のチェック | なし（レビューとテスト） | 既定は軽量な所有権チェック、重い資産監査はオプトイン（計測で 2〜3 ms 対 1〜1.6 s） | D-vm にはここが何もない。D-own の計測値が分割を正当化している | **D-own** |
