@@ -225,8 +225,7 @@ func CheckSizes(sizes map[string]int, budget map[string]int) []Violation {
 	return out
 }
 
-// pkgDecls is one parsed package: named type declarations keyed by
-// name.
+// pkgDecls is one parsed package's named type declarations.
 type pkgDecls struct {
 	types map[string]typeDecl
 }
@@ -279,12 +278,9 @@ func loadPkg(root, pkgRel string) (*pkgDecls, error) {
 
 // CheckSharedFields walks every field type reachable from the struct
 // typeName in package pkgDir (following named types into other
-// module-internal packages) and reports execution-state leaks:
-//
-//   - a field whose type is in forbidden ("pkg/path.Type" entries)
-//   - a function-typed field, unless its "StructName.FieldName" path is
-//     in exempt
-//
+// module-internal packages) and reports execution-state leaks: a
+// field whose type is in forbidden ("pkg/path.Type" entries), or a
+// function-typed field unless "StructName.FieldName" is in exempt.
 // Field names use the declaring struct's name, so a nested violation
 // reports the struct that holds it.
 func CheckSharedFields(root, pkgDir, typeName string, forbidden, exempt map[string]bool) ([]Violation, error) {
@@ -314,9 +310,8 @@ func CheckSharedFields(root, pkgDir, typeName string, forbidden, exempt map[stri
 		}
 		out = append(out, Violation{pkg, fq, fmt.Sprintf("%s.%s holds forbidden shared state: field %s has type %s", strct, field, field, fq)})
 	}
-	// walkType inspects a field type expression. imports is the table of
-	// the file that declares the type — selector resolution must happen
-	// per declaring file, since files may reuse an alias.
+	// walkType inspects a field type expr; imports comes from the
+	// declaring file, since files may reuse an alias.
 	var walkType func(pkg, strct, field string, imports map[string]string, expr ast.Expr) error
 	walkType = func(pkg, strct, field string, imports map[string]string, expr ast.Expr) error {
 		d, err := load(pkg)
@@ -325,6 +320,10 @@ func CheckSharedFields(root, pkgDir, typeName string, forbidden, exempt map[stri
 		}
 		switch t := expr.(type) {
 		case *ast.Ident:
+			// unqualified names resolve in the declaring package ("." is the module root)
+			if fq := modPath + strings.TrimPrefix("/"+pkg, "/.") + "." + t.Name; forbidden[fq] {
+				report(pkg, strct, field, fq)
+			}
 			if _, ok := d.types[t.Name]; ok {
 				r := ref{pkg, t.Name}
 				if !seen[r] {

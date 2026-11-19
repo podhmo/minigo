@@ -239,6 +239,30 @@ type CellChan chan *rt.Cell
 	}
 }
 
+// Regression (M1-3): a field spelled with an unqualified name from the
+// declaring package itself must resolve to that package's qualified
+// name — `Leaked *Cell` inside package rt is still `example.com/m/rt.Cell`.
+// The same goes through a same-package alias.
+func TestSharedFieldsSamePackage(t *testing.T) {
+	dir := gentest.WriteFiles(t, map[string]string{
+		"go.mod":   "module example.com/m\n\ngo 1.26\n",
+		"rt/rt.go": "package rt\n\ntype Cell struct{ V int }\ntype Alias = Cell\n\ntype Image struct {\n\tLeaked *Cell\n\tVia    *Alias\n\tOk     int\n}\n",
+	})
+	forbidden := map[string]bool{"example.com/m/rt.Cell": true}
+	vs, err := archcheck.CheckSharedFields(dir, "rt", "Image", forbidden, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vs) != 2 {
+		t.Fatalf("want 2 violations, got %+v", vs)
+	}
+	for _, v := range vs {
+		if v.Dep != "example.com/m/rt.Cell" {
+			t.Errorf("unexpected dep: %s", v.Message)
+		}
+	}
+}
+
 // Regression: a parenthesized named struct decl must still match
 // "Type.Field" exemptions — not the doubled "Type.Type.Field".
 func TestSharedFieldsParenExempt(t *testing.T) {
