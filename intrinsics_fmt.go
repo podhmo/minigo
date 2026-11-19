@@ -1193,7 +1193,8 @@ func fmtArg(v runtime.MemberCaller, x runtime.Value) any {
 		// a still-constant payload materializes at the declared width
 		// first: `fmt.Println(uint64(1<<64 - 1))` is max-uint where the
 		// untyped default reading overflows int inside fmtValue.
-		if mv, ok := hostbridge.ConstAtWidth(v, x); ok {
+		mc, _ := v.(runtime.ConstMaterializer)
+		if mv, ok := hostbridge.ConstAtWidth(mc, x); ok {
 			return fmtArg(v, runtime.Tag(x.Typ, mv))
 		}
 		return &fmtValue{c: v, x: x}
