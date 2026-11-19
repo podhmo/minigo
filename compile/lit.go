@@ -70,8 +70,8 @@ func (c *compiler) emitEllipsisLenFold(cl *ast.CompositeLit, te ast.Expr, elPos 
 		}
 	}
 	c.emit(bytecode.OpPack, len(cl.Elts), 0, cl.Pos())
-	c.emit(bytecode.OpNil, 0, 0, cl.Pos())
-	c.emit(bytecode.OpCall, 1, 0, cl.Pos())
+	c.emit3(bytecode.OpCall, 1, 0, c.callSiteArgs(
+		[]bytecode.ArgHint{{Kind: bytecode.HintNil}}, cl.Pos()), cl.Pos())
 	c.emit(bytecode.OpFoldArrayLen, c.constIdx(at), 0, cl.Pos())
 	c.emit(bytecode.OpLocalType, 0, 0, cl.Pos())
 }
@@ -257,7 +257,9 @@ func (c *compiler) callSite(lt litTyp, pos token.Pos) int {
 	c.ch.CallSites = append(c.ch.CallSites, &bytecode.CallSite{
 		Expr: lt.expr, File: file, Pos: pos,
 		Depth: lt.depth, Key: lt.key, After: lt.after,
-		Ctx: &runtime.TypeDef{Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes},
+		Ctx:   &runtime.TypeDef{Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes},
+		Sym:   -1,
+		Quote: -1,
 	})
 	return len(c.ch.CallSites) - 1
 }

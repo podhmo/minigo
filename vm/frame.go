@@ -88,7 +88,7 @@ type frame struct {
 	results  []runtime.Value
 
 	// argbuf/statbuf are OpCall's reusable arg/static scratch (see
-	// popArgsCall): a frame issuing millions of calls otherwise allocates
+	// popArgsCallSite): a frame issuing millions of calls otherwise allocates
 	// two slices per call.
 	argbuf  []runtime.Value
 	statbuf []*runtime.TypeDef

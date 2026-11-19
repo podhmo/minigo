@@ -599,8 +599,11 @@ func (v *VM) loop(f *frame) {
 				}
 			}
 		case bytecode.OpSpecialCall:
-			sym := consts[ins.A].(runtime.SymbolID)
-			q := consts[ins.B].(*runtime.QuotedCall)
+			// the site's Sym/Quote index the sym id and the quoted
+			// call in Consts (P4-4a).
+			ssite := f.ch.CallSites[ins.C]
+			sym := consts[ssite.Sym].(runtime.SymbolID)
+			q := consts[ssite.Quote].(*runtime.QuotedCall)
 			if v.H.Special == nil {
 				f.trap("OpSpecialCall: no special-form registry")
 			}
@@ -622,42 +625,30 @@ func (v *VM) loop(f *frame) {
 			// coerces like a store into `var p T`.
 			f.push(&runtime.Cell{Elem: x, Typ: declaredTag(x)})
 		case bytecode.OpCall:
+			// arg statics live on the call site's ArgHint record
+			// (P4-4a) — generic inference resolves them lazily.
+			site := f.ch.CallSites[ins.C]
 			var args []runtime.Value
-			var statics []*runtime.TypeDef
 			var spreadTd *runtime.TypeDef
 			var fn runtime.Value
 			var r runtime.Value
 			var err error
 			if int(ins.B) == 0 {
-				// P4-3b: args stay in place — pop the statics, drop the
-				// callee slot, and the top argc operands become the
-				// callee's operand window; no argbuf copy.
+				// P4-3b: args stay in place — drop the callee slot,
+				// and the top argc operands become the callee's
+				// operand window; no argbuf copy.
 				argc := int(ins.A)
-				statbuf := f.statbuf
-				if cap(statbuf) < argc {
-					statbuf = make([]*runtime.TypeDef, argc)
-				} else {
-					statbuf = statbuf[:argc]
-					for i := range statbuf {
-						statbuf[i] = nil
-					}
-				}
-				f.statbuf = statbuf
-				for i := argc - 1; i >= 0; i-- {
-					if td, ok := f.pop().(*runtime.TypeDef); ok {
-						statbuf[i] = td
-					}
-				}
 				fn = f.stack[f.sp-argc-1]
 				f.sp -= argc + 1
 				f.stack = f.stack[:f.sp]
 				// vals keeps the args — the callee's window covers
 				// them; the next push drops the dead callee slot too.
-				r, err = v.callInPlace(f, fn, argc, statbuf)
+				r, err = v.callInPlace(f, fn, argc, site.Args)
 			} else {
-				args, statics, spreadTd = v.popArgsCall(f, int(ins.A), int(ins.B), ins.Pos)
+				var hints []bytecode.ArgHint
+				args, hints, spreadTd = v.popArgsCallSite(f, int(ins.A), int(ins.B), ins.Pos, site)
 				fn = f.pop()
-				r, err = v.call(fn, args, statics, spreadTd)
+				r, err = v.callHints(f, fn, args, hints, spreadTd)
 			}
 			if v.H.Prof != nil {
 				v.profCheck() // a long host call lands on its call line

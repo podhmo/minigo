@@ -158,9 +158,9 @@ func effect(ch *Chunk, ip int, ins Instruction, d int, problems *[]string) (int,
 		}
 		return one(d) // recv: pop chan, push the arm
 	case OpCall:
-		// [fn, arg1..argA, static1..staticA] -> result: the compiler
-		// always emits the A static-typedef slots above the args.
-		return one(d - 2*int(ins.A))
+		// [fn, arg1..argA] -> result: the arg statics live on the
+		// call site's ArgHint record (P4-4a), not the operand stack.
+		return one(d - int(ins.A))
 	case OpDefer, OpGo:
 		return one(d - 2*int(ins.A) - 1)
 	case OpPack:
@@ -258,7 +258,9 @@ func needed(ins Instruction) int {
 			return 2 // send arm: chan + value
 		}
 		return 1
-	case OpCall, OpDefer, OpGo:
+	case OpCall:
+		return int(ins.A) + 1
+	case OpDefer, OpGo:
 		return 2*int(ins.A) + 1
 	case OpPack:
 		return int(ins.A)

@@ -297,8 +297,7 @@ func (c *compiler) hoistEagerOps(es []ast.Expr, prefix string) (subs []ast.Expr,
 				for _, a := range subArgs {
 					c.expr(a)
 				}
-				c.argStatics(subArgs)
-				c.emit(bytecode.OpCall, len(uc.Args), 2, call.Pos())
+				c.emit3(bytecode.OpCall, len(uc.Args), 2, c.callSiteArgs(c.argHints(subArgs), call.Pos()), call.Pos())
 			} else {
 				c.expr(synth)
 			}
@@ -661,15 +660,18 @@ unwrapped:
 						c.expr(fs.X)
 					}
 					c.expr(name)
+					// the statics tier as a site: the base's declared
+					// typedef, and nothing for the name literal.
+					var h0 bytecode.ArgHint
 					if bte != nil {
 						c.pkgScopeTyp = bteFile
-						c.typeExpr(bte)
+						h0 = bytecode.ArgHint{Kind: bytecode.HintDeferredTyp, A: int32(c.exprSite(bte, x.Pos()))}
 						c.pkgScopeTyp = nil
 					} else {
-						c.staticTyp(fs.X)
+						h0 = c.argHint(fs.X)
 					}
-					c.emit(bytecode.OpNil, 0, 0, x.Pos())
-					c.emit(bytecode.OpCall, 2, 0, x.Pos())
+					c.emit3(bytecode.OpCall, 2, 0, c.callSiteArgs(
+						[]bytecode.ArgHint{h0, {Kind: bytecode.HintNil}}, x.Pos()), x.Pos())
 					return
 				}
 			}
@@ -746,18 +748,20 @@ unwrapped:
 				} else {
 					c.emit(bytecode.OpNil, 0, 0, x.Pos())
 				}
+				// the statics tier as a site: the operand's declared
+				// typedef for the first arg, nothing for the rest.
+				var h0 bytecode.ArgHint
 				if te != nil {
 					c.pkgScopeTyp = ot.teFile
-					c.typeExpr(te)
+					h0 = bytecode.ArgHint{Kind: bytecode.HintDeferredTyp, A: int32(c.exprSite(te, x.Pos()))}
 					c.pkgScopeTyp = nil
 				} else if ot.deferred {
-					c.emit(bytecode.OpDeferredValueTyp, c.exprSite(operand, x.Pos()), 0, x.Pos())
+					h0 = bytecode.ArgHint{Kind: bytecode.HintDeferredValueTyp, A: int32(c.exprSite(operand, x.Pos()))}
 				} else {
-					c.staticTyp(operand)
+					h0 = c.argHint(operand)
 				}
-				c.emit(bytecode.OpNil, 0, 0, x.Pos())
-				c.emit(bytecode.OpNil, 0, 0, x.Pos())
-				c.emit(bytecode.OpCall, 3, 0, x.Pos())
+				c.emit3(bytecode.OpCall, 3, 0, c.callSiteArgs(
+					[]bytecode.ArgHint{h0, {Kind: bytecode.HintNil}, {Kind: bytecode.HintNil}}, x.Pos()), x.Pos())
 				return
 			}
 		}
@@ -783,8 +787,8 @@ unwrapped:
 				jm := c.emit(bytecode.OpLenIdxFold, 0, 0, x.Pos())
 				c.expr(ix.Index)
 				c.emit(bytecode.OpIndex, 0, 0, ix.Lbrack)
-				c.emit(bytecode.OpNil, 0, 0, x.Pos())
-				c.emit(bytecode.OpCall, 1, 0, x.Pos())
+				c.emit3(bytecode.OpCall, 1, 0, c.callSiteArgs(
+					[]bytecode.ArgHint{{Kind: bytecode.HintNil}}, x.Pos()), x.Pos())
 				c.patchA(jm, len(c.ch.Code))
 				return
 			}
@@ -804,8 +808,8 @@ unwrapped:
 			c.expr(st.X)
 			jm1 := c.emit(bytecode.OpLenDerefFold, 0, 1, x.Pos())
 			c.emit(bytecode.OpDeref, 0, 0, st.Pos())
-			c.emit(bytecode.OpNil, 0, 0, x.Pos())
-			c.emit(bytecode.OpCall, 1, 0, x.Pos())
+			c.emit3(bytecode.OpCall, 1, 0, c.callSiteArgs(
+				[]bytecode.ArgHint{{Kind: bytecode.HintNil}}, x.Pos()), x.Pos())
 			c.patchA(jm0, len(c.ch.Code))
 			c.patchA(jm1, len(c.ch.Code))
 			return
@@ -821,8 +825,8 @@ unwrapped:
 			b = 1
 		}
 		jm := c.emit(bytecode.OpLenCallFold, 0, b, x.Pos())
-		c.staticTyp(x.Args[0])
-		c.emit(bytecode.OpCall, 1, callSpread(x), x.Pos())
+		c.emit3(bytecode.OpCall, 1, callSpread(x), c.callSiteArgs(
+			[]bytecode.ArgHint{c.argHint(x.Args[0])}, x.Pos()), x.Pos())
 		c.patchA(jm, len(c.ch.Code))
 		return
 	}
@@ -839,8 +843,7 @@ unwrapped:
 		args = args[1:]
 	}
 	c.callArgs(args)
-	c.argStatics(x.Args)
-	c.emit(bytecode.OpCall, len(x.Args), callSpread(x), x.Pos())
+	c.emit3(bytecode.OpCall, len(x.Args), callSpread(x), c.callSiteArgs(c.argHints(x.Args), x.Pos()), x.Pos())
 }
 
 // lenOperandCalls reports whether a len/cap operand forces evaluation
@@ -912,6 +915,27 @@ func (c *compiler) argStatics(args []ast.Expr) {
 	for _, a := range args {
 		c.staticTyp(a)
 	}
+}
+
+// callSiteArgs records one call site's arg-hint record (P4-4a) and
+// returns its CallSites index for OpCall's C operand — the per-arg
+// recipes OpCall resolves lazily in place of the static-typedef
+// operand tier argStatics pushes for defer/go.
+func (c *compiler) callSiteArgs(hints []bytecode.ArgHint, pos token.Pos) int {
+	c.ch.CallSites = append(c.ch.CallSites, &bytecode.CallSite{
+		Pos: pos, Args: hints,
+		Sym: -1, Quote: -1,
+	})
+	return len(c.ch.CallSites) - 1
+}
+
+// argHints maps each source argument to its static-typedef recipe.
+func (c *compiler) argHints(args []ast.Expr) []bytecode.ArgHint {
+	hints := make([]bytecode.ArgHint, len(args))
+	for i, a := range args {
+		hints[i] = c.argHint(a)
+	}
+	return hints
 }
 
 // callSpread reports the OpCall B flag for the argument list: 1
