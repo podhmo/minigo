@@ -449,18 +449,6 @@ func intOf(v any) int {
 
 func int64Of(v any) int64 { return stdlib.Int64Of(v) }
 
-func durOf(v any) time.Duration { return time.Duration(int64Of(v)) }
-
-// borrowBytes marshals a script value to []byte for a host call that
-// writes into the buffer: the returned commit writes the bytes back
-// into the script slice's elements. It must see the arg before hostbridge.GoNative
-// flattens it — an []any has lost the script slice it came from. Values
-// already sharing their backing (a host []byte inside a GoValue) need
-// no commit; read-only consumers keep using byteSlice.
-func borrowBytes(v runtime.Value) ([]byte, func()) {
-	return stdlib.BorrowBytes(v)
-}
-
 // unsafeElems resolves unsafe.String/Slice's (ptr, len) to the n
 // elements starting at an &s[i] ref, sharing the slice's backing.
 // sliceTypFromPtr maps a pointer/array/slice typedef to the unnamed
@@ -1150,3 +1138,13 @@ func asWriterVM(vc runtime.MemberCaller, v any) (io.Writer, error) {
 }
 
 var defaultIOAdapters = &stdio.Adapters{UnwrapArg: unwrapFmtArg}
+
+// engineFileOf unwraps the script-visible os.Stdout facade to the real
+// file for net's FileConn/FilePacketConn adapters (P2-12).
+func engineFileOf(v any) *os.File {
+	if s, ok := v.(*engineStdout); ok {
+		return s.File
+	}
+	t, _ := v.(*os.File)
+	return t
+}

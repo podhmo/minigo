@@ -8,6 +8,7 @@ import (
 	stdlibbytealg "github.com/podhmo/minigo/internal/stdlib/bytealg"
 	stdlibbytes "github.com/podhmo/minigo/internal/stdlib/bytes"
 	stdlibcontext "github.com/podhmo/minigo/internal/stdlib/context"
+	stdlibcrand "github.com/podhmo/minigo/internal/stdlib/crand"
 	stdlibcsv "github.com/podhmo/minigo/internal/stdlib/csv"
 	stdliberrors "github.com/podhmo/minigo/internal/stdlib/errors"
 	stdlibgodebug "github.com/podhmo/minigo/internal/stdlib/godebug"
@@ -16,6 +17,7 @@ import (
 	stdlibhtmltemplate "github.com/podhmo/minigo/internal/stdlib/htmltemplate"
 	stdio "github.com/podhmo/minigo/internal/stdlib/io"
 	stdlibmath "github.com/podhmo/minigo/internal/stdlib/math"
+	stdlibnet "github.com/podhmo/minigo/internal/stdlib/net"
 	stdlibnetip "github.com/podhmo/minigo/internal/stdlib/netip"
 	stdlibpath "github.com/podhmo/minigo/internal/stdlib/path"
 	stdlibrace "github.com/podhmo/minigo/internal/stdlib/race"
@@ -73,10 +75,10 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("sync", func() { stdlibsync.Install(e.bindBound, h) })
 	e.pending.Register("sync/atomic", func() { e.installSyncAtomic(h) })
 	e.pending.Register("context", func() { stdlibcontext.Install(e.bindBound, h) })
-	e.pending.Register("net", func() { e.installNet(h) })
+	e.pending.Register("net", func() { stdlibnet.Install(e.bindBound, h, engineFileOf) })
 	e.pending.Register("net/netip", func() { stdlibnetip.Install(e.bindBound) })
 	e.pending.Register("io", func() { stdio.Install(e.bindBound, h, h.ioAdapters()) })
-	e.pending.Register("crypto/rand", func() { e.installCryptoRand(h) })
+	e.pending.Register("crypto/rand", func() { stdlibcrand.Install(e.bindBound, h, h.ioAdapters(), scriptTypeString) })
 	e.pending.Register("crypto/sha256", func() { stdlibsha256.Install(e.bindBound) })
 	e.pending.Register("encoding/csv", func() { stdlibcsv.Install(e.bindBound, h, h.ioAdapters()) })
 	e.pending.Register("bufio", func() { stdlibbufio.Install(e.bindBound, h, h.ioAdapters()) })

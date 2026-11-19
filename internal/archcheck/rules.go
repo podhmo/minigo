@@ -12,9 +12,9 @@ package archcheck
 // so self-edges never appear.
 var Rules = map[string][]string{
 	".": {"builtin", "bytecode", "compile", "index", "inspect", "internal/assetaudit", "internal/bind", "internal/execution", "internal/hostbridge", "internal/replhooks", "internal/source", "internal/spike", "internal/stdlib", "internal/stdlib/context", "internal/stdlib/base64", "internal/stdlib/bufio", "internal/stdlib/bytes",
-		"internal/stdlib/bytealg", "internal/stdlib/csv", "internal/stdlib/errors", "internal/stdlib/godebug",
+		"internal/stdlib/bytealg", "internal/stdlib/crand", "internal/stdlib/csv", "internal/stdlib/errors", "internal/stdlib/godebug",
 		"internal/stdlib/io",
-		"internal/stdlib/hex", "internal/stdlib/math", "internal/stdlib/netip", "internal/stdlib/path", "internal/stdlib/race",
+		"internal/stdlib/hex", "internal/stdlib/math", "internal/stdlib/net", "internal/stdlib/netip", "internal/stdlib/path", "internal/stdlib/race",
 		"internal/stdlib/regexp", "internal/stdlib/sha256", "internal/stdlib/strconv", "internal/stdlib/stringslite",
 		"internal/stdlib/sync", "internal/stdlib/syscall", "internal/stdlib/testenv", "internal/stdlib/unicode", "internal/stdlib/html", "internal/stdlib/htmltemplate", "internal/stdlib/texttemplate", "internal/stdlib/time", "internal/stdlib/utf8", "minireflect", "repl", "resolve", "runtime", "special", "syntax", "vm"},
 	"builtin":                      {"compile", "internal/hostbridge", "internal/source", "runtime", "vm"},
@@ -44,6 +44,8 @@ var Rules = map[string][]string{
 	"internal/stdlib/bufio":        {"internal/hostbridge", "internal/stdlib", "internal/stdlib/io", "runtime"},
 	"internal/stdlib/bytes":        {"internal/stdlib", "runtime"},
 	"internal/stdlib/csv":          {"internal/stdlib", "internal/stdlib/io", "runtime"},
+	"internal/stdlib/crand":        {"internal/hostbridge", "internal/stdlib", "internal/stdlib/io", "runtime"},
+	"internal/stdlib/net":          {"internal/stdlib", "runtime"},
 	"internal/stdlib/hex":          {"internal/stdlib", "internal/stdlib/io", "runtime"},
 	"internal/stdlib/bytealg":      {"internal/stdlib", "runtime"},
 	"internal/stdlib/godebug":      {"internal/stdlib", "runtime"},

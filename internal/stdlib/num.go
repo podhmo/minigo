@@ -60,6 +60,9 @@ func IntOf(v any) int {
 }
 
 // Int64Of is IntOf widened to int64.
+// DurOf materializes a numeric script value as time.Duration.
+func DurOf(v any) time.Duration { return time.Duration(Int64Of(v)) }
+
 func Int64Of(v any) int64 { return int64(IntOf(v)) }
 
 // FloatOf reads a script value as a host float64.
