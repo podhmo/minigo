@@ -17,7 +17,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, funcMap *runtime.TypeDef) {
 	// io.Writer arg adapts `&b` cells via toReflectValue's auto-pointer
 	// rule and the data map marshals through hostbridge.GoNative.
 	bind("text/template", map[string]runtime.Value{
-		"Template": stdlib.HostType("text/stdtemplate.Template", func() any { return stdtemplate.New("") }),
+		"Template": stdlib.HostType("text/template.Template", func() any { return stdtemplate.New("") }),
 		"New": h.Fn1("template.New", func(a []any) (any, error) {
 			return &runtime.GoValue{V: stdtemplate.New(stdlib.Str(a[0]))}, nil
 		}, stdtemplate.New),
