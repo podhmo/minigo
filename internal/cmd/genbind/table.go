@@ -14,12 +14,12 @@ type spec struct {
 }
 
 var specs = []spec{
-	{Path: "encoding/hex", File: "encoding_hex",
+	{Path: "encoding/hex", File: "encoding_hex", Dir: "internal/stdlib/hex",
 		// Encode/Decode write through the dst argument; the encoder
 		// constructors take io.Writer/io.Reader — all handwritten.
 		Skip: map[string]bool{"Encode": true, "Decode": true,
 			"NewEncoder": true, "NewDecoder": true, "Dumper": true}},
-	{Path: "encoding/base64", File: "encoding_base64",
+	{Path: "encoding/base64", File: "encoding_base64", Dir: "internal/stdlib/base64",
 		// the constructors adapt script io.Writer/io.Reader values.
 		Skip: map[string]bool{"NewEncoder": true, "NewDecoder": true}},
 	{Path: "crypto/sha256", File: "crypto_sha256", Dir: "internal/stdlib/sha256"},

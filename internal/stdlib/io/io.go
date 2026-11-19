@@ -341,7 +341,8 @@ type scriptWriter struct {
 // AsReader mirrors AsWriter for io.Reader args: `strings.NewReader`'s
 // GoValue unwraps to the real reader, `&r` cells deref through. A nil
 // argument is a valid (nil) io.Reader — `io.NopCloser(nil)` is legal Go.
-func AsReader(v any) (io.Reader, error) {
+func (ad *Adapters) AsReader(v any) (io.Reader, error) {
+	v = ad.UnwrapArg(v)
 	if v == nil {
 		return nil, nil
 	}
