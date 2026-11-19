@@ -809,7 +809,9 @@ func firstArg(args []runtime.Value) runtime.Value {
 // the only multi-value spread Go allows).
 func (v *VM) popArgsCallSite(f *frame, argc int, mode int, pos token.Pos, site *bytecode.CallSite) ([]runtime.Value, []bytecode.ArgHint, *runtime.TypeDef) {
 	args, spreadTd := v.popArgsBuf(f, argc, mode, pos, make([]runtime.Value, argc))
-	v.profAllocs++
+	if argc > 0 { // a length-0 slice allocates no backing array
+		v.profAllocs++
+	}
 	hints := site.Args
 	if mode == 1 && len(hints) >= argc {
 		hints = hints[:argc-1]
