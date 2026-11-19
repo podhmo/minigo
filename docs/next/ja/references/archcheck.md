@@ -38,6 +38,16 @@ repl         -> compile index internal/replhooks resolve runtime syntax
 
 import とセレクタ名の検査では、コールバック経由の実行が起きないことまでは証明できない。それは振る舞いテスト（M0-4）で補う。
 
+## P2-7 で確定した vm 側の残責務（vm → internal/hostbridge の境界）
+
+`vm/` は `reflect` を直接 import しない（P2-7 の完了条件、rules.go の banned import で強制）。一方で `internal/hostbridge` への import は許可する（17 ファイル）。許容するのは**データ寄りの型情報 helper** に限る:
+
+- `hostbridge.TypeOf(v)` — 値の reflect.Type を読むだけの問い合わせ（34 箇所）
+- `hostbridge.Type` — host 型を指すキー型（7 箇所）
+- `hostbridge.ConstToHostInt` — 定数から host 整数への変換（2 箇所）
+
+これらは型の問い合わせであって実行ロジックを伴わない。**実行ロジックを伴う変換（marshal、adapt、host↔script の構造変換）は vm に書かず、`hostbridge.Marshal` の hook 注入か `hostbridge.Lift` 経由に限定する**（上記 P2-7b の節）。新しい直接の host 変換処理を vm に足す変更は境界違反として扱い、単なる別名追加を進捗として数えない。
+
 ## P2-7b の hook 注入（marshal.go の Marshal）
 
 `toReflectValueDepth` とその配下（deepHost/hostMarshal、hostShapeOf、typedContainer、structDataHost ほか）が必要とする VM 依存の断片は、`hostbridge.Marshal` の hook フィールドとして注入する（`Materialize`、`ConstArg`、`AdaptFunc`、`AdaptFuncOpaque`、`AdaptIface`、`HostErr`、`ElemOf`、`MapKeyOf`、`AliasOf`、`HostTypOf`、`ScriptBytes`、`FuncMapElem`、`TemplateCallableNout`）。`ElemOf`/`MapKeyOf`/`AliasOf`/`HostErr` は `VMCaller` から `vmOf` で VM を取り直す closure になっていて、hostbridge 側は `runtime.VMCaller` だけを見る。
