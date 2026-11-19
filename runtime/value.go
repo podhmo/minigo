@@ -1475,10 +1475,26 @@ func arrayTypedef(td *TypeDef) bool {
 	return ok && at.Len != nil
 }
 
+// typeTagMemo memoizes typeTagOf's spelling per typedef — a struct or
+// array map key asks for its tag (twice today: once into the repr, once
+// into mapKey.typ) on every CanonicalKey, and the tag is a pure
+// function of the declaration. Entries are bounded by declaration +
+// instantiation count, like the intern table's.
+var typeTagMemo sync.Map // *TypeDef -> string
+
 func typeTagOf(td *TypeDef) string {
 	if td == nil {
 		return "?"
 	}
+	if s, ok := typeTagMemo.Load(td); ok {
+		return s.(string)
+	}
+	s := typeTagOfInner(td)
+	typeTagMemo.Store(td, s)
+	return s
+}
+
+func typeTagOfInner(td *TypeDef) string {
 	if td.Name != "" {
 		name := td.Name
 		if td.Pkg != nil && td.Pkg.Path != "" {
