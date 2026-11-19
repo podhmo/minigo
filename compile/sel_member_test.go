@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/internal/semantics"
+	"github.com/podhmo/minigo/internal/source"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
 )
@@ -56,5 +58,50 @@ func checkSelMemberSyntheticTypeEntry(t *testing.T) {
 	}
 	if !c.selIsType(ref, "T") {
 		t.Fatal("selIsType lost the is-type verdict on a synthetic index entry")
+	}
+}
+
+// The same verdict under strict lazy compilation (FuncStrict): an
+// unmaterialized ref defers instead of answering, and once the ref is
+// materialized to Indexed the IndexedOnly peek still reports the
+// synthetic entry's is-type verdict — the strict acceptance job
+// exercises this compile-time-fact dependency directly.
+func TestStrictLazySelMemberSyntheticTypeEntry(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := syntax.ParseFile(fset, "m.go", []byte("package p\nfunc (T) M() {}"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ix, err := index.BuildLenient([]*syntax.File{f})
+	if err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	if ix.Types["T"] == nil || ix.Types["T"].Decl != nil {
+		t.Fatalf("fixture shape wrong: Types[T] = %+v", ix.Types["T"])
+	}
+
+	// A package never MarkIndexed reports IndexReady, so the
+	// materialized ref answers Found under IndexedOnly.
+	p := &runtime.Package{Path: "p", PackageImage: runtime.PackageImage{Index: ix}}
+	ref := &runtime.ImportRef{
+		Path: "p",
+		Load: func(path string) (*runtime.Package, error) {
+			return p, nil
+		},
+	}
+	c := &compiler{strictLazy: true}
+	if _, _, ok := c.selMember(ref, "T"); ok {
+		t.Fatal("selMember answered an unmaterialized ref under IndexedOnly")
+	}
+	// Carry the ref to the Indexed stage through the same adapter the
+	// fact sites use — compile/ never calls ImportRef.Materialize.
+	if res := source.PackageAtIndexed(ref, semantics.AllowIndex); res.Kind != semantics.Found {
+		t.Fatalf("PackageAtIndexed: %v (err %v)", res.Kind, res.Err)
+	}
+	if _, _, ok := c.selMember(ref, "T"); !ok {
+		t.Fatal("selMember lost the is-type verdict on a synthetic index entry under IndexedOnly")
+	}
+	if !c.selIsType(ref, "T") {
+		t.Fatal("selIsType lost the is-type verdict on a synthetic index entry under IndexedOnly")
 	}
 }
