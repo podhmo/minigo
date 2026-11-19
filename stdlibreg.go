@@ -11,14 +11,17 @@ import (
 	stdlibcrand "github.com/podhmo/minigo/internal/stdlib/crand"
 	stdlibcsv "github.com/podhmo/minigo/internal/stdlib/csv"
 	stdliberrors "github.com/podhmo/minigo/internal/stdlib/errors"
+	stdlibfilepath "github.com/podhmo/minigo/internal/stdlib/filepath"
 	stdlibgodebug "github.com/podhmo/minigo/internal/stdlib/godebug"
 	stdlibhex "github.com/podhmo/minigo/internal/stdlib/hex"
+	stdlibhost "github.com/podhmo/minigo/internal/stdlib/host"
 	stdlibhtml "github.com/podhmo/minigo/internal/stdlib/html"
 	stdlibhtmltemplate "github.com/podhmo/minigo/internal/stdlib/htmltemplate"
 	stdio "github.com/podhmo/minigo/internal/stdlib/io"
 	stdlibmath "github.com/podhmo/minigo/internal/stdlib/math"
 	stdlibnet "github.com/podhmo/minigo/internal/stdlib/net"
 	stdlibnetip "github.com/podhmo/minigo/internal/stdlib/netip"
+	stdlibosexec "github.com/podhmo/minigo/internal/stdlib/osexec"
 	stdlibpath "github.com/podhmo/minigo/internal/stdlib/path"
 	stdlibrace "github.com/podhmo/minigo/internal/stdlib/race"
 	stdlibregexp "github.com/podhmo/minigo/internal/stdlib/regexp"
@@ -63,10 +66,10 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("slices", func() { e.installSlices(h) })
 	e.pending.Register("maps", func() { e.installMaps(h) })
 	e.pending.Register("os", func() { e.installOs(h) })
-	e.pending.Register("path/filepath", func() { e.installPathFilepath(h) })
-	e.pending.Register("os/exec", func() { e.installOsExec(h) })
-	e.pending.Register("minigo.dev/host", func() { e.installHost(h) })
-	e.pending.Register("github.com/podhmo/minigo/host", func() { e.installHost(h) })
+	e.pending.Register("path/filepath", func() { stdlibfilepath.Install(e.bindBound, h, h.env) })
+	e.pending.Register("os/exec", func() { stdlibosexec.Install(e.bindBound, h, h.env) })
+	e.pending.Register("minigo.dev/host", func() { stdlibhost.Install(e.bindBound, h, h.env) })
+	e.pending.Register("github.com/podhmo/minigo/host", func() { stdlibhost.Install(e.bindBound, h, h.env) })
 	e.pending.Register("minigo.dev/inspect", func() { e.installInspect() })
 	e.pending.Register("github.com/podhmo/minigo/inspect", func() { e.installInspect() })
 	e.pending.Register("unsafe", func() { e.installUnsafe(h) })

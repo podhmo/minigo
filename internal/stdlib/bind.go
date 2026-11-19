@@ -518,3 +518,25 @@ func ValueDeclTyp(v runtime.Value) *runtime.TypeDef {
 	}
 	return nil
 }
+
+// StrSlice marshals a script string slice to []string for host calls.
+func StrSlice(v any) []string {
+	if n, ok := v.(*runtime.Named); ok {
+		return StrSlice(n.V)
+	}
+	if s, ok := v.(*runtime.Slice); ok {
+		out := make([]string, len(s.Elems))
+		for i, e := range s.Elems {
+			out[i] = Str(e)
+		}
+		return out
+	}
+	if a, ok := v.([]any); ok {
+		out := make([]string, len(a))
+		for i, e := range a {
+			out[i] = Str(e)
+		}
+		return out
+	}
+	return nil
+}

@@ -28,7 +28,7 @@ var specs = []spec{
 	{Path: "strconv", File: "strconv", Dir: "internal/stdlib/strconv"},
 	{Path: "unicode/utf8", File: "unicode_utf8", Dir: "internal/stdlib/utf8",
 		Skip: map[string]bool{"EncodeRune": true, "AppendRune": true}},
-	{Path: "path/filepath", File: "path_filepath",
+	{Path: "path/filepath", File: "path_filepath", Dir: "internal/stdlib/filepath",
 		Skip: map[string]bool{"Walk": true, "WalkDir": true,
 			"Separator": true, "ListSeparator": true,
 			"Abs": true, "Rel": true, "EvalSymlinks": true, "Glob": true}},
