@@ -218,14 +218,15 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, typedSeq func(*runtime.BuiltinF
 		"CompactFunc":  stdlib.SlicesCompactFunc(),
 		"Replace":      slicesReplace(),
 		"Max": &runtime.BuiltinFunc{Name: "slices.Max", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			// gc propagates a NaN element and prefers +0 over -0.
+			// gc propagates a NaN element and prefers +0 over -0; a
+			// NaN best is final — nothing ranks past it.
 			return stdlib.SliceExtreme(vc, "slices.Max", args, func(best, x runtime.Value) bool {
-				return stdlib.NumNaNOf(x) || stdlib.LessScript(best, x) || (stdlib.PosZeroOf(x) && stdlib.NegZeroOf(best))
+				return stdlib.NumNaNOf(x) || (!stdlib.NumNaNOf(best) && stdlib.LessScript(best, x)) || (stdlib.PosZeroOf(x) && stdlib.NegZeroOf(best))
 			})
 		}},
 		"Min": &runtime.BuiltinFunc{Name: "slices.Min", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			return stdlib.SliceExtreme(vc, "slices.Min", args, func(best, x runtime.Value) bool {
-				return stdlib.NumNaNOf(x) || stdlib.LessScript(x, best) || (stdlib.NegZeroOf(x) && stdlib.PosZeroOf(best))
+				return stdlib.NumNaNOf(x) || (!stdlib.NumNaNOf(best) && stdlib.LessScript(x, best)) || (stdlib.NegZeroOf(x) && stdlib.PosZeroOf(best))
 			})
 		}},
 		"Reverse": slicesReverse(),
