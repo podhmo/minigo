@@ -126,6 +126,7 @@ var strictLazyCorpus = []string{
 	"gate_nilvariadic",
 	"gate_nilaliasfile",
 	"gate_rangeof_call",
+	"gate_recvdeferred",
 	"gate_redecl",
 	"gate_rangelocal",
 	"gate_rangenested",
