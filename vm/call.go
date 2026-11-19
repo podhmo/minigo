@@ -667,7 +667,10 @@ func (v *VM) prepFrameSeen(callee runtime.Value, args []runtime.Value, winArgs i
 		fr.putLocal(i, valueCopy(a))
 	}
 	if winArgs >= 0 {
-		// params consumed — the window is empty for the first op.
+		// params consumed — nil the arg slots (their values now live
+		// in locals) so the arena's dead region pins nothing, and
+		// empty the window for the first op.
+		clear(fr.stack[:winArgs])
 		fr.sp = 0
 		fr.stack = fr.stack[:0]
 	}
