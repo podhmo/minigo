@@ -59,7 +59,7 @@ migration; history above that point lives in the source repository.
   - [ ] **fmt key order of a mixed-type `map[any]`**: `fmt.Println(map[any]string{"s": "s", 1: "i"})` prints `map[s:s 1:i]` in go (internal/fmtsort orders by kind first) and `map[1:i s:s]` here.
   - [ ] **`json.Marshal(map[any]int{...})` should fail**: go reports `json: unsupported type: map[interface {}]int`.
   - [ ] **`map[any]` keys of named chan and converted struct types collide**: `type C chan int` values key like the plain `chan int`, and `NS(st)` for `type NS St` keys like `St` (`IfaceKeyOf` types scalars only; chans key by identity, structs by their own Def).
-- [ ] **Correct extract-schema plugin flag help**: the `-plugin` help string still advertises `Overrides()`, but hooks are selected by the exported `func(*extschema.Config)` signature. Align the CLI help with the corrected Go docs; see [the Go doc review](docs/godoc-review.md).
+- [x] **Correct extract-schema plugin flag help**: the `-plugin` help string now advertises `func(*extschema.Config)` hooks, matching the hook-selection signature and the Go docs.
 
 ### `minigo`: Stack-VM Interpreter (redesign of go-scan's tree-walking `minigo`) ([docs/sketch/plan-minigo-vm.md](./docs/sketch/plan-minigo-vm.md))
 
