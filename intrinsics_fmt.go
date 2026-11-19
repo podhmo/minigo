@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/podhmo/minigo/internal/hostbridge"
+	"github.com/podhmo/minigo/internal/stdlib"
 	"github.com/podhmo/minigo/minireflect"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -158,16 +159,16 @@ func (e *Engine) installFmt(h *hostHelpers) {
 			case 0:
 				return errVal(errors.New(msg)), nil
 			case 1:
-				return errVal(&wrapError{msg: msg, err: wrapOperand(v, args[pos[0]+1])}), nil
+				return errVal(&stdlib.WrapError{Msg: msg, Err: stdlib.WrapOperand(v, args[pos[0]+1])}), nil
 			}
 			slices.Sort(pos)
 			var errs []error
 			for _, p := range slices.Compact(pos) {
-				if err := wrapOperand(v, args[p+1]); err != nil {
+				if err := stdlib.WrapOperand(v, args[p+1]); err != nil {
 					errs = append(errs, err)
 				}
 			}
-			return errVal(&wrapErrors{msg: msg, errs: errs}), nil
+			return errVal(&stdlib.WrapErrors{Msg: msg, Errs: errs}), nil
 		}},
 	})
 }
@@ -886,23 +887,7 @@ func refDeclTyp(v runtime.Value) *runtime.TypeDef {
 // cell's Typ stamps its ELEMENT — see pointeeDeclTyp), and untyped
 // literals or host boxes report nil.
 func valueDeclTyp(v runtime.Value) *runtime.TypeDef {
-	switch x := v.(type) {
-	case *runtime.Struct:
-		return x.Def
-	case *runtime.Named:
-		return x.Typ
-	case *runtime.Slice:
-		return x.Typ
-	case *runtime.Map:
-		return x.Typ
-	case *runtime.Chan:
-		return x.Typ
-	case *runtime.TypedNil:
-		return x.Typ
-	case *runtime.IfaceNil:
-		return x.Typ
-	}
-	return nil
+	return stdlib.ValueDeclTyp(v)
 }
 
 // pointeeDeclTyp is the declared type an &-operand points at: a tracked
