@@ -5,7 +5,10 @@
 // the KeyA const instead of reporting no SymbolID.
 package litkeys
 
-import "net/url"
+import (
+	"net/http"
+	"net/url"
+)
 
 const (
 	KeyA = "a"
@@ -65,14 +68,22 @@ func Aliases() int {
 	return len(a) + len(b)
 }
 
-// Imported: an imported type stays unresolved — under-resolution.
+// Imported: an imported type resolves when the imported package is
+// already materialized — the test materializes net/url first.
 func Imported() int {
 	v := url.Values{KeyA: nil}
 	return len(v)
 }
 
-// GenericElem: an element whose type is a type parameter of the generic
-// decl stays unresolved — under-resolution.
+// ImportedCold: an imported type whose package is not materialized
+// stays unresolved — inspect never loads a package for this.
+func ImportedCold() int {
+	h := http.Header{KeyA: nil}
+	return len(h)
+}
+
+// GenericElem: an element whose type is a type parameter resolves
+// through the instantiation's argument at the call site.
 func GenericElem() int {
 	m := Pair[string, map[string]int]{KeyA: {KeyB: 1}}
 	return len(m)
