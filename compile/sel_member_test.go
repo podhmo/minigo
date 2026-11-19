@@ -53,8 +53,12 @@ func checkSelMemberSyntheticTypeEntry(t *testing.T) {
 		},
 	}
 	c := &compiler{}
-	if _, _, ok := c.selMember(ref, "T"); !ok {
-		t.Fatal("selMember lost the is-type verdict on a synthetic index entry")
+	res := c.selMember(ref, "T")
+	if res.Val == nil || (res.Kind != semantics.Found && res.Kind != semantics.Deferred) {
+		t.Fatalf("selMember lost the is-type verdict on a synthetic index entry: %v", res.Kind)
+	}
+	if res := c.selMember(ref, "Nope"); res.Kind != semantics.Missing || res.Val != nil {
+		t.Fatalf("selMember on an absent member = %v, want Missing", res.Kind)
 	}
 	if !c.selIsType(ref, "T") {
 		t.Fatal("selIsType lost the is-type verdict on a synthetic index entry")
@@ -90,15 +94,15 @@ func TestStrictLazySelMemberSyntheticTypeEntry(t *testing.T) {
 		},
 	}
 	c := &compiler{strictLazy: true}
-	if _, _, ok := c.selMember(ref, "T"); ok {
-		t.Fatal("selMember answered an unmaterialized ref under IndexedOnly")
+	if res := c.selMember(ref, "T"); res.Val != nil || res.Kind != semantics.Deferred {
+		t.Fatalf("selMember on an unmaterialized ref under IndexedOnly = %v, want Deferred with no Val", res.Kind)
 	}
 	// Carry the ref to the Indexed stage through the same adapter the
 	// fact sites use — compile/ never calls ImportRef.Materialize.
 	if res := source.PackageAtIndexed(ref, semantics.AllowIndex); res.Kind != semantics.Found {
 		t.Fatalf("PackageAtIndexed: %v (err %v)", res.Kind, res.Err)
 	}
-	if _, _, ok := c.selMember(ref, "T"); !ok {
+	if res := c.selMember(ref, "T"); res.Val == nil {
 		t.Fatal("selMember lost the is-type verdict on a synthetic index entry under IndexedOnly")
 	}
 	if !c.selIsType(ref, "T") {
