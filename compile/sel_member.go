@@ -33,7 +33,7 @@ func (c *compiler) selMember(ref *runtime.ImportRef, name string) semantics.Resu
 		// Missing, Failed — and Deferred without a materialized
 		// package — all mean the oracle cannot answer here; the
 		// classification defers rather than answering false.
-		return semantics.Result[*memberFact]{Kind: res.Kind}
+		return semantics.Result[*memberFact]{Kind: res.Kind, Err: res.Err}
 	}
 	p := res.Val
 	answer := func(f *memberFact) semantics.Result[*memberFact] {
