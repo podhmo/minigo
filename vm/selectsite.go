@@ -57,18 +57,21 @@ func (v *VM) structMember(f *frame, s *runtime.Struct, name string, recv runtime
 		// leaves the stored slot stale on arrival, so the next read
 		// resolves again.
 		epoch := runtime.MethodSetEpoch()
-		tid := v.H.TypeIDOf(def)
-		if slot, _ := site.Cache.Load().(*selectSlot); slot != nil &&
-			slot.tid == tid && slot.epoch == epoch {
-			if val, ok := v.applySelectSlot(f, s, name, recv, slot.res); ok {
-				return val
+		if tid := v.H.TypeIDOf(def); tid != "" && tid != "?" {
+			// "?" marks an unidentifiable typedef — unrelated types
+			// share it, so a slot may never key on it.
+			if slot, _ := site.Cache.Load().(*selectSlot); slot != nil &&
+				slot.tid == tid && slot.epoch == epoch {
+				if val, ok := v.applySelectSlot(f, s, name, recv, slot.res); ok {
+					return val
+				}
 			}
+			val, res := v.structMemberRes(f, s, name, recv)
+			if res != nil {
+				site.Cache.Store(&selectSlot{tid: tid, epoch: epoch, res: res})
+			}
+			return val
 		}
-		val, res := v.structMemberRes(f, s, name, recv)
-		if res != nil {
-			site.Cache.Store(&selectSlot{tid: tid, epoch: epoch, res: res})
-		}
-		return val
 	}
 	val, _ := v.structMemberRes(f, s, name, recv)
 	return val

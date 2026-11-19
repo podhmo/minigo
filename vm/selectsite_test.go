@@ -71,6 +71,44 @@ func TestSelectSiteCache(t *testing.T) {
 		}
 	})
 
+	t.Run("unidentifiable typedefs never share a slot", func(t *testing.T) {
+		// TypeIDOf's "?" marks a typedef it cannot identify — two
+		// unrelated types share it, so the site must not key on it.
+		defC := &runtime.TypeDef{Name: "C", Kind: runtime.KindStruct, Fields: []string{"Tag", "N"}}
+		defD := &runtime.TypeDef{Name: "D", Kind: runtime.KindStruct, Fields: []string{"N", "Tag"}}
+		v := &VM{}
+		v.H.TypeIDOf = func(td *runtime.TypeDef) runtime.TypeID { return "?" }
+		site := &bytecode.GlobalSite{}
+		chunk := func(recv runtime.Value) *bytecode.Chunk {
+			return &bytecode.Chunk{
+				Consts: []any{recv, "N"},
+				Sites:  []*bytecode.GlobalSite{site},
+				Code: []bytecode.Instruction{
+					{Op: bytecode.OpConst, A: 0},
+					{Op: bytecode.OpSelect, A: 1, C: 0},
+					{Op: bytecode.OpReturn, A: 1},
+				},
+			}
+		}
+		c := &runtime.Struct{Def: defC, Fields: []runtime.Value{"x", int64(7)}}
+		d := &runtime.Struct{Def: defD, Fields: []runtime.Value{int64(9), "y"}}
+		for i, tc := range []struct {
+			recv *runtime.Struct
+			want runtime.Value
+		}{{c, int64(7)}, {d, int64(9)}, {c, int64(7)}} {
+			got, err := v.Call(&runtime.Function{Chunk: chunk(tc.recv), Pkg: &runtime.Package{}}, nil)
+			if err != nil {
+				t.Fatalf("call %d: %v", i, err)
+			}
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Fatalf("call %d result (-want +got):\n%s", i, diff)
+			}
+			if site.Cache.Load() != nil {
+				t.Fatalf("call %d: a '?' typedef must not fill the slot", i)
+			}
+		}
+	})
+
 	t.Run("concurrent selects share the slot", func(t *testing.T) {
 		const n = 8
 		var wg sync.WaitGroup
