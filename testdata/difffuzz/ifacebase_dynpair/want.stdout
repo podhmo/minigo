@@ -9,6 +9,13 @@ true
 42 is not E
 true
 true
+*E not error
+*W not error
+e not BadSig
+j not BadSig
+j is Stringer
+h!
+h!
 S is E
 x
 SW is E
