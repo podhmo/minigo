@@ -267,3 +267,46 @@ func TestInternTypedefBoundConverges(t *testing.T) {
 		t.Errorf("synthesized twin did not converge on the bound typedef: %p vs %p", got, bound)
 	}
 }
+
+// M4-6b: the compiled-instantiation key identifies the declaration plus
+// each bind's TypeID — copies of one type share a chunk — with pointer
+// fallbacks for un-internable typedefs and "" for non-typedef binds.
+func TestInstKeyTypeID(t *testing.T) {
+	e := NewEngine(".")
+	decl := &ast.FuncDecl{}
+	file := &syntax.File{}
+
+	sliceOfInt := func() *runtime.TypeDef {
+		return &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: ast.NewIdent("int")}}
+	}
+	mkFn := func(binds map[string]runtime.Value) *runtime.Function {
+		return &runtime.Function{Decl: decl, File: file, Name: "f", Binds: binds}
+	}
+
+	// distinct typedef objects of one type share the key — the intern
+	// table's whole point.
+	ka := e.instKey(mkFn(map[string]runtime.Value{"T": sliceOfInt()}))
+	kb := e.instKey(mkFn(map[string]runtime.Value{"T": sliceOfInt()}))
+	if ka == "" {
+		t.Fatal("instKey returned empty for a spelled anonymous bind")
+	}
+	if ka != kb {
+		t.Fatalf("copies of one type must share the key:\n%s\n%s", ka, kb)
+	}
+	// a different type binds a different key.
+	kc := e.instKey(mkFn(map[string]runtime.Value{"T": &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: ast.NewIdent("string")}}}))
+	if kc == ka {
+		t.Fatal("[]int and []string binds must key differently")
+	}
+	// un-internable typedefs key by their own pointer: two placeholders
+	// never share a compiled chunk.
+	un := func() *runtime.TypeDef { return &runtime.TypeDef{Kind: runtime.KindPointer} }
+	ku1, ku2 := e.instKey(mkFn(map[string]runtime.Value{"T": un()})), e.instKey(mkFn(map[string]runtime.Value{"T": un()}))
+	if ku1 == "" || ku1 == ku2 {
+		t.Fatal("un-internable binds must key by pointer")
+	}
+	// a non-typedef bind cannot key an instantiation.
+	if k := e.instKey(mkFn(map[string]runtime.Value{"T": int64(1)})); k != "" {
+		t.Fatalf("non-typedef bind keyed %q, want \"\"", k)
+	}
+}
