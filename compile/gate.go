@@ -282,6 +282,8 @@ func (c *compiler) exprSiteAt(x ast.Expr, teFile *syntax.File, pos token.Pos) in
 		Expr: x, File: file, Pos: pos,
 		Ctx:    &runtime.TypeDef{Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes},
 		Consts: localConsts,
+		Sym:    -1,
+		Quote:  -1,
 	})
 	return len(c.ch.CallSites) - 1
 }
