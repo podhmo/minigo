@@ -27,6 +27,7 @@ import (
 	stdlibregexp "github.com/podhmo/minigo/internal/stdlib/regexp"
 	stdlibsha256 "github.com/podhmo/minigo/internal/stdlib/sha256"
 	stdlibstrconv "github.com/podhmo/minigo/internal/stdlib/strconv"
+	stdlibstrings "github.com/podhmo/minigo/internal/stdlib/strings"
 	stdlibstringslite "github.com/podhmo/minigo/internal/stdlib/stringslite"
 	stdlibsync "github.com/podhmo/minigo/internal/stdlib/sync"
 	stdlibsyscall "github.com/podhmo/minigo/internal/stdlib/syscall"
@@ -43,7 +44,7 @@ func (e *Engine) registerStdlib() {
 	h := &hostHelpers{env: bindEnv{e}}
 	e.pending.Register("fmt", func() { e.installFmt(h) })
 	e.pending.Register("errors", func() { stdliberrors.Install(e.bindBound, h, e.ifaceReqSet) })
-	e.pending.Register("strings", func() { e.installStrings(h) })
+	e.pending.Register("strings", func() { stdlibstrings.Install(e.bindBound, h, e.typedSeq) })
 	e.pending.Register("strconv", func() { stdlibstrconv.Install(e.bindBound) })
 	e.pending.Register("bytes", func() { stdlibbytes.Install(e.bindBound) })
 	e.pending.Register("unicode", func() { stdlibunicode.Install(e.bindBound) })

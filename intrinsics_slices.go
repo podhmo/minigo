@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/podhmo/minigo/internal/hostbridge"
+	"github.com/podhmo/minigo/internal/stdlib"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -77,7 +78,7 @@ func (e *Engine) installSlices(h *hostHelpers) {
 			}
 			s, ok := sliceOf(args[0])
 			if !ok {
-				if nilish(args[0]) {
+				if stdlib.Nilish(args[0]) {
 					return args[0], nil // deleting from nil yields nil
 				}
 				return nil, fmt.Errorf("slices.DeleteFunc: arg must be a slice")
@@ -100,7 +101,7 @@ func (e *Engine) installSlices(h *hostHelpers) {
 			}
 			s, ok := sliceOf(args[0])
 			if !ok {
-				if nilish(args[0]) {
+				if stdlib.Nilish(args[0]) {
 					return args[0], nil
 				}
 				return nil, fmt.Errorf("slices.Compact: arg must be a slice")
