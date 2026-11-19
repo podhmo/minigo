@@ -42,6 +42,7 @@ type selRes struct {
 	path []int             // selPath/selMemberSet: declared index path
 	m    *runtime.Function // selMethod/selMemberSet: the method
 	via  byte              // selMemberSet: 0 method, 1 iface dispatch, 2 host member
+	ntd  *runtime.TypeDef  // selNamedMethod: the peeled typedef the receiver re-tags to
 }
 
 type selKind uint8
@@ -51,6 +52,7 @@ const (
 	selMethod
 	selPath
 	selMemberSet
+	selNamedMethod
 )
 
 func (v *VM) structMember(f *frame, s *runtime.Struct, name string, recv runtime.Value, site *bytecode.GlobalSite) runtime.Value {
@@ -192,4 +194,59 @@ func (v *VM) structMemberRes(f *frame, s *runtime.Struct, name string, recv runt
 	}
 	f.trap("%s has no field or method %s", def.Name, name)
 	return nil, nil
+}
+
+// namedPayload peels a Named's payload through pointer derefs and nested
+// tags — the value a field or host member resolves on (the same walk
+// namedMemberRes does).
+func namedPayload(n *runtime.Named) runtime.Value {
+	sv := n.V
+	if dv, ok := runtime.Deref(sv); ok {
+		sv = dv
+	}
+	for {
+		nn, isNamed := sv.(*runtime.Named)
+		if !isNamed {
+			break
+		}
+		sv = nn.V
+		if dv, ok := runtime.Deref(sv); ok {
+			sv = dv
+		}
+	}
+	return sv
+}
+
+// applyNamedSlot replays a cached namedMember resolution on this call's
+// value — the receiver bind and field read run per access.
+func (v *VM) applyNamedSlot(f *frame, n *runtime.Named, name string, recv runtime.Value, res *selRes) (runtime.Value, bool) {
+	switch res.kind {
+	case selNamedMethod:
+		m := res.m
+		if err := m.EnsureCompiled(); err != nil {
+			f.trap("%s", err)
+		}
+		r := recv
+		if m.PtrRecv {
+			r = v.ptrReceiver(r)
+		} else if res.ntd != n.Typ {
+			sv := n.V
+			if dv, ok := runtime.Deref(sv); ok {
+				sv = dv
+			}
+			r = valueCopy(runtime.Tag(res.ntd, sv))
+		} else {
+			r = valueCopy(n)
+		}
+		return &runtime.BoundMethod{Recv: r, Fn: m}, true
+	case selField:
+		if s, ok := namedPayload(n).(*runtime.Struct); ok && res.idx < len(s.Fields) {
+			return s.Fields[res.idx], true
+		}
+	case selPath:
+		if s, ok := namedPayload(n).(*runtime.Struct); ok {
+			return v.fieldAtPath(f, s, res.path, name), true
+		}
+	}
+	return nil, false
 }

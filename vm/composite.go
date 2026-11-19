@@ -93,7 +93,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 	case *runtime.Struct:
 		return v.structMember(f, b, name, b, site)
 	case *runtime.Named:
-		return v.namedMember(f, b, name, b)
+		return v.namedMember(f, b, name, b, site)
 	case *runtime.Cell:
 		// a cell can hold another ref (`p := &s` stores a ref value) —
 		// select on the stored ref so a pointer receiver writes through
@@ -115,7 +115,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 		case *runtime.Struct:
 			return v.structMember(f, e, name, b, site)
 		case *runtime.Named:
-			return v.namedMember(f, e, name, b)
+			return v.namedMember(f, e, name, b, site)
 		case *runtime.TypedNil:
 			return v.memberOfType(f, e.Typ, name, b, false)
 		case *runtime.IfaceNil:
@@ -169,7 +169,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 		case *runtime.Struct:
 			return v.structMember(f, t, name, recv, site)
 		case *runtime.Named:
-			return v.namedMember(f, t, name, recv)
+			return v.namedMember(f, t, name, recv, site)
 		case *runtime.Slice:
 			return v.typedMember(f, t.Typ, name, recv, "slice")
 		case *runtime.Map:
@@ -783,7 +783,31 @@ func (v *VM) ptrReceiver(r runtime.Value) runtime.Value {
 // namedMember resolves base.name on a Named value: methods come only from
 // the declared typedef (`type A B` does not inherit B's methods, like
 // Go); fields reach through to the underlying struct's layout.
-func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.Value) runtime.Value {
+func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.Value, site *bytecode.GlobalSite) runtime.Value {
+	td := n.Typ
+	if site != nil && v.H.TypeIDOf != nil && td != nil && len(td.LocalTypes) == 0 {
+		// same epoch-first discipline as structMember: a method-set
+		// edit during resolution leaves the stored slot stale, and the
+		// next read resolves again.
+		epoch := runtime.MethodSetEpoch()
+		tid := v.H.TypeIDOf(td)
+		if slot, _ := site.Cache.Load().(*selectSlot); slot != nil &&
+			slot.tid == tid && slot.epoch == epoch && slot.name == name {
+			if val, ok := v.applyNamedSlot(f, n, name, recv, slot.res); ok {
+				return val
+			}
+		}
+		val, res := v.namedMemberRes(f, n, name, recv)
+		if res != nil {
+			site.Cache.Store(&selectSlot{tid: tid, epoch: epoch, name: name, res: res})
+		}
+		return val
+	}
+	val, _ := v.namedMemberRes(f, n, name, recv)
+	return val
+}
+
+func (v *VM) namedMemberRes(f *frame, n *runtime.Named, name string, recv runtime.Value) (runtime.Value, *selRes) {
 	// an anonymous *Declared typedef exposes the pointee's method set —
 	// `(*T)(p)` keeps T's methods callable on the conversion result.
 	td := n.Typ
@@ -817,13 +841,13 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 			// itself is the receiver, so the pointee stays shared.
 			r = valueCopy(n)
 		}
-		return &runtime.BoundMethod{Recv: r, Fn: m}
+		return &runtime.BoundMethod{Recv: r, Fn: m}, &selRes{kind: selNamedMethod, m: m, ntd: td}
 	}
 	if td != nil && (td.IfaceBase || td.Kind == runtime.KindInterface) {
 		// a declared-over-interface tag has no members of its own
 		// beyond declared overrides (checked above): `e.Error()` on
 		// `type E error` dispatches on the payload the interface holds.
-		return v.selectMember(f, n.V, name)
+		return v.selectMember(f, n.V, name), nil
 	}
 	// fields live on the underlying struct value — promoted fields of the
 	// underlying type are stored as fields on it, but promoted METHODS of
@@ -863,7 +887,7 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 			}
 		}
 		if mv, ok := v.hostMember(f, gv.V, name); ok {
-			return mv
+			return mv, nil
 		}
 		f.trap("no member %s on host value %T", name, gv.V)
 	}
@@ -880,7 +904,7 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 			hv = cv
 		}
 		if mv, ok := v.hostMember(f, hv, name); ok {
-			return mv
+			return mv, nil
 		}
 	}
 	if td != nil && td.HostNew != nil && td.Kind == runtime.KindNamedBasic {
@@ -891,14 +915,14 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 		rt := hostbridge.TypeOf(td.HostNew())
 		if rv := hostbridge.RVOf(sv); rv.IsValid() && rv.Type().ConvertibleTo(rt) {
 			if mv, ok := v.hostMember(f, rv.Convert(rt).Interface(), name); ok {
-				return mv
+				return mv, nil
 			}
 		}
 	}
 	if s, isStruct := sv.(*runtime.Struct); isStruct {
 		for i, fn := range s.Def.Fields {
 			if fn == name && selVisible(sp, s.Def.Pkg, fn) {
-				return s.Fields[i]
+				return s.Fields[i], &selRes{kind: selField, idx: i}
 			}
 		}
 		// the declaration answers the field side when it can —
@@ -909,36 +933,36 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 				if found {
 					if pr, ok := v.promotedMemberEx(f, s, name, true, false, len(idx)-1); ok {
 						if pr.host != nil {
-							return v.selectMember(f, pr.host, name)
+							return v.selectMember(f, pr.host, name), nil
 						}
 						// methods and interface members do not
 						// inherit — the trap below reports.
 						f.trap("%s has no field or method %s", tdName(n.Typ), name)
 					}
-					return v.fieldAtPath(f, s, idx, name)
+					return v.fieldAtPath(f, s, idx, name), &selRes{kind: selPath, path: idx}
 				}
 				if pr, ok := v.promotedMemberEx(f, s, name, true, false, -1); ok {
 					if pr.host != nil {
-						return v.selectMember(f, pr.host, name)
+						return v.selectMember(f, pr.host, name), nil
 					}
 				}
 				f.trap("%s has no field or method %s", tdName(n.Typ), name)
-				return nil
+				return nil, nil
 			}
 		}
 		if pr, ok := v.promotedMember(f, s, name, true); ok {
 			if pr.host != nil {
-				return v.selectMember(f, pr.host, name)
+				return v.selectMember(f, pr.host, name), nil
 			}
 			if pr.st != nil {
-				return pr.st.Fields[pr.idx]
+				return pr.st.Fields[pr.idx], nil
 			}
 			// a defined type does not inherit promoted methods or
 			// interface specs — fall through to the no-member trap.
 		}
 	}
 	f.trap("%s has no field or method %s", tdName(n.Typ), name)
-	return nil
+	return nil, nil
 }
 
 func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Value) {
