@@ -116,7 +116,7 @@ var FileBudgets = map[string]int{
 	"internal/stdlib/inspect/inspect.go":           1194,
 	"internal/stdlib/inspect/hooks.go":             24,
 	"internal/stdlib/json/json.go":                 2304,
-	"internal/stdlib/fmt/fmt.go":                  1675,
+	"internal/stdlib/fmt/fmt.go":                   1675,
 	"internal/stdlib/typshape.go":                  221,
 	"iterseq.go":                                   104,
 	"minigo.go":                                    1676,

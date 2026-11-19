@@ -180,3 +180,20 @@ func TestSessionLazyInstallBindsItsOwnTable(t *testing.T) {
 		t.Fatal("the session answered the parent's os package")
 	}
 }
+
+// TestTemplateFuncMapPerSession pins the FuncMap typedef's ownership:
+// every session builds its own *runtime.TypeDef (installbound.go), so
+// binding text/template in one engine can never leave another engine's
+// typedef pointing at the first engine's package (root TODO, S6).
+func TestTemplateFuncMapPerSession(t *testing.T) {
+	e1 := NewEngine(".")
+	e2 := NewEngine(".")
+	td1a, td1b := e1.templateFuncMap(), e1.templateFuncMap()
+	td2 := e2.templateFuncMap()
+	if td1a != td1b {
+		t.Fatal("templateFuncMap is not stable within a session")
+	}
+	if td1a == td2 {
+		t.Fatal("templateFuncMap typedefs are shared across sessions")
+	}
+}
