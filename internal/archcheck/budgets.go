@@ -94,7 +94,7 @@ var FileBudgets = map[string]int{
 	"internal/source/source.go":                    105,
 	"internal/spike/spike_off.go":                  67,
 	"internal/spike/spike_on.go":                   113,
-	"intrinsics.go":                                1230,
+	"intrinsics.go":                                1226,
 	"intrinsics_bufio.go":                          106,
 	"intrinsics_bytes.go":                          6,
 	"intrinsics_crypto_rand.go":                    98,
