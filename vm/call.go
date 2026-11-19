@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"go/token"
 	"reflect"
-	"slices"
 
 	"github.com/podhmo/minigo/runtime"
 )
@@ -218,28 +217,39 @@ func (v *VM) callEntered(callee runtime.Value, args []runtime.Value, statics []*
 // spreadTd carries the element typedef a trailing `xs...` slice supplied
 // at the call site; nil when the call had no spread.
 func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (runtime.Value, error) {
-	return v.callWindow(callee, args, -1, statics, spreadTd)
+	return v.callWindow(nil, callee, args, -1, statics, spreadTd)
 }
 
 // callInPlace is call for an OpCall whose args stay on the operand
 // stack: the caller dropped callee and statics and left its top argc
-// operands, which become the callee's window — no argbuf copy. The
+// operands, which become the callee's window — no argbuf copy. f is the
+// calling frame — its argbuf backs any materialized args slice. The
 // dispatch paths that need a real slice (linkname receiver prepend,
 // builtin, conversion, host func) materialize it via inPlaceArgs.
-func (v *VM) callInPlace(callee runtime.Value, argc int, statics []*runtime.TypeDef) (runtime.Value, error) {
-	return v.callWindow(callee, nil, argc, statics, nil)
+func (v *VM) callInPlace(f *frame, callee runtime.Value, argc int, statics []*runtime.TypeDef) (runtime.Value, error) {
+	return v.callWindow(f, callee, nil, argc, statics, nil)
 }
 
 // inPlaceArgs materializes argc operands off the arena tail — the
-// in-place call's args — when a dispatch arm needs a slice.
-func (v *VM) inPlaceArgs(argc int, args []runtime.Value) []runtime.Value {
+// in-place call's args — when a dispatch arm needs a slice. The caller
+// frame's argbuf backs it (same reuse popArgsCall had); builtins that
+// keep their args take a private copy in callBuiltin like before.
+func (v *VM) inPlaceArgs(f *frame, argc int, args []runtime.Value) []runtime.Value {
 	if argc < 0 || args != nil {
 		return args
 	}
-	return slices.Clone(v.vals[len(v.vals)-argc:])
+	buf := f.argbuf
+	if cap(buf) < argc {
+		buf = make([]runtime.Value, argc)
+	} else {
+		buf = buf[:argc]
+	}
+	copy(buf, v.vals[len(v.vals)-argc:])
+	f.argbuf = buf
+	return buf
 }
 
-func (v *VM) callWindow(callee runtime.Value, args []runtime.Value, winArgs int, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (runtime.Value, error) {
+func (v *VM) callWindow(f *frame, callee runtime.Value, args []runtime.Value, winArgs int, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (runtime.Value, error) {
 	if p := v.proc.Load(); p != nil {
 		select {
 		case <-p.Done():
@@ -265,7 +275,7 @@ func (v *VM) callWindow(callee runtime.Value, args []runtime.Value, winArgs int,
 					seen = map[*runtime.Function]bool{}
 				}
 				seen[fn] = true
-				args = v.inPlaceArgs(winArgs, args)
+				args = v.inPlaceArgs(f, winArgs, args)
 				// materialized — the args no longer sit in the arena window.
 				winArgs = -1
 				callee, args = relinkCallee(callee, tv, args)
@@ -274,9 +284,9 @@ func (v *VM) callWindow(callee runtime.Value, args []runtime.Value, winArgs int,
 		}
 		switch c := callee.(type) {
 		case *runtime.BuiltinFunc:
-			return v.callBuiltin(c, v.inPlaceArgs(winArgs, args))
+			return v.callBuiltin(c, v.inPlaceArgs(f, winArgs, args))
 		case *runtime.TypeDef:
-			args = v.inPlaceArgs(winArgs, args)
+			args = v.inPlaceArgs(f, winArgs, args)
 			if len(args) != 1 {
 				return nil, fmt.Errorf("conversion to %s needs exactly one argument", c.Name)
 			}
@@ -291,7 +301,7 @@ func (v *VM) callWindow(callee runtime.Value, args []runtime.Value, winArgs int,
 		case *runtime.GoValue:
 			if fv := reflect.ValueOf(c.V); fv.IsValid() && fv.Kind() == reflect.Func {
 				name := fmt.Sprintf("%v", fv.Type())
-				margs, err := v.matBuiltinArgs(expandSpread(v.inPlaceArgs(winArgs, args)), c.V)
+				margs, err := v.matBuiltinArgs(expandSpread(v.inPlaceArgs(f, winArgs, args)), c.V)
 				if err != nil {
 					return nil, fmt.Errorf("%s %w", name, err)
 				}

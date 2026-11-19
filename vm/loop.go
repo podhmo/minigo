@@ -653,7 +653,7 @@ func (v *VM) loop(f *frame) {
 				f.stack = f.stack[:f.sp]
 				// vals keeps the args — the callee's window covers
 				// them; the next push drops the dead callee slot too.
-				r, err = v.callInPlace(fn, argc, statbuf)
+				r, err = v.callInPlace(f, fn, argc, statbuf)
 			} else {
 				args, statics, spreadTd = v.popArgsCall(f, int(ins.A), int(ins.B), ins.Pos)
 				fn = f.pop()
