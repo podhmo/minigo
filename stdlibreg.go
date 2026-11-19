@@ -28,6 +28,7 @@ import (
 	stdlibosexec "github.com/podhmo/minigo/internal/stdlib/osexec"
 	stdlibpath "github.com/podhmo/minigo/internal/stdlib/path"
 	stdlibrace "github.com/podhmo/minigo/internal/stdlib/race"
+	stdreflect "github.com/podhmo/minigo/internal/stdlib/reflect"
 	stdlibregexp "github.com/podhmo/minigo/internal/stdlib/regexp"
 	stdlibsha256 "github.com/podhmo/minigo/internal/stdlib/sha256"
 	stdlibslices "github.com/podhmo/minigo/internal/stdlib/slices"
@@ -41,6 +42,7 @@ import (
 	stdlibtexttemplate "github.com/podhmo/minigo/internal/stdlib/texttemplate"
 	stdlibtime "github.com/podhmo/minigo/internal/stdlib/time"
 	stdlibunicode "github.com/podhmo/minigo/internal/stdlib/unicode"
+	stdunsafe "github.com/podhmo/minigo/internal/stdlib/unsafe"
 	stdlibutf8 "github.com/podhmo/minigo/internal/stdlib/utf8"
 )
 
@@ -68,7 +70,7 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("internal/stringslite", func() { stdlibstringslite.Install(e.bindBound, h) })
 	e.pending.Register("html", func() { stdlibhtml.Install(e.bindBound) })
 	e.pending.Register("path", func() { stdlibpath.Install(e.bindBound) })
-	e.pending.Register("reflect", func() { e.installReflect() })
+	e.pending.Register("reflect", func() { stdreflect.Install(e.bindBound, e.reflectHooks()) })
 	e.pending.Register("sort", func() { stdlibsort.Install(e.bindBound, h) })
 	e.pending.Register("slices", func() { stdlibslices.Install(e.bindBound, h, e.typedSeq) })
 	e.pending.Register("maps", func() { stdlibmaps.Install(e.bindBound, h, e.typedSeq) })
@@ -79,7 +81,7 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("github.com/podhmo/minigo/host", func() { stdlibhost.Install(e.bindBound, h, h.env) })
 	e.pending.Register("minigo.dev/inspect", func() { e.installInspect() })
 	e.pending.Register("github.com/podhmo/minigo/inspect", func() { e.installInspect() })
-	e.pending.Register("unsafe", func() { e.installUnsafe(h) })
+	e.pending.Register("unsafe", func() { stdunsafe.Install(e.bindBound, e.reflectHooks()) })
 	e.pending.Register("runtime", func() { stdruntime.Install(e.bindBound, h) })
 	e.pending.Register("time", func() { stdlibtime.Install(e.bindBound, h) })
 	e.pending.Register("sync", func() { stdlibsync.Install(e.bindBound, h) })

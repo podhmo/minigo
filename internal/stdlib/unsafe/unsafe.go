@@ -1,4 +1,7 @@
-package minigo
+// Package stdunsafe is the lazy installer for the bound "unsafe" package
+// (P2-12): sizes/offsets answer from DECLARED types through minireflect,
+// pointer args ride &s[i] refs so zero-copy string packing holds.
+package stdunsafe
 
 import (
 	"errors"
@@ -13,7 +16,7 @@ import (
 	"github.com/podhmo/minigo/runtime"
 )
 
-func (e *Engine) installUnsafe(h *hostHelpers) {
+func Install(bind stdlib.Bind, hooks minireflect.Hooks) {
 	// unsafe/runtime: the fixed runtime primitives source cannot reach
 	// (plan §11). Sizes are 64-bit host approximations over the boxed
 	// representation; NumGoroutine is pinned to 1 — the VM is
@@ -26,7 +29,7 @@ func (e *Engine) installUnsafe(h *hostHelpers) {
 
 	uintptrTyp := &runtime.TypeDef{Name: "uintptr", Kind: runtime.KindNamedBasic}
 
-	e.bindBound("unsafe", map[string]runtime.Value{
+	bind("unsafe", map[string]runtime.Value{
 		// unsafe.Pointer: a named pointer to the opaque ArbitraryType.
 		// Values carry it as a Named tag over the real ref, so *T <->
 		// unsafe.Pointer conversions keep write-through and identity.
@@ -42,10 +45,10 @@ func (e *Engine) installUnsafe(h *hostHelpers) {
 		"Sizeof": &runtime.BuiltinFunc{Name: "unsafe.Sizeof", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			// gc's result is an untyped uintptr constant — the closest
 			// runtime shape is an int64 tagged uintptr.
-			return runtime.Tag(uintptrTyp, e.unsafeSizeOf(args[0], e.unsafeStaticTyp(args))), nil
+			return runtime.Tag(uintptrTyp, unsafeSizeOf(hooks, args[0], unsafeStaticTyp(hooks, args))), nil
 		}},
 		"Alignof": &runtime.BuiltinFunc{Name: "unsafe.Alignof", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			return runtime.Tag(uintptrTyp, e.unsafeAlignOf(args[0], e.unsafeStaticTyp(args))), nil
+			return runtime.Tag(uintptrTyp, unsafeAlignOf(hooks, args[0], unsafeStaticTyp(hooks, args))), nil
 		}},
 		"Offsetof": &runtime.BuiltinFunc{Name: "unsafe.Offsetof", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			// The compiler rewrites unsafe.Offsetof(s.f) to pass the
@@ -58,7 +61,7 @@ func (e *Engine) installUnsafe(h *hostHelpers) {
 			if !ok {
 				return nil, errors.New("unsafe.Offsetof requires a field selector operand")
 			}
-			off, err := e.unsafeFieldOffset(args[0], name)
+			off, err := unsafeFieldOffset(hooks, args[0], name)
 			if err != nil {
 				return nil, err
 			}
@@ -92,10 +95,10 @@ func (e *Engine) installUnsafe(h *hostHelpers) {
 			if err != nil {
 				return nil, err
 			}
-			return string(byteSlice(&runtime.Slice{Elems: elems})), nil
+			return string(stdlib.ByteSlice(&runtime.Slice{Elems: elems})), nil
 		}},
 		"Slice": &runtime.BuiltinFunc{Name: "unsafe.Slice", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			n := int(int64Of(hostbridge.GoNative(args[1])))
+			n := int(stdlib.Int64Of(hostbridge.GoNative(args[1])))
 			// a nil pointer with len 0 is legal and reports the nil slice
 			// (Go panics only when len != 0) — typed nils keep their
 			// element type so the result is still a []T nil.
@@ -130,13 +133,13 @@ func (e *Engine) installUnsafe(h *hostHelpers) {
 // static typedef (nil when the operand has no static type), args[2]
 // the indexed container's for a `c[i]` operand — the operand's
 // declared type is the container's element type.
-func (e *Engine) unsafeStaticTyp(args []runtime.Value) *runtime.TypeDef {
+func unsafeStaticTyp(hooks minireflect.Hooks, args []runtime.Value) *runtime.TypeDef {
 	if len(args) > 2 {
 		if ctd, ok := args[2].(*runtime.TypeDef); ok && ctd != nil {
 			// parr[i] auto-derefs a pointer container: peel the stars
 			// so the element typedef comes from the indexed base.
 			for ctd.Kind == runtime.KindPointer {
-				next, err := e.elemOf(ctd)
+				next, err := hooks.ElemOf(ctd)
 				if err != nil || next == nil || next == ctd {
 					break
 				}
@@ -154,7 +157,7 @@ func (e *Engine) unsafeStaticTyp(args []runtime.Value) *runtime.TypeDef {
 				}
 			}
 			if container {
-				if etd, err := e.elemOf(ctd); err == nil && etd != nil {
+				if etd, err := hooks.ElemOf(ctd); err == nil && etd != nil {
 					return etd
 				}
 			}
@@ -168,7 +171,7 @@ func (e *Engine) unsafeStaticTyp(args []runtime.Value) *runtime.TypeDef {
 	return nil
 }
 
-func (e *Engine) unsafeSizeOf(v runtime.Value, declared *runtime.TypeDef) int64 {
+func unsafeSizeOf(hooks minireflect.Hooks, v runtime.Value, declared *runtime.TypeDef) int64 {
 	if declared != nil {
 		if declared.HostNew != nil {
 			// a host-bound type's layout lives in reflect — its typedef
@@ -180,10 +183,10 @@ func (e *Engine) unsafeSizeOf(v runtime.Value, declared *runtime.TypeDef) int64 
 			}
 			return int64(rt.Size())
 		}
-		return int64(minireflect.SizeOf(e.reflectHooks(), declared))
+		return int64(minireflect.SizeOf(hooks, declared))
 	}
 	if td := sizeDeclTyp(v); td != nil {
-		return int64(minireflect.SizeOf(e.reflectHooks(), td))
+		return int64(minireflect.SizeOf(hooks, td))
 	}
 	switch x := v.(type) {
 	case bool:
@@ -207,7 +210,7 @@ func (e *Engine) unsafeSizeOf(v runtime.Value, declared *runtime.TypeDef) int64 
 		return 8
 	case *runtime.UConst:
 		if mv, err := runtime.UConstNative(x); err == nil && mv != x {
-			return e.unsafeSizeOf(mv, nil)
+			return unsafeSizeOf(hooks, mv, nil)
 		}
 		return 8
 	case runtime.Nil, *runtime.IfaceNil:
@@ -217,7 +220,7 @@ func (e *Engine) unsafeSizeOf(v runtime.Value, declared *runtime.TypeDef) int64 
 	}
 }
 
-func (e *Engine) unsafeAlignOf(v runtime.Value, declared *runtime.TypeDef) int64 {
+func unsafeAlignOf(hooks minireflect.Hooks, v runtime.Value, declared *runtime.TypeDef) int64 {
 	if declared != nil {
 		if declared.HostNew != nil {
 			rt := declared.HostType()
@@ -226,12 +229,12 @@ func (e *Engine) unsafeAlignOf(v runtime.Value, declared *runtime.TypeDef) int64
 			}
 			return int64(rt.Align())
 		}
-		return int64(minireflect.AlignOf(e.reflectHooks(), declared))
+		return int64(minireflect.AlignOf(hooks, declared))
 	}
 	if td := sizeDeclTyp(v); td != nil {
-		return int64(minireflect.AlignOf(e.reflectHooks(), td))
+		return int64(minireflect.AlignOf(hooks, td))
 	}
-	if n := e.unsafeSizeOf(v, nil); n < 8 {
+	if n := unsafeSizeOf(hooks, v, nil); n < 8 {
 		if n < 1 {
 			return 1 // alignment is always at least 1
 		}
@@ -266,7 +269,7 @@ func unsafeStringArg(v runtime.Value) (string, bool) {
 // misplaces every later field: an `any` holding an int64 read as 8
 // where the declared interface pair is 16.) A host-boxed struct answers
 // through reflect's real field offset instead.
-func (e *Engine) unsafeFieldOffset(base runtime.Value, name string) (int64, error) {
+func unsafeFieldOffset(hooks minireflect.Hooks, base runtime.Value, name string) (int64, error) {
 	switch x := base.(type) {
 	case *runtime.TypeDef:
 		// a statically-resolved base arrives as its typedef — a nil
@@ -274,7 +277,7 @@ func (e *Engine) unsafeFieldOffset(base runtime.Value, name string) (int64, erro
 		// non-struct typedef has no fields.
 		td := x
 		for td.Kind == runtime.KindPointer {
-			next, err := e.elemOf(td)
+			next, err := hooks.ElemOf(td)
 			if err != nil || next == nil || next == td {
 				break
 			}
@@ -294,20 +297,20 @@ func (e *Engine) unsafeFieldOffset(base runtime.Value, name string) (int64, erro
 			}
 			return 0, fmt.Errorf("unsafe.Offsetof: %s has no field %s", rt, name)
 		}
-		off, err := minireflect.OffsetOf(e.reflectHooks(), td, name)
+		off, err := minireflect.OffsetOf(hooks, td, name)
 		if err != nil {
 			return 0, err
 		}
 		return int64(off), nil
 	case *runtime.Cell:
-		return e.unsafeFieldOffset(x.Elem, name)
+		return unsafeFieldOffset(hooks, x.Elem, name)
 	case *runtime.Named:
-		return e.unsafeFieldOffset(x.V, name)
+		return unsafeFieldOffset(hooks, x.V, name)
 	case *runtime.Struct:
 		if x.Def == nil {
 			break
 		}
-		off, err := minireflect.OffsetOf(e.reflectHooks(), x.Def, name)
+		off, err := minireflect.OffsetOf(hooks, x.Def, name)
 		if err != nil {
 			return 0, err
 		}
@@ -334,4 +337,39 @@ func unsafeBytes(str string) *runtime.Slice {
 		el[i] = runtime.ByteValue(str[i])
 	}
 	return &runtime.Slice{Elems: el, Typ: &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: ast.NewIdent("byte")}}}
+}
+
+// sizeDeclTyp is the operand's declared type for unsafe.Sizeof/Alignof
+// when the operand itself carries one (an untyped literal, a host box
+// reports nil and the caller falls back to runtime-value widths).
+func sizeDeclTyp(v runtime.Value) *runtime.TypeDef {
+	switch v.(type) {
+	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
+		// a pointer value: the operand's declared type is *T where T
+		// is the pointee's declared type — the tag stamped on the box
+		// belongs under the star (OpBox/OpLocalRef stamp the POINTEE's
+		// typedef), it never answers the pointee's layout itself.
+		var elem *runtime.TypeDef
+		if c, ok := v.(*runtime.Cell); ok {
+			elem = c.Typ
+		}
+		return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: elem}
+	}
+	return stdlib.ValueDeclTyp(v)
+}
+
+// sliceTypFromPtr maps a pointer/array/slice typedef to the unnamed
+// []E typedef unsafe.Slice's result carries — never the named slice or
+// the [N]E array the pointer was taken from.
+func sliceTypFromPtr(td *runtime.TypeDef) *runtime.TypeDef {
+	if td == nil {
+		return nil
+	}
+	switch x := td.TypeExpr().(type) {
+	case *ast.StarExpr:
+		return &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: x.X}, Elem: td.Elem, Pkg: td.Pkg, File: td.File}
+	case *ast.ArrayType:
+		return &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: x.Elt}, Elem: td.Elem, Pkg: td.Pkg, File: td.File}
+	}
+	return td
 }
