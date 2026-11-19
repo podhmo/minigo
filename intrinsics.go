@@ -471,16 +471,6 @@ type afterFuncTimer = stdtime.AfterFuncTimer
 // the type lives with the moved context installer (P2-12c).
 type scriptCoro = stdcontext.ScriptCoro
 
-// lockerOf adapts a script Lock/Unlock pair to a sync.Locker (P2-12c).
-func lockerOf(vc runtime.MemberCaller, v any) (sync.Locker, error) {
-	return stdcontext.LockerOf(vc, v)
-}
-
-// syncOnceWrap implements the sync.OnceFunc family (P2-12c).
-func syncOnceWrap(name string, args []runtime.Value) (runtime.Value, error) {
-	return stdcontext.SyncOnceWrap(name, args)
-}
-
 // asCtx coerces a script value to a context.Context (P2-12c).
 func asCtx(v any) (context.Context, error) {
 	return stdcontext.AsCtx(v)
