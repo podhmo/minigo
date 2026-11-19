@@ -47,13 +47,14 @@ func init() {
 			return adaptFuncOut(x, ft, vc, true)
 		},
 		AdaptIface: adaptIface,
-		HostErr: func(vc runtime.VMCaller, orig runtime.Value) error {
+		HostErr: func(vc runtime.VMCaller) func(runtime.MemberCaller, runtime.Value) error {
 			m := vmOf(vc)
-			if m == nil || m.H.HostErr == nil {
+			if m == nil {
 				return nil
 			}
-			return m.H.HostErr(vc, orig)
+			return m.H.HostErr
 		},
+		HasVM: func(vc runtime.VMCaller) bool { return vmOf(vc) != nil },
 		ElemOf: func(vc runtime.VMCaller, td *runtime.TypeDef) (*runtime.TypeDef, error) {
 			if m := vmOf(vc); m != nil && m.H.ElemOf != nil {
 				return m.H.ElemOf(td)

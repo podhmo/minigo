@@ -46,9 +46,13 @@ type Marshal struct {
 	// AdaptIface builds a live host proxy for a script value satisfying
 	// a non-empty interface.
 	AdaptIface func(orig runtime.Value, t reflect.Type, vc runtime.MemberCaller) (reflect.Value, bool)
-	// HostErr boxes a script error value as a host error through the
-	// VM's error binding; returns nil when the VM has none.
-	HostErr func(vc runtime.VMCaller, orig runtime.Value) error
+	// HostErr returns the VM's script-error box for the caller, nil
+	// when the caller carries no VM or the VM has no error binding —
+	// the check must run before IfaceMember, which dereferences vc.
+	HostErr func(vc runtime.VMCaller) func(runtime.MemberCaller, runtime.Value) error
+	// HasVM reports whether vc reaches a live VM — a provisional nil
+	// host shape must not cache when no VM can resolve the hooks.
+	HasVM func(vc runtime.VMCaller) bool
 	// ElemOf resolves a container typedef's element typedef.
 	ElemOf func(vc runtime.VMCaller, td *runtime.TypeDef) (*runtime.TypeDef, error)
 	// MapKeyOf resolves a map typedef's key typedef.
@@ -367,9 +371,11 @@ func (m *Marshal) toReflectValueDepth(v runtime.Value, t reflect.Type, vc runtim
 			// a script error crossing into a host `error` slot (a
 			// CancelCauseFunc's cause) boxes like every other script
 			// error the host sees, so errors.Is/== agree on it.
-			if _, ok := runtime.IfaceMember(vc, orig, "Error"); ok {
-				if err := m.HostErr(vc, orig); err != nil {
-					return reflect.ValueOf(&err).Elem(), nil
+			if he := m.HostErr(vc); he != nil {
+				if _, ok := runtime.IfaceMember(vc, orig, "Error"); ok {
+					if err := he(vc, orig); err != nil {
+						return reflect.ValueOf(&err).Elem(), nil
+					}
 				}
 			}
 		}
@@ -717,7 +723,7 @@ func (m *Marshal) cachedHostShape(vc runtime.VMCaller, td *runtime.TypeDef) refl
 	rt := m.hostShapeOf(vc, td, 0)
 	// without a VM the type hooks are out of reach and the answer is a
 	// provisional nil — keep it out of the cache.
-	if m.ElemOf != nil && hostShapeSize.Load() < hostShapeCap {
+	if m.HasVM(vc) && hostShapeSize.Load() < hostShapeCap {
 		if _, loaded := hostShapes.LoadOrStore(td, rt); !loaded {
 			hostShapeSize.Add(1)
 		}
