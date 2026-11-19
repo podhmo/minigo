@@ -281,10 +281,14 @@ func (c *compiler) typSelectNeedsCellDepth(te ast.Expr, sel string, depth int) (
 			}
 		}
 		return cellUnknown, "" // a host or unindexed member is unproven
-	case *ast.StructType, *ast.InterfaceType, *ast.MapType,
+	case *ast.StructType:
+		// an anonymous struct declares no methods, but `struct{ N }`
+		// promotes N's — a pointer receiver still binds the cell.
+		return c.structFieldNeedsCell(t, sel, depth)
+	case *ast.InterfaceType, *ast.MapType,
 		*ast.ChanType, *ast.FuncType, *ast.ArrayType:
-		// anonymous types carry no methods — the select is a field or
-		// fails at run time; neither binds a cell.
+		// other anonymous types carry no methods — the select is a
+		// field or fails at run time; neither binds a cell.
 		return cellNo, ""
 	}
 	// F[T] instantiations and anything else: the member could be a
@@ -326,54 +330,63 @@ func (c *compiler) indexSelectNeedsCell(tdi *index.TypeDeclInfo, sel string, dep
 	case *ast.InterfaceType:
 		return cellNo, "" // dynamic dispatch
 	case *ast.StructType:
-		if st.Fields != nil {
-			var embedded []ast.Expr
-			for _, f := range st.Fields.List {
-				if len(f.Names) == 0 {
-					if embeddedName(f.Type) == sel {
-						return cellNo, ""
-					}
-					embedded = append(embedded, f.Type)
-					continue
-				}
-				for _, n := range f.Names {
-					if n.Name == sel {
-						return cellNo, ""
-					}
-				}
+		return c.structFieldNeedsCell(st, sel, depth)
+	}
+	// a named non-struct: the only members are methods, already checked.
+	return cellNo, ""
+}
+
+// structFieldNeedsCell classifies sel against a struct's fields: a
+// direct or embedded-name field is cellNo; a promoted member's receiver
+// kind lives in an embedded type's decl (an embedded `*U` promotes U's
+// methods including pointer receivers — the cell is the ref target
+// either way); an uninspectable embed is cellUnknown. Shared by the
+// named-decl and anonymous-struct paths — an anonymous `struct{ N }`
+// promotes N's methods the same way.
+func (c *compiler) structFieldNeedsCell(st *ast.StructType, sel string, depth int) (cellVerdict, string) {
+	if st.Fields == nil {
+		return cellNo, ""
+	}
+	var embedded []ast.Expr
+	for _, f := range st.Fields.List {
+		if len(f.Names) == 0 {
+			if embeddedName(f.Type) == sel {
+				return cellNo, ""
 			}
-			// not a direct member — a promoted member's receiver kind
-			// lives in an embedded type's decl. An embedded `*U`
-			// promotes U's methods including pointer receivers —
-			// the cell is the ref target either way.
-			if len(embedded) > 0 {
-				if depth <= 0 {
-					return cellUnknown, ""
-				}
-				unknown := false
-				for _, et := range embedded {
-					if se, ok := ast.Unparen(et).(*ast.StarExpr); ok {
-						et = se.X
-					}
-					v, _ := c.typSelectNeedsCellDepth(et, sel, depth-1)
-					if v == cellYes {
-						return cellYes, "ptrrecv"
-					}
-					if v == cellUnknown {
-						unknown = true
-					}
-				}
-				if unknown {
-					// a promoted member on an uninspectable embed may
-					// still be a pointer method.
-					return cellUnknown, ""
-				}
+			embedded = append(embedded, f.Type)
+			continue
+		}
+		for _, n := range f.Names {
+			if n.Name == sel {
+				return cellNo, ""
 			}
 		}
+	}
+	if len(embedded) == 0 {
 		// a direct field, a value-receiver method, or no member at all
 		// — none binds the cell.
 		return cellNo, ""
 	}
-	// a named non-struct: the only members are methods, already checked.
+	if depth <= 0 {
+		return cellUnknown, ""
+	}
+	unknown := false
+	for _, et := range embedded {
+		if se, ok := ast.Unparen(et).(*ast.StarExpr); ok {
+			et = se.X
+		}
+		v, _ := c.typSelectNeedsCellDepth(et, sel, depth-1)
+		if v == cellYes {
+			return cellYes, "ptrrecv"
+		}
+		if v == cellUnknown {
+			unknown = true
+		}
+	}
+	if unknown {
+		// a promoted member on an uninspectable embed may still be a
+		// pointer method.
+		return cellUnknown, ""
+	}
 	return cellNo, ""
 }
