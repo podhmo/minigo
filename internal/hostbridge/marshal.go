@@ -308,7 +308,7 @@ func (m *Marshal) toReflectValueDepth(v runtime.Value, t reflect.Type, vc runtim
 		} else if t.Kind() == reflect.Struct {
 			hst = t
 		}
-		hostNamedIs := runtime.HostNamedIs
+		hostNamedIs := HostNamedIs
 		if tw, ok := vc.(runtime.HostNamedTwinner); ok {
 			hostNamedIs = tw.HostNamedTwin
 		}
@@ -979,7 +979,7 @@ func (m *Marshal) HostFieldValue(x runtime.Value, owner reflect.Type, name strin
 
 // fillHostStruct copies a script struct's fields into the host struct
 // out, name by name. The script type is the host type's source twin —
-// [runtime.HostNamedIs] gates the conversion at the call site — so the
+// [HostNamedIs] gates the conversion at the call site — so the
 // field names line up; a field the host lacks is skipped (toolchain
 // skew adds or drops internals). Unexported fields set through their
 // address: out is freshly allocated, so the write stays private to the

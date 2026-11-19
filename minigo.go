@@ -571,7 +571,7 @@ func (e *Engine) hostTwin(rt reflect.Type) *runtime.TypeDef {
 	p.WaitIndexed()
 	if p.Index != nil {
 		td, err := e.td.ResolveTypeRef(&runtime.TypeDef{Pkg: p}, ast.NewIdent(rt.Name()))
-		if err != nil || !runtime.HostNamedIs(rt, td) {
+		if err != nil || !hostbridge.HostNamedIs(rt, td) {
 			return nil
 		}
 		return td

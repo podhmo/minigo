@@ -84,6 +84,14 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 		if rt0.Name() != "" {
 			return hostTypeID(rt0, args)
 		}
+		// a minted named typedef's carrier is the unnamed *T box: key on
+		// the element's host type so the descriptor lands under the same
+		// `host:<pkgpath>:<name>` key whether or not the declared package
+		// is loaded yet (the name-only fallback spells the package's
+		// short name — "fs.FileMode" — which never converges on io/fs).
+		if rt0.Kind() == reflect.Pointer && rt0.Elem().Name() != "" && td.Name == rt0.Elem().String() {
+			return hostTypeID(rt0.Elem(), args)
+		}
 		// the carrier is unnamed (a *box pointer): the bound typedef's
 		// declared name is the represented type's identity.
 		if pkg, name, ok := splitHostName(td.Name); ok {

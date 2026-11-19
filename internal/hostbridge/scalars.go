@@ -357,3 +357,31 @@ func UintOperand(v runtime.Value) (uint64, bool) {
 	}
 	return 0, false
 }
+
+// HostNamedIs reports whether td declares the host type rt — same
+// package path and name. This is the residual reflect.Type↔typedef
+// compare for callers with no type intern table; callers holding an
+// engine's machinery answer through [runtime.HostNamedTwinner] instead
+// (the printed spelling cannot decide identity: inside go/ast
+// `*BlockStmt` spells "*BlockStmt" while a script may spell it
+// "*goast.BlockStmt").
+func HostNamedIs(rt reflect.Type, td *runtime.TypeDef) bool {
+	if rt == nil || td == nil || td.Pkg == nil || td.Pkg.Path == "" || td.Name == "" || td.Local || len(td.Binds) > 0 {
+		return false
+	}
+	return rt.PkgPath() == td.Pkg.Path && rt.Name() == td.Name
+}
+
+// HostTwinOf reports whether a value of td is a value of the host type
+// rt: td is rt's source twin ([HostNamedIs]) or the bound typedef that
+// boxes rt as a scalar (time.Month's HostScalar). Same residual-status
+// caveat as HostNamedIs.
+func HostTwinOf(rt reflect.Type, td *runtime.TypeDef) bool {
+	if rt == nil || td == nil {
+		return false
+	}
+	if td.HostScalar != nil {
+		return reflect.TypeOf(td.HostScalar) == rt
+	}
+	return HostNamedIs(rt, td)
+}

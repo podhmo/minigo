@@ -906,11 +906,11 @@ func hostNamedPayloads(a, b runtime.Value) (runtime.Value, runtime.Value, bool) 
 	case aHost && bHost:
 		return pa, pb, ra == rb
 	case aHost:
-		if n, ok := b.(*runtime.Named); ok && runtime.HostTwinOf(ra, n.Typ) {
+		if n, ok := b.(*runtime.Named); ok && hostbridge.HostTwinOf(ra, n.Typ) {
 			return pa, OrderScalar(n.V), true
 		}
 	case bHost:
-		if n, ok := a.(*runtime.Named); ok && runtime.HostTwinOf(rb, n.Typ) {
+		if n, ok := a.(*runtime.Named); ok && hostbridge.HostTwinOf(rb, n.Typ) {
 			return OrderScalar(n.V), pb, true
 		}
 	}

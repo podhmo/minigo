@@ -3,6 +3,8 @@ package minigo
 import (
 	"go/ast"
 	"go/token"
+	"io/fs"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -310,5 +312,37 @@ func TestInstKeyTypeID(t *testing.T) {
 	// a non-typedef bind cannot key an instantiation.
 	if k := e.instKey(mkFn(map[string]runtime.Value{"T": int64(1)})); k != "" {
 		t.Fatalf("non-typedef bind keyed %q, want \"\"", k)
+	}
+}
+
+// the intern-widening pins (TODO: intern 表拡張): name-only mints and
+// minted pointers over named host types must converge on the bound
+// typedef's canonical host:<pkgpath>:<name> key — the same key a bound
+// td reaches through splitHostName.
+func TestTypeIDHostMintKeysCanonically(t *testing.T) {
+	e := NewEngine(".")
+
+	// a bound typedef spells "io/fs.FileMode"; everything else minted for
+	// the same type must share its key.
+	newMode := func() any { m := fs.FileMode(0); return &m }
+	bound := &runtime.TypeDef{Name: "io/fs.FileMode", Kind: runtime.KindNamedBasic, HostNew: newMode}
+	want := e.typeIDOf(bound)
+	if want != "host:io/fs:FileMode" {
+		t.Fatalf("bound typedef keys %q, want host:io/fs:FileMode", want)
+	}
+
+	// name-only mint with the reflected identity attached (vm's
+	// hostTypedefOf path) keys the same way.
+	named := &runtime.TypeDef{Name: "fs.FileMode", HostIdent: reflect.TypeOf(fs.FileMode(0))}
+	if got := e.typeIDOf(named); got != want {
+		t.Errorf("name-only mint keys %q, want %q", got, want)
+	}
+
+	// minted pointer-carrier typedef (vm's hostTypedefOfNew path: HostNew
+	// returns *fs.FileMode) keys on the element's package path, not the
+	// package-name fragment of td.Name.
+	mint := &runtime.TypeDef{Name: "fs.FileMode", Kind: runtime.KindNamedBasic, HostNew: newMode}
+	if got := e.typeIDOf(mint); got != want {
+		t.Errorf("pointer-carrier mint keys %q, want %q", got, want)
 	}
 }
