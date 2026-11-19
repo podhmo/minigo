@@ -207,3 +207,14 @@ func main() {
 	}
 }
 ```
+
+## 再分類（P2-2/P2-3 の確定、スタック先端の HEAD）
+
+識別子参照を数えるスキャナで全 named `VMCaller` 引数を3分類した。
+
+- **未使用（参照0回）**: 0 件。初回計測の 96 件は P2-1〜P2-2b の CallerRef 化・削除で解消済み。
+- **pass-only（call の引数で受け渡すだけ）**: 156 件。ほぼ全件が funclit で、シグネチャが `BuiltinFunc.Fn`（`func(runtime.VMCaller, []runtime.Value)`）、iterseq の yield、hostbridge の登録型で固定されている。引数を `MemberCaller` 等に絞ると渡し先の helper のシグネチャまで連鎖して下げる必要があり、「VM が要る側に型を合わせてから受け渡す」二重の型付けを増やすだけで情報量が増えないため現行維持。
+- **ref-only（参照はあるがメソッド呼び出しなし）**: 11 件。capability の型アサーション（`DeepEqual` の `HostNilTwiner`、`materializerOf`）と、後で必要になるための保存（`RValue.vc`、`Panic.VC`、`bindCaller`/`callbackContext`）の2種。`materializerOf` の引数は `runtime.CallerRef` に絞った（観測のみで呼び出し能力を使わない、P2-2b と同じパターン）。BuiltinFunc.Fn のシグネットで固定される funclit と、VM 経由を維持する保存系は `VMCaller` のまま。
+
+完了条件: 未使用 0 件を維持し、pass-only はシグネチャ固定の funclit であることを文書で固定した。
+

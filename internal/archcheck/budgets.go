@@ -9,7 +9,7 @@ var FileBudgets = map[string]int{
 	"asmimpl.go":                                   279,
 	"bindenv.go":                                   52,
 	"boundreads.go":                                70,
-	"builtin/builtins.go":                          1118,
+	"builtin/builtins.go":                          1119,
 	"builtin/hostslice.go":                         75,
 	"builtin/order.go":                             30,
 	"builtins.go":                                  16,
