@@ -38,6 +38,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/podhmo/minigo/builtin"
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/compile"
 	"github.com/podhmo/minigo/index"
@@ -331,7 +332,7 @@ func NewEngine(startDir string, opts ...Option) *Engine {
 			e.cwd = abs
 		}
 	}
-	e.builtins = builtins(e)
+	e.builtins = builtin.Env(bindEnv{e})
 	res, err := resolve.NewGoScanResolver(startDir, e.cfg)
 	if err != nil {
 		// fall back to GOPATH-less dir resolution only; Locate() will still
@@ -610,7 +611,7 @@ func (e *Engine) NewSession() *Engine {
 			typeIntern:   execution.NewIntern[runtime.TypeID, *runtime.TypeDef](),
 		},
 	}
-	s.builtins = builtins(s)
+	s.builtins = builtin.Env(bindEnv{s})
 	s.fieldPaths = fieldPathService(s)
 	s.registerStdlib()
 	// sessions inherit the parent's host bindings: a script importing a

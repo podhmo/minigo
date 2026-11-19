@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"time"
 
+	"github.com/podhmo/minigo/builtin"
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/vm"
@@ -89,8 +89,8 @@ func (e *Engine) installSort(h *hostHelpers) {
 // sets sort.Ints, sort.Strings, and slices.Sort support.
 func sortScript(el []runtime.Value) {
 	sort.Slice(el, func(i, j int) bool {
-		bv := orderScalar(el[j])
-		switch a := orderScalar(el[i]).(type) {
+		bv := builtin.OrderScalar(el[j])
+		switch a := builtin.OrderScalar(el[i]).(type) {
 		case int64:
 			if b, ok := bv.(int64); ok {
 				return a < b
@@ -129,8 +129,8 @@ func scriptElems(v any) []runtime.Value {
 // lessScript orders int64/float64/string/bool (heterogeneous pairs rank by kind:
 // numbers < strings < others, comparing numerically across int64/float64).
 func lessScript(a, b runtime.Value) bool {
-	a = orderScalar(a)
-	b = orderScalar(b)
+	a = builtin.OrderScalar(a)
+	b = builtin.OrderScalar(b)
 	an, aok := numOf(a)
 	bn, bok := numOf(b)
 	if aok && bok {
@@ -157,28 +157,6 @@ func lessScript(a, b runtime.Value) bool {
 	return false
 }
 
-// orderScalar is the scalar the ordering helpers compare for v: tags
-// peel, and a host named basic — boxed (a FileMode from os.Stat, a
-// token.Token off inspect.AST) or raw (a time.Month or reflect.Kind a
-// host call returned) — reads as its payload, so it orders among the
-// source values of its type.
-func orderScalar(v runtime.Value) runtime.Value {
-	v = runtime.Unwrap(v)
-	switch x := v.(type) {
-	case int64, float64, string, bool, time.Duration, *runtime.UConst, runtime.Nil:
-		return v
-	case *runtime.GoValue:
-		if p, _, ok := runtime.HostNamedScalar(x); ok {
-			return p
-		}
-		return v
-	}
-	if p, _, ok := runtime.HostNamedPayload(v); ok {
-		return p
-	}
-	return v
-}
-
 // scriptSortable is the sort.Interface view of a script object.
 type scriptSortable struct {
 	vc                    runtime.ScriptCaller
@@ -190,7 +168,7 @@ type scriptSortable struct {
 // named basic ordered among its source twins). Two int64 payloads
 // compare exactly — the float64 route would merge neighbours past 2^53.
 func cmpScript(a, b runtime.Value) int64 {
-	a, b = orderScalar(a), orderScalar(b)
+	a, b = builtin.OrderScalar(a), builtin.OrderScalar(b)
 	if x, ok := a.(int64); ok {
 		if y, ok := b.(int64); ok {
 			return int64(cmp.Compare(x, y))
