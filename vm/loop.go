@@ -988,8 +988,10 @@ func (v *VM) loop(f *frame) {
 				chosen, recvd, open = hostbridge.Select(cases)
 			} else {
 				unpark := v.park(wake)
-				chosen, recvd, open = hostbridge.Select(cases)
-				unpark()
+				func() {
+					defer unpark()
+					chosen, recvd, open = hostbridge.Select(cases)
+				}()
 			}
 			switch {
 			case chosen == doneIdx:
