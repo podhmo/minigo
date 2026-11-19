@@ -346,14 +346,18 @@ func (v *VM) instTypeKey(f *frame, g *runtime.TypeDef, targs []runtime.Value) (r
 		fmt.Fprintf(&b, "|t%s", tid)
 	}
 
-	var ctx *runtime.TypeDef // a TypeDef is ~1KB; mint it only when a constraint needs resolving
+	var ctx *runtime.TypeDef // ~1KB — reuse the VM's scratch typedef
 	for i := 0; i < len(targs) && i < len(g.TConstraints); i++ {
 		if constraintBase(g.TConstraints[i]) == nil {
 			continue
 		}
 		if ctx == nil {
-			ctx = &runtime.TypeDef{Pkg: g.Pkg, File: g.File}
+			if v.keyCtx == nil {
+				v.keyCtx = &runtime.TypeDef{}
+			}
+			ctx = v.keyCtx
 		}
+		ctx.Pkg, ctx.File = g.Pkg, g.File
 		ct := v.constraintType(ctx, g.TConstraints[i])
 		if ct == nil {
 			continue
@@ -1677,10 +1681,6 @@ var builtinTypeNames = map[string]bool{
 	"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true,
 	"uintptr": true, "byte": true, "rune": true,
 	"float32": true, "float64": true, "complex64": true, "complex128": true,
-	// the permissive constraints constrain nothing, so they key no
-	// identity — treated as builtin names like the satisfiesConstraint
-	// Ident arm already does.
-	"any": true, "comparable": true,
 }
 
 func isBuiltinTypeName(n string) bool { return builtinTypeNames[n] }
