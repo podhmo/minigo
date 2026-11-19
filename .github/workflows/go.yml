@@ -26,6 +26,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
+      with:
+        # the M1-4 budget step needs the merge base's budgets.go
+        fetch-depth: 0
 
     - name: Set up Go
       uses: actions/setup-go@v7
@@ -43,6 +46,13 @@ jobs:
 
     - name: Internal import graph (archcheck)
       run: make archcheck
+
+    - name: File budgets vs merge base (M1-4)
+      if: github.event_name == 'pull_request'
+      run: |
+        base="$(git merge-base HEAD "origin/${{ github.base_ref }}")"
+        git show "$base:internal/archcheck/budgets.go" > /tmp/base_budgets.go
+        go run ./internal/cmd/archcheck -budget-base /tmp/base_budgets.go
 
   race-test:
     runs-on: ubuntu-latest
