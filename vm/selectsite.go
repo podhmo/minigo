@@ -254,15 +254,24 @@ func (v *VM) applyNamedSlot(f *frame, n *runtime.Named, name string, recv runtim
 // instSiteSlot is one OpInstantiate site's memo: the result of the last
 // (base, targs) pair it saw. Bases and args are pointer values, so ==
 // compares identity — a redeclared generic or a changed arg type misses
-// and falls back to the full key spell, never stale-hits.
+// and falls back to the full key spell, never stale-hits. env/gen guard
+// what pointer identity cannot see: instTypeKey resolves the generic's
+// constraint names in its declaring package, and a REPL redeclaration of
+// the constraint repoints those names — bumping the env generation —
+// without changing base or arg identity.
 type instSiteSlot struct {
 	base  runtime.Value
+	env   *runtime.Env
+	gen   uint64
 	targs []runtime.Value
 	out   runtime.Value
 }
 
 func (s *instSiteSlot) match(base runtime.Value, targs []runtime.Value) bool {
 	if s.base != base || len(s.targs) != len(targs) {
+		return false
+	}
+	if s.env != nil && s.env.Gen() != s.gen {
 		return false
 	}
 	for i, a := range targs {
@@ -273,15 +282,30 @@ func (s *instSiteSlot) match(base runtime.Value, targs []runtime.Value) bool {
 	return true
 }
 
-// instSiteCacheable reports whether (base, targs) can memoize safely:
-// every element must be a comparable pointer — a non-pointer arg (the
-// index fallback's `a[i]` value args) may hold an uncomparable payload.
-func instSiteCacheable(base runtime.Value, targs []runtime.Value) bool {
-	switch base.(type) {
-	case *runtime.Function, *runtime.TypeDef:
+// instSiteEnv reports the env a memoized base's key can silently depend
+// on: the declaring package's Globals, whose generation a constraint
+// (re)declaration bumps. Bases that can never memoize — the index
+// fallback's non-generic base — report ok false.
+func instSiteEnv(base runtime.Value) (*runtime.Env, bool) {
+	var pkg *runtime.Package
+	switch g := base.(type) {
+	case *runtime.Function:
+		pkg = g.Pkg
+	case *runtime.TypeDef:
+		pkg = g.Pkg
 	default:
-		return false
+		return nil, false
 	}
+	if pkg == nil {
+		return nil, true
+	}
+	return pkg.Globals, true
+}
+
+// instSiteCacheable reports whether targs can memoize safely: every
+// element must be a comparable pointer — a non-pointer arg (the index
+// fallback's `a[i]` value args) may hold an uncomparable payload.
+func instSiteCacheable(targs []runtime.Value) bool {
 	for _, a := range targs {
 		if _, ok := a.(*runtime.TypeDef); !ok {
 			return false
