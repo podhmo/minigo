@@ -1348,6 +1348,14 @@ func typedScalarKeyOf(v Value) (typedKey, bool) {
 			}
 			p = Unwrap(mv)
 		}
+		// a nil interface carries no dynamic type — `var e E` for
+		// `type E error` keys like plain nil, tag or not. (E's
+		// td is KindNamedBasic, not KindInterface, so the payload
+		// shape is the tell here.)
+		switch p.(type) {
+		case Nil, *TypedNil, *IfaceNil:
+			return typedKey{}, false
+		}
 		var typ string
 		switch {
 		case x.Typ.HostScalar != nil:
