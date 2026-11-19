@@ -222,10 +222,11 @@ func (c *compiler) typSelectNeedsCellDepth(te ast.Expr, sel string, depth int) (
 			// the declTyp spelling may predate this shadow and name
 			// the package-level type instead (`func f(s S)` inside a
 			// `type S int` block) — union the answers so either
-			// referent's pointer method still boxes.
+			// referent's pointer method still boxes, at depth-1 so a
+			// shadowed embed cycle stays bounded.
 			if c.pkg != nil && c.pkg.Index != nil {
 				if tdi := c.pkg.Index.Types[t.Name]; tdi != nil {
-					return c.indexSelectNeedsCell(tdi, sel, 4)
+					return c.indexSelectNeedsCell(tdi, sel, depth-1)
 				}
 			}
 			return false, ""
