@@ -108,12 +108,19 @@ func hostShapeSame(a, b *TypeExpr, res Resolver) bool {
 }
 
 // specShapeExtra is sameShapeExtra across the host/AST boundary:
-// array lengths and channel directions must still agree.
+// array lengths, func parameter counts and channel directions must
+// still agree — the children compare alone would merge
+// func(any, any, bool) with func(any, any) bool.
 func specShapeExtra(a, b *TypeExpr, res Resolver) bool {
 	la, oka := specArrayLen(a, res)
 	lb, okb := specArrayLen(b, res)
-	if oka || okb {
-		return oka && okb && la == lb
+	if oka != okb || la != lb {
+		return false
+	}
+	na, oka := specFuncIns(a)
+	nb, okb := specFuncIns(b)
+	if oka != okb || na != nb {
+		return false
 	}
 	da, oka := specChanDir(a)
 	db, okb := specChanDir(b)
@@ -136,7 +143,40 @@ func specArrayLen(te *TypeExpr, res Resolver) (int64, bool) {
 	if !ok || at.Len == nil {
 		return 0, false
 	}
-	return lenConst(te.Sub(at.Len), res)
+	if n, ok := lenConst(te.Sub(at.Len), res); ok {
+		return n, true
+	}
+	// a fixed-length spelling whose length does not const-evaluate
+	// still is an array — reporting none would match it against a
+	// slice, so -1 mismatches every host-side length instead.
+	return -1, true
+}
+
+// specFuncIns reports a func spelling's parameter count — its
+// children list merges inputs and results, so the boundary needs a
+// separate check.
+func specFuncIns(te *TypeExpr) (int, bool) {
+	if te.ht != nil {
+		if te.ht.Kind() == reflect.Func {
+			return te.ht.NumIn(), true
+		}
+		return 0, false
+	}
+	ft, ok := te.expr.(*ast.FuncType)
+	if !ok {
+		return 0, false
+	}
+	n := 0
+	if ft.Params != nil {
+		for _, f := range ft.Params.List {
+			if len(f.Names) == 0 {
+				n++
+			} else {
+				n += len(f.Names)
+			}
+		}
+	}
+	return n, true
 }
 
 // specChanDir normalizes a channel direction across the boundary:
@@ -178,13 +218,22 @@ func specChanDir(te *TypeExpr) (int, bool) {
 // sits deeper than gc's, which under-resolves rather than
 // misattributes.
 func hostPromoDepth(rt reflect.Type, name string) int {
+	return hostPromoDepthSeen(rt, name, map[reflect.Type]bool{})
+}
+
+// hostPromoDepthSeen walks the anonymous-field chain carrying name;
+// seen guards the descent — declared Go types cannot cycle their
+// embeds, but a reflect.StructOf-built or otherwise synthetic type
+// could, and a cycle would otherwise recurse without bound.
+func hostPromoDepthSeen(rt reflect.Type, name string, seen map[reflect.Type]bool) int {
 	st := rt
 	for st.Kind() == reflect.Ptr {
 		st = st.Elem()
 	}
-	if st.Kind() != reflect.Struct {
+	if st.Kind() != reflect.Struct || seen[st] {
 		return 0
 	}
+	seen[st] = true
 	for i := 0; i < st.NumField(); i++ {
 		f := st.Field(i)
 		if !f.Anonymous {
@@ -202,7 +251,7 @@ func hostPromoDepth(rt reflect.Type, name string) int {
 				continue
 			}
 		}
-		return 1 + hostPromoDepth(f.Type, name)
+		return 1 + hostPromoDepthSeen(f.Type, name, seen)
 	}
 	return 0
 }
