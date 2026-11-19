@@ -172,7 +172,7 @@ var FileBudgets = map[string]int{
 	"tools/difffuzz/text.go":                       205,
 	"tools/tmpltests/main.go":                      816,
 	"tools/tmpltests/shims.go":                     130,
-	"typeid.go":                                    356,
+	"typeid.go":                                    370,
 	"vm/assert.go":                                 1774,
 	"vm/binop.go":                                  1587,
 	"vm/call.go":                                   908,
@@ -238,7 +238,7 @@ var FileBudgetExceptions = map[string]string{
 	// M4-6b: e.compileFunc gained the instM cache lookup/store and
 	// typeid.go gained the instKey TypeID keyer.
 	"minigo.go":                        "M4-6b instM cache check/store + P4-1b verifyChunk + typeIDOf memo map",
-	"typeid.go":                        "M4-6b: e.instKey computes the TypeID instantiation key; intern-widen: canonical elem key + carrierUpgrade + per-typedef memo of the computed TypeID",
+	"typeid.go":                        "M4-6b: e.instKey computes the TypeID instantiation key; intern-widen: canonical elem key + carrierUpgrade + per-typedef memo of the computed TypeID deduped through the intern table",
 	"internal/stdlib/bind.go":          "ValueDeclTyp moved here so the errors installer can share it (P2-12)",
 	"intrinsics_os.go":                 "stdlib.OsErrPred moved to internal/stdlib; import line only (P2-12)",
 	"stdlibreg.go":                     "registers the moved stdlib installers (P2-12)",
