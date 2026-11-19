@@ -1289,6 +1289,7 @@ func (v *VM) HostMapDelete(m *runtime.GoValue, key runtime.Value) (ok bool) {
 func (v *VM) HostClear(m *runtime.GoValue) (ok bool) {
 	return marshalHost.HostClear(m)
 }
+
 // when m does not hold a map.
 // HostClear runs the clear builtin on a boxed host map or slice; ok is
 // false when m holds neither.

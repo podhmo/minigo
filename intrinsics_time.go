@@ -208,7 +208,7 @@ func newChanFeed(vc runtime.CallerRef, src <-chan time.Time, once bool) *chanFee
 		src:  src,
 		once: once,
 	}
-	f.ptr = vm.RegisterWakeChan(vc, reflect.ValueOf(f.C))
+	f.ptr = vm.RegisterWakeChan(vc, f.C)
 	f.start()
 	return f
 }
