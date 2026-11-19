@@ -224,4 +224,9 @@ var FileBudgets = map[string]int{
 // FileBudgetExceptions records paths whose budget may grow vs the merge
 // base — path → the reason the raise is justified. An empty map is the
 // steady state: prefer splitting a file over recording an exception.
-var FileBudgetExceptions = map[string]string{}
+var FileBudgetExceptions = map[string]string{
+	// M4-6b: e.compileFunc gained the instM cache lookup/store and
+	// typeid.go gained the instKey TypeID keyer.
+	"minigo.go": "M4-6b: compileFunc owns the instM cache check/store",
+	"typeid.go": "M4-6b: e.instKey computes the TypeID instantiation key",
+}
