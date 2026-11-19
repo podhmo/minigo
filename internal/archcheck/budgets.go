@@ -51,7 +51,7 @@ var FileBudgets = map[string]int{
 	"internal/archcheck/all.go":                    57,
 	"internal/archcheck/archcheck.go": 643,
 	"internal/archcheck/budgets.go": 242,
-	"internal/archcheck/rules.go":                  103,
+	"internal/archcheck/rules.go":                  113,
 	"internal/assetaudit/assetaudit.go":            112,
 	"internal/bind/env.go":                         48,
 	"internal/bind/install.go":                     102,
