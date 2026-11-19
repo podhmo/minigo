@@ -76,7 +76,7 @@ var Rules = map[string][]string{
 	"internal/stdlib/json":         {"internal/hostbridge", "internal/stdlib", "internal/stdlib/io", "runtime"},
 	"internal/stdlib/fmt":          {"internal/hostbridge", "internal/stdlib", "internal/stdlib/goruntime", "internal/stdlib/io", "internal/stdlib/json", "internal/stdlib/time", "minireflect", "runtime"},
 	"internal/typedef":             {"bytecode", "index", "internal/hostbridge", "runtime", "syntax"},
-	"internal/vet":                 {"index", "runtime"},
+	"internal/vet":                 {"index", "runtime", "syntax"},
 	"internal/stdlib/maps":         {"internal/stdlib", "runtime"},
 	"internal/stdlib/slices":       {"internal/hostbridge", "internal/stdlib", "runtime"},
 	"internal/stdlib/sort":         {"internal/hostbridge", "internal/stdlib", "runtime", "vm"},
