@@ -19,13 +19,13 @@ chunk RangeMap (params=1 locals=5 results=1)
   0017  OpBinary +
   0018  OpSwap
   0019  OpDup
-  0020  OpDeref
+  0020  OpDeref 1
   0021  OpRot3
   0022  OpBinary +
   0023  OpSetRefs 1
   0024  OpJump ->8
   0025  OpLocal slot1
-  0026  OpGlobal k3 site1
+  0026  OpGlobal k3 site2
   0027  OpLocalType
   0028  OpCoerceTop
   0029  OpReturn 1

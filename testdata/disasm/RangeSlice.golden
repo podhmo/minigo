@@ -20,7 +20,7 @@ chunk RangeSlice (params=1 locals=4 results=1)
   0018  OpSetRefs 1
   0019  OpJump ->8
   0020  OpLocal slot1
-  0021  OpGlobal k2 site0
+  0021  OpGlobal k2 site1
   0022  OpLocalType
   0023  OpCoerceTop
   0024  OpReturn 1

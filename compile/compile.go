@@ -123,6 +123,16 @@ func (c *compiler) emit(op bytecode.Op, a, b int, pos token.Pos) int {
 	return len(c.ch.Code) - 1
 }
 
+// emitDerefSite emits OpDeref carrying a select site: a read through
+// a field ref resolves the member through the site cache like
+// OpSelect — `x.f++` and `x.f op= y` don't re-resolve per hit.
+func (c *compiler) emitDerefSite(pos token.Pos) int {
+	i := c.emit(bytecode.OpDeref, 0, 0, pos)
+	c.ch.Code[i].C = int32(len(c.ch.Sites))
+	c.ch.Sites = append(c.ch.Sites, &bytecode.GlobalSite{})
+	return i
+}
+
 func (c *compiler) emit3(op bytecode.Op, a, b, cc int, pos token.Pos) int {
 	i := c.emit(op, a, b, pos)
 	c.ch.Code[i].C = int32(cc)
