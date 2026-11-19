@@ -62,6 +62,22 @@ const (
 	baseNoCell                  // no local cell involved (global, type name)
 )
 
+// cellVerdict is the tri-state answer to "can selecting sel on this
+// operand bind its storage cell": cellYes binds it (a pointer-receiver
+// method), cellNo provably cannot (a field, a value-receiver method,
+// interface dispatch, a pointer operand, no member at all), and
+// cellUnknown is unprovable at compile time. Boxing treats cellUnknown
+// like cellNo — P4-2b's promote-on-demand covers a late ref — while a
+// select's base operand keeps the storage ref like cellYes, since a
+// detached value would silently drop a pointer receiver's writes.
+type cellVerdict int
+
+const (
+	cellUnknown cellVerdict = iota
+	cellNo
+	cellYes
+)
+
 // selectNeedsCell reports whether selecting sel on the ref operand of
 // base can keep the operand's cell alive past the select, plus the
 // attribution reason for spike measurement. Only a proven escape boxes
@@ -75,7 +91,25 @@ func (c *compiler) selectNeedsCell(base ast.Expr, sel string) (bool, string) {
 	if kind != baseTyp {
 		return false, ""
 	}
-	return c.typSelectNeedsCellDepth(te, sel, 4)
+	v, why := c.typSelectNeedsCellDepth(te, sel, 4)
+	return v == cellYes, why
+}
+
+// selectorBaseNoCell reports whether the operand of `x.sel` reads as a
+// plain value with no storage ref: the static type must resolve and
+// the member must provably not bind the operand's cell. Interface-typed
+// and detached-copy operands also read as values (dispatch binds the
+// payload, a copy owns no cell). Everything unproven keeps the ref.
+func (c *compiler) selectorBaseNoCell(x ast.Expr, sel string) bool {
+	te, kind := c.baseStaticTyp(x)
+	switch kind {
+	case baseIface, baseCopy:
+		return true
+	case baseTyp:
+		v, _ := c.typSelectNeedsCellDepth(te, sel, 4)
+		return v == cellNo
+	}
+	return false
 }
 
 // baseStaticTyp resolves the static type expression of a ref operand:
@@ -184,63 +218,54 @@ func embeddedName(te ast.Expr) string {
 
 // typSelectNeedsCellDepth classifies a select on an operand whose
 // static type expression is te: a pointer-receiver method binds the
-// cell; fields, value-receiver methods, interfaces and memberless
-// types do not. Unresolvable receivers box. depth bounds alias-chain
+// cell (cellYes); fields, value-receiver methods, interfaces and
+// memberless types provably do not (cellNo); everything unresolvable is
+// cellUnknown — boxing can afford to treat it as a lazy promote, but a
+// base operand must keep its storage ref. depth bounds alias-chain
 // resolution (`type A = B = C`).
-func (c *compiler) typSelectNeedsCellDepth(te ast.Expr, sel string, depth int) (bool, string) {
+func (c *compiler) typSelectNeedsCellDepth(te ast.Expr, sel string, depth int) (cellVerdict, string) {
 	t := ast.Unparen(te)
 	switch t := t.(type) {
 	case *ast.StarExpr:
 		// the operand is already a pointer: the select binds the
 		// pointer value, never the cell holding it.
-		return false, ""
+		return cellNo, ""
 	case *ast.Ident:
 		if t.NamePos == token.NoPos && predeclaredTypeNames[t.Name] {
 			// a positionless name is declTypCanon's marker for a name
 			// that already resolved to a builtin at bind time — a
 			// user-declared `type int` can never claim it.
-			return false, ""
+			return cellNo, ""
 		}
 		if b := c.fs.lookupBinding(t.Name); b != nil && b.typeDecl {
 			// a local `type` decl cannot carry methods: an interface
 			// dispatches dynamically, a struct member is a field or a
-			// promoted member of an embedded field.
-			local := false
-			switch {
-			case b.ifaceT:
-			case c.structFieldTyp(t, sel) != nil:
-			default:
-				_, isStruct := ast.Unparen(c.unfoldTypExpr(t, 4)).(*ast.StructType)
-				local = isStruct // a promoted member could be a ptr method
-			}
-			if local {
-				// a promoted member may be a pointer method —
-				// unprovable here, so the slot stays plain and a
-				// run-time ref promotes it if needed.
-				return false, ""
-			}
-			// the declTyp spelling may predate this shadow and name
-			// the package-level type instead (`func f(s S)` inside a
-			// `type S int` block) — union the answers so either
-			// referent's pointer method still boxes, at depth-1 so a
-			// shadowed embed cycle stays bounded.
+			// promoted member of an embedded field. The declTyp spelling
+			// may predate this shadow and name the package-level type
+			// instead (`func f(s S)` inside a `type S int` block) —
+			// union the answers so either referent's pointer method
+			// still boxes, at depth-1 so a shadowed embed cycle stays
+			// bounded; a non-yes verdict stays unproven, since the
+			// referents can disagree.
 			if c.pkg != nil && c.pkg.Index != nil {
 				if tdi := c.pkg.Index.Types[t.Name]; tdi != nil {
-					return c.indexSelectNeedsCell(tdi, sel, depth-1)
+					if v, why := c.indexSelectNeedsCell(tdi, sel, depth-1); v == cellYes {
+						return v, why
+					}
 				}
 			}
-			return false, ""
+			return cellUnknown, ""
 		}
 		if _, bound := c.binds[t.Name]; bound {
-			return false, "" // a type parameter's receiver is unprovable
+			return cellUnknown, "" // a type parameter's receiver is unprovable
 		}
 		if tdi := c.typeDeclOf(t); tdi != nil {
 			return c.indexSelectNeedsCell(tdi, sel, depth)
 		}
 		if predeclaredTypeNames[t.Name] {
-			return false, ""
+			return cellNo, ""
 		}
-		return false, "" // an unresolved type name promotes lazily
+		return cellUnknown, "" // an unresolved type name stays unproven
 	case *ast.SelectorExpr:
 		// `pkg.T` — an indexed source package's declared type answers
 		// the member's receiver kind like a local decl.
@@ -255,17 +280,16 @@ func (c *compiler) typSelectNeedsCellDepth(te ast.Expr, sel string, depth int) (
 				}
 			}
 		}
-		return false, "" // a host or unindexed member promotes lazily
+		return cellUnknown, "" // a host or unindexed member is unproven
 	case *ast.StructType, *ast.InterfaceType, *ast.MapType,
 		*ast.ChanType, *ast.FuncType, *ast.ArrayType:
 		// anonymous types carry no methods — the select is a field or
 		// fails at run time; neither binds a cell.
-		return false, ""
+		return cellNo, ""
 	}
 	// F[T] instantiations and anything else: the member could be a
-	// pointer-receiver method we cannot prove — the slot stays plain
-	// and a run-time ref promotes it when needed.
-	return false, ""
+	// pointer-receiver method we cannot prove.
+	return cellUnknown, ""
 }
 
 // indexSelectNeedsCell resolves member sel on the indexed type: a
@@ -275,46 +299,46 @@ func (c *compiler) typSelectNeedsCellDepth(te ast.Expr, sel string, depth int) (
 // spec (`type A = T`) declares no members of its own: the member set is
 // the target type's, resolved through the same ident rules (depth caps
 // alias chains).
-func (c *compiler) indexSelectNeedsCell(tdi *index.TypeDeclInfo, sel string, depth int) (bool, string) {
+func (c *compiler) indexSelectNeedsCell(tdi *index.TypeDeclInfo, sel string, depth int) (cellVerdict, string) {
 	if d := tdi.Methods[sel]; d != nil && d.Func != nil && d.Func.Recv != nil && len(d.Func.Recv.List) > 0 {
 		_, ptr := ast.Unparen(d.Func.Recv.List[0].Type).(*ast.StarExpr)
 		if ptr {
-			return true, "ptrrecv"
+			return cellYes, "ptrrecv"
 		}
-		return false, ""
+		return cellNo, ""
 	}
 	if tdi.Decl == nil {
-		return false, ""
+		return cellUnknown, ""
 	}
 	ts, ok := tdi.Decl.Spec.(*ast.TypeSpec)
 	if !ok {
-		return false, ""
+		return cellUnknown, ""
 	}
 	if ts.Assign.IsValid() {
 		// `type A = T` — members live on T's declaration. A chain past
-		// the depth cap is unprovable — no upfront box.
+		// the depth cap is unprovable.
 		if depth <= 0 {
-			return false, ""
+			return cellUnknown, ""
 		}
 		return c.typSelectNeedsCellDepth(ts.Type, sel, depth-1)
 	}
 	switch st := ts.Type.(type) {
 	case *ast.InterfaceType:
-		return false, "" // dynamic dispatch
+		return cellNo, "" // dynamic dispatch
 	case *ast.StructType:
 		if st.Fields != nil {
 			var embedded []ast.Expr
 			for _, f := range st.Fields.List {
 				if len(f.Names) == 0 {
 					if embeddedName(f.Type) == sel {
-						return false, ""
+						return cellNo, ""
 					}
 					embedded = append(embedded, f.Type)
 					continue
 				}
 				for _, n := range f.Names {
 					if n.Name == sel {
-						return false, ""
+						return cellNo, ""
 					}
 				}
 			}
@@ -322,19 +346,34 @@ func (c *compiler) indexSelectNeedsCell(tdi *index.TypeDeclInfo, sel string, dep
 			// lives in an embedded type's decl. An embedded `*U`
 			// promotes U's methods including pointer receivers —
 			// the cell is the ref target either way.
-			if depth > 0 {
+			if len(embedded) > 0 {
+				if depth <= 0 {
+					return cellUnknown, ""
+				}
+				unknown := false
 				for _, et := range embedded {
 					if se, ok := ast.Unparen(et).(*ast.StarExpr); ok {
 						et = se.X
 					}
-					if need, _ := c.typSelectNeedsCellDepth(et, sel, depth-1); need {
-						return true, "ptrrecv"
+					v, _ := c.typSelectNeedsCellDepth(et, sel, depth-1)
+					if v == cellYes {
+						return cellYes, "ptrrecv"
 					}
+					if v == cellUnknown {
+						unknown = true
+					}
+				}
+				if unknown {
+					// a promoted member on an uninspectable embed may
+					// still be a pointer method.
+					return cellUnknown, ""
 				}
 			}
 		}
-		return false, ""
+		// a direct field, a value-receiver method, or no member at all
+		// — none binds the cell.
+		return cellNo, ""
 	}
 	// a named non-struct: the only members are methods, already checked.
-	return false, ""
+	return cellNo, ""
 }

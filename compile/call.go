@@ -929,18 +929,31 @@ func callSpread(x *ast.CallExpr) int {
 }
 
 // selectorBase emits the operand of a `.Sel` select — shared by OpSelect
-// and the callee-position OpSelectCall.
-func (c *compiler) selectorBase(x ast.Expr) {
+// and the callee-position OpSelectCall. A var-shaped base lowers to its
+// storage ref only when the member can bind it — a pointer-receiver
+// method `x.M()` reads `(&x).M()`, and any member the compiler cannot
+// classify keeps the ref too. A proven field read, value-receiver call
+// or interface dispatch takes the value itself and skips the FieldRef
+// chain and the cell recursion in selectMember.
+func (c *compiler) selectorBase(x ast.Expr, sel string) {
 	// `s[i].M()` is `(&s[i]).M()` — Go's selector lowering hands the
 	// element's storage to a pointer receiver. Emit the element's ref
 	// (a tolerated map element resolves to its copy at select time) so
 	// the write lands; a type-form operand (F[T].M) stays an
 	// instantiation.
 	if ix, ok := indexOperand(x); ok && !c.isTypeForm(ix.Index) && c.refableIndexBase(ix.X) {
-		c.refTargetBase(ix.X, false)
-		c.expr(ix.Index)
-		c.emit(bytecode.OpIndexRef, 0, 1, ix.Lbrack)
-	} else if c.selectorBaseIsVar(x) {
+		if c.selectorBaseNoCell(x, sel) {
+			// the member provably cannot bind the element's storage —
+			// read the element itself instead of a tolerated ref.
+			c.expr(ix.X)
+			c.expr(ix.Index)
+			c.emit(bytecode.OpIndex, 0, 0, ix.Lbrack)
+		} else {
+			c.refTargetBase(ix.X, false)
+			c.expr(ix.Index)
+			c.emit(bytecode.OpIndexRef, 0, 1, ix.Lbrack)
+		}
+	} else if c.selectorBaseIsVar(x) && !c.selectorBaseNoCell(x, sel) {
 		// `x.M()` lowers to `(&x).M()` when M needs a pointer — a
 		// scalar named value is a detached copy otherwise, so the
 		// receiver binds the var's storage ref for the write to land.
@@ -967,7 +980,7 @@ func (c *compiler) calleeExpr(fun ast.Expr) {
 		if id, isId := ast.Unparen(t.X).(*ast.Ident); isId {
 			if _, _, found := c.fs.find(id.Name); found {
 				c.boxReceiver(t.X, t.Sel.Name)
-				c.selectorBase(t.X)
+				c.selectorBase(t.X, t.Sel.Name)
 				c.emit(bytecode.OpSelectCall, c.nameIdx(t.Sel.Name), 0, t.Sel.Pos())
 				return
 			}
