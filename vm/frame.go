@@ -120,10 +120,15 @@ type frame struct {
 	cells       []runtime.Cell
 	cellsShared bool
 	// cellsAligned marks the pooled block laid out one cell per slot
-	// (non-escaping chunks): a promoted plain slot takes cells[i]
-	// instead of allocating. Escaping chunks pack only boxed cells and
-	// leave this false.
+	// (every chunk now): a promoted plain slot takes cells[i] instead
+	// of allocating.
 	cellsAligned bool
+	// cellsLeaked marks that a pooled cell was actually published this
+	// call (OpLocalRef's non-transient push, a closure capture) —
+	// freeFrame drops the block like cellsShared. Publishing a slot's
+	// own heap cell (a post-publish rebind allocated it) does not set
+	// the flag: the block itself still never escaped.
+	cellsLeaked bool
 }
 
 // framePool recycles frames after a normal return. The frame object
@@ -182,9 +187,10 @@ func freeFrame(f *frame) {
 	f.results = nil
 	f.boundLo, f.boundHi = 0, 0
 	f.vpack = nil
-	if f.cellsShared {
+	if f.cellsShared || f.cellsLeaked {
 		f.cells = nil
 		f.cellsShared = false
+		f.cellsLeaked = false
 	} else {
 		clear(f.cells)
 	}
@@ -265,11 +271,29 @@ func (f *frame) localVal(i int) runtime.Value {
 	return f.locals[i]
 }
 
-// localCell returns the cell backing slot i, promoting a plain slot's
-// value into a fresh cell in place when a real ref or capture demands
-// addressability the compiler's classification missed.
+// localCell returns the cell backing slot i for a ref or capture that
+// can publish it, promoting a plain slot when a ref demands
+// addressability the compiler's classification missed. Handing out a
+// cell inside the pooled block flags cellsLeaked — the block must outlive
+// the frame — while a slot rebound onto its own heap cell publishes
+// nothing pooled.
 func (f *frame) localCell(i int) *runtime.Cell {
 	if c, ok := f.boxedCell(i); ok {
+		if f.cellsAligned && i < len(f.cells) && c == &f.cells[i] {
+			f.cellsLeaked = true
+		}
+		return c
+	}
+	if f.cellsAligned && i < len(f.cells) && i < len(f.slotRefs) {
+		c := &f.cells[i]
+		c.Elem = f.locals[i]
+		if i < len(f.ltyps) {
+			c.Typ = f.ltyps[i]
+		}
+		f.slotRefs[i].c = c
+		f.locals[i] = &f.slotRefs[i]
+		f.cellsLeaked = true
+		spike.NoteSlotPromoted()
 		return c
 	}
 	c := &runtime.Cell{Elem: f.locals[i]}
