@@ -88,7 +88,7 @@
   - [x] **P2-14a root の完了条件を明確にする**: 実測: `minigo.go` 単体 1,489 行、root 直下の非テスト・非生成 Go の合計 19,338 行（archcheck の計測、`vm.go` は 883 行）。計画書の約 3,000 行は root パッケージ合計と解釈する（`minigo.go` 単体は達成済みのため）。残すファサードの責務: 公開 API（`Engine`/`NewEngine`/`Run`/`Call`/`Bind`/`NewSession`/`With*` オプション）とセッション状態の保持、内部実装は `internal/*` 側へ。
   - [x] **P2-14b index 完了の公開と待機を抽出する**: `buildPackage` と `indexFiles` の完了通知を抽出し、`runtime.Package` に互換の入口を残す。並行した初回ロード、strict/lenient の分離、パース・index 失敗後の待機解除と既存診断をテストする。→ `execution.IndexGate`（`internal/execution`）に抽出、`Package.MarkIndexed`/`FinishIndexing`/`WaitIndexed`/`IndexReady` が互換の窓口（#1155） — 完了
   - [x] **P2-14c 初期化の状態遷移と runner を抽出する**: P2-14b のあとに `EnsureReady` / `EnsureReadyRun` が使う状態遷移・初期化処理を抽出する。一度だけの初期化、エラーと panic 後の状態、実行中の process に所属する初期化をテストする。→ `execution.Init` に一度だけの実行+panic→error 記録を抽出（#1156）
-  - [-] **P2-14d 特殊形式の registry と context を抽出する**: registry は `execution.Registry[K,V]` に抽出済み（PR TBD）。context 実装（`vm/special.go` の `specialCtx`）は `*VM`/`*frame` 参照のため `internal/execution` へは移せない（execution は runtime を import できず、vm は外側）— vm 残留が正しい配置と判断。
+  - [x] **P2-14d 特殊形式の registry と context を抽出する**: registry は `execution.Registry[K,V]` に抽出済み。context 実装（`vm/special.go` の `specialCtx`）は `*VM`/`*frame` 参照のため vm 残留が正しい配置 — 計画 K8・§2.8 に反映済み。互換テスト `TestSpecialAPIPlacement` を追加。
   - [x] **P2-14e Session 所有権チェックの入口をそろえる**: 決定 — 外部から `*runtime.Package` を受けて自エンジンの実行で init/評価する入口は `Call` と `EvalExpr` の2つ。両方で `Owner != nil && Owner != e` を拒否。対象は source-built パッケージのみ（`buildPackage` が Owner=e を付与）で、host bind は Owner なしのまま Session 間共有を許す。`EvalExpr` にチェックを追加し、外国パッケージ拒否・bound 共有の2テストを追加（PR TBD）
 
 ## M4 + P3: 型情報の統合

@@ -198,7 +198,7 @@ minigo
 ├── vm                dispatch loop, frames, calls, defer/panic/recover
 ├── runtime           public values and base execution contracts (data only)
 ├── builtin           len, append, make, … (capability interfaces)
-├── special           public: SymbolID, QuotedCall, SpecialContext (examples import these)
+├── special           public: SymbolID, QuotedCall (value-free types only)
 │                     (registry and the VM-side context implementation sit in internal/execution)
 ├── inspect  minireflect  repl   consumers of semantics, never their own engine
 ```
@@ -472,10 +472,15 @@ internal/stdlib/
 
 ### 2.8 Special forms: `special/`
 
-- `SymbolID`, `QuotedCall`, `SpecialFunc` and `SpecialContext` move to the
-  public `special/` package (examples import them; I7, see K8). The registry
-  and the VM-side context implementation (`vm.specialCtx`) move to
-  `internal/execution`.
+- `SymbolID` and `QuotedCall` live in the public `special/` package with
+  aliases left in `runtime` (I7, see K8). `SpecialFunc`/`SpecialContext`
+  stay in `runtime`: their signatures reference `runtime.Value`,
+  `*Package` and `*TypeDef`, so moving them would create a
+  runtime <-> special cycle. Examples consume the `runtime.*` surface and
+  are unaffected. The registry moved to `internal/execution.Registry`;
+  the VM-side context implementation (`vm.specialCtx`) stays in `vm`
+  because it needs `*VM`/`*frame` and `internal/execution` cannot import
+  runtime/vm.
 - Dispatch uses canonical symbol identity from the declaring package. That
   means import aliases, local shadowing and method origin are all respected.
 - The compiler asks the registry only `Has(SymbolID)`, and never loads the
@@ -519,7 +524,7 @@ internal/hostbridge  → runtime, internal/semantics
 vm                   → bytecode, runtime, internal/process, internal/hostbridge(interface)
 internal/execution   → internal/source, internal/semantics, runtime, compile, vm, special
 builtin              → runtime (capability interfaces)
-special              → runtime, internal/semantics
+special              → syntax (identifiers and quoted calls only, no values)
 internal/stdlib/...  → internal/stdlib/bind → runtime (capabilities), internal/hostbridge
 minigo               → everything above
 inspect, minireflect, repl, storybook, cmd → minigo (inspect/minireflect ask internal/semantics)
@@ -620,7 +625,7 @@ Each conflict is judged on four criteria, without a default winner:
 | K5 | Does the type layer import `runtime`? | Yes: `types → runtime`, with a `Def *runtime.TypeDef` back-pointer for gradual migration | No: `semantics` must not depend on runtime, VM or compiler | D-own: C1 is then enforced by the import graph, and inspect/minireflect can share answers without a VM (**I**, **S**). D-vm migrates more cheaply (**M**). The spike shows these answers decide semantics (S2), so a layer testable without a VM is worth the adapter cost. | **D-own**. D-vm's migration technique (one call site at a time; `TypeDef` gains a `TypeID` field) is kept, but as an execution-side adapter, not a back-pointer inside semantics. |
 | K6 | Where generic inference lives | Whole thing in `types/infer.go` | Grows into semantics feature group by feature group | `inferCached` consumes run-time values, so a pure-semantics placement is impossible as is. | **Split** (§2.3): unification in semantics; value → TypeID in the adapter. Neither source had this. |
 | K7 | Untyped-constant arithmetic | A separate `constant/` package below `vm` | Semantics answers only what execution needs, with no evaluation | Arithmetic on run-time `UConst` values is evaluation, not a declaration question. | **D-own's boundary**: arithmetic stays on the execution side. `semantics` answers only "is it a constant, and of what declared type". |
-| K8 | Package layout | Public `types/`, `loader/`, `hostffi/`, `stdlib/`, `vm/sched/` | `internal/{source, semantics, execution, process, hostbridge, stdlib, archcheck}` | `internal/` keeps transitional APIs from becoming I7 obligations (**I**, **M**). D-vm's names describe mechanisms; D-own's describe ownership, which matches the review checklist. | **D-own**, with one exception: `special` stays public, because examples import `SymbolID`, `QuotedCall` and `SpecialContext` (I7). The registry implementation goes to `internal/execution`. |
+| K8 | Package layout | Public `types/`, `loader/`, `hostffi/`, `stdlib/`, `vm/sched/` | `internal/{source, semantics, execution, process, hostbridge, stdlib, archcheck}` | `internal/` keeps transitional APIs from becoming I7 obligations (**I**, **M**). D-vm's names describe mechanisms; D-own's describe ownership, which matches the review checklist. | **D-own**, with one exception: `special` stays public (I7) — but only the value-free `SymbolID`/`QuotedCall` live there; `SpecialFunc`/`SpecialContext` stay in `runtime` (a move would cycle on runtime values). Examples use the `runtime.*` surface. The registry implementation lives in `internal/execution`; the VM-side context implementation stays in `vm`. |
 | K9 | Bound tables | Lazily built, potentially shared across engines | Bindings inherited at `NewSession`; per-Session state needs an explicit factory | **E**: about 45 closures capture engine state, so sharing is impossible without moving that state. D-own's factory is exactly the missing piece. D-vm's laziness is what the session cost (60–70%) calls for. | **Both**: D-own's ownership model, with `bind.Env` as the factory, plus D-vm's lazy per-package build. Cross-engine sharing is deferred to M6. |
 | K10 | Architecture enforcement | `archtest_test.go`: import graph and file-size ratchet | `internal/cmd/archcheck`: import graph, mutable globals, and a recursive field allowlist on shared assets | D-own catches Session state leaking *into* shared assets, which an import graph cannot see. D-vm's size ratchet is orthogonal. | **D-own**, plus D-vm's file-size ratchet. |
 | K11 | Runtime checks | None (review and tests) | A lightweight ownership check by default; the heavy asset audit is opt-in (measured 2–3 ms against 1–1.6 s) | D-vm had nothing here; D-own's numbers justify its split. | **D-own**. |
