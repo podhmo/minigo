@@ -29,7 +29,7 @@ import (
 // a timer or retained host hook that will run script code later. While one
 // is pending, deadlock detection stays disarmed. Call release when the
 // callback fires or is cancelled; it is a no-op when vc has no process.
-func NoteExternalWait(vc runtime.VMCaller) (release func()) {
+func NoteExternalWait(vc runtime.CallerRef) (release func()) {
 	if p := procOf(vc); p != nil {
 		return p.NoteExternalWait()
 	}
@@ -58,7 +58,7 @@ func NoteExternalWait(vc runtime.VMCaller) (release func()) {
 // registration lasts as long as vc's process. It returns the id to pass to
 // [SetWakeChanDead] and [WakeChanState], or 0 when vc has no process, in
 // which case the channel stays unmanaged.
-func RegisterWakeChan(vc runtime.VMCaller, rv reflect.Value) uintptr {
+func RegisterWakeChan(vc runtime.CallerRef, rv reflect.Value) uintptr {
 	if p := procOf(vc); p != nil {
 		return p.RegisterChan(rv)
 	}
@@ -73,7 +73,7 @@ func RegisterWakeChan(vc runtime.VMCaller, rv reflect.Value) uintptr {
 // SetWakeChanDead marks a channel registered with [RegisterWakeChan] as
 // dead (no sender can reach it, e.g. a stopped timer) or alive again (e.g.
 // a reset timer). An unknown id is ignored.
-func SetWakeChanDead(vc runtime.VMCaller, ptr uintptr, dead bool) {
+func SetWakeChanDead(vc runtime.CallerRef, ptr uintptr, dead bool) {
 	if p := procOf(vc); p != nil {
 		p.SetChanDead(ptr, dead)
 	}
@@ -86,7 +86,7 @@ func SetWakeChanDead(vc runtime.VMCaller, ptr uintptr, dead bool) {
 // WakeChanState reports whether the channel id is registered with
 // [RegisterWakeChan] and, if so, whether it is alive. (false, false) means
 // the channel is unmanaged or vc has no process.
-func WakeChanState(vc runtime.VMCaller, ptr uintptr) (managed, alive bool) {
+func WakeChanState(vc runtime.CallerRef, ptr uintptr) (managed, alive bool) {
 	if p := procOf(vc); p != nil {
 		return p.ChanState(ptr)
 	}
@@ -264,7 +264,7 @@ var parkingHostMethods = map[string]bool{
 
 // procDoneOf reports the caller VM's proc-done channel; non-*VM callers
 // (host-side VMCaller implementations) have no process to watch.
-func procDoneOf(vc runtime.VMCaller) <-chan struct{} {
+func procDoneOf(vc runtime.CallerRef) <-chan struct{} {
 	if p := procOf(vc); p != nil {
 		return p.Done()
 	}
@@ -278,7 +278,7 @@ func procDoneOf(vc runtime.VMCaller) <-chan struct{} {
 // procOf returns the caller VM's current proc in one read — ReleaseProc
 // can nil v.proc concurrently, so check-then-use pairs must capture the
 // pointer first or they race a nil receiver/field panic.
-func procOf(vc runtime.VMCaller) *process.Proc {
+func procOf(vc runtime.CallerRef) *process.Proc {
 	if b, ok := vc.(currentProcBearer); ok {
 		return b.currentProc()
 	}
@@ -321,7 +321,7 @@ func (v *VM) park(w process.Wake) func() {
 // iter.Pull's coroutine is resumed only by a script goroutine, so it
 // reports no external wake source — and the op unwinds with a procExit
 // panic when vc's process ends instead of parking past it.
-func ParkedChanSend(vc runtime.VMCaller, ch chan struct{}) {
+func ParkedChanSend(vc runtime.CallerRef, ch chan struct{}) {
 	unpark := vcPark(vc, process.Wake{})
 	defer unpark()
 	select {
@@ -334,7 +334,7 @@ func ParkedChanSend(vc runtime.VMCaller, ch chan struct{}) {
 // ParkedChanRecv is ParkedChanSend's receive half.
 
 // ParkedChanRecv is ParkedChanSend's receive half.
-func ParkedChanRecv(vc runtime.VMCaller, ch chan struct{}) {
+func ParkedChanRecv(vc runtime.CallerRef, ch chan struct{}) {
 	unpark := vcPark(vc, process.Wake{})
 	defer unpark()
 	select {
@@ -349,7 +349,7 @@ func ParkedChanRecv(vc runtime.VMCaller, ch chan struct{}) {
 
 // vcPark is park for code holding only a runtime.VMCaller (e.g.
 // callReflectFunc's blocking-host join).
-func vcPark(vc runtime.VMCaller, w process.Wake) func() {
+func vcPark(vc runtime.CallerRef, w process.Wake) func() {
 	if p, ok := vc.(vcParker); ok {
 		return p.parkCaller(w)
 	}

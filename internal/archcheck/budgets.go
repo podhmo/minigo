@@ -184,7 +184,7 @@ var FileBudgets = map[string]int{
 	"vm/iter.go":                         376,
 	"vm/loop.go":                         1087,
 	"vm/panic.go":                        543,
-	"vm/processcaller.go":                169,
+	"vm/processcaller.go":                179,
 	"vm/profile.go":                      336,
 	"vm/sched.go":                        358,
 	"vm/select.go":                       155,
