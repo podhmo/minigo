@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/podhmo/minigo/internal/replhooks"
+	stdinspect "github.com/podhmo/minigo/internal/stdlib/inspect"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -34,7 +35,7 @@ func (e *Engine) ReplHooks() *replhooks.Hooks {
 		LoadDir:         e.loadDir,
 		PackageNameFrom: e.packageNameFrom,
 		BoundPackages:   e.BoundPackages,
-		LookupDeclIn:    e.lookupDeclIn,
+		LookupDeclIn:    stdinspect.LookupDeclIn,
 		Materialize:     e.materialize,
 
 		MethodFunc:     e.methodFunc,

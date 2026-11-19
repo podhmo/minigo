@@ -19,6 +19,7 @@ import (
 	stdlibhost "github.com/podhmo/minigo/internal/stdlib/host"
 	stdlibhtml "github.com/podhmo/minigo/internal/stdlib/html"
 	stdlibhtmltemplate "github.com/podhmo/minigo/internal/stdlib/htmltemplate"
+	stdinspect "github.com/podhmo/minigo/internal/stdlib/inspect"
 	stdio "github.com/podhmo/minigo/internal/stdlib/io"
 	stdlibmaps "github.com/podhmo/minigo/internal/stdlib/maps"
 	stdlibmath "github.com/podhmo/minigo/internal/stdlib/math"
@@ -79,8 +80,18 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("os/exec", func() { stdlibosexec.Install(e.bindBound, h, h.env) })
 	e.pending.Register("minigo.dev/host", func() { stdlibhost.Install(e.bindBound, h, h.env) })
 	e.pending.Register("github.com/podhmo/minigo/host", func() { stdlibhost.Install(e.bindBound, h, h.env) })
-	e.pending.Register("minigo.dev/inspect", func() { e.installInspect() })
-	e.pending.Register("github.com/podhmo/minigo/inspect", func() { e.installInspect() })
+	stdinspectHooks := stdinspect.Hooks{
+		LoadPath:        e.loadPath,
+		LoadPathLenient: e.loadPathLenient,
+		LoadDirLenient:  e.loadDirLenient,
+		LoadFileLenient: e.loadFileLenient,
+		FSPath:          e.fsPath,
+		Materialize:     e.materialize,
+		BoundOf:         e.BoundOf,
+		SourceOf:        e.SourceOf,
+	}
+	e.pending.Register("minigo.dev/inspect", func() { stdinspect.Install(e.bindBound, stdinspectHooks) })
+	e.pending.Register("github.com/podhmo/minigo/inspect", func() { stdinspect.Install(e.bindBound, stdinspectHooks) })
 	e.pending.Register("unsafe", func() { stdunsafe.Install(e.bindBound, e.reflectHooks()) })
 	e.pending.Register("runtime", func() { stdruntime.Install(e.bindBound, h) })
 	e.pending.Register("time", func() { stdlibtime.Install(e.bindBound, h) })
