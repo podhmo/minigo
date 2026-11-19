@@ -226,7 +226,7 @@ func CheckSizes(sizes map[string]int, budget map[string]int) []Violation {
 }
 
 // ParseFileBudgetsFile parses a Go source file holding a `FileBudgets`
-// map literal — a budgets.go revision such as the merge base's — and
+// map literal — a budgets.go revision such as the base branch's — and
 // returns the recorded table (M1-4).
 func ParseFileBudgetsFile(path string) (map[string]int, error) {
 	f, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
@@ -294,7 +294,7 @@ func CheckBudgetGrowth(base, current map[string]int, exceptions map[string]strin
 		if _, exempt := exceptions[path]; exempt {
 			continue
 		}
-		out = append(out, Violation{path, "", fmt.Sprintf("%s's budget grew %d → %d vs the merge base — split the file, or record the raise in FileBudgetExceptions", path, b, cur)})
+		out = append(out, Violation{path, "", fmt.Sprintf("%s's budget grew %d → %d vs the base branch — split the file, or record the raise in FileBudgetExceptions", path, b, cur)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Pkg < out[j].Pkg })
 	return out

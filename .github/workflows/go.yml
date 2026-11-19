@@ -47,11 +47,14 @@ jobs:
     - name: Internal import graph (archcheck)
       run: make archcheck
 
-    - name: File budgets vs merge base (M1-4)
+    - name: File budgets vs base branch (M1-4)
       if: github.event_name == 'pull_request'
       run: |
-        base="$(git merge-base HEAD "origin/${{ github.base_ref }}")"
-        git show "$base:internal/archcheck/budgets.go" > /tmp/base_budgets.go
+        # Compare with the base branch's tip, not the merge base: on a
+        # stacked PR the merge base is an older commit whose budgets do
+        # not reflect raises that legitimately landed below, while the
+        # base tip is the table this PR actually diffs.
+        git show "origin/${{ github.base_ref }}:internal/archcheck/budgets.go" > /tmp/base_budgets.go
         go run ./internal/cmd/archcheck -budget-base /tmp/base_budgets.go
 
   race-test:
