@@ -26,13 +26,12 @@ func ConstNative(v runtime.Value) runtime.Value {
 // display and fmtArg share it so a UConst never spills its untyped
 // reading into output. ok is false when x holds no UConst, the caller
 // can't materialize, or the conversion fails.
-func ConstAtWidth(v runtime.CallerRef, x *runtime.Named) (runtime.Value, bool) {
+func ConstAtWidth(mc runtime.ConstMaterializer, x *runtime.Named) (runtime.Value, bool) {
 	u, ok := x.V.(*runtime.UConst)
 	if !ok {
 		return nil, false
 	}
-	mc, ok := v.(runtime.ConstMaterializer)
-	if !ok {
+	if mc == nil {
 		return nil, false
 	}
 	mv, err := mc.MaterializeConstErr(u, x.Typ)
