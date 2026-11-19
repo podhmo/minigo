@@ -61,6 +61,9 @@ func SliceSource(pieces []runtime.Value) *runtime.SeqSource {
 			return nil
 		},
 		Collect: func(runtime.ScriptCaller) []runtime.Value { return slices.Clone(pieces) },
+		// the pieces exist already, so a range loop may iterate the
+		// slice itself rather than parking frames per yield.
+		Materialized: pieces,
 	}
 }
 
