@@ -841,8 +841,10 @@ func Copy(v Value) Value {
 		case int64, float64, bool, string, complex128:
 			return x
 		}
-		// assignment copies the underlying value but keeps the declared tag
-		return Tag(x.Typ, Copy(x.V))
+		// assignment copies the underlying value but keeps the declared
+		// tag — built directly, not via Tag, so a payload's own tag
+		// (Named{T, Named{U, v}}) survives the copy.
+		return &Named{Typ: x.Typ, V: Copy(x.V)}
 	}
 	return v
 }
