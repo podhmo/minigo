@@ -1262,6 +1262,16 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		order := append([]runtime.Value{}, v.Order...)
 		sort.SliceStable(order, func(i, j int) bool {
 			a, b := order[i], order[j]
+			// Mixed-type keys (map[any]) compare by the concrete
+			// type first, like fmtsort's interface rule.
+			ra, ta := mapKeyRank(a)
+			rb, tb := mapKeyRank(b)
+			if ra != rb {
+				return ra < rb
+			}
+			if ta != tb {
+				return ta < tb
+			}
 			if stdlib.LessScript(a, b) {
 				return true
 			}
@@ -1654,4 +1664,86 @@ func UnwrapFmtArg(v any) any {
 // hand script values to Go formatters through it.
 func NewFmtValue(c runtime.MemberCaller, x runtime.Value) fmt.Formatter {
 	return &fmtValue{c: c, x: x, nilSyntax: true}
+}
+
+// mapKeyRank ranks a map key by its concrete type like go's
+// internal/fmtsort orders interface keys — the type first, then the
+// value. Go orders types by the rtype's address, which happens to be a
+// fixed layout for the predeclared types (string < int8 < ... < bool)
+// and allocation luck for everything else; the predeclared ranks pin
+// that layout and other types fall into deterministic groups ordered
+// by their typedef spell.
+func mapKeyRank(v runtime.Value) (int, string) {
+	var spell string
+	switch x := v.(type) {
+	case nil:
+		return 0, ""
+	case *runtime.TypedNil:
+		return 0, ""
+	case int64:
+		spell = "int"
+	case float64:
+		spell = "float64"
+	case string:
+		spell = "string"
+	case bool:
+		spell = "bool"
+	case complex128:
+		spell = "complex128"
+	case *runtime.Named:
+		if x.Typ == nil {
+			return 60, ""
+		}
+		spell = stdlib.TypedefSpelling(x.Typ)
+	case *runtime.Struct:
+		if x.Def != nil && stdlib.IsArrayTyp(x.Def) {
+			return 10, stdlib.TypedefSpelling(x.Def)
+		}
+		if x.Def != nil {
+			return 12, stdlib.TypedefSpelling(x.Def)
+		}
+		return 12, ""
+	case *runtime.Chan:
+		if x.Typ != nil {
+			return 11, stdlib.TypedefSpelling(x.Typ)
+		}
+		return 11, ""
+	case *runtime.GoValue:
+		if rt := reflect.TypeOf(x.V); rt != nil {
+			spell = rt.String()
+		} else {
+			return 0, ""
+		}
+	default:
+		return 60, fmt.Sprintf("%T", v)
+	}
+	if r, ok := fmtKeyBasicRank[spell]; ok {
+		return r, ""
+	}
+	// Named and host types group before the predeclared set, ordered
+	// among themselves by spell — their go order is the rtype's
+	// address, which no spelling can reproduce.
+	return 20, spell
+}
+
+// fmtKeyBasicRank is the predeclared types' layout order in go's
+// fmtsort output (string < int8 < ... < bool), as printed by go1.27.
+var fmtKeyBasicRank = map[string]int{
+	"string":     30,
+	"int8":       31,
+	"uint8":      32,
+	"int16":      33,
+	"uint16":     34,
+	"int32":      35,
+	"uint32":     36,
+	"int64":      37,
+	"uint64":     38,
+	"int":        39,
+	"uint":       40,
+	"uintptr":    41,
+	"complex64":  42,
+	"complex128": 43,
+	"float32":    44,
+	"float64":    45,
+	"bool":       46,
 }
