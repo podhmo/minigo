@@ -1106,8 +1106,9 @@ func namedFloat32(x runtime.Value) bool {
 // builtin's spelling: (0x0,0x0) for a nil interface, [0/0]0x0 for a nil
 // slice.
 // materializerOf views a builtin caller as the optional constant
-// materialization capability display needs.
-func materializerOf(v runtime.VMCaller) runtime.ConstMaterializer {
+// materialization capability display needs. CallerRef: the caller is
+// only probed for the capability, never invoked.
+func materializerOf(v runtime.CallerRef) runtime.ConstMaterializer {
 	mc, _ := v.(runtime.ConstMaterializer)
 	return mc
 }
