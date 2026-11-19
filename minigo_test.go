@@ -3710,14 +3710,47 @@ func (T) F(x interface{ m() int }) { x.m() }
 
 import "example.com/m/a"
 
-// the declared field m shadows the promoted method — S does not
-// implement a.I.
+type I = interface{ m() }
+
+func Use(x I) {}
+
+// a field m declared in main does NOT shadow the promoted a.m:
+// S still satisfies a.I.
 type S struct {
 	a.T
 	m int
 }
 
-func main() { a.Use(S{}) }
+// a method m declared in main coexists with the promoted a.m:
+// S2 satisfies both main's I and a's I.
+type S2 struct{ a.T }
+
+func (S2) m() {}
+
+func main() {
+	a.Use(S{})
+	a.Use(S2{})
+	Use(S2{})
+}
+`)
+	write(filepath.Join(root, "badshadow", "main.go"), `package main
+
+type I = interface{ m() }
+
+func Use(x I) {}
+
+// a field m declared in main DOES shadow a same-package promoted m:
+// S4 lacks the method and fails main's I.
+type T4 struct{}
+
+func (T4) m() {}
+
+type S4 struct {
+	T4
+	m int
+}
+
+func main() { Use(S4{}) }
 `)
 	write(filepath.Join(root, "sig", "main.go"), `package main
 
@@ -3766,13 +3799,17 @@ func main() { b.Use(a.T{}) }
 	if err == nil || !strings.Contains(err.Error(), "cannot use a.T as I") {
 		t.Fatalf("cross-package unexported method must not satisfy, got %v", err)
 	}
-	if _, err := e.Run(context.Background(), filepath.Join(root, "shadow"), "main"); err == nil {
-		t.Fatalf("a declared field must shadow the promoted unexported method")
+	if _, err := e.Run(context.Background(), filepath.Join(root, "shadow"), "main"); err != nil {
+		t.Fatalf("cross-package shadowing must not drop the promoted method: %v", err)
+	}
+	if _, err := e.Run(context.Background(), filepath.Join(root, "badshadow"), "main"); err == nil {
+		t.Fatalf("a same-package declared field must shadow the promoted method")
 	}
 	if _, err := e.Run(context.Background(), filepath.Join(root, "sig"), "main"); err != nil {
 		t.Fatalf("signature comparison under qualified requirement keys: %v", err)
 	}
-	if _, err := e.Run(context.Background(), filepath.Join(root, "local"), "main"); err != nil {
-		t.Fatalf("func-local struct embedding an interface must dispatch m: %v", err)
+	_, err = e.Run(context.Background(), filepath.Join(root, "local"), "main")
+	if err == nil {
+		t.Fatalf("main cannot select a's unexported m (gc: undefined) — must error")
 	}
 }
