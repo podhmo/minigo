@@ -98,7 +98,9 @@ func (c *compiler) isIfaceExpr(e ast.Expr) bool {
 			if c.fs.lookupBinding(fn.Name) == nil && c.pkg != nil && c.pkg.Index != nil {
 				if fd := c.pkg.Index.Funcs[fn.Name]; fd != nil && fd.Func != nil {
 					if rs := fd.Func.Type.Results; rs != nil && len(rs.List) == 1 {
-						return c.isIfaceTypeExpr(rs.List[0].Type)
+						// a package decl's signature resolves its type
+						// names in package scope, not the use site's.
+						return c.isIfaceTypeExprPkg(rs.List[0].Type)
 					}
 				}
 			}
@@ -120,7 +122,10 @@ func (c *compiler) isIfaceExpr(e ast.Expr) bool {
 		if c.pkg != nil && c.pkg.Index != nil {
 			if vd := c.pkg.Index.Vars[x.Name]; vd != nil {
 				if vs, ok := vd.Spec.(*ast.ValueSpec); ok {
-					if vs.Type != nil && c.isIfaceTypeExpr(vs.Type) {
+					// the package var's declared type resolves in
+					// package scope — a local shadow must not
+					// relabel it.
+					if vs.Type != nil && c.isIfaceTypeExprPkg(vs.Type) {
 						return true
 					}
 					if vs.Type == nil && len(vs.Values) > 0 {
@@ -1044,10 +1049,47 @@ func (c *compiler) funcTypeResultOpTyp(ft *ast.FuncType, file *syntax.File) opTy
 	if id, ok := ast.Unparen(te).(*ast.Ident); ok && funcTypeHasParam(ft, id.Name) {
 		return opTyp{}
 	}
-	if c.isIfaceTypeExpr(te) {
+	iface := c.isIfaceTypeExpr(te)
+	if file != nil {
+		// the signature was spelled in a package decl file — its type
+		// names resolve in package scope, so the use site's local
+		// decls and binds cannot rename them.
+		iface = c.isIfaceTypeExprPkg(te)
+	}
+	if iface {
 		return opTyp{iface: true}
 	}
 	return opTyp{te: te, teFile: file}
+}
+
+// isIfaceTypeExprPkg is isIfaceTypeExpr for a type expression spelled
+// in a package decl: the names a package-level signature writes resolve
+// in the package's index scope — a function-local `type I interface{}`
+// shadowing a package `type I struct{}` must not relabel the result.
+func (c *compiler) isIfaceTypeExprPkg(e ast.Expr) bool {
+	switch t := e.(type) {
+	case *ast.InterfaceType:
+		return true
+	case *ast.ParenExpr:
+		return c.isIfaceTypeExprPkg(t.X)
+	case *ast.Ident:
+		if t.NamePos == token.NoPos {
+			// synthesized name: the builtin, not the shadow
+			return t.Name == "any" || t.Name == "error"
+		}
+		if c.pkg != nil && c.pkg.Index != nil {
+			if tdi := c.pkg.Index.Types[t.Name]; tdi != nil && tdi.Decl != nil {
+				if ts, ok := tdi.Decl.Spec.(*ast.TypeSpec); ok {
+					_, iface := ts.Type.(*ast.InterfaceType)
+					return iface
+				}
+			}
+		}
+		if predeclaredTypeNames[t.Name] {
+			return t.Name == "any" || t.Name == "error"
+		}
+	}
+	return false
 }
 
 // calleeFuncTyp resolves a call's callee to its signature: a declared
@@ -1155,7 +1197,11 @@ func (c *compiler) nthResultOpTyp(e ast.Expr, i int) opTyp {
 			if id, ok := ast.Unparen(te).(*ast.Ident); ok && funcTypeHasParam(ft, id.Name) {
 				return opTyp{}
 			}
-			if c.isIfaceTypeExpr(te) {
+			iface := c.isIfaceTypeExpr(te)
+			if ftFile != nil {
+				iface = c.isIfaceTypeExprPkg(te)
+			}
+			if iface {
 				return opTyp{iface: true}
 			}
 			return opTyp{te: te, teFile: ftFile}
