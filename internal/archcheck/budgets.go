@@ -237,4 +237,5 @@ var FileBudgetExceptions = map[string]string{
 	"stdlibreg.go":                  "registers the moved errors installer (P2-12)",
 	"internal/archcheck/budgets.go": "new file budgets for internal/stdlib/errors + wraperr (P2-12)",
 	"internal/archcheck/rules.go":   "allow-list entry for internal/stdlib/errors (P2-12)",
+	"internal/stdlib/io/io.go":      "AsReader became an Adapters method so the fmt-box unwrap stays faithful (P2-12)",
 }
