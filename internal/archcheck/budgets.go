@@ -50,7 +50,7 @@ var FileBudgets = map[string]int{
 	"installbound.go": 120,
 	"internal/archcheck/all.go":                    57,
 	"internal/archcheck/archcheck.go":              643,
-	"internal/archcheck/budgets.go":                236,
+	"internal/archcheck/budgets.go": 240,
 	"internal/archcheck/rules.go":                  100,
 	"internal/assetaudit/assetaudit.go":            112,
 	"internal/bind/env.go":                         48,
@@ -133,7 +133,7 @@ var FileBudgets = map[string]int{
 	"intrinsics_unicode.go":                        23,
 	"intrinsics_unsafe.go":                         368,
 	"iterseq.go":                                   916,
-	"minigo.go": 1678,
+	"minigo.go": 1699,
 	"minigo_reflect.go":                            48,
 	"minireflect/minireflect.go":                   1183,
 	"minireflect/rtype.go":                         1874,
@@ -184,7 +184,7 @@ var FileBudgets = map[string]int{
 	"tools/difffuzz/text.go":                       205,
 	"tools/tmpltests/main.go":                      816,
 	"tools/tmpltests/shims.go":                     130,
-	"typeid.go": 288,
+	"typeid.go": 319,
 	"typeid_leaf.go":                          232,
 	"vet.go":                                       221,
 	"vm/assert.go": 1807,
@@ -230,11 +230,10 @@ var FileBudgetExceptions = map[string]string{
 	// M1-4 itself: the merge-base growth check, its CLI flag, and the
 	// budgets table entry are the feature — these raises land once.
 	"internal/archcheck/archcheck.go": "M1-4: ParseFileBudgetsFile + CheckBudgetGrowth",
-	"internal/archcheck/budgets.go":   "M1-4: FileBudgetExceptions + doc comments",
+	"internal/archcheck/budgets.go":   "M1-4: FileBudgetExceptions + doc comments; M4-6b: FileBudgetExceptions entries",
 	"internal/cmd/archcheck/main.go":  "M1-4: -budget-base flag wiring",
 	// M4-6b: e.compileFunc gained the instM cache lookup/store and
 	// typeid.go gained the instKey TypeID keyer.
-	"minigo.go":                     "M4-6b: compileFunc owns the instM cache check/store",
-	"typeid.go":                     "M4-6b: e.instKey computes the TypeID instantiation key",
-	"internal/archcheck/budgets.go": "M4-6b: FileBudgetExceptions entries",
+	"minigo.go": "M4-6b: compileFunc owns the instM cache check/store",
+	"typeid.go": "M4-6b: e.instKey computes the TypeID instantiation key",
 }

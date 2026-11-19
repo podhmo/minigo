@@ -429,17 +429,21 @@ func (e *Engine) compileFunc(fn *runtime.Function) error {
 	} else {
 		err = compile.Func(fn)
 	}
-	if err == nil && key != "" {
-		fn.Pkg.SetInstChunk(key, fn.Decl, fn.Binds, fn.Chunk)
-	}
-	if err != nil || !e.verifyChunks || fn.Chunk == nil {
+	if err != nil {
 		return err
 	}
-	if _, verr := bytecode.Verify(fn.Chunk); verr != nil {
-		return fmt.Errorf("%s: %w", fn.Name, verr)
+	if e.verifyChunks && fn.Chunk != nil {
+		if _, verr := bytecode.Verify(fn.Chunk); verr != nil {
+			return fmt.Errorf("%s: %w", fn.Name, verr)
+		}
+		if _, verr := bytecode.VerifyKinds(fn.Chunk); verr != nil {
+			return fmt.Errorf("%s: %w", fn.Name, verr)
+		}
 	}
-	if _, verr := bytecode.VerifyKinds(fn.Chunk); verr != nil {
-		return fmt.Errorf("%s: %w", fn.Name, verr)
+	// store only after the chunk passed verification — a rejected chunk
+	// must not satisfy a later instantiation's lookup.
+	if key != "" {
+		fn.Pkg.SetInstChunk(key, fn.Decl, fn.Binds, fn.Chunk)
 	}
 	return nil
 }
