@@ -37,7 +37,7 @@ var FileBudgets = map[string]int{
 	"index/builtin.go":                             22,
 	"index/index.go":                               311,
 	"index/value_specs.go":                         45,
-	"inspect/inspect.go":                           2670,
+	"inspect/inspect.go":                           2690,
 	"inspect/host_members.go":                      58,
 	"inspect/stub.go":                              382,
 	"installbound.go":                              121,
