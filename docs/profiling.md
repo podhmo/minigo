@@ -79,12 +79,12 @@ answers "what part of the script is slow". To work on interpreter performance
 use the CPU and allocation profiles on the same run to see what the interpreter
 spends on it.
 
+Exact per-function call counts ride in the same profile as a third sample
+type: `go tool pprof -top -sample_index=calls script.pprof` ranks functions by
+how often they ran (a time profile cannot say that `f` ran 21M times).
+
 ### Known gaps
 
-- There are no exact call counts: a time profile cannot say that `f` ran 21M
-  times.
 - Script allocations are not attributed to script stacks.
-- A closure inside a method prints as `T.m.func1`, where Go prints
-  `(*T).m.func1`.
 
 These gaps are tracked in `TODO.md`.

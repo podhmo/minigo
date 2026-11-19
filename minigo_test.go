@@ -2141,7 +2141,7 @@ func TestScriptProfiler(t *testing.T) {
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Command("go", "tool", "pprof", "-top", "-lines", "-unit=ms", path).CombinedOutput()
+	out, err := exec.Command("go", "tool", "pprof", "-top", "-lines", "-unit=ms", "-sample_index=time", path).CombinedOutput()
 	if err != nil {
 		t.Fatalf("go tool pprof: %v\n%s", err, out)
 	}
@@ -2165,6 +2165,22 @@ func TestScriptProfiler(t *testing.T) {
 	want := map[string]bool{"spin loop line": true, "parked excluded": true, "closure name": true, "method closure": true, "deferred host call": true, "quick channel ops": true}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Fatalf("profile mismatch (-want +got):\n%s\n%s", diff, top)
+	}
+
+	// the calls view carries exact per-function counts: marker ran
+	// exactly seven times — a fact the samples view cannot express.
+	out, err = exec.Command("go", "tool", "pprof", "-top", "-sample_index=calls", path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("go tool pprof -sample_index=calls: %v\n%s", err, out)
+	}
+	callsTop := string(out)
+	gotCalls := map[string]int{
+		"main.marker":   profFlatCount(callsTop, "main.marker"),
+		"main.recvLoop": profFlatCount(callsTop, "main.recvLoop"),
+	}
+	wantCalls := map[string]int{"main.marker": 7, "main.recvLoop": 1}
+	if diff := cmp.Diff(wantCalls, gotCalls); diff != "" {
+		t.Fatalf("call counts mismatch (-want +got):\n%s\n%s", diff, callsTop)
 	}
 }
 
@@ -2202,6 +2218,22 @@ func profHasFuncAtLine(top, fn string, line int) bool {
 		}
 	}
 	return false
+}
+
+// profFlatCount sums the flat column of the `go tool pprof -top` rows
+// whose name column is exactly fn — the calls view's exact counts.
+func profFlatCount(top, fn string) int {
+	var total int
+	for _, line := range strings.Split(top, "\n") {
+		fs := strings.Fields(line)
+		if len(fs) < 6 || fs[5] != fn {
+			continue
+		}
+		if v, err := strconv.Atoi(fs[0]); err == nil {
+			total += v
+		}
+	}
+	return total
 }
 
 // profFlatMs sums the flat ms of the `go tool pprof -top -unit=ms` rows
