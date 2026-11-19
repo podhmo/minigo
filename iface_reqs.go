@@ -2,33 +2,10 @@ package minigo
 
 import (
 	"go/ast"
-	"strings"
 
+	"github.com/podhmo/minigo/internal/typedef"
 	"github.com/podhmo/minigo/runtime"
 )
-
-// reqKey spells a method name in the requirement/method-set key space:
-// exported names are package-free, but an unexported name belongs to
-// its declaring package — `interface{ m() }` declared in pkgA is not
-// satisfied by pkgB's `m`. The pkg-qualified key rides Names/Depths/
-// Funcs alongside the plain name, which member selection keeps using.
-func reqKey(pkg *runtime.Package, name string) string {
-	if pkg == nil || ast.IsExported(name) {
-		return name
-	}
-	return pkg.Path + "." + name
-}
-
-// plainReqName recovers the method name a pkg-qualified requirement
-// key encodes (pkg `a`'s `m` is keyed "a.m"); exported keys carry no
-// package part and return unchanged. Method names never contain '.',
-// so the last dot marks the join.
-func plainReqName(key string) string {
-	if i := strings.LastIndexByte(key, '.'); i >= 0 {
-		return key[i+1:]
-	}
-	return key
-}
 
 // ifaceReqs returns the required method set of an interface typedef:
 // declared methods union the requirements of embedded interface elements.
@@ -58,17 +35,17 @@ func (e *Engine) ifaceReqSet(td *runtime.TypeDef) map[string]bool {
 }
 
 func (e *Engine) ifaceReqsRec(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool, complete *bool) map[string]bool {
-	td = e.peelAliasTd(td)
+	td = e.td.PeelAliasTd(td)
 	if td == nil || seen[td] {
 		return nil
 	}
 	seen[td] = true
 	set := map[string]bool{}
 	for _, m := range td.MReqs {
-		set[reqKey(td.Pkg, m)] = true
+		set[typedef.ReqKey(td.Pkg, m)] = true
 	}
 	for _, spec := range td.IEmbeds {
-		sub, err := e.resolveTypeRef(td, spec)
+		sub, err := e.td.ResolveTypeRef(td, spec)
 		if err != nil || sub == nil {
 			*complete = false
 			continue // constraint exprs (~T, |) don't resolve to typedefs
@@ -142,14 +119,14 @@ func (e *Engine) ifaceSigReqs(td *runtime.TypeDef) (map[string]*runtime.Function
 //
 // complete turns false when an embedded element fails to resolve.
 func (e *Engine) ifaceSigsOf(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool, complete *bool) map[string]ifaceSig {
-	td = e.peelAliasTd(td)
+	td = e.td.PeelAliasTd(td)
 	if td == nil || seen[td] {
 		return nil
 	}
 	seen[td] = true
 	out := map[string]ifaceSig{}
 	var it *ast.InterfaceType
-	for _, x := range []ast.Expr{td.Anon, specType(td)} {
+	for _, x := range []ast.Expr{td.Anon, typedef.SpecType(td)} {
 		if s, ok := x.(*ast.InterfaceType); ok {
 			it = s
 			break
@@ -170,14 +147,14 @@ func (e *Engine) ifaceSigsOf(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool
 				// unexported requirements compare under their
 				// declaring package's key (M4-2b); ifaceTypEq looks
 				// signatures up by the qualified requirement key.
-				if k := reqKey(td.Pkg, n.Name); k != n.Name {
+				if k := typedef.ReqKey(td.Pkg, n.Name); k != n.Name {
 					out[k] = sig
 				}
 			}
 		}
 	}
 	for _, spec := range td.IEmbeds {
-		emb, err := e.resolveTypeRef(td, spec)
+		emb, err := e.td.ResolveTypeRef(td, spec)
 		if err != nil || emb == nil {
 			*complete = false
 			continue

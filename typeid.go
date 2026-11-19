@@ -31,7 +31,7 @@ import (
 //     a composite the walk cannot decompose (func types, anonymous
 //     structs and interfaces) keys on the canonical spelling instead.
 func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
-	td = e.peelAliasTd(td)
+	td = e.td.PeelAliasTd(td)
 	if td == nil {
 		return "?"
 	}

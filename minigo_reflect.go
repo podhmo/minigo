@@ -9,14 +9,14 @@ import (
 // also used where intrinsics need declared-type layout (unsafe.Offsetof).
 func (e *Engine) reflectHooks() minireflect.Hooks {
 	return minireflect.Hooks{
-		ElemOf:      e.elemOf,
-		ResolveType: e.resolveTypeRef,
-		FieldTypes:  e.fieldTypes,
-		TypeMethods: e.typeMethods,
+		ElemOf:      e.td.ElemOf,
+		ResolveType: e.td.ResolveTypeRef,
+		FieldTypes:  e.td.FieldTypes,
+		TypeMethods: e.td.TypeMethods,
 		IfaceReqs:   e.ifaceReqs,
-		Underlying:  e.underlying,
-		AliasOf:     e.aliasOf,
-		MethodSet:   e.methodSet,
+		Underlying:  e.td.Underlying,
+		AliasOf:     e.td.AliasOf,
+		MethodSet:   e.td.MethodSet,
 		TypeAlias:   proxyHostType,
 		UnwrapHost:  proxyUnwrapHost,
 	}
