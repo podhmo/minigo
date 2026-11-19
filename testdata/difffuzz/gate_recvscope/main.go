@@ -21,4 +21,9 @@ func main() {
 	case a := <-inner.ArrayCh:
 		fmt.Println(unsafe.Sizeof(a), unsafe.Alignof(a))
 	}
+	inner.ResetHostCh()
+	select {
+	case now := <-inner.HostCh:
+		fmt.Println(unsafe.Sizeof(now), unsafe.Alignof(now))
+	}
 }

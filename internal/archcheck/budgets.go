@@ -16,7 +16,7 @@ var FileBudgets = map[string]int{
 	"bytecode/verify_kinds.go":                     382,
 	"cmd/minigo/main.go":                           1231,
 	"compile/assign.go":                            918,
-	"compile/call.go":                              1060,
+	"compile/call.go":                              1052,
 	"compile/compile.go":                           461,
 	"compile/constfold.go":                         866,
 	"compile/expr.go":                              577,
