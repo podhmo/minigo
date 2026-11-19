@@ -622,9 +622,43 @@ func (v *VM) loop(f *frame) {
 			// coerces like a store into `var p T`.
 			f.push(&runtime.Cell{Elem: x, Typ: declaredTag(x)})
 		case bytecode.OpCall:
-			args, statics, spreadTd := v.popArgsCall(f, int(ins.A), int(ins.B), ins.Pos)
-			fn := f.pop()
-			r, err := v.call(fn, args, statics, spreadTd)
+			var args []runtime.Value
+			var statics []*runtime.TypeDef
+			var spreadTd *runtime.TypeDef
+			var fn runtime.Value
+			var r runtime.Value
+			var err error
+			if int(ins.B) == 0 {
+				// P4-3b: args stay in place — pop the statics, drop the
+				// callee slot, and the top argc operands become the
+				// callee's operand window; no argbuf copy.
+				argc := int(ins.A)
+				statbuf := f.statbuf
+				if cap(statbuf) < argc {
+					statbuf = make([]*runtime.TypeDef, argc)
+				} else {
+					statbuf = statbuf[:argc]
+					for i := range statbuf {
+						statbuf[i] = nil
+					}
+				}
+				f.statbuf = statbuf
+				for i := argc - 1; i >= 0; i-- {
+					if td, ok := f.pop().(*runtime.TypeDef); ok {
+						statbuf[i] = td
+					}
+				}
+				fn = f.stack[f.sp-argc-1]
+				f.sp -= argc + 1
+				f.stack = f.stack[:f.sp]
+				// vals keeps the args — the callee's window covers
+				// them; the next push drops the dead callee slot too.
+				r, err = v.callInPlace(fn, argc, statbuf)
+			} else {
+				args, statics, spreadTd = v.popArgsCall(f, int(ins.A), int(ins.B), ins.Pos)
+				fn = f.pop()
+				r, err = v.call(fn, args, statics, spreadTd)
+			}
 			if v.H.Prof != nil {
 				v.profCheck() // a long host call lands on its call line
 			}
