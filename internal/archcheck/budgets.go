@@ -276,6 +276,7 @@ var FileBudgetExceptions = map[string]string{
 	"runtime/value.go":                "intern-widen: unexported hostTwinOf residual + TwinOperands doc + array iface elem keys + quoted string keys + SeqSource.Materialized",
 	"syntax/scope.go":                 "scoped locals: local-name spans + type-param binds for AtLocal",
 	"internal/stdlib/seq.go":          "seq materialized: SliceSource exposes its pieces for direct range iteration",
+	"vm/iter.go":                      "seq materialized: 'q' iterator kind for materialized seqs",
 	"vm/generic.go":                   "intern-widen: HostIdent on the name-only host mint",
 	"runtime/package.go":              "M0-4/M4-8: type-member materialization without init",
 	"vm/call.go":                      "M0-4/M4-8 + P2-7f reflect-free vm + profiler count/alloc hooks",
