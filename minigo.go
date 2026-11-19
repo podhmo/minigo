@@ -1744,6 +1744,10 @@ func (e *Engine) typeDefOf(pkg *runtime.Package, d *index.Decl) (runtime.Value, 
 		td.Kind = runtime.KindChan
 	case *ast.Ident:
 		td.Kind = runtime.KindNamedBasic
+		// `type E error` declares an interface-based named type: the
+		// ident resolves in package scope, so a shadowed builtin name
+		// (`type error = int`) is not mistaken for the interface.
+		td.IfaceBase = identSpecIface(pkg, t, 0)
 	default:
 		td.Kind = runtime.KindNamedBasic
 	}
@@ -1758,6 +1762,31 @@ func (e *Engine) typeDefOf(pkg *runtime.Package, d *index.Decl) (runtime.Value, 
 		}
 	}
 	return td, nil
+}
+
+// identSpecIface reports whether the ident of a `type X <id>` decl
+// resolves to an interface type in pkg scope: a declared name follows
+// its spec (chasing `type E error`-style ident chains), a builtin
+// `error`/`any` answers directly, and a shadowed builtin name does
+// not. depth bounds the chain walk.
+func identSpecIface(pkg *runtime.Package, id *ast.Ident, depth int) bool {
+	if depth > 8 {
+		return false
+	}
+	if pkg != nil && pkg.Index != nil {
+		if tdi := pkg.Index.Types[id.Name]; tdi != nil && tdi.Decl != nil {
+			if ts, ok := tdi.Decl.Spec.(*ast.TypeSpec); ok {
+				switch u := ts.Type.(type) {
+				case *ast.InterfaceType:
+					return true
+				case *ast.Ident:
+					return identSpecIface(pkg, u, depth+1)
+				}
+			}
+			return false
+		}
+	}
+	return id.Name == "error" || id.Name == "any"
 }
 
 // methodFunc builds the runtime.Function for one method decl — shared by

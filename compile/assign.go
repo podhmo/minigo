@@ -279,13 +279,16 @@ func (c *compiler) localTypeDecl(ts *ast.TypeSpec) {
 			}
 		}
 	}
-	isIface := false
+	// `type E error` declares an interface-based named type too: the
+	// ident resolves in this scope, so a shadowed `type error = int`
+	// decl is not mistaken for the builtin.
+	isIface := c.isIfaceTypeExpr(ts.Type)
+	td.IfaceBase = isIface
 	switch t := ts.Type.(type) {
 	case *ast.StructType:
 		td.SetStructShape(t)
 	case *ast.InterfaceType:
 		td.SetInterfaceShape(t)
-		isIface = true
 	case *ast.ArrayType:
 		td.Kind = runtime.KindSlice
 	case *ast.MapType:
