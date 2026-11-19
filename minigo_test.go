@@ -1229,13 +1229,18 @@ func TestInitFailureSurfaces(t *testing.T) {
 }
 
 func TestInitFailEmbedAssert(t *testing.T) {
-	// resolving an embedded type from a package whose init failed must
-	// surface that failure, not make the method set "unsure" (which
-	// lets every interface assertion succeed).
+	// resolving an embedded type is a type-only query: it materializes
+	// the declaration without running the package's init, so a package
+	// whose init WOULD fail still answers the assertion with a definite
+	// method set (false here) instead of an "unsure" set that lets every
+	// interface assertion succeed.
 	e := newEngine(t)
-	if got, err := e.Run(context.Background(), "./testdata/initembed", "Assert"); err == nil ||
-		!strings.Contains(err.Error(), "inner init went wrong") {
-		t.Fatalf("assertion over a failed embed must surface the init error, got %v, %v", got, err)
+	got, err := e.Run(context.Background(), "./testdata/initembed", "Assert")
+	if err != nil {
+		t.Fatalf("Assert: %v", err)
+	}
+	if got != false {
+		t.Fatalf("assertion over a lazily-materialized embed must answer false, got %v", got)
 	}
 }
 
