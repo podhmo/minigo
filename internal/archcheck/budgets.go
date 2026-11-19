@@ -133,7 +133,7 @@ var FileBudgets = map[string]int{
 	"intrinsics_unicode_utf8.go":         109,
 	"intrinsics_unsafe.go":               368,
 	"iterseq.go":                         916,
-	"minigo.go":                        1617,
+	"minigo.go":                          1617,
 	"minigo_reflect.go":                  48,
 	"minireflect/minireflect.go":         1183,
 	"minireflect/rtype.go":               1874,
