@@ -199,7 +199,7 @@ var FileBudgets = map[string]int{
 	"vm/profile.go":                                433,
 	"vm/sched.go":                                  352,
 	"vm/select.go":                                 36,
-	"vm/selectsite.go":                             195,
+	"vm/selectsite.go":                             196,
 	"vm/special.go":                                287,
 	"vm/trace.go":                                  216,
 	"vm/vm.go":                                     976,
@@ -286,6 +286,6 @@ var FileBudgetExceptions = map[string]string{
 	"vm/frame.go":                     "P4-2c: plain-slot promotion counters",
 	"vm/loop.go":                      "P4-6 fragment memo + P2-7e host chanops move + profiler alloc counting",
 	"vm/processcaller.go":             "P2-2b: narrowed host callback helper callers",
-	"vm/selectsite.go":                "M4-2b: select unexported members by (call package, name)",
+	"vm/selectsite.go":                "M4-2b: select unexported members by (call package, name); deref-site slot also keys the member name",
 	"replhooks.go":                    "stdinspect.LookupDeclIn import for the moved inspect installer (P2-12)",
 }

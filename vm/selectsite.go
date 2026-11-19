@@ -31,6 +31,7 @@ func (v *VM) selSite(f *frame, ins bytecode.Instruction) *bytecode.GlobalSite {
 type selectSlot struct {
 	tid   runtime.TypeID
 	epoch uint64
+	name  string // the member name resolved — one site serves many
 	res   *selRes
 }
 
@@ -63,14 +64,14 @@ func (v *VM) structMember(f *frame, s *runtime.Struct, name string, recv runtime
 			// "?" marks an unidentifiable typedef — unrelated types
 			// share it, so a slot may never key on it.
 			if slot, _ := site.Cache.Load().(*selectSlot); slot != nil &&
-				slot.tid == tid && slot.epoch == epoch {
+				slot.tid == tid && slot.epoch == epoch && slot.name == name {
 				if val, ok := v.applySelectSlot(f, s, name, recv, slot.res); ok {
 					return val
 				}
 			}
 			val, res := v.structMemberRes(f, s, name, recv)
 			if res != nil {
-				site.Cache.Store(&selectSlot{tid: tid, epoch: epoch, res: res})
+				site.Cache.Store(&selectSlot{tid: tid, epoch: epoch, name: name, res: res})
 			}
 			return val
 		}
