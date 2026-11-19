@@ -49,7 +49,7 @@ var FileBudgets = map[string]int{
 	"installbound.go":                              121,
 	"internal/archcheck/all.go":                    57,
 	"internal/archcheck/archcheck.go":              642,
-	"internal/archcheck/budgets.go":                228,
+	"internal/archcheck/budgets.go":                233,
 	"internal/archcheck/rules.go":                  100,
 	"internal/assetaudit/assetaudit.go":            112,
 	"internal/bind/env.go":                         48,
@@ -132,7 +132,7 @@ var FileBudgets = map[string]int{
 	"intrinsics_unicode.go":                        23,
 	"intrinsics_unsafe.go":                         368,
 	"iterseq.go":                                   916,
-	"minigo.go":                                    1634,
+	"minigo.go":                                    1676,
 	"minigo_reflect.go":                            48,
 	"minireflect/minireflect.go":                   1183,
 	"minireflect/rtype.go":                         1874,
@@ -227,6 +227,6 @@ var FileBudgets = map[string]int{
 var FileBudgetExceptions = map[string]string{
 	// M4-6b: e.compileFunc gained the instM cache lookup/store and
 	// typeid.go gained the instKey TypeID keyer.
-	"minigo.go": "M4-6b: compileFunc owns the instM cache check/store",
+	"minigo.go": "M4-6b instM cache check/store + P4-1b verifyChunk",
 	"typeid.go": "M4-6b: e.instKey computes the TypeID instantiation key",
 }

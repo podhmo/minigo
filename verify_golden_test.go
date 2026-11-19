@@ -2,6 +2,7 @@ package minigo
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/podhmo/minigo/bytecode"
@@ -80,6 +81,45 @@ func TestVerifyCompiled(t *testing.T) {
 		t.Fatalf("Counter is %T, want *runtime.TypeDef", v)
 	}
 	verifyFn(t, td.Methods["Bump"])
+}
+
+// TestVerifyChunkRejectsMalformed pins P4-1b's gate on every path the
+// engine runs it through: a malformed chunk fails wherever it lands —
+// top level, or nested as a function-literal proto in a healthy chunk.
+func TestVerifyChunkRejectsMalformed(t *testing.T) {
+	e := NewEngine(".", WithBytecodeVerify())
+	bad := &bytecode.Chunk{
+		Name: "bad",
+		// OpReturn 1 on an empty stack underflows.
+		Code: []bytecode.Instruction{{Op: bytecode.OpReturn, A: 1}},
+	}
+	if err := e.verifyChunk(bad); err == nil {
+		t.Fatal("verifyChunk accepted a malformed chunk")
+	}
+	good := &bytecode.Chunk{
+		Name: "good",
+		Code: []bytecode.Instruction{{Op: bytecode.OpReturn}},
+		Consts: []any{
+			&runtime.Function{Name: "good.inner", Chunk: bad},
+		},
+	}
+	err := e.verifyChunk(good)
+	if err == nil {
+		t.Fatal("verifyChunk accepted a chunk with a malformed nested literal")
+	}
+	if !strings.Contains(err.Error(), "good.inner") {
+		t.Fatalf("nested rejection must name the literal: %v", err)
+	}
+	// a healthy outer with a healthy nested literal verifies.
+	good.Consts = []any{
+		&runtime.Function{Name: "good.inner", Chunk: &bytecode.Chunk{
+			Name: "inner",
+			Code: []bytecode.Instruction{{Op: bytecode.OpReturn}},
+		}},
+	}
+	if err := e.verifyChunk(good); err != nil {
+		t.Fatalf("verifyChunk rejected a healthy nest: %v", err)
+	}
 }
 
 // TestWithBytecodeVerify pins the debug entry point (P4-1b): an
