@@ -301,12 +301,17 @@ type UpvalDesc struct {
 }
 
 // ASTFragment is an AST expression kept uncompiled as a chunk constant.
-// [OpEvalFragment] compiles it each time it executes and pushes its value; the
+// [OpEvalFragment] compiles it on first execution (memoized in Cache) and
+// pushes its value; the
 // expression sees package globals, File's imports and builtins, but not
 // the enclosing function's locals.
 type ASTFragment struct {
 	Expr ast.Expr
 	File *syntax.File
+	// Cache memoizes the fragment's compiled chunk across executions:
+	// the same site compiles identically every time (P4-6). Written
+	// once and read by every goroutine running the chunk.
+	Cache atomic.Value
 }
 
 // Chunk is compiled code for one function, package initializer or
