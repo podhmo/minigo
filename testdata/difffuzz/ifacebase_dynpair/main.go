@@ -46,6 +46,9 @@ func main() {
 	var e2 E
 	fmt.Println(e2 == nil)
 	reqs()
+	ptrs()
+	sigs()
+	unexported()
 	if _, ok := e2.(E); ok {
 		fmt.Println("nil asserts")
 	}
@@ -98,4 +101,62 @@ func reqs() {
 	fmt.Println(a2 == nil)
 	e3 := e2
 	fmt.Println(e3 == nil)
+}
+
+// a pointer to a declared-over-interface type has an empty method set
+// (gc: *E carries no methods).
+func ptrs() {
+	var pe *E
+	if _, ok := any(pe).(error); ok {
+		fmt.Println("bad *E")
+	} else {
+		fmt.Println("*E not error")
+	}
+	var pw *W
+	if _, ok := any(pw).(error); ok {
+		fmt.Println("bad *W")
+	} else {
+		fmt.Println("*W not error")
+	}
+}
+
+// a promoted requirement keeps its signature — a same-name method with
+// the wrong signature does not satisfy.
+type BadSig interface{ Error() int }
+
+func sigs() {
+	var e E = myErr{}
+	if _, ok := any(e).(BadSig); ok {
+		fmt.Println("bad e")
+	} else {
+		fmt.Println("e not BadSig")
+	}
+	type J interface{ E }
+	var j J = myErr{}
+	if _, ok := any(j).(BadSig); ok {
+		fmt.Println("bad j")
+	} else {
+		fmt.Println("j not BadSig")
+	}
+	if _, ok := any(j).(interface{ Error() string }); !ok {
+		fmt.Println("bad j2")
+	} else {
+		fmt.Println("j is Stringer")
+	}
+}
+
+// an unexported requirement also promotes under its plain name, so the
+// method expression and the selector reach the stored value.
+type I2 interface{ hidden() string }
+type h struct{}
+
+func (h) hidden() string { return "h!" }
+
+type S2 struct{ I2 }
+
+func unexported() {
+	s := S2{I2: h{}}
+	var f func(S2) string = S2.hidden
+	fmt.Println(f(s))
+	fmt.Println(s.hidden())
 }

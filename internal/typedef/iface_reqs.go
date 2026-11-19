@@ -177,5 +177,20 @@ func (r *Resolver) ifaceSigsOf(td *runtime.TypeDef, seen map[*runtime.TypeDef]bo
 			}
 		}
 	}
+	if td.IfaceBase && td.Spec != nil {
+		// a declared-over-interface type (`type E error`) carries its
+		// requirements' signatures on the underlying interface, spelled
+		// by the spec's type expression — chase it like ifaceReqsRec.
+		sub, err := r.ResolveTypeRef(td, td.Spec.Type)
+		if err != nil || sub == nil {
+			*complete = false
+		} else {
+			for name, sig := range r.ifaceSigsOf(sub, seen, complete) {
+				if _, dup := out[name]; !dup {
+					out[name] = sig
+				}
+			}
+		}
+	}
 	return out
 }
