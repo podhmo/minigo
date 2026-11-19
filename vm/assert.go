@@ -23,6 +23,7 @@ import (
 	"go/ast"
 	"go/token"
 	"sort"
+	"strings"
 
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
@@ -282,6 +283,17 @@ func tdName(td *runtime.TypeDef) string {
 		return "chan"
 	}
 	return "type"
+}
+
+// tdNameIn spells td for a diagnostic issued from cur's compilation
+// unit: a named type declared in another package qualifies by package
+// name like gc (`origin.Count`), while names in the same package and
+// names already carrying a qualifier print bare.
+func tdNameIn(cur *runtime.Package, td *runtime.TypeDef) string {
+	if td != nil && td.Name != "" && td.Pkg != nil && td.Pkg != cur && td.Pkg.Name != "" && !strings.ContainsRune(td.Name, '.') {
+		return td.Pkg.Name + "." + td.Name
+	}
+	return tdName(td)
 }
 
 // typeAssert implements x.(T): returns x on match, panics with a script
