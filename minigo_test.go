@@ -2185,6 +2185,18 @@ func TestScriptProfiler(t *testing.T) {
 	if diff := cmp.Diff(wantCalls, gotCalls); diff != "" {
 		t.Fatalf("call counts mismatch (-want +got):\n%s\n%s", diff, callsTop)
 	}
+
+	// the allocs view attributes interpreter allocations to the script
+	// stack: cellHolder's escaping local makes a fresh cells block on
+	// each of its seven calls.
+	out, err = exec.Command("go", "tool", "pprof", "-top", "-sample_index=allocs", "-nodefraction=0", path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("go tool pprof -sample_index=allocs: %v\n%s", err, out)
+	}
+	allocsTop := string(out)
+	if n := profFlatCount(allocsTop, "main.cellHolder"); n < 7 {
+		t.Fatalf("cellHolder allocs: got %d, want >= 7\n%s", n, allocsTop)
+	}
 }
 
 // funcLineOf finds the 1-based line of needle inside the function that

@@ -95,6 +95,13 @@ func joinWait() {
 	wg.Wait()
 }
 
+// cellHolder's local escapes through the return value, so every call
+// allocates a fresh cells block — the allocs view must count them.
+func cellHolder() *int {
+	x := 0
+	return &x
+}
+
 // Ops returns recvLoop's wall time in ms.
 func Ops() int {
 	slowDefer()
@@ -103,6 +110,7 @@ func Ops() int {
 	recvLoop(300000)
 	for range 7 {
 		marker()
+		cellHolder()
 	}
 	return int(time.Since(start).Milliseconds())
 }
