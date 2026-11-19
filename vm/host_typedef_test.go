@@ -2,6 +2,7 @@ package vm
 
 import (
 	"fmt"
+	"go/ast"
 	"testing"
 	"unsafe"
 
@@ -116,4 +117,60 @@ func TestTwinStructConversion(t *testing.T) {
 	if _, err := marshalHost.ToReflect(&runtime.Cell{Elem: cyc}, hostbridge.TypeOf((*testCyc)(nil)), nil); err == nil {
 		t.Fatal("cyclic twin converted; want depth error")
 	}
+}
+
+// M4-4 pin: an unnamed pointer's twin compare — `x.(**T)` hands rt=`*T`
+// — falls back to the spelled `*pkgpath.T` identity when the element's
+// package answers no twin (never loaded, or a source declaration that
+// is not a host twin). A later removal of the HostTwinOf fallback must
+// keep these exact answers.
+type starPinT struct{}
+
+func TestHostTypedefIsAnonPtrSpelling(t *testing.T) {
+	rt := hostbridge.TypeOf((*starPinT)(nil)) // unnamed *T
+	ert := hostbridge.TypeOf(starPinT{})      // named element
+
+	mkTD := func(sel string) *runtime.TypeDef {
+		return &runtime.TypeDef{
+			Kind: runtime.KindPointer,
+			Anon: &ast.StarExpr{X: &ast.SelectorExpr{
+				X:   ast.NewIdent("github.com/podhmo/minigo/vm"),
+				Sel: ast.NewIdent(sel),
+			}},
+		}
+	}
+
+	t.Run("no twin hook, spelling matches", func(t *testing.T) {
+		v := &VM{H: Hooks{HostTwin: func(hostbridge.Type) *runtime.TypeDef { return nil }}}
+		if !v.hostTypedefIs(rt, mkTD(ert.Name())) {
+			t.Fatal("spelled *pkgpath.T must match the minted want")
+		}
+	})
+	t.Run("no twin hook, spelling differs", func(t *testing.T) {
+		v := &VM{H: Hooks{HostTwin: func(hostbridge.Type) *runtime.TypeDef { return nil }}}
+		if v.hostTypedefIs(rt, mkTD("Other")) {
+			t.Fatal("a differently-spelled *other.T must not match")
+		}
+		if v.hostTypedefIs(rt, &runtime.TypeDef{Kind: runtime.KindPointer}) {
+			t.Fatal("an unspellable *T must not match")
+		}
+	})
+	t.Run("twin resolves through the hook", func(t *testing.T) {
+		// the element's twin exists: want is the canonical *T over it,
+		// and the spelled *pkgpath.T typedef compares equal to it.
+		twin := &runtime.TypeDef{
+			Name: "vm." + ert.Name(),
+			Kind: runtime.KindStruct,
+			Pkg:  &runtime.Package{Path: "github.com/podhmo/minigo/vm"},
+		}
+		v := &VM{H: Hooks{HostTwin: func(r hostbridge.Type) *runtime.TypeDef {
+			if r == ert {
+				return twin
+			}
+			return nil
+		}}}
+		if !v.hostTypedefIs(rt, mkTD(ert.Name())) {
+			t.Fatal("resolved-twin *T must match the spelled typedef")
+		}
+	})
 }
