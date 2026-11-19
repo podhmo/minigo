@@ -113,10 +113,7 @@
   - [x] **M4-3d インスタンス化の typedef を切り替える**: M4-3b の表へコピーを集約する。型引数が異なる型、別宣言の同名型、別 Session の分離を確認する。
 - [x] **M4-4 host twin 系の helper を消す（1 つにつき 1 PR）**: 対象は `hostTwinIs`、`hostNilTwin`、`sameSpelledTwin`、`HostNamedIs`/`HostTwinOf`、`sourceTwinOf`。完了条件: 各 PR が pin 済みのリグレッションケースで裏付けられている。→ `HostNamedIs`/`HostTwinOf` を除く 4 つは除去済み（PR #1170〜#1172）。残りの2つは intern 表で一意化できない typedef への fallback として残留が正しいと判断（docs/open-questions.md、二段階の capability 注入は複雑化のため不採用）。除去は intern 拡張後の別タスクとした
 - [ ] **intern 表を拡張して `HostNamedIs`/`HostTwinOf` を除去する**: intern 表が一意化できない typedef（host-minted の name-only tag、無名ポインタ、HostScalar box）への fallback として `HostNamedIs`/`HostTwinOf` が残っている（runtime/value.go）。intern 表の対象を広げるとともに、正規化が intern 前に使う宣言検索（`Engine.hostTwin`）の置き換えを設計する。VM・runtime・builtin・hostbridge の利用側を移し、名前付きスカラーと無名ポインタの既存ケースを固定する。[対応案](./follow-up.md)
-- [-] **M4-5 代入可能性と変換可能性を semantics に移す**: `tdShapeEq`、`underlyingShape`/`convShapeEq`、`structFieldsEq` を、`AssignableTo`/`ConvertibleTo`/`Identical` として移す（消すのではない）。`peelAlias` は `TypeOf` の解決に含める。 判定の VM からの抽出は実装済み。semantics への移設または配置の決定が残る。 [follow-up.md](./follow-up.md)
-  - [-] **M4-5a 同一性とエイリアス**: `Identical` と `TypeOf` の alias 解決を先に導入する。定義型・エイリアス、構造体のタグ、パッケージ固有名の比較を固定する。
-  - [-] **M4-5b 代入可能性**: M4-5a の結果を使って `AssignableTo` を移す。型なし定数、named/unnamed の組み合わせ、インタフェース充足を既存挙動と照合する。
-  - [-] **M4-5c 変換可能性**: `ConvertibleTo` を移し、構造・タグや数値など、代入の規則と結果が異なるケースを分けて検証する。
+- [x] **M4-5 代入可能性と変換可能性の配置**: 現行境界を採用し、比較器は `runtime` に残す。宣言側の呼び手が出た時点で `Service` に判定を足す（分割の記録は [semantics-api.md](./references/semantics-api.md#判定の配置m4-5-の決着)）。 [follow-up.md](./follow-up.md)
 - [-] **M4-6 ジェネリクス推論を分割する**: TypeID の上での単一化は `semantics` に、引数の値から TypeID への対応づけは実行側のアダプタに置く。インスタンスキャッシュのキーは `(関数宣言, []TypeID)` にする。完了条件: 「per-call key spelling」の TODO が解消する。 推論・明示インスタンスの TypeID キーは実装済み。単一化の配置と chunk キャッシュの移行が残る。 [follow-up.md](./follow-up.md)
   - [-] **M4-6a TypeID 上の単一化**: M4-3 のキーを使い、値の取り出しを実行側アダプタに残して推論を移す。制約、部分指定、推論不能の診断を固定する。
   - [-] **M4-6b インスタンスキャッシュのキー**: M4-6a のあとに `(関数宣言, []TypeID)` へ切り替える。正しいキャッシュ再利用と衝突がないことを確認し、既存のジェネリクスベンチで差分を記録する。
