@@ -1730,16 +1730,58 @@ type mapStore struct {
 	Keys  []Value // canonical key per Order slot — a NaN canonical key is
 	// a fresh nonce on every CanonicalKey call, so iteration remembers
 	// the one used at insert instead of recomputing it.
-	// shared marks Order/Keys as handed to an in-place walk
-	// ([Map.BeginWalk]): the next Delete copies them once (copy on
-	// write) instead of shifting them under the walker, and clears the
-	// flag — later deletes shift the private copy. Atomic because
-	// read-only walks may start from several goroutines at once.
-	shared atomic.Bool
+	// pos maps each live canonical key to its Order/Keys slot; built
+	// lazily once the map is big enough that Delete's linear scan
+	// costs more than the bookkeeping.
+	pos map[Value]int
+	// dead counts tombstoned slots. Order stays sparse until the share
+	// of dead slots crosses the compaction threshold.
+	dead int
 	// dels counts removals (Delete, Clear) through any header, so a
 	// walker can tell that every slot it walks is still present without
 	// a lookup.
 	dels uint64
+}
+
+// orderPos is the order-map size at which Delete switches from a
+// linear scan to the pos index.
+const orderPos = 64
+
+// buildPos indexes every live canonical key's Order slot.
+func (s *mapStore) buildPos() {
+	s.pos = make(map[Value]int, len(s.Order))
+	for i, ck := range s.Keys {
+		if ck != nil {
+			s.pos[ck] = i
+		}
+	}
+}
+
+// compact drops tombstoned slots, restoring a dense Order/Keys (and
+// the pos index over them). Held MapWalk/iterator snapshots keep the
+// old sparse arrays and skip the holes themselves.
+func (s *mapStore) compact() {
+	if s.dead == 0 {
+		return
+	}
+	n := len(s.Pairs)
+	order := make([]Value, 0, n)
+	keys := make([]Value, 0, n)
+	var pos map[Value]int
+	if s.pos != nil {
+		pos = make(map[Value]int, n)
+	}
+	for i, ck := range s.Keys {
+		if ck == nil {
+			continue
+		}
+		if pos != nil {
+			pos[ck] = len(order)
+		}
+		order = append(order, s.Order[i])
+		keys = append(keys, ck)
+	}
+	s.Order, s.Keys, s.pos, s.dead = order, keys, pos, 0
 }
 
 // mapBox is a [Map] and its first store in one allocation: the common
@@ -1769,8 +1811,11 @@ func (m *Map) store() *mapStore {
 // MapWalk is an in-place walk over a [Map]'s entries as they were when
 // it began — the allocation-free counterpart of [Map.SnapshotKeys]. An
 // entry inserted meanwhile is not produced, an entry deleted before its
-// turn is skipped, and values read live. It needs no release: the map
-// copies its order slices on the first Delete after the walk began.
+// turn is skipped (its slot is tombstoned, so it reads as absent), and
+// values read live. It needs no release: the map's order arrays are
+// only ever tombstoned in place or replaced wholesale by compaction,
+// never shifted under the walker. Len may over-count while tombstones
+// are outstanding — At/Key answer false for them.
 type MapWalk struct {
 	s         *mapStore
 	display   []Value
@@ -1792,10 +1837,12 @@ func (m *Map) Header() *Map {
 func (m *Map) Clone() *Map {
 	c := NewMap(m.Typ, m.IfaceKey)
 	if s := m.mapStore; s != nil {
+		s.compact()
 		cs := c.mapStore
 		maps.Copy(cs.Pairs, s.Pairs)
 		cs.Order = slices.Clone(s.Order)
 		cs.Keys = slices.Clone(s.Keys)
+		cs.pos = maps.Clone(s.pos)
 	}
 	return c
 }
@@ -1803,9 +1850,9 @@ func (m *Map) Clone() *Map {
 // BeginWalk starts an in-place walk over m's entries.
 func (m *Map) BeginWalk() *MapWalk {
 	s := m.store()
-	if !s.shared.Load() {
-		s.shared.Store(true)
-	}
+	// compact first: slots deleted before the walk should not occupy it
+	// — only entries deleted after this point skip as the walk goes.
+	s.compact()
 	return &MapWalk{s: s, display: s.Order, canonical: s.Keys, dels: s.dels}
 }
 
@@ -1815,20 +1862,27 @@ func (w *MapWalk) Len() int { return len(w.display) }
 // At returns slot i's script key and current value; ok is false when the
 // entry was removed since the walk began.
 func (w *MapWalk) At(i int) (k, v Value, ok bool) {
+	if k = w.display[i]; k == nil {
+		return nil, nil, false // tombstoned slot
+	}
 	ck := w.canonical[i]
 	v, ok = w.s.Pairs[ck]
-	return w.display[i], v, ok
+	return k, v, ok
 }
 
 // Key returns slot i's script key; ok is false when the entry was
 // removed since the walk began. It skips the lookup while nothing was
 // removed.
 func (w *MapWalk) Key(i int) (Value, bool) {
+	k := w.display[i]
+	if k == nil {
+		return nil, false // tombstoned slot
+	}
 	if w.s.dels == w.dels {
-		return w.display[i], true
+		return k, true
 	}
 	_, ok := w.s.Pairs[w.canonical[i]]
-	return w.display[i], ok
+	return k, ok
 }
 
 // canonicalKey is the key k stores under in m.
@@ -1844,13 +1898,16 @@ func (m *Map) Len() int {
 	if m.mapStore == nil {
 		return 0
 	}
-	return len(m.Order)
+	return len(m.Pairs)
 }
 
 // At returns the i-th entry in insertion order: the script key and its
-// current value.
+// current value. Tombstoned slots compact first, so i counts live
+// entries.
 func (m *Map) At(i int) (Value, Value) {
-	return m.Order[i], m.Pairs[m.Keys[i]]
+	s := m.mapStore
+	s.compact()
+	return s.Order[i], s.Pairs[s.Keys[i]]
 }
 
 // Get looks up the script key k. A NaN key is never found. To look up a
@@ -1869,10 +1926,23 @@ func (m *Map) Get(k Value) (Value, bool) {
 // entry is still present with [Map.LookupCanonical] on the canonical
 // key; [Map.Get] on a NaN script key would never find it.
 func (m *Map) SnapshotKeys() (display, canonical []Value) {
-	if m.mapStore == nil {
+	s := m.mapStore
+	if s == nil {
 		return nil, nil
 	}
-	return append([]Value(nil), m.Order...), append([]Value(nil), m.Keys...)
+	if s.dead == 0 {
+		return append([]Value(nil), s.Order...), append([]Value(nil), s.Keys...)
+	}
+	display = make([]Value, 0, len(s.Pairs))
+	canonical = make([]Value, 0, len(s.Pairs))
+	for i, ck := range s.Keys {
+		if ck == nil {
+			continue
+		}
+		display = append(display, s.Order[i])
+		canonical = append(canonical, ck)
+	}
+	return display, canonical
 }
 
 // LookupCanonical looks up a canonical key taken from Pairs or
@@ -1895,15 +1965,26 @@ func (m *Map) Insert(k, v Value) {
 	if _, exists := s.Pairs[ck]; !exists {
 		s.Order = append(s.Order, k)
 		s.Keys = append(s.Keys, ck)
+		if s.pos != nil {
+			s.pos[ck] = len(s.Order) - 1
+		} else if len(s.Order) >= orderPos {
+			s.buildPos()
+		}
 	}
 	s.Pairs[ck] = v
 }
 
 // Delete removes the script key k and reports whether it was present. A
 // NaN key is never present, as in Go.
+//
+// The slot is tombstoned — nil in Order/Keys — instead of shifted out:
+// walkers and iterators already check the entry against Pairs, so a
+// tombstone reads as "deleted before the turn" everywhere, and Order
+// never shifts under a held snapshot. Past orderPos entries the slot
+// comes from the pos index instead of a linear scan, and once dead
+// slots dominate the store compacts — deletes are O(1) amortized
+// rather than O(n) each.
 func (m *Map) Delete(k Value) bool {
-	// The canonical key stored per slot tells which order slot to drop —
-	// a stale order entry would render and range as `k:<nil>`.
 	if m.mapStore == nil {
 		return false
 	}
@@ -1914,20 +1995,30 @@ func (m *Map) Delete(k Value) bool {
 	}
 	delete(s.Pairs, ck)
 	s.dels++
-	for i := range s.Order {
-		if s.Keys[i] == ck {
-			if s.shared.Load() {
-				// a walk holds the current arrays: drop the slot into
-				// fresh ones instead of shifting under it. The copy is
-				// private, so later deletes shift it in place.
-				s.Order = slices.Delete(slices.Clone(s.Order), i, i+1)
-				s.Keys = slices.Delete(slices.Clone(s.Keys), i, i+1)
-				s.shared.Store(false)
+	i := -1
+	if s.pos != nil {
+		j, ok := s.pos[ck]
+		delete(s.pos, ck)
+		// pos is authoritative but defended: a stale or missing entry
+		// rescans rather than tombstoning the wrong slot or none.
+		if ok && j < len(s.Keys) && s.Keys[j] == ck {
+			i = j
+		}
+	}
+	if i < 0 {
+		for j, kj := range s.Keys {
+			if kj == ck {
+				i = j
 				break
 			}
-			s.Order = append(s.Order[:i], s.Order[i+1:]...)
-			s.Keys = append(s.Keys[:i], s.Keys[i+1:]...)
-			break
+		}
+	}
+	if i >= 0 {
+		s.Order[i] = nil
+		s.Keys[i] = nil
+		s.dead++
+		if s.dead >= 32 && s.dead*2 >= len(s.Order) {
+			s.compact()
 		}
 	}
 	return true
@@ -1939,6 +2030,8 @@ func (m *Map) Clear() {
 	s.Pairs = map[Value]Value{}
 	s.Order = nil
 	s.Keys = nil
+	s.pos = nil
+	s.dead = 0
 	s.dels++
 }
 
