@@ -19,10 +19,8 @@
 package vm
 
 import (
-	"errors"
 	"fmt"
 	"go/ast"
-	"io/fs"
 	"reflect"
 	"unsafe"
 
@@ -40,14 +38,11 @@ var marshalHost *hostbridge.Marshal
 
 func init() {
 	marshalHost = &hostbridge.Marshal{
-		Materialize: materializeDefault,
-		ConstArg:    hostConstArg,
-		AdaptFunc:   adaptFunc,
-		AdaptFuncOpaque: func(x runtime.Value, ft reflect.Type, vc runtime.VMCaller) (reflect.Value, error) {
-			return adaptFuncOut(x, ft, vc, true)
-		},
-		AdaptIface: adaptIface,
-		HostErr: func(vc runtime.VMCaller) func(runtime.MemberCaller, runtime.Value) error {
+		Materialize:  materializeDefault,
+		ConstArg:     hostConstArg,
+		AnchorCaller: callbackContext,
+		AnchorMember: callbackMemberContext,
+		HostErr: func(vc runtime.CallerRef) func(runtime.MemberCaller, runtime.Value) error {
 			m := vmOf(vc)
 			if m == nil {
 				return nil
@@ -402,202 +397,12 @@ var hostConstKindNames = map[reflect.Kind]string{
 	reflect.Float32: "float32", reflect.Float64: "float64",
 }
 
-// adaptIface reports a scriptIface-family proxy for v when v declares
-// every method interface t requires. Pure reflect cannot fabricate
-// interface impls, so the adapter's static method set must contain t's
-// — and the proxy variant is picked by whether the script declares the
-// OPTIONAL-probe methods (io.WriterTo/io.ReaderFrom, asserted by
-// io.Copy and friends): a Read-only script value adapted to io.Reader
-// must NOT satisfy WriterTo, or io.Copy calls a method that does not
-// exist and returns its error instead of copying through Read.
-func adaptIface(v runtime.Value, t reflect.Type, vc runtime.MemberCaller) (reflect.Value, bool) {
-	if vc == nil {
-		return reflect.Value{}, false
-	}
-	// script containers only — a struct value or a pointer box (cell,
-	// field/index ref) or named tag carrying one. The IfaceMember probes
-	// below apply the receiver rule to whatever box arrived.
-	switch v.(type) {
-	case *runtime.Struct, *runtime.Named,
-		*runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
-	default:
-		return reflect.Value{}, false
-	}
-	// v is the arg as passed — a bare *Struct or a pointer box wrapping
-	// it. Go stores the pointer when the caller passes &s, so the
-	// adapter's declared surface must come from that box's method set.
-	si := &scriptIface{vc: vc, recv: v}
-	// the probe answers "does the arg offer this method" — the value's
-	// method set under Go's receiver rule, so a bare struct no longer
-	// advertises a WriteTo it could never satisfy.
-	_, hasWT := runtime.IfaceMember(vc, v, "WriteTo")
-	_, hasRF := runtime.IfaceMember(vc, v, "ReadFrom")
-	var proxy any = si
-	switch {
-	case hasWT && hasRF:
-		proxy = scriptIfaceWTRF{si}
-	case hasWT:
-		proxy = scriptIfaceWT{si}
-	case hasRF:
-		proxy = scriptIfaceRF{si}
-	}
-	st := reflect.TypeOf(proxy)
-	if !st.Implements(t) {
-		// the fs.FS family sits beside the io surface above: a script
-		// value declaring Open — an interpreted embed.FS, or a script
-		// type with an Open method — adapts through scriptFS. It is
-		// probed only when the io proxy cannot serve t, so a script
-		// io.Reader keeps the honest WriteTo/ReadFrom surface.
-		if fsv := scriptFSFor(vc, v); fsv != nil && reflect.TypeOf(fsv).Implements(t) {
-			proxy = fsv
-			st = reflect.TypeOf(proxy)
-		}
-		if !st.Implements(t) {
-			// fs.File beside it: a script value declaring Stat — an
-			// embed openFile, a script file type, or a file a host
-			// handed back — adapts through the same per-file probe
-			// Open results get.
-			if fv := scriptFileFor(vc, v); fv != nil && reflect.TypeOf(fv).Implements(t) {
-				proxy = fv
-				st = reflect.TypeOf(proxy)
-			}
-		}
-	}
-	if !st.Implements(t) {
-		return reflect.Value{}, false
-	}
-	for i := 0; i < t.NumMethod(); i++ {
-		if _, ok := runtime.IfaceMember(vc, v, t.Method(i).Name); !ok {
-			return reflect.Value{}, false
-		}
-	}
-	out := reflect.New(t).Elem()
-	out.Set(reflect.ValueOf(proxy))
-	return out, true
-}
-
-// errOut extracts the error slot of a script (x, err) pair: host error
-// sentinels (io.EOF) arrive as GoValues and pass through verbatim so
-// identity comparisons host-side still hold; a script error value (a
-// boxed typed nil included — it is a non-nil error) goes through
-// hostErr so it reads back as itself once the host returns it.
-func errOut(vc runtime.MemberCaller, rs []runtime.Value, i int) error {
-	if i >= len(rs) {
-		return nil
-	}
-	switch e := runtime.Unwrap(rs[i]).(type) {
-	case nil, runtime.Nil, *runtime.TypedNil:
-		return nil
-	case *runtime.IfaceNil:
-		if runtime.BoxedNilTyp(e) == nil {
-			return nil
-		}
-		return hostErr(vc, rs[i])
-	case *runtime.GoValue:
-		if err, ok := e.V.(error); ok {
-			return err
-		}
-		return fmt.Errorf("%v", e.V)
-	default:
-		return hostErr(vc, rs[i])
-	}
-}
-
-// hostErr boxes a script error value for host code through the
-// engine's HostErr hook, falling back to the scriptIface proxy (whose
-// Error forwards to the script method).
-func hostErr(vc runtime.MemberCaller, v runtime.Value) error {
-	vc = callbackMemberContext(vc)
-	if m := vmOf(vc); m != nil && m.H.HostErr != nil {
-		return m.H.HostErr(vc, v)
-	}
-	return &scriptIface{vc: vc, recv: v}
-}
-
 // vmOf reports the VM behind a caller (nil for a foreign caller).
 func vmOf(vc runtime.CallerRef) *VM {
 	if b, ok := vc.(ownerVMBearer); ok {
 		return b.ownerVM()
 	}
 	return nil
-}
-
-func intOut(rs []runtime.Value, i int) int64 {
-	if i >= len(rs) {
-		return 0
-	}
-	switch n := runtime.Unwrap(rs[i]).(type) {
-	case int64:
-		return n
-	case float64:
-		return int64(n)
-	}
-	return 0
-}
-
-// byteSliceArg boxes a host []byte as a script slice of byte-tagged
-// elements — the shape a script `[]byte` parameter receives.
-func byteSliceArg(p []byte) *runtime.Slice {
-	el := make([]runtime.Value, len(p))
-	for i, b := range p {
-		el[i] = runtime.ByteValue(b)
-	}
-	return &runtime.Slice{Elems: el, Typ: &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: ast.NewIdent("byte")}}}
-}
-
-// backBytes mirrors a script callee's writes to the boxed slice back
-// into the host buffer — the []byte crossing is element-copied, so
-// fills the callee performed would otherwise be invisible to the host.
-func backBytes(dst []byte, src runtime.Value, n int) {
-	sl, ok := src.(*runtime.Slice)
-	if !ok {
-		return
-	}
-	for i := 0; i < n && i < len(sl.Elems) && i < len(dst); i++ {
-		if b, ok := runtime.Unwrap(sl.Elems[i]).(int64); ok {
-			dst[i] = byte(b)
-		}
-	}
-}
-
-// strOut/boolOut/fileModeOut extract scalar slots of a script method's
-// results — intOut's siblings for the fs proxies' non-int returns. A
-// constant-domain or host-boxed FileMode still reads correctly.
-func strOut(rs []runtime.Value, i int) string {
-	if i >= len(rs) {
-		return ""
-	}
-	str, _ := runtime.Unwrap(rs[i]).(string)
-	return str
-}
-
-func boolOut(rs []runtime.Value, i int) bool {
-	if i >= len(rs) {
-		return false
-	}
-	b, _ := runtime.Unwrap(rs[i]).(bool)
-	return b
-}
-
-func fileModeOut(rs []runtime.Value, i int) fs.FileMode {
-	if i >= len(rs) {
-		return 0
-	}
-	v := runtime.Unwrap(rs[i])
-	if u, ok := v.(*runtime.UConst); ok {
-		if mv, err := materializeDefault(u); err == nil {
-			v = runtime.Unwrap(mv)
-		}
-	}
-	switch m := v.(type) {
-	case int64:
-		return fs.FileMode(uint32(m))
-	case *runtime.GoValue:
-		if fm, ok := m.V.(fs.FileMode); ok {
-			return fm
-		}
-	}
-	return 0
 }
 
 // hostSeqFunc adapts a script iter.Seq / iter.Seq2 value to the host
@@ -1095,8 +900,8 @@ func funcMapElem(x runtime.Value, vc runtime.VMCaller) (reflect.Value, error) {
 		if sig == nil {
 			return reflect.Value{}, fmt.Errorf("FuncMap value %T has no declared signature", x)
 		}
-		fv, err := adaptFuncWith(x, sigHostType(sig), vc, adaptOpts{
-			funcMap: funcMapArgs(vmOf(vc), sig, &runtime.TypeDef{Pkg: pkg, File: file, Binds: binds}),
+		fv, err := marshalHost.AdaptFuncWith(x, sigHostType(sig), vc, hostbridge.AdaptOpts{
+			FuncMap: funcMapArgs(vmOf(vc), sig, &runtime.TypeDef{Pkg: pkg, File: file, Binds: binds}),
 		})
 		if err != nil {
 			return reflect.Value{}, err
@@ -1256,12 +1061,12 @@ func (v *VM) funcMapParamType(ctx *runtime.TypeDef, e ast.Expr) *runtime.TypeDef
 	return td
 }
 
-// guard wraps callee so the conversion of the arguments runs on the VM
+// Guard wraps callee so the conversion of the arguments runs on the VM
 // that executes the call — not the one that registered the func when the
 // template runs on another goroutine (an http handler, a `go`
 // statement): there the call reroutes to a child VM, and the conversion
 // (type hooks, the interface memo) belongs to that VM.
-func (fs *funcMapSig) guard(callee runtime.Value) runtime.Value {
+func (fs *funcMapSig) Guard(callee runtime.Value) runtime.Value {
 	if !fs.convert {
 		return callee
 	}
@@ -1282,137 +1087,6 @@ func (fs *funcMapSig) guard(callee runtime.Value) runtime.Value {
 		}
 		return c.Call(callee, conv)
 	}}
-}
-
-// funcMapPanicValue maps the error a script FuncMap func came back with
-// to the value the host panics with. text/template recovers that panic
-// in safeCall — an error stands as is, anything else prints with %v —
-// so a script panic must cross as its payload: panic("boom") reads
-// `error calling p: boom`, not the `panic: boom` the *runtime.Panic
-// renders. Other failures (a trap, a mismatched argument) keep their
-// error.
-func funcMapPanicValue(err error, vc runtime.VMCaller) any {
-	var p *runtime.Panic
-	if !errors.As(err, &p) || p == nil {
-		return err
-	}
-	switch x := p.Value.(type) {
-	case *runtime.GoValue:
-		return x.V
-	case *runtime.Named:
-		if gv, ok := x.V.(*runtime.GoValue); ok {
-			return gv.V
-		}
-	}
-	if _, ok := runtime.IfaceMember(vc, p.Value, "Error"); ok {
-		if e := hostErr(vc, p.Value); e != nil {
-			return e
-		}
-	}
-	if s, ok := runtime.IfaceCallString(vc, p.Value, "String"); ok {
-		return s
-	}
-	return marshalHost.DeepHost(p.Value, vc, marshalHost.NewWalk())
-}
-
-// adaptFunc wraps a script callable as a host-typed func so methods taking
-// a func parameter (sync.Once.Do, sort callbacks, WalkDir-style visitors)
-// can invoke it: calls run back on vc — the VM the host call is executing
-// on, which is the right goroutine for synchronous host callbacks. A host
-// that retains the func and calls it later from another goroutine
-// (sync.WaitGroup.Go, time.AfterFunc) lands on vc.Call from a foreign
-// goroutine, which reroutes to a spawned child VM — see Call.
-func adaptFunc(x runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.Value, error) {
-	return adaptFuncOut(x, t, vc, false)
-}
-
-// adaptFuncOut is adaptFunc; opaque hands a result to an `any` result
-// slot as is rather than marshaling it (see hostFieldValue).
-func adaptFuncOut(x runtime.Value, t reflect.Type, vc runtime.VMCaller, opaque bool) (reflect.Value, error) {
-	return adaptFuncWith(x, t, vc, adaptOpts{opaque: opaque})
-}
-
-// adaptOpts tunes adaptFuncWith beyond adaptFunc's defaults.
-type adaptOpts struct {
-	// opaque hands a result to an `any` result slot as is (see
-	// adaptFuncOut).
-	opaque bool
-	// funcMap marks a func registered through template.FuncMap: its
-	// arguments convert to the declared script types, and a script
-	// panic reaches the host as its payload (see funcMapPanicValue).
-	funcMap *funcMapSig
-}
-
-// adaptFuncWith is adaptFuncOut with the full option set.
-func adaptFuncWith(x runtime.Value, t reflect.Type, vc runtime.VMCaller, o adaptOpts) (reflect.Value, error) {
-	opaque := o.opaque
-	if vc == nil {
-		return reflect.Value{}, fmt.Errorf("cannot adapt %T to %s off-VM", x, t)
-	}
-	switch x.(type) {
-	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc, *runtime.Named:
-	default:
-		return reflect.Value{}, fmt.Errorf("cannot use %T as %s", x, t)
-	}
-	fv := reflect.MakeFunc(t, func(in []reflect.Value) []reflect.Value {
-		vc := callbackContext(vc)
-		callee, call := x, vc.Call
-		if o.funcMap != nil {
-			callee = o.funcMap.guard(x)
-			if cc, ok := vc.(runtime.CatchCaller); ok {
-				call = cc.CallCatching
-			}
-		}
-		sargs := make([]runtime.Value, 0, len(in))
-		for i, a := range in {
-			if t.IsVariadic() && i == len(in)-1 {
-				// the host packs a ...T call into one slice; the script
-				// callee collects separate args back into its own ...T.
-				for j := range a.Len() {
-					sargs = append(sargs, hostbridge.GoSlotValueOf(a.Index(j)))
-				}
-				continue
-			}
-			sargs = append(sargs, hostbridge.GoSlotValueOf(a))
-		}
-		r, err := call(callee, sargs)
-		if err != nil {
-			if o.funcMap != nil {
-				panic(funcMapPanicValue(err, vc))
-			}
-			panic(err)
-		}
-		nout := t.NumOut()
-		var rs []runtime.Value
-		if tup, ok := r.(*runtime.Tuple); ok {
-			rs = tup.Elems
-		} else {
-			rs = []runtime.Value{r}
-		}
-		out := make([]reflect.Value, nout)
-		for i := range out {
-			var rv reflect.Value
-			var err error
-			if opaque && i < len(rs) && t.Out(i) == anyType {
-				// the pool stores the result verbatim, exactly as Put
-				// does: marshaling would lose the script type of a
-				// named non-struct (slog's `(*buffer.Buffer)(&b)`
-				// reading back as *[]uint8) and run a struct's
-				// niladic methods via its host projection.
-				rv, err = hostbridge.OpaqueStoreArg("*sync.Pool", "Put", 0, rs[i], materializeDefault)
-			} else if i < len(rs) {
-				rv, err = marshalHost.ToReflect(rs[i], t.Out(i), vc)
-			} else {
-				rv, err = marshalHost.ToReflect(runtime.NIL, t.Out(i), vc)
-			}
-			if err != nil {
-				panic(err)
-			}
-			out[i] = rv
-		}
-		return out
-	})
-	return fv, nil
 }
 
 // hostNamedInt reports whether x is a host value of a defined integer

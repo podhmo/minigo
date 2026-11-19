@@ -45,3 +45,21 @@ import とセレクタ名の検査では、コールバック経由の実行が�
 注意点: hook の実体（`adaptFunc`/`funcMapElem` など）は本体から `marshalHost` を参照するので、`var marshalHost = &hostbridge.Marshal{...}` と書くと var 初期化の依存閉路でコンパイルエラーになる。`func init()` で代入して閉路を断つ（init の本体は依存解析の対象外）。
 
 `hostArgAs` はフレーム依存が強いので丸ごとは動かさず、`hostbridge.Lift(x, td, *ArgAsHooks, depth)` として切り出し、`v.hostArgAs` は呼び出しごとに hook を組み立てる薄い wrapper として残した。
+
+### P2-7c の adapter 移行（hostbridge/iface.go, adapt.go, scriptiface_gen.go）
+
+`scriptIface` / `scriptFS` / `scriptFile` 系の script→host interface プロキシと
+`adaptFunc` / `adaptFuncWith` / `adaptIface` / `funcMapPanicValue` を
+`internal/hostbridge` へ移動した。
+
+- `scriptIface` は `m *Marshal` フィールドを持ち、エラースロットの変換
+  (`(m *Marshal) errOut` → `hostErr`) と `ScriptBytes` 高速パスを Marshal 経由で解決する。
+- `Marshal` hook 追加: `AnchorCaller` / `AnchorMember`（vm の
+  `callbackContext` / `callbackMemberContext` の注入口 — callback 呼び出し外の
+  member 選択や marshal を idle anchor VM に振る）。`HostErr` の引数を
+  `CallerRef` へ広げ MemberCaller 経路からも使えるようにした。
+- `adaptOpts` は公開の `AdaptOpts` になり `FuncMapGuard` インターフェース
+  （`Guard(callee)`）で vm の `*funcMapSig` を受け取る。`funcMapSig` 自体は
+  `v.hostArgAsChecked` を使うため vm 側に残す（`guard` → `Guard` に公開化）。
+- `scriptiface_gen.go` の生成先を `internal/hostbridge` に変更
+  （`genifaces` の `out` と `//go:generate` ディレクティブを iface.go へ移動）。

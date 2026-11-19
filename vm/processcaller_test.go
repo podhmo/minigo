@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -186,7 +187,7 @@ func TestFieldFactoryRemainsReusableAcrossRootCalls(t *testing.T) {
 		// Generic value/field adaptation is deliberately outside the initial
 		// retained host-argument boundary. Source packages use persistent
 		// Pool.New factories (notably go/printer's package-global pool).
-		fv, err := adaptFunc(factory, reflect.TypeFor[func() any](), v)
+		fv, err := marshalHost.AdaptFuncWith(factory, reflect.TypeFor[func() any](), v, hostbridge.AdaptOpts{})
 		if err != nil {
 			return nil, err
 		}
