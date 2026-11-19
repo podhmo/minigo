@@ -11,6 +11,7 @@ package minigo
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"go/ast"
 	"io"
@@ -26,6 +27,8 @@ import (
 	"github.com/podhmo/minigo/internal/bind"
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/stdlib"
+	stdcontext "github.com/podhmo/minigo/internal/stdlib/context"
+	stdtime "github.com/podhmo/minigo/internal/stdlib/time"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -33,15 +36,6 @@ var (
 	memStatsOnce     sync.Once
 	memStatsSnapshot goruntime.MemStats
 )
-
-// feedPump is one pump lifecycle: done retires it, exited closes when
-// the goroutine returns, and dropped records a fire it held but never
-// delivered (read only after exited closes).
-type feedPump struct {
-	done    chan struct{}
-	exited  chan struct{}
-	dropped bool
-}
 
 // hostType delegates to the shared binding machinery in internal/stdlib.
 func hostType(name string, new func() any) *runtime.TypeDef {
@@ -108,13 +102,13 @@ func (h *hostHelpers) out() io.Writer {
 	return h.env.Out()
 }
 
-func (h *hostHelpers) fn(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
-	return h.fnvc(name, func(_ runtime.VMCaller, a []any) (any, error) { return f(a) }, target...)
+func (h *hostHelpers) Fn(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
+	return h.Fnvc(name, func(_ runtime.VMCaller, a []any) (any, error) { return f(a) }, target...)
 }
 
 // fnvc is fn for bindings that need the caller (e.g. deadlock-wait
 // bookkeeping through the channel a host call hands to the script).
-func (h *hostHelpers) fnvc(name string, f func(runtime.VMCaller, []any) (any, error), target ...any) *runtime.BuiltinFunc {
+func (h *hostHelpers) Fnvc(name string, f func(runtime.VMCaller, []any) (any, error), target ...any) *runtime.BuiltinFunc {
 	bf := &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		a := make([]any, len(args))
 		for i, v := range args {
@@ -135,7 +129,7 @@ func (h *hostHelpers) fnvc(name string, f func(runtime.VMCaller, []any) (any, er
 // fnvcRaw is an arity-checked fnvc that also hands f the raw script
 // args — an error argument must reach hostErrOf unflattened so a script
 // error keeps its identity through the host (hostbridge.GoNative would format it).
-func (h *hostHelpers) fnvcRaw(name string, arity int, f func(runtime.VMCaller, []any, []runtime.Value) (any, error), target ...any) *runtime.BuiltinFunc {
+func (h *hostHelpers) FnvcRaw(name string, arity int, f func(runtime.VMCaller, []any, []runtime.Value) (any, error), target ...any) *runtime.BuiltinFunc {
 	bf := &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) != arity {
 			return nil, fmt.Errorf("%s needs %d args, got %d", name, arity, len(args))
@@ -156,20 +150,42 @@ func (h *hostHelpers) fnvcRaw(name string, arity int, f func(runtime.VMCaller, [
 	return bf
 }
 
-// fn1/fn2/fn3 are arity-checked variants.
+// Unexported spellings keep the existing call sites; the exported
+// variants satisfy stdlib.Helpers for the moved installers (P2-12c).
+func (h *hostHelpers) fn(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
+	return h.Fn(name, f, target...)
+}
+
+func (h *hostHelpers) fnvcRaw(name string, arity int, f func(runtime.VMCaller, []any, []runtime.Value) (any, error), target ...any) *runtime.BuiltinFunc {
+	return h.FnvcRaw(name, arity, f, target...)
+}
+
 func (h *hostHelpers) fn1(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
-	return h.arity(name, 1, f, target...)
+	return h.Fn1(name, f, target...)
 }
 
 func (h *hostHelpers) fn2(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
-	return h.arity(name, 2, f, target...)
+	return h.Fn2(name, f, target...)
 }
 
 func (h *hostHelpers) fn3(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
-	return h.arity(name, 3, f, target...)
+	return h.Fn3(name, f, target...)
 }
 
-func (h *hostHelpers) arity(name string, n int, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
+// Fn1/Fn2/Fn3 are arity-checked variants.
+func (h *hostHelpers) Fn1(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
+	return h.Arity(name, 1, f, target...)
+}
+
+func (h *hostHelpers) Fn2(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
+	return h.Arity(name, 2, f, target...)
+}
+
+func (h *hostHelpers) Fn3(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
+	return h.Arity(name, 3, f, target...)
+}
+
+func (h *hostHelpers) Arity(name string, n int, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
 	bf := &runtime.BuiltinFunc{Name: name, Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) < n {
 			return nil, fmt.Errorf("%s needs %d args, got %d", name, n, len(args))
@@ -437,28 +453,56 @@ func errVal(err error) runtime.Value {
 	return stdlib.ErrVal(err)
 }
 
-func namedSized(x any, v int64) runtime.Value {
-	return stdlib.NamedSized(x, v)
-}
-
 // scriptVal delegates to the shared binding machinery in internal/stdlib.
 func scriptVal(v any) runtime.Value {
 	return stdlib.ScriptVal(v)
 }
 
 func str(v any) string {
-	if n, ok := v.(*runtime.Named); ok {
-		return str(n.V)
-	}
-	if u, ok := v.(*runtime.UConst); ok {
-		// a builtin argument position materializes an untyped
-		// constant at its default type — the same fold intOf does.
-		return str(hostbridge.MustNativeConst(u))
-	}
-	if s, ok := v.(string); ok {
-		return s
-	}
-	return fmt.Sprint(v)
+	return stdlib.Str(v)
+}
+
+// timerChanBox/tickerChanBox/afterFuncTimer moved with the time
+// installer (P2-12c); the aliases keep typeid_test.go's references.
+type timerChanBox = stdtime.TimerChanBox
+type afterFuncTimer = stdtime.AfterFuncTimer
+
+// scriptCoro emulates runtime's coro for the iter.Pull/Pull2 linknames;
+// the type lives with the moved context installer (P2-12c).
+type scriptCoro = stdcontext.ScriptCoro
+
+// lockerOf adapts a script Lock/Unlock pair to a sync.Locker (P2-12c).
+func lockerOf(vc runtime.MemberCaller, v any) (sync.Locker, error) {
+	return stdcontext.LockerOf(vc, v)
+}
+
+// syncOnceWrap implements the sync.OnceFunc family (P2-12c).
+func syncOnceWrap(name string, args []runtime.Value) (runtime.Value, error) {
+	return stdcontext.SyncOnceWrap(name, args)
+}
+
+// asCtx coerces a script value to a context.Context (P2-12c).
+func asCtx(v any) (context.Context, error) {
+	return stdcontext.AsCtx(v)
+}
+
+// proxyHostType resolves the public spelling of a host type — the
+// TypeAlias hook for the reflect facade (moved with the time
+// installer, P2-12c).
+func proxyHostType(rt reflect.Type) reflect.Type {
+	return stdtime.ProxyHostType(rt)
+}
+
+// proxyUnwrapHost is the facade's UnwrapHost hook — the inverse of
+// proxyHostType (P2-12c).
+func proxyUnwrapHost(v any, t reflect.Type) (reflect.Value, bool) {
+	return stdtime.ProxyUnwrapHost(v, t)
+}
+
+// proxyHostTypeOf is proxyHostType over a value — the fmt path's %T
+// lookup (P2-12c).
+func proxyHostTypeOf(v any) reflect.Type {
+	return stdtime.ProxyHostTypeOf(v)
 }
 
 func intOf(v any) int {
@@ -814,10 +858,6 @@ func strsSlice(ss []string) runtime.Value {
 	return stdlib.StrsSlice(ss)
 }
 
-func bytesSliceOf(bb [][]byte) any {
-	return stdlib.BytesSliceOf(bb)
-}
-
 // runePred adapts a script callback into a rune predicate — strings'
 // TrimFunc/IndexFunc family and unicode's Is-print predicates call it.
 func runePred(v runtime.ScriptCaller, fn runtime.Value) func(rune) bool {
@@ -826,10 +866,6 @@ func runePred(v runtime.ScriptCaller, fn runtime.Value) func(rune) bool {
 		b, _ := res.(bool)
 		return b
 	}
-}
-
-func runeSlice(rs []rune) any {
-	return stdlib.RuneSlice(rs)
 }
 
 func floatOf(v any) float64 {

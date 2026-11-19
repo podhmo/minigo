@@ -59,7 +59,7 @@ func (e *Engine) installRuntime(h *hostHelpers) {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("runtime.newcoro needs 1 arg, got %d", len(args))
 			}
-			c := &scriptCoro{ch: make(chan struct{})}
+			c := &scriptCoro{Ch: make(chan struct{})}
 			cv := &runtime.GoValue{V: c}
 			// the worker parks in c before running f like gc's
 			// coroutine does, and its exit releases whoever is parked
@@ -68,8 +68,8 @@ func (e *Engine) installRuntime(h *hostHelpers) {
 			// counts toward deadlock detection and a process ending
 			// unwinds a parked side with procExit instead of leaking it.
 			vc.Spawn(&runtime.BuiltinFunc{Name: "runtime.newcoro worker", Fn: func(wc runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
-				defer func() { vm.ParkedChanSend(wc, c.ch) }()
-				vm.ParkedChanRecv(wc, c.ch)
+				defer func() { vm.ParkedChanSend(wc, c.Ch) }()
+				vm.ParkedChanRecv(wc, c.Ch)
 				_, err := wc.Call(args[0], []runtime.Value{cv})
 				return nil, err
 			}}, nil)
@@ -83,8 +83,8 @@ func (e *Engine) installRuntime(h *hostHelpers) {
 			if !ok {
 				return nil, fmt.Errorf("runtime.coroswitch needs a *coro, got %T", hostbridge.GoNative(args[0]))
 			}
-			vm.ParkedChanSend(vc, c.ch) // release the goroutine parked in c…
-			vm.ParkedChanRecv(vc, c.ch) // …and become it
+			vm.ParkedChanSend(vc, c.Ch) // release the goroutine parked in c…
+			vm.ParkedChanRecv(vc, c.Ch) // …and become it
 			return nil, nil
 		}},
 		"memhash": &runtime.BuiltinFunc{Name: "runtime.memhash", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
