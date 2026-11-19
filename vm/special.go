@@ -255,7 +255,10 @@ func (s *specialCtx) Eval(e ast.Expr) (runtime.Value, error) {
 		locals: make([]runtime.Value, ch.NLocals),
 		ltyps:  make([]*runtime.TypeDef, ch.NLocals),
 		upvals: s.f.upvals,
+		v:      s.v,
+		base:   len(s.v.vals),
 	}
+	fr.stack = s.v.vals[fr.base:]
 	// share the caller's slots — slot indices line up by construction;
 	// the locals a quoted form can name are all boxed (P4-2a), so they
 	// arrive as shared cell pointers and writes propagate back.
@@ -272,10 +275,10 @@ func (s *specialCtx) Eval(e ast.Expr) (runtime.Value, error) {
 		fr.locals[i] = &localCell{&runtime.Cell{Elem: runtime.NIL}}
 	}
 	s.v.exec(fr)
-	if len(fr.stack) == 0 {
+	if fr.sp == 0 {
 		return runtime.NIL, nil
 	}
-	return fr.stack[len(fr.stack)-1], nil
+	return fr.stack[fr.sp-1], nil
 }
 
 func (s *specialCtx) Errorf(n ast.Node, formatStr string, args ...any) error {

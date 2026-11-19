@@ -50,6 +50,19 @@ type deferredCall struct {
 type frame struct {
 	fn *runtime.Function
 	ch *bytecode.Chunk
+	// The operand stack is a window on the goroutine's shared arena
+	// (v.vals): vals[base:base+sp]. stack caches that view — re-sliced
+	// by every mutator; a bare read on a stale view still sees the
+	// frame's own operands because nothing but this frame writes its
+	// window, but every write or length change must go through the
+	// mutators so a growth-induced reallocation cannot lose it.
+	v     *VM
+	base  int
+	sp    int
+	stack []runtime.Value
+	// tailParked marks a suspended frame whose window a yield's park
+	// copied out of the arena — the matching restore shifts it back.
+	tailParked bool
 	// locals is the slot array: a *localCell wrapper for every slot the
 	// compiler marked boxed (P4-2 — refs, captures, ptr receivers,
 	// special-form visibility) or that promoted itself at run time, and
@@ -65,7 +78,6 @@ type frame struct {
 	// they hold), so the block recycles even when cells must not.
 	slotRefs []localCell
 	upvals   []*runtime.Cell
-	stack    []runtime.Value
 	ip       int
 
 	defers   []deferredCall // LIFO
@@ -135,8 +147,20 @@ func freeFrame(f *frame) {
 	// truncating first would pin the cells a recycled frame still
 	// references through the stale tail.
 	clear(f.slotRefs)
-	clear(f.stack)
-	f.stack = f.stack[:0]
+	// re-slice before clearing so a stale view (the arena may have
+	// grown past this backing) clears the live window.
+	if f.v != nil {
+		f.stack = f.v.vals[f.base : f.base+f.sp]
+		clear(f.stack)
+		// drop the arena tail only when this window is the top — a
+		// suspended frame's region below stays live.
+		if len(f.v.vals) == f.base+f.sp {
+			f.v.vals = f.v.vals[:f.base]
+		}
+	}
+	f.stack = nil
+	f.base, f.sp = 0, 0
+	f.tailParked = false
 	f.ip = 0
 	for i := range f.defers {
 		f.defers[i] = deferredCall{}
@@ -272,12 +296,47 @@ func (f *frame) putLocal(i int, x runtime.Value) {
 	}
 }
 
-func (f *frame) push(v runtime.Value) { f.stack = append(f.stack, v) }
+// push appends one operand. The reslice to f.base+f.sp keeps len(v.vals)
+// tracking this window's top: any dead tail above (an unwound frame's
+// leftovers) is dropped, never written over.
+func (f *frame) push(x runtime.Value) {
+	v := f.v
+	v.vals = append(v.vals[:f.base+f.sp], x)
+	f.sp++
+	f.stack = v.vals[f.base:]
+}
 
 func (f *frame) pop() runtime.Value {
-	v := f.stack[len(f.stack)-1]
-	f.stack = f.stack[:len(f.stack)-1]
-	return v
+	x := f.stack[f.sp-1]
+	f.sp--
+	f.stack = f.stack[:f.sp]
+	// at the tail the arena shrinks with the pop; below a suspended
+	// window it must not — those operands belong to the frame above.
+	if f.base+f.sp == len(f.v.vals) {
+		f.v.vals = f.v.vals[:f.base+f.sp]
+	}
+	return x
+}
+
+// setSp resizes the window — the in-loop form of a multi-pop.
+func (f *frame) setSp(n int) {
+	f.sp = n
+	f.stack = f.v.vals[f.base : f.base+n]
+	if f.base+n < len(f.v.vals) {
+		f.v.vals = f.v.vals[:f.base+n]
+	}
+}
+
+// refresh re-slices the cached window view — needed before a bare
+// f.stack write when a nested call may have grown the arena past this
+// frame's backing array.
+func (f *frame) refresh() { f.stack = f.v.vals[f.base : f.base+f.sp] }
+
+// stkSet writes operand i — a bare f.stack[i] write could land in a
+// stale backing array after a nested call grew the arena.
+func (f *frame) stkSet(i int, x runtime.Value) {
+	f.refresh()
+	f.stack[i] = x
 }
 
 func (f *frame) pos() token.Pos {

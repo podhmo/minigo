@@ -194,6 +194,12 @@ type VM struct {
 
 	// frames is the live call stack (innermost last); recover() consults it.
 	frames []*frame
+	// vals is the goroutine's contiguous operand stack: each frame's
+	// operand region is the window vals[f.base : f.base+f.sp], ordered
+	// by call. Its length tracks the innermost live frame's top; a
+	// suspended frame's window may sit beyond it while a yield body
+	// parks the tail (see driveFuncIter).
+	vals []runtime.Value
 	// profTick is the Profiler tick this VM last checked in at.
 	profTick uint64
 	// callMu guards callDepth/callGid: the goroutine id owning the
@@ -580,7 +586,7 @@ func (v *VM) Member(base runtime.Value, name string) (m runtime.Value, ok bool) 
 			m, ok = nil, false
 		}
 	}()
-	fr := &frame{fn: &runtime.Function{Name: "<member>"}}
+	fr := &frame{fn: &runtime.Function{Name: "<member>"}, v: v, base: len(v.vals)}
 	return v.selectMember(fr, base, name), true
 }
 
