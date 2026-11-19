@@ -150,25 +150,7 @@ func Func(fn *runtime.Function) error { return funcStrict(fn, false) }
 func FuncStrict(fn *runtime.Function) error { return funcStrict(fn, true) }
 
 func funcStrict(fn *runtime.Function, strict bool) error {
-	if len(fn.Binds) == 0 || fn.Pkg == nil {
-		return compileFuncStrict(fn, strict)
-	}
-	// a generic instantiation compiles once per distinct binds: every
-	// call of an inferred generic mints a fresh Function
-	key, ok := runtime.InstKey(fn.Decl, fn.File, fn.Name, fn.Binds)
-	if ok {
-		if ch, hit := fn.Pkg.InstChunk(key); hit {
-			fn.Chunk = ch
-			return nil
-		}
-	}
-	if err := compileFuncStrict(fn, strict); err != nil {
-		return err
-	}
-	if ok {
-		fn.Pkg.SetInstChunk(key, fn.Decl, fn.Binds, fn.Chunk)
-	}
-	return nil
+	return compileFuncStrict(fn, strict)
 }
 
 func compileFuncStrict(fn *runtime.Function, strict bool) error {

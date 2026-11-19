@@ -20,7 +20,7 @@ var FileBudgets = map[string]int{
 	"cmd/minigo/main.go":                           1231,
 	"compile/assign.go": 926,
 	"compile/call.go":                              1052,
-	"compile/compile.go":                           461,
+	"compile/compile.go":                           443,
 	"compile/constfold.go":                         866,
 	"compile/expr.go":                              577,
 	"compile/fieldtyp.go":                     110,
