@@ -5,7 +5,7 @@ chunk Deferred (params=0 locals=1 results=1)
   0003  OpLocalType
   0004  OpCoerce slot0
   0005  OpMakeClosure k1
-  0006  OpDefer
+  0006  OpDefer csite0
   0007  OpLocalRef slot0
   0008  OpConst k2
   0009  OpSetRefs 1

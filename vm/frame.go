@@ -37,13 +37,20 @@ type deferredCall struct {
 	fn   runtime.Value
 	args []runtime.Value
 	pos  token.Pos
-	// statics holds the call site's per-argument declared typedefs —
-	// inference binds T to the argument's static type at deferred call
-	// time the same way an immediate OpCall does.
-	statics []*runtime.TypeDef
-	// spreadTd is the element typedef a trailing `xs...` argument carried
-	// into the call — type inference still sees `Sum(n...)`'s []int when
-	// the nil slice expanded to zero arguments.
+	// typs carries the call site's resolved arg facts — registration
+	// resolves the site's ArgHint recipes eagerly because the calling
+	// frame they read is gone by the time the deferred call runs.
+	typs callTyps
+}
+
+// callTyps bundles the type facts one call site resolved: the
+// per-argument declared typedefs — inference binds T to the
+// argument's static type the same way an immediate OpCall does —
+// and the element typedef a trailing `xs...` argument carried into
+// the call (`Sum(n...)`'s []int when the nil slice expanded to zero
+// arguments).
+type callTyps struct {
+	statics  []*runtime.TypeDef
 	spreadTd *runtime.TypeDef
 }
 
@@ -86,12 +93,6 @@ type frame struct {
 	// one-frame distance rule
 	retNamed bool // gather named result slots after defers run
 	results  []runtime.Value
-
-	// argbuf/statbuf are OpCall's reusable arg/static scratch (see
-	// popArgsCallSite): a frame issuing millions of calls otherwise allocates
-	// two slices per call.
-	argbuf  []runtime.Value
-	statbuf []*runtime.TypeDef
 
 	// boundLo/boundHi bound a re-entrant loop run (range-over-func yield):
 	// the bounded run executes only while boundLo < ip < boundHi and halts
@@ -174,10 +175,6 @@ func freeFrame(f *frame) {
 	// f.results' backing may be the returned Tuple's Elems — release it
 	// rather than clearing (OpReturn allocates a fresh slice per call).
 	f.results = nil
-	clear(f.argbuf[:cap(f.argbuf)])
-	f.argbuf = f.argbuf[:0]
-	clear(f.statbuf[:cap(f.statbuf)])
-	f.statbuf = f.statbuf[:0]
 	f.boundLo, f.boundHi = 0, 0
 	f.vpack = nil
 	if f.cellsShared {

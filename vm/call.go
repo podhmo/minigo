@@ -239,28 +239,16 @@ func (v *VM) callInPlace(f *frame, callee runtime.Value, argc int, hints []bytec
 }
 
 // inPlaceArgs materializes argc operands off the arena tail — the
-// in-place call's args — when a dispatch arm needs a slice. The caller
-// frame's argbuf backs it; builtins that
-// keep their args take a private copy in callBuiltin like before.
+// in-place call's args — when a dispatch arm needs a slice: they sit
+// contiguously at the tail already, so the arena region IS the args
+// slice. Nothing but this goroutine writes the tail during the call;
+// builtins that keep their args take a private copy in callBuiltin
+// like before.
 func (v *VM) inPlaceArgs(f *frame, argc int, args []runtime.Value) []runtime.Value {
 	if argc < 0 || args != nil {
 		return args
 	}
-	buf := f.argbuf
-	if cap(buf) < argc {
-		buf = make([]runtime.Value, argc)
-	} else {
-		// nil only the delta — len(buf) is the previous call's count,
-		// so [argc, len) is exactly where stale args sit.
-		stale := len(buf)
-		buf = buf[:argc]
-		if argc < stale {
-			clear(f.argbuf[argc:stale])
-		}
-	}
-	copy(buf, v.vals[len(v.vals)-argc:])
-	f.argbuf = buf
-	return buf
+	return v.vals[len(v.vals)-argc:]
 }
 
 // resolveArgHints turns a call site's per-arg recipes into the
@@ -773,36 +761,20 @@ func firstArg(args []runtime.Value) runtime.Value {
 	return args[0]
 }
 
-// popArgs pops argc args off the stack, preceded by the argc static
-// typedefs the compiler emitted above them — one declared typedef per
-// source argument so generic inference binds T to the argument's static
-// type (Go's rule), not the dynamic type the value happens to hold.
-// mode is the OpCall B flag: 1 expands a trailing slice/string spread
-// (`f(xs...)`) and reports the spread slice's element typedef so a
-// generic callee can still infer `Sum(n...)`'s T=int off a nil []int; 2
-// spreads a lone call argument's result tuple (`f(g())` — the only
-// multi-value spread Go allows).
-func (v *VM) popArgs(f *frame, argc int, mode int, pos token.Pos) ([]runtime.Value, []*runtime.TypeDef, *runtime.TypeDef) {
-	return v.popArgsBuf(f, argc, mode, pos, make([]runtime.Value, argc), make([]*runtime.TypeDef, argc))
-}
-
-// popArgsCallSite is the OpCall site path0027s popper (P4-4a):
-// no static-typedef operands exist — the site's ArgHint record
-// supplies them lazily — and the returned hint slice drops the
-// spread source's static like popArgsBuf dropped its statics tail.
+// popArgsCallSite pops argc args off the stack for a call op whose
+// arg metadata lives on the call site's ArgHint record (P4-4): no
+// static-typedef operands exist, and the returned hint slice drops
+// the spread source's static like popArgsBuf dropped its tail.
+// Deferred and spawned calls take the same path — their args must
+// not alias caller scratch, so the buffer is allocated per call.
+//
+// mode is the call op's B flag: 1 expands a trailing slice/string
+// spread (`f(xs...)`) and reports the spread slice's element typedef
+// so a generic callee can still infer `Sum(n...)`'s T=int off a nil
+// []int; 2 spreads a lone call argument's result tuple (`f(g())` —
+// the only multi-value spread Go allows).
 func (v *VM) popArgsCallSite(f *frame, argc int, mode int, pos token.Pos, site *bytecode.CallSite) ([]runtime.Value, []bytecode.ArgHint, *runtime.TypeDef) {
-	argbuf := f.argbuf
-	if cap(argbuf) < argc {
-		argbuf = make([]runtime.Value, argc)
-	} else {
-		stale := len(argbuf)
-		argbuf = argbuf[:argc]
-		if argc < stale {
-			clear(f.argbuf[argc:stale])
-		}
-	}
-	args, _, spreadTd := v.popArgsBuf(f, argc, mode, pos, argbuf, nil)
-	f.argbuf = argbuf
+	args, spreadTd := v.popArgsBuf(f, argc, mode, pos, make([]runtime.Value, argc))
 	hints := site.Args
 	if mode == 1 && len(hints) >= argc {
 		hints = hints[:argc-1]
@@ -810,18 +782,10 @@ func (v *VM) popArgsCallSite(f *frame, argc int, mode int, pos token.Pos, site *
 	return args, hints, spreadTd
 }
 
-// popArgsBuf pops into caller-provided buffers (sized at least argc):
-// the spread modes may still reassign args to a longer or foreign
-// slice. A nil statics skips the static-typedef tier pop — the OpCall
-// site path carries those as ArgHint recipes instead.
-func (v *VM) popArgsBuf(f *frame, argc int, mode int, pos token.Pos, args []runtime.Value, statics []*runtime.TypeDef) ([]runtime.Value, []*runtime.TypeDef, *runtime.TypeDef) {
-	if statics != nil {
-		for i := argc - 1; i >= 0; i-- {
-			if td, ok := f.pop().(*runtime.TypeDef); ok {
-				statics[i] = td
-			}
-		}
-	}
+// popArgsBuf pops into the caller-provided buffer (sized at least
+// argc): the spread modes may still reassign args to a longer or
+// foreign slice.
+func (v *VM) popArgsBuf(f *frame, argc int, mode int, pos token.Pos, args []runtime.Value) ([]runtime.Value, *runtime.TypeDef) {
 	for i := argc - 1; i >= 0; i-- {
 		args[i] = f.pop()
 	}
@@ -835,7 +799,7 @@ func (v *VM) popArgsBuf(f *frame, argc int, mode int, pos token.Pos, args []runt
 		// the lone static describes the call expression's declared result;
 		// a tuple expansion past position 0 leaves it unused (staticAt
 		// bounds-checks), and a single result — `f(error(e))` — keeps it.
-		return args, statics, nil
+		return args, nil
 	}
 	// args stay lazy across the boundary: the callee's declared-param
 	// coerce applies Go's constant-to-type conversion (`f('a')` into an
@@ -843,12 +807,6 @@ func (v *VM) popArgsBuf(f *frame, argc int, mode int, pos token.Pos, args []runt
 	if mode == 1 {
 		if argc == 0 {
 			f.trap("spread call with no arguments")
-		}
-		// the last static belongs to the spread source — the slice type,
-		// not the element — so positional arg slots stay aligned only up
-		// to it.
-		if statics != nil {
-			statics = statics[:argc-1]
 		}
 		last := args[argc-1]
 		var declared *runtime.TypeDef
@@ -869,7 +827,7 @@ func (v *VM) popArgsBuf(f *frame, argc int, mode int, pos token.Pos, args []runt
 			}
 			declared = tn.Typ
 			args = args[:argc-1] // nil slice spreads to zero args
-			return args, statics, v.elemTypedef(f, declared)
+			return args, v.elemTypedef(f, declared)
 		}
 		var namedTyp *runtime.TypeDef
 		if n, ok := last.(*runtime.Named); ok {
@@ -887,16 +845,16 @@ func (v *VM) popArgsBuf(f *frame, argc int, mode int, pos token.Pos, args []runt
 			for i := 0; i < len(str); i++ {
 				args = append(args, int64(str[i]))
 			}
-			return args, statics, nil
+			return args, nil
 		}
 		if _, isNil := last.(runtime.Nil); isNil {
 			args = args[:argc-1]
-			return args, statics, nil
+			return args, nil
 		}
 		if last == nil || last == runtime.NIL {
 			// f(nil...) on a nil slice expands to zero arguments
 			args = args[:argc-1]
-			return args, statics, nil
+			return args, nil
 		}
 		s, ok := last.(*runtime.Slice)
 		if !ok {
@@ -913,7 +871,7 @@ func (v *VM) popArgsBuf(f *frame, argc int, mode int, pos token.Pos, args []runt
 		if spreadTd == nil && namedTyp != nil {
 			spreadTd = v.elemTypedef(f, namedTyp)
 		}
-		return args, statics, spreadTd
+		return args, spreadTd
 	}
-	return args, statics, nil
+	return args, nil
 }

@@ -244,8 +244,7 @@ func (c *compiler) stmt(s ast.Stmt) {
 func (c *compiler) callStmt(call *ast.CallExpr, op bytecode.Op, pos token.Pos) {
 	c.calleeExpr(call.Fun)
 	c.callArgs(call.Args)
-	c.argStatics(call.Args)
-	c.emit(op, len(call.Args), callSpread(call), pos)
+	c.emit3(op, len(call.Args), callSpread(call), c.callSiteArgs(c.argHints(call.Args), pos), pos)
 }
 
 func (c *compiler) ifStmt(st *ast.IfStmt) {

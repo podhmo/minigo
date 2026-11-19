@@ -256,7 +256,15 @@ func kindSuccs(ch *Chunk, ip int, ins Instruction, st []SlotKind, problems *[]st
 		expect(exp...)
 		return one(push(pop(int(ins.A)+1), KindAny))
 	case OpDefer, OpGo:
-		return one(pop(2*int(ins.A) + 1))
+		// [callee, arg1..argA] -> nothing: the site record carries
+		// the arg recipes like OpCall (P4-4b).
+		exp := make([]SlotKind, 0, int(ins.A)+1)
+		exp = append(exp, KindCallable)
+		for i := 0; i < int(ins.A); i++ {
+			exp = append(exp, KindAny)
+		}
+		expect(exp...)
+		return one(pop(int(ins.A) + 1))
 	case OpPack:
 		return one(push(pop(int(ins.A)), KindTuple))
 	case OpUnpack:
