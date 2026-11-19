@@ -945,14 +945,14 @@ func (c *compiler) selectorBase(x ast.Expr, sel string) {
 		// the element must stay a ref: a value read deep-copies the
 		// element, so a write through a nested ref, a [:] on an array
 		// field, or a promoted pointer method would land on the copy.
-		c.refTargetBase(ix.X, false)
+		c.refTargetBase(ix.X, false, true)
 		c.expr(ix.Index)
 		c.emit(bytecode.OpIndexRef, 0, 1, ix.Lbrack)
 	} else if c.selectorBaseIsVar(x) && !c.selectorBaseNoCell(x, sel) {
 		// `x.M()` lowers to `(&x).M()` when M needs a pointer — a
 		// scalar named value is a detached copy otherwise, so the
 		// receiver binds the var's storage ref for the write to land.
-		c.refTargetBase(x, false)
+		c.refTargetBase(x, false, true)
 	} else {
 		c.expr(x)
 	}
