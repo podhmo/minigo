@@ -1,14 +1,21 @@
-package minigo
+// Package utf8 is the lazy installer for the bound "unicode/utf8" package
+// (P2-12b): the generated table lives here plus the handwritten
+// EncodeRune/AppendRune adapters that write through the script slice's
+// own backing.
+package utf8
 
 import (
 	"fmt"
-	"unicode/utf8"
+	stdutf8 "unicode/utf8"
 
 	"github.com/podhmo/minigo/internal/hostbridge"
+	"github.com/podhmo/minigo/internal/stdlib"
 	"github.com/podhmo/minigo/runtime"
 )
 
-func (e *Engine) installUnicodeUtf8(h *hostHelpers) {
+// Install registers the "unicode/utf8" bound table through the engine's
+// lazy binder.
+func Install(bind stdlib.Bind) {
 	tbl := unicodeUtf8GenEntries()
 	// gc signature: writes into the caller's []byte (through the
 	// script slice's own backing so sibling views see the bytes) and
@@ -30,14 +37,14 @@ func (e *Engine) installUnicodeUtf8(h *hostHelpers) {
 			}
 			styp = x.Typ
 		default:
-			s, ok := sliceOf(args[0])
+			s, ok := stdlib.SliceOf(args[0])
 			if !ok {
 				return nil, fmt.Errorf("utf8.EncodeRune on %T", args[0])
 			}
 			elems, styp = s.Elems, s.Typ
 		}
-		var buf [utf8.UTFMax]byte
-		n := utf8.EncodeRune(buf[:], rune(int64Of(hostbridge.GoNative(args[1]))))
+		var buf [stdutf8.UTFMax]byte
+		n := stdutf8.EncodeRune(buf[:], rune(hostbridge.Int64Of(hostbridge.GoNative(args[1]))))
 		if len(elems) < n {
 			// gc's `_ = p[width-1]` bounds check fires first.
 			panic(runtime.BoundsPanic(n-1, len(elems)))
@@ -58,7 +65,7 @@ func (e *Engine) installUnicodeUtf8(h *hostHelpers) {
 			elems[i] = a
 		}
 		return int64(n), nil
-	}, Target: utf8.EncodeRune}
+	}, Target: stdutf8.EncodeRune}
 	tbl["AppendRune"] = &runtime.BuiltinFunc{Name: "utf8.AppendRune", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) != 2 {
 			return nil, fmt.Errorf("utf8.AppendRune needs 2 args, got %d", len(args))
@@ -78,14 +85,14 @@ func (e *Engine) installUnicodeUtf8(h *hostHelpers) {
 			}
 			styp = x.Typ
 		default:
-			s, ok := sliceOf(args[0])
+			s, ok := stdlib.SliceOf(args[0])
 			if !ok {
 				return nil, fmt.Errorf("utf8.AppendRune on %T", args[0])
 			}
 			elems, styp = s.Elems, s.Typ
 		}
-		var buf [utf8.UTFMax]byte
-		n := utf8.EncodeRune(buf[:], rune(int64Of(hostbridge.GoNative(args[1]))))
+		var buf [stdutf8.UTFMax]byte
+		n := stdutf8.EncodeRune(buf[:], rune(hostbridge.Int64Of(hostbridge.GoNative(args[1]))))
 		var et *runtime.TypeDef
 		if styp != nil {
 			et = vc.TypeOf(vc.ElemZero(styp))
@@ -103,6 +110,6 @@ func (e *Engine) installUnicodeUtf8(h *hostHelpers) {
 			add[i] = a
 		}
 		return &runtime.Slice{Elems: append(elems, add...), Typ: hostbridge.AnonSliceTyp("byte")}, nil
-	}, Target: utf8.AppendRune}
-	e.bindBound("unicode/utf8", tbl)
+	}, Target: stdutf8.AppendRune}
+	bind("unicode/utf8", tbl)
 }

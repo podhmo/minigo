@@ -25,6 +25,7 @@ import (
 	"github.com/podhmo/minigo/builtin"
 	"github.com/podhmo/minigo/internal/bind"
 	"github.com/podhmo/minigo/internal/hostbridge"
+	"github.com/podhmo/minigo/internal/stdlib"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -42,10 +43,9 @@ type feedPump struct {
 	dropped bool
 }
 
-// hostType is a TypeDef whose zero is a host value: `var m T` and `T{}`
-// produce a boxed *newT() so selectMember sees the real method set.
+// hostType delegates to the shared binding machinery in internal/stdlib.
 func hostType(name string, new func() any) *runtime.TypeDef {
-	return &runtime.TypeDef{Name: name, Kind: runtime.KindStruct, HostNew: new}
+	return stdlib.HostType(name, new)
 }
 
 // hostSplitFunc binds one of bufio's stock split funcs: a script call
@@ -432,117 +432,18 @@ func retErr2[T any](v T, err error) (any, error) {
 	return &runtime.Tuple{Elems: []runtime.Value{scriptVal(v), errVal(err)}}, nil
 }
 
+// errVal delegates to the shared binding machinery in internal/stdlib.
 func errVal(err error) runtime.Value {
-	if err == nil {
-		return runtime.NIL
-	}
-	if sb, ok := err.(runtime.ScriptBoxed); ok {
-		// a script error that went through host code (a %w cause, a
-		// cancel cause, a callback's result) reads back as itself.
-		return sb.ScriptValue()
-	}
-	return &runtime.GoValue{V: err} // boxed: method calls (Error(), Unwrap()) dispatch via reflection
+	return stdlib.ErrVal(err)
 }
 
-// namedSized boxes a host-sized int with its declared typedef so %T
-// spells int8/int16/int32/int64/uintN like Go (rune is int32).
 func namedSized(x any, v int64) runtime.Value {
-	return runtime.Tag(runtime.BasicTypedef(fmt.Sprintf("%T", x)), v)
+	return stdlib.NamedSized(x, v)
 }
 
-// scriptVal converts a Go-native result back to a runtime value. Concrete
-// runtime types pass through; anything else (errors, host structs) is boxed
-// as a GoValue — Value is `any`, so it cannot be a type-switch case itself.
+// scriptVal delegates to the shared binding machinery in internal/stdlib.
 func scriptVal(v any) runtime.Value {
-	switch x := v.(type) {
-	case nil:
-		return runtime.NIL
-	case bool, string, float64:
-		return x
-	case int64:
-		// int64 is a named type in Go — distinct from int at assert time —
-		// so host int64 results ride in the box like the other sized ints.
-		return namedSized(x, x)
-	case int:
-		return int64(x)
-	case int8, int16, int32:
-		return namedSized(x, reflect.ValueOf(x).Int())
-	case uint, uint8, uint16, uint32, uint64, uintptr:
-		// int64(x) keeps the full bit pattern — a >=2^63 uint64 like
-		// math.Float64bits(-0.0) reinterprets losslessly.
-		return namedSized(x, int64(reflect.ValueOf(x).Uint()))
-	case float32:
-		// keep the declared width like a float32(x) conversion does —
-		// equality and map keys need the float32 tag, the payload rides
-		// in the float64 domain.
-		return runtime.Tag(runtime.BasicTypedef("float32"), float64(x))
-	case []byte:
-		if x == nil {
-			return &runtime.TypedNil{Typ: hostbridge.AnonSliceTyp("byte")}
-		}
-		// a []byte result unmarshals to byte-tagged elements so
-		// `string(b)` and indexing behave like Go source suggests, and
-		// elements compare like a []byte{...} literal's.
-		el := make([]runtime.Value, len(x))
-		for i, b := range x {
-			el[i] = runtime.ByteValue(b)
-		}
-		return &runtime.Slice{Elems: el, Typ: hostbridge.AnonSliceTyp("byte")}
-	case []string:
-		return strsSlice(x)
-	case []rune:
-		return runeSlice(x)
-	case [][]byte:
-		return scriptVal(bytesSliceOf(x))
-	case time.Duration:
-		// durations stay raw host values: methods (.Hours(), .String())
-		// dispatch through reflection and binaryOp unwraps for arithmetic.
-		return x
-	case []any:
-		if x == nil {
-			return &runtime.TypedNil{Typ: hostbridge.AnonSliceTyp("any")}
-		}
-		el := make([]runtime.Value, len(x))
-		for i, e := range x {
-			el[i] = scriptVal(e)
-		}
-		return &runtime.Slice{Elems: el, Typ: hostbridge.AnonSliceTyp("any")}
-	case map[any]any:
-		if x == nil {
-			return &runtime.TypedNil{Typ: &runtime.TypeDef{Kind: runtime.KindMap,
-				Anon: &ast.MapType{Key: ast.NewIdent("any"), Value: ast.NewIdent("any")}}}
-		}
-		m := runtime.NewMap(nil, true)
-		for k, vv := range x {
-			m.Insert(scriptVal(k), scriptVal(vv))
-		}
-		return m
-	case runtime.Nil, *runtime.Tuple, *runtime.Cell, *runtime.Slice,
-		*runtime.Map, *runtime.Struct, *runtime.Function, *runtime.Closure,
-		*runtime.BoundMethod, *runtime.BuiltinFunc, *runtime.GoValue,
-		*runtime.Chan, *runtime.TypeDef, *runtime.Iterator, *runtime.Package,
-		*runtime.ImportRef, *runtime.Named, *runtime.TypedNil:
-		return x
-	default:
-		// a nil *T of a named host type (os.Open's file on error), or a
-		// nil chan/func of a predeclared spelling, is a typed nil, as
-		// hostbridge.GoValueOf reads it: equal to nil, typed once stored in an
-		// interface. A box would make `f == nil` false.
-		if rv := reflect.ValueOf(x); (rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Chan || rv.Kind() == reflect.Func || rv.Kind() == reflect.Slice || rv.Kind() == reflect.Map) && rv.IsNil() {
-			if tn := hostbridge.HostNil(rv.Type()); tn != nil {
-				return tn
-			}
-		}
-		// a fixed-size host array (sha256.Sum256's [32]byte) unboxes to a
-		// script slice so `sum[:]` and encoders consume it, matching the
-		// handwritten adapters' `sum[:]` result.
-		if rv := reflect.ValueOf(x); rv.Kind() == reflect.Array {
-			sl := reflect.MakeSlice(reflect.SliceOf(rv.Type().Elem()), rv.Len(), rv.Len())
-			reflect.Copy(sl, rv)
-			return scriptVal(sl.Interface())
-		}
-		return &runtime.GoValue{V: x}
-	}
+	return stdlib.ScriptVal(v)
 }
 
 func str(v any) string {
@@ -719,15 +620,8 @@ func nilSliceArg(v runtime.Value) bool {
 	return ok && tn.Typ != nil && tn.Typ.Kind == runtime.KindSlice && !isArrayTyp(tn.Typ)
 }
 
-// sliceOf unwraps a script slice (cell/pointer derefed, Named-peeled,
-// or bare); typed nils and non-slices report not-ok so callers can give
-// their own error.
 func sliceOf(v runtime.Value) (*runtime.Slice, bool) {
-	if d, ok := runtime.Deref(v); ok {
-		v = d
-	}
-	s, ok := runtime.Unwrap(v).(*runtime.Slice)
-	return s, ok
+	return stdlib.SliceOf(v)
 }
 
 // retagSlice re-applies orig's named slice type (`type Buffer []byte`)
@@ -917,29 +811,11 @@ func anySlice(v any) []any {
 }
 
 func strsSlice(ss []string) runtime.Value {
-	if ss == nil {
-		// a nil []string result stays nil — SplitN(s, sep, 0) == nil.
-		return &runtime.TypedNil{Typ: hostbridge.AnonSliceTyp("string")}
-	}
-	el := make([]runtime.Value, len(ss))
-	for i, s := range ss {
-		el[i] = s
-	}
-	return &runtime.Slice{Elems: el, Typ: hostbridge.AnonSliceTyp("string")}
+	return stdlib.StrsSlice(ss)
 }
 
-// bytesSliceOf lifts a [][]byte result into []any so scriptVal turns each
-// element into a script []byte slice. A nil result keeps the [][]uint8
-// spelling so %T matches Go on a nil [][]byte.
 func bytesSliceOf(bb [][]byte) any {
-	if bb == nil {
-		return &runtime.TypedNil{Typ: hostbridge.AnonSliceTyp("[]uint8")}
-	}
-	out := make([]any, len(bb))
-	for i, b := range bb {
-		out[i] = b
-	}
-	return out
+	return stdlib.BytesSliceOf(bb)
 }
 
 // runePred adapts a script callback into a rune predicate — strings'
@@ -952,17 +828,8 @@ func runePred(v runtime.ScriptCaller, fn runtime.Value) func(rune) bool {
 	}
 }
 
-// runeSlice lifts a []rune result into a script slice of rune-tagged
-// int64s — the same element representation a []rune{...} literal makes.
 func runeSlice(rs []rune) any {
-	if rs == nil {
-		return &runtime.TypedNil{Typ: hostbridge.AnonSliceTyp("rune")}
-	}
-	out := make([]runtime.Value, len(rs))
-	for i, r := range rs {
-		out[i] = runtime.Tag(runtime.BasicTypedef("rune"), int64(r))
-	}
-	return &runtime.Slice{Elems: out, Typ: hostbridge.AnonSliceTyp("rune")}
+	return stdlib.RuneSlice(rs)
 }
 
 func floatOf(v any) float64 {
