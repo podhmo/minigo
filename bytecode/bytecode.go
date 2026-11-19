@@ -49,7 +49,7 @@ const (
 	OpGlobalRef // push the package cell for name (address-of a package var)
 
 	// composite access
-	OpSelect   // A: const idx of field/method name; pop base -> push base.name
+	OpSelect   // A: const idx of field/method name; pop base -> push base.name; C indexes Chunk.Sites
 	OpSetField // A: const idx of name; pop value, pop base -> base.name = value
 	OpIndex    // pop index, pop base -> push base[index]; B=1: container operand of a nested store or address-of (a boxed host map/slice element stays boxed over its storage)
 	OpIndexOK  // pop index, pop base -> push Tuple{value, ok} (comma-ok map access)
@@ -140,7 +140,7 @@ const (
 	// *T receiver under a value method panics like Go's devirtualized
 	// call — a plain nil dereference — where a lazily bound method value
 	// reports the "value method ... called using nil" wrapper text.
-	OpSelectCall // A: const idx of field/method name; pop base -> push base.name
+	OpSelectCall // A: const idx of field/method name; pop base -> push base.name; C indexes Chunk.Sites
 
 	// OpLenCallFold folds len(x)/cap(x): the stack is [callee, operand];
 	// when the callee still is the predeclared len/cap builtin (B: 0=len,
@@ -321,8 +321,8 @@ type Chunk struct {
 	NamedSlots []int // local slots of named results, for bare `return`; nil when none
 	Upvals     []UpvalDesc
 	IsVararg   bool
-	// Sites are the per-instruction caches of OpGlobal (indexed by the
-	// instruction's C operand).
+	// Sites are the per-instruction caches of OpGlobal, OpSelect and
+	// OpSelectCall (indexed by the instruction's C operand).
 	Sites []*GlobalSite
 
 	// CallSites are the deferred-fact records of OpDeferredTyp (indexed
@@ -346,12 +346,13 @@ type Chunk struct {
 	Boxed []bool
 }
 
-// GlobalSite is one OpGlobal instruction's resolution cache. The VM owns
-// the stored value's type; Cache is shared by every VM (goroutine)
-// running the chunk. An entry stays valid while the package's Globals
-// generation is unchanged: code that changes name resolution without
-// setting a global must call
-// [github.com/podhmo/minigo/runtime.Env.Touch].
+// GlobalSite is one instruction's resolution cache — OpGlobal guards its
+// entry on the package's Globals generation, OpSelect/OpSelectCall on the
+// receiver's TypeID and the method-set epoch. The VM owns the stored
+// value's type; Cache is shared by every VM (goroutine) running the
+// chunk. A global entry stays valid while the env generation is
+// unchanged: code that changes name resolution without setting a global
+// must call [github.com/podhmo/minigo/runtime.Env.Touch].
 type GlobalSite struct {
 	Cache atomic.Value
 }
