@@ -2,6 +2,7 @@ package minigo
 
 import (
 	stdlibcontext "github.com/podhmo/minigo/internal/stdlib/context"
+	stdliberrors "github.com/podhmo/minigo/internal/stdlib/errors"
 	stdlibhtml "github.com/podhmo/minigo/internal/stdlib/html"
 	stdlibhtmltemplate "github.com/podhmo/minigo/internal/stdlib/htmltemplate"
 	stdlibtexttemplate "github.com/podhmo/minigo/internal/stdlib/texttemplate"
@@ -14,7 +15,7 @@ import (
 func (e *Engine) registerStdlib() {
 	h := &hostHelpers{env: bindEnv{e}}
 	e.pending.Register("fmt", func() { e.installFmt(h) })
-	e.pending.Register("errors", func() { e.installErrors(h) })
+	e.pending.Register("errors", func() { stdliberrors.Install(e.bindBound, h, e.ifaceReqSet) })
 	e.pending.Register("strings", func() { e.installStrings(h) })
 	e.pending.Register("strconv", func() { e.installStrconv(h) })
 	e.pending.Register("bytes", func() { e.installBytes(h) })
