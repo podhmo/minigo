@@ -164,7 +164,7 @@ func (m *Marshal) AdaptFuncWith(x runtime.Value, t reflect.Type, vc runtime.VMCa
 		return reflect.Value{}, fmt.Errorf("cannot use %T as %s", x, t)
 	}
 	fv := reflect.MakeFunc(t, func(in []reflect.Value) []reflect.Value {
-		vc = m.AnchorCaller(vc)
+		vc := m.AnchorCaller(vc)
 		callee, call := x, vc.Call
 		if o.FuncMap != nil {
 			callee = o.FuncMap.Guard(x)
