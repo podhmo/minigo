@@ -21,9 +21,9 @@ package vm
 import (
 	"fmt"
 	"go/ast"
-	"reflect"
 
 	"github.com/podhmo/minigo/bytecode"
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/process"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
@@ -901,42 +901,48 @@ func (v *VM) loop(f *frame) {
 		case bytecode.OpSend:
 			val := f.pop()
 			chv := f.pop()
-			chRV, et, w := v.chanOf(f, chv)
+			chRV, et, w := hostbridge.ChanOf(v.chanHooks(f), chv)
 			if et != nil {
 				val = v.coerce(f, val, et)
 			} else {
 				val = v.materialize(f, val)
 			}
-			sv, err := v.chanSendValue(val, chRV.Type().Elem())
+			sv, err := marshalHost.ChanSendValue(v, val, chRV.Type().Elem())
 			if err != nil {
 				f.trap("cannot send on %s: %s", chRV.Type(), err)
 			}
-			v.chanSend(chRV, sv, w)
+			hostbridge.ChanSend(v.chanHooks(f), chRV, sv, w)
 		case bytecode.OpRecv:
-			val, _ := v.chanRecv(f, f.pop())
+			val, _ := func() (runtime.Value, bool) {
+				chRV2, et2, w2 := hostbridge.ChanOf(v.chanHooks(f), f.pop())
+				return hostbridge.ChanRecvRV(v.chanHooks(f), chRV2, et2, w2)
+			}()
 			f.push(val)
 		case bytecode.OpRecvOK:
-			val, ok := v.chanRecv(f, f.pop())
+			val, ok := func() (runtime.Value, bool) {
+				chRV2, et2, w2 := hostbridge.ChanOf(v.chanHooks(f), f.pop())
+				return hostbridge.ChanRecvRV(v.chanHooks(f), chRV2, et2, w2)
+			}()
 			f.push(&runtime.Tuple{Elems: []runtime.Value{val, ok}})
 		case bytecode.OpSelArm:
 			if ins.B == 1 {
 				val := f.pop()
 				chv := f.pop()
-				chRV, et, w := v.chanOf(f, chv)
+				chRV, et, w := hostbridge.ChanOf(v.chanHooks(f), chv)
 				if et != nil {
 					val = v.coerce(f, val, et)
 				} else {
 					val = v.materialize(f, val)
 				}
-				sv, err := v.chanSendValue(val, chRV.Type().Elem())
+				sv, err := marshalHost.ChanSendValue(v, val, chRV.Type().Elem())
 				if err != nil {
 					f.trap("cannot send on %s: %s", chRV.Type(), err)
 				}
-				f.push(&runtime.SelArm{Send: true, Wakeable: w.Misc, WakeChan: w.ChanPtr(), Case: reflect.SelectCase{Dir: reflect.SelectSend, Chan: chRV, Send: sv}})
+				f.push(&runtime.SelArm{Send: true, Wakeable: w.Misc, WakeChan: w.ChanPtr(), Case: hostbridge.SelectCaseSend(chRV, sv)})
 			} else {
 				chv := f.pop()
-				chRV, et, w := v.chanOf(f, chv)
-				f.push(&runtime.SelArm{NRecv: int(ins.A), ETyp: et, Wakeable: w.Misc, WakeChan: w.ChanPtr(), Case: reflect.SelectCase{Dir: reflect.SelectRecv, Chan: chRV}})
+				chRV, et, w := hostbridge.ChanOf(v.chanHooks(f), chv)
+				f.push(&runtime.SelArm{NRecv: int(ins.A), ETyp: et, Wakeable: w.Misc, WakeChan: w.ChanPtr(), Case: hostbridge.SelectCaseRecv(chRV)})
 			}
 		case bytecode.OpSelWait:
 			// arms were pushed in source order; the jump table follows this
@@ -951,16 +957,16 @@ func (v *VM) loop(f *frame) {
 				arms[i] = a
 			}
 			table := f.ip
-			cases := make([]reflect.SelectCase, 0, n+2)
+			cases := make([]hostbridge.SelectCase, 0, n+2)
 			for _, a := range arms {
 				cases = append(cases, a.Case)
 			}
 			doneIdx := len(cases)
-			cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: v.doneRV()})
+			cases = append(cases, hostbridge.SelectCaseRecv(hostbridge.RVOf(v.doneChan())))
 			defIdx := -1
 			if ins.B == 1 {
 				defIdx = len(cases)
-				cases = append(cases, reflect.SelectCase{Dir: reflect.SelectDefault})
+				cases = append(cases, hostbridge.SelectCaseDefault())
 			}
 			// a select without a default can park: it counts toward
 			// deadlock unless some arm watches a wake-capable channel.
@@ -975,14 +981,16 @@ func (v *VM) loop(f *frame) {
 					wake.Chans = append(wake.Chans, a.WakeChan)
 				}
 			}
-			chosen, rv, open := func() (int, reflect.Value, bool) {
-				if defIdx >= 0 {
-					return reflect.Select(cases)
-				}
+			var chosen int
+			var open bool
+			var recvd = hostbridge.RVOf(nil)
+			if defIdx >= 0 {
+				chosen, recvd, open = hostbridge.Select(cases)
+			} else {
 				unpark := v.park(wake)
-				defer unpark()
-				return reflect.Select(cases)
-			}()
+				chosen, recvd, open = hostbridge.Select(cases)
+				unpark()
+			}
 			switch {
 			case chosen == doneIdx:
 				panic(procExit{})
@@ -995,9 +1003,9 @@ func (v *VM) loop(f *frame) {
 					case 0:
 						f.push(runtime.NIL)
 					case 1:
-						f.push(v.chanZero(f, a, open, rv))
+						f.push(hostbridge.ChanZero(v.chanHooks(f), a, open, recvd))
 					default:
-						f.push(&runtime.Tuple{Elems: []runtime.Value{v.chanZero(f, a, open, rv), open}})
+						f.push(&runtime.Tuple{Elems: []runtime.Value{hostbridge.ChanZero(v.chanHooks(f), a, open, recvd), open}})
 					}
 				}
 				f.ip = table + chosen

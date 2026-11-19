@@ -263,7 +263,7 @@ func watchCtxDone(vc runtime.CallerRef, parent, child context.Context) {
 			return
 		}
 	}
-	if ptr := vm.RegisterWakeChan(vc, reflect.ValueOf(done)); ptr != 0 {
+	if ptr := vm.RegisterWakeChan(vc, done); ptr != 0 {
 		vm.SetWakeChanDead(vc, ptr, true)
 	}
 }

@@ -19,8 +19,7 @@
 package vm
 
 import (
-	"reflect"
-
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/process"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -52,15 +51,15 @@ func NoteExternalWait(vc runtime.CallerRef) (release func()) {
 // ticker the script never Stops keeps its pump goroutine — gc leaks an
 // unreferenced ticker's runtime timer the same way pre-Go-1.23.
 
-// RegisterWakeChan starts tracking the liveness of host channel rv for
+// RegisterWakeChan starts tracking the liveness of host channel ch for
 // deadlock detection: a goroutine parked on a registered channel counts as
 // wakeable only while the channel is alive (see [SetWakeChanDead]). The
 // registration lasts as long as vc's process. It returns the id to pass to
 // [SetWakeChanDead] and [WakeChanState], or 0 when vc has no process, in
 // which case the channel stays unmanaged.
-func RegisterWakeChan(vc runtime.CallerRef, rv reflect.Value) uintptr {
+func RegisterWakeChan(vc runtime.CallerRef, ch any) uintptr {
 	if p := procOf(vc); p != nil {
-		return p.RegisterChan(rv)
+		return p.RegisterChan(hostbridge.RVOf(ch))
 	}
 	return 0
 }
@@ -130,19 +129,14 @@ func (v *VM) ReleaseProc() {
 	}
 }
 
-// doneRV is the process-done channel as a reflect select operand — nil
+// doneChan is the process-done channel for the select arms — nil
 // (never ready) when this VM has no process.
-
-// doneRV is the process-done channel as a reflect select operand — nil
-// (never ready) when this VM has no process.
-func (v *VM) doneRV() reflect.Value {
+func (v *VM) doneChan() chan struct{} {
 	if p := v.proc.Load(); p != nil {
-		return reflect.ValueOf(p.Done())
+		return p.Done()
 	}
-	return nilChanValue
+	return nil
 }
-
-var nilChanValue = reflect.ValueOf((chan struct{})(nil))
 
 // Spawn implements [runtime.VMCaller].
 

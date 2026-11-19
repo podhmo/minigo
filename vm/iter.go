@@ -20,7 +20,6 @@ package vm
 
 import (
 	"fmt"
-	"reflect"
 	"slices"
 	"sync"
 	"unicode/utf8"
@@ -94,27 +93,27 @@ func (v *VM) itFrom(f *frame, coll runtime.Value, viaPtr bool) *runtime.Iterator
 		display, canonical := c.SnapshotKeys()
 		return mkIter(runtime.Iterator{Kind: 'm', M: c, Elems: display, Keys: canonical})
 	case *runtime.Chan:
-		return mkIter(runtime.Iterator{Kind: 'c', ChRV: reflect.ValueOf(c.C), ETyp: v.elemTypedef(f, c.Typ)})
+		return mkIter(runtime.Iterator{Kind: 'c', ChRV: hostbridge.RVOf(c.C), ETyp: v.elemTypedef(f, c.Typ)})
 	case *runtime.GoValue:
-		rv := reflect.ValueOf(c.V)
-		switch rv.Kind() {
-		case reflect.Chan:
+		rv := hostbridge.RVOf(c.V)
+		switch {
+		case hostbridge.IsChan(rv):
 			return mkIter(runtime.Iterator{Kind: 'c', ChRV: rv, HostChan: true})
-		case reflect.Map:
+		case hostbridge.IsMap(rv):
 			// a boxed host named map (url.Values, http.Header): snapshot
 			// the keys, read each value live like the script map
 			// iterator — an entry deleted before its turn is skipped.
 			return mkIter(runtime.Iterator{Kind: 'h', HostRV: rv, HostKeys: rv.MapKeys()})
-		case reflect.Slice:
+		case hostbridge.IsSlice(rv):
 			// a boxed host named slice (net.IP): the length is fixed at
 			// loop entry, each element is read live.
 			return mkIter(runtime.Iterator{Kind: 'h', HostRV: rv, Limit: rv.Len()})
-		case reflect.Array:
+		case hostbridge.IsArray(rv):
 			// an array value ranges over a copy, as in Go.
-			cp := reflect.New(rv.Type()).Elem()
+			cp := hostbridge.NewElem(rv)
 			cp.Set(rv)
 			return mkIter(runtime.Iterator{Kind: 'h', HostRV: cp, Limit: cp.Len()})
-		case reflect.String:
+		case hostbridge.IsString(rv):
 			return mkIter(runtime.Iterator{Kind: 'x', String: rv.String()})
 		}
 		f.trap("range over %T", coll)
@@ -131,7 +130,7 @@ func (v *VM) itFrom(f *frame, coll runtime.Value, viaPtr bool) *runtime.Iterator
 		if tn, ok := coll.(*runtime.TypedNil); ok && tn.Typ != nil {
 			if tn.Typ.Kind == runtime.KindChan {
 				// a nil channel range blocks forever, as in Go
-				return mkIter(runtime.Iterator{Kind: 'c', ChRV: nilChanRV, ETyp: v.elemTypedef(f, tn.Typ)})
+				return mkIter(runtime.Iterator{Kind: 'c', ChRV: hostbridge.NilChanRV, ETyp: v.elemTypedef(f, tn.Typ)})
 			}
 			// `for i := range p` over a nil *[N]T yields 0..N-1 — only the
 			// element read would dereference the nil pointer.
@@ -195,7 +194,7 @@ func (v *VM) iterNext(f *frame, it *runtime.Iterator, nvars int, elemRead bool) 
 		}
 		return false
 	case 'h':
-		if it.HostRV.Kind() == reflect.Map {
+		if hostbridge.IsMap(it.HostRV) {
 			for it.Idx < len(it.HostKeys) {
 				k := it.HostKeys[it.Idx]
 				it.Idx++
@@ -246,9 +245,9 @@ func (v *VM) iterNext(f *frame, it *runtime.Iterator, nvars int, elemRead bool) 
 		if it.HostChan {
 			// a host channel is evaluated per receive: a feed that died
 			// between iterations (a stopped timer) no longer wakes.
-			w = v.chanParkWake(it.ChRV)
+			w = hostbridge.ChanParkWake(v.chanHooks(f), it.ChRV)
 		}
-		val, ok := v.chanRecvRV(f, it.ChRV, it.ETyp, w)
+		val, ok := hostbridge.ChanRecvRV(v.chanHooks(f), it.ChRV, it.ETyp, w)
 		if !ok {
 			return false
 		}
