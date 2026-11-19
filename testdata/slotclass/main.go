@@ -108,3 +108,15 @@ func ShadowedParam(s S) {
 	_ = S(0)
 	s.PP()
 }
+
+// a self-referencing embed cycle shadowed by a same-named local
+// non-struct type must stay bounded — the member search drains the
+// depth budget instead of resetting it.
+type CycA struct{ CycB }
+type CycB struct{ CycA }
+
+func CycShadow(a CycA) {
+	type CycB int
+	_ = CycB(0)
+	a.PP()
+}

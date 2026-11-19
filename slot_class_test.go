@@ -63,6 +63,9 @@ func TestSlotClassification(t *testing.T) {
 		"Special":          true,
 		"AliasMethod":      true,
 		"ShadowedParam":    true,
+		// the CycB-shadowed embed cycle drains its depth budget and
+		// settles unprovable — PP exists on neither decl.
+		"CycShadow": false,
 	}
 	for name, want := range cases {
 		t.Run(name, func(t *testing.T) {
