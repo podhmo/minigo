@@ -122,6 +122,7 @@ type sessionState struct {
 	typeIntern *execution.Intern[runtime.TypeID, *runtime.TypeDef]
 
 	mu              sync.Mutex
+	tidMemo         sync.Map                    // *runtime.TypeDef -> runtime.TypeID (mint-stable keys)
 	pkgs            map[string]*runtime.Package // by import path
 	byDir           map[string]*runtime.Package // synthetic packages by dir
 	files           map[string]*runtime.Package // single-file packages by abs path
