@@ -246,20 +246,29 @@ type CellChan chan *rt.Cell
 func TestSharedFieldsSamePackage(t *testing.T) {
 	dir := gentest.WriteFiles(t, map[string]string{
 		"go.mod":   "module example.com/m\n\ngo 1.26\n",
-		"rt/rt.go": "package rt\n\ntype Cell struct{ V int }\ntype Alias = Cell\n\ntype Image struct {\n\tLeaked *Cell\n\tVia    *Alias\n\tOk     int\n}\n",
+		"rt/rt.go": "package rt\n\ntype Cell struct{ V int }\ntype Alias = Cell\n\ntype Image struct {\n\tLeaked *Cell\n\tVia    *Alias\n\tOk     int\n}\n\ntype Box[Cell any] struct {\n\tV Cell // the type param shadows rt.Cell — no violation\n}\n",
 	})
 	forbidden := map[string]bool{"example.com/m/rt.Cell": true}
 	vs, err := archcheck.CheckSharedFields(dir, "rt", "Image", forbidden, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(vs) != 2 {
-		t.Fatalf("want 2 violations, got %+v", vs)
-	}
+	var deps []string
 	for _, v := range vs {
-		if v.Dep != "example.com/m/rt.Cell" {
-			t.Errorf("unexpected dep: %s", v.Message)
-		}
+		deps = append(deps, v.Dep)
+	}
+	want := []string{"example.com/m/rt.Cell", "example.com/m/rt.Cell"}
+	if diff := cmp.Diff(want, deps); diff != "" {
+		t.Errorf("violation deps (-want +got):\n%s", diff)
+	}
+
+	// Box's field names its own type param, not the package's Cell.
+	vs, err = archcheck.CheckSharedFields(dir, "rt", "Box", forbidden, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff([]archcheck.Violation(nil), vs); diff != "" {
+		t.Error(diff)
 	}
 }
 
