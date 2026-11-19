@@ -1,11 +1,15 @@
 package minigo
 
 import (
+	stdlibbase64 "github.com/podhmo/minigo/internal/stdlib/base64"
+	stdlibbufio "github.com/podhmo/minigo/internal/stdlib/bufio"
 	stdlibbytealg "github.com/podhmo/minigo/internal/stdlib/bytealg"
 	stdlibbytes "github.com/podhmo/minigo/internal/stdlib/bytes"
 	stdlibcontext "github.com/podhmo/minigo/internal/stdlib/context"
+	stdlibcsv "github.com/podhmo/minigo/internal/stdlib/csv"
 	stdliberrors "github.com/podhmo/minigo/internal/stdlib/errors"
 	stdlibgodebug "github.com/podhmo/minigo/internal/stdlib/godebug"
+	stdlibhex "github.com/podhmo/minigo/internal/stdlib/hex"
 	stdlibhtml "github.com/podhmo/minigo/internal/stdlib/html"
 	stdlibhtmltemplate "github.com/podhmo/minigo/internal/stdlib/htmltemplate"
 	stdio "github.com/podhmo/minigo/internal/stdlib/io"
@@ -39,8 +43,8 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("unicode/utf8", func() { stdlibutf8.Install(e.bindBound) })
 	e.pending.Register("math", func() { stdlibmath.Install(e.bindBound, h) })
 	e.pending.Register("regexp", func() { stdlibregexp.Install(e.bindBound, h) })
-	e.pending.Register("encoding/base64", func() { e.installEncodingBase64(h) })
-	e.pending.Register("encoding/hex", func() { e.installEncodingHex(h) })
+	e.pending.Register("encoding/base64", func() { stdlibbase64.Install(e.bindBound, h, h.ioAdapters()) })
+	e.pending.Register("encoding/hex", func() { stdlibhex.Install(e.bindBound, h, h.ioAdapters()) })
 	e.pending.Register("encoding/json", func() { e.installEncodingJson(h) })
 	e.pending.Register("internal/godebug", func() { stdlibgodebug.Install(e.bindBound, h) })
 	e.pending.Register("internal/testenv", func() { stdlibtestenv.Install(e.bindBound, h) })
@@ -72,8 +76,8 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("io", func() { stdio.Install(e.bindBound, h, h.ioAdapters()) })
 	e.pending.Register("crypto/rand", func() { e.installCryptoRand(h) })
 	e.pending.Register("crypto/sha256", func() { stdlibsha256.Install(e.bindBound) })
-	e.pending.Register("encoding/csv", func() { e.installEncodingCsv(h) })
-	e.pending.Register("bufio", func() { e.installBufio(h) })
+	e.pending.Register("encoding/csv", func() { stdlibcsv.Install(e.bindBound, h, h.ioAdapters()) })
+	e.pending.Register("bufio", func() { stdlibbufio.Install(e.bindBound, h, h.ioAdapters()) })
 	e.pending.Register("text/template", func() { stdlibtexttemplate.Install(e.bindBound, h, e.templateFuncMap()) })
 	e.pending.Register("html/template", func() { stdlibhtmltemplate.Install(e.bindBound, h, e.templateFuncMap()) })
 }
