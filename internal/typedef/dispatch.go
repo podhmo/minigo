@@ -1,6 +1,8 @@
-package minigo
+package typedef
 
 import (
+	"context"
+
 	"errors"
 	"fmt"
 	"go/ast"
@@ -9,11 +11,67 @@ import (
 	"strings"
 	"time"
 
+	"github.com/podhmo/minigo/index"
+
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
 )
+
+// Resolver carries the typedef-dispatch machinery — method sets,
+// interface satisfaction, alias/underlying resolution and the deferred
+// type-of query — extracted from the root Engine (P2-14). The root wires
+// its few engine-level deps through New.
+type Resolver struct {
+	materialize   func(pkg *runtime.Package, d *index.Decl) (runtime.Value, error)
+	internTypedef func(td *runtime.TypeDef) *runtime.TypeDef
+	ifaceReqSet   func(td *runtime.TypeDef) map[string]bool
+	ifaceSigFuncs func(td *runtime.TypeDef) map[string]*runtime.Function
+	hostTwin      func(rt reflect.Type) *runtime.TypeDef
+	builtins      *runtime.Env
+	loadPath      func(ctx context.Context, path string) (*runtime.Package, error)
+}
+
+// Deps are the engine operations the resolver reaches back for.
+type Deps struct {
+	Materialize   func(pkg *runtime.Package, d *index.Decl) (runtime.Value, error)
+	InternTypedef func(td *runtime.TypeDef) *runtime.TypeDef
+	IfaceReqSet   func(td *runtime.TypeDef) map[string]bool
+	IfaceSigFuncs func(td *runtime.TypeDef) map[string]*runtime.Function
+	HostTwin      func(rt reflect.Type) *runtime.TypeDef
+	Builtins      *runtime.Env
+	LoadPath      func(ctx context.Context, path string) (*runtime.Package, error)
+}
+
+func New(d Deps) *Resolver {
+	return &Resolver{materialize: d.Materialize, internTypedef: d.InternTypedef,
+		ifaceReqSet: d.IfaceReqSet, ifaceSigFuncs: d.IfaceSigFuncs,
+		hostTwin: d.HostTwin, builtins: d.Builtins, loadPath: d.LoadPath}
+}
+
+// reqKey spells a method name in the requirement/method-set key space:
+// exported names are package-free, but an unexported name belongs to
+// its declaring package — `interface{ m() }` declared in pkgA is not
+// satisfied by pkgB's `m`. The pkg-qualified key rides Names/Depths/
+// Funcs alongside the plain name, which member selection keeps using.
+func ReqKey(pkg *runtime.Package, name string) string {
+	if pkg == nil || ast.IsExported(name) {
+		return name
+	}
+	return pkg.Path + "." + name
+}
+
+// plainReqName recovers the method name a pkg-qualified requirement
+// key encodes (pkg `a`'s `m` is keyed "a.m"); exported keys carry no
+// package part and return unchanged. Method names never contain '.',
+// so the last dot marks the join.
+func PlainReqName(key string) string {
+	if i := strings.LastIndexByte(key, '.'); i >= 0 {
+		return key[i+1:]
+	}
+	return key
+}
 
 // ---- interface satisfaction, method sets, embedded dispatch ----
 //
@@ -26,8 +84,8 @@ import (
 // methodsOfValue returns the method names callable on a dynamic value.
 // Structs offer declared + promoted methods; host GoValues expose their
 // reflect method set. Other values have no methods.
-func (e *Engine) methodsOfValue(v runtime.Value) (map[string]bool, error) {
-	ms, err := e.methodInfoOfValue(v)
+func (r *Resolver) MethodsOfValue(v runtime.Value) (map[string]bool, error) {
+	ms, err := r.MethodInfoOfValue(v)
 	if ms == nil {
 		return nil, err
 	}
@@ -38,8 +96,8 @@ func (e *Engine) methodsOfValue(v runtime.Value) (map[string]bool, error) {
 // plus an "unsure" flag — true when an embedded type failed to resolve
 // (e.g. a vendored stdlib package), so the returned set may be missing
 // promoted methods that the embed would have contributed.
-func (e *Engine) methodSetOfValue(v runtime.Value) (map[string]bool, bool, error) {
-	ms, err := e.methodInfoOfValue(v)
+func (r *Resolver) MethodSetOfValue(v runtime.Value) (map[string]bool, bool, error) {
+	ms, err := r.MethodInfoOfValue(v)
 	if ms == nil {
 		return nil, false, err
 	}
@@ -52,7 +110,7 @@ func (e *Engine) methodSetOfValue(v runtime.Value) (map[string]bool, bool, error
 // reports the callable names, the signature-bearing member functions,
 // and the unsure report in one pass — MethodSetOf, MethodFuncsOf and
 // MethodInfoOf each pick their view.
-func (e *Engine) methodInfoOfValue(v runtime.Value) (*runtime.MethodSet, error) {
+func (r *Resolver) MethodInfoOfValue(v runtime.Value) (*runtime.MethodSet, error) {
 	ptr := false
 	var seen map[runtime.Value]bool
 	for {
@@ -68,7 +126,7 @@ func (e *Engine) methodInfoOfValue(v runtime.Value) (*runtime.MethodSet, error) 
 				// Host reflect methods carry no decl signature, so the
 				// func view reports nil for the pure host box.
 				if n.Typ != nil && len(n.Typ.Methods) > 0 {
-					return e.typeMethodInfoU(n.Typ, ptr)
+					return r.TypeMethodInfoU(n.Typ, ptr)
 				}
 				return &runtime.MethodSet{Names: hostMethodSet(gv.V)}, nil
 			}
@@ -91,7 +149,7 @@ func (e *Engine) methodInfoOfValue(v runtime.Value) (*runtime.MethodSet, error) 
 					return &runtime.MethodSet{Names: hostMethodSet(rv.Convert(rt).Interface())}, nil
 				}
 			}
-			return e.typeMethodInfoU(n.Typ, ptr)
+			return r.TypeMethodInfoU(n.Typ, ptr)
 		}
 		// a cyclic pointer (x := any(nil); x = &x) never lands on a
 		// method-bearing value — stop rather than spin. Only ref kinds
@@ -120,22 +178,22 @@ func (e *Engine) methodInfoOfValue(v runtime.Value) (*runtime.MethodSet, error) 
 	}
 	switch x := v.(type) {
 	case *runtime.Struct:
-		if ms := e.methodWalkU(x.Def, ptr, map[walkKey]bool{}); ms != nil {
+		if ms := r.MethodWalkU(x.Def, ptr, map[walkKey]bool{}); ms != nil {
 			return ms, nil
 		}
 		return &runtime.MethodSet{}, nil
 	case *runtime.TypedNil:
-		return e.typeMethodInfoU(x.Typ, ptr)
+		return r.TypeMethodInfoU(x.Typ, ptr)
 	case *runtime.IfaceNil:
-		return e.typeMethodInfoU(x.Typ, ptr)
+		return r.TypeMethodInfoU(x.Typ, ptr)
 	case *runtime.Slice:
 		// a slice carrying a declared typedef (`type htmlSig []byte`)
 		// exposes that type's methods — same for maps and channels.
-		return e.typeMethodInfoU(x.Typ, ptr)
+		return r.TypeMethodInfoU(x.Typ, ptr)
 	case *runtime.Map:
-		return e.typeMethodInfoU(x.Typ, ptr)
+		return r.TypeMethodInfoU(x.Typ, ptr)
 	case *runtime.Chan:
-		return e.typeMethodInfoU(x.Typ, ptr)
+		return r.TypeMethodInfoU(x.Typ, ptr)
 	case time.Duration:
 		// a raw duration exposes the host method set the same way the
 		// GoValue box below does — selectMember special-cases it too.
@@ -143,7 +201,7 @@ func (e *Engine) methodInfoOfValue(v runtime.Value) (*runtime.MethodSet, error) 
 	case *runtime.GoValue:
 		// host values satisfy requirements by name alone — reflect
 		// methods carry no declared signature for the func view.
-		return &runtime.MethodSet{Names: e.hostTwinMethodSet(x.V)}, nil
+		return &runtime.MethodSet{Names: r.HostTwinMethodSet(x.V)}, nil
 	default:
 		return nil, nil
 	}
@@ -170,7 +228,7 @@ func hostMethodSet(x any) map[string]bool {
 // exprNode() and fail go/ast's own Expr when go/ast is interpreted from
 // source. Both sides come from the same source, so the twin's set is the
 // host type's.
-func (e *Engine) hostTwinMethodSet(x any) map[string]bool {
+func (r *Resolver) HostTwinMethodSet(x any) map[string]bool {
 	set := hostMethodSet(x)
 	rt := reflect.TypeOf(x)
 	if rt == nil {
@@ -180,11 +238,11 @@ func (e *Engine) hostTwinMethodSet(x any) map[string]bool {
 	if rt.Kind() == reflect.Pointer && rt.Name() == "" {
 		rt, ptr = rt.Elem(), true
 	}
-	twin := e.hostTwin(rt)
+	twin := r.hostTwin(rt)
 	if twin == nil || twin.Pkg == nil || twin.Pkg.Index == nil {
 		return set
 	}
-	names, _, err := e.typeMethodsU(twin, ptr)
+	names, _, err := r.TypeMethodsU(twin, ptr)
 	if err != nil {
 		return set
 	}
@@ -198,10 +256,10 @@ func (e *Engine) hostTwinMethodSet(x any) map[string]bool {
 
 // typeMethods implements the Hooks.TypeMethods hook: the method set of a
 // typedef (a typed nil still dispatches its declared methods, like Go).
-func (e *Engine) typeMethods(td *runtime.TypeDef) (map[string]bool, error) {
+func (r *Resolver) TypeMethods(td *runtime.TypeDef) (map[string]bool, error) {
 	// a typedef queried on its own reports the VALUE method set — the
 	// pointer method set asks through the *T typedef, which peels to ptr.
-	set, _, err := e.typeMethodsU(td, false)
+	set, _, err := r.TypeMethodsU(td, false)
 	return set, err
 }
 
@@ -210,8 +268,8 @@ func (e *Engine) typeMethods(td *runtime.TypeDef) (map[string]bool, error) {
 // may be missing methods the unresolved type would have contributed.
 // ptr reports whether the set is computed through a pointer — Go's
 // method set for *T includes pointer receivers while T's does not.
-func (e *Engine) typeMethodsU(td *runtime.TypeDef, ptr bool) (map[string]bool, bool, error) {
-	ms, err := e.typeMethodInfoU(td, ptr)
+func (r *Resolver) TypeMethodsU(td *runtime.TypeDef, ptr bool) (map[string]bool, bool, error) {
+	ms, err := r.TypeMethodInfoU(td, ptr)
 	if ms == nil {
 		return nil, false, err
 	}
@@ -222,18 +280,18 @@ func (e *Engine) typeMethodsU(td *runtime.TypeDef, ptr bool) (map[string]bool, b
 // one resolution (alias peel → anonymous-*T peel → interface and host
 // checks → embedded walk) producing both views — the callable name set
 // and the signature-bearing member functions.
-func (e *Engine) typeMethodInfoU(td *runtime.TypeDef, ptr bool) (*runtime.MethodSet, error) {
+func (r *Resolver) TypeMethodInfoU(td *runtime.TypeDef, ptr bool) (*runtime.MethodSet, error) {
 	// resolve aliases first — `type A = sync.Mutex` carries A's typedef
 	// but its method set is the host type's reflect set; checking
 	// HostNew on the unresolved alias would drop it.
-	td = e.peelAliasTd(td)
+	td = r.PeelAliasTd(td)
 	if td == nil {
 		return nil, nil
 	}
 	if rt := hostbridge.HostNilPtrType(td); rt != nil {
 		// the type of a nil host *T offers *T's reflect method set,
 		// like a non-nil box of it.
-		return &runtime.MethodSet{Names: e.hostTwinMethodSet(reflect.Zero(rt).Interface())}, nil
+		return &runtime.MethodSet{Names: r.HostTwinMethodSet(reflect.Zero(rt).Interface())}, nil
 	}
 	var unsure bool
 	// an anonymous *T typedef sees T's method set including pointer
@@ -241,7 +299,7 @@ func (e *Engine) typeMethodInfoU(td *runtime.TypeDef, ptr bool) (*runtime.Method
 	// methods declared on P itself — Go forbids those outright, so in
 	// valid programs the set is empty.
 	if td.Kind == runtime.KindPointer && td.Spec == nil {
-		if et, err := e.elemOf(td); err == nil && et != nil {
+		if et, err := r.ElemOf(td); err == nil && et != nil {
 			td, ptr = et, true
 		} else {
 			unsure = true
@@ -249,11 +307,11 @@ func (e *Engine) typeMethodInfoU(td *runtime.TypeDef, ptr bool) (*runtime.Method
 	}
 	// the pointee may itself be an alias (`type A = sync.Mutex` in `*A`)
 	// — peel again so the interface and host checks see the real type.
-	td = e.peelAliasTd(td)
+	td = r.PeelAliasTd(td)
 	if td == nil {
 		return &runtime.MethodSet{Unsure: unsure}, nil
 	}
-	ms := e.methodWalkU(td, ptr, map[walkKey]bool{})
+	ms := r.MethodWalkU(td, ptr, map[walkKey]bool{})
 	if ms == nil {
 		ms = &runtime.MethodSet{}
 	}
@@ -285,7 +343,7 @@ func (e *Engine) typeMethodInfoU(td *runtime.TypeDef, ptr bool) (*runtime.Method
 // aliasOf implements the Hooks.AliasOf hook: a KindAlias typedef resolves
 // its target expression — one hop only, so `type A = B` gives B's own
 // typedef even when B is itself a declared type (unlike underlying).
-func (e *Engine) aliasOf(td *runtime.TypeDef) (*runtime.TypeDef, error) {
+func (r *Resolver) AliasOf(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 	if td == nil || td.Kind != runtime.KindAlias || td.Anon == nil {
 		return td, nil
 	}
@@ -310,7 +368,7 @@ func (e *Engine) aliasOf(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 	// alias `type A = *T` would otherwise lose the pointer: rebuild it
 	// like the underlying hook does — A IS *T, not T.
 	expr := x
-	elem, err := e.resolveTypeRef(td, x)
+	elem, err := r.ResolveTypeRef(td, x)
 	if err != nil || elem == nil || n == 0 {
 		return elem, err
 	}
@@ -323,7 +381,7 @@ func (e *Engine) aliasOf(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 
 // underlying implements the Hooks.Underlying hook: a KindAlias typedef
 // resolves through its aliased expression to the real typedef.
-func (e *Engine) underlying(td *runtime.TypeDef) (*runtime.TypeDef, error) {
+func (r *Resolver) Underlying(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 	// aliases and named basics both peel to their underlying typedef —
 	// `type S string` bottoms out at the builtin "string" typedef so a
 	// zero value picks the right literal kind.
@@ -358,7 +416,7 @@ func (e *Engine) underlying(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 				n++
 				x = st.X
 			}
-			elem, err := e.resolveTypeRef(td, x)
+			elem, err := r.ResolveTypeRef(td, x)
 			if err != nil || elem == nil {
 				return nil, err
 			}
@@ -374,7 +432,7 @@ func (e *Engine) underlying(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 			}
 			return pt, nil
 		}
-		next, err := e.resolveTypeRef(td, td.Anon)
+		next, err := r.ResolveTypeRef(td, td.Anon)
 		if err != nil || next == nil || next == td {
 			return nil, err
 		}
@@ -387,9 +445,9 @@ func (e *Engine) underlying(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 // method sets, interface requirements and signatures all read through
 // the alias to the aliased declaration. Named basics stay put: `type A B`
 // declares a distinct method set, not B's.
-func (e *Engine) peelAliasTd(td *runtime.TypeDef) *runtime.TypeDef {
+func (r *Resolver) PeelAliasTd(td *runtime.TypeDef) *runtime.TypeDef {
 	for i := 0; td != nil && td.Kind == runtime.KindAlias && i < 32; i++ {
-		next, err := e.aliasOf(td)
+		next, err := r.AliasOf(td)
 		if err != nil || next == nil || next == td {
 			break
 		}
@@ -430,8 +488,8 @@ type walkKey struct {
 	args string
 }
 
-func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]bool) *runtime.MethodSet {
-	td = e.peelAliasTd(td)
+func (r *Resolver) MethodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]bool) *runtime.MethodSet {
+	td = r.PeelAliasTd(td)
 	if td == nil {
 		return nil
 	}
@@ -460,7 +518,7 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]boo
 	// an anonymous *T typedef sees T's method set including pointer
 	// receivers; a declared pointer typedef keeps only its own decls.
 	if td.Kind == runtime.KindPointer && td.Spec == nil {
-		if et, err := e.elemOf(td); err == nil && et != nil {
+		if et, err := r.ElemOf(td); err == nil && et != nil {
 			td, ptr = et, true
 		}
 	}
@@ -470,13 +528,13 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]boo
 		// plain name so `x.m` and `I.m` keep resolving. Never write
 		// back into the cached req set — copy.
 		names := map[string]bool{}
-		for m := range e.ifaceReqSet(td) {
+		for m := range r.ifaceReqSet(td) {
 			names[m] = true
-			if p := plainReqName(m); p != m {
+			if p := PlainReqName(m); p != m {
 				names[p] = true
 			}
 		}
-		funcs := e.ifaceSigFuncs(td)
+		funcs := r.ifaceSigFuncs(td)
 		depths := map[string]int{}
 		for m := range names {
 			depths[m] = 0
@@ -525,7 +583,7 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]boo
 		}
 		names[name] = true
 		funcs[name] = m
-		if k := reqKey(td.Pkg, name); k != name {
+		if k := ReqKey(td.Pkg, name); k != name {
 			// an unexported method also answers under its declaring
 			// package's key so interface requirements compare per
 			// package; promotion carries the key unchanged.
@@ -550,7 +608,7 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]boo
 	// promoted: embeds cannot contest it (the declared member always
 	// wins, so its smin entry would only poison Depths).
 	promoted := func(m string) bool {
-		p := plainReqName(m)
+		p := PlainReqName(m)
 		if !shadowed[p] && td.Methods[p] == nil {
 			return true
 		}
@@ -558,7 +616,7 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]boo
 		// for a pkg-qualified unexported key only when this type is in
 		// the same package: gc keeps `struct{ a.T; m int }` satisfying
 		// a's interface{ m() } (m in main is a different identifier).
-		return m != p && reqKey(td.Pkg, p) != m
+		return m != p && ReqKey(td.Pkg, p) != m
 	}
 	// A member promoted through more than one source survives only
 	// when its shallowest promotion is unique — gc's selector is
@@ -601,7 +659,7 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]boo
 		// the shared field layout. Over a host type the same rule
 		// keeps its exported fields (a defined type never gains host
 		// methods).
-		u, uerr := e.underlying(td)
+		u, uerr := r.Underlying(td)
 		if uerr != nil || u == nil {
 			unsure = true
 		} else if u != td && u.Kind == runtime.KindStruct {
@@ -620,7 +678,7 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]boo
 						contest(m, md, nil, nil, "host", true)
 					}
 				}
-			} else if sub2 := e.methodWalkU(u, ptr, seen); sub2 != nil {
+			} else if sub2 := r.MethodWalkU(u, ptr, seen); sub2 != nil {
 				unsure = unsure || sub2.Unsure
 				for m := range sub2.Names {
 					if sub2.Depths[m] == 0 || !promoted(m) {
@@ -649,7 +707,7 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]boo
 		}
 	}
 	for k, spec := range td.EmbedSpecs {
-		emb, err := e.resolveTypeRef(td, spec)
+		emb, err := r.ResolveTypeRef(td, spec)
 		// the embed's package failed its init (a trap or a panic): the
 		// program is already broken there, and treating the set as
 		// unsure would make every interface assertion succeed silently.
@@ -669,7 +727,7 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]boo
 		if k < len(td.EmbedIdx) {
 			fieldIdx = td.EmbedIdx[k]
 		}
-		peeled := e.peelAliasTd(emb)
+		peeled := r.PeelAliasTd(emb)
 		if peeled != nil && peeled.Kind == runtime.KindInterface {
 			// an embedded interface field satisfies its own requirements:
 			// the name set covers every required name (facade typedefs
@@ -680,15 +738,15 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]boo
 			// one; the receiver is the stored interface value itself.
 			// The signature shell contests with the name so a promoted
 			// requirement keeps its signature for assertion checks.
-			sigs := e.ifaceSigFuncs(peeled)
-			for m := range e.ifaceReqSet(peeled) {
+			sigs := r.ifaceSigFuncs(peeled)
+			for m := range r.ifaceReqSet(peeled) {
 				if promoted(m) {
 					contest(m, 1, sigs[m], []int{fieldIdx}, "iface", true)
 				}
 				// a pkg-qualified unexported requirement (M4-2b) also
 				// promotes under its plain name — `x.m` keeps selecting
 				// it; satisfaction only counts the qualified key.
-				if p := plainReqName(m); p != m && promoted(p) {
+				if p := PlainReqName(m); p != m && promoted(p) {
 					contest(p, 1, sigs[p], []int{fieldIdx}, "iface", true)
 				}
 			}
@@ -701,7 +759,7 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]boo
 		if _, isStar := spec.(*ast.StarExpr); isStar || emb.Kind == runtime.KindPointer {
 			embPtr = true
 		}
-		sub := e.methodWalkU(emb, embPtr, seen)
+		sub := r.MethodWalkU(emb, embPtr, seen)
 		if sub == nil {
 			continue
 		}
@@ -898,8 +956,8 @@ func hostDepthsIn(rt reflect.Type, seen map[reflect.Type]bool) map[string]int {
 // methodSet implements the minireflect MethodSet hook and the
 // Hooks.TypeMethodFuncs hook: the signature-bearing method set of a
 // typedef.
-func (e *Engine) methodSet(td *runtime.TypeDef) (map[string]*runtime.Function, error) {
-	return e.methodFuncs(td, false), nil
+func (r *Resolver) MethodSet(td *runtime.TypeDef) (map[string]*runtime.Function, error) {
+	return r.MethodFuncs(td, false), nil
 }
 
 // methodFuncs collects the method FUNCTIONS of a typedef — declared plus
@@ -909,8 +967,8 @@ func (e *Engine) methodSet(td *runtime.TypeDef) (map[string]*runtime.Function, e
 // the set; callers apply their own visibility rules (reflect exposes
 // exported methods only). An interface typedef yields synthesized
 // members carrying each required method's declared signature.
-func (e *Engine) methodFuncs(td *runtime.TypeDef, ptr bool) map[string]*runtime.Function {
-	if ms := e.methodWalkU(td, ptr, map[walkKey]bool{}); ms != nil {
+func (r *Resolver) MethodFuncs(td *runtime.TypeDef, ptr bool) map[string]*runtime.Function {
+	if ms := r.MethodWalkU(td, ptr, map[walkKey]bool{}); ms != nil {
 		return ms.Funcs
 	}
 	return nil
@@ -925,8 +983,8 @@ func (e *Engine) methodFuncs(td *runtime.TypeDef, ptr bool) map[string]*runtime.
 // script methods plus synthesized interface members. Host reflect
 // methods carry no decl signature, so host boxes report nil here and
 // satisfy requirements by name alone.
-func (e *Engine) methodFuncsOfValue(v runtime.Value) (map[string]*runtime.Function, error) {
-	ms, err := e.methodInfoOfValue(v)
+func (r *Resolver) MethodFuncsOfValue(v runtime.Value) (map[string]*runtime.Function, error) {
+	ms, err := r.MethodInfoOfValue(v)
 	if ms == nil {
 		return nil, err
 	}
@@ -944,18 +1002,18 @@ func (e *Engine) methodFuncsOfValue(v runtime.Value) (map[string]*runtime.Functi
 // The result is cached on td: every field store consults it, and
 // resolving each field's type from AST again dominated allocation in
 // field-heavy scripts (go/parser over a large package).
-func (e *Engine) fieldTypes(td *runtime.TypeDef) ([]*runtime.TypeDef, error) {
+func (r *Resolver) FieldTypes(td *runtime.TypeDef) ([]*runtime.TypeDef, error) {
 	if fts, ok := td.CachedFieldTypes(); ok {
 		return fts, nil
 	}
-	fts := e.resolveFieldTypes(td)
+	fts := r.ResolveFieldTypes(td)
 	td.SetFieldTypes(fts)
 	return fts, nil
 }
 
-func (e *Engine) resolveFieldTypes(td *runtime.TypeDef) []*runtime.TypeDef {
+func (r *Resolver) ResolveFieldTypes(td *runtime.TypeDef) []*runtime.TypeDef {
 	var st *ast.StructType
-	for _, x := range []ast.Expr{td.Anon, specType(td)} {
+	for _, x := range []ast.Expr{td.Anon, SpecType(td)} {
 		if s, ok := x.(*ast.StructType); ok {
 			st = s
 			break
@@ -981,7 +1039,7 @@ func (e *Engine) resolveFieldTypes(td *runtime.TypeDef) []*runtime.TypeDef {
 					}
 				}
 			}
-			ft, err := e.elemTypeRef(td, fld.Type)
+			ft, err := r.ElemTypeRef(td, fld.Type)
 			if err == nil {
 				out[i] = ft
 			} else {
@@ -1001,7 +1059,7 @@ func (e *Engine) resolveFieldTypes(td *runtime.TypeDef) []*runtime.TypeDef {
 	return out
 }
 
-func specType(td *runtime.TypeDef) ast.Expr {
+func SpecType(td *runtime.TypeDef) ast.Expr {
 	if td.Spec != nil {
 		return td.Spec.Type
 	}
@@ -1012,26 +1070,26 @@ func specType(td *runtime.TypeDef) ast.Expr {
 // `from` to a *TypeDef: package-local names via the index, pkg.Name via
 // import refs, *T / T[...] peel to the base. Anything else fails —
 // constraints and underlying-only types don't participate in method sets.
-func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, error) {
+func (r *Resolver) ResolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, error) {
 	switch t := x.(type) {
 	case *ast.StarExpr:
-		return e.resolveTypeRef(from, t.X)
+		return r.ResolveTypeRef(from, t.X)
 	case *ast.ParenExpr:
-		return e.resolveTypeRef(from, t.X)
+		return r.ResolveTypeRef(from, t.X)
 	case *ast.IndexExpr:
-		base, err := e.resolveTypeRef(from, t.X)
+		base, err := r.ResolveTypeRef(from, t.X)
 		if err != nil {
 			return nil, err
 		}
-		return e.instantiateRef(from, base, []ast.Expr{t.Index}), nil
+		return r.InstantiateRef(from, base, []ast.Expr{t.Index}), nil
 	case *ast.IndexListExpr:
-		base, err := e.resolveTypeRef(from, t.X)
+		base, err := r.ResolveTypeRef(from, t.X)
 		if err != nil {
 			return nil, err
 		}
-		return e.instantiateRef(from, base, t.Indices), nil
+		return r.InstantiateRef(from, base, t.Indices), nil
 	case *ast.ArrayType:
-		e.foldArrayLens(from, t)
+		r.foldArrayLens(from, t)
 		return &runtime.TypeDef{Kind: runtime.KindSlice, Anon: t, Pkg: from.Pkg, File: from.File, Binds: from.Binds, LocalTypes: from.LocalTypes}, nil
 	case *ast.MapType:
 		return &runtime.TypeDef{Kind: runtime.KindMap, Anon: t, Pkg: from.Pkg, File: from.File, Binds: from.Binds, LocalTypes: from.LocalTypes}, nil
@@ -1085,7 +1143,7 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 		}
 		if from.Pkg != nil && from.Pkg.Index != nil {
 			if info, ok := from.Pkg.Index.Types[t.Name]; ok && info.Decl != nil {
-				vv, err := e.materialize(from.Pkg, info.Decl)
+				vv, err := r.materialize(from.Pkg, info.Decl)
 				if err != nil {
 					return nil, err
 				}
@@ -1096,7 +1154,7 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 					// stays put: its target mentions the decl's own type
 					// parameters, which only instantiateRef can bind.
 					if td.Kind == runtime.KindAlias && len(td.TParams) == 0 {
-						return e.peelAliasTd(td), nil
+						return r.PeelAliasTd(td), nil
 					}
 					return td, nil
 				}
@@ -1138,7 +1196,7 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 				if !inGlobals && !inIndex {
 					continue
 				}
-				m, err := p.Member(t.Name, e.materialize)
+				m, err := p.Member(t.Name, r.materialize)
 				if err != nil {
 					return nil, fmt.Errorf("dot import %s: %s", ref.Path, err)
 				}
@@ -1155,7 +1213,7 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 				return itd, nil
 			}
 		}
-		if bv, ok := e.builtins.Get(t.Name); ok {
+		if bv, ok := r.builtins.Get(t.Name); ok {
 			if td, ok := bv.(*runtime.TypeDef); ok {
 				return td, nil
 			}
@@ -1166,14 +1224,14 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 		if !ok || from.Pkg == nil {
 			return nil, fmt.Errorf("cannot resolve embedded type")
 		}
-		p, err := e.importPackageAt(from, id.Name)
+		p, err := r.ImportPackageAt(from, id.Name)
 		if err != nil {
 			return nil, err
 		}
 		if p == from.Pkg {
-			return e.resolveTypeRef(from, ast.NewIdent(t.Sel.Name))
+			return r.ResolveTypeRef(from, ast.NewIdent(t.Sel.Name))
 		}
-		m, err := p.Member(t.Sel.Name, e.materialize)
+		m, err := p.Member(t.Sel.Name, r.materialize)
 		if err != nil {
 			return nil, err
 		}
@@ -1184,7 +1242,7 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 		// same alias transparency as the ident case: pkg.A where A is
 		// `type A = T` resolves to T's own typedef.
 		if td.Kind == runtime.KindAlias && len(td.TParams) == 0 {
-			td = e.peelAliasTd(td)
+			td = r.PeelAliasTd(td)
 		}
 		return td, nil
 	}
@@ -1196,14 +1254,14 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 // resolveTypeRef — a reference resolver that strips `*` — the answer
 // keeps the expression's own shape: `*int` resolves to a pointer
 // typedef, parens count their inner stars the same way.
-func (e *Engine) deferredTypeOf(site *bytecode.CallSite, ctx *runtime.TypeDef) (*runtime.TypeDef, error) {
-	return e.starKeepingTypedef(ctx, site.Expr)
+func (r *Resolver) DeferredTypeOf(site *bytecode.CallSite, ctx *runtime.TypeDef) (*runtime.TypeDef, error) {
+	return r.StarKeepingTypedef(ctx, site.Expr)
 }
 
 // starKeepingTypedef resolves a type expression while keeping its
 // leading `*` levels as pointer typedefs — resolveTypeRef strips them,
 // and a nilability or spelling judgment needs the pointer.
-func (e *Engine) starKeepingTypedef(ctx *runtime.TypeDef, expr ast.Expr) (*runtime.TypeDef, error) {
+func (r *Resolver) StarKeepingTypedef(ctx *runtime.TypeDef, expr ast.Expr) (*runtime.TypeDef, error) {
 	var stars []*ast.StarExpr
 	for {
 		switch t := expr.(type) {
@@ -1217,7 +1275,7 @@ func (e *Engine) starKeepingTypedef(ctx *runtime.TypeDef, expr ast.Expr) (*runti
 		}
 	}
 peeled:
-	td, err := e.resolveTypeRef(ctx, expr)
+	td, err := r.ResolveTypeRef(ctx, expr)
 	if err != nil {
 		return nil, err
 	}
@@ -1235,14 +1293,14 @@ peeled:
 // container typedef — or the pointee typedef of a pointer typedef —
 // resolved from its underlying type AST (Anon or Spec.Type). Used by
 // elided composite literal elements and pointer member dispatch.
-func (e *Engine) elemOf(td *runtime.TypeDef) (*runtime.TypeDef, error) {
-	return e.elemOfFuel(td, 8)
+func (r *Resolver) ElemOf(td *runtime.TypeDef) (*runtime.TypeDef, error) {
+	return r.elemOfFuel(td, 8)
 }
 
 // elemOfFuel is elemOf with a bound on the named-container hops a bare
 // underlying (`type N Ms`, `type N AS` with an alias AS) takes to reach
 // the container whose element it shares.
-func (e *Engine) elemOfFuel(td *runtime.TypeDef, fuel int) (*runtime.TypeDef, error) {
+func (r *Resolver) elemOfFuel(td *runtime.TypeDef, fuel int) (*runtime.TypeDef, error) {
 	if td.Elem != nil {
 		return td.Elem, nil
 	}
@@ -1260,27 +1318,27 @@ func (e *Engine) elemOfFuel(td *runtime.TypeDef, fuel int) (*runtime.TypeDef, er
 			// a pointer when the pointee is itself a star (`**T`'s
 			// element is `*T`, not T: resolveTypeRef would collapse the
 			// inner star and lose the pointer level).
-			return e.elemTypeRef(td, t.X)
+			return r.ElemTypeRef(td, t.X)
 		case *ast.ArrayType:
-			return e.elemTypeRef(td, t.Elt)
+			return r.ElemTypeRef(td, t.Elt)
 		case *ast.MapType:
-			return e.elemTypeRef(td, t.Value)
+			return r.ElemTypeRef(td, t.Value)
 		case *ast.ChanType:
-			return e.elemTypeRef(td, t.Value)
+			return r.ElemTypeRef(td, t.Value)
 		}
 		// bare underlying naming a container (`type N Ms`, `type N AS`
 		// with an alias AS = []map[K]V): N shares that container's
 		// element — the named type itself is not its element.
-		r, err := e.resolveTypeRef(td, x)
-		if err == nil && r != nil && r != td && fuel > 0 {
-			switch r.Kind {
+		etd, err := r.ResolveTypeRef(td, x)
+		if err == nil && etd != nil && etd != td && fuel > 0 {
+			switch etd.Kind {
 			case runtime.KindSlice, runtime.KindMap, runtime.KindChan, runtime.KindPointer, runtime.KindAlias:
-				return e.elemOfFuel(r, fuel-1)
+				return r.elemOfFuel(etd, fuel-1)
 			}
 		}
 		// any other bare underlying (e.g. `type T MyStruct`): the elem
 		// is that type
-		return r, err
+		return etd, err
 	}
 }
 
@@ -1290,7 +1348,7 @@ func (e *Engine) elemOfFuel(td *runtime.TypeDef, fuel int) (*runtime.TypeDef, er
 // so its body sees the concrete arguments. Arguments that do not resolve
 // (an unbound type parameter in a generic context) bind to a placeholder
 // named typedef so `List[T]` inside a decl stays a stable shape.
-func (e *Engine) instantiateRef(from *runtime.TypeDef, base *runtime.TypeDef, args []ast.Expr) *runtime.TypeDef {
+func (r *Resolver) InstantiateRef(from *runtime.TypeDef, base *runtime.TypeDef, args []ast.Expr) *runtime.TypeDef {
 	if base == nil || len(base.TParams) == 0 {
 		return base
 	}
@@ -1302,7 +1360,7 @@ func (e *Engine) instantiateRef(from *runtime.TypeDef, base *runtime.TypeDef, ar
 		// type args are full type expressions: a `*T` argument binds the
 		// pointer typedef, not its pointee — `mapping[string, *routingNode]`
 		// holds V=*routingNode (net/http's routing tree).
-		at, err := e.elemTypeRef(from, args[i])
+		at, err := r.ElemTypeRef(from, args[i])
 		if err != nil || at == nil {
 			if id, ok := args[i].(*ast.Ident); ok {
 				at = &runtime.TypeDef{Kind: runtime.KindNamedBasic, Name: id.Name, Pkg: from.Pkg, File: from.File}
@@ -1312,13 +1370,13 @@ func (e *Engine) instantiateRef(from *runtime.TypeDef, base *runtime.TypeDef, ar
 		}
 		binds[tp] = at
 	}
-	return e.instantiateBinds(base, binds)
+	return r.InstantiateBinds(base, binds)
 }
 
 // instantiateBinds builds the specialized typedef of generic base with
 // its type parameters bound to binds (param name → typedef), re-binding
 // every method so its body sees the concrete arguments.
-func (e *Engine) instantiateBinds(base *runtime.TypeDef, binds map[string]runtime.Value) *runtime.TypeDef {
+func (r *Resolver) InstantiateBinds(base *runtime.TypeDef, binds map[string]runtime.Value) *runtime.TypeDef {
 	td := &runtime.TypeDef{
 		Pkg: base.Pkg, Name: base.Name, File: base.File, Spec: base.Spec, Kind: base.Kind,
 		Fields: base.Fields, FTags: base.FTags, Anon: base.Anon, TParams: base.TParams,
@@ -1361,31 +1419,31 @@ func (e *Engine) instantiateBinds(base *runtime.TypeDef, binds map[string]runtim
 	}
 	// M4-3d: the instantiated descriptor is canonical — two mints of the
 	// same instantiation are the same pointer.
-	return e.internTypedef(td)
+	return r.internTypedef(td)
 }
 
 // elemTypeRef resolves a container's element type expression: `*T`
 // elements stay pointers (KindPointer), everything else resolves to its
 // typedef. Named pointer types (`*P` where P is `type P *Sq`) resolve
 // through resolveTypeRef to P's own typedef, which memberOfType peels.
-func (e *Engine) elemTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, error) {
+func (r *Resolver) ElemTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, error) {
 	if st, ok := x.(*ast.StarExpr); ok {
 		return &runtime.TypeDef{Kind: runtime.KindPointer, Anon: st, Pkg: from.Pkg, File: from.File, Binds: from.Binds, LocalTypes: from.LocalTypes}, nil
 	}
-	return e.resolveTypeRef(from, x)
+	return r.ResolveTypeRef(from, x)
 }
 
 // ---- shared helpers ----
 
 // typeParamNames extracts parameter names from a type parameter list,
 // in declaration order — the shared walk lives in syntax.
-func typeParamNames(fl *ast.FieldList) []string {
+func TypeParamNames(fl *ast.FieldList) []string {
 	return syntax.TypeParamNames(fl)
 }
 
 // typeParamConstraints extracts the constraint expression per type
 // parameter name, parallel to typeParamNames.
-func typeParamConstraints(fl *ast.FieldList) []ast.Expr {
+func TypeParamConstraints(fl *ast.FieldList) []ast.Expr {
 	if fl == nil {
 		return nil
 	}

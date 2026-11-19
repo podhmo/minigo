@@ -176,7 +176,7 @@ func TestDeferredTypeOfKeepsPointerShape(t *testing.T) {
 		"star":  &ast.StarExpr{X: ast.NewIdent("int")},
 		"paren": &ast.ParenExpr{X: &ast.StarExpr{X: ast.NewIdent("int")}},
 	} {
-		td, err := e.deferredTypeOf(&bytecode.CallSite{Expr: expr}, ctx)
+		td, err := e.td.DeferredTypeOf(&bytecode.CallSite{Expr: expr}, ctx)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -184,7 +184,7 @@ func TestDeferredTypeOfKeepsPointerShape(t *testing.T) {
 			t.Fatalf("%s: resolved to %v, want a pointer typedef", name, td.Kind)
 		}
 	}
-	td, err := e.deferredTypeOf(&bytecode.CallSite{Expr: ast.NewIdent("int")}, ctx)
+	td, err := e.td.DeferredTypeOf(&bytecode.CallSite{Expr: ast.NewIdent("int")}, ctx)
 	if err != nil {
 		t.Fatalf("ident: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestDeferredTypeOfKeepsPointerShape(t *testing.T) {
 	// the result with its own element.
 	inner := &ast.StarExpr{X: ast.NewIdent("int")}
 	outer := &ast.StarExpr{X: inner}
-	dd, err := e.deferredTypeOf(&bytecode.CallSite{Expr: outer}, ctx)
+	dd, err := e.td.DeferredTypeOf(&bytecode.CallSite{Expr: outer}, ctx)
 	if err != nil {
 		t.Fatalf("starstar: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestDeferredTypeOfKeepsPointerShape(t *testing.T) {
 	// spelling matches pointers minted by typeExpr.
 	ltd := &runtime.TypeDef{Kind: runtime.KindNamedBasic, Name: "L"}
 	lctx := &runtime.TypeDef{Pkg: ctx.Pkg, LocalTypes: map[string]*runtime.TypeDef{"L": ltd}}
-	lp, err := e.deferredTypeOf(&bytecode.CallSite{Expr: &ast.StarExpr{X: ast.NewIdent("L")}}, lctx)
+	lp, err := e.td.DeferredTypeOf(&bytecode.CallSite{Expr: &ast.StarExpr{X: ast.NewIdent("L")}}, lctx)
 	if err != nil {
 		t.Fatalf("local star: %v", err)
 	}

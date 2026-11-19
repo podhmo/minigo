@@ -1,4 +1,4 @@
-package minigo
+package typedef
 
 import (
 	"bufio"

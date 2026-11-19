@@ -53,7 +53,7 @@ func (e *Engine) iterSeqTd(elems ...*runtime.TypeDef) *runtime.TypeDef {
 	for i, tp := range base.TParams {
 		binds[tp] = elems[i]
 	}
-	td := e.instantiateBinds(base, binds)
+	td := e.td.InstantiateBinds(base, binds)
 	if cacheable {
 		if prev, loaded := e.iterSeqTds.LoadOrStore(key, td); loaded {
 			return prev.(*runtime.TypeDef)

@@ -123,24 +123,9 @@ func (h *hostHelpers) Arity(name string, n int, f func([]any) (any, error), targ
 	return bf
 }
 
-// retErr wraps a (n int, err error) or single-value+error result into the
-// script-visible tuple (value, err-or-nil).
-func retErr(n int, err error) (any, error) {
-	return stdlib.RetErr(n, err)
-}
-
-// errVal delegates to the shared binding machinery in internal/stdlib.
-func errVal(err error) runtime.Value {
-	return stdlib.ErrVal(err)
-}
-
 // scriptVal delegates to the shared binding machinery in internal/stdlib.
 func scriptVal(v any) runtime.Value {
 	return stdlib.ScriptVal(v)
-}
-
-func str(v any) string {
-	return stdlib.Str(v)
 }
 
 // timerChanBox/tickerChanBox/afterFuncTimer moved with the time
@@ -159,12 +144,6 @@ func proxyHostType(rt reflect.Type) reflect.Type {
 // proxyHostType (P2-12c).
 func proxyUnwrapHost(v any, t reflect.Type) (reflect.Value, bool) {
 	return stdtime.ProxyUnwrapHost(v, t)
-}
-
-// proxyHostTypeOf is proxyHostType over a value — the fmt path's %T
-// lookup (P2-12c).
-func proxyHostTypeOf(v any) reflect.Type {
-	return stdtime.ProxyHostTypeOf(v)
 }
 
 func byteSlice(v any) []byte {

@@ -1,4 +1,4 @@
-package minigo
+package typedef
 
 import (
 	"context"
@@ -18,7 +18,7 @@ import (
 // unaliased import whose clause differs from the path basename), the
 // context's own package when spelled by path, or — as exprOf emits —
 // an import path loaded directly.
-func (e *Engine) importPackageAt(from *runtime.TypeDef, name string) (*runtime.Package, error) {
+func (r *Resolver) ImportPackageAt(from *runtime.TypeDef, name string) (*runtime.Package, error) {
 	if from == nil || from.Pkg == nil {
 		return nil, fmt.Errorf("cannot resolve package %s", name)
 	}
@@ -45,7 +45,7 @@ func (e *Engine) importPackageAt(from *runtime.TypeDef, name string) (*runtime.P
 			return from.Pkg, nil
 		}
 		ref = &runtime.ImportRef{Path: path, Load: func(path string) (*runtime.Package, error) {
-			return e.loadPath(context.Background(), path)
+			return r.loadPath(context.Background(), path)
 		}}
 	}
 	return ref.Materialize()
@@ -55,17 +55,17 @@ func (e *Engine) importPackageAt(from *runtime.TypeDef, name string) (*runtime.P
 // the site's expression is a constant expression under ctx — compile's
 // isConstExprDepth answered under AllowIndex: qualified package members
 // answer from the package's index and globals at runtime.
-func (e *Engine) constExprOf(site *bytecode.CallSite, ctx *runtime.TypeDef) (bool, error) {
-	return e.constExpr(ctx, site.Consts, site.Expr)
+func (r *Resolver) ConstExprOf(site *bytecode.CallSite, ctx *runtime.TypeDef) (bool, error) {
+	return r.constExpr(ctx, site.Consts, site.Expr)
 }
 
 // constExpr is the runtime counterpart of compile's isConstExprDepth —
 // gc's rule, not the compile-time conservative one: where compile had
 // to be sure, the runtime can look a member up for real.
-func (e *Engine) constExpr(ctx *runtime.TypeDef, consts map[string]bool, x ast.Expr) (bool, error) {
+func (r *Resolver) constExpr(ctx *runtime.TypeDef, consts map[string]bool, x ast.Expr) (bool, error) {
 	switch t := x.(type) {
 	case *ast.ParenExpr:
-		return e.constExpr(ctx, consts, t.X)
+		return r.constExpr(ctx, consts, t.X)
 	case *ast.BasicLit:
 		return true, nil
 	case *ast.Ident:
@@ -95,7 +95,7 @@ func (e *Engine) constExpr(ctx *runtime.TypeDef, consts map[string]bool, x ast.E
 		if !ok {
 			return false, nil
 		}
-		p, err := e.importPackageAt(ctx, id.Name)
+		p, err := r.ImportPackageAt(ctx, id.Name)
 		if err != nil {
 			return false, err
 		}
@@ -115,15 +115,15 @@ func (e *Engine) constExpr(ctx *runtime.TypeDef, consts map[string]bool, x ast.E
 	case *ast.UnaryExpr:
 		switch t.Op {
 		case token.ADD, token.SUB, token.XOR, token.NOT:
-			return e.constExpr(ctx, consts, t.X)
+			return r.constExpr(ctx, consts, t.X)
 		}
 		return false, nil
 	case *ast.BinaryExpr:
-		a, err := e.constExpr(ctx, consts, t.X)
+		a, err := r.constExpr(ctx, consts, t.X)
 		if !a || err != nil {
 			return a, err
 		}
-		return e.constExpr(ctx, consts, t.Y)
+		return r.constExpr(ctx, consts, t.Y)
 	case *ast.CallExpr:
 		if t.Ellipsis.IsValid() || len(t.Args) == 0 {
 			return false, nil
@@ -143,7 +143,7 @@ func (e *Engine) constExpr(ctx *runtime.TypeDef, consts map[string]bool, x ast.E
 				}
 				arg := t.Args[0]
 				if f.Name == "len" {
-					if c, err := e.constExpr(ctx, consts, arg); c || err != nil {
+					if c, err := r.constExpr(ctx, consts, arg); c || err != nil {
 						return c, err // len of a constant string
 					}
 				}
@@ -151,26 +151,26 @@ func (e *Engine) constExpr(ctx *runtime.TypeDef, consts map[string]bool, x ast.E
 				// though the operand is not — `len(p.A)` asks the
 				// declared type, so the runtime answer resolves it
 				// instead of probing the operand's constness.
-				if e.lenOperandCalls(ctx, arg) {
+				if r.lenOperandCalls(ctx, arg) {
 					return false, nil
 				}
-				td, _, err := e.valueTyp(ctx, arg)
+				td, _, err := r.valueTyp(ctx, arg)
 				if err != nil || td == nil {
 					return false, nil
 				}
-				u, err := e.underlying(td)
+				u, err := r.Underlying(td)
 				if err != nil || u == nil {
 					return false, nil
 				}
 				if u.Kind == runtime.KindPointer && u.Elem != nil {
-					if u2, err2 := e.underlying(u.Elem); err2 == nil && u2 != nil {
+					if u2, err2 := r.Underlying(u.Elem); err2 == nil && u2 != nil {
 						u = u2
 					}
 				}
 				return runtime.ArrayTypedef(u), nil
 			case "min", "max", "real", "imag", "complex":
 				for _, a := range t.Args {
-					c, err := e.constExpr(ctx, consts, a)
+					c, err := r.constExpr(ctx, consts, a)
 					if !c || err != nil {
 						return c, err
 					}
@@ -179,18 +179,18 @@ func (e *Engine) constExpr(ctx *runtime.TypeDef, consts map[string]bool, x ast.E
 			}
 			// a conversion keeps the constant when the target's
 			// underlying is a basic type (`[]byte("s")` does not).
-			td, err := e.resolveTypeRef(ctx, f)
+			td, err := r.ResolveTypeRef(ctx, f)
 			if err != nil || td == nil {
 				return false, nil
 			}
-			u, err := e.underlying(td)
+			u, err := r.Underlying(td)
 			if err != nil || u == nil || u.Kind != runtime.KindNamedBasic {
 				return false, nil
 			}
 			if len(t.Args) != 1 {
 				return false, nil
 			}
-			return e.constExpr(ctx, consts, t.Args[0])
+			return r.constExpr(ctx, consts, t.Args[0])
 		case *ast.SelectorExpr:
 			switch f.Sel.Name {
 			case "Sizeof", "Alignof", "Offsetof":
@@ -201,7 +201,7 @@ func (e *Engine) constExpr(ctx *runtime.TypeDef, consts map[string]bool, x ast.E
 			if !ok || len(t.Args) != 1 {
 				return false, nil
 			}
-			p, err := e.importPackageAt(ctx, id.Name)
+			p, err := r.ImportPackageAt(ctx, id.Name)
 			if err != nil {
 				return false, err
 			}
@@ -214,7 +214,7 @@ func (e *Engine) constExpr(ctx *runtime.TypeDef, consts map[string]bool, x ast.E
 // lenOperandCalls mirrors the compile-side len/cap rule: an operand
 // containing a call or receive is never a constant operand, while a
 // conversion is transparent and descends into its args.
-func (e *Engine) lenOperandCalls(ctx *runtime.TypeDef, ex ast.Expr) bool {
+func (r *Resolver) lenOperandCalls(ctx *runtime.TypeDef, ex ast.Expr) bool {
 	calls := false
 	ast.Inspect(ex, func(n ast.Node) bool {
 		if calls || n == nil {
@@ -224,7 +224,7 @@ func (e *Engine) lenOperandCalls(ctx *runtime.TypeDef, ex ast.Expr) bool {
 		case *ast.FuncLit:
 			return false // body calls run at invocation, not operand time
 		case *ast.CallExpr:
-			if td, err := e.resolveTypeRef(ctx, t.Fun); err == nil && td != nil {
+			if td, err := r.ResolveTypeRef(ctx, t.Fun); err == nil && td != nil {
 				return true
 			}
 			calls = true
@@ -248,7 +248,7 @@ func (e *Engine) lenOperandCalls(ctx *runtime.TypeDef, ex ast.Expr) bool {
 // member that is not a source function, an out-of-range want, or a
 // result spelling a type parameter reports unknown — the intrinsic or
 // gate stays silent like before.
-func (e *Engine) callResultTypOf(ctx *runtime.TypeDef, fun ast.Expr, want, depth int) (*runtime.TypeDef, bool, error) {
+func (r *Resolver) callResultTypOf(ctx *runtime.TypeDef, fun ast.Expr, want, depth int) (*runtime.TypeDef, bool, error) {
 	if depth > 8 {
 		return nil, false, nil
 	}
@@ -259,14 +259,14 @@ func (e *Engine) callResultTypOf(ctx *runtime.TypeDef, fun ast.Expr, want, depth
 		if !ok {
 			return nil, false, nil
 		}
-		p, err := e.importPackageAt(ctx, id.Name)
+		p, err := r.ImportPackageAt(ctx, id.Name)
 		if err != nil {
 			return nil, false, err
 		}
 		if p == nil {
 			return nil, false, nil
 		}
-		m, err = p.Member(t.Sel.Name, e.materialize)
+		m, err = p.Member(t.Sel.Name, r.materialize)
 		if err != nil {
 			return nil, false, nil
 		}
@@ -275,7 +275,7 @@ func (e *Engine) callResultTypOf(ctx *runtime.TypeDef, fun ast.Expr, want, depth
 			return nil, false, nil
 		}
 		var err error
-		m, err = ctx.Pkg.Member(t.Name, e.materialize)
+		m, err = ctx.Pkg.Member(t.Name, r.materialize)
 		if err != nil {
 			return nil, false, nil
 		}
@@ -314,7 +314,7 @@ func (e *Engine) callResultTypOf(ctx *runtime.TypeDef, fun ast.Expr, want, depth
 	// keep the declared `*` levels — `*ClientTrace` is a nilable
 	// pointer, and resolving to its pointee would answer a named
 	// struct for the nil check.
-	td, err := e.starKeepingTypedef(&runtime.TypeDef{Pkg: f.Pkg, File: f.File}, rt)
+	td, err := r.StarKeepingTypedef(&runtime.TypeDef{Pkg: f.Pkg, File: f.File}, rt)
 	if err != nil {
 		return nil, false, nil
 	}
@@ -325,7 +325,7 @@ func (e *Engine) callResultTypOf(ctx *runtime.TypeDef, fun ast.Expr, want, depth
 // length of every array it contains — resolveTypeRef mints array
 // typedefs without running their length expression, and readers like
 // minireflect.Len only accept a literal or a [FoldArrayLen] fold.
-func (e *Engine) foldArrayLens(from *runtime.TypeDef, x ast.Expr) {
+func (r *Resolver) foldArrayLens(from *runtime.TypeDef, x ast.Expr) {
 	ast.Inspect(x, func(n ast.Node) bool {
 		at, ok := n.(*ast.ArrayType)
 		if !ok || at.Len == nil {
@@ -334,7 +334,7 @@ func (e *Engine) foldArrayLens(from *runtime.TypeDef, x ast.Expr) {
 		if _, done := runtime.FoldedArrayLen(from.Pkg, at); done {
 			return true
 		}
-		if n, ok := e.constIntValue(from, at.Len); ok {
+		if n, ok := r.constIntValue(from, at.Len); ok {
 			runtime.FoldArrayLen(from.Pkg, at, n)
 		}
 		return true
@@ -345,7 +345,7 @@ func (e *Engine) foldArrayLens(from *runtime.TypeDef, x ast.Expr) {
 // context — literals, unary/binary arithmetic, and named constants
 // (local or qualified). It never runs code: unsafe.Sizeof's argument
 // must not evaluate, and neither does a `[N]T` in a signature.
-func (e *Engine) constIntValue(from *runtime.TypeDef, x ast.Expr) (int64, bool) {
+func (r *Resolver) constIntValue(from *runtime.TypeDef, x ast.Expr) (int64, bool) {
 	switch t := ast.Unparen(x).(type) {
 	case *ast.BasicLit:
 		cv := constant.MakeFromLiteral(t.Value, t.Kind, 0)
@@ -353,7 +353,7 @@ func (e *Engine) constIntValue(from *runtime.TypeDef, x ast.Expr) (int64, bool) 
 			return iv, true
 		}
 	case *ast.UnaryExpr:
-		v, ok := e.constIntValue(from, t.X)
+		v, ok := r.constIntValue(from, t.X)
 		if !ok {
 			return 0, false
 		}
@@ -362,11 +362,11 @@ func (e *Engine) constIntValue(from *runtime.TypeDef, x ast.Expr) (int64, bool) 
 			return iv, true
 		}
 	case *ast.BinaryExpr:
-		a, ok := e.constIntValue(from, t.X)
+		a, ok := r.constIntValue(from, t.X)
 		if !ok {
 			return 0, false
 		}
-		b, ok := e.constIntValue(from, t.Y)
+		b, ok := r.constIntValue(from, t.Y)
 		if !ok {
 			return 0, false
 		}
@@ -391,18 +391,18 @@ func (e *Engine) constIntValue(from *runtime.TypeDef, x ast.Expr) (int64, bool) 
 			return iv, true
 		}
 	case *ast.Ident:
-		v, ok := e.constValueOf(from, t.Name)
+		v, ok := r.constValueOf(from, t.Name)
 		return v, ok
 	case *ast.SelectorExpr:
 		id, ok := t.X.(*ast.Ident)
 		if !ok {
 			return 0, false
 		}
-		p, err := e.importPackageAt(from, id.Name)
+		p, err := r.ImportPackageAt(from, id.Name)
 		if err != nil || p == nil {
 			return 0, false
 		}
-		return e.constValueOf(&runtime.TypeDef{Pkg: p, File: from.File}, t.Sel.Name)
+		return r.constValueOf(&runtime.TypeDef{Pkg: p, File: from.File}, t.Sel.Name)
 	}
 	return 0, false
 }
@@ -410,7 +410,7 @@ func (e *Engine) constIntValue(from *runtime.TypeDef, x ast.Expr) (int64, bool) 
 // constValueOf answers a named constant's int64 value: the package's
 // bound globals first (UConst), then the index's const decls
 // materialized lazily — `const N = 4` declared below the use site.
-func (e *Engine) constValueOf(from *runtime.TypeDef, name string) (int64, bool) {
+func (r *Resolver) constValueOf(from *runtime.TypeDef, name string) (int64, bool) {
 	if from == nil || from.Pkg == nil {
 		return 0, false
 	}
@@ -423,7 +423,7 @@ func (e *Engine) constValueOf(from *runtime.TypeDef, name string) (int64, bool) 
 	}
 	if from.Pkg.Index != nil {
 		if d := from.Pkg.Index.Consts[name]; d != nil {
-			if mv, err := e.materialize(from.Pkg, d); err == nil {
+			if mv, err := r.materialize(from.Pkg, d); err == nil {
 				if u, ok := mv.(*runtime.UConst); ok {
 					if iv, ok := constant.Int64Val(constant.ToInt(u.V)); ok {
 						return iv, true
@@ -486,18 +486,18 @@ func resultSpellsParam(d *ast.FuncDecl, rt ast.Expr) bool {
 // typedef a value expression carries — a qualified package member's
 // declared or inferred type, or an untyped constant's default type.
 // nil is a lawful answer: the gate stays silent on what it can't type.
-func (e *Engine) valueTypOf(site *bytecode.CallSite, ctx *runtime.TypeDef) (*runtime.TypeDef, bool, error) {
-	return e.valueTyp(ctx, site.Expr)
+func (r *Resolver) ValueTypOf(site *bytecode.CallSite, ctx *runtime.TypeDef) (*runtime.TypeDef, bool, error) {
+	return r.valueTyp(ctx, site.Expr)
 }
 
-func (e *Engine) valueTyp(ctx *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, bool, error) {
-	return e.valueTypDepth(ctx, x, 0)
+func (r *Resolver) valueTyp(ctx *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, bool, error) {
+	return r.valueTypDepth(ctx, x, 0)
 }
 
-func (e *Engine) valueTypDepth(ctx *runtime.TypeDef, x ast.Expr, depth int) (*runtime.TypeDef, bool, error) {
+func (r *Resolver) valueTypDepth(ctx *runtime.TypeDef, x ast.Expr, depth int) (*runtime.TypeDef, bool, error) {
 	switch t := x.(type) {
 	case *ast.ParenExpr:
-		return e.valueTypDepth(ctx, t.X, depth)
+		return r.valueTypDepth(ctx, t.X, depth)
 	case *ast.BasicLit:
 		return basicLitTypedef(t.Kind), true, nil
 	case *ast.Ident:
@@ -510,22 +510,22 @@ func (e *Engine) valueTypDepth(ctx *runtime.TypeDef, x ast.Expr, depth int) (*ru
 		if ctx == nil || ctx.Pkg == nil {
 			return nil, false, nil
 		}
-		return e.memberTypOf(ctx.Pkg, t.Name, depth+1)
+		return r.MemberTypOf(ctx.Pkg, t.Name, depth+1)
 	case *ast.UnaryExpr:
 		if t.Op != token.SUB && t.Op != token.ADD {
 			return nil, false, nil
 		}
-		return e.valueTypDepth(ctx, t.X, depth+1)
+		return r.valueTypDepth(ctx, t.X, depth+1)
 	case *ast.CallExpr:
 		// a conversion T(v) carries T's typedef; anything else is a
 		// call whose result typedef comes from the callee's declared
 		// signature — never by running the call (`unsafe.Sizeof`
 		// evaluates nothing, and neither does the gate).
-		td, err := e.starKeepingTypedef(ctx, t.Fun)
+		td, err := r.StarKeepingTypedef(ctx, t.Fun)
 		if err == nil && td != nil {
 			return td, false, nil
 		}
-		return e.callResultTypOf(ctx, t.Fun, 0, depth+1)
+		return r.callResultTypOf(ctx, t.Fun, 0, depth+1)
 	case *ast.IndexExpr:
 		// a synthetic bind-site marker the compiler emits for a
 		// deferred multi-result call — `f(args)[i]` asks the callee's
@@ -539,21 +539,21 @@ func (e *Engine) valueTypDepth(ctx *runtime.TypeDef, x ast.Expr, depth int) (*ru
 			// into the result and falls through to the element walk.
 			if lit, ok2 := t.Index.(*ast.BasicLit); ok2 && lit.ValuePos == token.NoPos {
 				i, _ := strconv.Atoi(lit.Value)
-				return e.callResultTypOf(ctx, call.Fun, i, depth+1)
+				return r.callResultTypOf(ctx, call.Fun, i, depth+1)
 			}
 		}
-		td, _, err := e.valueTypDepth(ctx, t.X, depth+1)
+		td, _, err := r.valueTypDepth(ctx, t.X, depth+1)
 		if err != nil || td == nil {
 			return nil, false, err
 		}
 		// `for _, v := range s` binds rune for a string operand —
 		// elemOf answers the string itself, not what ranging yields.
-		if u, uerr := e.underlying(td); uerr == nil && u != nil &&
+		if u, uerr := r.Underlying(td); uerr == nil && u != nil &&
 			u.Kind == runtime.KindNamedBasic &&
 			runtime.CanonicalBasicName(u.Name) == "string" {
 			return runtime.BasicTypedef("rune"), false, nil
 		}
-		etd, err := e.elemOf(td)
+		etd, err := r.ElemOf(td)
 		if err != nil || etd == nil {
 			return nil, false, err
 		}
@@ -562,11 +562,11 @@ func (e *Engine) valueTypDepth(ctx *runtime.TypeDef, x ast.Expr, depth int) (*ru
 		// a synthetic bind-site marker for a deferred range's key var:
 		// int for array/slice/string, the map's key type, the channel's
 		// element, and the operand's own typedef for an integer range.
-		td, _, err := e.valueTypDepth(ctx, t.X, depth+1)
+		td, _, err := r.valueTypDepth(ctx, t.X, depth+1)
 		if err != nil || td == nil {
 			return nil, false, err
 		}
-		u, err := e.underlying(td)
+		u, err := r.Underlying(td)
 		if err != nil || u == nil {
 			return nil, false, err
 		}
@@ -587,14 +587,14 @@ func (e *Engine) valueTypDepth(ctx *runtime.TypeDef, x ast.Expr, depth int) (*ru
 			return nil, false, nil
 		case runtime.KindMap:
 			if mt, ok := u.Anon.(*ast.MapType); ok {
-				kt, err := e.resolveTypeRef(u, mt.Key)
+				kt, err := r.ResolveTypeRef(u, mt.Key)
 				if err == nil && kt != nil {
 					return kt, false, nil
 				}
 			}
 			return nil, false, nil
 		case runtime.KindChan:
-			etd, err := e.elemOf(u)
+			etd, err := r.ElemOf(u)
 			if err != nil || etd == nil {
 				return nil, false, err
 			}
@@ -606,14 +606,14 @@ func (e *Engine) valueTypDepth(ctx *runtime.TypeDef, x ast.Expr, depth int) (*ru
 		if !ok {
 			return nil, false, nil
 		}
-		p, err := e.importPackageAt(ctx, id.Name)
+		p, err := r.ImportPackageAt(ctx, id.Name)
 		if err != nil {
 			return nil, false, err
 		}
 		if p == nil {
 			return nil, false, nil
 		}
-		return e.memberTypOf(p, t.Sel.Name, depth+1)
+		return r.MemberTypOf(p, t.Sel.Name, depth+1)
 	}
 	return nil, false, nil
 }
