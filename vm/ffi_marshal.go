@@ -25,7 +25,6 @@ import (
 	"unsafe"
 
 	"github.com/podhmo/minigo/internal/hostbridge"
-	"github.com/podhmo/minigo/internal/process"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -173,120 +172,6 @@ func hostZeroMethod(rt reflect.Type, name string) (runtime.Value, bool) {
 		bf.Method = &tm
 	}
 	return bf, true
-}
-
-// SnapshotOf converts a host Go value into a [VM.Call] argument. The value
-// crosses as a snapshot — a copy shaped for the script world — so script
-// writes to it never reach the host value. An unnamed host map becomes a
-// [runtime.Map] that a map-typed parameter can index, range and write; a
-// named map or struct keeps its host box so its methods stay callable.
-// Script-native values pass through unchanged.
-func SnapshotOf(x any) runtime.Value {
-	// The shape is hostbridge.GoValueOf's plus one wider unbox: unnamed maps unbox
-	// here while host call results still box them — an arg has a declared
-	// param shape to satisfy, a result does not. Named maps and structs
-	// keep their box for member dispatch, the rule hostbridge.GoValueOf applies to
-	// named slices.
-	return snapshotValue(x, map[uintptr]struct{}{})
-}
-
-// snapshotValue is SnapshotOf's worker: it threads the set of
-// containers currently being unboxed so one that contains itself
-// (reachable only through an `any` slot, since a Go map or slice
-// type can't name itself anonymously) boxes at the repeat instead of
-// recursing forever. Shared subcontainers still unbox — the set
-// forgets each container once its elements are built. Arrays skip
-// the check: an `any` slot stores an array by copy, so one can never
-// reach itself, and a cycle that passes through an array always
-// crosses a guarded slice or map on the way back.
-func snapshotValue(x any, visiting map[uintptr]struct{}) runtime.Value {
-	// the script's int domain is int64: a host int64 stands for a script
-	// int, so it enters bare — tagging it (like hostbridge.GoValueOf does for a
-	// reflect result) would make `int`-typed params reject the ints
-	// callers already pass.
-	if v, ok := x.(int64); ok {
-		return v
-	}
-	rv := reflect.ValueOf(x)
-	if rv.Kind() == reflect.Map && rv.Type().Name() == "" {
-		// recursing through snapshotValue unboxes nested maps too —
-		// m["a"]["b"] keeps working at any depth.
-		td := hostbridge.AnonMapTypX(hostbridge.AnonExprOf(rv.Type().Key()), hostbridge.AnonExprOf(rv.Type().Elem()))
-		if rv.IsNil() {
-			return &runtime.TypedNil{Typ: td}
-		}
-		if _, dup := visiting[rv.Pointer()]; dup {
-			return &runtime.GoValue{V: x}
-		}
-		visiting[rv.Pointer()] = struct{}{}
-		m := runtime.NewMap(td, rv.Type().Key().Kind() == reflect.Interface)
-		for _, k := range rv.MapKeys() {
-			m.Insert(snapshotValue(k.Interface(), visiting), snapshotValue(rv.MapIndex(k).Interface(), visiting))
-		}
-		delete(visiting, rv.Pointer())
-		return m
-	}
-	if (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) && rv.Type().Name() == "" {
-		switch rv.Type() {
-		case reflect.TypeOf([]byte(nil)), reflect.TypeOf([]string(nil)):
-			// the []byte/[]string shapes keep their element-tagged unbox —
-			// byte elements arrive tagged uint8, not bare int64s.
-		default:
-			// every other anonymous slice/array unboxes element-wise.
-			// Elements that can carry a nested anonymous container —
-			// a map-typed slot, or an `any` slot holding one — route
-			// through snapshotValue so `rs[0]["k"]` and `m[k]` index on
-			// arrival; primitives keep hostbridge.GoValueOf's tagged shape (an
-			// int64 in an `any` slot stays `int64`, not bare `int`).
-			// The typedef spells the composite element correctly
-			// (`[]map[string]interface{}` — an unparseable one-identifier
-			// element name never reaches the param check).
-			var td *runtime.TypeDef
-			if rv.Kind() == reflect.Slice {
-				td = hostbridge.AnonSliceTypX(hostbridge.AnonExprOf(rv.Type().Elem()))
-				if rv.IsNil() {
-					return &runtime.TypedNil{Typ: td}
-				}
-				// the same repeat guard the map branch keeps: a slice
-				// that holds itself through an `any` slot (s[0] = s)
-				// boxes at the repeat instead of overflowing the stack.
-				// A len-0 slice can neither recurse nor be a real
-				// repeat — s[:0] shares s's base pointer, so it must
-				// skip the guard instead of boxing as a false cycle.
-				if rv.Len() > 0 {
-					if _, dup := visiting[rv.Pointer()]; dup {
-						return &runtime.GoValue{V: x}
-					}
-					visiting[rv.Pointer()] = struct{}{}
-					defer delete(visiting, rv.Pointer())
-				}
-			} else {
-				td = hostbridge.AnonArrayTypX(rv.Len(), hostbridge.AnonExprOf(rv.Type().Elem()))
-			}
-			et := rv.Type().Elem()
-			el := make([]runtime.Value, rv.Len())
-			for i := range el {
-				ev := rv.Index(i)
-				if et.Kind() == reflect.Interface {
-					pv := reflect.ValueOf(ev.Interface())
-					switch {
-					case !pv.IsValid():
-						el[i] = runtime.NIL
-					case pv.Kind() == reflect.Map || pv.Kind() == reflect.Slice || pv.Kind() == reflect.Array:
-						el[i] = snapshotValue(pv.Interface(), visiting)
-					default:
-						el[i] = hostbridge.GoValueOf(pv)
-					}
-				} else if et.Kind() == reflect.Map || et.Kind() == reflect.Slice || et.Kind() == reflect.Array {
-					el[i] = snapshotValue(ev.Interface(), visiting)
-				} else {
-					el[i] = hostbridge.GoValueOf(ev)
-				}
-			}
-			return &runtime.Slice{Elems: el, Typ: td}
-		}
-	}
-	return hostbridge.GoValueOf(rv)
 }
 
 // hostField finds a field by name on a host value: pointer and
@@ -465,387 +350,6 @@ func scriptBytes(x *runtime.Slice) ([]byte, bool) {
 		bs[i] = byte(n)
 	}
 	return bs, true
-}
-
-// argBack pairs an argument with the host value it marshaled to so a
-// callee's writes through it can mirror back into the script value.
-type argBack struct {
-	arg runtime.Value
-	rv  reflect.Value
-	// maps records each map element's identity before the call when rv
-	// is a slice/array of maps: an element the callee left alone is the
-	// host copy of the caller's script map, one it replaced is new data.
-	maps []uintptr
-}
-
-// mapElemPtrs snapshots the map identities of a slice/array arg's
-// elements (nil for any other shape).
-func mapElemPtrs(rv reflect.Value) []uintptr {
-	if rv.Kind() == reflect.Interface {
-		rv = rv.Elem()
-	}
-	if !rv.IsValid() || (rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array) || rv.Type().Elem().Kind() != reflect.Map {
-		return nil
-	}
-	ps := make([]uintptr, rv.Len())
-	for i := range ps {
-		ps[i] = rv.Index(i).Pointer()
-	}
-	return ps
-}
-
-// scalarPayload is a script scalar's payload: the value itself, or a
-// Named's payload.
-func scalarPayload(v runtime.Value) runtime.Value {
-	if n, ok := v.(*runtime.Named); ok {
-		return n.V
-	}
-	return v
-}
-
-// unchangedScalar reports whether the host element ev still holds the
-// basic value the script element old carried — the common case after a
-// read-only host call, which then skips the copy-back (no boxing per
-// element, and old keeps its declared tag).
-func unchangedScalar(old runtime.Value, ev reflect.Value) bool {
-	p := scalarPayload(old)
-	switch k := ev.Kind(); {
-	case k >= reflect.Int && k <= reflect.Int64:
-		n, ok := p.(int64)
-		return ok && n == ev.Int()
-	case k >= reflect.Uint && k <= reflect.Uintptr:
-		n, ok := p.(int64)
-		return ok && uint64(n) == ev.Uint()
-	case k == reflect.Float32 || k == reflect.Float64:
-		f, ok := p.(float64)
-		return ok && f == ev.Float()
-	case k == reflect.String:
-		s, ok := p.(string)
-		return ok && s == ev.String()
-	case k == reflect.Bool:
-		b, ok := p.(bool)
-		return ok && b == ev.Bool()
-	}
-	return false
-}
-
-// retagElem keeps a script slice element's declared type across the
-// copy-back after a host call: the host sees `type U8 uint8` elements as
-// plain uint8, and the value coming back carries that basic tag. When
-// the old element was tagged and the new payload has the same Go shape,
-// the old tag wins; anything else takes the host value as is.
-func retagElem(old, nv runtime.Value) runtime.Value {
-	on, ok := old.(*runtime.Named)
-	if !ok || on.Typ == nil {
-		return nv
-	}
-	p := runtime.Unwrap(nv)
-	if reflect.TypeOf(p) != reflect.TypeOf(runtime.Unwrap(on.V)) {
-		return nv
-	}
-	if nn, ok := nv.(*runtime.Named); ok && nn.Typ == on.Typ {
-		return nv
-	}
-	return runtime.Tag(on.Typ, p)
-}
-
-// sliceArg resolves an argument to the script slice it carries, through
-// Named tags and one level of pointer-like deref.
-func sliceArg(a runtime.Value) *runtime.Slice {
-	u := runtime.Unwrap(a)
-	if dv, ok := runtime.Deref(u); ok {
-		u = runtime.Unwrap(dv)
-	}
-	s, _ := u.(*runtime.Slice)
-	return s
-}
-
-// refArg resolves an argument to the pointer-like node (Cell/FieldRef/
-// IndexRef) nearest its leaf value — the write-back target for a
-// pointer crossed by address — plus the leaf it resolved to.
-func refArg(a runtime.Value) (ref runtime.Value, leaf runtime.Value) {
-	u := a
-	var seen map[runtime.Value]bool
-	for {
-		if n, ok := u.(*runtime.Named); ok {
-			u = n.V
-			continue
-		}
-		switch u.(type) {
-		case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
-			if _, isDR := u.(*runtime.DerefRef); !isDR {
-				ref = u
-			}
-			// a cyclic pointer (x := any(nil); x = &x) resolves to
-			// itself forever — stop on a revisit.
-			if seen == nil {
-				seen = map[runtime.Value]bool{u: true}
-			} else if seen[u] {
-				return ref, u
-			} else {
-				seen[u] = true
-			}
-		}
-		if dv, ok := runtime.Deref(u); ok {
-			u = dv
-			continue
-		}
-		break
-	}
-	return ref, u
-}
-
-// callReflectFunc invokes a host func reflect.Value with script args:
-// arity checks, variadic/CallSlice handling, and result marshaling —
-// shared by host method values and callable GoValue funcs.
-func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-	vc = bindCaller(vc)
-	mt := m.Type()
-	nin := mt.NumIn()
-	if !mt.IsVariadic() && len(args) != nin {
-		return nil, fmt.Errorf("%s needs %d args, got %d", name, nin, len(args))
-	}
-	if mt.IsVariadic() && len(args) < nin-1 {
-		return nil, fmt.Errorf("%s needs at least %d args, got %d", name, nin-1, len(args))
-	}
-	// a trailing slice assignable to the variadic parameter calls
-	// through CallSlice — `f(xs...)`-style forwarding on natives.
-	in := make([]reflect.Value, len(args))
-	var backs []argBack
-	useSlice := false
-	for i, a := range args {
-		pt := mt.In(min(i, nin-1))
-		if mt.IsVariadic() && i >= nin-1 {
-			if i == nin-1 && len(args) == nin {
-				if rv, err := marshalHost.ToReflect(a, pt, vc); err == nil {
-					in[i] = rv
-					useSlice = true
-					backs = append(backs, argBack{arg: a, rv: rv, maps: mapElemPtrs(rv)})
-					continue
-				}
-			}
-			pt = pt.Elem()
-		}
-		rv, err := marshalHost.ToReflect(a, pt, vc)
-		if err != nil {
-			return nil, fmt.Errorf("%s arg %d: %w", name, i, err)
-		}
-		in[i] = rv
-		backs = append(backs, argBack{arg: a, rv: rv, maps: mapElemPtrs(rv)})
-	}
-	var out []reflect.Value
-	watched := false
-	wakeable := false
-	if w, parks := parkingHostMethods[name]; parks {
-		if done := procDoneOf(vc); done != nil {
-			watched = true
-			wakeable = w
-			// a method that can park indefinitely must not outlive its
-			// process: run it on a helper goroutine and select on
-			// proc.done, so a sibling's death unwinds this frame with
-			// procExit instead of hanging the process (mu held by a
-			// dead goroutine never releases its Lock waiters). The
-			// helper keeps running the real call — a leaked goroutine,
-			// the same documented limit as any host park.
-			type callRes struct {
-				out []reflect.Value
-				p   any
-			}
-			resCh := make(chan callRes, 1)
-			p := procOf(vc)
-			go func() {
-				// register before m.Call can invoke a script callback:
-				// a Call arriving from this goroutine re-enters the VM
-				// synchronously, so its panic propagates back through the
-				// join rather than failing the process. p is captured
-				// before the goroutine starts — it may already be dead,
-				// which marking is harmless for; a nil receiver is not.
-				if p != nil {
-					defer p.WatchCallFrom(goroutineID())()
-				}
-				defer func() {
-					if r := recover(); r != nil {
-						resCh <- callRes{p: r}
-					}
-				}()
-				if useSlice {
-					resCh <- callRes{out: m.CallSlice(in)}
-				} else {
-					resCh <- callRes{out: m.Call(in)}
-				}
-			}()
-			// the join can park indefinitely — wakeable only when the
-			// call itself can time out (see blockingHostMethods).
-			unpark := vcPark(vc, process.Wake{Misc: wakeable})
-			defer unpark()
-			select {
-			case <-done:
-				panic(procExit{})
-			case r := <-resCh:
-				unpark()
-				if r.p != nil {
-					panic(r.p)
-				}
-				out = r.out
-			}
-		}
-	}
-	if !watched {
-		if useSlice {
-			out = m.CallSlice(in)
-		} else {
-			out = m.Call(in)
-		}
-	}
-	// callee writes propagate back: a script slice crossed as a fresh
-	// host slice shares nothing (Reader.Read's buffer), and an
-	// addressable arg crossed as a fresh host pointer (a *T param or an
-	// interface the pointer implements) needs its pointee mirrored.
-	for _, wb := range backs {
-		handled := false
-		if ss := sliceArg(wb.arg); ss != nil {
-			rv := wb.rv
-			if rv.Kind() == reflect.Interface {
-				rv = rv.Elem()
-			}
-			if rv.IsValid() && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) {
-				// a []byte arg commits in one pass — hostbridge.GoValueOf per
-				// element would box and tag every byte again (#362).
-				// Unaddressable arrays can't view as Bytes — they keep
-				// the generic element loop.
-				if rv.Type().Elem().Kind() == reflect.Uint8 && (rv.Kind() == reflect.Slice || rv.CanAddr()) {
-					bs := rv.Bytes()
-					for i := 0; i < len(bs) && i < len(ss.Elems); i++ {
-						if p, ok := scalarPayload(ss.Elems[i]).(int64); ok && p == int64(bs[i]) {
-							continue // unchanged: keep the element (and its tag)
-						}
-						ss.Elems[i] = retagElem(ss.Elems[i], runtime.ByteValue(bs[i]))
-					}
-					handled = true
-					continue
-				}
-				for i := 0; i < rv.Len() && i < len(ss.Elems); i++ {
-					ev := rv.Index(i)
-					if unchangedScalar(ss.Elems[i], ev) {
-						continue // keep the element (and its tag) as is
-					}
-					if ev.Kind() == reflect.Interface && !ev.IsNil() {
-						if k := ev.Elem().Kind(); k == reflect.Slice || k == reflect.Map {
-							// an `any` element holding a container is the
-							// marshaled copy of a script container, which
-							// may be this very slice: keep the script
-							// element rather than rebuilding (and looping
-							// on) the copy.
-							continue
-						}
-					}
-					if ev.Kind() == reflect.Map {
-						if _, ok := runtime.Unwrap(ss.Elems[i]).(*runtime.Map); ok {
-							// a map element crossed as a host copy: left
-							// alone, the script map is still the caller's
-							// value — swapping in the copy's GoValue box
-							// would break index/assign on it
-							// (`rows[0]["a"]`). A map the callee put in its
-							// place lands as a script map, not a box.
-							if i < len(wb.maps) && wb.maps[i] == ev.Pointer() {
-								continue
-							}
-							ss.Elems[i] = retagElem(ss.Elems[i], SnapshotOf(ev.Interface()))
-							continue
-						}
-					}
-					ss.Elems[i] = retagElem(ss.Elems[i], hostbridge.GoValueOf(ev))
-				}
-				handled = true
-			}
-		}
-		if handled {
-			continue
-		}
-		ref, leaf := refArg(wb.arg)
-		if ref == nil || wb.rv.Kind() != reflect.Pointer {
-			continue
-		}
-		// the arg's own pointer crossing directly isn't a temp —
-		// copying its pointee back would un-box the cell.
-		if gv, ok := leaf.(*runtime.GoValue); ok {
-			if pv := reflect.ValueOf(gv.V); pv.IsValid() && pv.Kind() == reflect.Pointer && pv.Pointer() == wb.rv.Pointer() {
-				continue
-			}
-		}
-		val := hostbridge.GoValueOf(wb.rv.Elem())
-		if cell, ok := ref.(*runtime.Cell); ok {
-			if n, ok := cell.Elem.(*runtime.Named); ok {
-				// a declared cell keeps its tag through the round trip
-				vv := runtime.Unwrap(val)
-				if iv, ok := vv.(int64); ok {
-					vv = maskInt(iv, sizedNameOf(n.Typ))
-				}
-				val = runtime.Tag(n.Typ, vv)
-			}
-		}
-		runtime.SetRef(ref, val)
-	}
-	return goResults(out)
-}
-
-// goResults converts a host call's results to script values: no result
-// is NIL, one unboxes via hostbridge.GoValueOf, several become a Tuple.
-func goResults(out []reflect.Value) (runtime.Value, error) {
-	switch len(out) {
-	case 0:
-		return runtime.NIL, nil
-	case 1:
-		return hostbridge.GoSlotValueOf(out[0]), nil
-	default:
-		el := make([]runtime.Value, len(out))
-		for i, o := range out {
-			el[i] = hostbridge.GoSlotValueOf(o)
-		}
-		return &runtime.Tuple{Elems: el}, nil
-	}
-}
-
-// callOpaqueStore calls a container method (hostbridge.OpaqueContainers) whose
-// `any` parameters are pure storage: each `any` arg crosses inside the
-// interface box — what gc's boxing stores — so the struct's host
-// projection, and the niladic method calls it runs at marshal time,
-// never happen. A position gc hashes or compares as a key (a sync.Map
-// key, a context key, CompareAndSwap's comparand) crosses in its
-// canonical key form: equal script content hits and unhashable payloads
-// panic with a hash-type error, exactly where gc runs the check. Other
-// params marshal as usual, and no arg joins the write-back pass: a
-// store shares nothing addressable.
-func callOpaqueStore(recv, name string, m reflect.Value, vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-	mt := m.Type()
-	nin := mt.NumIn()
-	if !mt.IsVariadic() && len(args) != nin {
-		return nil, fmt.Errorf("%s needs %d args, got %d", name, nin, len(args))
-	}
-	if mt.IsVariadic() && len(args) < nin-1 {
-		return nil, fmt.Errorf("%s needs at least %d args, got %d", name, nin-1, len(args))
-	}
-	in := make([]reflect.Value, len(args))
-	for i, a := range args {
-		pt := mt.In(min(i, nin-1))
-		if mt.IsVariadic() && i >= nin-1 {
-			pt = pt.Elem()
-		}
-		if pt == anyType {
-			rv, err := hostbridge.OpaqueStoreArg(recv, name, i, a, materializeDefault)
-			if err != nil {
-				return nil, fmt.Errorf("%s arg %d: %w", name, i, err)
-			}
-			in[i] = rv
-			continue
-		}
-		rv, err := marshalHost.ToReflect(a, pt, vc)
-		if err != nil {
-			return nil, fmt.Errorf("%s arg %d: %w", name, i, err)
-		}
-		in[i] = rv
-	}
-	return goResults(m.Call(in))
 }
 
 // funcMapTypes are host map[string]any types whose values the host
@@ -1093,3 +597,37 @@ func (fs *funcMapSig) Guard(callee runtime.Value) runtime.Value {
 // type — a reflect.Kind or parse.NodeType, not a bare int or int64.
 // hostStringOperand is what eqlValue compares for a host-boxed string:
 // its string contents. Any other box compares as itself.
+
+// callHooksOf bundles the process- and caller-aware operations the
+// hostbridge call path needs — all resolved from the CallerRef, so a
+// foreign VMCaller works too.
+func callHooksOf(vc runtime.CallerRef) *hostbridge.CallHooks {
+	return &hostbridge.CallHooks{
+		BindCaller: bindCaller,
+		Parks: func(name string) (bool, bool) {
+			w, ok := parkingHostMethods[name]
+			return w, ok
+		},
+		ProcDone:    procDoneOf,
+		ProcOf:      procOf,
+		Park:        vcPark,
+		Exit:        func() any { return procExit{} },
+		MaskInt:     func(iv int64, td *runtime.TypeDef) int64 { return maskInt(iv, sizedNameOf(td)) },
+		Materialize: materializeDefault,
+		GoroutineID: goroutineID,
+	}
+}
+
+// callReflectFunc / callOpaqueStore delegate to the hostbridge call
+// path (internal/hostbridge/callhost.go); they exist so vm callers keep
+// their (name, m, vc, args) spelling.
+func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	return marshalHost.CallReflectFunc(callHooksOf(vc), name, m, vc, args)
+}
+
+func callOpaqueStore(recv, name string, m reflect.Value, vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	return marshalHost.CallOpaqueStore(callHooksOf(vc), recv, name, m, vc, args)
+}
+
+// SnapshotOf delegates to hostbridge.SnapshotOf.
+func SnapshotOf(x any) runtime.Value { return hostbridge.SnapshotOf(x) }
