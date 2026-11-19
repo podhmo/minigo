@@ -310,6 +310,9 @@ func (f *frame) push(x runtime.Value) {
 }
 
 func (f *frame) pop() runtime.Value {
+	// atTail before the decrement: the arena top equals this window's
+	// end only while no suspended frame's region sits above.
+	atTail := f.base+f.sp == len(f.v.vals)
 	x := f.stack[f.sp-1]
 	// nil the slot before dropping it — the backing arena keeps the
 	// region past len, and a dead script value pinned there outlives
@@ -317,9 +320,7 @@ func (f *frame) pop() runtime.Value {
 	f.stack[f.sp-1] = nil
 	f.sp--
 	f.stack = f.stack[:f.sp]
-	// at the tail the arena shrinks with the pop; below a suspended
-	// window it must not — those operands belong to the frame above.
-	if f.base+f.sp == len(f.v.vals) {
+	if atTail {
 		f.v.vals = f.v.vals[:f.base+f.sp]
 	}
 	return x

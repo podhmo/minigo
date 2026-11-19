@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"go/token"
 	"reflect"
+	"slices"
 
 	"github.com/podhmo/minigo/runtime"
 )
@@ -217,6 +218,28 @@ func (v *VM) callEntered(callee runtime.Value, args []runtime.Value, statics []*
 // spreadTd carries the element typedef a trailing `xs...` slice supplied
 // at the call site; nil when the call had no spread.
 func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (runtime.Value, error) {
+	return v.callWindow(callee, args, -1, statics, spreadTd)
+}
+
+// callInPlace is call for an OpCall whose args stay on the operand
+// stack: the caller dropped callee and statics and left its top argc
+// operands, which become the callee's window — no argbuf copy. The
+// dispatch paths that need a real slice (linkname receiver prepend,
+// builtin, conversion, host func) materialize it via inPlaceArgs.
+func (v *VM) callInPlace(callee runtime.Value, argc int, statics []*runtime.TypeDef) (runtime.Value, error) {
+	return v.callWindow(callee, nil, argc, statics, nil)
+}
+
+// inPlaceArgs materializes argc operands off the arena tail — the
+// in-place call's args — when a dispatch arm needs a slice.
+func (v *VM) inPlaceArgs(argc int, args []runtime.Value) []runtime.Value {
+	if argc < 0 || args != nil {
+		return args
+	}
+	return slices.Clone(v.vals[len(v.vals)-argc:])
+}
+
+func (v *VM) callWindow(callee runtime.Value, args []runtime.Value, winArgs int, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (runtime.Value, error) {
 	if p := v.proc.Load(); p != nil {
 		select {
 		case <-p.Done():
@@ -242,14 +265,18 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 					seen = map[*runtime.Function]bool{}
 				}
 				seen[fn] = true
+				args = v.inPlaceArgs(winArgs, args)
+				// materialized — the args no longer sit in the arena window.
+				winArgs = -1
 				callee, args = relinkCallee(callee, tv, args)
 				continue
 			}
 		}
 		switch c := callee.(type) {
 		case *runtime.BuiltinFunc:
-			return v.callBuiltin(c, args)
+			return v.callBuiltin(c, v.inPlaceArgs(winArgs, args))
 		case *runtime.TypeDef:
+			args = v.inPlaceArgs(winArgs, args)
 			if len(args) != 1 {
 				return nil, fmt.Errorf("conversion to %s needs exactly one argument", c.Name)
 			}
@@ -264,7 +291,7 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 		case *runtime.GoValue:
 			if fv := reflect.ValueOf(c.V); fv.IsValid() && fv.Kind() == reflect.Func {
 				name := fmt.Sprintf("%v", fv.Type())
-				margs, err := v.matBuiltinArgs(expandSpread(args), c.V)
+				margs, err := v.matBuiltinArgs(expandSpread(v.inPlaceArgs(winArgs, args)), c.V)
 				if err != nil {
 					return nil, fmt.Errorf("%s %w", name, err)
 				}
@@ -279,7 +306,7 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 		}
 		break
 	}
-	fr, err := v.prepFrameSeen(callee, args, statics, spreadTd, seen)
+	fr, err := v.prepFrameSeen(callee, args, winArgs, statics, spreadTd, seen)
 	if err != nil {
 		return nil, err
 	}
@@ -385,7 +412,13 @@ func relinkCallee(callee, tv runtime.Value, args []runtime.Value) (runtime.Value
 // prepFrameSeen is prepFrame carrying the linkname resolutions already
 // followed for this call — a pull decl whose pushed symbol resolves to
 // itself (or a longer cycle) would otherwise re-dispatch forever.
-func (v *VM) prepFrameSeen(callee runtime.Value, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef, seen map[*runtime.Function]bool) (*frame, error) {
+func (v *VM) prepFrameSeen(callee runtime.Value, args []runtime.Value, winArgs int, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef, seen map[*runtime.Function]bool) (*frame, error) {
+	// an in-place call reads its args off the arena tail — the view is
+	// aliased, never written, so inference and the BoundMethod arm see
+	// them without a copy.
+	if winArgs >= 0 && args == nil {
+		args = v.vals[len(v.vals)-winArgs:]
+	}
 	var fn *runtime.Function
 	var upvals []*runtime.Cell
 	switch c := callee.(type) {
@@ -414,7 +447,18 @@ func (v *VM) prepFrameSeen(callee runtime.Value, args []runtime.Value, statics [
 				panic(runtime.PlainPanic(fmt.Sprintf("value method %s%s called using nil *%s pointer", qual, fn.Name, fn.Recv)))
 			}
 		}
-		args = append([]runtime.Value{c.Recv}, args...)
+		if winArgs >= 0 {
+			// in-place args live in the arena — shift the window one
+			// slot right so the receiver can take its head.
+			base := len(v.vals) - winArgs
+			v.vals = append(v.vals, nil)
+			copy(v.vals[base+1:], v.vals[base:len(v.vals)-1])
+			v.vals[base] = c.Recv
+			winArgs++
+			args = v.vals[len(v.vals)-winArgs:]
+		} else {
+			args = append([]runtime.Value{c.Recv}, args...)
+		}
 	default:
 		return nil, fmt.Errorf("value of type %T is not callable", callee)
 	}
@@ -432,7 +476,7 @@ func (v *VM) prepFrameSeen(callee runtime.Value, args []runtime.Value, statics [
 					seen = map[*runtime.Function]bool{}
 				}
 				seen[fn] = true
-				return v.prepFrameSeen(tv, args, statics, spreadTd, seen)
+				return v.prepFrameSeen(tv, args, winArgs, statics, spreadTd, seen)
 			}
 		}
 		// An unresolved bodiless decl compiles to a zero-return shim,
@@ -490,8 +534,17 @@ func (v *VM) prepFrameSeen(callee runtime.Value, args []runtime.Value, statics [
 	if len(v.frames) == 0 {
 		v.vals = v.vals[:0]
 	}
-	fr.base = len(v.vals)
-	fr.sp = 0
+	if winArgs >= 0 {
+		// an in-place call: the caller's top winArgs operands are the
+		// arguments — the window covers them, no copy. Binding reads
+		// them off the window and empties it afterward.
+		fr.base = len(v.vals) - winArgs
+		fr.sp = winArgs
+		args = v.vals[fr.base:]
+	} else {
+		fr.base = len(v.vals)
+		fr.sp = 0
+	}
 	fr.stack = v.vals[fr.base:]
 	// locals is a value array: only slots the compiler marked boxed
 	// (P4-2a) — or every slot on an unclassified chunk — get a cell;
@@ -602,6 +655,11 @@ func (v *VM) prepFrameSeen(callee runtime.Value, args []runtime.Value, statics [
 			break
 		}
 		fr.putLocal(i, valueCopy(a))
+	}
+	if winArgs >= 0 {
+		// params consumed — the window is empty for the first op.
+		fr.sp = 0
+		fr.stack = fr.stack[:0]
 	}
 	return fr, nil
 }
