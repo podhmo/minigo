@@ -37,7 +37,11 @@ type Profiler struct {
 	// fnIDs gives each sampled function a small id for sample keys; it
 	// lives and dies with the profiler.
 	fnIDs map[*runtime.Function]uint64
-	end   time.Time
+	// counts holds exact per-function call counts — sampling cannot
+	// answer how often a function ran (a 21M-call helper looks like
+	// any other); the VMs count at frame entry.
+	counts sync.Map // *runtime.Function -> *atomic.Int64
+	end    time.Time
 }
 
 type profSample struct {
@@ -124,6 +128,13 @@ func (v *VM) profResync() {
 	}
 }
 
+// countCall records one entry into fn — the exact call count the
+// samples view cannot give.
+func (p *Profiler) countCall(fn *runtime.Function) {
+	c, _ := p.counts.LoadOrStore(fn, &atomic.Int64{})
+	c.(*atomic.Int64).Add(1)
+}
+
 func (p *Profiler) record(frames []*frame, n int64) {
 	stack := make([]profFrame, 0, len(frames))
 	for i := len(frames) - 1; i >= 0; i-- {
@@ -160,7 +171,9 @@ func (p *Profiler) record(frames []*frame, n int64) {
 }
 
 // WriteTo writes the samples as a gzipped pprof profile with sample
-// types samples/count and time/nanoseconds. Call it after Stop.
+// types samples/count, time/nanoseconds and calls/count — the last one
+// exact per-function call counts, one one-frame sample each. Call it
+// after Stop.
 func (p *Profiler) WriteTo(w io.Writer) (int64, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -171,13 +184,25 @@ func (p *Profiler) WriteTo(w io.Writer) (int64, error) {
 	b := newProfBuilder()
 	b.valueType(1, "samples", "count")
 	b.valueType(1, "time", "nanoseconds")
+	b.valueType(1, "calls", "count")
 	for _, s := range p.samples {
 		locs := make([]uint64, len(s.stack))
 		for i, f := range s.stack {
 			locs[i] = b.location(f)
 		}
-		b.sample(locs, s.n, s.n*p.period.Nanoseconds())
+		b.sample(locs, s.n, s.n*p.period.Nanoseconds(), 0)
 	}
+	// exact call counts land as one-frame samples at each function's
+	// declaration — `-calls` ranks them; the stack view is unchanged.
+	p.counts.Range(func(k, c any) bool {
+		fn := k.(*runtime.Function)
+		var pos token.Pos
+		if fn.Decl != nil {
+			pos = fn.Decl.Pos()
+		}
+		b.sample([]uint64{b.location(profFrame{fn: fn, pos: pos})}, 0, 0, c.(*atomic.Int64).Load())
+		return true
+	})
 	b.flushTables()
 	b.int(9, p.start.UnixNano())
 	b.int(10, end.Sub(p.start).Nanoseconds())

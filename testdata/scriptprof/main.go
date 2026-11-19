@@ -75,10 +75,17 @@ func recvLoop(n int) {
 	}
 }
 
+// marker exists to be counted: the profiler's calls view must show
+// exactly seven calls — sampling could never answer that.
+func marker() {}
+
 // Ops returns recvLoop's wall time in ms.
 func Ops() int {
 	slowDefer()
 	start := time.Now()
 	recvLoop(300000)
+	for range 7 {
+		marker()
+	}
 	return int(time.Since(start).Milliseconds())
 }

@@ -612,6 +612,9 @@ func (v *VM) prepFrameSeen(cf *frame, callee runtime.Value, args []runtime.Value
 		return nil, fmt.Errorf("stack exhausted: frame limit %d", maxFrames)
 	}
 	ch := fn.Chunk
+	if v.H.Prof != nil {
+		v.H.Prof.countCall(fn) // exact per-function call counts
+	}
 	fr := framePool.Get().(*frame)
 	fr.fn, fr.ch, fr.upvals = fn, ch, upvals
 	// The window starts at the arena's live top: for a nested call
