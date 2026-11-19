@@ -242,6 +242,7 @@ var FileBudgetExceptions = map[string]string{
 	"internal/archcheck/rules.go":   "allow-list entry for internal/stdlib/errors (P2-12)",
 	"internal/stdlib/io/io.go":      "AsReader became an Adapters method so the fmt-box unwrap stays faithful (P2-12)",
 	"intrinsics.go":                 "engineFileOf hook for the moved net installer (P2-12)",
+	"intrinsics_fmt.go":            "stdruntime import line for the moved CleanupHandle type switch (P2-12)",
 	"internal/stdlib/num.go":        "DurOf helper for the moved net installer (P2-12)",
 	"intrinsics_slices.go":          "stdlib.* qualifiers on the moved seq helpers (P2-12)",
 }
