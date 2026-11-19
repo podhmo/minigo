@@ -629,12 +629,12 @@ func (v *VM) loop(f *frame) {
 				f.stack = f.stack[:f.sp]
 				// vals keeps the args — the callee's window covers
 				// them; the next push drops the dead callee slot too.
-				r, err = v.callInPlace(f, fn, argc, site.Args)
+				r, err = v.callInPlace(f, fn, argc, site.Args, site)
 			} else {
 				var hints []bytecode.ArgHint
 				args, hints, spreadTd = v.popArgsCallSite(f, int(ins.A), int(ins.B), ins.Pos, site)
 				fn = f.pop()
-				r, err = v.callHints(f, fn, args, hints, spreadTd)
+				r, err = v.callHints(f, fn, args, hints, spreadTd, site)
 			}
 			if v.H.Prof != nil {
 				v.profCheck() // a long host call lands on its call line
