@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -399,7 +400,7 @@ func basicTdOfReflect(rt reflect.Type) *runtime.TypeDef {
 // they spell predeclared basics or `any` (nil when unspellable — the
 // seq then stays untyped). ok is false for a non-host-map.
 func hostMapSeqArg(v runtime.Value) (rv reflect.Value, kt, vt *runtime.TypeDef, ok bool) {
-	nv := goNative(v)
+	nv := hostbridge.GoNative(v)
 	if nv == nil {
 		return reflect.Value{}, nil, nil, false
 	}
@@ -413,13 +414,13 @@ func hostMapSeqArg(v runtime.Value) (rv reflect.Value, kt, vt *runtime.TypeDef, 
 // hostMapElemOf converts a yielded script pair element to the host
 // map's key or element reflect type for maps.Insert.
 func hostMapElemOf(v runtime.Value, rt reflect.Type) (reflect.Value, error) {
-	return hostReflectOf(goNative(v), rt)
+	return hostReflectOf(hostbridge.GoNative(v), rt)
 }
 
 // hostReflectOf converts a native value to reflect type rt for host map
 // writes: the assignable/convertible scalar paths first, then slices
 // and maps rebuilt element-wise — a script container arrives through
-// goNative as []any / map[any]any and a host map's declared element
+// hostbridge.GoNative as []any / map[any]any and a host map's declared element
 // type ([]string, map[string]int, ...) is not one conversion away.
 func hostReflectOf(nv any, rt reflect.Type) (reflect.Value, error) {
 	if nv == nil {
@@ -782,7 +783,7 @@ func (e *Engine) mapsSeqHelpers(mapsPkg map[string]runtime.Value) map[string]run
 		if !ok {
 			rv, hkt, _, hok := hostMapSeqArg(args[0])
 			if !hok {
-				return seqFn("maps.Keys", sliceSource(mapKeys(goNative(args[0])).Elems)), nil
+				return seqFn("maps.Keys", sliceSource(mapKeys(hostbridge.GoNative(args[0])).Elems)), nil
 			}
 			return e.typedSeq(seqFn("maps.Keys", hostMapSource(rv, mapSeqKeys)), hkt), nil
 		}
@@ -796,7 +797,7 @@ func (e *Engine) mapsSeqHelpers(mapsPkg map[string]runtime.Value) map[string]run
 		if !ok {
 			rv, _, hvt, hok := hostMapSeqArg(args[0])
 			if !hok {
-				return seqFn("maps.Values", sliceSource(mapValues(goNative(args[0])).Elems)), nil
+				return seqFn("maps.Values", sliceSource(mapValues(hostbridge.GoNative(args[0])).Elems)), nil
 			}
 			return e.typedSeq(seqFn("maps.Values", hostMapSource(rv, mapSeqValues)), hvt), nil
 		}

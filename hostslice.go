@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/vm"
 )
@@ -31,7 +32,7 @@ func hostSliceBase(x runtime.Value) (runtime.Value, bool) {
 	case *runtime.IfaceNil:
 		td = n.Typ
 	}
-	rt := vm.HostNilType(td)
+	rt := hostbridge.HostNilType(td)
 	if rt == nil || rt.Kind() != reflect.Slice {
 		return nil, false
 	}

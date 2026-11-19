@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"text/template"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/vm"
 )
@@ -13,7 +14,7 @@ import (
 func (e *Engine) installTextTemplate(h *hostHelpers) {
 	// text/template: New/Parse/Must box *template.Template — Execute's
 	// io.Writer arg adapts `&b` cells via toReflectValue's auto-pointer
-	// rule and the data map marshals through goNative.
+	// rule and the data map marshals through hostbridge.GoNative.
 	e.Bind("text/template", map[string]runtime.Value{
 		"Template": hostType("text/template.Template", func() any { return template.New("") }),
 		"New": h.fn1("template.New", func(a []any) (any, error) {
@@ -74,6 +75,6 @@ func templateMust(target any) *runtime.BuiltinFunc {
 		if err := hostErrOf(v, ev); err != nil {
 			panic(&runtime.Panic{Value: errVal(err), VC: v})
 		}
-		return scriptVal(goNative(t)), nil
+		return scriptVal(hostbridge.GoNative(t)), nil
 	}}
 }

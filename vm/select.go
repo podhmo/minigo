@@ -21,6 +21,7 @@ package vm
 import (
 	"reflect"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/process"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -51,7 +52,7 @@ func (v *VM) chanOf(f *frame, x runtime.Value) (reflect.Value, *runtime.TypeDef,
 		}
 		f.trap("channel operation on %T", x)
 	case runtime.Nil:
-		// host-returned nil channels arrive untyped (goValueOf folds nil
+		// host-returned nil channels arrive untyped (hostbridge.GoValueOf folds nil
 		// Chans/pointers to Nil for `v == nil` reads); the only nil that
 		// reaches a channel op is a nil channel — park it like a typed one.
 		return nilChanRV, nil, process.Wake{}
@@ -138,14 +139,14 @@ func (v *VM) chanRecvRV(f *frame, chRV reflect.Value, et *runtime.TypeDef, w pro
 		}
 		return runtime.NIL, false
 	}
-	return goValueOf(rv), true
+	return hostbridge.GoValueOf(rv), true
 }
 
 // chanZero is the OpSelWait payload for a receive arm: the received value,
 // or the element type's zero when the channel was closed.
 func (v *VM) chanZero(f *frame, a *runtime.SelArm, open bool, rv reflect.Value) runtime.Value {
 	if open {
-		return goValueOf(rv)
+		return hostbridge.GoValueOf(rv)
 	}
 	if a.ETyp != nil {
 		return v.zeroValue(f, a.ETyp)

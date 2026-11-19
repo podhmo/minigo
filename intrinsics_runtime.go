@@ -10,6 +10,7 @@ import (
 	goruntime "runtime"
 	"strings"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/vm"
 )
@@ -78,9 +79,9 @@ func (e *Engine) installRuntime(h *hostHelpers) {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("runtime.coroswitch needs 1 arg, got %d", len(args))
 			}
-			c, ok := goNative(args[0]).(*scriptCoro)
+			c, ok := hostbridge.GoNative(args[0]).(*scriptCoro)
 			if !ok {
-				return nil, fmt.Errorf("runtime.coroswitch needs a *coro, got %T", goNative(args[0]))
+				return nil, fmt.Errorf("runtime.coroswitch needs a *coro, got %T", hostbridge.GoNative(args[0]))
 			}
 			vm.ParkedChanSend(vc, c.ch) // release the goroutine parked in c…
 			vm.ParkedChanRecv(vc, c.ch) // …and become it
@@ -96,9 +97,9 @@ func (e *Engine) installRuntime(h *hostHelpers) {
 			}
 			// FNV-1a over the byte span, keyed by the seed and put
 			// through a murmur-style finalizer.
-			h := uint64(int64Of(goNative(args[1]))) ^ 14695981039346656037
+			h := uint64(int64Of(hostbridge.GoNative(args[1]))) ^ 14695981039346656037
 			for _, el := range elems {
-				h ^= uint64(int64Of(goNative(el))) & 0xFF
+				h ^= uint64(int64Of(hostbridge.GoNative(el))) & 0xFF
 				h *= 1099511628211
 			}
 			h ^= h >> 33
@@ -180,7 +181,7 @@ func (e *Engine) installRuntime(h *hostHelpers) {
 			}
 			// pcs is top-first: index 0 is the innermost live frame —
 			// the builtin's own call site, which is Caller(0) in Go.
-			skip := intOf(goNative(args[0]))
+			skip := intOf(hostbridge.GoNative(args[0]))
 			pcs := vc.CallerPCs()
 			if skip < 0 || skip >= len(pcs) {
 				return &runtime.Tuple{Elems: []runtime.Value{int64(0), "", int64(0), false}}, nil
@@ -200,7 +201,7 @@ func (e *Engine) installRuntime(h *hostHelpers) {
 			// index 0 is the Callers builtin itself, like Go — CallerFrame
 			// never resolves it. skip drops that many leading PCs.
 			pcs := append([]uintptr{0}, vc.CallerPCs()...)
-			skip := intOf(goNative(args[0]))
+			skip := intOf(hostbridge.GoNative(args[0]))
 			if skip > len(pcs) {
 				skip = len(pcs)
 			}
@@ -221,7 +222,7 @@ func (e *Engine) installRuntime(h *hostHelpers) {
 			}
 			sites := []runtime.CallSite{}
 			for _, e := range sl.Elems {
-				if s, ok := vc.CallerFrame(uintptr(int64Of(goNative(e)))); ok {
+				if s, ok := vc.CallerFrame(uintptr(int64Of(hostbridge.GoNative(e)))); ok {
 					sites = append(sites, s)
 				}
 			}

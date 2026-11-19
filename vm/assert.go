@@ -25,6 +25,7 @@ import (
 	"reflect"
 	"sort"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -965,7 +966,7 @@ func (v *VM) typeMatchesTD(f *frame, td, dyn *runtime.TypeDef) bool {
 		// containerAssert.
 		return true
 	}
-	if HostNilPtrType(dyn) != nil || ((dyn.Kind == runtime.KindSlice || dyn.Kind == runtime.KindMap) && dyn.HostIdent != nil) {
+	if hostbridge.HostNilPtrType(dyn) != nil || ((dyn.Kind == runtime.KindSlice || dyn.Kind == runtime.KindMap) && dyn.HostIdent != nil) {
 		// a nil host *T (or named host slice or map, net.IP) asserts to its
 		// source twin's type (or to the bound one) by identity, like
 		// a non-nil host box.
@@ -1098,7 +1099,7 @@ func (v *VM) memberOfType(f *frame, td *runtime.TypeDef, name string, recv runti
 		}
 		panic(runtime.NilDerefPanic())
 	}
-	if nt, ok := asTypedNil(rv); ok && HostNilType(nt.Typ) != nil {
+	if nt, ok := asTypedNil(rv); ok && hostbridge.HostNilType(nt.Typ) != nil {
 		// a nil named host slice (net.IP) dispatches its value
 		// methods on the nil receiver, as in Go
 		if bf, ok := v.hostNilMethod(nt.Typ, name); ok {
@@ -1320,7 +1321,7 @@ func (v *VM) sameTypedef(a, b *runtime.TypeDef) bool {
 }
 
 // hostElemTwin reports whether tag is an unnamed host slice whose
-// element ([hostPkgElemTypedef]) is the very type td's element declares
+// element ([hostbridge.HostPkgElemTypedef]) is the very type td's element declares
 // in source: host []ast.Stmt against go/ast's []Stmt spelled through a
 // type parameter, which the spelling compare cannot see.
 func (v *VM) hostElemTwin(f *frame, tag, td *runtime.TypeDef) bool {

@@ -1,7 +1,7 @@
 // Host reflect adapter: wraps a real Go function as a *runtime.BuiltinFunc
 // so generated binding tables (minigo gen-intrinsics) and hand-written
 // bindings can put ordinary pkg.F members into Bind symbol maps. Arguments
-// marshal by value through the same rules intrinsics use (goNative); results
+// marshal by value through the same rules intrinsics use (hostbridge.GoNative); results
 // marshal back through ValueOf. Marshaling is by copy — a wrapped function
 // cannot mutate script structures, and a script func passed into a wrapped
 // Go func arrives boxed as *GoValue.
@@ -14,6 +14,7 @@ import (
 	"math"
 	"reflect"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -130,7 +131,7 @@ func packVariadic(ft reflect.Type, in []reflect.Value) []reflect.Value {
 // need their elements converted one at a time.
 func toNative(v runtime.Value, pt reflect.Type) (reflect.Value, error) {
 	// a constant-domain argument converts to the declared parameter type
-	// with Go's own range check — goNative would either fail to express
+	// with Go's own range check — hostbridge.GoNative would either fail to express
 	// it at all (1<<63 as int64) or narrow it at int width first.
 	if uc, ok := v.(*runtime.UConst); ok {
 		if rv, err := uconstToReflect(uc, pt); err != nil || rv.IsValid() {
@@ -146,7 +147,7 @@ func toNative(v runtime.Value, pt reflect.Type) (reflect.Value, error) {
 			return reflect.Zero(pt), nil
 		}
 	}
-	x := goNative(v)
+	x := hostbridge.GoNative(v)
 	if x == nil {
 		return reflect.Zero(pt), nil
 	}

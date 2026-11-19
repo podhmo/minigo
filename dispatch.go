@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/podhmo/minigo/bytecode"
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
-	"github.com/podhmo/minigo/vm"
 )
 
 // ---- interface satisfaction, method sets, embedded dispatch ----
@@ -230,7 +230,7 @@ func (e *Engine) typeMethodInfoU(td *runtime.TypeDef, ptr bool) (*runtime.Method
 	if td == nil {
 		return nil, nil
 	}
-	if rt := vm.HostNilPtrType(td); rt != nil {
+	if rt := hostbridge.HostNilPtrType(td); rt != nil {
 		// the type of a nil host *T offers *T's reflect method set,
 		// like a non-nil box of it.
 		return &runtime.MethodSet{Names: e.hostTwinMethodSet(reflect.Zero(rt).Interface())}, nil

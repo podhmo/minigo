@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"unicode/utf8"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -36,7 +37,7 @@ func (e *Engine) installUnicodeUtf8(h *hostHelpers) {
 			elems, styp = s.Elems, s.Typ
 		}
 		var buf [utf8.UTFMax]byte
-		n := utf8.EncodeRune(buf[:], rune(int64Of(goNative(args[1]))))
+		n := utf8.EncodeRune(buf[:], rune(int64Of(hostbridge.GoNative(args[1]))))
 		if len(elems) < n {
 			// gc's `_ = p[width-1]` bounds check fires first.
 			panic(runtime.BoundsPanic(n-1, len(elems)))
@@ -63,7 +64,7 @@ func (e *Engine) installUnicodeUtf8(h *hostHelpers) {
 			return nil, fmt.Errorf("utf8.AppendRune needs 2 args, got %d", len(args))
 		}
 		// the append runs on the script slice's own backing — going
-		// through goNative would copy it, losing the spare-capacity
+		// through hostbridge.GoNative would copy it, losing the spare-capacity
 		// sharing Go's append preserves (b[:2] sees the rune and the
 		// writes through the result).
 		var elems []runtime.Value
@@ -84,7 +85,7 @@ func (e *Engine) installUnicodeUtf8(h *hostHelpers) {
 			elems, styp = s.Elems, s.Typ
 		}
 		var buf [utf8.UTFMax]byte
-		n := utf8.EncodeRune(buf[:], rune(int64Of(goNative(args[1]))))
+		n := utf8.EncodeRune(buf[:], rune(int64Of(hostbridge.GoNative(args[1]))))
 		var et *runtime.TypeDef
 		if styp != nil {
 			et = vc.TypeOf(vc.ElemZero(styp))
@@ -101,7 +102,7 @@ func (e *Engine) installUnicodeUtf8(h *hostHelpers) {
 			}
 			add[i] = a
 		}
-		return &runtime.Slice{Elems: append(elems, add...), Typ: anonSliceTyp("byte")}, nil
+		return &runtime.Slice{Elems: append(elems, add...), Typ: hostbridge.AnonSliceTyp("byte")}, nil
 	}, Target: utf8.AppendRune}
 	e.Bind("unicode/utf8", tbl)
 }

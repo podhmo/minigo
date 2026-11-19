@@ -14,8 +14,8 @@ import (
 	"strings"
 	"unsafe"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
-	"github.com/podhmo/minigo/vm"
 )
 
 func (e *Engine) installEncodingJson(h *hostHelpers) {
@@ -53,7 +53,7 @@ func (e *Engine) installEncodingJson(h *hostHelpers) {
 			}
 			return &runtime.GoValue{V: &jsonEncoder{c: v, enc: json.NewEncoder(w)}}, nil
 		}},
-		// Marshal/MarshalIndent take raw runtime args — h.fn's goNative
+		// Marshal/MarshalIndent take raw runtime args — h.fn's hostbridge.GoNative
 		// would stringify *runtime.Struct before goJSON can field-map it.
 		"Marshal": &runtime.BuiltinFunc{Name: "json.Marshal", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
@@ -71,7 +71,7 @@ func (e *Engine) installEncodingJson(h *hostHelpers) {
 			if len(args) != 3 {
 				return nil, fmt.Errorf("json.MarshalIndent needs 3 args, got %d", len(args))
 			}
-			b, err := json.MarshalIndent(goJSON(v, args[0]), str(goNative(args[1])), str(goNative(args[2])))
+			b, err := json.MarshalIndent(goJSON(v, args[0]), str(hostbridge.GoNative(args[1])), str(hostbridge.GoNative(args[2])))
 			err = jsonUnsupportedOf(err)
 			var se *jsonScriptErr
 			if errors.As(err, &se) {
@@ -85,7 +85,7 @@ func (e *Engine) installEncodingJson(h *hostHelpers) {
 		"Unmarshal": &runtime.BuiltinFunc{Name: "json.Unmarshal", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) == 1 {
 				var dec any
-				err := json.Unmarshal(byteSlice(goNative(args[0])), &dec)
+				err := json.Unmarshal(byteSlice(hostbridge.GoNative(args[0])), &dec)
 				return &runtime.Tuple{Elems: []runtime.Value{scriptVal(jsonDeep(dec)), errVal(err)}}, nil
 			}
 			if len(args) != 2 {
@@ -100,7 +100,7 @@ func (e *Engine) installEncodingJson(h *hostHelpers) {
 				}
 				return errVal(fmt.Errorf("json: Unmarshal(non-pointer %s)", runtime.DisplayName(atd))), nil
 			}
-			data := byteSlice(goNative(args[0]))
+			data := byteSlice(hostbridge.GoNative(args[0]))
 			// gc validates the input up front (checkValid): a syntax
 			// error reports before any UnmarshalJSON dispatch.
 			var dec any
@@ -326,7 +326,7 @@ func goJSONSeen(c runtime.MemberShapeCaller, v any, seen map[any]bool) any {
 		return m
 	case *runtime.GoValue:
 		return x.V
-	case map[any]any: // goNative's *runtime.Map output — keys stringify
+	case map[any]any: // hostbridge.GoNative's *runtime.Map output — keys stringify
 		if len(x) > 0 {
 			if jsonSeen(seen, reflect.ValueOf(x).UnsafePointer()) {
 				return jsonCycle{via: fmt.Sprintf("%T", x)}
@@ -349,7 +349,7 @@ func goJSONSeen(c runtime.MemberShapeCaller, v any, seen map[any]bool) any {
 			x[k] = goJSONSeen(c, e, seen)
 		}
 		return x
-	case []any: // goNative's *runtime.Slice output
+	case []any: // hostbridge.GoNative's *runtime.Slice output
 		if len(x) > 0 {
 			if jsonSeen(seen, reflect.ValueOf(x).UnsafePointer()) {
 				return jsonCycle{via: fmt.Sprintf("%T", x)}
@@ -413,7 +413,7 @@ func jsonMapKeyName(c runtime.MemberCaller, k runtime.Value, kt *runtime.TypeDef
 			}
 		}
 	}
-	nk := goNative(k)
+	nk := hostbridge.GoNative(k)
 	// an integer key spells its number even when its host type has a
 	// String method: map[time.Month]int{3: 1} marshals as {"3":1}.
 	switch rv := reflect.ValueOf(nk); rv.Kind() {
@@ -695,7 +695,7 @@ func jsonHostArgSeen(v any, seen map[unsafe.Pointer]bool) any {
 // projection stands for — the *struct{...} structDataHost mints,
 // recorded in vm's structOrigs.
 func projectedOrig(v any) (runtime.Value, bool) {
-	return vm.StructOrig(v)
+	return hostbridge.StructOrig(v)
 }
 
 // cleanupHandle is the runtime.Cleanup the bound AddCleanup returns:
@@ -757,7 +757,7 @@ func jsonMarshalResult(r runtime.Value) (b []byte, e runtime.Value, ok bool) {
 	default:
 		e = t.Elems[1]
 	}
-	b, ok = byteSlice(goNative(t.Elems[0])), true
+	b, ok = byteSlice(hostbridge.GoNative(t.Elems[0])), true
 	return b, e, ok
 }
 

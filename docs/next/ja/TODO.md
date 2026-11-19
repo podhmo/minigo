@@ -59,10 +59,10 @@
 - [x] **P2-5 `internal/process` を抽出する**: goroutine、park/wake、デッドロック検出を移す。ループとのやり取りは `spawn`/`park`/`unpark` だけにする。完了条件: `make test-race` と `make concurrency-stress` が通る。
 - [-] **P2-6 `special` を公開パッケージとして切り出す**: `SymbolID`、`QuotedCall`、`SpecialFunc`、`SpecialContext` を移し、`runtime` には型エイリアスを残す（I7）。レジストリと VM 側の context 実装は `internal/execution` に移す。完了条件: examples が無修正でコンパイルできる。
   - [x] `SymbolID` / `QuotedCall` → `special/` パッケージへ移動、`runtime` にエイリアス（PR #1141）
-  - [ ] `SpecialFunc` / `SpecialContext` は `runtime.Value`/`Package`/`TypeDef` 参照のため移すと import cycle — `runtime` に残置。registry・context 実装の `internal/execution` 移行は P2-14 に含める
+  - [x] `SpecialFunc` / `SpecialContext` は `runtime.Value`/`Package`/`TypeDef` 参照のため移すと import cycle — `runtime` に残置。registry・context 実装の `internal/execution` 移行は P2-14 に含める（P2-14d で registry は `execution.Registry` へ抽出済み、context は vm 残留と決定）
 - [-] **P2-7 `internal/hostbridge` を抽出する**: `goValueOf`、`toReflectValueDepth`、`hostMarshal`、`adaptFunc`、`hostArgAs`、opaque store、host↔script の変換層（`hostErrTwins`、`goNative`、プロキシのボックス）を移す。完了条件: archcheck が `vm/` での `reflect` を禁止している。
   - [x] opaque コンテナの引数パッキング（`OpaqueStoreArg`/`opaqueStoreKey`/`opaqueStoreValue`/`namedStoreValue`/`OpaqueKeyPosition`/`NamedLoadValue`）を `internal/hostbridge` へ（PR #1142）
-  - [ ] **P2-7a host 値との基本変換**: `goValueOf`、`goNative` と、値のコピー・box 化を担う処理を移す。名前付きスカラー、型付き nil、共有されるポインタ・map・slice の挙動を固定する。
+  - [x] **P2-7a host 値との基本変換**: `goValueOf`/`goSlotValueOf`（host→script）と `goNative`/`goNativeWalk`（script→host の any 化）を `internal/hostbridge` へ。`HostNil`/`HostNilType`/`HostNilPtrType`/`HostNilPtrTypedef` の型付き nil 機構、`hostPkgElemTypedef`/`anonExprOf`/`anonSliceTyp*`/`anonMapTypX`/`anonArrayTypX` の typedef 生成、`structOrigs`/`StructOrig`（書き込みは `RecordStructOrig`）、`float32Tag`/`complex64Tag`/`complex64Value`/`mustNativeConst` のスカラー幅 helper も同じ層へ。名前付きスカラー・型付き nil・共有コンテナの挙動は既存テストで固定済み。
   - [ ] **P2-7b 引数・返り値の変換**: P2-7a の変換を使って `toReflectValueDepth`、`hostMarshal`、`hostArgAs`、`hostErrTwins` を移す。可変長引数、入れ子のコレクション、書き戻し、error の回帰テストを通す。
   - [ ] **P2-7c 関数とインタフェースのアダプタ**: P2-2b と P2-7b のあとに `adaptFunc`、script interface のアダプタと proxy の box 化を移す。callback の再入、process 解放、panic の伝播を確認する。
   - [ ] **P2-7d VM の値操作に残る reflect**: `composite`、`convert`、`binop` の host 値操作を機能ごとに bridge 経由へ移す。各差分を該当する difffuzz と既存の host 値テストで確認する。

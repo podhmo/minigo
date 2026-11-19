@@ -25,6 +25,7 @@ import (
 	"reflect"
 	"unicode/utf8"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -596,13 +597,13 @@ func unboxGoValue(x runtime.Value) runtime.Value {
 		for i, b := range h {
 			el[i] = runtime.ByteValue(b)
 		}
-		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("byte")}
+		return &runtime.Slice{Elems: el, Typ: hostbridge.AnonSliceTyp("byte")}
 	case []rune:
 		el := make([]runtime.Value, len(h))
 		for i, r := range h {
 			el[i] = namedBasicElem("rune", int64(r))
 		}
-		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("rune")}
+		return &runtime.Slice{Elems: el, Typ: hostbridge.AnonSliceTyp("rune")}
 	}
 	return x
 }
@@ -1157,7 +1158,7 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 			v.sameTypedef(tn.Typ, td) {
 			return &runtime.TypedNil{Typ: td} // re-tag to the declared type
 		}
-		if HostNilPtrType(tn.Typ) != nil {
+		if hostbridge.HostNilPtrType(tn.Typ) != nil {
 			// a nil host *T whose twin the slot's type cannot be matched
 			// to (a renamed import of a bound package that registers no
 			// entry for T): bind it as the untyped nil it read as before

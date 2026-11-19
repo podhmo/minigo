@@ -14,7 +14,7 @@ func (e *Engine) installNet(h *hostHelpers) {
 	// script code declares net.Conn/net.Listener/net.Addr/net.Error;
 	// concrete values arrive as GoValue boxes whose methods dispatch
 	// through reflection, and script pointers (e.g. &net.TCPAddr{...})
-	// unbox via goNative at call boundaries.
+	// unbox via hostbridge.GoNative at call boundaries.
 	e.Bind("net", map[string]runtime.Value{
 		"Addr":             &runtime.TypeDef{Name: "net.Addr", Kind: runtime.KindInterface, MReqs: []string{"Network", "String"}},
 		"Conn":             &runtime.TypeDef{Name: "net.Conn", Kind: runtime.KindInterface, MReqs: []string{"Read", "Write", "Close", "LocalAddr", "RemoteAddr", "SetDeadline", "SetReadDeadline", "SetWriteDeadline"}},
@@ -123,7 +123,7 @@ func (e *Engine) installNet(h *hostHelpers) {
 }
 
 // net pointer/addr unwrappers: a script &net.TCPAddr{...} arrives at a
-// host call boundary as a GoValue box, unboxed by goNative upstream;
+// host call boundary as a GoValue box, unboxed by hostbridge.GoNative upstream;
 // nil stays a nil pointer like Go's optional-addr arguments.
 func tcpAddrOf(v any) *net.TCPAddr { t, _ := v.(*net.TCPAddr); return t }
 

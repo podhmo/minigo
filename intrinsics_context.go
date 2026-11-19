@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/vm"
 )
@@ -101,7 +102,7 @@ func (e *Engine) installContext(h *hostHelpers) {
 			if len(args) != 3 {
 				return nil, fmt.Errorf("context.WithValue needs 3 args, got %d", len(args))
 			}
-			c, err := asCtx(goNative(args[0]))
+			c, err := asCtx(hostbridge.GoNative(args[0]))
 			if err != nil {
 				return nil, err
 			}
@@ -111,7 +112,7 @@ func (e *Engine) installContext(h *hostHelpers) {
 			if len(args) != 2 {
 				return nil, fmt.Errorf("context.AfterFunc needs 2 args, got %d", len(args))
 			}
-			c, err := asCtx(goNative(args[0]))
+			c, err := asCtx(hostbridge.GoNative(args[0]))
 			if err != nil {
 				return nil, err
 			}
@@ -151,12 +152,12 @@ func (e *Engine) installContext(h *hostHelpers) {
 }
 
 // lockerOf resolves a script value to a sync.Locker for NewCond: host
-// values pass through goNative (*sync.Mutex, *sync.RWMutex), while a
+// values pass through hostbridge.GoNative (*sync.Mutex, *sync.RWMutex), while a
 // script-defined value adapts through its Lock/Unlock members — calls
 // run back on the VM that built the Cond, the same hazard as every
 // retained host callback.
 func lockerOf(vc runtime.MemberCaller, v runtime.Value) (sync.Locker, error) {
-	if l, ok := goNative(v).(sync.Locker); ok {
+	if l, ok := hostbridge.GoNative(v).(sync.Locker); ok {
 		return l, nil
 	}
 	lock, lok := runtime.IfaceMember(vc, v, "Lock")
@@ -228,7 +229,7 @@ func contextKey(k runtime.Value) (key any) {
 
 // asCtx resolves a script value to a host context.Context — bound
 // context producers (Background, With*) all yield GoValue boxes, so the
-// host value is already unwrapped by goNative upstream.
+// host value is already unwrapped by hostbridge.GoNative upstream.
 func asCtx(v any) (context.Context, error) {
 	if v == nil {
 		return nil, errors.New("context: nil parent")

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -66,7 +67,7 @@ func (e *Engine) installPathFilepath(h *hostHelpers) {
 		if len(args) != 2 {
 			return nil, fmt.Errorf("filepath.WalkDir needs 2 args, got %d", len(args))
 		}
-		root := str(goNative(args[0]))
+		root := str(hostbridge.GoNative(args[0]))
 		cb := args[1]
 		ap, err := h.env.FsPath(root)
 		if err != nil {
@@ -88,7 +89,7 @@ func (e *Engine) installPathFilepath(h *hostHelpers) {
 		if len(args) != 2 {
 			return nil, fmt.Errorf("filepath.Walk needs 2 args, got %d", len(args))
 		}
-		root := str(goNative(args[0]))
+		root := str(hostbridge.GoNative(args[0]))
 		cb := args[1]
 		ap, err := h.env.FsPath(root)
 		if err != nil {

@@ -24,18 +24,15 @@ import (
 	"go/ast"
 	"go/token"
 	"io/fs"
-	"math"
 	"reflect"
 	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
-	"time"
 	"unsafe"
 
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/process"
-	"github.com/podhmo/minigo/minireflect"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -88,14 +85,14 @@ func uncontendedLock(hv any, name string) func() bool {
 // reflect type is *U where U is the element typedef's boxed value type
 // — a HostNew that returns a pointer already is the *T box.
 func (v *VM) hostNilMethod(td *runtime.TypeDef, name string) (runtime.Value, bool) {
-	if rt := HostNilType(td); rt != nil {
-		// a nil named host slice ([HostNil]): IP's methods on nil IP
+	if rt := hostbridge.HostNilType(td); rt != nil {
+		// a nil named host slice ([hostbridge.HostNil]): IP's methods on nil IP
 		return hostZeroMethod(rt, name)
 	}
 	if td == nil || td.Spec != nil || td.Kind != runtime.KindPointer {
 		return nil, false
 	}
-	rt := HostNilPtrType(td)
+	rt := hostbridge.HostNilPtrType(td)
 	if rt == nil {
 		if v.H.ElemOf == nil {
 			return nil, false
@@ -130,249 +127,6 @@ func hostZeroMethod(rt reflect.Type, name string) (runtime.Value, bool) {
 	return bf, true
 }
 
-// sizedIntTyp names the builtin typedef for a sized int kind — the
-// reflect kind string spells the Go name exactly ("int8", "uint32").
-func sizedIntTyp(k reflect.Kind) *runtime.TypeDef {
-	return &runtime.TypeDef{Name: k.String(), Kind: runtime.KindNamedBasic}
-}
-
-// goValueOf adapts a reflect result to a runtime value: script-native types
-// pass through, everything else stays boxed as a host GoValue. Value is
-// `any`, so the pass-through list names the concrete runtime types.
-func goValueOf(rv reflect.Value) runtime.Value {
-	if !rv.IsValid() {
-		return runtime.NIL
-	}
-	switch rv.Kind() {
-	case reflect.Pointer, reflect.Interface, reflect.Chan, reflect.Func:
-		if rv.IsNil() {
-			// a nil *T of a named host type, or a nil chan/func of a
-			// predeclared spelling, is a typed nil ([HostNil]): it
-			// still compares equal to nil, but keeps its dynamic type
-			// when stored into an interface and dispatches T's pointer
-			// methods on the nil receiver, as in Go. Other nil
-			// pointer-ish host values read as plain nil — boxing them
-			// would make `v == nil` comparisons lie.
-			if rv.Kind() != reflect.Interface {
-				if tn := HostNil(rv.Type()); tn != nil {
-					return tn
-				}
-			}
-			return runtime.NIL
-		}
-	}
-	x := rv.Interface()
-	// a canonical opaque-store key coming back from a container
-	// (sync.Map Range callback, a loaded CAS comparand) restores the
-	// script value it was rendered from; everything else is not a
-	// canonical form and falls through to marshal as usual.
-	if orig, ok := runtime.OpaqueKeyOrig(x); ok {
-		return orig
-	}
-	// an anonymous *struct{...} is the projection structDataHost
-	// fabricates for a script struct; a host handing it back (a FuncMap
-	// func's argument, an `any` load) restores the script value.
-	if orig, ok := StructOrig(x); ok {
-		return orig
-	}
-	switch v := x.(type) {
-	case nil:
-		return runtime.NIL
-	case int:
-		return int64(v)
-	case int64:
-		// a concrete int64 keeps its width so %T spells `int64`; a
-		// payload unwrapped from an interface is a script int, spelled
-		// `int` (both store int64 — only rv's own kind can tell them
-		// apart).
-		if rv.Kind() == reflect.Interface {
-			return v
-		}
-		return runtime.Tag(sizedIntTyp(reflect.Int64), v)
-	case int8, int16, int32:
-		// sized ints keep their declared width so %T spells them
-		// like Go (int32 also covers rune — an alias). The tag reads
-		// the payload's kind: rv may be interface-shaped while x is
-		// the concrete payload.
-		pv := reflect.ValueOf(v)
-		return runtime.Tag(sizedIntTyp(pv.Kind()), pv.Int())
-	case uint, uint8, uint16, uint32, uintptr:
-		pv := reflect.ValueOf(v)
-		return runtime.Tag(sizedIntTyp(pv.Kind()), int64(pv.Uint()))
-	case uint64:
-		if v <= math.MaxInt64 {
-			if rv.Kind() == reflect.Interface {
-				return int64(v)
-			}
-			return runtime.Tag(sizedIntTyp(reflect.Uint64), int64(v))
-		}
-		return &runtime.GoValue{V: x}
-	case string:
-		return v
-	case bool:
-		return v
-	case float32:
-		// keep the declared width like a float32(x) conversion does —
-		// equality and map keys need the float32 tag, the payload rides
-		// in the float64 domain.
-		return runtime.Tag(&runtime.TypeDef{Name: "float32", Kind: runtime.KindNamedBasic}, float64(v))
-	case float64:
-		return v
-	case time.Duration:
-		// durations stay raw host values: methods (.Hours(), .String())
-		// dispatch through reflection and binaryOp unwraps for arithmetic.
-		return v
-	case []byte:
-		// []byte unmarshals to a slice of int64s so `string(b)` and
-		// indexing behave like Go source suggests. A nil slice is a
-		// typed nil so `b == nil` reads like Go.
-		if v == nil {
-			return &runtime.TypedNil{Typ: anonSliceTyp("byte")}
-		}
-		el := make([]runtime.Value, len(v))
-		for i, b := range v {
-			el[i] = runtime.ByteValue(b)
-		}
-		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("byte")}
-	case []string:
-		if v == nil {
-			return &runtime.TypedNil{Typ: anonSliceTyp("string")}
-		}
-		el := make([]runtime.Value, len(v))
-		for i, s := range v {
-			el[i] = s
-		}
-		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("string")}
-	case []any:
-		// a `chan any` send deep-hosts script containers (see deepHost);
-		// the receive rehydrates the flat slice shape so indexing works.
-		if v == nil {
-			return &runtime.TypedNil{Typ: anonSliceTyp("any")}
-		}
-		el := make([]runtime.Value, len(v))
-		for i, e := range v {
-			el[i] = goValueOf(reflect.ValueOf(e))
-		}
-		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("any")}
-	case map[any]any:
-		if v == nil {
-			return &runtime.TypedNil{Typ: &runtime.TypeDef{Kind: runtime.KindMap,
-				Anon: &ast.MapType{Key: ast.NewIdent("any"), Value: ast.NewIdent("any")}}}
-		}
-		m := runtime.NewMap(nil, false)
-		for k, e := range v {
-			m.Insert(goValueOf(reflect.ValueOf(k)), goValueOf(reflect.ValueOf(e)))
-		}
-		return m
-	case runtime.ScriptBoxed:
-		// a script value the host carried in a proxy (a script error
-		// returned by a host Unwrap) reads back as itself.
-		return v.ScriptValue()
-	case error:
-		// errors stay boxed — Error() and Unwrap() dispatch via reflection;
-		// errors.Is/As unwrap through goNative.
-		return &runtime.GoValue{V: x}
-	case runtime.Nil, *runtime.Tuple, *runtime.Cell, *runtime.Slice,
-		*runtime.Map, *runtime.Struct, *runtime.Function, *runtime.Closure,
-		*runtime.BoundMethod, *runtime.BuiltinFunc, *runtime.GoValue,
-		*runtime.Chan, *runtime.TypeDef, *runtime.Iterator, *runtime.Package,
-		*runtime.ImportRef, *runtime.TypedNil, *runtime.IfaceNil,
-		*runtime.Named, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
-		return v
-	case runtime.Named:
-		// opaqueStoreArg stored a Named by value so `any` storage keys
-		// compare by content — a loaded value re-wraps to the pointer
-		// form, keeping its tag for script type asserts.
-		return hostbridge.NamedLoadValue(v)
-	default:
-		// an unnamed host slice/array ([N]T, []T) unboxes element-wise so
-		// indexing and range work; a named slice type keeps its box to
-		// preserve method dispatch. A nil slice is a typed nil so
-		// `v == nil` reads like Go.
-		switch rv.Kind() {
-		case reflect.Slice:
-			if rv.IsNil() && rv.Type().Name() != "" {
-				// a nil named host slice (net.ParseIP's IP on bad
-				// input) is a typed nil of the host type, as a nil *T
-				if tn := HostNil(rv.Type()); tn != nil {
-					return tn
-				}
-			}
-			if rv.Type().Name() == "" {
-				td := anonSliceTypX(anonExprOf(rv.Type().Elem()))
-				td.Elem = hostPkgElemTypedef(rv.Type().Elem())
-				if rv.IsNil() {
-					return &runtime.TypedNil{Typ: td}
-				}
-				el := make([]runtime.Value, rv.Len())
-				for i := range el {
-					el[i] = goValueOf(rv.Index(i))
-				}
-				return &runtime.Slice{Elems: el, Typ: td}
-			}
-		case reflect.Map:
-			if rv.IsNil() && rv.Type().Name() != "" {
-				// a nil named host map (a request's Form, Trailer) is a
-				// typed nil of the host type, like a nil named slice
-				if tn := HostNil(rv.Type()); tn != nil {
-					return tn
-				}
-			}
-		case reflect.Array:
-			if rv.Type().Name() == "" {
-				el := make([]runtime.Value, rv.Len())
-				for i := range el {
-					el[i] = goValueOf(rv.Index(i))
-				}
-				return &runtime.Slice{Elems: el, Typ: anonArrayTypX(rv.Len(), anonExprOf(rv.Type().Elem()))}
-			}
-		}
-		return &runtime.GoValue{V: x}
-	}
-}
-
-// goSlotValueOf is goValueOf for a value read out of a host interface
-// slot — a host call's `any` result (sync.Map.Load, context.Value,
-// atomic.Value.Load), a callback's `any` param (sync.Map.Range), an
-// `any` field. A typed nil held there is a non-nil interface, so it
-// reads back boxed as an [runtime.IfaceNil] that keeps its dynamic type:
-// `v == nil` is false and `v.(*T)` still matches. goValueOf alone would
-// yield the bare typed nil, which equals nil. Script channels also ride
-// on `chan any` but keep their element type, so they use goValueOf.
-func goSlotValueOf(rv reflect.Value) runtime.Value {
-	if rv.Kind() == reflect.Interface && !rv.IsNil() {
-		e := rv.Elem()
-		switch e.Kind() {
-		case reflect.Chan, reflect.Func:
-			// a nil host chan/func of a predeclared spelling
-			if e.IsNil() {
-				if tn := HostNil(e.Type()); tn != nil {
-					return &runtime.IfaceNil{Typ: tn.Typ}
-				}
-			}
-		case reflect.Pointer:
-			if e.IsNil() {
-				// a nil host *T of a named type (os.Open's file on error)
-				if tn := HostNil(e.Type()); tn != nil {
-					return &runtime.IfaceNil{Typ: tn.Typ}
-				}
-			} else if tn, ok := e.Interface().(*runtime.TypedNil); ok && tn.Typ != nil {
-				// a script typed nil stored verbatim
-				return &runtime.IfaceNil{Typ: tn.Typ}
-			}
-		}
-		// a typed nil stored as a canonical opaque key (a sync.Map
-		// value, an atomic.Value) restores to its typed nil — box it
-		if orig, ok := runtime.OpaqueKeyOrig(e.Interface()); ok {
-			if tn, isTN := orig.(*runtime.TypedNil); isTN && tn.Typ != nil {
-				return &runtime.IfaceNil{Typ: tn.Typ}
-			}
-			return orig
-		}
-	}
-	return goValueOf(rv)
-}
-
 // SnapshotOf converts a host Go value into a [VM.Call] argument. The value
 // crosses as a snapshot — a copy shaped for the script world — so script
 // writes to it never reach the host value. An unnamed host map becomes a
@@ -380,10 +134,10 @@ func goSlotValueOf(rv reflect.Value) runtime.Value {
 // named map or struct keeps its host box so its methods stay callable.
 // Script-native values pass through unchanged.
 func SnapshotOf(x any) runtime.Value {
-	// The shape is goValueOf's plus one wider unbox: unnamed maps unbox
+	// The shape is hostbridge.GoValueOf's plus one wider unbox: unnamed maps unbox
 	// here while host call results still box them — an arg has a declared
 	// param shape to satisfy, a result does not. Named maps and structs
-	// keep their box for member dispatch, the rule goValueOf applies to
+	// keep their box for member dispatch, the rule hostbridge.GoValueOf applies to
 	// named slices.
 	return snapshotValue(x, map[uintptr]struct{}{})
 }
@@ -399,7 +153,7 @@ func SnapshotOf(x any) runtime.Value {
 // crosses a guarded slice or map on the way back.
 func snapshotValue(x any, visiting map[uintptr]struct{}) runtime.Value {
 	// the script's int domain is int64: a host int64 stands for a script
-	// int, so it enters bare — tagging it (like goValueOf does for a
+	// int, so it enters bare — tagging it (like hostbridge.GoValueOf does for a
 	// reflect result) would make `int`-typed params reject the ints
 	// callers already pass.
 	if v, ok := x.(int64); ok {
@@ -409,7 +163,7 @@ func snapshotValue(x any, visiting map[uintptr]struct{}) runtime.Value {
 	if rv.Kind() == reflect.Map && rv.Type().Name() == "" {
 		// recursing through snapshotValue unboxes nested maps too —
 		// m["a"]["b"] keeps working at any depth.
-		td := anonMapTypX(anonExprOf(rv.Type().Key()), anonExprOf(rv.Type().Elem()))
+		td := hostbridge.AnonMapTypX(hostbridge.AnonExprOf(rv.Type().Key()), hostbridge.AnonExprOf(rv.Type().Elem()))
 		if rv.IsNil() {
 			return &runtime.TypedNil{Typ: td}
 		}
@@ -434,14 +188,14 @@ func snapshotValue(x any, visiting map[uintptr]struct{}) runtime.Value {
 			// Elements that can carry a nested anonymous container —
 			// a map-typed slot, or an `any` slot holding one — route
 			// through snapshotValue so `rs[0]["k"]` and `m[k]` index on
-			// arrival; primitives keep goValueOf's tagged shape (an
+			// arrival; primitives keep hostbridge.GoValueOf's tagged shape (an
 			// int64 in an `any` slot stays `int64`, not bare `int`).
 			// The typedef spells the composite element correctly
 			// (`[]map[string]interface{}` — an unparseable one-identifier
 			// element name never reaches the param check).
 			var td *runtime.TypeDef
 			if rv.Kind() == reflect.Slice {
-				td = anonSliceTypX(anonExprOf(rv.Type().Elem()))
+				td = hostbridge.AnonSliceTypX(hostbridge.AnonExprOf(rv.Type().Elem()))
 				if rv.IsNil() {
 					return &runtime.TypedNil{Typ: td}
 				}
@@ -459,7 +213,7 @@ func snapshotValue(x any, visiting map[uintptr]struct{}) runtime.Value {
 					defer delete(visiting, rv.Pointer())
 				}
 			} else {
-				td = anonArrayTypX(rv.Len(), anonExprOf(rv.Type().Elem()))
+				td = hostbridge.AnonArrayTypX(rv.Len(), hostbridge.AnonExprOf(rv.Type().Elem()))
 			}
 			et := rv.Type().Elem()
 			el := make([]runtime.Value, rv.Len())
@@ -473,23 +227,19 @@ func snapshotValue(x any, visiting map[uintptr]struct{}) runtime.Value {
 					case pv.Kind() == reflect.Map || pv.Kind() == reflect.Slice || pv.Kind() == reflect.Array:
 						el[i] = snapshotValue(pv.Interface(), visiting)
 					default:
-						el[i] = goValueOf(pv)
+						el[i] = hostbridge.GoValueOf(pv)
 					}
 				} else if et.Kind() == reflect.Map || et.Kind() == reflect.Slice || et.Kind() == reflect.Array {
 					el[i] = snapshotValue(ev.Interface(), visiting)
 				} else {
-					el[i] = goValueOf(ev)
+					el[i] = hostbridge.GoValueOf(ev)
 				}
 			}
 			return &runtime.Slice{Elems: el, Typ: td}
 		}
 	}
-	return goValueOf(rv)
+	return hostbridge.GoValueOf(rv)
 }
-
-// hostRValueType is the facade's host type: a host []*RValue (MapKeys,
-// Call results) spells its elements reflect.Value like Go.
-var hostRValueType = reflect.TypeOf((*minireflect.RValue)(nil))
 
 // hostField finds a field by name on a host value: pointer and
 // interface chains are dereferenced to the struct underneath. nil or
@@ -1175,7 +925,7 @@ func hostNilOf(td *runtime.TypeDef, vc runtime.VMCaller) any {
 	if td == nil {
 		return nil
 	}
-	if rt := HostNilType(td); rt != nil {
+	if rt := hostbridge.HostNilType(td); rt != nil {
 		// a nil named host map or slice (a request's Form, net.IP)
 		return reflect.Zero(rt).Interface()
 	}
@@ -1700,7 +1450,7 @@ var opaqueContainers = map[string]bool{
 // hostFieldValue converts x for a host struct field: toReflectValue,
 // except that a script sync.Pool.New keeps its result opaque — the
 // pool hands it back through Get, which returns a script value verbatim
-// (goValueOf), so it must not marshal: a struct would become a
+// (hostbridge.GoValueOf), so it must not marshal: a struct would become a
 // *struct{...} projection, invoking its niladic methods on every miss,
 // and a named non-struct would lose its script type (the same rule as
 // Pool.Put).
@@ -1744,32 +1494,6 @@ func fillHostStruct(out reflect.Value, s *runtime.Struct, vc runtime.VMCaller, d
 		reflect.NewAt(fv.Type(), unsafe.Pointer(fv.UnsafeAddr())).Elem().Set(ev)
 	}
 	return nil
-}
-
-// structOrigs records the script value each fabricated *struct{...}
-// projection stands for: a host that hands one back — a FuncMap func's
-// argument, an `any` round-trip — restores the script object it
-// started from rather than surfacing the anonymous host struct.
-// Entries live for the process, the same trade-off as
-// runtime.opaqueKeyOrigs.
-var structOrigs sync.Map
-
-// StructOrig reports the script value a *struct{...} projection
-// minted by structDataHost stands for — for recoverers outside the vm
-// package (minigo's jsonHostArg). The type gate precedes the lookup:
-// an unhashable x (a slice or map payload) would panic in sync.Map.
-func StructOrig(x any) (runtime.Value, bool) {
-	rt := reflect.TypeOf(x)
-	if rt == nil || rt.Kind() != reflect.Pointer {
-		return nil, false
-	}
-	if et := rt.Elem(); et.Kind() != reflect.Struct || et.Name() != "" {
-		return nil, false
-	}
-	if orig, ok := structOrigs.Load(x); ok {
-		return orig, true
-	}
-	return nil, false
 }
 
 // structDataHost marshals a script struct (or a pointer to one) for a
@@ -1827,7 +1551,7 @@ func structDataHost(recv runtime.Value, s *runtime.Struct, vc runtime.VMCaller, 
 	}
 	out := reflect.New(reflect.StructOf(sfs))
 	h.walk.Register(s, out.Interface())
-	structOrigs.Store(out.Interface(), recv)
+	hostbridge.RecordStructOrig(out.Interface(), recv)
 	ev := out.Elem()
 	for j, i := range fidx {
 		if fv := deepHost(s.Fields[i], vc, h); fv != nil {
@@ -2180,7 +1904,7 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 				rv = rv.Elem()
 			}
 			if rv.IsValid() && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) {
-				// a []byte arg commits in one pass — goValueOf per
+				// a []byte arg commits in one pass — hostbridge.GoValueOf per
 				// element would box and tag every byte again (#362).
 				// Unaddressable arrays can't view as Bytes — they keep
 				// the generic element loop.
@@ -2225,7 +1949,7 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 							continue
 						}
 					}
-					ss.Elems[i] = retagElem(ss.Elems[i], goValueOf(ev))
+					ss.Elems[i] = retagElem(ss.Elems[i], hostbridge.GoValueOf(ev))
 				}
 				handled = true
 			}
@@ -2244,7 +1968,7 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 				continue
 			}
 		}
-		val := goValueOf(wb.rv.Elem())
+		val := hostbridge.GoValueOf(wb.rv.Elem())
 		if cell, ok := ref.(*runtime.Cell); ok {
 			if n, ok := cell.Elem.(*runtime.Named); ok {
 				// a declared cell keeps its tag through the round trip
@@ -2261,17 +1985,17 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 }
 
 // goResults converts a host call's results to script values: no result
-// is NIL, one unboxes via goValueOf, several become a Tuple.
+// is NIL, one unboxes via hostbridge.GoValueOf, several become a Tuple.
 func goResults(out []reflect.Value) (runtime.Value, error) {
 	switch len(out) {
 	case 0:
 		return runtime.NIL, nil
 	case 1:
-		return goSlotValueOf(out[0]), nil
+		return hostbridge.GoSlotValueOf(out[0]), nil
 	default:
 		el := make([]runtime.Value, len(out))
 		for i, o := range out {
-			el[i] = goSlotValueOf(o)
+			el[i] = hostbridge.GoSlotValueOf(o)
 		}
 		return &runtime.Tuple{Elems: el}, nil
 	}
@@ -2392,7 +2116,7 @@ func callBuiltinFuncMap(fx *runtime.BuiltinFunc, packed reflect.Value, vc runtim
 	vc = callbackContext(vc)
 	sargs := make([]runtime.Value, packed.Len())
 	for i := range sargs {
-		sargs[i] = goSlotValueOf(packed.Index(i))
+		sargs[i] = hostbridge.GoSlotValueOf(packed.Index(i))
 	}
 	fail := func(err error) []reflect.Value {
 		return []reflect.Value{reflect.Zero(anyType), reflect.ValueOf(&err).Elem()}
@@ -2645,11 +2369,11 @@ func adaptFuncWith(x runtime.Value, t reflect.Type, vc runtime.VMCaller, o adapt
 				// the host packs a ...T call into one slice; the script
 				// callee collects separate args back into its own ...T.
 				for j := range a.Len() {
-					sargs = append(sargs, goSlotValueOf(a.Index(j)))
+					sargs = append(sargs, hostbridge.GoSlotValueOf(a.Index(j)))
 				}
 				continue
 			}
-			sargs = append(sargs, goSlotValueOf(a))
+			sargs = append(sargs, hostbridge.GoSlotValueOf(a))
 		}
 		r, err := call(callee, sargs)
 		if err != nil {

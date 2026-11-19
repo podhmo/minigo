@@ -6,6 +6,7 @@ import (
 	"io"
 	"math/big"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -42,7 +43,7 @@ func (e *Engine) installCryptoRand(h *hostHelpers) {
 			return crand.Int(r, max)
 		}),
 		"Prime": h.randBig("rand.Prime", crand.Prime, func(_ runtime.VMCaller, r io.Reader, args []runtime.Value) (*big.Int, error) {
-			return crand.Prime(r, intOf(goNative(args[1])))
+			return crand.Prime(r, intOf(hostbridge.GoNative(args[1])))
 		}),
 	})
 }
@@ -67,10 +68,10 @@ func (h *hostHelpers) randBig(name string, target any, f func(vc runtime.VMCalle
 // bigIntOf resolves a *big.Int argument: a host-produced one (rand.Int's
 // or rand.Prime's own result, or a bound helper's) unboxes directly; a
 // script-built one rebuilds through the value's public Sign/Bytes
-// methods — math/big itself stays source-interpreted, so goNative only
+// methods — math/big itself stays source-interpreted, so hostbridge.GoNative only
 // sees a struct.
 func (h *hostHelpers) bigIntOf(vc runtime.VMCaller, v runtime.Value) (*big.Int, error) {
-	if bi, ok := goNative(v).(*big.Int); ok {
+	if bi, ok := hostbridge.GoNative(v).(*big.Int); ok {
 		return bi, nil
 	}
 	if vc != nil {

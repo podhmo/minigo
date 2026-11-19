@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -51,7 +52,7 @@ func (e *Engine) installSlices(h *hostHelpers) {
 			xs, xt, okx := scriptSliceArg(vc, args[0])
 			ys, yt, oky := scriptSliceArg(vc, args[1])
 			if !okx || !oky {
-				return slices.Equal(anySlice(goNative(args[0])), anySlice(goNative(args[1]))), nil
+				return slices.Equal(anySlice(hostbridge.GoNative(args[0])), anySlice(hostbridge.GoNative(args[1]))), nil
 			}
 			if xt == nil {
 				xt = yt
