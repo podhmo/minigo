@@ -14,16 +14,26 @@ import (
 	"strings"
 	"unsafe"
 
+	"sync/atomic"
+
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/stdlib"
 	stdio "github.com/podhmo/minigo/internal/stdlib/io"
 	"github.com/podhmo/minigo/runtime"
 )
 
-var typeStrOf func(runtime.Value) string
+// typeStr is the %T speller every engine installs — the same pure
+// function each time, so the store races harmlessly, but we still go
+// through atomic.Value to keep the race detector quiet when engines
+// install concurrently.
+var typeStr atomic.Value // func(runtime.Value) string
 
-func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, typeStr func(runtime.Value) string) {
-	typeStrOf = typeStr
+func typeStrOf(x runtime.Value) string {
+	return typeStr.Load().(func(runtime.Value) string)(x)
+}
+
+func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, ts func(runtime.Value) string) {
+	typeStr.Store(ts)
 	bind("encoding/json", map[string]runtime.Value{
 		"Number": &runtime.TypeDef{Name: "encoding/json.Number", Kind: runtime.KindNamedBasic, Anon: ast.NewIdent("string"), HostNew: func() any { return json.Number("") }},
 		// the Marshaler/Unmarshaler interface types — gc dispatches

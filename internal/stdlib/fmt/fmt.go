@@ -1,4 +1,4 @@
-package minigo
+package stdfmt
 
 import (
 	"bytes"
@@ -16,13 +16,19 @@ import (
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/stdlib"
 	stdruntime "github.com/podhmo/minigo/internal/stdlib/goruntime"
+	stdio "github.com/podhmo/minigo/internal/stdlib/io"
 	stdjson "github.com/podhmo/minigo/internal/stdlib/json"
 	"github.com/podhmo/minigo/minireflect"
 	"github.com/podhmo/minigo/runtime"
 )
 
-func (e *Engine) installFmt(h *hostHelpers) {
-	e.bindBound("fmt", map[string]runtime.Value{
+var typeStrOf func(runtime.Value) string
+var outOf func() io.Writer
+
+func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, out func() io.Writer, typeStr func(runtime.Value) string) {
+	typeStrOf = typeStr
+	outOf = out
+	bind("fmt", map[string]runtime.Value{
 		// fmt's interfaces are needed as types by interpreted sources that
 		// reflect on them or assert (e.g. template's fmt.Stringer probes,
 		// math/big's compile-time fmt.Scanner assertion).
@@ -57,46 +63,46 @@ func (e *Engine) installFmt(h *hostHelpers) {
 		// spacing reads the reflect Kind, so a named type over string
 		// (json.Number) suppresses the space — the host-shaped args hide
 		// that inside fmtValue.
-		"Print": h.pffn("fmt.Print", 0, func(_ runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
-			return retErr(fprintOperands(h.out(), a, flat))
+		"Print": pffn("fmt.Print", 0, func(_ runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
+			return stdlib.RetErr(fprintOperands(outOf(), a, flat))
 		}, fmt.Print),
-		"Println": h.ffn("fmt.Println", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprintln(h.out(), a...)) }, fmt.Println),
-		"Printf": h.ffn("fmt.Printf", 0, 1, func(a []any) (any, error) {
-			return retErr(fmt.Fprintf(h.out(), str(a[0]), a[1:]...))
+		"Println": ffn("fmt.Println", -1, 0, func(a []any) (any, error) { return stdlib.RetErr(fmt.Fprintln(outOf(), a...)) }, fmt.Println),
+		"Printf": ffn("fmt.Printf", 0, 1, func(a []any) (any, error) {
+			return stdlib.RetErr(fmt.Fprintf(outOf(), stdlib.Str(a[0]), a[1:]...))
 		}),
 		// Fprint* take an explicit writer — os.Stdout/os.Stderr arrive as
 		// GoValue (unwrapped by fmtArg to the native *os.File).
-		"Fprint": h.pffn("fmt.Fprint", 1, func(v runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
-			w, err := asWriterVM(v, a[0])
+		"Fprint": pffn("fmt.Fprint", 1, func(v runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
+			w, err := ad.AsWriterVM(v, a[0])
 			if err != nil {
 				return nil, err
 			}
-			return retErr(fprintOperands(w, a[1:], flat[1:]))
+			return stdlib.RetErr(fprintOperands(w, a[1:], flat[1:]))
 		}),
-		"Fprintf": h.vffn("fmt.Fprintf", 1, 2, func(v runtime.VMCaller, a []any) (any, error) {
-			w, err := asWriterVM(v, a[0])
+		"Fprintf": vffn("fmt.Fprintf", 1, 2, func(v runtime.VMCaller, a []any) (any, error) {
+			w, err := ad.AsWriterVM(v, a[0])
 			if err != nil {
 				return nil, err
 			}
-			return retErr(fmt.Fprintf(w, str(a[1]), a[2:]...))
+			return stdlib.RetErr(fmt.Fprintf(w, stdlib.Str(a[1]), a[2:]...))
 		}),
-		"Fprintln": h.vffn("fmt.Fprintln", -1, 1, func(v runtime.VMCaller, a []any) (any, error) {
-			w, err := asWriterVM(v, a[0])
+		"Fprintln": vffn("fmt.Fprintln", -1, 1, func(v runtime.VMCaller, a []any) (any, error) {
+			w, err := ad.AsWriterVM(v, a[0])
 			if err != nil {
 				return nil, err
 			}
-			return retErr(fmt.Fprintln(w, a[1:]...))
+			return stdlib.RetErr(fmt.Fprintln(w, a[1:]...))
 		}),
-		"Sprint": h.pffn("fmt.Sprint", 0, func(_ runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
+		"Sprint": pffn("fmt.Sprint", 0, func(_ runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
 			var buf bytes.Buffer
 			if _, err := fprintOperands(&buf, a, flat); err != nil {
 				return nil, err
 			}
 			return buf.String(), nil
 		}, fmt.Sprint),
-		"Sprintln": h.ffn("fmt.Sprintln", -1, 0, func(a []any) (any, error) { return fmt.Sprintln(a...), nil }, fmt.Sprintln),
-		"Sprintf": h.ffn("fmt.Sprintf", 0, 1, func(a []any) (any, error) {
-			return fmt.Sprintf(str(a[0]), a[1:]...), nil
+		"Sprintln": ffn("fmt.Sprintln", -1, 0, func(a []any) (any, error) { return fmt.Sprintln(a...), nil }, fmt.Sprintln),
+		"Sprintf": ffn("fmt.Sprintf", 0, 1, func(a []any) (any, error) {
+			return fmt.Sprintf(stdlib.Str(a[0]), a[1:]...), nil
 		}, fmt.Sprintf),
 		// The Append family formats like Sprint/Sprintf/Sprintln onto a
 		// caller's byte slice. The buffer arg is read from flat (the raw
@@ -104,31 +110,35 @@ func (e *Engine) installFmt(h *hostHelpers) {
 		// which byteSlice cannot see through. Source-interpreted packages
 		// reach these through e.g. log's output(), which formats via
 		// fmt.Appendln.
-		"Append": h.pffn("fmt.Append", 1, func(_ runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
+		"Append": pffn("fmt.Append", 1, func(_ runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
 			var buf bytes.Buffer
 			if _, err := fprintOperands(&buf, a[1:], flat[1:]); err != nil {
 				return nil, err
 			}
 			return append(byteSlice(flat[0]), buf.Bytes()...), nil
 		}, fmt.Append),
-		"Appendf": h.wffn("fmt.Appendf", 1, 2, func(_ runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
-			return fmt.Appendf(byteSlice(flat[0]), str(a[1]), a[2:]...), nil
+		"Appendf": wffn("fmt.Appendf", 1, 2, func(_ runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
+			return fmt.Appendf(byteSlice(flat[0]), stdlib.Str(a[1]), a[2:]...), nil
 		}, fmt.Appendf),
-		"Appendln": h.pffn("fmt.Appendln", 1, func(_ runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
+		"Appendln": pffn("fmt.Appendln", 1, func(_ runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
 			return fmt.Appendln(byteSlice(flat[0]), a[1:]...), nil
 		}, fmt.Appendln),
 		// The Scan family's out-params arrive as script refs; scanFn
 		// mirrors each into a host var of the pointee's type, scans, and
 		// writes results back through the ref (parse/node.go's
 		// complex-literal path needs Sscan).
-		"Sscan":   h.scanFn("fmt.Sscan", 1, nil, fmt.Sscan, func(head, ptrs []any) (int, error) { return fmt.Sscan(str(head[0]), ptrs...) }),
-		"Sscanf":  h.scanFn("fmt.Sscanf", 2, nil, fmt.Sscanf, func(head, ptrs []any) (int, error) { return fmt.Sscanf(str(head[0]), str(head[1]), ptrs...) }),
-		"Sscanln": h.scanFn("fmt.Sscanln", 1, nil, fmt.Sscanln, func(head, ptrs []any) (int, error) { return fmt.Sscanln(str(head[0]), ptrs...) }),
+		"Sscan": h.scanFn("fmt.Sscan", 1, nil, fmt.Sscan, func(head, ptrs []any) (int, error) { return fmt.Sscan(stdlib.Str(head[0]), ptrs...) }),
+		"Sscanf": h.scanFn("fmt.Sscanf", 2, nil, fmt.Sscanf, func(head, ptrs []any) (int, error) {
+			return fmt.Sscanf(stdlib.Str(head[0]), stdlib.Str(head[1]), ptrs...)
+		}),
+		"Sscanln": h.scanFn("fmt.Sscanln", 1, nil, fmt.Sscanln, func(head, ptrs []any) (int, error) { return fmt.Sscanln(stdlib.Str(head[0]), ptrs...) }),
 		"Scan":    h.scanFn("fmt.Scan", 0, nil, fmt.Scan, func(_, ptrs []any) (int, error) { return fmt.Scan(ptrs...) }),
-		"Scanf":   h.scanFn("fmt.Scanf", 1, nil, fmt.Scanf, func(head, ptrs []any) (int, error) { return fmt.Scanf(str(head[0]), ptrs...) }),
+		"Scanf":   h.scanFn("fmt.Scanf", 1, nil, fmt.Scanf, func(head, ptrs []any) (int, error) { return fmt.Scanf(stdlib.Str(head[0]), ptrs...) }),
 		"Scanln":  h.scanFn("fmt.Scanln", 0, nil, fmt.Scanln, func(_, ptrs []any) (int, error) { return fmt.Scanln(ptrs...) }),
 		"Fscan":   h.scanFn("fmt.Fscan", 1, h.scanReader, fmt.Fscan, func(head, ptrs []any) (int, error) { return fmt.Fscan(head[0].(io.Reader), ptrs...) }),
-		"Fscanf":  h.scanFn("fmt.Fscanf", 2, h.scanReader, fmt.Fscanf, func(head, ptrs []any) (int, error) { return fmt.Fscanf(head[0].(io.Reader), str(head[1]), ptrs...) }),
+		"Fscanf": h.scanFn("fmt.Fscanf", 2, h.scanReader, fmt.Fscanf, func(head, ptrs []any) (int, error) {
+			return fmt.Fscanf(head[0].(io.Reader), stdlib.Str(head[1]), ptrs...)
+		}),
 		"Fscanln": h.scanFn("fmt.Fscanln", 1, h.scanReader, fmt.Fscanln, func(head, ptrs []any) (int, error) { return fmt.Fscanln(head[0].(io.Reader), ptrs...) }),
 		// Errorf is hand-bound: %w verbs wrap the cause like Go's
 		// fmt.wrapError so errors.Unwrap/Is/As see the chain.
@@ -137,7 +147,7 @@ func (e *Engine) installFmt(h *hostHelpers) {
 				return nil, fmt.Errorf("fmt.Errorf needs 1+ args")
 			}
 			a, flat := fmtArgs(v, args)
-			spec := str(a[0])
+			spec := stdlib.Str(a[0])
 			// the %w operand indexes come from the spec as written —
 			// they index the raw args; rewriteTypeVerbs renumbers the
 			// directives and rebuilds the operand list for printing.
@@ -264,8 +274,8 @@ func rewriteWrapVerbs(spec string) (string, []int) {
 // format-string arg (-1 when none); %T verbs there are rewritten to %s
 // over the value's script type spelling because host fmt never calls
 // Formatter.Format for %T/%p.
-func (h *hostHelpers) ffn(name string, formatAt, minArgs int, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
-	return h.vffn(name, formatAt, minArgs, func(_ runtime.VMCaller, a []any) (any, error) {
+func ffn(name string, formatAt, minArgs int, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
+	return vffn(name, formatAt, minArgs, func(_ runtime.VMCaller, a []any) (any, error) {
 		return f(a)
 	}, target...)
 }
@@ -273,22 +283,22 @@ func (h *hostHelpers) ffn(name string, formatAt, minArgs int, f func([]any) (any
 // pffn is vffn without a format string whose inner fn also receives the
 // flat script args — the Print family's operand spacing keys on the
 // script-level string kind, which fmtArgs hides inside fmtValue.
-func (h *hostHelpers) pffn(name string, minArgs int, f func(runtime.VMCaller, []any, []runtime.Value) (any, error), target ...any) *runtime.BuiltinFunc {
-	return h.wffn(name, -1, minArgs, f, target...)
+func pffn(name string, minArgs int, f func(runtime.VMCaller, []any, []runtime.Value) (any, error), target ...any) *runtime.BuiltinFunc {
+	return wffn(name, -1, minArgs, f, target...)
 }
 
 // vffn is ffn whose inner fn also receives the VM caller — needed when
 // an argument must call back into the script (a script-defined
 // io.Writer for fmt.Fprintf, say).
-func (h *hostHelpers) vffn(name string, formatAt, minArgs int, f func(runtime.VMCaller, []any) (any, error), target ...any) *runtime.BuiltinFunc {
-	return h.wffn(name, formatAt, minArgs, func(v runtime.VMCaller, a []any, _ []runtime.Value) (any, error) {
+func vffn(name string, formatAt, minArgs int, f func(runtime.VMCaller, []any) (any, error), target ...any) *runtime.BuiltinFunc {
+	return wffn(name, formatAt, minArgs, func(v runtime.VMCaller, a []any, _ []runtime.Value) (any, error) {
 		return f(v, a)
 	}, target...)
 }
 
 // wffn is the shared fmt-call wrapper: the inner fn receives both the
 // host-shaped args and the flat script args (before fmtArg unboxing).
-func (h *hostHelpers) wffn(name string, formatAt, minArgs int, f func(runtime.VMCaller, []any, []runtime.Value) (any, error), target ...any) *runtime.BuiltinFunc {
+func wffn(name string, formatAt, minArgs int, f func(runtime.VMCaller, []any, []runtime.Value) (any, error), target ...any) *runtime.BuiltinFunc {
 	bf := &runtime.BuiltinFunc{Name: name, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) < minArgs {
 			return nil, fmt.Errorf("%s needs %d args, got %d", name, minArgs, len(args))
@@ -313,7 +323,7 @@ func (h *hostHelpers) wffn(name string, formatAt, minArgs int, f func(runtime.VM
 		if err != nil {
 			return nil, err
 		}
-		return scriptVal(r), nil
+		return stdlib.ScriptVal(r), nil
 	}}
 	if len(target) > 0 {
 		bf.Target = target[0]
@@ -505,7 +515,7 @@ func scriptScalarName(x runtime.Value) string {
 	case *runtime.Named:
 		return stdlib.TypedefSpelling(t.Typ)
 	case *runtime.GoValue:
-		return scriptTypeString(t)
+		return typeStrOf(t)
 	}
 	return fmt.Sprintf("%T", x)
 }
@@ -807,7 +817,7 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 		switch d.verb {
 		case 'T':
 			sb.WriteByte('s')
-			na = append(na, scriptTypeString(vals[d.pos]))
+			na = append(na, typeStrOf(vals[d.pos]))
 		case 'p':
 			sb.WriteByte('s')
 			na = append(na, ptrSpelling(c, vals[d.pos]))
@@ -1212,7 +1222,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		// scalar pointer: Go prints the address — a host pointer repr
 		// is the closest readable stand-in; %#v wraps it as (*T)(0xADDR).
 		if verb == 'v' && f.Flag('#') {
-			return fmt.Sprintf("(*%s)(%p)", scriptTypeString(dv), v)
+			return fmt.Sprintf("(*%s)(%p)", typeStrOf(dv), v)
 		}
 		return fmt.Sprintf("%p", v)
 	case *runtime.Struct:
@@ -1514,7 +1524,7 @@ func (s *fmtValue) nilTyp(verb rune, f fmt.State, td *runtime.TypeDef) string {
 
 // scriptTypeString spells a value's type the way Go's %T does —
 // "[]int", "main.Point" — using the typedef, not the Go wrapper type.
-func scriptTypeString(x runtime.Value) string {
+func typeStrOf(x runtime.Value) string {
 	switch t := x.(type) {
 	case nil, runtime.Nil:
 		// a nil interface has no dynamic type — %T spells <nil>.
@@ -1561,12 +1571,12 @@ func scriptTypeString(x runtime.Value) string {
 			if td := stdlib.NilIfaceTyp(dv); td != nil {
 				return "*" + stdlib.TypedefSpelling(td)
 			}
-			return "*" + scriptTypeString(dv)
+			return "*" + typeStrOf(dv)
 		}
 		return "unsafe.Pointer"
 	case *runtime.GoValue:
 		if se, ok := t.V.(*hostbridge.ScriptError); ok {
-			return scriptTypeString(se.V)
+			return typeStrOf(se.V)
 		}
 		if stdjson.IsEncoder(t.V) {
 			return "*json.Encoder"
