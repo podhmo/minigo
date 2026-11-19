@@ -99,21 +99,32 @@ func TestFileBudgetsMatchRepo(t *testing.T) {
 
 // BannedCalls on the real repo: compile/ must never call
 // ImportRef.Materialize or Package.EnsureReady directly — package
-// queries go through the internal/source adapter (M2-4).
+// queries go through the internal/source adapter (M2-4) — and the
+// adapter itself must not reach package initialization (M2-2).
 func TestBannedCallsRealRepo(t *testing.T) {
 	root := filepath.Join("..", "..")
-	for dir, names := range archcheck.BannedCalls {
-		banned := map[string]bool{}
-		for _, n := range names {
-			banned[n] = true
-		}
-		reps, err := archcheck.BannedSelectors(root, []string{dir}, banned)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, r := range reps {
-			t.Errorf("%s:%d calls .%s, banned in %s/", r.File, r.Line, r.Name, dir)
-		}
+	vs, err := archcheck.CheckBannedCalls(root, archcheck.BannedCalls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff([]archcheck.Violation(nil), vs); diff != "" {
+		t.Error(diff)
+	}
+}
+
+// A source-side call into package initialization fires: the check the
+// CLI and this test share must catch `.EnsureReady` and friends.
+func TestCheckBannedCallsSourceInit(t *testing.T) {
+	dir := gentest.WriteFiles(t, map[string]string{
+		"go.mod":   "module example.com/m\n\ngo 1.26\n",
+		"src/s.go": "package src\n\ntype P struct{}\nfunc (P) EnsureReady() {}\nfunc (P) Load() {}\n\nvar p P\nvar _ = p.EnsureReady()\nvar _ = p.Load()\n",
+	})
+	vs, err := archcheck.CheckBannedCalls(dir, map[string][]string{"src": {"EnsureReady", "EnsureReadyRun"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vs) != 1 || vs[0].Pkg != "src" {
+		t.Fatalf("want 1 src violation, got %+v", vs)
 	}
 }
 
