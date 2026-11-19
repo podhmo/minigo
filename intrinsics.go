@@ -28,6 +28,7 @@ import (
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/stdlib"
 	stdcontext "github.com/podhmo/minigo/internal/stdlib/context"
+	stdio "github.com/podhmo/minigo/internal/stdlib/io"
 	stdtime "github.com/podhmo/minigo/internal/stdlib/time"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -480,33 +481,7 @@ func durOf(v any) time.Duration { return time.Duration(int64Of(v)) }
 // already sharing their backing (a host []byte inside a GoValue) need
 // no commit; read-only consumers keep using byteSlice.
 func borrowBytes(v runtime.Value) ([]byte, func()) {
-	u := v
-	for {
-		if n, ok := u.(*runtime.Named); ok {
-			u = n.V
-			continue
-		}
-		if dv, ok := runtime.Deref(u); ok {
-			u = dv
-			continue
-		}
-		break
-	}
-	switch x := u.(type) {
-	case *runtime.Slice:
-		bs := byteSlice(x)
-		return bs, func() {
-			for i := range bs {
-				x.Elems[i] = runtime.ByteValue(bs[i])
-			}
-		}
-	case *runtime.GoValue:
-		if bs, ok := x.V.([]byte); ok {
-			// shared backing — host writes are already visible
-			return bs, func() {}
-		}
-	}
-	return byteSlice(v), func() {}
+	return stdlib.BorrowBytes(v)
 }
 
 // unsafeElems resolves unsafe.String/Slice's (ptr, len) to the n
@@ -794,25 +769,6 @@ func walkCallback(v runtime.MemberCaller, cb runtime.Value, root, ap, p string, 
 	sp := scriptPathOf(root, ap, p)
 	r := hostbridge.CallOrPanic(v, cb, []runtime.Value{sp, entry, errVal(scriptPathErr(werr, root, ap))})
 	return hostbridge.HostErrOf(v, r)
-}
-
-// hostBoxOf unwraps a host struct value (`var sb strings.Builder`,
-// `&strings.Builder{}`), which rides as Named{HostNew typedef, GoValue},
-// to its GoValue box, so io helpers hand the real host value to the host
-// call instead of adapting it through the script-callback proxy — the
-// proxy converts every chunk to a script []byte and back.
-func hostBoxOf(orig, v any) any {
-	// a pointer converted to a script-defined type, (*MyB)(&sb), keeps
-	// that type's method set: its Write must not be bypassed.
-	if t, ok := orig.(*runtime.Named); ok && (t.Typ == nil || t.Typ.HostNew == nil) {
-		return v
-	}
-	if n, ok := v.(*runtime.Named); ok && n.Typ != nil && n.Typ.HostNew != nil {
-		if g, ok := n.V.(*runtime.GoValue); ok {
-			return g
-		}
-	}
-	return v
 }
 
 // derefTyp peels the pointer level off a value's typedef — json.Unmarshal
@@ -1183,3 +1139,45 @@ func deepNilish(v runtime.Value) bool {
 	}
 	return v == nil || v == runtime.NIL
 }
+
+// ioAdapters bundles the env hooks the moved io package needs
+// (P2-12): the declared method set and the fmt argument unwrap.
+func (h *hostHelpers) ioAdapters() *stdio.Adapters {
+	return &stdio.Adapters{
+		MethodSetOf: func(v any) map[string]bool {
+			set, _, _ := h.env.MethodSetOfValue(v)
+			return set
+		},
+		UnwrapArg: func(v any) any {
+			if fv, ok := v.(*fmtValue); ok {
+				return fv.x
+			}
+			return v
+		},
+	}
+}
+
+func (h *hostHelpers) asReaderVM(vc runtime.MemberCaller, v any) (io.Reader, error) {
+	return h.ioAdapters().AsReaderVM(vc, v)
+}
+
+func asWriterVM(vc runtime.MemberCaller, v any) (io.Writer, error) {
+	return defaultIOAdapters.AsWriterVM(vc, v)
+}
+
+func asWriter(v any) (io.Writer, error) {
+	return defaultIOAdapters.AsWriter(v)
+}
+
+func asReader(v any) (io.Reader, error) {
+	return stdio.AsReader(unwrapFmtArg(v))
+}
+
+func unwrapFmtArg(v any) any {
+	if fv, ok := v.(*fmtValue); ok {
+		return fv.x
+	}
+	return v
+}
+
+var defaultIOAdapters = &stdio.Adapters{UnwrapArg: unwrapFmtArg}
