@@ -9,12 +9,16 @@
 > - 詳細は [references/](./references/) に置いた。
 > - 計画の §8 の判断（K1〜K13）を覆す場合は、先に計画書を更新する。
 
+## To Be Implemented
+
+- [ ] **リアーキテクチャの監査で確認した残件を進める**。実装・検証・見送り項目の対応案は [follow-up.md](./follow-up.md) にまとめた。依存する変更は GitHub stacked PRs で下の PR から順に進める。
+
 ## M0 + P0: 振る舞いの固定とベースライン
 
 - [x] **M0-1 `pkg/locator` の `go env` をメモ化する**: `getGoRoot`/`getGoModCache`（locator.go:474, 484）がロケータの生成ごとにサブプロセスを起動しており、最小の `NewEngine` 実行のほとんどの時間を占めている。プロセス単位で `sync.OnceValues` にする。完了条件: `NewEngine` のベンチで差分を報告している。[references/baseline.md](./references/baseline.md)
 - [x] **M0-2 ベースラインを記録する**: `session_bench_test`、`genericbench_test`、`NewEngine`/`NewSession` 単体、realworld の `grafana-openapi` の実行時間と alloc を記録する。完了条件: 以降の PR が差分を報告できる表が [references/baseline.md](./references/baseline.md) にある。
 - [x] **M0-3 スパイクのカウンタを常設する**: コンパイル起因のビルド数、C1 違反（コンパイル中の初期化）、`chunkCellsEscape` 率を、テスト専用のフックかビルドタグで取れるようにする。完了条件: C1 違反が 0 であることを確かめるテストが CI にある。[references/spike-instrumentation.md](./references/spike-instrumentation.md)
-- [x] **M0-4 遅延性の振る舞いを pin する**: 型の問い合わせだけでは init が panic するパッケージの初期化が走らないこと、import 先の未使用分岐は初期化されないこと、を確かめる振る舞いテストを書く。完了条件: index と初期化の対象をパス単位で検証するテストがある（出力だけを見ない）。[references/ownership.md](./references/ownership.md)
+- [-] **M0-4 遅延性の振る舞いを pin する**: 型の問い合わせだけでは init が panic するパッケージの初期化が走らないこと、import 先の未使用分岐は初期化されないこと、を確かめる振る舞いテストを書く。完了条件: index と初期化の対象をパス単位で検証するテストがある（出力だけを見ない）。[references/ownership.md](./references/ownership.md) index と未実行分岐は pin 済み。型 member 参照での初期化が残る。 [follow-up.md](./follow-up.md)
 - [x] **M0-5 Session の分離と編集後の更新を pin する**: 2 つの Session でカウンタが独立に進むこと、ソースを編集したあと既存の Session は旧版のまま動き、新しい Session は新版を使うこと、を確かめる。完了条件: 現状の振る舞いを記述するテストがある（違いが既知の差分なら、その旨を明記する）。[references/ownership.md](./references/ownership.md)
 - [x] **M0-6 Quoted Go を pin する**: スタブパッケージがロードも実行もされないこと、別名 import、ローカルなシャドウイング、同じ綴りの別関数を正しく判別することを確かめる。完了条件: 該当する examples（convert-define）以外にもルートのテストがある。
 - [x] **M0-7 コンパイル時の事実に依存する 15 件を明示する**: スパイクで答えない oracle を使うと壊れた 15 件に、「compile-time fact」のラベル（コメントかテーブル）を付ける。完了条件: 一覧が [references/acceptance-set.md](./references/acceptance-set.md) とテスト側の両方にある。
@@ -25,7 +29,7 @@
 - [x] **M1-1 `sharedAssets` と `sessionState` に機械的に分割する**: Engine のフィールドを、ソース由来の共有物（resolver、FileSet、AST/index キャッシュ）と Session 状態（pkgs、binds、globals など）に分ける。完了条件: 公開 API と共有の規則が変わっていない。[references/ownership.md](./references/ownership.md)
 - [x] **M1-2 `internal/archcheck` と `internal/cmd/archcheck` を作る**: `go/parser` だけで import グラフを検査する。最初は現在のグラフを許可集合にして、ラチェットで締めていく。完了条件: CI で動き、負例（禁止された import を足す）で落ちる。[references/archcheck.md](./references/archcheck.md)
 - [x] **M1-3 共有資産のフィールド許可リスト**: 共有資産とそのキャッシュエントリのフィールド型を再帰的に検査し、実行状態（`*runtime.Cell`、`*runtime.Function` など）が入ったら落とす。完了条件: 負例と正例のテストがある。[references/archcheck.md](./references/archcheck.md)
-- [x] **M1-4 ファイルサイズのラチェット**: 生成ファイルでもテストでもない `.go` ファイルが記録済みのサイズを超えたら失敗させる。完了条件: 記録表があり、予算は縮む方向にしか変わらない。
+- [-] **M1-4 ファイルサイズのラチェット**: 生成ファイルでもテストでもない `.go` ファイルが記録済みのサイズを超えたら失敗させる。完了条件: 記録表があり、予算は縮む方向にしか変わらない。 サイズ表との照合は実装済み。ベース比での増額の検出が残る。 [follow-up.md](./follow-up.md)
 
 ## P1: ファイル分割（機械的。ロジックの変更はゼロ）
 
@@ -37,9 +41,9 @@
 ## M2: semantics の問い合わせ
 
 - [x] **M2-1 `internal/semantics` の骨格を作る**: `TypeRef`、`Policy`（`IndexedOnly`/`AllowIndex`）、`Result`（Found/Missing/Deferred/Failed）を置く。`runtime`、`vm`、`compile` は import しない（archcheck に規則を足す）。完了条件: 型宣言の問い合わせが 1 つ、4 種類すべての結果についてユニットテスト付きで動く。[references/semantics-api.md](./references/semantics-api.md)
-- [x] **M2-2 `internal/source` に Indexed ビューを用意する**: `semantics` から見えるのは `IndexedOnly`/`AllowIndex` のビューだけにし、初期化を呼べないようにする。`ImportRef.Materialize`（実際には index している）を、名前で段階が分かるアダプタで包む。完了条件: semantics から `EnsureReady` 系に到達できないことを archcheck が保証している。
+- [-] **M2-2 `internal/source` に Indexed ビューを用意する**: `semantics` から見えるのは `IndexedOnly`/`AllowIndex` のビューだけにし、初期化を呼べないようにする。`ImportRef.Materialize`（実際には index している）を、名前で段階が分かるアダプタで包む。完了条件: semantics から `EnsureReady` 系に到達できないことを archcheck が保証している。 Indexed ビューは実装済み。source アダプターの初期化禁止を検査に加える。 [follow-up.md](./follow-up.md)
 - [x] **M2-3 コンパイラの 8 箇所をヒントと事実に仕分ける**: 仕分けの草案は [references/fact-sites.md](./references/fact-sites.md) にある。`DisplayName` 経由で到達する `runtime/typedef.go` の呼び出しも含める。完了条件: 各箇所にヒントか事実かを書いたコメントとテーブルがある。
-- [x] **M2-4 8 箇所をコンパイラ用アダプタ経由にする**: nil/false で表していた「不明」を `Result` に置き換える。Deferred になった事実は、当面は今と同じく `AllowIndex` で即時に答える（振る舞いは変えない）。完了条件: `compile/` から `ImportRef.Materialize()` を直接呼んでいる箇所が 0 になり、archcheck がそれを禁止している。
+- [-] **M2-4 8 箇所をコンパイラ用アダプタ経由にする**: nil/false で表していた「不明」を `Result` に置き換える。Deferred になった事実は、当面は今と同じく `AllowIndex` で即時に答える（振る舞いは変えない）。完了条件: `compile/` から `ImportRef.Materialize()` を直接呼んでいる箇所が 0 になり、archcheck がそれを禁止している。 直接 Materialize を禁止するテストは実装済み。Deferred を型分類まで伝える経路を残件とする。 [follow-up.md](./follow-up.md)
 
 ## M3: 実行時チェック
 
@@ -54,12 +58,12 @@
   - [x] メソッド別の原子 capability（`ValTyper`/`Converter`/`Equaler`/`ElemZeroer`/`ArraySizer`/`MapKeyer`/`NewMapper`/`Copier`）と合成型を追加し、中間層の受け渡し関数を絞った。`fmtValue.c`/`scriptLocker.vc` フィールドも `MemberCaller` 化。
   - [x] **P2-2a 組み込み関数と反復の helper**: `SeqSource.Each`/`Collect` を `ScriptCaller` に絞り、それに乗る `driveSeq`/`seqElems`/`collectSeq` と、`scanReader`/`asWriterVM`/`sliceExtreme`/`encode`/`hostErrArg`/`rewriteTypeVerbs`/`scriptWriter`/`scriptSortable` を最小 capability へ。`scriptYield` だけは `DirectYield` の `Fn` が `VMCaller` を要求するため据え置き。process 束縛系（`watchCtxDone`/`newChanFeed`）は P2-2b、marshal 系（`toReflectValue` 系）は P2-7 へ送る。
   - [x] **P2-2b host コールバックの helper**: `scriptIface.vc` とその利用側（`scriptFSFor`/`scriptFileFor`/`dirEntriesOf`/`adaptIface`/`errOut`/`hostErr`/`rewriteTypeVerbs` 系）を `MemberCaller` に、観測専用の引数（`vmOf`/`procOf`/`procDoneOf`/`NoteExternalWait`/`RegisterWakeChan`/`SetWakeChanDead`/`WakeChanState`/`ParkedChan*`/`vcPark`/`watchCtxDone`/`newChanFeed`/`chanFeed.vc`）を `CallerRef` に絞った。member-only の callback anchor 用に `callbackMemberContext` を追加。`bindCaller` と `callbackContext` 自身は VM 境界（`toReflectValue`/`CallCatching`/`c.Fn`）が `VMCaller` を要求するので据え置き。process 束縛・再入・解放後呼び出しは `vm/processcaller_test.go`/`procrace_test.go` の既存テストで固定済み。
-- [x] **P2-3 使っていない `VMCaller` 引数を削る**: 対象は 96 関数。完了条件: スキャナ（[references/vmcaller.md](./references/vmcaller.md)）の「未使用」が 0 になる。
+- [-] **P2-3 使っていない `VMCaller` 引数を削る**: 対象は 96 関数。完了条件: スキャナ（[references/vmcaller.md](./references/vmcaller.md)）の「未使用」が 0 になる。 既存スキャナで未使用候補が残る。名前が参照されている箇所と真に未使用の引数を再確認する。 [follow-up.md](./follow-up.md)
 - [x] **P2-4 `vmOf` のダウンキャストをなくす**: 7 箇所を capability のメソッドに置き換える。
 - [x] **P2-5 `internal/process` を抽出する**: goroutine、park/wake、デッドロック検出を移す。ループとのやり取りは `spawn`/`park`/`unpark` だけにする。完了条件: `make test-race` と `make concurrency-stress` が通る。
 - [-] **P2-6 `special` を公開パッケージとして切り出す**: `SymbolID`、`QuotedCall`、`SpecialFunc`、`SpecialContext` を移し、`runtime` には型エイリアスを残す（I7）。レジストリと VM 側の context 実装は `internal/execution` に移す。完了条件: examples が無修正でコンパイルできる。
   - [x] `SymbolID` / `QuotedCall` → `special/` パッケージへ移動、`runtime` にエイリアス（PR #1141）
-  - [x] `SpecialFunc` / `SpecialContext` は `runtime.Value`/`Package`/`TypeDef` 参照のため移すと import cycle — `runtime` に残置。registry・context 実装の `internal/execution` 移行は P2-14 に含める（P2-14d で registry は `execution.Registry` へ抽出済み、context は vm 残留と決定）
+  - [x] `SpecialFunc` / `SpecialContext` は `runtime.Value`/`Package`/`TypeDef` 参照のため移すと import cycle — `runtime` に残置。registry・context 実装の `internal/execution` 移行は P2-14 に含める（P2-14d で registry は `execution.Registry` へ抽出済み、context は vm 残留と決定）。公開型の配置と残す互換経路の [対応案](./follow-up.md#部分完了見送り項目の扱い) を追跡する。
 - [-] **P2-7 `internal/hostbridge` を抽出する**: `goValueOf`、`toReflectValueDepth`、`hostMarshal`、`adaptFunc`、`hostArgAs`、opaque store、host↔script の変換層（`hostErrTwins`、`goNative`、プロキシのボックス）を移す。完了条件: archcheck が `vm/` での `reflect` を禁止している。
   - [x] opaque コンテナの引数パッキング（`OpaqueStoreArg`/`opaqueStoreKey`/`opaqueStoreValue`/`namedStoreValue`/`OpaqueKeyPosition`/`NamedLoadValue`）を `internal/hostbridge` へ（PR #1142）
   - [x] **P2-7a host 値との基本変換**: `goValueOf`/`goSlotValueOf`（host→script）と `goNative`/`goNativeWalk`（script→host の any 化）を `internal/hostbridge` へ。`HostNil`/`HostNilType`/`HostNilPtrType`/`HostNilPtrTypedef` の型付き nil 機構、`hostPkgElemTypedef`/`anonExprOf`/`anonSliceTyp*`/`anonMapTypX`/`anonArrayTypX` の typedef 生成、`structOrigs`/`StructOrig`（書き込みは `RecordStructOrig`）、`float32Tag`/`complex64Tag`/`complex64Value`/`mustNativeConst` のスカラー幅 helper も同じ層へ。名前付きスカラー・型付き nil・共有コンテナの挙動は既存テストで固定済み。
@@ -81,14 +85,14 @@
   - [x] 遅延構築の仕組み（`bind.Pending` + installbound.go の入口、`templateFuncMap` のセッション化、ベンチ差分 0.47ms→10µs）: PR #1147
   - [x] **P2-12a 初回 install と明示 Bind の登録順を固定する**: `html` の既定テーブルの初回構築中に、同じパスへ明示 `Bind` が完了しても、既定テーブルで上書きされる。公開時に明示登録を優先し、`WithHostPolicy` で順序を固定した並行テストで `BoundSymbols` と通常の import が明示テーブルを返すことを確かめる。 [登録処理](https://github.com/podhmo/minigo/blob/9918230e/installbound.go#L53-L65)
   - [x] **P2-12b 依存の少ない stdlib installer を移す**: P2-9a のあとの最初の対象を `html` や `unicode/utf8` とし、`internal/stdlib/<path>` の `Install` から登録する。生成テーブルの再生成、初回構築、bound/source の結果を確認する。
-  - [x] **P2-12c 状態を持つ stdlib installer を移す**: P2-12a/b のあと、`bind.Env` を介して `time`・`context`、`text/template`・`html/template` など依存が近いパッケージを一組ずつ移す。間接の `time.Time`、Session ごとの `FuncMap`、source 優先設定を保ち、Session 生成と初回利用のベンチ差分を記録する。
-- [x] **P2-13 純粋なシグネチャの bind を生成する**: 約半分のエントリを `gen-intrinsics` で生成し、`// Code generated` ヘッダ付きでチェックインする。完了条件: 生成したパッケージに、source 解釈版との parity テストがある。[references/stdlib-lazy.md](./references/stdlib-lazy.md) — `internal/cmd/genbind` が index の Funcs/Vars/Consts/Types から `<camel>GenEntries()` を生成（`wrapBind` 経由）。12 パッケージ・約 500 エントリを生成済み。環境依存の filepath 系・値コンストラクタ型・コールバック系は手書きのまま installX がマージする。parity テストは `genbind_parity_test.go`（構造: 全 export をカバー / 振る舞い: bound vs source の呼び出し結果一致）
+  - [-] **P2-12c 状態を持つ stdlib installer を移す**: P2-12a/b のあと、`bind.Env` を介して `time`・`context`、`text/template`・`html/template` など依存が近いパッケージを一組ずつ移す。間接の `time.Time`、Session ごとの `FuncMap`、source 優先設定を保ち、Session 生成と初回利用のベンチ差分を記録する。 installer の移設は実装済み。初回利用単体の計測が残る。 [follow-up.md](./follow-up.md)
+- [-] **P2-13 純粋なシグネチャの bind を生成する**: 約半分のエントリを `gen-intrinsics` で生成し、`// Code generated` ヘッダ付きでチェックインする。完了条件: 生成したパッケージに、source 解釈版との parity テストがある。[references/stdlib-lazy.md](./references/stdlib-lazy.md) — `internal/cmd/genbind` が index の Funcs/Vars/Consts/Types から `<camel>GenEntries()` を生成（`wrapBind` 経由）。12 パッケージ・約 500 エントリを生成済み。環境依存の filepath 系・値コンストラクタ型・コールバック系は手書きのまま installX がマージする。parity テストは `genbind_parity_test.go`（構造: 全 export をカバー / 振る舞い: bound vs source の呼び出し結果一致） 構造比較は実装済み。4 パッケージの bound/source 呼び出し比較が残る。 [follow-up.md](./follow-up.md)
 - [-] **P2-14 `internal/execution` と `internal/source` を抽出する**: ライフサイクルの状態機械を `runtime/package.go` と `minigo.go` から移す。`embed.go`、`parse.go`、`parsecache.go` は `internal/source` へ移す。完了条件: root と `vm.go` がそれぞれ約 3,000 行を下回る。
   - [x] `parse.go`/`parsecache.go`/`embed.go` を `internal/source` へ（`ParseCache`/`IndexCache` + `ParsePackageFiles` + `EmbedBuiltin`/`EmbedEnv`）（PR #1149）
   - [x] **P2-14a root の完了条件を明確にする**: 実測: `minigo.go` 単体 1,489 行、root 直下の非テスト・非生成 Go の合計 19,338 行（archcheck の計測、`vm.go` は 883 行）。計画書の約 3,000 行は root パッケージ合計と解釈する（`minigo.go` 単体は達成済みのため）。残すファサードの責務: 公開 API（`Engine`/`NewEngine`/`Run`/`Call`/`Bind`/`NewSession`/`With*` オプション）とセッション状態の保持、内部実装は `internal/*` 側へ。
   - [x] **P2-14b index 完了の公開と待機を抽出する**: `buildPackage` と `indexFiles` の完了通知を抽出し、`runtime.Package` に互換の入口を残す。並行した初回ロード、strict/lenient の分離、パース・index 失敗後の待機解除と既存診断をテストする。→ `execution.IndexGate`（`internal/execution`）に抽出、`Package.MarkIndexed`/`FinishIndexing`/`WaitIndexed`/`IndexReady` が互換の窓口（#1155） — 完了
   - [x] **P2-14c 初期化の状態遷移と runner を抽出する**: P2-14b のあとに `EnsureReady` / `EnsureReadyRun` が使う状態遷移・初期化処理を抽出する。一度だけの初期化、エラーと panic 後の状態、実行中の process に所属する初期化をテストする。→ `execution.Init` に一度だけの実行+panic→error 記録を抽出（#1156）
-  - [-] **P2-14d 特殊形式の registry と context を抽出する**: registry は `execution.Registry[K,V]` に抽出済み（PR TBD）。context 実装（`vm/special.go` の `specialCtx`）は `*VM`/`*frame` 参照のため `internal/execution` へは移せない（execution は runtime を import できず、vm は外側）— vm 残留が正しい配置と判断。
+  - [-] **P2-14d 特殊形式の registry と context を抽出する**: registry は `execution.Registry[K,V]` に抽出済み（PR TBD）。context 実装（`vm/special.go` の `specialCtx`）は `*VM`/`*frame` 参照のため `internal/execution` へは移せない（execution は runtime を import できず、vm は外側）— vm 残留が正しい配置と判断。計画 K8 への反映と互換テストを残件とする。
   - [x] **P2-14e Session 所有権チェックの入口をそろえる**: 決定 — 外部から `*runtime.Package` を受けて自エンジンの実行で init/評価する入口は `Call` と `EvalExpr` の2つ。両方で `Owner != nil && Owner != e` を拒否。対象は source-built パッケージのみ（`buildPackage` が Owner=e を付与）で、host bind は Owner なしのまま Session 間共有を許す。`EvalExpr` にチェックを追加し、外国パッケージ拒否・bound 共有の2テストを追加（PR TBD）
 
 ## M4 + P3: 型情報の統合
@@ -108,25 +112,25 @@
   - [x] **M4-3c host typedef の入口を切り替える**: `hostTypedefOf` / `hostPkgElemTypedef`、`HostTypeOf` / bind 側を入口ごとに移す。source・bind 間の twin、型付き nil と型の表示を各差分で確認する。
   - [x] **M4-3d インスタンス化の typedef を切り替える**: M4-3b の表へコピーを集約する。型引数が異なる型、別宣言の同名型、別 Session の分離を確認する。
 - [x] **M4-4 host twin 系の helper を消す（1 つにつき 1 PR）**: 対象は `hostTwinIs`、`hostNilTwin`、`sameSpelledTwin`、`HostNamedIs`/`HostTwinOf`、`sourceTwinOf`。完了条件: 各 PR が pin 済みのリグレッションケースで裏付けられている。→ `HostNamedIs`/`HostTwinOf` を除く 4 つは除去済み（PR #1170〜#1172）。残りの2つは intern 表で一意化できない typedef への fallback として残留が正しいと判断（docs/open-questions.md、二段階の capability 注入は複雑化のため不採用）。除去は intern 拡張後の別タスクとした
-- [ ] **intern 表を拡張して `HostNamedIs`/`HostTwinOf` を除去する**: intern 表が一意化できない typedef（host-minted の name-only tag、無名ポインタ、HostScalar box）への fallback として `HostNamedIs`/`HostTwinOf` が残っている（runtime/value.go）。intern 表の coverage を広げたあと、minigo.go:491・vm/assert.go:1291・runtime/value.go:292・builtin/builtins.go:909・internal/hostbridge の各呼び出し点を移し替えて両 helper を消す。
-- [x] **M4-5 代入可能性と変換可能性を semantics に移す**: `tdShapeEq`、`underlyingShape`/`convShapeEq`、`structFieldsEq` を、`AssignableTo`/`ConvertibleTo`/`Identical` として移す（消すのではない）。`peelAlias` は `TypeOf` の解決に含める。
-  - [x] **M4-5a 同一性とエイリアス**: `Identical` と `TypeOf` の alias 解決を先に導入する。定義型・エイリアス、構造体のタグ、パッケージ固有名の比較を固定する。
-  - [x] **M4-5b 代入可能性**: M4-5a の結果を使って `AssignableTo` を移す。型なし定数、named/unnamed の組み合わせ、インタフェース充足を既存挙動と照合する。
-  - [x] **M4-5c 変換可能性**: `ConvertibleTo` を移し、構造・タグや数値など、代入の規則と結果が異なるケースを分けて検証する。
-- [x] **M4-6 ジェネリクス推論を分割する**: TypeID の上での単一化は `semantics` に、引数の値から TypeID への対応づけは実行側のアダプタに置く。インスタンスキャッシュのキーは `(関数宣言, []TypeID)` にする。完了条件: 「per-call key spelling」の TODO が解消する。
-  - [x] **M4-6a TypeID 上の単一化**: M4-3 のキーを使い、値の取り出しを実行側アダプタに残して推論を移す。制約、部分指定、推論不能の診断を固定する。
-  - [x] **M4-6b インスタンスキャッシュのキー**: M4-6a のあとに `(関数宣言, []TypeID)` へ切り替える。正しいキャッシュ再利用と衝突がないことを確認し、既存のジェネリクスベンチで差分を記録する。
-- [x] **M4-7 遅延された事実を実装する**: M2-3 で事実と仕分けた問いについて、Deferred のときは `CallSite` に `TypeRef` を持たせ、VM が最初の実行時に `AllowIndex` で解決する。Missing と Failed は `TRAP` にする。完了条件: 15 件の受け入れセットが、強制的に Deferred にしても通る。[references/acceptance-set.md](./references/acceptance-set.md)
+- [ ] **intern 表を拡張して `HostNamedIs`/`HostTwinOf` を除去する**: intern 表が一意化できない typedef（host-minted の name-only tag、無名ポインタ、HostScalar box）への fallback として `HostNamedIs`/`HostTwinOf` が残っている（runtime/value.go）。intern 表の対象を広げるとともに、正規化が intern 前に使う宣言検索（`Engine.hostTwin`）の置き換えを設計する。VM・runtime・builtin・hostbridge の利用側を移し、名前付きスカラーと無名ポインタの既存ケースを固定する。[対応案](./follow-up.md)
+- [-] **M4-5 代入可能性と変換可能性を semantics に移す**: `tdShapeEq`、`underlyingShape`/`convShapeEq`、`structFieldsEq` を、`AssignableTo`/`ConvertibleTo`/`Identical` として移す（消すのではない）。`peelAlias` は `TypeOf` の解決に含める。 判定の VM からの抽出は実装済み。semantics への移設または配置の決定が残る。 [follow-up.md](./follow-up.md)
+  - [-] **M4-5a 同一性とエイリアス**: `Identical` と `TypeOf` の alias 解決を先に導入する。定義型・エイリアス、構造体のタグ、パッケージ固有名の比較を固定する。
+  - [-] **M4-5b 代入可能性**: M4-5a の結果を使って `AssignableTo` を移す。型なし定数、named/unnamed の組み合わせ、インタフェース充足を既存挙動と照合する。
+  - [-] **M4-5c 変換可能性**: `ConvertibleTo` を移し、構造・タグや数値など、代入の規則と結果が異なるケースを分けて検証する。
+- [-] **M4-6 ジェネリクス推論を分割する**: TypeID の上での単一化は `semantics` に、引数の値から TypeID への対応づけは実行側のアダプタに置く。インスタンスキャッシュのキーは `(関数宣言, []TypeID)` にする。完了条件: 「per-call key spelling」の TODO が解消する。 推論・明示インスタンスの TypeID キーは実装済み。単一化の配置と chunk キャッシュの移行が残る。 [follow-up.md](./follow-up.md)
+  - [-] **M4-6a TypeID 上の単一化**: M4-3 のキーを使い、値の取り出しを実行側アダプタに残して推論を移す。制約、部分指定、推論不能の診断を固定する。
+  - [-] **M4-6b インスタンスキャッシュのキー**: M4-6a のあとに `(関数宣言, []TypeID)` へ切り替える。正しいキャッシュ再利用と衝突がないことを確認し、既存のジェネリクスベンチで差分を記録する。
+- [-] **M4-7 遅延された事実を実装する**: M2-3 で事実と仕分けた問いについて、Deferred のときは `CallSite` に `TypeRef` を持たせ、VM が最初の実行時に `AllowIndex` で解決する。Missing と Failed は `TRAP` にする。完了条件: 15 件の受け入れセットが、強制的に Deferred にしても通る。[references/acceptance-set.md](./references/acceptance-set.md) 受け入れテストは実装済み。合成型分類で Val を残す強制 Deferred の例外を見直す。 [follow-up.md](./follow-up.md)
   - [x] **M4-7a 遅延参照を保持・解決する経路**: `CallSite` に必要な `TypeRef` とソース位置だけを載せる。VM での初回解決、Missing/Failed の `TRAP`、未実行分岐で解決が走らないことを固定する。既存の引数バッファ等の移行は P4-4 で扱う。
-  - [x] **M4-7b import 名・型宣言・複合リテラル**: M4-7a を使い、`assign_pkgname_differs`、`litkey_named_peel`、`src_pkgtype_maplit_keys`、`TestSelMemberSyntheticTypeEntry` を強制 Deferred で通す。
+  - [-] **M4-7b import 名・型宣言・複合リテラル**: M4-7a を使い、`assign_pkgname_differs`、`litkey_named_peel`、`src_pkgtype_maplit_keys`、`TestSelMemberSyntheticTypeEntry` を強制 Deferred で通す。
   - [x] **M4-7c 定数の有無・型・シフト**: `isConstExprDepth`、`certainlyNonConstDepth` と修飾定数の判定を移す。`shift_const_count`、`gate_qualconst`、`gate_qualconstbind` を強制 Deferred で通す。
   - [x] **M4-7d 比較・変換・nil 判定と診断**: 残る selector 経路と診断用の package 名を移し、`TestNetHTTPRoundtrip`、残りの `gate_qual*`、`selconv_typearg`、`selnilable_trap` を固定する。全 15 件で通常・強制 Deferred の出力または `TRAP` 文言を照合する。
-- [x] **M4-8 `WithStrictLazyCompile` を入れて CI で回す**: `IndexedOnly` で、すべての事実を Deferred にしてコンパイルするモード。完了条件: conformance スイートの結果がこのモードでも同一である。
-  - [x] **M4-8a strict モードとロード順の比較**: M4-7 の全ケースが通ってから `WithStrictLazyCompile` を導入する。未 index と事前 index の両条件で結果を比較し、C1 の計測でコンパイル時初期化がゼロであることを確かめる。
-  - [x] **M4-8b CI の conformance ジョブ**: M4-8a を通常モードと併走させる。15 件の受け入れセットに加え、既存 conformance の出力と `TRAP` の同値性を確認する。
-- [x] **M4-9 `staticOpTyp` 系の裏ルートを置き換える**: `staticOpTyp`/`callOpTyp`/`opTyp`/`stampVarTyps`/`OpLocalTyp`/`OpGlobalTyp`/`statics` を、chunk に格納するヒントと事実に置き換える。
+- [-] **M4-8 `WithStrictLazyCompile` を入れて CI で回す**: `IndexedOnly` で、すべての事実を Deferred にしてコンパイルするモード。完了条件: conformance スイートの結果がこのモードでも同一である。 strict モードと CI は導入済み。同値性の検証と既知差分 3 件が残る。 [follow-up.md](./follow-up.md)
+  - [-] **M4-8a strict モードとロード順の比較**: M4-7 の全ケースが通ってから `WithStrictLazyCompile` を導入する。未 index と事前 index の各条件で別々に初回コンパイルし、結果を比較する。C1 の計測でコンパイル時初期化がゼロであることを確かめる。
+  - [-] **M4-8b CI の conformance ジョブ**: M4-8a を通常モードと併走させる。15 件の受け入れセットに加え、既存 conformance の出力と `TRAP` の同値性を確認する。
+- [-] **M4-9 `staticOpTyp` 系の裏ルートを置き換える**: `staticOpTyp`/`callOpTyp`/`opTyp`/`stampVarTyps`/`OpLocalTyp`/`OpGlobalTyp`/`statics` を、chunk に格納するヒントと事実に置き換える。 束縛・型解決は一部移行済み。select 受信と旧命令を維持する設計の反映が残る。 [follow-up.md](./follow-up.md)
   - [x] **M4-9a 既存の静的情報を仕分ける**: `staticOpTyp` / `callOpTyp` / `opTyp` の利用側を列挙し、変換・推論・診断で事実を必要とするケースを固定する。[references/static-typ-sites.md](./references/static-typ-sites.md)
-  - [x] **M4-9b chunk への格納と旧経路の削除**: M4-7/8 のあと、`stampVarTyps`、`OpLocalTyp`、`OpGlobalTyp`、`statics` を利用側ごとに置き換える。各差分で通常・strict のテストと bytecode golden を照合する。
+  - [-] **M4-9b chunk への格納と旧経路の削除**: M4-7/8 のあと、`stampVarTyps`、`OpLocalTyp`、`OpGlobalTyp`、`statics` を利用側ごとに置き換える。各差分で通常・strict のテストと bytecode golden を照合する。
 
 ## M5: PackageImage と PackageInstance
 
@@ -145,23 +149,23 @@
 
 ## P4: VM の形
 
-- [x] **P4-1 bytecode verifier と `MaxStack`**: スタック効果、ジャンプ先、スロット種別を検査する。テスト時とデバッグオプション指定時に走らせる。
+- [-] **P4-1 bytecode verifier と `MaxStack`**: スタック効果、ジャンプ先、スロット種別を検査する。テスト時とデバッグオプション指定時に走らせる。 verifier と MaxStack は実装済み。デバッグ指定時に検証を迂回する生成経路が残る。 [follow-up.md](./follow-up.md)
   - [x] **P4-1a 命令と制御フローの検証**: スタック効果、分岐先、マージ地点の深さを検証し `MaxStack` を計算する。既存 golden と、不正な分岐・スタック不足の負例を使う。
-  - [x] **P4-1b スロット種別と検証の入口**: P4-1a にスロット種別の検査を足し、テストとデバッグオプションから有効にする。正常な chunk の結果と診断が保たれることを確認する。
+  - [-] **P4-1b スロット種別と検証の入口**: P4-1a にスロット種別の検査を足し、テストとデバッグオプションから有効にする。正常な chunk の結果と診断が保たれることを確認する。
 - [x] **P4-2 スロット分類**: ストア、selector の読み出し、レシーバを分類の対象にする。Plain なローカルでは `OpNewLocal`/`OpRenewVar` がその場に書き込む。特殊形式の呼び出し地点から見えるローカルは Boxed にする。完了条件: escape する chunk が約 10% になる。[references/slot-classification.md](./references/slot-classification.md)
   - [x] **P4-2a 分類を記録する**: ストア、読み出し、アドレス取得、捕捉、メソッドのレシーバ、特殊形式からの参照を分類して計測する。M4 の事実を使い、レシーバが不明な場合は保守的に Boxed とする。
   - [x] **P4-2b Plain ローカルの初期化と書き込み**: P4-2a と P4-1 のあと、`OpNewLocal` / `OpRenewVar` を Plain スロットの直接書き込みに切り替える。ループ変数・多重代入・名前付き戻り値を確認する。
   - [x] **P4-2c selector・レシーバと特殊形式**: P4-2b のあと、値の読み出しとアドレスが必要な経路を分ける。ポインタレシーバ、closure、Quoted Go が参照するローカルの同一性を確認し、escape 率を同じケース集合で測る。
-- [x] **P4-3 goroutine ごとの連続スタック**: frame を `(base, sp)` の窓にし、引数はその場で渡す。
+- [-] **P4-3 goroutine ごとの連続スタック**: frame を `(base, sp)` の窓にし、引数はその場で渡す。 frame の窓と通常呼び出しのその場渡しは実装済み。その他の引数経路の扱いを明記する。 [follow-up.md](./follow-up.md)
   - [x] **P4-3a frame を連続スタックの窓にする**: P4-1/2 のあと、goroutine ごとに `(base, sp)` を使う。ネストした呼び出し、スタックの拡張、panic/recover 前後の値をテストする。
-  - [x] **P4-3b 引数をスタック上で受け渡す**: P4-3a のあと、通常呼び出しから切り替える。可変長引数、defer、host callback を個別に移し、既存の結果と割り当て数を測る。
-- [x] **P4-4 `CallSite` 記述子**: 引数のヒント、spread の型、quote インデックス、遅延された事実、ソース位置をまとめる。完了条件: `frame.argbuf/statbuf` と `deferredCall.statics/spreadTd` が消えている。
+  - [-] **P4-3b 引数をスタック上で受け渡す**: P4-3a のあと、通常呼び出しから切り替える。可変長引数、defer、host callback を個別に移し、既存の結果と割り当て数を測る。
+- [-] **P4-4 `CallSite` 記述子**: 引数のヒント、spread の型、quote インデックス、遅延された事実、ソース位置をまとめる。完了条件: `frame.argbuf/statbuf` と `deferredCall.statics/spreadTd` が消えている。 CallSite と frame バッファ撤去は実装済み。defer が保持する実行時型情報の完了条件を整理する。 [follow-up.md](./follow-up.md)
   - [x] **P4-4a 通常呼び出しの引数メタデータ**: M4-7a の `CallSite` に引数のヒント、spread の型、quote インデックスを載せる。通常・可変長・特殊形式で結果が一致することを確認する。
-  - [x] **P4-4b defer とバッファの撤去**: P4-4a のあと、defer が同じ記述子を使うようにする。評価順、spread、panic 経由の呼び出しをテストし、既存のバッファと重複フィールドを削除する。
+  - [-] **P4-4b defer とバッファの撤去**: P4-4a のあと、defer が同じ記述子を使うようにする。評価順、spread、panic 経由の呼び出しをテストし、既存のバッファと重複フィールドを削除する。
 - [x] **P4-5 インラインキャッシュ**: `OpGlobal`（`Env` epoch でガード）と `OpSelect`（`TypeID → パス`）にキャッシュを置く。Chunk は Session ごとのままにする。完了条件: `make test-race` と `make concurrency-stress` が通る。
   - [x] **P4-5a OpGlobal のキャッシュ**: `Env` epoch で再束縛時に無効化する。別 Session や同一 Session 内の goroutine で値が混ざらないことを確認し、ベンチ差分を記録する。
   - [x] **P4-5b OpSelect のキャッシュ**: M4-1d と M4-3 のあと、`TypeID` ごとの `FieldPath` を使う。同じサイトに異なるレシーバ型が来る場合と、並行アクセスをテストする。
-- [x] **P4-6 `OpEvalAST` を `OpEvalFragment` に改名する**: REPL/`EvalExpr` のブリッジとしてだけ残す。独立した PR で命令名・逆アセンブル出力・golden を更新し、REPL と `EvalExpr` の挙動を確認する。
+- [-] **P4-6 `OpEvalAST` を `OpEvalFragment` に改名する**: REPL/`EvalExpr` のブリッジとしてだけ残す。独立した PR で命令名・逆アセンブル出力・golden を更新し、REPL と `EvalExpr` の挙動を確認する。 改名は実装済み。通常のコンパイルで発行される用途が残る。 [follow-up.md](./follow-up.md)
 
 ## M6（任意・判断ゲート付き）
 
