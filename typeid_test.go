@@ -663,15 +663,49 @@ func TestTypeIDHostMintKeysCanonically(t *testing.T) {
 	// name-only mint with the reflected identity attached (vm's
 	// hostTypedefOf path) keys the same way.
 	named := &runtime.TypeDef{Name: "fs.FileMode", HostIdent: reflect.TypeOf(fs.FileMode(0))}
-	if got := e.typeIDOf(named); got != want {
-		t.Errorf("name-only mint keys %q, want %q", got, want)
+	if diff := cmp.Diff(want, e.typeIDOf(named)); diff != "" {
+		t.Errorf("name-only mint key mismatch (-want +got):%s", diff)
 	}
 
 	// minted pointer-carrier typedef (vm's hostTypedefOfNew path: HostNew
 	// returns *fs.FileMode) keys on the element's package path, not the
 	// package-name fragment of td.Name.
 	mint := &runtime.TypeDef{Name: "fs.FileMode", Kind: runtime.KindNamedBasic, HostNew: newMode}
-	if got := e.typeIDOf(mint); got != want {
-		t.Errorf("pointer-carrier mint keys %q, want %q", got, want)
+	if diff := cmp.Diff(want, e.typeIDOf(mint)); diff != "" {
+		t.Errorf("pointer-carrier mint key mismatch (-want +got):%s", diff)
+	}
+}
+
+// a name-only tag interned before the carrier-bearing mint must not
+// stay canonical: the stored descriptor gains the box, or every later
+// lookup of the identity loses the host methods.
+func TestTypeIDInternUpgradesNameOnlyTag(t *testing.T) {
+	e := NewEngine(".")
+	newMode := func() any { m := fs.FileMode(0); return &m }
+
+	// the tag hostbridge mints for an interface element's zero —
+	// name and HostIdent, deliberately no carrier.
+	tag := &runtime.TypeDef{Name: "fs.FileMode", Kind: runtime.KindNamedBasic,
+		HostIdent: reflect.TypeOf(fs.FileMode(0))}
+	got := e.internTypedef(tag)
+	if got.HostNew != nil {
+		t.Fatalf("first intern should keep the tag td (no carrier)")
+	}
+
+	// the carrier mint arrives later under the same key: canonical is a
+	// twin wearing the box, not the bare tag.
+	mint := &runtime.TypeDef{Name: "fs.FileMode", Kind: runtime.KindNamedBasic, HostNew: newMode}
+	canon := e.internTypedef(mint)
+	if canon.HostNew == nil {
+		t.Fatalf("canonical typedef lost the carrier: %+v", canon)
+	}
+	if diff := cmp.Diff("fs.FileMode", canon.Name); diff != "" {
+		t.Errorf("canonical name mismatch (-want +got):%s", diff)
+	}
+	// and a third lookup returns the upgraded descriptor.
+	tag2 := &runtime.TypeDef{Name: "fs.FileMode", Kind: runtime.KindNamedBasic,
+		HostIdent: reflect.TypeOf(fs.FileMode(0))}
+	if e.internTypedef(tag2) != canon {
+		t.Errorf("re-intern did not return the upgraded canonical")
 	}
 }
