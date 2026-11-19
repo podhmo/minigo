@@ -9,7 +9,7 @@ import (
 )
 
 func (e *Engine) installErrors(h *hostHelpers) {
-	e.Bind("errors", map[string]runtime.Value{
+	e.bindBound("errors", map[string]runtime.Value{
 		"New": h.fn("errors.New", func(a []any) (any, error) { return errors.New(str(a[0])), nil }, errors.New),
 		// sentinel vars ride GoValue boxes so `err == errors.ErrUnsupported`
 		// and errors.Is against the chain see the real objects.

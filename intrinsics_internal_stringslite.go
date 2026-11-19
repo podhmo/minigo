@@ -7,7 +7,7 @@ import (
 )
 
 func (e *Engine) installInternalStringslite(h *hostHelpers) {
-	e.Bind("internal/stringslite", map[string]runtime.Value{
+	e.bindBound("internal/stringslite", map[string]runtime.Value{
 		"HasPrefix": h.fn2("stringslite.HasPrefix", func(a []any) (any, error) { return strings.HasPrefix(str(a[0]), str(a[1])), nil }),
 		"HasSuffix": h.fn2("stringslite.HasSuffix", func(a []any) (any, error) { return strings.HasSuffix(str(a[0]), str(a[1])), nil }),
 		"IndexByte": h.fn2("stringslite.IndexByte", func(a []any) (any, error) { return int(strings.IndexByte(str(a[0]), byte(int64Of(a[1])))), nil }),

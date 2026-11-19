@@ -306,7 +306,7 @@ func (e *Engine) installOs(h *hostHelpers) {
 		ospkg["UserConfigDir"] = h.fn("os.UserConfigDir", func(a []any) (any, error) { return retErr2(os.UserConfigDir()) })
 	}
 
-	e.Bind("os", ospkg)
+	e.bindBound("os", ospkg)
 }
 
 // fsOp2 applies a one-path os operation after resolving the script path

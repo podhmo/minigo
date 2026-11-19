@@ -20,7 +20,7 @@ func (e *Engine) installSyncAtomic(h *hostHelpers) {
 	// the pointer-taking functions operate on script cells through
 	// Deref/SetRef — atomic in intent, since a script &x has no host
 	// address to hand the real runtime.
-	e.Bind("sync/atomic", map[string]runtime.Value{
+	e.bindBound("sync/atomic", map[string]runtime.Value{
 		"Bool":    hostType("sync/atomic.Bool", func() any { return &atomic.Bool{} }),
 		"Int32":   hostType("sync/atomic.Int32", func() any { return &atomic.Int32{} }),
 		"Int64":   hostType("sync/atomic.Int64", func() any { return &atomic.Int64{} }),

@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+
 	"github.com/podhmo/minigo/index"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -128,4 +130,47 @@ func TestConcurrentSourceAndBoundQuery(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// TestExplicitBindWinsDuringLazyInstall pins P2-12a: an explicit Bind
+// completing while a path's default table builds must win publication —
+// the installer's commit re-checks under the lock, so the default table
+// is dropped rather than clobbering the explicit one. The WithHostPolicy
+// hook holds the installer's commit until the explicit Bind has landed,
+// fixing the order deterministically.
+func TestExplicitBindWinsDuringLazyInstall(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	e := NewEngine(".", WithHostPolicy(func(path, name string) bool {
+		// the default html table's symbols block; the explicit
+		// table's "X" never matches so its Bind is not held
+		if path == "html" && name == "EscapeString" {
+			once.Do(func() { close(entered) })
+			<-release
+		}
+		return true
+	}))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.BoundSymbols("html") // triggers the lazy install
+	}()
+	<-entered
+	e.Bind("html", map[string]runtime.Value{"X": int64(1)})
+	close(release)
+	<-done
+
+	syms, ok := e.BoundSymbols("html")
+	if !ok {
+		t.Fatal("html is not bound")
+	}
+	if diff := cmp.Diff([]string{"X"}, syms); diff != "" {
+		t.Errorf("explicit Bind must win the published table (-want +got):\n%s", diff)
+	}
+	if p := e.BoundOf("html"); p == nil {
+		t.Fatal("BoundOf(html) = nil")
+	} else if _, ok := p.Globals.Get("X"); !ok {
+		t.Fatal("import table lacks the explicit symbol")
+	}
 }

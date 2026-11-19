@@ -12,7 +12,7 @@ import (
 )
 
 func (e *Engine) installMaps(h *hostHelpers) {
-	e.Bind("maps", genericFns(e.mapsSeqHelpers(map[string]runtime.Value{
+	e.bindBound("maps", genericFns(e.mapsSeqHelpers(map[string]runtime.Value{
 		"Clone": &runtime.BuiltinFunc{Name: "maps.Clone", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("maps.Clone needs 1 arg")

@@ -11,7 +11,7 @@ import (
 )
 
 func (e *Engine) installSlices(h *hostHelpers) {
-	e.Bind("slices", genericFns(hostSliceBoundary(e.slicesSeqHelpers(map[string]runtime.Value{
+	e.bindBound("slices", genericFns(hostSliceBoundary(e.slicesSeqHelpers(map[string]runtime.Value{
 		"Sort": h.sortInPlace("slices.Sort"),
 		"Contains": &runtime.BuiltinFunc{Name: "slices.Contains", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			i, err := sliceIndexScript(vc, "slices.Contains", args)

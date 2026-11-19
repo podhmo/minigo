@@ -956,11 +956,19 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value, opts 
 		Standard: !strings.Contains(strings.SplitN(importPath, "/", 2)[0], "."),
 	}
 	p.SetState(runtime.Ready)
+	e.bindPackage(p, cfg.name, symbols, true)
+}
+
+// bindPackage fills p's globals and publishes it as the path's bound
+// package. explicit=false (a lazy installer's default table) re-checks
+// under the commit lock so an explicit Bind completing mid-install is
+// never clobbered (P2-12a).
+func (e *Engine) bindPackage(p *runtime.Package, name string, symbols map[string]runtime.Value, explicit bool) {
 	for k, v := range symbols {
-		if e.hostPolicy != nil && !e.hostPolicy(importPath, k) {
+		if e.hostPolicy != nil && !e.hostPolicy(p.Path, k) {
 			continue
 		}
-		v = hostSymbol(cfg.name+"."+k, v)
+		v = hostSymbol(name+"."+k, v)
 		if bf, ok := v.(*runtime.BuiltinFunc); ok && (bf.Pkg == nil || bf.Pkg.Path == p.Path) {
 			// a BuiltinFunc bound under several paths keeps its first
 			// owner; a re-Bind re-points at the new live package
@@ -977,11 +985,16 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value, opts 
 		p.Globals.Set(k, v)
 	}
 	e.mu.Lock()
-	e.pending.Clear(importPath)
-	if _, skip := e.preservePkgs[importPath]; !skip {
-		e.pkgs[importPath] = p
+	if !explicit && e.names.Bound(p.Path) {
+		// an explicit Bind won the path while the default table built
+		e.mu.Unlock()
+		return
 	}
-	e.names.Set(importPath, p)
+	e.pending.Clear(p.Path)
+	if _, skip := e.preservePkgs[p.Path]; !skip {
+		e.pkgs[p.Path] = p
+	}
+	e.names.Set(p.Path, p)
 	e.mu.Unlock()
 }
 

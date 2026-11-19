@@ -148,7 +148,7 @@ func (e *Engine) installContext(h *hostHelpers) {
 	} {
 		tbl[k] = v
 	}
-	e.Bind("context", tbl)
+	e.bindBound("context", tbl)
 }
 
 // lockerOf resolves a script value to a sync.Locker for NewCond: host

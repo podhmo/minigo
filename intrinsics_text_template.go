@@ -15,7 +15,7 @@ func (e *Engine) installTextTemplate(h *hostHelpers) {
 	// text/template: New/Parse/Must box *template.Template — Execute's
 	// io.Writer arg adapts `&b` cells via toReflectValue's auto-pointer
 	// rule and the data map marshals through hostbridge.GoNative.
-	e.Bind("text/template", map[string]runtime.Value{
+	e.bindBound("text/template", map[string]runtime.Value{
 		"Template": hostType("text/template.Template", func() any { return template.New("") }),
 		"New": h.fn1("template.New", func(a []any) (any, error) {
 			return &runtime.GoValue{V: template.New(str(a[0]))}, nil

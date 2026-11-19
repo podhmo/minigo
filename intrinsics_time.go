@@ -32,7 +32,7 @@ func (e *Engine) installTime(h *hostHelpers) {
 		return &runtime.Named{Typ: weekdayTD, V: int64(d)}
 	}
 
-	e.Bind("time", map[string]runtime.Value{
+	e.bindBound("time", map[string]runtime.Value{
 		// *time.ParseError: errors.As / type asserts on Parse's error.
 		"ParseError": hostType("time.ParseError", func() any { return &time.ParseError{} }),
 		"Sleep":      h.fn("time.Sleep", func(a []any) (any, error) { time.Sleep(durOf(a[0])); return nil, nil }),

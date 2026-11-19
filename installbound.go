@@ -8,6 +8,7 @@ package minigo
 import (
 	"go/ast"
 	"reflect"
+	"strings"
 
 	"github.com/podhmo/minigo/runtime"
 )
@@ -60,7 +61,17 @@ func (e *Engine) bindBound(importPath string, symbols map[string]runtime.Value) 
 	if bound {
 		return
 	}
-	e.Bind(importPath, symbols)
+	p := &runtime.Package{
+		Path: importPath,
+		Name: lastElem(importPath),
+		PackageInstance: runtime.PackageInstance{
+			Globals:  runtime.NewEnv(),
+			Specials: e.specials,
+		},
+		Standard: !strings.Contains(strings.SplitN(importPath, "/", 2)[0], "."),
+	}
+	p.SetState(runtime.Ready)
+	e.bindPackage(p, lastElem(importPath), symbols, false)
 }
 
 // registered reports whether path is bound — installed already or

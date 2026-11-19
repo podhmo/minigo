@@ -10,7 +10,7 @@ import (
 )
 
 func (e *Engine) installStrings(h *hostHelpers) {
-	e.Bind("strings", map[string]runtime.Value{
+	e.bindBound("strings", map[string]runtime.Value{
 		"Contains":    h.fn2("strings.Contains", func(a []any) (any, error) { return strings.Contains(str(a[0]), str(a[1])), nil }, strings.Contains),
 		"ContainsAny": h.fn2("strings.ContainsAny", func(a []any) (any, error) { return strings.ContainsAny(str(a[0]), str(a[1])), nil }, strings.ContainsAny),
 		"Compare":     h.fn2("strings.Compare", func(a []any) (any, error) { return strings.Compare(str(a[0]), str(a[1])), nil }),

@@ -15,7 +15,7 @@ func (e *Engine) installOsExec(h *hostHelpers) {
 	// the engine's virtual cwd via cmd.Dir; scripts wire stdio through the
 	// boxed os.Stdin/Stdout/Stderr handles.
 	if len(h.env.AllowedRoots()) == 0 {
-		e.Bind("os/exec", map[string]runtime.Value{
+		e.bindBound("os/exec", map[string]runtime.Value{
 			"Command": h.fn("exec.Command", func(a []any) (any, error) {
 				if len(a) == 0 {
 					return nil, errors.New("exec.Command needs a name")

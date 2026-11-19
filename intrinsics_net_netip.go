@@ -12,5 +12,5 @@ func (e *Engine) installNetNetip(h *hostHelpers) {
 	tbl["Addr"] = hostType("net/netip.Addr", func() any { return netip.Addr{} })
 	tbl["AddrPort"] = hostType("net/netip.AddrPort", func() any { return netip.AddrPort{} })
 	tbl["Prefix"] = hostType("net/netip.Prefix", func() any { return netip.Prefix{} })
-	e.Bind("net/netip", tbl)
+	e.bindBound("net/netip", tbl)
 }
