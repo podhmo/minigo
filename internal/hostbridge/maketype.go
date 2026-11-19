@@ -89,6 +89,10 @@ func argSize(v any) int64 {
 		return int64(x)
 	case uint, uint8, uint16, uint32, uintptr:
 		return int64(reflect.ValueOf(x).Uint())
+	case *runtime.UConst:
+		// a typed constant `make(net.IP, uint8(4))` unwraps to its
+		// UConst payload; materialize like intOf does.
+		return argSize(MustNativeConst(x))
 	case *runtime.GoValue:
 		return argSize(x.V)
 	}

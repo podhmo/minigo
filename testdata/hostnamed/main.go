@@ -186,6 +186,13 @@ func MakeOOB() (msg string) {
 	return ""
 }
 
+// MakeTypedConst makes a net.IP whose size arguments are typed
+// constants — the UConst payload must materialize at its declared type.
+func MakeTypedConst() string {
+	m := make(net.IP, uint8(2), uint8(4))
+	return fmt.Sprintf("%d %d", len(m), cap(m))
+}
+
 // MakeMap makes a host named map and writes it.
 func MakeMap() string {
 	q := make(url.Values)
