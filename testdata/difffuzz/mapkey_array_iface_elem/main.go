@@ -19,4 +19,11 @@ func main() {
 	n := map[[1]M]int{{M(2)}: 3}
 	var two M = 2
 	fmt.Println(n[[1]M{two}]) // 3
+
+	// a string spelled like a type tag is a different key than the
+	// tagged value: [1]any{"uint32:2"} vs [1]any{uint32(2)}.
+	s := map[[1]any]int{{"uint32:2"}: 5, {"nil"}: 6}
+	fmt.Println(s[[1]any{uint32(2)}])  // 0
+	fmt.Println(s[[1]any{"uint32:2"}]) // 5
+	fmt.Println(s[[1]any{nil}])        // 0
 }

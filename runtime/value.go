@@ -1240,6 +1240,11 @@ func writeKeyElem(sb *strings.Builder, v Value) {
 		}
 	case *TypedNil, Nil:
 		sb.WriteString("nil")
+	case string:
+		// a string renders quoted so it can never collide with a
+		// type tag, the nil spelling or a nonce: [1]any{"uint32:2"}
+		// and [1]any{uint32(2)} are different keys.
+		fmt.Fprintf(sb, "%q", x)
 	default:
 		fmt.Fprintf(sb, "%v", x)
 	}
