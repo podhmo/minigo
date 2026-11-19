@@ -820,14 +820,14 @@ unwrapped:
 		return
 	}
 	c.calleeExpr(x.Fun)
-	newCall := isNewCall(x)
+	newCall := c.isNewCall(x)
 	args := x.Args
 	// make(T, ...) takes a type as first argument; new(T) also
 	// accepts an arbitrary expression (Go 1.26) — only a syntactic
 	// type form compiles as a type, anything else evaluates to a
 	// value and the builtin distinguishes a typedef argument from
 	// a value at run time.
-	if len(args) > 0 && (isTypePositionCall(x) || (newCall && c.isTypeForm(args[0]))) {
+	if len(args) > 0 && (c.isTypePositionCall(x) || (newCall && c.isTypeForm(args[0]))) {
 		c.typeExpr(args[0])
 		args = args[1:]
 	}
@@ -976,18 +976,30 @@ func (c *compiler) calleeExpr(fun ast.Expr) {
 	c.expr(fun)
 }
 
-// isTypePositionCall reports whether the call's first argument is a type
-// (the make builtin).
-func isTypePositionCall(x *ast.CallExpr) bool {
+// isTypePositionCall reports whether the call names the make builtin,
+// whose first argument is a type. A nearer declaration of `make` (a
+// declared func or var) shadows the builtin and makes it an ordinary
+// call — `func make(x int)` receiving `make(1)` must not parse `1` as
+// a type.
+func (c *compiler) isTypePositionCall(x *ast.CallExpr) bool {
 	id, ok := x.Fun.(*ast.Ident)
-	return ok && id.Name == "make"
+	if !ok || id.Name != "make" {
+		return false
+	}
+	_, shadowed := c.resolveName(id.Name)
+	return !shadowed
 }
 
 // isNewCall reports whether the call names the new builtin — its first
-// argument is a type OR an expression since Go 1.26.
-func isNewCall(x *ast.CallExpr) bool {
+// argument is a type OR an expression since Go 1.26. A nearer `new`
+// declaration shadows it like `make`.
+func (c *compiler) isNewCall(x *ast.CallExpr) bool {
 	id, ok := x.Fun.(*ast.Ident)
-	return ok && id.Name == "new"
+	if !ok || id.Name != "new" {
+		return false
+	}
+	_, shadowed := c.resolveName(id.Name)
+	return !shadowed
 }
 
 // isTypeForm reports whether e is syntactically a type expression (and thus

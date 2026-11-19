@@ -15,7 +15,7 @@ migration; history above that point lives in the source repository.
 
 - [x] **Preserve deferred operand types at binding sites**: `gate_rangedeferred`, `gate_recvdeferred`, and `gate_binddeferred` enforce the pinned diagnostics in both normal and strict conformance.
 
-- [ ] **A package-level function named `make` is compiled as the builtin**: `func make(x int) int { return x }; var X = make(1)` traps with `unsupported type expression *ast.BasicLit` in normal and strict modes. The call should pass `1` as a value.
+- [x] **A package-level function named `make` is compiled as the builtin**: `func make(x int) int { return x }; var X = make(1)` traps with `unsupported type expression *ast.BasicLit` in normal and strict modes. The call should pass `1` as a value.
 
 - [ ] **Deferred mismatch diagnostics omit the package name of a channel element type**: comparing a receive from `origin.Named` (declared as `chan origin.Count` from the caller's view) with a `string` reports `Count and string` in strict mode. The ordinary compile gate and Go report `origin.Count and string`.
 
