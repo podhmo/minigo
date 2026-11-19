@@ -1,19 +1,24 @@
 package minigo
 
 import (
+	stdlibbytealg "github.com/podhmo/minigo/internal/stdlib/bytealg"
 	stdlibbytes "github.com/podhmo/minigo/internal/stdlib/bytes"
 	stdlibcontext "github.com/podhmo/minigo/internal/stdlib/context"
 	stdliberrors "github.com/podhmo/minigo/internal/stdlib/errors"
+	stdlibgodebug "github.com/podhmo/minigo/internal/stdlib/godebug"
 	stdlibhtml "github.com/podhmo/minigo/internal/stdlib/html"
 	stdlibhtmltemplate "github.com/podhmo/minigo/internal/stdlib/htmltemplate"
 	stdlibmath "github.com/podhmo/minigo/internal/stdlib/math"
 	stdlibnetip "github.com/podhmo/minigo/internal/stdlib/netip"
 	stdlibpath "github.com/podhmo/minigo/internal/stdlib/path"
+	stdlibrace "github.com/podhmo/minigo/internal/stdlib/race"
 	stdlibregexp "github.com/podhmo/minigo/internal/stdlib/regexp"
 	stdlibsha256 "github.com/podhmo/minigo/internal/stdlib/sha256"
 	stdlibstrconv "github.com/podhmo/minigo/internal/stdlib/strconv"
+	stdlibstringslite "github.com/podhmo/minigo/internal/stdlib/stringslite"
 	stdlibsync "github.com/podhmo/minigo/internal/stdlib/sync"
 	stdlibsyscall "github.com/podhmo/minigo/internal/stdlib/syscall"
+	stdlibtestenv "github.com/podhmo/minigo/internal/stdlib/testenv"
 	stdlibtexttemplate "github.com/podhmo/minigo/internal/stdlib/texttemplate"
 	stdlibtime "github.com/podhmo/minigo/internal/stdlib/time"
 	stdlibunicode "github.com/podhmo/minigo/internal/stdlib/unicode"
@@ -36,12 +41,12 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("encoding/base64", func() { e.installEncodingBase64(h) })
 	e.pending.Register("encoding/hex", func() { e.installEncodingHex(h) })
 	e.pending.Register("encoding/json", func() { e.installEncodingJson(h) })
-	e.pending.Register("internal/godebug", func() { e.installInternalGodebug(h) })
-	e.pending.Register("internal/testenv", func() { e.installInternalTestenv(h) })
+	e.pending.Register("internal/godebug", func() { stdlibgodebug.Install(e.bindBound, h) })
+	e.pending.Register("internal/testenv", func() { stdlibtestenv.Install(e.bindBound, h) })
 	e.pending.Register("syscall", func() { stdlibsyscall.Install(e.bindBound, h) })
-	e.pending.Register("internal/bytealg", func() { e.installInternalBytealg(h) })
-	e.pending.Register("internal/race", func() { e.installInternalRace(h) })
-	e.pending.Register("internal/stringslite", func() { e.installInternalStringslite(h) })
+	e.pending.Register("internal/bytealg", func() { stdlibbytealg.Install(e.bindBound, h) })
+	e.pending.Register("internal/race", func() { stdlibrace.Install(e.bindBound, h) })
+	e.pending.Register("internal/stringslite", func() { stdlibstringslite.Install(e.bindBound, h) })
 	e.pending.Register("html", func() { stdlibhtml.Install(e.bindBound) })
 	e.pending.Register("path", func() { stdlibpath.Install(e.bindBound) })
 	e.pending.Register("reflect", func() { e.installReflect() })
