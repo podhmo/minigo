@@ -15,6 +15,7 @@ import (
 
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/stdlib"
+	stdruntime "github.com/podhmo/minigo/internal/stdlib/goruntime"
 	"github.com/podhmo/minigo/minireflect"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -801,7 +802,7 @@ func scriptTypeString(x runtime.Value) string {
 		switch t.V.(type) {
 		case *jsonEncoder:
 			return "*json.Encoder"
-		case cleanupHandle:
+		case stdruntime.CleanupHandle:
 			return "runtime.Cleanup"
 		case *minireflect.RValue:
 			return "reflect.Value"

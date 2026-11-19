@@ -1,4 +1,4 @@
-package minigo
+package goruntime
 
 import (
 	crand "crypto/rand"
@@ -9,32 +9,40 @@ import (
 	"os/exec"
 	goruntime "runtime"
 	"strings"
+	"sync"
 
 	"github.com/podhmo/minigo/internal/hostbridge"
+	"github.com/podhmo/minigo/internal/stdlib"
+	stdcontext "github.com/podhmo/minigo/internal/stdlib/context"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/vm"
 )
 
-func (e *Engine) installRuntime(h *hostHelpers) {
-	e.bindBound("runtime", map[string]runtime.Value{
+var (
+	memStatsOnce     sync.Once
+	memStatsSnapshot goruntime.MemStats
+)
+
+func Install(bind stdlib.Bind, h stdlib.Helpers) {
+	bind("runtime", map[string]runtime.Value{
 		"GOOS":   goruntime.GOOS,
 		"GOARCH": goruntime.GOARCH,
-		"NumGoroutine": h.fn("runtime.NumGoroutine", func(a []any) (any, error) {
+		"NumGoroutine": h.Fn("runtime.NumGoroutine", func(a []any) (any, error) {
 			return goruntime.NumGoroutine(), nil
 		}),
-		"Gosched": h.fn("runtime.Gosched", func(a []any) (any, error) {
+		"Gosched": h.Fn("runtime.Gosched", func(a []any) (any, error) {
 			goruntime.Gosched()
 			return nil, nil
 		}),
-		"NumCPU": h.fn("runtime.NumCPU", func(a []any) (any, error) { return goruntime.NumCPU(), nil }),
+		"NumCPU": h.Fn("runtime.NumCPU", func(a []any) (any, error) { return goruntime.NumCPU(), nil }),
 		"GOMAXPROCS": &runtime.BuiltinFunc{Name: "runtime.GOMAXPROCS", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			// read-only on the script side: GOMAXPROCS(0) reports the
 			// current setting without mutating the host process's
 			// parallelism.
 			return goruntime.GOMAXPROCS(0), nil
 		}},
-		"Version":  h.fn("runtime.Version", func(a []any) (any, error) { return goruntime.Version(), nil }),
-		"GC":       h.fn("runtime.GC", func(a []any) (any, error) { return nil, nil }),
+		"Version":  h.Fn("runtime.Version", func(a []any) (any, error) { return goruntime.Version(), nil }),
+		"GC":       h.Fn("runtime.GC", func(a []any) (any, error) { return nil, nil }),
 		"Compiler": "gc",
 		// //go:linkname targets other packages wire to (maphash's
 		// runtime_rand/runtime_memhash): unexported, so only reachable
@@ -59,7 +67,7 @@ func (e *Engine) installRuntime(h *hostHelpers) {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("runtime.newcoro needs 1 arg, got %d", len(args))
 			}
-			c := &scriptCoro{Ch: make(chan struct{})}
+			c := &stdcontext.ScriptCoro{Ch: make(chan struct{})}
 			cv := &runtime.GoValue{V: c}
 			// the worker parks in c before running f like gc's
 			// coroutine does, and its exit releases whoever is parked
@@ -79,7 +87,7 @@ func (e *Engine) installRuntime(h *hostHelpers) {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("runtime.coroswitch needs 1 arg, got %d", len(args))
 			}
-			c, ok := hostbridge.GoNative(args[0]).(*scriptCoro)
+			c, ok := hostbridge.GoNative(args[0]).(*stdcontext.ScriptCoro)
 			if !ok {
 				return nil, fmt.Errorf("runtime.coroswitch needs a *coro, got %T", hostbridge.GoNative(args[0]))
 			}
@@ -91,15 +99,15 @@ func (e *Engine) installRuntime(h *hostHelpers) {
 			if len(args) != 3 {
 				return nil, fmt.Errorf("runtime.memhash needs 3 args, got %d", len(args))
 			}
-			elems, err := unsafeElems(args[0], args[2])
+			elems, err := stdlib.UnsafeElems(args[0], args[2])
 			if err != nil {
 				return nil, err
 			}
 			// FNV-1a over the byte span, keyed by the seed and put
 			// through a murmur-style finalizer.
-			h := uint64(int64Of(hostbridge.GoNative(args[1]))) ^ 14695981039346656037
+			h := uint64(stdlib.Int64Of(hostbridge.GoNative(args[1]))) ^ 14695981039346656037
 			for _, el := range elems {
-				h ^= uint64(int64Of(hostbridge.GoNative(el))) & 0xFF
+				h ^= uint64(stdlib.Int64Of(hostbridge.GoNative(el))) & 0xFF
 				h *= 1099511628211
 			}
 			h ^= h >> 33
@@ -111,7 +119,7 @@ func (e *Engine) installRuntime(h *hostHelpers) {
 		}},
 		// runtime.GOROOT is deprecated for the host; report the env's
 		// root, falling back to `go env GOROOT` like go/build does.
-		"GOROOT": h.fn("runtime.GOROOT", func(a []any) (any, error) {
+		"GOROOT": h.Fn("runtime.GOROOT", func(a []any) (any, error) {
 			if gr := os.Getenv("GOROOT"); gr != "" {
 				return gr, nil
 			}
@@ -123,10 +131,10 @@ func (e *Engine) installRuntime(h *hostHelpers) {
 		}),
 		// a debugger trap is a no-op for the interpreter — the program
 		// just continues, which is what these tests rely on.
-		"Breakpoint": h.fn("runtime.Breakpoint", func(a []any) (any, error) { return nil, nil }),
+		"Breakpoint": h.Fn("runtime.Breakpoint", func(a []any) (any, error) { return nil, nil }),
 		// no GC: registering a finalizer is accepted but never fires —
 		// same observable behavior as a run with no GC pressure.
-		"SetFinalizer": h.fn("runtime.SetFinalizer", func(a []any) (any, error) {
+		"SetFinalizer": h.Fn("runtime.SetFinalizer", func(a []any) (any, error) {
 			if len(a) != 2 {
 				return nil, errors.New("runtime.SetFinalizer needs 2 args")
 			}
@@ -136,17 +144,17 @@ func (e *Engine) installRuntime(h *hostHelpers) {
 		// without a GC, so the call only has to hand back a Cleanup
 		// handle whose Stop is a no-op (weak.Make-based registrars like
 		// Songmu/flagx call it once per FlagSet).
-		"AddCleanup": h.fn("runtime.AddCleanup", func(a []any) (any, error) {
+		"AddCleanup": h.Fn("runtime.AddCleanup", func(a []any) (any, error) {
 			if len(a) != 3 {
 				return nil, fmt.Errorf("runtime.AddCleanup needs 3 args, got %d", len(a))
 			}
-			return &runtime.GoValue{V: cleanupHandle{}}, nil
+			return &runtime.GoValue{V: CleanupHandle{}}, nil
 		}),
-		"Cleanup":        hostType("runtime.Cleanup", func() any { return cleanupHandle{} }),
+		"Cleanup":        stdlib.HostType("runtime.Cleanup", func() any { return CleanupHandle{} }),
 		"MemProfileRate": &runtime.Cell{Elem: int64(512 * 1024)},
 		// liveness hints and heap profiling have no GC to act on —
 		// KeepAlive is a no-op; MemProfile reports no records.
-		"KeepAlive": h.fn("runtime.KeepAlive", func(a []any) (any, error) { return nil, nil }),
+		"KeepAlive": h.Fn("runtime.KeepAlive", func(a []any) (any, error) { return nil, nil }),
 		"MemProfile": &runtime.BuiltinFunc{Name: "runtime.MemProfile", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			return &runtime.Tuple{Elems: []runtime.Value{int64(0), true}}, nil
 		}},
@@ -155,12 +163,12 @@ func (e *Engine) installRuntime(h *hostHelpers) {
 			Fields: []string{"AllocBytes", "FreeBytes", "AllocObjects", "FreeObjects"},
 		},
 		"Error":    &runtime.TypeDef{Name: "runtime.Error", Kind: runtime.KindInterface, MReqs: []string{"Error", "RuntimeError"}},
-		"MemStats": hostType("runtime.MemStats", func() any { return &goruntime.MemStats{} }),
+		"MemStats": stdlib.HostType("runtime.MemStats", func() any { return &goruntime.MemStats{} }),
 		// the engine's own package handle — scripts get *runtime.Package
 		// values from inspect.DirOf/Current; the typedef lets them spell
 		// that type in signatures and asserts with one identity.
-		"Package": hostType("runtime.Package", func() any { return &runtime.Package{} }),
-		"ReadMemStats": h.fn("runtime.ReadMemStats", func(a []any) (any, error) {
+		"Package": stdlib.HostType("runtime.Package", func() any { return &runtime.Package{} }),
+		"ReadMemStats": h.Fn("runtime.ReadMemStats", func(a []any) (any, error) {
 			m, ok := a[0].(*goruntime.MemStats)
 			if !ok {
 				return nil, fmt.Errorf("ReadMemStats needs *runtime.MemStats, got %T", a[0])
@@ -181,7 +189,7 @@ func (e *Engine) installRuntime(h *hostHelpers) {
 			}
 			// pcs is top-first: index 0 is the innermost live frame —
 			// the builtin's own call site, which is Caller(0) in Go.
-			skip := intOf(hostbridge.GoNative(args[0]))
+			skip := stdlib.IntOf(hostbridge.GoNative(args[0]))
 			pcs := vc.CallerPCs()
 			if skip < 0 || skip >= len(pcs) {
 				return &runtime.Tuple{Elems: []runtime.Value{int64(0), "", int64(0), false}}, nil
@@ -201,7 +209,7 @@ func (e *Engine) installRuntime(h *hostHelpers) {
 			// index 0 is the Callers builtin itself, like Go — CallerFrame
 			// never resolves it. skip drops that many leading PCs.
 			pcs := append([]uintptr{0}, vc.CallerPCs()...)
-			skip := intOf(hostbridge.GoNative(args[0]))
+			skip := stdlib.IntOf(hostbridge.GoNative(args[0]))
 			if skip > len(pcs) {
 				skip = len(pcs)
 			}
@@ -222,7 +230,7 @@ func (e *Engine) installRuntime(h *hostHelpers) {
 			}
 			sites := []runtime.CallSite{}
 			for _, e := range sl.Elems {
-				if s, ok := vc.CallerFrame(uintptr(int64Of(hostbridge.GoNative(e)))); ok {
+				if s, ok := vc.CallerFrame(uintptr(stdlib.Int64Of(hostbridge.GoNative(e)))); ok {
 					sites = append(sites, s)
 				}
 			}
@@ -272,3 +280,10 @@ func (cf *callerFrames) Next() (callerFrame, bool) {
 
 // Name implements (*runtime.Func).Name.
 func (f *callerFunc) Name() string { return f.name }
+
+// CleanupHandle is the runtime.Cleanup the bound AddCleanup returns:
+// the interpreter has no GC to fire cleanups, so the handle is an
+// inert token — Stop is a no-op.
+type CleanupHandle struct{}
+
+func (CleanupHandle) Stop() {}

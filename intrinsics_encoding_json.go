@@ -367,6 +367,31 @@ func goJSONSeen(c runtime.MemberShapeCaller, v any, seen map[any]bool) any {
 
 // jsonSeen marks a container pointer on the current marshal path —
 // gc's ptrSeen equivalent. A repeat visit means a reference cycle.
+
+// jsonMarshalerErr renders gc's MarshalerError text for a script
+// MarshalJSON/MarshalText failure — `json: error calling MarshalJSON
+// for type *T: <err>` (gc's encoder always invokes through an
+// address, so the named type spells *T even for a value receiver).
+func jsonMarshalerErr(c runtime.TypeMemberCaller, se *jsonScriptErr) error {
+	name := "unknown"
+	if vt := c.TypeOf(se.operand); vt != nil {
+		name = runtime.DisplayName(derefTyp(vt))
+		if vt.Kind != runtime.KindPointer {
+			name = "*" + name
+		}
+	}
+	// the script error stays the cause — errors.Is/As reach it like
+	// MarshalerError's Unwrap.
+	me := &json.MarshalerError{Type: scriptReflectType{name: name}, Err: hostbridge.HostErrOf(c, se.sv)}
+	if se.method == "MarshalJSON" {
+		return me
+	}
+	// sourceFunc is unexported and an empty one reports "MarshalJSON",
+	// so a MarshalText failure wraps its MarshalerError instead —
+	// errors.As still matches it through Unwrap.
+	return &jsonMarshalTextErr{me: me}
+}
+
 func jsonSeen(seen map[any]bool, p any) bool {
 	if seen[p] {
 		return true
@@ -696,35 +721,6 @@ func jsonHostArgSeen(v any, seen map[unsafe.Pointer]bool) any {
 // recorded in vm's structOrigs.
 func projectedOrig(v any) (runtime.Value, bool) {
 	return hostbridge.StructOrig(v)
-}
-
-// cleanupHandle is the runtime.Cleanup the bound AddCleanup returns:
-// the interpreter has no GC to fire cleanups, so the handle is an
-// inert token — Stop is a no-op.
-type cleanupHandle struct{}
-
-// jsonMarshalerErr renders gc's MarshalerError text for a script
-// MarshalJSON/MarshalText failure — `json: error calling MarshalJSON
-// for type *T: <err>` (gc's encoder always invokes through an
-// address, so the named type spells *T even for a value receiver).
-func jsonMarshalerErr(c runtime.TypeMemberCaller, se *jsonScriptErr) error {
-	name := "unknown"
-	if vt := c.TypeOf(se.operand); vt != nil {
-		name = runtime.DisplayName(derefTyp(vt))
-		if vt.Kind != runtime.KindPointer {
-			name = "*" + name
-		}
-	}
-	// the script error stays the cause — errors.Is/As reach it like
-	// MarshalerError's Unwrap.
-	me := &json.MarshalerError{Type: scriptReflectType{name: name}, Err: hostbridge.HostErrOf(c, se.sv)}
-	if se.method == "MarshalJSON" {
-		return me
-	}
-	// sourceFunc is unexported and an empty one reports "MarshalJSON",
-	// so a MarshalText failure wraps its MarshalerError instead —
-	// errors.As still matches it through Unwrap.
-	return &jsonMarshalTextErr{me: me}
 }
 
 // jsonMarshalTextErr is the MarshalText half of a script marshaler
@@ -2252,8 +2248,6 @@ func (e *jsonEncoder) SetIndent(prefix, indent string) {
 func (e *jsonEncoder) SetEscapeHTML(on bool) {
 	e.enc.SetEscapeHTML(on)
 }
-
-func (cleanupHandle) Stop() {}
 
 func (e *jsonMarshalTextErr) Error() string {
 	return "json: error calling MarshalText for type " + e.me.Type.String() + ": " + e.me.Err.Error()
